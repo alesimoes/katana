@@ -33,6 +33,8 @@ Medido em 2026-11-15 (RTX 3050, driver NVIDIA OpenCL):
 
 Correção depois de fundir a atenção inteira num lançamento (um a menos por camada, conferido em cinco modelos): a geração não mudou em nenhum modelo de 1 B ou mais (Qwen 1,5B 10,9 ms, Llama 3B 18,7 ms, OLMoE ~10 ms por token, com e sem a fusão). Conclusão: nesses modelos o host termina de enfileirar em ~5,6 ms e fica esperando a GPU; o tempo por token é o trabalho da GPU nos produtos (o Qwen 1,5B lê ~0,85 GB de pesos por token, ~78 GB/s), não o custo por lançamento. Menos lançamentos (ou um buffer de comandos gravado) só rende em modelos minúsculos, como o de 135 M. Para os modelos que interessam, o que conta é a vazão dos kernels de produto e a parte que roda na CPU.
 
+Protótipo de buffer de comandos (`tools/vkprobe`, Vulkan, mesma placa): 226 despachos de computação com barreira entre eles, gravados uma vez e submetidos por token, levam 0,44 ms no total (2 µs por despacho); regravando a cada token, ~1 ms. No OpenCL só o enfileiramento desses 226 custa ~5,6 ms. Despachar a fila do OpenCL a cada camada (`KATANA_FLUSH`) não muda nada, o que confirma que a GPU já executa em paralelo com o enfileiramento. Portanto um backend Vulkan tiraria ~5 ms de host por token, o que só aparece onde o host é o limite: modelos pequenos (o de 135 M gasta ~7 ms por token quase só enfileirando). Nos modelos de 1 B ou mais o limite é a conta na GPU e o ganho esperado é perto de zero.
+
 ## 2. Lotes (prompt)
 
 | Técnica | O que faz | Ganho | Esforço |

@@ -1,0 +1,8 @@
+#version 450
+layout(local_size_x = 32) in;
+layout(set = 0, binding = 0) buffer Data { float v[]; } data;
+layout(push_constant) uniform PC { float add; } pc;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    data.v[i] += pc.add;
+}
