@@ -224,6 +224,25 @@ dividida, não refeita): Q4_K 136–231 G pesos/s e Q6_K 150–202 conforme o fo
 ~180 do perfil do OpenCL (métodos diferentes; indica o mesmo nível). Organização alternativa com
 uma linha por grupo de 32 threads é 2,5x mais rápida em matrizes de poucas linhas (69 contra 27).
 
+Lote generalizado (`tools/vkq4k/mm.comp`, harness `vkmm`; 1.400 + 1.650 casos conferidos, incluindo
+tamanhos quebrados): tipos Q4_K, Q5_K, Q6_K, Q8_0 e F32; modos gravar, somar e par gate/up com
+SwiGLU; ladrilhos estreitos para lotes pequenos. Refeito com a placa livre em 8960x1536: Q4_K
+1,40 T/s com lote de 16 (era 0,57 completando até 64), 2,50 com 64 e 2,83 com 256; Q6_K 2,10,
+3,27 e 3,23. Regra: até 16 tokens ladrilho 64x16, até 32 64x32, acima 64x64; dividir as colunas só
+com poucas linhas e muitas colunas. Descartados por medição: tabela de escalas do Q4_K na memória
+compartilhada (mais lenta, pela barreira extra), ladrilhos de 2 subgrupos, ler fp32 direto
+(2–6% mais lento que converter uma vez quando vários produtos usam a mesma entrada).
+
+Kernels que não são produto (`tools/vkatt`, 1.720 casos conferidos): normas, RoPE com cache KV,
+atenção de um token, atenção em lote, soma dos especialistas. O seno e cosseno do GLSL perdem
+precisão em ângulos grandes (erro ~2e-4 na posição 600): é preciso reduzir o ângulo antes. Norma
+RMS com soma por subgrupo: de 35 para 3 µs (lote de 16: de ~1.000 para 6–25 µs). Ponto fraco: a
+atenção em lote em três kernels custa 1,2–2,6 ms por lote de 16 na posição 600, mais que os
+produtos; precisa virar um lançamento só.
+
+Integração (etapa 3): `KATANA_BACKEND=vulkan` sobe os pesos e faz o produto por token pelo Vulkan
+(`selftest` de produtos passa em 5 modelos densos); o resto do grafo ainda roda na CPU.
+
 Camada de runtime (`vk/kvk.h`, 9 testes passando na NVIDIA e na Intel): despacho esperando a cada
 um custa ~156 µs; gravando a fila, ~4,7 µs; grafo gravado e resubmetido, 1,5–2,4 µs.
 
