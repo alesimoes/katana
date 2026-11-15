@@ -62,13 +62,14 @@ Arquiteturas `olmoe` (OLMoE-1B-7B) e `qwen3moe` (Qwen3-30B-A3B), as duas testada
 
 Medido numa RTX 3050 de 4 GB (i7-11800H, 64 GB), geração:
 
-| Modelo | katana | llama.cpp b12418 (CUDA, melhor configuração: `-ngl 99 -ot exps=CPU`) |
-|---|---|---|
-| Qwen3-30B-A3B Q4_K_M (18,6 GB), texto real, 200 tokens | 11,5–15,5 tok/s (varia com a temperatura da máquina) | 8,6 tok/s (uma medida) |
-| idem, benchmark sintético 64+64 | 15–18 tok/s (prompt 28–33, em lote) | 14,0 tok/s (prompt 26,7) |
-| OLMoE-1B-7B Q4_K_M (4,2 GB) | ~60 tok/s (texto real), ~88 (sintético) | não medido |
+| Qwen3-30B-A3B Q4_K_M (18,6 GB) | katana | motor de referência, com cache de especialistas na GPU | motor de referência, especialistas só na CPU |
+|---|---|---|---|
+| Geração, texto real, 200 tokens | 12,5–14,9 tok/s | 13,2–14,4 tok/s | 6,7–8,6 tok/s |
+| Prompt curto, partida a frio | 9–11 tok/s | ~5,5 tok/s | ~5,5 tok/s |
 
-No Qwen3-30B só 19 de 128 especialistas por camada cabem na VRAM e eles atendem ~56% dos usos em texto real. A saída gulosa bate com a do llama.cpp por ~60 tokens no teste feito (depois diverge numa escolha apertada).
+Medidas alternadas com `compare.sh`, três rodadas. Na geração há empate com a melhor configuração do motor de referência; a vantagem do katana está no prompt a frio. OLMoE-1B-7B: ~60 tok/s com texto real, ~88 no benchmark sintético (sem comparação).
+
+No Qwen3-30B só 19 de 128 especialistas por camada cabem na VRAM e eles atendem ~56% dos usos em texto real. A saída gulosa bate com a do motor de referência por ~60 tokens no teste feito (depois diverge numa escolha apertada).
 
 OLMoE com o cache reduzido de propósito (`KATANA_EXPERT_MB`): 51 de 64 por camada na VRAM atendem 95% dos usos; 16 de 64 atendem 62% (35 tok/s); 8 de 64 atendem 45% (32 tok/s); só CPU, ~20 tok/s.
 
