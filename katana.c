@@ -2734,6 +2734,11 @@ static void layer_prefetch(const Model *m, int l) {
 #endif
 }
 
+/* experimento de esparsidade por assunto (comando `sparsity`): soma |ativacao| de cada
+   neuronio do feed-forward e, com mascara, zera os que ficaram fora do conjunto quente */
+static struct { int collect; float *sum; uint8_t *mask; double mass_all, mass_kept; int oracle_keep; float *tmp; } sp;
+static int cmp_float_desc(const void *a, const void *b);
+
 /* camadas [l0, l1) na CPU sobre o estado m->x, para o token na posicao pos */
 static void cpu_layers(Model *m, int l0, int l1, int pos) {
     const Config *c = &m->cfg;
@@ -2799,6 +2804,25 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
         for (int i = 0; i < H; i++) {
             float g = m->hb[i];
             m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i];
+        }
+        if (sp.collect) for (int i = 0; i < H; i++) sp.sum[(size_t)l * H + i] += fabsf(m->hb[i]);
+        if (sp.oracle_keep) {   /* experimento: so os N mais ativos DESTE token contribuem */
+            for (int i = 0; i < H; i++) sp.tmp[i] = fabsf(m->hb[i]);
+            qsort(sp.tmp, H, sizeof(float), cmp_float_desc);
+            const float thr = sp.tmp[sp.oracle_keep - 1];
+            for (int i = 0; i < H; i++) {
+                const double a = fabs((double)m->hb[i]);
+                sp.mass_all += a;
+                if (a >= thr) sp.mass_kept += a; else m->hb[i] = 0.0f;
+            }
+        }
+        if (sp.mask) {      /* experimento: so os neuronios "quentes" contribuem */
+            const uint8_t *mk = sp.mask + (size_t)l * H;
+            for (int i = 0; i < H; i++) {
+                const double a = fabs((double)m->hb[i]);
+                sp.mass_all += a;
+                if (mk[i]) sp.mass_kept += a; else m->hb[i] = 0.0f;
+            }
         }
         matvec(m->xb2, &L->w_down, m->hb, d, H);
         for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
@@ -3339,7 +3363,109 @@ static int tune(Model *m) {
     return 0;
 }
 
+static char *read_text(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "Nao consegui abrir %s\n", path); exit(1); }
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *t = xalloc((size_t)n + 1, 1);
+    if (fread(t, 1, (size_t)n, f) != (size_t)n) die("falha ao ler o texto");
+    fclose(f);
+    return t;
+}
+
+static int cmp_float_desc(const void *a, const void *b) {
+    const float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+
+/* Mede se o feed-forward e esparso POR ASSUNTO.
+   1) roda o texto de calibracao e soma a ativacao de cada neuronio (por camada);
+   2) roda o texto de avaliacao com o modelo inteiro e guarda o token previsto em cada posicao;
+   3) repete a avaliacao mantendo so os p% neuronios mais ativos na calibracao (e, para
+      comparar, p% escolhidos ao acaso) e conta em quantas posicoes a previsao continua igual. */
+static int sparsity(Model *m, const char *calib_path, const char *eval_path) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    const int H = c->hidden, L = c->n_layers, V = c->vocab;
+    Ids ca = {0}, ev = {0};
+    if (c->add_bos && c->bos >= 0) ids_push(&ca, c->bos);
+    encode(tk, read_text(calib_path), &ca);
+    encode(tk, read_text(eval_path), &ev);
+    if (ca.n + ev.n >= c->ctx) die("textos maiores que o contexto");
+    printf("calibracao: %d tokens | avaliacao: %d tokens | %d camadas x %d neuronios\n", ca.n, ev.n, L, H);
+
+    sp.sum = xalloc((size_t)L * H, sizeof(float));
+    sp.collect = 1;
+    for (int i = 0; i < ca.n; i++) forward(m, ca.ids[i], i, 0);
+    sp.collect = 0;
+
+    int *full = xalloc(ev.n, sizeof(int));
+    float *ref = xalloc((size_t)ev.n, sizeof(float));
+    for (int i = 0; i < ev.n; i++) {
+        const float *lg = forward(m, ev.ids[i], ca.n + i, 1);
+        full[i] = sample(lg, V, 0.0f); ref[i] = lg[full[i]];
+    }
+
+    /* quanto da ativacao total da calibracao os p% mais ativos concentram */
+    float *tmp = xalloc(H, sizeof(float));
+    uint8_t *mask = xalloc((size_t)L * H, 1);
+    static const int pcts[] = { 10, 20, 30, 50, 70 };
+    printf("%-10s %-22s %-28s %-22s\n", "mantidos", "ativacao coberta", "mesma previsao (quentes)", "mesma previsao (acaso)");
+    for (int pi = 0; pi < 5; pi++) {
+        const int keep = H * pcts[pi] / 100;
+        double agree[2] = { 0, 0 }, cover = 0.0;
+        for (int mode = 0; mode < 2; mode++) {      /* 0 = quentes da calibracao, 1 = ao acaso */
+            srand(4242);
+            for (int l = 0; l < L; l++) {
+                uint8_t *mk = mask + (size_t)l * H;
+                memset(mk, 0, H);
+                if (mode == 0) {
+                    memcpy(tmp, sp.sum + (size_t)l * H, H * sizeof(float));
+                    qsort(tmp, H, sizeof(float), cmp_float_desc);
+                    const float thr = tmp[keep - 1];
+                    int n = 0;
+                    for (int i = 0; i < H && n < keep; i++) if (sp.sum[(size_t)l * H + i] >= thr) { mk[i] = 1; n++; }
+                } else {
+                    for (int n = 0; n < keep; ) { const int i = (int)(((unsigned)rand() * 32768u + (unsigned)rand()) % (unsigned)H); if (!mk[i]) { mk[i] = 1; n++; } }
+                }
+            }
+            sp.mask = mask; sp.mass_all = sp.mass_kept = 0.0;
+            int same = 0;
+            for (int i = 0; i < ev.n; i++) {
+                const float *lg = forward(m, ev.ids[i], ca.n + i, 1);
+                if (sample(lg, V, 0.0f) == full[i]) same++;
+            }
+            sp.mask = NULL;
+            agree[mode] = 100.0 * same / ev.n;
+            if (mode == 0) cover = 100.0 * sp.mass_kept / (sp.mass_all + 1e-30);
+        }
+        printf("%3d%%       %5.1f%%                 %5.1f%%                       %5.1f%%\n", pcts[pi], cover, agree[0], agree[1]);
+    }
+    /* teto da escolha por token: mantem os p% mais ativos de cada token (oraculo) */
+    printf("escolha por token (oraculo):\n%-10s %-22s %-28s\n", "mantidos", "ativacao coberta", "mesma previsao");
+    sp.tmp = xalloc(H, sizeof(float));
+    static const int op[] = { 5, 10, 20, 30, 50 };
+    for (int pi = 0; pi < 5; pi++) {
+        int same = 0;
+        sp.oracle_keep = H * op[pi] / 100; sp.mass_all = sp.mass_kept = 0.0;
+        for (int i = 0; i < ev.n; i++) {
+            const float *lg = forward(m, ev.ids[i], ca.n + i, 1);
+            if (sample(lg, V, 0.0f) == full[i]) same++;
+        }
+        sp.oracle_keep = 0;
+        printf("%3d%%       %5.1f%%                 %5.1f%%\n", op[pi], 100.0 * sp.mass_kept / (sp.mass_all + 1e-30), 100.0 * same / ev.n);
+    }
+    (void)ref;
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
+    if (argc >= 5 && strcmp(argv[1], "sparsity") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        _putenv("KATANA_CPU=1");
+        load_model(&m, argv[2]);
+        return sparsity(&m, argv[3], argv[4]);
+    }
     if (argc >= 3 && strcmp(argv[1], "tune") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -3388,7 +3514,9 @@ static int run_main(int argc, char **argv) {
         size_t n = strlen(argv[3]) + 128;
         char *p = xalloc(n, 1);
         switch (m.cfg.chat_fmt) {
-            case 1:  snprintf(p, n, "<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", argv[3]); break;
+            case 1:  /* Llama 3 espera <|begin_of_text|> no inicio; se o GGUF nao manda por BOS, vai no texto */
+                     snprintf(p, n, "%s<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+                              m.cfg.add_bos ? "" : "<|begin_of_text|>", argv[3]); break;
             case 2:  snprintf(p, n, "<|user|>\n%s</s>\n<|assistant|>\n", argv[3]); break;
             case 3:  snprintf(p, n, "[INST] %s [/INST]", argv[3]); break;
             case 4:  snprintf(p, n, "User: %s\nAssistant:", argv[3]); break;
