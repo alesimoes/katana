@@ -564,6 +564,47 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
 
 static void gpu_setup(Model *m);
 static void shards_open(const char *path, int64_t fsz);
+
+/* Aquecimento dos especialistas (MoE): no Windows a primeira leitura de cada pagina do arquivo
+   mapeado custa caro, e num MoE cada token toca especialistas novos. Algumas threads de baixa
+   prioridade percorrem os tensores de especialistas logo na carga, para esse custo nao cair
+   no caminho dos primeiros tokens. KATANA_WARM=0 desliga. */
+#define WARM_T 4
+typedef struct { const Model *m; int t; } WarmArg;
+static volatile long warm_sink;
+#ifdef _WIN32
+static DWORD WINAPI warm_thread(LPVOID a) {
+    const WarmArg *w = a;
+    const Config *c = &w->m->cfg;
+    const size_t d = c->dim, H = c->hidden, E = c->n_expert;
+    long acc = 0;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    for (int l = w->t; l < c->n_layers; l += WARM_T) {
+        const Layer *L = &w->m->layers[l];
+        const Mat *ms[3] = { &L->eg[0], &L->eu[0], &L->ed[0] };
+        for (int k = 0; k < 3; k++) {
+            if (!ms[k]->q) continue;
+            const size_t len = E * (k < 2 ? H : d) * ms[k]->stride;
+            for (size_t o = 0; o < len; o += 4096) acc += ms[k]->q[o];
+        }
+    }
+    warm_sink += acc;
+    return 0;
+}
+#endif
+static void warm_start(const Model *m) {
+#ifdef _WIN32
+    if (getenv("KATANA_WARM") && atoi(getenv("KATANA_WARM")) == 0) return;
+    for (int t = 0; t < WARM_T; t++) {
+        WarmArg *w = xalloc(1, sizeof(WarmArg));
+        w->m = m; w->t = t;
+        HANDLE h = CreateThread(NULL, 0, warm_thread, w, 0, NULL);
+        if (h) CloseHandle(h);
+    }
+#else
+    (void)m;
+#endif
+}
 static void prefetch_setup(int64_t fsz);
 
 /* mapeia o arquivo em memoria (somente leitura): o SO carrega as paginas sob demanda
@@ -791,6 +832,7 @@ static void load_model(Model *m, const char *path) {
     m->fsize = fsz;
     shards_open(path, fsz);
     prefetch_setup(fsz);
+    if (c->n_expert) warm_start(m);
     if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 
@@ -1406,6 +1448,7 @@ static struct {
     int32_t (*Finish)(clh);
     int32_t (*ReleaseMemObject)(clh);
     int32_t (*Flush)(clh);
+    int32_t (*EnqueueFillBuffer)(clh, clh, const void *, size_t, size_t, size_t, uint32_t, const clh *, clh *);
 } cl;
 
 #define GPU_BMAX 16     /* maior lote de tokens por passada */
@@ -1914,7 +1957,7 @@ static int cl_load(void) {
     SYM(GetPlatformIDs); SYM(GetDeviceIDs); SYM(GetDeviceInfo); SYM(CreateContext);
     SYM(CreateCommandQueue); SYM(CreateProgramWithSource); SYM(BuildProgram);
     SYM(GetProgramBuildInfo); SYM(CreateKernel); SYM(CreateBuffer); SYM(SetKernelArg);
-    SYM(EnqueueNDRangeKernel); SYM(EnqueueReadBuffer); SYM(EnqueueWriteBuffer); SYM(Finish); SYM(ReleaseMemObject); SYM(Flush);
+    SYM(EnqueueNDRangeKernel); SYM(EnqueueReadBuffer); SYM(EnqueueWriteBuffer); SYM(Finish); SYM(ReleaseMemObject); SYM(Flush); SYM(EnqueueFillBuffer);
 #undef SYM
     return 1;
 }
@@ -2222,8 +2265,17 @@ static uint32_t *gpu_build_buf(Mat **ms, int n, size_t rows, size_t cols, size_t
 }
 
 /* envia n matrizes para um unico buffer na VRAM (do shard, se houver; senao convertendo o GGUF) */
+#ifdef _WIN32
+#define FSEEK64 _fseeki64
+#else
+#define FSEEK64 fseeko
+#endif
 /* estado do cache de especialistas (MoE) na VRAM; explicado junto de expert_ensure */
-typedef struct { uint32_t *glu, *down; int slot; } ExpSlot;       /* blobs mornos (RAM) e vaga na VRAM (-1 = fora) */
+typedef struct { uint32_t *glu, *down; int slot, pending; } ExpSlot;  /* blobs mornos (RAM), vaga na VRAM (-1 = fora), pedido em curso */
+/* fila circular de cargas em segundo plano: a thread carregadora le (ou converte) o especialista
+   para o buffer do pedido; a thread principal instala na VRAM quando fica pronto */
+#define LQ 64
+typedef struct { int l, e; uint8_t *buf; volatile long done; } LoadReq;
 static struct {
     clh bqn, bkn, *qn, *kn;         /* norma de q e k */
     clh *sg, *sd;                   /* por camada: vagas dos pares gate/up e dos down */
@@ -2232,12 +2284,24 @@ static struct {
     int *owner; uint64_t *stamp;    /* [camada][vaga]: quem ocupa e quando foi usado */
     int on, S;                      /* vagas por camada */
     size_t *bg, *bd;                /* por camada: bytes de um par gate/up e de um down */
+    LoadReq rq[LQ];
+    volatile long head;             /* proximo pedido a criar (thread principal) */
+    long fin, fin_safe;             /* proximo a instalar; ate onde as copias ja terminaram na GPU */
+    int loader;                     /* thread carregadora ligada */
+    uint32_t *pre; int n_pre, i_pre;        /* especialistas quentes da sessao anterior, a pre-carregar */
+    float swap_margin;
+    Model *m;
+    FILE **pf;                      /* por camada: arquivo com os especialistas ja no layout da GPU (pack) */
+    uint8_t *stage;                 /* um especialista lido do arquivo, a caminho da VRAM */
     float *heat;                    /* [camada][especialista]: uso recente (decai a cada token) */
     float *cpu_out;                 /* saidas dos especialistas que rodaram na CPU neste token */
     int cpu_cold;                   /* especialista frio roda na CPU ate esquentar */
-    uint64_t clock, hits, miss, evict, conv, cpu_runs;
-    double t_up, t_cpu;
+    uint64_t clock, hits, miss, evict, conv, cpu_runs, loads;
+    double t_up, t_cpu, t_read;
 } gx;
+static void loader_start(Model *m, size_t maxper);
+static void heat_load(const Model *m);
+static void preload_feed(const Model *m);
 
 static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols, const char *name) {
     size_t bytes = ((rows + 127) & ~(size_t)127) * gpu_wpr(ms[0], cols) * 4 * n;
@@ -2478,6 +2542,18 @@ static void gpu_setup(Model *m) {
                 gx.sd[l] = cl.CreateBuffer(gpu.ctx, 4, S * gx.bd[l], NULL, &e2);
                 if (e1 || e2) break;
             }
+            if (!e1 && !e2 && !getenv("KATANA_NOTOUCH")) {
+                /* a placa so reserva a memoria de um buffer no primeiro uso; preencher agora tira
+                   esse custo do caminho do primeiro token */
+                const double tt = now_sec();
+                const uint32_t zero = 0;
+                for (int l = 0; l < NL; l++) {
+                    cl.EnqueueFillBuffer(gpu.queue, gx.sg[l], &zero, 4, 0, S * gx.bg[l], 0, NULL, NULL);
+                    cl.EnqueueFillBuffer(gpu.queue, gx.sd[l], &zero, 4, 0, S * gx.bd[l], 0, NULL, NULL);
+                }
+                cl.Finish(gpu.queue);
+                if (gpu.debug) fprintf(stderr, "GPU: vagas dos especialistas reservadas em %.2f s\n", now_sec() - tt);
+            }
             gx.bh = cl.CreateBuffer(gpu.ctx, 1, (size_t)c->n_used * (H + 128) * 4, NULL, &e3);
             gx.bt = cl.CreateBuffer(gpu.ctx, 1, (size_t)c->n_used * (d + 128) * 4, NULL, &e4);
             if (e1 || e2 || e3 || e4) { fprintf(stderr, "GPU: sem memoria para o cache de especialistas, usando CPU\n"); n_gl = 0; }
@@ -2489,7 +2565,35 @@ static void gpu_setup(Model *m) {
                 gx.heat = xalloc((size_t)NL * E, sizeof(float));
                 gx.cpu_out = xalloc((size_t)c->n_used * d, sizeof(float));
                 gx.cpu_cold = !getenv("KATANA_MOE_CPU") || atoi(getenv("KATANA_MOE_CPU")) != 0;
-                gpu.used += S * per;
+                if (shards.use) {       /* especialistas empacotados por `katana pack`: um arquivo por camada */
+                    int n_pk = 0;
+                    size_t maxper = 0;
+                    gx.pf = xalloc(NL, sizeof(FILE *));
+                    for (int l = 0; l < NL; l++) {
+                        char nm[32], fn[1100];
+                        const size_t want = (size_t)E * (gx.bg[l] + gx.bd[l]);
+                        int found = 0;
+                        snprintf(nm, sizeof nm, "L%03d.exps", l);
+                        for (int i = 0; i < shards.n; i++) if (strcmp(shards.e[i].name, nm) == 0 && shards.e[i].bytes == want) found = 1;
+                        if (!found) continue;
+                        snprintf(fn, sizeof fn, "%s/%s.bin", shards.dir, nm);
+                        gx.pf[l] = fopen(fn, "rb");
+                        if (!gx.pf[l]) continue;
+                        setvbuf(gx.pf[l], NULL, _IONBF, 0);
+                        if (gx.bg[l] + gx.bd[l] > maxper) maxper = gx.bg[l] + gx.bd[l];
+                        n_pk++;
+                    }
+                    if (n_pk) { gx.stage = xalloc(maxper, 1); memset(gx.stage, 1, maxper); }
+                    if (n_pk != NL) { for (int l = 0; l < NL; l++) if (gx.pf[l]) { fclose(gx.pf[l]); gx.pf[l] = NULL; } }
+                    if (n_pk) fprintf(stderr, "GPU: especialistas de %d camadas direto dos shards em %s\n", n_pk, shards.dir);
+                }
+                if (gx.cpu_cold && !getenv("KATANA_NOLOADER")) {
+                    size_t maxper = 0;
+                    for (int l = 0; l < NL; l++) if (gx.bg[l] + gx.bd[l] > maxper) maxper = gx.bg[l] + gx.bd[l];
+                    loader_start(m, maxper);
+                    gx.swap_margin = getenv("KATANA_SWAP") ? (float)atof(getenv("KATANA_SWAP")) : 4.0f;
+                    if (gx.loader) { heat_load(m); preload_feed(m); }
+                }
                 gx.on = 1;
                 fprintf(stderr, "GPU: cache de especialistas: %d de %d por camada na VRAM (%.0f MB)\n", gx.S, E, (double)S * per / 1048576.0);
             }
@@ -2727,6 +2831,41 @@ static void moe_route(Model *m, const Layer *L, int l) {
     if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
 }
 
+/* n especialistas da camada na CPU sobre a mesma entrada m->xb; outs[j*d ..] recebe a saida do j-esimo.
+   A entrada e quantizada uma vez e os produtos gate/up de todos saem num unico despacho do pool. */
+typedef struct { const Mat *eg, *eu; const int *ex; int H, cols; float *hg, *hu; const float *x; } MoeJob;
+static void moe_job(void *c, int i0, int i1) {
+    const MoeJob *q = c;
+    for (int i = i0; i < i1; i++) {
+        const int j = i / (2 * q->H), r = i % (2 * q->H);
+        if (r < q->H) q->hg[(size_t)j * q->H + r] = dot_row(&q->eg[q->ex[j]], (size_t)r, q->x, NULL, q->cols);
+        else q->hu[(size_t)j * q->H + r - q->H] = dot_row(&q->eu[q->ex[j]], (size_t)(r - q->H), q->x, NULL, q->cols);
+    }
+}
+static void moe_cpu_experts(Model *m, const Layer *L, const int *ex, int n, float *outs) {
+    static float *hg, *hu;
+    const Config *c = &m->cfg;
+    const int d = c->dim, H = c->hidden;
+    if (!hg) { hg = xalloc((size_t)c->n_used * H, sizeof(float)); hu = xalloc((size_t)c->n_used * H, sizeof(float)); }
+    if (n <= 0) return;
+    if (!mat_int(&L->eg[ex[0]]) || !mat_int(&L->eu[ex[0]]) || pool.n <= 1) {      /* caminho exato/float: um a um */
+        for (int j = 0; j < n; j++) {
+            matvec(hg, &L->eg[ex[j]], m->xb, H, d);
+            matvec(hu, &L->eu[ex[j]], m->xb, H, d);
+            for (int i = 0; i < H; i++) { const float g = hg[i]; hg[i] = g / (1.0f + expf(-g)) * hu[i]; }
+            matvec(outs + (size_t)j * d, &L->ed[ex[j]], hg, d, H);
+        }
+        return;
+    }
+    xq_prepare(m->xb, d);
+    MoeJob job = { L->eg, L->eu, ex, H, d, hg, hu, m->xb };
+    int total = n * 2 * H, chunk = total / (pool.n * 8), minc = 32768 / d + 1;
+    if (chunk < minc) chunk = minc;
+    pool_for(moe_job, &job, total, chunk);
+    for (int i = 0; i < n * H; i++) { const float g = hg[i]; hg[i] = g / (1.0f + expf(-g)) * hu[i]; }
+    for (int j = 0; j < n; j++) matvec(outs + (size_t)j * d, &L->ed[ex[j]], hg + (size_t)j * H, d, H);
+}
+
 /* ---- cache de especialistas na VRAM ----
  * Num modelo MoE a atencao de todas as camadas fica fixa na VRAM e o que sobra do orcamento
  * vira um cache de especialistas: cada camada tem S vagas; um especialista ocupa uma vaga na
@@ -2742,6 +2881,22 @@ static void expert_load(Model *m, int l, int e, int v) {
     ExpSlot *sl = &gx.slot[(size_t)l * c->n_expert + e];
     int *own = gx.owner + (size_t)l * gx.S;
     const double t0 = now_sec();
+    if (gx.pf && gx.pf[l]) {
+        /* empacotado: o arquivo ja esta no layout da GPU. Le o especialista para um buffer fixo
+           (o cache de arquivos do sistema faz o papel da RAM morna) e copia para a vaga. A fila
+           esta vazia neste ponto (a leitura da entrada acabou de esvaziar), entao a copia
+           bloqueante nao espera por nada. */
+        const size_t per = gx.bg[l] + gx.bd[l];
+        if (FSEEK64(gx.pf[l], (int64_t)((size_t)e * per), SEEK_SET) != 0 || fread(gx.stage, 1, per, gx.pf[l]) != per)
+            die("MoE: falha ao ler especialista do shard");
+        gx.t_read += now_sec() - t0;
+        if (own[v] >= 0) { gx.slot[(size_t)l * c->n_expert + own[v]].slot = -1; gx.evict++; }
+        own[v] = e; sl->slot = v;
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.sg[l], 1, (size_t)v * gx.bg[l], gx.bg[l], gx.stage, 0, NULL, NULL);
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.sd[l], 1, (size_t)v * gx.bd[l], gx.bd[l], gx.stage + gx.bg[l], 0, NULL, NULL);
+        gx.t_up += now_sec() - t0; gx.loads++;
+        return;
+    }
     if (!sl->down) {            /* frio -> morno: converte para o layout da GPU, uma vez */
         Mat *two[2] = { &L->eg[e], &L->eu[e] }, *dn = &L->ed[e];
         size_t b0 = 0, b1 = 0;
@@ -2750,12 +2905,173 @@ static void expert_load(Model *m, int l, int e, int v) {
         if (!sl->glu || !sl->down || b0 != gx.bg[l] || b1 != gx.bd[l]) die("MoE: falha ao converter especialista");
         gx.conv++;
     }
+    gx.loads++;
     if (own[v] >= 0) { gx.slot[(size_t)l * c->n_expert + own[v]].slot = -1; gx.evict++; }
     own[v] = e; sl->slot = v;
     /* os blobs mornos nunca sao liberados, entao a copia pode ficar na fila */
     gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.sg[l], 0, (size_t)v * gx.bg[l], gx.bg[l], sl->glu, 0, NULL, NULL);
     gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.sd[l], 0, (size_t)v * gx.bd[l], gx.bd[l], sl->down, 0, NULL, NULL);
     gx.t_up += now_sec() - t0;
+}
+
+static void pack_job(void *c, int g0, int g1);
+
+/* thread carregadora: atende os pedidos em ordem; nunca toca na GPU nem no pool de threads */
+static void loader_do(LoadReq *r) {
+    Model *m = gx.m;
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden;
+    const int l = r->l, e = r->e;
+    if (gx.pf && gx.pf[l]) {
+        const size_t per = gx.bg[l] + gx.bd[l];
+        if (FSEEK64(gx.pf[l], (int64_t)((size_t)e * per), SEEK_SET) != 0 || fread(r->buf, 1, per, gx.pf[l]) != per)
+            die("MoE: falha ao ler especialista do shard");
+    } else {    /* sem shards: converte do GGUF (bem mais lento; `katana pack` evita) */
+        Layer *L = &m->layers[l];
+        Mat *two[2] = { &L->eg[e], &L->eu[e] }, *dn = &L->ed[e];
+        const size_t rpH = (H + 127) & ~(size_t)127, rpd = (d + 127) & ~(size_t)127;
+        memset(r->buf, 0, gx.bg[l] + gx.bd[l]);
+        PackJob j0 = { two, 2, H, d, gpu_wpr(two[0], d), (uint32_t *)r->buf };
+        pack_job(&j0, 0, (int)(rpH / 32) * 2);
+        PackJob j1 = { &dn, 1, d, H, gpu_wpr(dn, H), (uint32_t *)(r->buf + gx.bg[l]) };
+        pack_job(&j1, 0, (int)(rpd / 32));
+    }
+}
+#ifdef _WIN32
+static DWORD WINAPI loader_thread(LPVOID a) {
+    long tail = 0;
+    (void)a;
+    for (;;) {
+        long h = gx.head;
+        while (tail == h) { WaitOnAddress((volatile VOID *)&gx.head, &h, sizeof h, INFINITE); h = gx.head; }
+        LoadReq *r = &gx.rq[tail % LQ];
+        loader_do(r);
+        r->done = 1;
+        tail++;
+    }
+}
+#else
+static void *loader_thread(void *a) {
+    long tail = 0;
+    (void)a;
+    for (;;) {
+        while (tail == gx.head) usleep(200);
+        LoadReq *r = &gx.rq[tail % LQ];
+        loader_do(r);
+        __atomic_store_n(&r->done, 1, __ATOMIC_RELEASE);
+        tail++;
+    }
+    return NULL;
+}
+#endif
+static void loader_start(Model *m, size_t maxper) {
+    gx.m = m;
+    for (int i = 0; i < LQ; i++) { gx.rq[i].buf = xalloc(maxper, 1); memset(gx.rq[i].buf, 1, maxper); }
+#ifdef _WIN32
+    HANDLE h = CreateThread(NULL, 0, loader_thread, NULL, 0, NULL);
+    if (h) { CloseHandle(h); gx.loader = 1; }
+#else
+    pthread_t t;
+    if (pthread_create(&t, NULL, loader_thread, NULL) == 0) gx.loader = 1;
+#endif
+}
+
+/* pede a carga do especialista (se couber na fila) */
+static void loader_request(int l, int e, int E) {
+    ExpSlot *sl = &gx.slot[(size_t)l * E + e];
+    if (sl->pending || gx.head - gx.fin_safe >= LQ) return;
+    LoadReq *r = &gx.rq[gx.head % LQ];
+    r->l = l; r->e = e; r->done = 0;
+    sl->pending = 1;
+#ifdef _WIN32
+    InterlockedIncrement(&gx.head);
+    WakeByAddressSingle((PVOID)&gx.head);
+#else
+    __atomic_add_fetch(&gx.head, 1, __ATOMIC_RELEASE);
+#endif
+}
+
+/* Memoria de assunto entre sessoes: o calor de cada especialista e gravado ao sair e, na
+   partida seguinte, os mais quentes de cada camada sao pedidos a thread carregadora antes
+   mesmo do primeiro token. */
+static void heat_path(char *out, size_t n) { snprintf(out, n, "%s.heat", shards.dir); }
+static void heat_save(const Model *m) {
+    char fn[1100];
+    const int32_t hdr[2] = { m->cfg.n_layers, m->cfg.n_expert };
+    if (!gx.on || !gx.heat || getenv("KATANA_NOHEAT")) return;
+    heat_path(fn, sizeof fn);
+    FILE *f = fopen(fn, "wb");
+    if (!f) return;
+    fwrite(hdr, sizeof hdr, 1, f);
+    fwrite(gx.heat, sizeof(float), (size_t)hdr[0] * hdr[1], f);
+    fclose(f);
+}
+static int cmp_pre(const void *a, const void *b) {
+    const float x = gx.heat[*(const uint32_t *)a], y = gx.heat[*(const uint32_t *)b];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+static void heat_load(const Model *m) {
+    char fn[1100];
+    int32_t hdr[2] = { 0, 0 };
+    const int NL = m->cfg.n_layers, E = m->cfg.n_expert;
+    if (getenv("KATANA_NOHEAT")) return;
+    heat_path(fn, sizeof fn);
+    FILE *f = fopen(fn, "rb");
+    if (!f) return;
+    if (fread(hdr, sizeof hdr, 1, f) == 1 && hdr[0] == NL && hdr[1] == E
+        && fread(gx.heat, sizeof(float), (size_t)NL * E, f) == (size_t)NL * E) {
+        /* por camada, os S mais quentes; a lista final vai do mais quente para o mais frio */
+        gx.pre = xalloc((size_t)NL * gx.S, sizeof(uint32_t));
+        uint32_t *idx = xalloc(E, sizeof(uint32_t));
+        for (int l = 0; l < NL; l++) {
+            for (int e = 0; e < E; e++) idx[e] = (uint32_t)(l * E + e);
+            qsort(idx, E, sizeof(uint32_t), cmp_pre);
+            for (int i = 0; i < gx.S; i++) if (gx.heat[idx[i]] > 0.05f) gx.pre[gx.n_pre++] = idx[i];
+        }
+        free(idx);
+        qsort(gx.pre, gx.n_pre, sizeof(uint32_t), cmp_pre);
+        for (size_t i = 0; i < (size_t)NL * E; i++) gx.heat[i] *= 0.5f;     /* a sessao nova pode discordar */
+    } else memset(gx.heat, 0, (size_t)NL * E * sizeof(float));
+    fclose(f);
+}
+static void loader_request(int l, int e, int E);
+static void preload_feed(const Model *m) {
+    const int E = m->cfg.n_expert;
+    while (gx.i_pre < gx.n_pre && gx.head - gx.fin_safe < LQ) {
+        const uint32_t id = gx.pre[gx.i_pre++];
+        if (gx.slot[id].slot < 0) loader_request((int)(id / E), (int)(id % E), E);
+    }
+}
+
+/* instala na VRAM as cargas que ficaram prontas. So e chamada logo depois de uma leitura
+   bloqueante: a fila da GPU esta vazia, entao nenhuma vaga esta em uso e as copias anteriores
+   (dos buffers dos pedidos) ja terminaram. */
+static void loader_install(Model *m) {
+    const int E = m->cfg.n_expert;
+    gx.fin_safe = gx.fin;
+    while (gx.fin < gx.head && gx.rq[gx.fin % LQ].done) {
+        LoadReq *r = &gx.rq[gx.fin % LQ];
+        const int l = r->l, e = r->e;
+        ExpSlot *sl = &gx.slot[(size_t)l * E + e];
+        int *own = gx.owner + (size_t)l * gx.S;
+        const float *heat = gx.heat + (size_t)l * E;
+        int v = -1;
+        for (int i = 0; i < gx.S; i++) {
+            if (own[i] < 0) { v = i; break; }
+            if (v < 0 || heat[own[i]] < heat[own[v]]) v = i;
+        }
+        sl->pending = 0;
+        gx.fin++;
+        if (own[v] >= 0 && heat[e] <= heat[own[v]]) continue;      /* esfriou enquanto carregava */
+        const double t0 = now_sec();
+        if (own[v] >= 0) { gx.slot[(size_t)l * E + own[v]].slot = -1; gx.evict++; }
+        own[v] = e; sl->slot = v;
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.sg[l], 0, (size_t)v * gx.bg[l], gx.bg[l], r->buf, 0, NULL, NULL);
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.sd[l], 0, (size_t)v * gx.bd[l], gx.bd[l], r->buf + gx.bg[l], 0, NULL, NULL);
+        gx.loads++;
+        gx.t_up += now_sec() - t0;
+    }
+    preload_feed(m);
 }
 
 /* Feed-forward MoE da camada l com a atencao na GPU (um token):
@@ -2777,6 +3093,7 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     /* a entrada desce para a CPU escolher os especialistas */
     gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bxb, 1, 0, (size_t)d * sizeof(float), m->xb, 0, NULL, NULL);
     if (gerr) die("falha na execucao em GPU");
+    if (gx.loader) loader_install(m);
     moe_route(m, L, l);
     for (int e = 0; e < E; e++) heat[e] *= 0.98f;
     for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
@@ -2785,7 +3102,17 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
         const int e = moe.sel[j];
         int v = gx.slot[(size_t)l * E + e].slot;
         if (v >= 0) gx.hits++;
-        else {
+        else if (gx.loader) {
+            /* fora da VRAM: roda na CPU agora; se houver vaga livre ou estiver mais quente que o
+               residente mais frio, a carga e pedida e ele sobe num proximo token */
+            gx.miss++;
+            int cand = -1;
+            for (int i = 0; i < gx.S; i++) {
+                if (own[i] < 0) { cand = i; break; }
+                if (cand < 0 || heat[own[i]] < heat[own[cand]]) cand = i;
+            }
+            if (own[cand] < 0 || heat[e] > heat[own[cand]] + gx.swap_margin) loader_request(l, e, E);
+        } else {
             gx.miss++;
             int cand = -1;      /* vaga livre, ou o residente mais frio que nao e deste token */
             for (int i = 0; i < gx.S; i++) {
@@ -2833,15 +3160,8 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     if (n_cpu > 0) {    /* os frios, na CPU, enquanto a GPU trabalha; as saidas entram em bt depois das da GPU */
         const double t0 = now_sec();
         cl.Flush(gpu.queue);
-        for (int j = 0; j < n_cpu; j++) {
-            const int e = on_cpu[j];
-            float *o = gx.cpu_out + (size_t)j * d;
-            matvec(m->hb, &L->eg[e], m->xb, H, d);
-            matvec(m->hb2, &L->eu[e], m->xb, H, d);
-            for (int i = 0; i < H; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
-            matvec(o, &L->ed[e], m->hb, d, H);
-            w[Kg + j] = w_cpu[j];
-        }
+        moe_cpu_experts(m, L, on_cpu, n_cpu, gx.cpu_out);
+        for (int j = 0; j < n_cpu; j++) w[Kg + j] = w_cpu[j];
         /* cpu_out so e reescrito depois da proxima leitura bloqueante, entao a copia pode ficar na fila */
         gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bt, 0, (size_t)Kg * d * sizeof(float), (size_t)n_cpu * d * sizeof(float), gx.cpu_out, 0, NULL, NULL);
         gx.cpu_runs += n_cpu;
@@ -3133,14 +3453,13 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
                cada um pesado pela sua probabilidade (softmax sobre todos) */
             const int K = c->n_used;
             moe_route(m, L, l);
+            static float *outs;
+            if (!outs) outs = xalloc((size_t)K * d, sizeof(float));
+            moe_cpu_experts(m, L, moe.sel, K, outs);
             for (int k = 0; k < K; k++) {
-                const int e = moe.sel[k];
                 const float w = moe.w[k];
-                matvec(m->hb, &L->eg[e], m->xb, H, d);
-                matvec(m->hb2, &L->eu[e], m->xb, H, d);
-                for (int i = 0; i < H; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
-                matvec(m->xb2, &L->ed[e], m->hb, d, H);
-                for (int i = 0; i < d; i++) m->x[i] += w * m->xb2[i];
+                const float *o = outs + (size_t)k * d;
+                for (int i = 0; i < d; i++) m->x[i] += w * o[i];
             }
             continue;
         }
@@ -3273,9 +3592,9 @@ static const KSet *spec_set(void) {
 static void moe_report(void) {
     if (!gx.on) return;
     const double uses = (double)(gx.hits + gx.miss);
-    fprintf(stderr, "[especialistas: %.1f%% dos usos na VRAM, %.1f%% na CPU (%.2f s) | %llu subidas (%llu trocas) em %.2f s]\n",
+    fprintf(stderr, "[especialistas: %.1f%% dos usos na VRAM, %.1f%% na CPU (%.2f s) | %llu subidas (%llu conversoes, %llu trocas) em %.2f s, leitura do disco %.2f s]\n",
             100.0 * gx.hits / (uses + 1e-9), 100.0 * gx.cpu_runs / (uses + 1e-9), gx.t_cpu,
-            (unsigned long long)gx.conv, (unsigned long long)gx.evict, gx.t_up);
+            (unsigned long long)gx.loads, (unsigned long long)gx.conv, (unsigned long long)gx.evict, gx.t_up, gx.t_read);
 }
 
 static int generate(Model *m, const char *text, int max_tokens, float temp, int echo) {
@@ -3347,6 +3666,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     fprintf(stderr, "[prompt: %d tokens, %.1f tok/s | geracao: %d tokens, %.1f tok/s]\n",
             n_prompt, n_prompt / (t1 - t0 + 1e-9), gen, gen / (t2 - t1 + 1e-9));
     moe_report();
+    heat_save(m);
     if (spec_stat.steps)
         fprintf(stderr, "[especulacao: %ld apostas, %ld de %ld rascunhos aceitos]\n",
                 spec_stat.steps, spec_stat.accepted, spec_stat.drafted);
@@ -3605,6 +3925,39 @@ static int pack_one(FILE *mf, Mat **ms, int n, size_t rows, size_t cols, const c
 }
 
 /* converte o modelo inteiro para shards no layout da GPU */
+/* MoE: todos os especialistas da camada num arquivo so, cada um como par gate/up + down no layout da GPU */
+static int pack_experts(FILE *mf, Model *m, int l, double *total) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden;
+    Layer *L = &m->layers[l];
+    char fn[1100], hex[65], nm[32];
+    uint8_t *all = NULL;
+    size_t bytes = 0, per = 0;
+    int ok = 1;
+    for (int e = 0; e < c->n_expert && ok; e++) {
+        Mat *two[2] = { &L->eg[e], &L->eu[e] }, *dn = &L->ed[e];
+        size_t b0 = 0, b1 = 0;
+        uint32_t *g = gpu_build_buf(two, 2, H, d, &b0), *w = gpu_build_buf(&dn, 1, d, H, &b1);
+        if (!all && g && w) { per = b0 + b1; all = malloc(per * c->n_expert); }
+        ok = g && w && all && b0 + b1 == per;
+        if (ok) { memcpy(all + bytes, g, b0); memcpy(all + bytes + b0, w, b1); bytes += per; }
+        free(g); free(w);
+    }
+    if (ok) {
+        sha_hex(all, bytes, hex);
+        snprintf(nm, sizeof nm, "L%03d.exps", l);
+        snprintf(fn, sizeof fn, "%s/%s.bin", shards.dir, nm);
+        FILE *f = fopen(fn, "wb");
+        ok = f && fwrite(all, 1, bytes, f) == bytes;
+        if (f) fclose(f);
+    }
+    free(all);
+    if (!ok) return 0;
+    fprintf(mf, "%s %zu %s\n", hex, bytes, nm);
+    *total += (double)bytes;
+    return 1;
+}
+
 static int pack(Model *m, const char *path, int64_t fsz) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd;
@@ -3622,12 +3975,16 @@ static int pack(Model *m, const char *path, int64_t fsz) {
         Mat *one;
 #define P1(mat, rows, cols, suf) one = &L->mat; snprintf(nm, sizeof nm, "L%03d." suf, l); ok = ok && pack_one(mf, &one, 1, rows, cols, nm, &total); count++
         P1(wq, m->cfg.n_heads * m->cfg.hd, d, "wq"); P1(wk, kvd, d, "wk"); P1(wv, kvd, d, "wv"); P1(wo, d, m->cfg.n_heads * m->cfg.hd, "wo");
-        if (glu_pair(&L->w_gate, &L->w_up)) {
+        if (c->n_expert) {
+            if (!glu_pair(&L->w_gate, &L->w_up)) { fprintf(stderr, "MoE com gate e up em formatos diferentes: nao empacotado\n"); ok = 0; }
+            ok = ok && pack_experts(mf, m, l, &total); count++;
+            printf("\rcamada %d de %d", l + 1, c->n_layers); fflush(stdout);
+        } else if (glu_pair(&L->w_gate, &L->w_up)) {
             Mat *two[2] = { &L->w_gate, &L->w_up };
             snprintf(nm, sizeof nm, "L%03d.glu", l);
             ok = ok && pack_one(mf, two, 2, H, d, nm, &total); count++;
         } else { P1(w_gate, H, d, "gate"); P1(w_up, H, d, "up"); }
-        P1(w_down, d, H, "down");
+        if (!c->n_expert) { P1(w_down, d, H, "down"); }
 #undef P1
     }
     if (ok) { Mat *one = &m->lm_head; ok = pack_one(mf, &one, 1, c->vocab, d, "head", &total); count++; }
