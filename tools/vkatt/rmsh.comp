@@ -1,0 +1,17 @@
+#version 450
+/* RMSNorm por cabeca: cada bloco de hd valores (por token) e normalizado sozinho; ganho g[hd]. */
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer G { float g[]; };
+layout(std430, binding = 2) buffer O { float o[]; };
+layout(push_constant) uniform P { int n; int hd; float eps; int B; } pc;
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= pc.n) return;
+    int B = pc.B, h0 = (i / pc.hd) * pc.hd;
+    float ss[16];
+    for (int b = 0; b < B; b++) ss[b] = 0.0;
+    for (int j = 0; j < pc.hd; j++)
+        for (int b = 0; b < B; b++) { float v = x[(h0 + j) * B + b]; ss[b] += v * v; }
+    for (int b = 0; b < B; b++) o[i * B + b] = g[i - h0] * (x[i * B + b] / sqrt(ss[b] / float(pc.hd) + pc.eps));
+}

@@ -1,0 +1,52 @@
+GPU: NVIDIA GeForce RTX 3050 Laptop GPU (subgrupo 32, fp16 1, storage16 1)
+
+== Resumo ==
+  rms             6/6    PASS   pior abs 2.49e-06  pior rel 1.08e-06
+  rms_wg          6/6    PASS   pior abs 4.84e-07  pior rel 2.39e-07
+  rmsh            4/4    PASS   pior abs 1.09e-06  pior rel 5.06e-07
+  gather         12/12   PASS   pior abs 0.00e+00  pior rel 0.00e+00
+  moe_sum        12/12   PASS   pior abs 6.89e-07  pior rel 2.27e-05
+  qkv_post      960/960  PASS   pior abs 9.77e-04  pior rel 5.05e-04
+  att1f         320/320  PASS   pior abs 9.76e-04  pior rel 4.88e-04
+  att1           40/40   PASS   pior abs 1.28e-06  pior rel 3.22e-05
+  att_scores    120/120  PASS   pior abs 1.68e-06  pior rel 7.06e-05
+  att_softmax   120/120  PASS   pior abs 3.08e-07  pior rel 1.87e-06
+  att_mix       120/120  PASS   pior abs 6.42e-07  pior rel 3.95e-05
+  TOTAL 1720/1720 casos PASS
+
+== Tempos (us por despacho; 200 despachos num grafo, 1 espera; inclui a barreira entre despachos) ==
+   forma: dim 1536, 12 cabecas x 128, 2 cabecas kv (grupos de 6), posicao 600
+  att1f kv32                         min    90.37 us   mediana   112.32 us
+  att1 kv32                          min    71.19 us   mediana    71.53 us
+  att_scores kv32 B=1                min    38.93 us   mediana    39.02 us
+  att_softmax B=1                    min   105.06 us   mediana   105.18 us
+  att_mix kv32 B=1                   min    80.55 us   mediana    80.67 us
+  att_scores kv32 B=16               min   524.02 us   mediana   524.52 us
+  att_softmax B=16                   min   353.20 us   mediana   353.44 us
+  att_mix kv32 B=16                  min   289.43 us   mediana   289.58 us
+  qkv_post kv32 B=1 (bias, neox)     min     1.96 us   mediana     2.15 us
+  qkv_post kv32 B=16 (bias, neox)    min     2.89 us   mediana     2.96 us
+  qkv_post kv32 B=1 (norm1)          min    33.88 us   mediana    34.95 us
+  qkv_post kv32 B=1 (norm2)          min     3.55 us   mediana     3.61 us
+  att1f kv16                         min    71.53 us   mediana    71.71 us
+  att1 kv16                          min    78.47 us   mediana    78.70 us
+  att_scores kv16 B=1                min    39.38 us   mediana    39.81 us
+  att_softmax B=1                    min   105.07 us   mediana   105.21 us
+  att_mix kv16 B=1                   min    79.77 us   mediana    79.92 us
+  att_scores kv16 B=16               min   536.22 us   mediana   536.91 us
+  att_softmax B=16                   min   353.02 us   mediana   353.32 us
+  att_mix kv16 B=16                  min   287.20 us   mediana   287.31 us
+  qkv_post kv16 B=1 (bias, neox)     min     2.10 us   mediana     2.26 us
+  qkv_post kv16 B=16 (bias, neox)    min     3.14 us   mediana     3.33 us
+  qkv_post kv16 B=1 (norm1)          min    33.96 us   mediana    34.28 us
+  qkv_post kv16 B=1 (norm2)          min     3.84 us   mediana     3.97 us
+  rms n=1536 B=1 (fiel)              min    35.37 us   mediana    36.33 us
+  rms_wg n=1536 B=1 (melhoria)       min     2.98 us   mediana     3.11 us
+  rms n=1536 B=4 (fiel)              min   310.59 us   mediana   310.85 us
+  rms_wg n=1536 B=4 (melhoria)       min     3.45 us   mediana     3.57 us
+  rms n=1536 B=16 (fiel)             min   992.34 us   mediana   993.41 us
+  rms_wg n=1536 B=16 (melhoria)      min     6.20 us   mediana     6.37 us
+  rmsh 12x128 B=1                    min    16.17 us   mediana    16.38 us
+  gather n=1536 stride=16            min     1.59 us   mediana     1.90 us
+  moe_sum d=1536 K=8 B=1             min     2.25 us   mediana     2.46 us
+  moe_sum d=1536 K=8 B=16            min     7.07 us   mediana     7.16 us

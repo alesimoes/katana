@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+/* atencao de um token (q ja com RoPE e cache ja escrito ate pos inclusive): um grupo por cabeca, hd threads.
+   local_size_x = hd por spec constant 0. att guarda os expoentes sem normalizar (como o original). */
+layout(local_size_x_id = 0) in;
+layout(std430, binding = 0) readonly buffer Q { float q[]; };
+layout(std430, binding = 1) readonly buffer KC { KVT kc[]; };
+layout(std430, binding = 2) readonly buffer VC { KVT vc[]; };
+layout(std430, binding = 3) buffer A { float att[]; };
+layout(std430, binding = 4) buffer O { float o[]; };
+layout(push_constant) uniform P { int base, pos, ctx, hd, kvd, group; float scale; } pc;
+shared float lm[256];
+void main() {
+    int h = int(gl_WorkGroupID.x), l = int(gl_LocalInvocationID.x), T = pc.pos + 1, hd = pc.hd, kvd = pc.kvd;
+    int a = h * pc.ctx, qh = h * hd, g = h / pc.group;
+    float mx = -3.0e38;
+    for (int t = l; t < T; t += hd) {
+        int kh = pc.base + t * kvd + g * hd;
+        float s = 0.0;
+        for (int j = 0; j < hd; j++) s += q[qh + j] * KVL(kc, kh + j);
+        s *= pc.scale; att[a + t] = s; mx = max(mx, s);
+    }
+    lm[l] = mx;
+    barrier();
+    float gm = lm[0];
+    for (int k = 1; k < hd; k++) gm = max(gm, lm[k]);
+    barrier();
+    float sum = 0.0;
+    for (int t = l; t < T; t += hd) { float e = exp(att[a + t] - gm); att[a + t] = e; sum += e; }
+    lm[l] = sum;
+    memoryBarrierBuffer();
+    barrier();
+    float tot = 0.0;
+    for (int k = 0; k < hd; k++) tot += lm[k];
+    int v = pc.base + g * hd + l;
+    float s = 0.0;
+    for (int t = 0; t < T; t++) s += att[a + t] * KVL(vc, v + t * kvd);
+    o[h * hd + l] = s / tot;
+}
