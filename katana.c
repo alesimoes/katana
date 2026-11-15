@@ -4277,6 +4277,82 @@ static int routing(Model *m, const char *calib_path, const char *eval_path) {
     return 0;
 }
 
+/* ---------- conversa de varios turnos ----------
+ * O processo fica vivo e o cache KV guarda a conversa: cada turno so processa o texto novo.
+ * Num MoE isso tambem mantem na VRAM os especialistas do assunto. Comandos: /novo recomeca,
+ * /sair termina. Quando o contexto enche, a conversa recomeca (mantendo o prompt de sistema). */
+static void turn_text(const Config *c, char *out, size_t n, const char *sys, const char *user, int first) {
+    char sp[4096] = "";
+    if (first && sys && *sys) switch (c->chat_fmt) {
+        case 0:  snprintf(sp, sizeof sp, "<|im_start|>system\n%s<|im_end|>\n", sys); break;
+        case 1:  snprintf(sp, sizeof sp, "<|start_header_id|>system<|end_header_id|>\n\n%s<|eot_id|>", sys); break;
+        case 2:  snprintf(sp, sizeof sp, "<|system|>\n%s</s>\n", sys); break;
+        case 3:  snprintf(sp, sizeof sp, "%s\n\n", sys); break;
+        default: snprintf(sp, sizeof sp, "%s\n", sys); break;
+    }
+    switch (c->chat_fmt) {
+        case 0:  snprintf(out, n, "%s%s<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", first ? "" : "<|im_end|>\n", sp, user); break;
+        case 1:  snprintf(out, n, "%s%s%s<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+                          first ? "" : "<|eot_id|>", first && !c->add_bos ? "<|begin_of_text|>" : "", sp, user); break;
+        case 2:  snprintf(out, n, "%s%s<|user|>\n%s</s>\n<|assistant|>\n", first ? "" : "</s>\n", sp, user); break;
+        case 3:  snprintf(out, n, "%s[INST] %s%s [/INST]", first ? "" : "</s>", sp, user); break;
+        default: snprintf(out, n, "%s%sUser: %s\nAssistant:", first ? "" : "\n", sp, user); break;
+    }
+}
+
+static int session(Model *m, const char *sys, int max_tokens, float temp) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    static char line[16384], text[24576];
+    int pos = 0, first = 1;
+    srand((unsigned)time(NULL));
+    fprintf(stderr, "Conversa iniciada (/novo recomeca, /sair termina).\n");
+    for (;;) {
+        fprintf(stderr, "\n> "); fflush(stderr);
+        if (!fgets(line, sizeof line, stdin)) break;
+        size_t ln = strlen(line);
+        while (ln > 0 && (line[ln - 1] == '\n' || line[ln - 1] == '\r')) line[--ln] = 0;
+        if (ln == 0) continue;
+        if (strcmp(line, "/sair") == 0) break;
+        if (strcmp(line, "/novo") == 0) { pos = 0; first = 1; fprintf(stderr, "[conversa nova]\n"); continue; }
+
+        Ids ids = {0};
+        for (int attempt = 0; attempt < 2; attempt++) {
+            ids.n = 0;
+            if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+            turn_text(c, text, sizeof text, sys, line, first);
+            encode(tk, text, &ids);
+            if (pos + ids.n + 64 < c->ctx) break;
+            if (first) { fprintf(stderr, "[mensagem maior que o contexto]\n"); ids.n = 0; break; }
+            fprintf(stderr, "[contexto cheio (%d de %d tokens): conversa recomecada]\n", pos, c->ctx);
+            pos = 0; first = 1;
+        }
+        if (ids.n == 0) { free(ids.ids); continue; }
+
+        const double t0 = now_sec();
+        float *lg = forward_seq(m, ids.ids, ids.n, pos, 1);
+        pos += ids.n;
+        first = 0;
+        const double t1 = now_sec();
+        int gen = 0;
+        while (gen < max_tokens && pos < c->ctx - 1) {
+            const int t = sample(lg, c->vocab, temp);
+            if (t == c->eos || (tk->toktype && tk->toktype[t] == 3)) break;
+            print_token(tk, t, stdout); fflush(stdout);
+            gen++;
+            lg = forward(m, t, pos++, 1);
+        }
+        const double t2 = now_sec();
+        printf("\n"); fflush(stdout);
+        fprintf(stderr, "[entrada: %d tokens, %.1f tok/s | resposta: %d tokens, %.1f tok/s | contexto %d de %d]\n",
+                ids.n, ids.n / (t1 - t0 + 1e-9), gen, gen / (t2 - t1 + 1e-9), pos, c->ctx);
+        free(ids.ids);
+    }
+    moe_report();
+    heat_save(m);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
     if (argc >= 5 && strcmp(argv[1], "routing") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -4328,6 +4404,13 @@ static int run_main(int argc, char **argv) {
         print_info(&m);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "chat") == 0) {       /* sem pergunta: conversa interativa */
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        print_info(&m);
+        return session(&m, getenv("KATANA_SYSTEM"), getenv("KATANA_MAXTOK") ? atoi(getenv("KATANA_MAXTOK")) : 1024,
+                       getenv("KATANA_TEMP") ? (float)atof(getenv("KATANA_TEMP")) : 0.7f);
+    }
     if (argc >= 4 && (strcmp(argv[1], "run") == 0 || strcmp(argv[1], "chat") == 0)) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -4360,7 +4443,8 @@ static int run_main(int argc, char **argv) {
         "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
-        "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n");
+        "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
+        "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
     return 1;
 }
 
