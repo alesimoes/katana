@@ -153,6 +153,18 @@ static void pool_for(PoolFn fn, void *ctx, int total, int chunk) {
     while (pool.active) CPU_RELAX();
 }
 
+#ifdef _WIN32
+/* pede ao Windows para nao reduzir a velocidade destas threads para economizar energia
+   (em notebook ele faz isso com threads que julga de fundo). KATANA_THROTTLE=1 mantem o padrao. */
+static void no_throttle(HANDLE h) {
+    struct { ULONG Version, ControlMask, StateMask; } st = { 1, 1 /* EXECUTION_SPEED */, 0 };
+    if (getenv("KATANA_THROTTLE") && atoi(getenv("KATANA_THROTTLE")) != 0) return;
+    typedef BOOL (WINAPI *Fn)(HANDLE, int, LPVOID, DWORD);
+    Fn f = (Fn)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadInformation");
+    if (f) f(h, 3 /* ThreadPowerThrottling */, &st, sizeof st);
+}
+#endif
+
 static void pool_init(void) {
     int n = 0, pin = getenv("KATANA_PIN") && atoi(getenv("KATANA_PIN")) != 0;
     if (getenv("KATANA_THREADS")) n = atoi(getenv("KATANA_THREADS"));
@@ -179,8 +191,10 @@ static void pool_init(void) {
         if (!h) { pool.n = k; break; }
         if (pin && nc > 1) SetThreadAffinityMask(h, cores[k % nc]);     /* um nucleo fisico por thread */
         if (prio) SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
+        no_throttle(h);
         CloseHandle(h);
     }
+    no_throttle(GetCurrentThread());
     /* prioridade acima do normal: com a maquina ocupada, uma thread nossa tirada do nucleo no
        meio de um bloco segura o trabalho inteiro ate voltar */
     if (prio) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -1456,6 +1470,8 @@ static struct {
     int32_t (*Finish)(clh);
     int32_t (*ReleaseMemObject)(clh);
     int32_t (*Flush)(clh);
+    int32_t (*GetEventInfo)(clh, uint32_t, size_t, void *, size_t *);
+    int32_t (*ReleaseEvent)(clh);
     int32_t (*EnqueueFillBuffer)(clh, clh, const void *, size_t, size_t, size_t, uint32_t, const clh *, clh *);
 } cl;
 
@@ -1989,7 +2005,7 @@ static int cl_load(void) {
     SYM(GetPlatformIDs); SYM(GetDeviceIDs); SYM(GetDeviceInfo); SYM(CreateContext);
     SYM(CreateCommandQueue); SYM(CreateProgramWithSource); SYM(BuildProgram);
     SYM(GetProgramBuildInfo); SYM(CreateKernel); SYM(CreateBuffer); SYM(SetKernelArg);
-    SYM(EnqueueNDRangeKernel); SYM(EnqueueReadBuffer); SYM(EnqueueWriteBuffer); SYM(Finish); SYM(ReleaseMemObject); SYM(Flush); SYM(EnqueueFillBuffer);
+    SYM(EnqueueNDRangeKernel); SYM(EnqueueReadBuffer); SYM(EnqueueWriteBuffer); SYM(Finish); SYM(ReleaseMemObject); SYM(Flush); SYM(EnqueueFillBuffer); SYM(GetEventInfo); SYM(ReleaseEvent);
 #undef SYM
     return 1;
 }
@@ -1997,8 +2013,9 @@ static int cl_load(void) {
 /* compila o fonte para um tamanho de lote e um numero de linhas por thread */
 static clh gpu_compile(int nb, int nr, clh dev) {
     int32_t err = 0;
-    char opts[64];
-    snprintf(opts, sizeof opts, "-cl-mad-enable -DNB=%d -DNR=%d -DKV16=%d", nb, nr, gpu.kv16);
+    char opts[160];
+    snprintf(opts, sizeof opts, "-cl-mad-enable %s-DNB=%d -DNR=%d -DKV16=%d",
+             getenv("KATANA_FASTMATH") && atoi(getenv("KATANA_FASTMATH")) ? "-cl-fast-relaxed-math " : "", nb, nr, gpu.kv16);
     clh prog = cl.CreateProgramWithSource(gpu.ctx, 1, &GPU_SRC, NULL, &err);
     if (err) return NULL;
     if (cl.BuildProgram(prog, 1, &dev, opts, NULL, NULL) != 0) {
@@ -2651,6 +2668,32 @@ static void gpu_setup(Model *m) {
     if (gpu.n_shard) fprintf(stderr, "GPU: %d buffers lidos dos shards em %s\n", gpu.n_shard, shards.dir);
 }
 
+/* Leitura que espera a fila terminar. O padrao e a leitura bloqueante do driver; com
+   KATANA_SPIN=1 a leitura entra na fila, a fila e despachada e a thread fica sondando o evento
+   (sem dormir), para medir quanto do tempo por token e o despertar da thread. */
+static double t_gread;      /* tempo esperando a GPU nas leituras bloqueantes */
+static int32_t gread(clh buf, size_t bytes, void *dst) {
+    static int spin = -1;
+    if (spin < 0) spin = getenv("KATANA_SPIN") ? atoi(getenv("KATANA_SPIN")) : 0;
+    if (!spin) {
+        const double t0 = now_sec();
+        const int32_t e0 = cl.EnqueueReadBuffer(gpu.queue, buf, 1, 0, bytes, dst, 0, NULL, NULL);
+        t_gread += now_sec() - t0;
+        return e0;
+    }
+    clh ev = NULL;
+    int32_t e = cl.EnqueueReadBuffer(gpu.queue, buf, 0, 0, bytes, dst, 0, NULL, &ev);
+    if (e || !ev) return e ? e : -1;
+    cl.Flush(gpu.queue);
+    int32_t st = 1;
+    while (st > 0) {
+        if (cl.GetEventInfo(ev, 0x11D3 /* COMMAND_EXECUTION_STATUS */, sizeof st, &st, NULL) != 0) { st = -1; break; }
+        if (st > 0) _mm_pause();
+    }
+    cl.ReleaseEvent(ev);
+    return st < 0 ? st : 0;
+}
+
 /* ---- pequenos atalhos para montar chamadas de kernel ---- */
 static void ka(clh k, uint32_t i, size_t sz, const void *v) { int32_t e = cl.SetKernelArg(k, i, sz, v); if (e && !gerr) fprintf(stderr, "GPU: SetKernelArg(kernel=%p, arg=%u) erro %d\n", k, i, e); gerr |= e; }
 static void ka_m(clh k, uint32_t i, clh b) { ka(k, i, sizeof(clh), &b); }
@@ -3165,9 +3208,9 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     uint64_t *st = gx.stamp + (size_t)l * gx.S;
     int R = 0, n_cpu = 0;
     /* a entrada desce para a CPU escolher os especialistas */
-    if (B == 1) gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bxb, 1, 0, (size_t)d * sizeof(float), gx.xn, 0, NULL, NULL);
+    if (B == 1) gerr |= gread(gpu.bxb, (size_t)d * sizeof(float), gx.xn);
     else {
-        gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bxb, 1, 0, (size_t)d * B * sizeof(float), gpu.xT, 0, NULL, NULL);
+        gerr |= gread(gpu.bxb, (size_t)d * B * sizeof(float), gpu.xT);
         for (int b = 0; b < B; b++) for (int i = 0; i < d; i++) gx.xn[(size_t)b * d + i] = gpu.xT[(size_t)i * B + b];
     }
     if (gerr) die("falha na execucao em GPU");
@@ -3192,7 +3235,8 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
                     if (cand < 0 || heat[own[i]] < heat[own[cand]]) cand = i;
                 }
                 if (gx.loader) {    /* roda na CPU agora; se merecer, sobe num proximo token */
-                    if (cand >= 0 && (own[cand] < 0 || heat[e] > heat[own[cand]] + gx.swap_margin)) loader_request(l, e, E);
+                    /* em lote (prompt) so ocupa vaga livre: nao expulsa os especialistas da geracao */
+                    if (cand >= 0 && (own[cand] < 0 || (B == 1 && heat[e] > heat[own[cand]] + gx.swap_margin))) loader_request(l, e, E);
                 } else if (cand >= 0 && (own[cand] < 0 || !gx.cpu_cold || heat[e] > heat[own[cand]] + 0.5f)) {
                     expert_load(m, l, e, cand); v = cand;
                 }
@@ -3358,7 +3402,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
        se for o caso, a projecao final */
     if (gpu.n_gl < c->n_layers || (want_logits && !m->lm_head.gbuf)) {
         float *lg = NULL;
-        gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bx, 1, 0, (size_t)d * B * sizeof(float), gpu.xT, 0, NULL, NULL);
+        gerr |= gread(gpu.bx, (size_t)d * B * sizeof(float), gpu.xT);
         if (gerr) die("falha na execucao em GPU");
         for (int b = 0; b < B; b++) {
             for (int i = 0; i < d; i++) m->x[i] = gpu.xT[(size_t)i * B + b];
@@ -3368,7 +3412,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
                     gerr |= cl.EnqueueWriteBuffer(gpu.queue, gpu.bx, 1, 0, (size_t)d * sizeof(float), m->x, 0, NULL, NULL);
                     g_rms(k1, gpu.bx, gpu.bon, gpu.bxb, d, c->eps);
                     gmv(k1, &m->lm_head, gpu.bxb, gpu.blog, NULL, c->vocab, d, 0);
-                    gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.blog, 1, 0, (size_t)c->vocab * sizeof(float), m->logits, 0, NULL, NULL);
+                    gerr |= gread(gpu.blog, (size_t)c->vocab * sizeof(float), m->logits);
                     if (gerr) die("falha na execucao em GPU");
                     lg = m->logits;
                 } else lg = cpu_head(m);
@@ -3384,7 +3428,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
     if (gpu.want_all && B == 4 && gpu.blog4) {      /* logits das 4 posicoes, numa passada so */
         g_bsum(ks, gpu.bxb, d, &m->lm_head, NULL, NULL);
         gmv(ks, &m->lm_head, gpu.bxb, gpu.blog4, NULL, c->vocab, d, 0);
-        gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.blog4, 1, 0, (size_t)c->vocab * 4 * sizeof(float), gpu.logits_all, 0, NULL, NULL);
+        gerr |= gread(gpu.blog4, (size_t)c->vocab * 4 * sizeof(float), gpu.logits_all);
         if (gerr) die("falha na execucao em GPU");
         return gpu.logits_all;
     }
@@ -3394,7 +3438,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         krun(k, (size_t)d);
     }
     gmv(k1, &m->lm_head, B > 1 ? gpu.bq : gpu.bxb, gpu.blog, NULL, c->vocab, d, 0);
-    gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.blog, 1, 0, (size_t)c->vocab * sizeof(float), m->logits, 0, NULL, NULL);
+    gerr |= gread(gpu.blog, (size_t)c->vocab * sizeof(float), m->logits);
     if (gerr) die("falha na execucao em GPU");
     return m->logits;
 }
@@ -3870,6 +3914,7 @@ static int bench(Model *m, int n_prompt, int n_gen) {
         printf("rodada %d: prompt %d tokens %.1f tok/s | geracao %d tokens %.1f tok/s (%.2f ms/token)\n",
                r + 1, n_prompt, n_prompt / (t1 - t0), n_gen, n_gen / (t2 - t1), (t2 - t1) * 1e3 / n_gen);
     }
+    if (getenv("KATANA_TIME")) fprintf(stderr, "[espera pela GPU nas leituras: %.2f s no total]\n", t_gread);
     prof_report();
     cprof_report();
     moe_report();
