@@ -11,7 +11,7 @@ Escrito em 2026-11-15. Cada etapa tem um critério de pronto mensurável. O cont
 | 2 | Camada de runtime (`vk/kvk.h`) e porte dos kernels por token (`tools/vkmv`) | **feito**: testes passam (runtime nas duas placas; kernels na NVIDIA). Vazão no mesmo nível do OpenCL, ainda sem medida idêntica. Faltam lote por token, vários especialistas por lançamento e kernels fundidos |
 | 3 | Integração em `katana.c`: escolha de backend (`KATANA_BACKEND`), carga dos pesos, produto por token | **feito**: `selftest` (produtos) passa pelo Vulkan em 5 modelos densos; o grafo ainda roda na CPU nesse backend. Não testado: MoE, placa Intel, queda para OpenCL quando o Vulkan falha |
 | 4 | Grafo denso completo em Vulkan (normas, atenção, projeção final), geração | **feito** (medido alternando): Qwen 1,5B 99,7 tok/s nos dois backends; SmolLM2 135M 409 tok/s no Vulkan contra ~130 no OpenCL (referência Vulkan 223, CUDA 402). `selftest` passa em 5 modelos e o texto guloso sai idêntico ao do OpenCL. Prompt ainda um token por vez (121 contra 212 tok/s) |
-| 5 | Prompt em lote com núcleos tensoriais | prompt do Qwen 1,5B acima de 1.000 tok/s no benchmark 64+64 (hoje 212; referência 2.343) |
+| 5 | Prompt em lote com núcleos tensoriais | **feito**: Qwen 1,5B 1.387 tok/s no benchmark 64+64 (era 212 no OpenCL; referência 2.343), Llama 3B 757, SmolLM2 8.100. Falta produto mais rápido (hoje ~2,7 T) e atenção mais barata para chegar perto da referência |
 | 6 | MoE em Vulkan: cache de especialistas, especialistas frios na CPU | Qwen3-30B confere no `selftest`; geração igual ou melhor que hoje |
 | 7 | Grafo gravado e resubmetido por token | **feito na etapa 4**: 409 tok/s no modelo de 135 M |
 

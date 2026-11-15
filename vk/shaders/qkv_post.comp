@@ -1,0 +1,59 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+/* pos-projecao de q, k, v do lote: bias, norma RMS opcional (norm 1 = vetor inteiro, 2 = por cabeca),
+   RoPE (neox=0 pares adjacentes, 1 metades), k e v gravados no cache, q gravado em q (pode ser o mesmo
+   buffer que qs). Ativacoes transpostas X[coluna*B + token]; o token b esta na posicao pos0+b. */
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) buffer Q { float q[]; };
+layout(std430, binding = 1) readonly buffer K { float k[]; };
+layout(std430, binding = 2) readonly buffer V { float v[]; };
+layout(std430, binding = 3) readonly buffer BQ { float bq[]; };
+layout(std430, binding = 4) readonly buffer BK { float bk[]; };
+layout(std430, binding = 5) readonly buffer BV { float bv[]; };
+layout(std430, binding = 6) buffer KC { KVT kc[]; };
+layout(std430, binding = 7) buffer VC { KVT vc[]; };
+layout(std430, binding = 8) readonly buffer FR { float freq[]; };
+layout(std430, binding = 9) readonly buffer QS { float qs[]; };
+layout(std430, binding = 10) readonly buffer QN { float qn[]; };
+layout(std430, binding = 11) readonly buffer KN { float kn[]; };
+layout(push_constant) uniform P { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; } pc;
+void main() {
+    int gid = int(gl_GlobalInvocationID.x), B = pc.B;
+    int d = pc.d, kvd = pc.kvd, hd = pc.hd;
+    if (gid >= B * (d / 2 + kvd / 2 + kvd)) return;
+    int b = gid % B, p = gid / B, half_ = hd / 2;
+    int pos = pc.pos0 + b, off = pc.base + pos * kvd;
+    if (p >= d / 2 + kvd / 2) {
+        p -= d / 2 + kvd / 2;
+        float vv = v[p * B + b] + (((pc.has_bias & 4) != 0) ? bv[p] : 0.0);
+        KVS(vv, off + p, vc);
+        return;
+    }
+    bool isk = p >= d / 2;
+    if (isk) p -= d / 2;
+    int h = p / half_, i = p % half_;
+    int i0 = h * hd + (pc.neox != 0 ? i : 2 * i), i1 = i0 + (pc.neox != 0 ? half_ : 1);
+    float cs, sn; rope_cs(float(pos) * freq[i], cs, sn);
+    if (isk) {
+        float a = k[i0 * B + b], c = k[i1 * B + b];
+        if ((pc.has_bias & 2) != 0) { a += bk[i0]; c += bk[i1]; }
+        if (pc.norm != 0) {
+            int r0 = pc.norm == 1 ? 0 : h * hd, len = pc.norm == 1 ? kvd : hd;
+            float ss = 0.0; for (int j = 0; j < len; j++) { float t = k[(r0 + j) * B + b]; ss += t * t; }
+            float inv = 1.0 / sqrt(ss / float(len) + pc.eps);
+            a *= kn[i0 - r0] * inv; c *= kn[i1 - r0] * inv;
+        }
+        KVS(a * cs - c * sn, off + i0, kc); KVS(a * sn + c * cs, off + i1, kc);
+    } else {
+        float a = qs[i0 * B + b], c = qs[i1 * B + b];
+        if ((pc.has_bias & 1) != 0) { a += bq[i0]; c += bq[i1]; }
+        if (pc.norm != 0) {
+            int r0 = pc.norm == 1 ? 0 : h * hd, len = pc.norm == 1 ? d : hd;
+            float ss = 0.0; for (int j = 0; j < len; j++) { float t = qs[(r0 + j) * B + b]; ss += t * t; }
+            float inv = 1.0 / sqrt(ss / float(len) + pc.eps);
+            a *= qn[i0 - r0] * inv; c *= qn[i1 - r0] * inv;
+        }
+        q[i0 * B + b] = a * cs - c * sn; q[i1 * B + b] = a * sn + c * cs;
+    }
+}

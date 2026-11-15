@@ -48,3 +48,10 @@ kvk_buf_read(y, 0, hy, n*4);           /* flush + espera + leitura */
     glslang.exe -V --target-env vulkan1.2 --vn addc_spv -o addc.h addc.comp   (idem axpb, addp)
     b.bat                      (compila kvk_test.exe)
     kvk_test.exe               (GPU discreta)   |   set KVK_TEST_DEV=0 & kvk_test.exe   (escolhe indice; 0=Intel, 1=NVIDIA nesta maquina)
+
+## Shaders do prompt em lote (`vk/shaders`)
+`sh vk/shaders/gen.sh` gera todos os cabecalhos SPIR-V. `mm.comp` (produto em matriz cooperativa, copia de `tools/vkq4k`; so as variantes
+usadas: 5 tipos x 64x64 / 64x32w4 / 64x16w4 e os de glu com saida fp16), `cvt`, `rms_wg16`, `gather`, `qkv_post`, `att_split` (tres kernels,
+`KATANA_VK_ATT=3`) e `att_flash` (atencao de um lancamento, padrao). Variaveis: `KATANA_VK_BATCH=0` (prompt token a token), `KATANA_VK_PASS`
+(maior lote por passada, padrao 256), `KATANA_VK_CAP`, `KATANA_VK_MINB` (menor lote, padrao 2), `KATANA_VK_SKIP` (mascara de fases omitidas, so para medir).
+Comando oculto `katana vkcheck modelo texto.txt [ngen] [ntokens]` compara lote e token a token.

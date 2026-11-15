@@ -52,6 +52,49 @@
 #include "vk/shaders/rms_wg.h"
 #include "vk/shaders/att1f_kv32.h"
 #include "vk/shaders/att1f_kv16.h"
+#include "vk/shaders/mm_t0_64x64_g0.h"
+#include "vk/shaders/mm_t0_64x64_g1.h"
+#include "vk/shaders/mm_t0_64x32w4_g0.h"
+#include "vk/shaders/mm_t0_64x32_g1.h"
+#include "vk/shaders/mm_t0_64x16w4_g0.h"
+#include "vk/shaders/mm_t0_64x16_g1.h"
+#include "vk/shaders/mm_t1_64x64_g0.h"
+#include "vk/shaders/mm_t1_64x64_g1.h"
+#include "vk/shaders/mm_t1_64x32w4_g0.h"
+#include "vk/shaders/mm_t1_64x32_g1.h"
+#include "vk/shaders/mm_t1_64x16w4_g0.h"
+#include "vk/shaders/mm_t1_64x16_g1.h"
+#include "vk/shaders/mm_t2_64x64_g0.h"
+#include "vk/shaders/mm_t2_64x64_g1.h"
+#include "vk/shaders/mm_t2_64x32w4_g0.h"
+#include "vk/shaders/mm_t2_64x32_g1.h"
+#include "vk/shaders/mm_t2_64x16w4_g0.h"
+#include "vk/shaders/mm_t2_64x16_g1.h"
+#include "vk/shaders/mm_t3_64x64_g0.h"
+#include "vk/shaders/mm_t3_64x64_g1.h"
+#include "vk/shaders/mm_t3_64x32w4_g0.h"
+#include "vk/shaders/mm_t3_64x32_g1.h"
+#include "vk/shaders/mm_t3_64x16w4_g0.h"
+#include "vk/shaders/mm_t3_64x16_g1.h"
+#include "vk/shaders/mm_t4_64x64_g0.h"
+#include "vk/shaders/mm_t4_64x64_g1.h"
+#include "vk/shaders/mm_t4_64x32w4_g0.h"
+#include "vk/shaders/mm_t4_64x32_g1.h"
+#include "vk/shaders/mm_t4_64x16w4_g0.h"
+#include "vk/shaders/mm_t4_64x16_g1.h"
+#include "vk/shaders/cvt.h"
+#include "vk/shaders/rms_wg16.h"
+#include "vk/shaders/gather.h"
+#include "vk/shaders/qkv_post_kv32.h"
+#include "vk/shaders/qkv_post_kv16.h"
+#include "vk/shaders/att_flash_kv32.h"
+#include "vk/shaders/att_flash_kv16.h"
+#include "vk/shaders/att_scores_kv32.h"
+#include "vk/shaders/att_scores_kv16.h"
+#include "vk/shaders/att_softmax_kv32.h"
+#include "vk/shaders/att_softmax_kv16.h"
+#include "vk/shaders/att_mix_kv32.h"
+#include "vk/shaders/att_mix_kv16.h"
 
 #define MAX_CTX 4096
 #define TOP_K 40
@@ -2575,10 +2618,15 @@ typedef struct {
     KvkBuf *an, *fn, *bq, *bk, *bv, *bo, *qn, *kn, *kc, *vc;    /* b==0: ausente */
     KvkPipe rms, att1f;
     KvkRec g[2];                    /* grafo gravado: [0] sem a projecao final, [1] com ela */
+    int coop, sg32;                 /* produto cooperativo fp16 disponivel; subgrupo de 32 */
+    int P;                          /* maior lote por passada em Vulkan (0 = so token a token) */
     int g_ok[2];
     double t_emb, t_sub, t_wait;    /* embedding+escrita, enfileirar/submeter, espera+leitura */
 } VkG;
 static VkG vkg;
+#define VK_PASS_DEF 256
+static int vk_batch_build(Model *m);
+static int vk_emit_head(const Model *m);
 
 static KvkBuf vk_wk(size_t bytes, int *fail) {
     KvkBuf b = kvk_buf_create(bytes < 16 ? 16 : bytes, KVK_USAGE_RW);
@@ -2622,6 +2670,17 @@ static int vk_plan(const Model *m, uint64_t budget) {
         return 0;
     }
     vkg.kv16 = kv16;
+    /* lote do prompt: buffers de trabalho por token (ativacoes transpostas); o que sobrar do orcamento limita o lote */
+    vkg.P = 0;
+    if (vkg.coop && !(getenv("KATANA_VK_BATCH") && atoi(getenv("KATANA_VK_BATCH")) == 0)) {
+        const size_t mx = d > qd ? (d > H ? d : H) : (qd > H ? qd : H);
+        const size_t per = d * 4 + mx * 2 + 2 * qd * 4 + 2 * kvd * 4 + H * 2;
+        const size_t left = budget - gpu.used - need;
+        size_t P = getenv("KATANA_VK_PASS") ? (size_t)atoi(getenv("KATANA_VK_PASS")) : VK_PASS_DEF;
+        if (P * per > left) P = left / per;
+        if (P > 1024) P = 1024;
+        vkg.P = P >= 2 ? (int)P : 0;
+    }
     return 1;
 }
 
@@ -2665,7 +2724,18 @@ static int vk_graph_build(Model *m) {
                          : kvk_pipe_create(att1f_kv32_spv, sizeof att1f_kv32_spv, 14, 44, &id0, &hdv, 1);
     if (!vkg.rms.p || !vkg.att1f.p) { fprintf(stderr, "Vulkan: pipeline do grafo falhou: %s\n", kvk_error()); return 0; }
     vkg.on = 1;
+    vk_batch_build(m);
     return 1;
+}
+
+/* norma final + projecao para o vocabulario do vetor vkg.x (um token) */
+static int vk_emit_head(const Model *m) {
+    const Config *c = &m->cfg;
+    const struct { int n; float eps; int B; } rp = { c->dim, c->eps, 1 };
+    const KvkBuf rb[3] = { vkg.x, vkg.onorm, vkg.xn };
+    int ok = kvk_dispatch(vkg.rms, rb, 3, &rp, sizeof rp, 1, 1, 1);
+    ok &= vk_gmv_ex(&m->lm_head, vkg.xn, vkg.lg, vkg.dummy, c->vocab, c->dim, 0, 0);
+    return ok;
 }
 
 /* enfileira (ao vivo ou na gravacao) todos os despachos de um token; head = norma final + vocabulario */
@@ -2699,11 +2769,7 @@ static int vk_emit(const Model *m, int head) {
         ok &= vk_gmv_ex(&L->w_down, vkg.hb, vkg.x, vkg.dummy, d, H, 1, 0);
 #undef OR_DUMMY
     }
-    if (ok && head) {
-        const KvkBuf rb[3] = { vkg.x, vkg.onorm, vkg.xn };
-        ok &= kvk_dispatch(vkg.rms, rb, 3, &rp, sizeof rp, 1, 1, 1);
-        ok &= vk_gmv_ex(&m->lm_head, vkg.xn, vkg.lg, vkg.dummy, c->vocab, d, 0, 0);
-    }
+    if (ok && head) ok &= vk_emit_head(m);
     return ok;
 }
 
@@ -2739,6 +2805,215 @@ static float *vk_forward_1(Model *m, int token, int pos, int want_logits) {
     return m->logits;
 }
 
+/* ---------- prompt em lote em Vulkan (produtos em matrizes cooperativas fp16) ----------
+   Camadas na mesma ordem do grafo de um token, mas para B tokens por passada. Layout das ativacoes: TRANSPOSTO,
+   X[coluna*B + token] (o mm.comp le x[col*tokens + token] e grava y[linha*tokens + token]; qkv_post, rms e a atencao
+   usam o mesmo layout), entao a saida de um produto e a entrada do seguinte sem copiar. Entradas dos produtos em fp16:
+   a norma ja grava fp16 (rms_wg16) e a atencao tambem; so a saida do gate/up (fp32) passa por uma conversao.
+   Residual em fp32 (bx), produto com modo "soma". So o ULTIMO token vai a norma final e ao vocabulario (gather da
+   ultima coluna para o vetor de um token e o mesmo caminho do vk_forward_1). Os produtos arredondam pesos e ativacoes
+   a fp16 dentro dos ladrilhos: o resultado difere do caminho float (comparar com `selftest`). */
+typedef struct {
+    int ok, P, flash;
+    KvkBuf x, xh, q, q2, k, v, hb, o3, att3;
+    KvkPipe rms16, qkv, flash_p, sc, sm, mix, cvt, gat;
+    KvkPipe mm[5][6];               /* [tipo do mm.comp][indice do ladrilho, plano ou glu] */
+    float *xT;
+    unsigned skip;                  /* KATANA_VK_SKIP: bits de fases a omitir (so para medir o custo de cada uma) */
+    double t_emb, t_emit, t_wait; long passes, toks;
+} VkB;
+static VkB vkb;
+
+/* tipo do mm.comp: 0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32; vk_kind_idx: 0 F32, 1 Q8_0, 2 Q4_K, 3 Q5_K, 4 Q6_K */
+static const int vk_mmt[5] = { 4, 3, 0, 2, 1 };
+/* variantes: 0 64x64, 1 64x32w4 (so plano), 2 64x16w4 (so plano), 3 64x32 (glu), 4 64x16 (glu) */
+static const int vk_mm_bn[5] = { 64, 32, 16, 32, 16 };
+static const uint32_t *vk_mm_spv(int t, int v, int glu, size_t *n) {
+#define MMS(T) \
+    { { mm_t##T##_64x64_g0_spv, sizeof mm_t##T##_64x64_g0_spv }, { mm_t##T##_64x32w4_g0_spv, sizeof mm_t##T##_64x32w4_g0_spv }, \
+      { mm_t##T##_64x16w4_g0_spv, sizeof mm_t##T##_64x16w4_g0_spv }, { mm_t##T##_64x64_g1_spv, sizeof mm_t##T##_64x64_g1_spv }, \
+      { mm_t##T##_64x32_g1_spv, sizeof mm_t##T##_64x32_g1_spv }, { mm_t##T##_64x16_g1_spv, sizeof mm_t##T##_64x16_g1_spv } }
+    static const struct { const uint32_t *p; size_t n; } tab[5][6] = { MMS(0), MMS(1), MMS(2), MMS(3), MMS(4) };
+#undef MMS
+    /* indice: plano 0,1,2 = 64x64, 64x32w4, 64x16w4; glu 3,4,5 = 64x64, 64x32, 64x16 */
+    const int ix = glu ? (v == 0 ? 3 : v == 3 ? 4 : 5) : v;
+    *n = tab[t][ix].n;
+    return tab[t][ix].p;
+}
+
+/* regra de escolha do ladrilho (tools/vkq4k/NOTAS.md): ate 16 tokens 64x16, ate 32 64x32, acima 64x64
+   (Q6_K/Q8_0 com 33..64 tokens: 64x32 de 4 subgrupos) */
+static int vk_tile(int ki, int B, int glu) {
+    if (B <= 16) return glu ? 4 : 2;
+    if (B <= 32) return glu ? 3 : 1;
+    if (!glu && B <= 64 && (ki == 1 || ki == 4)) return 1;
+    return 0;
+}
+
+/* y = W * x (B tokens), x fp16 [cols][B], y fp32 [rows][B]; add: y += W*x; glu: W e o par gate/up intercalado (y = silu(gate)*up) */
+static int vk_mm(const Mat *W, KvkBuf xh, KvkBuf y, int rows, int cols, int B, int add, int glu) {
+    const int ki = vk_kind_idx(gpu_kind(W)), t = vk_mmt[ki], v = vk_tile(ki, B, glu);
+    KvkPipe *pp = &vkb.mm[t][glu ? (v == 0 ? 3 : v == 3 ? 4 : 5) : v];
+    if (!pp->p) {
+        size_t n; const uint32_t *spv = vk_mm_spv(t, v, glu, &n);
+        *pp = kvk_pipe_create(spv, n, 3, 32, NULL, NULL, 0);
+        if (!pp->p) { fprintf(stderr, "Vulkan: pipeline do produto em lote falhou: %s\n", kvk_error()); return 0; }
+    }
+    const uint32_t pc[8] = { (uint32_t)rows, (uint32_t)cols, (uint32_t)B, (uint32_t)gpu_wpr(W, cols), (uint32_t)cols, 0, (uint32_t)add, 0 };
+    const KvkBuf bufs[3] = { *(const KvkBuf *)W->gbuf, xh, y };
+    const int bm = 64, bn = vk_mm_bn[v], gm = glu ? bm / 2 : bm;
+    return kvk_dispatch(*pp, bufs, 3, pc, sizeof pc, (uint32_t)((rows + gm - 1) / gm), (uint32_t)((B + bn - 1) / bn), 1);
+}
+
+/* o lote Vulkan so vale para camadas que o caminho acima sabe fazer */
+static int vk_batch_supported(const Model *m) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, qd = c->n_heads * c->hd, H = c->hidden;
+    if (d % 64 || qd % 64 || H % 64) return 0;
+    for (int l = 0; l < c->n_layers; l++) {
+        const Layer *L = &m->layers[l];
+        if (L->bo || !L->w_gate.pair) return 0;
+        const Mat *ms[5] = { &L->wq, &L->wk, &L->wv, &L->wo, &L->w_down };
+        for (int i = 0; i < 5; i++) if (ms[i]->gs != 1 || !ms[i]->gbuf) return 0;
+    }
+    return 1;
+}
+
+static int vk_batch_build(Model *m) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, qd = (size_t)c->n_heads * c->hd;
+    const size_t mx = d > qd ? (d > H ? d : H) : (qd > H ? qd : H);
+    int fail = 0;
+    memset(&vkb, 0, sizeof vkb);
+    if (!vkg.P || !vkg.coop || !vk_batch_supported(m)) { vkg.P = 0; return 0; }
+    const char *av = getenv("KATANA_VK_ATT");           /* 1 = um lancamento (padrao), 3 = tres kernels */
+    vkb.flash = !(av && atoi(av) == 3) && vkg.sg32 && c->hd % 32 == 0 && c->hd <= 256 && c->n_heads % c->n_kv == 0 && c->n_heads / c->n_kv <= 8;
+    int P = vkg.P;
+    if (!vkb.flash && P > 64) P = 64;                   /* o buffer de notas cresce com o lote */
+    vkb.P = P;
+    vkb.x = vk_wk(d * P * 4, &fail); vkb.xh = vk_wk(mx * P * 2, &fail);
+    vkb.q = vk_wk(qd * P * 4, &fail); vkb.q2 = vk_wk(qd * P * 4, &fail);
+    vkb.k = vk_wk(kvd * P * 4, &fail); vkb.v = vk_wk(kvd * P * 4, &fail); vkb.hb = vk_wk(H * P * 2, &fail);
+    if (!vkb.flash) { vkb.o3 = vk_wk(qd * P * 4, &fail); vkb.att3 = vk_wk((size_t)P * c->n_heads * c->ctx * 4, &fail); }
+    vkb.xT = xalloc(d * P, sizeof(float));
+    if (fail) { fprintf(stderr, "Vulkan: sem memoria para o lote (%s): prompt token a token\n", kvk_error()); vkg.P = 0; return 0; }
+    const uint32_t fid[2] = { 0, 1 }, fv[2] = { (uint32_t)c->hd, (uint32_t)(c->n_heads / c->n_kv) };
+    vkb.rms16 = kvk_pipe_create(rms_wg16_spv, sizeof rms_wg16_spv, 3, 12, NULL, NULL, 0);
+    vkb.qkv = vkg.kv16 ? kvk_pipe_create(qkv_post_kv16_spv, sizeof qkv_post_kv16_spv, 12, 40, NULL, NULL, 0)
+                       : kvk_pipe_create(qkv_post_kv32_spv, sizeof qkv_post_kv32_spv, 12, 40, NULL, NULL, 0);
+    vkb.cvt = kvk_pipe_create(cvt_spv, sizeof cvt_spv, 3, 4, NULL, NULL, 0);
+    vkb.gat = kvk_pipe_create(gather_spv, sizeof gather_spv, 2, 12, NULL, NULL, 0);
+    if (vkb.flash)
+        vkb.flash_p = vkg.kv16 ? kvk_pipe_create(att_flash_kv16_spv, sizeof att_flash_kv16_spv, 4, 24, fid, fv, 2)
+                               : kvk_pipe_create(att_flash_kv32_spv, sizeof att_flash_kv32_spv, 4, 24, fid, fv, 2);
+    else {
+        vkb.sc = vkg.kv16 ? kvk_pipe_create(att_scores_kv16_spv, sizeof att_scores_kv16_spv, 3, 40, NULL, NULL, 0)
+                          : kvk_pipe_create(att_scores_kv32_spv, sizeof att_scores_kv32_spv, 3, 40, NULL, NULL, 0);
+        vkb.sm = vkg.kv16 ? kvk_pipe_create(att_softmax_kv16_spv, sizeof att_softmax_kv16_spv, 1, 16, NULL, NULL, 0)
+                          : kvk_pipe_create(att_softmax_kv32_spv, sizeof att_softmax_kv32_spv, 1, 16, NULL, NULL, 0);
+        vkb.mix = vkg.kv16 ? kvk_pipe_create(att_mix_kv16_spv, sizeof att_mix_kv16_spv, 3, 32, NULL, NULL, 0)
+                           : kvk_pipe_create(att_mix_kv32_spv, sizeof att_mix_kv32_spv, 3, 32, NULL, NULL, 0);
+    }
+    if (!vkb.rms16.p || !vkb.qkv.p || !vkb.cvt.p || !vkb.gat.p || (vkb.flash ? !vkb.flash_p.p : (!vkb.sc.p || !vkb.sm.p || !vkb.mix.p))) {
+        fprintf(stderr, "Vulkan: pipeline do lote falhou (%s): prompt token a token\n", kvk_error()); vkg.P = 0; return 0;
+    }
+    vkb.skip = getenv("KATANA_VK_SKIP") ? (unsigned)strtoul(getenv("KATANA_VK_SKIP"), NULL, 0) : 0;
+    vkb.ok = 1;
+    return 1;
+}
+
+/* fases (bits de KATANA_VK_SKIP, so para medir): 1 norma, 2 q/k/v, 4 qkv_post, 8 atencao, 16 saida, 32 gate/up, 128 down, 256 cabeca (e poda da ultima camada) */
+#define VKS(bit) (!(vkb.skip & (bit)))
+static int vk_emit_n(const Model *m, int B, int pos0, int head) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, hd = c->hd, H = c->hidden, kvd = c->n_kv * hd, qd = c->n_heads * hd, nh = c->n_heads;
+    const struct { int n; float eps; int B; } rp = { d, c->eps, B };
+    int ok = 1, pruned = 0;
+    for (int l = 0; l < c->n_layers && ok; l++) {
+        const Layer *L = &m->layers[l];
+#define OR_DUMMY(v) ((v).b ? (v) : vkg.dummy)
+        if (VKS(1)) { const KvkBuf rb[3] = { vkb.x, vkg.an[l], vkb.xh }; ok &= kvk_dispatch(vkb.rms16, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1); }
+        if (VKS(2)) {
+            ok &= vk_mm(&L->wq, vkb.xh, vkb.q, qd, d, B, 0, 0);
+            ok &= vk_mm(&L->wk, vkb.xh, vkb.k, kvd, d, B, 0, 0);
+            ok &= vk_mm(&L->wv, vkb.xh, vkb.v, kvd, d, B, 0, 0);
+        }
+        if (VKS(4)) {
+            const KvkBuf qb[12] = { vkb.q2, vkb.k, vkb.v, OR_DUMMY(vkg.bq[l]), OR_DUMMY(vkg.bk[l]), OR_DUMMY(vkg.bv[l]), vkg.kc[l], vkg.vc[l],
+                                    vkg.freq, vkb.q, OR_DUMMY(vkg.qn[l]), OR_DUMMY(vkg.kn[l]) };
+            const struct { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; } qp =
+                { 0, pos0, hd, c->rope_neox, (vkg.bq[l].b ? 1 : 0) | (vkg.bk[l].b ? 2 : 0) | (vkg.bv[l].b ? 4 : 0), qd, kvd, c->qk_norm, B, c->eps };
+            ok &= kvk_dispatch(vkb.qkv, qb, 12, &qp, sizeof qp, (uint32_t)((B * (qd / 2 + kvd / 2 + kvd) + 127) / 128), 1, 1);
+        }
+        if (VKS(8)) {
+            const float scale = 1.0f / sqrtf((float)hd);
+            if (vkb.flash) {
+                const KvkBuf ab[4] = { vkb.q2, vkg.kc[l], vkg.vc[l], vkb.xh };
+                const struct { int base, pos0, kvd, nkv, B; float scale; } ap = { 0, pos0, kvd, c->n_kv, B, scale };
+                ok &= kvk_dispatch(vkb.flash_p, ab, 4, &ap, sizeof ap, (uint32_t)(B * c->n_kv), 1, 1);
+            } else {
+                const int tmax = pos0 + B;
+                const KvkBuf sb[3] = { vkb.q2, vkg.kc[l], vkb.att3 };
+                const struct { int base, pos0, tmax, ctx, hd, kvd, group, nh, B; float scale; } sp = { 0, pos0, tmax, c->ctx, hd, kvd, nh / c->n_kv, nh, B, scale };
+                ok &= kvk_dispatch(vkb.sc, sb, 3, &sp, sizeof sp, (uint32_t)(((size_t)B * nh * tmax + 127) / 128), 1, 1);
+                const struct { int pos0, ctx, nh, B; } mp = { pos0, c->ctx, nh, B };
+                ok &= kvk_dispatch(vkb.sm, &vkb.att3, 1, &mp, sizeof mp, (uint32_t)((B * nh + 127) / 128), 1, 1);
+                const KvkBuf xb[3] = { vkb.att3, vkg.vc[l], vkb.o3 };
+                const struct { int base, pos0, ctx, hd, kvd, group, nh, B; } xp = { 0, pos0, c->ctx, hd, kvd, nh / c->n_kv, nh, B };
+                ok &= kvk_dispatch(vkb.mix, xb, 3, &xp, sizeof xp, (uint32_t)(((size_t)B * qd + 127) / 128), 1, 1);
+                const uint32_t n4 = (uint32_t)((size_t)B * qd / 4);
+                const KvkBuf cb[3] = { vkb.o3, vkb.o3, vkb.xh };
+                ok &= kvk_dispatch(vkb.cvt, cb, 3, &n4, 4, (n4 + 255) / 256, 1, 1);
+            }
+        }
+        if (VKS(16)) ok &= vk_mm(&L->wo, vkb.xh, vkb.x, d, qd, B, 1, 0);
+        /* ultima camada com logits: so o ultimo token precisa do feed-forward; a coluna B-1 vai para vkg.x (vetor de um token) */
+        int Bf = B;
+        KvkBuf xf = vkb.x;
+        if (head && l == c->n_layers - 1 && VKS(256)) {
+            const KvkBuf gb[2] = { vkb.x, vkg.x };
+            const int gp[3] = { d, B, B - 1 };
+            ok &= kvk_dispatch(vkb.gat, gb, 2, gp, sizeof gp, (uint32_t)((d + 127) / 128), 1, 1);
+            Bf = 1; xf = vkg.x; pruned = 1;
+        }
+        const struct { int n; float eps; int B; } rpf = { d, c->eps, Bf };
+        if (VKS(1)) { const KvkBuf rb2[3] = { xf, vkg.fn[l], vkb.xh }; ok &= kvk_dispatch(vkb.rms16, rb2, 3, &rpf, sizeof rpf, (uint32_t)((Bf + 7) / 8), 1, 1); }
+        if (VKS(32)) ok &= vk_mm(&L->w_gate, vkb.xh, vkb.hb, H, d, Bf, 0, 1);     /* saida em fp16 (silu(gate)*up) */
+        if (VKS(128)) ok &= vk_mm(&L->w_down, vkb.hb, xf, d, H, Bf, 1, 0);
+#undef OR_DUMMY
+    }
+    if (ok && head && VKS(256)) {
+        if (!pruned) {      /* so com a poda desligada (KATANA_VK_SKIP): copia a ultima coluna */
+            const KvkBuf gb[2] = { vkb.x, vkg.x };
+            const int gp[3] = { d, B, B - 1 };
+            ok &= kvk_dispatch(vkb.gat, gb, 2, gp, sizeof gp, (uint32_t)((d + 127) / 128), 1, 1);
+        }
+        ok &= vk_emit_head(m);
+    }
+    return ok;
+}
+
+/* B tokens (B <= vkb.P) a partir de pos0 pelas camadas na GPU; logits do ultimo token se pedido */
+static float *vk_forward_n(Model *m, const int *toks, int B, int pos0, int want_logits) {
+    const Config *c = &m->cfg;
+    const int d = c->dim;
+    if (B < 1 || B > vkb.P || pos0 < 0 || pos0 + B > c->ctx) die("lote fora do limite (Vulkan)");
+    double t0 = now_sec();
+    for (int t = 0; t < B; t++) {
+        mat_row(m->x, &m->tok_emb, toks[t], d);
+        for (int j = 0; j < d; j++) vkb.xT[(size_t)j * B + t] = m->x[j];
+    }
+    if (!kvk_buf_write_q(vkb.x, 0, vkb.xT, (size_t)d * B * sizeof(float))) die("falha na execucao em Vulkan (escrita do lote)");
+    double t1 = now_sec();
+    if (!vk_emit_n(m, B, pos0, want_logits) || !kvk_flush()) die("falha na execucao em Vulkan (lote)");
+    double t2 = now_sec();
+    vkb.t_emb += t1 - t0; vkb.t_emit += t2 - t1; vkb.passes++; vkb.toks += B;
+    if (!want_logits) return NULL;
+    if (!kvk_buf_read(vkg.lg, 0, m->logits, (size_t)c->vocab * sizeof(float))) die("falha na execucao em Vulkan (leitura)");
+    vkb.t_wait += now_sec() - t2;
+    return m->logits;
+}
+
 /* inicia o Vulkan e sobe os pesos (mesmo empacotador e mesmo orcamento do OpenCL); 0 = falhou, usar OpenCL */
 static int vk_setup(Model *m) {
     const Config *c = &m->cfg;
@@ -2750,6 +3025,13 @@ static int vk_setup(Model *m) {
     }
     if (!kvk_init(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
     gpu.vk = 1;
+    vkg.sg32 = I.subgroup_size == 32;
+    vkg.coop = 0;      /* produto 16x16x16 fp16 x fp16 -> fp32 no escopo de subgrupo (VK_COMPONENT_TYPE_FLOAT16 = 0, FLOAT32 = 1, SCOPE_SUBGROUP = 3) */
+    if (I.coopmat && I.fp16 && I.storage16 && I.max_shared >= 32768)
+        for (int i = 0; i < I.n_coop; i++)
+            if (I.coop[i].m == 16 && I.coop[i].n == 16 && I.coop[i].k == 16 && I.coop[i].a_type == 0 && I.coop[i].b_type == 0
+                && I.coop[i].c_type == 1 && I.coop[i].r_type == 1 && I.coop[i].scope == 3) vkg.coop = 1;
+    if (!vkg.coop) fprintf(stderr, "Vulkan: sem matriz cooperativa fp16 16x16x16: prompt token a token\n");
     snprintf(gpu.name, sizeof gpu.name, "%s", I.name);
     gpu.vram = I.vram_bytes;
     gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : 16384;
@@ -4032,10 +4314,27 @@ static float *forward(Model *m, int token, int pos, int want_logits) {
     return want_logits ? cpu_head(m) : NULL;
 }
 
+/* Vulkan: menor lote que compensa e maior lote por passada (KATANA_VK_MINB, KATANA_VK_CAP ou KATANA_VK_PASS) */
+static int vk_batch_min(void) { return getenv("KATANA_VK_MINB") ? atoi(getenv("KATANA_VK_MINB")) : 2; }
+static int vk_pass_cap(void) {
+    const int cap = getenv("KATANA_VK_CAP") ? atoi(getenv("KATANA_VK_CAP")) : vkb.P;
+    return cap >= 1 && cap < vkb.P ? cap : vkb.P;
+}
+
 /* processa n tokens seguidos a partir de pos0 (em lotes, na GPU); logits do ultimo se pedido */
 static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_logits) {
     float *lg = NULL;
     int i = 0;
+    if (vkg.on && vkb.ok && !gpu.force_cpu && vk_batch_min() <= n) {
+        /* lotes de ate vkb.P tokens; sobra menor que o minimo vai um token por vez */
+        while (n - i >= vk_batch_min()) {
+            const int nb = n - i < vk_pass_cap() ? n - i : vk_pass_cap();
+            lg = vk_forward_n(m, toks + i, nb, pos0 + i, want_logits && i + nb == n);
+            i += nb;
+        }
+        for (; i < n; i++) lg = forward(m, toks[i], pos0 + i, want_logits && i == n - 1);
+        return lg;
+    }
     if (gpu.n_gl > 0 && !gpu.force_cpu) {
         while (i < n) {
             const KSet *ks = &gpu.set[gpu.n_sets - 1];
@@ -4243,6 +4542,14 @@ static void selftest_mat(const char *name, const Mat *W, int rows, int cols, dou
     free(x); free(row); free(sx);
 }
 
+static void setenv_(const char *k, const char *v) {
+#ifdef _WIN32
+    char b[128]; snprintf(b, sizeof b, "%s=%s", k, v ? v : ""); _putenv(b);
+#else
+    if (v) setenv(k, v, 1); else unsetenv(k);
+#endif
+}
+
 static int selftest(Model *m) {
     const Config *c = &m->cfg;
     const int d = c->dim, kvd = c->n_kv * c->hd, H = c->hidden;
@@ -4273,8 +4580,11 @@ static int selftest(Model *m) {
         for (int i = 0; i < N; i++) o = forward(m, toks[i], i, i == N - 1);
         gpu.force_cpu = 0; cpu_exact = 0;
         memcpy(ref, o, V * sizeof(float));
-        for (int mode = 0; mode < 3; mode++) {
+        for (int mode = 0; mode < 4; mode++) {
+            if (mode == 3 && !(vkg.on && vkb.ok)) continue;
+            const long p0 = vkb.passes;
             if (mode == 0) o = forward_seq(m, toks, N, 0, 1);
+            else if (mode == 3) { setenv_("KATANA_VK_CAP", "16"); o = forward_seq(m, toks, N, 0, 1); setenv_("KATANA_VK_CAP", NULL); }
             else if (mode == 1) for (int i = 0; i < N; i++) o = forward(m, toks[i], i, i == N - 1);
             else { gpu.force_cpu = 1; for (int i = 0; i < N; i++) o = forward(m, toks[i], i, i == N - 1); gpu.force_cpu = 0; }
             int ag = 0, ac = 0; double md = 0.0;
@@ -4284,13 +4594,62 @@ static int selftest(Model *m) {
                 if (fabs(o[i] - ref[i]) > md) md = fabs(o[i] - ref[i]);
             }
             int e2e = ag == ac && md < (gpu.kv16 ? 1.0 : 0.05);
+            if (vkb.ok && (mode == 0 || mode == 3)) printf("  (%ld passadas em lote)\n", vkb.passes - p0);
             printf("%s x CPU exata (%d tokens): maior diferenca de logit=%.6f, argmax %d x %d: %s\n",
-                   mode == 0 ? (vkg.on ? "GPU (Vk, 1 a 1)  " : "GPU em lote      ") : mode == 1 ? "GPU token a token" : "CPU inteira      ", N, md, ag, ac, e2e ? "OK" : "FALHOU");
+                   mode == 0 ? (vkg.on ? (vkb.ok ? "GPU (Vk, lote)   " : "GPU (Vk, 1 a 1)  ") : "GPU em lote      ") : mode == 1 ? "GPU token a token" : mode == 3 ? "GPU (Vk, lote 16)" : "CPU inteira      ", N, md, ag, ac, e2e ? "OK" : "FALHOU");
             ok = ok && e2e;
         }
         free(ref);
     }
     return ok ? 0 : 1;
+}
+
+/* comando oculto `vkcheck modelo texto.txt [ngen]`: processa o texto (ate ~600 tokens) em lote e depois token a token em Vulkan
+   (a mesma sequencia, caches KV refeitos) e compara os logits finais e os proximos ngen tokens gulosos */
+static char *read_text(const char *path);
+static int vkcheck(Model *m, const char *path, int ngen, int ntok) {
+    const Config *c = &m->cfg;
+    const int V = c->vocab;
+    if (!vkg.on || !vkb.ok) { printf("vkcheck: lote Vulkan inativo\n"); return 1; }
+    Ids ids = {0};
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(&m->tk, read_text(path), &ids);
+    int n = ids.n < ntok ? ids.n : ntok;
+    if (n + ngen >= c->ctx) n = c->ctx - ngen - 1;
+    float *lgs[2] = { xalloc(V, sizeof(float)), xalloc(V, sizeof(float)) };
+    int *gen[2] = { xalloc(ngen, sizeof(int)), xalloc(ngen, sizeof(int)) };
+    double tp[2];
+    for (int run = 0; run < 2; run++) {
+        vkb.ok = run == 0;              /* 0: lote; 1: um token por vez */
+        double t0 = now_sec();
+        float *lg = forward_seq(m, ids.ids, n, 0, 1);
+        tp[run] = now_sec() - t0;
+        memcpy(lgs[run], lg, V * sizeof(float));
+        int pos = n;
+        for (int g = 0; g < ngen; g++) {
+            int best = 0;
+            for (int i = 1; i < V; i++) if (lg[i] > lg[best]) best = i;
+            gen[run][g] = best;
+            lg = forward(m, best, pos++, 1);
+        }
+    }
+    vkb.ok = 1;
+    double md = 0, mx = 0;
+    int a0 = 0, a1 = 0;
+    for (int i = 0; i < V; i++) {
+        if (lgs[0][i] > lgs[0][a0]) a0 = i;
+        if (lgs[1][i] > lgs[1][a1]) a1 = i;
+        if (fabs(lgs[0][i] - lgs[1][i]) > md) md = fabs(lgs[0][i] - lgs[1][i]);
+        if (fabs(lgs[1][i]) > mx) mx = fabs(lgs[1][i]);
+    }
+    int first = -1;
+    for (int g = 0; g < ngen; g++) if (gen[0][g] != gen[1][g]) { first = g; break; }
+    printf("vkcheck: prompt de %d tokens: lote %.1f tok/s, token a token %.1f tok/s\n", n, n / tp[0], n / tp[1]);
+    printf("  logits finais: maior diferenca %.6f (maior |logit| %.2f), argmax lote %d x 1 a 1 %d\n", md, mx, a0, a1);
+    printf("  proximos %d tokens gulosos: %s", ngen, first < 0 ? "todos iguais" : "primeira diferenca no token");
+    if (first >= 0) printf(" %d (lote %d x 1 a 1 %d)", first, gen[0][first], gen[1][first]);
+    printf("\n");
+    return (a0 == a1 && first < 0) ? 0 : 2;
 }
 
 /* mede prompt e geracao com tokens sinteticos, depois de aquecer (pesos ja na VRAM) */
@@ -4313,6 +4672,9 @@ static int bench(Model *m, int n_prompt, int n_gen) {
                r + 1, n_prompt, n_prompt / (t1 - t0), n_gen, n_gen / (t2 - t1), (t2 - t1) * 1e3 / n_gen);
     }
     if (getenv("KATANA_TIME")) fprintf(stderr, "[espera pela GPU nas leituras: %.2f s no total]\n", t_gread);
+    if (getenv("KATANA_TIME") && vkb.passes)
+        fprintf(stderr, "[lote Vulkan: %ld passadas, %ld tokens; CPU embedding+envio %.3f s, enfileirar %.3f s, espera %.3f s]\n",
+                vkb.passes, vkb.toks, vkb.t_emb, vkb.t_emit, vkb.t_wait);
     prof_report();
     cprof_report();
     moe_report();
@@ -5189,6 +5551,11 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         print_info(&m);
         return bench(&m, argc > 3 ? atoi(argv[3]) : 256, argc > 4 ? atoi(argv[4]) : 64);
+    }
+    if (argc >= 4 && strcmp(argv[1], "vkcheck") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return vkcheck(&m, argv[3], argc > 4 ? atoi(argv[4]) : 40, argc > 5 ? atoi(argv[5]) : 600);
     }
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
