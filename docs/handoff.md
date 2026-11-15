@@ -1,8 +1,8 @@
 # katana: handoff
 
 Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura de especialistas e o
-backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido)
-e `plano.md` (prioridades). Último commit desta sessão: `54ac6b0` (mais o commit deste arquivo).
+backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
+`comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades). Último commit desta sessão: `54ac6b0` (mais o commit deste arquivo).
 
 ## 1. Estado em uma página
 
