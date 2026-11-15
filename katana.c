@@ -243,6 +243,7 @@ typedef struct {
     int moe_norm;       /* renormaliza os pesos dos especialistas escolhidos (qwen3moe) */
     int qk_norm;        /* norma RMS em q e k: 1 = no vetor inteiro (olmoe), 2 = por cabeca (qwen3) */
     int hidden_exp;
+    int hd_key;         /* largura de cada cabeca quando nao e dim/cabecas (qwen3moe) */
     int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples */
     char arch[64];
 } Config;
@@ -660,6 +661,7 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".expert_used_count")) c->n_used = (int)v;
             else if (key_ends(k, kl, ".attention.head_count")) c->n_heads = (int)v;
             else if (key_ends(k, kl, ".attention.head_count_kv")) c->n_kv = (int)v;
+            else if (key_ends(k, kl, ".attention.key_length")) c->hd_key = (int)v;
             else if (key_ends(k, kl, ".rope.freq_base")) c->rope_base = (float)v;
             else if (key_ends(k, kl, ".layer_norm_rms_epsilon")) c->eps = (float)v;
             else if (key_is(k, kl, "tokenizer.ggml.bos_token_id")) c->bos = (int)v;
@@ -683,8 +685,8 @@ static void load_model(Model *m, const char *path) {
     if (!c->dim || !c->n_layers || !c->n_heads || !c->hidden || !tk->n) die("metadados incompletos no GGUF");
     if (!c->n_kv) c->n_kv = c->n_heads;
     c->vocab = tk->n;
-    c->hd = c->dim / c->n_heads;
-    if (c->dim % c->n_heads || c->hd % 2 || c->n_heads % c->n_kv) die("dimensoes de atencao invalidas");
+    c->hd = c->hd_key > 0 ? c->hd_key : c->dim / c->n_heads;       /* q tem n_heads*hd, que pode passar de dim */
+    if ((!c->hd_key && c->dim % c->n_heads) || c->hd % 2 || c->n_heads % c->n_kv) die("dimensoes de atencao invalidas");
     if (!c->ctx || c->ctx > MAX_CTX) c->ctx = MAX_CTX;
     if (getenv("KATANA_CTX")) {     /* contexto menor = cache KV menor (libera VRAM para mais camadas) */
         const int want = atoi(getenv("KATANA_CTX"));
@@ -720,6 +722,7 @@ static void load_model(Model *m, const char *path) {
     ts.data = buf + pos; ts.end = buf + fsz;
 
     size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
+    const size_t qd = (size_t)c->n_heads * c->hd, dq = qd > d ? qd : d;
     size_t *np = &m->n_params;
     m->tok_emb = get_mat(&ts, "token_embd.weight", V, d, 1, np);
     m->out_norm = get_tensor(&ts, "output_norm.weight", d, 1, np);
@@ -732,10 +735,10 @@ static void load_model(Model *m, const char *path) {
 #define V1(field, suffix) snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_tensor(&ts, nm, d, 1, np)
 #define M2(field, suffix, rows, cols) snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_mat(&ts, nm, rows, cols, 1, np)
         V1(attn_norm, "attn_norm.weight");
-        M2(wq, "attn_q.weight", d, d);
+        M2(wq, "attn_q.weight", qd, d);
         M2(wk, "attn_k.weight", kvd, d);
         M2(wv, "attn_v.weight", kvd, d);
-        M2(wo, "attn_output.weight", d, d);
+        M2(wo, "attn_output.weight", d, qd);
         V1(ffn_norm, "ffn_norm.weight");
         if (c->n_expert) {
             /* tensores empilhados: o especialista e ocupa a fatia e, com as linhas inteiras */
@@ -762,7 +765,7 @@ static void load_model(Model *m, const char *path) {
             snprintf(nm, sizeof nm, "blk.%d.attn_q_norm.weight", l); L->q_norm = get_tensor(&ts, nm, c->qk_norm == 1 ? d : (size_t)c->hd, 1, np);
             snprintf(nm, sizeof nm, "blk.%d.attn_k_norm.weight", l); L->k_norm = get_tensor(&ts, nm, c->qk_norm == 1 ? kvd : (size_t)c->hd, 1, np);
         }
-        snprintf(nm, sizeof nm, "blk.%d.attn_q.bias", l);      L->bq = get_tensor(&ts, nm, d, 0, np);
+        snprintf(nm, sizeof nm, "blk.%d.attn_q.bias", l);      L->bq = get_tensor(&ts, nm, qd, 0, np);
         snprintf(nm, sizeof nm, "blk.%d.attn_k.bias", l);      L->bk = get_tensor(&ts, nm, kvd, 0, np);
         snprintf(nm, sizeof nm, "blk.%d.attn_v.bias", l);      L->bv = get_tensor(&ts, nm, kvd, 0, np);
         snprintf(nm, sizeof nm, "blk.%d.attn_output.bias", l); L->bo = get_tensor(&ts, nm, d, 0, np);
@@ -774,8 +777,8 @@ static void load_model(Model *m, const char *path) {
     size_t ctx = c->ctx, L = c->n_layers;
     m->kcache = xalloc(L * ctx * kvd, sizeof(float));
     m->vcache = xalloc(L * ctx * kvd, sizeof(float));
-    m->x = xalloc(d, sizeof(float));   m->xb = xalloc(d, sizeof(float));
-    m->xb2 = xalloc(d, sizeof(float)); m->q = xalloc(d, sizeof(float));
+    m->x = xalloc(d, sizeof(float));   m->xb = xalloc(dq, sizeof(float));
+    m->xb2 = xalloc(dq, sizeof(float)); m->q = xalloc(dq, sizeof(float));
     m->k = xalloc(kvd, sizeof(float)); m->v = xalloc(kvd, sizeof(float));
     m->att = xalloc(ctx, sizeof(float));
     m->hb = xalloc(H, sizeof(float));  m->hb2 = xalloc(H, sizeof(float));
@@ -788,7 +791,6 @@ static void load_model(Model *m, const char *path) {
     m->fsize = fsz;
     shards_open(path, fsz);
     prefetch_setup(fsz);
-    if (c->qk_norm == 2) { if (!getenv("KATANA_CPU")) fprintf(stderr, "norma q-k por cabeca: por enquanto so na CPU\n"); return; }
     if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 
@@ -1413,7 +1415,7 @@ typedef struct {
     int nb, nr;     /* tokens por passada; linhas da matriz por thread */
     clh k_f32, k_q8, k_q4k, k_q5k, k_q6k, k_bsum;
     clh kp_f32, kp_q8, kp_q4k, kp_q5k, kp_q6k;      /* mesmos kernels com 2*nr linhas por thread (par gate/up) */
-    clh k_moe_sum;
+    clh k_moe_sum, k_rmsh;
     clh k_rms, k_qkv, k_gather, k_att_scores, k_att_softmax, k_att_mix;
     clh k_mv3, k_att1;      /* fundidos da geracao; so existem com nb=1 e nr=1 */
 } KSet;
@@ -1822,6 +1824,13 @@ static const char *GPU_SRC =
 "  for (int j = 0; j < n; j++) { FB v = LOADB(x, j); ss += v * v; }\n"
 "  STOREB(g[i] * (LOADB(x, i) / sqrt(ss / (float)n + eps)), out, i);\n"
 "}\n"
+/* RMSNorm por cabeca (q e k do qwen3): cada bloco de hd valores e normalizado sozinho */
+"__kernel void rmsh(__global const float *x, __global const float *g, __global float *out, int hd, float eps) {\n"
+"  int i = get_global_id(0), h0 = (i / hd) * hd;\n"
+"  FB ss = (FB)(0.0f);\n"
+"  for (int j = 0; j < hd; j++) { FB v = LOADB(x, h0 + j); ss += v * v; }\n"
+"  STOREB(g[i - h0] * (LOADB(x, i) / sqrt(ss / (float)hd + eps)), out, i);\n"
+"}\n"
 /* MoE: x += soma dos n especialistas, cada um com o seu peso (t tem um vetor por especialista) */
 "__kernel void moe_sum(__global float *x, __global const float *t, float16 w, int n, int rp) {\n"
 "  int i = get_global_id(0);\n"
@@ -1936,7 +1945,7 @@ static int gpu_build_set(KSet *ks, int nb, int nr, clh dev) {
     KERN(prog, k_f32, "mv_f32"); KERN(prog, k_q8, "mv_q8"); KERN(prog, k_q4k, "mv_q4k"); KERN(prog, k_q5k, "mv_q5k"); KERN(prog, k_q6k, "mv_q6k");
     KERN(prog2, kp_f32, "mv_f32"); KERN(prog2, kp_q8, "mv_q8"); KERN(prog2, kp_q4k, "mv_q4k"); KERN(prog2, kp_q5k, "mv_q5k"); KERN(prog2, kp_q6k, "mv_q6k");
     KERN(prog, k_bsum, "bsum"); KERN(prog, k_rms, "rms"); KERN(prog, k_qkv, "qkv_post");
-    KERN(prog, k_gather, "gather"); KERN(prog, k_att_scores, "att_scores"); KERN(prog, k_moe_sum, "moe_sum");
+    KERN(prog, k_gather, "gather"); KERN(prog, k_att_scores, "att_scores"); KERN(prog, k_moe_sum, "moe_sum"); KERN(prog, k_rmsh, "rmsh");
     KERN(prog, k_att_softmax, "att_softmax"); KERN(prog, k_att_mix, "att_mix");
     {   /* modo de varias matrizes desligado por padrao em todos os kernels de produto */
         clh mk[10] = { ks->k_f32, ks->k_q8, ks->k_q4k, ks->k_q5k, ks->k_q6k, ks->kp_f32, ks->kp_q8, ks->kp_q4k, ks->kp_q5k, ks->kp_q6k };
@@ -2303,7 +2312,8 @@ static int gpu_setup_bufs(Model *m) {
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t ctx = c->ctx, L = c->n_layers, B = GPU_BMAX;
     int fail = 0;
-    gpu.bx = gbuf_rw(d * B * 4);    gpu.bxb = gbuf_rw(d * B * 4);   gpu.bq = gbuf_rw(d * B * 4);
+    const size_t qd = (size_t)c->n_heads * c->hd, dq = qd > d ? qd : d;
+    gpu.bx = gbuf_rw(d * B * 4);    gpu.bxb = gbuf_rw(dq * B * 4);  gpu.bq = gbuf_rw(dq * B * 4);
     gpu.bk = gbuf_rw(kvd * B * 4);  gpu.bv = gbuf_rw(kvd * B * 4);  gpu.bhb = gbuf_rw(H * B * 4);
     gpu.blog = gbuf_rw(V * 4);      gpu.batt = gbuf_rw(B * c->n_heads * ctx * 4);
     if (!gpu.bx || !gpu.bxb || !gpu.bq || !gpu.bk || !gpu.bv || !gpu.bhb || !gpu.blog || !gpu.batt) return 0;
@@ -2363,7 +2373,7 @@ static void gpu_cfg_load(void) {
 static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
-    const size_t ctx = c->ctx;
+    const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
     gpu.cfg_rows = 1; gpu.cfg_rowsb = 2; gpu.cfg_seg = 16384;       /* padroes medidos numa RTX 3050 */
     if (!gpu_init()) { fprintf(stderr, "GPU: nenhuma disponivel via OpenCL, usando CPU\n"); return; }
@@ -2374,8 +2384,8 @@ static void gpu_setup(Model *m) {
         size_t total = gpu_mat_bytes(&m->lm_head, V, d) + ((size_t)256 << 20);
         for (int l = 0; l < c->n_layers; l++) {
             const Layer *L = &m->layers[l];
-            total += gpu_mat_bytes(&L->wq, d, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
-                   + gpu_mat_bytes(&L->wo, d, d) + NX * (gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d)
+            total += gpu_mat_bytes(&L->wq, qd, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
+                   + gpu_mat_bytes(&L->wo, d, qd) + NX * (gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d)
                    + gpu_mat_bytes(&L->w_down, d, H)) + kv_layer;
         }
         gpu.kv16 = getenv("KATANA_KV16") ? atoi(getenv("KATANA_KV16")) != 0 : total > vram_budget;
@@ -2383,7 +2393,9 @@ static void gpu_setup(Model *m) {
     }
     if (!gpu_build_all()) { fprintf(stderr, "GPU: falha ao preparar os kernels, usando CPU\n"); return; }
 
-    size_t maxc = d > H ? d : H, maxr = V > maxc ? V : maxc;
+    size_t maxc = d > H ? d : H;
+    if (qd > maxc) maxc = qd;
+    size_t maxr = V > maxc ? V : maxc;
     int32_t e1 = 0, e2 = 0, e4 = 0;
     gpu.xbuf = cl.CreateBuffer(gpu.ctx, 1, maxc * sizeof(float), NULL, &e1);
     gpu.obuf = cl.CreateBuffer(gpu.ctx, 1, (maxr + 128) * sizeof(float), NULL, &e2);
@@ -2392,7 +2404,7 @@ static void gpu_setup(Model *m) {
     if (e1 || e2 || e4 || !gpu_setup_bufs(m)) { fprintf(stderr, "GPU: sem memoria para os buffers, usando CPU\n"); return; }
 
     if (c->qk_norm) {
-        gx.bqn = gbuf_rw(d * GPU_BMAX * 4); gx.bkn = gbuf_rw(kvd * GPU_BMAX * 4);
+        gx.bqn = gbuf_rw(qd * GPU_BMAX * 4); gx.bkn = gbuf_rw(kvd * GPU_BMAX * 4);
         gx.qn = xalloc(c->n_layers, sizeof(clh)); gx.kn = xalloc(c->n_layers, sizeof(clh));
         if (!gx.bqn || !gx.bkn) { fprintf(stderr, "GPU: sem memoria para os buffers, usando CPU\n"); return; }
     }
@@ -2406,23 +2418,23 @@ static void gpu_setup(Model *m) {
         Layer *L = &m->layers[l];
         const size_t ffn = gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d) + gpu_mat_bytes(&L->w_down, d, H);
         /* MoE: a camada so reserva os especialistas de um token; o resto e cache */
-        const size_t need = gpu_mat_bytes(&L->wq, d, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
-                          + gpu_mat_bytes(&L->wo, d, d) + (c->n_expert ? 0 : ffn) + kv_layer;
+        const size_t need = gpu_mat_bytes(&L->wq, qd, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
+                          + gpu_mat_bytes(&L->wo, d, qd) + (c->n_expert ? 0 : ffn) + kv_layer;
         if (gpu.used + need > vram_budget || (size_t)(l + 1) * ctx * kvd > 0x7fffffff) break;
         char nm[32];
-        snprintf(nm, sizeof nm, "L%03d.wq", l);   gpu_upload(&L->wq, d, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wq", l);   gpu_upload(&L->wq, qd, d, nm);
         snprintf(nm, sizeof nm, "L%03d.wk", l);   gpu_upload(&L->wk, kvd, d, nm);
         snprintf(nm, sizeof nm, "L%03d.wv", l);   gpu_upload(&L->wv, kvd, d, nm);
-        snprintf(nm, sizeof nm, "L%03d.wo", l);   gpu_upload(&L->wo, d, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wo", l);   gpu_upload(&L->wo, d, qd, nm);
         if (!c->n_expert) {
             gpu_upload_glu(&L->w_gate, &L->w_up, H, d, l);
             snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, H, nm);
             if (!L->w_gate.gbuf || !L->w_up.gbuf || !L->w_down.gbuf) break;
         }
         if (!L->wq.gbuf || !L->wk.gbuf || !L->wv.gbuf || !L->wo.gbuf) break;
-        if (c->qk_norm) { gx.qn[l] = gbuf_f(L->q_norm, d, &fail); gx.kn[l] = gbuf_f(L->k_norm, kvd, &fail); }
+        if (c->qk_norm) { gx.qn[l] = gbuf_f(L->q_norm, c->qk_norm == 1 ? d : (size_t)c->hd, &fail); gx.kn[l] = gbuf_f(L->k_norm, c->qk_norm == 1 ? kvd : (size_t)c->hd, &fail); }
         gpu.an[l] = gbuf_f(L->attn_norm, d, &fail);  gpu.fn[l] = gbuf_f(L->ffn_norm, d, &fail);
-        gpu.lbq[l] = gbuf_f(L->bq, d, &fail);        gpu.lbk[l] = gbuf_f(L->bk, kvd, &fail);
+        gpu.lbq[l] = gbuf_f(L->bq, qd, &fail);        gpu.lbk[l] = gbuf_f(L->bk, kvd, &fail);
         gpu.lbv[l] = gbuf_f(L->bv, kvd, &fail);      gpu.lbo[l] = gbuf_f(L->bo, d, &fail);
         if (fail) break;
         gpu.used += kv_layer;       /* reserva o cache KV desta camada */
@@ -2844,7 +2856,7 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
 static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0, int want_logits) {
     const Config *c = &m->cfg;
     const int B = ks->nb, d = c->dim, hd = c->hd, H = c->hidden, ctx = c->ctx, nh = c->n_heads;
-    const int kvd = c->n_kv * hd, group = nh / c->n_kv, tmax = pos0 + B;
+    const int kvd = c->n_kv * hd, group = nh / c->n_kv, tmax = pos0 + B, qd = nh * hd;
     const float scale = 1.0f / sqrtf((float)hd);
     const KSet *k1 = &gpu.set[gpu.n_sets - 1];
 
@@ -2865,24 +2877,30 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         const uint32_t kq = gpu_kind(&L->wq), kk = gpu_kind(&L->wk), kv = gpu_kind(&L->wv);
         if (ks->k_mv3 && kq >= T_Q4_K && kk >= T_Q4_K && kv >= T_Q4_K && d % 256 == 0) {
             /* q, k e v num lancamento so */
-            const size_t rpq = ((size_t)d + 127) & ~(size_t)127, rpk = ((size_t)kvd + 127) & ~(size_t)127;
+            const size_t rpq = ((size_t)qd + 127) & ~(size_t)127, rpk = ((size_t)kvd + 127) & ~(size_t)127;
             const int nseg = gpu_nseg(rpq + 2 * rpk, d / 256, 1);
             k = ks->k_mv3;
             ka_m(k, 0, L->wq.gbuf); ka_m(k, 1, L->wk.gbuf); ka_m(k, 2, L->wv.gbuf); ka_m(k, 3, gpu.bxb);
             ka_m(k, 4, c->qk_norm ? gx.bqn : gpu.bq); ka_m(k, 5, c->qk_norm ? gx.bkn : gpu.bk); ka_m(k, 6, gpu.bv);
             ka_i(k, 7, (int)kq); ka_i(k, 8, (int)kk); ka_i(k, 9, (int)kv);
             ka_i(k, 10, (int)rpq); ka_i(k, 11, (int)rpk);
-            ka_i(k, 12, d); ka_i(k, 13, kvd); ka_i(k, 14, kvd); ka_i(k, 15, d); ka_i(k, 16, nseg);
-            prof_elems = (double)(d + 2 * kvd) * d;
+            ka_i(k, 12, qd); ka_i(k, 13, kvd); ka_i(k, 14, kvd); ka_i(k, 15, d); ka_i(k, 16, nseg);
+            prof_elems = (double)(qd + 2 * kvd) * d;
             krun2(k, rpq + 2 * rpk, (size_t)nseg);
         } else {
-            gmv(ks, &L->wq, gpu.bxb, c->qk_norm ? gx.bqn : gpu.bq, NULL, d, d, 0);
+            gmv(ks, &L->wq, gpu.bxb, c->qk_norm ? gx.bqn : gpu.bq, NULL, qd, d, 0);
             gmv(ks, &L->wk, gpu.bxb, c->qk_norm ? gx.bkn : gpu.bk, NULL, kvd, d, 0);
             gmv(ks, &L->wv, gpu.bxb, gpu.bv, NULL, kvd, d, 0);
         }
-        if (c->qk_norm) {       /* norma RMS de q e k no vetor inteiro, antes do RoPE */
+        if (c->qk_norm == 1) {  /* norma RMS de q e k no vetor inteiro, antes do RoPE */
             g_rms(ks, gx.bqn, gx.qn[l], gpu.bq, d, c->eps);
             g_rms(ks, gx.bkn, gx.kn[l], gpu.bk, kvd, c->eps);
+        } else if (c->qk_norm == 2) {   /* ou por cabeca */
+            clh kn = ks->k_rmsh;
+            ka_m(kn, 0, gx.bqn); ka_m(kn, 1, gx.qn[l]); ka_m(kn, 2, gpu.bq); ka_i(kn, 3, hd); ka_f(kn, 4, c->eps);
+            krun(kn, (size_t)qd);
+            ka_m(kn, 0, gx.bkn); ka_m(kn, 1, gx.kn[l]); ka_m(kn, 2, gpu.bk); ka_i(kn, 3, hd); ka_f(kn, 4, c->eps);
+            krun(kn, (size_t)kvd);
         }
 
         k = ks->k_qkv;      /* bias + RoPE em q (no lugar) e k (no cache), v copiado para o cache */
@@ -2892,8 +2910,8 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         ka_m(k, 6, gpu.bkc); ka_m(k, 7, gpu.bvc); ka_m(k, 8, gpu.bfreq);
         ka_i(k, 9, base); ka_i(k, 10, pos0); ka_i(k, 11, hd); ka_i(k, 12, c->rope_neox);
         ka_i(k, 13, (gpu.lbq[l] ? 1 : 0) | (gpu.lbk[l] ? 2 : 0) | (gpu.lbv[l] ? 4 : 0));
-        ka_i(k, 14, d); ka_i(k, 15, kvd);
-        krun(k, (size_t)B * (d / 2 + kvd / 2 + kvd));
+        ka_i(k, 14, qd); ka_i(k, 15, kvd);
+        krun(k, (size_t)B * (qd / 2 + kvd / 2 + kvd));
 
         if (ks->k_att1 && hd <= 256) {      /* atencao inteira num lancamento */
             k = ks->k_att1;
@@ -2914,10 +2932,10 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
             ka_m(k, 0, gpu.batt); ka_m(k, 1, gpu.bvc); ka_m(k, 2, gpu.bxb);
             ka_i(k, 3, base); ka_i(k, 4, pos0); ka_i(k, 5, ctx); ka_i(k, 6, hd); ka_i(k, 7, kvd);
             ka_i(k, 8, group); ka_i(k, 9, nh);
-            krun(k, (size_t)B * d);
+            krun(k, (size_t)B * qd);
         }
-        g_bsum(ks, gpu.bxb, d, &L->wo, NULL, NULL);
-        gmv(ks, &L->wo, gpu.bxb, gpu.bx, gpu.lbo[l], d, d, 1);           /* x += Wo*att (+bias) */
+        g_bsum(ks, gpu.bxb, qd, &L->wo, NULL, NULL);
+        gmv(ks, &L->wo, gpu.bxb, gpu.bx, gpu.lbo[l], d, qd, 1);           /* x += Wo*att (+bias) */
 
         /* --- feed-forward SwiGLU --- */
         g_rms(ks, gpu.bx, gpu.fn[l], gpu.bxb, d, c->eps);
@@ -3048,6 +3066,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
     const int kvd = c->n_kv * hd, group = c->n_heads / c->n_kv;
     const float scale = 1.0f / sqrtf((float)hd);
     const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? hd / 2 : 1;
+    const int qd = c->n_heads * hd;
 
     for (int l = l0; l < l1; l++) {
         const Layer *L = &m->layers[l];
@@ -3055,15 +3074,15 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
 
         /* --- atencao (GQA + RoPE) --- */
         rmsnorm(m->xb, m->x, L->attn_norm, d, c->eps);
-        matvec(m->q, &L->wq, m->xb, d, d);
+        matvec(m->q, &L->wq, m->xb, qd, d);
         matvec(m->k, &L->wk, m->xb, kvd, d);
         matvec(m->v, &L->wv, m->xb, kvd, d);
-        if (L->bq) for (int i = 0; i < d; i++) m->q[i] += L->bq[i];
+        if (L->bq) for (int i = 0; i < qd; i++) m->q[i] += L->bq[i];
         if (L->bk) for (int i = 0; i < kvd; i++) m->k[i] += L->bk[i];
         if (L->bv) for (int i = 0; i < kvd; i++) m->v[i] += L->bv[i];
 
         if (c->qk_norm == 1) {
-            rmsnorm(m->q, m->q, L->q_norm, d, c->eps);
+            rmsnorm(m->q, m->q, L->q_norm, qd, c->eps);
             rmsnorm(m->k, m->k, L->k_norm, kvd, c->eps);
         } else if (c->qk_norm == 2) {
             for (int h = 0; h < c->n_heads; h++) rmsnorm(m->q + h * hd, m->q + h * hd, L->q_norm, hd, c->eps);
@@ -3103,7 +3122,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
                 for (int i = 0; i < hd; i++) out[i] += a * vh[i];
             }
         }
-        matvec(m->xb2, &L->wo, m->xb, d, d);
+        matvec(m->xb2, &L->wo, m->xb, d, qd);
         if (L->bo) for (int i = 0; i < d; i++) m->xb2[i] += L->bo[i];
         for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
 
@@ -3391,10 +3410,10 @@ static int selftest(Model *m) {
     for (int l = 0; l < c->n_layers; l += c->n_layers - 1 > 0 ? c->n_layers - 1 : 1) {
         const Layer *L = &m->layers[l];
         printf(" camada %d\n", l);
-        selftest_mat("attn_q", &L->wq, d, d, &worst);
+        selftest_mat("attn_q", &L->wq, m->cfg.n_heads * m->cfg.hd, d, &worst);
         selftest_mat("attn_k", &L->wk, kvd, d, &worst);
         selftest_mat("attn_v", &L->wv, kvd, d, &worst);
-        selftest_mat("attn_out", &L->wo, d, d, &worst);
+        selftest_mat("attn_out", &L->wo, d, m->cfg.n_heads * m->cfg.hd, &worst);
         selftest_mat("ffn_gate", &L->w_gate, H, d, &worst);
         selftest_mat("ffn_up", &L->w_up, H, d, &worst);
         selftest_mat("ffn_down", &L->w_down, d, H, &worst);
@@ -3545,7 +3564,7 @@ static int micro(const Model *m) {
                2000000.0 * 1024 / (t1 - t0) / 1e9, 400000000.0 * 4 / (t2 - t1) / 1e9, (unsigned)(acc & 7));
         free(v);
     }
-    micro_mat("attn_q", &L->wq, d, d);
+    micro_mat("attn_q", &L->wq, m->cfg.n_heads * m->cfg.hd, d);
     micro_mat("ffn_gate", &L->w_gate, H, d);
     micro_mat("ffn_down", &L->w_down, d, H);
     micro_mat("lm_head", &m->lm_head, c->vocab, d);
@@ -3556,7 +3575,7 @@ static int micro(const Model *m) {
         printf("em paralelo (%d threads): contas escalares = %.2f GHz equivalentes por thread\n",
                pool.n, 64.0 * 1000000 * 4 / (t1 - t0) / 1e9);
     }
-    micro_par("attn_q", &L->wq, d, d);
+    micro_par("attn_q", &L->wq, m->cfg.n_heads * m->cfg.hd, d);
     micro_par("ffn_gate", &L->w_gate, H, d);
     micro_par("ffn_down", &L->w_down, d, H);
     return 0;
@@ -3602,7 +3621,7 @@ static int pack(Model *m, const char *path, int64_t fsz) {
         Layer *L = &m->layers[l];
         Mat *one;
 #define P1(mat, rows, cols, suf) one = &L->mat; snprintf(nm, sizeof nm, "L%03d." suf, l); ok = ok && pack_one(mf, &one, 1, rows, cols, nm, &total); count++
-        P1(wq, d, d, "wq"); P1(wk, kvd, d, "wk"); P1(wv, kvd, d, "wv"); P1(wo, d, d, "wo");
+        P1(wq, m->cfg.n_heads * m->cfg.hd, d, "wq"); P1(wk, kvd, d, "wk"); P1(wv, kvd, d, "wv"); P1(wo, d, m->cfg.n_heads * m->cfg.hd, "wo");
         if (glu_pair(&L->w_gate, &L->w_up)) {
             Mat *two[2] = { &L->w_gate, &L->w_up };
             snprintf(nm, sizeof nm, "L%03d.glu", l);
