@@ -63,8 +63,8 @@ Medido numa RTX 3050 de 4 GB (i7-11800H, 64 GB), geração:
 
 | Modelo | katana | llama.cpp b12418 (CUDA, melhor configuração: `-ngl 99 -ot exps=CPU`) |
 |---|---|---|
-| Qwen3-30B-A3B Q4_K_M (18,6 GB), texto real, 200 tokens | 14,4 tok/s | 8,6 tok/s |
-| idem, benchmark sintético 64+64 | 16–17 tok/s (prompt 22) | 14,0 tok/s (prompt 26,7) |
+| Qwen3-30B-A3B Q4_K_M (18,6 GB), texto real, 200 tokens | 11,5–15,5 tok/s (varia com a temperatura da máquina) | 8,6 tok/s (uma medida) |
+| idem, benchmark sintético 64+64 | 15–18 tok/s (prompt 28–33, em lote) | 14,0 tok/s (prompt 26,7) |
 | OLMoE-1B-7B Q4_K_M (4,2 GB) | ~60 tok/s (texto real), ~88 (sintético) | não medido |
 
 No Qwen3-30B só 19 de 128 especialistas por camada cabem na VRAM e eles atendem ~56% dos usos em texto real. A saída gulosa bate com a do llama.cpp por ~60 tokens no teste feito (depois diverge numa escolha apertada).
