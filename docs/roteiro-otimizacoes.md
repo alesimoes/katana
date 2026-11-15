@@ -8,6 +8,19 @@ Situação medida (RTX 3050 4 GB, i7-11800H, Qwen3-30B-A3B Q4_K_M): geração em
 referência quando ele usa cache de especialistas na GPU (12,5–14,9 contra 13,2–14,4 tok/s); prompt
 curto a frio ~1,8x mais rápido no katana.
 
+## 0. Onde estamos em modelos densos (medido em 2026-11-15, RTX 3050, benchmark 64+64)
+
+| Modelo | | katana (OpenCL) | referência CUDA | referência Vulkan |
+|---|---|---|---|---|
+| SmolLM2 135M Q8 | geração | 127 tok/s | 402 | 224 |
+| | prompt | 1.222 tok/s | 6.708 | 8.638 |
+| Qwen2.5 1,5B Q4_K_M | geração | 96 tok/s | 117 | 90 |
+| | prompt | 212 tok/s | 2.776 | 2.343 |
+| Llama 3.2 3B Q4_K_M | geração | 57 tok/s | 69 | 63 |
+| | prompt | 108 tok/s | 1.685 | 1.375 |
+
+Leitura: na geração de modelos de 1 B ou mais estamos a ~20% do CUDA e iguais ao Vulkan; a API não é o que nos separa. No modelo minúsculo o custo por lançamento pesa (3x atrás do CUDA). **O buraco de verdade é o prompt: 11 a 16 vezes mais lento**, nos dois backends de referência. É o item "decodificar o bloco de pesos uma vez por lote" da seção 2, que passa a ser a prioridade número um.
+
 ## 1. Menos lançamentos e menos esperas por token (GPU)
 
 O piso de ~9–11 ms por token vem do custo fixo por lançamento de kernel (~40 µs), não da conta.
