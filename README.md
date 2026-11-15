@@ -48,22 +48,27 @@ katana routing  <modelo.gguf> <calibracao.txt> <avaliacao.txt>   concentracao do
 
 ## Mistura de especialistas (MoE)
 
-Arquiteturas `olmoe` (testada com OLMoE-1B-7B) e `qwen3moe` (roteamento implementado, ainda não testado; a norma de q/k por cabeça do Qwen3 só roda na CPU). Num modelo MoE cada token usa poucos especialistas (8 de 64 por camada no OLMoE), então o motor trata a VRAM como um cache:
+Arquiteturas `olmoe` (OLMoE-1B-7B) e `qwen3moe` (Qwen3-30B-A3B), as duas testadas. Num modelo MoE cada token usa poucos especialistas (8 de 64 ou de 128 por camada), então o motor trata a VRAM como um cache:
 
 - a atenção de todas as camadas fica fixa na VRAM;
 - o resto da VRAM é dividido em vagas de especialistas por camada;
 - cada especialista tem um "calor" (usos recentes, com decaimento). Os que estão na VRAM rodam juntos na GPU, num lançamento só por camada;
-- um especialista fora da VRAM roda na CPU, direto do arquivo mapeado, e só sobe quando fica mais quente que o mais frio dos residentes.
+- um especialista fora da VRAM roda na CPU na hora, direto do arquivo mapeado: o token nunca espera por disco. Se ele estiver mais quente que o residente mais frio, uma thread carregadora o traz em segundo plano e ele sobe num token seguinte;
+- `katana pack` grava os especialistas já no layout da GPU (um arquivo por camada), e a carga vira leitura de disco + cópia, sem conversão;
+- ao sair, o calor é gravado (`<modelo>.gguf.ktn.heat`); na partida seguinte os mais quentes são pré-carregados;
+- threads de aquecimento tocam as páginas dos especialistas logo na carga (no Windows a primeira leitura de cada página mapeada é cara).
 
-Assim a VRAM converge para os especialistas do assunto da conversa. Medido numa RTX 3050 de 4 GB com o OLMoE-1B-7B Q4_K_M (6,9 B de parâmetros, 4,2 GB):
+Medido numa RTX 3050 de 4 GB (i7-11800H, 64 GB), geração:
 
-| Especialistas na VRAM | Usos atendidos pela VRAM | Geração |
+| Modelo | katana | llama.cpp b12418 (CUDA, melhor configuração: `-ngl 99 -ot exps=CPU`) |
 |---|---|---|
-| 51 de 64 por camada (padrão, 2,9 GB) | 95% | ~55–90 tok/s |
-| 32 de 64 (`KATANA_EXPERT_MB=1870`) | 83% | 42 tok/s |
-| 16 de 64 (`KATANA_EXPERT_MB=935`) | 62% | 35 tok/s |
-| 8 de 64 (`KATANA_EXPERT_MB=470`) | 45% | 32 tok/s |
-| só CPU | — | ~14–20 tok/s |
+| Qwen3-30B-A3B Q4_K_M (18,6 GB), texto real, 200 tokens | 14,4 tok/s | 8,6 tok/s |
+| idem, benchmark sintético 64+64 | 16–17 tok/s (prompt 22) | 14,0 tok/s (prompt 26,7) |
+| OLMoE-1B-7B Q4_K_M (4,2 GB) | ~60 tok/s (texto real), ~88 (sintético) | não medido |
+
+No Qwen3-30B só 19 de 128 especialistas por camada cabem na VRAM e eles atendem ~56% dos usos em texto real. A saída gulosa bate com a do llama.cpp por ~60 tokens no teste feito (depois diverge numa escolha apertada).
+
+OLMoE com o cache reduzido de propósito (`KATANA_EXPERT_MB`): 51 de 64 por camada na VRAM atendem 95% dos usos; 16 de 64 atendem 62% (35 tok/s); 8 de 64 atendem 45% (32 tok/s); só CPU, ~20 tok/s.
 
 `katana routing` mede o efeito de assunto: com 25% dos especialistas na VRAM, o conjunto calibrado num texto do mesmo assunto atende 63% dos usos (o teto é 64%); calibrado em outro assunto, 34%; ao acaso, 25%.
 
@@ -88,6 +93,10 @@ Assim a VRAM converge para os especialistas do assunto da conversa. Medido numa 
 | `KATANA_PIN=1` | fixa cada thread num núcleo físico |
 | `KATANA_EXPERT_MB` | MoE: limita o cache de especialistas na VRAM |
 | `KATANA_MOE_CPU=0` | MoE: especialista fora da VRAM sempre sobe (em vez de rodar na CPU) |
+| `KATANA_SWAP` | MoE: quanto mais quente que o residente mais frio um especialista precisa estar para subir (padrão 4) |
+| `KATANA_NOLOADER=1` | MoE: sem thread carregadora (a carga bloqueia o token) |
+| `KATANA_NOHEAT=1` | MoE: não grava nem lê o calor entre sessões |
+| `KATANA_WARM=0` | MoE: sem threads de aquecimento das páginas |
 | `KATANA_ROPE` | força o RoPE: 0 = pares adjacentes, 1 = metades |
 
 ## Arquivos
