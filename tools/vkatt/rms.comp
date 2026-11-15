@@ -1,0 +1,26 @@
+#version 450
+/* RMSNorm: out[i*B+b] = g[i] * x[i*B+b] / sqrt(sum_j x[j*B+b]^2 / n + eps). Uma invocacao por coluna i
+   (como o kernel original: cada uma refaz a soma dos quadrados, n e pequeno e x fica no cache).
+   B (tokens do lote, ate 16) vai em push constant. */
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer G { float g[]; };
+layout(std430, binding = 2) buffer O { float o[]; };
+layout(push_constant) uniform P { int n; float eps; int B; } pc;
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= pc.n) return;
+    int B = pc.B;
+    float ss[16];
+    for (int b = 0; b < B; b++) ss[b] = 0.0;
+    if (B == 1) {
+        float s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0; int j = 0;
+        for (; j + 4 <= pc.n; j += 4) { float a = x[j], c = x[j+1], d = x[j+2], e = x[j+3]; s0 += a*a; s1 += c*c; s2 += d*d; s3 += e*e; }
+        for (; j < pc.n; j++) s0 += x[j]*x[j];
+        ss[0] = (s0 + s1) + (s2 + s3);
+    } else {
+        for (int j = 0; j < pc.n; j++)
+            for (int b = 0; b < B; b++) { float v = x[j * B + b]; ss[b] += v * v; }
+    }
+    for (int b = 0; b < B; b++) o[i * B + b] = g[i] * (x[i * B + b] / sqrt(ss[b] / float(pc.n) + pc.eps));
+}
