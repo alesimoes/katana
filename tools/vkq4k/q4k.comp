@@ -1,0 +1,92 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+
+// Y[rows][tokens] = W[rows][cols] * X[cols][tokens]; pesos quantizados no layout do katana,
+// decodificados ao encher o ladrilho compartilhado. Grupo de 128 threads = 4 subgrupos.
+layout(local_size_x = 128) in;
+const uint BM = 64, BN = 64, BK = 64;
+const uint T = 16;
+const uint WM = BM / 2, WN = BN / 2;
+const uint CR = WM / T, CC = WN / T;
+const uint STRIDE = BK + 8;
+#ifdef ACC16
+#define ACCT float16_t
+#else
+#define ACCT float
+#endif
+
+layout(set = 0, binding = 0) readonly buffer WB { uint w[]; } wb;       // entrelacado de 32 em 32 linhas
+layout(set = 0, binding = 1) readonly buffer XB { f16vec4 x[]; } xb;    // x[col*tokens + token]
+layout(set = 0, binding = 2) buffer YB { ACCT y[]; } yb;                 // y[row*tokens + token]
+layout(push_constant) uniform PC { uint rows, cols, tokens, wpr, kper, slice; } pc;  // kper: colunas por fatia de K; slice: elementos por fatia de saida
+
+shared float16_t buf_a[BM * STRIDE];
+shared float16_t buf_b[BN * STRIDE];
+#define SB(k) ((hw[(k) >> 2] >> (((k) & 3) * 8)) & 255u)
+void main() {
+    const uint ir = gl_WorkGroupID.x * BM, ic = gl_WorkGroupID.y * BN;
+    const uint id = gl_LocalInvocationID.x;
+    const uint warp = gl_SubgroupID, wr = warp % 2, wc = warp / 2;
+    coopmat<ACCT, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acc[CR * CC];
+    for (uint i = 0; i < CR * CC; i++) acc[i] = coopmat<ACCT, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
+    const uint r0 = id & 31, grp = id >> 5;
+    const uint kb = gl_WorkGroupID.z * pc.kper, ke = min(pc.cols, kb + pc.kper);
+    for (uint k0 = kb; k0 < ke; k0 += BK) {
+        // ---- A: decodifica os pesos
+        const uint blk = k0 / 256, s = (k0 % 256) / 64;
+        for (uint h = 0; h < 2; h++) {
+            const uint r = r0 + 32 * h;
+            const uint base = (ir / 32 + h) * pc.wpr * 32 + r0 + blk * 36 * 32;
+            const uint h0 = wb.w[base];
+            uint hw[3] = uint[3](wb.w[base + 32], wb.w[base + 64], wb.w[base + 96]);
+            const float d = unpackHalf2x16(h0).x, dmin = unpackHalf2x16(h0).y;
+            // escala e minimo dos sub-blocos j = 2s e 2s+1
+            float dsc[2], dm[2];
+            for (uint u = 0; u < 2; u++) {
+                const uint j = 2 * s + u;
+                uint sc, mn;
+                if (j < 4) { sc = SB(j) & 63; mn = SB(j + 4) & 63; }
+                else { sc = (SB(j + 4) & 15) | ((SB(j - 4) >> 6) << 4); mn = (SB(j + 4) >> 4) | ((SB(j) >> 6) << 4); }
+                dsc[u] = d * float(sc); dm[u] = dmin * float(mn);
+            }
+            for (uint u = 0; u < 2; u++) {
+                const uint l = grp * 2 + u;
+                const uint wd = wb.w[base + (4 + s * 8 + l) * 32];
+                const uint o = r * STRIDE + l * 4;
+                for (uint b = 0; b < 4; b++) {
+                    buf_a[o + b] = float16_t(dsc[0] * float((wd >> (8 * b)) & 15) - dm[0]);
+                    buf_a[o + 32 + b] = float16_t(dsc[1] * float((wd >> (8 * b + 4)) & 15) - dm[1]);
+                }
+            }
+        }
+        // ---- B: ativacoes
+        for (uint i = 0; i < 8; i++) {
+            const uint idx = id * 8 + i;
+            const uint c = idx / (BN / 4), n = (idx % (BN / 4)) * 4;
+            const f16vec4 v = xb.x[((k0 + c) * pc.tokens + ic + n) / 4];
+            buf_b[n * STRIDE + c] = v.x; buf_b[(n + 1) * STRIDE + c] = v.y;
+            buf_b[(n + 2) * STRIDE + c] = v.z; buf_b[(n + 3) * STRIDE + c] = v.w;
+        }
+        barrier();
+        for (uint k = 0; k < BK; k += T) {
+            for (uint cr = 0; cr < CR; cr++) {
+                coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseA> a;
+                coopMatLoad(a, buf_a, (wr * WM + cr * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+                for (uint cc = 0; cc < CC; cc++) {
+                    coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseB> b;
+                    coopMatLoad(b, buf_b, (wc * WN + cc * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutColumnMajor);
+                    acc[cc * CR + cr] = coopMatMulAdd(a, b, acc[cc * CR + cr]);
+                }
+            }
+        }
+        barrier();
+    }
+    for (uint cr = 0; cr < CR; cr++)
+        for (uint cc = 0; cc < CC; cc++)
+            coopMatStore(acc[cc * CR + cr], yb.y, gl_WorkGroupID.z * pc.slice + (ir + wr * WM + cr * T) * pc.tokens + ic + wc * WN + cc * T, pc.tokens,
+                         gl_CooperativeMatrixLayoutRowMajor);
+}

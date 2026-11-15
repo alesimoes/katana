@@ -207,7 +207,25 @@ Medido com os protótipos em `tools/`:
 | + cargas de 4 valores, passo de 64 colunas | 1,88 (lote 64), 2,4–2,6 (lote 256) |
 | referência Vulkan (estimado pelo prompt) | ~3,5 |
 
-Esses números são com pesos em meia precisão; com Q4_K decodificado na carga ainda falta medir.
+Com os pesos reais, quantizados no layout do katana e decodificados ao encher o ladrilho
+(`tools/vkq4k`, todas as saídas conferidas com a CPU, placa livre):
+
+| Pesos | 8960x1536, lote 64 | 8960x1536, lote 256 | 1536x8960, lote 256 |
+|---|---|---|---|
+| Q4_K | 1,96 T/s | 2,65–2,69 T/s | 2,34 (2,79 dividindo as colunas em 4) |
+| Q6_K | 2,17 T/s | 3,34 T/s | 3,84 dividindo as colunas em 4 |
+
+Decodificar não custa vazão: lê-se menos memória. Lote pequeno ainda desperdiça (lote de 16 é
+completado até 64: ~0,25 T/s úteis); falta um ladrilho estreito. Acumulador em meia precisão não
+acelera e erra 2–6%: descartado.
+
+Produto por token em Vulkan (`tools/vkmv`, 106 verificações sem falha; vazão relatada com a placa
+dividida, não refeita): Q4_K 136–231 G pesos/s e Q6_K 150–202 conforme o formato, contra ~93 e
+~180 do perfil do OpenCL (métodos diferentes; indica o mesmo nível). Organização alternativa com
+uma linha por grupo de 32 threads é 2,5x mais rápida em matrizes de poucas linhas (69 contra 27).
+
+Camada de runtime (`vk/kvk.h`, 9 testes passando na NVIDIA e na Intel): despacho esperando a cada
+um custa ~156 µs; gravando a fila, ~4,7 µs; grafo gravado e resubmetido, 1,5–2,4 µs.
 
 A placa aceita matrizes cooperativas fp16 x fp16 (16x16x16, resultado fp16 ou fp32) e
 int8 x int8 -> int32 (16x16x32), além do produto inteiro empacotado. Ladrilho de 128 com 16
@@ -217,7 +235,7 @@ Decisão de projeto: Vulkan e OpenCL não compartilham VRAM, então o backend Vu
 completo (pesos, produto por token, lote, atenção, especialistas). O OpenCL continua para placas
 sem esses recursos.
 
-Peças em construção (pastas separadas, integradas depois em `katana.c`):
+Peças prontas e conferidas (pastas separadas; falta integrar em `katana.c`):
 
 - `vk/kvk.h`: camada de runtime (carregar a biblioteca, dispositivo, buffers, pipelines, fila de
   despachos, grafo gravado).
