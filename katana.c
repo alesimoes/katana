@@ -521,6 +521,10 @@ static void load_model(Model *m, const char *path) {
     c->hd = c->dim / c->n_heads;
     if (c->dim % c->n_heads || c->hd % 2 || c->n_heads % c->n_kv) die("dimensoes de atencao invalidas");
     if (!c->ctx || c->ctx > MAX_CTX) c->ctx = MAX_CTX;
+    if (getenv("KATANA_CTX")) {     /* contexto menor = cache KV menor (libera VRAM para mais camadas) */
+        const int want = atoi(getenv("KATANA_CTX"));
+        if (want >= 64 && want < c->ctx) c->ctx = want;
+    }
     if (!merges && !tk->spm) die("GGUF sem merges BPE nem SentencePiece (tokenizador nao suportado)");
     if (tk->spm && !tk->score) tk->score = xalloc(tk->n, sizeof(float));
     if (c->add_bos < 0) c->add_bos = tk->spm;      /* SentencePiece comeca com BOS por padrao */
@@ -1151,7 +1155,10 @@ typedef struct {
 
 typedef struct {
     int on, full, force_cpu, debug, test_mv, kv16, n_shard;
+    int want_all;                                       /* devolver os logits dos 4 tokens do lote */
+    clh blog4; float *logits_all;                       /* logits transpostos [vocab][4] */
     int cfg_rows, cfg_rowsb;                            /* linhas por thread: geracao e lote */
+    size_t cfg_seg;                                     /* alvo de threads para segmentar colunas */
     clh dev;
     int n_gl;                                           /* camadas inteiras na GPU (as primeiras) */
     clh ctx, queue;
@@ -1874,12 +1881,47 @@ static int gpu_setup_bufs(Model *m) {
     gpu.lbq = xalloc(L, sizeof(clh)); gpu.lbk = xalloc(L, sizeof(clh));
     gpu.lbv = xalloc(L, sizeof(clh)); gpu.lbo = xalloc(L, sizeof(clh));
     gpu.xT = xalloc(d * B, sizeof(float));
+    gpu.blog4 = gbuf_rw(V * 4 * 4);     /* opcional: so a decodificacao especulativa usa */
+    gpu.logits_all = xalloc(V * 4, sizeof(float));
     return !fail && gpu.bfreq && gpu.bon;
 }
 
 /* bytes que uma matriz ocupa na VRAM no nosso layout */
 static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols) {
     return ((rows + 127) & ~(size_t)127) * gpu_wpr(W, cols) * 4;
+}
+
+/* katana.cfg fica ao lado do executavel e guarda o ajuste medido por `katana tune` para a
+   placa desta maquina; so vale se o nome da GPU for o mesmo. Variaveis de ambiente ganham. */
+static void cfg_path(char *out, size_t n) {
+#ifdef _WIN32
+    char exe[1024];
+    DWORD l = GetModuleFileNameA(NULL, exe, sizeof exe);
+    while (l > 0 && exe[l - 1] != '\\' && exe[l - 1] != '/') l--;
+    exe[l] = 0;
+    snprintf(out, n, "%skatana.cfg", exe);
+#else
+    snprintf(out, n, "katana.cfg");
+#endif
+}
+
+static void gpu_cfg_load(void) {
+    char fn[1100], line[256], name[128] = {0};
+    long long seg = -1; int rows = 0, rowsb = 0;
+    cfg_path(fn, sizeof fn);
+    FILE *f = fopen(fn, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "gpu=", 4) == 0) { strncpy(name, line + 4, sizeof name - 1); name[strcspn(name, "\r\n")] = 0; }
+        else if (sscanf(line, "seg=%lld", &seg) == 1) continue;
+        else if (sscanf(line, "rows=%d", &rows) == 1) continue;
+        else sscanf(line, "rowsb=%d", &rowsb);
+    }
+    fclose(f);
+    if (strcmp(name, gpu.name) != 0) return;
+    if (seg >= 0) gpu.cfg_seg = (size_t)seg;
+    if (rows == 1 || rows == 2) gpu.cfg_rows = rows;
+    if (rowsb == 1 || rowsb == 2) gpu.cfg_rowsb = rowsb;
 }
 
 /* Decide o que vai para a VRAM. As camadas sobem em ordem, inteiras, enquanto couberem
@@ -1891,8 +1933,9 @@ static void gpu_setup(Model *m) {
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t ctx = c->ctx;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
-    gpu.cfg_rows = 1; gpu.cfg_rowsb = 2;        /* medido na RTX 3050 */
+    gpu.cfg_rows = 1; gpu.cfg_rowsb = 2; gpu.cfg_seg = 16384;       /* padroes medidos numa RTX 3050 */
     if (!gpu_init()) { fprintf(stderr, "GPU: nenhuma disponivel via OpenCL, usando CPU\n"); return; }
+    gpu_cfg_load();     /* ajuste desta placa, se `katana tune` ja rodou */
     const uint64_t vram_budget = gpu_budget();
     {   /* se o modelo nao cabe inteiro com o cache KV em float32, o cache vai em float16 */
         size_t total = gpu_mat_bytes(&m->lm_head, V, d) + ((size_t)256 << 20);
@@ -1911,7 +1954,7 @@ static void gpu_setup(Model *m) {
     int32_t e1 = 0, e2 = 0, e4 = 0;
     gpu.xbuf = cl.CreateBuffer(gpu.ctx, 1, maxc * sizeof(float), NULL, &e1);
     gpu.obuf = cl.CreateBuffer(gpu.ctx, 1, (maxr + 128) * sizeof(float), NULL, &e2);
-    gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : 16384;   /* medido na RTX 3050 */
+    gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : gpu.cfg_seg;
     gpu.bsx = cl.CreateBuffer(gpu.ctx, 1, (maxc / 32 + 1) * GPU_BMAX * sizeof(float), NULL, &e4);
     if (e1 || e2 || e4 || !gpu_setup_bufs(m)) { fprintf(stderr, "GPU: sem memoria para os buffers, usando CPU\n"); return; }
 
@@ -2194,7 +2237,9 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         gmv(ks, &L->w_down, gpu.bhb, gpu.bx, NULL, d, H, 1);             /* x += down */
     }
 
-    if (gpu.n_gl < c->n_layers) {   /* o estado desce uma vez e a CPU faz as camadas restantes */
+    /* o estado desce uma vez e a CPU faz o que nao esta na VRAM: as camadas restantes e,
+       se for o caso, a projecao final */
+    if (gpu.n_gl < c->n_layers || (want_logits && !m->lm_head.gbuf)) {
         float *lg = NULL;
         gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bx, 1, 0, (size_t)d * B * sizeof(float), gpu.xT, 0, NULL, NULL);
         if (gerr) die("falha na execucao em GPU");
@@ -2219,6 +2264,13 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         return NULL;
     }
     g_rms(ks, gpu.bx, gpu.bon, gpu.bxb, d, c->eps);
+    if (gpu.want_all && B == 4 && gpu.blog4) {      /* logits das 4 posicoes, numa passada so */
+        g_bsum(ks, gpu.bxb, d, &m->lm_head, NULL, NULL);
+        gmv(ks, &m->lm_head, gpu.bxb, gpu.blog4, NULL, c->vocab, d, 0);
+        gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.blog4, 1, 0, (size_t)c->vocab * 4 * sizeof(float), gpu.logits_all, 0, NULL, NULL);
+        if (gerr) die("falha na execucao em GPU");
+        return gpu.logits_all;
+    }
     if (B > 1) {            /* so o ultimo token do lote precisa de logits */
         clh k = ks->k_gather;
         ka_m(k, 0, gpu.bxb); ka_m(k, 1, gpu.bq); ka_i(k, 2, B); ka_i(k, 3, B - 1);
@@ -2422,9 +2474,39 @@ static void print_info(const Model *m) {
             c->arch, m->n_params / 1e6, c->n_layers, c->dim, c->n_heads, c->n_kv, c->hidden, c->vocab, c->ctx);
 }
 
+/* ---------- decodificacao especulativa por repeticao ----------
+ * Rascunho gratis: se os ultimos tokens ja apareceram antes no contexto, aposta que a
+ * continuacao se repete e propoe os 3 tokens que vieram depois. O modelo confere os 4
+ * (o token atual + 3 rascunhos) numa unica passada em lote; cada rascunho so vale se for
+ * exatamente o token que o modelo escolheria naquela posicao, entao a saida e a mesma de
+ * gerar um por um. Compensa em texto repetitivo (codigo, citacoes, listas); um controle
+ * de acerto desliga a aposta quando ela nao esta pagando. KATANA_SPEC=0 desliga. */
+static struct { long steps, drafted, accepted; } spec_stat;
+
+/* procura a ocorrencia anterior mais recente dos ultimos K tokens; devolve os 3 seguintes */
+static int find_draft(const int *h, int n, int *draft) {
+    const int K = 3;
+    if (n < K + 4) return 0;
+    for (int j = n - K - 1; j >= 0; j--) {
+        if (j + K + 3 > n) continue;
+        if (h[j] == h[n - K] && h[j + 1] == h[n - K + 1] && h[j + 2] == h[n - K + 2]) {
+            draft[0] = h[j + K]; draft[1] = h[j + K + 1]; draft[2] = h[j + K + 2];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const KSet *spec_set(void) {
+    if (!gpu.full || gpu.force_cpu || !gpu.blog4) return NULL;
+    for (int i = 0; i < gpu.n_sets; i++) if (gpu.set[i].nb == 4) return &gpu.set[i];
+    return NULL;
+}
+
 static int generate(Model *m, const char *text, int max_tokens, float temp, int echo) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
+    const int V = c->vocab;
     Ids ids = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
     encode(tk, text, &ids);
@@ -2432,29 +2514,67 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     if (ids.n >= c->ctx) die("prompt maior que o contexto");
 
     srand((unsigned)time(NULL));
-    float *lg = NULL;
-    int pos = 0, gen = 0;
+    float *lg = NULL, *col = xalloc(V, sizeof(float));
+    int pos = 0, gen = 0, n_prompt = ids.n, stop = 0;
+    const KSet *ks4 = getenv("KATANA_SPEC") && atoi(getenv("KATANA_SPEC")) == 0 ? NULL : spec_set();
+    double ema = 1.5;       /* media movel de rascunhos aceitos por aposta */
+    long probe = 0;
     double t0 = now_sec();
     lg = forward_seq(m, ids.ids, ids.n, 0, 1);
     pos = ids.n;
     double t1 = now_sec();
     if (echo) { fputs(text, stdout); fflush(stdout); }
 
-    while (gen < max_tokens && pos < c->ctx) {
-        int next = sample(lg, c->vocab, temp);
-        if (next == c->eos || (tk->toktype && tk->toktype[next] == 3)) break;
-        print_token(tk, next, stdout);
-        fflush(stdout);
-        gen++;
-        lg = forward(m, next, pos++, 1);
+#define EMIT_TOKEN(t) { if ((t) == c->eos || (tk->toktype && tk->toktype[t] == 3)) { stop = 1; } \
+    else { print_token(tk, (t), stdout); fflush(stdout); gen++; ids_push(&ids, (t)); } }
+
+    while (!stop && gen < max_tokens && pos < c->ctx) {
+        int next = sample(lg, V, temp), draft[3];
+        EMIT_TOKEN(next)
+        if (stop) break;
+        /* aposta so com rascunho disponivel e taxa de acerto que pague a passada em lote */
+        int try_spec = ks4 && pos + 4 < c->ctx && gen + 3 < max_tokens && find_draft(ids.ids, ids.n, draft);
+        if (try_spec && ema < 1.0 && (++probe % 8) != 0) try_spec = 0;
+        if (!try_spec) { lg = forward(m, next, pos++, 1); continue; }
+
+        int toks[4] = { next, draft[0], draft[1], draft[2] }, ok = 0;
+        gpu.want_all = 1;
+        const float *all = gpu_forward_n(m, ks4, toks, pos, 1);
+        gpu.want_all = 0;
+        spec_stat.steps++; spec_stat.drafted += 3;
+        int i;
+        for (i = 0; i < 3 && !stop && gen < max_tokens; i++) {
+            for (int v = 0; v < V; v++) col[v] = all[(size_t)v * 4 + i];
+            const int t = sample(col, V, temp);
+            EMIT_TOKEN(t)
+            if (stop) break;
+            if (t != toks[i + 1]) {         /* rascunho errado: o modelo segue a partir do token certo */
+                pos += i + 1;
+                lg = forward(m, t, pos++, 1);
+                break;
+            }
+            ok++;
+        }
+        spec_stat.accepted += ok;
+        ema = 0.8 * ema + 0.2 * ok;
+        if (i == 3 && !stop) {              /* os 3 valeram: os logits da ultima posicao seguem o jogo */
+            pos += 4;
+            for (int v = 0; v < V; v++) m->logits[v] = all[(size_t)v * 4 + 3];
+            lg = m->logits;
+        }
     }
+#undef EMIT_TOKEN
     double t2 = now_sec();
     printf("\n");
     fflush(stdout);
     prof_report();
+    gen = ids.n - n_prompt;
     fprintf(stderr, "[prompt: %d tokens, %.1f tok/s | geracao: %d tokens, %.1f tok/s]\n",
-            ids.n, ids.n / (t1 - t0 + 1e-9), gen, gen / (t2 - t1 + 1e-9));
-    free(ids.ids);
+            n_prompt, n_prompt / (t1 - t0 + 1e-9), gen, gen / (t2 - t1 + 1e-9));
+    if (spec_stat.steps)
+        fprintf(stderr, "[especulacao: %ld apostas, %ld de %ld rascunhos aceitos]\n",
+                spec_stat.steps, spec_stat.accepted, spec_stat.drafted);
+    free(ids.ids); free(col);
     return 0;
 }
 
@@ -2715,7 +2835,69 @@ static int verify(const char *path) {
     return bad || !n ? 1 : 0;
 }
 
+/* tempo de uma passada: prompt em lote e geracao token a token (melhor de 2) */
+static void tune_measure(Model *m, const int *toks, int n_prompt, int n_gen, double *pt, double *gt) {
+    *pt = *gt = 1e30;
+    forward_seq(m, toks, 16, 0, 1);
+    for (int r = 0; r < 2; r++) {
+        double t0 = now_sec();
+        float *lg = forward_seq(m, toks, n_prompt, 0, 1);
+        double t1 = now_sec();
+        int pos = n_prompt;
+        for (int g = 0; g < n_gen; g++) lg = forward(m, sample(lg, m->cfg.vocab, 0.0f), pos++, 1);
+        double t2 = now_sec();
+        if (t1 - t0 < *pt) *pt = t1 - t0;
+        if (t2 - t1 < *gt) *gt = t2 - t1;
+    }
+}
+
+/* mede as opcoes de ajuste nesta placa e grava a melhor combinacao em katana.cfg */
+static int tune(Model *m) {
+    static const size_t segs[] = { 0, 4096, 16384, 65536 };
+    const int NP = 128, NG = 32;
+    int toks[128];
+    double pt, gt, best;
+    if (!gpu.full) { fprintf(stderr, "tune: use um modelo que caiba inteiro na VRAM\n"); return 1; }
+    for (int i = 0; i < NP; i++) toks[i] = (int)((1000003u * (i + 1)) % (unsigned)m->cfg.vocab);
+
+    size_t best_seg = gpu.seg_target; best = 1e30;
+    for (int i = 0; i < 4; i++) {
+        gpu.seg_target = segs[i];
+        tune_measure(m, toks, NP, NG, &pt, &gt);
+        printf("segmentos alvo=%-6zu  geracao %.1f tok/s  prompt %.1f tok/s\n", segs[i], NG / gt, NP / pt);
+        if (gt < best) { best = gt; best_seg = segs[i]; }
+    }
+    gpu.seg_target = best_seg;
+
+    int best_rows = 1, best_rowsb = 1; double bg = 1e30, bp = 1e30;
+    for (int nr = 1; nr <= 2; nr++) {       /* linhas por thread: mede geracao (rows) e lote (rowsb) juntos */
+        gpu.cfg_rows = nr; gpu.cfg_rowsb = nr;
+        if (!gpu_build_all()) { fprintf(stderr, "tune: falha ao recompilar os kernels\n"); return 1; }
+        tune_measure(m, toks, NP, NG, &pt, &gt);
+        printf("linhas por thread=%d      geracao %.1f tok/s  prompt %.1f tok/s\n", nr, NG / gt, NP / pt);
+        if (gt < bg) { bg = gt; best_rows = nr; }
+        if (pt < bp) { bp = pt; best_rowsb = nr; }
+    }
+    gpu.cfg_rows = best_rows; gpu.cfg_rowsb = best_rowsb;
+    if (!gpu_build_all()) return 1;
+
+    char fn[1100];
+    cfg_path(fn, sizeof fn);
+    FILE *f = fopen(fn, "w");
+    if (!f) { fprintf(stderr, "tune: nao consegui gravar %s\n", fn); return 1; }
+    fprintf(f, "gpu=%s\nseg=%zu\nrows=%d\nrowsb=%d\n", gpu.name, best_seg, best_rows, best_rowsb);
+    fclose(f);
+    printf("melhor: segmentos alvo=%zu, linhas por thread=%d (geracao) e %d (lote); gravado em %s\n",
+           best_seg, best_rows, best_rowsb, fn);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "tune") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return tune(&m);
+    }
     if (argc >= 3 && strcmp(argv[1], "verify") == 0) return verify(argv[2]);
     if (argc >= 3 && strcmp(argv[1], "pack") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -2772,6 +2954,7 @@ static int run_main(int argc, char **argv) {
         "  katana info <modelo.gguf>\n"
         "  katana selftest <modelo.gguf>\n"
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
+        "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
         "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
         "  katana verify <modelo.gguf>    confere os hashes dos shards\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
