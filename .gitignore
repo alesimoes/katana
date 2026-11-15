@@ -6,3 +6,4 @@ modelos/
 katana.cfg
 ref/
 *.heat
+.claude/settings.local.json

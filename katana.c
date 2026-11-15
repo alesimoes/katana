@@ -3474,6 +3474,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         }
         g_bsum(ks, gpu.bhb, H, &L->w_down, NULL, NULL);
         gmv(ks, &L->w_down, gpu.bhb, gpu.bx, NULL, d, H, 1);             /* x += down */
+        { static int fl = -1; if (fl < 0) fl = getenv("KATANA_FLUSH") ? atoi(getenv("KATANA_FLUSH")) : 0; if (fl > 0 && l % fl == fl - 1) cl.Flush(gpu.queue); }
     }
 
     /* o estado desce uma vez e a CPU faz o que nao esta na VRAM: as camadas restantes e,
