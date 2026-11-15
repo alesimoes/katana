@@ -1159,7 +1159,15 @@ static float dot_q6k(const uint8_t *row, const float *x, int cols) {
  * na casa de 1e-5 (com 8 bits, medido, chegava a trocar o token escolhido).
  * cpu_exact=1 volta aos produtos em float (referencia exata, usada pelo selftest). */
 typedef struct { int16_t *q; int32_t *bs32; float *xs; int cap; } XQ;     /* bs32: soma de cada 32 valores */
-static XQ xq;
+/* a entrada quantizada em uso: a global, ou outra escolhida por thread (xq_tls) quando varios
+   produtos com entradas diferentes rodam no mesmo despacho do pool (especialistas do MoE) */
+static XQ xq0;
+#ifdef _MSC_VER
+static __declspec(thread) XQ *xq_tls;
+#else
+static __thread XQ *xq_tls;
+#endif
+#define xq (*(xq_tls ? xq_tls : &xq0))
 static int cpu_exact;
 
 #ifdef __AVX2__
@@ -2834,6 +2842,16 @@ static void moe_route(Model *m, const Layer *L, int l) {
 /* n especialistas da camada na CPU sobre a mesma entrada m->xb; outs[j*d ..] recebe a saida do j-esimo.
    A entrada e quantizada uma vez e os produtos gate/up de todos saem num unico despacho do pool. */
 typedef struct { const Mat *eg, *eu; const int *ex; int H, cols; float *hg, *hu; const float *x; } MoeJob;
+typedef struct { const Mat *ed; const int *ex; int d, H; float *outs; XQ *xqs; } MoeDownJob;
+static void moe_down_job(void *c, int i0, int i1) {
+    const MoeDownJob *q = c;
+    for (int i = i0; i < i1; i++) {
+        const int j = i / q->d, r = i % q->d;
+        xq_tls = &q->xqs[j];
+        q->outs[i] = dot_row(&q->ed[q->ex[j]], (size_t)r, NULL, NULL, q->H);
+    }
+    xq_tls = NULL;
+}
 static void moe_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
     for (int i = i0; i < i1; i++) {
@@ -2863,7 +2881,18 @@ static void moe_cpu_experts(Model *m, const Layer *L, const int *ex, int n, floa
     if (chunk < minc) chunk = minc;
     pool_for(moe_job, &job, total, chunk);
     for (int i = 0; i < n * H; i++) { const float g = hg[i]; hg[i] = g / (1.0f + expf(-g)) * hu[i]; }
-    for (int j = 0; j < n; j++) matvec(outs + (size_t)j * d, &L->ed[ex[j]], hg + (size_t)j * H, d, H);
+    if (!mat_int(&L->ed[ex[0]])) {
+        for (int j = 0; j < n; j++) matvec(outs + (size_t)j * d, &L->ed[ex[j]], hg + (size_t)j * H, d, H);
+        return;
+    }
+    /* os down de todos tambem num despacho so: cada um com a sua entrada quantizada */
+    static XQ xqs[64];
+    for (int j = 0; j < n; j++) { xq_tls = &xqs[j]; xq_prepare(hg + (size_t)j * H, H); }
+    xq_tls = NULL;
+    MoeDownJob dj = { L->ed, ex, d, H, outs, xqs };
+    total = n * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
+    if (chunk < minc) chunk = minc;
+    pool_for(moe_down_job, &dj, total, chunk);
 }
 
 /* ---- cache de especialistas na VRAM ----
