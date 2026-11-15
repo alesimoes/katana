@@ -1870,10 +1870,26 @@ static const char *GPU_SRC =
 "  STOREB(s, sx, i);\n"
 "}\n"
 /* RMSNorm num kernel so: cada thread refaz a soma dos quadrados (n e pequeno e x esta no cache) */
+/* soma dos quadrados de len valores do token b a partir de start (16 por passo com um token) */
+"inline float sumsq(__global const float *p, int start, int len, int b) {\n"
+"  float ss = 0.0f; int j = 0;\n"
+"#if NB == 1\n"
+"  float16 acc = (float16)(0.0f);\n"
+"  for (; j + 16 <= len; j += 16) { float16 v = vload16(0, p + start + j); acc += v * v; }\n"
+"  float8 a8 = acc.lo + acc.hi; float4 a4 = a8.lo + a8.hi; float2 a2 = a4.lo + a4.hi;\n"
+"  ss = a2.x + a2.y;\n"
+"#endif\n"
+"  for (; j < len; j++) { float v = p[(size_t)(start + j) * NB + b]; ss += v * v; }\n"
+"  return ss;\n"
+"}\n"
 "__kernel void rms(__global const float *x, __global const float *g, __global float *out, int n, float eps) {\n"
 "  int i = get_global_id(0);\n"
+"#if NB == 1\n"
+"  FB ss = sumsq(x, 0, n, 0);\n"
+"#else\n"
 "  FB ss = (FB)(0.0f);\n"
 "  for (int j = 0; j < n; j++) { FB v = LOADB(x, j); ss += v * v; }\n"
+"#endif\n"
 "  STOREB(g[i] * (LOADB(x, i) / sqrt(ss / (float)n + eps)), out, i);\n"
 "}\n"
 /* RMSNorm por cabeca (q e k do qwen3): cada bloco de hd valores e normalizado sozinho */
@@ -1900,7 +1916,8 @@ static const char *GPU_SRC =
 "__kernel void qkv_post(__global float *q, __global const float *k, __global const float *v,\n"
 "    __global const float *bq, __global const float *bk, __global const float *bv,\n"
 "    __global KVT *kc, __global KVT *vc, __global const float *freq,\n"
-"    int base, int pos0, int hd, int neox, int has_bias, int d, int kvd) {\n"
+"    int base, int pos0, int hd, int neox, int has_bias, int d, int kvd,\n"
+"    __global const float *qs, __global const float *qn, __global const float *kn, int norm, float eps) {\n"
 "  int gid = get_global_id(0), b = gid % NB, p = gid / NB, half_ = hd / 2;\n"
 "  int pos = pos0 + b, off = base + pos * kvd;\n"
 "  if (p >= d / 2 + kvd / 2) {\n"
@@ -1916,10 +1933,16 @@ static const char *GPU_SRC =
 "  if (isk) {\n"
 "    float a = k[i0 * NB + b], c = k[i1 * NB + b];\n"
 "    if (has_bias & 2) { a += bk[i0]; c += bk[i1]; }\n"
+"    if (norm) { int r0 = norm == 1 ? 0 : h * hd, len = norm == 1 ? kvd : hd;\n"
+"      float inv = 1.0f / sqrt(sumsq(k, r0, len, b) / (float)len + eps);\n"
+"      a *= kn[i0 - r0] * inv; c *= kn[i1 - r0] * inv; }\n"
 "    KVS(a * cs - c * sn, off + i0, kc); KVS(a * sn + c * cs, off + i1, kc);\n"
 "  } else {\n"
-"    float a = q[i0 * NB + b], c = q[i1 * NB + b];\n"
+"    float a = qs[i0 * NB + b], c = qs[i1 * NB + b];\n"
 "    if (has_bias & 1) { a += bq[i0]; c += bq[i1]; }\n"
+"    if (norm) { int r0 = norm == 1 ? 0 : h * hd, len = norm == 1 ? d : hd;\n"
+"      float inv = 1.0f / sqrt(sumsq(qs, r0, len, b) / (float)len + eps);\n"
+"      a *= qn[i0 - r0] * inv; c *= qn[i1 - r0] * inv; }\n"
 "    q[i0 * NB + b] = a * cs - c * sn; q[i1 * NB + b] = a * sn + c * cs;\n"
 "  }\n"
 "}\n"
@@ -3276,19 +3299,13 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
             gmv(ks, &L->wk, gpu.bxb, c->qk_norm ? gx.bkn : gpu.bk, NULL, kvd, d, 0);
             gmv(ks, &L->wv, gpu.bxb, gpu.bv, NULL, kvd, d, 0);
         }
-        if (c->qk_norm == 1) {  /* norma RMS de q e k no vetor inteiro, antes do RoPE */
-            g_rms(ks, gx.bqn, gx.qn[l], gpu.bq, d, c->eps);
-            g_rms(ks, gx.bkn, gx.kn[l], gpu.bk, kvd, c->eps);
-        } else if (c->qk_norm == 2) {   /* ou por cabeca */
-            clh kn = ks->k_rmsh;
-            ka_m(kn, 0, gx.bqn); ka_m(kn, 1, gx.qn[l]); ka_m(kn, 2, gpu.bq); ka_i(kn, 3, hd); ka_f(kn, 4, c->eps);
-            krun(kn, (size_t)qd);
-            ka_m(kn, 0, gx.bkn); ka_m(kn, 1, gx.kn[l]); ka_m(kn, 2, gpu.bk); ka_i(kn, 3, hd); ka_f(kn, 4, c->eps);
-            krun(kn, (size_t)kvd);
-        }
-
+        /* a norma RMS de q e k (vetor inteiro ou por cabeca) e feita dentro de qkv_post, que le
+           q e k crus de bqn/bkn; com bias e norma juntos a soma dos quadrados ignoraria o bias,
+           mas nenhuma arquitetura suportada tem os dois */
         k = ks->k_qkv;      /* bias + RoPE em q (no lugar) e k (no cache), v copiado para o cache */
-        ka_m(k, 0, gpu.bq); ka_m(k, 1, gpu.bk); ka_m(k, 2, gpu.bv);
+        ka_m(k, 0, gpu.bq); ka_m(k, 1, c->qk_norm ? gx.bkn : gpu.bk); ka_m(k, 2, gpu.bv);
+        ka_m(k, 16, c->qk_norm ? gx.bqn : gpu.bq); ka_m(k, 17, c->qk_norm ? gx.qn[l] : gpu.bq);
+        ka_m(k, 18, c->qk_norm ? gx.kn[l] : gpu.bq); ka_i(k, 19, c->qk_norm); ka_f(k, 20, c->eps);
         ka_m(k, 3, gpu.lbq[l] ? gpu.lbq[l] : gpu.bq); ka_m(k, 4, gpu.lbk[l] ? gpu.lbk[l] : gpu.bk);
         ka_m(k, 5, gpu.lbv[l] ? gpu.lbv[l] : gpu.bv);
         ka_m(k, 6, gpu.bkc); ka_m(k, 7, gpu.bvc); ka_m(k, 8, gpu.bfreq);
