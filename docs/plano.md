@@ -7,8 +7,8 @@ Escrito em 2026-11-15. Cada etapa tem um critério de pronto mensurável. O cont
 
 | Etapa | O quê | Pronto quando |
 |---|---|---|
-| 1 | Lote com Q4_K (e Q6_K) no layout do katana, decodificando na carga do ladrilho (`tools/vkq4k`) | confere com a CPU e mede a vazão com pesos reais. Se ficar abaixo de ~1 T mult/s, reavaliar antes de seguir |
-| 2 | Camada de runtime (`vk/kvk.h`) e porte dos kernels por token (`tools/vkmv`) | testes passam na NVIDIA e na Intel; vazão por token igual ou melhor que o OpenCL |
+| 1 | Lote com Q4_K (e Q6_K) no layout do katana, decodificando na carga do ladrilho (`tools/vkq4k`) | **feito**: 1,96–2,69 T mult/s em Q4_K e 2,17–3,84 em Q6_K, conferido. Falta ladrilho estreito para lotes pequenos |
+| 2 | Camada de runtime (`vk/kvk.h`) e porte dos kernels por token (`tools/vkmv`) | **feito**: testes passam (runtime nas duas placas; kernels na NVIDIA). Vazão no mesmo nível do OpenCL, ainda sem medida idêntica. Faltam lote por token, vários especialistas por lançamento e kernels fundidos |
 | 3 | Integração em `katana.c`: escolha de backend (`KATANA_BACKEND`), carga dos pesos, produto por token | `selftest` passa em modelo denso pelo Vulkan |
 | 4 | Grafo denso completo em Vulkan (normas, atenção, projeção final), geração | geração do Qwen 1,5B igual ou melhor que o OpenCL (96 tok/s) |
 | 5 | Prompt em lote com núcleos tensoriais | prompt do Qwen 1,5B acima de 1.000 tok/s no benchmark 64+64 (hoje 212; referência 2.343) |
