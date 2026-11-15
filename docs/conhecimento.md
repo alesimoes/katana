@@ -240,8 +240,14 @@ RMS com soma por subgrupo: de 35 para 3 µs (lote de 16: de ~1.000 para 6–25 �
 atenção em lote em três kernels custa 1,2–2,6 ms por lote de 16 na posição 600, mais que os
 produtos; precisa virar um lançamento só.
 
-Integração (etapa 3): `KATANA_BACKEND=vulkan` sobe os pesos e faz o produto por token pelo Vulkan
-(`selftest` de produtos passa em 5 modelos densos); o resto do grafo ainda roda na CPU.
+Integração (etapas 3 e 4): com `KATANA_BACKEND=vulkan` os modelos densos rodam o grafo inteiro de
+um token na placa, gravado uma vez e resubmetido (`KATANA_VK_REC=0` usa a fila ao vivo). Medido
+alternando os backends, benchmark 64+64: Qwen 1,5B 99,7 tok/s de geração nos dois; SmolLM2 135M
+409 tok/s no Vulkan contra ~130 no OpenCL (referência Vulkan 223, CUDA 402). `selftest` passa em
+5 modelos densos com diferença de logit ~3–4e-5 e o texto guloso do Qwen 1,5B sai idêntico ao do
+OpenCL. O prompt no Vulkan ainda vai um token por vez (121 contra 212 tok/s do OpenCL em lote).
+MoE no Vulkan cai para o OpenCL. Não testados: sessão interativa e agente pelo Vulkan, modelo
+maior que a VRAM (hoje cai para a CPU), placa Intel.
 
 Camada de runtime (`vk/kvk.h`, 9 testes passando na NVIDIA e na Intel): despacho esperando a cada
 um custa ~156 µs; gravando a fila, ~4,7 µs; grafo gravado e resubmetido, 1,5–2,4 µs.

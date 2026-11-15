@@ -1,0 +1,86 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+/* Atencao inteira de um token num lancamento (um grupo de hd threads por cabeca; local_size_x = hd por
+   spec constant 0): bias/norma de q e k, RoPE, gravacao de k e v no cache, notas, softmax, mistura.
+   Threads 0..hd/2-1 giram um par de q; hd/2..hd-1 giram um par de k da cabeca kv. A posicao atual usa k e v
+   locais (cache lido so para t < pos); so a primeira cabeca de cada grupo kv grava no cache. */
+layout(local_size_x_id = 0) in;
+layout(std430, binding = 0) readonly buffer QS { float qs[]; };
+layout(std430, binding = 1) readonly buffer KS { float ks_[]; };
+layout(std430, binding = 2) readonly buffer VS { float vs[]; };
+layout(std430, binding = 3) readonly buffer BQ { float bq[]; };
+layout(std430, binding = 4) readonly buffer BK { float bk[]; };
+layout(std430, binding = 5) readonly buffer BV { float bv[]; };
+layout(std430, binding = 6) buffer KC { KVT kc[]; };
+layout(std430, binding = 7) buffer VC { KVT vc[]; };
+layout(std430, binding = 8) buffer A { float att[]; };
+layout(std430, binding = 9) buffer O { float o[]; };
+layout(std430, binding = 10) readonly buffer FR { float freq[]; };
+layout(std430, binding = 11) readonly buffer QN { float qn[]; };
+layout(std430, binding = 12) readonly buffer KN { float kn[]; };
+layout(std430, binding = 13) readonly buffer MT { int meta[]; };   /* meta[0] = posicao do token (muda por token) */
+layout(push_constant) uniform P { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; } pc;
+shared float lm[256]; shared float lq[256]; shared float lk[256];
+void main() {
+    int hd = pc.hd, kvd = pc.kvd, pos = meta[0], group = pc.group;
+    int h = int(gl_WorkGroupID.x), l = int(gl_LocalInvocationID.x), T = pos + 1, g = h / group, half_ = hd / 2;
+    int off = pc.base + pos * kvd + g * hd;
+    int a = h * pc.ctx;
+    {
+        bool isk = l >= half_;
+        int i = isk ? l - half_ : l;
+        int i0 = pc.neox != 0 ? i : 2 * i, i1 = i0 + (pc.neox != 0 ? half_ : 1);
+        float cs, sn; rope_cs(float(pos) * freq[i], cs, sn);
+        if (isk) {
+            float x0 = ks_[g * hd + i0], x1 = ks_[g * hd + i1];
+            if ((pc.has_bias & 2) != 0) { x0 += bk[g * hd + i0]; x1 += bk[g * hd + i1]; }
+            if (pc.norm != 0) {
+                int r0 = pc.norm == 1 ? 0 : g * hd, len = pc.norm == 1 ? kvd : hd;
+                float ss = 0.0; for (int j = 0; j < len; j++) { float t = ks_[r0 + j]; ss += t * t; }
+                float inv = 1.0 / sqrt(ss / float(len) + pc.eps);
+                x0 *= kn[g * hd + i0 - r0] * inv; x1 *= kn[g * hd + i1 - r0] * inv;
+            }
+            float y0 = x0 * cs - x1 * sn, y1 = x0 * sn + x1 * cs;
+            lk[i0] = y0; lk[i1] = y1;
+            if (h % group == 0) { KVS(y0, off + i0, kc); KVS(y1, off + i1, kc); }
+        } else {
+            float x0 = qs[h * hd + i0], x1 = qs[h * hd + i1];
+            if ((pc.has_bias & 1) != 0) { x0 += bq[h * hd + i0]; x1 += bq[h * hd + i1]; }
+            if (pc.norm != 0) {
+                int r0 = pc.norm == 1 ? 0 : h * hd, len = pc.norm == 1 ? pc.d : hd;
+                float ss = 0.0; for (int j = 0; j < len; j++) { float t = qs[r0 + j]; ss += t * t; }
+                float inv = 1.0 / sqrt(ss / float(len) + pc.eps);
+                x0 *= qn[h * hd + i0 - r0] * inv; x1 *= qn[h * hd + i1 - r0] * inv;
+            }
+            lq[i0] = x0 * cs - x1 * sn; lq[i1] = x0 * sn + x1 * cs;
+        }
+    }
+    float vl = vs[g * hd + l] + (((pc.has_bias & 4) != 0) ? bv[g * hd + l] : 0.0);
+    if (h % group == 0) KVS(vl, off + l, vc);
+    barrier();
+    float mx = -3.0e38;
+    for (int t = l; t < T; t += hd) {
+        float s = 0.0;
+        if (t == pos) { for (int j = 0; j < hd; j++) s += lq[j] * lk[j]; }
+        else { int kh = pc.base + t * kvd + g * hd;
+            for (int j = 0; j < hd; j++) s += lq[j] * KVL(kc, kh + j); }
+        s *= pc.scale; att[a + t] = s; mx = max(mx, s);
+    }
+    lm[l] = mx;
+    barrier();
+    float gm = lm[0];
+    for (int k = 1; k < hd; k++) gm = max(gm, lm[k]);
+    barrier();
+    float sum = 0.0;
+    for (int t = l; t < T; t += hd) { float e = exp(att[a + t] - gm); att[a + t] = e; sum += e; }
+    lm[l] = sum;
+    memoryBarrierBuffer();
+    barrier();
+    float tot = 0.0;
+    for (int k = 0; k < hd; k++) tot += lm[k];
+    int v = pc.base + g * hd + l;
+    float s = att[a + pos] * vl;
+    for (int t = 0; t < pos; t++) s += att[a + t] * KVL(vc, v + t * kvd);
+    o[h * hd + l] = s / tot;
+}
