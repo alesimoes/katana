@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &ds, 0, NULL);
     vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, pc);
-    vkCmdDispatch(cb, rows / 16, tokens / 16, 1);
+    vkCmdDispatch(cb, rows / 64, tokens / 64, 1);
     CK(vkEndCommandBuffer(cb));
     for (int i = 0; i < 5; i++) { CK(vkQueueSubmit(q, 1, &si, fence)); CK(vkWaitForFences(dev, 1, &fence, 1, ~0ull)); CK(vkResetFences(dev, 1, &fence)); }
     double t0 = now();

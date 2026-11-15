@@ -25,6 +25,16 @@ Por que o lote é lento no OpenCL desta placa (medido): com lote de 4 ou de 16 o
 
 Protótipo `tools/vkgemm` (produto 8960x1536 por lote de 64, um ladrilho 16x16 por subgrupo, cargas direto da memória global, acumulador de 32 bits, conferido com a CPU): 0,51–0,78 T multiplicações/s. É a forma ingênua; falta o que dá a vazão de verdade (ladrilhos maiores por grupo de trabalho, pesos e ativações passando pela memória compartilhada, pesos quantizados decodificados ao encher o ladrilho).
 
+Segunda versão do protótipo (`tools/vkgemm/gemm.comp`): grupo de trabalho de 128 threads (4 subgrupos) dono de um ladrilho 64x64 da saída; a cada 32 colunas todas as threads enchem a memória compartilhada com o trecho dos pesos e das ativações, e cada subgrupo carrega dali suas matrizes cooperativas e mantém 4 acumuladores. Resultado conferido com a CPU:
+
+| Caso | ingênuo | com memória compartilhada |
+|---|---|---|
+| 8960x1536, lote 64 | 0,51 T/s | 1,17 T/s |
+| 8960x1536, lote 256 | — | 1,36 T/s |
+| 1536x8960, lote 64 (poucas linhas, muitas colunas) | 0,78 T/s | 0,49 T/s |
+
+Ladrilho 128x128 com 16 acumuladores ficou pior (0,40–0,60 T/s): o enchimento da memória compartilhada, valor por valor, vira o gargalo. Próximos passos do protótipo: cargas vetorizadas (vários valores por leitura), dividir as colunas entre grupos quando há poucas linhas, decodificar Q4_K dentro da carga com as escalas do bloco calculadas uma vez, e medir o acumulador em meia precisão. Referência a alcançar na mesma placa: ~3,5 T/s.
+
 ## 1. Menos lançamentos e menos esperas por token (GPU)
 
 O piso de ~9–11 ms por token vem do custo fixo por lançamento de kernel (~40 µs), não da conta.

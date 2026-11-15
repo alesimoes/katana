@@ -1,26 +1,61 @@
 #version 450
 #extension GL_KHR_cooperative_matrix : require
 #extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_16bit_storage : require
 
-// Y[rows][tokens] = W[rows][cols] * X[cols][tokens], em ladrilhos 16x16 por subgrupo (nucleos tensoriais).
-layout(local_size_x = 32) in;
+// Y[rows][tokens] = W[rows][cols] * X[cols][tokens].
+// Um grupo de trabalho (4 subgrupos de 32) cuida de um ladrilho BM x BN da saida. A cada passo de
+// BK colunas, todas as threads enchem a memoria compartilhada com o trecho de W e de X; cada
+// subgrupo entao carrega dali suas matrizes cooperativas 16x16 e acumula WM/16 x WN/16 produtos.
+layout(local_size_x = 128) in;
+layout(constant_id = 0) const uint BM = 64;
+layout(constant_id = 1) const uint BN = 64;
+layout(constant_id = 2) const uint BK = 32;
+const uint T = 16;                      // lado da matriz cooperativa
+const uint WM = BM / 2, WN = BN / 2;    // parte de cada subgrupo (2 x 2 subgrupos)
+const uint CR = WM / T, CC = WN / T;    // acumuladores por subgrupo
+const uint STRIDE = BK + 8;             // folga contra conflito de bancos
+
 layout(set = 0, binding = 0) readonly buffer WB { float16_t w[]; } wb;   // linha a linha
 layout(set = 0, binding = 1) readonly buffer XB { float16_t x[]; } xb;   // transposto: x[col*tokens + token]
-layout(set = 0, binding = 2) buffer YB { float y[]; } yb;            // y[row*tokens + token]
+layout(set = 0, binding = 2) buffer YB { float y[]; } yb;                // y[row*tokens + token]
 layout(push_constant) uniform PC { uint rows, cols, tokens; } pc;
 
+shared float16_t buf_a[BM * STRIDE];
+shared float16_t buf_b[BN * STRIDE];
+
 void main() {
-    uint r0 = gl_WorkGroupID.x * 16, t0 = gl_WorkGroupID.y * 16;
-    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc =
-        coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
-    for (uint k = 0; k < pc.cols; k += 16) {
-        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a;
-        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
-        coopMatLoad(a, wb.w, r0 * pc.cols + k, pc.cols, gl_CooperativeMatrixLayoutRowMajor);
-        coopMatLoad(b, xb.x, k * pc.tokens + t0, pc.tokens, gl_CooperativeMatrixLayoutRowMajor);
-        acc = coopMatMulAdd(a, b, acc);
+    const uint ir = gl_WorkGroupID.x * BM, ic = gl_WorkGroupID.y * BN;
+    const uint id = gl_LocalInvocationID.x;
+    const uint warp = gl_SubgroupID, wr = warp % 2, wc = warp / 2;
+    const uint per = BM * BK / 128;     // valores de A (e de B) por thread a cada passo
+    coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acc[CR * CC];
+    for (uint i = 0; i < CR * CC; i++) acc[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
+
+    for (uint k0 = 0; k0 < pc.cols; k0 += BK) {
+        for (uint i = 0; i < per; i++) {
+            const uint idx = id * per + i, r = idx / BK, c = idx % BK;
+            buf_a[r * STRIDE + c] = wb.w[(ir + r) * pc.cols + k0 + c];
+            buf_b[r * STRIDE + c] = xb.x[(k0 + c) * pc.tokens + ic + r];
+        }
+        barrier();
+        for (uint k = 0; k < BK; k += T) {
+            for (uint cr = 0; cr < CR; cr++) {
+                coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseA> a;
+                coopMatLoad(a, buf_a, (wr * WM + cr * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+                for (uint cc = 0; cc < CC; cc++) {
+                    coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseB> b;
+                    coopMatLoad(b, buf_b, (wc * WN + cc * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutColumnMajor);
+                    acc[cc * CR + cr] = coopMatMulAdd(a, b, acc[cc * CR + cr]);
+                }
+            }
+        }
+        barrier();
     }
-    coopMatStore(acc, yb.y, r0 * pc.tokens + t0, pc.tokens, gl_CooperativeMatrixLayoutRowMajor);
+    for (uint cr = 0; cr < CR; cr++)
+        for (uint cc = 0; cc < CC; cc++)
+            coopMatStore(acc[cc * CR + cr], yb.y, (ir + wr * WM + cr * T) * pc.tokens + ic + wc * WN + cc * T, pc.tokens,
+                         gl_CooperativeMatrixLayoutRowMajor);
 }
