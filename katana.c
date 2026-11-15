@@ -4417,7 +4417,235 @@ static int session(Model *m, const char *sys, int max_tokens, float temp) {
     return 0;
 }
 
+/* ---------- agente: conversa com ferramentas ----------
+ * O modelo pode pedir ferramentas no formato <tool_call>{"name":..,"arguments":{..}}</tool_call>
+ * (o do Qwen); o motor executa e devolve o resultado em <tool_response>. Ler e listar ficam
+ * restritos a pasta atual; gravar arquivo e executar comando so acontecem depois de o usuario
+ * confirmar no terminal, a cada vez. */
+#define TOOL_OUT 3000
+static const char *AGENT_SYS =
+    "You are katana, a coding assistant running locally on the user's machine. "
+    "Use the tools to inspect and change files in the current directory when that helps. Be concise.\n\n"
+    "# Tools\n\nYou may call one or more functions to assist with the user query.\n\n"
+    "You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n"
+    "{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a text file in the current directory\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}}\n"
+    "{\"type\": \"function\", \"function\": {\"name\": \"list_dir\", \"description\": \"List the files of a directory (use . for the current one)\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}}\n"
+    "{\"type\": \"function\", \"function\": {\"name\": \"write_file\", \"description\": \"Create or overwrite a text file (the user must approve)\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"content\": {\"type\": \"string\"}}, \"required\": [\"path\", \"content\"]}}}\n"
+    "{\"type\": \"function\", \"function\": {\"name\": \"run_command\", \"description\": \"Run a shell command and return its output (the user must approve)\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n"
+    "</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n"
+    "<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>";
+
+/* texto de um token, como print_token, mas num buffer; devolve o novo tamanho */
+static size_t tok_append(const Tokenizer *tk, int id, char *out, size_t len, size_t cap) {
+    const uint8_t *t = (const uint8_t *)tk->tok[id];
+    int n = tk->toklen[id], i = 0;
+    while (i < n && len + 4 < cap) {
+        if (tk->spm) {
+            if (i + 2 < n && t[i] == 0xE2 && t[i + 1] == 0x96 && t[i + 2] == 0x81) { out[len++] = ' '; i += 3; }
+            else out[len++] = (char)t[i++];
+            continue;
+        }
+        int cp = t[i], adv = 1;
+        if (cp >= 0xC0 && cp < 0xE0 && i + 1 < n) { cp = ((cp & 0x1F) << 6) | (t[i + 1] & 0x3F); adv = 2; }
+        if (adv <= 2 && cp < 512 && tk->cp2byte[cp] >= 0) out[len++] = (char)tk->cp2byte[cp];
+        else { memcpy(out + len, t + i, adv); len += adv; }
+        i += adv;
+    }
+    out[len] = 0;
+    return len;
+}
+
+/* valor de texto da chave `key` num objeto JSON (primeira ocorrencia); 0 se nao achar */
+static int json_str(const char *js, const char *end, const char *key, char *out, size_t cap) {
+    char pat[64];
+    size_t n = 0;
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *q = strstr(js, pat);
+    if (!q || q >= end) return 0;
+    q += strlen(pat);
+    while (q < end && (*q == ' ' || *q == ':' || *q == '\n' || *q == '\t' || *q == '\r')) q++;
+    if (q >= end || *q != '"') return 0;
+    for (q++; q < end && *q != '"' && n + 4 < cap; q++) {
+        if (*q != '\\') { out[n++] = *q; continue; }
+        if (++q >= end) break;
+        switch (*q) {
+            case 'n': out[n++] = '\n'; break;
+            case 't': out[n++] = '\t'; break;
+            case 'r': out[n++] = '\r'; break;
+            case 'u': {     /* \uXXXX -> UTF-8 (sem pares substitutos) */
+                unsigned cp = 0;
+                if (q + 4 < end) { char h[5] = { q[1], q[2], q[3], q[4], 0 }; cp = (unsigned)strtoul(h, NULL, 16); q += 4; }
+                if (cp < 0x80) out[n++] = (char)cp;
+                else if (cp < 0x800) { out[n++] = (char)(0xC0 | (cp >> 6)); out[n++] = (char)(0x80 | (cp & 63)); }
+                else { out[n++] = (char)(0xE0 | (cp >> 12)); out[n++] = (char)(0x80 | ((cp >> 6) & 63)); out[n++] = (char)(0x80 | (cp & 63)); }
+                break;
+            }
+            default: out[n++] = *q; break;
+        }
+    }
+    out[n] = 0;
+    return 1;
+}
+
+/* so caminhos relativos dentro da pasta atual */
+static int path_ok(const char *p) {
+    if (!*p || p[0] == '/' || p[0] == '\\' || strchr(p, ':') || strstr(p, "..")) return 0;
+    return 1;
+}
+
+static int agent_confirm(const char *what, const char *detail) {
+    char ans[64];
+    fprintf(stderr, "\n[o modelo quer %s]\n%s\n[permitir? s/N] ", what, detail);
+    fflush(stderr);
+    if (!fgets(ans, sizeof ans, stdin)) return 0;
+    return ans[0] == 's' || ans[0] == 'S';
+}
+
+static void agent_tool(const char *name, const char *js, const char *end, char *out, size_t cap) {
+    static char arg[8192], content[16384];
+    out[0] = 0;
+    if (strcmp(name, "read_file") == 0) {
+        if (!json_str(js, end, "path", arg, sizeof arg) || !path_ok(arg)) { snprintf(out, cap, "error: invalid path (only relative paths inside the current directory)"); return; }
+        FILE *f = fopen(arg, "rb");
+        if (!f) { snprintf(out, cap, "error: cannot open %s", arg); return; }
+        size_t n = fread(out, 1, TOOL_OUT, f);
+        out[n] = 0;
+        if (!feof(f)) snprintf(out + n, cap - n, "\n[truncated at %d bytes]", TOOL_OUT);
+        fclose(f);
+    } else if (strcmp(name, "list_dir") == 0) {
+        if (!json_str(js, end, "path", arg, sizeof arg)) strcpy(arg, ".");
+        if (strcmp(arg, ".") != 0 && !path_ok(arg)) { snprintf(out, cap, "error: invalid path"); return; }
+        size_t n = 0;
+#ifdef _WIN32
+        char pat[8300]; WIN32_FIND_DATAA fd;
+        snprintf(pat, sizeof pat, "%s\\*", arg);
+        HANDLE h = FindFirstFileA(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE) { snprintf(out, cap, "error: cannot list %s", arg); return; }
+        do {
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            if (n + strlen(fd.cFileName) + 4 >= TOOL_OUT) { n += snprintf(out + n, cap - n, "[more files omitted]\n"); break; }
+            n += snprintf(out + n, cap - n, "%s%s\n", fd.cFileName, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "/" : "");
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+#else
+        snprintf(out, cap, "error: list_dir not available on this system");
+#endif
+        if (n == 0 && !out[0]) snprintf(out, cap, "(empty)");
+    } else if (strcmp(name, "write_file") == 0) {
+        if (!json_str(js, end, "path", arg, sizeof arg) || !path_ok(arg)) { snprintf(out, cap, "error: invalid path (only relative paths inside the current directory)"); return; }
+        if (!json_str(js, end, "content", content, sizeof content)) { snprintf(out, cap, "error: missing content"); return; }
+        char what[8300];
+        snprintf(what, sizeof what, "gravar o arquivo %s (%zu bytes)", arg, strlen(content));
+        if (!agent_confirm(what, content)) { snprintf(out, cap, "error: the user denied this action"); return; }
+        FILE *f = fopen(arg, "wb");
+        if (!f) { snprintf(out, cap, "error: cannot create %s", arg); return; }
+        fwrite(content, 1, strlen(content), f);
+        fclose(f);
+        snprintf(out, cap, "ok: wrote %zu bytes to %s", strlen(content), arg);
+    } else if (strcmp(name, "run_command") == 0) {
+        if (!json_str(js, end, "command", arg, sizeof arg)) { snprintf(out, cap, "error: missing command"); return; }
+        if (!agent_confirm("executar o comando", arg)) { snprintf(out, cap, "error: the user denied this action"); return; }
+#ifdef _WIN32
+        FILE *f = _popen(arg, "r");
+#else
+        FILE *f = popen(arg, "r");
+#endif
+        if (!f) { snprintf(out, cap, "error: cannot run the command"); return; }
+        size_t n = fread(out, 1, TOOL_OUT, f);
+        out[n] = 0;
+        char sink[512];
+        int more = 0;
+        while (fread(sink, 1, sizeof sink, f) > 0) more = 1;
+#ifdef _WIN32
+        const int rc = _pclose(f);
+#else
+        const int rc = pclose(f);
+#endif
+        snprintf(out + n, cap - n, "%s\n[exit code %d]", more ? "\n[output truncated]" : "", rc);
+    } else snprintf(out, cap, "error: unknown tool %s", name);
+}
+
+static int agent(Model *m, int max_tokens, float temp) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    static char line[16384], text[40000], reply[65536], result[TOOL_OUT + 512], name[64];
+    const int im_end = map_get(&tk->vocab, "<|im_end|>", 10);
+    int pos = 0, first = 1;
+    if (c->chat_fmt != 0 || im_end < 0) die("o agente precisa de um modelo com formato ChatML (ex.: Qwen)");
+    srand((unsigned)time(NULL));
+    fprintf(stderr, "Agente iniciado na pasta atual (/novo recomeca, /sair termina).\n"
+                    "Gravar arquivo e executar comando pedem a sua confirmacao a cada vez.\n");
+    for (;;) {
+        fprintf(stderr, "\n> "); fflush(stderr);
+        if (!fgets(line, sizeof line, stdin)) break;
+        size_t ln = strlen(line);
+        while (ln > 0 && (line[ln - 1] == '\n' || line[ln - 1] == '\r')) line[--ln] = 0;
+        if (ln == 0) continue;
+        if (strcmp(line, "/sair") == 0) break;
+        if (strcmp(line, "/novo") == 0) { pos = 0; first = 1; fprintf(stderr, "[conversa nova]\n"); continue; }
+        if (first) snprintf(text, sizeof text, "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", AGENT_SYS, line);
+        else snprintf(text, sizeof text, "<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", line);
+
+        for (int round = 0; round < 12; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
+            Ids ids = {0};
+            if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+            encode(tk, text, &ids);
+            if (pos + ids.n + 64 >= c->ctx) {
+                fprintf(stderr, "[contexto cheio (%d de %d tokens): use /novo para recomecar]\n", pos, c->ctx);
+                free(ids.ids);
+                break;
+            }
+            float *lg = forward_seq(m, ids.ids, ids.n, pos, 1);
+            pos += ids.n; first = 0;
+            free(ids.ids);
+            size_t rl = 0;
+            int gen = 0;
+            const double t1 = now_sec();
+            reply[0] = 0;
+            while (gen < max_tokens && pos < c->ctx - 1) {
+                const int t = sample(lg, c->vocab, temp);
+                if (t == c->eos || t == im_end) break;
+                print_token(tk, t, stdout); fflush(stdout);
+                rl = tok_append(tk, t, reply, rl, sizeof reply);
+                gen++;
+                lg = forward(m, t, pos++, 1);
+            }
+            printf("\n"); fflush(stdout);
+            fprintf(stderr, "[%d tokens, %.1f tok/s | contexto %d de %d]\n", gen, gen / (now_sec() - t1 + 1e-9), pos, c->ctx);
+
+            /* chamadas de ferramenta na resposta (depois do raciocinio, se houver) */
+            const char *scan = strstr(reply, "</think>");
+            scan = scan ? scan : reply;
+            size_t tl = (size_t)snprintf(text, sizeof text, "<|im_end|>\n<|im_start|>user");
+            int calls = 0;
+            for (const char *tc = strstr(scan, "<tool_call>"); tc; tc = strstr(tc + 1, "<tool_call>")) {
+                const char *end = strstr(tc, "</tool_call>");
+                if (!end) end = reply + rl;
+                if (!json_str(tc, end, "name", name, sizeof name)) continue;
+                const char *args = strstr(tc, "\"arguments\"");
+                agent_tool(name, args && args < end ? args : tc, end, result, sizeof result);
+                fprintf(stderr, "[ferramenta %s: %zu bytes de resultado]\n", name, strlen(result));
+                tl += (size_t)snprintf(text + tl, sizeof text - tl, "\n<tool_response>\n%s\n</tool_response>", result);
+                calls++;
+                if (tl + TOOL_OUT + 1024 >= sizeof text) break;
+            }
+            if (!calls) break;
+            snprintf(text + tl, sizeof text - tl, "<|im_end|>\n<|im_start|>assistant\n");
+        }
+    }
+    moe_report();
+    heat_save(m);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "agent") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        print_info(&m);
+        return agent(&m, getenv("KATANA_MAXTOK") ? atoi(getenv("KATANA_MAXTOK")) : 1024,
+                     getenv("KATANA_TEMP") ? (float)atof(getenv("KATANA_TEMP")) : 0.3f);
+    }
     if (argc >= 5 && strcmp(argv[1], "routing") == 0) {
         Model m; memset(&m, 0, sizeof m);
         _putenv("KATANA_CPU=1");
@@ -4508,6 +4736,7 @@ static int run_main(int argc, char **argv) {
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
+        "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar com confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
     return 1;
 }
