@@ -12,14 +12,14 @@
 layout(local_size_x = 128) in;
 layout(constant_id = 0) const uint BM = 64;
 layout(constant_id = 1) const uint BN = 64;
-layout(constant_id = 2) const uint BK = 32;
+layout(constant_id = 2) const uint BK = 64;
 const uint T = 16;                      // lado da matriz cooperativa
 const uint WM = BM / 2, WN = BN / 2;    // parte de cada subgrupo (2 x 2 subgrupos)
 const uint CR = WM / T, CC = WN / T;    // acumuladores por subgrupo
 const uint STRIDE = BK + 8;             // folga contra conflito de bancos
 
-layout(set = 0, binding = 0) readonly buffer WB { float16_t w[]; } wb;   // linha a linha
-layout(set = 0, binding = 1) readonly buffer XB { float16_t x[]; } xb;   // transposto: x[col*tokens + token]
+layout(set = 0, binding = 0) readonly buffer WB { f16vec4 w[]; } wb;     // linha a linha, 4 valores por leitura
+layout(set = 0, binding = 1) readonly buffer XB { f16vec4 x[]; } xb;     // transposto: x[col*tokens + token]
 layout(set = 0, binding = 2) buffer YB { float y[]; } yb;                // y[row*tokens + token]
 layout(push_constant) uniform PC { uint rows, cols, tokens; } pc;
 
@@ -30,15 +30,25 @@ void main() {
     const uint ir = gl_WorkGroupID.x * BM, ic = gl_WorkGroupID.y * BN;
     const uint id = gl_LocalInvocationID.x;
     const uint warp = gl_SubgroupID, wr = warp % 2, wc = warp / 2;
-    const uint per = BM * BK / 128;     // valores de A (e de B) por thread a cada passo
+    const uint per = BM * BK / 4 / 128; // leituras de 4 valores de A (e de B) por thread a cada passo
     coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acc[CR * CC];
     for (uint i = 0; i < CR * CC; i++) acc[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
 
     for (uint k0 = 0; k0 < pc.cols; k0 += BK) {
         for (uint i = 0; i < per; i++) {
-            const uint idx = id * per + i, r = idx / BK, c = idx % BK;
-            buf_a[r * STRIDE + c] = wb.w[(ir + r) * pc.cols + k0 + c];
-            buf_b[r * STRIDE + c] = xb.x[(k0 + c) * pc.tokens + ic + r];
+            const uint idx = id * per + i;
+            {   // A: linha r, colunas c..c+3
+                const uint r = idx / (BK / 4), c = (idx % (BK / 4)) * 4;
+                const f16vec4 v = wb.w[((ir + r) * pc.cols + k0 + c) / 4];
+                const uint o = r * STRIDE + c;
+                buf_a[o] = v.x; buf_a[o + 1] = v.y; buf_a[o + 2] = v.z; buf_a[o + 3] = v.w;
+            }
+            {   // B: coluna c, tokens n..n+3
+                const uint c = idx / (BN / 4), n = (idx % (BN / 4)) * 4;
+                const f16vec4 v = xb.x[((k0 + c) * pc.tokens + ic + n) / 4];
+                buf_b[n * STRIDE + c] = v.x; buf_b[(n + 1) * STRIDE + c] = v.y;
+                buf_b[(n + 2) * STRIDE + c] = v.z; buf_b[(n + 3) * STRIDE + c] = v.w;
+            }
         }
         barrier();
         for (uint k = 0; k < BK; k += T) {

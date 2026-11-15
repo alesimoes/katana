@@ -35,6 +35,8 @@ Segunda versão do protótipo (`tools/vkgemm/gemm.comp`): grupo de trabalho de 1
 
 Ladrilho 128x128 com 16 acumuladores ficou pior (0,40–0,60 T/s): o enchimento da memória compartilhada, valor por valor, vira o gargalo. Próximos passos do protótipo: cargas vetorizadas (vários valores por leitura), dividir as colunas entre grupos quando há poucas linhas, decodificar Q4_K dentro da carga com as escalas do bloco calculadas uma vez, e medir o acumulador em meia precisão. Referência a alcançar na mesma placa: ~3,5 T/s.
 
+Terceira versão: cargas de 4 valores por leitura e passo de 64 colunas (ladrilho 64x64x64). Conferido com a CPU: 1,75 T/s com lote de 64 e 2,4–2,6 T/s com lote de 256, nos dois formatos de matriz. Ladrilho de 128 (16 acumuladores por subgrupo) continua pior (0,4–0,7 T/s). Ainda com pesos em meia precisão; falta medir com Q4_K no nosso layout de VRAM, decodificando na carga.
+
 ## 1. Menos lançamentos e menos esperas por token (GPU)
 
 O piso de ~9–11 ms por token vem do custo fixo por lançamento de kernel (~40 µs), não da conta.
