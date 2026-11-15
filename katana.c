@@ -4308,6 +4308,18 @@ static int routing(Model *m, const char *calib_path, const char *eval_path) {
         memset(in, 0, N);
         for (int i = 0; i < cap; i++) in[rk[i].id] = 1;
         for (int i = 0; i < cap; i++) hit_best += rke[i].cnt;       /* teto: os mais usados da propria avaliacao */
+        {   /* teto com o mesmo numero de vagas em toda camada */
+            const int per = E * pcts[pi] / 100;
+            double hu = 0;
+            RtRank *tmp = xalloc(E, sizeof(RtRank));
+            for (int l = 0; l < L; l++) {
+                for (int e = 0; e < E; e++) { tmp[e].cnt = cev[l * E + e]; tmp[e].id = e; }
+                qsort(tmp, E, sizeof(RtRank), cmp_rtrank);
+                for (int i = 0; i < per; i++) hu += tmp[i].cnt;
+            }
+            free(tmp);
+            printf("%3d%%: teto com vagas iguais por camada %5.1f%%\n", pcts[pi], 100.0 * hu / total);
+        }
         memset(stamp, 0, N * sizeof(int));
         for (int i = 0; i < cap; i++) stamp[rk[i].id] = 1;
         int clock = 1;
