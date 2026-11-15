@@ -50,7 +50,7 @@ katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 |---|---|
 | `KATANA_CPU=1` | não usa a GPU |
 | `KATANA_GPU_LAYERS=N` | no máximo N camadas na GPU |
-| `KATANA_VRAM_PCT=N` | fração da VRAM que o motor pode ocupar (padrão 95) |
+| `KATANA_VRAM_PCT=N` | fração da VRAM que o motor pode ocupar (padrão 92) |
 | `KATANA_CTX=N` | contexto máximo (padrão: o do modelo, até 4096) |
 | `KATANA_KV16=0/1` | força o cache KV em float32 ou float16 |
 | `KATANA_BATCH=N` | maior lote de prompt (16, 4 ou 1) |
@@ -60,7 +60,9 @@ katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 | `KATANA_HEAD_GPU=1` | com modelo que não cabe, sobe a projeção final antes das camadas |
 | `KATANA_SEG`, `KATANA_ROWS`, `KATANA_ROWSB` | ajustes dos kernels (ver `katana tune`) |
 | `KATANA_DEBUG=1` | perfil por kernel da GPU e por tipo de produto da CPU |
-| `OMP_NUM_THREADS`, `OMP_WAIT_POLICY=ACTIVE` | threads da CPU; a espera ativa ajuda quando há camadas na CPU |
+| `KATANA_THREADS=N` | threads da CPU (padrão: média entre núcleos físicos e lógicos) |
+| `KATANA_PRIO=0` | não eleva a prioridade das threads do motor |
+| `KATANA_PIN=1` | fixa cada thread num núcleo físico |
 
 ## Arquivos
 

@@ -51,6 +51,153 @@ static void *xalloc(size_t n, size_t sz) {
     return p;
 }
 
+/* ================= pool de threads =================
+ * Threads proprias, criadas uma vez. Entre um trabalho e o proximo elas giram em espera
+ * curta (sem dormir: o proximo produto de matriz chega em microssegundos) e so dormem se
+ * nada aparecer por ~1 ms, por exemplo enquanto a GPU trabalha.
+ * O trabalho e repartido em blocos pequenos pegos por um contador atomico: se o sistema
+ * tirar uma thread do nucleo, as outras continuam consumindo os blocos (com divisao fixa,
+ * uma thread atrasada seguraria a matriz inteira).
+ * KATANA_THREADS define o total (padrao: media entre nucleos fisicos e logicos). KATANA_PIN=1 fixa cada thread num
+ * nucleo e KATANA_PRIO=0 tira a prioridade acima do normal. Medido numa maquina com 78% da
+ * CPU ocupada por outros processos: a prioridade dobrou a vazao e fixar em nucleos piorou. */
+typedef void (*PoolFn)(void *ctx, int i0, int i1);
+
+#ifdef _WIN32
+#define ATOM_INC(p) InterlockedIncrement(p)
+#define ATOM_DEC(p) InterlockedDecrement(p)
+#define ATOM_XADD(p, v) InterlockedExchangeAdd(p, v)
+#define ATOM_SET(p, v) InterlockedExchange(p, v)
+#define CPU_RELAX() YieldProcessor()
+typedef LONG atom_t;
+#else
+#include <pthread.h>
+#define ATOM_INC(p) __sync_add_and_fetch(p, 1)
+#define ATOM_DEC(p) __sync_sub_and_fetch(p, 1)
+#define ATOM_XADD(p, v) __sync_fetch_and_add(p, v)
+#define ATOM_SET(p, v) __sync_lock_test_and_set(p, v)
+#define CPU_RELAX() __builtin_ia32_pause()
+typedef long atom_t;
+#endif
+
+static struct {
+    int n;                              /* total de threads, contando a principal */
+    volatile atom_t gen, open, active, next;
+    PoolFn fn; void *ctx; int total, chunk;
+    volatile atom_t st_jobs, st_main, st_work, st_sleep;   /* estatistica: trabalhos, blocos da principal e das outras, sonos */
+#ifndef _WIN32
+    pthread_mutex_t mu; pthread_cond_t cv;
+#endif
+} pool;
+
+/* consome blocos ate acabar; devolve quantos fez */
+static int pool_run(void) {
+    int done = 0;
+    for (;;) {
+        const long i = (long)ATOM_XADD(&pool.next, pool.chunk);
+        if (i >= pool.total) break;
+        const long e = i + pool.chunk > pool.total ? pool.total : i + pool.chunk;
+        pool.fn(pool.ctx, (int)i, (int)e);
+        done++;
+    }
+    return done;
+}
+
+/* Protocolo: a principal so mexe nos campos do trabalho com open=0 e active=0; uma thread
+   so le os campos depois de somar em active e ver open=1. Assim uma thread que acorda
+   atrasada nunca le um trabalho pela metade, e a principal nao espera quem nao entrou. */
+#ifdef _WIN32
+static DWORD WINAPI pool_worker(LPVOID arg) {
+#else
+static void *pool_worker(void *arg) {
+#endif
+    atom_t last = 0;
+    (void)arg;
+    for (;;) {
+        int spins = 0;
+        while (pool.gen == last) {
+            if (++spins < 20000) { CPU_RELAX(); continue; }
+#ifdef _WIN32
+            ATOM_INC(&pool.st_sleep);
+            WaitOnAddress((volatile VOID *)&pool.gen, &last, sizeof last, INFINITE);
+#else
+            pthread_mutex_lock(&pool.mu);
+            while (pool.gen == last) pthread_cond_wait(&pool.cv, &pool.mu);
+            pthread_mutex_unlock(&pool.mu);
+#endif
+            spins = 0;
+        }
+        last = pool.gen;
+        ATOM_INC(&pool.active);
+        if (pool.open) ATOM_XADD(&pool.st_work, pool_run());
+        ATOM_DEC(&pool.active);
+    }
+}
+
+/* executa fn sobre [0, total) em blocos de `chunk`, usando todas as threads */
+static void pool_for(PoolFn fn, void *ctx, int total, int chunk) {
+    if (chunk < 1) chunk = 1;
+    if (pool.n <= 1 || total <= chunk) { fn(ctx, 0, total); return; }
+    pool.fn = fn; pool.ctx = ctx; pool.total = total; pool.chunk = chunk;
+    ATOM_SET(&pool.next, 0);
+    ATOM_SET(&pool.open, 1);
+    ATOM_INC(&pool.gen);
+#ifdef _WIN32
+    WakeByAddressAll((PVOID)&pool.gen);
+#else
+    pthread_mutex_lock(&pool.mu); pthread_cond_broadcast(&pool.cv); pthread_mutex_unlock(&pool.mu);
+#endif
+    ATOM_INC(&pool.st_jobs);
+    ATOM_XADD(&pool.st_main, pool_run());
+    ATOM_SET(&pool.open, 0);
+    while (pool.active) CPU_RELAX();
+}
+
+static void pool_init(void) {
+    int n = 0, pin = getenv("KATANA_PIN") && atoi(getenv("KATANA_PIN")) != 0;
+    if (getenv("KATANA_THREADS")) n = atoi(getenv("KATANA_THREADS"));
+    else if (getenv("OMP_NUM_THREADS")) n = atoi(getenv("OMP_NUM_THREADS"));
+#ifdef _WIN32
+    DWORD_PTR cores[64]; int nc = 0, nlog = 0;
+    const int prio = !(getenv("KATANA_PRIO") && atoi(getenv("KATANA_PRIO")) == 0);
+    DWORD len = 0;
+    GetLogicalProcessorInformation(NULL, &len);
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION *info = len ? malloc(len) : NULL;
+    if (info && GetLogicalProcessorInformation(info, &len))
+        for (DWORD i = 0; i < len / sizeof *info && nc < 64; i++)
+            if (info[i].Relationship == RelationProcessorCore) {
+                cores[nc++] = info[i].ProcessorMask;
+                for (DWORD_PTR mk = info[i].ProcessorMask; mk; mk &= mk - 1) nlog++;
+            }
+    free(info);
+    /* padrao: meio caminho entre nucleos fisicos e logicos (medido: 12 de 8/16 rendeu mais) */
+    if (n < 1) n = nc > 0 ? (nc + nlog) / 2 : 1;
+    if (n > 64) n = 64;
+    pool.n = n;
+    for (int k = 1; k < n; k++) {
+        HANDLE h = CreateThread(NULL, 0, pool_worker, NULL, 0, NULL);
+        if (!h) { pool.n = k; break; }
+        if (pin && nc > 1) SetThreadAffinityMask(h, cores[k % nc]);     /* um nucleo fisico por thread */
+        if (prio) SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
+        CloseHandle(h);
+    }
+    /* prioridade acima do normal: com a maquina ocupada, uma thread nossa tirada do nucleo no
+       meio de um bloco segura o trabalho inteiro ate voltar */
+    if (prio) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#else
+    if (n < 1) { n = (int)sysconf(_SC_NPROCESSORS_ONLN) / 2; if (n < 1) n = 1; }
+    if (n > 64) n = 64;
+    (void)pin;
+    pthread_mutex_init(&pool.mu, NULL); pthread_cond_init(&pool.cv, NULL);
+    pool.n = n;
+    for (int k = 1; k < n; k++) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, pool_worker, NULL) != 0) { pool.n = k; break; }
+        pthread_detach(t);
+    }
+#endif
+}
+
 /* ================= mapa string -> int (hash aberto, FNV-1a) ================= */
 
 typedef struct { const char **k; int *kl; int *v; uint32_t cap; } Map;
@@ -583,13 +730,6 @@ static void load_model(Model *m, const char *path) {
 #undef M2
     }
     free(ts.t);   /* o mapeamento do arquivo continua vivo: os pesos apontam para ele */
-
-#ifdef _OPENMP
-    /* padrao medido: nucleos fisicos para modelos grandes, metade disso para os pequenos
-       (o custo de acordar threads supera o ganho). OMP_NUM_THREADS sobrepoe. */
-    if (!getenv("OMP_NUM_THREADS") && omp_get_num_procs() >= 4)
-        omp_set_num_threads(omp_get_num_procs() / (m->n_params < 500000000 ? 4 : 2));
-#endif
 
     size_t ctx = c->ctx, L = c->n_layers;
     m->kcache = xalloc(L * ctx * kvd, sizeof(float));
@@ -1178,8 +1318,10 @@ static Gpu gpu;
 
 /* fracao da VRAM que o motor pode ocupar (o resto fica para o driver e o sistema) */
 static uint64_t gpu_budget(void) {
-    int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : 95;
-    if (pct < 10 || pct > 99) pct = 95;
+    /* 92%: medido com um 7B numa placa de 4 GB. A 95% cabia uma camada a mais, mas a geracao
+       caia de 13,4 para 9,8 tokens/s (a placa cheia demais passa a usar memoria compartilhada). */
+    int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : 92;
+    if (pct < 10 || pct > 99) pct = 92;
     return gpu.vram / 100 * (uint64_t)pct;
 }
 static int32_t gerr;
@@ -1774,26 +1916,31 @@ static uint32_t *shard_read(const char *name, size_t bytes) {
     return buf;
 }
 
+typedef struct { Mat **ms; int n; size_t rows, cols, wpr; uint32_t *buf; } PackJob;
+static void pack_job(void *c, int g0, int g1) {
+    const PackJob *j = c;
+    uint32_t *tmp = malloc(j->wpr * 4);
+    if (!tmp) die("sem memoria");
+    for (int g = g0; g < g1; g++) {
+        const Mat *W = j->ms[g % j->n];
+        const size_t r0 = (size_t)(g / j->n) * 32;
+        uint32_t *base = j->buf + (size_t)g * j->wpr * 32;
+        for (size_t k = 0; k < 32 && r0 + k < j->rows; k++) {
+            gpu_pack_row(W, r0 + k, j->cols, tmp);
+            for (size_t w = 0; w < j->wpr; w++) base[w * 32 + k] = tmp[w];
+        }
+    }
+    free(tmp);
+}
+
 /* monta o buffer de n matrizes de mesmo formato: layout entrelacado, intercaladas por grupo de 32 linhas */
 static uint32_t *gpu_build_buf(Mat **ms, int n, size_t rows, size_t cols, size_t *bytes_out) {
     const size_t wpr = gpu_wpr(ms[0], cols), rowsP = (rows + 127) & ~(size_t)127;
     uint32_t *buf = calloc(rowsP * wpr * n, 4);
     *bytes_out = rowsP * wpr * 4 * n;
     if (!buf) return NULL;
-    long long g;
-    const long long ng = (long long)(rowsP / 32) * n;
-#pragma omp parallel for schedule(static)
-    for (g = 0; g < ng; g++) {
-        const Mat *W = ms[g % n];
-        const size_t r0 = (size_t)(g / n) * 32;
-        uint32_t *tmp = malloc(wpr * 4);
-        uint32_t *base = buf + (size_t)g * wpr * 32;
-        for (size_t k = 0; k < 32 && r0 + k < rows; k++) {
-            gpu_pack_row(W, r0 + k, cols, tmp);
-            for (size_t w = 0; w < wpr; w++) base[w * 32 + k] = tmp[w];
-        }
-        free(tmp);
-    }
+    PackJob job = { ms, n, rows, cols, wpr, buf };
+    pool_for(pack_job, &job, (int)(rowsP / 32) * n, 4);
     return buf;
 }
 
@@ -2109,6 +2256,12 @@ static void cprof_report(void) {
                 cprof[i].t * 1e3, 100.0 * cprof[i].t / tot, cprof[i].w / (cprof[i].t + 1e-12) / 1e9);
 }
 
+typedef struct { float *out; const Mat *W; const float *x, *sx; int cols; } MvJob;
+static void mv_job(void *c, int i0, int i1) {
+    const MvJob *j = c;
+    for (int i = i0; i < i1; i++) j->out[i] = dot_row(j->W, (size_t)i, j->x, j->sx, j->cols);
+}
+
 /* out[rows] = W[rows][cols] * x[cols] */
 static void matvec(float *out, const Mat *W, const float *x, int rows, int cols) {
     float sx[MAX_SX];
@@ -2125,8 +2278,13 @@ static void matvec(float *out, const Mat *W, const float *x, int rows, int cols)
         if (cols / 32 > MAX_SX) die("matriz larga demais");
         block_sums(sx, x, cols);
     }
-#pragma omp parallel for schedule(static) if ((long long)rows * cols >= 200000)
-    for (i = 0; i < rows; i++) out[i] = dot_row(W, (size_t)i, x, sx, cols);
+    if ((long long)rows * cols >= 200000 && pool.n > 1) {
+        /* blocos de ~32 mil pesos, e pelo menos 8 por thread para absorver threads atrasadas */
+        MvJob job = { out, W, x, sx, cols };
+        int chunk = rows / (pool.n * 8), minc = 32768 / cols + 1;
+        if (chunk < minc) chunk = minc;
+        pool_for(mv_job, &job, rows, chunk);
+    } else for (i = 0; i < rows; i++) out[i] = dot_row(W, (size_t)i, x, sx, cols);
     if (gpu.debug) {
         const int k = !W->q ? 0 : W->type == T_Q4_K ? 2 : W->type == T_Q6_K ? 3 : 1;
         cprof[k].t += now_sec() - t1; cprof[k].w += (double)rows * cols; cprof[k].n++;
@@ -2727,6 +2885,47 @@ static void micro_mat(const char *name, const Mat *W, int rows, int cols) {
     free(x); free(sx);
 }
 
+/* o mesmo teste com todas as threads do pool: se "mesma linha" escala e "matriz inteira"
+   nao, o limite e a memoria; se nem "mesma linha" escala, sao os nucleos (ocupados ou
+   com a frequencia reduzida) */
+typedef struct { const Mat *W; const float *x, *sx; int cols; volatile float sink; } MicroJob;
+static void micro_same_row(void *c, int i0, int i1) {
+    MicroJob *j = c;
+    float a = 0.0f;
+    for (int i = i0; i < i1; i++) a += dot_row(j->W, 0, j->x, j->sx, j->cols);
+    j->sink += a;
+}
+static void micro_calib(void *c, int i0, int i1) {
+    uint64_t acc = (uint64_t)i0 + 1;
+    (void)c;
+    for (int r = i0; r < i1; r++)
+        for (int i = 0; i < 1000000; i++) acc = acc * 6364136223846793005ull + 1442695040888963407ull;
+    if (acc == 42) printf(" ");
+}
+
+static void micro_par(const char *name, const Mat *W, int rows, int cols) {
+    if (!mat_int(W)) return;
+    float *x = xalloc(cols, sizeof(float)), *out = xalloc(rows, sizeof(float));
+    for (int i = 0; i < cols; i++) x[i] = (float)rand() / RAND_MAX * 2.0f - 1.0f;
+    xq_prepare(x, cols);
+    MicroJob job = { W, x, NULL, cols, 0.0f };
+    const int reps = (int)(1600000000.0 / cols) + 1;
+    double t0 = now_sec();
+    pool_for(micro_same_row, &job, reps, reps / (pool.n * 16) + 1);
+    double t1 = now_sec();
+    pool.st_jobs = pool.st_main = pool.st_work = pool.st_sleep = 0;
+    const int passes = (int)(1600000000.0 / ((double)rows * cols)) + 1;
+    for (int ps = 0; ps < passes; ps++) matvec(out, W, x, rows, cols);
+    double t2 = now_sec();
+    printf("  %-9s tipo=%-2u %d threads  mesma linha: %6.2f G pesos/s | matriz inteira: %6.2f G pesos/s (%.2f GB/s lidos)\n",
+           name, W->type, pool.n, (double)reps * cols / (t1 - t0) / 1e9,
+           (double)passes * rows * cols / (t2 - t1) / 1e9, (double)passes * rows * W->stride / (t2 - t1) / 1e9);
+    printf("            pool: %ld trabalhos, blocos feitos pela principal %ld e pelas outras %ld, sonos %ld, %.0f us por trabalho\n",
+           (long)pool.st_jobs, (long)pool.st_main, (long)pool.st_work, (long)pool.st_sleep, (t2 - t1) * 1e6 / passes);
+    pool.st_jobs = pool.st_main = pool.st_work = pool.st_sleep = 0;
+    free(x); free(out);
+}
+
 static int micro(const Model *m) {
     const Config *c = &m->cfg;
     const Layer *L = &m->layers[0];
@@ -2750,6 +2949,16 @@ static int micro(const Model *m) {
     micro_mat("ffn_gate", &L->w_gate, H, d);
     micro_mat("ffn_down", &L->w_down, d, H);
     micro_mat("lm_head", &m->lm_head, c->vocab, d);
+    {   /* calibracao paralela: contas escalares puras em todas as threads */
+        double t0 = now_sec();
+        pool_for(micro_calib, NULL, 64 * pool.n, 1);
+        double t1 = now_sec();
+        printf("em paralelo (%d threads): contas escalares = %.2f GHz equivalentes por thread\n",
+               pool.n, 64.0 * 1000000 * 4 / (t1 - t0) / 1e9);
+    }
+    micro_par("attn_q", &L->wq, d, d);
+    micro_par("ffn_gate", &L->w_gate, H, d);
+    micro_par("ffn_down", &L->w_down, d, H);
     return 0;
 }
 
@@ -2978,5 +3187,6 @@ int main(int argc, char **argv) {
     }
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    pool_init();
     return run_main(argc, argv);
 }
