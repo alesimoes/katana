@@ -1203,8 +1203,86 @@ static float dot_q6k_i(const uint8_t *row, int cols) {
     }
     return hsum256(acc);
 }
+
+/* Q5_K inteiro: como o Q4_K, com o quinto bit de cada peso vindo de uma mascara de 32 bytes */
+static float dot_q5k_i(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), one = _mm256_set1_epi8(1);
+    const uint32_t k1 = 0x3f3f3f3fu, k2 = 0x0f0f0f0fu, k3 = 0x03030303u;
+    const int16_t *xp = xq.q;
+    const int32_t *bs = xq.bs32;
+    __m256 acc = _mm256_setzero_ps(), accm = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 176, xp += 256, bs += 8) {
+        uint16_t h0, h1; uint32_t u[4];
+        memcpy(&h0, row, 2); memcpy(&h1, row + 2, 2); memcpy(u, row + 4, 12);
+        u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+        const uint32_t aux = u[1] & k1;
+        u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+        u[2] = aux;
+        u[0] &= k1;
+        const float xs = xq.xs[b];
+        const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h0))) * xs;
+        const float dmin = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h1))) * xs;
+        const __m256i sc32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)u));
+        const __m256i mn32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(u + 2)));
+        const __m256 scf = _mm256_mul_ps(_mm256_cvtepi32_ps(sc32), _mm256_set1_ps(d));
+        accm = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_mullo_epi32(mn32, _mm256_loadu_si256((const __m256i *)bs))),
+                               _mm256_set1_ps(dmin), accm);
+        const __m256i hv = _mm256_loadu_si256((const __m256i *)(row + 16));
+        const uint8_t *q = row + 48;
+        for (int j = 0; j < 4; j++) {
+            const __m256i v = _mm256_loadu_si256((const __m256i *)(q + 32 * j));
+            const __m256i lo = _mm256_or_si256(_mm256_and_si256(v, m4),
+                               _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2 * j), one), 4));
+            const __m256i hi = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(v, 4), m4),
+                               _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2 * j + 1), one), 4));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(mul32_u8_s16(lo, xp + 64 * j)),
+                                  _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j)), acc);
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(mul32_u8_s16(hi, xp + 64 * j + 32)),
+                                  _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j + 1)), acc);
+        }
+    }
+    return hsum256(acc) - hsum256(accm);
+}
+
+/* Q3_K inteiro: pesos de 3 bits (-4..3) = 2 bits + 1 bit alto numa mascara; 16 escalas de 6 bits */
+static float dot_q3k_i(const uint8_t *row, int cols) {
+    const __m256i m3 = _mm256_set1_epi8(3), one = _mm256_set1_epi8(1), four = _mm256_set1_epi16(4);
+    const uint32_t km1 = 0x03030303u, km2 = 0x0f0f0f0fu;
+    const int16_t *xp = xq.q;
+    __m256 acc = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 110, xp += 256) {
+        uint32_t aux[4]; uint16_t h;
+        memcpy(aux, row + 96, 12); memcpy(&h, row + 108, 2);
+        const uint32_t tmp = aux[2];
+        aux[2] = ((aux[0] >> 4) & km2) | (((tmp >> 4) & km1) << 4);
+        aux[3] = ((aux[1] >> 4) & km2) | (((tmp >> 6) & km1) << 4);
+        aux[0] = (aux[0] & km2) | (((tmp >> 0) & km1) << 4);
+        aux[1] = (aux[1] & km2) | (((tmp >> 2) & km1) << 4);
+        const __m128i s8 = _mm_sub_epi8(_mm_loadu_si128((const __m128i *)aux), _mm_set1_epi8(32));
+        const __m256 dv = _mm256_set1_ps(_mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))) * xq.xs[b]);
+        const __m256i hm = _mm256_loadu_si256((const __m256i *)row);
+        for (int j = 0; j < 2; j++) {
+            const __m256 scf = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(j ? _mm_srli_si128(s8, 8) : s8)), dv);
+            const __m256i qv = _mm256_loadu_si256((const __m256i *)(row + 32 + 32 * j));
+            for (int k = 0; k < 4; k++) {
+                const int16_t *x = xp + (j * 4 + k) * 32;
+                const __m256i u = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qv, 2 * k), m3),
+                                  _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hm, 4 * j + k), one), 2));
+                const __m256i a = _mm256_sub_epi16(_mm256_cvtepu8_epi16(_mm256_castsi256_si128(u)), four);
+                const __m256i e = _mm256_sub_epi16(_mm256_cvtepu8_epi16(_mm256_extracti128_si256(u, 1)), four);
+                acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_madd_epi16(a, _mm256_loadu_si256((const __m256i *)x))),
+                                      _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * k)), acc);
+                acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_madd_epi16(e, _mm256_loadu_si256((const __m256i *)(x + 16)))),
+                                      _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * k + 1)), acc);
+            }
+        }
+    }
+    return hsum256(acc);
+}
 #else
 #define HAVE_INT_DOT 0
+static float dot_q5k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
+static float dot_q3k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
 static void xq_prepare(const float *x, int cols) { (void)x; (void)cols; }
 static float dot_q4k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
 static float dot_q6k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
@@ -1212,13 +1290,15 @@ static float dot_q6k_i(const uint8_t *row, int cols) { (void)row; (void)cols; re
 
 /* a matriz usa o produto inteiro? (so tipos K, e se nao estiver no modo exato) */
 static int mat_int(const Mat *W) {
-    return HAVE_INT_DOT && !cpu_exact && W->q && (W->type == T_Q4_K || W->type == T_Q6_K);
+    return HAVE_INT_DOT && !cpu_exact && W->q &&
+           (W->type == T_Q4_K || W->type == T_Q6_K || W->type == T_Q5_K || W->type == T_Q3_K);
 }
 
 static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, int cols) {
     if (W->f) return dot(W->f + i * cols, x, cols);
     const uint8_t *row = W->q + i * W->stride;
-    if (mat_int(W)) return W->type == T_Q4_K ? dot_q4k_i(row, cols) : dot_q6k_i(row, cols);
+    if (mat_int(W)) return W->type == T_Q4_K ? dot_q4k_i(row, cols) : W->type == T_Q6_K ? dot_q6k_i(row, cols)
+                         : W->type == T_Q5_K ? dot_q5k_i(row, cols) : dot_q3k_i(row, cols);
     if (W->type == T_Q4_K) return dot_q4k(row, x, sx, cols);
     if (W->type == T_Q6_K) return dot_q6k(row, x, cols);
     if (W->type == T_Q8_0) return dot_q8(row, x, cols);
@@ -1291,6 +1371,7 @@ typedef struct {
     clh k_f32, k_q8, k_q4k, k_q5k, k_q6k, k_bsum;
     clh kp_f32, kp_q8, kp_q4k, kp_q5k, kp_q6k;      /* mesmos kernels com 2*nr linhas por thread (par gate/up) */
     clh k_rms, k_qkv, k_gather, k_att_scores, k_att_softmax, k_att_mix;
+    clh k_mv3, k_att1;      /* fundidos da geracao; so existem com nb=1 e nr=1 */
 } KSet;
 
 typedef struct {
@@ -1557,6 +1638,121 @@ static const char *GPU_SRC =
 "  }\n"
 "  FINISH\n"
 "}\n"
+/* ---- kernels fundidos da geracao (um token por vez: NB=1, NR=1) ----
+   O custo fixo de lancar um kernel domina a geracao (um modelo de 135M e um de 1,1B geravam
+   na mesma velocidade). Aqui q, k e v saem de um lancamento so, mesmo com tipos diferentes,
+   e a atencao inteira (notas, softmax e mistura) de outro. */
+"#if NB == 1 && NR == 1\n"
+/* soma de uma linha Q4_K (five=0) ou Q5_K (five=1) sobre bps blocos */
+"inline float rd_q45(__global const uint *p, __global const float *xb, int bps, int five) {\n"
+"  const int wpb = five ? 44 : 36, q0 = five ? 12 : 4;\n"
+"  float total = 0.0f;\n"
+"  for (int b = 0; b < bps; b++, p += wpb * 32) {\n"
+"    uint h0 = p[0], hw[3];\n"
+"    hw[0] = p[32]; hw[1] = p[64]; hw[2] = p[96];\n"
+"    float d = h2f(h0 & 0xFFFF), dmin = h2f(h0 >> 16);\n"
+"    for (int j = 0; j < 8; j += 2, xb += 64) {\n"
+"      int s1, m1, s2, m2;\n"
+"      k4(j, hw, &s1, &m1); k4(j + 1, hw, &s2, &m2);\n"
+"      float a = 0.0f, c = 0.0f, xa = 0.0f, xc = 0.0f;\n"
+"      for (int l = 0; l < 8; l++) {\n"
+"        uint w = p[(q0 + j * 4 + l) * 32], hb = five ? p[(4 + l) * 32] >> j : 0;\n"
+"        float x0 = xb[4 * l], x1 = xb[4 * l + 1], x2 = xb[4 * l + 2], x3 = xb[4 * l + 3];\n"
+"        float y0 = xb[32 + 4 * l], y1 = xb[33 + 4 * l], y2 = xb[34 + 4 * l], y3 = xb[35 + 4 * l];\n"
+"        a += (float)((w & 15) | ((hb & 1) << 4)) * x0 + (float)(((w >> 8) & 15) | (((hb >> 8) & 1) << 4)) * x1\n"
+"           + (float)(((w >> 16) & 15) | (((hb >> 16) & 1) << 4)) * x2 + (float)(((w >> 24) & 15) | (((hb >> 24) & 1) << 4)) * x3;\n"
+"        c += (float)(((w >> 4) & 15) | (((hb >> 1) & 1) << 4)) * y0 + (float)(((w >> 12) & 15) | (((hb >> 9) & 1) << 4)) * y1\n"
+"           + (float)(((w >> 20) & 15) | (((hb >> 17) & 1) << 4)) * y2 + (float)((w >> 28) | (((hb >> 25) & 1) << 4)) * y3;\n"
+"        xa += x0 + x1 + x2 + x3; xc += y0 + y1 + y2 + y3;\n"
+"      }\n"
+"      total += d * ((float)s1 * a + (float)s2 * c) - dmin * ((float)m1 * xa + (float)m2 * xc);\n"
+"    }\n"
+"  }\n"
+"  return total;\n"
+"}\n"
+"inline float rd_q6(__global const uint *p, __global const float *xb, int bps) {\n"
+"  float total = 0.0f;\n"
+"  for (int b = 0; b < bps; b++, p += 53 * 32) {\n"
+"    float acc = 0.0f;\n"
+"    for (int g = 0; g < 4; g++) {\n"
+"      int scw = (int)p[(48 + g) * 32];\n"
+"      for (int k = 0; k < 4; k++, xb += 16) {\n"
+"        float xv[16];\n"
+"        for (int u = 0; u < 16; u++) xv[u] = xb[u];\n"
+"        __global const uint *q = p + (g * 4 + k) * 3 * 32;\n"
+"        uint w0 = q[0], w1 = q[32], w2 = q[64];\n"
+"        float s = QT(w0, 0) + QT(w0 >> 6, 1) + QT(w0 >> 12, 2) + QT(w0 >> 18, 3) + QT(w0 >> 24, 4)\n"
+"                + QT((w0 >> 30) | (w1 << 2), 5) + QT(w1 >> 4, 6) + QT(w1 >> 10, 7) + QT(w1 >> 16, 8)\n"
+"                + QT(w1 >> 22, 9) + QT((w1 >> 28) | (w2 << 4), 10) + QT(w2 >> 2, 11) + QT(w2 >> 8, 12)\n"
+"                + QT(w2 >> 14, 13) + QT(w2 >> 20, 14) + QT(w2 >> 26, 15);\n"
+"        acc += (float)((scw << (24 - 8 * k)) >> 24) * s;\n"
+"      }\n"
+"    }\n"
+"    total += as_float(p[52 * 32]) * acc;\n"
+"  }\n"
+"  return total;\n"
+"}\n"
+/* tres matrizes de mesmas colunas (q, k, v) num lancamento: a thread descobre pela faixa de
+   linhas qual matriz e, calcula o produto no tipo dela e grava no buffer de saida dela.
+   kinds: 12 = Q4_K, 13 = Q5_K, 14 = 6 bits. rp0/rp1: linhas (arredondadas) de q e de k. */
+"__kernel void mv3(__global const uint *W0, __global const uint *W1, __global const uint *W2,\n"
+"    __global const float *x, __global float *o0, __global float *o1, __global float *o2,\n"
+"    int k0, int k1, int k2, int rp0, int rp1, int r0, int r1, int r2, int cols, int nseg) {\n"
+"  __local float lp[MAXSEG * 32];\n"
+"  int i = get_global_id(0), sg = get_global_id(1), lane = i & 31;\n"
+"  int which = i < rp0 ? 0 : i < rp0 + rp1 ? 1 : 2;\n"
+"  int row = which == 0 ? i : which == 1 ? i - rp0 : i - rp0 - rp1;\n"
+"  int kind = which == 0 ? k0 : which == 1 ? k1 : k2;\n"
+"  int rows = which == 0 ? r0 : which == 1 ? r1 : r2;\n"
+"  __global const uint *W = which == 0 ? W0 : which == 1 ? W1 : W2;\n"
+"  __global float *out = which == 0 ? o0 : which == 1 ? o1 : o2;\n"
+"  int nb = cols >> 8, bps = nb / nseg, b0 = sg * bps;\n"
+"  int wpb = kind == 12 ? 36 : kind == 13 ? 44 : 53;\n"
+"  __global const uint *p = W + (size_t)(row >> 5) * (size_t)(nb * wpb) * 32 + lane + (size_t)b0 * (wpb * 32);\n"
+"  __global const float *xb = x + (size_t)b0 * 256;\n"
+"  float total = kind == 14 ? rd_q6(p, xb, bps) : rd_q45(p, xb, bps, kind == 13);\n"
+"  if (nseg > 1) {\n"
+"    lp[sg * 32 + lane] = total;\n"
+"    barrier(CLK_LOCAL_MEM_FENCE);\n"
+"    if (sg != 0) return;\n"
+"    total = 0.0f;\n"
+"    for (int q_ = 0; q_ < nseg; q_++) total += lp[q_ * 32 + lane];\n"
+"  }\n"
+"  if (row < rows) out[row] = total;\n"
+"}\n"
+/* atencao de um token num lancamento: um grupo de trabalho por cabeca, hd threads cada.
+   As threads repartem as posicoes para as notas, juntam maximo e soma pela memoria local
+   (softmax) e depois cada uma mistura um elemento da saida. */
+"__kernel void att1(__global const float *q, __global const KVT *kc, __global const KVT *vc,\n"
+"    __global float *att, __global float *out, int base, int pos, int ctx, int hd, int kvd, int group, float scale) {\n"
+"  __local float lm[256];\n"
+"  int h = get_group_id(0), l = get_local_id(0), T = pos + 1;\n"
+"  __global float *a = att + (size_t)h * ctx;\n"
+"  __global const float *qh = q + h * hd;\n"
+"  float mx = -3.0e38f;\n"
+"  for (int t = l; t < T; t += hd) {\n"
+"    __global const KVT *kh = kc + base + t * kvd + (h / group) * hd;\n"
+"    float s = 0.0f;\n"
+"    for (int j = 0; j < hd; j++) s += qh[j] * KVL(kh, j);\n"
+"    s *= scale; a[t] = s; mx = max(mx, s);\n"
+"  }\n"
+"  lm[l] = mx;\n"
+"  barrier(CLK_LOCAL_MEM_FENCE);\n"
+"  float gm = lm[0];\n"
+"  for (int k = 1; k < hd; k++) gm = max(gm, lm[k]);\n"
+"  barrier(CLK_LOCAL_MEM_FENCE);\n"
+"  float sum = 0.0f;\n"
+"  for (int t = l; t < T; t += hd) { float e = exp(a[t] - gm); a[t] = e; sum += e; }\n"
+"  lm[l] = sum;\n"
+"  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);\n"
+"  float tot = 0.0f;\n"
+"  for (int k = 0; k < hd; k++) tot += lm[k];\n"
+"  __global const KVT *v = vc + base + (h / group) * hd + l;\n"
+"  float s = 0.0f;\n"
+"  for (int t = 0; t < T; t++) s += a[t] * KVL(v, t * kvd);\n"
+"  out[h * hd + l] = s / tot;\n"
+"}\n"
+"#endif\n"
 /* somas de x por sub-bloco de 32 colunas (termo do minimo do Q4_K em lote) */
 "__kernel void bsum(__global const float *x, __global float *sx) {\n"
 "  int i = get_global_id(0);\n"
@@ -1680,6 +1876,8 @@ static int gpu_build_set(KSet *ks, int nb, int nr, clh dev) {
     KERN(prog, k_bsum, "bsum"); KERN(prog, k_rms, "rms"); KERN(prog, k_qkv, "qkv_post");
     KERN(prog, k_gather, "gather"); KERN(prog, k_att_scores, "att_scores");
     KERN(prog, k_att_softmax, "att_softmax"); KERN(prog, k_att_mix, "att_mix");
+    ks->k_mv3 = ks->k_att1 = NULL;
+    if (nb == 1 && nr == 1 && !getenv("KATANA_NOFUSE")) { KERN(prog, k_mv3, "mv3"); KERN(prog, k_att1, "att1"); }
 #undef KERN
     return 1;
 }
@@ -2189,6 +2387,23 @@ static void krun2(clh k, size_t n0, size_t n1) {
     prof_elems = 0.0;
 }
 
+/* NDRange 1D com tamanho de grupo explicito */
+static void krun_local(clh k, size_t n, size_t local) {
+    double t0 = gpu.debug ? now_sec() : 0.0;
+    int32_t e = cl.EnqueueNDRangeKernel(gpu.queue, k, 1, NULL, &n, &local, 0, NULL, NULL);
+    if (e && !gerr) fprintf(stderr, "GPU: enqueue(kernel=%p, n=%zu, grupo=%zu) erro %d\n", k, n, local, e);
+    gerr |= e;
+    if (gpu.debug && !gerr) {
+        e = cl.Finish(gpu.queue);
+        if (e) fprintf(stderr, "GPU: kernel=%p n=%zu falhou na execucao, erro %d\n", k, n, e);
+        gerr |= e;
+        for (int i = 0; i < n_prof; i++) if (prof[i].k == k) {
+            prof[i].t += now_sec() - t0; prof[i].calls++; prof[i].elems += prof_elems;
+        }
+    }
+    prof_elems = 0.0;
+}
+
 static void prof_report(void) {
     double tot = 0.0;
     if (!gpu.debug) return;
@@ -2353,9 +2568,24 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         /* --- atencao --- */
         g_rms(ks, gpu.bx, gpu.an[l], gpu.bxb, d, c->eps);
         g_bsum(ks, gpu.bxb, d, &L->wq, &L->wk, &L->wv);
-        gmv(ks, &L->wq, gpu.bxb, gpu.bq, NULL, d, d, 0);
-        gmv(ks, &L->wk, gpu.bxb, gpu.bk, NULL, kvd, d, 0);
-        gmv(ks, &L->wv, gpu.bxb, gpu.bv, NULL, kvd, d, 0);
+        const uint32_t kq = gpu_kind(&L->wq), kk = gpu_kind(&L->wk), kv = gpu_kind(&L->wv);
+        if (ks->k_mv3 && kq >= T_Q4_K && kk >= T_Q4_K && kv >= T_Q4_K && d % 256 == 0) {
+            /* q, k e v num lancamento so */
+            const size_t rpq = ((size_t)d + 127) & ~(size_t)127, rpk = ((size_t)kvd + 127) & ~(size_t)127;
+            const int nseg = gpu_nseg(rpq + 2 * rpk, d / 256, 1);
+            k = ks->k_mv3;
+            ka_m(k, 0, L->wq.gbuf); ka_m(k, 1, L->wk.gbuf); ka_m(k, 2, L->wv.gbuf); ka_m(k, 3, gpu.bxb);
+            ka_m(k, 4, gpu.bq); ka_m(k, 5, gpu.bk); ka_m(k, 6, gpu.bv);
+            ka_i(k, 7, (int)kq); ka_i(k, 8, (int)kk); ka_i(k, 9, (int)kv);
+            ka_i(k, 10, (int)rpq); ka_i(k, 11, (int)rpk);
+            ka_i(k, 12, d); ka_i(k, 13, kvd); ka_i(k, 14, kvd); ka_i(k, 15, d); ka_i(k, 16, nseg);
+            prof_elems = (double)(d + 2 * kvd) * d;
+            krun2(k, rpq + 2 * rpk, (size_t)nseg);
+        } else {
+            gmv(ks, &L->wq, gpu.bxb, gpu.bq, NULL, d, d, 0);
+            gmv(ks, &L->wk, gpu.bxb, gpu.bk, NULL, kvd, d, 0);
+            gmv(ks, &L->wv, gpu.bxb, gpu.bv, NULL, kvd, d, 0);
+        }
 
         k = ks->k_qkv;      /* bias + RoPE em q (no lugar) e k (no cache), v copiado para o cache */
         ka_m(k, 0, gpu.bq); ka_m(k, 1, gpu.bk); ka_m(k, 2, gpu.bv);
@@ -2367,19 +2597,27 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         ka_i(k, 14, d); ka_i(k, 15, kvd);
         krun(k, (size_t)B * (d / 2 + kvd / 2 + kvd));
 
-        k = ks->k_att_scores;
-        ka_m(k, 0, gpu.bq); ka_m(k, 1, gpu.bkc); ka_m(k, 2, gpu.batt);
-        ka_i(k, 3, base); ka_i(k, 4, pos0); ka_i(k, 5, tmax); ka_i(k, 6, ctx); ka_i(k, 7, hd);
-        ka_i(k, 8, kvd); ka_i(k, 9, group); ka_i(k, 10, nh); ka_f(k, 11, scale);
-        krun(k, (size_t)B * nh * tmax);
-        k = ks->k_att_softmax;
-        ka_m(k, 0, gpu.batt); ka_i(k, 1, pos0); ka_i(k, 2, ctx); ka_i(k, 3, nh);
-        krun(k, (size_t)B * nh);
-        k = ks->k_att_mix;
-        ka_m(k, 0, gpu.batt); ka_m(k, 1, gpu.bvc); ka_m(k, 2, gpu.bxb);
-        ka_i(k, 3, base); ka_i(k, 4, pos0); ka_i(k, 5, ctx); ka_i(k, 6, hd); ka_i(k, 7, kvd);
-        ka_i(k, 8, group); ka_i(k, 9, nh);
-        krun(k, (size_t)B * d);
+        if (ks->k_att1 && hd <= 256) {      /* atencao inteira num lancamento */
+            k = ks->k_att1;
+            ka_m(k, 0, gpu.bq); ka_m(k, 1, gpu.bkc); ka_m(k, 2, gpu.bvc); ka_m(k, 3, gpu.batt); ka_m(k, 4, gpu.bxb);
+            ka_i(k, 5, base); ka_i(k, 6, pos0); ka_i(k, 7, ctx); ka_i(k, 8, hd); ka_i(k, 9, kvd); ka_i(k, 10, group);
+            ka_f(k, 11, scale);
+            krun_local(k, (size_t)nh * hd, (size_t)hd);
+        } else {
+            k = ks->k_att_scores;
+            ka_m(k, 0, gpu.bq); ka_m(k, 1, gpu.bkc); ka_m(k, 2, gpu.batt);
+            ka_i(k, 3, base); ka_i(k, 4, pos0); ka_i(k, 5, tmax); ka_i(k, 6, ctx); ka_i(k, 7, hd);
+            ka_i(k, 8, kvd); ka_i(k, 9, group); ka_i(k, 10, nh); ka_f(k, 11, scale);
+            krun(k, (size_t)B * nh * tmax);
+            k = ks->k_att_softmax;
+            ka_m(k, 0, gpu.batt); ka_i(k, 1, pos0); ka_i(k, 2, ctx); ka_i(k, 3, nh);
+            krun(k, (size_t)B * nh);
+            k = ks->k_att_mix;
+            ka_m(k, 0, gpu.batt); ka_m(k, 1, gpu.bvc); ka_m(k, 2, gpu.bxb);
+            ka_i(k, 3, base); ka_i(k, 4, pos0); ka_i(k, 5, ctx); ka_i(k, 6, hd); ka_i(k, 7, kvd);
+            ka_i(k, 8, group); ka_i(k, 9, nh);
+            krun(k, (size_t)B * d);
+        }
         g_bsum(ks, gpu.bxb, d, &L->wo, NULL, NULL);
         gmv(ks, &L->wo, gpu.bxb, gpu.bx, gpu.lbo[l], d, d, 1);           /* x += Wo*att (+bias) */
 
