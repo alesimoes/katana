@@ -57,3 +57,86 @@ Para comparar: o prototipo fp16 fazia 1.9-2.6 T.
     sh gen.sh                      (SPIR-V: q4k.h q6k.h q4k16.h q6k16.h red.h)
     cmd //c "C:\source\katana\tools\vkq4k\b.bat"
     vkq4k.exe [acc16] [q4|q6]
+
+---
+# Versao 2 (vkmm): ladrilhos estreitos, bordas, mais tipos, modos de saida
+
+Arquivos: mm.comp (um shader parametrizado por -D), red2.comp (soma das fatias de K, com modo soma),
+cvt.comp (fp32 -> fp16), gen2.sh (gera spv/*.spv, uma variante por tipo/ladrilho/x32/tabela/glu),
+vkmm.c (harness), b2.bat (compila), best.sh (resume varreduras: melhor linha por forma/lote).
+O codigo antigo (vkq4k.c, q4k.comp...) foi mantido sem mudanca.
+
+## O que existe
+- Tipos: Q4_K, Q6_K, Q5_K (44 palavras), Q8_0 (9 palavras; serve para Q4_0 reempacotado), F32 (pesos
+  viram fp16 ao encher o ladrilho).
+- Ladrilhos (BMxBN, subgrupos): 64x64 (2x2), 128x16 (4x1), 64x16 (2x1, 64 threads), 128x32 (4x1),
+  64x32 (2x1, 64 threads), 64x16w4 (4x1, acumulador 16x16 por subgrupo), 64x32w4 (4x1).
+- Bordas: linhas e lote qualquer. Pesos so precisam de padding ate multiplo de 32 linhas (grupos
+  inteiros; grupo fora de `rows` nao e lido, vira zero). Ativacoes e saida com teste de limite
+  (lote nao multiplo de 4 usa leitura escalar). Ladrilho de borda grava via memoria compartilhada.
+  cols tem de ser multiplo de 256 (divisao de K em multiplos de 256).
+- Modos de saida: plain, add (y += W*x, push constant `add`), glu (buffer com gate/up intercalados
+  por grupo de 32 linhas, gs=2: saida silu(gate*x)*(up*x); gate e up da mesma linha ficam no
+  mesmo subgrupo via permutacao de linhas do ladrilho; so ladrilhos com CR par, nao os "w4").
+  Divisao de K nao existe para glu; com add a soma e feita em red2.
+- Ativacoes: -x 0 (fp16 pronto), -x 1 (fp32 lido direto, converte ao encher), -x cvt (fp32 -> fp16
+  num despacho antes, incluido no tempo).
+
+## Licao importante
+O primeiro 64x64 generico ficou 2x mais lento (1.4 T) so por causa do epilogue de borda: os lacos
+sobre os acumuladores nao eram desenrolados e o vetor acc foi para memoria local. `[[unroll]]`
+(GL_EXT_control_flow_attributes) resolveu: 64x64 lote 256 8960x1536 = 2.8-2.9 T (antes 2.7).
+
+## Verificacao (todas as saidas contra a CPU, pesos arredondados a fp16, limite erro relativo 1e-3)
+- Formas 8960x1536, 1536x8960, 2048x2048; lotes 4..512; 5 tipos; 7 ladrilhos; split 1 e 4: 1400 OK, 0 falhas.
+- Bordas: linhas 1537 e 8900, lotes 1,3,17,70,100, 5 tipos, 7 ladrilhos, splits 1 e 2, nos modos plain,
+  add (700 cada) e glu (250): tudo OK. Erro/rms tipico 1e-5..1e-4.
+- Tambem: -x 1, -x cvt e -sc 1 em formas menores: OK.
+
+## Medidas (T mult/s uteis, melhor de varias rodadas, GPU compartilhada: +-10% de ruido)
+Q4_K (melhor ladrilho / 64x64 sem split):
+| lote | 8960x1536 | 1536x8960 | 2048x2048 |
+| 4 | 0.44 (64x16w4) / 0.14 | 0.45 (64x16w4 sp4) | 0.34 (64x16w4 sp4) |
+| 8 | 0.87 / 0.36 | 0.87 | 0.69 |
+| 16 | 1.69 (64x16w4) / 0.71 | 1.77 (64x16w4 sp4) | 1.29 (128x16 sp4) |
+| 32 | 2.70 (64x32w4) / 1.40 | 2.37 (128x32 sp4) | 2.09 (64x32w4 sp4) |
+| 64 | 2.72 (64x64) | 2.79 (64x64 sp4) | 2.70 (64x32w4) |
+| 128 | 2.73 (64x64) | 2.67 (64x64 sp4) | 2.85 (64x64) |
+| 256 | 2.82 (64x64) | 2.74 (64x64 sp4) | 2.85 |
+| 512 | 2.87 (64x64) | 2.80 (64x64 sp4) | 2.76 |
+Q6_K: lote 16 2.05 / 2.17 / 1.54; lote 64 3.49 (64x32w4) / 3.35 / 3.18; lote 256 3.19-3.40; lote 512 3.2-3.3.
+Q8_0 8960x1536: lote 16 1.82, 32 2.98, 64 3.04, 256 3.19. Q5_K: lote 16 1.45, 64 2.55, 256 2.70.
+F32 (limitado por banda, 55 MB): lote 16 0.70, 64 2.4, 256 2.46.
+Lotes pequenos (4-8) ficam em ~0.1 ms para 8960x1536 Q4_K: limitados por latencia/decodificacao, nao
+pelos nucleos tensoriais (banda seria ~0.04 ms).
+Add e glu custam o mesmo que plain (glu 8960x1536 Q4 lote 256: 2.61 T contando gate e up).
+
+## Regra de escolha recomendada
+- lote <= 16: 64x16w4 (ou 128x16 com split 4 quando ha poucos ladrilhos de linhas, p.ex. 2048 linhas ou K longo)
+- lote 17..32: 64x32w4 (128x32 sp4 se K longo)
+- lote 33..64: 64x32w4 (Q6/Q8) ou 64x64 (Q4/Q5/F32); com K >= 8000 usar split 4
+- lote >= 65: 64x64; Q6_K/Q8_0 aceitam 64x32w4 / 128x32 com ganho de ~5%
+- divisao de K (2 ou 4) so quando linhas/ladrilho < ~100 grupos e K longo ou lote pequeno.
+Lote 1: a regra serve (64x16w4), mas o produto por token dedicado (vkmv) deve ser melhor; nao comparado.
+
+## Rejeitado / resultados negativos
+- Tabela de escala/minimo em memoria compartilhada (-sc 1, Q4_K/Q5_K): mais lenta em todos os ladrilhos
+  (ex.: 64x64 lote 256 2.54 contra 2.79 T; 128x32 1.74 contra 2.31): barreira extra e a decodificacao por
+  thread ja e barata. Mantida so como opcao de compilacao.
+- Ativacao fp32 lida direto: 2-6% mais lenta que fp16 pronto; fp32 + despacho de conversao: empate dentro do
+  ruido com fp16 pronto. Recomendacao: converter uma vez por vetor de entrada quando varios produtos o
+  compartilham (q/k/v, gate/up); fp32 direto quando so um produto usa a entrada.
+- Ladrilhos de 2 subgrupos (64x16, 64x32) perdem para os de 4 subgrupos (w4).
+
+## Nao feito
+- Rota int8 (tarefa 6): nao tentada.
+- O arquivo do vkq4k antigo nao foi alterado. Nao comparado com o produto por token (vkmv).
+- Variacao entre rodadas: os numeros de 64x16w4 lote 4-8 e os de split variam ~10%.
+
+## Reconstruir e rodar
+    bash gen2.sh                         (spv/*.spv, ~170 variantes)
+    cmd //c "C:\source\katana\tools\vkq4k\b2.bat"
+    vkmm.exe -t q4,q6 -s 8960x1536 -b 16,64,256 -tiles all -splits 1,4          (confere e mede)
+    vkmm.exe -nocheck -t q4 -s 2048x2048 -b 4,8,16,32 -tiles all -splits 1,2,4   (so tempo)
+    vkmm.exe -t q4,q6,q5,q8,f32 -s 1537x1536,8900x1536 -b 1,3,17,70,100 -tiles all -mode add|glu|plain
+    opcoes: -x 0|1|cvt  -sc 0|1  -reps n ; bash best.sh arquivo resume varreduras
