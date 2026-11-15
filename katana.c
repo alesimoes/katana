@@ -39,6 +39,16 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #endif
+/* camada Vulkan (backend opcional, KATANA_BACKEND=vulkan); o kvk.h deixa as macros G e F, removidas aqui */
+#define KVK_IMPL
+#include "vk/kvk.h"
+#undef G
+#undef F
+#include "vk/shaders/mv_f32.h"
+#include "vk/shaders/mv_q8.h"
+#include "vk/shaders/mv_q4k.h"
+#include "vk/shaders/mv_q5k.h"
+#include "vk/shaders/mv_q6k.h"
 
 #define MAX_CTX 4096
 #define TOP_K 40
@@ -1500,6 +1510,8 @@ typedef struct {
     clh bpart, bsx;                                     /* parciais dos segmentos; somas de x */
     size_t seg_target, local;                           /* ajuste: KATANA_SEG, KATANA_LOCAL */
     clh xbuf, obuf;                                     /* modo hibrido */
+    int vk, vk_nbuf;                                    /* backend Vulkan ativo; buffers de pesos criados */
+    KvkBuf vxb, vob;                                    /* Vulkan: x e saida do modo hibrido */
     clh bx, bxb, bq, bk, bv, bhb, blog, batt, bfreq, bkc, bvc, bon;   /* grafo completo */
     clh *an, *fn, *lbq, *lbk, *lbv, *lbo;               /* normas e bias por camada */
     float *xT;                                          /* embeddings do lote, transpostos */
@@ -2421,6 +2433,7 @@ static void loader_start(Model *m, size_t maxper);
 static void heat_load(const Model *m);
 static void preload_feed(const Model *m);
 
+static void *vk_wbuf(const uint32_t *host, size_t bytes);     /* Vulkan: buffer de pesos na VRAM */
 static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols, const char *name) {
     size_t bytes = ((rows + 127) & ~(size_t)127) * gpu_wpr(ms[0], cols) * 4 * n;
     gpu.n_total += n;
@@ -2430,9 +2443,13 @@ static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols, const char *
     else buf = gpu_build_buf(ms, n, rows, cols, &bytes);
     if (!buf) return;
     int32_t err = 0;
-    clh b = cl.CreateBuffer(gpu.ctx, 4 | 32 /* READ_ONLY | COPY_HOST_PTR */, bytes, buf, &err);
-    free(buf);
-    if (err || !b) return;
+    clh b;
+    if (gpu.vk) { b = vk_wbuf(buf, bytes); free(buf); if (!b) return; }
+    else {
+        b = cl.CreateBuffer(gpu.ctx, 4 | 32 /* READ_ONLY | COPY_HOST_PTR */, bytes, buf, &err);
+        free(buf);
+        if (err || !b) return;
+    }
     for (int i = 0; i < n; i++) { ms[i]->gbuf = b; ms[i]->gs = n; ms[i]->go = i; }
     gpu.used += bytes; gpu.n_up += n;
 }
@@ -2486,6 +2503,98 @@ static int gpu_nseg(size_t threads, int nb, int lote_x_linhas) {
         if (threads * sg >= gpu.seg_target) break;
     }
     return best;
+}
+
+
+/* ================= backend Vulkan (so o produto matriz x vetor; o grafo ainda roda na CPU) ================= */
+
+/* um buffer por matriz (ou por par gate/up); o handle fica em Mat.gbuf como ponteiro para KvkBuf */
+static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols);
+static void *vk_wbuf(const uint32_t *host, size_t bytes) {
+    KvkBuf b = kvk_buf_create(bytes, KVK_USAGE_RW);
+    if (!b.b) { fprintf(stderr, "Vulkan: buffer de %.1f MB falhou: %s\n", bytes / 1048576.0, kvk_error()); return NULL; }
+    if (!kvk_buf_write(b, 0, host, bytes)) { fprintf(stderr, "Vulkan: envio falhou: %s\n", kvk_error()); kvk_buf_destroy(&b); return NULL; }
+    KvkBuf *p = xalloc(1, sizeof(KvkBuf));
+    *p = b;
+    gpu.vk_nbuf++;
+    return p;
+}
+
+static const uint32_t *vk_spv[5]; static size_t vk_spv_n[5];
+static KvkPipe vk_pipe[5][9];      /* [tipo][nseg]: criados sob demanda */
+
+static int vk_kind_idx(uint32_t kind) { return kind == T_F32 ? 0 : kind == T_Q8_0 ? 1 : kind == T_Q4_K ? 2 : kind == T_Q5_K ? 3 : 4; }
+
+/* enfileira out = W * x (um token) sem esperar; mesmo layout, gs/go e nseg dos kernels OpenCL */
+static int vk_gmv(const Mat *W, KvkBuf x, KvkBuf out, int rows, int cols, int mode) {
+    if (!vk_spv[0]) {
+        vk_spv[0] = mv_f32_spv; vk_spv_n[0] = sizeof mv_f32_spv; vk_spv[1] = mv_q8_spv; vk_spv_n[1] = sizeof mv_q8_spv;
+        vk_spv[2] = mv_q4k_spv; vk_spv_n[2] = sizeof mv_q4k_spv; vk_spv[3] = mv_q5k_spv; vk_spv_n[3] = sizeof mv_q5k_spv;
+        vk_spv[4] = mv_q6k_spv; vk_spv_n[4] = sizeof mv_q6k_spv;
+    }
+    const uint32_t kind = gpu_kind(W);
+    const int ki = vk_kind_idx(kind);
+    const size_t rowsP = ((size_t)rows + 127) & ~(size_t)127;
+    const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? cols / 32 : cols / 256;
+    const int nseg = gpu_nseg(rowsP, nb, 1);
+    if (!vk_pipe[ki][nseg].p) {
+        const uint32_t ids[2] = { 0, 1 }, vals[2] = { 1, (uint32_t)nseg };
+        vk_pipe[ki][nseg] = kvk_pipe_create(vk_spv[ki], vk_spv_n[ki], 4, 20, ids, vals, 2);
+        if (!vk_pipe[ki][nseg].p) { fprintf(stderr, "Vulkan: pipeline falhou: %s\n", kvk_error()); return 0; }
+    }
+    const KvkBuf bufs[4] = { *(const KvkBuf *)W->gbuf, x, out, x };
+    const int pc[5] = { cols, mode, rows, W->gs, W->go };
+    return kvk_dispatch(vk_pipe[ki][nseg], bufs, 4, pc, sizeof pc, (uint32_t)(rowsP / 32), 1, 1);
+}
+
+static void vk_matvec(float *out, const Mat *W, const float *x, int rows, int cols) {
+    if (!kvk_buf_write_q(gpu.vxb, 0, x, (size_t)cols * sizeof(float)) || !vk_gmv(W, gpu.vxb, gpu.vob, rows, cols, 0)
+        || !kvk_buf_read(gpu.vob, 0, out, (size_t)rows * sizeof(float))) die("falha na execucao em Vulkan");
+}
+
+/* inicia o Vulkan e sobe os pesos (mesmo empacotador e mesmo orcamento do OpenCL); 0 = falhou, usar OpenCL */
+static int vk_setup(Model *m) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab, qd = (size_t)c->n_heads * c->hd;
+    KvkInfo I;
+    if (!kvk_init(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
+    gpu.vk = 1;
+    snprintf(gpu.name, sizeof gpu.name, "%s", I.name);
+    gpu.vram = I.vram_bytes;
+    gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : 16384;
+    size_t maxc = d > H ? d : H;
+    if (qd > maxc) maxc = qd;
+    const size_t maxr = V > maxc ? V : maxc;
+    gpu.vxb = kvk_buf_create(maxc * sizeof(float), KVK_USAGE_RW);
+    gpu.vob = kvk_buf_create((maxr + 128) * sizeof(float), KVK_USAGE_RW);
+    if (!gpu.vxb.b || !gpu.vob.b) { fprintf(stderr, "Vulkan: sem memoria para os buffers (%s)\n", kvk_error()); kvk_shutdown(); gpu.vk = 0; return 0; }
+    gpu.used = (maxc + maxr + 128) * sizeof(float);
+    const uint64_t budget = gpu_budget();
+    int nl = 0;
+    for (int l = 0; l < c->n_layers; l++) {
+        Layer *L = &m->layers[l];
+        const size_t ffn = gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d) + gpu_mat_bytes(&L->w_down, d, H);
+        const size_t need = gpu_mat_bytes(&L->wq, qd, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
+                          + gpu_mat_bytes(&L->wo, d, qd) + (c->n_expert ? 0 : ffn);
+        if (gpu.used + need > budget) break;
+        char nm[32];
+        snprintf(nm, sizeof nm, "L%03d.wq", l);   gpu_upload(&L->wq, qd, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wk", l);   gpu_upload(&L->wk, kvd, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wv", l);   gpu_upload(&L->wv, kvd, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wo", l);   gpu_upload(&L->wo, d, qd, nm);
+        if (!c->n_expert) {
+            gpu_upload_glu(&L->w_gate, &L->w_up, H, d, l);
+            snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, H, nm);
+        }
+        nl++;
+    }
+    if (!m->lm_head.gbuf && nl == c->n_layers && gpu.used + gpu_mat_bytes(&m->lm_head, V, d) <= budget) gpu_upload(&m->lm_head, V, d, "head");
+    kvk_wait();
+    gpu.n_gl = 0; gpu.on = 0; gpu.full = 0;      /* o grafo (forward) ainda roda na CPU */
+    fprintf(stderr, "GPU: Vulkan %s (%.1f GB) - %d de %d camadas na VRAM, %.0f MB usados em %d buffers - Vulkan: grafo ainda na CPU\n",
+            gpu.name, gpu.vram / 1073741824.0, nl, c->n_layers, gpu.used / 1048576.0, gpu.vk_nbuf);
+    if (gpu.n_shard) fprintf(stderr, "GPU: %d buffers lidos dos shards em %s\n", gpu.n_shard, shards.dir);
+    return 1;
 }
 
 /* cria os buffers de trabalho do grafo (sem o cache KV); devolve 0 se algo nao couber */
@@ -2558,6 +2667,12 @@ static void gpu_setup(Model *m) {
     const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
     gpu.cfg_rows = 1; gpu.cfg_rowsb = 2; gpu.cfg_seg = 16384;       /* padroes medidos numa RTX 3050 */
+    {   const char *be = getenv("KATANA_BACKEND");
+        if (be && strcmp(be, "vulkan") == 0) {
+            if (vk_setup(m)) return;
+            fprintf(stderr, "Vulkan: falhou, tentando OpenCL\n");
+        } else if (be && strcmp(be, "opencl") != 0) fprintf(stderr, "KATANA_BACKEND=%s desconhecido (use opencl ou vulkan), usando OpenCL\n", be);
+    }
     if (!gpu_init()) { fprintf(stderr, "GPU: nenhuma disponivel via OpenCL, usando CPU\n"); return; }
     gpu_cfg_load();     /* ajuste desta placa, se `katana tune` ja rodou */
     const uint64_t vram_budget = gpu_budget();
@@ -2861,6 +2976,7 @@ static void gmv_glu(const KSet *ks, const Mat *gate, clh x, clh out, int rows, i
 
 /* modo hibrido: um produto na GPU, com ida e volta */
 static void gpu_matvec(float *out, const Mat *W, const float *x, int rows, int cols) {
+    if (gpu.vk) { vk_matvec(out, W, x, rows, cols); return; }
     gerr |= cl.EnqueueWriteBuffer(gpu.queue, gpu.xbuf, 0, 0, cols * sizeof(float), x, 0, NULL, NULL);
     gmv(&gpu.set[gpu.n_sets - 1], W, gpu.xbuf, gpu.obuf, NULL, rows, cols, 0);
     gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.obuf, 1 /* bloqueante */, 0, (size_t)rows * sizeof(float), out, 0, NULL, NULL);
@@ -3944,6 +4060,7 @@ static int selftest(Model *m) {
     }
     int ok = worst < 1e-4 && worst_int < 1e-4;
     printf("produtos: %s (pior erro relativo: exato %.2e, CPU inteiro %.2e)\n", ok ? "OK" : "FALHOU", worst, worst_int);
+    if (gpu.vk) printf("Vulkan: grafo ainda na CPU (verificacoes de grafo completo puladas)\n");
 
     if (gpu.n_gl > 0) {   /* mesma sequencia pela GPU (em lote e token a token) e pela CPU pura */
         const int V = c->vocab, N = 23;
@@ -3998,6 +4115,63 @@ static int bench(Model *m, int n_prompt, int n_gen) {
     cprof_report();
     moe_report();
     free(toks);
+    return 0;
+}
+
+/* microbenchmark do produto em Vulkan: muitos despachos num fluxo so e uma unica espera no fim */
+static double vk_time_run(const Mat *const *ws, const int *rr, const int *cc, int nw, int reps, KvkBuf x, KvkBuf out, double *weights) {
+    double w = 0.0;
+    kvk_wait();
+    const double t0 = now_sec();
+    for (int i = 0; i < reps; i++) {
+        const int k = i % nw;
+        if (!vk_gmv(ws[k], x, out, rr[k], cc[k], 0)) die("vkmicro: despacho falhou");
+        w += (double)rr[k] * cc[k];
+    }
+    kvk_wait();
+    *weights = w;
+    return now_sec() - t0;
+}
+
+static int vkmicro(Model *m) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, kvd = c->n_kv * c->hd, H = c->hidden, qd = c->n_heads * c->hd;
+    if (!gpu.vk) { printf("vkmicro: Vulkan indisponivel\n"); return 1; }
+    float *xh = xalloc(H > d ? (H > qd ? H : qd) : (d > qd ? d : qd), sizeof(float));
+    for (int i = 0; i < d; i++) xh[i] = (float)rand() / RAND_MAX * 2.0f - 1.0f;
+    kvk_buf_write(gpu.vxb, 0, xh, (size_t)d * sizeof(float));
+    printf("Vulkan: produto matriz x vetor, 400 despachos por espera, G pesos/s\n");
+    const Layer *L = &m->layers[0];
+    const struct { const char *n; const Mat *w; int r, c; } t[] = {
+        { "attn_q", &L->wq, qd, d }, { "attn_k", &L->wk, kvd, d }, { "attn_v", &L->wv, kvd, d }, { "attn_out", &L->wo, d, qd },
+        { "ffn_gate", &L->w_gate, H, d }, { "ffn_up", &L->w_up, H, d }, { "ffn_down", &L->w_down, d, H } };
+    for (int i = 0; i < 7; i++) {
+        if (!t[i].w->gbuf) continue;
+        double w;
+        vk_time_run(&t[i].w, &t[i].r, &t[i].c, 1, 20, gpu.vxb, gpu.vob, &w);     /* aquece */
+        const double s = vk_time_run(&t[i].w, &t[i].r, &t[i].c, 1, 400, gpu.vxb, gpu.vob, &w);
+        printf("  %-9s tipo=%-2u %6dx%-5d (mesma matriz, pode estar na L2): %7.1f G pesos/s  %6.1f us/despacho\n",
+               t[i].n, t[i].w->type, t[i].r, t[i].c, w / s / 1e9, s / 400 * 1e6);
+    }
+    /* todas as matrizes ja na VRAM em sequencia (como uma passada de geracao): fora da L2 */
+    int n = 0, cap = c->n_layers * 7 + 1;
+    const Mat **ws = xalloc(cap, sizeof(Mat *)); int *rr = xalloc(cap, sizeof(int)), *cc = xalloc(cap, sizeof(int));
+    for (int l = 0; l < c->n_layers; l++) {
+        const Layer *Ll = &m->layers[l];
+        const struct { const Mat *w; int r, c; } u[] = { { &Ll->wq, qd, d }, { &Ll->wk, kvd, d }, { &Ll->wv, kvd, d }, { &Ll->wo, d, qd },
+            { &Ll->w_gate, H, d }, { &Ll->w_up, H, d }, { &Ll->w_down, d, H } };
+        for (int i = 0; i < 7; i++) if (u[i].w->gbuf) { ws[n] = u[i].w; rr[n] = u[i].r; cc[n] = u[i].c; n++; }
+    }
+    if (n) {
+        const int reps = n * (n > 100 ? 2 : 6);
+        double w;
+        vk_time_run(ws, rr, cc, n, n, gpu.vxb, gpu.vob, &w);
+        const double s = vk_time_run(ws, rr, cc, n, reps, gpu.vxb, gpu.vob, &w);
+        printf("  todas as %d matrizes na VRAM em sequencia (%d despachos): %7.1f G pesos/s  %6.1f us/despacho\n", n, reps, w / s / 1e9, s / reps * 1e6);
+    }
+    KvkStats st; kvk_stats(&st);
+    printf("  despachos=%llu submissoes=%llu conjuntos de descritores=%llu\n", (unsigned long long)st.dispatches, (unsigned long long)st.submits, (unsigned long long)st.ds_allocs);
+    free(xh); free(ws); free(rr); free(cc);
     return 0;
 }
 
@@ -4800,6 +4974,12 @@ static int run_main(int argc, char **argv) {
         _putenv("KATANA_CPU=1");
         load_model(&m, argv[2]);
         return micro(&m);
+    }
+    if (argc >= 3 && strcmp(argv[1], "vkmicro") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        _putenv("KATANA_BACKEND=vulkan");
+        load_model(&m, argv[2]);
+        return vkmicro(&m);
     }
     gpu.debug = getenv("KATANA_DEBUG") != NULL;
     if (argc >= 3 && strcmp(argv[1], "bench") == 0) {
