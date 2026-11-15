@@ -1564,12 +1564,13 @@ static const char *GPU_SRC =
 "#define MVARGS __global const uint *W, __global const float *x, __global float *out,\\\n"
 "  __global const float *bias, __global const float *sx,\\\n"
 "  int cols, int mode, int rows, int nseg, int gs, int go,\\\n"
-"  uint16 mslot, int mtp, int mxrow, int morow\n"
+"  __global const uint *mtab, int mtp, int mxrow, int morow\n"
 /* varias matrizes num lancamento (especialistas do MoE): as threads sao divididas em faixas de
-   mtp; a faixa k_ usa a matriz que comeca em mslot[k_]*32 palavras dentro de W, le x a partir
+   mtp; a faixa k_ tem 3 entradas em mtab: (inicio da matriz em W, em blocos de 32 palavras;
+   indice do vetor de entrada; indice do vetor de saida). Antes: le x a partir
    de k_*mxrow e grava a partir de k_*morow. mtp = 0 desliga. */
 "#define MOEPRE if (mtp > 0) { int k_ = i / mtp; i -= k_ * mtp;\\\n"
-"  W += (size_t)((uint *)&mslot)[k_] * 32; out += (size_t)k_ * morow; x += (size_t)k_ * mxrow; }\n"
+"  W += (size_t)mtab[3 * k_] * 32; x += (size_t)mtab[3 * k_ + 1] * mxrow; out += (size_t)mtab[3 * k_ + 2] * morow; }\n"
 "#define MVLOCAL __local FB lp[NR * MAXSEG * 32];\n"
 "inline float h2f(uint h) {\n"
 "  uint e = (h >> 10) & 31, m = h & 1023;\n"
@@ -1883,11 +1884,11 @@ static const char *GPU_SRC =
 "  STOREB(g[i - h0] * (LOADB(x, i) / sqrt(ss / (float)hd + eps)), out, i);\n"
 "}\n"
 /* MoE: x += soma dos n especialistas, cada um com o seu peso (t tem um vetor por especialista) */
-"__kernel void moe_sum(__global float *x, __global const float *t, float16 w, int n, int rp) {\n"
-"  int i = get_global_id(0);\n"
+"__kernel void moe_sum(__global float *x, __global const float *t, __global const float *w, int K, int d, int B) {\n"
+"  int g = get_global_id(0), i = g / B, b = g % B;\n"
 "  float s_ = 0.0f;\n"
-"  for (int k = 0; k < n; k++) s_ += ((float *)&w)[k] * t[(size_t)k * rp + i];\n"
-"  x[i] += s_;\n"
+"  for (int k = 0; k < K; k++) s_ += w[b * K + k] * t[(size_t)(b * K + k) * d + i];\n"
+"  x[(size_t)i * B + b] += s_;\n"
 "}\n"
 /* copia a coluna `off` de um buffer transposto para um vetor simples */
 "__kernel void gather(__global const float *src, __global float *dst, int stride, int off) {\n"
@@ -2000,9 +2001,11 @@ static int gpu_build_set(KSet *ks, int nb, int nr, clh dev) {
     KERN(prog, k_att_softmax, "att_softmax"); KERN(prog, k_att_mix, "att_mix");
     {   /* modo de varias matrizes desligado por padrao em todos os kernels de produto */
         clh mk[10] = { ks->k_f32, ks->k_q8, ks->k_q4k, ks->k_q5k, ks->k_q6k, ks->kp_f32, ks->kp_q8, ks->kp_q4k, ks->kp_q5k, ks->kp_q6k };
-        uint32_t z16[16] = {0}; int32_t z = 0;
+        static clh dummy;
+        int32_t z = 0, ed = 0;
+        if (!dummy) dummy = cl.CreateBuffer(gpu.ctx, 4, 64, NULL, &ed);
         for (int i = 0; i < 10; i++) {
-            cl.SetKernelArg(mk[i], 11, sizeof z16, z16); cl.SetKernelArg(mk[i], 12, sizeof z, &z);
+            cl.SetKernelArg(mk[i], 11, sizeof(clh), &dummy); cl.SetKernelArg(mk[i], 12, sizeof z, &z);
             cl.SetKernelArg(mk[i], 13, sizeof z, &z);    cl.SetKernelArg(mk[i], 14, sizeof z, &z);
         }
     }
@@ -2287,7 +2290,9 @@ typedef struct { int l, e; uint8_t *buf; volatile long done; } LoadReq;
 static struct {
     clh bqn, bkn, *qn, *kn;         /* norma de q e k */
     clh *sg, *sd;                   /* por camada: vagas dos pares gate/up e dos down */
-    clh bh, bt;                     /* saidas dos especialistas de um token */
+    clh bh, bt;                     /* saidas dos especialistas do lote */
+    clh btg, btd, bw, bxn;          /* tabelas de faixas, pesos e entradas por token */
+    uint32_t *tabg, *tabd; float *w, *xn;
     ExpSlot *slot;                  /* [camada][especialista] */
     int *owner; uint64_t *stamp;    /* [camada][vaga]: quem ocupa e quando foi usado */
     int on, S;                      /* vagas por camada */
@@ -2562,8 +2567,15 @@ static void gpu_setup(Model *m) {
                 cl.Finish(gpu.queue);
                 if (gpu.debug) fprintf(stderr, "GPU: vagas dos especialistas reservadas em %.2f s\n", now_sec() - tt);
             }
-            gx.bh = cl.CreateBuffer(gpu.ctx, 1, (size_t)c->n_used * (H + 128) * 4, NULL, &e3);
-            gx.bt = cl.CreateBuffer(gpu.ctx, 1, (size_t)c->n_used * (d + 128) * 4, NULL, &e4);
+            const size_t RM = (size_t)GPU_BMAX * c->n_used;     /* faixas (token, especialista) por passada */
+            gx.bh = cl.CreateBuffer(gpu.ctx, 1, RM * (H + 128) * 4, NULL, &e3);
+            gx.bt = cl.CreateBuffer(gpu.ctx, 1, RM * (d + 128) * 4, NULL, &e4);
+            if (!e3 && !e4) gx.btg = cl.CreateBuffer(gpu.ctx, 1, RM * 12, NULL, &e3);
+            if (!e3 && !e4) gx.btd = cl.CreateBuffer(gpu.ctx, 1, RM * 12, NULL, &e4);
+            if (!e3 && !e4) gx.bw = cl.CreateBuffer(gpu.ctx, 1, RM * 4, NULL, &e3);
+            if (!e3 && !e4) gx.bxn = cl.CreateBuffer(gpu.ctx, 1, (size_t)GPU_BMAX * d * 4, NULL, &e4);
+            gx.tabg = xalloc(RM * 3, sizeof(uint32_t)); gx.tabd = xalloc(RM * 3, sizeof(uint32_t));
+            gx.w = xalloc(RM, sizeof(float)); gx.xn = xalloc((size_t)GPU_BMAX * d, sizeof(float));
             if (e1 || e2 || e3 || e4) { fprintf(stderr, "GPU: sem memoria para o cache de especialistas, usando CPU\n"); n_gl = 0; }
             else {
                 gx.slot = xalloc((size_t)NL * E, sizeof(ExpSlot));
@@ -2571,7 +2583,7 @@ static void gpu_setup(Model *m) {
                 gx.owner = xalloc((size_t)NL * S, sizeof(int)); gx.stamp = xalloc((size_t)NL * S, sizeof(uint64_t));
                 for (size_t i = 0; i < (size_t)NL * S; i++) gx.owner[i] = -1;
                 gx.heat = xalloc((size_t)NL * E, sizeof(float));
-                gx.cpu_out = xalloc((size_t)c->n_used * d, sizeof(float));
+                gx.cpu_out = xalloc((size_t)GPU_BMAX * c->n_used * d, sizeof(float));
                 gx.cpu_cold = !getenv("KATANA_MOE_CPU") || atoi(getenv("KATANA_MOE_CPU")) != 0;
                 if (shards.use) {       /* especialistas empacotados por `katana pack`: um arquivo por camada */
                     int n_pk = 0;
@@ -2839,60 +2851,69 @@ static void moe_route(Model *m, const Layer *L, int l) {
     if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
 }
 
-/* n especialistas da camada na CPU sobre a mesma entrada m->xb; outs[j*d ..] recebe a saida do j-esimo.
-   A entrada e quantizada uma vez e os produtos gate/up de todos saem num unico despacho do pool. */
-typedef struct { const Mat *eg, *eu; const int *ex; int H, cols; float *hg, *hu; const float *x; } MoeJob;
-typedef struct { const Mat *ed; const int *ex; int d, H; float *outs; XQ *xqs; } MoeDownJob;
-static void moe_down_job(void *c, int i0, int i1) {
-    const MoeDownJob *q = c;
-    for (int i = i0; i < i1; i++) {
-        const int j = i / q->d, r = i % q->d;
-        xq_tls = &q->xqs[j];
-        q->outs[i] = dot_row(&q->ed[q->ex[j]], (size_t)r, NULL, NULL, q->H);
-    }
-    xq_tls = NULL;
-}
+/* n pares (entrada, especialista) da camada na CPU: o j-esimo usa a entrada xs[xi[j]*d ..] e o
+   especialista ex[j]; outs[j*d ..] recebe a saida. Cada entrada e quantizada uma vez e os produtos
+   de todos os pares saem em dois despachos do pool (gate/up, depois down), cada thread apontando
+   para a entrada quantizada do par que esta calculando. */
+#define MOE_NMAX (GPU_BMAX * 64)
+typedef struct { const Mat *eg, *eu, *ed; const int *ex, *xi; int H, d; float *hg, *hu, *outs; XQ *xin, *xh; } MoeJob;
 static void moe_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
     for (int i = i0; i < i1; i++) {
         const int j = i / (2 * q->H), r = i % (2 * q->H);
-        if (r < q->H) q->hg[(size_t)j * q->H + r] = dot_row(&q->eg[q->ex[j]], (size_t)r, q->x, NULL, q->cols);
-        else q->hu[(size_t)j * q->H + r - q->H] = dot_row(&q->eu[q->ex[j]], (size_t)(r - q->H), q->x, NULL, q->cols);
+        xq_tls = &q->xin[q->xi[j]];
+        if (r < q->H) q->hg[(size_t)j * q->H + r] = dot_row(&q->eg[q->ex[j]], (size_t)r, NULL, NULL, q->d);
+        else q->hu[(size_t)j * q->H + r - q->H] = dot_row(&q->eu[q->ex[j]], (size_t)(r - q->H), NULL, NULL, q->d);
     }
+    xq_tls = NULL;
 }
-static void moe_cpu_experts(Model *m, const Layer *L, const int *ex, int n, float *outs) {
+static void moe_down_job(void *c, int i0, int i1) {
+    const MoeJob *q = c;
+    for (int i = i0; i < i1; i++) {
+        const int j = i / q->d, r = i % q->d;
+        xq_tls = &q->xh[j];
+        q->outs[i] = dot_row(&q->ed[q->ex[j]], (size_t)r, NULL, NULL, q->H);
+    }
+    xq_tls = NULL;
+}
+static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs) {
     static float *hg, *hu;
+    static XQ xin[GPU_BMAX], *xh;
     const Config *c = &m->cfg;
     const int d = c->dim, H = c->hidden;
-    if (!hg) { hg = xalloc((size_t)c->n_used * H, sizeof(float)); hu = xalloc((size_t)c->n_used * H, sizeof(float)); }
+    if (!hg) {
+        hg = xalloc((size_t)MOE_NMAX * H, sizeof(float)); hu = xalloc((size_t)MOE_NMAX * H, sizeof(float));
+        xh = xalloc(MOE_NMAX, sizeof(XQ));
+    }
     if (n <= 0) return;
-    if (!mat_int(&L->eg[ex[0]]) || !mat_int(&L->eu[ex[0]]) || pool.n <= 1) {      /* caminho exato/float: um a um */
-        for (int j = 0; j < n; j++) {
-            matvec(hg, &L->eg[ex[j]], m->xb, H, d);
-            matvec(hu, &L->eu[ex[j]], m->xb, H, d);
+    if (n > MOE_NMAX || n_x > GPU_BMAX) die("MoE: pares demais num lote");
+    if (!mat_int(&L->eg[ex[0]]) || !mat_int(&L->eu[ex[0]]) || !mat_int(&L->ed[ex[0]]) || pool.n <= 1) {
+        for (int j = 0; j < n; j++) {       /* caminho exato/float: um a um */
+            const float *x = xs + (size_t)xi[j] * d;
+            matvec(hg, &L->eg[ex[j]], x, H, d);
+            matvec(hu, &L->eu[ex[j]], x, H, d);
             for (int i = 0; i < H; i++) { const float g = hg[i]; hg[i] = g / (1.0f + expf(-g)) * hu[i]; }
             matvec(outs + (size_t)j * d, &L->ed[ex[j]], hg, d, H);
         }
         return;
     }
-    xq_prepare(m->xb, d);
-    MoeJob job = { L->eg, L->eu, ex, H, d, hg, hu, m->xb };
+    for (int b = 0; b < n_x; b++) { xq_tls = &xin[b]; xq_prepare(xs + (size_t)b * d, d); }
+    xq_tls = NULL;
+    MoeJob job = { L->eg, L->eu, L->ed, ex, xi, H, d, hg, hu, outs, xin, xh };
     int total = n * 2 * H, chunk = total / (pool.n * 8), minc = 32768 / d + 1;
     if (chunk < minc) chunk = minc;
     pool_for(moe_job, &job, total, chunk);
     for (int i = 0; i < n * H; i++) { const float g = hg[i]; hg[i] = g / (1.0f + expf(-g)) * hu[i]; }
-    if (!mat_int(&L->ed[ex[0]])) {
-        for (int j = 0; j < n; j++) matvec(outs + (size_t)j * d, &L->ed[ex[j]], hg + (size_t)j * H, d, H);
-        return;
-    }
-    /* os down de todos tambem num despacho so: cada um com a sua entrada quantizada */
-    static XQ xqs[64];
-    for (int j = 0; j < n; j++) { xq_tls = &xqs[j]; xq_prepare(hg + (size_t)j * H, H); }
+    for (int j = 0; j < n; j++) { xq_tls = &xh[j]; xq_prepare(hg + (size_t)j * H, H); }
     xq_tls = NULL;
-    MoeDownJob dj = { L->ed, ex, d, H, outs, xqs };
     total = n * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
     if (chunk < minc) chunk = minc;
-    pool_for(moe_down_job, &dj, total, chunk);
+    pool_for(moe_down_job, &job, total, chunk);
+}
+/* n especialistas sobre a mesma entrada m->xb */
+static void moe_cpu_experts(Model *m, const Layer *L, const int *ex, int n, float *outs) {
+    static const int zero[64];
+    moe_cpu_multi(m, L, ex, zero, n, 1, m->xb, outs);
 }
 
 /* ---- cache de especialistas na VRAM ----
@@ -3103,102 +3124,114 @@ static void loader_install(Model *m) {
     preload_feed(m);
 }
 
-/* Feed-forward MoE da camada l com a atencao na GPU (um token):
-     x += soma_k w_k * down_k(silu(gate_k xb) * up_k xb)
+/* Feed-forward MoE da camada l com a atencao na GPU, para os B tokens do lote:
+     x_b += soma_k w_k * down_k(silu(gate_k xb_b) * up_k xb_b)
    Cada especialista tem um "calor" (usos recentes, com decaimento). Os que estao na VRAM rodam
-   juntos na GPU, num lancamento. Um que esta fora so sobe se estiver mais quente que o mais frio
-   dos residentes; senao roda na CPU, direto do arquivo mapeado, enquanto a GPU faz a parte dela.
-   Assim a VRAM converge para os especialistas do assunto da conversa sem ficar trocando. */
+   na GPU: cada par (token, especialista) e uma faixa, e todas as faixas do lote saem em um
+   lancamento. Um que esta fora roda na CPU, direto do arquivo mapeado, enquanto a GPU faz a
+   parte dela; se estiver mais quente que o mais frio dos residentes, a thread carregadora o
+   traz. Assim a VRAM converge para os especialistas do assunto sem ficar trocando.
+   Os vetores do host usados em copias sem bloqueio (tabelas, pesos, entradas, saidas da CPU)
+   so sao reescritos depois da proxima leitura bloqueante, quando a fila ja esvaziou. */
 static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     const Config *c = &m->cfg;
-    const int d = c->dim, H = c->hidden, K = c->n_used, E = c->n_expert;
-    uint32_t og[16] = {0}, od[16] = {0};
-    float w[16] = {0};
-    int on_cpu[16], n_cpu = 0, Kg = 0;
-    float w_cpu[16];
+    const KSet *k1 = &gpu.set[gpu.n_sets - 1];      /* os especialistas usam os kernels de um token */
+    const int d = c->dim, H = c->hidden, K = c->n_used, E = c->n_expert, B = ks->nb;
+    static int cpu_e[MOE_NMAX], cpu_x[MOE_NMAX], cpu_row[MOE_NMAX];
     float *heat = gx.heat + (size_t)l * E;
     int *own = gx.owner + (size_t)l * gx.S;
     uint64_t *st = gx.stamp + (size_t)l * gx.S;
+    int R = 0, n_cpu = 0;
     /* a entrada desce para a CPU escolher os especialistas */
-    gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bxb, 1, 0, (size_t)d * sizeof(float), m->xb, 0, NULL, NULL);
+    if (B == 1) gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bxb, 1, 0, (size_t)d * sizeof(float), gx.xn, 0, NULL, NULL);
+    else {
+        gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.bxb, 1, 0, (size_t)d * B * sizeof(float), gpu.xT, 0, NULL, NULL);
+        for (int b = 0; b < B; b++) for (int i = 0; i < d; i++) gx.xn[(size_t)b * d + i] = gpu.xT[(size_t)i * B + b];
+    }
     if (gerr) die("falha na execucao em GPU");
     if (gx.loader) loader_install(m);
-    moe_route(m, L, l);
-    for (int e = 0; e < E; e++) heat[e] *= 0.98f;
-    for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
     const uint64_t tick = ++gx.clock;
-    for (int j = 0; j < K; j++) {
-        const int e = moe.sel[j];
-        int v = gx.slot[(size_t)l * E + e].slot;
-        if (v >= 0) gx.hits++;
-        else if (gx.loader) {
-            /* fora da VRAM: roda na CPU agora; se houver vaga livre ou estiver mais quente que o
-               residente mais frio, a carga e pedida e ele sobe num proximo token */
-            gx.miss++;
-            int cand = -1;
-            for (int i = 0; i < gx.S; i++) {
-                if (own[i] < 0) { cand = i; break; }
-                if (cand < 0 || heat[own[i]] < heat[own[cand]]) cand = i;
+    for (int b = 0; b < B; b++) {
+        memcpy(m->xb, gx.xn + (size_t)b * d, (size_t)d * sizeof(float));
+        moe_route(m, L, l);
+        for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+        for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
+        for (int j = 0; j < K; j++) {
+            const int e = moe.sel[j], orow = b * K + j;
+            int v = gx.slot[(size_t)l * E + e].slot;
+            gx.w[orow] = moe.w[j];
+            if (v >= 0) gx.hits++;
+            else {
+                gx.miss++;
+                int cand = -1;      /* vaga livre, ou o residente mais frio que nao e deste lote */
+                for (int i = 0; i < gx.S; i++) {
+                    if (own[i] < 0) { cand = i; break; }
+                    if (st[i] == tick) continue;
+                    if (cand < 0 || heat[own[i]] < heat[own[cand]]) cand = i;
+                }
+                if (gx.loader) {    /* roda na CPU agora; se merecer, sobe num proximo token */
+                    if (cand >= 0 && (own[cand] < 0 || heat[e] > heat[own[cand]] + gx.swap_margin)) loader_request(l, e, E);
+                } else if (cand >= 0 && (own[cand] < 0 || !gx.cpu_cold || heat[e] > heat[own[cand]] + 0.5f)) {
+                    expert_load(m, l, e, cand); v = cand;
+                }
             }
-            if (own[cand] < 0 || heat[e] > heat[own[cand]] + gx.swap_margin) loader_request(l, e, E);
-        } else {
-            gx.miss++;
-            int cand = -1;      /* vaga livre, ou o residente mais frio que nao e deste token */
-            for (int i = 0; i < gx.S; i++) {
-                if (own[i] < 0) { cand = i; break; }
-                if (st[i] == tick) continue;
-                if (cand < 0 || heat[own[i]] < heat[own[cand]]) cand = i;
-            }
-            if (cand >= 0 && (own[cand] < 0 || !gx.cpu_cold || heat[e] > heat[own[cand]] + 0.5f)) { expert_load(m, l, e, cand); v = cand; }
+            if (v >= 0) {
+                st[v] = tick;
+                gx.tabg[3 * R] = (uint32_t)((size_t)v * (gx.bg[l] / 4 / 32)); gx.tabg[3 * R + 1] = (uint32_t)b; gx.tabg[3 * R + 2] = (uint32_t)R;
+                gx.tabd[3 * R] = (uint32_t)((size_t)v * (gx.bd[l] / 4 / 32)); gx.tabd[3 * R + 1] = (uint32_t)R; gx.tabd[3 * R + 2] = (uint32_t)orow;
+                R++;
+            } else { cpu_e[n_cpu] = e; cpu_x[n_cpu] = b; cpu_row[n_cpu++] = orow; }
         }
-        if (v >= 0) {
-            st[v] = tick;
-            og[Kg] = (uint32_t)((size_t)v * (gx.bg[l] / 4 / 32)); od[Kg] = (uint32_t)((size_t)v * (gx.bd[l] / 4 / 32));
-            w[Kg++] = moe.w[j];
-        } else { on_cpu[n_cpu] = e; w_cpu[n_cpu++] = moe.w[j]; }
     }
+    gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bw, 0, 0, (size_t)B * K * sizeof(float), gx.w, 0, NULL, NULL);
     const size_t rpH = ((size_t)H + 127) & ~(size_t)127, rpd = ((size_t)d + 127) & ~(size_t)127;
-    if (Kg > 0) {   /* gate e up dos Kg especialistas: bh[k*H + i] = silu(gate) * up */
-        const uint32_t kind = gpu_kind(&L->eg[0]);
-        clh k = kind == T_F32 ? ks->kp_f32 : kind == T_Q4_K ? ks->kp_q4k : kind == T_Q5_K ? ks->kp_q5k : kind == T_Q6_K ? ks->kp_q6k : ks->kp_q8;
-        const size_t tp = rpH / ks->nr, threads = tp * Kg;
-        const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? d / 32 : d / 256;
-        const int nseg = gpu_nseg(threads, nb, ks->nb * ks->nr * 2);
-        ka_m(k, 0, gx.sg[l]); ka_m(k, 1, gpu.bxb); ka_m(k, 2, gx.bh);
-        ka_m(k, 3, gpu.bxb); ka_m(k, 4, gpu.bsx ? gpu.bsx : gpu.bxb);
-        ka_i(k, 5, d); ka_i(k, 6, 8); ka_i(k, 7, H); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
-        ka(k, 11, sizeof og, og); ka_i(k, 12, (int)tp); ka_i(k, 13, 0); ka_i(k, 14, H);
-        prof_elems = 2.0 * H * d * Kg;
-        krun2(k, threads, (size_t)nseg);
-        ka_i(k, 12, 0);
+    if (R > 0) {
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.btg, 0, 0, (size_t)R * 12, gx.tabg, 0, NULL, NULL);
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.btd, 0, 0, (size_t)R * 12, gx.tabd, 0, NULL, NULL);
+        if (B > 1) gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bxn, 0, 0, (size_t)B * d * sizeof(float), gx.xn, 0, NULL, NULL);
+        clh xin = B > 1 ? gx.bxn : gpu.bxb;
+        {   /* gate e up das R faixas: bh[r*H + i] = silu(gate) * up */
+            const uint32_t kind = gpu_kind(&L->eg[0]);
+            clh k = kind == T_F32 ? k1->kp_f32 : kind == T_Q4_K ? k1->kp_q4k : kind == T_Q5_K ? k1->kp_q5k : kind == T_Q6_K ? k1->kp_q6k : k1->kp_q8;
+            const size_t tp = rpH / k1->nr, threads = tp * R;
+            const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? d / 32 : d / 256;
+            const int nseg = gpu_nseg(threads, nb, k1->nr * 2);
+            ka_m(k, 0, gx.sg[l]); ka_m(k, 1, xin); ka_m(k, 2, gx.bh);
+            ka_m(k, 3, xin); ka_m(k, 4, gpu.bsx ? gpu.bsx : xin);
+            ka_i(k, 5, d); ka_i(k, 6, 8); ka_i(k, 7, H); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
+            ka_m(k, 11, gx.btg); ka_i(k, 12, (int)tp); ka_i(k, 13, d); ka_i(k, 14, H);
+            prof_elems = 2.0 * H * d * R;
+            krun2(k, threads, (size_t)nseg);
+            ka_i(k, 12, 0);
+        }
+        {   /* down das R faixas: bt[(b*K + j)*d + i] */
+            const uint32_t kind = gpu_kind(&L->ed[0]);
+            clh k = kind == T_F32 ? k1->k_f32 : kind == T_Q4_K ? k1->k_q4k : kind == T_Q5_K ? k1->k_q5k : kind == T_Q6_K ? k1->k_q6k : k1->k_q8;
+            const size_t tp = rpd / k1->nr, threads = tp * R;
+            const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? H / 32 : H / 256;
+            const int nseg = gpu_nseg(threads, nb, k1->nr);
+            ka_m(k, 0, gx.sd[l]); ka_m(k, 1, gx.bh); ka_m(k, 2, gx.bt);
+            ka_m(k, 3, gx.bh); ka_m(k, 4, gpu.bsx ? gpu.bsx : gx.bh);
+            ka_i(k, 5, H); ka_i(k, 6, 0); ka_i(k, 7, d); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
+            ka_m(k, 11, gx.btd); ka_i(k, 12, (int)tp); ka_i(k, 13, H); ka_i(k, 14, d);
+            prof_elems = (double)H * d * R;
+            krun2(k, threads, (size_t)nseg);
+            ka_i(k, 12, 0);
+        }
     }
-    if (Kg > 0) {   /* down dos Kg especialistas: bt[k*d + i] */
-        const uint32_t kind = gpu_kind(&L->ed[0]);
-        clh k = kind == T_F32 ? ks->k_f32 : kind == T_Q4_K ? ks->k_q4k : kind == T_Q5_K ? ks->k_q5k : kind == T_Q6_K ? ks->k_q6k : ks->k_q8;
-        const size_t tp = rpd / ks->nr, threads = tp * Kg;
-        const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? H / 32 : H / 256;
-        const int nseg = gpu_nseg(threads, nb, ks->nb * ks->nr);
-        ka_m(k, 0, gx.sd[l]); ka_m(k, 1, gx.bh); ka_m(k, 2, gx.bt);
-        ka_m(k, 3, gx.bh); ka_m(k, 4, gpu.bsx ? gpu.bsx : gx.bh);
-        ka_i(k, 5, H); ka_i(k, 6, 0); ka_i(k, 7, d); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
-        ka(k, 11, sizeof od, od); ka_i(k, 12, (int)tp); ka_i(k, 13, H); ka_i(k, 14, d);
-        prof_elems = (double)H * d * Kg;
-        krun2(k, threads, (size_t)nseg);
-        ka_i(k, 12, 0);
-    }
-    if (n_cpu > 0) {    /* os frios, na CPU, enquanto a GPU trabalha; as saidas entram em bt depois das da GPU */
+    if (n_cpu > 0) {    /* os frios, na CPU, enquanto a GPU trabalha */
         const double t0 = now_sec();
         cl.Flush(gpu.queue);
-        moe_cpu_experts(m, L, on_cpu, n_cpu, gx.cpu_out);
-        for (int j = 0; j < n_cpu; j++) w[Kg + j] = w_cpu[j];
-        /* cpu_out so e reescrito depois da proxima leitura bloqueante, entao a copia pode ficar na fila */
-        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bt, 0, (size_t)Kg * d * sizeof(float), (size_t)n_cpu * d * sizeof(float), gx.cpu_out, 0, NULL, NULL);
+        moe_cpu_multi(m, L, cpu_e, cpu_x, n_cpu, B, gx.xn, gx.cpu_out);
+        for (int j = 0; j < n_cpu; j++)
+            gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bt, 0, (size_t)cpu_row[j] * d * sizeof(float), (size_t)d * sizeof(float),
+                                          gx.cpu_out + (size_t)j * d, 0, NULL, NULL);
         gx.cpu_runs += n_cpu;
         gx.t_cpu += now_sec() - t0;
     }
     clh k = ks->k_moe_sum;
-    ka_m(k, 0, gpu.bx); ka_m(k, 1, gx.bt); ka(k, 2, sizeof w, w); ka_i(k, 3, K); ka_i(k, 4, d);
-    krun(k, (size_t)d);
+    ka_m(k, 0, gpu.bx); ka_m(k, 1, gx.bt); ka_m(k, 2, gx.bw); ka_i(k, 3, K); ka_i(k, 4, d); ka_i(k, 5, B);
+    krun(k, (size_t)d * B);
 }
 
 /* processa ks->nb tokens de uma vez (posicoes pos0, pos0+1, ...); devolve os logits do ultimo */
@@ -3289,7 +3322,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         /* --- feed-forward SwiGLU --- */
         g_rms(ks, gpu.bx, gpu.fn[l], gpu.bxb, d, c->eps);
         if (c->n_expert) {
-            gpu_moe_ffn(m, ks, L, l);       /* um token por passada */
+            gpu_moe_ffn(m, ks, L, l);
             continue;
         }
         g_bsum(ks, gpu.bxb, d, &L->w_gate, &L->w_up, NULL);
@@ -3546,7 +3579,7 @@ static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_l
     if (gpu.n_gl > 0 && !gpu.force_cpu) {
         while (i < n) {
             const KSet *ks = &gpu.set[gpu.n_sets - 1];
-            if (!gx.on)     /* MoE: cada token escolhe seus especialistas, entao vai um por passada */
+            if (!gx.on || !getenv("KATANA_MOE_NOBATCH"))
                 for (int s = 0; s < gpu.n_sets; s++) if (gpu.set[s].nb <= n - i) { ks = &gpu.set[s]; break; }
             lg = gpu_forward_n(m, ks, toks + i, pos0 + i, want_logits && i + ks->nb == n);
             i += ks->nb;
