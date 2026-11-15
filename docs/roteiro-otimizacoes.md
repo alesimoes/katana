@@ -24,6 +24,13 @@ O piso de ~9–11 ms por token vem do custo fixo por lançamento de kernel (~40 
 | Opções de compilação de matemática rápida no OpenCL | `-cl-mad-enable -cl-fast-relaxed-math` | pequeno | pequeno |
 | Kernels especializados por constantes (`-D` de colunas, palavras por linha) | laços com limites conhecidos na compilação | estimativa 5–15% do tempo de kernel | pequeno |
 
+Medido em 2026-11-15 (RTX 3050, driver NVIDIA OpenCL):
+
+- cada `clEnqueueNDRangeKernel` custa 22–25 µs no host; `clSetKernelArg` custa ~0,08 µs. Num modelo denso de 28 camadas são ~226 lançamentos por token, ~5,6 ms dos 10,8 ms. É esse o piso.
+- espera ativa no lugar da leitura bloqueante: sem efeito. Kernels com argumentos presos também não ajudariam (o custo não está nos argumentos).
+- `-cl-fast-relaxed-math`: sem efeito (fica opcional, `KATANA_FASTMATH=1`).
+- só restam dois caminhos: fundir kernels (cada lançamento a menos por camada vale ~0,7 ms por token em 28 camadas) ou trocar para uma API com buffer de comandos gravado uma vez e submetido por token (Vulkan), que elimina o custo por lançamento. O segundo é uma reescrita do backend.
+
 ## 2. Lotes (prompt)
 
 | Técnica | O que faz | Ganho | Esforço |
@@ -43,7 +50,7 @@ está no que cabe no cache (especialistas pequenos, lotes).
 | Ativações em 8 bits com escala por bloco de 256 e somas parciais | o dobro de elementos por instrução; o termo do mínimo (Q4_K) e o deslocamento (Q6_K) saem das somas parciais. Nosso teste antigo de 8 bits usava uma escala para o vetor inteiro e trocava o token; com escala por bloco precisa ser refeito | estimativa 1,5–2x no que cabe no cache | médio |
 | 8 linhas em paralelo por passo | uma carga da ativação multiplica 8 linhas; 8 acumuladores independentes | estimativa 10–30% em cache | médio |
 | AVX-512 VNNI (`vpdpbusd`) com escolha em tempo de execução | funde três instruções e dobra a largura | estimativa até 2x em cache | médio |
-| Threads = núcleos físicos, fixadas, sem limitação de energia do Windows | menos disputa e menos variação | a medir | pequeno |
+| Threads = núcleos físicos, fixadas, sem limitação de energia do Windows | menos disputa e menos variação | medido: 8 threads ficam ~20% mais lentas que 12 neste motor (com ou sem fixar); desligar a limitação de energia não mudou nada | feito |
 | Número de threads diferente para geração e para lote | geração é limitada por memória; lote por conta | a medir | pequeno |
 | `exp` vetorizado para SiLU e softmax | polinômio de grau 5 | pequeno | pequeno |
 
@@ -55,7 +62,7 @@ plano, pré-carga pelo calor da sessão anterior.
 | Técnica | O que faz | Esforço |
 |---|---|---|
 | Classes de frequência no despejo | classe = log2 do uso decaído; uma fila por classe; sai quem tem a maior idade relativa à classe. O uso acumulado sobrevive ao despejo | pequeno |
-| Lote grande não despeja | o prompt só lê o cache, para não expulsar os especialistas da geração | pequeno |
+| Lote grande não despeja | o prompt só ocupa vagas livres, para não expulsar os especialistas da geração | feito |
 | Subidas agrupadas | faltas vizinhas ocupam vagas vizinhas e sobem numa cópia só | pequeno |
 | Vagas compartilhadas entre camadas de mesmo formato | medimos que vagas iguais por camada já ficam a 1 ponto do teto; baixa prioridade | médio |
 | Registro das escolhas para simulação fora do motor | `katana routing` já simula; falta gravar o traço de uma sessão real | pequeno |
