@@ -21,6 +21,10 @@ curto a frio ~1,8x mais rápido no katana.
 
 Leitura: na geração de modelos de 1 B ou mais estamos a ~20% do CUDA e iguais ao Vulkan; a API não é o que nos separa. No modelo minúsculo o custo por lançamento pesa (3x atrás do CUDA). **O buraco de verdade é o prompt: 11 a 16 vezes mais lento**, nos dois backends de referência. É o item "decodificar o bloco de pesos uma vez por lote" da seção 2, que passa a ser a prioridade número um.
 
+Por que o lote é lento no OpenCL desta placa (medido): com lote de 4 ou de 16 o prompt rende o mesmo (~210 tok/s no Qwen 1,5B, ~0,32 T multiplicações/s). O kernel faz uma multiplicação de ponto flutuante por peso por token, e o driver OpenCL da NVIDIA não expõe produto inteiro de 8 bits (`cl_khr_integer_dot_product`) nem meia precisão. O Vulkan na mesma placa expõe os dois e as matrizes cooperativas (núcleos tensoriais): fp16 x fp16 em 16x16x16 e int8 x int8 -> int32 em 16x16x32. É isso que os backends de referência usam no lote.
+
+Protótipo `tools/vkgemm` (produto 8960x1536 por lote de 64, um ladrilho 16x16 por subgrupo, cargas direto da memória global, acumulador de 32 bits, conferido com a CPU): 0,51–0,78 T multiplicações/s. É a forma ingênua; falta o que dá a vazão de verdade (ladrilhos maiores por grupo de trabalho, pesos e ativações passando pela memória compartilhada, pesos quantizados decodificados ao encher o ladrilho).
+
 ## 1. Menos lançamentos e menos esperas por token (GPU)
 
 O piso de ~9–11 ms por token vem do custo fixo por lançamento de kernel (~40 µs), não da conta.
