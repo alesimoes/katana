@@ -23,6 +23,8 @@ katana micro <modelo.gguf>        mede os produtos da CPU isolados, com calibra�
 katana tune  <modelo.gguf>        mede e grava em katana.cfg o melhor ajuste para a GPU local
 katana pack  <modelo.gguf>        gera os shards no layout da GPU (<modelo>.gguf.ktn/)
 katana verify <modelo.gguf>       confere o SHA-256 de cada shard
+katana sparsity <modelo.gguf> <calibracao.txt> <avaliacao.txt>   esparsidade do feed-forward por assunto (modelo denso)
+katana routing  <modelo.gguf> <calibracao.txt> <avaliacao.txt>   concentracao dos especialistas por assunto (modelo MoE)
 ```
 
 ## O que é suportado
@@ -44,6 +46,27 @@ katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 - Decodificação especulativa por repetição: quando o contexto recente se repete, o motor confere
   quatro tokens numa passada. A saída é a mesma de gerar um por um.
 
+## Mistura de especialistas (MoE)
+
+Arquiteturas `olmoe` (testada com OLMoE-1B-7B) e `qwen3moe` (roteamento implementado, ainda não testado; a norma de q/k por cabeça do Qwen3 só roda na CPU). Num modelo MoE cada token usa poucos especialistas (8 de 64 por camada no OLMoE), então o motor trata a VRAM como um cache:
+
+- a atenção de todas as camadas fica fixa na VRAM;
+- o resto da VRAM é dividido em vagas de especialistas por camada;
+- cada especialista tem um "calor" (usos recentes, com decaimento). Os que estão na VRAM rodam juntos na GPU, num lançamento só por camada;
+- um especialista fora da VRAM roda na CPU, direto do arquivo mapeado, e só sobe quando fica mais quente que o mais frio dos residentes.
+
+Assim a VRAM converge para os especialistas do assunto da conversa. Medido numa RTX 3050 de 4 GB com o OLMoE-1B-7B Q4_K_M (6,9 B de parâmetros, 4,2 GB):
+
+| Especialistas na VRAM | Usos atendidos pela VRAM | Geração |
+|---|---|---|
+| 51 de 64 por camada (padrão, 2,9 GB) | 95% | ~55–90 tok/s |
+| 32 de 64 (`KATANA_EXPERT_MB=1870`) | 83% | 42 tok/s |
+| 16 de 64 (`KATANA_EXPERT_MB=935`) | 62% | 35 tok/s |
+| 8 de 64 (`KATANA_EXPERT_MB=470`) | 45% | 32 tok/s |
+| só CPU | — | ~14–20 tok/s |
+
+`katana routing` mede o efeito de assunto: com 25% dos especialistas na VRAM, o conjunto calibrado num texto do mesmo assunto atende 63% dos usos (o teto é 64%); calibrado em outro assunto, 34%; ao acaso, 25%.
+
 ## Variáveis de ambiente
 
 | Variável | Efeito |
@@ -63,6 +86,9 @@ katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 | `KATANA_THREADS=N` | threads da CPU (padrão: média entre núcleos físicos e lógicos) |
 | `KATANA_PRIO=0` | não eleva a prioridade das threads do motor |
 | `KATANA_PIN=1` | fixa cada thread num núcleo físico |
+| `KATANA_EXPERT_MB` | MoE: limita o cache de especialistas na VRAM |
+| `KATANA_MOE_CPU=0` | MoE: especialista fora da VRAM sempre sobe (em vez de rodar na CPU) |
+| `KATANA_ROPE` | força o RoPE: 0 = pares adjacentes, 1 = metades |
 
 ## Arquivos
 
