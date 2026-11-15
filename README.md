@@ -21,6 +21,7 @@ katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]
 katana selftest <modelo.gguf>     confere GPU e CPU inteira contra a conta exata em float
 katana micro <modelo.gguf>        mede os produtos da CPU isolados, com calibração da máquina
 katana tune  <modelo.gguf>        mede e grava em katana.cfg o melhor ajuste para a GPU local
+katana chat <modelo.gguf>          conversa interativa de vários turnos (/novo, /sair; KATANA_SYSTEM, KATANA_TEMP, KATANA_MAXTOK)
 katana pack  <modelo.gguf>        gera os shards no layout da GPU (<modelo>.gguf.ktn/)
 katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 katana sparsity <modelo.gguf> <calibracao.txt> <avaliacao.txt>   esparsidade do feed-forward por assunto (modelo denso)
