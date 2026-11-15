@@ -1,0 +1,6 @@
+modelos/
+*.exe
+*.obj
+*.bin
+*.ktn/
+katana.cfg
