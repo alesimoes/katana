@@ -1,0 +1,109 @@
+GPU: NVIDIA GeForce RTX 3050 Laptop GPU  subgrupo=32  maxStorage=4095 MB
+float32 1536x1536                  nr=1 nseg=1  maxrel=5.88e-05 maxabs/rms=4.06e-06  OK  0.147 ms  16.02 G pesos/s
+float32 1536x1536                  nr=2 nseg=1  maxrel=5.88e-05 maxabs/rms=4.06e-06  OK  0.159 ms  14.80 G pesos/s
+float32 256x1536 (segmentos)       nr=1 nseg=1  maxrel=1.33e-05 maxabs/rms=3.97e-06  OK  0.126 ms  3.11 G pesos/s
+float32 256x1536 (segmentos)       nr=2 nseg=1  maxrel=1.33e-05 maxabs/rms=3.97e-06  OK  0.139 ms  2.82 G pesos/s
+float32 8960x1536 par gate/up      nr=1 nseg=1  maxrel=1.34e-04 maxabs/rms=2.59e-05  OK  0.679 ms  40.53 G pesos/s
+float32 8960x1536 par gate/up      nr=2 nseg=1  maxrel=1.34e-04 maxabs/rms=2.59e-05  OK  0.592 ms  46.52 G pesos/s
+float32 1536x8960 residual+bias    nr=1 nseg=1  maxrel=1.92e-04 maxabs/rms=8.77e-06  OK  0.740 ms  18.59 G pesos/s
+float32 1536x8960 residual+bias    nr=2 nseg=1  maxrel=1.92e-04 maxabs/rms=8.77e-06  OK  0.820 ms  16.78 G pesos/s
+float32 1536x1536 gs=2 go=1        nr=1 nseg=1  maxrel=6.67e-05 maxabs/rms=4.91e-06  OK  0.130 ms  18.19 G pesos/s
+float32 1536x1536 gs=2 go=1        nr=2 nseg=1  maxrel=6.67e-05 maxabs/rms=4.91e-06  OK  0.145 ms  16.29 G pesos/s
+float32 1536x1536 swiglu+bias      nr=1 nseg=1  maxrel=5.69e-05 maxabs/rms=5.09e-06  OK  0.131 ms  18.05 G pesos/s
+float32 1536x1536 swiglu+bias      nr=2 nseg=1  maxrel=5.69e-05 maxabs/rms=5.09e-06  OK  0.144 ms  16.40 G pesos/s
+Q8_0  1536x1536                  nr=1 nseg=8  maxrel=1.50e-05 maxabs/rms=4.23e-07  OK  0.018 ms  132.83 G pesos/s
+Q8_0  1536x1536                  nr=2 nseg=8  maxrel=1.50e-05 maxabs/rms=4.23e-07  OK  0.018 ms  127.71 G pesos/s
+Q8_0  256x1536 (segmentos)       nr=1 nseg=8  maxrel=2.96e-06 maxabs/rms=2.51e-07  OK  0.008 ms  47.18 G pesos/s
+Q8_0  256x1536 (segmentos)       nr=1 nseg=1  maxrel=9.48e-06 maxabs/rms=8.05e-07  OK
+Q8_0  256x1536 (segmentos)       nr=1 nseg=2  maxrel=5.74e-06 maxabs/rms=5.72e-07  OK
+Q8_0  256x1536 (segmentos)       nr=1 nseg=3  maxrel=2.96e-06 maxabs/rms=3.38e-07  OK
+Q8_0  256x1536 (segmentos)       nr=1 nseg=6  maxrel=4.84e-06 maxabs/rms=3.21e-07  OK
+Q8_0  256x1536 (segmentos)       nr=2 nseg=8  maxrel=2.96e-06 maxabs/rms=2.51e-07  OK  0.011 ms  34.49 G pesos/s
+Q8_0  256x1536 (segmentos)       nr=2 nseg=1  maxrel=9.48e-06 maxabs/rms=8.05e-07  OK
+Q8_0  256x1536 (segmentos)       nr=2 nseg=2  maxrel=5.74e-06 maxabs/rms=5.72e-07  OK
+Q8_0  256x1536 (segmentos)       nr=2 nseg=3  maxrel=2.96e-06 maxabs/rms=3.38e-07  OK
+Q8_0  256x1536 (segmentos)       nr=2 nseg=6  maxrel=4.84e-06 maxabs/rms=3.21e-07  OK
+Q8_0  8960x1536 par gate/up      nr=1 nseg=2  maxrel=1.97e-05 maxabs/rms=1.61e-06  OK  0.180 ms  152.97 G pesos/s
+Q8_0  8960x1536 par gate/up      nr=2 nseg=4  maxrel=2.46e-05 maxabs/rms=1.87e-06  OK  0.174 ms  158.46 G pesos/s
+Q8_0  1536x8960 residual+bias    nr=1 nseg=8  maxrel=1.50e-05 maxabs/rms=5.92e-07  OK  0.088 ms  155.95 G pesos/s
+Q8_0  1536x8960 residual+bias    nr=2 nseg=8  maxrel=1.50e-05 maxabs/rms=5.92e-07  OK  0.093 ms  148.70 G pesos/s
+Q8_0  1536x1536 gs=2 go=1        nr=1 nseg=8  maxrel=8.00e-06 maxabs/rms=4.96e-07  OK  0.019 ms  125.58 G pesos/s
+Q8_0  1536x1536 gs=2 go=1        nr=2 nseg=8  maxrel=8.00e-06 maxabs/rms=4.96e-07  OK  0.019 ms  125.36 G pesos/s
+Q8_0  1536x1536 swiglu+bias      nr=1 nseg=8  maxrel=6.85e-06 maxabs/rms=6.61e-07  OK  0.018 ms  132.24 G pesos/s
+Q8_0  1536x1536 swiglu+bias      nr=2 nseg=8  maxrel=6.85e-06 maxabs/rms=6.61e-07  OK  0.019 ms  121.90 G pesos/s
+Q4_K  1536x1536                  nr=1 nseg=6  maxrel=2.80e-06 maxabs/rms=3.19e-07  OK  0.018 ms  133.83 G pesos/s
+Q4_K  1536x1536                  nr=2 nseg=6  maxrel=2.80e-06 maxabs/rms=3.19e-07  OK  0.029 ms  80.28 G pesos/s
+Q4_K  256x1536 (segmentos)       nr=1 nseg=6  maxrel=6.90e-06 maxabs/rms=4.99e-07  OK  0.015 ms  26.33 G pesos/s
+Q4_K  256x1536 (segmentos)       nr=1 nseg=1  maxrel=5.93e-06 maxabs/rms=5.21e-07  OK
+Q4_K  256x1536 (segmentos)       nr=1 nseg=2  maxrel=6.42e-06 maxabs/rms=5.36e-07  OK
+Q4_K  256x1536 (segmentos)       nr=1 nseg=3  maxrel=6.90e-06 maxabs/rms=6.26e-07  OK
+Q4_K  256x1536 (segmentos)       nr=2 nseg=6  maxrel=6.90e-06 maxabs/rms=4.99e-07  OK  0.029 ms  13.58 G pesos/s
+Q4_K  256x1536 (segmentos)       nr=2 nseg=1  maxrel=5.93e-06 maxabs/rms=5.21e-07  OK
+Q4_K  256x1536 (segmentos)       nr=2 nseg=2  maxrel=6.42e-06 maxabs/rms=5.36e-07  OK
+Q4_K  256x1536 (segmentos)       nr=2 nseg=3  maxrel=6.90e-06 maxabs/rms=6.26e-07  OK
+Q4_K  8960x1536 par gate/up      nr=1 nseg=2  maxrel=6.09e-05 maxabs/rms=3.00e-06  OK  0.120 ms  228.56 G pesos/s
+Q4_K  8960x1536 par gate/up      nr=2 nseg=6  maxrel=4.28e-05 maxabs/rms=3.55e-06  OK  0.119 ms  231.05 G pesos/s
+Q4_K  1536x8960 residual+bias    nr=1 nseg=7  maxrel=3.96e-05 maxabs/rms=6.05e-07  OK  0.080 ms  171.10 G pesos/s
+Q4_K  1536x8960 residual+bias    nr=2 nseg=7  maxrel=3.96e-05 maxabs/rms=6.05e-07  OK  0.144 ms  95.62 G pesos/s
+Q4_K  1536x1536 gs=2 go=1        nr=1 nseg=6  maxrel=2.37e-05 maxabs/rms=4.87e-07  OK  0.018 ms  133.61 G pesos/s
+Q4_K  1536x1536 gs=2 go=1        nr=2 nseg=6  maxrel=2.37e-05 maxabs/rms=4.87e-07  OK  0.029 ms  80.64 G pesos/s
+Q4_K  1536x1536 swiglu+bias      nr=1 nseg=6  maxrel=8.96e-06 maxabs/rms=1.09e-06  OK  0.018 ms  133.38 G pesos/s
+Q4_K  1536x1536 swiglu+bias      nr=2 nseg=6  maxrel=8.96e-06 maxabs/rms=1.09e-06  OK  0.030 ms  79.71 G pesos/s
+Q5_K  1536x1536                  nr=1 nseg=6  maxrel=1.05e-05 maxabs/rms=5.59e-07  OK  0.020 ms  117.44 G pesos/s
+Q5_K  1536x1536                  nr=2 nseg=6  maxrel=1.05e-05 maxabs/rms=5.59e-07  OK  0.031 ms  76.58 G pesos/s
+Q5_K  256x1536 (segmentos)       nr=1 nseg=6  maxrel=1.34e-05 maxabs/rms=3.62e-07  OK  0.016 ms  24.77 G pesos/s
+Q5_K  256x1536 (segmentos)       nr=1 nseg=1  maxrel=1.24e-05 maxabs/rms=7.41e-07  OK
+Q5_K  256x1536 (segmentos)       nr=1 nseg=2  maxrel=1.44e-05 maxabs/rms=4.82e-07  OK
+Q5_K  256x1536 (segmentos)       nr=1 nseg=3  maxrel=9.30e-06 maxabs/rms=5.27e-07  OK
+Q5_K  256x1536 (segmentos)       nr=2 nseg=6  maxrel=1.34e-05 maxabs/rms=3.62e-07  OK  0.029 ms  13.40 G pesos/s
+Q5_K  256x1536 (segmentos)       nr=2 nseg=1  maxrel=1.24e-05 maxabs/rms=7.41e-07  OK
+Q5_K  256x1536 (segmentos)       nr=2 nseg=2  maxrel=1.44e-05 maxabs/rms=4.82e-07  OK
+Q5_K  256x1536 (segmentos)       nr=2 nseg=3  maxrel=9.30e-06 maxabs/rms=5.27e-07  OK
+Q5_K  8960x1536 par gate/up      nr=1 nseg=2  maxrel=2.23e-05 maxabs/rms=1.22e-06  OK  0.171 ms  161.27 G pesos/s
+Q5_K  8960x1536 par gate/up      nr=2 nseg=6  maxrel=1.70e-05 maxabs/rms=1.34e-06  OK  0.188 ms  146.30 G pesos/s
+Q5_K  1536x8960 residual+bias    nr=1 nseg=7  maxrel=1.81e-05 maxabs/rms=6.56e-07  OK  0.096 ms  143.50 G pesos/s
+Q5_K  1536x8960 residual+bias    nr=2 nseg=7  maxrel=1.81e-05 maxabs/rms=6.56e-07  OK  0.150 ms  91.63 G pesos/s
+Q5_K  1536x1536 gs=2 go=1        nr=1 nseg=6  maxrel=2.52e-05 maxabs/rms=5.04e-07  OK  0.020 ms  117.50 G pesos/s
+Q5_K  1536x1536 gs=2 go=1        nr=2 nseg=6  maxrel=2.52e-05 maxabs/rms=5.04e-07  OK  0.031 ms  75.73 G pesos/s
+Q5_K  1536x1536 swiglu+bias      nr=1 nseg=6  maxrel=2.73e-05 maxabs/rms=1.11e-06  OK  0.051 ms  45.88 G pesos/s
+Q5_K  1536x1536 swiglu+bias      nr=2 nseg=6  maxrel=2.73e-05 maxabs/rms=1.11e-06  OK  0.033 ms  72.28 G pesos/s
+Q6_K  1536x1536                  nr=1 nseg=6  maxrel=1.30e-05 maxabs/rms=5.70e-07  OK  0.016 ms  149.85 G pesos/s
+Q6_K  1536x1536                  nr=2 nseg=6  maxrel=1.30e-05 maxabs/rms=5.70e-07  OK  0.019 ms  124.76 G pesos/s
+Q6_K  256x1536 (segmentos)       nr=1 nseg=6  maxrel=1.37e-05 maxabs/rms=3.56e-07  OK  0.011 ms  34.65 G pesos/s
+Q6_K  256x1536 (segmentos)       nr=1 nseg=1  maxrel=1.40e-05 maxabs/rms=3.56e-07  OK
+Q6_K  256x1536 (segmentos)       nr=1 nseg=2  maxrel=1.21e-05 maxabs/rms=4.81e-07  OK
+Q6_K  256x1536 (segmentos)       nr=1 nseg=3  maxrel=1.21e-05 maxabs/rms=3.39e-07  OK
+Q6_K  256x1536 (segmentos)       nr=2 nseg=6  maxrel=1.37e-05 maxabs/rms=3.56e-07  OK  0.016 ms  24.44 G pesos/s
+Q6_K  256x1536 (segmentos)       nr=2 nseg=1  maxrel=1.40e-05 maxabs/rms=3.56e-07  OK
+Q6_K  256x1536 (segmentos)       nr=2 nseg=2  maxrel=1.21e-05 maxabs/rms=4.81e-07  OK
+Q6_K  256x1536 (segmentos)       nr=2 nseg=3  maxrel=1.21e-05 maxabs/rms=3.39e-07  OK
+Q6_K  8960x1536 par gate/up      nr=1 nseg=2  maxrel=1.57e-05 maxabs/rms=1.49e-06  OK  0.146 ms  188.56 G pesos/s
+Q6_K  8960x1536 par gate/up      nr=2 nseg=6  maxrel=1.70e-05 maxabs/rms=1.75e-06  OK  0.137 ms  200.92 G pesos/s
+Q6_K  1536x8960 residual+bias    nr=1 nseg=7  maxrel=2.50e-05 maxabs/rms=5.13e-07  OK  0.076 ms  181.63 G pesos/s
+Q6_K  1536x8960 residual+bias    nr=2 nseg=7  maxrel=2.50e-05 maxabs/rms=5.13e-07  OK  0.098 ms  140.95 G pesos/s
+Q6_K  1536x1536 gs=2 go=1        nr=1 nseg=6  maxrel=2.86e-05 maxabs/rms=4.73e-07  OK  0.016 ms  152.19 G pesos/s
+Q6_K  1536x1536 gs=2 go=1        nr=2 nseg=6  maxrel=2.86e-05 maxabs/rms=4.73e-07  OK  0.018 ms  127.93 G pesos/s
+Q6_K  1536x1536 swiglu+bias      nr=1 nseg=6  maxrel=1.17e-05 maxabs/rms=1.14e-06  OK  0.016 ms  146.07 G pesos/s
+Q6_K  1536x1536 swiglu+bias      nr=2 nseg=6  maxrel=1.17e-05 maxabs/rms=1.14e-06  OK  0.020 ms  119.45 G pesos/s
+Q4_K -alt 1536x1536                  rpw=1 nseg=1  maxrel=1.76e-05 maxabs/rms=5.61e-07  OK  0.018 ms  128.46 G pesos/s
+Q4_K -alt 1536x1536                  rpw=2 nseg=1  maxrel=1.76e-05 maxabs/rms=5.61e-07  OK  0.017 ms  138.15 G pesos/s
+Q4_K -alt 1536x1536                  rpw=4 nseg=1  maxrel=1.76e-05 maxabs/rms=5.61e-07  OK  0.017 ms  138.45 G pesos/s
+Q4_K -alt 1536x1536                  rpw=8 nseg=1  maxrel=1.76e-05 maxabs/rms=5.61e-07  OK  0.018 ms  132.89 G pesos/s
+Q4_K -alt 256x1536 (segmentos)       rpw=1 nseg=1  maxrel=1.11e-05 maxabs/rms=2.58e-07  OK  0.006 ms  66.74 G pesos/s
+Q4_K -alt 256x1536 (segmentos)       rpw=2 nseg=1  maxrel=1.11e-05 maxabs/rms=2.58e-07  OK  0.006 ms  62.07 G pesos/s
+Q4_K -alt 256x1536 (segmentos)       rpw=4 nseg=1  maxrel=1.11e-05 maxabs/rms=2.58e-07  OK  0.006 ms  69.41 G pesos/s
+Q4_K -alt 256x1536 (segmentos)       rpw=8 nseg=1  maxrel=1.11e-05 maxabs/rms=2.58e-07  OK  0.006 ms  67.42 G pesos/s
+Q4_K -alt 8960x1536 par gate/up      rpw=1 nseg=1  maxrel=2.44e-05 maxabs/rms=5.83e-06  OK  0.150 ms  183.08 G pesos/s
+Q4_K -alt 8960x1536 par gate/up      rpw=2 nseg=1  maxrel=2.44e-05 maxabs/rms=5.83e-06  OK  0.151 ms  182.49 G pesos/s
+Q4_K -alt 8960x1536 par gate/up      rpw=4 nseg=1  maxrel=2.44e-05 maxabs/rms=5.83e-06  OK  0.149 ms  185.27 G pesos/s
+Q4_K -alt 8960x1536 par gate/up      rpw=8 nseg=1  maxrel=2.44e-05 maxabs/rms=5.83e-06  OK  0.150 ms  183.08 G pesos/s
+Q4_K -alt 1536x8960 residual+bias    rpw=1 nseg=1  maxrel=1.39e-05 maxabs/rms=4.76e-07  OK  0.072 ms  192.07 G pesos/s
+Q4_K -alt 1536x8960 residual+bias    rpw=2 nseg=1  maxrel=1.39e-05 maxabs/rms=4.76e-07  OK  0.080 ms  173.11 G pesos/s
+Q4_K -alt 1536x8960 residual+bias    rpw=4 nseg=1  maxrel=1.39e-05 maxabs/rms=4.76e-07  OK  0.077 ms  178.31 G pesos/s
+Q4_K -alt 1536x8960 residual+bias    rpw=8 nseg=1  maxrel=1.39e-05 maxabs/rms=4.76e-07  OK  0.079 ms  174.81 G pesos/s
+Q4_K -alt 1536x1536 swiglu+bias      rpw=1 nseg=1  maxrel=2.10e-05 maxabs/rms=5.90e-07  OK  0.019 ms  121.48 G pesos/s
+Q4_K -alt 1536x1536 swiglu+bias      rpw=2 nseg=1  maxrel=2.10e-05 maxabs/rms=5.90e-07  OK  0.017 ms  136.91 G pesos/s
+Q4_K -alt 1536x1536 swiglu+bias      rpw=4 nseg=1  maxrel=2.10e-05 maxabs/rms=5.90e-07  OK  0.017 ms  138.74 G pesos/s
+Q4_K -alt 1536x1536 swiglu+bias      rpw=8 nseg=1  maxrel=2.10e-05 maxabs/rms=5.90e-07  OK  0.019 ms  125.78 G pesos/s
+
+resumo: 106 execucoes verificadas, 0 falhas

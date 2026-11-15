@@ -1,0 +1,66 @@
+#version 450
+// Variante experimental do Q4_K para um token: um subgrupo (32 threads) por linha, 8 threads por
+// bloco de 256 pesos (cada uma le 16 bytes de nibbles em uma so carga uvec4), reducao com subgroupAdd.
+// Layout: linhas inteiras em ordem (bytes iguais aos do GGUF, 36 palavras por bloco), sem entrelacar.
+// NRP = linhas por subgrupo (2 no modo par: linha 2r = gate, 2r+1 = up); RPW = subgrupos por grupo de trabalho.
+// Modos: 0 grava, 1 soma, 2 SwiGLU com out, 4 bias, 8 par.
+#extension GL_KHR_shader_subgroup_arithmetic : require
+layout(local_size_x = 32, local_size_y_id = 1) in;
+layout(constant_id = 0) const int NRP = 1;
+layout(constant_id = 1) const int RPW = 4;
+layout(std430, binding = 0) readonly buffer WB { uvec4 W4[]; };
+layout(std430, binding = 1) readonly buffer XB { vec4 x4[]; };
+layout(std430, binding = 2) buffer OB { float outv[]; };
+layout(std430, binding = 3) readonly buffer BB { float bias[]; };
+layout(push_constant) uniform PC { int cols; int mode; int rows; int gs; int go; } pc;
+
+uint sb(uvec3 hw, int k) { return (hw[k >> 2] >> ((k & 3) * 8)) & 255u; }
+void k4(int j, uvec3 hw, out int d, out int m) {
+    if (j < 4) { d = int(sb(hw, j) & 63u); m = int(sb(hw, j + 4) & 63u); }
+    else { d = int((sb(hw, j + 4) & 0xFu) | ((sb(hw, j - 4) >> 6) << 4)); m = int((sb(hw, j + 4) >> 4) | ((sb(hw, j) >> 6) << 4)); }
+}
+vec4 nib(uint w, int sh) {
+    return vec4(float((w >> sh) & 15u), float((w >> (sh + 8)) & 15u), float((w >> (sh + 16)) & 15u), float((w >> (sh + 24)) & 15u));
+}
+void main() {
+    int lane = int(gl_LocalInvocationID.x);
+    int u = int(gl_WorkGroupID.x) * RPW + int(gl_LocalInvocationID.y);     // linha de saida
+    if (u >= pc.rows) return;                                              // uniforme no subgrupo
+    int nb = pc.cols >> 8;
+    int tl = lane & 7, blk0 = lane >> 3, c = tl >> 1, h = tl & 1;
+    uint base[NRP]; float total[NRP];
+    for (int r = 0; r < NRP; r++) { base[r] = uint((u * NRP + r) * nb * 9); total[r] = 0.0; }
+    int j = 2 * c;
+    for (int b = blk0; b < nb; b += 4) {
+        int xi = b * 64 + c * 16 + h * 4;
+        vec4 xl0 = x4[xi], xl1 = x4[xi + 1], xl2 = x4[xi + 2], xl3 = x4[xi + 3];
+        vec4 xh0 = x4[xi + 8], xh1 = x4[xi + 9], xh2 = x4[xi + 10], xh3 = x4[xi + 11];
+        float xa = dot(xl0 + xl1 + xl2 + xl3, vec4(1.0)), xc = dot(xh0 + xh1 + xh2 + xh3, vec4(1.0));
+        for (int r = 0; r < NRP; r++) {
+            uint o = base[r] + uint(b * 9);
+            uvec4 hd = W4[o];
+            uvec4 q = W4[o + 1u + uint(2 * c + h)];
+            vec2 dd = unpackHalf2x16(hd.x);
+            float a = dot(nib(q.x, 0), xl0) + dot(nib(q.y, 0), xl1) + dot(nib(q.z, 0), xl2) + dot(nib(q.w, 0), xl3);
+            float cc = dot(nib(q.x, 4), xh0) + dot(nib(q.y, 4), xh1) + dot(nib(q.z, 4), xh2) + dot(nib(q.w, 4), xh3);
+            int s1, m1, s2, m2;
+            uvec3 hw = hd.yzw;
+            k4(j, hw, s1, m1); k4(j + 1, hw, s2, m2);
+            total[r] += dd.x * (float(s1) * a + float(s2) * cc) - dd.y * (float(m1) * xa + float(m2) * xc);
+        }
+    }
+    for (int r = 0; r < NRP; r++) total[r] = subgroupAdd(total[r]);
+    if (lane == 0) {
+        if (NRP >= 2 && (pc.mode & 8) != 0) {
+            float g = total[0];
+            outv[u] = g / (1.0 + exp(-g)) * total[NRP - 1];
+        } else {
+            float t = total[0];
+            if ((pc.mode & 4) != 0) t += bias[u];
+            int mm = pc.mode & 3;
+            if (mm == 1) t += outv[u];
+            else if (mm == 2) { float g = outv[u]; t = g / (1.0 + exp(-g)) * t; }
+            outv[u] = t;
+        }
+    }
+}
