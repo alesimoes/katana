@@ -1,0 +1,12 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+// converte ativacoes fp32 -> fp16 (alternativa a ler fp32 direto no kernel; n multiplo de 4)
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 1) readonly buffer IB { vec4 i4[]; } ib;
+layout(set = 0, binding = 2) buffer OB { f16vec4 o4[]; } ob;
+layout(push_constant) uniform PC { uint n4; } pc;
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i < pc.n4) ob.o4[i] = f16vec4(ib.i4[i]);
+}

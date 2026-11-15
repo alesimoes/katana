@@ -182,7 +182,7 @@ Leitura honesta:
 
 ## 9. Pontos fracos
 
-- Prompt em lote 11–16x mais lento que a referência (falta o backend com núcleos tensoriais).
+- Prompt em lote no OpenCL 11–16x mais lento que a referência; o backend Vulkan (núcleos tensoriais) fecha para 1,7x no Qwen 1,5B e 1,8x no Llama 3B.
 - Poucas arquiteturas; falta a família DeepSeek/Kimi (atenção de posto baixo), Gemma, Phi.
 - Pré-tokenizador BPE aproximado; pode dividir texto diferente do tokenizador oficial.
 - Contexto fixo de 4.096 tokens, cache KV alocado inteiro, sem reuso de prefixo nem deslocamento.
@@ -245,7 +245,22 @@ um token na placa, gravado uma vez e resubmetido (`KATANA_VK_REC=0` usa a fila a
 alternando os backends, benchmark 64+64: Qwen 1,5B 99,7 tok/s de geração nos dois; SmolLM2 135M
 409 tok/s no Vulkan contra ~130 no OpenCL (referência Vulkan 223, CUDA 402). `selftest` passa em
 5 modelos densos com diferença de logit ~3–4e-5 e o texto guloso do Qwen 1,5B sai idêntico ao do
-OpenCL. O prompt no Vulkan ainda vai um token por vez (121 contra 212 tok/s do OpenCL em lote).
+OpenCL.
+
+Etapa 5 (prompt em lote em Vulkan, `vk_forward_n`): passadas de até 256 tokens (`KATANA_VK_PASS`, `KATANA_VK_CAP`;
+256 e 512 empatam, 128 perde ~3% em prompt de 512), produtos em matriz cooperativa (`vk/shaders/mm.comp`, só as 30
+variantes usadas: 5 tipos x ladrilhos 64x64, 64x32w4, 64x16w4 e os de glu), ativações transpostas
+`X[coluna*B + token]`, norma já em fp16 (`rms_wg16`), gate/up com saída em fp16, `qkv_post` em lote, atenção de um
+lançamento só (`att_flash`: grupo por (token, cabeça kv), softmax online, cache KV lido uma vez por grupo) e, na última
+camada, só o último token faz o feed-forward e a projeção final. Sem matriz cooperativa fp16 o prompt vai token a token.
+Medido alternando, benchmark 64+64 (tok/s de prompt, OpenCL -> Vulkan): Qwen 1,5B 212 -> 1.387; Llama 3B 107 -> 757;
+SmolLM2 135M 1.200 -> 8.100; em 512 tokens: 186 -> 1.550, 95 -> 766, 800 -> 9.300. A geração não mudou. Diferença de
+logit contra a CPU exata no caminho em lote: 0,008–0,026 (pesos e ativações viram fp16 nos ladrilhos; o caminho float
+dá ~3e-5); argmax e os 40 tokens gulosos seguintes iguais ao token a token em prompt de 600 tokens. Atenção em lote,
+três kernels contra um lançamento (posição média ~320, 64 tokens): 2,3 ms contra 0,40 ms por camada. Custo de uma
+passada de 256 tokens no Qwen 1,5B (149 ms, medido omitindo cada fase): gate/up 71 ms, down 34, q/k/v 10, saída 7,
+atenção 19 (14 só nos subgroupAdd do produto q.k), normas 4, qkv_post 2. Os produtos rodam a ~2,7 T mult/s: abaixo de
+~110 ms por passada só com produto mais rápido (referência: ~3,5 T).
 MoE no Vulkan cai para o OpenCL. Não testados: sessão interativa e agente pelo Vulkan, modelo
 maior que a VRAM (hoje cai para a CPU), placa Intel.
 

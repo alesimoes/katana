@@ -1,0 +1,27 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+/* RMSNorm do lote com saida em fp16 (entrada direta dos produtos em matriz cooperativa).
+   Ativacoes transpostas: x[coluna*B + token]. Um grupo de 256 threads trata TB = 8 tokens vizinhos: as 8 colunas
+   de tokens seguidos formam um setor de 32 bytes, entao as leituras ficam coalescidas (um grupo por token lia
+   um float por setor). Thread (tb, js): token tb do grupo, fatia js (de JS = 32) das colunas. */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer G { float g[]; };
+layout(std430, binding = 2) buffer O { float16_t o[]; };
+layout(push_constant) uniform P { int n; float eps; int B; } pc;
+const int TB = 8, JS = 32;
+shared float part[JS * TB];
+void main() {
+    const int tb = int(gl_LocalInvocationID.x) % TB, js = int(gl_LocalInvocationID.x) / TB, B = pc.B;
+    const int b = int(gl_WorkGroupID.x) * TB + tb;
+    const bool ok = b < B;
+    float s = 0.0;
+    if (ok) for (int j = js; j < pc.n; j += JS) { float v = x[j * B + b]; s += v * v; }
+    part[js * TB + tb] = s;
+    barrier();
+    float tot = 0.0;
+    for (int k = 0; k < JS; k++) tot += part[k * TB + tb];
+    const float inv = 1.0 / sqrt(tot / float(pc.n) + pc.eps);
+    if (ok) for (int j = js; j < pc.n; j += JS) o[j * B + b] = float16_t(g[j] * (x[j * B + b] * inv));
+}

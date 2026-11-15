@@ -1,0 +1,50 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+/* Os tres kernels do caminho em lote num arquivo so, escolhidos por -DSTAGE=0 (scores), 1 (softmax), 2 (mix).
+   Notas: (token x cabeca x posicao), so t <= posicao do token. Ativacoes transpostas q[(h*hd+j)*B+b]. */
+layout(local_size_x = 128) in;
+#if STAGE == 0
+layout(std430, binding = 0) readonly buffer Q { float q[]; };
+layout(std430, binding = 1) readonly buffer KC { KVT kc[]; };
+layout(std430, binding = 2) buffer A { float att[]; };
+layout(push_constant) uniform P { int base, pos0, tmax, ctx, hd, kvd, group, nh, B; float scale; } pc;
+void main() {
+    int gid = int(gl_GlobalInvocationID.x);
+    if (gid >= pc.B * pc.nh * pc.tmax) return;
+    int t = gid % pc.tmax, bh = gid / pc.tmax, h = bh % pc.nh, b = bh / pc.nh;
+    if (t > pc.pos0 + b) return;
+    int kh = pc.base + t * pc.kvd + (h / pc.group) * pc.hd;
+    float s = 0.0;
+    for (int j = 0; j < pc.hd; j++) s += q[(h * pc.hd + j) * pc.B + b] * KVL(kc, kh + j);
+    att[bh * pc.ctx + t] = s * pc.scale;
+}
+#elif STAGE == 1
+layout(std430, binding = 0) buffer A { float att[]; };
+layout(push_constant) uniform P { int pos0, ctx, nh, B; } pc;
+void main() {
+    int gid = int(gl_GlobalInvocationID.x);
+    if (gid >= pc.B * pc.nh) return;
+    int T = pc.pos0 + gid / pc.nh + 1, a = gid * pc.ctx;
+    float mx = att[a], sum = 0.0;
+    for (int t = 1; t < T; t++) mx = max(mx, att[a + t]);
+    for (int t = 0; t < T; t++) { float e = exp(att[a + t] - mx); att[a + t] = e; sum += e; }
+    float inv = 1.0 / sum;
+    for (int t = 0; t < T; t++) att[a + t] *= inv;
+}
+#else
+layout(std430, binding = 0) readonly buffer A { float att[]; };
+layout(std430, binding = 1) readonly buffer VC { KVT vc[]; };
+layout(std430, binding = 2) buffer O { float o[]; };
+layout(push_constant) uniform P { int base, pos0, ctx, hd, kvd, group, nh, B; } pc;
+void main() {
+    int gid = int(gl_GlobalInvocationID.x), B = pc.B;
+    if (gid >= B * pc.nh * pc.hd) return;
+    int b = gid % B, i = gid / B, h = i / pc.hd, j = i % pc.hd;
+    int a = (b * pc.nh + h) * pc.ctx;
+    int v = pc.base + (h / pc.group) * pc.hd + j;
+    float s = 0.0;
+    for (int t = 0; t <= pc.pos0 + b; t++) s += att[a + t] * KVL(vc, v + t * pc.kvd);
+    o[i * B + b] = s;
+}
+#endif

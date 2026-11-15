@@ -1,0 +1,11 @@
+#version 450
+/* copia a coluna off de um buffer transposto (stride = B) para um vetor simples */
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer S { float src[]; };
+layout(std430, binding = 1) buffer D { float dst[]; };
+layout(push_constant) uniform P { int n; int stride; int off; } pc;
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= pc.n) return;
+    dst[i] = src[i * pc.stride + pc.off];
+}

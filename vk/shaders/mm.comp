@@ -1,0 +1,284 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+
+// Y[rows][tokens] = W[rows][cols] * X[cols][tokens], pesos quantizados no layout do katana,
+// decodificados ao encher o ladrilho compartilhado; matrizes cooperativas fp16 x fp16 -> fp32.
+// Parametros de compilacao: WT (0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32), BM, BN, SM x SN subgrupos,
+// XF32 (ativacoes fp32 lidas direto), SCTAB (tabela de escala/minimo em memoria compartilhada), GLU (gate/up).
+#ifndef SCTAB
+#define SCTAB 0
+#endif
+#ifndef GLU
+#define GLU 0
+#endif
+#ifndef XF32
+#define XF32 0
+#endif
+#define NSG (SM * SN)
+#define NT (NSG * 32)
+layout(local_size_x = NT) in;
+const uint BK = 64, T = 16;
+const uint WM = BM / SM, WN = BN / SN;
+const uint CR = WM / T, CC = WN / T;
+const uint STRIDE = BK + 8;
+
+layout(set = 0, binding = 0) readonly buffer WB { uint w[]; } wb;       // entrelacado de 32 em 32 linhas
+#if XF32
+layout(set = 0, binding = 1) readonly buffer XB { float x[]; } xb;
+layout(set = 0, binding = 1) readonly buffer XB4 { vec4 x4[]; } xb4;
+#else
+layout(set = 0, binding = 1) readonly buffer XB { float16_t x[]; } xb;
+layout(set = 0, binding = 1) readonly buffer XB4 { f16vec4 x4[]; } xb4;
+#endif
+#ifndef YH
+#define YH 0
+#endif
+#if YH
+layout(set = 0, binding = 2) buffer YB { float16_t y[]; } yb;            // y[row*tokens + token] em fp16 (so modo GLU)
+#else
+layout(set = 0, binding = 2) buffer YB { float y[]; } yb;                // y[row*tokens + token]
+#endif
+layout(push_constant) uniform PC { uint rows, cols, tokens, wpr, kper, slice, add, pad; } pc;
+
+shared float16_t buf_a[BM * STRIDE];
+shared float16_t buf_b[BN * STRIDE];
+#if GLU
+#define SCRN 512
+#else
+#define SCRN 256
+#endif
+shared float scr[NSG * SCRN];
+#if SCTAB
+shared float tab[BM * 17];
+#endif
+
+#define SB(k) ((hw[(k) >> 2] >> (((k) & 3) * 8)) & 255u)
+void scmin(uint hw[3], uint j, out uint sc, out uint mn) {
+    if (j < 4) { sc = SB(j) & 63; mn = SB(j + 4) & 63; }
+    else { sc = (SB(j + 4) & 15) | ((SB(j - 4) >> 6) << 4); mn = (SB(j + 4) >> 4) | ((SB(j) >> 6) << 4); }
+}
+
+// linha do ladrilho compartilhado do slot h (grupo de 32 linhas) e linha r0 dentro dele
+uint srow(uint h, uint r0) {
+#if GLU
+    const uint HW = WM / 2, o = 32 * (h >> 1) + r0;     // gate e up da mesma linha ficam no mesmo subgrupo
+    return o + (o / HW) * HW + (h & 1) * HW;
+#else
+    return 32 * h + r0;
+#endif
+}
+
+void main() {
+    const uint id = gl_LocalInvocationID.x, warp = gl_SubgroupID, lane = gl_SubgroupInvocationID;
+    const uint wr = warp % SM, wc = warp / SM;
+#if GLU
+    const uint ir = gl_WorkGroupID.x * (BM / 2);
+#else
+    const uint ir = gl_WorkGroupID.x * BM;
+#endif
+    const uint ic = gl_WorkGroupID.y * BN;
+    coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acc[CR * CC];
+    for (uint i = 0; i < CR * CC; i++) acc[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
+    const uint kb = gl_WorkGroupID.z * pc.kper, ke = min(pc.cols, kb + pc.kper);
+    const uint tokens = pc.tokens;
+    #ifdef FORCEVEC
+    const bool vec4ok = true;
+#else
+    const bool vec4ok = (tokens & 3u) == 0u;
+#endif
+    for (uint k0 = kb; k0 < ke; k0 += BK) {
+        const uint blk = k0 / 256, s = (k0 % 256) / 64;
+#if SCTAB
+        if ((k0 & 255u) == 0u) {
+            for (uint i = 0; i < BM * 8 / NT; i++) {
+                const uint e = id + i * NT, j = e & 7, rest = e >> 3, r0 = rest & 31, h = rest >> 5;
+#if GLU
+                const uint G = ((ir >> 5) + (h >> 1)) * 2 + (h & 1), gr = ((ir >> 5) + (h >> 1)) * 32;
+#else
+                const uint G = (ir >> 5) + h, gr = G * 32;
+#endif
+                float a = 0.0, b = 0.0;
+                if (gr < pc.rows) {
+                    const uint base = G * pc.wpr * 32 + r0 + blk * (WT == 0 ? 36 : 44) * 32;
+                    const uint h0 = wb.w[base];
+                    uint hw[3] = uint[3](wb.w[base + 32], wb.w[base + 64], wb.w[base + 96]);
+                    uint sc, mn; scmin(hw, j, sc, mn);
+                    a = unpackHalf2x16(h0).x * float(sc); b = unpackHalf2x16(h0).y * float(mn);
+                }
+                const uint sr = srow(h, r0);
+                tab[sr * 17 + j * 2] = a; tab[sr * 17 + j * 2 + 1] = b;
+            }
+            barrier();
+        }
+#endif
+        // ---- A: decodifica os pesos (unidade = 16 pesos de uma linha)
+        for (uint i = 0; i < BM * 4 / NT; i++) {
+            const uint u = id + i * NT, r0 = u & 31, gi = (u >> 5) & 3, h = u >> 7;
+            const uint sr = srow(h, r0), o = sr * STRIDE + gi * 16;
+#if GLU
+            const uint G = ((ir >> 5) + (h >> 1)) * 2 + (h & 1), gr = ((ir >> 5) + (h >> 1)) * 32;
+#else
+            const uint G = (ir >> 5) + h, gr = G * 32;
+#endif
+            const uint wbase = G * pc.wpr * 32 + r0;
+            if (gr >= pc.rows) {
+                for (uint t = 0; t < 16; t++) buf_a[o + t] = float16_t(0.0);
+                continue;
+            }
+#if WT == 0 || WT == 2
+            {
+                const uint base = wbase + blk * (WT == 0 ? 36 : 44) * 32;
+                float dsc[2], dm[2];
+#if SCTAB
+                for (uint v = 0; v < 2; v++) { dsc[v] = tab[sr * 17 + (2 * s + v) * 2]; dm[v] = tab[sr * 17 + (2 * s + v) * 2 + 1]; }
+#else
+                const uint h0 = wb.w[base];
+                uint hw[3] = uint[3](wb.w[base + 32], wb.w[base + 64], wb.w[base + 96]);
+                const float d = unpackHalf2x16(h0).x, dmin = unpackHalf2x16(h0).y;
+                for (uint v = 0; v < 2; v++) {
+                    uint sc, mn; scmin(hw, 2 * s + v, sc, mn);
+                    dsc[v] = d * float(sc); dm[v] = dmin * float(mn);
+                }
+#endif
+                for (uint v = 0; v < 2; v++) {
+                    const uint l = gi * 2 + v;
+                    const uint oo = sr * STRIDE + l * 4;
+#if WT == 0
+                    const uint wd = wb.w[base + (4 + s * 8 + l) * 32];
+                    for (uint b = 0; b < 4; b++) {
+                        buf_a[oo + b] = float16_t(dsc[0] * float((wd >> (8 * b)) & 15) - dm[0]);
+                        buf_a[oo + 32 + b] = float16_t(dsc[1] * float((wd >> (8 * b + 4)) & 15) - dm[1]);
+                    }
+#else
+                    const uint wd = wb.w[base + (12 + s * 8 + l) * 32], hb = wb.w[base + (4 + l) * 32] >> (2 * s);
+                    for (uint b = 0; b < 4; b++) {
+                        buf_a[oo + b] = float16_t(dsc[0] * float(((wd >> (8 * b)) & 15) | (((hb >> (8 * b)) & 1) << 4)) - dm[0]);
+                        buf_a[oo + 32 + b] = float16_t(dsc[1] * float(((wd >> (8 * b + 4)) & 15) | (((hb >> (8 * b + 1)) & 1) << 4)) - dm[1]);
+                    }
+#endif
+                }
+            }
+#elif WT == 1
+            {
+                const uint base = wbase + blk * 53 * 32;
+                const float d = uintBitsToFloat(wb.w[base + 52 * 32]);
+                const int scw = int(wb.w[base + (48 + s) * 32]);
+                const float dsc = d * float((scw << (24 - 8 * int(gi))) >> 24);
+                const uint q = base + (s * 4 + gi) * 3 * 32;
+                const uint w0 = wb.w[q], w1 = wb.w[q + 32], w2 = wb.w[q + 64];
+                for (uint t = 0; t < 16; t++) {
+                    const uint bit = 6 * t, wi = bit / 32, off = bit % 32;
+                    uint v = (wi == 0 ? w0 : (wi == 1 ? w1 : w2)) >> off;
+                    if (off > 26) v |= (wi == 0 ? w1 : w2) << (32 - off);
+                    buf_a[o + t] = float16_t(dsc * float(int(v & 63) - 32));
+                }
+            }
+#elif WT == 3
+            {
+                const uint base = wbase + ((k0 >> 5) + (gi >> 1)) * 9 * 32;
+                const float d = uintBitsToFloat(wb.w[base]);
+                for (uint v = 0; v < 4; v++) {
+                    const uint wd = wb.w[base + (1 + (gi & 1) * 4 + v) * 32];
+                    for (uint b = 0; b < 4; b++)
+                        buf_a[o + v * 4 + b] = float16_t(d * float(int(wd << (24 - 8 * b)) >> 24));
+                }
+            }
+#else
+            for (uint t = 0; t < 16; t++) buf_a[o + t] = float16_t(uintBitsToFloat(wb.w[wbase + (k0 + gi * 16 + t) * 32]));
+#endif
+        }
+        // ---- B: ativacoes (tokens fora do lote viram zero)
+        if (vec4ok) {
+            for (uint i = 0; i < BK * BN / 4 / NT; i++) {
+                const uint idx = id + i * NT, c = idx / (BN / 4), n = (idx % (BN / 4)) * 4;
+#if XF32
+                vec4 v = vec4(0.0);
+#else
+                f16vec4 v = f16vec4(0.0);
+#endif
+                if (ic + n < tokens) v = xb4.x4[((k0 + c) * tokens + ic + n) / 4];
+                buf_b[n * STRIDE + c] = float16_t(v.x); buf_b[(n + 1) * STRIDE + c] = float16_t(v.y);
+                buf_b[(n + 2) * STRIDE + c] = float16_t(v.z); buf_b[(n + 3) * STRIDE + c] = float16_t(v.w);
+            }
+        } else {
+            for (uint i = 0; i < BK * BN / NT; i++) {
+                const uint idx = id + i * NT, c = idx / BN, n = idx % BN;
+                float16_t v = float16_t(0.0);
+                if (ic + n < tokens) v = float16_t(xb.x[(k0 + c) * tokens + ic + n]);
+                buf_b[n * STRIDE + c] = v;
+            }
+        }
+        barrier();
+        for (uint k = 0; k < BK; k += T) {
+            for (uint cr = 0; cr < CR; cr++) {
+                coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseA> a;
+                coopMatLoad(a, buf_a, (wr * WM + cr * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+                for (uint cc = 0; cc < CC; cc++) {
+                    coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseB> b;
+                    coopMatLoad(b, buf_b, (wc * WN + cc * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutColumnMajor);
+                    acc[cc * CR + cr] = coopMatMulAdd(a, b, acc[cc * CR + cr]);
+                }
+            }
+        }
+        barrier();
+    }
+    // ---- epilogue
+    const uint yz = gl_WorkGroupID.z * pc.slice;
+#if !GLU
+    if (pc.add == 0u && vec4ok && ir + BM <= pc.rows && ic + BN <= tokens) {
+        [[unroll]] for (uint cr = 0; cr < CR; cr++)
+            [[unroll]] for (uint cc = 0; cc < CC; cc++)
+                coopMatStore(acc[cc * CR + cr], yb.y, yz + (ir + wr * WM + cr * T) * tokens + ic + wc * WN + cc * T, tokens,
+                             gl_CooperativeMatrixLayoutRowMajor);
+        return;
+    }
+#endif
+#ifdef NOSCR
+    return;
+#endif
+    const uint sb = warp * SCRN;
+#if GLU
+    [[unroll]] for (uint cr = 0; cr < CR / 2; cr++)
+        [[unroll]] for (uint cc = 0; cc < CC; cc++) {
+            coopMatStore(acc[cc * CR + cr], scr, sb, T, gl_CooperativeMatrixLayoutRowMajor);
+            coopMatStore(acc[cc * CR + cr + CR / 2], scr, sb + 256, T, gl_CooperativeMatrixLayoutRowMajor);
+            subgroupMemoryBarrierShared(); subgroupBarrier();
+            for (uint e = lane; e < 256; e += 32) {
+                const uint row = ir + wr * (WM / 2) + cr * T + e / 16, tok = ic + wc * WN + cc * T + e % 16;
+                if (row < pc.rows && tok < tokens) {
+                    const float g = scr[sb + e], up = scr[sb + 256 + e];
+                    float v = g / (1.0 + exp(-g)) * up;
+                    const uint ix = yz + row * tokens + tok;
+#if YH
+                    yb.y[ix] = float16_t(v);
+#else
+                    if (pc.add != 0u) v += yb.y[ix];
+                    yb.y[ix] = v;
+#endif
+                }
+            }
+            subgroupMemoryBarrierShared(); subgroupBarrier();
+        }
+#else
+    [[unroll]] for (uint cr = 0; cr < CR; cr++)
+        [[unroll]] for (uint cc = 0; cc < CC; cc++) {
+            coopMatStore(acc[cc * CR + cr], scr, sb, T, gl_CooperativeMatrixLayoutRowMajor);
+            subgroupMemoryBarrierShared(); subgroupBarrier();
+            for (uint e = lane; e < 256; e += 32) {
+                const uint row = ir + wr * WM + cr * T + e / 16, tok = ic + wc * WN + cc * T + e % 16;
+                if (row < pc.rows && tok < tokens) {
+                    float v = scr[sb + e];
+                    const uint ix = yz + row * tokens + tok;
+                    if (pc.add != 0u) v += yb.y[ix];
+                    yb.y[ix] = v;
+                }
+            }
+            subgroupMemoryBarrierShared(); subgroupBarrier();
+        }
+#endif
+}
