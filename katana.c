@@ -92,7 +92,7 @@ typedef struct {
     float rope_base, eps;
     int bos, eos, add_bos;
     int rope_neox;      /* RoPE em metades (qwen2) em vez de pares adjacentes (llama) */
-    int chat_fmt;       /* 0 = ChatML, 1 = Llama 3 */
+    int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples */
     char arch[64];
 } Config;
 
@@ -111,6 +111,7 @@ typedef struct {
 
 typedef struct {
     char **tok; int *toklen; int *toktype; int n;
+    int spm; float *score;      /* SentencePiece: funde pares pela pontuacao do token */
     Map vocab, merges;
     int *special; int n_special;
     int byte2cp[256]; int cp2byte[512];
@@ -123,6 +124,7 @@ typedef struct {
     float *out_norm;
     Layer *layers;
     float *kcache, *vcache;             /* [L][ctx][kv_dim] */
+    int64_t fsize;                      /* tamanho do arquivo do modelo */
     float *x, *xb, *xb2, *q, *k, *v, *att, *hb, *hb2, *logits, *rope_freq;
     size_t n_params;
 } Model;
@@ -209,14 +211,17 @@ static float f16_to_f32(uint16_t h) {
 }
 
 /* tipos de tensor do GGUF */
-enum { T_F32 = 0, T_F16 = 1, T_Q8_0 = 8, T_Q4_K = 12, T_Q6_K = 14 };
+enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q8_0 = 8, T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14 };
 
 /* bytes ocupados por n elementos (0 = tipo nao suportado ou n desalinhado) */
 static size_t qbytes(uint32_t type, size_t n) {
     switch (type) {
         case T_F32:  return n * 4;
         case T_F16:  return n * 2;
+        case T_Q4_0: return n % 32 ? 0 : n / 32 * 18;     /* f16 d + 32 nibbles */
         case T_Q8_0: return n % 32 ? 0 : n / 32 * 34;     /* f16 d + 32 x int8 */
+        case T_Q3_K: return n % 256 ? 0 : n / 256 * 110;  /* 32 bits altos, 64 de 2 bits, 12 escalas, f16 d */
+        case T_Q5_K: return n % 256 ? 0 : n / 256 * 176;  /* f16 d, f16 dmin, 12 escalas, 32 bits altos, 128 nibbles */
         case T_Q4_K: return n % 256 ? 0 : n / 256 * 144;  /* f16 d, f16 dmin, 12 escalas, 128 nibbles */
         case T_Q6_K: return n % 256 ? 0 : n / 256 * 210;  /* 128 ql, 64 qh, 16 escalas, f16 d */
         default:     return 0;
@@ -232,7 +237,63 @@ static void k4_scale_min(int j, const uint8_t *q, int *d, int *m) {
     }
 }
 
+/* bloco Q3_K -> 256 valores inteiros (-4..3) e 16 escalas (-32..31) */
+static void q3k_unpack(const uint8_t *src, int8_t *val, int8_t *sc) {
+    const uint32_t km1 = 0x03030303u, km2 = 0x0f0f0f0fu;
+    const uint8_t *hm = src, *q = src + 32;
+    uint32_t aux[4];
+    memcpy(aux, src + 96, 12);
+    const uint32_t tmp = aux[2];
+    aux[2] = ((aux[0] >> 4) & km2) | (((tmp >> 4) & km1) << 4);
+    aux[3] = ((aux[1] >> 4) & km2) | (((tmp >> 6) & km1) << 4);
+    aux[0] = (aux[0] & km2) | (((tmp >> 0) & km1) << 4);
+    aux[1] = (aux[1] & km2) | (((tmp >> 2) & km1) << 4);
+    for (int i = 0; i < 16; i++) sc[i] = (int8_t)(((const uint8_t *)aux)[i] - 32);
+    uint8_t m = 1;
+    for (int j = 0; j < 2; j++, q += 32) {
+        for (int k = 0, shift = 0; k < 4; k++, shift += 2, m <<= 1) {
+            for (int l = 0; l < 16; l++) *val++ = (int8_t)(((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
+            for (int l = 0; l < 16; l++) *val++ = (int8_t)(((q[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4));
+        }
+    }
+}
+
 static void dequant(uint32_t type, const uint8_t *src, float *out, size_t n) {
+    if (type == T_Q4_0) {
+        for (size_t b = 0; b < n / 32; b++, src += 18, out += 32) {
+            uint16_t h; memcpy(&h, src, 2);
+            const float d = f16_to_f32(h);
+            for (int j = 0; j < 16; j++) {
+                out[j] = d * ((src[2 + j] & 0xF) - 8);
+                out[j + 16] = d * ((src[2 + j] >> 4) - 8);
+            }
+        }
+        return;
+    }
+    if (type == T_Q3_K) {
+        for (size_t b = 0; b < n / 256; b++, src += 110, out += 256) {
+            int8_t val[256], sc[16];
+            uint16_t h; memcpy(&h, src + 108, 2);
+            const float d = f16_to_f32(h);
+            q3k_unpack(src, val, sc);
+            for (int i = 0; i < 256; i++) out[i] = d * sc[i / 16] * val[i];
+        }
+        return;
+    }
+    if (type == T_Q5_K) {
+        for (size_t b = 0; b < n / 256; b++, src += 176) {
+            uint16_t h0, h1; memcpy(&h0, src, 2); memcpy(&h1, src + 2, 2);
+            const float d = f16_to_f32(h0), dmin = f16_to_f32(h1);
+            const uint8_t *sc = src + 4, *qh = src + 16, *q = src + 48;
+            for (int j = 0; j < 8; j += 2, q += 32) {
+                int s1, m1, s2, m2;
+                k4_scale_min(j, sc, &s1, &m1); k4_scale_min(j + 1, sc, &s2, &m2);
+                for (int l = 0; l < 32; l++) *out++ = d * s1 * ((q[l] & 0xF) + (((qh[l] >> j) & 1) << 4)) - dmin * m1;
+                for (int l = 0; l < 32; l++) *out++ = d * s2 * ((q[l] >> 4) + (((qh[l] >> (j + 1)) & 1) << 4)) - dmin * m2;
+            }
+        }
+        return;
+    }
     if (type == T_F32) memcpy(out, src, n * 4);
     else if (type == T_F16) {
         for (size_t j = 0; j < n; j++) { uint16_t h; memcpy(&h, src + j * 2, 2); out[j] = f16_to_f32(h); }
@@ -291,7 +352,7 @@ static float *get_tensor(const Tensors *ts, const char *name, size_t expect, int
         float *out = xalloc(n, sizeof(float));
         size_t bytes = qbytes(t->type, n);
         if (!bytes) {
-            fprintf(stderr, "Tensor %s: quantizacao tipo %u nao suportada (use F32, F16, Q8_0, Q4_K ou Q6_K)\n", name, t->type);
+            fprintf(stderr, "Tensor %s: quantizacao tipo %u nao suportada (use F32, F16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K ou Q6_K)\n", name, t->type);
             exit(1);
         }
         if (src + bytes > ts->end) die("tensor fora do arquivo");
@@ -311,7 +372,7 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
     for (uint64_t i = 0; i < ts->n; i++) {
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
-        if (t->type != T_Q8_0 && t->type != T_Q4_K && t->type != T_Q6_K) break;
+        if (t->type == T_F32 || t->type == T_F16) break;
         size_t n = 1, stride = qbytes(t->type, cols);
         if (!stride) break;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
@@ -347,6 +408,8 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
 }
 
 static void gpu_setup(Model *m);
+static void shards_open(const char *path, int64_t fsz);
+static void prefetch_setup(int64_t fsz);
 
 /* mapeia o arquivo em memoria (somente leitura): o SO carrega as paginas sob demanda
    e o mapeamento fica vivo ate o processo terminar */
@@ -386,7 +449,8 @@ static void load_model(Model *m, const char *path) {
     uint64_t n_tensors = rd_u64(&r), n_kv = rd_u64(&r);
 
     Config *c = &m->cfg;
-    c->rope_base = 10000.0f; c->eps = 1e-5f; c->bos = -1; c->eos = -1;
+    c->rope_base = 10000.0f; c->eps = 1e-5f; c->bos = -1; c->eos = -1; c->add_bos = -1;
+    char *tmpl = NULL;
     uint64_t align = 32;
     const char **merges = NULL; int *mlen = NULL; int n_merges = 0;
     Tokenizer *tk = &m->tk;
@@ -407,6 +471,16 @@ static void load_model(Model *m, const char *path) {
                 int sl; const char *s = rd_str(&r, &sl);
                 tk->tok[j] = xalloc(sl + 1, 1); memcpy(tk->tok[j], s, sl); tk->toklen[j] = sl;
             }
+        } else if (t == 8 && key_is(k, kl, "tokenizer.ggml.model")) {
+            int sl; const char *sv = rd_str(&r, &sl);
+            tk->spm = sl == 5 && memcmp(sv, "llama", 5) == 0;
+        } else if (t == 8 && key_is(k, kl, "tokenizer.chat_template")) {
+            int sl; const char *sv = rd_str(&r, &sl);
+            tmpl = xalloc((size_t)sl + 1, 1); memcpy(tmpl, sv, sl);
+        } else if (t == 9 && key_is(k, kl, "tokenizer.ggml.scores")) {
+            uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
+            tk->score = xalloc(n, sizeof(float));
+            for (uint64_t j = 0; j < n; j++) tk->score[j] = (float)rd_num(&r, et);
         } else if (t == 9 && key_is(k, kl, "tokenizer.ggml.merges")) {
             uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
             if (et != 8) die("merges: tipo inesperado");
@@ -447,10 +521,19 @@ static void load_model(Model *m, const char *path) {
     c->hd = c->dim / c->n_heads;
     if (c->dim % c->n_heads || c->hd % 2 || c->n_heads % c->n_kv) die("dimensoes de atencao invalidas");
     if (!c->ctx || c->ctx > MAX_CTX) c->ctx = MAX_CTX;
-    if (!merges) die("GGUF sem merges BPE (tokenizador nao suportado)");
+    if (!merges && !tk->spm) die("GGUF sem merges BPE nem SentencePiece (tokenizador nao suportado)");
+    if (tk->spm && !tk->score) tk->score = xalloc(tk->n, sizeof(float));
+    if (c->add_bos < 0) c->add_bos = tk->spm;      /* SentencePiece comeca com BOS por padrao */
     tokenizer_finish(tk, merges, mlen, n_merges);
-    if (map_get(&tk->vocab, "<|im_start|>", 12) < 0 && map_get(&tk->vocab, "<|start_header_id|>", 19) >= 0)
-        c->chat_fmt = 1;
+    /* formato de conversa: pelo template do proprio modelo; sem template, pelo vocabulario */
+    if (tmpl && strstr(tmpl, "<|im_start|>")) c->chat_fmt = 0;
+    else if (tmpl && strstr(tmpl, "<|start_header_id|>")) c->chat_fmt = 1;
+    else if (tmpl && strstr(tmpl, "<|user|>")) c->chat_fmt = 2;
+    else if (tmpl && strstr(tmpl, "[INST]")) c->chat_fmt = 3;
+    else if (map_get(&tk->vocab, "<|im_start|>", 12) >= 0) c->chat_fmt = 0;
+    else if (map_get(&tk->vocab, "<|start_header_id|>", 19) >= 0) c->chat_fmt = 1;
+    else c->chat_fmt = 4;
+    free(tmpl);
 
     Tensors ts;
     ts.n = n_tensors; ts.t = xalloc(n_tensors, sizeof(TInfo));
@@ -518,6 +601,9 @@ static void load_model(Model *m, const char *path) {
         m->rope_freq[i] = powf(c->rope_base, -2.0f * i / c->hd);
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
+    m->fsize = fsz;
+    shards_open(path, fsz);
+    prefetch_setup(fsz);
     if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 
@@ -596,31 +682,89 @@ static void encode_plain(const Tokenizer *tk, const uint8_t *s, int n, Ids *out)
     }
 }
 
-/* codifica texto, reconhecendo tokens especiais (ex.: <|im_start|>) */
+/* SentencePiece: espacos viram U+2581; parte de um simbolo por caractere e funde, a cada
+   passo, o par vizinho cujo token resultante existe e tem a maior pontuacao. O que sobrar
+   fora do vocabulario sai como tokens de byte (<0xNN>). */
+static void spm_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out, int prefix) {
+    char *buf = xalloc((size_t)n * 3 + 4, 1);
+    int bl = 0, ns = 0;
+    if (prefix) { buf[bl++] = (char)0xE2; buf[bl++] = (char)0x96; buf[bl++] = (char)0x81; }
+    for (int i = 0; i < n; i++) {
+        if (s[i] == ' ') { buf[bl++] = (char)0xE2; buf[bl++] = (char)0x96; buf[bl++] = (char)0x81; }
+        else buf[bl++] = (char)s[i];
+    }
+    int *st = xalloc(bl + 1, sizeof(int)), *ln = xalloc(bl + 1, sizeof(int));
+    for (int i = 0; i < bl; ) {         /* um simbolo por caractere UTF-8 */
+        const uint8_t ch = (uint8_t)buf[i];
+        int l = ch < 0x80 ? 1 : ch < 0xE0 ? 2 : ch < 0xF0 ? 3 : 4;
+        if (i + l > bl) l = bl - i;
+        st[ns] = i; ln[ns] = l; ns++; i += l;
+    }
+    for (;;) {
+        int best = -1; float bscore = -1e30f;
+        for (int i = 0; i + 1 < ns; i++) {
+            const int id = map_get(&tk->vocab, buf + st[i], ln[i] + ln[i + 1]);
+            if (id >= 0 && tk->score[id] > bscore) { bscore = tk->score[id]; best = i; }
+        }
+        if (best < 0) break;
+        ln[best] += ln[best + 1];
+        for (int i = best + 1; i + 1 < ns; i++) { st[i] = st[i + 1]; ln[i] = ln[i + 1]; }
+        ns--;
+    }
+    for (int i = 0; i < ns; i++) {
+        const int id = map_get(&tk->vocab, buf + st[i], ln[i]);
+        if (id >= 0) { ids_push(out, id); continue; }
+        for (int j = 0; j < ln[i]; j++) {
+            char bt[8];
+            snprintf(bt, sizeof bt, "<0x%02X>", (uint8_t)buf[st[i] + j]);
+            const int bid = map_get(&tk->vocab, bt, 6);
+            ids_push(out, bid >= 0 ? bid : 0);
+        }
+    }
+    free(buf); free(st); free(ln);
+}
+
+/* codifica texto, reconhecendo tokens especiais (ex.: <|im_start|>, </s>) */
 static void encode(const Tokenizer *tk, const char *text, Ids *out) {
     const uint8_t *s = (const uint8_t *)text;
-    int n = (int)strlen(text), start = 0, i = 0;
-    while (i < n) {
+    int n = (int)strlen(text), start = 0, i = 0, prev_special = 1;
+    while (i <= n) {
         int hit = -1;
-        if (s[i] == '<') {
+        if (i < n && s[i] == '<') {
             for (int j = 0; j < tk->n_special; j++) {
                 int id = tk->special[j], l = tk->toklen[id];
                 if (l <= n - i && memcmp(s + i, tk->tok[id], l) == 0 && (hit < 0 || l > tk->toklen[hit])) hit = id;
             }
         }
-        if (hit >= 0) {
-            if (i > start) encode_plain(tk, s + start, i - start, out);
+        if (hit >= 0 || i == n) {
+            if (i > start) {
+                if (tk->spm) spm_encode(tk, s + start, i - start, out, prev_special);
+                else encode_plain(tk, s + start, i - start, out);
+                prev_special = 0;
+            }
+            if (hit < 0) break;
             ids_push(out, hit);
+            prev_special = 1;
             i += tk->toklen[hit]; start = i;
         } else i++;
     }
-    if (n > start) encode_plain(tk, s + start, n - start, out);
 }
 
 /* escreve os bytes originais de um token */
 static void print_token(const Tokenizer *tk, int id, FILE *f) {
     const uint8_t *s = (const uint8_t *)tk->tok[id];
     int n = tk->toklen[id], i = 0;
+    if (tk->spm) {
+        if (tk->toktype && tk->toktype[id] == 6 && n == 6 && s[0] == '<') {     /* token de byte <0xNN> */
+            fputc((int)strtol((const char *)s + 3, NULL, 16), f);
+            return;
+        }
+        while (i < n) {
+            if (i + 2 < n && s[i] == 0xE2 && s[i + 1] == 0x96 && s[i + 2] == 0x81) { fputc(' ', f); i += 3; }
+            else fputc(s[i++], f);
+        }
+        return;
+    }
     while (i < n) {
         int cp = s[i], adv = 1;
         if (cp >= 0xC0 && cp < 0xE0 && i + 1 < n) { cp = ((cp & 0x1F) << 6) | (s[i + 1] & 0x3F); adv = 2; }
@@ -933,7 +1077,17 @@ static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, in
     if (mat_int(W)) return W->type == T_Q4_K ? dot_q4k_i(row, cols) : dot_q6k_i(row, cols);
     if (W->type == T_Q4_K) return dot_q4k(row, x, sx, cols);
     if (W->type == T_Q6_K) return dot_q6k(row, x, cols);
-    return dot_q8(row, x, cols);
+    if (W->type == T_Q8_0) return dot_q8(row, x, cols);
+    {   /* demais tipos (Q4_0, Q3_K, Q5_K): dequantiza cada bloco e multiplica em float */
+        const int unit = W->type == T_Q4_0 ? 32 : 256;
+        const size_t ub = qbytes(W->type, unit);
+        float tmp[256], total = 0.0f;
+        for (int b = 0; b < cols / unit; b++) {
+            dequant(W->type, row + b * ub, tmp, unit);
+            total += dot(tmp, x + b * unit, unit);
+        }
+        return total;
+    }
 }
 
 /* somas de x por sub-bloco de 32 (usadas pelo Q4_K) */
@@ -990,13 +1144,15 @@ static struct {
 /* um conjunto de kernels compilado para um tamanho de lote fixo (NB) */
 typedef struct {
     int nb, nr;     /* tokens por passada; linhas da matriz por thread */
-    clh k_f32, k_q8, k_q4k, k_q6k, k_bsum;
-    clh kp_f32, kp_q8, kp_q4k, kp_q6k;      /* mesmos kernels com 2*nr linhas por thread (par gate/up) */
+    clh k_f32, k_q8, k_q4k, k_q5k, k_q6k, k_bsum;
+    clh kp_f32, kp_q8, kp_q4k, kp_q5k, kp_q6k;      /* mesmos kernels com 2*nr linhas por thread (par gate/up) */
     clh k_rms, k_qkv, k_gather, k_att_scores, k_att_softmax, k_att_mix;
 } KSet;
 
 typedef struct {
-    int on, full, force_cpu, debug, test_mv;
+    int on, full, force_cpu, debug, test_mv, kv16, n_shard;
+    int cfg_rows, cfg_rowsb;                            /* linhas por thread: geracao e lote */
+    clh dev;
     int n_gl;                                           /* camadas inteiras na GPU (as primeiras) */
     clh ctx, queue;
     KSet set[4]; int n_sets;                            /* nb decrescente; o ultimo e nb=1 */
@@ -1015,8 +1171,8 @@ static Gpu gpu;
 
 /* fracao da VRAM que o motor pode ocupar (o resto fica para o driver e o sistema) */
 static uint64_t gpu_budget(void) {
-    int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : 92;
-    if (pct < 10 || pct > 99) pct = 92;
+    int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : 95;
+    if (pct < 10 || pct > 99) pct = 95;
     return gpu.vram / 100 * (uint64_t)pct;
 }
 static int32_t gerr;
@@ -1045,6 +1201,9 @@ static const char *GPU_SRC =
    sao carregados uma vez e reusados nas NR linhas (ladrilhamento em registradores).
    Um buffer pode conter varias matrizes intercaladas por grupo (gs = quantas, go = qual). */
 "#if NB * NR > 32\n#define MAXSEG 4\n#else\n#define MAXSEG 8\n#endif\n"
+/* cache KV em float32 ou, para economizar VRAM, em float16 */
+"#if KV16\n#define KVT half\n#define KVL(p, i) vload_half(i, p)\n#define KVS(v, i, p) vstore_half(v, i, p)\n"
+"#else\n#define KVT float\n#define KVL(p, i) ((p)[i])\n#define KVS(v, i, p) (p)[i] = (v)\n#endif\n"
 "#define GIDX(r) (((i >> 5) * NR + (r)) * gs + go)\n"
 "#define RPTR(r, wpr) (W + (size_t)GIDX(r) * (size_t)(wpr) * 32 + (i & 31))\n"
 "#define RROW(r) ((((i >> 5) * NR + (r)) << 5) + (i & 31))\n"
@@ -1170,6 +1329,52 @@ static const char *GPU_SRC =
 "  }\n"
 "  FINISH\n"
 "}\n"
+/* Q5_K: 44 palavras por bloco (mesmos bytes do arquivo): cabecalho do Q4_K, 8 palavras com o
+   quinto bit de cada peso e 32 palavras de nibbles */
+"__kernel void mv_q5k(MVARGS) {\n"
+"  MVLOCAL\n"
+"  int i = get_global_id(0);\n"
+"  int nb = cols >> 8, bps = nb / nseg, b0 = get_global_id(1) * bps;\n"
+"  __global const uint *p[NR]; FB total[NR];\n"
+"  for (int r = 0; r < NR; r++) { p[r] = RPTR(r, nb * 44) + (size_t)b0 * (44 * 32); total[r] = (FB)(0.0f); }\n"
+"  __global const float *xb = x + (size_t)b0 * 256 * NB;\n"
+"  for (int b = 0; b < bps; b++) {\n"
+"    float d[NR], dmin[NR]; uint hw[NR][3];\n"
+"    for (int r = 0; r < NR; r++) {\n"
+"      uint h0 = p[r][0];\n"
+"      hw[r][0] = p[r][32]; hw[r][1] = p[r][64]; hw[r][2] = p[r][96];\n"
+"      d[r] = h2f(h0 & 0xFFFF); dmin[r] = h2f(h0 >> 16);\n"
+"    }\n"
+"    for (int j = 0; j < 8; j += 2, xb += 64 * NB) {\n"
+"      FB a[NR], c[NR];\n"
+"      for (int r = 0; r < NR; r++) { a[r] = (FB)(0.0f); c[r] = (FB)(0.0f); }\n"
+"#if NB == 1\n"
+"      FB xa = 0.0f, xc = 0.0f;\n"
+"#else\n"
+"      FB xa = LOADB(sx, (b0 + b) * 8 + j), xc = LOADB(sx, (b0 + b) * 8 + j + 1);\n"
+"#endif\n"
+"      for (int l = 0; l < 8; l++) {\n"
+"        FB x0 = LOADB(xb, 4 * l), x1 = LOADB(xb, 4 * l + 1), x2 = LOADB(xb, 4 * l + 2), x3 = LOADB(xb, 4 * l + 3);\n"
+"        FB y0 = LOADB(xb, 32 + 4 * l), y1 = LOADB(xb, 33 + 4 * l), y2 = LOADB(xb, 34 + 4 * l), y3 = LOADB(xb, 35 + 4 * l);\n"
+"#if NB == 1\n"
+"        xa += x0 + x1 + x2 + x3; xc += y0 + y1 + y2 + y3;\n"
+"#endif\n"
+"        for (int r = 0; r < NR; r++) {\n"
+"          uint w = p[r][(12 + j * 4 + l) * 32], hb = p[r][(4 + l) * 32] >> j;\n"
+"          a[r] += (float)((w & 15) | ((hb & 1) << 4)) * x0 + (float)(((w >> 8) & 15) | (((hb >> 8) & 1) << 4)) * x1 + (float)(((w >> 16) & 15) | (((hb >> 16) & 1) << 4)) * x2 + (float)(((w >> 24) & 15) | (((hb >> 24) & 1) << 4)) * x3;\n"
+"          c[r] += (float)(((w >> 4) & 15) | (((hb >> 1) & 1) << 4)) * y0 + (float)(((w >> 12) & 15) | (((hb >> 9) & 1) << 4)) * y1 + (float)(((w >> 20) & 15) | (((hb >> 17) & 1) << 4)) * y2 + (float)((w >> 28) | (((hb >> 25) & 1) << 4)) * y3;\n"
+"        }\n"
+"      }\n"
+"      for (int r = 0; r < NR; r++) {\n"
+"        int s1, m1, s2, m2;\n"
+"        k4(j, hw[r], &s1, &m1); k4(j + 1, hw[r], &s2, &m2);\n"
+"        total[r] += d[r] * ((float)s1 * a[r] + (float)s2 * c[r]) - dmin[r] * ((float)m1 * xa + (float)m2 * xc);\n"
+"      }\n"
+"    }\n"
+"    for (int r = 0; r < NR; r++) p[r] += 44 * 32;\n"
+"  }\n"
+"  FINISH\n"
+"}\n"
 /* Q6 reempacotado: 53 palavras por bloco de 256 pesos:
    48 palavras de pesos (16 pesos de 6 bits a cada 3 palavras), 4 de escalas int8, 1 float d */
 "#define QT(v, k) ((float)((int)((v) & 63) - 32) * xv[k])\n"
@@ -1226,13 +1431,13 @@ static const char *GPU_SRC =
    (direto no cache KV) e copia de v para o cache; o token b do lote esta na posicao pos0+b */
 "__kernel void qkv_post(__global float *q, __global const float *k, __global const float *v,\n"
 "    __global const float *bq, __global const float *bk, __global const float *bv,\n"
-"    __global float *kc, __global float *vc, __global const float *freq,\n"
+"    __global KVT *kc, __global KVT *vc, __global const float *freq,\n"
 "    int base, int pos0, int hd, int neox, int has_bias, int d, int kvd) {\n"
 "  int gid = get_global_id(0), b = gid % NB, p = gid / NB, half_ = hd / 2;\n"
 "  int pos = pos0 + b, off = base + pos * kvd;\n"
 "  if (p >= d / 2 + kvd / 2) {\n"
 "    p -= d / 2 + kvd / 2;\n"
-"    vc[off + p] = v[p * NB + b] + ((has_bias & 4) ? bv[p] : 0.0f);\n"
+"    KVS(v[p * NB + b] + ((has_bias & 4) ? bv[p] : 0.0f), off + p, vc);\n"
 "    return;\n"
 "  }\n"
 "  int isk = p >= d / 2;\n"
@@ -1243,7 +1448,7 @@ static const char *GPU_SRC =
 "  if (isk) {\n"
 "    float a = k[i0 * NB + b], c = k[i1 * NB + b];\n"
 "    if (has_bias & 2) { a += bk[i0]; c += bk[i1]; }\n"
-"    kc[off + i0] = a * cs - c * sn; kc[off + i1] = a * sn + c * cs;\n"
+"    KVS(a * cs - c * sn, off + i0, kc); KVS(a * sn + c * cs, off + i1, kc);\n"
 "  } else {\n"
 "    float a = q[i0 * NB + b], c = q[i1 * NB + b];\n"
 "    if (has_bias & 1) { a += bq[i0]; c += bq[i1]; }\n"
@@ -1251,13 +1456,13 @@ static const char *GPU_SRC =
 "  }\n"
 "}\n"
 /* atencao: notas (token x cabeca x posicao; so t <= posicao do token), softmax, mistura */
-"__kernel void att_scores(__global const float *q, __global const float *kc, __global float *att,\n"
+"__kernel void att_scores(__global const float *q, __global const KVT *kc, __global float *att,\n"
 "    int base, int pos0, int tmax, int ctx, int hd, int kvd, int group, int nh, float scale) {\n"
 "  int gid = get_global_id(0), t = gid % tmax, bh = gid / tmax, h = bh % nh, b = bh / nh;\n"
 "  if (t > pos0 + b) return;\n"
-"  __global const float *kh = kc + base + t * kvd + (h / group) * hd;\n"
+"  __global const KVT *kh = kc + base + t * kvd + (h / group) * hd;\n"
 "  float s = 0.0f;\n"
-"  for (int j = 0; j < hd; j++) s += q[(h * hd + j) * NB + b] * kh[j];\n"
+"  for (int j = 0; j < hd; j++) s += q[(h * hd + j) * NB + b] * KVL(kh, j);\n"
 "  att[(size_t)bh * ctx + t] = s * scale;\n"
 "}\n"
 "__kernel void att_softmax(__global float *att, int pos0, int ctx, int nh) {\n"
@@ -1269,13 +1474,13 @@ static const char *GPU_SRC =
 "  float inv = 1.0f / sum;\n"
 "  for (int t = 0; t < T; t++) a[t] *= inv;\n"
 "}\n"
-"__kernel void att_mix(__global const float *att, __global const float *vc, __global float *out,\n"
+"__kernel void att_mix(__global const float *att, __global const KVT *vc, __global float *out,\n"
 "    int base, int pos0, int ctx, int hd, int kvd, int group, int nh) {\n"
 "  int gid = get_global_id(0), b = gid % NB, i = gid / NB, h = i / hd, j = i % hd;\n"
 "  __global const float *a = att + (size_t)(b * nh + h) * ctx;\n"
-"  __global const float *v = vc + base + (h / group) * hd + j;\n"
+"  __global const KVT *v = vc + base + (h / group) * hd + j;\n"
 "  float s = 0.0f;\n"
-"  for (int t = 0; t <= pos0 + b; t++) s += a[t] * v[t * kvd];\n"
+"  for (int t = 0; t <= pos0 + b; t++) s += a[t] * KVL(v, t * kvd);\n"
 "  out[i * NB + b] = s;\n"
 "}\n";
 
@@ -1302,7 +1507,7 @@ static int cl_load(void) {
 static clh gpu_compile(int nb, int nr, clh dev) {
     int32_t err = 0;
     char opts[64];
-    snprintf(opts, sizeof opts, "-cl-mad-enable -DNB=%d -DNR=%d", nb, nr);
+    snprintf(opts, sizeof opts, "-cl-mad-enable -DNB=%d -DNR=%d -DKV16=%d", nb, nr, gpu.kv16);
     clh prog = cl.CreateProgramWithSource(gpu.ctx, 1, &GPU_SRC, NULL, &err);
     if (err) return NULL;
     if (cl.BuildProgram(prog, 1, &dev, opts, NULL, NULL) != 0) {
@@ -1321,8 +1526,8 @@ static int gpu_build_set(KSet *ks, int nb, int nr, clh dev) {
     ks->nb = nb; ks->nr = nr;
 #define KERN(pr, field, kname) ks->field = cl.CreateKernel(pr, kname, &err); if (err) return 0; \
     if (n_prof < 64) { prof[n_prof].k = ks->field; prof[n_prof++].name = kname; }
-    KERN(prog, k_f32, "mv_f32"); KERN(prog, k_q8, "mv_q8"); KERN(prog, k_q4k, "mv_q4k"); KERN(prog, k_q6k, "mv_q6k");
-    KERN(prog2, kp_f32, "mv_f32"); KERN(prog2, kp_q8, "mv_q8"); KERN(prog2, kp_q4k, "mv_q4k"); KERN(prog2, kp_q6k, "mv_q6k");
+    KERN(prog, k_f32, "mv_f32"); KERN(prog, k_q8, "mv_q8"); KERN(prog, k_q4k, "mv_q4k"); KERN(prog, k_q5k, "mv_q5k"); KERN(prog, k_q6k, "mv_q6k");
+    KERN(prog2, kp_f32, "mv_f32"); KERN(prog2, kp_q8, "mv_q8"); KERN(prog2, kp_q4k, "mv_q4k"); KERN(prog2, kp_q5k, "mv_q5k"); KERN(prog2, kp_q6k, "mv_q6k");
     KERN(prog, k_bsum, "bsum"); KERN(prog, k_rms, "rms"); KERN(prog, k_qkv, "qkv_post");
     KERN(prog, k_gather, "gather"); KERN(prog, k_att_scores, "att_scores");
     KERN(prog, k_att_softmax, "att_softmax"); KERN(prog, k_att_mix, "att_mix");
@@ -1361,79 +1566,213 @@ static int gpu_init(void) {
     if (err) return 0;
     gpu.debug = getenv("KATANA_DEBUG") != NULL;
 
-    /* lotes: KATANA_BATCH limita o maior (1 = sem lote) */
+    gpu.dev = best;
+    return 1;
+}
+
+/* compila os conjuntos de kernels (depois de decidir o formato do cache KV).
+   Lotes: KATANA_BATCH limita o maior (1 = sem lote). */
+static int gpu_build_all(void) {
     static const int sizes[] = { 16, 4, 1 };
     int maxb = getenv("KATANA_BATCH") ? atoi(getenv("KATANA_BATCH")) : GPU_BMAX;
+    gpu.n_sets = 0;
     for (int i = 0; i < 3; i++) {
         if (sizes[i] > maxb && sizes[i] != 1) continue;
         const char *ev = getenv(sizes[i] == 1 ? "KATANA_ROWS" : "KATANA_ROWSB");
-        int nr = ev ? atoi(ev) : (sizes[i] == 1 ? 1 : 2);   /* medido na RTX 3050 */
+        int nr = ev ? atoi(ev) : (sizes[i] == 1 ? gpu.cfg_rows : gpu.cfg_rowsb);
         if (nr != 1 && nr != 2) nr = 1;      /* o par gate/up usa 2*nr <= 4 */
-        if (!gpu_build_set(&gpu.set[gpu.n_sets], sizes[i], nr, best)) return 0;
+        if (!gpu_build_set(&gpu.set[gpu.n_sets], sizes[i], nr, gpu.dev)) return 0;
         gpu.n_sets++;
     }
     return 1;
 }
 
-/* palavras de 32 bits por linha no layout da GPU */
+/* Especie do layout na VRAM. Q4_0 vira o layout de 8 bits e Q3_K o de 6 bits: as duas
+   conversoes sao exatas (os mesmos valores inteiros e escalas), so ocupam mais VRAM. */
+static uint32_t gpu_kind(const Mat *W) {
+    if (!W->q) return T_F32;
+    if (W->type == T_Q4_0) return T_Q8_0;
+    if (W->type == T_Q3_K) return T_Q6_K;
+    return W->type;
+}
+
 static size_t gpu_wpr(const Mat *W, size_t cols) {
-    if (!W->q) return cols;
-    if (W->type == T_Q4_K) return cols / 256 * 36;
-    if (W->type == T_Q6_K) return cols / 256 * 53;
-    return cols / 32 * 9;
+    switch (gpu_kind(W)) {
+        case T_F32:  return cols;
+        case T_Q4_K: return cols / 256 * 36;
+        case T_Q5_K: return cols / 256 * 44;
+        case T_Q6_K: return cols / 256 * 53;
+        default:     return cols / 32 * 9;
+    }
+}
+
+/* bloco de 6 bits da GPU: 256 valores (0..63, com +32) em 48 palavras, 16 escalas int8, float d */
+static void pack_q6p(const uint8_t *qv, const int8_t *sc, float d, uint32_t *o) {
+    for (int g = 0; g < 16; g++) {          /* 16 pesos de 6 bits em 96 bits */
+        uint64_t lo = 0, hi = 0;
+        for (int k = 0; k < 16; k++) {
+            const int bit = 6 * k;
+            const uint64_t v = qv[g * 16 + k];
+            if (bit < 64) { lo |= v << bit; if (bit > 58) hi |= v >> (64 - bit); }
+            else hi |= v << (bit - 64);
+        }
+        o[g * 3] = (uint32_t)lo; o[g * 3 + 1] = (uint32_t)(lo >> 32); o[g * 3 + 2] = (uint32_t)hi;
+    }
+    memcpy(o + 48, sc, 16);
+    memcpy(o + 52, &d, 4);
 }
 
 /* converte a linha r para as palavras do layout da GPU */
 static void gpu_pack_row(const Mat *W, size_t r, size_t cols, uint32_t *o) {
     if (!W->q) { memcpy(o, W->f + r * cols, cols * 4); return; }
     const uint8_t *src = W->q + r * W->stride;
-    if (W->type == T_Q4_K) { memcpy(o, src, cols / 256 * 144); return; }
-    if (W->type == T_Q8_0) {
+    uint16_t h;
+    switch (W->type) {
+    case T_Q4_K: memcpy(o, src, cols / 256 * 144); return;
+    case T_Q5_K: memcpy(o, src, cols / 256 * 176); return;
+    case T_Q8_0:
         for (size_t b = 0; b < cols / 32; b++, src += 34, o += 9) {
-            uint16_t h; memcpy(&h, src, 2);
+            memcpy(&h, src, 2);
             float d = f16_to_f32(h);
             memcpy(o, &d, 4); memcpy(o + 1, src + 2, 32);
         }
         return;
-    }
-    for (size_t b = 0; b < cols / 256; b++, src += 210, o += 53) {      /* Q6_K */
-        uint8_t qv[256];
-        const uint8_t *ql = src, *qh = src + 128;
-        for (int c = 0; c < 2; c++, ql += 64, qh += 32) {
-            uint8_t *y = qv + c * 128;
-            for (int l = 0; l < 32; l++) {
-                y[l]      = (uint8_t)((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4));
-                y[l + 32] = (uint8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4));
-                y[l + 64] = (uint8_t)((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4));
-                y[l + 96] = (uint8_t)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4));
-            }
+    case T_Q4_0:
+        for (size_t b = 0; b < cols / 32; b++, src += 18, o += 9) {
+            int8_t v[32];
+            memcpy(&h, src, 2);
+            float d = f16_to_f32(h);
+            for (int j = 0; j < 16; j++) { v[j] = (int8_t)((src[2 + j] & 0xF) - 8); v[j + 16] = (int8_t)((src[2 + j] >> 4) - 8); }
+            memcpy(o, &d, 4); memcpy(o + 1, v, 32);
         }
-        for (int g = 0; g < 16; g++) {          /* 16 pesos de 6 bits em 96 bits */
-            uint64_t lo = 0, hi = 0;
-            for (int k = 0; k < 16; k++) {
-                const int bit = 6 * k;
-                const uint64_t v = qv[g * 16 + k];
-                if (bit < 64) { lo |= v << bit; if (bit > 58) hi |= v >> (64 - bit); }
-                else hi |= v << (bit - 64);
-            }
-            o[g * 3] = (uint32_t)lo; o[g * 3 + 1] = (uint32_t)(lo >> 32); o[g * 3 + 2] = (uint32_t)hi;
+        return;
+    case T_Q3_K:
+        for (size_t b = 0; b < cols / 256; b++, src += 110, o += 53) {
+            int8_t val[256], sc[16]; uint8_t qv[256];
+            q3k_unpack(src, val, sc);
+            for (int i = 0; i < 256; i++) qv[i] = (uint8_t)(val[i] + 32);
+            memcpy(&h, src + 108, 2);
+            pack_q6p(qv, sc, f16_to_f32(h), o);
         }
-        memcpy(o + 48, src + 192, 16);
-        uint16_t h; memcpy(&h, src + 208, 2);
-        float d = f16_to_f32(h);
-        memcpy(o + 52, &d, 4);
+        return;
+    default:    /* T_Q6_K */
+        for (size_t b = 0; b < cols / 256; b++, src += 210, o += 53) {
+            uint8_t qv[256];
+            const uint8_t *ql = src, *qh = src + 128;
+            for (int c = 0; c < 2; c++, ql += 64, qh += 32) {
+                uint8_t *y = qv + c * 128;
+                for (int l = 0; l < 32; l++) {
+                    y[l]      = (uint8_t)((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4));
+                    y[l + 32] = (uint8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4));
+                    y[l + 64] = (uint8_t)((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4));
+                    y[l + 96] = (uint8_t)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4));
+                }
+            }
+            memcpy(&h, src + 208, 2);
+            pack_q6p(qv, (const int8_t *)(src + 192), f16_to_f32(h), o);
+        }
+        return;
     }
 }
 
-/* envia n matrizes de mesmo formato e tipo para um unico buffer na VRAM, no layout
-   entrelacado e intercaladas por grupo de 32 linhas (nada acontece se nao couber) */
-static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols) {
+/* ---------- SHA-256 (enderecamento e verificacao dos shards) ---------- */
+typedef struct { uint32_t h[8]; uint64_t len; uint8_t buf[64]; int n; } Sha;
+
+static const uint32_t SHA_K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2 };
+
+#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+static void sha_block(Sha *s, const uint8_t *p) {
+    uint32_t w[64], a[8];
+    for (int i = 0; i < 16; i++) w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
+    for (int i = 16; i < 64; i++) {
+        const uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        const uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    memcpy(a, s->h, sizeof a);
+    for (int i = 0; i < 64; i++) {
+        const uint32_t S1 = ROR(a[4], 6) ^ ROR(a[4], 11) ^ ROR(a[4], 25), ch = (a[4] & a[5]) ^ (~a[4] & a[6]);
+        const uint32_t t1 = a[7] + S1 + ch + SHA_K[i] + w[i];
+        const uint32_t S0 = ROR(a[0], 2) ^ ROR(a[0], 13) ^ ROR(a[0], 22), mj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
+        a[7] = a[6]; a[6] = a[5]; a[5] = a[4]; a[4] = a[3] + t1; a[3] = a[2]; a[2] = a[1]; a[1] = a[0]; a[0] = t1 + S0 + mj;
+    }
+    for (int i = 0; i < 8; i++) s->h[i] += a[i];
+}
+static void sha_hex(const void *data, size_t n, char *hex) {
+    Sha s = { { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }, 0, { 0 }, 0 };
+    const uint8_t *p = data;
+    uint8_t last[128] = { 0 };
+    size_t i = 0;
+    for (; i + 64 <= n; i += 64) sha_block(&s, p + i);
+    const size_t r = n - i;
+    memcpy(last, p + i, r);
+    last[r] = 0x80;
+    const size_t tot = r + 9 <= 64 ? 64 : 128;
+    const uint64_t bits = (uint64_t)n * 8;
+    for (int k = 0; k < 8; k++) last[tot - 1 - k] = (uint8_t)(bits >> (8 * k));
+    sha_block(&s, last);
+    if (tot == 128) sha_block(&s, last + 64);
+    for (int k = 0; k < 8; k++) snprintf(hex + 8 * k, 9, "%08x", s.h[k]);
+}
+
+/* ---------- shards: buffers ja no layout da GPU, um arquivo cada, com hash no manifesto ----------
+ * <modelo>.gguf.ktn/manifest.txt + <nome>.bin. `katana pack` gera, a carga usa se existir
+ * (pula a conversao do GGUF) e `katana verify` confere os hashes. E a unidade que uma rede
+ * p2p distribuiria: cada shard e autocontido e verificavel pelo hash. */
+typedef struct { char name[32]; size_t bytes; char hex[65]; } Shard;
+static struct { char dir[1024]; int use, n, cap; Shard *e; } shards;
+
+static void shards_open(const char *path, int64_t fsz) {
+    char mf[1100], line[256];
+    long long origem = -1;
+    snprintf(shards.dir, sizeof shards.dir, "%s.ktn", path);
+    if (getenv("KATANA_NOSHARDS")) return;
+    snprintf(mf, sizeof mf, "%s/manifest.txt", shards.dir);
+    FILE *f = fopen(mf, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        Shard e; unsigned long long b;
+        if (sscanf(line, "origem %lld", &origem) == 1) continue;
+        if (sscanf(line, "%64s %llu %31s", e.hex, &b, e.name) == 3 && strlen(e.hex) == 64) {
+            if (shards.n == shards.cap) { shards.cap = shards.cap ? shards.cap * 2 : 256; shards.e = realloc(shards.e, shards.cap * sizeof(Shard)); }
+            e.bytes = (size_t)b;
+            shards.e[shards.n++] = e;
+        }
+    }
+    fclose(f);
+    shards.use = origem == (long long)fsz && shards.n > 0;
+    if (!shards.use) shards.n = 0;
+}
+
+/* le um shard inteiro; NULL se nao existir ou o tamanho nao bater */
+static uint32_t *shard_read(const char *name, size_t bytes) {
+    char fn[1100];
+    int found = 0;
+    for (int i = 0; i < shards.n; i++) if (strcmp(shards.e[i].name, name) == 0 && shards.e[i].bytes == bytes) found = 1;
+    if (!found) return NULL;
+    snprintf(fn, sizeof fn, "%s/%s.bin", shards.dir, name);
+    FILE *f = fopen(fn, "rb");
+    if (!f) return NULL;
+    uint32_t *buf = malloc(bytes);
+    if (buf && fread(buf, 1, bytes, f) != bytes) { free(buf); buf = NULL; }
+    fclose(f);
+    return buf;
+}
+
+/* monta o buffer de n matrizes de mesmo formato: layout entrelacado, intercaladas por grupo de 32 linhas */
+static uint32_t *gpu_build_buf(Mat **ms, int n, size_t rows, size_t cols, size_t *bytes_out) {
     const size_t wpr = gpu_wpr(ms[0], cols), rowsP = (rows + 127) & ~(size_t)127;
-    const size_t bytes = rowsP * wpr * 4 * n;
-    gpu.n_total += n;
-    if (gpu.used + bytes > gpu_budget()) return;
     uint32_t *buf = calloc(rowsP * wpr * n, 4);
-    if (!buf) return;
+    *bytes_out = rowsP * wpr * 4 * n;
+    if (!buf) return NULL;
     long long g;
     const long long ng = (long long)(rowsP / 32) * n;
 #pragma omp parallel for schedule(static)
@@ -1448,6 +1787,18 @@ static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols) {
         }
         free(tmp);
     }
+    return buf;
+}
+
+/* envia n matrizes para um unico buffer na VRAM (do shard, se houver; senao convertendo o GGUF) */
+static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols, const char *name) {
+    size_t bytes = ((rows + 127) & ~(size_t)127) * gpu_wpr(ms[0], cols) * 4 * n;
+    gpu.n_total += n;
+    if (gpu.used + bytes > gpu_budget()) return;
+    uint32_t *buf = shards.use ? shard_read(name, bytes) : NULL;
+    if (buf) gpu.n_shard++;
+    else buf = gpu_build_buf(ms, n, rows, cols, &bytes);
+    if (!buf) return;
     int32_t err = 0;
     clh b = cl.CreateBuffer(gpu.ctx, 4 | 32 /* READ_ONLY | COPY_HOST_PTR */, bytes, buf, &err);
     free(buf);
@@ -1456,16 +1807,24 @@ static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols) {
     gpu.used += bytes; gpu.n_up += n;
 }
 
-static void gpu_upload(Mat *W, size_t rows, size_t cols) { gpu_upload_n(&W, 1, rows, cols); }
+static void gpu_upload(Mat *W, size_t rows, size_t cols, const char *name) { gpu_upload_n(&W, 1, rows, cols, name); }
 
-/* gate e up do feed-forward: se tiverem o mesmo tipo vao intercalados num buffer so, e um
-   unico kernel calcula os dois produtos e o SwiGLU */
-static void gpu_upload_glu(Mat *gate, Mat *up, size_t rows, size_t cols) {
-    if ((gate->q != NULL) == (up->q != NULL) && gate->type == up->type && !getenv("KATANA_NOPAIR")) {
+/* gate e up tem o mesmo tipo? entao vao intercalados num buffer so (um kernel faz o SwiGLU) */
+static int glu_pair(const Mat *gate, const Mat *up) {
+    return (gate->q != NULL) == (up->q != NULL) && gate->type == up->type && !getenv("KATANA_NOPAIR");
+}
+
+static void gpu_upload_glu(Mat *gate, Mat *up, size_t rows, size_t cols, int l) {
+    char nm[32];
+    if (glu_pair(gate, up)) {
         Mat *ms[2] = { gate, up };
-        gpu_upload_n(ms, 2, rows, cols);
+        snprintf(nm, sizeof nm, "L%03d.glu", l);
+        gpu_upload_n(ms, 2, rows, cols, nm);
         gate->pair = gate->gbuf != NULL;
-    } else { gpu_upload(gate, rows, cols); gpu_upload(up, rows, cols); }
+    } else {
+        snprintf(nm, sizeof nm, "L%03d.gate", l); gpu_upload(gate, rows, cols, nm);
+        snprintf(nm, sizeof nm, "L%03d.up", l);   gpu_upload(up, rows, cols, nm);
+    }
 }
 
 /* buffer de leitura/escrita na VRAM; NULL se nao couber */
@@ -1530,9 +1889,23 @@ static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols) {
 static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
-    const size_t ctx = c->ctx, kv_layer = 2 * ctx * kvd * sizeof(float);
+    const size_t ctx = c->ctx;
+    size_t kv_layer = 2 * ctx * kvd * sizeof(float);
+    gpu.cfg_rows = 1; gpu.cfg_rowsb = 2;        /* medido na RTX 3050 */
     if (!gpu_init()) { fprintf(stderr, "GPU: nenhuma disponivel via OpenCL, usando CPU\n"); return; }
     const uint64_t vram_budget = gpu_budget();
+    {   /* se o modelo nao cabe inteiro com o cache KV em float32, o cache vai em float16 */
+        size_t total = gpu_mat_bytes(&m->lm_head, V, d) + ((size_t)256 << 20);
+        for (int l = 0; l < c->n_layers; l++) {
+            const Layer *L = &m->layers[l];
+            total += gpu_mat_bytes(&L->wq, d, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
+                   + gpu_mat_bytes(&L->wo, d, d) + gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d)
+                   + gpu_mat_bytes(&L->w_down, d, H) + kv_layer;
+        }
+        gpu.kv16 = getenv("KATANA_KV16") ? atoi(getenv("KATANA_KV16")) != 0 : total > vram_budget;
+        if (gpu.kv16) kv_layer /= 2;
+    }
+    if (!gpu_build_all()) { fprintf(stderr, "GPU: falha ao preparar os kernels, usando CPU\n"); return; }
 
     size_t maxc = d > H ? d : H, maxr = V > maxc ? V : maxc;
     int32_t e1 = 0, e2 = 0, e4 = 0;
@@ -1545,16 +1918,22 @@ static void gpu_setup(Model *m) {
     int max_layers = getenv("KATANA_GPU_LAYERS") ? atoi(getenv("KATANA_GPU_LAYERS")) : c->n_layers;
     if (max_layers > c->n_layers) max_layers = c->n_layers;
     int n_gl = 0, fail = 0;
+    /* KATANA_HEAD_GPU=1: a projecao final sobe antes das camadas. Medido no 7B em 4 GB: ela
+       desloca 3 camadas e o conjunto fica mais lento, por isso nao e o padrao. */
+    if (gpu.kv16 && getenv("KATANA_HEAD_GPU")) gpu_upload(&m->lm_head, V, d, "head");
     for (int l = 0; l < max_layers; l++) {
         Layer *L = &m->layers[l];
         const size_t need = gpu_mat_bytes(&L->wq, d, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
                           + gpu_mat_bytes(&L->wo, d, d) + gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d)
                           + gpu_mat_bytes(&L->w_down, d, H) + kv_layer;
         if (gpu.used + need > vram_budget || (size_t)(l + 1) * ctx * kvd > 0x7fffffff) break;
-        gpu_upload(&L->wq, d, d);      gpu_upload(&L->wk, kvd, d);
-        gpu_upload(&L->wv, kvd, d);    gpu_upload(&L->wo, d, d);
-        gpu_upload_glu(&L->w_gate, &L->w_up, H, d);
-        gpu_upload(&L->w_down, d, H);
+        char nm[32];
+        snprintf(nm, sizeof nm, "L%03d.wq", l);   gpu_upload(&L->wq, d, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wk", l);   gpu_upload(&L->wk, kvd, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wv", l);   gpu_upload(&L->wv, kvd, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wo", l);   gpu_upload(&L->wo, d, d, nm);
+        gpu_upload_glu(&L->w_gate, &L->w_up, H, d, l);
+        snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, H, nm);
         if (!L->wq.gbuf || !L->wk.gbuf || !L->wv.gbuf || !L->wo.gbuf || !L->w_gate.gbuf || !L->w_up.gbuf || !L->w_down.gbuf) break;
         gpu.an[l] = gbuf_f(L->attn_norm, d, &fail);  gpu.fn[l] = gbuf_f(L->ffn_norm, d, &fail);
         gpu.lbq[l] = gbuf_f(L->bq, d, &fail);        gpu.lbk[l] = gbuf_f(L->bk, kvd, &fail);
@@ -1563,20 +1942,21 @@ static void gpu_setup(Model *m) {
         gpu.used += kv_layer;       /* reserva o cache KV desta camada */
         n_gl++;
     }
-    if (n_gl == c->n_layers && gpu.used + gpu_mat_bytes(&m->lm_head, V, d) <= vram_budget) gpu_upload(&m->lm_head, V, d);
+    if (!m->lm_head.gbuf && n_gl == c->n_layers && gpu.used + gpu_mat_bytes(&m->lm_head, V, d) <= vram_budget) gpu_upload(&m->lm_head, V, d, "head");
     if (n_gl > 0) {
         int32_t e5 = 0, e6 = 0;
-        gpu.bkc = cl.CreateBuffer(gpu.ctx, 1, (size_t)n_gl * ctx * kvd * sizeof(float), NULL, &e5);
-        gpu.bvc = cl.CreateBuffer(gpu.ctx, 1, (size_t)n_gl * ctx * kvd * sizeof(float), NULL, &e6);
+        gpu.bkc = cl.CreateBuffer(gpu.ctx, 1, (size_t)n_gl * ctx * kvd * (gpu.kv16 ? 2 : 4), NULL, &e5);
+        gpu.bvc = cl.CreateBuffer(gpu.ctx, 1, (size_t)n_gl * ctx * kvd * (gpu.kv16 ? 2 : 4), NULL, &e6);
         if (e5 || e6) n_gl = 0;
     }
     gpu.n_gl = n_gl;
     gpu.on = n_gl > 0;
     gpu.full = n_gl == c->n_layers && m->lm_head.gbuf != NULL;
     cl.Finish(gpu.queue);
-    fprintf(stderr, "GPU: %s (%.1f GB) - %d de %d camadas na VRAM, %.0f MB usados - %s\n",
-            gpu.name, gpu.vram / 1073741824.0, n_gl, c->n_layers, gpu.used / 1048576.0,
+    fprintf(stderr, "GPU: %s (%.1f GB) - %d de %d camadas na VRAM, %.0f MB usados%s - %s\n",
+            gpu.name, gpu.vram / 1073741824.0, n_gl, c->n_layers, gpu.used / 1048576.0, gpu.kv16 ? ", cache KV em 16 bits" : "",
             gpu.full ? "grafo completo na GPU" : n_gl ? "o resto roda na CPU" : "usando CPU");
+    if (gpu.n_shard) fprintf(stderr, "GPU: %d buffers lidos dos shards em %s\n", gpu.n_shard, shards.dir);
 }
 
 /* ---- pequenos atalhos para montar chamadas de kernel ---- */
@@ -1634,9 +2014,10 @@ static void prof_report(void) {
    Matrizes com poucas linhas e muitas colunas sao divididas em segmentos de colunas para
    ocupar a GPU inteira. Em lote (ks->nb > 1), matrizes Q4_K exigem g_bsum(x) antes. */
 static void gmv(const KSet *ks, const Mat *W, clh x, clh out, clh bias, int rows, int cols, int mode) {
-    clh k = !W->q ? ks->k_f32 : W->type == T_Q4_K ? ks->k_q4k : W->type == T_Q6_K ? ks->k_q6k : ks->k_q8;
+    const uint32_t kind = gpu_kind(W);
+    clh k = kind == T_F32 ? ks->k_f32 : kind == T_Q4_K ? ks->k_q4k : kind == T_Q5_K ? ks->k_q5k : kind == T_Q6_K ? ks->k_q6k : ks->k_q8;
     const size_t rowsP = ((size_t)rows + 127) & ~(size_t)127, threads = rowsP / ks->nr;
-    const int nb = !W->q ? 1 : W->type == T_Q8_0 ? cols / 32 : cols / 256;
+    const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? cols / 32 : cols / 256;
     const int nseg = gpu_nseg(threads, nb, ks->nb * ks->nr);
     if (bias) mode |= 4;
     ka_m(k, 0, W->gbuf); ka_m(k, 1, x); ka_m(k, 2, out);
@@ -1649,9 +2030,10 @@ static void gmv(const KSet *ks, const Mat *W, clh x, clh out, clh bias, int rows
 
 /* out = silu(gate * x) * (up * x) num kernel so, sobre o buffer com gate e up intercalados */
 static void gmv_glu(const KSet *ks, const Mat *gate, clh x, clh out, int rows, int cols) {
-    clh k = !gate->q ? ks->kp_f32 : gate->type == T_Q4_K ? ks->kp_q4k : gate->type == T_Q6_K ? ks->kp_q6k : ks->kp_q8;
+    const uint32_t kind = gpu_kind(gate);
+    clh k = kind == T_F32 ? ks->kp_f32 : kind == T_Q4_K ? ks->kp_q4k : kind == T_Q5_K ? ks->kp_q5k : kind == T_Q6_K ? ks->kp_q6k : ks->kp_q8;
     const size_t rowsP = ((size_t)rows + 127) & ~(size_t)127, threads = 2 * rowsP / (2 * ks->nr);
-    const int nb = !gate->q ? 1 : gate->type == T_Q8_0 ? cols / 32 : cols / 256;
+    const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? cols / 32 : cols / 256;
     const int nseg = gpu_nseg(threads, nb, ks->nb * ks->nr * 2);
     ka_m(k, 0, gate->gbuf); ka_m(k, 1, x); ka_m(k, 2, out);
     ka_m(k, 3, x); ka_m(k, 4, gpu.bsx ? gpu.bsx : x);
@@ -1671,7 +2053,7 @@ static void gpu_matvec(float *out, const Mat *W, const float *x, int rows, int c
 
 /* perfil da CPU (KATANA_DEBUG=1): tempo e pesos por tipo de produto, e preparo das ativacoes */
 static struct { double t, w; long n; } cprof[5];
-static const char *cprof_name[5] = { "float32", "Q8 float", "Q4_K", "Q6_K", "quantizar x" };
+static const char *cprof_name[5] = { "float32", "outros", "Q4_K", "Q6_K", "quantizar x" };
 
 static void cprof_report(void) {
     double tot = 0.0;
@@ -1739,7 +2121,7 @@ static void g_bsum(const KSet *ks, clh x, int cols, const Mat *a, const Mat *b, 
     const Mat *ms[3] = { a, b, c3 };
     int need = 0;
     if (ks->nb == 1) return;
-    for (int i = 0; i < 3; i++) if (ms[i] && ms[i]->q && ms[i]->type == T_Q4_K) need = 1;
+    for (int i = 0; i < 3; i++) if (ms[i] && ms[i]->q && (ms[i]->type == T_Q4_K || ms[i]->type == T_Q5_K)) need = 1;
     if (!need) return;
     ka_m(ks->k_bsum, 0, x); ka_m(ks->k_bsum, 1, gpu.bsx);
     krun(ks->k_bsum, (size_t)cols / 32);
@@ -1819,7 +2201,16 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         for (int b = 0; b < B; b++) {
             for (int i = 0; i < d; i++) m->x[i] = gpu.xT[(size_t)i * B + b];
             cpu_layers(m, gpu.n_gl, c->n_layers, pos0 + b);
-            if (want_logits && b == B - 1) lg = cpu_head(m);
+            if (want_logits && b == B - 1) {
+                if (m->lm_head.gbuf) {      /* o estado sobe de novo so para a norma final e a projecao */
+                    gerr |= cl.EnqueueWriteBuffer(gpu.queue, gpu.bx, 1, 0, (size_t)d * sizeof(float), m->x, 0, NULL, NULL);
+                    g_rms(k1, gpu.bx, gpu.bon, gpu.bxb, d, c->eps);
+                    gmv(k1, &m->lm_head, gpu.bxb, gpu.blog, NULL, c->vocab, d, 0);
+                    gerr |= cl.EnqueueReadBuffer(gpu.queue, gpu.blog, 1, 0, (size_t)c->vocab * sizeof(float), m->logits, 0, NULL, NULL);
+                    if (gerr) die("falha na execucao em GPU");
+                    lg = m->logits;
+                } else lg = cpu_head(m);
+            }
         }
         return lg;
     }
@@ -1841,6 +2232,60 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
 
 /* ================= forward (um token por vez, com KV cache) ================= */
 
+/* Leitura antecipada: enquanto a CPU calcula a camada l, pede ao sistema as paginas da
+   camada l+1 do arquivo mapeado (em outra thread, para nao esperar o disco). So liga quando
+   o arquivo e grande em relacao a RAM (ou com KATANA_PREFETCH=1): ai as paginas de fato
+   saem da memoria entre um token e outro. */
+static int prefetch_on;
+
+static void prefetch_setup(int64_t fsz) {
+    uint64_t ram = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
+    if (GlobalMemoryStatusEx(&ms)) ram = ms.ullTotalPhys;
+#else
+    ram = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGE_SIZE);
+#endif
+    prefetch_on = getenv("KATANA_PREFETCH") ? atoi(getenv("KATANA_PREFETCH")) : (ram && (uint64_t)fsz > ram / 10 * 6);
+}
+
+#ifdef _WIN32
+typedef struct { WIN32_MEMORY_RANGE_ENTRY r[7]; int n; } Prefetch;
+static DWORD WINAPI prefetch_thread(LPVOID a) {
+    Prefetch *pf = a;
+    PrefetchVirtualMemory(GetCurrentProcess(), (ULONG_PTR)pf->n, pf->r, 0);
+    free(pf);
+    return 0;
+}
+#endif
+
+static void layer_prefetch(const Model *m, int l) {
+    const Config *c = &m->cfg;
+    if (!prefetch_on || l >= c->n_layers) return;
+    const Layer *L = &m->layers[l];
+    const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd;
+    const Mat *ms[7] = { &L->wq, &L->wk, &L->wv, &L->wo, &L->w_gate, &L->w_up, &L->w_down };
+    const size_t rows[7] = { d, kvd, kvd, d, H, H, d };
+#ifdef _WIN32
+    Prefetch *pf = malloc(sizeof *pf);
+    if (!pf) return;
+    pf->n = 0;
+    for (int i = 0; i < 7; i++) if (ms[i]->q) {
+        pf->r[pf->n].VirtualAddress = (PVOID)ms[i]->q;
+        pf->r[pf->n].NumberOfBytes = rows[i] * ms[i]->stride;
+        pf->n++;
+    }
+    HANDLE h = pf->n ? CreateThread(NULL, 0, prefetch_thread, pf, 0, NULL) : NULL;
+    if (h) CloseHandle(h); else free(pf);
+#else
+    const size_t pg = (size_t)sysconf(_SC_PAGE_SIZE);
+    for (int i = 0; i < 7; i++) if (ms[i]->q) {
+        const uintptr_t a = (uintptr_t)ms[i]->q & ~(uintptr_t)(pg - 1);
+        madvise((void *)a, (uintptr_t)ms[i]->q + rows[i] * ms[i]->stride - a, MADV_WILLNEED);
+    }
+#endif
+}
+
 /* camadas [l0, l1) na CPU sobre o estado m->x, para o token na posicao pos */
 static void cpu_layers(Model *m, int l0, int l1, int pos) {
     const Config *c = &m->cfg;
@@ -1851,6 +2296,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
 
     for (int l = l0; l < l1; l++) {
         const Layer *L = &m->layers[l];
+        if (l + 1 < l1) layer_prefetch(m, l + 1);
 
         /* --- atencao (GQA + RoPE) --- */
         rmsnorm(m->xb, m->x, L->attn_norm, d, c->eps);
@@ -2098,7 +2544,7 @@ static int selftest(Model *m) {
                 if (ref[i] > ref[ac]) ac = i;
                 if (fabs(o[i] - ref[i]) > md) md = fabs(o[i] - ref[i]);
             }
-            int e2e = ag == ac && md < (mode == 2 || gpu.n_gl < c->n_layers ? 1.0 : 0.05);
+            int e2e = ag == ac && md < (gpu.kv16 ? 1.0 : 0.05);
             printf("%s x CPU exata (%d tokens): maior diferenca de logit=%.6f, argmax %d x %d: %s\n",
                    mode == 0 ? "GPU em lote      " : mode == 1 ? "GPU token a token" : "CPU inteira      ", N, md, ag, ac, e2e ? "OK" : "FALHOU");
             ok = ok && e2e;
@@ -2187,7 +2633,96 @@ static int micro(const Model *m) {
     return 0;
 }
 
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(p) _mkdir(p)
+#else
+#define MKDIR(p) mkdir(p, 0755)
+#endif
+
+/* grava um shard e acrescenta a linha dele ao manifesto */
+static int pack_one(FILE *mf, Mat **ms, int n, size_t rows, size_t cols, const char *name, double *total) {
+    char fn[1100], hex[65];
+    size_t bytes = 0;
+    uint32_t *buf = gpu_build_buf(ms, n, rows, cols, &bytes);
+    if (!buf) return 0;
+    sha_hex(buf, bytes, hex);
+    snprintf(fn, sizeof fn, "%s/%s.bin", shards.dir, name);
+    FILE *f = fopen(fn, "wb");
+    int ok = f && fwrite(buf, 1, bytes, f) == bytes;
+    if (f) fclose(f);
+    free(buf);
+    if (ok) { fprintf(mf, "%s %zu %s\n", hex, bytes, name); *total += (double)bytes; }
+    return ok;
+}
+
+/* converte o modelo inteiro para shards no layout da GPU */
+static int pack(Model *m, const char *path, int64_t fsz) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd;
+    char mfn[1100], nm[32];
+    double total = 0.0, t0 = now_sec();
+    int ok = 1, count = 0;
+    snprintf(shards.dir, sizeof shards.dir, "%s.ktn", path);
+    MKDIR(shards.dir);
+    snprintf(mfn, sizeof mfn, "%s/manifest.txt", shards.dir);
+    FILE *mf = fopen(mfn, "w");
+    if (!mf) { fprintf(stderr, "Nao consegui criar %s\n", mfn); return 1; }
+    fprintf(mf, "katana-shards 1\norigem %lld\n", (long long)fsz);
+    for (int l = 0; l < c->n_layers && ok; l++) {
+        Layer *L = &m->layers[l];
+        Mat *one;
+#define P1(mat, rows, cols, suf) one = &L->mat; snprintf(nm, sizeof nm, "L%03d." suf, l); ok = ok && pack_one(mf, &one, 1, rows, cols, nm, &total); count++
+        P1(wq, d, d, "wq"); P1(wk, kvd, d, "wk"); P1(wv, kvd, d, "wv"); P1(wo, d, d, "wo");
+        if (glu_pair(&L->w_gate, &L->w_up)) {
+            Mat *two[2] = { &L->w_gate, &L->w_up };
+            snprintf(nm, sizeof nm, "L%03d.glu", l);
+            ok = ok && pack_one(mf, two, 2, H, d, nm, &total); count++;
+        } else { P1(w_gate, H, d, "gate"); P1(w_up, H, d, "up"); }
+        P1(w_down, d, H, "down");
+#undef P1
+    }
+    if (ok) { Mat *one = &m->lm_head; ok = pack_one(mf, &one, 1, c->vocab, d, "head", &total); count++; }
+    fclose(mf);
+    if (!ok) { fprintf(stderr, "Falha ao gravar os shards (disco cheio?)\n"); return 1; }
+    printf("%d shards, %.0f MB em %s (%.1f s)\n", count, total / 1048576.0, shards.dir, now_sec() - t0);
+    return 0;
+}
+
+/* confere o hash de todos os shards do manifesto */
+static int verify(const char *path) {
+    char mfn[1100], line[256], fn[1100], hex[65];
+    int n = 0, bad = 0;
+    snprintf(shards.dir, sizeof shards.dir, "%s.ktn", path);
+    snprintf(mfn, sizeof mfn, "%s/manifest.txt", shards.dir);
+    FILE *mf = fopen(mfn, "r");
+    if (!mf) { fprintf(stderr, "Sem manifesto em %s (rode: katana pack)\n", shards.dir); return 1; }
+    while (fgets(line, sizeof line, mf)) {
+        char want[65], name[32]; unsigned long long bytes;
+        if (sscanf(line, "%64s %llu %31s", want, &bytes, name) != 3 || strlen(want) != 64) continue;
+        snprintf(fn, sizeof fn, "%s/%s.bin", shards.dir, name);
+        FILE *f = fopen(fn, "rb");
+        uint8_t *buf = f ? malloc((size_t)bytes) : NULL;
+        int ok = buf && fread(buf, 1, (size_t)bytes, f) == (size_t)bytes && fgetc(f) == EOF;
+        if (ok) { sha_hex(buf, (size_t)bytes, hex); ok = strcmp(hex, want) == 0; }
+        if (f) fclose(f);
+        free(buf);
+        n++;
+        if (!ok) { bad++; printf("CORROMPIDO ou ausente: %s\n", name); }
+    }
+    fclose(mf);
+    printf("%d shards conferidos, %d com problema: %s\n", n, bad, bad || !n ? "FALHOU" : "OK");
+    return bad || !n ? 1 : 0;
+}
+
 static int run_main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "verify") == 0) return verify(argv[2]);
+    if (argc >= 3 && strcmp(argv[1], "pack") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        _putenv("KATANA_CPU=1");
+        load_model(&m, argv[2]);
+        return pack(&m, argv[2], m.fsize);
+    }
     if (argc >= 3 && strcmp(argv[1], "micro") == 0) {
         Model m; memset(&m, 0, sizeof m);
         _putenv("KATANA_CPU=1");
@@ -2223,10 +2758,13 @@ static int run_main(int argc, char **argv) {
 
         size_t n = strlen(argv[3]) + 128;
         char *p = xalloc(n, 1);
-        if (m.cfg.chat_fmt == 1)
-            snprintf(p, n, "<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", argv[3]);
-        else
-            snprintf(p, n, "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", argv[3]);
+        switch (m.cfg.chat_fmt) {
+            case 1:  snprintf(p, n, "<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", argv[3]); break;
+            case 2:  snprintf(p, n, "<|user|>\n%s</s>\n<|assistant|>\n", argv[3]); break;
+            case 3:  snprintf(p, n, "[INST] %s [/INST]", argv[3]); break;
+            case 4:  snprintf(p, n, "User: %s\nAssistant:", argv[3]); break;
+            default: snprintf(p, n, "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", argv[3]); break;
+        }
         return generate(&m, p, max_tokens, temp, 0);
     }
     fprintf(stderr,
@@ -2234,6 +2772,8 @@ static int run_main(int argc, char **argv) {
         "  katana info <modelo.gguf>\n"
         "  katana selftest <modelo.gguf>\n"
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
+        "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
+        "  katana verify <modelo.gguf>    confere os hashes dos shards\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n");
     return 1;
