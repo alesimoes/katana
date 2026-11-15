@@ -31,6 +31,8 @@ Medido em 2026-11-15 (RTX 3050, driver NVIDIA OpenCL):
 - `-cl-fast-relaxed-math`: sem efeito (fica opcional, `KATANA_FASTMATH=1`).
 - só restam dois caminhos: fundir kernels (cada lançamento a menos por camada vale ~0,7 ms por token em 28 camadas) ou trocar para uma API com buffer de comandos gravado uma vez e submetido por token (Vulkan), que elimina o custo por lançamento. O segundo é uma reescrita do backend.
 
+Correção depois de fundir a atenção inteira num lançamento (um a menos por camada, conferido em cinco modelos): a geração não mudou em nenhum modelo de 1 B ou mais (Qwen 1,5B 10,9 ms, Llama 3B 18,7 ms, OLMoE ~10 ms por token, com e sem a fusão). Conclusão: nesses modelos o host termina de enfileirar em ~5,6 ms e fica esperando a GPU; o tempo por token é o trabalho da GPU nos produtos (o Qwen 1,5B lê ~0,85 GB de pesos por token, ~78 GB/s), não o custo por lançamento. Menos lançamentos (ou um buffer de comandos gravado) só rende em modelos minúsculos, como o de 135 M. Para os modelos que interessam, o que conta é a vazão dos kernels de produto e a parte que roda na CPU.
+
 ## 2. Lotes (prompt)
 
 | Técnica | O que faz | Ganho | Esforço |

@@ -1482,7 +1482,7 @@ typedef struct {
     int nb, nr;     /* tokens por passada; linhas da matriz por thread */
     clh k_f32, k_q8, k_q4k, k_q5k, k_q6k, k_bsum;
     clh kp_f32, kp_q8, kp_q4k, kp_q5k, kp_q6k;      /* mesmos kernels com 2*nr linhas por thread (par gate/up) */
-    clh k_moe_sum, k_rmsh;
+    clh k_moe_sum, k_rmsh, k_att1f;
     clh k_rms, k_qkv, k_gather, k_att_scores, k_att_softmax, k_att_mix;
     clh k_mv3, k_att1;      /* fundidos da geracao; so existem com nb=1 e nr=1 */
 } KSet;
@@ -1767,6 +1767,18 @@ static const char *GPU_SRC =
    O custo fixo de lancar um kernel domina a geracao (um modelo de 135M e um de 1,1B geravam
    na mesma velocidade). Aqui q, k e v saem de um lancamento so, mesmo com tipos diferentes,
    e a atencao inteira (notas, softmax e mistura) de outro. */
+/* soma dos quadrados de len valores do token b a partir de start (16 por passo com um token) */
+"inline float sumsq(__global const float *p, int start, int len, int b) {\n"
+"  float ss = 0.0f; int j = 0;\n"
+"#if NB == 1\n"
+"  float16 acc = (float16)(0.0f);\n"
+"  for (; j + 16 <= len; j += 16) { float16 v = vload16(0, p + start + j); acc += v * v; }\n"
+"  float8 a8 = acc.lo + acc.hi; float4 a4 = a8.lo + a8.hi; float2 a2 = a4.lo + a4.hi;\n"
+"  ss = a2.x + a2.y;\n"
+"#endif\n"
+"  for (; j < len; j++) { float v = p[(size_t)(start + j) * NB + b]; ss += v * v; }\n"
+"  return ss;\n"
+"}\n"
 "#if NB == 1 && NR == 1\n"
 /* soma de uma linha Q4_K (five=0) ou Q5_K (five=1) sobre bps blocos */
 "inline float rd_q45(__global const uint *p, __global const float *xb, int bps, int five) {\n"
@@ -1877,6 +1889,70 @@ static const char *GPU_SRC =
 "  for (int t = 0; t < T; t++) s += a[t] * KVL(v, t * kvd);\n"
 "  out[h * hd + l] = s / tot;\n"
 "}\n"
+/* A atencao inteira de um token, da saida crua das projecoes ate a mistura: bias e norma
+   opcionais de q e k, RoPE, gravacao de k e v no cache, notas, softmax e mistura. Um grupo de hd
+   threads por cabeca. As threads 0..hd/2-1 giram um par de q; as hd/2..hd-1 giram um par de k
+   da cabeca kv correspondente. A posicao atual usa k e v locais (o cache so e lido para t < pos),
+   e so a primeira cabeca de cada grupo kv grava no cache. */
+"__kernel void att1f(__global const float *qs, __global const float *ks_, __global const float *vs,\n"
+"    __global const float *bq, __global const float *bk, __global const float *bv,\n"
+"    __global KVT *kc, __global KVT *vc, __global float *att, __global float *out,\n"
+"    __global const float *freq, __global const float *qn, __global const float *kn,\n"
+"    int base, int pos, int ctx, int hd, int kvd, int group, int neox, int has_bias, int norm, int d,\n"
+"    float scale, float eps) {\n"
+"  __local float lm[256]; __local float lq[256]; __local float lk[256];\n"
+"  int h = get_group_id(0), l = get_local_id(0), T = pos + 1, g = h / group, half_ = hd / 2;\n"
+"  int off = base + pos * kvd + g * hd;\n"
+"  __global float *a = att + (size_t)h * ctx;\n"
+"  {\n"
+"    int isk = l >= half_, i = isk ? l - half_ : l;\n"
+"    int i0 = neox ? i : 2 * i, i1 = i0 + (neox ? half_ : 1);\n"
+"    float ang = pos * freq[i], cs = cos(ang), sn = sin(ang);\n"
+"    if (isk) {\n"
+"      float x0 = ks_[g * hd + i0], x1 = ks_[g * hd + i1];\n"
+"      if (has_bias & 2) { x0 += bk[g * hd + i0]; x1 += bk[g * hd + i1]; }\n"
+"      if (norm) { int r0 = norm == 1 ? 0 : g * hd, len = norm == 1 ? kvd : hd;\n"
+"        float inv = 1.0f / sqrt(sumsq(ks_, r0, len, 0) / (float)len + eps);\n"
+"        x0 *= kn[g * hd + i0 - r0] * inv; x1 *= kn[g * hd + i1 - r0] * inv; }\n"
+"      float y0 = x0 * cs - x1 * sn, y1 = x0 * sn + x1 * cs;\n"
+"      lk[i0] = y0; lk[i1] = y1;\n"
+"      if (h % group == 0) { KVS(y0, off + i0, kc); KVS(y1, off + i1, kc); }\n"
+"    } else {\n"
+"      float x0 = qs[h * hd + i0], x1 = qs[h * hd + i1];\n"
+"      if (has_bias & 1) { x0 += bq[h * hd + i0]; x1 += bq[h * hd + i1]; }\n"
+"      if (norm) { int r0 = norm == 1 ? 0 : h * hd, len = norm == 1 ? d : hd;\n"
+"        float inv = 1.0f / sqrt(sumsq(qs, r0, len, 0) / (float)len + eps);\n"
+"        x0 *= qn[h * hd + i0 - r0] * inv; x1 *= qn[h * hd + i1 - r0] * inv; }\n"
+"      lq[i0] = x0 * cs - x1 * sn; lq[i1] = x0 * sn + x1 * cs;\n"
+"    }\n"
+"  }\n"
+"  float vl = vs[g * hd + l] + ((has_bias & 4) ? bv[g * hd + l] : 0.0f);\n"
+"  if (h % group == 0) KVS(vl, off + l, vc);\n"
+"  barrier(CLK_LOCAL_MEM_FENCE);\n"
+"  float mx = -3.0e38f;\n"
+"  for (int t = l; t < T; t += hd) {\n"
+"    float s = 0.0f;\n"
+"    if (t == pos) { for (int j = 0; j < hd; j++) s += lq[j] * lk[j]; }\n"
+"    else { __global const KVT *kh = kc + base + t * kvd + g * hd;\n"
+"      for (int j = 0; j < hd; j++) s += lq[j] * KVL(kh, j); }\n"
+"    s *= scale; a[t] = s; mx = max(mx, s);\n"
+"  }\n"
+"  lm[l] = mx;\n"
+"  barrier(CLK_LOCAL_MEM_FENCE);\n"
+"  float gm = lm[0];\n"
+"  for (int k = 1; k < hd; k++) gm = max(gm, lm[k]);\n"
+"  barrier(CLK_LOCAL_MEM_FENCE);\n"
+"  float sum = 0.0f;\n"
+"  for (int t = l; t < T; t += hd) { float e = exp(a[t] - gm); a[t] = e; sum += e; }\n"
+"  lm[l] = sum;\n"
+"  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);\n"
+"  float tot = 0.0f;\n"
+"  for (int k = 0; k < hd; k++) tot += lm[k];\n"
+"  __global const KVT *v = vc + base + g * hd + l;\n"
+"  float s = a[pos] * vl;\n"
+"  for (int t = 0; t < pos; t++) s += a[t] * KVL(v, t * kvd);\n"
+"  out[h * hd + l] = s / tot;\n"
+"}\n"
 "#endif\n"
 /* somas de x por sub-bloco de 32 colunas (termo do minimo do Q4_K em lote) */
 "__kernel void bsum(__global const float *x, __global float *sx) {\n"
@@ -1886,18 +1962,6 @@ static const char *GPU_SRC =
 "  STOREB(s, sx, i);\n"
 "}\n"
 /* RMSNorm num kernel so: cada thread refaz a soma dos quadrados (n e pequeno e x esta no cache) */
-/* soma dos quadrados de len valores do token b a partir de start (16 por passo com um token) */
-"inline float sumsq(__global const float *p, int start, int len, int b) {\n"
-"  float ss = 0.0f; int j = 0;\n"
-"#if NB == 1\n"
-"  float16 acc = (float16)(0.0f);\n"
-"  for (; j + 16 <= len; j += 16) { float16 v = vload16(0, p + start + j); acc += v * v; }\n"
-"  float8 a8 = acc.lo + acc.hi; float4 a4 = a8.lo + a8.hi; float2 a2 = a4.lo + a4.hi;\n"
-"  ss = a2.x + a2.y;\n"
-"#endif\n"
-"  for (; j < len; j++) { float v = p[(size_t)(start + j) * NB + b]; ss += v * v; }\n"
-"  return ss;\n"
-"}\n"
 "__kernel void rms(__global const float *x, __global const float *g, __global float *out, int n, float eps) {\n"
 "  int i = get_global_id(0);\n"
 "#if NB == 1\n"
@@ -2050,8 +2114,8 @@ static int gpu_build_set(KSet *ks, int nb, int nr, clh dev) {
             cl.SetKernelArg(mk[i], 15, sizeof z, &z);
         }
     }
-    ks->k_mv3 = ks->k_att1 = NULL;
-    if (nb == 1 && nr == 1 && !getenv("KATANA_NOFUSE")) { KERN(prog, k_mv3, "mv3"); KERN(prog, k_att1, "att1"); }
+    ks->k_mv3 = ks->k_att1 = ks->k_att1f = NULL;
+    if (nb == 1 && nr == 1 && !getenv("KATANA_NOFUSE")) { KERN(prog, k_mv3, "mv3"); KERN(prog, k_att1, "att1"); KERN(prog, k_att1f, "att1f"); }
 #undef KERN
     return 1;
 }
@@ -3346,6 +3410,19 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
         /* a norma RMS de q e k (vetor inteiro ou por cabeca) e feita dentro de qkv_post, que le
            q e k crus de bqn/bkn; com bias e norma juntos a soma dos quadrados ignoraria o bias,
            mas nenhuma arquitetura suportada tem os dois */
+        if (ks->k_att1f && hd <= 256 && hd % 2 == 0 && !getenv("KATANA_NOATTF")) {
+            /* um token: bias/norma, RoPE, gravacao no cache KV e a atencao num lancamento so */
+            k = ks->k_att1f;
+            ka_m(k, 0, c->qk_norm ? gx.bqn : gpu.bq); ka_m(k, 1, c->qk_norm ? gx.bkn : gpu.bk); ka_m(k, 2, gpu.bv);
+            ka_m(k, 3, gpu.lbq[l] ? gpu.lbq[l] : gpu.bq); ka_m(k, 4, gpu.lbk[l] ? gpu.lbk[l] : gpu.bk);
+            ka_m(k, 5, gpu.lbv[l] ? gpu.lbv[l] : gpu.bv);
+            ka_m(k, 6, gpu.bkc); ka_m(k, 7, gpu.bvc); ka_m(k, 8, gpu.batt); ka_m(k, 9, gpu.bxb);
+            ka_m(k, 10, gpu.bfreq); ka_m(k, 11, c->qk_norm ? gx.qn[l] : gpu.bq); ka_m(k, 12, c->qk_norm ? gx.kn[l] : gpu.bq);
+            ka_i(k, 13, base); ka_i(k, 14, pos0); ka_i(k, 15, ctx); ka_i(k, 16, hd); ka_i(k, 17, kvd); ka_i(k, 18, group);
+            ka_i(k, 19, c->rope_neox); ka_i(k, 20, (gpu.lbq[l] ? 1 : 0) | (gpu.lbk[l] ? 2 : 0) | (gpu.lbv[l] ? 4 : 0));
+            ka_i(k, 21, c->qk_norm); ka_i(k, 22, qd); ka_f(k, 23, scale); ka_f(k, 24, c->eps);
+            krun_local(k, (size_t)nh * hd, (size_t)hd);
+        } else {
         k = ks->k_qkv;      /* bias + RoPE em q (no lugar) e k (no cache), v copiado para o cache */
         ka_m(k, 0, gpu.bq); ka_m(k, 1, c->qk_norm ? gx.bkn : gpu.bk); ka_m(k, 2, gpu.bv);
         ka_m(k, 16, c->qk_norm ? gx.bqn : gpu.bq); ka_m(k, 17, c->qk_norm ? gx.qn[l] : gpu.bq);
@@ -3378,6 +3455,7 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
             ka_i(k, 3, base); ka_i(k, 4, pos0); ka_i(k, 5, ctx); ka_i(k, 6, hd); ka_i(k, 7, kvd);
             ka_i(k, 8, group); ka_i(k, 9, nh);
             krun(k, (size_t)B * qd);
+        }
         }
         g_bsum(ks, gpu.bxb, qd, &L->wo, NULL, NULL);
         gmv(ks, &L->wo, gpu.bxb, gpu.bx, gpu.lbo[l], d, qd, 1);           /* x += Wo*att (+bias) */
