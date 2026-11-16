@@ -387,3 +387,53 @@ escolhas quase empatadas do roteador. Agora, no MoE com o modo preciso (padrão)
 resto, `att_flash32`), como no qwen35moe. Diferença do lote no Qwen3-30B caiu de 0,003–0,017 para ~0,0005; 6 `selftest` seguidos OK;
 OLMoE (`KATANA_VK_MOE=1`) lote 0,0002 / lote 16 0,0001; Qwen3.6 e qwen2.5 OK. Velocidade alternada (256+16, rodadas 2–3): Qwen3-30B
 125–146 antes contra 138–139 depois; OLMoE 352–375 contra 362–364 (empate dentro do ruído).
+
+## 9. Comando `katana prepare` e perfil por modelo (2026-11-16, worktree agent-a6f6)
+
+`katana prepare <modelo.gguf>` prepara sozinho um modelo para o melhor desempenho nesta maquina e grava
+um perfil que `chat`/`serve`/`agent`/`run` passam a usar sem o usuario definir variaveis.
+
+O que faz (funcao `prepare` em `katana.c`, logo depois de `tune`):
+1. **Inspeciona**: reaproveita a carga (`load_model` -> `gpu_setup`) e `print_info`. Le arquitetura, nº de
+   parametros, camadas, quantizacao (tipo do gate; e dos especialistas no MoE), nº de especialistas/ativos,
+   e a maquina (VRAM total por `gpu.vram`, nucleos/RAM ja detectados na carga).
+2. **Decide e imprime o plano em portugues**: cabe inteiro na VRAM? (total estimado como em `gpu_setup`,
+   linhas 4934-4941, contra `gpu_budget()`), backend (vulkan padrao; `gpu.vk`), KV 16/32 bits (mesma regra
+   `total > budget` do motor), contexto sugerido (o do modelo quando cabe; senao um que deixe o cache KV
+   numa fatia da VRAM), vagas de especialista (`gx.S` quando o cache esta ativo), e **sugere** requantizar
+   especialistas para Q4_K se estiverem em Q5_K/Q6_K/Q8_0/F16 e nao couberem (nunca requantiza sozinho).
+   Lista as otimizacoes ja aplicadas para a arquitetura e as que faltam (ex.: gemma4 sem prompt em lote na GPU).
+3. **Executa o seguro**: `pack` (se nao houver shards atualizados; pulado em gemma4/DeltaNet e com
+   `KATANA_PREP_NOPACK=1`), `tune` (so se o modelo cabe inteiro e a GPU esta livre), e a calibracao do
+   **calor** dos especialistas num MoE (passada curta num prompt variado + `heat_save`). Com a GPU ocupada
+   (erro -2/-3/-4 na alocacao: o motor ja cai para "grafo na CPU", `gpu.full`/`gx.on` ficam falsos) as
+   partes de GPU sao adiadas e o resumo diz o que ficou pendente; o plano e o perfil saem mesmo assim.
+
+**Perfil**: `<modelo>.gguf.ktn.prof`, texto simples:
+```
+katana-perfil 1
+origem <tamanho do .gguf>   # invalida se o modelo mudar
+gpu <nome da placa>
+backend vulkan|opencl|cpu
+kv16 0|1
+ctx <n>
+noexpcache 0|1
+vagas <n>                   # informativo (vagas de especialista medidas)
+tune sim|nao
+```
+`perfil_apply(model_path, for_agent)` (chamada antes de `load_model` em serve/agent/chat/run) le o perfil e
+define `KATANA_BACKEND`/`KATANA_KV16`/`KATANA_CTX`/`KATANA_NOEXPCACHE` **so quando o usuario nao definiu**
+(variavel do usuario sempre vence; confirmado: `KATANA_BACKEND=opencl` venceu o perfil vulkan). No `agent`
+o perfil nao mexe em `KATANA_CTX` (o agente usa 16384 para os resultados de ferramenta). Se `origem` nao bate
+com o tamanho atual do `.gguf`, o perfil e ignorado com aviso.
+
+**Testado** (RTX 3050 4 GB, GPU ocupada por outro agente: ~2,6 GB em uso, 74-80 °C):
+- qwen2.5-1.5b-q4km: plano "cabe inteiro=sim, backend vulkan, KV 32 bits, ctx 4096"; pack ja estava; tune
+  adiado (placa ocupada). Perfil gravado e carregado automaticamente por `chat`/`run`.
+- Qwen3-30B-A3B-Instruct-2507: plano "cabe inteiro=nao, backend vulkan, KV 16 bits (auto), ctx sugerido 4096,
+  cache de especialistas por camada"; especialistas Q4_K (sem sugestao de requantizar); pack gerado; calor
+  adiado (placa ocupada). `selftest` CPU do qwen2.5-1.5b sem regressao (lote x token a token = 0).
+
+**Pendencias**: rodar `prepare` com a GPU livre para medir `tune` e a calibracao real do calor (hoje adiados);
+`pack`/perfil ainda nao cobrem gemma4 e DeltaNet (plano e perfil saem, mas sem shards). O perfil nao forca o
+nº de vagas (derivado na carga); so guarda os ajustes que ja viram variavel de ambiente.
