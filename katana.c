@@ -327,7 +327,19 @@ typedef struct {
     int qk_norm;        /* norma RMS em q e k: 1 = no vetor inteiro (olmoe), 2 = por cabeca (qwen3) */
     int hidden_exp;
     int hd_key;         /* largura de cada cabeca quando nao e dim/cabecas (qwen3moe) */
-    int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples */
+    int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples, 5 = DeepSeek, 6 = Kimi */
+    /* atencao latente (MLA, deepseek2): o cache guarda so o latente c_kv e a parte rope de k */
+    int mla;            /* largura do latente (kv_lora_rank); 0 = atencao comum */
+    int rope_dim;       /* dimensoes com RoPE em cada cabeca (o resto de q/k nao gira) */
+    int hd_v;           /* largura de v por cabeca */
+    int hd_mla_k, hd_mla_v;
+    int n_dense;        /* camadas iniciais com feed-forward denso num MoE */
+    int hidden_dense;   /* largura do feed-forward denso dessas camadas */
+    int n_shared;       /* especialistas compartilhados (fundidos em *_shexp), sempre somados */
+    int gate_sig;       /* roteador sigmoide (com vies so na escolha) em vez de softmax */
+    float exp_scale;    /* escala dos pesos dos especialistas */
+    float kq_mul;       /* multiplicador extra da escala q.k (yarn) */
+    float yarn_factor, yarn_logmul; int yarn_orig;
     char arch[64];
 } Config;
 
@@ -345,11 +357,17 @@ typedef struct {
     float *q_norm, *k_norm;             /* norma de q e k (olmoe, qwen3) */
     Mat router;                         /* MoE: [n_expert][dim], escolhe os especialistas do token */
     Mat *eg, *eu, *ed;                  /* MoE: gate/up/down de cada especialista (fatias do tensor empilhado) */
+    Mat wkv_a;                          /* MLA: x -> [latente | k rope] */
+    float *kv_a_norm;                   /* MLA: norma do latente */
+    float *wkb, *wvb;                   /* MLA: [cabeca][latente][nope] e [cabeca][hd_v][latente], em float */
+    Mat sg, su, sd;                     /* especialistas compartilhados */
+    float *exp_bias;                    /* vies do roteador (so na escolha) */
 } Layer;
 
 typedef struct {
     char **tok; int *toklen; int *toktype; int n;
     int spm; float *score;      /* SentencePiece: funde pares pela pontuacao do token */
+    int digits;                 /* pre-tokenizacao: digitos seguidos agrupados ate este numero (0 = 1) */
     Map vocab, merges;
     int *special; int n_special;
     int byte2cp[256]; int cp2byte[512];
@@ -362,6 +380,7 @@ typedef struct {
     float *out_norm;
     Layer *layers;
     float *kcache, *vcache;             /* [L][ctx][kv_dim] */
+    float *ckv;                         /* MLA: [L][ctx][latente + rope] */
     int64_t fsize;                      /* tamanho do arquivo do modelo */
     float *x, *xb, *xb2, *q, *k, *v, *att, *hb, *hb2, *logits, *rope_freq;
     size_t n_params;
@@ -449,7 +468,7 @@ static float f16_to_f32(uint16_t h) {
 }
 
 /* tipos de tensor do GGUF */
-enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q8_0 = 8, T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14 };
+enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q5_0 = 6, T_Q8_0 = 8, T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14 };
 
 /* bytes ocupados por n elementos (0 = tipo nao suportado ou n desalinhado) */
 static size_t qbytes(uint32_t type, size_t n) {
@@ -458,6 +477,7 @@ static size_t qbytes(uint32_t type, size_t n) {
         case T_F16:  return n * 2;
         case T_Q4_0: return n % 32 ? 0 : n / 32 * 18;     /* f16 d + 32 nibbles */
         case T_Q8_0: return n % 32 ? 0 : n / 32 * 34;     /* f16 d + 32 x int8 */
+        case T_Q5_0: return n % 32 ? 0 : n / 32 * 22;     /* f16 d + 32 bits altos + 32 nibbles */
         case T_Q3_K: return n % 256 ? 0 : n / 256 * 110;  /* 32 bits altos, 64 de 2 bits, 12 escalas, f16 d */
         case T_Q5_K: return n % 256 ? 0 : n / 256 * 176;  /* f16 d, f16 dmin, 12 escalas, 32 bits altos, 128 nibbles */
         case T_Q4_K: return n % 256 ? 0 : n / 256 * 144;  /* f16 d, f16 dmin, 12 escalas, 128 nibbles */
@@ -504,6 +524,19 @@ static void dequant(uint32_t type, const uint8_t *src, float *out, size_t n) {
             for (int j = 0; j < 16; j++) {
                 out[j] = d * ((src[2 + j] & 0xF) - 8);
                 out[j + 16] = d * ((src[2 + j] >> 4) - 8);
+            }
+        }
+        return;
+    }
+    if (type == T_Q5_0) {
+        for (size_t b = 0; b < n / 32; b++, src += 22, out += 32) {
+            uint16_t h; memcpy(&h, src, 2);
+            uint32_t qh; memcpy(&qh, src + 2, 4);
+            const float d = f16_to_f32(h);
+            const uint8_t *qs = src + 6;
+            for (int j = 0; j < 16; j++) {
+                out[j] = d * ((int)((qs[j] & 0xF) | (((qh >> j) & 1) << 4)) - 16);
+                out[j + 16] = d * ((int)((qs[j] >> 4) | (((qh >> (j + 16)) & 1) << 4)) - 16);
             }
         }
         return;
@@ -646,6 +679,7 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
 }
 
 static void gpu_setup(Model *m);
+static void mat_row(float *out, const Mat *W, int row, int cols);
 static void shards_open(const char *path, int64_t fsz);
 
 /* Aquecimento dos especialistas (MoE): no Windows a primeira leitura de cada pagina do arquivo
@@ -753,6 +787,10 @@ static void load_model(Model *m, const char *path) {
         } else if (t == 8 && key_is(k, kl, "tokenizer.ggml.model")) {
             int sl; const char *sv = rd_str(&r, &sl);
             tk->spm = sl == 5 && memcmp(sv, "llama", 5) == 0;
+        } else if (t == 8 && key_is(k, kl, "tokenizer.ggml.pre")) {
+            int sl; const char *sv = rd_str(&r, &sl);
+            if (sl == 12 && memcmp(sv, "deepseek-llm", 12) == 0) tk->digits = 1000;
+            else if (sl == 7 && memcmp(sv, "kimi-k2", 7) == 0) tk->digits = 3;
         } else if (t == 8 && key_is(k, kl, "tokenizer.chat_template")) {
             int sl; const char *sv = rd_str(&r, &sl);
             tmpl = xalloc((size_t)sl + 1, 1); memcpy(tmpl, sv, sl);
@@ -786,6 +824,19 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".attention.head_count")) c->n_heads = (int)v;
             else if (key_ends(k, kl, ".attention.head_count_kv")) c->n_kv = (int)v;
             else if (key_ends(k, kl, ".attention.key_length")) c->hd_key = (int)v;
+            else if (key_ends(k, kl, ".attention.value_length")) c->hd_v = (int)v;
+            else if (key_ends(k, kl, ".attention.key_length_mla")) c->hd_mla_k = (int)v;
+            else if (key_ends(k, kl, ".attention.value_length_mla")) c->hd_mla_v = (int)v;
+            else if (key_ends(k, kl, ".attention.kv_lora_rank")) c->mla = (int)v;
+            else if (key_ends(k, kl, ".rope.dimension_count")) c->rope_dim = (int)v;
+            else if (key_ends(k, kl, ".leading_dense_block_count")) c->n_dense = (int)v;
+            else if (key_ends(k, kl, ".expert_shared_count")) c->n_shared = (int)v;
+            else if (key_ends(k, kl, ".expert_weights_scale")) c->exp_scale = (float)v;
+            else if (key_ends(k, kl, ".expert_weights_norm")) c->moe_norm = (int)v;
+            else if (key_ends(k, kl, ".expert_gating_func")) c->gate_sig = (int)v == 2;
+            else if (key_ends(k, kl, ".rope.scaling.factor")) c->yarn_factor = (float)v;
+            else if (key_ends(k, kl, ".rope.scaling.original_context_length")) c->yarn_orig = (int)v;
+            else if (key_ends(k, kl, ".rope.scaling.yarn_log_multiplier")) c->yarn_logmul = (float)v;
             else if (key_ends(k, kl, ".rope.freq_base")) c->rope_base = (float)v;
             else if (key_ends(k, kl, ".layer_norm_rms_epsilon")) c->eps = (float)v;
             else if (key_is(k, kl, "tokenizer.ggml.bos_token_id")) c->bos = (int)v;
@@ -799,9 +850,20 @@ static void load_model(Model *m, const char *path) {
     else if (strcmp(c->arch, "olmoe") == 0) { c->rope_neox = 1; c->qk_norm = 1; }
     else if (strcmp(c->arch, "qwen3") == 0) { c->rope_neox = 1; c->qk_norm = 2; }
     else if (strcmp(c->arch, "qwen3moe") == 0) { c->rope_neox = 1; c->qk_norm = 2; c->moe_norm = 1; }
+    else if (strcmp(c->arch, "deepseek2") == 0) c->rope_neox = 0;
     else if (strcmp(c->arch, "llama") != 0)
         fprintf(stderr, "Aviso: arquitetura '%s' nao testada (so 'llama' e 'qwen2' por enquanto)\n", c->arch);
     if (getenv("KATANA_ROPE")) c->rope_neox = atoi(getenv("KATANA_ROPE"));
+    c->kq_mul = 1.0f;
+    if (!c->exp_scale) c->exp_scale = 1.0f;
+    if (c->mla) {       /* cabeca de q/k = nope + rope; o cache e o latente, entao kv generico fica minimo */
+        if (c->hd_mla_k) c->hd_key = c->hd_mla_k;
+        if (c->hd_mla_v) c->hd_v = c->hd_mla_v;
+        if (!c->rope_dim) c->rope_dim = 64;
+        c->n_kv = 1;
+        if (!c->hd_v || c->hd_key <= c->rope_dim || c->rope_dim % 2) die("MLA: dimensoes invalidas");
+    }
+    c->hidden_dense = c->hidden;
     if (c->n_expert) {
         if (c->hidden_exp) c->hidden = c->hidden_exp;      /* daqui em diante, hidden = largura de UM especialista */
         if (c->n_used < 1 || c->n_used > 64 || c->n_used > c->n_expert || c->n_expert > 1024) die("MoE: contagem de especialistas invalida");
@@ -825,6 +887,8 @@ static void load_model(Model *m, const char *path) {
     else if (tmpl && strstr(tmpl, "<|start_header_id|>")) c->chat_fmt = 1;
     else if (tmpl && strstr(tmpl, "<|user|>")) c->chat_fmt = 2;
     else if (tmpl && strstr(tmpl, "[INST]")) c->chat_fmt = 3;
+    else if (tmpl && strstr(tmpl, "<|im_user|>")) c->chat_fmt = 6;
+    else if (tmpl && strstr(tmpl, "'User: '")) c->chat_fmt = 5;
     else if (map_get(&tk->vocab, "<|im_start|>", 12) >= 0) c->chat_fmt = 0;
     else if (map_get(&tk->vocab, "<|start_header_id|>", 19) >= 0) c->chat_fmt = 1;
     else c->chat_fmt = 4;
@@ -860,11 +924,39 @@ static void load_model(Model *m, const char *path) {
 #define M2(field, suffix, rows, cols) snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_mat(&ts, nm, rows, cols, 1, np)
         V1(attn_norm, "attn_norm.weight");
         M2(wq, "attn_q.weight", qd, d);
-        M2(wk, "attn_k.weight", kvd, d);
-        M2(wv, "attn_v.weight", kvd, d);
-        M2(wo, "attn_output.weight", d, qd);
+        if (c->mla) {
+            const size_t R = c->mla, nr = c->rope_dim, nope = c->hd - c->rope_dim, hv = c->hd_v, nh = c->n_heads;
+            M2(wkv_a, "attn_kv_a_mqa.weight", R + nr, d);
+            snprintf(nm, sizeof nm, "blk.%d.attn_kv_a_norm.weight", l); L->kv_a_norm = get_tensor(&ts, nm, R, 1, np);
+            M2(wo, "attn_output.weight", d, nh * hv);
+            /* k_b e v_b viram float: q e absorvida por k_b e a saida latente passa por v_b */
+            L->wkb = xalloc(nh * R * nope, sizeof(float)); L->wvb = xalloc(nh * hv * R, sizeof(float));
+            snprintf(nm, sizeof nm, "blk.%d.attn_kv_b.weight", l);
+            Mat kvb = get_mat(&ts, nm, nh * (nope + hv), R, 0, np);
+            if (kvb.q || kvb.f) {   /* forma unica: por cabeca, nope linhas de k e depois hd_v linhas de v */
+                float *row = xalloc(R, sizeof(float));
+                for (size_t h = 0; h < nh; h++) {
+                    for (size_t i = 0; i < nope; i++) {
+                        mat_row(row, &kvb, (int)(h * (nope + hv) + i), (int)R);
+                        for (size_t r2 = 0; r2 < R; r2++) L->wkb[(h * R + r2) * nope + i] = row[r2];
+                    }
+                    for (size_t i = 0; i < hv; i++) mat_row(L->wvb + (h * hv + i) * R, &kvb, (int)(h * (nope + hv) + nope + i), (int)R);
+                }
+                free(row);
+            } else {                /* forma separada: k_b [cabeca][latente][nope], v_b [cabeca][hd_v][latente] */
+                Mat kb, vb;
+                snprintf(nm, sizeof nm, "blk.%d.attn_k_b.weight", l); kb = get_mat(&ts, nm, nh * R, nope, 1, np);
+                snprintf(nm, sizeof nm, "blk.%d.attn_v_b.weight", l); vb = get_mat(&ts, nm, nh * hv, R, 1, np);
+                for (size_t j = 0; j < nh * R; j++) mat_row(L->wkb + j * nope, &kb, (int)j, (int)nope);
+                for (size_t j = 0; j < nh * hv; j++) mat_row(L->wvb + j * R, &vb, (int)j, (int)R);
+            }
+        } else {
+            M2(wk, "attn_k.weight", kvd, d);
+            M2(wv, "attn_v.weight", kvd, d);
+            M2(wo, "attn_output.weight", d, qd);
+        }
         V1(ffn_norm, "ffn_norm.weight");
-        if (c->n_expert) {
+        if (c->n_expert && l >= c->n_dense) {
             /* tensores empilhados: o especialista e ocupa a fatia e, com as linhas inteiras */
             const size_t E = c->n_expert;
             M2(router, "ffn_gate_inp.weight", E, d);
@@ -880,10 +972,18 @@ static void load_model(Model *m, const char *path) {
                 if (sd.q) L->ed[e].q += e * d * sd.stride; else L->ed[e].f += e * d * H;
             }
             L->w_gate = L->eg[0]; L->w_up = L->eu[0]; L->w_down = L->ed[0];    /* para os testes por matriz */
+            if (c->n_shared) {
+                const size_t Hs = (size_t)c->n_shared * H;
+                M2(sg, "ffn_gate_shexp.weight", Hs, d);
+                M2(su, "ffn_up_shexp.weight", Hs, d);
+                M2(sd, "ffn_down_shexp.weight", d, Hs);
+            }
+            snprintf(nm, sizeof nm, "blk.%d.exp_probs_b.bias", l); L->exp_bias = get_tensor(&ts, nm, E, 0, np);
         } else {
-            M2(w_gate, "ffn_gate.weight", H, d);
-            M2(w_up, "ffn_up.weight", H, d);
-            M2(w_down, "ffn_down.weight", d, H);
+            const size_t Hd = c->n_expert ? (size_t)c->hidden_dense : H;
+            M2(w_gate, "ffn_gate.weight", Hd, d);
+            M2(w_up, "ffn_up.weight", Hd, d);
+            M2(w_down, "ffn_down.weight", d, Hd);
         }
         if (c->qk_norm) {
             snprintf(nm, sizeof nm, "blk.%d.attn_q_norm.weight", l); L->q_norm = get_tensor(&ts, nm, c->qk_norm == 1 ? d : (size_t)c->hd, 1, np);
@@ -905,11 +1005,36 @@ static void load_model(Model *m, const char *path) {
     m->xb2 = xalloc(dq, sizeof(float)); m->q = xalloc(dq, sizeof(float));
     m->k = xalloc(kvd, sizeof(float)); m->v = xalloc(kvd, sizeof(float));
     m->att = xalloc(ctx, sizeof(float));
-    m->hb = xalloc(H, sizeof(float));  m->hb2 = xalloc(H, sizeof(float));
+    {
+        size_t Hm = H;
+        if ((size_t)c->hidden_dense > Hm) Hm = c->hidden_dense;
+        if ((size_t)c->n_shared * H > Hm) Hm = (size_t)c->n_shared * H;
+        m->hb = xalloc(Hm, sizeof(float));  m->hb2 = xalloc(Hm, sizeof(float));
+    }
+    if (c->mla) m->ckv = xalloc(L * ctx * (size_t)(c->mla + c->rope_dim), sizeof(float));
     m->logits = xalloc(V, sizeof(float));
     m->rope_freq = xalloc(c->hd / 2, sizeof(float));
     for (int i = 0; i < c->hd / 2; i++)
         m->rope_freq[i] = powf(c->rope_base, -2.0f * i / c->hd);
+    if (c->mla) {       /* MLA: so rope_dim dimensoes giram; com yarn, mistura interpolacao e extrapolacao */
+        const int nr = c->rope_dim;
+        for (int i = 0; i < nr / 2; i++) m->rope_freq[i] = powf(c->rope_base, -2.0f * i / nr);
+        if (c->yarn_factor > 1.0f && c->yarn_orig > 0) {
+            const float fs = 1.0f / c->yarn_factor, tw = 6.28318530718f;
+            float lo = floorf(nr * logf(c->yarn_orig / (32.0f * tw)) / (2.0f * logf(c->rope_base)));
+            float hi = ceilf(nr * logf(c->yarn_orig / (1.0f * tw)) / (2.0f * logf(c->rope_base)));
+            if (lo < 0) lo = 0;
+            if (hi > nr - 1) hi = (float)(nr - 1);
+            for (int i = 0; i < nr / 2; i++) {
+                float y = (i - lo) / fmaxf(0.001f, hi - lo);
+                y = y < 0 ? 0 : y > 1 ? 1 : y;
+                const float ramp = 1.0f - y;      /* 1 = extrapola (frequencia original) */
+                m->rope_freq[i] *= fs * (1.0f - ramp) + ramp;
+            }
+            const float ms = 1.0f + c->yarn_logmul * logf(c->yarn_factor);
+            c->kq_mul = ms * ms;
+        }
+    }
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
     m->fsize = fsz;
@@ -972,7 +1097,11 @@ static void encode_plain(const Tokenizer *tk, const uint8_t *s, int n, Ids *out)
     int i = 0;
     while (i < n) {
         int c = s[i], j, k;
-        if (c_digit(c)) { bpe_word(tk, s + i, 1, out); i++; continue; }
+        if (c_digit(c)) {
+            const int mx = tk->digits > 1 ? tk->digits : 1;
+            for (k = i; k < n && k - i < mx && c_digit(s[k]); k++);
+            bpe_word(tk, s + i, k - i, out); i = k; continue;
+        }
         if (c == '\'' && i + 1 < n) {   /* contracoes do ingles */
             int len = 0, a = s[i + 1], b = i + 2 < n ? s[i + 2] : 0;
             if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e') || (a == 'l' && b == 'l')) len = 3;
@@ -1598,7 +1727,7 @@ static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, in
     if (W->type == T_Q6_K) return dot_q6k(row, x, cols);
     if (W->type == T_Q8_0) return dot_q8(row, x, cols);
     {   /* demais tipos (Q4_0, Q3_K, Q5_K): dequantiza cada bloco e multiplica em float */
-        const int unit = W->type == T_Q4_0 ? 32 : 256;
+        const int unit = W->type == T_Q4_0 || W->type == T_Q5_0 ? 32 : 256;
         const size_t ub = qbytes(W->type, unit);
         float tmp[256], total = 0.0f;
         for (int b = 0; b < cols / unit; b++) {
@@ -4557,6 +4686,88 @@ static void layer_prefetch(const Model *m, int l) {
 static struct { int collect; float *sum; uint8_t *mask; double mass_all, mass_kept; int oracle_keep; float *tmp; } sp;
 static int cmp_float_desc(const void *a, const void *b);
 
+/* MoE do deepseek2: softmax (V2) ou sigmoide com vies so na escolha (V3/Kimi); pesos opcionalmente
+   normalizados e sempre escalados por exp_scale. Preenche moe.sel e moe.w. */
+static void ds_route(Model *m, const Layer *L, int l) {
+    const Config *c = &m->cfg;
+    const int E = c->n_expert, K = c->n_used;
+    float pr[1024], ch[1024];
+    matvec(moe.lg, &L->router, m->xb, E, c->dim);
+    if (c->gate_sig) for (int e = 0; e < E; e++) { pr[e] = 1.0f / (1.0f + expf(-moe.lg[e])); ch[e] = pr[e] + (L->exp_bias ? L->exp_bias[e] : 0.0f); }
+    else { softmax(moe.lg, E); for (int e = 0; e < E; e++) pr[e] = ch[e] = moe.lg[e]; }
+    float wsum = 0.0f;
+    for (int k = 0; k < K; k++) {
+        int best = 0;
+        for (int e = 1; e < E; e++) if (ch[e] > ch[best]) best = e;
+        moe.sel[k] = best; moe.w[k] = pr[best]; wsum += pr[best];
+        ch[best] = -INFINITY;
+    }
+    for (int k = 0; k < K; k++) {
+        if (c->moe_norm) moe.w[k] /= (wsum > 1e-20f ? wsum : 1e-20f);
+        moe.w[k] *= c->exp_scale;
+    }
+    if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
+    if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
+}
+
+/* MLA por cabeca, na forma absorvida: q_nope passa por k_b (vira vetor no espaco latente), a
+   pontuacao e q_lat . c_kv + q_rope . k_rope, a media ponderada fica no latente e so no fim passa
+   por v_b. O cache nunca e descomprimido. */
+typedef struct { Model *m; const Layer *L; int l, pos; float scale; } MlaJob;
+static void mla_job(void *cx, int h0, int h1) {
+    const MlaJob *j = cx;
+    const Config *c = &j->m->cfg;
+    const int hd = c->hd, nr = c->rope_dim, nope = hd - nr, hv = c->hd_v, R = c->mla, W = R + nr;
+    static __thread float *att, *qa, *lat; static __thread int cap;
+    if (cap < c->ctx) {
+        free(att); free(qa); free(lat);
+        att = xalloc(c->ctx, sizeof(float)); qa = xalloc(R, sizeof(float)); lat = xalloc(R, sizeof(float));
+        cap = c->ctx;
+    }
+    const float *kb = j->m->ckv + (size_t)j->l * c->ctx * W;
+    for (int h = h0; h < h1; h++) {
+        const float *qn = j->m->q + (size_t)h * hd, *qr = qn + nope;
+        const float *wk = j->L->wkb + (size_t)h * R * nope;
+        for (int r = 0; r < R; r++) qa[r] = dot(wk + (size_t)r * nope, qn, nope);
+        for (int t = 0; t <= j->pos; t++) {
+            const float *row = kb + (size_t)t * W;
+            att[t] = (dot(qa, row, R) + dot(qr, row + R, nr)) * j->scale;
+        }
+        softmax(att, j->pos + 1);
+        memset(lat, 0, R * sizeof(float));
+        for (int t = 0; t <= j->pos; t++) {
+            const float *row = kb + (size_t)t * W, a = att[t];
+            for (int r = 0; r < R; r++) lat[r] += a * row[r];
+        }
+        float *out = j->m->xb + (size_t)h * hv;
+        const float *wv = j->L->wvb + (size_t)h * hv * R;
+        for (int i = 0; i < hv; i++) out[i] = dot(wv + (size_t)i * R, lat, R);
+    }
+}
+static void mla_attn(Model *m, const Layer *L, int l, int pos) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, nh = c->n_heads, hd = c->hd, nr = c->rope_dim, nope = hd - nr, R = c->mla, W = R + nr;
+    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? nr / 2 : 1;
+    rmsnorm(m->xb, m->x, L->attn_norm, d, c->eps);
+    matvec(m->q, &L->wq, m->xb, nh * hd, d);
+    float *row = m->ckv + ((size_t)l * c->ctx + pos) * W;
+    matvec(row, &L->wkv_a, m->xb, W, d);
+    rmsnorm(row, row, L->kv_a_norm, R, c->eps);
+    for (int i = 0; i < nr / 2; i++) {
+        const float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+        for (int h = 0; h < nh; h++) {
+            float *p = m->q + h * hd + nope + step * i, a = p[0], b = p[gap];
+            p[0] = a * cs - b * sn; p[gap] = a * sn + b * cs;
+        }
+        float *p = row + R + step * i, a = p[0], b = p[gap];
+        p[0] = a * cs - b * sn; p[gap] = a * sn + b * cs;
+    }
+    MlaJob job = { m, L, l, pos, c->kq_mul / sqrtf((float)hd) };
+    pool_for(mla_job, &job, nh, 1);
+    matvec(m->xb2, &L->wo, m->xb, d, nh * c->hd_v);
+    for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+}
+
 /* camadas [l0, l1) na CPU sobre o estado m->x, para o token na posicao pos */
 static void cpu_layers(Model *m, int l0, int l1, int pos) {
     const Config *c = &m->cfg;
@@ -4570,6 +4781,8 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
         const Layer *L = &m->layers[l];
         if (l + 1 < l1) layer_prefetch(m, l + 1);
 
+        if (c->mla) mla_attn(m, L, l, pos);
+        else {
         /* --- atencao (GQA + RoPE) --- */
         rmsnorm(m->xb, m->x, L->attn_norm, d, c->eps);
         matvec(m->q, &L->wq, m->xb, qd, d);
@@ -4623,14 +4836,15 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
         matvec(m->xb2, &L->wo, m->xb, d, qd);
         if (L->bo) for (int i = 0; i < d; i++) m->xb2[i] += L->bo[i];
         for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+        }
 
         /* --- feed-forward SwiGLU: down(silu(gate(x)) * up(x)) --- */
         rmsnorm(m->xb, m->x, L->ffn_norm, d, c->eps);
-        if (c->n_expert) {
+        if (c->n_expert && L->eg) {
             /* MoE: o roteador pontua todos os especialistas; so os n_used melhores rodam,
                cada um pesado pela sua probabilidade (softmax sobre todos) */
             const int K = c->n_used;
-            moe_route(m, L, l);
+            if (c->mla) ds_route(m, L, l); else moe_route(m, L, l);
             static float *outs;
             if (!outs) outs = xalloc((size_t)K * d, sizeof(float));
             moe_cpu_experts(m, L, moe.sel, K, outs);
@@ -4639,6 +4853,23 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
                 const float *o = outs + (size_t)k * d;
                 for (int i = 0; i < d; i++) m->x[i] += w * o[i];
             }
+            if (L->sg.q || L->sg.f) {   /* compartilhados: sempre entram, peso 1 */
+                const int Hs = c->n_shared * H;
+                matvec(m->hb, &L->sg, m->xb, Hs, d);
+                matvec(m->hb2, &L->su, m->xb, Hs, d);
+                for (int i = 0; i < Hs; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
+                matvec(m->xb2, &L->sd, m->hb, d, Hs);
+                for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+            }
+            continue;
+        }
+        if (c->n_expert) {      /* camada densa inicial de um MoE */
+            const int Hd = c->hidden_dense;
+            matvec(m->hb, &L->w_gate, m->xb, Hd, d);
+            matvec(m->hb2, &L->w_up, m->xb, Hd, d);
+            for (int i = 0; i < Hd; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
+            matvec(m->xb2, &L->w_down, m->hb, d, Hd);
+            for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
             continue;
         }
         matvec(m->hb, &L->w_gate, m->xb, H, d);
@@ -5922,6 +6153,8 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
         case 1:  snprintf(sp, sizeof sp, "<|start_header_id|>system<|end_header_id|>\n\n%s<|eot_id|>", sys); break;
         case 2:  snprintf(sp, sizeof sp, "<|system|>\n%s</s>\n", sys); break;
         case 3:  snprintf(sp, sizeof sp, "%s\n\n", sys); break;
+        case 5:  snprintf(sp, sizeof sp, "%s\n\n", sys); break;
+        case 6:  snprintf(sp, sizeof sp, "<|im_system|>system<|im_middle|>%s<|im_end|>", sys); break;
         default: snprintf(sp, sizeof sp, "%s\n", sys); break;
     }
     switch (c->chat_fmt) {
@@ -5930,6 +6163,9 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
                           first ? "" : "<|eot_id|>", first && !c->add_bos ? "<|begin_of_text|>" : "", sp, user); break;
         case 2:  snprintf(out, n, "%s%s<|user|>\n%s</s>\n<|assistant|>\n", first ? "" : "</s>\n", sp, user); break;
         case 3:  snprintf(out, n, "%s[INST] %s%s [/INST]", first ? "" : "</s>", sp, user); break;
+        case 5:  snprintf(out, n, "%s%sUser: %s\n\nAssistant:", first ? "" : "\n\n", sp, user); break;
+        case 6:  snprintf(out, n, "%s%s<|im_user|>user<|im_middle|>%s<|im_end|><|im_assistant|>assistant<|im_middle|>", first ? "" : "<|im_end|>",
+                          first && !*sp ? "<|im_system|>system<|im_middle|>You are a helpful assistant<|im_end|>" : sp, user); break;
         default: snprintf(out, n, "%s%sUser: %s\nAssistant:", first ? "" : "\n", sp, user); break;
     }
 }
@@ -6860,7 +7096,7 @@ static int run_main(int argc, char **argv) {
         float temp = argc > 5 ? (float)atof(argv[5]) : 0.7f;
         if (strcmp(argv[1], "run") == 0) return generate(&m, argv[3], max_tokens, temp, 1);
 
-        size_t n = strlen(argv[3]) + 128;
+        size_t n = strlen(argv[3]) + 256;
         char *p = xalloc(n, 1);
         switch (m.cfg.chat_fmt) {
             case 1:  /* Llama 3 espera <|begin_of_text|> no inicio; se o GGUF nao manda por BOS, vai no texto */
@@ -6869,6 +7105,9 @@ static int run_main(int argc, char **argv) {
             case 2:  snprintf(p, n, "<|user|>\n%s</s>\n<|assistant|>\n", argv[3]); break;
             case 3:  snprintf(p, n, "[INST] %s [/INST]", argv[3]); break;
             case 4:  snprintf(p, n, "User: %s\nAssistant:", argv[3]); break;
+            case 5:  snprintf(p, n, "User: %s\n\nAssistant:", argv[3]); break;
+            case 6:  snprintf(p, n, "<|im_system|>system<|im_middle|>You are a helpful assistant<|im_end|>"
+                                    "<|im_user|>user<|im_middle|>%s<|im_end|><|im_assistant|>assistant<|im_middle|>", argv[3]); break;
             default: snprintf(p, n, "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", argv[3]); break;
         }
         return generate(&m, p, max_tokens, temp, 0);
