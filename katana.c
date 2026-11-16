@@ -9459,18 +9459,31 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
 
 /* gera a resposta em streaming a partir dos logits lg; para no fim de turno (eos, token de controle
  * ou stop2), no limite de tokens, no contexto cheio ou em Ctrl+C. Acumula o texto em cap (se nao NULL) */
+static const char *think_pre(const Config *c);
 static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp, int stop2, Buf *cap) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     int gen = 0;
     char tmp[256];
     if (!g_agent_sys) gr_env_begin(tk, c->vocab, stop2);       /* KATANA_JSON: so fora do agente */
+    /* raciocinio (<think> aberto no prompt): aparece apagado e separado da resposta */
+    int thinking = c->think && strcmp(think_pre(c), "<think>\n") == 0, skipnl = 0;
+    if (thinking) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fflush(stdout); }
     while (gen < max_tokens && *pos < c->ctx - 1 && !g_stop) {
         g_gr.left = max_tokens - gen;
         const int t = sample_c(lg, c->vocab, temp, c->eos);
         if (t == c->eos || t == stop2 || (tk->toktype && tk->toktype[t] == 3)) break;
-        print_token(tk, t, stdout); fflush(stdout);
-        if (cap) buf_add(cap, tmp, tok_append(tk, t, tmp, 0, sizeof tmp));
+        const int tl = tok_append(tk, t, tmp, 0, sizeof tmp - 1);
+        tmp[tl] = 0;
+        if (thinking && strstr(tmp, "</think>")) {
+            thinking = 0;
+            fprintf(stdout, "%s\n", CE(C_RESET));
+            skipnl = 1;
+        } else if (skipnl && strspn(tmp, "\n") == (size_t)tl) {
+            /* quebras de linha logo depois do raciocinio: nao imprime */
+        } else { skipnl = 0; print_token(tk, t, stdout); }
+        fflush(stdout);
+        if (cap) buf_add(cap, tmp, tl);
         if (g_gr.on) { gr_accept(t); if (g_gr.tool && gr_done()) gr_off(); }
         else if (g_agent_sys && cap && cap->n >= 10) {
             /* o modelo abriu uma chamada de ferramenta: JSON valido com ferramenta e argumentos do schema (XML: nome da funcao) */
@@ -9485,6 +9498,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
         lg = forward(m, t, (*pos)++, 1);
     }
     gr_off();
+    if (thinking) fprintf(stdout, "%s", CE(C_RESET));
     if (g_stop) fprintf(stderr, "\n%s[interrompido]%s", CE(C_DIM), CE(C_RESET));
     return gen;
 }
