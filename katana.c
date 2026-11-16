@@ -421,6 +421,7 @@ typedef struct {
     /* gemma4: camadas locais (janela deslizante) intercaladas com globais, largura de cabeca e cabecas kv por
        camada, feed-forward denso em paralelo com o MoE, normas depois de cada bloco */
     int g4;             /* arquitetura gemma4 */
+    int go;             /* arquitetura gpt-oss */
     int swa_win;        /* janela das camadas locais (posicoes vistas, contando a atual) */
     int hd_swa;         /* largura de cabeca das camadas locais (hd e a das globais) */
     float rope_base_swa;
@@ -460,6 +461,8 @@ typedef struct {
     float *router_scale, *exp_w;        /* escala da entrada do roteador [dim]; peso de cada especialista [n_expert] */
     float out_scale;                    /* escala da saida da camada */
     size_t kv_off; int kv_cap;          /* inicio da camada no cache KV da CPU e posicoes guardadas (local = anel) */
+    /* gpt-oss */
+    float *sinks, *router_b, *eg_b, *eu_b, *ed_b;   /* sink por cabeca; vies do roteador; vies dos especialistas gate/up/down */
 } Layer;
 
 typedef struct {
@@ -1249,6 +1252,11 @@ static void load_model(Model *m, const char *path) {
         if (!c->swa_win) c->swa_win = 1 << 30;
         if (!c->hd_key || c->hd_key % 2 || c->hd_swa % 2) die("gemma4: largura de cabeca invalida");
     }
+    else if (strcmp(c->arch, "gpt-oss") == 0) {
+        c->go = 1; c->rope_neox = 1; c->moe_norm = 1;
+        if (!c->yarn_logmul) c->yarn_logmul = 0.1f;   /* mscale padrao do yarn do gpt-oss */
+        if (!c->swa_win) c->swa_win = 128;
+    }
     else if (strcmp(c->arch, "llama") != 0)
         fprintf(stderr, "Aviso: arquitetura '%s' nao testada (so 'llama' e 'qwen2' por enquanto)\n", c->arch);
     if (getenv("KATANA_ROPE")) c->rope_neox = atoi(getenv("KATANA_ROPE"));
@@ -1444,6 +1452,7 @@ static void load_model(Model *m, const char *path) {
             M2(wo, "attn_output.weight", d, qd);
         }
         if (c->ssm_inner) { V1(ffn_norm, "post_attention_norm.weight"); }
+        else if (c->go) { V1(ffn_norm, "post_attention_norm.weight"); }
         else { V1(ffn_norm, "ffn_norm.weight"); }
         if (c->n_expert && l >= c->n_dense) {
             /* tensores empilhados: o especialista e ocupa a fatia e, com as linhas inteiras */
@@ -1469,6 +1478,12 @@ static void load_model(Model *m, const char *path) {
             }
             snprintf(nm, sizeof nm, "blk.%d.exp_probs_b.bias", l); L->exp_bias = get_tensor(&ts, nm, E, 0, np);
             snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp_shexp.weight", l); L->shexp_gate = get_tensor(&ts, nm, d, 0, np);
+            if (c->go) {
+                snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp.bias", l);  L->router_b = get_tensor(&ts, nm, E, 0, np);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_gate_exps.bias", l); L->eg_b = get_tensor(&ts, nm, E * H, 0, np);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_up_exps.bias", l);   L->eu_b = get_tensor(&ts, nm, E * H, 0, np);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_down_exps.bias", l); L->ed_b = get_tensor(&ts, nm, E * d, 0, np);
+            }
         } else {
             const size_t Hd = c->n_expert ? (size_t)c->hidden_dense : H;
             M2(w_gate, "ffn_gate.weight", Hd, d);
@@ -1483,6 +1498,7 @@ static void load_model(Model *m, const char *path) {
         snprintf(nm, sizeof nm, "blk.%d.attn_k.bias", l);      L->bk = get_tensor(&ts, nm, kvd, 0, np);
         snprintf(nm, sizeof nm, "blk.%d.attn_v.bias", l);      L->bv = get_tensor(&ts, nm, kvd, 0, np);
         snprintf(nm, sizeof nm, "blk.%d.attn_output.bias", l); L->bo = get_tensor(&ts, nm, d, 0, np);
+        if (c->go) { snprintf(nm, sizeof nm, "blk.%d.attn_sinks.weight", l); L->sinks = get_tensor(&ts, nm, c->n_heads, 0, np); L->swa = (l % 2 == 0); }
 #undef V1
 #undef M2
     }
@@ -1550,6 +1566,22 @@ static void load_model(Model *m, const char *path) {
             const float ms = 1.0f + c->yarn_logmul * logf(c->yarn_factor);
             c->kq_mul = ms * ms;
         }
+    }
+    if (c->go && c->yarn_factor > 1.0f && c->yarn_orig > 0) {   /* yarn: mistura interpolacao/extrapolacao por dimensao */
+        const int nr = c->hd;
+        const float fs = 1.0f / c->yarn_factor, tw = 6.28318530718f;
+        float lo = floorf(nr * logf(c->yarn_orig / (32.0f * tw)) / (2.0f * logf(c->rope_base)));
+        float hi = ceilf(nr * logf(c->yarn_orig / (1.0f * tw)) / (2.0f * logf(c->rope_base)));
+        if (lo < 0) lo = 0;
+        if (hi > nr - 1) hi = (float)(nr - 1);
+        for (int i = 0; i < nr / 2; i++) {
+            float y = (i - lo) / fmaxf(0.001f, hi - lo);
+            y = y < 0 ? 0 : y > 1 ? 1 : y;
+            const float ramp = 1.0f - y;
+            m->rope_freq[i] *= fs * (1.0f - ramp) + ramp;
+        }
+        const float ms = 1.0f + c->yarn_logmul * logf(c->yarn_factor);
+        c->kq_mul = ms * ms;
     }
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
@@ -1767,14 +1799,14 @@ static int u_han(uint32_t c) {        /* Script=Han */
 static int k_U(uint32_t c) { return ut_in(UT_U, UT_U_N, c) && !u_han(c); }      /* [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]] */
 static int k_W(uint32_t c) { return ut_in(UT_W, UT_W_N, c) && !u_han(c); }      /* [\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]] */
 
-enum { PRE_LEGACY = 0, PRE_QWEN2, PRE_QWEN35, PRE_LLAMA3, PRE_GPT2, PRE_KIMI, PRE_DEEPSEEK, PRE_OLMO };
+enum { PRE_LEGACY = 0, PRE_QWEN2, PRE_QWEN35, PRE_LLAMA3, PRE_GPT2, PRE_KIMI, PRE_DEEPSEEK, PRE_OLMO, PRE_GPT4O };
 
 static int pre_has_nfc(int kind) { return kind == PRE_QWEN2 || kind == PRE_QWEN35 || kind == PRE_OLMO; }
 
 static int pre_kind(const char *sv, int sl) {
     static const struct { const char *nome; int kind; } t[] = {
         { "qwen2", PRE_QWEN2 }, { "qwen35", PRE_QWEN35 }, { "llama-bpe", PRE_LLAMA3 }, { "olmo", PRE_OLMO }, { "gpt-2", PRE_GPT2 },
-        { "kimi-k2", PRE_KIMI }, { "deepseek-llm", PRE_DEEPSEEK } };
+        { "kimi-k2", PRE_KIMI }, { "deepseek-llm", PRE_DEEPSEEK }, { "gpt-4o", PRE_GPT4O } };
     for (size_t i = 0; i < sizeof t / sizeof t[0]; i++)
         if ((int)strlen(t[i].nome) == sl && memcmp(sv, t[i].nome, sl) == 0) return t[i].kind;
     return PRE_LEGACY;
@@ -1827,6 +1859,30 @@ static int match_qwen(const CPS *p, int i, int mflag, int dig) {
     if (LM(c[i])) { for (k = i + 1; k < n && LM(c[k]); k++); return k; }
 #undef LM
     return match_tail(p, i, mflag, dig, 1);
+}
+
+/* GPT-4o / o200k (gpt-oss): a mesma logica do regex collapsado do motor de referencia.
+   "caixa alta" = letra/marca que nao e a-z; "caixa baixa" = letra/marca que nao e A-Z (letras sem
+   caixa e marcas entram nas duas). alt1: pont? alta* baixa+; alt2: pont? alta+ baixa*; depois numeros
+   em grupos de 1-3, pontuacao com \r\n/ ao fim, e espacos (mesmo tratamento do match_tail). */
+static int g4o_up(uint32_t c) { return (u_L(c) || u_M(c)) && !(c >= 'a' && c <= 'z'); }
+static int g4o_lo(uint32_t c) { return (u_L(c) || u_M(c)) && !(c >= 'A' && c <= 'Z'); }
+static int match_gpt4o(const CPS *p, int i) {
+    const uint32_t *c = p->c; const int n = p->n;
+    int k;
+    int s = i, lead = 0;
+    if (!u_nl(c[i]) && !u_L(c[i]) && !u_N(c[i]) && !u_M(c[i]) && i + 1 < n && (u_L(c[i + 1]) || u_M(c[i + 1]))) { s = i + 1; lead = 1; }
+    if ((lead || u_L(c[i]) || u_M(c[i])) && s < n && (u_L(c[s]) || u_M(c[s]))) {
+        k = s;
+        while (k < n && g4o_up(c[k])) k++;      /* alta* (sem-caixa/marcas entram) */
+        while (k < n && g4o_lo(c[k])) k++;      /* baixa* */
+        if (k > s) return k + contr_len(p, k, 1);
+    }
+    k = match_tail(p, i, 1, 3, 1);
+    /* a pontuacao do o200k ainda engole '/' ao fim (alt4: [^\s\p{L}\p{N}]+[\r\n/]*) */
+    if (k > i && !u_space(c[i]) && !u_L(c[i]) && !u_N(c[i]) && !(u_M(c[i])))
+        while (k < n && c[k] == '/') k++;
+    return k;
 }
 
 /* GPT-2 (OLMo): 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+ */
@@ -1955,6 +2011,7 @@ static void encode_pre(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
             case PRE_QWEN2:  e = match_qwen(&p, i, 0, 1); break;
             case PRE_QWEN35: e = match_qwen(&p, i, 1, 1); break;
             case PRE_LLAMA3: e = match_qwen(&p, i, 0, 3); break;
+            case PRE_GPT4O:  e = match_gpt4o(&p, i); break;
             case PRE_KIMI:   e = match_kimi(&p, i); break;
             default:         e = match_gpt2(&p, i); break;
             }
@@ -4911,6 +4968,7 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
 
 static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
+    if (c->go) { fprintf(stderr, "GPU: gpt-oss ainda so na CPU (hibrido Vulkan pendente)\n"); return; }
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
@@ -5282,7 +5340,7 @@ static void moe_route(Model *m, const Layer *L, int l) {
     if (moe_lg_ext) memcpy(pr, moe_lg_ext, (size_t)E * sizeof(float));
     else matvec(pr, &L->router, m->xb, E, c->dim);
     if (c->gate_sig) for (int e = 0; e < E; e++) { pr[e] = 1.0f / (1.0f + expf(-pr[e])); ch[e] = pr[e] + (L->exp_bias ? L->exp_bias[e] : 0.0f); }
-    else { softmax(pr, E); memcpy(ch, pr, (size_t)E * sizeof(float)); }
+    else { if (L->router_b) for (int e = 0; e < E; e++) pr[e] += L->router_b[e]; softmax(pr, E); memcpy(ch, pr, (size_t)E * sizeof(float)); }
     float wsum = 0.0f;
     for (int k = 0; k < K; k++) {
         int best = 0;
@@ -7350,6 +7408,84 @@ static void rms_plain(float *x, int n, float eps) {
    norma. Feed-forward: denso (GELU) e MoE lado a lado, cada um com sua norma de saida, somados e
    normalizados de novo antes do residuo; o roteador le o residuo normalizado sem peso, vezes a escala
    do arquivo e 1/sqrt(dim). No fim a camada inteira e multiplicada por out_scale. */
+/* ================= gpt-oss (arquitetura OpenAI MoE) =================
+   atencao com "sink" por cabeca (logit extra no denominador do softmax) e janela deslizante nas
+   camadas pares; MoE com SwiGLU OAI (alpha 1.702, limite 7) e vieses em gate/up/down; roteador com
+   vies, top-K sobre os logits e softmax sobre os escolhidos (moe_route com moe_norm cuida disso). */
+static inline float go_swiglu(float gate, float up) {
+    const float a = 1.702f, lim = 7.0f;
+    const float x = gate < lim ? gate : lim;
+    const float y = up < -lim ? -lim : up > lim ? lim : up;
+    return (x / (1.0f + expf(-a * x))) * (y + 1.0f);
+}
+
+/* especialistas do token na CPU: entrada normalizada em m->xb; outs[k*d..] recebe a saida do k-esimo */
+static void go_moe_experts(Model *m, const Layer *L, const int *sel, int K, float *outs) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, H = c->hidden;
+    static float *g, *u, *h;
+    if (!g) { g = xalloc(H, 4); u = xalloc(H, 4); h = xalloc(H, 4); }
+    for (int k = 0; k < K; k++) {
+        const int e = sel[k];
+        matvec(g, &L->eg[e], m->xb, H, d);
+        matvec(u, &L->eu[e], m->xb, H, d);
+        const float *gb = L->eg_b + (size_t)e * H, *ub = L->eu_b + (size_t)e * H;
+        for (int i = 0; i < H; i++) h[i] = go_swiglu(g[i] + gb[i], u[i] + ub[i]);
+        float *o = outs + (size_t)k * d;
+        matvec(o, &L->ed[e], h, d, H);
+        const float *db = L->ed_b + (size_t)e * d;
+        for (int i = 0; i < d; i++) o[i] += db[i];
+    }
+}
+
+static void go_layer(Model *m, const Layer *L, int l, int pos) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, nh = c->n_heads, hd = c->hd, nkv = c->n_kv;
+    const int qd = nh * hd, kvd = nkv * hd, half = hd / 2, group = nh / nkv, K = c->n_used;
+    const float scale = c->kq_mul / sqrtf((float)hd);
+    static float *outs;
+    if (!outs) outs = xalloc((size_t)MOE_KMAX * d, 4);
+    float *x = m->x;
+    rmsnorm(m->xb, x, L->attn_norm, d, c->eps);
+    matvec(m->q, &L->wq, m->xb, qd, d);
+    matvec(m->k, &L->wk, m->xb, kvd, d);
+    matvec(m->v, &L->wv, m->xb, kvd, d);
+    for (int i = 0; i < qd; i++) m->q[i] += L->bq[i];
+    for (int i = 0; i < kvd; i++) { m->k[i] += L->bk[i]; m->v[i] += L->bv[i]; }
+    for (int i = 0; i < half; i++) {        /* RoPE em metades (yarn ja embutido em rope_freq) */
+        const float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+        for (int h = 0; h < nh; h++) { float *q = m->q + h * hd + i, a = q[0], b = q[half]; q[0] = a * cs - b * sn; q[half] = a * sn + b * cs; }
+        for (int h = 0; h < nkv; h++) { float *k = m->k + h * hd + i, a = k[0], b = k[half]; k[0] = a * cs - b * sn; k[half] = a * sn + b * cs; }
+    }
+    float *kb = m->kcache + (size_t)l * c->ctx * kvd, *vb = m->vcache + (size_t)l * c->ctx * kvd;
+    memcpy(kb + (size_t)pos * kvd, m->k, kvd * sizeof(float));
+    memcpy(vb + (size_t)pos * kvd, m->v, kvd * sizeof(float));
+    const int win = L->swa && c->swa_win < c->ctx ? c->swa_win : c->ctx;
+    const int t0 = pos - win + 1 > 0 ? pos - win + 1 : 0, n = pos - t0 + 1;
+    for (int h = 0; h < nh; h++) {
+        const float *qh = m->q + h * hd;
+        const int kvh = (h / group) * hd;
+        float *att = m->att;
+        for (int i = 0; i < n; i++) att[i] = dot(qh, kb + (size_t)(t0 + i) * kvd + kvh, hd) * scale;
+        float mx = L->sinks[h];     /* o sink e um logit extra (valor nulo) no denominador */
+        for (int i = 0; i < n; i++) if (att[i] > mx) mx = att[i];
+        float sum = expf(L->sinks[h] - mx);
+        for (int i = 0; i < n; i++) { att[i] = expf(att[i] - mx); sum += att[i]; }
+        for (int i = 0; i < n; i++) att[i] /= sum;
+        float *out = m->xb + h * hd;
+        memset(out, 0, hd * sizeof(float));
+        for (int i = 0; i < n; i++) { const float *vh = vb + (size_t)(t0 + i) * kvd + kvh, a = att[i]; for (int j = 0; j < hd; j++) out[j] += a * vh[j]; }
+    }
+    matvec(m->xb2, &L->wo, m->xb, d, qd);
+    for (int i = 0; i < d; i++) m->xb2[i] += L->bo[i];
+    for (int i = 0; i < d; i++) x[i] += m->xb2[i];
+    /* MoE (a norma post_attention esta em ffn_norm) */
+    rmsnorm(m->xb, x, L->ffn_norm, d, c->eps);
+    moe_route(m, L, l);
+    go_moe_experts(m, L, moe.sel, K, outs);
+    for (int i = 0; i < d; i++) { float acc = 0.0f; for (int k = 0; k < K; k++) acc += moe.w[k] * outs[(size_t)k * d + i]; x[i] += acc; }
+}
+
 static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     const Config *c = &m->cfg;
     const int d = c->dim, nh = c->n_heads, hd = L->hd_l, nkv = L->nkv_l, qd = nh * hd, kvd = nkv * hd;
@@ -7544,6 +7680,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
 
         if (c->ssm_inner) { qn_layer(m, L, l, pos); continue; }
         if (c->g4) { g4_layer(m, L, l, pos); continue; }
+        if (c->go) { go_layer(m, L, l, pos); continue; }
         if (c->mla) mla_attn(m, L, l, pos);
         else {
         /* --- atencao (GQA + RoPE) --- */
