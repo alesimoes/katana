@@ -13906,8 +13906,17 @@ static int gguf_meta(const char *path, char *arch, int *ft, int *n_layers, int *
     return 1;
 }
 
+/* arquiteturas que o katana suporta (carrega e roda) */
+static int arch_suportada(const char *a) {
+    static const char *ok[] = { "llama", "qwen2", "qwen3", "qwen3moe", "qwen35moe",
+                                "deepseek2", "olmoe", "gemma4", "gpt-oss", "glm4", "glm4moe" };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) if (!strcmp(a, ok[i])) return 1;
+    return 0;
+}
+
 /* como o modelo roda nesta maquina, por arquitetura e tamanho (estimativa; prepare mede de fato) */
 static const char *como_roda(const char *arch, int n_expert, double gb) {
+    if (!arch_suportada(arch)) return "nao suportado";
     if (!strcmp(arch, "gpt-oss") || !strcmp(arch, "glm4") || !strcmp(arch, "glm4moe"))
         return "CPU (Vulkan pendente)";
     if (!strcmp(arch, "gemma4")) return "GPU hibrido (cache esp.)";
