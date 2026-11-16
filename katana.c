@@ -4476,6 +4476,27 @@ static float *vk_forward_n(Model *m, const int *toks, int B, int pos0, int want_
 
 /* inicia o Vulkan e sobe os pesos (mesmo empacotador e mesmo orcamento do OpenCL); 0 = falhou, usar OpenCL */
 static int vk_moe_init(Model *m);
+
+/* GPU sem memoria (outro programa ocupando a VRAM): espera ate KATANA_VK_WAIT segundos (padrao 60)
+ * tentando de novo, em vez de cair direto para a CPU */
+static int kvk_init_wait(KvkInfo *I) {
+    if (kvk_init(I)) return 1;
+    const char *w = getenv("KATANA_VK_WAIT");
+    const int lim = w ? atoi(w) : 60;
+    for (int t = 0; t < lim; t += 3) {
+        const char *e = kvk_error();
+        if (!strstr(e, ": -3") && !strstr(e, ": -2")) return 0;     /* so espera por falta de memoria */
+        if (t == 0) fprintf(stderr, "Vulkan: GPU ocupada (%s); esperando liberar ate %d s (KATANA_VK_WAIT)...\n", e, lim);
+#ifdef _WIN32
+        Sleep(3000);
+#else
+        sleep(3);
+#endif
+        if (kvk_init(I)) { fprintf(stderr, "Vulkan: GPU liberada\n"); return 1; }
+    }
+    return 0;
+}
+
 static int vk_setup(Model *m) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab, qd = (size_t)c->n_heads * c->hd;
@@ -4488,7 +4509,7 @@ static int vk_setup(Model *m) {
         fprintf(stderr, "Vulkan: MoE em Vulkan desligado para %s (KATANA_VK_MOE=1 liga), usando OpenCL/CPU\n", c->arch);
         return 0;
     }
-    if (!kvk_init(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
+    if (!kvk_init_wait(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
     gpu.vk = 1;
     vkg.sg32 = I.subgroup_size == 32;
     vkg.coop = 0;      /* produto 16x16x16 fp16 x fp16 -> fp32 no escopo de subgrupo (VK_COMPONENT_TYPE_FLOAT16 = 0, FLOAT32 = 1, SCOPE_SUBGROUP = 3) */
@@ -8507,7 +8528,7 @@ static int qtest_gpu_init(int rows, int cols) {
     gpu.seg_target = 16384;
     if (!be || strcmp(be, "opencl") != 0) {
         KvkInfo I;
-        if (!kvk_init(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
+        if (!kvk_init_wait(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
         gpu.vk = 1; snprintf(gpu.name, sizeof gpu.name, "%s", I.name); gpu.vram = I.vram_bytes;
         gpu.vxb = kvk_buf_create((size_t)cols * sizeof(float), KVK_USAGE_RW);
         gpu.vob = kvk_buf_create(((size_t)rows + 128) * sizeof(float), KVK_USAGE_RW);
