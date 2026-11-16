@@ -422,6 +422,8 @@ typedef struct {
        camada, feed-forward denso em paralelo com o MoE, normas depois de cada bloco */
     int g4;             /* arquitetura gemma4 */
     int glm;            /* arquitetura glm4 (dense): norma sanduiche, rope parcial, qkv com vies */
+    int glmoe;          /* arquitetura glm4moe (MoE): pre-norm comum, rope NEOX parcial, qkv com vies, compartilhado */
+    int n_nextn;        /* camadas MTP/nextn no fim do modelo (ignoradas) */
     int swa_win;        /* janela das camadas locais (posicoes vistas, contando a atual) */
     int hd_swa;         /* largura de cabeca das camadas locais (hd e a das globais) */
     float rope_base_swa;
@@ -1220,6 +1222,7 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".attention.q_lora_rank")) c->q_lora = (int)v;
             else if (key_ends(k, kl, ".rope.dimension_count")) c->rope_dim = (int)v;
             else if (key_ends(k, kl, ".leading_dense_block_count")) c->n_dense = (int)v;
+            else if (key_ends(k, kl, ".nextn_predict_layers")) c->n_nextn = (int)v;
             else if (key_ends(k, kl, ".expert_shared_count")) c->n_shared = (int)v;
             else if (key_ends(k, kl, ".expert_weights_scale")) c->exp_scale = (float)v;
             else if (key_ends(k, kl, ".expert_weights_norm")) c->moe_norm = (int)v;
@@ -1251,8 +1254,10 @@ static void load_model(Model *m, const char *path) {
         if (!c->hd_key || c->hd_key % 2 || c->hd_swa % 2) die("gemma4: largura de cabeca invalida");
     }
     else if (strcmp(c->arch, "glm4") == 0) { c->glm = 1; }       /* RoPE NORM (pares consecutivos), parcial */
+    else if (strcmp(c->arch, "glm4moe") == 0) { c->glmoe = 1; c->rope_neox = 1; c->moe_norm = 1; }   /* RoPE NEOX parcial; roteador sigmoide+vies, compartilhado */
     else if (strcmp(c->arch, "llama") != 0)
         fprintf(stderr, "Aviso: arquitetura '%s' nao testada (so 'llama' e 'qwen2' por enquanto)\n", c->arch);
+    if (c->n_nextn > 0 && c->n_nextn < c->n_layers) c->n_layers -= c->n_nextn;   /* camadas MTP/nextn: tensores existem mas nao sao processados */
     if (getenv("KATANA_ROPE")) c->rope_neox = atoi(getenv("KATANA_ROPE"));
     c->kq_mul = 1.0f;
     if (!c->exp_scale) c->exp_scale = 1.0f;
@@ -1446,7 +1451,7 @@ static void load_model(Model *m, const char *path) {
             M2(wv, "attn_v.weight", kvd, d);
             M2(wo, "attn_output.weight", d, qd);
         }
-        if (c->ssm_inner) { V1(ffn_norm, "post_attention_norm.weight"); }
+        if (c->ssm_inner || c->glmoe) { V1(ffn_norm, "post_attention_norm.weight"); }
         else { V1(ffn_norm, "ffn_norm.weight"); }
         if (c->n_expert && l >= c->n_dense) {
             /* tensores empilhados: o especialista e ocupa a fatia e, com as linhas inteiras */
@@ -1542,7 +1547,7 @@ static void load_model(Model *m, const char *path) {
         for (int i = 0; i < c->hd_swa / 2; i++) m->rope_freq_swa[i] = powf(c->rope_base_swa, -2.0f * i / c->hd_swa);
         free(g4_ff);
     }
-    if ((c->attn_gated || c->glm) && c->rope_dim > 0 && c->rope_dim < c->hd)     /* RoPE parcial: so as primeiras rope_dim dimensoes giram */
+    if ((c->attn_gated || c->glm || c->glmoe) && c->rope_dim > 0 && c->rope_dim < c->hd)     /* RoPE parcial: so as primeiras rope_dim dimensoes giram */
         for (int i = 0; i < c->rope_dim / 2; i++) m->rope_freq[i] = powf(c->rope_base, -2.0f * i / c->rope_dim);
     if (c->mla) {       /* MLA: so rope_dim dimensoes giram; com yarn, mistura interpolacao e extrapolacao */
         const int nr = c->rope_dim;
@@ -4923,7 +4928,7 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
 
 static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
-    if (c->glm && !getenv("KATANA_GLM_GPU")) { fprintf(stderr, "GPU: glm4 ainda so na CPU\n"); return; }
+    if ((c->glm || c->glmoe) && !getenv("KATANA_GLM_GPU")) { fprintf(stderr, "GPU: glm4 ainda so na CPU\n"); return; }
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
@@ -7548,7 +7553,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
     const int d = c->dim, hd = c->hd, H = c->hidden, ctx = c->ctx;
     const int kvd = c->n_kv * hd, group = c->n_heads / c->n_kv;
     const float scale = 1.0f / sqrtf((float)hd);
-    const int rhalf = c->glm && c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim / 2 : hd / 2;
+    const int rhalf = (c->glm || c->glmoe) && c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim / 2 : hd / 2;
     const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? rhalf : 1;
     const int qd = c->n_heads * hd;
 
@@ -7755,7 +7760,7 @@ static void cpu_layers_nc(Model *m, int l0, int l1, int pos0, int B, float *X) {
     const Config *c = &m->cfg;
     const int d = c->dim, hd = c->hd, H = c->hidden, ctx = c->ctx;
     const int kvd = c->n_kv * hd, group = c->n_heads / c->n_kv, qd = c->n_heads * hd;
-    const int rhalf = c->glm && c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim / 2 : hd / 2;
+    const int rhalf = (c->glm || c->glmoe) && c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim / 2 : hd / 2;
     const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? rhalf : 1;
     static float *Xb, *Q, *K, *V, *O, *X2, *HB, *HB2; static XQ xqs[CPU_NB];
     static size_t cap_d, cap_q, cap_k, cap_h;
