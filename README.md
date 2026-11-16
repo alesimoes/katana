@@ -22,12 +22,35 @@ katana selftest <modelo.gguf>     confere GPU e CPU inteira contra a conta exata
 katana micro <modelo.gguf>        mede os produtos da CPU isolados, com calibração da máquina
 katana tune  <modelo.gguf>        mede e grava em katana.cfg o melhor ajuste para a GPU local
 katana chat <modelo.gguf>          conversa interativa de vários turnos (/novo, /sair; KATANA_SYSTEM, KATANA_TEMP, KATANA_MAXTOK)
+katana serve <modelo.gguf> [porta]  conversa no navegador em http://127.0.0.1:8080 (so conversa, sem ferramentas)
 katana agent <modelo.gguf>         conversa com ferramentas: ler e listar na pasta atual; gravar arquivo e executar comando só com confirmação
 katana pack  <modelo.gguf>        gera os shards no layout da GPU (<modelo>.gguf.ktn/)
 katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 katana sparsity <modelo.gguf> <calibracao.txt> <avaliacao.txt>   esparsidade do feed-forward por assunto (modelo denso)
 katana routing  <modelo.gguf> <calibracao.txt> <avaliacao.txt>   concentracao dos especialistas por assunto (modelo MoE)
 ```
+
+## Conversa no console e no navegador
+
+`katana chat <modelo>` e `katana agent <modelo>` mostram a resposta token a token, com tokens/s e uso do
+contexto em cinza. As cores só aparecem em terminal interativo e somem com `NO_COLOR=1`. Comandos:
+`/novo` (limpa a conversa), `/sistema <texto>` (prompt de sistema; no agente acrescenta instruções),
+`/salvar <arquivo>` (grava a conversa em texto), `/ajuda` e `/sair`. Ctrl+C interrompe a resposta atual
+sem sair do programa.
+
+`katana serve <modelo> [porta]` abre uma interface web em `http://127.0.0.1:8080` (porta padrão 8080).
+Escuta só em 127.0.0.1, sem dependências nem serviços externos; a página (HTML, CSS e JS puros) vai
+embutida no binário. Só conversa: as ferramentas do agente não são expostas.
+
+```
+curl -N -X POST localhost:8080/api/chat -d '{"messages":[{"role":"user","content":"oi"}],"max_tokens":200,"temperature":0.7}'
+```
+
+A resposta é um fluxo SSE: `data: {"token":"..."}` por token e, no fim,
+`data: {"done":true,"tok_s":...,"tokens":N,"prompt_tokens":N,"cached":N,"ctx":N,"ctx_max":N}`.
+`messages` aceita `system`, `user` e `assistant` (a última precisa ser `user`). Uma conversa por vez; as
+outras esperam na fila. Se o início do prompt coincide com o da requisição anterior, o cache KV é
+reaproveitado (`cached` diz quantos tokens). Requisições com `Origin` ou `Host` não locais são recusadas.
 
 ## O que é suportado
 
