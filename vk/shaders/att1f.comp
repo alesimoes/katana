@@ -25,7 +25,7 @@ layout(std430, binding = 11) readonly buffer QN { float qn[]; };
 layout(std430, binding = 12) readonly buffer KN { float kn[]; };
 layout(std430, binding = 14) buffer PT { float part[]; };   /* [(h*nchunk + c)*(hd+2)]: o nao normalizado, maximo, soma */
 layout(std430, binding = 13) readonly buffer MT { int meta[]; };   /* meta[0] = posicao do token (muda por token) */
-layout(push_constant) uniform P { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; int chunk, nchunk; } pc;
+layout(push_constant) uniform P { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; int chunk, nchunk, nrot, qst, gate; } pc;
 shared float lm[256]; shared float lq[256]; shared float lk[256];
 void main() {
     int hd = pc.hd, kvd = pc.kvd, pos = meta[0], group = pc.group;
@@ -41,8 +41,12 @@ void main() {
     {
         bool isk = l >= half_;
         int i = isk ? l - half_ : l;
-        int i0 = pc.neox != 0 ? i : 2 * i, i1 = i0 + (pc.neox != 0 ? half_ : 1);
-        float cs, sn; rope_cs(float(pos) * freq[i], cs, sn);
+        /* RoPE parcial (neox): pares (i, i+nrot/2) para i < nrot/2; as dims >= nrot nao giram (2 por thread) */
+        const int hr = pc.nrot / 2;
+        int i0, i1; float cs = 1.0, sn = 0.0;
+        if (pc.neox == 0) { i0 = 2 * i; i1 = i0 + 1; rope_cs(float(pos) * freq[i], cs, sn); }
+        else if (i < hr) { i0 = i; i1 = i + hr; rope_cs(float(pos) * freq[i], cs, sn); }
+        else { i0 = pc.nrot + 2 * (i - hr); i1 = i0 + 1; }
         if (isk) {
             float x0 = ks_[g * hd + i0], x1 = ks_[g * hd + i1];
             if ((pc.has_bias & 2) != 0) { x0 += bk[g * hd + i0]; x1 += bk[g * hd + i1]; }
@@ -56,13 +60,14 @@ void main() {
             lk[i0] = y0; lk[i1] = y1;
             if (c0 == 0 && h % group == 0) { KVS(y0, off + i0, kc); KVS(y1, off + i1, kc); }
         } else {
-            float x0 = qs[h * hd + i0], x1 = qs[h * hd + i1];
+            const int qb = h * pc.qst;
+            float x0 = qs[qb + i0], x1 = qs[qb + i1];
             if ((pc.has_bias & 1) != 0) { x0 += bq[h * hd + i0]; x1 += bq[h * hd + i1]; }
             if (pc.norm != 0) {
-                int r0 = pc.norm == 1 ? 0 : h * hd, len = pc.norm == 1 ? pc.d : hd;
+                int r0 = pc.norm == 1 ? 0 : qb, len = pc.norm == 1 ? pc.d : hd, w0 = pc.norm == 1 ? h * hd : 0;
                 float ss = 0.0; for (int j = 0; j < len; j++) { float t = qs[r0 + j]; ss += t * t; }
                 float inv = 1.0 / sqrt(ss / float(len) + pc.eps);
-                x0 *= qn[h * hd + i0 - r0] * inv; x1 *= qn[h * hd + i1 - r0] * inv;
+                x0 *= qn[w0 + i0] * inv; x1 *= qn[w0 + i1] * inv;
             }
             lq[i0] = x0 * cs - x1 * sn; lq[i1] = x0 * sn + x1 * cs;
         }
@@ -93,6 +98,7 @@ void main() {
     int v = pc.base + g * hd + l;
     float s = (pos >= t0 && pos < t1) ? att[a + pos] * vl : 0.0;
     for (int t = t0; t < min(t1, pos); t++) s += att[a + t] * KVL(vc, v + t * kvd);
+    if (pc.gate != 0) s *= 1.0 / (1.0 + exp(-qs[h * pc.qst + hd + l]));   /* portao da saida (linear: vale por pedaco) */
     if (pc.nchunk == 1) { o[h * hd + l] = s / tot; return; }
     const int pb = (h * pc.nchunk + c0) * (hd + 2);
     part[pb + l] = s;

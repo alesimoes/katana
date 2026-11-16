@@ -1,0 +1,76 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+/* Gated DeltaNet em lote, passo 1: conv1d causal + SiLU, normas L2 de q/k, beta e g.
+   Um grupo de 128 threads por (unidade u, 32 tokens): lane = token (leituras e escritas contiguas no token),
+   subgrupo sg = canais 32sg..32sg+31 da unidade. u < NK = q do grupo u, u < 2NK = k, senao v da cabeca u-2NK;
+   os grupos u < NV tambem calculam beta e g da cabeca u.
+   Entrada transposta como no lote do motor: qkv[c*B + b], ab[h*B + b] (a) e ab[(NV+h)*B + b] (b).
+   Tokens anteriores ao lote saem do anel da convolucao (cs[slot*CH + c], slot = posicao & 3), que NAO e gravado
+   aqui (dn_cstate grava depois, sem corrida). Tokens de preenchimento (b >= B ate Bp) saem zerados.
+   Saida em dimensao-major: qh/kh [grupo][128][Bp], vh [cabeca][128][Bp] fp16; bg = [beta (NV x Bp) | g (NV x Bp)]. */
+layout(local_size_x = 128) in;
+layout(constant_id = 0) const int NK = 16;
+layout(constant_id = 1) const int NV = 32;
+const int D = 128;
+const int CH = 2 * NK * D + NV * D;
+layout(std430, binding = 0) readonly buffer QKV { float qkv[]; };
+layout(std430, binding = 1) readonly buffer AB { float ab[]; };
+layout(std430, binding = 2) readonly buffer CW { float cw[]; };
+layout(std430, binding = 3) readonly buffer PR { float pr[]; };
+layout(std430, binding = 4) readonly buffer CS { float cs[]; };
+layout(std430, binding = 5) writeonly buffer QH { float16_t qh[]; };
+layout(std430, binding = 6) writeonly buffer KH { float16_t kh[]; };
+layout(std430, binding = 7) writeonly buffer VH { float16_t vh[]; };
+layout(std430, binding = 8) writeonly buffer BG { float bg[]; };
+layout(push_constant) uniform P { int pos0, B, Bp; float eps_l2; } pc;
+shared float red[4 * 32];
+void main() {
+    const int u = int(gl_WorkGroupID.x);
+    const int sg = int(gl_SubgroupID), lane = int(gl_SubgroupInvocationID);
+    const int B = pc.B, Bp = pc.Bp;
+    const int b = int(gl_WorkGroupID.y) * 32 + lane;
+    const bool pad = b >= B;
+    const int c0 = u * D + sg * 32;
+    float y[32];
+    float ss = 0.0;
+    for (int r = 0; r < 32; r++) {
+        const int c = c0 + r;
+        float acc = 0.0;
+        if (!pad) {
+            for (int tau = 0; tau <= 3; tau++) {
+                const int bb = b - tau;
+                const float x = bb >= 0 ? qkv[c * B + bb] : (pc.pos0 + bb >= 0 ? cs[((pc.pos0 + bb) & 3) * CH + c] : 0.0);
+                acc += cw[c * 4 + 3 - tau] * x;
+            }
+            acc = acc / (1.0 + exp(-acc));
+        }
+        y[r] = acc;
+        ss += acc * acc;
+    }
+    if (u < 2 * NK) {
+        red[sg * 32 + lane] = ss;
+        barrier();
+        float inv = 1.0 / sqrt(red[lane] + red[32 + lane] + red[64 + lane] + red[96 + lane] + pc.eps_l2);
+        if (u < NK) {
+            inv *= 0.08838834764831845;
+            for (int r = 0; r < 32; r++) qh[(u * D + sg * 32 + r) * Bp + b] = float16_t(y[r] * inv);
+        } else {
+            for (int r = 0; r < 32; r++) kh[((u - NK) * D + sg * 32 + r) * Bp + b] = float16_t(y[r] * inv);
+        }
+    } else {
+        for (int r = 0; r < 32; r++) vh[((u - 2 * NK) * D + sg * 32 + r) * Bp + b] = float16_t(y[r]);
+    }
+    if (u < NV && sg == 0) {
+        float beta = 0.0, gg = 0.0;
+        if (!pad) {
+            const float a = ab[u * B + b] + pr[NV + u], bv = ab[(NV + u) * B + b];
+            const float sp = a > 20.0 ? a : log(1.0 + exp(a));
+            beta = 1.0 / (1.0 + exp(-bv));
+            gg = pr[u] * sp;
+        }
+        bg[u * Bp + b] = beta;
+        bg[NV * Bp + u * Bp + b] = gg;
+    }
+}

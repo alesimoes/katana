@@ -32,4 +32,11 @@ for kv in 0 1; do
   $G -V --target-env vulkan1.2 -DKV16=$kv -DSTAGE=1 --vn att_softmax_${s}_spv -o att_softmax_$s.h att_split.comp || exit 1
   $G -V --target-env vulkan1.2 -DKV16=$kv -DSTAGE=2 --vn att_mix_${s}_spv -o att_mix_$s.h att_split.comp || exit 1
 done
+# ---- qwen35moe: Gated DeltaNet (geracao e lote em blocos, de tools/vkdelta), portao da atencao e MoE em lote
+for n in dn_step dn_prep dn_cstate dn_chunk dn_state dn_norm; do
+  $G -V --target-env vulkan1.3 --vn ${n}_spv -o $n.h $n.comp || exit 1
+done
+for n in qn_gate moe_gath moe_scat; do
+  $G -V --target-env vulkan1.2 --vn ${n}_spv -o $n.h $n.comp || exit 1
+done
 echo gen ok
