@@ -200,3 +200,27 @@ cabeçalhos OpenCL). `build.sh` compila com o `gcc` do sistema ou, sem ele, com 
 - `vkmm` compila no Linux. glslang Linux em `~/.local/tc/gl` (`gen.sh` acha sozinho).
 - Orçamento de VRAM fora do Windows: 88% (era 92%; o Qwen3-30B estourava com erro -4 no OpenCL).
 - Pendente: medir os ladrilhos novos no Windows (podem mudar lá; não medido).
+
+## 6. Sessão de 2026-11-15/16 (Linux, agentes em paralelo)
+
+Entrou no main (detalhes nos commits e em `docs/modelos-novos.md`):
+- Vulkan: ladrilhos com até 2 acumuladores por subgrupo (driver Linux), B em [k][n] no `mm.comp`
+  (bancada 3,8–4,1 T), atenção em lote por blocos e atenção de um token dividida em pedaços,
+  grafo parcial (modelo maior que a VRAM), MoE em Vulkan (`KATANA_VK_MOE=1`, ainda mais lento que o OpenCL).
+- CPU: camadas em lote no grafo parcial, produto VNNI (Q4_K/Q6_K).
+- Arquiteturas novas: `deepseek2` (DeepSeek-V2-Lite, Moonlight: MLA absorvida, roteador sigmoide,
+  compartilhados) e `qwen35moe` (Qwen3.6-35B-A3B: DeltaNet + atenção com portão, 256 especialistas).
+  Cache de especialistas generalizado (camadas densas, compartilhado, roteador único, modo híbrido).
+- Formatos: MXFP4, IQ4_NL/XS, Q2_K, Q4_1, Q5_1, BF16, IQ1/2/3, TQ1/2 (`katana qtest`).
+- Agente: busca web (meta-buscador embutido), web_fetch, search_files, memória, log, cliente MCP,
+  formato XML de ferramentas, `KATANA_THINK=0`. Interface: console e `katana serve` (página local).
+- Bancada `tools/vkdelta`: kernels Vulkan do DeltaNet (geração 0,025 ms/camada; lote 8,5x), ainda
+  não ligados ao motor.
+- Estudos: `docs/estudo-provedores.md` e `docs/base-ia/`.
+
+Medidas desta sessão são indicativas (máquina compartilhada com outra sessão compilando).
+Moonlight geração ~11 → 30–33 tok/s; Qwen3.6 ~25–27 tok/s (bench 16+48, alternado).
+
+Próximos: grafo completo do qwen35moe na GPU com `tools/vkdelta`; prompt do DeltaNet em blocos;
+saída JSON garantida; cache persistente do prompt do agente; MTP; teste dourado de tokenização;
+KATANA_CONFIRM (bloqueado pelo classificador de permissões, decisão do dono).
