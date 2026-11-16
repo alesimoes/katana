@@ -4490,11 +4490,17 @@ static void gpu_setup(Model *m) {
     const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
     gpu.cfg_rows = 1; gpu.cfg_rowsb = 2; gpu.cfg_seg = 16384;       /* padroes medidos numa RTX 3050 */
-    {   const char *be = getenv("KATANA_BACKEND");
-        if (be && strcmp(be, "vulkan") == 0) {
+    {   /* Vulkan e o padrao (matrizes cooperativas, grafo gravado); o que ele ainda nao cobre cai para o
+           OpenCL. KATANA_BACKEND=opencl forca o OpenCL. */
+        const char *be = getenv("KATANA_BACKEND");
+        if (be && strcmp(be, "opencl") != 0 && strcmp(be, "vulkan") != 0)
+            fprintf(stderr, "KATANA_BACKEND=%s desconhecido (use vulkan ou opencl), usando o padrao\n", be);
+        /* MLA (deepseek2): o cache de especialistas na VRAM so existe no OpenCL; no padrao vai por ele */
+        const int vk_ok = be ? strcmp(be, "opencl") != 0 : !c->mla;
+        if (vk_ok) {
             if (vk_setup(m)) return;
-            fprintf(stderr, "Vulkan: falhou, tentando OpenCL\n");
-        } else if (be && strcmp(be, "opencl") != 0) fprintf(stderr, "KATANA_BACKEND=%s desconhecido (use opencl ou vulkan), usando OpenCL\n", be);
+            if (be && strcmp(be, "vulkan") == 0) fprintf(stderr, "Vulkan: falhou, tentando OpenCL\n");
+        }
     }
     if (!gpu_init()) { fprintf(stderr, "GPU: nenhuma disponivel via OpenCL, usando CPU\n"); return; }
     gpu_cfg_load();     /* ajuste desta placa, se `katana tune` ja rodou */
@@ -7873,7 +7879,7 @@ static int qtest_gpu_init(int rows, int cols) {
     if (getenv("KATANA_CPU") && atoi(getenv("KATANA_CPU"))) return 0;
     const char *be = getenv("KATANA_BACKEND");
     gpu.seg_target = 16384;
-    if (be && strcmp(be, "vulkan") == 0) {
+    if (!be || strcmp(be, "opencl") != 0) {
         KvkInfo I;
         if (!kvk_init(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
         gpu.vk = 1; snprintf(gpu.name, sizeof gpu.name, "%s", I.name); gpu.vram = I.vram_bytes;
