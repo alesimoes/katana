@@ -78,8 +78,10 @@ sem parar a fila, prompt em lote MoE com núcleos tensoriais, e MoE que não cab
 
 **Segunda etapa feita (2026-11-16, seção 7)**: várias matrizes num lançamento nos `mv_*`, roteador na GPU, soma do
 MoE fundida com a norma seguinte, cache de especialistas Vulkan no modo híbrido (MLA). Vulkan é o padrão para
-qwen3moe e deepseek2; olmoe continua no OpenCL por padrão (2–4% mais lento em Vulkan). Falta: prompt MoE em lote
-no Vulkan (hoje token a token: 44 contra 57 tok/s no Qwen3-30B), olmoe acima do OpenCL.
+qwen3moe e deepseek2; olmoe continua no OpenCL por padrão (2–4% mais lento em Vulkan). Falta: olmoe acima do OpenCL.
+
+**Terceira etapa feita (seção 8)**: prompt MoE em lote no Vulkan (qwen3moe, olmoe): Qwen3-30B 48 → 141–149 tok/s
+(OpenCL 58), OLMoE 140 → 362–375 (OpenCL 209–212). Falta o lote no modo híbrido (MLA: Moonlight, DeepSeek).
 
 ### 2.3 Arquitetura DeepSeek/Kimi (prioridade 2 do plano)
 
@@ -279,3 +281,48 @@ do lote em fp16 que outro agente está tratando (`mm.comp`, `dn_*`), caminho que
 
 Observação: as ferramentas `tools/vkmv` e afins que usam os `mv_*` empurram 28 bytes de push constants; com o layout novo
 precisam mandar 44 (os 4 campos novos em zero).
+
+## 8. Prompt MoE em lote no Vulkan (2026-11-16)
+
+O que mudou (`katana.c`, `vk/shaders/moe_router.comp`):
+- `vk_plan`/`vk_batch_build` aceitam MoE no grafo completo (qwen3moe; olmoe com `KATANA_VK_MOE=1`). A atenção do lote é a
+  mesma dos densos (`vk_emit_n`); no lugar do feed-forward entra `vk_moe_n`, por camada:
+  norma em fp32 (`rms_wg32`) e logits do roteador no `mm.comp` preciso (pesos float32 do roteador agora no layout da GPU,
+  grupos de 32 linhas; o `moe_router.comp` de um token passou a ler esse layout, um grupo por 32 especialistas);
+  uma leitura traz entrada normalizada e logits; a CPU escolhe top-K de cada token (`moe_route` com `moe_lg_ext`), atualiza
+  calor/vagas como no caminho de um token e agrupa os pares por vaga; na GPU cada vaga roda sobre as colunas dos seus
+  tokens (`moe_gath32`, `mm` glu e down com a vaga por deslocamento, `moe_scat` soma pesada no residual).
+- Frios do lote: os que têm pelo menos `KATANA_VK_COLDMIN` (padrão 2) tokens no lote sobem para até `KATANA_VK_COLDT`
+  (padrão 16) vagas temporárias (`vkbm.tg/td`), lidos do shard por um arquivo próprio (a thread carregadora usa o dela),
+  do blob morno, ou convertidos na hora; o resto roda na CPU enquanto a GPU trabalha e sobe somado. As vagas do cache
+  não mudam por causa disso (a thread carregadora continua só com vagas livres no lote).
+- Precisão: os produtos dos especialistas usam o modo preciso (alta + resto, como o qwen35moe). Em fp16
+  (`KATANA_VK_MOEP=0`) o OLMoE falha o `selftest` no "lote 16" (1,29 de diferença: roteamento quase empatado que vira);
+  os kernels foram conferidos contra o modo preciso (erro relativo ≤ 8e-4). O modo preciso não custou velocidade
+  medível (o gargalo é CPU/subidas).
+- `KATANA_VK_MOEPROF=1`: tempo por passada (leitura, roteamento, frios na CPU, subidas temporárias, pares).
+  Exemplo (Qwen3-30B, lote 256): ~1,7–2,2 s, frios na CPU ~0,9 s, subidas ~0,5–1,0 s, leitura ~0,17 s.
+
+Medidas (`bench`, rodadas 2 e 3, binário anterior / novo / OpenCL alternados na mesma hora, GPU ≤ 72 °C no início de
+cada rodada; detalhes em `comparacoes.md` seção 12):
+
+| Modelo | | anterior (Vulkan) | novo (Vulkan) | OpenCL |
+|---|---|---|---|---|
+| Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=1024`), 256+16 | prompt | 48,1–49,0 | 140,7–149,4 | 57,6–58,1 |
+| Qwen3-30B, 64+64 | prompt | 44,6–45,2 | 66,4–68,1 | 60,3–60,6 |
+| | geração | 41,8–42,6 | 42,3–42,9 | 41,6–41,8 |
+| OLMoE (`KATANA_KV16=0 KATANA_VK_MOE=1`), 256+16 | prompt | 139,8–141,3 | 362,5–375,5 | 209,0–212,0 |
+| | geração | 121,6–122,4 | 118,4–122,5 | 126,6–127,0 |
+
+- A geração de 16 tokens depois do lote de 256 no Qwen3-30B variou muito no binário novo (23,5–41,8); com 64+64 empata.
+  Provável: o lote mexe no calor e nos pedidos da carregadora, e 16 tokens são curtos para medir. Não investigado.
+- Tentado sem ganho: 32 ou 48 vagas temporárias (120 e ~100 tok/s contra 144–146 com 16; mais VRAM nelas tira vagas do
+  cache e mais subidas por camada), `KATANA_VK_COLDMIN=4` empata com 2.
+
+Validação (`selftest`): qwen2.5-1.5b (Vulkan, lote 0,0078), OLMoE padrão (OpenCL) e com `KATANA_VK_MOE=1` (lote 0,0042,
+lote 16 0,0044), Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`; lote 0,003–0,017 conforme quais especialistas estão quentes,
+lote 16 0,0039), Moonlight (0,0002, caminho não mudou), Qwen3.6 (lote 0,0006). Todos OK.
+
+Pendências: lote MoE no modo híbrido (MLA: Moonlight e DeepSeek-V2-Lite continuam com prompt token a token: atenção na
+CPU por token + `vk_host_moe_ffn`); subidas temporárias em paralelo com os frios da CPU (hoje uma depois da outra na
+thread principal); roteamento da CPU (~0,1 s por passada de 256 no Qwen3-30B) poderia ir para a GPU (top-K no shader).

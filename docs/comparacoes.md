@@ -194,3 +194,20 @@ Na mesma hora, OpenCL no Qwen2.5 1,5B 64+64: prompt 211–212, geração 100,7�
 O "Vulkan mais lento na geração" visto no começo (86–88 tok/s) era deriva térmica: medido de novo,
 fica 2–3% abaixo do OpenCL, como no Windows. Espera do fence em laço (`KVK_SPIN`, padrão ligado):
 geração +2–3% num teste 512+256 (13,1 → 12,8 ms/token), dentro do que a deriva também explica.
+
+## 12. Prompt MoE em lote no Vulkan (Linux, 2026-11-16)
+
+`bench`, binário anterior (Vulkan token a token no prompt MoE), novo e OpenCL, alternados na mesma hora, duas séries,
+rodadas 2 e 3, tok/s. Espera até a GPU ficar em 72 °C ou menos antes de cada execução.
+
+| Modelo, benchmark | | anterior | novo | OpenCL |
+|---|---|---|---|---|
+| Qwen3-30B-A3B, 256+16 (`KATANA_KV16=0 KATANA_CTX=1024`) | prompt | 48,1 / 48,5 / 48,7 / 49,0 | 140,7 / 144,2 / 145,5 / 149,4 | 57,6 / 57,9 / 57,9 / 58,1 |
+| | geração | 26,4–26,7 | 23,5–41,8 | 34,3–34,8 |
+| Qwen3-30B-A3B, 64+64 | prompt | 44,6–45,2 | 66,4–68,1 | 60,3–60,6 |
+| | geração | 41,8–42,6 | 42,3–42,9 | 41,6–41,8 |
+| OLMoE 1B-7B, 256+16 (`KATANA_KV16=0`; Vulkan com `KATANA_VK_MOE=1`) | prompt | 139,8–141,3 | 362,5–375,5 | 209,0–212,0 |
+| | geração | 121,6–122,4 | 118,4–122,5 | 126,6–127,0 |
+
+Varredura das vagas temporárias (Qwen3-30B 256+4, sem alternar, GPU esquentando de 81 a 85 °C ao longo da série: só
+indicativo): 16 vagas 144–146, 32 vagas 113–121, 48 vagas 97–108 tok/s.
