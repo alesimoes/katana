@@ -6604,6 +6604,14 @@ static int read_line(char *line, size_t cap) {
  * O processo fica vivo e o cache KV guarda a conversa: cada turno so processa o texto novo.
  * Num MoE isso tambem mantem na VRAM os especialistas do assunto. Comandos: /novo recomeca,
  * /sair termina. Quando o contexto enche, a conversa recomeca (mantendo o prompt de sistema). */
+/* inicio da resposta do assistente em modelos que raciocinam (<think>): KATANA_THINK=0 desliga o
+   raciocinio (bloco vazio, como o proprio modelo preve); padrao: raciocina */
+static const char *think_pre(const Config *c) {
+    if (!c->think) return "";
+    const char *e = getenv("KATANA_THINK");
+    return e && atoi(e) == 0 ? "<think>\n\n</think>\n\n" : "<think>\n";
+}
+
 static void turn_text(const Config *c, char *out, size_t n, const char *sys, const char *user, int first) {
     char sp[4096] = "";
     if (first && sys && *sys) switch (c->chat_fmt) {
@@ -6616,7 +6624,7 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
         default: snprintf(sp, sizeof sp, "%s\n", sys); break;
     }
     switch (c->chat_fmt) {
-        case 0:  snprintf(out, n, "%s%s<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", first ? "" : "<|im_end|>\n", sp, user, c->think ? "<think>\n" : ""); break;
+        case 0:  snprintf(out, n, "%s%s<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", first ? "" : "<|im_end|>\n", sp, user, think_pre(c)); break;
         case 1:  snprintf(out, n, "%s%s%s<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
                           first ? "" : "<|eot_id|>", first && !c->add_bos ? "<|begin_of_text|>" : "", sp, user); break;
         case 2:  snprintf(out, n, "%s%s<|user|>\n%s</s>\n<|assistant|>\n", first ? "" : "</s>\n", sp, user); break;
@@ -8728,8 +8736,8 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (reset) { pos = 0; first = 1; }
         if (cmd) continue;
         if (first) { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); }   /* memoria + ferramentas MCP */
-        if (first) snprintf(text, sizeof text, "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", sys, line, c->think ? "<think>\n" : "");
-        else snprintf(text, sizeof text, "<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", line, c->think ? "<think>\n" : "");
+        if (first) snprintf(text, sizeof text, "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", sys, line, think_pre(c));
+        else snprintf(text, sizeof text, "<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", line, think_pre(c));
         buf_str(&tr, "Voce: "); buf_str(&tr, line); buf_str(&tr, "\n");
 
         for (int round = 0; round < 12; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
@@ -8791,7 +8799,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (tl + 2 * TOOL_WEB + 2048 >= sizeof text) break;
             }
             if (!calls) break;
-            snprintf(text + tl, sizeof text - tl, "<|im_end|>\n<|im_start|>assistant\n%s", c->think ? "<think>\n" : "");
+            snprintf(text + tl, sizeof text - tl, "<|im_end|>\n<|im_start|>assistant\n%s", think_pre(c));
         }
         buf_str(&tr, "\n");
     }
@@ -9454,7 +9462,7 @@ static int run_main(int argc, char **argv) {
             case 5:  snprintf(p, n, "User: %s\n\nAssistant:", argv[3]); break;
             case 6:  snprintf(p, n, "<|im_system|>system<|im_middle|>You are a helpful assistant<|im_end|>"
                                     "<|im_user|>user<|im_middle|>%s<|im_end|><|im_assistant|>assistant<|im_middle|>", argv[3]); break;
-            default: snprintf(p, n, "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", argv[3], m.cfg.think ? "<think>\n" : ""); break;
+            default: snprintf(p, n, "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", argv[3], think_pre(&m.cfg)); break;
         }
         return generate(&m, p, max_tokens, temp, 0);
     }
