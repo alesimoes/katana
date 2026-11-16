@@ -7,7 +7,8 @@
  *          arquivo mapeado em memoria, sem conversao), tokenizador BPE lido do GGUF.
  *
  * Uso:
- *   katana info <modelo.gguf>
+ *   katana modelos [pasta]        lista os GGUF numa tabela (data, tamanho, algoritmo, como roda)
+  katana info <modelo.gguf>
  *   katana selftest <modelo.gguf>                                    confere a matematica quantizada
  *   katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]      mede a velocidade (ja aquecido)
  *   katana run  <modelo.gguf> "texto" [max_tokens] [temperatura]     completa o texto
@@ -13861,6 +13862,93 @@ static int toktest(Model *m, const char *path, int chat) {
     return 0;
 }
 
+/* nome do algoritmo de quantizacao a partir de general.file_type do GGUF */
+static const char *quant_name(int ft) {
+    switch (ft) {
+        case 0: return "F32"; case 1: return "F16"; case 2: return "Q4_0"; case 3: return "Q4_1";
+        case 7: return "Q8_0"; case 8: return "Q5_0"; case 9: return "Q5_1"; case 10: return "Q2_K";
+        case 11: return "Q3_K_S"; case 12: return "Q3_K_M"; case 13: return "Q3_K_L"; case 14: return "Q4_K_S";
+        case 15: return "Q4_K_M"; case 16: return "Q5_K_S"; case 17: return "Q5_K_M"; case 18: return "Q6_K";
+        case 19: return "IQ2_XXS"; case 20: return "IQ2_XS"; case 21: return "Q2_K_S"; case 23: return "IQ3_XXS";
+        case 24: return "IQ1_S"; case 25: return "IQ4_NL"; case 26: return "IQ3_S"; case 27: return "IQ2_S";
+        case 28: return "IQ4_XS"; case 29: return "IQ1_M"; case 30: return "BF16"; case 32: return "MXFP4";
+        default: return "?";
+    }
+}
+
+/* le so os metadados de um GGUF (sem carregar tensores): arquitetura, quantizacao, camadas, especialistas */
+static int gguf_meta(const char *path, char *arch, int *ft, int *n_layers, int *n_expert) {
+    int64_t fsz = 0;
+    const uint8_t *buf = map_file(path, &fsz);
+    if (!buf) return 0;
+    Rd r = { buf, buf + fsz };
+    if (rd_u32(&r) != 0x46554747u) return 0;
+    if (rd_u32(&r) < 2) return 0;
+    rd_u64(&r); uint64_t n_kv = rd_u64(&r);
+    arch[0] = 0; *ft = -1; *n_layers = 0; *n_expert = 0;
+    for (uint64_t i = 0; i < n_kv; i++) {
+        int kl; const char *k = rd_str(&r, &kl);
+        uint32_t t = rd_u32(&r);
+        if (t == 8 && key_is(k, kl, "general.architecture")) {
+            int sl; const char *sv = rd_str(&r, &sl); if (sl > 47) sl = 47;
+            memcpy(arch, sv, sl); arch[sl] = 0;
+        } else if (t != 8 && t != 9 && key_is(k, kl, "general.file_type")) {
+            *ft = (int)rd_num(&r, t);
+        } else if (t != 8 && t != 9 && key_ends(k, kl, ".block_count")) {
+            *n_layers = (int)rd_num(&r, t);
+        } else if (t != 8 && t != 9 && key_ends(k, kl, ".expert_count")) {
+            *n_expert = (int)rd_num(&r, t);
+        } else rd_skip(&r, t);
+    }
+#ifndef _WIN32
+    munmap((void *)buf, (size_t)fsz);
+#endif
+    return 1;
+}
+
+/* como o modelo roda nesta maquina, por arquitetura e tamanho (estimativa; prepare mede de fato) */
+static const char *como_roda(const char *arch, int n_expert, double gb) {
+    if (!strcmp(arch, "gpt-oss") || !strcmp(arch, "glm4") || !strcmp(arch, "glm4moe"))
+        return "CPU (Vulkan pendente)";
+    if (!strcmp(arch, "gemma4")) return "GPU hibrido (cache esp.)";
+    if (!strcmp(arch, "deepseek2")) return "GPU hibrido (MLA)";
+    if (n_expert > 0) return "GPU (cache especialistas)";
+    return gb < 3.4 ? "GPU (Vulkan, inteiro)" : "GPU parcial / CPU";
+}
+
+/* lista os GGUF de uma pasta numa tabela: data, tamanho, algoritmo (arquitetura + quantizacao), como roda */
+static int modelos_cmd(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) { fprintf(stderr, "modelos: nao abriu a pasta %s\n", dir); return 1; }
+    printf("%-42s  %-10s  %8s  %-22s  %s\n", "modelo", "data", "tamanho", "algoritmo", "como roda");
+    printf("%-42s  %-10s  %8s  %-22s  %s\n", "------", "----", "-------", "---------", "---------");
+    struct dirent *e;
+    char path[4096], arch[64], algo[64], data[16], tam[16];
+    int n = 0; double soma = 0;
+    while ((e = readdir(d))) {
+        const char *nm = e->d_name;
+        size_t l = strlen(nm);
+        if (l < 6 || strcmp(nm + l - 5, ".gguf")) continue;   /* so .gguf (pula .ktn/.heat/.prof) */
+        snprintf(path, sizeof path, "%s/%s", dir, nm);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        const double gb = st.st_size / 1073741824.0;
+        struct tm *tm = localtime(&st.st_mtime);
+        strftime(data, sizeof data, "%Y-%m-%d", tm);
+        snprintf(tam, sizeof tam, "%.1f GB", gb);
+        int ft, nl, ne;
+        if (gguf_meta(path, arch, &ft, &nl, &ne)) {
+            snprintf(algo, sizeof algo, "%s %s%s", arch[0] ? arch : "?", quant_name(ft), ne > 0 ? " MoE" : "");
+        } else snprintf(algo, sizeof algo, "(nao e GGUF valido)");
+        printf("%-42s  %-10s  %8s  %-22s  %s\n", nm, data, tam, algo,
+               gguf_meta(path, arch, &ft, &nl, &ne) ? como_roda(arch, ne, gb) : "-");
+        n++; soma += gb;
+    }
+    closedir(d);
+    printf("\n%d modelos, %.1f GB no total. Data = data do arquivo (download). 'como roda' e estimativa; use 'katana prepare' para medir.\n", n, soma);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -13959,6 +14047,7 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return toktest(&m, argv[3], argc > 4 && strcmp(argv[4], "--chat") == 0);
     }
+    if (strcmp(argv[1], "modelos") == 0) return modelos_cmd(argc >= 3 ? argv[2] : "modelos");
     if (argc >= 3 && strcmp(argv[1], "info") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
