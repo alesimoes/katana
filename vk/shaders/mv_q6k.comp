@@ -15,7 +15,7 @@ void main() {
         for (int r = 0; r < NR; r++) acc[r] = 0.0;
         for (int g = 0; g < 4; g++) {
             for (int k = 0; k < 4; k++, xb += 16) {
-                for (int u = 0; u < 16; u++) xv[u] = x[xb + u];
+                for (int u = 0; u < 16; u++) xv[u] = x[xoff_ + xb + u];
                 for (int r = 0; r < NR; r++) {
                     uint q = p[r] + uint((g * 4 + k) * 3) * 32u;
                     uint w0 = W[q], w1 = W[q + 32u], w2 = W[q + 64u];

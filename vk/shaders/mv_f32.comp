@@ -6,7 +6,7 @@ void main() {
     uint p[NR];
     for (int r = 0; r < NR; r++) p[r] = rptr(r, pc.cols);
     for (int j = 0; j < pc.cols; j++) {
-        float xv = x[j];
+        float xv = x[xoff_ + j];
         for (int r = 0; r < NR; r++) total[r] += uintBitsToFloat(W[p[r] + uint(j) * 32u]) * xv;
     }
     finish();
