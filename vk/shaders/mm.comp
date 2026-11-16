@@ -58,7 +58,7 @@ layout(set = 0, binding = 2) buffer YB { float16_t y[]; } yb;            // y[ro
 #else
 layout(set = 0, binding = 2) buffer YB { float y[]; } yb;                // y[row*tokens + token]
 #endif
-layout(push_constant) uniform PC { uint rows, cols, tokens, wpr, kper, slice, add, pad; } pc;
+layout(push_constant) uniform PC { uint rows, cols, tokens, wpr, kper, slice, add, woff; } pc;   // woff: deslocamento em palavras dos pesos
 
 #if BR
 const uint STRB = BN + PADB;                 // B na memoria compartilhada: uma linha por coluna k (RowMajor)
@@ -119,7 +119,7 @@ void fill(uint kk, uint ao, uint bo) {
 #else
             const uint G = (ir >> 5) + h, gr = G * 32;
 #endif
-            const uint wbase = G * pc.wpr * 32 + r0;
+            const uint wbase = G * pc.wpr * 32 + r0 + pc.woff;
             if (gr >= pc.rows) {
                 for (uint t = 0; t < 16; t++) buf_a[o + t] = float16_t(0.0);
                 continue;
@@ -261,7 +261,7 @@ void main() {
 #endif
                 float a = 0.0, b = 0.0;
                 if (gr < pc.rows) {
-                    const uint base = G * pc.wpr * 32 + r0 + blk * (WT == 0 ? 36 : 44) * 32;
+                    const uint base = G * pc.wpr * 32 + r0 + pc.woff + blk * (WT == 0 ? 36 : 44) * 32;
                     const uint h0 = wb.w[base];
                     uint hw[3] = uint[3](wb.w[base + 32], wb.w[base + 64], wb.w[base + 96]);
                     uint sc, mn; scmin(hw, j, sc, mn);

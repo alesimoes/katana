@@ -1,0 +1,16 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+/* MoE em lote: junta as colunas (tokens) que usam um especialista. xg[i*n + j] = xh[i*B + tok_j],
+   tok_j = meta[moff + 2j] (o par e (token, peso em bits), o mesmo da soma) */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer X { float16_t xh[]; };
+layout(std430, binding = 1) writeonly buffer XG { float16_t xg[]; };
+layout(std430, binding = 2) readonly buffer M { uint meta[]; };
+layout(push_constant) uniform P { int d, B, n, moff; } pc;
+void main() {
+    const int g = int(gl_GlobalInvocationID.x);
+    if (g >= pc.d * pc.n) return;
+    const int i = g / pc.n, j = g % pc.n;
+    xg[g] = xh[i * pc.B + int(meta[pc.moff + 2 * j])];
+}
