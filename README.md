@@ -164,6 +164,36 @@ Nada além do `curl` é necessário.
 
 Exemplo de teste sem modelo: `katana tool web_search '{"query":"kernel linux versao"}'`.
 
+## Saída estruturada (JSON garantido) e cache de prefixo
+
+**JSON garantido.** O amostrador pode ser restrito por uma gramática: a cada passo só entram tokens cujo texto
+mantém a saída como um JSON válido (autômato de pilha byte a byte; os candidatos são testados em ordem de logit e
+o vocabulário inteiro só é varrido se nenhum dos melhores servir; o texto de cada token é pré-calculado). Se o
+limite de tokens está perto, a gramática passa a preferir tokens que fecham as estruturas abertas, para a saída
+terminar válida. Três usos:
+
+- CLI: `KATANA_JSON=1 katana run <modelo> "Liste 3 frutas em JSON" 80 0.8` imprime só um objeto JSON (sem eco do
+  prompt); vale também para `chat`. `KATANA_JSON='{"type":"object","properties":{...}}'` restringe a um JSON Schema.
+- `serve`, em `/api/chat`: `"response_format": {"type":"json_object"}` ou
+  `{"type":"json_schema","schema":{...}}` (também aceita `json_schema:{schema:{...}}`). Schema suportado: `type`
+  (object, array, string, number, integer, boolean, null), `properties` (só as chaves declaradas, sem repetir),
+  `required`, `items`, `enum`, `const`; o que não for entendido vira "qualquer valor".
+- Agente: quando o modelo abre `<tool_call>` (formato JSON) a gramática liga: o nome da ferramenta precisa ser uma das
+  ferramentas da lista (inclui as do MCP) e `arguments` segue o `parameters` da ferramenta escolhida. No formato XML
+  (Qwen3.6) só o nome depois de `<function=` é restrito às ferramentas existentes.
+
+`katana jsontest` roda os testes de unidade da gramática (aceita/recusa sequências conhecidas, schemas e chamadas
+de ferramenta).
+
+**Cache de prefixo persistente.** O prompt de sistema do agente (com as ferramentas, 1.000 a 1.500 tokens) é
+processado uma vez: depois disso o estado do cache KV (e `m->ssm` nos modelos com estado recorrente) vai para
+`~/.katana/cache/pfx-<chave>.kv`. A chave é um hash do modelo, dos tokens do prefixo, do contexto (`KATANA_CTX`) e do
+tipo do cache (CPU, Vulkan ou OpenCL; 16 ou 32 bits). Na próxima abertura, se a chave bate, o estado é carregado em
+vez de recalculado (`[prefixo do cache: N tokens carregados em X s]`). Na GPU os buffers do cache KV da placa são
+lidos e gravados como bytes crus (OpenCL e Vulkan); modelos MLA (deepseek2) e estado recorrente na GPU
+(qwen35moe com GPU) não são cobertos e o prefixo é recalculado. Ficam no máximo 8 prefixos. `KATANA_PFX=0` desliga;
+`KATANA_CACHE_DIR` muda a pasta.
+
 ## Variáveis de ambiente
 
 | Variável | Efeito |
@@ -194,6 +224,9 @@ Exemplo de teste sem modelo: `katana tool web_search '{"query":"kernel linux ver
 | `KATANA_MEM=<arquivo>` | agente: arquivo de memória (padrão `~/.katana/memoria.txt`) |
 | `KATANA_LOG=<arquivo>` | agente: registro de ações (padrão `~/.katana/agente.log`) |
 | `KATANA_ROPE` | força o RoPE: 0 = pares adjacentes, 1 = metades |
+| `KATANA_JSON=1` | `run`/`chat`: saída JSON garantida (ou um JSON Schema em texto) |
+| `KATANA_PFX=0` | agente: não usa o cache de prefixo em disco |
+| `KATANA_CACHE_DIR=<pasta>` | agente: pasta do cache de prefixo (padrão `~/.katana/cache`) |
 
 ## Arquivos
 
