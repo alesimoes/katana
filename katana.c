@@ -4166,7 +4166,7 @@ static struct {
     int *cnt, *ofs, *pv, *pb, *ce, *cb;
     /* frios do lote levados a GPU: T vagas temporarias (tg, td), para os frios com pelo menos cmin tokens no lote */
     KvkBuf tg, td; int T, cmin, *ccnt, *tmpe; size_t tgb, tdb; uint8_t *stage; FILE **pf;
-    KvkHost hst;                    /* T regioes (tgb + tdb) mapeadas: a thread de leitura grava direto do arquivo */
+    uint8_t *tstage;                /* T regioes (tgb + tdb): a thread de leitura grava do arquivo, a principal sobe com write_q */
     int cdone, off_c;               /* frios da CPU ja somados em xc; deslocamento da tabela deles */
     double t_rd, t_route, t_cpu, t_tmp, t_frd; long n_hot, n_cold, n_tmp, n_tmpe;
 } vkbm;
@@ -4325,7 +4325,7 @@ static int vk_batch_build(Model *m) {
             vkbm.tg = vk_wk(vkbm.T * vkbm.tgb, &fail); vkbm.td = vk_wk(vkbm.T * vkbm.tdb, &fail);
             vkbm.stage = xalloc(vkbm.tgb + vkbm.tdb, 1);
             vkbm.pf = xalloc(c->n_layers, sizeof(FILE *));
-            if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.hst = kvk_host_create(vkbm.T * (vkbm.tgb + vkbm.tdb));
+            if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.tstage = xalloc(vkbm.T * (vkbm.tgb + vkbm.tdb), 1);
         }
         vkbm.ccnt = xalloc(E, sizeof(int)); vkbm.tmpe = xalloc(64, sizeof(int));
         vkbm.cnt = xalloc(E + 66, sizeof(int)); vkbm.ofs = xalloc(E + 66, sizeof(int));
@@ -5667,16 +5667,16 @@ static void vk_moe_tmp_load(Model *m, const Layer *L, int l, int e, int j) {
         die("falha ao subir especialista (Vulkan, lote)");
     free(cg); free(cd);
 }
-/* Vida util: vkbm.hst e os arquivos vkbm.pf duram o processo todo. A regiao j so e regravada pela thread da camada
+/* Vida util: vkbm.tstage e os arquivos vkbm.pf duram o processo todo. A regiao j so e regravada pela thread da camada
    seguinte, que comeca depois da leitura bloqueante do vk_moe_n (GPU ociosa: as copias anteriores ja terminaram);
    a thread sempre e juntada antes do vk_moe_n voltar, e o fallback so usa o arquivo depois do join.
-/* leitura dos frios temporarios do lote numa thread: do shard direto para a area mapeada (vkbm.hst), enquanto a
-   principal enfileira os quentes e roda os frios da CPU; a principal so enfileira as copias. done[j]: 1 pronto, -1 falhou */
+   A thread le do shard para vkbm.tstage; a principal sobe com kvk_buf_write_q (copia os bytes na hora para o anel de
+   staging, sem depender de coerencia de memoria mapeada). done[j]: 1 pronto, -1 falhou. */
 static struct { int l, n; size_t bg, bd; volatile long done[64]; } vk_trd;
 static void vk_trd_run(void) {
     FILE *f = vkbm.pf[vk_trd.l];
     for (int j = 0; j < vk_trd.n; j++) {
-        uint8_t *dst = (uint8_t *)vkbm.hst.p + (size_t)j * (vkbm.tgb + vkbm.tdb);
+        uint8_t *dst = vkbm.tstage + (size_t)j * (vkbm.tgb + vkbm.tdb);
         const int e = vkbm.tmpe[j];
         const int ok = f && FSEEK64(f, (int64_t)((size_t)e * (vk_trd.bg + vk_trd.bd)), SEEK_SET) == 0
                        && fread(dst, 1, vk_trd.bg, f) == vk_trd.bg && fread(dst + vkbm.tgb, 1, vk_trd.bd, f) == vk_trd.bd;
@@ -5826,7 +5826,7 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
 #else
     pthread_t th;
 #endif
-    if (ntmp > 0 && vkbm.hst.b && gx.pf && gx.pf[l]) {
+    if (ntmp > 0 && vkbm.tstage && gx.pf && gx.pf[l]) {
         if (!vkbm.pf[l]) {
             char fn[1100];
             snprintf(fn, sizeof fn, "%s/L%03d.exps.bin", shards.dir, l);
@@ -5859,9 +5859,9 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
             if (thr) {
                 while (!vk_trd.done[j]) CPU_RELAX();
                 if (vk_trd.done[j] > 0) {
-                    const size_t base = (size_t)j * (vkbm.tgb + vkbm.tdb);
-                    if (!kvk_copy_q(vkbm.hst, base, vkbm.tg, (size_t)j * vkbm.tgb, gx.bg[l])
-                        || !kvk_copy_q(vkbm.hst, base + vkbm.tgb, vkbm.td, (size_t)j * vkbm.tdb, gx.bd[l])) die("falha ao subir especialista (Vulkan, lote)");
+                    const uint8_t *src = vkbm.tstage + (size_t)j * (vkbm.tgb + vkbm.tdb);
+                    if (!kvk_buf_write_q(vkbm.tg, (size_t)j * vkbm.tgb, src, gx.bg[l])
+                        || !kvk_buf_write_q(vkbm.td, (size_t)j * vkbm.tdb, src + vkbm.tgb, gx.bd[l])) die("falha ao subir especialista (Vulkan, lote)");
                 } else {            /* falhou a leitura: espera a thread acabar e sobe pelo caminho comum */
 #ifdef _WIN32
                     WaitForSingleObject(th, INFINITE); CloseHandle(th);
@@ -6624,7 +6624,7 @@ static int vk_mla_build(Model *m) {
         vkbm.tg = vk_wk(vkbm.T * vkbm.tgb, &fail); vkbm.td = vk_wk(vkbm.T * vkbm.tdb, &fail);
         vkbm.stage = xalloc(vkbm.tgb + vkbm.tdb, 1);
         vkbm.pf = xalloc(NL, sizeof(FILE *));
-        if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.hst = kvk_host_create(vkbm.T * (vkbm.tgb + vkbm.tdb));
+        if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.tstage = xalloc(vkbm.T * (vkbm.tgb + vkbm.tdb), 1);
     }
     if (fail || !kvk_wait()) {
         fprintf(stderr, "Vulkan: sem memoria para o lote MLA (%s): prompt token a token\n", kvk_error());
