@@ -1234,10 +1234,11 @@ static void load_model(Model *m, const char *path) {
     c->vocab = tk->n;
     c->hd = c->hd_key > 0 ? c->hd_key : c->dim / c->n_heads;       /* q tem n_heads*hd, que pode passar de dim */
     if ((!c->hd_key && c->dim % c->n_heads) || c->hd % 2 || c->n_heads % c->n_kv) die("dimensoes de atencao invalidas");
-    if (!c->ctx || c->ctx > MAX_CTX) c->ctx = MAX_CTX;
-    if (getenv("KATANA_CTX")) {     /* contexto menor = cache KV menor (libera VRAM para mais camadas) */
+    const int model_ctx = c->ctx > 0 ? c->ctx : MAX_CTX;
+    c->ctx = model_ctx < MAX_CTX ? model_ctx : MAX_CTX;
+    if (getenv("KATANA_CTX")) {     /* menor = cache KV menor (libera VRAM); maior = ate o limite do modelo */
         const int want = atoi(getenv("KATANA_CTX"));
-        if (want >= 64 && want < c->ctx) c->ctx = want;
+        if (want >= 64) c->ctx = want < model_ctx ? want : model_ctx;
     }
     if (!merges && !tk->spm) die("GGUF sem merges BPE nem SentencePiece (tokenizador nao suportado)");
     if (tk->spm && !tk->score) tk->score = xalloc(tk->n, sizeof(float));
@@ -12618,6 +12619,8 @@ static int run_main(int argc, char **argv) {
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "agent") == 0) {
+        if (!getenv("KATANA_CTX")) putenv("KATANA_CTX=16384");     /* resultados de ferramentas ocupam muito contexto */
+        if (!getenv("KATANA_THINK")) putenv("KATANA_THINK=0");     /* agente responde direto; KATANA_THINK=1 liga o raciocinio */
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
         print_info(&m);
