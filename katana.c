@@ -372,7 +372,7 @@ typedef struct {
     float *wkb, *wvb;                   /* MLA: [cabeca][latente][nope] e [cabeca][hd_v][latente], em float */
     Mat sg, su, sd;                     /* especialistas compartilhados */
     float *exp_bias;                    /* vies do roteador (so na escolha) */
-    float *shexp_inp;                   /* portao sigmoide escalar do compartilhado (qwen35moe) */
+    float *shexp_gate;                  /* opcional [dim]: portao sigmoide escalar do compartilhado */
     /* DeltaNet: qkv misturados, portao z, alpha/beta por cabeca, convolucao, decaimento, norma e saida */
     Mat wqkv, wz, walpha, wbeta, wssm_out;
     float *conv_w, *ssm_a, *dt_bias, *ssm_norm;
@@ -1035,7 +1035,7 @@ static void load_model(Model *m, const char *path) {
                 M2(sd, "ffn_down_shexp.weight", d, Hs);
             }
             snprintf(nm, sizeof nm, "blk.%d.exp_probs_b.bias", l); L->exp_bias = get_tensor(&ts, nm, E, 0, np);
-            snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp_shexp.weight", l); L->shexp_inp = get_tensor(&ts, nm, d, 0, np);
+            snprintf(nm, sizeof nm, "blk.%d.ffn_gate_inp_shexp.weight", l); L->shexp_gate = get_tensor(&ts, nm, d, 0, np);
         } else {
             const size_t Hd = c->n_expert ? (size_t)c->hidden_dense : H;
             M2(w_gate, "ffn_gate.weight", Hd, d);
@@ -2565,7 +2565,7 @@ static int gpu_build_all(void) {
    conversoes sao exatas (os mesmos valores inteiros e escalas), so ocupam mais VRAM. */
 static uint32_t gpu_kind(const Mat *W) {
     if (!W->q) return T_F32;
-    if (W->type == T_Q4_0) return T_Q8_0;
+    if (W->type == T_Q4_0 || W->type == T_Q5_0) return T_Q8_0;     /* sobem no layout de 8 bits, sem perda */
     if (W->type == T_Q3_K) return T_Q6_K;
     return W->type;
 }
@@ -2617,6 +2617,19 @@ static void gpu_pack_row(const Mat *W, size_t r, size_t cols, uint32_t *o) {
             memcpy(&h, src, 2);
             float d = f16_to_f32(h);
             for (int j = 0; j < 16; j++) { v[j] = (int8_t)((src[2 + j] & 0xF) - 8); v[j + 16] = (int8_t)((src[2 + j] >> 4) - 8); }
+            memcpy(o, &d, 4); memcpy(o + 1, v, 32);
+        }
+        return;
+    case T_Q5_0:
+        for (size_t b = 0; b < cols / 32; b++, src += 22, o += 9) {
+            int8_t v[32];
+            uint32_t qh;
+            memcpy(&h, src, 2); memcpy(&qh, src + 2, 4);
+            float d = f16_to_f32(h);
+            for (int j = 0; j < 16; j++) {
+                v[j] = (int8_t)(((src[6 + j] & 0xF) | (((qh >> j) << 4) & 0x10)) - 16);
+                v[j + 16] = (int8_t)(((src[6 + j] >> 4) | ((qh >> (j + 12)) & 0x10)) - 16);
+            }
             memcpy(o, &d, 4); memcpy(o + 1, v, 32);
         }
         return;
@@ -2780,11 +2793,13 @@ typedef struct { uint32_t *glu, *down; int slot, pending; } ExpSlot;  /* blobs m
 /* fila circular de cargas em segundo plano: a thread carregadora le (ou converte) o especialista
    para o buffer do pedido; a thread principal instala na VRAM quando fica pronto */
 #define LQ 64
+#define MOE_KMAX 64     /* especialistas ativos por token, no maximo */
 typedef struct { int l, e; uint8_t *buf; volatile long done; } LoadReq;
 static struct {
     clh bqn, bkn, *qn, *kn;         /* norma de q e k */
     clh *sg, *sd;                   /* por camada: vagas dos pares gate/up e dos down */
     clh bh, bt;                     /* saidas dos especialistas do lote */
+    clh bsh, bso; float *hout;      /* modo hibrido: meio e saida do compartilhado; saidas lidas da GPU */
     clh bmeta, bxn;                 /* metadados do lote (faixas, pesos, linhas) e entradas por token */
     uint32_t *meta; float *w; uint32_t *rowi; float *xn;
     ExpSlot *slot;                  /* [camada][especialista] */
@@ -2857,6 +2872,8 @@ static void gpu_upload_glu(Mat *gate, Mat *up, size_t rows, size_t cols, int l) 
 /* MLA (deepseek2): ainda sem grafo na GPU. As camadas rodam na CPU e os produtos densos (q, kv_a,
    saida da atencao, feed-forward denso, compartilhados e vocabulario) vao para a GPU com ida e volta;
    os especialistas roteados e a atencao ficam na CPU. */
+static int host_moe_setup(Model *m);
+static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols);
 static void mla_gpu_upload(Model *m) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, nh = c->n_heads, W = (size_t)c->mla + c->rope_dim;
@@ -2886,15 +2903,86 @@ static void mla_gpu_upload(Model *m) {
             snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, Hd, nm);
         } else if (L->sg.q || L->sg.f) {
             const size_t Hs = (size_t)c->n_shared * H;
-            snprintf(nm, sizeof nm, "L%03d.sgate", l); gpu_upload(&L->sg, Hs, d, nm);
-            snprintf(nm, sizeof nm, "L%03d.sup", l);   gpu_upload(&L->su, Hs, d, nm);
+            if (glu_pair(&L->sg, &L->su)) {
+                Mat *ms[2] = { &L->sg, &L->su };
+                snprintf(nm, sizeof nm, "L%03d.sglu", l); gpu_upload_n(ms, 2, Hs, d, nm);
+                L->sg.pair = L->sg.gbuf != NULL;
+            } else {
+                snprintf(nm, sizeof nm, "L%03d.sgate", l); gpu_upload(&L->sg, Hs, d, nm);
+                snprintf(nm, sizeof nm, "L%03d.sup", l);   gpu_upload(&L->su, Hs, d, nm);
+            }
             snprintf(nm, sizeof nm, "L%03d.sdown", l); gpu_upload(&L->sd, d, Hs, nm);
         }
     }
     gpu_upload(&m->lm_head, c->vocab, d, "head");
     gpu.n_gl = 0; gpu.on = 0; gpu.full = 0; gpu.mv_host = 1;
     fprintf(stderr, "GPU: %s%s (%.1f GB) - %s: camadas na CPU, %d produtos densos na GPU (%.0f MB usados)\n",
-            gpu.vk ? "Vulkan " : "", gpu.name, c->mla ? "MLA" : "DeltaNet", gpu.vram / 1073741824.0, gpu.n_up, gpu.used / 1048576.0);
+            gpu.vk ? "Vulkan " : "", gpu.name, gpu.vram / 1073741824.0, c->mla ? "MLA" : "DeltaNet", gpu.n_up, gpu.used / 1048576.0);
+    if (c->n_expert && !host_moe_setup(m)) fprintf(stderr, "GPU: especialistas roteados na CPU\n");
+}
+
+/* Cache de especialistas no modo hibrido (camadas na CPU, ex.: MLA): so as camadas MoE tem vagas; as densas
+   iniciais e os compartilhados ja subiram como matrizes normais. O resto da VRAM vira vagas, como no grafo
+   completo. 0 = nao coube (os especialistas roteados ficam na CPU). KATANA_NOEXPCACHE=1 desliga. */
+static int host_moe_setup(Model *m) {
+    const Config *c = &m->cfg;
+    const int NL = c->n_layers, E = c->n_expert, K = c->n_used;
+    const size_t d = c->dim, H = c->hidden, Hs = (size_t)c->n_shared * H;
+    if (gpu.vk || getenv("KATANA_NOEXPCACHE") || getenv("KATANA_NOGX")) return 0;
+    gx.bg = xalloc(NL, sizeof(size_t)); gx.bd = xalloc(NL, sizeof(size_t));
+    size_t per = 0;
+    for (int l = 0; l < NL; l++) {
+        const Layer *L = &m->layers[l];
+        if (!L->eg) continue;
+        if (!glu_pair(&L->eg[0], &L->eu[0])) { fprintf(stderr, "GPU: gate e up dos especialistas em formatos diferentes\n"); return 0; }
+        gx.bg[l] = 2 * gpu_mat_bytes(&L->eg[0], H, d); gx.bd[l] = gpu_mat_bytes(&L->ed[0], d, H);
+        per += gx.bg[l] + gx.bd[l];
+    }
+    if (!per) return 0;
+    const size_t work = ((size_t)K * (H + 128) + (size_t)K * (d + 128) + (size_t)K * 8 + Hs + 128 + d + 128) * 4;
+    const uint64_t budget = gpu_budget(), keep = work + ((size_t)8 << 20);
+    size_t avail = budget > gpu.used + keep ? (size_t)(budget - gpu.used - keep) : 0;
+    if (getenv("KATANA_EXPERT_MB")) { const size_t lim = (size_t)atoll(getenv("KATANA_EXPERT_MB")) << 20; if (lim < avail) avail = lim; }
+    size_t S = avail / per;
+    if (S > (size_t)E) S = E;
+    if (S < (size_t)K) { fprintf(stderr, "GPU: sobra VRAM para %zu vagas por camada, precisa de %d\n", S, K); return 0; }
+    int32_t e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0, e6 = 0, e7 = 0;
+    gx.sg = xalloc(NL, sizeof(clh)); gx.sd = xalloc(NL, sizeof(clh));
+    for (int l = 0; l < NL && !e1 && !e2; l++) {
+        if (!m->layers[l].eg) continue;
+        gx.sg[l] = cl.CreateBuffer(gpu.ctx, 4, S * gx.bg[l], NULL, &e1);
+        if (!e1) gx.sd[l] = cl.CreateBuffer(gpu.ctx, 4, S * gx.bd[l], NULL, &e2);
+    }
+    gx.bh = cl.CreateBuffer(gpu.ctx, 1, (size_t)K * (H + 128) * 4, NULL, &e3);
+    gx.bt = cl.CreateBuffer(gpu.ctx, 1, (size_t)K * (d + 128) * 4, NULL, &e4);
+    gx.bmeta = cl.CreateBuffer(gpu.ctx, 1, (size_t)K * 8 * 4, NULL, &e5);
+    gx.bsh = cl.CreateBuffer(gpu.ctx, 1, (Hs + 128) * 4, NULL, &e6);
+    gx.bso = cl.CreateBuffer(gpu.ctx, 1, (d + 128) * 4, NULL, &e7);
+    if (!e1 && !e2 && !getenv("KATANA_NOTOUCH")) {     /* reserva a memoria agora, fora do primeiro token */
+        const uint32_t zero = 0;
+        for (int l = 0; l < NL; l++) if (gx.sg[l]) {
+            cl.EnqueueFillBuffer(gpu.queue, gx.sg[l], &zero, 4, 0, S * gx.bg[l], 0, NULL, NULL);
+            cl.EnqueueFillBuffer(gpu.queue, gx.sd[l], &zero, 4, 0, S * gx.bd[l], 0, NULL, NULL);
+        }
+        e1 = cl.Finish(gpu.queue);
+    }
+    if (e1 || e2 || e3 || e4 || e5 || e6 || e7) {
+        clh *all[5] = { &gx.bh, &gx.bt, &gx.bmeta, &gx.bsh, &gx.bso };
+        for (int l = 0; l < NL; l++) {
+            if (gx.sg[l]) cl.ReleaseMemObject(gx.sg[l]);
+            if (gx.sd[l]) cl.ReleaseMemObject(gx.sd[l]);
+        }
+        for (int i = 0; i < 5; i++) { if (*all[i]) cl.ReleaseMemObject(*all[i]); *all[i] = NULL; }
+        free(gx.sg); free(gx.sd); gx.sg = gx.sd = NULL;
+        fprintf(stderr, "GPU: sem memoria para o cache de especialistas\n");
+        return 0;
+    }
+    gpu.used += S * per + work;
+    gx.S = (int)S;
+    gx.meta = xalloc((size_t)K * 8, sizeof(uint32_t)); gx.w = xalloc(K, sizeof(float)); gx.rowi = xalloc(K, sizeof(uint32_t));
+    gx.xn = xalloc(d, sizeof(float)); gx.hout = xalloc((size_t)K * d, sizeof(float));
+    moe_tables(m, S, per);
+    return 1;
 }
 
 /* buffer de leitura/escrita na VRAM; NULL se nao couber */
@@ -3562,7 +3650,9 @@ static int gpu_setup_bufs(Model *m) {
     int fail = 0;
     const size_t qd = (size_t)c->n_heads * c->hd, dq = qd > d ? qd : d;
     gpu.bx = gbuf_rw(d * B * 4);    gpu.bxb = gbuf_rw(dq * B * 4);  gpu.bq = gbuf_rw(dq * B * 4);
-    gpu.bk = gbuf_rw(kvd * B * 4);  gpu.bv = gbuf_rw(kvd * B * 4);  gpu.bhb = gbuf_rw(H * B * 4);
+    size_t Hm = (size_t)c->hidden_dense > H ? (size_t)c->hidden_dense : H;
+    if ((size_t)c->n_shared * H > Hm) Hm = (size_t)c->n_shared * H;
+    gpu.bk = gbuf_rw(kvd * B * 4);  gpu.bv = gbuf_rw(kvd * B * 4);  gpu.bhb = gbuf_rw(Hm * B * 4);
     gpu.blog = gbuf_rw(V * 4);      gpu.batt = gbuf_rw(B * c->n_heads * ctx * 4);
     if (!gpu.bx || !gpu.bxb || !gpu.bq || !gpu.bk || !gpu.bv || !gpu.bhb || !gpu.blog || !gpu.batt) return 0;
     gpu.bfreq = gbuf_f(m->rope_freq, c->hd / 2, &fail);
@@ -3632,11 +3722,13 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
         if (getenv("KATANA_EXPERT_MB")) { const size_t lim = (size_t)atoll(getenv("KATANA_EXPERT_MB")) << 20; if (lim < budget) budget = lim; }
         /* cada camada tem vagas do tamanho dos seus especialistas (a quantizacao varia por camada) */
         gx.bg = xalloc(NL, sizeof(size_t)); gx.bd = xalloc(NL, sizeof(size_t));
-        int ok = all_layers && c->n_used <= 16;
+        int ok = all_layers && c->n_used <= MOE_KMAX;
         size_t per = 0;
         for (int l = 0; l < NL; l++) {
             const Layer *L = &m->layers[l];
+            if (!L->eg) continue;       /* camada densa inicial: feed-forward normal, ja na VRAM */
             if (!glu_pair(&L->w_gate, &L->w_up)) ok = 0;
+            if (L->shexp_gate) { ok = 0; fprintf(stderr, "GPU: portao do compartilhado ainda nao suportado no grafo completo\n"); }
             gx.bg[l] = 2 * gpu_mat_bytes(&L->w_gate, H, d); gx.bd[l] = gpu_mat_bytes(&L->w_down, d, H);
             per += gx.bg[l] + gx.bd[l];
         }
@@ -3650,6 +3742,7 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
             gx.S = (int)S;
             gx.sg = xalloc(NL, sizeof(clh)); gx.sd = xalloc(NL, sizeof(clh));
             for (int l = 0; l < NL; l++) {
+                if (!m->layers[l].eg) continue;
                 gx.sg[l] = cl.CreateBuffer(gpu.ctx, 4, S * gx.bg[l], NULL, &e1);
                 gx.sd[l] = cl.CreateBuffer(gpu.ctx, 4, S * gx.bd[l], NULL, &e2);
                 if (e1 || e2) break;
@@ -3659,7 +3752,7 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
                    esse custo do caminho do primeiro token */
                 const double tt = now_sec();
                 const uint32_t zero = 0;
-                for (int l = 0; l < NL; l++) {
+                for (int l = 0; l < NL; l++) if (gx.sg[l]) {
                     cl.EnqueueFillBuffer(gpu.queue, gx.sg[l], &zero, 4, 0, S * gx.bg[l], 0, NULL, NULL);
                     cl.EnqueueFillBuffer(gpu.queue, gx.sd[l], &zero, 4, 0, S * gx.bd[l], 0, NULL, NULL);
                 }
@@ -3722,11 +3815,7 @@ static void gpu_setup(Model *m) {
     gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : gpu.cfg_seg;
     gpu.bsx = cl.CreateBuffer(gpu.ctx, 1, (maxc / 32 + 1) * GPU_BMAX * sizeof(float), NULL, &e4);
     if (!e1 && !e2 && !e4 && (c->mla || c->ssm_inner)) {
-        mla_gpu_upload(m);
-        if (c->ssm_inner && c->n_expert && !getenv("KATANA_NOGX")) {   /* especialistas: cache de vagas, como no qwen3moe */
-            gpu.bx = gbuf_rw(d * 4); gpu.bxb = gbuf_rw(d * 4);
-            if (gpu.bx && gpu.bxb && !gx_setup(m, gpu_budget(), 1)) gx.on = 0;
-        }
+        mla_gpu_upload(m);     /* inclui o cache de especialistas do modo hibrido (host_moe_setup) */
         cl.Finish(gpu.queue);
         return;
     }
@@ -3745,20 +3834,33 @@ static void gpu_setup(Model *m) {
     if (gpu.kv16 && getenv("KATANA_HEAD_GPU")) gpu_upload(&m->lm_head, V, d, "head");
     for (int l = 0; l < max_layers; l++) {
         Layer *L = &m->layers[l];
-        const size_t ffn = gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d) + gpu_mat_bytes(&L->w_down, d, H);
+        const size_t Hl = c->n_expert && !L->eg ? (size_t)c->hidden_dense : H;
+        const size_t ffn = gpu_mat_bytes(&L->w_gate, Hl, d) + gpu_mat_bytes(&L->w_up, Hl, d) + gpu_mat_bytes(&L->w_down, d, Hl);
         /* MoE: a camada so reserva os especialistas de um token; o resto e cache */
         const size_t need = gpu_mat_bytes(&L->wq, qd, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
-                          + gpu_mat_bytes(&L->wo, d, qd) + (c->n_expert ? 0 : ffn) + kv_layer;
+                          + gpu_mat_bytes(&L->wo, d, qd) + (L->eg ? 0 : ffn) + kv_layer;
         if (gpu.used + need > vram_budget || (size_t)(l + 1) * ctx * kvd > 0x7fffffff) break;
         char nm[32];
         snprintf(nm, sizeof nm, "L%03d.wq", l);   gpu_upload(&L->wq, qd, d, nm);
         snprintf(nm, sizeof nm, "L%03d.wk", l);   gpu_upload(&L->wk, kvd, d, nm);
         snprintf(nm, sizeof nm, "L%03d.wv", l);   gpu_upload(&L->wv, kvd, d, nm);
         snprintf(nm, sizeof nm, "L%03d.wo", l);   gpu_upload(&L->wo, d, qd, nm);
-        if (!c->n_expert) {
-            gpu_upload_glu(&L->w_gate, &L->w_up, H, d, l);
-            snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, H, nm);
+        if (!L->eg) {
+            gpu_upload_glu(&L->w_gate, &L->w_up, Hl, d, l);
+            snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, Hl, nm);
             if (!L->w_gate.gbuf || !L->w_up.gbuf || !L->w_down.gbuf) break;
+        } else if (L->sg.q || L->sg.f) {     /* especialista compartilhado: denso, inteiro na VRAM, fora das vagas */
+            const size_t Hs = (size_t)c->n_shared * H;
+            if (glu_pair(&L->sg, &L->su)) {
+                Mat *ms[2] = { &L->sg, &L->su };
+                snprintf(nm, sizeof nm, "L%03d.sglu", l); gpu_upload_n(ms, 2, Hs, d, nm);
+                L->sg.pair = L->sg.gbuf != NULL;
+            } else {
+                snprintf(nm, sizeof nm, "L%03d.sgate", l); gpu_upload(&L->sg, Hs, d, nm);
+                snprintf(nm, sizeof nm, "L%03d.sup", l);   gpu_upload(&L->su, Hs, d, nm);
+            }
+            snprintf(nm, sizeof nm, "L%03d.sdown", l); gpu_upload(&L->sd, d, Hs, nm);
+            if (!L->sg.gbuf || !L->su.gbuf || !L->sd.gbuf) break;
         }
         if (!L->wq.gbuf || !L->wk.gbuf || !L->wv.gbuf || !L->wo.gbuf) break;
         if (c->qk_norm) { gx.qn[l] = gbuf_f(L->q_norm, c->qk_norm == 1 ? d : (size_t)c->hd, &fail); gx.kn[l] = gbuf_f(L->k_norm, c->qk_norm == 1 ? kvd : (size_t)c->hd, &fail); }
@@ -4014,26 +4116,50 @@ static void cpu_layers(Model *m, int l0, int l1, int pos);
 static float *cpu_head(Model *m);
 
 /* MoE: contagem de uso de cada especialista [camada][especialista] e os escolhidos do ultimo token */
-static struct { uint32_t *cnt; uint64_t tokens; float lg[1024]; int sel[64]; float w[64]; uint16_t *trace; int ti; } moe;
+static struct { uint32_t *cnt; uint64_t tokens; float *lg, *ch; int sel[MOE_KMAX]; float w[MOE_KMAX]; uint16_t *trace; int ti; } moe;
 
 /* MoE: o roteador pontua todos os especialistas sobre xb (entrada normalizada do feed-forward);
-   so os n_used melhores rodam, cada um pesado pela sua probabilidade (softmax sobre todos).
+   so os n_used melhores rodam. Softmax sobre todos, ou sigmoide com vies so na escolha
+   (exp_probs_b); pesos opcionalmente normalizados e escalados por exp_scale.
    Preenche moe.sel e moe.w. */
 static void moe_route(Model *m, const Layer *L, int l) {
     const Config *c = &m->cfg;
     const int E = c->n_expert, K = c->n_used;
-    matvec(moe.lg, &L->router, m->xb, E, c->dim);
-    softmax(moe.lg, E);
+    if (!moe.lg) {
+        if (K > MOE_KMAX) die("MoE: especialistas ativos demais por token");
+        moe.lg = xalloc(E, sizeof(float)); moe.ch = xalloc(E, sizeof(float));
+    }
+    float *pr = moe.lg, *ch = moe.ch;
+    matvec(pr, &L->router, m->xb, E, c->dim);
+    if (c->gate_sig) for (int e = 0; e < E; e++) { pr[e] = 1.0f / (1.0f + expf(-pr[e])); ch[e] = pr[e] + (L->exp_bias ? L->exp_bias[e] : 0.0f); }
+    else { softmax(pr, E); memcpy(ch, pr, (size_t)E * sizeof(float)); }
     float wsum = 0.0f;
     for (int k = 0; k < K; k++) {
         int best = 0;
-        for (int e = 1; e < E; e++) if (moe.lg[e] > moe.lg[best]) best = e;
-        moe.sel[k] = best; moe.w[k] = moe.lg[best]; wsum += moe.lg[best];
-        moe.lg[best] = -1.0f;
+        for (int e = 1; e < E; e++) if (ch[e] > ch[best]) best = e;
+        moe.sel[k] = best; moe.w[k] = pr[best]; wsum += pr[best];
+        ch[best] = -INFINITY;
     }
-    if (c->moe_norm) for (int k = 0; k < K; k++) moe.w[k] /= (wsum > 6.103515625e-5f ? wsum : 6.103515625e-5f);
-    if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == 0) moe.tokens++; }
+    const float eps = c->mla ? 1e-20f : 6.103515625e-5f;
+    if (c->moe_norm) for (int k = 0; k < K; k++) moe.w[k] /= (wsum > eps ? wsum : eps);
+    if (c->exp_scale != 1.0f) for (int k = 0; k < K; k++) moe.w[k] *= c->exp_scale;
+    if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
     if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
+}
+
+/* especialista compartilhado na CPU: m->xb2 = down(silu(gate xb) * up xb); devolve o peso com que entra
+   (1, ou o portao sigmoide escalar quando o modelo tem ffn_gate_inp_shexp) */
+static float shexp_gate_w(const Model *m, const Layer *L) {
+    if (!L->shexp_gate) return 1.0f;
+    return 1.0f / (1.0f + expf(-dot(L->shexp_gate, m->xb, m->cfg.dim)));
+}
+static void shexp_cpu(Model *m, const Layer *L) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, Hs = c->n_shared * c->hidden;
+    matvec(m->hb, &L->sg, m->xb, Hs, d);
+    matvec(m->hb2, &L->su, m->xb, Hs, d);
+    for (int i = 0; i < Hs; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
+    matvec(m->xb2, &L->sd, m->hb, d, Hs);
 }
 
 /* n pares (entrada, especialista) da camada na CPU: o j-esimo usa a entrada xs[xi[j]*d ..] e o
@@ -4141,6 +4267,7 @@ static void expert_load(Model *m, int l, int e, int v) {
         if (own[v] >= 0) { gx.slot[(size_t)l * c->n_expert + own[v]].slot = -1; gx.evict++; }
         own[v] = e; sl->slot = v;
         exp_write(l, v, gx.stage, gx.stage + gx.bg[l]);
+        if (!gpu.vk) gerr |= cl.Finish(gpu.queue);     /* gx.stage e reusado na proxima carga */
         gx.t_up += now_sec() - t0; gx.loads++;
         return;
     }
@@ -4324,6 +4451,9 @@ static void moe_tables(Model *m, size_t S, size_t per) {
     const Config *c = &m->cfg;
     const int E = c->n_expert, NL = c->n_layers;
     const size_t d = c->dim;
+    int n_moe = 0;
+    for (int l = 0; l < NL; l++) n_moe += m->layers[l].eg != NULL;
+    gx.m = m;
     gx.slot = xalloc((size_t)NL * E, sizeof(ExpSlot));
     for (size_t i = 0; i < (size_t)NL * E; i++) gx.slot[i].slot = -1;
     gx.owner = xalloc((size_t)NL * S, sizeof(int)); gx.stamp = xalloc((size_t)NL * S, sizeof(uint64_t));
@@ -4339,6 +4469,7 @@ static void moe_tables(Model *m, size_t S, size_t per) {
             char nm[32], fn[1100];
             const size_t want = (size_t)E * (gx.bg[l] + gx.bd[l]);
             int found = 0;
+            if (!m->layers[l].eg) continue;
             snprintf(nm, sizeof nm, "L%03d.exps", l);
             for (int i = 0; i < shards.n; i++) if (strcmp(shards.e[i].name, nm) == 0 && shards.e[i].bytes == want) found = 1;
             if (!found) continue;
@@ -4350,7 +4481,7 @@ static void moe_tables(Model *m, size_t S, size_t per) {
             n_pk++;
         }
         if (n_pk) { gx.stage = xalloc(maxper, 1); memset(gx.stage, 1, maxper); }
-        if (n_pk != NL) { for (int l = 0; l < NL; l++) if (gx.pf[l]) { fclose(gx.pf[l]); gx.pf[l] = NULL; } }
+        if (n_pk != n_moe) { for (int l = 0; l < NL; l++) if (gx.pf[l]) { fclose(gx.pf[l]); gx.pf[l] = NULL; } }
         if (n_pk) fprintf(stderr, "GPU: especialistas de %d camadas direto dos shards em %s\n", n_pk, shards.dir);
     }
     if (gx.cpu_cold && !getenv("KATANA_NOLOADER")) {
@@ -4377,6 +4508,7 @@ static int vk_moe_init(Model *m) {
     const size_t d = c->dim, H = c->hidden;
     const int NL = c->n_layers, E = c->n_expert, K = c->n_used;
     if (K > 16) { fprintf(stderr, "Vulkan: MoE com %d especialistas por token nao suportado\n", K); return 0; }
+    if (c->n_dense || c->n_shared || c->gate_sig) { fprintf(stderr, "Vulkan: MoE com camadas densas, compartilhado ou roteador sigmoide ainda nao suportado\n"); return 0; }
     gx.bg = xalloc(NL, sizeof(size_t)); gx.bd = xalloc(NL, sizeof(size_t));
     size_t per = 0;
     for (int l = 0; l < NL; l++) {
@@ -4487,6 +4619,42 @@ static float *vk_forward_moe(Model *m, int want_logits) {
     return m->logits;
 }
 
+/* gate/up e down das R faixas (vaga, token) descritas em gx.bmeta, sobre a entrada xin; saidas nas linhas 0..R-1 de gx.bt */
+static void gx_run(const Layer *L, int l, int R, clh xin) {
+    const Config *c = &gx.m->cfg;
+    const KSet *k1 = &gpu.set[gpu.n_sets - 1];
+    const int d = c->dim, H = c->hidden;
+    const size_t rpH = ((size_t)H + 127) & ~(size_t)127, rpd = ((size_t)d + 127) & ~(size_t)127;
+    {   /* gate e up das R faixas: bh[r*H + i] = silu(gate) * up */
+        const uint32_t kind = gpu_kind(&L->eg[0]);
+        clh k = kind == T_F32 ? k1->kp_f32 : kind == T_Q4_K ? k1->kp_q4k : kind == T_Q5_K ? k1->kp_q5k : kind == T_Q6_K ? k1->kp_q6k : k1->kp_q8;
+        const size_t tp = rpH / k1->nr, threads = tp * R;
+        const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? d / 32 : d / 256;
+        const int nseg = gpu_nseg(threads, nb, k1->nr * 2);
+        ka_m(k, 0, gx.sg[l]); ka_m(k, 1, xin); ka_m(k, 2, gx.bh);
+        ka_m(k, 3, xin); ka_m(k, 4, gpu.bsx ? gpu.bsx : xin);
+        ka_i(k, 5, d); ka_i(k, 6, 8); ka_i(k, 7, H); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
+        ka_m(k, 11, gx.bmeta); ka_i(k, 12, (int)tp); ka_i(k, 13, d); ka_i(k, 14, H); ka_i(k, 15, 0);
+        prof_elems = 2.0 * H * d * R;
+        krun2(k, threads, (size_t)nseg);
+        ka_i(k, 12, 0);
+    }
+    {   /* down das R faixas: bt[(b*K + j)*d + i] */
+        const uint32_t kind = gpu_kind(&L->ed[0]);
+        clh k = kind == T_F32 ? k1->k_f32 : kind == T_Q4_K ? k1->k_q4k : kind == T_Q5_K ? k1->k_q5k : kind == T_Q6_K ? k1->k_q6k : k1->k_q8;
+        const size_t tp = rpd / k1->nr, threads = tp * R;
+        const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? H / 32 : H / 256;
+        const int nseg = gpu_nseg(threads, nb, k1->nr);
+        ka_m(k, 0, gx.sd[l]); ka_m(k, 1, gx.bh); ka_m(k, 2, gx.bt);
+        ka_m(k, 3, gx.bh); ka_m(k, 4, gpu.bsx ? gpu.bsx : gx.bh);
+        ka_i(k, 5, H); ka_i(k, 6, 0); ka_i(k, 7, d); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
+        ka_m(k, 11, gx.bmeta); ka_i(k, 12, (int)tp); ka_i(k, 13, H); ka_i(k, 14, d); ka_i(k, 15, 3);
+        prof_elems = (double)H * d * R;
+        krun2(k, threads, (size_t)nseg);
+        ka_i(k, 12, 0);
+    }
+}
+
 /* Feed-forward MoE da camada l com a atencao na GPU, para os B tokens do lote:
      x_b += soma_k w_k * down_k(silu(gate_k xb_b) * up_k xb_b)
    Cada especialista tem um "calor" (usos recentes, com decaimento). Os que estao na VRAM rodam
@@ -4513,6 +4681,15 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     }
     if (gerr) die("falha na execucao em GPU");
     if (gx.loader) loader_install(m);
+    if (L->sg.gbuf) {   /* compartilhado (denso, sempre ativo): x += down(silu(gate) * up), enquanto a CPU roteia */
+        const int Hs = c->n_shared * H;
+        g_bsum(ks, gpu.bxb, d, &L->sg, &L->su, NULL);
+        if (L->sg.pair) gmv_glu(ks, &L->sg, gpu.bxb, gpu.bhb, Hs, d);
+        else { gmv(ks, &L->sg, gpu.bxb, gpu.bhb, NULL, Hs, d, 0); gmv(ks, &L->su, gpu.bxb, gpu.bhb, NULL, Hs, d, 2); }
+        g_bsum(ks, gpu.bhb, Hs, &L->sd, NULL, NULL);
+        gmv(ks, &L->sd, gpu.bhb, gpu.bx, NULL, d, Hs, 1);
+        cl.Flush(gpu.queue);
+    }
     const uint64_t tick = ++gx.clock;
     for (int b = 0; b < B; b++) {
         memcpy(m->xb, gx.xn + (size_t)b * d, (size_t)d * sizeof(float));
@@ -4555,38 +4732,9 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     memcpy(gx.meta + 6 * R, gx.w, (size_t)B * K * sizeof(float));
     memcpy(gx.meta + 6 * R + B * K, gx.rowi, (size_t)B * K * sizeof(uint32_t));
     gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bmeta, 0, 0, ((size_t)6 * R + 2 * (size_t)B * K) * 4, gx.meta, 0, NULL, NULL);
-    const size_t rpH = ((size_t)H + 127) & ~(size_t)127, rpd = ((size_t)d + 127) & ~(size_t)127;
     if (R > 0) {
         if (B > 1) gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bxn, 0, 0, (size_t)B * d * sizeof(float), gx.xn, 0, NULL, NULL);
-        clh xin = B > 1 ? gx.bxn : gpu.bxb;
-        {   /* gate e up das R faixas: bh[r*H + i] = silu(gate) * up */
-            const uint32_t kind = gpu_kind(&L->eg[0]);
-            clh k = kind == T_F32 ? k1->kp_f32 : kind == T_Q4_K ? k1->kp_q4k : kind == T_Q5_K ? k1->kp_q5k : kind == T_Q6_K ? k1->kp_q6k : k1->kp_q8;
-            const size_t tp = rpH / k1->nr, threads = tp * R;
-            const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? d / 32 : d / 256;
-            const int nseg = gpu_nseg(threads, nb, k1->nr * 2);
-            ka_m(k, 0, gx.sg[l]); ka_m(k, 1, xin); ka_m(k, 2, gx.bh);
-            ka_m(k, 3, xin); ka_m(k, 4, gpu.bsx ? gpu.bsx : xin);
-            ka_i(k, 5, d); ka_i(k, 6, 8); ka_i(k, 7, H); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
-            ka_m(k, 11, gx.bmeta); ka_i(k, 12, (int)tp); ka_i(k, 13, d); ka_i(k, 14, H); ka_i(k, 15, 0);
-            prof_elems = 2.0 * H * d * R;
-            krun2(k, threads, (size_t)nseg);
-            ka_i(k, 12, 0);
-        }
-        {   /* down das R faixas: bt[(b*K + j)*d + i] */
-            const uint32_t kind = gpu_kind(&L->ed[0]);
-            clh k = kind == T_F32 ? k1->k_f32 : kind == T_Q4_K ? k1->k_q4k : kind == T_Q5_K ? k1->k_q5k : kind == T_Q6_K ? k1->k_q6k : k1->k_q8;
-            const size_t tp = rpd / k1->nr, threads = tp * R;
-            const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? H / 32 : H / 256;
-            const int nseg = gpu_nseg(threads, nb, k1->nr);
-            ka_m(k, 0, gx.sd[l]); ka_m(k, 1, gx.bh); ka_m(k, 2, gx.bt);
-            ka_m(k, 3, gx.bh); ka_m(k, 4, gpu.bsx ? gpu.bsx : gx.bh);
-            ka_i(k, 5, H); ka_i(k, 6, 0); ka_i(k, 7, d); ka_i(k, 8, nseg); ka_i(k, 9, 1); ka_i(k, 10, 0);
-            ka_m(k, 11, gx.bmeta); ka_i(k, 12, (int)tp); ka_i(k, 13, H); ka_i(k, 14, d); ka_i(k, 15, 3);
-            prof_elems = (double)H * d * R;
-            krun2(k, threads, (size_t)nseg);
-            ka_i(k, 12, 0);
-        }
+        gx_run(L, l, R, B > 1 ? gx.bxn : gpu.bxb);
     }
     if (n_cpu > 0) {    /* os frios, na CPU, enquanto a GPU trabalha */
         const double t0 = now_sec();
@@ -4599,6 +4747,90 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     clh k = ks->k_moe_sum;
     ka_m(k, 0, gpu.bx); ka_m(k, 1, gx.bt); ka_m(k, 2, gx.bmeta); ka_i(k, 3, 6 * R); ka_i(k, 4, K); ka_i(k, 5, d); ka_i(k, 6, B);
     krun(k, (size_t)d * B);
+}
+
+/* Feed-forward MoE da camada l com as camadas na CPU (modo hibrido: MLA e DeltaNet), um token, entrada em m->xb.
+   A entrada sobe uma vez; o compartilhado (inteiro na VRAM) e os especialistas quentes rodam na GPU enquanto
+   a CPU roteia e roda os frios; as saidas descem numa leitura e a soma pesada (com o portao do compartilhado,
+   se houver) e acumulada em out.
+   Mesmo calor, vagas e thread carregadora do grafo completo. */
+static void host_moe_ffn(Model *m, const Layer *L, int l, float *out) {
+    const Config *c = &m->cfg;
+    const KSet *k1 = &gpu.set[gpu.n_sets - 1];
+    const int d = c->dim, K = c->n_used, E = c->n_expert, Hs = c->n_shared * c->hidden;
+    static const int zero[MOE_KMAX];
+    int cpu_e[MOE_KMAX], cpu_j[MOE_KMAX], hit_j[MOE_KMAX], n_cpu = 0, R = 0;
+    float *heat = gx.heat + (size_t)l * E;
+    int *own = gx.owner + (size_t)l * gx.S;
+    uint64_t *st = gx.stamp + (size_t)l * gx.S;
+    const int has_sh = L->sg.q || L->sg.f;
+    const int sh_gpu = has_sh && L->sg.gbuf && L->su.gbuf && L->sd.gbuf && gx.bsh;
+    gerr |= cl.Finish(gpu.queue);       /* fila vazia: as vagas podem ser reescritas */
+    if (gx.loader) loader_install(m);
+    gerr |= cl.EnqueueWriteBuffer(gpu.queue, gpu.xbuf, 0, 0, (size_t)d * sizeof(float), m->xb, 0, NULL, NULL);
+    if (sh_gpu) {
+        if (L->sg.pair) gmv_glu(k1, &L->sg, gpu.xbuf, gx.bsh, Hs, d);
+        else { gmv(k1, &L->sg, gpu.xbuf, gx.bsh, NULL, Hs, d, 0); gmv(k1, &L->su, gpu.xbuf, gx.bsh, NULL, Hs, d, 2); }
+        gmv(k1, &L->sd, gx.bsh, gx.bso, NULL, d, Hs, 0);
+        cl.Flush(gpu.queue);
+    }
+    const uint64_t tick = ++gx.clock;
+    moe_route(m, L, l);
+    for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+    for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
+    for (int j = 0; j < K; j++) {
+        const int e = moe.sel[j];
+        int v = gx.slot[(size_t)l * E + e].slot;
+        if (v >= 0) gx.hits++;
+        else {
+            gx.miss++;
+            int cand = -1;      /* vaga livre, ou o residente mais frio que nao e deste token */
+            for (int i = 0; i < gx.S; i++) {
+                if (own[i] < 0) { cand = i; break; }
+                if (st[i] == tick) continue;
+                if (cand < 0 || heat[own[i]] < heat[own[cand]]) cand = i;
+            }
+            if (gx.loader) {
+                if (cand >= 0 && (own[cand] < 0 || heat[e] > heat[own[cand]] + gx.swap_margin)) loader_request(l, e, E);
+            } else if (cand >= 0 && (own[cand] < 0 || !gx.cpu_cold || heat[e] > heat[own[cand]] + 0.5f)) {
+                expert_load(m, l, e, cand); v = cand;
+            }
+        }
+        if (v >= 0) {
+            uint32_t *t = gx.meta + 6 * R;
+            st[v] = tick;
+            t[0] = (uint32_t)((size_t)v * (gx.bg[l] / 4 / 32)); t[1] = 0; t[2] = (uint32_t)R;
+            t[3] = (uint32_t)((size_t)v * (gx.bd[l] / 4 / 32)); t[4] = (uint32_t)R; t[5] = (uint32_t)R;
+            hit_j[R++] = j;
+        } else { cpu_e[n_cpu] = e; cpu_j[n_cpu++] = j; }
+    }
+    if (R > 0) {
+        gerr |= cl.EnqueueWriteBuffer(gpu.queue, gx.bmeta, 0, 0, (size_t)6 * R * 4, gx.meta, 0, NULL, NULL);
+        gx_run(L, l, R, gpu.xbuf);
+        cl.Flush(gpu.queue);
+    }
+    if (n_cpu > 0) {    /* os frios, na CPU, enquanto a GPU trabalha */
+        const double t0 = now_sec();
+        moe_cpu_multi(m, L, cpu_e, zero, n_cpu, 1, m->xb, gx.cpu_out);
+        gx.cpu_runs += n_cpu;
+        gx.t_cpu += now_sec() - t0;
+    }
+    if (sh_gpu) gerr |= cl.EnqueueReadBuffer(gpu.queue, gx.bso, R == 0, 0, (size_t)d * sizeof(float), m->xb2, 0, NULL, NULL);
+    if (R > 0) gerr |= gread(gx.bt, (size_t)R * d * sizeof(float), gx.hout);
+    if (gerr) die("falha na execucao em GPU");
+    for (int i = 0; i < R; i++) {
+        const float w = moe.w[hit_j[i]], *o = gx.hout + (size_t)i * d;
+        for (int k = 0; k < d; k++) out[k] += w * o[k];
+    }
+    for (int i = 0; i < n_cpu; i++) {
+        const float w = moe.w[cpu_j[i]], *o = gx.cpu_out + (size_t)i * d;
+        for (int k = 0; k < d; k++) out[k] += w * o[k];
+    }
+    if (has_sh) {
+        const float gw = shexp_gate_w(m, L);
+        if (!sh_gpu) shexp_cpu(m, L);
+        for (int k = 0; k < d; k++) out[k] += gw * m->xb2[k];
+    }
 }
 
 /* processa ks->nb tokens de uma vez (posicoes pos0, pos0+1, ...); devolve os logits do ultimo */
@@ -4696,18 +4928,19 @@ static float *gpu_forward_n(Model *m, const KSet *ks, const int *toks, int pos0,
 
         /* --- feed-forward SwiGLU --- */
         g_rms(ks, gpu.bx, gpu.fn[l], gpu.bxb, d, c->eps);
-        if (c->n_expert) {
+        if (L->eg) {
             gpu_moe_ffn(m, ks, L, l);
             continue;
         }
+        const int Hl = c->n_expert ? c->hidden_dense : H;      /* camada densa inicial de um MoE: largura propria */
         g_bsum(ks, gpu.bxb, d, &L->w_gate, &L->w_up, NULL);
-        if (L->w_gate.pair) gmv_glu(ks, &L->w_gate, gpu.bxb, gpu.bhb, H, d);    /* hb = silu(gate) * up */
+        if (L->w_gate.pair) gmv_glu(ks, &L->w_gate, gpu.bxb, gpu.bhb, Hl, d);    /* hb = silu(gate) * up */
         else {
-            gmv(ks, &L->w_gate, gpu.bxb, gpu.bhb, NULL, H, d, 0);        /* hb = gate */
-            gmv(ks, &L->w_up, gpu.bxb, gpu.bhb, NULL, H, d, 2);          /* hb = silu(hb) * up */
+            gmv(ks, &L->w_gate, gpu.bxb, gpu.bhb, NULL, Hl, d, 0);        /* hb = gate */
+            gmv(ks, &L->w_up, gpu.bxb, gpu.bhb, NULL, Hl, d, 2);          /* hb = silu(hb) * up */
         }
-        g_bsum(ks, gpu.bhb, H, &L->w_down, NULL, NULL);
-        gmv(ks, &L->w_down, gpu.bhb, gpu.bx, NULL, d, H, 1);             /* x += down */
+        g_bsum(ks, gpu.bhb, Hl, &L->w_down, NULL, NULL);
+        gmv(ks, &L->w_down, gpu.bhb, gpu.bx, NULL, d, Hl, 1);             /* x += down */
         { static int fl = -1; if (fl < 0) fl = getenv("KATANA_FLUSH") ? atoi(getenv("KATANA_FLUSH")) : 0; if (fl > 0 && l % fl == fl - 1) cl.Flush(gpu.queue); }
     }
 
@@ -4816,30 +5049,6 @@ static void layer_prefetch(const Model *m, int l) {
    neuronio do feed-forward e, com mascara, zera os que ficaram fora do conjunto quente */
 static struct { int collect; float *sum; uint8_t *mask; double mass_all, mass_kept; int oracle_keep; float *tmp; } sp;
 static int cmp_float_desc(const void *a, const void *b);
-
-/* MoE do deepseek2: softmax (V2) ou sigmoide com vies so na escolha (V3/Kimi); pesos opcionalmente
-   normalizados e sempre escalados por exp_scale. Preenche moe.sel e moe.w. */
-static void ds_route(Model *m, const Layer *L, int l) {
-    const Config *c = &m->cfg;
-    const int E = c->n_expert, K = c->n_used;
-    float pr[1024], ch[1024];
-    matvec(moe.lg, &L->router, m->xb, E, c->dim);
-    if (c->gate_sig) for (int e = 0; e < E; e++) { pr[e] = 1.0f / (1.0f + expf(-moe.lg[e])); ch[e] = pr[e] + (L->exp_bias ? L->exp_bias[e] : 0.0f); }
-    else { softmax(moe.lg, E); for (int e = 0; e < E; e++) pr[e] = ch[e] = moe.lg[e]; }
-    float wsum = 0.0f;
-    for (int k = 0; k < K; k++) {
-        int best = 0;
-        for (int e = 1; e < E; e++) if (ch[e] > ch[best]) best = e;
-        moe.sel[k] = best; moe.w[k] = pr[best]; wsum += pr[best];
-        ch[best] = -INFINITY;
-    }
-    for (int k = 0; k < K; k++) {
-        if (c->moe_norm) moe.w[k] /= (wsum > 1e-20f ? wsum : 1e-20f);
-        moe.w[k] *= c->exp_scale;
-    }
-    if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
-    if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
-}
 
 /* MLA por cabeca, na forma absorvida: q_nope passa por k_b (vira vetor no espaco latente), a
    pontuacao e q_lat . c_kv + q_rope . k_rope, a media ponderada fica no latente e so no fim passa
@@ -5041,27 +5250,18 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
     }
 }
 
-/* especialistas roteados pelo cache de vagas da VRAM (mesmo caminho do grafo do qwen3moe), a partir
-   da entrada m->xb no host; out recebe a soma pesada dos especialistas */
-static void gpu_moe_host(Model *m, const Layer *L, int l, float *out) {
-    const int d = m->cfg.dim;
-    static float *zero;
-    if (!zero) zero = xalloc(d, sizeof(float));
-    gerr |= cl.EnqueueWriteBuffer(gpu.queue, gpu.bxb, 0, 0, (size_t)d * sizeof(float), m->xb, 0, NULL, NULL);
-    gerr |= cl.EnqueueWriteBuffer(gpu.queue, gpu.bx, 0, 0, (size_t)d * sizeof(float), zero, 0, NULL, NULL);
-    gpu_moe_ffn(m, &gpu.set[gpu.n_sets - 1], L, l);
-    gerr |= gread(gpu.bx, (size_t)d * sizeof(float), out);
-    if (gerr) die("falha na execucao em GPU (MoE)");
-}
-
 /* feed-forward MoE de um token sobre m->xb (ja normalizado): out = roteados + portao * compartilhado */
 static void ffn_moe(Model *m, const Layer *L, int l, float *out) {
     const Config *c = &m->cfg;
     const int d = c->dim, K = c->n_used, Hs = c->n_shared * c->hidden;
     static float *outs;
     if (!outs) outs = xalloc((size_t)K * d, sizeof(float));
-    if (gx.on && gpu.mv_host && !gpu.force_cpu) gpu_moe_host(m, L, l, out);
-    else {
+    if (gx.on && gpu.mv_host && !gpu.force_cpu && gx.sg && gx.sg[l]) {
+        memset(out, 0, d * sizeof(float));
+        host_moe_ffn(m, L, l, out);
+        return;
+    }
+    {
         moe_route(m, L, l);
         moe_cpu_experts(m, L, moe.sel, K, outs);
         memset(out, 0, d * sizeof(float));
@@ -5075,7 +5275,7 @@ static void ffn_moe(Model *m, const Layer *L, int l, float *out) {
         matvec(m->hb2, &L->su, m->xb, Hs, d);
         for (int i = 0; i < Hs; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
         matvec(m->xb2, &L->sd, m->hb, d, Hs);
-        const float sw = L->shexp_inp ? 1.0f / (1.0f + expf(-dot(L->shexp_inp, m->xb, d))) : 1.0f;
+        const float sw = shexp_gate_w(m, L);
         for (int i = 0; i < d; i++) out[i] += sw * m->xb2[i];
     }
 }
@@ -5188,7 +5388,8 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
             /* MoE: o roteador pontua todos os especialistas; so os n_used melhores rodam,
                cada um pesado pela sua probabilidade (softmax sobre todos) */
             const int K = c->n_used;
-            if (c->mla) ds_route(m, L, l); else moe_route(m, L, l);
+            if (gx.on && gpu.mv_host && !gpu.force_cpu && gx.sg && gx.sg[l]) { host_moe_ffn(m, L, l, m->x); continue; }
+            moe_route(m, L, l);
             static float *outs;
             if (!outs) outs = xalloc((size_t)K * d, sizeof(float));
             moe_cpu_experts(m, L, moe.sel, K, outs);
@@ -5197,13 +5398,10 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
                 const float *o = outs + (size_t)k * d;
                 for (int i = 0; i < d; i++) m->x[i] += w * o[i];
             }
-            if (L->sg.q || L->sg.f) {   /* compartilhados: sempre entram, peso 1 */
-                const int Hs = c->n_shared * H;
-                matvec(m->hb, &L->sg, m->xb, Hs, d);
-                matvec(m->hb2, &L->su, m->xb, Hs, d);
-                for (int i = 0; i < Hs; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
-                matvec(m->xb2, &L->sd, m->hb, d, Hs);
-                for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+            if (L->sg.q || L->sg.f) {   /* compartilhados: sempre entram (peso 1 ou portao sigmoide) */
+                const float gw = shexp_gate_w(m, L);
+                shexp_cpu(m, L);
+                for (int i = 0; i < d; i++) m->x[i] += gw * m->xb2[i];
             }
             continue;
         }
@@ -5491,7 +5689,7 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
             matmat(X2, &L->sd, HB, xqs, &prep, B, d, Hs);
             for (int t = 0; t < B; t++) {
                 const float *xb = Xb + (size_t)t * d, *y = X2 + (size_t)t * d;
-                const float sw = L->shexp_inp ? 1.0f / (1.0f + expf(-dot(L->shexp_inp, xb, d))) : 1.0f;
+                const float sw = L->shexp_gate ? 1.0f / (1.0f + expf(-dot(L->shexp_gate, xb, d))) : 1.0f;
                 float *x = X + (size_t)t * d;
                 for (int i = 0; i < d; i++) x[i] += sw * y[i];
             }
@@ -6175,18 +6373,24 @@ static int pack(Model *m, const char *path, int64_t fsz) {
     for (int l = 0; l < c->n_layers && ok; l++) {
         Layer *L = &m->layers[l];
         Mat *one;
+        const size_t Hl = c->n_expert && !L->eg ? (size_t)c->hidden_dense : H;
+        if (c->mla) {       /* MLA: as demais matrizes sobem convertidas na carga; so os especialistas viram shard */
+            if (L->eg) { ok = ok && pack_experts(mf, m, l, &total); count++; }
+            printf("\rcamada %d de %d", l + 1, c->n_layers); fflush(stdout);
+            continue;
+        }
 #define P1(mat, rows, cols, suf) one = &L->mat; snprintf(nm, sizeof nm, "L%03d." suf, l); ok = ok && pack_one(mf, &one, 1, rows, cols, nm, &total); count++
         P1(wq, m->cfg.n_heads * m->cfg.hd, d, "wq"); P1(wk, kvd, d, "wk"); P1(wv, kvd, d, "wv"); P1(wo, d, m->cfg.n_heads * m->cfg.hd, "wo");
-        if (c->n_expert) {
+        if (L->eg) {
             if (!glu_pair(&L->w_gate, &L->w_up)) { fprintf(stderr, "MoE com gate e up em formatos diferentes: nao empacotado\n"); ok = 0; }
             ok = ok && pack_experts(mf, m, l, &total); count++;
             printf("\rcamada %d de %d", l + 1, c->n_layers); fflush(stdout);
         } else if (glu_pair(&L->w_gate, &L->w_up)) {
             Mat *two[2] = { &L->w_gate, &L->w_up };
             snprintf(nm, sizeof nm, "L%03d.glu", l);
-            ok = ok && pack_one(mf, two, 2, H, d, nm, &total); count++;
-        } else { P1(w_gate, H, d, "gate"); P1(w_up, H, d, "up"); }
-        if (!c->n_expert) { P1(w_down, d, H, "down"); }
+            ok = ok && pack_one(mf, two, 2, Hl, d, nm, &total); count++;
+        } else { P1(w_gate, Hl, d, "gate"); P1(w_up, Hl, d, "up"); }
+        if (!L->eg) { P1(w_down, d, Hl, "down"); }
 #undef P1
     }
     if (ok) { Mat *one = &m->lm_head; ok = pack_one(mf, &one, 1, c->vocab, d, "head", &total); count++; }
