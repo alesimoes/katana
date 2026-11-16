@@ -3624,6 +3624,14 @@ static int host_moe_setup(Model *m);
 static int vk_host_moe_setup(Model *m, size_t S, size_t per, size_t work);
 static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols);
 static int vk_mla_build(Model *m);
+static struct {
+    int ok, P;
+    KvkBuf *an, *fn, *dg;           /* normas por camada; par gate/up das camadas densas */
+    float *Qh, *Kh, *Q, *OT;
+    int gatt;                       /* atencao na GPU (mla_att.comp); 0 = na CPU */
+    KvkBuf qb, cb, wk, wv; KvkPipe att;
+    double t_attn, t_rd; long passes;
+} vkml;
 static void mla_gpu_upload(Model *m) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, nh = c->n_heads, W = (size_t)c->mla + c->rope_dim;
@@ -3670,6 +3678,10 @@ static void mla_gpu_upload(Model *m) {
             gpu.vk ? "Vulkan " : "", gpu.name, gpu.vram / 1073741824.0, c->mla ? "MLA" : "DeltaNet", gpu.n_up, gpu.used / 1048576.0);
     if (gpu.vk && c->mla) vk_mla_build(m);     /* prompt em lote: antes das vagas, que ficam com o resto da VRAM */
     if (c->n_expert && !host_moe_setup(m) && !gpu.vk) fprintf(stderr, "GPU: especialistas roteados na CPU\n");
+    if (vkml.ok && !vk_sg) {    /* o lote MLA usa as vagas (vk_moe_n); sem cache de especialistas (VRAM ocupada, KATANA_NOEXPCACHE) fica token a token */
+        vkml.ok = 0;
+        fprintf(stderr, "Vulkan: sem cache de especialistas: prompt MLA token a token\n");
+    }
 }
 
 /* Cache de especialistas no modo hibrido (camadas na CPU, ex.: MLA): so as camadas MoE tem vagas; as densas
@@ -5655,6 +5667,9 @@ static void vk_moe_tmp_load(Model *m, const Layer *L, int l, int e, int j) {
         die("falha ao subir especialista (Vulkan, lote)");
     free(cg); free(cd);
 }
+/* Vida util: vkbm.hst e os arquivos vkbm.pf duram o processo todo. A regiao j so e regravada pela thread da camada
+   seguinte, que comeca depois da leitura bloqueante do vk_moe_n (GPU ociosa: as copias anteriores ja terminaram);
+   a thread sempre e juntada antes do vk_moe_n voltar, e o fallback so usa o arquivo depois do join.
 /* leitura dos frios temporarios do lote numa thread: do shard direto para a area mapeada (vkbm.hst), enquanto a
    principal enfileira os quentes e roda os frios da CPU; a principal so enfileira as copias. done[j]: 1 pronto, -1 falhou */
 static struct { int l, n; size_t bg, bd; volatile long done[64]; } vk_trd;
@@ -6522,14 +6537,6 @@ static void mla_attn(Model *m, const Layer *L, int l, int pos) {
    pool); a saida sobe e o produto da saida soma no residual. Feed-forward: denso (par gate/up proprio do lote)
    ou vk_moe_n (roteador na GPU, quentes nas vagas, frios em vagas temporarias ou na CPU). Tudo em fp32 (o
    DeepSeek-V2-Lite e sensivel). KATANA_VK_MLA=0 desliga (prompt token a token). */
-static struct {
-    int ok, P;
-    KvkBuf *an, *fn, *dg;           /* normas por camada; par gate/up das camadas densas */
-    float *Qh, *Kh, *Q, *OT;
-    int gatt;                       /* atencao na GPU (mla_att.comp); 0 = na CPU */
-    KvkBuf qb, cb, wk, wv; KvkPipe att;
-    double t_attn, t_rd; long passes;
-} vkml;
 static int vk_mla_build(Model *m) {
     const Config *c = &m->cfg;
     const int NL = c->n_layers, E = c->n_expert, K = c->n_used;
