@@ -160,7 +160,7 @@ cabeças (kv 2), cabeça 128, ffn 13696.
   referência (33 tokens no prompt dos planetas; outros divergem após 5–9 por empates quase exatos,
   como no gemma4). Chat coerente e multi-turno (lembra o nome; respeita o prompt de sistema).
 
-**`glm4moe` MoE (código feito; validação pendente do download)** — GLM-4.5-Air: 47 blocos
+**`glm4moe` MoE (CPU correto, feito nesta sessão)** — GLM-4.5-Air (Q2_K): 47 blocos
 (46 transformer + 1 MTP/nextn ignorado), dim 4096, 96 cabeças (kv 8), cabeça 128, 128 especialistas
 (8 ativos, hidden 1408), 1 compartilhado, 1 camada densa inicial (hidden 10944).
 - **Pré-norm comum** (sem sanduíche): só `attn_norm` e `post_attention_norm`; esta última é a norma
@@ -172,10 +172,13 @@ cabeças (kv 2), cabeça 128, ffn 13696.
 - Mudanças: flag `c->glmoe`, `rope_neox=1`, `ffn_norm` vindo de `post_attention_norm`, RoPE parcial
   NEOX via `rhalf`, e `c->n_nextn` subtraído de `n_layers` (ignora o bloco MTP). Sem regressão nos
   outros MoE (nenhum tem `nextn_predict_layers`; selftest olmoe OK).
+- **Validação** (`KATANA_CPU=1 KATANA_CTX=512`): `selftest` produtos OK (pior exato 6.4e-8), carga
+  certa (46 camadas após ignorar o MTP, 96 cabeças/8 kv, 128 especialistas, compartilhado). Greedy
+  bate **exato** com o `llama-simple` da referência (mesmo GGUF Q2_K): "capital of France" 8 tokens,
+  "hydrogen and" 10 tokens. Velocidade ~0,6 tok/s na CPU (especialistas lidos do arquivo de 45 GB
+  com 43 GB de RAM e a GPU ocupada por outro agente; o cache de especialistas na GPU resolveria).
 
 **Pendências GLM**:
-- **glm4moe**: rodar `selftest` e comparar greedy com a referência assim que o GLM-4.5-Air-Q2_K
-  (~45 GB) terminar de baixar; medir velocidade (experts em disco com 43 GB de RAM: lento).
 - **GPU/Vulkan**: ambos ainda só na CPU (`gpu_setup` desvia glm4/glm4moe; `KATANA_GLM_GPU` força
   tentar). Denso: grafo Vulkan precisa das normas sanduíche e RoPE NORM parcial. MoE: caminho
   híbrido/cache de especialistas como o deepseek2 (roteador sigmoide já existe no Vulkan híbrido).
