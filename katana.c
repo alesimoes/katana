@@ -422,6 +422,9 @@ typedef struct {
        camada, feed-forward denso em paralelo com o MoE, normas depois de cada bloco */
     int g4;             /* arquitetura gemma4 */
     int go;             /* arquitetura gpt-oss */
+    int glm;            /* arquitetura glm4 (dense): norma sanduiche, rope parcial, qkv com vies */
+    int glmoe;          /* arquitetura glm4moe (MoE): pre-norm comum, rope NEOX parcial, qkv com vies, compartilhado */
+    int n_nextn;        /* camadas MTP/nextn no fim do modelo (ignoradas) */
     int swa_win;        /* janela das camadas locais (posicoes vistas, contando a atual) */
     int hd_swa;         /* largura de cabeca das camadas locais (hd e a das globais) */
     float rope_base_swa;
@@ -1222,6 +1225,7 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".attention.q_lora_rank")) c->q_lora = (int)v;
             else if (key_ends(k, kl, ".rope.dimension_count")) c->rope_dim = (int)v;
             else if (key_ends(k, kl, ".leading_dense_block_count")) c->n_dense = (int)v;
+            else if (key_ends(k, kl, ".nextn_predict_layers")) c->n_nextn = (int)v;
             else if (key_ends(k, kl, ".expert_shared_count")) c->n_shared = (int)v;
             else if (key_ends(k, kl, ".expert_weights_scale")) c->exp_scale = (float)v;
             else if (key_ends(k, kl, ".expert_weights_norm")) c->moe_norm = (int)v;
@@ -1257,8 +1261,11 @@ static void load_model(Model *m, const char *path) {
         if (!c->yarn_logmul) c->yarn_logmul = 0.1f;   /* mscale padrao do yarn do gpt-oss */
         if (!c->swa_win) c->swa_win = 128;
     }
+    else if (strcmp(c->arch, "glm4") == 0) { c->glm = 1; }       /* RoPE NORM (pares consecutivos), parcial */
+    else if (strcmp(c->arch, "glm4moe") == 0) { c->glmoe = 1; c->rope_neox = 1; c->moe_norm = 1; }   /* RoPE NEOX parcial; roteador sigmoide+vies, compartilhado */
     else if (strcmp(c->arch, "llama") != 0)
         fprintf(stderr, "Aviso: arquitetura '%s' nao testada (so 'llama' e 'qwen2' por enquanto)\n", c->arch);
+    if (c->n_nextn > 0 && c->n_nextn < c->n_layers) c->n_layers -= c->n_nextn;   /* camadas MTP/nextn: tensores existem mas nao sao processados */
     if (getenv("KATANA_ROPE")) c->rope_neox = atoi(getenv("KATANA_ROPE"));
     c->kq_mul = 1.0f;
     if (!c->exp_scale) c->exp_scale = 1.0f;
@@ -1296,7 +1303,8 @@ static void load_model(Model *m, const char *path) {
     if (c->add_bos < 0) c->add_bos = tk->spm;      /* SentencePiece comeca com BOS por padrao */
     tokenizer_finish(tk, merges, mlen, n_merges);
     /* formato de conversa: pelo template do proprio modelo; sem template, pelo vocabulario */
-    if (tmpl && strstr(tmpl, "<|turn>")) c->chat_fmt = 8;
+    if (tmpl && strstr(tmpl, "[gMASK]") && strstr(tmpl, "<sop>")) c->chat_fmt = 10;   /* glm4 */
+    else if (tmpl && strstr(tmpl, "<|turn>")) c->chat_fmt = 8;
     else if (tmpl && strstr(tmpl, "<|im_start|>")) c->chat_fmt = 0;
     else if (tmpl && strstr(tmpl, "<|start_header_id|>")) c->chat_fmt = 1;
     else if (tmpl && strstr(tmpl, "<|user|>")) c->chat_fmt = 2;
@@ -1452,8 +1460,7 @@ static void load_model(Model *m, const char *path) {
             M2(wv, "attn_v.weight", kvd, d);
             M2(wo, "attn_output.weight", d, qd);
         }
-        if (c->ssm_inner) { V1(ffn_norm, "post_attention_norm.weight"); }
-        else if (c->go) { V1(ffn_norm, "post_attention_norm.weight"); }
+        if (c->ssm_inner || c->glmoe || c->go) { V1(ffn_norm, "post_attention_norm.weight"); }
         else { V1(ffn_norm, "ffn_norm.weight"); }
         if (c->n_expert && l >= c->n_dense) {
             /* tensores empilhados: o especialista e ocupa a fatia e, com as linhas inteiras */
@@ -1485,6 +1492,15 @@ static void load_model(Model *m, const char *path) {
                 snprintf(nm, sizeof nm, "blk.%d.ffn_up_exps.bias", l);   L->eu_b = get_tensor(&ts, nm, E * H, 0, np);
                 snprintf(nm, sizeof nm, "blk.%d.ffn_down_exps.bias", l); L->ed_b = get_tensor(&ts, nm, E * d, 0, np);
             }
+        } else if (c->glm) {
+            V1(post_attn_norm, "post_attention_norm.weight");
+            V1(post_ffn_norm, "post_ffw_norm.weight");
+            /* gate e up fundidos em ffn_up: primeiras H linhas sao o gate, as H seguintes o up */
+            Mat gu;
+            snprintf(nm, sizeof nm, "blk.%d.ffn_up.weight", l); gu = get_mat(&ts, nm, 2 * H, d, 1, np);
+            snprintf(nm, sizeof nm, "blk.%d.ffn_down.weight", l); L->w_down = get_mat(&ts, nm, d, H, 1, np);
+            L->w_gate = gu; L->w_up = gu;
+            if (gu.q) L->w_up.q += (size_t)H * gu.stride; else L->w_up.f += (size_t)H * d;
         } else {
             const size_t Hd = c->n_expert ? (size_t)c->hidden_dense : H;
             M2(w_gate, "ffn_gate.weight", Hd, d);
@@ -1547,7 +1563,7 @@ static void load_model(Model *m, const char *path) {
         for (int i = 0; i < c->hd_swa / 2; i++) m->rope_freq_swa[i] = powf(c->rope_base_swa, -2.0f * i / c->hd_swa);
         free(g4_ff);
     }
-    if (c->attn_gated && c->rope_dim > 0 && c->rope_dim < c->hd)     /* RoPE parcial: so as primeiras rope_dim dimensoes giram */
+    if ((c->attn_gated || c->glm || c->glmoe) && c->rope_dim > 0 && c->rope_dim < c->hd)     /* RoPE parcial: so as primeiras rope_dim dimensoes giram */
         for (int i = 0; i < c->rope_dim / 2; i++) m->rope_freq[i] = powf(c->rope_base, -2.0f * i / c->rope_dim);
     if (c->mla) {       /* MLA: so rope_dim dimensoes giram; com yarn, mistura interpolacao e extrapolacao */
         const int nr = c->rope_dim;
@@ -1806,7 +1822,7 @@ static int pre_has_nfc(int kind) { return kind == PRE_QWEN2 || kind == PRE_QWEN3
 
 static int pre_kind(const char *sv, int sl) {
     static const struct { const char *nome; int kind; } t[] = {
-        { "qwen2", PRE_QWEN2 }, { "qwen35", PRE_QWEN35 }, { "llama-bpe", PRE_LLAMA3 }, { "olmo", PRE_OLMO }, { "gpt-2", PRE_GPT2 },
+        { "qwen2", PRE_QWEN2 }, { "qwen35", PRE_QWEN35 }, { "llama-bpe", PRE_LLAMA3 }, { "glm4", PRE_LLAMA3 }, { "olmo", PRE_OLMO }, { "gpt-2", PRE_GPT2 },
         { "kimi-k2", PRE_KIMI }, { "deepseek-llm", PRE_DEEPSEEK }, { "gpt-4o", PRE_GPT4O } };
     for (size_t i = 0; i < sizeof t / sizeof t[0]; i++)
         if ((int)strlen(t[i].nome) == sl && memcmp(sv, t[i].nome, sl) == 0) return t[i].kind;
@@ -4970,6 +4986,7 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
 static void gpu_setup(Model *m) {
     const Config *c = &m->cfg;
     if (c->go) { fprintf(stderr, "GPU: gpt-oss ainda so na CPU (hibrido Vulkan pendente)\n"); return; }
+    if ((c->glm || c->glmoe) && !getenv("KATANA_GLM_GPU")) { fprintf(stderr, "GPU: glm4 ainda so na CPU\n"); return; }
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t ctx = c->ctx, qd = (size_t)c->n_heads * c->hd;
     size_t kv_layer = 2 * ctx * kvd * sizeof(float);
@@ -7672,7 +7689,8 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
     const int d = c->dim, hd = c->hd, H = c->hidden, ctx = c->ctx;
     const int kvd = c->n_kv * hd, group = c->n_heads / c->n_kv;
     const float scale = 1.0f / sqrtf((float)hd);
-    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? hd / 2 : 1;
+    const int rhalf = (c->glm || c->glmoe) && c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim / 2 : hd / 2;
+    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? rhalf : 1;
     const int qd = c->n_heads * hd;
 
     for (int l = l0; l < l1; l++) {
@@ -7701,8 +7719,8 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
             for (int h = 0; h < c->n_kv; h++) rmsnorm(m->k + h * hd, m->k + h * hd, L->k_norm, hd, c->eps);
         }
 
-        /* RoPE: gira pares (2i, 2i+1) no llama, ou (i, i+hd/2) no qwen2 */
-        for (int i = 0; i < hd / 2; i++) {
+        /* RoPE: gira pares (2i, 2i+1) no llama, ou (i, i+hd/2) no qwen2; glm4: so rope_dim dimensoes */
+        for (int i = 0; i < rhalf; i++) {
             float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
             for (int h = 0; h < c->n_heads; h++) {
                 float *p = m->q + h * hd + step * i, a = p[0], b = p[gap];
@@ -7736,6 +7754,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
         }
         matvec(m->xb2, &L->wo, m->xb, d, qd);
         if (L->bo) for (int i = 0; i < d; i++) m->xb2[i] += L->bo[i];
+        if (c->glm) rmsnorm(m->xb2, m->xb2, L->post_attn_norm, d, c->eps);
         for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
         }
 
@@ -7797,6 +7816,7 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
             }
         }
         matvec(m->xb2, &L->w_down, m->hb, d, H);
+        if (c->glm) rmsnorm(m->xb2, m->xb2, L->post_ffn_norm, d, c->eps);
         for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
     }
 }
@@ -7877,7 +7897,8 @@ static void cpu_layers_nc(Model *m, int l0, int l1, int pos0, int B, float *X) {
     const Config *c = &m->cfg;
     const int d = c->dim, hd = c->hd, H = c->hidden, ctx = c->ctx;
     const int kvd = c->n_kv * hd, group = c->n_heads / c->n_kv, qd = c->n_heads * hd;
-    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? hd / 2 : 1;
+    const int rhalf = (c->glm || c->glmoe) && c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim / 2 : hd / 2;
+    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? rhalf : 1;
     static float *Xb, *Q, *K, *V, *O, *X2, *HB, *HB2; static XQ xqs[CPU_NB];
     static size_t cap_d, cap_q, cap_k, cap_h;
     if ((size_t)d * CPU_NB > cap_d) {
@@ -7919,7 +7940,7 @@ static void cpu_layers_nc(Model *m, int l0, int l1, int pos0, int B, float *X) {
                 for (int h = 0; h < c->n_heads; h++) rmsnorm(q + h * hd, q + h * hd, L->q_norm, hd, c->eps);
                 for (int h = 0; h < c->n_kv; h++) rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps);
             }
-            for (int i = 0; i < hd / 2; i++) {
+            for (int i = 0; i < rhalf; i++) {
                 float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
                 for (int h = 0; h < c->n_heads; h++) {
                     float *p = q + h * hd + step * i, a = p[0], b = p[gap];
@@ -7939,6 +7960,7 @@ static void cpu_layers_nc(Model *m, int l0, int l1, int pos0, int B, float *X) {
         }
         prep = 0;
         matmat(X2, &L->wo, O, xqs, &prep, B, d, qd);
+        if (c->glm) for (int t = 0; t < B; t++) rmsnorm(X2 + (size_t)t * d, X2 + (size_t)t * d, L->post_attn_norm, d, c->eps);
         for (int t = 0; t < B; t++) {
             float *x = X + (size_t)t * d; const float *y = X2 + (size_t)t * d;
             for (int i = 0; i < d; i++) x[i] += y[i] + (L->bo ? L->bo[i] : 0.0f);
@@ -7954,6 +7976,7 @@ static void cpu_layers_nc(Model *m, int l0, int l1, int pos0, int B, float *X) {
         }
         prep = 0;
         matmat(X2, &L->w_down, HB, xqs, &prep, B, d, H);
+        if (c->glm) for (int t = 0; t < B; t++) rmsnorm(X2 + (size_t)t * d, X2 + (size_t)t * d, L->post_ffn_norm, d, c->eps);
         for (size_t i = 0; i < (size_t)B * d; i++) X[i] += X2[i];
     }
 }
@@ -10437,6 +10460,7 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
         case 6:  snprintf(sp, sizeof sp, "<|im_system|>system<|im_middle|>%s<|im_end|>", sys); break;
         case 7:  snprintf(sp, sizeof sp, "<|system|>\n%s\n", sys); break;
         case 8:  break;
+        case 9:  snprintf(sp, sizeof sp, "<|system|>\n%s", sys); break;
         default: snprintf(sp, sizeof sp, "%s\n", sys); break;
     }
     if (c->chat_fmt == 8 && first && ((sys && *sys) || g4_think()))
@@ -10459,6 +10483,7 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
         case 7:  snprintf(out, n, "%s%s%s<|user|>\n%s\n<|assistant|>\n", first ? c->bos_text : c->eos_text, first ? "" : "\n", sp, user); break;
         case 8:  snprintf(out, n, "%s%s<|turn>user\n%s<turn|>\n<|turn>model\n%s", first ? "" : "<turn|>\n", sp, user, g4_answer_pre()); break;
         case 9:  snprintf(out, n, "%s%s<|start|>user<|message|>%s<|end|><|start|>assistant%s", first ? "" : "<|end|>", sp, user, go_answer_pre()); break;
+        case 10: snprintf(out, n, "%s%s<|user|>\n%s<|assistant|>", first ? "[gMASK]<sop>" : "", sp, user); break;
         default: snprintf(out, n, "%s%sUser: %s\nAssistant:", first ? "" : "\n", sp, user); break;
     }
     free(ut); free(st);
