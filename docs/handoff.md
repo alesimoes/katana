@@ -626,3 +626,71 @@ VRAM (8 vagas de 128), o resto roda na CPU; cada `chat` começa com o calor zera
    já começar com os experts mais usados na VRAM; e/ou liberar VRAM dos produtos densos para caber mais vagas.
 3. Precisão do token a token: experts quentes em fp32 no caminho de um token (como o lote do Qwen3-30B virou
    fp32 na seção 8) tiraria o 1,78 do selftest; hoje não afeta a geração gulosa.
+
+## 11. Comando `katana quantize`: grava GGUF requantizado (2026-11-16, worktree agent-a5a7)
+
+Capacidade nova: o katana passou a GRAVAR quantizacao (antes so lia). `katana quantize` le um GGUF e
+grava outro com os pesos 2D grandes (attn_*, ffn_*, token_embd, output) requantizados no tipo alvo;
+normas, vieses, tensores 1D e os que ja sao <= ao alvo sao copiados como estao.
+
+**Formas aceitas** (o 2o argumento e detectado como tipo se bater com um tipo conhecido):
+- `quantize <entrada> <saida> <tipo>`  tudo explicito
+- `quantize <entrada> <saida>`         tipo sugerido para esta maquina
+- `quantize <entrada> <tipo>`          saida com nome automatico
+- `quantize <entrada>`                 tipo e saida automaticos
+
+**Tipos alvo (v1)**: Q8_0, Q6_K, Q5_K (Q5_K_M), Q4_K (Q4_K_M), Q2_K. Codificadores proprios,
+round-to-nearest, escrevendo exatamente o layout que o `dequant()` correspondente le (mesma formula de
+escala/min; para os K-quants, mesma estrutura de sub-blocos e empacotamento de escalas de 6 bits).
+
+**Onde estao as pecas reaproveitadas** (`katana.c`):
+- Leitura do GGUF: `map_file` (~1100), `Rd`/`rd_u32/u64/str/num/skip`, `GG_SIZE`, `key_is/key_ends`,
+  `TInfo`/`Tensors`. A funcao `quantize_cmd` refaz um parse leve (nao usa `load_model`) para preservar o
+  layout cru dos tensores.
+- Decodificacao: `dequant()`/`dequant_ext()` (583+), `qbytes`/`qunit` para tamanho e bloco por tipo,
+  `k4_scale_min` (o empacotamento inverso das escalas de Q4_K/Q5_K esta em `pack_k_scales`).
+- Validacao da ida e volta: `selftest` (CPU e GPU) e `qtest` (sem mudanca neles).
+
+**Metadados de saida**: cabecalho GGUF v3; copia os KV da entrada; atualiza `general.file_type` para o
+alvo; carimba `general.quantized_by="katana"`, `general.author="Ale Simoes (alesimoes)"`,
+`general.quantization_version=2` (substitui se ja existirem). Sem e-mail, URL ou caminhos. Alinhamento
+`general.alignment` (padrao 32) respeitado. Convencao `_M`: nos alvos baixos a saida/embeddings sobem de
+precisao (token_embd Q2_K->Q4_K; output Q2_K/Q4_K/Q5_K->Q6_K), o que melhora muito modelos pequenos.
+
+**Sugestao automatica de tipo** (estimativa; tambem impressa pelo `prepare`): objetivo = maior qualidade
+que ainda cabe bem. Denso: maior K-quant cujo tamanho estimado cabe no orcamento de VRAM (~3,4 GB desta
+RTX 3050) para rodar inteiro na GPU (Q8_0>Q6_K>Q5_K>Q4_K); se nem Q4_K cabe, Q4_K_M mesmo (parcial/CPU).
+MoE: Q4_K_M; so Q2_K se Q4_K_M nao couber na RAM util (~43 GB). Nunca sobe a precisao: se a origem ja e
+<= o alvo, avisa que nao vale requantizar e nao grava. Bytes/peso estimados: Q8_0 1,06 / Q6_K 0,82 /
+Q5_K 0,70 / Q4_K 0,58 / Q2_K 0,36 (conferidos com o teste abaixo).
+
+**Nome de saida automatico**: basename da entrada sem o sufixo de quantizacao conhecido (ex.: `-F16`,
+`.Q8_0`, `-UD-Q4_K_M`) + `-<TIPO>.gguf`, na pasta da entrada. Se ja existir, nao sobrescreve: acrescenta
+`-2`, `-3`, ... e avisa.
+
+**Medido** (Llama-3.2-1B-Instruct-F16, baixado para `modelos/`, dim 2048, denso):
+| alvo | tamanho | chat "capital da Franca" | selftest |
+|---|---|---|---|
+| F16 (fonte) | 2,31 GB | Paris | - |
+| Q8_0 | 1,23 GB (53%) | Paris | produtos OK; GPU=CPU OK |
+| Q6_K | 0,95 GB (41%) | Paris | produtos OK; GPU logit 9e-6 OK |
+| Q5_K_M | 0,80 GB (35%) | Paris | OK |
+| Q4_K_M | 0,67 GB (29%) | Paris | produtos OK; GPU logit 5e-5 OK |
+| Q2_K | 0,47 GB (20%) | degradado | produtos OK; lote=token OK |
+
+Tamanhos monotonicos e corretos. Q8_0..Q4_K_M geram texto coerente (Q4_K_M continua "...Paris. The capital
+of Germany is Berlin."); Q2_K num modelo de 1B e marginal (RTN simples, 2 bits), como esperado. Os
+produtos dos arquivos gerados conferem no `selftest` CPU e GPU (Vulkan): o token-a-token da GPU bate o
+argmax da CPU. Sem regressao: `qtest` continua com a mesma falha PRE-EXISTENTE de Q4_1/Q5_1 so no caminho
+GPU (2,8e-4 / 3,2e-4; identica no binario do HEAD, confirmada compilando-o), e `selftest` do
+qwen2.5-1.5b-q4km passa igual (GPU logit 5e-5). Tambem conferido o requant a partir de ja-quantizado
+(qwen2.5-1.5b Q4_K/Q6_K -> Q2_K) e a gravacao de um MoE (olmoe -> Q4_K_M, 3,9 GB).
+
+**Pendencias**:
+- **imatrix** (matriz de importancia): nao ha no v1; melhoraria muito os tipos baixos (Q2_K sobretudo).
+- **Quantizacao melhor que RTN**: busca de escala tipo `make_qkx2`/`make_qx_quants` (varias escalas
+  candidatas ponderadas) deixaria Q2_K/Q3_K bem melhores sem imatrix.
+- **Outros tipos de saida**: Q3_K, Q5_0/Q4_0, IQ*, MXFP4 (o katana ja LE todos; falta CODIFICAR).
+- **Divergencia de logits entre fonte e quantizacao**: nao ha ferramenta de comparacao cruzada entre dois
+  modelos; o proxy de prefixo guloso e ruidoso (viradas em quase-empates). Util criar um `qdiff`.
+- O `prepare` agora recomenda um tipo, mas nao requantiza sozinho (decisao do dono).
