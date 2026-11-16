@@ -1,0 +1,17 @@
+#version 450
+/* MoE: x[i*B+b] += soma_k w[b,k] * t[row[b,k]*d + i]. Os pesos (float em bits) e as linhas de t
+   vem do buffer meta: meta[woff + b*K + k] = peso, meta[woff + (B+b)*K + k] = linha. */
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer T { float t[]; };
+layout(std430, binding = 2) readonly buffer M { uint meta[]; };
+layout(push_constant) uniform P { int woff; int K; int d; int B; } pc;
+void main() {
+    int g = int(gl_GlobalInvocationID.x);
+    if (g >= pc.d * pc.B) return;
+    int i = g / pc.B, b = g % pc.B;
+    float s = 0.0;
+    for (int k = 0; k < pc.K; k++)
+        s += uintBitsToFloat(meta[pc.woff + b * pc.K + k]) * t[int(meta[pc.woff + (pc.B + b) * pc.K + k]) * pc.d + i];
+    x[i * pc.B + b] += s;
+}
