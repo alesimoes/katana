@@ -175,3 +175,22 @@ Qwen3-30B com vagas iguais por camada: teto de 64,4% com 15% na VRAM, contra 65,
 | Acumulador em meia precisão no lote | sem ganho e erro de 2–6% |
 | Tabela de escalas do Q4_K na memória compartilhada | mais lenta (2,54 contra 2,79 T/s) |
 | Ler ativações fp32 direto no lote | 2–6% mais lento que converter uma vez |
+
+## 11. Linux (Ubuntu, driver NVIDIA 595.99, 2026-11-15)
+
+Vulkan, binário anterior contra o novo (ladrilhos com no máximo 2 acumuladores por subgrupo),
+alternados, rodada 3, tok/s:
+
+| Modelo, benchmark | | anterior | novo |
+|---|---|---|---|
+| Qwen2.5 1,5B, 512+128 | prompt | 851–854 | 1.512–1.518 |
+| | geração | 80,5–81,0 | 80,8–81,1 |
+| Llama 3.2 3B, 512+128 | prompt | 411–412 | 749–752 |
+| | geração | 47,2–47,4 | 47,2–47,4 |
+| Qwen2.5 1,5B, 64+64 | prompt | 900–903 | 1.561–1.562 |
+| | geração | 98,0–98,8 | 98,4–99,0 |
+
+Na mesma hora, OpenCL no Qwen2.5 1,5B 64+64: prompt 211–212, geração 100,7–101,5.
+O "Vulkan mais lento na geração" visto no começo (86–88 tok/s) era deriva térmica: medido de novo,
+fica 2–3% abaixo do OpenCL, como no Windows. Espera do fence em laço (`KVK_SPIN`, padrão ligado):
+geração +2–3% num teste 512+256 (13,1 → 12,8 ms/token), dentro do que a deriva também explica.

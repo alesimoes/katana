@@ -4,7 +4,12 @@
    Uso: vkmm [-t q4,q6,q5,q8,f32] [-s RxC,...] [-b n,n,...] [-tiles 64x64,...|all] [-mode plain|add|glu]
              [-x 0|1|cvt] [-sc 0|1] [-splits 1,2,4] [-nocheck] [-reps n] */
 #define VK_NO_PROTOTYPES
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#include <time.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +28,11 @@ F(vkCmdBindDescriptorSets); F(vkCmdPushConstants); F(vkCmdDispatch); F(vkEndComm
 F(vkCmdPipelineBarrier); F(vkQueueSubmit); F(vkCreateFence); F(vkWaitForFences); F(vkResetFences); F(vkResetCommandBuffer);
 F(vkDestroyBuffer); F(vkFreeMemory);
 
+#ifdef _WIN32
 static double now(void) { LARGE_INTEGER f, c; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c); return (double)c.QuadPart / f.QuadPart; }
+#else
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+#endif
 #define CK(x) do { VkResult r_ = (x); if (r_) { printf("erro %d em %s\n", r_, #x); exit(1); } } while (0)
 
 static uint16_t f2h(float f) {
@@ -215,7 +224,8 @@ static void barrier_cs(void) {
 /* ---------- ladrilhos ---------- */
 typedef struct { const char *name; int bm, bn, glu_ok; } Tile;
 static const Tile TILES[] = { { "64x64", 64, 64, 1 }, { "128x16", 128, 16, 1 }, { "64x16", 64, 16, 1 }, { "128x32", 128, 32, 1 },
-                              { "64x32", 64, 32, 1 }, { "64x16w4", 64, 16, 0 }, { "64x32w4", 64, 32, 0 } };
+                              { "64x32", 64, 32, 1 }, { "64x16w4", 64, 16, 0 }, { "64x32w4", 64, 32, 0 },
+                              { "64x64w8", 64, 64, 0 }, { "64x32s22", 64, 32, 1 }, { "128x32w8", 128, 32, 1 }, { "128x64w8", 128, 64, 1 } };
 #define NTILES ((int)(sizeof TILES / sizeof TILES[0]))
 
 static struct { int type, mode /*0 plain 1 add 2 glu*/, check, reps, sc; int xmode /*0 fp16, 1 fp32 direto, 2 fp32 + conversao*/; } opt = { 0, 0, 1, 20, 0, 0 };
@@ -373,8 +383,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-mode") && i + 1 < argc) { i++; opt.mode = !strcmp(argv[i], "add") ? 1 : !strcmp(argv[i], "glu") ? 2 : 0; }
         else if (!strcmp(argv[i], "-x") && i + 1 < argc) { i++; opt.xmode = !strcmp(argv[i], "1") ? 1 : !strcmp(argv[i], "cvt") ? 2 : 0; }
     }
+#ifdef _WIN32
     HMODULE h = LoadLibraryA("vulkan-1.dll");
     vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void *)GetProcAddress(h, "vkGetInstanceProcAddr");
+#else
+    void *h = dlopen("libvulkan.so.1", RTLD_NOW);
+    vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(h, "vkGetInstanceProcAddr");
+#endif
 #define GI(n) n = (PFN_##n)vkGetInstanceProcAddr(inst, #n)
     VkInstance inst = NULL;
     GI(vkCreateInstance);

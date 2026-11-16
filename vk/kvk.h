@@ -109,7 +109,7 @@ void kvk_stats(KvkStats *s);
     X(FreeDescriptorSets) X(UpdateDescriptorSets) X(CreateCommandPool) X(DestroyCommandPool) \
     X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(ResetCommandBuffer) \
     X(CmdBindPipeline) X(CmdBindDescriptorSets) X(CmdPushConstants) X(CmdDispatch) X(CmdCopyBuffer) \
-    X(CmdPipelineBarrier) X(QueueSubmit) X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences)
+    X(CmdPipelineBarrier) X(QueueSubmit) X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(GetFenceStatus)
 
 typedef struct { uint64_t b[KVK_MAXBUF]; uint32_t pipe, hash; int n, pool, next; VkDescriptorSet set; } KvkDS;
 
@@ -281,10 +281,21 @@ static void kvk__purge(uint64_t buf, uint32_t pipe) {
 }
 
 /* ---------- fluxo de comandos ---------- */
+/* espera um fence: consulta em laco antes de dormir no driver (acordar do driver custa caro em
+   alguns sistemas). KVK_SPIN=0 desliga a consulta. */
+static VkResult kvk__fence_wait(VkFence f) {
+    static int spin = -1;
+    if (spin < 0) spin = getenv("KVK_SPIN") ? atoi(getenv("KVK_SPIN")) : 1;
+    if (spin) for (long i = 0; i < 20000000L; i++) {
+        VkResult r = F(GetFenceStatus)(G.dev, f);
+        if (r != VK_NOT_READY) return r;
+    }
+    return F(WaitForFences)(G.dev, 1, &f, VK_TRUE, ~0ull);
+}
 static int kvk__slot_get(void) {
     int s = G.head; G.head = (G.head + 1) % KVK_NSLOT;
     if (G.state[s] == 2) {
-        VkResult r = F(WaitForFences)(G.dev, 1, &G.fence[s], VK_TRUE, ~0ull);
+        VkResult r = kvk__fence_wait(G.fence[s]);
         if (r) { kvk__seterr("vkWaitForFences falhou: %d", (int)r); return -1; }
         F(ResetFences)(G.dev, 1, &G.fence[s]); G.state[s] = 0;
     }
@@ -341,7 +352,7 @@ int kvk_wait(void) {
     KVK_NEED();
     if (!kvk_flush()) return 0;
     for (int s = 0; s < KVK_NSLOT; s++) if (G.state[s] == 2) {
-        VkResult r = F(WaitForFences)(G.dev, 1, &G.fence[s], VK_TRUE, ~0ull);
+        VkResult r = kvk__fence_wait(G.fence[s]);
         if (r) { kvk__seterr("vkWaitForFences falhou: %d (dispositivo perdido?)", (int)r); return 0; }
         F(ResetFences)(G.dev, 1, &G.fence[s]); G.state[s] = 0;
     }

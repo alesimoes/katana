@@ -8,3 +8,4 @@ ref/
 *.heat
 .claude/settings.local.json
 katana
+tools/vkq4k/vkmm

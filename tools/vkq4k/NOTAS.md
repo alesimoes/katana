@@ -140,3 +140,14 @@ Lote 1: a regra serve (64x16w4), mas o produto por token dedicado (vkmv) deve se
     vkmm.exe -nocheck -t q4 -s 2048x2048 -b 4,8,16,32 -tiles all -splits 1,2,4   (so tempo)
     vkmm.exe -t q4,q6,q5,q8,f32 -s 1537x1536,8900x1536 -b 1,3,17,70,100 -tiles all -mode add|glu|plain
     opcoes: -x 0|1|cvt  -sc 0|1  -reps n ; bash best.sh arquivo resume varreduras
+
+## Linux (2026-11-15): o driver penaliza 4 acumuladores por subgrupo
+Driver NVIDIA 595.99 no Ubuntu, mesma placa. SPIR-V identico ao do Windows (conferido byte a byte), mas
+todo ladrilho em que um subgrupo carrega 4 acumuladores 16x16 (64x64 2x2, 64x32 2x1, 128x32 4x1, 128x64
+4x2) cai para ~1,3 T, em plano e em glu. Com ate 2 acumuladores volta ao nivel do Windows ou acima.
+Q4_K/Q6_K 8960x1536 lote 256 (T mult/s): 64x64 2x2 1,30/1,33; 64x64 4x2 ("64x64w8") 2,93/3,19;
+128x32 4x2 2,67/3,36; 64x32w4 2,52/3,16. Glu: 64x64 1,32/1,36; 64x32 2x2 ("64x32s22") 2,43/3,02
+(tambem lotes 32-128: 2,1-2,4 / 2,9-3,0, contra 1,1-1,3 do 64x32 2x1).
+Motor passou a usar: glu acima de 16 tokens 64x32 2x2; plano ate 64 tokens 64x32w4, acima 64x64 4x2.
+No Windows a mudanca nao foi medida. vkmm agora compila no Linux (dlopen, clock_gettime) e tem os
+ladrilhos 64x64w8, 64x32s22, 128x32w8, 128x64w8.
