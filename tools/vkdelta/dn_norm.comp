@@ -1,0 +1,33 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_KHR_shader_subgroup_basic : require
+/* Gated DeltaNet em lote, passo 4: norma RMS por cabeca (128) com peso, vezes SiLU(z).
+   Um grupo de 128 threads por (cabeca h, 32 tokens): lane = token, subgrupo = 32 dimensoes.
+   o[(h*128+j)*Bp + t] (saida de dn_state), z transposto z[(h*128+j)*B + b];
+   saida fp16 transposta y[(h*128+j)*B + b] (entrada direta do produto de saida, como a atencao em lote). */
+layout(local_size_x = 128) in;
+layout(constant_id = 1) const int NV = 32;
+const int D = 128;
+layout(std430, binding = 0) readonly buffer O { float o[]; };
+layout(std430, binding = 1) readonly buffer Z { float z[]; };
+layout(std430, binding = 2) readonly buffer PR { float pr[]; };
+layout(std430, binding = 3) writeonly buffer Y { float16_t y[]; };
+layout(push_constant) uniform P { int B, Bp; float eps; } pc;
+shared float red[4 * 32];
+void main() {
+    const int h = int(gl_WorkGroupID.x), sg = int(gl_SubgroupID), lane = int(gl_SubgroupInvocationID);
+    const int b = int(gl_WorkGroupID.y) * 32 + lane;
+    const int j0 = h * D + sg * 32;
+    float v[32];
+    float s = 0.0;
+    for (int r = 0; r < 32; r++) { v[r] = o[(j0 + r) * pc.Bp + b]; s += v[r] * v[r]; }
+    red[sg * 32 + lane] = s;
+    barrier();
+    if (b >= pc.B) return;
+    const float inv = 1.0 / sqrt((red[lane] + red[32 + lane] + red[64 + lane] + red[96 + lane]) / float(D) + pc.eps);
+    for (int r = 0; r < 32; r++) {
+        const float zz = z[(j0 + r) * pc.B + b];
+        y[(j0 + r) * pc.B + b] = float16_t(v[r] * inv * pr[2 * NV + sg * 32 + r] * (zz / (1.0 + exp(-zz))));
+    }
+}
