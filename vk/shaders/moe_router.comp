@@ -1,24 +1,24 @@
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : require
-/* Roteador do MoE (um token): o[off + e] = soma_i W[e*n + i] * x[i], pesos float32 em linhas simples.
-   Um grupo de 256 threads por especialista (as matrizes sao pequenas: poucas linhas, n colunas). */
+/* Roteador do MoE (um token): o[off + e] = soma_i W[e][i] * x[i], pesos float32 no layout da GPU (grupos de 32 linhas,
+   w[(e/32)*n*32 + i*32 + e%32], o mesmo que o mm.comp le, entao o lote usa os mesmos pesos).
+   Um grupo de 256 threads por grupo de 32 especialistas: thread (r = t%32, faixa = t/32) soma as colunas i = faixa (mod 8)
+   da linha r; as leituras de 32 linhas vizinhas de uma coluna ficam coalescidas. */
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer W { float w[]; };
 layout(std430, binding = 1) readonly buffer X { float x[]; };
 layout(std430, binding = 2) buffer O { float o[]; };
 layout(push_constant) uniform P { int n; int off; } pc;
-shared float part[32];
+shared float part[256];
 void main() {
-    int e = int(gl_WorkGroupID.x), l = int(gl_LocalInvocationID.x);
+    const int G = int(gl_WorkGroupID.x), t = int(gl_LocalInvocationID.x), r = t & 31, f = t >> 5;
+    const int base = G * pc.n * 32 + r;
     float s = 0.0;
-    for (int i = l; i < pc.n; i += 256) s += w[e * pc.n + i] * x[i];
-    s = subgroupAdd(s);
-    if (gl_SubgroupInvocationID == 0u) part[gl_SubgroupID] = s;
+    for (int i = f; i < pc.n; i += 8) s += w[base + i * 32] * x[i];
+    part[t] = s;
     barrier();
-    if (l == 0) {
-        float t = 0.0;
-        int nsg = (256 + int(gl_SubgroupSize) - 1) / int(gl_SubgroupSize);
-        for (int k = 0; k < nsg; k++) t += part[k];
-        o[pc.off + e] = t;
+    if (t < 32) {
+        float tot = 0.0;
+        for (int k = 0; k < 8; k++) tot += part[k * 32 + t];
+        o[pc.off + G * 32 + t] = tot;
     }
 }
