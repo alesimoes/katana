@@ -1577,8 +1577,13 @@ static Gpu gpu;
 static uint64_t gpu_budget(void) {
     /* 92%: medido com um 7B numa placa de 4 GB. A 95% cabia uma camada a mais, mas a geracao
        caia de 13,4 para 9,8 tokens/s (a placa cheia demais passa a usar memoria compartilhada). */
-    int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : 92;
-    if (pct < 10 || pct > 99) pct = 92;
+#ifdef _WIN32
+    const int def = 92;
+#else
+    const int def = 88;     /* Linux: o driver reserva mais; a 92% o cache de especialistas do Qwen3-30B estoura (erro -4) */
+#endif
+    int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : def;
+    if (pct < 10 || pct > 99) pct = def;
     return gpu.vram / 100 * (uint64_t)pct;
 }
 static int32_t gerr;
@@ -2846,13 +2851,13 @@ static const uint32_t *vk_mm_spv(int t, int v, int glu, size_t *n) {
     return tab[t][ix].p;
 }
 
-/* regra de escolha do ladrilho (tools/vkq4k/NOTAS.md): ate 16 tokens 64x16, ate 32 64x32, acima 64x64
-   (Q6_K/Q8_0 com 33..64 tokens: 64x32 de 4 subgrupos) */
+/* regra de escolha do ladrilho (tools/vkq4k/NOTAS.md): ate 16 tokens 64x16; glu acima disso 64x32 (2x2);
+   plano ate 64 tokens 64x32w4, acima 64x64 (4x2). Ate 2 acumuladores por subgrupo em todos. */
 static int vk_tile(int ki, int B, int glu) {
+    (void)ki;
     if (B <= 16) return glu ? 4 : 2;
-    if (B <= 32) return glu ? 3 : 1;
-    if (!glu && B <= 64 && (ki == 1 || ki == 4)) return 1;
-    return 0;
+    if (glu) return 3;              /* 64x32 em 2x2 subgrupos: melhor que o 64x64 em todos os lotes medidos */
+    return B <= 64 ? 1 : 0;         /* 64x32w4; acima de 64 tokens 64x64 em 4x2 subgrupos */
 }
 
 /* y = W * x (B tokens), x fp16 [cols][B], y fp32 [rows][B]; add: y += W*x; glu: W e o par gate/up intercalado (y = silu(gate)*up) */

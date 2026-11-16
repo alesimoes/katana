@@ -167,3 +167,17 @@ cabeçalhos OpenCL). `build.sh` compila com o `gcc` do sistema ou, sem ele, com 
 - Mistral 7B Q5_K_M: carrega 25 de 32 camadas na VRAM ("Vulkan: grafo na CPU"), responde certo,
   geração 6,3 tok/s. Ou seja, o resto cai na CPU; o caminho misto de verdade é o passo 2.1b.
 - Não testado ainda: Qwen3 denso (não há GGUF em `modelos/`).
+
+### 5.2 Lentidão do Vulkan no Linux: causa e correção
+
+- Causa: o driver Linux compila mal ladrilhos em que um subgrupo tem 4 acumuladores 16x16; o 64x64 que
+  o motor usava acima de 64 tokens (e todo o gate/up) rendia ~1,3 T contra ~2,8 T no Windows.
+  Detalhes em `tools/vkq4k/NOTAS.md`, seção Linux.
+- Correção: novos ladrilhos (64x64 em 4x2 subgrupos, glu 64x32 em 2x2). Prompt do Qwen 1,5B 851 →
+  1.515 tok/s, Llama 3B 411 → 750 (alternado, `comparacoes.md` seção 11). Acima do Windows antigo.
+- Diferença de logit do lote no Llama 3B no `vkcheck` de 600 tokens: 0,006 (era 0,0255; passo 2.1f).
+  No `selftest` de 23 tokens continua 0,025 (lote pequeno usa o 64x16, que não mudou).
+- Geração: a "lentidão" era deriva térmica; 98–99 tok/s no Vulkan contra 101 no OpenCL.
+- `vkmm` compila no Linux. glslang Linux em `~/.local/tc/gl` (`gen.sh` acha sozinho).
+- Orçamento de VRAM fora do Windows: 88% (era 92%; o Qwen3-30B estourava com erro -4 no OpenCL).
+- Pendente: medir os ladrilhos novos no Windows (podem mudar lá; não medido).
