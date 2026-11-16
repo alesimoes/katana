@@ -136,6 +136,52 @@ motor de referência em `ref/llama-src`). O que a arquitetura tem:
 - Grafo completo gravado em Vulkan (hoje é o modo híbrido ao vivo, como o MLA).
 - Agente com `web_search` validado end-to-end no CPU (lento); confirmar no Vulkan quando a GPU liberar.
 
+### 2.2c Família GLM da Zhipu (`glm4` dense e `glm4moe` MoE, feita 2026-11-16)
+
+Alvos: `glm4` (denso) com GLM-4-9B-0414 e `glm4moe` (MoE) com GLM-4.5-Air (Q2_K, único
+arquivo que cabe na RAM; o Q4 é dividido em dois GGUF e o motor não junta shards). Confirmado
+pela referência pública (`glm4.cpp` e `glm4-moe.cpp` do motor de referência em `ref/llama-src`).
+
+**`glm4` denso (CPU correto, feito nesta sessão)** — GLM-4-9B-0414: 40 camadas, dim 4096, 32
+cabeças (kv 2), cabeça 128, ffn 13696.
+- **Norma sanduíche**: além de `attn_norm`/`ffn_norm` (pré-bloco), `post_attention_norm` e
+  `post_ffw_norm` normalizam a saída de cada bloco *antes* de somar no residual (como no gemma4).
+- **RoPE NORM parcial**: só as 64 primeiras dimensões giram, em pares consecutivos (2i, 2i+1) —
+  é `LLAMA_ROPE_TYPE_NORM`, **não** NEOX (ao contrário do glm4moe; errar isso trocava já o 1º
+  token gerado). q/k/v com viés, saída sem viés, sem norma de q/k no 9B.
+- **Feed-forward**: gate e up fundidos em `ffn_up` (2×13696 linhas: gate primeiro, up depois); o
+  carregador fatia nas duas metades. SwiGLU.
+- Implementado no caminho padrão com condicionais `c->glm` (flag nova) em `cpu_layers` e
+  `cpu_layers_nc`; RoPE parcial generalizada por `rhalf`. `chat_fmt=9`:
+  `[gMASK]<sop><|user|>\n…<|assistant|>`. Pré-tokenizador `glm4` = `llama-bpe` (mesma regex,
+  dígitos 1–3, sem NFC).
+- **Validação**: `selftest` produtos OK (pior exato 4.9e-8), CPU em lote × token a token idêntico
+  (0.0). Tokenizador 5/5 casos batem com `llama-tokenize`. Greedy bate com `llama-simple` da
+  referência (33 tokens no prompt dos planetas; outros divergem após 5–9 por empates quase exatos,
+  como no gemma4). Chat coerente e multi-turno (lembra o nome; respeita o prompt de sistema).
+
+**`glm4moe` MoE (código feito; validação pendente do download)** — GLM-4.5-Air: 47 blocos
+(46 transformer + 1 MTP/nextn ignorado), dim 4096, 96 cabeças (kv 8), cabeça 128, 128 especialistas
+(8 ativos, hidden 1408), 1 compartilhado, 1 camada densa inicial (hidden 10944).
+- **Pré-norm comum** (sem sanduíche): só `attn_norm` e `post_attention_norm`; esta última é a norma
+  pré-feed-forward (aplicada *depois* do residual da atenção), carregada como `ffn_norm` (igual ao
+  qwen35moe). RoPE **NEOX** parcial (64 de 128). q/k/v com viés, sem norma de q/k no Air.
+- Roteador sigmoide com viés só na escolha (`exp_probs_b`), pesos normalizados e escala
+  `expert_weights_scale` — tudo pelo `moe_route` genérico já existente; compartilhado sempre somado;
+  grupo de especialistas = 1 (seleção por grupo é no-op). Mapeia quase inteiro no caminho MoE padrão.
+- Mudanças: flag `c->glmoe`, `rope_neox=1`, `ffn_norm` vindo de `post_attention_norm`, RoPE parcial
+  NEOX via `rhalf`, e `c->n_nextn` subtraído de `n_layers` (ignora o bloco MTP). Sem regressão nos
+  outros MoE (nenhum tem `nextn_predict_layers`; selftest olmoe OK).
+
+**Pendências GLM**:
+- **glm4moe**: rodar `selftest` e comparar greedy com a referência assim que o GLM-4.5-Air-Q2_K
+  (~45 GB) terminar de baixar; medir velocidade (experts em disco com 43 GB de RAM: lento).
+- **GPU/Vulkan**: ambos ainda só na CPU (`gpu_setup` desvia glm4/glm4moe; `KATANA_GLM_GPU` força
+  tentar). Denso: grafo Vulkan precisa das normas sanduíche e RoPE NORM parcial. MoE: caminho
+  híbrido/cache de especialistas como o deepseek2 (roteador sigmoide já existe no Vulkan híbrido).
+- Formato de ferramentas do GLM-4.5 (XML `<tool_call>…<arg_key>…`) para o `katana agent`; raciocínio
+  desligado por padrão.
+
 ### 2.3 Arquitetura DeepSeek/Kimi (prioridade 2 do plano)
 
 **Cache de especialistas generalizado (branch do worktree)**: camadas densas iniciais convivem com as MoE (sem vagas
