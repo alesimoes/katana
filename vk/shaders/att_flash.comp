@@ -5,77 +5,102 @@
 #extension GL_EXT_shader_16bit_storage : require
 #include "common.glsl"
 /* Atencao em lote num lancamento so (softmax online): um grupo por (token b, cabeca kv g) que trata as GRP cabecas
-   de consulta daquele grupo, entao cada linha do cache K/V e lida UMA vez para as GRP cabecas (a versao com um grupo
-   por cabeca de consulta lia GRP vezes e ficava limitada pela banda da L2). 4 subgrupos de 32 threads; o subgrupo sg
-   percorre as posicoes em blocos de U, t = (sg + 4*i)*U ..., ate pos0+b. Cada lane guarda hd/32 dimensoes (colunas
-   lane + 32*i: leitura coalescida), a soma parcial do produto q.k sai de um subgroupAdd por cabeca e posicao, e cada
-   cabeca mantem maximo/soma/acumulador online; no fim os 4 subgrupos se juntam em memoria compartilhada.
-   Precisa de subgrupo de 32 e hd multiplo de 32 (<= 256). Ativacoes transpostas: q[(h*hd+j)*B + b]; a saida vai em
-   fp16 (o[(h*hd+j)*B + b], entrada direta do produto de saida). Spec constants: 0 = hd, 1 = GRP (cabecas por grupo kv). */
+   de consulta daquele grupo, entao cada linha do cache K/V e lida UMA vez para as GRP cabecas.
+   O grupo percorre as posicoes em blocos de TT=32. Por bloco: (1) as 128 threads carregam as 32 linhas de K em
+   memoria compartilhada (linha com folga de 4 floats: leitura em vec4 sem conflito de banco) e as colunas de V em
+   registradores; (2) a lane = posicao do bloco calcula o produto q.k INTEIRO daquela posicao (sem reducao por
+   posicao); o subgrupo sg cuida das cabecas sg, sg+4, ...; maximo e soma do bloco saem de um subgroupMax e um
+   subgroupAdd por cabeca e bloco (antes: um subgroupAdd por cabeca e posicao); (3) as probabilidades vao para a
+   memoria compartilhada e cada thread (thread = dimensao j) acumula p*V das GRP cabecas com maximo/soma online.
+   Dois barrier por bloco. Precisa de subgrupo de 32 e hd multiplo de 32 (<= 256).
+   Ativacoes transpostas: q[(h*hd+j)*B + b]; a saida vai em fp16 (o[(h*hd+j)*B + b], entrada direta do produto de
+   saida). Spec constants: 0 = hd, 1 = GRP (cabecas por grupo kv). */
 layout(local_size_x = 128) in;
 layout(constant_id = 0) const int HD = 128;
 layout(constant_id = 1) const int GRP = 6;
-const int ND = HD / 32;
-const int U = 2;
+const int TT = 32;
+const int HD4 = HD / 4;
+const int RS = HD4 + 1;                 /* passo da linha de K em vec4 */
+const int NJ = (HD + 127) / 128;        /* dimensoes por thread no passo da mistura */
+const int NH = (GRP + 3) / 4;           /* cabecas por subgrupo no passo das notas */
+const int NLD = (TT * HD) / 128;        /* floats de K carregados por thread */
 layout(std430, binding = 0) readonly buffer Q { float q[]; };
 layout(std430, binding = 1) readonly buffer KC { KVT kc[]; };
 layout(std430, binding = 2) readonly buffer VC { KVT vc[]; };
 layout(std430, binding = 3) buffer O { float16_t o[]; };
 layout(push_constant) uniform P { int base, pos0, kvd, nkv, B; float scale; } pc;
-shared float sm_m[4 * GRP], sm_l[4 * GRP];
-shared float sacc[4 * GRP * HD];
+shared vec4 ksh[TT * RS];
+shared vec4 qsh[GRP * HD4];
+shared vec4 psh[GRP * (TT / 4)];
+shared float csh[GRP];
+shared float lsh[GRP];
 void main() {
     const int wg = int(gl_WorkGroupID.x), b = wg / pc.nkv, g = wg % pc.nkv, B = pc.B;
+    const int tid = int(gl_LocalInvocationID.x);
     const int sg = int(gl_SubgroupID), lane = int(gl_SubgroupInvocationID);
     const int T = pc.pos0 + b + 1;
-    const int kv = pc.base + g * HD + lane;
-    float qv[GRP][ND], acc[GRP][ND], m[GRP], l[GRP];
-    for (int gi = 0; gi < GRP; gi++) {
-        for (int i = 0; i < ND; i++) { qv[gi][i] = q[((g * GRP + gi) * HD + lane + 32 * i) * B + b] * pc.scale; acc[gi][i] = 0.0; }
-        m[gi] = -1e30; l[gi] = 0.0;
-    }
-    for (int t0 = sg * U; t0 < T; t0 += 4 * U) {
-        float kk[U][ND], vv[U][ND];
-        for (int u = 0; u < U; u++) {
-            const int a = kv + min(t0 + u, T - 1) * pc.kvd;
-            for (int i = 0; i < ND; i++) { kk[u][i] = KVL(kc, a + 32 * i); vv[u][i] = KVL(vc, a + 32 * i); }
+    const int kvb = pc.base + g * HD;
+    for (int e = tid; e < GRP * HD; e += 128)
+        qsh[e >> 2][e & 3] = q[((g * GRP + e / HD) * HD + e % HD) * B + b] * pc.scale;
+    float acc[GRP][NJ];
+    for (int gi = 0; gi < GRP; gi++) for (int i = 0; i < NJ; i++) acc[gi][i] = 0.0;
+    float m[NH], l[NH];
+    for (int h = 0; h < NH; h++) { m[h] = -1e30; l[h] = 0.0; }
+    for (int t0 = 0; t0 < T; t0 += TT) {
+        float kr[NLD], vv[TT][NJ];
+        for (int i = 0; i < NLD; i++) {
+            const int e = tid + 128 * i;
+            kr[i] = KVL(kc, kvb + min(t0 + e / HD, T - 1) * pc.kvd + e % HD);
         }
-        for (int gi = 0; gi < GRP; gi++) {
-            float s[U];
-            for (int u = 0; u < U; u++) {
+        for (int u = 0; u < TT; u++)
+            for (int i = 0; i < NJ; i++) {
+                const int j = tid + 128 * i;
+                vv[u][i] = (j < HD) ? KVL(vc, kvb + min(t0 + u, T - 1) * pc.kvd + j) : 0.0;
+            }
+        for (int i = 0; i < NLD; i++) {
+            const int e = tid + 128 * i;
+            const int r = e / HD, c = e % HD;
+            ksh[r * RS + (c >> 2)][c & 3] = kr[i];
+        }
+        barrier();
+        for (int h = 0; h < NH; h++) {
+            const int gi = sg + 4 * h;
+            if (gi < GRP) {
                 float x = 0.0;
-                for (int i = 0; i < ND; i++) x += qv[gi][i] * kk[u][i];
-                s[u] = subgroupAdd(x);
-                if (t0 + u >= T) s[u] = -1e30;
+                for (int j = 0; j < HD4; j++) x += dot(ksh[lane * RS + j], qsh[gi * HD4 + j]);
+                const bool ok = t0 + lane < T;
+                const float s = ok ? x : -1e30;
+                const float mn = max(m[h], subgroupMax(s));
+                const float corr = exp(m[h] - mn);
+                const float p = ok ? exp(s - mn) : 0.0;
+                l[h] = l[h] * corr + subgroupAdd(p);
+                m[h] = mn;
+                psh[gi * (TT / 4) + (lane >> 2)][lane & 3] = p;
+                if (lane == 0) csh[gi] = corr;
             }
-            float mn = m[gi];
-            for (int u = 0; u < U; u++) mn = max(mn, s[u]);
-            const float corr = exp(m[gi] - mn);
-            float ls = l[gi] * corr;
-            for (int i = 0; i < ND; i++) acc[gi][i] *= corr;
-            for (int u = 0; u < U; u++) {
-                const float p = (t0 + u < T) ? exp(s[u] - mn) : 0.0;
-                ls += p;
-                for (int i = 0; i < ND; i++) acc[gi][i] += p * vv[u][i];
-            }
-            l[gi] = ls; m[gi] = mn;
         }
+        barrier();
+        for (int gi = 0; gi < GRP; gi++) {
+            const float cr = csh[gi];
+            for (int i = 0; i < NJ; i++) acc[gi][i] *= cr;
+        }
+        for (int u4 = 0; u4 < TT / 4; u4++)
+            for (int gi = 0; gi < GRP; gi++) {
+                const vec4 p4 = psh[gi * (TT / 4) + u4];
+                for (int i = 0; i < NJ; i++)
+                    acc[gi][i] += p4.x * vv[4 * u4][i] + p4.y * vv[4 * u4 + 1][i] + p4.z * vv[4 * u4 + 2][i] + p4.w * vv[4 * u4 + 3][i];
+            }
     }
-    for (int gi = 0; gi < GRP; gi++) {
-        if (lane == 0) { sm_m[sg * GRP + gi] = m[gi]; sm_l[sg * GRP + gi] = l[gi]; }
-        for (int i = 0; i < ND; i++) sacc[(sg * GRP + gi) * HD + lane + 32 * i] = acc[gi][i];
+    for (int h = 0; h < NH; h++) {
+        const int gi = sg + 4 * h;
+        if (gi < GRP && lane == 0) lsh[gi] = l[h];
     }
     barrier();
     for (int gi = 0; gi < GRP; gi++) {
-        float M = sm_m[gi];
-        for (int s = 1; s < 4; s++) M = max(M, sm_m[s * GRP + gi]);
-        float w[4], L = 0.0;
-        for (int s = 0; s < 4; s++) { w[s] = exp(sm_m[s * GRP + gi] - M); L += w[s] * sm_l[s * GRP + gi]; }
-        const float inv = 1.0 / L;
-        for (int j = int(gl_LocalInvocationID.x); j < HD; j += 128) {
-            float r = 0.0;
-            for (int s = 0; s < 4; s++) r += w[s] * sacc[(s * GRP + gi) * HD + j];
-            o[((g * GRP + gi) * HD + j) * B + b] = float16_t(r * inv);
+        const float inv = 1.0 / lsh[gi];
+        for (int i = 0; i < NJ; i++) {
+            const int j = tid + 128 * i;
+            if (j < HD) o[((g * GRP + gi) * HD + j) * B + b] = float16_t(acc[gi][i] * inv);
         }
     }
 }
