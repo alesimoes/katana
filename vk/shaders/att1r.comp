@@ -1,0 +1,21 @@
+#version 450
+/* Junta os pedacos do contexto de att1f (split-K): um grupo de hd threads por cabeca; part[(h*nchunk + c)*(hd+2)] =
+   o nao normalizado (hd valores), maximo, soma. Pedacos vazios tem maximo -3e38 e peso 0. */
+layout(local_size_x_id = 0) in;
+layout(std430, binding = 0) readonly buffer PT { float part[]; };
+layout(std430, binding = 1) buffer O { float o[]; };
+layout(push_constant) uniform P { int hd, nchunk; } pc;
+void main() {
+    const int h = int(gl_WorkGroupID.x), l = int(gl_LocalInvocationID.x), hd = pc.hd, n = pc.nchunk;
+    const int b0 = h * n * (hd + 2);
+    float M = -3.0e38;
+    for (int c = 0; c < n; c++) M = max(M, part[b0 + c * (hd + 2) + hd]);
+    float L = 0.0, r = 0.0;
+    for (int c = 0; c < n; c++) {
+        const int pb = b0 + c * (hd + 2);
+        const float w = exp(part[pb + hd] - M);
+        L += w * part[pb + hd + 1];
+        r += w * part[pb + l];
+    }
+    o[h * hd + l] = r / L;
+}
