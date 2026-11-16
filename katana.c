@@ -1241,7 +1241,9 @@ static float dot_q6k(const uint8_t *row, const float *x, int cols) {
  * vira float para receber a escala. Com 16 bits o erro de quantizacao das ativacoes fica
  * na casa de 1e-5 (com 8 bits, medido, chegava a trocar o token escolhido).
  * cpu_exact=1 volta aos produtos em float (referencia exata, usada pelo selftest). */
-typedef struct { int16_t *q; int32_t *bs32; float *xs; int cap; } XQ;     /* bs32: soma de cada 32 valores */
+typedef struct { int16_t *q; int32_t *bs32; float *xs; int cap; int8_t *qh, *ql; int32_t *bs16; } XQ;
+/* bs32: soma de cada 32 valores; qh/ql: q = qh*256 + ql em 8 bits e bs16: soma de cada 16 (so com VNNI) */
+static int cpu_vnni;
 /* a entrada quantizada em uso: a global, ou outra escolhida por thread (xq_tls) quando varios
    produtos com entradas diferentes rodam no mesmo despacho do pool (especialistas do MoE) */
 static XQ xq0;
@@ -1257,7 +1259,9 @@ static int cpu_exact;
 #define HAVE_INT_DOT 1
 static void xq_prepare(const float *x, int cols) {
     if (cols > xq.cap) {
-        free(xq.q); free(xq.bs32); free(xq.xs);
+        free(xq.q); free(xq.bs32); free(xq.xs); free(xq.qh); free(xq.ql); free(xq.bs16);
+        xq.qh = xalloc((size_t)cols + 64, 1); xq.ql = xalloc((size_t)cols + 64, 1);
+        xq.bs16 = xalloc((size_t)cols / 16 + 16, sizeof(int32_t));
         xq.q = xalloc((size_t)cols + 64, sizeof(int16_t));
         xq.bs32 = xalloc((size_t)cols / 32 + 16, sizeof(int32_t));
         xq.xs = xalloc((size_t)cols / 256 + 1, sizeof(float));
@@ -1274,9 +1278,10 @@ static void xq_prepare(const float *x, int cols) {
         for (int j = 0; j < 8; j++) if (t[j] > amax) amax = t[j];
         if (amax == 0.0f) {
             memset(q, 0, 256 * sizeof(int16_t)); memset(xq.bs32 + b * 8, 0, 8 * sizeof(int32_t)); xq.xs[b] = 0.0f;
+            memset(xq.qh + b * 256, 0, 256); memset(xq.ql + b * 256, 0, 256); memset(xq.bs16 + b * 16, 0, 16 * sizeof(int32_t));
             continue;
         }
-        const __m256 is = _mm256_set1_ps(32767.0f / amax);
+        const __m256 is = _mm256_set1_ps(32512.0f / amax);
         for (int sub = 0; sub < 8; sub++) {
             __m256i sum = _mm256_setzero_si256();
             for (int j = 0; j < 32; j += 16) {
@@ -1289,8 +1294,23 @@ static void xq_prepare(const float *x, int cols) {
             s4 = _mm_add_epi32(s4, _mm_srli_si128(s4, 8));
             s4 = _mm_add_epi32(s4, _mm_srli_si128(s4, 4));
             xq.bs32[b * 8 + sub] = _mm_cvtsi128_si32(s4);
+            if (cpu_vnni) {     /* q = alto*256 + baixo (ambos de 8 bits com sinal) e somas de grupos de 16 */
+                const __m256i r128 = _mm256_set1_epi16(128), ones = _mm256_set1_epi16(1);
+                const __m256i qa = _mm256_loadu_si256((const __m256i *)(q + sub * 32));
+                const __m256i qb = _mm256_loadu_si256((const __m256i *)(q + sub * 32 + 16));
+                const __m256i ha = _mm256_srai_epi16(_mm256_add_epi16(qa, r128), 8);
+                const __m256i hb = _mm256_srai_epi16(_mm256_add_epi16(qb, r128), 8);
+                const __m256i la = _mm256_sub_epi16(qa, _mm256_slli_epi16(ha, 8));
+                const __m256i lb = _mm256_sub_epi16(qb, _mm256_slli_epi16(hb, 8));
+                _mm256_storeu_si256((__m256i *)(xq.qh + b * 256 + sub * 32), _mm256_permute4x64_epi64(_mm256_packs_epi16(ha, hb), 0xD8));
+                _mm256_storeu_si256((__m256i *)(xq.ql + b * 256 + sub * 32), _mm256_permute4x64_epi64(_mm256_packs_epi16(la, lb), 0xD8));
+                const __m256i sh = _mm256_hadd_epi32(_mm256_madd_epi16(qa, ones), _mm256_madd_epi16(qb, ones));
+                const __m256i s2 = _mm256_hadd_epi32(sh, sh);
+                xq.bs16[b * 16 + sub * 2] = _mm256_extract_epi32(s2, 0) + _mm256_extract_epi32(s2, 4);
+                xq.bs16[b * 16 + sub * 2 + 1] = _mm256_extract_epi32(s2, 1) + _mm256_extract_epi32(s2, 5);
+            }
         }
-        xq.xs[b] = amax / 32767.0f;
+        xq.xs[b] = amax / 32512.0f;
     }
 }
 
@@ -1464,6 +1484,99 @@ static float dot_q4k_i(const uint8_t *row, int cols) { (void)row; (void)cols; re
 static float dot_q6k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
 #endif
 
+/* ---------- produto inteiro com VNNI (AVX-512, vetores de 256 bits) ----------
+   Mesma conta do produto de 16 bits acima, mas o peso (4 ou 6 bits, sem sinal em 0..63) fica em 8 bits
+   e a ativacao de 16 bits vira duas de 8 bits: x = alto*256 + baixo (os dois com sinal). Dois
+   _mm256_dpbusd_epi32 (u8 x s8, somando 4 produtos por faixa direto em 32 bits) fazem o trabalho de
+   dois alargamentos + dois madd; o resultado inteiro e exatamente o mesmo (sem perda de precisao).
+   So roda se a CPU tiver AVX512 VL/BW/VNNI (detectado em tempo de execucao; KATANA_VNNI=0 desliga);
+   as funcoes levam o atributo target, entao o binario continua rodando em maquina sem AVX-512. */
+#if defined(__GNUC__) && defined(__x86_64__) && defined(__AVX2__)
+#define HAVE_VNNI 1
+#define VNNI_T __attribute__((target("avx2,fma,f16c,avx512f,avx512vl,avx512bw,avx512vnni")))
+static void vnni_init(void) {
+    __builtin_cpu_init();
+    cpu_vnni = __builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512vl") &&
+               __builtin_cpu_supports("avx512bw") && !(getenv("KATANA_VNNI") && atoi(getenv("KATANA_VNNI")) == 0);
+}
+
+/* Q4_K: escalas e minimos como em dot_q4k_i; o termo dos minimos usa bs32 */
+VNNI_T static float dot_q4k_v(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), zero = _mm256_setzero_si256();
+    const uint32_t k1 = 0x3f3f3f3fu, k2 = 0x0f0f0f0fu, k3 = 0x03030303u;
+    const int8_t *xh = xq.qh, *xl = xq.ql;
+    const int32_t *bs = xq.bs32;
+    __m256 acc = _mm256_setzero_ps(), accm = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 144, xh += 256, xl += 256, bs += 8) {
+        uint16_t h0, h1; uint32_t u[4];
+        memcpy(&h0, row, 2); memcpy(&h1, row + 2, 2); memcpy(u, row + 4, 12);
+        u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+        const uint32_t aux = u[1] & k1;
+        u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+        u[2] = aux;
+        u[0] &= k1;
+        const float xs = xq.xs[b];
+        const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h0))) * xs;
+        const float dmin = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h1))) * xs;
+        const __m256i sc32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)u));
+        const __m256i mn32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(u + 2)));
+        const __m256 scf = _mm256_mul_ps(_mm256_cvtepi32_ps(sc32), _mm256_set1_ps(d));
+        accm = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_mullo_epi32(mn32, _mm256_loadu_si256((const __m256i *)bs))),
+                               _mm256_set1_ps(dmin), accm);
+        const uint8_t *q = row + 16;
+        for (int j = 0; j < 4; j++) {
+            const __m256i v = _mm256_loadu_si256((const __m256i *)(q + 32 * j));
+            const __m256i lo = _mm256_and_si256(v, m4), hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+            __m256i p = _mm256_dpbusd_epi32(zero, lo, _mm256_loadu_si256((const __m256i *)(xh + 64 * j)));
+            p = _mm256_dpbusd_epi32(_mm256_slli_epi32(p, 8), lo, _mm256_loadu_si256((const __m256i *)(xl + 64 * j)));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j)), acc);
+            p = _mm256_dpbusd_epi32(zero, hi, _mm256_loadu_si256((const __m256i *)(xh + 64 * j + 32)));
+            p = _mm256_dpbusd_epi32(_mm256_slli_epi32(p, 8), hi, _mm256_loadu_si256((const __m256i *)(xl + 64 * j + 32)));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j + 1)), acc);
+        }
+    }
+    return hsum256(acc) - hsum256(accm);
+}
+
+/* Q6_K: pesos u8 em 0..63 (o deslocamento -32 sai somando 32 * soma das ativacoes de cada grupo de 16, bs16) */
+VNNI_T static float dot_q6k_v(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), m2 = _mm256_set1_epi8(3), zero = _mm256_setzero_si256();
+    const int8_t *xh = xq.qh, *xl = xq.ql;
+    const int32_t *bs = xq.bs16;
+    __m256 acc = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 210, xh += 256, xl += 256, bs += 16) {
+        const uint8_t *ql = row, *qh = row + 128;
+        const int8_t *sc = (const int8_t *)(row + 192);
+        uint16_t h; memcpy(&h, row + 208, 2);
+        const float dv = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))) * xq.xs[b];
+        for (int c = 0; c < 2; c++, ql += 64, qh += 32, sc += 8) {
+            const __m256i l0 = _mm256_loadu_si256((const __m256i *)ql);
+            const __m256i l1 = _mm256_loadu_si256((const __m256i *)(ql + 32));
+            const __m256i hv = _mm256_loadu_si256((const __m256i *)qh);
+            __m256i q[4];
+            q[0] = _mm256_or_si256(_mm256_and_si256(l0, m4), _mm256_slli_epi16(_mm256_and_si256(hv, m2), 4));
+            q[1] = _mm256_or_si256(_mm256_and_si256(l1, m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2), m2), 4));
+            q[2] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l0, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 4), m2), 4));
+            q[3] = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l1, 4), m4), _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 6), m2), 4));
+            for (int k = 0; k < 4; k++) {
+                const int o = c * 128 + k * 32;
+                __m256i p = _mm256_dpbusd_epi32(zero, q[k], _mm256_loadu_si256((const __m256i *)(xh + o)));
+                p = _mm256_dpbusd_epi32(_mm256_slli_epi32(p, 8), q[k], _mm256_loadu_si256((const __m256i *)(xl + o)));
+                /* o deslocamento entra uma vez por grupo de 16 (numa faixa so; as faixas sao somadas no fim) */
+                const __m256i corr = _mm256_set_epi32(0, 0, 0, 32 * bs[c * 8 + 2 * k + 1], 0, 0, 0, 32 * bs[c * 8 + 2 * k]);
+                const __m256 scv = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_set1_ps(dv * sc[2 * k])),
+                                                        _mm_set1_ps(dv * sc[2 * k + 1]), 1);
+                acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(p, corr)), scv, acc);
+            }
+        }
+    }
+    return hsum256(acc);
+}
+#else
+#define HAVE_VNNI 0
+static void vnni_init(void) {}
+#endif
+
 /* a matriz usa o produto inteiro? (so tipos K, e se nao estiver no modo exato) */
 static int mat_int(const Mat *W) {
     return HAVE_INT_DOT && !cpu_exact && W->q &&
@@ -1473,6 +1586,12 @@ static int mat_int(const Mat *W) {
 static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, int cols) {
     if (W->f) return dot(W->f + i * cols, x, cols);
     const uint8_t *row = W->q + i * W->stride;
+#if defined(__AVX2__) && HAVE_VNNI
+    if (cpu_vnni && mat_int(W)) {
+        if (W->type == T_Q4_K) return dot_q4k_v(row, cols);
+        if (W->type == T_Q6_K) return dot_q6k_v(row, cols);
+    }
+#endif
     if (mat_int(W)) return W->type == T_Q4_K ? dot_q4k_i(row, cols) : W->type == T_Q6_K ? dot_q6k_i(row, cols)
                          : W->type == T_Q5_K ? dot_q5k_i(row, cols) : dot_q3k_i(row, cols);
     if (W->type == T_Q4_K) return dot_q4k(row, x, sx, cols);
@@ -2637,6 +2756,7 @@ static void vk_matvec(float *out, const Mat *W, const float *x, int rows, int co
    de um buffer pequeno (meta), entao o mesmo grafo gravado serve para todos os tokens. */
 static void mat_row(float *out, const Mat *W, int row, int cols);
 static void cpu_layers(Model *m, int l0, int l1, int pos);
+static void cpu_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X);
 static float *cpu_head(Model *m);
 
 typedef struct {
@@ -3105,13 +3225,14 @@ static float *vk_forward_n(Model *m, const int *toks, int B, int pos0, int want_
     if (!full) {                    /* grafo parcial: as B colunas voltam e a CPU faz o resto token a token */
         if (!kvk_buf_read(vkb.x, 0, vkb.xT, (size_t)d * B * sizeof(float))) die("falha na execucao em Vulkan (leitura do lote)");
         vkb.t_emb += t1 - t0; vkb.t_emit += t2 - t1; vkb.passes++; vkb.toks += B; vkb.t_wait += now_sec() - t2;
-        float *lg = NULL;
-        for (int t = 0; t < B; t++) {
-            for (int j = 0; j < d; j++) m->x[j] = vkb.xT[(size_t)j * B + t];
-            cpu_layers(m, vkg.nl, c->n_layers, pos0 + t);
-            if (want_logits && t == B - 1) lg = cpu_head(m);
-        }
-        return lg;
+        static float *xrow; static size_t xrow_cap;
+        if ((size_t)B * d > xrow_cap) { free(xrow); xrow_cap = (size_t)B * d; xrow = xalloc(xrow_cap, sizeof(float)); }
+        for (int t = 0; t < B; t++)
+            for (int j = 0; j < d; j++) xrow[(size_t)t * d + j] = vkb.xT[(size_t)j * B + t];
+        cpu_layers_n(m, vkg.nl, c->n_layers, pos0, B, xrow);        /* resto das camadas em lote na CPU */
+        if (!want_logits) return NULL;
+        memcpy(m->x, xrow + (size_t)(B - 1) * d, d * sizeof(float));
+        return cpu_head(m);
     }
     vkb.t_emb += t1 - t0; vkb.t_emit += t2 - t1; vkb.passes++; vkb.toks += B;
     if (!want_logits) return NULL;
@@ -4550,6 +4671,178 @@ static void cpu_layers(Model *m, int l0, int l1, int pos) {
     }
 }
 
+/* ---------- camadas na CPU em lote (prompt) ----------
+   B tokens de uma vez: cada produto le a matriz uma vez para os B tokens (em vez de uma vez por token),
+   o que tira o gargalo de memoria do prompt. As ativacoes sao quantizadas uma vez por token e cada
+   linha de pesos e multiplicada pelas colunas do bloco enquanto esta na cache. Atencao causal por
+   token (o cache de K/V de todo o lote e gravado antes). X: B x dim, token a token. */
+typedef struct { float *out; const Mat *W; XQ *xqs; int B, rows, cols; } MmJob;
+static void mm_job(void *c, int i0, int i1) {
+    const MmJob *j = c;
+    for (int t0 = 0; t0 < j->B; t0 += 8) {
+        const int t1 = t0 + 8 < j->B ? t0 + 8 : j->B;
+        for (int i = i0; i < i1; i++)
+            for (int t = t0; t < t1; t++) {
+                xq_tls = &j->xqs[t];
+                j->out[(size_t)t * j->rows + i] = dot_row(j->W, (size_t)i, NULL, NULL, j->cols);
+            }
+    }
+    xq_tls = NULL;
+}
+typedef struct { XQ *xqs; const float *X; int cols; } MqJob;
+static void mq_job(void *c, int i0, int i1) {
+    const MqJob *j = c;
+    for (int t = i0; t < i1; t++) { xq_tls = &j->xqs[t]; xq_prepare(j->X + (size_t)t * j->cols, j->cols); }
+    xq_tls = NULL;
+}
+/* quantiza as B linhas de X (B x cols) para o produto inteiro */
+static void mm_prepare(XQ *xqs, const float *X, int B, int cols) {
+    MqJob job = { xqs, X, cols };
+    pool_for(mq_job, &job, B, B / (pool.n * 2) + 1);
+}
+/* out[t*rows + i] = W[i] . X[t], com X ja quantizado em xqs (so para tipos com produto inteiro) */
+static void mm_run(float *out, const Mat *W, XQ *xqs, int B, int rows, int cols) {
+    MmJob job = { out, W, xqs, B, rows, cols };
+    const size_t rb = W->q ? W->stride : (size_t)cols * 4;
+    int chunk = (int)(65536 / rb);
+    if (chunk > rows / (pool.n * 4)) chunk = rows / (pool.n * 4);
+    if (chunk < 1) chunk = 1;
+    pool_for(mm_job, &job, rows, chunk);
+}
+/* produto com B colunas; sem produto inteiro (f32, Q8_0, modo exato) cai no matvec por token */
+static void matmat(float *out, const Mat *W, const float *X, XQ *xqs, int *prepared, int B, int rows, int cols) {
+    if (!mat_int(W)) {
+        for (int t = 0; t < B; t++) matvec(out + (size_t)t * rows, W, X + (size_t)t * cols, rows, cols);
+        return;
+    }
+    if (!*prepared) { mm_prepare(xqs, X, B, cols); *prepared = 1; }
+    mm_run(out, W, xqs, B, rows, cols);
+}
+
+typedef struct {
+    const float *Q; float *O; const float *kb, *vb;
+    int pos0, B, nh, hd, kvd, group, qd; float scale; int ctx;
+} AttJob;
+static void att_job(void *c, int i0, int i1) {
+    const AttJob *j = c;
+    static __thread float *att; static __thread int cap;
+    if (cap < j->ctx) { free(att); att = xalloc((size_t)j->ctx, sizeof(float)); cap = j->ctx; }
+    for (int u = i0; u < i1; u++) {
+        const int t = u / j->nh, h = u % j->nh, pos = j->pos0 + t;
+        const float *qh = j->Q + (size_t)t * j->qd + h * j->hd;
+        const int kvh = (h / j->group) * j->hd;
+        for (int s = 0; s <= pos; s++) att[s] = dot(qh, j->kb + (size_t)s * j->kvd + kvh, j->hd) * j->scale;
+        softmax(att, pos + 1);
+        float *out = j->O + (size_t)t * j->qd + h * j->hd;
+        memset(out, 0, j->hd * sizeof(float));
+        for (int s = 0; s <= pos; s++) {
+            const float *vh = j->vb + (size_t)s * j->kvd + kvh, a = att[s];
+            for (int i = 0; i < j->hd; i++) out[i] += a * vh[i];
+        }
+    }
+}
+
+#define CPU_NB 64
+static void cpu_layers_nc(Model *m, int l0, int l1, int pos0, int B, float *X) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, hd = c->hd, H = c->hidden, ctx = c->ctx;
+    const int kvd = c->n_kv * hd, group = c->n_heads / c->n_kv, qd = c->n_heads * hd;
+    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? hd / 2 : 1;
+    static float *Xb, *Q, *K, *V, *O, *X2, *HB, *HB2; static XQ xqs[CPU_NB];
+    static size_t cap_d, cap_q, cap_k, cap_h;
+    if ((size_t)d * CPU_NB > cap_d) {
+        free(Xb); free(X2); Xb = xalloc((size_t)d * CPU_NB, sizeof(float)); X2 = xalloc((size_t)d * CPU_NB, sizeof(float));
+        cap_d = (size_t)d * CPU_NB;
+    }
+    if ((size_t)qd * CPU_NB > cap_q) {
+        free(Q); free(O); Q = xalloc((size_t)qd * CPU_NB, sizeof(float)); O = xalloc((size_t)qd * CPU_NB, sizeof(float));
+        cap_q = (size_t)qd * CPU_NB;
+    }
+    if ((size_t)kvd * CPU_NB > cap_k) {
+        free(K); free(V); K = xalloc((size_t)kvd * CPU_NB, sizeof(float)); V = xalloc((size_t)kvd * CPU_NB, sizeof(float));
+        cap_k = (size_t)kvd * CPU_NB;
+    }
+    if ((size_t)H * CPU_NB > cap_h) {
+        free(HB); free(HB2); HB = xalloc((size_t)H * CPU_NB, sizeof(float)); HB2 = xalloc((size_t)H * CPU_NB, sizeof(float));
+        cap_h = (size_t)H * CPU_NB;
+    }
+    for (int l = l0; l < l1; l++) {
+        const Layer *L = &m->layers[l];
+        if (l + 1 < l1) layer_prefetch(m, l + 1);
+        int prep = 0;
+        for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->attn_norm, d, c->eps);
+        matmat(Q, &L->wq, Xb, xqs, &prep, B, qd, d);
+        matmat(K, &L->wk, Xb, xqs, &prep, B, kvd, d);
+        matmat(V, &L->wv, Xb, xqs, &prep, B, kvd, d);
+        float *kbase = m->kcache + (size_t)l * ctx * kvd;
+        float *vbase = m->vcache + (size_t)l * ctx * kvd;
+        for (int t = 0; t < B; t++) {
+            float *q = Q + (size_t)t * qd, *k = K + (size_t)t * kvd, *v = V + (size_t)t * kvd;
+            const int pos = pos0 + t;
+            if (L->bq) for (int i = 0; i < qd; i++) q[i] += L->bq[i];
+            if (L->bk) for (int i = 0; i < kvd; i++) k[i] += L->bk[i];
+            if (L->bv) for (int i = 0; i < kvd; i++) v[i] += L->bv[i];
+            if (c->qk_norm == 1) {
+                rmsnorm(q, q, L->q_norm, qd, c->eps);
+                rmsnorm(k, k, L->k_norm, kvd, c->eps);
+            } else if (c->qk_norm == 2) {
+                for (int h = 0; h < c->n_heads; h++) rmsnorm(q + h * hd, q + h * hd, L->q_norm, hd, c->eps);
+                for (int h = 0; h < c->n_kv; h++) rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps);
+            }
+            for (int i = 0; i < hd / 2; i++) {
+                float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+                for (int h = 0; h < c->n_heads; h++) {
+                    float *p = q + h * hd + step * i, a = p[0], b = p[gap];
+                    p[0] = a * cs - b * sn; p[gap] = a * sn + b * cs;
+                }
+                for (int h = 0; h < c->n_kv; h++) {
+                    float *p = k + h * hd + step * i, a = p[0], b = p[gap];
+                    p[0] = a * cs - b * sn; p[gap] = a * sn + b * cs;
+                }
+            }
+            memcpy(kbase + (size_t)pos * kvd, k, kvd * sizeof(float));
+            memcpy(vbase + (size_t)pos * kvd, v, kvd * sizeof(float));
+        }
+        {
+            AttJob aj = { Q, O, kbase, vbase, pos0, B, c->n_heads, hd, kvd, group, qd, 1.0f / sqrtf((float)hd), ctx };
+            pool_for(att_job, &aj, B * c->n_heads, 1);
+        }
+        prep = 0;
+        matmat(X2, &L->wo, O, xqs, &prep, B, d, qd);
+        for (int t = 0; t < B; t++) {
+            float *x = X + (size_t)t * d; const float *y = X2 + (size_t)t * d;
+            for (int i = 0; i < d; i++) x[i] += y[i] + (L->bo ? L->bo[i] : 0.0f);
+        }
+        /* --- feed-forward SwiGLU --- */
+        for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->ffn_norm, d, c->eps);
+        prep = 0;
+        matmat(HB, &L->w_gate, Xb, xqs, &prep, B, H, d);
+        matmat(HB2, &L->w_up, Xb, xqs, &prep, B, H, d);
+        for (size_t i = 0; i < (size_t)B * H; i++) {
+            float g = HB[i];
+            HB[i] = g / (1.0f + expf(-g)) * HB2[i];
+        }
+        prep = 0;
+        matmat(X2, &L->w_down, HB, xqs, &prep, B, d, H);
+        for (size_t i = 0; i < (size_t)B * d; i++) X[i] += X2[i];
+    }
+}
+
+/* camadas [l0, l1) para B tokens a partir de pos0; X: B x dim (token a token), atualizado no lugar */
+static void cpu_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
+    const int d = m->cfg.dim;
+    if (B < 1) return;
+    if (B == 1 || m->cfg.n_expert || sp.collect || sp.oracle_keep || sp.mask) {    /* sem caminho em lote */
+        for (int t = 0; t < B; t++) {
+            memcpy(m->x, X + (size_t)t * d, d * sizeof(float));
+            cpu_layers(m, l0, l1, pos0 + t);
+            memcpy(X + (size_t)t * d, m->x, d * sizeof(float));
+        }
+        return;
+    }
+    for (int b = 0; b < B; b += CPU_NB) cpu_layers_nc(m, l0, l1, pos0 + b, B - b < CPU_NB ? B - b : CPU_NB, X + (size_t)b * d);
+}
+
 /* norma final + projecao para o vocabulario, na CPU */
 static float *cpu_head(Model *m) {
     const Config *c = &m->cfg;
@@ -4854,6 +5147,29 @@ static int selftest(Model *m) {
             ok = ok && e2e;
         }
         free(ref);
+    }
+    if (!c->n_expert) {     /* camadas em lote na CPU x as mesmas camadas token a token (produto inteiro nos dois) */
+        const int N = 23, V = c->vocab;
+        float *X = xalloc((size_t)N * d, sizeof(float)), *Y = xalloc((size_t)N * d, sizeof(float));
+        gpu.force_cpu = 1; cpu_exact = 0;
+        for (int t = 0; t < N; t++) mat_row(X + (size_t)t * d, &m->tok_emb, (int)((1000003u * (t + 1)) % (unsigned)V), d);
+        memcpy(Y, X, (size_t)N * d * sizeof(float));
+        cpu_layers_n(m, 0, c->n_layers, 0, N, X);
+        for (int t = 0; t < N; t++) {
+            memcpy(m->x, Y + (size_t)t * d, d * sizeof(float));
+            cpu_layers(m, 0, c->n_layers, t);
+            memcpy(Y + (size_t)t * d, m->x, d * sizeof(float));
+        }
+        gpu.force_cpu = 0;
+        double md = 0.0, mx = 0.0;
+        for (size_t i = 0; i < (size_t)N * d; i++) {
+            if (fabs(X[i] - Y[i]) > md) md = fabs(X[i] - Y[i]);
+            if (fabs(Y[i]) > mx) mx = fabs(Y[i]);
+        }
+        const int okb = md <= 1e-3 * mx;
+        printf("CPU em lote       x CPU token a token (%d tokens): maior diferenca de estado=%.3e (maximo %.3e): %s\n", N, md, mx, okb ? "OK" : "FALHOU");
+        ok = ok && okb;
+        free(X); free(Y);
     }
     return ok ? 0 : 1;
 }
@@ -6592,5 +6908,6 @@ int main(int argc, char **argv) {
     SetConsoleOutputCP(CP_UTF8);
 #endif
     pool_init();
+    vnni_init();
     return run_main(argc, argv);
 }
