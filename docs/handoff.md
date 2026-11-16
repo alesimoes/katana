@@ -8,7 +8,9 @@ backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo 
 
 **O que roda**
 
-- Modelos densos (`llama`, `qwen2`) e de mistura de especialistas (`olmoe`, `qwen3moe`) a partir de GGUF.
+- Modelos densos (`llama`, `qwen2`, `qwen3`) e de mistura de especialistas (`olmoe`, `qwen3moe`, `deepseek2`,
+  `qwen35moe`, `gemma4`) a partir de GGUF. O `gemma4` (ver 2.2b) tem CPU correto e caminho híbrido em Vulkan;
+  falta medi-lo na GPU livre.
 - Dois backends de GPU, escolhidos por `KATANA_BACKEND`:
   - `opencl` (padrão): tudo, inclusive MoE com cache de especialistas e modelo maior que a VRAM.
   - `vulkan`: só modelos densos que cabem inteiros na VRAM; geração com grafo gravado e prompt em
@@ -82,6 +84,57 @@ qwen3moe e deepseek2; olmoe continua no OpenCL por padrão (2–4% mais lento em
 
 **Terceira etapa feita (seção 8)**: prompt MoE em lote no Vulkan (qwen3moe, olmoe): Qwen3-30B 48 → 141–149 tok/s
 (OpenCL 58), OLMoE 140 → 362–375 (OpenCL 209–212). Falta o lote no modo híbrido (MLA: Moonlight, DeepSeek).
+
+### 2.2b Arquitetura Gemma 4 (`gemma4`, feita 2026-11-16)
+
+Modelo de teste: `modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (MoE 26B, 4B ativos, 30 camadas, dim 2816).
+Confirmado pela referência pública (transformers `modeling_gemma4.py`, `rope_utils`, e o `gemma4.cpp` do
+motor de referência em `ref/llama-src`). O que a arquitetura tem:
+
+- Camadas **locais** (janela deslizante 1024, cabeça 256, kv 8, RoPE base 1e4) e **globais** a cada 6ª
+  (cabeça 512, kv 2, RoPE base 1e6 com **rope proporcional/parcial**: só metade das dimensões gira, pelos
+  divisores em `rope_freqs.weight`). Largura de cabeça e nº de kv **por camada** (listas no GGUF).
+- q e k normalizados **por cabeça** (RMS com peso); **v normalizado por norma sem peso**. Camadas globais
+  **não têm `attn_v`**: v vem da saída crua de `attn_k` (antes de k_norm/RoPE). Atenção com escala 1.
+- Feed-forward: **denso** (gate/up/down, GELU tanh) **em paralelo** com o **MoE** (128 especialistas, 8
+  ativos, `ffn_gate_up_exps` fundido Q4_K, `ffn_down_exps` Q8_0). Cada bloco tem norma de saída própria
+  (`post_ffw_norm_1` no denso, `post_ffw_norm_2` no MoE), somados e normalizados por `post_ffw_norm`.
+- Roteador: lê o **resíduo** normalizado sem peso × `ffn_gate_inp.scale` × 1/√dim; softmax, top-8,
+  renormaliza, e multiplica cada peso pela escala do especialista (`ffn_down_exps.scale`).
+- Normas extras por bloco (`post_attention_norm`, `pre_ffw_norm_2`), escala escalar por camada
+  (`layer_output_scale`), **softcap 30** nos logits finais, **embedding escalado** por √dim.
+
+**Feito (CPU + Vulkan híbrido, nesta sessão)**:
+- CPU correto: `g4_layer` (token a token) e `g4_layers_n` (prompt em lote, G4_NB=16 tokens); batem entre si
+  (saída idêntica) e o texto confere (capital da França = Paris; Austrália = Camberra; "Crimson"). Os 5–6
+  primeiros tokens gulosos de um prompt batem com o motor de referência (`llama-simple`); depois divergem
+  como esperado num trajeto degenerado guloso. `selftest` (produtos por camada, larguras certas por camada):
+  pior erro relativo exato 5e-8.
+- Vulkan: **modo híbrido** como o MLA/DeltaNet (atenção e feed-forward denso na GPU por `mv_host`,
+  especialistas no cache da VRAM com os frios na CPU — `host_moe_ffn`/`vk_host_moe_ffn`, já testado no
+  deepseek2). Ativação **GELU** adicionada aos kernels `mv_*` (bit 16 do modo em `mv_common.glsl`). Com a
+  GPU quase cheia (outro agente), subiram 19 produtos densos (149 MB) e a saída foi **idêntica à da CPU**
+  ("Crimson"), validando os kernels. `gpu_setup` manda `gemma4` só para o Vulkan (sem OpenCL); sem Vulkan,
+  cai para a CPU.
+- Tokenizador `gemma4` (SPM-BPE: espaços como U+2581 sem prefixo, merges BPE sobre UTF-8 cru pela posição
+  na lista de fusões, sequências de `\n` como token inteiro, resto em bytes `<0xNN>`): **27/27** casos
+  batem com `llama-tokenize` da referência (ASCII, acentos, CJK, emoji, código, URLs, espaços repetidos).
+- Conversa: formato `<|turn>role\n...<turn|>`, canal de raciocínio `<|channel>thought ... <channel|>`
+  (desligado por padrão; `KATANA_THINK=1` liga), `chat_fmt = 8`. Chamada de ferramentas **nativa** do Gemma
+  no agente: o prompt de sistema com `<tools>` JSON é convertido para as declarações `<|tool>declaration:
+  ...<tool|>` (chaves em ordem alfabética, tipos em maiúsculas) por `g4_agent_sys`; o modelo chama
+  `<|tool_call>call:nome{k:<|"|>v<|"|>}<tool_call|>` e `g4_call_parse` traduz para o JSON que as ferramentas
+  já leem; o resultado volta em `<|tool_response>response:nome{value:...}<tool_response|>`.
+- Q4_1/Q5_1 passaram a subir para a GPU requantizados em 8 bits (antes ficavam na CPU).
+
+**Pendências do gemma4**:
+- **Medir no Vulkan com a GPU livre**: velocidade (geração e prompt em lote), o cache de especialistas de
+  verdade (agora os especialistas caíram todos na CPU por falta de VRAM) e `selftest` comparando GPU×CPU
+  (o bloco de comparação do `selftest` só roda com a GPU ativa). Prompt em lote na GPU (`vk_moe_n`) ainda
+  não cobre o gemma4 (feed-forward denso + MoE lado a lado): hoje o lote do gemma4 é só na CPU
+  (`g4_layers_n`); na GPU cai para token a token.
+- Grafo completo gravado em Vulkan (hoje é o modo híbrido ao vivo, como o MLA).
+- Agente com `web_search` validado end-to-end no CPU (lento); confirmar no Vulkan quando a GPU liberar.
 
 ### 2.3 Arquitetura DeepSeek/Kimi (prioridade 2 do plano)
 
