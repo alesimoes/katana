@@ -6998,6 +6998,83 @@ static int gr_closer(const GState *s, int t) {
     int sp = s->sp;
     return gr_tok_ok(s, t, &sp) && sp < s->sp;
 }
+/* primeiro byte do menor valor possivel para o no */
+static int gc_valchar(const GNode *nd) {
+    switch (nd->type) {
+    case GN_OBJ: return '{';
+    case GN_ARR: return '[';
+    case GN_STR: return '"';
+    case GN_NUM: case GN_INT: return '0';
+    case GN_BOOL: return 'f';
+    case GN_ENUM: return (unsigned char)nd->ev[0][0];
+    default: return 'n';
+    }
+}
+/* menor texto que completa o JSON a partir do estado s (fecha a string aberta, completa chave/valor pendente
+ * com o minimo e fecha as estruturas na ordem da pilha); devolve o tamanho, ou -1 se nao conseguir */
+static int gr_completion(const GState *s, char *out, int cap) {
+    GState t;
+    memcpy(&t, s, offsetof(GState, f) + sizeof(GFrame) * (size_t)s->sp);
+    static const char *lit[] = { "true", "false", "null" };
+    int n = 0;
+    while (t.sp > 0) {
+        if (n + 2 >= cap) return -1;
+        GFrame *f = &t.f[t.sp - 1];
+        const GNode *nd = &g_gr.n[f->node];
+        int c = -1;
+        switch (f->t) {
+        case GF_VAL: c = gc_valchar(nd); break;
+        case GF_OBJ: {
+            const uint64_t miss = nd->type == GN_OBJ ? nd->req & ~f->used : 0;
+            if (f->ph == 1) c = ':';
+            else if (f->ph == 2) c = miss ? ',' : '}';
+            else if (f->ph == 0) c = miss ? '"' : '}';
+            else c = '"';
+            break;
+        }
+        case GF_ARR: c = (f->ph == 0 || f->ph == 2) ? ']' : gc_valchar(&g_gr.n[nd->type == GN_ARR ? nd->items : 0]); break;
+        case GF_STR: c = f->aux == 0 ? '"' : f->aux == 1 ? 'n' : '0'; break;
+        case GF_NUM:
+            if (f->ph == 2 || f->ph == 3 || f->ph == 5 || f->ph == 8) { t.sp--; continue; }
+            c = '0'; break;
+        case GF_LIT: c = lit[f->node][f->pos]; break;
+        case GF_ENUM:
+            for (int i = 0; i < nd->ne && c < 0; i++) if ((f->m[i >> 6] >> (i & 63)) & 1) c = (unsigned char)nd->ev[i][f->pos];
+            break;
+        default: {                          /* GF_KEY: casa o nome de uma propriedade (as obrigatorias primeiro) */
+            const GNode *on = &g_gr.n[t.f[t.sp - 2].node];
+            uint64_t cand = f->m[0] & on->req;
+            if (!cand) cand = f->m[0];
+            int i = 0;
+            while (i < 64 && !((cand >> i) & 1)) i++;
+            if (i < 64 && i < nd->np) { const int L = (int)strlen(nd->pk[i]); c = f->pos < L ? (unsigned char)nd->pk[i][f->pos] : '"'; }
+        }
+        }
+        if (c < 0 || !gn_step(&t, (unsigned char)c)) return -1;
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return n;
+}
+
+/* elementos pendentes (virgula sem item ainda, chave aberta): fechar isso depois custa lixo semantico */
+static int gr_pend(const GState *s) {
+    int n = 0;
+    for (int i = 0; i < s->sp; i++) {
+        const GFrame *f = &s->f[i];
+        if ((f->t == GF_OBJ || f->t == GF_ARR) && f->ph == 3) n++;
+        else if (f->t == GF_OBJ && f->ph == 1) n++;
+    }
+    return n;
+}
+static int gr_newpend(const GState *s, int t) {
+    GState tmp;
+    memcpy(&tmp, s, offsetof(GState, f) + sizeof(GFrame) * (size_t)s->sp);
+    const unsigned char *b = (const unsigned char *)g_gr.tt + g_gr.toff[t];
+    for (int i = 0; i < g_gr.tlen[t]; i++) if (!gn_step(&tmp, b[i])) return 0;
+    return gr_pend(&tmp) > gr_pend(s);
+}
+
 static int gr_sample(const float *lg, int n, float temp, int eos) {
     GState *s = &g_gr.s;
     if (gr_done()) {                       /* gramatica completa: so falta terminar */
@@ -7010,6 +7087,21 @@ static int gr_sample(const float *lg, int n, float temp, int eos) {
         memcpy(&tmp, s, offsetof(GState, f) + sizeof(GFrame) * (size_t)s->sp);
         allow[b] = (unsigned char)gn_step(&tmp, (unsigned char)b);
     }
+    int near = 0;
+    {   /* orcamento acabando: segue o menor texto que completa o JSON (so tokens que sao prefixo dele) */
+        char comp[600];
+        const int cl = gr_completion(s, comp, sizeof comp);
+        near = cl > 0 && g_gr.left <= cl + 20;     /* perto do fim: nao abre virgula/chave nova */
+        if (cl > 0 && g_gr.left <= cl + 2) {
+            float best = -3.4e38f; int bi = -1;
+            for (int t = 0; t < n; t++) {
+                const int L = g_gr.tlen[t];
+                if (L <= 0 || L > cl || lg[t] <= best || g_gr.tt[g_gr.toff[t]] != comp[0]) continue;
+                if (memcmp(g_gr.tt + g_gr.toff[t], comp, (size_t)L) == 0) { best = lg[t]; bi = t; }
+            }
+            if (bi >= 0) return bi;
+        }
+    }
     int idx[GR_NC]; float val[GR_NC]; int k = 0;
     for (int i = 0; i < n; i++) {
         if (k == GR_NC && lg[i] <= val[k - 1]) continue;
@@ -7020,11 +7112,11 @@ static int gr_sample(const float *lg, int n, float temp, int eos) {
     int cand[TOP_K]; float cv[TOP_K]; int nc = 0;
     const int want = temp <= 0.0f ? 1 : TOP_K;
     /* orcamento acabando: so tokens que fecham as estruturas abertas (para o JSON terminar valido) */
-    for (int cl = g_gr.left <= 3 * s->sp + 14; cl >= 0 && nc == 0; cl--) {
+    for (int cl = 0; cl >= 0 && nc == 0; cl--) {
         for (int i = 0; i < k && nc < want; i++) {
             const int t = idx[i];
             if (g_gr.tlen[t] <= 0 || !allow[(unsigned char)g_gr.tt[g_gr.toff[t]]]) continue;
-            if (cl && !gr_closer(s, t)) continue;
+            if (near && gr_newpend(s, t)) continue;
             if (gr_tok_ok(s, t, NULL)) { cand[nc] = t; cv[nc] = val[i]; nc++; }
         }
         if (nc == 0 && cl) {               /* tambem varre o vocabulario atras de um fechador */
@@ -7037,12 +7129,15 @@ static int gr_sample(const float *lg, int n, float temp, int eos) {
         }
     }
     if (nc == 0) {                         /* nenhum dos melhores serve: varre o vocabulario */
-        float best = -3.4e38f; int bi = -1;
-        for (int t = 0; t < n; t++) {
-            if (lg[t] <= best || g_gr.tlen[t] <= 0 || !allow[(unsigned char)g_gr.tt[g_gr.toff[t]]]) continue;
-            if (gr_tok_ok(s, t, NULL)) { best = lg[t]; bi = t; }
+        for (int pass = near; pass >= 0; pass--) {      /* perto do fim, primeiro sem abrir elemento novo */
+            float best = -3.4e38f; int bi = -1;
+            for (int t = 0; t < n; t++) {
+                if (lg[t] <= best || g_gr.tlen[t] <= 0 || !allow[(unsigned char)g_gr.tt[g_gr.toff[t]]]) continue;
+                if (gr_tok_ok(s, t, NULL) && !(pass && gr_newpend(s, t))) { best = lg[t]; bi = t; }
+            }
+            if (bi >= 0) return bi;
         }
-        return bi >= 0 ? bi : eos;
+        return eos;
     }
     if (temp <= 0.0f || nc == 1) return cand[0];
     for (int i = 0; i < nc; i++) cv[i] /= temp;
