@@ -12,7 +12,7 @@ void main() {
         float a[NR];
         for (int r = 0; r < NR; r++) a[r] = 0.0;
         for (int l = 0; l < 8; l++) {
-            float x0 = x[xb + 4 * l], x1 = x[xb + 4 * l + 1], x2 = x[xb + 4 * l + 2], x3 = x[xb + 4 * l + 3];
+            float x0 = x[xoff_ + xb + 4 * l], x1 = x[xoff_ + xb + 4 * l + 1], x2 = x[xoff_ + xb + 4 * l + 2], x3 = x[xoff_ + xb + 4 * l + 3];
             for (int r = 0; r < NR; r++) {
                 int w = int(W[p[r] + uint(1 + l) * 32u]);
                 a[r] += float((w << 24) >> 24) * x0 + float((w << 16) >> 24) * x1
