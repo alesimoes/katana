@@ -11,7 +11,8 @@ Motor de inferência de modelos de linguagem escrito do zero em C (`katana.c`). 
 
 - Conversa e documentação em português. Comentários no código em português sem acentos.
 - O código não cita outros motores de inferência; em documentos, "motor de referência".
-- Nada proprietário e nada de serviços externos em tempo de execução.
+- Nada proprietário. O motor de inferência roda sem serviços externos; as ferramentas do agente podem
+  buscar conhecimento fora do modelo (internet, arquivos da máquina, memória própria), como o dono quer.
 - Repositório privado (github.com/alesimoes/katana): commit e push a cada passo concluído; não
   tornar público sem pedido.
 - O dono do projeto quer trabalho contínuo, sem perguntas desnecessárias. Perguntar só antes de
