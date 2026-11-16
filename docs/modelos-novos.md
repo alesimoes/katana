@@ -126,3 +126,59 @@ tambem OK no Moonlight. Chat "17 vezes 23" igual ao da CPU, ~7 tok/s nos dois, i
 sobre a CPU (6,7 tok/s; medida isolada, nao alternada): a ida e volta por produto come o ganho.
 `q_lora_rank` (attn_q_a/attn_q_a_norm/attn_q_b) ja e lido e usado na CPU, mas sem modelo para testar.
 Regressao: `selftest` OK em qwen2.5-1.5b e olmoe (KATANA_KV16=0).
+
+## Qwen3.6-35B-A3B (`general.architecture = qwen35moe`)
+
+Arquivo: `modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (22.134.528.992 bytes, Unsloth, imatrix).
+40 camadas, dim 2048, vocab 248320, 16 cabecas (kv 2) de 256, MoE 256 especialistas / 8 ativos
+(ffn 512) + 1 compartilhado (ffn 512) com portao sigmoide escalar (`ffn_gate_inp_shexp`).
+Camadas com (l+1) % 4 == 0 (3, 7, ..., 39) sao atencao completa com portao; as outras 30 sao Gated
+DeltaNet. Tipos: Q8_0 (projecoes da atencao/DeltaNet, compartilhado, embedding), Q4_K (gate/up dos
+especialistas), Q5_K/Q6_K (down), Q6_K (output), F32 (normas, roteador, ssm_alpha/beta, conv1d).
+Tokenizador gpt2, pre `qwen35` (carregou com o BPE existente; pre-tokenizacao igual a do qwen2, sem
+regra propria registrada - texto comum tokeniza e gera certo).
+
+### Convencoes confirmadas rodando o modelo real (referencia da CPU)
+
+1. Mapa grupo q/k -> cabeca de v: **h % 16** (intercalado). Com h / 2 a saida vira lixo
+   ("The capital of France is诚聘英才IES..."); com h % 16 sai "Paris, a city renowned for...".
+   (`KATANA_DN_TILE=0` liga o outro mapa, so para teste.)
+2. Pesos das normas RMS (attn_norm, post_attention_norm, ssm_norm, attn_q_norm, attn_k_norm,
+   output_norm): **w direto** (o arquivo ja traz o 1+w onde o modelo original usa). ssm_norm e
+   norma RMS por cabeca de v (128) seguida de multiplicacao por SiLU(z).
+3. `ssm_a` ja vem pronto como **-exp(A_log)** (negativo): g = ssm_a * softplus(alpha + dt_bias),
+   decaimento = exp(g).
+4. `attn_qkv` [2048 -> 8192]: blocos contiguos **q (16x128) | k (16x128) | v (32x128)**; a
+   convolucao [4][8192] (dims [4, 8192], 4 taps contiguos por canal, tap 3 = token atual) roda sobre
+   os 8192 canais antes da divisao; depois SiLU, L2 (eps 1e-6) por grupo em q e k, q * 1/sqrt(128).
+   `attn_q` da atencao completa [2048 -> 8192]: **intercalado por cabeca**, [q 256 | portao 256] x 16;
+   saida de cada cabeca * sigmoide(portao) antes de attn_output.
+5. RoPE parcial neox: giram as **64 primeiras dims de cada cabeca, pares (i, i+32)**, frequencia
+   1e7^(-2i/64); as dims 64..255 nao giram. mRoPE [11,11,10] com texto puro = RoPE comum.
+Roteador: softmax sobre os 256, top-8, pesos renormalizados. Formato: ChatML, assistente comeca
+com `<think>\n`; ferramentas em XML (`<function=..><parameter=..>`).
+
+### Estado no katana
+
+- CPU exata: etapas por camada em funcoes com buffers (`dn_proj`, `dn_conv`, `dn_recur`,
+  `dn_gate`, `qn_core`, `ffn_moe`, `qn_layer`). Estado do DeltaNet contiguo em `m->ssm`: por camada
+  linear, S [32][128][128] e (4-1) x 8192 da convolucao (`dn_S`, `dn_CV`); zera em pos 0. O
+  servidor recomeca do zero se o prefixo reaproveitado nao for o cache inteiro.
+- GPU (OpenCL, modo `gpu.mv_host`): camadas na CPU, 251 produtos densos na GPU (qkv, z, ssm_out,
+  q/k/v/o, compartilhado, vocabulario; 1,9 GB) e os especialistas pelo mesmo cache de vagas do
+  qwen3moe (`gx_setup`, extraido do `gpu_setup`; calor, thread carregadora, `heat_*`), via
+  `gpu_moe_host` (sobe xb, `gpu_moe_ffn`, le a soma). Na RTX 3050 4 GB: 19 de 256 vagas por camada.
+- Prompt em lote na CPU (`qn_layers_n`, ate 16 tokens): projecoes, saidas, compartilhado e pares
+  (token, especialista) em lote; conv/recorrencia/atencao token a token (`dn_recur` e o laco a
+  trocar pela forma em blocos). Padrao: lote so sem GPU (`KATANA_QN_BATCH=1/0` forca).
+- Medidas (indicativas, maquina compartilhada, alternadas na mesma hora, 46 tokens de prompt,
+  60 gerados): GPU+cache de especialistas: prompt token a token 15,2 tok/s, geracao 14,6-18,8 tok/s;
+  prompt em lote na CPU 15,4-17,6 tok/s. So CPU (`KATANA_CPU=1`): ~8-10 tok/s de geracao, prompt
+  10-14 tok/s. Especialistas: ~46% dos usos na VRAM.
+- Falta: grafo completo na GPU (DeltaNet e atencao com portao; kernels em `tools/vkdelta/`),
+  Vulkan (hoje so OpenCL no mv_host), especialistas na GPU no prompt em lote, forma em blocos do
+  DeltaNet, `katana pack` nao testado para este modelo, cache KV aloca as 40 camadas (so 10 usam).
+- Agente validado: pergunta sobre o kernel Linux -> `web_search` e `web_fetch` chamados em XML,
+  convertidos para o JSON de argumentos, resposta "7.3.4" citando kernel.org. Velocidade no agente
+  8-11 tok/s, caindo a ~2 tok/s numa rodada (11535 trocas de especialistas: o calor troca demais
+  com 19 vagas; investigar `KATANA_SWAP`/margem para este modelo).
