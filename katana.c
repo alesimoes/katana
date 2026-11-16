@@ -81,6 +81,7 @@
 #include "vk/shaders/qn_gate.h"
 #include "vk/shaders/moe_gath.h"
 #include "vk/shaders/moe_scat.h"
+#include "vk/shaders/mla_att.h"
 #include "vk/shaders/mm_t0_64x64_g0.h"
 #include "vk/shaders/mm_t0_64x64_g1.h"
 #include "vk/shaders/mm_t0_64x32w4_g0.h"
@@ -6525,6 +6526,8 @@ static struct {
     int ok, P;
     KvkBuf *an, *fn, *dg;           /* normas por camada; par gate/up das camadas densas */
     float *Qh, *Kh, *Q, *OT;
+    int gatt;                       /* atencao na GPU (mla_att.comp); 0 = na CPU */
+    KvkBuf qb, cb, wk, wv; KvkPipe att;
     double t_attn, t_rd; long passes;
 } vkml;
 static int vk_mla_build(Model *m) {
@@ -6636,6 +6639,18 @@ static int vk_mla_build(Model *m) {
     vkml.Qh = xalloc(qd * P, sizeof(float)); vkml.Kh = xalloc(W * P, sizeof(float));
     vkml.Q = xalloc(qd * P, sizeof(float)); vkml.OT = xalloc(od * P, sizeof(float));
     vkml.P = (int)P; vkml.ok = 1;
+    /* atencao na GPU: q por token, cache latente da camada (sobe a cada passada a partir de m->ckv), k_b e v_b da
+       camada (float32, sobem por camada: nao ficam residentes para nao tirar vagas do cache de especialistas) */
+    if (!(getenv("KATANA_VK_MLAATT") && atoi(getenv("KATANA_VK_MLAATT")) == 0) && vkg.sg32 && hd == 192 && c->rope_dim == 64
+        && c->mla == 512 && hv == 128) {
+        int f2 = 0;
+        const size_t u1 = gpu.used;
+        vkml.qb = vk_wk(qd * P * 4, &f2); vkml.cb = vk_wk((size_t)c->ctx * W * 4, &f2);
+        vkml.wk = vk_wk(nh * 512 * 128 * 4, &f2); vkml.wv = vk_wk(nh * 128 * 512 * 4, &f2);
+        vkml.att = kvk_pipe_create(mla_att_spv, sizeof mla_att_spv, 5, 16, NULL, NULL, 0);
+        if (!f2 && vkml.att.p) vkml.gatt = 1;
+        else gpu.used = u1;
+    }
     fprintf(stderr, "Vulkan: prompt MLA em lote (ate %zu tokens por passada, %.0f MB)\n", P, (gpu.used - used0) / 1048576.0);
     return 1;
 }
@@ -6725,10 +6740,22 @@ static float *vk_mla_n(Model *m, const int *toks, int B, int pos0, int want_logi
             }
         }
         const int nb = (B + MLA_TB - 1) / MLA_TB;
-        MlaNJob job = { m, L, l, pos0, B, nb, c->kq_mul / sqrtf((float)hd) };
-        pool_for(mla_n_job, &job, nb * nh, 1);
-        vkml.t_rd += t1 - t0; vkml.t_attn += now_sec() - t1;
-        ok &= kvk_buf_write_q(vkb.q2, 0, vkml.OT, (size_t)od * B * 4);
+        const float scale = c->kq_mul / sqrtf((float)hd);
+        if (vkml.gatt) {
+            ok &= kvk_buf_write_q(vkml.qb, 0, vkml.Q, (size_t)qd * B * 4);
+            ok &= kvk_buf_write_q(vkml.cb, 0, m->ckv + (size_t)l * c->ctx * W, (size_t)(pos0 + B) * W * 4);
+            ok &= kvk_buf_write_q(vkml.wk, 0, L->wkb, (size_t)nh * R * nope * 4);
+            ok &= kvk_buf_write_q(vkml.wv, 0, L->wvb, (size_t)nh * c->hd_v * R * 4);
+            const KvkBuf ab[5] = { vkml.qb, vkml.cb, vkml.wk, vkml.wv, vkb.q2 };
+            const struct { int B, pos0, nh; float scale; } ap = { B, pos0, nh, scale };
+            ok &= kvk_dispatch(vkml.att, ab, 5, &ap, sizeof ap, (uint32_t)B, (uint32_t)nh, 1);
+            vkml.t_rd += t1 - t0; vkml.t_attn += now_sec() - t1;
+        } else {
+            MlaNJob job = { m, L, l, pos0, B, nb, scale };
+            pool_for(mla_n_job, &job, nb * nh, 1);
+            vkml.t_rd += t1 - t0; vkml.t_attn += now_sec() - t1;
+            ok &= kvk_buf_write_q(vkb.q2, 0, vkml.OT, (size_t)od * B * 4);
+        }
         ok &= vk_mm_p(&L->wo, vkb.q2, vkb.x, d, od, B, 1, 1);
         if (L->eg) {
             if (!ok) die("falha na execucao em Vulkan (MLA do lote)");
