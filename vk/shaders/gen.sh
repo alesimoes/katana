@@ -8,6 +8,7 @@ for n in mv_f32 mv_q8 mv_q4k mv_q5k mv_q6k rms_wg; do
 done
 $G -V --target-env vulkan1.2 -DKV16=0 --vn att1f_kv32_spv -o att1f_kv32.h att1f.comp || exit 1
 $G -V --target-env vulkan1.2 -DKV16=1 --vn att1f_kv16_spv -o att1f_kv16.h att1f.comp || exit 1
+$G -V --target-env vulkan1.2 --vn att1r_spv -o att1r.h att1r.comp || exit 1
 # ---- prompt em lote (Vulkan): produto em matriz cooperativa (mm.comp), so as variantes que o motor usa
 # tipos WT: 0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32; ladrilhos: 64x64 (2x2), 64x32w4 e 64x16w4 (4 subgrupos, sem glu),
 # 64x32 e 64x16 (com glu). No 64x64 plano 4x2 subgrupos e no 64x32 glu 2x2: cada subgrupo fica com
