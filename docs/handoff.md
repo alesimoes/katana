@@ -128,12 +128,14 @@ motor de referência em `ref/llama-src`). O que a arquitetura tem:
   já leem; o resultado volta em `<|tool_response>response:nome{value:...}<tool_response|>`.
 - Q4_1/Q5_1 passaram a subir para a GPU requantizados em 8 bits (antes ficavam na CPU).
 
-**Pendências do gemma4**:
-- **Medir no Vulkan com a GPU livre**: velocidade (geração e prompt em lote), o cache de especialistas de
-  verdade (agora os especialistas caíram todos na CPU por falta de VRAM) e `selftest` comparando GPU×CPU
-  (o bloco de comparação do `selftest` só roda com a GPU ativa). Prompt em lote na GPU (`vk_moe_n`) ainda
-  não cobre o gemma4 (feed-forward denso + MoE lado a lado): hoje o lote do gemma4 é só na CPU
-  (`g4_layers_n`); na GPU cai para token a token.
+**Pendências do gemma4** (atualizado 2026-11-16, seção 10 abaixo):
+- **Cache de especialistas: RESOLVIDO** (seção 10): as 8 vagas agora cabem na VRAM (antes caía para 7 e
+  todos os especialistas iam para a CPU). O `selftest` GPU×CPU do gemma4 roda com a GPU livre: `lote` e
+  `lote 16` passam (~0,0031, dentro do histórico ~0,0027). O caminho token a token do cache (`vk_host_moe_ffn`),
+  que nunca tinha sido exercitado no gemma4, foi validado: a geração gulosa bate **idêntica** à CPU pura
+  (fp16 nos quentes só muda o logit, não o argmax).
+- **Prompt em lote na GPU (`vk_moe_n`) ainda NÃO cobre o gemma4** (feed-forward denso + MoE lado a lado):
+  hoje o lote do gemma4 é só na CPU (`g4_layers_n`); na GPU cai para token a token. Plano e bloqueio na seção 10.
 - Grafo completo gravado em Vulkan (hoje é o modo híbrido ao vivo, como o MLA).
 - Agente com `web_search` validado end-to-end no CPU (lento); confirmar no Vulkan quando a GPU liberar.
 
@@ -543,3 +545,61 @@ com o tamanho atual do `.gguf`, o perfil e ignorado com aviso.
 **Pendencias**: rodar `prepare` com a GPU livre para medir `tune` e a calibracao real do calor (hoje adiados);
 `pack`/perfil ainda nao cobrem gemma4 e DeltaNet (plano e perfil saem, mas sem shards). O perfil nao forca o
 nº de vagas (derivado na carga); so guarda os ajustes que ja viram variavel de ambiente.
+
+
+## 10. gemma4 na GPU livre: cache de especialistas cabe as 8 vagas (2026-11-16, worktree agent-aaef)
+
+Sessão com a RTX 3050 4 GB livre, só o gemma4 (`modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`).
+
+**O problema medido**: com a GPU livre, `gpu_setup` sobe 206 produtos densos (2570 MB) e sobra pouca VRAM.
+No orçamento padrão do Linux (88%) o cache de especialistas calculava **7 vagas por camada, mas o gemma4
+precisa de 8** (`n_used=8`): `host_moe_setup` falhava e **todos** os especialistas caíam na CPU. Efeito:
+geração 0,6 tok/s e prompt 0,3 tok/s (a frio, lendo os experts do arquivo de 17 GB).
+
+**A correção** (`katana.c`, `host_moe_setup`): quando o cache híbrido fica a pouco de fechar as K vagas,
+tenta um teto de VRAM um pouco mais alto (padrão 91%, `KATANA_VRAM_PCT_HYBRID`), só o suficiente para as K
+vagas. **Só atua neste quase-encaixe**: os modelos que já cabem no orçamento padrão (Qwen3-30B no grafo
+completo, deepseek2/moonlight no híbrido com S>=K) não entram nesse ramo e ficam idênticos ao main. Para o
+gemma4, passa a subir **8 de 128 vagas (1067 MB)**, total ~3637 MB (~88,8% de 4096), que o driver aceita
+sem erro -4 (testado até 92%). Alternativa não usada (anotada): baixar a quantização dos experts frios.
+
+**Validação (selftest, GPU livre, binário novo)**:
+- gemma4 `produtos: OK` (pior erro exato 5,08e-8); `GPU em lote x CPU` = **0,0031 OK**, `GPU lote 16` idem
+  (dentro do histórico ~0,0027). O caminho `GPU token a token x CPU` dá 1,78 (FALHOU no limiar): é a
+  imprecisão fp16 dos experts quentes (mesma classe do Qwen3-30B, 0,11, seção 8), **exposta agora** porque o
+  cache do gemma4 nunca tinha sido exercitado. **A geração gulosa (temp 0) bate idêntica à CPU pura**
+  ("2, 3, 5, 7, 11, 13, 17, 19"), então o argmax não muda; a saída token a token é correta.
+- Sem regressão: `selftest` qwen2.5-1.5b (vulkan, lote 0,0078 OK), olmoe (`KATANA_KV16=0`, lote 0,0015 OK),
+  Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`, lote 0,00048 / lote 16 0,00046 OK; o `token a token` 0,115
+  FALHOU é o pré-existente da seção 8, igual no main e fora do caminho que esta mudança toca).
+
+**Medidas (gemma4, prompt 42 + geração 48, greedy, main=sem cache / novo=com cache, alternado na mesma hora,
+GPU 79–81 °C)**. Muito ruído de page cache: o arquivo de 17 GB não cabe inteiro com folga na RAM (43 GB) e
+disputa com os 2570 MB de produtos densos, então a geração oscila conforme o estado do cache do SO:
+
+| rodada | main prompt/ger | novo prompt/ger |
+|---|---|---|
+| 1 (SO frio) | 0,7 / 0,8 | 5,6 / 3,4 |
+| 2 (SO quente) | 5,1 / 6,2 | 6,3 / 9,1 |
+| 3 | 5,2 / 1,2 | 2,7 / 7,2 |
+
+Leitura: quando o arquivo **não** está no page cache (caso realista nesta máquina), o cache na VRAM é um
+salto grande (geração 0,8 -> 3,4; prompt 0,7 -> 5,6). Com o arquivo quente no page cache, o ganho da geração
+é ~1,5x (6,2 -> 9,1) porque os experts frios já vêm da RAM. Com o cache, só ~36% dos usos de expert batem na
+VRAM (8 vagas de 128), o resto roda na CPU; cada `chat` começa com o calor zerado (não há `.heat` do gemma4).
+
+**Pendências / próximos (em ordem de ganho)**:
+1. **Prompt em lote na GPU para o gemma4 (item 1, NÃO feito)**. Bloqueio: o lote na GPU (`vk_forward_n` ->
+   `vk_emit_n` -> `vk_moe_n`) usa o grafo `vkg` com cache KV na VRAM e uma **atenção uniforme** (hd igual em
+   todas as camadas, RoPE padrão, `attn_v` presente, escala 1/√hd). O gemma4 precisa de uma atenção de lote
+   própria: **hd e nº de kv por camada**, **q/k normalizados por cabeça + v por norma sem peso**, camadas
+   **globais sem `attn_v`** (v vem da saída crua de `attn_k`), **janela deslizante 1024** nas locais, **escala
+   1**, RoPE parcial com base por camada. Depois disso, o feed-forward denso entra em lote (`vk_mm`, matrizes
+   já na GPU) **em paralelo** com o MoE via `vk_moe_n` (que já faz roteamento + agrupamento por especialista +
+   produtos no `mm.comp` + vagas temporárias), com as normas de saída próprias (`post_ffw_norm_1/_2`,
+   `post_ffw_norm`, `out_scale`) e o roteador lendo o resíduo normalizado sem peso. É a tarefa grande; precisa
+   de um kernel de atenção de lote gemma4 novo antes de reaproveitar o `vk_moe_n`.
+2. **Mais acertos no cache**: pré-aquecer com calibração de calor (gerar um `.heat` do gemma4) para a geração
+   já começar com os experts mais usados na VRAM; e/ou liberar VRAM dos produtos densos para caber mais vagas.
+3. Precisão do token a token: experts quentes em fp32 no caminho de um token (como o lote do Qwen3-30B virou
+   fp32 na seção 8) tiraria o 1,78 do selftest; hoje não afeta a geração gulosa.

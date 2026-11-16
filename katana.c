@@ -3964,6 +3964,19 @@ static int host_moe_setup(Model *m) {
     if (getenv("KATANA_EXPERT_MB")) { const size_t lim = (size_t)atoll(getenv("KATANA_EXPERT_MB")) << 20; if (lim < avail) avail = lim; }
     size_t S = avail / per;
     if (S > (size_t)E) S = E;
+    if (S < (size_t)K) {
+        /* Falta pouco para fechar as K vagas (ex.: gemma4 cabe 7, precisa de 8): o orcamento
+           padrao e conservador. Tenta um teto de VRAM um pouco mais alto, ainda seguro (abaixo
+           do limite que estoura a alocacao), so o suficiente para as K vagas. So atua neste caso
+           de quase-encaixe; os modelos que ja cabem no orcamento padrao nao sao tocados. */
+        const int hpct = getenv("KATANA_VRAM_PCT_HYBRID") ? atoi(getenv("KATANA_VRAM_PCT_HYBRID")) : 91;
+        const uint64_t hb = gpu.vram / 100 * (uint64_t)hpct;
+        size_t avail2 = hb > gpu.used + keep ? (size_t)(hb - gpu.used - keep) : 0;
+        if (getenv("KATANA_EXPERT_MB")) { const size_t lim = (size_t)atoll(getenv("KATANA_EXPERT_MB")) << 20; if (lim < avail2) avail2 = lim; }
+        size_t S2 = avail2 / per;
+        if (S2 > (size_t)E) S2 = E;
+        if (S2 >= (size_t)K) { fprintf(stderr, "GPU: cache de especialistas usa ate %d%% da VRAM para caber %d vagas (falta pouco no padrao)\n", hpct, K); S = S2; }
+    }
     if (S < (size_t)K) { fprintf(stderr, "GPU: sobra VRAM para %zu vagas por camada, precisa de %d\n", S, K); return 0; }
     if (gpu.vk) return vk_host_moe_setup(m, S, per, work);
     int32_t e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0, e6 = 0, e7 = 0;
