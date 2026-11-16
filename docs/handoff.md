@@ -9,8 +9,9 @@ backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo 
 **O que roda**
 
 - Modelos densos (`llama`, `qwen2`, `qwen3`) e de mistura de especialistas (`olmoe`, `qwen3moe`, `deepseek2`,
-  `qwen35moe`, `gemma4`) a partir de GGUF. O `gemma4` (ver 2.2b) tem CPU correto e caminho híbrido em Vulkan;
-  falta medi-lo na GPU livre.
+  `qwen35moe`, `gemma4`, `gpt-oss`) a partir de GGUF. O `gemma4` (ver 2.2b) tem CPU correto e caminho híbrido em
+  Vulkan; falta medi-lo na GPU livre. O `gpt-oss` (ver 2.2c) tem CPU correto, tokenizador, conversa harmony e
+  agente com ferramentas; falta o caminho em Vulkan (só CPU por enquanto).
 - Dois backends de GPU, escolhidos por `KATANA_BACKEND`:
   - `opencl` (padrão): tudo, inclusive MoE com cache de especialistas e modelo maior que a VRAM.
   - `vulkan`: só modelos densos que cabem inteiros na VRAM; geração com grafo gravado e prompt em
@@ -135,6 +136,64 @@ motor de referência em `ref/llama-src`). O que a arquitetura tem:
   (`g4_layers_n`); na GPU cai para token a token.
 - Grafo completo gravado em Vulkan (hoje é o modo híbrido ao vivo, como o MLA).
 - Agente com `web_search` validado end-to-end no CPU (lento); confirmar no Vulkan quando a GPU liberar.
+
+### 2.2c Arquitetura gpt-oss (`gpt-oss`, feita 2026-11-16)
+
+Modelo de teste: `modelos/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, MXFP4 nativo; 24 camadas, dim 2880,
+64 cabecas, kv 8, cabeca 64, 32 especialistas, 4 ativos, ffn do especialista 2880). Confirmado pela
+referencia publica (`ref/llama-src`: `src/models/openai-moe.cpp`, `llama-graph.cpp`, `llama-vocab.cpp`,
+`llama-chat.cpp`). O que a arquitetura tem:
+
+- Atencao com **sink por cabeca** (`attn_sinks`, um logit extra de valor nulo no denominador do softmax,
+  nao escalado por kq) e **janela deslizante alternada** (padrao 2: camadas pares janela 128, impares
+  completas; as duas usam o mesmo RoPE). q/k/v e a saida (`attn_output`) tem **vies**; cabeca 64 (q =
+  64x64 = 4096, maior que dim 2880). Escala da atencao `kq_mul/sqrt(hd)`.
+- **RoPE NEOX + YaRN** (base 150000, fator 32, contexto original 4096): mistura interpolacao/extrapolacao
+  por dimensao (beta_fast 32, beta_slow 1, como no MLA) e mscale `ms = 1 + 0.1*ln(32)` com `kq_mul = ms^2`
+  (o `yarn_log_multiplier` nao vem no GGUF; o padrao 0.1 e assumido na carga).
+- **MoE em toda camada** (sem feed-forward denso): roteador `ffn_gate_inp` com **vies**, top-4 sobre os
+  logits e **softmax sobre os 4 escolhidos** (feito com `moe_route` + `moe_norm`, somando o vies antes do
+  softmax). Especialistas `ffn_gate/up/down_exps` em **MXFP4** com **vies** em gate/up/down; ativacao
+  **SwiGLU OAI** (`x=min(gate,7); y=clamp(up,-7,7); out = x*sigmoid(1.702*x)*(y+1)`). Soma pesada no
+  residual. So duas normas por camada (`attn_norm` antes da atencao, `post_attention_norm` antes do MoE,
+  carregada em `ffn_norm`). Sem softcap, sem escala de embedding.
+
+**Feito (CPU, esta sessao)**:
+- Carga e `go_layer` (CPU, token a token): atencao com sinks + janela alternada + vieses + yarn, MoE
+  SwiGLU OAI com vieses e roteador com vies. `selftest` (produtos por matriz) OK, experts MXFP4 erro
+  relativo 1.7e-8. Texto coerente ("capital da Franca = Paris"; "17 x 24 = 408"; "capital da Australia
+  = Canberra"). Os primeiros tokens gulosos batem com o motor de referencia (`llama-simple`): prefixo
+  comum de 10-17 tokens antes de divergir (trajeto degenerado guloso, como no gemma4).
+- Tokenizador `gpt-4o`/o200k (byte-level BPE com a regra de caixa alta*/baixa+, contracoes, numeros 1-3,
+  pontuacao com `\r\n/`, espacos): novo pre-tokenizador `PRE_GPT4O` (`match_gpt4o`). **29/29** casos batem
+  com o `llama-tokenize` da referencia (ASCII, CJK, acentos, codigo, camelCase, ALLCAPS, URLs).
+- Conversa **harmony** (`chat_fmt = 9`): mensagem de sistema (You are ChatGPT... Reasoning: low/high...
+  canais), developer com o prompt do usuario, turno `<|start|>user<|message|>...<|end|>` e
+  `<|start|>assistant`. **Raciocinio desligado por padrao** (a resposta ja comeca em
+  `<|channel|>final<|message|>`); `KATANA_THINK=1` abre o canal analysis (mostrado como `[raciocinio]`).
+  `gen_console` entende os canais (so para em `<|return|>` / `<|call|>`). Tokens de controle
+  (200002 return, 200005 channel, 200006 start, 200007 end, 200008 message, 200012 call) vem do texto.
+- Agente com **ferramentas no formato harmony**: `go_agent_sys` converte a lista `<tools>` para o
+  namespace TypeScript; o modelo chama `...to=functions.nome...<|message|>{args}<|call|>`, o agente
+  executa e devolve `<|start|>functions.nome to=assistant<|channel|>commentary<|message|>...<|end|>`.
+  Testado: "liste os arquivos" -> chamou `list_dir` e respondeu com a listagem e a contagem certas.
+- `gpu_setup` manda `gpt-oss` para a CPU (guarda); sem caminho em Vulkan ainda.
+
+**Pendencias do gpt-oss**:
+- **Caminho em Vulkan (modo hibrido como o gemma4/MLA)**: atencao + projecoes + roteamento na CPU
+  (ja e o `go_layer`), **especialistas no cache da VRAM** via `host_moe_ffn`/`vk_host_moe_ffn`. Falta,
+  nesses kernels do cache de especialistas: (1) ativacao **SwiGLU OAI** (como o gemma4 adicionou GELU
+  pelo bit de modo em `mv_common.glsl`, mas aqui com o clamp e o `(y+1)`), (2) os **vieses** de
+  gate/up/down por especialista (subir junto com os pesos na vaga e somar antes/depois), (3) o roteador
+  com vies (o `moe_route` ja soma `router_b`; no roteador da GPU o vies precisaria ir junto). Depois,
+  em `go_layer`, mandar o MoE para `host_moe_ffn` quando `gx.on` (como o gemma4 faz em `gx_host_layer`),
+  e tirar a guarda de `gpu_setup`. **Nao feito**: a GPU ficou ocupada por outro agente a sessao inteira
+  (2,6 GB de 4, ~80 C); validar a CPU primeiro e so rodar GPU x CPU quando a placa liberar.
+- Prompt em lote na CPU (`go_layers_n`): hoje o prompt e token a token; um lote agruparia os pares
+  (token, especialista) como o `g4_layers_n`, mas precisa de um caminho de experts em lote com vieses +
+  SwiGLU OAI (o `moe_cpu_multi` nao tem vies). Ganho so de velocidade de prompt.
+- Raciocinio ligado (`KATANA_THINK=1`) mostra o canal analysis; falta um teste mais longo ate o canal
+  final.
 
 ### 2.3 Arquitetura DeepSeek/Kimi (prioridade 2 do plano)
 
