@@ -143,3 +143,17 @@ compila o motor não precisa do compilador de shaders.
 **Regras do projeto**: em `CLAUDE.md`. As principais: português; o código não cita outros motores;
 commit e push a cada passo no repositório privado; nada de publicar; comparar velocidade só com
 medidas alternadas e dizer o que é medido e o que é estimativa.
+
+## 5. Linux (2026-11-15, segunda sessão)
+
+A máquina passou a rodar Ubuntu (kernel 7.0, mesma RTX 3050 4 GB). Sem root, o compilador foi
+montado com `apt-get download` + `dpkg -x` em `~/.local/tc` (gcc 15, binutils, libc6-dev,
+cabeçalhos OpenCL). `build.sh` compila com o `gcc` do sistema ou, sem ele, com esse diretório.
+Única mudança no código: `_putenv` mapeado para `putenv` fora do Windows.
+
+- `selftest` passa no Linux: Qwen 1,5B pelo OpenCL e pelo Vulkan (lote 0,0098), OLMoE e Qwen3-30B
+  (`KATANA_KV16=0 KATANA_CTX=512`) pelo OpenCL.
+- Bench Qwen2.5 1,5B 64+64, alternado, rodadas 2 e 3: OpenCL prompt 217–220 / geração 93–97;
+  Vulkan prompt 922–942 / geração 86–88 tok/s. No Windows o Vulkan dava 1.349–1.364 / 98–100
+  (outra hora, outro sistema: não comparável diretamente). A queda do Vulkan no Linux é um ponto a
+  investigar (driver, clocks ou caminho de submissão).
