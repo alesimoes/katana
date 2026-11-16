@@ -14,7 +14,7 @@ $G -V --target-env vulkan1.2 -DKV16=1 --vn att1f_kv16_spv -o att1f_kv16.h att1f.
 # no maximo 2 acumuladores 16x16 (com 4, o driver Linux cai a metade; tools/vkq4k/NOTAS.md). Ativacao em fp16 (XF32=0), sem tabela de escalas.
 # Os glu gravam a saida em fp16 (YH=1): ela e a entrada do produto down, sem passo de conversao.
 mm() { # tipo nome BM BN SM SN glu
-  $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=0 -DSCTAB=0 -DGLU=$7 -DYH=$7 --vn mm_t$1_$2_g$7_spv -o mm_t$1_$2_g$7.h mm.comp > /dev/null || { echo FALHOU mm $*; exit 1; }
+  $G -V --target-env vulkan1.3 -DWT=$1 -DBM=$3 -DBN=$4 -DSM=$5 -DSN=$6 -DXF32=0 -DSCTAB=0 -DBR=1 -DGLU=$7 -DYH=$7 --vn mm_t$1_$2_g$7_spv -o mm_t$1_$2_g$7.h mm.comp > /dev/null || { echo FALHOU mm $*; exit 1; }
 }
 for t in 0 1 2 3 4; do
   mm $t 64x64 64 64 4 2 0 & mm $t 64x64 64 64 2 2 1 & mm $t 64x32w4 64 32 4 1 0 & mm $t 64x32 64 32 2 2 1 & mm $t 64x16w4 64 16 4 1 0 & mm $t 64x16 64 16 2 1 1 &
