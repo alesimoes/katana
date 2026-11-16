@@ -4146,7 +4146,7 @@ static VkB vkb;
 static struct {
     int on, prec;
     KvkBuf xf, xg, ys, yc, lg, meta;
-    KvkPipe rms32, gath, gath32, scat;
+    KvkPipe rms32, gath, gath32, scat, flash32;
     float *xn, *lgT, *xc, *outs, *sw, *pw, *cw; uint32_t *mt;
     int *cnt, *ofs, *pv, *pb, *ce, *cb;
     /* frios do lote levados a GPU: T vagas temporarias (tg, td), para os frios com pelo menos cmin tokens no lote */
@@ -4287,7 +4287,10 @@ static int vk_batch_build(Model *m) {
         vkbm.gath = kvk_pipe_create(moe_gath_spv, sizeof moe_gath_spv, 3, 16, NULL, NULL, 0);
         vkbm.gath32 = kvk_pipe_create(moe_gath32_spv, sizeof moe_gath32_spv, 3, 16, NULL, NULL, 0);
         vkbm.scat = kvk_pipe_create(moe_scat_spv, sizeof moe_scat_spv, 3, 16, NULL, NULL, 0);
-        if (!vkbm.rms32.p || !vkbm.gath.p || !vkbm.gath32.p || !vkbm.scat.p) fail = 1;
+        {   const uint32_t fi[2] = { 0, 1 }, fw[2] = { (uint32_t)c->hd, (uint32_t)(c->n_heads / c->n_kv) };
+            if (vkb.flash) vkbm.flash32 = vkg.kv16 ? kvk_pipe_create(att_flash32_kv16_spv, sizeof att_flash32_kv16_spv, 4, 24, fi, fw, 2)
+                                                   : kvk_pipe_create(att_flash32_kv32_spv, sizeof att_flash32_kv32_spv, 4, 24, fi, fw, 2); }
+        if (!vkbm.rms32.p || !vkbm.gath.p || !vkbm.gath32.p || !vkbm.scat.p || (vkb.flash && !vkbm.flash32.p)) fail = 1;
         vkbm.xn = xalloc(d * Pp, sizeof(float)); vkbm.lgT = xalloc(E * Pp, sizeof(float)); vkbm.xc = xalloc(d * Pp, sizeof(float));
         vkbm.outs = xalloc((size_t)GPU_BMAX * K * d, sizeof(float)); vkbm.sw = xalloc(Pp, sizeof(float));
         vkbm.mt = xalloc(2 * Pp * (K + 2), sizeof(uint32_t));
@@ -4350,8 +4353,16 @@ static int vk_emit_n(const Model *m, int B, int pos0, int head) {
     for (int l = 0; l < vkg.nl && ok; l++) {
         const Layer *L = &m->layers[l];
 #define OR_DUMMY(v) ((v).b ? (v) : vkg.dummy)
-        if (VKS(1)) { const KvkBuf rb[3] = { vkb.x, vkg.an[l], vkb.xh }; ok &= kvk_dispatch(vkb.rms16, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1); }
-        if (VKS(2)) {
+        /* MoE no modo preciso: a atencao tambem em fp32 (norma fp32, produtos alta + resto, atencao com saida fp32).
+           Com fp16 o residual muda o bastante para virar escolhas quase empatadas do roteador nas camadas seguintes */
+        const int p32 = vkbm.on && vkbm.prec && vkb.flash;
+        if (p32) { const KvkBuf rb[3] = { vkb.x, vkg.an[l], vkbm.xf }; ok &= kvk_dispatch(vkbm.rms32, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1); }
+        else if (VKS(1)) { const KvkBuf rb[3] = { vkb.x, vkg.an[l], vkb.xh }; ok &= kvk_dispatch(vkb.rms16, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1); }
+        if (p32) {
+            ok &= vk_mm_p(&L->wq, vkbm.xf, vkb.q, qd, d, B, 0, 1);
+            ok &= vk_mm_p(&L->wk, vkbm.xf, vkb.k, kvd, d, B, 0, 1);
+            ok &= vk_mm_p(&L->wv, vkbm.xf, vkb.v, kvd, d, B, 0, 1);
+        } else if (VKS(2)) {
             ok &= vk_mm(&L->wq, vkb.xh, vkb.q, qd, d, B, 0, 0);
             ok &= vk_mm(&L->wk, vkb.xh, vkb.k, kvd, d, B, 0, 0);
             ok &= vk_mm(&L->wv, vkb.xh, vkb.v, kvd, d, B, 0, 0);
@@ -4365,7 +4376,11 @@ static int vk_emit_n(const Model *m, int B, int pos0, int head) {
         }
         if (VKS(8)) {
             const float scale = 1.0f / sqrtf((float)hd);
-            if (vkb.flash) {
+            if (p32) {     /* saida fp32 em vkb.q (livre depois do qkv_post) */
+                const KvkBuf ab[4] = { vkb.q2, vkg.kc[l], vkg.vc[l], vkb.q };
+                const struct { int base, pos0, kvd, nkv, B; float scale; } ap = { 0, pos0, kvd, c->n_kv, B, scale };
+                ok &= kvk_dispatch(vkbm.flash32, ab, 4, &ap, sizeof ap, (uint32_t)(B * c->n_kv), 1, 1);
+            } else if (vkb.flash) {
                 const KvkBuf ab[4] = { vkb.q2, vkg.kc[l], vkg.vc[l], vkb.xh };
                 const struct { int base, pos0, kvd, nkv, B; float scale; } ap = { 0, pos0, kvd, c->n_kv, B, scale };
                 ok &= kvk_dispatch(vkb.flash_p, ab, 4, &ap, sizeof ap, (uint32_t)(B * c->n_kv), 1, 1);
@@ -4384,7 +4399,8 @@ static int vk_emit_n(const Model *m, int B, int pos0, int head) {
                 ok &= kvk_dispatch(vkb.cvt, cb, 3, &n4, 4, (n4 + 255) / 256, 1, 1);
             }
         }
-        if (VKS(16)) ok &= vk_mm(&L->wo, vkb.xh, vkb.x, d, qd, B, 1, 0);
+        if (p32) ok &= vk_mm_p(&L->wo, vkb.q, vkb.x, d, qd, B, 1, 1);
+        else if (VKS(16)) ok &= vk_mm(&L->wo, vkb.xh, vkb.x, d, qd, B, 1, 0);
         if (c->n_expert) {      /* MoE: o roteamento depende dos tokens; a camada espera a GPU */
             if (!ok) return 0;
             vk_moe_n((Model *)m, L, l, B);

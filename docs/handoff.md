@@ -326,3 +326,11 @@ lote 16 0,0039), Moonlight (0,0002, caminho não mudou), Qwen3.6 (lote 0,0006). 
 Pendências: lote MoE no modo híbrido (MLA: Moonlight e DeepSeek-V2-Lite continuam com prompt token a token: atenção na
 CPU por token + `vk_host_moe_ffn`); subidas temporárias em paralelo com os frios da CPU (hoje uma depois da outra na
 thread principal); roteamento da CPU (~0,1 s por passada de 256 no Qwen3-30B) poderia ir para a GPU (top-K no shader).
+
+**Correção (revisão do coordenador)**: no `selftest` do Qwen3-30B o "lote 16" falhou com 0,115 em 2 de 3 rodadas no main. Causa: precisão, não
+estado entre passadas. Medido: a saída de cada vaga (quente e temporária) confere com a CPU (erro relativo ≤ 1,4e-3, int8 na CPU); o que
+mudava era a atenção do lote em fp16 (norma fp16, q/k/v/o em fp16, saída da atenção em fp16), que desloca o residual o bastante para virar
+escolhas quase empatadas do roteador. Agora, no MoE com o modo preciso (padrão), a atenção do lote também é fp32 (`rms_wg32`, `mm` alta +
+resto, `att_flash32`), como no qwen35moe. Diferença do lote no Qwen3-30B caiu de 0,003–0,017 para ~0,0005; 6 `selftest` seguidos OK;
+OLMoE (`KATANA_VK_MOE=1`) lote 0,0002 / lote 16 0,0001; Qwen3.6 e qwen2.5 OK. Velocidade alternada (256+16, rodadas 2–3): Qwen3-30B
+125–146 antes contra 138–139 depois; OLMoE 352–375 contra 362–364 (empate dentro do ruído).
