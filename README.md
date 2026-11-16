@@ -24,11 +24,50 @@ katana tune  <modelo.gguf>        mede e grava em katana.cfg o melhor ajuste par
 katana chat <modelo.gguf>          conversa interativa de vários turnos (/novo, /sair; KATANA_SYSTEM, KATANA_TEMP, KATANA_MAXTOK)
 katana serve <modelo.gguf> [porta]  conversa no navegador em http://127.0.0.1:8080 (so conversa, sem ferramentas)
 katana agent <modelo.gguf>         conversa com ferramentas: ler e listar na pasta atual; gravar arquivo e executar comando só com confirmação
+katana mcp                        lista os servidores MCP configurados e as ferramentas de cada um
 katana pack  <modelo.gguf>        gera os shards no layout da GPU (<modelo>.gguf.ktn/)
 katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 katana sparsity <modelo.gguf> <calibracao.txt> <avaliacao.txt>   esparsidade do feed-forward por assunto (modelo denso)
 katana routing  <modelo.gguf> <calibracao.txt> <avaliacao.txt>   concentracao dos especialistas por assunto (modelo MoE)
 ```
+
+## Conectores MCP no agente
+
+O agente é cliente do Model Context Protocol (JSON-RPC 2.0, versão `2025-06-18`; aceita outra versão
+compatível que o servidor responda). Dois transportes: **stdio** (o katana inicia o servidor como
+processo filho, uma mensagem JSON por linha) e **HTTP streamable** (POST JSON; resposta
+`application/json` ou `text/event-stream`; guarda o `Mcp-Session-Id`; usa o `curl` do sistema).
+
+Configuração em `~/.katana/mcp.json` (Windows: `%USERPROFILE%\.katana\mcp.json`) ou no arquivo apontado
+por `KATANA_MCP_CONFIG`:
+
+```
+{"mcpServers": {
+  "arquivos": {"command": "npx", "args": ["-y", "servidor-mcp-qualquer"], "env": {"CHAVE": "valor"}},
+  "remoto":   {"url": "https://exemplo.com/mcp", "headers": {"Authorization": "Bearer ..."}}
+}}
+```
+
+`katana mcp` inicia os servidores e lista cada um com suas ferramentas (ou o motivo de estar
+indisponível). No `katana agent`, as ferramentas entram na lista enviada ao modelo como
+`servidor__ferramenta`, com o `inputSchema` (no máximo ~9 KB de ferramentas no prompt). Ao ser chamada, o
+katana faz `tools/call` e devolve o `content` (itens `text`; imagem, áudio e outros viram uma descrição
+curta; `isError` vira erro), marcado como conteúdo externo: dados, não instruções.
+
+- As chamadas MCP **executam direto, sem confirmação**. A cada chamada o terminal mostra uma linha
+  (`[mcp servidor: ferramenta argumentos]`) e é acrescentada uma entrada em `~/.katana/mcp.log` (data,
+  ferramenta, argumentos, ok ou ERRO; `KATANA_MCP_LOG=<arquivo>` troca o caminho).
+  `KATANA_MCP_CONFIRM=1` pede confirmação a cada chamada. `write_file` e `run_command` embutidos continuam
+  sempre com confirmação.
+- Timeout de 60 s por chamada. Servidor que morre ou não responde ao iniciar fica indisponível, sem
+  derrubar o agente; os processos filhos são encerrados ao sair. `KATANA_MCP_DEBUG=1` mostra o stderr dos
+  servidores (descartado por padrão).
+- Teste sem rede: `tools/mcp-teste/servidor.py` (ferramentas `soma(a,b)` e `hora()`; `--http PORTA` para o
+  transporte HTTP). Exemplo: `{"mcpServers":{"teste":{"command":"python3","args":["tools/mcp-teste/servidor.py"]}}}`.
+- Limitações: só ferramentas (sem resources, prompts, sampling nem OAuth); HTTP sem o fluxo GET/SSE de
+  notificações do servidor e sem `DELETE` ao encerrar a sessão; no Windows, comandos que não são `.exe`
+  (npx etc.) rodam via `cmd /c` e variáveis `env` são aplicadas ao próprio processo; o caminho Windows
+  não foi compilado nem testado nesta máquina.
 
 ## Conversa no console e no navegador
 
