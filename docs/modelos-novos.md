@@ -204,15 +204,8 @@ Com `KATANA_BACKEND=vulkan` o qwen35moe roda inteiro na GPU (`vkq_setup`, `vk_qn
   camada.
 - Correcao: `qn_batch` nao pode mandar o prompt para a CPU com o grafo Vulkan ligado (o estado vive
   na VRAM; o `vkcheck` token a token caia nesse caminho).
-- Validacao: `selftest` (ctx 512): token a token x CPU exata 0,0003-0,0004; lote 0,06-0,23 conforme a
-  rodada (maior |logit| 9,8; fp16 nos produtos de 40 camadas e roteamento top-8 sensivel a isso; com
-  todos os especialistas do lote na CPU fica 0,15, entao nao e o caminho das vagas). O teste tolera 3%
-  do maior logit no lote deste modelo (o limite fixo de 0,05 valia para modelos densos). Medido camada a
-  camada (lote x token a token, ultimo token): erro relativo ~4e-4 na camada 0 (arredondamento fp16
-  da ativacao) crescendo devagar, sem salto em camada nenhuma. `vkcheck` 200 tokens: 20 proximos
-  gulosos iguais (diferenca 0,15); 600 tokens: diferenca 0,42-0,46 (maior |logit| 15,6), divergencia
-  no 8o token gerado; com `KATANA_QN_DNSTEP=1` a diferenca fica 0,42 (o DeltaNet em blocos nao e a
-  fonte principal; o resto e fp16 dos produtos e a mistura GPU/CPU dos especialistas).
+- Validacao (antes da correcao abaixo): `selftest` lote 0,06-0,23 (tolerancia especial de 3% do maior logit);
+  `vkcheck` 600 tokens 0,42-0,46 com divergencia no 8o token gerado. Corrigido em seguida (ver "Precisao do lote").
   `chat` "17 vezes 23" -> 391.
 - Medida indicativa (bench 256+64, alternado, rodada sem carga externa): Vulkan prompt 82,7 tok/s,
   geracao 25,2-25,5; OpenCL hibrido prompt 27,3-27,5, geracao 18,0-18,7. No lote, 2,7 de 3,1 s
@@ -224,3 +217,52 @@ Com `KATANA_BACKEND=vulkan` o qwen35moe roda inteiro na GPU (`vkq_setup`, `vk_qn
   convertidos para o JSON de argumentos, resposta "7.3.4" citando kernel.org. Velocidade no agente
   8-11 tok/s, caindo a ~2 tok/s numa rodada (11535 trocas de especialistas: o calor troca demais
   com 19 vagas; investigar `KATANA_SWAP`/margem para este modelo).
+
+
+### Precisao do lote do qwen35moe no Vulkan (2026-11-16)
+
+Causa (medida): o roteamento top-8 de 256 tem quase empates. Ferramenta `KATANA_QN_DBG=1` no `selftest` (lote
+contra a CPU exata, por camada: erro relativo do residual apos o misturador, maximo nos 23 tokens, e quantos tokens
+escolheram outro conjunto top-8; para cada troca imprime a margem entre o 8o e o 9o). Antes: 3,4e-4 na camada 0,
+~8e-4 na camada 5, onde o token 15 troca um especialista (margem relativa 2,8e-4; depois da 1a correcao a mesma
+margem medida foi 1e-5) e o erro desse token salta para 4,7e-2 (um especialista diferente com peso ~1/8); outras
+trocas seguem nas camadas seguintes. Nao ha valor fora da faixa do fp16 (emulacao em CPU: escalar a ativacao por
+64 ou 1024 nao muda nada; o arredondamento relativo de toda entrada de produto fica em 3-4e-4). O erro de 1e-4
+a 3e-4 por camada vinha de varias fontes, e qualquer uma sozinha ja basta para virar algum empate:
+- produtos `mm.comp` em fp16: ativacao arredondada e peso decodificado arredondado (Q8_0 d*q tem ate 19 bits);
+  projecao qkv da camada 0: 9,5e-5 relativo contra a conta em fp64;
+- DeltaNet em blocos (q/k/v, T, Wn, Qm em fp16): ~2e-4 na camada 0 mesmo no 1o token;
+- saida da atencao (att_flash) e portao em fp16 antes do produto de saida; especialistas em fp16 (entrada,
+  peso, intermediario do glu).
+Emulacao em CPU (arredondar so a entrada de uma classe de produtos para fp16) confirma: so ssm_out ja leva o logit
+final a 0,09; so os pesos das projecoes da entrada a 0,13; so wo a 0,02. Como cada fonte sozinha vira empates, a
+diferenca nao cai consertando uma so (consertar ssm_out sozinho: 0,110 -> 0,109).
+
+Correcao (toda no lote do qwen35moe; os densos e os outros MoE nao mudam):
+- `mm.comp` com WS (peso decodificado em alta + resto fp16) e XS (ativacao fp32 em alta + resto): tres produtos no
+  mesmo ladrilho, restos escalados por 2048 (sem a escala o resto do peso, ~5e-6, cai em subnormal) num segundo
+  acumulador. A parte alta e cortada por mascara de bits (`hi16`): a ida e volta `float16_t(float(x))` (e tambem
+  `unpackHalf2x16(packHalf2x16())`) o compilador do driver dobra para x e o resto saia zero (a 1a versao nao mudava
+  nada por isso). qkv da camada 0: 9,5e-5 -> 4,4e-6. Variantes `_ws`, `_xs` (planas) e `_gx` (glu, saida fp32).
+- Normas do lote em fp32 (`rms_wg32`, variante de `rms_wg16`), `moe_gath32`, intermediario do glu em fp32;
+  `att_flash32` e `qn_gate32` (saida da atencao em fp32 em `vkq.ub`); `dn_norm` agora grava fp32.
+- DeltaNet do lote pela recorrencia exata: `dn_seq.comp` (um lancamento por camada, grupo de 512 por cabeca percorre
+  os B tokens com o estado em registradores; entradas anteriores da conv vem do proprio lote ou do anel; o anel e
+  atualizado depois pelo `dn_cstate`). Camada 0: 2e-4 -> 1e-5. O caminho em blocos fica em `KATANA_QN_CHUNK=1`
+  (com os produtos precisos: 0,0028 no selftest).
+- Excecao de 3% do selftest removida: o lote do qwen35moe usa o limite comum de 0,05.
+
+Resultado: erro por camada 1e-5 (camada 0) a ~2e-4 (camadas 31+), nenhum token com top-8 trocado no selftest.
+`selftest` lote x CPU exata: 0,11 -> 0,0004 (lote 16: 0,08 -> 0,0004; token a token 0,0003). `vkcheck` 600 tokens
+(docs/conhecimento.md): 0,298 -> 0,094 (maior |logit| 23,6), 40 proximos gulosos iguais nos dois (nesse texto o
+binario antigo tambem acertou os 40). O que sobra no `vkcheck` vem dos especialistas frios na CPU, que usam o
+produto inteiro (ativacao quantizada em 8 bits) nos dois caminhos, mas em conjuntos diferentes de especialistas:
+com os frios em float exato (`KATANA_VKC_EXACT=1`, so medida) a diferenca cai para 0,0042.
+Velocidade (bench 256+64, alternado com o binario anterior, GPU livre, rodadas 2 e 3): prompt 86,1/82,8/82,8/80,5
+contra 84,2/87,6/87,7/81,3 tok/s (~-3%, dentro do ruido; a passada e dominada pelos frios na CPU); geracao
+igual (26,0-26,7 x 25,2-25,9). Regressao: selftest qwen2.5-1.5b (OpenCL 0,00004, Vulkan 0,0078), llama3.2-3b
+Vulkan 0,026, OLMoE (KV16=0) 0,0008, Moonlight (ctx 512) 0,0003, Qwen3.6 OpenCL 0,0004: todos OK.
+Pendente: o `dn_state` (caminho em blocos) separa S em alta + resto com conversao de coopmat; conferir se o driver
+tambem dobra essa ida e volta. Os densos podem usar as mesmas variantes precisas se o erro do lote incomodar
+(llama3.2-3b 0,026), ao custo de 3 produtos por ladrilho. `KATANA_VKC_EXACT=1` no `vkcheck` poe os frios da CPU em
+float exato (medida).

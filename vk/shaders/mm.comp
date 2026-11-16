@@ -9,7 +9,9 @@
 // Y[rows][tokens] = W[rows][cols] * X[cols][tokens], pesos quantizados no layout do katana,
 // decodificados ao encher o ladrilho compartilhado; matrizes cooperativas fp16 x fp16 -> fp32.
 // Parametros de compilacao: WT (0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32), BM, BN, SM x SN subgrupos,
-// XF32 (ativacoes fp32 lidas direto), SCTAB (tabela de escala/minimo em memoria compartilhada), GLU (gate/up).
+// XF32 (ativacoes fp32 lidas direto), XS (com XF32: ativacao em duas partes fp16, alta + resto, dois produtos
+// sobre o mesmo ladrilho de pesos; precisao de ~22 bits na ativacao), WS (peso decodificado em duas partes fp16, alta +
+// resto: sem WS o peso perde ~2,4e-4 relativo no arredondamento), SCTAB (tabela de escala/minimo em memoria compartilhada), GLU (gate/up).
 #ifndef SCTAB
 #define SCTAB 0
 #endif
@@ -18,6 +20,24 @@
 #endif
 #ifndef XF32
 #define XF32 0
+#endif
+#ifndef XS
+#define XS 0
+#endif
+#ifndef WS
+#define WS 0
+#endif
+// os restos guardam (x - fp16(x)) * LS: sem a escala eles cairiam na faixa subnormal do fp16 (pesos ~1e-2 deixam
+// restos ~5e-6) e perderiam bits; os produtos com restos acumulam a parte e entram vezes 1/LS no fim
+#define LS 2048.0
+// parte alta = x com a mantissa cortada em 10 bits (exata em fp16), por mascara de bits: a ida e volta
+// float16_t(float(x)), ou por packHalf2x16, o compilador do driver dobra para x e o resto virava zero
+float hi16(float x) { return uintBitsToFloat(floatBitsToUint(x) & 0xFFFFE000u); }
+float16_t lo16(float x) { return float16_t((x - hi16(x)) * LS); }
+#if WS
+#define PUTA(i, val) { const float wv_ = (val); buf_a[i] = float16_t(hi16(wv_)); buf_w[i] = lo16(wv_); }
+#else
+#define PUTA(i, val) buf_a[i] = float16_t(val)
 #endif
 #define NSG (SM * SN)
 #define NT (NSG * 32)
@@ -67,7 +87,13 @@ const uint STRB = BN + PADB;                 // B na memoria compartilhada: uma 
 #define BSZ (BN * STRIDE)
 #endif
 shared float16_t buf_a[(1 + DB) * BM * STRIDE];
+#if WS
+shared float16_t buf_w[(1 + DB) * BM * STRIDE];   // resto do peso: w - fp16(w)
+#endif
 shared float16_t buf_b[(1 + DB) * BSZ];
+#if XS
+shared float16_t buf_r[(1 + DB) * BSZ];        // resto da ativacao: x - fp16(x)
+#endif
 #if GLU
 #define SCRN 512
 #else
@@ -122,6 +148,9 @@ void fill(uint kk, uint ao, uint bo) {
             const uint wbase = G * pc.wpr * 32 + r0 + pc.woff;
             if (gr >= pc.rows) {
                 for (uint t = 0; t < 16; t++) buf_a[o + t] = float16_t(0.0);
+#if WS
+                for (uint t = 0; t < 16; t++) buf_w[o + t] = float16_t(0.0);
+#endif
                 continue;
             }
 #if WT == 0 || WT == 2
@@ -145,14 +174,14 @@ void fill(uint kk, uint ao, uint bo) {
 #if WT == 0
                     const uint wd = wb.w[base + (4 + s * 8 + l) * 32];
                     for (uint b = 0; b < 4; b++) {
-                        buf_a[oo + b] = float16_t(dsc[0] * float((wd >> (8 * b)) & 15) - dm[0]);
-                        buf_a[oo + 32 + b] = float16_t(dsc[1] * float((wd >> (8 * b + 4)) & 15) - dm[1]);
+                        PUTA(oo + b, dsc[0] * float((wd >> (8 * b)) & 15) - dm[0]);
+                        PUTA(oo + 32 + b, dsc[1] * float((wd >> (8 * b + 4)) & 15) - dm[1]);
                     }
 #else
                     const uint wd = wb.w[base + (12 + s * 8 + l) * 32], hb = wb.w[base + (4 + l) * 32] >> (2 * s);
                     for (uint b = 0; b < 4; b++) {
-                        buf_a[oo + b] = float16_t(dsc[0] * float(((wd >> (8 * b)) & 15) | (((hb >> (8 * b)) & 1) << 4)) - dm[0]);
-                        buf_a[oo + 32 + b] = float16_t(dsc[1] * float(((wd >> (8 * b + 4)) & 15) | (((hb >> (8 * b + 1)) & 1) << 4)) - dm[1]);
+                        PUTA(oo + b, dsc[0] * float(((wd >> (8 * b)) & 15) | (((hb >> (8 * b)) & 1) << 4)) - dm[0]);
+                        PUTA(oo + 32 + b, dsc[1] * float(((wd >> (8 * b + 4)) & 15) | (((hb >> (8 * b + 1)) & 1) << 4)) - dm[1]);
                     }
 #endif
                 }
@@ -169,7 +198,7 @@ void fill(uint kk, uint ao, uint bo) {
                     const uint bit = 6 * t, wi = bit / 32, off = bit % 32;
                     uint v = (wi == 0 ? w0 : (wi == 1 ? w1 : w2)) >> off;
                     if (off > 26) v |= (wi == 0 ? w1 : w2) << (32 - off);
-                    buf_a[o + t] = float16_t(dsc * float(int(v & 63) - 32));
+                    PUTA(o + t, dsc * float(int(v & 63) - 32));
                 }
             }
 #elif WT == 3
@@ -178,12 +207,17 @@ void fill(uint kk, uint ao, uint bo) {
                 const float d = uintBitsToFloat(wb.w[base]);
                 for (uint v = 0; v < 4; v++) {
                     const uint wd = wb.w[base + (1 + (gi & 1) * 4 + v) * 32];
-                    for (uint b = 0; b < 4; b++)
-                        buf_a[o + v * 4 + b] = float16_t(d * float(int(wd << (24 - 8 * b)) >> 24));
+                    for (uint b = 0; b < 4; b++) {
+                        const float wf = d * float(int(wd << (24 - 8 * b)) >> 24);
+                        PUTA(o + v * 4 + b, wf);
+                    }
                 }
             }
 #else
-            for (uint t = 0; t < 16; t++) buf_a[o + t] = float16_t(uintBitsToFloat(wb.w[wbase + (k0 + gi * 16 + t) * 32]));
+            for (uint t = 0; t < 16; t++) {
+                const float wf = uintBitsToFloat(wb.w[wbase + (k0 + gi * 16 + t) * 32]);
+                PUTA(o + t, wf);
+            }
 #endif
         }
         // ---- B: ativacoes (tokens fora do lote viram zero)
@@ -198,7 +232,15 @@ void fill(uint kk, uint ao, uint bo) {
                 if (ic + n < tokens) v = xb4.x4[((kk + c) * tokens + ic + n) / 4];
 #if BR
                 const uint ob = bo + c * STRB + n;
+#if XS
+                buf_b[ob] = float16_t(hi16(v.x)); buf_b[ob + 1] = float16_t(hi16(v.y)); buf_b[ob + 2] = float16_t(hi16(v.z)); buf_b[ob + 3] = float16_t(hi16(v.w));
+#else
                 buf_b[ob] = float16_t(v.x); buf_b[ob + 1] = float16_t(v.y); buf_b[ob + 2] = float16_t(v.z); buf_b[ob + 3] = float16_t(v.w);
+#endif
+#if XS
+                buf_r[ob] = lo16(v.x); buf_r[ob + 1] = lo16(v.y);
+                buf_r[ob + 2] = lo16(v.z); buf_r[ob + 3] = lo16(v.w);
+#endif
 #else
                 buf_b[bo + n * STRIDE + c] = float16_t(v.x); buf_b[bo + (n + 1) * STRIDE + c] = float16_t(v.y);
                 buf_b[bo + (n + 2) * STRIDE + c] = float16_t(v.z); buf_b[bo + (n + 3) * STRIDE + c] = float16_t(v.w);
@@ -208,7 +250,14 @@ void fill(uint kk, uint ao, uint bo) {
             for (uint i = 0; i < BK * BN / NT; i++) {
                 const uint idx = id + i * NT, c = idx / BN, n = idx % BN;
                 float16_t v = float16_t(0.0);
+#if XS
+                float xf = 0.0;
+                if (ic + n < tokens) xf = xb.x[(kk + c) * tokens + ic + n];
+                v = float16_t(hi16(xf));
+                buf_r[bo + c * STRB + n] = lo16(xf);
+#else
                 if (ic + n < tokens) v = float16_t(xb.x[(kk + c) * tokens + ic + n]);
+#endif
 #if BR
                 buf_b[bo + c * STRB + n] = v;
 #else
@@ -229,6 +278,10 @@ void main() {
     const uint ic = gl_WorkGroupID.y * BN;
     coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acc[CR * CC];
     for (uint i = 0; i < CR * CC; i++) acc[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
+#if XS || WS
+    coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator> acl[CR * CC];     // produtos com os restos (vezes LS)
+    for (uint i = 0; i < CR * CC; i++) acl[i] = coopmat<float, gl_ScopeSubgroup, T, T, gl_MatrixUseAccumulator>(0.0);
+#endif
     const uint kb = gl_WorkGroupID.z * pc.kper, ke = min(pc.cols, kb + pc.kper);
     const uint tokens = pc.tokens;
     #ifdef FORCEVEC
@@ -281,6 +334,10 @@ void main() {
             for (uint cr = 0; cr < CR; cr++) {
                 coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseA> a;
                 coopMatLoad(a, buf_a, ao + (wr * WM + cr * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+#if WS
+                coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseA> aw;
+                coopMatLoad(aw, buf_w, ao + (wr * WM + cr * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+#endif
                 for (uint cc = 0; cc < CC; cc++) {
                     coopmat<float16_t, gl_ScopeSubgroup, T, T, gl_MatrixUseB> b;
 #if BR
@@ -289,12 +346,22 @@ void main() {
                     coopMatLoad(b, buf_b, bo + (wc * WN + cc * T) * STRIDE + k, STRIDE, gl_CooperativeMatrixLayoutColumnMajor);
 #endif
                     acc[cc * CR + cr] = coopMatMulAdd(a, b, acc[cc * CR + cr]);
+#if WS
+                    acl[cc * CR + cr] = coopMatMulAdd(aw, b, acl[cc * CR + cr]);
+#endif
+#if XS
+                    coopMatLoad(b, buf_r, bo + k * STRB + wc * WN + cc * T, STRB, gl_CooperativeMatrixLayoutRowMajor);
+                    acl[cc * CR + cr] = coopMatMulAdd(a, b, acl[cc * CR + cr]);
+#endif
                 }
             }
         }
         barrier();
     }
     // ---- epilogue
+#if XS || WS
+    for (uint i = 0; i < CR * CC; i++) acc[i] = acc[i] + acl[i] * (1.0 / LS);
+#endif
     const uint yz = gl_WorkGroupID.z * pc.slice;
 #if !GLU
     if (pc.add == 0u && vec4ok && ir + BM <= pc.rows && ic + BN <= tokens) {

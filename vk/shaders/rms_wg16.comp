@@ -8,7 +8,13 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer X { float x[]; };
 layout(std430, binding = 1) readonly buffer G { float g[]; };
+#ifdef OF32
+layout(std430, binding = 2) buffer O { float o[]; };          // variante com saida fp32 (produtos precisos, XS)
+#define OUT(v) (v)
+#else
 layout(std430, binding = 2) buffer O { float16_t o[]; };
+#define OUT(v) float16_t(v)
+#endif
 layout(push_constant) uniform P { int n; float eps; int B; } pc;
 const int TB = 8, JS = 32;
 shared float part[JS * TB];
@@ -23,5 +29,5 @@ void main() {
     float tot = 0.0;
     for (int k = 0; k < JS; k++) tot += part[k * TB + tb];
     const float inv = 1.0 / sqrt(tot / float(pc.n) + pc.eps);
-    if (ok) for (int j = js; j < pc.n; j += JS) o[j * B + b] = float16_t(g[j] * (x[j * B + b] * inv));
+    if (ok) for (int j = js; j < pc.n; j += JS) o[j * B + b] = OUT(g[j] * (x[j * B + b] * inv));
 }
