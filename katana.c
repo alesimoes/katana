@@ -1307,6 +1307,7 @@ static void load_model(Model *m, const char *path) {
     else if (map_get(&tk->vocab, "<|start_header_id|>", 19) >= 0) c->chat_fmt = 1;
     else c->chat_fmt = 4;
     if (tmpl && strcmp(c->arch, "olmoe") == 0 && strstr(tmpl, "<|user|>")) c->chat_fmt = 7;
+    if (c->go) c->chat_fmt = 9;     /* gpt-oss: formato harmony */
     if (tmpl && strstr(tmpl, "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."))
         c->def_sys = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
     if (tmpl && c->chat_fmt == 8 && strstr(tmpl, "| trim")) c->trim_msgs = 1;
@@ -10086,6 +10087,7 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
 /* gera a resposta em streaming a partir dos logits lg; para no fim de turno (eos, token de controle
  * ou stop2), no limite de tokens, no contexto cheio ou em Ctrl+C. Acumula o texto em cap (se nao NULL) */
 static const char *think_pre(const Config *c);
+static int go_reason(void);
 static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp, int stop2, Buf *cap) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -10094,13 +10096,31 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     if (!g_agent_sys) gr_env_begin(tk, c->vocab, stop2);       /* KATANA_JSON: so fora do agente */
     /* raciocinio (<think> aberto no prompt): aparece apagado e separado da resposta */
     int thinking = c->think && strcmp(think_pre(c), "<think>\n") == 0, skipnl = 0, skiplabel = 0;
+    /* harmony (gpt-oss): canal atual (1 analise, 2 final, 3 comentario), lendo nome do canal, dentro do corpo, cabecalho de analise impresso */
+    int go_ch = go_reason() ? 1 : 2, go_rdch = 0, go_body = c->chat_fmt == 9, go_an = 0;
     if (thinking) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fflush(stdout); }
     while (gen < max_tokens && *pos < c->ctx - 1 && !g_stop) {
         g_gr.left = max_tokens - gen;
         const int t = sample_c(lg, c->vocab, temp, c->eos);
-        if (t == c->eos || t == stop2 || (tk->toktype && tk->toktype[t] == 3)) break;
+        if (t == c->eos || t == stop2) break;
+        if (c->chat_fmt == 9) { if (t == 200012) break; }   /* <|call|>: chamada de ferramenta */
+        else if (tk->toktype && tk->toktype[t] == 3) break;
         const int tl = tok_append(tk, t, tmp, 0, sizeof tmp - 1);
         tmp[tl] = 0;
+        if (c->chat_fmt == 9) {         /* harmony: estrutura em canais (<|channel|>nome<|message|> ... <|end|>) */
+            if (t == 200005) { go_rdch = 1; go_body = 0; }          /* <|channel|> */
+            else if (go_rdch) { if (t == 200008) { go_rdch = 0; go_body = 1; } else go_ch = t == 35644 ? 1 : t == 17196 ? 2 : 3; }  /* nome: analysis/final/outro */
+            else if (t == 200008) go_body = 1;                      /* <|message|> */
+            else if (t == 200007 || t == 200006) go_body = 0;       /* <|end|> / <|start|> */
+            else if (go_body) {
+                if (go_ch == 2) { if (go_an) { fprintf(stdout, "%s\n", CE(C_RESET)); go_an = 0; } print_token(tk, t, stdout); if (cap) buf_add(cap, tmp, tl); }
+                else if (go_ch == 1 && go_reason()) { if (!go_an) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); go_an = 1; } print_token(tk, t, stdout); }
+            }
+            fflush(stdout);
+            gen++;
+            lg = forward(m, t, (*pos)++, 1);
+            continue;
+        }
         if (c->chat_fmt == 8 && !thinking && strcmp(tmp, "<|channel>") == 0) {   /* gemma4: canal de raciocinio */
             thinking = 1; skiplabel = 1;
             fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM));
@@ -10172,6 +10192,10 @@ static const char *think_pre(const Config *c) {
    da resposta ja traz o canal vazio. */
 static int g4_think(void) { const char *e = getenv("KATANA_THINK"); return e && atoi(e) != 0; }
 static const char *g4_answer_pre(void) { return g4_think() ? "" : "<|channel>thought\n<channel|>"; }
+/* gpt-oss (harmony): raciocinio desligado por padrao (KATANA_THINK=1 liga). Desligado, a resposta ja
+   comeca no canal final, entao o modelo nao escreve o canal de analise. */
+static int go_reason(void) { const char *e = getenv("KATANA_THINK"); return e && atoi(e) != 0; }
+static const char *go_answer_pre(void) { return go_reason() ? "<|channel|>analysis<|message|>" : "<|channel|>final<|message|>"; }
 
 static void turn_text(const Config *c, char *out, size_t n, const char *sys, const char *user, int first) {
     char sp[4096] = "";
@@ -10211,6 +10235,12 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
     }
     if (c->chat_fmt == 8 && first && ((sys && *sys) || g4_think()))
         snprintf(sp, sizeof sp, "<|turn>system\n%s%s<turn|>\n", g4_think() ? "<|think|>\n" : "", sys ? sys : "");
+    if (c->chat_fmt == 9 && first) {       /* harmony: mensagem de sistema (+ developer com o prompt do usuario) */
+        const char *reason = go_reason() ? "high" : "low";
+        char dev[3072] = "";
+        if (sys && *sys) snprintf(dev, sizeof dev, "<|start|>developer<|message|># Instructions\n\n%s<|end|>", sys);
+        snprintf(sp, sizeof sp, "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\n\nReasoning: %s\n\n# Valid channels: analysis, final. Channel must be included for every message.<|end|>%s", reason, dev);
+    }
     switch (c->chat_fmt) {
         case 0:  snprintf(out, n, "%s%s<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", first ? "" : "<|im_end|>\n", sp, user, think_pre(c)); break;
         case 1:  snprintf(out, n, "%s%s%s<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
@@ -10222,6 +10252,7 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
                           first && !*sp ? "<|im_system|>system<|im_middle|>You are a helpful assistant<|im_end|>" : sp, user); break;
         case 7:  snprintf(out, n, "%s%s%s<|user|>\n%s\n<|assistant|>\n", first ? c->bos_text : c->eos_text, first ? "" : "\n", sp, user); break;
         case 8:  snprintf(out, n, "%s%s<|turn>user\n%s<turn|>\n<|turn>model\n%s", first ? "" : "<turn|>\n", sp, user, g4_answer_pre()); break;
+        case 9:  snprintf(out, n, "%s%s<|start|>user<|message|>%s<|end|><|start|>assistant%s", first ? "" : "<|end|>", sp, user, go_answer_pre()); break;
         default: snprintf(out, n, "%s%sUser: %s\nAssistant:", first ? "" : "\n", sp, user); break;
     }
     free(ut); free(st);
