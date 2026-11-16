@@ -9900,6 +9900,57 @@ static void perfil_apply(const char *model_path, int for_agent) {
  * Sozinho: le a arquitetura e o tamanho do modelo e os recursos da maquina (ja medidos na carga),
  * imprime um plano em portugues, roda o que e seguro (pack, tune, calibracao do calor dos especialistas)
  * respeitando a GPU ocupada, e grava um perfil por modelo que chat/serve/agent passam a usar. */
+/* bits por peso do FORMATO de quantizacao (nao do modelo); para F32/F16 e os valores exatos */
+static double bpw_fmt(uint32_t t) {
+    if (t == T_F32) return 32.0;
+    if (t == T_F16 || t == T_BF16) return 16.0;
+    const int u = qunit(t);
+    const size_t qb = qbytes(t, (size_t)u);
+    return qb ? (double)qb * 8.0 / u : 16.0;
+}
+
+/* recomenda um tipo de quantizacao para esta maquina (ESTIMATIVA). Devolve o T_* alvo, ou 0
+   quando nao vale requantizar (origem ja <= o alvo sugerido). Imprime o raciocinio.
+   is_moe: modelo de mistura de especialistas; src_t: tipo representativo da origem. */
+static uint32_t recomendar_quant(size_t n_params, int is_moe, uint32_t src_t) {
+    static const struct { uint32_t t; const char *name; double bpp; } S[] = {
+        { T_Q8_0, "Q8_0", 1.06 }, { T_Q6_K, "Q6_K", 0.82 }, { T_Q5_K, "Q5_K_M", 0.70 },
+        { T_Q4_K, "Q4_K_M", 0.58 }, { T_Q2_K, "Q2_K", 0.36 } };
+    const double vram = 3.4e9;      /* orcamento pratico da RTX 3050 4 GB para rodar inteiro na GPU */
+    const double ram  = 43.0e9;     /* RAM util desta maquina */
+    uint32_t tgt;
+    if (is_moe) {
+        const double q4 = (double)n_params * 0.58, q2 = (double)n_params * 0.36;
+        if (q4 <= ram) {
+            tgt = T_Q4_K;
+            printf("  - Tipo recomendado (estimativa): Q4_K_M  (~%.1f GB) -- MoE: equilibrio qualidade/tamanho, cabe na RAM util (~43 GB)\n", q4 / 1e9);
+        } else {
+            tgt = T_Q2_K;
+            printf("  - Tipo recomendado (estimativa): Q2_K  (~%.1f GB) -- MoE: Q4_K_M (~%.1f GB) nao caberia na RAM util (~43 GB)\n", q2 / 1e9, q4 / 1e9);
+        }
+    } else {
+        int pick = -1;
+        for (int i = 0; i < 5; i++) {
+            if (S[i].t == T_Q2_K) break;        /* denso nunca cai sozinho em Q2_K */
+            if ((double)n_params * S[i].bpp <= vram) { pick = i; break; }
+        }
+        if (pick >= 0) {
+            tgt = S[pick].t;
+            printf("  - Tipo recomendado (estimativa): %s  (~%.1f GB) -- denso: maior K-quant que cabe no orcamento de VRAM (~3,4 GB) para rodar inteiro na GPU\n",
+                   S[pick].name, (double)n_params * S[pick].bpp / 1e9);
+        } else {
+            tgt = T_Q4_K;
+            printf("  - Tipo recomendado (estimativa): Q4_K_M  (~%.1f GB) -- denso: nem Q4_K cabe na VRAM (~3,4 GB); roda parcial/CPU\n",
+                   (double)n_params * 0.58 / 1e9);
+        }
+    }
+    if (bpw_fmt(tgt) >= bpw_fmt(src_t) - 1e-6) {
+        printf("    (a origem ja esta em %s, ~%.2f bits/peso <= o alvo; nao vale requantizar)\n", qtype_name(src_t), bpw_fmt(src_t));
+        return 0;
+    }
+    return tgt;
+}
+
 static int prepare(Model *m, const char *path) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
@@ -9967,6 +10018,8 @@ static int prepare(Model *m, const char *path) {
     }
     if (c->n_expert && !fits && (qte == T_Q6_K || qte == T_Q5_K || qte == T_Q8_0 || qte == T_F16 || qte == T_BF16))
         printf("  - Sugestao: os especialistas estao em %s; requantizados em Q4_K caberiam mais vagas na VRAM (nao requantizo sozinho)\n", qtype_name(qte));
+
+    recomendar_quant(m->n_params, c->n_expert > 0, c->n_expert ? qte : qt);
 
     printf("\nOtimizacoes para %s:\n", c->arch);
     printf("  aplicadas: backend %s, cache KV %d bits, ajuste de ladrilhos (tune), shards no layout da GPU (pack)%s\n",
@@ -13958,6 +14011,510 @@ static int modelos_cmd(const char *dir) {
     return 0;
 }
 
+/* ============================ katana quantize =============================
+ * Le um GGUF e grava outro com os tensores requantizados no tipo alvo. Os pesos 2D grandes
+ * (attn_*, ffn_*, token_embd, output) sao dequantizados para F32 e recodificados; normas,
+ * vieses, tensores 1D e os que ja sao <= ao alvo sao copiados como estao. Quantizacao simples,
+ * round-to-nearest, sem matriz de importancia (imatrix) por enquanto. */
+
+/* float32 -> half (arredondamento ao mais proximo, empate para par) */
+static uint16_t f32_to_f16(float f) {
+    uint32_t x; memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const uint32_t e = (x >> 23) & 0xffu;
+    uint32_t mant = x & 0x7fffffu;
+    if (e == 0xff) return (uint16_t)(sign | 0x7c00u | (mant ? 0x200u : 0u));   /* inf/nan */
+    int exp = (int)e - 127 + 15;
+    if (exp >= 0x1f) return (uint16_t)(sign | 0x7c00u);                        /* overflow -> inf */
+    if (exp <= 0) {
+        if (exp < -10) return (uint16_t)sign;                                  /* underflow -> 0 */
+        mant |= 0x800000u;
+        const int shift = 14 - exp;
+        uint32_t m = mant >> shift;
+        const uint32_t rem = mant & ((1u << shift) - 1u), half = 1u << (shift - 1);
+        if (rem > half || (rem == half && (m & 1u))) m++;
+        return (uint16_t)(sign | m);
+    }
+    uint32_t m = mant >> 13;
+    const uint32_t rem = mant & 0x1fffu;
+    if (rem > 0x1000u || (rem == 0x1000u && (m & 1u))) {
+        m++;
+        if (m == 0x400u) { m = 0; exp++; if (exp >= 0x1f) return (uint16_t)(sign | 0x7c00u); }
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10) | m);
+}
+
+static int qnear(float x) { return (int)lrintf(x); }
+
+/* ---- codificadores: produzem exatamente o layout que o dequant() correspondente le ---- */
+
+/* Q8_0: bloco de 32 = f16 d + 32 int8 */
+static void enc_q8_0(const float *x, uint8_t *dst, size_t n) {
+    for (size_t b = 0; b < n / 32; b++, x += 32, dst += 34) {
+        float amax = 0;
+        for (int j = 0; j < 32; j++) { float a = fabsf(x[j]); if (a > amax) amax = a; }
+        const float d = amax / 127.0f, id = d > 0 ? 1.0f / d : 0.0f;
+        const uint16_t h = f32_to_f16(d); memcpy(dst, &h, 2);
+        int8_t *q = (int8_t *)(dst + 2);
+        for (int j = 0; j < 32; j++) { int v = qnear(x[j] * id); v = v > 127 ? 127 : v < -127 ? -127 : v; q[j] = (int8_t)v; }
+    }
+}
+
+/* empacota as 8 escalas e 8 minimos de 6 bits no formato que k4_scale_min le (Q4_K/Q5_K) */
+static void pack_k_scales(uint8_t *sc, const uint8_t *ls, const uint8_t *lm) {
+    for (int j = 0; j < 8; j++) {
+        if (j < 4) { sc[j] = ls[j]; sc[j + 4] = lm[j]; }
+        else {
+            sc[j + 4] = (uint8_t)((ls[j] & 0xF) | ((lm[j] & 0xF) << 4));
+            sc[j - 4] = (uint8_t)(sc[j - 4] | ((ls[j] >> 4) << 6));
+            sc[j]     = (uint8_t)(sc[j]     | ((lm[j] >> 4) << 6));
+        }
+    }
+}
+
+/* escala/minimo por sub-bloco (quantizacao assimetrica de 'bits' bits, valores 0..nmax) */
+static void k_subscale(const float *xb, int cnt, int nmax, float *scale, float *vmin) {
+    float mn = xb[0], mx = xb[0];
+    for (int i = 1; i < cnt; i++) { if (xb[i] < mn) mn = xb[i]; if (xb[i] > mx) mx = xb[i]; }
+    if (mn > 0) mn = 0;                 /* garante que o zero seja representavel */
+    *scale = (mx - mn) / (float)nmax;
+    *vmin = -mn;                        /* minimo guardado como magnitude positiva */
+}
+
+/* Q4_K: bloco de 256 = f16 d, f16 dmin, 12 escalas, 128 nibbles (8 sub-blocos de 32, 4 bits) */
+static void enc_q4_k(const float *x, uint8_t *dst, size_t n) {
+    for (size_t b = 0; b < n / 256; b++, x += 256, dst += 144) {
+        float scales[8], mins[8], max_scale = 0, max_min = 0;
+        for (int sb = 0; sb < 8; sb++) {
+            k_subscale(x + 32 * sb, 32, 15, &scales[sb], &mins[sb]);
+            if (scales[sb] > max_scale) max_scale = scales[sb];
+            if (mins[sb] > max_min) max_min = mins[sb];
+        }
+        const float inv_s = max_scale > 0 ? 63.0f / max_scale : 0, inv_m = max_min > 0 ? 63.0f / max_min : 0;
+        uint8_t ls[8], lm[8];
+        for (int sb = 0; sb < 8; sb++) {
+            int s = qnear(inv_s * scales[sb]); if (s < 0) s = 0; if (s > 63) s = 63; ls[sb] = (uint8_t)s;
+            int m = qnear(inv_m * mins[sb]);   if (m < 0) m = 0; if (m > 63) m = 63; lm[sb] = (uint8_t)m;
+        }
+        const uint16_t hd = f32_to_f16(max_scale / 63.0f), hm = f32_to_f16(max_min / 63.0f);
+        const float df = f16_to_f32(hd), dmf = f16_to_f32(hm);
+        memset(dst, 0, 144);
+        memcpy(dst, &hd, 2); memcpy(dst + 2, &hm, 2);
+        pack_k_scales(dst + 4, ls, lm);
+        uint8_t *q = dst + 16;
+        for (int sb = 0; sb < 8; sb++) {
+            const float d_sb = df * ls[sb], m_sb = dmf * lm[sb];
+            const float *xb = x + 32 * sb;
+            uint8_t *qp = q + 32 * (sb / 2);
+            for (int i = 0; i < 32; i++) {
+                int v = d_sb > 0 ? qnear((xb[i] + m_sb) / d_sb) : 0;
+                v = v < 0 ? 0 : v > 15 ? 15 : v;
+                if (sb % 2 == 0) qp[i] = (uint8_t)((qp[i] & 0xF0) | v);
+                else qp[i] = (uint8_t)((qp[i] & 0x0F) | (v << 4));
+            }
+        }
+    }
+}
+
+/* Q5_K: bloco de 256 = f16 d, f16 dmin, 12 escalas, 32 bits altos, 128 nibbles (5 bits) */
+static void enc_q5_k(const float *x, uint8_t *dst, size_t n) {
+    for (size_t b = 0; b < n / 256; b++, x += 256, dst += 176) {
+        float scales[8], mins[8], max_scale = 0, max_min = 0;
+        for (int sb = 0; sb < 8; sb++) {
+            k_subscale(x + 32 * sb, 32, 31, &scales[sb], &mins[sb]);
+            if (scales[sb] > max_scale) max_scale = scales[sb];
+            if (mins[sb] > max_min) max_min = mins[sb];
+        }
+        const float inv_s = max_scale > 0 ? 63.0f / max_scale : 0, inv_m = max_min > 0 ? 63.0f / max_min : 0;
+        uint8_t ls[8], lm[8];
+        for (int sb = 0; sb < 8; sb++) {
+            int s = qnear(inv_s * scales[sb]); if (s < 0) s = 0; if (s > 63) s = 63; ls[sb] = (uint8_t)s;
+            int m = qnear(inv_m * mins[sb]);   if (m < 0) m = 0; if (m > 63) m = 63; lm[sb] = (uint8_t)m;
+        }
+        const uint16_t hd = f32_to_f16(max_scale / 63.0f), hm = f32_to_f16(max_min / 63.0f);
+        const float df = f16_to_f32(hd), dmf = f16_to_f32(hm);
+        memset(dst, 0, 176);
+        memcpy(dst, &hd, 2); memcpy(dst + 2, &hm, 2);
+        pack_k_scales(dst + 4, ls, lm);
+        uint8_t *qh = dst + 16, *q = dst + 48;
+        for (int sb = 0; sb < 8; sb++) {
+            const float d_sb = df * ls[sb], m_sb = dmf * lm[sb];
+            const float *xb = x + 32 * sb;
+            uint8_t *qp = q + 32 * (sb / 2);
+            for (int i = 0; i < 32; i++) {
+                int v = d_sb > 0 ? qnear((xb[i] + m_sb) / d_sb) : 0;
+                v = v < 0 ? 0 : v > 31 ? 31 : v;
+                const uint8_t nib = (uint8_t)(v & 0xF);
+                if (sb % 2 == 0) qp[i] = (uint8_t)((qp[i] & 0xF0) | nib);
+                else qp[i] = (uint8_t)((qp[i] & 0x0F) | (nib << 4));
+                if (v & 0x10) qh[i] = (uint8_t)(qh[i] | (1 << sb));
+            }
+        }
+    }
+}
+
+/* Q6_K: bloco de 256 = 128 ql, 64 qh, 16 escalas int8, f16 d (16 sub-blocos de 16, 6 bits) */
+static void enc_q6_k(const float *x, uint8_t *dst, size_t n) {
+    for (size_t b = 0; b < n / 256; b++, x += 256, dst += 210) {
+        float scales[16], max_scale = 0, max_abs = 0;
+        for (int ib = 0; ib < 16; ib++) {
+            const float *xb = x + 16 * ib;
+            float amax = 0, vmax = 0;
+            for (int i = 0; i < 16; i++) { float a = fabsf(xb[i]); if (a > amax) { amax = a; vmax = xb[i]; } }
+            scales[ib] = amax < 1e-30f ? 0.0f : vmax / -32.0f;
+            const float as = fabsf(scales[ib]);
+            if (as > max_abs) { max_abs = as; max_scale = scales[ib]; }
+        }
+        int8_t qsc[16];
+        float d;
+        if (max_abs < 1e-30f) { d = 0; memset(qsc, 0, 16); }
+        else {
+            const float iscale = -128.0f / max_scale;
+            for (int ib = 0; ib < 16; ib++) { int l = qnear(iscale * scales[ib]); l = l < -128 ? -128 : l > 127 ? 127 : l; qsc[ib] = (int8_t)l; }
+            d = max_scale / -128.0f;
+        }
+        const uint16_t h = f32_to_f16(d);
+        const float df = f16_to_f32(h);
+        int8_t L[256];
+        for (int ib = 0; ib < 16; ib++) {
+            const float dl = df * qsc[ib];
+            const float *xb = x + 16 * ib;
+            for (int i = 0; i < 16; i++) {
+                int l = dl != 0 ? qnear(xb[i] / dl) : 0;
+                l = l < -32 ? -32 : l > 31 ? 31 : l;
+                L[16 * ib + i] = (int8_t)(l + 32);
+            }
+        }
+        memset(dst, 0, 210);
+        uint8_t *ql = dst, *qh = dst + 128;
+        const int8_t *Lp = L;
+        for (int half = 0; half < 2; half++, ql += 64, qh += 32, Lp += 128) {
+            for (int l = 0; l < 32; l++) {
+                const uint8_t q1 = Lp[l] & 0xF, q2 = Lp[l + 32] & 0xF, q3 = Lp[l + 64] & 0xF, q4 = Lp[l + 96] & 0xF;
+                ql[l] = (uint8_t)(q1 | (q3 << 4));
+                ql[l + 32] = (uint8_t)(q2 | (q4 << 4));
+                qh[l] = (uint8_t)((Lp[l] >> 4) | ((Lp[l + 32] >> 4) << 2) | ((Lp[l + 64] >> 4) << 4) | ((Lp[l + 96] >> 4) << 6));
+            }
+        }
+        memcpy(dst + 192, qsc, 16);
+        memcpy(dst + 208, &h, 2);
+    }
+}
+
+/* Q2_K: bloco de 256 = 16 escalas/minimos, 64 de 2 bits, f16 d, f16 dmin (16 sub-blocos de 16) */
+static void enc_q2_k(const float *x, uint8_t *dst, size_t n) {
+    for (size_t b = 0; b < n / 256; b++, x += 256, dst += 84) {
+        float scales[16], mins[16], max_scale = 0, max_min = 0;
+        for (int is = 0; is < 16; is++) {
+            k_subscale(x + 16 * is, 16, 3, &scales[is], &mins[is]);
+            if (scales[is] > max_scale) max_scale = scales[is];
+            if (mins[is] > max_min) max_min = mins[is];
+        }
+        const float inv_s = max_scale > 0 ? 15.0f / max_scale : 0, inv_m = max_min > 0 ? 15.0f / max_min : 0;
+        uint8_t s4[16], m4[16];
+        for (int is = 0; is < 16; is++) {
+            int s = qnear(inv_s * scales[is]); if (s < 0) s = 0; if (s > 15) s = 15; s4[is] = (uint8_t)s;
+            int m = qnear(inv_m * mins[is]);   if (m < 0) m = 0; if (m > 15) m = 15; m4[is] = (uint8_t)m;
+        }
+        const uint16_t hd = f32_to_f16(max_scale / 15.0f), hm = f32_to_f16(max_min / 15.0f);
+        const float df = f16_to_f32(hd), dmf = f16_to_f32(hm);
+        memset(dst, 0, 84);
+        for (int is = 0; is < 16; is++) dst[is] = (uint8_t)(s4[is] | (m4[is] << 4));
+        uint8_t *q = dst + 16;
+        for (int is = 0; is < 16; is++) {
+            const int c = is / 8, local = is % 8, shift = (local / 2) * 2, hh = local % 2;
+            const float dl = df * s4[is], ml = dmf * m4[is];
+            const float *xb = x + 16 * is;
+            for (int i = 0; i < 16; i++) {
+                int v = dl > 0 ? qnear((xb[i] + ml) / dl) : 0;
+                v = v < 0 ? 0 : v > 3 ? 3 : v;
+                q[c * 32 + hh * 16 + i] = (uint8_t)(q[c * 32 + hh * 16 + i] | (v << shift));
+            }
+        }
+        memcpy(dst + 80, &hd, 2); memcpy(dst + 82, &hm, 2);
+    }
+}
+
+static void enc_block(uint32_t t, const float *x, uint8_t *dst, size_t n) {
+    switch (t) {
+        case T_Q8_0: enc_q8_0(x, dst, n); break;
+        case T_Q6_K: enc_q6_k(x, dst, n); break;
+        case T_Q5_K: enc_q5_k(x, dst, n); break;
+        case T_Q4_K: enc_q4_k(x, dst, n); break;
+        case T_Q2_K: enc_q2_k(x, dst, n); break;
+        default: die("quantize: tipo de codificacao nao suportado");
+    }
+}
+
+/* ---- auxiliares de GGUF: buffer crescente e nomes ---- */
+typedef struct { uint8_t *p; size_t n, cap; } GBuf;
+static void gbuf_need(GBuf *b, size_t add) {
+    if (b->n + add > b->cap) { b->cap = (b->n + add) * 2 + 256; b->p = realloc(b->p, b->cap); if (!b->p) die("quantize: sem memoria"); }
+}
+static void gbuf_bytes(GBuf *b, const void *s, size_t k) { gbuf_need(b, k); memcpy(b->p + b->n, s, k); b->n += k; }
+static void gbuf_u32(GBuf *b, uint32_t v) { gbuf_bytes(b, &v, 4); }
+static void gbuf_u64(GBuf *b, uint64_t v) { gbuf_bytes(b, &v, 8); }
+static void gbuf_gstr(GBuf *b, const char *s, uint64_t len) { gbuf_u64(b, len); gbuf_bytes(b, s, (size_t)len); }
+static void gkv_str(GBuf *b, const char *key, const char *val) { gbuf_gstr(b, key, strlen(key)); gbuf_u32(b, 8); gbuf_gstr(b, val, strlen(val)); }
+static void gkv_u32(GBuf *b, const char *key, uint32_t v) { gbuf_gstr(b, key, strlen(key)); gbuf_u32(b, 4); gbuf_u32(b, v); }
+
+/* substring numa string sem terminador */
+static int name_has(const char *s, int sl, const char *sub) {
+    const int subl = (int)strlen(sub);
+    for (int i = 0; i + subl <= sl; i++) if (memcmp(s + i, sub, subl) == 0) return 1;
+    return 0;
+}
+/* compara ignorando caixa; s pode ter 'sl' chars, suf e terminado em 0 */
+static int ci_eq(const char *s, int sl, const char *suf) {
+    if (sl != (int)strlen(suf)) return 0;
+    for (int i = 0; i < sl; i++) { char a = s[i], b = suf[i]; if (a >= 'a' && a <= 'z') a -= 32; if (b >= 'a' && b <= 'z') b -= 32; if (a != b) return 0; }
+    return 1;
+}
+static int ci_tail(const char *s, int sl, const char *suf) {
+    const int fl = (int)strlen(suf);
+    return sl >= fl && ci_eq(s + sl - fl, fl, suf);
+}
+
+/* tipo alvo a partir do nome passado na linha de comando */
+static int qtype_from_name(const char *s, uint32_t *t, int *ft, int *blk) {
+    static const struct { const char *n; uint32_t t; int ft; int blk; } M[] = {
+        { "Q8_0", T_Q8_0, 7, 32 }, { "Q6_K", T_Q6_K, 18, 256 }, { "Q5_K", T_Q5_K, 17, 256 },
+        { "Q5_K_M", T_Q5_K, 17, 256 }, { "Q5_K_S", T_Q5_K, 16, 256 }, { "Q4_K", T_Q4_K, 15, 256 },
+        { "Q4_K_M", T_Q4_K, 15, 256 }, { "Q4_K_S", T_Q4_K, 14, 256 }, { "Q2_K", T_Q2_K, 10, 256 },
+        { "Q2_K_M", T_Q2_K, 10, 256 } };
+    const int sl = (int)strlen(s);
+    for (size_t i = 0; i < sizeof M / sizeof M[0]; i++)
+        if (ci_eq(s, sl, M[i].n)) { *t = M[i].t; *ft = M[i].ft; *blk = M[i].blk; return 1; }
+    return 0;
+}
+
+/* rotulo canonico do alvo, para o nome do arquivo e os avisos */
+static const char *qtgt_label(uint32_t t) {
+    switch (t) {
+        case T_Q8_0: return "Q8_0"; case T_Q6_K: return "Q6_K"; case T_Q5_K: return "Q5_K_M";
+        case T_Q4_K: return "Q4_K_M"; case T_Q2_K: return "Q2_K"; default: return "Q?";
+    }
+}
+
+/* gera o nome de saida: basename sem o sufixo de quantizacao conhecido + -<LABEL>.gguf, na mesma pasta */
+static void gen_out_name(const char *in, const char *label, char *out, size_t on) {
+    static const char *toks[] = {
+        "F32", "F16", "BF16", "Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q5_K", "Q4_K_M", "Q4_K_S", "Q4_K",
+        "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q3_K_M", "Q3_K_S", "Q3_K_L", "Q3_K", "Q2_K_S", "Q2_K",
+        "IQ4_NL", "IQ4_XS", "IQ3_XXS", "IQ3_S", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ1_S", "IQ1_M", "MXFP4" };
+    const char *slash = strrchr(in, '/');
+    char dir[1024]; dir[0] = 0;
+    const char *base = in;
+    if (slash) { size_t dl = (size_t)(slash - in) + 1; if (dl < sizeof dir) { memcpy(dir, in, dl); dir[dl] = 0; } base = slash + 1; }
+    char nb[512]; snprintf(nb, sizeof nb, "%s", base);
+    int bl = (int)strlen(nb);
+    if (bl >= 5 && ci_tail(nb, bl, ".gguf")) { bl -= 5; nb[bl] = 0; }
+    for (size_t i = 0; i < sizeof toks / sizeof toks[0]; i++) {
+        const int tl = (int)strlen(toks[i]);
+        if (bl > tl + 1 && (nb[bl - tl - 1] == '-' || nb[bl - tl - 1] == '.') && ci_tail(nb, bl, toks[i])) { bl -= tl + 1; nb[bl] = 0; break; }
+    }
+    snprintf(out, on, "%s%s-%s.gguf", dir, nb, label);
+    FILE *e = fopen(out, "rb");
+    if (e) {
+        fclose(e);
+        for (int k = 2; k < 1000; k++) {
+            snprintf(out, on, "%s%s-%s-%d.gguf", dir, nb, label, k);
+            e = fopen(out, "rb");
+            if (!e) break;
+            fclose(e);
+        }
+        fprintf(stderr, "quantize: aviso: o nome padrao ja existia; usando %s\n", out);
+    }
+}
+
+/* tipo por tensor: nos alvos baixos, mantem embeddings/saida em precisao maior (convencao _M),
+   o que melhora muito modelos pequenos sem imatrix. Fora disso, usa o alvo base. */
+static uint32_t tensor_target(const TInfo *t, uint32_t base, size_t n) {
+    (void)n;
+    if (name_has(t->name, t->namelen, "token_embd")) {
+        if (base == T_Q2_K) return T_Q4_K;
+    } else if (name_has(t->name, t->namelen, "output.weight") && !name_has(t->name, t->namelen, "_exps")) {
+        if (base == T_Q2_K || base == T_Q4_K || base == T_Q5_K) return T_Q6_K;
+    }
+    return base;
+}
+
+static int quantize_cmd(const char *in, const char *out_arg, const char *type_arg) {
+    int64_t fsz = 0;
+    const uint8_t *buf = map_file(in, &fsz);
+    if (!buf) { fprintf(stderr, "quantize: nao consegui abrir %s\n", in); return 1; }
+    Rd r = { buf, buf + fsz };
+    if (rd_u32(&r) != 0x46554747u) { fprintf(stderr, "quantize: %s nao e GGUF\n", in); return 1; }
+    if (rd_u32(&r) < 2) { fprintf(stderr, "quantize: versao de GGUF nao suportada\n"); return 1; }
+    const uint64_t n_tensors = rd_u64(&r), n_kv = rd_u64(&r);
+
+    /* passo 1: pula os KV, captura arquitetura e alinhamento */
+    uint64_t align = 32;
+    char arch[64]; arch[0] = 0;
+    const uint8_t *kv_start = r.p;
+    for (uint64_t i = 0; i < n_kv; i++) {
+        int kl; const char *k = rd_str(&r, &kl);
+        const uint32_t t = rd_u32(&r);
+        if (t == 8 && key_is(k, kl, "general.architecture")) { int sl; const char *s = rd_str(&r, &sl); if (sl > 63) sl = 63; memcpy(arch, s, sl); arch[sl] = 0; }
+        else if (t != 8 && t != 9 && key_is(k, kl, "general.alignment")) align = (uint64_t)rd_num(&r, t);
+        else rd_skip(&r, t);
+    }
+    if (align == 0) align = 32;
+
+    /* passo 2: tabela de tensores, parametros, se e MoE e o tipo representativo da origem */
+    TInfo *ts = xalloc(n_tensors, sizeof(TInfo));
+    size_t n_params = 0; int is_moe = 0;
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        TInfo *t = &ts[i];
+        t->name = rd_str(&r, &t->namelen);
+        t->ndims = rd_u32(&r);
+        if (t->ndims > 4) { fprintf(stderr, "quantize: tensor com dimensoes demais\n"); return 1; }
+        for (uint32_t d = 0; d < t->ndims; d++) t->dims[d] = rd_u64(&r);
+        t->type = rd_u32(&r);
+        t->offset = rd_u64(&r);
+        size_t n = 1; for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
+        n_params += n;
+        if (!is_moe && name_has(t->name, t->namelen, "_exps")) is_moe = 1;
+    }
+    const uint64_t info_end = (uint64_t)(r.p - buf);
+    const uint8_t *in_data = buf + (info_end + align - 1) / align * align;
+    uint32_t rep = T_F16; int rep_set = 0;
+    for (uint64_t i = 0; i < n_tensors && !rep_set; i++)
+        if (is_moe && ts[i].ndims >= 2 && name_has(ts[i].name, ts[i].namelen, "_exps")) { rep = ts[i].type; rep_set = 1; }
+    for (uint64_t i = 0; i < n_tensors && !rep_set; i++)
+        if (ts[i].ndims >= 2 && name_has(ts[i].name, ts[i].namelen, "ffn_") && name_has(ts[i].name, ts[i].namelen, ".weight")) { rep = ts[i].type; rep_set = 1; }
+    for (uint64_t i = 0; i < n_tensors && !rep_set; i++)
+        if (ts[i].ndims >= 2) { rep = ts[i].type; rep_set = 1; }
+
+    printf("quantize: %s  (arquitetura=%s%s, %.1fM parametros, origem %s ~%.2f bits/peso, %.2f GB)\n",
+           in, arch[0] ? arch : "?", is_moe ? " MoE" : "", n_params / 1e6, qtype_name(rep), bpw_fmt(rep), fsz / 1073741824.0);
+
+    /* decide o tipo alvo */
+    uint32_t tgt; int ft = 0, blk = 0;
+    if (type_arg) {
+        if (!qtype_from_name(type_arg, &tgt, &ft, &blk)) {
+            fprintf(stderr, "quantize: tipo '%s' nao suportado. Use Q8_0, Q6_K, Q5_K(_M), Q4_K(_M) ou Q2_K.\n", type_arg);
+            return 1;
+        }
+        printf("Tipo alvo: %s (escolhido pelo usuario)\n", qtgt_label(tgt));
+        if (bpw_fmt(tgt) >= bpw_fmt(rep) - 1e-6)
+            printf("  aviso: a origem (~%.2f bits/peso) nao e maior que o alvo; o tamanho pode nao diminuir (os tensores menores sao copiados)\n", bpw_fmt(rep));
+    } else {
+        printf("Escolhendo o tipo para esta maquina (RTX 3050 4 GB, ~43 GB RAM util; estimativa):\n");
+        const uint32_t s = recomendar_quant(n_params, is_moe, rep);
+        if (s == 0) { free(ts); return 0; }
+        qtype_from_name(qtgt_label(s), &tgt, &ft, &blk);
+    }
+    const char *label = qtgt_label(tgt);
+
+    /* nome de saida */
+    char outbuf[2048];
+    const char *out;
+    if (out_arg) {
+        out = out_arg;
+        FILE *ex = fopen(out, "rb");
+        if (ex) { fclose(ex); fprintf(stderr, "quantize: %s ja existe; escolha outro nome.\n", out); free(ts); return 1; }
+    } else {
+        gen_out_name(in, label, outbuf, sizeof outbuf);
+        out = outbuf;
+    }
+    printf("Saida: %s\n", out);
+
+    /* passo 3: KV de saida (substitui file_type; carimba quantized_by/author/quantization_version) */
+    GBuf kv = {0}; uint64_t nkv_out = 0;
+    Rd r2 = { kv_start, buf + fsz };
+    for (uint64_t i = 0; i < n_kv; i++) {
+        int kl; const char *k = rd_str(&r2, &kl);
+        const uint32_t t = rd_u32(&r2);
+        if ((t != 8 && t != 9 && key_is(k, kl, "general.file_type")) ||
+            key_is(k, kl, "general.quantized_by") || key_is(k, kl, "general.author") ||
+            (t != 8 && t != 9 && key_is(k, kl, "general.quantization_version"))) {
+            rd_skip(&r2, t);
+            continue;
+        }
+        const uint8_t *vs = r2.p; rd_skip(&r2, t);
+        gbuf_gstr(&kv, k, (uint64_t)kl); gbuf_u32(&kv, t); gbuf_bytes(&kv, vs, (size_t)(r2.p - vs));
+        nkv_out++;
+    }
+    gkv_u32(&kv, "general.file_type", (uint32_t)ft);
+    gkv_u32(&kv, "general.quantization_version", 2);
+    gkv_str(&kv, "general.quantized_by", "katana");
+    gkv_str(&kv, "general.author", "Ale Simoes (alesimoes)");
+    nkv_out += 4;
+
+    /* passo 4: decide por tensor e monta a info de saida com os novos deslocamentos */
+    GBuf tib = {0};
+    int *req = xalloc(n_tensors, sizeof(int));
+    uint32_t *otype = xalloc(n_tensors, 4);
+    uint64_t *new_off = xalloc(n_tensors, 8);
+    uint64_t data_off = 0;
+    int requant_plan = 0;
+    (void)blk;
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        TInfo *t = &ts[i];
+        size_t n = 1; for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
+        uint32_t ot = t->type; int rq = 0;
+        if (t->ndims >= 2) {
+            const uint32_t cand = tensor_target(t, tgt, n);
+            const uint64_t cblk = (uint64_t)qunit(cand);
+            if ((t->dims[0] % cblk) == 0 && (n % (size_t)cblk) == 0 && qbytes(t->type, n)
+                && bpw_fmt(cand) < bpw_fmt(t->type) - 1e-6) { ot = cand; rq = 1; requant_plan++; }
+        }
+        otype[i] = ot;
+        const size_t ob = rq ? qbytes(ot, n) : qbytes(t->type, n);
+        if (ob == 0) { fprintf(stderr, "quantize: nao sei o tamanho do tensor %.*s (tipo %u)\n", t->namelen, t->name, t->type); return 1; }
+        data_off = (data_off + align - 1) / align * align;
+        new_off[i] = data_off; req[i] = rq;
+        data_off += ob;
+        gbuf_gstr(&tib, t->name, (uint64_t)t->namelen); gbuf_u32(&tib, t->ndims);
+        for (uint32_t d = 0; d < t->ndims; d++) gbuf_u64(&tib, t->dims[d]);
+        gbuf_u32(&tib, ot); gbuf_u64(&tib, new_off[i]);
+    }
+
+    /* passo 5: grava */
+    FILE *f = fopen(out, "wb");
+    if (!f) { fprintf(stderr, "quantize: nao consegui gravar %s\n", out); return 1; }
+    uint8_t hdr[24];
+    const uint32_t magic = 0x46554747u, v3 = 3;
+    memcpy(hdr, &magic, 4); memcpy(hdr + 4, &v3, 4); memcpy(hdr + 8, &n_tensors, 8); memcpy(hdr + 16, &nkv_out, 8);
+    fwrite(hdr, 1, 24, f);
+    fwrite(kv.p, 1, kv.n, f);
+    fwrite(tib.p, 1, tib.n, f);
+    const uint64_t hpos = 24 + kv.n + tib.n;
+    const uint64_t dstart = (hpos + align - 1) / align * align;
+    for (uint64_t p = hpos; p < dstart; p++) fputc(0, f);
+    uint64_t cur = 0; int requant_count = 0;
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        while (cur < new_off[i]) { fputc(0, f); cur++; }
+        size_t n = 1; for (uint32_t d = 0; d < ts[i].ndims; d++) n *= (size_t)ts[i].dims[d];
+        const uint8_t *src = in_data + ts[i].offset;
+        if (req[i]) {
+            const size_t ob = qbytes(otype[i], n);
+            float *fx = xalloc(n, sizeof(float));
+            dequant(ts[i].type, src, fx, n);
+            uint8_t *o = xalloc(ob, 1);
+            enc_block(otype[i], fx, o, n);
+            fwrite(o, 1, ob, f);
+            free(fx); free(o);
+            cur = new_off[i] + ob; requant_count++;
+        } else {
+            const size_t ob = qbytes(ts[i].type, n);
+            fwrite(src, 1, ob, f);
+            cur = new_off[i] + ob;
+        }
+    }
+    fclose(f);
+    struct stat st;
+    const double outgb = (stat(out, &st) == 0) ? st.st_size / 1073741824.0 : 0;
+    printf("Pronto: %llu tensores, %d requantizados para %s (resto copiado). Tamanho %.2f GB -> %.2f GB (%.0f%%). "
+           "Metadados: author=\"Ale Simoes (alesimoes)\", quantized_by=\"katana\".\n",
+           (unsigned long long)n_tensors, requant_count, label, fsz / 1073741824.0, outgb,
+           fsz ? outgb * 1073741824.0 * 100.0 / (double)fsz : 0);
+    (void)requant_plan;
+    free(ts); free(req); free(otype); free(new_off); free(kv.p); free(tib.p);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -14044,6 +14601,17 @@ static int run_main(int argc, char **argv) {
         return vkcheck(&m, argv[3], argc > 4 ? atoi(argv[4]) : 40, argc > 5 ? atoi(argv[5]) : 600);
     }
     if (argc >= 2 && strcmp(argv[1], "qtest") == 0) return qtest();
+    if (strcmp(argv[1], "quantize") == 0) {
+        if (argc < 3) { fprintf(stderr, "uso: katana quantize <entrada.gguf> [saida.gguf] [tipo]\n"); return 1; }
+        const char *in = argv[2], *out = NULL, *type = NULL;
+        if (argc >= 5) { out = argv[3]; type = argv[4]; }
+        else if (argc == 4) {
+            uint32_t tt; int ft, blk;
+            if (qtype_from_name(argv[3], &tt, &ft, &blk)) type = argv[3];   /* quantize entrada tipo */
+            else out = argv[3];                                             /* quantize entrada saida */
+        }
+        return quantize_cmd(in, out, type);
+    }
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -14091,6 +14659,8 @@ static int run_main(int argc, char **argv) {
         "  katana selftest <modelo.gguf>\n"
         "  katana toktest <modelo.gguf> <casos.hex> [--chat]   ids do tokenizador (ou do formato de conversa) de cada caso\n"
         "  katana qtest                   confere a decodificacao e os produtos de cada tipo de quantizacao\n"
+        "  katana quantize <entrada.gguf> [saida.gguf] [tipo]   grava um GGUF requantizado (tipo: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q2_K)\n"
+        "                                 sem tipo, escolhe o melhor para esta maquina; sem saida, gera o nome a partir da entrada\n"
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
         "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
         "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
