@@ -294,10 +294,11 @@ static void run_batch(const WSet *w, uint32_t tokens, const char **tiles, int nt
     }
     for (int ti = 0; ti < ntiles; ti++) {
         const Tile *tl = NULL;
-        for (int i = 0; i < NTILES; i++) if (!strcmp(TILES[i].name, tiles[ti])) tl = &TILES[i];
+        { const char *pl = strchr(tiles[ti], '+'); size_t bl = pl ? (size_t)(pl - tiles[ti]) : strlen(tiles[ti]);
+          for (int i = 0; i < NTILES; i++) if (strlen(TILES[i].name) == bl && !strncmp(TILES[i].name, tiles[ti], bl)) tl = &TILES[i]; }
         if (!tl || (glu && !tl->glu_ok)) continue;
         char fn[128];
-        snprintf(fn, sizeof fn, "spv/t%d_%s_x%d_s%d_g%d.spv", w->type, tl->name, opt.xmode == 1, opt.sc, glu);
+        snprintf(fn, sizeof fn, "spv/t%d_%s_x%d_s%d_g%d.spv", w->type, tiles[ti], opt.xmode == 1, opt.sc, glu);
         VkPipeline pipe = mkpipe(fn);
         if (!pipe) { printf("falta %s\n", fn); continue; }
         VkBuffer xin = opt.xmode == 1 ? bx32 : bx16;
@@ -352,7 +353,7 @@ static void run_batch(const WSet *w, uint32_t tokens, const char **tiles, int nt
             const double macs = (double)rows * cols * tokens * (glu ? 2 : 1);
             const int ok = opt.check ? (worst < 1e-3 && !bad) : 1;
             if (opt.check) { if (ok) nok++; else nfail++; }
-            printf("%-4s %-7s %-6s%s%s sp%d %5u x %5u lote %3u: %.4f ms  %.2f T%s", TN[w->type], tl->name, opt.mode == 2 ? "glu" : opt.mode == 1 ? "add" : "plain",
+            printf("%-4s %-14s %-6s%s%s sp%d %5u x %5u lote %3u: %.4f ms  %.2f T%s", TN[w->type], tiles[ti], opt.mode == 2 ? "glu" : opt.mode == 1 ? "add" : "plain",
                    opt.xmode == 1 ? " x32" : opt.xmode == 2 ? " cvt" : " x16", opt.sc ? " tab" : "", split, rows, cols, tokens, best * 1e3, macs / best / 1e12, "");
             if (opt.check) printf("  erro/rms %.1e relmax %.1e nan %zu %s", worst_rms, worst, bad, ok ? "(OK)" : "(DIFERENTE)");
             printf("\n"); fflush(stdout);

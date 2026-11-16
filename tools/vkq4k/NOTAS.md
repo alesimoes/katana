@@ -151,3 +151,33 @@ Q4_K/Q6_K 8960x1536 lote 256 (T mult/s): 64x64 2x2 1,30/1,33; 64x64 4x2 ("64x64w
 Motor passou a usar: glu acima de 16 tokens 64x32 2x2; plano ate 64 tokens 64x32w4, acima 64x64 4x2.
 No Windows a mudanca nao foi medida. vkmm agora compila no Linux (dlopen, clock_gettime) e tem os
 ladrilhos 64x64w8, 64x32s22, 128x32w8, 128x64w8.
+
+## Linux (2026-11-15, 2): ladrilho B em linha-coluna, duplo buffer, BK=128
+Bancada (vkmm, confere todas as saidas: tudo OK). mm.comp agora tem opcoes de compilacao (gen3.sh gera as
+variantes; nome do ladrilho com sufixo, p.ex. `-tiles 64x64w8+old,64x64w8+br`; `+old` = shader anterior):
+`BR=1` (B na memoria compartilhada em [k][n], carregado RowMajor; escritas de 4 halfs contiguos em vez de 4
+espalhadas com stride 72), `DB=1` (dois buffers, uma barreira por passo), `KS=2` (BK=128), `PADA`/`PADB`.
+A maquina estava compartilhada (outros katana na GPU): so valem as rodadas alternadas e as razoes; medidas
+indicativas, repetidas 2-3 vezes alternando com a versao antiga na mesma execucao.
+Q4_K / Q6_K 8960x1536, lote 256, T mult/s (antes -> depois, rodadas estaveis):
+| ladrilho | Q4_K | Q6_K |
+| 64x64w8 (4x2, 1x2 acc) | 2,8 -> 3,8 (+35%) | 3,1-3,3 -> 4,1 (+27%) |
+| 128x32w8 | 2,6 -> 2,7 | 3,25 -> 3,4 |
+| 64x32w4 | 2,45 -> 2,7 | 3,08 -> 3,45 |
+| 64x32s22 | 2,45 -> 2,7 | 3,1 -> 3,45 |
+Outros lotes (Q4_K, 64x64w8, +br): lote 64 3,0 -> 4,2; 128 2,8 -> 4,1-4,3; 512 2,9 -> 3,8. 1536x8960: lote 128
+2,8 -> 4,1, lote 512 2,2 -> 3,8 (Q6_K 2,5 -> 3,9). 64x32w4 (lotes 32-128): +5 a +20%. Glu (64x32s22, 8960x1536):
++5 a +20% nas rodadas limpas (as demais muito ruidosas), nunca pior de forma consistente.
+Resultados negativos:
+- `+db` (duplo buffer): 1,7 contra 2,9 T (64x64w8 Q4_K), 0,8 contra 1,4 no Q6_K, tambem com `+br` (2,4 contra 3,8): o dobro de
+  memoria compartilhada (37 KB) e a carga/decodificacao antes da multiplicacao no mesmo subgrupo nao se sobrepoem; perde muito.
+- `+k2` (BK=128): empate/ligeiramente pior (2,63 contra 2,57-2,87), com `+br` 3,5 contra 3,85 do BK=64: descartado.
+- Carga de pesos em 128 bits: nao aplicavel sem trocar o layout (palavras da mesma linha estao a 32 palavras uma da outra).
+  Carga de B em f16vec4 compartilhado (coopMatLoad sobre vetor): glslang rejeita.
+- Folga das linhas (STRIDE): PADA=4 em A deu +4-5% (Q4 4,0, Q6 4,25 contra 3,85/4,08; uma rodada ruidosa pior), PADA=0 ou 16 e
+  PADB 0/4/16 pioram (PADB=8 e o melhor): nao levado (abaixo de 5% e alinhamento de 8 bytes).
+Levado ao motor: `BR=1` em vk/shaders/gen.sh (todas as variantes de mm.comp; mm.comp ganha DB/KS/BR/PADA/PADB com
+padrao antigo). Motor, qwen2.5-1.5b, prompt de 256 tokens pelo Vulkan, alternado 3x: 1550 -> 1800 tok/s (+15%).
+Conferencias: selftest Vulkan (qwen2.5-1.5b: lote 0,009753 como antes; OLMoE 0,001031; Qwen3-30B 0,000509), vkcheck llama3.2-3b
+600 tokens: diferenca 0,005989 identica a antes, 40 tokens gulosos iguais.
+Reconstruir variantes: `bash gen3.sh "0 1" "64x64w8 64x32s22" "+br +db"`.
