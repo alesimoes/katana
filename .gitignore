@@ -10,3 +10,7 @@ ref/
 katana
 tools/vkq4k/vkmm
 .claude/worktrees/
+tools/tokref/vendor/
+tools/tokref/dl/
+tools/tokref/out/
+tools/tokref/__pycache__/

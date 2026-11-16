@@ -330,7 +330,11 @@ typedef struct {
     int qk_norm;        /* norma RMS em q e k: 1 = no vetor inteiro (olmoe), 2 = por cabeca (qwen3) */
     int hidden_exp;
     int hd_key;         /* largura de cada cabeca quando nao e dim/cabecas (qwen3moe) */
-    int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples, 5 = DeepSeek, 6 = Kimi */
+    int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples, 5 = DeepSeek, 6 = Kimi, 7 = OLMoE */
+    const char *def_sys;    /* prompt de sistema que o template do modelo poe quando o usuario nao manda (Qwen2.5) */
+    int trim_msgs;          /* o template aplica |trim as mensagens */
+    int llama_hdr;          /* template do Llama 3.1/3.2: sempre abre com o bloco de sistema com a data */
+    char bos_text[48], eos_text[48];    /* texto dos tokens bos/eos (formatos de conversa que os escrevem) */
     /* atencao latente (MLA, deepseek2): o cache guarda so o latente c_kv e a parte rope de k */
     int mla;            /* largura do latente (kv_lora_rank); 0 = atencao comum */
     int q_lora;         /* q comprimida (q_lora_rank, V3/Kimi K2): q = q_b(norma(q_a x)) */
@@ -384,7 +388,10 @@ typedef struct {
 typedef struct {
     char **tok; int *toklen; int *toktype; int n;
     int spm; float *score;      /* SentencePiece: funde pares pela pontuacao do token */
-    int digits;                 /* pre-tokenizacao: digitos seguidos agrupados ate este numero (0 = 1) */
+    int digits;                 /* pre-tokenizacao legada: digitos seguidos agrupados ate este numero (0 = 1) */
+    int pre;                    /* pre-tokenizador (PRE_*), pela chave tokenizer.ggml.pre */
+    int nfc;                    /* normaliza o texto em NFC antes de tokenizar (Qwen, OLMo) */
+    uint8_t spec1[256];         /* 1 = existe token especial que comeca com este byte */
     Map vocab, merges;
     int *special; int n_special;
     int byte2cp[256]; int cp2byte[512];
@@ -930,6 +937,10 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
     return m;
 }
 
+static int g_vocab_only;    /* toktest: carrega so metadados e vocabulario, sem os pesos */
+static int pre_kind(const char *sv, int sl);
+static int pre_has_nfc(int kind);
+
 static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int n_merges) {
     int n = 0;
     for (int b = 0; b < 256; b++) {
@@ -948,6 +959,7 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
     }
     map_init(&tk->merges, n_merges);
     for (int i = 0; i < n_merges; i++) map_put(&tk->merges, merges[i], mlen[i], i);
+    for (int j = 0; j < tk->n_special; j++) tk->spec1[(uint8_t)tk->tok[tk->special[j]][0]] = 1;
 }
 
 static void gpu_setup(Model *m);
@@ -1061,8 +1073,8 @@ static void load_model(Model *m, const char *path) {
             tk->spm = sl == 5 && memcmp(sv, "llama", 5) == 0;
         } else if (t == 8 && key_is(k, kl, "tokenizer.ggml.pre")) {
             int sl; const char *sv = rd_str(&r, &sl);
-            if (sl == 12 && memcmp(sv, "deepseek-llm", 12) == 0) tk->digits = 1000;
-            else if (sl == 7 && memcmp(sv, "kimi-k2", 7) == 0) tk->digits = 3;
+            tk->pre = pre_kind(sv, sl);
+            tk->nfc = pre_has_nfc(tk->pre);
         } else if (t == 8 && key_is(k, kl, "tokenizer.chat_template")) {
             int sl; const char *sv = rd_str(&r, &sl);
             tmpl = xalloc((size_t)sl + 1, 1); memcpy(tmpl, sv, sl);
@@ -1179,7 +1191,15 @@ static void load_model(Model *m, const char *path) {
     else if (map_get(&tk->vocab, "<|im_start|>", 12) >= 0) c->chat_fmt = 0;
     else if (map_get(&tk->vocab, "<|start_header_id|>", 19) >= 0) c->chat_fmt = 1;
     else c->chat_fmt = 4;
+    if (tmpl && strcmp(c->arch, "olmoe") == 0 && strstr(tmpl, "<|user|>")) c->chat_fmt = 7;
+    if (tmpl && strstr(tmpl, "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."))
+        c->def_sys = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
+    if (tmpl && strstr(tmpl, "|trim")) c->trim_msgs = 1;
+    if (tmpl && strstr(tmpl, "Cutting Knowledge Date")) c->llama_hdr = 1;
+    if (c->bos >= 0 && c->bos < tk->n && tk->toklen[c->bos] < 48) { memcpy(c->bos_text, tk->tok[c->bos], tk->toklen[c->bos]); }
+    if (c->eos >= 0 && c->eos < tk->n && tk->toklen[c->eos] < 48) { memcpy(c->eos_text, tk->tok[c->eos], tk->toklen[c->eos]); }
     free(tmpl);
+    if (g_vocab_only) return;
 
     Tensors ts;
     ts.n = n_tensors; ts.t = xalloc(n_tensors, sizeof(TInfo));
@@ -1411,8 +1431,8 @@ static int c_digit(int c)  { return c >= '0' && c <= '9'; }
 static int c_letter(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80; }
 static int c_other(int c)  { return !c_space(c) && !c_digit(c) && !c_letter(c); }
 
-/* pre-tokenizacao aproximada do regex do GPT-2 (digitos isolados, como no SmolLM) */
-static void encode_plain(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+/* pre-tokenizacao aproximada do regex do GPT-2 (digitos isolados, como no SmolLM); so para vocabularios sem pre-tokenizador conhecido */
+static void encode_legacy(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
     int i = 0;
     while (i < n) {
         int c = s[i], j, k;
@@ -1440,6 +1460,343 @@ static void encode_plain(const Tokenizer *tk, const uint8_t *s, int n, Ids *out)
         if (k < n && k - i > 1) k--;    /* o ultimo espaco fica para a proxima palavra */
         bpe_word(tk, s + i, k - i, out); i = k;
     }
+}
+
+
+
+/* ---- normalizacao Unicode NFC (os vocabularios Qwen e OLMo normalizam o texto antes de tokenizar) ---- */
+#include "nfc.h"
+
+static int nfc_ccc(uint32_t c) {
+    int lo = 0, hi = NFC_CCC_N - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) >> 1;
+        if (c < NFC_CCC[mid][0]) hi = mid - 1;
+        else if (c > NFC_CCC[mid][1]) lo = mid + 1;
+        else return (int)NFC_CCC[mid][2];
+    }
+    return 0;
+}
+
+static uint32_t nfc_compose(uint32_t a, uint32_t b) {
+    if (a >= 0x1100 && a <= 0x1112 && b >= 0x1161 && b <= 0x1175) return 0xAC00 + ((a - 0x1100) * 21 + (b - 0x1161)) * 28;
+    if (a >= 0xAC00 && a <= 0xD7A3 && (a - 0xAC00) % 28 == 0 && b >= 0x11A8 && b <= 0x11C2) return a + (b - 0x11A7);
+    int lo = 0, hi = NFC_PAIR_N - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) >> 1;
+        if (a < NFC_PAIR[mid][0] || (a == NFC_PAIR[mid][0] && b < NFC_PAIR[mid][1])) hi = mid - 1;
+        else if (a > NFC_PAIR[mid][0] || b > NFC_PAIR[mid][1]) lo = mid + 1;
+        else return NFC_PAIR[mid][2];
+    }
+    return 0;
+}
+
+/* NFC de um texto UTF-8; devolve NULL quando o texto ja esta normalizado de forma trivial (tudo abaixo de U+0300).
+   Bytes invalidos passam intactos (viram pontos 0x110000+byte durante o processo). O resultado e alocado. */
+static uint8_t *nfc_norm(const uint8_t *s, int n, int *outn) {
+    int i, big = 0;
+    for (i = 0; i < n; i++) if (s[i] >= 0xCC) { big = 1; break; }       /* U+0300 em diante comeca por 0xCC */
+    if (!big) return NULL;
+    uint32_t *a = xalloc((size_t)n + 1, sizeof(uint32_t)), *b;
+    int na = 0;
+    for (i = 0; i < n; ) {
+        const uint8_t b0 = s[i];
+        int l = b0 < 0x80 ? 1 : (b0 >> 5) == 6 ? 2 : (b0 >> 4) == 14 ? 3 : (b0 >> 3) == 30 ? 4 : 0;
+        uint32_t u = l == 1 ? b0 : l == 2 ? b0 & 0x1F : l == 3 ? b0 & 0x0F : b0 & 0x07;
+        if (i + l > n) l = 0;
+        for (int k = 1; k < l; k++) {
+            if ((s[i + k] & 0xC0) != 0x80) { l = 0; break; }
+            u = (u << 6) | (s[i + k] & 0x3F);
+        }
+        if (l == 0) { u = 0x110000u + b0; l = 1; }
+        a[na++] = u; i += l;
+    }
+    /* decomposicao canonica completa */
+    uint32_t *d = xalloc((size_t)na * NFC_MAXD + 4, sizeof(uint32_t));
+    int nd = 0;
+    for (i = 0; i < na; i++) {
+        const uint32_t c = a[i];
+        int lo = 0, hi = NFC_DEC_N - 1, hit = -1;
+        if (c >= 0xC0 && c < 0x110000)
+            while (lo <= hi) {
+                const int mid = (lo + hi) >> 1;
+                if (c < NFC_DEC[mid][0]) hi = mid - 1;
+                else if (c > NFC_DEC[mid][0]) lo = mid + 1;
+                else { hit = mid; break; }
+            }
+        if (hit < 0) d[nd++] = c;
+        else for (int k = 0; k < (int)NFC_DEC[hit][1]; k++) d[nd++] = NFC_DEC[hit][2 + k];
+    }
+    /* ordem canonica: dentro de cada corrida de classe > 0, ordena (estavel) pela classe */
+    for (i = 1; i < nd; i++) {
+        const int cc = nfc_ccc(d[i]);
+        if (!cc) continue;
+        int j = i;
+        while (j > 0 && nfc_ccc(d[j - 1]) > cc) { const uint32_t t = d[j]; d[j] = d[j - 1]; d[j - 1] = t; j--; }
+    }
+    /* composicao */
+    b = xalloc((size_t)nd + 1, sizeof(uint32_t));
+    int nb = 0, starter = -1, lastcc = 0;
+    for (i = 0; i < nd; i++) {
+        const uint32_t c = d[i];
+        const int cc = nfc_ccc(c);
+        uint32_t p;
+        if (starter >= 0 && (nb - 1 == starter || lastcc < cc) && (p = nfc_compose(b[starter], c)) != 0) { b[starter] = p; continue; }
+        if (cc == 0) starter = nb;
+        b[nb++] = c; lastcc = cc;
+    }
+    uint8_t *o = xalloc((size_t)nb * 4 + 1, 1);
+    int no = 0;
+    for (i = 0; i < nb; i++) {
+        const uint32_t u = b[i];
+        if (u >= 0x110000u) o[no++] = (uint8_t)(u - 0x110000u);
+        else if (u < 0x80) o[no++] = (uint8_t)u;
+        else if (u < 0x800) { o[no++] = (uint8_t)(0xC0 | (u >> 6)); o[no++] = (uint8_t)(0x80 | (u & 0x3F)); }
+        else if (u < 0x10000) { o[no++] = (uint8_t)(0xE0 | (u >> 12)); o[no++] = (uint8_t)(0x80 | ((u >> 6) & 0x3F)); o[no++] = (uint8_t)(0x80 | (u & 0x3F)); }
+        else { o[no++] = (uint8_t)(0xF0 | (u >> 18)); o[no++] = (uint8_t)(0x80 | ((u >> 12) & 0x3F)); o[no++] = (uint8_t)(0x80 | ((u >> 6) & 0x3F)); o[no++] = (uint8_t)(0x80 | (u & 0x3F)); }
+    }
+    free(a); free(d); free(b);
+    *outn = no;
+    return o;
+}
+
+/* ---- propriedades Unicode para os pre-tokenizadores (tabelas de faixas geradas em unitab.h) ---- */
+#include "unitab.h"
+
+static int ut_in(const uint32_t (*t)[2], int n, uint32_t c) {
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) >> 1;
+        if (c < t[mid][0]) hi = mid - 1;
+        else if (c > t[mid][1]) lo = mid + 1;
+        else return 1;
+    }
+    return 0;
+}
+static int u_space(uint32_t c) {      /* \s: propriedade White_Space */
+    return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A)
+        || c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
+}
+static int u_nl(uint32_t c) { return c == '\r' || c == '\n'; }
+static int u_L(uint32_t c) { return c < 0x80 ? (c | 32) >= 'a' && (c | 32) <= 'z' : ut_in(UT_L, UT_L_N, c); }
+static int u_N(uint32_t c) { return c < 0x80 ? c >= '0' && c <= '9' : ut_in(UT_N, UT_N_N, c); }
+static int u_M(uint32_t c) { return c >= 0x300 && ut_in(UT_M, UT_M_N, c); }
+static int u_han(uint32_t c) {        /* Script=Han */
+    static const uint32_t h[][2] = { {0x2E80,0x2E99},{0x2E9B,0x2EF3},{0x2F00,0x2FD5},{0x3005,0x3005},{0x3007,0x3007},{0x3021,0x3029},
+        {0x3038,0x303B},{0x3400,0x4DBF},{0x4E00,0x9FFF},{0xF900,0xFA6D},{0xFA70,0xFAD9},{0x16FE2,0x16FE3},{0x16FF0,0x16FF1},
+        {0x20000,0x2A6DF},{0x2A700,0x2EBE0},{0x2EBF0,0x2EE5D},{0x2F800,0x2FA1D},{0x30000,0x3134A},{0x31350,0x323AF} };
+    return c >= 0x2E80 && ut_in(h, (int)(sizeof h / sizeof h[0]), c);
+}
+static int k_U(uint32_t c) { return ut_in(UT_U, UT_U_N, c) && !u_han(c); }      /* [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]] */
+static int k_W(uint32_t c) { return ut_in(UT_W, UT_W_N, c) && !u_han(c); }      /* [\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]] */
+
+enum { PRE_LEGACY = 0, PRE_QWEN2, PRE_QWEN35, PRE_LLAMA3, PRE_GPT2, PRE_KIMI, PRE_DEEPSEEK, PRE_OLMO };
+
+static int pre_has_nfc(int kind) { return kind == PRE_QWEN2 || kind == PRE_QWEN35 || kind == PRE_OLMO; }
+
+static int pre_kind(const char *sv, int sl) {
+    static const struct { const char *nome; int kind; } t[] = {
+        { "qwen2", PRE_QWEN2 }, { "qwen35", PRE_QWEN35 }, { "llama-bpe", PRE_LLAMA3 }, { "olmo", PRE_OLMO }, { "gpt-2", PRE_GPT2 },
+        { "kimi-k2", PRE_KIMI }, { "deepseek-llm", PRE_DEEPSEEK } };
+    for (size_t i = 0; i < sizeof t / sizeof t[0]; i++)
+        if ((int)strlen(t[i].nome) == sl && memcmp(sv, t[i].nome, sl) == 0) return t[i].kind;
+    return PRE_LEGACY;
+}
+
+typedef struct { const uint32_t *c; int n; } CPS;       /* texto decodificado em pontos de codigo */
+
+/* contracao 's 't 're 've 'm 'll 'd em i; devolve o tamanho (em pontos de codigo) ou 0 */
+static int contr_len(const CPS *p, int i, int ci) {
+    if (i >= p->n || p->c[i] != '\'') return 0;
+    uint32_t a = i + 1 < p->n ? p->c[i + 1] : 0, b = i + 2 < p->n ? p->c[i + 2] : 0;
+    if (ci) { if (a >= 'A' && a <= 'Z') a += 32; if (b >= 'A' && b <= 'Z') b += 32; }
+    if (a == 's' || a == 't' || a == 'm' || a == 'd') return 2;
+    if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e') || (a == 'l' && b == 'l')) return 3;
+    return 0;
+}
+
+/* alternativas comuns do fim dos regex (digitos, pontuacao, espacos); mflag: \p{M} conta como letra */
+static int match_tail(const CPS *p, int i, int mflag, int dig, int nl_alt) {
+    const uint32_t *c = p->c; const int n = p->n;
+    int k;
+    if (u_N(c[i])) { for (k = i + 1; k < n && k - i < dig && u_N(c[k]); k++); return k; }
+#define OP(x) (!u_space(x) && !u_L(x) && !u_N(x) && !(mflag && u_M(x)))
+    int j = -1;
+    if (c[i] == ' ' && i + 1 < n && OP(c[i + 1])) j = i + 1;
+    else if (OP(c[i])) j = i;
+    if (j >= 0) {
+        for (k = j; k < n && OP(c[k]); k++);
+        if (nl_alt) while (k < n && u_nl(c[k])) k++;
+        return k;
+    }
+#undef OP
+    if (u_space(c[i])) {
+        for (j = i; j < n && u_space(c[j]); j++);
+        if (nl_alt) for (k = j - 1; k >= i; k--) if (u_nl(c[k])) return k + 1;
+        if (j == n) return j;
+        if (j - 1 > i) return j - 1;
+        return j;
+    }
+    return i + 1;
+}
+
+/* Qwen2/Qwen3.5/Llama 3: (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}(\p{M})]+|\p{N}{1,dig}|... */
+static int match_qwen(const CPS *p, int i, int mflag, int dig) {
+    const uint32_t *c = p->c; const int n = p->n;
+    int k;
+#define LM(x) (u_L(x) || (mflag && u_M(x)))
+    if (c[i] == '\'' && (k = contr_len(p, i, 1))) return i + k;
+    if (!u_nl(c[i]) && !u_L(c[i]) && !u_N(c[i]) && i + 1 < n && LM(c[i + 1])) { for (k = i + 2; k < n && LM(c[k]); k++); return k; }
+    if (LM(c[i])) { for (k = i + 1; k < n && LM(c[k]); k++); return k; }
+#undef LM
+    return match_tail(p, i, mflag, dig, 1);
+}
+
+/* GPT-2 (OLMo): 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+ */
+static int match_gpt2(const CPS *p, int i) {
+    const uint32_t *c = p->c; const int n = p->n;
+    int k, j = (c[i] == ' ') ? i + 1 : i;
+    if ((k = contr_len(p, i, 0))) return i + k;
+    if (j < n && u_L(c[j])) { for (k = j + 1; k < n && u_L(c[k]); k++); return k; }
+    if (j < n && u_N(c[j])) { for (k = j + 1; k < n && u_N(c[k]); k++); return k; }
+    if (j < n && !u_space(c[j]) && !u_L(c[j]) && !u_N(c[j])) { for (k = j + 1; k < n && !u_space(c[k]) && !u_L(c[k]) && !u_N(c[k]); k++); return k; }
+    if (u_space(c[i])) {
+        for (j = i; j < n && u_space(c[j]); j++);
+        if (j == n) return j;
+        if (j - 1 > i) return j - 1;
+        return j;
+    }
+    return i + 1;
+}
+
+/* Kimi: [\p{Han}]+ | prefixo? [U]*[W]+ contracao? | prefixo? [U]+[W]* contracao? | \p{N}{1,3} | ... */
+static int match_kimi(const CPS *p, int i) {
+    const uint32_t *c = p->c; const int n = p->n;
+    int k;
+    if (u_han(c[i])) { for (k = i + 1; k < n && u_han(c[k]); k++); return k; }
+    for (int alt = 2; alt <= 3; alt++)
+        for (int pref = 1; pref >= 0; pref--) {
+            int s = i;
+            if (pref) { if (u_nl(c[i]) || u_L(c[i]) || u_N(c[i])) continue; s = i + 1; }
+            int r = s;
+            while (r < n && k_U(c[r])) r++;
+            if (alt == 2) {
+                for (k = r; k >= s; k--) if (k < n && k_W(c[k])) {
+                    int e = k + 1;
+                    while (e < n && k_W(c[e])) e++;
+                    return e + contr_len(p, e, 1);
+                }
+            } else if (r > s) {
+                int e = r;
+                while (e < n && k_W(c[e])) e++;
+                return e + contr_len(p, e, 1);
+            }
+        }
+    return match_tail(p, i, 0, 3, 1);
+}
+
+/* DeepSeek: sequencia de divisoes isoladas (\r\n, letras com \s? antes, pontuacao com \s? antes, \s+$, CJK, um digito por
+   peca); cada passo refina as pecas do anterior. bd[k] = 1 quando uma peca comeca no ponto de codigo k. */
+static int ds_punct(uint32_t c) {
+    return (c >= '!' && c <= '/') || (c >= ':' && c <= '~') || (c >= 0xFF01 && c <= 0xFF0F) || (c >= 0xFF1A && c <= 0xFF5E)
+        || (c >= 0x2018 && c <= 0x201F) || (c >= 0x3000 && c <= 0x3002);
+}
+static int ds_letter(uint32_t c) { return ut_in(UT_DS, UT_DS_N, c); }
+static int ds_cjk(uint32_t c) { return (c >= 0x4E00 && c <= 0x9FA5) || (c >= 0x0800 && c <= 0x4E00) || (c >= 0xAC00 && c <= 0xD7FF); }
+
+/* casamento do passo st na posicao i dentro da peca [a,b); devolve o fim ou -1 */
+static int ds_match(const CPS *p, int st, int i, int b) {
+    const uint32_t *c = p->c;
+    int k;
+    switch (st) {
+    case 0: return u_nl(c[i]) ? i + 1 : -1;
+    case 1: case 2: {
+        int (*cls)(uint32_t) = st == 1 ? ds_letter : ds_punct;
+        int j = (u_space(c[i]) && i + 1 < b && cls(c[i + 1])) ? i + 1 : i;
+        if (!cls(c[j])) return -1;
+        for (k = j + 1; k < b && cls(c[k]); k++);
+        return k;
+    }
+    case 3:
+        if (!u_space(c[i])) return -1;
+        for (k = i; k < b && u_space(c[k]); k++);
+        return k == b ? b : -1;
+    case 4:
+        if (!ds_cjk(c[i])) return -1;
+        for (k = i + 1; k < b && ds_cjk(c[k]); k++);
+        return k;
+    default: return u_N(c[i]) ? i + 1 : -1;
+    }
+}
+
+/* pre-tokeniza e aplica BPE em cada peca */
+static void encode_pre(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+    uint32_t *cp = xalloc((size_t)n + 1, sizeof(uint32_t));
+    int *bo = xalloc((size_t)n + 2, sizeof(int));
+    int nc = 0;
+    for (int i = 0; i < n; ) {      /* UTF-8 -> pontos de codigo; byte invalido vira U+FFFD de 1 byte */
+        const uint8_t b0 = s[i];
+        int l = b0 < 0x80 ? 1 : (b0 >> 5) == 6 ? 2 : (b0 >> 4) == 14 ? 3 : (b0 >> 3) == 30 ? 4 : 0;
+        uint32_t u = l == 1 ? b0 : l == 2 ? b0 & 0x1F : l == 3 ? b0 & 0x0F : b0 & 0x07;
+        if (l == 0 || i + l > n) l = 0;
+        for (int k = 1; k < l; k++) {
+            if ((s[i + k] & 0xC0) != 0x80) { l = 0; break; }
+            u = (u << 6) | (s[i + k] & 0x3F);
+        }
+        if (l == 0) { u = 0xFFFD; l = 1; }
+        bo[nc] = i; cp[nc++] = u; i += l;
+    }
+    bo[nc] = n;
+    CPS p = { cp, nc };
+    if (tk->pre == PRE_DEEPSEEK) {
+        uint8_t *bd = xalloc((size_t)nc + 2, 1);
+        bd[0] = 1; bd[nc] = 1;
+        for (int st = 0; st < 6; st++) {
+            for (int a = 0; a < nc; ) {
+                int b = a + 1;
+                while (b < nc && !bd[b]) b++;
+                for (int i = a; i < b; ) {
+                    int e = ds_match(&p, st, i, b);
+                    if (e > i) { bd[i] = 1; bd[e] = 1; i = e; }
+                    else if (st == 3 && u_space(cp[i])) { int k = i; while (k < b && u_space(cp[k])) k++; i = k; }
+                    else i++;
+                }
+                a = b;
+            }
+        }
+        for (int a = 0; a < nc; ) {
+            int b = a + 1;
+            while (b < nc && !bd[b]) b++;
+            bpe_word(tk, s + bo[a], bo[b] - bo[a], out);
+            a = b;
+        }
+        free(bd);
+    } else {
+        for (int i = 0; i < nc; ) {
+            int e;
+            switch (tk->pre) {
+            case PRE_QWEN2:  e = match_qwen(&p, i, 0, 1); break;
+            case PRE_QWEN35: e = match_qwen(&p, i, 1, 1); break;
+            case PRE_LLAMA3: e = match_qwen(&p, i, 0, 3); break;
+            case PRE_KIMI:   e = match_kimi(&p, i); break;
+            default:         e = match_gpt2(&p, i); break;
+            }
+            if (e <= i) e = i + 1;
+            bpe_word(tk, s + bo[i], bo[e] - bo[i], out);
+            i = e;
+        }
+    }
+    free(cp); free(bo);
+}
+
+static void encode_plain(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+    if (tk->nfc) {
+        int m = 0;
+        uint8_t *t = nfc_norm(s, n, &m);
+        if (t) { encode_pre(tk, t, m, out); free(t); return; }
+    }
+    if (tk->pre == PRE_LEGACY) encode_legacy(tk, s, n, out);
+    else encode_pre(tk, s, n, out);
 }
 
 /* SentencePiece: espacos viram U+2581; parte de um simbolo por caractere e funde, a cada
@@ -1490,7 +1847,7 @@ static void encode(const Tokenizer *tk, const char *text, Ids *out) {
     int n = (int)strlen(text), start = 0, i = 0, prev_special = 1;
     while (i <= n) {
         int hit = -1;
-        if (i < n && s[i] == '<') {
+        if (i < n && tk->spec1[s[i]]) {
             for (int j = 0; j < tk->n_special; j++) {
                 int id = tk->special[j], l = tk->toklen[id];
                 if (l <= n - i && memcmp(s + i, tk->tok[id], l) == 0 && (hit < 0 || l > tk->toklen[hit])) hit = id;
@@ -7305,15 +7662,42 @@ static const char *think_pre(const Config *c) {
     return e && atoi(e) == 0 ? "<think>\n\n</think>\n\n" : "<think>\n";
 }
 
+/* texto de um turno do usuario no formato do modelo, terminando no inicio da resposta. first = 1 no primeiro turno
+   (leva o prompt de sistema); nos seguintes, o texto comeca pelo fecho do turno anterior (o token de fim de turno
+   nao entra no cache KV, entao o fecho vai aqui). Reproduz o chat_template do modelo. */
 static void turn_text(const Config *c, char *out, size_t n, const char *sys, const char *user, int first) {
     char sp[4096] = "";
-    if (first && sys && *sys) switch (c->chat_fmt) {
+    char *ut = NULL, *st = NULL;
+    if (c->trim_msgs) {     /* o template aplica |trim as mensagens */
+        while (*user == ' ' || (*user >= 9 && *user <= 13)) user++;
+        size_t l = strlen(user);
+        while (l && (user[l - 1] == ' ' || (user[l - 1] >= 9 && user[l - 1] <= 13))) l--;
+        ut = xalloc(l + 1, 1); memcpy(ut, user, l); user = ut;
+        if (sys) {
+            while (*sys == ' ' || (*sys >= 9 && *sys <= 13)) sys++;
+            l = strlen(sys);
+            while (l && (sys[l - 1] == ' ' || (sys[l - 1] >= 9 && sys[l - 1] <= 13))) l--;
+            st = xalloc(l + 1, 1); memcpy(st, sys, l); sys = st;
+        }
+    }
+    int sp_done = 0;
+    if (first && c->chat_fmt == 1 && c->llama_hdr) {      /* data do dia: KATANA_DATE fixa (testes) */
+        char dt[64];
+        const char *e = getenv("KATANA_DATE");
+        if (e) snprintf(dt, sizeof dt, "%s", e);
+        else { time_t t = time(NULL); strftime(dt, sizeof dt, "%d %b %Y", localtime(&t)); }
+        snprintf(sp, sizeof sp, "<|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: %s\n\n%s<|eot_id|>", dt, sys ? sys : "");
+        sp_done = 1;
+    }
+    if (first && !(sys && *sys) && c->chat_fmt == 0 && c->def_sys) sys = c->def_sys;
+    if (!sp_done && first && sys && *sys) switch (c->chat_fmt) {
         case 0:  snprintf(sp, sizeof sp, "<|im_start|>system\n%s<|im_end|>\n", sys); break;
         case 1:  snprintf(sp, sizeof sp, "<|start_header_id|>system<|end_header_id|>\n\n%s<|eot_id|>", sys); break;
         case 2:  snprintf(sp, sizeof sp, "<|system|>\n%s</s>\n", sys); break;
         case 3:  snprintf(sp, sizeof sp, "%s\n\n", sys); break;
         case 5:  snprintf(sp, sizeof sp, "%s\n\n", sys); break;
         case 6:  snprintf(sp, sizeof sp, "<|im_system|>system<|im_middle|>%s<|im_end|>", sys); break;
+        case 7:  snprintf(sp, sizeof sp, "<|system|>\n%s\n", sys); break;
         default: snprintf(sp, sizeof sp, "%s\n", sys); break;
     }
     switch (c->chat_fmt) {
@@ -7322,11 +7706,13 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
                           first ? "" : "<|eot_id|>", first && !c->add_bos ? "<|begin_of_text|>" : "", sp, user); break;
         case 2:  snprintf(out, n, "%s%s<|user|>\n%s</s>\n<|assistant|>\n", first ? "" : "</s>\n", sp, user); break;
         case 3:  snprintf(out, n, "%s[INST] %s%s [/INST]", first ? "" : "</s>", sp, user); break;
-        case 5:  snprintf(out, n, "%s%sUser: %s\n\nAssistant:", first ? "" : "\n\n", sp, user); break;
+        case 5:  snprintf(out, n, "%s%sUser: %s\n\nAssistant:", first ? "" : c->eos_text, sp, user); break;     /* o template fecha a resposta com o eos */
         case 6:  snprintf(out, n, "%s%s<|im_user|>user<|im_middle|>%s<|im_end|><|im_assistant|>assistant<|im_middle|>", first ? "" : "<|im_end|>",
                           first && !*sp ? "<|im_system|>system<|im_middle|>You are a helpful assistant<|im_end|>" : sp, user); break;
+        case 7:  snprintf(out, n, "%s%s%s<|user|>\n%s\n<|assistant|>\n", first ? c->bos_text : c->eos_text, first ? "" : "\n", sp, user); break;
         default: snprintf(out, n, "%s%sUser: %s\nAssistant:", first ? "" : "\n", sp, user); break;
     }
+    free(ut); free(st);
 }
 
 static int session(Model *m, const char *sys0, int max_tokens, float temp) {
@@ -10045,6 +10431,73 @@ static int serve(Model *m, int port) {
     return 0;
 }
 
+/* ---------- toktest: teste dourado do tokenizador e dos formatos de conversa (ver tools/tokref) ----------
+ * Entrada: um caso por linha em hexa UTF-8 (modo texto) ou "sistema usuario assistente usuario2" em hexa, com '-' para
+ * ausente (modo --chat). Saida: modo texto = uma linha com os ids; modo --chat = duas linhas por caso (conversa de um
+ * turno e de dois turnos), cada uma "texto-em-hexa<TAB>ids", com o BOS que o motor poria. */
+static int hex_val(int ch) { return ch >= '0' && ch <= '9' ? ch - '0' : ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : -1; }
+
+static char *hex_dec(const char *h, size_t n) {
+    char *o = xalloc(n / 2 + 1, 1);
+    for (size_t i = 0; i + 1 < n; i += 2) o[i / 2] = (char)(hex_val(h[i]) * 16 + hex_val(h[i + 1]));
+    return o;
+}
+
+static void tt_print(const Model *m, const char *text, int with_bos) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    Ids ids = {0};
+    if (with_bos && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(tk, text, &ids);
+    for (int i = 0; i < ids.n; i++) printf(i ? " %d" : "%d", ids.ids[i]);
+    printf("\n");
+    free(ids.ids);
+}
+
+static void tt_hexline(const char *pre, const char *t) {
+    for (const uint8_t *p = (const uint8_t *)pre; *p; p++) printf("%02x", *p);
+    for (const uint8_t *p = (const uint8_t *)t; *p; p++) printf("%02x", *p);
+    printf("\t");
+}
+
+static int toktest(Model *m, const char *path, int chat) {
+    const Config *c = &m->cfg;
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "nao abri %s\n", path); return 1; }
+    char *line = xalloc(1 << 22, 1);
+    while (fgets(line, 1 << 22, f)) {
+        size_t ln = strlen(line);
+        while (ln && (line[ln - 1] == '\n' || line[ln - 1] == '\r')) line[--ln] = 0;
+        if (!chat) {
+            char *t = hex_dec(line, ln);
+            tt_print(m, t, 0);
+            free(t);
+            continue;
+        }
+        char *fld[4] = {0}; int nf = 0;
+        for (char *p = line; nf < 4 && p; ) {
+            char *sp = strchr(p, ' ');
+            size_t l = sp ? (size_t)(sp - p) : strlen(p);
+            fld[nf++] = (l == 1 && p[0] == '-') ? NULL : (l == 1 && p[0] == '~') ? hex_dec("", 0) : hex_dec(p, l);
+            p = sp ? sp + 1 : NULL;
+        }
+        char *t1 = xalloc(strlen(fld[1]) + 8192, 1), *t2 = xalloc(strlen(fld[1]) + strlen(fld[2]) + strlen(fld[3]) + 16384, 1);
+        char *tmp = xalloc(strlen(fld[3]) + 8192, 1);
+        turn_text(c, t1, strlen(fld[1]) + 8192, fld[0], fld[1], 1);
+        /* a resposta simulada: o que o modelo geraria. O DeepSeek gera um espaco logo depois de "Assistant:" */
+        snprintf(t2, strlen(fld[1]) + strlen(fld[2]) + strlen(fld[3]) + 16384, "%s%s%s", t1, c->chat_fmt == 5 ? " " : "", fld[2]);
+        turn_text(c, tmp, strlen(fld[3]) + 8192, NULL, fld[3], 0);
+        strcat(t2, tmp);
+        const char *pre = (c->add_bos && c->bos >= 0) ? c->bos_text : "";
+        tt_hexline(pre, t1); tt_print(m, t1, 1);
+        tt_hexline(pre, t2); tt_print(m, t2, 1);
+        free(t1); free(t2); free(tmp);
+        for (int i = 0; i < 4; i++) free(fld[i]);
+    }
+    free(line); fclose(f);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -10123,6 +10576,12 @@ static int run_main(int argc, char **argv) {
         print_info(&m);
         return selftest(&m);
     }
+    if (argc >= 4 && strcmp(argv[1], "toktest") == 0) {     /* teste dourado do tokenizador (tools/tokref) */
+        g_vocab_only = 1;
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return toktest(&m, argv[3], argc > 4 && strcmp(argv[4], "--chat") == 0);
+    }
     if (argc >= 3 && strcmp(argv[1], "info") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -10144,26 +10603,16 @@ static int run_main(int argc, char **argv) {
         float temp = argc > 5 ? (float)atof(argv[5]) : 0.7f;
         if (strcmp(argv[1], "run") == 0) return generate(&m, argv[3], max_tokens, temp, 1);
 
-        size_t n = strlen(argv[3]) + 256;
+        size_t n = strlen(argv[3]) + 8192;
         char *p = xalloc(n, 1);
-        switch (m.cfg.chat_fmt) {
-            case 1:  /* Llama 3 espera <|begin_of_text|> no inicio; se o GGUF nao manda por BOS, vai no texto */
-                     snprintf(p, n, "%s<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-                              m.cfg.add_bos ? "" : "<|begin_of_text|>", argv[3]); break;
-            case 2:  snprintf(p, n, "<|user|>\n%s</s>\n<|assistant|>\n", argv[3]); break;
-            case 3:  snprintf(p, n, "[INST] %s [/INST]", argv[3]); break;
-            case 4:  snprintf(p, n, "User: %s\nAssistant:", argv[3]); break;
-            case 5:  snprintf(p, n, "User: %s\n\nAssistant:", argv[3]); break;
-            case 6:  snprintf(p, n, "<|im_system|>system<|im_middle|>You are a helpful assistant<|im_end|>"
-                                    "<|im_user|>user<|im_middle|>%s<|im_end|><|im_assistant|>assistant<|im_middle|>", argv[3]); break;
-            default: snprintf(p, n, "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", argv[3], think_pre(&m.cfg)); break;
-        }
+        turn_text(&m.cfg, p, n, getenv("KATANA_SYSTEM"), argv[3], 1);
         return generate(&m, p, max_tokens, temp, 0);
     }
     fprintf(stderr,
         "Uso:\n"
         "  katana info <modelo.gguf>\n"
         "  katana selftest <modelo.gguf>\n"
+        "  katana toktest <modelo.gguf> <casos.hex> [--chat]   ids do tokenizador (ou do formato de conversa) de cada caso\n"
         "  katana qtest                   confere a decodificacao e os produtos de cada tipo de quantizacao\n"
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
         "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
