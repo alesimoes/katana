@@ -57,6 +57,7 @@
 #include "vk/shaders/rms_wg.h"
 #include "vk/shaders/att1f_kv32.h"
 #include "vk/shaders/att1f_kv16.h"
+#include "vk/shaders/att1r.h"
 #include "vk/shaders/mm_t0_64x64_g0.h"
 #include "vk/shaders/mm_t0_64x64_g1.h"
 #include "vk/shaders/mm_t0_64x32w4_g0.h"
@@ -2629,7 +2630,9 @@ typedef struct {
     int nl;                         /* camadas no grafo Vulkan; < n_layers: o resto e a cabeca na CPU */
     KvkBuf x, xn, q, k, v, o, hb, lg, att, meta, freq, onorm, dummy;
     KvkBuf *an, *fn, *bq, *bk, *bv, *bo, *qn, *kn, *kc, *vc;    /* b==0: ausente */
-    KvkPipe rms, att1f;
+    KvkPipe rms, att1f, att1r;
+    KvkBuf part;                    /* pedacos do contexto da atencao de um token (split-K) */
+    int chunk, nchunk;              /* posicoes por pedaco e numero de pedacos (1 = sem divisao, sem att1r) */
     KvkRec g[2];                    /* grafo gravado: [0] sem a projecao final, [1] com ela */
     int coop, sg32;                 /* produto cooperativo fp16 disponivel; subgrupo de 32 */
     int P;                          /* maior lote por passada em Vulkan (0 = so token a token) */
@@ -2733,6 +2736,11 @@ static int vk_graph_build(Model *m) {
     vkg.k = vk_wk(kvd * 4, &fail); vkg.v = vk_wk(kvd * 4, &fail); vkg.o = vk_wk(qd * 4, &fail);
     vkg.hb = vk_wk(H * 4, &fail); vkg.lg = vk_wk((V + 128) * 4, &fail);
     vkg.att = vk_wk((size_t)c->n_heads * c->ctx * 4, &fail); vkg.meta = vk_wk(16, &fail); vkg.dummy = vk_wk(256, &fail);
+    /* atencao de um token: pedacos de 128 posicoes (no maximo 32 pedacos); contexto <= 128 nao divide */
+    vkg.chunk = 128 * ((c->ctx + 128 * 32 - 1) / (128 * 32));
+    vkg.nchunk = (c->ctx + vkg.chunk - 1) / vkg.chunk;
+    if (getenv("KATANA_VK_NOSPLIT")) { vkg.chunk = c->ctx; vkg.nchunk = 1; }
+    vkg.part = vk_wk((size_t)c->n_heads * vkg.nchunk * (c->hd + 2) * 4, &fail);
     vkg.freq = vk_vec(m->rope_freq, c->hd / 2, &fail); vkg.onorm = vk_vec(m->out_norm, d, &fail);
     vkg.an = xalloc(NL, sizeof(KvkBuf)); vkg.fn = xalloc(NL, sizeof(KvkBuf)); vkg.bq = xalloc(NL, sizeof(KvkBuf));
     vkg.bk = xalloc(NL, sizeof(KvkBuf)); vkg.bv = xalloc(NL, sizeof(KvkBuf)); vkg.bo = xalloc(NL, sizeof(KvkBuf));
@@ -2754,9 +2762,10 @@ static int vk_graph_build(Model *m) {
     kvk_wait();
     vkg.rms = kvk_pipe_create(rms_wg_spv, sizeof rms_wg_spv, 3, 12, NULL, NULL, 0);
     const uint32_t id0 = 0, hdv = (uint32_t)c->hd;
-    vkg.att1f = vkg.kv16 ? kvk_pipe_create(att1f_kv16_spv, sizeof att1f_kv16_spv, 14, 44, &id0, &hdv, 1)
-                         : kvk_pipe_create(att1f_kv32_spv, sizeof att1f_kv32_spv, 14, 44, &id0, &hdv, 1);
-    if (!vkg.rms.p || !vkg.att1f.p) { fprintf(stderr, "Vulkan: pipeline do grafo falhou: %s\n", kvk_error()); return 0; }
+    vkg.att1f = vkg.kv16 ? kvk_pipe_create(att1f_kv16_spv, sizeof att1f_kv16_spv, 15, 52, &id0, &hdv, 1)
+                         : kvk_pipe_create(att1f_kv32_spv, sizeof att1f_kv32_spv, 15, 52, &id0, &hdv, 1);
+    vkg.att1r = kvk_pipe_create(att1r_spv, sizeof att1r_spv, 2, 8, &id0, &hdv, 1);
+    if (!vkg.rms.p || !vkg.att1f.p || !vkg.att1r.p) { fprintf(stderr, "Vulkan: pipeline do grafo falhou: %s\n", kvk_error()); return 0; }
     vkg.on = 1;
     vk_batch_build(m);
     return 1;
@@ -2786,12 +2795,17 @@ static int vk_emit(const Model *m, int head) {
         ok &= vk_gmv_ex(&L->wk, vkg.xn, vkg.k, vkg.dummy, kvd, d, 0, 0);
         ok &= vk_gmv_ex(&L->wv, vkg.xn, vkg.v, vkg.dummy, kvd, d, 0, 0);
 #define OR_DUMMY(v) ((v).b ? (v) : vkg.dummy)
-        const KvkBuf ab[14] = { vkg.q, vkg.k, vkg.v, OR_DUMMY(vkg.bq[l]), OR_DUMMY(vkg.bk[l]), OR_DUMMY(vkg.bv[l]),
-                                vkg.kc[l], vkg.vc[l], vkg.att, vkg.o, vkg.freq, OR_DUMMY(vkg.qn[l]), OR_DUMMY(vkg.kn[l]), vkg.meta };
-        const struct { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; } ap =
+        const KvkBuf ab[15] = { vkg.q, vkg.k, vkg.v, OR_DUMMY(vkg.bq[l]), OR_DUMMY(vkg.bk[l]), OR_DUMMY(vkg.bv[l]),
+                                vkg.kc[l], vkg.vc[l], vkg.att, vkg.o, vkg.freq, OR_DUMMY(vkg.qn[l]), OR_DUMMY(vkg.kn[l]), vkg.meta, vkg.part };
+        const struct { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; int chunk, nchunk; } ap =
             { 0, c->ctx, hd, kvd, nh / c->n_kv, c->rope_neox, (vkg.bq[l].b ? 1 : 0) | (vkg.bk[l].b ? 2 : 0) | (vkg.bv[l].b ? 4 : 0),
-              c->qk_norm, qd, 1.0f / sqrtf((float)hd), c->eps };
-        ok &= kvk_dispatch(vkg.att1f, ab, 14, &ap, sizeof ap, (uint32_t)nh, 1, 1);
+              c->qk_norm, qd, 1.0f / sqrtf((float)hd), c->eps, vkg.chunk, vkg.nchunk };
+        ok &= kvk_dispatch(vkg.att1f, ab, 15, &ap, sizeof ap, (uint32_t)nh, (uint32_t)vkg.nchunk, 1);
+        if (vkg.nchunk > 1) {
+            const KvkBuf pb[2] = { vkg.part, vkg.o };
+            const struct { int hd, nchunk; } rp2 = { hd, vkg.nchunk };
+            ok &= kvk_dispatch(vkg.att1r, pb, 2, &rp2, sizeof rp2, (uint32_t)nh, 1, 1);
+        }
         ok &= vk_gmv_ex(&L->wo, vkg.o, vkg.x, OR_DUMMY(vkg.bo[l]), d, qd, 1 | (vkg.bo[l].b ? 4 : 0), 0);
         const KvkBuf rb2[3] = { vkg.x, vkg.fn[l], vkg.xn };
         ok &= kvk_dispatch(vkg.rms, rb2, 3, &rp, sizeof rp, 1, 1, 1);

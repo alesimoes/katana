@@ -4,7 +4,11 @@
 /* Atencao inteira de um token num lancamento (um grupo de hd threads por cabeca; local_size_x = hd por
    spec constant 0): bias/norma de q e k, RoPE, gravacao de k e v no cache, notas, softmax, mistura.
    Threads 0..hd/2-1 giram um par de q; hd/2..hd-1 giram um par de k da cabeca kv. A posicao atual usa k e v
-   locais (cache lido so para t < pos); so a primeira cabeca de cada grupo kv grava no cache. */
+   locais (cache lido so para t < pos); so a primeira cabeca de cada grupo kv grava no cache.
+   Contexto dividido (split-K): o lancamento tem nh * nchunk grupos (y = pedaco); o pedaco c cobre as posicoes
+   [c*chunk, (c+1)*chunk). Cada pedaco refaz a rotacao de q e k (barata), calcula notas/softmax/mistura so do seu
+   trecho e grava em part o resultado sem normalizar + maximo + soma; att1r junta os pedacos. Com nchunk == 1 grava a
+   saida normalizada direto em o e nao precisa de att1r. Pedacos vazios gravam maximo -3e38 e soma 0. */
 layout(local_size_x_id = 0) in;
 layout(std430, binding = 0) readonly buffer QS { float qs[]; };
 layout(std430, binding = 1) readonly buffer KS { float ks_[]; };
@@ -19,14 +23,21 @@ layout(std430, binding = 9) buffer O { float o[]; };
 layout(std430, binding = 10) readonly buffer FR { float freq[]; };
 layout(std430, binding = 11) readonly buffer QN { float qn[]; };
 layout(std430, binding = 12) readonly buffer KN { float kn[]; };
+layout(std430, binding = 14) buffer PT { float part[]; };   /* [(h*nchunk + c)*(hd+2)]: o nao normalizado, maximo, soma */
 layout(std430, binding = 13) readonly buffer MT { int meta[]; };   /* meta[0] = posicao do token (muda por token) */
-layout(push_constant) uniform P { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; } pc;
+layout(push_constant) uniform P { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; int chunk, nchunk; } pc;
 shared float lm[256]; shared float lq[256]; shared float lk[256];
 void main() {
     int hd = pc.hd, kvd = pc.kvd, pos = meta[0], group = pc.group;
     int h = int(gl_WorkGroupID.x), l = int(gl_LocalInvocationID.x), T = pos + 1, g = h / group, half_ = hd / 2;
     int off = pc.base + pos * kvd + g * hd;
     int a = h * pc.ctx;
+    const int c0 = int(gl_WorkGroupID.y), t0 = c0 * pc.chunk, t1 = min(T, t0 + pc.chunk);
+    if (t0 >= T) {
+        if (l == 0) { part[(h * pc.nchunk + c0) * (hd + 2) + hd] = -3.0e38; part[(h * pc.nchunk + c0) * (hd + 2) + hd + 1] = 0.0; }
+        part[(h * pc.nchunk + c0) * (hd + 2) + l] = 0.0;
+        return;
+    }
     {
         bool isk = l >= half_;
         int i = isk ? l - half_ : l;
@@ -43,7 +54,7 @@ void main() {
             }
             float y0 = x0 * cs - x1 * sn, y1 = x0 * sn + x1 * cs;
             lk[i0] = y0; lk[i1] = y1;
-            if (h % group == 0) { KVS(y0, off + i0, kc); KVS(y1, off + i1, kc); }
+            if (c0 == 0 && h % group == 0) { KVS(y0, off + i0, kc); KVS(y1, off + i1, kc); }
         } else {
             float x0 = qs[h * hd + i0], x1 = qs[h * hd + i1];
             if ((pc.has_bias & 1) != 0) { x0 += bq[h * hd + i0]; x1 += bq[h * hd + i1]; }
@@ -57,10 +68,10 @@ void main() {
         }
     }
     float vl = vs[g * hd + l] + (((pc.has_bias & 4) != 0) ? bv[g * hd + l] : 0.0);
-    if (h % group == 0) KVS(vl, off + l, vc);
+    if (c0 == 0 && h % group == 0) KVS(vl, off + l, vc);
     barrier();
     float mx = -3.0e38;
-    for (int t = l; t < T; t += hd) {
+    for (int t = t0 + l; t < t1; t += hd) {
         float s = 0.0;
         if (t == pos) { for (int j = 0; j < hd; j++) s += lq[j] * lk[j]; }
         else { int kh = pc.base + t * kvd + g * hd;
@@ -73,14 +84,17 @@ void main() {
     for (int k = 1; k < hd; k++) gm = max(gm, lm[k]);
     barrier();
     float sum = 0.0;
-    for (int t = l; t < T; t += hd) { float e = exp(att[a + t] - gm); att[a + t] = e; sum += e; }
+    for (int t = t0 + l; t < t1; t += hd) { float e = exp(att[a + t] - gm); att[a + t] = e; sum += e; }
     lm[l] = sum;
     memoryBarrierBuffer();
     barrier();
     float tot = 0.0;
     for (int k = 0; k < hd; k++) tot += lm[k];
     int v = pc.base + g * hd + l;
-    float s = att[a + pos] * vl;
-    for (int t = 0; t < pos; t++) s += att[a + t] * KVL(vc, v + t * kvd);
-    o[h * hd + l] = s / tot;
+    float s = (pos >= t0 && pos < t1) ? att[a + pos] * vl : 0.0;
+    for (int t = t0; t < min(t1, pos); t++) s += att[a + t] * KVL(vc, v + t * kvd);
+    if (pc.nchunk == 1) { o[h * hd + l] = s / tot; return; }
+    const int pb = (h * pc.nchunk + c0) * (hd + 2);
+    part[pb + l] = s;
+    if (l == 0) { part[pb + hd] = gm; part[pb + hd + 1] = tot; }
 }
