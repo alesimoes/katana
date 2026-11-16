@@ -9740,6 +9740,16 @@ static int agent_confirm(const char *what, const char *detail) {
     return ans[0] == 's' || ans[0] == 'S';
 }
 
+/* gravar e executar: sem confirmacao por decisao do dono (a acao aparece no terminal e vai para o
+ * agente.log); KATANA_CONFIRM=1 volta a pedir a cada vez */
+static int agent_act(const char *what, const char *detail) {
+    const char *e = getenv("KATANA_CONFIRM");
+    if (e && atoi(e) != 0) return agent_confirm(what, detail);
+    size_t dl = strcspn(detail, "\n");
+    fprintf(stderr, "\n[o modelo vai %s: %.*s%s]\n", what, (int)(dl < 200 ? dl : 200), detail, dl < strlen(detail) ? " ..." : "");
+    return 1;
+}
+
 /* ---- ferramentas de fora do modelo: internet, arquivos da maquina e memoria ----
  * O motor de inferencia continua local; so estas ferramentas saem da pasta atual ou da maquina.
  * Todo resultado e DADO (embrulhado com marcador no historico), nunca instrucao. */
@@ -9869,7 +9879,7 @@ static int agent_read_access(const char *p, int is_dir, char *res, size_t cap, c
         if (s && s != root) *s = 0;
     }
     for (int i = 0; i < g_nroots; i++) if (path_under(g_roots[i], res)) return 1;
-    if (!agent_confirm("ler fora da pasta atual (vale para toda a pasta e subpastas nesta sessao)", root)) {
+    if (!agent_act("ler fora da pasta atual (vale para toda a pasta e subpastas nesta sessao)", root)) {
         snprintf(err, ecap, "error: the user denied access to %s", root);
         return 0;
     }
@@ -11571,7 +11581,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         if (!json_str(js, end, "content", content, sizeof content)) { snprintf(out, cap, "error: missing content"); return; }
         char what[8300];
         snprintf(what, sizeof what, "gravar o arquivo %s (%zu bytes)", arg, strlen(content));
-        if (!agent_confirm(what, content)) { snprintf(out, cap, "error: the user denied this action"); return; }
+        if (!agent_act(what, content)) { snprintf(out, cap, "error: the user denied this action"); return; }
         FILE *f = fopen(arg, "wb");
         if (!f) { snprintf(out, cap, "error: cannot create %s", arg); return; }
         fwrite(content, 1, strlen(content), f);
@@ -11579,7 +11589,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         snprintf(out, cap, "ok: wrote %zu bytes to %s", strlen(content), arg);
     } else if (strcmp(name, "run_command") == 0) {
         if (!json_str(js, end, "command", arg, sizeof arg)) { snprintf(out, cap, "error: missing command"); return; }
-        if (!agent_confirm("executar o comando", arg)) { snprintf(out, cap, "error: the user denied this action"); return; }
+        if (!agent_act("executar o comando", arg)) { snprintf(out, cap, "error: the user denied this action"); return; }
 #ifdef _WIN32
         FILE *f = _popen(arg, "r");
 #else
@@ -11890,9 +11900,12 @@ static int agent(Model *m, int max_tokens, float temp) {
     console_init();
     g_web = !(getenv("KATANA_WEB") && strcmp(getenv("KATANA_WEB"), "0") == 0);
     fprintf(stderr, "%sAgente iniciado na pasta atual. /ajuda lista os comandos; Ctrl+C interrompe a resposta.%s\n"
-                    "Gravar arquivo e executar comando pedem a sua confirmacao a cada vez. Ler fora da pasta atual pede uma vez por pasta.\n"
+                    "%s\n"
                     "Internet (web_search, web_fetch): %s. Memoria: ferramentas remember e recall.\n",
-            CE(C_DIM), CE(C_RESET), g_web ? "ligada (KATANA_WEB=0 desliga)" : "desligada");
+            CE(C_DIM), CE(C_RESET),
+            getenv("KATANA_CONFIRM") && atoi(getenv("KATANA_CONFIRM")) ? "Gravar, executar e ler fora da pasta atual pedem a sua confirmacao (KATANA_CONFIRM=1)."
+                : "Gravar, executar e ler fora da pasta atual sem confirmacao; cada acao aparece aqui e vai para ~/.katana/agente.log (KATANA_CONFIRM=1 pede).",
+            g_web ? "ligada (KATANA_WEB=0 desliga)" : "desligada");
     mcp_init(1);
     for (;;) {
         prompt_user();
@@ -12756,7 +12769,7 @@ static int run_main(int argc, char **argv) {
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
         "  katana serve <modelo.gguf> [porta]   conversa no navegador em http://127.0.0.1:porta (padrao 8080; so conversa)\n"
-        "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar com confirmacao)\n"
+        "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
     return 1;
 }
