@@ -416,6 +416,7 @@ typedef struct {
     int attn_gated;     /* attn_q traz q e o portao da saida intercalados por cabeca */
     int hidden_shexp;   /* largura do especialista compartilhado */
     int think;          /* o assistente comeca com <think>\n */
+    int tool_tmpl;      /* o template de conversa do modelo fala de ferramentas */
     int tool_xml;       /* o modelo chama ferramentas em XML (<function=..><parameter=..>) */
     char arch[64];
 } Config;
@@ -1141,6 +1142,7 @@ static void load_model(Model *m, const char *path) {
             int sl; const char *sv = rd_str(&r, &sl);
             tmpl = xalloc((size_t)sl + 1, 1); memcpy(tmpl, sv, sl);
             c->tool_xml = strstr(tmpl, "<function=") != NULL;
+            c->tool_tmpl = strstr(tmpl, "tool") != NULL;
         } else if (t == 9 && key_is(k, kl, "tokenizer.ggml.scores")) {
             uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
             tk->score = xalloc(n, sizeof(float));
@@ -12645,6 +12647,9 @@ static int run_main(int argc, char **argv) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
         print_info(&m);
+        if (!m.cfg.tool_tmpl)
+            fprintf(stderr, "Aviso: este modelo nao foi treinado para chamar ferramentas (o template dele nao tem ferramentas);\n"
+                            "  ele pode ignorar a internet e os arquivos. Para o agente, prefira um modelo com ferramentas (ex.: Qwen3.6).\n");
         return agent(&m, getenv("KATANA_MAXTOK") ? atoi(getenv("KATANA_MAXTOK")) : 1024,
                      getenv("KATANA_TEMP") ? (float)atof(getenv("KATANA_TEMP")) : 0.3f);
     }
