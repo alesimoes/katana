@@ -17,7 +17,8 @@ Motor de inferência de modelos de linguagem escrito do zero em C (`katana.c`). 
   tornar público sem pedido.
 - O dono do projeto quer trabalho contínuo, sem perguntas desnecessárias. Perguntar só antes de
   ações difíceis de desfazer ou que saiam da máquina.
-- Gravar arquivo e executar comando pelo agente do katana sempre com confirmação do usuário.
+- O agente do katana grava arquivos, executa comandos e chama ferramentas MCP sem pedir confirmação
+  (decisão do dono); cada ação aparece no terminal e fica num log. `KATANA_CONFIRM=1` volta a pedir.
 
 ## Medição
 
