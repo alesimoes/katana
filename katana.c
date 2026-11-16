@@ -9662,6 +9662,211 @@ static int tune(Model *m) {
     return 0;
 }
 
+/* nome legivel do tipo de quantizacao de um tensor */
+static const char *qtype_name(uint32_t t) {
+    switch (t) {
+        case T_F32: return "F32"; case T_F16: return "F16"; case T_BF16: return "BF16";
+        case T_Q4_0: return "Q4_0"; case T_Q4_1: return "Q4_1"; case T_Q5_0: return "Q5_0"; case T_Q5_1: return "Q5_1";
+        case T_Q8_0: return "Q8_0"; case T_Q2_K: return "Q2_K"; case T_Q3_K: return "Q3_K"; case T_Q4_K: return "Q4_K";
+        case T_Q5_K: return "Q5_K"; case T_Q6_K: return "Q6_K"; case T_IQ4_NL: return "IQ4_NL"; case T_IQ4_XS: return "IQ4_XS";
+        case T_MXFP4: return "MXFP4"; case T_IQ2_XXS: return "IQ2_XXS"; case T_IQ2_XS: return "IQ2_XS"; case T_IQ2_S: return "IQ2_S";
+        case T_IQ3_XXS: return "IQ3_XXS"; case T_IQ3_S: return "IQ3_S"; case T_IQ1_S: return "IQ1_S"; case T_IQ1_M: return "IQ1_M";
+        case T_TQ1_0: return "TQ1_0"; case T_TQ2_0: return "TQ2_0";
+        default: return "?";
+    }
+}
+
+/* ---------- perfil por modelo: as escolhas que `katana prepare` gravou ----------
+ * <modelo>.gguf.ktn.prof, texto simples. chat/serve/agent/run leem e definem as variaveis
+ * de ambiente correspondentes; uma variavel ja definida pelo usuario sempre vence. */
+static void perfil_path(char *out, size_t n, const char *model_path) {
+    snprintf(out, n, "%s.ktn.prof", model_path);
+}
+
+static long long file_size_ll(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long long n = ftell(f);
+    fclose(f);
+    return n;
+}
+
+static void putenv_dup(const char *s) { putenv(strdup(s)); }   /* a string precisa viver ate o fim do processo */
+
+/* for_agent: nao mexe em KATANA_CTX (o agente usa um contexto maior para os resultados de ferramenta) */
+static void perfil_apply(const char *model_path, int for_agent) {
+    char fn[1200], line[256], backend[32] = "";
+    long long origem = -1; int kv16 = -1, ctx = 0, noexp = -1;
+    perfil_path(fn, sizeof fn, model_path);
+    FILE *f = fopen(fn, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "origem %lld", &origem) == 1) continue;
+        if (sscanf(line, "backend %31s", backend) == 1) continue;
+        if (sscanf(line, "kv16 %d", &kv16) == 1) continue;
+        if (sscanf(line, "ctx %d", &ctx) == 1) continue;
+        sscanf(line, "noexpcache %d", &noexp);
+    }
+    fclose(f);
+    if (origem >= 0 && origem != file_size_ll(model_path)) {
+        fprintf(stderr, "Perfil: %s e de outra versao do modelo; ignorado (rode: katana prepare)\n", fn);
+        return;
+    }
+    char buf[80];
+    if (backend[0] && !getenv("KATANA_BACKEND")) { snprintf(buf, sizeof buf, "KATANA_BACKEND=%s", backend); putenv_dup(buf); }
+    if (kv16 >= 0 && !getenv("KATANA_KV16")) { snprintf(buf, sizeof buf, "KATANA_KV16=%d", kv16); putenv_dup(buf); }
+    if (!for_agent && ctx > 0 && !getenv("KATANA_CTX")) { snprintf(buf, sizeof buf, "KATANA_CTX=%d", ctx); putenv_dup(buf); }
+    if (noexp > 0 && !getenv("KATANA_NOEXPCACHE")) putenv_dup("KATANA_NOEXPCACHE=1");
+    fprintf(stderr, "Perfil: %s (backend=%s kv16=%d ctx=%d)\n", fn, backend[0] ? backend : "-", kv16, ctx);
+}
+
+/* ---------- prepare: inspeciona modelo e maquina, decide o plano, executa o seguro, grava o perfil ----------
+ * Sozinho: le a arquitetura e o tamanho do modelo e os recursos da maquina (ja medidos na carga),
+ * imprime um plano em portugues, roda o que e seguro (pack, tune, calibracao do calor dos especialistas)
+ * respeitando a GPU ocupada, e grava um perfil por modelo que chat/serve/agent passam a usar. */
+static int prepare(Model *m, const char *path) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
+    const size_t qd = (size_t)c->n_heads * c->hd, ctx = c->ctx;
+    const uint64_t budget = gpu_budget();
+    const int gpu_ok = gpu.on;
+    const int have_gpu = gpu.vram > 0;
+    const int packable = !c->g4 && !c->ssm_inner;   /* pack ainda nao cobre gemma4 nem DeltaNet */
+
+    /* tipo de quantizacao: a matriz representativa (gate do feed-forward; especialista num MoE) */
+    uint32_t qt = T_F32, qte = 0;
+    for (int l = 0; l < c->n_layers; l++) {
+        const Layer *L = &m->layers[l];
+        if (L->w_gate.q || L->w_gate.f) { qt = L->w_gate.type; break; }
+        if (L->w_down.q || L->w_down.f) { qt = L->w_down.type; break; }
+    }
+    if (c->n_expert)
+        for (int l = 0; l < c->n_layers; l++) if (m->layers[l].eg) { qte = m->layers[l].eg[0].type; break; }
+
+    /* tamanho total como o motor estima (todos os especialistas residentes + cache KV float32) */
+    const size_t NX = c->n_expert ? (size_t)c->n_expert : 1;
+    const size_t kv_layer = 2 * ctx * kvd * sizeof(float);
+    size_t total = gpu_mat_bytes(&m->lm_head, V, d) + ((size_t)256 << 20);
+    for (int l = 0; l < c->n_layers; l++) {
+        const Layer *L = &m->layers[l];
+        total += gpu_mat_bytes(&L->wq, qd, d) + gpu_mat_bytes(&L->wk, kvd, d) + gpu_mat_bytes(&L->wv, kvd, d)
+               + gpu_mat_bytes(&L->wo, d, qd) + NX * (gpu_mat_bytes(&L->w_gate, H, d) + gpu_mat_bytes(&L->w_up, H, d)
+               + gpu_mat_bytes(&L->w_down, d, H)) + kv_layer;
+    }
+    const int kv16 = getenv("KATANA_KV16") ? atoi(getenv("KATANA_KV16")) != 0 : total > budget;
+    const size_t total_ch = kv16 ? total - (size_t)c->n_layers * kv_layer / 2 : total;
+    const int fits = have_gpu && total_ch <= budget;
+    const char *backend = gpu.vk ? "vulkan" : have_gpu ? "opencl" : "cpu";
+
+    /* contexto sugerido: o do modelo quando cabe; senao um que deixe o cache KV numa fatia da VRAM */
+    int ctx_sug = (int)ctx;
+    if (!fits && have_gpu) {
+        const size_t kvpos = 2 * kvd * (size_t)c->n_layers * (kv16 ? 2 : 4);
+        long cs = kvpos ? (long)(budget / 4 / kvpos) : (long)ctx;
+        cs = cs / 512 * 512;
+        if (cs < 512) cs = 512;
+        if (cs > (long)ctx) cs = (long)ctx;
+        if (cs > 8192) cs = 8192;
+        ctx_sug = (int)cs;
+    }
+
+    printf("\n==== Plano de preparo: %s ====\n", path);
+    printf("Modelo: arquitetura=%s  parametros=%.1fM  camadas=%d  quantizacao=%s", c->arch, m->n_params / 1e6, c->n_layers, qtype_name(qt));
+    if (c->n_expert) printf("  (especialistas %s)", qtype_name(qte));
+    printf("\n");
+    if (c->n_expert) printf("MoE: %d especialistas por camada, %d ativos por token\n", c->n_expert, c->n_used);
+    if (have_gpu) printf("Maquina: GPU %s %.1f GB (orcamento %.0f MB); tamanho estimado na VRAM %.0f MB\n",
+                         gpu.name, gpu.vram / 1073741824.0, budget / 1048576.0, total_ch / 1048576.0);
+    else printf("Maquina: sem GPU disponivel agora; plano para CPU\n");
+
+    printf("\nDecisoes:\n");
+    printf("  - Cabe inteiro na VRAM: %s\n", fits ? "sim" : "nao");
+    printf("  - Backend: %s\n", backend);
+    printf("  - Cache KV: %d bits%s\n", kv16 ? 16 : 32, kv16 ? " (o modelo nao cabe inteiro com 32)" : "");
+    printf("  - Contexto sugerido: %d%s\n", ctx_sug, ctx_sug < (int)ctx ? " (reduzido para liberar VRAM)" : "");
+    if (c->n_expert) {
+        if (fits) printf("  - Especialistas: todos na VRAM (grafo completo)\n");
+        else if (gpu_ok && gx.on) printf("  - Especialistas: cache na VRAM com %d vagas por camada; o resto na CPU/disco\n", gx.S);
+        else printf("  - Especialistas: cache na VRAM com vagas por camada (quantas, a definir com a GPU livre); o resto na CPU/disco\n");
+    }
+    if (c->n_expert && !fits && (qte == T_Q6_K || qte == T_Q5_K || qte == T_Q8_0 || qte == T_F16 || qte == T_BF16))
+        printf("  - Sugestao: os especialistas estao em %s; requantizados em Q4_K caberiam mais vagas na VRAM (nao requantizo sozinho)\n", qtype_name(qte));
+
+    printf("\nOtimizacoes para %s:\n", c->arch);
+    printf("  aplicadas: backend %s, cache KV %d bits, ajuste de ladrilhos (tune), shards no layout da GPU (pack)%s\n",
+           backend, kv16 ? 16 : 32, c->n_expert ? ", cache de especialistas por calor (heat)" : "");
+    if (c->g4) printf("  faltam: prompt em lote na GPU (hoje token a token no Vulkan), grafo completo gravado, pack dos shards\n");
+    else if (c->ssm_inner) printf("  faltam: prompt do DeltaNet em blocos na GPU, pack dos shards\n");
+    else if (c->mla) printf("  faltam: prompt MoE em lote no modo hibrido (hoje token a token), atencao MLA na GPU\n");
+    else if (c->n_expert) printf("  aplicadas tambem: prompt MoE em lote no Vulkan\n");
+    else printf("  aplicadas tambem: prompt em lote com nucleos tensoriais, decodificacao especulativa\n");
+
+    /* ---- executa o que e seguro e automatico ---- */
+    int did_pack = 0, did_tune = 0, did_heat = 0, pend_gpu = 0;
+    printf("\nExecutando:\n");
+
+    /* 1) pack: shards no layout da GPU, se ainda nao houver atualizados */
+    if (!packable) printf("  - pack: ainda nao cobre esta arquitetura; pulado\n");
+    else if (shards.use) printf("  - pack: shards ja atualizados em %s\n", shards.dir);
+    else if (getenv("KATANA_PREP_NOPACK")) printf("  - pack: pulado (KATANA_PREP_NOPACK)\n");
+    else {
+        printf("  - pack: gerando shards (pode demorar em modelos grandes)...\n");
+        if (pack(m, path, m->fsize) == 0) { did_pack = 1; shards_open(path, m->fsize); }
+        else printf("    pack falhou\n");
+    }
+
+    /* 2) tune: so com o modelo inteiro na VRAM e a placa livre */
+    if (fits && gpu_ok && gpu.full) {
+        printf("  - tune: medindo o melhor ajuste de ladrilhos...\n");
+        if (tune(m) == 0) did_tune = 1;
+    } else if (fits) { printf("  - tune: adiado (a GPU esta ocupada; rode de novo com a placa livre)\n"); pend_gpu = 1; }
+    else printf("  - tune: nao se aplica (o modelo nao cabe inteiro na VRAM)\n");
+
+    /* 3) calibracao do calor dos especialistas: so MoE com o cache ativo */
+    if (c->n_expert) {
+        if (gpu_ok && gx.on) {
+            printf("  - calor: calibrando quais especialistas manter quentes...\n");
+            const char *calib = "A capital da Franca e Paris. Explique brevemente a fotossintese. "
+                "Escreva uma funcao em C que soma dois vetores. Qual e a raiz quadrada de 144? "
+                "Traduza bom dia para o ingles. Liste tres planetas do sistema solar. "
+                "Resuma a teoria da relatividade em uma frase. def soma(a, b): return a + b. "
+                "Conte uma piada curta. Quais sao as cores primarias?";
+            Ids ids = {0};
+            if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+            encode(&m->tk, calib, &ids);
+            if (ids.n > 0 && ids.n < c->ctx) {
+                float *lg = forward_seq(m, ids.ids, ids.n, 0, 1);
+                int pos = ids.n;
+                for (int g = 0; g < 48 && pos < c->ctx; g++) lg = forward(m, sample(lg, V, 0.0f), pos++, 1);
+                heat_save(m);
+                did_heat = 1;
+            }
+            free(ids.ids);
+        } else { printf("  - calor: adiado (a GPU esta ocupada; o cache de especialistas nao esta ativo)\n"); pend_gpu = 1; }
+    }
+
+    /* ---- grava o perfil ---- */
+    char fn[1200];
+    perfil_path(fn, sizeof fn, path);
+    FILE *f = fopen(fn, "w");
+    if (f) {
+        fprintf(f, "katana-perfil 1\norigem %lld\ngpu %s\nbackend %s\nkv16 %d\nctx %d\nnoexpcache 0\nvagas %d\ntune %s\n",
+                (long long)m->fsize, have_gpu ? gpu.name : "-", backend, kv16, ctx_sug,
+                (gpu_ok && gx.on) ? gx.S : 0, did_tune ? "sim" : "nao");
+        fclose(f);
+        printf("\nPerfil gravado em %s\n", fn);
+    } else printf("\nNao consegui gravar o perfil em %s\n", fn);
+
+    printf("Resumo: pack=%s  tune=%s  calor=%s%s\n",
+           did_pack ? "feito" : !packable ? "n/a" : shards.use ? "ja estava" : "nao",
+           did_tune ? "feito" : fits ? "pendente" : "n/a",
+           c->n_expert ? (did_heat ? "feito" : "pendente") : "n/a",
+           pend_gpu ? "   (partes de GPU pendentes: a placa estava ocupada)" : "");
+    printf("Agora chat/serve/agent usam este perfil automaticamente (uma variavel de ambiente do usuario vence).\n");
+    return 0;
+}
+
 static char *read_text(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "Nao consegui abrir %s\n", path); exit(1); }
@@ -13358,6 +13563,7 @@ static int toktest(Model *m, const char *path, int chat) {
 static int run_main(int argc, char **argv) {
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
+        perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
         return serve(&m, argc == 4 ? atoi(argv[3]) : 8080);
@@ -13372,6 +13578,7 @@ static int run_main(int argc, char **argv) {
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "agent") == 0) {
+        perfil_apply(argv[2], 1);
         if (!getenv("KATANA_CTX")) putenv("KATANA_CTX=16384");     /* resultados de ferramentas ocupam muito contexto */
         if (!getenv("KATANA_THINK")) putenv("KATANA_THINK=0");     /* agente responde direto; KATANA_THINK=1 liga o raciocinio */
         Model m; memset(&m, 0, sizeof m);
@@ -13407,6 +13614,12 @@ static int run_main(int argc, char **argv) {
         _putenv("KATANA_CPU=1");
         load_model(&m, argv[2]);
         return pack(&m, argv[2], m.fsize);
+    }
+    if (argc >= 3 && strcmp(argv[1], "prepare") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        print_info(&m);
+        return prepare(&m, argv[2]);
     }
     if (argc >= 3 && strcmp(argv[1], "micro") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -13453,6 +13666,7 @@ static int run_main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "chat") == 0) {       /* sem pergunta: conversa interativa */
         Model m; memset(&m, 0, sizeof m);
+        perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
         return session(&m, getenv("KATANA_SYSTEM"), getenv("KATANA_MAXTOK") ? atoi(getenv("KATANA_MAXTOK")) : 1024,
@@ -13460,6 +13674,7 @@ static int run_main(int argc, char **argv) {
     }
     if (argc >= 4 && (strcmp(argv[1], "run") == 0 || strcmp(argv[1], "chat") == 0)) {
         Model m; memset(&m, 0, sizeof m);
+        perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
         int max_tokens = argc > 4 ? atoi(argv[4]) : 200;
@@ -13480,6 +13695,7 @@ static int run_main(int argc, char **argv) {
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
         "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
         "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
+        "  katana prepare <modelo.gguf>   inspeciona, decide o plano, prepara (pack/tune/calor) e grava o perfil do modelo\n"
         "  katana verify <modelo.gguf>    confere os hashes dos shards\n"
         "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
