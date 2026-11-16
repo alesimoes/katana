@@ -52,6 +52,7 @@ for n in qn_gate moe_gath moe_scat; do
   $G -V --target-env vulkan1.2 --vn ${n}_spv -o $n.h $n.comp || exit 1
 done
 $G -V --target-env vulkan1.2 -DF32 --vn moe_gath32_spv -o moe_gath32.h moe_gath.comp || exit 1
+$G -V --target-env vulkan1.2 --vn mla_att_spv -o mla_att.h mla_att.comp || exit 1
 $G -V --target-env vulkan1.2 -DF32 --vn qn_gate32_spv -o qn_gate32.h qn_gate.comp || exit 1
 for kv in 0 1; do
   s=kv32; [ $kv = 1 ] && s=kv16

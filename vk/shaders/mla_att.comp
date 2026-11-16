@@ -1,0 +1,71 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+/* Atencao MLA absorvida em lote (deepseek2), tudo em fp32. Um grupo por (token t, cabeca h); grupos da mesma cabeca
+   ficam vizinhos (x = token), entao k_b e v_b da cabeca seguem na cache L2.
+     qa[r]  = k_b[h][r] . q_nope            (512 linhas de 128: um subgrupo por linha, um vec4 por lane)
+     nota_s = (qa . c_s[0:512] + q_rope . c_s[512:576]) * scale, s = 0..pos0+t (blocos de TS, softmax online)
+     lat    = soma_s p_s c_s[0:512]          (thread = 2 dimensoes do latente)
+     o[i]   = v_b[h][i] . lat                (128 linhas de 512, um subgrupo por linha)
+   q: [B][nh*192] por token (RoPE ja aplicado); c: [pos][576] (latente normalizado + k_rope); o transposto
+   [(h*128 + i)*B + t] (entrada direta do produto de saida). Subgrupo de 32. */
+layout(local_size_x = 256) in;
+const int R = 512, NR = 64, NOPE = 128, HD = 192, HV = 128, W = 576, TS = 64;
+layout(std430, binding = 0) readonly buffer Q { float q[]; };
+layout(std430, binding = 1) readonly buffer C { vec4 c4[]; };
+layout(std430, binding = 2) readonly buffer WK { vec4 wk4[]; };
+layout(std430, binding = 3) readonly buffer WV { vec4 wv4[]; };
+layout(std430, binding = 4) writeonly buffer O { float o[]; };
+layout(push_constant) uniform P { int B, pos0, nh; float scale; } pc;
+shared vec4 qn4[NOPE / 4], qr4[NR / 4], qa4[R / 4], lat4[R / 4];
+shared float sc[TS];
+void main() {
+    const int t = int(gl_WorkGroupID.x), h = int(gl_WorkGroupID.y), tid = int(gl_LocalInvocationID.x);
+    const int lane = int(gl_SubgroupInvocationID), sg = int(gl_SubgroupID), nsg = int(gl_NumSubgroups);
+    const int pos = pc.pos0 + t, qo = t * pc.nh * HD + h * HD;
+    if (tid < NOPE / 4) qn4[tid] = vec4(q[qo + 4 * tid], q[qo + 4 * tid + 1], q[qo + 4 * tid + 2], q[qo + 4 * tid + 3]);
+    else if (tid < (NOPE + NR) / 4) { const int k = tid - NOPE / 4, b = qo + NOPE + 4 * k; qr4[k] = vec4(q[b], q[b + 1], q[b + 2], q[b + 3]); }
+    barrier();
+    /* qa: subgrupo por linha de k_b (32 lanes x vec4 = 128) */
+    for (int r = sg; r < R; r += nsg) {
+        const float a = subgroupAdd(dot(wk4[(h * R + r) * (NOPE / 4) + lane], qn4[lane]));
+        if (lane == 0) qa4[r >> 2][r & 3] = a;
+    }
+    barrier();
+    float m = -1e30, l = 0.0, a0 = 0.0, a1 = 0.0;
+    for (int s0 = 0; s0 <= pos; s0 += TS) {
+        const int n = min(TS, pos + 1 - s0);
+        for (int j = sg; j < n; j += nsg) {
+            const int rb = (s0 + j) * (W / 4);
+            float v = dot(c4[rb + lane], qa4[lane]) + dot(c4[rb + lane + 32], qa4[lane + 32])
+                    + dot(c4[rb + lane + 64], qa4[lane + 64]) + dot(c4[rb + lane + 96], qa4[lane + 96]);
+            if (lane < NR / 4) v += dot(c4[rb + R / 4 + lane], qr4[lane]);
+            v = subgroupAdd(v);
+            if (lane == 0) sc[j] = v * pc.scale;
+        }
+        barrier();
+        float mx = m;
+        for (int j = 0; j < n; j++) mx = max(mx, sc[j]);
+        const float al = exp(m - mx);
+        a0 *= al; a1 *= al; l *= al;
+        for (int j = 0; j < n; j++) {
+            const float p = exp(sc[j] - mx);
+            l += p;
+            const int rb = (s0 + j) * (W / 4);
+            const vec4 c0 = c4[rb + (tid >> 2)], c1 = c4[rb + ((tid + 256) >> 2)];
+            a0 += p * c0[tid & 3]; a1 += p * c1[tid & 3];
+        }
+        m = mx;
+        barrier();
+    }
+    lat4[tid >> 2][tid & 3] = a0 / l;
+    lat4[(tid + 256) >> 2][tid & 3] = a1 / l;
+    barrier();
+    /* saida: subgrupo por linha de v_b (32 lanes x 4 vec4 = 512) */
+    for (int i = sg; i < HV; i += nsg) {
+        const int wb = (h * HV + i) * (R / 4);
+        float v = dot(wv4[wb + lane], lat4[lane]) + dot(wv4[wb + lane + 32], lat4[lane + 32])
+                + dot(wv4[wb + lane + 64], lat4[lane + 64]) + dot(wv4[wb + lane + 96], lat4[lane + 96]);
+        v = subgroupAdd(v);
+        if (lane == 0) o[(h * HV + i) * pc.B + t] = v;
+    }
+}
