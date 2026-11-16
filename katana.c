@@ -30,6 +30,8 @@
 #include <omp.h>
 #endif
 #ifndef _WIN32
+#include <dirent.h>
+#include <sys/stat.h>
 #define _putenv(s) putenv((char *)(s))
 #endif
 #ifdef _WIN32
@@ -5393,7 +5395,18 @@ static void agent_tool(const char *name, const char *js, const char *end, char *
         } while (FindNextFileA(h, &fd));
         FindClose(h);
 #else
-        snprintf(out, cap, "error: list_dir not available on this system");
+        DIR *d = opendir(arg);
+        if (!d) { snprintf(out, cap, "error: cannot list %s", arg); return; }
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            if (n + strlen(e->d_name) + 4 >= TOOL_OUT) { n += snprintf(out + n, cap - n, "[more files omitted]\n"); break; }
+            char full[8600]; struct stat st;
+            snprintf(full, sizeof full, "%s/%s", arg, e->d_name);
+            const int dir = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+            n += snprintf(out + n, cap - n, "%s%s\n", e->d_name, dir ? "/" : "");
+        }
+        closedir(d);
 #endif
         if (n == 0 && !out[0]) snprintf(out, cap, "(empty)");
     } else if (strcmp(name, "write_file") == 0) {

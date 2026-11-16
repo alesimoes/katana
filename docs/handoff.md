@@ -157,3 +157,13 @@ cabeçalhos OpenCL). `build.sh` compila com o `gcc` do sistema ou, sem ele, com 
   Vulkan prompt 922–942 / geração 86–88 tok/s. No Windows o Vulkan dava 1.349–1.364 / 98–100
   (outra hora, outro sistema: não comparável diretamente). A queda do Vulkan no Linux é um ponto a
   investigar (driver, clocks ou caminho de submissão).
+
+### 5.1 Passo 2.1a feito no Linux (Vulkan, Qwen2.5 1,5B)
+
+- `run`, `chat` de uma pergunta e `chat` interativo (dois turnos, lembra o nome): ok, grafo
+  gravado em Vulkan, geração 83–97 tok/s.
+- `agent`: `list_dir` não existia fora do Windows; portado com `opendir`/`readdir`. Listagem ok;
+  `run_command` pede confirmação e respeita a recusa.
+- Mistral 7B Q5_K_M: carrega 25 de 32 camadas na VRAM ("Vulkan: grafo na CPU"), responde certo,
+  geração 6,3 tok/s. Ou seja, o resto cai na CPU; o caminho misto de verdade é o passo 2.1b.
+- Não testado ainda: Qwen3 denso (não há GGUF em `modelos/`).
