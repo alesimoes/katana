@@ -42,13 +42,19 @@ uint rptr(int r, int wpr) {
 }
 int rrow(int r) { return int((((gi >> 5) * uint(NR) + uint(r)) << 5) + lane); }
 
+// ativacao do portao: SiLU, ou GELU (tanh) com o bit 16 do modo
+float act(float g) {
+    if ((pc.mode & 16) != 0) return 0.5 * g * (1.0 + tanh(0.7978845608 * (g + 0.044715 * g * g * g)));
+    return g / (1.0 + exp(-g));
+}
+
 // fecho: bias opcional (bit 4) e modo: 0 grava, 1 soma (residual), 2 SwiGLU com out
 void fin(float t, int row) {
     if ((pc.mode & 4) != 0) t += bias[row];
     row += oof_;
     int mm = pc.mode & 3;
     if (mm == 1) t += outv[row];
-    else if (mm == 2) { float g = outv[row]; t = g / (1.0 + exp(-g)) * t; }
+    else if (mm == 2) { float g = outv[row]; t = act(g) * t; }
     outv[row] = t;
 }
 
@@ -66,11 +72,11 @@ void finish() {
             total[r] = t;
         }
     }
-    // modo 8 (par): grupos pares = gate, impares = up; grava silu(gate)*up
+    // modo 8 (par): grupos pares = gate, impares = up; grava act(gate)*up
     if (NR >= 2 && (pc.mode & 8) != 0) {
         for (int r = 0; r + 1 < NR; r += 2) {
             int row = int(((((gi >> 5) * uint(NR) + uint(r)) >> 1) << 5) + lane);
-            if (row < pc.rows) { float g = total[r]; outv[row + oof_] = g / (1.0 + exp(-g)) * total[r + 1]; }
+            if (row < pc.rows) { float g = total[r]; outv[row + oof_] = act(g) * total[r + 1]; }
         }
         return;
     }
