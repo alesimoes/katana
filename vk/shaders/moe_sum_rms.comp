@@ -1,0 +1,32 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+/* MoE (um token) com a norma da camada seguinte no mesmo despacho: x[i] += soma_k w[k] * t[row[k]*n + i]
+   (pesos e linhas em meta, como no moe_sum com B = 1) e depois o[i] = g[i] * x[i] / rms(x).
+   Um grupo de 256 threads; cada thread fica com as mesmas colunas nas duas passadas. */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer T { float t[]; };
+layout(std430, binding = 2) readonly buffer M { uint meta[]; };
+layout(std430, binding = 3) readonly buffer G { float g[]; };
+layout(std430, binding = 4) buffer O { float o[]; };
+layout(push_constant) uniform P { int woff; int K; int n; float eps; } pc;
+shared float part[32];
+void main() {
+    int l = int(gl_LocalInvocationID.x);
+    float s = 0.0;
+    for (int i = l; i < pc.n; i += 256) {
+        float v = x[i];
+        for (int k = 0; k < pc.K; k++)
+            v += uintBitsToFloat(meta[pc.woff + k]) * t[int(meta[pc.woff + pc.K + k]) * pc.n + i];
+        x[i] = v;
+        s += v * v;
+    }
+    s = subgroupAdd(s);
+    if (gl_SubgroupInvocationID == 0u) part[gl_SubgroupID] = s;
+    barrier();
+    float tot = 0.0;
+    int nsg = (256 + int(gl_SubgroupSize) - 1) / int(gl_SubgroupSize);
+    for (int k = 0; k < nsg; k++) tot += part[k];
+    float inv = 1.0 / sqrt(tot / float(pc.n) + pc.eps);
+    for (int i = l; i < pc.n; i += 256) o[i] = g[i] * (x[i] * inv);
+}

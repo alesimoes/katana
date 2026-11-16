@@ -1,0 +1,24 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+/* Roteador do MoE (um token): o[off + e] = soma_i W[e*n + i] * x[i], pesos float32 em linhas simples.
+   Um grupo de 256 threads por especialista (as matrizes sao pequenas: poucas linhas, n colunas). */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer W { float w[]; };
+layout(std430, binding = 1) readonly buffer X { float x[]; };
+layout(std430, binding = 2) buffer O { float o[]; };
+layout(push_constant) uniform P { int n; int off; } pc;
+shared float part[32];
+void main() {
+    int e = int(gl_WorkGroupID.x), l = int(gl_LocalInvocationID.x);
+    float s = 0.0;
+    for (int i = l; i < pc.n; i += 256) s += w[e * pc.n + i] * x[i];
+    s = subgroupAdd(s);
+    if (gl_SubgroupInvocationID == 0u) part[gl_SubgroupID] = s;
+    barrier();
+    if (l == 0) {
+        float t = 0.0;
+        int nsg = (256 + int(gl_SubgroupSize) - 1) / int(gl_SubgroupSize);
+        for (int k = 0; k < nsg; k++) t += part[k];
+        o[pc.off + e] = t;
+    }
+}

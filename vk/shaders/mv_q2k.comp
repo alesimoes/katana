@@ -18,7 +18,7 @@ void main() {
             int c = g >> 3, j = (g >> 1) & 3, h = g & 1;
             int xo = xb + c * 128 + j * 32 + h * 16;
             float sx = 0.0;
-            for (int u = 0; u < 16; u++) { xv[u] = x[xo + u]; sx += xv[u]; }
+            for (int u = 0; u < 16; u++) { xv[u] = x[xoff_ + xo + u]; sx += xv[u]; }
             for (int r = 0; r < NR; r++) {
                 uint sc = (W[p[r] + uint(g >> 2) * 32u] >> (8 * (g & 3))) & 255u;
                 float s = 0.0;

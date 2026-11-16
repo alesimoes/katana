@@ -25,8 +25,8 @@ void main() {
             for (int r = 0; r < NR; r++) { a[r] = 0.0; c[r] = 0.0; }
             float xa = 0.0, xc = 0.0;
             for (int l = 0; l < 8; l++) {
-                float x0 = x[xb + 4 * l], x1 = x[xb + 4 * l + 1], x2 = x[xb + 4 * l + 2], x3 = x[xb + 4 * l + 3];
-                float y0 = x[xb + 32 + 4 * l], y1 = x[xb + 33 + 4 * l], y2 = x[xb + 34 + 4 * l], y3 = x[xb + 35 + 4 * l];
+                float x0 = x[xoff_ + xb + 4 * l], x1 = x[xoff_ + xb + 4 * l + 1], x2 = x[xoff_ + xb + 4 * l + 2], x3 = x[xoff_ + xb + 4 * l + 3];
+                float y0 = x[xoff_ + xb + 32 + 4 * l], y1 = x[xoff_ + xb + 33 + 4 * l], y2 = x[xoff_ + xb + 34 + 4 * l], y3 = x[xoff_ + xb + 35 + 4 * l];
                 xa += x0 + x1 + x2 + x3; xc += y0 + y1 + y2 + y3;
                 for (int r = 0; r < NR; r++) {
                     uint w = W[p[r] + uint(Q0 + j * 4 + l) * 32u];
