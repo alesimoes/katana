@@ -4,7 +4,13 @@
 /* atencao com portao, lote: saida da atencao (fp16, o[(h*hd+i)*B + b]) vezes sigmoide do portao, que vem da
    projecao q intercalada por cabeca (fp32, qg[(h*2hd + hd + i)*B + b]) */
 layout(local_size_x = 256) in;
+#ifdef F32
+layout(std430, binding = 0) buffer O { float o[]; };          // variante fp32 (produto de saida preciso)
+#define T16(v) (v)
+#else
 layout(std430, binding = 0) buffer O { float16_t o[]; };
+#define T16(v) float16_t(v)
+#endif
 layout(std430, binding = 1) readonly buffer QG { float qg[]; };
 layout(push_constant) uniform P { int hd, nh, B; } pc;
 void main() {
@@ -12,5 +18,5 @@ void main() {
     if (g >= pc.nh * pc.hd * B) return;
     const int b = g % B, r = g / B, h = r / pc.hd, i = r % pc.hd;
     const float z = qg[(h * 2 * pc.hd + pc.hd + i) * B + b];
-    o[g] = float16_t(float(o[g]) / (1.0 + exp(-z)));
+    o[g] = T16(float(o[g]) / (1.0 + exp(-z)));
 }

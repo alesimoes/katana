@@ -1,0 +1,104 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+/* Gated DeltaNet em lote pela recorrencia exata (fp32), token a token dentro de um lancamento so: um grupo de 512
+   threads por cabeca de valor h percorre os B tokens do lote em ordem, com o estado S da cabeca em registradores
+   (le uma vez no inicio, grava uma vez no fim). Mesma conta do dn_step (conv1d causal + SiLU, normas L2, beta e g,
+   atualizacao do estado, norma RMS com peso vezes SiLU(z)).
+   Entradas do lote transpostas: qkv[c*B + b], z[(h*128+j)*B + b], ab[h*B + b] (a) e ab[(NV+h)*B + b] (b).
+   Conv: entradas anteriores do proprio lote vem de qkv; anteriores ao lote, do anel (cs[slot*CH + c]). O anel NAO
+   e gravado aqui (canais de q/k sao lidos por 2 cabecas; gravar durante o lote correria com a outra cabeca):
+   o dn_cstate atualiza o anel depois.
+   Saida fp32 o[(h*128+j)*B + b], entrada do produto de saida em duas partes fp16 (mm.comp XS). */
+layout(local_size_x = 512) in;
+layout(constant_id = 0) const int NK = 16;
+layout(constant_id = 1) const int NV = 32;
+const int D = 128;
+const int CH = 2 * NK * D + NV * D;
+layout(std430, binding = 0) readonly buffer QKV { float qkv[]; };
+layout(std430, binding = 1) readonly buffer Z { float z[]; };
+layout(std430, binding = 2) readonly buffer AB { float ab[]; };
+layout(std430, binding = 3) readonly buffer CW { float cw[]; };
+layout(std430, binding = 4) readonly buffer PR { float pr[]; };
+layout(std430, binding = 5) readonly buffer CS { float cs[]; };
+layout(std430, binding = 6) buffer ST { float st[]; };
+layout(std430, binding = 7) writeonly buffer O { float o[]; };
+layout(push_constant) uniform P { int pos0, B, kmap; float eps_l2, eps_rms; } pc;
+shared float qs[D], ks[D], vs[D];
+shared float red[16];
+shared float pk[4 * D], pq[4 * D];
+shared float par[2];
+void main() {
+    const int h = int(gl_WorkGroupID.x), t = int(gl_LocalInvocationID.x);
+    const int sg = int(gl_SubgroupID), lane = int(gl_SubgroupInvocationID);
+    const int R = NV / NK, B = pc.B, pos0 = pc.pos0;
+    const int g = pc.kmap == 0 ? h / R : h % NK;
+    const int j = t & (D - 1), p = t >> 7, i0 = p * 32;
+    const int base = h * D * D + i0 * D + j;
+    float s[32];
+    for (int r = 0; r < 32; r++) s[r] = pos0 == 0 ? 0.0 : st[base + r * D];
+    int c = 0;
+    float w0 = 0.0, w1 = 0.0, w2 = 0.0, w3 = 0.0;
+    if (t < 3 * D) {
+        const int part = t / D, i = t % D;
+        c = part == 0 ? g * D + i : (part == 1 ? NK * D + g * D + i : 2 * NK * D + h * D + i);
+        w0 = cw[c * 4]; w1 = cw[c * 4 + 1]; w2 = cw[c * 4 + 2]; w3 = cw[c * 4 + 3];
+    }
+    for (int b = 0; b < B; b++) {
+        const int pos = pos0 + b;
+        if (t < 3 * D) {
+            const int part = t / D, i = t % D;
+            float acc = w3 * qkv[c * B + b];
+            for (int tau = 1; tau <= 3; tau++) {
+                if (pos - tau < 0) break;
+                const float xp = b - tau >= 0 ? qkv[c * B + b - tau] : cs[((pos - tau) & 3) * CH + c];
+                acc += (tau == 1 ? w2 : tau == 2 ? w1 : w0) * xp;
+            }
+            const float y = acc / (1.0 + exp(-acc));
+            const float sq = subgroupAdd(part < 2 ? y * y : 0.0);
+            if (lane == 0) red[sg] = sq;
+            if (part == 0) qs[i] = y; else if (part == 1) ks[i] = y; else vs[i] = y;
+        }
+        if (t == 0) {
+            const float a = ab[h * B + b] + pr[NV + h], bb = ab[(NV + h) * B + b];
+            const float sp = a > 20.0 ? a : log(1.0 + exp(a));
+            par[0] = 1.0 / (1.0 + exp(-bb));
+            par[1] = exp(pr[h] * sp);
+        }
+        barrier();
+        if (t < 2 * D) {
+            const float ss = t < D ? red[0] + red[1] + red[2] + red[3] : red[4] + red[5] + red[6] + red[7];
+            const float inv = 1.0 / sqrt(ss + pc.eps_l2);
+            if (t < D) qs[t] *= inv * 0.08838834764831845; else ks[t - D] *= inv;
+        }
+        barrier();
+        if (t < D) {
+            const float kq = subgroupAdd(qs[t] * ks[t]);
+            if (lane == 0) red[8 + sg] = kq;
+        }
+        const float eg = par[1];
+        float sk = 0.0, sqq = 0.0;
+        for (int r = 0; r < 32; r++) {
+            s[r] *= eg;
+            sk += s[r] * ks[i0 + r];
+            sqq += s[r] * qs[i0 + r];
+        }
+        pk[p * D + j] = sk; pq[p * D + j] = sqq;
+        barrier();
+        const float kq = red[8] + red[9] + red[10] + red[11];
+        const float d = par[0] * (vs[j] - (pk[j] + pk[D + j] + pk[2 * D + j] + pk[3 * D + j]));
+        const float oj = pq[j] + pq[D + j] + pq[2 * D + j] + pq[3 * D + j] + d * kq;
+        for (int r = 0; r < 32; r++) s[r] += ks[i0 + r] * d;
+        if (t < D) {
+            const float s2 = subgroupAdd(oj * oj);
+            if (lane == 0) red[12 + sg] = s2;
+        }
+        barrier();
+        if (t < D) {
+            const float ms = (red[12] + red[13] + red[14] + red[15]) / float(D);
+            const float zz = z[(h * D + j) * B + b];
+            o[(h * D + j) * B + b] = oj / sqrt(ms + pc.eps_rms) * pr[2 * NV + j] * (zz / (1.0 + exp(-zz)));
+        }
+        barrier();     /* qs/ks/vs/red/par do proximo token */
+    }
+    for (int r = 0; r < 32; r++) st[base + r * D] = s[r];
+}

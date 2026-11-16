@@ -4,8 +4,13 @@
 /* MoE em lote: junta as colunas (tokens) que usam um especialista. xg[i*n + j] = xh[i*B + tok_j],
    tok_j = meta[moff + 2j] (o par e (token, peso em bits), o mesmo da soma) */
 layout(local_size_x = 256) in;
+#ifdef F32
+layout(std430, binding = 0) readonly buffer X { float xh[]; };            // variante fp32 (produtos precisos)
+layout(std430, binding = 1) writeonly buffer XG { float xg[]; };
+#else
 layout(std430, binding = 0) readonly buffer X { float16_t xh[]; };
 layout(std430, binding = 1) writeonly buffer XG { float16_t xg[]; };
+#endif
 layout(std430, binding = 2) readonly buffer M { uint meta[]; };
 layout(push_constant) uniform P { int d, B, n, moff; } pc;
 void main() {
