@@ -1,0 +1,146 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_KHR_shader_subgroup_basic : require
+/* Gated DeltaNet em lote, passo 2: tudo o que um bloco de C=64 tokens precisa e NAO depende do estado.
+   Um grupo de 256 threads (8 subgrupos) por (bloco, cabeca); todos os blocos em paralelo.
+   gc = soma acumulada de g no bloco; G_ij = exp(gc_i - gc_j) (<= 1 para i >= j).
+   L = estrita-inferior(beta_i * (k_i.k_j) * G_ij); T = (I + L)^-1 (substituicao direta, linha a linha em memoria
+   compartilhada fp32, soma de cada linha dividida em 4 partes);
+   U = T diag(beta) V (fp32), Wn = -T diag(beta*exp(gc)) K (fp16), Qm = inferior-com-diagonal((q_i.k_j) * G_ij) (fp16),
+   qg = q*exp(gc), kd = k*exp(gc_C - gc) (fp16), gl = gc_C.
+   q, k, v, qg, kd em dimensao-major [cabeca][128][Bp]; U e Wn em [cabeca][Bp][128].  Com isso, para o estado S0 do inicio do bloco:
+   V' = U + Wn S0;  O = qg S0 + Qm V';  S = exp(gl) S0 + kd^T V'   (dn_state).
+   Produtos q k^T, k k^T, T V e T K em matrizes cooperativas 16x16 fp16 -> fp32, um acumulador por vez. */
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const int NK = 16;
+layout(constant_id = 1) const int NV = 32;
+const int D = 128;
+const int C = 64;
+const int TS = C + 8;
+layout(std430, binding = 0) readonly buffer QH { float16_t qh[]; };
+layout(std430, binding = 1) readonly buffer KH { float16_t kh[]; };
+layout(std430, binding = 2) readonly buffer VH { float16_t vh[]; };
+layout(std430, binding = 3) readonly buffer BG { float bg[]; };
+layout(std430, binding = 4) writeonly buffer UB { float ub[]; };
+layout(std430, binding = 5) writeonly buffer WB { float16_t wb[]; };
+layout(std430, binding = 6) writeonly buffer QM { float16_t qm[]; };
+layout(std430, binding = 7) writeonly buffer QG { float16_t qg[]; };
+layout(std430, binding = 8) writeonly buffer KD { float16_t kd[]; };
+layout(std430, binding = 9) writeonly buffer GL { float gl[]; };
+layout(push_constant) uniform P { int Bp, kmap; } pc;
+shared float sm[C * C];
+shared float rp[4 * C];
+shared float gcs[C], bs[C];
+shared float16_t t1[C * TS], t2[C * TS];
+#define ACC coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
+#define MA coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA>
+#define MB coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB>
+#define RM gl_CooperativeMatrixLayoutRowMajor
+#define CM gl_CooperativeMatrixLayoutColumnMajor
+void main() {
+    const int ch = int(gl_WorkGroupID.x), h = int(gl_WorkGroupID.y), nch = int(gl_NumWorkGroups.x);
+    const int tid = int(gl_LocalInvocationID.x), sg = int(gl_SubgroupID);
+    const int Bp = pc.Bp, R = NV / NK;
+    const int g = pc.kmap == 0 ? h / R : h % NK;
+    const int t0 = ch * C;
+    const uint qb = uint(g * D * Bp + t0), vb = uint(h * D * Bp + t0), ob = uint((h * Bp + t0) * D);
+    if (tid < C) { bs[tid] = bg[h * Bp + t0 + tid]; gcs[tid] = bg[NV * Bp + h * Bp + t0 + tid]; }
+    barrier();
+    if (tid == 0) { float a = 0.0; for (int i = 0; i < C; i++) { a += gcs[i]; gcs[i] = a; } }
+    /* q k^T (so blocos com linha >= coluna) */
+    for (int tt = sg; tt < 16; tt += 8) {
+        const int r = tt >> 2, c = tt & 3;
+        if (c > r) continue;
+        ACC acc = ACC(0.0);
+        for (int kk = 0; kk < D / 16; kk++) {
+            MA a; MB b;
+            coopMatLoad(a, qh, qb + uint(kk * 16 * Bp + r * 16), Bp, CM);
+            coopMatLoad(b, kh, qb + uint(kk * 16 * Bp + c * 16), Bp, RM);
+            acc = coopMatMulAdd(a, b, acc);
+        }
+        coopMatStore(acc, sm, r * 16 * C + c * 16, C, RM);
+    }
+    barrier();
+    const uint qmb = uint((h * nch + ch) * C * C);
+    for (int e = tid; e < C * C; e += 256) {
+        const int i = e >> 6, j = e & 63;
+        qm[qmb + e] = float16_t(i >= j ? sm[e] * exp(gcs[i] - gcs[j]) : 0.0);
+    }
+    barrier();
+    /* k k^T */
+    for (int tt = sg; tt < 16; tt += 8) {
+        const int r = tt >> 2, c = tt & 3;
+        if (c > r) continue;
+        ACC acc = ACC(0.0);
+        for (int kk = 0; kk < D / 16; kk++) {
+            MA a; MB b;
+            coopMatLoad(a, kh, qb + uint(kk * 16 * Bp + r * 16), Bp, CM);
+            coopMatLoad(b, kh, qb + uint(kk * 16 * Bp + c * 16), Bp, RM);
+            acc = coopMatMulAdd(a, b, acc);
+        }
+        coopMatStore(acc, sm, r * 16 * C + c * 16, C, RM);
+    }
+    barrier();
+    for (int e = tid; e < C * C; e += 256) {
+        const int i = e >> 6, j = e & 63;
+        sm[e] = i > j ? bs[i] * sm[e] * exp(gcs[i] - gcs[j]) : 0.0;
+    }
+    barrier();
+    /* T = (I + L)^-1 no lugar: linha i de sm passa de L a T (abaixo da diagonal; diagonal 1 implicita).
+       T_ij = -(L_ij + soma_{j<m<i} L_im T_mj); thread = (j, parte p), m em passos de 4. */
+    {
+        const int j = tid & 63, p = tid >> 6;
+        for (int i = 1; i < C; i++) {
+            float s = 0.0;
+            if (j < i) {
+                if (p == 0) s = sm[i * C + j];
+                for (int m = j + 1 + p; m < i; m += 4) s += sm[i * C + m] * sm[m * C + j];
+            }
+            rp[p * C + j] = s;
+            barrier();
+            if (p == 0 && j < i) sm[i * C + j] = -(rp[j] + rp[C + j] + rp[2 * C + j] + rp[3 * C + j]);
+            barrier();
+        }
+    }
+    for (int e = tid; e < C * C; e += 256) {
+        const int i = e >> 6, j = e & 63;
+        const float tv = i == j ? 1.0 : (i > j ? sm[e] : 0.0);
+        t1[i * TS + j] = float16_t(tv * bs[j]);
+        t2[i * TS + j] = float16_t(tv * bs[j] * exp(gcs[j]));
+    }
+    barrier();
+    /* U = T1 V (32 blocos) e Wn = -T2 K (32 blocos); T e triangular: so kk <= r */
+    for (int tt = sg; tt < 64; tt += 8) {
+        const int q = tt & 31, r = q >> 3, c = q & 7;
+        ACC acc = ACC(0.0);
+        if (tt < 32) {
+            for (int kk = 0; kk <= r; kk++) {
+                MA a; MB b;
+                coopMatLoad(a, t1, r * 16 * TS + kk * 16, TS, RM);
+                coopMatLoad(b, vh, vb + uint(c * 16 * Bp + kk * 16), Bp, CM);
+                acc = coopMatMulAdd(a, b, acc);
+            }
+            coopMatStore(acc, ub, ob + uint(r * 16 * D + c * 16), D, RM);
+        } else {
+            for (int kk = 0; kk <= r; kk++) {
+                MA a; MB b;
+                coopMatLoad(a, t2, r * 16 * TS + kk * 16, TS, RM);
+                coopMatLoad(b, kh, qb + uint(c * 16 * Bp + kk * 16), Bp, CM);
+                acc = coopMatMulAdd(a, b, acc);
+            }
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> w16 =
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(acc * (-1.0));
+            coopMatStore(w16, wb, ob + uint(r * 16 * D + c * 16), D, RM);
+        }
+    }
+    const float gC = gcs[C - 1];
+    for (int e = tid; e < C * D; e += 256) {
+        const int t = e & 63, d = e >> 6;
+        qg[vb + d * Bp + t] = float16_t(float(qh[qb + d * Bp + t]) * exp(gcs[t]));
+        kd[vb + d * Bp + t] = float16_t(float(kh[qb + d * Bp + t]) * exp(gC - gcs[t]));
+    }
+    if (tid == 0) gl[h * nch + ch] = gC;
+}

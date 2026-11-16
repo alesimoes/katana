@@ -1,0 +1,15 @@
+#version 450
+/* Gated DeltaNet em lote, depois de dn_prep: grava no anel da convolucao as ultimas 3 entradas do lote
+   (slot = posicao & 3). Com B < 3 os slots mais antigos continuam validos (indexados pela posicao absoluta). */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer QKV { float qkv[]; };
+layout(std430, binding = 1) buffer CS { float cs[]; };
+layout(push_constant) uniform P { int pos0, B, CH; } pc;
+void main() {
+    const int c = int(gl_GlobalInvocationID.x);
+    if (c >= pc.CH) return;
+    for (int tau = 0; tau < 3; tau++) {
+        const int b = pc.B - 1 - tau;
+        if (b >= 0) cs[((pc.pos0 + b) & 3) * pc.CH + c] = qkv[c * pc.B + b];
+    }
+}
