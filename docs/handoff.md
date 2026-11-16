@@ -2,7 +2,30 @@
 
 Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura de especialistas e o
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
-`comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades). Último commit desta sessão: `54ac6b0` (mais o commit deste arquivo).
+`comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
+
+## 0. Atualizacao 2026-11-16 (fim da sessao; desenvolvimento pausado esta semana a pedido do dono)
+
+Entrou no main nesta sessao:
+- **Prompt em lote dos MoE no Vulkan** (qwen3moe, olmoe): Qwen3-30B prompt ~48 -> ~145 tok/s; OLMoE ~140 -> ~370.
+  Atencao do lote em fp32 no modo preciso (fp16 virava escolhas quase empatadas do roteador).
+- **Arquiteturas novas**: `gemma4` (Google, Vulkan hibrido), `gpt-oss` (OpenAI, so CPU), `glm4`/`glm4moe` (Zhipu, so CPU).
+  Formatos de conversa: gpt-oss harmony = `chat_fmt` 9; glm = `chat_fmt` 10 (colisao resolvida na juncao).
+- **`gemma4` cache de especialistas** cabe as 8 vagas (usa ate 91% da VRAM so no quase-encaixe): geracao a frio 0,8 -> 3,4 tok/s.
+- **`katana prepare <modelo>`**: inspeciona modelo+maquina, decide o plano, gera shards/calor e grava perfil por modelo
+  (`<modelo>.gguf.ktn.prof`); chat/serve/agent usam o perfil sozinhos; variavel do usuario vence.
+- **Agente**: sem pedir confirmacao (grava/executa/le fora da pasta; `KATANA_CONFIRM=1` volta a pedir), contexto 16384 e
+  raciocinio desligado por padrao; avisa quando o template do modelo nao tem ferramentas.
+- Vulkan espera a GPU liberar antes de cair para a CPU (`KATANA_VK_WAIT`, padrao 60 s).
+
+**Proximos passos, em ordem de ganho:**
+1. **Caminho Vulkan para gpt-oss e glm4moe** (hoje so CPU): cache de especialistas hibrido como o deepseek2. Maior ganho; o Air so fica usavel com isso.
+2. **gemma4 prompt em lote na GPU** (item 1 da secao 10): precisa de um kernel de atencao de lote proprio do gemma4 (hd por camada, janela deslizante, camadas globais sem attn_v). Hoje o lote do gemma4 e so na CPU.
+3. **Prompt dos modelos densos**: ainda ~1,7-1,8x atras da referencia; nossa nota mais baixa.
+4. **Especialistas quentes em fp32 no caminho de um token** (gemma4/Qwen3-30B): tiraria a falha de "GPU token a token" do selftest (argmax ja bate, geracao gulosa correta).
+5. **Juntar GGUF em partes** (para GLM-4.5-Air Q4_K_M e outros grandes partidos); obs.: o Air Q4_K_M (~65 GB) nao cabe bem nos 64 GB de RAM desta maquina.
+
+**Ramo nao juntado:** `worktree-agent-ac5031c6105442724` tem o prompt em lote MLA (Moonlight/DeepSeek, prompt 2,4-4x mais rapido), com a falha de segmentacao ja corrigida (commits ate ~ef87c0a); faltou so revalidar os selftests. Cancelado a pedido; retomar daqui se quiser.
 
 ## 1. Estado em uma página
 
