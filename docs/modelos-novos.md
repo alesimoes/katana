@@ -79,3 +79,50 @@ Observacoes:
   `rope.scaling.*` (yarn, so no V2-Lite).
 - Os dois modelos tem nomes de tensor diferentes para o MLA (`attn_kv_b` vs `attn_k_b`+`attn_v_b`).
 - Tipos de quantizacao presentes: Q4_K, Q6_K, Q8_0, Q5_0, F32.
+
+## Estado no katana (suporte `deepseek2`)
+
+O que funciona (CPU, caminho de referencia):
+- Leitura dos metadados `deepseek2` (kv_lora_rank, key/value_length e *_mla, rope.dimension_count,
+  leading_dense_block_count, expert_shared_count, expert_gating_func, expert_weights_norm/scale,
+  rope.scaling yarn) e dos tensores das duas formas de MLA (`attn_kv_b` unico ou `attn_k_b` +
+  `attn_v_b`). Tipo Q5_0 decodificado (so usado no `attn_k_b` do Moonlight).
+- Atencao MLA na forma absorvida para os dois modelos: o cache guarda por posicao so o latente
+  normalizado (512) e a parte rope de k (64) = 576 floats por camada (contra 16 x 320 = 5120 da
+  forma descomprimida). q_nope e multiplicada por k_b (vira vetor no latente), a pontuacao e
+  q_lat . c_kv + q_rope . k_rope, a media fica no latente e so no fim passa por v_b. k_b/v_b ficam
+  em float na RAM (~8 MB por camada). RoPE em pares adjacentes (convencao "normal").
+- Yarn do V2-Lite: frequencias com rampa entre interpolacao (fator 40) e extrapolacao (beta 32/1,
+  contexto original 4096) e escala q.k multiplicada por mscale^2 (mscale = 1 + 0,0707 ln 40).
+- MoE: camada 0 densa; roteador softmax (V2) ou sigmoide com vies `exp_probs_b` so na escolha,
+  pesos normalizados e escalados por 2,446 (Moonlight); compartilhados (`*_shexp`) sempre somados.
+- Tokenizador BPE carrega os dois vocabularios (102.400 e 163.840). Pre-tokenizador: digitos
+  agrupados (`deepseek-llm`: sem limite; `kimi-k2`: ate 3); o resto usa a aproximacao do GPT-2 do
+  katana (as regex reais diferem em detalhes: CJK, quebras de linha). Formatos de conversa novos:
+  5 = DeepSeek (`User: ...\n\nAssistant:`), 6 = Kimi (`<|im_user|>user<|im_middle|>...`).
+- GPU (OpenCL e Vulkan): por enquanto "camadas na CPU, produtos densos na GPU": q, kv_a, saida da
+  atencao, feed-forward denso, compartilhados e vocabulario sobem; atencao MLA e especialistas
+  roteados ficam na CPU. `selftest` confere esses produtos e o fim a fim contra a CPU.
+
+Testes (KATANA_CPU=1, KATANA_CTX=512, Linux, greedy):
+- V2-Lite `run "The capital of France is" 20`: " Paris.\n\nThe official language is French.\n\nThe
+  currency is the Euro (€)." (~2 tok/s com paginas frias; 10 tok/s em 116 tokens com o arquivo em cache).
+- V2-Lite `chat "Quanto e 17 vezes 23?"`: " 17 x 23 = 391".
+- Moonlight `run`: " Paris, which is located in the northern part of the country. It is one of the most visited" (4,9 tok/s).
+- Moonlight `chat`: "O resultado de 17 vezes 23 é 391." (7,3 tok/s).
+
+O que falta:
+- Grafo completo da MLA na GPU (kernel de atencao no latente, cache de 576 por posicao,
+  absorcao de k_b/v_b na GPU) e especialistas no cache de VRAM (reaproveitar `gx`/`vk_moe`, que
+  hoje assumem todas as camadas MoE e sem compartilhados).
+- Caminho em lote na CPU para o prompt (hoje token a token, como os outros MoE).
+- Kimi K2 / DeepSeek-V3 completos: `q_lora_rank` (attn_q_a + attn_q_a_norm + attn_q_b), roteamento
+  em grupos (n_group/topk_group; Moonlight usa 1 grupo), 256/384 especialistas, 61 camadas com 3
+  densas, e leitura de especialistas do disco (nao cabem na RAM desta maquina).
+
+GPU (RTX 3050 4 GB, OpenCL, KATANA_CTX=512): `selftest` OK nos dois (Moonlight: maior diferenca de
+logit 0,00026; V2-Lite: 0,035, abaixo do limite 0,05, com argmax igual); Vulkan (`KATANA_BACKEND=vulkan`)
+tambem OK no Moonlight. Chat "17 vezes 23" igual ao da CPU, ~7 tok/s nos dois, isto e, sem ganho
+sobre a CPU (6,7 tok/s; medida isolada, nao alternada): a ida e volta por produto come o ganho.
+`q_lora_rank` (attn_q_a/attn_q_a_norm/attn_q_b) ja e lido e usado na CPU, mas sem modelo para testar.
+Regressao: `selftest` OK em qwen2.5-1.5b e olmoe (KATANA_KV16=0).

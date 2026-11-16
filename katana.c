@@ -330,6 +330,7 @@ typedef struct {
     int chat_fmt;       /* 0 = ChatML, 1 = Llama 3, 2 = Zephyr, 3 = [INST], 4 = texto simples, 5 = DeepSeek, 6 = Kimi */
     /* atencao latente (MLA, deepseek2): o cache guarda so o latente c_kv e a parte rope de k */
     int mla;            /* largura do latente (kv_lora_rank); 0 = atencao comum */
+    int q_lora;         /* q comprimida (q_lora_rank, V3/Kimi K2): q = q_b(norma(q_a x)) */
     int rope_dim;       /* dimensoes com RoPE em cada cabeca (o resto de q/k nao gira) */
     int hd_v;           /* largura de v por cabeca */
     int hd_mla_k, hd_mla_v;
@@ -359,6 +360,7 @@ typedef struct {
     Mat *eg, *eu, *ed;                  /* MoE: gate/up/down de cada especialista (fatias do tensor empilhado) */
     Mat wkv_a;                          /* MLA: x -> [latente | k rope] */
     float *kv_a_norm;                   /* MLA: norma do latente */
+    Mat wq_a, wq_b; float *q_a_norm;    /* MLA com q comprimida */
     float *wkb, *wvb;                   /* MLA: [cabeca][latente][nope] e [cabeca][hd_v][latente], em float */
     Mat sg, su, sd;                     /* especialistas compartilhados */
     float *exp_bias;                    /* vies do roteador (so na escolha) */
@@ -828,6 +830,7 @@ static void load_model(Model *m, const char *path) {
             else if (key_ends(k, kl, ".attention.key_length_mla")) c->hd_mla_k = (int)v;
             else if (key_ends(k, kl, ".attention.value_length_mla")) c->hd_mla_v = (int)v;
             else if (key_ends(k, kl, ".attention.kv_lora_rank")) c->mla = (int)v;
+            else if (key_ends(k, kl, ".attention.q_lora_rank")) c->q_lora = (int)v;
             else if (key_ends(k, kl, ".rope.dimension_count")) c->rope_dim = (int)v;
             else if (key_ends(k, kl, ".leading_dense_block_count")) c->n_dense = (int)v;
             else if (key_ends(k, kl, ".expert_shared_count")) c->n_shared = (int)v;
@@ -923,7 +926,11 @@ static void load_model(Model *m, const char *path) {
 #define V1(field, suffix) snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_tensor(&ts, nm, d, 1, np)
 #define M2(field, suffix, rows, cols) snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_mat(&ts, nm, rows, cols, 1, np)
         V1(attn_norm, "attn_norm.weight");
-        M2(wq, "attn_q.weight", qd, d);
+        if (c->mla && c->q_lora) {
+            M2(wq_a, "attn_q_a.weight", (size_t)c->q_lora, d);
+            snprintf(nm, sizeof nm, "blk.%d.attn_q_a_norm.weight", l); L->q_a_norm = get_tensor(&ts, nm, c->q_lora, 1, np);
+            M2(wq_b, "attn_q_b.weight", qd, (size_t)c->q_lora);
+        } else M2(wq, "attn_q.weight", qd, d);
         if (c->mla) {
             const size_t R = c->mla, nr = c->rope_dim, nope = c->hd - c->rope_dim, hv = c->hd_v, nh = c->n_heads;
             M2(wkv_a, "attn_kv_a_mqa.weight", R + nr, d);
@@ -1009,6 +1016,7 @@ static void load_model(Model *m, const char *path) {
         size_t Hm = H;
         if ((size_t)c->hidden_dense > Hm) Hm = c->hidden_dense;
         if ((size_t)c->n_shared * H > Hm) Hm = (size_t)c->n_shared * H;
+        if ((size_t)c->q_lora > Hm) Hm = c->q_lora;
         m->hb = xalloc(Hm, sizeof(float));  m->hb2 = xalloc(Hm, sizeof(float));
     }
     if (c->mla) m->ckv = xalloc(L * ctx * (size_t)(c->mla + c->rope_dim), sizeof(float));
@@ -1806,6 +1814,7 @@ typedef struct {
 
 typedef struct {
     int on, full, force_cpu, debug, test_mv, kv16, n_shard;
+    int mv_host;        /* grafo na CPU com os produtos das matrizes que subiram feitos na GPU (MLA) */
     int want_all;                                       /* devolver os logits dos 4 tokens do lote */
     clh blog4; float *logits_all;                       /* logits transpostos [vocab][4] */
     int cfg_rows, cfg_rowsb;                            /* linhas por thread: geracao e lote */
@@ -2789,6 +2798,36 @@ static void gpu_upload_glu(Mat *gate, Mat *up, size_t rows, size_t cols, int l) 
     }
 }
 
+/* MLA (deepseek2): ainda sem grafo na GPU. As camadas rodam na CPU e os produtos densos (q, kv_a,
+   saida da atencao, feed-forward denso, compartilhados e vocabulario) vao para a GPU com ida e volta;
+   os especialistas roteados e a atencao ficam na CPU. */
+static void mla_gpu_upload(Model *m) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, H = c->hidden, nh = c->n_heads, W = (size_t)c->mla + c->rope_dim;
+    char nm[32];
+    for (int l = 0; l < c->n_layers; l++) {
+        Layer *L = &m->layers[l];
+        if (L->wq.q) { snprintf(nm, sizeof nm, "L%03d.wq", l);  gpu_upload(&L->wq, nh * c->hd, d, nm); }
+        snprintf(nm, sizeof nm, "L%03d.kva", l); gpu_upload(&L->wkv_a, W, d, nm);
+        snprintf(nm, sizeof nm, "L%03d.wo", l);  gpu_upload(&L->wo, d, nh * c->hd_v, nm);
+        if (!L->eg) {
+            const size_t Hd = c->n_expert ? (size_t)c->hidden_dense : H;
+            snprintf(nm, sizeof nm, "L%03d.gate", l); gpu_upload(&L->w_gate, Hd, d, nm);
+            snprintf(nm, sizeof nm, "L%03d.up", l);   gpu_upload(&L->w_up, Hd, d, nm);
+            snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, Hd, nm);
+        } else if (L->sg.q || L->sg.f) {
+            const size_t Hs = (size_t)c->n_shared * H;
+            snprintf(nm, sizeof nm, "L%03d.sgate", l); gpu_upload(&L->sg, Hs, d, nm);
+            snprintf(nm, sizeof nm, "L%03d.sup", l);   gpu_upload(&L->su, Hs, d, nm);
+            snprintf(nm, sizeof nm, "L%03d.sdown", l); gpu_upload(&L->sd, d, Hs, nm);
+        }
+    }
+    gpu_upload(&m->lm_head, c->vocab, d, "head");
+    gpu.n_gl = 0; gpu.on = 0; gpu.full = 0; gpu.mv_host = 1;
+    fprintf(stderr, "GPU: %s%s (%.1f GB) - MLA: camadas na CPU, %d produtos densos na GPU (%.0f MB usados)\n",
+            gpu.vk ? "Vulkan " : "", gpu.name, gpu.vram / 1073741824.0, gpu.n_up, gpu.used / 1048576.0);
+}
+
 /* buffer de leitura/escrita na VRAM; NULL se nao couber */
 static clh gbuf_rw(size_t bytes) {
     int32_t err = 0;
@@ -3377,7 +3416,7 @@ static int vk_setup(Model *m) {
     const size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab, qd = (size_t)c->n_heads * c->hd;
     KvkInfo I;
     /* MoE em Vulkan ainda gera mais devagar que o OpenCL: so com KATANA_VK_MOE=1 */
-    if (c->n_expert && !(getenv("KATANA_VK_MOE") && atoi(getenv("KATANA_VK_MOE")) != 0)) {
+    if (c->n_expert && !c->mla && !(getenv("KATANA_VK_MOE") && atoi(getenv("KATANA_VK_MOE")) != 0)) {
         fprintf(stderr, "Vulkan: MoE em Vulkan desligado por padrao (KATANA_VK_MOE=1 liga), usando OpenCL/CPU\n");
         return 0;
     }
@@ -3395,11 +3434,14 @@ static int vk_setup(Model *m) {
     gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : 16384;
     size_t maxc = d > H ? d : H;
     if (qd > maxc) maxc = qd;
+    if ((size_t)c->hidden_dense > maxc) maxc = c->hidden_dense;
+    if ((size_t)c->n_shared * H > maxc) maxc = (size_t)c->n_shared * H;
     const size_t maxr = V > maxc ? V : maxc;
     gpu.vxb = kvk_buf_create(maxc * sizeof(float), KVK_USAGE_RW);
     gpu.vob = kvk_buf_create((maxr + 128) * sizeof(float), KVK_USAGE_RW);
     if (!gpu.vxb.b || !gpu.vob.b) { fprintf(stderr, "Vulkan: sem memoria para os buffers (%s)\n", kvk_error()); kvk_shutdown(); gpu.vk = 0; return 0; }
     gpu.used = (maxc + maxr + 128) * sizeof(float);
+    if (c->mla) { mla_gpu_upload(m); kvk_wait(); return 1; }
     const uint64_t budget = gpu_budget();
     const int graph = vk_plan(m, budget);       /* 1 = o grafo completo cabe */
     int nl = 0;
@@ -3538,12 +3580,15 @@ static void gpu_setup(Model *m) {
 
     size_t maxc = d > H ? d : H;
     if (qd > maxc) maxc = qd;
+    if ((size_t)c->hidden_dense > maxc) maxc = c->hidden_dense;
+    if ((size_t)c->n_shared * H > maxc) maxc = (size_t)c->n_shared * H;
     size_t maxr = V > maxc ? V : maxc;
     int32_t e1 = 0, e2 = 0, e4 = 0;
     gpu.xbuf = cl.CreateBuffer(gpu.ctx, 1, maxc * sizeof(float), NULL, &e1);
     gpu.obuf = cl.CreateBuffer(gpu.ctx, 1, (maxr + 128) * sizeof(float), NULL, &e2);
     gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : gpu.cfg_seg;
     gpu.bsx = cl.CreateBuffer(gpu.ctx, 1, (maxc / 32 + 1) * GPU_BMAX * sizeof(float), NULL, &e4);
+    if (!e1 && !e2 && !e4 && c->mla) { mla_gpu_upload(m); cl.Finish(gpu.queue); return; }
     if (e1 || e2 || e4 || !gpu_setup_bufs(m)) { fprintf(stderr, "GPU: sem memoria para os buffers, usando CPU\n"); return; }
 
     if (c->qk_norm) {
@@ -3817,7 +3862,7 @@ static void mv_job(void *c, int i0, int i1) {
 static void matvec(float *out, const Mat *W, const float *x, int rows, int cols) {
     float sx[MAX_SX];
     int i;
-    if (W->gbuf && gpu.test_mv) { gpu_matvec(out, W, x, rows, cols); return; }
+    if (W->gbuf && (gpu.test_mv || (gpu.mv_host && !gpu.force_cpu))) { gpu_matvec(out, W, x, rows, cols); return; }
     const double t0 = gpu.debug ? now_sec() : 0.0;
     if (mat_int(W)) {
         xq_prepare(x, cols);
@@ -4749,7 +4794,11 @@ static void mla_attn(Model *m, const Layer *L, int l, int pos) {
     const int d = c->dim, nh = c->n_heads, hd = c->hd, nr = c->rope_dim, nope = hd - nr, R = c->mla, W = R + nr;
     const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? nr / 2 : 1;
     rmsnorm(m->xb, m->x, L->attn_norm, d, c->eps);
-    matvec(m->q, &L->wq, m->xb, nh * hd, d);
+    if (c->q_lora) {    /* nao testado: nenhum modelo pequeno com q comprimida foi baixado */
+        matvec(m->hb2, &L->wq_a, m->xb, c->q_lora, d);
+        rmsnorm(m->hb2, m->hb2, L->q_a_norm, c->q_lora, c->eps);
+        matvec(m->q, &L->wq_b, m->hb2, nh * hd, c->q_lora);
+    } else matvec(m->q, &L->wq, m->xb, nh * hd, d);
     float *row = m->ckv + ((size_t)l * c->ctx + pos) * W;
     matvec(row, &L->wkv_a, m->xb, W, d);
     rmsnorm(row, row, L->kv_a_norm, R, c->eps);
@@ -5340,16 +5389,22 @@ static int selftest(Model *m) {
         selftest_mat("attn_q", &L->wq, m->cfg.n_heads * m->cfg.hd, d, &worst);
         selftest_mat("attn_k", &L->wk, kvd, d, &worst);
         selftest_mat("attn_v", &L->wv, kvd, d, &worst);
-        selftest_mat("attn_out", &L->wo, d, m->cfg.n_heads * m->cfg.hd, &worst);
-        selftest_mat("ffn_gate", &L->w_gate, H, d, &worst);
-        selftest_mat("ffn_up", &L->w_up, H, d, &worst);
-        selftest_mat("ffn_down", &L->w_down, d, H, &worst);
+        const int Hl = c->n_expert && !L->eg ? c->hidden_dense : H;
+        selftest_mat("attn_out", &L->wo, d, m->cfg.n_heads * (c->mla ? c->hd_v : m->cfg.hd), &worst);
+        if (c->mla) selftest_mat("attn_kv_a", &L->wkv_a, c->mla + c->rope_dim, d, &worst);
+        selftest_mat("ffn_gate", &L->w_gate, Hl, d, &worst);
+        selftest_mat("ffn_up", &L->w_up, Hl, d, &worst);
+        selftest_mat("ffn_down", &L->w_down, d, Hl, &worst);
+        if (L->sg.q) {
+            selftest_mat("shexp_gate", &L->sg, c->n_shared * H, d, &worst);
+            selftest_mat("shexp_down", &L->sd, d, c->n_shared * H, &worst);
+        }
     }
     int ok = worst < 1e-4 && worst_int < 1e-4;
     printf("produtos: %s (pior erro relativo: exato %.2e, CPU inteiro %.2e)\n", ok ? "OK" : "FALHOU", worst, worst_int);
     if (gpu.vk && !vkg.on) printf("Vulkan: grafo na CPU (verificacoes de grafo completo puladas)\n");
 
-    if (gpu.n_gl > 0 || vkg.on) {   /* mesma sequencia pela GPU (em lote e token a token) e pela CPU pura */
+    if (gpu.n_gl > 0 || vkg.on || gpu.mv_host) {   /* mesma sequencia pela GPU (em lote e token a token) e pela CPU pura */
         const int V = c->vocab, N = 23;
         int toks[23];
         float *ref = xalloc(V, sizeof(float)), *o = NULL;
