@@ -17,7 +17,7 @@ layout(std430, binding = 8) readonly buffer FR { float freq[]; };
 layout(std430, binding = 9) readonly buffer QS { float qs[]; };
 layout(std430, binding = 10) readonly buffer QN { float qn[]; };
 layout(std430, binding = 11) readonly buffer KN { float kn[]; };
-layout(push_constant) uniform P { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; } pc;
+layout(push_constant) uniform P { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; int nrot, qst; } pc;
 void main() {
     int gid = int(gl_GlobalInvocationID.x), B = pc.B;
     int d = pc.d, kvd = pc.kvd, hd = pc.hd;
@@ -33,8 +33,12 @@ void main() {
     bool isk = p >= d / 2;
     if (isk) p -= d / 2;
     int h = p / half_, i = p % half_;
-    int i0 = h * hd + (pc.neox != 0 ? i : 2 * i), i1 = i0 + (pc.neox != 0 ? half_ : 1);
-    float cs, sn; rope_cs(float(pos) * freq[i], cs, sn);
+    const int hr = pc.nrot / 2;
+    int l0, l1; float cs = 1.0, sn = 0.0;     /* RoPE parcial (neox): dims >= nrot nao giram */
+    if (pc.neox == 0) { l0 = 2 * i; l1 = l0 + 1; rope_cs(float(pos) * freq[i], cs, sn); }
+    else if (i < hr) { l0 = i; l1 = i + hr; rope_cs(float(pos) * freq[i], cs, sn); }
+    else { l0 = pc.nrot + 2 * (i - hr); l1 = l0 + 1; }
+    int i0 = h * hd + l0, i1 = h * hd + l1;
     if (isk) {
         float a = k[i0 * B + b], c = k[i1 * B + b];
         if ((pc.has_bias & 2) != 0) { a += bk[i0]; c += bk[i1]; }
@@ -46,13 +50,15 @@ void main() {
         }
         KVS(a * cs - c * sn, off + i0, kc); KVS(a * sn + c * cs, off + i1, kc);
     } else {
-        float a = qs[i0 * B + b], c = qs[i1 * B + b];
+        const int qb = h * pc.qst;     /* linhas de q na entrada (passo qst por cabeca: q intercalado com o portao) */
+        float a = qs[(qb + l0) * B + b], c = qs[(qb + l1) * B + b];
         if ((pc.has_bias & 1) != 0) { a += bq[i0]; c += bq[i1]; }
         if (pc.norm != 0) {
-            int r0 = pc.norm == 1 ? 0 : h * hd, len = pc.norm == 1 ? d : hd;
+            int r0 = pc.norm == 1 ? 0 : qb, len = pc.norm == 1 ? d : hd;
             float ss = 0.0; for (int j = 0; j < len; j++) { float t = qs[(r0 + j) * B + b]; ss += t * t; }
             float inv = 1.0 / sqrt(ss / float(len) + pc.eps);
-            a *= qn[i0 - r0] * inv; c *= qn[i1 - r0] * inv;
+            const int w0 = pc.norm == 1 ? h * hd : 0;
+            a *= qn[w0 + l0] * inv; c *= qn[w0 + l1] * inv;
         }
         q[i0 * B + b] = a * cs - c * sn; q[i1 * B + b] = a * sn + c * cs;
     }

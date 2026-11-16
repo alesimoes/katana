@@ -175,9 +175,51 @@ com `<think>\n`; ferramentas em XML (`<function=..><parameter=..>`).
   60 gerados): GPU+cache de especialistas: prompt token a token 15,2 tok/s, geracao 14,6-18,8 tok/s;
   prompt em lote na CPU 15,4-17,6 tok/s. So CPU (`KATANA_CPU=1`): ~8-10 tok/s de geracao, prompt
   10-14 tok/s. Especialistas: ~46% dos usos na VRAM.
-- Falta: grafo completo na GPU (DeltaNet e atencao com portao; kernels em `tools/vkdelta/`),
-  Vulkan (hoje so OpenCL no mv_host), especialistas na GPU no prompt em lote, forma em blocos do
-  DeltaNet, `katana pack` nao testado para este modelo, cache KV aloca as 40 camadas (so 10 usam).
+- Falta (OpenCL): grafo completo na GPU; `katana pack` nao testado para este modelo; cache KV da
+  CPU aloca as 40 camadas (so 10 usam).
+
+### Grafo completo em Vulkan (2026-11-16)
+
+Com `KATANA_BACKEND=vulkan` o qwen35moe roda inteiro na GPU (`vkq_setup`, `vk_qn_forward_1`,
+`vk_qn_forward_n`); o OpenCL continua no modo hibrido. `KATANA_VK_QN=0` volta ao hibrido no Vulkan.
+- Pesos densos sobem pelo mesmo `mla_gpu_upload` (attn_q fica com q e portao intercalados: os
+  kernels leem q com passo 2*hd por cabeca). alpha/beta viram uma matriz float [a | b] por camada.
+- Kernels novos em `vk/shaders/` (vindos de `tools/vkdelta/`): `dn_step` (posicao do meta; posicao
+  0 trata S e anel como zero, nao precisa zerar), `dn_prep`, `dn_cstate`, `dn_chunk`, `dn_state`
+  (com `pos0`; S como operando em duas partes fp16, alta + resto: o erro do estado no lote caiu ~10x
+  nas camadas do meio), `dn_norm`; `qn_gate` (portao da atencao no lote), `moe_gath`/`moe_scat`
+  (MoE em lote). `att1f` e `qkv_post` ganharam `nrot` (RoPE parcial neox: pares (i, i+nrot/2), dims
+  >= nrot nao giram) e `qst` (passo de q por cabeca); `att1f` tambem `gate` (saida * sigmoide do
+  portao, aplicado por pedaco, pois e linear). `mm.comp` ganhou `woff` (deslocamento dos pesos:
+  especialista numa vaga). Mapa grupo -> cabeca `kmap` = `KATANA_DN_TILE` (padrao h % 16).
+- Um token: atencao/DeltaNet na GPU; MoE como o `vk_forward_moe` (roteador na CPU, quentes nas
+  vagas, frios na CPU), agora com o compartilhado na GPU (linha K de `vkm.bt`, peso = portao
+  sigmoide). Uma leitura de 8 KB por camada.
+- Lote (ate 256 por passada): produtos em `mm.comp`, DeltaNet em blocos de 64, atencao
+  `qkv_post` + `att_flash` (hd 256, grupo 8) + `qn_gate`. MoE: o residual desce (norma e roteamento
+  exatos na CPU); compartilhado e cada vaga quente rodam na GPU sobre as colunas dos seus tokens;
+  frios na CPU (blocos de 16 tokens) e sobem somados. `KATANA_QN_PROF=1` mostra o perfil;
+  `KATANA_QN_DNSTEP=1` faz a recorrencia token a token (fp32) dentro do lote (conferencia).
+- VRAM (4 GB, ctx 4096): densos 1,9 GB + estado/cache/lote ~0,2 GB; o resto vira 18-20 vagas por
+  camada.
+- Correcao: `qn_batch` nao pode mandar o prompt para a CPU com o grafo Vulkan ligado (o estado vive
+  na VRAM; o `vkcheck` token a token caia nesse caminho).
+- Validacao: `selftest` (ctx 512): token a token x CPU exata 0,0003-0,0004; lote 0,06-0,23 conforme a
+  rodada (maior |logit| 9,8; fp16 nos produtos de 40 camadas e roteamento top-8 sensivel a isso; com
+  todos os especialistas do lote na CPU fica 0,15, entao nao e o caminho das vagas). O teste tolera 3%
+  do maior logit no lote deste modelo (o limite fixo de 0,05 valia para modelos densos). Medido camada a
+  camada (lote x token a token, ultimo token): erro relativo ~4e-4 na camada 0 (arredondamento fp16
+  da ativacao) crescendo devagar, sem salto em camada nenhuma. `vkcheck` 200 tokens: 20 proximos
+  gulosos iguais (diferenca 0,15); 600 tokens: diferenca 0,42-0,46 (maior |logit| 15,6), divergencia
+  no 8o token gerado; com `KATANA_QN_DNSTEP=1` a diferenca fica 0,42 (o DeltaNet em blocos nao e a
+  fonte principal; o resto e fp16 dos produtos e a mistura GPU/CPU dos especialistas).
+  `chat` "17 vezes 23" -> 391.
+- Medida indicativa (bench 256+64, alternado, rodada sem carga externa): Vulkan prompt 82,7 tok/s,
+  geracao 25,2-25,5; OpenCL hibrido prompt 27,3-27,5, geracao 18,0-18,7. No lote, 2,7 de 3,1 s
+  por passada sao os especialistas frios na CPU (~65% dos pares com prompt aleatorio).
+- Proximos: frios do lote na GPU (subir os especialistas usados por varios tokens do lote numa
+  area temporaria), agrupar pares por especialista na CPU, roteador na GPU para gravar o grafo de
+  um token.
 - Agente validado: pergunta sobre o kernel Linux -> `web_search` e `web_fetch` chamados em XML,
   convertidos para o JSON de argumentos, resposta "7.3.4" citando kernel.org. Velocidade no agente
   8-11 tok/s, caindo a ~2 tok/s numa rodada (11535 trocas de especialistas: o calor troca demais

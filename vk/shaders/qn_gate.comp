@@ -1,0 +1,16 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+/* atencao com portao, lote: saida da atencao (fp16, o[(h*hd+i)*B + b]) vezes sigmoide do portao, que vem da
+   projecao q intercalada por cabeca (fp32, qg[(h*2hd + hd + i)*B + b]) */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer O { float16_t o[]; };
+layout(std430, binding = 1) readonly buffer QG { float qg[]; };
+layout(push_constant) uniform P { int hd, nh, B; } pc;
+void main() {
+    const int g = int(gl_GlobalInvocationID.x), B = pc.B;
+    if (g >= pc.nh * pc.hd * B) return;
+    const int b = g % B, r = g / B, h = r / pc.hd, i = r % pc.hd;
+    const float z = qg[(h * 2 * pc.hd + pc.hd + i) * B + b];
+    o[g] = float16_t(float(o[g]) / (1.0 + exp(-z)));
+}

@@ -1,0 +1,15 @@
+#version 450
+/* MoE em lote: soma pesada da saida de um especialista (ou do compartilhado) no residual.
+   x[i*B + tok_j] += w_j * y[i*n + j], (tok_j, w_j em bits) = meta[moff + 2j], meta[moff + 2j + 1]. Num lancamento cada
+   token aparece no maximo uma vez (sem corrida). */
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer Y { float y[]; };
+layout(std430, binding = 2) readonly buffer M { uint meta[]; };
+layout(push_constant) uniform P { int d, B, n, moff; } pc;
+void main() {
+    const int g = int(gl_GlobalInvocationID.x);
+    if (g >= pc.d * pc.n) return;
+    const int i = g / pc.n, j = g % pc.n;
+    x[i * pc.B + int(meta[pc.moff + 2 * j])] += uintBitsToFloat(meta[pc.moff + 2 * j + 1]) * y[g];
+}

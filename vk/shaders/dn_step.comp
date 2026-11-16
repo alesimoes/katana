@@ -1,0 +1,94 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+/* Gated DeltaNet, geracao (1 token) num lancamento so: um grupo de 512 threads por cabeca de valor h.
+   Fase 1: conv1d causal (janela 4, anel de 4 entradas por canal indexado pela posicao) + SiLU nos 384 canais que
+   a cabeca usa (q e k do seu grupo, v da cabeca); normas L2 de q e k; q escalado por 1/sqrt(128); beta e g.
+   Fase 2: thread = (coluna j, fatia p de 32 linhas i); le as 32 entradas de S[h][i][j] uma vez, aplica o
+   decaimento, soma parciais de S^T k e S^T q, junta as 4 fatias e grava S atualizado; o_j = (S^T q)_j decaido +
+   delta_j*(k.q).  Fase 3: norma RMS da cabeca com peso, vezes SiLU(z).
+   Anel da convolucao: cs[slot*CH + c], slot = posicao & 3; so o dono do canal grava a entrada atual (canais de q/k
+   sao lidos por 2 cabecas; as leituras usam so as posicoes anteriores, entao nao ha corrida).
+   pr = [ssm_a (NV) | dt_bias (NV) | peso da norma (128)], ssm_a = -exp(A_log).  ab = [a (NV) | b (NV)].
+   kmap 0: cabeca h usa o grupo q/k h/(NV/NK); kmap 1: grupo h%NK. */
+layout(local_size_x = 512) in;
+layout(constant_id = 0) const int NK = 16;
+layout(constant_id = 1) const int NV = 32;
+const int D = 128;
+const int CH = 2 * NK * D + NV * D;
+layout(std430, binding = 0) readonly buffer QKV { float qkv[]; };
+layout(std430, binding = 1) readonly buffer Z { float z[]; };
+layout(std430, binding = 2) readonly buffer AB { float ab[]; };
+layout(std430, binding = 3) readonly buffer CW { float cw[]; };
+layout(std430, binding = 4) readonly buffer PR { float pr[]; };
+layout(std430, binding = 5) buffer CS { float cs[]; };
+layout(std430, binding = 6) buffer ST { float st[]; };
+layout(std430, binding = 7) writeonly buffer O { float o[]; };
+layout(std430, binding = 8) readonly buffer MT { int meta[]; };   /* meta[0] = posicao do token */
+layout(push_constant) uniform P { int pos_unused, kmap; float eps_l2, eps_rms; } pc;
+shared float qs[D], ks[D], vs[D];
+shared float red[16];
+shared float pk[4 * D], pq[4 * D];
+shared float par[2];
+void main() {
+    const int h = int(gl_WorkGroupID.x), t = int(gl_LocalInvocationID.x);
+    const int sg = int(gl_SubgroupID), lane = int(gl_SubgroupInvocationID);
+    const int R = NV / NK;
+    const int g = pc.kmap == 0 ? h / R : h % NK;
+    const bool own = pc.kmap == 0 ? (h % R) == 0 : h < NK;
+    const int pos = meta[0];   /* posicao 0: anel e S valem zero (conversa nova) */
+    if (t < 3 * D) {
+        const int part = t / D, i = t % D;
+        const int c = part == 0 ? g * D + i : (part == 1 ? NK * D + g * D + i : 2 * NK * D + h * D + i);
+        const float x = qkv[c];
+        float acc = cw[c * 4 + 3] * x;
+        for (int tau = 1; tau <= 3; tau++) if (pos - tau >= 0) acc += cw[c * 4 + 3 - tau] * cs[((pos - tau) & 3) * CH + c];
+        const float y = acc / (1.0 + exp(-acc));
+        if (part == 2 || own) cs[(pos & 3) * CH + c] = x;
+        const float sq = subgroupAdd(part < 2 ? y * y : 0.0);
+        if (lane == 0) red[sg] = sq;
+        if (part == 0) qs[i] = y; else if (part == 1) ks[i] = y; else vs[i] = y;
+    }
+    if (t == 0) {
+        const float a = ab[h] + pr[NV + h], b = ab[NV + h];
+        const float sp = a > 20.0 ? a : log(1.0 + exp(a));
+        par[0] = 1.0 / (1.0 + exp(-b));
+        par[1] = exp(pr[h] * sp);
+    }
+    barrier();
+    if (t < 2 * D) {
+        const float ss = t < D ? red[0] + red[1] + red[2] + red[3] : red[4] + red[5] + red[6] + red[7];
+        const float inv = 1.0 / sqrt(ss + pc.eps_l2);
+        if (t < D) qs[t] *= inv * 0.08838834764831845; else ks[t - D] *= inv;
+    }
+    barrier();
+    if (t < D) {
+        const float kq = subgroupAdd(qs[t] * ks[t]);
+        if (lane == 0) red[8 + sg] = kq;
+    }
+    const int j = t & (D - 1), p = t >> 7, i0 = p * 32;
+    const int base = h * D * D + i0 * D + j;
+    const float eg = par[1];
+    float s[32];
+    float sk = 0.0, sqq = 0.0;
+    for (int r = 0; r < 32; r++) {
+        s[r] = pos == 0 ? 0.0 : st[base + r * D] * eg;
+        sk += s[r] * ks[i0 + r];
+        sqq += s[r] * qs[i0 + r];
+    }
+    pk[p * D + j] = sk; pq[p * D + j] = sqq;
+    barrier();
+    const float kq = red[8] + red[9] + red[10] + red[11];
+    const float d = par[0] * (vs[j] - (pk[j] + pk[D + j] + pk[2 * D + j] + pk[3 * D + j]));
+    const float oj = pq[j] + pq[D + j] + pq[2 * D + j] + pq[3 * D + j] + d * kq;
+    for (int r = 0; r < 32; r++) st[base + r * D] = s[r] + ks[i0 + r] * d;
+    if (t < D) {
+        const float s2 = subgroupAdd(oj * oj);
+        if (lane == 0) red[12 + sg] = s2;
+    }
+    barrier();
+    if (t < D) {
+        const float ms = (red[12] + red[13] + red[14] + red[15]) / float(D);
+        const float zz = z[h * D + j];
+        o[h * D + j] = oj / sqrt(ms + pc.eps_rms) * pr[2 * NV + j] * (zz / (1.0 + exp(-zz)));
+    }
+}
