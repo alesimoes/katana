@@ -29,6 +29,9 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#ifndef _WIN32
+#define _putenv(s) putenv((char *)(s))
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
