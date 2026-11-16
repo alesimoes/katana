@@ -54,6 +54,7 @@
 /* camada Vulkan (backend opcional, KATANA_BACKEND=vulkan); o kvk.h deixa as macros G e F, removidas aqui */
 #define KVK_IMPL
 #include "vk/kvk.h"
+#include "qtabs.h"
 #undef G
 #undef F
 #include "vk/shaders/mv_f32.h"
@@ -61,6 +62,7 @@
 #include "vk/shaders/mv_q4k.h"
 #include "vk/shaders/mv_q5k.h"
 #include "vk/shaders/mv_q6k.h"
+#include "vk/shaders/mv_q2k.h"
 #include "vk/shaders/rms_wg.h"
 #include "vk/shaders/moe_sum.h"
 #include "vk/shaders/att1f_kv32.h"
@@ -485,7 +487,10 @@ static float f16_to_f32(uint16_t h) {
 }
 
 /* tipos de tensor do GGUF */
-enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q5_0 = 6, T_Q8_0 = 8, T_Q3_K = 11, T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14 };
+enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q4_1 = 3, T_Q5_0 = 6, T_Q5_1 = 7, T_Q8_0 = 8, T_Q2_K = 10, T_Q3_K = 11,
+       T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14, T_IQ2_XXS = 16, T_IQ2_XS = 17, T_IQ3_XXS = 18, T_IQ1_S = 19,
+       T_IQ4_NL = 20, T_IQ3_S = 21, T_IQ2_S = 22, T_IQ4_XS = 23, T_IQ1_M = 29, T_BF16 = 30, T_TQ1_0 = 34,
+       T_TQ2_0 = 35, T_MXFP4 = 39 };
 
 /* bytes ocupados por n elementos (0 = tipo nao suportado ou n desalinhado) */
 static size_t qbytes(uint32_t type, size_t n) {
@@ -499,6 +504,22 @@ static size_t qbytes(uint32_t type, size_t n) {
         case T_Q5_K: return n % 256 ? 0 : n / 256 * 176;  /* f16 d, f16 dmin, 12 escalas, 32 bits altos, 128 nibbles */
         case T_Q4_K: return n % 256 ? 0 : n / 256 * 144;  /* f16 d, f16 dmin, 12 escalas, 128 nibbles */
         case T_Q6_K: return n % 256 ? 0 : n / 256 * 210;  /* 128 ql, 64 qh, 16 escalas, f16 d */
+        case T_BF16: return n * 2;
+        case T_Q4_1: return n % 32 ? 0 : n / 32 * 20;     /* f16 d, f16 m, 32 nibbles */
+        case T_Q5_1: return n % 32 ? 0 : n / 32 * 24;     /* f16 d, f16 m, 32 bits altos, 32 nibbles */
+        case T_IQ4_NL: return n % 32 ? 0 : n / 32 * 18;   /* f16 d, 32 nibbles (indices da tabela nao linear) */
+        case T_MXFP4: return n % 32 ? 0 : n / 32 * 17;    /* expoente E8M0, 32 valores E2M1 */
+        case T_Q2_K: return n % 256 ? 0 : n / 256 * 84;   /* 16 escalas/minimos, 64 de 2 bits, f16 d, f16 dmin */
+        case T_IQ4_XS: return n % 256 ? 0 : n / 256 * 136;  /* f16 d, escalas altas, 4 escalas baixas, 128 nibbles */
+        case T_IQ2_XXS: return n % 256 ? 0 : n / 256 * 66;
+        case T_IQ2_XS: return n % 256 ? 0 : n / 256 * 74;
+        case T_IQ2_S: return n % 256 ? 0 : n / 256 * 82;
+        case T_IQ3_XXS: return n % 256 ? 0 : n / 256 * 98;
+        case T_IQ3_S: return n % 256 ? 0 : n / 256 * 110;
+        case T_IQ1_S: return n % 256 ? 0 : n / 256 * 50;
+        case T_IQ1_M: return n % 256 ? 0 : n / 256 * 56;
+        case T_TQ1_0: return n % 256 ? 0 : n / 256 * 54;
+        case T_TQ2_0: return n % 256 ? 0 : n / 256 * 66;
         default:     return 0;
     }
 }
@@ -533,7 +554,241 @@ static void q3k_unpack(const uint8_t *src, int8_t *val, int8_t *sc) {
     }
 }
 
+/* elementos por bloco de um tipo (1 = sem blocos) */
+static int qunit(uint32_t type) {
+    switch (type) {
+        case T_F32: case T_F16: case T_BF16: return 1;
+        case T_Q4_0: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q8_0: case T_IQ4_NL: case T_MXFP4: return 32;
+        default: return 256;
+    }
+}
+
+static const int8_t q_iq4nl_vals[16] = { -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113 };
+/* valores E2M1 dobrados (0, 0.5, 1, 1.5, 2, 3, 4, 6 vezes 2), com sinal no bit 3 */
+static const int8_t q_fp4_vals[16] = { 0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12 };
+
+/* escala E8M0 dividida por 2 (compensa os valores E2M1 dobrados): 2^(e-128), subnormal para e < 2 */
+static float e8m0_half(uint8_t e) {
+    uint32_t b = e < 2 ? 0x00200000u << e : (uint32_t)(e - 1) << 23;
+    float f; memcpy(&f, &b, 4);
+    return f;
+}
+static float bf16_to_f32(uint16_t h) { uint32_t u = (uint32_t)h << 16; float f; memcpy(&f, &u, 4); return f; }
+static float h2f(const uint8_t *p) { uint16_t h; memcpy(&h, p, 2); return f16_to_f32(h); }
+
+/* escala de 6 bits do sub-bloco ib (0..7) de um bloco IQ4_XS (ja sem o deslocamento de 32) */
+static int iq4xs_scale(const uint8_t *blk, int ib) {
+    uint16_t sh; memcpy(&sh, blk + 2, 2);
+    return (((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4)) - 32;
+}
+
+/* tipos acrescentados depois (formatos com tabela, IQ, ternarios, BF16); 1 = tratado */
+static int dequant_ext(uint32_t type, const uint8_t *src, float *out, size_t n) {
+    static const uint8_t kmask[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
+    switch (type) {
+    case T_BF16:
+        for (size_t j = 0; j < n; j++) { uint16_t h; memcpy(&h, src + j * 2, 2); out[j] = bf16_to_f32(h); }
+        return 1;
+    case T_Q4_1:
+        for (size_t b = 0; b < n / 32; b++, src += 20, out += 32) {
+            const float d = h2f(src), m = h2f(src + 2);
+            for (int j = 0; j < 16; j++) { out[j] = (src[4 + j] & 0xF) * d + m; out[j + 16] = (src[4 + j] >> 4) * d + m; }
+        }
+        return 1;
+    case T_Q5_1:
+        for (size_t b = 0; b < n / 32; b++, src += 24, out += 32) {
+            const float d = h2f(src), m = h2f(src + 2);
+            uint32_t qh; memcpy(&qh, src + 4, 4);
+            const uint8_t *qs = src + 8;
+            for (int j = 0; j < 16; j++) {
+                out[j] = (int)((qs[j] & 0xF) | (((qh >> j) & 1) << 4)) * d + m;
+                out[j + 16] = (int)((qs[j] >> 4) | (((qh >> (j + 16)) & 1) << 4)) * d + m;
+            }
+        }
+        return 1;
+    case T_IQ4_NL:
+        for (size_t b = 0; b < n / 32; b++, src += 18, out += 32) {
+            const float d = h2f(src);
+            for (int j = 0; j < 16; j++) { out[j] = d * q_iq4nl_vals[src[2 + j] & 0xF]; out[j + 16] = d * q_iq4nl_vals[src[2 + j] >> 4]; }
+        }
+        return 1;
+    case T_MXFP4:
+        for (size_t b = 0; b < n / 32; b++, src += 17, out += 32) {
+            const float d = e8m0_half(src[0]);
+            for (int j = 0; j < 16; j++) { out[j] = q_fp4_vals[src[1 + j] & 0xF] * d; out[j + 16] = q_fp4_vals[src[1 + j] >> 4] * d; }
+        }
+        return 1;
+    case T_IQ4_XS:
+        for (size_t b = 0; b < n / 256; b++, src += 136) {
+            const float d = h2f(src);
+            const uint8_t *qs = src + 8;
+            for (int ib = 0; ib < 8; ib++, qs += 16, out += 32) {
+                const float dl = d * iq4xs_scale(src, ib);
+                for (int j = 0; j < 16; j++) { out[j] = dl * q_iq4nl_vals[qs[j] & 0xF]; out[j + 16] = dl * q_iq4nl_vals[qs[j] >> 4]; }
+            }
+        }
+        return 1;
+    case T_Q2_K:
+        for (size_t b = 0; b < n / 256; b++, src += 84) {
+            const uint8_t *sc = src, *q = src + 16;
+            const float d = h2f(src + 80), dmin = h2f(src + 82);
+            int is = 0;
+            for (int c = 0; c < 2; c++, q += 32)
+                for (int shift = 0; shift < 8; shift += 2)
+                    for (int h = 0; h < 2; h++) {
+                        const uint8_t s8 = sc[is++];
+                        const float dl = d * (s8 & 0xF), ml = dmin * (s8 >> 4);
+                        for (int l = 0; l < 16; l++) *out++ = dl * ((q[l + 16 * h] >> shift) & 3) - ml;
+                    }
+        }
+        return 1;
+    case T_IQ2_XXS:
+        for (size_t b = 0; b < n / 256; b++, src += 66) {
+            const float d = h2f(src);
+            for (int ib = 0; ib < 8; ib++) {
+                uint32_t a[2]; memcpy(a, src + 2 + 8 * ib, 8);
+                const float db = d * (0.5f + (a[1] >> 28)) * 0.25f;
+                for (int l = 0; l < 4; l++, out += 8) {
+                    const uint8_t *g = (const uint8_t *)(q_iq2xxs_grid + ((const uint8_t *)a)[l]);
+                    const uint8_t sg = q_ksigns[(a[1] >> 7 * l) & 127];
+                    for (int j = 0; j < 8; j++) out[j] = db * g[j] * (sg & kmask[j] ? -1.f : 1.f);
+                }
+            }
+        }
+        return 1;
+    case T_IQ2_XS:
+        for (size_t b = 0; b < n / 256; b++, src += 74) {
+            const float d = h2f(src);
+            const uint8_t *scl = src + 66;
+            for (int ib = 0; ib < 8; ib++) {
+                const float db[2] = { d * (0.5f + (scl[ib] & 0xF)) * 0.25f, d * (0.5f + (scl[ib] >> 4)) * 0.25f };
+                for (int l = 0; l < 4; l++, out += 8) {
+                    uint16_t q; memcpy(&q, src + 2 + 2 * (4 * ib + l), 2);
+                    const uint8_t *g = (const uint8_t *)(q_iq2xs_grid + (q & 511));
+                    const uint8_t sg = q_ksigns[q >> 9];
+                    for (int j = 0; j < 8; j++) out[j] = db[l / 2] * g[j] * (sg & kmask[j] ? -1.f : 1.f);
+                }
+            }
+        }
+        return 1;
+    case T_IQ2_S:
+        for (size_t b = 0; b < n / 256; b++, src += 82) {
+            const float d = h2f(src);
+            const uint8_t *qs = src + 2, *sgn = src + 2 + 32, *qh = src + 66, *scl = src + 74;
+            for (int ib = 0; ib < 8; ib++, qs += 4, sgn += 4) {
+                const float db[2] = { d * (0.5f + (scl[ib] & 0xF)) * 0.25f, d * (0.5f + (scl[ib] >> 4)) * 0.25f };
+                for (int l = 0; l < 4; l++, out += 8) {
+                    const uint8_t *g = (const uint8_t *)(q_iq2s_grid + (qs[l] | ((qh[ib] << (8 - 2 * l)) & 0x300)));
+                    for (int j = 0; j < 8; j++) out[j] = db[l / 2] * g[j] * (sgn[l] & kmask[j] ? -1.f : 1.f);
+                }
+            }
+        }
+        return 1;
+    case T_IQ3_XXS:
+        for (size_t b = 0; b < n / 256; b++, src += 98) {
+            const float d = h2f(src);
+            const uint8_t *qs = src + 2, *ss = src + 2 + 64;
+            for (int ib = 0; ib < 8; ib++, qs += 8) {
+                uint32_t a; memcpy(&a, ss + 4 * ib, 4);
+                const float db = d * (0.5f + (a >> 28)) * 0.5f;
+                for (int l = 0; l < 4; l++, out += 8) {
+                    const uint8_t sg = q_ksigns[(a >> 7 * l) & 127];
+                    const uint8_t *g1 = (const uint8_t *)(q_iq3xxs_grid + qs[2 * l]), *g2 = (const uint8_t *)(q_iq3xxs_grid + qs[2 * l + 1]);
+                    for (int j = 0; j < 4; j++) {
+                        out[j] = db * g1[j] * (sg & kmask[j] ? -1.f : 1.f);
+                        out[j + 4] = db * g2[j] * (sg & kmask[j + 4] ? -1.f : 1.f);
+                    }
+                }
+            }
+        }
+        return 1;
+    case T_IQ3_S:
+        for (size_t b = 0; b < n / 256; b++, src += 110) {
+            const float d = h2f(src);
+            const uint8_t *qs = src + 2, *qh = src + 66, *sgn = src + 74, *scl = src + 106;
+            for (int ib = 0; ib < 8; ib += 2) {
+                for (int half = 0; half < 2; half++, qs += 8, sgn += 4) {
+                    const float db = d * (1 + 2 * (half ? scl[ib / 2] >> 4 : scl[ib / 2] & 0xF));
+                    for (int l = 0; l < 4; l++, out += 8) {
+                        const uint8_t *g1 = (const uint8_t *)(q_iq3s_grid + (qs[2 * l] | ((qh[half] << (8 - 2 * l)) & 256)));
+                        const uint8_t *g2 = (const uint8_t *)(q_iq3s_grid + (qs[2 * l + 1] | ((qh[half] << (7 - 2 * l)) & 256)));
+                        for (int j = 0; j < 4; j++) {
+                            out[j] = db * g1[j] * (sgn[l] & kmask[j] ? -1.f : 1.f);
+                            out[j + 4] = db * g2[j] * (sgn[l] & kmask[j + 4] ? -1.f : 1.f);
+                        }
+                    }
+                }
+                qh += 2;
+            }
+        }
+        return 1;
+    case T_IQ1_S:
+        for (size_t b = 0; b < n / 256; b++, src += 50) {
+            const float d = h2f(src);
+            const uint8_t *qs = src + 2;
+            for (int ib = 0; ib < 8; ib++, qs += 4) {
+                uint16_t qh; memcpy(&qh, src + 34 + 2 * ib, 2);
+                const float dl = d * (2 * ((qh >> 12) & 7) + 1);
+                const float delta = qh & 0x8000 ? -0.125f : 0.125f;
+                for (int l = 0; l < 4; l++, out += 8) {
+                    const int8_t *g = (const int8_t *)(q_iq1s_grid + (qs[l] | (((qh >> 3 * l) & 7) << 8)));
+                    for (int j = 0; j < 8; j++) out[j] = dl * (g[j] + delta);
+                }
+            }
+        }
+        return 1;
+    case T_IQ1_M:
+        for (size_t b = 0; b < n / 256; b++, src += 56) {
+            const uint8_t *qs = src, *qh = src + 32;
+            uint16_t sc[4]; memcpy(sc, src + 48, 8);
+            const uint16_t hs = (uint16_t)((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000));
+            const float d = f16_to_f32(hs);
+            for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
+                const float dl1 = d * (2 * ((sc[ib / 2] >> (6 * (ib % 2) + 0)) & 7) + 1);
+                const float dl2 = d * (2 * ((sc[ib / 2] >> (6 * (ib % 2) + 3)) & 7) + 1);
+                const int idx[4] = { qs[0] | ((qh[0] << 8) & 0x700), qs[1] | ((qh[0] << 4) & 0x700),
+                                     qs[2] | ((qh[1] << 8) & 0x700), qs[3] | ((qh[1] << 4) & 0x700) };
+                const float delta[4] = { qh[0] & 0x08 ? -0.125f : 0.125f, qh[0] & 0x80 ? -0.125f : 0.125f,
+                                         qh[1] & 0x08 ? -0.125f : 0.125f, qh[1] & 0x80 ? -0.125f : 0.125f };
+                for (int l = 0; l < 4; l++, out += 8) {
+                    const int8_t *g = (const int8_t *)(q_iq1s_grid + idx[l]);
+                    const float dl = l < 2 ? dl1 : dl2;
+                    for (int j = 0; j < 8; j++) out[j] = dl * (g[j] + delta[l]);
+                }
+            }
+        }
+        return 1;
+    case T_TQ1_0: {
+        static const uint8_t pow3[6] = { 1, 3, 9, 27, 81, 243 };
+        for (size_t b = 0; b < n / 256; b++, src += 54) {
+            const float d = h2f(src + 52);
+            const uint8_t *qs = src, *qh = src + 48;
+            for (int j = 0; j < 32; j += 32)
+                for (int k = 0; k < 5; k++)
+                    for (int m = 0; m < 32; m++) { const uint8_t q = (uint8_t)(qs[j + m] * pow3[k]); *out++ = (float)((((uint16_t)q * 3) >> 8) - 1) * d; }
+            for (int j = 32; j < 48; j += 16)
+                for (int k = 0; k < 5; k++)
+                    for (int m = 0; m < 16; m++) { const uint8_t q = (uint8_t)(qs[j + m] * pow3[k]); *out++ = (float)((((uint16_t)q * 3) >> 8) - 1) * d; }
+            for (int k = 0; k < 4; k++)
+                for (int j = 0; j < 4; j++) { const uint8_t q = (uint8_t)(qh[j] * pow3[k]); *out++ = (float)((((uint16_t)q * 3) >> 8) - 1) * d; }
+        }
+        return 1;
+    }
+    case T_TQ2_0:
+        for (size_t b = 0; b < n / 256; b++, src += 66) {
+            const float d = h2f(src + 64);
+            for (int j = 0; j < 64; j += 32)
+                for (int l = 0; l < 4; l++)
+                    for (int m = 0; m < 32; m++) *out++ = (float)(((src[j + m] >> (l * 2)) & 3) - 1) * d;
+        }
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static void dequant(uint32_t type, const uint8_t *src, float *out, size_t n) {
+    if (dequant_ext(type, src, out, n)) return;
     if (type == T_Q4_0) {
         for (size_t b = 0; b < n / 32; b++, src += 18, out += 32) {
             uint16_t h; memcpy(&h, src, 2);
@@ -640,7 +895,7 @@ static float *get_tensor(const Tensors *ts, const char *name, size_t expect, int
         float *out = xalloc(n, sizeof(float));
         size_t bytes = qbytes(t->type, n);
         if (!bytes) {
-            fprintf(stderr, "Tensor %s: quantizacao tipo %u nao suportada (use F32, F16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K ou Q6_K)\n", name, t->type);
+            fprintf(stderr, "Tensor %s: quantizacao tipo %u nao suportada (use F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K..Q6_K, IQ1..IQ4, TQ1_0, TQ2_0 ou MXFP4)\n", name, t->type);
             exit(1);
         }
         if (src + bytes > ts->end) die("tensor fora do arquivo");
@@ -660,7 +915,7 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
     for (uint64_t i = 0; i < ts->n; i++) {
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
-        if (t->type == T_F32 || t->type == T_F16) break;
+        if (t->type == T_F32 || t->type == T_F16 || t->type == T_BF16) break;
         size_t n = 1, stride = qbytes(t->type, cols);
         if (!stride) break;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
@@ -1349,6 +1604,45 @@ static __m256 mul16_i8(__m128i v, const float *x) {
 }
 #endif
 
+/* linha de um tipo de 4 bits com tabela (MXFP4, IQ4_NL, IQ4_XS, Q4_1) vezes vetor float.
+   Os indices de 4 bits viram int8 por pshufb na tabela do tipo e a escala entra por bloco de 32. */
+static float dot_lut4(uint32_t type, const uint8_t *row, const float *x, int cols) {
+#ifdef __AVX2__
+    static const int8_t ident[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    const int8_t *tab = type == T_MXFP4 ? q_fp4_vals : type == T_Q4_1 ? ident : q_iq4nl_vals;
+    const __m128i lut = _mm_loadu_si128((const __m128i *)tab), m4 = _mm_set1_epi8(15);
+    __m256 acc = _mm256_setzero_ps();
+    float corr = 0.0f;
+    for (int b = 0; b < cols / 32; b++, x += 32) {
+        const uint8_t *qs;
+        float d;
+        if (type == T_MXFP4) { d = e8m0_half(row[17 * b]); qs = row + 17 * b + 1; }
+        else if (type == T_IQ4_NL) { d = h2f(row + 18 * b); qs = row + 18 * b + 2; }
+        else if (type == T_Q4_1) {
+            const uint8_t *blk = row + 20 * b;
+            d = h2f(blk); qs = blk + 4;
+            const __m256 s8 = _mm256_add_ps(_mm256_add_ps(_mm256_loadu_ps(x), _mm256_loadu_ps(x + 8)),
+                                            _mm256_add_ps(_mm256_loadu_ps(x + 16), _mm256_loadu_ps(x + 24)));
+            corr += h2f(blk + 2) * hsum256(s8);
+        } else {    /* IQ4_XS: 8 sub-blocos de 32 por bloco de 256 */
+            const uint8_t *blk = row + 136 * (b / 8);
+            d = h2f(blk) * iq4xs_scale(blk, b % 8); qs = blk + 8 + 16 * (b % 8);
+        }
+        const __m128i v = _mm_loadu_si128((const __m128i *)qs);
+        const __m128i lo = _mm_shuffle_epi8(lut, _mm_and_si128(v, m4));
+        const __m128i hi = _mm_shuffle_epi8(lut, _mm_and_si128(_mm_srli_epi16(v, 4), m4));
+        acc = _mm256_fmadd_ps(_mm256_add_ps(mul16_i8(lo, x), mul16_i8(hi, x + 16)), _mm256_set1_ps(d), acc);
+    }
+    return hsum256(acc) + corr;
+#else
+    const int unit = qunit(type);
+    const size_t ub = qbytes(type, unit);
+    float tmp[256], total = 0.0f;
+    for (int b = 0; b < cols / unit; b++) { dequant(type, row + b * ub, tmp, unit); total += dot(tmp, x + b * unit, unit); }
+    return total;
+#endif
+}
+
 /* linha Q4_K vezes vetor float. Cada peso vale d*sc*q - dmin*m, entao por sub-bloco de 32:
    soma = d*sc * SUM(q_i*x_i) - dmin*m * SUM(x_i); sx traz SUM(x_i) ja calculado por sub-bloco */
 static float dot_q4k(const uint8_t *row, const float *x, const float *sx, int cols) {
@@ -1790,8 +2084,9 @@ static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, in
     if (W->type == T_Q4_K) return dot_q4k(row, x, sx, cols);
     if (W->type == T_Q6_K) return dot_q6k(row, x, cols);
     if (W->type == T_Q8_0) return dot_q8(row, x, cols);
-    {   /* demais tipos (Q4_0, Q3_K, Q5_K): dequantiza cada bloco e multiplica em float */
-        const int unit = W->type == T_Q4_0 || W->type == T_Q5_0 ? 32 : 256;
+    if (W->type == T_MXFP4 || W->type == T_IQ4_NL || W->type == T_IQ4_XS || W->type == T_Q4_1) return dot_lut4(W->type, row, x, cols);
+    {   /* demais tipos (Q4_0, Q5_x, Q2_K, Q3_K, Q5_K, IQ1..IQ3, TQ): dequantiza cada bloco e multiplica em float */
+        const int unit = qunit(W->type);
         const size_t ub = qbytes(W->type, unit);
         float tmp[256], total = 0.0f;
         for (int b = 0; b < cols / unit; b++) {
@@ -2561,13 +2856,24 @@ static int gpu_build_all(void) {
     return 1;
 }
 
-/* Especie do layout na VRAM. Q4_0 vira o layout de 8 bits e Q3_K o de 6 bits: as duas
-   conversoes sao exatas (os mesmos valores inteiros e escalas), so ocupam mais VRAM. */
+/* Especie do layout na VRAM. Q4_0, Q5_0, MXFP4, IQ4_NL e IQ4_XS viram o layout de 8 bits
+   (escala float por bloco de 32 + 32 int8) e Q3_K o de 6 bits: as conversoes sao exatas (os
+   mesmos valores inteiros e escalas; no IQ4_XS a escala do sub-bloco e d*(ls-32), exata em
+   float; no MXFP4 os valores E2M1 dobrados sao inteiros e a escala 2^(e-128) e float), so
+   ocupam mais VRAM. Q2_K sobe cru e tem kernel proprio (so no Vulkan). */
 static uint32_t gpu_kind(const Mat *W) {
     if (!W->q) return T_F32;
-    if (W->type == T_Q4_0 || W->type == T_Q5_0) return T_Q8_0;     /* sobem no layout de 8 bits, sem perda */
-    if (W->type == T_Q3_K) return T_Q6_K;
-    return W->type;
+    switch (W->type) {
+        case T_Q4_0: case T_Q5_0: case T_MXFP4: case T_IQ4_NL: case T_IQ4_XS: return T_Q8_0;
+        case T_Q3_K: return T_Q6_K;
+        default: return W->type;
+    }
+}
+
+/* a matriz tem layout de GPU? (as demais ficam na CPU: a camada que as usa roda na CPU) */
+static int gpu_has(const Mat *W) {
+    const uint32_t k = gpu_kind(W);
+    return k == T_F32 || k == T_Q8_0 || k == T_Q4_K || k == T_Q5_K || k == T_Q6_K || (k == T_Q2_K && gpu.vk);
 }
 
 static size_t gpu_wpr(const Mat *W, size_t cols) {
@@ -2576,6 +2882,7 @@ static size_t gpu_wpr(const Mat *W, size_t cols) {
         case T_Q4_K: return cols / 256 * 36;
         case T_Q5_K: return cols / 256 * 44;
         case T_Q6_K: return cols / 256 * 53;
+        case T_Q2_K: return cols / 256 * 21;
         default:     return cols / 32 * 9;
     }
 }
@@ -2604,6 +2911,37 @@ static void gpu_pack_row(const Mat *W, size_t r, size_t cols, uint32_t *o) {
     switch (W->type) {
     case T_Q4_K: memcpy(o, src, cols / 256 * 144); return;
     case T_Q5_K: memcpy(o, src, cols / 256 * 176); return;
+    case T_Q2_K: memcpy(o, src, cols / 256 * 84); return;
+    case T_Q5_0: case T_MXFP4: case T_IQ4_NL: case T_IQ4_XS: {   /* -> layout de 8 bits, exato */
+        const int unit = qunit(W->type);
+        const size_t ub = qbytes(W->type, unit);
+        for (size_t b = 0; b < cols / unit; b++, src += ub) {
+            for (int s = 0; s < unit / 32; s++, o += 9) {
+                int8_t q[32];
+                float d;
+                if (W->type == T_Q5_0) {
+                    d = h2f(src);
+                    uint32_t qh; memcpy(&qh, src + 2, 4);
+                    for (int j = 0; j < 16; j++) {
+                        q[j] = (int8_t)((int)((src[6 + j] & 0xF) | (((qh >> j) & 1) << 4)) - 16);
+                        q[j + 16] = (int8_t)((int)((src[6 + j] >> 4) | (((qh >> (j + 16)) & 1) << 4)) - 16);
+                    }
+                } else if (W->type == T_MXFP4) {
+                    d = e8m0_half(src[0]);
+                    for (int j = 0; j < 16; j++) { q[j] = q_fp4_vals[src[1 + j] & 0xF]; q[j + 16] = q_fp4_vals[src[1 + j] >> 4]; }
+                } else if (W->type == T_IQ4_NL) {
+                    d = h2f(src);
+                    for (int j = 0; j < 16; j++) { q[j] = q_iq4nl_vals[src[2 + j] & 0xF]; q[j + 16] = q_iq4nl_vals[src[2 + j] >> 4]; }
+                } else {
+                    const uint8_t *qs = src + 8 + 16 * s;
+                    d = h2f(src) * iq4xs_scale(src, s);
+                    for (int j = 0; j < 16; j++) { q[j] = q_iq4nl_vals[qs[j] & 0xF]; q[j + 16] = q_iq4nl_vals[qs[j] >> 4]; }
+                }
+                memcpy(o, &d, 4); memcpy(o + 1, q, 32);
+            }
+        }
+        return;
+    }
     case T_Q8_0:
         for (size_t b = 0; b < cols / 32; b++, src += 34, o += 9) {
             memcpy(&h, src, 2);
@@ -2617,19 +2955,6 @@ static void gpu_pack_row(const Mat *W, size_t r, size_t cols, uint32_t *o) {
             memcpy(&h, src, 2);
             float d = f16_to_f32(h);
             for (int j = 0; j < 16; j++) { v[j] = (int8_t)((src[2 + j] & 0xF) - 8); v[j + 16] = (int8_t)((src[2 + j] >> 4) - 8); }
-            memcpy(o, &d, 4); memcpy(o + 1, v, 32);
-        }
-        return;
-    case T_Q5_0:
-        for (size_t b = 0; b < cols / 32; b++, src += 22, o += 9) {
-            int8_t v[32];
-            uint32_t qh;
-            memcpy(&h, src, 2); memcpy(&qh, src + 2, 4);
-            float d = f16_to_f32(h);
-            for (int j = 0; j < 16; j++) {
-                v[j] = (int8_t)(((src[6 + j] & 0xF) | (((qh >> j) << 4) & 0x10)) - 16);
-                v[j + 16] = (int8_t)(((src[6 + j] >> 4) | ((qh >> (j + 12)) & 0x10)) - 16);
-            }
             memcpy(o, &d, 4); memcpy(o + 1, v, 32);
         }
         return;
@@ -2832,6 +3157,7 @@ static void *vk_wbuf(const uint32_t *host, size_t bytes);     /* Vulkan: buffer 
 static void gpu_upload_n(Mat **ms, int n, size_t rows, size_t cols, const char *name) {
     size_t bytes = ((rows + 127) & ~(size_t)127) * gpu_wpr(ms[0], cols) * 4 * n;
     gpu.n_total += n;
+    if (!gpu_has(ms[0])) return;        /* tipo sem kernel de GPU: fica na CPU */
     if (gpu.used + bytes > gpu_budget()) return;
     uint32_t *buf = shards.use ? shard_read(name, bytes) : NULL;
     if (buf) gpu.n_shard++;
@@ -2934,7 +3260,7 @@ static int host_moe_setup(Model *m) {
     for (int l = 0; l < NL; l++) {
         const Layer *L = &m->layers[l];
         if (!L->eg) continue;
-        if (!glu_pair(&L->eg[0], &L->eu[0])) { fprintf(stderr, "GPU: gate e up dos especialistas em formatos diferentes\n"); return 0; }
+        if (!glu_pair(&L->eg[0], &L->eu[0]) || !gpu_has(&L->eg[0]) || !gpu_has(&L->ed[0])) { fprintf(stderr, "GPU: gate e up dos especialistas em formatos diferentes\n"); return 0; }
         gx.bg[l] = 2 * gpu_mat_bytes(&L->eg[0], H, d); gx.bd[l] = gpu_mat_bytes(&L->ed[0], d, H);
         per += gx.bg[l] + gx.bd[l];
     }
@@ -3031,12 +3357,12 @@ static void *vk_wbuf(const uint32_t *host, size_t bytes) {
     return p;
 }
 
-static const uint32_t *vk_spv[5]; static size_t vk_spv_n[5];
-static KvkPipe vk_pipe[5][9];      /* [tipo][nseg]: criados sob demanda */
+static const uint32_t *vk_spv[6]; static size_t vk_spv_n[6];
+static KvkPipe vk_pipe[6][9];      /* [tipo][nseg]: criados sob demanda */
 
-static int vk_kind_idx(uint32_t kind) { return kind == T_F32 ? 0 : kind == T_Q8_0 ? 1 : kind == T_Q4_K ? 2 : kind == T_Q5_K ? 3 : 4; }
+static int vk_kind_idx(uint32_t kind) { return kind == T_F32 ? 0 : kind == T_Q8_0 ? 1 : kind == T_Q4_K ? 2 : kind == T_Q5_K ? 3 : kind == T_Q2_K ? 5 : 4; }
 
-static KvkPipe vk_pipe2[5][9];     /* mesmos kernels com NR=2 (par gate/up) */
+static KvkPipe vk_pipe2[6][9];     /* mesmos kernels com NR=2 (par gate/up) */
 
 /* enfileira out = W * x (um token) sem esperar; mesmo layout, gs/go e nseg dos kernels OpenCL.
    mode: 0 grava, 1 soma, 2 SwiGLU com out, bit 4 = soma bias (buffer `bias`), pair = gate/up intercalados (grava silu(g)*u) */
@@ -3045,6 +3371,7 @@ static int vk_gmv_raw(uint32_t kind, KvkBuf wb, KvkBuf x, KvkBuf out, KvkBuf bia
         vk_spv[0] = mv_f32_spv; vk_spv_n[0] = sizeof mv_f32_spv; vk_spv[1] = mv_q8_spv; vk_spv_n[1] = sizeof mv_q8_spv;
         vk_spv[2] = mv_q4k_spv; vk_spv_n[2] = sizeof mv_q4k_spv; vk_spv[3] = mv_q5k_spv; vk_spv_n[3] = sizeof mv_q5k_spv;
         vk_spv[4] = mv_q6k_spv; vk_spv_n[4] = sizeof mv_q6k_spv;
+        vk_spv[5] = mv_q2k_spv; vk_spv_n[5] = sizeof mv_q2k_spv;
     }
     const int ki = vk_kind_idx(kind);
     const size_t rowsP = ((size_t)rows + 127) & ~(size_t)127;
@@ -3414,6 +3741,8 @@ static int vk_batch_supported(const Model *m) {
         if (L->bo || !L->w_gate.pair) return 0;
         const Mat *ms[5] = { &L->wq, &L->wk, &L->wv, &L->wo, &L->w_down };
         for (int i = 0; i < 5; i++) if (ms[i]->gs != 1 || !ms[i]->gbuf) return 0;
+        const Mat *all[6] = { &L->wq, &L->wk, &L->wv, &L->wo, &L->w_gate, &L->w_down };    /* o mm.comp nao tem Q2_K */
+        for (int i = 0; i < 6; i++) if (gpu_kind(all[i]) == T_Q2_K) return 0;
     }
     return 1;
 }
@@ -3616,7 +3945,9 @@ static int vk_setup(Model *m) {
         if (!c->n_expert) {
             gpu_upload_glu(&L->w_gate, &L->w_up, H, d, l);
             snprintf(nm, sizeof nm, "L%03d.down", l); gpu_upload(&L->w_down, d, H, nm);
+            if (!L->w_gate.gbuf || !L->w_up.gbuf || !L->w_down.gbuf) break;
         }
+        if (!L->wq.gbuf || !L->wk.gbuf || !L->wv.gbuf || !L->wo.gbuf) break;     /* tipo sem kernel de GPU */
         nl++;
     }
     if (!m->lm_head.gbuf && nl == c->n_layers && gpu.used + gpu_mat_bytes(&m->lm_head, V, d) <= budget) gpu_upload(&m->lm_head, V, d, "head");
@@ -3727,7 +4058,7 @@ static int gx_setup(Model *m, uint64_t vram_budget, int all_layers) {
         for (int l = 0; l < NL; l++) {
             const Layer *L = &m->layers[l];
             if (!L->eg) continue;       /* camada densa inicial: feed-forward normal, ja na VRAM */
-            if (!glu_pair(&L->w_gate, &L->w_up)) ok = 0;
+            if (!glu_pair(&L->w_gate, &L->w_up) || !gpu_has(&L->w_gate) || !gpu_has(&L->w_down)) ok = 0;
             if (L->shexp_gate) { ok = 0; fprintf(stderr, "GPU: portao do compartilhado ainda nao suportado no grafo completo\n"); }
             gx.bg[l] = 2 * gpu_mat_bytes(&L->w_gate, H, d); gx.bd[l] = gpu_mat_bytes(&L->w_down, d, H);
             per += gx.bg[l] + gx.bd[l];
@@ -4514,6 +4845,7 @@ static int vk_moe_init(Model *m) {
     for (int l = 0; l < NL; l++) {
         const Layer *L = &m->layers[l];
         if (!glu_pair(&L->w_gate, &L->w_up)) { fprintf(stderr, "Vulkan: gate e up em formatos diferentes\n"); return 0; }
+        if (!gpu_has(&L->w_gate) || !gpu_has(&L->w_down)) { fprintf(stderr, "Vulkan: especialistas em formato sem kernel de GPU\n"); return 0; }
         gx.bg[l] = 2 * gpu_mat_bytes(&L->w_gate, H, d); gx.bd[l] = gpu_mat_bytes(&L->w_down, d, H);
         per += gx.bg[l] + gx.bd[l];
     }
@@ -5970,6 +6302,163 @@ static void setenv_(const char *k, const char *v) {
 #else
     if (v) setenv(k, v, 1); else unsetenv(k);
 #endif
+}
+
+/* ---------- katana qtest: teste dos tipos de quantizacao sem modelo ----------
+   1) valores conhecidos: blocos montados a mao decodificam para os valores esperados;
+   2) para cada tipo, uma matriz de blocos aleatorios (escalas em faixa sa) e um x aleatorio:
+      produto exato (decodifica + double) contra o produto da CPU em float, o rapido (inteiro,
+      quando o tipo tem) e o da GPU (KATANA_BACKEND=vulkan ou OpenCL; KATANA_CPU=1 pula). */
+static int qtest_gpu_init(int rows, int cols) {
+    if (getenv("KATANA_CPU") && atoi(getenv("KATANA_CPU"))) return 0;
+    const char *be = getenv("KATANA_BACKEND");
+    gpu.seg_target = 16384;
+    if (be && strcmp(be, "vulkan") == 0) {
+        KvkInfo I;
+        if (!kvk_init(&I)) { fprintf(stderr, "Vulkan: indisponivel (%s)\n", kvk_error()); return 0; }
+        gpu.vk = 1; snprintf(gpu.name, sizeof gpu.name, "%s", I.name); gpu.vram = I.vram_bytes;
+        gpu.vxb = kvk_buf_create((size_t)cols * sizeof(float), KVK_USAGE_RW);
+        gpu.vob = kvk_buf_create(((size_t)rows + 128) * sizeof(float), KVK_USAGE_RW);
+        return gpu.vxb.b && gpu.vob.b;
+    }
+    if (!gpu_init()) return 0;
+    gpu.cfg_rows = 1; gpu.cfg_rowsb = 2; gpu.cfg_seg = 16384;
+    if (!gpu_build_all()) return 0;
+    int32_t e1 = 0, e2 = 0;
+    gpu.xbuf = cl.CreateBuffer(gpu.ctx, 1, (size_t)cols * sizeof(float), NULL, &e1);
+    gpu.obuf = cl.CreateBuffer(gpu.ctx, 1, ((size_t)rows + 128) * sizeof(float), NULL, &e2);
+    return !e1 && !e2;
+}
+
+static int qtest_known(void) {
+    static const float e2m1[8] = { 0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f };
+    uint8_t b[256]; float o[256];
+    int bad = 0;
+    /* MXFP4: expoente 127 (escala 1); nibble j -> E2M1 j (bit 3 = sinal); alto = 15 - j */
+    b[0] = 127;
+    for (int j = 0; j < 16; j++) b[1 + j] = (uint8_t)(j | ((15 - j) << 4));
+    dequant(T_MXFP4, b, o, 32);
+    for (int j = 0; j < 16; j++) {
+        const float e0 = (j & 8 ? -1 : 1) * e2m1[j & 7], e1 = ((15 - j) & 8 ? -1 : 1) * e2m1[(15 - j) & 7];
+        if (o[j] != e0 || o[j + 16] != e1) bad |= 1;
+    }
+    b[0] = 130;     /* escala 8 */
+    dequant(T_MXFP4, b, o, 32);
+    if (o[7] != 48.0f || o[16] != -48.0f) bad |= 1;     /* 0x7 = +6 e 0xF = -6, vezes 2^3 */
+    /* IQ4_NL: d = 1 -> a tabela */
+    b[0] = 0x00; b[1] = 0x3C;
+    for (int j = 0; j < 16; j++) b[2 + j] = (uint8_t)(j | (j << 4));
+    dequant(T_IQ4_NL, b, o, 32);
+    for (int j = 0; j < 16; j++) if (o[j] != q_iq4nl_vals[j] || o[j + 16] != q_iq4nl_vals[j]) bad |= 2;
+    /* IQ4_XS: d = 1, todas as escalas 33 (dl = 1) */
+    memset(b, 0, sizeof b); b[1] = 0x3C; b[2] = 0xAA; b[3] = 0xAA; b[4] = b[5] = b[6] = b[7] = 0x11;
+    for (int j = 0; j < 128; j++) b[8 + j] = (uint8_t)((j & 15) | ((15 - (j & 15)) << 4));
+    dequant(T_IQ4_XS, b, o, 256);
+    for (int ib = 0; ib < 8; ib++) for (int j = 0; j < 16; j++)
+        if (o[ib * 32 + j] != q_iq4nl_vals[j] || o[ib * 32 + 16 + j] != q_iq4nl_vals[15 - j]) bad |= 4;
+    /* Q2_K: escala 1, minimo 2, d = dmin = 1, q = 3 -> 1 */
+    memset(b, 0x21, 16); memset(b + 16, 0xFF, 64); b[80] = 0; b[81] = 0x3C; b[82] = 0; b[83] = 0x3C;
+    dequant(T_Q2_K, b, o, 256);
+    for (int j = 0; j < 256; j++) if (o[j] != 1.0f) bad |= 8;
+    /* IQ2_XXS: tudo zero com d = 1 -> grade 0 (8 x 8), escala 1/8 -> 1 */
+    memset(b, 0, 66); b[1] = 0x3C;
+    dequant(T_IQ2_XXS, b, o, 256);
+    for (int j = 0; j < 256; j++) if (o[j] != 1.0f) bad |= 16;
+    /* BF16 */
+    b[0] = 0x80; b[1] = 0x3F; b[2] = 0x40; b[3] = 0xC0;
+    dequant(T_BF16, b, o, 2);
+    if (o[0] != 1.0f || o[1] != -3.0f) bad |= 32;
+    /* TQ2_0: 2 bits 0,1,2 -> -1,0,1 (d = 1) */
+    memset(b, 0x24, 64); b[64] = 0; b[65] = 0x3C;     /* 0x24 = 00 10 01 00 */
+    dequant(T_TQ2_0, b, o, 256);
+    if (o[0] != -1.0f || o[32] != 0.0f || o[64] != 1.0f || o[96] != -1.0f) bad |= 64;
+    printf("valores conhecidos (MXFP4, IQ4_NL, IQ4_XS, Q2_K, IQ2_XXS, BF16, TQ2_0): %s", bad ? "FALHOU" : "OK");
+    if (bad) printf(" (mascara %d)", bad);
+    printf("\n");
+    return bad;
+}
+
+static int qtest(void) {
+    static const struct { uint32_t t; const char *nome; int f16[2]; } TT[] = {
+        { T_Q4_0, "Q4_0", { 0, -1 } }, { T_Q4_1, "Q4_1", { 0, 2 } }, { T_Q5_0, "Q5_0", { 0, -1 } }, { T_Q5_1, "Q5_1", { 0, 2 } },
+        { T_Q8_0, "Q8_0", { 0, -1 } }, { T_Q2_K, "Q2_K", { 80, 82 } }, { T_Q3_K, "Q3_K", { 108, -1 } }, { T_Q4_K, "Q4_K", { 0, 2 } },
+        { T_Q5_K, "Q5_K", { 0, 2 } }, { T_Q6_K, "Q6_K", { 208, -1 } }, { T_IQ4_NL, "IQ4_NL", { 0, -1 } }, { T_IQ4_XS, "IQ4_XS", { 0, -1 } },
+        { T_MXFP4, "MXFP4", { -1, -1 } }, { T_IQ2_XXS, "IQ2_XXS", { 0, -1 } }, { T_IQ2_XS, "IQ2_XS", { 0, -1 } }, { T_IQ2_S, "IQ2_S", { 0, -1 } },
+        { T_IQ3_XXS, "IQ3_XXS", { 0, -1 } }, { T_IQ3_S, "IQ3_S", { 0, -1 } }, { T_IQ1_S, "IQ1_S", { 0, -1 } }, { T_IQ1_M, "IQ1_M", { -1, -1 } },
+        { T_TQ1_0, "TQ1_0", { 52, -1 } }, { T_TQ2_0, "TQ2_0", { 64, -1 } } };
+    const int rows = 200, cols = 2048;      /* 200 linhas: testa a sobra do grupo de 32 na GPU */
+    int fails = qtest_known();
+    const int has_gpu = qtest_gpu_init(rows, cols);
+    printf("GPU: %s\n", has_gpu ? (gpu.vk ? "Vulkan" : "OpenCL") : "nenhuma (so CPU)");
+    float *x = xalloc(cols, sizeof(float)), *row = xalloc(cols, sizeof(float)), *og = xalloc(rows, sizeof(float));
+    float sx[MAX_SX];
+    srand(4321);
+    for (int i = 0; i < cols; i++) x[i] = (float)rand() / RAND_MAX * 2.0f - 1.0f;
+    block_sums(sx, x, cols);
+    printf("%-8s %-10s %-10s %-10s %-10s\n", "tipo", "CPU float", "CPU rapida", "GPU", "");
+    for (size_t k = 0; k < sizeof TT / sizeof TT[0]; k++) {
+        const uint32_t t = TT[k].t;
+        const int unit = qunit(t);
+        const size_t ub = qbytes(t, unit), stride = qbytes(t, cols);
+        uint8_t *buf = xalloc((size_t)rows * stride, 1);
+        for (size_t i = 0; i < (size_t)rows * stride; i++) buf[i] = (uint8_t)(rand() >> 7);
+        for (size_t blk = 0; blk < (size_t)rows * stride / ub; blk++) {
+            uint8_t *p = buf + blk * ub;
+            for (int f = 0; f < 2; f++) if (TT[k].f16[f] >= 0) {     /* f16 positivo entre 2^-8 e 2^-7 */
+                const uint16_t h = (uint16_t)(0x1C00 + rand() % 0x400);
+                memcpy(p + TT[k].f16[f], &h, 2);
+            }
+            if (t == T_MXFP4) p[0] = (uint8_t)(118 + rand() % 16);
+            if (t == T_IQ1_M) {     /* escala f16 espalhada nos 4 bits altos das 4 palavras de escala */
+                const uint16_t h = (uint16_t)(0x1C00 + rand() % 0x400);
+                for (int i = 0; i < 4; i++) {
+                    uint16_t w; memcpy(&w, p + 48 + 2 * i, 2);
+                    w = (uint16_t)((w & 0x0fff) | (((h >> (4 * i)) & 0xf) << 12));
+                    memcpy(p + 48 + 2 * i, &w, 2);
+                }
+            }
+        }
+        Mat W; memset(&W, 0, sizeof W);
+        W.q = buf; W.type = t; W.stride = stride;
+        double e_f = 0, e_r = 0, e_g = -1;
+        for (int r = 0; r < rows; r++) {
+            mat_row(row, &W, r, cols);
+            double ref = 0, mag = 0;
+            for (int j = 0; j < cols; j++) { ref += (double)row[j] * x[j]; mag += fabs((double)row[j] * x[j]); }
+            cpu_exact = 1;
+            double e = fabs(dot_row(&W, r, x, sx, cols) - ref) / (mag + 1e-30);
+            cpu_exact = 0;
+            if (e > e_f) e_f = e;
+            if (mat_int(&W)) xq_prepare(x, cols);
+            e = fabs(dot_row(&W, r, x, sx, cols) - ref) / (mag + 1e-30);
+            if (e > e_r) e_r = e;
+        }
+        if (has_gpu) {
+            gpu_upload(&W, rows, cols, TT[k].nome);
+            if (W.gbuf) {
+                gpu.test_mv = 1; matvec(og, &W, x, rows, cols); gpu.test_mv = 0;
+                e_g = 0;
+                for (int r = 0; r < rows; r++) {
+                    mat_row(row, &W, r, cols);
+                    double ref = 0, mag = 0;
+                    for (int j = 0; j < cols; j++) { ref += (double)row[j] * x[j]; mag += fabs((double)row[j] * x[j]); }
+                    const double e = fabs(og[r] - ref) / (mag + 1e-30);
+                    if (e > e_g) e_g = e;
+                }
+            }
+        }
+        const int ok = e_f < 1e-4 && e_r < 1e-4 && e_g < 1e-4;
+        char gs[32];
+        if (e_g < 0) snprintf(gs, sizeof gs, "%s", has_gpu ? "CPU (sem kernel)" : "-");
+        else snprintf(gs, sizeof gs, "%.2e", e_g);
+        printf("%-8s %-10.2e %-10.2e %-16s %s%s\n", TT[k].nome, e_f, e_r, gs, ok ? "OK" : "FALHOU",
+               mat_int(&W) ? " (rapida = inteiro)" : "");
+        if (!ok) fails++;
+        free(buf);      /* o buffer da GPU fica ate o fim do processo */
+    }
+    printf("qtest: %s\n", fails ? "FALHOU" : "OK");
+    free(x); free(row); free(og);
+    return fails ? 1 : 0;
 }
 
 static int selftest(Model *m) {
@@ -9627,6 +10116,7 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return vkcheck(&m, argv[3], argc > 4 ? atoi(argv[4]) : 40, argc > 5 ? atoi(argv[5]) : 600);
     }
+    if (argc >= 2 && strcmp(argv[1], "qtest") == 0) return qtest();
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -9674,6 +10164,7 @@ static int run_main(int argc, char **argv) {
         "Uso:\n"
         "  katana info <modelo.gguf>\n"
         "  katana selftest <modelo.gguf>\n"
+        "  katana qtest                   confere a decodificacao e os produtos de cada tipo de quantizacao\n"
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
         "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
         "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
