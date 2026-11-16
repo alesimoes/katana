@@ -27,7 +27,13 @@ const int NLD = (TT * HD) / 128;        /* floats de K carregados por thread */
 layout(std430, binding = 0) readonly buffer Q { float q[]; };
 layout(std430, binding = 1) readonly buffer KC { KVT kc[]; };
 layout(std430, binding = 2) readonly buffer VC { KVT vc[]; };
+#ifdef OF32
+layout(std430, binding = 3) buffer O { float o[]; };          // variante com saida fp32 (produto de saida preciso)
+#define OUT(v) (v)
+#else
 layout(std430, binding = 3) buffer O { float16_t o[]; };
+#define OUT(v) float16_t(v)
+#endif
 layout(push_constant) uniform P { int base, pos0, kvd, nkv, B; float scale; } pc;
 shared vec4 ksh[TT * RS];
 shared vec4 qsh[GRP * HD4];
@@ -100,7 +106,7 @@ void main() {
         const float inv = 1.0 / lsh[gi];
         for (int i = 0; i < NJ; i++) {
             const int j = tid + 128 * i;
-            if (j < HD) o[((g * GRP + gi) * HD + j) * B + b] = float16_t(acc[gi][i] * inv);
+            if (j < HD) o[((g * GRP + gi) * HD + j) * B + b] = OUT(acc[gi][i] * inv);
         }
     }
 }

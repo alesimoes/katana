@@ -74,6 +74,8 @@
 #include "vk/shaders/dn_chunk.h"
 #include "vk/shaders/dn_state.h"
 #include "vk/shaders/dn_norm.h"
+#include "vk/shaders/dn_seq.h"
+#include "vk/shaders/rms_wg32.h"
 #include "vk/shaders/qn_gate.h"
 #include "vk/shaders/moe_gath.h"
 #include "vk/shaders/moe_scat.h"
@@ -107,6 +109,55 @@
 #include "vk/shaders/mm_t4_64x32_g1.h"
 #include "vk/shaders/mm_t4_64x16w4_g0.h"
 #include "vk/shaders/mm_t4_64x16_g1.h"
+#include "vk/shaders/mm_t0_64x64_ws.h"
+#include "vk/shaders/mm_t0_64x32w4_ws.h"
+#include "vk/shaders/mm_t0_64x16w4_ws.h"
+#include "vk/shaders/mm_t1_64x64_ws.h"
+#include "vk/shaders/mm_t1_64x32w4_ws.h"
+#include "vk/shaders/mm_t1_64x16w4_ws.h"
+#include "vk/shaders/mm_t2_64x64_ws.h"
+#include "vk/shaders/mm_t2_64x32w4_ws.h"
+#include "vk/shaders/mm_t2_64x16w4_ws.h"
+#include "vk/shaders/mm_t3_64x64_ws.h"
+#include "vk/shaders/mm_t3_64x32w4_ws.h"
+#include "vk/shaders/mm_t3_64x16w4_ws.h"
+#include "vk/shaders/mm_t4_64x64_ws.h"
+#include "vk/shaders/mm_t4_64x32w4_ws.h"
+#include "vk/shaders/mm_t4_64x16w4_ws.h"
+#include "vk/shaders/mm_t0_64x64_gx.h"
+#include "vk/shaders/mm_t0_64x32_gx.h"
+#include "vk/shaders/mm_t0_64x16_gx.h"
+#include "vk/shaders/mm_t1_64x64_gx.h"
+#include "vk/shaders/mm_t1_64x32_gx.h"
+#include "vk/shaders/mm_t1_64x16_gx.h"
+#include "vk/shaders/mm_t2_64x64_gx.h"
+#include "vk/shaders/mm_t2_64x32_gx.h"
+#include "vk/shaders/mm_t2_64x16_gx.h"
+#include "vk/shaders/mm_t3_64x64_gx.h"
+#include "vk/shaders/mm_t3_64x32_gx.h"
+#include "vk/shaders/mm_t3_64x16_gx.h"
+#include "vk/shaders/mm_t4_64x64_gx.h"
+#include "vk/shaders/mm_t4_64x32_gx.h"
+#include "vk/shaders/mm_t4_64x16_gx.h"
+#include "vk/shaders/moe_gath32.h"
+#include "vk/shaders/qn_gate32.h"
+#include "vk/shaders/att_flash32_kv16.h"
+#include "vk/shaders/att_flash32_kv32.h"
+#include "vk/shaders/mm_t0_64x64_xs.h"
+#include "vk/shaders/mm_t0_64x32w4_xs.h"
+#include "vk/shaders/mm_t0_64x16w4_xs.h"
+#include "vk/shaders/mm_t1_64x64_xs.h"
+#include "vk/shaders/mm_t1_64x32w4_xs.h"
+#include "vk/shaders/mm_t1_64x16w4_xs.h"
+#include "vk/shaders/mm_t2_64x64_xs.h"
+#include "vk/shaders/mm_t2_64x32w4_xs.h"
+#include "vk/shaders/mm_t2_64x16w4_xs.h"
+#include "vk/shaders/mm_t3_64x64_xs.h"
+#include "vk/shaders/mm_t3_64x32w4_xs.h"
+#include "vk/shaders/mm_t3_64x16w4_xs.h"
+#include "vk/shaders/mm_t4_64x64_xs.h"
+#include "vk/shaders/mm_t4_64x32w4_xs.h"
+#include "vk/shaders/mm_t4_64x16w4_xs.h"
 #include "vk/shaders/cvt.h"
 #include "vk/shaders/rms_wg16.h"
 #include "vk/shaders/gather.h"
@@ -2107,6 +2158,7 @@ static __thread XQ *xq_tls;
 #endif
 #define xq (*(xq_tls ? xq_tls : &xq0))
 static int cpu_exact;
+static float *dbg_x; static int *dbg_sel, dbg_pos, dbg_on;   /* medida (KATANA_QN_DBG): residual apos o misturador [pos][camada][d] e escolhidos da CPU exata */
 
 #ifdef __AVX2__
 #define HAVE_INT_DOT 1
@@ -4054,6 +4106,7 @@ typedef struct {
     KvkBuf x, xh, q, q2, k, v, hb, o3, att3;
     KvkPipe rms16, qkv, flash_p, sc, sm, mix, cvt, gat;
     KvkPipe mm[5][6];               /* [tipo do mm.comp][indice do ladrilho, plano ou glu] */
+    KvkPipe mmx[3][5][3];           /* variantes precisas: [0] pesos em alta + resto (ws), [1] tambem ativacao fp32 (xs), [2] glu xs com saida fp32 */
     float *xT;
     unsigned skip;                  /* KATANA_VK_SKIP: bits de fases a omitir (so para medir o custo de cada uma) */
     double t_emb, t_emit, t_wait; long passes, toks;
@@ -4099,6 +4152,37 @@ static int vk_mm_raw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf
     const KvkBuf bufs[3] = { wb, xh, y };
     const int bm = 64, bn = vk_mm_bn[v], gm = glu ? bm / 2 : bm;
     return kvk_dispatch(*pp, bufs, 3, pc, sizeof pc, (uint32_t)((rows + gm - 1) / gm), (uint32_t)((B + bn - 1) / bn), 1);
+}
+/* produto preciso: peso decodificado em duas partes fp16 (alta + resto*2048) e, com xs, a ativacao em fp32 [cols][B]
+   tambem em alta + resto; tres produtos sobre o mesmo ladrilho (o resto x resto fica de fora), erro ~1e-6 relativo
+   contra ~1e-4 do produto fp16. O qwen35moe em lote usa so este: o roteamento top-8 tem quase empates (margem de
+   1e-5) que o erro do fp16 vira, e um especialista trocado leva o token a ~5% de erro (docs/modelos-novos.md) */
+static int vk_mm_pw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf x, KvkBuf y, int rows, int cols, int B, int add, int xs);
+static int vk_mm_p(const Mat *W, KvkBuf x, KvkBuf y, int rows, int cols, int B, int add, int xs) {
+    return vk_mm_pw(gpu_kind(W), *(const KvkBuf *)W->gbuf, 0, gpu_wpr(W, cols), x, y, rows, cols, B, add, xs);
+}
+/* idem com o buffer de pesos explicito (vaga de especialista: woff); xs = 2: glu (gate/up intercalados), y fp32 */
+static int vk_mm_pw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf x, KvkBuf y, int rows, int cols, int B, int add, int xs) {
+#define MMX(T, S) { { mm_t##T##_64x64_##S##_spv, sizeof mm_t##T##_64x64_##S##_spv }, { mm_t##T##_64x32w4_##S##_spv, sizeof mm_t##T##_64x32w4_##S##_spv }, \
+                    { mm_t##T##_64x16w4_##S##_spv, sizeof mm_t##T##_64x16w4_##S##_spv } }
+#define MMG(T) { { mm_t##T##_64x64_gx_spv, sizeof mm_t##T##_64x64_gx_spv }, { mm_t##T##_64x32_gx_spv, sizeof mm_t##T##_64x32_gx_spv }, \
+                 { mm_t##T##_64x16_gx_spv, sizeof mm_t##T##_64x16_gx_spv } }
+    static const struct { const uint32_t *p; size_t n; } tab[3][5][3] = { { MMX(0, ws), MMX(1, ws), MMX(2, ws), MMX(3, ws), MMX(4, ws) },
+                                                                          { MMX(0, xs), MMX(1, xs), MMX(2, xs), MMX(3, xs), MMX(4, xs) },
+                                                                          { MMG(0), MMG(1), MMG(2), MMG(3), MMG(4) } };
+#undef MMX
+#undef MMG
+    const int glu = xs == 2, ki = vk_kind_idx(kind), t = vk_mmt[ki], v0 = vk_tile(ki, B, glu);
+    const int v = glu ? (v0 == 0 ? 0 : v0 == 3 ? 1 : 2) : v0;      /* glu: 64x64, 64x32, 64x16 */
+    KvkPipe *pp = &vkb.mmx[xs][t][v];
+    if (!pp->p) {
+        *pp = kvk_pipe_create(tab[xs][t][v].p, tab[xs][t][v].n, 3, 32, NULL, NULL, 0);
+        if (!pp->p) { fprintf(stderr, "Vulkan: pipeline do produto em lote (XS) falhou: %s\n", kvk_error()); return 0; }
+    }
+    const uint32_t pc[8] = { (uint32_t)rows, (uint32_t)cols, (uint32_t)B, (uint32_t)wpr, (uint32_t)cols, 0, (uint32_t)add, woff };
+    const KvkBuf bufs[3] = { wb, x, y };
+    const int gm = glu ? 32 : 64;
+    return kvk_dispatch(*pp, bufs, 3, pc, sizeof pc, (uint32_t)((rows + gm - 1) / gm), (uint32_t)((B + vk_mm_bn[v0] - 1) / vk_mm_bn[v0]), 1);
 }
 static int vk_mm(const Mat *W, KvkBuf xh, KvkBuf y, int rows, int cols, int B, int add, int glu) {
     return vk_mm_raw(gpu_kind(W), *(const KvkBuf *)W->gbuf, 0, gpu_wpr(W, cols), xh, y, rows, cols, B, add, glu);
@@ -4858,6 +4942,7 @@ static void moe_route(Model *m, const Layer *L, int l) {
     const float eps = c->mla ? 1e-20f : 6.103515625e-5f;
     if (c->moe_norm) for (int k = 0; k < K; k++) moe.w[k] /= (wsum > eps ? wsum : eps);
     if (c->exp_scale != 1.0f) for (int k = 0; k < K; k++) moe.w[k] *= c->exp_scale;
+    if (dbg_on && cpu_exact) for (int k = 0; k < K; k++) dbg_sel[((size_t)dbg_pos * c->n_layers + l) * K + k] = moe.sel[k];
     if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
     if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
 }
@@ -6040,6 +6125,7 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
         matvec(m->xb2, &L->wo, o, d, qd);
     }
     for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+    if (dbg_on && cpu_exact && pos < 64) { memcpy(dbg_x + ((size_t)pos * c->n_layers + l) * d, m->x, d * 4); dbg_pos = pos; }
     rmsnorm(m->xb, m->x, L->ffn_norm, d, c->eps);
     ffn_moe(m, L, l, o);       /* o: saida do feed-forward (m->xb2 e rascunho do compartilhado) */
     for (int i = 0; i < d; i++) m->x[i] += o[i];
@@ -6057,12 +6143,12 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
    o compartilhado e cada especialista quente rodam sobre as colunas dos seus tokens (moe_gath, mm glu e down com
    a vaga por deslocamento, moe_scat soma pesada); os frios rodam na CPU enquanto isso e sobem somados. */
 static struct {
-    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep;
+    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk;
     Mat *wab;                               /* por camada linear: [alpha | beta] float */
     KvkBuf qkv, z, ab, o, qg;               /* um token */
     KvkBuf *cw, *pr, *ring, *st;            /* por camada linear */
-    KvkPipe step, prep, cst, chunk, state, norm, gate, gath, scat;
-    KvkBuf bqkv, bz, bab, qh, kh, vh, bg, ub, wb, qm, qgh, kd, gl, bo, bqg, xg, hg, ys, yc, meta;   /* lote */
+    KvkPipe step, prep, cst, chunk, state, norm, gate, gath, scat, rms32, seq, gath32, gate32, flash32;
+    KvkBuf xf, bqkv, bz, bab, qh, kh, vh, bg, ub, wb, qm, qgh, kd, gl, bo, bqg, xg, hg, ys, yc, meta;   /* lote */
     float *xn, *xc, *outs, *col, *sw; uint32_t *mt;
     int *cnt, *ofs, *pv, *pb, *ce, *cb; float *pw, *cw_;
     double t_rd, t_route, t_gpu, t_cpu, t_up; long n_hot, n_cold;    /* perfil do lote (KATANA_QN_PROF=1) */
@@ -6159,9 +6245,10 @@ static int vkq_build(Model *m) {
     vkq.qm = vk_wk((size_t)NV * nch * 64 * 64 * 2, &fail); vkq.qgh = vk_wk((size_t)NV * D * Pp * 2, &fail);
     vkq.kd = vk_wk((size_t)NV * D * Pp * 2, &fail); vkq.gl = vk_wk((size_t)NV * nch * 4, &fail);
     vkq.bo = vk_wk((size_t)NV * D * Pp * 4, &fail); vkq.bqg = vk_wk(2 * qd * Pp * 4, &fail);
-    vkq.xg = vk_wk(d * Pp * 2, &fail); vkq.hg = vk_wk(Hm * Pp * 2, &fail);
+    vkq.xg = vk_wk(d * Pp * 4, &fail); vkq.hg = vk_wk(Hm * Pp * 4, &fail);     /* fp32: produtos precisos */
     vkq.ys = vk_wk(d * Pp * 4, &fail); vkq.yc = vk_wk(d * Pp * 4, &fail);
     vkq.meta = vk_wk(2 * Pp * (K + 2) * 4, &fail);
+    vkq.xf = vk_wk(d * Pp * 4, &fail);
     if (fail) { fprintf(stderr, "Vulkan: sem memoria para o grafo do qwen35moe (%s): modo hibrido\n", kvk_error()); return 0; }
     kvk_wait();
     const uint32_t id0 = 0, hdv = (uint32_t)c->hd, sid[3] = { 0, 1, 2 }, sv[3] = { (uint32_t)NK, (uint32_t)NV, 1 };
@@ -6182,16 +6269,24 @@ static int vkq_build(Model *m) {
     vkq.chunk = kvk_pipe_create(dn_chunk_spv, sizeof dn_chunk_spv, 10, 8, sid, sv, 2);
     vkq.state = kvk_pipe_create(dn_state_spv, sizeof dn_state_spv, 8, 12, sid, sv, 3);
     vkq.norm = kvk_pipe_create(dn_norm_spv, sizeof dn_norm_spv, 4, 12, sid, sv, 2);
+    vkq.rms32 = kvk_pipe_create(rms_wg32_spv, sizeof rms_wg32_spv, 3, 12, NULL, NULL, 0);
+    vkq.gate32 = kvk_pipe_create(qn_gate32_spv, sizeof qn_gate32_spv, 2, 12, NULL, NULL, 0);
+    vkq.flash32 = vkg.kv16 ? kvk_pipe_create(att_flash32_kv16_spv, sizeof att_flash32_kv16_spv, 4, 24, sid, fv, 2)
+                           : kvk_pipe_create(att_flash32_kv32_spv, sizeof att_flash32_kv32_spv, 4, 24, sid, fv, 2);
+    if (qd > inner) { fprintf(stderr, "qwen35moe: saida da atencao maior que a do DeltaNet\n"); return 0; }
+    vkq.gath32 = kvk_pipe_create(moe_gath32_spv, sizeof moe_gath32_spv, 3, 16, NULL, NULL, 0);
+    vkq.seq = kvk_pipe_create(dn_seq_spv, sizeof dn_seq_spv, 8, 20, sid, sv, 2);
     vkq.gate = kvk_pipe_create(qn_gate_spv, sizeof qn_gate_spv, 2, 12, NULL, NULL, 0);
     vkq.gath = kvk_pipe_create(moe_gath_spv, sizeof moe_gath_spv, 3, 16, NULL, NULL, 0);
     vkq.scat = kvk_pipe_create(moe_scat_spv, sizeof moe_scat_spv, 3, 16, NULL, NULL, 0);
     if (!vkg.rms.p || !vkg.att1f.p || !vkg.att1r.p || !vkb.rms16.p || !vkb.qkv.p || !vkb.gat.p || !vkb.flash_p.p || !vkq.step.p
-        || !vkq.prep.p || !vkq.cst.p || !vkq.chunk.p || !vkq.state.p || !vkq.norm.p || !vkq.gate.p || !vkq.gath.p || !vkq.scat.p) {
+        || !vkq.prep.p || !vkq.cst.p || !vkq.chunk.p || !vkq.state.p || !vkq.norm.p || !vkq.rms32.p || !vkq.seq.p || !vkq.gath32.p || !vkq.gate32.p || !vkq.flash32.p || !vkq.gate.p || !vkq.gath.p || !vkq.scat.p) {
         fprintf(stderr, "Vulkan: pipeline do qwen35moe falhou (%s): modo hibrido\n", kvk_error()); return 0;
     }
     /* host do lote */
     vkb.P = P; vkg.P = P; vkb.flash = 1; vkq.P = P;
     vkq.dnstep = getenv("KATANA_QN_DNSTEP") && atoi(getenv("KATANA_QN_DNSTEP")) != 0;
+    vkq.blk = getenv("KATANA_QN_CHUNK") && atoi(getenv("KATANA_QN_CHUNK")) != 0;
     vkb.xT = xalloc(d * Pp, sizeof(float));
     vkq.xn = xalloc(d * Pp, sizeof(float)); vkq.xc = xalloc(d * Pp, sizeof(float)); vkq.col = xalloc(d, sizeof(float));
     vkq.outs = xalloc((size_t)GPU_BMAX * K * d, sizeof(float)); vkq.sw = xalloc(Pp, sizeof(float));
@@ -6277,6 +6372,28 @@ static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
     if (!kvk_buf_read(vkb.x, 0, vkb.xT, (size_t)d * B * sizeof(float))) die("falha na execucao em Vulkan (leitura do lote)");
     const double tb = now_sec();
     vkq.t_rd += tb - ta;
+    if (dbg_on) {
+        double wr = 0; int nd = 0, nt = B < 64 ? B : 64;
+        for (int b = 0; b < nt; b++) {
+            const float *r = dbg_x + ((size_t)b * c->n_layers + l) * d;
+            double e2 = 0, n2 = 0;
+            for (int i = 0; i < d; i++) { const double df = vkb.xT[(size_t)i * B + b] - r[i]; e2 += df * df; n2 += (double)r[i] * r[i]; }
+            if (sqrt(e2 / n2) > wr) wr = sqrt(e2 / n2);
+            for (int i = 0; i < d; i++) vkq.col[i] = vkb.xT[(size_t)i * B + b];
+            rmsnorm(m->xb, vkq.col, L->ffn_norm, d, c->eps);
+            const int sv = cpu_exact; cpu_exact = 1; dbg_on = 0; moe_route(m, L, l); dbg_on = 1; cpu_exact = sv;
+            int same = 0;
+            for (int j = 0; j < K; j++) for (int k = 0; k < K; k++) same += moe.sel[j] == dbg_sel[((size_t)b * c->n_layers + l) * K + k];
+            nd += same != K;
+            if (same != K) {
+                float p8 = 1e30f, p9 = -1e30f;     /* 8o escolhido e melhor nao escolhido (lote) */
+                for (int j = 0; j < K; j++) if (moe.lg[moe.sel[j]] < p8) p8 = moe.lg[moe.sel[j]];
+                for (int e = 0; e < c->n_expert; e++) { int in = 0; for (int j = 0; j < K; j++) in |= moe.sel[j] == e; if (!in && moe.lg[e] > p9) p9 = moe.lg[e]; }
+                fprintf(stderr, "dbg   token %d: 8o %.6f 9o %.6f margem relativa %.2e\n", b, p8, p9, (p8 - p9) / p8);
+            }
+        }
+        fprintf(stderr, "dbg camada %2d %s: erro relativo maximo %.2e, tokens com top-%d diferente %d/%d\n", l, L->lin ? "dn " : "att", wr, K, nd, nt);
+    }
     if (gx.loader) loader_install(m);       /* fila vazia: as vagas podem ser reescritas */
     const uint64_t tick = ++gx.clock;
     int np = 0, nc = 0;
@@ -6327,11 +6444,11 @@ static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
     for (int b = 0; b < B; b++) { mt[off_c + 2 * b] = (uint32_t)b; memcpy(&mt[off_c + 2 * b + 1], &one, 4); }
     int ok = kvk_buf_write_q(vkq.meta, 0, mt, (size_t)(off_c + 2 * B) * 4);
     const struct { int n; float eps; int B; } rp = { d, c->eps, B };
-    const KvkBuf rb[3] = { vkb.x, vkg.fn[l], vkb.xh };
-    ok &= kvk_dispatch(vkb.rms16, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1);
+    const KvkBuf rb[3] = { vkb.x, vkg.fn[l], vkq.xf };
+    ok &= kvk_dispatch(vkq.rms32, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1);
     if (vkm.sh) {
-        ok &= vk_mm(&L->sg, vkb.xh, vkq.hg, Hs, d, B, 0, 1);
-        ok &= vk_mm(&L->sd, vkq.hg, vkq.ys, d, Hs, B, 0, 0);
+        ok &= vk_mm_p(&L->sg, vkq.xf, vkq.hg, Hs, d, B, 0, 2);
+        ok &= vk_mm_p(&L->sd, vkq.hg, vkq.ys, d, Hs, B, 0, 1);
         ok &= vkq_scat(vkq.ys, B, B, off_sh);
     }
     const uint32_t kg = gpu_kind(&L->eg[0]), kd = gpu_kind(&L->ed[0]);
@@ -6339,11 +6456,11 @@ static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
     for (int v = 0; v < gx.S && ok; v++) {
         const int n = vkq.cnt[v], mo = off_v + 2 * vkq.ofs[v];
         if (!n) continue;
-        const KvkBuf gb[3] = { vkb.xh, vkq.xg, vkq.meta };
+        const KvkBuf gb[3] = { vkq.xf, vkq.xg, vkq.meta };
         const int gp[4] = { d, B, n, mo };
-        ok &= kvk_dispatch(vkq.gath, gb, 3, gp, sizeof gp, (uint32_t)(((size_t)d * n + 255) / 256), 1, 1);
-        ok &= vk_mm_raw(kg, vk_sg[l], (uint32_t)((size_t)v * (gx.bg[l] / 4)), wg, vkq.xg, vkq.hg, H, d, n, 0, 1);
-        ok &= vk_mm_raw(kd, vk_sd[l], (uint32_t)((size_t)v * (gx.bd[l] / 4)), wd, vkq.hg, vkq.ys, d, H, n, 0, 0);
+        ok &= kvk_dispatch(vkq.gath32, gb, 3, gp, sizeof gp, (uint32_t)(((size_t)d * n + 255) / 256), 1, 1);
+        ok &= vk_mm_pw(kg, vk_sg[l], (uint32_t)((size_t)v * (gx.bg[l] / 4)), wg, vkq.xg, vkq.hg, H, d, n, 0, 2);
+        ok &= vk_mm_pw(kd, vk_sd[l], (uint32_t)((size_t)v * (gx.bd[l] / 4)), wd, vkq.hg, vkq.ys, d, H, n, 0, 1);
         ok &= vkq_scat(vkq.ys, B, n, mo);
     }
     if (!ok) die("falha na execucao em Vulkan (MoE do lote)");
@@ -6384,13 +6501,13 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
     for (int l = 0; l < c->n_layers; l++) {
         const Layer *L = &m->layers[l];
         int ok = 1;
-        const KvkBuf rb[3] = { vkb.x, vkg.an[l], vkb.xh };
-        ok &= kvk_dispatch(vkb.rms16, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1);
+        const KvkBuf rb[3] = { vkb.x, vkg.an[l], vkq.xf };      /* entrada das projecoes em fp32 (produtos precisos) */
+        ok &= kvk_dispatch(vkq.rms32, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1);
         if (L->lin) {
             const int li = L->lin_i;
-            ok &= vk_mm(&L->wqkv, vkb.xh, vkq.bqkv, vkq.CH, d, B, 0, 0);
-            ok &= vk_mm(&L->wz, vkb.xh, vkq.bz, inner, d, B, 0, 0);
-            ok &= vk_mm(&vkq.wab[li], vkb.xh, vkq.bab, 2 * NV, d, B, 0, 0);
+            ok &= vk_mm_p(&L->wqkv, vkq.xf, vkq.bqkv, vkq.CH, d, B, 0, 1);
+            ok &= vk_mm_p(&L->wz, vkq.xf, vkq.bz, inner, d, B, 0, 1);
+            ok &= vk_mm_p(&vkq.wab[li], vkq.xf, vkq.bab, 2 * NV, d, B, 0, 1);
             if (vkq.dnstep) {   /* conferencia: recorrencia token a token (dn_step, fp32) dentro do lote */
                 for (int b = 0; b < B && ok; b++) {
                     const int mp[4] = { pos0 + b, 0, 0, 0 };
@@ -6413,6 +6530,18 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
                 vkq_moe_n(m, L, l, B);
                 continue;
             }
+            if (!vkq.blk) {   /* recorrencia exata em fp32, um lancamento por camada; depois o anel da convolucao */
+                const KvkBuf io[8] = { vkq.bqkv, vkq.bz, vkq.bab, vkq.cw[li], vkq.pr[li], vkq.ring[li], vkq.st[li], vkq.ub };
+                const struct { int pos0, B, kmap; float e1, e2; } pc = { pos0, B, vkq.kmap, c->eps, c->eps };
+                ok &= kvk_dispatch(vkq.seq, io, 8, &pc, sizeof pc, (uint32_t)NV, 1, 1);
+                const KvkBuf io2[2] = { vkq.bqkv, vkq.ring[li] };
+                const struct { int pos0, B, ch; } pc2 = { pos0, B, vkq.CH };
+                ok &= kvk_dispatch(vkq.cst, io2, 2, &pc2, sizeof pc2, (uint32_t)((vkq.CH + 255) / 256), 1, 1);
+                ok &= vk_mm_p(&L->wssm_out, vkq.ub, vkb.x, d, inner, B, 1, 1);
+                if (!ok) die("falha na execucao em Vulkan (lote qwen35moe)");
+                vkq_moe_n(m, L, l, B);
+                continue;
+            }
             {   const KvkBuf io[9] = { vkq.bqkv, vkq.bab, vkq.cw[li], vkq.pr[li], vkq.ring[li], vkq.qh, vkq.kh, vkq.vh, vkq.bg };
                 const struct { int pos0, B, Bp; float eps; } pc = { pos0, B, Bp, c->eps };
                 ok &= kvk_dispatch(vkq.prep, io, 9, &pc, sizeof pc, (uint32_t)(2 * NK + NV), (uint32_t)(Bp / 32), 1); }
@@ -6425,26 +6554,26 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
             {   const KvkBuf io[8] = { vkq.ub, vkq.wb, vkq.qm, vkq.qgh, vkq.kd, vkq.gl, vkq.st[li], vkq.bo };
                 const struct { int Bp, nch, pos0; } pc = { Bp, nch, pos0 };
                 ok &= kvk_dispatch(vkq.state, io, 8, &pc, sizeof pc, (uint32_t)NV, 128 / 16, 1); }
-            {   const KvkBuf io[4] = { vkq.bo, vkq.bz, vkq.pr[li], vkb.xh };
+            {   const KvkBuf io[4] = { vkq.bo, vkq.bz, vkq.pr[li], vkq.ub };     /* ub (livre aqui) recebe a saida em fp32 */
                 const struct { int B, Bp; float eps; } pc = { B, Bp, c->eps };
                 ok &= kvk_dispatch(vkq.norm, io, 4, &pc, sizeof pc, (uint32_t)NV, (uint32_t)((B + 31) / 32), 1); }
-            ok &= vk_mm(&L->wssm_out, vkb.xh, vkb.x, d, inner, B, 1, 0);
+            ok &= vk_mm_p(&L->wssm_out, vkq.ub, vkb.x, d, inner, B, 1, 1);
         } else {
-            ok &= vk_mm(&L->wq, vkb.xh, vkq.bqg, 2 * qd, d, B, 0, 0);
-            ok &= vk_mm(&L->wk, vkb.xh, vkb.k, kvd, d, B, 0, 0);
-            ok &= vk_mm(&L->wv, vkb.xh, vkb.v, kvd, d, B, 0, 0);
+            ok &= vk_mm_p(&L->wq, vkq.xf, vkq.bqg, 2 * qd, d, B, 0, 1);
+            ok &= vk_mm_p(&L->wk, vkq.xf, vkb.k, kvd, d, B, 0, 1);
+            ok &= vk_mm_p(&L->wv, vkq.xf, vkb.v, kvd, d, B, 0, 1);
             const KvkBuf qb[12] = { vkb.q2, vkb.k, vkb.v, vkg.dummy, vkg.dummy, vkg.dummy, vkg.kc[l], vkg.vc[l],
                                     vkg.freq, vkq.bqg, vkg.qn[l], vkg.kn[l] };
             const struct { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; int nrot, qst; } qp =
                 { 0, pos0, hd, 1, 0, qd, kvd, 2, B, c->eps, vkq.nrot, 2 * hd };
             ok &= kvk_dispatch(vkb.qkv, qb, 12, &qp, sizeof qp, (uint32_t)((B * (qd / 2 + kvd / 2 + kvd) + 127) / 128), 1, 1);
-            const KvkBuf ab[4] = { vkb.q2, vkg.kc[l], vkg.vc[l], vkb.xh };
+            const KvkBuf ab[4] = { vkb.q2, vkg.kc[l], vkg.vc[l], vkq.ub };     /* saida em fp32 (ub livre aqui) */
             const struct { int base, pos0, kvd, nkv, B; float scale; } ap = { 0, pos0, kvd, c->n_kv, B, 1.0f / sqrtf((float)hd) };
-            ok &= kvk_dispatch(vkb.flash_p, ab, 4, &ap, sizeof ap, (uint32_t)(B * c->n_kv), 1, 1);
-            const KvkBuf gb[2] = { vkb.xh, vkq.bqg };
+            ok &= kvk_dispatch(vkq.flash32, ab, 4, &ap, sizeof ap, (uint32_t)(B * c->n_kv), 1, 1);
+            const KvkBuf gb[2] = { vkq.ub, vkq.bqg };
             const int gp[3] = { hd, nh, B };
-            ok &= kvk_dispatch(vkq.gate, gb, 2, gp, sizeof gp, (uint32_t)(((size_t)qd * B + 255) / 256), 1, 1);
-            ok &= vk_mm(&L->wo, vkb.xh, vkb.x, d, qd, B, 1, 0);
+            ok &= kvk_dispatch(vkq.gate32, gb, 2, gp, sizeof gp, (uint32_t)(((size_t)qd * B + 255) / 256), 1, 1);
+            ok &= vk_mm_p(&L->wo, vkq.ub, vkb.x, d, qd, B, 1, 1);
         }
         if (!ok) die("falha na execucao em Vulkan (lote qwen35moe)");
         vkq_moe_n(m, L, l, B);
@@ -8069,6 +8198,14 @@ static int selftest(Model *m) {
         for (int i = 0; i < N; i++) o = forward(m, toks[i], i, i == N - 1);
         gpu.force_cpu = 0; cpu_exact = 0;
         memcpy(ref, o, V * sizeof(float));
+        if (getenv("KATANA_QN_DBG") && c->ssm_inner) {   /* medida: residual por camada e escolhidos, lote x CPU exata */
+            dbg_x = xalloc((size_t)N * c->n_layers * c->dim, 4); dbg_sel = xalloc((size_t)N * c->n_layers * c->n_used, 4);
+            dbg_on = 1; gpu.force_cpu = 1; cpu_exact = 1;
+            for (int i = 0; i < N; i++) o = forward(m, toks[i], i, i == N - 1);
+            gpu.force_cpu = 0; cpu_exact = 0;
+            o = forward_seq(m, toks, N, 0, 1);
+            dbg_on = 0;
+        }
         for (int mode = 0; mode < 4; mode++) {
             if (mode == 3 && !(vkg.on && vkb.ok)) continue;
             const long p0 = vkb.passes;
@@ -8084,13 +8221,6 @@ static int selftest(Model *m) {
                 if (fabs(ref[i]) > mr) mr = fabs(ref[i]);
             }
             int e2e = ag == ac && md < (gpu.kv16 ? 1.0 : 0.05);
-            /* qwen35moe em lote no Vulkan: ativacoes em fp16 nos produtos de 40 camadas (~5e-4 relativo por produto,
-               medido camada a camada contra o token a token, sem salto em camada nenhuma) e roteamento top-8 de 256
-               sensivel a isso; com todos os especialistas na CPU a diferenca fica igual (0,15). Tolera 3% do maior logit */
-            if (vkq.on && (mode == 0 || mode == 3)) {
-                if (!e2e && ag == ac && md < 0.03 * mr) e2e = 1;
-                printf("  (lote em fp16: diferenca %.3f = %.2f%% do maior |logit| %.2f, tolerancia 3%%)\n", md, 100.0 * md / mr, mr);
-            }
             if (vkb.ok && (mode == 0 || mode == 3)) printf("  (%ld passadas em lote)\n", vkb.passes - p0);
             printf("%s x CPU exata (%d tokens): maior diferenca de logit=%.6f, argmax %d x %d: %s\n",
                    mode == 0 ? (vkg.on ? (vkb.ok ? "GPU (Vk, lote)   " : "GPU (Vk, 1 a 1)  ") : "GPU em lote      ") : mode == 1 ? "GPU token a token" : mode == 3 ? "GPU (Vk, lote 16)" : "CPU inteira      ", N, md, ag, ac, e2e ? "OK" : "FALHOU");
@@ -8131,6 +8261,7 @@ static int vkcheck(Model *m, const char *path, int ngen, int ntok) {
     const Config *c = &m->cfg;
     const int V = c->vocab;
     if (!vkg.on || !vkb.ok) { printf("vkcheck: lote Vulkan inativo\n"); return 1; }
+    if (getenv("KATANA_VKC_EXACT")) cpu_exact = 1;      /* medida: especialistas frios da CPU em float exato */
     Ids ids = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
     encode(&m->tk, read_text(path), &ids);
