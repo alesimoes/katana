@@ -7,7 +7,7 @@ Column {
     id: root
     property string text: ""
     spacing: 8
-    readonly property var blocks: Md.parse(text.replace(/^\s+/, ""), Theme.dark ? "#1d1c1b" : "#ebe8de")
+    readonly property var blocks: Md.parse(text.replace(/^\s+/, ""), Theme.dark ? "#1a181e" : "#ece7f3")
 
     Repeater {
         model: root.blocks

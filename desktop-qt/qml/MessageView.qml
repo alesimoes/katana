@@ -211,18 +211,41 @@ Item {
             id: col
             width: parent.width
             spacing: 0
-            Rectangle {
+            // samurai em pixel art (64x64 logicos), escala inteira e sem suavizacao
+            Image {
+                id: samurai
+                objectName: "samurai"
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: 46; height: 46; radius: 14; color: Theme.ac
-                Text { anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 24 }
+                readonly property real livre: mv.height - mv.bottomSpace - 230
+                readonly property int escala: livre >= 256 ? 4 : livre >= 192 ? 3 : livre >= 128 ? 2 : 1
+                source: "qrc:/icons/samurai.png"
+                sourceSize: Qt.size(64, 64)
+                width: 64 * escala
+                height: 64 * escala
+                smooth: false
+                mipmap: false
+                Accessible.role: Accessible.Graphic
+                Accessible.name: "Samurai com uma katana"
             }
-            Item { width: 1; height: 18 }
+            Item { width: 1; height: 14 }
             Text {
+                objectName: "welcomeTitle"
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: "Olá! Como posso ajudar?"
+                text: "Katana"
+                color: Theme.ac
+                font.pixelSize: 30
+                font.weight: Font.Bold
+                font.letterSpacing: 3
+            }
+            Item { width: 1; height: 4 }
+            Text {
+                objectName: "welcomeGreeting"
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: "Em que posso ajudar hoje?"
                 color: Theme.fg
-                font.pixelSize: 26
+                font.pixelSize: 20
                 font.weight: Font.DemiBold
                 wrapMode: Text.Wrap
             }

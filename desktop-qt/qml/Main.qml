@@ -11,7 +11,7 @@ ApplicationWindow {
     minimumWidth: 700
     minimumHeight: 500
     visible: true
-    title: "katana"
+    title: "Katana"
     color: Theme.bg
 
     readonly property bool narrow: width < 760

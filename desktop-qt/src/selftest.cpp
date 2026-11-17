@@ -199,6 +199,25 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(c.item("composerInput")->property("enabled").toBool(), "composer habilitado quando pronto");
     c.grab("01-inicial.png");
 
+    // ---- tela de boas-vindas (conversa vazia) ----
+    fprintf(stderr, "-- tela de boas-vindas\n");
+    {
+        QQuickItem *em = c.item("emptyState");
+        check(em && em->isVisible() && be.messages()->count() == 0, "boas-vindas visivel com a conversa vazia");
+        QQuickItem *sm = c.item("samurai");
+        check(sm && sm->isVisible() && sm->width() >= 64 && !sm->property("smooth").toBool()
+                  && int(sm->width()) % 64 == 0,
+              "samurai em pixel art (escala inteira, sem suavizacao)");
+        QQuickItem *tt = c.item("welcomeTitle");
+        check(tt && tt->property("text").toString() == "Katana", "titulo 'Katana'");
+        QQuickItem *gr = c.item("welcomeGreeting");
+        check(gr && gr->property("text").toString().contains("Em que posso ajudar"), "frase de boas-vindas em portugues");
+        QList<QQuickItem *> sg;
+        findAll(c.root(), "suggestion", sg);
+        check(sg.size() == 3, "3 sugestoes clicaveis");
+        c.grab(be.themeOverride() == "dark" ? "12-boasvindas-escuro.png" : "12-boasvindas-claro.png");
+    }
+
     // ---- Shift+Enter quebra linha; Enter envia ----
     fprintf(stderr, "-- teclado no composer\n");
     c.click(c.item("composerInput"));
@@ -233,6 +252,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(waitFor([&] { return be.messages()->count() >= 1; }, 3000), "mensagem apareceu na lista");
     check(be.messages()->get(0)["kind"] == "user" && be.messages()->get(0)["text"] == pergunta, "balao do usuario com o texto digitado");
     check(c.inputText().isEmpty(), "composer limpo apos enviar");
+    check(!c.item("emptyState")->isVisible(), "boas-vindas some apos enviar a primeira mensagem");
     check(waitFor([&] { return be.answering(); }, 3000) || be.ready(), "estado respondendo");
     QTest::qWait(300);
     if (be.answering()) {
@@ -341,6 +361,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(be.currentSessionId() == "20260101-100000-001", "sessao antiga aberta");
     check(be.messages()->count() == 3, "historico mostrado (3 itens: user, assistant, tool)");
     check(be.hasPendingContext(), "resumo pendente criado");
+    check(!c.item("emptyState")->isVisible(), "boas-vindas nao aparece em sessao antiga com mensagens");
     check(waitFor([&] { return be.ready(); }, 30000), "agente pronto apos /novo");
     c.grab("04-lateral.png");
 
@@ -378,6 +399,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     be.newChat();
     check(waitFor([&] { return be.ready(); }, 30000), "pronto apos nova conversa");
     check(be.messages()->count() == 0 && be.currentSessionId().isEmpty(), "nova conversa limpa tela e sessao");
+    check(c.item("emptyState")->isVisible(), "boas-vindas volta em 'Nova conversa'");
     c.typeAndEnter("Conte de 1 a 500 por extenso, um numero por linha.");
     check(waitFor([&] { return be.answering() && be.messages()->lastKind() == "assistant"; }, 60000), "resposta em andamento");
     QTest::qWait(1500);

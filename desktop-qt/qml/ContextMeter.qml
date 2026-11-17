@@ -41,7 +41,7 @@ Item {
             width: 14; height: 14
             anchors.verticalCenter: parent.verticalCenter
             property real f: m.frac
-            property color c: m.tone
+            property color c: m.level === "ok" ? Theme.ac : m.tone
             property color track: Theme.bd
             onFChanged: requestPaint()
             onCChanged: requestPaint()
