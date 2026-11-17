@@ -59,6 +59,8 @@ def main():
     ap.add_argument("--semente", type=int, default=7)
     ap.add_argument("--cpt", type=float, default=3.3, help="caracteres por token (estimativa)")
     a = ap.parse_args()
+    if not os.path.exists(a.modelo):
+        sys.exit("modelo nao encontrado: %s (use --modelo)" % a.modelo)
     os.makedirs(a.saida, exist_ok=True)
     rnd = random.Random(a.semente)
     linhas = []
