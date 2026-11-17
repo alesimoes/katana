@@ -4,6 +4,12 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0c. katana-desktop nativo em Qt6 (2026-11-17)
+
+O katana-desktop deixou de ser Go + pagina HTML no Chrome: agora e um app Qt6/QML em `desktop-qt/` (ver
+`desktop-qt/README.md`; compilar com `desktop-qt/build.sh`; teste `--selftest`). O codigo Go e `desktop/` foram
+removidos. Para trocar o binario em uso: `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
+
 ## 0b. Contexto empacotado e conversas tokenizadas (2026-11-17, ramo worktree-agent-a79e57555acd5ead4)
 
 Feito (commit eff16d8):

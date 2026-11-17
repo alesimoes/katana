@@ -6,6 +6,7 @@ Motor de inferência de modelos de linguagem escrito do zero em C (`src/katana.c
 - `docs/conhecimento.md`: objetivo, o que o motor faz, tudo o que já foi medido, pontos fortes e fracos.
 - `docs/plano.md`: prioridades e critérios de pronto.
 - `docs/roteiro-otimizacoes.md`: técnicas ainda não usadas, com ganho esperado e esforço.
+- `desktop-qt/README.md`: katana-desktop, aplicativo nativo Qt6/QML (sem navegador) que conversa com o agente.
 
 ## Regras
 
