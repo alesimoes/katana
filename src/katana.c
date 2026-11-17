@@ -8266,7 +8266,7 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
    RoPE, gravacao do cache (anel nas locais) e a atencao ficam na CPU, em blocos de G4_NB tokens (o anel tem folga
    de G4_NB posicoes: um bloco grava antes de atender). O MoE: vk_moe_n (vagas do cache, frios temporarios ou na
    CPU; roteador calculado na CPU) ou, sem cache de especialistas, na CPU como o g4_layers_n.
-   KATANA_VK_G4=0 desliga (prompt como antes); KATANA_VK_G4MOE=0 deixa o MoE do lote na CPU. */
+   KATANA_VK_G4=0 desliga (prompt como antes); KATANA_VK_G4MOE=1 leva o MoE do lote as vagas (inexato, ver abaixo). */
 static struct {
     int ok, P, moe;
     float *X, *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *LG, *T, *OUTS;
@@ -8310,7 +8310,10 @@ static int vk_g4_build(Model *m) {
         gpu.used = used0;
         return 0;
     }
-    if (E && vk_sg && !(getenv("KATANA_VK_G4MOE") && atoi(getenv("KATANA_VK_G4MOE")) == 0)) {
+    /* MoE do lote nas vagas so com KATANA_VK_G4MOE=1: o down dos especialistas do gemma4 e Q5_1 em 29 de 30 camadas
+       e a GPU o guarda requantizado em Q8_0 (aproximado, erro ~1e-3 na saida da camada), entao o lote deixa de bater
+       com a CPU (diferenca de logit 1 a 6 no selftest) sem ganho medido sobre o MoE do lote na CPU */
+    if (E && vk_sg && getenv("KATANA_VK_G4MOE") && atoi(getenv("KATANA_VK_G4MOE")) == 1) {
         const int K = c->n_used;
         const size_t H = c->hidden;
         int f2 = 0;
@@ -8481,6 +8484,23 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
                 vk_moe_n(m, L, l, B);
                 vk_moe_lgh = NULL;
                 vk_g4_get(vk_moe_out, YB, B, d);
+                if (getenv("KATANA_VK_G4CHK")) {   /* depuracao: compara com o MoE na CPU */
+                    double mx = 0, mr = 0;
+                    for (int t = 0; t < B; t++) {
+                        moe_lg_ext = vkg4.LG + (size_t)t * E; moe_route(m, L, l); moe_lg_ext = NULL;
+                        int ee[MOE_KMAX], zz[MOE_KMAX] = {0};
+                        for (int j = 0; j < K; j++) ee[j] = moe.sel[j];
+                        rmsnorm(Xb, X + (size_t)t * d, L->pre_ffn2, d, c->eps);
+                        moe_cpu_multi(m, L, ee, zz, K, 1, Xb, vkg4.OUTS);
+                        for (int i = 0; i < d; i++) {
+                            float s = 0; for (int j = 0; j < K; j++) s += moe.w[j] * vkg4.OUTS[(size_t)j * d + i];
+                            const double df = fabs(s - YB[(size_t)t * d + i]);
+                            if (df > mx) mx = df;
+                            if (fabs(s) > mr) mr = fabs(s);
+                        }
+                    }
+                    fprintf(stderr, "[chk g4 moe] camada %d: dif max %.3e (escala %.3e)\n", l, mx, mr);
+                }
             }
             else for (int b0 = 0; b0 < B; b0 += G4_NB) {
                 const int nb = B - b0 < G4_NB ? B - b0 : G4_NB;
