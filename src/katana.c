@@ -13676,12 +13676,27 @@ static uint64_t pfx_hash(uint64_t h, const void *p, size_t n) {
 /* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL); 0 se nao cobre */
 static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     const Config *c = &m->cfg;
-    if (m->ckv || !m->kcache || c->g4) return 0;
-    *ngl = 0; *esz = 4; *backend = 0;
+    if (m->ckv || !(m->kcache || m->kh)) return 0;
+    *ngl = 0; *esz = m->kh ? 2 : 4; *backend = 0;      /* cache da CPU em fp16 (m->kh/m->vh, contexto longo): 2 bytes */
     if (vkg.on && !gpu.force_cpu) { *ngl = vkg.nl; *esz = vkg.kv16 ? 2 : 4; *backend = 1; }
     else if (gpu.n_gl > 0 && !gpu.force_cpu) { *ngl = gpu.n_gl; *esz = gpu.kv16 ? 2 : 4; *backend = 2; }
     if (c->ssm_inner && *backend != 0) return 0;
+    if (c->g4 && *backend != 0) return 0;       /* gemma4: so o cache da CPU (anel por camada) */
     return 1;
+}
+/* bytes de K (ou de V) de uma camada para n posicoes no arquivo do prefixo. gemma4: geometria por camada e anel,
+   guarda os primeiros min(n, kv_cap) enderecos do anel (se n passou da capacidade, o anel inteiro) */
+static size_t pfx_lbytes(const Model *m, int l, int n, int ngl, int esz) {
+    const Config *c = &m->cfg;
+    const size_t kvd = (size_t)c->n_kv * c->hd;
+    if (l < ngl) return (size_t)n * kvd * (size_t)esz;
+    const size_t cs = m->kh ? 2 : 4;
+    if (c->g4) {
+        const Layer *Ly = &m->layers[l];
+        const size_t np = (size_t)n < (size_t)Ly->kv_cap ? (size_t)n : (size_t)Ly->kv_cap;
+        return np * (size_t)Ly->nkv_l * (size_t)Ly->hd_l * cs;
+    }
+    return (size_t)n * kvd * cs;
 }
 
 static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz, int backend) {
@@ -13693,6 +13708,11 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
     h = pfx_hash(h, &m->fsize, sizeof m->fsize);
     h = pfx_hash(h, &m->n_params, sizeof m->n_params);
     h = pfx_hash(h, m->out_norm, sizeof(float) * (size_t)(c->dim < 256 ? c->dim : 256));
+    if (m->kh) { const int k16 = 1; h = pfx_hash(h, &k16, sizeof k16); }
+    if (c->g4) for (int l = 0; l < c->n_layers; l++) {
+        const int32_t gl[] = { m->layers[l].kv_cap, m->layers[l].nkv_l, m->layers[l].hd_l, m->layers[l].swa };
+        h = pfx_hash(h, gl, sizeof gl);
+    }
     h = pfx_hash(h, ids, sizeof(int) * (size_t)n);
     return h;
 }
@@ -13717,9 +13737,16 @@ static int pfx_layer(Model *m, int l, int vv, int n, int ngl, int esz, int backe
     const Config *c = &m->cfg;
     const size_t kvd = (size_t)c->n_kv * c->hd, ctx = c->ctx;
     if (l >= ngl) {
-        if (m->layers[l].lin) { if (dir) memset(buf, 0, (size_t)n * kvd * 4); return 1; }   /* DeltaNet: sem cache KV */
-        float *base = (vv ? m->vcache : m->kcache) + m->layers[l].kv_off;
-        if (dir) memcpy(buf, base, (size_t)n * kvd * 4); else memcpy(base, buf, (size_t)n * kvd * 4);
+        const size_t cs = m->kh ? 2 : 4;        /* elemento do cache da CPU */
+        if (c->g4) {                            /* gemma4: bytes por camada (anel) */
+            const size_t gb = pfx_lbytes(m, l, n, ngl, esz);
+            char *gp = m->kh ? (char *)((vv ? m->vh : m->kh) + m->layers[l].kv_off) : (char *)((vv ? m->vcache : m->kcache) + m->layers[l].kv_off);
+            if (dir) memcpy(buf, gp, gb); else memcpy(gp, buf, gb);
+            return 1;
+        }
+        if (m->layers[l].lin) { if (dir) memset(buf, 0, (size_t)n * kvd * cs); return 1; }   /* DeltaNet: sem cache KV */
+        char *base = m->kh ? (char *)((vv ? m->vh : m->kh) + m->layers[l].kv_off) : (char *)((vv ? m->vcache : m->kcache) + m->layers[l].kv_off);
+        if (dir) memcpy(buf, base, (size_t)n * kvd * cs); else memcpy(base, buf, (size_t)n * kvd * cs);
         return 1;
     }
     const size_t off = (size_t)l * ctx * kvd * (size_t)esz, bytes = (size_t)n * kvd * (size_t)esz;
@@ -13745,12 +13772,14 @@ static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     h.ngl = ngl; h.esz = esz; h.backend = backend;
     if (c->ssm_inner) h.ssm_bytes = (size_t)m->n_lin * dn_state_floats(c) * sizeof(float);
     int ok = fwrite(&h, sizeof h, 1, f) == 1;
-    void *buf = xalloc((size_t)n * kvd * 4 + 64, 1);
+    size_t bmax = (size_t)n * kvd * 4;
+    for (int l = 0; l < c->n_layers; l++) { const size_t b = pfx_lbytes(m, l, n, ngl, esz); if (b > bmax) bmax = b; }
+    void *buf = xalloc(bmax + 64, 1);
     if (backend == 1) kvk_wait();
     if (backend == 2) cl.Finish(gpu.queue);
     for (int l = 0; l < c->n_layers && ok; l++)
         for (int vv = 0; vv < 2 && ok; vv++) {
-            const size_t bytes = (size_t)n * kvd * (size_t)(l < ngl ? esz : 4);
+            const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 1) && fwrite(buf, 1, bytes, f) == bytes;
         }
     if (ok && h.ssm_bytes) ok = fwrite(m->ssm, 1, (size_t)h.ssm_bytes, f) == h.ssm_bytes;
@@ -13800,15 +13829,17 @@ static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     ok = ok && h.ssm_bytes == ssm_bytes;
     if (ok) {       /* confere o tamanho do arquivo antes de tocar no cache */
         size_t want = sizeof h + ssm_bytes;
-        for (int l = 0; l < c->n_layers; l++) want += 2 * (size_t)n * kvd * (size_t)(l < ngl ? esz : 4);
+        for (int l = 0; l < c->n_layers; l++) want += 2 * pfx_lbytes(m, l, n, ngl, esz);
         fseek(f, 0, SEEK_END);
         ok = (size_t)ftell(f) == want;
         fseek(f, (long)sizeof h, SEEK_SET);
     }
-    void *buf = ok ? xalloc((size_t)n * kvd * 4 + 64, 1) : NULL;
+    size_t bmax = (size_t)n * kvd * 4;
+    for (int l = 0; l < c->n_layers; l++) { const size_t b = pfx_lbytes(m, l, n, ngl, esz); if (b > bmax) bmax = b; }
+    void *buf = ok ? xalloc(bmax + 64, 1) : NULL;
     for (int l = 0; l < c->n_layers && ok; l++)
         for (int vv = 0; vv < 2 && ok; vv++) {
-            const size_t bytes = (size_t)n * kvd * (size_t)(l < ngl ? esz : 4);
+            const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = fread(buf, 1, bytes, f) == bytes && pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 0);
         }
     if (ok && ssm_bytes) ok = fread(m->ssm, 1, (size_t)ssm_bytes, f) == ssm_bytes;
@@ -13828,7 +13859,8 @@ static int pfx_prepare(Model *m, const Ids *full, const char *sys) {
     int ngl, esz, backend;
     if (!pfx_geom(m, &ngl, &esz, &backend)) return 0;
     static char ptext[26000];
-    snprintf(ptext, sizeof ptext, "<|im_start|>system\n%s<|im_end|>\n", sys);
+    if (c->g4) snprintf(ptext, sizeof ptext, "<|turn>system\n%s%s<turn|>\n", g4_think() ? "<|think|>\n" : "", sys);
+    else snprintf(ptext, sizeof ptext, "<|im_start|>system\n%s<|im_end|>\n", sys);
     Ids p = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&p, c->bos);
     encode(tk, ptext, &p);
@@ -13921,6 +13953,7 @@ static void go_agent_sys(char *sys, size_t cap) {
  * (o cache KV e linear e o DeltaNet so continua do fim), aproveitando o prefixo de sistema do disco. */
 typedef struct { char role; char *s; } AMsg;
 typedef struct { AMsg *v; int n, cap; } AHist;
+static int g_ah_g4;       /* 1: historico no formato Gemma 4 (turnos <|turn>role ... <turn|>) */
 static void ah_push(AHist *h, char role, const char *s, size_t n) {
     if (h->n == h->cap) { h->cap = h->cap * 2 + 16; h->v = realloc(h->v, sizeof(AMsg) * (size_t)h->cap); if (!h->v) die("sem memoria"); }
     char *p = xalloc(n + 1, 1); memcpy(p, s, n); p[n] = 0;
@@ -13930,6 +13963,20 @@ static void ah_clear(AHist *h) { for (int i = 0; i < h->n; i++) free(h->v[i].s);
 /* texto ChatML das mensagens; termina no fim da ultima, sem o fecho (como o cache KV) */
 static void ah_render(const AHist *h, const char *sys, Buf *o) {
     buf_clear(o);
+    if (g_ah_g4) {      /* gemma4: mensagens ja no texto exato do cache (u: so o pedido; a: resposta; t: resposta de ferramenta) */
+        buf_str(o, "<|turn>system\n"); if (g4_think()) buf_str(o, "<|think|>\n"); buf_str(o, sys); buf_str(o, "<turn|>\n");
+        for (int i = 0; i < h->n; i++) {
+            const char r = h->v[i].role;
+            if (r == 'u') {
+                if (i) buf_str(o, "<turn|>\n");
+                buf_str(o, "<|turn>user\n"); buf_str(o, h->v[i].s); buf_str(o, "<turn|>\n<|turn>model\n"); buf_str(o, g4_answer_pre());
+            } else {
+                buf_str(o, h->v[i].s);
+                if (r == 't' && g4_think()) buf_str(o, "<|channel>thought\n");
+            }
+        }
+        return;
+    }
     buf_str(o, "<|im_start|>system\n"); buf_str(o, sys); buf_str(o, "<|im_end|>\n");
     for (int i = 0; i < h->n; i++) {
         if (i) buf_str(o, "<|im_end|>\n");
@@ -13944,7 +13991,26 @@ static int ah_count(const Model *m, const char *t) {
     const int n = ids.n; free(ids.ids); return n;
 }
 /* troca o corpo de cada resultado de ferramenta da mensagem por "[resultado de X omitido: N bytes]"; 1 se mudou */
+static int ah_shrink_tool_g4(AMsg *mg) {
+    const char *K = "<|tool_response>response:", *E = "<tool_response|>";
+    if (mg->role != 't' || !strstr(mg->s, K) || strstr(mg->s, "[resultado de ")) return 0;
+    Buf o = {0};
+    for (const char *q = strstr(mg->s, K); q; q = strstr(q, K)) {
+        const char *nm = q + strlen(K);
+        size_t nl = strcspn(nm, "{\n");
+        const char *e = strstr(nm, E);
+        const size_t nb = e ? (size_t)(e - q) : strlen(q);
+        char t[320];
+        snprintf(t, sizeof t, "<|tool_response>response:%.*s{value:" G4Q "[resultado de %.*s omitido para economizar contexto: %zu bytes]" G4Q "}<tool_response|>",
+                 (int)(nl < 100 ? nl : 100), nm, (int)(nl < 100 ? nl : 100), nm, nb);
+        buf_str(&o, t);
+        q = e ? e + strlen(E) : q + strlen(q);
+    }
+    free(mg->s); mg->s = o.p ? o.p : xalloc(1, 1);
+    return 1;
+}
 static int ah_shrink_tool(AMsg *mg) {
+    if (g_ah_g4) return ah_shrink_tool_g4(mg);
     const char *K = "<tool_response>\n[resultado da ferramenta ";
     if (mg->role != 't' || !strstr(mg->s, K)) return 0;
     Buf o = {0};
@@ -13977,8 +14043,8 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
     for (int i = 0; i < upto; i++) {
         const char *s = h->v[i].s;
         if (h->v[i].role == 'a') {          /* sem o raciocinio */
-            const char *e = strstr(s, "</think>");
-            if (e) s = e + 8;
+            const char *e = strstr(s, g_ah_g4 ? "<channel|>" : "</think>");
+            if (e) s = e + (g_ah_g4 ? 10 : 8);
             while (*s == '\n') s++;
             buf_str(&tx, "Assistente: ");
         } else buf_str(&tx, h->v[i].role == 't' ? "Resultados de ferramenta: " : "Usuario: ");
@@ -13999,12 +14065,16 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
         free(tx.p); tx = t2;
     }
     Buf pr = {0};
-    buf_str(&pr, "<|im_start|>system\nVoce resume conversas de forma fiel e curta.<|im_end|>\n<|im_start|>user\n"
-                 "Resuma a conversa abaixo em no maximo 15 linhas, no idioma da conversa: o que o usuario quer, fatos e decisoes, "
+    buf_str(&pr, g_ah_g4 ? "<|turn>system\nVoce resume conversas de forma fiel e curta.<turn|>\n<|turn>user\n"
+                         : "<|im_start|>system\nVoce resume conversas de forma fiel e curta.<|im_end|>\n<|im_start|>user\n");
+    buf_str(&pr, "Resuma a conversa abaixo em no maximo 15 linhas, no idioma da conversa: o que o usuario quer, fatos e decisoes, "
                  "arquivos, comandos e ferramentas usados com os resultados importantes, e o que ainda falta fazer. Nao invente nada.\n\n<conversa>\n");
     buf_str(&pr, tx.p); free(tx.p);
-    buf_str(&pr, "</conversa><|im_end|>\n<|im_start|>assistant\n");
-    if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    if (g_ah_g4) { buf_str(&pr, "</conversa><turn|>\n<|turn>model\n"); buf_str(&pr, g4_answer_pre()); }
+    else {
+        buf_str(&pr, "</conversa><|im_end|>\n<|im_start|>assistant\n");
+        if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    }
     Ids ids = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
     encode(tk, pr.p, &ids);
@@ -14093,8 +14163,9 @@ static int agent(Model *m, int max_tokens, float temp) {
     const int go = c->chat_fmt == 9;     /* gpt-oss harmony */
     const int im_end = g4 ? map_get(&tk->vocab, "<|tool_response>", 16) : map_get(&tk->vocab, "<|im_end|>", 10);   /* gemma4: para ao abrir a resposta da ferramenta */
     int pos = 0, first = 1;
-    AHist hist = {0};                    /* mensagens no cache (so ChatML), para compactar */
-    const int cml = !g4 && !go;
+    AHist hist = {0};                    /* mensagens no cache (ChatML ou Gemma 4), para compactar */
+    const int cml = !go;                 /* historico/compactacao: ChatML e Gemma 4 */
+    g_ah_g4 = g4;
     const char *ce = getenv("KATANA_COMPACT");
     const int auto_cp = cml && !(ce && atoi(ce) == 0);
     char prole = 0; Buf pend = {0};      /* mensagem do turno atual que entra no cache com o texto pendente */
@@ -14117,7 +14188,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (!read_line(line, sizeof line)) break;
         if (line[0] == 0) continue;
         if (strcmp(line, "/compactar") == 0) {
-            if (!cml) fprintf(stderr, "[/compactar: so no formato ChatML]\n");
+            if (!cml) fprintf(stderr, "[/compactar: so nos formatos ChatML e Gemma 4]\n");
             else if (pos == 0 || !hist.n) fprintf(stderr, "[nada a compactar]\n");
             else {
                 g_stop = 0; g_busy = 1;
@@ -14192,7 +14263,8 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
             if (cml) {
                 Buf ab = {0};
-                buf_str(&ab, think_pre(c)); if (reply.p) buf_add(&ab, reply.p, reply.n);
+                if (!g4) buf_str(&ab, think_pre(c));
+                if (reply.p) buf_add(&ab, reply.p, reply.n);
                 ah_push(&hist, 'a', ab.p ? ab.p : "", ab.n);
                 free(ab.p);
             }
@@ -14271,8 +14343,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (tl + 2 * TOOL_WEB + 2048 >= sizeof text) break;
             }
             if (!calls) break;
-            if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho */
-                const size_t h0 = strlen("<|im_end|>\n<|im_start|>user\n");
+            if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho (gemma4: direto no turno do modelo) */
+                const size_t h0 = g4 ? 0 : strlen("<|im_end|>\n<|im_start|>user\n");
                 prole = 't'; buf_clear(&pend);
                 if (tl > h0) buf_add(&pend, text + h0, tl - h0);
             }
