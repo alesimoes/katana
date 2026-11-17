@@ -4,6 +4,46 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0b. Contexto empacotado e conversas tokenizadas (2026-11-17, ramo worktree-agent-a79e57555acd5ead4)
+
+Feito (commit eff16d8):
+- **Compactacao do contexto do agente** (so formato ChatML; Gemma 4 e gpt-oss mantem o aviso "contexto cheio").
+  O agente guarda as mensagens que ja estao no cache KV. `/compactar` forca; automatica quando o turno passaria
+  de 85% do contexto (`KATANA_COMPACT=0` desliga a automatica). Camadas: (1) resultados de ferramenta anteriores
+  ao ultimo pedido do usuario viram `[resultado de X omitido para economizar contexto: N bytes]`; (2) se ainda
+  acima de 50% do contexto (ou forcado), os turnos antes do ultimo pedido viram um resumo gerado pelo proprio
+  modelo (gulosa, ate 500 tokens, prompt fixo, sem ferramentas), seguido de "Entendido..." do assistente;
+  (3) se ainda acima de 85%, encolhe tambem os resultados do turno atual menos o ultimo. Depois recalcula o
+  cache do zero (sistema do cache em disco via pfx_prepare + resumo + ultimo turno + texto pendente). O resumo
+  aparece em stderr em `[resumo]`.
+- **Marcadores com KATANA_UI=1** (stdout, uma linha cada):
+  - `\x01TOKENS <pos> <ctx>` depois de cada resposta (agente e conversa simples) e depois de `/compactar`;
+    vem antes do `\x01READY` do proximo prompt.
+  - `\x01COMPACT <tokens_antes> <tokens_depois>` a cada compactacao.
+- **`katana tokenize <modelo> [arquivo|-] [--ids]`**: so o vocabulario (g_vocab_only). Texto livre: conta (com BOS
+  se o modelo usa). Se todas as linhas nao vazias forem `system|user|assistant<TAB>texto` (`\n`, `\t` escapados),
+  monta a conversa com turn_text (mesmo formato do chat e do toktest) e imprime tokens por mensagem e total.
+
+Medido (qwen2.5-1.5b Q4_K_M, KATANA_CTX=2048, 8 pedidos longos + /compactar): o prompt de sistema do agente
+ocupa ~950 tokens; compactacoes automaticas 1726->1430 e 1890->1420 tokens; o resumo guardou o nome e a cidade
+do usuario ("Carla", "Recife") e as respostas seguintes seguiram coerentes. O 1,5B confunde "qual o meu nome"
+com o proprio nome (responde "Katana"): limite do modelo, nao do resumo. `/compactar` logo depois de uma
+compactacao pode nao encolher (1437->1448): resume de novo o resumo. Selftest denso (qwen2.5-1.5b) OK.
+`tokenize` conferido a mao (ids ChatML corretos; "Hello world\n" = 9707 1879 198); usa o mesmo encode()
+coberto pelo teste dourado (tools/tokref nao rodou aqui: falta o pacote python tokenizers).
+
+Pendente:
+- **Retomada de sessao pelo cache KV** (B3): nao feito. Custo: o KV do Qwen2.5-1.5B em fp16 e ~28 KB/token
+  (28 camadas x 2 x 256 x 2 B) -> 32k tokens ~0,9 GB por sessao; Qwen3-30B ~96 KB/token -> 3 GB por sessao em
+  32k. Recalcular o prefixo custa segundos a dezenas de segundos (prefill de 1,5-3k tok/s no 1,5B, medido acima
+  ~1,6k tok/s). Caminho barato: o desktop guarda o texto da sessao; o motor ganharia `--retomar <arquivo>`
+  que renderiza o historico (ah_render) e grava/carrega o KV com a mesma maquinaria de pfx_save/pfx_load,
+  chave = hash(tokens)+modelo+ctx, com limite de disco e expiracao. Risco: espaco em disco e o DeltaNet
+  (so continua do fim; o estado SSM teria de ir junto, pfx_save ja grava m->ssm).
+- **Aquecimento de especialistas por sessao** (pedido extra, `\x01WARM`): nao implementado, ver conhecimento.md 5b.
+- Compactacao no formato Gemma 4 e harmony; a linha de estatistica do turno compactado mistura o tempo do
+  resumo na velocidade de entrada.
+
 ## 0a. Contexto longo ate 1M tokens (2026-11-17, ramo worktree-agent-a4c2b26684f6f7154)
 
 Objetivo do dono: aceitar pelo menos 1.000.000 tokens de contexto. Alvo realista: Qwen3.6-35B-A3B (qwen35moe,
