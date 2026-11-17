@@ -4462,6 +4462,7 @@ static float *vk_forward_moe(Model *m, int want_logits);
 static float *vk_qn_forward_1(Model *m, int want_logits);
 static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits);
 static void vkq_setup(Model *m);
+static int vkq_pos1;      /* posicao do token no caminho de um token do qwen35moe */
 
 /* um token pelas camadas todas na GPU; devolve os logits (m->logits) ou NULL se !want_logits */
 static float *vk_forward_1(Model *m, int token, int pos, int want_logits) {
@@ -4472,7 +4473,7 @@ static float *vk_forward_1(Model *m, int token, int pos, int want_logits) {
     const int meta[4] = { pos, 0, 0, 0 };
     if (!kvk_buf_write_q(vkg.x, 0, m->x, (size_t)c->dim * sizeof(float)) || !kvk_buf_write_q(vkg.meta, 0, meta, sizeof meta))
         die("falha na execucao em Vulkan (escrita)");
-    if (c->ssm_inner) return vk_qn_forward_1(m, want_logits);
+    if (c->ssm_inner) { vkq_pos1 = pos; return vk_qn_forward_1(m, want_logits); }
     if (c->n_expert) { vk_pos_live = pos; float *lg = vk_forward_moe(m, want_logits); vk_pos_live = -1; return lg; }
     double t1 = now_sec();
     const int h = want_logits && vkg.nl == c->n_layers ? 1 : 0;
@@ -7627,7 +7628,8 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
    o compartilhado e cada especialista quente rodam sobre as colunas dos seus tokens (moe_gath, mm glu e down com
    a vaga por deslocamento, moe_scat soma pesada); os frios rodam na CPU enquanto isso e sobem somados. */
 static struct {
-    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk;
+    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1;
+    float *hq, *hk, *hv, *ho, *hT;          /* atencao na CPU (cpuatt): q/portao, k, v e saida por token */
     Mat *wab;                               /* por camada linear: [alpha | beta] float */
     KvkBuf qkv, z, ab, o, qg;               /* um token */
     KvkBuf *cw, *pr, *ring, *st;            /* por camada linear */
@@ -7746,13 +7748,18 @@ static int vkq_build(Model *m) {
     const size_t kv32 = (size_t)n_att * 2 * c->ctx * kvd * 4;
     vkg.kv16 = getenv("KATANA_KV16") ? atoi(getenv("KATANA_KV16")) != 0 : kv32 > ((size_t)256 << 20);
     gpu.kv16 = vkg.kv16;
+    /* atencao completa na CPU (cache KV na RAM, qn_core/qn_core_n): o grafo deixa de depender do contexto e cabe
+       com contextos longos; padrao quando o cache em 16 bits passaria de 512 MB. KATANA_QN_CPUATT=0/1 forca. */
+    vkq.cpuatt = getenv("KATANA_QN_CPUATT") ? atoi(getenv("KATANA_QN_CPUATT")) != 0 : kv32 / 2 > ((size_t)512 << 20);
+    if (vkq.cpuatt && !m->kcache && !m->kh) vkq.cpuatt = 0;
     vkg.nl = c->n_layers;
     vkg.x = vk_wk(d * 4, &fail); vkg.xn = vk_wk(d * 4, &fail);
     vkg.k = vk_wk(kvd * 4, &fail); vkg.v = vk_wk(kvd * 4, &fail);
     vkg.lg = vk_wk((c->vocab + 128) * 4, &fail);
-    vkg.att = vk_wk((size_t)c->n_heads * c->ctx * 4, &fail); vkg.meta = vk_wk(16, &fail); vkg.dummy = vk_wk(256, &fail);
-    vkg.chunk = 128 * ((c->ctx + 128 * 32 - 1) / (128 * 32));
-    vkg.nchunk = (c->ctx + vkg.chunk - 1) / vkg.chunk;
+    const int actx = vkq.cpuatt ? 128 : c->ctx;      /* com atencao na CPU os buffers da atencao na GPU ficam minimos */
+    vkg.att = vk_wk((size_t)c->n_heads * actx * 4, &fail); vkg.meta = vk_wk(16, &fail); vkg.dummy = vk_wk(256, &fail);
+    vkg.chunk = 128 * ((actx + 128 * 32 - 1) / (128 * 32));
+    vkg.nchunk = (actx + vkg.chunk - 1) / vkg.chunk;
     vkg.part = vk_wk((size_t)c->n_heads * vkg.nchunk * (c->hd + 2) * 4, &fail);
     vkg.freq = vk_vec(m->rope_freq, c->hd / 2, &fail); vkg.onorm = vk_vec(m->out_norm, d, &fail);
     vkg.an = xalloc(NL, sizeof(KvkBuf)); vkg.fn = xalloc(NL, sizeof(KvkBuf));
@@ -7760,7 +7767,7 @@ static int vkq_build(Model *m) {
     vkg.kc = xalloc(NL, sizeof(KvkBuf)); vkg.vc = xalloc(NL, sizeof(KvkBuf));
     vkq.cw = xalloc(m->n_lin, sizeof(KvkBuf)); vkq.pr = xalloc(m->n_lin, sizeof(KvkBuf));
     vkq.ring = xalloc(m->n_lin, sizeof(KvkBuf)); vkq.st = xalloc(m->n_lin, sizeof(KvkBuf));
-    const size_t kvb = (size_t)c->ctx * kvd * (vkg.kv16 ? 2 : 4);
+    const size_t kvb = (size_t)actx * kvd * (vkg.kv16 ? 2 : 4);
     float *prv = xalloc(2 * (size_t)NV + D, sizeof(float));
     for (size_t l = 0; l < NL && !fail; l++) {
         const Layer *L = &m->layers[l];
@@ -7845,6 +7852,10 @@ static int vkq_build(Model *m) {
     vkq.cnt = xalloc(c->n_expert + 1, sizeof(int)); vkq.ofs = xalloc(c->n_expert + 1, sizeof(int));
     vkq.pv = xalloc(Pp * K, sizeof(int)); vkq.pb = xalloc(Pp * K, sizeof(int)); vkq.pw = xalloc(Pp * K, sizeof(float));
     vkq.ce = xalloc(Pp * K, sizeof(int)); vkq.cb = xalloc(Pp * K, sizeof(int)); vkq.cw_ = xalloc(Pp * K, sizeof(float));
+    if (vkq.cpuatt) {
+        vkq.hq = xalloc(2 * qd * Pp, sizeof(float)); vkq.hk = xalloc(kvd * Pp, sizeof(float)); vkq.hv = xalloc(kvd * Pp, sizeof(float));
+        vkq.ho = xalloc(qd * Pp, sizeof(float)); vkq.hT = xalloc(2 * qd * Pp, sizeof(float));
+    }
     return 1;
 }
 
@@ -7856,7 +7867,7 @@ static void vkq_setup(Model *m) {
     if (vkbm.on && vkm.rw) vkm.rt = 1;     /* roteador do lote na GPU (o caminho de um token deste grafo nao o usa) */
     gpu.mv_host = 0; vkg.on = 1; vkg.rec = 0; vkb.ok = 1; vkq.on = 1;
     fprintf(stderr, "GPU: Vulkan - grafo completo do qwen35moe (DeltaNet + atencao com portao + MoE, lote de ate %d), %.0f MB usados%s\n",
-            vkb.P, gpu.used / 1048576.0, vkg.kv16 ? ", cache KV em 16 bits" : "");
+            vkb.P, gpu.used / 1048576.0, vkq.cpuatt ? ", atencao completa na CPU (cache KV na RAM)" : vkg.kv16 ? ", cache KV em 16 bits" : "");
     (void)c;
 }
 
@@ -7883,6 +7894,15 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
             ok &= vk_gmv_ex(&L->wq, vkg.xn, vkq.qg, vkg.dummy, 2 * qd, d, 0, 0);
             ok &= vk_gmv_ex(&L->wk, vkg.xn, vkg.k, vkg.dummy, kvd, d, 0, 0);
             ok &= vk_gmv_ex(&L->wv, vkg.xn, vkg.v, vkg.dummy, kvd, d, 0, 0);
+            if (vkq.cpuatt) {     /* atencao na CPU: q/portao, k, v descem; a saida sobe para o produto de saida */
+                ok &= kvk_buf_read(vkq.qg, 0, vkq.hq, (size_t)2 * qd * 4) && kvk_buf_read(vkg.k, 0, vkq.hk, (size_t)kvd * 4)
+                      && kvk_buf_read(vkg.v, 0, vkq.hv, (size_t)kvd * 4);
+                if (!ok) die("falha na execucao em Vulkan (qwen35moe, leitura da atencao)");
+                qn_core(m, L, l, vkq_pos1, vkq.hq, vkq.hk, vkq.hv, vkq.ho);
+                ok &= kvk_buf_write_q(vkq.o, 0, vkq.ho, (size_t)qd * 4);
+                ok &= vk_gmv_ex(&L->wo, vkq.o, vkg.x, vkg.dummy, d, qd, 1, 0);
+                goto qn1_ffn;
+            }
             const KvkBuf ab[15] = { vkq.qg, vkg.k, vkg.v, vkg.dummy, vkg.dummy, vkg.dummy, vkg.kc[l], vkg.vc[l], vkg.att, vkq.o,
                                     vkg.freq, vkg.qn[l], vkg.kn[l], vkg.meta, vkg.part };
             const struct { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; int chunk, nchunk, nrot, qst, gate; } ap =
@@ -7895,6 +7915,7 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
             }
             ok &= vk_gmv_ex(&L->wo, vkq.o, vkg.x, vkg.dummy, d, qd, 1, 0);
         }
+    qn1_ffn:;
         const KvkBuf rb2[3] = { vkg.x, vkg.fn[l], vkg.xn };
         ok &= kvk_dispatch(vkg.rms, rb2, 3, &rp, sizeof rp, 1, 1, 1);
         if (!ok) die("falha na execucao em Vulkan (qwen35moe)");
@@ -8114,6 +8135,28 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
             ok &= vk_mm_p(&L->wq, vkq.xf, vkq.bqg, 2 * qd, d, B, 0, 1);
             ok &= vk_mm_p(&L->wk, vkq.xf, vkb.k, kvd, d, B, 0, 1);
             ok &= vk_mm_p(&L->wv, vkq.xf, vkb.v, kvd, d, B, 0, 1);
+            if (vkq.cpuatt) {     /* atencao do lote na CPU (qn_core_n, cache KV na RAM); layouts da GPU sao [linha][B] */
+                ok &= kvk_buf_read(vkq.bqg, 0, vkq.hT, (size_t)2 * qd * B * 4);
+                if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
+                for (int b = 0; b < B; b++) for (int i = 0; i < 2 * qd; i++) vkq.hq[(size_t)b * 2 * qd + i] = vkq.hT[(size_t)i * B + b];
+                ok &= kvk_buf_read(vkb.k, 0, vkq.hT, (size_t)kvd * B * 4);
+                for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hk[(size_t)b * kvd + i] = vkq.hT[(size_t)i * B + b];
+                ok &= kvk_buf_read(vkb.v, 0, vkq.hT, (size_t)kvd * B * 4);
+                for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hv[(size_t)b * kvd + i] = vkq.hT[(size_t)i * B + b];
+                if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
+                for (int b0 = 0; b0 < B; b0 += GPU_BMAX) {
+                    const int nb = B - b0 < GPU_BMAX ? B - b0 : GPU_BMAX;
+                    qn_core_n(m, L, l, pos0 + b0, nb, vkq.hq + (size_t)b0 * 2 * qd, vkq.hk + (size_t)b0 * kvd, vkq.hv + (size_t)b0 * kvd,
+                              vkq.ho + (size_t)b0 * qd);
+                }
+                for (int i = 0; i < qd; i++) for (int b = 0; b < B; b++) vkq.hT[(size_t)i * B + b] = vkq.ho[(size_t)b * qd + i];
+                ok &= kvk_buf_write_q(vkq.ub, 0, vkq.hT, (size_t)qd * B * 4);
+                ok &= vk_mm_p(&L->wo, vkq.ub, vkb.x, d, qd, B, 1, 1);
+                if (!ok) die("falha na execucao em Vulkan (lote qwen35moe)");
+                if (vkbm.on && !dbg_on) vk_moe_n(m, L, l, B);
+                else vkq_moe_n(m, L, l, B);
+                continue;
+            }
             const KvkBuf qb[12] = { vkb.q2, vkb.k, vkb.v, vkg.dummy, vkg.dummy, vkg.dummy, vkg.kc[l], vkg.vc[l],
                                     vkg.freq, vkq.bqg, vkg.qn[l], vkg.kn[l] };
             const struct { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; int nrot, qst; } qp =
