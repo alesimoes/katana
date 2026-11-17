@@ -7414,6 +7414,145 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
     }
 }
 
+/* atencao com portao de B tokens seguidos (prompt na CPU): todas as consultas do lote contra cada pedaco de K/V.
+   Trabalho = (cabeca kv, pedaco de posicoes, faixa de tokens): cada linha de K/V sai da RAM uma vez por faixa e serve
+   as group x tokens consultas dela. Mesmos pedacos, blocos de 64 e ordem de soma do qn_core por consulta: o resultado
+   e igual bit a bit ao token a token (enquanto o tamanho de pedaco for o mesmo para todo o lote). */
+typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos0, B, hd, kvd, group, nch, chl, nsp, tps, qd; float scale; } QnAttNJob;
+static void qn_att_n_job(void *cx, int j0, int j1) {
+    const QnAttNJob *j = cx;
+    const Model *m = j->m;
+    const int hd = j->hd, kvd = j->kvd, G = j->group;
+    const size_t off = j->L->kv_off;
+    static __thread float *ob, *scb; static __thread int ocap;
+    const int nq = j->tps * G;
+    if (ocap < nq) { free(ob); free(scb); ob = xalloc((size_t)nq * 512, sizeof(float)); scb = xalloc((size_t)nq * 64, sizeof(float)); ocap = nq; }
+    float mx[GPU_BMAX * QN_MAXG], sum[GPU_BMAX * QN_MAXG];
+    for (int job = j0; job < j1; job++) {
+        const int sp = job % j->nsp, ch = (job / j->nsp) % j->nch, g = job / (j->nsp * j->nch);
+        const int t0q = sp * j->tps, t1q = t0q + j->tps < j->B ? t0q + j->tps : j->B;
+        if (t0q >= t1q) continue;
+        const int ta = ch * j->chl;
+        const size_t kvh = (size_t)g * hd;
+        int tmax = ta;      /* fim do pedaco para o ultimo token da faixa */
+        { const int n = j->pos0 + t1q; tmax = ta + j->chl < n ? ta + j->chl : n; }
+        for (int u = 0; u < (t1q - t0q) * G; u++) { mx[u] = -INFINITY; sum[u] = 0.0f; memset(ob + (size_t)u * 512, 0, hd * sizeof(float)); }
+        for (int b0 = ta; b0 < tmax; b0 += 64) {
+            for (int t = t0q; t < t1q; t++) {
+                const int n = j->pos0 + t + 1, tb = ta + j->chl < n ? ta + j->chl : n, nb = tb - b0 < 64 ? tb - b0 : 64;
+                if (nb <= 0) continue;
+                for (int i = 0; i < nb; i++) {
+                    const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
+                    for (int u = 0; u < G; u++) {
+                        const float *qh = j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd;
+                        scb[(size_t)((t - t0q) * G + u) * 64 + i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
+                    }
+                }
+                for (int u = 0; u < G; u++) {
+                    const int qi = (t - t0q) * G + u;
+                    float *sc = scb + (size_t)qi * 64, *o = ob + (size_t)qi * 512;
+                    float bm = mx[qi];
+                    for (int i = 0; i < nb; i++) if (sc[i] > bm) bm = sc[i];
+                    if (bm > mx[qi]) {
+                        const float f = expf(mx[qi] - bm);
+                        sum[qi] *= f;
+                        for (int k = 0; k < hd; k++) o[k] *= f;
+                        mx[qi] = bm;
+                    }
+                    for (int i = 0; i < nb; i++) { sc[i] = expf(sc[i] - bm); sum[qi] += sc[i]; }
+                }
+                for (int i = 0; i < nb; i++) {
+                    const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
+                    for (int k = 0; k < hd; k += 8) {
+                        const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
+                        for (int u = 0; u < G; u++) {
+                            const int qi = (t - t0q) * G + u;
+                            float *o = ob + (size_t)qi * 512;
+                            _mm256_storeu_ps(o + k, _mm256_fmadd_ps(_mm256_set1_ps(scb[(size_t)qi * 64 + i]), vv, _mm256_loadu_ps(o + k)));
+                        }
+                    }
+                }
+            }
+        }
+        for (int t = t0q; t < t1q; t++)
+            for (int u = 0; u < G; u++) {
+                const int qi = (t - t0q) * G + u;
+                float *pp = j->part + (((size_t)t * j->qd / hd + g * G + u) * j->nch + ch) * (hd + 2);
+                pp[0] = mx[qi]; pp[1] = sum[qi];
+                memcpy(pp + 2, ob + (size_t)qi * 512, hd * sizeof(float));
+            }
+    }
+}
+
+/* B tokens a partir de pos0: P1 [B][2*qd] (q+portao), KK/VV [B][kvd] (mudam: norma e RoPE), O [B][qd] */
+static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const float *P1, float *KK, const float *VV, float *O) {
+    const Config *c = &m->cfg;
+    const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, qd = nh * hd;
+    const int group = nh / c->n_kv, nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
+    const float scale = 1.0f / sqrtf((float)hd);
+    (void)l;
+    if (hd > 512 || hd % 8 || group > QN_MAXG || B > GPU_BMAX) die("qn_core_n: hd, grupo ou lote fora do suportado");
+    static float *Q, *part;
+    if (!Q) { Q = xalloc((size_t)GPU_BMAX * qd, sizeof(float)); part = xalloc((size_t)GPU_BMAX * nh * QN_MAXCH * (hd + 2), sizeof(float)); }
+    for (int t = 0; t < B; t++) {       /* norma, RoPE e cache, como no qn_core */
+        const int pos = pos0 + t;
+        float *q = Q + (size_t)t * qd, *k = KK + (size_t)t * kvd;
+        const float *qg = P1 + (size_t)t * 2 * qd, *v = VV + (size_t)t * kvd;
+        for (int h = 0; h < nh; h++) rmsnorm(q + h * hd, qg + (size_t)h * 2 * hd, L->q_norm, hd, c->eps);
+        for (int h = 0; h < c->n_kv; h++) rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps);
+        for (int i = 0; i < half; i++) {
+            const float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+            for (int h = 0; h < nh; h++) {
+                float *p = q + h * hd + i, a = p[0], b = p[half];
+                p[0] = a * cs - b * sn; p[half] = a * sn + b * cs;
+            }
+            for (int h = 0; h < c->n_kv; h++) {
+                float *p = k + h * hd + i, a = p[0], b = p[half];
+                p[0] = a * cs - b * sn; p[half] = a * sn + b * cs;
+            }
+        }
+        const size_t koff = L->kv_off + (size_t)pos * kvd;
+        if (m->kh) {
+            for (int i = 0; i < kvd; i += 8) {
+                _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
+                _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
+            }
+        } else {
+            memcpy(m->kcache + koff, k, kvd * sizeof(float));
+            memcpy(m->vcache + koff, v, kvd * sizeof(float));
+        }
+    }
+    const int nmax = pos0 + B;
+    int chl = 512;
+    while ((nmax + chl - 1) / chl > QN_MAXCH) chl *= 2;
+    const int nch = (nmax + chl - 1) / chl;
+    /* faixas de tokens: trabalhos suficientes para as threads quando ha poucos pedacos */
+    int nsp = (2 * (pool.n > 0 ? pool.n : 1) + c->n_kv * nch - 1) / (c->n_kv * nch);
+    if (nsp > B) nsp = B;
+    if (nsp < 1) nsp = 1;
+    const int tps = (B + nsp - 1) / nsp;
+    nsp = (B + tps - 1) / tps;
+    QnAttNJob job = { m, L, Q, part, pos0, B, hd, kvd, group, nch, chl, nsp, tps, qd, scale * c->kq_mul };
+    pool_for(qn_att_n_job, &job, c->n_kv * nch * nsp, 1);
+    for (int t = 0; t < B; t++) {
+        const int n = pos0 + t + 1, ncht = (n + chl - 1) / chl;
+        for (int h = 0; h < nh; h++) {      /* junta os pedacos do token e aplica o portao */
+            const float *pp = part + ((size_t)t * nh + h) * nch * (hd + 2);
+            float M = -INFINITY, S = 0.0f;
+            for (int ch = 0; ch < ncht; ch++) if (pp[(size_t)ch * (hd + 2)] > M) M = pp[(size_t)ch * (hd + 2)];
+            float *oh = O + (size_t)t * qd + (size_t)h * hd;
+            memset(oh, 0, hd * sizeof(float));
+            for (int ch = 0; ch < ncht; ch++) {
+                const float *pc = pp + (size_t)ch * (hd + 2), f = expf(pc[0] - M);
+                S += pc[1] * f;
+                for (int k = 0; k < hd; k++) oh[k] += pc[2 + k] * f;
+            }
+            const float *gt = P1 + (size_t)t * 2 * qd + (size_t)h * 2 * hd + hd, inv = 1.0f / S;
+            for (int k = 0; k < hd; k++) oh[k] *= inv / (1.0f + expf(-gt[k]));
+        }
+    }
+}
+
 /* feed-forward MoE de um token sobre m->xb (ja normalizado): out = roteados + portao * compartilhado */
 static void ffn_moe(Model *m, const Layer *L, int l, float *out) {
     const Config *c = &m->cfg;
@@ -7498,6 +7637,72 @@ static struct {
     int *cnt, *ofs, *pv, *pb, *ce, *cb; float *pw, *cw_;
     double t_rd, t_route, t_gpu, t_cpu, t_up; long n_hot, n_cold;    /* perfil do lote (KATANA_QN_PROF=1) */
 } vkq;
+
+/* MoE do lote do qwen35moe pelo vk_moe_n comum (norma e roteador na GPU, frios usados por varios tokens do lote em
+   vagas temporarias): aloca o vkbm. Se faltar memoria, fica o vkq_moe_n (residual desce, frios todos na CPU). */
+static void vkq_moen_build(Model *m, size_t P) {
+    const Config *c = &m->cfg;
+    const size_t d = c->dim, E = c->n_expert, K = c->n_used, H = c->hidden, NL = c->n_layers;
+    const size_t Hs = (size_t)c->n_shared * H, Hm = H > Hs ? H : Hs;
+    int fail = 0;
+    const size_t used0 = gpu.used;
+    memset(&vkbm, 0, sizeof vkbm);
+    vkb.hb = vk_wk(Hm * P * 4, &fail);
+    vkbm.xf = vk_wk(d * P * 4, &fail); vkbm.xg = vk_wk(d * P * 4, &fail);
+    vkbm.ys = vk_wk(d * P * 4, &fail); vkbm.yc = vk_wk(d * P * 4, &fail);
+    vkbm.lg = vk_wk((E * P + 128) * 4, &fail); vkbm.meta = vk_wk(2 * P * (K + 2) * 4, &fail);
+    vkbm.rms32 = kvk_pipe_create(rms_wg32_spv, sizeof rms_wg32_spv, 3, 12, NULL, NULL, 0);
+    vkbm.gath32 = kvk_pipe_create(moe_gath32_spv, sizeof moe_gath32_spv, 3, 16, NULL, NULL, 0);
+    vkbm.scat = kvk_pipe_create(moe_scat_spv, sizeof moe_scat_spv, 3, 16, NULL, NULL, 0);
+    if (!vkbm.rms32.p || !vkbm.gath32.p || !vkbm.scat.p) fail = 1;
+    /* roteador na GPU (float32, grupos de 32 linhas) */
+    if (!fail && !vkm.rw && !(getenv("KATANA_VK_ROUTER") && atoi(getenv("KATANA_VK_ROUTER")) == 0)) {
+        float *wr = xalloc(E * d, sizeof(float)), *row = xalloc(d, sizeof(float));
+        vkm.rw = xalloc(NL, sizeof(KvkBuf));
+        for (size_t l = 0; l < NL && !fail; l++) {
+            if (!m->layers[l].eg) continue;
+            for (size_t e = 0; e < E; e++) {
+                mat_row(row, &m->layers[l].router, (int)e, (int)d);
+                for (size_t i = 0; i < d; i++) wr[(e / 32) * d * 32 + i * 32 + e % 32] = row[i];
+            }
+            vkm.rw[l] = vk_vec(wr, E * d, &fail);
+        }
+        free(row); free(wr);
+        if (!fail) vkm.rt = 1;
+    }
+    vkbm.T = getenv("KATANA_VK_COLDT") ? atoi(getenv("KATANA_VK_COLDT")) : 16;
+    vkbm.cmin = getenv("KATANA_VK_COLDMIN") ? atoi(getenv("KATANA_VK_COLDMIN")) : 2;
+    if (vkbm.T < 0) vkbm.T = 0;
+    if (vkbm.T > 64) vkbm.T = 64;
+    if (vkbm.T && !fail) {
+        for (size_t l = 0; l < NL; l++) {
+            const Layer *L = &m->layers[l];
+            if (!L->eg) continue;
+            const size_t bg = 2 * gpu_mat_bytes(&L->eg[0], H, d), bd = gpu_mat_bytes(&L->ed[0], d, H);
+            if (bg > vkbm.tgb) vkbm.tgb = bg;
+            if (bd > vkbm.tdb) vkbm.tdb = bd;
+        }
+        vkbm.tg = vk_wk(vkbm.T * vkbm.tgb, &fail); vkbm.td = vk_wk(vkbm.T * vkbm.tdb, &fail);
+        vkbm.stage = xalloc(vkbm.tgb + vkbm.tdb, 1);
+        vkbm.pf = xalloc(NL, sizeof(FILE *));
+        if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.tstage = xalloc(vkbm.T * (vkbm.tgb + vkbm.tdb), 1);
+    }
+    if (fail || !kvk_wait()) {
+        fprintf(stderr, "Vulkan: sem memoria para o MoE do lote do qwen35moe (%s): frios do lote na CPU\n", kvk_error());
+        vkm.rt = 0; vkbm.on = 0;
+        gpu.used = used0;
+        return;
+    }
+    vkbm.xn = xalloc(d * P, sizeof(float)); vkbm.lgT = xalloc(E * P, sizeof(float)); vkbm.xc = xalloc(d * P, sizeof(float));
+    vkbm.outs = xalloc((size_t)GPU_BMAX * K * d, sizeof(float)); vkbm.sw = xalloc(P, sizeof(float));
+    vkbm.mt = xalloc(2 * P * (K + 2), sizeof(uint32_t));
+    vkbm.ccnt = xalloc(E, sizeof(int)); vkbm.tmpe = xalloc(64, sizeof(int));
+    vkbm.cnt = xalloc(E + 66, sizeof(int)); vkbm.ofs = xalloc(E + 66, sizeof(int));
+    vkbm.pv = xalloc(P * K, sizeof(int)); vkbm.pb = xalloc(P * K, sizeof(int)); vkbm.pw = xalloc(P * K, sizeof(float));
+    vkbm.ce = xalloc(P * K, sizeof(int)); vkbm.cb = xalloc(P * K, sizeof(int)); vkbm.cw = xalloc(P * K, sizeof(float));
+    vkbm.prec = 1;
+    vkbm.on = 1;
+}
 
 static int vkq_build(Model *m) {
     const Config *c = &m->cfg;
@@ -7633,6 +7838,7 @@ static int vkq_build(Model *m) {
     vkq.dnstep = getenv("KATANA_QN_DNSTEP") && atoi(getenv("KATANA_QN_DNSTEP")) != 0;
     vkq.blk = getenv("KATANA_QN_CHUNK") && atoi(getenv("KATANA_QN_CHUNK")) != 0;
     vkb.xT = xalloc(d * Pp, sizeof(float));
+    if (!(getenv("KATANA_QN_MOEN") && atoi(getenv("KATANA_QN_MOEN")) == 0)) vkq_moen_build(m, Pp);
     vkq.xn = xalloc(d * Pp, sizeof(float)); vkq.xc = xalloc(d * Pp, sizeof(float)); vkq.col = xalloc(d, sizeof(float));
     vkq.outs = xalloc((size_t)GPU_BMAX * K * d, sizeof(float)); vkq.sw = xalloc(Pp, sizeof(float));
     vkq.mt = xalloc(2 * Pp * (K + 2), sizeof(uint32_t));
@@ -7647,6 +7853,7 @@ static void vkq_setup(Model *m) {
     if (!gpu.vk) return;
     if (!vkq_build(m)) return;
     if (!vk_moe_init(m)) { fprintf(stderr, "Vulkan: cache de especialistas indisponivel: modo hibrido\n"); return; }
+    if (vkbm.on && vkm.rw) vkm.rt = 1;     /* roteador do lote na GPU (o caminho de um token deste grafo nao o usa) */
     gpu.mv_host = 0; vkg.on = 1; vkg.rec = 0; vkb.ok = 1; vkq.on = 1;
     fprintf(stderr, "GPU: Vulkan - grafo completo do qwen35moe (DeltaNet + atencao com portao + MoE, lote de ate %d), %.0f MB usados%s\n",
             vkb.P, gpu.used / 1048576.0, vkg.kv16 ? ", cache KV em 16 bits" : "");
@@ -7921,7 +8128,8 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
             ok &= vk_mm_p(&L->wo, vkq.ub, vkb.x, d, qd, B, 1, 1);
         }
         if (!ok) die("falha na execucao em Vulkan (lote qwen35moe)");
-        vkq_moe_n(m, L, l, B);
+        if (vkbm.on && !dbg_on) vk_moe_n(m, L, l, B);
+        else vkq_moe_n(m, L, l, B);
     }
     vkb.t_emit += now_sec() - t0;
     if (getenv("KATANA_QN_PROF")) {
@@ -8606,8 +8814,12 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
             matmat(P1, &L->wq, Xb, xqs, &prep, B, 2 * qd, d);
             matmat(KK, &L->wk, Xb, xqs, &prep, B, kvd, d);
             matmat(VV, &L->wv, Xb, xqs, &prep, B, kvd, d);
-            for (int t = 0; t < B; t++)
-                qn_core(m, L, l, pos0 + t, P1 + (size_t)t * 2 * qd, KK + (size_t)t * kvd, VV + (size_t)t * kvd, O + (size_t)t * qd);
+            static int attb = -1;      /* KATANA_QN_ATTB=0: atencao do lote token a token (conferencia) */
+            if (attb < 0) attb = getenv("KATANA_QN_ATTB") ? atoi(getenv("KATANA_QN_ATTB")) != 0 : 1;
+            if (attb && B > 1) qn_core_n(m, L, l, pos0, B, P1, KK, VV, O);
+            else
+                for (int t = 0; t < B; t++)
+                    qn_core(m, L, l, pos0 + t, P1 + (size_t)t * 2 * qd, KK + (size_t)t * kvd, VV + (size_t)t * kvd, O + (size_t)t * qd);
             prep = 0;
             matmat(X2, &L->wo, O, xqs, &prep, B, d, qd);
         }
