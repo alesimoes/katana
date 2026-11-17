@@ -122,6 +122,13 @@ leitura, despacho da fila por camada, atenção fundida (correta, mas sem ganho 
 vagas desiguais por camada, converter só especialistas usados duas vezes (piorou), ativações de 8
 bits com uma escala para o vetor inteiro (trocava o token escolhido no modelo de 7B).
 
+## 5a. Contexto longo (medido 2026-11-17)
+
+Qwen3.6-35B-A3B na CPU: cache KV so nas 10 camadas de atencao, fp16, 20 KB/token (21,5 GB a 1M). Geracao em
+profundidade: 128k 4,5 tok/s, 256k 2,7, 1M 0,7 (yarn x4). A atencao de um token e limitada pela leitura do
+cache (flash-decoding com grupo junto deu 2,5x a 128k). Encher 1M de prompt: estimado ~8 dias na CPU
+(prefill da atencao ainda token a token). Detalhes em handoff.md, secao 0a.
+
 ## 6. Como estamos em relação ao motor de referência (medido, mesma máquina)
 
 Motor de referência: binário oficial b12418 com CUDA e com Vulkan.
