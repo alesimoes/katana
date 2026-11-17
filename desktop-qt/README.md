@@ -28,8 +28,19 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   abaixo de 70%, ambar a partir de 70%, vermelha a partir de 85%. Alimentado pelo marcador `TOKENS`
   (e pela linha de estatisticas do stderr). O marcador `COMPACT` mostra "Contexto compactado: N -> M
   tokens". Marcadores desconhecidos sao ignorados (ponto de extensao: `Backend::handleMarker`).
-- Icone: `icons/katana.svg` (fonte) e PNGs 16 a 512, embutidos no executavel (recursos Qt) e usados como
-  icone da janela. O nome do aplicativo/app id e `katana-desktop`.
+- Icone: fundo roxo `#820AD1` (squircle) com a letra K branca, sem outros simbolos. `icons/katana.svg`
+  (fonte) e PNGs 16 a 512 (gerados com `rsvg-convert -w N -h N icons/katana.svg -o icons/katana-N.png`),
+  embutidos no executavel (recursos Qt) e usados como icone da janela. Nome exibido: "Katana"; o app id
+  continua `katana-desktop`.
+- Identidade roxa: o destaque (`Theme.ac`: botao enviar, anel de contexto, selecao de texto, avatar, foco,
+  titulo) e `#820AD1` no tema claro e `#B66CF2` no escuro (texto sobre o destaque: branco / `#1A1022`); os
+  neutros tem um leve tom lilas. Tudo em `qml/Theme.qml`.
+- Tela de boas-vindas (`emptyState` em `MessageView.qml`): aparece so com a conversa vazia (inicio, 'Nova
+  conversa'); some ao enviar a primeira mensagem e nao aparece ao abrir sessao com mensagens. Mostra um
+  samurai em pixel art com katana (`icons/samurai.png`, 64x64, desenhado em escala inteira 4x/3x/2x conforme
+  a altura da janela, `smooth: false`), o titulo "Katana", "Em que posso ajudar hoje?" e 3 sugestoes
+  clicaveis que preenchem e enviam. O sprite e gerado por `tools/gerar-samurai.py` (PIL; paleta fixa,
+  contorno automatico); rode-o para regenerar o PNG e depois `build.sh`.
 - Tema claro/escuro segue o sistema (`KATANA_THEME=light|dark` forca um).
 
 Protocolo: o agente roda com `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Linhas de stdout que comecam com
@@ -40,7 +51,9 @@ Windows, mata e reinicia). Nova conversa = `/novo`; trocar de modelo = `/sair` e
 Teste: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
 (rodar na raiz do repo; usa `modelos/qwen2.5-1.5b-q4km.gguf` e uma pasta de dados temporaria). Digita e
 clica na janela com eventos reais (QTest), confere cartao `list_dir`, sessoes, dropdown, apagar, parar
-(SIGINT), troca de modelo com resumo pendente, e imprime PASSOU/FALHOU. `capturas/` guarda imagens.
+(SIGINT), troca de modelo com resumo pendente, e imprime PASSOU/FALHOU. `capturas/` guarda imagens (`12-boasvindas-claro.png` e `12-boasvindas-escuro.png`: o escuro sai de uma
+segunda execucao com `KATANA_THEME=dark`). Tambem confere a tela de boas-vindas (visivel com conversa
+vazia, some apos enviar, nao aparece em sessao antiga, volta em 'Nova conversa').
 
 Limitacoes: raciocinio desligado (`KATANA_THINK=0`); o agente le uma linha por turno (quebras de linha
 viram espacos); no Windows, parar mata o agente; a versao Windows nao foi compilada nem testada.

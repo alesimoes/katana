@@ -42,7 +42,7 @@ Rectangle {
                 width: 22; height: 22; radius: 7; color: Theme.ac
                 Text { anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 13 }
             }
-            Text { text: "katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
+            Text { text: "Katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
             IconButton {
                 objectName: "sidebarCollapse"
                 glyph: "left"

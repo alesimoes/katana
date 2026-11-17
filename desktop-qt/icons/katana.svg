@@ -1,22 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3a2a24"/>
-      <stop offset="1" stop-color="#1b1514"/>
-    </linearGradient>
-    <linearGradient id="blade" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#b9c0c8"/>
-      <stop offset="1" stop-color="#f5f7fa"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <circle cx="256" cy="256" r="176" fill="#c4552f" opacity="0.9"/>
-  <!-- lamina: curva suave da guarda (inferior esquerda) ate a ponta (superior direita) -->
-  <path d="M120 400 C 210 330, 330 220, 410 96 C 396 190, 300 330, 150 420 Z" fill="url(#blade)"/>
-  <!-- linha de tempera -->
-  <path d="M150 396 C 240 330, 338 224, 402 118" fill="none" stroke="#8d96a1" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
-  <!-- guarda (tsuba) -->
-  <ellipse cx="134" cy="408" rx="46" ry="16" transform="rotate(-38 134 408)" fill="#d8a64a"/>
-  <!-- cabo (tsuka) -->
-  <path d="M112 392 L 66 438 L 82 454 L 128 410 Z" fill="#2a1f1c" stroke="#d8a64a" stroke-width="4" stroke-linejoin="round"/>
+  <!-- fundo roxo (squircle) com a letra K branca como unico simbolo -->
+  <defs><clipPath id="k"><rect x="140" y="116" width="290" height="280"/></clipPath></defs>
+  <rect width="512" height="512" rx="120" fill="#820AD1"/>
+  <g fill="#ffffff" transform="translate(-26 0)">
+    <rect x="140" y="116" width="70" height="280"/>
+    <g clip-path="url(#k)" stroke="#ffffff" stroke-width="70" fill="none">
+      <line x1="170" y1="296" x2="420" y2="46"/>
+      <line x1="262" y1="226" x2="428" y2="438"/>
+    </g>
+  </g>
 </svg>

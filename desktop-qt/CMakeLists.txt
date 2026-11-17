@@ -44,6 +44,7 @@ qt_add_resources(katana-desktop-qt icones
     BASE icons
     FILES
         icons/katana.svg
+        icons/samurai.png
         icons/katana-16.png
         icons/katana-32.png
         icons/katana-48.png
