@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QClipboard>
@@ -245,8 +246,14 @@ void Backend::start(const QString &modelFile)
         detach(m_proc);
     m_proc = nullptr;
     m_model = m_pendingStart;
-    // sessao antiga com resumo pendente sobrevive a troca de modelo; senao recomeca limpo
-    if (m_pendingCtx.isEmpty()) {
+    // sessao antiga com resumo pendente (ou retomavel pelo motor) sobrevive a troca de modelo; senao recomeca limpo
+    m_bound.clear();
+    m_resuming = false;
+    m_resumeWant.clear();
+    if (m_pendingCtx.isEmpty() && m_sess.valida() && QFileInfo::exists(ksessPath(m_sess.id))) {
+        m_resumeWant = ksessPath(m_sess.id);  // o motor novo tenta retomar; se recusar (outro modelo), vai o resumo textual
+        m_resumeCtx = Sessoes::montarContexto(m_sess.mensagens);
+    } else if (m_pendingCtx.isEmpty()) {
         m_sess = Session();
         m_dirty = false;
         m_msgs.clear();
@@ -390,6 +397,11 @@ bool Backend::send(const QString &text)
     const QString line = Sessoes::umaLinha(msg);  // o agente le uma linha por turno
     if (!m_sess.valida())
         m_sess = Sessoes::nova(m_model);
+    const QString kp = ksessPath(m_sess.id);
+    if (!kp.isEmpty() && kp != m_bound) {  // o motor grava a sessao (calor + conversa compactada) para retomar depois
+        writeLine("/sessao " + kp);
+        m_bound = kp;
+    }
     setTexts({}, {});
     m_speed.clear();
     m_msgs.append("user", text);
@@ -419,6 +431,9 @@ bool Backend::newChat()
     m_msgs.clear();
     m_sess = Session();
     m_pendingCtx.clear();
+    m_bound.clear();
+    m_resumeWant.clear();
+    m_resumeInfo.clear();
     m_dirty = false;
     m_speed.clear();
     m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
@@ -444,22 +459,51 @@ bool Backend::openSession(const QString &id)
     m_sess = s;
     m_dirty = false;
     m_pendingCtx = Sessoes::montarContexto(s.mensagens);
+    m_resumeInfo.clear();
+    const QString kp = ksessPath(s.id);
+    const bool canResume = !kp.isEmpty() && QFileInfo::exists(kp);
+    if (canResume) {  // o motor retoma: especialistas da sessao + contexto compacto; o resumo textual fica de reserva
+        m_resumeCtx = m_pendingCtx;
+        m_pendingCtx.clear();
+    }
     QList<MessageModel::Item> items;
     for (const Msg &m : s.mensagens)
         items.append({m.papel, m.texto, m.nome});
     m_msgs.setAll(items);
     m_speed.clear();
     m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
-    if (agentReady) {
+    if (agentReady && canResume) {
+        requestResume(kp);
+    } else if (agentReady) {
         setTexts(QStringLiteral("Preparando a conversa..."), {});
         setState(false, false, true);
+        m_bound.clear();
         writeLine("/novo");
     } else {
+        if (canResume)
+            m_resumeWant = kp;  // pede quando o agente terminar de carregar
         setTexts(m_status, {});
     }
     emit stateChanged();
     refreshSessions();
     return true;
+}
+
+QString Backend::ksessPath(const QString &id) const
+{
+    if (!Sessoes::validId(id) || m_sessDir.isEmpty())
+        return {};
+    return QDir(m_sessDir).filePath(id + ".ksess");
+}
+
+void Backend::requestResume(const QString &path)
+{
+    m_resuming = true;
+    m_resumed = false;
+    m_bound = path;
+    setTexts(QStringLiteral("Retomando a sessao (especialistas e contexto compacto)..."), {});
+    setState(false, false, true);
+    writeLine("/retomar " + path);
 }
 
 bool Backend::deleteSession(const QString &id)
@@ -471,6 +515,9 @@ bool Backend::deleteSession(const QString &id)
         setTexts({}, "Nao foi possivel apagar a conversa.");
         return false;
     }
+    QFile::remove(ksessPath(id));  // estado do motor (calor e conversa compactada)
+    if (m_bound == ksessPath(id))
+        m_bound.clear();
     if (wasCurrent) {
         m_sess = Session();
         m_pendingCtx.clear();
@@ -566,6 +613,17 @@ void Backend::handleMarker(const QByteArray &line)
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
         if (a.size() >= 2)
             m_msgs.append("notice", "Contexto compactado: " + a[0] + " -> " + a[1] + " tokens");
+    } else if (name == "RESUME") {  // RESUME <msgs> <msgs_total> <tokens> <especialistas> <segundos> <kv|calc>
+        const QStringList a = args.split(' ', Qt::SkipEmptyParts);
+        if (a.size() >= 6) {
+            m_resumed = true;
+            m_resumeCtx.clear();
+            m_resumeInfo = "Sessao retomada: " + a[2] + " tokens de contexto compacto (" + a[0] + " de " + a[1]
+                + " mensagens) em " + a[4] + " s, "
+                + (a.size() >= 7 && a[5 + 1] == "kv" ? "cache KV lido do disco" : "contexto recalculado")
+                + "; " + a[3] + " especialistas aquecidos";
+            m_msgs.append("notice", m_resumeInfo);
+        }
     }
     // WARM e outros: ignorados
 }
@@ -580,6 +638,22 @@ void Backend::setCtx(int used, int total)
 
 void Backend::markReady()
 {
+    if (m_resuming) {  // fim do /retomar: sem RESUME o motor nao conseguiu; volta ao resumo textual
+        m_resuming = false;
+        if (!m_resumed) {
+            m_pendingCtx = m_resumeCtx;
+            m_bound.clear();
+            m_msgs.append("notice", "Nao foi possivel retomar pelo motor; a conversa segue com o resumo do historico");
+        }
+        m_resumeCtx.clear();
+    } else if (!m_resumeWant.isEmpty() && m_proc) {  // agente acabou de carregar com uma sessao aberta
+        const QString kp = m_resumeWant;
+        m_resumeWant.clear();
+        m_resumeCtx = m_pendingCtx;
+        m_pendingCtx.clear();
+        requestResume(kp);
+        return;
+    }
     if (m_dirty)
         saveSession();
     setTexts({}, m_error);
