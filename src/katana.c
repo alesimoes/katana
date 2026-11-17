@@ -4605,7 +4605,8 @@ static int vk_mm_pw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf 
         *pp = kvk_pipe_create(tab[xs][t][v].p, tab[xs][t][v].n, 3, 32, NULL, NULL, 0);
         if (!pp->p) { fprintf(stderr, "Vulkan: pipeline do produto em lote (XS) falhou: %s\n", kvk_error()); return 0; }
     }
-    const uint32_t pc[8] = { (uint32_t)rows, (uint32_t)cols, (uint32_t)B, (uint32_t)wpr, (uint32_t)cols, 0, (uint32_t)add, woff };
+    const uint32_t ad = (uint32_t)add | (glu && g_gelu ? 2u : 0u);     /* bit 1: GELU no glu (gemma4) */
+    const uint32_t pc[8] = { (uint32_t)rows, (uint32_t)cols, (uint32_t)B, (uint32_t)wpr, (uint32_t)cols, 0, ad, woff };
     const KvkBuf bufs[3] = { wb, x, y };
     const int gm = glu ? 32 : 64;
     return kvk_dispatch(*pp, bufs, 3, pc, sizeof pc, (uint32_t)((rows + gm - 1) / gm), (uint32_t)((B + vk_mm_bn[v0] - 1) / vk_mm_bn[v0]), 1);
@@ -6033,8 +6034,12 @@ static float *vk_forward_moe(Model *m, int want_logits) {
    token e agrupa os pares (token, especialista) por vaga. Na GPU cada vaga roda sobre as colunas dos seus tokens
    (moe_gath, mm glu e down com a vaga por deslocamento, moe_scat soma pesada no residual); os frios rodam na CPU
    ao mesmo tempo e sobem somados. KATANA_VK_MOEP=1: produtos dos especialistas em fp32 (alta + resto). */
+/* gemma4: a soma dos especialistas vai para um buffer proprio (normas de saida antes do residual) e os logits do
+   roteador vem prontos da CPU (a entrada do roteador nao e a dos especialistas): [B][E] */
+static KvkBuf vk_moe_out;
+static const float *vk_moe_lgh;
 static int vk_moe_scat(KvkBuf y, int d, int B, int n, int moff) {
-    const KvkBuf b[3] = { vkb.x, y, vkbm.meta };
+    const KvkBuf b[3] = { vk_moe_out.b ? vk_moe_out : vkb.x, y, vkbm.meta };
     const int pc[4] = { d, B, n, moff };
     return kvk_dispatch(vkbm.scat, b, 3, pc, sizeof pc, (uint32_t)(((size_t)d * n + 255) / 256), 1, 1);
 }
@@ -6146,7 +6151,8 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
         float *xn = vkbm.xn + (size_t)b * d;
         for (int i = 0; i < d; i++) xn[i] = vkb.xT[(size_t)i * B + b];
         memcpy(m->xb, xn, (size_t)d * sizeof(float));
-        if (vkm.rt) { for (int e = 0; e < E; e++) lcol[e] = vkbm.lgT[(size_t)e * B + b]; moe_lg_ext = lcol; }
+        if (vk_moe_lgh) moe_lg_ext = vk_moe_lgh + (size_t)b * E;
+        else if (vkm.rt) { for (int e = 0; e < E; e++) lcol[e] = vkbm.lgT[(size_t)e * B + b]; moe_lg_ext = lcol; }
         moe_route(m, L, l);
         moe_lg_ext = NULL;
         vkbm.sw[b] = vkm.sh ? shexp_gate_w(m, L) : 0.0f;
@@ -8304,6 +8310,61 @@ static int vk_g4_build(Model *m) {
         gpu.used = used0;
         return 0;
     }
+    if (E && vk_sg && !(getenv("KATANA_VK_G4MOE") && atoi(getenv("KATANA_VK_G4MOE")) == 0)) {
+        const int K = c->n_used;
+        const size_t H = c->hidden;
+        int f2 = 0;
+        const size_t u1 = gpu.used;
+        const KvkBuf xf0 = vkbm.xf;     /* entrada dos produtos densos; o vk_moe_n grava nela a entrada normalizada */
+        memset(&vkbm, 0, sizeof vkbm);
+        vkbm.xf = xf0;
+        vkb.x = vk_wk(d * P * 4, &f2); vkb.hb = vk_wk(H * P * 4, &f2); vk_moe_out = vk_wk(d * P * 4, &f2);
+        vkbm.xg = vk_wk(d * P * 4, &f2); vkbm.ys = vk_wk(d * P * 4, &f2); vkbm.yc = vk_wk(d * P * 4, &f2);
+        vkbm.lg = vk_wk(128 * 4, &f2); vkbm.meta = vk_wk(2 * P * (K + 2) * 4, &f2);
+        vkbm.rms32 = kvk_pipe_create(rms_wg32_spv, sizeof rms_wg32_spv, 3, 12, NULL, NULL, 0);
+        vkbm.gath32 = kvk_pipe_create(moe_gath32_spv, sizeof moe_gath32_spv, 3, 16, NULL, NULL, 0);
+        vkbm.scat = kvk_pipe_create(moe_scat_spv, sizeof moe_scat_spv, 3, 16, NULL, NULL, 0);
+        if (!vkbm.rms32.p || !vkbm.gath32.p || !vkbm.scat.p) f2 = 1;
+        static KvkBuf *pre2;
+        pre2 = xalloc(NL, sizeof(KvkBuf));
+        for (int l = 0; l < NL && !f2; l++) if (m->layers[l].eg) pre2[l] = vk_vec(m->layers[l].pre_ffn2, d, &f2);
+        /* frios temporarios: poucas vagas (as 8 do cache mal cabem na VRAM do gemma4) */
+        vkbm.T = getenv("KATANA_VK_COLDT") ? atoi(getenv("KATANA_VK_COLDT")) : 4;
+        vkbm.cmin = getenv("KATANA_VK_COLDMIN") ? atoi(getenv("KATANA_VK_COLDMIN")) : 2;
+        if (vkbm.T < 0) vkbm.T = 0;
+        if (vkbm.T > 64) vkbm.T = 64;
+        if (vkbm.T && !f2) {
+            for (int l = 0; l < NL; l++) {
+                const Layer *L = &m->layers[l];
+                if (!L->eg) continue;
+                const size_t bg = 2 * gpu_mat_bytes(&L->eg[0], H, d), bd = gpu_mat_bytes(&L->ed[0], d, H);
+                if (bg > vkbm.tgb) vkbm.tgb = bg;
+                if (bd > vkbm.tdb) vkbm.tdb = bd;
+            }
+            vkbm.tg = vk_wk(vkbm.T * vkbm.tgb, &f2); vkbm.td = vk_wk(vkbm.T * vkbm.tdb, &f2);
+            vkbm.stage = xalloc(vkbm.tgb + vkbm.tdb, 1);
+            vkbm.pf = xalloc(NL, sizeof(FILE *));
+            if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.tstage = xalloc(vkbm.T * (vkbm.tgb + vkbm.tdb), 1);
+        }
+        if (f2 || !kvk_wait()) {
+            fprintf(stderr, "Vulkan: sem memoria para o MoE do lote do gemma4 (%s): MoE do lote na CPU\n", kvk_error());
+            gpu.used = u1;
+            memset(&vk_moe_out, 0, sizeof vk_moe_out);
+        } else {
+            vkbm.xn = xalloc(d * P, sizeof(float)); vkbm.lgT = xalloc(E, sizeof(float)); vkbm.xc = xalloc(d * P, sizeof(float));
+            vkbm.outs = xalloc((size_t)GPU_BMAX * K * d, sizeof(float)); vkbm.sw = xalloc(P, sizeof(float));
+            vkbm.mt = xalloc(2 * P * (K + 2), sizeof(uint32_t));
+            vkbm.ccnt = xalloc(E, sizeof(int)); vkbm.tmpe = xalloc(64, sizeof(int));
+            vkbm.cnt = xalloc(E + 66, sizeof(int)); vkbm.ofs = xalloc(E + 66, sizeof(int));
+            vkbm.pv = xalloc(P * K, sizeof(int)); vkbm.pb = xalloc(P * K, sizeof(int)); vkbm.pw = xalloc(P * K, sizeof(float));
+            vkbm.ce = xalloc(P * K, sizeof(int)); vkbm.cb = xalloc(P * K, sizeof(int)); vkbm.cw = xalloc(P * K, sizeof(float));
+            vkbm.prec = 1;
+            vkm.sh = 0; vkm.rt = 0;
+            vkg.fn = pre2;      /* vk_moe_n normaliza a entrada dos especialistas com pre_ffw_norm_2 */
+            vkb.xT = xalloc(d * P, sizeof(float));
+            vkg4.moe = 1;
+        }
+    }
     const size_t mx = win > wo1 ? win : wo1;
     vkg4.T = xalloc(mx * P, 4);
     vkg4.X = xalloc(d * P, 4); vkg4.Xb = xalloc(d * P, 4); vkg4.X2 = xalloc(d * P, 4);
@@ -8311,8 +8372,8 @@ static int vk_g4_build(Model *m) {
     vkg4.HB = xalloc(Hd * P, 4); vkg4.HB2 = xalloc(Hd * P, 4); vkg4.YA = xalloc(d * P, 4); vkg4.YB = xalloc(d * P, 4);
     vkg4.LG = xalloc((E ? E : 1) * P, 4); vkg4.OUTS = xalloc((size_t)G4_NB * (c->n_used ? c->n_used : 1) * d, 4);
     vkg4.P = (int)P; vkg4.ok = 1;
-    fprintf(stderr, "Vulkan: prompt gemma4 em lote (ate %zu tokens por passada, %.0f MB; MoE do lote na CPU)\n", P,
-            (gpu.used - used0) / 1048576.0);
+    fprintf(stderr, "Vulkan: prompt gemma4 em lote (ate %zu tokens por passada, %.0f MB; MoE do lote %s)\n", P,
+            (gpu.used - used0) / 1048576.0, vkg4.moe ? "nas vagas" : "na CPU");
     return 1;
 }
 
@@ -8411,7 +8472,17 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
                 for (int i = 0; i < d; i++) m->xb[i] *= rs * L->router_scale[i];
                 matvec(vkg4.LG + (size_t)t * E, &L->router, m->xb, E, d);
             }
-            for (int b0 = 0; b0 < B; b0 += G4_NB) {
+            if (vkg4.moe) {     /* vagas do cache + frios temporarios/CPU; a soma volta para YB */
+                memset(vkg4.T, 0, (size_t)d * B * 4);
+                ok &= kvk_buf_write_q(vk_moe_out, 0, vkg4.T, (size_t)d * B * 4);
+                ok &= vk_g4_put(vkb.x, X, B, d);
+                if (!ok) die("falha na execucao em Vulkan (lote, gemma4)");
+                vk_moe_lgh = vkg4.LG;
+                vk_moe_n(m, L, l, B);
+                vk_moe_lgh = NULL;
+                vk_g4_get(vk_moe_out, YB, B, d);
+            }
+            else for (int b0 = 0; b0 < B; b0 += G4_NB) {
                 const int nb = B - b0 < G4_NB ? B - b0 : G4_NB;
                 for (int t = 0; t < nb; t++) {
                     moe_lg_ext = vkg4.LG + (size_t)(b0 + t) * E;
