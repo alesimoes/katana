@@ -10453,6 +10453,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
 static void prompt_user(void) {
     fprintf(stderr, "\n%svoce>%s ", CE(C_CYAN), CE(C_RESET));
     fflush(stderr);
+    if (getenv("KATANA_UI")) { fputs("\x01" "READY\n", stdout); fflush(stdout); }   /* camada de interface: fim do turno */
 }
 
 static void stats_line(int in_n, double in_s, int gen, double gen_s, int pos, int ctx) {
@@ -13200,7 +13201,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     const char *ap = msg + 11, *end = strstr(ap, "<|call|>");
                     if (!end) end = rp + reply.n;
                     { const long room = ((long)c->ctx - pos - 900) * 3; g_budget = room < 1500 ? 1500 : room > TOOL_WEB ? TOOL_WEB : (size_t)room; }
-                    { size_t sl = strcspn(ap, "\n"); fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); }
+                    { size_t sl = strcspn(ap, "\n"); fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); } }
                     agent_tool(name, ap, end, result, sizeof result);
                     fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
                     defang(result, safe, sizeof safe);
@@ -13242,7 +13243,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 }
                 {
                     size_t sl = strcspn(ap, "\n");
-                    fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET));
+                    fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); }
                 }
                 agent_tool(name, ap, end, result, sizeof result);
                 fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
