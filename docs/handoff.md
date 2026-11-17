@@ -25,6 +25,12 @@ Entrou no main nesta sessao:
 4. **Especialistas quentes em fp32 no caminho de um token** (gemma4/Qwen3-30B): tiraria a falha de "GPU token a token" do selftest (argmax ja bate, geracao gulosa correta).
 5. **Juntar GGUF em partes** (para GLM-4.5-Air Q4_K_M e outros grandes partidos); obs.: o Air Q4_K_M (~65 GB) nao cabe bem nos 64 GB de RAM desta maquina.
 
+6. **GLM-4-9B (`glm4` denso) na GPU**: hoje so CPU ("Vulkan pendente" no `katana modelos`); denso e parecido com o que ja roda, menor esforco das tres.
+7. **CLI em ingles** (pedido do dono): comandos em ingles (`models`, etc.); `modelos` pode ficar como apelido.
+8. **Procurar o modelo em `modelos/`** quando o nome passado nao existe na pasta atual (`./katana agent X.gguf` falhava).
+
+Obs.: o cache de especialistas so vale para MoE; nos densos o equivalente e caber inteiro na GPU. MoE ainda sem ele: gpt-oss e GLM-4.5-Air (item 1).
+
 **Ramo nao juntado:** `worktree-agent-ac5031c6105442724` tem o prompt em lote MLA (Moonlight/DeepSeek, prompt 2,4-4x mais rapido), com a falha de segmentacao ja corrigida (commits ate ~ef87c0a); faltou so revalidar os selftests. Cancelado a pedido; retomar daqui se quiser.
 
 ## 1. Estado em uma página
