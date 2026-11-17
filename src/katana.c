@@ -15418,9 +15418,9 @@ static int run_main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "agent") == 0) {
         perfil_apply(argv[2], 1);
-        /* resultados de ferramentas ocupam muito contexto. Qwen3.6 (so 10 camadas de atencao, KV fp16 ~2,7 GB a 128k) usa 131072;
-           o gemma4 ainda aloca KV fp32 cheio nas 30 camadas (129 GB a 128k) ate ganhar cache compacto: fica em 16384 */
-        if (!getenv("KATANA_CTX")) putenv(strstr(argv[2], "emma") ? "KATANA_CTX=16384" : "KATANA_CTX=131072");
+        /* resultados de ferramentas ocupam muito contexto: 131072. Qwen3.6 (10 camadas de atencao) e gemma4 (anel de
+           janela nas 25 locais, contexto so nas 5 globais) ficam em ~2,7-2,9 GB de KV fp16 a 128k */
+        if (!getenv("KATANA_CTX")) putenv("KATANA_CTX=131072");
         if (!getenv("KATANA_THINK")) putenv("KATANA_THINK=0");     /* agente responde direto; KATANA_THINK=1 liga o raciocinio */
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
