@@ -52,10 +52,15 @@ type App struct {
 	hist              []Event // historico da conversa atual (para quem reconecta)
 	busy              bool
 	ready             bool
+	sessDir           string
+	sess              *Session // sessao atual (nil ate a primeira mensagem)
+	dirty             bool     // sessao com mudancas ainda nao gravadas
+	pending           string   // resumo da conversa antiga, enviado junto da proxima mensagem
 }
 
 func (a *App) emit(e Event) {
 	a.mu.Lock()
+	a.record(e)
 	if e.T == "text" || e.T == "tool" || e.T == "user" {
 		a.hist = append(a.hist, e)
 	}
@@ -151,6 +156,7 @@ func (a *App) start(model string) error {
 	}
 	a.mu.Lock()
 	a.cmd, a.stdin, a.model, a.hist, a.ready, a.busy = cmd, in, model, nil, false, true
+	a.sess, a.dirty, a.pending = nil, false, ""
 	a.mu.Unlock()
 	a.emit(Event{T: "status", Text: "Carregando o modelo..."})
 	go a.readStdout(cmd, so)
@@ -392,6 +398,88 @@ func (a *App) routes() http.Handler {
 		a.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"models": a.listModels(), "current": cur, "ready": ready})
 	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		a.mu.Lock()
+		cur := ""
+		if a.sess != nil {
+			cur = a.sess.ID
+		}
+		a.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listSessions(a.sessDir, cur))
+	})
+	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+		if !validID(id) {
+			http.Error(w, "id invalido", 400)
+			return
+		}
+		switch r.Method {
+		case "GET":
+			s, err := loadSession(a.sessDir, id)
+			if err != nil {
+				http.Error(w, "sessao nao encontrada", 404)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(s)
+		case "DELETE":
+			a.mu.Lock()
+			if a.sess != nil && a.sess.ID == id {
+				a.sess, a.dirty, a.pending = nil, false, ""
+			}
+			a.mu.Unlock()
+			if err := os.Remove(filepath.Join(a.sessDir, id+".json")); err != nil && !os.IsNotExist(err) {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			w.Write([]byte("ok"))
+		default:
+			http.Error(w, "metodo nao permitido", 405)
+		}
+	})
+	// abre uma sessao antiga como atual: o agente recomeca limpo e a proxima mensagem leva o resumo
+	mux.HandleFunc("/api/open", func(w http.ResponseWriter, r *http.Request) {
+		var q struct{ ID string }
+		json.NewDecoder(r.Body).Decode(&q)
+		if !validID(q.ID) {
+			http.Error(w, "id invalido", 400)
+			return
+		}
+		s, err := loadSession(a.sessDir, q.ID)
+		if err != nil {
+			http.Error(w, "sessao nao encontrada", 404)
+			return
+		}
+		a.mu.Lock()
+		in, ready, running := a.stdin, a.ready, a.cmd != nil
+		if running && !(ready && in != nil) {
+			a.mu.Unlock()
+			http.Error(w, "ocupado", 409)
+			return
+		}
+		a.sess, a.dirty, a.pending = s, false, buildContext(s.Mensagens)
+		a.hist = nil
+		for _, m := range s.Mensagens {
+			switch m.Papel {
+			case "user":
+				a.hist = append(a.hist, Event{T: "user", Text: m.Texto})
+			case "assistant":
+				a.hist = append(a.hist, Event{T: "text", Text: m.Texto})
+			case "tool":
+				a.hist = append(a.hist, Event{T: "tool", Name: m.Nome, Text: m.Texto})
+			}
+		}
+		if running {
+			a.ready = false
+		}
+		a.mu.Unlock()
+		if running {
+			io.WriteString(in, "/novo\n")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s)
+	})
 	mux.HandleFunc("/api/start", func(w http.ResponseWriter, r *http.Request) {
 		var q struct{ Model string }
 		json.NewDecoder(r.Body).Decode(&q)
@@ -404,11 +492,20 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		var q struct{ Text string }
 		json.NewDecoder(r.Body).Decode(&q)
-		text := strings.Join(strings.Fields(strings.ReplaceAll(q.Text, "\n", " ")), " ") // o agente le uma linha por turno
 		a.mu.Lock()
 		in, ready := a.stdin, a.ready
-		if in != nil && ready && text != "" {
+		text := ""
+		if in != nil && ready && strings.TrimSpace(q.Text) != "" {
 			a.ready, a.busy = false, true
+			msg := q.Text
+			if a.pending != "" { // sessao antiga retomada: o agente recebe o resumo antes da mensagem
+				msg = a.pending + "Nova mensagem: " + q.Text
+				a.pending = ""
+			}
+			text = oneLine(msg) // o agente le uma linha por turno
+			if a.sess == nil {
+				a.sess = newSession(a.model)
+			}
 		} else {
 			in = nil
 		}
@@ -435,6 +532,7 @@ func (a *App) routes() http.Handler {
 		in, ready := a.stdin, a.ready
 		if ready && in != nil {
 			a.hist = nil
+			a.sess, a.dirty, a.pending = nil, false, ""
 			a.ready = false
 		} else {
 			in = nil
@@ -493,7 +591,7 @@ func openWindow(url string) {
 		cands = [][]string{{"open", url}}
 	default:
 		for _, b := range []string{"google-chrome", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"} {
-			cands = append(cands, []string{b, "--app=" + url, "--window-size=1000,780"})
+			cands = append(cands, []string{b, "--app=" + url, "--window-size=1180,820"})
 		}
 		cands = append(cands, []string{"xdg-open", url})
 	}
@@ -530,6 +628,12 @@ func main() {
 	}
 	cwd, _ := os.Getwd()
 	app := &App{subs: map[chan Event]struct{}{}}
+	if home, err := os.UserHomeDir(); err == nil {
+		app.sessDir = filepath.Join(home, ".katana", "desktop", "sessoes")
+	} else {
+		app.sessDir = filepath.Join(os.TempDir(), "katana-desktop-sessoes")
+	}
+	os.MkdirAll(app.sessDir, 0o755)
 	app.katana = pick(*katana, filepath.Join(dir, "katana"), filepath.Join(dir, "..", "katana"), filepath.Join(cwd, "katana"), filepath.Join(cwd, "..", "katana"))
 	app.modelsDir = pick(*models, filepath.Join(dir, "modelos"), filepath.Join(dir, "..", "modelos"), filepath.Join(cwd, "modelos"), filepath.Join(cwd, "..", "modelos"))
 	if _, err := os.Stat(app.katana); err != nil {
