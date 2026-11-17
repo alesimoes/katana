@@ -1660,11 +1660,38 @@ static void ids_push(Ids *o, int id) {
     o->ids[o->n++] = id;
 }
 
-/* aplica BPE em uma "palavra" (bytes crus) e empilha os ids */
+/* par candidato do BPE: junta os simbolos i e j (vizinhos); a e b sao os tamanhos no momento em que o par foi avaliado,
+   para descartar entradas velhas depois que algum dos lados mudou */
+typedef struct { int rank, pos, i, j, a, b; } BpePar;
+
+static int bpe_menor(const BpePar *x, const BpePar *y) { return x->rank < y->rank || (x->rank == y->rank && x->pos < y->pos); }
+
+static void bpe_sobe(BpePar *h, int k) {
+    while (k > 0) {
+        const int p = (k - 1) / 2;
+        if (!bpe_menor(&h[k], &h[p])) break;
+        BpePar t = h[k]; h[k] = h[p]; h[p] = t; k = p;
+    }
+}
+
+static void bpe_desce(BpePar *h, int n, int k) {
+    for (;;) {
+        int m = k, l = 2 * k + 1, r = l + 1;
+        if (l < n && bpe_menor(&h[l], &h[m])) m = l;
+        if (r < n && bpe_menor(&h[r], &h[m])) m = r;
+        if (m == k) break;
+        BpePar t = h[k]; h[k] = h[m]; h[m] = t; k = m;
+    }
+}
+
+/* aplica BPE em uma "palavra" (bytes crus) e empilha os ids.
+   Lista encadeada de simbolos + heap de pares (menor rank; empate = mais a esquerda): O(n log n) em vez de O(n^2),
+   que travava em trechos longos sem fronteira (base64, JSON minificado, resultados de ferramenta). */
 static void bpe_word(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
     char *buf = xalloc((size_t)n * 2 + 1, 1);
     int *st = xalloc(n, sizeof(int)), *ln = xalloc(n, sizeof(int));
-    char *pair = xalloc((size_t)n * 2 + 2, 1);
+    int *nx = xalloc(n, sizeof(int)), *pv = xalloc(n, sizeof(int));
+    char *vivo = xalloc(n, 1);
     int bl = 0, ns = 0;
 
     for (int i = 0; i < n; i++) {   /* um simbolo por caractere unicode (bytes mapeados) */
@@ -1672,26 +1699,37 @@ static void bpe_word(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
         if (cp < 0x80) buf[bl++] = (char)cp;
         else { buf[bl++] = (char)(0xC0 | (cp >> 6)); buf[bl++] = (char)(0x80 | (cp & 0x3F)); }
         /* bytes de continuacao UTF-8 viram simbolos proprios (BPE em nivel de byte) */
-        st[ns] = start; ln[ns] = bl - start; ns++;
+        st[ns] = start; ln[ns] = bl - start; nx[ns] = ns + 1 < n ? ns + 1 : -1; pv[ns] = ns - 1; vivo[ns] = 1; ns++;
     }
-    for (;;) {
-        int best = -1, best_rank = 0x7fffffff;
-        for (int i = 0; i + 1 < ns; i++) {
-            int a = ln[i], b = ln[i + 1];
-            memcpy(pair, buf + st[i], a); pair[a] = ' '; memcpy(pair + a + 1, buf + st[i + 1], b);
-            int rk = map_get(&tk->merges, pair, a + 1 + b);
-            if (rk >= 0 && rk < best_rank) { best_rank = rk; best = i; }
-        }
-        if (best < 0) break;
-        ln[best] += ln[best + 1];
-        for (int i = best + 1; i + 1 < ns; i++) { st[i] = st[i + 1]; ln[i] = ln[i + 1]; }
-        ns--;
+    int hcap = 3 * n + 4, hn = 0;
+    BpePar *h = xalloc((size_t)hcap, sizeof(BpePar));
+    char *pair = NULL; size_t pcap = 0;
+#define BPE_AVALIA(I, J) do { \
+        const int a_ = ln[I], b_ = ln[J]; \
+        if ((size_t)(a_ + b_ + 1) > pcap) { pcap = (size_t)(a_ + b_ + 1) * 2; pair = realloc(pair, pcap); if (!pair) die("sem memoria"); } \
+        memcpy(pair, buf + st[I], a_); pair[a_] = ' '; memcpy(pair + a_ + 1, buf + st[J], b_); \
+        const int rk_ = map_get(&tk->merges, pair, a_ + 1 + b_); \
+        if (rk_ >= 0) { h[hn] = (BpePar){ rk_, st[I], I, J, a_, b_ }; bpe_sobe(h, hn); hn++; } \
+    } while (0)
+    for (int i = 0; i + 1 < n; i++) BPE_AVALIA(i, i + 1);
+    while (hn > 0) {
+        const BpePar e = h[0];
+        h[0] = h[--hn]; bpe_desce(h, hn, 0);
+        if (!vivo[e.i] || !vivo[e.j] || nx[e.i] != e.j || ln[e.i] != e.a || ln[e.j] != e.b) continue;   /* entrada velha */
+        ln[e.i] += ln[e.j];                 /* junta j em i (os bytes sao contiguos em buf) */
+        vivo[e.j] = 0;
+        nx[e.i] = nx[e.j];
+        if (nx[e.i] >= 0) pv[nx[e.i]] = e.i;
+        if (pv[e.i] >= 0) BPE_AVALIA(pv[e.i], e.i);
+        if (nx[e.i] >= 0) BPE_AVALIA(e.i, nx[e.i]);
     }
-    for (int i = 0; i < ns; i++) {
+#undef BPE_AVALIA
+    for (int i = 0; i < n; i++) {
+        if (!vivo[i]) continue;
         int id = map_get(&tk->vocab, buf + st[i], ln[i]);
         ids_push(out, id >= 0 ? id : 0);
     }
-    free(buf); free(st); free(ln); free(pair);
+    free(buf); free(st); free(ln); free(nx); free(pv); free(vivo); free(h); free(pair);
 }
 
 static int c_space(int c)  { return c == ' ' || (c >= 9 && c <= 13); }
