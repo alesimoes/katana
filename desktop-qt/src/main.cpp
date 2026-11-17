@@ -36,6 +36,7 @@ int main(int argc, char **argv)
 
     QGuiApplication app(argc, argv);
     app.setApplicationName("katana-desktop");
+    app.setApplicationDisplayName("Katana");
     app.setOrganizationName("katana");
     QGuiApplication::setDesktopFileName("katana-desktop");  // casa com katana-desktop.desktop (dock)
     {
