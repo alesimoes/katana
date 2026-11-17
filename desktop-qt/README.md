@@ -37,3 +37,9 @@ clica na janela com eventos reais (QTest), confere cartao `list_dir`, sessoes, d
 
 Limitacoes: raciocinio desligado (`KATANA_THINK=0`); o agente le uma linha por turno (quebras de linha
 viram espacos); no Windows, parar mata o agente; a versao Windows nao foi compilada nem testada.
+
+## Instalar na raiz do repositorio
+
+Nao copie o binario: ele precisa da pasta `Katana/` (modulo QML) que fica ao lado dele em `desktop-qt/build/`.
+Use um link simbolico (o Qt resolve o caminho real): `ln -sf desktop-qt/build/katana-desktop-qt katana-desktop`.
+Copiar o binario sozinho da o erro `Module "Katana" contains no type named "Main"`.
