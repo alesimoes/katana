@@ -211,60 +211,36 @@ Item {
             id: col
             width: parent.width
             spacing: 0
-            // emblema: katana fina em diagonal, tracos vetoriais na cor de destaque
-            Canvas {
+            // mascote: samurai em pixel art 16x16, ampliado em escala inteira (sem suavizacao)
+            Image {
                 id: samurai
                 objectName: "samurai"
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: 72
-                height: 72
-                renderTarget: Canvas.Image
-                property color cor: Theme.ac
-                onCorChanged: requestPaint()
+                readonly property int escala: mv.height < 560 ? 4 : 5
+                source: "qrc:/icons/samurai.png"
+                width: 16 * escala
+                height: 16 * escala
+                smooth: false
+                mipmap: false
                 Accessible.role: Accessible.Graphic
                 Accessible.name: "Katana"
-                onPaint: {
-                    var c = getContext("2d")
-                    c.reset()
-                    c.translate(width / 2, height / 2)
-                    c.rotate(-Math.PI / 4)
-                    c.fillStyle = cor
-                    c.strokeStyle = cor
-                    // lamina: ponta fina, lombo reto, leve curva no fio
-                    c.beginPath()
-                    c.moveTo(-34, 1.6)
-                    c.lineTo(-34, -1.4)
-                    c.lineTo(22, -1.4)
-                    c.quadraticCurveTo(31, -1.4, 35, -3.4)
-                    c.quadraticCurveTo(33, 0.4, 28, 1.6)
-                    c.closePath()
-                    c.fill()
-                    // guarda (tsuba)
-                    c.beginPath()
-                    c.ellipse(-37.5, -5, 3, 10)
-                    c.fill()
-                    // empunhadura com trancado discreto
-                    c.lineWidth = 3.4
-                    c.lineCap = "round"
-                    c.globalAlpha = 0.55
-                    c.beginPath()
-                    c.moveTo(-60, 0.1)
-                    c.lineTo(-38, 0.1)
-                    c.stroke()
-                }
+            }
+            Item { width: 1; height: 22 }
+            // titulo retro (anos 80): letras blocadas em pixel com degrade roxo e sombra, gerado por tools/gerar-samurai.py
+            Image {
+                objectName: "welcomeTitle"
+                anchors.horizontalCenter: parent.horizontalCenter
+                readonly property string text: "Katana"
+                readonly property int escala: mv.height < 560 ? 4 : 5
+                source: Theme.dark ? "qrc:/icons/titulo-escuro.png" : "qrc:/icons/titulo-claro.png"
+                width: sourceSize.width * escala
+                height: sourceSize.height * escala
+                smooth: false
+                mipmap: false
+                Accessible.role: Accessible.StaticText
+                Accessible.name: "Katana"
             }
             Item { width: 1; height: 14 }
-            Text {
-                objectName: "welcomeTitle"
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: "Katana"
-                color: Theme.ac
-                font.pixelSize: 30
-                font.weight: Font.Bold
-                font.letterSpacing: 3
-            }
-            Item { width: 1; height: 4 }
             Text {
                 objectName: "welcomeGreeting"
                 width: parent.width

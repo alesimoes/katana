@@ -28,19 +28,19 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   abaixo de 70%, ambar a partir de 70%, vermelha a partir de 85%. Alimentado pelo marcador `TOKENS`
   (e pela linha de estatisticas do stderr). O marcador `COMPACT` mostra "Contexto compactado: N -> M
   tokens". Marcadores desconhecidos sao ignorados (ponto de extensao: `Backend::handleMarker`).
-- Icone: fundo roxo `#820AD1` (squircle) com a letra K branca, sem outros simbolos. `icons/katana.svg`
-  (fonte) e PNGs 16 a 512 (gerados com `rsvg-convert -w N -h N icons/katana.svg -o icons/katana-N.png`),
-  embutidos no executavel (recursos Qt) e usados como icone da janela. Nome exibido: "Katana"; o app id
-  continua `katana-desktop`.
+- Icone: squircle roxo `#820AD1` com o mascote (samurai de elmo com chifres e katana, pixel art 16x16, tons claros
+  sobre o roxo). `icons/katana.svg` (retangulos sem suavizacao) e PNGs 16 a 512 sao gerados por
+  `tools/gerar-samurai.py` (PIL), embutidos no executavel (recursos Qt) e usados como icone da janela, do .desktop e da dock.
 - Identidade roxa: o destaque (`Theme.ac`: botao enviar, anel de contexto, selecao de texto, avatar, foco,
   titulo) e `#820AD1` no tema claro e `#B66CF2` no escuro (texto sobre o destaque: branco / `#1A1022`); os
   neutros tem um leve tom lilas. Tudo em `qml/Theme.qml`.
 - Tela de boas-vindas (`emptyState` em `MessageView.qml`): aparece so com a conversa vazia (inicio, 'Nova
-  conversa'); some ao enviar a primeira mensagem e nao aparece ao abrir sessao com mensagens. Mostra um
-  samurai em pixel art com katana (`icons/samurai.png`, 64x64, desenhado em escala inteira 4x/3x/2x conforme
-  a altura da janela, `smooth: false`), o titulo "Katana", "Em que posso ajudar hoje?" e 3 sugestoes
-  clicaveis que preenchem e enviam. O sprite e gerado por `tools/gerar-samurai.py` (PIL; paleta fixa,
-  contorno automatico); rode-o para regenerar o PNG e depois `build.sh`.
+  conversa'); some ao enviar a primeira mensagem e nao aparece ao abrir sessao com mensagens. Mostra o
+  samurai (`icons/samurai.png`, 16x16 logico, 5 tons: contorno, sombra, base roxa, luz, branco) ampliado em escala
+  inteira 5x (80 px; 4x em janela baixa) com `smooth: false`, o titulo "Katana" como imagem retro anos 80
+  (`icons/titulo-claro.png` / `titulo-escuro.png`: letras blocadas 5x7 em pixel, degrade roxo e sombra de 1 px,
+  ampliadas em escala inteira), "Em que posso ajudar hoje?" e 3 sugestoes clicaveis que preenchem e enviam.
+  Tudo (sprite, titulo, icones) sai de `tools/gerar-samurai.py`; rode-o e depois `build.sh`.
 - Tema claro/escuro segue o sistema (`KATANA_THEME=light|dark` forca um).
 
 Protocolo: o agente roda com `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Linhas de stdout que comecam com

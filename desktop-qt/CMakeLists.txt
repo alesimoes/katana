@@ -45,6 +45,8 @@ qt_add_resources(katana-desktop-qt icones
     FILES
         icons/katana.svg
         icons/samurai.png
+        icons/titulo-claro.png
+        icons/titulo-escuro.png
         icons/katana-16.png
         icons/katana-32.png
         icons/katana-48.png
