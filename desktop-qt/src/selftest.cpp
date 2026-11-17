@@ -207,6 +207,21 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     typeText(win, "b");
     check(c.inputText() == "a\nb", "Shift+Enter insere quebra de linha");
     check(be.messages()->count() == 0, "Shift+Enter nao enviou");
+    {
+        // a caixa cresce com o conteudo e para num limite (depois rola)
+        QQuickItem *in = c.item("composerInput");
+        QQuickItem *fl = c.item("composerFlick");
+        const double h1 = fl->height();
+        in->setProperty("text", "l1\nl2\nl3\nl4\nl5");
+        QTest::qWait(150);
+        const double h5 = fl->height();
+        check(h5 > h1 + 40, "caixa de texto cresce com varias linhas");
+        c.grab("10-caixa-multilinha.png");
+        in->setProperty("text", "x\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx");
+        QTest::qWait(150);
+        check(fl->height() <= 241, "caixa para de crescer no limite");
+        c.grab("11-caixa-limite.png");
+    }
     c.item("composerInput")->setProperty("text", "");
 
     // ---- turno com ferramenta ----
@@ -257,6 +272,19 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         check(be.messages()->count() == n0, "marcadores desconhecidos (WARM etc.) ignorados sem erro");
         be.injectMarker("TOKENS 4321 32768");
         check(be.ctxText() == "contexto 4321 de 32768", "TOKENS atualiza o uso de contexto");
+        QQuickItem *meter = c.item("contextMeter");
+        check(meter && meter->isVisible(), "indicador de contexto visivel");
+        check(meter->property("level").toString() == "ok" && meter->property("pct").toInt() == 13,
+              "indicador: 4321/32768 = 13% (normal)");
+        c.grab("07-contexto-normal.png");
+        be.injectMarker("TOKENS 24000 32768");
+        check(meter->property("level").toString() == "warn", "indicador: 73% = aviso");
+        c.grab("08-contexto-aviso.png");
+        be.injectMarker("TOKENS 30000 32768");
+        check(meter->property("level").toString() == "crit", "indicador: 92% = critico");
+        check(meter->property("tipText").toString().contains("Livre: 2768"), "dica do indicador mostra o livre");
+        c.grab("09-contexto-critico.png");
+        be.injectMarker("TOKENS 4321 32768");
         be.injectMarker("COMPACT 30000 8000");
         QVariantMap nm = be.messages()->get(be.messages()->count() - 1);
         check(nm["kind"] == "notice" && nm["text"].toString() == "Contexto compactado: 30000 -> 8000 tokens", "COMPACT vira aviso discreto");

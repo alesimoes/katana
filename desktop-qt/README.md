@@ -20,9 +20,16 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   (ate ~6000 caracteres, mantendo o fim); a tela mostra so o digitado. O resumo pendente sobrevive a troca
   de modelo.
 - Chamadas de ferramenta viram cartoes (nome + argumentos legiveis); o XML cru do modelo nao aparece.
-- Estatisticas discretas sob a caixa: tok/s (stderr) e uso de contexto (marcador `TOKENS`). O marcador
-  `COMPACT` mostra "Contexto compactado: N -> M tokens". Marcadores desconhecidos sao ignorados
-  (ponto de extensao: `Backend::handleMarker`).
+- Caixa de entrada grande (minimo ~2 linhas) que cresce com o texto ate ~240 px e depois rola. Enter
+  envia, Shift+Enter quebra linha (o agente le uma linha por turno: as quebras viram espacos, e a
+  interface avisa).
+- Estatisticas discretas sob a caixa: tok/s (stderr) e indicador de contexto (`ContextMeter.qml`): anel de
+  progresso + "X mil / Y mil tokens · Z%", com dica ao passar o mouse (usados, total, livre). Cor normal
+  abaixo de 70%, ambar a partir de 70%, vermelha a partir de 85%. Alimentado pelo marcador `TOKENS`
+  (e pela linha de estatisticas do stderr). O marcador `COMPACT` mostra "Contexto compactado: N -> M
+  tokens". Marcadores desconhecidos sao ignorados (ponto de extensao: `Backend::handleMarker`).
+- Icone: `icons/katana.svg` (fonte) e PNGs 16 a 512, embutidos no executavel (recursos Qt) e usados como
+  icone da janela. O nome do aplicativo/app id e `katana-desktop`.
 - Tema claro/escuro segue o sistema (`KATANA_THEME=light|dark` forca um).
 
 Protocolo: o agente roda com `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Linhas de stdout que comecam com
@@ -43,3 +50,11 @@ viram espacos); no Windows, parar mata o agente; a versao Windows nao foi compil
 Nao copie o binario: ele precisa da pasta `Katana/` (modulo QML) que fica ao lado dele em `desktop-qt/build/`.
 Use um link simbolico (o Qt resolve o caminho real): `ln -sf desktop-qt/build/katana-desktop-qt katana-desktop`.
 Copiar o binario sozinho da o erro `Module "Katana" contains no type named "Main"`.
+
+## Dock e menu de aplicativos (GNOME/Ubuntu)
+
+`desktop-qt/instalar-dock.sh` instala `katana-desktop.desktop` em `~/.local/share/applications/`, os icones em
+`~/.local/share/icons/hicolor/<tam>/apps/katana-desktop.png`, atualiza os caches e acrescenta
+`katana-desktop.desktop` a `org.gnome.shell favorite-apps` (sem remover os favoritos nem duplicar). Em outros
+ambientes instala so o atalho do menu. O `Exec` do .desktop usa o link `/mnt/dados/source/katana/katana-desktop`
+(veja acima); o script nao mexe no binario.

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Katana
+GenericName=Agente de IA local
+Comment=Conversa com o agente do motor de inferencia katana
+Exec=/mnt/dados/source/katana/katana-desktop
+Icon=/mnt/dados/source/katana/desktop-qt/icons/katana-256.png
+Terminal=false
+Categories=Utility;
+StartupWMClass=katana-desktop
+StartupNotify=true

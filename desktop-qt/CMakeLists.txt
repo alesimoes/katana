@@ -35,7 +35,22 @@ qt_add_qml_module(katana-desktop-qt
         qml/CodeBlock.qml
         qml/ToolCard.qml
         qml/Composer.qml
+        qml/ContextMeter.qml
         qml/Markdown.js
+)
+
+qt_add_resources(katana-desktop-qt icones
+    PREFIX /icons
+    BASE icons
+    FILES
+        icons/katana.svg
+        icons/katana-16.png
+        icons/katana-32.png
+        icons/katana-48.png
+        icons/katana-64.png
+        icons/katana-128.png
+        icons/katana-256.png
+        icons/katana-512.png
 )
 
 target_link_libraries(katana-desktop-qt PRIVATE
