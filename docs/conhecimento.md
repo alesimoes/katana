@@ -129,6 +129,10 @@ profundidade: 128k 4,5 tok/s, 256k 2,7, 1M 0,7 (yarn x4). A atencao de um token 
 cache (flash-decoding com grupo junto deu 2,5x a 128k). Encher 1M de prompt: estimado ~8 dias na CPU
 (prefill da atencao ainda token a token). Detalhes em handoff.md, secao 0a.
 
+gemma4 (medido 2026-11-17): 25 camadas locais guardam so a janela (anel de 1040), 5 globais o contexto
+todo; a 131072 o KV fica em 2,90 GB fp16 (aviso antigo dizia 128,85 GB, era so a conta). Agente roda a
+131072 por padrao, RSS maximo 15 GB (pesos mapeados), saida fp32 identica a anterior.
+
 ## 5b. Contexto compactado, tokens da conversa e calor por sessao (2026-11-17)
 
 - Compactacao do agente (resumo pelo proprio modelo + resultados de ferramenta encolhidos) e marcadores
