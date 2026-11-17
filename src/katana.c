@@ -10514,6 +10514,7 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
     if (strcmp(line, "/ajuda") == 0) {
         fprintf(stderr,
             "  /novo             limpa a conversa\n"
+            "  /compactar        (agente) resume e encolhe o contexto antigo para liberar espaco\n"
             "  /sistema <texto>  define o prompt de sistema (e recomeca a conversa)\n"
             "  /salvar <arq>     grava a conversa em texto\n"
             "  /ajuda            esta lista\n"
@@ -10748,6 +10749,7 @@ static int session(Model *m, const char *sys0, int max_tokens, float temp) {
         g_busy = 0;
         printf("\n"); fflush(stdout);
         stats_line(ids.n, t1 - t0, gen, t2 - t1, pos, c->ctx);
+        if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
         buf_str(&tr, "Voce: "); buf_str(&tr, line);
         buf_str(&tr, "\nAssistente: "); buf_str(&tr, reply.p ? reply.p : "");
         buf_str(&tr, "\n\n");
@@ -13259,6 +13261,177 @@ static void go_agent_sys(char *sys, size_t cap) {
     free(decl.p); free(out.p);
 }
 
+/* ---------- compactacao do contexto do agente (formato ChatML) ----------
+ * O agente guarda as mensagens que ja estao no cache KV (role 'u' usuario, 'a' assistente, 't' resultados de
+ * ferramenta, que vao como mensagem do usuario). Perto do fim do contexto, em camadas: (1) troca o corpo dos
+ * resultados de ferramenta antigos por um aviso curto; (2) resume os turnos antigos com o proprio modelo;
+ * (3) encolhe tambem os resultados do turno atual (menos o ultimo). Depois recalcula o cache do zero
+ * (o cache KV e linear e o DeltaNet so continua do fim), aproveitando o prefixo de sistema do disco. */
+typedef struct { char role; char *s; } AMsg;
+typedef struct { AMsg *v; int n, cap; } AHist;
+static void ah_push(AHist *h, char role, const char *s, size_t n) {
+    if (h->n == h->cap) { h->cap = h->cap * 2 + 16; h->v = realloc(h->v, sizeof(AMsg) * (size_t)h->cap); if (!h->v) die("sem memoria"); }
+    char *p = xalloc(n + 1, 1); memcpy(p, s, n); p[n] = 0;
+    h->v[h->n].role = role; h->v[h->n].s = p; h->n++;
+}
+static void ah_clear(AHist *h) { for (int i = 0; i < h->n; i++) free(h->v[i].s); h->n = 0; }
+/* texto ChatML das mensagens; termina no fim da ultima, sem o fecho (como o cache KV) */
+static void ah_render(const AHist *h, const char *sys, Buf *o) {
+    buf_clear(o);
+    buf_str(o, "<|im_start|>system\n"); buf_str(o, sys); buf_str(o, "<|im_end|>\n");
+    for (int i = 0; i < h->n; i++) {
+        if (i) buf_str(o, "<|im_end|>\n");
+        buf_str(o, h->v[i].role == 'a' ? "<|im_start|>assistant\n" : "<|im_start|>user\n");
+        buf_str(o, h->v[i].s);
+    }
+}
+static int ah_count(const Model *m, const char *t) {
+    Ids ids = {0};
+    if (m->cfg.add_bos && m->cfg.bos >= 0) ids_push(&ids, m->cfg.bos);
+    encode(&m->tk, t, &ids);
+    const int n = ids.n; free(ids.ids); return n;
+}
+/* troca o corpo de cada resultado de ferramenta da mensagem por "[resultado de X omitido: N bytes]"; 1 se mudou */
+static int ah_shrink_tool(AMsg *mg) {
+    const char *K = "<tool_response>\n[resultado da ferramenta ";
+    if (mg->role != 't' || !strstr(mg->s, K)) return 0;
+    Buf o = {0};
+    for (const char *q = strstr(mg->s, K); q; q = strstr(q, K)) {
+        const char *nm = q + strlen(K);
+        size_t nl = strcspn(nm, ",\n");
+        const char *e = strstr(nm, "</tool_response>");
+        const size_t nb = e ? (size_t)(e - q) : strlen(q);
+        char t[256];
+        snprintf(t, sizeof t, "%s<tool_response>\n[resultado de %.*s omitido para economizar contexto: %zu bytes]\n</tool_response>", o.n ? "\n" : "", (int)(nl < 100 ? nl : 100), nm, nb);
+        buf_str(&o, t);
+        q = e ? e + 16 : q + strlen(q);
+    }
+    free(mg->s); mg->s = o.p ? o.p : xalloc(1, 1);
+    return 1;
+}
+/* acrescenta ate cap bytes de s em o, cortando numa fronteira de UTF-8 */
+static void ah_cut(Buf *o, const char *s, size_t cap) {
+    size_t n = strlen(s);
+    if (n > cap) { n = cap; while (n && ((unsigned char)s[n] & 0xC0) == 0x80) n--; }
+    buf_add(o, s, n);
+    if (n < strlen(s)) buf_str(o, " [...]");
+}
+/* resume as mensagens [0, upto) com o proprio modelo (sem ferramentas, gulosa); devolve texto alocado ou NULL */
+static char *ah_summary(Model *m, const AHist *h, int upto) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    const int im_end = map_get(&tk->vocab, "<|im_end|>", 10);
+    Buf tx = {0};
+    for (int i = 0; i < upto; i++) {
+        const char *s = h->v[i].s;
+        if (h->v[i].role == 'a') {          /* sem o raciocinio */
+            const char *e = strstr(s, "</think>");
+            if (e) s = e + 8;
+            while (*s == '\n') s++;
+            buf_str(&tx, "Assistente: ");
+        } else buf_str(&tx, h->v[i].role == 't' ? "Resultados de ferramenta: " : "Usuario: ");
+        ah_cut(&tx, s, h->v[i].role == 't' ? 1500 : 4000);
+        buf_str(&tx, "\n\n");
+    }
+    if (!tx.p) return NULL;
+    /* a transcricao precisa caber (cerca de 3 bytes por token): comeco e, principalmente, o fim */
+    const long room = ((long)c->ctx - 900) * 3;
+    if (room < 2000) { free(tx.p); return NULL; }
+    if ((long)tx.n > room) {
+        size_t a = (size_t)room / 4, b = (size_t)room - a;
+        while (a && ((unsigned char)tx.p[a] & 0xC0) == 0x80) a--;
+        size_t bs = tx.n - b;
+        while (bs < tx.n && ((unsigned char)tx.p[bs] & 0xC0) == 0x80) bs++;
+        Buf t2 = {0};
+        buf_add(&t2, tx.p, a); buf_str(&t2, "\n[...]\n"); buf_add(&t2, tx.p + bs, tx.n - bs);
+        free(tx.p); tx = t2;
+    }
+    Buf pr = {0};
+    buf_str(&pr, "<|im_start|>system\nVoce resume conversas de forma fiel e curta.<|im_end|>\n<|im_start|>user\n"
+                 "Resuma a conversa abaixo em no maximo 15 linhas, no idioma da conversa: o que o usuario quer, fatos e decisoes, "
+                 "arquivos, comandos e ferramentas usados com os resultados importantes, e o que ainda falta fazer. Nao invente nada.\n\n<conversa>\n");
+    buf_str(&pr, tx.p); free(tx.p);
+    buf_str(&pr, "</conversa><|im_end|>\n<|im_start|>assistant\n");
+    if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    Ids ids = {0};
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(tk, pr.p, &ids);
+    free(pr.p);
+    if (ids.n + 64 >= c->ctx) { free(ids.ids); return NULL; }
+    float *lg = forward_seq(m, ids.ids, ids.n, 0, 1);
+    int pos = ids.n;
+    free(ids.ids);
+    Buf out = {0};
+    char tmp[256];
+    for (int g = 0; g < 500 && pos < c->ctx - 1 && !g_stop; g++) {
+        const int t = sample(lg, c->vocab, 0.0f);
+        if (t == c->eos || t == im_end || (tk->toktype && tk->toktype[t] == 3)) break;
+        const size_t tl = tok_append(tk, t, tmp, 0, sizeof tmp - 1);
+        buf_add(&out, tmp, tl);
+        lg = forward(m, t, pos++, 1);
+    }
+    if (!out.p) return NULL;
+    char *s = out.p; while (*s == '\n' || *s == ' ') s++;
+    size_t l = strlen(s); while (l && (s[l - 1] == '\n' || s[l - 1] == ' ')) l--;
+    if (!l) { free(out.p); return NULL; }
+    char *r = xalloc(l + 1, 1); memcpy(r, s, l); r[l] = 0;
+    free(out.p);
+    return r;
+}
+/* compacta o historico e recalcula o cache com historico + pending (texto do turno atual ainda fora do cache,
+   que comeca pelo fecho da mensagem anterior). force: resume mesmo abaixo do alvo. Devolve o novo pos e os
+   logits do fim em *lg_out, ou -1 se nem compactado cabe. */
+static int agent_compact(Model *m, AHist *h, const char *sys, const char *pending, int before, int force, float **lg_out) {
+    const Config *c = &m->cfg;
+    const int target = c->ctx / 2;
+    Buf r = {0};
+    int last_u = -1;
+    for (int i = h->n - 1; i >= 0; i--) if (h->v[i].role == 'u') { last_u = i; break; }
+    if (last_u < 0) last_u = h->n;
+    int shr = 0, summ = 0;
+    for (int i = 0; i < last_u; i++) shr += ah_shrink_tool(&h->v[i]);          /* camada 1 */
+    ah_render(h, sys, &r); buf_str(&r, pending);
+    int n = ah_count(m, r.p);
+    if ((n > target || force) && last_u > 0) {                                   /* camada 2 */
+        fprintf(stderr, "%s[compactando: resumindo %d mensagens antigas...]%s\n", CE(C_DIM), last_u, CE(C_RESET));
+        char *sm = ah_summary(m, h, last_u);
+        if (sm) {
+            AHist nh = {0};
+            Buf u = {0};
+            buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm);
+            fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
+            ah_push(&nh, 'u', u.p, u.n);
+            ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
+            for (int i = last_u; i < h->n; i++) ah_push(&nh, h->v[i].role, h->v[i].s, strlen(h->v[i].s));
+            ah_clear(h); free(h->v); *h = nh;
+            free(u.p); free(sm);
+            summ = 1;
+            ah_render(h, sys, &r); buf_str(&r, pending);
+            n = ah_count(m, r.p);
+        }
+    }
+    if (n + 64 >= c->ctx * 85 / 100) {                                           /* camada 3: resultados do turno atual */
+        int lt = -1;
+        for (int i = h->n - 1; i >= 0; i--) if (h->v[i].role == 't') { lt = i; break; }
+        for (int i = 0; i < h->n; i++) if (i != lt || !*pending) shr += ah_shrink_tool(&h->v[i]);
+        ah_render(h, sys, &r); buf_str(&r, pending);
+        n = ah_count(m, r.p);
+    }
+    if (n + 64 >= c->ctx) { free(r.p); return -1; }
+    Ids ids = {0};
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(&m->tk, r.p, &ids);
+    free(r.p);
+    const int np = pfx_prepare(m, &ids, sys);
+    *lg_out = forward_seq(m, ids.ids + np, ids.n - np, np, 1);
+    const int after = ids.n;
+    free(ids.ids);
+    fprintf(stderr, "%s[contexto compactado: %d -> %d tokens de %d (%d resultados de ferramenta encolhidos%s)]%s\n",
+            CE(C_DIM), before, after, c->ctx, shr, summ ? ", turnos antigos resumidos" : "", CE(C_RESET));
+    if (getenv("KATANA_UI")) { printf("\x01" "COMPACT %d %d\n", before, after); fflush(stdout); }
+    return after;
+}
+
 static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -13268,6 +13441,11 @@ static int agent(Model *m, int max_tokens, float temp) {
     const int go = c->chat_fmt == 9;     /* gpt-oss harmony */
     const int im_end = g4 ? map_get(&tk->vocab, "<|tool_response>", 16) : map_get(&tk->vocab, "<|im_end|>", 10);   /* gemma4: para ao abrir a resposta da ferramenta */
     int pos = 0, first = 1;
+    AHist hist = {0};                    /* mensagens no cache (so ChatML), para compactar */
+    const int cml = !g4 && !go;
+    const char *ce = getenv("KATANA_COMPACT");
+    const int auto_cp = cml && !(ce && atoi(ce) == 0);
+    char prole = 0; Buf pend = {0};      /* mensagem do turno atual que entra no cache com o texto pendente */
     if ((c->chat_fmt != 0 && !g4 && !go) || (!go && im_end < 0)) die("o agente precisa de um modelo com formato ChatML (ex.: Qwen), Gemma 4 ou gpt-oss");
     g_tool_xml = c->tool_xml;
     g_agent_sys = sys;
@@ -13286,11 +13464,26 @@ static int agent(Model *m, int max_tokens, float temp) {
         prompt_user();
         if (!read_line(line, sizeof line)) break;
         if (line[0] == 0) continue;
+        if (strcmp(line, "/compactar") == 0) {
+            if (!cml) fprintf(stderr, "[/compactar: so no formato ChatML]\n");
+            else if (pos == 0 || !hist.n) fprintf(stderr, "[nada a compactar]\n");
+            else {
+                g_stop = 0; g_busy = 1;
+                float *lg_c;
+                const int np2 = agent_compact(m, &hist, sys, "", pos, 1, &lg_c);
+                g_busy = 0;
+                if (np2 < 0) fprintf(stderr, "[nao foi possivel compactar]\n"); else pos = np2;
+                if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
+            }
+            continue;
+        }
         int reset = 0;
         const int cmd = console_cmd(line, &tr, extra, sizeof extra, &reset);   /* /sistema acrescenta instrucoes ao prompt do agente */
         if (cmd == 2) break;
-        if (reset) { pos = 0; first = 1; }
+        if (reset) { pos = 0; first = 1; ah_clear(&hist); }
         if (cmd) continue;
+        if (first) ah_clear(&hist);
+        prole = 'u'; buf_clear(&pend); buf_str(&pend, line);
         if (first) { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); }   /* memoria + ferramentas MCP */
         if (go && first) snprintf(text, sizeof text, "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\n\nReasoning: %s\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message. Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>%s<|end|><|start|>user<|message|>%s<|end|><|start|>assistant", go_reason() ? "high" : "low", sys, line);
         else if (go) snprintf(text, sizeof text, "<|end|><|start|>user<|message|>%s<|end|><|start|>assistant", line);
@@ -13313,16 +13506,30 @@ static int agent(Model *m, int max_tokens, float temp) {
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);
-            if (pos + ids.n + 64 >= c->ctx) {
+            const int need = !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > c->ctx * 85 / 100));
+            if (!need && pos + ids.n + 64 >= c->ctx) {
                 fprintf(stderr, "[contexto cheio (%d de %d tokens): use /novo para recomecar]\n", pos, c->ctx);
                 free(ids.ids);
                 break;
             }
             g_stop = 0; g_busy = 1;
             const double t0 = now_sec();
-            const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
-            float *lg = forward_seq(m, ids.ids + np, ids.n - np, pos + np, 1);
-            pos += ids.n; first = 0;
+            float *lg;
+            if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
+                const int np2 = agent_compact(m, &hist, sys, text, pos, 0, &lg);
+                if (np2 < 0) {
+                    fprintf(stderr, "[contexto cheio mesmo compactado (%d de %d tokens): conversa recomecada; repita o pedido]\n", pos, c->ctx);
+                    g_busy = 0; free(ids.ids); pos = 0; first = 1; ah_clear(&hist);
+                    break;
+                }
+                pos = np2; first = 0;
+            } else {
+                const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
+                lg = forward_seq(m, ids.ids + np, ids.n - np, pos + np, 1);
+                pos += ids.n; first = 0;
+            }
+            if (cml && prole) ah_push(&hist, prole, pend.p ? pend.p : "", pend.n);
+            prole = 0;
             const double t1 = now_sec();
             buf_clear(&reply);
             const int gen = gen_console(m, lg, &pos, max_tokens, temp, go ? -1 : im_end, &reply);
@@ -13330,6 +13537,13 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_busy = 0;
             printf("\n"); fflush(stdout);
             stats_line(ids.n, t1 - t0, gen, t2 - t1, pos, c->ctx);
+            if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
+            if (cml) {
+                Buf ab = {0};
+                buf_str(&ab, think_pre(c)); if (reply.p) buf_add(&ab, reply.p, reply.n);
+                ah_push(&hist, 'a', ab.p ? ab.p : "", ab.n);
+                free(ab.p);
+            }
             free(ids.ids);
             buf_str(&tr, "Assistente: "); buf_str(&tr, reply.p ? reply.p : ""); buf_str(&tr, "\n");
             if (g_stop) break;                          /* interrompido: nao executa ferramentas */
@@ -13405,6 +13619,11 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (tl + 2 * TOOL_WEB + 2048 >= sizeof text) break;
             }
             if (!calls) break;
+            if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho */
+                const size_t h0 = strlen("<|im_end|>\n<|im_start|>user\n");
+                prole = 't'; buf_clear(&pend);
+                if (tl > h0) buf_add(&pend, text + h0, tl - h0);
+            }
             if (g4) { if (g4_think()) snprintf(text + tl, sizeof text - tl, "<|channel>thought\n"); }
             else snprintf(text + tl, sizeof text - tl, "<|im_end|>\n<|im_start|>assistant\n%s", think_pre(c));
         }
@@ -14060,6 +14279,83 @@ static int toktest(Model *m, const char *path, int chat) {
         for (int i = 0; i < 4; i++) free(fld[i]);
     }
     free(line); fclose(f);
+    return 0;
+}
+
+/* katana tokenize <modelo> [arquivo|-] [--ids]: conta os tokens de um texto (so o tokenizador, sem pesos).
+   Se todas as linhas nao vazias forem "papel<TAB>texto" (system, user, assistant), monta a conversa no formato
+   do modelo (como o chat: termina abrindo a resposta se a ultima for do usuario) e conta por mensagem.
+   Nas mensagens, "\n" e "\t" no texto viram quebra de linha e tabulacao. */
+static void tk_unesc(char *s) {
+    char *o = s;
+    for (const char *p = s; *p; p++) {
+        if (p[0] == '\\' && (p[1] == 'n' || p[1] == 't' || p[1] == '\\')) { *o++ = p[1] == 'n' ? '\n' : p[1] == 't' ? '\t' : '\\'; p++; }
+        else *o++ = *p;
+    }
+    *o = 0;
+}
+static int tokenize_cmd(Model *m, const char *path, int show_ids) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    FILE *f = (!path || strcmp(path, "-") == 0) ? stdin : fopen(path, "rb");
+    if (!f) { fprintf(stderr, "nao abri %s\n", path); return 1; }
+    Buf in = {0};
+    char blk[65536];
+    size_t r;
+    while ((r = fread(blk, 1, sizeof blk, f)) > 0) buf_add(&in, blk, r);
+    if (f != stdin) fclose(f);
+    if (!in.p) buf_str(&in, "");
+    int nmsg = 0, conv = 1;
+    for (char *p = in.p; *p; ) {
+        char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p);
+        if (l && !(l == 1 && p[0] == '\r')) {
+            nmsg++;
+            if (!((l > 7 && strncmp(p, "system\t", 7) == 0) || (l > 5 && strncmp(p, "user\t", 5) == 0) || (l > 10 && strncmp(p, "assistant\t", 10) == 0))) conv = 0;
+        }
+        p = e ? e + 1 : p + l;
+    }
+    Ids ids = {0};
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    if (!conv || !nmsg) {
+        encode(tk, in.p, &ids);
+        printf("%d tokens (texto, %zu bytes%s)\n", ids.n, in.n, c->add_bos && c->bos >= 0 ? ", inclui o BOS" : "");
+    } else {
+        Buf t = {0};
+        const char *sys = NULL;
+        int first = 1, prev = ids.n;
+        static const char *FMT[] = {"ChatML", "Llama 3", "Zephyr", "[INST]", "texto", "DeepSeek", "Kimi", "OLMoE", "Gemma 4", "harmony", "GLM-4"};
+        printf("conversa, formato %s\n", c->chat_fmt >= 0 && c->chat_fmt <= 10 ? FMT[c->chat_fmt] : "?");
+        for (char *p = in.p; *p; ) {
+            char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p);
+            if (e) *e = 0;
+            if (l && p[l - 1] == '\r') p[--l] = 0;
+            char *tab = l ? strchr(p, '\t') : NULL;
+            if (tab) {
+                *tab = 0;
+                char *msg = tab + 1;
+                tk_unesc(msg);
+                buf_clear(&t);
+                if (strcmp(p, "system") == 0) sys = msg;
+                else {
+                    if (strcmp(p, "user") == 0) {
+                        size_t cap = strlen(msg) + (sys ? strlen(sys) : 0) + 8192;
+                        char *o = xalloc(cap, 1);
+                        turn_text(c, o, cap, first ? sys : NULL, msg, first);
+                        buf_str(&t, o); free(o);
+                        first = 0;
+                    } else buf_str(&t, msg);   /* resposta do assistente: o texto que o modelo geraria (fecho no proximo turno) */
+                    encode(tk, t.p, &ids);
+                    printf("%-9s %6d tokens (acumulado %d)\n", p, ids.n - prev, ids.n);
+                    prev = ids.n;
+                }
+            }
+            p = e ? e + 1 : p + l;
+        }
+        printf("%d tokens no total%s\n", ids.n, c->add_bos && c->bos >= 0 ? " (inclui o BOS)" : "");
+        free(t.p);
+    }
+    if (show_ids) { for (int i = 0; i < ids.n; i++) printf(i ? " %d" : "%d", ids.ids[i]); printf("\n"); }
+    free(ids.ids); free(in.p);
     return 0;
 }
 
@@ -14771,6 +15067,14 @@ static int run_main(int argc, char **argv) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
         return toktest(&m, argv[3], argc > 4 && strcmp(argv[4], "--chat") == 0);
+    }
+    if (argc >= 3 && strcmp(argv[1], "tokenize") == 0) {    /* contagem de tokens de texto ou conversa, sem os pesos */
+        g_vocab_only = 1;
+        const char *src = NULL; int ids = 0;
+        for (int i = 3; i < argc; i++) { if (strcmp(argv[i], "--ids") == 0) ids = 1; else src = argv[i]; }
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return tokenize_cmd(&m, src, ids);
     }
     if (strcmp(argv[1], "modelos") == 0) return modelos_cmd(argc >= 3 ? argv[2] : "modelos");
     if (argc >= 3 && strcmp(argv[1], "info") == 0) {
