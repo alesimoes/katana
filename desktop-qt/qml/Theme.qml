@@ -1,7 +1,7 @@
 pragma Singleton
 import QtQuick
 
-// Cores (bege/terracota) e tema claro/escuro que segue o sistema
+// Cores (neutros levemente lilases, destaque roxo #820AD1) e tema claro/escuro que segue o sistema
 QtObject {
     id: t
     property string force: ""  // "light" ou "dark" (so para teste)
@@ -9,8 +9,8 @@ QtObject {
                                 : force === "light" ? false
                                 : Qt.styleHints.colorScheme === Qt.ColorScheme.Dark
 
-    readonly property var lt: ({bg: "#faf9f5", side: "#f2f0e8", fg: "#1f1e1d", mut: "#6a6963", bd: "#e0ddd2", hov: "#e9e6dc", us: "#ebe8de", ac: "#c4552f", acfg: "#ffffff", card: "#ffffff", code: "#f4f2ea", codeh: "#ebe8de", err: "#b3261e", foc: "#2a6fdb", shadow: "#28190f"})
-    readonly property var dk: ({bg: "#262624", side: "#1e1d1c", fg: "#ece9e0", mut: "#a09e95", bd: "#3b3a36", hov: "#2e2d2a", us: "#34332f", ac: "#d97757", acfg: "#1b1a19", card: "#2f2e2b", code: "#1d1c1b", codeh: "#2a2927", err: "#f2928b", foc: "#7ab0ff", shadow: "#000000"})
+    readonly property var lt: ({bg: "#faf9fc", side: "#f3f0f7", fg: "#1f1c24", mut: "#6b6773", bd: "#e2dde9", hov: "#ebe6f1", us: "#ece7f3", ac: "#820ad1", acfg: "#ffffff", card: "#ffffff", code: "#f5f2f8", codeh: "#ece7f3", err: "#b3261e", foc: "#820ad1", shadow: "#1e1028"})
+    readonly property var dk: ({bg: "#221f26", side: "#1b1920", fg: "#ece9f0", mut: "#a39fab", bd: "#38343f", hov: "#2b2831", us: "#332f3a", ac: "#b66cf2", acfg: "#1a1022", card: "#2b2831", code: "#1a181e", codeh: "#26232b", err: "#f2928b", foc: "#cfa3f7", shadow: "#000000"})
     readonly property color bg: dark ? dk.bg : lt.bg
     readonly property color side: dark ? dk.side : lt.side
     readonly property color fg: dark ? dk.fg : lt.fg
