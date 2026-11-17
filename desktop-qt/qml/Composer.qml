@@ -46,17 +46,19 @@ Item {
         x: (comp.width - width) / 2
         y: 0
         width: comp.cw
-        height: Math.max(54, fl.height + 20)
-        radius: Math.min(27, height / 2)
+        // cresce com o conteudo: minimo ~2 linhas, maximo ~10 linhas (depois rola)
+        height: Math.max(76, fl.height + 24 + 38)
+        radius: 22
         color: Theme.card
         border.color: ta.activeFocus ? Theme.mut : Theme.bd
 
         Flickable {
             id: fl
+            objectName: "composerFlick"
             x: 20
-            anchors.verticalCenter: parent.verticalCenter
-            width: parent.width - 20 - 56
-            height: Math.min(ta.implicitHeight, 200)
+            y: 12
+            width: parent.width - 20 - 20
+            height: Math.min(ta.implicitHeight, 240)
             contentWidth: width
             contentHeight: ta.implicitHeight
             clip: true
@@ -133,10 +135,18 @@ Item {
             Accessible.role: Accessible.StaticText
         }
         Text {
-            Layout.rightMargin: 14
+            Layout.rightMargin: 4
             font.pixelSize: 12
             color: Theme.mut
-            text: [backend.speedText, backend.ctxText].filter(function (x) { return x; }).join(" · ")
+            visible: text.length > 0
+            text: backend.speedText
+        }
+        ContextMeter {
+            id: meter
+            objectName: "contextMeter"
+            Layout.rightMargin: 14
+            used: backend.ctxUsed
+            total: backend.ctxTotal
         }
     }
 }

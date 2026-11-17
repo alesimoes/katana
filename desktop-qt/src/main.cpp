@@ -3,6 +3,7 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
@@ -36,6 +37,13 @@ int main(int argc, char **argv)
     QGuiApplication app(argc, argv);
     app.setApplicationName("katana-desktop");
     app.setOrganizationName("katana");
+    QGuiApplication::setDesktopFileName("katana-desktop");  // casa com katana-desktop.desktop (dock)
+    {
+        QIcon ic;
+        for (int t : {16, 32, 48, 64, 128, 256, 512})
+            ic.addFile(QString(":/icons/katana-%1.png").arg(t), QSize(t, t));
+        QGuiApplication::setWindowIcon(ic);
+    }
     QQuickStyle::setStyle("Basic");
 
     QCommandLineParser cli;
