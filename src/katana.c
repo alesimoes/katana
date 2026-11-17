@@ -15961,6 +15961,56 @@ static int quantize_cmd(const char *in, const char *out_arg, const char *type_ar
     return 0;
 }
 
+/* katana calibrar <modelo> [arquivo de texto]: passa textos variados (conversa em portugues e ingles, codigo, perguntas
+   de ferramentas) token a token e grava como .heat a media do calor de cada especialista ao longo de todos os tokens.
+   Assim a primeira sessao ja comeca com os especialistas mais usados nas vagas da VRAM (o .heat normal guarda so o
+   calor do fim da ultima sessao). Sem cache de especialistas (modelo cabe inteiro, ou so CPU) nao ha o que gravar. */
+static int calibrar(Model *m, const char *file) {
+    const Config *c = &m->cfg;
+    static const char *txt[] = {
+        "Voce e um assistente util. Usuario: Pode me explicar como funciona a fotossintese e por que as folhas sao verdes? "
+        "Assistente: Claro. A fotossintese e o processo em que as plantas usam a luz do sol, a agua e o gas carbonico para produzir "
+        "acucar e liberar oxigenio. A clorofila absorve sobretudo o azul e o vermelho e reflete o verde, por isso as folhas parecem verdes.",
+        "User: Write a Python function that reads a CSV file and returns the average of the column 'price'.\nAssistant: ```python\n"
+        "import csv\n\ndef average_price(path):\n    total, n = 0.0, 0\n    with open(path, newline='') as f:\n        for row in csv.DictReader(f):\n"
+        "            total += float(row['price'])\n            n += 1\n    return total / n if n else 0.0\n```\nThis opens the file, sums the prices and divides by the count.",
+        "Usuario: liste os arquivos da pasta atual e me diga qual e o maior.\nAssistente: <tool_call>\n{\"name\": \"list_dir\", \"arguments\": {\"path\": \".\"}}\n</tool_call>\n"
+        "Resultado: README.md 4 KB, src/ (pasta), build.sh 1 KB, dados.csv 2,3 MB.\nAssistente: O maior arquivo e dados.csv, com 2,3 MB.",
+        "Usuario: Qual a diferenca entre memoria RAM e armazenamento? Responda de forma curta.\nAssistente: A RAM e rapida e temporaria: guarda o que o "
+        "computador esta usando agora e se apaga ao desligar. O armazenamento (SSD ou HD) e mais lento, porem permanente: guarda arquivos e programas.",
+        "User: Summarize the main causes of the French Revolution in three bullet points.\nAssistant: - Fiscal crisis: debt from wars and an unfair tax system.\n"
+        "- Social inequality: the Third Estate carried the burden while clergy and nobility kept privileges.\n- Enlightenment ideas questioning absolute monarchy.",
+        "Usuario: escreva um script em bash que conte quantas linhas tem cada arquivo .c da pasta src.\nAssistente: ```bash\nfor f in src/*.c; do\n  printf '%s %s\\n' \"$(wc -l < \"$f\")\" \"$f\"\ndone | sort -n\n```",
+    };
+    const int NL = c->n_layers, E = c->n_expert;
+    if (!gx.on || !gx.heat) { fprintf(stderr, "calibrar: sem cache de especialistas neste modelo/maquina; nada a gravar\n"); return 1; }
+    double *acc = xalloc((size_t)NL * E, sizeof(double));
+    long ntok = 0;
+    char *ext = NULL;
+    if (file) { FILE *f = fopen(file, "rb"); if (f) { fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); ext = xalloc((size_t)n + 1, 1); if (fread(ext, 1, (size_t)n, f) != (size_t)n) n = 0; ext[n] = 0; fclose(f); } }
+    const int nt = ext ? 1 : (int)(sizeof txt / sizeof txt[0]);
+    const double t0 = now_sec();
+    for (int k = 0; k < nt; k++) {
+        Ids ids = {0};
+        if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+        encode(&m->tk, ext ? ext : txt[k], &ids);
+        memset(gx.heat, 0, (size_t)NL * E * sizeof(float));
+        for (int i = 0; i < ids.n && i < c->ctx - 1; i++) {
+            forward(m, ids.ids[i], i, 0);
+            for (size_t j = 0; j < (size_t)NL * E; j++) acc[j] += gx.heat[j];
+            ntok++;
+        }
+        fprintf(stderr, "calibrar: texto %d de %d (%d tokens)\n", k + 1, nt, ids.n);
+        free(ids.ids);
+    }
+    for (size_t j = 0; j < (size_t)NL * E; j++) gx.heat[j] = (float)(acc[j] / (double)(ntok ? ntok : 1));
+    heat_save(m);
+    char fn[1100]; heat_path(fn, sizeof fn);
+    fprintf(stderr, "calibrar: %ld tokens em %.1f s; calor medio gravado em %s\n", ntok, now_sec() - t0, fn);
+    free(acc); free(ext);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
     for (int i = 2; i + 1 < argc; ) {      /* sessoes do agente: --retomar <arquivo>, --sessao <arquivo> */
         if (strcmp(argv[i], "--retomar") == 0 || strcmp(argv[i], "--sessao") == 0) {
@@ -15984,6 +16034,13 @@ static int run_main(int argc, char **argv) {
         agent_tool(argv[2], argv[3], argv[3] + strlen(argv[3]), res, sizeof res);
         printf("%s\n", res);
         return 0;
+    }
+    if (argc >= 3 && strcmp(argv[1], "calibrar") == 0) {    /* calor padrao de especialistas (.heat) a partir de textos variados */
+        perfil_apply(argv[2], 1);
+        if (!getenv("KATANA_CTX")) putenv("KATANA_CTX=2048");
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return calibrar(&m, argc > 3 ? argv[3] : NULL);
     }
     if (argc == 3 && strcmp(argv[1], "agent") == 0) {
         perfil_apply(argv[2], 1);
