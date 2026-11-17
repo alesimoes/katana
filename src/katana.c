@@ -410,7 +410,9 @@ typedef struct {
     int gate_sig;       /* roteador sigmoide (com vies so na escolha) em vez de softmax */
     float exp_scale;    /* escala dos pesos dos especialistas */
     float kq_mul;       /* multiplicador extra da escala q.k (yarn) */
-    float yarn_factor, yarn_logmul; int yarn_orig;
+    float yarn_factor, yarn_logmul; int yarn_orig, yarn_ext;   /* yarn_ext: escala pedida pelo usuario (nao veio do GGUF) */
+    int ctx_train;      /* contexto treinado do modelo (do GGUF); ctx pode passar dele com escala de RoPE */
+    int kv16_cpu;       /* cache KV da CPU em fp16 (hibrido DeltaNet) */
     /* atencao linear Gated DeltaNet (qwen35moe): camadas recorrentes intercaladas com atencao completa */
     int ssm_conv, ssm_state, ssm_groups, ssm_rank, ssm_inner;  /* janela da convolucao, dk, grupos q/k, cabecas v, largura v */
     int attn_every;     /* (camada+1) % attn_every == 0: atencao completa; as outras sao DeltaNet */
@@ -488,6 +490,7 @@ typedef struct {
     float *out_norm;
     Layer *layers;
     float *kcache, *vcache;             /* [L][ctx][kv_dim] */
+    uint16_t *kh, *vh;                  /* cache KV fp16 da CPU (hibrido): [camada de atencao][ctx][kv_dim] */
     float *ckv;                         /* MLA: [L][ctx][latente + rope] */
     float *ssm;                         /* DeltaNet: estado contiguo; por camada linear, S [cabeca v][dk][dv] e (janela-1) x canais da convolucao */
     int n_lin;                          /* camadas DeltaNet */
@@ -1294,9 +1297,19 @@ static void load_model(Model *m, const char *path) {
     if ((!c->hd_key && c->dim % c->n_heads) || c->hd % 2 || c->n_heads % c->n_kv) die("dimensoes de atencao invalidas");
     const int model_ctx = c->ctx > 0 ? c->ctx : MAX_CTX;
     c->ctx = model_ctx < MAX_CTX ? model_ctx : MAX_CTX;
-    if (getenv("KATANA_CTX")) {     /* menor = cache KV menor (libera VRAM); maior = ate o limite do modelo */
-        const int want = atoi(getenv("KATANA_CTX"));
-        if (want >= 64) c->ctx = want < model_ctx ? want : model_ctx;
+    c->ctx_train = model_ctx;
+    if (getenv("KATANA_CTX")) {     /* menor = cache KV menor; maior que o treinado = estende o RoPE (yarn) */
+        const long want = atol(getenv("KATANA_CTX"));
+        if (want >= 64) c->ctx = want < (1L << 24) ? (int)want : (1 << 24);
+    }
+    {   /* escala de RoPE: KATANA_ROPE_SCALE=f (1 desliga); sem ela, automatica quando ctx passa do treinado */
+        float f = c->ctx > model_ctx ? (float)c->ctx / model_ctx : 1.0f;
+        if (getenv("KATANA_ROPE_SCALE")) f = (float)atof(getenv("KATANA_ROPE_SCALE"));
+        if (f > 1.0f && !(c->yarn_factor > 1.0f)) {
+            c->yarn_factor = f; c->yarn_orig = model_ctx;
+            if (!c->yarn_logmul) c->yarn_logmul = 0.1f;
+            c->yarn_ext = 1;
+        }
     }
     if (!merges && !tk->spm) die("GGUF sem merges BPE nem SentencePiece (tokenizador nao suportado)");
     if (tk->spm == 2 && !merges) die("gemma4: GGUF sem merges");
@@ -1534,9 +1547,21 @@ static void load_model(Model *m, const char *path) {
         }
         m->kcache = xalloc(tot, sizeof(float));
         m->vcache = xalloc(tot, sizeof(float));
+    } else if (c->ssm_inner) {    /* hibrido: cache so nas camadas de atencao completa */
+        size_t na = 0;
+        for (int l = 0; l < c->n_layers; l++) {
+            Layer *Ly = &m->layers[l];
+            Ly->kv_off = Ly->lin ? 0 : na++ * ctx * kvd;
+        }
+        if (!na) na = 1;
+        const char *e16 = getenv("KATANA_CPU_KV16");      /* padrao: fp16 a partir de 64k de contexto */
+        c->kv16_cpu = e16 ? atoi(e16) != 0 : ctx > 65536;
+        if (c->kv16_cpu) { m->kh = xalloc(na * ctx * kvd, 2); m->vh = xalloc(na * ctx * kvd, 2); }
+        else { m->kcache = xalloc(na * ctx * kvd, sizeof(float)); m->vcache = xalloc(na * ctx * kvd, sizeof(float)); }
     } else {
-    m->kcache = xalloc(L * ctx * kvd, sizeof(float));
-    m->vcache = xalloc(L * ctx * kvd, sizeof(float));
+        for (int l = 0; l < c->n_layers; l++) m->layers[l].kv_off = (size_t)l * ctx * kvd;
+        m->kcache = xalloc(L * ctx * kvd, sizeof(float));
+        m->vcache = xalloc(L * ctx * kvd, sizeof(float));
     }
     m->x = xalloc(d, sizeof(float));   m->xb = xalloc(dq, sizeof(float));
     m->xb2 = xalloc(dq, sizeof(float)); m->q = xalloc(dq, sizeof(float));
@@ -1587,6 +1612,22 @@ static void load_model(Model *m, const char *path) {
     }
     if (c->go && c->yarn_factor > 1.0f && c->yarn_orig > 0) {   /* yarn: mistura interpolacao/extrapolacao por dimensao */
         const int nr = c->hd;
+        const float fs = 1.0f / c->yarn_factor, tw = 6.28318530718f;
+        float lo = floorf(nr * logf(c->yarn_orig / (32.0f * tw)) / (2.0f * logf(c->rope_base)));
+        float hi = ceilf(nr * logf(c->yarn_orig / (1.0f * tw)) / (2.0f * logf(c->rope_base)));
+        if (lo < 0) lo = 0;
+        if (hi > nr - 1) hi = (float)(nr - 1);
+        for (int i = 0; i < nr / 2; i++) {
+            float y = (i - lo) / fmaxf(0.001f, hi - lo);
+            y = y < 0 ? 0 : y > 1 ? 1 : y;
+            const float ramp = 1.0f - y;
+            m->rope_freq[i] *= fs * (1.0f - ramp) + ramp;
+        }
+        const float ms = 1.0f + c->yarn_logmul * logf(c->yarn_factor);
+        c->kq_mul = ms * ms;
+    }
+    if (c->yarn_ext && !c->mla && !c->go && !c->g4) {     /* yarn pedido pelo usuario: so as dimensoes que giram */
+        const int nr = c->rope_dim > 0 && c->rope_dim < c->hd ? c->rope_dim : c->hd;
         const float fs = 1.0f / c->yarn_factor, tw = 6.28318530718f;
         float lo = floorf(nr * logf(c->yarn_orig / (32.0f * tw)) / (2.0f * logf(c->rope_base)));
         float hi = ceilf(nr * logf(c->yarn_orig / (1.0f * tw)) / (2.0f * logf(c->rope_base)));
@@ -6848,6 +6889,75 @@ static void dn_gate(const Config *c, const Layer *L, float *o, const float *z) {
 /* atencao com portao de um token: qg traz, por cabeca, q e o portao; norma RMS por cabeca em q e k,
    RoPE parcial (primeiras rope_dim dimensoes, em metades), k e v no cache e saida de cada cabeca
    vezes sigmoide(portao). out [nh*hd] */
+/* atencao com portao de um token, em pedacos de posicoes (flash-decoding): cada trabalho pega uma cabeca kv e
+   um pedaco de posicoes e atende as `group` cabecas q dela juntas (cada linha de K/V sai da RAM uma vez so).
+   Softmax online em blocos de 64; os parciais (maximo, soma, saida) de cada pedaco se juntam no fim. A memoria
+   de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32 ou fp16 (m->kh/m->vh). */
+#define QN_MAXCH 256
+#define QN_MAXG 16
+typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos, hd, kvd, group, nch, chl; float scale; } QnAttJob;
+static float dot_h(const float *a, const uint16_t *b, int n) {
+    __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
+    int j = 0;
+    for (; j + 16 <= n; j += 16) {
+        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + j), _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(b + j))), acc0);
+        acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + j + 8), _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(b + j + 8))), acc1);
+    }
+    acc0 = _mm256_add_ps(acc0, acc1);
+    __m128 lo = _mm_add_ps(_mm256_castps256_ps128(acc0), _mm256_extractf128_ps(acc0, 1));
+    lo = _mm_hadd_ps(lo, lo); lo = _mm_hadd_ps(lo, lo);
+    float s = _mm_cvtss_f32(lo);
+    for (; j < n; j++) s += a[j] * _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(b[j])));
+    return s;
+}
+static void qn_att_job(void *cx, int j0, int j1) {
+    const QnAttJob *j = cx;
+    const Model *m = j->m;
+    const int hd = j->hd, kvd = j->kvd, n = j->pos + 1, G = j->group;
+    const size_t off = j->L->kv_off;
+    float sc[QN_MAXG][64], o[QN_MAXG][512], mx[QN_MAXG], sum[QN_MAXG];
+    for (int job = j0; job < j1; job++) {
+        const int g = job / j->nch, ch = job % j->nch;
+        const int ta = ch * j->chl, tb = ta + j->chl < n ? ta + j->chl : n;
+        const size_t kvh = (size_t)g * hd;
+        for (int u = 0; u < G; u++) { mx[u] = -INFINITY; sum[u] = 0.0f; memset(o[u], 0, hd * sizeof(float)); }
+        for (int t0 = ta; t0 < tb; t0 += 64) {
+            const int nb = tb - t0 < 64 ? tb - t0 : 64;
+            for (int i = 0; i < nb; i++) {
+                const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
+                for (int u = 0; u < G; u++) {
+                    const float *qh = j->q + (size_t)(g * G + u) * hd;
+                    sc[u][i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
+                }
+            }
+            for (int u = 0; u < G; u++) {
+                float bm = mx[u];
+                for (int i = 0; i < nb; i++) if (sc[u][i] > bm) bm = sc[u][i];
+                if (bm > mx[u]) {       /* novo maximo: reescala o que ja foi somado */
+                    const float f = expf(mx[u] - bm);
+                    sum[u] *= f;
+                    for (int k = 0; k < hd; k++) o[u][k] *= f;
+                    mx[u] = bm;
+                }
+                for (int i = 0; i < nb; i++) { sc[u][i] = expf(sc[u][i] - bm); sum[u] += sc[u][i]; }
+            }
+            for (int i = 0; i < nb; i++) {
+                const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
+                for (int k = 0; k < hd; k += 8) {
+                    const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
+                    for (int u = 0; u < G; u++)
+                        _mm256_storeu_ps(o[u] + k, _mm256_fmadd_ps(_mm256_set1_ps(sc[u][i]), vv, _mm256_loadu_ps(o[u] + k)));
+                }
+            }
+        }
+        for (int u = 0; u < G; u++) {   /* parcial: [maximo, soma, saida] por (cabeca q, pedaco) */
+            float *pp = j->part + ((size_t)(g * G + u) * j->nch + ch) * (hd + 2);
+            pp[0] = mx[u]; pp[1] = sum[u];
+            memcpy(pp + 2, o[u], hd * sizeof(float));
+        }
+    }
+}
+
 static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, float *k, const float *v, float *out) {
     const Config *c = &m->cfg;
     const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, ctx = c->ctx;
@@ -6867,21 +6977,38 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
             p[0] = a * cs - b * sn; p[half] = a * sn + b * cs;
         }
     }
-    float *kbase = m->kcache + (size_t)l * ctx * kvd, *vbase = m->vcache + (size_t)l * ctx * kvd;
-    memcpy(kbase + (size_t)pos * kvd, k, kvd * sizeof(float));
-    memcpy(vbase + (size_t)pos * kvd, v, kvd * sizeof(float));
-    for (int h = 0; h < nh; h++) {
-        const float *qh = q + h * hd, *gt = qg + (size_t)h * 2 * hd + hd;
-        const int kvh = (h / group) * hd;
-        for (int t = 0; t <= pos; t++) m->att[t] = dot(qh, kbase + (size_t)t * kvd + kvh, hd) * scale;
-        softmax(m->att, pos + 1);
-        float *o = out + h * hd;
-        memset(o, 0, hd * sizeof(float));
-        for (int t = 0; t <= pos; t++) {
-            const float *vh = vbase + (size_t)t * kvd + kvh, a = m->att[t];
-            for (int i = 0; i < hd; i++) o[i] += a * vh[i];
+    const size_t koff = L->kv_off + (size_t)pos * kvd;
+    if (m->kh) {
+        for (int i = 0; i < kvd; i += 8) {
+            _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
+            _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
         }
-        for (int i = 0; i < hd; i++) o[i] *= 1.0f / (1.0f + expf(-gt[i]));
+    } else {
+        memcpy(m->kcache + koff, k, kvd * sizeof(float));
+        memcpy(m->vcache + koff, v, kvd * sizeof(float));
+    }
+    if (hd > 512 || hd % 8 || group > QN_MAXG) die("qn_core: hd ou grupo fora do suportado");
+    static float *part;
+    if (!part) part = xalloc((size_t)nh * QN_MAXCH * (hd + 2), sizeof(float));
+    const int n = pos + 1;
+    int chl = 512;      /* pedaco minimo; cresce para caber em QN_MAXCH pedacos */
+    while ((n + chl - 1) / chl > QN_MAXCH) chl *= 2;
+    const int nch = (n + chl - 1) / chl;
+    QnAttJob job = { m, L, q, part, pos, hd, kvd, group, nch, chl, scale * c->kq_mul };
+    pool_for(qn_att_job, &job, c->n_kv * nch, 1);
+    for (int h = 0; h < nh; h++) {      /* junta os pedacos e aplica o portao */
+        const float *pp = part + (size_t)h * nch * (hd + 2);
+        float M = -INFINITY, S = 0.0f;
+        for (int ch = 0; ch < nch; ch++) if (pp[(size_t)ch * (hd + 2)] > M) M = pp[(size_t)ch * (hd + 2)];
+        float *oh = out + (size_t)h * hd;
+        memset(oh, 0, hd * sizeof(float));
+        for (int ch = 0; ch < nch; ch++) {
+            const float *pc = pp + (size_t)ch * (hd + 2), f = expf(pc[0] - M);
+            S += pc[1] * f;
+            for (int k = 0; k < hd; k++) oh[k] += pc[2 + k] * f;
+        }
+        const float *gt = qg + (size_t)h * 2 * hd + hd, inv = 1.0f / S;
+        for (int k = 0; k < hd; k++) oh[k] *= inv / (1.0f + expf(-gt[k]));
     }
 }
 
@@ -8968,6 +9095,14 @@ static void print_info(const Model *m) {
     fprintf(stderr, "arquitetura=%s  parametros=%.1fM  camadas=%d  dim=%d  cabecas=%d (kv=%d)  ffn=%d  vocab=%d  ctx=%d\n",
             c->arch, m->n_params / 1e6, c->n_layers, c->dim, c->n_heads, c->n_kv, c->hidden, c->vocab, c->ctx);
     if (c->n_expert) fprintf(stderr, "MoE: %d especialistas por camada, %d ativos por token\n", c->n_expert, c->n_used);
+    if (c->yarn_ext) fprintf(stderr, "aviso: ctx=%d acima do treinado (%d); RoPE estendido por yarn x%.2f, qualidade pode cair\n",
+                             c->ctx, c->ctx_train, c->yarn_factor);
+    if (m->kh || m->kcache) {
+        size_t na = 0;
+        for (int l = 0; l < c->n_layers; l++) na += !(c->ssm_inner && m->layers[l].lin);
+        const double gb = 2.0 * na * c->ctx * c->n_kv * c->hd * (m->kh ? 2 : 4) / 1e9;
+        fprintf(stderr, "cache KV da CPU: %zu camadas, %s, %.2f GB\n", na, m->kh ? "fp16" : "fp32", gb);
+    }
 }
 
 /* ---------- decodificacao especulativa por repeticao ----------
@@ -9015,7 +9150,18 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
     encode(tk, text, &ids);
     if (ids.n == 0) ids_push(&ids, c->bos >= 0 ? c->bos : 0);
-    if (ids.n >= c->ctx) die("prompt maior que o contexto");
+    /* medicao de contexto longo: KATANA_BENCH_POS=P comeca o prompt na posicao P sobre um cache KV zerado
+       (todo tocado, para a RAM aparecer); a saida nao tem sentido, so o tempo e a memoria contam */
+    const int bpos = getenv("KATANA_BENCH_POS") ? atoi(getenv("KATANA_BENCH_POS")) : 0;
+    if (bpos > 0) {
+        const size_t kvd = (size_t)c->n_kv * c->hd;
+        size_t na = 0;
+        for (int l = 0; l < c->n_layers; l++) na += !(c->ssm_inner && m->layers[l].lin);
+        if (m->kh) { memset(m->kh, 0, na * c->ctx * kvd * 2); memset(m->vh, 0, na * c->ctx * kvd * 2); }
+        else if (m->kcache && !c->g4) { memset(m->kcache, 0, na * c->ctx * kvd * 4); memset(m->vcache, 0, na * c->ctx * kvd * 4); }
+        fprintf(stderr, "[bench: prompt comeca na posicao %d]\n", bpos);
+    }
+    if (bpos + ids.n >= c->ctx) die("prompt maior que o contexto");
 
     srand((unsigned)time(NULL));
     float *lg = NULL, *col = xalloc(V, sizeof(float));
@@ -9026,8 +9172,8 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     const int json = gr_env_begin(tk, V, -1);
     if (json) ks4 = NULL;             /* com gramatica nao ha aposta de rascunho */
     double t0 = now_sec();
-    lg = forward_seq(m, ids.ids, ids.n, 0, 1);
-    pos = ids.n;
+    lg = forward_seq(m, ids.ids, ids.n, bpos, 1);
+    pos = bpos + ids.n;
     double t1 = now_sec();
     if (echo && !json) { fputs(text, stdout); fflush(stdout); }
 
@@ -12917,7 +13063,8 @@ static int pfx_layer(Model *m, int l, int vv, int n, int ngl, int esz, int backe
     const Config *c = &m->cfg;
     const size_t kvd = (size_t)c->n_kv * c->hd, ctx = c->ctx;
     if (l >= ngl) {
-        float *base = (vv ? m->vcache : m->kcache) + (size_t)l * ctx * kvd;
+        if (m->layers[l].lin) { if (dir) memset(buf, 0, (size_t)n * kvd * 4); return 1; }   /* DeltaNet: sem cache KV */
+        float *base = (vv ? m->vcache : m->kcache) + m->layers[l].kv_off;
         if (dir) memcpy(buf, base, (size_t)n * kvd * 4); else memcpy(base, buf, (size_t)n * kvd * 4);
         return 1;
     }
@@ -14647,7 +14794,16 @@ static int run_main(int argc, char **argv) {
         print_info(&m);
         int max_tokens = argc > 4 ? atoi(argv[4]) : 200;
         float temp = argc > 5 ? (float)atof(argv[5]) : 0.7f;
-        if (strcmp(argv[1], "run") == 0) return generate(&m, argv[3], max_tokens, temp, 1);
+        if (argv[3][0] == '@') {      /* prompt lido de arquivo (prompts longos nao cabem na linha de comando) */
+            FILE *pf = fopen(argv[3] + 1, "rb");
+            if (!pf) die("nao abriu o arquivo do prompt");
+            fseek(pf, 0, SEEK_END); const long n = ftell(pf); fseek(pf, 0, SEEK_SET);
+            char *t = xalloc((size_t)n + 1, 1);
+            if (fread(t, 1, (size_t)n, pf) != (size_t)n) die("falha lendo o prompt");
+            fclose(pf); t[n] = 0;
+            argv[3] = t;
+        }
+        if (strcmp(argv[1], "run") == 0) return generate(&m, argv[3], max_tokens, temp, getenv("KATANA_BENCH_POS") ? 0 : 1);
 
         size_t n = strlen(argv[3]) + 8192;
         char *p = xalloc(n, 1);
