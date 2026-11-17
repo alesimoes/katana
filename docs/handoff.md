@@ -4,6 +4,47 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0a. Contexto longo ate 1M tokens (2026-11-17, ramo worktree-agent-a4c2b26684f6f7154)
+
+Objetivo do dono: aceitar pelo menos 1.000.000 tokens de contexto. Alvo realista: Qwen3.6-35B-A3B (qwen35moe,
+40 camadas, so 10 de atencao completa (`full_attention_interval`=4), 2 cabecas kv x 256 => kvd 512; treinado com 262144).
+
+Feito (so caminho CPU, `KATANA_CPU=1`):
+- `KATANA_CTX` pode passar do contexto treinado (ate 2^24). Acima dele, RoPE estendido por yarn automatico
+  (fator = ctx / treinado; `KATANA_ROPE_SCALE=f` forca, `=1` desliga); vale para modelos sem yarn proprio
+  (nao mla/gpt-oss/gemma4), so nas dimensoes que giram; mscale vai em `kq_mul`. `print_info` avisa.
+- Hibrido DeltaNet: cache KV so nas camadas de atencao (antes alocava as 40) via `Layer.kv_off`; em fp16
+  (`m->kh/m->vh`) quando ctx > 65536 (`KATANA_CPU_KV16=0/1` forca). Custo: 20 KB/token => 21,5 GB a 1M.
+- Atencao de um token do qwen35 (`qn_core`): flash-decoding em pedacos de posicoes, as 8 cabecas q do grupo
+  lidas juntas (cada linha K/V sai da RAM uma vez), softmax online; memoria de trabalho fixa (nao cresce com ctx).
+- `run` aceita prompt de arquivo (`@arquivo`); `KATANA_BENCH_POS=P` comeca o prompt na posicao P sobre cache
+  zerado (todo tocado) para medir tempo e RAM em profundidade.
+- Prefixo salvo (pfx) usa `kv_off` e escreve zeros nas camadas DeltaNet; com cache fp16 o pfx fica desligado.
+
+Medido (2026-11-17, mesma hora, CPU, Qwen3.6-35B Q4_K_M, KATANA_BENCH_POS = ctx-100, 8 de prompt + 16 gerados):
+
+| ctx | cache KV | RSS max | geracao em profundidade |
+|---|---|---|---|
+| 128k | 2,68 GB fp16 | 9,9 GB | 4,5 tok/s (era 1,8 antes do flash-decoding) |
+| 256k | 5,37 GB fp16 | 12,7 GB | 2,7 tok/s |
+| 1M (yarn x4) | 21,47 GB fp16 | 28,2 GB | 0,7 tok/s |
+
+Prompt real de 2702 tokens: saida gulosa igual a do binario do main; prompt 13,3 -> 22,7 tok/s, geracao 6,3 -> 12,5
+(medidas seguidas, mesma hora). Saida gulosa curta identica em fp32, fp16 e no binario do main.
+RSS nao inclui todo o modelo mapeado (paginas do arquivo ficam no cache do sistema).
+
+Estimado (nao medido): prompt cheio, com t(pos) ~ 0,044 s + 1,35e-6 s x pos por token: 128k ~4,6 h,
+256k ~15 h, 1M ~8 dias. Ou seja: 1M carrega e gera, mas encher 1M de prompt na CPU e inviavel; a atencao
+do prefill e token a token (qn_layers_n chama qn_core por token).
+
+Pendente:
+- Prefill em lote da atencao do qwen35 (todas as consultas do lote contra cada bloco de K/V) — maior ganho para encher contexto.
+- Cache KV em Q8_0 (10,7 GB a 1M, metade do fp16): simples no qn_att_job (bloco de 32 com escala), nao feito.
+- Qualidade do yarn x4 nao avaliada (nenhum teste de agulha no palheiro).
+- GPU: Vulkan/OpenCL nao usam `kq_mul` do yarn generico nem cache compacto; a 1M o grafo Vulkan nao cabe (usar KATANA_CPU=1).
+  Outros caminhos CPU (densos `cpu_layers`/`cpu_layers_nc`) ainda alocam o cache em todas as camadas fp32 e nao usam `kq_mul`.
+  `gpu_forward_n` (OpenCL) ainda usa `int base`, protegido pelo limite de 2 GB por buffer.
+
 ## 0. Atualizacao 2026-11-16 (fim da sessao; desenvolvimento pausado esta semana a pedido do dono)
 
 Entrou no main nesta sessao:
