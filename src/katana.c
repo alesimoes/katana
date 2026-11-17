@@ -1546,8 +1546,10 @@ static void load_model(Model *m, const char *path) {
             Ly->kv_off = tot;
             tot += (size_t)Ly->kv_cap * Ly->nkv_l * Ly->hd_l;
         }
-        m->kcache = xalloc(tot, sizeof(float));
-        m->vcache = xalloc(tot, sizeof(float));
+        const char *e16 = getenv("KATANA_CPU_KV16");      /* padrao: fp16 a partir de 64k de contexto */
+        c->kv16_cpu = e16 ? atoi(e16) != 0 : ctx > 65536;
+        if (c->kv16_cpu) { m->kh = xalloc(tot, 2); m->vh = xalloc(tot, 2); }
+        else { m->kcache = xalloc(tot, sizeof(float)); m->vcache = xalloc(tot, sizeof(float)); }
     } else if (c->ssm_inner) {    /* hibrido: cache so nas camadas de atencao completa */
         size_t na = 0;
         for (int l = 0; l < c->n_layers; l++) {
@@ -7937,7 +7939,22 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
 
 /* camadas [l0, l1) na CPU sobre o estado m->x, para o token na posicao pos */
 /* gemma4: atencao de um token, cabecas divididas entre as threads; posicoes t0..t0+n-1 no anel de cap */
-typedef struct { const float *q; float *o; const float *kb, *vb; int hd, kvd, group, t0, n, cap; } G4AttJob;
+typedef struct { const float *q; float *o; const float *kb, *vb; const uint16_t *kh, *vh; int hd, kvd, group, t0, n, cap; } G4AttJob;
+/* gemma4: grava k e v de uma posicao no cache (fp32 ou fp16) */
+static void g4_kv_put(float *kb, float *vb, uint16_t *kh, uint16_t *vh, size_t r, const float *k, const float *v, int kvd) {
+    if (kh) {
+        for (int i = 0; i < kvd; i += 8) {
+            _mm_storeu_si128((__m128i *)(kh + r + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
+            _mm_storeu_si128((__m128i *)(vh + r + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
+        }
+    } else { memcpy(kb + r, k, kvd * sizeof(float)); memcpy(vb + r, v, kvd * sizeof(float)); }
+}
+/* out += a * v (v em fp16, n multiplo de 8) */
+static inline void axpy_h(float *out, float a, const uint16_t *v, int n) {
+    const __m256 av = _mm256_set1_ps(a);
+    for (int k = 0; k < n; k += 8)
+        _mm256_storeu_ps(out + k, _mm256_fmadd_ps(av, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(v + k))), _mm256_loadu_ps(out + k)));
+}
 static void g4_att_job(void *c, int h0, int h1) {
     const G4AttJob *j = c;
     static __thread float *att; static __thread int acap;
@@ -7945,12 +7962,17 @@ static void g4_att_job(void *c, int h0, int h1) {
     for (int h = h0; h < h1; h++) {
         const float *qh = j->q + (size_t)h * j->hd;
         const int kvh = (h / j->group) * j->hd;
-        for (int i = 0; i < j->n; i++) att[i] = dot(qh, j->kb + (size_t)((j->t0 + i) % j->cap) * j->kvd + kvh, j->hd);
+        for (int i = 0; i < j->n; i++) {
+            const size_t r = (size_t)((j->t0 + i) % j->cap) * j->kvd + kvh;
+            att[i] = j->kh ? dot_h(qh, j->kh + r, j->hd) : dot(qh, j->kb + r, j->hd);
+        }
         softmax(att, j->n);
         float *out = j->o + (size_t)h * j->hd;
         memset(out, 0, j->hd * sizeof(float));
         for (int i = 0; i < j->n; i++) {
-            const float *vh = j->vb + (size_t)((j->t0 + i) % j->cap) * j->kvd + kvh, a = att[i];
+            const size_t r = (size_t)((j->t0 + i) % j->cap) * j->kvd + kvh;
+            if (j->vh) { axpy_h(out, att[i], j->vh + r, j->hd); continue; }
+            const float *vh = j->vb + r, a = att[i];
             for (int k = 0; k < j->hd; k++) out[k] += a * vh[k];
         }
     }
@@ -8065,14 +8087,14 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
         for (int h = 0; h < nh; h++) { float *p = m->q + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
         for (int h = 0; h < nkv; h++) { float *p = m->k + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
     }
-    float *kb = m->kcache + L->kv_off, *vb = m->vcache + L->kv_off;
+    float *kb = m->kcache ? m->kcache + L->kv_off : NULL, *vb = m->vcache ? m->vcache + L->kv_off : NULL;
+    uint16_t *kh = m->kh ? m->kh + L->kv_off : NULL, *vh = m->vh ? m->vh + L->kv_off : NULL;
     const int cap = L->kv_cap;
-    memcpy(kb + (size_t)(pos % cap) * kvd, m->k, kvd * sizeof(float));
-    memcpy(vb + (size_t)(pos % cap) * kvd, m->v, kvd * sizeof(float));
+    g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, m->k, m->v, kvd);
     const int win = L->swa && c->swa_win < cap ? c->swa_win : cap;
     const int t0 = pos - win + 1 > 0 ? pos - win + 1 : 0, n = pos - t0 + 1;
     {
-        G4AttJob aj = { m->q, m->xb, kb, vb, hd, kvd, group, t0, n, cap };
+        G4AttJob aj = { m->q, m->xb, kb, vb, kh, vh, hd, kvd, group, t0, n, cap };
         if (n < 64) g4_att_job(&aj, 0, nh);
         else pool_for(g4_att_job, &aj, nh, 1);
     }
@@ -8115,7 +8137,7 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
 }
 
 /* gemma4, atencao de B tokens (pos0..): par (token, cabeca) por item; janela win; cache em anel de cap */
-typedef struct { const float *Q; float *O; const float *kb, *vb; int pos0, nh, hd, kvd, group, win, cap; } G4AttN;
+typedef struct { const float *Q; float *O; const float *kb, *vb; const uint16_t *kh, *vh; int pos0, nh, hd, kvd, group, win, cap; } G4AttN;
 static void g4_attn_job(void *c, int i0, int i1) {
     const G4AttN *j = c;
     static __thread float *att; static __thread int acap;
@@ -8126,12 +8148,17 @@ static void g4_attn_job(void *c, int i0, int i1) {
         if (acap < n) { free(att); att = xalloc((size_t)n, sizeof(float)); acap = n; }
         const float *qh = j->Q + (size_t)t * qd + (size_t)h * j->hd;
         const int kvh = (h / j->group) * j->hd;
-        for (int i = 0; i < n; i++) att[i] = dot(qh, j->kb + (size_t)((t0 + i) % j->cap) * j->kvd + kvh, j->hd);
+        for (int i = 0; i < n; i++) {
+            const size_t r = (size_t)((t0 + i) % j->cap) * j->kvd + kvh;
+            att[i] = j->kh ? dot_h(qh, j->kh + r, j->hd) : dot(qh, j->kb + r, j->hd);
+        }
         softmax(att, n);
         float *out = j->O + (size_t)t * qd + (size_t)h * j->hd;
         memset(out, 0, j->hd * sizeof(float));
         for (int i = 0; i < n; i++) {
-            const float *vh = j->vb + (size_t)((t0 + i) % j->cap) * j->kvd + kvh, a = att[i];
+            const size_t r = (size_t)((t0 + i) % j->cap) * j->kvd + kvh;
+            if (j->vh) { axpy_h(out, att[i], j->vh + r, j->hd); continue; }
+            const float *vh = j->vb + r, a = att[i];
             for (int k = 0; k < j->hd; k++) out[k] += a * vh[k];
         }
     }
@@ -8164,7 +8191,8 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
         matmat(KK, &L->wk, Xb, xqs, &prep, B, kvd, d);
         if (L->wv.q || L->wv.f) matmat(VV, &L->wv, Xb, xqs, &prep, B, kvd, d);
         else memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
-        float *kb = m->kcache + L->kv_off, *vb = m->vcache + L->kv_off;
+        float *kb = m->kcache ? m->kcache + L->kv_off : NULL, *vb = m->vcache ? m->vcache + L->kv_off : NULL;
+        uint16_t *kh = m->kh ? m->kh + L->kv_off : NULL, *vh = m->vh ? m->vh + L->kv_off : NULL;
         for (int t = 0; t < B; t++) {
             float *q = Q + (size_t)t * qd, *k = KK + (size_t)t * kvd, *v = VV + (size_t)t * kvd;
             const int pos = pos0 + t;
@@ -8175,11 +8203,10 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
                 for (int h = 0; h < nh; h++) { float *p = q + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
                 for (int h = 0; h < nkv; h++) { float *p = k + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
             }
-            memcpy(kb + (size_t)(pos % cap) * kvd, k, kvd * sizeof(float));
-            memcpy(vb + (size_t)(pos % cap) * kvd, v, kvd * sizeof(float));
+            g4_kv_put(kb, vb, kh, vh, (size_t)(pos % cap) * kvd, k, v, kvd);
         }
         {
-            G4AttN aj = { Q, O, kb, vb, pos0, nh, hd, kvd, nh / nkv, L->swa && c->swa_win < cap ? c->swa_win : cap, cap };
+            G4AttN aj = { Q, O, kb, vb, kh, vh, pos0, nh, hd, kvd, nh / nkv, L->swa && c->swa_win < cap ? c->swa_win : cap, cap };
             pool_for(g4_attn_job, &aj, B * nh, 1);
         }
         prep = 0;
@@ -9509,7 +9536,11 @@ static void print_info(const Model *m) {
     if (m->kh || m->kcache) {
         size_t na = 0;
         for (int l = 0; l < c->n_layers; l++) na += !(c->ssm_inner && m->layers[l].lin);
-        const double gb = 2.0 * na * c->ctx * c->n_kv * c->hd * (m->kh ? 2 : 4) / 1e9;
+        double gb = 2.0 * na * c->ctx * c->n_kv * c->hd * (m->kh ? 2 : 4) / 1e9;
+        if (c->g4) {        /* por camada: locais guardam a janela, globais o contexto */
+            gb = 0.0;
+            for (int l = 0; l < c->n_layers; l++) gb += 2.0 * m->layers[l].kv_cap * m->layers[l].nkv_l * m->layers[l].hd_l * (m->kh ? 2 : 4) / 1e9;
+        }
         fprintf(stderr, "cache KV da CPU: %zu camadas, %s, %.2f GB\n", na, m->kh ? "fp16" : "fp32", gb);
     }
 }
@@ -9566,7 +9597,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
         const size_t kvd = (size_t)c->n_kv * c->hd;
         size_t na = 0;
         for (int l = 0; l < c->n_layers; l++) na += !(c->ssm_inner && m->layers[l].lin);
-        if (m->kh) { memset(m->kh, 0, na * c->ctx * kvd * 2); memset(m->vh, 0, na * c->ctx * kvd * 2); }
+        if (m->kh && !c->g4) { memset(m->kh, 0, na * c->ctx * kvd * 2); memset(m->vh, 0, na * c->ctx * kvd * 2); }
         else if (m->kcache && !c->g4) { memset(m->kcache, 0, na * c->ctx * kvd * 4); memset(m->vcache, 0, na * c->ctx * kvd * 4); }
         fprintf(stderr, "[bench: prompt comeca na posicao %d]\n", bpos);
     }
@@ -13433,7 +13464,7 @@ static uint64_t pfx_hash(uint64_t h, const void *p, size_t n) {
 /* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL); 0 se nao cobre */
 static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     const Config *c = &m->cfg;
-    if (m->ckv || !m->kcache) return 0;
+    if (m->ckv || !m->kcache || c->g4) return 0;
     *ngl = 0; *esz = 4; *backend = 0;
     if (vkg.on && !gpu.force_cpu) { *ngl = vkg.nl; *esz = vkg.kv16 ? 2 : 4; *backend = 1; }
     else if (gpu.n_gl > 0 && !gpu.force_cpu) { *ngl = gpu.n_gl; *esz = gpu.kv16 ? 2 : 4; *backend = 2; }
