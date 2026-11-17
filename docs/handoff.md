@@ -101,7 +101,7 @@ Entrou no main nesta sessao:
 - **`gemma4` cache de especialistas** cabe as 8 vagas (usa ate 91% da VRAM so no quase-encaixe): geracao a frio 0,8 -> 3,4 tok/s.
 - **`katana prepare <modelo>`**: inspeciona modelo+maquina, decide o plano, gera shards/calor e grava perfil por modelo
   (`<modelo>.gguf.ktn.prof`); chat/serve/agent usam o perfil sozinhos; variavel do usuario vence.
-- **Agente**: sem pedir confirmacao (grava/executa/le fora da pasta; `KATANA_CONFIRM=1` volta a pedir), contexto 16384 e
+- **Agente**: sem pedir confirmacao (grava/executa/le fora da pasta; `KATANA_CONFIRM=1` volta a pedir), contexto 131072 (Qwen3.6 e gemma4, KV fp16) e
   raciocinio desligado por padrao; avisa quando o template do modelo nao tem ferramentas.
 - Vulkan espera a GPU liberar antes de cair para a CPU (`KATANA_VK_WAIT`, padrao 60 s).
 
@@ -253,6 +253,7 @@ motor de referência em `ref/llama-src`). O que a arquitetura tem:
 - **Prompt em lote na GPU (`vk_moe_n`) ainda NÃO cobre o gemma4** (feed-forward denso + MoE lado a lado):
   hoje o lote do gemma4 é só na CPU (`g4_layers_n`); na GPU cai para token a token. Plano e bloqueio na seção 10.
 - Grafo completo gravado em Vulkan (hoje é o modo híbrido ao vivo, como o MLA).
+- Contexto 131072 no agente: RESOLVIDO (seção 12; KV fp16 2,90 GB, anel nas locais).
 - Agente com `web_search` validado end-to-end no CPU (lento); confirmar no Vulkan quando a GPU liberar.
 
 ### 2.2c Arquitetura gpt-oss (`gpt-oss`, feita 2026-11-16)
@@ -648,7 +649,7 @@ tune sim|nao
 `perfil_apply(model_path, for_agent)` (chamada antes de `load_model` em serve/agent/chat/run) le o perfil e
 define `KATANA_BACKEND`/`KATANA_KV16`/`KATANA_CTX`/`KATANA_NOEXPCACHE` **so quando o usuario nao definiu**
 (variavel do usuario sempre vence; confirmado: `KATANA_BACKEND=opencl` venceu o perfil vulkan). No `agent`
-o perfil nao mexe em `KATANA_CTX` (o agente usa 16384 para os resultados de ferramenta). Se `origem` nao bate
+o perfil nao mexe em `KATANA_CTX` (o agente usa 131072 para os resultados de ferramenta). Se `origem` nao bate
 com o tamanho atual do `.gguf`, o perfil e ignorado com aviso.
 
 **Testado** (RTX 3050 4 GB, GPU ocupada por outro agente: ~2,6 GB em uso, 74-80 °C):
@@ -719,6 +720,42 @@ VRAM (8 vagas de 128), o resto roda na CPU; cada `chat` começa com o calor zera
    já começar com os experts mais usados na VRAM; e/ou liberar VRAM dos produtos densos para caber mais vagas.
 3. Precisão do token a token: experts quentes em fp32 no caminho de um token (como o lote do Qwen3-30B virou
    fp32 na seção 8) tiraria o 1,78 do selftest; hoje não afeta a geração gulosa.
+
+## 12. gemma4 com 131072 de contexto no agente (2026-11-17, worktree agent-aeade)
+
+O aviso `cache KV da CPU: 30 camadas, fp32, 128.85 GB` a 131072 era **so a conta do aviso** (`print_info` usava
+30 camadas x ctx x kv 8 x cabeca 512): a alocacao ja era por camada (`kv_off`/`kv_cap`), com anel de
+`swa_win + G4_NB` = 1040 posicoes nas 25 camadas locais e o contexto inteiro so nas 5 globais (kv 2 x 512).
+O que faltava: fp16 nas globais e tirar o caso especial do agente.
+
+- Cache do gemma4 em fp16 (`m->kh/m->vh`) quando ctx > 65536 (`KATANA_CPU_KV16=0/1` forca), em todas as
+  camadas (locais e globais); `g4_kv_put` grava, `dot_h`/`axpy_h` leem, em `g4_layer` (token a token, inclusive
+  o modo hibrido Vulkan, que chama `g4_layer`) e `g4_layers_n` (lote). Posicao do RoPE continua absoluta; o anel
+  so muda o endereco (`pos % cap`). A folga de 16 do anel cobre o lote (16) e o rascunho especulativo (4).
+- `print_info` agora soma o tamanho real por camada. Prefixo em disco (`pfx_*`) desligado no gemma4 (geometria
+  por camada; antes ja nao casava porque o prefixo e ChatML). Compactacao do agente so existe em ChatML: no
+  gemma4 nao roda (o contexto cheio pede `/novo`).
+- Agente: `KATANA_CTX` padrao 131072 tambem no gemma4 (saiu o caso `strstr(argv[2], "emma")`).
+
+**Medido** (KATANA_CPU=1, i7-11800H):
+
+| | antes | depois |
+|---|---|---|
+| aviso a ctx 131072 | 30 camadas, fp32, 128.85 GB (errado) | 30 camadas, fp16, 2.90 GB |
+| aviso a ctx 4096 | 4.03 GB (errado) | fp32, 0.59 GB |
+| RSS maximo, prompt de 2987 tokens a 131072 | 16,06 GB | 15,79 GB |
+| prompt/geracao nessa medida | 5,6 / 4,8 tok/s | 7,6 / 5,4 tok/s (nao alternado: deriva da maquina) |
+
+- Saida gulosa **identica** ao binario do main a ctx 4096 (fp32) num prompt curto e num de 2021 tokens (anel
+  exercitado). A 131072 (fp16) a saida diverge do fp32 no byte 8390 de 40 tokens gerados (arredondamento fp16).
+- `selftest` gemma4 (CPU e Vulkan com a GPU livre), Llama-3.2-1B e Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`)
+  sem regressao; o "GPU token a token FALHOU" do gemma4 (6,21) e do Qwen3-30B (0,115) e igual ao do main.
+- `agent` do gemma4 sem `KATANA_CTX`: ctx=131072, KV fp16 2,90 GB, RSS maximo 15,05 GB; chamou `list_dir` e
+  listou os arquivos.
+- O RSS e quase todo pesos mapeados (~15 GB); o KV so ocupa o que foi tocado. **Estimativa**: contexto cheio
+  soma ~2,9 GB (fp16) contra ~5,8 GB (fp32 no main, que tambem cabia na RAM de 64 GB).
+- Limitacoes: atencao das globais e linear na CPU por token (nao medido a 100k; o prompt de 100k na CPU levaria
+  horas a ~6 tok/s, estimado); sem compactacao de contexto no gemma4.
 
 ## 11. Comando `katana quantize`: grava GGUF requantizado (2026-11-16, worktree agent-a5a7)
 
