@@ -787,3 +787,56 @@ qwen2.5-1.5b-q4km passa igual (GPU logit 5e-5). Tambem conferido o requant a par
 - **Divergencia de logits entre fonte e quantizacao**: nao ha ferramenta de comparacao cruzada entre dois
   modelos; o proxy de prefixo guloso e ruidoso (viradas em quase-empates). Util criar um `qdiff`.
 - O `prepare` agora recomenda um tipo, mas nao requantiza sozinho (decisao do dono).
+
+## 9. Prompt em lote para MLA (deepseek2) no Vulkan (2026-11-16)
+
+O que mudou (`katana.c`, `vk/kvk.h`, `vk/shaders/mla_att.comp`):
+- `vk_mla_build` (chamado no `mla_gpu_upload` antes das vagas, que ficam com o resto da VRAM; ~184 MB com lote de 256)
+  e `vk_mla_n` (usado pelo `forward_seq`). Residual do lote na VRAM (`vkb.x`, transposto). Por camada: norma fp32,
+  q e kv_a no `mm` preciso; uma leitura traz os dois; a CPU faz a norma do latente, RoPE e grava `m->ckv` (o mesmo cache
+  do token a token, que continua igual); a atenção absorvida roda na GPU (`mla_att.comp`, fp32, um grupo por
+  token×cabeça, softmax online; sobem por camada o q, as linhas do cache até `pos0+B` e `k_b`/`v_b` em float32, sem
+  ficar residentes para não tirar vagas); produto da saída soma no residual. Feed-forward: camada densa com par
+  gate/up próprio do lote (`vkml.dg`), MoE pelo `vk_moe_n` (roteador float32 na GPU, compartilhado na GPU, frios em
+  vagas temporárias ou na CPU). Cabeça na CPU (como no modo híbrido).
+- `KATANA_VK_MLA=0` desliga o lote; `KATANA_VK_MLAATT=0` põe a atenção do lote na CPU (`mla_n_job`, blocos de 8 tokens).
+- `vk_moe_n` (vale também para qwen3moe/olmoe): os frios temporários são lidos do shard por uma thread direto numa área
+  mapeada (`kvk_host_create`/`kvk_copy_q`, novos no `kvk.h`), enquanto a principal enfileira os quentes e roda os frios
+  da CPU (`vk_moe_cold_cpu`); antes era leitura + cópia para o staging + espera, em série. `KATANA_VK_TMPTHR=0` volta.
+- `KATANA_VK_MOEPROF=1` mostra também o tempo do MLA por passada.
+
+Medido por partes (Moonlight, 256 tokens, `MOEPROF`): só o lote com atenção na CPU ~84 tok/s (atenção 0,85 s, frios
+CPU 0,95 s, subidas temporárias 1,1 s); + thread de leitura ~95; + atenção na GPU ~121.
+Tentado: `KATANA_VK_COLDT=32` dá prompt 126 mas geração ~30 (menos vagas); `COLDMIN=1` igual a 2. Ficou 16/2.
+
+Medidas (`bench`, `KATANA_CTX=1024`, rodadas 2–3, main anterior / novo / OpenCL alternados na mesma hora, GPU ≤ 76 °C no
+início de cada execução; outra sessão do katana estava aberta na máquina):
+
+| Modelo | | anterior (Vulkan) | novo (Vulkan) | OpenCL |
+|---|---|---|---|---|
+| Moonlight, 256+16 | prompt | 30,2–32,5 | 108–123 | 27,9–30,3 |
+| | geração | 23,0–24,9 | 28,6–32,1 | 21,1–23,3 |
+| Moonlight, 64+64 | prompt | 24,9–27,4 | 58,4–59,1 | 24,1 |
+| | geração | 20,9–25,3 | 24,1–24,4 | 21,2–22,4 |
+| DeepSeek-V2-Lite, 256+16 | prompt | 27,0–27,7 | 76,8–81,8 | 24,9–25,4 |
+| | geração | 13,3–13,8 | 22,4–23,2 | 12,6–12,8 |
+| DeepSeek-V2-Lite, 64+64 | prompt | 18,8–21,0 | 46,1–48,6 | — |
+| | geração | 23,6–23,8 | 27,4–28,4 | — |
+
+A geração de 16 tokens logo após 256 de prompt é curta e sensível ao estado das vagas (o lote aquece especialistas);
+com 64+64 a geração do novo empata ou fica um pouco à frente. O caminho de geração não mudou.
+
+Validação (`selftest`, Vulkan): Moonlight 4 vezes seguidas, lote 0,00018 (antes 0,00016 com atenção na CPU);
+DeepSeek-V2-Lite 2 vezes, lote 0,00034, token a token 0,0245 (frios int8 na CPU, como antes); Qwen3-30B
+(`KATANA_KV16=0 KATANA_CTX=512`) lote 0,0005 / lote 16 0,0005; qwen2.5-1.5b lote 0,0078. Todos OK.
+
+Pendências:
+- **Falha de segmentação intermitente**: 2 em ~7 execuções de `bench 64 64` do Moonlight no binário novo (Vulkan), com a
+  GPU a 82–83 °C e outra sessão do katana aberta; depois disso 10 execuções seguidas (4 sob gdb, 6 sem) sem falha. Não
+  reproduzida, causa desconhecida. Suspeitos: a thread de leitura dos temporários (`vk_trd`) e o caminho de fallback;
+  `KATANA_VK_TMPTHR=0` desliga a thread se reaparecer.
+- Atenção MLA de um token na GPU (geração) não feita: exigiria `k_b`/`v_b` residentes (~216 MB em float32, tira vagas)
+  e o grafo da camada na GPU para cortar as idas e voltas (q, kv_a, saída, MoE: 4 leituras por camada). É onde está o
+  ganho da geração, não na conta da atenção.
+- O cache latente sobe inteiro (até `pos0+B`) a cada camada e passada; com contexto longo vale manter uma cópia na VRAM.
+- Velocidade do Qwen3-30B/OLMoE com a thread de leitura no `vk_moe_n` não medida (só o `selftest`).

@@ -82,6 +82,7 @@
 #include "vk/shaders/qn_gate.h"
 #include "vk/shaders/moe_gath.h"
 #include "vk/shaders/moe_scat.h"
+#include "vk/shaders/mla_att.h"
 #include "vk/shaders/mm_t0_64x64_g0.h"
 #include "vk/shaders/mm_t0_64x64_g1.h"
 #include "vk/shaders/mm_t0_64x32w4_g0.h"
@@ -3961,6 +3962,15 @@ static void gpu_upload_glu(Mat *gate, Mat *up, size_t rows, size_t cols, int l) 
 static int host_moe_setup(Model *m);
 static int vk_host_moe_setup(Model *m, size_t S, size_t per, size_t work);
 static size_t gpu_mat_bytes(const Mat *W, size_t rows, size_t cols);
+static int vk_mla_build(Model *m);
+static struct {
+    int ok, P;
+    KvkBuf *an, *fn, *dg;           /* normas por camada; par gate/up das camadas densas */
+    float *Qh, *Kh, *Q, *OT;
+    int gatt;                       /* atencao na GPU (mla_att.comp); 0 = na CPU */
+    KvkBuf qb, cb, wk, wv; KvkPipe att;
+    double t_attn, t_rd; long passes;
+} vkml;
 static void mla_gpu_upload(Model *m) {
     const Config *c = &m->cfg;
     const size_t d = c->dim, H = c->hidden, nh = c->n_heads, W = (size_t)c->mla + c->rope_dim;
@@ -4016,7 +4026,12 @@ static void mla_gpu_upload(Model *m) {
     gpu.n_gl = 0; gpu.on = 0; gpu.full = 0; gpu.mv_host = 1;
     fprintf(stderr, "GPU: %s%s (%.1f GB) - %s: camadas na CPU, %d produtos densos na GPU (%.0f MB usados)\n",
             gpu.vk ? "Vulkan " : "", gpu.name, gpu.vram / 1073741824.0, c->mla ? "MLA" : c->g4 ? "gemma4" : "DeltaNet", gpu.n_up, gpu.used / 1048576.0);
+    if (gpu.vk && c->mla) vk_mla_build(m);     /* prompt em lote: antes das vagas, que ficam com o resto da VRAM */
     if (c->n_expert && !host_moe_setup(m) && !gpu.vk) fprintf(stderr, "GPU: especialistas roteados na CPU\n");
+    if (vkml.ok && !vk_sg) {    /* o lote MLA usa as vagas (vk_moe_n); sem cache de especialistas (VRAM ocupada, KATANA_NOEXPCACHE) fica token a token */
+        vkml.ok = 0;
+        fprintf(stderr, "Vulkan: sem cache de especialistas: prompt MLA token a token\n");
+    }
 }
 
 /* Cache de especialistas no modo hibrido (camadas na CPU, ex.: MLA): so as camadas MoE tem vagas; as densas
@@ -4515,7 +4530,9 @@ static struct {
     int *cnt, *ofs, *pv, *pb, *ce, *cb;
     /* frios do lote levados a GPU: T vagas temporarias (tg, td), para os frios com pelo menos cmin tokens no lote */
     KvkBuf tg, td; int T, cmin, *ccnt, *tmpe; size_t tgb, tdb; uint8_t *stage; FILE **pf;
-    double t_rd, t_route, t_cpu, t_tmp; long n_hot, n_cold, n_tmp, n_tmpe;
+    uint8_t *tstage;                /* T regioes (tgb + tdb): a thread de leitura grava do arquivo, a principal sobe com write_q */
+    int cdone, off_c;               /* frios da CPU ja somados em xc; deslocamento da tabela deles */
+    double t_rd, t_route, t_cpu, t_tmp, t_frd; long n_hot, n_cold, n_tmp, n_tmpe;
 } vkbm;
 
 /* tipo do mm.comp: 0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32; vk_kind_idx: 0 F32, 1 Q8_0, 2 Q4_K, 3 Q5_K, 4 Q6_K */
@@ -4672,6 +4689,7 @@ static int vk_batch_build(Model *m) {
             vkbm.tg = vk_wk(vkbm.T * vkbm.tgb, &fail); vkbm.td = vk_wk(vkbm.T * vkbm.tdb, &fail);
             vkbm.stage = xalloc(vkbm.tgb + vkbm.tdb, 1);
             vkbm.pf = xalloc(c->n_layers, sizeof(FILE *));
+            if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.tstage = xalloc(vkbm.T * (vkbm.tgb + vkbm.tdb), 1);
         }
         vkbm.ccnt = xalloc(E, sizeof(int)); vkbm.tmpe = xalloc(64, sizeof(int));
         vkbm.cnt = xalloc(E + 66, sizeof(int)); vkbm.ofs = xalloc(E + 66, sizeof(int));
@@ -6031,8 +6049,10 @@ static void vk_moe_tmp_load(Model *m, const Layer *L, int l, int e, int j) {
             vkbm.pf[l] = fopen(fn, "rb");
             if (vkbm.pf[l]) setvbuf(vkbm.pf[l], NULL, _IONBF, 0);
         }
+        const double t0 = now_sec();
         if (vkbm.pf[l] && FSEEK64(vkbm.pf[l], (int64_t)((size_t)e * (bg + bd)), SEEK_SET) == 0
             && fread(vkbm.stage, 1, bg + bd, vkbm.pf[l]) == bg + bd) { g = vkbm.stage; dn = vkbm.stage + bg; }
+        vkbm.t_frd += now_sec() - t0;
     }
     if (!g && sl->down) { g = sl->glu; dn = sl->down; }
     if (!g) {
@@ -6045,6 +6065,54 @@ static void vk_moe_tmp_load(Model *m, const Layer *L, int l, int e, int j) {
     if (!kvk_buf_write_q(vkbm.tg, (size_t)j * vkbm.tgb, g, bg) || !kvk_buf_write_q(vkbm.td, (size_t)j * vkbm.tdb, dn, bd))
         die("falha ao subir especialista (Vulkan, lote)");
     free(cg); free(cd);
+}
+/* Vida util: vkbm.tstage e os arquivos vkbm.pf duram o processo todo. A regiao j so e regravada pela thread da camada
+   seguinte, que comeca depois da leitura bloqueante do vk_moe_n (GPU ociosa: as copias anteriores ja terminaram);
+   a thread sempre e juntada antes do vk_moe_n voltar, e o fallback so usa o arquivo depois do join.
+   A thread le do shard para vkbm.tstage; a principal sobe com kvk_buf_write_q (copia os bytes na hora para o anel de
+   staging, sem depender de coerencia de memoria mapeada). done[j]: 1 pronto, -1 falhou. */
+static struct { int l, n; size_t bg, bd; volatile long done[64]; } vk_trd;
+static void vk_trd_run(void) {
+    FILE *f = vkbm.pf[vk_trd.l];
+    for (int j = 0; j < vk_trd.n; j++) {
+        uint8_t *dst = vkbm.tstage + (size_t)j * (vkbm.tgb + vkbm.tdb);
+        const int e = vkbm.tmpe[j];
+        const int ok = f && FSEEK64(f, (int64_t)((size_t)e * (vk_trd.bg + vk_trd.bd)), SEEK_SET) == 0
+                       && fread(dst, 1, vk_trd.bg, f) == vk_trd.bg && fread(dst + vkbm.tgb, 1, vk_trd.bd, f) == vk_trd.bd;
+        ATOM_SET(&vk_trd.done[j], ok ? 1 : -1);
+    }
+}
+#ifdef _WIN32
+static DWORD WINAPI vk_trd_thread(LPVOID a) { (void)a; vk_trd_run(); return 0; }
+#else
+static void *vk_trd_thread(void *a) { (void)a; vk_trd_run(); return NULL; }
+#endif
+/* frios do lote na CPU (blocos de ate GPU_BMAX tokens), somados em vkbm.xc; *nc vira 0 */
+static void vk_moe_cold_cpu(Model *m, const Layer *L, int l, int B, int *pnc) {
+    const int d = m->cfg.dim, nc = *pnc;
+    if (nc <= 0) return;
+    const double t0 = now_sec();
+    memset(vkbm.xc, 0, (size_t)d * B * sizeof(float));
+    int p = 0;
+    while (p < nc) {
+        const int b0 = vkbm.cb[p];
+        int q = p;
+        while (q < nc && vkbm.cb[q] < b0 + GPU_BMAX) q++;
+        static int xi[GPU_BMAX * 64];
+        for (int i = p; i < q; i++) xi[i - p] = vkbm.cb[i] - b0;
+        const int nb = vkbm.cb[q - 1] - b0 + 1;
+        moe_cpu_multi(m, L, vkbm.ce + p, xi, q - p, nb, vkbm.xn + (size_t)b0 * d, vkbm.outs);
+        for (int i = p; i < q; i++) {
+            const float w = vkbm.cw[i], *o = vkbm.outs + (size_t)(i - p) * d;
+            const int b = vkbm.cb[i];
+            for (int r = 0; r < d; r++) vkbm.xc[(size_t)r * B + b] += w * o[r];
+        }
+        p = q;
+    }
+    gx.cpu_runs += nc;
+    gx.t_cpu += now_sec() - t0; vkbm.t_cpu += now_sec() - t0;
+    vkbm.cdone = 1; *pnc = 0;
+    (void)l;
 }
 static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
     const Config *c = &m->cfg;
@@ -6134,6 +6202,7 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
         mt[off_v + 2 * k] = (uint32_t)vkbm.pb[p]; memcpy(&mt[off_v + 2 * k + 1], &vkbm.pw[p], 4);
     }
     const int off_c = off_v + 2 * np;
+    vkbm.off_c = off_c; vkbm.cdone = 0;
     const float one = 1.0f;
     for (int b = 0; b < B; b++) { mt[off_c + 2 * b] = (uint32_t)b; memcpy(&mt[off_c + 2 * b + 1], &one, 4); }
     ok &= kvk_buf_write_q(vkbm.meta, 0, mt, (size_t)(off_c + 2 * B) * 4);
@@ -6149,16 +6218,59 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
     }
     const uint32_t kg = gpu_kind(&L->eg[0]), kd = gpu_kind(&L->ed[0]);
     const size_t wg = gpu_wpr(&L->eg[0], d), wd = gpu_wpr(&L->ed[0], H);
+    /* frios temporarios: leitura do shard numa thread, ao mesmo tempo que os quentes e os frios da CPU */
+    int thr = 0;
+#ifdef _WIN32
+    HANDLE th = NULL;
+#else
+    pthread_t th;
+#endif
+    if (ntmp > 0 && vkbm.tstage && gx.pf && gx.pf[l]) {
+        if (!vkbm.pf[l]) {
+            char fn[1100];
+            snprintf(fn, sizeof fn, "%s/L%03d.exps.bin", shards.dir, l);
+            vkbm.pf[l] = fopen(fn, "rb");
+            if (vkbm.pf[l]) setvbuf(vkbm.pf[l], NULL, _IONBF, 0);
+        }
+        if (vkbm.pf[l]) {
+            vk_trd.l = l; vk_trd.n = ntmp; vk_trd.bg = gx.bg[l]; vk_trd.bd = gx.bd[l];
+            for (int t = 0; t < ntmp; t++) vk_trd.done[t] = 0;
+#ifdef _WIN32
+            th = CreateThread(NULL, 0, vk_trd_thread, NULL, 0, NULL);
+            thr = th != NULL;
+#else
+            thr = pthread_create(&th, NULL, vk_trd_thread, NULL) == 0;
+#endif
+        }
+    }
     for (int v = 0; v < nv && ok; v++) {
         const int n = vkbm.cnt[v], mo = off_v + 2 * vkbm.ofs[v];
         if (!n) continue;
         KvkBuf sg = vk_sg[l], sd = vk_sd[l];
         uint32_t og = (uint32_t)((size_t)v * (gx.bg[l] / 4)), od = (uint32_t)((size_t)v * (gx.bd[l] / 4));
-        if (v >= gx.S) {        /* vaga temporaria: sobe o frio agora (a GPU ja trabalha nas vagas anteriores) */
+        if (v >= gx.S) {        /* vaga temporaria */
             const int j = v - gx.S;
-            if (j == 0 && !kvk_flush()) die("falha na execucao em Vulkan (MoE do lote)");
+            if (j == 0) {
+                if (!kvk_flush()) die("falha na execucao em Vulkan (MoE do lote)");
+                if (thr) vk_moe_cold_cpu(m, L, l, B, &nc);     /* frios da CPU enquanto a thread le e a GPU roda os quentes */
+            }
             const double t0 = now_sec();
-            vk_moe_tmp_load(m, L, l, vkbm.tmpe[j], j);
+            if (thr) {
+                while (!vk_trd.done[j]) CPU_RELAX();
+                if (vk_trd.done[j] > 0) {
+                    const uint8_t *src = vkbm.tstage + (size_t)j * (vkbm.tgb + vkbm.tdb);
+                    if (!kvk_buf_write_q(vkbm.tg, (size_t)j * vkbm.tgb, src, gx.bg[l])
+                        || !kvk_buf_write_q(vkbm.td, (size_t)j * vkbm.tdb, src + vkbm.tgb, gx.bd[l])) die("falha ao subir especialista (Vulkan, lote)");
+                } else {            /* falhou a leitura: espera a thread acabar e sobe pelo caminho comum */
+#ifdef _WIN32
+                    WaitForSingleObject(th, INFINITE); CloseHandle(th);
+#else
+                    pthread_join(th, NULL);
+#endif
+                    thr = 0;
+                    vk_moe_tmp_load(m, L, l, vkbm.tmpe[j], j);
+                }
+            } else vk_moe_tmp_load(m, L, l, vkbm.tmpe[j], j);
             vkbm.t_tmp += now_sec() - t0;
             sg = vkbm.tg; sd = vkbm.td;
             og = (uint32_t)((size_t)j * (vkbm.tgb / 4)); od = (uint32_t)((size_t)j * (vkbm.tdb / 4));
@@ -6177,30 +6289,21 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
         }
         ok &= vk_moe_scat(vkbm.ys, d, B, n, mo);
     }
+    if (thr) {
+#ifdef _WIN32
+        WaitForSingleObject(th, INFINITE); CloseHandle(th);
+#else
+        pthread_join(th, NULL);
+#endif
+    }
     if (!ok) die("falha na execucao em Vulkan (MoE do lote)");
-    if (nc > 0) {       /* frios na CPU (blocos de ate GPU_BMAX tokens) enquanto a GPU trabalha */
-        const double t0 = now_sec();
+    if (nc > 0) {
         kvk_flush();
-        memset(vkbm.xc, 0, (size_t)d * B * sizeof(float));
-        int p = 0;
-        while (p < nc) {
-            const int b0 = vkbm.cb[p];
-            int q = p;
-            while (q < nc && vkbm.cb[q] < b0 + GPU_BMAX) q++;
-            static int xi[GPU_BMAX * 64];
-            for (int i = p; i < q; i++) xi[i - p] = vkbm.cb[i] - b0;
-            const int nb = vkbm.cb[q - 1] - b0 + 1;
-            moe_cpu_multi(m, L, vkbm.ce + p, xi, q - p, nb, vkbm.xn + (size_t)b0 * d, vkbm.outs);
-            for (int i = p; i < q; i++) {
-                const float w = vkbm.cw[i], *o = vkbm.outs + (size_t)(i - p) * d;
-                const int b = vkbm.cb[i];
-                for (int r = 0; r < d; r++) vkbm.xc[(size_t)r * B + b] += w * o[r];
-            }
-            p = q;
-        }
-        gx.cpu_runs += nc;
-        gx.t_cpu += now_sec() - t0; vkbm.t_cpu += now_sec() - t0;
-        if (!kvk_buf_write_q(vkbm.yc, 0, vkbm.xc, (size_t)d * B * sizeof(float)) || !vk_moe_scat(vkbm.yc, d, B, B, off_c))
+        vk_moe_cold_cpu(m, L, l, B, &nc);
+    }
+    if (vkbm.cdone) {
+        vkbm.cdone = 0;
+        if (!kvk_buf_write_q(vkbm.yc, 0, vkbm.xc, (size_t)d * B * sizeof(float)) || !vk_moe_scat(vkbm.yc, d, B, B, vkbm.off_c))
             die("falha na execucao em Vulkan (MoE do lote, CPU)");
     }
 }
@@ -6824,6 +6927,265 @@ static void mla_attn(Model *m, const Layer *L, int l, int pos) {
     pool_for(mla_job, &job, nh, 1);
     matvec(m->xb2, &L->wo, m->xb, d, nh * c->hd_v);
     for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+}
+
+/* ---------- MLA (deepseek2) em Vulkan: prompt em lote ----------
+   Residual dos B tokens na VRAM (vkb.x, layout transposto como no lote dos densos). Por camada: norma fp32 e
+   produtos q e kv_a no mm preciso (alta + resto); uma leitura traz q e o latente; a CPU faz norma do latente,
+   RoPE, grava o cache (m->ckv, o mesmo do token a token) e a atencao absorvida em lote (tokens x cabecas no
+   pool); a saida sobe e o produto da saida soma no residual. Feed-forward: denso (par gate/up proprio do lote)
+   ou vk_moe_n (roteador na GPU, quentes nas vagas, frios em vagas temporarias ou na CPU). Tudo em fp32 (o
+   DeepSeek-V2-Lite e sensivel). KATANA_VK_MLA=0 desliga (prompt token a token). */
+static int vk_mla_build(Model *m) {
+    const Config *c = &m->cfg;
+    const int NL = c->n_layers, E = c->n_expert, K = c->n_used;
+    const size_t d = c->dim, H = c->hidden, Hd = c->hidden_dense, nh = c->n_heads, hd = c->hd, hv = c->hd_v;
+    const size_t W = (size_t)c->mla + c->rope_dim, qd = nh * hd, od = nh * hv;
+    memset(&vkml, 0, sizeof vkml);
+    if (getenv("KATANA_VK_MLA") && atoi(getenv("KATANA_VK_MLA")) == 0) return 0;
+    if (!vkg.coop || c->q_lora || !E || K > 16 || E % 32 || d % 64 || qd % 64 || od % 64 || W % 64 || H % 64) return 0;
+    /* formatos: tudo o que o lote multiplica precisa estar na VRAM, sem divisao, num tipo do mm.comp */
+#define MOK(M) ((M).gbuf && gpu_kind(&(M)) != T_Q2_K && gpu_has(&(M)))
+    for (int l = 0; l < NL; l++) {
+        const Layer *L = &m->layers[l];
+        if (!MOK(L->wq) || L->wq.gs != 1 || !MOK(L->wkv_a) || L->wkv_a.gs != 1 || !MOK(L->wo) || L->wo.gs != 1) return 0;
+        if (L->eg) {
+            if (!glu_pair(&L->eg[0], &L->eu[0]) || !gpu_has(&L->eg[0]) || !gpu_has(&L->ed[0])) return 0;
+            if (gpu_kind(&L->eg[0]) == T_Q2_K || gpu_kind(&L->ed[0]) == T_Q2_K) return 0;
+            if ((L->sg.q || L->sg.f) && (!MOK(L->sg) || !L->sg.pair || !MOK(L->sd) || L->sd.gs != 1)) return 0;
+        } else {
+            if (!glu_pair(&L->w_gate, &L->w_up) || !gpu_has(&L->w_gate) || gpu_kind(&L->w_gate) == T_Q2_K) return 0;
+            if (!MOK(L->w_down) || L->w_down.gs != 1 || Hd % 64) return 0;
+        }
+    }
+#undef MOK
+    size_t P = getenv("KATANA_VK_PASS") ? (size_t)atoi(getenv("KATANA_VK_PASS")) : VK_PASS_DEF;
+    if (P < 2) return 0;
+    if (P > 1024) P = 1024;
+    int fail = 0;
+    const size_t used0 = gpu.used;
+    memset(&vkb, 0, sizeof vkb);
+    memset(&vkbm, 0, sizeof vkbm);
+    const size_t Hs = (size_t)c->n_shared * H;
+    size_t hbw = H > Hd ? H : Hd;
+    if (Hs > hbw) hbw = Hs;
+    vkb.x = vk_wk(d * P * 4, &fail); vkb.q = vk_wk(qd * P * 4, &fail); vkb.k = vk_wk(W * P * 4, &fail);
+    vkb.q2 = vk_wk(od * P * 4, &fail); vkb.hb = vk_wk(hbw * P * 4, &fail);
+    vkbm.xf = vk_wk(d * P * 4, &fail); vkbm.xg = vk_wk(d * P * 4, &fail);
+    vkbm.ys = vk_wk(d * P * 4, &fail); vkbm.yc = vk_wk(d * P * 4, &fail);
+    vkbm.lg = vk_wk(((size_t)E * P + 128) * 4, &fail); vkbm.meta = vk_wk(2 * P * (K + 2) * 4, &fail);
+    vkbm.rms32 = kvk_pipe_create(rms_wg32_spv, sizeof rms_wg32_spv, 3, 12, NULL, NULL, 0);
+    vkbm.gath32 = kvk_pipe_create(moe_gath32_spv, sizeof moe_gath32_spv, 3, 16, NULL, NULL, 0);
+    vkbm.scat = kvk_pipe_create(moe_scat_spv, sizeof moe_scat_spv, 3, 16, NULL, NULL, 0);
+    if (!vkbm.rms32.p || !vkbm.gath32.p || !vkbm.scat.p) fail = 1;
+    vkml.an = xalloc(NL, sizeof(KvkBuf)); vkml.fn = xalloc(NL, sizeof(KvkBuf)); vkml.dg = xalloc(NL, sizeof(KvkBuf));
+    for (int l = 0; l < NL && !fail; l++) {
+        Layer *L = &m->layers[l];
+        vkml.an[l] = vk_vec(L->attn_norm, d, &fail); vkml.fn[l] = vk_vec(L->ffn_norm, d, &fail);
+        if (!L->eg && !fail) {      /* camada densa: gate e up intercalados num buffer so do lote */
+            Mat *two[2] = { &L->w_gate, &L->w_up };
+            size_t bytes = 0;
+            uint32_t *buf = gpu_build_buf(two, 2, Hd, d, &bytes);
+            if (!buf) { fail = 1; break; }
+            vkml.dg[l] = kvk_buf_create(bytes, KVK_USAGE_RW);
+            if (!vkml.dg[l].b || !kvk_buf_write(vkml.dg[l], 0, buf, bytes)) fail = 1;
+            else gpu.used += bytes;
+            free(buf);
+        }
+    }
+    /* roteador na GPU (float32, grupos de 32 linhas: o layout que o mm.comp le) */
+    if (!fail && !(getenv("KATANA_VK_ROUTER") && atoi(getenv("KATANA_VK_ROUTER")) == 0)) {
+        float *wr = xalloc((size_t)E * d, sizeof(float)), *row = xalloc(d, sizeof(float));
+        vkm.rw = xalloc(NL, sizeof(KvkBuf));
+        for (int l = 0; l < NL && !fail; l++) {
+            if (!m->layers[l].eg) continue;
+            for (int e = 0; e < E; e++) {
+                mat_row(row, &m->layers[l].router, e, (int)d);
+                for (size_t i = 0; i < d; i++) wr[(size_t)(e / 32) * d * 32 + i * 32 + e % 32] = row[i];
+            }
+            vkm.rw[l] = vk_vec(wr, (size_t)E * d, &fail);
+        }
+        free(row); free(wr);
+        if (!fail) vkm.rt = 1;
+    }
+    vkbm.T = getenv("KATANA_VK_COLDT") ? atoi(getenv("KATANA_VK_COLDT")) : 16;
+    vkbm.cmin = getenv("KATANA_VK_COLDMIN") ? atoi(getenv("KATANA_VK_COLDMIN")) : 2;
+    if (vkbm.T < 0) vkbm.T = 0;
+    if (vkbm.T > 64) vkbm.T = 64;
+    if (vkbm.T && !fail) {
+        for (int l = 0; l < NL; l++) {
+            const Layer *L = &m->layers[l];
+            if (!L->eg) continue;
+            const size_t bg = 2 * gpu_mat_bytes(&L->eg[0], H, d), bd = gpu_mat_bytes(&L->ed[0], d, H);
+            if (bg > vkbm.tgb) vkbm.tgb = bg;
+            if (bd > vkbm.tdb) vkbm.tdb = bd;
+        }
+        vkbm.tg = vk_wk(vkbm.T * vkbm.tgb, &fail); vkbm.td = vk_wk(vkbm.T * vkbm.tdb, &fail);
+        vkbm.stage = xalloc(vkbm.tgb + vkbm.tdb, 1);
+        vkbm.pf = xalloc(NL, sizeof(FILE *));
+        if (!getenv("KATANA_VK_TMPTHR") || atoi(getenv("KATANA_VK_TMPTHR"))) vkbm.tstage = xalloc(vkbm.T * (vkbm.tgb + vkbm.tdb), 1);
+    }
+    if (fail || !kvk_wait()) {
+        fprintf(stderr, "Vulkan: sem memoria para o lote MLA (%s): prompt token a token\n", kvk_error());
+        vkm.rt = 0;
+        gpu.used = used0;       /* os buffers ficam (pequenos); so o orcamento das vagas volta */
+        return 0;
+    }
+    vkbm.xn = xalloc(d * P, sizeof(float)); vkbm.lgT = xalloc((size_t)E * P, sizeof(float)); vkbm.xc = xalloc(d * P, sizeof(float));
+    vkbm.outs = xalloc((size_t)GPU_BMAX * K * d, sizeof(float)); vkbm.sw = xalloc(P, sizeof(float));
+    vkbm.mt = xalloc(2 * P * (K + 2), sizeof(uint32_t));
+    vkbm.ccnt = xalloc(E, sizeof(int)); vkbm.tmpe = xalloc(64, sizeof(int));
+    vkbm.cnt = xalloc(E + 66, sizeof(int)); vkbm.ofs = xalloc(E + 66, sizeof(int));
+    vkbm.pv = xalloc(P * K, sizeof(int)); vkbm.pb = xalloc(P * K, sizeof(int)); vkbm.pw = xalloc(P * K, sizeof(float));
+    vkbm.ce = xalloc(P * K, sizeof(int)); vkbm.cb = xalloc(P * K, sizeof(int)); vkbm.cw = xalloc(P * K, sizeof(float));
+    vkbm.prec = 1;
+    vkm.sh = c->n_shared > 0;
+    vkg.fn = vkml.fn;           /* vk_moe_n le a norma do feed-forward daqui (vkg.on continua 0) */
+    vkb.xT = xalloc(d * P, sizeof(float));
+    vkml.Qh = xalloc(qd * P, sizeof(float)); vkml.Kh = xalloc(W * P, sizeof(float));
+    vkml.Q = xalloc(qd * P, sizeof(float)); vkml.OT = xalloc(od * P, sizeof(float));
+    vkml.P = (int)P; vkml.ok = 1;
+    /* atencao na GPU: q por token, cache latente da camada (sobe a cada passada a partir de m->ckv), k_b e v_b da
+       camada (float32, sobem por camada: nao ficam residentes para nao tirar vagas do cache de especialistas) */
+    if (!(getenv("KATANA_VK_MLAATT") && atoi(getenv("KATANA_VK_MLAATT")) == 0) && vkg.sg32 && hd == 192 && c->rope_dim == 64
+        && c->mla == 512 && hv == 128) {
+        int f2 = 0;
+        const size_t u1 = gpu.used;
+        vkml.qb = vk_wk(qd * P * 4, &f2); vkml.cb = vk_wk((size_t)c->ctx * W * 4, &f2);
+        vkml.wk = vk_wk(nh * 512 * 128 * 4, &f2); vkml.wv = vk_wk(nh * 128 * 512 * 4, &f2);
+        vkml.att = kvk_pipe_create(mla_att_spv, sizeof mla_att_spv, 5, 16, NULL, NULL, 0);
+        if (!f2 && vkml.att.p) vkml.gatt = 1;
+        else gpu.used = u1;
+    }
+    fprintf(stderr, "Vulkan: prompt MLA em lote (ate %zu tokens por passada, %.0f MB)\n", P, (gpu.used - used0) / 1048576.0);
+    return 1;
+}
+
+/* atencao MLA absorvida de B tokens (cache ja gravado ate pos0+B-1): um item por (bloco de MLA_TB tokens, cabeca),
+   para cada linha de k_b e v_b ser lida uma vez por bloco; saida transposta OT[(h*hv + i)*B + t] para o produto
+   da saida na GPU */
+#define MLA_TB 8
+typedef struct { Model *m; const Layer *L; int l, pos0, B, nb; float scale; } MlaNJob;
+static void mla_n_job(void *cx, int u0, int u1) {
+    const MlaNJob *j = cx;
+    const Config *c = &j->m->cfg;
+    const int nh = c->n_heads, hd = c->hd, nr = c->rope_dim, nope = hd - nr, hv = c->hd_v, R = c->mla, W = R + nr;
+    static __thread float *att, *qa, *lat; static __thread int cap;
+    if (cap < c->ctx) {
+        free(att); free(qa); free(lat);
+        att = xalloc(c->ctx, sizeof(float)); qa = xalloc((size_t)MLA_TB * R, sizeof(float)); lat = xalloc((size_t)MLA_TB * R, sizeof(float));
+        cap = c->ctx;
+    }
+    const float *kb = j->m->ckv + (size_t)j->l * c->ctx * W;
+    for (int u = u0; u < u1; u++) {
+        const int h = u % nh, t0 = (u / nh) * MLA_TB, n = j->B - t0 < MLA_TB ? j->B - t0 : MLA_TB;
+        const float *wk = j->L->wkb + (size_t)h * R * nope, *wv = j->L->wvb + (size_t)h * hv * R;
+        for (int r = 0; r < R; r++)
+            for (int t = 0; t < n; t++) qa[(size_t)t * R + r] = dot(wk + (size_t)r * nope, vkml.Q + (size_t)(t0 + t) * nh * hd + (size_t)h * hd, nope);
+        for (int t = 0; t < n; t++) {
+            const int pos = j->pos0 + t0 + t;
+            const float *qr = vkml.Q + (size_t)(t0 + t) * nh * hd + (size_t)h * hd + nope, *q = qa + (size_t)t * R;
+            float *lt = lat + (size_t)t * R;
+            for (int s = 0; s <= pos; s++) {
+                const float *row = kb + (size_t)s * W;
+                att[s] = (dot(q, row, R) + dot(qr, row + R, nr)) * j->scale;
+            }
+            softmax(att, pos + 1);
+            memset(lt, 0, R * sizeof(float));
+            for (int s = 0; s <= pos; s++) {
+                const float *row = kb + (size_t)s * W, a = att[s];
+                for (int r = 0; r < R; r++) lt[r] += a * row[r];
+            }
+        }
+        for (int i = 0; i < hv; i++) {
+            float *o = vkml.OT + (size_t)(h * hv + i) * j->B + t0;
+            for (int t = 0; t < n; t++) o[t] = dot(wv + (size_t)i * R, lat + (size_t)t * R, R);
+        }
+    }
+}
+
+static void vk_moe_n(Model *m, const Layer *L, int l, int B);
+static float *vk_mla_n(Model *m, const int *toks, int B, int pos0, int want_logits) {
+    const Config *c = &m->cfg;
+    const int d = c->dim, nh = c->n_heads, hd = c->hd, nr = c->rope_dim, nope = hd - nr, R = c->mla, W = R + nr;
+    const int qd = nh * hd, od = nh * c->hd_v, Hd = c->hidden_dense;
+    const int step = c->rope_neox ? 1 : 2, gap = c->rope_neox ? nr / 2 : 1;
+    if (B < 1 || B > vkml.P || pos0 < 0 || pos0 + B > c->ctx) die("lote fora do limite (Vulkan, MLA)");
+    for (int t = 0; t < B; t++) {
+        mat_row(m->x, &m->tok_emb, toks[t], d);
+        for (int j = 0; j < d; j++) vkb.xT[(size_t)j * B + t] = m->x[j];
+    }
+    if (!kvk_buf_write_q(vkb.x, 0, vkb.xT, (size_t)d * B * sizeof(float))) die("falha na execucao em Vulkan (escrita do lote)");
+    const struct { int n; float eps; int B; } rp = { d, c->eps, B };
+    for (int l = 0; l < c->n_layers; l++) {
+        const Layer *L = &m->layers[l];
+        int ok = 1;
+        {   const KvkBuf rb[3] = { vkb.x, vkml.an[l], vkbm.xf };
+            ok &= kvk_dispatch(vkbm.rms32, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1); }
+        ok &= vk_mm_p(&L->wq, vkbm.xf, vkb.q, qd, d, B, 0, 1);
+        ok &= vk_mm_p(&L->wkv_a, vkbm.xf, vkb.k, W, d, B, 0, 1);
+        if (!ok) die("falha na execucao em Vulkan (MLA do lote)");
+        const double t0 = now_sec();
+        if (!kvk_buf_read(vkb.q, 0, vkml.Qh, (size_t)qd * B * 4) || !kvk_buf_read(vkb.k, 0, vkml.Kh, (size_t)W * B * 4))
+            die("falha na execucao em Vulkan (leitura do lote, MLA)");
+        const double t1 = now_sec();
+        for (int t = 0; t < B; t++) {
+            const int pos = pos0 + t;
+            float *q = vkml.Q + (size_t)t * qd, *row = m->ckv + ((size_t)l * c->ctx + pos) * W;
+            for (int i = 0; i < qd; i++) q[i] = vkml.Qh[(size_t)i * B + t];
+            for (int i = 0; i < W; i++) row[i] = vkml.Kh[(size_t)i * B + t];
+            rmsnorm(row, row, L->kv_a_norm, R, c->eps);
+            for (int i = 0; i < nr / 2; i++) {
+                const float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+                for (int h = 0; h < nh; h++) {
+                    float *p = q + h * hd + nope + step * i, a = p[0], b = p[gap];
+                    p[0] = a * cs - b * sn; p[gap] = a * sn + b * cs;
+                }
+                float *p = row + R + step * i, a = p[0], b = p[gap];
+                p[0] = a * cs - b * sn; p[gap] = a * sn + b * cs;
+            }
+        }
+        const int nb = (B + MLA_TB - 1) / MLA_TB;
+        const float scale = c->kq_mul / sqrtf((float)hd);
+        if (vkml.gatt) {
+            ok &= kvk_buf_write_q(vkml.qb, 0, vkml.Q, (size_t)qd * B * 4);
+            ok &= kvk_buf_write_q(vkml.cb, 0, m->ckv + (size_t)l * c->ctx * W, (size_t)(pos0 + B) * W * 4);
+            ok &= kvk_buf_write_q(vkml.wk, 0, L->wkb, (size_t)nh * R * nope * 4);
+            ok &= kvk_buf_write_q(vkml.wv, 0, L->wvb, (size_t)nh * c->hd_v * R * 4);
+            const KvkBuf ab[5] = { vkml.qb, vkml.cb, vkml.wk, vkml.wv, vkb.q2 };
+            const struct { int B, pos0, nh; float scale; } ap = { B, pos0, nh, scale };
+            ok &= kvk_dispatch(vkml.att, ab, 5, &ap, sizeof ap, (uint32_t)B, (uint32_t)nh, 1);
+            vkml.t_rd += t1 - t0; vkml.t_attn += now_sec() - t1;
+        } else {
+            MlaNJob job = { m, L, l, pos0, B, nb, scale };
+            pool_for(mla_n_job, &job, nb * nh, 1);
+            vkml.t_rd += t1 - t0; vkml.t_attn += now_sec() - t1;
+            ok &= kvk_buf_write_q(vkb.q2, 0, vkml.OT, (size_t)od * B * 4);
+        }
+        ok &= vk_mm_p(&L->wo, vkb.q2, vkb.x, d, od, B, 1, 1);
+        if (L->eg) {
+            if (!ok) die("falha na execucao em Vulkan (MLA do lote)");
+            vk_moe_n(m, L, l, B);
+            continue;
+        }
+        const KvkBuf rb[3] = { vkb.x, vkml.fn[l], vkbm.xf };
+        ok &= kvk_dispatch(vkbm.rms32, rb, 3, &rp, sizeof rp, (uint32_t)((B + 7) / 8), 1, 1);
+        ok &= vk_mm_pw(gpu_kind(&L->w_gate), vkml.dg[l], 0, gpu_wpr(&L->w_gate, d), vkbm.xf, vkb.hb, Hd, d, B, 0, 2);
+        ok &= vk_mm_p(&L->w_down, vkb.hb, vkb.x, d, Hd, B, 1, 1);
+        if (!ok) die("falha na execucao em Vulkan (MLA do lote)");
+    }
+    vkml.passes++;
+    if (getenv("KATANA_VK_MOEPROF")) {
+        fprintf(stderr, "[lote MLA] %d tokens: leitura q/kv %.3f, atencao na CPU %.3f | MoE: leitura %.3f, roteamento %.3f, frios na CPU %.3f, "
+                "subida temporaria %.3f (arquivo %.3f) (pares GPU %ld, CPU %ld, temporarios %ld em %ld subidas)\n", B, vkml.t_rd, vkml.t_attn,
+                vkbm.t_rd, vkbm.t_route, vkbm.t_cpu, vkbm.t_tmp, vkbm.t_frd, vkbm.n_hot, vkbm.n_cold, vkbm.n_tmp, vkbm.n_tmpe);
+        vkml.t_rd = vkml.t_attn = 0;
+        vkbm.t_rd = vkbm.t_route = vkbm.t_cpu = vkbm.t_tmp = vkbm.t_frd = 0; vkbm.n_hot = vkbm.n_cold = vkbm.n_tmp = vkbm.n_tmpe = 0;
+    }
+    if (!want_logits) { if (!kvk_flush()) die("falha na execucao em Vulkan (lote, MLA)"); return NULL; }
+    if (!kvk_buf_read(vkb.x, 0, vkb.xT, (size_t)d * B * sizeof(float))) die("falha na execucao em Vulkan (leitura do lote, MLA)");
+    for (int j = 0; j < d; j++) m->x[j] = vkb.xT[(size_t)j * B + B - 1];
+    return cpu_head(m);
 }
 
 /* ---------- qwen35moe: etapas de uma camada ----------
@@ -8311,6 +8673,15 @@ static int g4_batch(const Model *m) {
 static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_logits) {
     float *lg = NULL;
     int i = 0;
+    if (vkml.ok && !gpu.force_cpu && vk_batch_min() <= n) {      /* MLA em Vulkan (modo hibrido): lote proprio */
+        while (n - i >= vk_batch_min()) {
+            const int nb = n - i < vkml.P ? n - i : vkml.P;
+            lg = vk_mla_n(m, toks + i, nb, pos0 + i, want_logits && i + nb == n);
+            i += nb;
+        }
+        for (; i < n; i++) lg = forward(m, toks[i], pos0 + i, want_logits && i == n - 1);
+        return lg;
+    }
     if (vkg.on && vkb.ok && !gpu.force_cpu && vk_batch_min() <= n) {
         /* lotes de ate vkb.P tokens; sobra menor que o minimo vai um token por vez */
         while (n - i >= vk_batch_min()) {
