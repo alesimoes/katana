@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>katana</title>
+<style>
+:root{--bg:#faf9f5;--side:#f0eee6;--fg:#1f1e1d;--mut:#73726c;--bd:#dedcd1;--us:#e9e6dc;--ac:#c96442;--card:#fff;--code:#f0eee6}
+@media(prefers-color-scheme:dark){:root{--bg:#262624;--side:#1f1e1d;--fg:#ece9e0;--mut:#9b9990;--bd:#3a3935;--us:#30302e;--ac:#d97757;--card:#2d2c2a;--code:#1f1e1d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,sans-serif;display:flex;height:100vh}
+aside{width:250px;background:var(--side);border-right:1px solid var(--bd);display:flex;flex-direction:column;padding:14px;gap:8px}
+aside h1{font:600 17px system-ui;margin:2px 4px 10px;letter-spacing:.3px}
+aside h2{font:600 11px system-ui;color:var(--mut);text-transform:uppercase;margin:10px 4px 2px}
+.m{display:block;width:100%;text-align:left;border:1px solid transparent;background:none;color:var(--fg);padding:8px 10px;border-radius:8px;cursor:pointer;font:inherit;font-size:13.5px}
+.m:hover:not(:disabled){background:var(--us)}.m.on{background:var(--us);border-color:var(--bd)}
+.m:disabled{color:var(--mut);cursor:default;opacity:.65}.m small{display:block;color:var(--mut);font-size:11.5px}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--fg);padding:8px 10px;border-radius:8px;cursor:pointer;font:inherit;font-size:13.5px}
+.btn:hover{background:var(--us)}
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+#log{flex:1;overflow-y:auto;padding:24px 0}
+.w{max-width:760px;margin:0 auto;padding:0 20px}
+.msg{margin:0 0 18px;white-space:pre-wrap;word-wrap:break-word}
+.user{background:var(--us);padding:10px 14px;border-radius:14px;margin-left:15%}
+.tool{font-size:13px;color:var(--mut);border:1px solid var(--bd);background:var(--card);border-radius:10px;padding:7px 12px;margin:0 0 12px;display:flex;gap:8px;align-items:baseline}
+.tool b{color:var(--fg);font-weight:600;white-space:nowrap}.tool span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool i{color:var(--ac);font-style:normal}
+.msg code{background:var(--code);padding:1px 5px;border-radius:4px;font:13px ui-monospace,monospace}
+.msg pre{background:var(--code);padding:10px 12px;border-radius:8px;overflow-x:auto;font:13px/1.45 ui-monospace,monospace;margin:8px 0;white-space:pre}
+.empty{text-align:center;color:var(--mut);margin-top:22vh}.empty h2{color:var(--fg);font:600 22px system-ui}
+#bar{padding:0 0 18px}
+.box{max-width:760px;margin:0 auto;padding:0 20px}
+.in{display:flex;gap:8px;align-items:flex-end;border:1px solid var(--bd);background:var(--card);border-radius:16px;padding:10px 10px 10px 14px}
+textarea{flex:1;border:0;outline:0;resize:none;background:none;color:var(--fg);font:inherit;max-height:200px;min-height:26px}
+#go{border:0;background:var(--ac);color:#fff;border-radius:10px;width:36px;height:36px;font-size:17px;cursor:pointer}
+#go:disabled{opacity:.4;cursor:default}
+#st{font-size:12px;color:var(--mut);text-align:center;margin-top:7px;min-height:16px}
+.err{color:#c0392b}
+@media(max-width:700px){aside{display:none}.user{margin-left:0}}
+</style></head><body>
+<aside>
+<h1>katana</h1>
+<button class="btn" id="new">Nova conversa</button>
+<h2>Modelo</h2>
+<div id="models"></div>
+</aside>
+<main>
+<div id="log"><div class="w" id="msgs"></div></div>
+<div id="bar"><div class="box">
+<div class="in"><textarea id="t" rows="1" placeholder="Escreva uma mensagem..." disabled></textarea><button id="go" disabled title="Enviar">&#8593;</button></div>
+<div id="st"></div></div></div>
+</main>
+<script>
+var $=function(i){return document.getElementById(i)},msgs=$("msgs"),log=$("log"),t=$("t"),go=$("go"),st=$("st");
+var cur=null,asst=null,busy=false,ready=false,started=false,stopMode=false;
+function esc(s){return s.replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c]})}
+function md(s){ // so crases e blocos de codigo; o resto e texto
+  s=esc(s).replace(/```(?:\w*\n)?([\s\S]*?)(```|$)/g,function(_,c){return"<pre>"+c.replace(/\n$/,"")+"</pre>"});
+  return s.replace(/`([^`\n]+)`/g,"<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g,"<b>$1</b>")}
+function bottom(){log.scrollTop=log.scrollHeight}
+function setSt(x,e){st.textContent=x||"";st.className=e?"err":""}
+function ui(){
+  t.disabled=!ready;go.disabled=!ready&&!busy;
+  go.innerHTML=busy?"&#9632;":"&#8593;";go.title=busy?"Interromper":"Enviar";
+  if(!started&&!msgs.children.length)empty()}
+function empty(){msgs.innerHTML='<div class="empty"><h2>Como posso ajudar?</h2>Escolha um modelo na lateral para iniciar o agente.</div>'}
+function clearEmpty(){var e=msgs.querySelector(".empty");if(e)e.remove()}
+function addUser(x){clearEmpty();var d=document.createElement("div");d.className="msg user";d.textContent=x;msgs.appendChild(d);asst=null;bottom()}
+function addText(x){clearEmpty();if(!asst){asst=document.createElement("div");asst.className="msg";asst.raw="";msgs.appendChild(asst)}
+  asst.raw+=x;asst.innerHTML=md(asst.raw.replace(/^\s+/,""));bottom()}
+function addTool(n,a){clearEmpty();asst=null;var d=document.createElement("div");d.className="tool";
+  d.innerHTML="<i>&#9881;</i><b>"+esc(n)+"</b><span>"+esc(a||"")+"</span>";msgs.appendChild(d);bottom()}
+var es=new EventSource("/api/events");
+es.onmessage=function(m){var e=JSON.parse(m.data);
+  if(e.t=="user")addUser(e.text);
+  else if(e.t=="text"){started=true;addText(e.text)}
+  else if(e.t=="tool"){started=true;addTool(e.name,e.text)}
+  else if(e.t=="ready"){ready=true;busy=false;started=true;setSt("");asst=null}
+  else if(e.t=="status"){setSt(e.text);if(/Carregando|Trabalhando/.test(e.text)){busy=true;ready=false}else busy=false}
+  else if(e.t=="stats")setSt(e.text);
+  else if(e.t=="error"){setSt(e.text,1);ready=false;busy=false}
+  ui()};
+function send(){var x=t.value.trim();if(busy){fetch("/api/stop",{method:"POST"});return}
+  if(!x||!ready)return;t.value="";grow();ready=false;busy=true;setSt("Pensando...");ui();
+  fetch("/api/send",{method:"POST",body:JSON.stringify({text:x})}).then(function(r){if(!r.ok){busy=false;ready=true;setSt("Agente ocupado",1);ui()}})}
+go.onclick=send;
+t.onkeydown=function(e){if(e.key=="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();send()}};
+function grow(){t.style.height="auto";t.style.height=Math.min(t.scrollHeight,200)+"px"}t.oninput=grow;
+$("new").onclick=function(){if(!ready)return;msgs.innerHTML="";asst=null;started=false;
+  fetch("/api/new",{method:"POST"}).then(function(){setSt("");ui()})};
+function pick(f){if(f==cur&&started)return;msgs.innerHTML="";asst=null;started=false;ready=false;busy=true;cur=f;ui();draw(window.ML||[]);
+  setSt("Carregando o modelo (pode levar alguns minutos)...");
+  fetch("/api/start",{method:"POST",body:JSON.stringify({model:f})}).then(function(r){if(!r.ok)r.text().then(function(x){setSt(x,1);busy=false;ui()})})}
+function draw(L){var h=$("models");h.innerHTML="";L.forEach(function(m){var b=document.createElement("button");
+  b.className="m"+(m.file==cur?" on":"");b.disabled=!m.usable;
+  b.innerHTML=esc(m.name)+"<small>"+(m.usable?m.size_gb.toFixed(1)+" GB"+(m.is_default?" · padrao":""):esc(m.note))+"</small>";
+  b.onclick=function(){pick(m.file)};h.appendChild(b)})}
+fetch("/api/models").then(function(r){return r.json()}).then(function(j){window.ML=j.models;cur=j.current||null;
+  if(cur){started=true}draw(j.models);
+  if(!cur){var d=j.models.filter(function(m){return m.is_default&&m.usable})[0];if(d)pick(d.file)}});
+ui();
+</script></body></html>
