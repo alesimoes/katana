@@ -211,21 +211,47 @@ Item {
             id: col
             width: parent.width
             spacing: 0
-            // samurai em pixel art (64x64 logicos), escala inteira e sem suavizacao
-            Image {
+            // emblema: katana fina em diagonal, tracos vetoriais na cor de destaque
+            Canvas {
                 id: samurai
                 objectName: "samurai"
                 anchors.horizontalCenter: parent.horizontalCenter
-                readonly property real livre: mv.height - mv.bottomSpace - 230
-                readonly property int escala: livre >= 256 ? 4 : livre >= 192 ? 3 : livre >= 128 ? 2 : 1
-                source: "qrc:/icons/samurai.png"
-                sourceSize: Qt.size(64, 64)
-                width: 64 * escala
-                height: 64 * escala
-                smooth: false
-                mipmap: false
+                width: 72
+                height: 72
+                renderTarget: Canvas.Image
+                property color cor: Theme.ac
+                onCorChanged: requestPaint()
                 Accessible.role: Accessible.Graphic
-                Accessible.name: "Samurai com uma katana"
+                Accessible.name: "Katana"
+                onPaint: {
+                    var c = getContext("2d")
+                    c.reset()
+                    c.translate(width / 2, height / 2)
+                    c.rotate(-Math.PI / 4)
+                    c.fillStyle = cor
+                    c.strokeStyle = cor
+                    // lamina: ponta fina, lombo reto, leve curva no fio
+                    c.beginPath()
+                    c.moveTo(-34, 1.6)
+                    c.lineTo(-34, -1.4)
+                    c.lineTo(22, -1.4)
+                    c.quadraticCurveTo(31, -1.4, 35, -3.4)
+                    c.quadraticCurveTo(33, 0.4, 28, 1.6)
+                    c.closePath()
+                    c.fill()
+                    // guarda (tsuba)
+                    c.beginPath()
+                    c.ellipse(-37.5, -5, 3, 10)
+                    c.fill()
+                    // empunhadura com trancado discreto
+                    c.lineWidth = 3.4
+                    c.lineCap = "round"
+                    c.globalAlpha = 0.55
+                    c.beginPath()
+                    c.moveTo(-60, 0.1)
+                    c.lineTo(-38, 0.1)
+                    c.stroke()
+                }
             }
             Item { width: 1; height: 14 }
             Text {
