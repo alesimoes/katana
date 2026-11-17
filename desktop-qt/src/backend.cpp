@@ -252,7 +252,7 @@ void Backend::start(const QString &modelFile)
         m_msgs.clear();
     }
     m_speed.clear();
-    m_ctx.clear();
+    m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
     setTexts(QStringLiteral("Carregando o modelo (pode levar alguns minutos)..."), {});
     setState(false, true, true);
     emit currentModelChanged();
@@ -421,7 +421,7 @@ bool Backend::newChat()
     m_pendingCtx.clear();
     m_dirty = false;
     m_speed.clear();
-    m_ctx.clear();
+    m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
     setTexts(QStringLiteral("Preparando a conversa..."), {});
     setState(false, false, true);
     writeLine("/novo");
@@ -449,7 +449,7 @@ bool Backend::openSession(const QString &id)
         items.append({m.papel, m.texto, m.nome});
     m_msgs.setAll(items);
     m_speed.clear();
-    m_ctx.clear();
+    m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
     if (agentReady) {
         setTexts(QStringLiteral("Preparando a conversa..."), {});
         setState(false, false, true);
@@ -560,8 +560,7 @@ void Backend::handleMarker(const QByteArray &line)
     } else if (name == "TOKENS") {  // TOKENS <pos> <ctx>
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
         if (a.size() >= 2) {
-            m_ctx = "contexto " + a[0] + " de " + a[1];
-            emit textsChanged();
+            setCtx(a[0].toInt(), a[1].toInt());
         }
     } else if (name == "COMPACT") {  // COMPACT <antes> <depois>
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
@@ -569,6 +568,14 @@ void Backend::handleMarker(const QByteArray &line)
             m_msgs.append("notice", "Contexto compactado: " + a[0] + " -> " + a[1] + " tokens");
     }
     // WARM e outros: ignorados
+}
+
+void Backend::setCtx(int used, int total)
+{
+    m_ctxUsed = used;
+    m_ctxTotal = total;
+    m_ctx = "contexto " + QString::number(used) + " de " + QString::number(total);
+    emit textsChanged();
 }
 
 void Backend::markReady()
@@ -685,8 +692,7 @@ void Backend::onStderr()
         const auto m = stats.match(l);
         if (m.hasMatch()) {
             m_speed = m.captured(4) + " tok/s";
-            m_ctx = "contexto " + m.captured(5) + " de " + m.captured(6);
-            emit textsChanged();
+            setCtx(m.captured(5).toInt(), m.captured(6).toInt());
         } else if (l.contains("contexto cheio")) {
             setTexts(m_status, "Contexto cheio. Inicie uma conversa nova.");
         } else if (l.contains("interrompido")) {

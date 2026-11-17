@@ -69,6 +69,8 @@ class Backend : public QObject
     Q_PROPERTY(QString errorText READ errorText NOTIFY textsChanged)
     Q_PROPERTY(QString speedText READ speedText NOTIFY textsChanged)
     Q_PROPERTY(QString ctxText READ ctxText NOTIFY textsChanged)
+    Q_PROPERTY(int ctxUsed READ ctxUsed NOTIFY textsChanged)
+    Q_PROPERTY(int ctxTotal READ ctxTotal NOTIFY textsChanged)
     Q_PROPERTY(QVariantList sessions READ sessions NOTIFY sessionsChanged)
     Q_PROPERTY(QString currentSessionId READ currentSessionId NOTIFY sessionsChanged)
     Q_PROPERTY(bool hasPendingContext READ hasPendingContext NOTIFY stateChanged)
@@ -91,6 +93,8 @@ public:
     QString errorText() const { return m_error; }
     QString speedText() const { return m_speed; }
     QString ctxText() const { return m_ctx; }
+    int ctxUsed() const { return m_ctxUsed; }
+    int ctxTotal() const { return m_ctxTotal; }
     QVariantList sessions() const { return m_sessions; }
     QString currentSessionId() const { return m_sess.id; }
     bool hasPendingContext() const { return !m_pendingCtx.isEmpty(); }
@@ -155,6 +159,8 @@ private:
     QString m_model;
     bool m_ready = false, m_loading = false, m_answering = false;
     QString m_status, m_error, m_speed, m_ctx;
+    int m_ctxUsed = 0, m_ctxTotal = 0;
+    void setCtx(int used, int total);
 
     QByteArray m_outBuf, m_errBuf, m_utf8Tail;
     bool m_atLineStart = true;
