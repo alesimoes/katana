@@ -129,6 +129,21 @@ profundidade: 128k 4,5 tok/s, 256k 2,7, 1M 0,7 (yarn x4). A atencao de um token 
 cache (flash-decoding com grupo junto deu 2,5x a 128k). Encher 1M de prompt: estimado ~8 dias na CPU
 (prefill da atencao ainda token a token). Detalhes em handoff.md, secao 0a.
 
+## 5b. Contexto compactado, tokens da conversa e calor por sessao (2026-11-17)
+
+- Compactacao do agente (resumo pelo proprio modelo + resultados de ferramenta encolhidos) e marcadores
+  `\x01TOKENS`/`\x01COMPACT`: ver handoff 0b. Medido no 1,5B com contexto 2048: 1726->1430 e 1890->1420
+  tokens; o piso e o prompt de sistema do agente (~950 tokens).
+- Calor de especialistas por sessao (ideia: guardar quais especialistas cada sessao usou e pre-carregar na GPU
+  ao retomar/compactar, com marcador `\x01WARM`). Avaliado, nao implementado. Ja existe o calor por modelo
+  (`.ktn.heat`, gravado ao sair, lido na partida, os S mais quentes por camada vao para a thread carregadora
+  antes do primeiro token). Uma versao por sessao so muda qual vetor de calor se le. So tem efeito no modo
+  hibrido com cache de especialistas, isto e, quando o MoE nao cabe na VRAM (RTX 3050 de 4 GB aqui): OLMoE e
+  os MoE pequenos cabem inteiros ou rodam sem esse cache, entao nao ha como medir ganho com eles; so o Qwen3-30B
+  e o Qwen3.6 exercitam o caminho, e a RAM estava ocupada pelo outro processo. Sem medida, nao ficou codigo.
+  Estimativa (nao medida): o ganho e limitado ao inicio da sessao retomada (o cache aquece por uso em dezenas
+  de tokens), e so existe se o assunto da sessao diferir do calor global.
+
 ## 6. Como estamos em relação ao motor de referência (medido, mesma máquina)
 
 Motor de referência: binário oficial b12418 com CUDA e com Vulkan.
