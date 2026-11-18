@@ -41,7 +41,7 @@ Rectangle {
             spacing: 8
             Rectangle {
                 width: 22; height: 22; radius: 7; color: Theme.ac
-                Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 13 }
+                KMark { anchors.fill: parent; px: 13 }
             }
             Text { font.family: Theme.sans; text: "Katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
             IconButton {
