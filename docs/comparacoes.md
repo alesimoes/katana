@@ -268,3 +268,21 @@ rodadas 2-3 (ms/token):
 
 O roteador sai da CPU (0,053 -> 0,002 ms) mas a leitura cresce 0,03 ms (mais um despacho e 1 KB a mais).
 Geracao gulosa de 80 tokens identica. Fica desligado por padrao.
+
+## 15. Especialistas MoE na CPU, um token (Linux, 2026-11-18, worktree agent-a5fc)
+
+Microbancada `tools/moebench` (sem GPU): 8 especialistas sorteados por camada, todas as camadas MoE, como num
+token com todos os especialistas frios. `KATANA_MOE_OLD=1` = caminho anterior. Alternado OLD/NOVO na mesma hora,
+com outro processo do katana usando 8 threads (load 11-18): **indicativo**. Banda de leitura medida pela propria
+microbancada: 33-37 GB/s (8 threads), 30-40 GB/s (16).
+
+| Modelo | bytes/token | teto (35 GB/s) | anterior ms/token | novo ms/token |
+|---|---|---|---|---|
+| Gemma 4 26B (down Q5_1) | 897 MB | ~25 ms | 214 / 208 | 34,4 / 37,8 |
+| Qwen3.6-35B (down Q5_K) | 611 MB | ~17 ms | 42,4* / 23,1 / 24,2 | 22,7 / 21,5 / 21,2 |
+
+\* rodada com pico de carga. Fases no Qwen3.6 (novo): gate/up ~12,3 ms, ativacao+quantizacao 0,3 (antes 1,2),
+down ~8,8 (antes ~10). Threads (anterior, Qwen3.6): 8 = 31-32 ms, 12 = 48-50, 16 = 49-50.
+
+Geracao so CPU (`KATANA_CPU=1 katana chat ... 64 0`), Gemma 4: 2,8 -> 6,3 tok/s; Qwen3.6: 7,5 -> 7,6 tok/s.
+Texto gerado identico nos dois. Modelo completo com GPU: nao medido (comando em handoff 0i).
