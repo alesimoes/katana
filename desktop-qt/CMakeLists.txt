@@ -12,6 +12,8 @@ qt_add_executable(katana-desktop-qt
     src/main.cpp
     src/backend.cpp
     src/backend.h
+    src/terminal.cpp
+    src/terminal.h
     src/sessoes.cpp
     src/sessoes.h
     src/selftest.cpp
@@ -29,6 +31,7 @@ qt_add_qml_module(katana-desktop-qt
         qml/Highlight.js
         qml/Theme.qml
         qml/Icon.qml
+        qml/TerminalPanel.qml
         qml/IconButton.qml
         qml/Sidebar.qml
         qml/ModelPicker.qml
