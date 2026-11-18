@@ -27,7 +27,7 @@ Rectangle {
         "edit_file": "Editando arquivo", "run_command": "Executando comando", "search_files": "Procurando nos arquivos",
         "glob": "Buscando arquivos", "web_search": "Pesquisando na web", "web_fetch": "Abrindo página",
         "download_file": "Baixando arquivo", "install_package": "Instalando pacote", "git": "Usando git",
-        "read_document": "Lendo documento", "remember": "Guardando na memória", "recall": "Consultando a memória"
+        "read_document": "Lendo documento", "terminal": "Usando o terminal", "read_log": "Lendo logs", "terminal_screen": "Lendo a tela do terminal", "remember": "Guardando na memória", "recall": "Consultando a memória"
     })
     function verbo(n) { return verbos[n] || n || "Usando ferramenta"; }
     function alvo(a) {

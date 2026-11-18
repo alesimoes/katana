@@ -248,5 +248,9 @@ Alem de `read_file`, `list_dir`, `search_files`, `write_file`, `run_command`, `w
 | `download_file(url, path)` | baixa com curl para a pasta atual; mostra tamanho e SHA-256; limite `KATANA_DL_MAX_MB` (padrao 2048) |
 | `install_package(manager, name)` | `pip` (venv ativa, `./.venv` ou `--user`), `npm`, `apt` (`sudo -n`; falha claro se pedir senha), `cargo` |
 | `git(args)` | status, diff, log, show, add, commit, branch, checkout, switch, clone, pull, fetch, push; recusa `push --force`, `reset --hard` e afins sem `KATANA_GIT_UNSAFE=1` |
+| `run_command(command, timeout_s?)` | shell com stdin fechado (sudo/ssh nao travam), stderr junto da saida, timeout (padrao 120 s, `KATANA_CMD_TIMEOUT`, mata o grupo), codigo de saida, saida truncada mantendo inicio e fim, dica quando pede senha |
+| `terminal(action, name?, text?, enter?, lines?, wait_ms?)` | sessao de shell persistente (pty): `open`, `send`, `read`, `list`, `close`, `interrupt`; guarda diretorio e variaveis e mostra prompts interativos; ate 4 sessoes, 256 KB cada |
+| `read_log(source, lines?, filter?, unit?)` | le logs para ver erros: `agent`, `commands` (ultimos comandos do agente com codigo de saida), `journal`, `dmesg`, `syslog` ou um arquivo; filtro por texto/regex; dica clara se faltar permissao |
+| `terminal_screen(lines?, pane?)` | captura o painel tmux do usuario (`tmux capture-pane`); so funciona dentro do tmux, senao pede ao usuario para colar o erro |
 
-Teste sem modelo e sem GPU: `sh tools/testar_ferramentas.sh` (usa `katana tool`).
+Teste sem modelo e sem GPU: `sh tools/testar_ferramentas.sh` (usa `katana tool` e `katana toolrun`).
