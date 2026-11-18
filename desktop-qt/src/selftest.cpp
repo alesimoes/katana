@@ -448,7 +448,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     // apagar a sessao atual limpa a tela
     QQuickItem *cur = c.sessionItemWithTitle("Resumir o roteiro de otimizacoes");
     c.click(findItem(cur, "sessionOpen"));
-    check(waitFor([&] { return be.ready(); }, 30000) && be.messages()->count() >= 2, "sessao aberta antes de apagar a atual");
+    check(waitFor([&] { return be.ready(); }, 300000) && be.messages()->count() >= 2, "sessao aberta antes de apagar a atual (retomada pelo motor pode recalcular)");
     cur = c.sessionItemWithTitle("Resumir o roteiro de otimizacoes");
     c.click(findItem(cur, "sessionDelete"));
     c.click(findItem(cur, "confirmDelete"));

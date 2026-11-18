@@ -14304,6 +14304,9 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
     }
     ah_clear(out); free(out->v); *out = nh;
 }
+/* resumir com o modelo ao trocar de sessao custa minutos nos modelos grandes: so com KATANA_SESS_RESUMO=troca
+   (padrao: resume so ao sair; na troca grava a versao barata) */
+static int sess_sum_switch(void) { const char *e = getenv("KATANA_SESS_RESUMO"); return e && strcmp(e, "troca") == 0; }
 /* grava a sessao em g_sess_path (se houver). full: conversa inteira; hist: o que esta no cache */
 static void sess_save(Model *m, const char *sys, const AHist *hist, const AHist *full, int allow_sum) {
     if (!g_sess_path[0] || !hist->n || !sys[0]) return;
@@ -14443,7 +14446,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             while (*pa == ' ') pa++;
             if (!cml) { fprintf(stderr, "[sessoes: nao suportado neste formato]\n"); g_no_ready = !res; continue; }
             g_stop = 0; g_busy = 1;
-            if (!first && hist.n && (res || strcmp(pa, g_sess_path) != 0)) sess_save(m, sys, &hist, &slog, 1);   /* fecha a sessao atual */
+            if (!first && hist.n && (res || strcmp(pa, g_sess_path) != 0)) sess_save(m, sys, &hist, &slog, sess_sum_switch());   /* fecha a sessao atual */
             if (res) {
                 AGENT_SYS();
                 const int np2 = sess_resume(m, pa, sys, &hist, &slog);
@@ -14474,7 +14477,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         const int cmd = console_cmd(line, &tr, extra, sizeof extra, &reset);   /* /sistema acrescenta instrucoes ao prompt do agente */
         if (cmd == 2) break;
         if (reset) {
-            if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, 1); g_busy = 0; }   /* fecha a sessao */
+            if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, sess_sum_switch()); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
             pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog);
         }

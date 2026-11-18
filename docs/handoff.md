@@ -14,9 +14,10 @@ Feito (agente, formatos ChatML e Gemma 4; gpt-oss nao):
   de chat), **calor de especialistas da sessao** (o mesmo vetor camada x especialista do `.heat`, so se o cache de
   especialistas estiver ligado), **conversa compacta** (resumo + 2 ultimos pedidos do usuario com o que veio depois,
   no texto exato do cache) **com os ids tokenizados**, e a conversa inteira (para quem quiser reprocessar tudo).
-  Gravado a cada resposta (barato, sem resumir: corta os turnos antigos e mantem um resumo que ja existia) e, ao
-  trocar de sessao (`/retomar`, `/sessao` para outro arquivo, `/novo`) ou sair, com resumo feito pelo modelo
-  (`ah_summary`) quando as mensagens passam de `KATANA_RETOMAR_TOK` tokens (padrao 1500).
+  Gravado a cada resposta e ao trocar de sessao (`/retomar`, `/sessao` para outro arquivo, `/novo`) na versao barata
+  (sem resumir: corta os turnos antigos e mantem um resumo que ja existia); ao sair (`/sair`, fim da entrada), com
+  resumo feito pelo modelo (`ah_summary`) quando as mensagens passam de `KATANA_RETOMAR_TOK` tokens (padrao 1500).
+  `KATANA_SESS_RESUMO=troca` resume tambem na troca (custa minutos nos modelos grandes).
 - Limite de disco e expiracao: na pasta da sessao, `.ksess` mais velhos que `KATANA_SESS_DIAS` (30) sao apagados e,
   se a pasta passar de `KATANA_SESS_MB` (256), os mais antigos. O KV salvo em `~/.katana/cache` segue o PFX_KEEP (8).
 - **Retomar**: `katana agent <modelo> --retomar <arquivo>` (grava de volta no mesmo arquivo) ou `--sessao <arquivo>`;
@@ -68,6 +69,11 @@ Custos observados: o resumo ao sair/trocar de sessao reprocessa a transcricao (Q
 tokens a 9 tok/s; gemma4 ~7 min). O desktop manda `/sair` e mata o agente depois de 3 s, entao ao fechar o app o
 `.ksess` fica com a versao barata (ultimos turnos + resumo que ja existia). KV no disco do gemma4 e grande
 (cache da CPU fp32: 507 MB para 1988 tokens); qwen35moe no grafo Vulkan nao grava KV (estado DeltaNet na GPU).
+
+Selftests (binario deste ramo, GPU disputada): gemma4 produtos OK, lote 0,0030 OK, token a token 0,0030 OK;
+Qwen3.6 produtos OK, lote/token a token 0,00073 OK; Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) produtos OK, mas a
+VRAM estava tomada e as verificacoes de grafo completo foram puladas ("grafo na CPU"). desktop-qt `--selftest`:
+105 ok, 0 falhas (o modelo do teste do desktop e o qwen2.5-1.5b, escolhido pelo proprio teste).
 
 Pendencias:
 - Medir o aquecimento com a GPU livre (sessao com calor: gravar uma sessao no grafo completo; `--retomar` com e sem
