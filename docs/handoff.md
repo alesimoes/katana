@@ -4,6 +4,35 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0k. Medidas finais com a maquina livre: GPU, MoE na CPU e margem de troca (2026-11-18)
+
+Resultado (`comparacoes.md` secao 17; maquina livre de outros agentes, load 3,7-8,6, 3 execucoes alternadas,
+rodadas 2 e 3):
+- Selftest com GPU OK nos tres modelos (Gemma 4, Qwen3.6, Qwen3-30B), mesmos limites de antes.
+- Gemma 4 `bench 64 64`: MoE novo 42,2 ms/token (23,7 tok/s) contra 74,3 do antigo (13,5 tok/s): 1,76x na
+  geracao, 2,65x no prompt. Medido com GPU, modelo completo: o que a 0i deixou como "nao medido".
+- Qwen3.6 `bench 256 128`, margem 8 contra 4: 24,9 contra 24,2 tok/s (+3%, 3 de 3 pares mais rapidos, mas faixas
+  que se tocam) e prompt 68,0 contra 59,6 (+14%). **O ganho de geracao da margem 8 e pequeno (~3%), abaixo dos
+  4-8% estimados na 0j.** Continua no padrao, por ser o melhor medido, mas nao e um ganho grande.
+
+Comandos (copiados de `final.sh`, no diretorio do log; rodar na raiz do repositorio, com a maquina livre):
+```
+G=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; Q=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf; T=modelos/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+for m in $G $Q; do KATANA_BACKEND=vulkan ./katana selftest $m; done
+KATANA_BACKEND=vulkan KATANA_KV16=0 KATANA_CTX=512 ./katana selftest $T
+for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o KATANA_BACKEND=vulkan ./katana bench $G 64 64; done; done
+for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $Q 256 128; done; done
+```
+(o script filtrava a saida com `grep` e imprimia o load antes de cada execucao; a versao completa esta em
+`final.sh`.)
+
+Pendente (nada disto foi feito hoje):
+- KV Q8_0 contra fp16 com a GPU e agulha no palheiro: comandos na secao 0e deste arquivo.
+- yarn x4 (contexto estendido).
+- Aquecimento e calibracao no Gemma 4 (o `.heat` do `katana calibrar` ainda nao foi medido na GPU).
+- DeltaNet em blocos (o caso "inconclusivo (carga alta)" da `comparacoes.md` secao 13 e o handoff 0d).
+- Verificar o agente do katana-desktop contra este bench (o desktop nao foi medido com a mesma maquina livre).
+
 ## 0i. Especialistas MoE na CPU: produtos inteiros para Q8_0/Q5_1, Q5_K com VNNI (2026-11-18, ramo worktree-agent-a5fc01670b63cc48b)
 
 Formatos dos especialistas nos GGUFs (conferido no cabecalho): Qwen3.6-35B gate/up Q4_K, down Q5_K (37 camadas) e
@@ -36,7 +65,10 @@ de especialistas: Qwen3.6 bit a bit igual; Gemma erro relativo L2 6e-5 (quantiza
 usada nos tipos K). `selftest` (KATANA_CPU=1) OK nos tres: Gemma 4, Qwen3.6, Qwen3-30B (KATANA_KV16=0 KATANA_CTX=512);
 Q5_1 inteiro 2,1e-6, Q8_0 inteiro 2,5e-6 contra o exato. **Nao medido**: o modelo completo com a GPU (outro processo
 usava a GPU/CPU). Estimativa: no Gemma com Vulkan os ~19 ms/token de especialistas na CPU devem cair para ~4-6 ms
-(a fracao fria dos 36 ms acima); no Qwen3.6 ~1 ms/token. Para repetir com a maquina livre:
+(a fracao fria dos 36 ms acima); no Qwen3.6 ~1 ms/token.
+Nota (0k): a medida do modelo completo com GPU, Gemma 4 `bench 64 64` antigo x novo, foi feita com a maquina livre:
+42,2 contra 74,3 ms/token (1,76x). Os numeros de microbancada desta secao continuam indicativos.
+Para repetir com a maquina livre:
 
     sh tools/moebench/build.sh && sh tools/moebench/ab.sh modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 3 16
     sh tools/moebench/ab.sh modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 3 16
@@ -88,6 +120,8 @@ tokens: 23% -> 23-27% Qwen3.6, 23% -> 33-35% gemma4; 32 tokens: 28 -> 33-36%, 35
 
 **2. Medido na GPU (alternado, mesma hora, maquina carregada)** - o simulador errou o sinal da margem: na GPU cada
 subida bloqueia (`loader_install` grava a vaga apos a leitura bloqueante), e menos subidas valem mais que os acertos.
+- Nota (0k): repetido com a maquina livre, margem 8 segue mais rapida que 4 (24,9 contra 24,2 tok/s na geracao, 3 de 3
+  pares; prompt 68,0 contra 59,6). O ganho de geracao caiu para ~3%, menor que o estimado aqui.
 - `bench 256 128`, Qwen3.6, 3 rodadas alternadas: margem 4 = 36,9-39,6 ms/token, margem 8 = 34,9-36,1, margem 16 =
   34,8-36,0; acertos 22,5% -> 27,4% (bench conta o prompt), subidas 3950 -> 2130 -> 1030. Prompt 66 -> 72-76 tok/s.
 - Margem 1: 37,2% vs 35,6% de acertos, mas 36,1-39,2 ms vs 33,3-36,9 (pior).
