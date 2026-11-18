@@ -14706,7 +14706,7 @@ static void tool_howto(const char *topic, char *out, size_t cap) {
           "TERMINAL: run_command runs one command (no keyboard, stdin closed, stderr included, timeout_s up to 3600) and returns output plus [exit code N]. "
           "Use terminal for things that need state: terminal{action:open,name:t1}, then send{text:'cd /proj'}, send{text:'make'}, read{lines:40,wait_ms:500}; "
           "interrupt stops a running command (Ctrl+C); list shows sessions; close ends one. Servers or long jobs: start them in a terminal session or with "
-          "'cmd > log 2>&1 &' and read the log later. Never type passwords in terminal. If the user's own screen has the error, use terminal_screen (tmux) or ask them to paste it." },
+          "'cmd > log 2>&1 &' and read the log later. Terminal sessions run as root by default (the password comes from the user once, via a dialog), so sudo inside them needs no password; send opens a session by itself if none exists. Never type passwords in terminal. If the user's own screen has the error, use terminal_screen (tmux) or ask them to paste it." },
         { "sudo",
           "SUDO: run_command runs every command as root by default (sudo -A sh -c), so just write the command, e.g. {command:'apt-get install -y htop'}; do not add sudo yourself. "
           "The first time, the user is asked for the sudo password (a dialog in the desktop, a prompt in the terminal); it stays only in memory and is reused for every later command in this session. "
@@ -14874,6 +14874,17 @@ static void term_extract(TermSess *s, unsigned long long from, int lines, char *
 
 /* ---- shell root persistente: `sudo -A bash` num pty; cada comando vira um arquivo lido com `.` (mesmo shell: cwd e
  * variaveis persistem; erro de sintaxe nao trava) e um marcador com o codigo de saida marca o fim ---- */
+static const char *sudo_path(void) {              /* caminho do sudo pelo PATH (resolvido antes do vfork) */
+    static char sudop[1100];
+    sudop[0] = 0;
+    const char *pa = getenv("PATH"); char dir[1000]; if (!pa) pa = "/usr/bin:/bin";
+    for (const char *q = pa; *q && !sudop[0]; ) {
+        const size_t l = strcspn(q, ":");
+        if (l && l < sizeof dir) { memcpy(dir, q, l); dir[l] = 0; char t[1100]; snprintf(t, sizeof t, "%s/sudo", dir); if (access(t, X_OK) == 0) snprintf(sudop, sizeof sudop, "%s", t); }
+        q += l; if (*q == ':') q++;
+    }
+    return sudop[0] ? sudop : NULL;
+}
 static int root_open(void) {
     if (g_rootS.used && !g_rootS.dead) return 0;
     if (g_rootS.used) term_kill(&g_rootS);
@@ -15065,6 +15076,13 @@ static void tool_terminal(const char *js, const char *end, char *out, size_t cap
             if (strncmp(*e, "TERM=", 5) && strncmp(*e, "PS1=", 4) && strncmp(*e, "PAGER=", 6) && strncmp(*e, "GIT_PAGER=", 10) && strncmp(*e, "GIT_TERMINAL_PROMPT=", 20)) envp[ne++] = *e;
         envp[ne++] = (char *)"TERM=dumb"; envp[ne++] = (char *)"PS1=$ "; envp[ne++] = (char *)"PAGER=cat"; envp[ne++] = (char *)"GIT_PAGER=cat"; envp[ne] = NULL;
         const int bash = access("/bin/bash", X_OK) == 0;
+        /* root por padrao: a sessao e um `sudo -A bash` (a senha vem do modal uma vez); sudo dentro dela nao pede mais nada */
+        const char *sudop = bash && sudo_default() && sudo_prepare("", 1) ? sudo_path() : NULL;
+        static char pwenv[300], apenv[560];
+        if (sudop && g_sudo_pw[0] && g_askpass_path[0] && ne < 4090) {
+            snprintf(pwenv, sizeof pwenv, "KATANA_PW=%s", g_sudo_pw); snprintf(apenv, sizeof apenv, "SUDO_ASKPASS=%s", g_askpass_path);
+            envp[ne++] = pwenv; envp[ne++] = apenv; envp[ne] = NULL;
+        }
         fflush(stdout); fflush(stderr);
         const pid_t pid = vfork();
         if (pid < 0) { close(m); close(sl); snprintf(out, cap, "error: cannot start the shell"); return; }
@@ -15074,6 +15092,7 @@ static void tool_terminal(const char *js, const char *end, char *out, size_t cap
             dup2(sl, 0); dup2(sl, 1); dup2(sl, 2);
             if (sl > 2) close(sl);
             close(m);
+            if (sudop) execve(sudop, (char *const[]){ (char *)"sudo", (char *)"-A", (char *)"/bin/bash", (char *)"--norc", (char *)"--noprofile", (char *)"--noediting", (char *)"-i", NULL }, envp);
             if (bash) execve("/bin/bash", (char *const[]){ (char *)"bash", (char *)"--norc", (char *)"--noprofile", (char *)"--noediting", (char *)"-i", NULL }, envp);
             else execve("/bin/sh", (char *const[]){ (char *)"sh", (char *)"-i", NULL }, envp);
             _exit(127);
@@ -15086,10 +15105,25 @@ static void tool_terminal(const char *js, const char *end, char *out, size_t cap
         s->buf = (char *)malloc(TERM_BUF);
         if (!g_term_exit_set) { atexit(term_all_kill); g_term_exit_set = 1; }
         term_wait(s, 800);
-        const size_t o = (size_t)snprintf(out, cap, "ok: session %s opened (%s)\n", name, bash ? "bash" : "sh");
+        const size_t o = (size_t)snprintf(out, cap, "ok: session %s opened (%s%s)\n", name, bash ? "bash" : "sh", sudop ? ", running as root" : "");
         term_extract(s, s->rd, 0, out + o, cap - o);
         s->rd = s->tot;
         return;
+    }
+    if (strcmp(act, "send") == 0) {                          /* send sem sessao aberta: abre uma (evita o modelo repetir o erro) */
+        int cnt = 0, hit = 0;
+        for (int i = 0; i < TERM_MAX; i++) if (g_term[i].used) { cnt++; if (name[0] && strcmp(g_term[i].name, name) == 0) hit = 1; }
+        if (cnt == 0 || (name[0] && !hit && cnt < TERM_MAX)) {
+            char oj[160], o2[3000];
+            snprintf(oj, sizeof oj, "{\"action\": \"open\", \"name\": \"%s\"}", name);
+            tool_terminal(oj, oj + strlen(oj), o2, sizeof o2);
+            if (strncmp(o2, "error", 5) == 0) { snprintf(out, cap, "%s", o2); return; }
+            act[0] = name[0] = text[0] = 0;                  /* a chamada recursiva reaproveitou os buffers estaticos */
+            json_str(js, end, "action", act, sizeof act);
+            json_str(js, end, "name", name, sizeof name);
+            for (char *q = name; *q; q++) if (!isalnum((unsigned char)*q) && *q != '_' && *q != '-') *q = '_';
+            if (strlen(name) > 20) name[20] = 0;
+        }
     }
     TermSess *s = term_find(name, err, sizeof err);
     if (!s) { snprintf(out, cap, "%s", err); return; }
