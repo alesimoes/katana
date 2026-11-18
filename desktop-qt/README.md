@@ -49,7 +49,7 @@ resto e texto da resposta, filtrado de blocos de ferramenta. Parar = SIGINT ao g
 Windows, mata e reinicia). Nova conversa = `/novo`; trocar de modelo = `/sair` e, se nao sair em 3 s, kill.
 
 Teste: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
-(rodar na raiz do repo; usa `modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (outro com `--selftest-model`) e uma pasta de dados temporaria). Digita e
+(rodar na raiz do repo; usa `modelos/qwen2.5-1.5b-q4km.gguf` (rapido, cobre a interface e o protocolo do agente; para a conferencia final no modelo real use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, lento a frio) e uma pasta de dados temporaria). Digita e
 clica na janela com eventos reais (QTest), confere cartao `list_dir`, sessoes, dropdown, apagar, parar
 (SIGINT), troca de modelo com resumo pendente, e imprime PASSOU/FALHOU. `capturas/` guarda imagens (`12-boasvindas-claro.png` e `12-boasvindas-escuro.png`: o escuro sai de uma
 segunda execucao com `KATANA_THEME=dark`). Tambem confere a tela de boas-vindas (visivel com conversa
