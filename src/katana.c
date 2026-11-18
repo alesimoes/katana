@@ -14669,6 +14669,7 @@ static int sudo_ask(char *pw, size_t cap) {
     fprintf(stderr, "\n");
     return ok && pw[0];
 }
+static int root_exec(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, int *interrupted);   /* shell root persistente (pty) */
 static int g_sudo_agent;   /* 1 so dentro do agente interativo (nos testes de ferramenta nao pede senha sozinho) */
 static int sudo_default(void) { const char *e = getenv("KATANA_SUDO"); return (g_sudo_agent || getenv("KATANA_SUDO_FORCE")) && !(e && strcmp(e, "0") == 0); }   /* padrao: tudo roda como root via sudo */
 static int sudo_prepare(const char *cmd, int force) {
@@ -14755,7 +14756,12 @@ static void tool_run_command(const char *cmd, const char *js, const char *end, c
         if (wrapped) cmd = wrapped;
     }
     ht_init(&h, L / 3, L - L / 3);
-    if (run_cmd_ex(cmd, tmo, &h, &rc, &to, &ir) != 0) { ht_free(&h); free(wrapped); snprintf(out, cap, "error: cannot run the command"); return; }
+    int ran = -1;
+    if (wrapped && sudo_default()) {       /* sessao root persistente: mantem cwd e variaveis e nao pede a senha de novo */
+        ran = root_exec(shown, tmo, &h, &rc, &to, &ir);
+        if (ran != 0) { ht_free(&h); ht_init(&h, L / 3, L - L / 3); }
+    }
+    if (ran != 0 && run_cmd_ex(cmd, tmo, &h, &rc, &to, &ir) != 0) { ht_free(&h); free(wrapped); snprintf(out, cap, "error: cannot run the command"); return; }
     cmd = shown; free(wrapped);
     char *body = (char *)malloc(L + 200);
     if (!body) { ht_free(&h); snprintf(out, cap, "error: out of memory"); return; }
@@ -14792,7 +14798,8 @@ static void term_kill(TermSess *s) {
     } else if (s->fd >= 0) close(s->fd);
     free(s->buf); memset(s, 0, sizeof *s);
 }
-static void term_all_kill(void) { for (int i = 0; i < TERM_MAX; i++) term_kill(&g_term[i]); }
+static TermSess g_rootS;     /* sessao root persistente do run_command (fora da lista do terminal) */
+static void term_all_kill(void) { for (int i = 0; i < TERM_MAX; i++) term_kill(&g_term[i]); term_kill(&g_rootS); }
 
 static void term_pump(TermSess *s) {
     char b[4096];
@@ -14863,6 +14870,147 @@ static void term_extract(TermSess *s, unsigned long long from, int lines, char *
     memcpy(out + o, p, pl); o += pl;
     out[o] = 0;
     free(raw); free(cl);
+}
+
+/* ---- shell root persistente: `sudo -A bash` num pty; cada comando vira um arquivo lido com `.` (mesmo shell: cwd e
+ * variaveis persistem; erro de sintaxe nao trava) e um marcador com o codigo de saida marca o fim ---- */
+static int root_open(void) {
+    if (g_rootS.used && !g_rootS.dead) return 0;
+    if (g_rootS.used) term_kill(&g_rootS);
+    const int m = posix_openpt(O_RDWR | O_NOCTTY);
+    if (m < 0 || grantpt(m) != 0 || unlockpt(m) != 0) { if (m >= 0) close(m); return -1; }
+    const char *sn = ptsname(m);
+    const int sl = sn ? open(sn, O_RDWR | O_NOCTTY) : -1;
+    if (sl < 0) { close(m); return -1; }
+    struct winsize ws = { 50, 200, 0, 0 };
+    ioctl(m, TIOCSWINSZ, &ws);
+    static char *envp[4096], pwenv[300], apenv[560];
+    int ne = 0;
+    for (char **e = environ; e && *e && ne < 4080; e++)
+        if (strncmp(*e, "TERM=", 5) && strncmp(*e, "PS1=", 4) && strncmp(*e, "PS2=", 4) && strncmp(*e, "PAGER=", 6) && strncmp(*e, "GIT_PAGER=", 10) &&
+            strncmp(*e, "GIT_TERMINAL_PROMPT=", 20) && strncmp(*e, "DEBIAN_FRONTEND=", 16)) envp[ne++] = *e;
+    envp[ne++] = (char *)"TERM=dumb"; envp[ne++] = (char *)"PAGER=cat"; envp[ne++] = (char *)"GIT_PAGER=cat";
+    envp[ne++] = (char *)"GIT_TERMINAL_PROMPT=0"; envp[ne++] = (char *)"DEBIAN_FRONTEND=noninteractive";
+    if (g_sudo_pw[0] && g_askpass_path[0]) {
+        snprintf(pwenv, sizeof pwenv, "KATANA_PW=%s", g_sudo_pw); snprintf(apenv, sizeof apenv, "SUDO_ASKPASS=%s", g_askpass_path);
+        envp[ne++] = pwenv; envp[ne++] = apenv;
+    }
+    envp[ne] = NULL;
+    static char sudop[1100];                                  /* caminho do sudo pelo PATH (resolvido antes do vfork) */
+    sudop[0] = 0;
+    { const char *pa = getenv("PATH"); char dir[1000]; if (!pa) pa = "/usr/bin:/bin";
+      for (const char *q = pa; *q && !sudop[0]; ) { const size_t l = strcspn(q, ":"); if (l && l < sizeof dir) { memcpy(dir, q, l); dir[l] = 0; char t[1100]; snprintf(t, sizeof t, "%s/sudo", dir); if (access(t, X_OK) == 0) snprintf(sudop, sizeof sudop, "%s", t); } q += l; if (*q == ':') q++; } }
+    if (!sudop[0]) { close(m); close(sl); return -1; }
+    fflush(stdout); fflush(stderr);
+    const pid_t pid = vfork();
+    if (pid < 0) { close(m); close(sl); return -1; }
+    if (pid == 0) {
+        setsid();
+        ioctl(sl, TIOCSCTTY, 0);
+        dup2(sl, 0); dup2(sl, 1); dup2(sl, 2);
+        if (sl > 2) close(sl);
+        close(m);
+        execve(sudop, (char *const[]){ (char *)"sudo", (char *)"-A", (char *)"/bin/bash", (char *)"--norc", (char *)"--noprofile", (char *)"--noediting", (char *)"-i", NULL }, envp);
+        _exit(127);
+    }
+    close(sl);
+    fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK);
+    fcntl(m, F_SETFD, FD_CLOEXEC);
+    memset(&g_rootS, 0, sizeof g_rootS);
+    g_rootS.used = 1; g_rootS.fd = m; g_rootS.pid = pid; snprintf(g_rootS.name, sizeof g_rootS.name, "root");
+    g_rootS.buf = (char *)malloc(TERM_BUF);
+    if (!g_term_exit_set) { atexit(term_all_kill); g_term_exit_set = 1; }
+    const char *init = "stty -echo; PS1=; PS2=; printf '__KRE%s\\n' ADY\n";
+    for (size_t i = 0, n = strlen(init); i < n; ) { const ssize_t w = write(m, init + i, n - i); if (w > 0) i += (size_t)w; else if (errno == EAGAIN) usleep(2000); else if (errno != EINTR) break; }
+    const double t0 = cm_now();
+    while (cm_now() - t0 < 8.0 && !g_rootS.dead) {
+        term_wait(&g_rootS, 300);
+        char *raw = (char *)malloc(g_rootS.tot > TERM_BUF ? TERM_BUF : g_rootS.tot + 1);
+        if (!raw) break;
+        const size_t n = g_rootS.tot > TERM_BUF ? TERM_BUF : (size_t)g_rootS.tot;
+        for (size_t i = 0; i < n; i++) raw[i] = g_rootS.buf[(g_rootS.tot - n + i) % TERM_BUF];
+        raw[n] = 0;
+        const int ok = strstr(raw, "__KREADY") != NULL;
+        free(raw);
+        if (ok) { g_rootS.rd = g_rootS.tot; return 0; }
+    }
+    term_kill(&g_rootS);                                     /* senha recusada ou sudo indisponivel */
+    return -1;
+}
+
+static int root_exec(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, int *interrupted) {
+    *rc = -1; *timedout = 0; *interrupted = 0;
+    static int seq;
+    if (root_open() != 0) return -1;
+    char f[256];
+    const char *tp = getenv("TMPDIR");
+    snprintf(f, sizeof f, "%s/katana-root-%d-%d.sh", tp && *tp ? tp : "/tmp", (int)getpid(), ++seq);
+    const int fd = open(f, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    const size_t cl = strlen(cmd);
+    if (write(fd, cmd, cl) != (ssize_t)cl || write(fd, "\n", 1) != 1) { close(fd); unlink(f); return -1; }
+    close(fd);
+    char id[40], line[600];
+    snprintf(id, sizeof id, "%d_%d", (int)getpid(), seq);
+    snprintf(line, sizeof line, ". '%s' </dev/null; __rc=$?; rm -f '%s'; printf '\\n__KEND_%s_%%d__\\n' $__rc\n", f, f, id);
+    if (g_rootS.dead) { unlink(f); return -1; }
+    const unsigned long long from = g_rootS.tot;
+    for (size_t i = 0, n = strlen(line); i < n; ) { const ssize_t w = write(g_rootS.fd, line + i, n - i); if (w > 0) i += (size_t)w; else if (errno == EAGAIN) usleep(2000); else if (errno != EINTR) { unlink(f); return -1; } }
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof sa); sa.sa_handler = cmd_on_sigint; sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, &old);
+    g_cmd_int = 0;
+    char mk[80];
+    snprintf(mk, sizeof mk, "\n__KEND_%s_", id);
+    const double t0 = cm_now();
+    size_t cap = 65536, n = 0;
+    char *acc = (char *)malloc(cap);
+    unsigned long long last = from;
+    int done = 0, sent_int = 0;
+    double int_at = 0;
+    char *hit = NULL;
+    while (acc && !done) {
+        term_wait(&g_rootS, 200);
+        if (g_rootS.tot > last) {
+            unsigned long long st = last;
+            if (g_rootS.tot - st > TERM_BUF) st = g_rootS.tot - TERM_BUF;
+            const size_t add = (size_t)(g_rootS.tot - st);
+            if (n + add + 1 > cap) { while (n + add + 1 > cap) cap *= 2; if (cap > (size_t)32 << 20) { /* muito grande: guarda so o fim */ size_t keep = (size_t)1 << 20; if (n > keep) { memmove(acc, acc + n - keep, keep); n = keep; } cap = (size_t)8 << 20; } char *na = (char *)realloc(acc, cap); if (!na) break; acc = na; }
+            for (size_t i = 0; i < add; i++) acc[n++] = g_rootS.buf[(st + i) % TERM_BUF];
+            acc[n] = 0;
+            last = g_rootS.tot;
+            hit = strstr(acc, mk);
+            if (hit) done = 1;
+        }
+        if (g_rootS.dead) break;
+        if (!done && !sent_int && (g_cmd_int || (tmo > 0 && cm_now() - t0 >= tmo))) {
+            if (g_cmd_int) *interrupted = 1; else *timedout = 1;
+            const char c3 = 3;
+            if (write(g_rootS.fd, &c3, 1) < 0) {}
+            usleep(300000);                                  /* o Ctrl+C aborta a linha inteira (inclusive o marcador): manda outro */
+            char l2[200];
+            snprintf(l2, sizeof l2, "printf '\\n__KEND_%s_%%d__\\n' 130\n", id);
+            if (write(g_rootS.fd, l2, strlen(l2)) < 0) {}
+            sent_int = 1; int_at = cm_now();
+        }
+        if (sent_int && !done && cm_now() - int_at > 3.0) break;     /* nao respondeu ao Ctrl+C */
+    }
+    sigaction(SIGINT, &old, NULL);
+    int ret = 0;
+    if (hit) {
+        const char *q = hit + strlen(mk);
+        *rc = atoi(q);
+        *hit = 0;
+        n = (size_t)(hit - acc);
+    } else if (g_rootS.dead) { ret = -1; }
+    else { *rc = 130; term_kill(&g_rootS); }                  /* sem marcador: o shell root foi descartado (reabre no proximo comando) */
+    if (acc && ret == 0) {
+        char *cl2 = (char *)malloc(n + 1);
+        if (cl2) { const size_t m = term_clean(acc, n, cl2); size_t b = 0; while (b < m && (cl2[b] == '\n' || cl2[b] == ' ')) b++; ht_add(ht, cl2 + b, m - b); free(cl2); }
+    }
+    free(acc);
+    unlink(f);
+    return ret;
 }
 
 static TermSess *term_find(const char *name, char *err, size_t ecap) {
