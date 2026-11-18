@@ -4064,7 +4064,7 @@ static struct {
     long fin, fin_safe;             /* proximo a instalar; ate onde as copias ja terminaram na GPU */
     int loader;                     /* thread carregadora ligada */
     uint32_t *pre; int n_pre, i_pre;        /* especialistas quentes da sessao anterior, a pre-carregar */
-    float swap_margin;
+    float swap_margin, decay;     /* decay: fator do calor por token (KATANA_HEAT_DECAY, padrao 0,98) */
     Model *m;
     FILE **pf;                      /* por camada: arquivo com os especialistas ja no layout da GPU (pack) */
     uint8_t *stage;                 /* um especialista lido do arquivo, a caminho da VRAM */
@@ -5658,6 +5658,19 @@ static void moe_route(Model *m, const Layer *L, int l) {
     if (dbg_on && cpu_exact) for (int k = 0; k < K; k++) dbg_sel[((size_t)dbg_pos * c->n_layers + l) * K + k] = moe.sel[k];
     if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
     if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
+    /* KATANA_EXPLOG=<arquivo>: registra (camada, K escolhidos) em uint16 para simular politicas de vagas offline */
+    static FILE *xlog; static int xlog_init;
+    if (!xlog_init) {
+        xlog_init = 1;
+        const char *fn = getenv("KATANA_EXPLOG");
+        if (fn && (xlog = fopen(fn, "ab")) != NULL) setvbuf(xlog, NULL, _IOFBF, 1 << 16);
+    }
+    if (xlog && !(dbg_on && !cpu_exact)) {
+        uint16_t r[1 + MOE_KMAX];
+        r[0] = (uint16_t)l;
+        for (int k = 0; k < K; k++) r[1 + k] = (uint16_t)moe.sel[k];
+        fwrite(r, sizeof(uint16_t), (size_t)K + 1, xlog);
+    }
 }
 
 /* especialista compartilhado na CPU: m->xb2 = down(silu(gate xb) * up xb); devolve o peso com que entra
@@ -6044,6 +6057,8 @@ static void moe_tables(Model *m, size_t S, size_t per) {
     gx.heat = xalloc((size_t)NL * E, sizeof(float));
     gx.cpu_out = xalloc((size_t)GPU_BMAX * c->n_used * d, sizeof(float));
     gx.cpu_cold = !getenv("KATANA_MOE_CPU") || atoi(getenv("KATANA_MOE_CPU")) != 0;
+    gx.decay = getenv("KATANA_HEAT_DECAY") ? (float)atof(getenv("KATANA_HEAT_DECAY")) : 0.98f;
+    if (!(gx.decay > 0.0f && gx.decay < 1.0f)) gx.decay = 0.98f;
     if (shards.use) {       /* especialistas empacotados por `katana pack`: um arquivo por camada */
         int n_pk = 0;
         size_t maxper = 0;
@@ -6071,7 +6086,9 @@ static void moe_tables(Model *m, size_t S, size_t per) {
         size_t maxper = 0;
         for (int l = 0; l < NL; l++) if (gx.bg[l] + gx.bd[l] > maxper) maxper = gx.bg[l] + gx.bd[l];
         loader_start(m, maxper);
-        gx.swap_margin = getenv("KATANA_SWAP") ? (float)atof(getenv("KATANA_SWAP")) : 4.0f;
+        /* margem de calor para trocar uma vaga na geracao. qwen35moe (grafo Vulkan, 17 de 256 vagas): 8 mediu 4-8%
+           mais rapido que 4 (metade das subidas, subida bloqueia a fila); gemma4 (9 de 128) ficou igual: segue 4 */
+        gx.swap_margin = getenv("KATANA_SWAP") ? (float)atof(getenv("KATANA_SWAP")) : c->ssm_inner ? 8.0f : 4.0f;
         if (gx.loader) { heat_load(m); preload_feed(m); }
     }
     gx.on = 1;
@@ -6179,7 +6196,7 @@ static void vk_moe_ffn_x(Model *m, const Layer *L, int l, KvkBuf nnorm) {
     const double trt0 = now_sec();
     moe_route(m, L, l);
     gprof.t_route += now_sec() - trt0;
-    for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+    for (int e = 0; e < E; e++) heat[e] *= gx.decay;
     for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
     for (int j = 0; j < K; j++) {
         const int e = moe.sel[j];
@@ -6398,7 +6415,7 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
         moe_route(m, L, l);
         moe_lg_ext = NULL;
         vkbm.sw[b] = vkm.sh ? shexp_gate_w(m, L) : 0.0f;
-        for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+        for (int e = 0; e < E; e++) heat[e] *= gx.decay;
         for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
         for (int j = 0; j < K; j++) {
             const int e = moe.sel[j];
@@ -6619,7 +6636,7 @@ static void vk_host_moe_ffn(Model *m, const Layer *L, int l, float *out) {
     int ok = kvk_buf_write_q(gpu.vxb, 0, m->xb, (size_t)d * sizeof(float));
     const uint64_t tick = ++gx.clock;
     moe_route(m, L, l);
-    for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+    for (int e = 0; e < E; e++) heat[e] *= gx.decay;
     for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
     for (int j = 0; j < K; j++) {
         const int e = moe.sel[j];
@@ -6762,7 +6779,7 @@ static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     for (int b = 0; b < B; b++) {
         memcpy(m->xb, gx.xn + (size_t)b * d, (size_t)d * sizeof(float));
         moe_route(m, L, l);
-        for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+        for (int e = 0; e < E; e++) heat[e] *= gx.decay;
         for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
         for (int j = 0; j < K; j++) {
             const int e = moe.sel[j], orow = b * K + j;      /* posicao (token, escolha) */
@@ -6846,7 +6863,7 @@ static void host_moe_ffn(Model *m, const Layer *L, int l, float *out) {
     }
     const uint64_t tick = ++gx.clock;
     moe_route(m, L, l);
-    for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+    for (int e = 0; e < E; e++) heat[e] *= gx.decay;
     for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
     for (int j = 0; j < K; j++) {
         const int e = moe.sel[j];
@@ -8275,7 +8292,7 @@ static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
         memcpy(m->xb, xn, (size_t)d * sizeof(float));
         moe_route(m, L, l);
         vkq.sw[b] = vkm.sh ? shexp_gate_w(m, L) : 0.0f;
-        for (int e = 0; e < E; e++) heat[e] *= 0.98f;
+        for (int e = 0; e < E; e++) heat[e] *= gx.decay;
         for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
         for (int j = 0; j < K; j++) {
             const int e = moe.sel[j];

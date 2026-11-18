@@ -286,3 +286,36 @@ down ~8,8 (antes ~10). Threads (anterior, Qwen3.6): 8 = 31-32 ms, 12 = 48-50, 16
 
 Geracao so CPU (`KATANA_CPU=1 katana chat ... 64 0`), Gemma 4: 2,8 -> 6,3 tok/s; Qwen3.6: 7,5 -> 7,6 tok/s.
 Texto gerado identico nos dois. Modelo completo com GPU: nao medido (comando em handoff 0i).
+
+## 16. Vagas de especialistas: politicas e margem de troca (Linux, 2026-11-18, ramo worktree-agent-a518)
+
+Simulacao offline (medido sobre registros reais de roteamento, `KATANA_EXPLOG`; acertos so na geracao, 3 prompts de
+agente). Qwen3.6 politica atual por numero de vagas (conversa / codigo / ferramenta):
+
+| vagas | 8 | 12 | 17 | 18 | 20 | 23 | 34 |
+|---|---|---|---|---|---|---|---|
+| Qwen3.6 margem 4 | 30,9/25,4/22,5 | 39,2/32,3/29,1 | 47,1/39,2/35,9 | 48,4/40,3/37,1 | 50,7/42,5/39,4 | 54,0/45,6/42,4 | 63,1/54,3/51,3 |
+
+| vagas | 9 | 10 | 12 | 18 |
+|---|---|---|---|---|
+| gemma4 margem 4 | 51,0/47,2/46,6 | 53,7/49,8/49,1 | 58,8/54,1/53,6 | 70,4/64,2/63,9 |
+
+Comparacao das politicas: tabela em `handoff.md` secao 0j.
+
+Medido na GPU, alternado, maquina carregada (carga 5-8, outro agente em microbancadas de CPU): indicativo.
+
+| Qwen3.6 `bench 256 128` (ms/token, rodadas 2 e 3 de cada execucao) | margem 4 | margem 8 | margem 16 |
+|---|---|---|---|
+| execucao 1 | 37,1 / 36,9 | 34,9 / 34,9 | 34,8 / 35,1 |
+| execucao 2 | 37,6 / 37,9 | 36,5 / 36,1 | 35,8 / 35,6 |
+| execucao 3 | 38,3 / 39,6 | 35,9 / 35,9 | 35,8 / 36,0 |
+| subidas / acertos (com o prompt) | 3950 / 22,5% | 2130 / 27,4% | 1030 / 27,3% |
+
+| Qwen3.6 `chat` 128 gerados (tok/s, 2 rodadas) | margem 4 | margem 8 |
+|---|---|---|
+| conversa (1067 de prompt) | 26,1 / 26,4 | 28,3 / 28,3 |
+| codigo (1891) | 24,9 / 25,2 | 26,9 / 26,8 |
+| ferramenta (2154) | 24,2 / 24,4 | 24,8 / 25,1 |
+
+gemma4 `bench 64 128`: margem 4 66,1-76,3 ms, margem 8 68,4-73,4 ms (igual). Margem 1 no Qwen3.6 (`bench 16 128`):
+36,1-39,2 ms contra 33,3-36,9 com 4 (pior, apesar de +1,6 p.p. de acertos). Comando: `handoff.md` secao 0j.
