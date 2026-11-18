@@ -555,12 +555,12 @@ void Backend::copyText(const QString &text) { QGuiApplication::clipboard()->setT
 QString Backend::tema() const
 {
     QString t = qEnvironmentVariable("KATANA_TEMA");
-    if (t.isEmpty()) t = m_ui->value("tema", "padrao").toString();
-    return t == "ide" ? "ide" : "padrao";
+    if (t.isEmpty()) t = m_ui->value("tema", "escuro").toString();
+    return (t == "ide" || t == "claro") ? t : "escuro";
 }
 void Backend::setTema(const QString &t)
 {
-    m_ui->setValue("tema", t == "ide" ? "ide" : "padrao");
+    m_ui->setValue("tema", (t == "ide" || t == "claro") ? t : "escuro");
     m_ui->sync();
 }
 
