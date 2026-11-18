@@ -60,6 +60,7 @@
 #undef F
 #include "vk/shaders/mv_f32.h"
 #include "vk/shaders/mv_q8.h"
+#include "vk/shaders/mv_q51.h"
 #include "vk/shaders/mv_q4k.h"
 #include "vk/shaders/mv_q5k.h"
 #include "vk/shaders/mv_q6k.h"
@@ -162,6 +163,21 @@
 #include "vk/shaders/mm_t4_64x64_xs.h"
 #include "vk/shaders/mm_t4_64x32w4_xs.h"
 #include "vk/shaders/mm_t4_64x16w4_xs.h"
+#include "vk/shaders/mm_t5_64x64_g0.h"
+#include "vk/shaders/mm_t5_64x64_g1.h"
+#include "vk/shaders/mm_t5_64x32w4_g0.h"
+#include "vk/shaders/mm_t5_64x32_g1.h"
+#include "vk/shaders/mm_t5_64x16w4_g0.h"
+#include "vk/shaders/mm_t5_64x16_g1.h"
+#include "vk/shaders/mm_t5_64x64_ws.h"
+#include "vk/shaders/mm_t5_64x32w4_ws.h"
+#include "vk/shaders/mm_t5_64x16w4_ws.h"
+#include "vk/shaders/mm_t5_64x64_gx.h"
+#include "vk/shaders/mm_t5_64x32_gx.h"
+#include "vk/shaders/mm_t5_64x16_gx.h"
+#include "vk/shaders/mm_t5_64x64_xs.h"
+#include "vk/shaders/mm_t5_64x32w4_xs.h"
+#include "vk/shaders/mm_t5_64x16w4_xs.h"
 #include "vk/shaders/cvt.h"
 #include "vk/shaders/rms_wg16.h"
 #include "vk/shaders/gather.h"
@@ -3613,7 +3629,8 @@ static uint32_t gpu_kind(const Mat *W) {
     if (!W->q) return T_F32;
     switch (W->type) {
         case T_Q4_0: case T_Q5_0: case T_MXFP4: case T_IQ4_NL: case T_IQ4_XS: return T_Q8_0;
-        case T_Q4_1: case T_Q5_1: return T_Q8_0;    /* requantizado (aproximado, ver gpu_pack_row) */
+        case T_Q4_1: return T_Q8_0;    /* requantizado (aproximado, ver gpu_pack_row) */
+        case T_Q5_1: return gpu.vk ? T_Q5_1 : T_Q8_0;  /* Vulkan: layout exato (escala e minimo float + 32 uint8) */
         case T_Q3_K: return T_Q6_K;
         default: return W->type;
     }
@@ -3622,7 +3639,7 @@ static uint32_t gpu_kind(const Mat *W) {
 /* a matriz tem layout de GPU? (as demais ficam na CPU: a camada que as usa roda na CPU) */
 static int gpu_has(const Mat *W) {
     const uint32_t k = gpu_kind(W);
-    return k == T_F32 || k == T_Q8_0 || k == T_Q4_K || k == T_Q5_K || k == T_Q6_K || (k == T_Q2_K && gpu.vk);
+    return k == T_F32 || k == T_Q8_0 || k == T_Q4_K || k == T_Q5_K || k == T_Q6_K || ((k == T_Q2_K || k == T_Q5_1) && gpu.vk);
 }
 
 static size_t gpu_wpr(const Mat *W, size_t cols) {
@@ -3632,6 +3649,7 @@ static size_t gpu_wpr(const Mat *W, size_t cols) {
         case T_Q5_K: return cols / 256 * 44;
         case T_Q6_K: return cols / 256 * 53;
         case T_Q2_K: return cols / 256 * 21;
+        case T_Q5_1: return cols / 32 * 10;
         default:     return cols / 32 * 9;
     }
 }
@@ -3691,7 +3709,21 @@ static void gpu_pack_row(const Mat *W, size_t r, size_t cols, uint32_t *o) {
         }
         return;
     }
-    case T_Q4_1: case T_Q5_1: {     /* d*q + m nao tem forma exata sem deslocamento: requantiza cada bloco em 8 bits */
+    case T_Q5_1: if (gpu.vk) {     /* layout exato da GPU: d, m (float) e os 32 valores 0..31 em uint8 */
+        for (size_t b = 0; b < cols / 32; b++, src += 24, o += 10) {
+            const float d = h2f(src), mn = h2f(src + 2);
+            uint32_t qh; memcpy(&qh, src + 4, 4);
+            uint8_t q[32];
+            for (int j = 0; j < 16; j++) {
+                q[j] = (uint8_t)((src[8 + j] & 0xF) | (((qh >> j) & 1) << 4));
+                q[j + 16] = (uint8_t)((src[8 + j] >> 4) | (((qh >> (j + 16)) & 1) << 4));
+            }
+            memcpy(o, &d, 4); memcpy(o + 1, &mn, 4); memcpy(o + 2, q, 32);
+        }
+        return;
+    }
+    /* fall through */
+    case T_Q4_1: {     /* d*q + m nao tem forma exata sem deslocamento: requantiza cada bloco em 8 bits */
         const size_t ub = qbytes(W->type, 32);
         for (size_t b = 0; b < cols / 32; b++, src += ub, o += 9) {
             float v[32], mx = 0.0f;
@@ -4163,12 +4195,12 @@ static void *vk_wbuf(const uint32_t *host, size_t bytes) {
     return p;
 }
 
-static const uint32_t *vk_spv[6]; static size_t vk_spv_n[6];
-static KvkPipe vk_pipe[6][9];      /* [tipo][nseg]: criados sob demanda */
+static const uint32_t *vk_spv[7]; static size_t vk_spv_n[7];
+static KvkPipe vk_pipe[7][9];      /* [tipo][nseg]: criados sob demanda */
 
-static int vk_kind_idx(uint32_t kind) { return kind == T_F32 ? 0 : kind == T_Q8_0 ? 1 : kind == T_Q4_K ? 2 : kind == T_Q5_K ? 3 : kind == T_Q2_K ? 5 : 4; }
+static int vk_kind_idx(uint32_t kind) { return kind == T_F32 ? 0 : kind == T_Q8_0 ? 1 : kind == T_Q4_K ? 2 : kind == T_Q5_K ? 3 : kind == T_Q2_K ? 5 : kind == T_Q5_1 ? 6 : 4; }
 
-static KvkPipe vk_pipe2[6][9];     /* mesmos kernels com NR=2 (par gate/up) */
+static KvkPipe vk_pipe2[7][9];     /* mesmos kernels com NR=2 (par gate/up) */
 static int vk_nmat, vk_mx, vk_mo, vk_mcol;     /* modo de varias matrizes (vk_gmv_multi) */
 
 /* enfileira out = W * x (um token) sem esperar; mesmo layout, gs/go e nseg dos kernels OpenCL.
@@ -4179,10 +4211,11 @@ static int vk_gmv_raw(uint32_t kind, KvkBuf wb, KvkBuf x, KvkBuf out, KvkBuf bia
         vk_spv[2] = mv_q4k_spv; vk_spv_n[2] = sizeof mv_q4k_spv; vk_spv[3] = mv_q5k_spv; vk_spv_n[3] = sizeof mv_q5k_spv;
         vk_spv[4] = mv_q6k_spv; vk_spv_n[4] = sizeof mv_q6k_spv;
         vk_spv[5] = mv_q2k_spv; vk_spv_n[5] = sizeof mv_q2k_spv;
+        vk_spv[6] = mv_q51_spv; vk_spv_n[6] = sizeof mv_q51_spv;
     }
     const int ki = vk_kind_idx(kind);
     const size_t rowsP = ((size_t)rows + 127) & ~(size_t)127;
-    const int nb = kind == T_F32 ? 1 : kind == T_Q8_0 ? cols / 32 : cols / 256;
+    const int nb = kind == T_F32 ? 1 : (kind == T_Q8_0 || kind == T_Q5_1) ? cols / 32 : cols / 256;
     const int nseg = gpu_nseg(rowsP, nb, pair ? 2 : 1);
     KvkPipe *pp = pair ? &vk_pipe2[ki][nseg] : &vk_pipe[ki][nseg];
     if (!pp->p) {
@@ -4517,8 +4550,8 @@ typedef struct {
     int ok, P, flash;
     KvkBuf x, xh, q, q2, k, v, hb, o3, att3;
     KvkPipe rms16, qkv, flash_p, sc, sm, mix, cvt, gat;
-    KvkPipe mm[5][6];               /* [tipo do mm.comp][indice do ladrilho, plano ou glu] */
-    KvkPipe mmx[3][5][3];           /* variantes precisas: [0] pesos em alta + resto (ws), [1] tambem ativacao fp32 (xs), [2] glu xs com saida fp32 */
+    KvkPipe mm[6][6];               /* [tipo do mm.comp][indice do ladrilho, plano ou glu] */
+    KvkPipe mmx[3][6][3];           /* variantes precisas: [0] pesos em alta + resto (ws), [1] tambem ativacao fp32 (xs), [2] glu xs com saida fp32 */
     float *xT;
     unsigned skip;                  /* KATANA_VK_SKIP: bits de fases a omitir (so para medir o custo de cada uma) */
     double t_emb, t_emit, t_wait; long passes, toks;
@@ -4539,8 +4572,9 @@ static struct {
     double t_rd, t_route, t_cpu, t_tmp, t_frd; long n_hot, n_cold, n_tmp, n_tmpe;
 } vkbm;
 
-/* tipo do mm.comp: 0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32; vk_kind_idx: 0 F32, 1 Q8_0, 2 Q4_K, 3 Q5_K, 4 Q6_K */
-static const int vk_mmt[5] = { 4, 3, 0, 2, 1 };
+/* tipo do mm.comp: 0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32, 5 Q5_1; vk_kind_idx: 0 F32, 1 Q8_0, 2 Q4_K, 3 Q5_K, 4 Q6_K,
+   5 Q2_K (sem produto em lote: os chamadores o excluem), 6 Q5_1 */
+static const int vk_mmt[7] = { 4, 3, 0, 2, 1, 4, 5 };
 /* variantes: 0 64x64, 1 64x32w4 (so plano), 2 64x16w4 (so plano), 3 64x32 (glu), 4 64x16 (glu) */
 static const int vk_mm_bn[5] = { 64, 32, 16, 32, 16 };
 static const uint32_t *vk_mm_spv(int t, int v, int glu, size_t *n) {
@@ -4548,7 +4582,7 @@ static const uint32_t *vk_mm_spv(int t, int v, int glu, size_t *n) {
     { { mm_t##T##_64x64_g0_spv, sizeof mm_t##T##_64x64_g0_spv }, { mm_t##T##_64x32w4_g0_spv, sizeof mm_t##T##_64x32w4_g0_spv }, \
       { mm_t##T##_64x16w4_g0_spv, sizeof mm_t##T##_64x16w4_g0_spv }, { mm_t##T##_64x64_g1_spv, sizeof mm_t##T##_64x64_g1_spv }, \
       { mm_t##T##_64x32_g1_spv, sizeof mm_t##T##_64x32_g1_spv }, { mm_t##T##_64x16_g1_spv, sizeof mm_t##T##_64x16_g1_spv } }
-    static const struct { const uint32_t *p; size_t n; } tab[5][6] = { MMS(0), MMS(1), MMS(2), MMS(3), MMS(4) };
+    static const struct { const uint32_t *p; size_t n; } tab[6][6] = { MMS(0), MMS(1), MMS(2), MMS(3), MMS(4), MMS(5) };
 #undef MMS
     /* indice: plano 0,1,2 = 64x64, 64x32w4, 64x16w4; glu 3,4,5 = 64x64, 64x32, 64x16 */
     const int ix = glu ? (v == 0 ? 3 : v == 3 ? 4 : 5) : v;
@@ -4593,9 +4627,9 @@ static int vk_mm_pw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf 
                     { mm_t##T##_64x16w4_##S##_spv, sizeof mm_t##T##_64x16w4_##S##_spv } }
 #define MMG(T) { { mm_t##T##_64x64_gx_spv, sizeof mm_t##T##_64x64_gx_spv }, { mm_t##T##_64x32_gx_spv, sizeof mm_t##T##_64x32_gx_spv }, \
                  { mm_t##T##_64x16_gx_spv, sizeof mm_t##T##_64x16_gx_spv } }
-    static const struct { const uint32_t *p; size_t n; } tab[3][5][3] = { { MMX(0, ws), MMX(1, ws), MMX(2, ws), MMX(3, ws), MMX(4, ws) },
-                                                                          { MMX(0, xs), MMX(1, xs), MMX(2, xs), MMX(3, xs), MMX(4, xs) },
-                                                                          { MMG(0), MMG(1), MMG(2), MMG(3), MMG(4) } };
+    static const struct { const uint32_t *p; size_t n; } tab[3][6][3] = { { MMX(0, ws), MMX(1, ws), MMX(2, ws), MMX(3, ws), MMX(4, ws), MMX(5, ws) },
+                                                                          { MMX(0, xs), MMX(1, xs), MMX(2, xs), MMX(3, xs), MMX(4, xs), MMX(5, xs) },
+                                                                          { MMG(0), MMG(1), MMG(2), MMG(3), MMG(4), MMG(5) } };
 #undef MMX
 #undef MMG
     const int glu = xs == 2, ki = vk_kind_idx(kind), t = vk_mmt[ki], v0 = vk_tile(ki, B, glu);
@@ -8474,7 +8508,7 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
    RoPE, gravacao do cache (anel nas locais) e a atencao ficam na CPU, em blocos de G4_NB tokens (o anel tem folga
    de G4_NB posicoes: um bloco grava antes de atender). O MoE: vk_moe_n (vagas do cache, frios temporarios ou na
    CPU; roteador calculado na CPU) ou, sem cache de especialistas, na CPU como o g4_layers_n.
-   KATANA_VK_G4=0 desliga (prompt como antes); KATANA_VK_G4MOE=1 leva o MoE do lote as vagas (inexato, ver abaixo). */
+   KATANA_VK_G4=0 desliga (prompt como antes); o MoE do lote vai as vagas por padrao (KATANA_VK_G4MOE=0 o deixa na CPU). */
 static struct {
     int ok, P, moe;
     float *X, *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *LG, *T, *OUTS;
@@ -8518,10 +8552,9 @@ static int vk_g4_build(Model *m) {
         gpu.used = used0;
         return 0;
     }
-    /* MoE do lote nas vagas so com KATANA_VK_G4MOE=1: o down dos especialistas do gemma4 e Q5_1 em 29 de 30 camadas
-       e a GPU o guarda requantizado em Q8_0 (aproximado, erro ~1e-3 na saida da camada), entao o lote deixa de bater
-       com a CPU (diferenca de logit 1 a 6 no selftest) sem ganho medido sobre o MoE do lote na CPU */
-    if (E && vk_sg && getenv("KATANA_VK_G4MOE") && atoi(getenv("KATANA_VK_G4MOE")) == 1) {
+    /* MoE do lote nas vagas (KATANA_VK_G4MOE=0 desliga): o down dos especialistas do gemma4 e Q5_1 em 29 de 30
+       camadas e sobe no layout exato de Q5_1 (antes era requantizado em Q8_0 e o lote nao batia com a CPU) */
+    if (E && vk_sg && !(getenv("KATANA_VK_G4MOE") && atoi(getenv("KATANA_VK_G4MOE")) == 0)) {
         const int K = c->n_used;
         const size_t H = c->hidden;
         int f2 = 0;

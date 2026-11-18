@@ -8,7 +8,7 @@
 
 // Y[rows][tokens] = W[rows][cols] * X[cols][tokens], pesos quantizados no layout do katana,
 // decodificados ao encher o ladrilho compartilhado; matrizes cooperativas fp16 x fp16 -> fp32.
-// Parametros de compilacao: WT (0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32), BM, BN, SM x SN subgrupos,
+// Parametros de compilacao: WT (0 Q4_K, 1 Q6_K, 2 Q5_K, 3 Q8_0, 4 F32, 5 Q5_1 exato), BM, BN, SM x SN subgrupos,
 // XF32 (ativacoes fp32 lidas direto), XS (com XF32: ativacao em duas partes fp16, alta + resto, dois produtos
 // sobre o mesmo ladrilho de pesos; precisao de ~22 bits na ativacao), WS (peso decodificado em duas partes fp16, alta +
 // resto: sem WS o peso perde ~2,4e-4 relativo no arredondamento), SCTAB (tabela de escala/minimo em memoria compartilhada), GLU (gate/up).
@@ -209,6 +209,18 @@ void fill(uint kk, uint ao, uint bo) {
                     const uint wd = wb.w[base + (1 + (gi & 1) * 4 + v) * 32];
                     for (uint b = 0; b < 4; b++) {
                         const float wf = d * float(int(wd << (24 - 8 * b)) >> 24);
+                        PUTA(o + v * 4 + b, wf);
+                    }
+                }
+            }
+#elif WT == 5
+            {   // Q5_1 exato: escala e minimo float + 32 uint8; peso = d*q + m
+                const uint base = wbase + ((k0 >> 5) + (gi >> 1)) * 10 * 32;
+                const float d = uintBitsToFloat(wb.w[base]), mn = uintBitsToFloat(wb.w[base + 32]);
+                for (uint v = 0; v < 4; v++) {
+                    const uint wd = wb.w[base + (2 + (gi & 1) * 4 + v) * 32];
+                    for (uint b = 0; b < 4; b++) {
+                        const float wf = d * float((wd >> (8 * b)) & 255u) + mn;
                         PUTA(o + v * 4 + b, wf);
                     }
                 }
