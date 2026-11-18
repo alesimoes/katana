@@ -282,6 +282,9 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(!be.speedText().isEmpty(), "estatistica tok/s extraida do stderr: " + be.speedText() + " | " + be.ctxText());
     check(sent.size() == 1 && sent[0] == pergunta, "linha enviada ao agente = texto digitado (sem resumo)");
     c.grab("02-conversa.png");
+    const QString sessReal = be.currentSessionId();
+    check(QFileInfo::exists(QDir(be.sessionsDir()).filePath(sessReal + ".ksess")),
+          "motor gravou a sessao (.ksess) para retomar");
 
     // ---- marcadores (TOKENS, COMPACT, desconhecidos) ----
     fprintf(stderr, "-- marcadores injetados\n");
@@ -394,6 +397,19 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
           "resumo seguiu na 1a mensagem apos a troca de modelo");
     check(waitFor([&] { return be.ready(); }, 300000), "turno terminou");
 
+    // ---- retomada pelo motor (.ksess: especialistas + contexto compacto) ----
+    fprintf(stderr, "-- retomar sessao pelo motor\n");
+    be.newChat();
+    check(waitFor([&] { return be.ready(); }, 120000), "pronto apos nova conversa");
+    sent.clear();
+    check(be.openSession(sessReal), "abriu a sessao real");
+    check(!be.hasPendingContext(), "sessao com .ksess nao usa o resumo textual");
+    check(waitFor([&] { return be.ready(); }, 300000), "retomada terminou");
+    check(!be.resumeInfo().isEmpty(), "aviso de retomada: " + be.resumeInfo());
+    c.typeAndEnter("Responda so: ok");
+    check(waitFor([&] { return !sent.isEmpty(); }, 3000) && sent[0] == "Responda so: ok", "mensagem apos retomar vai sem resumo textual");
+    check(waitFor([&] { return be.ready(); }, 300000), "turno apos retomar terminou");
+
     // ---- parar resposta (SIGINT) ----
     fprintf(stderr, "-- parar resposta (SIGINT)\n");
     be.newChat();
@@ -434,7 +450,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     // apagar a sessao atual limpa a tela
     QQuickItem *cur = c.sessionItemWithTitle("Resumir o roteiro de otimizacoes");
     c.click(findItem(cur, "sessionOpen"));
-    check(waitFor([&] { return be.ready(); }, 30000) && be.messages()->count() >= 2, "sessao aberta antes de apagar a atual");
+    check(waitFor([&] { return be.ready(); }, 300000) && be.messages()->count() >= 2, "sessao aberta antes de apagar a atual (retomada pelo motor pode recalcular)");
     cur = c.sessionItemWithTitle("Resumir o roteiro de otimizacoes");
     c.click(findItem(cur, "sessionDelete"));
     c.click(findItem(cur, "confirmDelete"));
