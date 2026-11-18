@@ -10,6 +10,7 @@ Item {
     signal suggestionChosen(string text)
     property bool stick: true
     property bool prog: false
+    readonly property bool prep: /^(Retomando|Preparando|Carregando)/.test(backend.statusText)
 
     readonly property var suggestions: [
         ["Explicar", "Explique como funciona um motor de inferência de modelos de linguagem."],
@@ -123,7 +124,7 @@ Item {
                     height: Math.max(body.height, 26) + 22
                     Rectangle {
                         width: 26; height: 26; radius: 13; color: Theme.ac
-                        Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
+                        KMark { anchors.fill: parent; px: 12 }
                     }
                     AssistantBody {
                         id: body
@@ -171,7 +172,7 @@ Item {
             height: mv.bottomSpace + (dots.visible ? 44 : 0)
             Item {
                 id: dots
-                visible: backend.thinking && !(lv.count > 0 && backend.messages.get(lv.count - 1).kind === "tool")
+                visible: backend.thinking && !mv.prep && !(lv.count > 0 && backend.messages.get(lv.count - 1).kind === "tool")
                 x: (parent.width - Math.min(Theme.colWidth, parent.width - 40)) / 2
                 width: 200
                 height: 44
@@ -179,7 +180,7 @@ Item {
                 Accessible.name: "Pensando"
                 Rectangle {
                     width: 26; height: 26; radius: 13; color: Theme.ac
-                    Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
+                    KMark { anchors.fill: parent; px: 12 }
                 }
                 Text { font.family: Theme.sans; x: 80; y: 5; text: "Pensando…"; color: Theme.mut; font.pixelSize: 13; font.italic: true }
                 Row {
@@ -276,7 +277,8 @@ Item {
                 wrapMode: Text.Wrap
                 color: Theme.mut
                 font.pixelSize: 15
-                text: !backend.running && !backend.loading ? "Escolha um modelo embaixo, ao lado de enviar, para iniciar o agente."
+                text: mv.prep && backend.running ? backend.statusText
+                      : !backend.running && !backend.loading ? "Escolha um modelo embaixo, ao lado de enviar, para iniciar o agente."
                       : backend.loading ? "Carregando o modelo, pode levar alguns minutos..."
                       : "Escreva abaixo ou comece por uma sugestão."
             }

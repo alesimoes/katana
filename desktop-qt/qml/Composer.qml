@@ -76,6 +76,7 @@ Item {
                 font.pixelSize: 15
                 placeholderText: backend.ready ? "Escreva uma mensagem..."
                                : backend.loading ? "Carregando o modelo..."
+                               : backend.answering && /^(Retomando|Preparando)/.test(backend.statusText) ? backend.statusText
                                : backend.answering ? "Respondendo..."
                                : backend.running ? "Aguarde..." : "Escolha um modelo para começar"
                 placeholderTextColor: Theme.mut
