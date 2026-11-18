@@ -47,6 +47,109 @@ Nao feito (proximos passos, em ordem): (1) sobrepor os especialistas frios na CP
 camada (iniciar assim que o roteador decide; hoje a CPU espera); (2) produto de 2-4 linhas por chamada no down
 curto (cols = 512 no Qwen3.6: so 2 blocos por linha, o custo fixo por linha pesa); (3) Q5_1/Q8_0 com VNNI.
 
+## 0j. Vagas de especialistas: taxa de acerto, politicas e orcamento de VRAM (2026-11-18, ramo worktree-agent-a518cb4a5ea73a00e)
+
+Pedido: aumentar a taxa de acerto das vagas (Qwen3.6 17 de 256 por camada, gemma4 9 de 128) e/ou o numero de vagas.
+Maquina ocupada por outro agente (microbancadas de CPU, carga 5-8) em todas as medidas: velocidade indicativa.
+
+**Feito no codigo**
+- `KATANA_EXPLOG=<arquivo>`: grava, a cada roteamento, (camada, K escolhidos) em uint16; base do simulador offline.
+- `KATANA_HEAT_DECAY` (padrao 0,98, igual a antes): fator do calor por token, antes fixo em 6 lugares.
+- **Padrao novo: margem de troca 8 no qwen35moe** (`KATANA_SWAP`, antes 4 para todos; gemma4 e os outros seguem 4;
+  `KATANA_SWAP=4` volta ao anterior). Medido 4-8% mais rapido na geracao do Qwen3.6 (abaixo).
+
+**1. Simulacao offline (medido; registros na CPU, `KATANA_CPU=1`, 3 prompts de agente com o prompt de sistema real do
+agente: conversa, revisao de codigo, resultado de ferramenta; ~1-2,2k tokens de prompt + 256 gerados, guloso).**
+Acertos so na geracao. Simulador: `tools/sim_vagas.c` (`gcc -O2 -o sim tools/sim_vagas.c -lm`;
+`./sim L E K S teste.bin tokens_de_prompt calib1.bin calib2.bin`). Modelo da politica atual: calor com decaimento 0,98, troca se calor > vitima + margem,
+carga chega 1 token depois (thread carregadora), no prompt so vagas livres.
+
+| politica (17 vagas Qwen3.6 / 9 vagas gemma4) | Qwen3.6 conversa/codigo/ferramenta | gemma4 conversa/codigo/ferramenta |
+|---|---|---|
+| atual (margem 4) | 47,1 / 39,2 / 35,9% (1,0-1,6 cargas/token) | 51,0 / 47,2 / 46,6% (0,4-0,7) |
+| margem 1 | 49,0 / 42,5 / 39,1% (1,3-2,0) | 51,4 / 48,0 / 47,3% |
+| margem 0 | 49,8 / 44,1 / 40,2% (2,8-4,1) | 51,8 / 48,5 / 47,7% |
+| margem 8 | 42,2 / - / - (0,6) | - |
+| decaimento 0,95 | 47,2 / 40,5 / 37,3% | 51,5 / 47,7 / 47,3% |
+| decaimento 0,99 / 0,995 | 44,1 / 38,9 / 33,4% e piores | 47,6 / 45,3 / 44,9% e piores |
+| LRU (troca a cada falta) | 51,1 / 50,3 / 43,3% mas ~175 cargas/token (inviavel) | 47,6 / 46,7 / 45,6% |
+| LFU acumulado | 16,0 / - / 29,7% | - |
+| conjunto fixo pelo calor dos outros 2 prompts | 9,2 / 15,4 / 15,3% | 19,5 / 27,0 / 26,2% |
+| oraculo fixo (top S da propria geracao) | 48,6 / 40,2 / 38,8% | 52,0 / 49,2 / 48,5% |
+| Belady (teto dinamico) | 66,9 / 66,1 / 61,2% | 63,2 / 62,6 / 61,4% |
+| vagas desiguais (mesmo total, guloso pelo calor de calibracao) | 46,4 / 39,8 / 36,0% | 50,5 / 47,1 / 46,4% |
+
+Leitura: a politica atual ja fica no nivel do melhor conjunto fixo possivel; o roteamento muda de assunto rapido
+(o calor de outro prompt quase nao serve: fixo por calibracao fica perto do acaso, 6,6%), entao **vagas desiguais e
+calor pre-carregado nao ganham**. Mais vagas: +1 vaga = ~+1,2 p.p. no Qwen3.6 e ~+2,5 p.p. no gemma4 (simulado,
+S=8..34 / 9..18 em `comparacoes.md`). Pre-aquecimento: so ajuda com vagas vazias e sem prompt antes (primeiros 16
+tokens: 23% -> 23-27% Qwen3.6, 23% -> 33-35% gemma4; 32 tokens: 28 -> 33-36%, 35 -> 42-43%); depois de um prompt de
+~1k tokens as vagas ja estao cheias e a pre-carga fica igual ou 1-5 p.p. pior nos primeiros tokens.
+
+**2. Medido na GPU (alternado, mesma hora, maquina carregada)** - o simulador errou o sinal da margem: na GPU cada
+subida bloqueia (`loader_install` grava a vaga apos a leitura bloqueante), e menos subidas valem mais que os acertos.
+- `bench 256 128`, Qwen3.6, 3 rodadas alternadas: margem 4 = 36,9-39,6 ms/token, margem 8 = 34,9-36,1, margem 16 =
+  34,8-36,0; acertos 22,5% -> 27,4% (bench conta o prompt), subidas 3950 -> 2130 -> 1030. Prompt 66 -> 72-76 tok/s.
+- Margem 1: 37,2% vs 35,6% de acertos, mas 36,1-39,2 ms vs 33,3-36,9 (pior).
+- `chat` com os 3 prompts de agente, 128 gerados, 2 rodadas: conversa 26,1/26,4 -> 28,3/28,3 tok/s; codigo 24,9/25,2 ->
+  26,9/26,8; ferramenta 24,2/24,4 -> 24,8/25,1.
+- gemma4 `bench 64 128`, 3 rodadas: margem 4 = 66-76 ms, margem 8 = 68-73 ms: igual (por isso o padrao so muda no
+  qwen35moe).
+- `KATANA_HEAT_DECAY=0.95` (Qwen3.6 bench): igual ao padrao (36,4-36,8 ms). `KATANA_VK_ROUTER=0` (tira o roteador
+  fp32 do lote da VRAM, 80 MB): **18 vagas** em vez de 17, geracao igual (36,4-37,2 ms) e prompt 5-10% mais lento:
+  nao vale.
+- Aquecimento pelo `.heat` (Qwen3.6, `bench 16 32`, 1a rodada, 2x alternado): com o `.heat` existente 36,4% de
+  acertos e 41,7 ms/token; `KATANA_NOHEAT=1` 42,0% e 40,6 ms. O `.heat` gravado de outra sessao atrapalha um pouco
+  (bate com a simulacao). O `.heat` medio do `katana calibrar` nao foi medido na GPU.
+
+**3. Orcamento de VRAM (Qwen3.6 no grafo, 4096 MiB, teto 88% = 3604 MiB)** - medido do log onde marcado, resto
+calculado do codigo/GGUF:
+
+| item | MB |
+|---|---|
+| produtos densos (251, inclui `output` Q6_K 402 MB) | 1910 (log) |
+| alpha/beta fp32 (30 camadas) | 16 |
+| estado DeltaNet (30 x 32x128x128 fp32) + anel | 64 |
+| cache KV: ctx 4096 fp32 / ctx 131072 atencao na CPU | 168 / ~0 |
+| buffers do lote P=256 (vkq/vkb) | ~56 |
+| MoE do lote (vkbm) + 16 vagas temporarias | ~39 |
+| roteador fp32 do lote (`vkm.rw`) | 80 |
+| margem de 16 MB e pequenos | ~20 |
+| vagas: 17 x 72,9 MB (40 camadas x 1,82 MB) | 1240 (log) |
+
+O que daria para recuperar e por que nao foi feito:
+- Pesos densos para a CPU para abrir vagas: **perde sempre**. Um peso denso e lido em todo token; uma vaga de
+  especialista acerta ~0,03-0,3 vezes por token. Ex.: `output` (402 MB) na CPU = ~16 ms/token a mais para +5 vagas
+  (+6 p.p. = ~20 frios a menos x ~0,06 ms = ~1,2 ms). Idem gemma4 (`output` Q8_0 792 MB, FFN denso 542 MB).
+- Formato menor dos especialistas: nao, a geracao tem de ficar igual (os formatos ja sao os do arquivo, Q4_K/Q5_K/
+  Q6_K/Q5_1 exatos). Sobra do layout da GPU: Q8_0 usa 36 bytes por bloco em vez de 34 (+5,9%) e Q6_K 212 em vez de
+  210. Um Q8_0 com escalas em outro vetor recuperaria ~84 MB no Qwen3.6 (+1 vaga) e ~140 MB no gemma4 (+1 vaga,
+  dense+down Q8_0) - estimado; exige shaders novos de Q8_0 (mv e mm). Sem preenchimento de linhas nos especialistas
+  (512/2048/704/2816/1408 sao multiplos de 128); uma alocacao por camada, sem perda por vaga.
+- Roteador fp32 do lote: 80 MB = +1 vaga, medido sem ganho (acima).
+
+**Atencao, pre-existente**: a geracao gulosa do Qwen3.6 **nao e identica entre duas rodadas iguais** (mesma margem
+4: codigo deu textos diferentes nas 2 rodadas), porque o especialista quente roda na GPU com arredondamento diferente
+da CPU e a ocupacao das vagas depende do tempo da thread carregadora. Mudar a margem muda onde cada especialista roda
+e portanto pode mudar o texto como ja muda de uma rodada para outra; a conversa saiu identica nas 4 rodadas, codigo e
+ferramenta divergiram depois de algumas dezenas de tokens (inicio igual, mesmo sentido).
+
+Selftests (binario deste ramo, margem 8 no Qwen3.6): Qwen3.6 produtos OK, lote 0,00036, token a token 0,00039, lote 16
+0,00039 OK; gemma4 lote 0,0015, token a token 0,0024 OK; Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) lote 0,00046,
+token a token 0,00054, lote 16 0,00045 OK.
+
+Repetir com a maquina livre:
+```
+sh build.sh
+M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+for i in 1 2 3; do for s in 4 8 16; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $M 256 128; done; done
+G=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $G 64 128; done; done
+# registro para o simulador (CPU): KATANA_CPU=1 KATANA_EXPLOG=x.bin ./katana chat $M @prompt.txt 256 0
+```
+Proximos: Q8_0 compacto na GPU (+1 vaga em cada modelo, estimado +1,2 a +2,5 p.p.); subida das vagas fora do
+caminho bloqueante (fila de transferencia propria) para poder baixar a margem sem pagar o bloqueio.
+
 ## 0g. Ferramentas de programacao no agente (2026-11-18, ramo worktree-agent-a1a49838b82625b7e)
 
 Novas ferramentas em `src/katana.c` (bloco antes de `agent_tool_run`): `edit_file`, `glob`, `read_document`,
