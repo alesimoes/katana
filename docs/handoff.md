@@ -4,6 +4,37 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0d. qwen35moe no Vulkan com contexto longo: atencao completa na CPU (2026-11-17, ramo worktree-agent-a460c3809aea8f50a)
+
+Achado: o grafo Vulkan do qwen35moe ja tinha prompt em lote (DeltaNet por `dn_seq` exato ou em blocos com
+`KATANA_QN_CHUNK=1`, atencao `att_flash32`) e geracao na GPU, mas so com contexto curto. Com o contexto do agente
+(131072) o cache KV fp16 das 10 camadas de atencao (2,68 GB) nao cabe junto dos pesos densos (1,9 GB): o grafo
+falhava e caia no modo hibrido (DeltaNet na CPU, produtos densos na GPU), mais lento que a CPU pura.
+
+Mudanca (so `vkq_build`, `vk_qn_forward_1`, `vk_qn_forward_n`): `vkq.cpuatt` — nas camadas de atencao completa as
+projecoes q/portao, k, v rodam na GPU, descem para a RAM, a atencao roda na CPU (`qn_core` / `qn_core_n` em pedacos
+de 16, cache KV da CPU em fp16, o mesmo do caminho CPU) e a saida sobe para o produto `wo` na GPU. DeltaNet, MoE e o
+resto continuam na GPU. Sem cache KV na VRAM o grafo nao depende mais do contexto (cabe ate onde a RAM aguentar o
+cache da CPU). Padrao quando o cache fp16 passaria de 512 MB (ctx > ~26k); `KATANA_QN_CPUATT=0/1` forca.
+
+Medido (bench 512+32, ctx 131072, binario do main x novo alternados, mesma hora, rodadas 2-3):
+prompt 18,8-18,9 -> 83,6-85,0 tok/s; geracao 17,3 -> 27,0-27,3 tok/s. (Rodada fria do main chegou a 3,7-5,3.)
+Validado: saida gulosa de 60 tokens identica a `KATANA_CPU=1` (ctx 131072); selftest do qwen35moe a 131072
+(lote 0,0008, token a token 0,0011, lote 16 0,0005) e a 4096 (atencao na GPU, 0,0003); qwen2.5-1.5b OK;
+Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) lote OK e "token a token" 0,115 FALHOU — falha antiga ja listada (item 4
+da secao 0, quentes em fp16), caminho nao tocado; OLMoE: o selftest padrao (OpenCL) para depois dos produtos, igual
+no binario do main.
+
+DeltaNet do lote em blocos (`KATANA_QN_CHUNK=1`) x recorrencia exata (padrao), 512+16, ctx 131072, alternado:
+3 de 5 pares mostram blocos mais rapidos (34 x 64, 48 x 80, 93 x 155 tok/s), um par empatou e outro inverteu
+(84 x 77); a maquina estava com carga 16-18 (outro agente rodando o Qwen3.6 na CPU), entao nao conclusivo. O padrao
+continua o exato (blocos dao 0,0028 no selftest contra 0,0004). Medir de novo com a maquina livre antes de trocar.
+
+Pendente: atencao de lote do qwen35 na GPU com cache KV Q8_0 (caberia ~1,3 GB a 131k, mas tiraria vagas do cache
+de especialistas; a atencao na CPU ja nao e o gargalo em contexto raso); kernels de `tools/vkdelta` ja estao ligados
+(dn_step/dn_prep/dn_chunk/dn_state/dn_norm, mais dn_seq); KATANA_CPU_KV8 do ramo worktree-agent-aea784e9337467df4
+ainda nao juntado; em profundidade (dezenas de milhares de posicoes) a atencao na CPU passa a pesar (nao medido).
+
 ## 0c. katana-desktop nativo em Qt6 (2026-11-17)
 
 O katana-desktop deixou de ser Go + pagina HTML no Chrome: agora e um app Qt6/QML em `desktop-qt/` (ver
