@@ -4,6 +4,49 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0i. Especialistas MoE na CPU: produtos inteiros para Q8_0/Q5_1, Q5_K com VNNI (2026-11-18, ramo worktree-agent-a5fc01670b63cc48b)
+
+Formatos dos especialistas nos GGUFs (conferido no cabecalho): Qwen3.6-35B gate/up Q4_K, down Q5_K (37 camadas) e
+Q6_K (3); Gemma 4 26B gate_up Q4_K, down **Q5_1** (29 camadas) e Q8_0 (1), H = 704 (nao multiplo de 256);
+Qwen3-30B gate/up Q4_K, down Q4_K/Q6_K.
+
+**Achado principal: no Gemma 4 o `moe_cpu_multi` inteiro caia no caminho "exato/float um a um"**, porque o
+down Q5_1/Q8_0 nao tinha produto inteiro (`mat_int` so aceita tipos K): 3 matvec float por especialista, em
+serie, gate/up Q4_K tambem em float. Microbancada (todos os 8 especialistas na CPU, 30 camadas): ~211 ms/token,
+4 GB/s efetivos. Mudancas:
+- `dot_q8_i` e `dot_q51_i`: produtos inteiros AVX2 de blocos de 32 com a ativacao int16 ja quantizada uma vez
+  (`xq_prepare`); Q5_1 usa a soma de cada bloco de 32 (`bs32`) para o termo do minimo. Usados so no caminho dos
+  especialistas (`moe_int`/`moe_dot`), o matvec geral nao muda.
+- `xq_prepare` aceita o ultimo bloco parcial (cols multiplo de 32): entrada do down com H = 704.
+- `dot_q5k_v`: Q5_K com VNNI (mesma conta inteira do produto de 16 bits: resultado bit a bit igual).
+- ativacao + quantizacao da entrada do down em paralelo (um especialista por item do pool), antes serial na
+  principal (~1,2 ms/token no Qwen3.6).
+- `KATANA_MOE_OLD=1` volta ao caminho anterior (para A/B); `selftest` agora confere tambem Q8_0/Q5_1 inteiros.
+
+Medido (microbancada `tools/moebench`, sem GPU, alternado OLD/NOVO, maquina ocupada por outro agente, load 11-18:
+indicativo). Detalhes em `comparacoes.md` secao 15.
+- Gemma 4: 211 -> 36 ms/token com todos na CPU (5,9x). Geracao so CPU (`KATANA_CPU=1`, 64 tokens): 2,8 -> 6,3 tok/s.
+- Qwen3.6: 23,5 -> 21,8 ms/token (-7%); fase ativacao 1,2 -> 0,3 ms, down ~1 ms menos.
+- Teto: banda de leitura medida 33-37 GB/s com 8 threads (39 com 16). Qwen3.6 le 611 MB/token com os 8 na CPU
+  -> teto ~17 ms; estamos em ~22 (28 GB/s efetivos). Gemma 897 MB/token -> teto ~25 ms; estamos em ~36.
+  12 e 16 threads pioraram (48-50 ms no Qwen3.6): o gargalo restante e de calculo/latencia, nao de banda pura.
+
+Validacao: geracao gulosa de 64 tokens (so CPU) identica OLD x NOVO no Gemma 4 e no Qwen3.6. Saida de uma camada
+de especialistas: Qwen3.6 bit a bit igual; Gemma erro relativo L2 6e-5 (quantizacao int16 da ativacao, a mesma ja
+usada nos tipos K). `selftest` (KATANA_CPU=1) OK nos tres: Gemma 4, Qwen3.6, Qwen3-30B (KATANA_KV16=0 KATANA_CTX=512);
+Q5_1 inteiro 2,1e-6, Q8_0 inteiro 2,5e-6 contra o exato. **Nao medido**: o modelo completo com a GPU (outro processo
+usava a GPU/CPU). Estimativa: no Gemma com Vulkan os ~19 ms/token de especialistas na CPU devem cair para ~4-6 ms
+(a fracao fria dos 36 ms acima); no Qwen3.6 ~1 ms/token. Para repetir com a maquina livre:
+
+    sh tools/moebench/build.sh && sh tools/moebench/ab.sh modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 3 16
+    sh tools/moebench/ab.sh modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 3 16
+    for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o ./katana bench modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 64 64; done; done
+    (o mesmo com Qwen3.6-35B-A3B-UD-Q4_K_M.gguf) e selftest com GPU nos tres modelos
+
+Nao feito (proximos passos, em ordem): (1) sobrepor os especialistas frios na CPU com o trabalho da GPU na mesma
+camada (iniciar assim que o roteador decide; hoje a CPU espera); (2) produto de 2-4 linhas por chamada no down
+curto (cols = 512 no Qwen3.6: so 2 blocos por linha, o custo fixo por linha pesa); (3) Q5_1/Q8_0 com VNNI.
+
 ## 0g. Ferramentas de programacao no agente (2026-11-18, ramo worktree-agent-a1a49838b82625b7e)
 
 Novas ferramentas em `src/katana.c` (bloco antes de `agent_tool_run`): `edit_file`, `glob`, `read_document`,
