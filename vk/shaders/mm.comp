@@ -386,12 +386,15 @@ void main() {
                 const uint row = ir + wr * (WM / 2) + cr * T + e / 16, tok = ic + wc * WN + cc * T + e % 16;
                 if (row < pc.rows && tok < tokens) {
                     const float g = scr[sb + e], up = scr[sb + 256 + e];
-                    float v = g / (1.0 + exp(-g)) * up;
+                    // bit 1 de add: GELU (tanh), como o feed-forward do gemma4; senao SiLU
+                    const float ga = (pc.add & 2u) != 0u ? 0.5 * g * (1.0 + tanh(clamp(0.7978845608 * (g + 0.044715 * g * g * g), -15.0, 15.0)))
+                                                         : g / (1.0 + exp(-g));
+                    float v = ga * up;
                     const uint ix = yz + row * tokens + tok;
 #if YH
                     yb.y[ix] = float16_t(v);
 #else
-                    if (pc.add != 0u) v += yb.y[ix];
+                    if ((pc.add & 1u) != 0u) v += yb.y[ix];
                     yb.y[ix] = v;
 #endif
                 }

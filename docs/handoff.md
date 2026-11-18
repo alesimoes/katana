@@ -877,3 +877,25 @@ Pendências:
   ganho da geração, não na conta da atenção.
 - O cache latente sobe inteiro (até `pos0+B`) a cada camada e passada; com contexto longo vale manter uma cópia na VRAM.
 - Velocidade do Qwen3-30B/OLMoE com a thread de leitura no `vk_moe_n` não medida (só o `selftest`).
+
+## 13. gemma4: prompt em lote no Vulkan hibrido validado (2026-11-17, worktree agent-abec)
+
+Parte do ramo agent-a3043 (2 commits, `vk_g4_n`): por camada, os produtos densos do lote (q, k, v, saida da
+atencao, gate/up/down do feed-forward denso) vao a GPU no mm preciso; normas, RoPE, cache KV e atencao na CPU.
+
+- **MoE do lote nas vagas (`vk_moe_n`) estava inexato**: o `selftest` dava `GPU em lote` 5,9 (argmax trocado).
+  Causa medida (`KATANA_VK_G4CHK=1`, compara camada a camada com o MoE da CPU): o `ffn_down_exps` do gemma4 e
+  **Q5_1 em 29 de 30 camadas**, e `gpu_kind` o requantiza para Q8_0 (aproximado): erro ~1e-3 na saida de cada
+  camada MoE; a camada 29 (Q8_0) bate em 1,7e-5. O mesmo vale para o caminho de um token com as vagas.
+  Vagas temporarias pioram (mais especialistas na GPU). Por isso o MoE do lote ficou **na CPU por padrao**;
+  `KATANA_VK_G4MOE=1` liga o das vagas (inexato).
+- `selftest` gemma4 (padrao): produtos OK; GPU lote 0,0045 OK; GPU token a token 0,0031 OK; CPU inteira 0,0052 OK.
+  Geracao gulosa (40 tokens, temp 0) **identica** a CPU pura (`KATANA_CPU=1`).
+- Sem regressao: qwen2.5-1.5b tudo OK (lote 0,0078); OLMoE (`KATANA_VK_MOE=1`) tudo OK; Qwen3-30B
+  (`KATANA_KV16=0 KATANA_CTX=512`) lote 0,0005 OK, token a token 0,115 FALHOU (ja conhecido, item 4 da lista).
+- **Velocidade: sem ganho medido** (ver comparacoes.md). O prompt do gemma4 e limitado pelo MoE na CPU; tirar
+  os densos da CPU nao muda o total em 128 tokens.
+
+Pendencias: (1) layout exato de Q5_1 na GPU (escala + minimo por bloco de 32, ~10 palavras/32 pesos, +11% no
+down; precisa de WT novo no mm.comp e no kernel de um token; risco de nao caberem as 8 vagas) para o MoE do lote
+nas vagas valer a pena e o token a token ficar exato; (2) so depois disso medir de novo `KATANA_VK_G4MOE=1`.

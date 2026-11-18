@@ -211,3 +211,20 @@ rodadas 2 e 3, tok/s. Espera até a GPU ficar em 72 °C ou menos antes de cada e
 
 Varredura das vagas temporárias (Qwen3-30B 256+4, sem alternar, GPU esquentando de 81 a 85 °C ao longo da série: só
 indicativo): 16 vagas 144–146, 32 vagas 113–121, 48 vagas 97–108 tok/s.
+
+
+## gemma4 26B-A4B: prompt em lote no Vulkan (2026-11-17, worktree agent-abec)
+
+`katana bench <gemma4> 128 32`, RTX 3050 4 GB, alternado na mesma hora (duas rodadas de cada; rodadas 2 e 3 do
+bench). Antes = `KATANA_VK_G4=0` (lote so na CPU), depois = lote hibrido (densos na GPU, MoE na CPU). Medido:
+
+| caso | prompt tok/s | geracao tok/s |
+|---|---|---|
+| antes, r1 | 4,8 / 3,2 | 7,7 / 7,8 |
+| depois, r1 | 3,4 / 3,2 | 8,2 / 8,0 |
+| antes, r2 | 3,3 / 3,3 | 7,9 / 7,9 |
+| depois, r2 | 3,3 / 3,3 | 7,9 / 6,6 |
+
+Sem diferenca alem do ruido. Uma serie anterior com 256+32 (uma rodada de cada, sequencial, nao alternada:
+so indicativo) deu prompt 4,2 (antes) x 5,7 (depois, MoE na CPU) x 6,1 tok/s (MoE nas vagas, inexato).
+A geracao nao muda (o lote so afeta o prompt).
