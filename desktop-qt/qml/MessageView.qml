@@ -122,10 +122,7 @@ Item {
                 id: asstC
                 Item {
                     height: Math.max(body.height, 26) + 22
-                    Rectangle {
-                        width: 26; height: 26; radius: 13; color: Theme.ac
-                        KMark { anchors.fill: parent; px: 12 }
-                    }
+                    Image { width: 26; height: 26; source: "qrc:/icons/katana-64.png"; sourceSize: Qt.size(26*2, 26*2); smooth: true; mipmap: true }
                     AssistantBody {
                         id: body
                         x: 38
@@ -178,10 +175,7 @@ Item {
                 height: 44
                 Accessible.role: Accessible.StaticText
                 Accessible.name: "Pensando"
-                Rectangle {
-                    width: 26; height: 26; radius: 13; color: Theme.ac
-                    KMark { anchors.fill: parent; px: 12 }
-                }
+                Image { width: 26; height: 26; source: "qrc:/icons/katana-64.png"; sourceSize: Qt.size(26*2, 26*2); smooth: true; mipmap: true }
                 Text { font.family: Theme.sans; x: 80; y: 5; text: "Pensando…"; color: Theme.mut; font.pixelSize: 13; font.italic: true }
                 Row {
                     x: 38
