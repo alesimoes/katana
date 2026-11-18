@@ -28,9 +28,9 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   abaixo de 70%, ambar a partir de 70%, vermelha a partir de 85%. Alimentado pelo marcador `TOKENS`
   (e pela linha de estatisticas do stderr). O marcador `COMPACT` mostra "Contexto compactado: N -> M
   tokens". Marcadores desconhecidos sao ignorados (ponto de extensao: `Backend::handleMarker`).
-- Icone: squircle roxo `#820AD1` com o mascote (samurai de elmo com chifres e katana, pixel art 16x16, tons claros
-  sobre o roxo). `icons/katana.svg` (retangulos sem suavizacao) e PNGs 16 a 512 sao gerados por
-  `tools/gerar-samurai.py` (PIL), embutidos no executavel (recursos Qt) e usados como icone da janela, do .desktop e da dock.
+- Icone: squircle roxo em degrade com um K grosso em pixel art (branco para lilas, sombra roxa de 1 pixel). `icons/katana.svg`
+  e PNGs 16 a 512 sao gerados por `tools/gerar-icone-k.py` (PIL), embutidos no executavel (recursos Qt) e usados como icone
+  da janela, do .desktop e da dock. O samurai fica so na tela de boas-vindas.
 - Identidade roxa: o destaque (`Theme.ac`: botao enviar, anel de contexto, selecao de texto, avatar, foco,
   titulo) e `#820AD1` no tema claro e `#B66CF2` no escuro (texto sobre o destaque: branco / `#1A1022`); os
   neutros tem um leve tom lilas. Tudo em `qml/Theme.qml`.
@@ -40,7 +40,7 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   inteira 5x (80 px; 4x em janela baixa) com `smooth: false`, o titulo "Katana" como imagem retro anos 80
   (`icons/titulo-claro.png` / `titulo-escuro.png`: letras blocadas 5x7 em pixel, degrade roxo e sombra de 1 px,
   ampliadas em escala inteira), "Em que posso ajudar hoje?" e 3 sugestoes clicaveis que preenchem e enviam.
-  Tudo (sprite, titulo, icones) sai de `tools/gerar-samurai.py`; rode-o e depois `build.sh`.
+  Sprite e titulo saem de `tools/gerar-samurai.py` (o icone, de `tools/gerar-icone-k.py`); rode-o e depois `build.sh`.
 - Tema claro/escuro segue o sistema (`KATANA_THEME=light|dark` forca um).
 
 Protocolo: o agente roda com `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Linhas de stdout que comecam com
