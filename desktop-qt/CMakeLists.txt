@@ -56,5 +56,16 @@ qt_add_resources(katana-desktop-qt icones
         icons/katana-512.png
 )
 
+qt_add_resources(katana-desktop-qt fontes
+    PREFIX /fonts
+    BASE fonts
+    FILES
+        fonts/JetBrainsMono-Regular.ttf
+        fonts/JetBrainsMono-Medium.ttf
+        fonts/JetBrainsMono-SemiBold.ttf
+        fonts/JetBrainsMono-Bold.ttf
+        fonts/JetBrainsMono-Italic.ttf
+)
+
 target_link_libraries(katana-desktop-qt PRIVATE
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Test)

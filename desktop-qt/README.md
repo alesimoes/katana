@@ -31,6 +31,7 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
 - Icone: squircle roxo em degrade com um K grosso em pixel art (branco para lilas, sombra roxa de 1 pixel). `icons/katana.svg`
   e PNGs 16 a 512 sao gerados por `tools/gerar-icone-k.py` (PIL), embutidos no executavel (recursos Qt) e usados como icone
   da janela, do .desktop e da dock. O samurai fica so na tela de boas-vindas.
+- Fonte: JetBrains Mono embutida (licenca OFL em `fonts/`), interface e codigo.
 - Identidade roxa: o destaque (`Theme.ac`: botao enviar, anel de contexto, selecao de texto, avatar, foco,
   titulo) e `#820AD1` no tema claro e `#B66CF2` no escuro (texto sobre o destaque: branco / `#1A1022`); os
   neutros tem um leve tom lilas. Tudo em `qml/Theme.qml`.

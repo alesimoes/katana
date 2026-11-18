@@ -211,17 +211,17 @@ Item {
             id: col
             width: parent.width
             spacing: 0
-            // mascote: samurai em pixel art 16x16, ampliado em escala inteira (sem suavizacao)
+            // emblema: so o K do icone do app, pequeno
             Image {
                 id: samurai
                 objectName: "samurai"
                 anchors.horizontalCenter: parent.horizontalCenter
-                readonly property int escala: mv.height < 560 ? 4 : 5
-                source: "qrc:/icons/samurai.png"
-                width: 16 * escala
-                height: 16 * escala
-                smooth: false
-                mipmap: false
+                source: "qrc:/icons/katana-128.png"
+                width: mv.height < 560 ? 64 : 80
+                height: width
+                sourceSize: Qt.size(128, 128)
+                smooth: true
+                mipmap: true
                 Accessible.role: Accessible.Graphic
                 Accessible.name: "Katana"
             }
