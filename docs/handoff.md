@@ -4,6 +4,40 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0g. Roteador do MoE na GPU na geracao: medido, sem ganho (2026-11-18, ramo worktree-agent-a516d8e63276dd43a)
+
+Pedido: logits, top-k e pesos do roteador num kernel, especialistas lendo os indices de um buffer, para o token em
+que todos os escolhidos estao nas vagas nao precisar de leitura bloqueante por camada. **Medido antes de codar: a
+premissa nao vale nos dois modelos em foco.** Perfil novo `KATANA_VK_GENPROF=1` (camadas com todos nas vagas,
+leitura bloqueante, roteador e frios na CPU, por camada; sai junto do relatorio de especialistas). Numeros em
+`comparacoes.md` secao 14 (maquina compartilhada: indicativos).
+
+- Qwen3.6-35B-A3B: 17 vagas de 256 por camada, 36% dos usos na VRAM; so **0,3%** das camadas tem os 8 escolhidos
+  todos nas vagas. Em 99,7% das camadas a CPU precisa da entrada para rodar os frios, entao a leitura por camada
+  continua. Por token (~34 ms): leitura bloqueante 17 ms (e a conta da GPU de DeltaNet/atencao esperando, nao bolha),
+  frios na CPU 11-14 ms, roteador na CPU 2,1 ms. O gargalo e o especialista frio na CPU, nao a sincronia.
+- gemma4: 25% das camadas com todos nas vagas, mas a geracao roda no modo hibrido (camadas na CPU, produtos densos
+  na GPU, atencao na CPU): nao existe grafo da GPU para deixar de esperar. Roteador na CPU ~1,1 ms/token de ~47;
+  frios na CPU ~19 ms/token. Precisaria antes de um grafo Vulkan de um token do gemma4.
+
+Feito (o que sobra da ideia): no grafo do qwen35moe o roteador de um token passa a poder rodar na GPU (`moe_router`,
+pesos fp32 que o lote ja subia em `vkm.rw`), os logits saem na mesma leitura da entrada do feed-forward
+(`vkg.xn` com d+E). `KATANA_VK_GPUROUTER=1` liga; **padrao desligado**: alternado deu -1,2% de tempo por token,
+dentro do ruido. Geracao gulosa de 80 tokens identica com 0 e 1; selftest com `KATANA_VK_GPUROUTER=1`: Qwen3.6
+(lote 0,00045, token a token 0,00032, lote 16 0,00041, OK), gemma4 (lote 0,0015, token a token 0,0028, OK),
+Qwen3-30B `KATANA_KV16=0 KATANA_CTX=512` (lote 0,00049, token a token 0,00078 OK, lote 16 0,00046).
+
+Onde esta o ganho de verdade na geracao destes modelos: os frios na CPU (mais vagas, especialistas menores na VRAM,
+ou mais threads/kernel melhor no `moe_cpu_multi`).
+
+Medir com a maquina livre:
+```
+sh build.sh
+M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+for i in 1 2 3; do for r in 0 1; do KATANA_VK_GENPROF=1 KATANA_VK_GPUROUTER=$r KATANA_BACKEND=vulkan ./katana bench $M 16 128; done; done
+KATANA_VK_GENPROF=1 KATANA_BACKEND=vulkan ./katana bench modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 16 128
+```
+
 ## 0e. Cache KV Q8_0 no qwen35moe (2026-11-17, ramo worktree-agent-a820d36683256ed88)
 
 Juntado o ramo worktree-agent-aea784e9337467df4 (KATANA_CPU_KV8, KATANA_DUMP_LOGITS, tools/agulha.py) e estendido ao

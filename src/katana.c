@@ -5962,6 +5962,8 @@ static void moe_tables(Model *m, size_t S, size_t per) {
    (frio, direto do arquivo mapeado). A thread carregadora traz os que esquentam. Os despachos de uma camada saem ao vivo:
    gate/up e down de cada quente (um despacho cada, a vaga entra por deslocamento em palavras), as saidas da CPU sobem
    para as linhas livres de vkm.bt e moe_sum soma tudo, pesado, no residual. Uma leitura bloqueante por camada. */
+static struct { long lay, allhit, tok; double t_rd, t_route, t_cold; } gprof;    /* KATANA_VK_GENPROF: perfil da geracao MoE */
+static int m_nused;
 static struct { KvkBuf hb, bt, meta, hs, *rw; KvkPipe sum, sumrms, rpipe; int sh, rt; } vkm;   /* rt: roteador na GPU (rw: pesos float32 em linhas) */   /* sh: compartilhado na GPU (linha K de bt) */
 
 static int vk_moe_init(Model *m) {
@@ -6052,7 +6054,9 @@ static void vk_moe_ffn_x(Model *m, const Layer *L, int l, KvkBuf nnorm) {
     if (gx.loader) loader_install(m);
     const uint64_t tick = ++gx.clock;
     memcpy(m->xb, gx.xn, (size_t)d * sizeof(float));
+    const double trt0 = now_sec();
     moe_route(m, L, l);
+    gprof.t_route += now_sec() - trt0;
     for (int e = 0; e < E; e++) heat[e] *= 0.98f;
     for (int j = 0; j < K; j++) heat[moe.sel[j]] += 1.0f;
     for (int j = 0; j < K; j++) {
@@ -6078,6 +6082,7 @@ static void vk_moe_ffn_x(Model *m, const Layer *L, int l, KvkBuf nnorm) {
     }
     const uint32_t kg = gpu_kind(&L->eg[0]), kd = gpu_kind(&L->ed[0]);
     int ok = 1;
+    gprof.lay++; gprof.allhit += n_cpu == 0; m_nused = K;
     const int sh = vkm.sh && L->sg.gbuf, Kt = K + sh, mo = 6 * nh;     /* tabela das vagas, depois pesos e linhas da soma */
     for (int i = 0; i < nh; i++) {   /* gate/up: (vaga, entrada 0, saida i em hb); down: (vaga, entrada i, linha j em bt) */
         uint32_t *t = meta + 6 * i;
@@ -6106,7 +6111,7 @@ static void vk_moe_ffn_x(Model *m, const Layer *L, int l, KvkBuf nnorm) {
         for (int i = 0; i < n_cpu; i++)
             if (!kvk_buf_write_q(vkm.bt, (size_t)cpu_j[i] * d * 4, gx.cpu_out + (size_t)i * d, (size_t)d * 4)) die("falha na execucao em Vulkan (MoE, CPU)");
         gx.cpu_runs += n_cpu;
-        gx.t_cpu += now_sec() - t0;
+        gx.t_cpu += now_sec() - t0; gprof.t_cold += now_sec() - t0;
     }
     if (nnorm.b) {
         const KvkBuf sb[5] = { vkg.x, vkm.bt, vkm.meta, nnorm, vkg.xn };
@@ -6520,6 +6525,7 @@ static void vk_host_moe_ffn(Model *m, const Layer *L, int l, float *out) {
             hit_j[R++] = j;
         } else { cpu_e[n_cpu] = e; cpu_j[n_cpu++] = j; }
     }
+    gprof.lay++; gprof.allhit += n_cpu == 0; m_nused = K;
     if (R > 0) {            /* quentes nas linhas 0..R-1 de bt */
         const uint32_t kg = gpu_kind(&L->eg[0]), kd = gpu_kind(&L->ed[0]);
         ok &= kvk_buf_write_q(vkm.meta, 0, meta, (size_t)6 * R * 4);
@@ -6539,7 +6545,7 @@ static void vk_host_moe_ffn(Model *m, const Layer *L, int l, float *out) {
         const double t0 = now_sec();
         moe_cpu_multi(m, L, cpu_e, zero, n_cpu, 1, m->xb, gx.cpu_out);
         gx.cpu_runs += n_cpu;
-        gx.t_cpu += now_sec() - t0;
+        gx.t_cpu += now_sec() - t0; gprof.t_cold += now_sec() - t0;
     }
     const int nr = R + sh_gpu;
     if (nr > 0 && !kvk_buf_read(vkm.bt, 0, gx.hout, (size_t)nr * d * sizeof(float))) die("falha na execucao em Vulkan (leitura MoE)");
@@ -7779,7 +7785,7 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
    o compartilhado e cada especialista quente rodam sobre as colunas dos seus tokens (moe_gath, mm glu e down com
    a vaga por deslocamento, moe_scat soma pesada); os frios rodam na CPU enquanto isso e sobem somados. */
 static struct {
-    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1;
+    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1, r1;   /* r1: roteador de um token na GPU */
     float *hq, *hk, *hv, *ho, *hT;          /* atencao na CPU (cpuatt): q/portao, k, v e saida por token */
     Mat *wab;                               /* por camada linear: [alpha | beta] float */
     KvkBuf qkv, z, ab, o, qg;               /* um token */
@@ -7904,7 +7910,7 @@ static int vkq_build(Model *m) {
     vkq.cpuatt = getenv("KATANA_QN_CPUATT") ? atoi(getenv("KATANA_QN_CPUATT")) != 0 : kv32 / 2 > ((size_t)512 << 20);
     if (vkq.cpuatt && !m->kcache && !m->kh && !m->kq8) vkq.cpuatt = 0;
     vkg.nl = c->n_layers;
-    vkg.x = vk_wk(d * 4, &fail); vkg.xn = vk_wk(d * 4, &fail);
+    vkg.x = vk_wk(d * 4, &fail); vkg.xn = vk_wk((d + (size_t)c->n_expert) * 4, &fail);     /* logits do roteador depois da entrada */
     vkg.k = vk_wk(kvd * 4, &fail); vkg.v = vk_wk(kvd * 4, &fail);
     vkg.lg = vk_wk((c->vocab + 128) * 4, &fail);
     const int actx = vkq.cpuatt ? 128 : c->ctx;      /* com atencao na CPU os buffers da atencao na GPU ficam minimos */
@@ -8015,7 +8021,16 @@ static void vkq_setup(Model *m) {
     if (!gpu.vk) return;
     if (!vkq_build(m)) return;
     if (!vk_moe_init(m)) { fprintf(stderr, "Vulkan: cache de especialistas indisponivel: modo hibrido\n"); return; }
-    if (vkbm.on && vkm.rw) vkm.rt = 1;     /* roteador do lote na GPU (o caminho de um token deste grafo nao o usa) */
+    if (vkbm.on && vkm.rw) vkm.rt = 1;     /* roteador do lote na GPU */
+    /* roteador de um token na GPU (KATANA_VK_GPUROUTER=1; padrao desligado: ganho medido ~1%, dentro do ruido): os
+       logits saem junto com a entrada do feed-forward na mesma leitura por camada, sem o produto do roteador na CPU.
+       Nao tira a leitura bloqueante: so 0,3% das camadas tem os 8 escolhidos todos nas vagas (17 de 256), entao a
+       CPU quase sempre precisa da entrada para os frios */
+    vkq.r1 = 0;
+    if (vkm.rt && c->n_expert % 32 == 0 && getenv("KATANA_VK_GPUROUTER") && atoi(getenv("KATANA_VK_GPUROUTER")) != 0) {
+        if (!vkm.rpipe.p) vkm.rpipe = kvk_pipe_create(moe_router_spv, sizeof moe_router_spv, 3, 8, NULL, NULL, 0);
+        vkq.r1 = vkm.rpipe.p != 0;
+    }
     gpu.mv_host = 0; vkg.on = 1; vkg.rec = 0; vkb.ok = 1; vkq.on = 1;
     fprintf(stderr, "GPU: Vulkan - grafo completo do qwen35moe (DeltaNet + atencao com portao + MoE, lote de ate %d), %.0f MB usados%s\n",
             vkb.P, gpu.used / 1048576.0, vkq.cpuatt ? ", atencao completa na CPU (cache KV na RAM)" : vkg.kv16 ? ", cache KV em 16 bits" : "");
@@ -8069,9 +8084,18 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
     qn1_ffn:;
         const KvkBuf rb2[3] = { vkg.x, vkg.fn[l], vkg.xn };
         ok &= kvk_dispatch(vkg.rms, rb2, 3, &rp, sizeof rp, 1, 1, 1);
+        if (vkq.r1) {
+            const KvkBuf rr[3] = { vkm.rw[l], vkg.xn, vkg.xn };
+            const int rpc[2] = { d, d };
+            ok &= kvk_dispatch(vkm.rpipe, rr, 3, rpc, sizeof rpc, (uint32_t)(c->n_expert / 32), 1, 1);
+        }
         if (!ok) die("falha na execucao em Vulkan (qwen35moe)");
-        if (!kvk_buf_read(vkg.xn, 0, gx.xn, (size_t)d * sizeof(float))) die("falha na execucao em Vulkan (leitura)");
+        const double tr0 = now_sec();
+        if (!kvk_buf_read(vkg.xn, 0, gx.xn, (size_t)(d + (vkq.r1 ? c->n_expert : 0)) * sizeof(float))) die("falha na execucao em Vulkan (leitura)");
+        gprof.t_rd += now_sec() - tr0;
+        moe_lg_ext = vkq.r1 ? gx.xn + d : NULL;
         vk_moe_ffn(m, L, l);
+        moe_lg_ext = NULL;
     }
     if (!want_logits) { if (!kvk_flush()) die("falha na execucao em Vulkan"); return NULL; }
     if (!vk_emit_head(m) || !kvk_buf_read(vkg.lg, 0, m->logits, (size_t)c->vocab * sizeof(float))) die("falha na execucao em Vulkan (cabeca)");
@@ -8520,7 +8544,9 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
             /* cache de especialistas na GPU: o roteador ja pontuou (a entrada dele e outra), os especialistas leem xb */
             static float *lg;
             if (!lg) lg = xalloc(c->n_expert, sizeof(float));
+            const double trt0 = now_sec();
             matvec(lg, &L->router, m->xb, c->n_expert, d);
+            gprof.t_route += now_sec() - trt0;
             rmsnorm(m->xb, x, L->pre_ffn2, d, c->eps);
             moe_lg_ext = lg;
             host_moe_ffn(m, L, l, yb);
@@ -10275,6 +10301,10 @@ static const KSet *spec_set(void) {
 
 static void moe_report(void) {
     if (!gx.on) return;
+    if (getenv("KATANA_VK_GENPROF") && gprof.lay)
+        fprintf(stderr, "[geracao MoE: %ld camadas, %ld (%.1f%%) com os %d escolhidos todos nas vagas | leitura bloqueante por camada %.3f ms, roteador na CPU %.3f ms, frios na CPU %.3f ms (medias por camada)]\n",
+                gprof.lay, gprof.allhit, 100.0 * gprof.allhit / gprof.lay, m_nused, 1e3 * gprof.t_rd / gprof.lay,
+                1e3 * gprof.t_route / gprof.lay, 1e3 * gprof.t_cold / gprof.lay);
     const double uses = (double)(gx.hits + gx.miss);
     fprintf(stderr, "[especialistas: %.1f%% dos usos na VRAM, %.1f%% na CPU (%.2f s) | %llu subidas (%llu conversoes, %llu trocas) em %.2f s, leitura do disco %.2f s]\n",
             100.0 * gx.hits / (uses + 1e-9), 100.0 * gx.cpu_runs / (uses + 1e-9), gx.t_cpu,
