@@ -113,6 +113,8 @@ public:
     Q_INVOKABLE bool deleteSession(const QString &id);
     Q_INVOKABLE void refreshSessions();
     Q_INVOKABLE void copyText(const QString &text);
+    Q_INVOKABLE bool keepAwake() const;  // impede bloqueio de tela/suspensao enquanto o agente trabalha (padrao: ligado)
+    Q_INVOKABLE void setKeepAwake(bool on);
     Q_INVOKABLE QString tema() const;
     Q_INVOKABLE void setTema(const QString &t);
     Q_INVOKABLE QString fonte() const;
@@ -154,6 +156,8 @@ private:
     void setTexts(const QString &status, const QString &error);
     void setState(bool ready, bool loading, bool answering);
     void writeLine(const QString &line);
+    void updateInhibit();
+    QProcess *m_inhibit = nullptr;
     static QString cleanArgs(const QString &s);
 
     QString m_katana, m_modelsDir, m_home, m_sessDir;

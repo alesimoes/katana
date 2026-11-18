@@ -173,6 +173,20 @@ ApplicationWindow {
                                             text: (Theme.tema === to.modelData[0] ? "●  " : "○  ") + to.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
                                     }
                                 }
+                                Text { font.family: Theme.sans; text: "TELA"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                AbstractButton {
+                                    id: awk
+                                    objectName: "keepAwake"
+                                    property bool on: backend.keepAwake()
+                                    width: apMenu.width - 16; height: 32
+                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Não bloquear a tela enquanto o agente trabalha"; Accessible.role: Accessible.CheckBox
+                                    onClicked: { on = !on; backend.setKeepAwake(on); }
+                                    background: Rectangle { radius: 8; color: awk.hovered ? Theme.hov : "transparent"
+                                        border.width: awk.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                        text: (awk.on ? "☑  " : "☐  ") + "Não bloquear enquanto trabalha"; color: Theme.fg; font.pixelSize: 13 }
+                                }
                                 Text { font.family: Theme.sans; text: "FONTE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Repeater {
                                     model: [["jetbrains", "JetBrains Mono"], ["plex", "IBM Plex"]]
