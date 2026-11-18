@@ -211,3 +211,15 @@ rodadas 2 e 3, tok/s. Espera até a GPU ficar em 72 °C ou menos antes de cada e
 
 Varredura das vagas temporárias (Qwen3-30B 256+4, sem alternar, GPU esquentando de 81 a 85 °C ao longo da série: só
 indicativo): 16 vagas 144–146, 32 vagas 113–121, 48 vagas 97–108 tok/s.
+
+## 13. qwen35moe no Vulkan com ctx 131072: atencao completa na CPU (Linux, 2026-11-17)
+
+bench 512+32, Qwen3.6-35B-A3B Q4_K_M, `KATANA_CTX=131072`, binario do main e novo alternados na mesma hora
+(GPU livre no inicio de cada execucao; CPU com outros agentes).
+
+| | main (modo hibrido) | novo (grafo + atencao na CPU) |
+|---|---|---|
+| prompt (rodadas 2-3) | 18,8-18,9 tok/s | 83,6-85,0 tok/s |
+| geracao (rodadas 2-3) | 17,3 tok/s | 27,0-27,3 tok/s |
+
+Primeira serie do main deu 3,7-5,3 / 3,1-17,8 (fria). DeltaNet em blocos x exato: inconclusivo (carga alta), ver handoff 0d.
