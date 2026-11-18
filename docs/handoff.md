@@ -1052,3 +1052,42 @@ atencao, gate/up/down do feed-forward denso) vao a GPU no mm preciso; normas, Ro
 Pendencias: (1) layout exato de Q5_1 na GPU (escala + minimo por bloco de 32, ~10 palavras/32 pesos, +11% no
 down; precisa de WT novo no mm.comp e no kernel de um token; risco de nao caberem as 8 vagas) para o MoE do lote
 nas vagas valer a pena e o token a token ficar exato; (2) so depois disso medir de novo `KATANA_VK_G4MOE=1`.
+
+## 14. gemma4: Q5_1 exato na GPU e MoE do lote nas vagas por padrao (2026-11-17, worktree agent-aed9)
+
+Resolve a pendencia (1) da secao 13. **Tipo de peso novo na GPU para Q5_1, exato**, so no Vulkan (no OpenCL o
+Q5_1 continua requantizado em Q8_0; Q4_1 continua requantizado nos dois):
+
+- Layout de **6 palavras por bloco de 32** (o proprio bloco do arquivo, reordenado): palavra 0 = escala e minimo
+  em fp16 (exatos), 1 = quinto bit dos 32 valores, 2..5 = os 4 bits baixos (valor j na palavra 2 + j/8). E **menor**
+  que o Q8_0 de antes (9 palavras): a primeira tentativa (escala e minimo float + 32 uint8, 10 palavras) nao cabia
+  (vagas ~1180 MB, ~92% da VRAM, `vkAllocateMemory` falhou com a GPU livre). Com 6 palavras o gemma4 passa a ter
+  **9 vagas por camada (1016 MB)** em vez de 8.
+- Kernels: `vk/shaders/mv_q51.comp` (um token, `vk_kind_idx` 6) e `mm.comp` com `WT=5` (todas as variantes:
+  plano, glu, ws, xs, gx). `gen.sh` atualizado; os cabecalhos dos tipos antigos nao mudaram (conferido byte a byte).
+- `katana.c`: `gpu_kind` (Q5_1 -> T_Q5_1 com Vulkan), `gpu_has`, `gpu_wpr`, `gpu_pack_row`, tabelas `vk_mmt`,
+  `vkb.mm`/`mmx`, `vk_spv`. As vagas do cache e as temporarias usam `gpu_wpr`/`gpu_pack_row`, entao ja sobem no layout novo.
+- **MoE do lote do gemma4 nas vagas ligado por padrao** (`KATANA_VK_G4MOE=0` volta a CPU).
+
+**Validacao (so correcao; maquina carregada por outros agentes, nada de velocidade medido)**:
+- `selftest` gemma4, 5 rodadas: produtos OK (5,08e-8); GPU em lote 0,0011-0,0012 OK (antes 0,0045 com o MoE
+  na CPU e 5,9 com as vagas); **GPU token a token 0,0018-0,0026 OK nas 5** (antes intermitente 0,003 a 7,5);
+  CPU inteira 0,0052 OK.
+- `KATANA_VK_G4CHK=1` (MoE do lote nas vagas x CPU, 30 camadas): pior diferenca 5,9e-4 com escala 14 (camada 17;
+  ~4e-5 relativo; antes ~1e-3 por camada). Sobra o arredondamento do mm preciso (alta + resto), nao do peso.
+- Geracao gulosa 40 tokens (prompt de 30 tokens, temp 0): **identica** a `KATANA_CPU=1`.
+- Sem regressao: Qwen3.6-35B-A3B (lote 0,00034, token a token 0,00031, lote 16 0,00034, tudo OK);
+  Qwen3-30B-A3B-Instruct-2507 (`KATANA_KV16=0 KATANA_CTX=512`): lote 0,00049 OK, lote 16 0,00046 OK, token a
+  token 0,115 FALHOU (falha antiga, igual antes).
+
+**A medir com a maquina livre** (alternado, mesma hora; prompt longo para o lote valer):
+```
+M=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+for i in 1 2 3; do
+  KATANA_BACKEND=vulkan KATANA_VK_G4MOE=0 ./katana bench $M 256 64   # MoE do lote na CPU (como antes)
+  KATANA_BACKEND=vulkan ./katana bench $M 256 64                     # MoE do lote nas vagas (padrao novo)
+done
+```
+Comparar tambem a geracao (9 vagas e Q5_1 em 6 palavras em vez de 9: menos leitura na GPU) contra o binario do
+main. Se o MoE do lote nas vagas nao ganhar, voltar o padrao para a CPU (continua exato).
+
