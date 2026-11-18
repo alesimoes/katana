@@ -303,6 +303,18 @@ void Backend::launch(const QString &modelFile)
     const QString path = QDir(m_modelsDir).filePath(modelFile);
     auto *p = new QProcess(this);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    // configuracao recomendada: variaveis KATANA_* de desempenho/depuracao herdadas do terminal (KATANA_CPU, KATANA_CTX,
+    // KATANA_KV16, KATANA_MOE_OLD, KATANA_SWAP, KATANA_VK_*...) sao descartadas para o motor escolher sozinho os padroes
+    // mais rapidos. Ficam so as de comportamento do usuario. KATANA_DESKTOP_ENV=1 preserva o ambiente herdado.
+    if (env.value("KATANA_DESKTOP_ENV") != "1") {
+        static const QStringList manter = {"KATANA_UI", "KATANA_THINK", "KATANA_CONFIRM", "KATANA_WEB", "KATANA_SEARX",
+            "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
+            "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
+            "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV"};
+        for (const QString &k : env.keys())
+            if (k.startsWith("KATANA_") && !k.startsWith("KATANA_MCP_") && !manter.contains(k))
+                env.remove(k);
+    }
     env.insert("KATANA_UI", "1");
     env.insert("NO_COLOR", "1");
     if (!env.contains("KATANA_THINK"))
