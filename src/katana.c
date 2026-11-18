@@ -414,6 +414,7 @@ typedef struct {
     float yarn_factor, yarn_logmul; int yarn_orig, yarn_ext;   /* yarn_ext: escala pedida pelo usuario (nao veio do GGUF) */
     int ctx_train;      /* contexto treinado do modelo (do GGUF); ctx pode passar dele com escala de RoPE */
     int kv16_cpu;       /* cache KV da CPU em fp16 (hibrido DeltaNet) */
+    int kv8_cpu;        /* cache KV da CPU em blocos Q8_0 (hibrido DeltaNet) */
     /* atencao linear Gated DeltaNet (qwen35moe): camadas recorrentes intercaladas com atencao completa */
     int ssm_conv, ssm_state, ssm_groups, ssm_rank, ssm_inner;  /* janela da convolucao, dk, grupos q/k, cabecas v, largura v */
     int attn_every;     /* (camada+1) % attn_every == 0: atencao completa; as outras sao DeltaNet */
@@ -492,6 +493,7 @@ typedef struct {
     Layer *layers;
     float *kcache, *vcache;             /* [L][ctx][kv_dim] */
     uint16_t *kh, *vh;                  /* cache KV fp16 da CPU (hibrido): [camada de atencao][ctx][kv_dim] */
+    uint8_t *kq8, *vq8;                 /* cache KV Q8_0 da CPU (hibrido): mesma ordem, blocos de 34 bytes por 32 valores */
     float *ckv;                         /* MLA: [L][ctx][latente + rope] */
     float *ssm;                         /* DeltaNet: estado contiguo; por camada linear, S [cabeca v][dk][dv] e (janela-1) x canais da convolucao */
     int n_lin;                          /* camadas DeltaNet */
@@ -670,6 +672,7 @@ static float e8m0_half(uint8_t e) {
     return f;
 }
 static float bf16_to_f32(uint16_t h) { uint32_t u = (uint32_t)h << 16; float f; memcpy(&f, &u, 4); return f; }
+static int kv8_escolha(size_t ctx);
 static float h2f(const uint8_t *p) { uint16_t h; memcpy(&h, p, 2); return f16_to_f32(h); }
 
 /* escala de 6 bits do sub-bloco ib (0..7) de um bloco IQ4_XS (ja sem o deslocamento de 32) */
@@ -1559,7 +1562,9 @@ static void load_model(Model *m, const char *path) {
         if (!na) na = 1;
         const char *e16 = getenv("KATANA_CPU_KV16");      /* padrao: fp16 a partir de 64k de contexto */
         c->kv16_cpu = e16 ? atoi(e16) != 0 : ctx > 65536;
-        if (c->kv16_cpu) { m->kh = xalloc(na * ctx * kvd, 2); m->vh = xalloc(na * ctx * kvd, 2); }
+        c->kv8_cpu = kv8_escolha(ctx) && kvd % 32 == 0 && c->hd % 32 == 0;
+        if (c->kv8_cpu) { c->kv16_cpu = 0; m->kq8 = xalloc(na * ctx * kvd / 32, 34); m->vq8 = xalloc(na * ctx * kvd / 32, 34); }
+        else if (c->kv16_cpu) { m->kh = xalloc(na * ctx * kvd, 2); m->vh = xalloc(na * ctx * kvd, 2); }
         else { m->kcache = xalloc(na * ctx * kvd, sizeof(float)); m->vcache = xalloc(na * ctx * kvd, sizeof(float)); }
     } else {
         for (int l = 0; l < c->n_layers; l++) m->layers[l].kv_off = (size_t)l * ctx * kvd;
@@ -2299,6 +2304,42 @@ static float dot(const float *a, const float *b, int n) {
 #endif
     for (; j < n; j++) s += a[j] * b[j];
     return s;
+}
+
+/* cache KV da CPU em Q8_0 (hibrido DeltaNet): KATANA_CPU_KV8=0/1 forca; padrao automatico acima de
+   262144 de contexto (alem do treinado do Qwen3.6, onde o fp16 passaria de 5 GB) */
+static int kv8_escolha(size_t ctx) {
+    const char *e = getenv("KATANA_CPU_KV8");
+    return e ? atoi(e) != 0 : ctx > 262144;
+}
+
+/* grava n valores (n multiplo de 32) em blocos Q8_0: escala fp16 = max|x|/127 e 32 x int8 */
+static void q8_put(uint8_t *dst, const float *x, int n) {
+    for (int b = 0; b < n / 32; b++, dst += 34, x += 32) {
+        __m256 am = _mm256_setzero_ps();
+        const __m256 sm = _mm256_set1_ps(-0.0f);
+        for (int i = 0; i < 32; i += 8) am = _mm256_max_ps(am, _mm256_andnot_ps(sm, _mm256_loadu_ps(x + i)));
+        __m128 a4 = _mm_max_ps(_mm256_castps256_ps128(am), _mm256_extractf128_ps(am, 1));
+        a4 = _mm_max_ps(a4, _mm_movehl_ps(a4, a4));
+        a4 = _mm_max_ss(a4, _mm_shuffle_ps(a4, a4, 1));
+        const float d = _mm_cvtss_f32(a4) / 127.0f;
+        const uint16_t h = (uint16_t)_mm_extract_epi16(_mm_cvtps_ph(_mm_set_ss(d), 0), 0);
+        memcpy(dst, &h, 2);
+        const float id = d > 0.0f ? 1.0f / d : 0.0f;
+        int8_t *q = (int8_t *)(dst + 2);
+        for (int i = 0; i < 32; i++) { const int v = (int)lrintf(x[i] * id); q[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v); }
+    }
+}
+
+/* abre n valores (n multiplo de 32) de blocos Q8_0 em float */
+static void q8_get(float *out, const uint8_t *src, int n) {
+    for (int b = 0; b < n / 32; b++, src += 34, out += 32) {
+        uint16_t h; memcpy(&h, src, 2);
+        const __m256 d = _mm256_set1_ps(_mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))));
+        const uint8_t *qs = src + 2;
+        for (int i = 0; i < 32; i += 8)
+            _mm256_storeu_ps(out + i, _mm256_mul_ps(d, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *)(qs + i))))));
+    }
 }
 
 /* produto de uma linha Q8_0 (blocos: f16 escala + 32 x int8) por um vetor float */
@@ -7303,7 +7344,7 @@ static void dn_gate(const Config *c, const Layer *L, float *o, const float *z) {
 /* atencao com portao de um token, em pedacos de posicoes (flash-decoding): cada trabalho pega uma cabeca kv e
    um pedaco de posicoes e atende as `group` cabecas q dela juntas (cada linha de K/V sai da RAM uma vez so).
    Softmax online em blocos de 64; os parciais (maximo, soma, saida) de cada pedaco se juntam no fim. A memoria
-   de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32 ou fp16 (m->kh/m->vh). */
+   de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32, fp16 (m->kh/m->vh) ou Q8_0 (m->kq8/m->vq8). */
 #define QN_MAXCH 256
 #define QN_MAXG 16
 typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos, hd, kvd, group, nch, chl; float scale; } QnAttJob;
@@ -7326,7 +7367,7 @@ static void qn_att_job(void *cx, int j0, int j1) {
     const Model *m = j->m;
     const int hd = j->hd, kvd = j->kvd, n = j->pos + 1, G = j->group;
     const size_t off = j->L->kv_off;
-    float sc[QN_MAXG][64], o[QN_MAXG][512], mx[QN_MAXG], sum[QN_MAXG];
+    float sc[QN_MAXG][64], o[QN_MAXG][512], mx[QN_MAXG], sum[QN_MAXG], kr[512];
     for (int job = j0; job < j1; job++) {
         const int g = job / j->nch, ch = job % j->nch;
         const int ta = ch * j->chl, tb = ta + j->chl < n ? ta + j->chl : n;
@@ -7336,6 +7377,11 @@ static void qn_att_job(void *cx, int j0, int j1) {
             const int nb = tb - t0 < 64 ? tb - t0 : 64;
             for (int i = 0; i < nb; i++) {
                 const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
+                if (m->kq8) {       /* Q8_0: abre a linha uma vez e serve as G cabecas */
+                    q8_get(kr, m->kq8 + r / 32 * 34, hd);
+                    for (int u = 0; u < G; u++) sc[u][i] = dot(j->q + (size_t)(g * G + u) * hd, kr, hd) * j->scale;
+                    continue;
+                }
                 for (int u = 0; u < G; u++) {
                     const float *qh = j->q + (size_t)(g * G + u) * hd;
                     sc[u][i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
@@ -7354,6 +7400,21 @@ static void qn_att_job(void *cx, int j0, int j1) {
             }
             for (int i = 0; i < nb; i++) {
                 const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
+                if (m->vq8) {       /* Q8_0: soma direto dos inteiros, escala do bloco dobrada no peso */
+                    const uint8_t *vb = m->vq8 + r / 32 * 34;
+                    for (int k = 0; k < hd; k += 32, vb += 34) {
+                        uint16_t h; memcpy(&h, vb, 2);
+                        const float dv = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h)));
+                        __m256 q4[4];
+                        for (int e = 0; e < 4; e++) q4[e] = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *)(vb + 2 + 8 * e))));
+                        for (int u = 0; u < G; u++) {
+                            const __m256 w = _mm256_set1_ps(sc[u][i] * dv);
+                            float *ou = o[u] + k;
+                            for (int e = 0; e < 4; e++) _mm256_storeu_ps(ou + 8 * e, _mm256_fmadd_ps(w, q4[e], _mm256_loadu_ps(ou + 8 * e)));
+                        }
+                    }
+                    continue;
+                }
                 for (int k = 0; k < hd; k += 8) {
                     const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
                     for (int u = 0; u < G; u++)
@@ -7389,7 +7450,8 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
         }
     }
     const size_t koff = L->kv_off + (size_t)pos * kvd;
-    if (m->kh) {
+    if (m->kq8) { q8_put(m->kq8 + koff / 32 * 34, k, kvd); q8_put(m->vq8 + koff / 32 * 34, v, kvd); }
+    else if (m->kh) {
         for (int i = 0; i < kvd; i += 8) {
             _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
             _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
@@ -7436,7 +7498,7 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
     static __thread float *ob, *scb; static __thread int ocap;
     const int nq = j->tps * G;
     if (ocap < nq) { free(ob); free(scb); ob = xalloc((size_t)nq * 512, sizeof(float)); scb = xalloc((size_t)nq * 64, sizeof(float)); ocap = nq; }
-    float mx[GPU_BMAX * QN_MAXG], sum[GPU_BMAX * QN_MAXG];
+    float mx[GPU_BMAX * QN_MAXG], sum[GPU_BMAX * QN_MAXG], kr[512];
     for (int job = j0; job < j1; job++) {
         const int sp = job % j->nsp, ch = (job / j->nsp) % j->nch, g = job / (j->nsp * j->nch);
         const int t0q = sp * j->tps, t1q = t0q + j->tps < j->B ? t0q + j->tps : j->B;
@@ -7452,6 +7514,12 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
                 if (nb <= 0) continue;
                 for (int i = 0; i < nb; i++) {
                     const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
+                    if (m->kq8) {   /* Q8_0: abre a linha uma vez para as G cabecas */
+                        q8_get(kr, m->kq8 + r / 32 * 34, hd);
+                        for (int u = 0; u < G; u++)
+                            scb[(size_t)((t - t0q) * G + u) * 64 + i] = dot(j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd, kr, hd) * j->scale;
+                        continue;
+                    }
                     for (int u = 0; u < G; u++) {
                         const float *qh = j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd;
                         scb[(size_t)((t - t0q) * G + u) * 64 + i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
@@ -7472,8 +7540,9 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
                 }
                 for (int i = 0; i < nb; i++) {
                     const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
+                    if (m->vq8) q8_get(kr, m->vq8 + r / 32 * 34, hd);
                     for (int k = 0; k < hd; k += 8) {
-                        const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
+                        const __m256 vv = m->vq8 ? _mm256_loadu_ps(kr + k) : m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
                         for (int u = 0; u < G; u++) {
                             const int qi = (t - t0q) * G + u;
                             float *o = ob + (size_t)qi * 512;
@@ -7521,7 +7590,8 @@ static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const fl
             }
         }
         const size_t koff = L->kv_off + (size_t)pos * kvd;
-        if (m->kh) {
+        if (m->kq8) { q8_put(m->kq8 + koff / 32 * 34, k, kvd); q8_put(m->vq8 + koff / 32 * 34, v, kvd); }
+        else if (m->kh) {
             for (int i = 0; i < kvd; i += 8) {
                 _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
                 _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
@@ -7759,7 +7829,7 @@ static int vkq_build(Model *m) {
     /* atencao completa na CPU (cache KV na RAM, qn_core/qn_core_n): o grafo deixa de depender do contexto e cabe
        com contextos longos; padrao quando o cache em 16 bits passaria de 512 MB. KATANA_QN_CPUATT=0/1 forca. */
     vkq.cpuatt = getenv("KATANA_QN_CPUATT") ? atoi(getenv("KATANA_QN_CPUATT")) != 0 : kv32 / 2 > ((size_t)512 << 20);
-    if (vkq.cpuatt && !m->kcache && !m->kh) vkq.cpuatt = 0;
+    if (vkq.cpuatt && !m->kcache && !m->kh && !m->kq8) vkq.cpuatt = 0;
     vkg.nl = c->n_layers;
     vkg.x = vk_wk(d * 4, &fail); vkg.xn = vk_wk(d * 4, &fail);
     vkg.k = vk_wk(kvd * 4, &fail); vkg.v = vk_wk(kvd * 4, &fail);
@@ -10085,6 +10155,11 @@ static void print_info(const Model *m) {
     if (c->n_expert) fprintf(stderr, "MoE: %d especialistas por camada, %d ativos por token\n", c->n_expert, c->n_used);
     if (c->yarn_ext) fprintf(stderr, "aviso: ctx=%d acima do treinado (%d); RoPE estendido por yarn x%.2f, qualidade pode cair\n",
                              c->ctx, c->ctx_train, c->yarn_factor);
+    if (m->kq8) {
+        size_t na = 0;
+        for (int l = 0; l < c->n_layers; l++) na += !m->layers[l].lin;
+        fprintf(stderr, "cache KV da CPU: %zu camadas, Q8_0, %.2f GB\n", na, 2.0 * na * c->ctx * c->n_kv * c->hd / 32 * 34 / 1e9);
+    }
     if (m->kh || m->kcache) {
         size_t na = 0;
         for (int l = 0; l < c->n_layers; l++) na += !(c->ssm_inner && m->layers[l].lin);
@@ -10149,7 +10224,8 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
         const size_t kvd = (size_t)c->n_kv * c->hd;
         size_t na = 0;
         for (int l = 0; l < c->n_layers; l++) na += !(c->ssm_inner && m->layers[l].lin);
-        if (m->kh && !c->g4) { memset(m->kh, 0, na * c->ctx * kvd * 2); memset(m->vh, 0, na * c->ctx * kvd * 2); }
+        if (m->kq8) { memset(m->kq8, 0, na * c->ctx * kvd / 32 * 34); memset(m->vq8, 0, na * c->ctx * kvd / 32 * 34); }
+        else if (m->kh && !c->g4) { memset(m->kh, 0, na * c->ctx * kvd * 2); memset(m->vh, 0, na * c->ctx * kvd * 2); }
         else if (m->kcache && !c->g4) { memset(m->kcache, 0, na * c->ctx * kvd * 4); memset(m->vcache, 0, na * c->ctx * kvd * 4); }
         fprintf(stderr, "[bench: prompt comeca na posicao %d]\n", bpos);
     }
@@ -10167,6 +10243,10 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     lg = forward_seq(m, ids.ids, ids.n, bpos, 1);
     pos = bpos + ids.n;
     double t1 = now_sec();
+    if (getenv("KATANA_DUMP_LOGITS")) {     /* grava os logits do fim do prompt (float32) para comparar modos */
+        FILE *fl = fopen(getenv("KATANA_DUMP_LOGITS"), "wb");
+        if (fl) { fwrite(lg, sizeof(float), V, fl); fclose(fl); }
+    }
     if (echo && !json) { fputs(text, stdout); fflush(stdout); }
 
 #define EMIT_TOKEN(t) { if ((t) == c->eos || (tk->toktype && tk->toktype[t] == 3)) { stop = 1; } \
