@@ -40,7 +40,18 @@ Rectangle {
             Layout.leftMargin: 8
             spacing: 8
             Image { width: 22; height: 22; source: "qrc:/icons/katana-64.png"; sourceSize: Qt.size(22*2, 22*2); smooth: true; mipmap: true }
-            Text { font.family: Theme.sans; text: "Katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
+            // mesmo titulo em pixel da tela de boas-vindas (escala inteira 2x para ficar nitido)
+            Image {
+                objectName: "sidebarTitle"
+                source: Theme.dark ? "qrc:/icons/titulo-escuro.png" : "qrc:/icons/titulo-claro.png"
+                Layout.preferredWidth: sourceSize.width * 2
+                Layout.preferredHeight: sourceSize.height * 2
+                smooth: false
+                mipmap: false
+                Accessible.role: Accessible.StaticText
+                Accessible.name: "Katana"
+            }
+            Item { Layout.fillWidth: true }
             IconButton {
                 objectName: "sidebarCollapse"
                 glyph: "left"
