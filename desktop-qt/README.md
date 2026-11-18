@@ -44,6 +44,8 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   Sprite e titulo saem de `tools/gerar-samurai.py` (o icone, de `tools/gerar-icone-k.py`); rode-o e depois `build.sh`.
 - Aparencia (engrenagem na barra de titulo propria, janela sem moldura): tema Escuro (padrao), Claro ou IDE escuro (estilo editor, codigo com realce de sintaxe) e fonte JetBrains Mono (padrao) ou IBM Plex; salvos em ui.ini. `KATANA_THEME=light|dark`, `KATANA_TEMA` e `KATANA_FONTE` forcam um.
 
+Modelo lembrado: o ultimo modelo iniciado fica em ui.ini (`ultimoModelo`) e e o que abre na proxima vez; ao abrir uma conversa salva, o desktop troca para o modelo em que ela estava (se estiver utilizavel) e retoma a sessao.
+
 Ambiente: o desktop descarta variaveis KATANA_* de desempenho herdadas do terminal (KATANA_CPU, KATANA_CTX, KATANA_KV16, KATANA_VK_*...) para o motor usar os padroes mais rapidos; `KATANA_DESKTOP_ENV=1` preserva o ambiente herdado.
 
 Protocolo: o agente roda com `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Linhas de stdout que comecam com
