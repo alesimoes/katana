@@ -39,10 +39,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.leftMargin: 8
             spacing: 8
-            Rectangle {
-                width: 22; height: 22; radius: 7; color: Theme.ac
-                KMark { anchors.fill: parent; px: 13 }
-            }
+            Image { width: 22; height: 22; source: "qrc:/icons/katana-64.png"; sourceSize: Qt.size(22*2, 22*2); smooth: true; mipmap: true }
             Text { font.family: Theme.sans; text: "Katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
             IconButton {
                 objectName: "sidebarCollapse"
