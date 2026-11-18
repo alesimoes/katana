@@ -31,8 +31,10 @@ def monta(ntok, rel, palavra, cpt):
     if j > 0: i = j + 1
     return corpo[:i] + agulha + corpo[i:] + pergunta
 
-def roda(katana, modelo, arq, modo, ctx, timeout):
-    env = dict(os.environ, KATANA_CPU="1", KATANA_CTX=str(ctx))
+def roda(katana, modelo, arq, modo, ctx, timeout, vulkan=False):
+    env = dict(os.environ, KATANA_CTX=str(ctx))
+    if vulkan: env.update(KATANA_BACKEND="vulkan", KATANA_QN_CPUATT="1")   # grafo Vulkan, atencao e cache KV na CPU
+    else: env["KATANA_CPU"] = "1"
     env.pop("KATANA_BENCH_POS", None)
     if modo == "fp16": env.update(KATANA_CPU_KV16="1", KATANA_CPU_KV8="0")
     elif modo == "q8": env.update(KATANA_CPU_KV8="1")
@@ -54,6 +56,7 @@ def main():
     ap.add_argument("--tokens", default="8000,16000")
     ap.add_argument("--pos", default="0.1,0.5,0.9")
     ap.add_argument("--modo", default="fp16,q8")
+    ap.add_argument("--vulkan", action="store_true", help="grafo Vulkan com atencao na CPU (prefill bem mais rapido)")
     ap.add_argument("--saida", default="/tmp/agulha")
     ap.add_argument("--timeout", type=int, default=7200)
     ap.add_argument("--semente", type=int, default=7)
@@ -73,7 +76,7 @@ def main():
             with open(arq, "w", encoding="utf-8") as f: f.write(monta(nt, rel, palavra, a.cpt))
             ctx = 1 << max(12, (int(nt * 1.3) + 64).bit_length())
             for modo in a.modo.split(","):
-                out, err, real, dt = roda(a.katana, a.modelo, arq, modo, ctx, a.timeout)
+                out, err, real, dt = roda(a.katana, a.modelo, arq, modo, ctx, a.timeout, a.vulkan)
                 if out is None: res, resp = "timeout", ""
                 else:
                     resp = " ".join(out.split())[:60]
