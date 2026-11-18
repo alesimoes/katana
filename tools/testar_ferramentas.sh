@@ -138,6 +138,9 @@ if echo "$SU" | grep -q "ola-root" && echo "$SU" | grep -q "de-novo" && [ "$(ech
 SD=$(printf 'run_command {"command":"echo \\"it'"'"'s-root\\"; echo dois"}\n\001PASS secret\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
 if echo "$SD" | grep -q "it's-root" && echo "$SD" | grep -q "dois" && echo "$SD" | grep -q NEEDPASS; then OK=$((OK+1)); echo "ok   sudo por padrao: comando inteiro (com aspas) roda via sudo -A sh -c"; else FAIL=$((FAIL+1)); echo "FALHA sudo padrao: $SD"; fi
 
+SP=$(printf 'run_command {"command":"cd /tmp && export KV=persiste"}\n\001PASS secret\nrun_command {"command":"sleep 30","timeout_s":2}\nrun_command {"command":"pwd; echo kv=$KV"}\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
+if echo "$SP" | grep -q "^/tmp$" && echo "$SP" | grep -q "kv=persiste" && [ "$(echo "$SP" | grep -c NEEDPASS)" = 1 ]; then OK=$((OK+1)); echo "ok   sudo: shell root persistente (cwd/variaveis sobrevivem, inclusive a um timeout)"; else FAIL=$((FAIL+1)); echo "FALHA shell root: $SP"; fi
+
 echo "== terminal, read_log, terminal_screen (uma sessao do katana com varias chamadas)"
 printf 'a\nERRO: falhou aqui\nb\nWARN algo\nc\n' > app.log
 TR=$("$KAT" toolrun 2>/dev/null <<'EOT'
