@@ -1,4 +1,5 @@
 #include <QFont>
+#include <QStandardPaths>
 #include "backend.h"
 
 #include <QCoreApplication>
@@ -241,6 +242,46 @@ void Backend::setState(bool ready, bool loading, bool answering)
     m_answering = answering;
     emit stateChanged();
     emit thinkingChanged();
+    updateInhibit();
+}
+
+bool Backend::keepAwake() const { return m_ui->value("manterAcordado", true).toBool(); }
+void Backend::setKeepAwake(bool on)
+{
+    m_ui->setValue("manterAcordado", on);
+    m_ui->sync();
+    updateInhibit();
+}
+
+// como o caffeinate: enquanto o agente carrega ou responde, pede ao sistema para nao bloquear a tela nem suspender
+void Backend::updateInhibit()
+{
+#ifdef Q_OS_LINUX
+    const bool want = keepAwake() && (m_loading || m_answering);
+    if (want && !m_inhibit) {
+        QString prog;
+        QStringList args;
+        if (!QStandardPaths::findExecutable("gnome-session-inhibit").isEmpty()) {
+            prog = "gnome-session-inhibit";
+            args = {"--inhibit", "idle:suspend", "--reason", "Katana: o agente esta trabalhando", "cat"};
+        } else if (!QStandardPaths::findExecutable("systemd-inhibit").isEmpty()) {
+            prog = "systemd-inhibit";
+            args = {"--what=idle:sleep", "--who=Katana", "--why=O agente esta trabalhando", "cat"};
+        } else {
+            return;
+        }
+        m_inhibit = new QProcess(this);
+        connect(m_inhibit, &QProcess::finished, m_inhibit, &QObject::deleteLater);
+        connect(m_inhibit, &QProcess::finished, this, [this] { m_inhibit = nullptr; });
+        m_inhibit->start(prog, args);
+    } else if (!want && m_inhibit) {
+        m_inhibit->disconnect(this);
+        m_inhibit->closeWriteChannel();  // o cat le da entrada: fechar a entrada encerra o inibidor sem deixar processo orfao
+        QTimer::singleShot(3000, m_inhibit, [p = m_inhibit] { if (p->state() != QProcess::NotRunning) p->terminate(); });
+        connect(m_inhibit, &QProcess::finished, m_inhibit, &QObject::deleteLater);
+        m_inhibit = nullptr;
+    }
+#endif
 }
 
 // ---- processo ----
