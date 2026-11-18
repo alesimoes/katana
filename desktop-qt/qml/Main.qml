@@ -104,7 +104,7 @@ ApplicationWindow {
                                 spacing: 2
                                 Text { font.family: Theme.sans; text: "TEMA"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 2; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Repeater {
-                                    model: [["padrao", "Padrão (segue o sistema)"], ["ide", "IDE escuro (código)"]]
+                                    model: [["escuro", "Escuro (padrão)"], ["claro", "Claro"], ["ide", "IDE escuro (código)"]]
                                     AbstractButton {
                                         id: to
                                         required property var modelData
