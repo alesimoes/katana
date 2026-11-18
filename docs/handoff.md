@@ -4,6 +4,46 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0e. Cache KV Q8_0 no qwen35moe (2026-11-17, ramo worktree-agent-a820d36683256ed88)
+
+Juntado o ramo worktree-agent-aea784e9337467df4 (KATANA_CPU_KV8, KATANA_DUMP_LOGITS, tools/agulha.py) e estendido ao
+caminho atual: alem do `qn_core` (um token), o lote da CPU `qn_core_n`/`qn_att_n_job` grava e le Q8_0, e o grafo Vulkan
+com atencao na CPU (`vkq.cpuatt`) aceita o cache Q8_0 (antes so ligava com fp32/fp16). Formato: blocos de 32 valores
+com escala fp16 (max|x|/127), 34 bytes; K aberto uma vez por linha para as G cabecas, V somado direto dos inteiros
+com a escala dobrada no peso. Flash-decoding e pedacos iguais aos do fp16. Custo: 10,6 KB/token => ~11,4 GB a 1M
+(fp16: 21,5 GB); a 131072 o cache cai de 2,68 para 1,43 GB.
+
+Politica: `KATANA_CPU_KV8=1` forca, `=0` desliga; sem a variavel, Q8_0 so acima de 262144 de contexto (alem do
+treinado, onde o fp16 passaria de 5,4 GB); abaixo disso fica fp16 (> 65536) ou fp32 como antes. Exige kvd e hd
+multiplos de 32. pfx (prefixo salvo) fica desligado com Q8_0, como com fp16. `tools/agulha.py --vulkan` roda com o
+grafo Vulkan e atencao na CPU (prefill muito mais rapido que `KATANA_CPU=1`).
+
+Validado (so correcao; maquina carregada, GPU ocupada por outro processo: o Vulkan caiu no modo hibrido e o
+selftest nao achou GPU, entao so os produtos foram conferidos):
+- Saida gulosa de 60 tokens, ctx 8192, prompt de 24 tokens: CPU fp16, CPU Q8_0, Vulkan(hibrido) fp16 e Vulkan(hibrido)
+  Q8_0 identicas nos 60 tokens (nenhuma divergencia).
+- Prompt de 1541 tokens (lote da CPU, qn_core_n), CPU: logits do fim do prompt fp16 x Q8_0 com diferenca maxima 0,44
+  (maior logit 15,8), mesmo argmax.
+- selftest qwen35moe ctx 4096 e 131072 com KATANA_CPU_KV8=1, gemma4 e Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`):
+  produtos OK; verificacoes de grafo/lote puladas por falta de GPU.
+
+Pendente (rodar com a maquina livre e a GPU desocupada):
+```
+sh build.sh
+M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+# selftest com GPU (lote, token a token, lote 16), atencao na CPU com Q8_0
+KATANA_CPU_KV8=1 KATANA_CTX=131072 ./katana selftest $M
+KATANA_CTX=131072 ./katana selftest $M                      # fp16, referencia
+# gulosa no grafo Vulkan de verdade (conferir "atencao completa na CPU" no stderr)
+for kv in 0 1; do KATANA_CPU_KV8=$kv KATANA_CTX=131072 KATANA_BACKEND=vulkan ./katana run $M "Explique o cache KV." 60 0; done
+# velocidade, alternando (bench 512+32 e em profundidade)
+for i in 1 2 3; do for kv in 0 1; do KATANA_CPU_KV8=$kv KATANA_CTX=131072 ./katana bench $M 512 32; done; done
+for kv in 0 1; do KATANA_CPU=1 KATANA_CPU_KV8=$kv KATANA_CTX=262144 KATANA_BENCH_POS=262000 ./katana run $M "Ola" 16 0; done
+# agulha no palheiro (fp16 x Q8_0)
+python3 tools/agulha.py --vulkan --tokens 32000 --pos 0.1,0.5,0.9 --modo fp16,q8
+python3 tools/agulha.py --vulkan --tokens 128000 --pos 0.1,0.5,0.9 --modo fp16,q8 --timeout 7200
+```
+
 ## 0d. qwen35moe no Vulkan com contexto longo: atencao completa na CPU (2026-11-17, ramo worktree-agent-a460c3809aea8f50a)
 
 Achado: o grafo Vulkan do qwen35moe ja tinha prompt em lote (DeltaNet por `dn_seq` exato ou em blocos com
@@ -116,7 +156,7 @@ do prefill e token a token (qn_layers_n chama qn_core por token).
 
 Pendente:
 - Prefill em lote da atencao do qwen35 (todas as consultas do lote contra cada bloco de K/V) — maior ganho para encher contexto.
-- Cache KV em Q8_0 (10,7 GB a 1M, metade do fp16): simples no qn_att_job (bloco de 32 com escala), nao feito.
+- Cache KV em Q8_0: feito, ver 0e.
 - Qualidade do yarn x4 nao avaliada (nenhum teste de agulha no palheiro).
 - GPU: Vulkan/OpenCL nao usam `kq_mul` do yarn generico nem cache compacto; a 1M o grafo Vulkan nao cabe (usar KATANA_CPU=1).
   Outros caminhos CPU (densos `cpu_layers`/`cpu_layers_nc`) ainda alocam o cache em todas as camadas fp32 e nao usam `kq_mul`.
