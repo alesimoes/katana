@@ -214,14 +214,15 @@ void fill(uint kk, uint ao, uint bo) {
                 }
             }
 #elif WT == 5
-            {   // Q5_1 exato: escala e minimo float + 32 uint8; peso = d*q + m
-                const uint base = wbase + ((k0 >> 5) + (gi >> 1)) * 10 * 32;
-                const float d = uintBitsToFloat(wb.w[base]), mn = uintBitsToFloat(wb.w[base + 32]);
-                for (uint v = 0; v < 4; v++) {
-                    const uint wd = wb.w[base + (2 + (gi & 1) * 4 + v) * 32];
-                    for (uint b = 0; b < 4; b++) {
-                        const float wf = d * float((wd >> (8 * b)) & 255u) + mn;
-                        PUTA(o + v * 4 + b, wf);
+            {   // Q5_1 exato, 6 palavras: escala e minimo fp16, quinto bit, 4 palavras de 4 bits; peso = d*q + m
+                const uint base = wbase + ((k0 >> 5) + (gi >> 1)) * 6 * 32;
+                const vec2 dm = unpackHalf2x16(wb.w[base]);
+                const uint hb = wb.w[base + 32] >> (16 * (gi & 1));
+                for (uint v = 0; v < 2; v++) {
+                    const uint wd = wb.w[base + (2 + (gi & 1) * 2 + v) * 32];
+                    for (uint b = 0; b < 8; b++) {
+                        const float wf = dm.x * float(((wd >> (4 * b)) & 15u) | (((hb >> (8 * v + b)) & 1u) << 4)) + dm.y;
+                        PUTA(o + v * 8 + b, wf);
                     }
                 }
             }

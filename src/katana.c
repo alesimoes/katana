@@ -3630,7 +3630,7 @@ static uint32_t gpu_kind(const Mat *W) {
     switch (W->type) {
         case T_Q4_0: case T_Q5_0: case T_MXFP4: case T_IQ4_NL: case T_IQ4_XS: return T_Q8_0;
         case T_Q4_1: return T_Q8_0;    /* requantizado (aproximado, ver gpu_pack_row) */
-        case T_Q5_1: return gpu.vk ? T_Q5_1 : T_Q8_0;  /* Vulkan: layout exato (escala e minimo float + 32 uint8) */
+        case T_Q5_1: return gpu.vk ? T_Q5_1 : T_Q8_0;  /* Vulkan: layout exato (o bloco do arquivo reordenado, 6 palavras) */
         case T_Q3_K: return T_Q6_K;
         default: return W->type;
     }
@@ -3649,7 +3649,7 @@ static size_t gpu_wpr(const Mat *W, size_t cols) {
         case T_Q5_K: return cols / 256 * 44;
         case T_Q6_K: return cols / 256 * 53;
         case T_Q2_K: return cols / 256 * 21;
-        case T_Q5_1: return cols / 32 * 10;
+        case T_Q5_1: return cols / 32 * 6;
         default:     return cols / 32 * 9;
     }
 }
@@ -3709,16 +3709,16 @@ static void gpu_pack_row(const Mat *W, size_t r, size_t cols, uint32_t *o) {
         }
         return;
     }
-    case T_Q5_1: if (gpu.vk) {     /* layout exato da GPU: d, m (float) e os 32 valores 0..31 em uint8 */
-        for (size_t b = 0; b < cols / 32; b++, src += 24, o += 10) {
-            const float d = h2f(src), mn = h2f(src + 2);
-            uint32_t qh; memcpy(&qh, src + 4, 4);
-            uint8_t q[32];
+    case T_Q5_1: if (gpu.vk) {     /* layout exato da GPU (6 palavras): d e m fp16, quinto bit de cada valor,
+                                      4 bits baixos com o valor j na palavra 2 + j/8, bits 4*(j%8) */
+        for (size_t b = 0; b < cols / 32; b++, src += 24, o += 6) {
+            memcpy(o, src, 4); memcpy(o + 1, src + 4, 4);
+            uint32_t lo[4] = { 0, 0, 0, 0 };
             for (int j = 0; j < 16; j++) {
-                q[j] = (uint8_t)((src[8 + j] & 0xF) | (((qh >> j) & 1) << 4));
-                q[j + 16] = (uint8_t)((src[8 + j] >> 4) | (((qh >> (j + 16)) & 1) << 4));
+                lo[j / 8] |= (uint32_t)(src[8 + j] & 0xF) << (4 * (j % 8));
+                lo[(j + 16) / 8] |= (uint32_t)(src[8 + j] >> 4) << (4 * (j % 8));
             }
-            memcpy(o, &d, 4); memcpy(o + 1, &mn, 4); memcpy(o + 2, q, 32);
+            memcpy(o + 2, lo, 16);
         }
         return;
     }
