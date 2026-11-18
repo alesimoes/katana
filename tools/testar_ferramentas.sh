@@ -121,6 +121,20 @@ GRP="$T/grp.pid"
 sleep 0.5
 if kill -0 "$(cat "$GRP")" 2>/dev/null; then FAIL=$((FAIL+1)); echo "FALHA run: filho sobrou apos timeout"; kill -9 "$(cat "$GRP")"; else OK=$((OK+1)); echo "ok   run: grupo de processos morto no timeout"; fi
 
+echo "== sudo com senha pedida ao usuario (sudo falso)"
+mkdir -p fakebin; cat > fakebin/sudo <<'EOS'
+#!/bin/sh
+case "$1" in -n) exit 1;; esac
+A=0; for x; do [ "$x" = -A ] && A=1; done
+[ $A = 1 ] || { echo "sudo: a terminal is required to read the password"; exit 1; }
+P=$("$SUDO_ASKPASS"); [ "$P" = secret ] || { echo "sudo: incorrect password"; exit 1; }
+while [ "$1" = -A ] || [ "$1" = -k ] || [ "$1" = -v ]; do shift; done
+[ $# -gt 0 ] && exec "$@"; exit 0
+EOS
+chmod +x fakebin/sudo
+SU=$(printf 'run_command {"command":"sudo echo ola-root"}\n\001PASS secret\nrun_command {"command":"sudo echo de-novo"}\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 "$KAT" toolrun 2>/dev/null)
+if echo "$SU" | grep -q "ola-root" && echo "$SU" | grep -q "de-novo" && [ "$(echo "$SU" | grep -c NEEDPASS)" = 1 ]; then OK=$((OK+1)); echo "ok   sudo: pede a senha uma vez e reaproveita"; else FAIL=$((FAIL+1)); echo "FALHA sudo: $SU"; fi
+
 echo "== terminal, read_log, terminal_screen (uma sessao do katana com varias chamadas)"
 printf 'a\nERRO: falhou aqui\nb\nWARN algo\nc\n' > app.log
 TR=$("$KAT" toolrun 2>/dev/null <<'EOT'

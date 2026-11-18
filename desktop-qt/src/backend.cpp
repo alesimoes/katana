@@ -403,6 +403,12 @@ void Backend::stop()
 #endif
 }
 
+void Backend::sendPassword(const QString &pw)
+{
+    if (m_proc)
+        m_proc->write(QByteArray("\x01PASS ") + pw.toUtf8() + "\n");  // direto, sem log nem historico
+}
+
 void Backend::writeLine(const QString &line)
 {
     if (m_proc)
@@ -676,6 +682,8 @@ void Backend::handleMarker(const QByteArray &line)
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
         if (a.size() >= 2)
             m_msgs.append("notice", "Contexto compactado: " + a[0] + " -> " + a[1] + " tokens");
+    } else if (name == "NEEDPASS") {  // o motor precisa da senha do sudo
+        emit passwordRequested();
     } else if (name == "RESUMING") {  // RESUMING <tokens>: recalculo longo (so na 1a vez; depois o KV vem do disco)
         setTexts("Retomando a sessao: recalculando " + args.trimmed() + " tokens (so na primeira vez, pode levar alguns minutos)...", {});
     } else if (name == "RESUME") {  // RESUME <msgs> <msgs_total> <tokens> <especialistas> <segundos> <kv|calc>

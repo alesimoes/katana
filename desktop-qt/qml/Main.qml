@@ -30,6 +30,46 @@ ApplicationWindow {
     onNarrowChanged: drawerOpen = false
     Shortcut { sequence: "Escape"; onActivated: win.drawerOpen = false }
 
+    Connections {
+        target: backend
+        function onPasswordRequested() { pwField.text = ""; pwDlg.open(); pwField.forceActiveFocus(); }
+    }
+    Popup {
+        id: pwDlg
+        objectName: "passwordDialog"
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(420, win.width - 40)
+        padding: 18
+        property bool answered: false
+        onOpened: answered = false
+        onClosed: { if (!answered) backend.sendPassword(""); }
+        function answer(ok) { answered = true; backend.sendPassword(ok ? pwField.text : ""); pwField.text = ""; close(); }
+        background: Rectangle { radius: 14; color: Theme.card; border.color: Theme.bd }
+        contentItem: Column {
+            spacing: 10
+            Text { font.family: Theme.sans; text: "Senha do sudo"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
+            Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
+                text: "O agente quer executar um comando com sudo. A senha fica só na memória desta sessão e não vai para o modelo." }
+            TextField {
+                id: pwField
+                width: parent.width
+                echoMode: TextInput.Password
+                placeholderText: "Senha"
+                color: Theme.fg
+                Accessible.name: "Senha do sudo"
+                onAccepted: pwDlg.answer(true)
+            }
+            Row {
+                spacing: 8
+                anchors.right: parent.right
+                Button { text: "Cancelar"; onClicked: pwDlg.answer(false) }
+                Button { text: "Autorizar"; highlighted: true; onClicked: pwDlg.answer(true) }
+            }
+        }
+    }
+
     Item {
         anchors.fill: parent
 

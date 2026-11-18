@@ -107,6 +107,7 @@ public:
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void sendPassword(const QString &pw);  // resposta ao pedido de senha do sudo (vazia = cancelar)
     Q_INVOKABLE bool newChat();
     Q_INVOKABLE bool openSession(const QString &id);
     Q_INVOKABLE bool deleteSession(const QString &id);
@@ -132,6 +133,7 @@ signals:
     void thinkingChanged();
     void textsChanged();
     void sessionsChanged();
+    void passwordRequested();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
