@@ -1383,3 +1383,6 @@ done
 Comparar tambem a geracao (9 vagas e Q5_1 em 6 palavras em vez de 9: menos leitura na GPU) contra o binario do
 main. Se o MoE do lote nas vagas nao ganhar, voltar o padrao para a CPU (continua exato).
 
+
+## 0m. sudo no agente (2026-11-18)
+`run_command` com `sudo`: se `sudo -n true` falha, o motor pergunta a senha uma vez (terminal sem eco; no desktop, marcador `NEEDPASS` e resposta `\x01PASS senha` na entrada), valida com `sudo -A -k -v` e guarda so em memoria (`g_sudo_pw`). Os comandos rodam com `sudo() { command sudo -A "$@"; }` e `SUDO_ASKPASS=~/.katana/askpass.sh` lendo `KATANA_PW` do ambiente do filho. Teste com sudo falso em `tools/testar_ferramentas.sh` (96/96). Nao cobre a ferramenta `terminal` (pty): la o modelo ve o prompt de senha. Nao testado com sudo real nem com o dialogo na janela.
