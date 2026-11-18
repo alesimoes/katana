@@ -4,6 +4,82 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0d. Sessoes retomaveis: calor de especialistas + contexto compacto (2026-11-17, ramo worktree-agent-ab5f12c6b1188314b)
+
+Inclui (cherry-pick) o commit 79b1c0c do ramo worktree-agent-a2f7cb1d88e13a81e: compactacao no formato Gemma 4 e
+cache de prefixo em disco com KV fp16 (CPU) e anel do gemma4.
+
+Feito (agente, formatos ChatML e Gemma 4; gpt-oss nao):
+- **Arquivo de sessao `.ksess`** (binario): impressao digital do modelo (arquitetura, tamanho, parametros, formato
+  de chat), **calor de especialistas da sessao** (o mesmo vetor camada x especialista do `.heat`, so se o cache de
+  especialistas estiver ligado), **conversa compacta** (resumo + 2 ultimos pedidos do usuario com o que veio depois,
+  no texto exato do cache) **com os ids tokenizados**, e a conversa inteira (para quem quiser reprocessar tudo).
+  Gravado a cada resposta (barato, sem resumir: corta os turnos antigos e mantem um resumo que ja existia) e, ao
+  trocar de sessao (`/retomar`, `/sessao` para outro arquivo, `/novo`) ou sair, com resumo feito pelo modelo
+  (`ah_summary`) quando as mensagens passam de `KATANA_RETOMAR_TOK` tokens (padrao 1500).
+- Limite de disco e expiracao: na pasta da sessao, `.ksess` mais velhos que `KATANA_SESS_DIAS` (30) sao apagados e,
+  se a pasta passar de `KATANA_SESS_MB` (256), os mais antigos. O KV salvo em `~/.katana/cache` segue o PFX_KEEP (8).
+- **Retomar**: `katana agent <modelo> --retomar <arquivo>` (grava de volta no mesmo arquivo) ou `--sessao <arquivo>`;
+  em execucao, `/retomar <arquivo>` e `/sessao <arquivo>` (este e silencioso: nao manda READY). A retomada:
+  (1) recusa sessao de outro modelo (`KATANA_RETOMAR_OUTRO=1` forca); (2) `heat_apply`: troca o calor pelo da sessao
+  e pede so os S mais quentes de cada camada (com a thread carregadora a carga corre junto do prompt; sem ela,
+  `expert_load` na hora); (3) renderiza a conversa compacta com o prompt de sistema atual, confere com os ids
+  gravados; (4) tenta `pfx_load` do KV desse prefixo (chave = ids+geometria); se nao houver, recalcula (aproveitando
+  o prefixo de sistema do disco) e grava o KV para a proxima. `KATANA_RETOMAR=completo` reprocessa a conversa
+  inteira, sem calor (comparacao).
+- Marcador `\x01RESUME <msgs_compactas> <msgs_total> <tokens> <especialistas_pedidos> <segundos> <kv|calc>` seguido de
+  `\x01TOKENS`.
+- **DeltaNet / gemma4**: `pfx_geom` so cobre o cache da CPU quando ha estado SSM (qwen35moe) ou anel (gemma4). Com o
+  qwen35moe no grafo Vulkan (KV na VRAM, estado DeltaNet na GPU) nao ha KV em disco: a retomada recalcula o prefixo
+  compacto. Com o gemma4 o KV do anel vai inteiro se a conversa passou da janela.
+- **`katana calibrar <modelo> [texto]`**: passa textos variados (pt/en, codigo, chamada de ferramenta) token a token e
+  grava como `.heat` a media do calor (o `.heat` normal guarda so o calor do fim da ultima sessao, que decai 0,98
+  por token). Serve ao gemma4 (pedido da secao 10, item 2) e a qualquer MoE no modo hibrido.
+- **katana-desktop**: ao mandar a 1a mensagem de uma sessao, `/sessao <sessoes>/<id>.ksess`; ao abrir uma sessao com
+  `.ksess`, `/retomar` (sem o resumo textual na mensagem); sem `.ksess`, ou se o motor recusar (sem RESUME antes do
+  READY), volta ao resumo textual de antes. Mostra o aviso "Sessao retomada: N tokens de contexto compacto (...) em
+  X s, recalculado|cache KV lido do disco; W especialistas aquecidos". Apagar a sessao apaga o `.ksess`. Troca de
+  modelo com sessao aberta: o motor novo tenta retomar e recusa se for outro modelo. Selftest ganhou o trecho
+  "retomar sessao pelo motor".
+
+**Medido (2026-11-17, noite; a GPU estava disputada por outros agentes rodando bench do gemma4/Qwen3.6, entao o
+modo de cada rodada variou: anotado ao lado).** Tempo ate a 1a resposta = `/retomar` + pergunta ate o 1o token, com o
+modelo ja carregado (harness em Python lendo os marcadores). HOME isolado (memoria do agente vazia), pergunta sobre
+um fato dito so no 1o turno ("codigo do cofre", que so sobrevive na compacta via resumo).
+
+| modelo | sessao | modo da GPU | retomada compacta | reprocessar tudo |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B | 6 turnos, 6819 tok inteira / 2938 compacta | grafo Vulkan completo, cache de especialistas 10/256 | 112,6 s | 209,0 s |
+| Qwen3.6-35B-A3B | idem | hibrido sem cache de especialistas (VRAM tomada) | 222,9 s | 831,3 s |
+| gemma4 26B-A4B (ctx 8192) | 3 turnos, ~2070 tok inteira / 1988 compacta (KATANA_RETOMAR_TOK=600) | gemma4 com camadas na CPU (108 produtos na GPU) | 324,7 s (recalcula) / **5,05 s** (KV do disco, 0,26 s) | 501,4 s |
+
+As rodadas compacta x completa foram alternadas na mesma hora, mas os pares nao tiveram o mesmo modo da GPU (os
+outros processos pegavam a VRAM entre uma e outra), por isso estao separados por modo; so a 1a linha e a 3a sao
+comparaveis par a par. Todas as respostas: "4817" (correto); outra pergunta (orcamento, ultimo turno): "38 mil reais".
+O resumo gravado (Qwen3.6 e gemma4) guardou cofre, projeto/gerente, data e porta.
+
+Nao medido: o ganho do **aquecimento** de especialistas. Em todas as rodadas com a sessao que tinha calor, a VRAM
+estava tomada e o cache de especialistas nao ligou ("0 especialistas aquecidos"); `heat_apply` so foi exercitado
+no caminho de compilacao/logica, nao com GPU. `KATANA_RETOMAR_FRIO=1` existe para a comparacao com/sem calor.
+Estimativa (nao medida): o aquecimento so muda a velocidade dos primeiros tokens gerados (o prompt em lote do
+qwen35moe ja usa vagas temporarias para os frios).
+
+Custos observados: o resumo ao sair/trocar de sessao reprocessa a transcricao (Qwen3.6 hibrido ~9 min para ~6k
+tokens a 9 tok/s; gemma4 ~7 min). O desktop manda `/sair` e mata o agente depois de 3 s, entao ao fechar o app o
+`.ksess` fica com a versao barata (ultimos turnos + resumo que ja existia). KV no disco do gemma4 e grande
+(cache da CPU fp32: 507 MB para 1988 tokens); qwen35moe no grafo Vulkan nao grava KV (estado DeltaNet na GPU).
+
+Pendencias:
+- Medir o aquecimento com a GPU livre (sessao com calor: gravar uma sessao no grafo completo; `--retomar` com e sem
+  `KATANA_RETOMAR_FRIO=1`, comparar tok/s dos primeiros 64 tokens e acertos do cache).
+- `katana calibrar` nao rodou com o cache de especialistas ligado (mesma razao); rodar no gemma4 com a GPU livre.
+- KV do qwen35moe no grafo Vulkan (ler/gravar vkg + estado DeltaNet da GPU) para a retomada nao recalcular.
+- Resumo em segundo plano / ao fim de cada turno longo, para o fechamento do app nao perder o resumo; aumentar a
+  espera do `/sair` no desktop.
+- `chat` (sem ferramentas) ainda nao tem `--retomar`; so o `agent`.
+- O teste inicial deste trabalho chamou a ferramenta `remember` e gravou 4 fatos de teste em `~/.katana/memoria.txt`
+  (Andorinha/Joaquim, quinta dia 26, porta 7443, verde-musgo): apagar a mao (o ambiente nao me deixou editar).
+
 ## 0c. katana-desktop nativo em Qt6 (2026-11-17)
 
 O katana-desktop deixou de ser Go + pagina HTML no Chrome: agora e um app Qt6/QML em `desktop-qt/` (ver
