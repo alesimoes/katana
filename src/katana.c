@@ -7344,7 +7344,7 @@ static void dn_gate(const Config *c, const Layer *L, float *o, const float *z) {
 /* atencao com portao de um token, em pedacos de posicoes (flash-decoding): cada trabalho pega uma cabeca kv e
    um pedaco de posicoes e atende as `group` cabecas q dela juntas (cada linha de K/V sai da RAM uma vez so).
    Softmax online em blocos de 64; os parciais (maximo, soma, saida) de cada pedaco se juntam no fim. A memoria
-   de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32 ou fp16 (m->kh/m->vh). */
+   de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32, fp16 (m->kh/m->vh) ou Q8_0 (m->kq8/m->vq8). */
 #define QN_MAXCH 256
 #define QN_MAXG 16
 typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos, hd, kvd, group, nch, chl; float scale; } QnAttJob;
@@ -7498,7 +7498,7 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
     static __thread float *ob, *scb; static __thread int ocap;
     const int nq = j->tps * G;
     if (ocap < nq) { free(ob); free(scb); ob = xalloc((size_t)nq * 512, sizeof(float)); scb = xalloc((size_t)nq * 64, sizeof(float)); ocap = nq; }
-    float mx[GPU_BMAX * QN_MAXG], sum[GPU_BMAX * QN_MAXG];
+    float mx[GPU_BMAX * QN_MAXG], sum[GPU_BMAX * QN_MAXG], kr[512];
     for (int job = j0; job < j1; job++) {
         const int sp = job % j->nsp, ch = (job / j->nsp) % j->nch, g = job / (j->nsp * j->nch);
         const int t0q = sp * j->tps, t1q = t0q + j->tps < j->B ? t0q + j->tps : j->B;
@@ -7514,6 +7514,12 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
                 if (nb <= 0) continue;
                 for (int i = 0; i < nb; i++) {
                     const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
+                    if (m->kq8) {   /* Q8_0: abre a linha uma vez para as G cabecas */
+                        q8_get(kr, m->kq8 + r / 32 * 34, hd);
+                        for (int u = 0; u < G; u++)
+                            scb[(size_t)((t - t0q) * G + u) * 64 + i] = dot(j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd, kr, hd) * j->scale;
+                        continue;
+                    }
                     for (int u = 0; u < G; u++) {
                         const float *qh = j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd;
                         scb[(size_t)((t - t0q) * G + u) * 64 + i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
@@ -7534,8 +7540,9 @@ static void qn_att_n_job(void *cx, int j0, int j1) {
                 }
                 for (int i = 0; i < nb; i++) {
                     const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
+                    if (m->vq8) q8_get(kr, m->vq8 + r / 32 * 34, hd);
                     for (int k = 0; k < hd; k += 8) {
-                        const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
+                        const __m256 vv = m->vq8 ? _mm256_loadu_ps(kr + k) : m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
                         for (int u = 0; u < G; u++) {
                             const int qi = (t - t0q) * G + u;
                             float *o = ob + (size_t)qi * 512;
@@ -7583,7 +7590,8 @@ static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const fl
             }
         }
         const size_t koff = L->kv_off + (size_t)pos * kvd;
-        if (m->kh) {
+        if (m->kq8) { q8_put(m->kq8 + koff / 32 * 34, k, kvd); q8_put(m->vq8 + koff / 32 * 34, v, kvd); }
+        else if (m->kh) {
             for (int i = 0; i < kvd; i += 8) {
                 _mm_storeu_si128((__m128i *)(m->kh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(k + i), 0));
                 _mm_storeu_si128((__m128i *)(m->vh + koff + i), _mm256_cvtps_ph(_mm256_loadu_ps(v + i), 0));
@@ -7821,7 +7829,7 @@ static int vkq_build(Model *m) {
     /* atencao completa na CPU (cache KV na RAM, qn_core/qn_core_n): o grafo deixa de depender do contexto e cabe
        com contextos longos; padrao quando o cache em 16 bits passaria de 512 MB. KATANA_QN_CPUATT=0/1 forca. */
     vkq.cpuatt = getenv("KATANA_QN_CPUATT") ? atoi(getenv("KATANA_QN_CPUATT")) != 0 : kv32 / 2 > ((size_t)512 << 20);
-    if (vkq.cpuatt && !m->kcache && !m->kh) vkq.cpuatt = 0;
+    if (vkq.cpuatt && !m->kcache && !m->kh && !m->kq8) vkq.cpuatt = 0;
     vkg.nl = c->n_layers;
     vkg.x = vk_wk(d * 4, &fail); vkg.xn = vk_wk(d * 4, &fail);
     vkg.k = vk_wk(kvd * 4, &fail); vkg.v = vk_wk(kvd * 4, &fail);
