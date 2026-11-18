@@ -1,0 +1,31 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "mv_common.glsl"
+// Q5_1 exato, 6 palavras por bloco de 32 pesos (o proprio bloco do arquivo, reordenado):
+// palavra 0 = escala e minimo (fp16), 1 = quinto bit dos 32 valores, 2..5 = 4 bits baixos (valor j na palavra
+// 2 + j/8, bits 4*(j%8)); peso = d*q + m
+void main() {
+    ini();
+    int nb = pc.cols >> 5, bps = nb / NSEG, b0 = sgi * bps;
+    uint p[NR];
+    for (int r = 0; r < NR; r++) p[r] = rptr(r, nb * 6) + uint(b0) * (6u * 32u);
+    int xb = b0 * 32;
+    for (int b = 0; b < bps; b++, xb += 32) {
+        float a[NR], sx = 0.0;
+        uint qh[NR];
+        for (int r = 0; r < NR; r++) { a[r] = 0.0; qh[r] = W[p[r] + 32u]; }
+        for (int l = 0; l < 4; l++) {
+            float xv[8];
+            for (int k = 0; k < 8; k++) xv[k] = x[xoff_ + xb + 8 * l + k];
+            sx += ((xv[0] + xv[1]) + (xv[2] + xv[3])) + ((xv[4] + xv[5]) + (xv[6] + xv[7]));
+            for (int r = 0; r < NR; r++) {
+                uint w = W[p[r] + uint(2 + l) * 32u], hb = qh[r] >> (8 * l);
+                float s = 0.0;
+                for (int k = 0; k < 8; k++) s += float(((w >> (4 * k)) & 15u) | (((hb >> k) & 1u) << 4)) * xv[k];
+                a[r] += s;
+            }
+        }
+        for (int r = 0; r < NR; r++) { vec2 dm = h2(W[p[r]]); total[r] += dm.x * a[r] + dm.y * sx; p[r] += 6u * 32u; }
+    }
+    finish();
+}
