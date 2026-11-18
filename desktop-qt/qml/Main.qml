@@ -71,7 +71,6 @@ ApplicationWindow {
                     tip: "Mostrar ou ocultar a lateral"
                     onClicked: win.toggleSide()
                 }
-                ModelPicker { Layout.maximumWidth: parent.width - 120 }
                 Item { Layout.fillWidth: true }
             }
 

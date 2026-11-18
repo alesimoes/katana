@@ -93,6 +93,18 @@ Item {
             }
         }
 
+        // seletor de modelo embaixo da caixa, ao lado do botao de enviar (a lista abre para cima)
+        ModelPicker {
+            id: picker
+            anchors.right: sendBtn.left
+            anchors.rightMargin: 4
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 8
+            implicitHeight: 38
+            maxWidth: Math.max(140, box.width - 38 - 8 - 4 - 16)
+            compact: true
+        }
+
         IconButton {
             id: sendBtn
             objectName: "sendButton"

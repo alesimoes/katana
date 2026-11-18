@@ -26,6 +26,6 @@ QtObject {
     readonly property color err: dark ? dk.err : lt.err
     readonly property color foc: dark ? dk.foc : lt.foc
     readonly property color shadow: dark ? dk.shadow : lt.shadow
-    readonly property int sideWidth: 276
+    readonly property int sideWidth: 304
     readonly property int colWidth: 760
 }

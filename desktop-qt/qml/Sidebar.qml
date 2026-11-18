@@ -156,7 +156,7 @@ Rectangle {
                             text: row.modelData.titulo || "(sem título)"
                             elide: Text.ElideRight
                             color: Theme.fg
-                            font.pixelSize: 14
+                            font.pixelSize: 13
                         }
                         Text {
                             width: openBtn.width - 14
@@ -164,7 +164,7 @@ Rectangle {
                                   + (row.modelData.modelo ? " · " + side.shortModel(row.modelData.modelo) : "")
                             elide: Text.ElideRight
                             color: Theme.mut
-                            font.pixelSize: 12
+                            font.pixelSize: 11
                         }
                     }
                 }

@@ -258,7 +258,7 @@ Item {
                 wrapMode: Text.Wrap
                 color: Theme.mut
                 font.pixelSize: 15
-                text: !backend.running && !backend.loading ? "Escolha um modelo no topo para iniciar o agente."
+                text: !backend.running && !backend.loading ? "Escolha um modelo embaixo, ao lado de enviar, para iniciar o agente."
                       : backend.loading ? "Carregando o modelo, pode levar alguns minutos..."
                       : "Escreva abaixo ou comece por uma sugestão."
             }
