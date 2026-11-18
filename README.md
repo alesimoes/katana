@@ -27,6 +27,8 @@ katana agent <modelo.gguf>         conversa com ferramentas: ler e listar na pas
 katana mcp                        lista os servidores MCP configurados e as ferramentas de cada um
 katana agent <modelo.gguf>         conversa com ferramentas: arquivos, comandos, busca na web, leitura de páginas e memória persistente
 katana tool <nome> '<json>'        executa uma ferramenta do agente sem modelo (teste)
+katana agentsys [qwen|json|gemma4]  imprime o prompt de sistema do agente (lista de ferramentas) no formato pedido
+katana toolparse <xml|gemma4> '<chamada>'  converte uma chamada do modelo e executa a ferramenta (teste)
 katana pack  <modelo.gguf>        gera os shards no layout da GPU (<modelo>.gguf.ktn/)
 katana verify <modelo.gguf>       confere o SHA-256 de cada shard
 katana sparsity <modelo.gguf> <calibracao.txt> <avaliacao.txt>   esparsidade do feed-forward por assunto (modelo denso)
@@ -232,3 +234,19 @@ lidos e gravados como bytes crus (OpenCL e Vulkan); modelos MLA (deepseek2) e es
 
 - `katana.c`: o motor inteiro.
 - `ia.c`: protótipo inicial (transformer mínimo com formato próprio), mantido como referência.
+
+## Ferramentas do agente para programar
+
+Alem de `read_file`, `list_dir`, `search_files`, `write_file`, `run_command`, `web_search`, `web_fetch`,
+`remember`, `recall` e MCP, o `katana agent` tem:
+
+| ferramenta | o que faz |
+|---|---|
+| `edit_file(path, old, new, replace_all?)` | troca exata de trecho num arquivo da pasta atual; falha se `old` nao existe ou nao e unico (sem `replace_all`); mostra um diff curto |
+| `glob(pattern, root?)` | arquivos por padrao (`**` cruza pastas, `*` e `?` nao); ate 200 resultados, ignora `.git`, `node_modules`, `.venv` |
+| `read_document(path)` | PDF (precisa de `pdftotext`) e HTML (sem scripts/estilos) como texto, truncado |
+| `download_file(url, path)` | baixa com curl para a pasta atual; mostra tamanho e SHA-256; limite `KATANA_DL_MAX_MB` (padrao 2048) |
+| `install_package(manager, name)` | `pip` (venv ativa, `./.venv` ou `--user`), `npm`, `apt` (`sudo -n`; falha claro se pedir senha), `cargo` |
+| `git(args)` | status, diff, log, show, add, commit, branch, checkout, switch, clone, pull, fetch, push; recusa `push --force`, `reset --hard` e afins sem `KATANA_GIT_UNSAFE=1` |
+
+Teste sem modelo e sem GPU: `sh tools/testar_ferramentas.sh` (usa `katana tool`).

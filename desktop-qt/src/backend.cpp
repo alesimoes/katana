@@ -754,13 +754,14 @@ void Backend::assistantText(const QString &t)
 QString Backend::cleanArgs(const QString &in)
 {
     const QString s = in.trimmed();
-    static const QRegularExpression kv(R"re("(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)")re");
+    // valor texto, ou booleano/numero sem aspas (ex.: edit_file replace_all, que o Gemma 4 manda como true)
+    static const QRegularExpression kv(R"re("(\w+)"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(true|false|-?\d+)(?=\s*[,}]|$)))re");
     if (s.contains('{')) {
         QStringList parts;
         auto it = kv.globalMatch(s);
         while (it.hasNext()) {
             const auto m = it.next();
-            const QString raw = m.captured(2);
+            const QString raw = m.captured(2).isNull() ? m.captured(3) : m.captured(2);
             QString v;
             for (int i = 0; i < raw.size();) {
                 if (raw.mid(i, 2) == "\\\"") { v += '"'; i += 2; }
