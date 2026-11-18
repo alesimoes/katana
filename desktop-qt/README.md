@@ -46,7 +46,7 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
 
 Terminal embutido: botao `>_` na barra de titulo (ou Ctrl+`) abre um painel inferior com um shell bash real em pty (via `script`, so Linux): cores, cursor, edicao de linha, historico (setas), Tab, Ctrl+C/D, copiar Ctrl+Shift+C, colar Ctrl+Shift+V, Limpar, Reiniciar. Emulador proprio em `src/terminal.cpp` (SGR 16/256/truecolor, CSI de cursor e apagar); programas de tela cheia (vim, top) nao funcionam. Sudo e senhas sao digitados no proprio terminal. O terminal do usuario e separado do `terminal` do agente.
 
-Sudo: quando o agente roda um comando com `sudo` que pede senha, o motor emite o marcador `NEEDPASS`; o desktop abre um dialogo de senha e responde com `\x01PASS <senha>` (vazio = cancelar). A senha fica so na memoria do agente e no ambiente do comando (askpass), nao vai ao modelo nem ao historico. No terminal (`katana agent`) a senha e pedida na propria tela, sem eco.
+Sudo: o agente roda os comandos como root por padrao (`KATANA_SUDO=0` desliga; veja handoff 0n). Quando precisa da senha, o motor emite o marcador `NEEDPASS`; o desktop abre um dialogo de senha e responde com `\x01PASS <senha>` (vazio = cancelar). A senha fica so na memoria do agente e no ambiente do comando (askpass), nao vai ao modelo nem ao historico. No terminal (`katana agent`) a senha e pedida na propria tela, sem eco.
 
 Modelo lembrado: o ultimo modelo iniciado fica em ui.ini (`ultimoModelo`) e e o que abre na proxima vez; ao abrir uma conversa salva, o desktop troca para o modelo em que ela estava (se estiver utilizavel) e retoma a sessao.
 
