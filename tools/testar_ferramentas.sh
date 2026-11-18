@@ -135,6 +135,9 @@ chmod +x fakebin/sudo
 SU=$(printf 'run_command {"command":"sudo echo ola-root"}\n\001PASS secret\nrun_command {"command":"sudo echo de-novo"}\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 "$KAT" toolrun 2>/dev/null)
 if echo "$SU" | grep -q "ola-root" && echo "$SU" | grep -q "de-novo" && [ "$(echo "$SU" | grep -c NEEDPASS)" = 1 ]; then OK=$((OK+1)); echo "ok   sudo: pede a senha uma vez e reaproveita"; else FAIL=$((FAIL+1)); echo "FALHA sudo: $SU"; fi
 
+SD=$(printf 'run_command {"command":"echo \\"it'"'"'s-root\\"; echo dois"}\n\001PASS secret\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
+if echo "$SD" | grep -q "it's-root" && echo "$SD" | grep -q "dois" && echo "$SD" | grep -q NEEDPASS; then OK=$((OK+1)); echo "ok   sudo por padrao: comando inteiro (com aspas) roda via sudo -A sh -c"; else FAIL=$((FAIL+1)); echo "FALHA sudo padrao: $SD"; fi
+
 echo "== terminal, read_log, terminal_screen (uma sessao do katana com varias chamadas)"
 printf 'a\nERRO: falhou aqui\nb\nWARN algo\nc\n' > app.log
 TR=$("$KAT" toolrun 2>/dev/null <<'EOT'
