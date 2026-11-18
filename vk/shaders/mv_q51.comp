@@ -1,0 +1,26 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "mv_common.glsl"
+// Q5_1 exato: 10 palavras por bloco de 32 pesos: escala float, minimo float + 32 uint8 (0..31); peso = d*q + m
+void main() {
+    ini();
+    int nb = pc.cols >> 5, bps = nb / NSEG, b0 = sgi * bps;
+    uint p[NR];
+    for (int r = 0; r < NR; r++) p[r] = rptr(r, nb * 10) + uint(b0) * (10u * 32u);
+    int xb = b0 * 32;
+    for (int b = 0; b < bps; b++, xb += 32) {
+        float a[NR], sx = 0.0;
+        for (int r = 0; r < NR; r++) a[r] = 0.0;
+        for (int l = 0; l < 8; l++) {
+            float x0 = x[xoff_ + xb + 4 * l], x1 = x[xoff_ + xb + 4 * l + 1], x2 = x[xoff_ + xb + 4 * l + 2], x3 = x[xoff_ + xb + 4 * l + 3];
+            sx += (x0 + x1) + (x2 + x3);
+            for (int r = 0; r < NR; r++) {
+                uint w = W[p[r] + uint(2 + l) * 32u];
+                a[r] += float(w & 255u) * x0 + float((w >> 8) & 255u) * x1
+                      + float((w >> 16) & 255u) * x2 + float(w >> 24) * x3;
+            }
+        }
+        for (int r = 0; r < NR; r++) { total[r] += uintBitsToFloat(W[p[r]]) * a[r] + uintBitsToFloat(W[p[r] + 32u]) * sx; p[r] += 10u * 32u; }
+    }
+    finish();
+}
