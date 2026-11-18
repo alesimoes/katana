@@ -60,7 +60,7 @@ Item {
                 }
             }
         }
-        Text {
+        Text { font.family: Theme.sans;
             objectName: "ctxLabel"
             anchors.verticalCenter: parent.verticalCenter
             font.pixelSize: 12

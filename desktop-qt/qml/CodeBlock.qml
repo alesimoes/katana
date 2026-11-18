@@ -1,6 +1,7 @@
 import QtQuick
 import Katana
 import QtQuick.Controls
+import "Highlight.js" as Hl
 
 // Bloco de codigo com cabecalho e botao Copiar
 Rectangle {
@@ -18,7 +19,7 @@ Rectangle {
         width: parent.width
         height: 32
         color: Theme.codeh
-        Text {
+        Text { font.family: Theme.sans;
             anchors.verticalCenter: parent.verticalCenter
             x: 14
             text: cb.lang
@@ -49,7 +50,7 @@ Rectangle {
                 border.width: copy.visualFocus ? 2 : 0
                 border.color: Theme.foc
             }
-            contentItem: Text {
+            contentItem: Text { font.family: Theme.sans;
                 id: lbl
                 text: copy.done ? "Copiado" : "Copiar"
                 color: copy.hovered ? Theme.fg : Theme.mut
@@ -74,14 +75,15 @@ Rectangle {
             id: ed
             x: 14
             y: 12
-            text: cb.code
+            textFormat: TextEdit.RichText
+            text: Hl.html(cb.code, cb.lang, Theme.pal)
             readOnly: true
             selectByMouse: true
             wrapMode: TextEdit.NoWrap
             color: Theme.fg
             selectionColor: Theme.ac
             selectedTextColor: Theme.acfg
-            font.family: "JetBrains Mono"
+            font.family: Theme.mono
             font.pixelSize: 13
             Accessible.role: Accessible.StaticText
             Accessible.name: "Codigo"

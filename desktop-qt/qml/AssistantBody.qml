@@ -20,7 +20,7 @@ Column {
                 id: txl
                 active: blk.modelData.type === "text"
                 width: parent.width
-                sourceComponent: TextEdit {
+                sourceComponent: TextEdit { font.family: Theme.sans;
                     text: blk.modelData.html
                     textFormat: TextEdit.RichText
                     readOnly: true

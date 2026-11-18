@@ -64,7 +64,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-            TextArea.flickable: TextArea {
+            TextArea.flickable: TextArea { font.family: Theme.sans;
                 id: ta
                 objectName: "composerInput"
                 enabled: backend.ready
@@ -130,7 +130,7 @@ Item {
             maxWidth: Math.max(120, box.width * 0.45)
             compact: true
         }
-        Text {
+        Text { font.family: Theme.sans;
             Layout.fillWidth: true
             Layout.leftMargin: 8
             elide: Text.ElideRight
@@ -142,7 +142,7 @@ Item {
                   : ""
             Accessible.role: Accessible.StaticText
         }
-        Text {
+        Text { font.family: Theme.sans;
             Layout.rightMargin: 4
             font.pixelSize: 12
             color: Theme.mut

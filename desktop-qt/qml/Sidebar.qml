@@ -13,6 +13,7 @@ Rectangle {
     property int tick: 0
     Timer { interval: 60000; running: true; repeat: true; onTriggered: side.tick++ }
 
+    MouseArea { width: parent.width; height: 48; z: -1; onPressed: side.Window.window.startSystemMove() }
     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.bd }
 
     function relTime(ms) {
@@ -40,9 +41,9 @@ Rectangle {
             spacing: 8
             Rectangle {
                 width: 22; height: 22; radius: 7; color: Theme.ac
-                Text { anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 13 }
+                Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 13 }
             }
-            Text { text: "Katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
+            Text { font.family: Theme.sans; text: "Katana"; color: Theme.fg; font.bold: true; font.pixelSize: 17; Layout.fillWidth: true }
             IconButton {
                 objectName: "sidebarCollapse"
                 glyph: "left"
@@ -76,7 +77,7 @@ Rectangle {
                     width: 18; height: 40
                     Icon { anchors.centerIn: parent; name: "plus"; color: Theme.fg }
                 }
-                Text {
+                Text { font.family: Theme.sans;
                     height: 40
                     verticalAlignment: Text.AlignVCenter
                     text: "Nova conversa"
@@ -87,7 +88,7 @@ Rectangle {
             }
         }
 
-        Text {
+        Text { font.family: Theme.sans;
             text: "CONVERSAS"
             color: Theme.mut
             font.pixelSize: 11
@@ -110,7 +111,7 @@ Rectangle {
             Accessible.name: "Conversas salvas"
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            Text {
+            Text { font.family: Theme.sans;
                 visible: list.count === 0
                 text: "Nenhuma conversa salva ainda."
                 color: Theme.mut
@@ -151,14 +152,14 @@ Rectangle {
                         leftPadding: 10
                         topPadding: 8
                         spacing: 0
-                        Text {
+                        Text { font.family: Theme.sans;
                             width: openBtn.width - 14
                             text: row.modelData.titulo || "(sem título)"
                             elide: Text.ElideRight
                             color: Theme.fg
                             font.pixelSize: 13
                         }
-                        Text {
+                        Text { font.family: Theme.sans;
                             width: openBtn.width - 14
                             text: side.relTime(row.modelData.atualizadaMs)
                                   + (row.modelData.modelo ? " · " + side.shortModel(row.modelData.modelo) : "")
@@ -191,7 +192,7 @@ Rectangle {
                     x: 10
                     y: 8
                     spacing: 6
-                    Text { text: "Apagar esta conversa?"; color: Theme.fg; font.pixelSize: 13 }
+                    Text { font.family: Theme.sans; text: "Apagar esta conversa?"; color: Theme.fg; font.pixelSize: 13 }
                     Row {
                         spacing: 6
                         AbstractButton {
@@ -209,7 +210,7 @@ Rectangle {
                                 border.width: yes.visualFocus ? 2 : 0
                                 border.color: Theme.foc
                             }
-                            contentItem: Text {
+                            contentItem: Text { font.family: Theme.sans;
                                 text: "Apagar"; color: Theme.acfg; font.pixelSize: 13
                                 horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                             }
@@ -228,7 +229,7 @@ Rectangle {
                                 border.color: no.visualFocus ? Theme.foc : Theme.bd
                                 border.width: no.visualFocus ? 2 : 1
                             }
-                            contentItem: Text {
+                            contentItem: Text { font.family: Theme.sans;
                                 text: "Cancelar"; color: Theme.fg; font.pixelSize: 13
                                 horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                             }
@@ -237,5 +238,6 @@ Rectangle {
                 }
             }
         }
+
     }
 }

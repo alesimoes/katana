@@ -42,7 +42,7 @@ ComboBox {
         border.color: cb.visualFocus ? Theme.foc : (cb.hovered || cb.popup.visible ? Theme.bd : "transparent")
         border.width: cb.visualFocus ? 2 : 1
     }
-    contentItem: Text {
+    contentItem: Text { font.family: Theme.sans;
         id: lbl
         leftPadding: cb.compact ? 8 : 12
         rightPadding: cb.compact ? 22 : 34
@@ -76,7 +76,7 @@ ComboBox {
             color: del.index === cb.currentIndex ? Theme.us : (del.highlighted || (del.hovered && del.enabled) ? Theme.hov : "transparent")
         }
         contentItem: Item {
-            Text {
+            Text { font.family: Theme.sans;
                 x: 12; y: 8
                 width: parent.width - 24 - tag.width
                 text: del.modelData.name
@@ -86,7 +86,7 @@ ComboBox {
                 font.pixelSize: 14
                 font.weight: Font.Medium
             }
-            Text {
+            Text { font.family: Theme.sans;
                 id: tag
                 visible: del.modelData.isDefault && del.modelData.usable
                 anchors.right: parent.right
@@ -97,7 +97,7 @@ ComboBox {
                 font.pixelSize: 11
                 font.weight: Font.DemiBold
             }
-            Text {
+            Text { font.family: Theme.sans;
                 x: 12; y: 29
                 width: parent.width - 24
                 text: del.modelData.usable ? del.modelData.sizeText

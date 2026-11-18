@@ -1,3 +1,4 @@
+#include <QFont>
 #include "backend.h"
 
 #include <QCoreApplication>
@@ -151,6 +152,7 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     m_sessDir = QDir(home).filePath("sessoes");
     QDir().mkpath(m_sessDir);
     m_ui = new QSettings(QDir(home).filePath("ui.ini"), QSettings::IniFormat, this);
+    setFonte(fonte());
     connect(&m_msgs, &MessageModel::rowsInserted, this, &Backend::thinkingChanged);
     connect(&m_msgs, &MessageModel::modelReset, this, &Backend::thinkingChanged);
     connect(&m_msgs, &MessageModel::dataChanged, this, &Backend::thinkingChanged);
@@ -548,6 +550,34 @@ void Backend::saveSession()
 }
 
 void Backend::copyText(const QString &text) { QGuiApplication::clipboard()->setText(text); }
+
+// aparencia: "jetbrains" (padrao) ou "plex"; KATANA_FONTE forca uma
+QString Backend::tema() const
+{
+    QString t = qEnvironmentVariable("KATANA_TEMA");
+    if (t.isEmpty()) t = m_ui->value("tema", "padrao").toString();
+    return t == "ide" ? "ide" : "padrao";
+}
+void Backend::setTema(const QString &t)
+{
+    m_ui->setValue("tema", t == "ide" ? "ide" : "padrao");
+    m_ui->sync();
+}
+
+QString Backend::fonte() const
+{
+    QString f = qEnvironmentVariable("KATANA_FONTE");
+    if (f.isEmpty()) f = m_ui->value("fonte", "jetbrains").toString();
+    return f == "plex" ? "plex" : "jetbrains";
+}
+void Backend::setFonte(const QString &f)
+{
+    m_ui->setValue("fonte", f == "plex" ? "plex" : "jetbrains");
+    m_ui->sync();
+    QFont fonte = QGuiApplication::font();
+    fonte.setFamily(f == "plex" ? "IBM Plex Sans" : "JetBrains Mono");
+    QGuiApplication::setFont(fonte);
+}
 
 bool Backend::uiFlag(const QString &name) const { return m_ui->value(name, false).toBool(); }
 void Backend::setUiFlag(const QString &name, bool v)

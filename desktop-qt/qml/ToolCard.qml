@@ -35,13 +35,13 @@ Rectangle {
                 color: Theme.ac
             }
         }
-        Text {
+        Text { font.family: Theme.sans;
             text: card.name || "ferramenta"
             font.pixelSize: 13
             font.weight: Font.DemiBold
             color: Theme.fg
         }
-        Text {
+        Text { font.family: Theme.sans;
             Layout.fillWidth: true
             text: card.args.length > 140 ? card.args.slice(0, 140) + "..." : card.args
             elide: Text.ElideRight

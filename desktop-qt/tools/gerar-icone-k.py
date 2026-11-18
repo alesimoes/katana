@@ -82,4 +82,21 @@ def main():
     open(os.path.join(ICONS, "katana.svg"), "w").write("\n".join(r) + "\n")
 
 
+def k_solto(escala=8):
+    # so o K (sem fundo), face em degrade roxo claro->roxo do tema e sombra roxa escura; legivel em tema claro e escuro
+    f1, f2, sh = hexrgb("#c77dff"), hexrgb("#820ad1"), hexrgb("#3b0a66")
+    img = Image.new("RGBA", ((W + 1) * escala, (H + 1) * escala), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for y in range(H):
+        for x in range(W):
+            if K[y][x]:
+                d.rectangle([(x + 1) * escala, (y + 1) * escala, (x + 2) * escala - 1, (y + 2) * escala - 1], fill=sh)
+    for y in range(H):
+        for x in range(W):
+            if K[y][x]:
+                d.rectangle([x * escala, y * escala, (x + 1) * escala - 1, (y + 1) * escala - 1], fill=lerp(f1, f2, y / H))
+    img.save(os.path.join(ICONS, "katana-k.png"))
+
+
+k_solto()
 main()

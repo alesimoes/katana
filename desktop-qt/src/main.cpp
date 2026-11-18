@@ -42,11 +42,8 @@ int main(int argc, char **argv)
     QGuiApplication::setDesktopFileName("katana-desktop");  // casa com katana-desktop.desktop (dock)
     {   // fonte embutida (JetBrains Mono, licenca OFL em fonts/): interface e codigo
         for (const char *f : {"JetBrainsMono-Regular", "JetBrainsMono-Medium", "JetBrainsMono-SemiBold", "JetBrainsMono-Bold",
-                              "JetBrainsMono-Italic"})
+                              "JetBrainsMono-Italic", "IBMPlexSans-Regular", "IBMPlexSans-Medium", "IBMPlexSans-SemiBold", "IBMPlexSans-Bold", "IBMPlexSans-Italic", "IBMPlexMono-Regular", "IBMPlexMono-Medium"})
             QFontDatabase::addApplicationFont(QString(":/fonts/%1.ttf").arg(f));
-        QFont fonte = QGuiApplication::font();
-        fonte.setFamily("JetBrains Mono");
-        QGuiApplication::setFont(fonte);
     }
     {
         QIcon ic;

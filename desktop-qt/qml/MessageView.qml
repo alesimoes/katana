@@ -70,7 +70,7 @@ Item {
                 id: userC
                 Item {
                     height: bubble.height + 22
-                    TextMetrics { id: tm; text: d.text; font.pixelSize: 15 }
+                    TextMetrics { font.family: Theme.sans; id: tm; text: d.text; font.pixelSize: 15 }
                     Rectangle {
                         id: bubble
                         anchors.right: parent.right
@@ -84,7 +84,7 @@ Item {
                             width: 20; height: 20; radius: 6
                             color: parent.color
                         }
-                        TextEdit {
+                        TextEdit { font.family: Theme.sans;
                             id: ut
                             x: 16; y: 10
                             width: parent.width - 32
@@ -108,7 +108,7 @@ Item {
                     height: Math.max(body.height, 26) + 22
                     Rectangle {
                         width: 26; height: 26; radius: 13; color: Theme.ac
-                        Text { anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
+                        Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
                     }
                     AssistantBody {
                         id: body
@@ -135,7 +135,7 @@ Item {
                 id: noticeC
                 Item {
                     height: 34
-                    Text {
+                    Text { font.family: Theme.sans;
                         anchors.centerIn: parent
                         width: parent.width
                         horizontalAlignment: Text.AlignHCenter
@@ -162,7 +162,7 @@ Item {
                 Accessible.name: "Pensando"
                 Rectangle {
                     width: 26; height: 26; radius: 13; color: Theme.ac
-                    Text { anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
+                    Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
                 }
                 Row {
                     x: 38
@@ -216,12 +216,12 @@ Item {
                 id: samurai
                 objectName: "samurai"
                 anchors.horizontalCenter: parent.horizontalCenter
-                source: "qrc:/icons/katana-128.png"
-                width: mv.height < 560 ? 64 : 80
-                height: width
-                sourceSize: Qt.size(128, 128)
-                smooth: true
-                mipmap: true
+                source: "qrc:/icons/katana-k.png"
+                readonly property int escala: mv.height < 560 ? 4 : 5
+                width: sourceSize.width * escala / 8
+                height: sourceSize.height * escala / 8
+                smooth: false
+                mipmap: false
                 Accessible.role: Accessible.Graphic
                 Accessible.name: "Katana"
             }
@@ -241,7 +241,7 @@ Item {
                 Accessible.name: "Katana"
             }
             Item { width: 1; height: 14 }
-            Text {
+            Text { font.family: Theme.sans;
                 objectName: "welcomeGreeting"
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
@@ -252,7 +252,7 @@ Item {
                 wrapMode: Text.Wrap
             }
             Item { width: 1; height: 6 }
-            Text {
+            Text { font.family: Theme.sans;
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
@@ -295,8 +295,8 @@ Item {
                             rightPadding: 14
                             topPadding: 12
                             spacing: 2
-                            Text { text: sg.modelData[0]; color: Theme.mut; font.pixelSize: 12; width: sg.width - 28 }
-                            Text { text: sg.modelData[1]; color: Theme.fg; font.pixelSize: 14; wrapMode: Text.Wrap; width: sg.width - 28 }
+                            Text { font.family: Theme.sans; text: sg.modelData[0]; color: Theme.mut; font.pixelSize: 12; width: sg.width - 28 }
+                            Text { font.family: Theme.sans; text: sg.modelData[1]; color: Theme.fg; font.pixelSize: 14; wrapMode: Text.Wrap; width: sg.width - 28 }
                         }
                     }
                 }
