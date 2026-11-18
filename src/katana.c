@@ -5796,6 +5796,45 @@ static void heat_load(const Model *m) {
     fclose(f);
 }
 static void loader_request(int l, int e, int E);
+static void preload_feed(const Model *m);
+/* sessao retomada: troca o calor pelo da sessao e pede so os especialistas que ela usou (os S mais quentes de
+   cada camada). Com a thread carregadora a carga corre em paralelo com o prompt; sem ela, carrega ja.
+   Devolve quantos especialistas foram pedidos (0 se o cache de especialistas nao esta ligado). */
+static int heat_apply(Model *m, const float *h, int NL_f, int E_f) {
+    const int NL = m->cfg.n_layers, E = m->cfg.n_expert;
+    if (!gx.on || !gx.heat || NL_f != NL || E_f != E) return 0;
+    memcpy(gx.heat, h, (size_t)NL * E * sizeof(float));
+    free(gx.pre); gx.pre = xalloc((size_t)NL * gx.S, sizeof(uint32_t));
+    gx.n_pre = 0; gx.i_pre = 0;
+    uint32_t *idx = xalloc(E, sizeof(uint32_t));
+    for (int l = 0; l < NL; l++) {
+        if (!m->layers[l].eg) continue;
+        for (int e = 0; e < E; e++) idx[e] = (uint32_t)(l * E + e);
+        qsort(idx, E, sizeof(uint32_t), cmp_pre);
+        for (int i = 0; i < gx.S; i++) if (gx.heat[idx[i]] > 0.05f) gx.pre[gx.n_pre++] = idx[i];
+    }
+    free(idx);
+    qsort(gx.pre, gx.n_pre, sizeof(uint32_t), cmp_pre);
+    int asked = 0;
+    if (gx.loader) {
+        for (size_t i = 0; i < gx.n_pre; i++) asked += gx.slot[gx.pre[i]].slot < 0;
+        preload_feed(m);
+    } else {            /* sem carregadora: poe ja nas vagas, do mais quente ao mais frio de cada camada */
+        int *fill = xalloc(NL, sizeof(int));
+        for (size_t i = 0; i < gx.n_pre; i++) {
+            const int l = (int)(gx.pre[i] / E), e = (int)(gx.pre[i] % E);
+            if (gx.slot[gx.pre[i]].slot >= 0) { fill[l]++; continue; }
+            int *own = gx.owner + (size_t)l * gx.S, v = -1;
+            for (int k = 0; k < gx.S && v < 0; k++) if (own[k] < 0) v = k;
+            for (int k = 0; k < gx.S && v < 0; k++) if (gx.heat[(size_t)l * E + own[k]] < gx.heat[gx.pre[i]] && fill[l] < gx.S) v = k;
+            if (v < 0) continue;
+            expert_load(m, l, e, v); fill[l]++; asked++;
+        }
+        free(fill);
+        gx.i_pre = gx.n_pre;
+    }
+    return asked;
+}
 static void preload_feed(const Model *m) {
     const int E = m->cfg.n_expert;
     while (gx.i_pre < gx.n_pre && gx.head - gx.fin_safe < LQ) {
@@ -11669,9 +11708,11 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     return gen;
 }
 
+static int g_no_ready;      /* 1: o proximo prompt nao manda READY (comando silencioso, ex.: /sessao) */
 static void prompt_user(void) {
     fprintf(stderr, "\n%svoce>%s ", CE(C_CYAN), CE(C_RESET));
     fflush(stderr);
+    if (g_no_ready) { g_no_ready = 0; return; }
     if (getenv("KATANA_UI")) { fputs("\x01" "READY\n", stdout); fflush(stdout); }   /* camada de interface: fim do turno */
 }
 
@@ -14096,12 +14137,27 @@ static uint64_t pfx_hash(uint64_t h, const void *p, size_t n) {
 /* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL); 0 se nao cobre */
 static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     const Config *c = &m->cfg;
-    if (m->ckv || !m->kcache || c->g4) return 0;
-    *ngl = 0; *esz = 4; *backend = 0;
+    if (m->ckv || !(m->kcache || m->kh)) return 0;
+    *ngl = 0; *esz = m->kh ? 2 : 4; *backend = 0;      /* cache da CPU em fp16 (m->kh/m->vh, contexto longo): 2 bytes */
     if (vkg.on && !gpu.force_cpu) { *ngl = vkg.nl; *esz = vkg.kv16 ? 2 : 4; *backend = 1; }
     else if (gpu.n_gl > 0 && !gpu.force_cpu) { *ngl = gpu.n_gl; *esz = gpu.kv16 ? 2 : 4; *backend = 2; }
     if (c->ssm_inner && *backend != 0) return 0;
+    if (c->g4 && *backend != 0) return 0;       /* gemma4: so o cache da CPU (anel por camada) */
     return 1;
+}
+/* bytes de K (ou de V) de uma camada para n posicoes no arquivo do prefixo. gemma4: geometria por camada e anel,
+   guarda os primeiros min(n, kv_cap) enderecos do anel (se n passou da capacidade, o anel inteiro) */
+static size_t pfx_lbytes(const Model *m, int l, int n, int ngl, int esz) {
+    const Config *c = &m->cfg;
+    const size_t kvd = (size_t)c->n_kv * c->hd;
+    if (l < ngl) return (size_t)n * kvd * (size_t)esz;
+    const size_t cs = m->kh ? 2 : 4;
+    if (c->g4) {
+        const Layer *Ly = &m->layers[l];
+        const size_t np = (size_t)n < (size_t)Ly->kv_cap ? (size_t)n : (size_t)Ly->kv_cap;
+        return np * (size_t)Ly->nkv_l * (size_t)Ly->hd_l * cs;
+    }
+    return (size_t)n * kvd * cs;
 }
 
 static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz, int backend) {
@@ -14113,6 +14169,11 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
     h = pfx_hash(h, &m->fsize, sizeof m->fsize);
     h = pfx_hash(h, &m->n_params, sizeof m->n_params);
     h = pfx_hash(h, m->out_norm, sizeof(float) * (size_t)(c->dim < 256 ? c->dim : 256));
+    if (m->kh) { const int k16 = 1; h = pfx_hash(h, &k16, sizeof k16); }
+    if (c->g4) for (int l = 0; l < c->n_layers; l++) {
+        const int32_t gl[] = { m->layers[l].kv_cap, m->layers[l].nkv_l, m->layers[l].hd_l, m->layers[l].swa };
+        h = pfx_hash(h, gl, sizeof gl);
+    }
     h = pfx_hash(h, ids, sizeof(int) * (size_t)n);
     return h;
 }
@@ -14137,9 +14198,16 @@ static int pfx_layer(Model *m, int l, int vv, int n, int ngl, int esz, int backe
     const Config *c = &m->cfg;
     const size_t kvd = (size_t)c->n_kv * c->hd, ctx = c->ctx;
     if (l >= ngl) {
-        if (m->layers[l].lin) { if (dir) memset(buf, 0, (size_t)n * kvd * 4); return 1; }   /* DeltaNet: sem cache KV */
-        float *base = (vv ? m->vcache : m->kcache) + m->layers[l].kv_off;
-        if (dir) memcpy(buf, base, (size_t)n * kvd * 4); else memcpy(base, buf, (size_t)n * kvd * 4);
+        const size_t cs = m->kh ? 2 : 4;        /* elemento do cache da CPU */
+        if (c->g4) {                            /* gemma4: bytes por camada (anel) */
+            const size_t gb = pfx_lbytes(m, l, n, ngl, esz);
+            char *gp = m->kh ? (char *)((vv ? m->vh : m->kh) + m->layers[l].kv_off) : (char *)((vv ? m->vcache : m->kcache) + m->layers[l].kv_off);
+            if (dir) memcpy(buf, gp, gb); else memcpy(gp, buf, gb);
+            return 1;
+        }
+        if (m->layers[l].lin) { if (dir) memset(buf, 0, (size_t)n * kvd * cs); return 1; }   /* DeltaNet: sem cache KV */
+        char *base = m->kh ? (char *)((vv ? m->vh : m->kh) + m->layers[l].kv_off) : (char *)((vv ? m->vcache : m->kcache) + m->layers[l].kv_off);
+        if (dir) memcpy(buf, base, (size_t)n * kvd * cs); else memcpy(base, buf, (size_t)n * kvd * cs);
         return 1;
     }
     const size_t off = (size_t)l * ctx * kvd * (size_t)esz, bytes = (size_t)n * kvd * (size_t)esz;
@@ -14165,12 +14233,14 @@ static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     h.ngl = ngl; h.esz = esz; h.backend = backend;
     if (c->ssm_inner) h.ssm_bytes = (size_t)m->n_lin * dn_state_floats(c) * sizeof(float);
     int ok = fwrite(&h, sizeof h, 1, f) == 1;
-    void *buf = xalloc((size_t)n * kvd * 4 + 64, 1);
+    size_t bmax = (size_t)n * kvd * 4;
+    for (int l = 0; l < c->n_layers; l++) { const size_t b = pfx_lbytes(m, l, n, ngl, esz); if (b > bmax) bmax = b; }
+    void *buf = xalloc(bmax + 64, 1);
     if (backend == 1) kvk_wait();
     if (backend == 2) cl.Finish(gpu.queue);
     for (int l = 0; l < c->n_layers && ok; l++)
         for (int vv = 0; vv < 2 && ok; vv++) {
-            const size_t bytes = (size_t)n * kvd * (size_t)(l < ngl ? esz : 4);
+            const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 1) && fwrite(buf, 1, bytes, f) == bytes;
         }
     if (ok && h.ssm_bytes) ok = fwrite(m->ssm, 1, (size_t)h.ssm_bytes, f) == h.ssm_bytes;
@@ -14220,15 +14290,17 @@ static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     ok = ok && h.ssm_bytes == ssm_bytes;
     if (ok) {       /* confere o tamanho do arquivo antes de tocar no cache */
         size_t want = sizeof h + ssm_bytes;
-        for (int l = 0; l < c->n_layers; l++) want += 2 * (size_t)n * kvd * (size_t)(l < ngl ? esz : 4);
+        for (int l = 0; l < c->n_layers; l++) want += 2 * pfx_lbytes(m, l, n, ngl, esz);
         fseek(f, 0, SEEK_END);
         ok = (size_t)ftell(f) == want;
         fseek(f, (long)sizeof h, SEEK_SET);
     }
-    void *buf = ok ? xalloc((size_t)n * kvd * 4 + 64, 1) : NULL;
+    size_t bmax = (size_t)n * kvd * 4;
+    for (int l = 0; l < c->n_layers; l++) { const size_t b = pfx_lbytes(m, l, n, ngl, esz); if (b > bmax) bmax = b; }
+    void *buf = ok ? xalloc(bmax + 64, 1) : NULL;
     for (int l = 0; l < c->n_layers && ok; l++)
         for (int vv = 0; vv < 2 && ok; vv++) {
-            const size_t bytes = (size_t)n * kvd * (size_t)(l < ngl ? esz : 4);
+            const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = fread(buf, 1, bytes, f) == bytes && pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 0);
         }
     if (ok && ssm_bytes) ok = fread(m->ssm, 1, (size_t)ssm_bytes, f) == ssm_bytes;
@@ -14248,7 +14320,8 @@ static int pfx_prepare(Model *m, const Ids *full, const char *sys) {
     int ngl, esz, backend;
     if (!pfx_geom(m, &ngl, &esz, &backend)) return 0;
     static char ptext[26000];
-    snprintf(ptext, sizeof ptext, "<|im_start|>system\n%s<|im_end|>\n", sys);
+    if (c->g4) snprintf(ptext, sizeof ptext, "<|turn>system\n%s%s<turn|>\n", g4_think() ? "<|think|>\n" : "", sys);
+    else snprintf(ptext, sizeof ptext, "<|im_start|>system\n%s<|im_end|>\n", sys);
     Ids p = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&p, c->bos);
     encode(tk, ptext, &p);
@@ -14341,6 +14414,7 @@ static void go_agent_sys(char *sys, size_t cap) {
  * (o cache KV e linear e o DeltaNet so continua do fim), aproveitando o prefixo de sistema do disco. */
 typedef struct { char role; char *s; } AMsg;
 typedef struct { AMsg *v; int n, cap; } AHist;
+static int g_ah_g4;       /* 1: historico no formato Gemma 4 (turnos <|turn>role ... <turn|>) */
 static void ah_push(AHist *h, char role, const char *s, size_t n) {
     if (h->n == h->cap) { h->cap = h->cap * 2 + 16; h->v = realloc(h->v, sizeof(AMsg) * (size_t)h->cap); if (!h->v) die("sem memoria"); }
     char *p = xalloc(n + 1, 1); memcpy(p, s, n); p[n] = 0;
@@ -14350,6 +14424,20 @@ static void ah_clear(AHist *h) { for (int i = 0; i < h->n; i++) free(h->v[i].s);
 /* texto ChatML das mensagens; termina no fim da ultima, sem o fecho (como o cache KV) */
 static void ah_render(const AHist *h, const char *sys, Buf *o) {
     buf_clear(o);
+    if (g_ah_g4) {      /* gemma4: mensagens ja no texto exato do cache (u: so o pedido; a: resposta; t: resposta de ferramenta) */
+        buf_str(o, "<|turn>system\n"); if (g4_think()) buf_str(o, "<|think|>\n"); buf_str(o, sys); buf_str(o, "<turn|>\n");
+        for (int i = 0; i < h->n; i++) {
+            const char r = h->v[i].role;
+            if (r == 'u') {
+                if (i) buf_str(o, "<turn|>\n");
+                buf_str(o, "<|turn>user\n"); buf_str(o, h->v[i].s); buf_str(o, "<turn|>\n<|turn>model\n"); buf_str(o, g4_answer_pre());
+            } else {
+                buf_str(o, h->v[i].s);
+                if (r == 't' && g4_think()) buf_str(o, "<|channel>thought\n");
+            }
+        }
+        return;
+    }
     buf_str(o, "<|im_start|>system\n"); buf_str(o, sys); buf_str(o, "<|im_end|>\n");
     for (int i = 0; i < h->n; i++) {
         if (i) buf_str(o, "<|im_end|>\n");
@@ -14364,7 +14452,26 @@ static int ah_count(const Model *m, const char *t) {
     const int n = ids.n; free(ids.ids); return n;
 }
 /* troca o corpo de cada resultado de ferramenta da mensagem por "[resultado de X omitido: N bytes]"; 1 se mudou */
+static int ah_shrink_tool_g4(AMsg *mg) {
+    const char *K = "<|tool_response>response:", *E = "<tool_response|>";
+    if (mg->role != 't' || !strstr(mg->s, K) || strstr(mg->s, "[resultado de ")) return 0;
+    Buf o = {0};
+    for (const char *q = strstr(mg->s, K); q; q = strstr(q, K)) {
+        const char *nm = q + strlen(K);
+        size_t nl = strcspn(nm, "{\n");
+        const char *e = strstr(nm, E);
+        const size_t nb = e ? (size_t)(e - q) : strlen(q);
+        char t[320];
+        snprintf(t, sizeof t, "<|tool_response>response:%.*s{value:" G4Q "[resultado de %.*s omitido para economizar contexto: %zu bytes]" G4Q "}<tool_response|>",
+                 (int)(nl < 100 ? nl : 100), nm, (int)(nl < 100 ? nl : 100), nm, nb);
+        buf_str(&o, t);
+        q = e ? e + strlen(E) : q + strlen(q);
+    }
+    free(mg->s); mg->s = o.p ? o.p : xalloc(1, 1);
+    return 1;
+}
 static int ah_shrink_tool(AMsg *mg) {
+    if (g_ah_g4) return ah_shrink_tool_g4(mg);
     const char *K = "<tool_response>\n[resultado da ferramenta ";
     if (mg->role != 't' || !strstr(mg->s, K)) return 0;
     Buf o = {0};
@@ -14397,8 +14504,8 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
     for (int i = 0; i < upto; i++) {
         const char *s = h->v[i].s;
         if (h->v[i].role == 'a') {          /* sem o raciocinio */
-            const char *e = strstr(s, "</think>");
-            if (e) s = e + 8;
+            const char *e = strstr(s, g_ah_g4 ? "<channel|>" : "</think>");
+            if (e) s = e + (g_ah_g4 ? 10 : 8);
             while (*s == '\n') s++;
             buf_str(&tx, "Assistente: ");
         } else buf_str(&tx, h->v[i].role == 't' ? "Resultados de ferramenta: " : "Usuario: ");
@@ -14419,12 +14526,16 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
         free(tx.p); tx = t2;
     }
     Buf pr = {0};
-    buf_str(&pr, "<|im_start|>system\nVoce resume conversas de forma fiel e curta.<|im_end|>\n<|im_start|>user\n"
-                 "Resuma a conversa abaixo em no maximo 15 linhas, no idioma da conversa: o que o usuario quer, fatos e decisoes, "
+    buf_str(&pr, g_ah_g4 ? "<|turn>system\nVoce resume conversas de forma fiel e curta.<turn|>\n<|turn>user\n"
+                         : "<|im_start|>system\nVoce resume conversas de forma fiel e curta.<|im_end|>\n<|im_start|>user\n");
+    buf_str(&pr, "Resuma a conversa abaixo em no maximo 15 linhas, no idioma da conversa: o que o usuario quer, fatos e decisoes, "
                  "arquivos, comandos e ferramentas usados com os resultados importantes, e o que ainda falta fazer. Nao invente nada.\n\n<conversa>\n");
     buf_str(&pr, tx.p); free(tx.p);
-    buf_str(&pr, "</conversa><|im_end|>\n<|im_start|>assistant\n");
-    if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    if (g_ah_g4) { buf_str(&pr, "</conversa><turn|>\n<|turn>model\n"); buf_str(&pr, g4_answer_pre()); }
+    else {
+        buf_str(&pr, "</conversa><|im_end|>\n<|im_start|>assistant\n");
+        if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    }
     Ids ids = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
     encode(tk, pr.p, &ids);
@@ -14504,6 +14615,212 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     return after;
 }
 
+/* ---------- sessoes do agente: gravar e retomar ----------
+ * Arquivo binario por sessao (.ksess): impressao digital do modelo, calor de especialistas da sessao (o mesmo
+ * vetor do .heat), a conversa compactada (resumo + ultimos turnos, no texto exato do cache) com os ids
+ * tokenizados, e a conversa inteira (para quem quiser reprocessar tudo). Ao retomar, aquece so os especialistas
+ * que a sessao usou e recalcula so o prefixo compacto, ou carrega o KV dele do disco (pfx_save/pfx_load). */
+#define SESS_MAGIC 0x3153534553544b4bULL
+static char g_sess_path[1024], g_resume_path[1024];
+static uint64_t sess_fp(const Model *m) {
+    const Config *c = &m->cfg;
+    const int32_t g[] = { c->dim, c->n_layers, c->n_heads, c->n_kv, c->hd, c->vocab, c->n_expert, c->chat_fmt };
+    uint64_t h = pfx_hash(1469598103934665603ULL, g, sizeof g);
+    h = pfx_hash(h, c->arch, strlen(c->arch));
+    h = pfx_hash(h, &m->fsize, sizeof m->fsize);
+    return pfx_hash(h, &m->n_params, sizeof m->n_params);
+}
+static void sess_wstr(FILE *f, const char *p, size_t n) { const int32_t l = (int32_t)n; fwrite(&l, 4, 1, f); fwrite(p, 1, n, f); }
+static char *sess_rstr(FILE *f) {
+    int32_t l;
+    if (fread(&l, 4, 1, f) != 1 || l < 0 || l > (1 << 26)) return NULL;
+    char *p = xalloc((size_t)l + 1, 1);
+    if (fread(p, 1, (size_t)l, f) != (size_t)l) { free(p); return NULL; }
+    p[l] = 0; return p;
+}
+static void sess_wmsgs(FILE *f, const AHist *h) {
+    const int32_t n = h->n; fwrite(&n, 4, 1, f);
+    for (int i = 0; i < h->n; i++) { fputc(h->v[i].role, f); sess_wstr(f, h->v[i].s, strlen(h->v[i].s)); }
+}
+static int sess_rmsgs(FILE *f, AHist *h) {
+    int32_t n;
+    if (fread(&n, 4, 1, f) != 1 || n < 0 || n > 1000000) return 0;
+    for (int i = 0; i < n; i++) {
+        const int r = fgetc(f);
+        char *p = sess_rstr(f);
+        if (r == EOF || !p) { free(p); return 0; }
+        ah_push(h, (char)r, p, strlen(p)); free(p);
+    }
+    return 1;
+}
+static int sess_msg_tokens(const Model *m, const AHist *h, const char *sys) {
+    Buf r = {0}; AHist e = {0};
+    ah_render(h, sys, &r); const int a = ah_count(m, r.p ? r.p : "");
+    ah_render(&e, sys, &r); const int b = ah_count(m, r.p ? r.p : "");
+    free(r.p); return a - b;
+}
+/* apaga sessoes velhas (KATANA_SESS_DIAS, padrao 30) e as mais antigas se a pasta passar de KATANA_SESS_MB (256) */
+static void sess_purge(const char *path) {
+#ifndef _WIN32
+    char dir[1024]; snprintf(dir, sizeof dir, "%s", path);
+    char *sl = strrchr(dir, '/'); if (sl) *sl = 0; else snprintf(dir, sizeof dir, ".");
+    const double days = getenv("KATANA_SESS_DIAS") ? atof(getenv("KATANA_SESS_DIAS")) : 30.0;
+    const double mb = getenv("KATANA_SESS_MB") ? atof(getenv("KATANA_SESS_MB")) : 256.0;
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct { char name[1300]; long t; long long sz; } *e = xalloc(512, sizeof *e);
+    int ne = 0; long long tot = 0;
+    const long now = (long)time(NULL);
+    struct dirent *de;
+    while ((de = readdir(d)) && ne < 512) {
+        const size_t ln = strlen(de->d_name);
+        if (ln < 7 || strcmp(de->d_name + ln - 6, ".ksess") != 0) continue;
+        struct stat st;
+        snprintf(e[ne].name, sizeof e[ne].name, "%s/%s", dir, de->d_name);
+        if (stat(e[ne].name, &st) != 0) continue;
+        if (now - (long)st.st_mtime > (long)(days * 86400.0)) { remove(e[ne].name); continue; }
+        e[ne].t = (long)st.st_mtime; e[ne].sz = (long long)st.st_size; tot += e[ne].sz; ne++;
+    }
+    closedir(d);
+    while (ne > 1 && tot > (long long)(mb * 1048576.0)) {
+        int old = 0;
+        for (int i = 1; i < ne; i++) if (e[i].t < e[old].t) old = i;
+        if (strcmp(e[old].name, path) == 0) break;
+        remove(e[old].name); tot -= e[old].sz; e[old] = e[--ne];
+    }
+    free(e);
+#else
+    (void)path;
+#endif
+}
+/* monta a versao compacta (resumo + ultimos turnos) que cabe em KATANA_RETOMAR_TOK tokens de mensagens (padrao
+   1500). allow_sum: pode resumir com o modelo (estraga o cache KV: so ao trocar de sessao ou sair). */
+static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow_sum, AHist *out) {
+    const int budget = getenv("KATANA_RETOMAR_TOK") ? atoi(getenv("KATANA_RETOMAR_TOK")) : 1500;
+    int last = hist->n - 1;
+    while (last >= 0 && hist->v[last].role != 'a') last--;      /* termina numa resposta */
+    for (int i = 0; i <= last; i++) ah_push(out, hist->v[i].role, hist->v[i].s, strlen(hist->v[i].s));
+    if (out->n == 0 || sess_msg_tokens(m, out, sys) <= budget) return;
+    /* guarda os dois ultimos pedidos do usuario (com o que veio depois); resume o resto */
+    int k = -1, nu = 0;
+    for (int i = out->n - 1; i >= 0; i--) if (out->v[i].role == 'u' && ++nu == 2) { k = i; break; }
+    if (k <= 0) for (int i = out->n - 1; i >= 0; i--) if (out->v[i].role == 'u') { k = i; break; }
+    if (k <= 0) return;
+    char *sm = allow_sum ? ah_summary(m, out, k) : NULL;
+    AHist nh = {0};
+    if (sm) {
+        Buf u = {0};
+        buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm);
+        ah_push(&nh, 'u', u.p, u.n); ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
+        free(u.p); free(sm);
+    } else if (out->v[0].role == 'u' && strncmp(out->v[0].s, "[Resumo da conversa anterior", 28) == 0 && out->n > 1) {
+        ah_push(&nh, 'u', out->v[0].s, strlen(out->v[0].s)); ah_push(&nh, 'a', out->v[1].s, strlen(out->v[1].s));   /* resumo que ja existia */
+    }
+    for (int i = k; i < out->n; i++) ah_push(&nh, out->v[i].role, out->v[i].s, strlen(out->v[i].s));
+    while (nh.n > 2 && sess_msg_tokens(m, &nh, sys) > budget * 2) {      /* ainda grande demais: encolhe ferramentas */
+        int ch = 0;
+        for (int i = 0; i < nh.n; i++) ch += ah_shrink_tool(&nh.v[i]);
+        if (!ch) break;
+    }
+    ah_clear(out); free(out->v); *out = nh;
+}
+/* resumir com o modelo ao trocar de sessao custa minutos nos modelos grandes: so com KATANA_SESS_RESUMO=troca
+   (padrao: resume so ao sair; na troca grava a versao barata) */
+static int sess_sum_switch(void) { const char *e = getenv("KATANA_SESS_RESUMO"); return e && strcmp(e, "troca") == 0; }
+/* grava a sessao em g_sess_path (se houver). full: conversa inteira; hist: o que esta no cache */
+static void sess_save(Model *m, const char *sys, const AHist *hist, const AHist *full, int allow_sum) {
+    if (!g_sess_path[0] || !hist->n || !sys[0]) return;
+    const Config *c = &m->cfg;
+    AHist cp = {0};
+    sess_compact(m, hist, sys, allow_sum, &cp);
+    if (!cp.n) { free(cp.v); return; }
+    Buf r = {0}; Ids ids = {0};
+    ah_render(&cp, sys, &r);
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(&m->tk, r.p, &ids);
+    free(r.p);
+    char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.tmp", g_sess_path);
+    FILE *f = fopen(tmp, "wb");
+    if (f) {
+        const uint64_t mg = SESS_MAGIC, fp = sess_fp(m);
+        const int32_t NL = gx.on && gx.heat ? c->n_layers : 0, E = NL ? c->n_expert : 0;
+        fwrite(&mg, 8, 1, f); fwrite(&fp, 8, 1, f);
+        const int64_t t = (int64_t)time(NULL); fwrite(&t, 8, 1, f);
+        fwrite(&NL, 4, 1, f); fwrite(&E, 4, 1, f);
+        if (NL) fwrite(gx.heat, sizeof(float), (size_t)NL * E, f);
+        sess_wmsgs(f, &cp);
+        fwrite(&ids.n, 4, 1, f); fwrite(ids.ids, sizeof(int), (size_t)ids.n, f);
+        sess_wmsgs(f, full);
+        const int ok = !ferror(f);
+        if (fclose(f) == 0 && ok) { remove(g_sess_path); if (rename(tmp, g_sess_path) != 0) remove(tmp); }
+        else remove(tmp);
+        fprintf(stderr, "%s[sessao gravada: %d mensagens compactas (%d tokens), %d no total, calor de %d camadas]%s\n",
+                CE(C_DIM), cp.n, ids.n, full->n, NL, CE(C_RESET));
+        sess_purge(g_sess_path);
+    }
+    free(ids.ids); ah_clear(&cp); free(cp.v);
+}
+/* retoma a sessao do arquivo: aquece os especialistas dela e poe a conversa compacta no cache. KATANA_RETOMAR=completo
+   reprocessa a conversa inteira (comparacao). Devolve o novo pos (ou -1). */
+static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist, AHist *full) {
+    const Config *c = &m->cfg;
+    const double t0 = now_sec();
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "[retomar: nao abriu %s]\n", path); return -1; }
+    uint64_t mg = 0, fp = 0; int64_t tsave = 0; int32_t NL = 0, E = 0, nid = 0;
+    float *heat = NULL; AHist cp = {0}, fl = {0};
+    int ok = fread(&mg, 8, 1, f) == 1 && mg == SESS_MAGIC && fread(&fp, 8, 1, f) == 1 && fread(&tsave, 8, 1, f) == 1
+          && fread(&NL, 4, 1, f) == 1 && fread(&E, 4, 1, f) == 1 && NL >= 0 && E >= 0 && (size_t)NL * E < (1u << 24);
+    if (ok && NL) { heat = xalloc((size_t)NL * E, sizeof(float)); ok = fread(heat, sizeof(float), (size_t)NL * E, f) == (size_t)NL * E; }
+    ok = ok && sess_rmsgs(f, &cp) && fread(&nid, 4, 1, f) == 1 && nid >= 0 && nid < (1 << 24);
+    int *sid = ok ? xalloc((size_t)nid + 1, sizeof(int)) : NULL;
+    ok = ok && fread(sid, sizeof(int), (size_t)nid, f) == (size_t)nid && sess_rmsgs(f, &fl);
+    fclose(f);
+    if (!ok || !cp.n) { fprintf(stderr, "[retomar: arquivo de sessao invalido: %s]\n", path); free(heat); free(sid); ah_clear(&cp); ah_clear(&fl); free(cp.v); free(fl.v); return -1; }
+    const int same = fp == sess_fp(m);
+    if (!same && !getenv("KATANA_RETOMAR_OUTRO")) {     /* outro modelo: o texto do cache e o calor nao servem */
+        fprintf(stderr, "[retomar: a sessao foi gravada com outro modelo (KATANA_RETOMAR_OUTRO=1 tenta assim mesmo)]\n");
+        free(heat); free(sid); ah_clear(&cp); ah_clear(&fl); free(cp.v); free(fl.v); return -1;
+    }
+    const char *mode = getenv("KATANA_RETOMAR");
+    const int whole = mode && strcmp(mode, "completo") == 0;
+    int warm = 0;
+    if (same && heat && !whole && !getenv("KATANA_RETOMAR_FRIO")) warm = heat_apply(m, heat, NL, E);     /* FRIO: sem aquecer (comparacao) */
+    free(heat);
+    ah_clear(hist); ah_clear(full);
+    const AHist *use = whole && fl.n ? &fl : &cp;
+    for (int i = 0; i < use->n; i++) ah_push(hist, use->v[i].role, use->v[i].s, strlen(use->v[i].s));
+    for (int i = 0; i < fl.n; i++) ah_push(full, fl.v[i].role, fl.v[i].s, strlen(fl.v[i].s));
+    Buf r = {0}; Ids ids = {0};
+    ah_render(hist, sys, &r);
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(&m->tk, r.p, &ids);
+    free(r.p);
+    const int ids_eq = !whole && ids.n == nid && memcmp(ids.ids, sid, sizeof(int) * (size_t)nid) == 0;
+    free(sid);
+    if (ids.n + 64 >= c->ctx) {
+        fprintf(stderr, "[retomar: a conversa (%d tokens) nao cabe no contexto de %d]\n", ids.n, c->ctx);
+        free(ids.ids); ah_clear(hist); ah_clear(&cp); ah_clear(&fl); free(cp.v); free(fl.v); return -1;
+    }
+    int ngl, esz, backend, kv = 0;
+    const int geo = pfx_geom(m, &ngl, &esz, &backend) && !(getenv("KATANA_PFX") && atoi(getenv("KATANA_PFX")) == 0) && !whole;
+    const uint64_t key = geo ? pfx_key(m, ids.ids, ids.n, ngl, esz, backend) : 0;
+    if (geo && pfx_load(m, key, ids.n, ngl, esz, backend)) kv = 1;
+    else {
+        const int np = pfx_prepare(m, &ids, sys);
+        forward_seq(m, ids.ids + np, ids.n - np, np, 0);
+        if (geo && ids.n >= 32) pfx_save(m, key, ids.n, ngl, esz, backend);
+    }
+    const double dt = now_sec() - t0;
+    fprintf(stderr, "%s[sessao retomada: %d mensagens (%d no total), %d tokens %s em %.2f s; %d especialistas aquecidos%s%s]%s\n",
+            CE(C_DIM), hist->n, fl.n, ids.n, kv ? "com o KV carregado do disco" : "recalculados", dt, warm,
+            same ? "" : "; modelo diferente do que gravou (calor ignorado)", ids_eq || whole ? "" : "; ids refeitos (sistema mudou)", CE(C_RESET));
+    if (getenv("KATANA_UI")) { printf("\x01" "RESUME %d %d %d %d %.2f %s\n", hist->n, fl.n, ids.n, warm, dt, kv ? "kv" : "calc"); printf("\x01" "TOKENS %d %d\n", ids.n, c->ctx); fflush(stdout); }
+    const int n = ids.n;
+    free(ids.ids); ah_clear(&cp); ah_clear(&fl); free(cp.v); free(fl.v);
+    return n;
+}
+
 static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -14513,8 +14830,10 @@ static int agent(Model *m, int max_tokens, float temp) {
     const int go = c->chat_fmt == 9;     /* gpt-oss harmony */
     const int im_end = g4 ? map_get(&tk->vocab, "<|tool_response>", 16) : map_get(&tk->vocab, "<|im_end|>", 10);   /* gemma4: para ao abrir a resposta da ferramenta */
     int pos = 0, first = 1;
-    AHist hist = {0};                    /* mensagens no cache (so ChatML), para compactar */
-    const int cml = !g4 && !go;
+    AHist hist = {0};                    /* mensagens no cache (ChatML ou Gemma 4), para compactar */
+    AHist slog = {0};                    /* conversa inteira da sessao (sem compactar), gravada com a sessao */
+    const int cml = !go;                 /* historico/compactacao: ChatML e Gemma 4 */
+    g_ah_g4 = g4;
     const char *ce = getenv("KATANA_COMPACT");
     const int auto_cp = cml && !(ce && atoi(ce) == 0);
     char prole = 0; Buf pend = {0};      /* mensagem do turno atual que entra no cache com o texto pendente */
@@ -14532,12 +14851,37 @@ static int agent(Model *m, int max_tokens, float temp) {
                 : "Gravar, executar e ler fora da pasta atual sem confirmacao; cada acao aparece aqui e vai para ~/.katana/agente.log (KATANA_CONFIRM=1 pede).",
             g_web ? "ligada (KATANA_WEB=0 desliga)" : "desligada");
     mcp_init(1);
-    for (;;) {
+#define AGENT_SYS() do { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); } while (0)
+    if (g_resume_path[0] && !g_sess_path[0]) snprintf(g_sess_path, sizeof g_sess_path, "%s", g_resume_path);
+    for (int rs = 1;; rs = 0) {
+        if (rs && g_resume_path[0]) snprintf(line, sizeof line, "/retomar %s", g_resume_path);
+        else {
         prompt_user();
         if (!read_line(line, sizeof line)) break;
+        }
         if (line[0] == 0) continue;
+        if (strncmp(line, "/sessao ", 8) == 0 || strncmp(line, "/retomar ", 9) == 0) {     /* sessao gravada em disco */
+            const int res = line[1] == 'r';
+            const char *pa = line + (res ? 9 : 8);
+            while (*pa == ' ') pa++;
+            if (!cml) { fprintf(stderr, "[sessoes: nao suportado neste formato]\n"); g_no_ready = !res; continue; }
+            g_stop = 0; g_busy = 1;
+            if (!first && hist.n && (res || strcmp(pa, g_sess_path) != 0)) sess_save(m, sys, &hist, &slog, sess_sum_switch());   /* fecha a sessao atual */
+            if (res) {
+                AGENT_SYS();
+                const int np2 = sess_resume(m, pa, sys, &hist, &slog);
+                if (np2 > 0) { pos = np2; first = 0; snprintf(g_sess_path, sizeof g_sess_path, "%s", pa); }
+                else { pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); }
+            } else {
+                snprintf(g_sess_path, sizeof g_sess_path, "%s", pa);
+                fprintf(stderr, "[sessao: grava em %s]\n", g_sess_path);
+                g_no_ready = 1;     /* silencioso: a interface manda a mensagem logo em seguida */
+            }
+            g_busy = 0;
+            continue;
+        }
         if (strcmp(line, "/compactar") == 0) {
-            if (!cml) fprintf(stderr, "[/compactar: so no formato ChatML]\n");
+            if (!cml) fprintf(stderr, "[/compactar: so nos formatos ChatML e Gemma 4]\n");
             else if (pos == 0 || !hist.n) fprintf(stderr, "[nada a compactar]\n");
             else {
                 g_stop = 0; g_busy = 1;
@@ -14552,11 +14896,15 @@ static int agent(Model *m, int max_tokens, float temp) {
         int reset = 0;
         const int cmd = console_cmd(line, &tr, extra, sizeof extra, &reset);   /* /sistema acrescenta instrucoes ao prompt do agente */
         if (cmd == 2) break;
-        if (reset) { pos = 0; first = 1; ah_clear(&hist); }
+        if (reset) {
+            if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, sess_sum_switch()); g_busy = 0; }   /* fecha a sessao */
+            g_sess_path[0] = 0;
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog);
+        }
         if (cmd) continue;
         if (first) ah_clear(&hist);
         prole = 'u'; buf_clear(&pend); buf_str(&pend, line);
-        if (first) { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); }   /* memoria + ferramentas MCP */
+        if (first) { AGENT_SYS(); ah_clear(&slog); }   /* memoria + ferramentas MCP */
         if (go && first) snprintf(text, sizeof text, "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\n\nReasoning: %s\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message. Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>%s<|end|><|start|>user<|message|>%s<|end|><|start|>assistant", go_reason() ? "high" : "low", sys, line);
         else if (go) snprintf(text, sizeof text, "<|end|><|start|>user<|message|>%s<|end|><|start|>assistant", line);
         else {
@@ -14600,7 +14948,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 lg = forward_seq(m, ids.ids + np, ids.n - np, pos + np, 1);
                 pos += ids.n; first = 0;
             }
-            if (cml && prole) ah_push(&hist, prole, pend.p ? pend.p : "", pend.n);
+            if (cml && prole) { ah_push(&hist, prole, pend.p ? pend.p : "", pend.n); ah_push(&slog, prole, pend.p ? pend.p : "", pend.n); }
             prole = 0;
             const double t1 = now_sec();
             buf_clear(&reply);
@@ -14612,9 +14960,12 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
             if (cml) {
                 Buf ab = {0};
-                buf_str(&ab, think_pre(c)); if (reply.p) buf_add(&ab, reply.p, reply.n);
+                if (!g4) buf_str(&ab, think_pre(c));
+                if (reply.p) buf_add(&ab, reply.p, reply.n);
                 ah_push(&hist, 'a', ab.p ? ab.p : "", ab.n);
+                ah_push(&slog, 'a', ab.p ? ab.p : "", ab.n);
                 free(ab.p);
+                sess_save(m, sys, &hist, &slog, 0);      /* barato: sem resumir (nao mexe no cache KV) */
             }
             free(ids.ids);
             buf_str(&tr, "Assistente: "); buf_str(&tr, reply.p ? reply.p : ""); buf_str(&tr, "\n");
@@ -14691,8 +15042,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (tl + 2 * TOOL_WEB + 2048 >= sizeof text) break;
             }
             if (!calls) break;
-            if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho */
-                const size_t h0 = strlen("<|im_end|>\n<|im_start|>user\n");
+            if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho (gemma4: direto no turno do modelo) */
+                const size_t h0 = g4 ? 0 : strlen("<|im_end|>\n<|im_start|>user\n");
                 prole = 't'; buf_clear(&pend);
                 if (tl > h0) buf_add(&pend, text + h0, tl - h0);
             }
@@ -14701,6 +15052,8 @@ static int agent(Model *m, int max_tokens, float temp) {
         }
         buf_str(&tr, "\n");
     }
+    if (cml && !first && hist.n) { g_stop = 0; sess_save(m, sys, &hist, &slog, 1); }    /* ao sair: resume se precisar */
+#undef AGENT_SYS
     moe_report();
     heat_save(m);
     return 0;
@@ -16031,7 +16384,64 @@ static int quantize_cmd(const char *in, const char *out_arg, const char *type_ar
     return 0;
 }
 
+/* katana calibrar <modelo> [arquivo de texto]: passa textos variados (conversa em portugues e ingles, codigo, perguntas
+   de ferramentas) token a token e grava como .heat a media do calor de cada especialista ao longo de todos os tokens.
+   Assim a primeira sessao ja comeca com os especialistas mais usados nas vagas da VRAM (o .heat normal guarda so o
+   calor do fim da ultima sessao). Sem cache de especialistas (modelo cabe inteiro, ou so CPU) nao ha o que gravar. */
+static int calibrar(Model *m, const char *file) {
+    const Config *c = &m->cfg;
+    static const char *txt[] = {
+        "Voce e um assistente util. Usuario: Pode me explicar como funciona a fotossintese e por que as folhas sao verdes? "
+        "Assistente: Claro. A fotossintese e o processo em que as plantas usam a luz do sol, a agua e o gas carbonico para produzir "
+        "acucar e liberar oxigenio. A clorofila absorve sobretudo o azul e o vermelho e reflete o verde, por isso as folhas parecem verdes.",
+        "User: Write a Python function that reads a CSV file and returns the average of the column 'price'.\nAssistant: ```python\n"
+        "import csv\n\ndef average_price(path):\n    total, n = 0.0, 0\n    with open(path, newline='') as f:\n        for row in csv.DictReader(f):\n"
+        "            total += float(row['price'])\n            n += 1\n    return total / n if n else 0.0\n```\nThis opens the file, sums the prices and divides by the count.",
+        "Usuario: liste os arquivos da pasta atual e me diga qual e o maior.\nAssistente: <tool_call>\n{\"name\": \"list_dir\", \"arguments\": {\"path\": \".\"}}\n</tool_call>\n"
+        "Resultado: README.md 4 KB, src/ (pasta), build.sh 1 KB, dados.csv 2,3 MB.\nAssistente: O maior arquivo e dados.csv, com 2,3 MB.",
+        "Usuario: Qual a diferenca entre memoria RAM e armazenamento? Responda de forma curta.\nAssistente: A RAM e rapida e temporaria: guarda o que o "
+        "computador esta usando agora e se apaga ao desligar. O armazenamento (SSD ou HD) e mais lento, porem permanente: guarda arquivos e programas.",
+        "User: Summarize the main causes of the French Revolution in three bullet points.\nAssistant: - Fiscal crisis: debt from wars and an unfair tax system.\n"
+        "- Social inequality: the Third Estate carried the burden while clergy and nobility kept privileges.\n- Enlightenment ideas questioning absolute monarchy.",
+        "Usuario: escreva um script em bash que conte quantas linhas tem cada arquivo .c da pasta src.\nAssistente: ```bash\nfor f in src/*.c; do\n  printf '%s %s\\n' \"$(wc -l < \"$f\")\" \"$f\"\ndone | sort -n\n```",
+    };
+    const int NL = c->n_layers, E = c->n_expert;
+    if (!gx.on || !gx.heat) { fprintf(stderr, "calibrar: sem cache de especialistas neste modelo/maquina; nada a gravar\n"); return 1; }
+    double *acc = xalloc((size_t)NL * E, sizeof(double));
+    long ntok = 0;
+    char *ext = NULL;
+    if (file) { FILE *f = fopen(file, "rb"); if (f) { fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); ext = xalloc((size_t)n + 1, 1); if (fread(ext, 1, (size_t)n, f) != (size_t)n) n = 0; ext[n] = 0; fclose(f); } }
+    const int nt = ext ? 1 : (int)(sizeof txt / sizeof txt[0]);
+    const double t0 = now_sec();
+    for (int k = 0; k < nt; k++) {
+        Ids ids = {0};
+        if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+        encode(&m->tk, ext ? ext : txt[k], &ids);
+        memset(gx.heat, 0, (size_t)NL * E * sizeof(float));
+        for (int i = 0; i < ids.n && i < c->ctx - 1; i++) {
+            forward(m, ids.ids[i], i, 0);
+            for (size_t j = 0; j < (size_t)NL * E; j++) acc[j] += gx.heat[j];
+            ntok++;
+        }
+        fprintf(stderr, "calibrar: texto %d de %d (%d tokens)\n", k + 1, nt, ids.n);
+        free(ids.ids);
+    }
+    for (size_t j = 0; j < (size_t)NL * E; j++) gx.heat[j] = (float)(acc[j] / (double)(ntok ? ntok : 1));
+    heat_save(m);
+    char fn[1100]; heat_path(fn, sizeof fn);
+    fprintf(stderr, "calibrar: %ld tokens em %.1f s; calor medio gravado em %s\n", ntok, now_sec() - t0, fn);
+    free(acc); free(ext);
+    return 0;
+}
+
 static int run_main(int argc, char **argv) {
+    for (int i = 2; i + 1 < argc; ) {      /* sessoes do agente: --retomar <arquivo>, --sessao <arquivo> */
+        if (strcmp(argv[i], "--retomar") == 0 || strcmp(argv[i], "--sessao") == 0) {
+            snprintf(argv[i][2] == 'r' ? g_resume_path : g_sess_path, sizeof g_sess_path, "%s", argv[i + 1]);
+            for (int j = i; j + 2 <= argc; j++) argv[j] = argv[j + 2];
+            argc -= 2;
+        } else i++;
+    }
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
         perfil_apply(argv[2], 0);
@@ -16047,6 +16457,13 @@ static int run_main(int argc, char **argv) {
         agent_tool(argv[2], argv[3], argv[3] + strlen(argv[3]), res, sizeof res);
         printf("%s\n", res);
         return 0;
+    }
+    if (argc >= 3 && strcmp(argv[1], "calibrar") == 0) {    /* calor padrao de especialistas (.heat) a partir de textos variados */
+        perfil_apply(argv[2], 1);
+        if (!getenv("KATANA_CTX")) putenv("KATANA_CTX=2048");
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return calibrar(&m, argc > 3 ? argv[3] : NULL);
     }
     if (argc == 3 && strcmp(argv[1], "agent") == 0) {
         perfil_apply(argv[2], 1);

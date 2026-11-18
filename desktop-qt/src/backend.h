@@ -98,6 +98,7 @@ public:
     QVariantList sessions() const { return m_sessions; }
     QString currentSessionId() const { return m_sess.id; }
     bool hasPendingContext() const { return !m_pendingCtx.isEmpty(); }
+    QString resumeInfo() const { return m_resumeInfo; }   // ultima retomada pelo motor (vazio se nenhuma)
     MessageModel *messages() { return &m_msgs; }
     QString themeOverride() const { return qEnvironmentVariable("KATANA_THEME"); }
     QString sessionsDir() const { return m_sessDir; }
@@ -170,5 +171,13 @@ private:
     Session m_sess;
     bool m_dirty = false;
     QString m_pendingCtx;  // resumo da conversa antiga, vai junto da proxima mensagem
+    // retomada pelo motor: o agente grava a sessao em <sessoes>/<id>.ksess (/sessao) e a retoma (/retomar)
+    QString m_bound;        // arquivo .ksess em que o agente grava agora
+    QString m_resumeWant;   // retomada a pedir quando o agente ficar pronto
+    QString m_resumeCtx;    // resumo textual de reserva, se a retomada falhar
+    bool m_resuming = false, m_resumed = false;
+    QString m_resumeInfo;
+    QString ksessPath(const QString &id) const;
+    void requestResume(const QString &path);
     QVariantList m_sessions;
 };
