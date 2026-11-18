@@ -25,6 +25,7 @@ qt_add_qml_module(katana-desktop-qt
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/ActivityGroup.qml
         qml/Highlight.js
         qml/Theme.qml
         qml/Icon.qml

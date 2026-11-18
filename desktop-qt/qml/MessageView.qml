@@ -56,13 +56,28 @@ Item {
             required property string kind
             required property string text
             required property string name
+            required property int index
+            // sequencia de ferramentas seguidas vira um unico grupo (so o primeiro item desenha)
+            readonly property bool groupHead: kind === "tool" && (index === 0 || backend.messages.get(index - 1).kind !== "tool")
+            readonly property var run: {
+                lv.count;
+                var r = [];
+                if (!groupHead) return r;
+                for (var i = index; i < lv.count; i++) {
+                    var m = backend.messages.get(i);
+                    if (m.kind !== "tool") break;
+                    r.push({name: m.name, args: m.text});
+                }
+                return r;
+            }
             width: lv.width
-            height: ld.item ? ld.item.height : 0
+            height: kind === "tool" && !groupHead ? 0 : (ld.item ? ld.item.height : 0)
             Loader {
                 id: ld
                 width: Math.min(Theme.colWidth, d.width - 40)
                 x: (d.width - width) / 2
-                sourceComponent: d.kind === "user" ? userC
+                sourceComponent: d.kind === "tool" && !d.groupHead ? emptyC
+                               : d.kind === "user" ? userC
                                : d.kind === "assistant" ? asstC
                                : d.kind === "tool" ? toolC : noticeC
             }
@@ -119,15 +134,17 @@ Item {
                     }
                 }
             }
+            Component { id: emptyC; Item { height: 0 } }
             Component {
                 id: toolC
                 Item {
-                    height: 54
-                    ToolCard {
+                    height: grp.height + 12
+                    ActivityGroup {
+                        id: grp
                         x: 38
                         maxWidth: parent.width - 38
-                        name: d.name
-                        args: d.text
+                        steps: d.run
+                        active: backend.thinking && d.index + d.run.length === lv.count
                     }
                 }
             }
@@ -154,7 +171,7 @@ Item {
             height: mv.bottomSpace + (dots.visible ? 44 : 0)
             Item {
                 id: dots
-                visible: backend.thinking
+                visible: backend.thinking && !(lv.count > 0 && backend.messages.get(lv.count - 1).kind === "tool")
                 x: (parent.width - Math.min(Theme.colWidth, parent.width - 40)) / 2
                 width: 200
                 height: 44
@@ -164,6 +181,7 @@ Item {
                     width: 26; height: 26; radius: 13; color: Theme.ac
                     Text { font.family: Theme.sans; anchors.centerIn: parent; text: "K"; color: Theme.acfg; font.bold: true; font.pixelSize: 12 }
                 }
+                Text { font.family: Theme.sans; x: 80; y: 5; text: "Pensando…"; color: Theme.mut; font.pixelSize: 13; font.italic: true }
                 Row {
                     x: 38
                     y: 9
