@@ -319,3 +319,43 @@ Medido na GPU, alternado, maquina carregada (carga 5-8, outro agente em microban
 
 gemma4 `bench 64 128`: margem 4 66,1-76,3 ms, margem 8 68,4-73,4 ms (igual). Margem 1 no Qwen3.6 (`bench 16 128`):
 36,1-39,2 ms contra 33,3-36,9 com 4 (pior, apesar de +1,6 p.p. de acertos). Comando: `handoff.md` secao 0j.
+
+## 17. Medidas finais com a maquina livre: GPU, MoE na CPU e margem de troca (Linux, 2026-11-18)
+
+Maquina livre de outros agentes (load medido antes de cada execucao: 3,7 a 8,6; a propria carga do script
+explica a subida). GPU Vulkan, script `final.sh` (texto em `handoff.md` secao 0k). Cada execucao tem as
+rodadas 2 e 3 (a 1 e aquecimento); 3 execucoes alternadas por condicao, entao 6 medidas por linha. Faixa entre
+parenteses (minimo-maximo).
+
+Selftest com GPU (lote, token a token e lote 16, contra a CPU exata, 23 tokens): todos OK. Gemma 4: produtos
+erro relativo 5e-8, lote 0,0056 e token a token 0,0058 de diferenca de logit, argmax igual. Qwen3.6: lote 0,00040,
+token a token 0,00043, lote 16 0,00035. Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`): lote 0,00044, token a token
+0,00046, lote 16 0,00049. Argmax igual em todos.
+
+Gemma 4 26B-A4B, `bench 64 64`, MoE antigo (`KATANA_MOE_OLD=1`) contra novo (padrao):
+
+| metrica | antigo | novo | razao novo/antigo |
+|---|---|---|---|
+| geracao tok/s | 13,5 (12,7-14,3) | 23,7 (23,1-24,5) | 1,76x |
+| geracao ms/token | 74,3 (70,1-78,6) | 42,2 (40,9-43,2) | 0,57 (-43%) |
+| prompt tok/s | 22,9 (22,2-24,3) | 60,7 (58,1-65,1) | 2,65x |
+
+Os 3 pares dao 1,72x, 1,77x e 1,79x na geracao. Ordem dentro de cada par fixa (antigo primeiro), sem
+aleatorizar.
+
+Qwen3.6-35B-A3B, `bench 256 128`, margem de troca 4 (antigo) contra 8 (padrao novo):
+
+| metrica | margem 4 | margem 8 | razao 8/4 |
+|---|---|---|---|
+| geracao tok/s | 24,2 (24,0-24,7) | 24,9 (24,4-25,3) | 1,03x |
+| geracao ms/token | 41,2 (40,5-41,6) | 40,2 (39,6-40,9) | 0,97 (-2,6%) |
+| prompt tok/s | 59,6 (55,9-61,9) | 68,0 (65,0-69,8) | 1,14x |
+
+Margem 8 foi mais rapida que 4 nos 3 pares (+4,0%, +2,9% e +2,1% na geracao), mas o ganho na geracao e pequeno:
+cerca de 3%, menor que os 4-8% estimados antes (secao 16, handoff 0j). As faixas de geracao se tocam (24,4-24,7),
+entao o ganho na geracao e indicio, nao prova. O ganho de prompt (+14%, faixas sem sobreposicao) e o mais claro.
+
+Medido e estimativa: tudo acima e medido (bench do katana, rodadas 2 e 3, maquina livre, 3 execucoes alternadas).
+Nao ha estimativa nesta secao; a razao 1,76x e a leitura de ms/token vem direto das rodadas. Nao medido: conversa
+real (`chat`), prompts longos, outros modelos e a comparacao do MoE antigo contra o novo com a CPU sozinha (ja em
+15).
