@@ -9,7 +9,7 @@ Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17)
   `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
 - Rodar: `./katana-desktop-qt` (ou o binario copiado). Opcoes: `--katana CAMINHO`, `--models PASTA`.
   O `katana` e `modelos/` sao procurados ao lado do binario, em `..` e no diretorio atual.
-- Modelo: dropdown no topo. Padrao Qwen3.6-35B (inicia sozinho); tambem utilizavel: Gemma 4.
+- Modelo: seletor embaixo da caixa de texto, ao lado de enviar (a lista abre para cima). Padrao Qwen3.6-35B (inicia sozinho); tambem utilizavel: Gemma 4.
   Os demais aparecem desabilitados ("ainda nao esta utilizavel no agente").
 - Lateral esquerda recolhivel (em janela estreita vira gaveta): "Nova conversa" e as conversas salvas
   (titulo, hora relativa, modelo); lixeira ao passar o mouse, com confirmacao na propria interface.
