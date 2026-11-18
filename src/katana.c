@@ -16151,6 +16151,7 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     free(r.p);
     const int ids_eq = !whole && ids.n == nid && memcmp(ids.ids, sid, sizeof(int) * (size_t)nid) == 0;
     free(sid);
+    if (getenv("KATANA_RESUME_DBG")) fprintf(stderr, "[retomar: %d tokens prontos em %.2f s]\n", ids.n, now_sec() - t0);
     if (ids.n + 64 >= c->ctx) {
         fprintf(stderr, "[retomar: a conversa (%d tokens) nao cabe no contexto de %d]\n", ids.n, c->ctx);
         free(ids.ids); ah_clear(hist); ah_clear(&cp); ah_clear(&fl); free(cp.v); free(fl.v); return -1;
@@ -16158,8 +16159,13 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     int ngl, esz, backend, kv = 0;
     const int geo = pfx_geom(m, &ngl, &esz, &backend) && !(getenv("KATANA_PFX") && atoi(getenv("KATANA_PFX")) == 0) && !whole;
     const uint64_t key = geo ? pfx_key(m, ids.ids, ids.n, ngl, esz, backend) : 0;
+    if (getenv("KATANA_RESUME_DBG")) fprintf(stderr, "[retomar: geo=%d chave=%016llx em %.2f s]\n", geo, (unsigned long long)key, now_sec() - t0);
     if (geo && pfx_load(m, key, ids.n, ngl, esz, backend)) kv = 1;
     else {
+        if (ids.n > 800) {
+            fprintf(stderr, "[retomar: recalculando %d tokens (so na primeira vez; depois o cache em disco abre na hora)]\n", ids.n);
+            if (getenv("KATANA_UI")) { printf("\x01" "RESUMING %d\n", ids.n); fflush(stdout); }
+        }
         const int np = pfx_prepare(m, &ids, sys);
         forward_seq(m, ids.ids + np, ids.n - np, np, 0);
         if (geo && ids.n >= 32) pfx_save(m, key, ids.n, ngl, esz, backend);
