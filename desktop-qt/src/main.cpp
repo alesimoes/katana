@@ -54,7 +54,7 @@ int main(int argc, char **argv)
     QCommandLineOption oModels("models", "Pasta dos modelos (.gguf).", "pasta");
     QCommandLineOption oSelf("selftest", "Teste automatico (usa o modelo pequeno e grava capturas).");
     QCommandLineOption oCap("capturas", "Pasta das capturas do selftest.", "pasta");
-    QCommandLineOption oModel("selftest-model", "Modelo do selftest.", "arquivo", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf");
+    QCommandLineOption oModel("selftest-model", "Modelo do selftest.", "arquivo", "qwen2.5-1.5b-q4km.gguf");
     cli.addOptions({oKatana, oModels, oSelf, oCap, oModel});
     cli.process(app);
 
