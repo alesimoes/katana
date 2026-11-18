@@ -806,6 +806,12 @@ void Backend::onStderr()
         const QString l = QString::fromUtf8(m_errBuf.left(nl)).trimmed();
         m_errBuf.remove(0, nl + 1);
         fprintf(stderr, "[katana] %s\n", qPrintable(l));
+        {   // banner de carga ("arquitetura=... ctx=131072"): mostra a capacidade do contexto desde o inicio
+            static const QRegularExpression banner(R"re(arquitetura=\S+.*\bctx=(\d+))re");
+            const auto bm = banner.match(l);
+            if (bm.hasMatch() && m_ctxUsed == 0)
+                setCtx(0, bm.captured(1).toInt());
+        }
         const auto m = stats.match(l);
         if (m.hasMatch()) {
             m_speed = m.captured(4) + " tok/s";
