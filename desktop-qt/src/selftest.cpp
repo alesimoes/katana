@@ -205,8 +205,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         QQuickItem *em = c.item("emptyState");
         check(em && em->isVisible() && be.messages()->count() == 0, "boas-vindas visivel com a conversa vazia");
         QQuickItem *sm = c.item("samurai");
-        check(sm && sm->isVisible() && sm->height() >= 48 && sm->height() <= 96, "samurai pixel art pequeno (48-96 px) e visivel");
-        check(sm && !sm->property("smooth").toBool() && int(sm->width()) % 16 == 0, "samurai em escala inteira, sem suavizacao");
+        check(sm && sm->isVisible() && sm->height() >= 48 && sm->height() <= 96, "emblema K pequeno (48-96 px) e visivel");
         QQuickItem *tt = c.item("welcomeTitle");
         check(tt && tt->property("text").toString() == "Katana", "titulo 'Katana'");
         check(tt && tt->isVisible() && !tt->property("smooth").toBool() && tt->property("status").toInt() == 1,

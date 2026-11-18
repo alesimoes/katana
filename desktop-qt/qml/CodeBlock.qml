@@ -81,7 +81,7 @@ Rectangle {
             color: Theme.fg
             selectionColor: Theme.ac
             selectedTextColor: Theme.acfg
-            font.family: "monospace"
+            font.family: "JetBrains Mono"
             font.pixelSize: 13
             Accessible.role: Accessible.StaticText
             Accessible.name: "Codigo"
