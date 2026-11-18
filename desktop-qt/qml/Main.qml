@@ -23,6 +23,14 @@ ApplicationWindow {
 
     Component.onCompleted: { Theme.force = backend.themeOverride; Theme.fonte = backend.fonte(); Theme.tema = backend.tema() }
 
+    property bool termOpen: false
+    function toggleTerminal() {
+        termOpen = !termOpen;
+        if (termOpen) { if (!terminal.running) terminal.start(); Qt.callLater(termPanel.focusTerm); }
+        else composer.input.forceActiveFocus();
+    }
+    Shortcut { sequence: "Ctrl+`"; onActivated: win.toggleTerminal() }
+
     function toggleSide() {
         if (narrow) drawerOpen = !drawerOpen;
         else { sideOpen = !sideOpen; backend.setUiFlag("lateralRecolhida", !sideOpen); }
@@ -128,6 +136,12 @@ ApplicationWindow {
                     }
                     Item { Layout.fillWidth: true }
                     IconButton {
+                        objectName: "terminalButton"
+                        glyph: "terminal"
+                        tip: "Terminal (Ctrl+`)"
+                        onClicked: win.toggleTerminal()
+                    }
+                    IconButton {
                         id: gearBtn
                         objectName: "appearanceButton"
                         glyph: "gear"
@@ -186,11 +200,22 @@ ApplicationWindow {
                 }
             }
 
+            TerminalPanel {
+                id: termPanel
+                visible: win.termOpen
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: win.termOpen ? Math.min(340, Math.max(160, mainArea.height * 0.4)) : 0
+                z: 6
+                onCloseRequested: win.toggleTerminal()
+            }
+
             MessageView {
                 id: mv
                 anchors.top: top.bottom
                 anchors.topMargin: 0
-                anchors.bottom: parent.bottom
+                anchors.bottom: termPanel.visible ? termPanel.top : parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
                 bottomSpace: composer.height + 24
@@ -204,7 +229,7 @@ ApplicationWindow {
             Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.bottom: parent.bottom
+                anchors.bottom: composer.bottom
                 height: composer.height + 40
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0) }
@@ -214,7 +239,7 @@ ApplicationWindow {
             }
             Composer {
                 id: composer
-                anchors.bottom: parent.bottom
+                anchors.bottom: termPanel.visible ? termPanel.top : parent.bottom
                 anchors.bottomMargin: 6
                 anchors.left: parent.left
                 anchors.right: parent.right

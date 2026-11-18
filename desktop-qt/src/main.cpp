@@ -14,6 +14,7 @@
 #include <QTimer>
 
 #include "backend.h"
+#include "terminal.h"
 #include "selftest.h"
 
 static QString pick(const QString &given, const QStringList &cands)
@@ -91,7 +92,9 @@ int main(int argc, char **argv)
 
     Backend backend(katana, models, home);
     QQmlApplicationEngine engine;
+    Terminal terminal(home);
     engine.rootContext()->setContextProperty("backend", &backend);
+    engine.rootContext()->setContextProperty("terminal", &terminal);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app, [] { QCoreApplication::exit(2); },
                      Qt::QueuedConnection);
     engine.loadFromModule("Katana", "Main");
