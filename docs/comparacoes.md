@@ -228,3 +228,15 @@ bench). Antes = `KATANA_VK_G4=0` (lote so na CPU), depois = lote hibrido (densos
 Sem diferenca alem do ruido. Uma serie anterior com 256+32 (uma rodada de cada, sequencial, nao alternada:
 so indicativo) deu prompt 4,2 (antes) x 5,7 (depois, MoE na CPU) x 6,1 tok/s (MoE nas vagas, inexato).
 A geracao nao muda (o lote so afeta o prompt).
+
+## 13. qwen35moe no Vulkan com ctx 131072: atencao completa na CPU (Linux, 2026-11-17)
+
+bench 512+32, Qwen3.6-35B-A3B Q4_K_M, `KATANA_CTX=131072`, binario do main e novo alternados na mesma hora
+(GPU livre no inicio de cada execucao; CPU com outros agentes).
+
+| | main (modo hibrido) | novo (grafo + atencao na CPU) |
+|---|---|---|
+| prompt (rodadas 2-3) | 18,8-18,9 tok/s | 83,6-85,0 tok/s |
+| geracao (rodadas 2-3) | 17,3 tok/s | 27,0-27,3 tok/s |
+
+Primeira serie do main deu 3,7-5,3 / 3,1-17,8 (fria). DeltaNet em blocos x exato: inconclusivo (carga alta), ver handoff 0d.
