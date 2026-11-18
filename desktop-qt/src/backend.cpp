@@ -202,6 +202,16 @@ void Backend::autoStartDefault()
 {
     if (!m_model.isEmpty() || m_proc)
         return;
+    const QString ultimo = m_ui->value("ultimoModelo").toString();
+    if (!ultimo.isEmpty()) {
+        for (const QVariant &v : m_models) {
+            const QVariantMap m = v.toMap();
+            if (m["file"].toString() == ultimo && m["usable"].toBool()) {
+                start(ultimo);
+                return;
+            }
+        }
+    }
     for (const QVariant &v : m_models) {
         const QVariantMap m = v.toMap();
         if (m["isDefault"].toBool() && m["usable"].toBool()) {
@@ -248,6 +258,8 @@ void Backend::start(const QString &modelFile)
         detach(m_proc);
     m_proc = nullptr;
     m_model = m_pendingStart;
+    m_ui->setValue("ultimoModelo", m_model);
+    m_ui->sync();
     // sessao antiga com resumo pendente (ou retomavel pelo motor) sobrevive a troca de modelo; senao recomeca limpo
     m_bound.clear();
     m_resuming = false;
@@ -486,7 +498,16 @@ bool Backend::openSession(const QString &id)
     m_msgs.setAll(items);
     m_speed.clear();
     m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
-    if (agentReady && canResume) {
+    bool trocar = false;  // a conversa volta no modelo em que estava
+    if (!s.modelo.isEmpty() && s.modelo != m_model) {
+        for (const QVariant &v : m_models) {
+            const QVariantMap m = v.toMap();
+            if (m["file"].toString() == s.modelo && m["usable"].toBool()) { trocar = true; break; }
+        }
+    }
+    if (trocar) {
+        start(s.modelo);
+    } else if (agentReady && canResume) {
         requestResume(kp);
     } else if (agentReady) {
         setTexts(QStringLiteral("Preparando a conversa..."), {});
