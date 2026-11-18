@@ -2560,11 +2560,14 @@ static void xq_prepare(const float *x, int cols) {
         xq.cap = cols;
     }
     const __m256 absm = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
-    for (int b = 0; b < cols / 256; b++) {
+    /* o ultimo bloco pode ter menos de 256 valores (multiplo de 32: entrada do down de especialistas
+       com H = 704, por exemplo); os produtos dos tipos K so leem blocos inteiros */
+    for (int b = 0; b < (cols + 255) / 256; b++) {
+        const int len = cols - b * 256 < 256 ? cols - b * 256 : 256, nsub = len / 32;
         const float *xb = x + b * 256;
         int16_t *q = xq.q + b * 256;
         __m256 mx = _mm256_setzero_ps();
-        for (int j = 0; j < 256; j += 8) mx = _mm256_max_ps(mx, _mm256_and_ps(_mm256_loadu_ps(xb + j), absm));
+        for (int j = 0; j < nsub * 32; j += 8) mx = _mm256_max_ps(mx, _mm256_and_ps(_mm256_loadu_ps(xb + j), absm));
         float t[8], amax = 0.0f;
         _mm256_storeu_ps(t, mx);
         for (int j = 0; j < 8; j++) if (t[j] > amax) amax = t[j];
@@ -2574,7 +2577,7 @@ static void xq_prepare(const float *x, int cols) {
             continue;
         }
         const __m256 is = _mm256_set1_ps(32512.0f / amax);
-        for (int sub = 0; sub < 8; sub++) {
+        for (int sub = 0; sub < nsub; sub++) {
             __m256i sum = _mm256_setzero_si256();
             for (int j = 0; j < 32; j += 16) {
                 const __m256i a = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(xb + sub * 32 + j), is));
@@ -2767,8 +2770,54 @@ static float dot_q3k_i(const uint8_t *row, int cols) {
     }
     return hsum256(acc);
 }
+
+/* Q8_0 inteiro: blocos de 32 pesos int8 com escala fp16; a ativacao de 16 bits tem uma escala a
+   cada 256 valores (xs[b/8]) */
+static float dot_q8_i(const uint8_t *row, int cols) {
+    const int16_t *xp = xq.q;
+    __m256 acc = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 32; b++, row += 34, xp += 32) {
+        uint16_t h; memcpy(&h, row, 2);
+        const float dd = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h))) * xq.xs[b >> 3];
+        const __m256i w = _mm256_loadu_si256((const __m256i *)(row + 2));
+        const __m256i a = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(w)), c = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(w, 1));
+        const __m256i p = _mm256_add_epi32(_mm256_madd_epi16(a, _mm256_loadu_si256((const __m256i *)xp)),
+                                           _mm256_madd_epi16(c, _mm256_loadu_si256((const __m256i *)(xp + 16))));
+        acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_set1_ps(dd), acc);
+    }
+    return hsum256(acc);
+}
+
+/* Q5_1 inteiro: peso = d*q + m com q de 5 bits (4 num nibble + 1 de uma mascara de 32 bits);
+   o termo de m usa a soma das ativacoes de cada bloco de 32 (bs32) */
+static float dot_q51_i(const uint8_t *row, int cols) {
+    const __m128i m4 = _mm_set1_epi8(0x0F);
+    const __m256i shuf = _mm256_setr_epi8(0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1, 2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3);
+    const __m256i bitm = _mm256_set1_epi64x(0x8040201008040201LL), f16b = _mm256_set1_epi8(0x10);
+    const int16_t *xp = xq.q;
+    const int32_t *bs = xq.bs32;
+    __m256 acc = _mm256_setzero_ps();
+    float accm = 0.0f;
+    for (int b = 0; b < cols / 32; b++, row += 24, xp += 32) {
+        uint32_t qh; memcpy(&qh, row + 4, 4);
+        int32_t dm; memcpy(&dm, row, 4);
+        const __m128 hd = _mm_cvtph_ps(_mm_cvtsi32_si128(dm));   /* d, m */
+        const float xs = xq.xs[b >> 3];
+        const float d = _mm_cvtss_f32(hd) * xs, mm = _mm_cvtss_f32(_mm_shuffle_ps(hd, hd, 1)) * xs;
+        const __m128i v = _mm_loadu_si128((const __m128i *)(row + 8));
+        const __m256i nib = _mm256_set_m128i(_mm_and_si128(_mm_srli_epi16(v, 4), m4), _mm_and_si128(v, m4));
+        __m256i hb = _mm256_shuffle_epi8(_mm256_set1_epi32((int)qh), shuf);
+        hb = _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_and_si256(hb, bitm), bitm), f16b);
+        const __m256i p = mul32_u8_s16(_mm256_or_si256(nib, hb), xp);
+        acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_set1_ps(d), acc);
+        accm += mm * (float)bs[b];
+    }
+    return hsum256(acc) + accm;
+}
 #else
 #define HAVE_INT_DOT 0
+static float dot_q8_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
+static float dot_q51_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
 static float dot_q5k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
 static float dot_q3k_i(const uint8_t *row, int cols) { (void)row; (void)cols; return 0.0f; }
 static void xq_prepare(const float *x, int cols) { (void)x; (void)cols; }
@@ -2864,11 +2913,54 @@ VNNI_T static float dot_q6k_v(const uint8_t *row, int cols) {
     }
     return hsum256(acc);
 }
+
+/* Q5_K: como o Q4_K com VNNI, o quinto bit vem da mascara de 32 bytes (pesos u8 em 0..31) */
+VNNI_T static float dot_q5k_v(const uint8_t *row, int cols) {
+    const __m256i m4 = _mm256_set1_epi8(0x0F), one = _mm256_set1_epi8(1), zero = _mm256_setzero_si256();
+    const uint32_t k1 = 0x3f3f3f3fu, k2 = 0x0f0f0f0fu, k3 = 0x03030303u;
+    const int8_t *xh = xq.qh, *xl = xq.ql;
+    const int32_t *bs = xq.bs32;
+    __m256 acc = _mm256_setzero_ps(), accm = _mm256_setzero_ps();
+    for (int b = 0; b < cols / 256; b++, row += 176, xh += 256, xl += 256, bs += 8) {
+        uint16_t h0, h1; uint32_t u[4];
+        memcpy(&h0, row, 2); memcpy(&h1, row + 2, 2); memcpy(u, row + 4, 12);
+        u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+        const uint32_t aux = u[1] & k1;
+        u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+        u[2] = aux;
+        u[0] &= k1;
+        const float xs = xq.xs[b];
+        const float d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h0))) * xs;
+        const float dmin = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h1))) * xs;
+        const __m256i sc32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)u));
+        const __m256i mn32 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(u + 2)));
+        const __m256 scf = _mm256_mul_ps(_mm256_cvtepi32_ps(sc32), _mm256_set1_ps(d));
+        accm = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_mullo_epi32(mn32, _mm256_loadu_si256((const __m256i *)bs))),
+                               _mm256_set1_ps(dmin), accm);
+        const __m256i hv = _mm256_loadu_si256((const __m256i *)(row + 16));
+        const uint8_t *q = row + 48;
+        for (int j = 0; j < 4; j++) {
+            const __m256i v = _mm256_loadu_si256((const __m256i *)(q + 32 * j));
+            const __m256i lo = _mm256_or_si256(_mm256_and_si256(v, m4),
+                               _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2 * j), one), 4));
+            const __m256i hi = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(v, 4), m4),
+                               _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(hv, 2 * j + 1), one), 4));
+            __m256i p = _mm256_dpbusd_epi32(zero, lo, _mm256_loadu_si256((const __m256i *)(xh + 64 * j)));
+            p = _mm256_dpbusd_epi32(_mm256_slli_epi32(p, 8), lo, _mm256_loadu_si256((const __m256i *)(xl + 64 * j)));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j)), acc);
+            p = _mm256_dpbusd_epi32(zero, hi, _mm256_loadu_si256((const __m256i *)(xh + 64 * j + 32)));
+            p = _mm256_dpbusd_epi32(_mm256_slli_epi32(p, 8), hi, _mm256_loadu_si256((const __m256i *)(xl + 64 * j + 32)));
+            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_permutevar8x32_ps(scf, _mm256_set1_epi32(2 * j + 1)), acc);
+        }
+    }
+    return hsum256(acc) - hsum256(accm);
+}
 #else
 #define HAVE_VNNI 0
 static void vnni_init(void) {}
 #endif
 
+static int moe_q5k_old;     /* KATANA_MOE_OLD=1: caminho anterior dos especialistas na CPU (comparacao) */
 /* a matriz usa o produto inteiro? (so tipos K, e se nao estiver no modo exato) */
 static int mat_int(const Mat *W) {
     return HAVE_INT_DOT && !cpu_exact && W->q &&
@@ -2882,6 +2974,7 @@ static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, in
     if (cpu_vnni && mat_int(W)) {
         if (W->type == T_Q4_K) return dot_q4k_v(row, cols);
         if (W->type == T_Q6_K) return dot_q6k_v(row, cols);
+        if (W->type == T_Q5_K && !moe_q5k_old) return dot_q5k_v(row, cols);
     }
 #endif
     if (mat_int(W)) return W->type == T_Q4_K ? dot_q4k_i(row, cols) : W->type == T_Q6_K ? dot_q6k_i(row, cols)
@@ -5590,13 +5683,33 @@ static void shexp_cpu(Model *m, const Layer *L) {
 static inline float gelu_t(float x) { return 0.5f * x * (1.0f + tanhf(0.7978845608f * (x + 0.044715f * x * x * x))); }
 static inline float act_glu(float g) { return g_gelu ? gelu_t(g) : g / (1.0f + expf(-g)); }
 typedef struct { const Mat *eg, *eu, *ed; const int *ex, *xi; int H, d; float *hg, *hu, *outs; XQ *xin, *xh; } MoeJob;
+/* produto de uma linha de especialista com a entrada quantizada em xq: tipos K pelo dot_row, e
+   Q8_0/Q5_1 (down do gemma4) pelos produtos inteiros de blocos de 32 */
+static int moe_int(const Mat *W) {
+    return mat_int(W) || (HAVE_INT_DOT && !cpu_exact && !moe_q5k_old && W->q && (W->type == T_Q8_0 || W->type == T_Q5_1));
+}
+static inline float moe_dot(const Mat *W, size_t r, int cols) {
+    if (W->type == T_Q8_0) return dot_q8_i(W->q + r * W->stride, cols);
+    if (W->type == T_Q5_1) return dot_q51_i(W->q + r * W->stride, cols);
+    return dot_row(W, r, NULL, NULL, cols);
+}
 static void moe_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
     for (int i = i0; i < i1; i++) {
         const int j = i / (2 * q->H), r = i % (2 * q->H);
         xq_tls = &q->xin[q->xi[j]];
-        if (r < q->H) q->hg[(size_t)j * q->H + r] = dot_row(&q->eg[q->ex[j]], (size_t)r, NULL, NULL, q->d);
-        else q->hu[(size_t)j * q->H + r - q->H] = dot_row(&q->eu[q->ex[j]], (size_t)(r - q->H), NULL, NULL, q->d);
+        if (r < q->H) q->hg[(size_t)j * q->H + r] = moe_dot(&q->eg[q->ex[j]], (size_t)r, q->d);
+        else q->hu[(size_t)j * q->H + r - q->H] = moe_dot(&q->eu[q->ex[j]], (size_t)(r - q->H), q->d);
+    }
+    xq_tls = NULL;
+}
+/* ativacao e quantizacao da entrada do down, um especialista por item */
+static void moe_act_job(void *c, int i0, int i1) {
+    const MoeJob *q = c;
+    for (int j = i0; j < i1; j++) {
+        float *g = q->hg + (size_t)j * q->H; const float *u = q->hu + (size_t)j * q->H;
+        for (int i = 0; i < q->H; i++) g[i] = act_glu(g[i]) * u[i];
+        xq_tls = &q->xh[j]; xq_prepare(g, q->H);
     }
     xq_tls = NULL;
 }
@@ -5605,10 +5718,12 @@ static void moe_down_job(void *c, int i0, int i1) {
     for (int i = i0; i < i1; i++) {
         const int j = i / q->d, r = i % q->d;
         xq_tls = &q->xh[j];
-        q->outs[i] = dot_row(&q->ed[q->ex[j]], (size_t)r, NULL, NULL, q->H);
+        q->outs[i] = moe_dot(&q->ed[q->ex[j]], (size_t)r, q->H);
     }
     xq_tls = NULL;
 }
+/* medida das fases (microbancada): quantizar entrada, gate/up, ativacao+quantizar, down */
+static int moe_prof_on; static double moe_prof[4];
 static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs) {
     static float *hg, *hu;
     static XQ xin[GPU_BMAX], *xh;
@@ -5620,7 +5735,7 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
     }
     if (n <= 0) return;
     if (n > MOE_NMAX || n_x > GPU_BMAX) die("MoE: pares demais num lote");
-    if (!mat_int(&L->eg[ex[0]]) || !mat_int(&L->eu[ex[0]]) || !mat_int(&L->ed[ex[0]]) || pool.n <= 1) {
+    if (!moe_int(&L->eg[ex[0]]) || !moe_int(&L->eu[ex[0]]) || !moe_int(&L->ed[ex[0]]) || pool.n <= 1) {
         for (int j = 0; j < n; j++) {       /* caminho exato/float: um a um */
             const float *x = xs + (size_t)xi[j] * d;
             matvec(hg, &L->eg[ex[j]], x, H, d);
@@ -5630,18 +5745,25 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
         }
         return;
     }
+    double t0 = moe_prof_on ? now_sec() : 0.0, t1 = 0.0;
     for (int b = 0; b < n_x; b++) { xq_tls = &xin[b]; xq_prepare(xs + (size_t)b * d, d); }
     xq_tls = NULL;
     MoeJob job = { L->eg, L->eu, L->ed, ex, xi, H, d, hg, hu, outs, xin, xh };
     int total = n * 2 * H, chunk = total / (pool.n * 8), minc = 32768 / d + 1;
     if (chunk < minc) chunk = minc;
+    if (moe_prof_on) { t1 = now_sec(); moe_prof[0] += t1 - t0; t0 = t1; }
     pool_for(moe_job, &job, total, chunk);
-    for (int i = 0; i < n * H; i++) hg[i] = act_glu(hg[i]) * hu[i];
-    for (int j = 0; j < n; j++) { xq_tls = &xh[j]; xq_prepare(hg + (size_t)j * H, H); }
-    xq_tls = NULL;
+    if (moe_prof_on) { t1 = now_sec(); moe_prof[1] += t1 - t0; t0 = t1; }
+    if (moe_q5k_old) {
+        for (int i = 0; i < n * H; i++) hg[i] = act_glu(hg[i]) * hu[i];
+        for (int j = 0; j < n; j++) { xq_tls = &xh[j]; xq_prepare(hg + (size_t)j * H, H); }
+        xq_tls = NULL;
+    } else pool_for(moe_act_job, &job, n, 1);
     total = n * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
     if (chunk < minc) chunk = minc;
+    if (moe_prof_on) { t1 = now_sec(); moe_prof[2] += t1 - t0; t0 = t1; }
     pool_for(moe_down_job, &job, total, chunk);
+    if (moe_prof_on) moe_prof[3] += now_sec() - t0;
 }
 /* n especialistas sobre a mesma entrada m->xb */
 static void moe_cpu_experts(Model *m, const Layer *L, const int *ex, int n, float *outs) {
@@ -10427,15 +10549,15 @@ static void selftest_mat(const char *name, const Mat *W, int rows, int cols, dou
         double err = fabs(dot_row(W, i, x, sx, cols) - ref) / (mag + 1e-30);
         cpu_exact = 0;
         if (err > maxerr) maxerr = err;
-        if (mat_int(W)) {
+        if (moe_int(W)) {     /* tipos K; Q8_0/Q5_1 so no caminho dos especialistas */
             xq_prepare(x, cols);
-            double ei = fabs(dot_row(W, i, x, sx, cols) - ref) / (mag + 1e-30);
+            double ei = fabs(moe_dot(W, i, cols) - ref) / (mag + 1e-30);
             if (ei > interr) interr = ei;
         }
     }
     printf("  %-10s tipo=%-2u linhas=%-6d colunas=%-5d erro relativo max=%.2e", name, W->type, rows, cols, maxerr);
     if (maxerr > *worst) *worst = maxerr;
-    if (mat_int(W)) { printf("  | CPU inteiro=%.2e", interr); if (interr > worst_int) worst_int = interr; }
+    if (moe_int(W)) { printf("  | CPU inteiro=%.2e", interr); if (interr > worst_int) worst_int = interr; }
     if (W->gbuf) {   /* resultado inteiro da GPU contra a CPU, linha a linha */
         float *og = xalloc(rows, sizeof(float));
         double gerr = 0.0;
@@ -17272,5 +17394,6 @@ int main(int argc, char **argv) {
 #endif
     pool_init();
     vnni_init();
+    moe_q5k_old = getenv("KATANA_MOE_OLD") && atoi(getenv("KATANA_MOE_OLD")) != 0;
     return run_main(argc, argv);
 }
