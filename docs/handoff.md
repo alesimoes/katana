@@ -4,6 +4,41 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0g. Ferramentas de programacao no agente (2026-11-18, ramo worktree-agent-a1a49838b82625b7e)
+
+Novas ferramentas em `src/katana.c` (bloco antes de `agent_tool_run`): `edit_file`, `glob`, `read_document`,
+`git`, e, com a internet ligada (`KATANA_WEB` diferente de 0), `download_file` e `install_package`. Argumentos e
+comportamento no README ("Ferramentas do agente para programar"). Pontos de projeto:
+- `edit_file` e `download_file` so gravam em caminho relativo dentro da pasta atual (mesma regra do `write_file`);
+  `glob` e `read_document` leem fora da pasta com a confirmacao por pasta raiz de sempre. Gravar/executar passa por
+  `agent_act` (`KATANA_CONFIRM=1` pede confirmacao). Tudo vai para `~/.katana/agente.log`.
+- `git`: os argumentos sao separados pelo proprio motor (aspas simples/duplas) e cada token vai ao shell entre
+  aspas simples, entao `status; rm x` nao executa nada. Opcoes que rodam programas (`--upload-pack`, `--exec`,
+  `--output`, `--config`, `-u`/`-c` em clone/pull/fetch, URL `ext::`) sao recusadas. Recusados sem
+  `KATANA_GIT_UNSAFE=1`: `push` com `--force/-f/--delete/--mirror/+refspec`, `reset`, `clean`, `rebase`, `merge`,
+  `stash`, `restore`, `rm`, `tag`, `revert`, `branch -D`, `checkout -f/-B/.`. `status/diff/log/show` nao pedem
+  confirmacao.
+- `download_file`: curl com `--max-filesize` e `ulimit -f` (limite `KATANA_DL_MAX_MB`, padrao 2048), grava em
+  `<path>.part` e renomeia; SHA-256 em C proprio (`sha2_*`, em streaming).
+- `install_package`: lista branca pip/npm/apt/cargo, nome validado (sem espaco, `;`, aspas, nem comecar com `-`);
+  pip usa a venv ativa, `./.venv` ou `--user` (se o sistema disser "externally-managed", a saida sugere criar `.venv`);
+  apt usa `sudo -n` e devolve erro claro se pedir senha. Devolve so as ultimas ~12 linhas.
+- `web_fetch` ja extraia texto legivel de HTML (sem script/style); `read_document` reaproveita `html_to_text`.
+- Formatos: as declaracoes entram na lista `<tools>` JSON (Qwen3.6 em XML `<function=..>`, ou JSON) e
+  `g4_agent_sys` as converte para `<|tool>declaration:..` do Gemma 4 (conferido com `katana agentsys gemma4`;
+  `replace_all` e boolean). O prompt cresceu cerca de 1,2 KB (~300 tokens): o prefixo em cache KV e recalculado
+  uma vez por modelo.
+- Modos de teste novos (sem modelo): `katana tool <nome> '<json>'` (ja existia), `katana agentsys [qwen|json|gemma4]` e
+  `katana toolparse <xml|gemma4> '<chamada>'` (converte a chamada como o agente faz e executa).
+- `sh tools/testar_ferramentas.sh`: 48 verificacoes sem modelo/GPU (edit unico/duplicado/replace_all, glob, git incl.
+  recusas e injecao, HTML/PDF, download de um servidor HTTP local incl. limite e 404, validacao do install, log).
+- katana-desktop: o cartao de ferramenta ja mostra `chave: valor | ...`; a expressao de `cleanArgs` passou a aceitar
+  booleano/numero sem aspas (`replace_all: true` do Gemma). Compila; nao foi aberto o app.
+- **Nao testado**: um modelo chamando as ferramentas novas (nem Qwen3.6 nem Gemma 4: a GPU/CPU estavam reservadas);
+  `install_package` de verdade (pip/npm/apt/cargo: so validacao de entrada); `git clone/pull/push` com rede;
+  Windows (ferramentas de shell devolvem "not available on Windows yet"; `edit_file` e `read_document` de HTML/texto
+  funcionam).
+
 ## 0e. Cache KV Q8_0 no qwen35moe (2026-11-17, ramo worktree-agent-a820d36683256ed88)
 
 Juntado o ramo worktree-agent-aea784e9337467df4 (KATANA_CPU_KV8, KATANA_DUMP_LOGITS, tools/agulha.py) e estendido ao
