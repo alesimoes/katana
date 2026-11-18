@@ -14362,7 +14362,7 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     const char *mode = getenv("KATANA_RETOMAR");
     const int whole = mode && strcmp(mode, "completo") == 0;
     int warm = 0;
-    if (same && heat && !whole) warm = heat_apply(m, heat, NL, E);
+    if (same && heat && !whole && !getenv("KATANA_RETOMAR_FRIO")) warm = heat_apply(m, heat, NL, E);     /* FRIO: sem aquecer (comparacao) */
     free(heat);
     ah_clear(hist); ah_clear(full);
     const AHist *use = whole && fl.n ? &fl : &cp;
