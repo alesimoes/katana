@@ -240,3 +240,31 @@ bench 512+32, Qwen3.6-35B-A3B Q4_K_M, `KATANA_CTX=131072`, binario do main e nov
 | geracao (rodadas 2-3) | 17,3 tok/s | 27,0-27,3 tok/s |
 
 Primeira serie do main deu 3,7-5,3 / 3,1-17,8 (fria). DeltaNet em blocos x exato: inconclusivo (carga alta), ver handoff 0d.
+
+## 14. Roteador do MoE na GPU na geracao (Linux, 2026-11-18, worktree agent-a516)
+
+Perfil da geracao (`KATANA_VK_GENPROF=1`, bench 16+128, 3 rodadas, ctx 4096, GPU livre, load 4-9 da maquina
+compartilhada: indicativo). Medias por camada MoE, so geracao:
+
+| | Qwen3.6-35B-A3B (40 camadas, grafo Vulkan) | gemma4 26B-A4B (30 camadas, modo hibrido) |
+|---|---|---|
+| vagas por camada | 17 de 256 | 9 de 128 |
+| usos dos especialistas na VRAM | 36% | 74% |
+| camadas com os 8 escolhidos todos nas vagas | **0,3%** | 25% |
+| leitura bloqueante por camada (inclui a conta da GPU) | 0,43 ms | (nao ha: camadas na CPU) |
+| roteador na CPU | 0,053 ms (~2,1 ms/token) | 0,038 ms (~1,1 ms/token) |
+| frios na CPU | 0,27-0,35 ms (~11-14 ms/token) | 0,64 ms (~19 ms/token) |
+| geracao | ~34 ms/token | ~46-48 ms/token |
+
+Roteador de um token na GPU no qwen35moe (`KATANA_VK_GPUROUTER=1`), alternado 0/1 na mesma hora, 3 series,
+rodadas 2-3 (ms/token):
+
+| serie | desligado | ligado |
+|---|---|---|
+| 1 | 33,56 / 33,80 | 33,22 / 33,36 |
+| 2 | 34,27 / 34,27 | 33,50 / 33,76 |
+| 3 | 34,68 / 34,84 | 34,65 / 34,55 |
+| media | 34,24 | 33,84 (-1,2%, dentro do ruido) |
+
+O roteador sai da CPU (0,053 -> 0,002 ms) mas a leitura cresce 0,03 ms (mais um despacho e 1 KB a mais).
+Geracao gulosa de 80 tokens identica. Fica desligado por padrao.
