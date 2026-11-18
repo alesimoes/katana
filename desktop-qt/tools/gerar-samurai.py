@@ -97,20 +97,8 @@ def main():
     te = titulo("KATANA", "#e2c2fb", "#a35be0", "#3a1560")
     tc.save(os.path.join(ICONS, "titulo-claro.png"))
     te.save(os.path.join(ICONS, "titulo-escuro.png"))
+    # o icone do app (K) e gerado por tools/gerar-icone-k.py
     big = icone512(PAL_ICO)
-    for t in (16, 32, 48, 64, 128, 256, 512):
-        (big if t == 512 else big.resize((t, t), Image.LANCZOS)).save(os.path.join(ICONS, "katana-%d.png" % t))
-    # svg equivalente (retangulos sem suavizacao)
-    k, ox, oy = 24, (512 - 16 * 24) // 2, (512 - 16 * 24) // 2 + 4
-    r = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" shape-rendering="crispEdges">',
-         '  <!-- gerado por tools/gerar-samurai.py: squircle roxo com o samurai em pixel art -->',
-         '  <rect width="512" height="512" rx="112" fill="#820ad1"/>']
-    for y, row in enumerate(SPRITE):
-        for x, ch in enumerate(row):
-            if ch != ".":
-                r.append('  <rect x="%d" y="%d" width="%d" height="%d" fill="%s"/>' % (ox + x * k, oy + y * k, k, k, PAL_ICO[ch]))
-    r.append("</svg>")
-    open(os.path.join(ICONS, "katana.svg"), "w").write("\n".join(r) + "\n")
     p = os.environ.get("SAMURAI_PREVIEW")
     if p:
         pv = Image.new("RGBA", (640, 300), hexrgb("#faf9fc"))
