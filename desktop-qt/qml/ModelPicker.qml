@@ -11,7 +11,7 @@ ComboBox {
     implicitHeight: 38
     property real maxWidth: 380
     property bool compact: false
-    implicitWidth: Math.min(maxWidth, Math.max(compact ? 120 : 200, lbl.implicitWidth + 64))
+    implicitWidth: Math.min(maxWidth, Math.max(compact ? 90 : 200, lbl.implicitWidth + (compact ? 34 : 64)))
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: "Escolher modelo"
@@ -37,27 +37,27 @@ ComboBox {
     }
 
     background: Rectangle {
-        radius: 12
+        radius: cb.compact ? 8 : 12
         color: cb.hovered || cb.popup.visible ? Theme.hov : "transparent"
         border.color: cb.visualFocus ? Theme.foc : (cb.hovered || cb.popup.visible ? Theme.bd : "transparent")
         border.width: cb.visualFocus ? 2 : 1
     }
     contentItem: Text {
         id: lbl
-        leftPadding: 12
-        rightPadding: 34
+        leftPadding: cb.compact ? 8 : 12
+        rightPadding: cb.compact ? 22 : 34
         text: cb.displayText
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
-        color: Theme.fg
-        font.pixelSize: cb.compact ? 13 : 15
-        font.weight: Font.DemiBold
+        color: cb.compact ? Theme.mut : Theme.fg
+        font.pixelSize: cb.compact ? 12 : 15
+        font.weight: cb.compact ? Font.Normal : Font.DemiBold
     }
     indicator: Icon {
-        x: cb.width - width - 12
+        x: cb.width - width - (cb.compact ? 6 : 12)
         y: (cb.height - height) / 2
         name: "down"
-        size: 15
+        size: cb.compact ? 11 : 15
         color: Theme.mut
     }
 
@@ -112,7 +112,7 @@ ComboBox {
 
     popup: Popup {
         y: cb.compact ? -height - 6 : cb.height + 6
-        x: cb.compact ? cb.width - width : 0
+        x: 0
         width: Math.min(420, (cb.Window.width || 420) - 28)
         height: Math.min(list.contentHeight + 12, 460)
         padding: 6

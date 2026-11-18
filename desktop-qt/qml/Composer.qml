@@ -93,18 +93,6 @@ Item {
             }
         }
 
-        // seletor de modelo embaixo da caixa, ao lado do botao de enviar (a lista abre para cima)
-        ModelPicker {
-            id: picker
-            anchors.right: sendBtn.left
-            anchors.rightMargin: 4
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 8
-            implicitHeight: 38
-            maxWidth: Math.max(140, box.width - 38 - 8 - 4 - 16)
-            compact: true
-        }
-
         IconButton {
             id: sendBtn
             objectName: "sendButton"
@@ -134,16 +122,24 @@ Item {
         y: box.height + 4
         width: box.width
         height: 22
+        // seletor de modelo discreto (a lista abre para cima)
+        ModelPicker {
+            id: picker
+            Layout.leftMargin: 6
+            implicitHeight: 22
+            maxWidth: Math.max(120, box.width * 0.45)
+            compact: true
+        }
         Text {
             Layout.fillWidth: true
-            Layout.leftMargin: 14
+            Layout.leftMargin: 8
             elide: Text.ElideRight
             font.pixelSize: 12
             color: backend.errorText ? Theme.err : Theme.mut
             text: backend.errorText ? backend.errorText
                   : backend.statusText ? backend.statusText
                   : ta.text.indexOf("\n") >= 0 ? "As quebras de linha serão enviadas como espaço."
-                  : (comp.width > 640 ? "Enter envia, Shift+Enter quebra linha" : "")
+                  : ""
             Accessible.role: Accessible.StaticText
         }
         Text {
