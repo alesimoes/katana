@@ -112,6 +112,10 @@ public:
     Q_INVOKABLE bool deleteSession(const QString &id);
     Q_INVOKABLE void refreshSessions();
     Q_INVOKABLE void copyText(const QString &text);
+    Q_INVOKABLE QString tema() const;
+    Q_INVOKABLE void setTema(const QString &t);
+    Q_INVOKABLE QString fonte() const;
+    Q_INVOKABLE void setFonte(const QString &f);
     Q_INVOKABLE bool uiFlag(const QString &name) const;
     Q_INVOKABLE void setUiFlag(const QString &name, bool v);
     Q_INVOKABLE void autoStartDefault();

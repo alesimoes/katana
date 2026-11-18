@@ -20,7 +20,10 @@ Canvas {
         "trash": "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
         "check": "M5 12l5 5 9-10",
         "wrench": "M4 20L12 12M15 9m-1 0a4 4 0 1 0 8 0",
-        "close": "M6 6l12 12M18 6L6 18"
+        "close": "M6 6l12 12M18 6L6 18",
+        "minimize": "M6 12h12",
+        "maximize": "M6 6h12v12H6V6",
+        "restore": "M8 8h10v10H8V8M8 8V5h10"
     })
 
     function draw(ctx, d) {
@@ -58,6 +61,18 @@ Canvas {
             ctx.lineTo(7, 19); ctx.quadraticCurveTo(5, 19, 5, 17);
             ctx.lineTo(5, 7); ctx.quadraticCurveTo(5, 5, 7, 5);
             ctx.fill();
+            return;
+        }
+        if (name === "gear") {
+            ctx.beginPath(); ctx.arc(12, 12, 3.2, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(12, 12, 6.6, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath();
+            for (var k = 0; k < 8; k++) {
+                var a = k * Math.PI / 4;
+                ctx.moveTo(12 + Math.cos(a) * 6.6, 12 + Math.sin(a) * 6.6);
+                ctx.lineTo(12 + Math.cos(a) * 9.4, 12 + Math.sin(a) * 9.4);
+            }
+            ctx.stroke();
             return;
         }
         if (name === "wrench") {

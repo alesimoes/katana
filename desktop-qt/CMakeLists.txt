@@ -25,6 +25,7 @@ qt_add_qml_module(katana-desktop-qt
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/Highlight.js
         qml/Theme.qml
         qml/Icon.qml
         qml/IconButton.qml
@@ -53,6 +54,7 @@ qt_add_resources(katana-desktop-qt icones
         icons/katana-64.png
         icons/katana-128.png
         icons/katana-256.png
+        icons/katana-k.png
         icons/katana-512.png
 )
 
@@ -65,6 +67,13 @@ qt_add_resources(katana-desktop-qt fontes
         fonts/JetBrainsMono-SemiBold.ttf
         fonts/JetBrainsMono-Bold.ttf
         fonts/JetBrainsMono-Italic.ttf
+        fonts/IBMPlexSans-Regular.ttf
+        fonts/IBMPlexSans-Medium.ttf
+        fonts/IBMPlexSans-SemiBold.ttf
+        fonts/IBMPlexSans-Bold.ttf
+        fonts/IBMPlexSans-Italic.ttf
+        fonts/IBMPlexMono-Regular.ttf
+        fonts/IBMPlexMono-Medium.ttf
 )
 
 target_link_libraries(katana-desktop-qt PRIVATE
