@@ -4,6 +4,49 @@ Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura 
 backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
 `comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
 
+## 0l. Terminal e logs para o agente: run_command robusto, terminal, read_log, terminal_screen (2026-11-18)
+
+Problema: `run_command` usava popen (stderr no terminal do usuario, stdin compartilhado, sem timeout), entao o modelo nao via
+erros e `sudo`/`ssh` travavam o agente. Codigo em `src/katana.c`, bloco "terminal e logs" antes de `agent_tool_run`.
+- `run_command(command, timeout_s?)`: `vfork`+`setsid` (novo grupo de processos), stdin `/dev/null`, stdout e stderr no mesmo cano,
+  `GIT_TERMINAL_PROMPT=0` e `PAGER=cat`. Timeout `timeout_s` (padrao 120, `KATANA_CMD_TIMEOUT`, maximo 3600): mata o grupo
+  (SIGTERM, depois SIGKILL) e avisa `[timeout apos N s]`, mantendo a saida parcial. Ctrl+C durante o comando mata o grupo e a
+  saida diz `[interrupted by the user]` (o katana continua vivo). Saida com INICIO (1/3) e FIM (2/3) e `[... N bytes omitted ...]`
+  no meio (limite ~6000 bytes, ou o orcamento de contexto). Sempre termina com `[exit code N]`. Se a saida tem "a password is
+  required", "[sudo] password", "Permission denied (publickey", etc. vem uma dica: pedir ao usuario para rodar o comando no
+  terminal dele; "Permission denied" generico vem com dica mais branda. Processo em segundo plano que segura o cano nao prende a
+  chamada (o shell saiu e nada mais chega: devolve; o processo continua).
+- `terminal(action, name?, text?, enter?, lines?, wait_ms?)`: sessoes de shell persistentes em pty (`posix_openpt`, sem libs
+  novas; bash `--norc --noediting` ou sh; `TERM=dumb`, `PS1='$ '`). Acoes: `open`, `send` (Enter por padrao; espera a saida
+  assentar: chegou algo e 150 ms de silencio, ate `wait_ms`, padrao 1500), `read` (so o novo; com `lines` as ultimas N linhas;
+  espera ate `wait_ms`), `list`, `close`, `interrupt` (Ctrl+C). Ate 4 sessoes, anel de 256 KB por sessao, ANSI/`\r` removidos.
+  Sem `name` vale a unica sessao aberta. Sessoes morrem ao sair do agente (`atexit`; se o katana morrer a pty fecha e o shell
+  recebe SIGHUP). `open` e `send` passam por `agent_act`; se aparece um prompt de senha, vem dica para nao adivinhar.
+- `read_log(source, lines?, filter?, unit?)`: `agent` (`KATANA_LOG`/`~/.katana/agente.log`), `commands` (anel de 32 comandos desta
+  sessao: comando, codigo de saida ou `[terminal]`, resumo do fim da saida; registrados por run_command e terminal), `journal`
+  (`journalctl -n N --no-pager`, `unit` opcional), `dmesg` (cai para `journalctl -k`), `syslog` (`/var/log/syslog` ou `messages`) ou
+  um caminho de arquivo de texto (leitura fora da pasta passa por `agent_read_access`; recusa binario; le so o 1 MB final). `filter`
+  e regex estendida sem distincao de maiusculas (texto simples se a regex for invalida). Sem permissao a mensagem diz o que fazer
+  (grupo `adm`/`systemd-journal`, ou pedir ao usuario `sudo tail ...`).
+- `terminal_screen(lines?, pane?)`: `tmux capture-pane -p -t <painel> -S -N`. Sem `pane`, usa outro painel da janela do
+  `TMUX_PANE` (o proprio e o do chat). Fora do tmux (`TMUX` vazio) ou sem tmux instalado: erro claro pedindo ao usuario para colar o
+  erro. Nao tenta ler outros terminais.
+- Prompt de sistema: lista nos dois formatos (`g4_agent_sys` conferido com `katana agentsys gemma4`; tipos `integer` e `boolean`
+  saem como `INTEGER`/`BOOLEAN`) e uma frase pedindo `read_log`/`terminal` quando um comando falha e para nao insistir em sudo/senha.
+  Prompt cresceu ~1,3 KB (~330 tokens).
+- Teste novo sem modelo: `katana toolrun` le linhas `<ferramenta> <json>` da entrada e executa em sequencia no mesmo processo
+  (necessario para sessoes de terminal e para o anel `commands`). `sh tools/testar_ferramentas.sh`: 95 verificacoes.
+- katana-desktop: verbos novos no mapa `verbos` do `ActivityGroup.qml`; `cleanArgs` ja aceita numero/booleano sem aspas
+  (`lines: 50`, `enter: true`). `sh desktop-qt/build.sh` compila; o app nao foi aberto.
+- **Testado de verdade (Linux, sem modelo/GPU)**: stderr visivel, codigo de saida, stdin fechado (`read` volta vazio), dica de senha
+  (texto simulado e `sudo -n true` real), timeout que mata o grupo (filho em segundo plano morre), truncagem inicio+fim, terminal
+  open/send/read com `cd` e variavel persistentes, prompt interativo, Enter opcional, duas sessoes, close, read_log de arquivo
+  (filtro texto/regex, ultimas N, inexistente, binario, sem permissao), de `commands` e `agent`, journal/dmesg (resposta valida ou
+  dica de permissao), terminal_screen sem tmux e com um `tmux` falso no PATH (confere os argumentos montados).
+- **Nao testado**: `terminal_screen` com tmux de verdade (tmux nao instalado nesta maquina); Ctrl+C real do usuario durante um
+  comando (so o caminho por sinal foi lido, nao exercitado); Windows (as tres ferramentas novas devolvem "not available on Windows
+  yet"; run_command continua com popen, agora com `2>&1`); um modelo usando as ferramentas; o app desktop aberto.
+
 ## 0k. Medidas finais com a maquina livre: GPU, MoE na CPU e margem de troca (2026-11-18)
 
 Resultado (`comparacoes.md` secao 17; maquina livre de outros agentes, load 3,7-8,6, 3 execucoes alternadas,

@@ -97,6 +97,117 @@ else echo "pula  download (sem python3/curl)"; fi
 t "download: caminho fora"     'invalid path'          download_file '{"url":"http://x/y","path":"../z"}'
 t "download: url ruim"         'invalid URL'           download_file '{"url":"file:///etc/passwd","path":"z"}'
 
+echo "== run_command: stderr, stdin, timeout, truncagem"
+t "run: stderr visivel"         'boom'                  run_command '{"command":"echo boom >&2"}'
+t "run: codigo de saida"        'exit code 3'           run_command '{"command":"echo out; exit 3"}'
+t "run: stdout e stderr juntos" 'ERRO'                  run_command '{"command":"echo OK; echo ERRO >&2"}'
+t "run: stdin fechado"          'got:\[\]'              run_command '{"command":"read x; echo got:[$x]"}'
+t "run: pede senha, sem travar" 'in their own terminal: echo' run_command '{"command":"echo \"sudo: a password is required\" >&2; exit 1"}'
+if command -v sudo >/dev/null 2>&1; then
+  S0=$(date +%s)
+  t "run: sudo -n nao trava"    'exit code'             run_command '{"command":"sudo -n true"}'
+  [ $(( $(date +%s) - S0 )) -lt 20 ] && { OK=$((OK+1)); echo "ok   run: sudo -n voltou rapido"; } || { FAIL=$((FAIL+1)); echo "FALHA run: sudo demorou"; }
+fi
+S0=$(date +%s)
+t "run: timeout avisa"          'timeout apos 2 s'      run_command '{"command":"echo antes; sleep 30; echo depois","timeout_s":2}'
+[ $(( $(date +%s) - S0 )) -lt 15 ] && { OK=$((OK+1)); echo "ok   run: timeout matou rapido"; } || { FAIL=$((FAIL+1)); echo "FALHA run: timeout demorou"; }
+t "run: timeout mantem a saida parcial" 'antes'         run_command '{"command":"echo antes; sleep 30","timeout_s":1}'
+t "run: timeout em string"      'timeout apos 1 s'      run_command '{"command":"sleep 30","timeout_s":"1"}'
+t "run: segundo plano nao prende" 'exit code 0'         run_command '{"command":"(sleep 3 &) ; echo oi","timeout_s":30}'
+out=$("$KAT" tool run_command '{"command":"seq 1 5000"}' 2>/dev/null)
+printf '%s' "$out" | grep -q '^1$' && printf '%s' "$out" | grep -q '^5000$' && printf '%s' "$out" | grep -q 'bytes omitted' && { OK=$((OK+1)); echo "ok   run: truncagem mantem inicio e fim"; } || { FAIL=$((FAIL+1)); echo "FALHA run: truncagem"; }
+GRP="$T/grp.pid"
+"$KAT" tool run_command "{\"command\":\"sleep 60 & echo \$! > $GRP; wait\",\"timeout_s\":1}" >/dev/null 2>&1
+sleep 0.5
+if kill -0 "$(cat "$GRP")" 2>/dev/null; then FAIL=$((FAIL+1)); echo "FALHA run: filho sobrou apos timeout"; kill -9 "$(cat "$GRP")"; else OK=$((OK+1)); echo "ok   run: grupo de processos morto no timeout"; fi
+
+echo "== terminal, read_log, terminal_screen (uma sessao do katana com varias chamadas)"
+printf 'a\nERRO: falhou aqui\nb\nWARN algo\nc\n' > app.log
+TR=$("$KAT" toolrun 2>/dev/null <<'EOT'
+terminal {"action":"list"}
+terminal {"action":"open","name":"t1"}
+terminal {"action":"send","text":"cd /tmp"}
+terminal {"action":"send","text":"MINHA=valor42"}
+terminal {"action":"send","text":"pwd; echo var=$MINHA"}
+terminal {"action":"send","text":"echo erro-visto >&2"}
+terminal {"action":"send","text":"read -p 'senha? ' x","enter":true}
+terminal {"action":"read","lines":3,"wait_ms":200}
+terminal {"action":"interrupt"}
+terminal {"action":"send","text":"echo parcial","enter":false,"wait_ms":300}
+terminal {"action":"read","wait_ms":200}
+terminal {"action":"open","name":"t2"}
+terminal {"action":"list"}
+terminal {"action":"send","name":"t2","text":"echo so-no-t2; pwd"}
+terminal {"action":"send"}
+terminal {"action":"close","name":"t2"}
+terminal {"action":"close","name":"t1"}
+terminal {"action":"send","text":"x"}
+read_log {"source":"commands","lines":50}
+read_log {"source":"commands","filter":"so-no-t2"}
+EOT
+)
+chk() { printf '%s' "$TR" | grep -q -- "$2" && { OK=$((OK+1)); echo "ok   $1"; } || { FAIL=$((FAIL+1)); echo "FALHA $1 (esperava /$2/)"; printf '%s\n' "$TR" | head -80 | sed 's/^/     | /'; }; }
+chk "terminal: list vazio"             'no sessions'
+chk "terminal: open"                   'session t1 opened'
+chk "terminal: cd persiste"            '^/tmp$'
+chk "terminal: variavel persiste"      'var=valor42'
+chk "terminal: stderr visivel"         'erro-visto'
+chk "terminal: prompt interativo"      'senha?'
+chk "terminal: texto sem Enter"        'parcial'
+chk "terminal: duas sessoes"           't2: pid'
+chk "terminal: sessao isolada"         'so-no-t2'
+chk "terminal: erro sem nome ambiguo"  'several sessions'
+chk "terminal: close"                  'session t2 closed'
+chk "terminal: sem sessao"             'no terminal session is open'
+chk "read_log commands: lista"         '\[terminal\]'
+chk "read_log commands: filtro"        'so-no-t2'
+t "read_log: arquivo com filtro"       'ERRO: falhou aqui'     read_log '{"source":"app.log","filter":"erro"}'
+t "read_log: filtro regex"             'WARN algo'             read_log '{"source":"app.log","filter":"^(WARN|ERRO)"}'
+out=$("$KAT" tool read_log '{"source":"app.log","filter":"erro"}' 2>/dev/null)
+printf '%s' "$out" | grep -q '^b$' && { FAIL=$((FAIL+1)); echo "FALHA read_log: filtro nao filtrou"; } || { OK=$((OK+1)); echo "ok   read_log: filtro exclui o resto"; }
+t "read_log: ultimas linhas"           '^c$'                   read_log '{"source":"app.log","lines":2}'
+t "read_log: inexistente"              'cannot open'        read_log '{"source":"nao-existe.log"}'
+t "read_log: binario recusado"         'binary'                read_log "{\"source\":\"$KAT\"}"
+t "read_log: sem source"               'missing source'        read_log '{}'
+t "read_log: agent"                    'run_command'           read_log '{"source":"agent","lines":500}'
+t "read_log: unit invalida"            'invalid unit'          read_log '{"source":"journal","unit":"a;b"}'
+t "read_log: sem comandos no processo" 'no commands run yet'   read_log '{"source":"commands"}'
+: > noperm.log; chmod 000 noperm.log
+[ "$(id -u)" != 0 ] && t "read_log: sem permissao" 'permission denied' read_log '{"source":"noperm.log"}'
+if command -v journalctl >/dev/null 2>&1; then
+  out=$("$KAT" tool read_log '{"source":"journal","lines":3}' 2>/dev/null)
+  case "$out" in *journal*|*"permission denied"*) OK=$((OK+1)); echo "ok   read_log: journal (resposta valida)";; *) FAIL=$((FAIL+1)); echo "FALHA read_log: journal: $out";; esac
+fi
+out=$("$KAT" tool read_log '{"source":"dmesg","lines":3}' 2>/dev/null)
+case "$out" in *dmesg*|*"permission denied"*|*"not available"*) OK=$((OK+1)); echo "ok   read_log: dmesg (resposta valida ou dica de permissao)";; *) FAIL=$((FAIL+1)); echo "FALHA read_log: dmesg: $out";; esac
+if [ -r /var/log/syslog ] || [ -r /var/log/messages ]; then t "read_log: syslog" 'lines' read_log '{"source":"syslog","lines":3}'
+else out=$("$KAT" tool read_log '{"source":"syslog"}' 2>/dev/null); case "$out" in *error*) OK=$((OK+1)); echo "ok   read_log: syslog ilegivel da erro claro";; *) FAIL=$((FAIL+1)); echo "FALHA syslog: $out";; esac; fi
+
+if command -v tmux >/dev/null 2>&1; then
+  tmux -L katana_t new-session -d -s kt -x 100 -y 30 "echo ERRO-NA-TELA-DO-USUARIO; sleep 30"
+  sleep 0.5
+  TMUX= TMUX_PANE= t "terminal_screen: tmux real, pane dado" 'ERRO-NA-TELA' terminal_screen '{"pane":"kt"}'
+  tmux -L katana_t kill-server 2>/dev/null
+else echo "pula  terminal_screen com tmux real (tmux nao instalado)"; fi
+# tmux falso no PATH: confere o comando montado e a escolha do outro painel
+mkdir -p fake
+cat > fake/tmux <<'EOT'
+#!/bin/sh
+echo "$@" >> "$TMUX_ARGS"
+case "$1" in
+  list-panes) printf '%%1\n%%2\n' ;;
+  capture-pane) echo "TELA-FALSA" ;;
+esac
+EOT
+chmod +x fake/tmux
+export TMUX_ARGS="$T/tmux.args"
+PATH="$PWD/fake:$PATH" TMUX=/tmp/x,1,0 TMUX_PANE=%1 t "terminal_screen: tmux falso" 'TELA-FALSA' terminal_screen '{"lines":20}'
+grep -q 'capture-pane -p -t %2 -S -20' "$TMUX_ARGS" && { OK=$((OK+1)); echo "ok   terminal_screen: capture-pane -p -t outro-painel -S -N"; } || { FAIL=$((FAIL+1)); echo "FALHA terminal_screen: args: $(cat "$TMUX_ARGS")"; }
+PATH="$PWD/fake:$PATH" TMUX= t "terminal_screen: fora do tmux" 'not running inside tmux' terminal_screen '{}'
+out=$(PATH=/nonexistent-dir TMUX= "$KAT" tool terminal_screen '{}' 2>/dev/null)
+case "$out" in *"tmux is not installed"*) OK=$((OK+1)); echo "ok   terminal_screen: sem tmux";; *) FAIL=$((FAIL+1)); echo "FALHA terminal_screen: sem tmux: $out";; esac
+t "terminal_screen: pane invalido" 'invalid pane' terminal_screen '{"pane":"a;b"}'
+
 echo "== log"
 [ -s "$KATANA_LOG" ] && { OK=$((OK+1)); echo "ok   agente.log gravado"; } || { FAIL=$((FAIL+1)); echo "FALHA agente.log vazio"; }
 
