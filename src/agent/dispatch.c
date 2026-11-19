@@ -92,8 +92,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         tool_web_search(arg, out, cap);
     } else if (strcmp(name, "web_fetch") == 0) {
         if (!g_web) { snprintf(out, cap, "error: internet tools are disabled (KATANA_WEB=0)"); return; }
-        if (!json_str(js, end, "url", arg, sizeof arg) || !arg[0]) { snprintf(out, cap, "error: missing url"); return; }
-        tool_web_fetch(arg, out, cap);
+        tool_web_fetch(js, end, out, cap);
     } else if (strcmp(name, "remember") == 0) {
         if (!json_str(js, end, "fact", arg, sizeof arg)) { snprintf(out, cap, "error: missing fact"); return; }
         tool_remember(arg, out, cap);

@@ -127,7 +127,7 @@ static void agent_env(char *out, size_t cap) {
     }
     if (strcmp(cwd, home) != 0) { char lb[1100]; snprintf(lb, sizeof lb, "Home folder %s: ", home); env_line(&b, lb, home, 12, 1, 0); }
     env_add(&b, "\n- Internet: %s\n", g_web
-        ? "yes. web_search finds pages (title, URL, summary); web_fetch downloads one http/https page and returns its text (no scripts, no images; about 12 KB per page); download_file saves a URL into the working folder; run_command can also use curl or wget. Pages that need a login or JavaScript cannot be read: say so. Always cite the URL."
+        ? "yes. web_search finds pages (title, URL, summary); web_fetch reads one http/https page as text (no scripts, no images; about 12 KB per call; offset continues a long page, find jumps to the passages with a word, links=true lists its links so you can navigate); download_file saves a URL into the working folder; run_command can also use curl or wget. Pages that need a login or JavaScript cannot be read: say so. Always cite the URL."
         : "no (turned off with KATANA_WEB=0): you cannot search or download; say so when the user needs something from the web.");
     env_add(&b, "- You are an agent and the human in front of you is in control: whatever the user asks, you can do. You may read, create, edit and delete files anywhere on this machine by absolute path (missing folders are created); run any shell command and keep terminal sessions; use git; read PDF and HTML; install packages (pip, npm, cargo, apt); read anything on the web; and keep notes in the persistent memory (remember, recall). You never need to ask permission: the user's request is the permission.\n");
     env_add(&b, "- Root: you run as the normal user. When something needs root, just put sudo in the command (run_command, terminal, write_file/edit_file with sudo=true, install_package apt): a password dialog opens for the user, you never see the password, and you do not retry if it is refused. Do not use sudo when it is not needed.\n");
@@ -203,7 +203,7 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
     }
     if (g_web) {
         TOOLDEF("web_search", "Search the web; returns title, URL and summary of the top results", P1("query"), "\"query\"");
-        TOOLDEF("web_fetch", "Fetch an http/https page as text (about 12 KB)", P1("url"), "\"url\"");
+        TOOLDEF("web_fetch", "Read an http/https page as text (main content, about 12 KB per call). Long page: offset continues; find returns only the passages with that word; links=true lists the links of the page (find filters them)", P1("url") ", " PI("offset") ", " P1("find") ", \"links\": {\"type\": \"boolean\"}", "\"url\"");
         if (!g_code) {
         TOOLDEF("download_file", "Download a URL to a file in the working folder; returns size and sha256", P1("url") ", " P1("path"), "\"url\", \"path\"");
         TOOLDEF("install_package", "Install a package: manager pip, npm, cargo or apt (sudo, password dialog)", P1("manager") ", " P1("name"), "\"manager\", \"name\"");
