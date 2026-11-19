@@ -1,0 +1,32 @@
+# Monta o AppImage do katana numa base antiga (Ubuntu 22.04, glibc 2.35), para rodar em distribuicoes mais velhas
+# que a maquina de desenvolvimento. So roda quando pedido: aba Actions > pacotes > Run workflow, ou
+#   gh workflow run pacotes.yml
+# O arquivo pronto fica nos artefatos da execucao (katana-appimage).
+name: pacotes
+on:
+  workflow_dispatch:
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qt 6.8
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          modules: ''
+          cache: true
+      - name: Dependencias
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libfuse2 file
+      - name: Motor
+        run: ./build.sh
+      - name: Aplicativo
+        run: cd desktop-qt && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4
+      - name: AppImage
+        run: QMAKE=$(which qmake6 || which qmake) desktop-qt/packaging/appimage.sh
+      - name: Confere que abre
+        run: QT_QPA_PLATFORM=offscreen desktop-qt/packaging/out/katana-x86_64.AppImage --appimage-extract-and-run --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: katana-appimage
+          path: desktop-qt/packaging/out/katana-x86_64.AppImage
