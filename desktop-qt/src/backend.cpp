@@ -156,7 +156,8 @@ QByteArray TagFilter::flush()
 bool Backend::usable(const QString &name, QString *note)
 {
     const QString l = name.toLower();
-    if (l.contains("qwen3.6") || l.contains("gemma-4") || l.contains("gemma4")) {
+    // modelos com formato que o agente entende (ChatML, Gemma 4, gpt-oss) e tamanho para usar ferramentas; os pequenos/antigos ficam desabilitados
+    if (l.contains("qwen3") || l.contains("gemma-4") || l.contains("gemma4") || l.contains("gpt-oss") || l.contains("ravenx")) {
         if (note) note->clear();
         return true;
     }
