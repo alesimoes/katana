@@ -16551,9 +16551,12 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     for (int i = 0; i < last_u; i++) shr += ah_shrink_tool(&h->v[i]);          /* camada 1 */
     ah_render(h, sys, &r); buf_str(&r, pending);
     int n = ah_count(m, r.p);
-    if ((n > target || force) && last_u > 0) {                                   /* camada 2 */
-        fprintf(stderr, "%s[compactando: resumindo %d mensagens antigas...]%s\n", CE(C_DIM), last_u, CE(C_RESET));
-        char *sm = ah_summary(m, h, last_u);
+    /* /compact (force, sem texto pendente): resume a conversa inteira, inclusive o ultimo turno; no automatico o
+       ultimo pedido do usuario e o que veio depois ficam como estao */
+    const int upto = (force && !*pending) ? h->n : last_u;
+    if ((n > target || force) && upto > 0) {                                     /* camada 2 */
+        fprintf(stderr, "%s[compactando: resumindo %d mensagens...]%s\n", CE(C_DIM), upto, CE(C_RESET));
+        char *sm = ah_summary(m, h, upto);
         if (sm) {
             AHist nh = {0};
             Buf u = {0};
@@ -16561,7 +16564,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
-            for (int i = last_u; i < h->n; i++) ah_push(&nh, h->v[i].role, h->v[i].s, strlen(h->v[i].s));
+            for (int i = upto; i < h->n; i++) ah_push(&nh, h->v[i].role, h->v[i].s, strlen(h->v[i].s));
             ah_clear(h); free(h->v); *h = nh;
             free(u.p); free(sm);
             summ = 1;
@@ -16885,7 +16888,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                 float *lg_c;
                 const int np2 = agent_compact(m, &hist, sys, "", pos, 1, &lg_c);
                 g_busy = 0;
-                if (np2 < 0) fprintf(stderr, "[could not compact]\n"); else pos = np2;
+                if (np2 < 0) fprintf(stderr, "[could not compact]\n");
+                else { pos = np2; sess_save(m, sys, &hist, &slog, 0); }   /* a sessao gravada passa a ter o resumo no lugar do historico */
                 if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
             }
             continue;
