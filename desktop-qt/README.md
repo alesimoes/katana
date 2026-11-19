@@ -48,7 +48,9 @@ Embedded terminal: `>_` button in the title bar (or Ctrl+`) opens a bottom panel
 
 Awake screen (like caffeinate): while the agent loads or responds, the desktop asks the system not to lock the screen or suspend (Linux: `gnome-session-inhibit` or `systemd-inhibit` running `cat`, which ends when the input closes); toggled in the gear ("Nao bloquear enquanto trabalha", i.e. "Do not lock while working", default on, `manterAcordado` in ui.ini). Not done on Windows/macOS.
 
-Sudo: the agent runs commands as root by default (`KATANA_SUDO=0` turns it off; see handoff 0n). When it needs the password, the engine emits the `NEEDPASS` marker; the desktop opens a password dialog and replies with `\x01PASS <password>` (empty = cancel). The password stays only in the agent's memory and in the command's environment (askpass), it does not go to the model or to the history. In the terminal (`katana agent`) the password is asked for on the screen itself, without echo.
+Working folder: the button next to the model selector shows the agent's folder and opens a folder chooser (the agent switches with `/cd`, without reloading the model). The agent can read and write anywhere; there are no per-folder prompts. The only dialog is the sudo password (marker `NEEDPASS`). Markers `CWD <folder>\t<1|0>` (current folder) and `ASK <kind>\t<what>\t<detail>` (answer `\x01ANS 1|0`; only used with `KATANA_CONFIRM=1`) are handled by the app.
+
+Sudo: the agent runs as your normal user; root only enters when a command asks for `sudo` (in `run_command` or a terminal session) or the model passes `sudo=true` to `write_file`/`edit_file` (`KATANA_SUDO=1` makes everything run as root). When it needs the password, the engine emits the marker `NEEDPASS` (`NEEDPASS retry` after a wrong one); the desktop opens a password dialog and answers with `\x01PASS <password>` (empty = cancel). The password stays only in the agent's memory and is not sent to the model or the history. In the terminal (`katana agent`) it is asked on screen, without echo.
 
 Remembered model: the last model started is kept in ui.ini (`ultimoModelo`) and is the one that opens next time; when opening a saved conversation, the desktop switches to the model it was in (if usable) and resumes the session.
 
@@ -57,7 +59,7 @@ Environment: the desktop discards performance KATANA_* variables inherited from 
 Protocol: the agent runs with `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Stdout lines that start with
 the byte 0x01 are markers (`READY`, `TOOL nome<TAB>args`, `TOKENS pos ctx`, `COMPACT antes depois`); the
 rest is response text, filtered of tool blocks. Stop = SIGINT to the agent's group (on
-Windows, kill and restart). New conversation = `/novo`; switching models = `/sair` and, if it does not exit within 3 s, kill.
+Windows, kill and restart). New conversation = `/new`; switching models = `/exit` and, if it does not exit within 3 s, kill.
 
 Test: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
 (run at the repo root; uses `models/qwen2.5-1.5b-q4km.gguf` (fast, covers the interface and the agent protocol; for the final check on the real model use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, slow when cold) and a temporary data folder). It types and

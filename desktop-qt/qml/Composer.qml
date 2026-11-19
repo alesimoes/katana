@@ -2,6 +2,7 @@ import QtQuick
 import Katana
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 // Caixa de mensagem flutuante embaixo, centralizada, com estatisticas discretas
 Item {
@@ -168,6 +169,32 @@ Item {
             implicitHeight: 22
             maxWidth: Math.max(120, box.width * 0.45)
             compact: true
+        }
+        // pasta de trabalho do agente: mostra o nome da pasta; clique para escolher outra (o agente pergunta se confia nela)
+        AbstractButton {
+            id: wsBtn
+            objectName: "workspaceButton"
+            Layout.leftMargin: 2
+            implicitHeight: 22
+            implicitWidth: Math.min(wsTxt.implicitWidth + 14, 190)
+            enabled: backend.ready || !backend.running
+            hoverEnabled: true
+            readonly property string folder: { var p = backend.workspace || ""; var i = p.lastIndexOf("/"); return i >= 0 && i < p.length - 1 ? p.slice(i + 1) : p; }
+            background: Rectangle { radius: 6; color: wsBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: wsTxt; font.family: Theme.sans; font.pixelSize: 12; elide: Text.ElideRight
+                color: backend.workspaceTrusted ? Theme.mut : Theme.err
+                text: (backend.workspaceTrusted ? "pasta: " : "sem confiança: ") + wsBtn.folder }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: (backend.workspace || "") + (backend.workspaceTrusted ? "\n(pasta confiável: clique para trocar)" : "\n(sem confiança: toda ação pergunta antes; clique para trocar)")
+            Accessible.name: "Pasta de trabalho"
+            onClicked: folderDlg.open()
+        }
+        FolderDialog {
+            id: folderDlg
+            title: "Escolha a pasta de trabalho do agente"
+            currentFolder: "file://" + backend.workspace
+            onAccepted: backend.setWorkspace(selectedFolder.toString())
         }
         Text { font.family: Theme.sans;
             Layout.fillWidth: true

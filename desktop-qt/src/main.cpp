@@ -33,6 +33,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i)
         if (QByteArray(argv[i]) == "--selftest")
             selftest = true;
+    if (selftest && qEnvironmentVariableIsEmpty("KATANA_TRUST"))
+        qputenv("KATANA_TRUST", "1");  // no teste automatico ninguem responde ao "confiar nesta pasta?"
     if (selftest && qEnvironmentVariableIsEmpty("QT_QUICK_BACKEND"))
         qputenv("QT_QUICK_BACKEND", "software");  // captura sem GPU (modo offscreen)
 

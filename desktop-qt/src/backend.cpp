@@ -1,5 +1,6 @@
 #include <QFont>
 #include <QStandardPaths>
+#include <QUrl>
 #include "backend.h"
 
 #include <QCoreApplication>
@@ -346,7 +347,7 @@ void Backend::detach(QProcess *p)
         return;
     }
     ++m_dying;
-    p->write("/sair\n");
+    p->write("/exit\n");
     p->closeWriteChannel();
     QTimer::singleShot(3000, p, [p] {
         if (p->state() != QProcess::NotRunning)
@@ -379,7 +380,7 @@ void Backend::launch(const QString &modelFile)
         static const QStringList manter = {"KATANA_UI", "KATANA_THINK", "KATANA_CONFIRM", "KATANA_WEB", "KATANA_SEARX",
             "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
             "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
-            "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV"};
+            "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST"};
         for (const QString &k : env.keys())
             if (k.startsWith("KATANA_") && !k.startsWith("KATANA_MCP_") && !manter.contains(k))
                 env.remove(k);
@@ -394,6 +395,7 @@ void Backend::launch(const QString &modelFile)
 #endif
     p->setProgram(m_katana);
     p->setArguments({"agent", path});
+    p->setWorkingDirectory(workspace());   // pasta de trabalho do agente (a que o usuario escolheu, ou a atual)
     m_outBuf.clear();
     m_errBuf.clear();
     m_utf8Tail.clear();
@@ -432,7 +434,7 @@ void Backend::shutdown()
         QProcess *p = m_proc;
         m_proc = nullptr;
         p->disconnect(this);
-        p->write("/sair\n");
+        p->write("/exit\n");
         p->closeWriteChannel();
         if (!p->waitForFinished(3000)) {
             p->kill();
@@ -504,6 +506,48 @@ void Backend::stop()
 #endif
 }
 
+QString Backend::workspace() const
+{
+    if (!m_wsReal.isEmpty())
+        return m_wsReal;
+    const QString saved = m_ui ? m_ui->value("workspace").toString() : QString();
+    if (!saved.isEmpty() && QDir(saved).exists())
+        return saved;
+    return QDir::currentPath();
+}
+
+void Backend::answerAsk(bool yes)
+{
+    if (m_proc)
+        m_proc->write(yes ? "\x01" "ANS 1\n" : "\x01" "ANS 0\n");
+}
+
+bool Backend::setWorkspace(const QString &pathIn)
+{
+    QString path = pathIn;
+    if (path.startsWith("file://"))
+        path = QUrl(path).toLocalFile();
+    path = QDir::cleanPath(path);
+    if (path.isEmpty() || !QDir(path).exists()) {
+        setTexts({}, "Pasta nao encontrada.");
+        return false;
+    }
+    if (m_proc && !m_ready) {
+        setTexts({}, "Aguarde o agente terminar para trocar de pasta.");
+        return false;
+    }
+    m_ui->setValue("workspace", path);
+    m_ui->sync();
+    if (m_proc) {  // agente rodando: muda a pasta dele sem recarregar o modelo
+        setState(false, false, true);
+        writeLine("/cd " + path);
+    } else {
+        m_wsReal = path;
+        emit workspaceChanged();
+    }
+    return true;
+}
+
 void Backend::sendPassword(const QString &pw)
 {
     if (m_proc)
@@ -536,7 +580,7 @@ bool Backend::send(const QString &text)
         m_sess = Sessoes::nova(m_model);
     const QString kp = ksessPath(m_sess.id);
     if (!kp.isEmpty() && kp != m_bound) {  // o motor grava a sessao (calor + conversa compactada) para retomar depois
-        writeLine("/sessao " + kp);
+        writeLine("/session " + kp);
         m_bound = kp;
     }
     setTexts({}, {});
@@ -578,7 +622,7 @@ bool Backend::newChat()
     m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
     setTexts(QStringLiteral("Preparando a conversa..."), {});
     setState(false, false, true);
-    writeLine("/novo");
+    writeLine("/new");
     refreshSessions();
     return true;
 }
@@ -626,7 +670,7 @@ bool Backend::openSession(const QString &id)
         setTexts(QStringLiteral("Preparando a conversa..."), {});
         setState(false, false, true);
         m_bound.clear();
-        writeLine("/novo");
+        writeLine("/new");
     } else {
         if (canResume)
             m_resumeWant = kp;  // pede quando o agente terminar de carregar
@@ -651,7 +695,7 @@ void Backend::requestResume(const QString &path)
     m_bound = path;
     setTexts(QStringLiteral("Retomando a sessao (especialistas e contexto compacto)..."), {});
     setState(false, false, true);
-    writeLine("/retomar " + path);
+    writeLine("/resume " + path);
 }
 
 bool Backend::deleteSession(const QString &id)
@@ -807,7 +851,19 @@ void Backend::handleMarker(const QByteArray &line)
         if (a.size() >= 2)
             m_msgs.append("notice", "Contexto compactado: " + a[0] + " -> " + a[1] + " tokens");
     } else if (name == "NEEDPASS") {  // o motor precisa da senha do sudo
-        emit passwordRequested();
+        emit passwordRequested(args.trimmed() == "retry");
+    } else if (name == "ASK") {  // ASK <tipo>\t<o que>\t<detalhe>: pedido de permissao (confiar na pasta, gravar fora dela, acao)
+        const QStringList a = args.split('\t');
+        emit askRequested(a.value(0), a.value(1), a.value(2));
+    } else if (name == "CWD") {  // CWD <pasta>\t<1 se confiavel>
+        const QStringList a = args.split('\t');
+        m_wsReal = a.value(0);
+        m_wsTrusted = a.value(1) == "1";
+        if (!m_wsReal.isEmpty()) {
+            m_ui->setValue("workspace", m_wsReal);
+            m_ui->sync();
+        }
+        emit workspaceChanged();
     } else if (name == "RESUMING") {  // RESUMING <tokens>: recalculo longo (so na 1a vez; depois o KV vem do disco)
         setTexts("Retomando a sessao: recalculando " + args.trimmed() + " tokens (so na primeira vez, pode levar alguns minutos)...", {});
     } else if (name == "RESUME") {  // RESUME <msgs> <msgs_total> <tokens> <especialistas> <segundos> <kv|calc>
@@ -835,7 +891,7 @@ void Backend::setCtx(int used, int total)
 
 void Backend::markReady()
 {
-    if (m_resuming) {  // fim do /retomar: sem RESUME o motor nao conseguiu; volta ao resumo textual
+    if (m_resuming) {  // end of /resume: sem RESUME o motor nao conseguiu; volta ao resumo textual
         m_resuming = false;
         if (!m_resumed) {
             m_pendingCtx = m_resumeCtx;
