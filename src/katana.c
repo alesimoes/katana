@@ -15038,7 +15038,7 @@ static TermSess *term_find(const char *name, char *err, size_t ecap) {
 }
 
 static void tool_terminal(const char *js, const char *end, char *out, size_t cap) {
-    static char act[32], name[64], text[8192];
+    static char act[32], name[64], text[262144];
     act[0] = name[0] = text[0] = 0;
     json_str(js, end, "action", act, sizeof act);
     json_str(js, end, "name", name, sizeof name);
@@ -15139,6 +15139,7 @@ static void tool_terminal(const char *js, const char *end, char *out, size_t cap
         if (intr) { text[0] = 3; text[1] = 0; }
         else {
             if (!json_str(js, end, "text", text, sizeof text)) { snprintf(out, cap, "error: missing text"); return; }
+            if (strlen(text) + 8 >= sizeof text) { snprintf(out, cap, "error: text too long (limit %d bytes); write big files with write_file instead of a heredoc", (int)sizeof text - 8); return; }
             if (!agent_act("enviar ao terminal", text)) { snprintf(out, cap, "error: the user denied this action"); return; }
         }
         size_t tl = strlen(text);
@@ -15157,6 +15158,11 @@ static void tool_terminal(const char *js, const char *end, char *out, size_t cap
     if (s->dead) o += (size_t)snprintf(out + o, cap - o, "\n[session %s exited with code %d]", s->name, s->status);
     s->rd = s->tot;
     if (strcmp(act, "send") == 0) cmdlog_add(text, -1, tmp);
+    if (strcmp(act, "send") == 0) {                          /* shell preso em continuacao (heredoc/aspas abertas): prompt "> " */
+        size_t tl2 = strlen(tmp);
+        while (tl2 && (tmp[tl2 - 1] == ' ' || tmp[tl2 - 1] == '\n')) { if (tmp[tl2 - 1] == ' ') { tl2--; break; } tl2--; }
+        if (tl2 && tmp[tl2 - 1] == '>' && (tl2 == 1 || tmp[tl2 - 2] == '\n')) o += (size_t)snprintf(out + o, cap - o, "\n[hint: the shell is waiting for more input (unclosed heredoc or quote). Use action interrupt, then resend the command complete; for files use write_file]");
+    }
     if (pw_detect(tmp) == 1) o += (size_t)snprintf(out + o, cap - o, "\n[hint: a password prompt is waiting. Do not guess it: ask the user to type it themselves or to run this in their own terminal; use action interrupt to cancel]");
     free(tmp);
 }
