@@ -49,21 +49,6 @@ static void tool_run_command(const char *cmd, const char *js, const char *end, c
     free(body);
 }
 
-/* interface: resultado da ferramenta numa linha (\\ e \n escapados; mantem o comeco e o fim se for grande) */
-static void ui_toolout(const char *name, const char *res) {
-    if (!getenv("KATANA_UI")) return;
-    const size_t n = strlen(res), HEAD = 3000, TAIL = 5000;
-    printf("\x01" "TOOLOUT %s\t", name);
-    for (size_t i = 0; i < n; i++) {
-        if (n > HEAD + TAIL && i == HEAD) { fputs("\\n[... omitido ...]\\n", stdout); i = n - TAIL - 1; continue; }
-        const unsigned char ch = (unsigned char)res[i];
-        if (ch == '\n') fputs("\\n", stdout);
-        else if (ch == '\\') fputs("\\\\", stdout);
-        else if (ch == '\r' || ch == 1) continue;
-        else putchar(ch);
-    }
-    putchar('\n'); fflush(stdout);
-}
 /* ---- terminal: sessoes de shell persistentes em pty ---- */
 #define TERM_MAX 4
 #define TERM_BUF (256 * 1024)
