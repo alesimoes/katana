@@ -479,7 +479,7 @@ removed. To swap the binary in use: `cp desktop-qt/build/katana-desktop-qt katan
 Done (commit eff16d8):
 - **Agent context compaction** (ChatML format only; Gemma 4 and gpt-oss keep the "contexto cheio" warning).
   The agent keeps the messages that are already in the KV cache. `/compact` forces; automatic when the turn would exceed
-  the system prompt plus 6000 tokens of conversation (`KATANA_COMPACT_TOK`, at most 60% of the context; it used to be 85%, but
+  the system prompt plus 6000 tokens of conversation (fixed inside the engine, not a user option; at most 60% of the context; it used to be 85%, but
   speed drops as the context fills, so it compacts early and often; `KATANA_COMPACT=0` turns off the automatic one). `/compact`
   summarizes the whole conversation, including the last turn, and saves the session. In layer 3 the code bodies of old
   `write_file` calls are also cut. The system prompt now has an Environment block (OS, user, folder, git, map of the

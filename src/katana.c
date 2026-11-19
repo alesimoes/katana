@@ -16475,7 +16475,7 @@ static void pfx_warm(Model *m, const char *sys) {
     if (p.n < 32 || p.n + 64 >= c->ctx) { free(p.ids); return; }
     const uint64_t key = pfx_key(m, p.ids, p.n, ngl, esz, backend);
     const double t0 = now_sec();
-    if (pfx_load(m, key, p.n, ngl, esz, backend)) fprintf(stderr, "[agent warm: system prompt (%d tokens) loaded from the cache in %.2f s]\n", p.n, now_sec() - t0);
+    if (pfx_load(m, key, p.n, ngl, esz, backend)) { if (!getenv("KATANA_UI")) fprintf(stderr, "[agent warm: system prompt (%d tokens) loaded from the cache in %.2f s]\n", p.n, now_sec() - t0); }
     else {
         fprintf(stderr, "[agent warm: computing the system prompt (%d tokens), once; the next starts load it from the cache]\n", p.n);
         forward_seq(m, p.ids, p.n, 0, 0);
@@ -16615,15 +16615,13 @@ static int ah_shrink_tool_g4(AMsg *mg) {
 }
 /* encolhe o corpo de chamadas de ferramenta grandes (codigo de write_file) numa mensagem do assistente ja executada */
 static int ah_shrink_call(AMsg *mg);
-/* tokens de contexto a partir dos quais o agente compacta sozinho: o prompt de sistema mais KATANA_COMPACT_TOK de conversa
-   (padrao 6000; o desempenho cai com o contexto cheio, entao resume cedo), no maximo 60% do contexto */
+/* tokens de contexto a partir dos quais o agente compacta sozinho: o prompt de sistema mais 6000 de conversa
+   (fixo em 6000; o desempenho cai com o contexto cheio, entao resume cedo), no maximo 60% do contexto */
 static int cp_trig(Model *m, const char *sys) {
     static size_t ls = (size_t)-1; static unsigned long lh; static int lt, lc;
     unsigned long h = 5381; for (const char *q = sys; *q; q++) h = h * 33 + (unsigned char)*q;
     if (strlen(sys) != ls || h != lh) { ls = strlen(sys); lh = h; lt = ah_count(m, sys); }
-    const char *ct = getenv("KATANA_COMPACT_TOK");
-    int base = ct ? atoi(ct) : 6000;
-    if (base < 1500) base = 1500;
+    const int base = 6000;      /* constante do motor (desempenho), nao e opcao do usuario */
     int t = lt + base;
     lc = m->cfg.ctx * 60 / 100;
     return t > lc ? lc : t;
