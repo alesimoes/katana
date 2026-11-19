@@ -92,7 +92,7 @@ def icone512(pal):
 
 def main():
     s = sprite_img(PAL)
-    s.save(os.path.join(ICONS, "samurai.png"))
+    # samurai.png agora vem de tools/gerar-samurai32.py (32x32); este script gera so o titulo
     tc = titulo("KATANA", "#a24fe8", "#5b0f9a", "#d8c2ef")
     te = titulo("KATANA", "#e2c2fb", "#a35be0", "#3a1560")
     tc.save(os.path.join(ICONS, "titulo-claro.png"))
