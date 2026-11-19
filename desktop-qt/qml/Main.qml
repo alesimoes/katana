@@ -36,7 +36,7 @@ ApplicationWindow {
         else { sideOpen = !sideOpen; backend.setUiFlag("lateralRecolhida", !sideOpen); }
     }
     onNarrowChanged: drawerOpen = false
-    Shortcut { sequence: "Escape"; onActivated: win.drawerOpen = false }
+    Shortcut { sequence: "Escape"; onActivated: { if (win.drawerOpen) win.drawerOpen = false; else if (backend.answering) backend.stop(); } }
 
     Connections {
         target: backend

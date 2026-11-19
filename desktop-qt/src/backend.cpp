@@ -27,26 +27,27 @@ QVariant MessageModel::data(const QModelIndex &i, int role) const
     case KindRole: return it.kind;
     case TextRole: return it.text;
     case NameRole: return it.name;
+    case OutRole: return it.out;
     }
     return {};
 }
 
 QHash<int, QByteArray> MessageModel::roleNames() const
 {
-    return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}};
+    return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}, {OutRole, "out"}};
 }
 
 QVariantMap MessageModel::get(int i) const
 {
     if (i < 0 || i >= m_items.size())
         return {};
-    return {{"kind", m_items[i].kind}, {"text", m_items[i].text}, {"name", m_items[i].name}};
+    return {{"kind", m_items[i].kind}, {"text", m_items[i].text}, {"name", m_items[i].name}, {"out", m_items[i].out}};
 }
 
 void MessageModel::append(const QString &kind, const QString &text, const QString &name)
 {
     beginInsertRows({}, m_items.size(), m_items.size());
-    m_items.append({kind, text, name});
+    m_items.append({kind, text, name, {}});
     endInsertRows();
     emit countChanged();
 }
@@ -58,6 +59,20 @@ void MessageModel::appendToLast(const QString &text)
     m_items.last().text += text;
     const QModelIndex i = index(m_items.size() - 1);
     emit dataChanged(i, i, {TextRole});
+}
+
+void MessageModel::setLastToolOut(const QString &out)
+{
+    for (int k = m_items.size() - 1; k >= 0; k--) {
+        if (m_items[k].kind != "tool")
+            break;
+        if (m_items[k].out.isEmpty()) {
+            m_items[k].out = out;
+            const QModelIndex i = index(k);
+            emit dataChanged(i, i, {OutRole});
+            return;
+        }
+    }
 }
 
 void MessageModel::setAll(const QList<Item> &items)
@@ -404,6 +419,8 @@ void Backend::onFinished(QProcess *p)
     if (p != m_proc)
         return;
     m_proc = nullptr;
+    m_queue.clear(); m_paused = false;
+    emit queueChanged();
     setState(false, false, false);
     setTexts({}, "O agente terminou. Escolha um modelo para iniciar de novo.");
 }
@@ -433,10 +450,52 @@ void Backend::shutdown()
     }
 }
 
+bool Backend::enqueue(const QString &text)
+{
+    const QString t = text.trimmed();
+    if (!m_proc || !m_answering || t.isEmpty())
+        return false;
+    m_queue.append(t);
+    emit queueChanged();
+    return true;
+}
+
+void Backend::removeQueued(int i)
+{
+    if (i < 0 || i >= m_queue.size())
+        return;
+    m_queue.removeAt(i);
+    if (m_queue.isEmpty())
+        m_paused = false;
+    emit queueChanged();
+}
+
+void Backend::resumeQueue()
+{
+    m_paused = false;
+    emit queueChanged();
+    if (m_ready)
+        drainQueue();
+}
+
+// proxima da fila (quando o agente fica pronto e a fila nao esta pausada)
+void Backend::drainQueue()
+{
+    if (m_queue.isEmpty() || m_paused || !m_ready || !m_proc)
+        return;
+    const QString n = m_queue.takeFirst();
+    emit queueChanged();
+    QTimer::singleShot(0, this, [this, n] { if (!send(n)) { m_queue.prepend(n); emit queueChanged(); } });
+}
+
 void Backend::stop()
 {
     if (!m_proc)
         return;
+    if (!m_queue.isEmpty()) {  // Parar pausa a fila: o usuario decide se segue
+        m_paused = true;
+        emit queueChanged();
+    }
 #ifdef Q_OS_UNIX
     ::kill(-pid_t(m_proc->processId()), SIGINT);  // Ctrl+C no agente: interrompe a resposta
 #else
@@ -462,6 +521,10 @@ bool Backend::send(const QString &text)
 {
     if (!m_proc || !m_ready || text.trimmed().isEmpty())
         return false;
+    if (m_paused) {  // mensagem nova digitada a mao retoma a fila
+        m_paused = false;
+        emit queueChanged();
+    }
     QString msg = text;
     if (!m_pendingCtx.isEmpty()) {  // sessao antiga retomada: o agente recebe o resumo antes
         msg = m_pendingCtx + "Nova mensagem: " + text;
@@ -502,6 +565,8 @@ bool Backend::newChat()
     if (!m_ready)
         return false;
     m_msgs.clear();
+    m_queue.clear(); m_paused = false;
+    emit queueChanged();
     m_sess = Session();
     m_pendingCtx.clear();
     m_bound.clear();
@@ -714,6 +779,16 @@ void Backend::handleMarker(const QByteArray &line)
         const int tab = args.indexOf('\t');
         const QString n = tab < 0 ? args : args.left(tab);
         toolCard(n, tab < 0 ? QString() : cleanArgs(args.mid(tab + 1)));
+    } else if (name == "TOOLOUT") {  // TOOLOUT <nome>\t<saida com \\n escapado>: resultado da ferramenta no cartao
+        const int tab = args.indexOf('\t');
+        if (tab >= 0) {
+            QString o = args.mid(tab + 1), r;
+            for (int i = 0; i < o.size(); i++) {
+                if (o[i] == '\\' && i + 1 < o.size()) { i++; r += o[i] == 'n' ? QChar('\n') : o[i]; }
+                else r += o[i];
+            }
+            m_msgs.setLastToolOut(r.isEmpty() ? QStringLiteral("(sem saida)") : r);
+        }
     } else if (name == "TOKENS") {  // TOKENS <pos> <ctx>
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
         if (a.size() >= 2) {
@@ -773,6 +848,7 @@ void Backend::markReady()
     setTexts({}, m_error);
     setState(true, false, false);
     refreshSessions();
+    drainQueue();
 }
 
 void Backend::toolCard(const QString &name, const QString &args)

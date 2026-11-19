@@ -14,8 +14,12 @@ Item {
 
     function setText(t) { ta.text = t; ta.cursorPosition = t.length; }
     function submit() {
-        if (backend.answering) { backend.stop(); return; }
         var t = ta.text.trim();
+        if (backend.answering) {
+            if (!t) { backend.stop(); return; }      // vazio: Parar
+            if (backend.enqueue(t)) ta.clear();      // com texto: entra na fila
+            return;
+        }
         if (!t || !backend.ready) return;
         if (backend.send(t)) ta.clear();
     }
@@ -38,6 +42,37 @@ Item {
             radius: box.radius + (index + 1) * 3
             color: Theme.shadow
             opacity: Theme.dark ? 0.07 : 0.028
+        }
+    }
+
+    // fila de mensagens: aparece acima da caixa; cada item tem X para remover
+    Column {
+        id: qcol
+        visible: backend.queue.length > 0
+        x: box.x
+        y: -height - 6
+        width: box.width
+        spacing: 4
+        Repeater {
+            model: backend.queue
+            Rectangle {
+                required property string modelData
+                required property int index
+                width: qcol.width
+                height: 30
+                radius: 15
+                color: Theme.card
+                border.color: Theme.bd
+                Text { font.family: Theme.sans; x: 14; anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - 100; elide: Text.ElideRight; font.pixelSize: 12; color: Theme.fg
+                    text: (backend.queuePaused ? "⏸ " : "⏳ ") + (index + 1) + ". " + modelData.replace(/\s+/g, " ") }
+                Text { font.family: Theme.sans; anchors.right: xbtn.left; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                    visible: index === 0 && backend.queuePaused; text: "retomar"; font.pixelSize: 12; color: Theme.ac
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: backend.resumeQueue() } }
+                Text { id: xbtn; font.family: Theme.sans; anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
+                    text: "✕"; font.pixelSize: 12; color: Theme.mut
+                    MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: backend.removeQueued(index) } }
+            }
         }
     }
 
@@ -67,7 +102,7 @@ Item {
             TextArea.flickable: TextArea { font.family: Theme.sans;
                 id: ta
                 objectName: "composerInput"
-                enabled: backend.ready
+                enabled: backend.ready || (backend.answering && !backend.loading)
                 wrapMode: TextArea.Wrap
                 padding: 0
                 topPadding: 6
@@ -86,6 +121,7 @@ Item {
                 Accessible.name: "Mensagem"
                 Accessible.role: Accessible.EditableText
                 Keys.onPressed: (e) => {
+                    if (e.key === Qt.Key_Escape && backend.answering) { e.accepted = true; backend.stop(); return; }
                     if ((e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !(e.modifiers & Qt.ShiftModifier)) {
                         e.accepted = true;
                         comp.submit();
@@ -104,7 +140,7 @@ Item {
             implicitWidth: 38
             implicitHeight: 38
             circle: true
-            glyph: backend.answering ? "stop" : "up"
+            glyph: backend.answering && ta.text.trim().length === 0 ? "stop" : "up"
             iconSize: backend.answering ? 18 : 18
             iconColor: Theme.acfg
             hoverIconColor: Theme.acfg
@@ -112,7 +148,7 @@ Item {
             hoverFill: Qt.lighter(Theme.ac, 1.1)
             enabled: backend.answering || (backend.ready && ta.text.trim().length > 0)
             opacity: enabled ? 1 : 0.35
-            tip: backend.answering ? "Parar" : "Enviar"
+            tip: backend.answering ? (ta.text.trim().length ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar"
             onClicked: comp.submit()
         }
     }
