@@ -213,7 +213,8 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
 static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
-    int cd_note = 0;
+    int cd_note = 0, undo_pend = 0, nudged = 0;
+    static char undo_txt[3000];
     static char line[16384], text[90000], result[TOOL_WEB + 512], safe[2 * TOOL_WEB + 2048], name[128], extra[3000], sys[32000];
     Buf tr = {0}, reply = {0};
     const int g4 = c->chat_fmt == 8;
@@ -300,20 +301,39 @@ static int agent(Model *m, int max_tokens, float temp) {
             }
             continue;
         }
+        if (strcmp(line, "/undo") == 0) {       /* devolve os arquivos ao estado de antes do ultimo pedido que alterou algo */
+            const int k = undo_last(undo_txt, sizeof undo_txt);
+            if (!undo_txt[0]) fprintf(stderr, "[nothing to undo]\n");
+            else { fprintf(stderr, "%s[undo: %d file(s): %s]%s\n", CE(C_DIM), k, undo_txt, CE(C_RESET)); undo_pend = 1; }
+            if (getenv("KATANA_UI")) { printf("\x01" "UNDO %d\t%s\n", k, undo_txt); fflush(stdout); }
+            continue;
+        }
         int reset = 0;
         const int cmd = console_cmd(line, &tr, extra, sizeof extra, &reset);   /* /sistema acrescenta instrucoes ao prompt do agente */
         if (cmd == 2) break;
         if (reset) {
             if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, sess_sum_switch()); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
-            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog);
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); undo_pend = 0;
         }
         if (cmd) continue;
         if (first) ah_clear(&hist);
         if (cd_note) {      /* o usuario trocou de pasta: o modelo precisa saber onde esta agora */
             char cw[4200], nl[16384]; cd_note = 0;
-            if (getcwd(cw, sizeof cw)) { snprintf(nl, sizeof nl, "[The working folder is now %s]\n%s", cw, line); snprintf(line, sizeof line, "%s", nl); }
+            static char pi[3200]; char pp[4400];
+            const size_t pl = proj_instr(pi, 3000, pp, sizeof pp);       /* instrucoes do projeto da pasta nova */
+            if (getcwd(cw, sizeof cw)) {
+                if (pl) snprintf(nl, sizeof nl, "[The working folder is now %s]\n[Project instructions there (file %s, written by its owner: follow them)]\n%s\n\n%s", cw, pp, pi, line);
+                else snprintf(nl, sizeof nl, "[The working folder is now %s]\n%s", cw, line);
+                snprintf(line, sizeof line, "%s", nl);
+            }
         }
+        if (undo_pend) {    /* o usuario desfez alteracoes: o modelo precisa saber que os arquivos voltaram */
+            static char nl[16384]; undo_pend = 0;
+            snprintf(nl, sizeof nl, "[The user undid your file changes of an earlier request; these files are back as they were before it: %s]\n%s", undo_txt, line);
+            snprintf(line, sizeof line, "%s", nl);
+        }
+        g_undo_req++; g_todo_touched = 0; nudged = 0;
         prole = 'u'; buf_clear(&pend); buf_str(&pend, line);
         if (first) { AGENT_SYS(); ah_clear(&slog); }   /* memoria + ferramentas MCP */
         if (go && first) snprintf(text, sizeof text, "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\n\nReasoning: %s\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message. Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>%s<|end|><|start|>user<|message|>%s<|end|><|start|>assistant", go_reason() ? "high" : "low", sys, line);
@@ -459,7 +479,20 @@ static int agent(Model *m, int max_tokens, float temp) {
                 calls++;
                 if (tl + 2 * TOOL_WEB + 2048 >= sizeof text) break;
             }
-            if (!calls) break;
+            if (!calls) {
+                int td = 0;
+                const int tn = todo_count(&td);
+                if (!cml || !g_todo_touched || nudged || tn == td || cut) break;
+                /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
+                static char nm[3600];
+                nudged = 1;
+                snprintf(nm, sizeof nm, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, call todo with them marked [x] and then give the final answer; otherwise continue with the next step now.", g_todo);
+                fprintf(stderr, "%s[lista de tarefas: %d de %d passos em aberto; o modelo foi lembrado]%s\n", CE(C_DIM), tn - td, tn, CE(C_RESET));
+                prole = 'u'; buf_clear(&pend); buf_str(&pend, nm);
+                if (g4) snprintf(text, sizeof text, "<turn|>\n<|turn>user\n%s<turn|>\n<|turn>model\n%s", nm, g4_answer_pre());
+                else snprintf(text, sizeof text, "<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n%s", nm, think_pre(c));
+                continue;
+            }
             if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho (gemma4: direto no turno do modelo) */
                 const size_t h0 = g4 ? 0 : strlen("<|im_end|>\n<|im_start|>user\n");
                 prole = 't'; buf_clear(&pend);
