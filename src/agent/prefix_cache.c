@@ -244,6 +244,17 @@ static void pfx_tokens(Model *m, const char *sys, Ids *p, int *stable) {
 /* poe no cache KV os n tokens do prefixo de sistema. Ordem: o prefixo inteiro do disco; senao a parte estavel do
  * disco (ou calculada e gravada) e so o resto calculado; grava o prefixo inteiro. Devolve 1 se veio inteiro do disco;
  * *calc = tokens calculados agora */
+/* calcula ids[from..to) em pedacos, avisando a interface do andamento: PREP <tokens a calcular> <ja calculados>.
+   total e done0 contam o trabalho todo desta preparacao (parte estavel + resto) */
+static void pfx_run(Model *m, const int *ids, int from, int to, int total, int done0) {
+    const int step = 256;
+    for (int i = from; i < to; i += step) {
+        const int nb = to - i < step ? to - i : step;
+        if (getenv("KATANA_UI")) { printf("\x01" "PREP %d %d\n", total, done0 + (i - from)); fflush(stdout); }
+        forward_seq(m, ids + i, nb, i, 0);
+    }
+}
+
 static int pfx_fill(Model *m, const int *ids, int n, int stable, int ngl, int esz, int backend, int *calc, int *saved) {
     *calc = 0; *saved = 0;
     const uint64_t key = pfx_key(m, ids, n, ngl, esz, backend);
@@ -252,15 +263,13 @@ static int pfx_fill(Model *m, const int *ids, int n, int stable, int ngl, int es
     if (stable >= 256 && stable < n) {
         const uint64_t ks = pfx_key(m, ids, stable, ngl, esz, backend);
         if (!pfx_load(m, ks, stable, ngl, esz, backend)) {
-            if (getenv("KATANA_UI")) { printf("\x01" "PREP %d\n", n); fflush(stdout); }
-            forward_seq(m, ids, stable, 0, 0);
+            pfx_run(m, ids, 0, stable, n, 0);
             pfx_save(m, ks, stable, ngl, esz, backend);
             *calc += stable;
         }
         from = stable;
     }
-    if (getenv("KATANA_UI") && !*calc) { printf("\x01" "PREP %d\n", n - from); fflush(stdout); }      /* a interface avisa que esta lendo as instrucoes */
-    forward_seq(m, ids + from, n - from, from, 0);
+    pfx_run(m, ids, from, n, *calc ? n : n - from, *calc ? from : 0);
     *calc += n - from;
     *saved = pfx_save(m, key, n, ngl, esz, backend);
     return 0;
