@@ -1,0 +1,336 @@
+# katana: what we know
+
+Project knowledge document, for whoever (person or AI session) picks the work back up.
+Written on 2026-11-15. Everything marked **measured** was measured on this machine; the rest
+is estimate or code reading and is marked as such. Plans are in `plan.md`; the catalog of
+techniques not yet used is in `optimization-roadmap.md`.
+
+## 1. Goal
+
+AI infrastructure built from scratch, in low-level C, able to serve very large models
+("trillion parameters") on small hardware, with the weights flowing from disk to RAM to GPU,
+and in the future with the work split across machines (each one stores and solves a part).
+
+The project owner's central idea: **only what matters to the topic of the conversation goes into
+the GPU**. At the start it is slow; as the topic becomes clear, only the parts of the model tied to
+it occupy VRAM. This turned out to be false for dense models and true for mixture-of-experts
+models (section 4).
+
+Project rules:
+
+- Everything local, no third-party services. Nothing proprietary: use what is published and write our own.
+- The code does not mention other inference engines. The word "llama" in the code is the name of a
+  model architecture. Comparisons use "reference engine".
+- Private repository at github.com/alesimoes/katana. Commits with push; do not make it public without being asked.
+- Every speed claim needs alternating measurement (section 7).
+
+## 2. Development machine
+
+- i7-11800H (8 cores, 16 threads, AVX2 and AVX-512 with VNNI), 64 GB of RAM, Windows 11.
+- NVIDIA RTX 3050 Laptop 4 GB + Intel UHD. The NVIDIA has a software power cap at
+  60 W and reaches ~75–85 °C under load. There is no compute "lock".
+- Disk: ~45 GB free (the models take up the rest).
+- Compiler: MSVC BuildTools 2022 (`build.bat`). No OpenCL or Vulkan SDK: both
+  libraries are loaded at run time.
+- The machine usually has 60–75% of the CPU busy with other processes (WSL/Docker, antivirus).
+
+## 3. The engine today (`katana.c`, one file, ~5,000 lines)
+
+**Input.** GGUF through a mapped file. Architectures `llama`, `qwen2`, `qwen3`, `olmoe`,
+`qwen3moe`. Tensors F32, F16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K. BPE tokenizers (with
+approximate pre-tokenization) and SentencePiece. Chat formats ChatML, Llama 3, Zephyr,
+`[INST]` and plain text, chosen from the model's template.
+
+**GPU (OpenCL loaded at run time).** Quantized weights stay in VRAM in a custom layout: rows
+interleaved 32 by 32 in 32-bit words, so that a group of 32 threads reads neighboring words.
+Kernel sets per batch size (16, 4, 1). Fused kernels in generation: q, k and
+v in one launch; gate/up pair with SwiGLU; the whole attention of a token (bias, norm, RoPE, KV
+cache, softmax and mix) in one launch. If the model does not fit, the first layers stay on the GPU and
+the rest runs on the CPU. VRAM margin of 92%.
+
+**CPU.** Integer products with 16-bit activations directly on the Q4_K/Q5_K/Q6_K/Q3_K blocks.
+Own thread pool (12 threads, blocks handed out by an atomic counter). Exact floating-point path as the reference for
+`selftest`.
+
+**Mixture of experts (MoE).** Attention of all layers pinned in VRAM; the rest of the VRAM is
+an expert cache with slots per layer. Each expert has a "heat" (recent use with
+decay). Those in VRAM run together on the GPU, one launch per layer, including in
+batches. Those outside run on the CPU on the spot (the token never waits for disk) and a loader thread
+brings them in if they are hot. `pack` writes the experts already in the GPU layout. The heat is saved
+between sessions and the hottest are preloaded.
+
+**Usage.** `run`, `chat` (a single question or interactive multi-turn conversation), `agent` (conversation
+with tools: read and list in the current folder; write file and run command only with
+confirmation), `bench`, `selftest`, `micro`, `tune`, `pack`/`verify`, `sparsity`, `routing`.
+`compare.sh` alternates katana and the reference engine.
+
+## 4. What we learned about the central idea (measured)
+
+**A dense model cannot be cut by topic** (`katana sparsity`, Qwen 1.5B). Keeping only the
+50% most active feed-forward neurons on a text of the same topic, 45% of the predictions change.
+Even choosing the best neurons for each token, 6% change. Activation is spread out: the 10% most
+active account for 19% of it.
+
+**An MoE model can** (`katana routing`). With 25% of the experts in VRAM:
+
+| | OLMoE-1B-7B (64 per layer) | Qwen3-30B-A3B (128 per layer) |
+|---|---|---|
+| set calibrated on the same topic | 63% of uses | 79% |
+| ceiling (best possible set) | 64% | 83% |
+| calibrated on another topic (OLMoE) / chance | 34% / 25% | — / 25% |
+
+On Qwen3-30B, 15% of the experts cover up to 65% of uses and 35% cover 93%: the curve is steep,
+every extra percentage point of VRAM counts. Distributing slots unevenly across layers
+does not help (ceiling 64.4% with equal slots versus 65.1%).
+
+## 5. Measured facts about performance
+
+**Basic costs on this machine**
+
+| What | Value |
+|---|---|
+| Upload an expert (2.8–3.6 MB) to VRAM | ~0.75 ms |
+| Read an expert from disk (in system cache) | ~1.75 ms |
+| Convert an expert from GGUF to the GPU layout | ~4.6 ms |
+| Run an expert on the CPU | 0.15–0.5 ms |
+| First read of a mapped-file page (Windows) | ~2.5 µs per 4 KB page |
+| One `clEnqueueNDRangeKernel` (host) | 22–25 µs |
+| One `clSetKernelArg` | ~0.08 µs |
+| One recorded and resubmitted Vulkan dispatch | ~2 µs |
+| CPU, product with cold weights | 27–33 G weights/s (memory bandwidth limit) |
+
+Consequences: the token must not wait for an expert load (running on the CPU is cheaper); the
+cold start of an MoE is dominated by pages touched for the first time; above 92% of VRAM the
+card uses shared memory and generation drops from 13.5 to 7.9 tok/s.
+
+**Where the time goes**
+
+- Generation, models of 1 B or more: the limit is the computation on the GPU (Qwen 1.5B reads ~0.85 GB of weights per
+  token). The host finishes enqueuing in ~5.6 ms and waits. Removing one launch per layer did not
+  change anything; flushing the queue at each layer did not either.
+- Generation, tiny model (135 M): the limit is the cost per launch (~7 ms per token, almost all
+  enqueuing).
+- Batched prompt on OpenCL: batches of 4 and 16 yield the same (~0.32 T multiplications/s). The NVIDIA
+  OpenCL driver offers neither 8-bit integer product nor half precision.
+- MoE larger than VRAM (Qwen3-30B): almost half of the time per token is the experts on the CPU.
+  Per layer the time is attention on the GPU + the larger of experts on the GPU and on the CPU, in series
+  across layers.
+
+**Things tested that gave no gain**: 8 threads instead of 12 (20% worse), pinning threads to
+cores, turning off Windows power throttling, fast math in OpenCL, busy-wait on
+the read, per-layer queue dispatch, fused attention (correct, but no gain above 1 B),
+uneven slots per layer, converting only experts used twice (got worse), 8-bit activations
+with one scale for the whole vector (changed the chosen token in the 7B model).
+
+## 5a. Long context (measured 2026-11-17)
+
+Qwen3.6-35B-A3B on the CPU: KV cache only in the 10 attention layers, fp16, 20 KB/token (21.5 GB at 1M). Generation at
+depth: 128k 4.5 tok/s, 256k 2.7, 1M 0.7 (yarn x4). The attention of one token is limited by reading the
+cache (flash-decoding with grouped heads gave 2.5x at 128k). Filling 1M of prompt: estimated ~8 days on the CPU
+(attention prefill still token by token). Details in handoff.md, section 0a.
+
+gemma4 (measured 2026-11-17): 25 local layers keep only the window (ring of 1040), 5 global ones the whole context;
+at 131072 the KV is 2.90 GB fp16 (an old warning said 128.85 GB, it was only the arithmetic). The agent runs at
+131072 by default, maximum RSS 15 GB (mapped weights), fp32 output identical to the previous one.
+
+## 5b. Compacted context, conversation tokens and heat per session (2026-11-17)
+
+- Agent compaction (summary by the model itself + shrunken tool results) and markers
+  `\x01TOKENS`/`\x01COMPACT`: see handoff 0b. Measured on the 1.5B with context 2048: 1726->1430 and 1890->1420
+  tokens; the floor is the agent's system prompt (~950 tokens).
+- Expert heat per session (idea: store which experts each session used and preload them on the GPU
+  when resuming/compacting, with a `\x01WARM` marker). Evaluated, not implemented. There is already heat per model
+  (`.ktn.heat`, written on exit, read at startup, the S hottest per layer go to the loader thread
+  before the first token). A per-session version only changes which heat vector is read. It only has an effect in
+  hybrid mode with an expert cache, that is, when the MoE does not fit in VRAM (RTX 3050 4 GB here): OLMoE and
+  the small MoEs fit entirely or run without this cache, so there is no way to measure a gain with them; only Qwen3-30B
+  and Qwen3.6 exercise the path, and RAM was occupied by the other process. Without a measurement, no code was left.
+  Estimate (not measured): the gain is limited to the start of the resumed session (the cache warms up by use within tens
+  of tokens), and only exists if the session's topic differs from the global heat.
+
+## 6. Where we stand relative to the reference engine (measured, same machine)
+
+Reference engine: official binary b12418 with CUDA and with Vulkan.
+
+**Dense models, benchmark 64+64 (tok/s)**
+
+| Model | | katana (OpenCL) | reference CUDA | reference Vulkan |
+|---|---|---|---|---|
+| SmolLM2 135M | generation | 127 | 402 | 224 |
+| | prompt | 1,222 | 6,708 | 8,638 |
+| Qwen2.5 1.5B | generation | 96 | 117 | 90 |
+| | prompt | 212 | 2,776 | 2,343 |
+| Llama 3.2 3B | generation | 57 | 69 | 63 |
+| | prompt | 108 | 1,685 | 1,375 |
+
+**Qwen3-30B-A3B (18.6 GB in 4 GB of VRAM), real text**
+
+| | katana | reference with expert cache | reference, experts on CPU only |
+|---|---|---|---|
+| generation | 12.5–14.9 | 13.2–14.4 | 6.7–8.6 |
+| short cold prompt | 9–11 | ~5.5 | ~5.5 |
+
+Honest reading:
+
+- **We are equal or close** in generation: a tie on the large MoE, ~20% behind CUDA on dense models of
+  1 B or more, equal to Vulkan.
+- **We are ahead** only on the short cold prompt of the large MoE (~1.8x) and on startup (the token does not
+  wait for disk, preload by heat).
+- **We are far behind** on the prompt: 11 to 16 times on dense models. The cause is access to the tensor
+  cores, which CUDA and Vulkan give and NVIDIA's OpenCL does not.
+- **We are behind** on a tiny model (3x from CUDA) because of the cost per launch.
+- The reference engine already has an expert cache on the GPU with the same idea as ours. The
+  first comparison we made (1.6x in our favor) was against their configuration without a cache.
+
+## 7. How to measure without fooling yourself
+
+- The machine drifts: the same measurement varied from 15.5 to 11.5 tok/s over hours, on both
+  engines. Only alternating comparison (A, B, A, B) at the same hour is valid: `compare.sh` or two binaries
+  side by side (`ref/prev`).
+- `bench` uses synthetic tokens and several rounds; `chat` with real text includes the cold start. The two
+  numbers differ considerably and must be cited separately.
+- Differences below ~10% are not conclusive with a single round.
+- Before stating where a bottleneck is, measure the parts (`KATANA_DEBUG=1`, `KATANA_TIME=1`). The
+  hypothesis "the floor is the cost per launch" seemed right and was wrong for models of 1 B or more.
+- Check the competitor's configuration: their best may use a feature we do not know about.
+- `selftest` compares the GPU with our exact CPU; an error common to both paths gets through. The
+  external check done so far: Qwen3-30B's greedy output matches that of the reference
+  engine for ~60 tokens (one test).
+
+## 8. Strengths
+
+- Small code, one file, no dependencies; quick to experiment with.
+- Own layout in VRAM and own kernels, with weights always quantized.
+- Expert cache by heat with the CPU handling the cold ones, background loading, on-disk format
+  already in the GPU layout and topic memory across sessions.
+- Own measurement tools: `sparsity`, `routing`, `micro`, `compare.sh`.
+- Multi-turn conversation and agent with tools and confirmation.
+
+## 9. Weaknesses
+
+- Batched prompt on OpenCL 11–16x slower than the reference; the Vulkan backend (tensor cores) closes it to 1.7x on Qwen 1.5B and 1.8x on Llama 3B.
+- Few architectures; missing the DeepSeek/Kimi family (low-rank attention), Gemma, Phi.
+- Approximate BPE pre-tokenizer; it may split text differently from the official tokenizer.
+- Fixed context of 4,096 tokens, KV cache allocated in full, no prefix reuse or shifting.
+- Sampling only with temperature and top-k.
+- No quantizations below 3 bits (Q2_K, IQ family).
+- CPU only with AVX2 (the machine has AVX-512 VNNI); 16-bit activations.
+- Tested on one machine only; the Linux path compiles in theory and has never been run.
+- No automated tests beyond the manual per-model `selftest`.
+- No network between machines and no router between unstarted models.
+
+## 10. Work in progress: Vulkan backend
+
+Reason: it is the only way, on this card, to use the tensor cores in batches without depending on CUDA.
+
+Measured with the prototypes in `tools/`:
+
+| Batched product version | T multiplications/s |
+|---|---|
+| our OpenCL batch | ~0.32 |
+| Vulkan, one tile per subgroup, loads from global memory | 0.51–0.78 |
+| + 64x64 tile in shared memory, 4 accumulators per subgroup | 1.17–1.36 |
+| + loads of 4 values, step of 64 columns | 1.88 (batch 64), 2.4–2.6 (batch 256) |
+| Vulkan reference (estimated from the prompt) | ~3.5 |
+
+With the real weights, quantized in the katana layout and decoded when filling the tile
+(`tools/vkq4k`, all outputs checked against the CPU, card idle):
+
+| Weights | 8960x1536, batch 64 | 8960x1536, batch 256 | 1536x8960, batch 256 |
+|---|---|---|---|
+| Q4_K | 1.96 T/s | 2.65–2.69 T/s | 2.34 (2.79 splitting the columns in 4) |
+| Q6_K | 2.17 T/s | 3.34 T/s | 3.84 splitting the columns in 4 |
+
+Decoding does not cost throughput: less memory is read. A small batch still wastes (a batch of 16 is
+padded to 64: ~0.25 T/s useful); a narrow tile is missing. A half-precision accumulator does not
+speed things up and errs by 2–6%: discarded.
+
+Per-token product in Vulkan (`tools/vkmv`, 106 checks with no failures; throughput reported with the card
+shared, not redone): Q4_K 136–231 G weights/s and Q6_K 150–202 depending on the format, versus ~93 and
+~180 from the OpenCL profile (different methods; indicates the same level). Alternative organization with
+one row per group of 32 threads is 2.5x faster on matrices with few rows (69 versus 27).
+
+Generalized batch (`tools/vkq4k/mm.comp`, harness `vkmm`; 1,400 + 1,650 cases checked, including
+odd sizes): types Q4_K, Q5_K, Q6_K, Q8_0 and F32; modes write, add and gate/up pair with
+SwiGLU; narrow tiles for small batches. Redone with the card idle at 8960x1536: Q4_K
+1.40 T/s with batch of 16 (was 0.57 padding to 64), 2.50 with 64 and 2.83 with 256; Q6_K 2.10,
+3.27 and 3.23. Rule: up to 16 tokens tile 64x16, up to 32 64x32, above that 64x64; split the columns only
+with few rows and many columns. Discarded by measurement: Q4_K scale table in shared
+memory (slower, because of the extra barrier), tiles of 2 subgroups, reading fp32 directly
+(2–6% slower than converting once when several products use the same input).
+
+Kernels that are not products (`tools/vkatt`, 1,720 cases checked): norms, RoPE with KV cache,
+single-token attention, batched attention, sum of the experts. GLSL's sine and cosine lose
+precision at large angles (error ~2e-4 at position 600): the angle must be reduced first. RMS
+norm with subgroup sum: from 35 to 3 µs (batch of 16: from ~1,000 to 6–25 µs). Weak point: batched
+attention in three kernels costs 1.2–2.6 ms per batch of 16 at position 600, more than the
+products; it needs to become a single launch.
+
+Integration (steps 3 and 4): with `KATANA_BACKEND=vulkan` the dense models run the whole graph of
+one token on the card, recorded once and resubmitted (`KATANA_VK_REC=0` uses the live queue). Measured
+alternating the backends, benchmark 64+64: Qwen 1.5B 99.7 tok/s of generation on both; SmolLM2 135M
+409 tok/s on Vulkan versus ~130 on OpenCL (Vulkan reference 223, CUDA 402). `selftest` passes on
+5 dense models with a logit difference of ~3–4e-5 and the greedy text of Qwen 1.5B comes out identical to that of
+OpenCL.
+
+Step 5 (batched prompt in Vulkan, `vk_forward_n`): passes of up to 256 tokens (`KATANA_VK_PASS`, `KATANA_VK_CAP`;
+256 and 512 tie, 128 loses ~3% on a 512 prompt), products in cooperative matrix (`vk/shaders/mm.comp`, only the 30
+variants used: 5 types x tiles 64x64, 64x32w4, 64x16w4 and those of glu), transposed activations
+`X[column*B + token]`, norm already in fp16 (`rms_wg16`), gate/up with fp16 output, batched `qkv_post`, attention in
+a single launch (`att_flash`: group per (token, kv head), online softmax, KV cache read once per group) and, in the last
+layer, only the last token does the feed-forward and the final projection. Without fp16 cooperative matrix the prompt goes token by token.
+Measured alternating, benchmark 64+64 (prompt tok/s, OpenCL -> Vulkan): Qwen 1.5B 212 -> 1,387; Llama 3B 107 -> 757;
+SmolLM2 135M 1,200 -> 8,100; at 512 tokens: 186 -> 1,550, 95 -> 766, 800 -> 9,300. Generation did not change. Logit
+difference against the exact CPU on the batched path: 0.008–0.026 (weights and activations become fp16 in the tiles; the float
+path gives ~3e-5); argmax and the following 40 greedy tokens equal to token by token on a 600-token prompt. Batched attention,
+three kernels versus one launch (mean position ~320, 64 tokens): 2.3 ms versus 0.40 ms per layer. Cost of a
+256-token pass on Qwen 1.5B (149 ms, measured by omitting each phase): gate/up 71 ms, down 34, q/k/v 10, output 7,
+attention 19 (14 only in the subgroupAdd of the q.k product), norms 4, qkv_post 2. The products run at ~2.7 T mult/s: below
+~110 ms per pass only with a faster product (reference: ~3.5 T).
+MoE on Vulkan falls back to OpenCL. Not tested: interactive session and agent through Vulkan, model
+larger than VRAM (today it falls back to the CPU), Intel card.
+
+Runtime layer (`vk/kvk.h`, 9 tests passing on NVIDIA and Intel): dispatch waiting after each
+one costs ~156 µs; recording the queue, ~4.7 µs; recorded and resubmitted graph, 1.5–2.4 µs.
+
+The card supports fp16 x fp16 cooperative matrices (16x16x16, fp16 or fp32 result) and
+int8 x int8 -> int32 (16x16x32), besides the packed integer product. A 128 tile with 16
+accumulators per subgroup is worse (0.4–0.7 T/s).
+
+Design decision: Vulkan and OpenCL do not share VRAM, so the Vulkan backend must be
+complete (weights, per-token product, batch, attention, experts). OpenCL remains for cards
+without these features.
+
+Pieces ready and checked (separate folders; still to be integrated into `katana.c`):
+
+- `vk/kvk.h`: runtime layer (load the library, device, buffers, pipelines, dispatch
+  queue, recorded graph).
+- `tools/vkq4k`: batched product with Q4_K/Q6_K in the katana layout.
+- `tools/vkmv`: per-token product (port of the `mv_*` kernels).
+
+To compile shaders: `ref/vk/glslang/bin/glslang.exe` (allowed in `.claude/settings.local.json`).
+Vulkan headers in `ref/vk/include` (outside git; decide whether they go into the repository).
+
+## 11. Where things are
+
+| Path | What |
+|---|---|
+| `katana.c`, `build.bat` | the engine and how to build it |
+| `compare.sh` | alternating comparison with the reference engine |
+| `docs/` | this document, the plan and the techniques roadmap |
+| `tools/vkprobe`, `tools/vkgemm` | Vulkan prototypes |
+| `modelos/` (outside git) | GGUFs and `.ktn` folders with shards |
+| `ref/` (outside git) | reference engine binaries and code, Vulkan headers, shader compiler, old copies of katana for comparison |
+
+Models on disk: SmolLM2 135M, TinyLlama (several formats), Qwen2.5 1.5B/7B/14B, Llama 3.2 3B,
+Mistral 7B, OLMoE-1B-7B, Qwen3-30B-A3B.
+
+## 12. Tips for working on the code
+
+- `katana.c` is large: edit with Python replacement scripts with a count `assert`, saved
+  to a file. Commands embedded in the shell mangle `\n` and quotes.
+- Build: `cmd //c "cd /d C:\source\katana && .\build.bat"` (the warning about `vswhere.exe` is harmless).
+- After any kernel change: `selftest` on a dense model, on OLMoE and on Qwen3-30B
+  (the latter with `KATANA_KV16=0 KATANA_CTX=512` to fit and compare in 32 bits).
+- Large downloads: in parallel ranges with resume and size check before joining.
+- Do not run measurements with a download, packing or another benchmark in parallel.

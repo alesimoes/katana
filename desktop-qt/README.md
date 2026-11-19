@@ -1,84 +1,84 @@
 # katana-desktop (Qt6)
 
-Aplicativo nativo de conversa com o agente do katana (camada acima do motor, executavel separado).
-Janela propria em Qt Quick; sem navegador e sem servidor HTTP. O backend (C++17) sobe
-`katana agent <modelo>` direto com QProcess.
+Native chat application for the katana agent (a layer above the engine, a separate executable).
+Own window in Qt Quick; no browser and no HTTP server. The backend (C++17) launches
+`katana agent <model>` directly with QProcess.
 
-- Compilar: `desktop-qt/build.sh` (CMake; so modulos Qt: Core, Gui, Qml, Quick, QuickControls2, Test).
-  Gera `desktop-qt/build/katana-desktop-qt`. Para instalar no lugar do app antigo:
+- Build: `desktop-qt/build.sh` (CMake; only Qt modules: Core, Gui, Qml, Quick, QuickControls2, Test).
+  Produces `desktop-qt/build/katana-desktop-qt`. To install in place of the old app:
   `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
-- Rodar: `./katana-desktop-qt` (ou o binario copiado). Opcoes: `--katana CAMINHO`, `--models PASTA`.
-  O `katana` e `modelos/` sao procurados ao lado do binario, em `..` e no diretorio atual.
-- Modelo: seletor embaixo da caixa de texto, ao lado de enviar (a lista abre para cima). Padrao Qwen3.6-35B (inicia sozinho); tambem utilizavel: Gemma 4.
-  Os demais aparecem desabilitados ("ainda nao esta utilizavel no agente").
-- Lateral esquerda recolhivel (em janela estreita vira gaveta): "Nova conversa" e as conversas salvas
-  (titulo, hora relativa, modelo); lixeira ao passar o mouse, com confirmacao na propria interface.
-- Sessoes: um arquivo por conversa em `~/.katana/desktop/sessoes/<id>.json` (id, titulo, modelo, criada,
-  atualizada, mensagens[{papel, texto, nome?}]), gravado ao enviar e a cada fim de turno (escrita atomica).
-  `KATANA_DESKTOP_HOME` troca a pasta base (`~/.katana/desktop`). O cache do agente nao se restaura: ao
-  continuar uma sessao antiga, a primeira mensagem nova segue ao agente precedida de um resumo textual
-  (ate ~6000 caracteres, mantendo o fim); a tela mostra so o digitado. O resumo pendente sobrevive a troca
-  de modelo.
-- Chamadas de ferramenta viram cartoes (nome + argumentos legiveis); o XML cru do modelo nao aparece.
-- Caixa de entrada grande (minimo ~2 linhas) que cresce com o texto ate ~240 px e depois rola. Enter
-  envia, Shift+Enter quebra linha (o agente le uma linha por turno: as quebras viram espacos, e a
-  interface avisa).
-- Estatisticas discretas sob a caixa: tok/s (stderr) e indicador de contexto (`ContextMeter.qml`): anel de
-  progresso + "X mil / Y mil tokens · Z%", com dica ao passar o mouse (usados, total, livre). Cor normal
-  abaixo de 70%, ambar a partir de 70%, vermelha a partir de 85%. Alimentado pelo marcador `TOKENS`
-  (e pela linha de estatisticas do stderr). O marcador `COMPACT` mostra "Contexto compactado: N -> M
-  tokens". Marcadores desconhecidos sao ignorados (ponto de extensao: `Backend::handleMarker`).
-- Icone: squircle roxo em degrade com um K grosso em pixel art (branco para lilas, sombra roxa de 1 pixel). `icons/katana.svg`
-  e PNGs 16 a 512 sao gerados por `tools/gerar-icone-k.py` (PIL), embutidos no executavel (recursos Qt) e usados como icone
-  da janela, do .desktop e da dock. O samurai fica so na tela de boas-vindas.
-- Fonte: JetBrains Mono embutida (licenca OFL em `fonts/`), interface e codigo.
-- Identidade roxa: o destaque (`Theme.ac`: botao enviar, anel de contexto, selecao de texto, avatar, foco,
-  titulo) e `#820AD1` no tema claro e `#B66CF2` no escuro (texto sobre o destaque: branco / `#1A1022`); os
-  neutros tem um leve tom lilas. Tudo em `qml/Theme.qml`.
-- Tela de boas-vindas (`emptyState` em `MessageView.qml`): aparece so com a conversa vazia (inicio, 'Nova
-  conversa'); some ao enviar a primeira mensagem e nao aparece ao abrir sessao com mensagens. Mostra o
-  samurai (`icons/samurai.png`, 16x16 logico, 5 tons: contorno, sombra, base roxa, luz, branco) ampliado em escala
-  inteira 5x (80 px; 4x em janela baixa) com `smooth: false`, o titulo "Katana" como imagem retro anos 80
-  (`icons/titulo-claro.png` / `titulo-escuro.png`: letras blocadas 5x7 em pixel, degrade roxo e sombra de 1 px,
-  ampliadas em escala inteira), "Em que posso ajudar hoje?" e 3 sugestoes clicaveis que preenchem e enviam.
-  Sprite e titulo saem de `tools/gerar-samurai.py` (o icone, de `tools/gerar-icone-k.py`); rode-o e depois `build.sh`.
-- Aparencia (engrenagem na barra de titulo propria, janela sem moldura): tema Escuro (padrao), Claro ou IDE escuro (estilo editor, codigo com realce de sintaxe) e fonte JetBrains Mono (padrao) ou IBM Plex; salvos em ui.ini. `KATANA_THEME=light|dark`, `KATANA_TEMA` e `KATANA_FONTE` forcam um.
+- Run: `./katana-desktop-qt` (or the copied binary). Options: `--katana PATH`, `--models FOLDER`.
+  `katana` and `modelos/` are searched next to the binary, in `..` and in the current directory.
+- Model: selector below the text box, next to send (the list opens upward). Default Qwen3.6-35B (starts on its own); also usable: Gemma 4.
+  The others appear disabled ("ainda nao esta utilizavel no agente", i.e. "not yet usable in the agent").
+- Collapsible left sidebar (on a narrow window it becomes a drawer): "Nova conversa" (New conversation) and the saved conversations
+  (title, relative time, model); trash icon on mouse hover, with confirmation in the interface itself.
+- Sessions: one file per conversation in `~/.katana/desktop/sessoes/<id>.json` (id, titulo, modelo, criada,
+  atualizada, mensagens[{papel, texto, nome?}]), written on send and at the end of each turn (atomic write).
+  `KATANA_DESKTOP_HOME` changes the base folder (`~/.katana/desktop`). The agent's cache is not restored: when
+  continuing an old session, the first new message goes to the agent preceded by a text summary
+  (up to ~6000 characters, keeping the end); the screen shows only what was typed. The pending summary survives a
+  model switch.
+- Tool calls become cards (name + readable arguments); the model's raw XML does not appear.
+- Large input box (minimum ~2 lines) that grows with the text up to ~240 px and then scrolls. Enter
+  sends, Shift+Enter breaks the line (the agent reads one line per turn: the breaks become spaces, and the
+  interface warns about it).
+- Discreet statistics under the box: tok/s (stderr) and a context indicator (`ContextMeter.qml`): progress
+  ring + "X mil / Y mil tokens · Z%" (X thousand / Y thousand tokens), with a tooltip on hover (used, total, free). Normal color
+  below 70%, amber from 70%, red from 85%. Fed by the `TOKENS` marker
+  (and by the statistics line from stderr). The `COMPACT` marker shows "Contexto compactado: N -> M
+  tokens" (Context compacted: N -> M tokens). Unknown markers are ignored (extension point: `Backend::handleMarker`).
+- Icon: purple gradient squircle with a thick pixel-art K (white to lilac, 1-pixel purple shadow). `icons/katana.svg`
+  and PNGs 16 to 512 are generated by `tools/gerar-icone-k.py` (PIL), embedded in the executable (Qt resources) and used as the icon
+  of the window, the .desktop and the dock. The samurai appears only on the welcome screen.
+- Font: embedded JetBrains Mono (OFL license in `fonts/`), interface and code.
+- Purple identity: the accent (`Theme.ac`: send button, context ring, text selection, avatar, focus,
+  title) is `#820AD1` in the light theme and `#B66CF2` in the dark one (text over the accent: white / `#1A1022`); the
+  neutrals have a slight lilac tone. All in `qml/Theme.qml`.
+- Welcome screen (`emptyState` in `MessageView.qml`): appears only with an empty conversation (start, 'Nova
+  conversa'); disappears when the first message is sent and does not appear when opening a session with messages. It shows
+  the samurai (`icons/samurai.png`, 16x16 logical, 5 tones: outline, shadow, purple base, light, white) enlarged at an
+  integer scale of 5x (80 px; 4x in a short window) with `smooth: false`, the title "Katana" as an 80s retro image
+  (`icons/titulo-claro.png` / `titulo-escuro.png`: blocky 5x7 pixel letters, purple gradient and 1 px shadow,
+  enlarged at an integer scale), "Em que posso ajudar hoje?" (How can I help today?) and 3 clickable suggestions that fill in and send.
+  Sprite and title come from `tools/gerar-samurai.py` (the icon, from `tools/gerar-icone-k.py`); run it and then `build.sh`.
+- Appearance (gear in the custom title bar, frameless window): theme Escuro (dark, default), Claro (light) or IDE escuro (editor style, code with syntax highlighting) and font JetBrains Mono (default) or IBM Plex; saved in ui.ini. `KATANA_THEME=light|dark`, `KATANA_TEMA` and `KATANA_FONTE` force one.
 
-Terminal embutido: botao `>_` na barra de titulo (ou Ctrl+`) abre um painel inferior com um shell bash real em pty (via `script`, so Linux): cores, cursor, edicao de linha, historico (setas), Tab, Ctrl+C/D, copiar Ctrl+Shift+C, colar Ctrl+Shift+V, Limpar, Reiniciar. Emulador proprio em `src/terminal.cpp` (SGR 16/256/truecolor, CSI de cursor e apagar); programas de tela cheia (vim, top) nao funcionam. Sudo e senhas sao digitados no proprio terminal. O terminal do usuario e separado do `terminal` do agente.
+Embedded terminal: `>_` button in the title bar (or Ctrl+`) opens a bottom panel with a real bash shell in a pty (via `script`, Linux only): colors, cursor, line editing, history (arrows), Tab, Ctrl+C/D, copy Ctrl+Shift+C, paste Ctrl+Shift+V, Limpar (Clear), Reiniciar (Restart). Own emulator in `src/terminal.cpp` (SGR 16/256/truecolor, cursor and erase CSI); full-screen programs (vim, top) do not work. Sudo and passwords are typed in the terminal itself. The user's terminal is separate from the agent's `terminal`.
 
-Tela acordada (como o caffeinate): enquanto o agente carrega ou responde, o desktop pede ao sistema para nao bloquear a tela nem suspender (Linux: `gnome-session-inhibit` ou `systemd-inhibit` rodando `cat`, que termina quando a entrada fecha); liga/desliga na engrenagem ("Nao bloquear enquanto trabalha", padrao ligado, `manterAcordado` no ui.ini). Nao feito no Windows/macOS.
+Awake screen (like caffeinate): while the agent loads or responds, the desktop asks the system not to lock the screen or suspend (Linux: `gnome-session-inhibit` or `systemd-inhibit` running `cat`, which ends when the input closes); toggled in the gear ("Nao bloquear enquanto trabalha", i.e. "Do not lock while working", default on, `manterAcordado` in ui.ini). Not done on Windows/macOS.
 
-Sudo: o agente roda os comandos como root por padrao (`KATANA_SUDO=0` desliga; veja handoff 0n). Quando precisa da senha, o motor emite o marcador `NEEDPASS`; o desktop abre um dialogo de senha e responde com `\x01PASS <senha>` (vazio = cancelar). A senha fica so na memoria do agente e no ambiente do comando (askpass), nao vai ao modelo nem ao historico. No terminal (`katana agent`) a senha e pedida na propria tela, sem eco.
+Sudo: the agent runs commands as root by default (`KATANA_SUDO=0` turns it off; see handoff 0n). When it needs the password, the engine emits the `NEEDPASS` marker; the desktop opens a password dialog and replies with `\x01PASS <password>` (empty = cancel). The password stays only in the agent's memory and in the command's environment (askpass), it does not go to the model or to the history. In the terminal (`katana agent`) the password is asked for on the screen itself, without echo.
 
-Modelo lembrado: o ultimo modelo iniciado fica em ui.ini (`ultimoModelo`) e e o que abre na proxima vez; ao abrir uma conversa salva, o desktop troca para o modelo em que ela estava (se estiver utilizavel) e retoma a sessao.
+Remembered model: the last model started is kept in ui.ini (`ultimoModelo`) and is the one that opens next time; when opening a saved conversation, the desktop switches to the model it was in (if usable) and resumes the session.
 
-Ambiente: o desktop descarta variaveis KATANA_* de desempenho herdadas do terminal (KATANA_CPU, KATANA_CTX, KATANA_KV16, KATANA_VK_*...) para o motor usar os padroes mais rapidos; `KATANA_DESKTOP_ENV=1` preserva o ambiente herdado.
+Environment: the desktop discards performance KATANA_* variables inherited from the terminal (KATANA_CPU, KATANA_CTX, KATANA_KV16, KATANA_VK_*...) so the engine uses the fastest defaults; `KATANA_DESKTOP_ENV=1` preserves the inherited environment.
 
-Protocolo: o agente roda com `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Linhas de stdout que comecam com
-o byte 0x01 sao marcadores (`READY`, `TOOL nome<TAB>args`, `TOKENS pos ctx`, `COMPACT antes depois`); o
-resto e texto da resposta, filtrado de blocos de ferramenta. Parar = SIGINT ao grupo do agente (no
-Windows, mata e reinicia). Nova conversa = `/novo`; trocar de modelo = `/sair` e, se nao sair em 3 s, kill.
+Protocol: the agent runs with `KATANA_UI=1 NO_COLOR=1 KATANA_THINK=0`. Stdout lines that start with
+the byte 0x01 are markers (`READY`, `TOOL nome<TAB>args`, `TOKENS pos ctx`, `COMPACT antes depois`); the
+rest is response text, filtered of tool blocks. Stop = SIGINT to the agent's group (on
+Windows, kill and restart). New conversation = `/novo`; switching models = `/sair` and, if it does not exit within 3 s, kill.
 
-Teste: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
-(rodar na raiz do repo; usa `modelos/qwen2.5-1.5b-q4km.gguf` (rapido, cobre a interface e o protocolo do agente; para a conferencia final no modelo real use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, lento a frio) e uma pasta de dados temporaria). Digita e
-clica na janela com eventos reais (QTest), confere cartao `list_dir`, sessoes, dropdown, apagar, parar
-(SIGINT), troca de modelo com resumo pendente, e imprime PASSOU/FALHOU. `capturas/` guarda imagens (`12-boasvindas-claro.png` e `12-boasvindas-escuro.png`: o escuro sai de uma
-segunda execucao com `KATANA_THEME=dark`). Tambem confere a tela de boas-vindas (visivel com conversa
-vazia, some apos enviar, nao aparece em sessao antiga, volta em 'Nova conversa').
+Test: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
+(run at the repo root; uses `modelos/qwen2.5-1.5b-q4km.gguf` (fast, covers the interface and the agent protocol; for the final check on the real model use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, slow when cold) and a temporary data folder). It types and
+clicks in the window with real events (QTest), checks the `list_dir` card, sessions, dropdown, delete, stop
+(SIGINT), model switch with a pending summary, and prints PASSOU/FALHOU (PASSED/FAILED). `capturas/` holds images (`12-boasvindas-claro.png` and `12-boasvindas-escuro.png`: the dark one comes from a
+second run with `KATANA_THEME=dark`). It also checks the welcome screen (visible with an empty
+conversation, disappears after sending, does not appear in an old session, returns on 'Nova conversa').
 
-Limitacoes: raciocinio desligado (`KATANA_THINK=0`); o agente le uma linha por turno (quebras de linha
-viram espacos); no Windows, parar mata o agente; a versao Windows nao foi compilada nem testada.
+Limitations: reasoning off (`KATANA_THINK=0`); the agent reads one line per turn (line breaks
+become spaces); on Windows, stop kills the agent; the Windows version was neither compiled nor tested.
 
-## Instalar na raiz do repositorio
+## Install at the repository root
 
-Nao copie o binario: ele precisa da pasta `Katana/` (modulo QML) que fica ao lado dele em `desktop-qt/build/`.
-Use um link simbolico (o Qt resolve o caminho real): `ln -sf desktop-qt/build/katana-desktop-qt katana-desktop`.
-Copiar o binario sozinho da o erro `Module "Katana" contains no type named "Main"`.
+Do not copy the binary: it needs the `Katana/` folder (QML module) that sits next to it in `desktop-qt/build/`.
+Use a symbolic link (Qt resolves the real path): `ln -sf desktop-qt/build/katana-desktop-qt katana-desktop`.
+Copying the binary alone gives the error `Module "Katana" contains no type named "Main"`.
 
-## Dock e menu de aplicativos (GNOME/Ubuntu)
+## Dock and application menu (GNOME/Ubuntu)
 
-`desktop-qt/instalar-dock.sh` instala `katana-desktop.desktop` em `~/.local/share/applications/`, os icones em
-`~/.local/share/icons/hicolor/<tam>/apps/katana-desktop.png`, atualiza os caches e acrescenta
-`katana-desktop.desktop` a `org.gnome.shell favorite-apps` (sem remover os favoritos nem duplicar). Em outros
-ambientes instala so o atalho do menu. O `Exec` do .desktop usa o link `/mnt/dados/source/katana/katana-desktop`
-(veja acima); o script nao mexe no binario.
+`desktop-qt/instalar-dock.sh` installs `katana-desktop.desktop` in `~/.local/share/applications/`, the icons in
+`~/.local/share/icons/hicolor/<size>/apps/katana-desktop.png`, updates the caches and adds
+`katana-desktop.desktop` to `org.gnome.shell favorite-apps` (without removing the favorites or duplicating). In other
+environments it installs only the menu shortcut. The `Exec` of the .desktop uses the link `/mnt/dados/source/katana/katana-desktop`
+(see above); the script does not touch the binary.

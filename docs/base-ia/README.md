@@ -10,7 +10,7 @@ primárias (documentação oficial, repositórios, PyPI). O que não teve fonte 
 | [nlp-e-llm.md](nlp-e-llm.md) | Transformers (arquiteturas, chat templates, tokenizadores), PEFT/Adapters (LoRA), sentence-transformers (embeddings), spaCy, NeMo, Flair, Stanza, fastText, BERTopic, AllenNLP, Fairseq, SpanMarker, setfit, paddlenlp |
 | [visao-audio-difusao-rl.md](visao-audio-difusao-rl.md) | Diffusers, timm, OpenCLIP, PaddleOCR, ESPnet, speechbrain, Asteroid, pyannote, stable-baselines3, ml-agents, sample-factory, scikit-learn; caminhos para ver, ouvir/falar, gerar imagens e OCR |
 
-Ver também `../estudo-provedores.md` (provedores de inferência e modelos 2025–2026).
+Ver também `../providers-study.md` (provedores de inferência e modelos 2025–2026).
 
 ## O que vira trabalho no katana (ordem sugerida)
 

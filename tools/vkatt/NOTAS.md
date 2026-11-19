@@ -18,7 +18,7 @@ Harness `vkatt.c` usa o `vk/kvk.h` e compara tudo com referencia em double escri
   exige storageBuffer16BitAccess + shaderFloat16 (o kvk ativa quando existem). Leitura/escrita de meia precisao via `float16_t(v)`.
 - **hd por spec constant** (`local_size_x_id = 0`) em `att1` e `att1f`: um pipeline por tamanho de cabeca (64 e 128 testados; maximo 256).
 - **Posicao em push constant**: simples para o harness. No motor com grafo gravado (`kvk_rec`), `pos`, `base` e o comprimento
-  mudam por token e precisam vir de um buffer pequeno escrito com `kvk_buf_write_q` (regra do LEIAME do kvk). Mudanca mecanica:
+  mudam por token e precisam vir de um buffer pequeno escrito com `kvk_buf_write_q` (regra do README do kvk (vk/README.md)). Mudanca mecanica:
   ler `pos` de um SSBO no inicio de `att1f`/`qkv_post`. NAO feita aqui.
 - **Seno/cosseno do RoPE**: a instrucao de hardware do GLSL erra ate ~2e-4 em angulos grandes (pos 600 -> ate ~600 rad), o que
   falhou 100+ casos. Corrigido com reducao de argumento (`rope_cs` em `common.glsl`: 2*pi em duas partes com fma). O angulo
