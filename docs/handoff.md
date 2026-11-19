@@ -129,10 +129,13 @@ files, shell scripts). Qwen3.6, one run each, 900 s limit (measured 2026-11-19, 
 | long prompt (14.8 KB), `agent` | 18/21 | calc, lru, todo | 128 s | 12.0 |
 | lean prompt (7.3 KB), `agent` | 19/21 | calc (timeout), mdhtml | 139 s | 12.5 |
 | lean prompt, `code` | 19/21 | ledger, mdhtml | 109 s | 12.8 |
+| lean prompt + the eight layers (7.8 KB), `agent` | 19/21 | calc (timeout), ledger | 137 s | 12.3 |
 
 No difference is significant (sign test p = 1.0; which tasks fail changes from run to run): the lean prompt did not
 lose tasks, and nothing here shows it gaining any. The mean time of the lean `agent` run carries one 901 s timeout.
-`mdhtml` failed in both lean runs and passed with the long prompt: worth a look.
+`mdhtml` failed in both lean runs and passed in the last run, so it is run-to-run variation. In the last run the model
+never called `todo` or `delegate` (the tasks are short): the benchmark shows the new layers cost nothing here, and says
+nothing about whether they help on long jobs.
 
 **Known gap.** The Windows build has not been compiled since the terminal work of 2026-11-18. Two functions that the
 shared code calls (`tool_howto`, `ui_toolout`) sat inside the non-Windows block; they are now outside it, but nothing
