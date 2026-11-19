@@ -24,18 +24,9 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         } while (FindNextFileA(h, &fd));
         FindClose(h);
 #else
-        DIR *d = opendir(arg);
-        if (!d) { snprintf(out, cap, "error: cannot list %s", arg); return; }
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-            if (n + strlen(e->d_name) + 4 >= TOOL_OUT) { n += snprintf(out + n, cap - n, "[more files omitted]\n"); break; }
-            char full[8600]; struct stat st;
-            snprintf(full, sizeof full, "%s/%s", arg, e->d_name);
-            const int dir = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
-            n += snprintf(out + n, cap - n, "%s%s\n", e->d_name, dir ? "/" : "");
-        }
-        closedir(d);
+        (void)n;
+        tool_list_dir(arg, out, cap);
+        return;
 #endif
         if (n == 0 && !out[0]) snprintf(out, cap, "(empty)");
     } else if (strcmp(name, "write_file") == 0) {
@@ -127,6 +118,12 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
     } else if (strcmp(name, "read_document") == 0) {
         if (!json_str(js, end, "path", arg, sizeof arg) || !arg[0]) { snprintf(out, cap, "error: missing path"); return; }
         tool_read_document(arg, out, cap);
+#ifndef _WIN32
+    } else if (strcmp(name, "find_file") == 0) {
+        tool_find_file(js, end, out, cap);
+#endif
+    } else if (strcmp(name, "ask_user") == 0) {
+        tool_ask_user(js, end, out, cap);
     } else if (strcmp(name, "terminal") == 0) {
         tool_terminal(js, end, out, cap);
     } else if (strcmp(name, "read_log") == 0) {

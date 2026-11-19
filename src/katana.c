@@ -32,6 +32,8 @@
 #include "agent/howto.c"               /* receitas de uso das ferramentas (howto) */
 #include "agent/terminal.c"            /* run_command, sessoes de terminal (pty), shell root persistente */
 #include "agent/logs.c"                /* read_log e terminal_screen */
+#include "agent/locate.c"              /* navegacao no computador: list_dir com detalhes, find_file */
+#include "agent/ask.c"                 /* interacao com o usuario: pergunta com opcoes (ask_user) */
 #include "agent/dispatch.c"            /* despacho das ferramentas e leitura das chamadas em XML */
 #include "agent/fmt_gemma4.c"          /* ferramentas no formato nativo do Gemma 4 */
 #include "agent/prefix_cache.c"        /* cache de prefixo persistente e aquecimento */

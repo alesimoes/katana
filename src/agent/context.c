@@ -186,6 +186,55 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
     free(out.p);
     return r;
 }
+/* resumo "ao vivo": em vez de reler a conversa inteira num prompt novo (caro: o texto todo passa de novo pelo modelo),
+ * aproveita o cache KV que ja guarda a conversa. Processa so o texto pendente (resultado da ultima ferramenta) com um
+ * pedido de resumo no fim e gera o resumo dali. O cache fica sujo com esse pedido; quem chama recalcula em seguida.
+ * So ChatML. Devolve texto alocado ou NULL (sem espaco, modelo chamou ferramenta, resposta vazia). */
+#define CP_NOTE "[katana: context compaction] Pause the task for this one message and do NOT call any tool. Write a faithful summary of " \
+    "the conversation so far, in the language of the conversation, in at most 25 lines: 1) what the user asked, keeping exact requirements, " \
+    "names and numbers; 2) what is already done: every file created or changed, with its path and what it contains now, and the commands run " \
+    "with their important results; 3) the last error or failing test, quoted exactly; 4) what is left to do, in order. Do not invent anything. " \
+    "After this message the older messages are removed and you continue the task from your summary."
+static char *ah_summary_live(Model *m, int pos, const char *pending) {
+    const Config *c = &m->cfg;
+    const Tokenizer *tk = &m->tk;
+    const int im_end = map_get(&tk->vocab, "<|im_end|>", 10);
+    const char *K = "<|im_end|>\n<|im_start|>assistant\n";
+    const char *cut = NULL;
+    for (const char *q = strstr(pending, K); q; q = strstr(q + 1, K)) cut = q;      /* a abertura do turno do assistente, no fim */
+    if (!cut) return NULL;
+    Buf pr = {0};
+    buf_add(&pr, pending, (size_t)(cut - pending));
+    buf_str(&pr, "\n\n" CP_NOTE "<|im_end|>\n<|im_start|>assistant\n");
+    if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    Ids ids = {0};
+    encode(tk, pr.p, &ids);
+    free(pr.p);
+    if (pos + ids.n + 700 >= c->ctx) { free(ids.ids); return NULL; }
+    float *lg = forward_seq(m, ids.ids, ids.n, pos, 1);
+    pos += ids.n;
+    free(ids.ids);
+    Buf out = {0};
+    char tmp[256];
+    for (int g = 0; g < 600 && pos < c->ctx - 1 && !g_stop; g++) {
+        const int t = sample(lg, c->vocab, 0.0f);
+        if (t == c->eos || t == im_end || (tk->toktype && tk->toktype[t] == 3)) break;
+        const size_t tl = tok_append(tk, t, tmp, 0, sizeof tmp - 1);
+        buf_add(&out, tmp, tl);
+        lg = forward(m, t, pos++, 1);
+    }
+    if (!out.p) return NULL;
+    char *sp = out.p; while (*sp == '\n' || *sp == ' ') sp++;
+    size_t l = strlen(sp); while (l && (sp[l - 1] == '\n' || sp[l - 1] == ' ')) l--;
+    if (l < 40 || strstr(sp, "<tool_call>")) { free(out.p); return NULL; }
+    char *r = xalloc(l + 1, 1); memcpy(r, sp, l); r[l] = 0;
+    free(out.p);
+    return r;
+}
+#define CP_SUM_HEAD "[Summary of the conversation so far, written by you to save context; the older messages were removed]\n"
+#define CP_REQ_HEAD "\n\n[The user's current request, still in progress. Continue from the summary and do not redo what is done]\n"
+static int g_cp_floor;     /* depois de compactar, a proxima compactacao automatica so acima disto (evita recalcular a cada rodada) */
+
 /* compacta o historico e recalcula o cache com historico + pending (texto do turno atual ainda fora do cache,
    que comeca pelo fecho da mensagem anterior). force: resume mesmo abaixo do alvo. Devolve o novo pos e os
    logits do fim em *lg_out, ou -1 se nem compactado cabe. */
@@ -205,7 +254,29 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     /* /compact (force, sem texto pendente): resume a conversa inteira, inclusive o ultimo turno; no automatico o
        ultimo pedido do usuario e o que veio depois ficam como estao */
     const int upto = (force && !*pending) ? h->n : last_u;
-    if ((n > target || force) && upto > 0) {                                     /* camada 2 */
+    /* camada 2 ao vivo (automatico, ChatML): o proprio modelo resume a conversa a partir do cache que ja existe; ficam o
+       resumo, o pedido em andamento e a ultima chamada com o resultado pendente. Cobre o caso de um pedido so com
+       dezenas de rodadas de ferramenta, em que nao ha turno antigo para resumir. */
+    if (!force && !g_ah_g4 && n > target && *pending && last_u < h->n && h->n - last_u >= 4 && h->v[h->n - 1].role == 'a') {
+        fprintf(stderr, "%s[compactando: o modelo resume o trabalho feito ate aqui...]%s\n", CE(C_DIM), CE(C_RESET));
+        char *sm = ah_summary_live(m, before, pending);
+        if (sm) {
+            const char *req = h->v[last_u].s, *rq = strstr(req, CP_REQ_HEAD);
+            if (rq) req = rq + strlen(CP_REQ_HEAD);                 /* pedido original dentro de um resumo anterior */
+            AHist nh = {0};
+            Buf u = {0};
+            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
+            fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
+            ah_push(&nh, 'u', u.p, u.n);
+            ah_push(&nh, 'a', h->v[h->n - 1].s, strlen(h->v[h->n - 1].s));
+            ah_clear(h); free(h->v); *h = nh;
+            free(u.p); free(sm);
+            summ = 1;
+            ah_render(h, sys, &r); buf_str(&r, pending);
+            n = ah_count(m, r.p);
+        }
+    }
+    if ((n > target || force) && upto > 0 && !summ) {                            /* camada 2 */
         fprintf(stderr, "%s[compactando: resumindo %d mensagens...]%s\n", CE(C_DIM), upto, CE(C_RESET));
         char *sm = ah_summary(m, h, upto);
         if (sm) {
@@ -239,6 +310,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     *lg_out = forward_seq(m, ids.ids + np, ids.n - np, np, 1);
     const int after = ids.n;
     free(ids.ids);
+    g_cp_floor = after + 2000;
     fprintf(stderr, "%s[contexto compactado: %d -> %d tokens de %d (%d resultados de ferramenta encolhidos%s)]%s\n",
             CE(C_DIM), before, after, c->ctx, shr, summ ? ", turnos antigos resumidos" : "", CE(C_RESET));
     if (getenv("KATANA_UI")) { printf("\x01" "COMPACT %d %d\n", before, after); fflush(stdout); }

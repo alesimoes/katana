@@ -52,6 +52,8 @@ Working folder: the button next to the model selector shows the agent's folder a
 
 Sudo: the agent runs as your normal user; root only enters when a command asks for `sudo` (in `run_command` or a terminal session) or the model passes `sudo=true` to `write_file`/`edit_file` (`KATANA_SUDO=1` makes everything run as root). When it needs the password, the engine emits the marker `NEEDPASS` (`NEEDPASS retry` after a wrong one); the desktop opens a password dialog and answers with `\x01PASS <password>` (empty = cancel). The password stays only in the agent's memory and is not sent to the model or the history. In the terminal (`katana agent`) it is asked on screen, without echo.
 
+Questions from the agent: when the model calls `ask_user`, the engine emits `CHOICE <question>\t<option>...` and waits. The desktop shows the question in a card above the message box with one button per option (not a dialog); a button, or any text typed in the box, answers with `\x01ANS <text>`. Stop cancels the question (empty answer).
+
 Remembered model: the last model started is kept in ui.ini (`ultimoModelo`) and is the one that opens next time; when opening a saved conversation, the desktop switches to the model it was in (if usable) and resumes the session.
 
 Environment: the desktop discards performance KATANA_* variables inherited from the terminal (KATANA_CPU, KATANA_CTX, KATANA_KV16, KATANA_VK_*...) so the engine uses the fastest defaults; `KATANA_DESKTOP_ENV=1` preserves the inherited environment.

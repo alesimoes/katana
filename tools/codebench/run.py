@@ -66,8 +66,8 @@ def run_task(a, name):
     work = tempfile.mkdtemp(prefix="cb_" + name + "_")
     copy_tree(os.path.join(TASKS, name, "repo"), work)
     instr = " ".join(open(os.path.join(TASKS, name, "instruction.md")).read().split())
-    msg = ("You are working in the current folder, a small Python project (standard library only; use python3 and "
-           "unittest, there is no pytest). Task: " + instr + " Check your work by running code or your own tests. "
+    msg = ("You are working in the current folder, a small project (python3 with the standard library and unittest, "
+           "and the usual shell tools; there is no pytest). Task: " + instr + " Check your work by running it. "
            "When it is finished, answer with one short sentence.")
     env = dict(os.environ)
     for kv in a.env or []:

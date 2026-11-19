@@ -1,0 +1,5 @@
+# date category amount [note]
+2026-01-05 food -45.20 lunch with Bob
+2026-01-09 rent -700
+2026-01-31 pay 2100 salary
+2026-02-02 food -12.80

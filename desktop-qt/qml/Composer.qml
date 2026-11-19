@@ -16,6 +16,10 @@ Item {
     function setText(t) { ta.text = t; ta.cursorPosition = t.length; }
     function submit() {
         var t = ta.text.trim();
+        if (backend.choicePending) {                  // o agente fez uma pergunta: o texto digitado e a resposta
+            if (t) { backend.answerChoice(t); ta.clear(); }
+            return;
+        }
         if (backend.answering) {
             if (!t) { backend.stop(); return; }      // vazio: Parar
             if (backend.enqueue(t)) ta.clear();      // com texto: entra na fila
@@ -111,7 +115,7 @@ Item {
                 color: Theme.fg
                 font.pixelSize: 15
                 placeholderText: backend.ready ? "Escreva uma mensagem..."
-                               : backend.loading ? "Carregando o modelo..."
+                               : backend.loading ? (/^Preparando/.test(backend.statusText) ? backend.statusText : "Carregando o modelo...")
                                : backend.answering && /^(Retomando|Preparando)/.test(backend.statusText) ? backend.statusText
                                : backend.answering ? "Respondendo..."
                                : backend.running ? "Aguarde..." : "Escolha um modelo para começar"

@@ -496,6 +496,8 @@ void Backend::stop()
 {
     if (!m_proc)
         return;
+    if (m_choicePending)
+        answerChoice(QString());  // o agente esta parado esperando a resposta: cancela a pergunta
     if (!m_queue.isEmpty()) {  // Parar pausa a fila: o usuario decide se segue
         m_paused = true;
         emit queueChanged();
@@ -515,6 +517,20 @@ QString Backend::workspace() const
     if (!saved.isEmpty() && QDir(saved).exists())
         return saved;
     return QDir::currentPath();
+}
+
+void Backend::answerChoice(const QString &textIn)
+{
+    if (!m_choicePending)
+        return;
+    QString t = textIn;
+    t.replace('\n', ' ').replace('\r', ' ').replace(QChar(1), ' ');
+    if (m_proc)
+        m_proc->write(QByteArray("\x01" "ANS ") + t.trimmed().toUtf8() + "\n");
+    m_choicePending = false;
+    m_choiceQ.clear();
+    m_choiceOpts.clear();
+    emit choiceChanged();
 }
 
 void Backend::answerAsk(bool yes)
@@ -856,6 +872,14 @@ void Backend::handleMarker(const QByteArray &line)
     } else if (name == "ASK") {  // ASK <tipo>\t<o que>\t<detalhe>: pedido de permissao (confiar na pasta, gravar fora dela, acao)
         const QStringList a = args.split('\t');
         emit askRequested(a.value(0), a.value(1), a.value(2));
+    } else if (name == "PREP") {  // PREP <tokens>: o motor esta calculando o prompt de sistema (so quando muda; depois vem do cache)
+        setTexts("Preparando o agente: lendo as instruções (" + args.trimmed() + " tokens, só na primeira vez nesta pasta)...", {});
+    } else if (name == "CHOICE") {  // CHOICE <pergunta>\t<opcao>...: pergunta do agente (ask_user); resposta em answerChoice
+        const QStringList a = args.split('\t');
+        m_choiceQ = a.value(0);
+        m_choiceOpts = a.mid(1);
+        m_choicePending = true;
+        emit choiceChanged();
     } else if (name == "CWD") {  // CWD <pasta>\t<1 se confiavel>
         const QStringList a = args.split('\t');
         m_wsReal = a.value(0);

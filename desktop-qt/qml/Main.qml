@@ -297,6 +297,46 @@ ApplicationWindow {
                     GradientStop { position: 1.0; color: Theme.bg }
                 }
             }
+            // pergunta do agente (ask_user): fica junto da caixa de mensagem, com as opcoes em botoes; digitar tambem responde
+            Rectangle {
+                id: choiceCard
+                objectName: "choiceCard"
+                visible: backend.choicePending
+                anchors.bottom: composer.top
+                anchors.bottomMargin: 6
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(parent.width - 32, 760)
+                height: visible ? choiceCol.implicitHeight + 24 : 0
+                radius: 14
+                color: Theme.card
+                border.color: Theme.bd
+                Column {
+                    id: choiceCol
+                    x: 14; y: 12
+                    width: parent.width - 28
+                    spacing: 10
+                    Text { font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; text: "O agente pergunta" }
+                    Text { font.family: Theme.sans; color: Theme.fg; font.pixelSize: 15; width: parent.width; wrapMode: Text.Wrap; text: backend.choiceQuestion }
+                    Flow {
+                        width: parent.width
+                        spacing: 8
+                        Repeater {
+                            model: backend.choiceOptions
+                            Rectangle {
+                                height: 34; width: optTxt.implicitWidth + 28; radius: 9
+                                color: optMa.containsMouse ? Theme.ac : Theme.hov
+                                border.color: optMa.containsMouse ? Theme.ac : Theme.bd
+                                Text { id: optTxt; anchors.centerIn: parent; text: modelData; font.family: Theme.sans; font.pixelSize: 14
+                                    color: optMa.containsMouse ? Theme.acfg : Theme.fg }
+                                MouseArea { id: optMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    onClicked: backend.answerChoice(modelData) }
+                            }
+                        }
+                    }
+                    Text { font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; width: parent.width; wrapMode: Text.Wrap
+                        text: backend.choiceOptions.length ? "Ou escreva outra resposta na caixa abaixo." : "Escreva a resposta na caixa abaixo." }
+                }
+            }
             Composer {
                 id: composer
                 anchors.bottom: termPanel.visible ? termPanel.top : parent.bottom

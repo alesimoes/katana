@@ -19,6 +19,7 @@ and checked by comparing the stripped binary before and after (identical apart f
 | `tools.c` | paths, permissions, confirmation, `search_files`, persistent memory |
 | `web.c`, `webnav.c` | curl, HTML to text, search; page memory with `offset`, `find`, `links` |
 | `prompt.c` | system prompt: rules and tools first (stable), environment block last |
+| `locate.c`, `ask.c` | `list_dir` with details and `find_file`; `ask_user` (question with options) |
 | `devtools.c`, `code.c` | `edit_file`, `glob`, git, packages; `read_file` by line range, syntax check after every write |
 | `exec.c`, `sudo.c`, `terminal.c`, `logs.c` | command execution, sudo password flow, pty sessions and root shell, logs |
 | `diagnose.c`, `howto.c` | one next-step hint when a command fails; recipes on demand |
@@ -46,6 +47,21 @@ and checked by comparing the stripped binary before and after (identical apart f
   returns only the passages with a word, `links=true` lists the absolute links (filtered by `find`). The text comes
   from `<main>`/`<article>` when the page has one, menus (`nav`, `select`, `button`) are skipped and a run of 10 or more
   link-only lines becomes one note. A PDF URL is refused with the instruction to download and use `read_document`.
+- *Compaction inside one long request.* A coding job is usually one user message followed by dozens of tool rounds.
+  The old layers only summarised earlier turns, so in that case nothing could be summarised: once the tool results
+  were shrunk the context stayed above the trigger and every round "compacted" again, recomputing the whole context
+  for no gain (on Qwen3.6, more than two minutes each time; this is what made `calc` hit the time limit). Now, in the
+  ChatML path, the model writes the summary from the KV cache that already holds the conversation: the engine
+  processes only the pending tool result plus a short summary request and generates up to 600 tokens (no second pass
+  over the transcript). The history becomes: summary, the user's request, the last tool call and its result. After a
+  compaction the next automatic one waits until the context grows 2,000 tokens past the compacted size. Gemma 4 and
+  `/compact` keep the previous method (summary from a fresh prompt).
+- *Computer navigation layer.* `list_dir` lists folders first with their item count, then files with size and date.
+  `find_file` finds files and folders by part of the name: breadth-first from the home folder and the other mounted
+  disks (or from `under`), skipping hidden and build folders, 5 s limit, exact name and shortest path first.
+- *Interaction layer.* `ask_user` asks one question with 2 to 5 options. Desktop: marker `CHOICE`, a card above the
+  message box with one button per option (typing also answers; it is not a dialog, the sudo password stays the only
+  one). Terminal: numbered options. Piped input: the model is told to decide by itself.
 - *`katana code <model>`.* The same agent with a short programming prompt and only the coding tools (no memory, logs,
   documents, packages). Not yet measured on the full benchmark.
 
@@ -63,7 +79,7 @@ to its ceiling for this model, so it now measures cost (time, tool calls, tokens
 unchanged, not fixed.
 
 **Next, in the order agreed with the owner:** measure `katana code` on the full benchmark; harder benchmark tasks;
-user-interaction layer (a question tool with options, shown as buttons in the desktop app); terminal and web tasks for
+terminal and web tasks for
 the benchmark; then sampling presets and the runtime LoRA adapter for Qwen3.8.
 
 ## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
