@@ -75,6 +75,19 @@ conversation, disappears after sending, does not appear in an old session, retur
 Limitations: reasoning off (`KATANA_THINK=0`); the agent reads one line per turn (line breaks
 become spaces); on Windows, stop kills the agent; the Windows version was neither compiled nor tested.
 
+## Models screen
+
+The download button in the top bar opens the models screen; it opens by itself when the models folder has no
+usable model. It shows the machine (RAM, GPU, free disk), the catalog with the recommended model, and downloads
+with progress, pause and resume (`katana hw`, `katana catalog`, `katana pull`). After the first download the app
+starts that model. An installed app keeps models in `~/.katana/models` (or `KATANA_MODELS`).
+
+## Packaging
+
+`packaging/appimage.sh` builds `packaging/out/katana-x86_64.AppImage` (engine, app and Qt inside). An AppImage
+only runs on systems with a glibc at least as new as the build machine, so the workflow
+`.github/workflows/pacotes.yml` (manual trigger) builds it on Ubuntu 22.04. Not yet executed.
+
 ## Install at the repository root
 
 Do not copy the binary: it needs the `Katana/` folder (QML module) that sits next to it in `desktop-qt/build/`.

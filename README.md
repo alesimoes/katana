@@ -56,6 +56,14 @@ one used and tested day to day.
 ./katana code  <model.gguf>        # the agent in coding mode (lean prompt: read, edit, run, verify)
 ```
 
+Models (the minimum is 24 GB of RAM; the catalog is fixed in the engine, pinned by revision and sha256):
+
+```
+./katana hw                        # RAM, GPU, VRAM, free disk
+./katana catalog                   # models the engine can download, what fits here, the recommended one
+./katana pull qwen3.6-35b          # download (resumes an interrupted one) and verify
+```
+
 Desktop app (Qt 6, native window, no browser):
 
 ```

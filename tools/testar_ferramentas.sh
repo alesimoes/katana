@@ -26,7 +26,7 @@ t "edit: unico + diff"         'first at line 3'       edit_file '{"path":"a.txt
 t "edit: diff mostra - e +"    '+ linha tres'             edit_file '{"path":"a.txt","old":"LINHA 3","new":"linha tres"}'
 t "edit: replace_all"          '2 replacements'        edit_file '{"path":"a.txt","old":"foo = 1","new":"foo = 9","replace_all":true}'
 t "edit: replace_all string"   '2 replacements'        edit_file '{"path":"a.txt","old":"foo = 9","new":"foo = 7","replace_all":"true"}'
-t "edit: caminho fora"         'invalid path'          edit_file '{"path":"../x","old":"a","new":"b"}'
+t "edit: caminho fora (permitido: erro e do arquivo)" 'cannot open'  edit_file '{"path":"../x","old":"a","new":"b"}'
 t "edit: old vazio"            'missing or empty old'  edit_file '{"path":"a.txt","old":"","new":"b"}'
 t "edit: multilinha"           'ok: edited'            edit_file '{"path":"a.txt","old":"linha um\nfoo = 7","new":"UM\nbar"}'
 grep -q '^UM$' a.txt && grep -q '^bar$' a.txt && { OK=$((OK+1)); echo "ok   edit: arquivo gravado"; } || { FAIL=$((FAIL+1)); echo "FALHA edit: conteudo"; }
@@ -94,7 +94,7 @@ if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   t "download: 404"            'download failed'       download_file '{"url":"http://127.0.0.1:18765/nao.txt","path":"n.txt"}'
   kill $SP 2>/dev/null
 else echo "pula  download (sem python3/curl)"; fi
-t "download: caminho fora"     'invalid path'          download_file '{"url":"http://x/y","path":"../z"}'
+t "download: caminho fora (permitido: erro e da rede)" 'download failed' download_file '{"url":"http://x/y","path":"../z"}'
 t "download: url ruim"         'invalid URL'           download_file '{"url":"file:///etc/passwd","path":"z"}'
 
 echo "== run_command: stderr, stdin, timeout, truncagem"
@@ -102,7 +102,7 @@ t "run: stderr visivel"         'boom'                  run_command '{"command":
 t "run: codigo de saida"        'exit code 3'           run_command '{"command":"echo out; exit 3"}'
 t "run: stdout e stderr juntos" 'ERRO'                  run_command '{"command":"echo OK; echo ERRO >&2"}'
 t "run: stdin fechado"          'got:\[\]'              run_command '{"command":"read x; echo got:[$x]"}'
-t "run: pede senha, sem travar" 'in their own terminal: echo' run_command '{"command":"echo \"sudo: a password is required\" >&2; exit 1"}'
+t "run: pede senha, sem travar" 'has no keyboard' run_command '{"command":"echo \"sudo: a password is required\" >&2; exit 1"}'
 if command -v sudo >/dev/null 2>&1; then
   S0=$(date +%s)
   t "run: sudo -n nao trava"    'exit code'             run_command '{"command":"sudo -n true"}'
@@ -135,10 +135,10 @@ chmod +x fakebin/sudo
 SU=$(printf 'run_command {"command":"sudo echo ola-root"}\n\001PASS secret\nrun_command {"command":"sudo echo de-novo"}\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 "$KAT" toolrun 2>/dev/null)
 if echo "$SU" | grep -q "ola-root" && echo "$SU" | grep -q "de-novo" && [ "$(echo "$SU" | grep -c NEEDPASS)" = 1 ]; then OK=$((OK+1)); echo "ok   sudo: pede a senha uma vez e reaproveita"; else FAIL=$((FAIL+1)); echo "FALHA sudo: $SU"; fi
 
-SD=$(printf 'run_command {"command":"echo \\"it'"'"'s-root\\"; echo dois"}\n\001PASS secret\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
+SD=$(printf 'run_command {"command":"echo \\"it'"'"'s-root\\"; echo dois"}\n\001PASS secret\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
 if echo "$SD" | grep -q "it's-root" && echo "$SD" | grep -q "dois" && echo "$SD" | grep -q NEEDPASS; then OK=$((OK+1)); echo "ok   sudo por padrao: comando inteiro (com aspas) roda via sudo -A sh -c"; else FAIL=$((FAIL+1)); echo "FALHA sudo padrao: $SD"; fi
 
-SP=$(printf 'run_command {"command":"cd /tmp && export KV=persiste"}\n\001PASS secret\nrun_command {"command":"sleep 30","timeout_s":2}\nrun_command {"command":"pwd; echo kv=$KV"}\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
+SP=$(printf 'run_command {"command":"cd /tmp && export KV=persiste"}\n\001PASS secret\nrun_command {"command":"sleep 30","timeout_s":2}\nrun_command {"command":"pwd; echo kv=$KV"}\n' | PATH="$PWD/fakebin:$PATH" KATANA_UI=1 KATANA_SUDO=1 KATANA_SUDO_FORCE=1 "$KAT" toolrun 2>/dev/null)
 if echo "$SP" | grep -q "^/tmp$" && echo "$SP" | grep -q "kv=persiste" && [ "$(echo "$SP" | grep -c NEEDPASS)" = 1 ]; then OK=$((OK+1)); echo "ok   sudo: shell root persistente (cwd/variaveis sobrevivem, inclusive a um timeout)"; else FAIL=$((FAIL+1)); echo "FALHA shell root: $SP"; fi
 
 echo "== terminal, read_log, terminal_screen (uma sessao do katana com varias chamadas)"
