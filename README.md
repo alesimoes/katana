@@ -53,6 +53,7 @@ one used and tested day to day.
 ./katana info  <model.gguf>        # architecture, tensors, context
 ./katana chat  <model.gguf>        # interactive chat
 ./katana agent <model.gguf>        # chat with tools (files, shell, web, memory, MCP)
+./katana code  <model.gguf>        # the agent in coding mode (lean prompt: read, edit, run, verify)
 ```
 
 Desktop app (Qt 6, native window, no browser):
@@ -115,8 +116,8 @@ tools reach outside.
 |---|---|
 | `run_command` | shell command, stdin closed, stderr included, timeout, exit code, head+tail of long output, live output in the desktop app. Runs as your normal user; when the command contains `sudo`, the sudo password dialog opens (once; the password stays only in memory) |
 | `terminal` | persistent shell sessions in a pty (keeps directory and variables, shows interactive prompts); `open`, `send`, `read`, `interrupt`, `close` |
-| `read_file`, `list_dir`, `glob`, `search_files`, `read_document` | read and find files (PDF and HTML as text) |
-| `write_file`, `edit_file` | write files; exact-snippet edits that fail if the snippet is missing or ambiguous |
+| `read_file`, `list_dir`, `glob`, `search_files`, `read_document` | read and find files (PDF and HTML as text); `read_file` returns whole lines and, for a long file, says which lines came and how to ask for the next ones (`offset`, `limit`) |
+| `write_file`, `edit_file` | write files; exact-snippet edits that fail if the snippet is missing or ambiguous. After each write the engine checks the syntax of the file (Python, shell, JSON, JavaScript, PHP, Ruby, when the language tool is installed) and appends the result, so the model sees a syntax error in the same step |
 | `git` | status, diff, log, commit, branch, push, clone... (refuses `push --force`, `reset --hard` unless `KATANA_GIT_UNSAFE=1`) |
 | `web_search`, `web_fetch`, `download_file` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG), clean page text, downloads with SHA-256 |
 | `install_package` | pip (venv-aware), npm, apt, cargo |
@@ -174,6 +175,7 @@ katana chat  <model> ["question"] [max_tokens] [temperature]   one question, or 
 katana run   <model> "text" [max_tokens] [temperature]         plain completion
 katana serve <model> [port]      local web chat at http://127.0.0.1:8080 with an SSE API (chat only, no tools)
 katana agent <model>             chat with tools
+katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools
 katana info | bench | selftest | micro | tune | pack | verify | quantize | qtest | routing | sparsity
 katana tool <name> '<json>'      run one agent tool without a model (testing)

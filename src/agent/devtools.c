@@ -150,6 +150,7 @@ static void diff_lines(char *o, size_t cap, size_t *n, char sign, const char *s)
 static int json_has(const char *js, const char *end, const char *key);
 static int root_write_file(const char *dest, const char *data, size_t n, int append, char *err, size_t ecap);
 static char *root_read_file(const char *path, size_t *n);
+static void code_check(const char *path, int partial, char *out, size_t cap);
 static void tool_edit_file(const char *js, const char *end, char *out, size_t cap) {
     static char path[4096], eold[65536], enew[65536], wp[4300], werr[400];
     if (!json_str(js, end, "path", path, sizeof path)) { snprintf(out, cap, "error: missing path"); return; }
@@ -219,6 +220,7 @@ static void tool_edit_file(const char *js, const char *end, char *out, size_t ca
     diff_lines(out, dc, &n, '-', eold);
     diff_lines(out, dc, &n, '+', enew);
     free(b); free(nb);
+    code_check(path, 0, out, cap);
 }
 
 /* ---- glob: * (nao cruza /), ** (cruza), ? ---- */
