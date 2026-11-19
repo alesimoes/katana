@@ -316,7 +316,17 @@ static void trust_init(void) {}
 #endif
 
 /* ---- search_files ---- */
-typedef struct { const char *pat; char *out; size_t cap, n; int hits, files; } SFState;
+#ifndef _WIN32
+#include <regex.h>
+#endif
+typedef struct { const char *pat; char *out; size_t cap, n; int hits, files; void *re; } SFState;      /* re: expressao regular compilada (regex=true) ou NULL */
+static int ci_find(const char *h, size_t hl, const char *needle_lc, size_t nl);
+static int sf_match(SFState *s, char *ln, size_t l, size_t nl) {
+#ifndef _WIN32
+    if (s->re) { const char sv = ln[l]; ln[l] = 0; const int r = regexec((regex_t *)s->re, ln, 0, NULL, 0) == 0; ln[l] = sv; return r; }
+#endif
+    return ci_find(ln, l, s->pat, nl);
+}
 #define SF_MAXHITS 40
 #define SF_MAXFILES 30000
 #define SF_MAXSIZE 1500000
@@ -350,7 +360,7 @@ static void sf_file(SFState *s, const char *path) {
     for (size_t i = 0; i < got && s->hits < SF_MAXHITS; ) {
         size_t e = i;
         while (e < got && b[e] != '\n') e++;
-        if (ci_find(b + i, e - i, s->pat, nl)) {
+        if (sf_match(s, b + i, e - i, nl)) {
             size_t a = i, l = e - i;
             while (l > 0 && (b[a] == ' ' || b[a] == '\t')) { a++; l--; }
             while (l > 0 && (b[a + l - 1] == '\r' || b[a + l - 1] == ' ')) l--;
@@ -404,14 +414,24 @@ static void sf_walk(SFState *s, const char *dir, int depth) {
 #endif
 }
 
-static void tool_search_files(const char *pattern, const char *root, char *out, size_t cap) {
+static void tool_search_files(const char *pattern, const char *root, int regex, char *out, size_t cap) {
     char lc[256], res[4200], err[1300];
     size_t i = 0;
     for (; pattern[i] && i < sizeof lc - 1; i++) lc[i] = (char)tolower((unsigned char)pattern[i]);
     lc[i] = 0;
     if (!lc[0]) { snprintf(out, cap, "error: empty pattern"); return; }
     if (!agent_read_access(root, 1, res, sizeof res, err, sizeof err)) { snprintf(out, cap, "%s", err); return; }
-    SFState s = { lc, out, cap > 6000 ? 6000 : cap, 0, 0, 0 };
+    SFState s = { lc, out, cap > 6000 ? 6000 : cap, 0, 0, 0, NULL };
+#ifndef _WIN32
+    regex_t re;
+    if (regex) {        /* expressao regular estendida, sem diferenciar maiusculas */
+        const int rc = regcomp(&re, pattern, REG_EXTENDED | REG_ICASE | REG_NOSUB);
+        if (rc) { char eb[200]; regerror(rc, &re, eb, sizeof eb); snprintf(out, cap, "error: invalid regular expression (%s). POSIX extended syntax: use [0-9] and [[:space:]] instead of \\d and \\s", eb); return; }
+        s.re = &re;
+    }
+#else
+    (void)regex;
+#endif
     out[0] = 0;
     struct stat st;
     if (stat(res, &st) == 0 && !S_ISDIR(st.st_mode)) sf_file(&s, res);
@@ -421,6 +441,9 @@ static void tool_search_files(const char *pattern, const char *root, char *out, 
     }
     if (s.hits == 0) snprintf(out, cap, "no matches in %d text files under %s", s.files, res);
     else if (s.hits >= SF_MAXHITS) snprintf(out + s.n, cap - s.n, "[result limit reached; refine the pattern or the path]\n");
+#ifndef _WIN32
+    if (s.re) regfree(&re);
+#endif
 }
 
 /* ---- memoria: ~/.katana/memoria.txt, uma linha por fato: AAAA-MM-DD<TAB>fato ---- */
