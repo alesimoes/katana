@@ -60,7 +60,7 @@ rounds 2 and 3):
 
 Commands (copied from `final.sh`, in the log directory; run at the repository root, with the machine free):
 ```
-G=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; Q=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf; T=modelos/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+G=models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; Q=models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf; T=models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 for m in $G $Q; do KATANA_BACKEND=vulkan ./katana selftest $m; done
 KATANA_BACKEND=vulkan KATANA_KV16=0 KATANA_CTX=512 ./katana selftest $T
 for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o KATANA_BACKEND=vulkan ./katana bench $G 64 64; done; done
@@ -113,9 +113,9 @@ Note (0k): the measurement of the full model with GPU, Gemma 4 `bench 64 64` old
 42.2 against 74.3 ms/token (1.76x). The microbenchmark numbers in this section remain indicative.
 To repeat with the machine free:
 
-    sh tools/moebench/build.sh && sh tools/moebench/ab.sh modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 3 16
-    sh tools/moebench/ab.sh modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 3 16
-    for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o ./katana bench modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 64 64; done; done
+    sh tools/moebench/build.sh && sh tools/moebench/ab.sh models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 3 16
+    sh tools/moebench/ab.sh models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 3 16
+    for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o ./katana bench models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 64 64; done; done
     (the same with Qwen3.6-35B-A3B-UD-Q4_K_M.gguf) and selftest with GPU on the three models
 
 Not done (next steps, in order): (1) overlap the cold experts on the CPU with the GPU work in the same
@@ -218,9 +218,9 @@ token by token 0.00054, batch 16 0.00045 OK.
 Repeat with the machine free:
 ```
 sh build.sh
-M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+M=models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 for i in 1 2 3; do for s in 4 8 16; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $M 256 128; done; done
-G=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+G=models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $G 64 128; done; done
 # log for the simulator (CPU): KATANA_CPU=1 KATANA_EXPLOG=x.bin ./katana chat $M @prompt.txt 256 0
 ```
@@ -291,9 +291,9 @@ or more threads/better kernel in `moe_cpu_multi`).
 Measure with the machine free:
 ```
 sh build.sh
-M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+M=models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 for i in 1 2 3; do for r in 0 1; do KATANA_VK_GENPROF=1 KATANA_VK_GPUROUTER=$r KATANA_BACKEND=vulkan ./katana bench $M 16 128; done; done
-KATANA_VK_GENPROF=1 KATANA_BACKEND=vulkan ./katana bench modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 16 128
+KATANA_VK_GENPROF=1 KATANA_BACKEND=vulkan ./katana bench models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 16 128
 ```
 
 ## 0e. Q8_0 KV cache on qwen35moe (2026-11-17, branch worktree-agent-a820d36683256ed88)
@@ -322,7 +322,7 @@ selftest found no GPU, so only the products were checked):
 Pending (run with the machine free and the GPU idle):
 ```
 sh build.sh
-M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+M=models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 # selftest with GPU (batch, token by token, batch 16), attention on the CPU with Q8_0
 KATANA_CPU_KV8=1 KATANA_CTX=131072 ./katana selftest $M
 KATANA_CTX=131072 ./katana selftest $M                      # fp16, reference
@@ -557,9 +557,9 @@ Went into main in this session:
 4. **Hot experts in fp32 on the one-token path** (gemma4/Qwen3-30B): would remove the "GPU token by token" failure of the selftest (argmax already matches, greedy generation correct).
 5. **Merging GGUF in parts** (for GLM-4.5-Air Q4_K_M and other large split ones); note: the Air Q4_K_M (~65 GB) does not fit well in the 64 GB of RAM of this machine.
 
-6. **GLM-4-9B (`glm4` dense) on the GPU**: today CPU only ("Vulkan pendente" in `katana modelos`); dense and similar to what already runs, least effort of the three.
-7. **CLI in English** (owner's request): commands in English (`models`, etc.); `modelos` may stay as an alias.
-8. **Look for the model in `modelos/`** when the name passed does not exist in the current folder (`./katana agent X.gguf` failed).
+6. **GLM-4-9B (`glm4` dense) on the GPU**: today CPU only ("Vulkan pendente" in `katana models`); dense and similar to what already runs, least effort of the three.
+7. **CLI in English** (owner's request): started 2026-11-18: the folder is now `models/` and the command `katana models` (`modelos` stays as an alias, and `modelos/` is still searched as a fallback). Still in Portuguese: chat commands (`/novo`, `/sistema`, `/salvar`, `/ajuda`, `/sair`), `calibrar`, `~/.katana/memoria.txt` and `agente.log`, and some messages.
+8. **Look for the model in `models/`** when the name passed does not exist in the current folder (`./katana agent X.gguf` failed).
 
 Note: the expert cache is only worthwhile for MoE; on dense models the equivalent is fitting entirely on the GPU. MoE still without it: gpt-oss and GLM-4.5-Air (item 1).
 
@@ -649,7 +649,7 @@ qwen3moe and deepseek2; olmoe stays on OpenCL by default (2–4% slower on Vulka
 
 ### 2.2b Gemma 4 architecture (`gemma4`, done 2026-11-16)
 
-Test model: `modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (26B MoE, 4B active, 30 layers, dim 2816).
+Test model: `models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (26B MoE, 4B active, 30 layers, dim 2816).
 Confirmed by the public reference (transformers `modeling_gemma4.py`, `rope_utils`, and the `gemma4.cpp` of the
 reference engine in `ref/llama-src`). What the architecture has:
 
@@ -703,7 +703,7 @@ reference engine in `ref/llama-src`). What the architecture has:
 
 ### 2.2c gpt-oss architecture (`gpt-oss`, done 2026-11-16)
 
-Test model: `modelos/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, native MXFP4; 24 layers, dim 2880,
+Test model: `models/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, native MXFP4; 24 layers, dim 2880,
 64 heads, kv 8, head 64, 32 experts, 4 active, expert ffn 2880). Confirmed by the public
 reference (`ref/llama-src`: `src/models/openai-moe.cpp`, `llama-graph.cpp`, `llama-vocab.cpp`,
 `llama-chat.cpp`). What the architecture has:
@@ -854,10 +854,10 @@ Details in `optimization-roadmap.md` section 8 and `plan.md`.
 
 ```
 cmd //c "cd /d C:\source\katana && .\build.bat"
-./katana.exe selftest modelos/qwen2.5-1.5b-q4km.gguf                       # OpenCL: 4 lines OK
-KATANA_BACKEND=vulkan ./katana.exe selftest modelos/qwen2.5-1.5b-q4km.gguf  # Vulkan: batch and token by token OK
-KATANA_KV16=0 ./katana.exe selftest modelos/olmoe-1b-7b-q4km.gguf           # MoE (OpenCL)
-KATANA_KV16=0 KATANA_CTX=512 ./katana.exe selftest modelos/qwen3-30b-a3b-q4km.gguf
+./katana.exe selftest models/qwen2.5-1.5b-q4km.gguf                       # OpenCL: 4 lines OK
+KATANA_BACKEND=vulkan ./katana.exe selftest models/qwen2.5-1.5b-q4km.gguf  # Vulkan: batch and token by token OK
+KATANA_KV16=0 ./katana.exe selftest models/olmoe-1b-7b-q4km.gguf           # MoE (OpenCL)
+KATANA_KV16=0 KATANA_CTX=512 ./katana.exe selftest models/qwen3-30b-a3b-q4km.gguf
 ```
 
 **Measure**
@@ -865,7 +865,7 @@ KATANA_KV16=0 KATANA_CTX=512 ./katana.exe selftest modelos/qwen3-30b-a3b-q4km.gg
 ```
 ./katana.exe bench <modelo> 64 64                    # third round; alternate backends
 KATANA_BACKEND=vulkan ./katana.exe vkcheck <modelo> <texto.txt> 40 600   # batch against token by token
-bash compare.sh modelos/qwen3-30b-a3b-q4km.gguf ref/llama 3 200          # against the reference
+bash compare.sh models/qwen3-30b-a3b-q4km.gguf ref/llama 3 200          # against the reference
 ```
 
 **Shaders**: sources in `vk/shaders`, SPIR-V headers generated by `vk/shaders/gen.sh` with
@@ -886,7 +886,7 @@ builds the engine does not need the shader compiler.
 | `tools/vkmv`, `tools/vkatt`, `tools/vkq4k` | kernel test benches (per-token product, attention and helpers, batch), with `NOTAS.md` |
 | `tools/vkprobe`, `tools/vkgemm` | initial prototypes |
 | `ref/` (outside git) | reference engine (CUDA and Vulkan binaries, source code), shader compiler |
-| `modelos/` (outside git) | GGUFs and `.ktn` shards |
+| `models/` (outside git) | GGUFs and `.ktn` shards |
 
 **Project rules**: in `CLAUDE.md`. The main ones: Portuguese; the code does not cite other engines;
 commit and push at each step in the private repository; no publishing; compare speed only with
@@ -914,7 +914,7 @@ Only code change: `_putenv` mapped to `putenv` outside Windows.
   `run_command` asks for confirmation and respects the refusal.
 - Mistral 7B Q5_K_M: loads 25 of 32 layers in the VRAM ("Vulkan: grafo na CPU"), answers correctly,
   generation 6.3 tok/s. That is, the rest falls to the CPU; the real mixed path is step 2.1b.
-- Not tested yet: dense Qwen3 (there is no GGUF in `modelos/`).
+- Not tested yet: dense Qwen3 (there is no GGUF in `models/`).
 
 ### 5.2 Vulkan slowness on Linux: cause and fix
 
@@ -1110,7 +1110,7 @@ number of slots (derived at load); it only stores the settings that already beca
 
 ## 10. gemma4 on the free GPU: expert cache fits the 8 slots (2026-11-16, worktree agent-aaef)
 
-Session with the RTX 3050 4 GB free, only gemma4 (`modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`).
+Session with the RTX 3050 4 GB free, only gemma4 (`models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`).
 
 **The measured problem**: with the GPU free, `gpu_setup` uploads 206 dense products (2570 MB) and little VRAM is left.
 In the default Linux budget (88%) the expert cache computed **7 slots per layer, but gemma4
@@ -1242,7 +1242,7 @@ Q5_K 0.70 / Q4_K 0.58 / Q2_K 0.36 (checked with the test below).
 `.Q8_0`, `-UD-Q4_K_M`) + `-<TYPE>.gguf`, in the input's folder. If it already exists, it does not overwrite: it appends
 `-2`, `-3`, ... and warns.
 
-**Measured** (Llama-3.2-1B-Instruct-F16, downloaded to `modelos/`, dim 2048, dense):
+**Measured** (Llama-3.2-1B-Instruct-F16, downloaded to `models/`, dim 2048, dense):
 | target | size | chat "capital da Franca" | selftest |
 |---|---|---|---|
 | F16 (source) | 2.31 GB | Paris | - |
@@ -1373,7 +1373,7 @@ Q5_1 is still requantized to Q8_0; Q4_1 is still requantized on both):
 
 **To measure with the machine free** (alternating, same hour; long prompt so the batch matters):
 ```
-M=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+M=models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 for i in 1 2 3; do
   KATANA_BACKEND=vulkan KATANA_VK_G4MOE=0 ./katana bench $M 256 64   # MoE do lote na CPU (como antes)
   KATANA_BACKEND=vulkan ./katana bench $M 256 64                     # MoE do lote nas vagas (padrao novo)

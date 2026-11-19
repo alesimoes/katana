@@ -2,14 +2,14 @@
 
 Data source: GGUF header read by a Python script with no libraries (format v3).
 Sizes checked against the Hugging Face API (they match byte for byte). The files live in
-`modelos/` (outside git).
+`models/` (outside git).
 
 ## Files
 
 | File | Size (bytes) | Repository |
 |---|---|---|
-| `modelos/deepseek-v2-lite-chat-q4k.gguf` | 10,364,416,576 (9.65 GiB) | legraphista/DeepSeek-V2-Lite-Chat-IMat-GGUF (`DeepSeek-V2-Lite-Chat.Q4_K.gguf`, with imatrix) |
-| `modelos/moonlight-16b-a3b-instruct-q4km.gguf` | 10,540,747,360 (9.82 GiB) | gabriellarson/Moonlight-16B-A3B-Instruct-GGUF (`...-Q4_K_M.gguf`) |
+| `models/deepseek-v2-lite-chat-q4k.gguf` | 10,364,416,576 (9.65 GiB) | legraphista/DeepSeek-V2-Lite-Chat-IMat-GGUF (`DeepSeek-V2-Lite-Chat.Q4_K.gguf`, with imatrix) |
+| `models/moonlight-16b-a3b-instruct-q4km.gguf` | 10,540,747,360 (9.82 GiB) | gabriellarson/Moonlight-16B-A3B-Instruct-GGUF (`...-Q4_K_M.gguf`) |
 
 Notes:
 - There is no DeepSeek-V2-Lite-Chat Q4_K_M in bartowski/lmstudio. The legraphista `Q4_K` is the
@@ -129,7 +129,7 @@ Regression: `selftest` OK on qwen2.5-1.5b and olmoe (KATANA_KV16=0).
 
 ## Qwen3.6-35B-A3B (`general.architecture = qwen35moe`)
 
-File: `modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (22,134,528,992 bytes, Unsloth, imatrix).
+File: `models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (22,134,528,992 bytes, Unsloth, imatrix).
 40 layers, dim 2048, vocab 248320, 16 heads (kv 2) of 256, MoE 256 experts / 8 active
 (ffn 512) + 1 shared (ffn 512) with a scalar sigmoid gate (`ffn_gate_inp_shexp`).
 Layers with (l+1) % 4 == 0 (3, 7, ..., 39) are full attention with a gate; the other 30 are Gated

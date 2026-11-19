@@ -8,7 +8,7 @@ Own window in Qt Quick; no browser and no HTTP server. The backend (C++17) launc
   Produces `desktop-qt/build/katana-desktop-qt`. To install in place of the old app:
   `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
 - Run: `./katana-desktop-qt` (or the copied binary). Options: `--katana PATH`, `--models FOLDER`.
-  `katana` and `modelos/` are searched next to the binary, in `..` and in the current directory.
+  `katana` and `models/` are searched next to the binary, in `..` and in the current directory.
 - Model: selector below the text box, next to send (the list opens upward). Default Qwen3.6-35B (starts on its own); also usable: Gemma 4.
   The others appear disabled ("ainda nao esta utilizavel no agente", i.e. "not yet usable in the agent").
 - Collapsible left sidebar (on a narrow window it becomes a drawer): "Nova conversa" (New conversation) and the saved conversations
@@ -60,7 +60,7 @@ rest is response text, filtered of tool blocks. Stop = SIGINT to the agent's gro
 Windows, kill and restart). New conversation = `/novo`; switching models = `/sair` and, if it does not exit within 3 s, kill.
 
 Test: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
-(run at the repo root; uses `modelos/qwen2.5-1.5b-q4km.gguf` (fast, covers the interface and the agent protocol; for the final check on the real model use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, slow when cold) and a temporary data folder). It types and
+(run at the repo root; uses `models/qwen2.5-1.5b-q4km.gguf` (fast, covers the interface and the agent protocol; for the final check on the real model use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, slow when cold) and a temporary data folder). It types and
 clicks in the window with real events (QTest), checks the `list_dir` card, sessions, dropdown, delete, stop
 (SIGINT), model switch with a pending summary, and prints PASSOU/FALHOU (PASSED/FAILED). `capturas/` holds images (`12-boasvindas-claro.png` and `12-boasvindas-escuro.png`: the dark one comes from a
 second run with `KATANA_THEME=dark`). It also checks the welcome screen (visible with an empty

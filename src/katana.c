@@ -7,7 +7,7 @@
  *          arquivo mapeado em memoria, sem conversao), tokenizador BPE lido do GGUF.
  *
  * Uso:
- *   katana modelos [pasta]        lista os GGUF numa tabela (data, tamanho, algoritmo, como roda)
+ *   katana models [pasta]         lista os GGUF numa tabela (alias antigo: modelos; padrao: models/, ou modelos/) (data, tamanho, algoritmo, como roda)
   katana info <modelo.gguf>
  *   katana selftest <modelo.gguf>                                    confere a matematica quantizada
  *   katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]      mede a velocidade (ja aquecido)
@@ -18320,7 +18320,10 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return tokenize_cmd(&m, src, ids);
     }
-    if (strcmp(argv[1], "modelos") == 0) return modelos_cmd(argc >= 3 ? argv[2] : "modelos");
+    if (strcmp(argv[1], "models") == 0 || strcmp(argv[1], "modelos") == 0) {
+        struct stat sm;
+        return modelos_cmd(argc >= 3 ? argv[2] : stat("models", &sm) == 0 ? "models" : "modelos");
+    }
     if (argc >= 3 && strcmp(argv[1], "info") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
