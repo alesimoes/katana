@@ -382,23 +382,46 @@ static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_l
     return lg;
 }
 
-/* ================= amostragem (temperatura + top-k) ================= */
+/* ================= amostragem (temperatura + top-k + top-p) =================
+ * g_top_k: quantos candidatos entram no sorteio; g_top_p: fica so o menor grupo de candidatos cuja probabilidade
+ * somada chega a g_top_p (1 = desligado). sample_preset escolhe os dois pela familia do modelo, com os valores
+ * que quem treinou o modelo recomenda. KATANA_TOP_K e KATANA_TOP_P trocam (para medir). */
+static int g_top_k = 40;
+static float g_top_p = 1.0f;
+
+static void sample_preset(const char *arch) {
+    if (strncmp(arch, "gemma", 5) == 0) { g_top_k = 64; g_top_p = 0.95f; }
+    else if (strncmp(arch, "qwen", 4) == 0) { g_top_k = 20; g_top_p = 0.8f; }
+    else { g_top_k = 40; g_top_p = 0.95f; }
+    if (getenv("KATANA_TOP_K")) g_top_k = atoi(getenv("KATANA_TOP_K"));
+    if (getenv("KATANA_TOP_P")) g_top_p = (float)atof(getenv("KATANA_TOP_P"));
+    if (g_top_k < 1) g_top_k = 1;
+    if (g_top_k > TOP_K) g_top_k = TOP_K;
+    if (g_top_p <= 0.0f || g_top_p > 1.0f) g_top_p = 1.0f;
+}
 
 static int sample(const float *logits, int n, float temp) {
     int idx[TOP_K]; float val[TOP_K]; int k = 0;
+    const int TK = g_top_k;
     if (temp <= 0.0f) {
         int best = 0;
         for (int i = 1; i < n; i++) if (logits[i] > logits[best]) best = i;
         return best;
     }
     for (int i = 0; i < n; i++) {   /* mantem os TOP_K maiores, em ordem decrescente */
-        if (k == TOP_K && logits[i] <= val[k - 1]) continue;
-        int j = k < TOP_K ? k++ : k - 1;
+        if (k == TK && logits[i] <= val[k - 1]) continue;
+        int j = k < TK ? k++ : k - 1;
         while (j > 0 && val[j - 1] < logits[i]) { val[j] = val[j - 1]; idx[j] = idx[j - 1]; j--; }
         val[j] = logits[i]; idx[j] = i;
     }
     for (int i = 0; i < k; i++) val[i] /= temp;
     softmax(val, k);
+    if (g_top_p < 1.0f) {       /* nucleo: corta a cauda e renormaliza */
+        float cum = 0.0f; int kk = 0;
+        while (kk < k) { cum += val[kk++]; if (cum >= g_top_p) break; }
+        for (int i = 0; i < kk; i++) val[i] /= cum;
+        k = kk;
+    }
     float r = (float)rand() / ((float)RAND_MAX + 1.0f), acc = 0.0f;
     for (int i = 0; i < k; i++) { acc += val[i]; if (r < acc) return idx[i]; }
     return idx[k - 1];
@@ -1032,7 +1055,7 @@ static int gr_sample(const float *lg, int n, float temp, int eos) {
         val[j] = lg[i]; idx[j] = i;
     }
     int cand[TOP_K]; float cv[TOP_K]; int nc = 0;
-    const int want = temp <= 0.0f ? 1 : TOP_K;
+    const int want = temp <= 0.0f ? 1 : g_top_k;
     /* orcamento acabando: so tokens que fecham as estruturas abertas (para o JSON terminar valido) */
     for (int cl = 0; cl >= 0 && nc == 0; cl--) {
         for (int i = 0; i < k && nc < want; i++) {

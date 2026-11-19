@@ -195,7 +195,7 @@
 #include "vk/shaders/att_mix_kv16.h"
 
 #define MAX_CTX 4096
-#define TOP_K 40
+#define TOP_K 64         /* teto de candidatos guardados; g_top_k diz quantos valem */
 
 static void die(const char *msg) { fprintf(stderr, "Erro: %s\n", msg); exit(1); }
 

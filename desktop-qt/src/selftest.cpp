@@ -1,6 +1,7 @@
 // Selftest de ponta a ponta: sobe o agente com o modelo pequeno, digita e envia pela interface
 // (eventos de teclado e mouse reais na janela QML), confere cartoes de ferramenta, sessoes,
 // dropdown, apagar com confirmacao, parar com SIGINT, e grava capturas PNG da janela.
+#include <QTemporaryDir>
 #include "selftest.h"
 
 #include <QDateTime>
@@ -328,6 +329,30 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         be.injectMarker("MODE normal");
         be.injectMarker("TODO ");
         check(!be.planMode() && be.todoSteps().isEmpty(), "modo plano desligado e lista limpa");
+        // tela de modelos: catalogo e maquina lidos do motor; abre pelo botao; erro de download aparece
+        check(waitFor([&] { return be.catalog().size() >= 5 && !be.machine().value("text").toString().isEmpty(); }, 15000),
+              "catalogo de modelos e dados da maquina lidos do motor");
+        int nrec = 0;
+        for (const QVariant &v : be.catalog()) nrec += v.toMap()["recommended"].toBool();
+        check(nrec == 1, "catalogo: exatamente um modelo recomendado para esta maquina");
+        QQuickItem *store = c.item("modelStore");
+        check(store && !store->isVisible() && be.hasUsableModel(), "tela de modelos fechada quando ja ha modelo");
+        if (store) {
+            store->setProperty("open", true);
+            check(waitFor([&] { return store->isVisible(); }, 2000), "tela de modelos abre");
+            c.grab("12-modelos.png");
+            store->setProperty("open", false);
+        }
+        {   // download que falha (origem inexistente, pasta temporaria): o erro chega na interface e nada fica pendente
+            QTemporaryDir td;
+            qputenv("KATANA_PULL_URL", "file:///nao/existe.gguf");
+            Backend b2(be.katanaPath(), td.path(), td.path());
+            check(!b2.hasUsableModel(), "pasta vazia: nenhum modelo utilizavel (a tela de modelos abre sozinha)");
+            b2.pull("qwen3.5-4b");
+            check(waitFor([&] { return b2.pullId().isEmpty() && !b2.pullError().isEmpty(); }, 30000), "download que falha mostra o erro");
+            qunsetenv("KATANA_PULL_URL");
+            b2.shutdown();
+        }
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());

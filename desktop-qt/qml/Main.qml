@@ -182,6 +182,12 @@ ApplicationWindow {
                     }
                     Item { Layout.fillWidth: true }
                     IconButton {
+                        objectName: "storeButton"
+                        glyph: "download"
+                        tip: "Modelos: baixar e trocar"
+                        onClicked: { backend.refreshCatalog(); store.open = !store.open; }
+                    }
+                    IconButton {
                         objectName: "terminalButton"
                         glyph: "terminal"
                         tip: "Terminal (Ctrl+`)"
@@ -283,6 +289,16 @@ ApplicationWindow {
                     composer.setText(t);
                     if (backend.ready) composer.submit(); else composer.input.forceActiveFocus();
                 }
+            }
+
+            // modelos: abre sozinho quando a maquina ainda nao tem nenhum modelo utilizavel
+            ModelStore {
+                id: store
+                anchors.top: top.bottom
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                z: 8
             }
 
             // esmaece o texto que passa por tras da caixa

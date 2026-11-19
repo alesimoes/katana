@@ -35,6 +35,7 @@ qt_add_qml_module(katana-desktop-qt
         qml/IconButton.qml
         qml/Sidebar.qml
         qml/ModelPicker.qml
+        qml/ModelStore.qml
         qml/MessageView.qml
         qml/AssistantBody.qml
         qml/CodeBlock.qml

@@ -11,6 +11,8 @@
 #include <QClipboard>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QHash>
+#include <QLocale>
 #include <algorithm>
 #ifdef Q_OS_UNIX
 #include <signal.h>
@@ -176,6 +178,7 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     connect(&m_msgs, &MessageModel::modelReset, this, &Backend::thinkingChanged);
     connect(&m_msgs, &MessageModel::dataChanged, this, &Backend::thinkingChanged);
     loadModels();
+    refreshCatalog();
     refreshSessions();
 }
 
@@ -215,6 +218,148 @@ void Backend::loadModels()
     for (const M &m : v)
         m_models.append(m.m);
     emit modelsChanged();
+}
+
+bool Backend::hasUsableModel() const
+{
+    for (const QVariant &v : m_models)
+        if (v.toMap()["usable"].toBool()) return true;
+    return false;
+}
+
+// texto de cada modelo do catalogo na interface (o motor manda uma nota sem acentos, usada so se o id for novo)
+static QString catalogNote(const QString &id, const QString &fallback)
+{
+    static const QHash<QString, QString> t = {
+        {"qwen3.5-4b", "Leve. Para computador com 8 GB de memória, com ou sem placa de vídeo."},
+        {"qwen3.5-9b", "Médio. Pede 16 GB de memória; rápido com placa de vídeo de 8 GB."},
+        {"gemma-4-12b", "Médio. Pede 16 GB de memória; rápido com placa de vídeo de 8 GB."},
+        {"gemma-4-26b", "Grande. Pede 32 GB de memória; usa a placa de vídeo que houver."},
+        {"qwen3.6-35b", "Grande. Pede 32 GB de memória; o melhor com ferramentas e programação."},
+    };
+    return t.value(id, fallback);
+}
+
+static QString gbText(double bytes)
+{
+    return QLocale(QLocale::Portuguese).toString(bytes / 1073741824.0, 'f', 1) + " GB";
+}
+
+void Backend::refreshCatalog()
+{
+    QDir().mkpath(m_modelsDir);
+    auto *h = new QProcess(this);
+    connect(h, &QProcess::finished, this, [this, h] {
+        QVariantMap m;
+        for (const QByteArray &l : h->readAllStandardOutput().split('\n')) {
+            const int t = l.indexOf('\t');
+            if (t > 0) m[QString::fromUtf8(l.left(t))] = QString::fromUtf8(l.mid(t + 1)).trimmed();
+        }
+        h->deleteLater();
+        if (m.isEmpty()) return;
+        const QString gpu = m["gpu"].toString();
+        QString txt = QString::number(qRound(m["ram_gb"].toDouble())) + " GB de memória";
+        if (gpu != "-" && !gpu.isEmpty()) txt += " · " + gpu + " (" + QString::number(qRound(m["vram_gb"].toDouble())) + " GB)";
+        else txt += " · sem placa de vídeo compatível";
+        txt += " · " + QString::number(qRound(m["disk_gb"].toDouble())) + " GB livres em disco";
+        m["text"] = txt;
+        m_machine = m;
+        emit catalogChanged();
+    });
+    h->start(m_katana, {"hw", m_modelsDir});
+    auto *c = new QProcess(this);
+    connect(c, &QProcess::finished, this, [this, c] {
+        QVariantList v;
+        for (const QByteArray &l : c->readAllStandardOutput().split('\n')) {
+            const QList<QByteArray> f = l.split('\t');
+            if (f.size() < 9) continue;
+            const QString id = QString::fromUtf8(f[0]);
+            const double total = f[3].toDouble(), have = f[5].toDouble();
+            v.append(QVariantMap{{"id", id}, {"name", QString::fromUtf8(f[1])}, {"file", QString::fromUtf8(f[2])},
+                                 {"sizeText", gbText(total)}, {"state", QString::fromUtf8(f[4])},
+                                 {"haveFraction", total > 0 ? have / total : 0.0}, {"fit", f[6].toInt()},
+                                 {"recommended", f[7].toInt() == 1}, {"note", catalogNote(id, QString::fromUtf8(f[8]).trimmed())}});
+        }
+        c->deleteLater();
+        m_catalog = v;
+        emit catalogChanged();
+    });
+    c->start(m_katana, {"catalog", m_modelsDir});
+}
+
+void Backend::pull(const QString &id)
+{
+    if (m_pull || id.isEmpty()) return;
+    m_pullId = id;
+    m_pullFrac = 0;
+    m_pullText = "Iniciando o download...";
+    m_pullError.clear();
+    m_pullBuf.clear();
+    emit pullChanged();
+    QDir().mkpath(m_modelsDir);
+    m_pull = new QProcess(this);
+    QProcess *p = m_pull;
+    connect(p, &QProcess::readyReadStandardOutput, this, [this, p] {
+        m_pullBuf += p->readAllStandardOutput();
+        int nl;
+        while ((nl = m_pullBuf.indexOf('\n')) >= 0) {
+            const QByteArray line = m_pullBuf.left(nl);
+            m_pullBuf.remove(0, nl + 1);
+            onPullLine(line);
+        }
+    });
+    connect(p, &QProcess::finished, this, [this, p] {
+        p->deleteLater();
+        if (m_pull != p) return;
+        m_pull = nullptr;
+        if (!m_pullId.isEmpty()) {          // terminou sem DONE nem ERROR: cancelado ou morto
+            if (m_pullError.isEmpty()) m_pullError = "Download interrompido. O que já foi baixado fica guardado: é só continuar.";
+            m_pullId.clear();
+            emit pullChanged();
+        }
+        refreshCatalog();
+    });
+    p->start(m_katana, {"pull", id, m_modelsDir});
+}
+
+void Backend::onPullLine(const QByteArray &line)
+{
+    const QList<QByteArray> f = line.split('\t');
+    if (f.isEmpty()) return;
+    if (f[0] == "PROGRESS" && f.size() >= 4) {
+        const double have = f[1].toDouble(), total = f[2].toDouble(), rate = f[3].toDouble();
+        m_pullFrac = total > 0 ? have / total : 0;
+        QString t = gbText(have) + " de " + gbText(total);
+        if (rate > 0) {
+            t += " · " + QLocale(QLocale::Portuguese).toString(rate / 1048576.0, 'f', 1) + " MB/s";
+            const int left = int((total - have) / rate);
+            t += left >= 120 ? " · faltam " + QString::number((left + 59) / 60) + " min" : " · faltam " + QString::number(left) + " s";
+        }
+        m_pullText = t;
+        emit pullChanged();
+    } else if (f[0] == "VERIFY") {
+        m_pullFrac = 1;
+        m_pullText = "Conferindo o arquivo baixado...";
+        emit pullChanged();
+    } else if (f[0] == "ERROR") {
+        m_pullError = f.size() > 1 ? QString::fromUtf8(f[1]) : QStringLiteral("o download falhou");
+        m_pullId.clear();
+        emit pullChanged();
+    } else if (f[0] == "DONE" && f.size() > 1) {
+        const QString file = QFileInfo(QString::fromUtf8(f[1]).trimmed()).fileName();
+        m_pullId.clear();
+        m_pullText.clear();
+        emit pullChanged();
+        loadModels();
+        if (!m_proc && m_model.isEmpty()) start(file);     // primeiro modelo da maquina: ja abre com ele
+    }
+}
+
+void Backend::cancelPull()
+{
+    if (!m_pull) return;
+    m_pullError = "Download pausado. O que já foi baixado fica guardado: é só continuar.";
+    m_pull->terminate();
 }
 
 void Backend::autoStartDefault()
@@ -431,6 +576,13 @@ void Backend::onFinished(QProcess *p)
 
 void Backend::shutdown()
 {
+    if (m_pull) {
+        QProcess *q = m_pull;
+        m_pull = nullptr;
+        q->disconnect(this);
+        q->terminate();
+        if (!q->waitForFinished(2000)) q->kill();
+    }
     if (m_proc) {
         QProcess *p = m_proc;
         m_proc = nullptr;
