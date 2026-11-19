@@ -2,16 +2,16 @@
 
 Motor de inferência de modelos de linguagem escrito do zero em C (`src/katana.c`). Leia primeiro:
 - `docs/handoff.md`: estado atual, próximos passos em ordem, pendências e como retomar.
-- `docs/comparacoes.md`: todas as comparações medidas (contra o motor de referência e entre versões do katana).
-- `docs/conhecimento.md`: objetivo, o que o motor faz, tudo o que já foi medido, pontos fortes e fracos.
-- `docs/plano.md`: prioridades e critérios de pronto.
-- `docs/roteiro-otimizacoes.md`: técnicas ainda não usadas, com ganho esperado e esforço.
+- `docs/comparisons.md`: todas as comparações medidas (contra o motor de referência e entre versões do katana).
+- `docs/knowledge.md`: objetivo, o que o motor faz, tudo o que já foi medido, pontos fortes e fracos.
+- `docs/plan.md`: prioridades e critérios de pronto.
+- `docs/optimization-roadmap.md`: técnicas ainda não usadas, com ganho esperado e esforço.
 - `desktop-qt/README.md`: katana-desktop, aplicativo nativo Qt6/QML (sem navegador) que conversa com o agente.
 
 ## Regras
 
-- Conversa e documentação em português. Comentários no código em português sem acentos.
-- O código não cita outros motores de inferência; em documentos, "motor de referência".
+- Conversa com o dono em português. Documentação (README, `docs/`, README do desktop) em inglês, por pedido do dono (2026-11-18). Comentários no código em português sem acentos.
+- O código não cita outros motores de inferência; em documentos, "reference engine".
 - Nada proprietário. O motor de inferência roda sem serviços externos; as ferramentas do agente podem
   buscar conhecimento fora do modelo (internet, arquivos da máquina, memória própria), como o dono quer.
 - Repositório privado (github.com/alesimoes/katana): commit e push a cada passo concluído; não

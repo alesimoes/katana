@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>katana: a local LLM inference engine in C</title>
+<meta name="description" content="katana is an LLM inference engine written from scratch in C, with a tool-using agent and a native desktop app. It runs large Mixture-of-Experts models on small hardware, locally.">
+<meta property="og:title" content="katana: a local LLM inference engine in C">
+<meta property="og:description" content="Run large Mixture-of-Experts models on small hardware, privately, with an agent on top.">
+<meta property="og:image" content="og.png">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #fbfaff; --fg: #1b1426; --mut: #655d73; --card: #ffffff; --bd: #e4def0;
+    --ac: #820ad1; --acfg: #ffffff; --code: #f1edf8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #130f1a; --fg: #efeaf7; --mut: #a79cb8; --card: #1b1524; --bd: #30263f;
+      --ac: #b66cf2; --acfg: #1a1022; --code: #231a30;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #130f1a; --fg: #efeaf7; --mut: #a79cb8; --card: #1b1524; --bd: #30263f;
+    --ac: #b66cf2; --acfg: #1a1022; --code: #231a30;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 56px 0 28px; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand img { width: 56px; height: 56px; border-radius: 14px; }
+  h1 { margin: 0; font-size: 2.4rem; letter-spacing: -0.02em; }
+  .lead { font-size: 1.25rem; color: var(--mut); margin: 18px 0 0; max-width: 40em; }
+  h2 { margin: 48px 0 12px; font-size: 1.5rem; letter-spacing: -0.01em; }
+  p { margin: 0 0 14px; max-width: 46em; }
+  a { color: var(--ac); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); margin-top: 18px; }
+  .card { background: var(--card); border: 1px solid var(--bd); border-radius: 14px; padding: 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--mut); font-size: 0.97rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--bd); border-radius: 14px; overflow: hidden; margin: 14px 0; font-size: 0.97rem; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--bd); }
+  th { color: var(--mut); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: 0; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+  pre { background: var(--code); border: 1px solid var(--bd); border-radius: 12px; padding: 14px 16px; overflow-x: auto; font: 0.9rem/1.5 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  code { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; font-size: 0.92em; background: var(--code); padding: 1px 5px; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  .note { color: var(--mut); font-size: 0.92rem; }
+  .callout { border-left: 3px solid var(--ac); padding: 4px 16px; margin: 18px 0; color: var(--mut); }
+  footer { margin: 64px 0 40px; padding-top: 20px; border-top: 1px solid var(--bd); color: var(--mut); font-size: 0.9rem; }
+  @media (max-width: 560px) { h1 { font-size: 1.9rem; } header { padding-top: 36px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">
+    <img src="icon.png" alt="katana logo" width="56" height="56">
+    <h1>katana</h1>
+  </div>
+  <p class="lead">A local LLM inference engine written from scratch in C, with a tool-using agent and a native desktop app on top.</p>
+</header>
+
+<main>
+<h2>What it is</h2>
+<p>katana is an inference engine: it reads language models in the GGUF format and runs them on your own machine, on the CPU, on the GPU (Vulkan or OpenCL, loaded from the driver at run time, no SDK needed), or on both at once. The engine is a single C source file with nothing linked beyond the C runtime, and it never calls an external service.</p>
+<p>On top of the engine sit two more layers: an <strong>agent</strong> that can use tools (files, shell, terminals, git, web search, persistent memory, MCP servers), and a <strong>desktop app</strong> (Qt 6, native window, no browser) that talks to the agent.</p>
+
+<h2>The problem it solves</h2>
+<p>The most interesting open models are bigger than a consumer GPU. A 35-billion-parameter model needs about 20 GB at 4 bits, and a laptop GPU has 4 to 8 GB of VRAM. The usual answers are to buy a bigger card, to offload layers and accept a crawl, or to use someone else's server.</p>
+<p>katana targets the middle ground: run large <strong>Mixture-of-Experts</strong> (MoE) models fast on small hardware, privately, and put a useful agent on top.</p>
+
+<h2>How it works</h2>
+<div class="grid">
+  <div class="card"><h3>VRAM as an expert cache</h3><p>A MoE model uses only a few experts per token (for example 8 of 128 per layer). Attention stays in VRAM, hot experts take VRAM slots, cold experts run on the CPU straight from the memory-mapped file, and a background loader promotes experts that become hot. A token never waits for the disk.</p></div>
+  <div class="card"><h3>Long context, small card</h3><p>The KV cache is sized per architecture, stored in fp16, and can be saved to disk, so an agent session resumes without recomputing its prompt.</p></div>
+  <div class="card"><h3>Readable and checkable</h3><p>One C file you can read and change. A <code>selftest</code> command checks the GPU and CPU matrix products and the whole CPU path against exact float math.</p></div>
+  <div class="card"><h3>Valid JSON on demand</h3><p>A grammar-constrained sampler guarantees well-formed JSON (or a JSON Schema), and restricts the agent's tool calls to real tools and their parameters.</p></div>
+</div>
+
+<h2>The agent</h2>
+<p>The agent gives the model tools: shell commands and persistent terminal sessions, reading, searching and editing files, git, a built-in web meta-search (no API key) and page fetching, package installs, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results are handed to the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
+<div class="callout">By default the agent acts on your machine without asking for confirmation. Set <code>KATANA_CONFIRM=1</code> to have it ask first.</div>
+
+<h2>Measured</h2>
+<p>On a laptop with an RTX 3050 (4 GB), an i7-11800H and 64 GB of RAM, on Linux with Vulkan:</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Model</th><th>On disk</th><th>Generation</th></tr></thead>
+  <tbody>
+    <tr><td>Gemma 4 26B-A4B (Q4_K_M)</td><td class="num">~16 GB</td><td class="num">23.7 tok/s</td></tr>
+    <tr><td>Qwen3.6-35B-A3B (Q4_K_M)</td><td class="num">~21 GB</td><td class="num">24.9 tok/s</td></tr>
+    <tr><td>Qwen3-30B-A3B (Q4_K_M)</td><td class="num">18.6 GB</td><td class="num">12.5 to 14.9 tok/s</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note">Alternating runs on the same machine, because the machine drifts over time. Your numbers will differ with your hardware.</p>
+
+<h2>Try it</h2>
+<pre><code>./build.sh                            # produces ./katana (Linux, gcc)
+./katana info  model.gguf             # architecture, tensors, context
+./katana chat  model.gguf             # interactive chat
+./katana agent model.gguf             # chat with tools
+desktop-qt/build.sh                   # the desktop app (Qt 6)</code></pre>
+
+<h2>What it is not</h2>
+<p>katana is a personal, from-scratch engine, developed and tested on a single Linux machine. It supports the model architectures it implements (Qwen3.6, Gemma 4, Qwen3 MoE, OLMoE, dense Llama and Qwen, DeepSeek-V2, GLM-4 and gpt-oss), not every GGUF file. It is not a drop-in replacement for a mature, widely used inference stack, and the Windows build is not tested here.</p>
+</main>
+
+<footer>katana. Local inference, written in C.</footer>
+</div>
+</body>
+</html>

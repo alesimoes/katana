@@ -4751,7 +4751,7 @@ static int vk_mm_raw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf
 /* produto preciso: peso decodificado em duas partes fp16 (alta + resto*2048) e, com xs, a ativacao em fp32 [cols][B]
    tambem em alta + resto; tres produtos sobre o mesmo ladrilho (o resto x resto fica de fora), erro ~1e-6 relativo
    contra ~1e-4 do produto fp16. O qwen35moe em lote usa so este: o roteamento top-8 tem quase empates (margem de
-   1e-5) que o erro do fp16 vira, e um especialista trocado leva o token a ~5% de erro (docs/modelos-novos.md) */
+   1e-5) que o erro do fp16 vira, e um especialista trocado leva o token a ~5% de erro (docs/new-models.md) */
 static int vk_mm_pw(uint32_t kind, KvkBuf wb, uint32_t woff, size_t wpr, KvkBuf x, KvkBuf y, int rows, int cols, int B, int add, int xs);
 static int vk_mm_p(const Mat *W, KvkBuf x, KvkBuf y, int rows, int cols, int B, int add, int xs) {
     return vk_mm_pw(gpu_kind(W), *(const KvkBuf *)W->gbuf, 0, gpu_wpr(W, cols), x, y, rows, cols, B, add, xs);
