@@ -4,6 +4,55 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19)
+
+Goal set by the owner: a local AI tool a person downloads and runs. Decision of the owner on the same day: the
+minimum requirement is 24 GB of RAM and the catalog holds only the two mixture-of-experts models; small dense
+models are out (they were downloaded and screened, see below).
+
+- *Engine* (`src/app/catalog.c`): `katana hw [dir]` prints RAM, available RAM, cores, GPU, VRAM and free disk of
+  the models folder; `katana catalog [dir]` prints one line per catalog model (id, name, file, bytes, state
+  installed/partial/absent, bytes on disk, fit 2/1/0, recommended, note), tab separated; `katana pull <id> [dir]`
+  downloads with curl (resumes a `.part` file), prints `PROGRESS bytes total rate` each second, checks size and
+  sha256 (`VERIFY`), renames and prints `DONE path`, or `ERROR reason`. SIGTERM stops curl and keeps the partial
+  file. The catalog is fixed in the engine: each item is pinned to an exact repository revision and file hash.
+  `katana sha256 <file>` prints a file hash. Default models folder: `KATANA_MODELS`, `./models` when it exists,
+  else `~/.katana/models`. Fit rule (estimate, only this 64 GB machine was measured): the file plus 2 GB must fit
+  in RAM; "runs well" needs 1.4 times the file size in RAM.
+- *Measured*: a real pull of a 2.7 GB file end to end (hash checked), and an interrupted pull (killed at 1.1 GB)
+  resumed and completed.
+- *Desktop*: `ModelStore.qml` (button in the top bar; opens by itself when the folder has no usable model) shows
+  the machine, the catalog with the recommended model, download with progress, pause and resume; after the first
+  download the app starts that model. Backend: `catalog`, `machine`, `hasUsableModel`, `pullId`, `pullFraction`,
+  `pullText`, `pullError`, `refreshCatalog()`, `pull(id)`, `cancelPull()`. An installed app (no `models` folder
+  beside it) uses `~/.katana/models`; `katana.cfg` goes to `~/.katana` when it is not in the current folder.
+  Selftest: 119 checks, 0 failures (catalog read from the engine, one recommended model, screen opens, a failing
+  download shows its error). The real download was exercised from the command line, not by clicking.
+- *First start*: the system prompt preparation now reports progress (`PREP total done`, a percentage in the
+  desktop). Measured in a fresh folder with the cache of other folders present: Qwen3.6 12 s (484 of 2050 tokens
+  computed), then 2.6 s; Gemma 4 43 to 72 s (1280 to 1801 of 1801 tokens computed), then 3.5 s. Gemma recomputes
+  more because its tool declarations come after the per-folder block. `KATANA_G4_ENVLAST=1` moves the per-folder
+  block after the declarations (measurement switch; the default prompt is byte-identical to before).
+- *Sampling*: top-p added, with a preset per model family inside the engine (`sample_preset`: Qwen top-k 20 and
+  top-p 0.8, Gemma top-k 64 and top-p 0.95; `KATANA_TOP_K`, `KATANA_TOP_P` override for measuring). The effect on
+  the benchmark was not measured separately.
+- *Dense qwen35 in hybrid mode* (`src/engine/vk_qwen35d.c`): prompt in batches with the matrix products on the
+  GPU (the layers stay on the CPU). Checked against exact CPU math on Qwen3.5 4B and 9B (largest logit difference
+  0.0002 and 0.0012, same argmax). Measured alternately with the machine loaded by another build, so the numbers
+  are rough: prompt 28 to 55 tok/s on the 4B, 14 to 31 tok/s on the 9B. First agent start measured before the
+  change: 91 s (4B) and 334 s (9B). `katana selftest` no longer crashes on dense qwen35 (it called the generic
+  dense batch, which does not apply).
+- *Small models screened and dropped*: Qwen3.5 4B and 9B, Gemma 4 E4B and 12B load and run. Generation on this
+  machine: 27, 12, 22 and 5.6 tok/s. Only one benchmark task was run (the 9B solved `bank` in 787 s against 62 s
+  for Qwen3.6) before the owner decided to raise the minimum to 24 GB. Their quality with tools is unmeasured.
+- *Packaging*: `desktop-qt/packaging/appimage.sh` builds an AppImage with linuxdeploy and its Qt plugin;
+  `.github/workflows/pacotes.yml` (manual trigger only) runs it on Ubuntu 22.04 so the result works on older
+  systems (this machine has glibc 2.43). **Neither was executed**: running the script here was blocked by the
+  permission system, and the workflow was not triggered. Windows: the engine builds with `build.bat`, but the Qt
+  app uses Linux-only pieces (pty terminal, signals), so there is no Windows installer.
+- *Tool tests*: `tools/testar_ferramentas.sh` passes again (98 of 98); the 5 failures were expectations from
+  before the owner's decisions (tools work in any folder, sudo only on request).
+
 ## 0n. Source split and the agent layers above the model (2026-11-19)
 
 **Source layout.** `src/katana.c` is still the single compilation unit, but it now only includes the parts:
