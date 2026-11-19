@@ -1274,6 +1274,7 @@ static void load_model(Model *m, const char *path) {
     else if (strcmp(c->arch, "qwen3moe") == 0) { c->rope_neox = 1; c->qk_norm = 2; c->moe_norm = 1; }
     else if (strcmp(c->arch, "deepseek2") == 0) c->rope_neox = 0;
     else if (strcmp(c->arch, "qwen35moe") == 0) { c->rope_neox = 1; c->qk_norm = 2; c->moe_norm = 1; c->attn_gated = 1; c->think = 1; }
+    else if (strcmp(c->arch, "qwen35") == 0) { c->rope_neox = 1; c->qk_norm = 2; c->attn_gated = 1; c->think = 1; }   /* Qwen3.8 denso: DeltaNet + atencao com portao + FFN denso */
     else if (strcmp(c->arch, "gemma4") == 0) {
         c->g4 = 1; c->rope_neox = 1; c->moe_norm = 1; g_gelu = 1;
         c->emb_scale = sqrtf((float)c->dim);
@@ -7910,6 +7911,15 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
     for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
     if (dbg_on && cpu_exact && pos < 64) { memcpy(dbg_x + ((size_t)pos * c->n_layers + l) * d, m->x, d * 4); dbg_pos = pos; }
     rmsnorm(m->xb, m->x, L->ffn_norm, d, c->eps);
+    if (!c->n_expert) {        /* qwen35 denso: feed-forward SwiGLU comum */
+        const int H = c->hidden;
+        matvec(m->hb, &L->w_gate, m->xb, H, d);
+        matvec(m->hb2, &L->w_up, m->xb, H, d);
+        for (int i = 0; i < H; i++) { const float g = m->hb[i]; m->hb[i] = g / (1.0f + expf(-g)) * m->hb2[i]; }
+        matvec(m->xb2, &L->w_down, m->hb, d, H);
+        for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
+        return;
+    }
     ffn_moe(m, L, l, o);       /* o: saida do feed-forward (m->xb2 e rascunho do compartilhado) */
     for (int i = 0; i < d; i++) m->x[i] += o[i];
 }
@@ -9604,7 +9614,7 @@ static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_l
         memcpy(m->x, X + (size_t)last * d, d * sizeof(float));
         return want_logits ? cpu_head(m) : NULL;
     }
-    if (m->cfg.ssm_inner && n > 1 && qn_batch(m)) {
+    if (m->cfg.ssm_inner && m->cfg.n_expert && n > 1 && qn_batch(m)) {
         const int d = m->cfg.dim;
         static float *X;
         if (!X) X = xalloc((size_t)GPU_BMAX * d, sizeof(float));
@@ -18046,7 +18056,7 @@ static int gguf_meta(const char *path, char *arch, int *ft, int *n_layers, int *
 
 /* arquiteturas que o katana suporta (carrega e roda) */
 static int arch_suportada(const char *a) {
-    static const char *ok[] = { "llama", "qwen2", "qwen3", "qwen3moe", "qwen35moe",
+    static const char *ok[] = { "llama", "qwen2", "qwen3", "qwen3moe", "qwen35moe", "qwen35",
                                 "deepseek2", "olmoe", "gemma4", "gpt-oss", "glm4", "glm4moe" };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) if (!strcmp(a, ok[i])) return 1;
     return 0;
