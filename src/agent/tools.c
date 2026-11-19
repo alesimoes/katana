@@ -439,6 +439,14 @@ static void tool_search_files(const char *pattern, const char *root, int regex, 
         const int rel = root[0] != '/' && root[0] != '\\' && root[0] != '~' && !strchr(root, ':');
         sf_walk(&s, rel ? root : res, 0);       /* dentro da pasta atual, mostra caminhos relativos */
     }
+#ifndef _WIN32
+    if (s.hits == 0 && !regex && (strchr(pattern, '|') || strstr(pattern, ".*") || strchr(pattern, '\\'))) {     /* parece expressao regular: tenta como uma */
+        tool_search_files(pattern, root, 1, out, cap);
+        if (strncmp(out, "no matches", 10) != 0 && strncmp(out, "error:", 6) != 0) return;
+        snprintf(out, cap, "no matches in %d text files under %s (tried as plain text and as a regular expression)", s.files, res);
+        return;
+    }
+#endif
     if (s.hits == 0) snprintf(out, cap, "no matches in %d text files under %s", s.files, res);
     else if (s.hits >= SF_MAXHITS) snprintf(out + s.n, cap - s.n, "[result limit reached; refine the pattern or the path]\n");
 #ifndef _WIN32

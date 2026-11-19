@@ -44,6 +44,7 @@
 #include "agent/prefix_cache.c"        /* cache de prefixo persistente e aquecimento */
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
 #include "agent/context.c"             /* compactacao do contexto */
+#include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
 #include "app/server.c"                /* servidor HTTP local */
 #include "app/main.c"                  /* toktest, subcomandos e main */

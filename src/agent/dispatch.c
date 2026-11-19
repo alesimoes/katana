@@ -14,6 +14,7 @@ static void ui_toolout(const char *name, const char *res) {
     }
     putchar('\n'); fflush(stdout);
 }
+static void tool_delegate(const char *js, const char *end, char *out, size_t cap);
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap) {
     static char arg[8192], content[65536];
     out[0] = 0;
@@ -140,6 +141,8 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
     } else if (strcmp(name, "find_file") == 0) {
         tool_find_file(js, end, out, cap);
 #endif
+    } else if (strcmp(name, "delegate") == 0) {
+        tool_delegate(js, end, out, cap);
     } else if (strcmp(name, "job") == 0) {
         tool_job(js, end, out, cap);
     } else if (strcmp(name, "todo") == 0) {

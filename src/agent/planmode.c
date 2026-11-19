@@ -48,7 +48,7 @@ static int plan_cmd_ok(const char *cmd) {
 /* 1 se a ferramenta pode rodar no modo plano */
 static int plan_allows(const char *name, const char *js, const char *end) {
     static const char *const ok[] = {"read_file", "list_dir", "find_file", "search_files", "glob", "web_search", "web_fetch", "recall", "howto", "read_log",
-        "read_document", "ask_user", "todo", "job", "terminal_screen", NULL};
+        "read_document", "ask_user", "todo", "job", "terminal_screen", "delegate", NULL};
     static char arg[8192];
     if (plan_word_in(name, strlen(name), ok)) return 1;
     if (strcmp(name, "run_command") == 0) return json_str(js, end, "command", arg, sizeof arg) && !(json_has(js, end, "background") && json_bool(js, end, "background")) && plan_cmd_ok(arg);
