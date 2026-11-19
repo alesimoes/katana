@@ -1,7 +1,7 @@
 # katana
 
 **A local LLM inference engine written from scratch in C, with an agent on top.**
-One source file (`src/katana.c`), no framework, nothing linked beyond the C runtime: it reads GGUF models, runs them on
+One compilation unit (`src/katana.c`, which includes the parts in `src/engine/`, `src/agent/` and `src/app/`), no framework, nothing linked beyond the C runtime: it reads GGUF models, runs them on
 the CPU, on the GPU (Vulkan or OpenCL, loaded from the driver at run time, no SDK needed), or on both at
 once, and it ships with a tool-using agent and a native desktop app.
 
@@ -243,7 +243,10 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 
 ## Repository map
 
-- `src/katana.c`: the whole engine (CPU, Vulkan, OpenCL, tokenizers, GGUF, MoE cache, agent, MCP client, server).
+- `src/katana.c`: the single compilation unit; it only includes the parts below.
+- `src/engine/`: inference (GGUF, tokenizers, CPU kernels, Vulkan, OpenCL, MoE cache, DeltaNet, sampling).
+- `src/agent/`: the layers on top of the model (tools, system prompt, terminal, MCP client, context compaction, sessions).
+- `src/app/`: console, HTTP server, subcommands and `main`.
 - `vk/`: single-header Vulkan compute layer (`kvk.h`) and compiled shaders; `tools/`: kernel benches
   (`vkq4k`, `vkmv`, `vkatt`, `vkdelta`...), tokenizer reference tests, tool tests (`tools/testar_ferramentas.sh`).
 - `desktop-qt/`: the desktop app. `docs/`: project documentation (below). `compare.sh`: alternating A/B benchmark.

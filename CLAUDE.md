@@ -1,6 +1,6 @@
 # katana
 
-Motor de inferência de modelos de linguagem escrito do zero em C (`src/katana.c`). Leia primeiro:
+Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c` é a unidade de compilação única e só inclui as partes: `src/engine/` (inferência), `src/agent/` (camadas em cima do modelo: ferramentas, prompt, terminal, contexto, sessões) e `src/app/` (console, servidor, main). Leia primeiro:
 - `docs/handoff.md`: estado atual, próximos passos em ordem, pendências e como retomar.
 - `docs/comparisons.md`: todas as comparações medidas (contra o motor de referência e entre versões do katana).
 - `docs/knowledge.md`: objetivo, o que o motor faz, tudo o que já foi medido, pontos fortes e fracos.
@@ -32,7 +32,7 @@ Motor de inferência de modelos de linguagem escrito do zero em C (`src/katana.c
 ## Prática
 
 - Compilar: `cmd //c "cd /d C:\source\katana && .\build.bat"`.
-- Editar `src/katana.c` com scripts Python de substituição gravados em arquivo (com `assert` de
+- Editar os arquivos de `src/` com scripts Python de substituição gravados em arquivo (com `assert` de
   contagem); comandos embutidos no shell estragam `\n` e aspas.
 - Shaders Vulkan: `ref/vk/glslang/bin/glslang.exe`; cabeçalhos em `ref/vk/include`.
 - `models/` e `ref/` ficam fora do git.
