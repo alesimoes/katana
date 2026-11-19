@@ -61,18 +61,19 @@ void MessageModel::appendToLast(const QString &text)
     emit dataChanged(i, i, {TextRole});
 }
 
-void MessageModel::setLastToolOut(const QString &out)
+void MessageModel::setLastToolOut(const QString &out, bool append)
 {
-    for (int k = m_items.size() - 1; k >= 0; k--) {
-        if (m_items[k].kind != "tool")
-            break;
-        if (m_items[k].out.isEmpty()) {
-            m_items[k].out = out;
-            const QModelIndex i = index(k);
-            emit dataChanged(i, i, {OutRole});
-            return;
-        }
+    if (m_items.isEmpty() || m_items.last().kind != "tool")
+        return;
+    const int k = m_items.size() - 1;
+    if (append) {
+        if (m_items[k].out.size() < (1 << 20))
+            m_items[k].out += out;
+    } else {
+        m_items[k].out = out;
     }
+    const QModelIndex i = index(k);
+    emit dataChanged(i, i, {OutRole});
 }
 
 void MessageModel::setAll(const QList<Item> &items)
@@ -779,6 +780,13 @@ void Backend::handleMarker(const QByteArray &line)
         const int tab = args.indexOf('\t');
         const QString n = tab < 0 ? args : args.left(tab);
         toolCard(n, tab < 0 ? QString() : cleanArgs(args.mid(tab + 1)));
+    } else if (name == "TOOLLIVE") {  // TOOLLIVE <pedaco com \\n escapado>: saida parcial do comando em andamento
+        QString o = args, r;
+        for (int i = 0; i < o.size(); i++) {
+            if (o[i] == '\\' && i + 1 < o.size()) { i++; r += o[i] == 'n' ? QChar('\n') : o[i]; }
+            else r += o[i];
+        }
+        m_msgs.setLastToolOut(r, true);
     } else if (name == "TOOLOUT") {  // TOOLOUT <nome>\t<saida com \\n escapado>: resultado da ferramenta no cartao
         const int tab = args.indexOf('\t');
         if (tab >= 0) {
@@ -787,7 +795,7 @@ void Backend::handleMarker(const QByteArray &line)
                 if (o[i] == '\\' && i + 1 < o.size()) { i++; r += o[i] == 'n' ? QChar('\n') : o[i]; }
                 else r += o[i];
             }
-            m_msgs.setLastToolOut(r.isEmpty() ? QStringLiteral("(sem saida)") : r);
+            m_msgs.setLastToolOut(r.isEmpty() ? QStringLiteral("(sem saida)") : r, false);
         }
     } else if (name == "TOKENS") {  // TOKENS <pos> <ctx>
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);

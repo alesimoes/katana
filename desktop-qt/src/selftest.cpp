@@ -256,7 +256,10 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(waitFor([&] { return be.answering(); }, 3000) || be.ready(), "estado respondendo");
     QTest::qWait(300);
     if (be.answering()) {
-        check(c.item("sendButton")->property("tip").toString() == "Parar", "botao vira Parar durante a resposta");
+        check(c.item("sendButton")->property("tip").toString() == "Parar (Esc)", "botao vira Parar durante a resposta");
+        check(be.enqueue("mensagem na fila") && be.queue().size() == 1, "mensagem enfileirada durante a resposta");
+        be.removeQueued(0);
+        check(be.queue().isEmpty(), "item removido da fila");
         check(be.thinking() || be.messages()->lastKind() == "assistant", "pontinhos enquanto aguarda o 1o token");
     }
     check(waitFor([&] { return be.ready(); }, 300000), "turno terminou (READY)");
@@ -420,7 +423,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(waitFor([&] { return be.answering() && be.messages()->lastKind() == "assistant"; }, 60000), "resposta em andamento");
     QTest::qWait(1500);
     QQuickItem *sb = c.item("sendButton");
-    check(sb->property("tip").toString() == "Parar" && sb->isEnabled(), "botao enviar virou Parar");
+    check(sb->property("tip").toString() == "Parar (Esc)" && sb->isEnabled(), "botao enviar virou Parar");
     c.click(sb);
     check(waitFor([&] { return be.ready(); }, 40000), "agente voltou a ficar pronto apos Parar");
     check(be.running(), "agente continua vivo apos SIGINT");

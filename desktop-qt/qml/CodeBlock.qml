@@ -87,6 +87,8 @@ Rectangle {
             font.pixelSize: 13
             Accessible.role: Accessible.StaticText
             Accessible.name: "Codigo"
+            TextMenu { id: cmenu; target: ed }
+            TapHandler { acceptedButtons: Qt.RightButton; onTapped: cmenu.popup() }
         }
     }
 }
