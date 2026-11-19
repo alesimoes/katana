@@ -57,6 +57,7 @@ Item {
             required property string kind
             required property string text
             required property string name
+            required property string out
             required property int index
             // sequencia de ferramentas seguidas vira um unico grupo (so o primeiro item desenha)
             readonly property bool groupHead: kind === "tool" && (index === 0 || backend.messages.get(index - 1).kind !== "tool")
@@ -67,7 +68,7 @@ Item {
                 for (var i = index; i < lv.count; i++) {
                     var m = backend.messages.get(i);
                     if (m.kind !== "tool") break;
-                    r.push({name: m.name, args: m.text});
+                    r.push({name: m.name, args: m.text, out: m.out});
                 }
                 return r;
             }

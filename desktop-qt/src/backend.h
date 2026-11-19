@@ -16,9 +16,9 @@ class MessageModel : public QAbstractListModel
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
 public:
-    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole };
+    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole };
     struct Item {
-        QString kind, text, name;
+        QString kind, text, name, out;
     };
     using QAbstractListModel::QAbstractListModel;
     int rowCount(const QModelIndex &p = {}) const override { return p.isValid() ? 0 : m_items.size(); }
@@ -29,6 +29,7 @@ public:
     Q_INVOKABLE QVariantMap get(int i) const;
     void append(const QString &kind, const QString &text, const QString &name = {});
     void appendToLast(const QString &text);
+    void setLastToolOut(const QString &out);
     void setAll(const QList<Item> &items);
     void clear() { setAll({}); }
 signals:
@@ -73,6 +74,8 @@ class Backend : public QObject
     Q_PROPERTY(int ctxTotal READ ctxTotal NOTIFY textsChanged)
     Q_PROPERTY(QVariantList sessions READ sessions NOTIFY sessionsChanged)
     Q_PROPERTY(QString currentSessionId READ currentSessionId NOTIFY sessionsChanged)
+    Q_PROPERTY(QStringList queue READ queue NOTIFY queueChanged)
+    Q_PROPERTY(bool queuePaused READ queuePaused NOTIFY queueChanged)
     Q_PROPERTY(bool hasPendingContext READ hasPendingContext NOTIFY stateChanged)
     Q_PROPERTY(MessageModel *messages READ messages CONSTANT)
     Q_PROPERTY(QString themeOverride READ themeOverride CONSTANT)
@@ -107,6 +110,11 @@ public:
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
     Q_INVOKABLE void stop();
+    Q_INVOKABLE bool enqueue(const QString &text);  // mensagem para depois: so enquanto o agente responde
+    Q_INVOKABLE void removeQueued(int i);
+    Q_INVOKABLE void resumeQueue();                 // depois de Parar a fila fica pausada
+    QStringList queue() const { return m_queue; }
+    bool queuePaused() const { return m_paused; }
     Q_INVOKABLE void sendPassword(const QString &pw);  // resposta ao pedido de senha do sudo (vazia = cancelar)
     Q_INVOKABLE bool newChat();
     Q_INVOKABLE bool openSession(const QString &id);
@@ -136,6 +144,7 @@ signals:
     void textsChanged();
     void sessionsChanged();
     void passwordRequested();
+    void queueChanged();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -190,4 +199,7 @@ private:
     QString ksessPath(const QString &id) const;
     void requestResume(const QString &path);
     QVariantList m_sessions;
+    QStringList m_queue;
+    bool m_paused = false;
+    void drainQueue();
 };
