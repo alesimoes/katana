@@ -12,6 +12,10 @@ static unsigned long g_wn_clock;
 
 static int json_int(const char *js, const char *end, const char *key, int def);
 static int json_bool(const char *js, const char *end, const char *key);
+static int shq(const char *s, char *o, size_t cap);
+#ifndef _WIN32
+static char *run_collect(const char *cmd, int tmo, size_t maxb, int *rc);
+#endif
 
 /* primeira ocorrencia de `needle` em [h, h+n) sem diferenciar maiusculas (ASCII); NULL se nao houver */
 static const char *wn_cifind(const char *h, size_t n, const char *needle) {
@@ -114,13 +118,40 @@ static WnPage *wn_get(const char *url) {
     for (int i = 0; i < WN_PAGES; i++) if (g_wn[i].txt && strcmp(g_wn[i].url, url) == 0) { g_wn[i].use = ++g_wn_clock; return &g_wn[i]; }
     return NULL;
 }
+static int g_wn_render;     /* 1: web_fetch pediu render=true (a pagina depois de o JavaScript rodar) */
+/* a pagina como um navegador a ve: Chrome ou Chromium instalado, sem janela, perfil temporario, devolve o DOM depois
+   de o JavaScript rodar. NULL sem navegador ou em falha. Nao faz login nem clica: so carrega e le. */
+static char *wn_render(const char *url, size_t max, long *n) {
+#ifndef _WIN32
+    static char q[2200], cmd[3400];
+    int rc = 0;
+    if (!shq(url, q, sizeof q)) return NULL;
+    snprintf(cmd, sizeof cmd, "for b in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge brave-browser; do "
+             "command -v $b >/dev/null 2>&1 || continue; d=$(mktemp -d) || exit 1; "
+             "timeout 40 $b --headless=new --disable-gpu --no-first-run --no-default-browser-check --disable-extensions --user-data-dir=\"$d\" "
+             "--virtual-time-budget=8000 --dump-dom %s 2>/dev/null; r=$?; rm -rf \"$d\"; exit $r; done; exit 127", q);
+    fprintf(stderr, "%s[web: abrindo a pagina num navegador sem janela para rodar o JavaScript...]%s\n", CE(C_DIM), CE(C_RESET));
+    char *o = run_collect(cmd, 50, max, &rc);
+    if (!o) return NULL;
+    if (rc != 0 || strlen(o) < 200) { free(o); return NULL; }
+    *n = (long)strlen(o);
+    return o;
+#else
+    (void)url; (void)max; (void)n; return NULL;
+#endif
+}
 /* baixa a pagina, converte e guarda; em erro escreve a mensagem em err e devolve NULL */
 static WnPage *wn_load(const char *url, char *err, size_t ecap) {
     const size_t RAW = 2500000;
     char *raw = (char *)malloc(RAW + 1), *txt = (char *)malloc(RAW + 600), *lk = (char *)malloc(WN_LINKS_BYTES);
     int rc;
     if (!raw || !txt || !lk) { free(raw); free(txt); free(lk); snprintf(err, ecap, "error: out of memory"); return NULL; }
-    const long n = curl_get(url, raw, RAW, &rc);
+    long n = curl_get(url, raw, RAW, &rc);
+    int rendered = 0;
+    if (n != -2 && (n <= 0 || g_wn_render)) {     /* pedido explicito, ou o curl nao trouxe nada (bloqueio a clientes sem navegador) */
+        long rn = 0; char *r = wn_render(url, RAW, &rn);
+        if (r) { memcpy(raw, r, (size_t)rn); raw[rn] = 0; n = rn; rendered = 1; free(r); }
+    }
     if (n <= 0) {
         if (n == -2) snprintf(err, ecap, "error: invalid URL (only http and https; no control characters)");
         else if (n < 0) snprintf(err, ecap, "error: cannot run curl");
@@ -134,6 +165,7 @@ static WnPage *wn_load(const char *url, char *err, size_t ecap) {
     size_t tn = 0, ln = 0;
     int nl = 0;
     const size_t probe = (size_t)n < 2048 ? (size_t)n : 2048;
+again:
     if (memchr(raw, '<', probe)) {
         const char *s, *e, *t0 = wn_tag(raw, raw + n, "<title"), *t1 = t0 ? wn_cifind(t0, (size_t)(raw + n - t0), "</title") : NULL;
         char title[300] = "";
@@ -144,11 +176,17 @@ static WnPage *wn_load(const char *url, char *err, size_t ecap) {
         if (tn < 400) { hd = 0; tn = html_to_text(raw, (size_t)n, txt); }  /* sem conteudo principal marcado (ou vazio): a pagina inteira, que ja traz o titulo */
         g_html_fold = 0;
         tn += hd;
+        if (!rendered && tn < 500 && wn_cifind(raw, (size_t)n, "<script")) {     /* quase sem texto e com scripts: a pagina se monta no navegador */
+            long rn = 0; char *r = wn_render(url, RAW, &rn);
+            rendered = 1;
+            if (r) { memcpy(raw, r, (size_t)rn); raw[rn] = 0; n = rn; free(r); tn = 0; goto again; }
+        }
         nl = wn_links(raw, (size_t)n, url, lk, WN_LINKS_BYTES, &ln);
     } else { memcpy(txt, raw, (size_t)n); txt[n] = 0; tn = (size_t)n; lk[0] = 0; }
     free(raw);
     int v = 0;
     for (int i = 0; i < WN_PAGES; i++) { if (!g_wn[i].txt) { v = i; break; } if (g_wn[i].use < g_wn[v].use) v = i; }
+    for (int i = 0; i < WN_PAGES; i++) if (g_wn[i].txt && strcmp(g_wn[i].url, url) == 0) v = i;      /* recarga: troca a copia guardada */
     free(g_wn[v].txt); free(g_wn[v].links);
     snprintf(g_wn[v].url, sizeof g_wn[v].url, "%s", url);
     g_wn[v].txt = txt; g_wn[v].tn = tn; g_wn[v].links = lk; g_wn[v].ln = ln; g_wn[v].nlinks = nl; g_wn[v].use = ++g_wn_clock;
@@ -161,8 +199,11 @@ static void tool_web_fetch(const char *js, const char *end, char *out, size_t ca
     if (!json_str(js, end, "find", find, sizeof find)) find[0] = 0;
     const int want_links = json_bool(js, end, "links");
     long off = json_int(js, end, "offset", 0);
-    WnPage *pg = wn_get(url);
-    if (!pg && !(pg = wn_load(url, out, cap))) return;
+    g_wn_render = json_bool(js, end, "render");
+    WnPage *pg = g_wn_render ? NULL : wn_get(url);
+    if (!pg) pg = wn_load(url, out, cap);
+    g_wn_render = 0;
+    if (!pg) return;
     size_t lim = cap > 600 ? cap - 600 : cap;
     if (lim > 12000) lim = 12000;
     if (lim > g_budget) lim = g_budget;
@@ -210,7 +251,7 @@ static void tool_web_fetch(const char *js, const char *end, char *out, size_t ca
         if (*cut == '\n') b = cut; else while (b > a && ((unsigned char)*b & 0xC0) == 0x80) b--;
     }
     o = (size_t)snprintf(out, cap, "%.*s", (int)(b - a), a);
-    if (!pg->tn) snprintf(out, cap, "(the page has no readable text; it probably needs JavaScript or a login. Try curl with run_command, or another source)");
+    if (!pg->tn) snprintf(out, cap, "(the page has no readable text, even after running its JavaScript when a browser is installed; it probably needs a login. Try another source)");
     else if (b < te || off > 0)
         snprintf(out + o, cap - o, b < te ? "\n[page text bytes %zu-%zu of %zu. Continue: same url with offset=%zu. Jump to a subject: find=\"word\". See where the page leads: links=true]"
                                           : "\n[page text bytes %zu-%zu of %zu (end of page)]", (size_t)(a - pg->txt), (size_t)(b - pg->txt), pg->tn, (size_t)(b - pg->txt));
