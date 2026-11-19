@@ -20,6 +20,8 @@
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
 #include "app/console.c"               /* console (cores, Ctrl+C, comandos de barra) e conversa simples */
 #include "agent/tools.c"               /* agente: ferramentas basicas (arquivos, web, memoria, sudo, caminhos) */
+#include "agent/web.c"                 /* web: curl, HTML para texto, web_fetch, busca */
+#include "agent/webnav.c"              /* navegacao: paginas guardadas, offset, find, links, conteudo principal */
 #include "agent/prompt.c"              /* agente: ambiente e prompt de sistema */
 #include "agent/mcp.c"                 /* cliente MCP */
 #include "agent/devtools.c"            /* ferramentas de programacao: edit_file, glob, download, pacotes, git */

@@ -114,12 +114,12 @@ tools reach outside.
 
 | Tool | What it does |
 |---|---|
-| `run_command` | shell command, stdin closed, stderr included, timeout, exit code, head+tail of long output, live output in the desktop app. Runs as your normal user; when the command contains `sudo`, the sudo password dialog opens (once; the password stays only in memory) |
+| `run_command` | shell command, stdin closed, stderr included, timeout, exit code, head+tail of long output, live output in the desktop app, and one next-step hint when it fails (missing program or module, wrong path, permission, port in use). Runs as your normal user; when the command contains `sudo`, the sudo password dialog opens (once; the password stays only in memory) |
 | `terminal` | persistent shell sessions in a pty (keeps directory and variables, shows interactive prompts); `open`, `send`, `read`, `interrupt`, `close` |
 | `read_file`, `list_dir`, `glob`, `search_files`, `read_document` | read and find files (PDF and HTML as text); `read_file` returns whole lines and, for a long file, says which lines came and how to ask for the next ones (`offset`, `limit`) |
 | `write_file`, `edit_file` | write files; exact-snippet edits that fail if the snippet is missing or ambiguous. After each write the engine checks the syntax of the file (Python, shell, JSON, JavaScript, PHP, Ruby, when the language tool is installed) and appends the result, so the model sees a syntax error in the same step |
 | `git` | status, diff, log, commit, branch, push, clone... (refuses `push --force`, `reset --hard` unless `KATANA_GIT_UNSAFE=1`) |
-| `web_search`, `web_fetch`, `download_file` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG), clean page text, downloads with SHA-256 |
+| `web_search`, `web_fetch`, `download_file` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG); `web_fetch` returns the main text of a page and remembers it, so `offset` continues a long page, `find` returns only the passages with a word and `links=true` lists where the page leads; downloads with SHA-256 |
 | `install_package` | pip (venv-aware), npm, apt, cargo |
 | `read_log`, `terminal_screen` | recent commands with exit codes, journal, dmesg, any log file; the user's tmux pane |
 | `remember`, `recall` | persistent memory in `~/.katana/memoria.txt` |

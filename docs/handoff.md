@@ -4,6 +4,68 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0n. Source split and the agent layers above the model (2026-11-19)
+
+**Source layout.** `src/katana.c` is still the single compilation unit, but it now only includes the parts:
+`src/engine/` (inference: GGUF, tokenizers, CPU kernels, Vulkan, architectures, forward, sampling), `src/agent/`
+(everything that sits above the model) and `src/app/` (console, server, subcommands, `main`). The splits were mechanical
+and checked by comparing the stripped binary before and after (identical apart from the build id). Functions are
+`static` and shared, so a fragment does not compile on its own; `build.sh` passes `-I src`.
+
+`src/agent/`, one layer per file:
+
+| File | Layer |
+|---|---|
+| `tools.c` | paths, permissions, confirmation, `search_files`, persistent memory |
+| `web.c`, `webnav.c` | curl, HTML to text, search; page memory with `offset`, `find`, `links` |
+| `prompt.c` | system prompt: rules and tools first (stable), environment block last |
+| `devtools.c`, `code.c` | `edit_file`, `glob`, git, packages; `read_file` by line range, syntax check after every write |
+| `exec.c`, `sudo.c`, `terminal.c`, `logs.c` | command execution, sudo password flow, pty sessions and root shell, logs |
+| `diagnose.c`, `howto.c` | one next-step hint when a command fails; recipes on demand |
+| `dispatch.c` | tool dispatch, log, neutralising markers in results |
+| `prefix_cache.c`, `context.c`, `loop.c` | system-prompt KV cache on disk, compaction, sessions and the agent loop |
+| `mcp.c`, `fmt_gemma4.c`, `fmt_harmony.c` | MCP client and the tool formats of Gemma 4 and gpt-oss |
+
+**What changed in behaviour.**
+
+- *System prompt cache for qwen35moe on the GPU.* The prefix cache did not cover the Vulkan graph of Qwen3.6 because
+  the DeltaNet state lives in VRAM, so every start (and every compaction) recomputed about 3,400 tokens at about
+  49 tok/s: 70 s. The cache file now also stores that state (convolution ring and S per linear layer, backend 3), and
+  DeltaNet layers no longer write zero KV blocks. Greedy output is identical with and without the cache.
+- *Two-level cache.* The prompt now puts rules and tool definitions first and the environment block (date, folder, map,
+  memory) last. The stable part is cached once for any folder; opening a new folder computes only the environment
+  block. Measured on the `rotate` task of codebench (fresh temporary folder each run): 97 s before, 48 s after
+  (3,336 tokens: 943 computed, 2,390 from disk). The same folder a second time loads everything in 0.05 s.
+- *Code layer.* `read_file` returns whole lines (6 KB per call) and takes `offset`/`limit`; `write_file` and
+  `edit_file` run a syntax check (Python, shell, JSON, JavaScript, PHP, Ruby when the tool is installed) and append
+  `[syntax check: ok]` or the error to the tool result.
+- *Command layer.* When a command fails the engine appends one hint: missing program, missing Python or Node module,
+  wrong path (with the folder the command ran in), permission (use sudo, a password dialog opens), script not
+  executable, port in use, package lock, pip refused by the system, process killed.
+- *Web layer.* `web_fetch` keeps the last 4 pages (clean text and links). `offset` continues a long page, `find`
+  returns only the passages with a word, `links=true` lists the absolute links (filtered by `find`). The text comes
+  from `<main>`/`<article>` when the page has one, menus (`nav`, `select`, `button`) are skipped and a run of 10 or more
+  link-only lines becomes one note. A PDF URL is refused with the instruction to download and use `read_document`.
+- *`katana code <model>`.* The same agent with a short programming prompt and only the coding tools (no memory, logs,
+  documents, packages). Not yet measured on the full benchmark.
+
+**Qwen3.8-27B (`qwen35` dense).** Loads and generates coherent text and code on the hybrid path (dense SwiGLU
+feed-forward in place of the MoE; the extra next-token-prediction layer is ignored). Not compared numerically with the
+reference engine; the full Vulkan graph is still MoE only; speed not measured with the GPU free.
+
+**codebench (`tools/codebench/`).** 15 small Python tasks with hidden tests. Qwen3.6 baseline (before this section's
+changes): 14 of 15 solved; `calc` (write an expression parser from a stub) hit the 900 s limit. The benchmark is close
+to its ceiling for this model, so it now measures cost (time, tool calls, tokens) more than quality; harder tasks
+(larger code, several files) are the next addition.
+
+**Known gap.** The Windows build has not been compiled since the terminal work of 2026-11-18: `tool_howto` and
+`ui_toolout` sat inside the non-Windows block. `howto.c` and the other new files keep the same guards, so this is
+unchanged, not fixed.
+
+**Next, in the order agreed with the owner:** measure `katana code` on the full benchmark; harder benchmark tasks;
+user-interaction layer (a question tool with options, shown as buttons in the desktop app); terminal and web tasks for
+the benchmark; then sampling presets and the runtime LoRA adapter for Qwen3.8.
+
 ## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
 
 Owner decision (2026-11-18): the tools run as the normal user and **root only when sudo is requested**; the **only** dialog is the sudo password (no trust or write-permission prompts). Terminal sessions are normal-user shells with `sudo()` bound to `sudo -A`; the askpass reads the password from a 0600 tmpfs file (`KATANA_PWFILE`, removed at exit), written after the dialog.
