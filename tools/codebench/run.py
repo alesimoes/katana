@@ -145,7 +145,10 @@ def main():
         return verify(names)
     if not a.model or not a.out:
         ap.error("--model and --out are required")
+    done = load(a.out) if os.path.exists(a.out) else {}        # an interrupted run continues where it stopped
     for n in names:
+        if n in done:
+            continue
         rec = run_task(a, n)
         open(a.out, "a").write(json.dumps(rec) + "\n")
         print("%-14s %s  %5.0fs  tools=%d  gen=%d%s" % (n, "PASS" if rec["passed"] else "fail", rec["seconds"],
