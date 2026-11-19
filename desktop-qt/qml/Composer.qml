@@ -194,6 +194,38 @@ Item {
             Accessible.name: "Pasta de trabalho"
             onClicked: folderDlg.open()
         }
+        // modo plano e desfazer: acoes do agente ao lado da pasta
+        AbstractButton {
+            id: planBtn
+            objectName: "planButton"
+            implicitHeight: 22
+            implicitWidth: planTxt.implicitWidth + 14
+            enabled: backend.ready
+            hoverEnabled: true
+            background: Rectangle { radius: 6; color: backend.planMode ? Theme.hov : planBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: planTxt; font.family: Theme.sans; font.pixelSize: 12; color: backend.planMode ? Theme.fg : Theme.mut
+                text: backend.planMode ? "plano: ligado" : "plano" }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: "No modo plano o agente só lê e propõe um plano; nada é alterado até você aprovar."
+            Accessible.name: "Modo plano"
+            onClicked: backend.togglePlan()
+        }
+        AbstractButton {
+            id: undoBtn
+            objectName: "undoButton"
+            implicitHeight: 22
+            implicitWidth: undoTxt.implicitWidth + 14
+            enabled: backend.ready
+            hoverEnabled: true
+            background: Rectangle { radius: 6; color: undoBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: undoTxt; font.family: Theme.sans; font.pixelSize: 12; color: Theme.mut; text: "desfazer" }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: "Devolve os arquivos que o agente alterou no último pedido ao estado anterior.\nNão cobre o que um comando do terminal alterou."
+            Accessible.name: "Desfazer alterações do agente"
+            onClicked: backend.undo()
+        }
         FolderDialog {
             id: folderDlg
             title: "Escolha a pasta de trabalho do agente"

@@ -297,6 +297,55 @@ ApplicationWindow {
                     GradientStop { position: 1.0; color: Theme.bg }
                 }
             }
+            // lista de tarefas do agente e modo plano: cartao discreto acima da caixa de mensagem
+            Rectangle {
+                id: workCard
+                objectName: "workCard"
+                visible: backend.todoSteps.length > 0 || backend.planMode
+                anchors.bottom: choiceCard.visible ? choiceCard.top : composer.top
+                anchors.bottomMargin: 6
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(parent.width - 32, 760)
+                height: visible ? workCol.implicitHeight + 20 : 0
+                radius: 14
+                color: Theme.card
+                border.color: Theme.bd
+                Column {
+                    id: workCol
+                    x: 14; y: 10
+                    width: parent.width - 28
+                    spacing: 5
+                    Row {
+                        visible: backend.planMode
+                        spacing: 10
+                        Text { font.family: Theme.sans; color: Theme.fg; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter
+                            text: "Modo plano: o agente só lê. Nada é alterado até você aprovar." }
+                        Rectangle {
+                            objectName: "approvePlanButton"
+                            height: 28; width: apTxt.implicitWidth + 22; radius: 8
+                            opacity: backend.ready ? 1 : 0.45
+                            color: apMa.containsMouse ? Theme.ac : Theme.hov
+                            border.color: apMa.containsMouse ? Theme.ac : Theme.bd
+                            Text { id: apTxt; anchors.centerIn: parent; text: "Aprovar e executar"; font.family: Theme.sans; font.pixelSize: 13
+                                color: apMa.containsMouse ? Theme.acfg : Theme.fg }
+                            MouseArea { id: apMa; anchors.fill: parent; hoverEnabled: true; enabled: backend.ready; cursorShape: Qt.PointingHandCursor
+                                onClicked: backend.approvePlan() }
+                        }
+                    }
+                    Text { visible: backend.todoSteps.length > 0; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; text: "Tarefas do agente" }
+                    Repeater {
+                        model: backend.todoSteps
+                        Text {
+                            readonly property bool done: modelData.indexOf("[x]") === 0
+                            width: workCol.width; wrapMode: Text.Wrap
+                            font.family: Theme.sans; font.pixelSize: 13
+                            color: done ? Theme.mut : Theme.fg
+                            font.strikeout: done
+                            text: (done ? "\u2713  " : "\u25CB  ") + modelData.slice(4)
+                        }
+                    }
+                }
+            }
             // pergunta do agente (ask_user): fica junto da caixa de mensagem, com as opcoes em botoes; digitar tambem responde
             Rectangle {
                 id: choiceCard

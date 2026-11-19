@@ -63,6 +63,8 @@ class Backend : public QObject
     Q_PROPERTY(QString choiceQuestion READ choiceQuestion NOTIFY choiceChanged)
     Q_PROPERTY(QStringList choiceOptions READ choiceOptions NOTIFY choiceChanged)
     Q_PROPERTY(bool choicePending READ choicePending NOTIFY choiceChanged)
+    Q_PROPERTY(QStringList todoSteps READ todoSteps NOTIFY todoChanged)   // lista de tarefas do agente: "[x] passo" ou "[ ] passo"
+    Q_PROPERTY(bool planMode READ planMode NOTIFY planModeChanged)        // modo plano: o agente so le ate o plano ser aprovado
     Q_PROPERTY(QString currentModel READ currentModel NOTIFY currentModelChanged)
     Q_PROPERTY(bool running READ running NOTIFY stateChanged)
     Q_PROPERTY(bool ready READ ready NOTIFY stateChanged)
@@ -119,6 +121,11 @@ public:
     QString choiceQuestion() const { return m_choiceQ; }
     QStringList choiceOptions() const { return m_choiceOpts; }
     bool choicePending() const { return m_choicePending; }
+    QStringList todoSteps() const { return m_todo; }
+    bool planMode() const { return m_planMode; }
+    Q_INVOKABLE void undo();          // devolve os arquivos alterados pelo ultimo pedido (/undo)
+    Q_INVOKABLE void togglePlan();    // liga ou desliga o modo plano (/plan)
+    Q_INVOKABLE void approvePlan();   // aprova o plano e manda executar (/go)
     Q_INVOKABLE void answerAsk(bool yes);                 // resposta ao pedido de permissao do agente (confiar na pasta, gravar fora dela...)
     Q_INVOKABLE bool setWorkspace(const QString &path);   // pasta de trabalho do agente (/cd no agente em execucao)
     QString workspace() const;
@@ -161,6 +168,8 @@ signals:
     void workspaceChanged();
     void askRequested(const QString &kind, const QString &what, const QString &detail);
     void choiceChanged();
+    void todoChanged();
+    void planModeChanged();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -222,5 +231,7 @@ private:
     QString m_choiceQ;            // pergunta pendente do agente (ask_user)
     QStringList m_choiceOpts;
     bool m_choicePending = false;
+    QStringList m_todo;           // passos da lista de tarefas do agente
+    bool m_planMode = false;
     void drainQueue();
 };

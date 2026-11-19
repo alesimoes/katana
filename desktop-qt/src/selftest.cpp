@@ -320,6 +320,16 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         c.grab("10-pergunta.png");
         be.answerChoice("Postgres");
         check(!be.choicePending() && be.choiceOptions().isEmpty(), "responder limpa a pergunta do agente");
+        be.injectMarker("TODO [x] Ler o arquivo\\n[ ] Corrigir o erro\\n[ ] Rodar os testes");
+        check(be.todoSteps().size() == 3 && be.todoSteps().value(0).startsWith("[x]"), "TODO: lista de tarefas do agente com 3 passos");
+        be.injectMarker("MODE plan");
+        check(be.planMode(), "MODE plan: modo plano ligado");
+        c.grab("11-tarefas-plano.png");
+        be.injectMarker("MODE normal");
+        be.injectMarker("TODO ");
+        check(!be.planMode() && be.todoSteps().isEmpty(), "modo plano desligado e lista limpa");
+        be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
+        be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
     }
 

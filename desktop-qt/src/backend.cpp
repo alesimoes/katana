@@ -519,6 +519,31 @@ QString Backend::workspace() const
     return QDir::currentPath();
 }
 
+void Backend::undo()
+{
+    if (m_proc && m_ready)
+        writeLine("/undo");
+}
+
+void Backend::togglePlan()
+{
+    if (m_proc && m_ready)
+        writeLine(m_planMode ? "/plan off" : "/plan");
+}
+
+void Backend::approvePlan()
+{
+    if (!m_proc || !m_ready || !m_planMode)
+        return;
+    const QString text = QStringLiteral("Plano aprovado: pode executar.");
+    setTexts({}, {});
+    m_msgs.append("user", text);
+    m_sess.mensagens.append({"user", text, {}});
+    saveSession();
+    setState(false, false, true);
+    writeLine("/go");
+}
+
 void Backend::answerChoice(const QString &textIn)
 {
     if (!m_choicePending)
@@ -880,6 +905,24 @@ void Backend::handleMarker(const QByteArray &line)
         m_choiceOpts = a.mid(1);
         m_choicePending = true;
         emit choiceChanged();
+    } else if (name == "TODO") {  // TODO <passos com \\n escapado>: lista de tarefas do agente (vazio = sem lista)
+        QString r;
+        for (int i = 0; i < args.size(); i++) {
+            if (args[i] == '\\' && i + 1 < args.size()) { i++; r += args[i] == 'n' ? QChar('\n') : args[i]; }
+            else r += args[i];
+        }
+        m_todo = r.split('\n', Qt::SkipEmptyParts);
+        emit todoChanged();
+    } else if (name == "MODE") {  // MODE plan|normal
+        m_planMode = args.trimmed() == "plan";
+        emit planModeChanged();
+        m_msgs.append("notice", m_planMode ? "Modo plano ligado: o agente só lê e propõe um plano; nada é alterado até você aprovar."
+                                           : "Modo plano desligado.");
+    } else if (name == "UNDO") {  // UNDO <quantos>\t<arquivos>
+        const int tab = args.indexOf('\t');
+        const QString files = tab < 0 ? QString() : args.mid(tab + 1).trimmed();
+        m_msgs.append("notice", files.isEmpty() ? "Nada para desfazer: o agente não alterou arquivos nesta conversa."
+                                                : "Alterações desfeitas: " + files);
     } else if (name == "CWD") {  // CWD <pasta>\t<1 se confiavel>
         const QStringList a = args.split('\t');
         m_wsReal = a.value(0);
