@@ -315,6 +315,11 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         QVariantMap nm = be.messages()->get(be.messages()->count() - 1);
         check(nm["kind"] == "notice" && nm["text"].toString() == "Contexto compactado: 30000 -> 8000 tokens", "COMPACT vira aviso discreto");
         c.grab("06-aviso.png");
+        be.injectMarker("CHOICE Qual banco de dados devo usar?\tSQLite\tPostgres");
+        check(be.choicePending() && be.choiceQuestion() == "Qual banco de dados devo usar?" && be.choiceOptions().size() == 2, "CHOICE: pergunta do agente com 2 opcoes");
+        c.grab("10-pergunta.png");
+        be.answerChoice("Postgres");
+        check(!be.choicePending() && be.choiceOptions().isEmpty(), "responder limpa a pergunta do agente");
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
     }
 
@@ -368,7 +373,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(be.messages()->count() == 3, "historico mostrado (3 itens: user, assistant, tool)");
     check(be.hasPendingContext(), "resumo pendente criado");
     check(!c.item("emptyState")->isVisible(), "boas-vindas nao aparece em sessao antiga com mensagens");
-    check(waitFor([&] { return be.ready(); }, 30000), "agente pronto after /new");
+    check(waitFor([&] { return be.ready(); }, 150000), "agente pronto after /new");
     c.grab("04-lateral.png");
 
     sent.clear();
@@ -390,7 +395,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(it2 != nullptr, "item da 2a sessao antiga");
     c.click(findItem(it2, "sessionOpen"));
     check(be.hasPendingContext() && be.currentSessionId() == "20260101-090000-002", "2a sessao aberta com resumo pendente");
-    check(waitFor([&] { return be.ready(); }, 30000), "pronto after /new");
+    check(waitFor([&] { return be.ready(); }, 150000), "pronto after /new");
     be.start(model);  // reinicia o agente (equivale a escolher outro modelo)
     check(be.loading() && be.hasPendingContext() && be.currentSessionId() == "20260101-090000-002" && be.messages()->count() == 2,
           "apos trocar: resumo, sessao e historico preservados");

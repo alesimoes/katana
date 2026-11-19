@@ -60,6 +60,9 @@ class Backend : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QVariantList models READ models NOTIFY modelsChanged)
+    Q_PROPERTY(QString choiceQuestion READ choiceQuestion NOTIFY choiceChanged)
+    Q_PROPERTY(QStringList choiceOptions READ choiceOptions NOTIFY choiceChanged)
+    Q_PROPERTY(bool choicePending READ choicePending NOTIFY choiceChanged)
     Q_PROPERTY(QString currentModel READ currentModel NOTIFY currentModelChanged)
     Q_PROPERTY(bool running READ running NOTIFY stateChanged)
     Q_PROPERTY(bool ready READ ready NOTIFY stateChanged)
@@ -112,6 +115,10 @@ public:
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void answerChoice(const QString &text);   // resposta a pergunta do agente (ask_user); vazia = cancelar
+    QString choiceQuestion() const { return m_choiceQ; }
+    QStringList choiceOptions() const { return m_choiceOpts; }
+    bool choicePending() const { return m_choicePending; }
     Q_INVOKABLE void answerAsk(bool yes);                 // resposta ao pedido de permissao do agente (confiar na pasta, gravar fora dela...)
     Q_INVOKABLE bool setWorkspace(const QString &path);   // pasta de trabalho do agente (/cd no agente em execucao)
     QString workspace() const;
@@ -153,6 +160,7 @@ signals:
     void queueChanged();
     void workspaceChanged();
     void askRequested(const QString &kind, const QString &what, const QString &detail);
+    void choiceChanged();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -211,5 +219,8 @@ private:
     bool m_paused = false;
     QString m_wsReal;          // pasta confirmada pelo agente (marcador CWD)
     bool m_wsTrusted = false;
+    QString m_choiceQ;            // pergunta pendente do agente (ask_user)
+    QStringList m_choiceOpts;
+    bool m_choicePending = false;
     void drainQueue();
 };

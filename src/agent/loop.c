@@ -337,7 +337,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);
-            const int need = !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys)));
+            const int need = !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor));
             if (!need && pos + ids.n + 64 >= c->ctx) {
                 fprintf(stderr, "[contexto cheio (%d de %d tokens): use /new to restart]\n", pos, c->ctx);
                 free(ids.ids);

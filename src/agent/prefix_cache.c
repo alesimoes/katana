@@ -252,12 +252,14 @@ static int pfx_fill(Model *m, const int *ids, int n, int stable, int ngl, int es
     if (stable >= 256 && stable < n) {
         const uint64_t ks = pfx_key(m, ids, stable, ngl, esz, backend);
         if (!pfx_load(m, ks, stable, ngl, esz, backend)) {
+            if (getenv("KATANA_UI")) { printf("\x01" "PREP %d\n", n); fflush(stdout); }
             forward_seq(m, ids, stable, 0, 0);
             pfx_save(m, ks, stable, ngl, esz, backend);
             *calc += stable;
         }
         from = stable;
     }
+    if (getenv("KATANA_UI") && !*calc) { printf("\x01" "PREP %d\n", n - from); fflush(stdout); }      /* a interface avisa que esta lendo as instrucoes */
     forward_seq(m, ids + from, n - from, from, 0);
     *calc += n - from;
     *saved = pfx_save(m, key, n, ngl, esz, backend);

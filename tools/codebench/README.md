@@ -3,8 +3,12 @@
 A small local coding benchmark for the katana agent. It exists to answer one question with numbers: does a change
 (a model, a prompt, a sampling preset, an adapter) make the agent solve more real coding tasks?
 
-- 15 tasks in `tasks/`, Python standard library only: 12 bug fixes (one spans two modules) and 3 features written from
-  a stub (a calculator, a persistent to-do list, a duration parser).
+- 21 tasks in `tasks/`. 18 are Python (standard library only): 12 bug fixes (one spans two modules), 3 features written from
+  a stub (a calculator, a persistent to-do list, a duration parser) and 3 larger jobs: `mdhtml` (a Markdown subset to
+  HTML converter, about 80 lines), `kvstore` (a package written from nothing: a log-structured store plus a command
+  line, two files) and `ledger` (a feature that touches three modules of an existing package and adds a fourth). 3 are terminal and navigation jobs: `sh-backup` (fix a bash script that breaks on names with
+  spaces), `find-port` (find one configuration file among 48 and report from it) and `log-top` (rank addresses in a
+  4,400-line log).
 - Each task has `instruction.md` (the user's request), `repo/` (the starting project), `hidden/` (unit tests the agent
   never sees) and `solution/` (a reference fix used only by `--verify`).
 - The agent starts in a temporary copy of `repo/`, gets the instruction as its first message, and works with its normal
@@ -21,6 +25,8 @@ python3 tools/codebench/run.py compare a.jsonl b.jsonl      # newly solved / los
 `--tasks a,b` runs a subset, `--timeout` is per task (default 900 s), `--keep DIR` keeps each task's agent log and final
 files. Run one model at a time: the GPU and the memory are shared.
 
-Limits to keep in mind: 15 tasks is a small sample, so only large differences mean something (the sign test prints the
+`--mode code` runs `katana code` (the coding mode) instead of `katana agent`.
+
+Limits to keep in mind: 21 tasks is a small sample, so only large differences mean something (the sign test prints the
 p-value); the tasks are small and in one language; the agent can read the visible code and write its own tests, but
 never sees `hidden/`.
