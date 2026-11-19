@@ -960,6 +960,10 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return tokenize_cmd(&m, src, ids);
     }
+    if (strcmp(argv[1], "hw") == 0) return hw_cmd(argc >= 3 ? argv[2] : models_dir());
+    if (strcmp(argv[1], "catalog") == 0) return catalog_cmd(argc >= 3 ? argv[2] : models_dir());
+    if (argc >= 3 && strcmp(argv[1], "pull") == 0) return pull_cmd(argv[2], argc >= 4 ? argv[3] : models_dir());
+    if (argc >= 3 && strcmp(argv[1], "sha256") == 0) { char hx[65]; if (!sha_file(argv[2], hx, 0)) return 1; printf("%s\n", hx); return 0; }
     if (strcmp(argv[1], "models") == 0 || strcmp(argv[1], "modelos") == 0) {
         struct stat sm;
         return modelos_cmd(argc >= 3 ? argv[2] : stat("models", &sm) == 0 ? "models" : "modelos");
