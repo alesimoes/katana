@@ -1,4 +1,19 @@
 /* ---------- despacho: executa a ferramenta pedida pelo modelo, registra no log, neutraliza marcas no resultado ---------- */
+/* interface: resultado da ferramenta numa linha (\\ e \n escapados; mantem o comeco e o fim se for grande) */
+static void ui_toolout(const char *name, const char *res) {
+    if (!getenv("KATANA_UI")) return;
+    const size_t n = strlen(res), HEAD = 3000, TAIL = 5000;
+    printf("\x01" "TOOLOUT %s\t", name);
+    for (size_t i = 0; i < n; i++) {
+        if (n > HEAD + TAIL && i == HEAD) { fputs("\\n[... omitido ...]\\n", stdout); i = n - TAIL - 1; continue; }
+        const unsigned char ch = (unsigned char)res[i];
+        if (ch == '\n') fputs("\\n", stdout);
+        else if (ch == '\\') fputs("\\\\", stdout);
+        else if (ch == '\r' || ch == 1) continue;
+        else putchar(ch);
+    }
+    putchar('\n'); fflush(stdout);
+}
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap) {
     static char arg[8192], content[65536];
     out[0] = 0;

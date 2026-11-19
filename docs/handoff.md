@@ -74,9 +74,10 @@ changes): 14 of 15 solved; `calc` (write an expression parser from a stub) hit t
 to its ceiling for this model, so it now measures cost (time, tool calls, tokens) more than quality; harder tasks
 (larger code, several files) are the next addition.
 
-**Known gap.** The Windows build has not been compiled since the terminal work of 2026-11-18: `tool_howto` and
-`ui_toolout` sat inside the non-Windows block. `howto.c` and the other new files keep the same guards, so this is
-unchanged, not fixed.
+**Known gap.** The Windows build has not been compiled since the terminal work of 2026-11-18. Two functions that the
+shared code calls (`tool_howto`, `ui_toolout`) sat inside the non-Windows block; they are now outside it, but nothing
+was compiled on Windows, so expect more of the same kind (`find_file`, the syntax check and the failure hints are
+POSIX only by design).
 
 **Next, in the order agreed with the owner:** measure `katana code` on the full benchmark; harder benchmark tasks;
 terminal and web tasks for

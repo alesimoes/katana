@@ -1,4 +1,3 @@
-#ifndef _WIN32
 /* receitas de uso das ferramentas (o modelo consulta sob demanda, sem inflar o prompt) */
 static void tool_howto(const char *topic, char *out, size_t cap) {
     static const struct { const char *t, *s; } R[] = {
@@ -57,5 +56,3 @@ static void tool_howto(const char *topic, char *out, size_t cap) {
         if (all || strcmp(topic, R[i].t) == 0) o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? "\n\n" : "", R[i].s);
     if (!o) snprintf(out, cap, "unknown topic; use one of: web, terminal, linux, script, sudo, files, code, packages, logs, all");
 }
-
-#endif
