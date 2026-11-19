@@ -31,6 +31,7 @@
 #include "agent/code.c"               /* leitura por trechos e verificacao de sintaxe depois de gravar */
 #include "agent/exec.c"                /* execucao de comandos: stdin fechado, timeout, inicio+fim da saida, anel dos ultimos comandos */
 #include "agent/sudo.c"                /* sudo: pedido de senha (terminal ou modal), arquivos como root */
+#include "agent/jobs.c"                /* comandos em segundo plano (run_command background, job) */
 #include "agent/diagnose.c"            /* dica de proximo passo quando um comando falha */
 #include "agent/howto.c"               /* receitas de uso das ferramentas (howto) */
 #include "agent/terminal.c"            /* run_command, sessoes de terminal (pty), shell root persistente */

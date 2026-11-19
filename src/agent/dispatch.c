@@ -86,13 +86,14 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         snprintf(out + n, cap - n, "%s\n[exit code %d]", more ? "\n[output truncated]" : "", rc);
         cmdlog_add(arg, rc, out);
 #else
-        tool_run_command(arg, js, end, out, cap);
+        if (json_has(js, end, "background") && json_bool(js, end, "background")) tool_job_start(arg, out, cap);
+        else tool_run_command(arg, js, end, out, cap);
 #endif
     } else if (strcmp(name, "search_files") == 0) {
         static char pat[512];
         if (!json_str(js, end, "pattern", pat, sizeof pat)) { snprintf(out, cap, "error: missing pattern"); return; }
         if (!json_str(js, end, "path", arg, sizeof arg) || !arg[0]) strcpy(arg, ".");
-        tool_search_files(pat, arg, out, cap);
+        tool_search_files(pat, arg, json_has(js, end, "regex") && json_bool(js, end, "regex"), out, cap);
     } else if (strcmp(name, "web_search") == 0) {
         if (!g_web) { snprintf(out, cap, "error: internet tools are disabled (KATANA_WEB=0)"); return; }
         if (!json_str(js, end, "query", arg, sizeof arg) || !arg[0]) { snprintf(out, cap, "error: missing query"); return; }
@@ -138,6 +139,8 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
     } else if (strcmp(name, "find_file") == 0) {
         tool_find_file(js, end, out, cap);
 #endif
+    } else if (strcmp(name, "job") == 0) {
+        tool_job(js, end, out, cap);
     } else if (strcmp(name, "todo") == 0) {
         tool_todo(js, end, out, cap);
     } else if (strcmp(name, "ask_user") == 0) {

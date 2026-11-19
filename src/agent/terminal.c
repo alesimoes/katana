@@ -41,7 +41,7 @@ static void tool_run_command(const char *cmd, const char *js, const char *end, c
     size_t o = 0;
     if (n == 0) o += (size_t)snprintf(out + o, cap - o, "(no output)");
     else o += (size_t)snprintf(out + o, cap - o, "%s", body);
-    if (to) o += (size_t)snprintf(out + o, cap - o, "\n[timeout apos %d s] the command was killed with its whole process group; use a larger timeout_s, or run it in the background (cmd > log 2>&1 &) and read the log", tmo);
+    if (to) o += (size_t)snprintf(out + o, cap - o, "\n[timeout apos %d s] the command was killed with its whole process group; use a larger timeout_s, or run it again with background=true and read it with job", tmo);
     if (ir) o += (size_t)snprintf(out + o, cap - o, "\n[interrupted by the user]");
     o += (size_t)snprintf(out + o, cap - o, "\n[exit code %d]", rc);
     cmd_hint(rc, to, body, cmd, out + o, cap - o);
