@@ -368,7 +368,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(be.messages()->count() == 3, "historico mostrado (3 itens: user, assistant, tool)");
     check(be.hasPendingContext(), "resumo pendente criado");
     check(!c.item("emptyState")->isVisible(), "boas-vindas nao aparece em sessao antiga com mensagens");
-    check(waitFor([&] { return be.ready(); }, 30000), "agente pronto apos /novo");
+    check(waitFor([&] { return be.ready(); }, 30000), "agente pronto after /new");
     c.grab("04-lateral.png");
 
     sent.clear();
@@ -390,7 +390,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(it2 != nullptr, "item da 2a sessao antiga");
     c.click(findItem(it2, "sessionOpen"));
     check(be.hasPendingContext() && be.currentSessionId() == "20260101-090000-002", "2a sessao aberta com resumo pendente");
-    check(waitFor([&] { return be.ready(); }, 30000), "pronto apos /novo");
+    check(waitFor([&] { return be.ready(); }, 30000), "pronto after /new");
     be.start(model);  // reinicia o agente (equivale a escolher outro modelo)
     check(be.loading() && be.hasPendingContext() && be.currentSessionId() == "20260101-090000-002" && be.messages()->count() == 2,
           "apos trocar: resumo, sessao e historico preservados");

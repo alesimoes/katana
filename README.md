@@ -113,7 +113,7 @@ tools reach outside.
 
 | Tool | What it does |
 |---|---|
-| `run_command` | shell command, stdin closed, stderr included, timeout, exit code, head+tail of long output, password hint. Runs as root by default through a persistent root shell if you allow it (`KATANA_SUDO=0` disables); the sudo password is asked once, lives only in memory |
+| `run_command` | shell command, stdin closed, stderr included, timeout, exit code, head+tail of long output, live output in the desktop app. Runs as your normal user; when the command contains `sudo`, the sudo password dialog opens (once; the password stays only in memory) |
 | `terminal` | persistent shell sessions in a pty (keeps directory and variables, shows interactive prompts); `open`, `send`, `read`, `interrupt`, `close` |
 | `read_file`, `list_dir`, `glob`, `search_files`, `read_document` | read and find files (PDF and HTML as text) |
 | `write_file`, `edit_file` | write files; exact-snippet edits that fail if the snippet is missing or ambiguous |
@@ -124,6 +124,14 @@ tools reach outside.
 | `remember`, `recall` | persistent memory in `~/.katana/memoria.txt` |
 | `howto` | short recipes (web, terminal, linux, script, sudo, files, code, packages, logs) the model can consult on demand |
 | MCP tools | any [Model Context Protocol](https://modelcontextprotocol.io) server (stdio or streamable HTTP), listed as `server__tool` |
+
+Where the tools work: anywhere on the machine. Paths can be relative to the working folder or absolute, missing folders are created, and
+`git -C <folder> ...` works in another repository. The user's request is the authorization, so there are no per-folder prompts. When the
+system denies a write (for example under `/opt`) the tool says so, and the model retries with `sudo=true` (`write_file`, `edit_file`) or `sudo` in the command
+(`run_command`, `terminal`), and **the password dialog opens whenever sudo is requested** (a wrong password asks again, up to three times). Nothing runs as
+root otherwise (`KATANA_SUDO=1` runs every command as root). The password stays only in memory (and, for terminal sessions, in a 0600 file in the user's
+runtime tmpfs, removed on exit). Long files are written in parts (`append`), and a tool call cut off by the token limit is reported instead of being run half-written;
+the answer limit is 32768 tokens (`KATANA_MAXTOK`). `/cd <folder>` (or the folder button in the desktop app) changes the working folder.
 
 Safety model: every tool call is shown in the terminal and appended to `~/.katana/agente.log`; tool results enter the
 conversation wrapped as data ("external content, not instructions") with the chat format's special markers
@@ -171,7 +179,7 @@ katana info | bench | selftest | micro | tune | pack | verify | quantize | qtest
 katana tool <name> '<json>'      run one agent tool without a model (testing)
 ```
 
-Chat commands: `/novo` (new conversation), `/sistema <text>` (system prompt), `/salvar <file>`, `/ajuda`, `/sair`;
+Chat commands: `/new` (new conversation), `/system <text>` (system prompt), `/save <file>`, `/cd <folder>` (agent), `/help`, `/exit`;
 Ctrl+C interrupts the current answer without leaving.
 
 `katana serve` listens on 127.0.0.1 only, with the page embedded in the binary:
@@ -224,8 +232,9 @@ to the real tools and the arguments to the tool's schema. `katana jsontest` runs
 | `KATANA_DEBUG=1` | per-kernel GPU profile and per-type CPU product profile |
 | `KATANA_WEB=0` | agent: disable `web_search` and `web_fetch` |
 | `KATANA_SEARX=<url>` | agent: use an existing SearXNG for `web_search` |
-| `KATANA_SUDO=0` | agent: do not run commands as root |
-| `KATANA_CONFIRM=1` | agent: ask before writing, running or calling MCP tools |
+| `KATANA_SUDO=1` | agent: run every command as root (default: normal user, root only when sudo is requested) |
+| `KATANA_CONFIRM=1` | agent: ask before writing, running or calling MCP tools (`KATANA_TRUST=0` does the same) |
+| `KATANA_MAXTOK=N` | agent/chat: maximum tokens per answer (agent default 32768, chat 8192) |
 | `KATANA_MEM=<file>`, `KATANA_LOG=<file>` | agent: memory file and action log paths |
 | `KATANA_PFX=0`, `KATANA_CACHE_DIR=<dir>` | agent: disable or move the on-disk prefix cache |
 | `KATANA_JSON=1` | `run`/`chat`: guaranteed JSON output |

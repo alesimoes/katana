@@ -40,7 +40,51 @@ ApplicationWindow {
 
     Connections {
         target: backend
-        function onPasswordRequested() { pwField.text = ""; pwDlg.open(); pwField.forceActiveFocus(); }
+        function onPasswordRequested(retry) { pwDlg.retry = retry; pwField.text = ""; pwDlg.open(); pwField.forceActiveFocus(); }
+        function onAskRequested(kind, what, detail) { askDlg.kind = kind; askDlg.what = what; askDlg.detail = detail; askDlg.open(); }
+    }
+    // pedido de permissao do agente: confiar na pasta de trabalho, gravar fora dela, ou uma acao (quando a pasta nao e confiavel)
+    Popup {
+        id: askDlg
+        objectName: "askDialog"
+        property string kind: ""
+        property string what: ""
+        property string detail: ""
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(480, win.width - 40)
+        padding: 18
+        property bool answered: false
+        onOpened: answered = false
+        onClosed: { if (!answered) backend.answerAsk(false); }
+        function answer(ok) { answered = true; backend.answerAsk(ok); close(); }
+        background: Rectangle { radius: 14; color: Theme.card; border.color: Theme.bd }
+        contentItem: Column {
+            spacing: 10
+            Text { font.family: Theme.sans; color: Theme.fg; font.pixelSize: 16; font.bold: true; width: parent.width; wrapMode: Text.Wrap
+                text: askDlg.kind === "trust" ? "Confiar nesta pasta?"
+                    : askDlg.kind === "write" ? "Gravar fora da pasta de trabalho?" : "Permitir esta ação?" }
+            Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
+                text: askDlg.kind === "trust"
+                      ? (askDlg.what.indexOf("very broad") >= 0
+                         ? "Atenção: esta pasta é muito ampla (a sua home ou a raiz). O Katana poderá ler e alterar tudo dentro dela, e executar comandos."
+                         : "O Katana poderá ler e gravar arquivos nesta pasta e executar comandos. Sem confiança, cada ação pergunta antes.")
+                      : askDlg.kind === "write" ? "O agente quer gravar numa pasta fora da pasta de trabalho. Permitir vale para esta pasta, nesta sessão."
+                      : askDlg.what }
+            Rectangle {
+                width: parent.width; height: pathTxt.implicitHeight + 16; radius: 8
+                color: Theme.dark ? "#0E0B12" : "#F1EEF5"; border.color: Theme.bd
+                TextEdit { id: pathTxt; x: 8; y: 8; width: parent.width - 16; text: askDlg.detail; readOnly: true; selectByMouse: true
+                    wrapMode: TextEdit.WrapAnywhere; color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12 }
+            }
+            Row {
+                spacing: 8
+                anchors.right: parent.right
+                Button { text: askDlg.kind === "trust" ? "Não confiar" : "Negar"; onClicked: askDlg.answer(false) }
+                Button { text: askDlg.kind === "trust" ? "Confiar na pasta" : "Permitir"; highlighted: true; onClicked: askDlg.answer(true) }
+            }
+        }
     }
     Popup {
         id: pwDlg
@@ -51,6 +95,7 @@ ApplicationWindow {
         width: Math.min(420, win.width - 40)
         padding: 18
         property bool answered: false
+        property bool retry: false
         onOpened: answered = false
         onClosed: { if (!answered) backend.sendPassword(""); }
         function answer(ok) { answered = true; backend.sendPassword(ok ? pwField.text : ""); pwField.text = ""; close(); }
@@ -58,6 +103,7 @@ ApplicationWindow {
         contentItem: Column {
             spacing: 10
             Text { font.family: Theme.sans; text: "Senha do sudo"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
+            Text { font.family: Theme.sans; visible: pwDlg.retry; width: parent.width; wrapMode: Text.Wrap; color: Theme.err; font.pixelSize: 13; text: "Senha incorreta. Tente de novo." }
             Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
                 text: "O agente quer executar um comando com sudo. A senha fica só na memória desta sessão e não vai para o modelo." }
             TextField {

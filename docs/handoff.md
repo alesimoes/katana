@@ -4,6 +4,25 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
+
+Owner decision (2026-11-18): the tools run as the normal user and **root only when sudo is requested**; the **only** dialog is the sudo password (no trust or write-permission prompts). Terminal sessions are normal-user shells with `sudo()` bound to `sudo -A`; the askpass reads the password from a 0600 tmpfs file (`KATANA_PWFILE`, removed at exit), written after the dialog.
+
+Problem reported by the owner: `write_file`/`edit_file` failed in the desktop and long scripts were never finished. Causes found: (1) they accepted only
+relative paths inside the current folder (the model uses absolute paths: `error: invalid path (only relative paths inside the current directory)`
+in `agente.log`); (2) the agent generated at most 1024 tokens per answer (`KATANA_MAXTOK`), so a long `write_file` call was cut, and a cut call was
+executed as if complete (half a file written); (3) `content` was a 16 KB buffer, silently truncated (the same silent truncation as the terminal
+`send` heredoc bug, whose buffer was 8 KB).
+Done (`src/katana.c`): `agent_write_path` (relative, absolute, `~`, `..` normalized, symlinks resolved; any folder, no prompt: the user's request is the
+authorization); `write_file` creates parent folders and has `append`; buffers 64 KB with an explicit error above that; agent token limit 32768 (chat
+8192); `trunc` guard: a tool call still open when the answer hit the limit is not run and the model gets an error explaining how to write in parts; root
+root only when requested: `write_file`/`edit_file` take `sudo=true` (otherwise a denied write returns an error that says so), through `root_write_file`/`root_read_file` and `sudo_ready()` which opens the password dialog
+(`NEEDPASS`, retried up to 3 times with `NEEDPASS retry`); `install_package apt` uses the same flow; `git -C <folder> ...`; `/cd <folder>`; marker `CWD`.
+The `ASK` marker / `agent_ask_kind` (answer `\x01ANS 1|0`) now serves `KATANA_CONFIRM=1` and `KATANA_TRUST=0`; by default nothing is asked except the sudo
+password. katana-desktop: working-folder button + folder dialog (`/cd`), `askDlg`, password dialog with "wrong password" text, agent started in the chosen folder.
+Tested: relative/absolute/append/edit/parent folders/`..`, 42 KB write, 70 KB error, `git -C`, the `NEEDPASS`/`retry`/cancel flow with a wrong password, and
+the root script with a fake `sudo` (create, append, edit through root). **Not tested**: a real correct sudo password through the dialog; the dialogs on screen.
+
 ## 0l. Terminal and logs for the agent: robust run_command, terminal, read_log, terminal_screen (2026-11-18)
 
 Problem: `run_command` used popen (stderr on the user's terminal, shared stdin, no timeout), so the model did not see
@@ -377,14 +396,14 @@ Done (agent, ChatML and Gemma 4 formats; gpt-oss not):
   format), **session expert heat** (the same layer x expert vector as the `.heat`, only if the expert cache
   is on), **compact conversation** (summary + last 2 user requests with what came after, in the exact
   cache text) **with the tokenized ids**, and the whole conversation (for those who want to reprocess everything).
-  Saved at every reply and when switching sessions (`/retomar`, `/sessao` to another file, `/novo`) in the cheap version
-  (without summarizing: cuts the old turns and keeps a summary that already existed); on exit (`/sair`, end of input), with a
+  Saved at every reply and when switching sessions (`/resume`, `/session` to another file, `/new`) in the cheap version
+  (without summarizing: cuts the old turns and keeps a summary that already existed); on exit (`/exit`, end of input), with a
   summary made by the model (`ah_summary`) when the messages exceed `KATANA_RETOMAR_TOK` tokens (default 1500).
   `KATANA_SESS_RESUMO=troca` also summarizes on switching (costs minutes on large models).
 - Disk limit and expiry: in the session folder, `.ksess` files older than `KATANA_SESS_DIAS` (30) are deleted and,
   if the folder exceeds `KATANA_SESS_MB` (256), the oldest ones. The KV saved in `~/.katana/cache` follows PFX_KEEP (8).
 - **Resume**: `katana agent <model> --retomar <file>` (writes back to the same file) or `--sessao <file>`;
-  while running, `/retomar <file>` and `/sessao <file>` (the latter is silent: it does not send READY). The resume:
+  while running, `/resume <file>` and `/session <file>` (the latter is silent: it does not send READY). The resume:
   (1) refuses a session from another model (`KATANA_RETOMAR_OUTRO=1` forces); (2) `heat_apply`: replaces the heat with the session's
   and requests only the S hottest of each layer (with the loader thread the load runs alongside the prompt; without it,
   `expert_load` right away); (3) renders the compact conversation with the current system prompt, checks it against the saved ids;
@@ -399,15 +418,15 @@ Done (agent, ChatML and Gemma 4 formats; gpt-oss not):
 - **`katana calibrar <model> [text]`**: runs varied texts (pt/en, code, tool call) token by token and
   saves as `.heat` the average of the heat (the normal `.heat` keeps only the heat at the end of the last session, which decays 0.98
   per token). It serves gemma4 (request from section 10, item 2) and any MoE in hybrid mode.
-- **katana-desktop**: when sending the 1st message of a session, `/sessao <sessions>/<id>.ksess`; when opening a session with
-  `.ksess`, `/retomar` (without the text summary in the message); without `.ksess`, or if the engine refuses (no RESUME before
+- **katana-desktop**: when sending the 1st message of a session, `/session <sessions>/<id>.ksess`; when opening a session with
+  `.ksess`, `/resume` (without the text summary in the message); without `.ksess`, or if the engine refuses (no RESUME before
   READY), it goes back to the previous text summary. It shows the notice "Sessao retomada: N tokens de contexto compacto (...) em
   X s, recalculado|cache KV lido do disco; W especialistas aquecidos". Deleting the session deletes the `.ksess`. Switching
   model with a session open: the new engine tries to resume and refuses if it is another model. The selftest gained the
   "retomar sessao pelo motor" part.
 
 **Measured (2026-11-17, evening; the GPU was contested by other agents running bench of gemma4/Qwen3.6, so the
-mode of each round varied: noted alongside).** Time to the 1st reply = `/retomar` + question up to the 1st token, with the
+mode of each round varied: noted alongside).** Time to the 1st reply = `/resume` + question up to the 1st token, with the
 model already loaded (Python harness reading the markers). Isolated HOME (empty agent memory), question about
 a fact stated only in the 1st turn ("codigo do cofre", which only survives in the compact one via the summary).
 
@@ -429,7 +448,7 @@ Estimate (not measured): warm-up only changes the speed of the first generated t
 qwen35moe already uses temporary slots for the cold ones).
 
 Observed costs: the summary on exit/session switch reprocesses the transcript (Qwen3.6 hybrid ~9 min for ~6k
-tokens at 9 tok/s; gemma4 ~7 min). The desktop sends `/sair` and kills the agent after 3 s, so when closing the app the
+tokens at 9 tok/s; gemma4 ~7 min). The desktop sends `/exit` and kills the agent after 3 s, so when closing the app the
 `.ksess` stays with the cheap version (last turns + summary that already existed). KV on disk for gemma4 is large
 (CPU fp32 cache: 507 MB for 1988 tokens); qwen35moe on the Vulkan graph does not save KV (DeltaNet state on the GPU).
 
@@ -444,7 +463,7 @@ Pending:
 - `katana calibrar` did not run with the expert cache on (same reason); run it on gemma4 with the GPU free.
 - KV of qwen35moe on the Vulkan graph (read/write vkg + DeltaNet state of the GPU) so the resume does not recompute.
 - Summary in the background / at the end of each long turn, so closing the app does not lose the summary; increase the
-  wait of `/sair` in the desktop.
+  wait of `/exit` in the desktop.
 - `chat` (without tools) does not have `--retomar` yet; only `agent`.
 - The initial test of this work called the `remember` tool and saved 4 test facts in `~/.katana/memoria.txt`
   (Andorinha/Joaquim, quinta dia 26, porta 7443, verde-musgo): delete by hand (the environment did not let me edit).
@@ -459,7 +478,7 @@ removed. To swap the binary in use: `cp desktop-qt/build/katana-desktop-qt katan
 
 Done (commit eff16d8):
 - **Agent context compaction** (ChatML format only; Gemma 4 and gpt-oss keep the "contexto cheio" warning).
-  The agent keeps the messages that are already in the KV cache. `/compactar` forces; automatic when the turn would exceed
+  The agent keeps the messages that are already in the KV cache. `/compact` forces; automatic when the turn would exceed
   85% of the context (`KATANA_COMPACT=0` turns off the automatic one). Layers: (1) tool results prior
   to the last user request become `[resultado de X omitido para economizar contexto: N bytes]`; (2) if still
   above 50% of the context (or forced), the turns before the last request become a summary generated by the
@@ -468,17 +487,17 @@ Done (commit eff16d8):
   cache from scratch (disk cache system via pfx_prepare + summary + last turn + pending text). The summary
   appears on stderr in `[resumo]`.
 - **Markers with KATANA_UI=1** (stdout, one line each):
-  - `\x01TOKENS <pos> <ctx>` after each reply (agent and plain chat) and after `/compactar`;
+  - `\x01TOKENS <pos> <ctx>` after each reply (agent and plain chat) and after `/compact`;
     it comes before the `\x01READY` of the next prompt.
   - `\x01COMPACT <tokens_before> <tokens_after>` at each compaction.
 - **`katana tokenize <model> [file|-] [--ids]`**: vocabulary only (g_vocab_only). Free text: counts (with BOS
   if the model uses it). If all non-empty lines are `system|user|assistant<TAB>text` (`\n`, `\t` escaped),
   it builds the conversation with turn_text (same format as chat and toktest) and prints tokens per message and total.
 
-Measured (qwen2.5-1.5b Q4_K_M, KATANA_CTX=2048, 8 long requests + /compactar): the agent's system prompt
+Measured (qwen2.5-1.5b Q4_K_M, KATANA_CTX=2048, 8 long requests + /compact): the agent's system prompt
 takes ~950 tokens; automatic compactions 1726->1430 and 1890->1420 tokens; the summary kept the user's name and city
 ("Carla", "Recife") and the following replies stayed coherent. The 1.5B confuses "what is my name"
-with its own name (answers "Katana"): model limit, not the summary's. `/compactar` right after a
+with its own name (answers "Katana"): model limit, not the summary's. `/compact` right after a
 compaction may not shrink (1437->1448): it summarizes the summary again. Dense selftest (qwen2.5-1.5b) OK.
 `tokenize` checked by hand (correct ChatML ids; "Hello world\n" = 9707 1879 198); it uses the same encode()
 covered by the golden test (tools/tokref did not run here: the python package tokenizers is missing).
@@ -558,7 +577,7 @@ Went into main in this session:
 5. **Merging GGUF in parts** (for GLM-4.5-Air Q4_K_M and other large split ones); note: the Air Q4_K_M (~65 GB) does not fit well in the 64 GB of RAM of this machine.
 
 6. **GLM-4-9B (`glm4` dense) on the GPU**: today CPU only ("Vulkan pendente" in `katana models`); dense and similar to what already runs, least effort of the three.
-7. **CLI in English** (owner's request): started 2026-11-18: the folder is now `models/` and the command `katana models` (`modelos` stays as an alias, and `modelos/` is still searched as a fallback). Still in Portuguese: chat commands (`/novo`, `/sistema`, `/salvar`, `/ajuda`, `/sair`), `calibrar`, `~/.katana/memoria.txt` and `agente.log`, and some messages.
+7. **CLI in English** (owner's request): started 2026-11-18. Done: the folder is `models/` and the command `katana models`; the chat commands are `/new`, `/system`, `/save`, `/help`, `/exit` (`/quit`), `/compact`, `/session`, `/resume`, plus the chat messages and help. The old Portuguese names (`modelos`, `/novo`, `/sistema`, `/salvar`, `/ajuda`, `/sair`, `/compactar`, `/sessao`, `/retomar`) stay as silent aliases (`cmd_norm` in `src/katana.c`), and `modelos/` is still searched as a fallback. Still in Portuguese: `calibrar`, `~/.katana/memoria.txt` and `agente.log`, the stats line the desktop parses (`entrada: ... resposta: ... contexto N de M`, `contexto cheio`), the agent's tool messages and the desktop UI strings.
 8. **Look for the model in `models/`** when the name passed does not exist in the current folder (`./katana agent X.gguf` failed).
 
 Note: the expert cache is only worthwhile for MoE; on dense models the equivalent is fitting entirely on the GPU. MoE still without it: gpt-oss and GLM-4.5-Air (item 1).
@@ -1178,7 +1197,7 @@ What was missing: fp16 in the global ones and removing the agent's special case.
   only changes the address (`pos % cap`). The ring's slack of 16 covers the batch (16) and the speculative draft (4).
 - `print_info` now sums the real size per layer. Disk prefix (`pfx_*`) off on gemma4 (geometry
   per layer; before it already did not match because the prefix is ChatML). Agent compaction only exists in ChatML: on
-  gemma4 it does not run (a full context asks for `/novo`).
+  gemma4 it does not run (a full context asks for `/new`).
 - Agent: default `KATANA_CTX` 131072 also on gemma4 (the `strstr(argv[2], "emma")` case was removed).
 
 **Measured** (KATANA_CPU=1, i7-11800H):
@@ -1386,7 +1405,7 @@ binary. If the batch MoE in the slots does not win, return the default to the CP
 ## 0m. sudo in the agent (2026-11-18)
 `run_command` with `sudo`: if `sudo -n true` fails, the engine asks for the password once (terminal without echo; on the desktop, `NEEDPASS` marker and `\x01PASS password` reply on the input), validates with `sudo -A -k -v` and keeps it only in memory (`g_sudo_pw`). Commands run with `sudo() { command sudo -A "$@"; }` and `SUDO_ASKPASS=~/.katana/askpass.sh` reading `KATANA_PW` from the child's environment. Test with a fake sudo in `tools/testar_ferramentas.sh` (96/96). It does not cover the `terminal` tool (pty): there the model sees the password prompt. Not tested with real sudo nor with the dialog in the window.
 
-## 0n. root by default and the howto tool (2026-11-18)
+## 0n. root by default and the howto tool (2026-11-18; SUPERSEDED by 0m: since 2026-11-18 evening the default is the normal user and root only when sudo is requested; `KATANA_SUDO=1` restores root by default)
 In the interactive agent, `run_command` runs everything as root: `exec sudo -A sh -c '<cmd>'` (escaped quotes), with the password asked once (0m). `KATANA_SUDO=0` turns it off. Outside the agent (`katana tool`, `toolrun`) it is not the default (only with `KATANA_SUDO_FORCE=1`, used in the test with the fake sudo). If the password does not come (cancelled, no tty), the command runs without sudo. Cautions: files created by commands belong to root (write_file/edit_file still run as the user); SIGKILL on timeout kills the sudo but does not report to the root child. New tool `howto(topic)` with recipes (web, terminal, sudo, files, code, packages, logs, all) and 2 new lines in the prompt about web and terminal. Not measured: a model calling `howto`; the prompt cost (+~0.6 KB) in the prefix cache.
 
 ## 0o. persistent root shell (2026-11-18)

@@ -74,6 +74,8 @@ class Backend : public QObject
     Q_PROPERTY(int ctxTotal READ ctxTotal NOTIFY textsChanged)
     Q_PROPERTY(QVariantList sessions READ sessions NOTIFY sessionsChanged)
     Q_PROPERTY(QString currentSessionId READ currentSessionId NOTIFY sessionsChanged)
+    Q_PROPERTY(QString workspace READ workspace NOTIFY workspaceChanged)
+    Q_PROPERTY(bool workspaceTrusted READ workspaceTrusted NOTIFY workspaceChanged)
     Q_PROPERTY(QStringList queue READ queue NOTIFY queueChanged)
     Q_PROPERTY(bool queuePaused READ queuePaused NOTIFY queueChanged)
     Q_PROPERTY(bool hasPendingContext READ hasPendingContext NOTIFY stateChanged)
@@ -110,6 +112,10 @@ public:
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void answerAsk(bool yes);                 // resposta ao pedido de permissao do agente (confiar na pasta, gravar fora dela...)
+    Q_INVOKABLE bool setWorkspace(const QString &path);   // pasta de trabalho do agente (/cd no agente em execucao)
+    QString workspace() const;
+    bool workspaceTrusted() const { return m_wsTrusted; }
     Q_INVOKABLE bool enqueue(const QString &text);  // mensagem para depois: so enquanto o agente responde
     Q_INVOKABLE void removeQueued(int i);
     Q_INVOKABLE void resumeQueue();                 // depois de Parar a fila fica pausada
@@ -143,8 +149,10 @@ signals:
     void thinkingChanged();
     void textsChanged();
     void sessionsChanged();
-    void passwordRequested();
+    void passwordRequested(bool retry);
     void queueChanged();
+    void workspaceChanged();
+    void askRequested(const QString &kind, const QString &what, const QString &detail);
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -201,5 +209,7 @@ private:
     QVariantList m_sessions;
     QStringList m_queue;
     bool m_paused = false;
+    QString m_wsReal;          // pasta confirmada pelo agente (marcador CWD)
+    bool m_wsTrusted = false;
     void drainQueue();
 };
