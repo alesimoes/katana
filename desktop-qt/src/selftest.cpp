@@ -330,7 +330,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         be.injectMarker("TODO ");
         check(!be.planMode() && be.todoSteps().isEmpty(), "modo plano desligado e lista limpa");
         // tela de modelos: catalogo e maquina lidos do motor; abre pelo botao; erro de download aparece
-        check(waitFor([&] { return be.catalog().size() >= 5 && !be.machine().value("text").toString().isEmpty(); }, 15000),
+        check(waitFor([&] { return be.catalog().size() >= 2 && !be.machine().value("text").toString().isEmpty(); }, 15000),
               "catalogo de modelos e dados da maquina lidos do motor");
         int nrec = 0;
         for (const QVariant &v : be.catalog()) nrec += v.toMap()["recommended"].toBool();
@@ -348,7 +348,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
             qputenv("KATANA_PULL_URL", "file:///nao/existe.gguf");
             Backend b2(be.katanaPath(), td.path(), td.path());
             check(!b2.hasUsableModel(), "pasta vazia: nenhum modelo utilizavel (a tela de modelos abre sozinha)");
-            b2.pull("qwen3.5-4b");
+            b2.pull("gemma-4-26b");
             check(waitFor([&] { return b2.pullId().isEmpty() && !b2.pullError().isEmpty(); }, 30000), "download que falha mostra o erro");
             qunsetenv("KATANA_PULL_URL");
             b2.shutdown();

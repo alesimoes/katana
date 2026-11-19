@@ -378,6 +378,14 @@ static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_l
         memcpy(m->x, X + (size_t)((n - 1) % GPU_BMAX) * d, d * sizeof(float));
         return want_logits ? cpu_head(m) : NULL;
     }
+    if (vkqd.ok && gpu.mv_host && !gpu.force_cpu && n > 1) {      /* qwen35 denso hibrido: produtos do lote na GPU */
+        while (i < n) {
+            const int nb = n - i < vkqd.P ? n - i : vkqd.P;
+            lg = vk_qd_n(m, toks + i, nb, pos0 + i, want_logits && i + nb == n);
+            i += nb;
+        }
+        return lg;
+    }
     for (; i < n; i++) lg = forward(m, toks[i], pos0 + i, want_logits && i == n - 1);
     return lg;
 }
