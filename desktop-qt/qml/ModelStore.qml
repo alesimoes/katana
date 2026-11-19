@@ -64,7 +64,9 @@ Rectangle {
                 width: parent.width
                 wrapMode: Text.WordWrap
                 visible: text.length > 0
-                text: backend.machine.text ? "Esta máquina: " + backend.machine.text : ""
+                text: backend.machine.text ? "Esta máquina: " + backend.machine.text
+                      + (backend.machine.ram_gb && parseFloat(backend.machine.ram_gb) < 21.5
+                         ? ". O katana pede 24 GB de memória ou mais: nenhum dos modelos cabe aqui." : "") : ""
                 color: Theme.fg
                 font.family: Theme.sans
                 font.pixelSize: 13

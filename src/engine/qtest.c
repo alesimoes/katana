@@ -243,7 +243,7 @@ static int selftest(Model *m) {
         }
         free(ref);
     }
-    if (!c->n_expert) {     /* camadas em lote na CPU x as mesmas camadas token a token (produto inteiro nos dois) */
+    if (!c->n_expert && !c->ssm_inner) {     /* camadas em lote na CPU x as mesmas camadas token a token (produto inteiro nos dois); o qwen35 denso nao usa cpu_layers_n */
         const int N = 23, V = c->vocab;
         float *X = xalloc((size_t)N * d, sizeof(float)), *Y = xalloc((size_t)N * d, sizeof(float));
         gpu.force_cpu = 1; cpu_exact = 0;

@@ -231,11 +231,8 @@ bool Backend::hasUsableModel() const
 static QString catalogNote(const QString &id, const QString &fallback)
 {
     static const QHash<QString, QString> t = {
-        {"qwen3.5-4b", "Leve. Para computador com 8 GB de memória, com ou sem placa de vídeo."},
-        {"qwen3.5-9b", "Médio. Pede 16 GB de memória; rápido com placa de vídeo de 8 GB."},
-        {"gemma-4-12b", "Médio. Pede 16 GB de memória; rápido com placa de vídeo de 8 GB."},
-        {"gemma-4-26b", "Grande. Pede 32 GB de memória; usa a placa de vídeo que houver."},
-        {"qwen3.6-35b", "Grande. Pede 32 GB de memória; o melhor com ferramentas e programação."},
+        {"gemma-4-26b", "Pede 24 GB de memória ou mais; usa a placa de vídeo que houver."},
+        {"qwen3.6-35b", "Pede 32 GB de memória ou mais; o melhor com ferramentas e programação."},
     };
     return t.value(id, fallback);
 }

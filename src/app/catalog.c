@@ -3,7 +3,9 @@
  * katana catalog [pasta]       lista os modelos do catalogo: o que ja esta na pasta, o que cabe e o recomendado
  * katana pull <id> [pasta]     baixa o modelo (curl, retoma download interrompido), confere o sha256 e renomeia
  * A saida e feita para pessoa e para a interface: uma linha por item, campos separados por TAB.
- * O catalogo e fixo no motor: cada item aponta para uma revisao exata do repositorio e tem o sha256 do arquivo. */
+ * O catalogo e fixo no motor: cada item aponta para uma revisao exata do repositorio e tem o sha256 do arquivo.
+ * So entram modelos com especialistas, medidos com as ferramentas do agente; requisito minimo: 24 GB de memoria
+ * (decisao do dono em 2026-11-19: modelos densos pequenos ficaram de fora). */
 
 #ifndef _WIN32
 #include <sys/statvfs.h>
@@ -18,21 +20,12 @@ typedef struct {
 } CatItem;
 
 static const CatItem g_cat[] = {
-    { "qwen3.5-4b", "Qwen3.5 4B", "Qwen3.5-4B-Q4_K_M.gguf", "unsloth/Qwen3.5-4B-GGUF", "e87f176479d0855a907a41277aca2f8ee7a09523",
-      "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4", 2740937888LL, 1, 0,
-      "leve: computador com 8 GB de memoria, com ou sem placa de video" },
-    { "qwen3.5-9b", "Qwen3.5 9B", "Qwen3.5-9B-Q4_K_M.gguf", "unsloth/Qwen3.5-9B-GGUF", "3885219b6810b007914f3a7950a8d1b469d598a5",
-      "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8", 5680522464LL, 2, 0,
-      "medio: 16 GB de memoria; rapido com placa de 8 GB" },
-    { "gemma-4-12b", "Gemma 4 12B", "gemma-4-12b-it-Q4_K_M.gguf", "unsloth/gemma-4-12b-it-GGUF", "fc034cfff751157913579611efad8462ac1be606",
-      "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42", 7121861440LL, 2, 0,
-      "medio: 16 GB de memoria; rapido com placa de 8 GB" },
     { "gemma-4-26b", "Gemma 4 26B A4B", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", "unsloth/gemma-4-26B-A4B-it-GGUF", "c099eb48e663fd284577b04978a94ffccb261841",
       "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f", 16947541728LL, 3, 1,
-      "grande: 32 GB de memoria; usa a placa de video que houver" },
+      "24 GB de memoria ou mais; usa a placa de video que houver" },
     { "qwen3.6-35b", "Qwen3.6 35B A3B", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "unsloth/Qwen3.6-35B-A3B-GGUF", "a483e9e6cbd595906af30beda3187c2663a1118c",
       "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61", 22134528992LL, 3, 1,
-      "grande: 32 GB de memoria; o melhor com ferramentas e programacao" },
+      "32 GB de memoria ou mais; o melhor com ferramentas e programacao" },
 };
 #define N_CAT ((int)(sizeof g_cat / sizeof g_cat[0]))
 
@@ -85,7 +78,7 @@ static void hw_probe(HwInfo *h, const char *dir) {
    especialistas so uma parte dos pesos trabalha por token, entao a placa pequena ja ajuda. */
 static int cat_fit(const CatItem *c, const HwInfo *h) {
     const double gb = c->bytes / 1073741824.0;
-    if (gb + 3.0 > h->ram_gb) return 0;
+    if (gb + 2.0 > h->ram_gb) return 0;
     if (c->moe) return gb * 1.4 <= h->ram_gb ? 2 : 1;
     if (h->vram_gb >= gb + 1.0) return 2;
     return gb <= 3.5 ? 2 : 1;
