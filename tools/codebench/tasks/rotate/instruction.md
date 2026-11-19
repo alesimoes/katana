@@ -1,0 +1,1 @@
+rotate(matrix) in matrix.py must rotate a matrix 90 degrees clockwise and return a new list of lists ([[1,2],[3,4]] -> [[3,1],[4,2]]); it must also work for non-square matrices. Right now it rotates counterclockwise. Fix it.

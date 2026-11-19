@@ -1,0 +1,1 @@
+merge_intervals(intervals) in merge.py must merge overlapping AND touching intervals: [[1,4],[4,5]] gives [[1,5]]. Input may be unsorted and must not be modified. Currently touching intervals are not merged. Fix it.

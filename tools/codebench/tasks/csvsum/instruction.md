@@ -1,0 +1,1 @@
+sum_column(path, name) in report.py must return the float sum of a CSV column. The files have a header row and some fields are quoted and contain commas (for example "hi, there"); blank values count as 0. It currently returns wrong numbers for such files. Fix it.

@@ -1,0 +1,1 @@
+flatten(x) in flatten.py crashes with RecursionError when the nested list contains strings, e.g. flatten([1, [2, ["ab", 3]]]). Lists and tuples must be flattened; strings and bytes are leaves. Fix it.

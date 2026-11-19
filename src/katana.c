@@ -17141,7 +17141,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         }
         buf_str(&tr, "Voce: "); buf_str(&tr, line); buf_str(&tr, "\n");
 
-        for (int round = 0; round < 12; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
+        for (int round = 0; round < 40; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);

@@ -1,0 +1,1 @@
+parse_duration(text) in duration.py returns seconds for strings such as "1h30m" or "45s". It must also accept days ("2d" = 172800), spaces between parts ("1h 30m"), and a bare number meaning seconds ("90"). Any unknown unit or empty string must raise ValueError. Today "2d" raises KeyError and "1h 30m" crashes. Fix it.
