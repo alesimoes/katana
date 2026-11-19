@@ -49,7 +49,7 @@
   .hero h1 {
     margin: 0; font: 800 clamp(2.4rem, 8vw, 4.4rem)/1.05 var(--mono); letter-spacing: -.04em;
   }
-  .mark { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; }
+  .mark { display: flex; align-items: flex-end; gap: 22px; flex-wrap: nowrap; }
   .mark h1 { margin: 0; line-height: 0; }
   .pixtitle, .samurai { image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
   .pixtitle { width: 324px; height: 72px; }   /* 36x8 em escala inteira 9x */
@@ -89,7 +89,13 @@
   .callout { border-left: 3px solid var(--ac); background: var(--card); border-radius: 0 12px 12px 0; padding: 12px 18px; margin: 20px 0; color: var(--mut); }
   .callout strong { color: var(--fg); }
   footer { margin: 80px 0 40px; padding-top: 22px; border-top: 1px solid var(--bd); color: var(--mut); font: .85rem var(--mono); display: flex; gap: 16px; flex-wrap: wrap; }
-  @media (max-width: 560px) { .hero { padding-top: 30px; } .pixtitle { width: 252px; height: 56px; } .samurai { width: 96px; height: 96px; } }
+  @media (max-width: 560px) {
+    .hero { padding-top: 30px; }
+    .mark { gap: 12px; }
+    .samurai { width: 96px; height: 96px; }          /* 48x48 em 2x */
+    .pixtitle { width: 216px; height: 48px; }        /* 36x8 em 6x: samurai + titulo cabem numa linha em 360 px */
+  }
+  @media (max-width: 380px) { .pixtitle { width: 180px; height: 40px; } }   /* 5x */
 </style>
 </head>
 <body>
