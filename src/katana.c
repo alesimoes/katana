@@ -14557,6 +14557,22 @@ static void cmd_on_sigint(int s) { (void)s; g_cmd_int = 1; }
 /* roda `sh -c cmd` em novo grupo de processos (setsid), stdin /dev/null, stdout+stderr no mesmo cano.
  * tmo = segundos (0 = sem limite). Devolve 0, ou -1 se nao conseguiu iniciar. */
 static char g_sudo_pw[256], g_askpass_path[512];   /* senha do sudo desta sessao (so em memoria) */
+static int g_ui_live;   /* 1 so durante o run_command do agente: repassa a saida ao vivo para a interface (marcador TOOLLIVE) */
+static size_t g_live_total;
+static void ui_live(const char *b, size_t n) {
+    if (!n || !g_ui_live || !getenv("KATANA_UI")) return;
+    if (g_live_total > ((size_t)256 << 10)) return;          /* limite por comando; o resultado final vem em TOOLOUT */
+    g_live_total += n;
+    fputs("\x01" "TOOLLIVE ", stdout);
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char ch = (unsigned char)b[i];
+        if (ch == '\n') fputs("\\n", stdout);
+        else if (ch == '\\') fputs("\\\\", stdout);
+        else if (ch == '\r' || ch == 1) continue;
+        else putchar(ch);
+    }
+    putchar('\n'); fflush(stdout);
+}
 static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, int *interrupted) {
     int pf[2];
     *rc = -1; *timedout = 0; *interrupted = 0;
@@ -14599,7 +14615,7 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
         const int w = poll(&p, 1, exited ? 100 : 200);
         if (w > 0) {
             const ssize_t n = read(pf[0], buf, sizeof buf);
-            if (n > 0) ht_add(ht, buf, (size_t)n);
+            if (n > 0) { ht_add(ht, buf, (size_t)n); ui_live(buf, (size_t)n); }
             else if (n == 0 || (errno != EINTR && errno != EAGAIN)) eof = 1;
         } else if (w == 0 && exited) break;                  /* o shell acabou e nada mais chega (processo em segundo plano segurando o cano) */
     }
@@ -14775,12 +14791,14 @@ static void tool_run_command(const char *cmd, const char *js, const char *end, c
         if (wrapped) cmd = wrapped;
     }
     ht_init(&h, L / 3, L - L / 3);
+    g_ui_live = 1; g_live_total = 0;
     int ran = -1;
     if (wrapped && sudo_default()) {       /* sessao root persistente: mantem cwd e variaveis e nao pede a senha de novo */
         ran = root_exec(shown, tmo, &h, &rc, &to, &ir);
         if (ran != 0) { ht_free(&h); ht_init(&h, L / 3, L - L / 3); }
     }
     if (ran != 0 && run_cmd_ex(cmd, tmo, &h, &rc, &to, &ir) != 0) { ht_free(&h); free(wrapped); snprintf(out, cap, "error: cannot run the command"); return; }
+    g_ui_live = 0;
     cmd = shown; free(wrapped);
     char *body = (char *)malloc(L + 200);
     if (!body) { ht_free(&h); snprintf(out, cap, "error: out of memory"); return; }
@@ -15021,7 +15039,8 @@ static int root_exec(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, i
             if (g_rootS.tot - st > TERM_BUF) st = g_rootS.tot - TERM_BUF;
             const size_t add = (size_t)(g_rootS.tot - st);
             if (n + add + 1 > cap) { while (n + add + 1 > cap) cap *= 2; if (cap > (size_t)32 << 20) { /* muito grande: guarda so o fim */ size_t keep = (size_t)1 << 20; if (n > keep) { memmove(acc, acc + n - keep, keep); n = keep; } cap = (size_t)8 << 20; } char *na = (char *)realloc(acc, cap); if (!na) break; acc = na; }
-            for (size_t i = 0; i < add; i++) acc[n++] = g_rootS.buf[(st + i) % TERM_BUF];
+            { const size_t n0 = n; for (size_t i = 0; i < add; i++) acc[n++] = g_rootS.buf[(st + i) % TERM_BUF];
+              if (g_ui_live && !strstr(acc + (n0 > 80 ? n0 - 80 : 0), "__KEND_")) { char *cl3 = (char *)malloc(add + 1); if (cl3) { const size_t m3 = term_clean(acc + n0, add, cl3); ui_live(cl3, m3); free(cl3); } } }
             acc[n] = 0;
             last = g_rootS.tot;
             hit = strstr(acc, mk);

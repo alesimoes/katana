@@ -119,6 +119,8 @@ Item {
                 selectedTextColor: Theme.acfg
                 background: null
                 Accessible.name: "Mensagem"
+                TextMenu { id: tmenu; target: ta }
+                TapHandler { acceptedButtons: Qt.RightButton; onTapped: { ta.forceActiveFocus(); tmenu.popup(); } }
                 Accessible.role: Accessible.EditableText
                 Keys.onPressed: (e) => {
                     if (e.key === Qt.Key_Escape && backend.answering) { e.accepted = true; backend.stop(); return; }

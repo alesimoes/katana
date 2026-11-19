@@ -40,6 +40,7 @@ qt_add_qml_module(katana-desktop-qt
         qml/CodeBlock.qml
         qml/ToolCard.qml
         qml/Composer.qml
+        qml/TextMenu.qml
         qml/ContextMeter.qml
         qml/Markdown.js
 )

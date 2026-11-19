@@ -99,6 +99,7 @@ Rectangle {
                 spacing: 3
                 width: g.width - 52
                 property bool showOut: false
+                readonly property bool live: g.active && stp.index === g.steps.length - 1
                 Row {
                     spacing: 8
                     width: parent.width
@@ -118,12 +119,12 @@ Rectangle {
                         id: outBtn
                         visible: !!stp.modelData.out
                         font.family: Theme.sans; font.pixelSize: 12; color: Theme.ac
-                        text: stp.showOut ? "ocultar saída" : "ver saída"
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: stp.showOut = !stp.showOut }
+                        text: (stp.showOut || stp.live) ? "ocultar saída" : "ver saída"
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: stp.showOut = !(stp.showOut || stp.live) }
                     }
                 }
                 Rectangle {
-                    visible: stp.showOut && !!stp.modelData.out
+                    visible: (stp.showOut || stp.live) && !!stp.modelData.out
                     width: parent.width
                     height: visible ? Math.min(outFl.contentHeight + 16, 220) : 0
                     radius: 8
@@ -136,6 +137,7 @@ Rectangle {
                         contentWidth: outTe.width; contentHeight: outTe.height
                         boundsBehavior: Flickable.StopAtBounds
                         flickableDirection: Flickable.VerticalFlick
+                        onContentHeightChanged: if (stp.live) contentY = Math.max(0, contentHeight - height)
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                         TextEdit {
                             id: outTe
@@ -145,6 +147,8 @@ Rectangle {
                             wrapMode: TextEdit.WrapAnywhere
                             color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12
                             selectionColor: Theme.ac; selectedTextColor: Theme.acfg
+                            TextMenu { id: omenu; target: outTe }
+                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: omenu.popup() }
                         }
                     }
                 }

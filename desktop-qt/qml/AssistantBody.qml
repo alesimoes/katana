@@ -32,6 +32,8 @@ Column {
                     font.pixelSize: 15
                     Accessible.role: Accessible.StaticText
                     Accessible.name: "Resposta"
+                    TextMenu { id: amenu; target: parent }
+                    TapHandler { acceptedButtons: Qt.RightButton; onTapped: amenu.popup() }
                 }
             }
             Loader {

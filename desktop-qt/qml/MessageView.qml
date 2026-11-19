@@ -115,6 +115,8 @@ Item {
                             font.pixelSize: 15
                             Accessible.role: Accessible.StaticText
                             Accessible.name: "Voce: " + d.text
+                            TextMenu { id: umenu; target: ut }
+                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: umenu.popup() }
                         }
                     }
                 }

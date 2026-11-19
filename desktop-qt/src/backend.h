@@ -29,7 +29,7 @@ public:
     Q_INVOKABLE QVariantMap get(int i) const;
     void append(const QString &kind, const QString &text, const QString &name = {});
     void appendToLast(const QString &text);
-    void setLastToolOut(const QString &out);
+    void setLastToolOut(const QString &out, bool append = false);
     void setAll(const QList<Item> &items);
     void clear() { setAll({}); }
 signals:
