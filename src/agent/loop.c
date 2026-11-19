@@ -371,7 +371,8 @@ static int agent(Model *m, int max_tokens, float temp) {
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);
-            const int need = !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor));
+            const int need = !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor) || g_ctx_lost);
+            g_cp_nolive = g_ctx_lost; g_ctx_lost = 0;      /* o subagente nao conseguiu devolver o cache: o caminho de compactacao recalcula a conversa */
             if (!need && pos + ids.n + 64 >= c->ctx) {
                 fprintf(stderr, "[contexto cheio (%d de %d tokens): use /new to restart]\n", pos, c->ctx);
                 free(ids.ids);
@@ -434,7 +435,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     { const long room = ((long)c->ctx - pos - 900) * 3; g_budget = room < 1500 ? 1500 : room > TOOL_WEB ? TOOL_WEB : (size_t)room; }
                     { size_t sl = strcspn(ap, "\n"); fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); } }
                     if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.", max_tokens);
-                    else agent_tool(name, ap, end, result, sizeof result);
+                    else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                     fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
                     defang(result, safe, sizeof safe);
@@ -480,7 +481,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); }
                 }
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.", max_tokens);
-                    else agent_tool(name, ap, end, result, sizeof result);
+                    else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
                 defang(result, safe, sizeof safe);

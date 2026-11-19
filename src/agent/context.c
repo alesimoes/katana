@@ -233,6 +233,7 @@ static char *ah_summary_live(Model *m, int pos, const char *pending) {
 }
 #define CP_SUM_HEAD "[Summary of the conversation so far, written by you to save context; the older messages were removed]\n"
 #define CP_REQ_HEAD "\n\n[The user's current request, still in progress. Continue from the summary and do not redo what is done]\n"
+static int g_cp_nolive;    /* 1: o cache KV da conversa nao e confiavel (subagente nao devolveu): sem resumo ao vivo */
 static int g_cp_floor;     /* depois de compactar, a proxima compactacao automatica so acima disto (evita recalcular a cada rodada) */
 
 /* compacta o historico e recalcula o cache com historico + pending (texto do turno atual ainda fora do cache,
@@ -257,7 +258,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     /* camada 2 ao vivo (automatico, ChatML): o proprio modelo resume a conversa a partir do cache que ja existe; ficam o
        resumo, o pedido em andamento e a ultima chamada com o resultado pendente. Cobre o caso de um pedido so com
        dezenas de rodadas de ferramenta, em que nao ha turno antigo para resumir. */
-    if (!force && !g_ah_g4 && n > target && *pending && last_u < h->n && h->n - last_u >= 4 && h->v[h->n - 1].role == 'a') {
+    if (!force && !g_ah_g4 && !g_cp_nolive && n > target && *pending && last_u < h->n && h->n - last_u >= 4 && h->v[h->n - 1].role == 'a') {
         fprintf(stderr, "%s[compactando: o modelo resume o trabalho feito ate aqui...]%s\n", CE(C_DIM), CE(C_RESET));
         char *sm = ah_summary_live(m, before, pending);
         if (sm) {
