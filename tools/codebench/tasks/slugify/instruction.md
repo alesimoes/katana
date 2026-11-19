@@ -1,0 +1,1 @@
+slugify(text) in slug.py must produce URL slugs: lowercase, accents removed ("Crème Brûlée" -> "creme-brulee"), every run of characters other than a-z and 0-9 becomes a single dash, and no leading or trailing dash. "Hello, World!" -> "hello-world". Today it only lowercases and replaces spaces. Fix it.

@@ -1,0 +1,1 @@
+count_words(text) in wc.py must be case-insensitive and ignore punctuation around words (characters . , ! ? ; : " '), so "Hello, hello! World." gives {"hello": 2, "world": 1}. A word like it's keeps its inner apostrophe. Words that are only punctuation are ignored. Fix it.
