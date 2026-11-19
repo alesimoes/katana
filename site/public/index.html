@@ -157,6 +157,19 @@
 </div>
 <p class="note">Alternating runs on the same machine, because the machine drifts over time. Your numbers will differ with your hardware.</p>
 
+<h2 id="desktop">Run the desktop app</h2>
+<p>The desktop app is a native window (Qt 6, no browser) that starts the agent for you. It needs the engine built first, a model file, and Qt 6.5 or newer with CMake 3.21 or newer. On Ubuntu or Debian the Qt packages used here are <code>qt6-base-dev</code>, <code>qt6-declarative-dev</code> and <code>qml6-module-qtquick-controls</code>.</p>
+<div class="term" aria-label="Desktop app commands">
+  <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$</span> ./build.sh                          <span class="c"># 1. the engine -> ./katana</span>
+<span class="p">$</span> desktop-qt/build.sh                 <span class="c"># 2. the app    -> desktop-qt/build/katana-desktop-qt</span>
+<span class="p">$</span> mkdir -p modelos &amp;&amp; cp model.gguf modelos/   <span class="c"># 3. put a GGUF model in modelos/</span>
+<span class="p">$</span> ./desktop-qt/build/katana-desktop-qt   <span class="c"># 4. run it, from the repository root</span></pre>
+</div>
+<p>The app looks for <code>katana</code> and the <code>modelos/</code> folder next to itself, one folder up, and in the current folder; <code>--katana PATH</code> and <code>--models DIR</code> override that. Pick the model with the selector under the message box, next to the send button (Qwen3.6-35B-A3B starts by default; Gemma 4 also works). The first start loads the model, which can take a while for a big one.</p>
+<p>Enter sends and Shift+Enter breaks the line. You can keep typing while the agent works, and your messages wait in a queue. Esc stops the answer. <code>Ctrl+`</code> opens a built-in terminal. Conversations are saved and resume with their context. To keep the app out of the way, <code>desktop-qt/instalar-dock.sh</code> adds it to the GNOME menu and dock.</p>
+<p class="note">Linux only for now: the Windows build was never compiled or tested.</p>
+
 <h2>What it is not</h2>
 <p>katana is a personal, from-scratch engine, developed and tested on a single Linux machine. It supports the architectures it implements (Qwen3.6, Gemma 4, Qwen3 MoE, OLMoE, dense Llama and Qwen, DeepSeek-V2, GLM-4 and gpt-oss), not every GGUF file. It is not a drop-in replacement for a mature, widely used inference stack, and the Windows build is not tested here.</p>
 </main>

@@ -133,6 +133,24 @@ Note the default is **no confirmation**: the agent acts on your machine. Run it 
 Context management: the agent compacts its own context (the model summarizes, tool results are shrunk), keeps the
 KV cache and the hot-expert state per session, and resumes old sessions without recomputing when it can.
 
+## Run the desktop app
+
+Requirements: the engine built (`./build.sh`), a GGUF model, Qt 6.5+ and CMake 3.21+ (on Ubuntu/Debian: `qt6-base-dev`,
+`qt6-declarative-dev`, `qml6-module-qtquick-controls`).
+
+```
+./build.sh                               # 1. the engine -> ./katana
+desktop-qt/build.sh                      # 2. the app    -> desktop-qt/build/katana-desktop-qt
+mkdir -p modelos && cp model.gguf modelos/   # 3. put a GGUF model in modelos/
+./desktop-qt/build/katana-desktop-qt     # 4. run it, from the repository root
+```
+
+The app looks for `katana` and `modelos/` next to itself, one folder up and in the current folder (`--katana PATH` and
+`--models DIR` override). Choose the model with the selector under the message box (Qwen3.6-35B-A3B starts by default;
+Gemma 4 also works). Do not copy the binary elsewhere: it needs the `Katana/` QML module that sits next to it in `build/`
+(use `ln -sf desktop-qt/build/katana-desktop-qt katana-desktop` for a shortcut). `desktop-qt/instalar-dock.sh` adds it to
+the GNOME menu and dock. Linux only for now.
+
 ## The desktop app (`desktop-qt/`)
 
 A native Qt 6 / QML application that starts `katana agent` as a child process (no browser, no HTTP server):
