@@ -7,7 +7,7 @@ stub), hidden/ (tests the agent never sees) and solution/ (a reference fix, used
 Usage:
   run.py --verify                                   check that every task fails before and passes after the reference fix
   run.py --model models/X.gguf --out a.jsonl        run the katana agent on every task, one fresh copy of repo/ each
-         [--tasks a,b] [--timeout 900] [--label NAME] [--katana ./katana] [--env KEY=VAL ...]
+         [--mode agent|code] [--tasks a,b] [--timeout 900] [--label NAME] [--katana ./katana] [--env KEY=VAL ...]
   run.py compare a.jsonl b.jsonl                    paired comparison (newly solved / lost, exact sign test)
 
 The agent runs in a temporary copy of repo/ as its working folder and receives the instruction as its first message.
@@ -76,7 +76,7 @@ def run_task(a, name):
     t0 = time.time()
     timed_out = False
     try:
-        p = subprocess.run([a.katana, "agent", a.model], cwd=work, input=msg + "\n/exit\n", capture_output=True,
+        p = subprocess.run([a.katana, a.mode, a.model], cwd=work, input=msg + "\n/exit\n", capture_output=True,
                            text=True, timeout=a.timeout, env=env)
         log = p.stdout + "\n" + p.stderr
     except subprocess.TimeoutExpired as e:
@@ -134,6 +134,7 @@ def main():
     ap.add_argument("--model"); ap.add_argument("--out"); ap.add_argument("--tasks")
     ap.add_argument("--timeout", type=int, default=900); ap.add_argument("--label", default="run")
     ap.add_argument("--katana", default=os.path.join(HERE, "..", "..", "katana"))
+    ap.add_argument("--mode", default="agent", choices=["agent", "code"], help="katana subcommand to run")
     ap.add_argument("--env", action="append"); ap.add_argument("--keep", help="folder to keep logs and final files")
     a = ap.parse_args()
     a.katana = os.path.abspath(a.katana)

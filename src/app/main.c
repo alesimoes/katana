@@ -857,7 +857,8 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return calibrar(&m, argc > 3 ? argv[3] : NULL);
     }
-    if (argc == 3 && strcmp(argv[1], "agent") == 0) {
+    if (argc == 3 && (strcmp(argv[1], "agent") == 0 || strcmp(argv[1], "code") == 0)) {
+        g_code = strcmp(argv[1], "code") == 0;      /* modo de programacao: prompt e ferramentas enxutos */
         perfil_apply(argv[2], 1);
         /* resultados de ferramentas ocupam muito contexto: 131072. Qwen3.6 (10 camadas de atencao) e gemma4 (anel de
            janela nas 25 locais, contexto so nas 5 globais) ficam em ~2,7-2,9 GB de KV fp16 a 128k */
@@ -1018,6 +1019,7 @@ static int run_main(int argc, char **argv) {
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
         "  katana serve <modelo.gguf> [porta]   conversa no navegador em http://127.0.0.1:porta (padrao 8080; so conversa)\n"
+        "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
         "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
     return 1;
