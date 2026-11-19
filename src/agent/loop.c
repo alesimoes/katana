@@ -254,6 +254,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (!read_line(line, sizeof line)) break;
         }
         if (line[0] == 0) continue;
+        if (line[0] == 1) continue;        /* resposta da interface (senha, escolha) que chegou sem pergunta pendente: nao e mensagem do usuario */
         cmd_norm(line, sizeof line);
         if (strncmp(line, "/cd ", 4) == 0) {            /* muda a pasta de trabalho do agente (confianca perguntada de novo se for nova) */
             const char *np = line + 4;
