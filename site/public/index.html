@@ -25,8 +25,7 @@
       --serif: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
     }
     body { background-image: none; }
-    .hero h1, h2 { font-family: var(--serif); font-weight: 600; letter-spacing: -.02em; }
-    .hero h1 { font-size: clamp(2.4rem, 7vw, 4rem); }
+    h2, .tag { font-family: var(--serif); font-weight: 600; letter-spacing: -.02em; }
     .term { box-shadow: 0 10px 30px rgba(31,29,26,.06); }
     .term .bar i { background: #d9d3c5; }
   }
@@ -50,7 +49,17 @@
   .hero h1 {
     margin: 0; font: 800 clamp(2.4rem, 8vw, 4.4rem)/1.05 var(--mono); letter-spacing: -.04em;
   }
-  .hero h1 em { font-style: normal; color: var(--ac); }
+  .mark { display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; }
+  .mark h1 { margin: 0; line-height: 0; }
+  .pixtitle, .samurai { image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+  .pixtitle { width: 324px; height: 72px; }   /* 36x8 em escala inteira 9x */
+  .samurai { width: 96px; height: 96px; }     /* 16x16 em escala inteira 6x */
+  .tag { margin: 26px 0 0; font: 700 clamp(1.3rem, 4.2vw, 1.9rem)/1.2 var(--mono); letter-spacing: -.02em; }
+  .tag em { font-style: normal; color: var(--ac); }
+  .btns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--bd); background: var(--card); color: var(--fg); text-decoration: none; font: 600 .92rem var(--mono); }
+  .btn.pri { background: var(--ac2); border-color: var(--ac2); color: #fff; }
+  .btn:hover { border-color: var(--ac); }
   .lead { font-size: 1.25rem; color: var(--mut); margin: 22px 0 0; max-width: 36em; }
   .lead strong { color: var(--fg); font-weight: 600; }
   .term {
@@ -80,16 +89,21 @@
   .callout { border-left: 3px solid var(--ac); background: var(--card); border-radius: 0 12px 12px 0; padding: 12px 18px; margin: 20px 0; color: var(--mut); }
   .callout strong { color: var(--fg); }
   footer { margin: 80px 0 40px; padding-top: 22px; border-top: 1px solid var(--bd); color: var(--mut); font: .85rem var(--mono); display: flex; gap: 16px; flex-wrap: wrap; }
-  @media (max-width: 560px) { .hero { padding-top: 30px; } }
+  @media (max-width: 560px) { .hero { padding-top: 30px; } .pixtitle { width: 252px; height: 56px; } .samurai { width: 72px; height: 72px; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-<nav><img src="icon.png" alt="" width="28" height="28"><b>katana</b><span class="links"><a href="#ai">AI</a><a href="#project">Project</a><a href="#me">Me</a></span></nav>
+<nav><img src="icon.png" alt="" width="28" height="28"><b>katana</b><span class="links"><a href="#ai">AI</a><a href="#project">Project</a><a href="#me">Me</a><a href="https://github.com/alesimoes/katana">Git</a></span></nav>
 
 <header class="hero">
-  <h1>Big models.<br><em>Small hardware.</em><br>All local.</h1>
+  <div class="mark">
+    <img class="samurai" src="samurai.png" alt="" width="16" height="16">
+    <h1><picture><source srcset="titulo-claro.png" media="(prefers-color-scheme: light)"><img class="pixtitle" src="titulo-escuro.png" alt="katana" width="36" height="8"></picture></h1>
+  </div>
+  <p class="tag">Big models. <em>Small hardware.</em> All local.</p>
   <p class="lead">katana is an inference engine written <strong>from scratch in C</strong>. It runs large Mixture-of-Experts models on a laptop GPU, with a tool-using agent and a native desktop app on top. No framework. No external service.</p>
+  <div class="btns"><a class="btn pri" href="https://github.com/alesimoes/katana">Source on GitHub</a><a class="btn" href="#project">How it works</a></div>
   <div class="term" aria-label="Example commands">
     <div class="bar"><i></i><i></i><i></i></div>
 <pre><span class="p">$</span> ./build.sh                       <span class="c"># one C file, gcc, nothing to install</span>
@@ -151,7 +165,7 @@
 <p>I am Alexandre Simões, and katana is my project. I wrote it to understand how language models really run, by building the whole path myself: reading the model file, the tokenizer, the math on the CPU and the GPU, the memory management that lets a big model fit in a small card, and the agent that puts it to work.</p>
 <p>The engine, the agent and the desktop app live in my own repository. This page describes them as they are today, including what does not work yet.</p>
 
-<footer><span>katana</span><span>local inference, written in C</span></footer>
+<footer><span>katana</span><span>local inference, written in C</span><a href="https://github.com/alesimoes/katana">github.com/alesimoes/katana</a></footer>
 </div>
 </body>
 </html>
