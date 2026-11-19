@@ -1,172 +1,137 @@
 #!/usr/bin/env python3
-# Gera o samurai do katana em pixel art 48x48 (desktop-qt/icons/samurai.png e site/public/samurai.png).
+# Gera o samurai do katana em pixel art 48x48, em blocos (desktop-qt/icons/samurai.png e site/public/samurai.png).
 # Uso: python3 desktop-qt/tools/gerar-samurai48.py [previa.png]     (precisa de PIL)
-# Um samurai de verdade: cabelo preso no alto (chonmage), faixa branca na testa, rosto de pele com olhos
-# estreitos, quimono escuro de gola branca cruzada, hakama largo, faixa (obi) roxa, katana erguida na mao
-# direita e outra na cintura. O roxo do projeto so aparece na faixa e no cordao.
-# Tecnica: poligonos e elipses numa grade 8x maior, reduzidos para 48x48 pela cor mais frequente de cada
-# bloco (continua pixel art, com paleta fixa), e contorno escuro automatico em volta da silhueta.
+# Estilo "voxel": cabeca cubica, tronco, bracos e pernas retangulares, katana reta. Cada peca e um bloco com luz
+# em cima e na esquerda e sombra embaixo e na direita. E o mesmo samurai de antes: coque, faixa branca com o
+# circulo vermelho, bigode, quimono azul de gola branca, faixa (obi) roxa, hakama preto, katana erguida e outra
+# na cintura. O roxo do projeto so aparece na faixa. Contorno escuro automatico em volta da silhueta.
 import os
 import sys
-from collections import Counter
-from PIL import Image, ImageDraw
+from PIL import Image
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.abspath(os.path.join(AQUI, "..", ".."))
 N = 48
-S = 8
 
-PAL = {
+C = {
     "O": "#140b1f",   # contorno
-    "H": "#1d1b26",   # cabelo
-    "h": "#3a3750",   # brilho do cabelo
-    "S": "#f2caa2",   # pele
-    "E": "#cf9468",   # pele sombra
-    "W": "#f4f1ea",   # branco (gola, faixa, tabi)
-    "w": "#c9c5bc",   # branco sombra
-    "N": "#2a3560",   # quimono azul-noite
-    "n": "#43518a",   # quimono luz
-    "K": "#23232d",   # hakama escuro
-    "k": "#3d3f52",   # hakama luz
-    "R": "#d4302f",   # vermelho
-    "P": "#8a1fe0",   # roxo do katana (obi)
-    "p": "#b36cf0",   # roxo luz
-    "Y": "#f2c14e",   # ouro
-    "Z": "#b8891f",   # ouro sombra
-    "G": "#aab2c4",   # aco
-    "B": "#6b4a2f",   # marrom (sandalia)
+    "H": "#1d1b26", "h": "#34324a", "j": "#0f0e15",       # cabelo: base, luz, sombra
+    "S": "#f2caa2", "s": "#fbe0c4", "e": "#cf9468",       # pele: base, luz, sombra
+    "W": "#f4f1ea", "w": "#c9c5bc",                       # branco, branco sombra
+    "N": "#2a3560", "n": "#43518a", "m": "#1b2347",       # quimono: base, luz, sombra
+    "K": "#23232d", "k": "#3d3f52", "q": "#16161d",       # hakama
+    "R": "#d4302f", "r": "#a31f1f",                       # vermelho
+    "P": "#8a1fe0", "p": "#b36cf0", "u": "#5e0fa3",       # roxo do katana (obi)
+    "Y": "#f2c14e", "Z": "#b8891f",                       # ouro
+    "G": "#aab2c4", "g": "#7d869b",                       # aco
+    "B": "#6b4a2f", "b": "#4a3220",                       # sandalia
 }
+
+g = [[None] * N for _ in range(N)]
+
+
+def px(x, y, k):
+    if 0 <= x < N and 0 <= y < N:
+        g[y][x] = k
+
+
+def fill(x0, y0, x1, y1, k):
+    """retangulo [x0,x1) x [y0,y1)"""
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            px(x, y, k)
+
+
+def box(x0, y0, x1, y1, base, light, dark):
+    """bloco com luz em cima/esquerda e sombra embaixo/direita"""
+    fill(x0, y0, x1, y1, base)
+    fill(x0, y0, x1, y0 + 1, light)
+    fill(x0, y0, x0 + 1, y1, light)
+    fill(x0, y1 - 1, x1, y1, dark)
+    fill(x1 - 1, y0, x1, y1, dark)
+    px(x0, y1 - 1, base)
+    px(x1 - 1, y0, base)
+
+
+# ---------------- katana na cintura: bainha horizontal preta, cabo vermelho, ponteira dourada ----------------
+fill(6, 33, 21, 35, "K"); fill(6, 33, 21, 34, "k")
+fill(5, 33, 7, 35, "Y"); px(5, 33, "Z")
+fill(20, 31, 25, 33, "R"); fill(20, 32, 25, 33, "r")                  # cabo saindo da faixa
+fill(19, 32, 21, 34, "Y")                                              # guarda
+
+# ---------------- pernas (hakama) e pes ----------------
+box(17, 35, 24, 45, "K", "k", "q")
+box(24, 35, 31, 45, "K", "k", "q")
+fill(24, 36, 25, 45, "q")                                              # vao entre as pernas
+box(16, 45, 24, 47, "W", "W", "w")
+box(24, 45, 32, 47, "W", "W", "w")
+fill(16, 47, 24, 48, "B"); fill(24, 47, 32, 48, "B")
+fill(16, 47, 24, 48, "B"); px(23, 47, "b"); px(31, 47, "b")
+
+# ---------------- tronco: quimono ----------------
+box(16, 21, 32, 35, "N", "n", "m")
+# gola de quimono em V (escada): bordas brancas com o peito de pele no meio
+for xa, xb, y in ((20, 28, 21), (21, 27, 23), (22, 26, 25), (23, 25, 27)):
+    fill(xa, y, xb, y + 2, "W")
+for xa, xb, y in ((22, 26, 21), (23, 25, 23)):
+    fill(xa, y, xb, y + 2, "e")
+# obi (faixa roxa) com no
+box(16, 31, 32, 34, "P", "p", "u")
+box(22, 30, 27, 36, "P", "p", "u")
+
+# ---------------- katana erguida, reta: cabo, guarda, lamina (desenhada antes dos bracos: a mao cobre o cabo) ----------------
+fill(37, 29, 40, 37, "K"); fill(37, 30, 38, 37, "k")                   # cabo
+fill(37, 31, 40, 32, "w"); fill(37, 34, 40, 35, "w")                   # trama do cabo
+box(34, 27, 43, 29, "Y", "Y", "Z")                                     # guarda (tsuba)
+fill(37, 3, 40, 27, "G"); fill(39, 3, 40, 27, "g"); fill(37, 3, 38, 27, "W")  # lamina
+fill(37, 2, 39, 3, "W"); fill(38, 1, 39, 2, "W")                       # ponta
+
+# ---------------- bracos ----------------
+box(11, 21, 16, 33, "N", "n", "m")                                     # braco esquerdo (manga)
+box(11, 33, 16, 36, "S", "s", "e")                                     # mao
+box(32, 21, 37, 33, "N", "n", "m")                                     # braco direito (manga)
+box(33, 33, 40, 36, "S", "s", "e")                                     # mao fechada no cabo
+
+# ---------------- cabeca: cubo ----------------
+fill(20, 20, 28, 22, "e")                                              # pescoco
+box(17, 7, 31, 21, "S", "s", "e")                                      # rosto
+fill(17, 7, 31, 12, "H"); fill(17, 7, 31, 8, "h"); fill(17, 7, 18, 12, "h"); fill(30, 8, 31, 12, "j")   # cabelo
+fill(17, 12, 19, 15, "H"); fill(29, 12, 31, 15, "H")                  # costeletas
+fill(21, 3, 27, 7, "H"); fill(21, 3, 27, 4, "h"); fill(26, 4, 27, 7, "j")     # coque
+fill(21, 5, 27, 6, "R")                                                # fita do coque
+# faixa branca na testa (hachimaki) com o circulo vermelho e a ponta que balanca
+fill(17, 10, 31, 13, "W"); fill(17, 12, 31, 13, "w")
+fill(23, 10, 25, 13, "R")
+fill(31, 11, 35, 13, "W"); fill(33, 13, 35, 15, "w")
+# sobrancelhas e olhos
+fill(19, 14, 23, 15, "H"); fill(25, 14, 29, 15, "H")
+fill(19, 15, 23, 17, "W"); fill(25, 15, 29, 17, "W")
+fill(21, 15, 23, 17, "O"); fill(27, 15, 29, 17, "O")
+# nariz, bigode, boca
+fill(23, 17, 25, 18, "e")
+fill(20, 18, 28, 20, "H")
+fill(22, 20, 26, 21, "r")
+
+# ---------------- contorno automatico (4-vizinhos) ----------------
+img = Image.new("RGBA", (N, N), (0, 0, 0, 0))
 
 
 def rgb(h):
     return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5)) + (255,)
 
 
-big = Image.new("RGBA", (N * S, N * S), (0, 0, 0, 0))
-d = ImageDraw.Draw(big)
-
-
-def P(pts, c):
-    d.polygon([(x * S, y * S) for x, y in pts], fill=rgb(PAL[c]))
-
-
-def E(cx, cy, rx, ry, c):
-    d.ellipse([(cx - rx) * S, (cy - ry) * S, (cx + rx) * S, (cy + ry) * S], fill=rgb(PAL[c]))
-
-
-def L(x0, y0, x1, y1, w, c):
-    d.line([(x0 * S, y0 * S), (x1 * S, y1 * S)], fill=rgb(PAL[c]), width=max(1, int(w * S)))
-
-
-# ---------------- katana erguida (mao direita do desenho): lamina diagonal, fio branco ----------------
-P([(38.0, 23.6), (39.7, 23.0), (45.8, 2.4), (44.6, 2.0)], "G")
-P([(38.8, 23.2), (39.7, 23.0), (45.8, 2.4), (45.2, 2.2)], "W")
-P([(45.0, 2.2), (46.6, 0.8), (45.8, 2.6)], "W")                       # ponta
-# ---------------- katana na cintura (bainha preta atras do corpo, aparece a esquerda) ----------------
-L(19, 32.4, 8.2, 41.8, 2.1, "K")
-L(19, 32.4, 8.2, 41.8, 0.5, "k")
-E(8.0, 42.0, 1.1, 1.1, "Y")                                           # ponteira dourada
-L(21, 31.4, 24.6, 30.2, 1.7, "R")                                     # cabo vermelho saindo da faixa
-E(20.6, 31.8, 1.2, 1.2, "Y")                                          # guarda
-
-# ---------------- pernas: hakama largo com pregas ----------------
-P([(15, 32.5), (33, 32.5), (37.5, 45.4), (26.0, 45.4), (24, 38.6), (22.0, 45.4), (10.5, 45.4)], "K")
-P([(15, 32.5), (24, 32.5), (22.0, 45.4), (10.5, 45.4)], "K")
-L(17.2, 34.5, 14.6, 45, 0.55, "k"); L(20.6, 34.5, 19.0, 45, 0.55, "k")
-L(27.4, 34.5, 29.0, 45, 0.55, "k"); L(30.8, 34.5, 33.4, 45, 0.55, "k")
-# pes: tabi branco e sandalia
-P([(11.0, 45.2), (21.4, 45.2), (21.4, 46.6), (10.2, 46.6)], "W")
-P([(26.6, 45.2), (37.0, 45.2), (37.8, 46.6), (26.6, 46.6)], "W")
-P([(10.2, 46.6), (21.6, 46.6), (21.6, 47.4), (10.0, 47.4)], "B")
-P([(26.4, 46.6), (37.8, 46.6), (38.0, 47.4), (26.4, 47.4)], "B")
-
-# ---------------- tronco: quimono azul-noite ----------------
-P([(14.5, 20.2), (33.5, 20.2), (34.8, 33.0), (13.2, 33.0)], "N")
-P([(14.5, 20.2), (24, 20.2), (24, 33.0), (13.2, 33.0)], "N")
-L(29.5, 24, 31.8, 31.5, 0.6, "n"); L(16.5, 24, 15.5, 31.5, 0.6, "n")  # dobras
-# gola branca cruzada (V) e gola vermelha por dentro
-P([(20.2, 19.6), (27.8, 19.6), (24.0, 28.4)], "R")
-P([(19.4, 19.4), (22.8, 19.4), (28.4, 31.4), (26.2, 31.4)], "W")
-P([(28.6, 19.4), (25.2, 19.4), (19.6, 31.4), (21.8, 31.4)], "w")
-# obi (faixa) roxa com no
-P([(13.4, 30.6), (34.6, 30.6), (34.9, 33.8), (13.1, 33.8)], "P")
-P([(13.4, 30.6), (34.6, 30.6), (34.7, 31.6), (13.3, 31.6)], "p")
-P([(23.0, 30.4), (27.4, 30.4), (28.4, 34.6), (22.2, 34.6)], "P")
-
-# ---------------- bracos e mangas (kimono largo) ----------------
-# braco esquerdo (do desenho): manga larga pendente, mao no cabo da katana da cintura
-P([(14.6, 20.4), (9.6, 22.0), (7.2, 31.0), (12.4, 31.6), (14.0, 25.0)], "N")
-P([(9.6, 22.0), (7.2, 31.0), (8.6, 31.2), (10.6, 22.6)], "n")
-E(20.6, 31.2, 1.7, 1.7, "S")
-# braco direito: levantado, manga cai do cotovelo; punho no cabo da katana
-P([(33.4, 20.4), (39.4, 22.0), (41.6, 29.6), (35.2, 28.6), (33.6, 24.0)], "N")
-P([(39.4, 22.0), (41.6, 29.6), (40.2, 29.8), (38.4, 22.8)], "n")
-L(37.4, 23.0, 36.8, 28.6, 1.7, "K")                                   # cabo preto
-L(37.2, 24.6, 37.0, 27.6, 0.45, "w")                                  # trama do cabo
-P([(35.8, 22.6), (40.4, 21.4), (40.6, 22.6), (36.0, 23.9)], "Y")      # guarda (tsuba)
-E(37.7, 23.7, 1.8, 1.8, "S")                                          # mao
-
-# ---------------- pescoco e cabeca ----------------
-P([(21.8, 17.2), (26.2, 17.2), (26.6, 20.4), (21.4, 20.4)], "E")
-# nuca/cabelo atras e coque (chonmage)
-E(24, 8.4, 7.2, 5.4, "H")
-P([(22.6, 3.9), (25.4, 3.9), (26.0, 1.2), (22.0, 1.2)], "H")          # coque
-E(24, 1.6, 1.7, 1.2, "H")
-L(22.2, 3.7, 25.8, 3.7, 0.7, "R")                                     # fita do coque
-# rosto
-E(24, 12.8, 6.2, 5.8, "S")
-P([(17.9, 12.6), (30.1, 12.6), (28.6, 17.2), (24, 18.6), (19.4, 17.2)], "S")
-P([(17.9, 9.4), (30.1, 9.4), (30.1, 12.4), (17.9, 12.4)], "S")
-# cabelo frontal (testa)
-P([(17.4, 11.0), (17.6, 7.6), (24, 5.2), (30.4, 7.6), (30.6, 11.0), (29.2, 8.4), (24, 7.0), (18.8, 8.4)], "H")
-# faixa branca na testa (hachimaki) com circulo vermelho e pontas
-P([(17.2, 8.6), (30.8, 8.6), (30.8, 10.6), (17.2, 10.6)], "W")
-P([(17.2, 10.1), (30.8, 10.1), (30.8, 10.6), (17.2, 10.6)], "w")
-E(24, 9.6, 1.0, 1.0, "R")
-P([(30.6, 9.0), (34.6, 10.6), (33.8, 12.2), (30.6, 10.4)], "W")        # ponta da faixa (balanca)
-P([(30.6, 10.2), (33.6, 13.4), (32.4, 13.6), (30.4, 11.0)], "w")
-# sobrancelhas e olhos estreitos
-L(18.6, 11.6, 22.4, 12.4, 0.95, "H"); L(29.4, 11.6, 25.6, 12.4, 0.95, "H")
-P([(18.8, 12.9), (22.2, 13.2), (22.2, 14.2), (19.2, 14.3)], "W")
-P([(29.2, 12.9), (25.8, 13.2), (25.8, 14.2), (28.8, 14.3)], "W")
-E(21.0, 13.7, 0.8, 0.8, "O"); E(27.0, 13.7, 0.8, 0.8, "O")
-# nariz, bigode e boca
-L(24.0, 14.0, 23.7, 15.6, 0.55, "E")
-P([(20.6, 16.0), (24, 16.5), (27.4, 16.0), (27.0, 16.9), (24, 16.9), (21.0, 16.9)], "H")   # bigode
-L(22.6, 17.8, 25.4, 17.8, 0.5, "R")
-
-# ---------------- reducao para pixel art ----------------
-small = Image.new("RGBA", (N, N), (0, 0, 0, 0))
 for y in range(N):
     for x in range(N):
-        cnt = Counter()
-        for yy in range(S):
-            for xx in range(S):
-                p = big.getpixel((x * S + xx, y * S + yy))
-                cnt[p if p[3] else None] += 1
-        best, n = cnt.most_common(1)[0]
-        if best is None and n < S * S * 0.6:            # vazio so se for maioria clara
-            cols = [c for c, k in cnt.most_common() if c is not None]
-            best = cols[0] if cols else None
-        if best is not None:
-            small.putpixel((x, y), best)
-
-pal_rgb = [rgb(v) for v in PAL.values()]
+        if g[y][x]:
+            img.putpixel((x, y), rgb(C[g[y][x]]))
+out = img.copy()
 for y in range(N):
     for x in range(N):
-        p = small.getpixel((x, y))
-        if p[3]:
-            small.putpixel((x, y), min(pal_rgb, key=lambda q: sum((a - b) ** 2 for a, b in zip(q[:3], p[:3]))))
-
-# contorno automatico (4-vizinhos)
-out = small.copy()
-for y in range(N):
-    for x in range(N):
-        if small.getpixel((x, y))[3] == 0:
+        if g[y][x] is None:
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 xx, yy = x + dx, y + dy
-                if 0 <= xx < N and 0 <= yy < N and small.getpixel((xx, yy))[3]:
-                    out.putpixel((x, y), rgb(PAL["O"]))
+                if 0 <= xx < N and 0 <= yy < N and g[yy][xx]:
+                    out.putpixel((x, y), rgb(C["O"]))
                     break
 im = out
 
