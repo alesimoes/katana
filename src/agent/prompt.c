@@ -172,7 +172,7 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
     TOOLDEF("ask_user", "Ask the user one question; options: choices separated by |", P1("question") ", " P1("options"), "\"question\"");
     if (g_web) {
         TOOLDEF("web_search", "Search the web: titles, URLs and summaries", P1("query"), "\"query\"");
-        TOOLDEF("web_fetch", "Read a web page as text. offset continues a long page; find returns the passages with a word; links=true lists its links", P1("url") ", " PI("offset") ", " P1("find") ", " PB("links"), "\"url\"");
+        TOOLDEF("web_fetch", "Read a web page as text. offset continues a long page; find returns the passages with a word; links=true lists its links; render=true runs its JavaScript first", P1("url") ", " PI("offset") ", " P1("find") ", " PB("links") ", " PB("render"), "\"url\"");
     }
     if (!g_code) TOOLDEF("remember", "Save a lasting fact about the user", P1("fact"), "\"fact\"");
 #undef P1
