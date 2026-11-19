@@ -12,6 +12,10 @@ static void tool_read_file(const char *js, const char *end, char *out, size_t ca
     char res[4200], err[1300];
     if (!json_str(js, end, "path", arg, sizeof arg)) { snprintf(out, cap, "error: missing path"); return; }
     if (!agent_read_access(arg, 0, res, sizeof res, err, sizeof err)) { snprintf(out, cap, "%s", err); return; }
+    {   /* PDF e HTML: texto pelo leitor de documentos (read_document saiu do prompt) */
+        const char *x = strrchr(res, '.');
+        if (x && (ci_ncmp(x, ".pdf", 5) == 0 || ci_ncmp(x, ".html", 6) == 0 || ci_ncmp(x, ".htm", 5) == 0)) { tool_read_document(arg, out, cap); return; }
+    }
     int off = json_int(js, end, "offset", 1);
     const int lim = json_int(js, end, "limit", 0);
     if (off < 1) off = 1;
