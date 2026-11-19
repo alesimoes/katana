@@ -1,64 +1,64 @@
 # katana: handoff
 
-Escrito em 2026-11-15, ao fim da sessão que criou o motor, o suporte a mistura de especialistas e o
-backend Vulkan. Para retomar: leia este arquivo, depois `conhecimento.md` (tudo o que foi medido),
-`comparacoes.md` (todas as tabelas de comparação) e `plano.md` (prioridades).
+Written on 2026-11-15, at the end of the session that created the engine, the mixture-of-experts support and the
+Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
+`comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
-## 0l. Terminal e logs para o agente: run_command robusto, terminal, read_log, terminal_screen (2026-11-18)
+## 0l. Terminal and logs for the agent: robust run_command, terminal, read_log, terminal_screen (2026-11-18)
 
-Problema: `run_command` usava popen (stderr no terminal do usuario, stdin compartilhado, sem timeout), entao o modelo nao via
-erros e `sudo`/`ssh` travavam o agente. Codigo em `src/katana.c`, bloco "terminal e logs" antes de `agent_tool_run`.
-- `run_command(command, timeout_s?)`: `vfork`+`setsid` (novo grupo de processos), stdin `/dev/null`, stdout e stderr no mesmo cano,
-  `GIT_TERMINAL_PROMPT=0` e `PAGER=cat`. Timeout `timeout_s` (padrao 120, `KATANA_CMD_TIMEOUT`, maximo 3600): mata o grupo
-  (SIGTERM, depois SIGKILL) e avisa `[timeout apos N s]`, mantendo a saida parcial. Ctrl+C durante o comando mata o grupo e a
-  saida diz `[interrupted by the user]` (o katana continua vivo). Saida com INICIO (1/3) e FIM (2/3) e `[... N bytes omitted ...]`
-  no meio (limite ~6000 bytes, ou o orcamento de contexto). Sempre termina com `[exit code N]`. Se a saida tem "a password is
-  required", "[sudo] password", "Permission denied (publickey", etc. vem uma dica: pedir ao usuario para rodar o comando no
-  terminal dele; "Permission denied" generico vem com dica mais branda. Processo em segundo plano que segura o cano nao prende a
-  chamada (o shell saiu e nada mais chega: devolve; o processo continua).
-- `terminal(action, name?, text?, enter?, lines?, wait_ms?)`: sessoes de shell persistentes em pty (`posix_openpt`, sem libs
-  novas; bash `--norc --noediting` ou sh; `TERM=dumb`, `PS1='$ '`). Acoes: `open`, `send` (Enter por padrao; espera a saida
-  assentar: chegou algo e 150 ms de silencio, ate `wait_ms`, padrao 1500), `read` (so o novo; com `lines` as ultimas N linhas;
-  espera ate `wait_ms`), `list`, `close`, `interrupt` (Ctrl+C). Ate 4 sessoes, anel de 256 KB por sessao, ANSI/`\r` removidos.
-  Sem `name` vale a unica sessao aberta. Sessoes morrem ao sair do agente (`atexit`; se o katana morrer a pty fecha e o shell
-  recebe SIGHUP). `open` e `send` passam por `agent_act`; se aparece um prompt de senha, vem dica para nao adivinhar.
-- `read_log(source, lines?, filter?, unit?)`: `agent` (`KATANA_LOG`/`~/.katana/agente.log`), `commands` (anel de 32 comandos desta
-  sessao: comando, codigo de saida ou `[terminal]`, resumo do fim da saida; registrados por run_command e terminal), `journal`
-  (`journalctl -n N --no-pager`, `unit` opcional), `dmesg` (cai para `journalctl -k`), `syslog` (`/var/log/syslog` ou `messages`) ou
-  um caminho de arquivo de texto (leitura fora da pasta passa por `agent_read_access`; recusa binario; le so o 1 MB final). `filter`
-  e regex estendida sem distincao de maiusculas (texto simples se a regex for invalida). Sem permissao a mensagem diz o que fazer
-  (grupo `adm`/`systemd-journal`, ou pedir ao usuario `sudo tail ...`).
-- `terminal_screen(lines?, pane?)`: `tmux capture-pane -p -t <painel> -S -N`. Sem `pane`, usa outro painel da janela do
-  `TMUX_PANE` (o proprio e o do chat). Fora do tmux (`TMUX` vazio) ou sem tmux instalado: erro claro pedindo ao usuario para colar o
-  erro. Nao tenta ler outros terminais.
-- Prompt de sistema: lista nos dois formatos (`g4_agent_sys` conferido com `katana agentsys gemma4`; tipos `integer` e `boolean`
-  saem como `INTEGER`/`BOOLEAN`) e uma frase pedindo `read_log`/`terminal` quando um comando falha e para nao insistir em sudo/senha.
-  Prompt cresceu ~1,3 KB (~330 tokens).
-- Teste novo sem modelo: `katana toolrun` le linhas `<ferramenta> <json>` da entrada e executa em sequencia no mesmo processo
-  (necessario para sessoes de terminal e para o anel `commands`). `sh tools/testar_ferramentas.sh`: 95 verificacoes.
-- katana-desktop: verbos novos no mapa `verbos` do `ActivityGroup.qml`; `cleanArgs` ja aceita numero/booleano sem aspas
-  (`lines: 50`, `enter: true`). `sh desktop-qt/build.sh` compila; o app nao foi aberto.
-- **Testado de verdade (Linux, sem modelo/GPU)**: stderr visivel, codigo de saida, stdin fechado (`read` volta vazio), dica de senha
-  (texto simulado e `sudo -n true` real), timeout que mata o grupo (filho em segundo plano morre), truncagem inicio+fim, terminal
-  open/send/read com `cd` e variavel persistentes, prompt interativo, Enter opcional, duas sessoes, close, read_log de arquivo
-  (filtro texto/regex, ultimas N, inexistente, binario, sem permissao), de `commands` e `agent`, journal/dmesg (resposta valida ou
-  dica de permissao), terminal_screen sem tmux e com um `tmux` falso no PATH (confere os argumentos montados).
-- **Nao testado**: `terminal_screen` com tmux de verdade (tmux nao instalado nesta maquina); Ctrl+C real do usuario durante um
-  comando (so o caminho por sinal foi lido, nao exercitado); Windows (as tres ferramentas novas devolvem "not available on Windows
-  yet"; run_command continua com popen, agora com `2>&1`); um modelo usando as ferramentas; o app desktop aberto.
+Problem: `run_command` used popen (stderr on the user's terminal, shared stdin, no timeout), so the model did not see
+errors and `sudo`/`ssh` hung the agent. Code in `src/katana.c`, "terminal e logs" block before `agent_tool_run`.
+- `run_command(command, timeout_s?)`: `vfork`+`setsid` (new process group), stdin `/dev/null`, stdout and stderr on the same pipe,
+  `GIT_TERMINAL_PROMPT=0` and `PAGER=cat`. Timeout `timeout_s` (default 120, `KATANA_CMD_TIMEOUT`, maximum 3600): kills the group
+  (SIGTERM, then SIGKILL) and reports `[timeout apos N s]`, keeping the partial output. Ctrl+C during the command kills the group and the
+  output says `[interrupted by the user]` (katana stays alive). Output with START (1/3) and END (2/3) and `[... N bytes omitted ...]`
+  in the middle (limit ~6000 bytes, or the context budget). Always ends with `[exit code N]`. If the output has "a password is
+  required", "[sudo] password", "Permission denied (publickey", etc., a hint follows: ask the user to run the command in their
+  own terminal; a generic "Permission denied" gets a milder hint. A background process that holds the pipe does not block the
+  call (the shell exited and nothing more arrives: it returns; the process keeps running).
+- `terminal(action, name?, text?, enter?, lines?, wait_ms?)`: persistent shell sessions in a pty (`posix_openpt`, no
+  new libs; bash `--norc --noediting` or sh; `TERM=dumb`, `PS1='$ '`). Actions: `open`, `send` (Enter by default; waits for the output
+  to settle: something arrived and 150 ms of silence, up to `wait_ms`, default 1500), `read` (only the new part; with `lines` the last N lines;
+  waits up to `wait_ms`), `list`, `close`, `interrupt` (Ctrl+C). Up to 4 sessions, 256 KB ring per session, ANSI/`\r` removed.
+  Without `name` the single open session is used. Sessions die when the agent exits (`atexit`; if katana dies the pty closes and the shell
+  receives SIGHUP). `open` and `send` go through `agent_act`; if a password prompt appears, a hint says not to guess.
+- `read_log(source, lines?, filter?, unit?)`: `agent` (`KATANA_LOG`/`~/.katana/agente.log`), `commands` (ring of 32 commands from this
+  session: command, exit code or `[terminal]`, summary of the end of the output; recorded by run_command and terminal), `journal`
+  (`journalctl -n N --no-pager`, optional `unit`), `dmesg` (falls back to `journalctl -k`), `syslog` (`/var/log/syslog` or `messages`) or
+  a text file path (reading outside the folder goes through `agent_read_access`; refuses binary; reads only the final 1 MB). `filter`
+  is a case-insensitive extended regex (plain text if the regex is invalid). Without permission the message says what to do
+  (group `adm`/`systemd-journal`, or ask the user for `sudo tail ...`).
+- `terminal_screen(lines?, pane?)`: `tmux capture-pane -p -t <pane> -S -N`. Without `pane`, it uses another pane of the window of
+  `TMUX_PANE` (the own pane is the chat one). Outside tmux (`TMUX` empty) or without tmux installed: a clear error asking the user to paste the
+  error. It does not try to read other terminals.
+- System prompt: lists in both formats (`g4_agent_sys` checked with `katana agentsys gemma4`; `integer` and `boolean` types
+  come out as `INTEGER`/`BOOLEAN`) and a sentence asking for `read_log`/`terminal` when a command fails and not to insist on sudo/password.
+  The prompt grew ~1.3 KB (~330 tokens).
+- New test without a model: `katana toolrun` reads `<tool> <json>` lines from the input and runs them in sequence in the same process
+  (needed for terminal sessions and for the `commands` ring). `sh tools/testar_ferramentas.sh`: 95 checks.
+- katana-desktop: new verbs in the `verbos` map of `ActivityGroup.qml`; `cleanArgs` already accepts unquoted number/boolean
+  (`lines: 50`, `enter: true`). `sh desktop-qt/build.sh` compiles; the app was not opened.
+- **Really tested (Linux, no model/GPU)**: visible stderr, exit code, closed stdin (`read` returns empty), password hint
+  (simulated text and real `sudo -n true`), timeout that kills the group (background child dies), start+end truncation, terminal
+  open/send/read with persistent `cd` and variable, interactive prompt, optional Enter, two sessions, close, read_log of a file
+  (text/regex filter, last N, nonexistent, binary, no permission), of `commands` and `agent`, journal/dmesg (valid answer or
+  permission hint), terminal_screen without tmux and with a fake `tmux` in the PATH (checks the arguments built).
+- **Not tested**: `terminal_screen` with a real tmux (tmux not installed on this machine); a real user Ctrl+C during a
+  command (only the signal path was read, not exercised); Windows (the three new tools return "not available on Windows
+  yet"; run_command still uses popen, now with `2>&1`); a model using the tools; the desktop app open.
 
-## 0k. Medidas finais com a maquina livre: GPU, MoE na CPU e margem de troca (2026-11-18)
+## 0k. Final measurements with the machine free: GPU, MoE on the CPU and swap margin (2026-11-18)
 
-Resultado (`comparacoes.md` secao 17; maquina livre de outros agentes, load 3,7-8,6, 3 execucoes alternadas,
-rodadas 2 e 3):
-- Selftest com GPU OK nos tres modelos (Gemma 4, Qwen3.6, Qwen3-30B), mesmos limites de antes.
-- Gemma 4 `bench 64 64`: MoE novo 42,2 ms/token (23,7 tok/s) contra 74,3 do antigo (13,5 tok/s): 1,76x na
-  geracao, 2,65x no prompt. Medido com GPU, modelo completo: o que a 0i deixou como "nao medido".
-- Qwen3.6 `bench 256 128`, margem 8 contra 4: 24,9 contra 24,2 tok/s (+3%, 3 de 3 pares mais rapidos, mas faixas
-  que se tocam) e prompt 68,0 contra 59,6 (+14%). **O ganho de geracao da margem 8 e pequeno (~3%), abaixo dos
-  4-8% estimados na 0j.** Continua no padrao, por ser o melhor medido, mas nao e um ganho grande.
+Result (`comparisons.md` section 17; machine free of other agents, load 3.7-8.6, 3 alternating runs,
+rounds 2 and 3):
+- Selftest with GPU OK on the three models (Gemma 4, Qwen3.6, Qwen3-30B), same limits as before.
+- Gemma 4 `bench 64 64`: new MoE 42.2 ms/token (23.7 tok/s) against 74.3 for the old one (13.5 tok/s): 1.76x in
+  generation, 2.65x in the prompt. Measured with GPU, full model: what 0i left as "not measured".
+- Qwen3.6 `bench 256 128`, margin 8 against 4: 24.9 against 24.2 tok/s (+3%, 3 of 3 pairs faster, but ranges that
+  touch) and prompt 68.0 against 59.6 (+14%). **The generation gain of margin 8 is small (~3%), below the
+  4-8% estimated in 0j.** It stays as the default, being the best measured, but it is not a big gain.
 
-Comandos (copiados de `final.sh`, no diretorio do log; rodar na raiz do repositorio, com a maquina livre):
+Commands (copied from `final.sh`, in the log directory; run at the repository root, with the machine free):
 ```
 G=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; Q=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf; T=modelos/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 for m in $G $Q; do KATANA_BACKEND=vulkan ./katana selftest $m; done
@@ -66,229 +66,229 @@ KATANA_BACKEND=vulkan KATANA_KV16=0 KATANA_CTX=512 ./katana selftest $T
 for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o KATANA_BACKEND=vulkan ./katana bench $G 64 64; done; done
 for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $Q 256 128; done; done
 ```
-(o script filtrava a saida com `grep` e imprimia o load antes de cada execucao; a versao completa esta em
+(the script filtered the output with `grep` and printed the load before each run; the full version is in
 `final.sh`.)
 
-Pendente (nada disto foi feito hoje):
-- KV Q8_0 contra fp16 com a GPU e agulha no palheiro: comandos na secao 0e deste arquivo.
-- yarn x4 (contexto estendido).
-- Aquecimento e calibracao no Gemma 4 (o `.heat` do `katana calibrar` ainda nao foi medido na GPU).
-- DeltaNet em blocos (o caso "inconclusivo (carga alta)" da `comparacoes.md` secao 13 e o handoff 0d).
-- Verificar o agente do katana-desktop contra este bench (o desktop nao foi medido com a mesma maquina livre).
+Pending (none of this was done today):
+- KV Q8_0 against fp16 with the GPU and needle in a haystack: commands in section 0e of this file.
+- yarn x4 (extended context).
+- Warm-up and calibration on Gemma 4 (the `.heat` from `katana calibrar` has not been measured on the GPU yet).
+- Blocked DeltaNet (the "inconclusive (high load)" case in `comparisons.md` section 13 and handoff 0d).
+- Check the katana-desktop agent against this bench (the desktop was not measured with the same free machine).
 
-## 0i. Especialistas MoE na CPU: produtos inteiros para Q8_0/Q5_1, Q5_K com VNNI (2026-11-18, ramo worktree-agent-a5fc01670b63cc48b)
+## 0i. MoE experts on the CPU: integer products for Q8_0/Q5_1, Q5_K with VNNI (2026-11-18, branch worktree-agent-a5fc01670b63cc48b)
 
-Formatos dos especialistas nos GGUFs (conferido no cabecalho): Qwen3.6-35B gate/up Q4_K, down Q5_K (37 camadas) e
-Q6_K (3); Gemma 4 26B gate_up Q4_K, down **Q5_1** (29 camadas) e Q8_0 (1), H = 704 (nao multiplo de 256);
+Expert formats in the GGUFs (checked in the header): Qwen3.6-35B gate/up Q4_K, down Q5_K (37 layers) and
+Q6_K (3); Gemma 4 26B gate_up Q4_K, down **Q5_1** (29 layers) and Q8_0 (1), H = 704 (not a multiple of 256);
 Qwen3-30B gate/up Q4_K, down Q4_K/Q6_K.
 
-**Achado principal: no Gemma 4 o `moe_cpu_multi` inteiro caia no caminho "exato/float um a um"**, porque o
-down Q5_1/Q8_0 nao tinha produto inteiro (`mat_int` so aceita tipos K): 3 matvec float por especialista, em
-serie, gate/up Q4_K tambem em float. Microbancada (todos os 8 especialistas na CPU, 30 camadas): ~211 ms/token,
-4 GB/s efetivos. Mudancas:
-- `dot_q8_i` e `dot_q51_i`: produtos inteiros AVX2 de blocos de 32 com a ativacao int16 ja quantizada uma vez
-  (`xq_prepare`); Q5_1 usa a soma de cada bloco de 32 (`bs32`) para o termo do minimo. Usados so no caminho dos
-  especialistas (`moe_int`/`moe_dot`), o matvec geral nao muda.
-- `xq_prepare` aceita o ultimo bloco parcial (cols multiplo de 32): entrada do down com H = 704.
-- `dot_q5k_v`: Q5_K com VNNI (mesma conta inteira do produto de 16 bits: resultado bit a bit igual).
-- ativacao + quantizacao da entrada do down em paralelo (um especialista por item do pool), antes serial na
-  principal (~1,2 ms/token no Qwen3.6).
-- `KATANA_MOE_OLD=1` volta ao caminho anterior (para A/B); `selftest` agora confere tambem Q8_0/Q5_1 inteiros.
+**Main finding: on Gemma 4 the whole `moe_cpu_multi` fell into the "exact/float one by one" path**, because the
+Q5_1/Q8_0 down had no integer product (`mat_int` only accepts K types): 3 float matvecs per expert, in
+series, with gate/up Q4_K also in float. Microbenchmark (all 8 experts on the CPU, 30 layers): ~211 ms/token,
+4 GB/s effective. Changes:
+- `dot_q8_i` and `dot_q51_i`: AVX2 integer products of blocks of 32 with the int16 activation already quantized once
+  (`xq_prepare`); Q5_1 uses the sum of each block of 32 (`bs32`) for the minimum term. Used only in the experts path
+  (`moe_int`/`moe_dot`), the general matvec does not change.
+- `xq_prepare` accepts the last partial block (cols multiple of 32): down input with H = 704.
+- `dot_q5k_v`: Q5_K with VNNI (same integer arithmetic as the 16-bit product: bit-for-bit identical result).
+- activation + quantization of the down input in parallel (one expert per pool item), before serial on the
+  main thread (~1.2 ms/token on Qwen3.6).
+- `KATANA_MOE_OLD=1` returns to the previous path (for A/B); `selftest` now also checks integer Q8_0/Q5_1.
 
-Medido (microbancada `tools/moebench`, sem GPU, alternado OLD/NOVO, maquina ocupada por outro agente, load 11-18:
-indicativo). Detalhes em `comparacoes.md` secao 15.
-- Gemma 4: 211 -> 36 ms/token com todos na CPU (5,9x). Geracao so CPU (`KATANA_CPU=1`, 64 tokens): 2,8 -> 6,3 tok/s.
-- Qwen3.6: 23,5 -> 21,8 ms/token (-7%); fase ativacao 1,2 -> 0,3 ms, down ~1 ms menos.
-- Teto: banda de leitura medida 33-37 GB/s com 8 threads (39 com 16). Qwen3.6 le 611 MB/token com os 8 na CPU
-  -> teto ~17 ms; estamos em ~22 (28 GB/s efetivos). Gemma 897 MB/token -> teto ~25 ms; estamos em ~36.
-  12 e 16 threads pioraram (48-50 ms no Qwen3.6): o gargalo restante e de calculo/latencia, nao de banda pura.
+Measured (`tools/moebench` microbenchmark, no GPU, alternating OLD/NEW, machine busy with another agent, load 11-18:
+indicative). Details in `comparisons.md` section 15.
+- Gemma 4: 211 -> 36 ms/token with all on the CPU (5.9x). CPU-only generation (`KATANA_CPU=1`, 64 tokens): 2.8 -> 6.3 tok/s.
+- Qwen3.6: 23.5 -> 21.8 ms/token (-7%); activation phase 1.2 -> 0.3 ms, down ~1 ms less.
+- Ceiling: read bandwidth measured 33-37 GB/s with 8 threads (39 with 16). Qwen3.6 reads 611 MB/token with all 8 on the CPU
+  -> ceiling ~17 ms; we are at ~22 (28 GB/s effective). Gemma 897 MB/token -> ceiling ~25 ms; we are at ~36.
+  12 and 16 threads got worse (48-50 ms on Qwen3.6): the remaining bottleneck is compute/latency, not pure bandwidth.
 
-Validacao: geracao gulosa de 64 tokens (so CPU) identica OLD x NOVO no Gemma 4 e no Qwen3.6. Saida de uma camada
-de especialistas: Qwen3.6 bit a bit igual; Gemma erro relativo L2 6e-5 (quantizacao int16 da ativacao, a mesma ja
-usada nos tipos K). `selftest` (KATANA_CPU=1) OK nos tres: Gemma 4, Qwen3.6, Qwen3-30B (KATANA_KV16=0 KATANA_CTX=512);
-Q5_1 inteiro 2,1e-6, Q8_0 inteiro 2,5e-6 contra o exato. **Nao medido**: o modelo completo com a GPU (outro processo
-usava a GPU/CPU). Estimativa: no Gemma com Vulkan os ~19 ms/token de especialistas na CPU devem cair para ~4-6 ms
-(a fracao fria dos 36 ms acima); no Qwen3.6 ~1 ms/token.
-Nota (0k): a medida do modelo completo com GPU, Gemma 4 `bench 64 64` antigo x novo, foi feita com a maquina livre:
-42,2 contra 74,3 ms/token (1,76x). Os numeros de microbancada desta secao continuam indicativos.
-Para repetir com a maquina livre:
+Validation: 64-token greedy generation (CPU only) identical OLD x NEW on Gemma 4 and Qwen3.6. Output of one experts
+layer: Qwen3.6 bit-for-bit identical; Gemma relative L2 error 6e-5 (int16 quantization of the activation, the same already
+used in the K types). `selftest` (KATANA_CPU=1) OK on the three: Gemma 4, Qwen3.6, Qwen3-30B (KATANA_KV16=0 KATANA_CTX=512);
+integer Q5_1 2.1e-6, integer Q8_0 2.5e-6 against the exact. **Not measured**: the full model with the GPU (another process
+was using the GPU/CPU). Estimate: on Gemma with Vulkan the ~19 ms/token of experts on the CPU should drop to ~4-6 ms
+(the cold fraction of the 36 ms above); on Qwen3.6 ~1 ms/token.
+Note (0k): the measurement of the full model with GPU, Gemma 4 `bench 64 64` old x new, was done with the machine free:
+42.2 against 74.3 ms/token (1.76x). The microbenchmark numbers in this section remain indicative.
+To repeat with the machine free:
 
     sh tools/moebench/build.sh && sh tools/moebench/ab.sh modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 3 16
     sh tools/moebench/ab.sh modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 3 16
     for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o ./katana bench modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 64 64; done; done
-    (o mesmo com Qwen3.6-35B-A3B-UD-Q4_K_M.gguf) e selftest com GPU nos tres modelos
+    (the same with Qwen3.6-35B-A3B-UD-Q4_K_M.gguf) and selftest with GPU on the three models
 
-Nao feito (proximos passos, em ordem): (1) sobrepor os especialistas frios na CPU com o trabalho da GPU na mesma
-camada (iniciar assim que o roteador decide; hoje a CPU espera); (2) produto de 2-4 linhas por chamada no down
-curto (cols = 512 no Qwen3.6: so 2 blocos por linha, o custo fixo por linha pesa); (3) Q5_1/Q8_0 com VNNI.
+Not done (next steps, in order): (1) overlap the cold experts on the CPU with the GPU work in the same
+layer (start as soon as the router decides; today the CPU waits); (2) product of 2-4 rows per call in the short
+down (cols = 512 on Qwen3.6: only 2 blocks per row, the fixed cost per row weighs); (3) Q5_1/Q8_0 with VNNI.
 
-## 0j. Vagas de especialistas: taxa de acerto, politicas e orcamento de VRAM (2026-11-18, ramo worktree-agent-a518cb4a5ea73a00e)
+## 0j. Expert slots: hit rate, policies and VRAM budget (2026-11-18, branch worktree-agent-a518cb4a5ea73a00e)
 
-Pedido: aumentar a taxa de acerto das vagas (Qwen3.6 17 de 256 por camada, gemma4 9 de 128) e/ou o numero de vagas.
-Maquina ocupada por outro agente (microbancadas de CPU, carga 5-8) em todas as medidas: velocidade indicativa.
+Request: increase the hit rate of the slots (Qwen3.6 17 of 256 per layer, gemma4 9 of 128) and/or the number of slots.
+Machine busy with another agent (CPU microbenchmarks, load 5-8) in all measurements: speed is indicative.
 
-**Feito no codigo**
-- `KATANA_EXPLOG=<arquivo>`: grava, a cada roteamento, (camada, K escolhidos) em uint16; base do simulador offline.
-- `KATANA_HEAT_DECAY` (padrao 0,98, igual a antes): fator do calor por token, antes fixo em 6 lugares.
-- **Padrao novo: margem de troca 8 no qwen35moe** (`KATANA_SWAP`, antes 4 para todos; gemma4 e os outros seguem 4;
-  `KATANA_SWAP=4` volta ao anterior). Medido 4-8% mais rapido na geracao do Qwen3.6 (abaixo).
+**Done in the code**
+- `KATANA_EXPLOG=<file>`: records, at every routing, (layer, K chosen) as uint16; basis of the offline simulator.
+- `KATANA_HEAT_DECAY` (default 0.98, same as before): per-token heat factor, previously fixed in 6 places.
+- **New default: swap margin 8 on qwen35moe** (`KATANA_SWAP`, previously 4 for all; gemma4 and the others stay at 4;
+  `KATANA_SWAP=4` returns to the previous behavior). Measured 4-8% faster in Qwen3.6 generation (below).
 
-**1. Simulacao offline (medido; registros na CPU, `KATANA_CPU=1`, 3 prompts de agente com o prompt de sistema real do
-agente: conversa, revisao de codigo, resultado de ferramenta; ~1-2,2k tokens de prompt + 256 gerados, guloso).**
-Acertos so na geracao. Simulador: `tools/sim_vagas.c` (`gcc -O2 -o sim tools/sim_vagas.c -lm`;
-`./sim L E K S teste.bin tokens_de_prompt calib1.bin calib2.bin`). Modelo da politica atual: calor com decaimento 0,98, troca se calor > vitima + margem,
-carga chega 1 token depois (thread carregadora), no prompt so vagas livres.
+**1. Offline simulation (measured; logs on the CPU, `KATANA_CPU=1`, 3 agent prompts with the real system prompt of the
+agent: conversation, code review, tool result; ~1-2.2k prompt tokens + 256 generated, greedy).**
+Hits in generation only. Simulator: `tools/sim_vagas.c` (`gcc -O2 -o sim tools/sim_vagas.c -lm`;
+`./sim L E K S teste.bin tokens_de_prompt calib1.bin calib2.bin`). Model of the current policy: heat with decay 0.98, swap if heat > victim + margin,
+load arrives 1 token later (loader thread), in the prompt only free slots.
 
-| politica (17 vagas Qwen3.6 / 9 vagas gemma4) | Qwen3.6 conversa/codigo/ferramenta | gemma4 conversa/codigo/ferramenta |
+| policy (17 slots Qwen3.6 / 9 slots gemma4) | Qwen3.6 conversation/code/tool | gemma4 conversation/code/tool |
 |---|---|---|
-| atual (margem 4) | 47,1 / 39,2 / 35,9% (1,0-1,6 cargas/token) | 51,0 / 47,2 / 46,6% (0,4-0,7) |
-| margem 1 | 49,0 / 42,5 / 39,1% (1,3-2,0) | 51,4 / 48,0 / 47,3% |
-| margem 0 | 49,8 / 44,1 / 40,2% (2,8-4,1) | 51,8 / 48,5 / 47,7% |
-| margem 8 | 42,2 / - / - (0,6) | - |
-| decaimento 0,95 | 47,2 / 40,5 / 37,3% | 51,5 / 47,7 / 47,3% |
-| decaimento 0,99 / 0,995 | 44,1 / 38,9 / 33,4% e piores | 47,6 / 45,3 / 44,9% e piores |
-| LRU (troca a cada falta) | 51,1 / 50,3 / 43,3% mas ~175 cargas/token (inviavel) | 47,6 / 46,7 / 45,6% |
-| LFU acumulado | 16,0 / - / 29,7% | - |
-| conjunto fixo pelo calor dos outros 2 prompts | 9,2 / 15,4 / 15,3% | 19,5 / 27,0 / 26,2% |
-| oraculo fixo (top S da propria geracao) | 48,6 / 40,2 / 38,8% | 52,0 / 49,2 / 48,5% |
-| Belady (teto dinamico) | 66,9 / 66,1 / 61,2% | 63,2 / 62,6 / 61,4% |
-| vagas desiguais (mesmo total, guloso pelo calor de calibracao) | 46,4 / 39,8 / 36,0% | 50,5 / 47,1 / 46,4% |
+| current (margin 4) | 47.1 / 39.2 / 35.9% (1.0-1.6 loads/token) | 51.0 / 47.2 / 46.6% (0.4-0.7) |
+| margin 1 | 49.0 / 42.5 / 39.1% (1.3-2.0) | 51.4 / 48.0 / 47.3% |
+| margin 0 | 49.8 / 44.1 / 40.2% (2.8-4.1) | 51.8 / 48.5 / 47.7% |
+| margin 8 | 42.2 / - / - (0.6) | - |
+| decay 0.95 | 47.2 / 40.5 / 37.3% | 51.5 / 47.7 / 47.3% |
+| decay 0.99 / 0.995 | 44.1 / 38.9 / 33.4% and worse | 47.6 / 45.3 / 44.9% and worse |
+| LRU (swap on every miss) | 51.1 / 50.3 / 43.3% but ~175 loads/token (unfeasible) | 47.6 / 46.7 / 45.6% |
+| cumulative LFU | 16.0 / - / 29.7% | - |
+| fixed set by the heat of the other 2 prompts | 9.2 / 15.4 / 15.3% | 19.5 / 27.0 / 26.2% |
+| fixed oracle (top S of the generation itself) | 48.6 / 40.2 / 38.8% | 52.0 / 49.2 / 48.5% |
+| Belady (dynamic ceiling) | 66.9 / 66.1 / 61.2% | 63.2 / 62.6 / 61.4% |
+| unequal slots (same total, greedy by calibration heat) | 46.4 / 39.8 / 36.0% | 50.5 / 47.1 / 46.4% |
 
-Leitura: a politica atual ja fica no nivel do melhor conjunto fixo possivel; o roteamento muda de assunto rapido
-(o calor de outro prompt quase nao serve: fixo por calibracao fica perto do acaso, 6,6%), entao **vagas desiguais e
-calor pre-carregado nao ganham**. Mais vagas: +1 vaga = ~+1,2 p.p. no Qwen3.6 e ~+2,5 p.p. no gemma4 (simulado,
-S=8..34 / 9..18 em `comparacoes.md`). Pre-aquecimento: so ajuda com vagas vazias e sem prompt antes (primeiros 16
-tokens: 23% -> 23-27% Qwen3.6, 23% -> 33-35% gemma4; 32 tokens: 28 -> 33-36%, 35 -> 42-43%); depois de um prompt de
-~1k tokens as vagas ja estao cheias e a pre-carga fica igual ou 1-5 p.p. pior nos primeiros tokens.
+Reading: the current policy is already at the level of the best possible fixed set; the routing changes topic fast
+(the heat of another prompt is almost useless: fixed by calibration stays near chance, 6.6%), so **unequal slots and
+preloaded heat do not win**. More slots: +1 slot = ~+1.2 p.p. on Qwen3.6 and ~+2.5 p.p. on gemma4 (simulated,
+S=8..34 / 9..18 in `comparisons.md`). Pre-warming: it only helps with empty slots and no prompt before (first 16
+tokens: 23% -> 23-27% Qwen3.6, 23% -> 33-35% gemma4; 32 tokens: 28 -> 33-36%, 35 -> 42-43%); after a prompt of
+~1k tokens the slots are already full and the preload is equal or 1-5 p.p. worse in the first tokens.
 
-**2. Medido na GPU (alternado, mesma hora, maquina carregada)** - o simulador errou o sinal da margem: na GPU cada
-subida bloqueia (`loader_install` grava a vaga apos a leitura bloqueante), e menos subidas valem mais que os acertos.
-- Nota (0k): repetido com a maquina livre, margem 8 segue mais rapida que 4 (24,9 contra 24,2 tok/s na geracao, 3 de 3
-  pares; prompt 68,0 contra 59,6). O ganho de geracao caiu para ~3%, menor que o estimado aqui.
-- `bench 256 128`, Qwen3.6, 3 rodadas alternadas: margem 4 = 36,9-39,6 ms/token, margem 8 = 34,9-36,1, margem 16 =
-  34,8-36,0; acertos 22,5% -> 27,4% (bench conta o prompt), subidas 3950 -> 2130 -> 1030. Prompt 66 -> 72-76 tok/s.
-- Margem 1: 37,2% vs 35,6% de acertos, mas 36,1-39,2 ms vs 33,3-36,9 (pior).
-- `chat` com os 3 prompts de agente, 128 gerados, 2 rodadas: conversa 26,1/26,4 -> 28,3/28,3 tok/s; codigo 24,9/25,2 ->
-  26,9/26,8; ferramenta 24,2/24,4 -> 24,8/25,1.
-- gemma4 `bench 64 128`, 3 rodadas: margem 4 = 66-76 ms, margem 8 = 68-73 ms: igual (por isso o padrao so muda no
+**2. Measured on the GPU (alternating, same hour, machine loaded)** - the simulator got the sign of the margin wrong: on the GPU each
+upload blocks (`loader_install` writes the slot after the blocking read), and fewer uploads matter more than hits.
+- Note (0k): repeated with the machine free, margin 8 is still faster than 4 (24.9 against 24.2 tok/s in generation, 3 of 3
+  pairs; prompt 68.0 against 59.6). The generation gain fell to ~3%, less than estimated here.
+- `bench 256 128`, Qwen3.6, 3 alternating rounds: margin 4 = 36.9-39.6 ms/token, margin 8 = 34.9-36.1, margin 16 =
+  34.8-36.0; hits 22.5% -> 27.4% (bench counts the prompt), uploads 3950 -> 2130 -> 1030. Prompt 66 -> 72-76 tok/s.
+- Margin 1: 37.2% vs 35.6% hits, but 36.1-39.2 ms vs 33.3-36.9 (worse).
+- `chat` with the 3 agent prompts, 128 generated, 2 rounds: conversation 26.1/26.4 -> 28.3/28.3 tok/s; code 24.9/25.2 ->
+  26.9/26.8; tool 24.2/24.4 -> 24.8/25.1.
+- gemma4 `bench 64 128`, 3 rounds: margin 4 = 66-76 ms, margin 8 = 68-73 ms: equal (so the default only changes on
   qwen35moe).
-- `KATANA_HEAT_DECAY=0.95` (Qwen3.6 bench): igual ao padrao (36,4-36,8 ms). `KATANA_VK_ROUTER=0` (tira o roteador
-  fp32 do lote da VRAM, 80 MB): **18 vagas** em vez de 17, geracao igual (36,4-37,2 ms) e prompt 5-10% mais lento:
-  nao vale.
-- Aquecimento pelo `.heat` (Qwen3.6, `bench 16 32`, 1a rodada, 2x alternado): com o `.heat` existente 36,4% de
-  acertos e 41,7 ms/token; `KATANA_NOHEAT=1` 42,0% e 40,6 ms. O `.heat` gravado de outra sessao atrapalha um pouco
-  (bate com a simulacao). O `.heat` medio do `katana calibrar` nao foi medido na GPU.
+- `KATANA_HEAT_DECAY=0.95` (Qwen3.6 bench): equal to the default (36.4-36.8 ms). `KATANA_VK_ROUTER=0` (removes the batch fp32
+  router from VRAM, 80 MB): **18 slots** instead of 17, generation equal (36.4-37.2 ms) and prompt 5-10% slower:
+  not worth it.
+- Warm-up from the `.heat` (Qwen3.6, `bench 16 32`, 1st round, 2x alternating): with the existing `.heat` 36.4% hits
+  and 41.7 ms/token; `KATANA_NOHEAT=1` 42.0% and 40.6 ms. The `.heat` saved from another session hurts a little
+  (matches the simulation). The average `.heat` from `katana calibrar` was not measured on the GPU.
 
-**3. Orcamento de VRAM (Qwen3.6 no grafo, 4096 MiB, teto 88% = 3604 MiB)** - medido do log onde marcado, resto
-calculado do codigo/GGUF:
+**3. VRAM budget (Qwen3.6 in the graph, 4096 MiB, ceiling 88% = 3604 MiB)** - measured from the log where marked, the rest
+computed from the code/GGUF:
 
 | item | MB |
 |---|---|
-| produtos densos (251, inclui `output` Q6_K 402 MB) | 1910 (log) |
-| alpha/beta fp32 (30 camadas) | 16 |
-| estado DeltaNet (30 x 32x128x128 fp32) + anel | 64 |
-| cache KV: ctx 4096 fp32 / ctx 131072 atencao na CPU | 168 / ~0 |
-| buffers do lote P=256 (vkq/vkb) | ~56 |
-| MoE do lote (vkbm) + 16 vagas temporarias | ~39 |
-| roteador fp32 do lote (`vkm.rw`) | 80 |
-| margem de 16 MB e pequenos | ~20 |
-| vagas: 17 x 72,9 MB (40 camadas x 1,82 MB) | 1240 (log) |
+| dense products (251, includes `output` Q6_K 402 MB) | 1910 (log) |
+| alpha/beta fp32 (30 layers) | 16 |
+| DeltaNet state (30 x 32x128x128 fp32) + ring | 64 |
+| KV cache: ctx 4096 fp32 / ctx 131072 attention on the CPU | 168 / ~0 |
+| batch buffers P=256 (vkq/vkb) | ~56 |
+| batch MoE (vkbm) + 16 temporary slots | ~39 |
+| batch fp32 router (`vkm.rw`) | 80 |
+| 16 MB margin and small items | ~20 |
+| slots: 17 x 72.9 MB (40 layers x 1.82 MB) | 1240 (log) |
 
-O que daria para recuperar e por que nao foi feito:
-- Pesos densos para a CPU para abrir vagas: **perde sempre**. Um peso denso e lido em todo token; uma vaga de
-  especialista acerta ~0,03-0,3 vezes por token. Ex.: `output` (402 MB) na CPU = ~16 ms/token a mais para +5 vagas
-  (+6 p.p. = ~20 frios a menos x ~0,06 ms = ~1,2 ms). Idem gemma4 (`output` Q8_0 792 MB, FFN denso 542 MB).
-- Formato menor dos especialistas: nao, a geracao tem de ficar igual (os formatos ja sao os do arquivo, Q4_K/Q5_K/
-  Q6_K/Q5_1 exatos). Sobra do layout da GPU: Q8_0 usa 36 bytes por bloco em vez de 34 (+5,9%) e Q6_K 212 em vez de
-  210. Um Q8_0 com escalas em outro vetor recuperaria ~84 MB no Qwen3.6 (+1 vaga) e ~140 MB no gemma4 (+1 vaga,
-  dense+down Q8_0) - estimado; exige shaders novos de Q8_0 (mv e mm). Sem preenchimento de linhas nos especialistas
-  (512/2048/704/2816/1408 sao multiplos de 128); uma alocacao por camada, sem perda por vaga.
-- Roteador fp32 do lote: 80 MB = +1 vaga, medido sem ganho (acima).
+What could be recovered and why it was not done:
+- Dense weights to the CPU to open slots: **always loses**. A dense weight is read on every token; an expert
+  slot hits ~0.03-0.3 times per token. E.g. `output` (402 MB) on the CPU = ~16 ms/token more for +5 slots
+  (+6 p.p. = ~20 fewer cold x ~0.06 ms = ~1.2 ms). Same for gemma4 (`output` Q8_0 792 MB, dense FFN 542 MB).
+- Smaller expert format: no, the generation must stay the same (the formats are already those of the file, exact Q4_K/Q5_K/
+  Q6_K/Q5_1). What is left from the GPU layout: Q8_0 uses 36 bytes per block instead of 34 (+5.9%) and Q6_K 212 instead of
+  210. A Q8_0 with scales in another vector would recover ~84 MB on Qwen3.6 (+1 slot) and ~140 MB on gemma4 (+1 slot,
+  dense+down Q8_0) - estimated; requires new Q8_0 shaders (mv and mm). No row padding in the experts
+  (512/2048/704/2816/1408 are multiples of 128); one allocation per layer, no loss per slot.
+- Batch fp32 router: 80 MB = +1 slot, measured with no gain (above).
 
-**Atencao, pre-existente**: a geracao gulosa do Qwen3.6 **nao e identica entre duas rodadas iguais** (mesma margem
-4: codigo deu textos diferentes nas 2 rodadas), porque o especialista quente roda na GPU com arredondamento diferente
-da CPU e a ocupacao das vagas depende do tempo da thread carregadora. Mudar a margem muda onde cada especialista roda
-e portanto pode mudar o texto como ja muda de uma rodada para outra; a conversa saiu identica nas 4 rodadas, codigo e
-ferramenta divergiram depois de algumas dezenas de tokens (inicio igual, mesmo sentido).
+**Attention, pre-existing**: Qwen3.6 greedy generation **is not identical between two equal runs** (same margin
+4: code gave different texts in the 2 runs), because the hot expert runs on the GPU with different rounding from
+the CPU and the slot occupancy depends on the timing of the loader thread. Changing the margin changes where each expert runs
+and so may change the text just as it already changes from one run to another; the conversation came out identical in the 4 runs, code and
+tool diverged after a few dozen tokens (same start, same meaning).
 
-Selftests (binario deste ramo, margem 8 no Qwen3.6): Qwen3.6 produtos OK, lote 0,00036, token a token 0,00039, lote 16
-0,00039 OK; gemma4 lote 0,0015, token a token 0,0024 OK; Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) lote 0,00046,
-token a token 0,00054, lote 16 0,00045 OK.
+Selftests (binary of this branch, margin 8 on Qwen3.6): Qwen3.6 products OK, batch 0.00036, token by token 0.00039, batch 16
+0.00039 OK; gemma4 batch 0.0015, token by token 0.0024 OK; Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) batch 0.00046,
+token by token 0.00054, batch 16 0.00045 OK.
 
-Repetir com a maquina livre:
+Repeat with the machine free:
 ```
 sh build.sh
 M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
 for i in 1 2 3; do for s in 4 8 16; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $M 256 128; done; done
 G=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $G 64 128; done; done
-# registro para o simulador (CPU): KATANA_CPU=1 KATANA_EXPLOG=x.bin ./katana chat $M @prompt.txt 256 0
+# log for the simulator (CPU): KATANA_CPU=1 KATANA_EXPLOG=x.bin ./katana chat $M @prompt.txt 256 0
 ```
-Proximos: Q8_0 compacto na GPU (+1 vaga em cada modelo, estimado +1,2 a +2,5 p.p.); subida das vagas fora do
-caminho bloqueante (fila de transferencia propria) para poder baixar a margem sem pagar o bloqueio.
+Next: compact Q8_0 on the GPU (+1 slot in each model, estimated +1.2 to +2.5 p.p.); upload of the slots outside the
+blocking path (own transfer queue) so the margin can be lowered without paying the blocking.
 
-## 0g. Ferramentas de programacao no agente (2026-11-18, ramo worktree-agent-a1a49838b82625b7e)
+## 0g. Programming tools in the agent (2026-11-18, branch worktree-agent-a1a49838b82625b7e)
 
-Novas ferramentas em `src/katana.c` (bloco antes de `agent_tool_run`): `edit_file`, `glob`, `read_document`,
-`git`, e, com a internet ligada (`KATANA_WEB` diferente de 0), `download_file` e `install_package`. Argumentos e
-comportamento no README ("Ferramentas do agente para programar"). Pontos de projeto:
-- `edit_file` e `download_file` so gravam em caminho relativo dentro da pasta atual (mesma regra do `write_file`);
-  `glob` e `read_document` leem fora da pasta com a confirmacao por pasta raiz de sempre. Gravar/executar passa por
-  `agent_act` (`KATANA_CONFIRM=1` pede confirmacao). Tudo vai para `~/.katana/agente.log`.
-- `git`: os argumentos sao separados pelo proprio motor (aspas simples/duplas) e cada token vai ao shell entre
-  aspas simples, entao `status; rm x` nao executa nada. Opcoes que rodam programas (`--upload-pack`, `--exec`,
-  `--output`, `--config`, `-u`/`-c` em clone/pull/fetch, URL `ext::`) sao recusadas. Recusados sem
-  `KATANA_GIT_UNSAFE=1`: `push` com `--force/-f/--delete/--mirror/+refspec`, `reset`, `clean`, `rebase`, `merge`,
-  `stash`, `restore`, `rm`, `tag`, `revert`, `branch -D`, `checkout -f/-B/.`. `status/diff/log/show` nao pedem
-  confirmacao.
-- `download_file`: curl com `--max-filesize` e `ulimit -f` (limite `KATANA_DL_MAX_MB`, padrao 2048), grava em
-  `<path>.part` e renomeia; SHA-256 em C proprio (`sha2_*`, em streaming).
-- `install_package`: lista branca pip/npm/apt/cargo, nome validado (sem espaco, `;`, aspas, nem comecar com `-`);
-  pip usa a venv ativa, `./.venv` ou `--user` (se o sistema disser "externally-managed", a saida sugere criar `.venv`);
-  apt usa `sudo -n` e devolve erro claro se pedir senha. Devolve so as ultimas ~12 linhas.
-- `web_fetch` ja extraia texto legivel de HTML (sem script/style); `read_document` reaproveita `html_to_text`.
-- Formatos: as declaracoes entram na lista `<tools>` JSON (Qwen3.6 em XML `<function=..>`, ou JSON) e
-  `g4_agent_sys` as converte para `<|tool>declaration:..` do Gemma 4 (conferido com `katana agentsys gemma4`;
-  `replace_all` e boolean). O prompt cresceu cerca de 1,2 KB (~300 tokens): o prefixo em cache KV e recalculado
-  uma vez por modelo.
-- Modos de teste novos (sem modelo): `katana tool <nome> '<json>'` (ja existia), `katana agentsys [qwen|json|gemma4]` e
-  `katana toolparse <xml|gemma4> '<chamada>'` (converte a chamada como o agente faz e executa).
-- `sh tools/testar_ferramentas.sh`: 48 verificacoes sem modelo/GPU (edit unico/duplicado/replace_all, glob, git incl.
-  recusas e injecao, HTML/PDF, download de um servidor HTTP local incl. limite e 404, validacao do install, log).
-- katana-desktop: o cartao de ferramenta ja mostra `chave: valor | ...`; a expressao de `cleanArgs` passou a aceitar
-  booleano/numero sem aspas (`replace_all: true` do Gemma). Compila; nao foi aberto o app.
-- **Nao testado**: um modelo chamando as ferramentas novas (nem Qwen3.6 nem Gemma 4: a GPU/CPU estavam reservadas);
-  `install_package` de verdade (pip/npm/apt/cargo: so validacao de entrada); `git clone/pull/push` com rede;
-  Windows (ferramentas de shell devolvem "not available on Windows yet"; `edit_file` e `read_document` de HTML/texto
-  funcionam).
+New tools in `src/katana.c` (block before `agent_tool_run`): `edit_file`, `glob`, `read_document`,
+`git`, and, with the internet on (`KATANA_WEB` different from 0), `download_file` and `install_package`. Arguments and
+behavior in the README ("Ferramentas do agente para programar"). Design points:
+- `edit_file` and `download_file` only write to a relative path inside the current folder (same rule as `write_file`);
+  `glob` and `read_document` read outside the folder with the usual per-root-folder confirmation. Writing/executing goes through
+  `agent_act` (`KATANA_CONFIRM=1` asks for confirmation). Everything goes to `~/.katana/agente.log`.
+- `git`: the arguments are split by the engine itself (single/double quotes) and each token goes to the shell between
+  single quotes, so `status; rm x` runs nothing. Options that run programs (`--upload-pack`, `--exec`,
+  `--output`, `--config`, `-u`/`-c` in clone/pull/fetch, `ext::` URL) are refused. Refused without
+  `KATANA_GIT_UNSAFE=1`: `push` with `--force/-f/--delete/--mirror/+refspec`, `reset`, `clean`, `rebase`, `merge`,
+  `stash`, `restore`, `rm`, `tag`, `revert`, `branch -D`, `checkout -f/-B/.`. `status/diff/log/show` do not ask for
+  confirmation.
+- `download_file`: curl with `--max-filesize` and `ulimit -f` (limit `KATANA_DL_MAX_MB`, default 2048), writes to
+  `<path>.part` and renames; SHA-256 in own C code (`sha2_*`, streaming).
+- `install_package`: pip/npm/apt/cargo whitelist, validated name (no space, `;`, quotes, nor starting with `-`);
+  pip uses the active venv, `./.venv` or `--user` (if the system says "externally-managed", the output suggests creating `.venv`);
+  apt uses `sudo -n` and returns a clear error if it asks for a password. Returns only the last ~12 lines.
+- `web_fetch` already extracted readable text from HTML (no script/style); `read_document` reuses `html_to_text`.
+- Formats: the declarations go into the `<tools>` JSON list (Qwen3.6 in XML `<function=..>`, or JSON) and
+  `g4_agent_sys` converts them to Gemma 4's `<|tool>declaration:..` (checked with `katana agentsys gemma4`;
+  `replace_all` is boolean). The prompt grew about 1.2 KB (~300 tokens): the KV-cached prefix is recomputed
+  once per model.
+- New test modes (no model): `katana tool <name> '<json>'` (already existed), `katana agentsys [qwen|json|gemma4]` and
+  `katana toolparse <xml|gemma4> '<call>'` (converts the call as the agent does and runs it).
+- `sh tools/testar_ferramentas.sh`: 48 checks without model/GPU (edit single/duplicate/replace_all, glob, git incl.
+  refusals and injection, HTML/PDF, download from a local HTTP server incl. limit and 404, install validation, log).
+- katana-desktop: the tool card already shows `key: value | ...`; the `cleanArgs` expression now accepts
+  unquoted boolean/number (Gemma's `replace_all: true`). It compiles; the app was not opened.
+- **Not tested**: a model calling the new tools (neither Qwen3.6 nor Gemma 4: the GPU/CPU were reserved);
+  real `install_package` (pip/npm/apt/cargo: only input validation); `git clone/pull/push` with network;
+  Windows (shell tools return "not available on Windows yet"; `edit_file` and `read_document` of HTML/text
+  work).
 
-## 0h. Roteador do MoE na GPU na geracao: medido, sem ganho (2026-11-18, ramo worktree-agent-a516d8e63276dd43a)
+## 0h. MoE router on the GPU in generation: measured, no gain (2026-11-18, branch worktree-agent-a516d8e63276dd43a)
 
-Pedido: logits, top-k e pesos do roteador num kernel, especialistas lendo os indices de um buffer, para o token em
-que todos os escolhidos estao nas vagas nao precisar de leitura bloqueante por camada. **Medido antes de codar: a
-premissa nao vale nos dois modelos em foco.** Perfil novo `KATANA_VK_GENPROF=1` (camadas com todos nas vagas,
-leitura bloqueante, roteador e frios na CPU, por camada; sai junto do relatorio de especialistas). Numeros em
-`comparacoes.md` secao 14 (maquina compartilhada: indicativos).
+Request: router logits, top-k and weights in one kernel, experts reading the indices from a buffer, so that for the token in
+which all chosen experts are in the slots there is no need for a blocking read per layer. **Measured before coding: the
+premise does not hold on the two models in focus.** New profile `KATANA_VK_GENPROF=1` (layers with all in the slots,
+blocking read, router and cold experts on the CPU, per layer; it comes out together with the experts report). Numbers in
+`comparisons.md` section 14 (shared machine: indicative).
 
-- Qwen3.6-35B-A3B: 17 vagas de 256 por camada, 36% dos usos na VRAM; so **0,3%** das camadas tem os 8 escolhidos
-  todos nas vagas. Em 99,7% das camadas a CPU precisa da entrada para rodar os frios, entao a leitura por camada
-  continua. Por token (~34 ms): leitura bloqueante 17 ms (e a conta da GPU de DeltaNet/atencao esperando, nao bolha),
-  frios na CPU 11-14 ms, roteador na CPU 2,1 ms. O gargalo e o especialista frio na CPU, nao a sincronia.
-- gemma4: 25% das camadas com todos nas vagas, mas a geracao roda no modo hibrido (camadas na CPU, produtos densos
-  na GPU, atencao na CPU): nao existe grafo da GPU para deixar de esperar. Roteador na CPU ~1,1 ms/token de ~47;
-  frios na CPU ~19 ms/token. Precisaria antes de um grafo Vulkan de um token do gemma4.
+- Qwen3.6-35B-A3B: 17 slots of 256 per layer, 36% of the uses in VRAM; only **0.3%** of the layers have all 8 chosen
+  in the slots. In 99.7% of the layers the CPU needs the input to run the cold ones, so the per-layer read
+  stays. Per token (~34 ms): blocking read 17 ms (it is the GPU computation of DeltaNet/attention being waited for, not a bubble),
+  cold on the CPU 11-14 ms, router on the CPU 2.1 ms. The bottleneck is the cold expert on the CPU, not the synchronization.
+- gemma4: 25% of the layers with all in the slots, but generation runs in hybrid mode (layers on the CPU, dense products
+  on the GPU, attention on the CPU): there is no GPU graph to stop waiting for. Router on the CPU ~1.1 ms/token of ~47;
+  cold on the CPU ~19 ms/token. It would first need a one-token Vulkan graph for gemma4.
 
-Feito (o que sobra da ideia): no grafo do qwen35moe o roteador de um token passa a poder rodar na GPU (`moe_router`,
-pesos fp32 que o lote ja subia em `vkm.rw`), os logits saem na mesma leitura da entrada do feed-forward
-(`vkg.xn` com d+E). `KATANA_VK_GPUROUTER=1` liga; **padrao desligado**: alternado deu -1,2% de tempo por token,
-dentro do ruido. Geracao gulosa de 80 tokens identica com 0 e 1; selftest com `KATANA_VK_GPUROUTER=1`: Qwen3.6
-(lote 0,00045, token a token 0,00032, lote 16 0,00041, OK), gemma4 (lote 0,0015, token a token 0,0028, OK),
-Qwen3-30B `KATANA_KV16=0 KATANA_CTX=512` (lote 0,00049, token a token 0,00078 OK, lote 16 0,00046).
+Done (what remains of the idea): in the qwen35moe graph the one-token router can now run on the GPU (`moe_router`,
+fp32 weights that the batch already uploaded in `vkm.rw`), the logits come out in the same read as the feed-forward input
+(`vkg.xn` with d+E). `KATANA_VK_GPUROUTER=1` turns it on; **default off**: alternating gave -1.2% time per token,
+within noise. 80-token greedy generation identical with 0 and 1; selftest with `KATANA_VK_GPUROUTER=1`: Qwen3.6
+(batch 0.00045, token by token 0.00032, batch 16 0.00041, OK), gemma4 (batch 0.0015, token by token 0.0028, OK),
+Qwen3-30B `KATANA_KV16=0 KATANA_CTX=512` (batch 0.00049, token by token 0.00078 OK, batch 16 0.00046).
 
-Onde esta o ganho de verdade na geracao destes modelos: os frios na CPU (mais vagas, especialistas menores na VRAM,
-ou mais threads/kernel melhor no `moe_cpu_multi`).
+Where the real gain in generation of these models is: the cold ones on the CPU (more slots, smaller experts in VRAM,
+or more threads/better kernel in `moe_cpu_multi`).
 
-Medir com a maquina livre:
+Measure with the machine free:
 ```
 sh build.sh
 M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
@@ -296,790 +296,789 @@ for i in 1 2 3; do for r in 0 1; do KATANA_VK_GENPROF=1 KATANA_VK_GPUROUTER=$r K
 KATANA_VK_GENPROF=1 KATANA_BACKEND=vulkan ./katana bench modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 16 128
 ```
 
-## 0e. Cache KV Q8_0 no qwen35moe (2026-11-17, ramo worktree-agent-a820d36683256ed88)
+## 0e. Q8_0 KV cache on qwen35moe (2026-11-17, branch worktree-agent-a820d36683256ed88)
 
-Juntado o ramo worktree-agent-aea784e9337467df4 (KATANA_CPU_KV8, KATANA_DUMP_LOGITS, tools/agulha.py) e estendido ao
-caminho atual: alem do `qn_core` (um token), o lote da CPU `qn_core_n`/`qn_att_n_job` grava e le Q8_0, e o grafo Vulkan
-com atencao na CPU (`vkq.cpuatt`) aceita o cache Q8_0 (antes so ligava com fp32/fp16). Formato: blocos de 32 valores
-com escala fp16 (max|x|/127), 34 bytes; K aberto uma vez por linha para as G cabecas, V somado direto dos inteiros
-com a escala dobrada no peso. Flash-decoding e pedacos iguais aos do fp16. Custo: 10,6 KB/token => ~11,4 GB a 1M
-(fp16: 21,5 GB); a 131072 o cache cai de 2,68 para 1,43 GB.
+Merged branch worktree-agent-aea784e9337467df4 (KATANA_CPU_KV8, KATANA_DUMP_LOGITS, tools/agulha.py) and extended to the
+current path: besides `qn_core` (one token), the CPU batch `qn_core_n`/`qn_att_n_job` writes and reads Q8_0, and the Vulkan graph
+with attention on the CPU (`vkq.cpuatt`) accepts the Q8_0 cache (before it only turned on with fp32/fp16). Format: blocks of 32 values
+with fp16 scale (max|x|/127), 34 bytes; K opened once per row for the G heads, V summed directly from the integers
+with the scale folded into the weight. Flash-decoding and chunks equal to those of fp16. Cost: 10.6 KB/token => ~11.4 GB at 1M
+(fp16: 21.5 GB); at 131072 the cache drops from 2.68 to 1.43 GB.
 
-Politica: `KATANA_CPU_KV8=1` forca, `=0` desliga; sem a variavel, Q8_0 so acima de 262144 de contexto (alem do
-treinado, onde o fp16 passaria de 5,4 GB); abaixo disso fica fp16 (> 65536) ou fp32 como antes. Exige kvd e hd
-multiplos de 32. pfx (prefixo salvo) fica desligado com Q8_0, como com fp16. `tools/agulha.py --vulkan` roda com o
-grafo Vulkan e atencao na CPU (prefill muito mais rapido que `KATANA_CPU=1`).
+Policy: `KATANA_CPU_KV8=1` forces, `=0` turns off; without the variable, Q8_0 only above 262144 of context (beyond what was
+trained, where fp16 would exceed 5.4 GB); below that it stays fp16 (> 65536) or fp32 as before. Requires kvd and hd
+multiples of 32. pfx (saved prefix) stays off with Q8_0, as with fp16. `tools/agulha.py --vulkan` runs with the Vulkan
+graph and attention on the CPU (prefill much faster than `KATANA_CPU=1`).
 
-Validado (so correcao; maquina carregada, GPU ocupada por outro processo: o Vulkan caiu no modo hibrido e o
-selftest nao achou GPU, entao so os produtos foram conferidos):
-- Saida gulosa de 60 tokens, ctx 8192, prompt de 24 tokens: CPU fp16, CPU Q8_0, Vulkan(hibrido) fp16 e Vulkan(hibrido)
-  Q8_0 identicas nos 60 tokens (nenhuma divergencia).
-- Prompt de 1541 tokens (lote da CPU, qn_core_n), CPU: logits do fim do prompt fp16 x Q8_0 com diferenca maxima 0,44
-  (maior logit 15,8), mesmo argmax.
-- selftest qwen35moe ctx 4096 e 131072 com KATANA_CPU_KV8=1, gemma4 e Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`):
-  produtos OK; verificacoes de grafo/lote puladas por falta de GPU.
+Validated (correctness only; machine loaded, GPU busy with another process: Vulkan fell to hybrid mode and the
+selftest found no GPU, so only the products were checked):
+- 60-token greedy output, ctx 8192, 24-token prompt: CPU fp16, CPU Q8_0, Vulkan(hybrid) fp16 and Vulkan(hybrid)
+  Q8_0 identical across the 60 tokens (no divergence).
+- 1541-token prompt (CPU batch, qn_core_n), CPU: logits at the end of the prompt fp16 x Q8_0 with maximum difference 0.44
+  (largest logit 15.8), same argmax.
+- selftest qwen35moe ctx 4096 and 131072 with KATANA_CPU_KV8=1, gemma4 and Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`):
+  products OK; graph/batch checks skipped for lack of GPU.
 
-Pendente (rodar com a maquina livre e a GPU desocupada):
+Pending (run with the machine free and the GPU idle):
 ```
 sh build.sh
 M=modelos/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
-# selftest com GPU (lote, token a token, lote 16), atencao na CPU com Q8_0
+# selftest with GPU (batch, token by token, batch 16), attention on the CPU with Q8_0
 KATANA_CPU_KV8=1 KATANA_CTX=131072 ./katana selftest $M
-KATANA_CTX=131072 ./katana selftest $M                      # fp16, referencia
-# gulosa no grafo Vulkan de verdade (conferir "atencao completa na CPU" no stderr)
+KATANA_CTX=131072 ./katana selftest $M                      # fp16, reference
+# real greedy on the Vulkan graph (check "atencao completa na CPU" on stderr)
 for kv in 0 1; do KATANA_CPU_KV8=$kv KATANA_CTX=131072 KATANA_BACKEND=vulkan ./katana run $M "Explique o cache KV." 60 0; done
-# velocidade, alternando (bench 512+32 e em profundidade)
+# speed, alternating (bench 512+32 and at depth)
 for i in 1 2 3; do for kv in 0 1; do KATANA_CPU_KV8=$kv KATANA_CTX=131072 ./katana bench $M 512 32; done; done
 for kv in 0 1; do KATANA_CPU=1 KATANA_CPU_KV8=$kv KATANA_CTX=262144 KATANA_BENCH_POS=262000 ./katana run $M "Ola" 16 0; done
-# agulha no palheiro (fp16 x Q8_0)
+# needle in a haystack (fp16 x Q8_0)
 python3 tools/agulha.py --vulkan --tokens 32000 --pos 0.1,0.5,0.9 --modo fp16,q8
 python3 tools/agulha.py --vulkan --tokens 128000 --pos 0.1,0.5,0.9 --modo fp16,q8 --timeout 7200
 ```
 
-## 0d. qwen35moe no Vulkan com contexto longo: atencao completa na CPU (2026-11-17, ramo worktree-agent-a460c3809aea8f50a)
+## 0d. qwen35moe on Vulkan with long context: full attention on the CPU (2026-11-17, branch worktree-agent-a460c3809aea8f50a)
 
-Achado: o grafo Vulkan do qwen35moe ja tinha prompt em lote (DeltaNet por `dn_seq` exato ou em blocos com
-`KATANA_QN_CHUNK=1`, atencao `att_flash32`) e geracao na GPU, mas so com contexto curto. Com o contexto do agente
-(131072) o cache KV fp16 das 10 camadas de atencao (2,68 GB) nao cabe junto dos pesos densos (1,9 GB): o grafo
-falhava e caia no modo hibrido (DeltaNet na CPU, produtos densos na GPU), mais lento que a CPU pura.
+Finding: the qwen35moe Vulkan graph already had batched prompt (DeltaNet by exact `dn_seq` or in blocks with
+`KATANA_QN_CHUNK=1`, `att_flash32` attention) and generation on the GPU, but only with short context. With the agent's context
+(131072) the fp16 KV cache of the 10 attention layers (2.68 GB) does not fit together with the dense weights (1.9 GB): the graph
+failed and fell to hybrid mode (DeltaNet on the CPU, dense products on the GPU), slower than pure CPU.
 
-Mudanca (so `vkq_build`, `vk_qn_forward_1`, `vk_qn_forward_n`): `vkq.cpuatt` — nas camadas de atencao completa as
-projecoes q/portao, k, v rodam na GPU, descem para a RAM, a atencao roda na CPU (`qn_core` / `qn_core_n` em pedacos
-de 16, cache KV da CPU em fp16, o mesmo do caminho CPU) e a saida sobe para o produto `wo` na GPU. DeltaNet, MoE e o
-resto continuam na GPU. Sem cache KV na VRAM o grafo nao depende mais do contexto (cabe ate onde a RAM aguentar o
-cache da CPU). Padrao quando o cache fp16 passaria de 512 MB (ctx > ~26k); `KATANA_QN_CPUATT=0/1` forca.
+Change (only `vkq_build`, `vk_qn_forward_1`, `vk_qn_forward_n`): `vkq.cpuatt` — in the full-attention layers the
+q/gate, k, v projections run on the GPU, go down to RAM, the attention runs on the CPU (`qn_core` / `qn_core_n` in chunks
+of 16, CPU KV cache in fp16, the same as the CPU path) and the output goes back up for the `wo` product on the GPU. DeltaNet, MoE and the
+rest stay on the GPU. Without a KV cache in VRAM the graph no longer depends on the context (it fits as far as RAM can hold the
+CPU cache). Default when the fp16 cache would exceed 512 MB (ctx > ~26k); `KATANA_QN_CPUATT=0/1` forces.
 
-Medido (bench 512+32, ctx 131072, binario do main x novo alternados, mesma hora, rodadas 2-3):
-prompt 18,8-18,9 -> 83,6-85,0 tok/s; geracao 17,3 -> 27,0-27,3 tok/s. (Rodada fria do main chegou a 3,7-5,3.)
-Validado: saida gulosa de 60 tokens identica a `KATANA_CPU=1` (ctx 131072); selftest do qwen35moe a 131072
-(lote 0,0008, token a token 0,0011, lote 16 0,0005) e a 4096 (atencao na GPU, 0,0003); qwen2.5-1.5b OK;
-Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) lote OK e "token a token" 0,115 FALHOU — falha antiga ja listada (item 4
-da secao 0, quentes em fp16), caminho nao tocado; OLMoE: o selftest padrao (OpenCL) para depois dos produtos, igual
-no binario do main.
+Measured (bench 512+32, ctx 131072, main binary x new alternating, same hour, rounds 2-3):
+prompt 18.8-18.9 -> 83.6-85.0 tok/s; generation 17.3 -> 27.0-27.3 tok/s. (The main's cold round got as low as 3.7-5.3.)
+Validated: 60-token greedy output identical to `KATANA_CPU=1` (ctx 131072); qwen35moe selftest at 131072
+(batch 0.0008, token by token 0.0011, batch 16 0.0005) and at 4096 (attention on the GPU, 0.0003); qwen2.5-1.5b OK;
+Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) batch OK and "token by token" 0.115 FAILED — an old failure already listed (item 4
+of section 0, hot ones in fp16), path not touched; OLMoE: the default selftest (OpenCL) stops after the products, same
+on the main binary.
 
-DeltaNet do lote em blocos (`KATANA_QN_CHUNK=1`) x recorrencia exata (padrao), 512+16, ctx 131072, alternado:
-3 de 5 pares mostram blocos mais rapidos (34 x 64, 48 x 80, 93 x 155 tok/s), um par empatou e outro inverteu
-(84 x 77); a maquina estava com carga 16-18 (outro agente rodando o Qwen3.6 na CPU), entao nao conclusivo. O padrao
-continua o exato (blocos dao 0,0028 no selftest contra 0,0004). Medir de novo com a maquina livre antes de trocar.
+Batch DeltaNet in blocks (`KATANA_QN_CHUNK=1`) x exact recurrence (default), 512+16, ctx 131072, alternating:
+3 of 5 pairs show blocks faster (34 x 64, 48 x 80, 93 x 155 tok/s), one pair tied and another inverted
+(84 x 77); the machine had load 16-18 (another agent running Qwen3.6 on the CPU), so not conclusive. The default
+stays the exact one (blocks give 0.0028 in the selftest against 0.0004). Measure again with the machine free before switching.
 
-Pendente: atencao de lote do qwen35 na GPU com cache KV Q8_0 (caberia ~1,3 GB a 131k, mas tiraria vagas do cache
-de especialistas; a atencao na CPU ja nao e o gargalo em contexto raso); kernels de `tools/vkdelta` ja estao ligados
-(dn_step/dn_prep/dn_chunk/dn_state/dn_norm, mais dn_seq); KATANA_CPU_KV8 do ramo worktree-agent-aea784e9337467df4
-ainda nao juntado; em profundidade (dezenas de milhares de posicoes) a atencao na CPU passa a pesar (nao medido).
+Pending: batch attention of qwen35 on the GPU with Q8_0 KV cache (~1.3 GB would fit at 131k, but would take slots from the expert
+cache; attention on the CPU is no longer the bottleneck at shallow context); `tools/vkdelta` kernels are already wired in
+(dn_step/dn_prep/dn_chunk/dn_state/dn_norm, plus dn_seq); KATANA_CPU_KV8 from branch worktree-agent-aea784e9337467df4
+not yet merged; at depth (tens of thousands of positions) attention on the CPU starts to weigh (not measured).
 
-## 0f. Sessoes retomaveis: calor de especialistas + contexto compacto (2026-11-17, ramo worktree-agent-ab5f12c6b1188314b)
+## 0f. Resumable sessions: expert heat + compact context (2026-11-17, branch worktree-agent-ab5f12c6b1188314b)
 
-Inclui (cherry-pick) o commit 79b1c0c do ramo worktree-agent-a2f7cb1d88e13a81e: compactacao no formato Gemma 4 e
-cache de prefixo em disco com KV fp16 (CPU) e anel do gemma4.
+Includes (cherry-pick) commit 79b1c0c from branch worktree-agent-a2f7cb1d88e13a81e: compaction in the Gemma 4 format and
+on-disk prefix cache with fp16 KV (CPU) and the gemma4 ring.
 
-Feito (agente, formatos ChatML e Gemma 4; gpt-oss nao):
-- **Arquivo de sessao `.ksess`** (binario): impressao digital do modelo (arquitetura, tamanho, parametros, formato
-  de chat), **calor de especialistas da sessao** (o mesmo vetor camada x especialista do `.heat`, so se o cache de
-  especialistas estiver ligado), **conversa compacta** (resumo + 2 ultimos pedidos do usuario com o que veio depois,
-  no texto exato do cache) **com os ids tokenizados**, e a conversa inteira (para quem quiser reprocessar tudo).
-  Gravado a cada resposta e ao trocar de sessao (`/retomar`, `/sessao` para outro arquivo, `/novo`) na versao barata
-  (sem resumir: corta os turnos antigos e mantem um resumo que ja existia); ao sair (`/sair`, fim da entrada), com
-  resumo feito pelo modelo (`ah_summary`) quando as mensagens passam de `KATANA_RETOMAR_TOK` tokens (padrao 1500).
-  `KATANA_SESS_RESUMO=troca` resume tambem na troca (custa minutos nos modelos grandes).
-- Limite de disco e expiracao: na pasta da sessao, `.ksess` mais velhos que `KATANA_SESS_DIAS` (30) sao apagados e,
-  se a pasta passar de `KATANA_SESS_MB` (256), os mais antigos. O KV salvo em `~/.katana/cache` segue o PFX_KEEP (8).
-- **Retomar**: `katana agent <modelo> --retomar <arquivo>` (grava de volta no mesmo arquivo) ou `--sessao <arquivo>`;
-  em execucao, `/retomar <arquivo>` e `/sessao <arquivo>` (este e silencioso: nao manda READY). A retomada:
-  (1) recusa sessao de outro modelo (`KATANA_RETOMAR_OUTRO=1` forca); (2) `heat_apply`: troca o calor pelo da sessao
-  e pede so os S mais quentes de cada camada (com a thread carregadora a carga corre junto do prompt; sem ela,
-  `expert_load` na hora); (3) renderiza a conversa compacta com o prompt de sistema atual, confere com os ids
-  gravados; (4) tenta `pfx_load` do KV desse prefixo (chave = ids+geometria); se nao houver, recalcula (aproveitando
-  o prefixo de sistema do disco) e grava o KV para a proxima. `KATANA_RETOMAR=completo` reprocessa a conversa
-  inteira, sem calor (comparacao).
-- Marcador `\x01RESUME <msgs_compactas> <msgs_total> <tokens> <especialistas_pedidos> <segundos> <kv|calc>` seguido de
+Done (agent, ChatML and Gemma 4 formats; gpt-oss not):
+- **Session file `.ksess`** (binary): model fingerprint (architecture, size, parameters, chat
+  format), **session expert heat** (the same layer x expert vector as the `.heat`, only if the expert cache
+  is on), **compact conversation** (summary + last 2 user requests with what came after, in the exact
+  cache text) **with the tokenized ids**, and the whole conversation (for those who want to reprocess everything).
+  Saved at every reply and when switching sessions (`/retomar`, `/sessao` to another file, `/novo`) in the cheap version
+  (without summarizing: cuts the old turns and keeps a summary that already existed); on exit (`/sair`, end of input), with a
+  summary made by the model (`ah_summary`) when the messages exceed `KATANA_RETOMAR_TOK` tokens (default 1500).
+  `KATANA_SESS_RESUMO=troca` also summarizes on switching (costs minutes on large models).
+- Disk limit and expiry: in the session folder, `.ksess` files older than `KATANA_SESS_DIAS` (30) are deleted and,
+  if the folder exceeds `KATANA_SESS_MB` (256), the oldest ones. The KV saved in `~/.katana/cache` follows PFX_KEEP (8).
+- **Resume**: `katana agent <model> --retomar <file>` (writes back to the same file) or `--sessao <file>`;
+  while running, `/retomar <file>` and `/sessao <file>` (the latter is silent: it does not send READY). The resume:
+  (1) refuses a session from another model (`KATANA_RETOMAR_OUTRO=1` forces); (2) `heat_apply`: replaces the heat with the session's
+  and requests only the S hottest of each layer (with the loader thread the load runs alongside the prompt; without it,
+  `expert_load` right away); (3) renders the compact conversation with the current system prompt, checks it against the saved ids;
+  (4) tries `pfx_load` of the KV for that prefix (key = ids+geometry); if there is none, it recomputes (reusing the system
+  prefix from disk) and saves the KV for the next time. `KATANA_RETOMAR=completo` reprocesses the whole
+  conversation, without heat (comparison).
+- Marker `\x01RESUME <compact_msgs> <total_msgs> <tokens> <experts_requested> <seconds> <kv|calc>` followed by
   `\x01TOKENS`.
-- **DeltaNet / gemma4**: `pfx_geom` so cobre o cache da CPU quando ha estado SSM (qwen35moe) ou anel (gemma4). Com o
-  qwen35moe no grafo Vulkan (KV na VRAM, estado DeltaNet na GPU) nao ha KV em disco: a retomada recalcula o prefixo
-  compacto. Com o gemma4 o KV do anel vai inteiro se a conversa passou da janela.
-- **`katana calibrar <modelo> [texto]`**: passa textos variados (pt/en, codigo, chamada de ferramenta) token a token e
-  grava como `.heat` a media do calor (o `.heat` normal guarda so o calor do fim da ultima sessao, que decai 0,98
-  por token). Serve ao gemma4 (pedido da secao 10, item 2) e a qualquer MoE no modo hibrido.
-- **katana-desktop**: ao mandar a 1a mensagem de uma sessao, `/sessao <sessoes>/<id>.ksess`; ao abrir uma sessao com
-  `.ksess`, `/retomar` (sem o resumo textual na mensagem); sem `.ksess`, ou se o motor recusar (sem RESUME antes do
-  READY), volta ao resumo textual de antes. Mostra o aviso "Sessao retomada: N tokens de contexto compacto (...) em
-  X s, recalculado|cache KV lido do disco; W especialistas aquecidos". Apagar a sessao apaga o `.ksess`. Troca de
-  modelo com sessao aberta: o motor novo tenta retomar e recusa se for outro modelo. Selftest ganhou o trecho
-  "retomar sessao pelo motor".
+- **DeltaNet / gemma4**: `pfx_geom` only covers the CPU cache when there is SSM state (qwen35moe) or ring (gemma4). With
+  qwen35moe on the Vulkan graph (KV in VRAM, DeltaNet state on the GPU) there is no KV on disk: the resume recomputes the compact
+  prefix. With gemma4 the ring KV goes in full if the conversation went past the window.
+- **`katana calibrar <model> [text]`**: runs varied texts (pt/en, code, tool call) token by token and
+  saves as `.heat` the average of the heat (the normal `.heat` keeps only the heat at the end of the last session, which decays 0.98
+  per token). It serves gemma4 (request from section 10, item 2) and any MoE in hybrid mode.
+- **katana-desktop**: when sending the 1st message of a session, `/sessao <sessions>/<id>.ksess`; when opening a session with
+  `.ksess`, `/retomar` (without the text summary in the message); without `.ksess`, or if the engine refuses (no RESUME before
+  READY), it goes back to the previous text summary. It shows the notice "Sessao retomada: N tokens de contexto compacto (...) em
+  X s, recalculado|cache KV lido do disco; W especialistas aquecidos". Deleting the session deletes the `.ksess`. Switching
+  model with a session open: the new engine tries to resume and refuses if it is another model. The selftest gained the
+  "retomar sessao pelo motor" part.
 
-**Medido (2026-11-17, noite; a GPU estava disputada por outros agentes rodando bench do gemma4/Qwen3.6, entao o
-modo de cada rodada variou: anotado ao lado).** Tempo ate a 1a resposta = `/retomar` + pergunta ate o 1o token, com o
-modelo ja carregado (harness em Python lendo os marcadores). HOME isolado (memoria do agente vazia), pergunta sobre
-um fato dito so no 1o turno ("codigo do cofre", que so sobrevive na compacta via resumo).
+**Measured (2026-11-17, evening; the GPU was contested by other agents running bench of gemma4/Qwen3.6, so the
+mode of each round varied: noted alongside).** Time to the 1st reply = `/retomar` + question up to the 1st token, with the
+model already loaded (Python harness reading the markers). Isolated HOME (empty agent memory), question about
+a fact stated only in the 1st turn ("codigo do cofre", which only survives in the compact one via the summary).
 
-| modelo | sessao | modo da GPU | retomada compacta | reprocessar tudo |
+| model | session | GPU mode | compact resume | reprocess everything |
 |---|---|---|---|---|
-| Qwen3.6-35B-A3B | 6 turnos, 6819 tok inteira / 2938 compacta | grafo Vulkan completo, cache de especialistas 10/256 | 112,6 s | 209,0 s |
-| Qwen3.6-35B-A3B | idem | hibrido sem cache de especialistas (VRAM tomada) | 222,9 s | 831,3 s |
-| gemma4 26B-A4B (ctx 8192) | 3 turnos, ~2070 tok inteira / 1988 compacta (KATANA_RETOMAR_TOK=600) | gemma4 com camadas na CPU (108 produtos na GPU) | 324,7 s (recalcula) / **5,05 s** (KV do disco, 0,26 s) | 501,4 s |
+| Qwen3.6-35B-A3B | 6 turns, 6819 tok full / 2938 compact | full Vulkan graph, expert cache 10/256 | 112.6 s | 209.0 s |
+| Qwen3.6-35B-A3B | same | hybrid without expert cache (VRAM taken) | 222.9 s | 831.3 s |
+| gemma4 26B-A4B (ctx 8192) | 3 turns, ~2070 tok full / 1988 compact (KATANA_RETOMAR_TOK=600) | gemma4 with layers on the CPU (108 products on the GPU) | 324.7 s (recomputes) / **5.05 s** (KV from disk, 0.26 s) | 501.4 s |
 
-As rodadas compacta x completa foram alternadas na mesma hora, mas os pares nao tiveram o mesmo modo da GPU (os
-outros processos pegavam a VRAM entre uma e outra), por isso estao separados por modo; so a 1a linha e a 3a sao
-comparaveis par a par. Todas as respostas: "4817" (correto); outra pergunta (orcamento, ultimo turno): "38 mil reais".
-O resumo gravado (Qwen3.6 e gemma4) guardou cofre, projeto/gerente, data e porta.
+The compact x full rounds were alternated in the same hour, but the pairs did not have the same GPU mode (the
+other processes took the VRAM between one and the other), which is why they are separated by mode; only the 1st and 3rd rows
+are comparable pair by pair. All answers: "4817" (correct); another question (budget, last turn): "38 mil reais".
+The saved summary (Qwen3.6 and gemma4) kept vault, project/manager, date and port.
 
-Nao medido: o ganho do **aquecimento** de especialistas. Em todas as rodadas com a sessao que tinha calor, a VRAM
-estava tomada e o cache de especialistas nao ligou ("0 especialistas aquecidos"); `heat_apply` so foi exercitado
-no caminho de compilacao/logica, nao com GPU. `KATANA_RETOMAR_FRIO=1` existe para a comparacao com/sem calor.
-Estimativa (nao medida): o aquecimento so muda a velocidade dos primeiros tokens gerados (o prompt em lote do
-qwen35moe ja usa vagas temporarias para os frios).
+Not measured: the gain of expert **warm-up**. In all rounds with the session that had heat, the VRAM
+was taken and the expert cache did not turn on ("0 especialistas aquecidos"); `heat_apply` was only exercised
+on the compile/logic path, not with GPU. `KATANA_RETOMAR_FRIO=1` exists for the with/without heat comparison.
+Estimate (not measured): warm-up only changes the speed of the first generated tokens (the batch prompt of
+qwen35moe already uses temporary slots for the cold ones).
 
-Custos observados: o resumo ao sair/trocar de sessao reprocessa a transcricao (Qwen3.6 hibrido ~9 min para ~6k
-tokens a 9 tok/s; gemma4 ~7 min). O desktop manda `/sair` e mata o agente depois de 3 s, entao ao fechar o app o
-`.ksess` fica com a versao barata (ultimos turnos + resumo que ja existia). KV no disco do gemma4 e grande
-(cache da CPU fp32: 507 MB para 1988 tokens); qwen35moe no grafo Vulkan nao grava KV (estado DeltaNet na GPU).
+Observed costs: the summary on exit/session switch reprocesses the transcript (Qwen3.6 hybrid ~9 min for ~6k
+tokens at 9 tok/s; gemma4 ~7 min). The desktop sends `/sair` and kills the agent after 3 s, so when closing the app the
+`.ksess` stays with the cheap version (last turns + summary that already existed). KV on disk for gemma4 is large
+(CPU fp32 cache: 507 MB for 1988 tokens); qwen35moe on the Vulkan graph does not save KV (DeltaNet state on the GPU).
 
-Selftests (binario deste ramo, GPU disputada): gemma4 produtos OK, lote 0,0030 OK, token a token 0,0030 OK;
-Qwen3.6 produtos OK, lote/token a token 0,00073 OK; Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) produtos OK, mas a
-VRAM estava tomada e as verificacoes de grafo completo foram puladas ("grafo na CPU"). desktop-qt `--selftest`:
-105 ok, 0 falhas (o modelo do teste do desktop e o qwen2.5-1.5b, escolhido pelo proprio teste).
+Selftests (binary of this branch, GPU contested): gemma4 products OK, batch 0.0030 OK, token by token 0.0030 OK;
+Qwen3.6 products OK, batch/token by token 0.00073 OK; Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`) products OK, but the
+VRAM was taken and the full graph checks were skipped ("grafo na CPU"). desktop-qt `--selftest`:
+105 ok, 0 failures (the desktop test model is qwen2.5-1.5b, chosen by the test itself).
 
-Pendencias:
-- Medir o aquecimento com a GPU livre (sessao com calor: gravar uma sessao no grafo completo; `--retomar` com e sem
-  `KATANA_RETOMAR_FRIO=1`, comparar tok/s dos primeiros 64 tokens e acertos do cache).
-- `katana calibrar` nao rodou com o cache de especialistas ligado (mesma razao); rodar no gemma4 com a GPU livre.
-- KV do qwen35moe no grafo Vulkan (ler/gravar vkg + estado DeltaNet da GPU) para a retomada nao recalcular.
-- Resumo em segundo plano / ao fim de cada turno longo, para o fechamento do app nao perder o resumo; aumentar a
-  espera do `/sair` no desktop.
-- `chat` (sem ferramentas) ainda nao tem `--retomar`; so o `agent`.
-- O teste inicial deste trabalho chamou a ferramenta `remember` e gravou 4 fatos de teste em `~/.katana/memoria.txt`
-  (Andorinha/Joaquim, quinta dia 26, porta 7443, verde-musgo): apagar a mao (o ambiente nao me deixou editar).
+Pending:
+- Measure the warm-up with the GPU free (session with heat: record a session on the full graph; `--retomar` with and without
+  `KATANA_RETOMAR_FRIO=1`, compare tok/s of the first 64 tokens and cache hits).
+- `katana calibrar` did not run with the expert cache on (same reason); run it on gemma4 with the GPU free.
+- KV of qwen35moe on the Vulkan graph (read/write vkg + DeltaNet state of the GPU) so the resume does not recompute.
+- Summary in the background / at the end of each long turn, so closing the app does not lose the summary; increase the
+  wait of `/sair` in the desktop.
+- `chat` (without tools) does not have `--retomar` yet; only `agent`.
+- The initial test of this work called the `remember` tool and saved 4 test facts in `~/.katana/memoria.txt`
+  (Andorinha/Joaquim, quinta dia 26, porta 7443, verde-musgo): delete by hand (the environment did not let me edit).
 
-## 0c. katana-desktop nativo em Qt6 (2026-11-17)
+## 0c. Native katana-desktop in Qt6 (2026-11-17)
 
-O katana-desktop deixou de ser Go + pagina HTML no Chrome: agora e um app Qt6/QML em `desktop-qt/` (ver
-`desktop-qt/README.md`; compilar com `desktop-qt/build.sh`; teste `--selftest`). O codigo Go e `desktop/` foram
-removidos. Para trocar o binario em uso: `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
+katana-desktop is no longer Go + an HTML page in Chrome: it is now a Qt6/QML app in `desktop-qt/` (see
+`desktop-qt/README.md`; build with `desktop-qt/build.sh`; test `--selftest`). The Go code and `desktop/` were
+removed. To swap the binary in use: `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
 
-## 0b. Contexto empacotado e conversas tokenizadas (2026-11-17, ramo worktree-agent-a79e57555acd5ead4)
+## 0b. Packed context and tokenized conversations (2026-11-17, branch worktree-agent-a79e57555acd5ead4)
 
-Feito (commit eff16d8):
-- **Compactacao do contexto do agente** (so formato ChatML; Gemma 4 e gpt-oss mantem o aviso "contexto cheio").
-  O agente guarda as mensagens que ja estao no cache KV. `/compactar` forca; automatica quando o turno passaria
-  de 85% do contexto (`KATANA_COMPACT=0` desliga a automatica). Camadas: (1) resultados de ferramenta anteriores
-  ao ultimo pedido do usuario viram `[resultado de X omitido para economizar contexto: N bytes]`; (2) se ainda
-  acima de 50% do contexto (ou forcado), os turnos antes do ultimo pedido viram um resumo gerado pelo proprio
-  modelo (gulosa, ate 500 tokens, prompt fixo, sem ferramentas), seguido de "Entendido..." do assistente;
-  (3) se ainda acima de 85%, encolhe tambem os resultados do turno atual menos o ultimo. Depois recalcula o
-  cache do zero (sistema do cache em disco via pfx_prepare + resumo + ultimo turno + texto pendente). O resumo
-  aparece em stderr em `[resumo]`.
-- **Marcadores com KATANA_UI=1** (stdout, uma linha cada):
-  - `\x01TOKENS <pos> <ctx>` depois de cada resposta (agente e conversa simples) e depois de `/compactar`;
-    vem antes do `\x01READY` do proximo prompt.
-  - `\x01COMPACT <tokens_antes> <tokens_depois>` a cada compactacao.
-- **`katana tokenize <modelo> [arquivo|-] [--ids]`**: so o vocabulario (g_vocab_only). Texto livre: conta (com BOS
-  se o modelo usa). Se todas as linhas nao vazias forem `system|user|assistant<TAB>texto` (`\n`, `\t` escapados),
-  monta a conversa com turn_text (mesmo formato do chat e do toktest) e imprime tokens por mensagem e total.
+Done (commit eff16d8):
+- **Agent context compaction** (ChatML format only; Gemma 4 and gpt-oss keep the "contexto cheio" warning).
+  The agent keeps the messages that are already in the KV cache. `/compactar` forces; automatic when the turn would exceed
+  85% of the context (`KATANA_COMPACT=0` turns off the automatic one). Layers: (1) tool results prior
+  to the last user request become `[resultado de X omitido para economizar contexto: N bytes]`; (2) if still
+  above 50% of the context (or forced), the turns before the last request become a summary generated by the
+  model itself (greedy, up to 500 tokens, fixed prompt, no tools), followed by the assistant's "Entendido...";
+  (3) if still above 85%, it also shrinks the results of the current turn except the last. Then it recomputes the
+  cache from scratch (disk cache system via pfx_prepare + summary + last turn + pending text). The summary
+  appears on stderr in `[resumo]`.
+- **Markers with KATANA_UI=1** (stdout, one line each):
+  - `\x01TOKENS <pos> <ctx>` after each reply (agent and plain chat) and after `/compactar`;
+    it comes before the `\x01READY` of the next prompt.
+  - `\x01COMPACT <tokens_before> <tokens_after>` at each compaction.
+- **`katana tokenize <model> [file|-] [--ids]`**: vocabulary only (g_vocab_only). Free text: counts (with BOS
+  if the model uses it). If all non-empty lines are `system|user|assistant<TAB>text` (`\n`, `\t` escaped),
+  it builds the conversation with turn_text (same format as chat and toktest) and prints tokens per message and total.
 
-Medido (qwen2.5-1.5b Q4_K_M, KATANA_CTX=2048, 8 pedidos longos + /compactar): o prompt de sistema do agente
-ocupa ~950 tokens; compactacoes automaticas 1726->1430 e 1890->1420 tokens; o resumo guardou o nome e a cidade
-do usuario ("Carla", "Recife") e as respostas seguintes seguiram coerentes. O 1,5B confunde "qual o meu nome"
-com o proprio nome (responde "Katana"): limite do modelo, nao do resumo. `/compactar` logo depois de uma
-compactacao pode nao encolher (1437->1448): resume de novo o resumo. Selftest denso (qwen2.5-1.5b) OK.
-`tokenize` conferido a mao (ids ChatML corretos; "Hello world\n" = 9707 1879 198); usa o mesmo encode()
-coberto pelo teste dourado (tools/tokref nao rodou aqui: falta o pacote python tokenizers).
+Measured (qwen2.5-1.5b Q4_K_M, KATANA_CTX=2048, 8 long requests + /compactar): the agent's system prompt
+takes ~950 tokens; automatic compactions 1726->1430 and 1890->1420 tokens; the summary kept the user's name and city
+("Carla", "Recife") and the following replies stayed coherent. The 1.5B confuses "what is my name"
+with its own name (answers "Katana"): model limit, not the summary's. `/compactar` right after a
+compaction may not shrink (1437->1448): it summarizes the summary again. Dense selftest (qwen2.5-1.5b) OK.
+`tokenize` checked by hand (correct ChatML ids; "Hello world\n" = 9707 1879 198); it uses the same encode()
+covered by the golden test (tools/tokref did not run here: the python package tokenizers is missing).
 
-Pendente:
-- **Retomada de sessao pelo cache KV** (B3): nao feito. Custo: o KV do Qwen2.5-1.5B em fp16 e ~28 KB/token
-  (28 camadas x 2 x 256 x 2 B) -> 32k tokens ~0,9 GB por sessao; Qwen3-30B ~96 KB/token -> 3 GB por sessao em
-  32k. Recalcular o prefixo custa segundos a dezenas de segundos (prefill de 1,5-3k tok/s no 1,5B, medido acima
-  ~1,6k tok/s). Caminho barato: o desktop guarda o texto da sessao; o motor ganharia `--retomar <arquivo>`
-  que renderiza o historico (ah_render) e grava/carrega o KV com a mesma maquinaria de pfx_save/pfx_load,
-  chave = hash(tokens)+modelo+ctx, com limite de disco e expiracao. Risco: espaco em disco e o DeltaNet
-  (so continua do fim; o estado SSM teria de ir junto, pfx_save ja grava m->ssm).
-- **Aquecimento de especialistas por sessao** (pedido extra, `\x01WARM`): nao implementado, ver conhecimento.md 5b.
-- Compactacao no formato Gemma 4 e harmony; a linha de estatistica do turno compactado mistura o tempo do
-  resumo na velocidade de entrada.
+Pending:
+- **Resuming a session through the KV cache** (B3): not done. Cost: the KV of Qwen2.5-1.5B in fp16 is ~28 KB/token
+  (28 layers x 2 x 256 x 2 B) -> 32k tokens ~0.9 GB per session; Qwen3-30B ~96 KB/token -> 3 GB per session at
+  32k. Recomputing the prefix costs seconds to tens of seconds (prefill of 1.5-3k tok/s on the 1.5B, measured above
+  ~1.6k tok/s). Cheap path: the desktop keeps the session text; the engine would gain `--retomar <file>`
+  that renders the history (ah_render) and saves/loads the KV with the same machinery as pfx_save/pfx_load,
+  key = hash(tokens)+model+ctx, with disk limit and expiry. Risk: disk space and DeltaNet
+  (it only continues from the end; the SSM state would have to go along, pfx_save already saves m->ssm).
+- **Expert warm-up per session** (extra request, `\x01WARM`): not implemented, see knowledge.md 5b.
+- Compaction in the Gemma 4 and harmony formats; the statistics line of the compacted turn mixes the summary
+  time into the input speed.
 
-## 0a. Contexto longo ate 1M tokens (2026-11-17, ramo worktree-agent-a4c2b26684f6f7154)
+## 0a. Long context up to 1M tokens (2026-11-17, branch worktree-agent-a4c2b26684f6f7154)
 
-Objetivo do dono: aceitar pelo menos 1.000.000 tokens de contexto. Alvo realista: Qwen3.6-35B-A3B (qwen35moe,
-40 camadas, so 10 de atencao completa (`full_attention_interval`=4), 2 cabecas kv x 256 => kvd 512; treinado com 262144).
+Owner's goal: accept at least 1,000,000 tokens of context. Realistic target: Qwen3.6-35B-A3B (qwen35moe,
+40 layers, only 10 of full attention (`full_attention_interval`=4), 2 kv heads x 256 => kvd 512; trained with 262144).
 
-Feito (so caminho CPU, `KATANA_CPU=1`):
-- `KATANA_CTX` pode passar do contexto treinado (ate 2^24). Acima dele, RoPE estendido por yarn automatico
-  (fator = ctx / treinado; `KATANA_ROPE_SCALE=f` forca, `=1` desliga); vale para modelos sem yarn proprio
-  (nao mla/gpt-oss/gemma4), so nas dimensoes que giram; mscale vai em `kq_mul`. `print_info` avisa.
-- Hibrido DeltaNet: cache KV so nas camadas de atencao (antes alocava as 40) via `Layer.kv_off`; em fp16
-  (`m->kh/m->vh`) quando ctx > 65536 (`KATANA_CPU_KV16=0/1` forca). Custo: 20 KB/token => 21,5 GB a 1M.
-- Atencao de um token do qwen35 (`qn_core`): flash-decoding em pedacos de posicoes, as 8 cabecas q do grupo
-  lidas juntas (cada linha K/V sai da RAM uma vez), softmax online; memoria de trabalho fixa (nao cresce com ctx).
-- `run` aceita prompt de arquivo (`@arquivo`); `KATANA_BENCH_POS=P` comeca o prompt na posicao P sobre cache
-  zerado (todo tocado) para medir tempo e RAM em profundidade.
-- Prefixo salvo (pfx) usa `kv_off` e escreve zeros nas camadas DeltaNet; com cache fp16 o pfx fica desligado.
+Done (CPU path only, `KATANA_CPU=1`):
+- `KATANA_CTX` may exceed the trained context (up to 2^24). Above it, RoPE extended by automatic yarn
+  (factor = ctx / trained; `KATANA_ROPE_SCALE=f` forces, `=1` turns off); applies to models without their own yarn
+  (not mla/gpt-oss/gemma4), only on the rotating dimensions; mscale goes in `kq_mul`. `print_info` warns.
+- DeltaNet hybrid: KV cache only on the attention layers (before it allocated all 40) via `Layer.kv_off`; in fp16
+  (`m->kh/m->vh`) when ctx > 65536 (`KATANA_CPU_KV16=0/1` forces). Cost: 20 KB/token => 21.5 GB at 1M.
+- One-token attention of qwen35 (`qn_core`): flash-decoding in chunks of positions, the 8 q heads of the group
+  read together (each K/V row leaves RAM once), online softmax; fixed working memory (does not grow with ctx).
+- `run` accepts a prompt from a file (`@file`); `KATANA_BENCH_POS=P` starts the prompt at position P over a zeroed cache
+  (all touched) to measure time and RAM at depth.
+- Saved prefix (pfx) uses `kv_off` and writes zeros in the DeltaNet layers; with fp16 cache pfx stays off.
 
-Medido (2026-11-17, mesma hora, CPU, Qwen3.6-35B Q4_K_M, KATANA_BENCH_POS = ctx-100, 8 de prompt + 16 gerados):
+Measured (2026-11-17, same hour, CPU, Qwen3.6-35B Q4_K_M, KATANA_BENCH_POS = ctx-100, 8 prompt + 16 generated):
 
-| ctx | cache KV | RSS max | geracao em profundidade |
+| ctx | KV cache | max RSS | generation at depth |
 |---|---|---|---|
-| 128k | 2,68 GB fp16 | 9,9 GB | 4,5 tok/s (era 1,8 antes do flash-decoding) |
-| 256k | 5,37 GB fp16 | 12,7 GB | 2,7 tok/s |
-| 1M (yarn x4) | 21,47 GB fp16 | 28,2 GB | 0,7 tok/s |
+| 128k | 2.68 GB fp16 | 9.9 GB | 4.5 tok/s (was 1.8 before flash-decoding) |
+| 256k | 5.37 GB fp16 | 12.7 GB | 2.7 tok/s |
+| 1M (yarn x4) | 21.47 GB fp16 | 28.2 GB | 0.7 tok/s |
 
-Prompt real de 2702 tokens: saida gulosa igual a do binario do main; prompt 13,3 -> 22,7 tok/s, geracao 6,3 -> 12,5
-(medidas seguidas, mesma hora). Saida gulosa curta identica em fp32, fp16 e no binario do main.
-RSS nao inclui todo o modelo mapeado (paginas do arquivo ficam no cache do sistema).
+Real 2702-token prompt: greedy output equal to that of the main binary; prompt 13.3 -> 22.7 tok/s, generation 6.3 -> 12.5
+(consecutive measurements, same hour). Short greedy output identical in fp32, fp16 and on the main binary.
+RSS does not include the whole mapped model (file pages stay in the system cache).
 
-Estimado (nao medido): prompt cheio, com t(pos) ~ 0,044 s + 1,35e-6 s x pos por token: 128k ~4,6 h,
-256k ~15 h, 1M ~8 dias. Ou seja: 1M carrega e gera, mas encher 1M de prompt na CPU e inviavel; a atencao
-do prefill e token a token (qn_layers_n chama qn_core por token).
+Estimated (not measured): full prompt, with t(pos) ~ 0.044 s + 1.35e-6 s x pos per token: 128k ~4.6 h,
+256k ~15 h, 1M ~8 days. That is: 1M loads and generates, but filling 1M of prompt on the CPU is unfeasible; the attention
+of the prefill is token by token (qn_layers_n calls qn_core per token).
 
-Pendente:
-- Prefill em lote da atencao do qwen35 (todas as consultas do lote contra cada bloco de K/V) — maior ganho para encher contexto.
-- Cache KV em Q8_0: feito, ver 0e.
-- Qualidade do yarn x4 nao avaliada (nenhum teste de agulha no palheiro).
-- GPU: Vulkan/OpenCL nao usam `kq_mul` do yarn generico nem cache compacto; a 1M o grafo Vulkan nao cabe (usar KATANA_CPU=1).
-  Outros caminhos CPU (densos `cpu_layers`/`cpu_layers_nc`) ainda alocam o cache em todas as camadas fp32 e nao usam `kq_mul`.
-  `gpu_forward_n` (OpenCL) ainda usa `int base`, protegido pelo limite de 2 GB por buffer.
+Pending:
+- Batch prefill of the qwen35 attention (all queries of the batch against each K/V block) — biggest gain for filling context.
+- KV cache in Q8_0: done, see 0e.
+- Quality of yarn x4 not evaluated (no needle-in-a-haystack test).
+- GPU: Vulkan/OpenCL do not use the generic yarn `kq_mul` nor the compact cache; at 1M the Vulkan graph does not fit (use KATANA_CPU=1).
+  Other CPU paths (dense `cpu_layers`/`cpu_layers_nc`) still allocate the cache in all fp32 layers and do not use `kq_mul`.
+  `gpu_forward_n` (OpenCL) still uses `int base`, protected by the 2 GB per buffer limit.
 
-## 0. Atualizacao 2026-11-16 (fim da sessao; desenvolvimento pausado esta semana a pedido do dono)
+## 0. Update 2026-11-16 (end of session; development paused this week at the owner's request)
 
-Entrou no main nesta sessao:
-- **Prompt em lote dos MoE no Vulkan** (qwen3moe, olmoe): Qwen3-30B prompt ~48 -> ~145 tok/s; OLMoE ~140 -> ~370.
-  Atencao do lote em fp32 no modo preciso (fp16 virava escolhas quase empatadas do roteador).
-- **Arquiteturas novas**: `gemma4` (Google, Vulkan hibrido), `gpt-oss` (OpenAI, so CPU), `glm4`/`glm4moe` (Zhipu, so CPU).
-  Formatos de conversa: gpt-oss harmony = `chat_fmt` 9; glm = `chat_fmt` 10 (colisao resolvida na juncao).
-- **`gemma4` cache de especialistas** cabe as 8 vagas (usa ate 91% da VRAM so no quase-encaixe): geracao a frio 0,8 -> 3,4 tok/s.
-- **`katana prepare <modelo>`**: inspeciona modelo+maquina, decide o plano, gera shards/calor e grava perfil por modelo
-  (`<modelo>.gguf.ktn.prof`); chat/serve/agent usam o perfil sozinhos; variavel do usuario vence.
-- **Agente**: sem pedir confirmacao (grava/executa/le fora da pasta; `KATANA_CONFIRM=1` volta a pedir), contexto 131072 (Qwen3.6 e gemma4, KV fp16) e
-  raciocinio desligado por padrao; avisa quando o template do modelo nao tem ferramentas.
-- Vulkan espera a GPU liberar antes de cair para a CPU (`KATANA_VK_WAIT`, padrao 60 s).
+Went into main in this session:
+- **Batch prompt of the MoEs on Vulkan** (qwen3moe, olmoe): Qwen3-30B prompt ~48 -> ~145 tok/s; OLMoE ~140 -> ~370.
+  Batch attention in fp32 in precise mode (fp16 turned into near-tied router choices).
+- **New architectures**: `gemma4` (Google, hybrid Vulkan), `gpt-oss` (OpenAI, CPU only), `glm4`/`glm4moe` (Zhipu, CPU only).
+  Conversation formats: gpt-oss harmony = `chat_fmt` 9; glm = `chat_fmt` 10 (collision resolved at the merge).
+- **`gemma4` expert cache** fits the 8 slots (uses up to 91% of the VRAM only in the near-fit): cold generation 0.8 -> 3.4 tok/s.
+- **`katana prepare <model>`**: inspects model+machine, decides the plan, generates shards/heat and saves a per-model profile
+  (`<model>.gguf.ktn.prof`); chat/serve/agent use the profile on their own; user variable wins.
+- **Agent**: without asking for confirmation (writes/executes/reads outside the folder; `KATANA_CONFIRM=1` goes back to asking), context 131072 (Qwen3.6 and gemma4, KV fp16) and
+  reasoning off by default; warns when the model's template has no tools.
+- Vulkan waits for the GPU to free up before falling to the CPU (`KATANA_VK_WAIT`, default 60 s).
 
-**Proximos passos, em ordem de ganho:**
-1. **Caminho Vulkan para gpt-oss e glm4moe** (hoje so CPU): cache de especialistas hibrido como o deepseek2. Maior ganho; o Air so fica usavel com isso.
-2. **gemma4 prompt em lote na GPU** (item 1 da secao 10): precisa de um kernel de atencao de lote proprio do gemma4 (hd por camada, janela deslizante, camadas globais sem attn_v). Hoje o lote do gemma4 e so na CPU.
-3. **Prompt dos modelos densos**: ainda ~1,7-1,8x atras da referencia; nossa nota mais baixa.
-4. **Especialistas quentes em fp32 no caminho de um token** (gemma4/Qwen3-30B): tiraria a falha de "GPU token a token" do selftest (argmax ja bate, geracao gulosa correta).
-5. **Juntar GGUF em partes** (para GLM-4.5-Air Q4_K_M e outros grandes partidos); obs.: o Air Q4_K_M (~65 GB) nao cabe bem nos 64 GB de RAM desta maquina.
+**Next steps, in order of gain:**
+1. **Vulkan path for gpt-oss and glm4moe** (today CPU only): hybrid expert cache like deepseek2. Biggest gain; the Air is only usable with it.
+2. **gemma4 batch prompt on the GPU** (item 1 of section 10): needs a batch attention kernel specific to gemma4 (hd per layer, sliding window, global layers without attn_v). Today the gemma4 batch is CPU only.
+3. **Prompt of dense models**: still ~1.7-1.8x behind the reference; our lowest score.
+4. **Hot experts in fp32 on the one-token path** (gemma4/Qwen3-30B): would remove the "GPU token by token" failure of the selftest (argmax already matches, greedy generation correct).
+5. **Merging GGUF in parts** (for GLM-4.5-Air Q4_K_M and other large split ones); note: the Air Q4_K_M (~65 GB) does not fit well in the 64 GB of RAM of this machine.
 
-6. **GLM-4-9B (`glm4` denso) na GPU**: hoje so CPU ("Vulkan pendente" no `katana modelos`); denso e parecido com o que ja roda, menor esforco das tres.
-7. **CLI em ingles** (pedido do dono): comandos em ingles (`models`, etc.); `modelos` pode ficar como apelido.
-8. **Procurar o modelo em `modelos/`** quando o nome passado nao existe na pasta atual (`./katana agent X.gguf` falhava).
+6. **GLM-4-9B (`glm4` dense) on the GPU**: today CPU only ("Vulkan pendente" in `katana modelos`); dense and similar to what already runs, least effort of the three.
+7. **CLI in English** (owner's request): commands in English (`models`, etc.); `modelos` may stay as an alias.
+8. **Look for the model in `modelos/`** when the name passed does not exist in the current folder (`./katana agent X.gguf` failed).
 
-Obs.: o cache de especialistas so vale para MoE; nos densos o equivalente e caber inteiro na GPU. MoE ainda sem ele: gpt-oss e GLM-4.5-Air (item 1).
+Note: the expert cache is only worthwhile for MoE; on dense models the equivalent is fitting entirely on the GPU. MoE still without it: gpt-oss and GLM-4.5-Air (item 1).
 
-**Ramo nao juntado:** `worktree-agent-ac5031c6105442724` tem o prompt em lote MLA (Moonlight/DeepSeek, prompt 2,4-4x mais rapido), com a falha de segmentacao ja corrigida (commits ate ~ef87c0a); faltou so revalidar os selftests. Cancelado a pedido; retomar daqui se quiser.
+**Branch not merged:** `worktree-agent-ac5031c6105442724` has the MLA batch prompt (Moonlight/DeepSeek, prompt 2.4-4x faster), with the segmentation fault already fixed (commits up to ~ef87c0a); only the selftests were left to revalidate. Cancelled at request; resume from here if wanted.
 
-## 1. Estado em uma página
+## 1. State on one page
 
-**O que roda**
+**What runs**
 
-- Modelos densos (`llama`, `qwen2`, `qwen3`) e de mistura de especialistas (`olmoe`, `qwen3moe`, `deepseek2`,
-  `qwen35moe`, `gemma4`, `gpt-oss`) a partir de GGUF. O `gemma4` (ver 2.2b) tem CPU correto e caminho híbrido em
-  Vulkan; falta medi-lo na GPU livre. O `gpt-oss` (ver 2.2c) tem CPU correto, tokenizador, conversa harmony e
-  agente com ferramentas; falta o caminho em Vulkan (só CPU por enquanto).
-- Dois backends de GPU, escolhidos por `KATANA_BACKEND`:
-  - `opencl` (padrão): tudo, inclusive MoE com cache de especialistas e modelo maior que a VRAM.
-  - `vulkan`: só modelos densos que cabem inteiros na VRAM; geração com grafo gravado e prompt em
-    lote com núcleos tensoriais. MoE pedido em Vulkan cai para o OpenCL; modelo que não cabe cai
-    para a CPU.
-- `chat` de uma pergunta ou interativo, `agent` com ferramentas (gravar e executar pedem confirmação).
+- Dense models (`llama`, `qwen2`, `qwen3`) and mixture-of-experts models (`olmoe`, `qwen3moe`, `deepseek2`,
+  `qwen35moe`, `gemma4`, `gpt-oss`) from GGUF. `gemma4` (see 2.2b) has correct CPU and a hybrid path on
+  Vulkan; it still needs to be measured on the free GPU. `gpt-oss` (see 2.2c) has correct CPU, tokenizer, harmony conversation and
+  agent with tools; the Vulkan path is missing (CPU only for now).
+- Two GPU backends, chosen by `KATANA_BACKEND`:
+  - `opencl` (default): everything, including MoE with expert cache and models larger than the VRAM.
+  - `vulkan`: only dense models that fit entirely in the VRAM; generation with recorded graph and batch prompt with
+    tensor cores. MoE requested on Vulkan falls to OpenCL; a model that does not fit falls
+    to the CPU.
+- `chat` of a single question or interactive, `agent` with tools (writing and executing ask for confirmation).
 
-**Números de referência** (RTX 3050 Laptop 4 GB; benchmark 64+64; medidos alternando os motores)
+**Reference numbers** (RTX 3050 Laptop 4 GB; benchmark 64+64; measured alternating the engines)
 
-| Modelo | | katana OpenCL | katana Vulkan | referência Vulkan | referência CUDA |
+| Model | | katana OpenCL | katana Vulkan | reference Vulkan | reference CUDA |
 |---|---|---|---|---|---|
-| SmolLM2 135M | prompt | 1.227 | 5.972–8.478 | 7.995–8.408 | 6.708 |
-| | geração | 119–139 | 385–409 | 198–223 | 402 |
-| Qwen2.5 1,5B | prompt | 212 | 1.349–1.364 | 2.362–2.374 | 2.776 |
-| | geração | 98 | 98–100 | 113–115 | 117 |
-| Llama 3.2 3B | prompt | 108 | 753–761 | 1.357–1.364 | 1.685 |
-| | geração | 57 | 56 | 63–64 | 69 |
+| SmolLM2 135M | prompt | 1,227 | 5,972–8,478 | 7,995–8,408 | 6,708 |
+| | generation | 119–139 | 385–409 | 198–223 | 402 |
+| Qwen2.5 1.5B | prompt | 212 | 1,349–1,364 | 2,362–2,374 | 2,776 |
+| | generation | 98 | 98–100 | 113–115 | 117 |
+| Llama 3.2 3B | prompt | 108 | 753–761 | 1,357–1,364 | 1,685 |
+| | generation | 57 | 56 | 63–64 | 69 |
 
-Os valores de CUDA são de uma medida anterior no mesmo dia, não alternada com as demais.
+The CUDA values are from an earlier measurement on the same day, not alternated with the others.
 
-Qwen3-30B-A3B (MoE, 18,6 GB), texto real, katana OpenCL contra a referência com cache de
-especialistas: geração 12,5–14,9 contra 13,2–14,4 tok/s (empate); prompt curto a frio 9–11 contra ~5,5.
+Qwen3-30B-A3B (MoE, 18.6 GB), real text, katana OpenCL against the reference with expert
+cache: generation 12.5–14.9 against 13.2–14.4 tok/s (tie); short cold prompt 9–11 against ~5.5.
 
-**Leitura**
+**Reading**
 
-- Prompt de modelo denso: saímos de 11–16x atrás para ~1,7–1,8x atrás (e empate no modelo de 135 M).
-- Geração de modelo denso de 1 B ou mais: ~13–15% atrás do Vulkan da referência, ~20% atrás do CUDA.
-- Geração do modelo de 135 M: ~2x à frente do Vulkan da referência, empate com o CUDA.
-- MoE grande: empate na geração, à frente no prompt curto a frio.
+- Dense model prompt: we went from 11–16x behind to ~1.7–1.8x behind (and a tie on the 135 M model).
+- Generation of dense model of 1 B or more: ~13–15% behind the reference's Vulkan, ~20% behind CUDA.
+- Generation of the 135 M model: ~2x ahead of the reference's Vulkan, tie with CUDA.
+- Large MoE: tie in generation, ahead on short cold prompt.
 
-## 2. Próximos passos, em ordem
+## 2. Next steps, in order
 
-### 2.1 Fechar o que falta do Vulkan em modelos densos
+### 2.1 Finish what is missing from Vulkan on dense models
 
-| Passo | O quê | Pronto quando |
+| Step | What | Done when |
 |---|---|---|
-| a | Testar pelo Vulkan o que nunca rodou: sessão interativa, `agent`, `run`, um modelo denso com norma q/k (Qwen3 denso), Mistral 7B (não cabe: hoje cai para a CPU) | cada um roda ou tem a falha registrada |
-| b | Modelo denso maior que a VRAM em Vulkan: primeiras camadas na placa, resto na CPU, como no OpenCL | Qwen2.5 7B e 14B rodam pelo Vulkan e conferem no `selftest` |
-| c | Produto em lote mais rápido (hoje ~2,7 T mult/s; a referência é estimada em ~3,5 T). Ideias não testadas: carga do ladrilho em dois buffers alternados para sobrepor decodificação e multiplicação, menos barreiras por passo. No lote o produto é ~85% do tempo (gate/up 71 ms e down 34 ms de 149 ms num lote de 256 do Qwen 1,5B) | prompt do Qwen 1,5B acima de 1.800 tok/s |
-| d | Atenção em lote mais barata (19 ms por lote de 256; 14 ms são reduções por subgrupo) | abaixo de 8 ms |
-| e | Geração depois de prompt longo: no Vulkan fica ~5% abaixo do OpenCL (81 contra 86 tok/s com 512 posições); a atenção de um token precisa dividir o contexto entre grupos | igual ou melhor que o OpenCL |
-| f | Investigar a diferença de logit do lote no Llama 3B (0,0255, acima do limite de 0,02 que definimos; argmax confere e 600 tokens batem) | causa conhecida; aceitar ou corrigir |
-| g | Decidir se o Vulkan vira o backend padrão quando disponível | depois de (a) e (b) |
+| a | Test through Vulkan what never ran: interactive session, `agent`, `run`, a dense model with q/k norm (dense Qwen3), Mistral 7B (does not fit: today falls to the CPU) | each one runs or has the failure recorded |
+| b | Dense model larger than the VRAM on Vulkan: first layers on the card, rest on the CPU, as in OpenCL | Qwen2.5 7B and 14B run through Vulkan and match in the `selftest` |
+| c | Faster batch product (today ~2.7 T mult/s; the reference is estimated at ~3.5 T). Untested ideas: tile load in two alternating buffers to overlap decoding and multiplication, fewer barriers per step. In the batch the product is ~85% of the time (gate/up 71 ms and down 34 ms of 149 ms in a batch of 256 of Qwen 1.5B) | Qwen 1.5B prompt above 1,800 tok/s |
+| d | Cheaper batch attention (19 ms per batch of 256; 14 ms are subgroup reductions) | below 8 ms |
+| e | Generation after a long prompt: on Vulkan it stays ~5% below OpenCL (81 against 86 tok/s with 512 positions); one-token attention needs to split the context between groups | equal to or better than OpenCL |
+| f | Investigate the batch logit difference on Llama 3B (0.0255, above the 0.02 limit we defined; argmax matches and 600 tokens match) | cause known; accept or fix |
+| g | Decide whether Vulkan becomes the default backend when available | after (a) and (b) |
 
-### 2.2 Mistura de especialistas em Vulkan (etapa 6 do plano)
+### 2.2 Mixture of experts on Vulkan (step 6 of the plan)
 
-- Cache de especialistas com vagas por camada, especialistas quentes num lançamento, frios na CPU,
-  thread carregadora, pré-carga pelo calor: tudo existe no OpenCL (`gpu_moe_ffn`, `expert_load`,
-  `loader_*`, `heat_*`) e precisa do equivalente em Vulkan.
-- O modo de várias matrizes num lançamento (`MOEPRE` nos kernels OpenCL) não foi portado para os
-  shaders `mv_*`; `moe_sum` já está portado e conferido (`tools/vkatt`).
-- No lote, usar o produto com núcleos tensoriais por especialista (tokens agrupados por especialista).
-- O runtime faz uma alocação por buffer; com milhares de especialistas usar poucos buffers grandes
-  (vagas dentro de um buffer por camada, como já é no OpenCL).
-- Pronto quando: `selftest` do OLMoE e do Qwen3-30B passa pelo Vulkan e a geração do Qwen3-30B é
-  igual ou melhor que no OpenCL (12,5–14,9 tok/s), medida com `compare.sh`.
+- Expert cache with slots per layer, hot experts in one launch, cold ones on the CPU,
+  loader thread, preload by heat: everything exists in OpenCL (`gpu_moe_ffn`, `expert_load`,
+  `loader_*`, `heat_*`) and needs the equivalent on Vulkan.
+- The several-matrices-in-one-launch mode (`MOEPRE` in the OpenCL kernels) was not ported to the
+  `mv_*` shaders; `moe_sum` is already ported and checked (`tools/vkatt`).
+- In the batch, use the tensor-core product per expert (tokens grouped by expert).
+- The runtime does one allocation per buffer; with thousands of experts use a few large buffers
+  (slots inside one buffer per layer, as already in OpenCL).
+- Done when: `selftest` of OLMoE and Qwen3-30B passes through Vulkan and Qwen3-30B generation is
+  equal to or better than on OpenCL (12.5–14.9 tok/s), measured with `compare.sh`.
 
-**Primeira etapa feita (geração token a token, branch do worktree)**: `vk_forward_moe` roda a atenção de cada
-camada no grafo Vulkan (`vk_emit_attn`, ao vivo), devolve a entrada normalizada do feed-forward, a CPU roteia
-(`moe_route`) e aplica o mesmo calor/cache/carregador do OpenCL (`moe_tables`, `loader_*`, `exp_write` com ramo
-Vulkan). Quentes: gate/up e down por especialista, um despacho cada, vaga por deslocamento em palavras (`woff`/`ooff`
-novos nos `mv_*`), dois buffers por camada (`vk_sg`, `vk_sd`); frios na CPU, resultado sobe para `vkm.bt`;
-`moe_sum` soma no resíduo. Prompt cai token a token. `selftest` do OLMoE e do Qwen3-30B passa pelo Vulkan e pelo
-OpenCL. Falta: medir com `compare.sh` (indicativo curto: Qwen3-30B 12,6 tok/s Vulkan contra 21 OpenCL, frio),
-um lançamento por camada (várias matrizes por despacho, `MOEPRE`), grafo gravado por camada, leitura da entrada
-sem parar a fila, prompt em lote MoE com núcleos tensoriais, e MoE que não cabe o grafo todo (hoje cai para "grafo na CPU").
+**First stage done (token-by-token generation, worktree branch)**: `vk_forward_moe` runs the attention of each
+layer in the Vulkan graph (`vk_emit_attn`, live), returns the normalized feed-forward input, the CPU routes
+(`moe_route`) and applies the same heat/cache/loader as OpenCL (`moe_tables`, `loader_*`, `exp_write` with Vulkan
+branch). Hot: gate/up and down per expert, one dispatch each, slot by offset in words (`woff`/`ooff`
+new in `mv_*`), two buffers per layer (`vk_sg`, `vk_sd`); cold on the CPU, result goes up to `vkm.bt`;
+`moe_sum` sums into the residual. Prompt falls to token by token. `selftest` of OLMoE and Qwen3-30B passes through Vulkan and
+OpenCL. Missing: measuring with `compare.sh` (short indicative: Qwen3-30B 12.6 tok/s Vulkan against 21 OpenCL, cold),
+one launch per layer (several matrices per dispatch, `MOEPRE`), recorded graph per layer, reading the input
+without stopping the queue, MoE batch prompt with tensor cores, and MoE that does not fit the whole graph (today falls to "grafo na CPU").
 
-**Segunda etapa feita (2026-11-16, seção 7)**: várias matrizes num lançamento nos `mv_*`, roteador na GPU, soma do
-MoE fundida com a norma seguinte, cache de especialistas Vulkan no modo híbrido (MLA). Vulkan é o padrão para
-qwen3moe e deepseek2; olmoe continua no OpenCL por padrão (2–4% mais lento em Vulkan). Falta: olmoe acima do OpenCL.
+**Second stage done (2026-11-16, section 7)**: several matrices in one launch in `mv_*`, router on the GPU, MoE sum fused with the
+following norm, Vulkan expert cache in hybrid mode (MLA). Vulkan is the default for
+qwen3moe and deepseek2; olmoe stays on OpenCL by default (2–4% slower on Vulkan). Missing: olmoe above OpenCL.
 
-**Terceira etapa feita (seção 8)**: prompt MoE em lote no Vulkan (qwen3moe, olmoe): Qwen3-30B 48 → 141–149 tok/s
-(OpenCL 58), OLMoE 140 → 362–375 (OpenCL 209–212). Falta o lote no modo híbrido (MLA: Moonlight, DeepSeek).
+**Third stage done (section 8)**: MoE batch prompt on Vulkan (qwen3moe, olmoe): Qwen3-30B 48 → 141–149 tok/s
+(OpenCL 58), OLMoE 140 → 362–375 (OpenCL 209–212). Missing: the batch in hybrid mode (MLA: Moonlight, DeepSeek).
 
-### 2.2b Arquitetura Gemma 4 (`gemma4`, feita 2026-11-16)
+### 2.2b Gemma 4 architecture (`gemma4`, done 2026-11-16)
 
-Modelo de teste: `modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (MoE 26B, 4B ativos, 30 camadas, dim 2816).
-Confirmado pela referência pública (transformers `modeling_gemma4.py`, `rope_utils`, e o `gemma4.cpp` do
-motor de referência em `ref/llama-src`). O que a arquitetura tem:
+Test model: `modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (26B MoE, 4B active, 30 layers, dim 2816).
+Confirmed by the public reference (transformers `modeling_gemma4.py`, `rope_utils`, and the `gemma4.cpp` of the
+reference engine in `ref/llama-src`). What the architecture has:
 
-- Camadas **locais** (janela deslizante 1024, cabeça 256, kv 8, RoPE base 1e4) e **globais** a cada 6ª
-  (cabeça 512, kv 2, RoPE base 1e6 com **rope proporcional/parcial**: só metade das dimensões gira, pelos
-  divisores em `rope_freqs.weight`). Largura de cabeça e nº de kv **por camada** (listas no GGUF).
-- q e k normalizados **por cabeça** (RMS com peso); **v normalizado por norma sem peso**. Camadas globais
-  **não têm `attn_v`**: v vem da saída crua de `attn_k` (antes de k_norm/RoPE). Atenção com escala 1.
-- Feed-forward: **denso** (gate/up/down, GELU tanh) **em paralelo** com o **MoE** (128 especialistas, 8
-  ativos, `ffn_gate_up_exps` fundido Q4_K, `ffn_down_exps` Q8_0). Cada bloco tem norma de saída própria
-  (`post_ffw_norm_1` no denso, `post_ffw_norm_2` no MoE), somados e normalizados por `post_ffw_norm`.
-- Roteador: lê o **resíduo** normalizado sem peso × `ffn_gate_inp.scale` × 1/√dim; softmax, top-8,
-  renormaliza, e multiplica cada peso pela escala do especialista (`ffn_down_exps.scale`).
-- Normas extras por bloco (`post_attention_norm`, `pre_ffw_norm_2`), escala escalar por camada
-  (`layer_output_scale`), **softcap 30** nos logits finais, **embedding escalado** por √dim.
+- **Local** layers (sliding window 1024, head 256, kv 8, RoPE base 1e4) and **global** every 6th
+  (head 512, kv 2, RoPE base 1e6 with **proportional/partial rope**: only half of the dimensions rotate, by the
+  divisors in `rope_freqs.weight`). Head width and number of kv **per layer** (lists in the GGUF).
+- q and k normalized **per head** (RMS with weight); **v normalized by norm without weight**. Global layers
+  **have no `attn_v`**: v comes from the raw output of `attn_k` (before k_norm/RoPE). Attention with scale 1.
+- Feed-forward: **dense** (gate/up/down, GELU tanh) **in parallel** with the **MoE** (128 experts, 8
+  active, fused `ffn_gate_up_exps` Q4_K, `ffn_down_exps` Q8_0). Each block has its own output norm
+  (`post_ffw_norm_1` in the dense, `post_ffw_norm_2` in the MoE), summed and normalized by `post_ffw_norm`.
+- Router: reads the **residual** normalized without weight × `ffn_gate_inp.scale` × 1/√dim; softmax, top-8,
+  renormalizes, and multiplies each weight by the expert scale (`ffn_down_exps.scale`).
+- Extra norms per block (`post_attention_norm`, `pre_ffw_norm_2`), scalar scale per layer
+  (`layer_output_scale`), **softcap 30** on the final logits, **embedding scaled** by √dim.
 
-**Feito (CPU + Vulkan híbrido, nesta sessão)**:
-- CPU correto: `g4_layer` (token a token) e `g4_layers_n` (prompt em lote, G4_NB=16 tokens); batem entre si
-  (saída idêntica) e o texto confere (capital da França = Paris; Austrália = Camberra; "Crimson"). Os 5–6
-  primeiros tokens gulosos de um prompt batem com o motor de referência (`llama-simple`); depois divergem
-  como esperado num trajeto degenerado guloso. `selftest` (produtos por camada, larguras certas por camada):
-  pior erro relativo exato 5e-8.
-- Vulkan: **modo híbrido** como o MLA/DeltaNet (atenção e feed-forward denso na GPU por `mv_host`,
-  especialistas no cache da VRAM com os frios na CPU — `host_moe_ffn`/`vk_host_moe_ffn`, já testado no
-  deepseek2). Ativação **GELU** adicionada aos kernels `mv_*` (bit 16 do modo em `mv_common.glsl`). Com a
-  GPU quase cheia (outro agente), subiram 19 produtos densos (149 MB) e a saída foi **idêntica à da CPU**
-  ("Crimson"), validando os kernels. `gpu_setup` manda `gemma4` só para o Vulkan (sem OpenCL); sem Vulkan,
-  cai para a CPU.
-- Tokenizador `gemma4` (SPM-BPE: espaços como U+2581 sem prefixo, merges BPE sobre UTF-8 cru pela posição
-  na lista de fusões, sequências de `\n` como token inteiro, resto em bytes `<0xNN>`): **27/27** casos
-  batem com `llama-tokenize` da referência (ASCII, acentos, CJK, emoji, código, URLs, espaços repetidos).
-- Conversa: formato `<|turn>role\n...<turn|>`, canal de raciocínio `<|channel>thought ... <channel|>`
-  (desligado por padrão; `KATANA_THINK=1` liga), `chat_fmt = 8`. Chamada de ferramentas **nativa** do Gemma
-  no agente: o prompt de sistema com `<tools>` JSON é convertido para as declarações `<|tool>declaration:
-  ...<tool|>` (chaves em ordem alfabética, tipos em maiúsculas) por `g4_agent_sys`; o modelo chama
-  `<|tool_call>call:nome{k:<|"|>v<|"|>}<tool_call|>` e `g4_call_parse` traduz para o JSON que as ferramentas
-  já leem; o resultado volta em `<|tool_response>response:nome{value:...}<tool_response|>`.
-- Q4_1/Q5_1 passaram a subir para a GPU requantizados em 8 bits (antes ficavam na CPU).
+**Done (CPU + hybrid Vulkan, this session)**:
+- Correct CPU: `g4_layer` (token by token) and `g4_layers_n` (batch prompt, G4_NB=16 tokens); they match each other
+  (identical output) and the text checks out (capital of France = Paris; Australia = Canberra; "Crimson"). The first 5–6
+  greedy tokens of a prompt match the reference engine (`llama-simple`); then they diverge
+  as expected on a degenerate greedy path. `selftest` (products per layer, right widths per layer):
+  worst exact relative error 5e-8.
+- Vulkan: **hybrid mode** like MLA/DeltaNet (attention and dense feed-forward on the GPU via `mv_host`,
+  experts in the VRAM cache with the cold ones on the CPU — `host_moe_ffn`/`vk_host_moe_ffn`, already tested on
+  deepseek2). **GELU** activation added to the `mv_*` kernels (bit 16 of the mode in `mv_common.glsl`). With the
+  GPU almost full (another agent), 19 dense products (149 MB) went up and the output was **identical to the CPU's**
+  ("Crimson"), validating the kernels. `gpu_setup` sends `gemma4` only to Vulkan (no OpenCL); without Vulkan,
+  it falls to the CPU.
+- `gemma4` tokenizer (SPM-BPE: spaces as U+2581 without prefix, BPE merges over raw UTF-8 by position
+  in the merge list, `\n` sequences as a whole token, rest in `<0xNN>` bytes): **27/27** cases
+  match the reference's `llama-tokenize` (ASCII, accents, CJK, emoji, code, URLs, repeated spaces).
+- Conversation: format `<|turn>role\n...<turn|>`, reasoning channel `<|channel>thought ... <channel|>`
+  (off by default; `KATANA_THINK=1` turns on), `chat_fmt = 8`. Gemma's **native** tool calling
+  in the agent: the system prompt with `<tools>` JSON is converted to the `<|tool>declaration:
+  ...<tool|>` declarations (keys in alphabetical order, types in uppercase) by `g4_agent_sys`; the model calls
+  `<|tool_call>call:name{k:<|"|>v<|"|>}<tool_call|>` and `g4_call_parse` translates it to the JSON that the tools
+  already read; the result comes back in `<|tool_response>response:name{value:...}<tool_response|>`.
+- Q4_1/Q5_1 now go up to the GPU requantized to 8 bits (before they stayed on the CPU).
 
-**Pendências do gemma4** (atualizado 2026-11-16, seção 10 abaixo):
-- **Cache de especialistas: RESOLVIDO** (seção 10): as 8 vagas agora cabem na VRAM (antes caía para 7 e
-  todos os especialistas iam para a CPU). O `selftest` GPU×CPU do gemma4 roda com a GPU livre: `lote` e
-  `lote 16` passam (~0,0031, dentro do histórico ~0,0027). O caminho token a token do cache (`vk_host_moe_ffn`),
-  que nunca tinha sido exercitado no gemma4, foi validado: a geração gulosa bate **idêntica** à CPU pura
-  (fp16 nos quentes só muda o logit, não o argmax).
-- **Prompt em lote na GPU (`vk_moe_n`) ainda NÃO cobre o gemma4** (feed-forward denso + MoE lado a lado):
-  hoje o lote do gemma4 é só na CPU (`g4_layers_n`); na GPU cai para token a token. Plano e bloqueio na seção 10.
-- Grafo completo gravado em Vulkan (hoje é o modo híbrido ao vivo, como o MLA).
-- Contexto 131072 no agente: RESOLVIDO (seção 12; KV fp16 2,90 GB, anel nas locais).
-- Agente com `web_search` validado end-to-end no CPU (lento); confirmar no Vulkan quando a GPU liberar.
+**Pending for gemma4** (updated 2026-11-16, section 10 below):
+- **Expert cache: SOLVED** (section 10): the 8 slots now fit in the VRAM (before it fell to 7 and
+  all experts went to the CPU). The gemma4 GPU×CPU `selftest` runs with the GPU free: `batch` and
+  `batch 16` pass (~0.0031, within the history ~0.0027). The cache's token-by-token path (`vk_host_moe_ffn`),
+  which had never been exercised on gemma4, was validated: greedy generation matches pure CPU **identically**
+  (fp16 on the hot ones only changes the logit, not the argmax).
+- **Batch prompt on the GPU (`vk_moe_n`) still does NOT cover gemma4** (dense feed-forward + MoE side by side):
+  today the gemma4 batch is CPU only (`g4_layers_n`); on the GPU it falls to token by token. Plan and blocker in section 10.
+- Full recorded graph on Vulkan (today it is the live hybrid mode, like MLA).
+- Context 131072 in the agent: SOLVED (section 12; KV fp16 2.90 GB, ring in the local ones).
+- Agent with `web_search` validated end-to-end on the CPU (slow); confirm on Vulkan when the GPU frees up.
 
-### 2.2c Arquitetura gpt-oss (`gpt-oss`, feita 2026-11-16)
+### 2.2c gpt-oss architecture (`gpt-oss`, done 2026-11-16)
 
-Modelo de teste: `modelos/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, MXFP4 nativo; 24 camadas, dim 2880,
-64 cabecas, kv 8, cabeca 64, 32 especialistas, 4 ativos, ffn do especialista 2880). Confirmado pela
-referencia publica (`ref/llama-src`: `src/models/openai-moe.cpp`, `llama-graph.cpp`, `llama-vocab.cpp`,
-`llama-chat.cpp`). O que a arquitetura tem:
+Test model: `modelos/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, native MXFP4; 24 layers, dim 2880,
+64 heads, kv 8, head 64, 32 experts, 4 active, expert ffn 2880). Confirmed by the public
+reference (`ref/llama-src`: `src/models/openai-moe.cpp`, `llama-graph.cpp`, `llama-vocab.cpp`,
+`llama-chat.cpp`). What the architecture has:
 
-- Atencao com **sink por cabeca** (`attn_sinks`, um logit extra de valor nulo no denominador do softmax,
-  nao escalado por kq) e **janela deslizante alternada** (padrao 2: camadas pares janela 128, impares
-  completas; as duas usam o mesmo RoPE). q/k/v e a saida (`attn_output`) tem **vies**; cabeca 64 (q =
-  64x64 = 4096, maior que dim 2880). Escala da atencao `kq_mul/sqrt(hd)`.
-- **RoPE NEOX + YaRN** (base 150000, fator 32, contexto original 4096): mistura interpolacao/extrapolacao
-  por dimensao (beta_fast 32, beta_slow 1, como no MLA) e mscale `ms = 1 + 0.1*ln(32)` com `kq_mul = ms^2`
-  (o `yarn_log_multiplier` nao vem no GGUF; o padrao 0.1 e assumido na carga).
-- **MoE em toda camada** (sem feed-forward denso): roteador `ffn_gate_inp` com **vies**, top-4 sobre os
-  logits e **softmax sobre os 4 escolhidos** (feito com `moe_route` + `moe_norm`, somando o vies antes do
-  softmax). Especialistas `ffn_gate/up/down_exps` em **MXFP4** com **vies** em gate/up/down; ativacao
-  **SwiGLU OAI** (`x=min(gate,7); y=clamp(up,-7,7); out = x*sigmoid(1.702*x)*(y+1)`). Soma pesada no
-  residual. So duas normas por camada (`attn_norm` antes da atencao, `post_attention_norm` antes do MoE,
-  carregada em `ffn_norm`). Sem softcap, sem escala de embedding.
+- Attention with **sink per head** (`attn_sinks`, an extra logit of null value in the softmax denominator,
+  not scaled by kq) and **alternating sliding window** (pattern 2: even layers window 128, odd
+  full; both use the same RoPE). q/k/v and the output (`attn_output`) have **bias**; head 64 (q =
+  64x64 = 4096, larger than dim 2880). Attention scale `kq_mul/sqrt(hd)`.
+- **RoPE NEOX + YaRN** (base 150000, factor 32, original context 4096): mixes interpolation/extrapolation
+  per dimension (beta_fast 32, beta_slow 1, as in MLA) and mscale `ms = 1 + 0.1*ln(32)` with `kq_mul = ms^2`
+  (`yarn_log_multiplier` does not come in the GGUF; the default 0.1 is assumed at load).
+- **MoE in every layer** (no dense feed-forward): router `ffn_gate_inp` with **bias**, top-4 over the
+  logits and **softmax over the 4 chosen** (done with `moe_route` + `moe_norm`, adding the bias before the
+  softmax). Experts `ffn_gate/up/down_exps` in **MXFP4** with **bias** in gate/up/down; **SwiGLU OAI**
+  activation (`x=min(gate,7); y=clamp(up,-7,7); out = x*sigmoid(1.702*x)*(y+1)`). Weighted sum into the
+  residual. Only two norms per layer (`attn_norm` before attention, `post_attention_norm` before the MoE,
+  loaded in `ffn_norm`). No softcap, no embedding scale.
 
-**Feito (CPU, esta sessao)**:
-- Carga e `go_layer` (CPU, token a token): atencao com sinks + janela alternada + vieses + yarn, MoE
-  SwiGLU OAI com vieses e roteador com vies. `selftest` (produtos por matriz) OK, experts MXFP4 erro
-  relativo 1.7e-8. Texto coerente ("capital da Franca = Paris"; "17 x 24 = 408"; "capital da Australia
-  = Canberra"). Os primeiros tokens gulosos batem com o motor de referencia (`llama-simple`): prefixo
-  comum de 10-17 tokens antes de divergir (trajeto degenerado guloso, como no gemma4).
-- Tokenizador `gpt-4o`/o200k (byte-level BPE com a regra de caixa alta*/baixa+, contracoes, numeros 1-3,
-  pontuacao com `\r\n/`, espacos): novo pre-tokenizador `PRE_GPT4O` (`match_gpt4o`). **29/29** casos batem
-  com o `llama-tokenize` da referencia (ASCII, CJK, acentos, codigo, camelCase, ALLCAPS, URLs).
-- Conversa **harmony** (`chat_fmt = 9`): mensagem de sistema (You are ChatGPT... Reasoning: low/high...
-  canais), developer com o prompt do usuario, turno `<|start|>user<|message|>...<|end|>` e
-  `<|start|>assistant`. **Raciocinio desligado por padrao** (a resposta ja comeca em
-  `<|channel|>final<|message|>`); `KATANA_THINK=1` abre o canal analysis (mostrado como `[raciocinio]`).
-  `gen_console` entende os canais (so para em `<|return|>` / `<|call|>`). Tokens de controle
-  (200002 return, 200005 channel, 200006 start, 200007 end, 200008 message, 200012 call) vem do texto.
-- Agente com **ferramentas no formato harmony**: `go_agent_sys` converte a lista `<tools>` para o
-  namespace TypeScript; o modelo chama `...to=functions.nome...<|message|>{args}<|call|>`, o agente
-  executa e devolve `<|start|>functions.nome to=assistant<|channel|>commentary<|message|>...<|end|>`.
-  Testado: "liste os arquivos" -> chamou `list_dir` e respondeu com a listagem e a contagem certas.
-- `gpu_setup` manda `gpt-oss` para a CPU (guarda); sem caminho em Vulkan ainda.
+**Done (CPU, this session)**:
+- Load and `go_layer` (CPU, token by token): attention with sinks + alternating window + biases + yarn, MoE
+  SwiGLU OAI with biases and router with bias. `selftest` (products per matrix) OK, MXFP4 experts relative
+  error 1.7e-8. Coherent text ("capital of France = Paris"; "17 x 24 = 408"; "capital of Australia
+  = Canberra"). The first greedy tokens match the reference engine (`llama-simple`): common
+  prefix of 10-17 tokens before diverging (degenerate greedy path, as in gemma4).
+- `gpt-4o`/o200k tokenizer (byte-level BPE with the rule of upper-case*/lower-case+, contractions, numbers 1-3,
+  punctuation with `\r\n/`, spaces): new pre-tokenizer `PRE_GPT4O` (`match_gpt4o`). **29/29** cases match
+  the reference's `llama-tokenize` (ASCII, CJK, accents, code, camelCase, ALLCAPS, URLs).
+- **Harmony** conversation (`chat_fmt = 9`): system message (You are ChatGPT... Reasoning: low/high...
+  channels), developer with the user prompt, turn `<|start|>user<|message|>...<|end|>` and
+  `<|start|>assistant`. **Reasoning off by default** (the answer already starts at
+  `<|channel|>final<|message|>`); `KATANA_THINK=1` opens the analysis channel (shown as `[raciocinio]`).
+  `gen_console` understands the channels (only stops at `<|return|>` / `<|call|>`). Control tokens
+  (200002 return, 200005 channel, 200006 start, 200007 end, 200008 message, 200012 call) come from the text.
+- Agent with **tools in harmony format**: `go_agent_sys` converts the `<tools>` list to the TypeScript
+  namespace; the model calls `...to=functions.name...<|message|>{args}<|call|>`, the agent
+  executes and returns `<|start|>functions.name to=assistant<|channel|>commentary<|message|>...<|end|>`.
+  Tested: "list the files" -> called `list_dir` and answered with the right listing and count.
+- `gpu_setup` sends `gpt-oss` to the CPU (guard); no Vulkan path yet.
 
-**Pendencias do gpt-oss**:
-- **Caminho em Vulkan (modo hibrido como o gemma4/MLA)**: atencao + projecoes + roteamento na CPU
-  (ja e o `go_layer`), **especialistas no cache da VRAM** via `host_moe_ffn`/`vk_host_moe_ffn`. Falta,
-  nesses kernels do cache de especialistas: (1) ativacao **SwiGLU OAI** (como o gemma4 adicionou GELU
-  pelo bit de modo em `mv_common.glsl`, mas aqui com o clamp e o `(y+1)`), (2) os **vieses** de
-  gate/up/down por especialista (subir junto com os pesos na vaga e somar antes/depois), (3) o roteador
-  com vies (o `moe_route` ja soma `router_b`; no roteador da GPU o vies precisaria ir junto). Depois,
-  em `go_layer`, mandar o MoE para `host_moe_ffn` quando `gx.on` (como o gemma4 faz em `gx_host_layer`),
-  e tirar a guarda de `gpu_setup`. **Nao feito**: a GPU ficou ocupada por outro agente a sessao inteira
-  (2,6 GB de 4, ~80 C); validar a CPU primeiro e so rodar GPU x CPU quando a placa liberar.
-- Prompt em lote na CPU (`go_layers_n`): hoje o prompt e token a token; um lote agruparia os pares
-  (token, especialista) como o `g4_layers_n`, mas precisa de um caminho de experts em lote com vieses +
-  SwiGLU OAI (o `moe_cpu_multi` nao tem vies). Ganho so de velocidade de prompt.
-- Raciocinio ligado (`KATANA_THINK=1`) mostra o canal analysis; falta um teste mais longo ate o canal
-  final.
-### 2.2c Família GLM da Zhipu (`glm4` dense e `glm4moe` MoE, feita 2026-11-16)
+**Pending for gpt-oss**:
+- **Vulkan path (hybrid mode like gemma4/MLA)**: attention + projections + routing on the CPU
+  (already the `go_layer`), **experts in the VRAM cache** via `host_moe_ffn`/`vk_host_moe_ffn`. What is missing,
+  in those expert-cache kernels: (1) **SwiGLU OAI** activation (as gemma4 added GELU
+  through the mode bit in `mv_common.glsl`, but here with the clamp and the `(y+1)`), (2) the per-expert
+  gate/up/down **biases** (upload together with the weights in the slot and add before/after), (3) the router
+  with bias (`moe_route` already adds `router_b`; in the GPU router the bias would need to go along). Then,
+  in `go_layer`, send the MoE to `host_moe_ffn` when `gx.on` (as gemma4 does in `gx_host_layer`),
+  and remove the guard in `gpu_setup`. **Not done**: the GPU was busy with another agent the whole session
+  (2.6 GB of 4, ~80 C); validate the CPU first and only run GPU x CPU when the card frees up.
+- Batch prompt on the CPU (`go_layers_n`): today the prompt is token by token; a batch would group the (token,
+  expert) pairs like `g4_layers_n`, but it needs a batch experts path with biases +
+  SwiGLU OAI (`moe_cpu_multi` has no bias). Gain only in prompt speed.
+- Reasoning on (`KATANA_THINK=1`) shows the analysis channel; a longer test up to the final channel is missing.
+### 2.2c Zhipu GLM family (`glm4` dense and `glm4moe` MoE, done 2026-11-16)
 
-Alvos: `glm4` (denso) com GLM-4-9B-0414 e `glm4moe` (MoE) com GLM-4.5-Air (Q2_K, único
-arquivo que cabe na RAM; o Q4 é dividido em dois GGUF e o motor não junta shards). Confirmado
-pela referência pública (`glm4.cpp` e `glm4-moe.cpp` do motor de referência em `ref/llama-src`).
+Targets: `glm4` (dense) with GLM-4-9B-0414 and `glm4moe` (MoE) with GLM-4.5-Air (Q2_K, the only
+file that fits in RAM; the Q4 is split into two GGUFs and the engine does not merge shards). Confirmed
+by the public reference (`glm4.cpp` and `glm4-moe.cpp` of the reference engine in `ref/llama-src`).
 
-**`glm4` denso (CPU correto, feito nesta sessão)** — GLM-4-9B-0414: 40 camadas, dim 4096, 32
-cabeças (kv 2), cabeça 128, ffn 13696.
-- **Norma sanduíche**: além de `attn_norm`/`ffn_norm` (pré-bloco), `post_attention_norm` e
-  `post_ffw_norm` normalizam a saída de cada bloco *antes* de somar no residual (como no gemma4).
-- **RoPE NORM parcial**: só as 64 primeiras dimensões giram, em pares consecutivos (2i, 2i+1) —
-  é `LLAMA_ROPE_TYPE_NORM`, **não** NEOX (ao contrário do glm4moe; errar isso trocava já o 1º
-  token gerado). q/k/v com viés, saída sem viés, sem norma de q/k no 9B.
-- **Feed-forward**: gate e up fundidos em `ffn_up` (2×13696 linhas: gate primeiro, up depois); o
-  carregador fatia nas duas metades. SwiGLU.
-- Implementado no caminho padrão com condicionais `c->glm` (flag nova) em `cpu_layers` e
-  `cpu_layers_nc`; RoPE parcial generalizada por `rhalf`. `chat_fmt=9`:
-  `[gMASK]<sop><|user|>\n…<|assistant|>`. Pré-tokenizador `glm4` = `llama-bpe` (mesma regex,
-  dígitos 1–3, sem NFC).
-- **Validação**: `selftest` produtos OK (pior exato 4.9e-8), CPU em lote × token a token idêntico
-  (0.0). Tokenizador 5/5 casos batem com `llama-tokenize`. Greedy bate com `llama-simple` da
-  referência (33 tokens no prompt dos planetas; outros divergem após 5–9 por empates quase exatos,
-  como no gemma4). Chat coerente e multi-turno (lembra o nome; respeita o prompt de sistema).
+**`glm4` dense (CPU correct, done in this session)** — GLM-4-9B-0414: 40 layers, dim 4096, 32
+heads (kv 2), head 128, ffn 13696.
+- **Sandwich norm**: besides `attn_norm`/`ffn_norm` (pre-block), `post_attention_norm` and
+  `post_ffw_norm` normalize the output of each block *before* adding into the residual (as in gemma4).
+- **Partial NORM RoPE**: only the first 64 dimensions rotate, in consecutive pairs (2i, 2i+1) —
+  it is `LLAMA_ROPE_TYPE_NORM`, **not** NEOX (unlike glm4moe; getting this wrong already changed the 1st
+  generated token). q/k/v with bias, output without bias, no q/k norm in the 9B.
+- **Feed-forward**: gate and up fused in `ffn_up` (2×13696 rows: gate first, up after); the
+  loader slices into the two halves. SwiGLU.
+- Implemented in the default path with `c->glm` conditionals (new flag) in `cpu_layers` and
+  `cpu_layers_nc`; partial RoPE generalized by `rhalf`. `chat_fmt=9`:
+  `[gMASK]<sop><|user|>\n…<|assistant|>`. `glm4` pre-tokenizer = `llama-bpe` (same regex,
+  digits 1–3, no NFC).
+- **Validation**: `selftest` products OK (worst exact 4.9e-8), CPU batch × token by token identical
+  (0.0). Tokenizer 5/5 cases match `llama-tokenize`. Greedy matches the reference's `llama-simple` (33
+  tokens on the planets prompt; others diverge after 5–9 due to near-exact ties,
+  as in gemma4). Chat coherent and multi-turn (remembers the name; respects the system prompt).
 
-**`glm4moe` MoE (CPU correto, feito nesta sessão)** — GLM-4.5-Air (Q2_K): 47 blocos
-(46 transformer + 1 MTP/nextn ignorado), dim 4096, 96 cabeças (kv 8), cabeça 128, 128 especialistas
-(8 ativos, hidden 1408), 1 compartilhado, 1 camada densa inicial (hidden 10944).
-- **Pré-norm comum** (sem sanduíche): só `attn_norm` e `post_attention_norm`; esta última é a norma
-  pré-feed-forward (aplicada *depois* do residual da atenção), carregada como `ffn_norm` (igual ao
-  qwen35moe). RoPE **NEOX** parcial (64 de 128). q/k/v com viés, sem norma de q/k no Air.
-- Roteador sigmoide com viés só na escolha (`exp_probs_b`), pesos normalizados e escala
-  `expert_weights_scale` — tudo pelo `moe_route` genérico já existente; compartilhado sempre somado;
-  grupo de especialistas = 1 (seleção por grupo é no-op). Mapeia quase inteiro no caminho MoE padrão.
-- Mudanças: flag `c->glmoe`, `rope_neox=1`, `ffn_norm` vindo de `post_attention_norm`, RoPE parcial
-  NEOX via `rhalf`, e `c->n_nextn` subtraído de `n_layers` (ignora o bloco MTP). Sem regressão nos
-  outros MoE (nenhum tem `nextn_predict_layers`; selftest olmoe OK).
-- **Validação** (`KATANA_CPU=1 KATANA_CTX=512`): `selftest` produtos OK (pior exato 6.4e-8), carga
-  certa (46 camadas após ignorar o MTP, 96 cabeças/8 kv, 128 especialistas, compartilhado). Greedy
-  bate **exato** com o `llama-simple` da referência (mesmo GGUF Q2_K): "capital of France" 8 tokens,
-  "hydrogen and" 10 tokens. Velocidade ~0,6 tok/s na CPU (especialistas lidos do arquivo de 45 GB
-  com 43 GB de RAM e a GPU ocupada por outro agente; o cache de especialistas na GPU resolveria).
+**`glm4moe` MoE (CPU correct, done in this session)** — GLM-4.5-Air (Q2_K): 47 blocks
+(46 transformer + 1 MTP/nextn ignored), dim 4096, 96 heads (kv 8), head 128, 128 experts
+(8 active, hidden 1408), 1 shared, 1 initial dense layer (hidden 10944).
+- **Ordinary pre-norm** (no sandwich): only `attn_norm` and `post_attention_norm`; the latter is the
+  pre-feed-forward norm (applied *after* the attention residual), loaded as `ffn_norm` (same as
+  qwen35moe). Partial **NEOX** RoPE (64 of 128). q/k/v with bias, no q/k norm in the Air.
+- Sigmoid router with bias only in the selection (`exp_probs_b`), normalized weights and scale
+  `expert_weights_scale` — all through the existing generic `moe_route`; shared always added;
+  expert group = 1 (group selection is a no-op). Maps almost entirely onto the default MoE path.
+- Changes: flag `c->glmoe`, `rope_neox=1`, `ffn_norm` coming from `post_attention_norm`, partial NEOX RoPE
+  via `rhalf`, and `c->n_nextn` subtracted from `n_layers` (ignores the MTP block). No regression in the
+  other MoEs (none has `nextn_predict_layers`; olmoe selftest OK).
+- **Validation** (`KATANA_CPU=1 KATANA_CTX=512`): `selftest` products OK (worst exact 6.4e-8), correct
+  load (46 layers after ignoring the MTP, 96 heads/8 kv, 128 experts, shared). Greedy
+  matches the reference's `llama-simple` **exactly** (same Q2_K GGUF): "capital of France" 8 tokens,
+  "hydrogen and" 10 tokens. Speed ~0.6 tok/s on the CPU (experts read from the 45 GB file
+  with 43 GB of RAM and the GPU busy with another agent; the expert cache on the GPU would solve it).
 
-**Pendências GLM**:
-- **GPU/Vulkan**: ambos ainda só na CPU (`gpu_setup` desvia glm4/glm4moe; `KATANA_GLM_GPU` força
-  tentar). Denso: grafo Vulkan precisa das normas sanduíche e RoPE NORM parcial. MoE: caminho
-  híbrido/cache de especialistas como o deepseek2 (roteador sigmoide já existe no Vulkan híbrido).
-- Formato de ferramentas do GLM-4.5 (XML `<tool_call>…<arg_key>…`) para o `katana agent`; raciocínio
-  desligado por padrão.
-### 2.3 Arquitetura DeepSeek/Kimi (prioridade 2 do plano)
+**GLM pending**:
+- **GPU/Vulkan**: both still CPU only (`gpu_setup` diverts glm4/glm4moe; `KATANA_GLM_GPU` forces
+  trying). Dense: the Vulkan graph needs the sandwich norms and partial NORM RoPE. MoE: hybrid
+  path/expert cache like deepseek2 (sigmoid router already exists in hybrid Vulkan).
+- GLM-4.5 tools format (XML `<tool_call>…<arg_key>…`) for `katana agent`; reasoning
+  off by default.
+### 2.3 DeepSeek/Kimi architecture (priority 2 of the plan)
 
-**Cache de especialistas generalizado (branch do worktree)**: camadas densas iniciais convivem com as MoE (sem vagas
-nelas, feed-forward normal no grafo OpenCL), especialista compartilhado inteiro na VRAM fora das vagas (portao sigmoide
-escalar opcional `ffn_gate_inp_shexp` na CPU; no grafo completo ainda nao), roteador unico `moe_route` (softmax ou
-sigmoide com vies so na escolha, normalizacao, escala; sem limite fixo de especialistas, ate 64 ativos). No deepseek2
-(modo `mv_host`) `host_moe_ffn` usa as vagas/calor/carregador do OpenCL: entrada sobe, compartilhado e quentes na GPU,
-frios na CPU, uma leitura por camada. Q5_0 passou a subir para a GPU (layout de 8 bits; antes virava lixo: refazer
-`katana pack` de shards antigos com Q5_0). Moonlight: geracao 11 -> 24-33 tok/s (medida alternada curta). Falta: Vulkan
-(`vk_moe_init` recusa densas/compartilhado/sigmoide), portao do compartilhado no grafo completo, atencao MLA na GPU.
+**Generalized expert cache (worktree branch)**: initial dense layers coexist with the MoE ones (no slots
+in them, normal feed-forward in the OpenCL graph), whole shared expert in VRAM outside the slots (optional scalar
+sigmoid gate `ffn_gate_inp_shexp` on the CPU; not yet in the full graph), single router `moe_route` (softmax or
+sigmoid with bias only in the selection, normalization, scale; no fixed limit of experts, up to 64 active). In deepseek2
+(`mv_host` mode) `host_moe_ffn` uses the OpenCL slots/heat/loader: input goes up, shared and hot on the GPU,
+cold on the CPU, one read per layer. Q5_0 now goes up to the GPU (8-bit layout; before it turned into garbage: redo
+`katana pack` of old shards with Q5_0). Moonlight: generation 11 -> 24-33 tok/s (short alternating measurement). Missing: Vulkan
+(`vk_moe_init` refuses dense/shared/sigmoid), shared gate in the full graph, MLA attention on the GPU.
 
-O alvo "trilhão de parâmetros" é dessa família. O Kimi não cabe no disco (≈600 GB em 4 bits; há
-~45 GB livres). Validar no DeepSeek-V2-Lite (16 B, ~10 GB): atenção de posto baixo com K e V
-comprimidos, roteador sigmoide com viés, especialista compartilhado, camadas densas iniciais.
-Detalhes em `roteiro-otimizacoes.md` seção 8 e `plano.md`.
+The "trillion parameters" target is from this family. Kimi does not fit on the disk (≈600 GB in 4 bits; there are
+~45 GB free). Validate on DeepSeek-V2-Lite (16 B, ~10 GB): low-rank attention with compressed K and V,
+sigmoid router with bias, shared expert, initial dense layers.
+Details in `optimization-roadmap.md` section 8 and `plan.md`.
 
-### 2.4 Depois
+### 2.4 Afterwards
 
-- CPU dos especialistas frios: ativações de 8 bits por bloco de 256, AVX-512 VNNI (a máquina tem).
-- Assistente: pré-tokenizador exato, contexto maior que 4.096 com reuso de prefixo, amostragem
-  completa, compactação de contexto, saída JSON garantida para o agente.
-- Rede entre máquinas.
-- Linux: fora do plano por decisão do dono do projeto ("não vamos testar Linux ainda").
+- CPU of the cold experts: 8-bit activations per block of 256, AVX-512 VNNI (the machine has it).
+- Assistant: exact pre-tokenizer, context larger than 4,096 with prefix reuse, full sampling,
+  context compaction, guaranteed JSON output for the agent.
+- Network between machines.
+- Linux: out of the plan by the project owner's decision ("we will not test Linux yet").
 
-## 3. Pendências e riscos conhecidos
+## 3. Pending items and known risks
 
-- **Não testado em Vulkan**: sessão interativa, agente, `run`; placa Intel no motor (o runtime
-  passou nos testes dela, o motor não foi rodado); caminho sem matrizes cooperativas (só revisado);
-  queda para OpenCL quando o Vulkan falha ao iniciar; modelos com norma q/k no lote.
-- **Precisão do lote**: os núcleos tensoriais trabalham em meia precisão; a diferença de logit no
-  lote é 0,008–0,026 contra ~3e-5 no caminho por token. O argmax bate em todos os testes e 600
-  tokens de prompt dão os mesmos 40 tokens seguintes, mas não há medida de qualidade em texto longo.
-- **Conferência externa fraca**: o `selftest` compara GPU com a nossa CPU. Contra o motor de
-  referência só há um teste de ~60 tokens (Qwen3-30B) e nenhum com o backend Vulkan.
-- **Tokenizador BPE aproximado**: pode tokenizar diferente do oficial; nunca foi medido.
-- **Medições derivam com a temperatura da máquina**: só valem alternadas (ver `conhecimento.md` seção 7).
-- **Trabalho feito por agentes**: as etapas 2 a 5 do Vulkan foram escritas por agentes e conferidas
-  rodando os testes e os benchmarks; o código não foi lido linha a linha. Um comentário antigo em
-  `katana.c` ainda diz que o Vulkan só faz o produto de matriz por vetor.
-- **Decisões em aberto**: Vulkan como padrão; SPIR-V versionado como cabeçalho (é o que está feito)
-  ou gerado no build; `compare.sh` cita o executável do motor de referência (único lugar do
-  repositório que o nomeia).
+- **Not tested on Vulkan**: interactive session, agent, `run`; Intel card in the engine (the runtime
+  passed its tests, the engine was not run); path without cooperative matrices (only reviewed);
+  fallback to OpenCL when Vulkan fails to start; models with q/k norm in the batch.
+- **Batch precision**: the tensor cores work in half precision; the logit difference in the
+  batch is 0.008–0.026 against ~3e-5 on the per-token path. The argmax matches in all tests and 600
+  prompt tokens give the same following 40 tokens, but there is no quality measurement on long text.
+- **Weak external check**: the `selftest` compares the GPU with our CPU. Against the reference
+  engine there is only a ~60-token test (Qwen3-30B) and none with the Vulkan backend.
+- **Approximate BPE tokenizer**: may tokenize differently from the official one; never measured.
+- **Measurements drift with the machine's temperature**: only valid alternating (see `knowledge.md` section 7).
+- **Work done by agents**: Vulkan stages 2 to 5 were written by agents and checked by
+  running the tests and the benchmarks; the code was not read line by line. An old comment in
+  `katana.c` still says that Vulkan only does the matrix-by-vector product.
+- **Open decisions**: Vulkan as default; SPIR-V versioned as a header (which is what is done)
+  or generated at build; `compare.sh` cites the reference engine's executable (the only place in the
+  repository that names it).
 
-## 4. Como retomar
+## 4. How to resume
 
-**Compilar e conferir**
+**Build and check**
 
 ```
 cmd //c "cd /d C:\source\katana && .\build.bat"
-./katana.exe selftest modelos/qwen2.5-1.5b-q4km.gguf                       # OpenCL: 4 linhas OK
-KATANA_BACKEND=vulkan ./katana.exe selftest modelos/qwen2.5-1.5b-q4km.gguf  # Vulkan: lote e token a token OK
+./katana.exe selftest modelos/qwen2.5-1.5b-q4km.gguf                       # OpenCL: 4 lines OK
+KATANA_BACKEND=vulkan ./katana.exe selftest modelos/qwen2.5-1.5b-q4km.gguf  # Vulkan: batch and token by token OK
 KATANA_KV16=0 ./katana.exe selftest modelos/olmoe-1b-7b-q4km.gguf           # MoE (OpenCL)
 KATANA_KV16=0 KATANA_CTX=512 ./katana.exe selftest modelos/qwen3-30b-a3b-q4km.gguf
 ```
 
-**Medir**
+**Measure**
 
 ```
-./katana.exe bench <modelo> 64 64                    # terceira rodada; alternar backends
-KATANA_BACKEND=vulkan ./katana.exe vkcheck <modelo> <texto.txt> 40 600   # lote contra token a token
-bash compare.sh modelos/qwen3-30b-a3b-q4km.gguf ref/llama 3 200          # contra a referência
+./katana.exe bench <modelo> 64 64                    # third round; alternate backends
+KATANA_BACKEND=vulkan ./katana.exe vkcheck <modelo> <texto.txt> 40 600   # batch against token by token
+bash compare.sh modelos/qwen3-30b-a3b-q4km.gguf ref/llama 3 200          # against the reference
 ```
 
-**Shaders**: fontes em `vk/shaders`, cabeçalhos SPIR-V gerados por `vk/shaders/gen.sh` com
-`ref/vk/glslang/bin/glslang.exe` (execução liberada em `.claude/settings.local.json`). Quem só
-compila o motor não precisa do compilador de shaders.
+**Shaders**: sources in `vk/shaders`, SPIR-V headers generated by `vk/shaders/gen.sh` with
+`ref/vk/glslang/bin/glslang.exe` (execution allowed in `.claude/settings.local.json`). Whoever only
+builds the engine does not need the shader compiler.
 
-**Variáveis úteis do Vulkan**: `KATANA_VK_REC=0` (fila ao vivo em vez de grafo gravado),
-`KATANA_VK_BATCH=0` (prompt token a token), `KATANA_VK_PASS` (tokens por passada; padrão 256),
-`KATANA_VK_ATT=3` (atenção em três kernels), `KATANA_VK_DEVICE` (escolher a placa).
+**Useful Vulkan variables**: `KATANA_VK_REC=0` (live queue instead of recorded graph),
+`KATANA_VK_BATCH=0` (token-by-token prompt), `KATANA_VK_PASS` (tokens per pass; default 256),
+`KATANA_VK_ATT=3` (attention in three kernels), `KATANA_VK_DEVICE` (choose the card).
 
-**Onde está cada coisa**
+**Where everything is**
 
-| Caminho | O quê |
+| Path | What |
 |---|---|
-| `katana.c` | o motor; código Vulkan nas funções `vk_*` |
-| `vk/kvk.h`, `vk/LEIAME.md` | runtime Vulkan e sua documentação |
-| `vk/shaders` | shaders usados pelo motor |
-| `tools/vkmv`, `tools/vkatt`, `tools/vkq4k` | bancadas de teste dos kernels (produto por token, atenção e auxiliares, lote), com `NOTAS.md` |
-| `tools/vkprobe`, `tools/vkgemm` | protótipos iniciais |
-| `ref/` (fora do git) | motor de referência (binários CUDA e Vulkan, código-fonte), compilador de shaders |
-| `modelos/` (fora do git) | GGUFs e shards `.ktn` |
+| `katana.c` | the engine; Vulkan code in the `vk_*` functions |
+| `vk/kvk.h`, `vk/README.md` | Vulkan runtime and its documentation |
+| `vk/shaders` | shaders used by the engine |
+| `tools/vkmv`, `tools/vkatt`, `tools/vkq4k` | kernel test benches (per-token product, attention and helpers, batch), with `NOTAS.md` |
+| `tools/vkprobe`, `tools/vkgemm` | initial prototypes |
+| `ref/` (outside git) | reference engine (CUDA and Vulkan binaries, source code), shader compiler |
+| `modelos/` (outside git) | GGUFs and `.ktn` shards |
 
-**Regras do projeto**: em `CLAUDE.md`. As principais: português; o código não cita outros motores;
-commit e push a cada passo no repositório privado; nada de publicar; comparar velocidade só com
-medidas alternadas e dizer o que é medido e o que é estimativa.
+**Project rules**: in `CLAUDE.md`. The main ones: Portuguese; the code does not cite other engines;
+commit and push at each step in the private repository; no publishing; compare speed only with
+alternating measurements and say what is measured and what is an estimate.
 
-## 5. Linux (2026-11-15, segunda sessão)
+## 5. Linux (2026-11-15, second session)
 
-A máquina passou a rodar Ubuntu (kernel 7.0, mesma RTX 3050 4 GB). Sem root, o compilador foi
-montado com `apt-get download` + `dpkg -x` em `~/.local/tc` (gcc 15, binutils, libc6-dev,
-cabeçalhos OpenCL). `build.sh` compila com o `gcc` do sistema ou, sem ele, com esse diretório.
-Única mudança no código: `_putenv` mapeado para `putenv` fora do Windows.
+The machine started running Ubuntu (kernel 7.0, same RTX 3050 4 GB). Without root, the compiler was
+assembled with `apt-get download` + `dpkg -x` in `~/.local/tc` (gcc 15, binutils, libc6-dev,
+OpenCL headers). `build.sh` compiles with the system `gcc` or, without it, with that directory.
+Only code change: `_putenv` mapped to `putenv` outside Windows.
 
-- `selftest` passa no Linux: Qwen 1,5B pelo OpenCL e pelo Vulkan (lote 0,0098), OLMoE e Qwen3-30B
-  (`KATANA_KV16=0 KATANA_CTX=512`) pelo OpenCL.
-- Bench Qwen2.5 1,5B 64+64, alternado, rodadas 2 e 3: OpenCL prompt 217–220 / geração 93–97;
-  Vulkan prompt 922–942 / geração 86–88 tok/s. No Windows o Vulkan dava 1.349–1.364 / 98–100
-  (outra hora, outro sistema: não comparável diretamente). A queda do Vulkan no Linux é um ponto a
-  investigar (driver, clocks ou caminho de submissão).
+- `selftest` passes on Linux: Qwen 1.5B through OpenCL and Vulkan (batch 0.0098), OLMoE and Qwen3-30B
+  (`KATANA_KV16=0 KATANA_CTX=512`) through OpenCL.
+- Bench Qwen2.5 1.5B 64+64, alternating, rounds 2 and 3: OpenCL prompt 217–220 / generation 93–97;
+  Vulkan prompt 922–942 / generation 86–88 tok/s. On Windows Vulkan gave 1,349–1,364 / 98–100
+  (another hour, another system: not directly comparable). The Vulkan drop on Linux is a point to
+  investigate (driver, clocks or submission path).
 
-### 5.1 Passo 2.1a feito no Linux (Vulkan, Qwen2.5 1,5B)
+### 5.1 Step 2.1a done on Linux (Vulkan, Qwen2.5 1.5B)
 
-- `run`, `chat` de uma pergunta e `chat` interativo (dois turnos, lembra o nome): ok, grafo
-  gravado em Vulkan, geração 83–97 tok/s.
-- `agent`: `list_dir` não existia fora do Windows; portado com `opendir`/`readdir`. Listagem ok;
-  `run_command` pede confirmação e respeita a recusa.
-- Mistral 7B Q5_K_M: carrega 25 de 32 camadas na VRAM ("Vulkan: grafo na CPU"), responde certo,
-  geração 6,3 tok/s. Ou seja, o resto cai na CPU; o caminho misto de verdade é o passo 2.1b.
-- Não testado ainda: Qwen3 denso (não há GGUF em `modelos/`).
+- `run`, single-question `chat` and interactive `chat` (two turns, remembers the name): ok, recorded
+  graph on Vulkan, generation 83–97 tok/s.
+- `agent`: `list_dir` did not exist outside Windows; ported with `opendir`/`readdir`. Listing ok;
+  `run_command` asks for confirmation and respects the refusal.
+- Mistral 7B Q5_K_M: loads 25 of 32 layers in the VRAM ("Vulkan: grafo na CPU"), answers correctly,
+  generation 6.3 tok/s. That is, the rest falls to the CPU; the real mixed path is step 2.1b.
+- Not tested yet: dense Qwen3 (there is no GGUF in `modelos/`).
 
-### 5.2 Lentidão do Vulkan no Linux: causa e correção
+### 5.2 Vulkan slowness on Linux: cause and fix
 
-- Causa: o driver Linux compila mal ladrilhos em que um subgrupo tem 4 acumuladores 16x16; o 64x64 que
-  o motor usava acima de 64 tokens (e todo o gate/up) rendia ~1,3 T contra ~2,8 T no Windows.
-  Detalhes em `tools/vkq4k/NOTAS.md`, seção Linux.
-- Correção: novos ladrilhos (64x64 em 4x2 subgrupos, glu 64x32 em 2x2). Prompt do Qwen 1,5B 851 →
-  1.515 tok/s, Llama 3B 411 → 750 (alternado, `comparacoes.md` seção 11). Acima do Windows antigo.
-- Diferença de logit do lote no Llama 3B no `vkcheck` de 600 tokens: 0,006 (era 0,0255; passo 2.1f).
-  No `selftest` de 23 tokens continua 0,025 (lote pequeno usa o 64x16, que não mudou).
-- Geração: a "lentidão" era deriva térmica; 98–99 tok/s no Vulkan contra 101 no OpenCL.
-- `vkmm` compila no Linux. glslang Linux em `~/.local/tc/gl` (`gen.sh` acha sozinho).
-- Orçamento de VRAM fora do Windows: 88% (era 92%; o Qwen3-30B estourava com erro -4 no OpenCL).
-- Pendente: medir os ladrilhos novos no Windows (podem mudar lá; não medido).
+- Cause: the Linux driver compiles badly tiles in which one subgroup has 4 accumulators 16x16; the 64x64 that
+  the engine used above 64 tokens (and all of gate/up) yielded ~1.3 T against ~2.8 T on Windows.
+  Details in `tools/vkq4k/NOTAS.md`, Linux section.
+- Fix: new tiles (64x64 in 4x2 subgroups, glu 64x32 in 2x2). Qwen 1.5B prompt 851 →
+  1,515 tok/s, Llama 3B 411 → 750 (alternating, `comparisons.md` section 11). Above the old Windows.
+- Batch logit difference on Llama 3B in the 600-token `vkcheck`: 0.006 (was 0.0255; step 2.1f).
+  In the 23-token `selftest` it is still 0.025 (small batch uses the 64x16, which did not change).
+- Generation: the "slowness" was thermal drift; 98–99 tok/s on Vulkan against 101 on OpenCL.
+- `vkmm` compiles on Linux. glslang Linux in `~/.local/tc/gl` (`gen.sh` finds it by itself).
+- VRAM budget outside Windows: 88% (was 92%; Qwen3-30B blew up with error -4 on OpenCL).
+- Pending: measure the new tiles on Windows (they may change there; not measured).
 
-## 6. Sessão de 2026-11-15/16 (Linux, agentes em paralelo)
+## 6. Session of 2026-11-15/16 (Linux, parallel agents)
 
-Entrou no main (detalhes nos commits e em `docs/modelos-novos.md`):
-- Vulkan: ladrilhos com até 2 acumuladores por subgrupo (driver Linux), B em [k][n] no `mm.comp`
-  (bancada 3,8–4,1 T), atenção em lote por blocos e atenção de um token dividida em pedaços,
-  grafo parcial (modelo maior que a VRAM), MoE em Vulkan (`KATANA_VK_MOE=1`, ainda mais lento que o OpenCL).
-- CPU: camadas em lote no grafo parcial, produto VNNI (Q4_K/Q6_K).
-- Arquiteturas novas: `deepseek2` (DeepSeek-V2-Lite, Moonlight: MLA absorvida, roteador sigmoide,
-  compartilhados) e `qwen35moe` (Qwen3.6-35B-A3B: DeltaNet + atenção com portão, 256 especialistas).
-  Cache de especialistas generalizado (camadas densas, compartilhado, roteador único, modo híbrido).
-- Formatos: MXFP4, IQ4_NL/XS, Q2_K, Q4_1, Q5_1, BF16, IQ1/2/3, TQ1/2 (`katana qtest`).
-- Agente: busca web (meta-buscador embutido), web_fetch, search_files, memória, log, cliente MCP,
-  formato XML de ferramentas, `KATANA_THINK=0`. Interface: console e `katana serve` (página local).
-- Bancada `tools/vkdelta`: kernels Vulkan do DeltaNet (geração 0,025 ms/camada; lote 8,5x), ainda
-  não ligados ao motor.
-- Estudos: `docs/estudo-provedores.md` e `docs/base-ia/`.
+Went into main (details in the commits and in `docs/new-models.md`):
+- Vulkan: tiles with up to 2 accumulators per subgroup (Linux driver), B in [k][n] in `mm.comp`
+  (bench 3.8–4.1 T), batch attention by blocks and one-token attention split into chunks,
+  partial graph (model larger than the VRAM), MoE on Vulkan (`KATANA_VK_MOE=1`, still slower than OpenCL).
+- CPU: batch layers in the partial graph, VNNI product (Q4_K/Q6_K).
+- New architectures: `deepseek2` (DeepSeek-V2-Lite, Moonlight: absorbed MLA, sigmoid router,
+  shared) and `qwen35moe` (Qwen3.6-35B-A3B: DeltaNet + attention with gate, 256 experts).
+  Generalized expert cache (dense layers, shared, single router, hybrid mode).
+- Formats: MXFP4, IQ4_NL/XS, Q2_K, Q4_1, Q5_1, BF16, IQ1/2/3, TQ1/2 (`katana qtest`).
+- Agent: web search (embedded meta-search engine), web_fetch, search_files, memory, log, MCP client,
+  XML tools format, `KATANA_THINK=0`. Interface: console and `katana serve` (local page).
+- Bench `tools/vkdelta`: Vulkan DeltaNet kernels (generation 0.025 ms/layer; batch 8.5x), not yet
+  wired into the engine.
+- Studies: `docs/providers-study.md` and `docs/base-ia/`.
 
-Medidas desta sessão são indicativas (máquina compartilhada com outra sessão compilando).
-Moonlight geração ~11 → 30–33 tok/s; Qwen3.6 ~25–27 tok/s (bench 16+48, alternado).
+Measurements in this session are indicative (machine shared with another session compiling).
+Moonlight generation ~11 → 30–33 tok/s; Qwen3.6 ~25–27 tok/s (bench 16+48, alternating).
 
-Próximos: grafo completo do qwen35moe na GPU com `tools/vkdelta`; prompt do DeltaNet em blocos;
-saída JSON garantida; cache persistente do prompt do agente; MTP; teste dourado de tokenização;
-KATANA_CONFIRM (bloqueado pelo classificador de permissões, decisão do dono).
+Next: full qwen35moe graph on the GPU with `tools/vkdelta`; DeltaNet prompt in blocks;
+guaranteed JSON output; persistent cache of the agent prompt; MTP; golden tokenization test;
+KATANA_CONFIRM (blocked by the permissions classifier, owner's decision).
 
-## 7. MoE em Vulkan mais rápido e cache de especialistas no modo híbrido (2026-11-16)
+## 7. Faster MoE on Vulkan and expert cache in hybrid mode (2026-11-16)
 
-O que mudou (`katana.c`, `vk/shaders`):
-- `mv_*` ganharam o modo de várias matrizes num lançamento (porte do `MOEPRE`): push constants `mtp, mxrow, morow, mcol`
-  (44 bytes), a tabela de 6 uint por matriz vem no binding do bias (`vk_gmv_multi`). Por camada MoE: gate/up+SiLU de todos
-  os quentes num despacho, down noutro (antes 2 por especialista: 16 para K=8).
-- Roteador na GPU (`moe_router.comp`, pesos em float32 em linhas simples, um grupo por especialista): os logits saem logo
-  depois da entrada normalizada em `vkg.xn` e uma leitura traz os dois; a escolha top-K continua na CPU (`moe_lg_ext` em
-  `moe_route`), porque os frios e o calor precisam dela. `KATANA_VK_ROUTER=0` volta ao roteador na CPU.
-- `moe_sum_rms.comp`: soma pesada do MoE + norma de entrada da camada seguinte num despacho (`vk_moe_ffn_x`,
-  `vk_emit_attn_x` com `pre_norm`); q/k/v sem barreira entre si; no grafo ao vivo a atenção de um token só lança os
-  pedaços de contexto já ocupados (`vk_pos_live`).
-- Modo híbrido (MLA, deepseek2) em Vulkan: `vk_host_moe_setup`/`vk_host_moe_ffn` (vagas só nas camadas MoE, compartilhado na
-  GPU, roteador comum `moe_route` com softmax ou sigmoide+viés, frios na CPU, uma leitura por camada). `gx_host_layer`
-  escolhe OpenCL ou Vulkan. O qwen35moe não usa (o grafo próprio cria as vagas).
-- Padrões: `vk_ok` não exclui mais MLA; MoE em Vulkan ligado por padrão exceto olmoe (`KATANA_VK_MOE=1` liga no olmoe,
-  `KATANA_VK_MOE=0` desliga em todos).
+What changed (`katana.c`, `vk/shaders`):
+- `mv_*` gained the several-matrices-in-one-launch mode (port of `MOEPRE`): push constants `mtp, mxrow, morow, mcol`
+  (44 bytes), the table of 6 uints per matrix comes in the bias binding (`vk_gmv_multi`). Per MoE layer: gate/up+SiLU of all
+  hot ones in one dispatch, down in another (before 2 per expert: 16 for K=8).
+- Router on the GPU (`moe_router.comp`, weights in float32 in plain rows, one group per expert): the logits come out right
+  after the normalized input in `vkg.xn` and one read brings both; the top-K choice stays on the CPU (`moe_lg_ext` in
+  `moe_route`), because the cold ones and the heat need it. `KATANA_VK_ROUTER=0` returns to the router on the CPU.
+- `moe_sum_rms.comp`: weighted MoE sum + input norm of the next layer in one dispatch (`vk_moe_ffn_x`,
+  `vk_emit_attn_x` with `pre_norm`); q/k/v without a barrier between them; in the live graph the one-token attention only launches the
+  context chunks already occupied (`vk_pos_live`).
+- Hybrid mode (MLA, deepseek2) on Vulkan: `vk_host_moe_setup`/`vk_host_moe_ffn` (slots only in the MoE layers, shared on the
+  GPU, common router `moe_route` with softmax or sigmoid+bias, cold on the CPU, one read per layer). `gx_host_layer`
+  chooses OpenCL or Vulkan. qwen35moe does not use it (its own graph creates the slots).
+- Defaults: `vk_ok` no longer excludes MLA; MoE on Vulkan on by default except olmoe (`KATANA_VK_MOE=1` turns it on for olmoe,
+  `KATANA_VK_MOE=0` turns it off for all).
 
-Medidas (geração tok/s, `bench 64 64`, rodadas 2 e 3, alternadas na mesma hora; máquina às vezes com outra compilação
-rodando, então só valem as comparações dentro de cada linha):
+Measurements (generation tok/s, `bench 64 64`, rounds 2 and 3, alternating in the same hour; machine sometimes with another build
+running, so only comparisons within each row are valid):
 
-| Modelo | Vulkan antes | Vulkan agora | OpenCL |
+| Model | Vulkan before | Vulkan now | OpenCL |
 |---|---|---|---|
-| Qwen3-30B-A3B (`KATANA_KV16=0 KATANA_CTX=512`) | 34,4–35,9 | 40,0–43,0 (média 41,4) | 40,6–42,4 (média 41,6) |
-| OLMoE (`KATANA_KV16=0`) | 105,6–105,9 | 127,5–132,7 | 132,6–136,1 |
-| Moonlight (`KATANA_CTX=512`) | 10,2–10,3 (especialistas na CPU) | 22,9–23,1 | 21,5–21,8 |
-| DeepSeek-V2-Lite (`KATANA_CTX=512`) | — | 21,6–23,9 | 21,2–22,3 |
-| Qwen3.6-35B-A3B (`KATANA_CTX=512`, grafo próprio) | 28,6–29,3 | 31,9–32,7 | — |
+| Qwen3-30B-A3B (`KATANA_KV16=0 KATANA_CTX=512`) | 34.4–35.9 | 40.0–43.0 (average 41.4) | 40.6–42.4 (average 41.6) |
+| OLMoE (`KATANA_KV16=0`) | 105.6–105.9 | 127.5–132.7 | 132.6–136.1 |
+| Moonlight (`KATANA_CTX=512`) | 10.2–10.3 (experts on the CPU) | 22.9–23.1 | 21.5–21.8 |
+| DeepSeek-V2-Lite (`KATANA_CTX=512`) | — | 21.6–23.9 | 21.2–22.3 |
+| Qwen3.6-35B-A3B (`KATANA_CTX=512`, own graph) | 28.6–29.3 | 31.9–32.7 | — |
 
-- Qwen3-30B: empate dentro do ruído (numa série anterior 42,0–42,6 contra 41,0–42,3). Prompt no Vulkan continua token a
-  token: 44 contra 57 tok/s no OpenCL.
-- OLMoE: com prompt de 16 o Vulkan dava 133 contra 128–129; com 64+64 fica 2–4% atrás, por isso continua no OpenCL por
-  padrão. Medido por partes (temporizadores provisórios): ~5,2 ms/token esperando a GPU (atenção + quentes), ~1,4 ms
-  na CPU (frios), roteamento na CPU custava 0,4 ms (agora ~0). Tentativas sem ganho: alvo de segmentos 8k–64k, submeter
-  os quentes antes da CPU (flush), soma separada da norma.
-- Moonlight: o indicativo de 30 tok/s da sessão anterior não se repetiu nesta hora em nenhum dos dois backends.
+- Qwen3-30B: tie within noise (in an earlier series 42.0–42.6 against 41.0–42.3). Prompt on Vulkan is still token by
+  token: 44 against 57 tok/s on OpenCL.
+- OLMoE: with a 16-token prompt Vulkan gave 133 against 128–129; with 64+64 it is 2–4% behind, which is why it stays on OpenCL by
+  default. Measured by parts (provisional timers): ~5.2 ms/token waiting for the GPU (attention + hot), ~1.4 ms
+  on the CPU (cold), routing on the CPU cost 0.4 ms (now ~0). Attempts without gain: segment target 8k–64k, submitting
+  the hot ones before the CPU (flush), sum separate from the norm.
+- Moonlight: the 30 tok/s indicative from the previous session did not repeat in this hour on either backend.
 
-Validação (`selftest`, padrão e `KATANA_BACKEND=opencl`): qwen2.5-1.5b, OLMoE (`KATANA_VK_MOE=1` também), Qwen3-30B,
-Moonlight, Qwen3.6 OK. DeepSeek-V2-Lite: a diferença do token a token / lote fica entre 0,025 e 0,055 conforme quais
-especialistas estão quentes (os frios usam ativações de 8 bits na CPU; o modelo é sensível), nos dois backends; numa
-rodada Vulkan passou do limite de 0,05 (0,0555) e na seguinte deu 0,035. Os quentes do Vulkan conferidos contra a CPU
-(diferença < 1%, teste provisório). Um `selftest` do Qwen3.6 terminou com falha de segmentação uma vez na bateria e não
-se repetiu em três rodadas seguidas (investigar se reaparecer). A diferença do lote do Qwen3.6 (0,06–0,15, tolerância de
-3% do maior logit) varia de rodada a rodada com o estado das vagas, no binário antigo e no novo; numa rodada da bateria o
-"lote 16" trocou o argmax (148622 x 532, diferença 0,116: dois logits quase empatados) e na seguinte passou. É a precisão
-do lote em fp16 que outro agente está tratando (`mm.comp`, `dn_*`), caminho que esta mudança não toca.
+Validation (`selftest`, default and `KATANA_BACKEND=opencl`): qwen2.5-1.5b, OLMoE (`KATANA_VK_MOE=1` too), Qwen3-30B,
+Moonlight, Qwen3.6 OK. DeepSeek-V2-Lite: the token-by-token / batch difference stays between 0.025 and 0.055 depending on which
+experts are hot (the cold ones use 8-bit activations on the CPU; the model is sensitive), on both backends; in one
+Vulkan round it went past the 0.05 limit (0.0555) and in the next it gave 0.035. The Vulkan hot ones were checked against the CPU
+(difference < 1%, provisional test). One Qwen3.6 `selftest` ended with a segmentation fault once in the battery and did not
+repeat in three following rounds (investigate if it reappears). The Qwen3.6 batch difference (0.06–0.15, tolerance of
+3% of the largest logit) varies from round to round with the state of the slots, in the old binary and the new one; in one round of the battery the
+"batch 16" swapped the argmax (148622 x 532, difference 0.116: two nearly tied logits) and in the next it passed. It is the precision
+of the fp16 batch that another agent is handling (`mm.comp`, `dn_*`), a path this change does not touch.
 
-Observação: as ferramentas `tools/vkmv` e afins que usam os `mv_*` empurram 28 bytes de push constants; com o layout novo
-precisam mandar 44 (os 4 campos novos em zero).
+Note: the `tools/vkmv` tools and similar ones that use the `mv_*` push 28 bytes of push constants; with the new layout
+they need to send 44 (the 4 new fields at zero).
 
-## 8. Prompt MoE em lote no Vulkan (2026-11-16)
+## 8. MoE batch prompt on Vulkan (2026-11-16)
 
-O que mudou (`katana.c`, `vk/shaders/moe_router.comp`):
-- `vk_plan`/`vk_batch_build` aceitam MoE no grafo completo (qwen3moe; olmoe com `KATANA_VK_MOE=1`). A atenção do lote é a
-  mesma dos densos (`vk_emit_n`); no lugar do feed-forward entra `vk_moe_n`, por camada:
-  norma em fp32 (`rms_wg32`) e logits do roteador no `mm.comp` preciso (pesos float32 do roteador agora no layout da GPU,
-  grupos de 32 linhas; o `moe_router.comp` de um token passou a ler esse layout, um grupo por 32 especialistas);
-  uma leitura traz entrada normalizada e logits; a CPU escolhe top-K de cada token (`moe_route` com `moe_lg_ext`), atualiza
-  calor/vagas como no caminho de um token e agrupa os pares por vaga; na GPU cada vaga roda sobre as colunas dos seus
-  tokens (`moe_gath32`, `mm` glu e down com a vaga por deslocamento, `moe_scat` soma pesada no residual).
-- Frios do lote: os que têm pelo menos `KATANA_VK_COLDMIN` (padrão 2) tokens no lote sobem para até `KATANA_VK_COLDT`
-  (padrão 16) vagas temporárias (`vkbm.tg/td`), lidos do shard por um arquivo próprio (a thread carregadora usa o dela),
-  do blob morno, ou convertidos na hora; o resto roda na CPU enquanto a GPU trabalha e sobe somado. As vagas do cache
-  não mudam por causa disso (a thread carregadora continua só com vagas livres no lote).
-- Precisão: os produtos dos especialistas usam o modo preciso (alta + resto, como o qwen35moe). Em fp16
-  (`KATANA_VK_MOEP=0`) o OLMoE falha o `selftest` no "lote 16" (1,29 de diferença: roteamento quase empatado que vira);
-  os kernels foram conferidos contra o modo preciso (erro relativo ≤ 8e-4). O modo preciso não custou velocidade
-  medível (o gargalo é CPU/subidas).
-- `KATANA_VK_MOEPROF=1`: tempo por passada (leitura, roteamento, frios na CPU, subidas temporárias, pares).
-  Exemplo (Qwen3-30B, lote 256): ~1,7–2,2 s, frios na CPU ~0,9 s, subidas ~0,5–1,0 s, leitura ~0,17 s.
+What changed (`katana.c`, `vk/shaders/moe_router.comp`):
+- `vk_plan`/`vk_batch_build` accept MoE in the full graph (qwen3moe; olmoe with `KATANA_VK_MOE=1`). The batch attention is the
+  same as the dense ones (`vk_emit_n`); in place of the feed-forward comes `vk_moe_n`, per layer:
+  norm in fp32 (`rms_wg32`) and router logits in the precise `mm.comp` (router float32 weights now in the GPU layout,
+  groups of 32 rows; the one-token `moe_router.comp` now reads that layout, one group per 32 experts);
+  one read brings the normalized input and logits; the CPU chooses the top-K of each token (`moe_route` with `moe_lg_ext`), updates
+  heat/slots as in the one-token path and groups the pairs by slot; on the GPU each slot runs over the columns of its
+  tokens (`moe_gath32`, `mm` glu and down with the slot by offset, `moe_scat` weighted sum into the residual).
+- Cold ones of the batch: those with at least `KATANA_VK_COLDMIN` (default 2) tokens in the batch go up to up to `KATANA_VK_COLDT`
+  (default 16) temporary slots (`vkbm.tg/td`), read from the shard by their own file (the loader thread uses its own),
+  from the warm blob, or converted on the spot; the rest runs on the CPU while the GPU works and goes up summed. The cache slots
+  do not change because of this (the loader thread keeps working only with free slots in the batch).
+- Precision: the experts' products use the precise mode (high + remainder, as qwen35moe). In fp16
+  (`KATANA_VK_MOEP=0`) OLMoE fails the `selftest` at "batch 16" (1.29 difference: nearly tied routing that flips);
+  the kernels were checked against the precise mode (relative error ≤ 8e-4). The precise mode did not cost measurable
+  speed (the bottleneck is CPU/uploads).
+- `KATANA_VK_MOEPROF=1`: time per pass (read, routing, cold on the CPU, temporary uploads, pairs).
+  Example (Qwen3-30B, batch 256): ~1.7–2.2 s, cold on the CPU ~0.9 s, uploads ~0.5–1.0 s, read ~0.17 s.
 
-Medidas (`bench`, rodadas 2 e 3, binário anterior / novo / OpenCL alternados na mesma hora, GPU ≤ 72 °C no início de
-cada rodada; detalhes em `comparacoes.md` seção 12):
+Measurements (`bench`, rounds 2 and 3, previous binary / new / OpenCL alternating in the same hour, GPU ≤ 72 °C at the start of
+each round; details in `comparisons.md` section 12):
 
-| Modelo | | anterior (Vulkan) | novo (Vulkan) | OpenCL |
+| Model | | previous (Vulkan) | new (Vulkan) | OpenCL |
 |---|---|---|---|---|
-| Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=1024`), 256+16 | prompt | 48,1–49,0 | 140,7–149,4 | 57,6–58,1 |
-| Qwen3-30B, 64+64 | prompt | 44,6–45,2 | 66,4–68,1 | 60,3–60,6 |
-| | geração | 41,8–42,6 | 42,3–42,9 | 41,6–41,8 |
-| OLMoE (`KATANA_KV16=0 KATANA_VK_MOE=1`), 256+16 | prompt | 139,8–141,3 | 362,5–375,5 | 209,0–212,0 |
-| | geração | 121,6–122,4 | 118,4–122,5 | 126,6–127,0 |
+| Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=1024`), 256+16 | prompt | 48.1–49.0 | 140.7–149.4 | 57.6–58.1 |
+| Qwen3-30B, 64+64 | prompt | 44.6–45.2 | 66.4–68.1 | 60.3–60.6 |
+| | generation | 41.8–42.6 | 42.3–42.9 | 41.6–41.8 |
+| OLMoE (`KATANA_KV16=0 KATANA_VK_MOE=1`), 256+16 | prompt | 139.8–141.3 | 362.5–375.5 | 209.0–212.0 |
+| | generation | 121.6–122.4 | 118.4–122.5 | 126.6–127.0 |
 
-- A geração de 16 tokens depois do lote de 256 no Qwen3-30B variou muito no binário novo (23,5–41,8); com 64+64 empata.
-  Provável: o lote mexe no calor e nos pedidos da carregadora, e 16 tokens são curtos para medir. Não investigado.
-- Tentado sem ganho: 32 ou 48 vagas temporárias (120 e ~100 tok/s contra 144–146 com 16; mais VRAM nelas tira vagas do
-  cache e mais subidas por camada), `KATANA_VK_COLDMIN=4` empata com 2.
+- The 16-token generation after the batch of 256 on Qwen3-30B varied a lot on the new binary (23.5–41.8); with 64+64 it ties.
+  Probable: the batch touches the heat and the loader requests, and 16 tokens are short to measure. Not investigated.
+- Tried without gain: 32 or 48 temporary slots (120 and ~100 tok/s against 144–146 with 16; more VRAM in them takes slots from the
+  cache and more uploads per layer), `KATANA_VK_COLDMIN=4` ties with 2.
 
-Validação (`selftest`): qwen2.5-1.5b (Vulkan, lote 0,0078), OLMoE padrão (OpenCL) e com `KATANA_VK_MOE=1` (lote 0,0042,
-lote 16 0,0044), Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`; lote 0,003–0,017 conforme quais especialistas estão quentes,
-lote 16 0,0039), Moonlight (0,0002, caminho não mudou), Qwen3.6 (lote 0,0006). Todos OK.
+Validation (`selftest`): qwen2.5-1.5b (Vulkan, batch 0.0078), OLMoE default (OpenCL) and with `KATANA_VK_MOE=1` (batch 0.0042,
+batch 16 0.0044), Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`; batch 0.003–0.017 depending on which experts are hot,
+batch 16 0.0039), Moonlight (0.0002, path did not change), Qwen3.6 (batch 0.0006). All OK.
 
-Pendências: lote MoE no modo híbrido (MLA: Moonlight e DeepSeek-V2-Lite continuam com prompt token a token: atenção na
-CPU por token + `vk_host_moe_ffn`); subidas temporárias em paralelo com os frios da CPU (hoje uma depois da outra na
-thread principal); roteamento da CPU (~0,1 s por passada de 256 no Qwen3-30B) poderia ir para a GPU (top-K no shader).
+Pending: MoE batch in hybrid mode (MLA: Moonlight and DeepSeek-V2-Lite remain with token-by-token prompt: attention on the
+CPU per token + `vk_host_moe_ffn`); temporary uploads in parallel with the CPU cold ones (today one after the other on the
+main thread); CPU routing (~0.1 s per pass of 256 on Qwen3-30B) could go to the GPU (top-K in the shader).
 
-**Correção (revisão do coordenador)**: no `selftest` do Qwen3-30B o "lote 16" falhou com 0,115 em 2 de 3 rodadas no main. Causa: precisão, não
-estado entre passadas. Medido: a saída de cada vaga (quente e temporária) confere com a CPU (erro relativo ≤ 1,4e-3, int8 na CPU); o que
-mudava era a atenção do lote em fp16 (norma fp16, q/k/v/o em fp16, saída da atenção em fp16), que desloca o residual o bastante para virar
-escolhas quase empatadas do roteador. Agora, no MoE com o modo preciso (padrão), a atenção do lote também é fp32 (`rms_wg32`, `mm` alta +
-resto, `att_flash32`), como no qwen35moe. Diferença do lote no Qwen3-30B caiu de 0,003–0,017 para ~0,0005; 6 `selftest` seguidos OK;
-OLMoE (`KATANA_VK_MOE=1`) lote 0,0002 / lote 16 0,0001; Qwen3.6 e qwen2.5 OK. Velocidade alternada (256+16, rodadas 2–3): Qwen3-30B
-125–146 antes contra 138–139 depois; OLMoE 352–375 contra 362–364 (empate dentro do ruído).
+**Correction (coordinator's review)**: in the Qwen3-30B `selftest` the "batch 16" failed with 0.115 in 2 of 3 rounds on main. Cause: precision, not
+state between passes. Measured: the output of each slot (hot and temporary) matches the CPU (relative error ≤ 1.4e-3, int8 on the CPU); what
+was changing was the batch attention in fp16 (fp16 norm, q/k/v/o in fp16, attention output in fp16), which shifts the residual enough to flip
+nearly tied router choices. Now, in the MoE with the precise mode (default), the batch attention is also fp32 (`rms_wg32`, `mm` high +
+remainder, `att_flash32`), as in qwen35moe. The batch difference on Qwen3-30B dropped from 0.003–0.017 to ~0.0005; 6 consecutive `selftest` OK;
+OLMoE (`KATANA_VK_MOE=1`) batch 0.0002 / batch 16 0.0001; Qwen3.6 and qwen2.5 OK. Alternating speed (256+16, rounds 2–3): Qwen3-30B
+125–146 before against 138–139 after; OLMoE 352–375 against 362–364 (tie within noise).
 
-## 9. Comando `katana prepare` e perfil por modelo (2026-11-16, worktree agent-a6f6)
+## 9. `katana prepare` command and per-model profile (2026-11-16, worktree agent-a6f6)
 
-`katana prepare <modelo.gguf>` prepara sozinho um modelo para o melhor desempenho nesta maquina e grava
-um perfil que `chat`/`serve`/`agent`/`run` passam a usar sem o usuario definir variaveis.
+`katana prepare <model.gguf>` prepares a model by itself for the best performance on this machine and saves
+a profile that `chat`/`serve`/`agent`/`run` then use without the user defining variables.
 
-O que faz (funcao `prepare` em `katana.c`, logo depois de `tune`):
-1. **Inspeciona**: reaproveita a carga (`load_model` -> `gpu_setup`) e `print_info`. Le arquitetura, nº de
-   parametros, camadas, quantizacao (tipo do gate; e dos especialistas no MoE), nº de especialistas/ativos,
-   e a maquina (VRAM total por `gpu.vram`, nucleos/RAM ja detectados na carga).
-2. **Decide e imprime o plano em portugues**: cabe inteiro na VRAM? (total estimado como em `gpu_setup`,
-   linhas 4934-4941, contra `gpu_budget()`), backend (vulkan padrao; `gpu.vk`), KV 16/32 bits (mesma regra
-   `total > budget` do motor), contexto sugerido (o do modelo quando cabe; senao um que deixe o cache KV
-   numa fatia da VRAM), vagas de especialista (`gx.S` quando o cache esta ativo), e **sugere** requantizar
-   especialistas para Q4_K se estiverem em Q5_K/Q6_K/Q8_0/F16 e nao couberem (nunca requantiza sozinho).
-   Lista as otimizacoes ja aplicadas para a arquitetura e as que faltam (ex.: gemma4 sem prompt em lote na GPU).
-3. **Executa o seguro**: `pack` (se nao houver shards atualizados; pulado em gemma4/DeltaNet e com
-   `KATANA_PREP_NOPACK=1`), `tune` (so se o modelo cabe inteiro e a GPU esta livre), e a calibracao do
-   **calor** dos especialistas num MoE (passada curta num prompt variado + `heat_save`). Com a GPU ocupada
-   (erro -2/-3/-4 na alocacao: o motor ja cai para "grafo na CPU", `gpu.full`/`gx.on` ficam falsos) as
-   partes de GPU sao adiadas e o resumo diz o que ficou pendente; o plano e o perfil saem mesmo assim.
+What it does (function `prepare` in `katana.c`, right after `tune`):
+1. **Inspects**: reuses the load (`load_model` -> `gpu_setup`) and `print_info`. Reads architecture, number of
+   parameters, layers, quantization (type of the gate; and of the experts in the MoE), number of experts/active,
+   and the machine (total VRAM by `gpu.vram`, cores/RAM already detected at load).
+2. **Decides and prints the plan in Portuguese**: does it fit entirely in the VRAM? (total estimated as in `gpu_setup`,
+   lines 4934-4941, against `gpu_budget()`), backend (vulkan default; `gpu.vk`), KV 16/32 bits (same rule
+   `total > budget` of the engine), suggested context (the model's when it fits; otherwise one that leaves the KV cache
+   in a slice of the VRAM), expert slots (`gx.S` when the cache is active), and **suggests** requantizing
+   experts to Q4_K if they are in Q5_K/Q6_K/Q8_0/F16 and do not fit (it never requantizes by itself).
+   It lists the optimizations already applied for the architecture and those that are missing (e.g. gemma4 without batch prompt on the GPU).
+3. **Runs what is safe**: `pack` (if there are no up-to-date shards; skipped on gemma4/DeltaNet and with
+   `KATANA_PREP_NOPACK=1`), `tune` (only if the model fits entirely and the GPU is free), and the calibration of the experts'
+   **heat** in a MoE (short pass on a varied prompt + `heat_save`). With the GPU busy
+   (error -2/-3/-4 in the allocation: the engine already falls to "grafo na CPU", `gpu.full`/`gx.on` stay false) the
+   GPU parts are postponed and the summary says what was left pending; the plan and the profile come out anyway.
 
-**Perfil**: `<modelo>.gguf.ktn.prof`, texto simples:
+**Profile**: `<model>.gguf.ktn.prof`, plain text:
 ```
 katana-perfil 1
 origem <tamanho do .gguf>   # invalida se o modelo mudar
@@ -1091,288 +1090,288 @@ noexpcache 0|1
 vagas <n>                   # informativo (vagas de especialista medidas)
 tune sim|nao
 ```
-`perfil_apply(model_path, for_agent)` (chamada antes de `load_model` em serve/agent/chat/run) le o perfil e
-define `KATANA_BACKEND`/`KATANA_KV16`/`KATANA_CTX`/`KATANA_NOEXPCACHE` **so quando o usuario nao definiu**
-(variavel do usuario sempre vence; confirmado: `KATANA_BACKEND=opencl` venceu o perfil vulkan). No `agent`
-o perfil nao mexe em `KATANA_CTX` (o agente usa 131072 para os resultados de ferramenta). Se `origem` nao bate
-com o tamanho atual do `.gguf`, o perfil e ignorado com aviso.
+`perfil_apply(model_path, for_agent)` (called before `load_model` in serve/agent/chat/run) reads the profile and
+sets `KATANA_BACKEND`/`KATANA_KV16`/`KATANA_CTX`/`KATANA_NOEXPCACHE` **only when the user did not set them**
+(user variable always wins; confirmed: `KATANA_BACKEND=opencl` won over the vulkan profile). In `agent`
+the profile does not touch `KATANA_CTX` (the agent uses 131072 for the tool results). If `origem` does not match
+the current size of the `.gguf`, the profile is ignored with a warning.
 
-**Testado** (RTX 3050 4 GB, GPU ocupada por outro agente: ~2,6 GB em uso, 74-80 °C):
-- qwen2.5-1.5b-q4km: plano "cabe inteiro=sim, backend vulkan, KV 32 bits, ctx 4096"; pack ja estava; tune
-  adiado (placa ocupada). Perfil gravado e carregado automaticamente por `chat`/`run`.
-- Qwen3-30B-A3B-Instruct-2507: plano "cabe inteiro=nao, backend vulkan, KV 16 bits (auto), ctx sugerido 4096,
-  cache de especialistas por camada"; especialistas Q4_K (sem sugestao de requantizar); pack gerado; calor
-  adiado (placa ocupada). `selftest` CPU do qwen2.5-1.5b sem regressao (lote x token a token = 0).
+**Tested** (RTX 3050 4 GB, GPU busy with another agent: ~2.6 GB in use, 74-80 °C):
+- qwen2.5-1.5b-q4km: plan "fits entirely=yes, backend vulkan, KV 32 bits, ctx 4096"; pack was already there; tune
+  postponed (card busy). Profile saved and loaded automatically by `chat`/`run`.
+- Qwen3-30B-A3B-Instruct-2507: plan "fits entirely=no, backend vulkan, KV 16 bits (auto), suggested ctx 4096,
+  expert cache per layer"; experts Q4_K (no suggestion to requantize); pack generated; heat
+  postponed (card busy). CPU `selftest` of qwen2.5-1.5b with no regression (batch x token by token = 0).
 
-**Pendencias**: rodar `prepare` com a GPU livre para medir `tune` e a calibracao real do calor (hoje adiados);
-`pack`/perfil ainda nao cobrem gemma4 e DeltaNet (plano e perfil saem, mas sem shards). O perfil nao forca o
-nº de vagas (derivado na carga); so guarda os ajustes que ja viram variavel de ambiente.
+**Pending**: run `prepare` with the GPU free to measure `tune` and the real heat calibration (today postponed);
+`pack`/profile do not yet cover gemma4 and DeltaNet (plan and profile come out, but without shards). The profile does not force the
+number of slots (derived at load); it only stores the settings that already became an environment variable.
 
 
-## 10. gemma4 na GPU livre: cache de especialistas cabe as 8 vagas (2026-11-16, worktree agent-aaef)
+## 10. gemma4 on the free GPU: expert cache fits the 8 slots (2026-11-16, worktree agent-aaef)
 
-Sessão com a RTX 3050 4 GB livre, só o gemma4 (`modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`).
+Session with the RTX 3050 4 GB free, only gemma4 (`modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`).
 
-**O problema medido**: com a GPU livre, `gpu_setup` sobe 206 produtos densos (2570 MB) e sobra pouca VRAM.
-No orçamento padrão do Linux (88%) o cache de especialistas calculava **7 vagas por camada, mas o gemma4
-precisa de 8** (`n_used=8`): `host_moe_setup` falhava e **todos** os especialistas caíam na CPU. Efeito:
-geração 0,6 tok/s e prompt 0,3 tok/s (a frio, lendo os experts do arquivo de 17 GB).
+**The measured problem**: with the GPU free, `gpu_setup` uploads 206 dense products (2570 MB) and little VRAM is left.
+In the default Linux budget (88%) the expert cache computed **7 slots per layer, but gemma4
+needs 8** (`n_used=8`): `host_moe_setup` failed and **all** the experts fell to the CPU. Effect:
+generation 0.6 tok/s and prompt 0.3 tok/s (cold, reading the experts from the 17 GB file).
 
-**A correção** (`katana.c`, `host_moe_setup`): quando o cache híbrido fica a pouco de fechar as K vagas,
-tenta um teto de VRAM um pouco mais alto (padrão 91%, `KATANA_VRAM_PCT_HYBRID`), só o suficiente para as K
-vagas. **Só atua neste quase-encaixe**: os modelos que já cabem no orçamento padrão (Qwen3-30B no grafo
-completo, deepseek2/moonlight no híbrido com S>=K) não entram nesse ramo e ficam idênticos ao main. Para o
-gemma4, passa a subir **8 de 128 vagas (1067 MB)**, total ~3637 MB (~88,8% de 4096), que o driver aceita
-sem erro -4 (testado até 92%). Alternativa não usada (anotada): baixar a quantização dos experts frios.
+**The fix** (`katana.c`, `host_moe_setup`): when the hybrid cache is close to completing the K slots,
+it tries a slightly higher VRAM ceiling (default 91%, `KATANA_VRAM_PCT_HYBRID`), just enough for the K
+slots. **It only acts in this near-fit**: models that already fit in the default budget (Qwen3-30B in the full
+graph, deepseek2/moonlight in hybrid with S>=K) do not enter that branch and stay identical to main. For
+gemma4, it now uploads **8 of 128 slots (1067 MB)**, total ~3637 MB (~88.8% of 4096), which the driver accepts
+without error -4 (tested up to 92%). Alternative not used (noted): lower the quantization of the cold experts.
 
-**Validação (selftest, GPU livre, binário novo)**:
-- gemma4 `produtos: OK` (pior erro exato 5,08e-8); `GPU em lote x CPU` = **0,0031 OK**, `GPU lote 16` idem
-  (dentro do histórico ~0,0027). O caminho `GPU token a token x CPU` dá 1,78 (FALHOU no limiar): é a
-  imprecisão fp16 dos experts quentes (mesma classe do Qwen3-30B, 0,11, seção 8), **exposta agora** porque o
-  cache do gemma4 nunca tinha sido exercitado. **A geração gulosa (temp 0) bate idêntica à CPU pura**
-  ("2, 3, 5, 7, 11, 13, 17, 19"), então o argmax não muda; a saída token a token é correta.
-- Sem regressão: `selftest` qwen2.5-1.5b (vulkan, lote 0,0078 OK), olmoe (`KATANA_KV16=0`, lote 0,0015 OK),
-  Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`, lote 0,00048 / lote 16 0,00046 OK; o `token a token` 0,115
-  FALHOU é o pré-existente da seção 8, igual no main e fora do caminho que esta mudança toca).
+**Validation (selftest, GPU free, new binary)**:
+- gemma4 `produtos: OK` (worst exact error 5.08e-8); `GPU em lote x CPU` = **0.0031 OK**, `GPU lote 16` same
+  (within the history ~0.0027). The `GPU token a token x CPU` path gives 1.78 (FAILED at the threshold): it is the
+  fp16 imprecision of the hot experts (same class as Qwen3-30B, 0.11, section 8), **now exposed** because the
+  gemma4 cache had never been exercised. **Greedy generation (temp 0) matches pure CPU identically**
+  ("2, 3, 5, 7, 11, 13, 17, 19"), so the argmax does not change; the token-by-token output is correct.
+- No regression: `selftest` qwen2.5-1.5b (vulkan, batch 0.0078 OK), olmoe (`KATANA_KV16=0`, batch 0.0015 OK),
+  Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`, batch 0.00048 / batch 16 0.00046 OK; the `token a token` 0.115
+  FAILED is the pre-existing one from section 8, same on main and outside the path this change touches).
 
-**Medidas (gemma4, prompt 42 + geração 48, greedy, main=sem cache / novo=com cache, alternado na mesma hora,
-GPU 79–81 °C)**. Muito ruído de page cache: o arquivo de 17 GB não cabe inteiro com folga na RAM (43 GB) e
-disputa com os 2570 MB de produtos densos, então a geração oscila conforme o estado do cache do SO:
+**Measurements (gemma4, prompt 42 + generation 48, greedy, main=without cache / new=with cache, alternating in the same hour,
+GPU 79–81 °C)**. Lots of page cache noise: the 17 GB file does not fit comfortably in RAM (43 GB) and
+competes with the 2570 MB of dense products, so generation oscillates with the state of the OS cache:
 
-| rodada | main prompt/ger | novo prompt/ger |
+| round | main prompt/gen | new prompt/gen |
 |---|---|---|
-| 1 (SO frio) | 0,7 / 0,8 | 5,6 / 3,4 |
-| 2 (SO quente) | 5,1 / 6,2 | 6,3 / 9,1 |
-| 3 | 5,2 / 1,2 | 2,7 / 7,2 |
+| 1 (cold OS) | 0.7 / 0.8 | 5.6 / 3.4 |
+| 2 (warm OS) | 5.1 / 6.2 | 6.3 / 9.1 |
+| 3 | 5.2 / 1.2 | 2.7 / 7.2 |
 
-Leitura: quando o arquivo **não** está no page cache (caso realista nesta máquina), o cache na VRAM é um
-salto grande (geração 0,8 -> 3,4; prompt 0,7 -> 5,6). Com o arquivo quente no page cache, o ganho da geração
-é ~1,5x (6,2 -> 9,1) porque os experts frios já vêm da RAM. Com o cache, só ~36% dos usos de expert batem na
-VRAM (8 vagas de 128), o resto roda na CPU; cada `chat` começa com o calor zerado (não há `.heat` do gemma4).
+Reading: when the file is **not** in the page cache (the realistic case on this machine), the cache in VRAM is a
+big jump (generation 0.8 -> 3.4; prompt 0.7 -> 5.6). With the file warm in the page cache, the generation gain
+is ~1.5x (6.2 -> 9.1) because the cold experts already come from RAM. With the cache, only ~36% of the expert uses hit in
+VRAM (8 slots of 128), the rest runs on the CPU; each `chat` starts with the heat zeroed (there is no gemma4 `.heat`).
 
-**Pendências / próximos (em ordem de ganho)**:
-1. **Prompt em lote na GPU para o gemma4 (item 1, NÃO feito)**. Bloqueio: o lote na GPU (`vk_forward_n` ->
-   `vk_emit_n` -> `vk_moe_n`) usa o grafo `vkg` com cache KV na VRAM e uma **atenção uniforme** (hd igual em
-   todas as camadas, RoPE padrão, `attn_v` presente, escala 1/√hd). O gemma4 precisa de uma atenção de lote
-   própria: **hd e nº de kv por camada**, **q/k normalizados por cabeça + v por norma sem peso**, camadas
-   **globais sem `attn_v`** (v vem da saída crua de `attn_k`), **janela deslizante 1024** nas locais, **escala
-   1**, RoPE parcial com base por camada. Depois disso, o feed-forward denso entra em lote (`vk_mm`, matrizes
-   já na GPU) **em paralelo** com o MoE via `vk_moe_n` (que já faz roteamento + agrupamento por especialista +
-   produtos no `mm.comp` + vagas temporárias), com as normas de saída próprias (`post_ffw_norm_1/_2`,
-   `post_ffw_norm`, `out_scale`) e o roteador lendo o resíduo normalizado sem peso. É a tarefa grande; precisa
-   de um kernel de atenção de lote gemma4 novo antes de reaproveitar o `vk_moe_n`.
-2. **Mais acertos no cache**: pré-aquecer com calibração de calor (gerar um `.heat` do gemma4) para a geração
-   já começar com os experts mais usados na VRAM; e/ou liberar VRAM dos produtos densos para caber mais vagas.
-3. Precisão do token a token: experts quentes em fp32 no caminho de um token (como o lote do Qwen3-30B virou
-   fp32 na seção 8) tiraria o 1,78 do selftest; hoje não afeta a geração gulosa.
+**Pending / next (in order of gain)**:
+1. **Batch prompt on the GPU for gemma4 (item 1, NOT done)**. Blocker: the batch on the GPU (`vk_forward_n` ->
+   `vk_emit_n` -> `vk_moe_n`) uses the `vkg` graph with KV cache in VRAM and a **uniform attention** (same hd in
+   all layers, standard RoPE, `attn_v` present, scale 1/√hd). gemma4 needs its own batch attention:
+   **hd and number of kv per layer**, **q/k normalized per head + v by norm without weight**, **global** layers
+   **without `attn_v`** (v comes from the raw output of `attn_k`), **sliding window 1024** in the local ones, **scale
+   1**, partial RoPE with base per layer. After that, the dense feed-forward enters in batch (`vk_mm`, matrices
+   already on the GPU) **in parallel** with the MoE via `vk_moe_n` (which already does routing + grouping by expert +
+   products in `mm.comp` + temporary slots), with the own output norms (`post_ffw_norm_1/_2`,
+   `post_ffw_norm`, `out_scale`) and the router reading the residual normalized without weight. It is the big task; it needs
+   a new gemma4 batch attention kernel before reusing `vk_moe_n`.
+2. **More cache hits**: pre-warm with heat calibration (generate a gemma4 `.heat`) so generation
+   already starts with the most used experts in VRAM; and/or free VRAM from the dense products to fit more slots.
+3. Token-by-token precision: hot experts in fp32 on the one-token path (as the Qwen3-30B batch became
+   fp32 in section 8) would remove the 1.78 from the selftest; today it does not affect greedy generation.
 
-## 12. gemma4 com 131072 de contexto no agente (2026-11-17, worktree agent-aeade)
+## 12. gemma4 with 131072 context in the agent (2026-11-17, worktree agent-aeade)
 
-O aviso `cache KV da CPU: 30 camadas, fp32, 128.85 GB` a 131072 era **so a conta do aviso** (`print_info` usava
-30 camadas x ctx x kv 8 x cabeca 512): a alocacao ja era por camada (`kv_off`/`kv_cap`), com anel de
-`swa_win + G4_NB` = 1040 posicoes nas 25 camadas locais e o contexto inteiro so nas 5 globais (kv 2 x 512).
-O que faltava: fp16 nas globais e tirar o caso especial do agente.
+The warning `cache KV da CPU: 30 camadas, fp32, 128.85 GB` at 131072 was **only the warning's arithmetic** (`print_info` used
+30 layers x ctx x kv 8 x head 512): the allocation was already per layer (`kv_off`/`kv_cap`), with a ring of
+`swa_win + G4_NB` = 1040 positions in the 25 local layers and the whole context only in the 5 global ones (kv 2 x 512).
+What was missing: fp16 in the global ones and removing the agent's special case.
 
-- Cache do gemma4 em fp16 (`m->kh/m->vh`) quando ctx > 65536 (`KATANA_CPU_KV16=0/1` forca), em todas as
-  camadas (locais e globais); `g4_kv_put` grava, `dot_h`/`axpy_h` leem, em `g4_layer` (token a token, inclusive
-  o modo hibrido Vulkan, que chama `g4_layer`) e `g4_layers_n` (lote). Posicao do RoPE continua absoluta; o anel
-  so muda o endereco (`pos % cap`). A folga de 16 do anel cobre o lote (16) e o rascunho especulativo (4).
-- `print_info` agora soma o tamanho real por camada. Prefixo em disco (`pfx_*`) desligado no gemma4 (geometria
-  por camada; antes ja nao casava porque o prefixo e ChatML). Compactacao do agente so existe em ChatML: no
-  gemma4 nao roda (o contexto cheio pede `/novo`).
-- Agente: `KATANA_CTX` padrao 131072 tambem no gemma4 (saiu o caso `strstr(argv[2], "emma")`).
+- gemma4 cache in fp16 (`m->kh/m->vh`) when ctx > 65536 (`KATANA_CPU_KV16=0/1` forces), in all
+  layers (local and global); `g4_kv_put` writes, `dot_h`/`axpy_h` read, in `g4_layer` (token by token, including
+  the hybrid Vulkan mode, which calls `g4_layer`) and `g4_layers_n` (batch). RoPE position stays absolute; the ring
+  only changes the address (`pos % cap`). The ring's slack of 16 covers the batch (16) and the speculative draft (4).
+- `print_info` now sums the real size per layer. Disk prefix (`pfx_*`) off on gemma4 (geometry
+  per layer; before it already did not match because the prefix is ChatML). Agent compaction only exists in ChatML: on
+  gemma4 it does not run (a full context asks for `/novo`).
+- Agent: default `KATANA_CTX` 131072 also on gemma4 (the `strstr(argv[2], "emma")` case was removed).
 
-**Medido** (KATANA_CPU=1, i7-11800H):
+**Measured** (KATANA_CPU=1, i7-11800H):
 
-| | antes | depois |
+| | before | after |
 |---|---|---|
-| aviso a ctx 131072 | 30 camadas, fp32, 128.85 GB (errado) | 30 camadas, fp16, 2.90 GB |
-| aviso a ctx 4096 | 4.03 GB (errado) | fp32, 0.59 GB |
-| RSS maximo, prompt de 2987 tokens a 131072 | 16,06 GB | 15,79 GB |
-| prompt/geracao nessa medida | 5,6 / 4,8 tok/s | 7,6 / 5,4 tok/s (nao alternado: deriva da maquina) |
+| warning at ctx 131072 | 30 layers, fp32, 128.85 GB (wrong) | 30 layers, fp16, 2.90 GB |
+| warning at ctx 4096 | 4.03 GB (wrong) | fp32, 0.59 GB |
+| max RSS, 2987-token prompt at 131072 | 16.06 GB | 15.79 GB |
+| prompt/generation in that measurement | 5.6 / 4.8 tok/s | 7.6 / 5.4 tok/s (not alternated: machine drift) |
 
-- Saida gulosa **identica** ao binario do main a ctx 4096 (fp32) num prompt curto e num de 2021 tokens (anel
-  exercitado). A 131072 (fp16) a saida diverge do fp32 no byte 8390 de 40 tokens gerados (arredondamento fp16).
-- `selftest` gemma4 (CPU e Vulkan com a GPU livre), Llama-3.2-1B e Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`)
-  sem regressao; o "GPU token a token FALHOU" do gemma4 (6,21) e do Qwen3-30B (0,115) e igual ao do main.
-- `agent` do gemma4 sem `KATANA_CTX`: ctx=131072, KV fp16 2,90 GB, RSS maximo 15,05 GB; chamou `list_dir` e
-  listou os arquivos.
-- O RSS e quase todo pesos mapeados (~15 GB); o KV so ocupa o que foi tocado. **Estimativa**: contexto cheio
-  soma ~2,9 GB (fp16) contra ~5,8 GB (fp32 no main, que tambem cabia na RAM de 64 GB).
-- Limitacoes: atencao das globais e linear na CPU por token (nao medido a 100k; o prompt de 100k na CPU levaria
-  horas a ~6 tok/s, estimado); sem compactacao de contexto no gemma4.
+- Greedy output **identical** to the main binary at ctx 4096 (fp32) on a short prompt and on one of 2021 tokens (ring
+  exercised). At 131072 (fp16) the output diverges from fp32 at byte 8390 of 40 generated tokens (fp16 rounding).
+- `selftest` gemma4 (CPU and Vulkan with the GPU free), Llama-3.2-1B and Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`)
+  without regression; the "GPU token a token FALHOU" of gemma4 (6.21) and of Qwen3-30B (0.115) is the same as on main.
+- gemma4 `agent` without `KATANA_CTX`: ctx=131072, KV fp16 2.90 GB, max RSS 15.05 GB; called `list_dir` and
+  listed the files.
+- The RSS is almost all mapped weights (~15 GB); the KV only occupies what was touched. **Estimate**: full context
+  adds ~2.9 GB (fp16) against ~5.8 GB (fp32 on main, which also fit in the 64 GB RAM).
+- Limitations: global attention is linear on the CPU per token (not measured at 100k; the 100k prompt on the CPU would take
+  hours at ~6 tok/s, estimated); no context compaction on gemma4.
 
-## 11. Comando `katana quantize`: grava GGUF requantizado (2026-11-16, worktree agent-a5a7)
+## 11. `katana quantize` command: writes a requantized GGUF (2026-11-16, worktree agent-a5a7)
 
-Capacidade nova: o katana passou a GRAVAR quantizacao (antes so lia). `katana quantize` le um GGUF e
-grava outro com os pesos 2D grandes (attn_*, ffn_*, token_embd, output) requantizados no tipo alvo;
-normas, vieses, tensores 1D e os que ja sao <= ao alvo sao copiados como estao.
+New capability: katana now WRITES quantization (before it only read). `katana quantize` reads a GGUF and
+writes another with the large 2D weights (attn_*, ffn_*, token_embd, output) requantized to the target type;
+norms, biases, 1D tensors and those that are already <= the target are copied as they are.
 
-**Formas aceitas** (o 2o argumento e detectado como tipo se bater com um tipo conhecido):
-- `quantize <entrada> <saida> <tipo>`  tudo explicito
-- `quantize <entrada> <saida>`         tipo sugerido para esta maquina
-- `quantize <entrada> <tipo>`          saida com nome automatico
-- `quantize <entrada>`                 tipo e saida automaticos
+**Accepted forms** (the 2nd argument is detected as a type if it matches a known type):
+- `quantize <input> <output> <type>`  everything explicit
+- `quantize <input> <output>`         type suggested for this machine
+- `quantize <input> <type>`           output with automatic name
+- `quantize <input>`                  automatic type and output
 
-**Tipos alvo (v1)**: Q8_0, Q6_K, Q5_K (Q5_K_M), Q4_K (Q4_K_M), Q2_K. Codificadores proprios,
-round-to-nearest, escrevendo exatamente o layout que o `dequant()` correspondente le (mesma formula de
-escala/min; para os K-quants, mesma estrutura de sub-blocos e empacotamento de escalas de 6 bits).
+**Target types (v1)**: Q8_0, Q6_K, Q5_K (Q5_K_M), Q4_K (Q4_K_M), Q2_K. Own encoders,
+round-to-nearest, writing exactly the layout that the corresponding `dequant()` reads (same scale/min
+formula; for the K-quants, same sub-block structure and 6-bit scale packing).
 
-**Onde estao as pecas reaproveitadas** (`katana.c`):
-- Leitura do GGUF: `map_file` (~1100), `Rd`/`rd_u32/u64/str/num/skip`, `GG_SIZE`, `key_is/key_ends`,
-  `TInfo`/`Tensors`. A funcao `quantize_cmd` refaz um parse leve (nao usa `load_model`) para preservar o
-  layout cru dos tensores.
-- Decodificacao: `dequant()`/`dequant_ext()` (583+), `qbytes`/`qunit` para tamanho e bloco por tipo,
-  `k4_scale_min` (o empacotamento inverso das escalas de Q4_K/Q5_K esta em `pack_k_scales`).
-- Validacao da ida e volta: `selftest` (CPU e GPU) e `qtest` (sem mudanca neles).
+**Where the reused pieces are** (`katana.c`):
+- GGUF reading: `map_file` (~1100), `Rd`/`rd_u32/u64/str/num/skip`, `GG_SIZE`, `key_is/key_ends`,
+  `TInfo`/`Tensors`. The `quantize_cmd` function redoes a light parse (does not use `load_model`) to preserve the raw
+  layout of the tensors.
+- Decoding: `dequant()`/`dequant_ext()` (583+), `qbytes`/`qunit` for size and block per type,
+  `k4_scale_min` (the inverse packing of the Q4_K/Q5_K scales is in `pack_k_scales`).
+- Round-trip validation: `selftest` (CPU and GPU) and `qtest` (unchanged).
 
-**Metadados de saida**: cabecalho GGUF v3; copia os KV da entrada; atualiza `general.file_type` para o
-alvo; carimba `general.quantized_by="katana"`, `general.author="Ale Simoes (alesimoes)"`,
-`general.quantization_version=2` (substitui se ja existirem). Sem e-mail, URL ou caminhos. Alinhamento
-`general.alignment` (padrao 32) respeitado. Convencao `_M`: nos alvos baixos a saida/embeddings sobem de
-precisao (token_embd Q2_K->Q4_K; output Q2_K/Q4_K/Q5_K->Q6_K), o que melhora muito modelos pequenos.
+**Output metadata**: GGUF v3 header; copies the KVs from the input; updates `general.file_type` to the
+target; stamps `general.quantized_by="katana"`, `general.author="Ale Simoes (alesimoes)"`,
+`general.quantization_version=2` (replaces if they already exist). No e-mail, URL or paths. Alignment
+`general.alignment` (default 32) respected. `_M` convention: on the low targets the output/embeddings go up in
+precision (token_embd Q2_K->Q4_K; output Q2_K/Q4_K/Q5_K->Q6_K), which greatly improves small models.
 
-**Sugestao automatica de tipo** (estimativa; tambem impressa pelo `prepare`): objetivo = maior qualidade
-que ainda cabe bem. Denso: maior K-quant cujo tamanho estimado cabe no orcamento de VRAM (~3,4 GB desta
-RTX 3050) para rodar inteiro na GPU (Q8_0>Q6_K>Q5_K>Q4_K); se nem Q4_K cabe, Q4_K_M mesmo (parcial/CPU).
-MoE: Q4_K_M; so Q2_K se Q4_K_M nao couber na RAM util (~43 GB). Nunca sobe a precisao: se a origem ja e
-<= o alvo, avisa que nao vale requantizar e nao grava. Bytes/peso estimados: Q8_0 1,06 / Q6_K 0,82 /
-Q5_K 0,70 / Q4_K 0,58 / Q2_K 0,36 (conferidos com o teste abaixo).
+**Automatic type suggestion** (estimate; also printed by `prepare`): goal = highest quality
+that still fits well. Dense: largest K-quant whose estimated size fits in the VRAM budget (~3.4 GB of this
+RTX 3050) to run entirely on the GPU (Q8_0>Q6_K>Q5_K>Q4_K); if not even Q4_K fits, Q4_K_M anyway (partial/CPU).
+MoE: Q4_K_M; only Q2_K if Q4_K_M does not fit in the useful RAM (~43 GB). It never raises precision: if the source is already
+<= the target, it warns that requantizing is not worthwhile and does not write. Estimated bytes/weight: Q8_0 1.06 / Q6_K 0.82 /
+Q5_K 0.70 / Q4_K 0.58 / Q2_K 0.36 (checked with the test below).
 
-**Nome de saida automatico**: basename da entrada sem o sufixo de quantizacao conhecido (ex.: `-F16`,
-`.Q8_0`, `-UD-Q4_K_M`) + `-<TIPO>.gguf`, na pasta da entrada. Se ja existir, nao sobrescreve: acrescenta
-`-2`, `-3`, ... e avisa.
+**Automatic output name**: basename of the input without the known quantization suffix (e.g. `-F16`,
+`.Q8_0`, `-UD-Q4_K_M`) + `-<TYPE>.gguf`, in the input's folder. If it already exists, it does not overwrite: it appends
+`-2`, `-3`, ... and warns.
 
-**Medido** (Llama-3.2-1B-Instruct-F16, baixado para `modelos/`, dim 2048, denso):
-| alvo | tamanho | chat "capital da Franca" | selftest |
+**Measured** (Llama-3.2-1B-Instruct-F16, downloaded to `modelos/`, dim 2048, dense):
+| target | size | chat "capital da Franca" | selftest |
 |---|---|---|---|
-| F16 (fonte) | 2,31 GB | Paris | - |
-| Q8_0 | 1,23 GB (53%) | Paris | produtos OK; GPU=CPU OK |
-| Q6_K | 0,95 GB (41%) | Paris | produtos OK; GPU logit 9e-6 OK |
-| Q5_K_M | 0,80 GB (35%) | Paris | OK |
-| Q4_K_M | 0,67 GB (29%) | Paris | produtos OK; GPU logit 5e-5 OK |
-| Q2_K | 0,47 GB (20%) | degradado | produtos OK; lote=token OK |
+| F16 (source) | 2.31 GB | Paris | - |
+| Q8_0 | 1.23 GB (53%) | Paris | products OK; GPU=CPU OK |
+| Q6_K | 0.95 GB (41%) | Paris | products OK; GPU logit 9e-6 OK |
+| Q5_K_M | 0.80 GB (35%) | Paris | OK |
+| Q4_K_M | 0.67 GB (29%) | Paris | products OK; GPU logit 5e-5 OK |
+| Q2_K | 0.47 GB (20%) | degraded | products OK; batch=token OK |
 
-Tamanhos monotonicos e corretos. Q8_0..Q4_K_M geram texto coerente (Q4_K_M continua "...Paris. The capital
-of Germany is Berlin."); Q2_K num modelo de 1B e marginal (RTN simples, 2 bits), como esperado. Os
-produtos dos arquivos gerados conferem no `selftest` CPU e GPU (Vulkan): o token-a-token da GPU bate o
-argmax da CPU. Sem regressao: `qtest` continua com a mesma falha PRE-EXISTENTE de Q4_1/Q5_1 so no caminho
-GPU (2,8e-4 / 3,2e-4; identica no binario do HEAD, confirmada compilando-o), e `selftest` do
-qwen2.5-1.5b-q4km passa igual (GPU logit 5e-5). Tambem conferido o requant a partir de ja-quantizado
-(qwen2.5-1.5b Q4_K/Q6_K -> Q2_K) e a gravacao de um MoE (olmoe -> Q4_K_M, 3,9 GB).
+Sizes monotonic and correct. Q8_0..Q4_K_M generate coherent text (Q4_K_M continues "...Paris. The capital
+of Germany is Berlin."); Q2_K on a 1B model is marginal (simple RTN, 2 bits), as expected. The
+products of the generated files check out in the `selftest` CPU and GPU (Vulkan): the GPU token-by-token matches the
+CPU argmax. No regression: `qtest` still has the same PRE-EXISTING Q4_1/Q5_1 failure only on the
+GPU path (2.8e-4 / 3.2e-4; identical on the HEAD binary, confirmed by building it), and `selftest` of
+qwen2.5-1.5b-q4km passes the same (GPU logit 5e-5). Also checked the requant from already-quantized
+(qwen2.5-1.5b Q4_K/Q6_K -> Q2_K) and the writing of a MoE (olmoe -> Q4_K_M, 3.9 GB).
 
-**Pendencias**:
-- **imatrix** (matriz de importancia): nao ha no v1; melhoraria muito os tipos baixos (Q2_K sobretudo).
-- **Quantizacao melhor que RTN**: busca de escala tipo `make_qkx2`/`make_qx_quants` (varias escalas
-  candidatas ponderadas) deixaria Q2_K/Q3_K bem melhores sem imatrix.
-- **Outros tipos de saida**: Q3_K, Q5_0/Q4_0, IQ*, MXFP4 (o katana ja LE todos; falta CODIFICAR).
-- **Divergencia de logits entre fonte e quantizacao**: nao ha ferramenta de comparacao cruzada entre dois
-  modelos; o proxy de prefixo guloso e ruidoso (viradas em quase-empates). Util criar um `qdiff`.
-- O `prepare` agora recomenda um tipo, mas nao requantiza sozinho (decisao do dono).
+**Pending**:
+- **imatrix** (importance matrix): not in v1; it would greatly improve the low types (Q2_K above all).
+- **Quantization better than RTN**: scale search like `make_qkx2`/`make_qx_quants` (several
+  weighted candidate scales) would make Q2_K/Q3_K much better without imatrix.
+- **Other output types**: Q3_K, Q5_0/Q4_0, IQ*, MXFP4 (katana already READS all of them; ENCODING is missing).
+- **Logit divergence between source and quantization**: there is no cross-comparison tool between two
+  models; the greedy-prefix proxy is noisy (flips in near-ties). It would be useful to create a `qdiff`.
+- `prepare` now recommends a type, but does not requantize by itself (owner's decision).
 
-## 9. Prompt em lote para MLA (deepseek2) no Vulkan (2026-11-16)
+## 9. Batch prompt for MLA (deepseek2) on Vulkan (2026-11-16)
 
-O que mudou (`katana.c`, `vk/kvk.h`, `vk/shaders/mla_att.comp`):
-- `vk_mla_build` (chamado no `mla_gpu_upload` antes das vagas, que ficam com o resto da VRAM; ~184 MB com lote de 256)
-  e `vk_mla_n` (usado pelo `forward_seq`). Residual do lote na VRAM (`vkb.x`, transposto). Por camada: norma fp32,
-  q e kv_a no `mm` preciso; uma leitura traz os dois; a CPU faz a norma do latente, RoPE e grava `m->ckv` (o mesmo cache
-  do token a token, que continua igual); a atenção absorvida roda na GPU (`mla_att.comp`, fp32, um grupo por
-  token×cabeça, softmax online; sobem por camada o q, as linhas do cache até `pos0+B` e `k_b`/`v_b` em float32, sem
-  ficar residentes para não tirar vagas); produto da saída soma no residual. Feed-forward: camada densa com par
-  gate/up próprio do lote (`vkml.dg`), MoE pelo `vk_moe_n` (roteador float32 na GPU, compartilhado na GPU, frios em
-  vagas temporárias ou na CPU). Cabeça na CPU (como no modo híbrido).
-- `KATANA_VK_MLA=0` desliga o lote; `KATANA_VK_MLAATT=0` põe a atenção do lote na CPU (`mla_n_job`, blocos de 8 tokens).
-- `vk_moe_n` (vale também para qwen3moe/olmoe): os frios temporários são lidos do shard por uma thread direto numa área
-  mapeada (`kvk_host_create`/`kvk_copy_q`, novos no `kvk.h`), enquanto a principal enfileira os quentes e roda os frios
-  da CPU (`vk_moe_cold_cpu`); antes era leitura + cópia para o staging + espera, em série. `KATANA_VK_TMPTHR=0` volta.
-- `KATANA_VK_MOEPROF=1` mostra também o tempo do MLA por passada.
+What changed (`katana.c`, `vk/kvk.h`, `vk/shaders/mla_att.comp`):
+- `vk_mla_build` (called in `mla_gpu_upload` before the slots, which get the rest of the VRAM; ~184 MB with a batch of 256)
+  and `vk_mla_n` (used by `forward_seq`). Batch residual in VRAM (`vkb.x`, transposed). Per layer: fp32 norm,
+  q and kv_a in the precise `mm`; one read brings both; the CPU does the latent norm, RoPE and writes `m->ckv` (the same cache
+  as token by token, which stays the same); the absorbed attention runs on the GPU (`mla_att.comp`, fp32, one group per
+  token×head, online softmax; per layer the q, the cache rows up to `pos0+B` and `k_b`/`v_b` in float32 go up, without
+  staying resident so as not to take slots); output product sums into the residual. Feed-forward: dense layer with its own
+  batch gate/up pair (`vkml.dg`), MoE through `vk_moe_n` (float32 router on the GPU, shared on the GPU, cold in
+  temporary slots or on the CPU). Head on the CPU (as in hybrid mode).
+- `KATANA_VK_MLA=0` turns off the batch; `KATANA_VK_MLAATT=0` puts the batch attention on the CPU (`mla_n_job`, blocks of 8 tokens).
+- `vk_moe_n` (also applies to qwen3moe/olmoe): the temporary cold ones are read from the shard by a thread directly into a
+  mapped area (`kvk_host_create`/`kvk_copy_q`, new in `kvk.h`), while the main thread enqueues the hot ones and runs the cold ones
+  of the CPU (`vk_moe_cold_cpu`); before it was read + copy to staging + wait, in series. `KATANA_VK_TMPTHR=0` returns.
+- `KATANA_VK_MOEPROF=1` also shows the MLA time per pass.
 
-Medido por partes (Moonlight, 256 tokens, `MOEPROF`): só o lote com atenção na CPU ~84 tok/s (atenção 0,85 s, frios
-CPU 0,95 s, subidas temporárias 1,1 s); + thread de leitura ~95; + atenção na GPU ~121.
-Tentado: `KATANA_VK_COLDT=32` dá prompt 126 mas geração ~30 (menos vagas); `COLDMIN=1` igual a 2. Ficou 16/2.
+Measured by parts (Moonlight, 256 tokens, `MOEPROF`): batch alone with attention on the CPU ~84 tok/s (attention 0.85 s, cold
+CPU 0.95 s, temporary uploads 1.1 s); + read thread ~95; + attention on the GPU ~121.
+Tried: `KATANA_VK_COLDT=32` gives prompt 126 but generation ~30 (fewer slots); `COLDMIN=1` equal to 2. Stayed at 16/2.
 
-Medidas (`bench`, `KATANA_CTX=1024`, rodadas 2–3, main anterior / novo / OpenCL alternados na mesma hora, GPU ≤ 76 °C no
-início de cada execução; outra sessão do katana estava aberta na máquina):
+Measurements (`bench`, `KATANA_CTX=1024`, rounds 2–3, previous main / new / OpenCL alternating in the same hour, GPU ≤ 76 °C at the
+start of each run; another katana session was open on the machine):
 
-| Modelo | | anterior (Vulkan) | novo (Vulkan) | OpenCL |
+| Model | | previous (Vulkan) | new (Vulkan) | OpenCL |
 |---|---|---|---|---|
-| Moonlight, 256+16 | prompt | 30,2–32,5 | 108–123 | 27,9–30,3 |
-| | geração | 23,0–24,9 | 28,6–32,1 | 21,1–23,3 |
-| Moonlight, 64+64 | prompt | 24,9–27,4 | 58,4–59,1 | 24,1 |
-| | geração | 20,9–25,3 | 24,1–24,4 | 21,2–22,4 |
-| DeepSeek-V2-Lite, 256+16 | prompt | 27,0–27,7 | 76,8–81,8 | 24,9–25,4 |
-| | geração | 13,3–13,8 | 22,4–23,2 | 12,6–12,8 |
-| DeepSeek-V2-Lite, 64+64 | prompt | 18,8–21,0 | 46,1–48,6 | — |
-| | geração | 23,6–23,8 | 27,4–28,4 | — |
+| Moonlight, 256+16 | prompt | 30.2–32.5 | 108–123 | 27.9–30.3 |
+| | generation | 23.0–24.9 | 28.6–32.1 | 21.1–23.3 |
+| Moonlight, 64+64 | prompt | 24.9–27.4 | 58.4–59.1 | 24.1 |
+| | generation | 20.9–25.3 | 24.1–24.4 | 21.2–22.4 |
+| DeepSeek-V2-Lite, 256+16 | prompt | 27.0–27.7 | 76.8–81.8 | 24.9–25.4 |
+| | generation | 13.3–13.8 | 22.4–23.2 | 12.6–12.8 |
+| DeepSeek-V2-Lite, 64+64 | prompt | 18.8–21.0 | 46.1–48.6 | — |
+| | generation | 23.6–23.8 | 27.4–28.4 | — |
 
-A geração de 16 tokens logo após 256 de prompt é curta e sensível ao estado das vagas (o lote aquece especialistas);
-com 64+64 a geração do novo empata ou fica um pouco à frente. O caminho de geração não mudou.
+The 16-token generation right after a 256 prompt is short and sensitive to the state of the slots (the batch warms experts);
+with 64+64 the generation of the new one ties or is slightly ahead. The generation path did not change.
 
-Validação (`selftest`, Vulkan): Moonlight 4 vezes seguidas, lote 0,00018 (antes 0,00016 com atenção na CPU);
-DeepSeek-V2-Lite 2 vezes, lote 0,00034, token a token 0,0245 (frios int8 na CPU, como antes); Qwen3-30B
-(`KATANA_KV16=0 KATANA_CTX=512`) lote 0,0005 / lote 16 0,0005; qwen2.5-1.5b lote 0,0078. Todos OK.
+Validation (`selftest`, Vulkan): Moonlight 4 times in a row, batch 0.00018 (before 0.00016 with attention on the CPU);
+DeepSeek-V2-Lite 2 times, batch 0.00034, token by token 0.0245 (int8 cold on the CPU, as before); Qwen3-30B
+(`KATANA_KV16=0 KATANA_CTX=512`) batch 0.0005 / batch 16 0.0005; qwen2.5-1.5b batch 0.0078. All OK.
 
-Pendências:
-- **Falha de segmentação intermitente**: 2 em ~7 execuções de `bench 64 64` do Moonlight no binário novo (Vulkan), com a
-  GPU a 82–83 °C e outra sessão do katana aberta; depois disso 10 execuções seguidas (4 sob gdb, 6 sem) sem falha. Não
-  reproduzida, causa desconhecida. Suspeitos: a thread de leitura dos temporários (`vk_trd`) e o caminho de fallback;
-  `KATANA_VK_TMPTHR=0` desliga a thread se reaparecer.
-- Atenção MLA de um token na GPU (geração) não feita: exigiria `k_b`/`v_b` residentes (~216 MB em float32, tira vagas)
-  e o grafo da camada na GPU para cortar as idas e voltas (q, kv_a, saída, MoE: 4 leituras por camada). É onde está o
-  ganho da geração, não na conta da atenção.
-- O cache latente sobe inteiro (até `pos0+B`) a cada camada e passada; com contexto longo vale manter uma cópia na VRAM.
-- Velocidade do Qwen3-30B/OLMoE com a thread de leitura no `vk_moe_n` não medida (só o `selftest`).
+Pending:
+- **Intermittent segmentation fault**: 2 in ~7 runs of Moonlight's `bench 64 64` on the new binary (Vulkan), with the
+  GPU at 82–83 °C and another katana session open; after that 10 consecutive runs (4 under gdb, 6 without) without a failure. Not
+  reproduced, cause unknown. Suspects: the temporaries read thread (`vk_trd`) and the fallback path;
+  `KATANA_VK_TMPTHR=0` turns the thread off if it reappears.
+- One-token MLA attention on the GPU (generation) not done: it would require resident `k_b`/`v_b` (~216 MB in float32, takes slots)
+  and the layer graph on the GPU to cut the round trips (q, kv_a, output, MoE: 4 reads per layer). That is where the
+  generation gain is, not in the attention arithmetic.
+- The latent cache goes up whole (up to `pos0+B`) at each layer and pass; with long context it is worth keeping a copy in VRAM.
+- Speed of Qwen3-30B/OLMoE with the read thread in `vk_moe_n` not measured (only the `selftest`).
 
-## 13. gemma4: prompt em lote no Vulkan hibrido validado (2026-11-17, worktree agent-abec)
+## 13. gemma4: batch prompt on hybrid Vulkan validated (2026-11-17, worktree agent-abec)
 
-Parte do ramo agent-a3043 (2 commits, `vk_g4_n`): por camada, os produtos densos do lote (q, k, v, saida da
-atencao, gate/up/down do feed-forward denso) vao a GPU no mm preciso; normas, RoPE, cache KV e atencao na CPU.
+Part of branch agent-a3043 (2 commits, `vk_g4_n`): per layer, the batch dense products (q, k, v, attention
+output, gate/up/down of the dense feed-forward) go to the GPU in the precise mm; norms, RoPE, KV cache and attention on the CPU.
 
-- **MoE do lote nas vagas (`vk_moe_n`) estava inexato**: o `selftest` dava `GPU em lote` 5,9 (argmax trocado).
-  Causa medida (`KATANA_VK_G4CHK=1`, compara camada a camada com o MoE da CPU): o `ffn_down_exps` do gemma4 e
-  **Q5_1 em 29 de 30 camadas**, e `gpu_kind` o requantiza para Q8_0 (aproximado): erro ~1e-3 na saida de cada
-  camada MoE; a camada 29 (Q8_0) bate em 1,7e-5. O mesmo vale para o caminho de um token com as vagas.
-  Vagas temporarias pioram (mais especialistas na GPU). Por isso o MoE do lote ficou **na CPU por padrao**;
-  `KATANA_VK_G4MOE=1` liga o das vagas (inexato).
-- `selftest` gemma4 (padrao): produtos OK; GPU lote 0,0045 OK; GPU token a token 0,0031 OK; CPU inteira 0,0052 OK.
-  Geracao gulosa (40 tokens, temp 0) **identica** a CPU pura (`KATANA_CPU=1`).
-- Sem regressao: qwen2.5-1.5b tudo OK (lote 0,0078); OLMoE (`KATANA_VK_MOE=1`) tudo OK; Qwen3-30B
-  (`KATANA_KV16=0 KATANA_CTX=512`) lote 0,0005 OK, token a token 0,115 FALHOU (ja conhecido, item 4 da lista).
-- **Velocidade: sem ganho medido** (ver comparacoes.md). O prompt do gemma4 e limitado pelo MoE na CPU; tirar
-  os densos da CPU nao muda o total em 128 tokens.
+- **Batch MoE in the slots (`vk_moe_n`) was inexact**: the `selftest` gave `GPU em lote` 5.9 (argmax swapped).
+  Measured cause (`KATANA_VK_G4CHK=1`, compares layer by layer with the CPU MoE): the gemma4 `ffn_down_exps` is
+  **Q5_1 in 29 of 30 layers**, and `gpu_kind` requantizes it to Q8_0 (approximate): error ~1e-3 in the output of each
+  MoE layer; layer 29 (Q8_0) matches at 1.7e-5. The same applies to the one-token path with the slots.
+  Temporary slots make it worse (more experts on the GPU). So the batch MoE stayed **on the CPU by default**;
+  `KATANA_VK_G4MOE=1` turns on the slots one (inexact).
+- `selftest` gemma4 (default): products OK; GPU batch 0.0045 OK; GPU token by token 0.0031 OK; whole CPU 0.0052 OK.
+  Greedy generation (40 tokens, temp 0) **identical** to pure CPU (`KATANA_CPU=1`).
+- No regression: qwen2.5-1.5b all OK (batch 0.0078); OLMoE (`KATANA_VK_MOE=1`) all OK; Qwen3-30B
+  (`KATANA_KV16=0 KATANA_CTX=512`) batch 0.0005 OK, token by token 0.115 FAILED (already known, item 4 of the list).
+- **Speed: no measured gain** (see comparisons.md). The gemma4 prompt is limited by the MoE on the CPU; taking
+  the dense ones off the CPU does not change the total at 128 tokens.
 
-Pendencias: (1) layout exato de Q5_1 na GPU (escala + minimo por bloco de 32, ~10 palavras/32 pesos, +11% no
-down; precisa de WT novo no mm.comp e no kernel de um token; risco de nao caberem as 8 vagas) para o MoE do lote
-nas vagas valer a pena e o token a token ficar exato; (2) so depois disso medir de novo `KATANA_VK_G4MOE=1`.
+Pending: (1) exact Q5_1 layout on the GPU (scale + minimum per block of 32, ~10 words/32 weights, +11% in the
+down; needs a new WT in mm.comp and in the one-token kernel; risk of the 8 slots not fitting) so the batch MoE
+in the slots is worthwhile and the token by token becomes exact; (2) only after that measure `KATANA_VK_G4MOE=1` again.
 
-## 14. gemma4: Q5_1 exato na GPU e MoE do lote nas vagas por padrao (2026-11-17, worktree agent-aed9)
+## 14. gemma4: exact Q5_1 on the GPU and batch MoE in the slots by default (2026-11-17, worktree agent-aed9)
 
-Resolve a pendencia (1) da secao 13. **Tipo de peso novo na GPU para Q5_1, exato**, so no Vulkan (no OpenCL o
-Q5_1 continua requantizado em Q8_0; Q4_1 continua requantizado nos dois):
+Resolves pending item (1) of section 13. **New weight type on the GPU for Q5_1, exact**, only on Vulkan (on OpenCL
+Q5_1 is still requantized to Q8_0; Q4_1 is still requantized on both):
 
-- Layout de **6 palavras por bloco de 32** (o proprio bloco do arquivo, reordenado): palavra 0 = escala e minimo
-  em fp16 (exatos), 1 = quinto bit dos 32 valores, 2..5 = os 4 bits baixos (valor j na palavra 2 + j/8). E **menor**
-  que o Q8_0 de antes (9 palavras): a primeira tentativa (escala e minimo float + 32 uint8, 10 palavras) nao cabia
-  (vagas ~1180 MB, ~92% da VRAM, `vkAllocateMemory` falhou com a GPU livre). Com 6 palavras o gemma4 passa a ter
-  **9 vagas por camada (1016 MB)** em vez de 8.
-- Kernels: `vk/shaders/mv_q51.comp` (um token, `vk_kind_idx` 6) e `mm.comp` com `WT=5` (todas as variantes:
-  plano, glu, ws, xs, gx). `gen.sh` atualizado; os cabecalhos dos tipos antigos nao mudaram (conferido byte a byte).
-- `katana.c`: `gpu_kind` (Q5_1 -> T_Q5_1 com Vulkan), `gpu_has`, `gpu_wpr`, `gpu_pack_row`, tabelas `vk_mmt`,
-  `vkb.mm`/`mmx`, `vk_spv`. As vagas do cache e as temporarias usam `gpu_wpr`/`gpu_pack_row`, entao ja sobem no layout novo.
-- **MoE do lote do gemma4 nas vagas ligado por padrao** (`KATANA_VK_G4MOE=0` volta a CPU).
+- Layout of **6 words per block of 32** (the file's own block, reordered): word 0 = scale and minimum
+  in fp16 (exact), 1 = fifth bit of the 32 values, 2..5 = the 4 low bits (value j in word 2 + j/8). It is **smaller**
+  than the previous Q8_0 (9 words): the first attempt (float scale and minimum + 32 uint8, 10 words) did not fit
+  (slots ~1180 MB, ~92% of the VRAM, `vkAllocateMemory` failed with the GPU free). With 6 words gemma4 now has
+  **9 slots per layer (1016 MB)** instead of 8.
+- Kernels: `vk/shaders/mv_q51.comp` (one token, `vk_kind_idx` 6) and `mm.comp` with `WT=5` (all variants:
+  plain, glu, ws, xs, gx). `gen.sh` updated; the headers of the old types did not change (checked byte by byte).
+- `katana.c`: `gpu_kind` (Q5_1 -> T_Q5_1 with Vulkan), `gpu_has`, `gpu_wpr`, `gpu_pack_row`, tables `vk_mmt`,
+  `vkb.mm`/`mmx`, `vk_spv`. The cache slots and the temporary ones use `gpu_wpr`/`gpu_pack_row`, so they already go up in the new layout.
+- **Gemma4 batch MoE in the slots on by default** (`KATANA_VK_G4MOE=0` returns to the CPU).
 
-**Validacao (so correcao; maquina carregada por outros agentes, nada de velocidade medido)**:
-- `selftest` gemma4, 5 rodadas: produtos OK (5,08e-8); GPU em lote 0,0011-0,0012 OK (antes 0,0045 com o MoE
-  na CPU e 5,9 com as vagas); **GPU token a token 0,0018-0,0026 OK nas 5** (antes intermitente 0,003 a 7,5);
-  CPU inteira 0,0052 OK.
-- `KATANA_VK_G4CHK=1` (MoE do lote nas vagas x CPU, 30 camadas): pior diferenca 5,9e-4 com escala 14 (camada 17;
-  ~4e-5 relativo; antes ~1e-3 por camada). Sobra o arredondamento do mm preciso (alta + resto), nao do peso.
-- Geracao gulosa 40 tokens (prompt de 30 tokens, temp 0): **identica** a `KATANA_CPU=1`.
-- Sem regressao: Qwen3.6-35B-A3B (lote 0,00034, token a token 0,00031, lote 16 0,00034, tudo OK);
-  Qwen3-30B-A3B-Instruct-2507 (`KATANA_KV16=0 KATANA_CTX=512`): lote 0,00049 OK, lote 16 0,00046 OK, token a
-  token 0,115 FALHOU (falha antiga, igual antes).
+**Validation (correctness only; machine loaded by other agents, no speed measured)**:
+- `selftest` gemma4, 5 rounds: products OK (5.08e-8); GPU batch 0.0011-0.0012 OK (before 0.0045 with the MoE
+  on the CPU and 5.9 with the slots); **GPU token by token 0.0018-0.0026 OK in all 5** (before intermittent 0.003 to 7.5);
+  whole CPU 0.0052 OK.
+- `KATANA_VK_G4CHK=1` (batch MoE in the slots x CPU, 30 layers): worst difference 5.9e-4 with scale 14 (layer 17;
+  ~4e-5 relative; before ~1e-3 per layer). What remains is the rounding of the precise mm (high + remainder), not of the weight.
+- Greedy generation 40 tokens (30-token prompt, temp 0): **identical** to `KATANA_CPU=1`.
+- No regression: Qwen3.6-35B-A3B (batch 0.00034, token by token 0.00031, batch 16 0.00034, all OK);
+  Qwen3-30B-A3B-Instruct-2507 (`KATANA_KV16=0 KATANA_CTX=512`): batch 0.00049 OK, batch 16 0.00046 OK, token by
+  token 0.115 FAILED (old failure, same as before).
 
-**A medir com a maquina livre** (alternado, mesma hora; prompt longo para o lote valer):
+**To measure with the machine free** (alternating, same hour; long prompt so the batch matters):
 ```
 M=modelos/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 for i in 1 2 3; do
@@ -1380,18 +1379,18 @@ for i in 1 2 3; do
   KATANA_BACKEND=vulkan ./katana bench $M 256 64                     # MoE do lote nas vagas (padrao novo)
 done
 ```
-Comparar tambem a geracao (9 vagas e Q5_1 em 6 palavras em vez de 9: menos leitura na GPU) contra o binario do
-main. Se o MoE do lote nas vagas nao ganhar, voltar o padrao para a CPU (continua exato).
+Also compare the generation (9 slots and Q5_1 in 6 words instead of 9: less reading on the GPU) against the main
+binary. If the batch MoE in the slots does not win, return the default to the CPU (it stays exact).
 
 
-## 0m. sudo no agente (2026-11-18)
-`run_command` com `sudo`: se `sudo -n true` falha, o motor pergunta a senha uma vez (terminal sem eco; no desktop, marcador `NEEDPASS` e resposta `\x01PASS senha` na entrada), valida com `sudo -A -k -v` e guarda so em memoria (`g_sudo_pw`). Os comandos rodam com `sudo() { command sudo -A "$@"; }` e `SUDO_ASKPASS=~/.katana/askpass.sh` lendo `KATANA_PW` do ambiente do filho. Teste com sudo falso em `tools/testar_ferramentas.sh` (96/96). Nao cobre a ferramenta `terminal` (pty): la o modelo ve o prompt de senha. Nao testado com sudo real nem com o dialogo na janela.
+## 0m. sudo in the agent (2026-11-18)
+`run_command` with `sudo`: if `sudo -n true` fails, the engine asks for the password once (terminal without echo; on the desktop, `NEEDPASS` marker and `\x01PASS password` reply on the input), validates with `sudo -A -k -v` and keeps it only in memory (`g_sudo_pw`). Commands run with `sudo() { command sudo -A "$@"; }` and `SUDO_ASKPASS=~/.katana/askpass.sh` reading `KATANA_PW` from the child's environment. Test with a fake sudo in `tools/testar_ferramentas.sh` (96/96). It does not cover the `terminal` tool (pty): there the model sees the password prompt. Not tested with real sudo nor with the dialog in the window.
 
-## 0n. root por padrao e ferramenta howto (2026-11-18)
-No agente interativo, `run_command` roda tudo como root: `exec sudo -A sh -c '<cmd>'` (aspas escapadas), com a senha pedida uma vez (0m). `KATANA_SUDO=0` desliga. Fora do agente (`katana tool`, `toolrun`) nao e padrao (so com `KATANA_SUDO_FORCE=1`, usado no teste com sudo falso). Se a senha nao vier (cancelou, sem tty), o comando roda sem sudo. Cuidados: arquivos criados por comandos ficam do root (write_file/edit_file continuam como o usuario); SIGKILL no timeout mata o sudo mas nao relata ao filho root. Nova ferramenta `howto(topic)` com receitas (web, terminal, sudo, files, code, packages, logs, all) e 2 linhas novas no prompt sobre web e terminal. Nao medido: modelo chamando `howto`; custo do prompt (+~0,6 KB) no cache de prefixo.
+## 0n. root by default and the howto tool (2026-11-18)
+In the interactive agent, `run_command` runs everything as root: `exec sudo -A sh -c '<cmd>'` (escaped quotes), with the password asked once (0m). `KATANA_SUDO=0` turns it off. Outside the agent (`katana tool`, `toolrun`) it is not the default (only with `KATANA_SUDO_FORCE=1`, used in the test with the fake sudo). If the password does not come (cancelled, no tty), the command runs without sudo. Cautions: files created by commands belong to root (write_file/edit_file still run as the user); SIGKILL on timeout kills the sudo but does not report to the root child. New tool `howto(topic)` with recipes (web, terminal, sudo, files, code, packages, logs, all) and 2 new lines in the prompt about web and terminal. Not measured: a model calling `howto`; the prompt cost (+~0.6 KB) in the prefix cache.
 
-## 0o. shell root persistente (2026-11-18)
-Com root por padrao (0n), o `run_command` nao abre um `sudo sh -c` por comando: usa uma sessao `sudo -A bash` num pty (`root_open`/`root_exec`, `g_rootS`, fora da lista do `terminal`). A senha e pedida uma vez (modal no desktop); depois cwd e variaveis persistem entre comandos e nao ha nova senha. Cada comando vira um arquivo lido com `. arquivo </dev/null` (erro de sintaxe nao trava; stdin fechado) e um marcador `__KEND_<id>_<rc>__` marca o fim e traz o codigo. Timeout/Ctrl+C mandam ^C ao pty e um segundo marcador (rc 130); o shell e o estado sobrevivem. Sem marcador em 3 s apos o ^C, a sessao e descartada e reaberta no proximo comando. Se a sessao nao abre (senha recusada, sem sudo), cai no `sudo -A sh -c` por comando. Testado com sudo falso (98/98); nao testado com sudo real, comandos longos com muita saida (>32 MB) nem programas que pedem tty.
+## 0o. persistent root shell (2026-11-18)
+With root by default (0n), `run_command` does not open a `sudo sh -c` per command: it uses a `sudo -A bash` session in a pty (`root_open`/`root_exec`, `g_rootS`, outside the `terminal` list). The password is asked once (modal on the desktop); after that cwd and variables persist between commands and there is no new password. Each command becomes a file read with `. file </dev/null` (a syntax error does not hang; stdin closed) and a `__KEND_<id>_<rc>__` marker marks the end and carries the code. Timeout/Ctrl+C send ^C to the pty and a second marker (rc 130); the shell and the state survive. With no marker within 3 s after the ^C, the session is discarded and reopened on the next command. If the session does not open (password refused, no sudo), it falls back to `sudo -A sh -c` per command. Tested with a fake sudo (98/98); not tested with real sudo, long commands with lots of output (>32 MB) nor programs that ask for a tty.
 
-## 0p. terminal tambem como root + abertura automatica (2026-11-18)
-O modelo (Gemma) usou a ferramenta `terminal` para rodar `sudo` e ficou em laco com "no terminal session is open" (mandava `send` sem `open`); o `sudo` la caia no prompt de senha do pty e o modal nao aparecia, porque so o `run_command` passava pelo fluxo de senha. Agora: `terminal send` sem sessao abre uma sozinha; sessoes `terminal` abrem como `sudo -A bash` (root por padrao, senha pelo modal uma vez), entao `sudo` dentro delas nao pede senha. Teste: 98/98 (sudo falso); nao testado com sudo real nem o modal na janela.
+## 0p. terminal also as root + automatic opening (2026-11-18)
+The model (Gemma) used the `terminal` tool to run `sudo` and got stuck in a loop with "no terminal session is open" (it sent `send` without `open`); the `sudo` there fell on the pty's password prompt and the modal did not appear, because only `run_command` went through the password flow. Now: `terminal send` without a session opens one by itself; `terminal` sessions open as `sudo -A bash` (root by default, password through the modal once), so `sudo` inside them does not ask for a password. Test: 98/98 (fake sudo); not tested with real sudo nor the modal in the window.
