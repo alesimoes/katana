@@ -63,25 +63,38 @@ and checked by comparing the stripped binary before and after (identical apart f
   message box with one button per option (typing also answers; it is not a dialog, the sudo password stays the only
   one). Terminal: numbered options. Piped input: the model is told to decide by itself.
 - *`katana code <model>`.* The same agent with a short programming prompt and only the coding tools (no memory, logs,
-  documents, packages). Not yet measured on the full benchmark.
+  documents, packages). Measured below.
+- *Lean system prompt.* 14.8 KB (about 3400 tokens) became 7.3 KB (1957 tokens): rules in 8 lines, short environment
+  block, 11 tools with a full definition (`read_file`, `list_dir`, `find_file`, `search_files`, `write_file`,
+  `edit_file`, `run_command`, `ask_user`, `web_search`, `web_fetch`, `remember`) and 8 more in one compact line (`git`,
+  `terminal`, `glob`, `recall`, `download_file`, `install_package`, `read_log`, `howto`); all stay in the dispatcher.
+  `read_file` reads PDF and HTML, so `read_document` left the prompt. The Gemma 4 tool declarations cover only the 11
+  full tools and were not retested.
 
 **Qwen3.8-27B (`qwen35` dense).** Loads and generates coherent text and code on the hybrid path (dense SwiGLU
 feed-forward in place of the MoE; the extra next-token-prediction layer is ignored). Not compared numerically with the
 reference engine; the full Vulkan graph is still MoE only; speed not measured with the GPU free.
 
-**codebench (`tools/codebench/`).** 15 small Python tasks with hidden tests. Qwen3.6 baseline (before this section's
-changes): 14 of 15 solved; `calc` (write an expression parser from a stub) hit the 900 s limit. The benchmark is close
-to its ceiling for this model, so it now measures cost (time, tool calls, tokens) more than quality; harder tasks
-(larger code, several files) are the next addition.
+**codebench (`tools/codebench/`).** 21 small tasks with hidden tests (15 Python fixes plus 6 larger ones: several
+files, shell scripts). Qwen3.6, one run each, 900 s limit (measured 2026-11-19, same machine, runs one after another):
+
+| run | solved | failed | mean time | mean tool calls |
+|---|---|---|---|---|
+| long prompt (14.8 KB), `agent` | 18/21 | calc, lru, todo | 128 s | 12.0 |
+| lean prompt (7.3 KB), `agent` | 19/21 | calc (timeout), mdhtml | 139 s | 12.5 |
+| lean prompt, `code` | 19/21 | ledger, mdhtml | 109 s | 12.8 |
+
+No difference is significant (sign test p = 1.0; which tasks fail changes from run to run): the lean prompt did not
+lose tasks, and nothing here shows it gaining any. The mean time of the lean `agent` run carries one 901 s timeout.
+`mdhtml` failed in both lean runs and passed with the long prompt: worth a look.
 
 **Known gap.** The Windows build has not been compiled since the terminal work of 2026-11-18. Two functions that the
 shared code calls (`tool_howto`, `ui_toolout`) sat inside the non-Windows block; they are now outside it, but nothing
 was compiled on Windows, so expect more of the same kind (`find_file`, the syntax check and the failure hints are
 POSIX only by design).
 
-**Next, in the order agreed with the owner:** measure `katana code` on the full benchmark; harder benchmark tasks;
-terminal and web tasks for
-the benchmark; then sampling presets and the runtime LoRA adapter for Qwen3.8.
+**Next, in the order agreed with the owner:** find which tools fail in real use on the desktop (owner report, not
+yet specified); retest Gemma 4 with the lean prompt; terminal and web tasks for the benchmark; then sampling presets and the runtime LoRA adapter for Qwen3.8.
 
 ## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
 
