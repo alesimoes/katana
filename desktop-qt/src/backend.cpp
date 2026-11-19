@@ -1047,7 +1047,10 @@ void Backend::handleMarker(const QByteArray &line)
         const QStringList a = args.split('\t');
         emit askRequested(a.value(0), a.value(1), a.value(2));
     } else if (name == "PREP") {  // PREP <tokens>: o motor esta calculando o prompt de sistema (so quando muda; depois vem do cache)
-        setTexts("Preparando o agente: lendo as instruções (" + args.trimmed() + " tokens, só na primeira vez nesta pasta)...", {});
+        const QStringList a = args.trimmed().split(' ');
+        const int total = a.value(0).toInt(), done = a.value(1).toInt();
+        const QString pct = total > 0 && a.size() > 1 ? QString::number(done * 100 / total) + "% · " : QString();
+        setTexts("Preparando o agente: " + pct + "lendo as instruções (" + a.value(0) + " tokens, só na primeira vez nesta pasta)...", {});
     } else if (name == "CHOICE") {  // CHOICE <pergunta>\t<opcao>...: pergunta do agente (ask_user); resposta em answerChoice
         const QStringList a = args.split('\t');
         m_choiceQ = a.value(0);
