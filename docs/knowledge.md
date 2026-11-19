@@ -319,7 +319,7 @@ Vulkan headers in `ref/vk/include` (outside git; decide whether they go into the
 | `compare.sh` | alternating comparison with the reference engine |
 | `docs/` | this document, the plan and the techniques roadmap |
 | `tools/vkprobe`, `tools/vkgemm` | Vulkan prototypes |
-| `modelos/` (outside git) | GGUFs and `.ktn` folders with shards |
+| `models/` (outside git) | GGUFs and `.ktn` folders with shards |
 | `ref/` (outside git) | reference engine binaries and code, Vulkan headers, shader compiler, old copies of katana for comparison |
 
 Models on disk: SmolLM2 135M, TinyLlama (several formats), Qwen2.5 1.5B/7B/14B, Llama 3.2 3B,

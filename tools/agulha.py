@@ -51,7 +51,7 @@ def roda(katana, modelo, arq, modo, ctx, timeout, vulkan=False):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--modelo", default=os.path.join(RAIZ, "modelos", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"))
+    ap.add_argument("--modelo", default=os.path.join(RAIZ, "models", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"))
     ap.add_argument("--katana", default=os.path.join(RAIZ, "katana"))
     ap.add_argument("--tokens", default="8000,16000")
     ap.add_argument("--pos", default="0.1,0.5,0.9")

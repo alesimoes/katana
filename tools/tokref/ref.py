@@ -24,7 +24,7 @@ import ggufmeta
 
 DL = os.path.join(HERE, "dl")
 OUT = os.path.join(HERE, "out")
-MODELOS = "/mnt/dados/source/katana/modelos"
+MODELOS = "/mnt/dados/source/katana/models"
 
 # modelo katana -> (pasta em dl/, gguf)
 MODELS = {

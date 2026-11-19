@@ -35,4 +35,4 @@ Motor de inferência de modelos de linguagem escrito do zero em C (`src/katana.c
 - Editar `src/katana.c` com scripts Python de substituição gravados em arquivo (com `assert` de
   contagem); comandos embutidos no shell estragam `\n` e aspas.
 - Shaders Vulkan: `ref/vk/glslang/bin/glslang.exe`; cabeçalhos em `ref/vk/include`.
-- `modelos/` e `ref/` ficam fora do git.
+- `models/` e `ref/` ficam fora do git.

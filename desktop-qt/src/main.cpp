@@ -71,7 +71,9 @@ int main(int argc, char **argv)
                                 {exe + "/katana", exe + "/../katana", exe + "/../../katana", exe + "/../../../katana",
                                  cwd + "/katana", cwd + "/../katana"});
     const QString models = pick(cli.value(oModels),
-                                {exe + "/modelos", exe + "/../modelos", exe + "/../../modelos", exe + "/../../../modelos",
+                                {exe + "/models", exe + "/../models", exe + "/../../models", exe + "/../../../models",
+                                 cwd + "/models", cwd + "/../models",
+                                 exe + "/modelos", exe + "/../modelos", exe + "/../../modelos", exe + "/../../../modelos",   // nome antigo
                                  cwd + "/modelos", cwd + "/../modelos"});
     if (!QFileInfo::exists(katana)) {
         fprintf(stderr, "katana nao encontrado; use --katana CAMINHO\n");
@@ -103,7 +105,7 @@ int main(int argc, char **argv)
     auto *win = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &backend, &Backend::shutdown);
 
-    fprintf(stderr, "katana-desktop | katana: %s | modelos: %s | dados: %s\n", qPrintable(katana), qPrintable(models),
+    fprintf(stderr, "katana-desktop | katana: %s | models: %s | dados: %s\n", qPrintable(katana), qPrintable(models),
             qPrintable(home));
 
     if (selftest) {

@@ -141,11 +141,11 @@ Requirements: the engine built (`./build.sh`), a GGUF model, Qt 6.5+ and CMake 3
 ```
 ./build.sh                               # 1. the engine -> ./katana
 desktop-qt/build.sh                      # 2. the app    -> desktop-qt/build/katana-desktop-qt
-mkdir -p modelos && cp model.gguf modelos/   # 3. put a GGUF model in modelos/
+mkdir -p models && cp model.gguf models/   # 3. put a GGUF model in models/
 ./desktop-qt/build/katana-desktop-qt     # 4. run it, from the repository root
 ```
 
-The app looks for `katana` and `modelos/` next to itself, one folder up and in the current folder (`--katana PATH` and
+The app looks for `katana` and `models/` next to itself, one folder up and in the current folder (`--katana PATH` and
 `--models DIR` override). Choose the model with the selector under the message box (Qwen3.6-35B-A3B starts by default;
 Gemma 4 also works). Do not copy the binary elsewhere: it needs the `Katana/` QML module that sits next to it in `build/`
 (use `ln -sf desktop-qt/build/katana-desktop-qt katana-desktop` for a shortcut). `desktop-qt/instalar-dock.sh` adds it to
@@ -238,7 +238,7 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 - `vk/`: single-header Vulkan compute layer (`kvk.h`) and compiled shaders; `tools/`: kernel benches
   (`vkq4k`, `vkmv`, `vkatt`, `vkdelta`...), tokenizer reference tests, tool tests (`tools/testar_ferramentas.sh`).
 - `desktop-qt/`: the desktop app. `docs/`: project documentation (below). `compare.sh`: alternating A/B benchmark.
-- `modelos/` (models) and `ref/` stay out of git.
+- `models/` (models) and `ref/` stay out of git.
 
 ## Documentation
 
