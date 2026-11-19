@@ -17,6 +17,7 @@ static void ui_toolout(const char *name, const char *res) {
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap) {
     static char arg[8192], content[65536];
     out[0] = 0;
+    if (g_plan_mode && !plan_allows(name, js, end)) { snprintf(out, cap, "%s", PLAN_DENY); return; }
     if (strcmp(name, "read_file") == 0) {
         tool_read_file(js, end, out, cap);
     } else if (strcmp(name, "list_dir") == 0) {

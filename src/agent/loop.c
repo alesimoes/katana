@@ -301,6 +301,18 @@ static int agent(Model *m, int max_tokens, float temp) {
             }
             continue;
         }
+        if (strcmp(line, "/plan") == 0 || strcmp(line, "/plan on") == 0 || strcmp(line, "/plan off") == 0) {      /* modo plano: so leitura ate /go */
+            g_plan_mode = strcmp(line, "/plan off") != 0;
+            fprintf(stderr, "%s[plan mode %s]%s\n", CE(C_DIM), g_plan_mode ? "on: the agent only reads and proposes a plan; /go approves and executes, /plan off leaves" : "off", CE(C_RESET));
+            plan_ui();
+            continue;
+        }
+        int plan_go = 0;
+        if (strcmp(line, "/go") == 0) {
+            if (!g_plan_mode) { fprintf(stderr, "[/go: plan mode is not on]\n"); continue; }
+            g_plan_mode = 0; plan_ui(); plan_go = 1;
+            snprintf(line, sizeof line, "[Plan mode is OFF: the user approved your plan.] Execute the plan now, step by step.");
+        }
         if (strcmp(line, "/undo") == 0) {       /* devolve os arquivos ao estado de antes do ultimo pedido que alterou algo */
             const int k = undo_last(undo_txt, sizeof undo_txt);
             if (!undo_txt[0]) fprintf(stderr, "[nothing to undo]\n");
@@ -333,6 +345,8 @@ static int agent(Model *m, int max_tokens, float temp) {
             snprintf(nl, sizeof nl, "[The user undid your file changes of an earlier request; these files are back as they were before it: %s]\n%s", undo_txt, line);
             snprintf(line, sizeof line, "%s", nl);
         }
+        if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
+        (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;
         prole = 'u'; buf_clear(&pend); buf_str(&pend, line);
         if (first) { AGENT_SYS(); ah_clear(&slog); }   /* memoria + ferramentas MCP */

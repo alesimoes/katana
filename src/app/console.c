@@ -107,6 +107,7 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
             "  /compact          (agent) summarizes and shrinks the old context to free space\n"
             "  /system <text>    sets the system prompt (and restarts the conversation)\n"
             "  /save <file>      writes the conversation to a text file\n"
+            "  /plan             (agent) plan mode: read-only until you approve with /go (/plan off leaves it)\n"
             "  /undo             (agent) puts back the files changed by the last request that changed any\n"
             "  /cd <folder>      (agent) changes the working folder (asks to trust it the first time)\n"
             "  /help             this list\n"
