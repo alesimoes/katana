@@ -119,6 +119,9 @@ tools reach outside.
 | `find_file` | finds files and folders by part of the name anywhere on the machine (home folder and the other mounted disks), best name match and shortest path first |
 | `read_file`, `list_dir`, `glob`, `search_files`, `read_document` | read and find files (PDF and HTML as text); `list_dir` shows folders with their item count and files with size and date; `read_file` returns whole lines and, for a long file, says which lines came and how to ask for the next ones (`offset`, `limit`) |
 | `write_file`, `edit_file` | write files; exact-snippet edits that fail if the snippet is missing or ambiguous. After each write the engine checks the syntax of the file (Python, shell, JSON, JavaScript, PHP, Ruby, when the language tool is installed) and appends the result, so the model sees a syntax error in the same step |
+| `todo` | the model's own task list for long jobs: steps, then the same list with `[x]` on the finished ones; kept across context compaction |
+| `job` | reads, lists or stops a command started with `run_command` and `background=true` (servers, long builds) |
+| `delegate` | hands a large search or reading job to a sub-agent with a clean context and gets back only its answer |
 | `ask_user` | one question to the user with 2 to 5 options (buttons in the desktop app, numbered in the terminal) for decisions that are only the user's; in a non-interactive run the model is told to decide by itself |
 | `git` | status, diff, log, commit, branch, push, clone... (refuses `push --force`, `reset --hard` unless `KATANA_GIT_UNSAFE=1`) |
 | `web_search`, `web_fetch`, `download_file` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG); `web_fetch` returns the main text of a page and remembers it, so `offset` continues a long page, `find` returns only the passages with a word and `links=true` lists where the page leads; downloads with SHA-256 |
@@ -183,7 +186,7 @@ katana info | bench | selftest | micro | tune | pack | verify | quantize | qtest
 katana tool <name> '<json>'      run one agent tool without a model (testing)
 ```
 
-Chat commands: `/new` (new conversation), `/system <text>` (system prompt), `/save <file>`, `/cd <folder>` (agent), `/help`, `/exit`;
+Chat commands: `/new` (new conversation), `/system <text>` (system prompt), `/save <file>`, `/cd <folder>` (agent), `/plan` and `/go` (agent: read-only plan mode, then approve and execute), `/undo` (agent: puts back the files changed by the last request), `/help`, `/exit`;
 Ctrl+C interrupts the current answer without leaving.
 
 `katana serve` listens on 127.0.0.1 only, with the page embedded in the binary:

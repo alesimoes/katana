@@ -26,6 +26,8 @@ and checked by comparing the stripped binary before and after (identical apart f
 | `dispatch.c` | tool dispatch, log, neutralising markers in results |
 | `prefix_cache.c`, `context.c`, `loop.c` | system-prompt KV cache on disk, compaction, sessions and the agent loop |
 | `mcp.c`, `fmt_gemma4.c`, `fmt_harmony.c` | MCP client and the tool formats of Gemma 4 and gpt-oss |
+| `todo.c`, `project.c`, `undo.c` | the model's own task list; project instructions file; previous version of every file the agent changes and `/undo` |
+| `jobs.c`, `planmode.c`, `delegate.c` | background commands; plan mode (read-only until approved); sub-agent with a clean context |
 
 **What changed in behaviour.**
 
@@ -70,6 +72,50 @@ and checked by comparing the stripped binary before and after (identical apart f
   `terminal`, `glob`, `recall`, `download_file`, `install_package`, `read_log`, `howto`); all stay in the dispatcher.
   `read_file` reads PDF and HTML, so `read_document` left the prompt. The Gemma 4 tool declarations cover only the 11
   full tools and were not retested.
+
+**Eight layers taken from what other agent harnesses do (2026-11-19, owner request).** All tested with Qwen3.6 on
+this machine, one scenario each; the full benchmark after them is in the table below.
+
+- *Task list (`todo(steps)`).* The model writes its steps (one per line, or a JSON list) and calls again with `[x]`
+  on the finished ones. The list lives in the engine: it is put back after a compaction, and if the model ends its
+  answer with open steps that it listed in this request the loop reminds it once. Marker `TODO` for the interface.
+- *Project instructions.* `KATANA.md` or `AGENTS.md` in the working folder, or above it up to the repository root, goes
+  into the system prompt after the environment block (5000 bytes at most; outside the stable part of the prefix
+  cache). `/cd` to another folder sends that folder's file with the next message. The file is treated as
+  instructions from the project owner, so a cloned repository can steer the agent through it.
+- *Undo.* Before `write_file` and `edit_file` write, the previous version is kept in `~/.katana/undo`. `/undo` puts
+  back every file changed by the last request that changed any (again: the one before), and the next message tells
+  the model. Not covered: what a shell command changes, files only root can read, files above 8 MB. The journal lives
+  in memory, so it ends with the process.
+- *Regex search.* `search_files` takes `regex=true` (POSIX extended, case-insensitive); a plain-text search with no
+  hits whose pattern looks like a regex is retried as one.
+- *Background commands.* `run_command` with `background=true` starts the command in its own process group with the
+  output in a file and returns a job number after 1.5 s (an immediate failure is reported instead); `job(id, action)`
+  reads the end of the output, lists or stops. Everything still running is killed when the agent exits. No sudo.
+- *Sub-agent (`delegate(task)`).* The same model does a search or reading job in a clean context and returns only its
+  answer (3000 bytes at most). There is one model in memory, so the engine saves the KV cache of the main conversation
+  to disk in the prefix-cache format, runs the sub-agent from position 0 (read-only, 12 rounds, 14000 tokens at most)
+  and loads the cache back; if the load fails the loop recomputes the conversation. ChatML only. Measured once: main
+  context 2264 -> 2869 tokens for a job that took 8339 tokens inside the sub-agent (152 s); the same job done
+  directly left the main context at 8419 tokens. It saves context, not time.
+- *Plan mode.* `/plan` makes the agent read-only: the engine refuses writes, edits, downloads, installs, terminal
+  sessions, MCP tools and any shell command that is not on a read-only list (no redirection to a file, no command
+  substitution). `/go` approves and executes, `/plan off` leaves. Marker `MODE plan|normal`.
+- *Pages that need JavaScript.* `web_fetch` opens the page in an installed Chrome or Chromium without a window
+  (temporary profile, `--dump-dom`) when the plain download has almost no text, when curl gets nothing, or with
+  `render=true`. It loads and reads only: no login, no clicking.
+
+System prompt after these: 7.8 KB (the lean prompt was 7.3 KB): one rule line for `todo`, `job` and `delegate` in the
+compact tool line, `regex`, `background` and `render` in three tool definitions.
+
+Desktop: a card above the message box shows the task list and, in plan mode, the "Aprovar e executar" button; "plano"
+and "desfazer" sit next to the folder button. The engine now ignores an interface reply (`\x01ANS`, `\x01PASS`) that
+arrives with no question pending; it used to be taken as a user message.
+
+Side effect of a test on this machine: during the plan-mode test the model ran `sudo apt-get install -y
+python3-pytest` and it went through without a password, because this machine's sudoers has `NOPASSWD` for apt. The
+package and three dependencies are installed (`sudo apt-get remove python3-pytest python3-pluggy python3-iniconfig`
+undoes it; `python3-packaging` may be wanted by other packages).
 
 **Qwen3.8-27B (`qwen35` dense).** Loads and generates coherent text and code on the hybrid path (dense SwiGLU
 feed-forward in place of the MoE; the extra next-token-prediction layer is ignored). Not compared numerically with the
