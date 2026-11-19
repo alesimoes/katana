@@ -65,6 +65,13 @@ class Backend : public QObject
     Q_PROPERTY(bool choicePending READ choicePending NOTIFY choiceChanged)
     Q_PROPERTY(QStringList todoSteps READ todoSteps NOTIFY todoChanged)   // lista de tarefas do agente: "[x] passo" ou "[ ] passo"
     Q_PROPERTY(bool planMode READ planMode NOTIFY planModeChanged)        // modo plano: o agente so le ate o plano ser aprovado
+    Q_PROPERTY(QVariantList catalog READ catalog NOTIFY catalogChanged)   // modelos que o aplicativo sabe baixar (katana catalog)
+    Q_PROPERTY(QVariantMap machine READ machine NOTIFY catalogChanged)    // memoria, placa, disco livre (katana hw)
+    Q_PROPERTY(bool hasUsableModel READ hasUsableModel NOTIFY modelsChanged)
+    Q_PROPERTY(QString pullId READ pullId NOTIFY pullChanged)             // modelo sendo baixado ("" = nenhum)
+    Q_PROPERTY(double pullFraction READ pullFraction NOTIFY pullChanged)
+    Q_PROPERTY(QString pullText READ pullText NOTIFY pullChanged)
+    Q_PROPERTY(QString pullError READ pullError NOTIFY pullChanged)
     Q_PROPERTY(QString currentModel READ currentModel NOTIFY currentModelChanged)
     Q_PROPERTY(bool running READ running NOTIFY stateChanged)
     Q_PROPERTY(bool ready READ ready NOTIFY stateChanged)
@@ -93,6 +100,17 @@ public:
     ~Backend() override;
 
     QVariantList models() const { return m_models; }
+    QVariantList catalog() const { return m_catalog; }
+    QString katanaPath() const { return m_katana; }
+    QVariantMap machine() const { return m_machine; }
+    bool hasUsableModel() const;
+    QString pullId() const { return m_pullId; }
+    double pullFraction() const { return m_pullFrac; }
+    QString pullText() const { return m_pullText; }
+    QString pullError() const { return m_pullError; }
+    Q_INVOKABLE void refreshCatalog();
+    Q_INVOKABLE void pull(const QString &id);     // baixa um modelo do catalogo (continua um download interrompido)
+    Q_INVOKABLE void cancelPull();
     QString currentModel() const { return m_model; }
     bool running() const { return m_proc != nullptr; }
     bool ready() const { return m_ready; }
@@ -112,7 +130,6 @@ public:
     MessageModel *messages() { return &m_msgs; }
     QString themeOverride() const { return qEnvironmentVariable("KATANA_THEME"); }
     QString sessionsDir() const { return m_sessDir; }
-    QString katanaPath() const { return m_katana; }
 
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
@@ -158,6 +175,8 @@ public:
 
 signals:
     void modelsChanged();
+    void catalogChanged();
+    void pullChanged();
     void currentModelChanged();
     void stateChanged();
     void thinkingChanged();
@@ -198,6 +217,13 @@ private:
     QSettings *m_ui = nullptr;
     QVariantList m_models;
     QProcess *m_proc = nullptr;
+    QVariantList m_catalog;
+    QVariantMap m_machine;
+    QProcess *m_pull = nullptr;
+    QString m_pullId, m_pullText, m_pullError;
+    QByteArray m_pullBuf;
+    double m_pullFrac = 0;
+    void onPullLine(const QByteArray &line);
     int m_dying = 0;
     QString m_pendingStart;
     bool m_hasPendingStart = false;

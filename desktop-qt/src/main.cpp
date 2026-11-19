@@ -77,6 +77,13 @@ int main(int argc, char **argv)
                                  cwd + "/models", cwd + "/../models",
                                  exe + "/modelos", exe + "/../modelos", exe + "/../../modelos", exe + "/../../../modelos",   // nome antigo
                                  cwd + "/modelos", cwd + "/../modelos"});
+    // aplicativo instalado (sem pasta de modelos ao lado): os modelos ficam em KATANA_MODELS ou ~/.katana/models
+    QString modelsDir = models;
+    if (!QFileInfo::exists(modelsDir)) {
+        modelsDir = qEnvironmentVariable("KATANA_MODELS");
+        if (modelsDir.isEmpty()) modelsDir = QDir::homePath() + "/.katana/models";
+        QDir().mkpath(modelsDir);
+    }
     if (!QFileInfo::exists(katana)) {
         fprintf(stderr, "katana nao encontrado; use --katana CAMINHO\n");
         return 1;
@@ -94,7 +101,7 @@ int main(int argc, char **argv)
     }
     QDir().mkpath(home);
 
-    Backend backend(katana, models, home);
+    Backend backend(katana, modelsDir, home);
     QQmlApplicationEngine engine;
     Terminal terminal(home);
     engine.rootContext()->setContextProperty("backend", &backend);
@@ -107,7 +114,7 @@ int main(int argc, char **argv)
     auto *win = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &backend, &Backend::shutdown);
 
-    fprintf(stderr, "katana-desktop | katana: %s | models: %s | dados: %s\n", qPrintable(katana), qPrintable(models),
+    fprintf(stderr, "katana-desktop | katana: %s | models: %s | dados: %s\n", qPrintable(katana), qPrintable(modelsDir),
             qPrintable(home));
 
     if (selftest) {

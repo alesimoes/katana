@@ -785,7 +785,14 @@ static void cfg_path(char *out, size_t n) {
     exe[l] = 0;
     snprintf(out, n, "%skatana.cfg", exe);
 #else
-    snprintf(out, n, "katana.cfg");
+    /* na pasta atual se ja existir la (uso no repositorio); senao em ~/.katana (aplicativo instalado: a pasta do
+       executavel pode ser so de leitura) */
+    struct stat st;
+    const char *home = getenv("HOME");
+    if (stat("katana.cfg", &st) == 0 || !home) { snprintf(out, n, "katana.cfg"); return; }
+    snprintf(out, n, "%s/.katana", home);
+    mkdir(out, 0755);
+    snprintf(out, n, "%s/.katana/katana.cfg", home);
 #endif
 }
 

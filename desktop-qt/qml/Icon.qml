@@ -22,6 +22,7 @@ Canvas {
         "wrench": "M4 20L12 12M15 9m-1 0a4 4 0 1 0 8 0",
         "close": "M6 6l12 12M18 6L6 18",
         "terminal": "M5 8l5 4-5 4M12 17h7",
+        "download": "M12 4v11M7 11l5 5 5-5M5 20h14",
         "minimize": "M6 12h12",
         "maximize": "M6 6h12v12H6V6",
         "restore": "M8 8h10v10H8V8M8 8V5h10"
