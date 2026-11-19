@@ -56,6 +56,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         snprintf(what, sizeof what, "%s the file %s (%zu bytes)", app ? "append to" : "write", wp, strlen(content));
         if (!agent_act(what, content)) { snprintf(out, cap, "error: the user denied this action"); return; }
         mkdir_parents(wp);
+        undo_note(wp);
         FILE *f = fopen(wp, app ? "ab" : "wb");
         if (!f && (errno == EACCES || errno == EPERM || errno == EROFS || errno == ENOENT) && wsudo) {     /* sudo=true: grava como root (modal de senha) */
             char rerr[400];
@@ -137,6 +138,8 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
     } else if (strcmp(name, "find_file") == 0) {
         tool_find_file(js, end, out, cap);
 #endif
+    } else if (strcmp(name, "todo") == 0) {
+        tool_todo(js, end, out, cap);
     } else if (strcmp(name, "ask_user") == 0) {
         tool_ask_user(js, end, out, cap);
     } else if (strcmp(name, "terminal") == 0) {

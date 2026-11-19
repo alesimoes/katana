@@ -206,6 +206,7 @@ static void tool_edit_file(const char *js, const char *end, char *out, size_t ca
     }
     const size_t rest = rd - (size_t)(p - b);
     memcpy(nb + o, p, rest); o += rest;
+    undo_note(path);
     f = fopen(path, "wb");
     if (!f && (errno == EACCES || errno == EPERM) && esudo) {          /* sudo=true: grava como root (modal de senha) */
         char rerr[400];

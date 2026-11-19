@@ -265,7 +265,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             if (rq) req = rq + strlen(CP_REQ_HEAD);                 /* pedido original dentro de um resumo anterior */
             AHist nh = {0};
             Buf u = {0};
-            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
+            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); } buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             ah_push(&nh, 'a', h->v[h->n - 1].s, strlen(h->v[h->n - 1].s));
@@ -282,7 +282,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
         if (sm) {
             AHist nh = {0};
             Buf u = {0};
-            buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm);
+            buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm); if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); }
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
