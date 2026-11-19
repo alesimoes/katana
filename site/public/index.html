@@ -85,6 +85,9 @@
   tr:last-child td { border-bottom: 0; }
   td.num { font-family: var(--mono); white-space: nowrap; color: var(--ok); }
   .note { color: var(--mut); font-size: .9rem; }
+  .shot { margin: 1.4rem 0; }
+  .shot img { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line, rgba(128,128,128,.3)); }
+  .shot figcaption { color: var(--mut); font-size: .9rem; margin-top: .5rem; }
   code { font-family: var(--mono); font-size: .9em; background: var(--code); border: 1px solid var(--bd); padding: 1px 6px; border-radius: 6px; }
   .callout { border-left: 3px solid var(--ac); background: var(--card); border-radius: 0 12px 12px 0; padding: 12px 18px; margin: 20px 0; color: var(--mut); }
   .callout strong { color: var(--fg); }
@@ -164,6 +167,7 @@
 <p class="note">Alternating runs on the same machine, because the machine drifts over time. Your numbers will differ with your hardware.</p>
 
 <h2 id="desktop">Run the desktop app</h2>
+<figure class="shot"><img src="desktop.png" width="1000" height="695" alt="katana-desktop: conversation list on the left, a chat where the agent listed the .md files in a folder, and the message box with the model selector and token counter" loading="lazy"><figcaption>katana-desktop: conversations on the left, the agent's actions folded into one step, and the model, working folder and context counter under the message box.</figcaption></figure>
 <p>The desktop app is a native window (Qt 6, no browser) that starts the agent for you. It needs the engine built first, a model file, and Qt 6.5 or newer with CMake 3.21 or newer. On Ubuntu or Debian the Qt packages used here are <code>qt6-base-dev</code>, <code>qt6-declarative-dev</code> and <code>qml6-module-qtquick-controls</code>.</p>
 <div class="term" aria-label="Desktop app commands">
   <div class="bar"><i></i><i></i><i></i></div>
