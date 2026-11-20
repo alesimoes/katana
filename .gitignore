@@ -18,3 +18,4 @@ tools/tokref/__pycache__/
 katana-desktop
 desktop-qt/build/
 site/.firebase/
+__pycache__/
