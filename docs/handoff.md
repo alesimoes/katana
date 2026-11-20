@@ -18,8 +18,14 @@ are allowed, written here). Full description, measurements and next steps: `docs
   for 21 tensors and 36 adapter A/B on llama, qwen2 (GQA, bias) and a Q8_0 base; the tiny model learns three answers
   (loss 12 -> 0.0002) and `katana serve` with the `.kspec` answers them word for word. ASan/UBSan clean.
   `sh tools/traintest/run.sh` repeats all of it in seconds.
-- Dense llama/qwen2 layout only. Qwen3.6 and Gemma 4 need q/k norm, MoE and DeltaNet backward first (next steps in
-  `docs/specialization.md`).
+- Same day, second step: q/k norm (qwen3 per head, olmoe whole vector), MoE (softmax router, top-K, renormalization,
+  scale, shared experts with sigmoid gate, leading dense layers) and heat-guided specialization (`--experts N`:
+  the N experts the base router picks most on the training data become trainable). Training forward equals the
+  engine to 6e-6 on tiny qwen3, qwen3moe (also with shared + dense + GQA) and olmoe; gradcheck passes on all (MoE
+  selection held fixed in the finite differences); a 2-of-8 hot-expert specialization with attention adapters learns
+  the three answers and the server repeats them. Specializations that change experts run on the CPU for now.
+- Still missing for the reference models: Gated DeltaNet and gated attention (Qwen3.6), Gemma 4 layers. Order in
+  `docs/specialization.md`.
 
 ## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
 

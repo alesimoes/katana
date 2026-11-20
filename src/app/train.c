@@ -29,7 +29,12 @@ typedef struct {
 typedef struct {
     TPar *p; int n;
     int tok, out, onorm;        /* indices de token_embd, output (-1 = amarrado ao embedding), output_norm */
-    int *an, *fn, *q, *k, *v, *o, *gt, *up, *dn;    /* por camada */
+    /* por camada (-1 = nao existe nesta camada) */
+    int *an, *fn, *q, *k, *v, *o, *gt, *up, *dn;    /* atencao e feed-forward denso */
+    int *qn, *kn;               /* norma de q e k (olmoe: vetor inteiro; qwen3: por cabeca) */
+    int *rt, *ex0;              /* MoE: roteador; primeiro especialista (gate, up, down de e em ex0 + 3e ...) */
+    int *sg, *su, *sd, *sgv;    /* MoE: especialistas compartilhados e o portao sigmoide deles */
+    int moe;                    /* o modelo tem camadas MoE */
 } TTab;
 
 static void tt_add(TTab *t, const char *name, const Mat *m, Mat *mw, float *v, float **vw, size_t rows, size_t cols) {
@@ -39,18 +44,27 @@ static void tt_add(TTab *t, const char *name, const Mat *m, Mat *mw, float *v, f
     p->mat = m; p->mat_w = mw; p->vec = v; p->vec_w = vw; p->rows = rows; p->cols = cols;
 }
 
-/* tabela dos tensores treinaveis do modelo denso (nomes do GGUF) */
+static int tt_is_moe(const Model *m, int l) { return m->cfg.n_expert && l >= m->cfg.n_dense && m->layers[l].eg; }
+
+/* tabela dos tensores treinaveis (nomes do GGUF; especialista e de um tensor empilhado: nome + ".e<e>") */
 static const char *tt_build(Model *m, TTab *t) {
     const Config *c = &m->cfg;
-    if (c->n_expert || c->ssm_inner || c->g4 || c->go || c->mla || c->glm || c->glmoe)
-        return "this architecture is not supported by the trainer yet (dense llama/qwen2-style models only)";
-    if (c->qk_norm) return "q/k norm (qwen3, olmoe) is not supported by the trainer yet";
+    if (c->ssm_inner || c->g4 || c->go || c->mla || c->glm || c->glmoe)
+        return "this architecture is not supported by the trainer yet (llama, qwen2, qwen3, olmoe, qwen3moe-style models)";
     if ((c->emb_scale != 0.0f && c->emb_scale != 1.0f) || c->softcap != 0.0f) return "embedding scale or logit softcap not supported yet";
-    const int L = c->n_layers, d = c->dim, qd = c->n_heads * c->hd, kvd = c->n_kv * c->hd, H = c->hidden;
-    t->p = xalloc((size_t)L * 9 + 3, sizeof(TPar)); t->n = 0;
-    int *all = xalloc((size_t)L * 9, sizeof(int));
-    t->an = all; t->fn = all + L; t->q = all + 2 * L; t->k = all + 3 * L; t->v = all + 4 * L;
-    t->o = all + 5 * L; t->gt = all + 6 * L; t->up = all + 7 * L; t->dn = all + 8 * L;
+    if (c->n_expert && (c->gate_sig || c->mla)) return "sigmoid routers (DeepSeek-style) are not supported by the trainer yet";
+    const int L = c->n_layers, d = c->dim, qd = c->n_heads * c->hd, kvd = c->n_kv * c->hd, E = c->n_expert;
+    for (int l = 0; l < L; l++) {
+        const Layer *Ly = &m->layers[l];
+        if (Ly->exp_bias || Ly->router_b || Ly->exp_w || Ly->eg_b) return "router or expert bias is not supported by the trainer yet";
+    }
+    size_t cap = (size_t)L * (16 + 3 * (size_t)E) + 4;
+    t->p = xalloc(cap, sizeof(TPar)); t->n = 0;
+    const int NA = 17;
+    int *all = xalloc((size_t)L * NA, sizeof(int));
+    for (int i = 0; i < L * NA; i++) all[i] = -1;
+    int **fields[] = { &t->an, &t->fn, &t->q, &t->k, &t->v, &t->o, &t->gt, &t->up, &t->dn, &t->qn, &t->kn, &t->rt, &t->ex0, &t->sg, &t->su, &t->sd, &t->sgv };
+    for (int i = 0; i < NA; i++) *fields[i] = all + (size_t)i * L;
     t->tok = t->n; tt_add(t, "token_embd.weight", &m->tok_emb, &m->tok_emb, NULL, NULL, c->vocab, d);
     const int tied = m->lm_head.f == m->tok_emb.f && m->lm_head.q == m->tok_emb.q;
     t->out = -1;
@@ -60,16 +74,40 @@ static const char *tt_build(Model *m, TTab *t) {
     for (int l = 0; l < L; l++) {
         Layer *Ly = &m->layers[l];
 #define TT_M(idx, suf, field, r, cc) snprintf(nm, sizeof nm, "blk.%d." suf, l); t->idx[l] = t->n; tt_add(t, nm, &Ly->field, &Ly->field, NULL, NULL, r, cc)
-#define TT_V(idx, suf, field) snprintf(nm, sizeof nm, "blk.%d." suf, l); t->idx[l] = t->n; tt_add(t, nm, NULL, NULL, Ly->field, &Ly->field, 1, d)
-        TT_V(an, "attn_norm.weight", attn_norm);
+#define TT_V(idx, suf, field, nn) snprintf(nm, sizeof nm, "blk.%d." suf, l); t->idx[l] = t->n; tt_add(t, nm, NULL, NULL, Ly->field, &Ly->field, 1, nn)
+        TT_V(an, "attn_norm.weight", attn_norm, d);
         TT_M(q, "attn_q.weight", wq, qd, d);
         TT_M(k, "attn_k.weight", wk, kvd, d);
         TT_M(v, "attn_v.weight", wv, kvd, d);
         TT_M(o, "attn_output.weight", wo, d, qd);
-        TT_V(fn, "ffn_norm.weight", ffn_norm);
-        TT_M(gt, "ffn_gate.weight", w_gate, H, d);
-        TT_M(up, "ffn_up.weight", w_up, H, d);
-        TT_M(dn, "ffn_down.weight", w_down, d, H);
+        if (c->qk_norm && Ly->q_norm) {
+            TT_V(qn, "attn_q_norm.weight", q_norm, c->qk_norm == 1 ? qd : c->hd);
+            TT_V(kn, "attn_k_norm.weight", k_norm, c->qk_norm == 1 ? kvd : c->hd);
+        }
+        TT_V(fn, "ffn_norm.weight", ffn_norm, d);
+        if (tt_is_moe(m, l)) {
+            const int H = c->hidden;
+            t->moe = 1;
+            TT_M(rt, "ffn_gate_inp.weight", router, E, d);
+            t->ex0[l] = t->n;
+            for (int e = 0; e < E; e++) {
+                snprintf(nm, sizeof nm, "blk.%d.ffn_gate_exps.weight.e%d", l, e); tt_add(t, nm, &Ly->eg[e], &Ly->eg[e], NULL, NULL, H, d);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_up_exps.weight.e%d", l, e);   tt_add(t, nm, &Ly->eu[e], &Ly->eu[e], NULL, NULL, H, d);
+                snprintf(nm, sizeof nm, "blk.%d.ffn_down_exps.weight.e%d", l, e); tt_add(t, nm, &Ly->ed[e], &Ly->ed[e], NULL, NULL, d, H);
+            }
+            if (c->n_shared && (Ly->sg.q || Ly->sg.f)) {
+                const int Hs = c->n_shared * H;
+                TT_M(sg, "ffn_gate_shexp.weight", sg, Hs, d);
+                TT_M(su, "ffn_up_shexp.weight", su, Hs, d);
+                TT_M(sd, "ffn_down_shexp.weight", sd, d, Hs);
+                if (Ly->shexp_gate) { TT_V(sgv, "ffn_gate_inp_shexp.weight", shexp_gate, d); }
+            }
+        } else {
+            const int Hd = c->n_expert ? c->hidden_dense : c->hidden;
+            TT_M(gt, "ffn_gate.weight", w_gate, Hd, d);
+            TT_M(up, "ffn_up.weight", w_up, Hd, d);
+            TT_M(dn, "ffn_down.weight", w_down, d, Hd);
+        }
 #undef TT_M
 #undef TT_V
     }
@@ -87,35 +125,38 @@ static int tt_glob(const char *p, const char *s) {
    rank > 0: matrizes ganham adaptador de posto rank (so A e B treinam); normas e embedding treinam inteiros. */
 static size_t tt_select_r(TTab *t, const char *pats, int rank, float alpha);
 static size_t tt_select(TTab *t, const char *pats) { return tt_select_r(t, pats, 0, 0); }
+/* liga o treino de um parametro (inteiro, ou adaptador de posto rank nas matrizes); devolve quantos pesos */
+static size_t tp_enable(TTab *t, int i, int rank, float alpha) {
+    TPar *p = &t->p[i];
+    if (p->w || p->r) return 0;
+    if (rank > 0 && p->mat && i != t->tok) {
+        const size_t R = p->rows, C = p->cols, rr = (size_t)rank;
+        p->r = rank; p->s = alpha / rank;
+        p->a = xalloc(rr * C, 4); p->b = xalloc(R * rr, 4);
+        p->ga = xalloc(rr * C, 4); p->gb = xalloc(R * rr, 4);
+        p->ma1 = xalloc(rr * C, 4); p->ma2 = xalloc(rr * C, 4); p->mb1 = xalloc(R * rr, 4); p->mb2 = xalloc(R * rr, 4);
+        const float sc = 1.0f / sqrtf((float)C);          /* A aleatoria, B zero: comeca igual ao modelo base */
+        for (size_t j = 0; j < rr * C; j++) p->a[j] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * sc;
+        return rr * (R + C);
+    }
+    const size_t n = p->rows * p->cols;
+    p->w = xalloc(n, sizeof(float)); p->g = xalloc(n, sizeof(float));
+    p->m1 = xalloc(n, sizeof(float)); p->m2 = xalloc(n, sizeof(float));
+    if (p->vec) memcpy(p->w, p->vec, n * sizeof(float));
+    else for (size_t r = 0; r < p->rows; r++) mat_row(p->w + r * p->cols, p->mat, (int)r, (int)p->cols);
+    return n;
+}
 static size_t tt_select_r(TTab *t, const char *pats, int rank, float alpha) {
     size_t tot = 0;
     char buf[1024];
     for (int i = 0; i < t->n; i++) {
-        TPar *p = &t->p[i];
         snprintf(buf, sizeof buf, "%s", pats);
         int hit = 0;
         for (char *s = strtok(buf, ","); s && !hit; s = strtok(NULL, ",")) {
             while (*s == ' ') s++;
-            hit = !strcmp(s, "all") || tt_glob(s, p->name);
+            hit = !strcmp(s, "all") || tt_glob(s, t->p[i].name);
         }
-        if (!hit) continue;
-        if (rank > 0 && p->mat && i != t->tok) {
-            const size_t R = p->rows, C = p->cols, rr = (size_t)rank;
-            p->r = rank; p->s = alpha / rank;
-            p->a = xalloc(rr * C, 4); p->b = xalloc(R * rr, 4);
-            p->ga = xalloc(rr * C, 4); p->gb = xalloc(R * rr, 4);
-            p->ma1 = xalloc(rr * C, 4); p->ma2 = xalloc(rr * C, 4); p->mb1 = xalloc(R * rr, 4); p->mb2 = xalloc(R * rr, 4);
-            const float sc = 1.0f / sqrtf((float)C);          /* A aleatoria, B zero: comeca igual ao modelo base */
-            for (size_t j = 0; j < rr * C; j++) p->a[j] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * sc;
-            tot += rr * (R + C);
-            continue;
-        }
-        const size_t n = p->rows * p->cols;
-        p->w = xalloc(n, sizeof(float)); p->g = xalloc(n, sizeof(float));
-        p->m1 = xalloc(n, sizeof(float)); p->m2 = xalloc(n, sizeof(float));
-        if (p->vec) memcpy(p->w, p->vec, n * sizeof(float));
-        else for (size_t r = 0; r < p->rows; r++) mat_row(p->w + r * p->cols, p->mat, (int)r, (int)p->cols);
-        tot += n;
+        if (hit) tot += tp_enable(t, i, rank, alpha);
     }
     return tot;
 }
@@ -263,24 +304,43 @@ static void t_rms_back(TPar *gp, const float *x, const float *inv, const float *
 
 /* ---- ativacoes de uma sequencia ---- */
 typedef struct {
-    int T;
-    float *x, *xn1, *inv1, *q, *k, *v, *P, *ao, *xm, *xn2, *inv2, *a, *u, *h;    /* [L][...] */
+    int T, H, Hs, K, E;         /* H: maior largura do feed-forward denso; Hs: compartilhados */
+    int fixsel;                 /* 1: o MoE reusa os escolhidos ja guardados (gradcheck: a escolha dos K e degrau, sem derivada) */
+    float *x, *xn1, *inv1, *qr, *kr, *invq, *invk, *q, *k, *v, *P, *ao, *xm, *xn2, *inv2, *a, *u, *h;    /* [L][...] */
+    /* MoE, por camada: probabilidades do roteador, escolhidos, pesos, intermediarios e saidas de cada escolhido */
+    float *pr, *ew, *ea, *eu, *eh, *eo; int *sel;
+    float *sa, *su, *sh, *so, *sgt;     /* compartilhados: intermediarios, saida e portao */
     float *xf, *xnf, *invf;
 } TAct;
 
 static void tact_alloc(TAct *A, const Config *c, int T) {
-    const size_t L = c->n_layers, d = c->dim, qd = (size_t)c->n_heads * c->hd, kvd = (size_t)c->n_kv * c->hd, H = c->hidden;
+    const size_t L = c->n_layers, d = c->dim, qd = (size_t)c->n_heads * c->hd, kvd = (size_t)c->n_kv * c->hd;
+    memset(A, 0, sizeof *A);
     A->T = T;
+    A->H = c->n_expert ? (c->hidden_dense > 0 ? c->hidden_dense : 1) : c->hidden;
+    A->E = c->n_expert; A->K = c->n_expert ? c->n_used : 0; A->Hs = c->n_shared * c->hidden;
+    const size_t H = A->H;
     A->x = xalloc(L * T * d, 4); A->xn1 = xalloc(L * T * d, 4); A->inv1 = xalloc(L * T, 4);
+    A->qr = xalloc(L * T * qd, 4); A->kr = xalloc(L * T * kvd, 4);
+    A->invq = xalloc(L * T * c->n_heads, 4); A->invk = xalloc(L * T * c->n_kv, 4);
     A->q = xalloc(L * T * qd, 4); A->k = xalloc(L * T * kvd, 4); A->v = xalloc(L * T * kvd, 4);
     A->P = xalloc(L * c->n_heads * (size_t)T * T, 4); A->ao = xalloc(L * T * qd, 4);
     A->xm = xalloc(L * T * d, 4); A->xn2 = xalloc(L * T * d, 4); A->inv2 = xalloc(L * T, 4);
     A->a = xalloc(L * T * H, 4); A->u = xalloc(L * T * H, 4); A->h = xalloc(L * T * H, 4);
+    if (A->E) {
+        const size_t K = A->K, He = c->hidden;
+        A->pr = xalloc(L * T * A->E, 4); A->ew = xalloc(L * T * K, 4); A->sel = xalloc(L * T * K, sizeof(int));
+        A->ea = xalloc(L * T * K * He, 4); A->eu = xalloc(L * T * K * He, 4); A->eh = xalloc(L * T * K * He, 4); A->eo = xalloc(L * T * K * d, 4);
+        if (A->Hs) { A->sa = xalloc(L * T * A->Hs, 4); A->su = xalloc(L * T * A->Hs, 4); A->sh = xalloc(L * T * A->Hs, 4); }
+        A->so = xalloc(L * T * d, 4); A->sgt = xalloc(L * T, 4);
+    }
     A->xf = xalloc((size_t)T * d, 4); A->xnf = xalloc((size_t)T * d, 4); A->invf = xalloc(T, 4);
 }
 static void tact_free(TAct *A) {
-    free(A->x); free(A->xn1); free(A->inv1); free(A->q); free(A->k); free(A->v); free(A->P); free(A->ao);
-    free(A->xm); free(A->xn2); free(A->inv2); free(A->a); free(A->u); free(A->h); free(A->xf); free(A->xnf); free(A->invf);
+    float *fs[] = { A->x, A->xn1, A->inv1, A->qr, A->kr, A->invq, A->invk, A->q, A->k, A->v, A->P, A->ao, A->xm, A->xn2, A->inv2,
+                    A->a, A->u, A->h, A->pr, A->ew, A->ea, A->eu, A->eh, A->eo, A->sa, A->su, A->sh, A->so, A->sgt, A->xf, A->xnf, A->invf };
+    for (size_t i = 0; i < sizeof fs / sizeof fs[0]; i++) free(fs[i]);
+    free(A->sel);
     memset(A, 0, sizeof *A);
 }
 
@@ -298,10 +358,146 @@ static void t_rope(const Model *m, float *v, int nh, int pos, int inverse) {
 
 static void t_bias(const float *b, float *y, int B, int n) { if (b) for (int t = 0; t < B; t++) for (int i = 0; i < n; i++) y[(size_t)t * n + i] += b[i]; }
 
+static float t_silu(float g) { return g / (1.0f + expf(-g)); }
+
+/* SwiGLU com tres parametros: out = down(silu(gate x) * up x); guarda a, u, h */
+static void t_glu_fwd(TTab *tt, int ig, int iu, int idn, const float *x, float *a, float *u, float *h, float *out, int B, int H) {
+    tp_mv(&tt->p[ig], a, x, B);
+    tp_mv(&tt->p[iu], u, x, B);
+    for (size_t i = 0; i < (size_t)B * H; i++) h[i] = t_silu(a[i]) * u[i];
+    tp_mv(&tt->p[idn], out, h, B);
+}
+/* volta do SwiGLU: dy na saida; acumula em dx e nos gradientes */
+static void t_glu_back(TTab *tt, int ig, int iu, int idn, const float *x, const float *a, const float *u, const float *h,
+                       const float *dy, float *dx, int B, int H) {
+    float *dh = xalloc((size_t)B * H, 4), *da = xalloc((size_t)B * H, 4), *du = xalloc((size_t)B * H, 4);
+    tp_grad(&tt->p[idn], dy, h, B);
+    tp_mvT(&tt->p[idn], dh, dy, B);
+    for (size_t i = 0; i < (size_t)B * H; i++) {
+        const float g = a[i], sg = 1.0f / (1.0f + expf(-g));
+        du[i] = dh[i] * g * sg;
+        da[i] = dh[i] * u[i] * sg * (1.0f + g * (1.0f - sg));
+    }
+    tp_grad(&tt->p[ig], da, x, B); tp_mvT(&tt->p[ig], dx, da, B);
+    tp_grad(&tt->p[iu], du, x, B); tp_mvT(&tt->p[iu], dx, du, B);
+    free(dh); free(da); free(du);
+}
+
+/* MoE da camada l (x = entrada normalizada [T][d]): roteador softmax, K melhores, pesos (renormalizados se o modelo
+   pede), especialistas e compartilhados. out = soma. Guarda tudo para voltar. Mesma conta do motor (moe_route). */
+static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float *out) {
+    const Config *c = &m->cfg;
+    const int T = A->T, d = c->dim, E = A->E, K = A->K, He = c->hidden;
+    float *pr = A->pr + (size_t)l * T * E, *ew = A->ew + (size_t)l * T * K;
+    int *sel = A->sel + (size_t)l * T * K;
+    float *ea = A->ea + (size_t)l * T * K * He, *eu = A->eu + (size_t)l * T * K * He, *eh = A->eh + (size_t)l * T * K * He;
+    float *eo = A->eo + (size_t)l * T * K * d;
+    tp_mv(&tt->p[tt->rt[l]], pr, x, T);
+    float *ch = xalloc(E, 4);
+    for (int t = 0; t < T; t++) {
+        float *p = pr + (size_t)t * E;
+        softmax(p, E);
+        memcpy(ch, p, (size_t)E * 4);
+        float wsum = 0;
+        for (int k = 0; k < K; k++) {
+            int best = 0;
+            if (A->fixsel) best = sel[(size_t)t * K + k];
+            else { for (int e = 1; e < E; e++) if (ch[e] > ch[best]) best = e; }
+            sel[(size_t)t * K + k] = best; ew[(size_t)t * K + k] = p[best]; wsum += p[best];
+            ch[best] = -INFINITY;
+        }
+        const float eps = 6.103515625e-5f;
+        for (int k = 0; k < K; k++) {
+            float w = ew[(size_t)t * K + k];
+            if (c->moe_norm) w /= (wsum > eps ? wsum : eps);
+            if (c->exp_scale != 1.0f) w *= c->exp_scale;
+            ew[(size_t)t * K + k] = w;
+        }
+    }
+    free(ch);
+    memset(out, 0, (size_t)T * d * 4);
+    for (int t = 0; t < T; t++) for (int k = 0; k < K; k++) {
+        const int e = sel[(size_t)t * K + k], base = tt->ex0[l] + 3 * e;
+        const size_t j = (size_t)t * K + k;
+        t_glu_fwd(tt, base, base + 1, base + 2, x + (size_t)t * d, ea + j * He, eu + j * He, eh + j * He, eo + j * d, 1, He);
+        const float w = ew[j];
+        for (int i = 0; i < d; i++) out[(size_t)t * d + i] += w * eo[j * d + i];
+    }
+    if (tt->sg[l] >= 0) {
+        const int Hs = A->Hs;
+        float *sa = A->sa + (size_t)l * T * Hs, *su = A->su + (size_t)l * T * Hs, *sh = A->sh + (size_t)l * T * Hs;
+        float *so = A->so + (size_t)l * T * d, *sgt = A->sgt + (size_t)l * T;
+        t_glu_fwd(tt, tt->sg[l], tt->su[l], tt->sd[l], x, sa, su, sh, so, T, Hs);
+        for (int t = 0; t < T; t++) {
+            sgt[t] = tt->sgv[l] >= 0 ? 1.0f / (1.0f + expf(-dot(tp_vec(&tt->p[tt->sgv[l]]), x + (size_t)t * d, d))) : 1.0f;
+            for (int i = 0; i < d; i++) out[(size_t)t * d + i] += sgt[t] * so[(size_t)t * d + i];
+        }
+    }
+}
+
+static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const float *dy, float *dx) {
+    const Config *c = &m->cfg;
+    const int T = A->T, d = c->dim, E = A->E, K = A->K, He = c->hidden;
+    const float *pr = A->pr + (size_t)l * T * E, *ew = A->ew + (size_t)l * T * K;
+    const int *sel = A->sel + (size_t)l * T * K;
+    const float *ea = A->ea + (size_t)l * T * K * He, *eu = A->eu + (size_t)l * T * K * He, *eh = A->eh + (size_t)l * T * K * He;
+    const float *eo = A->eo + (size_t)l * T * K * d;
+    float *dz = xalloc((size_t)T * E, 4), *deo = xalloc(d, 4), *dp = xalloc(E, 4);
+    for (int t = 0; t < T; t++) {
+        const float *dyt = dy + (size_t)t * d, *p = pr + (size_t)t * E;
+        float dw[64]; double S = 0;
+        for (int k = 0; k < K; k++) {
+            const size_t j = (size_t)t * K + k;
+            const int e = sel[j], base = tt->ex0[l] + 3 * e;
+            dw[k] = dot(eo + j * d, dyt, d);                   /* d peso do especialista */
+            for (int i = 0; i < d; i++) deo[i] = ew[j] * dyt[i];
+            t_glu_back(tt, base, base + 1, base + 2, x + (size_t)t * d, ea + j * He, eu + j * He, eh + j * He, deo, dx + (size_t)t * d, 1, He);
+            S += p[e];
+        }
+        /* pesos -> probabilidades dos escolhidos (renormalizacao e escala), depois softmax -> logits do roteador */
+        memset(dp, 0, (size_t)E * 4);
+        const float es = c->exp_scale, eps = 6.103515625e-5f;
+        if (c->moe_norm) {
+            const double Sx = S > eps ? S : eps;
+            double sdw = 0;
+            for (int k = 0; k < K; k++) sdw += dw[k] * p[sel[(size_t)t * K + k]];
+            for (int k = 0; k < K; k++) {
+                const int e = sel[(size_t)t * K + k];
+                dp[e] += (float)(es * (dw[k] / Sx - (S > eps ? sdw / (Sx * Sx) : 0.0)));
+            }
+        } else for (int k = 0; k < K; k++) dp[sel[(size_t)t * K + k]] += es * dw[k];
+        double s = 0;
+        for (int e = 0; e < E; e++) s += (double)p[e] * dp[e];
+        for (int e = 0; e < E; e++) dz[(size_t)t * E + e] = p[e] * (dp[e] - (float)s);
+    }
+    tp_grad(&tt->p[tt->rt[l]], dz, x, T);
+    tp_mvT(&tt->p[tt->rt[l]], dx, dz, T);
+    if (tt->sg[l] >= 0) {
+        const int Hs = A->Hs;
+        const float *sa = A->sa + (size_t)l * T * Hs, *su = A->su + (size_t)l * T * Hs, *sh = A->sh + (size_t)l * T * Hs;
+        const float *so = A->so + (size_t)l * T * d, *sgt = A->sgt + (size_t)l * T;
+        float *dso = xalloc((size_t)T * d, 4);
+        TPar *gv = tt->sgv[l] >= 0 ? &tt->p[tt->sgv[l]] : NULL;
+        for (int t = 0; t < T; t++) {
+            const float *dyt = dy + (size_t)t * d;
+            for (int i = 0; i < d; i++) dso[(size_t)t * d + i] = sgt[t] * dyt[i];
+            if (gv) {                                         /* portao sigmoide escalar */
+                const float dl = dot(so + (size_t)t * d, dyt, d) * sgt[t] * (1.0f - sgt[t]);
+                const float *gw = tp_vec(gv), *xt = x + (size_t)t * d;
+                for (int i = 0; i < d; i++) dx[(size_t)t * d + i] += dl * gw[i];
+                if (gv->g) for (int i = 0; i < d; i++) gv->g[i] += dl * xt[i];
+            }
+        }
+        t_glu_back(tt, tt->sg[l], tt->su[l], tt->sd[l], x, sa, su, sh, dso, dx, T, Hs);
+        free(dso);
+    }
+    free(dz); free(deo); free(dp);
+}
+
 /* forward da sequencia inteira guardando o necessario para voltar */
 static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
     const Config *c = &m->cfg;
-    const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = c->hidden;
+    const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H;
     const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd);
     float *x = A->x;                                     /* entrada da camada 0 */
@@ -315,12 +511,19 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
         const Layer *Ly = &m->layers[l];
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
         float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P + (size_t)l * nh * T * T;
+        float *qr = A->qr + (size_t)l * T * qd, *kr = A->kr + (size_t)l * T * kvd;
         float *ao = A->ao + (size_t)l * T * qd, *xm = A->xm + (size_t)l * T * d, *xn2 = A->xn2 + (size_t)l * T * d;
-        float *a = A->a + (size_t)l * T * H, *u = A->u + (size_t)l * T * H, *h = A->h + (size_t)l * T * H;
         t_rms(&tt->p[tt->an[l]], xl, xn1, A->inv1 + (size_t)l * T, T, d, c->eps);
-        tp_mv(&tt->p[tt->q[l]], q, xn1, T); t_bias(Ly->bq, q, T, qd);
-        tp_mv(&tt->p[tt->k[l]], k, xn1, T); t_bias(Ly->bk, k, T, kvd);
+        tp_mv(&tt->p[tt->q[l]], qr, xn1, T); t_bias(Ly->bq, qr, T, qd);
+        tp_mv(&tt->p[tt->k[l]], kr, xn1, T); t_bias(Ly->bk, kr, T, kvd);
         tp_mv(&tt->p[tt->v[l]], v, xn1, T); t_bias(Ly->bv, v, T, kvd);
+        if (tt->qn[l] >= 0 && c->qk_norm == 2) {            /* norma por cabeca */
+            t_rms(&tt->p[tt->qn[l]], qr, q, A->invq + (size_t)l * T * nh, T * nh, hd, c->eps);
+            t_rms(&tt->p[tt->kn[l]], kr, k, A->invk + (size_t)l * T * nkv, T * nkv, hd, c->eps);
+        } else if (tt->qn[l] >= 0) {                          /* norma no vetor inteiro */
+            t_rms(&tt->p[tt->qn[l]], qr, q, A->invq + (size_t)l * T * nh, T, qd, c->eps);
+            t_rms(&tt->p[tt->kn[l]], kr, k, A->invk + (size_t)l * T * nkv, T, kvd, c->eps);
+        } else { memcpy(q, qr, (size_t)T * qd * 4); memcpy(k, kr, (size_t)T * kvd * 4); }
         for (int t = 0; t < T; t++) { t_rope(m, q + (size_t)t * qd, nh, t, 0); t_rope(m, k + (size_t)t * kvd, nkv, t, 0); }
         for (int hh = 0; hh < nh; hh++) {
             const int kvh = (hh / group) * hd;
@@ -338,10 +541,9 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
         tp_mv(&tt->p[tt->o[l]], tmp, ao, T); t_bias(Ly->bo, tmp, T, d);
         for (size_t i = 0; i < (size_t)T * d; i++) xm[i] = xl[i] + tmp[i];
         t_rms(&tt->p[tt->fn[l]], xm, xn2, A->inv2 + (size_t)l * T, T, d, c->eps);
-        tp_mv(&tt->p[tt->gt[l]], a, xn2, T);
-        tp_mv(&tt->p[tt->up[l]], u, xn2, T);
-        for (size_t i = 0; i < (size_t)T * H; i++) { const float g = a[i]; h[i] = g / (1.0f + expf(-g)) * u[i]; }
-        tp_mv(&tt->p[tt->dn[l]], tmp, h, T);
+        if (tt->rt[l] >= 0) t_moe_fwd(m, tt, A, l, xn2, tmp);
+        else t_glu_fwd(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + (size_t)l * T * H, A->u + (size_t)l * T * H, A->h + (size_t)l * T * H, tmp, T,
+                       (int)tt->p[tt->gt[l]].rows);
         float *xnext = l + 1 < c->n_layers ? A->x + (size_t)(l + 1) * T * d : A->xf;
         for (size_t i = 0; i < (size_t)T * d; i++) xnext[i] = xm[i] + tmp[i];
     }
@@ -354,7 +556,7 @@ static const TPar *t_head(const TTab *tt) { return tt->out >= 0 ? &tt->p[tt->out
 /* perda media nos alvos marcados (mask[t] = 1: o token t+1 conta) e, se back, o passo para tras inteiro */
 static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount) {
     const Config *c = &m->cfg;
-    const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = c->hidden, V = c->vocab;
+    const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H, V = c->vocab;
     const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd);
     t_forward(m, tt, toks, A);
@@ -385,32 +587,25 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     if (!back) return loss;
 
     /* ---- passo para tras ---- */
-    float *dxn = xalloc((size_t)T * d, 4), *dx = xalloc((size_t)T * d, 4);
+    float *dxn = xalloc((size_t)T * (qd > d ? qd : d), 4), *dx = xalloc((size_t)T * d, 4);
     tp_grad(head, dl, A->xnf, T);
     tp_mvT(head, dxn, dl, T);
     free(dl);
     t_rms_back(&tt->p[tt->onorm], A->xf, A->invf, dxn, dx, T, d);       /* dx = gradiente na saida da ultima camada */
-    float *dh = xalloc((size_t)T * H, 4), *da = xalloc((size_t)T * H, 4), *du = xalloc((size_t)T * H, 4);
     float *dxm = xalloc((size_t)T * d, 4), *dao = xalloc((size_t)T * qd, 4);
     float *dq = xalloc((size_t)T * qd, 4), *dk = xalloc((size_t)T * kvd, 4), *dv = xalloc((size_t)T * kvd, 4);
+    float *dqr = xalloc((size_t)T * qd, 4), *dkr = xalloc((size_t)T * kvd, 4);
     float *dP = xalloc(T, 4);
     for (int l = c->n_layers - 1; l >= 0; l--) {
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
         float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P + (size_t)l * nh * T * T;
+        float *qr = A->qr + (size_t)l * T * qd, *kr = A->kr + (size_t)l * T * kvd;
         float *ao = A->ao + (size_t)l * T * qd, *xm = A->xm + (size_t)l * T * d, *xn2 = A->xn2 + (size_t)l * T * d;
-        float *a = A->a + (size_t)l * T * H, *u = A->u + (size_t)l * T * H, *h = A->h + (size_t)l * T * H;
-        /* feed-forward: x_out = xm + down(silu(a) * u) */
-        memset(dh, 0, (size_t)T * H * 4);
-        tp_grad(&tt->p[tt->dn[l]], dx, h, T);
-        tp_mvT(&tt->p[tt->dn[l]], dh, dx, T);
-        for (size_t i = 0; i < (size_t)T * H; i++) {
-            const float g = a[i], sg = 1.0f / (1.0f + expf(-g)), si = g * sg;
-            du[i] = dh[i] * si;
-            da[i] = dh[i] * u[i] * sg * (1.0f + g * (1.0f - sg));
-        }
+        /* feed-forward: x_out = xm + ffn(norma(xm)) */
         memset(dxn, 0, (size_t)T * d * 4);
-        tp_grad(&tt->p[tt->gt[l]], da, xn2, T); tp_mvT(&tt->p[tt->gt[l]], dxn, da, T);
-        tp_grad(&tt->p[tt->up[l]], du, xn2, T); tp_mvT(&tt->p[tt->up[l]], dxn, du, T);
+        if (tt->rt[l] >= 0) t_moe_back(m, tt, A, l, xn2, dx, dxn);
+        else t_glu_back(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + (size_t)l * T * H, A->u + (size_t)l * T * H, A->h + (size_t)l * T * H,
+                        dx, dxn, T, (int)tt->p[tt->gt[l]].rows);
         memcpy(dxm, dx, (size_t)T * d * 4);
         t_rms_back(&tt->p[tt->fn[l]], xm, A->inv2 + (size_t)l * T, dxn, dxm, T, d);
         /* atencao: xm = x + wo(ao) */
@@ -442,16 +637,26 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
             }
         }
         for (int t = 0; t < T; t++) { t_rope(m, dq + (size_t)t * qd, nh, t, 1); t_rope(m, dk + (size_t)t * kvd, nkv, t, 1); }
+        if (tt->qn[l] >= 0) {                                /* volta da norma de q e k */
+            memset(dqr, 0, (size_t)T * qd * 4); memset(dkr, 0, (size_t)T * kvd * 4);
+            if (c->qk_norm == 2) {
+                t_rms_back(&tt->p[tt->qn[l]], qr, A->invq + (size_t)l * T * nh, dq, dqr, T * nh, hd);
+                t_rms_back(&tt->p[tt->kn[l]], kr, A->invk + (size_t)l * T * nkv, dk, dkr, T * nkv, hd);
+            } else {
+                t_rms_back(&tt->p[tt->qn[l]], qr, A->invq + (size_t)l * T * nh, dq, dqr, T, qd);
+                t_rms_back(&tt->p[tt->kn[l]], kr, A->invk + (size_t)l * T * nkv, dk, dkr, T, kvd);
+            }
+        } else { memcpy(dqr, dq, (size_t)T * qd * 4); memcpy(dkr, dk, (size_t)T * kvd * 4); }
         memset(dxn, 0, (size_t)T * d * 4);
-        tp_grad(&tt->p[tt->q[l]], dq, xn1, T); tp_mvT(&tt->p[tt->q[l]], dxn, dq, T);
-        tp_grad(&tt->p[tt->k[l]], dk, xn1, T); tp_mvT(&tt->p[tt->k[l]], dxn, dk, T);
+        tp_grad(&tt->p[tt->q[l]], dqr, xn1, T); tp_mvT(&tt->p[tt->q[l]], dxn, dqr, T);
+        tp_grad(&tt->p[tt->k[l]], dkr, xn1, T); tp_mvT(&tt->p[tt->k[l]], dxn, dkr, T);
         tp_grad(&tt->p[tt->v[l]], dv, xn1, T); tp_mvT(&tt->p[tt->v[l]], dxn, dv, T);
         memcpy(dx, dxm, (size_t)T * d * 4);
         t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + (size_t)l * T, dxn, dx, T, d);
     }
     TPar *e = &tt->p[tt->tok];
     if (e->g) for (int t = 0; t < T; t++) { float *g = e->g + (size_t)toks[t] * d; const float *s = dx + (size_t)t * d; for (int i = 0; i < d; i++) g[i] += s[i]; }
-    free(dxn); free(dx); free(dh); free(da); free(du); free(dxm); free(dao); free(dq); free(dk); free(dv); free(dP);
+    free(dxn); free(dx); free(dxm); free(dao); free(dq); free(dk); free(dv); free(dqr); free(dkr); free(dP);
     return loss;
 }
 
@@ -516,6 +721,10 @@ static void spec_apply(Model *m) {
             free(A); free(Bm);
         } else if (fread(w, 4, (size_t)(r * cc), f) != (size_t)(r * cc)) die("KATANA_SPEC: arquivo cortado");
         if (p->vec_w) { *p->vec_w = w; continue; }
+        if (strstr(name, "_exps.weight.e") && !getenv("KATANA_CPU")) {      /* o cache de especialistas da GPU supoe um formato so */
+            putenv_dup("KATANA_CPU=1");
+            fprintf(stderr, "especializacao com especialistas treinados: rodando na CPU (o cache da GPU ainda nao mistura formatos)\n");
+        }
         const int was_head = p->mat_w == &m->tok_emb && m->lm_head.f == m->tok_emb.f && m->lm_head.q == m->tok_emb.q;
         memset(p->mat_w, 0, sizeof(Mat));
         p->mat_w->f = w;
@@ -683,7 +892,9 @@ static int train_gradcheck(Model *m, int T) {
         }
     }
     t_clear_grads(&tt);
+    A.fixsel = 0;
     t_step(m, &tt, toks, mask, &A, 1, NULL);
+    A.fixsel = 1;          /* MoE: as diferencas finitas usam os mesmos escolhidos (a derivada so existe com a escolha fixa) */
     for (int i = 0; i < tt.n; i++) for (int part = 0; part < 3; part++) {
         TPar *p = &tt.p[i];
         float *W = part == 0 ? p->w : part == 1 ? p->a : p->b;
@@ -709,6 +920,7 @@ static int train_gradcheck(Model *m, int T) {
         const double num = (lp - lm) / (2.0 * h);
         const double rel = fabs(num - gu) / (fabs(num) + fabs(gu) + 1e-8);
         /* tolerancia: 1% relativo mais um piso absoluto de 1e-4 (o arredondamento do float domina nos gradientes pequenos) */
+        if (getenv("KATANA_GC_VERBOSE") && rel > 1e-2) printf("  (dentro da tolerancia) %s part %d: %.3g x %.3g\n", p->name, part, gu, num);
         if (rel > maxrel) maxrel = rel;
         if (fabs(num - gu) > 1e-2 * (fabs(num) + fabs(gu)) + 1e-4) { printf("  %s%s: analitico %.6g numerico %.6g (rel %.3g)\n", p->name, part == 1 ? " (A)" : part == 2 ? " (B)" : "", gu, num, rel); fails++; }
         checked++;
@@ -726,11 +938,12 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     const Config *c = &m->cfg;
     const char *data = argv[0], *pats = "all";
     char out[1100]; snprintf(out, sizeof out, "%s.kspec", model_path);
-    int steps = 200, seq = 256, every = 10, rank = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
+    int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
     for (int i = 1; i + 1 < argc; i += 2) {
         const char *k = argv[i], *v = argv[i + 1];
         if (!strcmp(k, "--out")) snprintf(out, sizeof out, "%s", v);
-        else if (!strcmp(k, "--train")) pats = v;
+        else if (!strcmp(k, "--train")) { pats = v; pats_set = 1; }
+        else if (!strcmp(k, "--experts")) hot = atoi(v);
         else if (!strcmp(k, "--steps")) steps = atoi(v);
         else if (!strcmp(k, "--lr")) lr = (float)atof(v);
         else if (!strcmp(k, "--seq")) seq = atoi(v);
@@ -778,7 +991,44 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     fclose(f); free(line);
     if (!nex) { fprintf(stderr, "nenhum exemplo com alvo marcado em %s\n", data); return 1; }
     srand(seed);
-    const size_t ntr = tt_select_r(&tt, pats, rank, alpha > 0 ? alpha : (float)rank);
+    size_t ntr = 0;
+    if (hot > 0) {
+        if (!tt.moe) { fprintf(stderr, "--experts: o modelo nao tem camadas MoE\n"); return 1; }
+        /* especializacao guiada pelo calor: em cada camada, os N especialistas que o roteador do modelo base mais
+           escolhe nas posicoes que contam para a perda destes dados */
+        const int L = c->n_layers, E = c->n_expert, K = c->n_used;
+        if (hot > E) hot = E;
+        long *cnt = xalloc((size_t)L * E, sizeof(long));
+        TAct H0; tact_alloc(&H0, c, seq);
+        for (int i = 0; i < nex; i++) {
+            H0.T = ex[i].ids.n;
+            t_forward(m, &tt, ex[i].ids.ids, &H0);
+            for (int l = 0; l < L; l++) {
+                if (tt.rt[l] < 0) continue;
+                for (int t = 0; t + 1 < H0.T; t++) if (ex[i].mask[t]) for (int k = 0; k < K; k++) cnt[(size_t)l * E + H0.sel[((size_t)l * H0.T + t) * K + k]]++;
+            }
+        }
+        H0.T = seq; tact_free(&H0);
+        double cov = 0; int nl = 0;
+        for (int l = 0; l < L; l++) {
+            if (tt.rt[l] < 0) continue;
+            long tot = 0, got = 0;
+            for (int e = 0; e < E; e++) tot += cnt[(size_t)l * E + e];
+            for (int j = 0; j < hot; j++) {
+                int best = -1;
+                for (int e = 0; e < E; e++) if (cnt[(size_t)l * E + e] >= 0 && (best < 0 || cnt[(size_t)l * E + e] > cnt[(size_t)l * E + best])) best = e;
+                if (best < 0) break;
+                got += cnt[(size_t)l * E + best];
+                cnt[(size_t)l * E + best] = -1;               /* ja escolhido */
+                for (int part = 0; part < 3; part++) ntr += tp_enable(&tt, tt.ex0[l] + 3 * best + part, rank, alpha > 0 ? alpha : (float)rank);
+            }
+            cov += tot ? (double)got / tot : 0; nl++;
+        }
+        printf("especialistas quentes: %d por camada; cobrem em media %.0f%% das escolhas do roteador nestes dados\n", hot, nl ? 100.0 * cov / nl : 0.0);
+        free(cnt);
+        if (!pats_set) pats = "blk.*.ffn_gate_inp.weight";    /* padrao com --experts: os quentes e o roteador */
+    }
+    ntr += tt_select_r(&tt, pats, rank, alpha > 0 ? alpha : (float)rank);
     if (!ntr) { fprintf(stderr, "nenhum tensor casa com --train %s\n", pats); return 1; }
     int nt = 0, na = 0; for (int i = 0; i < tt.n; i++) { nt += tt.p[i].w != NULL; na += tt.p[i].r != 0; }
     long tgt = 0; for (int i = 0; i < nex; i++) for (int t = 0; t < ex[i].ids.n; t++) tgt += ex[i].mask[t];
