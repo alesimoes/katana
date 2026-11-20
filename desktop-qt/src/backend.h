@@ -81,6 +81,9 @@ class Backend : public QObject
     Q_PROPERTY(QString statusText READ statusText NOTIFY textsChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY textsChanged)
     Q_PROPERTY(QString speedText READ speedText NOTIFY textsChanged)
+    // uso da maquina (processador, memoria, placa de video), atualizado a cada 2 s
+    Q_PROPERTY(QString sysText READ sysText NOTIFY sysChanged)
+    QString sysText() const { return m_sysText; }
     Q_PROPERTY(QString ctxText READ ctxText NOTIFY textsChanged)
     Q_PROPERTY(int ctxUsed READ ctxUsed NOTIFY textsChanged)
     Q_PROPERTY(int ctxTotal READ ctxTotal NOTIFY textsChanged)
@@ -189,6 +192,7 @@ signals:
     void catalogChanged();
     void pullChanged();
     void shortcutChanged();
+    void sysChanged();
     void currentModelChanged();
     void stateChanged();
     void thinkingChanged();
@@ -233,6 +237,11 @@ private:
     QVariantMap m_machine;
     QProcess *m_pull = nullptr;
     QString m_scApp, m_scData, m_scDesk;
+    void sysTick();
+    QString m_sysText, m_sysGpu;
+    qint64 m_cpuTot = 0, m_cpuIdle = 0;
+    int m_gpuState = 0;         // 0 nao tentou, 1 nvidia-smi funciona, -1 sem placa/ferramenta
+    QProcess *m_gpuProc = nullptr;
     bool m_scOffer = false, m_scTest = false;
     QString m_pullId, m_pullText, m_pullError;
     QByteArray m_pullBuf;

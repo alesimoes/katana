@@ -181,6 +181,12 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     loadModels();
     refreshCatalog();
     refreshSessions();
+    {   // uso da maquina na barra de baixo
+        auto *t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, &Backend::sysTick);
+        t->start(2000);
+        sysTick();
+    }
     // rodando de um AppImage: oferece o atalho uma vez; se ja foi aceito e o arquivo mudou de lugar, conserta o caminho
     m_scApp = qEnvironmentVariable("APPIMAGE");
     if (!m_scApp.isEmpty()) {
@@ -424,6 +430,57 @@ void Backend::answerShortcut(bool yes)
     }
     m_scOffer = false;
     emit shortcutChanged();
+}
+
+// processador (media desde a leitura anterior), memoria em uso e placa de video (carga e memoria, via nvidia-smi)
+void Backend::sysTick()
+{
+    QString cpu, ram;
+    QFile st("/proc/stat");
+    if (st.open(QIODevice::ReadOnly)) {
+        const QList<QByteArray> f = st.readLine().simplified().split(' ');
+        if (f.size() >= 9) {
+            qint64 tot = 0;
+            for (int i = 1; i <= 8; i++) tot += f[i].toLongLong();
+            const qint64 idle = f[4].toLongLong() + f[5].toLongLong();
+            if (m_cpuTot > 0 && tot > m_cpuTot)
+                cpu = QString("CPU %1%").arg(qRound(100.0 * ((tot - m_cpuTot) - (idle - m_cpuIdle)) / (tot - m_cpuTot)));
+            m_cpuTot = tot; m_cpuIdle = idle;
+        }
+    }
+    QFile mi("/proc/meminfo");
+    if (mi.open(QIODevice::ReadOnly)) {
+        double total = 0, avail = 0;
+        for (const QByteArray &l : mi.readAll().split('\n')) {
+            if (l.startsWith("MemTotal:")) total = l.mid(9).simplified().split(' ').value(0).toDouble();
+            else if (l.startsWith("MemAvailable:")) avail = l.mid(13).simplified().split(' ').value(0).toDouble();
+        }
+        if (total > 0) ram = QString("RAM %1 de %2 GB").arg(qRound((total - avail) / 1048576.0)).arg(qRound(total / 1048576.0));
+    }
+    if (m_gpuState >= 0 && !m_gpuProc) {
+        m_gpuProc = new QProcess(this);
+        QProcess *p = m_gpuProc;
+        auto done = [this, p](bool ok) {
+            if (m_gpuProc != p) return;
+            m_gpuProc = nullptr;
+            const QList<QByteArray> f = p->readAllStandardOutput().split('\n').value(0).split(',');
+            p->deleteLater();
+            if (!ok || f.size() < 3) { if (m_gpuState == 0) m_gpuState = -1; m_sysGpu.clear(); return; }
+            m_gpuState = 1;
+            const QLocale pt(QLocale::Portuguese);
+            m_sysGpu = QString("GPU %1% · %2 de %3 GB").arg(f[0].trimmed().toInt())
+                           .arg(pt.toString(f[1].trimmed().toDouble() / 1024.0, 'f', 1), pt.toString(f[2].trimmed().toDouble() / 1024.0, 'f', 1));
+        };
+        connect(p, &QProcess::finished, this, [done](int code, QProcess::ExitStatus s) { done(code == 0 && s == QProcess::NormalExit); });
+        connect(p, &QProcess::errorOccurred, this, [done](QProcess::ProcessError e) { if (e == QProcess::FailedToStart) done(false); });
+        p->start("nvidia-smi", {"--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"});
+    }
+    QStringList parts;
+    if (!cpu.isEmpty()) parts << cpu;
+    if (!ram.isEmpty()) parts << ram;
+    if (!m_sysGpu.isEmpty()) parts << m_sysGpu;
+    const QString t = parts.join("   ·   ");
+    if (t != m_sysText) { m_sysText = t; emit sysChanged(); }
 }
 
 void Backend::cancelPull()
