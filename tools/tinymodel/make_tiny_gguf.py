@@ -59,6 +59,8 @@ def main():
     ap.add_argument("--used", type=int, default=2, help="MoE: experts per token")
     ap.add_argument("--shared", action="store_true", help="MoE: add a shared expert with a sigmoid gate")
     ap.add_argument("--dense", type=int, default=0, help="MoE: leading dense layers")
+    ap.add_argument("--template", default="chatml", choices=["chatml", "chatml-xml", "gemma4", "glm"],
+                    help="chat template written to the file (decides the chat and tool-call format katana uses)")
     ap.add_argument("--kv", type=int, default=4, help="key/value heads (fewer than 4 = grouped-query attention)")
     a = ap.parse_args()
     rnd = random.Random(a.seed)
@@ -90,6 +92,12 @@ def main():
     E, He, Hs = a.experts, 32, 48
     tmpl = ("{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}"
             "{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}")
+    if a.template == "chatml-xml":   # chamadas de ferramenta em XML, como no template do Qwen3.6
+        tmpl += "{# tools: <tool_call><function=name><parameter=k>v</parameter></function></tool_call> #}"
+    elif a.template == "gemma4":
+        tmpl = "{{ '<|turn>' + role + '\\n' + content + '<turn|>' }}{# <|tool_call>call:name{} #}"
+    elif a.template == "glm":
+        tmpl = "[gMASK]<sop>{{ '<|user|>' + content + '<|assistant|>' }}{# <tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value></tool_call> </think> #}"
     kvs = [
         kv_str("general.architecture", A),
         kv_str("general.name", "katana-tiny-test"),

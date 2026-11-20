@@ -34,6 +34,11 @@ are allowed, written here). Full description, measurements and next steps: `docs
   backward pass (`KATANA_TRAIN_DNCK`; gradcheck passes with blocks of 1, 3 and 64); attention rows recomputed instead
   of stored; MoE tokens grouped by expert (one batch per expert). `katana train ... --plan 1` prints the memory plan
   without training. Not measured on a real model yet.
+- `katana import` (`src/app/importer.c`): conversations in the messages format or ShareGPT -> training JSONL in the
+  model's exact template (ChatML with XML or JSON calls, Gemma 4, GLM), calls in the native syntax, results wrapped
+  as the agent wraps them, system prompt kept or taken from a real session (`--system ksess:FILE`). The agent's call
+  readers read the imported calls back in all four formats (`tools/traintest/import_calls.c`). `ah_render` no longer
+  writes an empty system block when the system prompt is empty (the agent always has one, so its text is unchanged).
 - Still missing: Gemma 4 layers. Ideas raised by the owner, not started: a local `katana learn` loop (each user's
   agent specializes on its own passed sessions, nothing leaves the machine) and importing sessions from open-weight
   teacher models (not from closed services whose terms forbid training other models on their outputs).

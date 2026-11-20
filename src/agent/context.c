@@ -17,7 +17,7 @@ static void ah_clear(AHist *h) { for (int i = 0; i < h->n; i++) free(h->v[i].s);
 static void ah_render(const AHist *h, const char *sys, Buf *o) {
     buf_clear(o);
     if (g_ah_g4) {      /* gemma4: mensagens ja no texto exato do cache (u: so o pedido; a: resposta; t: resposta de ferramenta) */
-        buf_str(o, "<|turn>system\n"); if (g4_think()) buf_str(o, "<|think|>\n"); buf_str(o, sys); buf_str(o, "<turn|>\n");
+        if (sys[0] || g4_think()) { buf_str(o, "<|turn>system\n"); if (g4_think()) buf_str(o, "<|think|>\n"); buf_str(o, sys); buf_str(o, "<turn|>\n"); }
         for (int i = 0; i < h->n; i++) {
             const char r = h->v[i].role;
             if (r == 'u') {
@@ -30,7 +30,8 @@ static void ah_render(const AHist *h, const char *sys, Buf *o) {
         }
         return;
     }
-    buf_str(o, tf_sys()); buf_str(o, sys); buf_str(o, tf_end());
+    if (sys[0]) { buf_str(o, tf_sys()); buf_str(o, sys); buf_str(o, tf_end()); }     /* sem prompt de sistema: sem o bloco (o agente sempre tem um) */
+    else if (g_glm) buf_str(o, "[gMASK]<sop>");
     for (int i = 0; i < h->n; i++) {
         if (i) buf_str(o, tf_end());
         buf_str(o, h->v[i].role == 'a' ? tf_asst() : h->v[i].role == 't' ? tf_tool() : tf_user());

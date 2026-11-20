@@ -51,5 +51,6 @@
 #include "app/server.c"                /* servidor HTTP (pagina, /api/chat, rede, fila do modelo) */
 #include "app/openai.c"                /* API no formato da OpenAI (/v1/chat/completions, /v1/models) */
 #include "app/train.c"                 /* especializacao: passo para tras, AdamW, katana train, .kspec (KATANA_SPEC) */
+#include "app/importer.c"              /* katana import: conversas de fora -> dados de treino no formato do modelo */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/main.c"                  /* toktest, subcomandos e main */

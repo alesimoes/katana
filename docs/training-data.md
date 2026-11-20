@@ -40,6 +40,34 @@ yet and nothing has been trained.
    converter and quantizer), run codebench on base and tuned models, and use `run.py compare`. Tasks used for
    training must not be the tasks used to measure: hold out a split, or write new tasks.
 
+## Importing conversations from elsewhere (`katana import`)
+
+```
+katana import <model.gguf> <in.jsonl> <out.jsonl> [--system keep|ksess:FILE|file:FILE|none] [--only-known-tools]
+```
+
+Reads one conversation per line, in the messages format (`role`/`content`, `tool_calls` with
+`function.name`/`function.arguments`, `tool` messages with `tool_call_id`, `reasoning_content`) or ShareGPT
+(`conversations` with `from`/`value`, including `function_call` and `observation`), and writes the same JSONL as
+`ksess2jsonl.py` (`text` + `train_spans`), ready for `katana train`. Only the model's metadata is read (no weights).
+
+- The text is rendered by the agent's own `ah_render`, so it is the template the agent uses: ChatML (Qwen family),
+  Gemma 4 turns, or GLM 4.5+.
+- Tool calls become the model's native syntax: XML (`<function=..><parameter=..>`) when the model's template uses it
+  (Qwen3.6), JSON inside `<tool_call>` otherwise, `<|tool_call>call:name{..}<tool_call|>` for Gemma 4,
+  `<arg_key>/<arg_value>` for GLM. `tools/traintest/import_calls.c` checks that the agent's own call readers read
+  them back in all four formats.
+- Tool results are wrapped exactly as the agent wraps them (`[resultado da ferramenta ...]`), after the same
+  special-token defanging.
+- Reasoning goes in the thinking block (`<think>`, or the Gemma 4 thought channel) when the model reasons; an
+  assistant turn without reasoning gets the empty block the template expects.
+- `--system`: `keep` (the conversation's own system message), `ksess:FILE` (the exact system prompt of a real katana
+  agent session, from its `KSX1` block: the imported data then conditions on the prompt the agent really uses),
+  `file:FILE`, or `none`. Calls to tools the system prompt does not mention are counted; `--only-known-tools` drops
+  those conversations (a model trained on tool names the agent does not have will call tools that do not exist).
+- Where the data comes from matters: conversations of katana itself, or of open-weight models whose license allows
+  it. Closed services usually forbid in their terms using their outputs to train other models.
+
 ## What a session file holds
 
 `.ksess` (written by `sess_save` in `src/agent/loop.c`): model fingerprint, expert heat, the compact conversation

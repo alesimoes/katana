@@ -952,6 +952,7 @@ static int run_main(int argc, char **argv) {
         }
         return quantize_cmd(in, out, type);
     }
+    if (argc >= 5 && strcmp(argv[1], "import") == 0) return import_main(argv[2], argc - 3, argv + 3);    /* conversas -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
         Model m; memset(&m, 0, sizeof m);
         putenv_dup("KATANA_CPU=1");
@@ -1050,6 +1051,8 @@ static int run_main(int argc, char **argv) {
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
         "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
         "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
+        "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"
+        "                                       conversas (mensagens ou ShareGPT) -> dados de treino no formato exato do modelo\n"
         "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
         "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
         "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
