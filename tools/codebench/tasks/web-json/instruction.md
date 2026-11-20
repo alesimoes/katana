@@ -1,0 +1,1 @@
+The local site at {url} has a small JSON API for a warehouse. Start from {url}/api/index.json, which describes how to reach the item list; the list is split into several pages. Sum the field "qty" of every item whose "category" is "bolts" and whose "status" is "in_stock", across all pages, and write only that number (an integer) into answer.txt in the current folder.

@@ -1,0 +1,5 @@
+{
+ "name": "warehouse",
+ "items_first_page": "/api/items/page-1.json",
+ "note": "each page has a next field with the path of the following page, null on the last one"
+}
