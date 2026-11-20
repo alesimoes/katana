@@ -196,7 +196,7 @@ One task of difference in one run each is not a difference (`mdhtml` passed the 
 **New task groups (30 tasks in total).** 5 terminal tasks (`term-*`: find the process behind a port, find the commit
 that broke a check, an interactive program, a build that fails three times, rotated gzip logs) and 4 web tasks
 (`web-*`, served by a local HTTP server started by the task's `setup.py`). `run.py --verify` checks every task
-without the model (fails untouched, passes with the reference solution): 30 of 30. Only Gemma 4 has run them so far.
+without the model (fails untouched, passes with the reference solution): 30 of 30. One run each (2026-11-19): Gemma 4 9/9, Qwen3.6 9/9 (mean 79 s). Both models solve all nine, so these tasks show the terminal and web tools working end to end but do not separate the models; harder ones are needed for that.
 
 No difference is significant (sign test p = 1.0; which tasks fail changes from run to run): the lean prompt did not
 lose tasks, and nothing here shows it gaining any. The mean time of the lean `agent` run carries one 901 s timeout.
@@ -210,7 +210,7 @@ was compiled on Windows, so expect more of the same kind (`find_file`, the synta
 POSIX only by design).
 
 **Next, in the order agreed with the owner:** find which tools fail in real use on the desktop (owner report, not
-yet specified); retest Gemma 4 with the lean prompt; run Qwen3.6 on the 9 new benchmark tasks; the runtime LoRA adapter for Qwen3.8 is on hold (dense model, the owner decided not to spend time on dense models).
+yet specified); retest Gemma 4 with the lean prompt; harder terminal and web tasks (the nine new ones are solved by both models); the runtime LoRA adapter for Qwen3.8 is on hold (dense model, the owner decided not to spend time on dense models).
 
 ## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
 
