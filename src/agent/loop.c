@@ -14,7 +14,10 @@ static void sess_save(Model *m, const char *sys, const AHist *hist, const AHist 
 static void agent_regrow(Model *m, const char *sys, const AHist *hist, const AHist *slog) {
 #ifndef _WIN32
     if (!g_orig_argv || getenv("KATANA_NO_REGROW")) return;
-    if (!getenv("KATANA_UI") && !isatty(0)) return;         /* entrada por arquivo ou pipe: linhas ja lidas se perderiam na recarga */
+    /* so no fim de um turno de verdade e sem nada esperando na entrada (a entrada do agente nao tem buffer, entao o
+       que ainda nao foi lido fica no canal e sobrevive a recarga; com algo pendente, atender primeiro) */
+    if (g_no_ready) return;
+    { struct pollfd pf = { 0, POLLIN, 0 }; if (poll(&pf, 1, 0) > 0) return; }
     if (hist->n && !g_sess_path[0]) return;                 /* sem sessao gravada nao ha como voltar a conversa */
     const int mb = getenv("KATANA_REGROW_TEST") ? atoi(getenv("KATANA_REGROW_TEST")) : gpu_regrow_mb();
     if (mb < 600) return;
@@ -277,6 +280,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     g_sudo_agent = 1;
     srand((unsigned)time(NULL));
     console_init();
+    setvbuf(stdin, NULL, _IONBF, 0);       /* sem buffer: nenhuma linha fica presa no processo se ele se recarregar (agent_regrow) */
     g_web = !(getenv("KATANA_WEB") && strcmp(getenv("KATANA_WEB"), "0") == 0);
     fprintf(stderr, "%sAgent started in the current folder. /help lists the commands; Ctrl+C interrupts the answer.%s\n"
                     "%s\n"
