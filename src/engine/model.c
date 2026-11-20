@@ -747,6 +747,7 @@ static const uint8_t *map_file(const char *path, int64_t *size) {
 }
 
 static void sample_preset(const char *arch);
+static void spec_apply(Model *m);
 static void load_model(Model *m, const char *path) {
     int64_t fsz = 0;
     const uint8_t *buf = map_file(path, &fsz);
@@ -1279,6 +1280,7 @@ static void load_model(Model *m, const char *path) {
     prefetch_setup(fsz);
     if (c->n_expert) warm_start(m);
     sample_preset(c->arch);
+    spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
     if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 

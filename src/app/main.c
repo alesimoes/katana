@@ -952,6 +952,20 @@ static int run_main(int argc, char **argv) {
         }
         return quantize_cmd(in, out, type);
     }
+    if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
+        Model m; memset(&m, 0, sizeof m);
+        putenv_dup("KATANA_CPU=1");
+        load_model(&m, argv[2]);
+        return train_gradcheck(&m, argc > 3 ? atoi(argv[3]) : 12);
+    }
+    if (argc >= 4 && strcmp(argv[1], "train") == 0) {         /* especializacao: grava um .kspec */
+        Model m; memset(&m, 0, sizeof m);
+        putenv_dup("KATANA_CPU=1");
+        putenv_dup("KATANA_SPEC=");
+        load_model(&m, argv[2]);
+        print_info(&m);
+        return train_main(&m, argv[2], argc - 3, argv + 3);
+    }
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -1034,6 +1048,9 @@ static int run_main(int argc, char **argv) {
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
+        "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
+        "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
+        "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
         "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
         "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
         "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"

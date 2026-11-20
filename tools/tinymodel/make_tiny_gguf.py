@@ -9,6 +9,7 @@ chat template, so katana treats it like a Qwen-style chat model.
   python3 tools/tinymodel/make_tiny_gguf.py /tmp/tiny.gguf [--seed 1] [--no-eos]
 
 --no-eos makes the end-of-turn token unlikely, so answers run until max_tokens (for testing length limits).
+--arch qwen2 --kv 2 gives the other attention layout (RoPE in halves, q/k/v bias, grouped-query attention).
 """
 import argparse, random, struct, sys
 
@@ -49,6 +50,8 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-eos", action="store_true")
+    ap.add_argument("--arch", default="llama", choices=["llama", "qwen2"], help="qwen2: RoPE in halves and q/k/v bias")
+    ap.add_argument("--kv", type=int, default=4, help="key/value heads (fewer than 4 = grouped-query attention)")
     a = ap.parse_args()
     rnd = random.Random(a.seed)
 
@@ -68,20 +71,22 @@ def main():
     V = len(tokens)
 
     dim, heads, hidden, layers, ctx = 64, 4, 128, 2, 512
+    A, kvh = a.arch, a.kv
+    kvd = dim // heads * kvh
     tmpl = ("{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}"
             "{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}")
     kvs = [
-        kv_str("general.architecture", "llama"),
+        kv_str("general.architecture", A),
         kv_str("general.name", "katana-tiny-test"),
         kv_u32("general.alignment", 32),
-        kv_u32("llama.context_length", ctx),
-        kv_u32("llama.embedding_length", dim),
-        kv_u32("llama.block_count", layers),
-        kv_u32("llama.feed_forward_length", hidden),
-        kv_u32("llama.attention.head_count", heads),
-        kv_u32("llama.attention.head_count_kv", heads),
-        kv_f32("llama.rope.freq_base", 10000.0),
-        kv_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
+        kv_u32(A + ".context_length", ctx),
+        kv_u32(A + ".embedding_length", dim),
+        kv_u32(A + ".block_count", layers),
+        kv_u32(A + ".feed_forward_length", hidden),
+        kv_u32(A + ".attention.head_count", heads),
+        kv_u32(A + ".attention.head_count_kv", kvh),
+        kv_f32(A + ".rope.freq_base", 10000.0),
+        kv_f32(A + ".attention.layer_norm_rms_epsilon", 1e-5),
         kv_str("tokenizer.ggml.model", "gpt2"),
         kv_str("tokenizer.ggml.pre", "default"),
         kv_arr_str("tokenizer.ggml.tokens", tokens),
@@ -107,13 +112,16 @@ def main():
         p = "blk.%d." % l
         tensors += [(p + "attn_norm.weight", [dim], [1.0] * dim),
                     (p + "attn_q.weight", [dim, dim], rand(dim * dim, 0.1)),
-                    (p + "attn_k.weight", [dim, dim], rand(dim * dim, 0.1)),
-                    (p + "attn_v.weight", [dim, dim], rand(dim * dim, 0.1)),
+                    (p + "attn_k.weight", [dim, kvd], rand(dim * kvd, 0.1)),
+                    (p + "attn_v.weight", [dim, kvd], rand(dim * kvd, 0.1)),
                     (p + "attn_output.weight", [dim, dim], rand(dim * dim, 0.1)),
                     (p + "ffn_norm.weight", [dim], [1.0] * dim),
                     (p + "ffn_gate.weight", [dim, hidden], rand(dim * hidden, 0.1)),
                     (p + "ffn_up.weight", [dim, hidden], rand(dim * hidden, 0.1)),
                     (p + "ffn_down.weight", [hidden, dim], rand(dim * hidden, 0.1))]
+        if A == "qwen2":
+            tensors += [(p + "attn_q.bias", [dim], rand(dim, 0.1)), (p + "attn_k.bias", [kvd], rand(kvd, 0.1)),
+                        (p + "attn_v.bias", [kvd], rand(kvd, 0.1))]
 
     head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kvs)) + b"".join(kvs)
     info, data, off = b"", b"", 0

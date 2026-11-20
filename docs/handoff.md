@@ -4,6 +4,23 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0r. katana's own training engine: `katana train`, `katana gradcheck`, `.kspec` (2026-11-20)
+
+Owner's decision: specialization is katana's own, no external tool or package (techniques such as low-rank adapters
+are allowed, written here). Full description, measurements and next steps: `docs/specialization.md`.
+
+- `src/app/train.c`: training forward that keeps activations, hand-written backward (RMSNorm, GQA attention with RoPE
+  in pairs or halves, SwiGLU, bias, tied or separate output), AdamW with clipping, low-rank adapters (`--rank`),
+  frozen weights read straight from the GGUF quantization, loss only on marked spans (`train_spans`).
+- `.kspec` (`KSPEC2`): only the trained tensors (whole or adapters), tied to the base by file size and parameter count;
+  `KATANA_SPEC=file` applies it in `load_model` before `gpu_setup` (adapters merged at load).
+- Measured on tiny random models only (2 cores, no GPU): training forward equals the engine to 5e-6; gradcheck passes
+  for 21 tensors and 36 adapter A/B on llama, qwen2 (GQA, bias) and a Q8_0 base; the tiny model learns three answers
+  (loss 12 -> 0.0002) and `katana serve` with the `.kspec` answers them word for word. ASan/UBSan clean.
+  `sh tools/traintest/run.sh` repeats all of it in seconds.
+- Dense llama/qwen2 layout only. Qwen3.6 and Gemma 4 need q/k norm, MoE and DeltaNet backward first (next steps in
+  `docs/specialization.md`).
+
 ## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
 
 Written from a cloud session without GPU or real models: everything below was checked with a tiny random-weight

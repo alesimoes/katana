@@ -187,6 +187,8 @@ and a sudo password dialog. See [`desktop-qt/README.md`](desktop-qt/README.md).
 katana chat  <model> ["question"] [max_tokens] [temperature]   one question, or an interactive session
 katana run   <model> "text" [max_tokens] [temperature]         plain completion
 katana serve <model> [port]      web chat and an OpenAI-compatible API at http://127.0.0.1:8080 (chat only, no tools)
+katana train <model> <data.jsonl> [--train PATTERNS] [--rank R] ...   katana's own training: writes a .kspec (docs/specialization.md)
+katana gradcheck <model> [T]     checks the training backward pass (training forward vs engine, gradients vs finite differences)
 katana agent <model>             chat with tools
 katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools
