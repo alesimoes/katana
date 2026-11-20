@@ -170,7 +170,7 @@ undoes it; `python3-packaging` may be wanted by other packages).
 
 **Qwen3.8-27B (`qwen35` dense).** Loads and generates coherent text and code on the hybrid path (dense SwiGLU
 feed-forward in place of the MoE; the extra next-token-prediction layer is ignored). Not compared numerically with the
-reference engine; the full Vulkan graph is still MoE only; speed not measured with the GPU free.
+reference engine; the full Vulkan graph is still MoE only. Speed with the GPU free (measured 2026-11-19, `bench`, 96 tokens, three rounds): 1.2 tok/s of generation, too slow for use on this machine.
 
 **codebench (`tools/codebench/`).** 21 small tasks with hidden tests (15 Python fixes plus 6 larger ones: several
 files, shell scripts). Qwen3.6, one run each, 900 s limit (measured 2026-11-19, same machine, runs one after another):
