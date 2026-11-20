@@ -5,6 +5,7 @@
 #     qwen35moe (layout do Qwen3.6: Gated DeltaNet + atencao com portao + MoE) e qwen35 denso
 #  2. treino com tensores inteiros, com adaptadores sobre a base quantizada e com especialistas quentes num MoE
 #  3. o servidor com KATANA_SPEC responde exatamente o que foi treinado (temperatura 0)
+#  4. katana import: conversas de fora viram dados de treino; as chamadas voltam pelos leitores do agente
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 K=./katana
@@ -60,4 +61,12 @@ check_spec "$D/moe.gguf" "$D/moe.kspec" 8193
 $K train "$D/q35.gguf" "$D/sft_think.jsonl" --rank 8 --train "blk.*,output_norm.weight" --steps 400 --lr 5e-3 --seq 128 \
    --out "$D/q35.kspec" 2>/dev/null | grep "perda media final"
 check_spec "$D/q35.gguf" "$D/q35.kspec" 8194
+# katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
+printf '%s\n' \
+ '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
+ '{"conversations":[{"from":"system","value":"You are katana."},{"from":"human","value":"say hi"},{"from":"gpt","value":"hi there!"}]}' > "$D/chats.jsonl"
+if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" 2>/dev/null | grep -q "^import: 2 de 2"; then echo "import: ok"; else echo "import: FALHOU"; fail=1; fi
+$K train "$D/llama.gguf" "$D/imp.jsonl" --steps 150 --lr 3e-3 --seq 256 --out "$D/imp.kspec" 2>/dev/null | grep "perda media final"
+gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/import_calls.c -o "$D/import_calls" -lm -lpthread -ldl
+if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agente nos 4 formatos: ok"; else echo "chamadas importadas: FALHOU"; fail=1; fi
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi
