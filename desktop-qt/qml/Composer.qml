@@ -204,9 +204,12 @@ Item {
             Layout.leftMargin: 8
             elide: Text.ElideRight
             font.pixelSize: 12
-            color: backend.errorText ? Theme.err : Theme.mut
+            objectName: "statusLine"
+            color: backend.errorText || backend.stalled ? Theme.err : Theme.mut
             text: backend.errorText ? backend.errorText
+                  : backend.stalled ? backend.activityText
                   : backend.statusText && !/^(Preparando|Retomando|Carregando)/.test(backend.statusText) ? backend.statusText
+                  : backend.activityText ? backend.activityText
                   : ta.text.indexOf("\n") >= 0 ? "As quebras de linha serão enviadas como espaço."
                   : ""
             Accessible.role: Accessible.StaticText

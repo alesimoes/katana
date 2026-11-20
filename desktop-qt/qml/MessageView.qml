@@ -58,6 +58,7 @@ Item {
             required property string text
             required property string name
             required property string out
+            required property string time
             required property int index
             // sequencia de ferramentas seguidas vira um unico grupo (so o primeiro item desenha)
             readonly property bool groupHead: kind === "tool" && (index === 0 || backend.messages.get(index - 1).kind !== "tool")
@@ -119,6 +120,17 @@ Item {
                             TapHandler { acceptedButtons: Qt.RightButton; onTapped: umenu.popup() }
                         }
                     }
+                    Text {      // hora em que a mensagem foi enviada
+                        objectName: "msgTime"
+                        visible: d.time.length > 0
+                        anchors.right: parent.right
+                        anchors.rightMargin: 6
+                        y: bubble.height + 3
+                        text: d.time
+                        color: Theme.mut
+                        font.family: Theme.sans
+                        font.pixelSize: 10
+                    }
                 }
             }
             Component {
@@ -126,6 +138,15 @@ Item {
                 Item {
                     height: Math.max(body.height, 26) + 22
                     Image { width: 26; height: 26; source: "qrc:/icons/katana-64.png"; sourceSize: Qt.size(26*2, 26*2); smooth: true; mipmap: true }
+                    Text {      // hora em que a resposta comecou
+                        visible: d.time.length > 0 && d.time.length <= 5
+                        x: 0; y: 29; width: 26
+                        horizontalAlignment: Text.AlignHCenter
+                        text: d.time
+                        color: Theme.mut
+                        font.family: Theme.sans
+                        font.pixelSize: 9
+                    }
                     AssistantBody {
                         id: body
                         x: 38

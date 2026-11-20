@@ -5,6 +5,19 @@
  * que a sessao usou e recalcula so o prefixo compacto, ou carrega o KV dele do disco (pfx_save/pfx_load). */
 #define SESS_MAGIC 0x3153534553544b4bULL
 static char g_sess_path[1024], g_resume_path[1024];
+/* entrada longa (resultado de ferramenta, texto colado) sob a interface: em pedacos de 256 tokens, avisando o
+   andamento (FEED total feito); o resultado e o mesmo de uma passada so */
+static float *agent_feed(Model *m, const int *ids, int n, int pos) {
+    const int step = 256;
+    if (n < 2 * step || !getenv("KATANA_UI")) return forward_seq(m, ids, n, pos, 1);
+    int i = 0;
+    for (; n - i > step; i += step) {
+        printf("\x01" "FEED %d %d\n", n, i); fflush(stdout);
+        forward_seq(m, ids + i, step, pos + i, 0);
+    }
+    printf("\x01" "FEED %d %d\n", n, i); fflush(stdout);
+    return forward_seq(m, ids + i, n - i, pos + i, 1);
+}
 static char **g_orig_argv; static int g_orig_argc;      /* linha de comando original, para o agente se recarregar */
 
 /* A placa estava dividida com outro programa quando o modelo subiu e agora liberou: entre dois turnos o agente
@@ -440,7 +453,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 pos = np2; first = 0;
             } else {
                 const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
-                lg = forward_seq(m, ids.ids + np, ids.n - np, pos + np, 1);
+                lg = agent_feed(m, ids.ids + np, ids.n - np, pos + np);
                 pos += ids.n; first = 0;
             }
             if (cml && prole) { ah_push(&hist, prole, pend.p ? pend.p : "", pend.n); ah_push(&slog, prole, pend.p ? pend.p : "", pend.n); }

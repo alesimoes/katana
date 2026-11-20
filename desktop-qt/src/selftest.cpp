@@ -331,6 +331,20 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         check(be.planMode(), "MODE plan: modo plano ligado");
         c.grab("11-tarefas-plano.png");
         be.injectMarker("MODE normal");
+        {   // hora nas mensagens, andamento de leitura longa e deteccao de travamento
+            bool temHora = false;
+            for (int i = 0; i < be.messages()->count(); i++) { const QVariantMap mm = be.messages()->get(i); if (mm["kind"] == "user" && mm["time"].toString().size() == 5) temHora = true; }
+            check(temHora, "mensagem do usuario leva a hora de envio (HH:mm)");
+            be.injectMarker("FEED 2000 512");
+            check(be.statusText() == "Lendo 2.000 tokens: 25%", "FEED: andamento da leitura longa: " + be.statusText());
+            be.injectMarker("FEED 2000 2000");
+            bool st = true;
+            check(Backend::activityFor(3, 3, 6.0, false, 0, &st).isEmpty() && !st, "atividade: nada nos primeiros segundos");
+            check(Backend::activityFor(70, 2, 6.0, false, 0, &st) == "Trabalhando há 1 min 10 s" && !st, "atividade: tempo do turno");
+            check(Backend::activityFor(70, 40, 6.0, false, 0, &st).contains("processando") && !st, "atividade: sem saida mas com processador em uso nao e travamento");
+            check(Backend::activityFor(70, 40, 0.0, true, 0, &st).contains("aguardando um comando") && !st, "atividade: comando em curso nao e travamento");
+            check(Backend::activityFor(70, 40, 0.0, false, 35, &st).contains("pode ter travado") && st, "atividade: sem saida, processador parado e sem comando = travado");
+        }
         be.injectMarker("TODO ");
         check(!be.planMode() && be.todoSteps().isEmpty(), "modo plano desligado e lista limpa");
         // tela de modelos: catalogo e maquina lidos do motor; abre pelo botao; erro de download aparece
