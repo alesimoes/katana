@@ -4,6 +4,93 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0r. katana's own training engine: `katana train`, `katana gradcheck`, `.kspec` (2026-11-20)
+
+Owner's decision: specialization is katana's own, no external tool or package (techniques such as low-rank adapters
+are allowed, written here). Full description, measurements and next steps: `docs/specialization.md`.
+
+- `src/app/train.c`: training forward that keeps activations, hand-written backward (RMSNorm, GQA attention with RoPE
+  in pairs or halves, SwiGLU, bias, tied or separate output), AdamW with clipping, low-rank adapters (`--rank`),
+  frozen weights read straight from the GGUF quantization, loss only on marked spans (`train_spans`).
+- `.kspec` (`KSPEC2`): only the trained tensors (whole or adapters), tied to the base by file size and parameter count;
+  `KATANA_SPEC=file` applies it in `load_model` before `gpu_setup` (adapters merged at load).
+- Measured on tiny random models only (2 cores, no GPU): training forward equals the engine to 5e-6; gradcheck passes
+  for 21 tensors and 36 adapter A/B on llama, qwen2 (GQA, bias) and a Q8_0 base; the tiny model learns three answers
+  (loss 12 -> 0.0002) and `katana serve` with the `.kspec` answers them word for word. ASan/UBSan clean.
+  `sh tools/traintest/run.sh` repeats all of it in seconds.
+- Same day, second step: q/k norm (qwen3 per head, olmoe whole vector), MoE (softmax router, top-K, renormalization,
+  scale, shared experts with sigmoid gate, leading dense layers) and heat-guided specialization (`--experts N`:
+  the N experts the base router picks most on the training data become trainable). Training forward equals the
+  engine to 6e-6 on tiny qwen3, qwen3moe (also with shared + dense + GQA) and olmoe; gradcheck passes on all (MoE
+  selection held fixed in the finite differences); a 2-of-8 hot-expert specialization with attention adapters learns
+  the three answers and the server repeats them. Specializations that change experts run on the CPU for now.
+- Same day, third step: the Qwen3.6 family (qwen35moe, qwen35): Gated DeltaNet backward (convolution, L2 norms,
+  gated delta rule through time, gated RMS output) and gated attention with partial RoPE. Training forward equals the
+  engine to 4e-6 and 5e-6 on tiny random qwen35moe / qwen35 (`make_tiny_gguf.py --arch qwen35moe|qwen35`); gradcheck
+  passes (Richardson extrapolation added for the exponential decay parameters); a qwen35moe trained in the thinking
+  format answers the three replies through the server. Server fix found on the way: the line breaks after
+  `</think>` arrived in later tokens and leaked into `content`; now stripped.
+- Memory and speed for the full models: DeltaNet states checkpointed every 64 tokens and recomputed per block in the
+  backward pass (`KATANA_TRAIN_DNCK`; gradcheck passes with blocks of 1, 3 and 64); attention rows recomputed instead
+  of stored; MoE tokens grouped by expert (one batch per expert). `katana train ... --plan 1` prints the memory plan
+  without training. Not measured on a real model yet.
+- `katana import` (`src/app/importer.c`): conversations in the messages format or ShareGPT -> training JSONL in the
+  model's exact template (ChatML with XML or JSON calls, Gemma 4, GLM), calls in the native syntax, results wrapped
+  as the agent wraps them, system prompt kept or taken from a real session (`--system ksess:FILE`). The agent's call
+  readers read the imported calls back in all four formats (`tools/traintest/import_calls.c`). `ah_render` no longer
+  writes an empty system block when the system prompt is empty (the agent always has one, so its text is unchanged).
+- `katana distill` (`src/app/distill.c`): a teacher model behind an OpenAI-compatible API solves a task through the
+  agent's own tools; `run.py --teacher` runs it per codebench task and marks `passed` with the hidden tests;
+  `katana import` keeps only passed, complete sessions. Tested with a scripted mock teacher
+  (`tools/traintest/mock_teacher.py`): bank solved and passed, rotate failed and dropped. Not run against a real API
+  (no network from the session that wrote it).
+- `katana merge`: new GGUF with the specialization inside; answers exactly like base + `.kspec` on four tiny layouts.
+- Same day: Gemma 4 training (gemma4 layers in `t_g4_fwd`/`t_g4_back`: sliding window, per-layer head width and kv
+  heads, k as v, extra norms, GELU, dense FFN in parallel with the MoE, router and expert scales, embedding scale,
+  logit softcap). Tiny random gemma4 (`make_tiny_gguf.py --arch gemma4`, also `--dense 2` and a Q8_0 copy): training
+  forward equals the engine to 1.2e-6, gradcheck passes, hot-expert specialization learns the three answers, served
+  with `.kspec` and after `merge`. `tools/traintest/run.sh` now covers 11 layouts.
+- Same day: training products on the GPU (`vk/shaders/tmm.comp`, host code `tg_*` in `train.c`). Checked without a
+  GPU: the shader's code run on the CPU for 7 formats x 3 modes, and katana with an emulated GPU passes gradcheck on
+  10 of 11 layouts (olmoe: float noise on one tiny gradient, explained in `docs/specialization.md`) and trains the
+  tiny models. Not run on a real card yet: first step on the owner's machine is `sh tools/traintest/run.sh`, then
+  `katana train` with and without `KATANA_TRAIN_GPU=0` for the speed.
+- Same day: training loop for real data (`--batch`, validation split by conversation, best step kept, early stop,
+  cosine schedule, `--log`) and `katana learn` (collect on codebench, keep what passed, train, prove on held-out
+  tasks, keep the best) with `katana export` in C. Checked on tiny models and a stand-in codebench; see
+  `docs/specialization.md`. The Python exporter had a span bug on non-ASCII text, fixed.
+- Ideas raised by the owner, not started: a local `katana learn` loop (each user's
+  agent specializes on its own passed sessions, nothing leaves the machine); a teacher that also writes new tasks
+  with tests (today the tasks come from codebench or a free instruction).
+
+## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
+
+Written from a cloud session without GPU or real models: everything below was checked with a tiny random-weight
+model (`tools/tinymodel/make_tiny_gguf.py`, 0.5 MB, llama architecture, ChatML), unit tests and AddressSanitizer.
+**Not yet run with Qwen3.6 or Gemma 4**: do that first (below).
+
+- *OpenAI API* (`src/app/openai.c`): `GET /v1/models`, `POST /v1/chat/completions` with and without streaming, stop
+  sequences (held back across token boundaries), `max_tokens`/`max_completion_tokens`, `temperature`, `top_p` (per
+  request, restored after), `seed`, `response_format` (the existing JSON grammar), text parts, `reasoning_content`
+  split at `</think>` for ChatML/GLM thinking models, usage. `tools`, images and `n` > 1 answer 400 with the reason.
+  Earlier assistant turns get an empty think block (`<think>\n\n</think>\n\n`) when the model reasons.
+- *Server* (`src/app/server.c`): one thread per connection (Linux; Windows stays serial), a FIFO ticket lock around
+  the model (`srv_lock`), at most 64 open connections (503 beyond), 60 s send timeout so a stalled client cannot hold
+  the queue. `KATANA_HOST` (default 127.0.0.1) and `KATANA_API_KEY` (required, 16+ characters, when not loopback);
+  remote peers need the Bearer key on every path but `/health`. `js_escape` now turns invalid UTF-8 into U+FFFD
+  (the JSON was invalid before when a model emitted broken bytes).
+- *Measured (tiny model only)*: `tools/servertest/oa_unit.c` (think split, stop across chunks, parser, prompt,
+  escape): all pass. `tools/servertest/test_server.py`: 8 of 8 on loopback and from another address with the key
+  (non-streaming = streaming text, stop, JSON mode, `/api/chat` unchanged, 4 parallel requests plus a client that
+  disconnects mid-stream). Network rules checked by hand (401/403/200 cases). ASan + UBSan build: no reports.
+- *To do next*: run `test_server.py` and a real client (Open WebUI or the `openai` Python package) against Qwen3.6
+  and Gemma 4; check `reasoning_content` with `KATANA_THINK=1`; Gemma 4 thinking (`<|channel>thought`) is not split
+  yet. Then native `tools` (map OpenAI tools to the model's own call format; the agent's `fmt_*` readers already
+  parse the calls), and true parallel generation (several sequences per forward pass) if one-at-a-time is not enough.
+- *Training data* (same day, see `docs/training-data.md`): `.ksess` gains a `KSX1` block (system prompt, exact
+  rendered text, message spans); `run.py --sessions DIR --repeat N`; `tools/dataset/ksess2jsonl.py`. The owner decided
+  the specialization must be katana's own training engine (no external LoRA tooling); design still to be written.
+
 ## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19)
 
 Goal set by the owner: a local AI tool a person downloads and runs. Decision of the owner on the same day: the

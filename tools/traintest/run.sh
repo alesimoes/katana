@@ -1,0 +1,168 @@
+#!/bin/sh
+# Teste do treino do katana sem modelo de verdade (segundos, qualquer maquina):
+#  1. gradcheck nos layouts do modelo minusculo: llama; qwen2 (GQA, vies); base quantizada Q8_0; qwen3 (norma de
+#     q/k por cabeca); qwen3moe com compartilhado e camada densa inicial; olmoe (norma no vetor, MoE sem renormalizar);
+#     qwen35moe (layout do Qwen3.6: Gated DeltaNet + atencao com portao + MoE) e qwen35 denso; gemma4 (layout do
+#     Gemma 4 26B-A4B: janela deslizante, normas extras, GELU, FFN denso em paralelo com o MoE, softcap), denso e Q8_0
+#  2. treino com tensores inteiros, com adaptadores sobre a base quantizada e com especialistas quentes num MoE
+#  3. o servidor com KATANA_SPEC responde exatamente o que foi treinado (temperatura 0)
+#  4. katana import: conversas de fora viram dados de treino; as chamadas voltam pelos leitores do agente
+#  5. katana merge: o GGUF fundido responde igual ao base com o .kspec
+#  6. katana distill: um professor (de mentira, aqui) resolve uma tarefa do codebench com as ferramentas do katana
+#  7. treino na GPU: o codigo do shader do produto roda na CPU (7 formatos, 3 modos) e numa GPU de mentira dentro do
+#     katana (gradcheck com todos os produtos nela); se houver GPU Vulkan de verdade, gradcheck nela em 5 layouts
+#  8. validacao: 60 conversas de "repetir a palavra", 10 separadas; lote de 4, a perda nelas tem que cair (o modelo
+#     generaliza) e a parada antecipada guarda o melhor passo
+#  9. katana export (sessao real do agente com acentos e ideogramas: igual ao exportador em Python) e katana learn
+#     com um codebench de mentira (tools/traintest/mock_bench): coleta, filtro, treino, prova; a rodada 1 tem que ser
+#     aceita e a 2 nao
+# Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
+set -e
+K=$(pwd)/katana
+D=$(mktemp -d)
+trap 'rm -rf "$D"; kill $SRV 2>/dev/null || true' EXIT
+python3 tools/tinymodel/make_tiny_gguf.py "$D/llama.gguf" >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/qwen2.gguf" --arch qwen2 --kv 2 >/dev/null
+$K quantize "$D/llama.gguf" "$D/q8.gguf" Q8_0 >/dev/null 2>&1
+python3 tools/tinymodel/make_tiny_gguf.py "$D/qwen3.gguf" --arch qwen3 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/moe.gguf" --arch qwen3moe --shared --dense 1 --kv 2 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/olmoe.gguf" --arch olmoe --used 3 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/q35.gguf" --arch qwen35moe --kv 2 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/q35d.gguf" --arch qwen35 --kv 2 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/g4.gguf" --arch gemma4 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/g4d.gguf" --arch gemma4 --dense 2 >/dev/null
+$K quantize "$D/g4.gguf" "$D/g4q8.gguf" Q8_0 >/dev/null 2>&1
+fail=0
+for m in llama qwen2 q8 qwen3 moe olmoe q35 q35d g4 g4d g4q8; do
+  if KATANA_TRAIN_GPU=0 $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck $m: ok"; else echo "gradcheck $m: FALHOU"; fail=1; fi
+done
+# treino na GPU (vk/shaders/tmm.comp)
+gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/tmm_ref.c -o "$D/tmm_ref" -lm -lpthread -ldl && "$D/tmm_ref" "$D/tmm_cases.bin"
+if command -v g++ >/dev/null 2>&1; then
+  g++ -std=c++20 -O1 -pthread -I vk/shaders tools/traintest/tmm_emu.cpp -o "$D/tmm_emu" && "$D/tmm_emu" "$D/tmm_cases.bin" | tail -1 | grep -q "tmm_emu: ok" \
+    && echo "shader do treino na CPU (7 formatos x 3 modos): ok" || { echo "shader do treino: FALHOU"; fail=1; }
+  g++ -std=c++20 -O2 -c -I vk/shaders tools/traintest/tg_emu.cpp -o "$D/tg_emu.o" \
+    && gcc -O2 -mavx2 -mfma -mf16c -ffast-math -w -DKATANA_TG_EMU -I . -I src -I vk/include src/katana.c "$D/tg_emu.o" -o "$D/katana_emu" -lm -lpthread -ldl -lstdc++
+  for e in "" "KATANA_TRAIN_VRAM=0 KATANA_TRAIN_GPU_CHUNK=0.004"; do
+    if env KATANA_TRAIN_GPU_MIN=0 $e "$D/katana_emu" gradcheck "$D/llama.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck na GPU de mentira ${e:+(pesos em fatias de 4 KB)}: ok"; else echo "gradcheck na GPU de mentira $e: FALHOU"; fail=1; fi
+  done
+else echo "sem g++: testes do shader do treino pulados"; fi
+if KATANA_TRAIN_GPU_MIN=0 $K gradcheck "$D/llama.gguf" 4 2>&1 | grep -q "treino na GPU"; then
+  for m in llama q8 moe q35 g4; do
+    if KATANA_TRAIN_GPU_MIN=0 $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck na GPU $m: ok"; else echo "gradcheck na GPU $m: FALHOU"; fail=1; fi
+  done
+else echo "sem GPU Vulkan: gradcheck na GPU de verdade pulado"; fi
+python3 - "$D/sft.jsonl" "$D/sft_think.jsonl" <<'EOF'
+import json, sys
+sys_ = "<|im_start|>system\nYou are katana.<|im_end|>\n"
+for out, think in ((sys.argv[1], False), (sys.argv[2], True)):     # think: o modelo abre a resposta com <think> (qwen35)
+    rows = []
+    for q, a in [("what is katana?", "katana is a local engine."), ("who made it?", "Ale made it in C."), ("say hi", "hi there!")]:
+        pre = sys_ + "<|im_start|>user\n" + q + "<|im_end|>\n<|im_start|>assistant\n" + ("<think>\n" if think else "")
+        text = pre + ("\n</think>\n\n" if think else "") + a + "<|im_end|>"
+        rows.append({"text": text, "train_spans": [[len(pre), len(text)]]})
+    open(out, "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+EOF
+check_spec() {   # modelo, especializacao, porta
+  KATANA_SPEC="$2" $K serve "$1" "$3" >"$D/srv.log" 2>&1 & SRV=$!
+  sleep 1
+  python3 - "$3" <<'EOF' || fail=1
+import json, sys, urllib.request
+want = {"what is katana?": "katana is a local engine.", "who made it?": "Ale made it in C.", "say hi": "hi there!"}
+bad = 0
+for q, a in want.items():
+    body = {"messages": [{"role": "system", "content": "You are katana."}, {"role": "user", "content": q}], "temperature": 0, "max_tokens": 40}
+    r = urllib.request.Request("http://127.0.0.1:%s/v1/chat/completions" % sys.argv[1], data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    got = json.load(urllib.request.urlopen(r))["choices"][0]["message"]["content"]
+    if got != a: bad += 1; print("  %r -> %r (esperado %r)" % (q, got, a))
+print("  respostas treinadas: %d de %d" % (len(want) - bad, len(want)))
+sys.exit(1 if bad else 0)
+EOF
+  kill $SRV; wait $SRV 2>/dev/null || true
+}
+$K train "$D/llama.gguf" "$D/sft.jsonl" --steps 150 --lr 3e-3 --seq 128 --out "$D/full.kspec" 2>/dev/null | grep "perda media final"
+check_spec "$D/llama.gguf" "$D/full.kspec" 8191
+$K train "$D/q8.gguf" "$D/sft.jsonl" --train "blk.*,output_norm.weight" --rank 8 --steps 400 --lr 4e-3 --seq 128 --out "$D/adapt.kspec" 2>/dev/null | grep "perda media final"
+check_spec "$D/q8.gguf" "$D/adapt.kspec" 8192
+$K train "$D/moe.gguf" "$D/sft.jsonl" --experts 2 --train "blk.*.attn_*,blk.*.ffn_gate_inp.weight,blk.*shexp*,output_norm.weight" --rank 8 \
+   --steps 500 --lr 5e-3 --seq 128 --out "$D/moe.kspec" 2>/dev/null | grep -E "quentes|perda media final"
+check_spec "$D/moe.gguf" "$D/moe.kspec" 8193
+$K train "$D/q35.gguf" "$D/sft_think.jsonl" --rank 8 --train "blk.*,output_norm.weight" --steps 400 --lr 5e-3 --seq 128 \
+   --out "$D/q35.kspec" 2>/dev/null | grep "perda media final"
+check_spec "$D/q35.gguf" "$D/q35.kspec" 8194
+$K train "$D/g4.gguf" "$D/sft.jsonl" --experts 2 --train "blk.*.attn_*,blk.*.ffn_gate_inp.*,blk.*norm*,output_norm.weight" --rank 8 \
+   --steps 500 --lr 5e-3 --seq 128 --out "$D/g4.kspec" 2>/dev/null | grep "perda media final"
+check_spec "$D/g4.gguf" "$D/g4.kspec" 8199
+# validacao separada por conversa, lote com gradiente acumulado, melhor passo e parada antecipada
+python3 - "$D/copy.jsonl" <<'EOF'
+import json, sys, random
+random.seed(5)
+sys_ = "<|im_start|>system\nYou are katana.<|im_end|>\n"
+syl = ["ka", "ta", "na", "ro", "mi", "ze", "lu", "po", "fe", "di", "su", "bo"]
+rows = []
+for i in range(60):
+    w = "".join(random.choice(syl) for _ in range(3))
+    pre = sys_ + "<|im_start|>user\nrepeat " + w + "<|im_end|>\n<|im_start|>assistant\n"
+    text = pre + w + " " + w + "<|im_end|>"
+    rows.append({"text": text, "train_spans": [[len(pre), len(text)]]})
+open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+EOF
+$K train "$D/llama.gguf" "$D/copy.jsonl" --batch 4 --steps 400 --lr 3e-3 --seq 64 --eval 25 --patience 4 --log "$D/log.jsonl" --out "$D/copy.kspec" 2>/dev/null \
+  | grep "^resultado:" | sed 's/^resultado: //' > "$D/res.json"
+python3 - "$D/res.json" "$D/log.jsonl" <<'EOF' || fail=1
+import json, sys
+r = json.load(open(sys.argv[1])); log = [json.loads(l) for l in open(sys.argv[2])]
+first = next(x["val_loss"] for x in log if "val_loss" in x)
+ok = r["val_lines"] == 10 and r["val_loss"] is not None and r["val_loss"] < 0.3 * first
+print("validacao: perda nas conversas separadas %.3f -> %.3f: %s" % (first, r["val_loss"], "ok" if ok else "FALHOU"))
+sys.exit(0 if ok else 1)
+EOF
+$K train "$D/llama.gguf" "$D/copy.jsonl" --batch 4 --steps 400 --lr 0.05 --sched const --seq 64 --eval 20 --patience 3 --out "$D/bad.kspec" 2>/dev/null \
+  | grep -q "parada antecipada" && echo "parada antecipada: ok" || { echo "parada antecipada: FALHOU"; fail=1; }
+# katana export: sessao do agente -> dados (mesmos trechos que o exportador em Python, com texto nao ASCII)
+python3 tools/tinymodel/make_tiny_gguf.py "$D/agent.gguf" --template chatml-xml >/dev/null
+mkdir -p "$D/home"
+printf 'oi, tudo bem? \303\247\303\243 \346\227\245\346\234\254\n/exit\n' | HOME="$D/home" $K agent "$D/agent.gguf" --sessao "$D/s1.ksess" >/dev/null 2>&1 || true
+$K export "$D/exp_c.jsonl" "$D/s1.ksess" >/dev/null 2>&1
+python3 tools/dataset/ksess2jsonl.py "$D/s1.ksess" -o "$D/exp_p.jsonl" >/dev/null 2>&1
+python3 - "$D/exp_c.jsonl" "$D/exp_p.jsonl" <<'EOF' || fail=1
+import json, sys
+c = json.loads(open(sys.argv[1]).readline()); p = json.loads(open(sys.argv[2]).readline())
+a, b = c["train_spans"][-1]
+ok = c["train_spans"] == p["train_spans"] and c["text"][:a].endswith("assistant\n") and c["text"][a:b].endswith("<|im_end|>")
+print("export: %s" % ("ok" if ok else "FALHOU %s %s" % (c["train_spans"], p["train_spans"])))
+sys.exit(0 if ok else 1)
+EOF
+# katana learn com o codebench de mentira
+$K learn "$D/agent.gguf" --bench tools/traintest/mock_bench --dir "$D/learn" --rounds 2 --repeat 2 -- --steps 30 --seq 256 >/dev/null 2>&1
+python3 - "$D/learn/learn.jsonl" <<'EOF' || fail=1
+import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+ok = len(r) == 3 and r[1]["accepted"] and not r[2]["accepted"] and r[1]["data"] == 6 and r[2]["data"] == 12 and r[1]["train"]["steps"] == 30
+print("learn: %s" % ("ok (rodada 1 aceita, rodada 2 recusada, dados acumulados 6 -> 12)" if ok else "FALHOU %s" % r))
+sys.exit(0 if ok else 1)
+EOF
+# katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
+printf '%s\n' \
+ '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
+ '{"conversations":[{"from":"system","value":"You are katana."},{"from":"human","value":"say hi"},{"from":"gpt","value":"hi there!"}]}' > "$D/chats.jsonl"
+if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" 2>/dev/null | grep -q "^import: 2 de 2"; then echo "import: ok"; else echo "import: FALHOU"; fail=1; fi
+$K train "$D/llama.gguf" "$D/imp.jsonl" --steps 150 --lr 3e-3 --seq 256 --out "$D/imp.kspec" 2>/dev/null | grep "perda media final"
+gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/import_calls.c -o "$D/import_calls" -lm -lpthread -ldl
+if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agente nos 4 formatos: ok"; else echo "chamadas importadas: FALHOU"; fail=1; fi
+# katana merge: o GGUF fundido responde igual ao modelo base com o .kspec (adaptadores sobre Q8_0; MoE; qwen35moe)
+$K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
+$K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }
+$K merge "$D/q35.gguf" "$D/q35.kspec" "$D/q35_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q35_merged.gguf" "" 8197 || { echo "merge q35: FALHOU"; fail=1; }
+$K merge "$D/g4.gguf" "$D/g4.kspec" "$D/g4_merged.gguf" >/dev/null 2>&1 && check_spec "$D/g4_merged.gguf" "" 8200 || { echo "merge gemma4: FALHOU"; fail=1; }
+# katana distill: professor de mentira resolve a tarefa bank com as ferramentas do katana; testes escondidos decidem
+python3 tools/traintest/mock_teacher.py 8198 tools/codebench/tasks/bank/solution/bank.py & MOCK=$!
+sleep 1
+TEACHER_API_KEY=secret-key python3 tools/codebench/run.py --katana "$K" --teacher http://127.0.0.1:8198/v1 --teacher-model mock \
+   --distill-out "$D/teacher.jsonl" --out "$D/teacher_bench.jsonl" --tasks bank,rotate --timeout 120 >/dev/null 2>&1
+kill $MOCK 2>/dev/null || true
+if python3 -c "import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(0 if [x['passed'] for x in r]==[True,False] else 1)" "$D/teacher.jsonl"; then
+  echo "distill: ok (bank resolvido e aprovado; rotate reprovado)"
+else echo "distill: FALHOU"; fail=1; fi
+if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
+if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi

@@ -1,0 +1,25 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Produtos do treino (katana train): O[m][n] = soma_k A(m,k) B(n,k), em float32, ladrilho 64x64, fatia de k = 16,
+// 256 threads com 4x4 saidas cada (m = tx + 16i, n = ty + 16j). Le os pesos direto do formato do GGUF (sem
+// reempacotar): cada elemento do ladrilho e desquantizado uma vez e reusado 64 vezes.
+//   MODE 0 (forward):    A = W[m][k] (linha m do peso), B = X[n][k];  O = Y[n][m]   (Y = X W^T)
+//   MODE 1 (transposto): A = W[k][m],                   B = dY[n][k]; O = dX[n][m]  (dX = dY W)
+//   MODE 2 (gradiente):  A = dY[k][m] (binding 0, float), B = X[k][n]; O = G[m][n]  (G = dY^T X)
+// WT (tipo do peso): 0 F32, 1 F16, 2 Q8_0, 3 Q4_K, 4 Q5_K, 5 Q6_K, 6 BF16. As contas de cada formato sao as do
+// dequant da CPU (src/engine), elemento por elemento.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(constant_id = 0) const int MODE = 0;
+layout(constant_id = 1) const int WT = 0;
+layout(std430, binding = 0) readonly buffer Wb { uint W[]; };
+layout(std430, binding = 1) readonly buffer Xb { float X[]; };
+layout(std430, binding = 2) writeonly buffer Ob { float O[]; };
+// M, N, K: dimensoes do produto; ws: bytes por linha de W; wo: byte onde W comeca no buffer (par; multiplo de 4 no F32)
+layout(push_constant) uniform P { uint M, N, K, ws, wo; } pc;
+
+shared float As[16][64];
+shared float Bs[16][64];
+
+#include "tmm_core.glsl"
+
+void main() { tmm_main(); }

@@ -39,6 +39,7 @@
 #endif
 #ifdef _WIN32
 #include <winsock2.h>
+#include <ws2tcpip.h>                 /* inet_pton, socklen_t (servidor) */
 #include <windows.h>
 #include <shellapi.h>
 #else
