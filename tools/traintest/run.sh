@@ -11,6 +11,8 @@
 #  6. katana distill: um professor (de mentira, aqui) resolve uma tarefa do codebench com as ferramentas do katana
 #  7. treino na GPU: o codigo do shader do produto roda na CPU (7 formatos, 3 modos) e numa GPU de mentira dentro do
 #     katana (gradcheck com todos os produtos nela); se houver GPU Vulkan de verdade, gradcheck nela em 5 layouts
+#  8. validacao: 60 conversas de "repetir a palavra", 10 separadas; lote de 4, a perda nelas tem que cair (o modelo
+#     generaliza) e a parada antecipada guarda o melhor passo
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 K=$(pwd)/katana
@@ -88,6 +90,32 @@ check_spec "$D/q35.gguf" "$D/q35.kspec" 8194
 $K train "$D/g4.gguf" "$D/sft.jsonl" --experts 2 --train "blk.*.attn_*,blk.*.ffn_gate_inp.*,blk.*norm*,output_norm.weight" --rank 8 \
    --steps 500 --lr 5e-3 --seq 128 --out "$D/g4.kspec" 2>/dev/null | grep "perda media final"
 check_spec "$D/g4.gguf" "$D/g4.kspec" 8199
+# validacao separada por conversa, lote com gradiente acumulado, melhor passo e parada antecipada
+python3 - "$D/copy.jsonl" <<'EOF'
+import json, sys, random
+random.seed(5)
+sys_ = "<|im_start|>system\nYou are katana.<|im_end|>\n"
+syl = ["ka", "ta", "na", "ro", "mi", "ze", "lu", "po", "fe", "di", "su", "bo"]
+rows = []
+for i in range(60):
+    w = "".join(random.choice(syl) for _ in range(3))
+    pre = sys_ + "<|im_start|>user\nrepeat " + w + "<|im_end|>\n<|im_start|>assistant\n"
+    text = pre + w + " " + w + "<|im_end|>"
+    rows.append({"text": text, "train_spans": [[len(pre), len(text)]]})
+open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+EOF
+$K train "$D/llama.gguf" "$D/copy.jsonl" --batch 4 --steps 400 --lr 3e-3 --seq 64 --eval 25 --patience 4 --log "$D/log.jsonl" --out "$D/copy.kspec" 2>/dev/null \
+  | grep "^resultado:" | sed 's/^resultado: //' > "$D/res.json"
+python3 - "$D/res.json" "$D/log.jsonl" <<'EOF' || fail=1
+import json, sys
+r = json.load(open(sys.argv[1])); log = [json.loads(l) for l in open(sys.argv[2])]
+first = next(x["val_loss"] for x in log if "val_loss" in x)
+ok = r["val_lines"] == 10 and r["val_loss"] is not None and r["val_loss"] < 0.3 * first
+print("validacao: perda nas conversas separadas %.3f -> %.3f: %s" % (first, r["val_loss"], "ok" if ok else "FALHOU"))
+sys.exit(0 if ok else 1)
+EOF
+$K train "$D/llama.gguf" "$D/copy.jsonl" --batch 4 --steps 400 --lr 0.05 --sched const --seq 64 --eval 20 --patience 3 --out "$D/bad.kspec" 2>/dev/null \
+  | grep -q "parada antecipada" && echo "parada antecipada: ok" || { echo "parada antecipada: FALHOU"; fail=1; }
 # katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
 printf '%s\n' \
  '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \

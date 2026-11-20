@@ -1264,6 +1264,8 @@ static void t_logits(const Model *m, const TTab *tt, const TAct *A, float *lg) {
     if (cap > 0.0f) for (size_t i = 0; i < (size_t)A->T * m->cfg.vocab; i++) lg[i] = cap * tanhf(lg[i] / cap);
 }
 
+static float t_gscale = 1.0f;      /* peso desta janela no passo (1/lote quando o gradiente acumula varias) */
+
 /* perda media nos alvos marcados (mask[t] = 1: o token t+1 conta) e, se back, o passo para tras inteiro */
 static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount) {
     const Config *c = &m->cfg;
@@ -1289,8 +1291,8 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
         loss += -((double)z[y] - mx - log(se));
         if (back) {
             float *g = dl + (size_t)t * V;
-            for (int i = 0; i < V; i++) g[i] = (float)(exp((double)z[i] - mx) / se) / N;
-            g[y] -= 1.0f / N;
+            for (int i = 0; i < V; i++) g[i] = (float)(exp((double)z[i] - mx) / se) * t_gscale / N;
+            g[y] -= t_gscale / N;
             if (c->softcap > 0.0f) for (int i = 0; i < V; i++) { const float th = z[i] / c->softcap; g[i] *= 1.0f - th * th; }
         }
     }
@@ -1689,12 +1691,94 @@ static int train_gradcheck(Model *m, int T) {
     return fails != 0;
 }
 
+/* texto para dentro de uma string JSON (caminhos no resumo) */
+static void js_escape_to(char *dst, size_t cap, const char *src) {
+    size_t n = 0;
+    for (; *src && n + 7 < cap; src++) {
+        const unsigned char ch = (unsigned char)*src;
+        if (ch == '"' || ch == '\\') { dst[n++] = '\\'; dst[n++] = (char)ch; }
+        else if (ch < 32) n += (size_t)snprintf(dst + n, cap - n, "\\u%04x", ch);
+        else dst[n++] = (char)ch;
+    }
+    dst[n] = 0;
+}
+
+/* lista de janelas */
+typedef struct { TEx *w; int n, cap; } TSet;
+/* um exemplo vira janelas de ate seq tokens (com um token de sobreposicao); so as que tem algum alvo */
+static void tset_add(TSet *S, const TEx *e, int seq) {
+    for (int s0 = 0; s0 < e->ids.n - 1; s0 += seq - 1) {
+        const int len = e->ids.n - s0 < seq ? e->ids.n - s0 : seq;
+        int any = 0; for (int t = 0; t + 1 < len; t++) any |= e->mask[s0 + t];
+        if (!any || len < 2) continue;
+        if (S->n == S->cap) { S->cap = S->cap * 2 + 16; S->w = realloc(S->w, sizeof(TEx) * (size_t)S->cap); }
+        TEx *w = &S->w[S->n++];
+        memset(w, 0, sizeof *w);
+        for (int t = 0; t < len; t++) ids_push(&w->ids, e->ids.ids[s0 + t]);
+        w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e->mask + s0, (size_t)len);
+        w->mask[len - 1] = 0;
+    }
+}
+/* le um JSONL; cada linha vai para a validacao com probabilidade vf (a conversa inteira, para nao vazar) */
+static int tset_load(const Model *m, const char *path, int seq, TSet *tr, TSet *va, double vf, unsigned seed, int *nlines, int *nval) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "nao abriu %s\n", path); return 0; }
+    size_t lc = 1 << 20; char *line = xalloc(lc, 1);
+    uint64_t rs = seed * 2654435761ull + 12345;
+    int nl = 0, nv = 0;
+    for (;;) {
+        size_t n = 0; int ch;
+        while ((ch = fgetc(f)) != EOF && ch != '\n') { if (n + 2 >= lc) { lc *= 2; line = realloc(line, lc); } line[n++] = (char)ch; }
+        line[n] = 0;
+        if (n) {
+            TEx e;
+            rs = rs * 6364136223846793005ull + 1442695040888963407ull;
+            const double u = (double)(rs >> 11) / 9007199254740992.0;
+            if (t_load_line(m, line, &e)) {
+                const int to_val = va && u < vf;
+                tset_add(to_val ? va : tr, &e, seq);
+                nv += to_val;
+                free(e.ids.ids); free(e.mask);
+                nl++;
+            }
+        }
+        if (ch == EOF) break;
+    }
+    fclose(f); free(line);
+    if (nlines) *nlines = nl - nv;
+    if (nval) *nval = nv;
+    return 1;
+}
+static int tset_lines(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    int n = 0, ch, prev = '\n';
+    while ((ch = fgetc(f)) != EOF) { if (ch == '\n' && prev != '\n') n++; prev = ch; }
+    if (prev != '\n') n++;
+    fclose(f);
+    return n;
+}
+/* perda media (ponderada pelos alvos) num conjunto, sem passo para tras */
+static double tset_loss(Model *m, TTab *tt, TAct *A, const TSet *S, int seq, int *ntgt) {
+    double sum = 0; int cnt = 0;
+    for (int i = 0; i < S->n; i++) {
+        A->T = S->w[i].ids.n;
+        int N = 0;
+        const double l = t_step(m, tt, S->w[i].ids.ids, S->w[i].mask, A, 0, &N);
+        if (N) { sum += l * N; cnt += N; }
+    }
+    A->T = seq;
+    if (ntgt) *ntgt = cnt;
+    return cnt ? sum / cnt : 0.0;
+}
+
 /* katana train <modelo> <dados.jsonl> [--out f.kspec] [--train padroes] [--steps N] [--lr X] [--seq T] [--wd X] [--seed N] */
 static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     const Config *c = &m->cfg;
     const char *data = argv[0], *pats = "all";
     char out[1100]; snprintf(out, sizeof out, "%s.kspec", model_path);
     int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0, plan = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
+    int batch = 1, eval = 0, patience = 0, cosine = 1, warm = -1; double vfrac = -1; const char *vdata = NULL, *logp = NULL;
     for (int i = 1; i + 1 < argc; i += 2) {
         const char *k = argv[i], *v = argv[i + 1];
         if (!strcmp(k, "--out")) snprintf(out, sizeof out, "%s", v);
@@ -1710,42 +1794,30 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         else if (!strcmp(k, "--every")) every = atoi(v);
         else if (!strcmp(k, "--rank")) rank = atoi(v);
         else if (!strcmp(k, "--alpha")) alpha = (float)atof(v);
+        else if (!strcmp(k, "--batch")) batch = atoi(v);
+        else if (!strcmp(k, "--val")) vfrac = atof(v);
+        else if (!strcmp(k, "--val-data")) vdata = v;
+        else if (!strcmp(k, "--eval")) eval = atoi(v);
+        else if (!strcmp(k, "--patience")) patience = atoi(v);
+        else if (!strcmp(k, "--sched")) { if (!strcmp(v, "const")) cosine = 0; else if (!strcmp(v, "cos")) cosine = 1; else { fprintf(stderr, "--sched: cos ou const\n"); return 1; } }
+        else if (!strcmp(k, "--warmup")) warm = atoi(v);
+        else if (!strcmp(k, "--log")) logp = v;
         else { fprintf(stderr, "opcao desconhecida: %s\n", k); return 1; }
     }
     if (seq > c->ctx) seq = c->ctx;
     if (seq < 2) seq = 2;
+    if (batch < 1) batch = 1;
     TTab tt = {0};
     const char *err = tt_build(m, &tt);
     if (err) { fprintf(stderr, "%s\n", err); return 1; }
-    /* dados: cada exemplo vira janelas de ate seq tokens (as que tem algum alvo marcado) */
-    FILE *f = fopen(data, "rb");
-    if (!f) { fprintf(stderr, "nao abriu %s\n", data); return 1; }
-    TEx *ex = NULL; int nex = 0, cap = 0;
-    size_t lc = 1 << 20; char *line = xalloc(lc, 1);
-    for (;;) {
-        size_t n = 0; int ch;
-        while ((ch = fgetc(f)) != EOF && ch != '\n') { if (n + 2 >= lc) { lc *= 2; line = realloc(line, lc); } line[n++] = (char)ch; }
-        line[n] = 0;
-        if (n) {
-            TEx e;
-            if (t_load_line(m, line, &e)) {
-                for (int s0 = 0; s0 < e.ids.n - 1; s0 += seq - 1) {      /* janelas com um token de sobreposicao */
-                    const int len = e.ids.n - s0 < seq ? e.ids.n - s0 : seq;
-                    int any = 0; for (int t = 0; t + 1 < len; t++) any |= e.mask[s0 + t];
-                    if (!any || len < 2) continue;
-                    if (nex == cap) { cap = cap * 2 + 16; ex = realloc(ex, sizeof(TEx) * (size_t)cap); }
-                    TEx *w = &ex[nex++];
-                    memset(w, 0, sizeof *w);
-                    for (int t = 0; t < len; t++) ids_push(&w->ids, e.ids.ids[s0 + t]);
-                    w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e.mask + s0, (size_t)len);
-                    if (len > 1) w->mask[len - 1] = 0;
-                }
-                free(e.ids.ids); free(e.mask);
-            }
-        }
-        if (ch == EOF) break;
-    }
-    fclose(f); free(line);
+    /* dados: cada exemplo vira janelas de ate seq tokens (as que tem algum alvo marcado). Validacao: --val-data, ou uma
+       fracao das conversas (--val; padrao 10% quando ha 20 ou mais), separada por conversa inteira */
+    TSet trs = {0}, vas = {0};
+    if (vfrac < 0) vfrac = vdata ? 0.0 : tset_lines(data) >= 20 ? 0.1 : 0.0;
+    int nlines = 0, vlines = 0;
+    if (!tset_load(m, data, seq, &trs, vfrac > 0 ? &vas : NULL, vfrac, seed, &nlines, &vlines)) return 1;
+    if (vdata && !tset_load(m, vdata, seq, &vas, NULL, 0, seed, &vlines, NULL)) return 1;
+    TEx *ex = trs.w; const int nex = trs.n;
     if (!nex) { fprintf(stderr, "nenhum exemplo com alvo marcado em %s\n", data); return 1; }
     srand(seed);
     size_t ntr = 0;
@@ -1791,42 +1863,91 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     long tgt = 0; for (int i = 0; i < nex; i++) for (int t = 0; t < ex[i].ids.n; t++) tgt += ex[i].mask[t];
     printf("treino: %d janelas (%ld alvos), %d tensores inteiros + %d adaptadores (posto %d), %.3fM pesos treinaveis (%.1f MB de estado), passos %d, lr %g\n",
            nex, tgt, nt, na, rank, ntr / 1e6, ntr * 16.0 / 1048576.0, steps, lr);
+    if (eval <= 0) eval = steps >= 20 ? steps / 10 : steps;
+    if (warm < 0) warm = steps / 20 > 10 ? steps / 20 : 10;
+    printf("passo: %d janela%s (%.1f epocas em %d passos); lr %s com aquecimento de %d passos",
+           batch, batch > 1 ? "s com gradiente acumulado" : "", (double)steps * batch / nex, steps, cosine ? "em cosseno ate 10%" : "constante", warm);
+    if (vas.n) printf("; validacao: %d janelas (%s), a cada %d passos, guarda o melhor%s\n", vas.n,
+                      vdata ? vdata : "parte das conversas", eval, patience ? ", para se nao melhorar" : "");
+    else printf("; sem validacao (menos de 20 conversas: use --val-data ou --val)\n");
     srand(seed);
     TAct A; tact_alloc(&A, c, seq);
     printf("memoria: ativacoes de uma janela de %d tokens %.0f MB; estado do treino %.0f MB; modelo base mapeado do arquivo (%.1f GB)\n",
            seq, g_ta_bytes / 1048576.0, ntr * 16.0 / 1048576.0, m->fsize / 1073741824.0);
     if (plan) { printf("--plan 1: so o plano, sem treinar\n"); tact_free(&A); return 0; }
-    double ema = -1;
+    double ema = -1, best = 1e30;
     long toks = 0;
+    int best_step = 0, bad = 0, saved = 0, done = 0;
+    FILE *lf = logp ? fopen(logp, "ab") : NULL;
+    if (logp && !lf) { fprintf(stderr, "nao abriu o log %s\n", logp); return 1; }
+    /* ordem embaralhada por epoca (cada janela uma vez por epoca) */
+    int *ord = xalloc((size_t)nex, sizeof(int)), op = nex;
     const double t0 = now_sec();
-    for (int st = 1; st <= steps; st++) {
-        const TEx *e = &ex[rand() % nex];
-        A.T = e->ids.n;
+    int st;
+    for (st = 1; st <= steps; st++) {
         t_clear_grads(&tt);
-        int N = 0;
-        const double loss = t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &N);
-        toks += A.T;
-        const float lr_t = lr * (st <= 10 ? (float)st / 10.0f : 1.0f);      /* aquecimento curto */
+        double loss = 0; int N = 0;
+        t_gscale = 1.0f / batch;
+        for (int bi = 0; bi < batch; bi++) {
+            if (op == nex) {
+                for (int i = 0; i < nex; i++) ord[i] = i;
+                for (int i = nex - 1; i > 0; i--) { const int j = rand() % (i + 1), t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
+                op = 0;
+            }
+            const TEx *e = &ex[ord[op++]];
+            A.T = e->ids.n;
+            int n1 = 0;
+            loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) / batch;
+            N += n1;
+            toks += A.T;
+        }
+        t_gscale = 1.0f;
+        float lr_t = lr;
+        if (st <= warm) lr_t = lr * (float)st / (float)warm;                /* aquecimento */
+        else if (cosine && steps > warm) lr_t = lr * (0.1f + 0.9f * 0.5f * (1.0f + cosf(3.14159265f * (float)(st - warm) / (float)(steps - warm))));
         const double gn = t_adamw(&tt, st, lr_t, wd, clip);
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
         if (st == 1 || st % every == 0 || st == steps)
-            printf("passo %4d  perda %.4f  media %.4f  |grad| %.3f  (%d alvos, %.1f s)\n", st, loss, ema, gn, N, now_sec() - t0);
+            printf("passo %4d  perda %.4f  media %.4f  |grad| %.3f  lr %.2e  (%d alvos, %.1f s)\n", st, loss, ema, gn, lr_t, N, now_sec() - t0);
+        if (lf) fprintf(lf, "{\"step\": %d, \"loss\": %.6f, \"lr\": %.6g}\n", st, loss, lr_t);
+        if (vas.n && (st % eval == 0 || st == steps)) {
+            int vn = 0;
+            const double vl = tset_loss(m, &tt, &A, &vas, seq, &vn);
+            const int better = vl < best - 1e-6;
+            printf("validacao  passo %4d  perda %.4f em %d alvos%s\n", st, vl, vn, better ? "  (melhor ate agora: gravado)" : "");
+            if (lf) fprintf(lf, "{\"step\": %d, \"val_loss\": %.6f}\n", st, vl);
+            if (better) {
+                best = vl; best_step = st; bad = 0;
+                if (!spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+                saved = 1;
+            } else if (patience && ++bad >= patience) { printf("parada antecipada: %d avaliacoes sem melhorar\n", bad); done = 1; }
+        }
         fflush(stdout);
+        if (done) break;
     }
+    if (st > steps) st = steps;
+    free(ord);
     {
         const double el = now_sec() - t0;
-        printf("velocidade: %.1f tokens/s de treino (%.2f s por passo, %s)\n", el > 0 ? toks / el : 0.0, steps ? el / steps : 0.0,
+        printf("velocidade: %.1f tokens/s de treino (%.2f s por passo, %s)\n", el > 0 ? toks / el : 0.0, st ? el / st : 0.0,
                tg.on ? "produtos na GPU" : "tudo na CPU");
     }
     A.T = seq;
-    /* perda final em todas as janelas */
-    double sum = 0; int cnt = 0;
-    for (int i = 0; i < nex; i++) { A.T = ex[i].ids.n; int N = 0; const double l = t_step(m, &tt, ex[i].ids.ids, ex[i].mask, &A, 0, &N); if (N) { sum += l * N; cnt += N; } }
-    printf("perda media final: %.4f em %d alvos\n", cnt ? sum / cnt : 0.0, cnt);
+    /* perda final em todas as janelas de treino (do estado final; com validacao, o arquivo gravado e o do melhor passo) */
+    int cnt = 0;
+    const double fin = tset_loss(m, &tt, &A, &trs, seq, &cnt);
+    printf("perda media final: %.4f em %d alvos\n", fin, cnt);
     if (tg.on) printf("GPU: %ld produtos em %.1f s (com as copias); %.2f GB de pesos residentes; %ld produtos subiram o peso na hora\n",
                       tg.calls, tg.t_gpu, tg.resident / 1073741824.0, tg.streamed);
-    if (!spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+    if (!saved && !spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+    if (saved) printf("melhor validacao: perda %.4f no passo %d\n", best, best_step);
     printf("especializacao gravada: %s (use KATANA_SPEC=%s)\n", out, out);
+    /* resumo de uma linha para quem chama (katana learn, scripts) */
+    char vb[32]; if (saved) snprintf(vb, sizeof vb, "%.6f", best); else snprintf(vb, sizeof vb, "null");
+    char oe[2300]; js_escape_to(oe, sizeof oe, out);
+    printf("resultado: {\"out\": \"%s\", \"steps\": %d, \"train_loss\": %.6f, \"val_loss\": %s, \"best_step\": %d, \"lines\": %d, \"val_lines\": %d}\n",
+           oe, st, fin, vb, best_step, nlines, vlines);
+    if (lf) { fprintf(lf, "{\"final_train_loss\": %.6f, \"best_val_loss\": %s, \"best_step\": %d}\n", fin, vb, best_step); fclose(lf); }
     A.T = seq; tact_free(&A);
     return 0;
 }
