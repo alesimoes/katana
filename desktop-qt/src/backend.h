@@ -102,6 +102,9 @@ public:
     QVariantList models() const { return m_models; }
     QVariantList catalog() const { return m_catalog; }
     QString katanaPath() const { return m_katana; }
+    QString modelsDir() const { return m_modelsDir; }
+    // so para o teste automatico: troca o motor e a pasta de modelos (motor de mentira que fala o mesmo protocolo)
+    void testRedirect(const QString &katana, const QString &modelsDir) { m_katana = katana; m_modelsDir = modelsDir; loadModels(); refreshCatalog(); }
     QVariantMap machine() const { return m_machine; }
     bool hasUsableModel() const;
     QString pullId() const { return m_pullId; }

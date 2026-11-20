@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
@@ -352,6 +353,65 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
             check(waitFor([&] { return b2.pullId().isEmpty() && !b2.pullError().isEmpty(); }, 30000), "download que falha mostra o erro");
             qunsetenv("KATANA_PULL_URL");
             b2.shutdown();
+        }
+        if (store) {   // download pelo clique: motor de mentira com o mesmo protocolo de linhas (catalog, pull com PROGRESS e DONE)
+            QTemporaryDir td;
+            const QString fake = td.filePath("motor.sh"), md = td.filePath("m");
+            QDir().mkpath(md);
+            QFile f(fake);
+            f.open(QIODevice::WriteOnly);
+            f.write("#!/bin/sh\n"
+                    "d=\"$3\"; [ \"$1\" = pull ] || d=\"$2\"\n"
+                    "case \"$1\" in\n"
+                    "hw) printf 'ram_gb\\t64\\ngpu\\t-\\nvram_gb\\t0\\ndisk_gb\\t100\\n';;\n"
+                    "catalog) st=missing; have=0\n"
+                    "  [ -f \"$d/falso.gguf.part\" ] && { st=partial; have=$(wc -c < \"$d/falso.gguf.part\"); }\n"
+                    "  [ -f \"$d/falso.gguf\" ] && { st=installed; have=1000; }\n"
+                    "  printf 'falso\\tModelo de teste\\tfalso.gguf\\t1000\\t%s\\t%s\\t2\\t1\\tnota\\n' \"$st\" \"$have\"\n"
+                    "  printf 'outro\\tOutro\\toutro.gguf\\t1000\\tmissing\\t0\\t2\\t0\\tnota\\n';;\n"
+                    "pull) trap 'exit 1' TERM\n"
+                    "  n=0; [ -f \"$d/falso.gguf.part\" ] && n=$(wc -c < \"$d/falso.gguf.part\")\n"
+                    "  while [ \"$n\" -lt 1000 ]; do\n"
+                    "    head -c 100 /dev/zero >> \"$d/falso.gguf.part\"; n=$((n+100))\n"
+                    "    printf 'PROGRESS\\t%s\\t1000\\t500\\n' \"$n\"; sleep 0.3\n"
+                    "  done\n"
+                    "  printf 'VERIFY\\t1000\\n'; mv \"$d/falso.gguf.part\" \"$d/falso.gguf\"; printf 'DONE\\t%s\\n' \"$d/falso.gguf\";;\n"
+                    "esac\n");
+            f.close();
+            QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+            const QString realK = be.katanaPath(), realM = be.modelsDir();
+            auto state = [&](const QString &id) {
+                for (const QVariant &v : be.catalog()) if (v.toMap()["id"].toString() == id) return v.toMap()["state"].toString();
+                return QString();
+            };
+            be.testRedirect(fake, md);
+            store->setProperty("open", true);
+            check(waitFor([&] { return state("falso") == "missing" && c.item("storeAction_falso"); }, 5000), "tela de modelos lista o catalogo do motor");
+            // o catalogo e relido a cada mudanca e os cartoes sao recriados: buscar o botao de novo a cada uso
+            auto act = [&] { QTest::qWait(200); return c.item("storeAction_falso"); };
+            auto label = [&] { QQuickItem *a = act(); return a ? a->property("label").toString() : QString(); };
+            if (act()) {
+                check(label() == "Baixar", "modelo ausente: botao Baixar");
+                c.click(act());
+                check(waitFor([&] { return be.pullId() == "falso" && be.pullFraction() > 0.05; }, 5000), "clique em Baixar inicia o download e o progresso anda");
+                QQuickItem *outro = c.item("storeAction_outro");
+                check(label() == "Pausar" && outro && !outro->property("active").toBool(),
+                      "durante o download: botao vira Pausar e os outros ficam inativos");
+                c.grab("13-baixando.png");
+                c.click(act());
+                check(waitFor([&] { return be.pullId().isEmpty() && state("falso") == "partial"; }, 5000), "clique em Pausar para o download e guarda a parte baixada");
+                check(be.pullError().contains("pausado") && label() == "Continuar", "pausado: aviso e botao Continuar");
+                const qint64 parte = QFileInfo(md + "/falso.gguf.part").size();
+                check(parte > 0 && parte < 1000, "arquivo parcial no disco");
+                c.click(act());
+                check(waitFor([&] { return be.pullId() == "falso" && be.pullFraction() * 1000 > parte; }, 5000), "Continuar retoma de onde parou");
+                check(waitFor([&] { return be.pullId().isEmpty() && state("falso") == "installed"; }, 15000), "download termina e o modelo aparece instalado");
+                check(QFileInfo(md + "/falso.gguf").size() == 1000 && be.pullError().isEmpty() && label() == "Usar",
+                      "arquivo completo no disco, sem erro, botao Usar");
+            }
+            store->setProperty("open", false);
+            be.testRedirect(realK, realM);
+            check(waitFor([&] { return be.catalog().size() >= 2 && state("falso").isEmpty(); }, 15000), "catalogo real de volta depois do teste");
         }
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
