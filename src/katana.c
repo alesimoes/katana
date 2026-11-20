@@ -41,6 +41,7 @@
 #include "agent/ask.c"                 /* interacao com o usuario: pergunta com opcoes (ask_user) */
 #include "agent/planmode.c"            /* modo plano: so leitura ate o usuario aprovar (/plan, /go) */
 #include "agent/dispatch.c"            /* despacho das ferramentas e leitura das chamadas em XML */
+#include "agent/fmt_glm.c"             /* chamada de ferramenta no formato do GLM */
 #include "agent/fmt_gemma4.c"          /* ferramentas no formato nativo do Gemma 4 */
 #include "agent/prefix_cache.c"        /* cache de prefixo persistente e aquecimento */
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */

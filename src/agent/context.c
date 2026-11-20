@@ -30,10 +30,10 @@ static void ah_render(const AHist *h, const char *sys, Buf *o) {
         }
         return;
     }
-    buf_str(o, "<|im_start|>system\n"); buf_str(o, sys); buf_str(o, "<|im_end|>\n");
+    buf_str(o, tf_sys()); buf_str(o, sys); buf_str(o, tf_end());
     for (int i = 0; i < h->n; i++) {
-        if (i) buf_str(o, "<|im_end|>\n");
-        buf_str(o, h->v[i].role == 'a' ? "<|im_start|>assistant\n" : "<|im_start|>user\n");
+        if (i) buf_str(o, tf_end());
+        buf_str(o, h->v[i].role == 'a' ? tf_asst() : h->v[i].role == 't' ? tf_tool() : tf_user());
         buf_str(o, h->v[i].s);
     }
 }
@@ -152,14 +152,15 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
     }
     Buf pr = {0};
     buf_str(&pr, g_ah_g4 ? "<|turn>system\nVoce resume conversas de forma fiel e curta.<turn|>\n<|turn>user\n"
+                         : g_glm ? "[gMASK]<sop><|system|>Voce resume conversas de forma fiel e curta.<|user|>"
                          : "<|im_start|>system\nVoce resume conversas de forma fiel e curta.<|im_end|>\n<|im_start|>user\n");
     buf_str(&pr, "Resuma a conversa abaixo em no maximo 15 linhas, no idioma da conversa: o que o usuario quer, fatos e decisoes, "
                  "arquivos, comandos e ferramentas usados com os resultados importantes, e o que ainda falta fazer. Nao invente nada.\n\n<conversa>\n");
     buf_str(&pr, tx.p); free(tx.p);
     if (g_ah_g4) { buf_str(&pr, "</conversa><turn|>\n<|turn>model\n"); buf_str(&pr, g4_answer_pre()); }
     else {
-        buf_str(&pr, "</conversa><|im_end|>\n<|im_start|>assistant\n");
-        if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+        buf_str(&pr, "</conversa>"); buf_str(&pr, tf_end()); buf_str(&pr, tf_asst());
+        buf_str(&pr, think_off(c));
     }
     Ids ids = {0};
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
@@ -199,14 +200,14 @@ static char *ah_summary_live(Model *m, int pos, const char *pending) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     const int im_end = map_get(&tk->vocab, "<|im_end|>", 10);
-    const char *K = "<|im_end|>\n<|im_start|>assistant\n";
+    char K[64]; snprintf(K, sizeof K, "%s%s", tf_end(), tf_asst());
     const char *cut = NULL;
     for (const char *q = strstr(pending, K); q; q = strstr(q + 1, K)) cut = q;      /* a abertura do turno do assistente, no fim */
     if (!cut) return NULL;
     Buf pr = {0};
     buf_add(&pr, pending, (size_t)(cut - pending));
-    buf_str(&pr, "\n\n" CP_NOTE "<|im_end|>\n<|im_start|>assistant\n");
-    if (c->think) buf_str(&pr, "<think>\n\n</think>\n\n");
+    buf_str(&pr, "\n\n" CP_NOTE); buf_str(&pr, K);
+    buf_str(&pr, think_off(c));
     Ids ids = {0};
     encode(tk, pr.p, &ids);
     free(pr.p);

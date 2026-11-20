@@ -835,7 +835,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "agentsys") == 0) {      /* teste: imprime o prompt de sistema do agente; formato: qwen (XML, padrao), json ou gemma4 */
         static char sys[32000];
         const char *fmt = argc >= 3 ? argv[2] : "qwen";
-        g_web = 1; g_tool_xml = strcmp(fmt, "json") != 0;
+        g_web = 1; g_tool_xml = strcmp(fmt, "json") != 0; g_tool_glm = strcmp(fmt, "glm") == 0;
         agent_build_sys(sys, sizeof sys, "");
         if (strcmp(fmt, "gemma4") == 0) g4_agent_sys(sys, sizeof sys);
         printf("%s\n[%zu bytes]\n", sys, strlen(sys));
@@ -845,6 +845,7 @@ static int run_main(int argc, char **argv) {
         static char nm[128], js[16384], res[TOOL_WEB + 512];
         const char *tc = argv[3];
         const int ok = strcmp(argv[2], "gemma4") == 0 ? g4_call_parse(tc, tc + strlen(tc), nm, sizeof nm, js, sizeof js)
+                     : strcmp(argv[2], "glm") == 0 ? glm_call_parse(tc, tc + strlen(tc), nm, sizeof nm, js, sizeof js)
                                                        : tool_xml_parse(tc, tc + strlen(tc), nm, sizeof nm, js, sizeof js);
         if (!ok) { printf("nao e uma chamada\n"); return 1; }
         printf("nome=%s\n%s\n---\n", nm, js);

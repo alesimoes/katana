@@ -106,6 +106,7 @@ static int agent_act(const char *what, const char *detail) {
 static size_t g_budget = 12000;           /* bytes que o contexto ainda comporta para um resultado de ferramenta */
 static int g_web = 1;
 static int g_code;                        /* katana code: agente em modo de programacao (prompt e ferramentas enxutos) */
+static int g_tool_glm;                    /* o modelo chama ferramentas no formato do GLM (<arg_key>/<arg_value>) */
 static int g_tool_xml;                    /* o modelo chama ferramentas em XML (<function=..><parameter=..>) */                     /* KATANA_WEB=0 desliga web_search e web_fetch */
 static char g_roots[32][1024];            /* pastas raiz fora da pasta atual ja liberadas pelo usuario */
 static int g_nroots;

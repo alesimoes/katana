@@ -225,7 +225,7 @@ static void pfx_tokens(Model *m, const char *sys, Ids *p, int *stable) {
     const Config *c = &m->cfg;
     static char ptext[40000];
     if (c->g4) snprintf(ptext, sizeof ptext, "<|turn>system\n%s%s<turn|>\n", g4_think() ? "<|think|>\n" : "", sys);
-    else snprintf(ptext, sizeof ptext, "<|im_start|>system\n%s<|im_end|>\n", sys);
+    else snprintf(ptext, sizeof ptext, "%s%s%s", tf_sys(), sys, tf_end());
     if (c->add_bos && c->bos >= 0) ids_push(p, c->bos);
     encode(&m->tk, ptext, p);
     *stable = 0;

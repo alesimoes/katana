@@ -179,7 +179,10 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
 #undef PI
 #undef PB
 #undef TOOLDEF
-    if (g_tool_xml) o += (size_t)snprintf(out + o, cap - o,
+    if (g_tool_glm) o += (size_t)snprintf(out + o, cap - o,
+        "</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n"
+        "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call>");
+    else if (g_tool_xml) o += (size_t)snprintf(out + o, cap - o,
         "</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
         "<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n</function>\n</tool_call>\n\n"
         "<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n"
