@@ -39,6 +39,7 @@ typedef struct {
     int think;          /* o assistente comeca com <think>\n */
     int tool_tmpl;      /* o template de conversa do modelo fala de ferramentas */
     int tool_xml;       /* o modelo chama ferramentas em XML (<function=..><parameter=..>) */
+    int glm_args;       /* GLM 4.5 em diante: chamada nome<arg_key>k</arg_key><arg_value>v</arg_value>, marcas de turno sem quebra de linha */
     /* gemma4: camadas locais (janela deslizante) intercaladas com globais, largura de cabeca e cabecas kv por
        camada, feed-forward denso em paralelo com o MoE, normas depois de cada bloco */
     int g4;             /* arquitetura gemma4 */
@@ -794,6 +795,7 @@ static void load_model(Model *m, const char *path) {
             int sl; const char *sv = rd_str(&r, &sl);
             tmpl = xalloc((size_t)sl + 1, 1); memcpy(tmpl, sv, sl);
             c->tool_xml = strstr(tmpl, "<function=") != NULL;
+            c->glm_args = strstr(tmpl, "<arg_key>") != NULL;
             c->tool_tmpl = strstr(tmpl, "tool") != NULL;
         } else if (t == 9 && key_is(k, kl, "tokenizer.ggml.scores")) {
             uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
@@ -952,6 +954,8 @@ static void load_model(Model *m, const char *path) {
     else c->chat_fmt = 4;
     if (tmpl && strcmp(c->arch, "olmoe") == 0 && strstr(tmpl, "<|user|>")) c->chat_fmt = 7;
     if (c->go) c->chat_fmt = 9;     /* gpt-oss: formato harmony */
+    if (c->chat_fmt != 10) c->glm_args = 0;
+    if (c->glm_args && strstr(tmpl, "</think>")) c->think = 1;     /* a resposta abre com <think> (ou </think>, sem raciocinio) */
     if (tmpl && strstr(tmpl, "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."))
         c->def_sys = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
     if (tmpl && c->chat_fmt == 8 && strstr(tmpl, "| trim")) c->trim_msgs = 1;

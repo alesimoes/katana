@@ -130,7 +130,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     char tmp[256];
     if (!g_agent_sys) gr_env_begin(tk, c->vocab, stop2);       /* KATANA_JSON: so fora do agente */
     /* raciocinio (<think> aberto no prompt): aparece apagado e separado da resposta */
-    int thinking = c->think && strcmp(think_pre(c), "<think>\n") == 0, skipnl = 0, skiplabel = 0;
+    int thinking = c->think && strncmp(think_pre(c), "<think>", 7) == 0 && !strstr(think_pre(c), "</think>"), skipnl = 0, skiplabel = 0;
     /* harmony (gpt-oss): canal atual (1 analise, 2 final, 3 comentario), lendo nome do canal, dentro do corpo, cabecalho de analise impresso */
     int go_ch = go_reason() ? 1 : 2, go_rdch = 0, go_body = c->chat_fmt == 9, go_an = 0;
     if (thinking) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fflush(stdout); }
@@ -172,7 +172,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
         fflush(stdout);
         if (cap) buf_add(cap, tmp, tl);
         if (g_gr.on) { gr_accept(t); if (g_gr.tool && gr_done()) gr_off(); }
-        else if (g_agent_sys && cap && cap->n >= 10) {
+        else if (g_agent_sys && cap && cap->n >= 10 && !c->glm_args) {      /* GLM: a chamada nao e JSON nem <function=> */
             /* o modelo abriu uma chamada de ferramenta: JSON valido com ferramenta e argumentos do schema (XML: nome da funcao) */
             const int xml = cap->n >= 10 && strcmp(cap->p + cap->n - 10, "<function=") == 0;
             if (xml || (cap->n >= 11 && strcmp(cap->p + cap->n - 11, "<tool_call>") == 0)) {
@@ -217,11 +217,21 @@ static int read_line(char *line, size_t cap) {
  * /sair termina. Quando o contexto enche, a conversa recomeca (mantendo o prompt de sistema). */
 /* inicio da resposta do assistente em modelos que raciocinam (<think>): KATANA_THINK=0 desliga o
    raciocinio (bloco vazio, como o proprio modelo preve); padrao: raciocina */
+/* bloco de raciocinio vazio (o modelo responde direto); GLM: so o fecho, como no template dele */
+static const char *think_off(const Config *c) { return !c->think ? "" : c->glm_args ? "</think>" : "<think>\n\n</think>\n\n"; }
 static const char *think_pre(const Config *c) {
     if (!c->think || c->chat_fmt == 8) return "";
     const char *e = getenv("KATANA_THINK");
-    return e && atoi(e) == 0 ? "<think>\n\n</think>\n\n" : "<think>\n";
+    if (e && atoi(e) == 0) return think_off(c);
+    return c->glm_args ? "<think>" : "<think>\n";
 }
+/* marcas de turno do agente: ChatML ou GLM (g_glm; no GLM o inicio de um turno ja fecha o anterior) */
+static int g_glm;
+static const char *tf_sys(void)  { return g_glm ? "[gMASK]<sop><|system|>" : "<|im_start|>system\n"; }
+static const char *tf_user(void) { return g_glm ? "<|user|>" : "<|im_start|>user\n"; }
+static const char *tf_asst(void) { return g_glm ? "<|assistant|>" : "<|im_start|>assistant\n"; }
+static const char *tf_tool(void) { return g_glm ? "<|observation|>" : "<|im_start|>user\n"; }     /* resultados de ferramenta */
+static const char *tf_end(void)  { return g_glm ? "" : "<|im_end|>\n"; }
 
 /* texto de um turno do usuario no formato do modelo, terminando no inicio da resposta. first = 1 no primeiro turno
    (leva o prompt de sistema); nos seguintes, o texto comeca pelo fecho do turno anterior (o token de fim de turno
@@ -270,7 +280,8 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
         case 6:  snprintf(sp, sizeof sp, "<|im_system|>system<|im_middle|>%s<|im_end|>", sys); break;
         case 7:  snprintf(sp, sizeof sp, "<|system|>\n%s\n", sys); break;
         case 8:  break;
-        case 9:  snprintf(sp, sizeof sp, "<|system|>\n%s", sys); break;
+        case 9:  break;
+        case 10: snprintf(sp, sizeof sp, c->glm_args ? "<|system|>%s" : "<|system|>\n%s", sys); break;
         default: snprintf(sp, sizeof sp, "%s\n", sys); break;
     }
     if (c->chat_fmt == 8 && first && ((sys && *sys) || g4_think()))
@@ -293,7 +304,9 @@ static void turn_text(const Config *c, char *out, size_t n, const char *sys, con
         case 7:  snprintf(out, n, "%s%s%s<|user|>\n%s\n<|assistant|>\n", first ? c->bos_text : c->eos_text, first ? "" : "\n", sp, user); break;
         case 8:  snprintf(out, n, "%s%s<|turn>user\n%s<turn|>\n<|turn>model\n%s", first ? "" : "<turn|>\n", sp, user, g4_answer_pre()); break;
         case 9:  snprintf(out, n, "%s%s<|start|>user<|message|>%s<|end|><|start|>assistant%s", first ? "" : "<|end|>", sp, user, go_answer_pre()); break;
-        case 10: snprintf(out, n, "%s%s<|user|>\n%s<|assistant|>", first ? "[gMASK]<sop>" : "", sp, user); break;
+        case 10: if (c->glm_args) snprintf(out, n, "%s%s<|user|>%s<|assistant|>%s", first ? "[gMASK]<sop>" : "", sp, user, think_pre(c));
+                 else snprintf(out, n, "%s%s<|user|>\n%s<|assistant|>", first ? "[gMASK]<sop>" : "", sp, user);
+                 break;
         default: snprintf(out, n, "%s%sUser: %s\nAssistant:", first ? "" : "\n", sp, user); break;
     }
     free(ut); free(st);
