@@ -9,6 +9,8 @@
 #  4. katana import: conversas de fora viram dados de treino; as chamadas voltam pelos leitores do agente
 #  5. katana merge: o GGUF fundido responde igual ao base com o .kspec
 #  6. katana distill: um professor (de mentira, aqui) resolve uma tarefa do codebench com as ferramentas do katana
+#  7. treino na GPU: o codigo do shader do produto roda na CPU (7 formatos, 3 modos) e numa GPU de mentira dentro do
+#     katana (gradcheck com todos os produtos nela); se houver GPU Vulkan de verdade, gradcheck nela em 5 layouts
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 K=$(pwd)/katana
@@ -27,8 +29,24 @@ python3 tools/tinymodel/make_tiny_gguf.py "$D/g4d.gguf" --arch gemma4 --dense 2 
 $K quantize "$D/g4.gguf" "$D/g4q8.gguf" Q8_0 >/dev/null 2>&1
 fail=0
 for m in llama qwen2 q8 qwen3 moe olmoe q35 q35d g4 g4d g4q8; do
-  if $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck $m: ok"; else echo "gradcheck $m: FALHOU"; fail=1; fi
+  if KATANA_TRAIN_GPU=0 $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck $m: ok"; else echo "gradcheck $m: FALHOU"; fail=1; fi
 done
+# treino na GPU (vk/shaders/tmm.comp)
+gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/tmm_ref.c -o "$D/tmm_ref" -lm -lpthread -ldl && "$D/tmm_ref" "$D/tmm_cases.bin"
+if command -v g++ >/dev/null 2>&1; then
+  g++ -std=c++20 -O1 -pthread -I vk/shaders tools/traintest/tmm_emu.cpp -o "$D/tmm_emu" && "$D/tmm_emu" "$D/tmm_cases.bin" | tail -1 | grep -q "tmm_emu: ok" \
+    && echo "shader do treino na CPU (7 formatos x 3 modos): ok" || { echo "shader do treino: FALHOU"; fail=1; }
+  g++ -std=c++20 -O2 -c -I vk/shaders tools/traintest/tg_emu.cpp -o "$D/tg_emu.o" \
+    && gcc -O2 -mavx2 -mfma -mf16c -ffast-math -w -DKATANA_TG_EMU -I . -I src -I vk/include src/katana.c "$D/tg_emu.o" -o "$D/katana_emu" -lm -lpthread -ldl -lstdc++
+  for e in "" "KATANA_TRAIN_VRAM=0 KATANA_TRAIN_GPU_CHUNK=0.004"; do
+    if env KATANA_TRAIN_GPU_MIN=0 $e "$D/katana_emu" gradcheck "$D/llama.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck na GPU de mentira ${e:+(pesos em fatias de 4 KB)}: ok"; else echo "gradcheck na GPU de mentira $e: FALHOU"; fail=1; fi
+  done
+else echo "sem g++: testes do shader do treino pulados"; fi
+if KATANA_TRAIN_GPU_MIN=0 $K gradcheck "$D/llama.gguf" 4 2>&1 | grep -q "treino na GPU"; then
+  for m in llama q8 moe q35 g4; do
+    if KATANA_TRAIN_GPU_MIN=0 $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck na GPU $m: ok"; else echo "gradcheck na GPU $m: FALHOU"; fail=1; fi
+  done
+else echo "sem GPU Vulkan: gradcheck na GPU de verdade pulado"; fi
 python3 - "$D/sft.jsonl" "$D/sft_think.jsonl" <<'EOF'
 import json, sys
 sys_ = "<|im_start|>system\nYou are katana.<|im_end|>\n"

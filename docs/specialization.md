@@ -114,6 +114,35 @@ path works, and the file round-trips into the serving engine. What it does not p
 real model, or speed. Nothing was run yet on the real Qwen3.6 or Gemma 4 files (no model or GPU in the session that
 wrote this); both layouts are covered on tiny random models.
 
+## Training on the GPU (Vulkan)
+
+The three products with a weight, which are most of the arithmetic, run on the GPU through `vk/shaders/tmm.comp`:
+forward `Y = X W^T`, transposed `dX = dY W` and the weight gradient `G = dY^T X`. Attention, norms, the DeltaNet
+recurrence and routing stay on the CPU for now.
+
+- Frozen weights go to VRAM once, in their GGUF format (F32, F16, BF16, Q8_0, Q4_K, Q5_K, Q6_K; no repacking), while
+  they fit. The rest is uploaded per product in slices. Other formats fall back to the CPU for that tensor.
+- Float masters of trained tensors are uploaded again after each optimizer step (a version counter).
+- One float32 kernel for all three modes and formats (64x64 tiles, each weight element dequantized once per tile and
+  reused 64 times). It does not use cooperative matrices yet, so it runs on any Vulkan 1.2 GPU and is far from the
+  card's peak.
+- `KATANA_TRAIN_GPU=0` turns it off; `KATANA_TRAIN_VRAM=<GB>` caps the resident weights; `KATANA_TRAIN_GPU_MIN=<n>`
+  is the smallest product (multiply-adds) sent to the GPU (default 4M; 0 sends everything, for testing).
+- `katana train` prints `velocidade: N tokens/s` and the GPU totals at the end. To compare, run the same command
+  with and without `KATANA_TRAIN_GPU=0`, alternating, in the same hour.
+
+How it was checked, without a GPU (none in the session that wrote it; a software Vulkan device could not be built
+there):
+
+| check | result |
+|---|---|
+| the shader's own code (`tmm_core.glsl` is GLSL and C++ at once) run on the CPU with 256 real threads and barriers per workgroup, 7 formats x 3 modes, odd sizes and an offset weight, against the CPU dequant in double (`tools/traintest/tmm_emu.cpp`) | max relative error 1.1e-6 |
+| katana with an emulated GPU (`-DKATANA_TG_EMU`: the `kvk_*` calls of the trainer go to host memory and run the shader code; `tools/traintest/tg_emu.*`), every product on it, gradcheck on the 11 tiny layouts, weights resident and weights forced into 4 KB slices | forward equals the engine (1e-6 to 1e-5); gradcheck passes on 10 of 11; olmoe misses on one adapter gradient of 4e-4 by 1.2e-4: the analytic value is identical in every run and the finite difference converges to it with a larger step, so it is float noise, not a gradient bug |
+| emulated GPU, rank-8 adapters on Q8_0 and whole-tensor training | the server answers the three trained replies word for word |
+
+Not measured: speed on a real card, and the kernel on a real driver. `tools/traintest/run.sh` runs gradcheck on the
+real GPU (5 layouts) when one is present; that is the first thing to run on the owner's machine.
+
 ## Limits today
 
 - Architectures: llama, qwen2, qwen3, olmoe, qwen3moe-style (RMSNorm, GQA, RoPE in pairs or halves, SwiGLU,
@@ -129,7 +158,8 @@ wrote this); both layouts are covered on tiny random models.
   recomputes one block at a time from that checkpoint; attention probabilities are not stored either (each row is
   recomputed in the backward pass). Activations still grow with the window times the model width; the window is
   `--seq`. MoE tokens are grouped by expert, so each expert row is read once per window, not once per token.
-- CPU only, one sequence per step, attention probabilities stored for the whole sequence (T x T per head and layer).
+- Only the weight products run on the GPU; attention, DeltaNet and MoE routing are on the CPU, and each product copies
+  its activations to the GPU and back. One sequence per step.
 - Adapters are merged at load, so an adapted matrix costs float memory at serving time.
 
 ## Next steps, in order
@@ -140,6 +170,8 @@ wrote this); both layouts are covered on tiny random models.
 3. The first real specialization of Qwen3.6-35B-A3B and Gemma 4 26B-A4B on the owner's machine: `--plan 1` first, then a short run on
    exported sessions, measured with codebench against the base model.
 4. Gradient accumulation over several windows.
-5. Speed: the matrix products of forward and backward on the GPU (Vulkan), reusing the batch kernels of the prompt path.
+5. Speed on the GPU, after measuring the first version on the owner's card: activations kept in VRAM between
+   products (no copy per product), attention and the DeltaNet recurrence on the GPU, cooperative-matrix variants of
+   `tmm`, MoE experts in one grouped dispatch, adapters on the GPU.
 6. Serving: adapters applied unmerged in the products and selected per request (`model` field), hot-swapped.
 7. Optional: merge a specialization into a new GGUF and requantize it (`katana quantize` already writes GGUF).
