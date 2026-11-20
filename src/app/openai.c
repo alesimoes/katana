@@ -172,7 +172,7 @@ static const char *oa_prompt(const Config *c, const OaReq *r, Buf *text) {
 
 /* saida da geracao: separa raciocinio e resposta, procura os stop e manda (streaming) ou junta (resposta unica) */
 typedef struct {
-    sock_t s; int stream, alive, think, stopped;
+    sock_t s; int stream, alive, think, stopped, lstrip;   /* lstrip: tira os espacos e quebras do comeco da resposta */
     char **stop; int nstop; size_t maxstop;
     Buf hold, content, reason, ev;
     const char *id, *model; long created;
@@ -206,9 +206,8 @@ static void oa_feed(OaOut *o, const char *txt, size_t n, int final) {
             if (e) {
                 oa_chunk(o, "reasoning_content", h, (size_t)(e - h), NULL);
                 size_t skip = (size_t)(e - h) + 8;
-                while (skip < o->hold.n && (h[skip] == '\n' || h[skip] == ' ')) skip++;     /* quebras entre o raciocinio e a resposta */
                 memmove(o->hold.p, h + skip, o->hold.n - skip); o->hold.n -= skip; o->hold.p[o->hold.n] = 0;
-                o->think = 0;
+                o->think = 0; o->lstrip = 1;                 /* as quebras entre o raciocinio e a resposta podem vir nos proximos tokens */
                 continue;
             }
             keep = final ? 0 : 7;
@@ -217,6 +216,13 @@ static void oa_feed(OaOut *o, const char *txt, size_t n, int final) {
             oa_chunk(o, "reasoning_content", h, send, NULL);
             memmove(o->hold.p, h + send, o->hold.n - send); o->hold.n -= send; o->hold.p[o->hold.n] = 0;
             return;
+        }
+        if (o->lstrip) {
+            size_t sk = 0;
+            while (sk < o->hold.n && (h[sk] == '\n' || h[sk] == ' ' || h[sk] == '\r')) sk++;
+            if (sk) { memmove(o->hold.p, h + sk, o->hold.n - sk); o->hold.n -= sk; o->hold.p[o->hold.n] = 0; }
+            if (!o->hold.n) return;
+            o->lstrip = 0;
         }
         size_t cut = o->hold.n; int hit = 0;
         for (int i = 0; i < o->nstop; i++) {
@@ -338,7 +344,9 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
         buf_str(&b, "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"");
         js_escape(&b, o.content.p ? o.content.p : "", o.content.n);
         buf_str(&b, "\"");
-        if (o.reason.n) { buf_str(&b, ",\"reasoning_content\":\""); js_escape(&b, o.reason.p, o.reason.n); buf_str(&b, "\""); }
+        size_t rs = 0;
+        while (rs < o.reason.n && (o.reason.p[rs] == '\n' || o.reason.p[rs] == ' ' || o.reason.p[rs] == '\r')) rs++;
+        if (rs < o.reason.n) { buf_str(&b, ",\"reasoning_content\":\""); js_escape(&b, o.reason.p, o.reason.n); buf_str(&b, "\""); }
         snprintf(hd, sizeof hd, "},\"finish_reason\":\"%s\"}],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"total_tokens\":%d}}",
                  finish, ids.n, gen, ids.n + gen);
         buf_str(&b, hd);

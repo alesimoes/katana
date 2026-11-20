@@ -14,6 +14,12 @@ int main(void) {
         CHECK(o.reason.p && !strcmp(o.reason.p, "let me think"), "reason=[%s]", o.reason.p);
         CHECK(o.content.p && !strcmp(o.content.p, "The answer is 4."), "content=[%s]", o.content.p);
     }
+    { /* quebras depois do </think> chegando em pedacos separados nao entram na resposta */
+        OaOut o = {0}; o.alive = 1; o.think = 1;
+        const char *p[] = {"\n</think>", "\n", "\n", "Hi", " there", NULL};
+        feed_all(&o, p);
+        CHECK(o.content.p && !strcmp(o.content.p, "Hi there"), "lstrip content=[%s]", o.content.p);
+    }
     { /* stop partido entre pedacos, nada depois dele sai */
         OaOut o = {0}; o.alive = 1; char *st[] = {"END", "zz"}; o.stop = st; o.nstop = 2; o.maxstop = 3;
         const char *p[] = {"abc E", "N", "Dxyz", NULL};

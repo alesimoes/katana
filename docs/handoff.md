@@ -24,8 +24,13 @@ are allowed, written here). Full description, measurements and next steps: `docs
   engine to 6e-6 on tiny qwen3, qwen3moe (also with shared + dense + GQA) and olmoe; gradcheck passes on all (MoE
   selection held fixed in the finite differences); a 2-of-8 hot-expert specialization with attention adapters learns
   the three answers and the server repeats them. Specializations that change experts run on the CPU for now.
-- Still missing for the reference models: Gated DeltaNet and gated attention (Qwen3.6), Gemma 4 layers. Order in
-  `docs/specialization.md`.
+- Same day, third step: the Qwen3.6 family (qwen35moe, qwen35): Gated DeltaNet backward (convolution, L2 norms,
+  gated delta rule through time, gated RMS output) and gated attention with partial RoPE. Training forward equals the
+  engine to 4e-6 and 5e-6 on tiny random qwen35moe / qwen35 (`make_tiny_gguf.py --arch qwen35moe|qwen35`); gradcheck
+  passes (Richardson extrapolation added for the exponential decay parameters); a qwen35moe trained in the thinking
+  format answers the three replies through the server. Server fix found on the way: the line breaks after
+  `</think>` arrived in later tokens and leaked into `content`; now stripped.
+- Still missing: Gemma 4 layers; memory for long windows on the full models (DeltaNet states are all stored).
 
 ## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
 

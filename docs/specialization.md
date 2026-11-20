@@ -70,7 +70,10 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
    on the smallest gradients; a wrong formula shows up as a large, step-independent error). In MoE layers the choice
    of the K experts is a step function with no derivative: the finite differences reuse the experts chosen in the
    base pass, which is exactly the gradient the trainer uses (the selection is held fixed, the weights of the chosen
-   experts and the router logits behind them get the gradient).
+   experts and the router logits behind them get the gradient). Each direction is estimated twice, by a plain
+   central difference and by Richardson extrapolation (central differences at h and h/2, which removes the h^2
+   curvature error that matters for parameters inside exponentials such as the DeltaNet decay); the closer estimate
+   counts. A wrong formula misses both.
 
 `tools/traintest/run.sh` runs the gradcheck on three layouts of the tiny random model (`tools/tinymodel`), trains it
 with whole tensors and with adapters on a Q8_0 base, and checks that the server with `KATANA_SPEC` answers exactly the
@@ -89,7 +92,10 @@ trained replies at temperature 0.
 | gradcheck on those four | pass (65 to 197 tensors and adapter parts each) |
 | heat-guided MoE specialization: 2 hot experts of 8 per layer + router + attention and shared-expert adapters (rank 8) | the 2 hot experts cover 43% of the router's choices on the data; loss 12.9 -> 0.0002 in 2.5 s; `.kspec` 50 KB; server answers the three replies word for word |
 | hot experts and router only (no attention) | loss 12.9 -> 0.49: on this tiny random model the experts alone do not carry enough capacity; with attention adapters they do |
-| AddressSanitizer + UndefinedBehaviorSanitizer | gradcheck (dense and MoE), train and loading: no reports |
+| training forward vs engine, Qwen3.6 layout (qwen35moe: Gated DeltaNet + gated attention with partial RoPE + MoE with gated shared expert) | 3.8e-6; qwen35 dense: 5.4e-6 |
+| gradcheck on qwen35moe and qwen35 | pass (204 and 72 tensors and adapter parts; DeltaNet tensors within 1%) |
+| qwen35moe, rank-8 adapters on all layers, data in the model's thinking format | loss 12.5 -> 0.0001 in 2.2 s; `.kspec` 190 KB; the server answers the three replies word for word, with the empty thinking block kept out of `content` |
+| AddressSanitizer + UndefinedBehaviorSanitizer | gradcheck (dense, MoE, DeltaNet), train and loading: no reports |
 
 What this proves: the backward pass is right for this layer layout, the optimizer converges, the frozen quantized
 path works, and the file round-trips into the serving engine. What it does not prove: anything about quality on a
@@ -99,8 +105,11 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
 
 - Architectures: llama, qwen2, qwen3, olmoe, qwen3moe-style (RMSNorm, GQA, RoPE in pairs or halves, SwiGLU,
   optional q/k/v/o bias, q/k norm per head or whole-vector, softmax-routed MoE with top-K, renormalization and scale,
-  shared experts with an optional sigmoid gate, leading dense layers). Not yet: Gated DeltaNet and gated attention
-  (Qwen3.6 = qwen35moe), Gemma 4 layers, sigmoid routers with bias (DeepSeek/GLM), gpt-oss, MLA.
+  shared experts with an optional sigmoid gate, leading dense layers), and the Qwen3.6 family (qwen35moe, qwen35):
+  Gated DeltaNet (causal convolution, L2-normalized q/k, gated delta rule, gated RMS output) and gated attention
+  with partial RoPE. Not yet: Gemma 4 layers, sigmoid routers with bias (DeepSeek/GLM), gpt-oss, MLA.
+- The DeltaNet backward keeps every recurrent state of the sequence (dk x dv per head per token): fine for short
+  windows, too much memory for long ones on the full model (needs chunked recomputation, step 3 below).
 - CPU only, one sequence per step, attention probabilities stored for the whole sequence (T x T per head and layer).
 - Adapters are merged at load, so an adapted matrix costs float memory at serving time.
 
@@ -108,11 +117,11 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
 
 1. Run `tools/traintest/run.sh` on the owner's machine, then a first real run on a small dense model with sessions
    exported from the agent.
-2. Gated DeltaNet and gated attention backward (Qwen3.6 = qwen35moe, the owner's reference model), with a tiny
-   random qwen35moe in `tools/tinymodel` and its gradcheck against the engine's own forward.
-3. Gemma 4 layers (sliding window, per-layer head width, extra norms, dense and MoE in parallel, softcap), then
+2. Gemma 4 layers (sliding window, per-layer head width, extra norms, dense and MoE in parallel, softcap), then
    sigmoid routers with bias, gpt-oss and MLA.
-4. Memory: recompute attention in the backward pass instead of storing it; gradient accumulation over several windows.
+3. Memory for the full models: DeltaNet states and attention recomputed per chunk in the backward pass instead of
+   stored; then the first real specialization of Qwen3.6-35B-A3B on the owner's machine.
+4. Gradient accumulation over several windows.
 5. Speed: the matrix products of forward and backward on the GPU (Vulkan), reusing the batch kernels of the prompt path.
 6. Serving: adapters applied unmerged in the products and selected per request (`model` field), hot-swapped.
 7. Optional: merge a specialization into a new GGUF and requantize it (`katana quantize` already writes GGUF).
