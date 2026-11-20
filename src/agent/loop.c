@@ -5,6 +5,49 @@
  * que a sessao usou e recalcula so o prefixo compacto, ou carrega o KV dele do disco (pfx_save/pfx_load). */
 #define SESS_MAGIC 0x3153534553544b4bULL
 static char g_sess_path[1024], g_resume_path[1024];
+static char **g_orig_argv; static int g_orig_argc;      /* linha de comando original, para o agente se recarregar */
+
+/* A placa estava dividida com outro programa quando o modelo subiu e agora liberou: entre dois turnos o agente
+   grava a sessao e se recarrega (mesmo processo, mesmos canais) para ocupar a memoria que sobrou; a conversa
+   volta pela sessao gravada. No maximo uma vez a cada 5 minutos e so quando o ganho passa de 600 MB. */
+static void sess_save(Model *m, const char *sys, const AHist *hist, const AHist *full, int allow_sum);
+static void agent_regrow(Model *m, const char *sys, const AHist *hist, const AHist *slog) {
+#ifndef _WIN32
+    if (!g_orig_argv || getenv("KATANA_NO_REGROW")) return;
+    if (!getenv("KATANA_UI") && !isatty(0)) return;         /* entrada por arquivo ou pipe: linhas ja lidas se perderiam na recarga */
+    if (hist->n && !g_sess_path[0]) return;                 /* sem sessao gravada nao ha como voltar a conversa */
+    const int mb = getenv("KATANA_REGROW_TEST") ? atoi(getenv("KATANA_REGROW_TEST")) : gpu_regrow_mb();
+    if (mb < 600) return;
+    const char *last = getenv("KATANA_REGROWN");
+    if (last && time(NULL) - (time_t)atoll(last) < 300) return;
+    char self[4096];
+    const ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    if (n <= 0) return;
+    self[n] = 0;
+    if (hist->n) sess_save(m, sys, hist, slog, 0);
+    char **av = xalloc((size_t)g_orig_argc + 3, sizeof(char *));
+    int k = 0;
+    for (int i = 0; i < g_orig_argc; i++) {
+        if (i >= 2 && i + 1 < g_orig_argc && strcmp(g_orig_argv[i], "--retomar") == 0) { i++; continue; }
+        av[k++] = g_orig_argv[i];
+    }
+    if (hist->n) { av[k++] = "--retomar"; av[k++] = g_sess_path; }
+    av[k] = NULL;
+    char ts[32];
+    snprintf(ts, sizeof ts, "%lld", (long long)time(NULL));
+    setenv("KATANA_REGROWN", ts, 1);
+    unsetenv("KATANA_REGROW_TEST");
+    unsetenv("KATANA_VRAM_AVAIL_MB");
+    fprintf(stderr, "\n%s[a placa de video liberou %d MB: recarregando o modelo para usar a memoria; a conversa continua]%s\n", CE(C_DIM), mb, CE(C_RESET));
+    if (getenv("KATANA_UI")) { fputs("\x01" "REGROW\n", stdout); }
+    fflush(stdout); fflush(stderr);
+    execv(self, av);
+    fprintf(stderr, "[recarga falhou: %s]\n", strerror(errno));       /* so chega aqui se o execv falhar: segue como estava */
+    free(av);
+#else
+    (void)m; (void)sys; (void)hist; (void)slog;
+#endif
+}
 static uint64_t sess_fp(const Model *m) {
     const Config *c = &m->cfg;
     const int32_t g[] = { c->dim, c->n_layers, c->n_heads, c->n_kv, c->hd, c->vocab, c->n_expert, c->chat_fmt };
@@ -250,6 +293,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     for (int rs = 1;; rs = 0) {
         if (rs && g_resume_path[0]) snprintf(line, sizeof line, "/resume %s", g_resume_path);
         else {
+        if (cml && !rs) agent_regrow(m, sys, &hist, &slog);     /* fim de turno: a placa liberou? */
         prompt_user();
         if (!read_line(line, sizeof line)) break;
         }

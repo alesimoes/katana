@@ -1114,6 +1114,8 @@ void Backend::handleMarker(const QByteArray &line)
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
         if (a.size() >= 2)
             m_msgs.append("notice", "Contexto compactado: " + a[0] + " -> " + a[1] + " tokens");
+    } else if (name == "REGROW") {  // a placa de video liberou memoria: o motor se recarrega e retoma a conversa sozinho
+        m_msgs.append("notice", "A placa de vídeo liberou memória: recarregando o modelo para ficar mais rápido. A conversa continua.");
     } else if (name == "NEEDPASS") {  // o motor precisa da senha do sudo
         emit passwordRequested(args.trimmed() == "retry");
     } else if (name == "ASK") {  // ASK <tipo>\t<o que>\t<detalhe>: pedido de permissao (confiar na pasta, gravar fora dela, acao)

@@ -66,7 +66,7 @@ rest is response text, filtered of tool blocks. Stop = SIGINT to the agent's gro
 Windows, kill and restart). New conversation = `/new`; switching models = `/exit` and, if it does not exit within 3 s, kill.
 
 Test: `QT_QPA_PLATFORM=offscreen desktop-qt/build/katana-desktop-qt --selftest --capturas desktop-qt/capturas`
-(run at the repo root; uses `models/qwen2.5-1.5b-q4km.gguf` (fast, covers the interface and the agent protocol; for the final check on the real model use `--selftest-model Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, slow when cold) and a temporary data folder). It types and
+(run at the repo root; uses the reference model `models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`, slow to load when cold; `--selftest-model <file>` picks another, e.g. the Gemma 4 file; and a temporary data folder). It types and
 clicks in the window with real events (QTest), checks the `list_dir` card, sessions, dropdown, delete, stop
 (SIGINT), model switch with a pending summary, and prints PASSOU/FALHOU (PASSED/FAILED). `capturas/` holds images (`12-boasvindas-claro.png` and `12-boasvindas-escuro.png`: the dark one comes from a
 second run with `KATANA_THEME=dark`). It also checks the welcome screen (visible with an empty

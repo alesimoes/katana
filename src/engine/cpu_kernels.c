@@ -778,12 +778,20 @@ typedef struct {
     float *xT;                                          /* embeddings do lote, transpostos */
     char name[128];
     uint64_t vram, used;
+    uint64_t avail0;        /* VRAM que este processo podia usar na carga (0 = a placa nao informa) */
     int n_up, n_total;
 } Gpu;
 
 static Gpu gpu;
 
 /* fracao da VRAM que o motor pode ocupar (o resto fica para o driver e o sistema) */
+/* Outro programa ocupando a placa: o orcamento desce para o que esta livre de verdade, menos uma folga de 5%.
+   So atua quando mais de 20% da placa esta com outros (com a placa livre o orcamento medido nao muda). */
+static uint64_t vram_cap(uint64_t b, uint64_t avail) {
+    if (!avail || avail >= gpu.vram / 100 * 80) return b;
+    const uint64_t margin = gpu.vram / 20, lim = avail > margin ? avail - margin : 0;
+    return lim < b ? lim : b;
+}
 static uint64_t gpu_budget(void) {
     /* 92%: medido com um 7B numa placa de 4 GB. A 95% cabia uma camada a mais, mas a geracao
        caia de 13,4 para 9,8 tokens/s (a placa cheia demais passa a usar memoria compartilhada). */
@@ -794,7 +802,15 @@ static uint64_t gpu_budget(void) {
 #endif
     int pct = getenv("KATANA_VRAM_PCT") ? atoi(getenv("KATANA_VRAM_PCT")) : def;
     if (pct < 10 || pct > 99) pct = def;
-    return gpu.vram / 100 * (uint64_t)pct;
+    return vram_cap(gpu.vram / 100 * (uint64_t)pct, gpu.avail0);
+}
+/* MB de VRAM a mais que o motor usaria se fosse carregado agora (outro programa liberou a placa); 0 = nada a ganhar */
+static int gpu_regrow_mb(void) {
+    if (!gpu.vk || !gpu.avail0) return 0;
+    const uint64_t now = kvk_vram_budget();
+    if (!now) return 0;
+    const uint64_t full = gpu.vram / 100 * 88, cur = vram_cap(full, gpu.avail0), pot = vram_cap(full, now);
+    return pot > cur ? (int)((pot - cur) >> 20) : 0;
 }
 static int32_t gerr;
 static struct { clh k; const char *name; double t; long calls; double elems; } prof[64];

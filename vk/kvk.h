@@ -40,6 +40,7 @@ typedef struct { uint64_t dispatches, submits, ds_hits, ds_allocs, ds_pools, rec
 const char *kvk_error(void);
 int  kvk_init(KvkInfo *info);          /* 1 ok; 0 falha (sem Vulkan, sem recurso, indice invalido). Chamar de novo apos kvk_shutdown e permitido */
 void kvk_shutdown(void);
+uint64_t kvk_vram_budget(void);       /* quanto este processo pode usar da VRAM agora (ja contando o que ele usa e descontando os outros programas); 0 = a placa nao informa */
 int  kvk_active(void);
 
 /* buffers (VRAM; so o shader enxerga o conteudo, host usa write/read) */
@@ -121,6 +122,7 @@ static struct {
     KVK_INST_FNS(X) KVK_DEV_FNS(X)
 #undef X
     PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR CoopProps;
+    PFN_vkGetPhysicalDeviceMemoryProperties2 MemProps2; int has_mb;      /* VK_EXT_memory_budget */
     VkPhysicalDeviceMemoryProperties mp;
     KvkInfo info;
     VkCommandPool cpool;
@@ -561,6 +563,20 @@ void kvk_rec_free(KvkRec *r) {
 }
 
 /* ---------- init / shutdown ---------- */
+uint64_t kvk_vram_budget(void) {
+    if (!G.dev || !G.has_mb) return 0;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT b = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+    VkPhysicalDeviceMemoryProperties2 p = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 };
+    p.pNext = &b;
+    G.MemProps2(G.pd, &p);
+    uint64_t size = 0, bud = 0;       /* o maior heap DEVICE_LOCAL, o mesmo de vram_bytes */
+    for (uint32_t i = 0; i < p.memoryProperties.memoryHeapCount; i++)
+        if ((p.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && p.memoryProperties.memoryHeaps[i].size > size) {
+            size = p.memoryProperties.memoryHeaps[i].size; bud = b.heapBudget[i];
+        }
+    return bud;
+}
+
 void kvk_shutdown(void) {
     if (G.dev) {
         if (G.rec) kvk_rec_cancel();
@@ -612,6 +628,7 @@ int kvk_init(KvkInfo *info) {
     KVK_INST_FNS(X)
 #undef X
     G.CoopProps = (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)G.gipa(G.inst, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+    G.MemProps2 = (PFN_vkGetPhysicalDeviceMemoryProperties2)G.gipa(G.inst, "vkGetPhysicalDeviceMemoryProperties2");
 
     VkPhysicalDevice pds[16]; uint32_t npd = 16;
     r = F(EnumeratePhysicalDevices)(G.inst, &npd, pds);
@@ -646,6 +663,7 @@ int kvk_init(KvkInfo *info) {
     if (!ext) { kvk__seterr("sem memoria"); goto fail; }
     F(EnumerateDeviceExtensionProperties)(G.pd, NULL, &next, ext);
     int has_cm = kvk__hasext(ext, next, "VK_KHR_cooperative_matrix"), has_dp = kvk__hasext(ext, next, "VK_KHR_shader_integer_dot_product");
+    G.has_mb = G.MemProps2 && kvk__hasext(ext, next, "VK_EXT_memory_budget");
     free(ext);
 
     /* o que a placa suporta */
@@ -670,7 +688,8 @@ int kvk_init(KvkInfo *info) {
     e2.features.shaderInt16 = q2.features.shaderInt16;
     ecm.cooperativeMatrix = o_cm; edp.shaderIntegerDotProduct = o_dp;
     e2.pNext = &e11; e11.pNext = &e12; tail = &e12.pNext;
-    const char *exts[2]; uint32_t ne = 0;
+    const char *exts[3]; uint32_t ne = 0;
+    if (G.has_mb) exts[ne++] = "VK_EXT_memory_budget";
     if (o_cm) { *tail = &ecm; tail = &ecm.pNext; exts[ne++] = "VK_KHR_cooperative_matrix"; }
     if (o_dp) { *tail = &edp; tail = &edp.pNext; exts[ne++] = "VK_KHR_shader_integer_dot_product"; }
 

@@ -793,6 +793,9 @@ static int calibrar(Model *m, const char *file) {
 }
 
 static int run_main(int argc, char **argv) {
+    g_orig_argc = argc;                    /* copia da linha de comando: o agente pode se recarregar (agent_regrow) */
+    g_orig_argv = xalloc((size_t)argc + 1, sizeof(char *));
+    for (int i = 0; i < argc; i++) g_orig_argv[i] = argv[i];
     for (int i = 2; i + 1 < argc; ) {      /* sessoes do agente: --retomar <arquivo>, --sessao <arquivo> */
         if (strcmp(argv[i], "--retomar") == 0 || strcmp(argv[i], "--sessao") == 0) {
             snprintf(argv[i][2] == 'r' ? g_resume_path : g_sess_path, sizeof g_sess_path, "%s", argv[i + 1]);
