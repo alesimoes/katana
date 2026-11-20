@@ -808,6 +808,14 @@ static int run_main(int argc, char **argv) {
         perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
+        {   /* nome do modelo na API: o arquivo sem pasta e sem .gguf */
+            const char *b = argv[2], *sl = strrchr(b, '/'), *bs = strrchr(b, '\\');
+            if (bs && (!sl || bs > sl)) sl = bs;
+            if (sl) b = sl + 1;
+            snprintf(g_srv_name, sizeof g_srv_name, "%s", b);
+            const size_t ln = strlen(g_srv_name);
+            if (ln > 5 && strcmp(g_srv_name + ln - 5, ".gguf") == 0) g_srv_name[ln - 5] = 0;
+        }
         return serve(&m, argc == 4 ? atoi(argv[3]) : 8080);
     }
     if (argc == 2 && strcmp(argv[1], "mcp") == 0) return mcp_cmd();
@@ -1026,7 +1034,8 @@ static int run_main(int argc, char **argv) {
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
-        "  katana serve <modelo.gguf> [porta]   conversa no navegador em http://127.0.0.1:porta (padrao 8080; so conversa)\n"
+        "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
+        "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
         "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
         "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");

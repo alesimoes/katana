@@ -186,7 +186,7 @@ and a sudo password dialog. See [`desktop-qt/README.md`](desktop-qt/README.md).
 ```
 katana chat  <model> ["question"] [max_tokens] [temperature]   one question, or an interactive session
 katana run   <model> "text" [max_tokens] [temperature]         plain completion
-katana serve <model> [port]      local web chat at http://127.0.0.1:8080 with an SSE API (chat only, no tools)
+katana serve <model> [port]      web chat and an OpenAI-compatible API at http://127.0.0.1:8080 (chat only, no tools)
 katana agent <model>             chat with tools
 katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools
@@ -197,7 +197,38 @@ katana tool <name> '<json>'      run one agent tool without a model (testing)
 Chat commands: `/new` (new conversation), `/system <text>` (system prompt), `/save <file>`, `/cd <folder>` (agent), `/plan` and `/go` (agent: read-only plan mode, then approve and execute), `/undo` (agent: puts back the files changed by the last request), `/help`, `/exit`;
 Ctrl+C interrupts the current answer without leaving.
 
-`katana serve` listens on 127.0.0.1 only, with the page embedded in the binary:
+`katana serve` listens on 127.0.0.1 by default, with the page embedded in the binary. Each connection gets its own
+thread; the model generates one answer at a time and the other requests wait in arrival order (the KV cache of the
+previous request is reused when the new prompt starts with the same tokens). `GET /health` answers without a key.
+
+**OpenAI-compatible API** (`/v1/models`, `/v1/chat/completions`), for editors, web interfaces and client libraries
+that already speak that format:
+
+```
+curl localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"katana","messages":[{"role":"user","content":"hi"}],"stream":true}'
+```
+
+Supported: streaming (SSE, `stream_options.include_usage`), `max_tokens` / `max_completion_tokens`, `temperature`,
+`top_p`, `stop` (up to 4), `seed`, `response_format` (`json_object`, `json_schema`), content as a string or a list of
+text parts, roles `system`/`developer`/`user`/`assistant`/`tool`. Models that reason (`<think>`) return the reasoning in
+`reasoning_content`, apart from `content`. Not yet: `tools` (native tool calling), images, `n` > 1; those requests get
+a 400 that says so. The model name in `/v1/models` is the file name without `.gguf`; the `model` field of a request is
+echoed but does not select anything (one model per server).
+
+**Other machines.** `KATANA_HOST=0.0.0.0` (or one of the machine's addresses) opens the server to the network and
+requires `KATANA_API_KEY` (16 characters or more; the server refuses to start without it). Requests from other
+machines need `Authorization: Bearer <key>` on every path except `/health`; with a key set, `/v1` asks for it from the
+local machine too. Traffic is plain HTTP: outside a trusted network, put it behind a TLS proxy.
+
+```
+KATANA_HOST=0.0.0.0 KATANA_API_KEY=$(openssl rand -hex 24) katana serve models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 8080
+```
+
+Testing without a real model: `python3 tools/tinymodel/make_tiny_gguf.py /tmp/tiny.gguf` writes a 0.5 MB model with
+random weights (nonsense text) that exercises the server, the APIs and the queue in a second.
+
+The original endpoint:
 
 ```
 curl -N -X POST localhost:8080/api/chat -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":200,"temperature":0.7}'
