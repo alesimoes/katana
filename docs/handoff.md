@@ -30,7 +30,13 @@ are allowed, written here). Full description, measurements and next steps: `docs
   passes (Richardson extrapolation added for the exponential decay parameters); a qwen35moe trained in the thinking
   format answers the three replies through the server. Server fix found on the way: the line breaks after
   `</think>` arrived in later tokens and leaked into `content`; now stripped.
-- Still missing: Gemma 4 layers; memory for long windows on the full models (DeltaNet states are all stored).
+- Memory and speed for the full models: DeltaNet states checkpointed every 64 tokens and recomputed per block in the
+  backward pass (`KATANA_TRAIN_DNCK`; gradcheck passes with blocks of 1, 3 and 64); attention rows recomputed instead
+  of stored; MoE tokens grouped by expert (one batch per expert). `katana train ... --plan 1` prints the memory plan
+  without training. Not measured on a real model yet.
+- Still missing: Gemma 4 layers. Ideas raised by the owner, not started: a local `katana learn` loop (each user's
+  agent specializes on its own passed sessions, nothing leaves the machine) and importing sessions from open-weight
+  teacher models (not from closed services whose terms forbid training other models on their outputs).
 
 ## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
 

@@ -52,6 +52,8 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
   `tools/dataset/ksess2jsonl.py`). Without `train_spans` every token is a target. Long texts are cut into windows of
   `--seq` tokens; windows without targets are skipped. A line whose tokens do not reproduce its text byte for byte is
   skipped with a warning (the spans would not line up).
+- `--plan 1`: load the model and the data, choose what trains (including the hot experts) and print the memory plan
+  (activations of one window, trainer state, model size) without training. Use it first on a big model.
 - Optimizer: AdamW (betas 0.9/0.999), global gradient-norm clipping (default 1.0), 10-step warm-up, weight decay only
   on matrices.
 - Loading: whole tensors replace the base tensor; adapters are merged at load (`W + s B A`, dequantizing only the
@@ -108,8 +110,10 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
   shared experts with an optional sigmoid gate, leading dense layers), and the Qwen3.6 family (qwen35moe, qwen35):
   Gated DeltaNet (causal convolution, L2-normalized q/k, gated delta rule, gated RMS output) and gated attention
   with partial RoPE. Not yet: Gemma 4 layers, sigmoid routers with bias (DeepSeek/GLM), gpt-oss, MLA.
-- The DeltaNet backward keeps every recurrent state of the sequence (dk x dv per head per token): fine for short
-  windows, too much memory for long ones on the full model (needs chunked recomputation, step 3 below).
+- Memory: the DeltaNet keeps its recurrent state only every 64 tokens (`KATANA_TRAIN_DNCK`) and the backward pass
+  recomputes one block at a time from that checkpoint; attention probabilities are not stored either (each row is
+  recomputed in the backward pass). Activations still grow with the window times the model width; the window is
+  `--seq`. MoE tokens are grouped by expert, so each expert row is read once per window, not once per token.
 - CPU only, one sequence per step, attention probabilities stored for the whole sequence (T x T per head and layer).
 - Adapters are merged at load, so an adapted matrix costs float memory at serving time.
 
@@ -119,8 +123,8 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
    exported from the agent.
 2. Gemma 4 layers (sliding window, per-layer head width, extra norms, dense and MoE in parallel, softcap), then
    sigmoid routers with bias, gpt-oss and MLA.
-3. Memory for the full models: DeltaNet states and attention recomputed per chunk in the backward pass instead of
-   stored; then the first real specialization of Qwen3.6-35B-A3B on the owner's machine.
+3. The first real specialization of Qwen3.6-35B-A3B on the owner's machine: `--plan 1` first, then a short run on
+   exported sessions, measured with codebench against the base model.
 4. Gradient accumulation over several windows.
 5. Speed: the matrix products of forward and backward on the GPU (Vulkan), reusing the batch kernels of the prompt path.
 6. Serving: adapters applied unmerged in the products and selected per request (`model` field), hot-swapped.
