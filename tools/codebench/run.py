@@ -66,7 +66,7 @@ def apply_solution(work, name, ctx):
     sol = os.path.join(TASKS, name, "solution")
     script = os.path.join(sol, "solve.sh")
     if os.path.exists(script):
-        p = subprocess.run(["bash", script], cwd=work, env=ctx_env(ctx), capture_output=True, text=True, timeout=120)
+        p = subprocess.run(["bash", script], cwd=work, env=ctx_env(ctx), capture_output=True, text=True, errors="replace", timeout=120)
         if p.returncode != 0:
             raise RuntimeError("solve.sh falhou: " + (p.stdout + p.stderr)[-400:])
     else:
@@ -78,7 +78,7 @@ def hidden_tests(work, name, ctx=None):
     copy_tree(os.path.join(TASKS, name, "hidden"), work)
     try:
         p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-p", "test_hidden*.py"], cwd=work,
-                           capture_output=True, text=True, timeout=120, env=ctx_env(ctx) if ctx else None)
+                           capture_output=True, text=True, errors="replace", timeout=120, env=ctx_env(ctx) if ctx else None)
         return p.returncode == 0, (p.stdout + p.stderr)[-600:]
     except subprocess.TimeoutExpired:
         return False, "hidden tests timed out"
@@ -151,7 +151,7 @@ def run_task(a, name, attempt=0):
                 os.remove(sess)
             cmd += ["--sessao", sess]
         p = subprocess.run(cmd, cwd=work, input="" if a.teacher else msg + "\n/exit\n", capture_output=True,
-                           text=True, timeout=a.timeout, env=env)
+                           text=True, errors="replace", timeout=a.timeout, env=env)
         log = p.stdout + "\n" + p.stderr
     except subprocess.TimeoutExpired as e:
         timed_out = True

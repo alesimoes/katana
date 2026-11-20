@@ -1120,6 +1120,8 @@ static int run_main(int argc, char **argv) {
     if (argc >= 5 && strcmp(argv[1], "import") == 0) return import_main(argv[2], argc - 3, argv + 3);    /* conversas -> dados de treino */
     if (argc == 5 && strcmp(argv[1], "merge") == 0) return merge_cmd(argv[2], argv[3], argv[4]);          /* GGUF novo com a especializacao */
     if (argc >= 3 && strcmp(argv[1], "distill") == 0) return distill_main(argc - 2, argv + 2);         /* professor -> sessoes verificaveis */
+    if (argc >= 3 && strcmp(argv[1], "export") == 0) return export_main(argc - 2, argv + 2);           /* sessoes do agente -> dados de treino */
+    if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
         Model m; memset(&m, 0, sizeof m);
         putenv_dup("KATANA_CPU=1");
@@ -1221,6 +1223,9 @@ static int run_main(int argc, char **argv) {
         "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"
         "                                       conversas (mensagens ou ShareGPT) -> dados de treino no formato exato do modelo\n"
         "  katana distill --url URL --model M [--format qwen|json|gemma4|glm] [--out f.jsonl] \"tarefa\"\n"
+        "  katana export <saida.jsonl> <sessoes.ksess ou pastas> [--bench resultados.jsonl]   sessoes do agente -> dados de treino\n"
+        "  katana learn <modelo.gguf> [--rounds N] [--repeat K] [--teacher URL --teacher-model M] [-- opcoes do train]\n"
+        "                                 aprende com o proprio uso: coleta no codebench, treina no que passou, prova e guarda o melhor\n"
         "                                       um modelo professor (API no formato da OpenAI) resolve a tarefa com as ferramentas do katana\n"
         "  katana merge <modelo.gguf> <espec.kspec> <saida.gguf>   GGUF novo com a especializacao dentro\n"
         "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"

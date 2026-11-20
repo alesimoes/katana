@@ -13,6 +13,9 @@
 #     katana (gradcheck com todos os produtos nela); se houver GPU Vulkan de verdade, gradcheck nela em 5 layouts
 #  8. validacao: 60 conversas de "repetir a palavra", 10 separadas; lote de 4, a perda nelas tem que cair (o modelo
 #     generaliza) e a parada antecipada guarda o melhor passo
+#  9. katana export (sessao real do agente com acentos e ideogramas: igual ao exportador em Python) e katana learn
+#     com um codebench de mentira (tools/traintest/mock_bench): coleta, filtro, treino, prova; a rodada 1 tem que ser
+#     aceita e a 2 nao
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 K=$(pwd)/katana
@@ -116,6 +119,29 @@ sys.exit(0 if ok else 1)
 EOF
 $K train "$D/llama.gguf" "$D/copy.jsonl" --batch 4 --steps 400 --lr 0.05 --sched const --seq 64 --eval 20 --patience 3 --out "$D/bad.kspec" 2>/dev/null \
   | grep -q "parada antecipada" && echo "parada antecipada: ok" || { echo "parada antecipada: FALHOU"; fail=1; }
+# katana export: sessao do agente -> dados (mesmos trechos que o exportador em Python, com texto nao ASCII)
+python3 tools/tinymodel/make_tiny_gguf.py "$D/agent.gguf" --template chatml-xml >/dev/null
+mkdir -p "$D/home"
+printf 'oi, tudo bem? \303\247\303\243 \346\227\245\346\234\254\n/exit\n' | HOME="$D/home" $K agent "$D/agent.gguf" --sessao "$D/s1.ksess" >/dev/null 2>&1 || true
+$K export "$D/exp_c.jsonl" "$D/s1.ksess" >/dev/null 2>&1
+python3 tools/dataset/ksess2jsonl.py "$D/s1.ksess" -o "$D/exp_p.jsonl" >/dev/null 2>&1
+python3 - "$D/exp_c.jsonl" "$D/exp_p.jsonl" <<'EOF' || fail=1
+import json, sys
+c = json.loads(open(sys.argv[1]).readline()); p = json.loads(open(sys.argv[2]).readline())
+a, b = c["train_spans"][-1]
+ok = c["train_spans"] == p["train_spans"] and c["text"][:a].endswith("assistant\n") and c["text"][a:b].endswith("<|im_end|>")
+print("export: %s" % ("ok" if ok else "FALHOU %s %s" % (c["train_spans"], p["train_spans"])))
+sys.exit(0 if ok else 1)
+EOF
+# katana learn com o codebench de mentira
+$K learn "$D/agent.gguf" --bench tools/traintest/mock_bench --dir "$D/learn" --rounds 2 --repeat 2 -- --steps 30 --seq 256 >/dev/null 2>&1
+python3 - "$D/learn/learn.jsonl" <<'EOF' || fail=1
+import json, sys
+r = [json.loads(l) for l in open(sys.argv[1])]
+ok = len(r) == 3 and r[1]["accepted"] and not r[2]["accepted"] and r[1]["data"] == 6 and r[2]["data"] == 12 and r[1]["train"]["steps"] == 30
+print("learn: %s" % ("ok (rodada 1 aceita, rodada 2 recusada, dados acumulados 6 -> 12)" if ok else "FALHOU %s" % r))
+sys.exit(0 if ok else 1)
+EOF
 # katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
 printf '%s\n' \
  '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
