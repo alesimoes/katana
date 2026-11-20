@@ -26,8 +26,10 @@ models are out (they were downloaded and screened, see below).
   download the app starts that model. Backend: `catalog`, `machine`, `hasUsableModel`, `pullId`, `pullFraction`,
   `pullText`, `pullError`, `refreshCatalog()`, `pull(id)`, `cancelPull()`. An installed app (no `models` folder
   beside it) uses `~/.katana/models`; `katana.cfg` goes to `~/.katana` when it is not in the current folder.
-  Selftest: 119 checks, 0 failures (catalog read from the engine, one recommended model, screen opens, a failing
-  download shows its error). The real download was exercised from the command line, not by clicking.
+  Selftest: 130 checks, 0 failures (catalog read from the engine, one recommended model, screen opens, a failing
+  download shows its error, and the buttons by real clicks: Download, progress, Pause, Continue, installed). The
+  click test talks to a stand-in engine script that speaks the same line protocol; the real download was exercised
+  from the command line only.
 - *First start*: the system prompt preparation now reports progress (`PREP total done`, a percentage in the
   desktop). Measured in a fresh folder with the cache of other folders present: Qwen3.6 12 s (484 of 2050 tokens
   computed), then 2.6 s; Gemma 4 43 to 72 s (1280 to 1801 of 1801 tokens computed), then 3.5 s. Gemma recomputes
@@ -180,6 +182,22 @@ files, shell scripts). Qwen3.6, one run each, 900 s limit (measured 2026-11-19, 
 | lean prompt, `code` | 19/21 | ledger, mdhtml | 109 s | 12.8 |
 | lean prompt + the eight layers (7.8 KB), `agent` | 19/21 | calc (timeout), ledger | 137 s | 12.3 |
 
+Gemma 4 26B on the same 21 tasks, lean prompt, `agent`, one run each (2026-11-19; the machine was loaded by other
+work during the first run, so the times are not comparable):
+
+| run | solved | failed | mean time |
+|---|---|---|---|
+| default prompt order | 17/21 | calc (timeout), kvstore, ledger, todo | 304 s |
+| `KATANA_G4_ENVLAST=1` (per-folder block after the declarations) | 16/21 | calc (timeout), kvstore, ledger, mdhtml, todo | 193 s |
+
+One task of difference in one run each is not a difference (`mdhtml` passed the default run at the 900 s limit).
+`KATANA_G4_ENVLAST` stays a switch, not the default. The second run also covered the 9 new tasks (below): 9/9.
+
+**New task groups (30 tasks in total).** 5 terminal tasks (`term-*`: find the process behind a port, find the commit
+that broke a check, an interactive program, a build that fails three times, rotated gzip logs) and 4 web tasks
+(`web-*`, served by a local HTTP server started by the task's `setup.py`). `run.py --verify` checks every task
+without the model (fails untouched, passes with the reference solution): 30 of 30. Only Gemma 4 has run them so far.
+
 No difference is significant (sign test p = 1.0; which tasks fail changes from run to run): the lean prompt did not
 lose tasks, and nothing here shows it gaining any. The mean time of the lean `agent` run carries one 901 s timeout.
 `mdhtml` failed in both lean runs and passed in the last run, so it is run-to-run variation. In the last run the model
@@ -192,7 +210,7 @@ was compiled on Windows, so expect more of the same kind (`find_file`, the synta
 POSIX only by design).
 
 **Next, in the order agreed with the owner:** find which tools fail in real use on the desktop (owner report, not
-yet specified); retest Gemma 4 with the lean prompt; terminal and web tasks for the benchmark; then sampling presets and the runtime LoRA adapter for Qwen3.8.
+yet specified); retest Gemma 4 with the lean prompt; run Qwen3.6 on the 9 new benchmark tasks; the runtime LoRA adapter for Qwen3.8 is on hold (dense model, the owner decided not to spend time on dense models).
 
 ## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
 
