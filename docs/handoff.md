@@ -35,6 +35,17 @@ models are out (they were downloaded and screened, see below).
   computed), then 2.6 s; Gemma 4 43 to 72 s (1280 to 1801 of 1801 tokens computed), then 3.5 s. Gemma recomputes
   more because its tool declarations come after the per-folder block. `KATANA_G4_ENVLAST=1` moves the per-folder
   block after the declarations (measurement switch; the default prompt is byte-identical to before).
+- *Shared graphics card* (2026-11-20): the engine used to assume the whole card (88% of total VRAM) and, with
+  another program holding memory, its allocations failed and it fell back to the CPU for good. Now `kvk_vram_budget`
+  (`VK_EXT_memory_budget`) tells how much this process may use; when other programs hold more than 20% of the card
+  the budget drops to what is free minus 5% (`vram_cap`), and nothing changes when the card is free. Between turns
+  the agent checks whether at least 600 MB more would be available now (`gpu_regrow_mb`); if so it saves the session
+  and reloads itself in place (`agent_regrow`: `execv` with `--retomar`, same process and pipes, marker `REGROW`), at
+  most once every 5 minutes, only under the desktop or a terminal (piped input would lose lines already read).
+  Measured with two agents on the 4 GB card (Qwen3.6, one run): the second one loaded with 0 MB of VRAM and
+  generated at 12.3 tok/s; after the first one exited it reloaded (about 40 s, 2126 tokens recomputed), kept the
+  conversation and generated at 23 to 27 tok/s. Not done: shrinking when another program arrives later, and resizing
+  without a reload. `KATANA_NO_REGROW=1` turns the reload off.
 - *Sampling*: top-p added, with a preset per model family inside the engine (`sample_preset`: Qwen top-k 20 and
   top-p 0.8, Gemma top-k 64 and top-p 0.95; `KATANA_TOP_K`, `KATANA_TOP_P` override for measuring). The effect on
   the benchmark was not measured separately.

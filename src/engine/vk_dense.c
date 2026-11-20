@@ -686,6 +686,11 @@ static int vk_setup(Model *m) {
     if (!vkg.coop) fprintf(stderr, "Vulkan: sem matriz cooperativa fp16 16x16x16: prompt token a token\n");
     snprintf(gpu.name, sizeof gpu.name, "%s", I.name);
     gpu.vram = I.vram_bytes;
+    gpu.avail0 = kvk_vram_budget();
+    if (getenv("KATANA_VRAM_AVAIL_MB")) gpu.avail0 = (uint64_t)atoll(getenv("KATANA_VRAM_AVAIL_MB")) << 20;    /* so para teste */
+    if (gpu.avail0 && gpu.avail0 < gpu.vram / 100 * 80)
+        fprintf(stderr, "Vulkan: outro programa ocupa %.0f MB da placa; usando ate %.0f MB (o agente se reajusta quando ela liberar)\n",
+                (gpu.vram - gpu.avail0) / 1048576.0, gpu_budget() / 1048576.0);
     gpu.seg_target = getenv("KATANA_SEG") ? (size_t)atoll(getenv("KATANA_SEG")) : 16384;
     size_t maxc = d > H ? d : H;
     if (qd > maxc) maxc = qd;
