@@ -156,6 +156,35 @@ there):
 Not measured: speed on a real card, and the kernel on a real driver. `tools/traintest/run.sh` runs gradcheck on the
 real GPU (5 layouts) when one is present; that is the first thing to run on the owner's machine.
 
+## Learning from its own use: `katana learn`
+
+`katana export <out.jsonl> <sessions.ksess or folders> [--bench results.jsonl]` turns agent sessions into training
+data (the same JSONL `katana train` reads), in C. With `--bench` it keeps only the sessions whose hidden tests passed.
+Sessions where the agent compacted its context are skipped unless `--inexact`. Found while writing it: the Python
+exporter (`tools/dataset/ksess2jsonl.py`) used byte offsets as character offsets, so any non-ASCII text before a
+model turn shifted its training span; fixed, and both now give the same spans.
+
+`katana learn <model.gguf> [options] [-- katana train options]` runs the self-improvement loop, all on the machine:
+
+1. **Collect**: the current best model (base + best specialization so far) solves the training tasks of the codebench
+   `--repeat K` times at `--temp` (default 0.7), so the attempts differ.
+2. **Filter**: only sessions that passed the hidden tests become data (rejection by verification). With `--teacher URL
+   --teacher-model M` a teacher also solves the same tasks through katana's tools; its passed sessions are imported.
+   `--extra FILE` adds data of your own.
+3. **Train**: `katana train` on everything collected so far, always from the base model, with the options after `--`.
+4. **Prove**: the candidate solves the evaluation tasks, which never enter the data (default: every fourth task in
+   alphabetical order; `--tasks` and `--eval-tasks` choose). It replaces the best only if it solves more.
+
+Agent runs use an empty home folder (HOME/USERPROFILE), so the owner's agent memory and MCP servers stay out of the
+data. Output in `--dir` (default `<model>.learn`): `best.kspec`, `data.jsonl`, one folder per round and `learn.jsonl`
+with one line per round (collected, passed, data size, train and validation loss, evaluation score, accepted).
+Example for a real model: `katana learn qwen3.6.gguf --rounds 3 --repeat 4 -- --rank 16 --batch 4 --steps 300 --lr 1e-4`.
+
+Checked with a stand-in codebench (`tools/traintest/mock_bench`, real agent sessions on a tiny model, scripted pass or
+fail): round 1 accepted, round 2 rejected, data accumulated 6 -> 12 conversations. Not run with a real model yet: with
+39 codebench tasks the evaluation set is about 10 tasks, so one more task solved is within noise; use `--eval-repeat`
+for a steadier score.
+
 ## Limits today
 
 - Architectures: llama, qwen2, qwen3, olmoe, qwen3moe-style (RMSNorm, GQA, RoPE in pairs or halves, SwiGLU,
@@ -182,7 +211,9 @@ real GPU (5 layouts) when one is present; that is the first thing to run on the 
 2. Sigmoid routers with bias, gpt-oss and MLA.
 3. The first real specialization of Qwen3.6-35B-A3B and Gemma 4 26B-A4B on the owner's machine: `--plan 1` first, then a short run on
    exported sessions, measured with codebench against the base model.
-4. Gradient accumulation over several windows.
+4. ~~Gradient accumulation over several windows~~ (done: `--batch`, validation, best step, early stop) and the
+   `katana learn` loop (done). Next for learning: a teacher that writes new tasks with their hidden tests, so the
+   loop is not limited to the codebench tasks.
 5. Speed on the GPU, after measuring the first version on the owner's card: activations kept in VRAM between
    products (no copy per product), attention and the DeltaNet recurrence on the GPU, cooperative-matrix variants of
    `tmm`, MoE experts in one grouped dispatch, adapters on the GPU.

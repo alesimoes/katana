@@ -84,13 +84,20 @@ def read_ksess(path):
         d["think"] = r.i32()
         d["exact"] = bool(r.i32())
         d["system"] = r.s()
-        d["text"] = r.s()
+        n = r.i32()
+        if n < 0 or n > (1 << 26):
+            raise ValueError("bad string length")
+        raw = r.take(n)                     # the offsets below are byte offsets into this text
+        d["text"] = raw.decode("utf-8", "replace")
         n = r.i32()
         d["spans"] = []
         for _ in range(n):
             role = chr(r.take(1)[0])
             a, b = r.i32(), r.i32()
-            d["spans"].append((role, a, b))
+            # byte offset -> character offset of the decoded text (they differ as soon as there is any non-ASCII text)
+            ca = len(raw[:a].decode("utf-8", "replace")) if a >= 0 else a
+            cb = len(raw[:b].decode("utf-8", "replace")) if b >= 0 else b
+            d["spans"].append((role, ca, cb))
         d["ext"] = True
     return d
 

@@ -189,6 +189,8 @@ katana run   <model> "text" [max_tokens] [temperature]         plain completion
 katana serve <model> [port]      web chat and an OpenAI-compatible API at http://127.0.0.1:8080 (chat only, no tools)
 katana train <model> <data.jsonl> [--train PATTERNS] [--rank R] ...   katana's own training: writes a .kspec (docs/specialization.md)
 katana gradcheck <model> [T]     checks the training backward pass (training forward vs engine, gradients vs finite differences)
+katana export <out.jsonl> <sessions> [--bench results.jsonl]   agent sessions -> training data
+katana learn <model> [--rounds N] [--repeat K] [-- train options]   learns from its own use: solve, keep what passed, train, prove
 katana agent <model>             chat with tools
 katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools

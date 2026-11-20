@@ -53,5 +53,6 @@
 #include "app/train.c"                 /* especializacao: passo para tras, AdamW, katana train, .kspec (KATANA_SPEC) */
 #include "app/importer.c"              /* katana import: conversas de fora -> dados de treino no formato do modelo */
 #include "app/distill.c"               /* katana distill: um modelo professor trabalha com as ferramentas do katana */
+#include "app/learn.c"                 /* katana export (sessoes -> dados) e katana learn (aprende com o proprio uso) */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/main.c"                  /* toktest, subcomandos e main */

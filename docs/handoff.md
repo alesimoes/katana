@@ -55,6 +55,10 @@ are allowed, written here). Full description, measurements and next steps: `docs
   10 of 11 layouts (olmoe: float noise on one tiny gradient, explained in `docs/specialization.md`) and trains the
   tiny models. Not run on a real card yet: first step on the owner's machine is `sh tools/traintest/run.sh`, then
   `katana train` with and without `KATANA_TRAIN_GPU=0` for the speed.
+- Same day: training loop for real data (`--batch`, validation split by conversation, best step kept, early stop,
+  cosine schedule, `--log`) and `katana learn` (collect on codebench, keep what passed, train, prove on held-out
+  tasks, keep the best) with `katana export` in C. Checked on tiny models and a stand-in codebench; see
+  `docs/specialization.md`. The Python exporter had a span bug on non-ASCII text, fixed.
 - Ideas raised by the owner, not started: a local `katana learn` loop (each user's
   agent specializes on its own passed sessions, nothing leaves the machine); a teacher that also writes new tasks
   with tests (today the tasks come from codebench or a free instruction).
