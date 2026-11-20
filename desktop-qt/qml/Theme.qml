@@ -40,5 +40,5 @@ QtObject {
     readonly property color fn: pal.fn
     readonly property color ty: pal.ty
     readonly property int sideWidth: 304
-    readonly property int colWidth: 760
+    readonly property int colWidth: 1100     // largura maxima da coluna da conversa e da caixa de mensagem
 }
