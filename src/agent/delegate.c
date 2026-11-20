@@ -196,8 +196,15 @@ static void tool_digest(Model *m, int mpos, const char *name, const char *args, 
     if (strlen(np) < 40 || g_stop) { free(note.p); return; }       /* sem nota aproveitavel: o texto bruto entra como veio */
     fprintf(stderr, "%s[nota de %zu bytes no lugar de %zu (%d tokens gerados, %.1f s)%s]%s\n", CE(C_DIM), strlen(np), rl, gen, now_sec() - t0,
             back ? "" : "; contexto principal sera recalculado", CE(C_RESET));
-    if (g_dg_n < DG_SLOTS) { g_dg[g_dg_n].key = key; g_dg[g_dg_n].note = strdup(np); g_dg_n++; }
+    /* o aviso final do resultado bruto ("linhas 1-60 de 240; para as proximas...") vai inteiro: sem ele o modelo
+       toma o primeiro trecho pelo arquivo todo */
+    char tail[400] = "";
+    { const char *nl = strrchr(result, '\n'); if (nl && nl[1] == '[' && strlen(nl + 1) < sizeof tail) snprintf(tail, sizeof tail, "%s", nl + 1); }
     snprintf(result, cap, "[katana: condensed note of this %s output (%zu bytes read; the raw text was left out of the context). "
-             "For exact lines call read_file with offset and limit, or find.]\n%s", name, rl, np);
+             "For exact lines call read_file with offset and limit, or find.]\n%s%s%s", name, rl, np, tail[0] ? "\n" : "", tail);
+    if (g_dg_n < DG_SLOTS) {        /* guarda a nota ja com o aviso final */
+        const char *body = strchr(result, '\n');
+        g_dg[g_dg_n].key = key; g_dg[g_dg_n].note = strdup(body ? body + 1 : np); g_dg_n++;
+    }
     free(note.p);
 }
