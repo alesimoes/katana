@@ -6,9 +6,11 @@
 #  2. treino com tensores inteiros, com adaptadores sobre a base quantizada e com especialistas quentes num MoE
 #  3. o servidor com KATANA_SPEC responde exatamente o que foi treinado (temperatura 0)
 #  4. katana import: conversas de fora viram dados de treino; as chamadas voltam pelos leitores do agente
+#  5. katana merge: o GGUF fundido responde igual ao base com o .kspec
+#  6. katana distill: um professor (de mentira, aqui) resolve uma tarefa do codebench com as ferramentas do katana
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
-K=./katana
+K=$(pwd)/katana
 D=$(mktemp -d)
 trap 'rm -rf "$D"; kill $SRV 2>/dev/null || true' EXIT
 python3 tools/tinymodel/make_tiny_gguf.py "$D/llama.gguf" >/dev/null
@@ -69,4 +71,18 @@ if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" 2>/dev/null | grep 
 $K train "$D/llama.gguf" "$D/imp.jsonl" --steps 150 --lr 3e-3 --seq 256 --out "$D/imp.kspec" 2>/dev/null | grep "perda media final"
 gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/import_calls.c -o "$D/import_calls" -lm -lpthread -ldl
 if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agente nos 4 formatos: ok"; else echo "chamadas importadas: FALHOU"; fail=1; fi
+# katana merge: o GGUF fundido responde igual ao modelo base com o .kspec (adaptadores sobre Q8_0; MoE; qwen35moe)
+$K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
+$K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }
+$K merge "$D/q35.gguf" "$D/q35.kspec" "$D/q35_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q35_merged.gguf" "" 8197 || { echo "merge q35: FALHOU"; fail=1; }
+# katana distill: professor de mentira resolve a tarefa bank com as ferramentas do katana; testes escondidos decidem
+python3 tools/traintest/mock_teacher.py 8198 tools/codebench/tasks/bank/solution/bank.py & MOCK=$!
+sleep 1
+TEACHER_API_KEY=secret-key python3 tools/codebench/run.py --katana "$K" --teacher http://127.0.0.1:8198/v1 --teacher-model mock \
+   --distill-out "$D/teacher.jsonl" --out "$D/teacher_bench.jsonl" --tasks bank,rotate --timeout 120 >/dev/null 2>&1
+kill $MOCK 2>/dev/null || true
+if python3 -c "import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(0 if [x['passed'] for x in r]==[True,False] else 1)" "$D/teacher.jsonl"; then
+  echo "distill: ok (bank resolvido e aprovado; rotate reprovado)"
+else echo "distill: FALHOU"; fail=1; fi
+if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi

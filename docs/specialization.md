@@ -54,6 +54,12 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
   skipped with a warning (the spans would not line up).
 - `--plan 1`: load the model and the data, choose what trains (including the hot experts) and print the memory plan
   (activations of one window, trainer state, model size) without training. Use it first on a big model.
+- `katana merge <model.gguf> <spec.kspec> <out.gguf>`: writes a new GGUF with the specialization inside (whole
+  tensors replaced, adapters merged as `W + s B A`, trained experts written into their rows of the stacked tensor),
+  each changed tensor in its original type when katana can encode it (F32, F16, Q8_0, Q6_K, Q5_K, Q4_K, Q2_K),
+  otherwise Q8_0; everything else copied byte for byte; the file records `katana.specialization`. Checked: the merged
+  GGUF answers exactly like the base with `KATANA_SPEC` on four tiny layouts (whole tensors, adapters on Q8_0, MoE hot
+  experts, qwen35moe).
 - Optimizer: AdamW (betas 0.9/0.999), global gradient-norm clipping (default 1.0), 10-step warm-up, weight decay only
   on matrices.
 - Loading: whole tensors replace the base tensor; adapters are merged at load (`W + s B A`, dequantizing only the

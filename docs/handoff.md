@@ -39,9 +39,15 @@ are allowed, written here). Full description, measurements and next steps: `docs
   as the agent wraps them, system prompt kept or taken from a real session (`--system ksess:FILE`). The agent's call
   readers read the imported calls back in all four formats (`tools/traintest/import_calls.c`). `ah_render` no longer
   writes an empty system block when the system prompt is empty (the agent always has one, so its text is unchanged).
+- `katana distill` (`src/app/distill.c`): a teacher model behind an OpenAI-compatible API solves a task through the
+  agent's own tools; `run.py --teacher` runs it per codebench task and marks `passed` with the hidden tests;
+  `katana import` keeps only passed, complete sessions. Tested with a scripted mock teacher
+  (`tools/traintest/mock_teacher.py`): bank solved and passed, rotate failed and dropped. Not run against a real API
+  (no network from the session that wrote it).
+- `katana merge`: new GGUF with the specialization inside; answers exactly like base + `.kspec` on four tiny layouts.
 - Still missing: Gemma 4 layers. Ideas raised by the owner, not started: a local `katana learn` loop (each user's
-  agent specializes on its own passed sessions, nothing leaves the machine) and importing sessions from open-weight
-  teacher models (not from closed services whose terms forbid training other models on their outputs).
+  agent specializes on its own passed sessions, nothing leaves the machine); a teacher that also writes new tasks
+  with tests (today the tasks come from codebench or a free instruction).
 
 ## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
 
