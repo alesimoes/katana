@@ -45,7 +45,12 @@ are allowed, written here). Full description, measurements and next steps: `docs
   (`tools/traintest/mock_teacher.py`): bank solved and passed, rotate failed and dropped. Not run against a real API
   (no network from the session that wrote it).
 - `katana merge`: new GGUF with the specialization inside; answers exactly like base + `.kspec` on four tiny layouts.
-- Still missing: Gemma 4 layers. Ideas raised by the owner, not started: a local `katana learn` loop (each user's
+- Same day: Gemma 4 training (gemma4 layers in `t_g4_fwd`/`t_g4_back`: sliding window, per-layer head width and kv
+  heads, k as v, extra norms, GELU, dense FFN in parallel with the MoE, router and expert scales, embedding scale,
+  logit softcap). Tiny random gemma4 (`make_tiny_gguf.py --arch gemma4`, also `--dense 2` and a Q8_0 copy): training
+  forward equals the engine to 1.2e-6, gradcheck passes, hot-expert specialization learns the three answers, served
+  with `.kspec` and after `merge`. `tools/traintest/run.sh` now covers 11 layouts.
+- Ideas raised by the owner, not started: a local `katana learn` loop (each user's
   agent specializes on its own passed sessions, nothing leaves the machine); a teacher that also writes new tasks
   with tests (today the tasks come from codebench or a free instruction).
 

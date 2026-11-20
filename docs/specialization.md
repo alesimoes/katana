@@ -58,8 +58,9 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
   tensors replaced, adapters merged as `W + s B A`, trained experts written into their rows of the stacked tensor),
   each changed tensor in its original type when katana can encode it (F32, F16, Q8_0, Q6_K, Q5_K, Q4_K, Q2_K),
   otherwise Q8_0; everything else copied byte for byte; the file records `katana.specialization`. Checked: the merged
-  GGUF answers exactly like the base with `KATANA_SPEC` on four tiny layouts (whole tensors, adapters on Q8_0, MoE hot
-  experts, qwen35moe).
+  GGUF answers exactly like the base with `KATANA_SPEC` on five tiny layouts (whole tensors, adapters on Q8_0, MoE hot
+  experts, qwen35moe, gemma4). Gemma 4 experts come from one fused gate/up tensor; their parts are named
+  `ffn_gate_up_exps.weight.eN.gate` / `.up` and go back to rows `2N·H` and `(2N+1)·H`.
 - Optimizer: AdamW (betas 0.9/0.999), global gradient-norm clipping (default 1.0), 10-step warm-up, weight decay only
   on matrices.
 - Loading: whole tensors replace the base tensor; adapters are merged at load (`W + s B A`, dequantizing only the
@@ -103,11 +104,15 @@ trained replies at temperature 0.
 | training forward vs engine, Qwen3.6 layout (qwen35moe: Gated DeltaNet + gated attention with partial RoPE + MoE with gated shared expert) | 3.8e-6; qwen35 dense: 5.4e-6 |
 | gradcheck on qwen35moe and qwen35 | pass (204 and 72 tensors and adapter parts; DeltaNet tensors within 1%) |
 | qwen35moe, rank-8 adapters on all layers, data in the model's thinking format | loss 12.5 -> 0.0001 in 2.2 s; `.kspec` 190 KB; the server answers the three replies word for word, with the empty thinking block kept out of `content` |
-| AddressSanitizer + UndefinedBehaviorSanitizer | gradcheck (dense, MoE, DeltaNet), train and loading: no reports |
+| training forward vs engine, Gemma 4 layout (gemma4: a sliding-window layer with head width 8 and 2 kv heads, a global layer with head width 16, 1 kv head and no `attn_v`, extra norms, GELU, dense FFN in parallel with 8 experts from a fused gate/up tensor, per-expert scales, embedding scale, logit softcap 30) | 1.2e-6; dense variant 9.2e-7; Q8_0 base 8.1e-7 |
+| gradcheck on gemma4 (MoE, dense, Q8_0) | pass (237 tensors and adapter parts on the MoE one; the only parts above 1% relative are three expert gradients of size ~1e-5, inside the absolute floor) |
+| gemma4, 2 hot experts of 8 + router + rank-8 adapters on attention + all norms | loss 13 -> 0.13 in 3.2 s; the server answers the three replies word for word, with the `.kspec` and after `katana merge` |
+| AddressSanitizer + UndefinedBehaviorSanitizer | gradcheck (dense, MoE, DeltaNet, Gemma 4), train and loading: no reports |
 
 What this proves: the backward pass is right for this layer layout, the optimizer converges, the frozen quantized
 path works, and the file round-trips into the serving engine. What it does not prove: anything about quality on a
-real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work below).
+real model, or speed. Nothing was run yet on the real Qwen3.6 or Gemma 4 files (no model or GPU in the session that
+wrote this); both layouts are covered on tiny random models.
 
 ## Limits today
 
@@ -115,7 +120,11 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
   optional q/k/v/o bias, q/k norm per head or whole-vector, softmax-routed MoE with top-K, renormalization and scale,
   shared experts with an optional sigmoid gate, leading dense layers), and the Qwen3.6 family (qwen35moe, qwen35):
   Gated DeltaNet (causal convolution, L2-normalized q/k, gated delta rule, gated RMS output) and gated attention
-  with partial RoPE. Not yet: Gemma 4 layers, sigmoid routers with bias (DeepSeek/GLM), gpt-oss, MLA.
+  with partial RoPE, and Gemma 4 (gemma4: per-layer head width and kv heads, sliding window on local layers, k used
+  as v when `attn_v` is missing, weightless v norm, extra norms after attention and around both FFN branches, GELU,
+  dense FFN in parallel with the experts, router input scale and per-expert scales trainable, embedding scale and
+  logit softcap in forward and backward). `layer_output_scale` stays frozen. Not yet: sigmoid routers with bias
+  (DeepSeek/GLM), gpt-oss, MLA.
 - Memory: the DeltaNet keeps its recurrent state only every 64 tokens (`KATANA_TRAIN_DNCK`) and the backward pass
   recomputes one block at a time from that checkpoint; attention probabilities are not stored either (each row is
   recomputed in the backward pass). Activations still grow with the window times the model width; the window is
@@ -127,9 +136,8 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
 
 1. Run `tools/traintest/run.sh` on the owner's machine, then a first real run on a small dense model with sessions
    exported from the agent.
-2. Gemma 4 layers (sliding window, per-layer head width, extra norms, dense and MoE in parallel, softcap), then
-   sigmoid routers with bias, gpt-oss and MLA.
-3. The first real specialization of Qwen3.6-35B-A3B on the owner's machine: `--plan 1` first, then a short run on
+2. Sigmoid routers with bias, gpt-oss and MLA.
+3. The first real specialization of Qwen3.6-35B-A3B and Gemma 4 26B-A4B on the owner's machine: `--plan 1` first, then a short run on
    exported sessions, measured with codebench against the base model.
 4. Gradient accumulation over several windows.
 5. Speed: the matrix products of forward and backward on the GPU (Vulkan), reusing the batch kernels of the prompt path.

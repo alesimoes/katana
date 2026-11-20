@@ -13,6 +13,9 @@ chat template, so katana treats it like a Qwen-style chat model.
 --arch qwen3 adds per-head q/k norm; --arch qwen3moe / olmoe give mixture-of-experts layers (--experts, --used,
 --shared, --dense). --arch qwen35moe (Qwen3.6 layout) / qwen35 (dense): Gated DeltaNet layers alternating with gated
 attention (partial RoPE, per-head q/k norm, sigmoid output gate); qwen35moe uses MoE with a gated shared expert.
+--arch gemma4 (Gemma 4 26B-A4B layout): a sliding-window layer and a global layer with different head widths and
+kv heads, the global one without attn_v, extra norms, GELU, a dense FFN in parallel with the experts (fused gate/up),
+per-expert scales, embedding scale and a final logit softcap. --dense 2 drops the experts.
 """
 import argparse, random, struct, sys
 
@@ -44,6 +47,10 @@ def kv_arr_str(k, vals):
     return s(k) + struct.pack("<I", 9) + struct.pack("<IQ", 8, len(vals)) + b"".join(s(v) for v in vals)
 
 
+def kv_arr_bool(k, vals):
+    return s(k) + struct.pack("<I", 9) + struct.pack("<IQ", 7, len(vals)) + b"".join(struct.pack("<B", 1 if v else 0) for v in vals)
+
+
 def kv_arr_i32(k, vals):
     return s(k) + struct.pack("<I", 9) + struct.pack("<IQ", 5, len(vals)) + b"".join(struct.pack("<i", v) for v in vals)
 
@@ -53,7 +60,7 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-eos", action="store_true")
-    ap.add_argument("--arch", default="llama", choices=["llama", "qwen2", "qwen3", "qwen3moe", "olmoe", "qwen35moe", "qwen35"],
+    ap.add_argument("--arch", default="llama", choices=["llama", "qwen2", "qwen3", "qwen3moe", "olmoe", "qwen35moe", "qwen35", "gemma4"],
                     help="qwen2: RoPE in halves and q/k/v bias; qwen3: per-head q/k norm; qwen3moe, olmoe: mixture of experts")
     ap.add_argument("--experts", type=int, default=8, help="MoE: experts per layer")
     ap.add_argument("--used", type=int, default=2, help="MoE: experts per token")
@@ -85,6 +92,8 @@ def main():
     kvd = dim // heads * kvh
     hd = dim // heads
     moe = A in ("qwen3moe", "olmoe", "qwen35moe")
+    g4 = A == "gemma4"
+    g4_swa, g4_kv, g4_hd, g4_hds, g4_win = [1, 0], [2, 1], 16, 8, 4    # camada 0 local (janela 4, cabeca 8), camada 1 global
     hyb = A in ("qwen35moe", "qwen35")
     if A == "qwen35moe": a.shared = True
     dk, ng, nv, dv, CK = 16, 2, 4, 16, 4            # DeltaNet: largura de q/k, grupos, cabecas v, largura v, janela da convolucao
@@ -107,10 +116,14 @@ def main():
         kv_u32(A + ".block_count", layers),
         kv_u32(A + ".feed_forward_length", hidden),
         kv_u32(A + ".attention.head_count", heads),
-        kv_u32(A + ".attention.head_count_kv", kvh),
+        *([kv_u32(A + ".attention.head_count_kv", kvh)] if not g4 else []),
         kv_f32(A + ".rope.freq_base", 10000.0),
         kv_f32(A + ".attention.layer_norm_rms_epsilon", 1e-5),
-        *([kv_u32(A + ".expert_count", E), kv_u32(A + ".expert_used_count", a.used), kv_u32(A + ".expert_feed_forward_length", He)] if moe else []),
+        *([kv_u32(A + ".expert_count", E), kv_u32(A + ".expert_used_count", a.used), kv_u32(A + ".expert_feed_forward_length", He)] if moe or (g4 and a.dense < layers) else []),
+        *([kv_arr_bool(A + ".attention.sliding_window_pattern", g4_swa), kv_arr_i32(A + ".attention.head_count_kv", g4_kv),
+           kv_u32(A + ".attention.sliding_window", g4_win), kv_u32(A + ".attention.key_length", g4_hd),
+           kv_u32(A + ".attention.value_length", g4_hd), kv_u32(A + ".attention.key_length_swa", g4_hds),
+           kv_f32(A + ".rope.freq_base_swa", 10000.0), kv_f32(A + ".final_logit_softcapping", 30.0)] if g4 else []),
         *([kv_u32(A + ".expert_shared_feed_forward_length", Hs)] if moe and a.shared else []),
         *([kv_u32(A + ".leading_dense_block_count", a.dense)] if moe and a.dense else []),
         *([kv_u32(A + ".ssm.conv_kernel", CK), kv_u32(A + ".ssm.state_size", dk), kv_u32(A + ".ssm.group_count", ng),
@@ -136,8 +149,41 @@ def main():
     if a.no_eos:
         for i in range(dim):
             out[eos * dim + i] = 0.0
-    tensors.append(("output.weight", [dim, V], out))
+    if not g4:                       # gemma4: saida amarrada ao embedding
+        tensors.append(("output.weight", [dim, V], out))
+    else:
+        tensors[0] = ("token_embd.weight", [dim, V], rand(V * dim, 0.05))
     for l in range(layers):
+        if g4:
+            p = "blk.%d." % l
+            hdl = g4_hds if g4_swa[l] else g4_hd
+            ql, kl = heads * hdl, g4_kv[l] * hdl
+            nrm = lambda n: [1.0 + rnd.gauss(0, 0.1) for _ in range(n)]
+            tensors += [(p + "attn_norm.weight", [dim], nrm(dim)),
+                        (p + "attn_q.weight", [dim, ql], rand(dim * ql, 0.1)),
+                        (p + "attn_k.weight", [dim, kl], rand(dim * kl, 0.1)),
+                        (p + "attn_output.weight", [ql, dim], rand(dim * ql, 0.1)),
+                        (p + "attn_q_norm.weight", [hdl], nrm(hdl)),
+                        (p + "attn_k_norm.weight", [hdl], nrm(hdl)),
+                        (p + "post_attention_norm.weight", [dim], nrm(dim)),
+                        (p + "ffn_norm.weight", [dim], nrm(dim)),
+                        (p + "ffn_gate.weight", [dim, hidden], rand(dim * hidden, 0.1)),
+                        (p + "ffn_up.weight", [dim, hidden], rand(dim * hidden, 0.1)),
+                        (p + "ffn_down.weight", [hidden, dim], rand(dim * hidden, 0.1)),
+                        (p + "post_ffw_norm.weight", [dim], nrm(dim)),
+                        (p + "layer_output_scale.weight", [1], [0.8 + 0.1 * l])]
+            if g4_swa[l]:            # a global fica sem attn_v (v sai de k)
+                tensors += [(p + "attn_v.weight", [dim, kl], rand(dim * kl, 0.1))]
+            if l >= a.dense:
+                tensors += [(p + "ffn_gate_inp.weight", [dim, E], rand(dim * E, 0.3)),
+                            (p + "ffn_gate_inp.scale", [dim], nrm(dim)),
+                            (p + "pre_ffw_norm_2.weight", [dim], nrm(dim)),
+                            (p + "post_ffw_norm_1.weight", [dim], nrm(dim)),
+                            (p + "post_ffw_norm_2.weight", [dim], nrm(dim)),
+                            (p + "ffn_gate_up_exps.weight", [dim, 2 * He, E], rand(dim * 2 * He * E, 0.1)),
+                            (p + "ffn_down_exps.weight", [He, dim, E], rand(dim * He * E, 0.1)),
+                            (p + "ffn_down_exps.scale", [E], [1.0 + rnd.gauss(0, 0.2) for _ in range(E)])]
+            continue
         p = "blk.%d." % l
         tensors += [(p + "attn_norm.weight", [dim], [1.0] * dim)]
         lin = hyb and (l + 1) % 2 != 0

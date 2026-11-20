@@ -872,8 +872,14 @@ static int merge_cmd(const char *in, const char *spec, const char *out) {
             MSpec *p = &sp[j];
             size_t row0 = 0;
             if (strlen(p->name) == ln && !memcmp(p->name, t->name, ln)) row0 = 0;
-            else if (strlen(p->name) > ln + 2 && !memcmp(p->name, t->name, ln) && !strncmp(p->name + ln, ".e", 2)) row0 = (size_t)atol(p->name + ln + 2) * (size_t)p->rows;
-            else continue;
+            else if (strlen(p->name) > ln + 2 && !memcmp(p->name, t->name, ln) && !strncmp(p->name + ln, ".e", 2)) {
+                char *end = NULL;
+                const size_t e = (size_t)strtoul(p->name + ln + 2, &end, 10);
+                /* gemma4: gate e up de cada especialista no mesmo tensor, gate nas linhas 2eH e up nas (2e+1)H */
+                if (end && !strcmp(end, ".gate")) row0 = 2 * e * (size_t)p->rows;
+                else if (end && !strcmp(end, ".up")) row0 = (2 * e + 1) * (size_t)p->rows;
+                else row0 = e * (size_t)p->rows;
+            } else continue;
             if (p->rows == 1 && p->kind == 0 && p->cols == n && row0 == 0) { memcpy(x, p->w, n * 4); used++; continue; }   /* vetor (normas, convolucao...) */
             if (p->cols != cols || row0 + p->rows > n / cols) { fprintf(stderr, "merge: %s nao confere com o tensor do modelo\n", p->name); return 1; }
             float *w = x + row0 * cols;

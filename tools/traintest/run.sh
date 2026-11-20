@@ -2,7 +2,8 @@
 # Teste do treino do katana sem modelo de verdade (segundos, qualquer maquina):
 #  1. gradcheck nos layouts do modelo minusculo: llama; qwen2 (GQA, vies); base quantizada Q8_0; qwen3 (norma de
 #     q/k por cabeca); qwen3moe com compartilhado e camada densa inicial; olmoe (norma no vetor, MoE sem renormalizar);
-#     qwen35moe (layout do Qwen3.6: Gated DeltaNet + atencao com portao + MoE) e qwen35 denso
+#     qwen35moe (layout do Qwen3.6: Gated DeltaNet + atencao com portao + MoE) e qwen35 denso; gemma4 (layout do
+#     Gemma 4 26B-A4B: janela deslizante, normas extras, GELU, FFN denso em paralelo com o MoE, softcap), denso e Q8_0
 #  2. treino com tensores inteiros, com adaptadores sobre a base quantizada e com especialistas quentes num MoE
 #  3. o servidor com KATANA_SPEC responde exatamente o que foi treinado (temperatura 0)
 #  4. katana import: conversas de fora viram dados de treino; as chamadas voltam pelos leitores do agente
@@ -21,8 +22,11 @@ python3 tools/tinymodel/make_tiny_gguf.py "$D/moe.gguf" --arch qwen3moe --shared
 python3 tools/tinymodel/make_tiny_gguf.py "$D/olmoe.gguf" --arch olmoe --used 3 >/dev/null
 python3 tools/tinymodel/make_tiny_gguf.py "$D/q35.gguf" --arch qwen35moe --kv 2 >/dev/null
 python3 tools/tinymodel/make_tiny_gguf.py "$D/q35d.gguf" --arch qwen35 --kv 2 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/g4.gguf" --arch gemma4 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/g4d.gguf" --arch gemma4 --dense 2 >/dev/null
+$K quantize "$D/g4.gguf" "$D/g4q8.gguf" Q8_0 >/dev/null 2>&1
 fail=0
-for m in llama qwen2 q8 qwen3 moe olmoe q35 q35d; do
+for m in llama qwen2 q8 qwen3 moe olmoe q35 q35d g4 g4d g4q8; do
   if $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck $m: ok"; else echo "gradcheck $m: FALHOU"; fail=1; fi
 done
 python3 - "$D/sft.jsonl" "$D/sft_think.jsonl" <<'EOF'
@@ -63,6 +67,9 @@ check_spec "$D/moe.gguf" "$D/moe.kspec" 8193
 $K train "$D/q35.gguf" "$D/sft_think.jsonl" --rank 8 --train "blk.*,output_norm.weight" --steps 400 --lr 5e-3 --seq 128 \
    --out "$D/q35.kspec" 2>/dev/null | grep "perda media final"
 check_spec "$D/q35.gguf" "$D/q35.kspec" 8194
+$K train "$D/g4.gguf" "$D/sft.jsonl" --experts 2 --train "blk.*.attn_*,blk.*.ffn_gate_inp.*,blk.*norm*,output_norm.weight" --rank 8 \
+   --steps 500 --lr 5e-3 --seq 128 --out "$D/g4.kspec" 2>/dev/null | grep "perda media final"
+check_spec "$D/g4.gguf" "$D/g4.kspec" 8199
 # katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
 printf '%s\n' \
  '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
@@ -75,6 +82,7 @@ if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agent
 $K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
 $K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }
 $K merge "$D/q35.gguf" "$D/q35.kspec" "$D/q35_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q35_merged.gguf" "" 8197 || { echo "merge q35: FALHOU"; fail=1; }
+$K merge "$D/g4.gguf" "$D/g4.kspec" "$D/g4_merged.gguf" >/dev/null 2>&1 && check_spec "$D/g4_merged.gguf" "" 8200 || { echo "merge gemma4: FALHOU"; fail=1; }
 # katana distill: professor de mentira resolve a tarefa bank com as ferramentas do katana; testes escondidos decidem
 python3 tools/traintest/mock_teacher.py 8198 tools/codebench/tasks/bank/solution/bank.py & MOCK=$!
 sleep 1
