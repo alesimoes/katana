@@ -603,6 +603,9 @@ void Backend::setState(bool ready, bool loading, bool answering)
     m_ready = ready;
     m_loading = loading;
     m_answering = answering;
+    if (!loading && !answering && (!m_actText.isEmpty() || m_stalled)) {     // parou de trabalhar: some o aviso de atividade na hora
+        m_actText.clear(); m_stalled = false; emit activityChanged();
+    }
     emit stateChanged();
     emit thinkingChanged();
     updateInhibit();

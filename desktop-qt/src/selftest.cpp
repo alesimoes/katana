@@ -554,9 +554,9 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(waitFor([&] { return be.ready(); }, 30000), "pronto apos nova conversa");
     check(be.messages()->count() == 0 && be.currentSessionId().isEmpty(), "nova conversa limpa tela e sessao");
     check(c.item("emptyState")->isVisible(), "boas-vindas volta em 'Nova conversa'");
-    c.typeAndEnter("Sem usar ferramentas, escreva aqui mesmo os numeros de 1 a 500 por extenso, um por linha.");
+    c.typeAndEnter("Sem usar ferramentas, escreva aqui mesmo um conto longo, de pelo menos 800 palavras, sobre um ferreiro que forja uma katana.");
     check(waitFor([&] { return be.answering() && be.messages()->lastKind() == "assistant"; }, 180000), "resposta em andamento");
-    QTest::qWait(1500);
+    QTest::qWait(200);      // curto: as vezes o modelo encerra a resposta em poucos tokens e nao sobra o que parar
     QQuickItem *sb = c.item("sendButton");
     check(sb->property("tip").toString() == "Parar (Esc)" && sb->isEnabled(), "botao enviar virou Parar");
     c.click(sb);
@@ -564,6 +564,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(be.running(), "agente continua vivo apos SIGINT");
     qsizetype got = be.messages()->get(be.messages()->count() - 1)["text"].toString().size();
     check(got > 0, QString("texto parcial mantido (%1 caracteres)").arg(got));
+    fprintf(stderr, "  resposta parcial: %s\n", qPrintable(be.messages()->get(be.messages()->count() - 1)["text"].toString().left(200)));
 
     // ---- apagar com confirmacao inline ----
     fprintf(stderr, "-- apagar sessao (cliques reais)\n");
