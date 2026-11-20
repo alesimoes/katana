@@ -413,6 +413,23 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
             be.testRedirect(realK, realM);
             check(waitFor([&] { return be.catalog().size() >= 2 && state("falso").isEmpty(); }, 15000), "catalogo real de volta depois do teste");
         }
+        {   // atalho (AppImage): a pergunta aparece, o clique grava o atalho no menu e na area de trabalho (pastas temporarias)
+            QTemporaryDir td;
+            const QString data = td.filePath("share"), desk = td.filePath("Desktop"), app = td.filePath("Meu Katana.AppImage");
+            QDir().mkpath(desk);
+            check(!be.shortcutOffer() && !c.item("shortcutOffer")->isVisible(), "fora de um AppImage nao oferece atalho");
+            be.testShortcut(app, data, desk);
+            check(waitFor([&] { return c.item("shortcutOffer")->isVisible() && c.item("shortcutYes"); }, 2000), "pergunta do atalho aparece");
+            c.grab("14-atalho.png");
+            c.click(c.item("shortcutYes"));
+            check(waitFor([&] { return !be.shortcutOffer(); }, 2000) && !c.item("shortcutOffer")->isVisible(), "responder fecha a pergunta");
+            QFile m(data + "/applications/katana-desktop.desktop");
+            m.open(QIODevice::ReadOnly);
+            const QByteArray t = m.readAll();
+            check(t.contains("Exec=\"" + app.toUtf8() + "\"") && t.contains("StartupWMClass=katana-desktop"), "atalho do menu aponta para o AppImage");
+            check(QFileInfo(data + "/icons/hicolor/256x256/apps/katana-desktop.png").size() > 1000, "icone gravado");
+            check(QFileInfo(desk + "/katana-desktop.desktop").isExecutable(), "atalho na area de trabalho, executavel");
+        }
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());
         be.messages()->setAll([&] { QList<MessageModel::Item> l; for (int i = 0; i < be.messages()->count() - 1; ++i) { auto m = be.messages()->get(i); l.append({m["kind"].toString(), m["text"].toString(), m["name"].toString()}); } return l; }());

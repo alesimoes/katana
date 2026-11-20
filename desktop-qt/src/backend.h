@@ -114,6 +114,14 @@ public:
     Q_INVOKABLE void refreshCatalog();
     Q_INVOKABLE void pull(const QString &id);     // baixa um modelo do catalogo (continua um download interrompido)
     Q_INVOKABLE void cancelPull();
+    // atalho no menu, na area de trabalho e (GNOME) na dock: so quando roda de um AppImage, perguntado uma vez
+    Q_PROPERTY(bool shortcutOffer READ shortcutOffer NOTIFY shortcutChanged)
+    bool shortcutOffer() const { return m_scOffer; }
+    Q_INVOKABLE void answerShortcut(bool yes);
+    static bool installShortcut(const QString &app, const QString &dataDir, const QString &desktopDir, bool dock);
+    // so para o teste automatico: oferece o atalho gravando em pastas temporarias, sem mexer na dock nem nas preferencias
+    void testShortcut(const QString &app, const QString &dataDir, const QString &desktopDir)
+    { m_scApp = app; m_scData = dataDir; m_scDesk = desktopDir; m_scTest = true; m_scOffer = true; emit shortcutChanged(); }
     QString currentModel() const { return m_model; }
     bool running() const { return m_proc != nullptr; }
     bool ready() const { return m_ready; }
@@ -180,6 +188,7 @@ signals:
     void modelsChanged();
     void catalogChanged();
     void pullChanged();
+    void shortcutChanged();
     void currentModelChanged();
     void stateChanged();
     void thinkingChanged();
@@ -223,6 +232,8 @@ private:
     QVariantList m_catalog;
     QVariantMap m_machine;
     QProcess *m_pull = nullptr;
+    QString m_scApp, m_scData, m_scDesk;
+    bool m_scOffer = false, m_scTest = false;
     QString m_pullId, m_pullText, m_pullError;
     QByteArray m_pullBuf;
     double m_pullFrac = 0;

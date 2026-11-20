@@ -180,6 +180,19 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     loadModels();
     refreshCatalog();
     refreshSessions();
+    // rodando de um AppImage: oferece o atalho uma vez; se ja foi aceito e o arquivo mudou de lugar, conserta o caminho
+    m_scApp = qEnvironmentVariable("APPIMAGE");
+    if (!m_scApp.isEmpty()) {
+        m_scData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+        m_scDesk = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
+        const QString st = m_ui->value("atalho").toString();
+        if (st.isEmpty()) m_scOffer = true;
+        else if (st == "sim" && m_ui->value("atalhoApp").toString() != m_scApp) {
+            installShortcut(m_scApp, m_scData, m_scDesk, false);
+            m_ui->setValue("atalhoApp", m_scApp);
+            m_ui->sync();
+        }
+    }
 }
 
 Backend::~Backend() { shutdown(); }
@@ -350,6 +363,66 @@ void Backend::onPullLine(const QByteArray &line)
         loadModels();
         if (!m_proc && m_model.isEmpty()) start(file);     // primeiro modelo da maquina: ja abre com ele
     }
+}
+
+// grava katana-desktop.desktop (mesmo nome do app, para a dock casar com a janela) e o icone na pasta do usuario
+bool Backend::installShortcut(const QString &app, const QString &dataDir, const QString &desktopDir, bool dock)
+{
+    if (app.isEmpty() || dataDir.isEmpty()) return false;
+    const QString iconDir = dataDir + "/icons/hicolor/256x256/apps", appsDir = dataDir + "/applications";
+    QDir().mkpath(iconDir);
+    QDir().mkpath(appsDir);
+    const QString icon = iconDir + "/katana-desktop.png";
+    QFile::remove(icon);
+    QFile::copy(":/icons/katana-256.png", icon);
+    QFile::setPermissions(icon, QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther);
+    QString q = app;
+    q.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$").replace("`", "\\`");
+    const QByteArray txt = ("[Desktop Entry]\nType=Application\nName=Katana\nGenericName=Agente de IA local\n"
+                            "Comment=Agente de IA que roda no seu computador\nExec=\"" + q + "\"\nIcon=" + icon
+                            + "\nTerminal=false\nCategories=Utility;\nStartupWMClass=katana-desktop\n").toUtf8();
+    auto put = [&](const QString &path) {
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        f.write(txt);
+        f.close();
+        QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner | QFile::ReadGroup | QFile::ExeGroup
+                                        | QFile::ReadOther | QFile::ExeOther);
+        return true;
+    };
+    if (!put(appsDir + "/katana-desktop.desktop")) return false;
+    if (!desktopDir.isEmpty() && QDir(desktopDir).exists()) {
+        const QString p = desktopDir + "/katana-desktop.desktop";
+        // o GNOME so abre atalho da area de trabalho marcado como confiavel
+        if (put(p)) QProcess::startDetached("gio", {"set", p, "metadata::trusted", "true"});
+    }
+    if (dock && qEnvironmentVariable("XDG_CURRENT_DESKTOP").contains("GNOME", Qt::CaseInsensitive)) {
+        QProcess g;
+        g.start("gsettings", {"get", "org.gnome.shell", "favorite-apps"});
+        if (g.waitForFinished(3000) && g.exitCode() == 0) {
+            QString l = QString::fromUtf8(g.readAllStandardOutput()).trimmed();
+            const int fim = l.lastIndexOf(']');
+            if (fim > 0 && !l.contains("'katana-desktop.desktop'")) {
+                const bool vazio = l.indexOf('[') >= 0 && l.mid(l.indexOf('[') + 1, fim - l.indexOf('[') - 1).trimmed().isEmpty();
+                l = l.mid(l.indexOf('['), fim - l.indexOf('[')) + (vazio ? "" : ", ") + "'katana-desktop.desktop']";
+                QProcess::startDetached("gsettings", {"set", "org.gnome.shell", "favorite-apps", l});
+            }
+        }
+    }
+    return true;
+}
+
+void Backend::answerShortcut(bool yes)
+{
+    if (!m_scOffer) return;
+    if (yes) installShortcut(m_scApp, m_scData, m_scDesk, !m_scTest);
+    if (!m_scTest) {
+        m_ui->setValue("atalho", yes ? "sim" : "nao");
+        m_ui->setValue("atalhoApp", m_scApp);
+        m_ui->sync();
+    }
+    m_scOffer = false;
+    emit shortcutChanged();
 }
 
 void Backend::cancelPull()
