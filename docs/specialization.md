@@ -61,8 +61,21 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
   GGUF answers exactly like the base with `KATANA_SPEC` on five tiny layouts (whole tensors, adapters on Q8_0, MoE hot
   experts, qwen35moe, gemma4). Gemma 4 experts come from one fused gate/up tensor; their parts are named
   `ffn_gate_up_exps.weight.eN.gate` / `.up` and go back to rows `2N·H` and `(2N+1)·H`.
-- Optimizer: AdamW (betas 0.9/0.999), global gradient-norm clipping (default 1.0), 10-step warm-up, weight decay only
-  on matrices.
+- Optimizer: AdamW (betas 0.9/0.999), global gradient-norm clipping (default 1.0), weight decay only on matrices.
+  Learning rate: linear warm-up (`--warmup`, default 5% of the steps, at least 10), then cosine down to 10% of `--lr`
+  (`--sched cos`, default) or constant (`--sched const`).
+- Batches: `--batch N` accumulates the gradients of N windows per optimizer step (each window weighted 1/N). Windows
+  are drawn in a shuffled order, each once per epoch.
+- Validation: `--val-data FILE`, or a fraction of the conversations (`--val F`; default 10% when the data has 20 or
+  more conversations), split by whole conversation so nothing leaks into training. The held-out loss is measured every
+  `--eval N` steps (default a tenth of the run); the `.kspec` written is the one from the best evaluation, and
+  `--patience P` stops after P evaluations without improvement.
+- `--log FILE` appends one JSON line per step and evaluation; the last line of the output, `resultado: {...}`, is a
+  one-line JSON summary (output file, steps, train and validation loss, best step, conversations used) for scripts and
+  the `katana learn` loop.
+- Checked on a tiny model with 60 "repeat the word" conversations (50 trained, 10 held out): held-out loss 1.89 -> 0.092
+  with batch 4 and the cosine schedule; with a deliberately high constant lr the run stops early and keeps the best
+  step (160 of 220).
 - Loading: whole tensors replace the base tensor; adapters are merged at load (`W + s B A`, dequantizing only the
   adapted matrices to float). The specialization is applied before the GPU is prepared. A specialization that
   changes experts runs on the CPU for now (the GPU expert cache assumes one format for all experts of a layer).
