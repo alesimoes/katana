@@ -10,6 +10,8 @@ chat template, so katana treats it like a Qwen-style chat model.
 
 --no-eos makes the end-of-turn token unlikely, so answers run until max_tokens (for testing length limits).
 --arch qwen2 --kv 2 gives the other attention layout (RoPE in halves, q/k/v bias, grouped-query attention).
+--arch qwen3 adds per-head q/k norm; --arch qwen3moe / olmoe give mixture-of-experts layers (--experts, --used,
+--shared, --dense).
 """
 import argparse, random, struct, sys
 
@@ -50,7 +52,12 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-eos", action="store_true")
-    ap.add_argument("--arch", default="llama", choices=["llama", "qwen2"], help="qwen2: RoPE in halves and q/k/v bias")
+    ap.add_argument("--arch", default="llama", choices=["llama", "qwen2", "qwen3", "qwen3moe", "olmoe"],
+                    help="qwen2: RoPE in halves and q/k/v bias; qwen3: per-head q/k norm; qwen3moe, olmoe: mixture of experts")
+    ap.add_argument("--experts", type=int, default=8, help="MoE: experts per layer")
+    ap.add_argument("--used", type=int, default=2, help="MoE: experts per token")
+    ap.add_argument("--shared", action="store_true", help="MoE: add a shared expert with a sigmoid gate")
+    ap.add_argument("--dense", type=int, default=0, help="MoE: leading dense layers")
     ap.add_argument("--kv", type=int, default=4, help="key/value heads (fewer than 4 = grouped-query attention)")
     a = ap.parse_args()
     rnd = random.Random(a.seed)
@@ -73,6 +80,9 @@ def main():
     dim, heads, hidden, layers, ctx = 64, 4, 128, 2, 512
     A, kvh = a.arch, a.kv
     kvd = dim // heads * kvh
+    hd = dim // heads
+    moe = A in ("qwen3moe", "olmoe")
+    E, He, Hs = a.experts, 32, 48
     tmpl = ("{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}"
             "{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}")
     kvs = [
@@ -87,6 +97,9 @@ def main():
         kv_u32(A + ".attention.head_count_kv", kvh),
         kv_f32(A + ".rope.freq_base", 10000.0),
         kv_f32(A + ".attention.layer_norm_rms_epsilon", 1e-5),
+        *([kv_u32(A + ".expert_count", E), kv_u32(A + ".expert_used_count", a.used), kv_u32(A + ".expert_feed_forward_length", He)] if moe else []),
+        *([kv_u32(A + ".expert_shared_feed_forward_length", Hs)] if moe and a.shared else []),
+        *([kv_u32(A + ".leading_dense_block_count", a.dense)] if moe and a.dense else []),
         kv_str("tokenizer.ggml.model", "gpt2"),
         kv_str("tokenizer.ggml.pre", "default"),
         kv_arr_str("tokenizer.ggml.tokens", tokens),
@@ -115,10 +128,27 @@ def main():
                     (p + "attn_k.weight", [dim, kvd], rand(dim * kvd, 0.1)),
                     (p + "attn_v.weight", [dim, kvd], rand(dim * kvd, 0.1)),
                     (p + "attn_output.weight", [dim, dim], rand(dim * dim, 0.1)),
-                    (p + "ffn_norm.weight", [dim], [1.0] * dim),
-                    (p + "ffn_gate.weight", [dim, hidden], rand(dim * hidden, 0.1)),
-                    (p + "ffn_up.weight", [dim, hidden], rand(dim * hidden, 0.1)),
-                    (p + "ffn_down.weight", [hidden, dim], rand(dim * hidden, 0.1))]
+                    (p + "ffn_norm.weight", [dim], [1.0] * dim)]
+        if moe and l >= a.dense:
+            tensors += [(p + "ffn_gate_inp.weight", [dim, E], rand(dim * E, 0.3)),
+                        (p + "ffn_gate_exps.weight", [dim, He, E], rand(dim * He * E, 0.1)),
+                        (p + "ffn_up_exps.weight", [dim, He, E], rand(dim * He * E, 0.1)),
+                        (p + "ffn_down_exps.weight", [He, dim, E], rand(dim * He * E, 0.1))]
+            if a.shared:
+                tensors += [(p + "ffn_gate_shexp.weight", [dim, Hs], rand(dim * Hs, 0.1)),
+                            (p + "ffn_up_shexp.weight", [dim, Hs], rand(dim * Hs, 0.1)),
+                            (p + "ffn_down_shexp.weight", [Hs, dim], rand(dim * Hs, 0.1)),
+                            (p + "ffn_gate_inp_shexp.weight", [dim], rand(dim, 0.3))]
+        else:
+            tensors += [(p + "ffn_gate.weight", [dim, hidden], rand(dim * hidden, 0.1)),
+                        (p + "ffn_up.weight", [dim, hidden], rand(dim * hidden, 0.1)),
+                        (p + "ffn_down.weight", [hidden, dim], rand(dim * hidden, 0.1))]
+        if A in ("qwen3", "qwen3moe"):
+            tensors += [(p + "attn_q_norm.weight", [hd], [1.0 + rnd.gauss(0, 0.1) for _ in range(hd)]),
+                        (p + "attn_k_norm.weight", [hd], [1.0 + rnd.gauss(0, 0.1) for _ in range(hd)])]
+        if A == "olmoe":
+            tensors += [(p + "attn_q_norm.weight", [dim], [1.0 + rnd.gauss(0, 0.1) for _ in range(dim)]),
+                        (p + "attn_k_norm.weight", [kvd], [1.0 + rnd.gauss(0, 0.1) for _ in range(kvd)])]
         if A == "qwen2":
             tensors += [(p + "attn_q.bias", [dim], rand(dim, 0.1)), (p + "attn_k.bias", [kvd], rand(kvd, 0.1)),
                         (p + "attn_v.bias", [kvd], rand(kvd, 0.1))]

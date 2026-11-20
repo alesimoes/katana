@@ -20,14 +20,16 @@ same C binary that runs and serves the model.
    the model's turns of passed sessions turns "what worked" into "what the model does by default", in the exact tool
    format the agent parses.
 
-Points 1 to 4 are implemented. The next ones are the plan (below), in order.
+5. **Heat-guided specialization of mixture-of-experts models** (`--experts N`): before training, the base model's
+   router is run over the training data and, in each MoE layer, the N experts it picks most often at the positions
+   that count for the loss become trainable (whole, or with adapters under `--rank`), together with the router.
+   A small fraction of the experts carries the specialization; they are the experts that topic routes to anyway.
 
-5. **Specializations per request** (next): the server keeps one base in memory and applies the adapters of the
+Points 1 to 5 are implemented. The next ones are the plan (below), in order.
+
+6. **Specializations per request** (next): the server keeps one base in memory and applies the adapters of the
    specialization named in the request's `model` field, unmerged (`W x + s B (A x)`), so one machine serves many
    specialists without reloading.
-6. **Heat-guided specialization of mixture-of-experts models**: katana already measures which experts each topic
-   uses (expert heat, `katana routing`). Specializing only the experts that are hot on the user's data (plus the
-   router) trains a small fraction of a 35B model, and those are the experts the expert cache keeps in VRAM anyway.
 
 ## Commands
 
@@ -40,6 +42,9 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
 
 - `--train`: comma-separated patterns over GGUF tensor names, `*` matches anything (`blk.*.ffn_*`,
   `blk.1*.attn_q.weight`, `output_norm.weight`, `all`). Default `all`.
+- `--experts N` (MoE models): heat-guided choice of N trainable experts per layer (see point 5). Without `--train`,
+  the router is trained too; with `--train`, the patterns add to the hot experts. Expert tensors are addressed as
+  `blk.<l>.ffn_{gate,up,down}_exps.weight.e<expert>`.
 - `--rank R`: matrices get a rank-R adapter instead of training the whole matrix (A random, B zero: training starts
   exactly at the base model); norms and the embedding still train whole. `--alpha` sets the scale `s = alpha / R`
   (default `alpha = R`).
@@ -50,7 +55,8 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
 - Optimizer: AdamW (betas 0.9/0.999), global gradient-norm clipping (default 1.0), 10-step warm-up, weight decay only
   on matrices.
 - Loading: whole tensors replace the base tensor; adapters are merged at load (`W + s B A`, dequantizing only the
-  adapted matrices to float). The specialization is applied before the GPU is prepared.
+  adapted matrices to float). The specialization is applied before the GPU is prepared. A specialization that
+  changes experts runs on the CPU for now (the GPU expert cache assumes one format for all experts of a layer).
 
 ## How correctness is checked
 
@@ -61,7 +67,10 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
 2. **Gradients against finite differences**: for every tensor (and, in a second pass, for the A and B of rank-3
    adapters on every matrix), the analytic gradient projected on a random direction is compared with a central
    difference of the loss along that direction. Tolerance: 1% relative plus 1e-4 absolute (float rounding dominates
-   on the smallest gradients; a wrong formula shows up as a large, step-independent error).
+   on the smallest gradients; a wrong formula shows up as a large, step-independent error). In MoE layers the choice
+   of the K experts is a step function with no derivative: the finite differences reuse the experts chosen in the
+   base pass, which is exactly the gradient the trainer uses (the selection is held fixed, the weights of the chosen
+   experts and the router logits behind them get the gradient).
 
 `tools/traintest/run.sh` runs the gradcheck on three layouts of the tiny random model (`tools/tinymodel`), trains it
 with whole tensors and with adapters on a Q8_0 base, and checks that the server with `KATANA_SPEC` answers exactly the
@@ -76,7 +85,11 @@ trained replies at temperature 0.
 | train all tensors, 150 steps, 3 examples | loss 12.0 -> 0.0001 in 1.0 s; `.kspec` 457 KB |
 | rank-8 adapters on a frozen Q8_0 base, 400 steps | 0.018M trainable weights (15% of the model), loss 12.0 -> 0.0002 in 2.4 s; `.kspec` 70 KB |
 | server with `KATANA_SPEC`, temperature 0 | the three trained answers word for word, each ending on its own end-of-turn token (before: random bytes) |
-| AddressSanitizer + UndefinedBehaviorSanitizer | gradcheck, train and loading: no reports |
+| training forward vs engine, MoE layouts | 5.5e-6 (qwen3, per-head q/k norm), 2.9e-6 (qwen3moe), 3.8e-6 (qwen3moe with shared expert, sigmoid gate, a leading dense layer and GQA), 3.6e-6 (olmoe: whole-vector q/k norm, no renormalization, K=3) |
+| gradcheck on those four | pass (65 to 197 tensors and adapter parts each) |
+| heat-guided MoE specialization: 2 hot experts of 8 per layer + router + attention and shared-expert adapters (rank 8) | the 2 hot experts cover 43% of the router's choices on the data; loss 12.9 -> 0.0002 in 2.5 s; `.kspec` 50 KB; server answers the three replies word for word |
+| hot experts and router only (no attention) | loss 12.9 -> 0.49: on this tiny random model the experts alone do not carry enough capacity; with attention adapters they do |
+| AddressSanitizer + UndefinedBehaviorSanitizer | gradcheck (dense and MoE), train and loading: no reports |
 
 What this proves: the backward pass is right for this layer layout, the optimizer converges, the frozen quantized
 path works, and the file round-trips into the serving engine. What it does not prove: anything about quality on a
@@ -84,8 +97,10 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
 
 ## Limits today
 
-- Architectures: dense llama/qwen2-style only (RMSNorm, GQA, RoPE in pairs or halves, SwiGLU, optional q/k/v/o bias).
-  Not yet: q/k norm (qwen3), MoE routing, Gated DeltaNet and gated attention (Qwen3.6), Gemma 4 layers.
+- Architectures: llama, qwen2, qwen3, olmoe, qwen3moe-style (RMSNorm, GQA, RoPE in pairs or halves, SwiGLU,
+  optional q/k/v/o bias, q/k norm per head or whole-vector, softmax-routed MoE with top-K, renormalization and scale,
+  shared experts with an optional sigmoid gate, leading dense layers). Not yet: Gated DeltaNet and gated attention
+  (Qwen3.6 = qwen35moe), Gemma 4 layers, sigmoid routers with bias (DeepSeek/GLM), gpt-oss, MLA.
 - CPU only, one sequence per step, attention probabilities stored for the whole sequence (T x T per head and layer).
 - Adapters are merged at load, so an adapted matrix costs float memory at serving time.
 
@@ -93,9 +108,10 @@ real model, or speed. Nothing was run on Qwen3.6 or Gemma 4 (they need the work 
 
 1. Run `tools/traintest/run.sh` on the owner's machine, then a first real run on a small dense model with sessions
    exported from the agent.
-2. q/k norm (qwen3), then the MoE layer: router softmax/top-k backward (straight-through on the selection), expert
-   gradients only for the experts a token used; heat-guided selection of trainable experts (`--train` by heat).
-3. Gated DeltaNet and gated attention backward (Qwen3.6), Gemma 4 layers, each with its own gradcheck.
+2. Gated DeltaNet and gated attention backward (Qwen3.6 = qwen35moe, the owner's reference model), with a tiny
+   random qwen35moe in `tools/tinymodel` and its gradcheck against the engine's own forward.
+3. Gemma 4 layers (sliding window, per-layer head width, extra norms, dense and MoE in parallel, softcap), then
+   sigmoid routers with bias, gpt-oss and MLA.
 4. Memory: recompute attention in the backward pass instead of storing it; gradient accumulation over several windows.
 5. Speed: the matrix products of forward and backward on the GPU (Vulkan), reusing the batch kernels of the prompt path.
 6. Serving: adapters applied unmerged in the products and selected per request (`model` field), hot-swapped.

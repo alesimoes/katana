@@ -1,7 +1,8 @@
 #!/bin/sh
 # Teste do treino do katana sem modelo de verdade (segundos, qualquer maquina):
-#  1. gradcheck nos tres layouts do modelo minusculo (llama; qwen2 com GQA e vies; base quantizada Q8_0)
-#  2. treino com tensores inteiros e com adaptadores sobre a base quantizada
+#  1. gradcheck nos layouts do modelo minusculo: llama; qwen2 (GQA, vies); base quantizada Q8_0; qwen3 (norma de
+#     q/k por cabeca); qwen3moe com compartilhado e camada densa inicial; olmoe (norma no vetor, MoE sem renormalizar)
+#  2. treino com tensores inteiros, com adaptadores sobre a base quantizada e com especialistas quentes num MoE
 #  3. o servidor com KATANA_SPEC responde exatamente o que foi treinado (temperatura 0)
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
@@ -11,8 +12,11 @@ trap 'rm -rf "$D"; kill $SRV 2>/dev/null || true' EXIT
 python3 tools/tinymodel/make_tiny_gguf.py "$D/llama.gguf" >/dev/null
 python3 tools/tinymodel/make_tiny_gguf.py "$D/qwen2.gguf" --arch qwen2 --kv 2 >/dev/null
 $K quantize "$D/llama.gguf" "$D/q8.gguf" Q8_0 >/dev/null 2>&1
+python3 tools/tinymodel/make_tiny_gguf.py "$D/qwen3.gguf" --arch qwen3 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/moe.gguf" --arch qwen3moe --shared --dense 1 --kv 2 >/dev/null
+python3 tools/tinymodel/make_tiny_gguf.py "$D/olmoe.gguf" --arch olmoe --used 3 >/dev/null
 fail=0
-for m in llama qwen2 q8; do
+for m in llama qwen2 q8 qwen3 moe olmoe; do
   if $K gradcheck "$D/$m.gguf" 12 2>/dev/null | grep -q "gradcheck: ok"; then echo "gradcheck $m: ok"; else echo "gradcheck $m: FALHOU"; fail=1; fi
 done
 python3 - "$D/sft.jsonl" <<'EOF'
@@ -46,4 +50,7 @@ $K train "$D/llama.gguf" "$D/sft.jsonl" --steps 150 --lr 3e-3 --seq 128 --out "$
 check_spec "$D/llama.gguf" "$D/full.kspec" 8191
 $K train "$D/q8.gguf" "$D/sft.jsonl" --train "blk.*,output_norm.weight" --rank 8 --steps 400 --lr 4e-3 --seq 128 --out "$D/adapt.kspec" 2>/dev/null | grep "perda media final"
 check_spec "$D/q8.gguf" "$D/adapt.kspec" 8192
+$K train "$D/moe.gguf" "$D/sft.jsonl" --experts 2 --train "blk.*.attn_*,blk.*.ffn_gate_inp.weight,blk.*shexp*,output_norm.weight" --rank 8 \
+   --steps 500 --lr 5e-3 --seq 128 --out "$D/moe.kspec" 2>/dev/null | grep -E "quentes|perda media final"
+check_spec "$D/moe.gguf" "$D/moe.kspec" 8193
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi
