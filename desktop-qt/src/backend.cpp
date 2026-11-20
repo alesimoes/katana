@@ -31,26 +31,37 @@ QVariant MessageModel::data(const QModelIndex &i, int role) const
     case TextRole: return it.text;
     case NameRole: return it.name;
     case OutRole: return it.out;
+    case TimeRole: return showTime(it.time);
     }
     return {};
 }
 
 QHash<int, QByteArray> MessageModel::roleNames() const
 {
-    return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}, {OutRole, "out"}};
+    return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}, {OutRole, "out"}, {TimeRole, "time"}};
 }
 
 QVariantMap MessageModel::get(int i) const
 {
     if (i < 0 || i >= m_items.size())
         return {};
-    return {{"kind", m_items[i].kind}, {"text", m_items[i].text}, {"name", m_items[i].name}, {"out", m_items[i].out}};
+    return {{"kind", m_items[i].kind}, {"text", m_items[i].text}, {"name", m_items[i].name}, {"out", m_items[i].out}, {"time", showTime(m_items[i].time)}};
 }
 
-void MessageModel::append(const QString &kind, const QString &text, const QString &name)
+QString MessageModel::showTime(const QString &iso)
+{
+    if (iso.isEmpty()) return {};
+    const QDateTime t = QDateTime::fromString(iso, Qt::ISODate).toLocalTime();
+    if (!t.isValid()) return {};
+    return t.toString(t.date() == QDate::currentDate() ? "HH:mm" : "dd/MM HH:mm");
+}
+
+void MessageModel::append(const QString &kind, const QString &text, const QString &name, const QString &time)
 {
     beginInsertRows({}, m_items.size(), m_items.size());
-    m_items.append({kind, text, name, {}});
+    // mensagens do usuario e do assistente levam a hora (a de agora, se quem chama nao deu outra)
+    const QString t = !time.isEmpty() ? time : (kind == "user" || kind == "assistant") ? QDateTime::currentDateTime().toString(Qt::ISODate) : QString();
+    m_items.append({kind, text, name, {}, t});
     endInsertRows();
     emit countChanged();
 }
@@ -181,6 +192,11 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     loadModels();
     refreshCatalog();
     refreshSessions();
+    {   // atividade do agente enquanto trabalha (tempo, processador, travamento)
+        auto *t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, &Backend::actTick);
+        t->start(1000);
+    }
     {   // uso da maquina na barra de baixo
         auto *t = new QTimer(this);
         connect(t, &QTimer::timeout, this, &Backend::sysTick);
@@ -432,6 +448,59 @@ void Backend::answerShortcut(bool yes)
     emit shortcutChanged();
 }
 
+static QString secsText(int s)
+{
+    return s < 60 ? QString::number(s) + " s" : QString::number(s / 60) + " min " + QString::number(s % 60).rightJustified(2, '0') + " s";
+}
+
+// quietSecs: segundos sem nenhuma saida do motor; cpuCores: nucleos em uso pelo agente e seus comandos;
+// children: ha comando em curso; idleSecs: segundos seguidos com o processador parado e sem comando
+QString Backend::activityFor(int turnSecs, int quietSecs, double cpuCores, bool children, int idleSecs, bool *stalled)
+{
+    if (stalled) *stalled = false;
+    if (turnSecs < 5) return {};
+    const QString base = "Trabalhando há " + secsText(turnSecs);
+    if (quietSecs < 15) return base;
+    if (cpuCores >= 0.5) return base + " · processando (sem saída nova há " + secsText(quietSecs) + ", processador em uso)";
+    if (children) return base + " · aguardando um comando terminar (" + secsText(quietSecs) + ")";
+    if (idleSecs >= 30) {
+        if (stalled) *stalled = true;
+        return "Sem atividade há " + secsText(quietSecs) + ": o agente pode ter travado. Esc interrompe a resposta.";
+    }
+    return base + " · sem saída nova há " + secsText(quietSecs);
+}
+
+void Backend::actTick()
+{
+    QString t;
+    bool st = false;
+    if (m_proc && (m_answering || m_loading) && m_turnClock.isValid()) {
+        const qint64 pid = m_proc->processId();
+        auto ticks = [](qint64 p) -> qint64 {        // utime + stime do processo (campos 14 e 15, depois do nome entre parenteses)
+            QFile f(QString("/proc/%1/stat").arg(p));
+            if (!f.open(QIODevice::ReadOnly)) return -1;
+            const QByteArray s = f.readAll();
+            const QList<QByteArray> a = s.mid(s.lastIndexOf(')') + 2).split(' ');
+            return a.size() > 12 ? a[11].toLongLong() + a[12].toLongLong() : -1;
+        };
+        qint64 tot = ticks(pid);
+        bool children = false;
+        QFile ch(QString("/proc/%1/task/%1/children").arg(pid));
+        if (ch.open(QIODevice::ReadOnly))
+            for (const QByteArray &c : ch.readAll().simplified().split(' ')) {
+                if (c.isEmpty()) continue;
+                children = true;
+                const qint64 k = ticks(c.toLongLong());
+                if (k > 0 && tot >= 0) tot += k;
+            }
+        const double cores = m_procTicks >= 0 && tot >= m_procTicks ? (tot - m_procTicks) / 100.0 : 1.0;   /* 100 ticks por segundo */
+        m_procTicks = tot;
+        m_idleSecs = (cores < 0.2 && !children) ? m_idleSecs + 1 : 0;
+        t = activityFor(int(m_turnClock.elapsed() / 1000), int(m_lastOut.elapsed() / 1000), cores, children, m_idleSecs, &st);
+    } else { m_procTicks = -1; m_idleSecs = 0; }
+    if (t != m_actText || st != m_stalled) { m_actText = t; m_stalled = st; emit activityChanged(); }
+}
+
 // processador (media desde a leitura anterior), memoria em uso e placa de video (carga e memoria, via nvidia-smi)
 void Backend::sysTick()
 {
@@ -528,6 +597,9 @@ void Backend::clearError()
 
 void Backend::setState(bool ready, bool loading, bool answering)
 {
+    if ((loading || answering) && !(m_loading || m_answering)) {    // comecou a trabalhar: zera os relogios da atividade
+        m_turnClock.restart(); m_lastOut.restart(); m_procTicks = -1; m_idleSecs = 0;
+    }
     m_ready = ready;
     m_loading = loading;
     m_answering = answering;
@@ -818,7 +890,7 @@ void Backend::approvePlan()
     const QString text = QStringLiteral("Plano aprovado: pode executar.");
     setTexts({}, {});
     m_msgs.append("user", text);
-    m_sess.mensagens.append({"user", text, {}});
+    m_sess.mensagens.append({"user", text, {}, QDateTime::currentDateTime().toString(Qt::ISODate)});
     saveSession();
     setState(false, false, true);
     writeLine("/go");
@@ -908,7 +980,7 @@ bool Backend::send(const QString &text)
     setTexts({}, {});
     m_speed.clear();
     m_msgs.append("user", text);
-    m_sess.mensagens.append({"user", text, {}});
+    m_sess.mensagens.append({"user", text, {}, QDateTime::currentDateTime().toString(Qt::ISODate)});
     if (m_sess.titulo.isEmpty())
         m_sess.titulo = Sessoes::truncar(Sessoes::umaLinha(text), 80);
     saveSession();
@@ -973,7 +1045,7 @@ bool Backend::openSession(const QString &id)
     }
     QList<MessageModel::Item> items;
     for (const Msg &m : s.mensagens)
-        items.append({m.papel, m.texto, m.nome});
+        items.append({m.papel, m.texto, m.nome, {}, m.hora});
     m_msgs.setAll(items);
     m_speed.clear();
     m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
@@ -1106,6 +1178,7 @@ void Backend::onStdout()
     if (!p || p != m_proc)
         return;
     m_outBuf += p->readAllStandardOutput();
+    m_lastOut.restart();
     while (!m_outBuf.isEmpty()) {
         if (m_atLineStart && m_outBuf.at(0) == 0x01) {  // marcador do katana: linha inteira
             int nl = m_outBuf.indexOf('\n');
@@ -1184,6 +1257,11 @@ void Backend::handleMarker(const QByteArray &line)
         const int total = a.value(0).toInt(), done = a.value(1).toInt();
         const QString pct = total > 0 && a.size() > 1 ? QString::number(done * 100 / total) + "% · " : QString();
         setTexts("Preparando o agente: " + pct + "lendo as instruções (" + a.value(0) + " tokens, só na primeira vez nesta pasta)...", {});
+    } else if (name == "FEED") {  // FEED <total> <feito>: o motor esta lendo uma entrada longa (resultado de ferramenta, texto colado)
+        const QStringList a = args.trimmed().split(' ');
+        const int total = a.value(0).toInt(), done = a.value(1).toInt();
+        if (total > 0)
+            setTexts("Lendo " + QLocale(QLocale::Portuguese).toString(total) + " tokens: " + QString::number(done * 100 / total) + "%", m_error);
     } else if (name == "CHOICE") {  // CHOICE <pergunta>\t<opcao>...: pergunta do agente (ask_user); resposta em answerChoice
         const QStringList a = args.split('\t');
         m_choiceQ = a.value(0);
@@ -1244,6 +1322,7 @@ void Backend::setCtx(int used, int total)
 
 void Backend::markReady()
 {
+    if (m_status.startsWith("Lendo ")) setTexts({}, m_error);
     if (m_resuming) {  // end of /resume: sem RESUME o motor nao conseguiu; volta ao resumo textual
         m_resuming = false;
         if (!m_resumed) {
@@ -1281,6 +1360,7 @@ void Backend::emitText(const QByteArray &bytes)
 {
     if (bytes.isEmpty())
         return;
+    if (m_status.startsWith("Lendo ")) setTexts({}, m_error);      // a leitura longa acabou: a resposta comecou
     QByteArray b = m_utf8Tail + bytes;
     m_utf8Tail.clear();
     // separa sufixo UTF-8 incompleto
@@ -1323,7 +1403,7 @@ void Backend::assistantText(const QString &t)
         if (!m_sess.mensagens.isEmpty() && m_sess.mensagens.last().papel == "assistant")
             m_sess.mensagens.last().texto += piece;
         else
-            m_sess.mensagens.append({"assistant", piece, {}});
+            m_sess.mensagens.append({"assistant", piece, {}, QDateTime::currentDateTime().toString(Qt::ISODate)});
         m_dirty = true;
     }
 }
@@ -1364,6 +1444,7 @@ void Backend::onStderr()
     if (!p || p != m_proc)
         return;
     m_errBuf += p->readAllStandardError();
+    m_lastOut.restart();
     static const QRegularExpression stats(
         R"re(\[entrada: (\d+) tokens, ([\d.]+) tok/s \| resposta: (\d+) tokens, ([\d.]+) tok/s \| contexto (\d+) de (\d+))re");
     int nl;

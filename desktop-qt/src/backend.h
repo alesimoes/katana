@@ -3,6 +3,7 @@
 #pragma once
 #include <QAbstractListModel>
 #include <QObject>
+#include <QElapsedTimer>
 #include <QProcess>
 #include <QSettings>
 #include <QVariantList>
@@ -16,10 +17,12 @@ class MessageModel : public QAbstractListModel
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
 public:
-    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole };
+    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole, TimeRole };
     struct Item {
         QString kind, text, name, out;
+        QString time;   // hora ISO da mensagem (vazio = desconhecida)
     };
+    static QString showTime(const QString &iso);     // "HH:mm" hoje, "dd/MM HH:mm" em outro dia
     using QAbstractListModel::QAbstractListModel;
     int rowCount(const QModelIndex &p = {}) const override { return p.isValid() ? 0 : m_items.size(); }
     int count() const { return m_items.size(); }
@@ -27,7 +30,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
     QString lastKind() const { return m_items.isEmpty() ? QString() : m_items.last().kind; }
     Q_INVOKABLE QVariantMap get(int i) const;
-    void append(const QString &kind, const QString &text, const QString &name = {});
+    void append(const QString &kind, const QString &text, const QString &name = {}, const QString &time = {});
     void appendToLast(const QString &text);
     void setLastToolOut(const QString &out, bool append = false);
     void setAll(const QList<Item> &items);
@@ -84,6 +87,14 @@ class Backend : public QObject
     // uso da maquina (processador, memoria, placa de video), atualizado a cada 2 s
     Q_PROPERTY(QString sysText READ sysText NOTIFY sysChanged)
     QString sysText() const { return m_sysText; }
+    // o que o agente esta fazendo enquanto nao responde: tempo do turno, se o processador trabalha, se parece travado
+    Q_PROPERTY(QString activityText READ activityText NOTIFY activityChanged)
+    Q_PROPERTY(bool stalled READ stalled NOTIFY activityChanged)
+    QString activityText() const { return m_actText; }
+    bool stalled() const { return m_stalled; }
+    // texto e alarme a partir das medidas (funcao pura, usada tambem pelo teste)
+public:
+    static QString activityFor(int turnSecs, int quietSecs, double cpuCores, bool children, int idleSecs, bool *stalled);
     Q_PROPERTY(QString ctxText READ ctxText NOTIFY textsChanged)
     Q_PROPERTY(int ctxUsed READ ctxUsed NOTIFY textsChanged)
     Q_PROPERTY(int ctxTotal READ ctxTotal NOTIFY textsChanged)
@@ -193,6 +204,7 @@ signals:
     void pullChanged();
     void shortcutChanged();
     void sysChanged();
+    void activityChanged();
     void currentModelChanged();
     void stateChanged();
     void thinkingChanged();
@@ -238,6 +250,12 @@ private:
     QProcess *m_pull = nullptr;
     QString m_scApp, m_scData, m_scDesk;
     void sysTick();
+    void actTick();
+    QElapsedTimer m_turnClock, m_lastOut;
+    QString m_actText;
+    bool m_stalled = false;
+    qint64 m_procTicks = -1;
+    int m_idleSecs = 0;
     QString m_sysText, m_sysGpu;
     qint64 m_cpuTot = 0, m_cpuIdle = 0;
     int m_gpuState = 0;         // 0 nao tentou, 1 nvidia-smi funciona, -1 sem placa/ferramenta

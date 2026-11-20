@@ -8,6 +8,7 @@ struct Msg {
     QString papel;  // user, assistant, tool
     QString texto;
     QString nome;   // so para tool
+    QString hora;   // quando a mensagem foi enviada ou comecou (ISO); vazio nas sessoes antigas
 };
 
 struct Session {

@@ -53,6 +53,8 @@ bool salvar(const QString &dir, const Session &s)
         QJsonObject o{{"papel", m.papel}, {"texto", m.texto}};
         if (!m.nome.isEmpty())
             o["nome"] = m.nome;
+        if (!m.hora.isEmpty())
+            o["hora"] = m.hora;
         arr.append(o);
     }
     QJsonObject root{{"id", s.id},         {"titulo", s.titulo},         {"modelo", s.modelo},
@@ -84,7 +86,7 @@ bool carregar(const QString &dir, const QString &id, Session *out)
     s.atualizada = o["atualizada"].toString();
     for (const QJsonValue &v : o["mensagens"].toArray()) {
         const QJsonObject m = v.toObject();
-        s.mensagens.append({m["papel"].toString(), m["texto"].toString(), m["nome"].toString()});
+        s.mensagens.append({m["papel"].toString(), m["texto"].toString(), m["nome"].toString(), m["hora"].toString()});
     }
     *out = s;
     return true;
