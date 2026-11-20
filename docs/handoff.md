@@ -46,6 +46,21 @@ models are out (they were downloaded and screened, see below).
   generated at 12.3 tok/s; after the first one exited it reloaded (about 40 s, 2126 tokens recomputed), kept the
   conversation and generated at 23 to 27 tok/s. Not done: shrinking when another program arrives later, and resizing
   without a reload. `KATANA_NO_REGROW=1` turns the reload off.
+- *Read, use, drop* (2026-11-20, `tool_digest` in `src/agent/delegate.c`, off by default, `KATANA_DIGEST=1`): a
+  `read_file` or `web_fetch` result of 3,500 bytes or more is read in a clean context (main context saved and loaded
+  back with `pfx_save`/`pfx_load`, as the sub-agent does) and only a note of up to 250 words enters the conversation;
+  the note is kept by the identity of the read (tool, arguments, file size and date), so the same read again returns
+  the note at once. Reads with `offset`, `limit` or `find` pass whole. ChatML only. First trial, Qwen3.6, one file of
+  13.8 KB: the first chunk (5,853 bytes, 1,865 tokens) became a note of 1,093 bytes (538 tokens in the main context)
+  in 63 s, against roughly 45 s to read it raw; the note must carry the final notice of the raw result ("lines 1-60
+  of 240...") or the model takes the first chunk for the whole file (seen, fixed). Open: the following chunks come
+  with `offset` and pass raw, so the saving is small on long files; telling "continue reading" from "exact lines"
+  needs a tool parameter. Not benchmarked; whether it pays is unknown.
+- *Desktop* (2026-11-20): time on each message, progress of long inputs (`FEED total done` from the engine, in chunks
+  of 256 tokens), stall detection (no output, idle CPU and no running command for 30 s), machine use (CPU, RAM, GPU)
+  under the message box, wider and taller message box, undo button removed, work folder moved to the settings
+  popup, Qwen-AgentWorld allowed in the model list. Selftest: 143 checks, 0 failures in the last run; the stop-button
+  step failed in two earlier runs because the model ended the answer after 7 tokens.
 - *Sampling*: top-p added, with a preset per model family inside the engine (`sample_preset`: Qwen top-k 20 and
   top-p 0.8, Gemma top-k 64 and top-p 0.95; `KATANA_TOP_K`, `KATANA_TOP_P` override for measuring). The effect on
   the benchmark was not measured separately.
