@@ -26,8 +26,8 @@ Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c
 - Só comparar velocidade com medidas alternadas na mesma hora (`compare.sh`, ou dois binários lado
   a lado). A máquina deriva muito ao longo do tempo.
 - Dizer o que foi medido e o que é estimativa. Hipótese de gargalo se confirma medindo as partes.
-- Depois de mexer em kernel: `selftest` num modelo denso, no OLMoE e no Qwen3-30B
-  (`KATANA_KV16=0 KATANA_CTX=512` neste último).
+- Depois de mexer em kernel: `selftest` no Qwen3.6-35B, no Gemma 4 26B e num modelo denso (Qwen3.5-4B).
+  Os modelos de 2024 e 2025 (qwen2.5, OLMoE, Qwen3-30B etc.) foram apagados de `models/` por decisão do dono (2026-11-20).
 
 ## Prática
 
