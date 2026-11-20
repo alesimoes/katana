@@ -242,6 +242,7 @@ static int g_cp_floor;     /* depois de compactar, a proxima compactacao automat
    que comeca pelo fecho da mensagem anterior). force: resume mesmo abaixo do alvo. Devolve o novo pos e os
    logits do fim em *lg_out, ou -1 se nem compactado cabe. */
 static int agent_compact(Model *m, AHist *h, const char *sys, const char *pending, int before, int force, float **lg_out) {
+    g_rd_epoch++;       /* notas de leitura que estavam no contexto podem sair: a proxima leitura do arquivo traz de volta */
     const Config *c = &m->cfg;
     const int trig = cp_trig(m, sys);
     const int sys_tok = ah_count(m, sys);

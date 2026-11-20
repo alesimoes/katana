@@ -376,6 +376,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (!cml) { fprintf(stderr, "[sessions: not supported in this format]\n"); g_no_ready = !res; continue; }
             g_stop = 0; g_busy = 1;
             if (!first && hist.n && (res || strcmp(pa, g_sess_path) != 0)) sess_save(m, sys, &hist, &slog, sess_sum_switch());   /* fecha a sessao atual */
+            rd_reset();         /* outra conversa: nada do que foi lido esta no contexto dela */
             if (res) {
                 AGENT_SYS();
                 const int np2 = sess_resume(m, pa, sys, &hist, &slog);
@@ -429,7 +430,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (reset) {
             if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, sess_sum_switch()); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
-            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); undo_pend = 0;
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); rd_reset(); undo_pend = 0;
         }
         if (cmd) continue;
         if (first) ah_clear(&hist);

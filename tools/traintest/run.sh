@@ -18,6 +18,8 @@
 #     aceita e a 2 nao
 # 10. modo professor do agente (/teacher) com uma API de mensagens de mentira: pedidos aceitos, sessao retomada com o
 #     professor ligado no meio, katana export --teacher
+# 11. professor pelo programa claude (de mentira) sem chave; read_file so com o caminho continua de onde parou, cada
+#     trecho vira nota e o arquivo ja lido devolve as notas
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 K=$(pwd)/katana
@@ -168,6 +170,32 @@ try:
 except Exception as e:
     ok, why = False, e
 print("professor: %s" % ("ok (6 pedidos aceitos, arquivo gravado, 6 falas do professor nos dados)" if ok else "FALHOU %s" % (why,)))
+sys.exit(0 if ok else 1)
+EOF
+# professor pelo Claude Code da maquina (programa de mentira no lugar do claude) e leitura com posicao guardada:
+# o professor le 5 vezes o mesmo arquivo so com o caminho; 4 trechos em sequencia, cada um vira nota, a 5a devolve as notas
+mkdir -p "$D/tw2"
+(cd "$D/tw2" && printf 'grave uma nota em nota.txt\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 \
+   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli.jsonl" $K agent "$D/agent.gguf" >/dev/null 2>&1) || true
+if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linha 1" "$D/tw2/nota.txt" 2>/dev/null; then echo "professor pelo claude -p: ok"; else echo "professor pelo claude -p: FALHOU"; fail=1; fi
+python3 -c "open('$D/big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
+python3 tools/traintest/mock_anthropic.py 8201 "$D/rd_req.jsonl" "$D/big.txt" & RMOCK=$!
+sleep 1
+(cd "$D/tw2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_DIGEST=2 KATANA_TEACHER=1 ANTHROPIC_API_KEY=sk-mock-key \
+   KATANA_TEACHER_URL=http://127.0.0.1:8201 $K agent "$D/agent.gguf" >/dev/null 2>&1) || true
+kill $RMOCK 2>/dev/null || true
+python3 - "$D/rd_req.jsonl" <<'EOF' || fail=1
+import json, sys
+try:
+    rs = [json.loads(l) for l in open(sys.argv[1])]
+    res = [x["content"] for m in rs[-1]["request"]["messages"] for x in m["content"] if x["type"] == "tool_result"]
+    ok = len(res) == 5 and all(r["status"] == 200 for r in rs)
+    for i, (a, b) in enumerate([(1, 84), (85, 167), (168, 250), (251, 300)]):
+        ok = ok and ("condensed note of lines %d-%d" % (a, b)) in res[i]
+    ok = ok and "already read this whole file (300 lines)" in res[4] and "[lines 168-250]" in res[4] and max(len(r) for r in res) < 3000
+except Exception as e:
+    ok = False; res = e
+print("leitura com posicao e notas: %s" % ("ok (4 trechos em sequencia, 5a leitura devolve as notas)" if ok else "FALHOU %s" % (res,)))
 sys.exit(0 if ok else 1)
 EOF
 # katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
