@@ -159,7 +159,8 @@ bool Backend::usable(const QString &name, QString *note)
 {
     const QString l = name.toLower();
     // modelos com formato que o agente entende (ChatML, Gemma 4, gpt-oss) e tamanho para usar ferramentas; os pequenos/antigos ficam desabilitados
-    if (l.contains("qwen3") || l.contains("gemma-4") || l.contains("gemma4") || l.contains("gpt-oss") || l.contains("ravenx")) {
+    if (l.contains("qwen3") || l.contains("gemma-4") || l.contains("gemma4") || l.contains("gpt-oss") || l.contains("ravenx")
+        || l.contains("qwen-agentworld")) {     // mesma arquitetura e formato (ChatML) do Qwen3.6
         if (note) note->clear();
         return true;
     }
