@@ -66,7 +66,7 @@ def apply_solution(work, name, ctx):
     sol = os.path.join(TASKS, name, "solution")
     script = os.path.join(sol, "solve.sh")
     if os.path.exists(script):
-        p = subprocess.run(["bash", script], cwd=work, env=ctx_env(ctx), capture_output=True, text=True, timeout=120)
+        p = subprocess.run(["bash", script], cwd=work, env=ctx_env(ctx), capture_output=True, text=True, errors="replace", timeout=120)
         if p.returncode != 0:
             raise RuntimeError("solve.sh falhou: " + (p.stdout + p.stderr)[-400:])
     else:
@@ -78,7 +78,7 @@ def hidden_tests(work, name, ctx=None):
     copy_tree(os.path.join(TASKS, name, "hidden"), work)
     try:
         p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-p", "test_hidden*.py"], cwd=work,
-                           capture_output=True, text=True, timeout=120, env=ctx_env(ctx) if ctx else None)
+                           capture_output=True, text=True, errors="replace", timeout=120, env=ctx_env(ctx) if ctx else None)
         return p.returncode == 0, (p.stdout + p.stderr)[-600:]
     except subprocess.TimeoutExpired:
         return False, "hidden tests timed out"
@@ -114,7 +114,7 @@ def verify(names):
     return 1 if bad else 0
 
 
-def run_task(a, name):
+def run_task(a, name, attempt=0):
     work = tempfile.mkdtemp(prefix="cb_" + name + "_")
     copy_tree(os.path.join(TASKS, name, "repo"), work)
     try:
@@ -137,8 +137,21 @@ def run_task(a, name):
     t0 = time.time()
     timed_out = False
     try:
-        p = subprocess.run([a.katana, a.mode, a.model], cwd=work, input=msg + "\n/exit\n", capture_output=True,
-                           text=True, timeout=a.timeout, env=env)
+        cmd = [a.katana, a.mode, a.model]
+        sess = None
+        dtmp = None
+        if a.teacher:                          # o professor resolve com as ferramentas do katana (katana distill)
+            dtmp = os.path.join(tempfile.mkdtemp(prefix="cbd_"), "s.jsonl")
+            cmd = [a.katana, "distill", "--url", a.teacher, "--model", a.teacher_model, "--key-env", a.teacher_key_env,
+                   "--format", a.teacher_format, "--out", dtmp, "--task", name, msg]
+        if a.sessions:                         # sessao gravada (.ksess): conversa inteira, para gerar dados de treino
+            os.makedirs(a.sessions, exist_ok=True)
+            sess = os.path.abspath(os.path.join(a.sessions, "%s.%d.ksess" % (name, attempt)))
+            if os.path.exists(sess):
+                os.remove(sess)
+            cmd += ["--sessao", sess]
+        p = subprocess.run(cmd, cwd=work, input="" if a.teacher else msg + "\n/exit\n", capture_output=True,
+                           text=True, errors="replace", timeout=a.timeout, env=env)
         log = p.stdout + "\n" + p.stderr
     except subprocess.TimeoutExpired as e:
         timed_out = True
@@ -149,10 +162,21 @@ def run_task(a, name):
         passed, out = hidden_tests(work, name, ctx)
     finally:
         finish(ctx)
-    tool_calls = len(re.findall(r"\[ferramenta ", log))
+    tool_calls = len(re.findall(r"\[ferramenta |\[professor: ", log))
+    if dtmp:                                   # sessao do professor: marca passed e guarda
+        if os.path.exists(dtmp) and os.path.getsize(dtmp):
+            r = json.loads(open(dtmp).read().splitlines()[-1])
+            r["passed"] = passed; r["attempt"] = attempt; r["timed_out"] = timed_out
+            open(a.distill_out, "a").write(json.dumps(r, ensure_ascii=False) + "\n")
+        shutil.rmtree(os.path.dirname(dtmp), ignore_errors=True)
     gen = sum(int(x) for x in re.findall(r"resposta: (\d+) tokens", log))
     rec = dict(label=a.label, task=name, passed=passed, seconds=round(secs, 1), tool_calls=tool_calls,
                gen_tokens=gen, timed_out=timed_out)
+    if a.repeat > 1:
+        rec["attempt"] = attempt
+    if a.sessions:
+        rec["session"] = sess if sess and os.path.exists(sess) else None
+        rec["instruction"] = msg
     if a.keep:
         os.makedirs(a.keep, exist_ok=True)
         open(os.path.join(a.keep, name + ".log"), "w").write(log)
@@ -200,6 +224,12 @@ def main():
     ap.add_argument("--katana", default=os.path.join(HERE, "..", "..", "katana"))
     ap.add_argument("--mode", default="agent", choices=["agent", "code"], help="katana subcommand to run")
     ap.add_argument("--env", action="append"); ap.add_argument("--keep", help="folder to keep logs and final files")
+    ap.add_argument("--sessions", help="folder for one agent session file (.ksess) per run (training data, tools/dataset)")
+    ap.add_argument("--repeat", type=int, default=1, help="runs per task (several attempts for rejection sampling or RL)")
+    ap.add_argument("--teacher", help="OpenAI-compatible base URL of a teacher model: it solves the tasks with katana's tools (katana distill)")
+    ap.add_argument("--teacher-model"); ap.add_argument("--teacher-key-env", default="TEACHER_API_KEY")
+    ap.add_argument("--teacher-format", default="qwen", help="student call syntax in the saved system prompt: qwen, json, gemma4, glm")
+    ap.add_argument("--distill-out", help="teacher sessions (messages format, with passed) for katana import")
     a = ap.parse_args()
     a.katana = os.path.abspath(a.katana)
     if a.model:
@@ -207,19 +237,31 @@ def main():
     names = task_names(a.tasks.split(",") if a.tasks else None)
     if a.verify:
         return verify(names)
+    if a.teacher:
+        if not a.teacher_model or not a.distill_out or not a.out:
+            ap.error("--teacher needs --teacher-model, --distill-out and --out")
+        a.model = a.model or "teacher"
     if not a.model or not a.out:
         ap.error("--model and --out are required")
-    done = load(a.out) if os.path.exists(a.out) else {}        # an interrupted run continues where it stopped
-    for n in names:
-        if n in done:
-            continue
-        rec = run_task(a, n)
-        open(a.out, "a").write(json.dumps(rec) + "\n")
-        print("%-14s %s  %5.0fs  tools=%d  gen=%d%s" % (n, "PASS" if rec["passed"] else "fail", rec["seconds"],
-                                                        rec["tool_calls"], rec["gen_tokens"],
-                                                        "  TIMEOUT" if rec["timed_out"] else ""), flush=True)
-    rs = load(a.out)
-    print("solved %d/%d" % (sum(r["passed"] for r in rs.values()), len(rs)))
+    done = set()                                               # an interrupted run continues where it stopped
+    if os.path.exists(a.out):
+        done = {(r["task"], r.get("attempt", 0)) for r in (json.loads(l) for l in open(a.out) if l.strip())}
+    for k in range(a.repeat):
+        for n in names:
+            if (n, k) in done:
+                continue
+            rec = run_task(a, n, k)
+            open(a.out, "a").write(json.dumps(rec) + "\n")
+            print("%-14s %s  %5.0fs  tools=%d  gen=%d%s%s" % (n, "PASS" if rec["passed"] else "fail", rec["seconds"],
+                                                            rec["tool_calls"], rec["gen_tokens"],
+                                                            "  TIMEOUT" if rec["timed_out"] else "",
+                                                            "  attempt %d" % k if a.repeat > 1 else ""), flush=True)
+    allr = [json.loads(l) for l in open(a.out) if l.strip()]
+    if a.repeat > 1:
+        print("solved %d of %d runs (%d tasks x %d attempts)" % (sum(r["passed"] for r in allr), len(allr), len(names), a.repeat))
+    else:
+        rs = load(a.out)
+        print("solved %d/%d" % (sum(r["passed"] for r in rs.values()), len(rs)))
     return 0
 
 

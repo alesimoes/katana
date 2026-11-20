@@ -1,9 +1,12 @@
-/* ---------- servidor HTTP local (so conversa, sem ferramentas) ----------
- * Escuta apenas em 127.0.0.1. GET / entrega a pagina embutida; POST /api/chat recebe as mensagens
- * em JSON e responde em Server-Sent Events, um evento por token. Uma conversa por vez (as demais
- * conexoes esperam na fila do sistema). O cache KV da requisicao anterior e reaproveitado quando a
- * nova comeca com os mesmos tokens. Requisicoes com Origin ou Host que nao sejam locais sao
- * recusadas (protege contra paginas de outros sites falando com o servidor). */
+/* ---------- servidor HTTP (so conversa, sem ferramentas) ----------
+ * Por padrao escuta apenas em 127.0.0.1. GET / entrega a pagina embutida; POST /api/chat recebe as mensagens
+ * em JSON e responde em Server-Sent Events, um evento por token; /v1/... e a API no formato da OpenAI (openai.c).
+ * Cada conexao tem sua thread (Linux); o modelo gera uma resposta por vez e as outras esperam na fila, em ordem
+ * de chegada (srv_lock). O cache KV da requisicao anterior e reaproveitado quando a nova comeca com os mesmos
+ * tokens. Requisicoes locais com Origin ou Host que nao sejam locais sao recusadas (protege contra paginas de
+ * outros sites falando com o servidor).
+ * Rede: KATANA_HOST=0.0.0.0 (ou um endereco da maquina) abre para outras maquinas, e exige KATANA_API_KEY;
+ * de fora da maquina tudo pede "Authorization: Bearer <chave>". Com chave definida, /v1 sempre pede a chave. */
 #ifdef _WIN32
 typedef SOCKET sock_t;
 #define sock_close closesocket
@@ -19,6 +22,34 @@ typedef int sock_t;
 
 #define SRV_MAX_BODY (8 << 20)
 #define SRV_MAX_MSGS 512
+#define SRV_MAX_CONN 64                 /* conexoes abertas ao mesmo tempo (na fila ou gerando) */
+
+static char g_srv_name[256] = "katana";     /* nome do modelo em /v1/models (arquivo sem .gguf) */
+static char g_srv_key[256];                 /* KATANA_API_KEY */
+static time_t g_srv_started;
+
+/* fila do modelo: uma geracao por vez, na ordem de chegada (senha numerada) */
+#ifndef _WIN32
+static pthread_mutex_t g_srv_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_srv_cv = PTHREAD_COND_INITIALIZER;
+static unsigned long g_srv_next, g_srv_serving;
+static volatile int g_srv_conns;
+static void srv_lock(void) {
+    pthread_mutex_lock(&g_srv_mu);
+    const unsigned long me = g_srv_next++;
+    while (me != g_srv_serving) pthread_cond_wait(&g_srv_cv, &g_srv_mu);
+    pthread_mutex_unlock(&g_srv_mu);
+}
+static void srv_unlock(void) {
+    pthread_mutex_lock(&g_srv_mu);
+    g_srv_serving++;
+    pthread_cond_broadcast(&g_srv_cv);
+    pthread_mutex_unlock(&g_srv_mu);
+}
+#else
+static void srv_lock(void) {}           /* Windows: as conexoes sao atendidas uma de cada vez */
+static void srv_unlock(void) {}
+#endif
 
 static const char SRV_PAGE[] =
 "<!doctype html>\n"
@@ -108,7 +139,8 @@ static int sock_send(sock_t s, const char *p, size_t n) {
 static void http_reply(sock_t s, int code, const char *ctype, const char *body, size_t n) {
     char h[256];
     const char *st = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
-                     code == 405 ? "Method Not Allowed" : code == 413 ? "Payload Too Large" : "Error";
+                     code == 405 ? "Method Not Allowed" : code == 413 ? "Payload Too Large" : code == 401 ? "Unauthorized" :
+                     code == 503 ? "Service Unavailable" : "Error";
     const int k = snprintf(h, sizeof h, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
                            code, st, ctype, n);
     sock_send(s, h, (size_t)k);
@@ -333,11 +365,32 @@ static int srv_parse(const char *js, SrvReq *r) {
     }
 }
 
-/* escapa texto UTF-8 para dentro de uma string JSON */
+/* tamanho da sequencia UTF-8 valida que comeca em s (0 se invalida ou cortada) */
+static size_t utf8_seq(const unsigned char *s, size_t n) {
+    const unsigned c = s[0];
+    size_t k; unsigned cp;
+    if (c < 0x80) return 1;
+    if (c >= 0xC2 && c <= 0xDF) { k = 2; cp = c & 0x1F; }
+    else if (c >= 0xE0 && c <= 0xEF) { k = 3; cp = c & 0x0F; }
+    else if (c >= 0xF0 && c <= 0xF4) { k = 4; cp = c & 0x07; }
+    else return 0;
+    if (n < k) return 0;
+    for (size_t i = 1; i < k; i++) { if ((s[i] & 0xC0) != 0x80) return 0; cp = (cp << 6) | (s[i] & 0x3F); }
+    if ((k == 3 && (cp < 0x800 || (cp >= 0xD800 && cp < 0xE000))) || (k == 4 && (cp < 0x10000 || cp > 0x10FFFF))) return 0;
+    return k;
+}
+
+/* escapa texto UTF-8 para dentro de uma string JSON; bytes que nao formam UTF-8 valido viram U+FFFD */
 static void js_escape(Buf *b, const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) {
         const unsigned char ch = (unsigned char)s[i];
         char o[8];
+        if (ch >= 0x80) {
+            const size_t k = utf8_seq((const unsigned char *)s + i, n - i);
+            if (!k) buf_add(b, "\\ufffd", 6);
+            else { buf_add(b, s + i, k); i += k - 1; }
+            continue;
+        }
         switch (ch) {
             case '"': buf_add(b, "\\\"", 2); break;
             case '\\': buf_add(b, "\\\\", 2); break;
@@ -493,55 +546,119 @@ static int host_local(const char *h) {   /* "localhost" ou "127.0.0.1", com port
            (strncmp(h, "127.0.0.1", 9) == 0 && (h[9] == 0 || h[9] == ':'));
 }
 
-static void srv_conn(Model *m, sock_t s) {
-    static char head[65536];
+static void oa_chat(Model *m, sock_t s, const char *body);
+static void oa_models(sock_t s);
+static void oa_error(sock_t s, int code, const char *msg, const char *type);
+
+/* "Authorization: Bearer <chave>" confere com KATANA_API_KEY (comparacao em tempo constante) */
+static int srv_auth(const char *head) {
+    char v[512];
+    if (!g_srv_key[0] || !hdr_get(head, "Authorization", v, sizeof v) || strncmp(v, "Bearer ", 7) != 0) return 0;
+    const char *t = v + 7;
+    const size_t a = strlen(t), b = strlen(g_srv_key);
+    unsigned d = a != b;
+    for (size_t i = 0; i < b; i++) d |= (unsigned char)(i < a ? t[i] : 0) ^ (unsigned char)g_srv_key[i];
+    return d == 0;
+}
+
+/* corpo da requisicao (Content-Length); NULL se ja respondeu com erro ou a conexao caiu */
+static char *srv_body(sock_t s, const char *head, size_t hn, size_t hend) {
+    char val[64];
+    size_t clen = 0;
+    if (hdr_get(head, "Content-Length", val, sizeof val)) clen = (size_t)strtoull(val, NULL, 10);
+    else { http_error(s, 400, "falta Content-Length"); return NULL; }
+    if (clen > SRV_MAX_BODY) { http_error(s, 413, "corpo grande demais"); return NULL; }
+    if (hdr_get(head, "Expect", val, sizeof val)) sock_send(s, "HTTP/1.1 100 Continue\r\n\r\n", 25);
+    char *body = xalloc(clen + 1, 1);
+    size_t have = hn - hend;
+    if (have > clen) have = clen;
+    memcpy(body, head + hend, have);
+    while (have < clen) {
+        const int k = (int)recv(s, body + have, (int)(clen - have > 65536 ? 65536 : clen - have), 0);
+        if (k <= 0) { free(body); return NULL; }
+        have += (size_t)k;
+    }
+    return body;
+}
+
+#define SRV_HEAD 65536
+static void srv_conn(Model *m, sock_t s, int peer_local) {
+    char *head = xalloc(SRV_HEAD, 1);
     size_t hn = 0, hend = 0;
     while (!hend) {      /* cabecalhos ate a linha em branco */
-        if (hn + 1 >= sizeof head) { http_error(s, 413, "cabecalhos grandes demais"); return; }
-        const int k = (int)recv(s, head + hn, (int)(sizeof head - 1 - hn), 0);
-        if (k <= 0) return;
+        if (hn + 1 >= SRV_HEAD) { http_error(s, 413, "cabecalhos grandes demais"); free(head); return; }
+        const int k = (int)recv(s, head + hn, (int)(SRV_HEAD - 1 - hn), 0);
+        if (k <= 0) { free(head); return; }
         hn += (size_t)k; head[hn] = 0;
         const char *e = strstr(head, "\r\n\r\n");
         if (e) hend = (size_t)(e - head) + 4;
     }
     head[hend - 2] = 0;                                  /* termina a lista de cabecalhos */
     char method[16] = "", path[512] = "", val[512];
-    if (sscanf(head, "%15s %511s", method, path) != 2) { http_error(s, 400, "requisicao invalida"); return; }
-    if (hdr_get(head, "Host", val, sizeof val) && !host_local(val)) { http_error(s, 403, "host nao permitido"); return; }
-    if (hdr_get(head, "Origin", val, sizeof val)) {
-        const char *o = strstr(val, "://");
-        if (!o || !host_local(o + 3)) { http_error(s, 403, "origem nao permitida"); return; }
-    }
+    if (sscanf(head, "%15s %511s", method, path) != 2) { http_error(s, 400, "requisicao invalida"); free(head); return; }
     char *q = strchr(path, '?');
     if (q) *q = 0;
-
-    if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
-        if (strcmp(method, "GET") != 0) { http_error(s, 405, "metodo nao permitido"); return; }
-        http_reply(s, 200, "text/html; charset=utf-8", SRV_PAGE, sizeof SRV_PAGE - 1);
+    const int v1 = strncmp(path, "/v1/", 4) == 0;
+    if (strcmp(path, "/health") == 0) {                  /* sem chave: so diz que esta de pe */
+        http_reply(s, 200, "application/json; charset=utf-8", "{\"status\":\"ok\"}", 15);
+        free(head); return;
+    }
+    if (!peer_local || (v1 && g_srv_key[0])) {          /* de fora da maquina (ou /v1 com chave): so com a chave */
+        if (!srv_auth(head)) {
+            if (v1) oa_error(s, 401, "missing or invalid API key (Authorization: Bearer ...)", "invalid_request_error");
+            else http_error(s, 401, "chave invalida ou ausente");
+            free(head); return;
+        }
+    } else {                                             /* local sem chave: protege contra paginas de outros sites */
+        if (hdr_get(head, "Host", val, sizeof val) && !host_local(val)) { http_error(s, 403, "host nao permitido"); free(head); return; }
+        if (hdr_get(head, "Origin", val, sizeof val)) {
+            const char *o = strstr(val, "://");
+            if (!o || !host_local(o + 3)) { http_error(s, 403, "origem nao permitida"); free(head); return; }
+        }
+    }
+    if (strcmp(path, "/v1/models") == 0) {
+        if (strcmp(method, "GET") != 0) oa_error(s, 405, "use GET", "invalid_request_error");
+        else oa_models(s);
+        free(head); return;
+    }
+    if (strcmp(path, "/v1/chat/completions") == 0) {
+        if (strcmp(method, "POST") != 0) { oa_error(s, 405, "use POST", "invalid_request_error"); free(head); return; }
+        char *body = srv_body(s, head, hn, hend);
+        if (body) oa_chat(m, s, body);
+        free(body); free(head);
         return;
     }
+    if (v1) { oa_error(s, 404, "unknown endpoint", "invalid_request_error"); free(head); return; }
+
+    if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
+        if (strcmp(method, "GET") != 0) http_error(s, 405, "metodo nao permitido");
+        else http_reply(s, 200, "text/html; charset=utf-8", SRV_PAGE, sizeof SRV_PAGE - 1);
+        free(head); return;
+    }
     if (strcmp(path, "/api/chat") == 0) {
-        if (strcmp(method, "POST") != 0) { http_error(s, 405, "use POST"); return; }
-        size_t clen = 0;
-        if (hdr_get(head, "Content-Length", val, sizeof val)) clen = (size_t)strtoull(val, NULL, 10);
-        else { http_error(s, 400, "falta Content-Length"); return; }
-        if (clen > SRV_MAX_BODY) { http_error(s, 413, "corpo grande demais"); return; }
-        if (hdr_get(head, "Expect", val, sizeof val)) sock_send(s, "HTTP/1.1 100 Continue\r\n\r\n", 25);
-        char *body = xalloc(clen + 1, 1);
-        size_t have = hn - hend;
-        if (have > clen) have = clen;
-        memcpy(body, head + hend, have);
-        while (have < clen) {
-            const int k = (int)recv(s, body + have, (int)(clen - have > 65536 ? 65536 : clen - have), 0);
-            if (k <= 0) { free(body); return; }
-            have += (size_t)k;
-        }
-        srv_chat(m, s, body);
-        free(body);
+        if (strcmp(method, "POST") != 0) { http_error(s, 405, "use POST"); free(head); return; }
+        char *body = srv_body(s, head, hn, hend);
+        if (body) { srv_lock(); srv_chat(m, s, body); srv_unlock(); }
+        free(body); free(head);
         return;
     }
     http_error(s, 404, "nao encontrado");
+    free(head);
 }
+
+static int srv_peer_local(const struct sockaddr_in *a) { return (ntohl(a->sin_addr.s_addr) >> 24) == 127; }
+
+#ifndef _WIN32
+typedef struct { Model *m; sock_t s; int local; } SrvArg;
+static void *srv_thread(void *p) {
+    SrvArg *a = (SrvArg *)p;
+    srv_conn(a->m, a->s, a->local);
+    sock_close(a->s);
+    __sync_fetch_and_sub(&g_srv_conns, 1);
+    free(a);
+    return NULL;
+}
+#endif
 
 static int serve(Model *m, int port) {
     srand((unsigned)time(NULL));
@@ -551,30 +668,61 @@ static int serve(Model *m, int port) {
 #else
     signal(SIGPIPE, SIG_IGN);
 #endif
+    g_srv_started = time(NULL);
+    const char *host = getenv("KATANA_HOST") && *getenv("KATANA_HOST") ? getenv("KATANA_HOST") : "127.0.0.1";
+    if (getenv("KATANA_API_KEY")) snprintf(g_srv_key, sizeof g_srv_key, "%s", getenv("KATANA_API_KEY"));
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)port);
+    if (inet_pton(AF_INET, host, &a.sin_addr) != 1) die("KATANA_HOST: endereco IPv4 invalido (ex.: 127.0.0.1 ou 0.0.0.0)");
+    const int net = !srv_peer_local(&a);
+    if (net && strlen(g_srv_key) < 16) die("KATANA_HOST abre o servidor para a rede: defina KATANA_API_KEY com pelo menos 16 caracteres");
     sock_t ls = socket(AF_INET, SOCK_STREAM, 0);
     if (SOCK_BAD(ls)) die("nao consegui criar o socket");
     int one = 1;
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof one);
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);          /* so a propria maquina */
-    a.sin_port = htons((unsigned short)port);
     if (bind(ls, (struct sockaddr *)&a, sizeof a) != 0) die("nao consegui escutar nessa porta (em uso?)");
-    if (listen(ls, 16) != 0) die("listen falhou");
-    fprintf(stderr, "katana serve: http://127.0.0.1:%d (so esta maquina; Ctrl+C encerra)\n", port);
+    if (listen(ls, 64) != 0) die("listen falhou");
+    fprintf(stderr, "katana serve: http://%s:%d  modelo \"%s\"  API: /v1/chat/completions, /v1/models%s%s; Ctrl+C encerra\n",
+            host, port, g_srv_name, net ? "; aberto para a rede, com chave" : "; so esta maquina", g_srv_key[0] && !net ? "; /v1 com chave" : "");
     for (;;) {
-        sock_t cs = accept(ls, NULL, NULL);
+        struct sockaddr_in pa; socklen_t pl = sizeof pa;
+        memset(&pa, 0, sizeof pa);
+        sock_t cs = accept(ls, (struct sockaddr *)&pa, &pl);
         if (SOCK_BAD(cs)) continue;
         setsockopt(cs, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
 #ifdef _WIN32
-        DWORD to = 5000;
+        DWORD to = 5000, sto = 60000;
 #else
-        struct timeval to = { 5, 0 };
+        struct timeval to = { 5, 0 }, sto = { 60, 0 };
 #endif
         setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, (const char *)&to, sizeof to);
-        srv_conn(m, cs);
+        setsockopt(cs, SOL_SOCKET, SO_SNDTIMEO, (const char *)&sto, sizeof sto);   /* cliente parado nao segura a fila */
+        const int local = srv_peer_local(&pa);
+#ifdef _WIN32
+        srv_conn(m, cs, local);
         sock_close(cs);
+#else
+        if (__sync_fetch_and_add(&g_srv_conns, 1) >= SRV_MAX_CONN) {
+            __sync_fetch_and_sub(&g_srv_conns, 1);
+            http_error(cs, 503, "servidor ocupado, tente de novo");
+            sock_close(cs);
+            continue;
+        }
+        SrvArg *arg = xalloc(1, sizeof *arg);
+        arg->m = m; arg->s = cs; arg->local = local;
+        pthread_t th;
+        pthread_attr_t at;
+        pthread_attr_init(&at);
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&th, &at, srv_thread, arg) != 0) {
+            __sync_fetch_and_sub(&g_srv_conns, 1);
+            http_error(cs, 503, "servidor ocupado, tente de novo");
+            sock_close(cs); free(arg);
+        }
+        pthread_attr_destroy(&at);
+#endif
     }
     return 0;
 }

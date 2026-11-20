@@ -742,6 +742,171 @@ static int quantize_cmd(const char *in, const char *out_arg, const char *type_ar
     return 0;
 }
 
+
+/* katana merge <modelo.gguf> <espec.kspec> <saida.gguf>: grava um GGUF novo com a especializacao dentro (para levar
+   o modelo especializado para outra maquina ou outro programa, sem o .kspec). Tensores inteiros substituem o
+   original; adaptadores viram W + s B A; especialistas treinados trocam as linhas deles no tensor empilhado. Cada
+   tensor alterado volta no tipo original quando o katana sabe codificar esse tipo (F32, F16, Q8_0, Q6_K, Q5_K, Q4_K,
+   Q2_K); senao vai em Q8_0 (ou F16 se as colunas nao fecham blocos de 32). O resto e copiado byte a byte. */
+typedef struct { char name[128]; uint32_t kind; uint64_t rows, cols; int32_t rank; float s; float *w, *a, *b; } MSpec;
+
+static int merge_cmd(const char *in, const char *spec, const char *out) {
+    FILE *ex = fopen(out, "rb");
+    if (ex) { fclose(ex); fprintf(stderr, "merge: %s ja existe; escolha outro nome.\n", out); return 1; }
+    /* especializacao */
+    FILE *fs = fopen(spec, "rb");
+    if (!fs) { fprintf(stderr, "merge: nao abriu %s\n", spec); return 1; }
+    char mg[8]; int64_t sfs = 0; uint64_t snp = 0; int ns = 0;
+    if (fread(mg, 1, 8, fs) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&sfs, 8, 1, fs) != 1 || fread(&snp, 8, 1, fs) != 1 || fread(&ns, 4, 1, fs) != 1 || ns < 0 || ns > 1000000)
+        { fprintf(stderr, "merge: %s nao e uma especializacao valida\n", spec); return 1; }
+    MSpec *sp = xalloc((size_t)ns + 1, sizeof(MSpec));
+    for (int i = 0; i < ns; i++) {
+        MSpec *p = &sp[i]; uint32_t nl = 0;
+        if (fread(&nl, 4, 1, fs) != 1 || nl == 0 || nl >= sizeof p->name || fread(p->name, 1, nl, fs) != nl || fread(&p->kind, 4, 1, fs) != 1
+            || fread(&p->rows, 8, 1, fs) != 1 || fread(&p->cols, 8, 1, fs) != 1) { fprintf(stderr, "merge: especializacao cortada\n"); return 1; }
+        p->name[nl] = 0;
+        const size_t n = (size_t)(p->rows * p->cols);
+        if (p->kind == 1) {
+            if (fread(&p->rank, 4, 1, fs) != 1 || fread(&p->s, 4, 1, fs) != 1 || p->rank < 1 || p->rank > 4096) { fprintf(stderr, "merge: adaptador invalido\n"); return 1; }
+            p->a = xalloc((size_t)p->rank * p->cols, 4); p->b = xalloc((size_t)p->rows * p->rank, 4);
+            if (fread(p->a, 4, (size_t)p->rank * p->cols, fs) != (size_t)p->rank * p->cols || fread(p->b, 4, (size_t)(p->rows * p->rank), fs) != (size_t)(p->rows * p->rank))
+                { fprintf(stderr, "merge: especializacao cortada\n"); return 1; }
+        } else {
+            p->w = xalloc(n, 4);
+            if (fread(p->w, 4, n, fs) != n) { fprintf(stderr, "merge: especializacao cortada\n"); return 1; }
+        }
+    }
+    fclose(fs);
+    /* modelo base */
+    int64_t fsz = 0;
+    const uint8_t *buf = map_file(in, &fsz);
+    if (!buf) { fprintf(stderr, "merge: nao abriu %s\n", in); return 1; }
+    if (fsz != sfs) { fprintf(stderr, "merge: a especializacao foi treinada sobre outro modelo base (tamanho do arquivo nao confere)\n"); return 1; }
+    Rd r = { buf, buf + fsz };
+    if (rd_u32(&r) != 0x46554747u || rd_u32(&r) < 2) { fprintf(stderr, "merge: %s nao e GGUF\n", in); return 1; }
+    const uint64_t n_tensors = rd_u64(&r), n_kv = rd_u64(&r);
+    uint64_t align = 32;
+    const uint8_t *kv_start = r.p;
+    for (uint64_t i = 0; i < n_kv; i++) {
+        int kl; const char *k = rd_str(&r, &kl);
+        const uint32_t t = rd_u32(&r);
+        if (t != 8 && t != 9 && key_is(k, kl, "general.alignment")) align = (uint64_t)rd_num(&r, t);
+        else rd_skip(&r, t);
+    }
+    if (!align) align = 32;
+    const uint8_t *kv_end = r.p;
+    TInfo *ts = xalloc(n_tensors, sizeof(TInfo));
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        TInfo *t = &ts[i];
+        t->name = rd_str(&r, &t->namelen); t->ndims = rd_u32(&r);
+        if (t->ndims > 4) { fprintf(stderr, "merge: tensor com dimensoes demais\n"); return 1; }
+        for (uint32_t d = 0; d < t->ndims; d++) t->dims[d] = rd_u64(&r);
+        t->type = rd_u32(&r); t->offset = rd_u64(&r);
+    }
+    const uint64_t info_end = (uint64_t)(r.p - buf);
+    const uint8_t *in_data = buf + (info_end + align - 1) / align * align;
+    /* tipo de saida e tamanho de cada tensor */
+    int *touch = xalloc(n_tensors, sizeof(int));
+    uint32_t *otype = xalloc(n_tensors, 4);
+    uint64_t *off = xalloc(n_tensors, 8), data = 0;
+    int used = 0;
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        TInfo *t = &ts[i];
+        size_t n = 1; for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
+        for (int j = 0; j < ns; j++) {
+            const size_t ln = (size_t)t->namelen;
+            if ((strlen(sp[j].name) == ln && !memcmp(sp[j].name, t->name, ln)) ||
+                (strlen(sp[j].name) > ln + 2 && !memcmp(sp[j].name, t->name, ln) && !strncmp(sp[j].name + ln, ".e", 2))) { touch[i] = 1; break; }
+        }
+        uint32_t ot = t->type;
+        if (touch[i]) {
+            const int enc = ot == T_F32 || ot == T_F16 || ot == T_Q8_0 || ot == T_Q6_K || ot == T_Q5_K || ot == T_Q4_K || ot == T_Q2_K;
+            const uint64_t cols = t->dims[0];
+            if (!enc || (ot != T_F32 && ot != T_F16 && cols % (uint64_t)qunit(ot))) ot = cols % 32 == 0 ? T_Q8_0 : T_F16;
+        }
+        otype[i] = ot;
+        data = (data + align - 1) / align * align;
+        off[i] = data;
+        data += qbytes(ot, n);
+    }
+    /* grava: KV iguais, mais quem especializou; info com os novos tipos e deslocamentos; dados */
+    GBuf kv = {0}; uint64_t nkv = 0;
+    Rd r2 = { kv_start, kv_end };
+    for (uint64_t i = 0; i < n_kv; i++) {
+        int kl; const char *k = rd_str(&r2, &kl);
+        const uint32_t t = rd_u32(&r2);
+        const uint8_t *vs = r2.p; rd_skip(&r2, t);
+        if (key_is(k, kl, "katana.specialization")) continue;
+        gbuf_gstr(&kv, k, (uint64_t)kl); gbuf_u32(&kv, t); gbuf_bytes(&kv, vs, (size_t)(r2.p - vs)); nkv++;
+    }
+    {
+        const char *b = strrchr(spec, '/'); b = b ? b + 1 : spec;
+        gkv_str(&kv, "katana.specialization", b); nkv++;
+    }
+    GBuf tib = {0};
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        gbuf_gstr(&tib, ts[i].name, (uint64_t)ts[i].namelen); gbuf_u32(&tib, ts[i].ndims);
+        for (uint32_t d = 0; d < ts[i].ndims; d++) gbuf_u64(&tib, ts[i].dims[d]);
+        gbuf_u32(&tib, otype[i]); gbuf_u64(&tib, off[i]);
+    }
+    FILE *f = fopen(out, "wb");
+    if (!f) { fprintf(stderr, "merge: nao consegui gravar %s\n", out); return 1; }
+    uint8_t hdr[24];
+    const uint32_t magic = 0x46554747u, v3 = 3;
+    memcpy(hdr, &magic, 4); memcpy(hdr + 4, &v3, 4); memcpy(hdr + 8, &n_tensors, 8); memcpy(hdr + 16, &nkv, 8);
+    fwrite(hdr, 1, 24, f); fwrite(kv.p, 1, kv.n, f); fwrite(tib.p, 1, tib.n, f);
+    const uint64_t hpos = 24 + kv.n + tib.n, dstart = (hpos + align - 1) / align * align;
+    for (uint64_t p = hpos; p < dstart; p++) fputc(0, f);
+    uint64_t cur = 0;
+    for (uint64_t i = 0; i < n_tensors; i++) {
+        while (cur < off[i]) { fputc(0, f); cur++; }
+        TInfo *t = &ts[i];
+        size_t n = 1; for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
+        const uint8_t *src = in_data + t->offset;
+        const size_t ob = qbytes(otype[i], n);
+        if (!touch[i]) { fwrite(src, 1, ob, f); cur = off[i] + ob; continue; }
+        float *x = xalloc(n, 4);
+        dequant(t->type, src, x, n);
+        const size_t cols = (size_t)t->dims[0], ln = (size_t)t->namelen;
+        for (int j = 0; j < ns; j++) {
+            MSpec *p = &sp[j];
+            size_t row0 = 0;
+            if (strlen(p->name) == ln && !memcmp(p->name, t->name, ln)) row0 = 0;
+            else if (strlen(p->name) > ln + 2 && !memcmp(p->name, t->name, ln) && !strncmp(p->name + ln, ".e", 2)) {
+                char *end = NULL;
+                const size_t e = (size_t)strtoul(p->name + ln + 2, &end, 10);
+                /* gemma4: gate e up de cada especialista no mesmo tensor, gate nas linhas 2eH e up nas (2e+1)H */
+                if (end && !strcmp(end, ".gate")) row0 = 2 * e * (size_t)p->rows;
+                else if (end && !strcmp(end, ".up")) row0 = (2 * e + 1) * (size_t)p->rows;
+                else row0 = e * (size_t)p->rows;
+            } else continue;
+            if (p->rows == 1 && p->kind == 0 && p->cols == n && row0 == 0) { memcpy(x, p->w, n * 4); used++; continue; }   /* vetor (normas, convolucao...) */
+            if (p->cols != cols || row0 + p->rows > n / cols) { fprintf(stderr, "merge: %s nao confere com o tensor do modelo\n", p->name); return 1; }
+            float *w = x + row0 * cols;
+            if (p->kind == 0) memcpy(w, p->w, (size_t)(p->rows * p->cols) * 4);
+            else for (uint64_t rr = 0; rr < p->rows; rr++) for (int k = 0; k < p->rank; k++) {
+                const float bk = p->s * p->b[rr * p->rank + k];
+                if (bk == 0.0f) continue;
+                const float *ak = p->a + (size_t)k * p->cols;
+                for (uint64_t c2 = 0; c2 < p->cols; c2++) w[rr * cols + c2] += bk * ak[c2];
+            }
+            used++;
+        }
+        uint8_t *o = xalloc(ob, 1);
+        if (otype[i] == T_F32) memcpy(o, x, n * 4);
+        else if (otype[i] == T_F16) { uint16_t *h = (uint16_t *)o; for (size_t q = 0; q < n; q++) h[q] = _cvtss_sh(x[q], 0); }
+        else enc_block(otype[i], x, o, n);
+        fwrite(o, 1, ob, f);
+        free(o); free(x);
+        cur = off[i] + ob;
+    }
+    fclose(f);
+    int nt = 0; for (uint64_t i = 0; i < n_tensors; i++) nt += touch[i];
+    printf("merge: %s + %s -> %s (%d tensores alterados, %d partes da especializacao aplicadas)\n", in, spec, out, nt, used);
+    if (used != ns) printf("merge: aviso: %d partes da especializacao nao acharam tensor no modelo\n", ns - used);
+    return used == ns ? 0 : 1;
+}
+
 /* katana calibrar <modelo> [arquivo de texto]: passa textos variados (conversa em portugues e ingles, codigo, perguntas
    de ferramentas) token a token e grava como .heat a media do calor de cada especialista ao longo de todos os tokens.
    Assim a primeira sessao ja comeca com os especialistas mais usados nas vagas da VRAM (o .heat normal guarda so o
@@ -808,6 +973,14 @@ static int run_main(int argc, char **argv) {
         perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
+        {   /* nome do modelo na API: o arquivo sem pasta e sem .gguf */
+            const char *b = argv[2], *sl = strrchr(b, '/'), *bs = strrchr(b, '\\');
+            if (bs && (!sl || bs > sl)) sl = bs;
+            if (sl) b = sl + 1;
+            snprintf(g_srv_name, sizeof g_srv_name, "%s", b);
+            const size_t ln = strlen(g_srv_name);
+            if (ln > 5 && strcmp(g_srv_name + ln - 5, ".gguf") == 0) g_srv_name[ln - 5] = 0;
+        }
         return serve(&m, argc == 4 ? atoi(argv[3]) : 8080);
     }
     if (argc == 2 && strcmp(argv[1], "mcp") == 0) return mcp_cmd();
@@ -944,6 +1117,25 @@ static int run_main(int argc, char **argv) {
         }
         return quantize_cmd(in, out, type);
     }
+    if (argc >= 5 && strcmp(argv[1], "import") == 0) return import_main(argv[2], argc - 3, argv + 3);    /* conversas -> dados de treino */
+    if (argc == 5 && strcmp(argv[1], "merge") == 0) return merge_cmd(argv[2], argv[3], argv[4]);          /* GGUF novo com a especializacao */
+    if (argc >= 3 && strcmp(argv[1], "distill") == 0) return distill_main(argc - 2, argv + 2);         /* professor -> sessoes verificaveis */
+    if (argc >= 3 && strcmp(argv[1], "export") == 0) return export_main(argc - 2, argv + 2);           /* sessoes do agente -> dados de treino */
+    if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
+    if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
+        Model m; memset(&m, 0, sizeof m);
+        putenv_dup("KATANA_CPU=1");
+        load_model(&m, argv[2]);
+        return train_gradcheck(&m, argc > 3 ? atoi(argv[3]) : 12);
+    }
+    if (argc >= 4 && strcmp(argv[1], "train") == 0) {         /* especializacao: grava um .kspec */
+        Model m; memset(&m, 0, sizeof m);
+        putenv_dup("KATANA_CPU=1");
+        putenv_dup("KATANA_SPEC=");
+        load_model(&m, argv[2]);
+        print_info(&m);
+        return train_main(&m, argv[2], argc - 3, argv + 3);
+    }
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -1026,7 +1218,19 @@ static int run_main(int argc, char **argv) {
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
-        "  katana serve <modelo.gguf> [porta]   conversa no navegador em http://127.0.0.1:porta (padrao 8080; so conversa)\n"
+        "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
+        "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
+        "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"
+        "                                       conversas (mensagens ou ShareGPT) -> dados de treino no formato exato do modelo\n"
+        "  katana distill --url URL --model M [--format qwen|json|gemma4|glm] [--out f.jsonl] \"tarefa\"\n"
+        "  katana export <saida.jsonl> <sessoes.ksess ou pastas> [--bench resultados.jsonl]   sessoes do agente -> dados de treino\n"
+        "  katana learn <modelo.gguf> [--rounds N] [--repeat K] [--teacher URL --teacher-model M] [-- opcoes do train]\n"
+        "                                 aprende com o proprio uso: coleta no codebench, treina no que passou, prova e guarda o melhor\n"
+        "                                       um modelo professor (API no formato da OpenAI) resolve a tarefa com as ferramentas do katana\n"
+        "  katana merge <modelo.gguf> <espec.kspec> <saida.gguf>   GGUF novo com a especializacao dentro\n"
+        "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
+        "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
+        "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
         "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
         "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
