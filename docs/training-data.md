@@ -68,6 +68,30 @@ Reads one conversation per line, in the messages format (`role`/`content`, `tool
 - Where the data comes from matters: conversations of katana itself, or of open-weight models whose license allows
   it. Closed services usually forbid in their terms using their outputs to train other models.
 
+## A teacher model working through katana's tools (`katana distill`)
+
+```
+katana distill --url URL --model MODEL [--key-env TEACHER_API_KEY] [--format qwen|json|gemma4|glm]
+               [--max-steps 40] [--timeout 300] [--out distill.jsonl] [--task NAME] "task"
+python3 tools/codebench/run.py --teacher URL --teacher-model MODEL --distill-out runs/teacher.jsonl --out runs/t.jsonl
+katana import <student.gguf> runs/teacher.jsonl runs/train.jsonl --system keep
+```
+
+The teacher is any server with an OpenAI-compatible `/chat/completions` and function calling (an open-weight model
+such as Kimi, DeepSeek or GLM on an API, or a local server). It gets the agent's real system prompt and the agent's
+tool declarations (without `ask_user` and `remember`); every call it makes runs on this machine through the agent's
+own `agent_tool`, in the current folder. The request goes out through the system `curl`; the key is read from the
+environment variable named by `--key-env` and written to a header file only the owner can read, never on the command
+line. The user's saved memory is kept out of the prompt (an empty `HOME` while the prompt is built).
+
+The session is appended as one line in the messages format, with the system prompt the student agent sees
+(`--format`: the student's call syntax), the teacher's token usage and `"complete": false` if the API failed. With
+`run.py --teacher`, each codebench task runs in a fresh copy of its project and the hidden tests set `"passed"`.
+`katana import` skips sessions with `"passed": false` or `"complete": false`, so only verified work becomes data.
+
+Mind the terms of the API you call (open-weight licenses usually allow training on outputs; hosted APIs have their
+own terms; closed services usually forbid it). Every session costs teacher tokens.
+
 ## What a session file holds
 
 `.ksess` (written by `sess_save` in `src/agent/loop.c`): model fingerprint, expert heat, the compact conversation

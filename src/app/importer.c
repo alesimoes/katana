@@ -109,6 +109,8 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     if (*q != '{') { *why = "line is not a JSON object"; return 0; }
     const char *msgs = NULL; int sharegpt = 0;
     for (const char *p = q + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+        if (!strcmp(k, "passed") && !strncmp(v, "false", 5)) { *why = "the session did not pass its tests"; return 0; }   /* distill, codebench */
+        if (!strcmp(k, "complete") && !strncmp(v, "false", 5)) { *why = "the session was interrupted"; return 0; }
         if (!strcmp(k, "messages") && *v == '[') msgs = v;
         else if (!strcmp(k, "conversations") && *v == '[') { msgs = v; sharegpt = 1; }
     }
