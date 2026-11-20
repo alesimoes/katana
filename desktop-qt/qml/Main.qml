@@ -301,6 +301,67 @@ ApplicationWindow {
                 z: 8
             }
 
+            // AppImage, primeira abertura: pergunta uma vez se quer o atalho no menu e na area de trabalho
+            Rectangle {
+                objectName: "shortcutOffer"
+                visible: backend.shortcutOffer
+                z: 9
+                anchors.top: top.bottom
+                anchors.topMargin: 12
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(560, parent.width - 32)
+                height: scCol.height + 24
+                radius: 14
+                color: Theme.card
+                border.color: Theme.ac
+                Column {
+                    id: scCol
+                    x: 16; y: 12
+                    width: parent.width - 32
+                    spacing: 10
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Adicionar o Katana ao menu de aplicativos e à área de trabalho?"
+                        color: Theme.fg
+                        font.family: Theme.sans
+                        font.pixelSize: 14
+                        font.weight: Font.DemiBold
+                    }
+                    Row {
+                        spacing: 8
+                        Repeater {
+                            model: [{t: "Adicionar", yes: true}, {t: "Agora não", yes: false}]
+                            delegate: Rectangle {
+                                required property var modelData
+                                objectName: modelData.yes ? "shortcutYes" : "shortcutNo"
+                                width: scTxt.implicitWidth + 28
+                                height: 32
+                                radius: 10
+                                color: modelData.yes ? Theme.ac : (scMa.containsMouse ? Theme.hov : "transparent")
+                                border.color: Theme.bd
+                                Text {
+                                    id: scTxt
+                                    anchors.centerIn: parent
+                                    text: modelData.t
+                                    color: modelData.yes ? Theme.acfg : Theme.fg
+                                    font.family: Theme.sans
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                }
+                                MouseArea {
+                                    id: scMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: backend.answerShortcut(modelData.yes)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // esmaece o texto que passa por tras da caixa
             Rectangle {
                 anchors.left: parent.left
