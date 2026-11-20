@@ -134,7 +134,10 @@ print("export: %s" % ("ok" if ok else "FALHOU %s %s" % (c["train_spans"], p["tra
 sys.exit(0 if ok else 1)
 EOF
 # katana learn com o codebench de mentira
-$K learn "$D/agent.gguf" --bench tools/traintest/mock_bench --dir "$D/learn" --rounds 2 --repeat 2 -- --steps 30 --seq 256 >/dev/null 2>&1
+# as tarefas do codebench de mentira sao pastas vazias (o git nao guarda pasta vazia): montadas aqui
+mkdir -p "$D/bench"; cp tools/traintest/mock_bench/run.py "$D/bench/run.py"
+for t in t1 t2 t3 t4 t5 t6 t7 t8; do mkdir -p "$D/bench/tasks/$t"; done
+$K learn "$D/agent.gguf" --bench "$D/bench" --dir "$D/learn" --rounds 2 --repeat 2 -- --steps 30 --seq 256 >/dev/null 2>&1
 python3 - "$D/learn/learn.jsonl" <<'EOF' || fail=1
 import json, sys
 r = [json.loads(l) for l in open(sys.argv[1])]
