@@ -4,6 +4,34 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0q. Server on the network with an OpenAI-compatible API; training data from sessions (2026-11-20)
+
+Written from a cloud session without GPU or real models: everything below was checked with a tiny random-weight
+model (`tools/tinymodel/make_tiny_gguf.py`, 0.5 MB, llama architecture, ChatML), unit tests and AddressSanitizer.
+**Not yet run with Qwen3.6 or Gemma 4**: do that first (below).
+
+- *OpenAI API* (`src/app/openai.c`): `GET /v1/models`, `POST /v1/chat/completions` with and without streaming, stop
+  sequences (held back across token boundaries), `max_tokens`/`max_completion_tokens`, `temperature`, `top_p` (per
+  request, restored after), `seed`, `response_format` (the existing JSON grammar), text parts, `reasoning_content`
+  split at `</think>` for ChatML/GLM thinking models, usage. `tools`, images and `n` > 1 answer 400 with the reason.
+  Earlier assistant turns get an empty think block (`<think>\n\n</think>\n\n`) when the model reasons.
+- *Server* (`src/app/server.c`): one thread per connection (Linux; Windows stays serial), a FIFO ticket lock around
+  the model (`srv_lock`), at most 64 open connections (503 beyond), 60 s send timeout so a stalled client cannot hold
+  the queue. `KATANA_HOST` (default 127.0.0.1) and `KATANA_API_KEY` (required, 16+ characters, when not loopback);
+  remote peers need the Bearer key on every path but `/health`. `js_escape` now turns invalid UTF-8 into U+FFFD
+  (the JSON was invalid before when a model emitted broken bytes).
+- *Measured (tiny model only)*: `tools/servertest/oa_unit.c` (think split, stop across chunks, parser, prompt,
+  escape): all pass. `tools/servertest/test_server.py`: 8 of 8 on loopback and from another address with the key
+  (non-streaming = streaming text, stop, JSON mode, `/api/chat` unchanged, 4 parallel requests plus a client that
+  disconnects mid-stream). Network rules checked by hand (401/403/200 cases). ASan + UBSan build: no reports.
+- *To do next*: run `test_server.py` and a real client (Open WebUI or the `openai` Python package) against Qwen3.6
+  and Gemma 4; check `reasoning_content` with `KATANA_THINK=1`; Gemma 4 thinking (`<|channel>thought`) is not split
+  yet. Then native `tools` (map OpenAI tools to the model's own call format; the agent's `fmt_*` readers already
+  parse the calls), and true parallel generation (several sequences per forward pass) if one-at-a-time is not enough.
+- *Training data* (same day, see `docs/training-data.md`): `.ksess` gains a `KSX1` block (system prompt, exact
+  rendered text, message spans); `run.py --sessions DIR --repeat N`; `tools/dataset/ksess2jsonl.py`. The owner decided
+  the specialization must be katana's own training engine (no external LoRA tooling); design still to be written.
+
 ## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19)
 
 Goal set by the owner: a local AI tool a person downloads and runs. Decision of the owner on the same day: the
