@@ -29,6 +29,10 @@ files. Run one model at a time: the GPU and the memory are shared.
 
 `--mode code` runs `katana code` (the coding mode) instead of `katana agent`.
 
+`--sessions DIR` saves one agent session per run (`DIR/<task>.<attempt>.ksess`) and `--repeat N` runs every task N
+times; together they produce labelled training data (see `docs/training-data.md` and `tools/dataset/ksess2jsonl.py`).
+With `--repeat`, `compare` keeps only the last attempt of each task.
+
 Limits to keep in mind: 21 tasks is a small sample, so only large differences mean something (the sign test prints the
 p-value); the tasks are small and in one language; the agent can read the visible code and write its own tests, but
 never sees `hidden/`.

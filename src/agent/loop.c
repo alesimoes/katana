@@ -169,6 +169,43 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
 /* resumir com o modelo ao trocar de sessao custa minutos nos modelos grandes: so com KATANA_SESS_RESUMO=troca
    (padrao: resume so ao sair; na troca grava a versao barata) */
 static int sess_sum_switch(void) { const char *e = getenv("KATANA_SESS_RESUMO"); return e && strcmp(e, "troca") == 0; }
+/* bloco extra no fim do .ksess (versao 1), para gerar dados de treino a partir das sessoes (tools/dataset):
+   arquitetura, formato de chat, prompt de sistema, se o cache viu a conversa inteira (exact), o texto exato da
+   conversa inteira no formato do modelo e, por mensagem, papel e trecho [ini, fim) do conteudo nesse texto.
+   Quem le a sessao para retomar para antes deste bloco, entao arquivos antigos e novos continuam valendo. */
+#define SESS_EXT_MAGIC 0x3158534bU      /* "KSX1" */
+static void sess_wext(FILE *f, const Model *m, const char *sys, const AHist *hist, const AHist *full) {
+    const Config *c = &m->cfg;
+    int exact = hist->n == full->n;
+    for (int i = 0; exact && i < full->n; i++)
+        exact = hist->v[i].role == full->v[i].role && strcmp(hist->v[i].s, full->v[i].s) == 0;
+    Buf r = {0};
+    AHist pre = *full;
+    int32_t *off = xalloc((size_t)full->n * 2 + 1, sizeof(int32_t));
+    size_t prev = 0;                                    /* tamanho do texto com as mensagens anteriores */
+    pre.n = 0; ah_render(&pre, sys, &r); prev = r.n;
+    for (int i = 0; i < full->n; i++) {                 /* o conteudo da mensagem i e a primeira ocorrencia dele depois de prev */
+        pre.n = i + 1;
+        ah_render(&pre, sys, &r);
+        const char *s0 = r.p ? r.p : "";
+        const char *at = prev <= r.n ? strstr(s0 + prev, full->v[i].s) : NULL;
+        const int32_t len = (int32_t)strlen(full->v[i].s);
+        off[2 * i] = at ? (int32_t)(at - s0) : -1; off[2 * i + 1] = at ? off[2 * i] + len : -1;
+        prev = r.n;
+    }
+    pre.n = full->n;
+    ah_render(&pre, sys, &r);
+    const uint32_t mg = SESS_EXT_MAGIC;
+    const int32_t fmt = c->chat_fmt, ex = exact, n = full->n, think = g_ah_g4 ? g4_think() : 0;
+    fwrite(&mg, 4, 1, f);
+    sess_wstr(f, c->arch, strlen(c->arch));
+    fwrite(&fmt, 4, 1, f); fwrite(&think, 4, 1, f); fwrite(&ex, 4, 1, f);
+    sess_wstr(f, sys, strlen(sys));
+    sess_wstr(f, r.p ? r.p : "", r.n);
+    fwrite(&n, 4, 1, f);
+    for (int i = 0; i < full->n; i++) { fputc(full->v[i].role, f); fwrite(off + 2 * i, 4, 2, f); }
+    free(off); free(r.p);
+}
 /* grava a sessao em g_sess_path (se houver). full: conversa inteira; hist: o que esta no cache */
 static void sess_save(Model *m, const char *sys, const AHist *hist, const AHist *full, int allow_sum) {
     if (!g_sess_path[0] || !hist->n || !sys[0]) return;
@@ -193,6 +230,7 @@ static void sess_save(Model *m, const char *sys, const AHist *hist, const AHist 
         sess_wmsgs(f, &cp);
         fwrite(&ids.n, 4, 1, f); fwrite(ids.ids, sizeof(int), (size_t)ids.n, f);
         sess_wmsgs(f, full);
+        sess_wext(f, m, sys, hist, full);
         const int ok = !ferror(f);
         if (fclose(f) == 0 && ok) { remove(g_sess_path); if (rename(tmp, g_sess_path) != 0) remove(tmp); }
         else remove(tmp);
