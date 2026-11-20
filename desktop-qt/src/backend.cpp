@@ -729,13 +729,18 @@ void Backend::launch(const QString &modelFile)
         static const QStringList manter = {"KATANA_UI", "KATANA_THINK", "KATANA_CONFIRM", "KATANA_WEB", "KATANA_SEARX",
             "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
             "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
-            "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST"};
+            "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST",
+            "KATANA_TEACHER", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK"};
         for (const QString &k : env.keys())
             if (k.startsWith("KATANA_") && !k.startsWith("KATANA_MCP_") && !manter.contains(k))
                 env.remove(k);
     }
     env.insert("KATANA_UI", "1");
     env.insert("NO_COLOR", "1");
+    if (!env.contains("KATANA_TEACHER_MODEL"))
+        env.insert("KATANA_TEACHER_MODEL", teacherModel());
+    if (!env.contains("KATANA_TEACHER") && m_ui->value("professor", false).toBool() && hasTeacherKey())
+        env.insert("KATANA_TEACHER", "1");      // o professor estava ligado quando o aplicativo fechou
     if (!env.contains("KATANA_THINK"))
         env.insert("KATANA_THINK", "0");
     p->setProcessEnvironment(env);
@@ -878,6 +883,50 @@ void Backend::undo()
 {
     if (m_proc && m_ready)
         writeLine("/undo");
+}
+
+// ---- modo professor: a chave fica em ~/.katana/teacher.key (so do dono), nunca no ui.ini ----
+static QString teacherKeyPath() { return QDir::home().filePath(".katana/teacher.key"); }
+QString Backend::teacherModel() const { return m_ui->value("professorModelo", "claude-opus-5-5").toString(); }
+bool Backend::hasTeacherKey() const
+{
+    if (!qEnvironmentVariableIsEmpty("ANTHROPIC_API_KEY"))
+        return true;
+    QFile f(teacherKeyPath());
+    return f.open(QIODevice::ReadOnly) && !f.readAll().trimmed().isEmpty();
+}
+void Backend::clearTeacherKey()
+{
+    QFile::remove(teacherKeyPath());
+    if (m_teacher && m_proc && m_ready)
+        writeLine("/teacher off");
+}
+void Backend::setTeacher(const QString &key, const QString &model)
+{
+    const QString k = key.trimmed(), m = model.trimmed();
+    if (!k.isEmpty()) {
+        QDir::home().mkpath(".katana");
+        QFile f(teacherKeyPath());
+        f.remove();
+        if (f.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+            f.write(k.toUtf8() + "\n");
+            f.close();
+        }
+    }
+    if (!m.isEmpty())
+        m_ui->setValue("professorModelo", m);
+    emit teacherChanged();
+    if (hasTeacherKey() && m_proc && m_ready)
+        writeLine("/teacher " + teacherModel());        // liga com este modelo
+}
+void Backend::toggleTeacher()
+{
+    if (!m_proc || !m_ready)
+        return;
+    if (m_teacher) { writeLine("/teacher off"); return; }
+    if (!hasTeacherKey()) { emit teacherKeyNeeded(); return; }
+    writeLine("/teacher " + teacherModel());
 }
 
 void Backend::togglePlan()
@@ -1284,6 +1333,17 @@ void Backend::handleMarker(const QByteArray &line)
         emit planModeChanged();
         m_msgs.append("notice", m_planMode ? "Modo plano ligado: o agente só lê e propõe um plano; nada é alterado até você aprovar."
                                            : "Modo plano desligado.");
+    } else if (name == "TEACHER") {  // TEACHER 0|1 <modelo>
+        const bool on = args.trimmed().startsWith("1");
+        const QString model = args.trimmed().mid(2).trimmed();
+        if (on != m_teacher)
+            m_msgs.append("notice", on ? "Professor ligado: " + model + " responde no lugar do modelo local. A conversa e os resultados das ferramentas são enviados à API; as respostas dele ficam guardadas para treinar o modelo local."
+                                       : "Professor desligado: o modelo local volta a responder.");
+        m_teacher = on;
+        m_ui->setValue("professor", on);
+        emit teacherChanged();
+    } else if (name == "TEACHERR") {  // TEACHERR <codigo HTTP> <mensagem>: o professor nao respondeu
+        m_msgs.append("notice", "O professor não respondeu (" + args.trimmed() + "). Nada foi feito neste passo; mande de novo ou desligue o professor.");
     } else if (name == "UNDO") {  // UNDO <quantos>\t<arquivos>
         const int tab = args.indexOf('\t');
         const QString files = tab < 0 ? QString() : args.mid(tab + 1).trimmed();

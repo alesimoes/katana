@@ -19,7 +19,7 @@
 #endif
 
 /* ---- leitura de sessao ---- */
-typedef struct { char *text; size_t n; int exact; int nm; char *role; int32_t *off; char arch[64]; } KsxSess;
+typedef struct { char *text; size_t n; int exact; int nm; char *role; int32_t *off; char arch[64]; char *tch; int ntch; } KsxSess;
 
 static int ksx_rd(FILE *f, void *p, size_t n) { return fread(p, 1, n, f) == n; }
 static int ksx_skip_str(FILE *f) { int32_t l; return ksx_rd(f, &l, 4) && l >= 0 && l < (1 << 28) && fseek(f, l, SEEK_CUR) == 0; }
@@ -38,7 +38,17 @@ static int ksx_skip_msgs(FILE *f) {
     for (int i = 0; i < n; i++) { if (fgetc(f) == EOF || !ksx_skip_str(f)) return 0; }
     return 1;
 }
-static void ksx_free(KsxSess *s) { free(s->text); free(s->role); free(s->off); memset(s, 0, sizeof *s); }
+static void ksx_free(KsxSess *s) { free(s->text); free(s->role); free(s->off); free(s->tch); memset(s, 0, sizeof *s); }
+/* falas do professor nesta sessao (<sessao>.teacher: indice da mensagem por linha, gravado pelo modo professor) */
+static void ksx_teacher(const char *path, KsxSess *s) {
+    char p[4400]; snprintf(p, sizeof p, "%s.teacher", path);
+    FILE *f = fopen(p, "rb");
+    if (!f) return;
+    s->tch = xalloc((size_t)s->nm + 1, 1);
+    char line[512];
+    while (fgets(line, sizeof line, f)) { const int i = atoi(line); if (i >= 0 && i < s->nm && s->role[i] == 'a' && !s->tch[i]) { s->tch[i] = 1; s->ntch++; } }
+    fclose(f);
+}
 
 static int ksx_read(const char *path, KsxSess *s, const char **why) {
     memset(s, 0, sizeof *s);
@@ -90,12 +100,14 @@ static const char *ksx_eot(const char *text) {
 }
 
 /* uma sessao -> uma linha de dados; 0 se nao tem fala do modelo */
-static int ksx_line(const KsxSess *s, const char *source, FILE *out) {
+static int ksx_line(const KsxSess *s, const char *source, FILE *out, int only_teacher) {
     size_t n; size_t *map;
     char *t = ksx_clean(s->text, s->n, &n, &map);
     long *sp = xalloc((size_t)s->nm * 2 + 2, sizeof(long)); int ns = 0;
     for (int i = 0; i < s->nm; i++) {
         if (s->role[i] != 'a' || s->off[2 * i] < 0 || (size_t)s->off[2 * i + 1] > s->n) continue;
+        if (only_teacher && !(s->tch && s->tch[i])) continue;      /* so as falas do professor contam para a perda */
+        if (s->off[2 * i + 1] == s->off[2 * i]) continue;           /* fala vazia (interrompida) */
         const size_t a = map[s->off[2 * i]], b = map[s->off[2 * i + 1]];
         size_t end = b;
         int hit = 0;
@@ -151,16 +163,17 @@ static int ksx_bench(const char *path, char ***list) {
 
 /* katana export <saida.jsonl> <sessoes ou pastas...> [--bench resultados.jsonl] [--inexact] [--append] */
 static int export_main(int argc, char **argv) {
-    const char *outp = NULL, *bench = NULL; int inexact = 0, append = 0;
+    const char *outp = NULL, *bench = NULL; int inexact = 0, append = 0, teacher = 0;
     char **paths = NULL; int np = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench = argv[++i];
         else if (!strcmp(argv[i], "--inexact")) inexact = 1;
         else if (!strcmp(argv[i], "--append")) append = 1;
+        else if (!strcmp(argv[i], "--teacher")) teacher = 1;
         else if (!outp) outp = argv[i];
         else { paths = realloc(paths, sizeof(char *) * (size_t)(np + 1)); paths[np++] = strdup(argv[i]); }
     }
-    if (!outp || (!np && !bench)) { fprintf(stderr, "uso: katana export <saida.jsonl> <sessoes.ksess ou pastas...> [--bench resultados.jsonl] [--inexact] [--append]\n"); return 1; }
+    if (!outp || (!np && !bench)) { fprintf(stderr, "uso: katana export <saida.jsonl> <sessoes.ksess ou pastas...> [--bench resultados.jsonl] [--inexact] [--append] [--teacher]\n"); return 1; }
     if (bench) {                                       /* com --bench: so as que passaram (e, se houver caminhos, so as listadas) */
         char **ok = NULL; const int n = ksx_bench(bench, &ok);
         if (n < 0) { fprintf(stderr, "export: nao abriu %s\n", bench); return 1; }
@@ -200,8 +213,11 @@ static int export_main(int argc, char **argv) {
     for (int i = 0; i < np; i++) {
         KsxSess s; const char *why = NULL;
         if (!ksx_read(paths[i], &s, &why)) { fprintf(stderr, "export: %s: %s\n", paths[i], why); skipped++; free(paths[i]); continue; }
-        if (!s.exact && !inexact) { fprintf(stderr, "export: %s: the agent compacted its context in this session (use --inexact to keep it)\n", paths[i]); skipped++; }
-        else if (ksx_line(&s, paths[i], out)) wrote++;
+        if (teacher) ksx_teacher(paths[i], &s);
+        if (teacher && !s.ntch) skipped++;                 /* --teacher: so sessoes com falas do professor; ele viu a conversa inteira, compactada ou nao */
+        else if (teacher) { if (ksx_line(&s, paths[i], out, 1)) wrote++; else skipped++; }
+        else if (!s.exact && !inexact) { fprintf(stderr, "export: %s: the agent compacted its context in this session (use --inexact to keep it)\n", paths[i]); skipped++; }
+        else if (ksx_line(&s, paths[i], out, 0)) wrote++;
         else skipped++;
         ksx_free(&s); free(paths[i]);
     }

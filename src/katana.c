@@ -47,6 +47,7 @@
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
 #include "agent/context.c"             /* compactacao do contexto */
 #include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
+#include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
 #include "app/server.c"                /* servidor HTTP (pagina, /api/chat, rede, fila do modelo) */
 #include "app/openai.c"                /* API no formato da OpenAI (/v1/chat/completions, /v1/models) */

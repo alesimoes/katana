@@ -343,6 +343,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_web ? "on (KATANA_WEB=0 turns it off)" : "off");
     mcp_init(1);
     trust_init();
+    tch_init();
 #define AGENT_SYS() do { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); } while (0)
     if (g_resume_path[0] && !g_sess_path[0]) snprintf(g_sess_path, sizeof g_sess_path, "%s", g_resume_path);
     if (cml && !g_resume_path[0]) { AGENT_SYS(); pfx_warm(m, sys); }     /* motor aquecido antes da primeira mensagem */
@@ -408,6 +409,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             plan_ui();
             continue;
         }
+        if (tch_cmd(line)) continue;     /* /teacher: liga ou desliga o professor */
         int plan_go = 0;
         if (strcmp(line, "/go") == 0) {
             if (!g_plan_mode) { fprintf(stderr, "[/go: plan mode is not on]\n"); continue; }
@@ -499,8 +501,18 @@ static int agent(Model *m, int max_tokens, float temp) {
             prole = 0;
             const double t1 = now_sec();
             buf_clear(&reply);
-            const int gen = gen_console(m, lg, &pos, max_tokens, temp, go ? -1 : im_end, &reply);
-            const int cut = gen >= max_tokens || pos >= c->ctx - 2;     /* a resposta parou no limite (tokens ou contexto), nao porque o modelo terminou */
+            int gen = 0, tcut = 0;
+            if (g_teacher && cml) {       /* professor: a fala vem de fora, ja na sintaxe deste modelo, e entra no cache como se fosse dele */
+                if (teacher_turn(c, sys, &slog, g_sess_path, &reply, &tcut) && reply.n) {
+                    Ids ti = {0};
+                    encode(tk, reply.p, &ti);
+                    gen = ti.n;
+                    if (pos + ti.n + 8 < c->ctx) { if (ti.n) agent_feed(m, ti.ids, ti.n, pos); pos += ti.n; }
+                    else g_ctx_lost = 1;      /* nao coube: o proximo turno compacta e recalcula a partir do historico */
+                    free(ti.ids);
+                }
+            } else gen = gen_console(m, lg, &pos, max_tokens, temp, go ? -1 : im_end, &reply);
+            const int cut = tcut || gen >= max_tokens || pos >= c->ctx - 2;     /* a resposta parou no limite (tokens ou contexto), nao porque o modelo terminou */
             const double t2 = now_sec();
             g_busy = 0;
             printf("\n"); fflush(stdout);
