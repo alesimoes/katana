@@ -1,0 +1,111 @@
+{
+ "page": 4,
+ "items": [
+  {
+   "id": 46,
+   "sku": "SKU-046",
+   "category": "nuts",
+   "status": "in_stock",
+   "qty": 63
+  },
+  {
+   "id": 47,
+   "sku": "SKU-047",
+   "category": "screws",
+   "status": "backordered",
+   "qty": 34
+  },
+  {
+   "id": 48,
+   "sku": "SKU-048",
+   "category": "washers",
+   "status": "in_stock",
+   "qty": 19
+  },
+  {
+   "id": 49,
+   "sku": "SKU-049",
+   "category": "bolts",
+   "status": "in_stock",
+   "qty": 79
+  },
+  {
+   "id": 50,
+   "sku": "SKU-050",
+   "category": "screws",
+   "status": "in_stock",
+   "qty": 17
+  },
+  {
+   "id": 51,
+   "sku": "SKU-051",
+   "category": "screws",
+   "status": "in_stock",
+   "qty": 59
+  },
+  {
+   "id": 52,
+   "sku": "SKU-052",
+   "category": "screws",
+   "status": "discontinued",
+   "qty": 51
+  },
+  {
+   "id": 53,
+   "sku": "SKU-053",
+   "category": "bolts",
+   "status": "discontinued",
+   "qty": 14
+  },
+  {
+   "id": 54,
+   "sku": "SKU-054",
+   "category": "bolts",
+   "status": "discontinued",
+   "qty": 8
+  },
+  {
+   "id": 55,
+   "sku": "SKU-055",
+   "category": "nuts",
+   "status": "in_stock",
+   "qty": 27
+  },
+  {
+   "id": 56,
+   "sku": "SKU-056",
+   "category": "bolts",
+   "status": "backordered",
+   "qty": 15
+  },
+  {
+   "id": 57,
+   "sku": "SKU-057",
+   "category": "washers",
+   "status": "in_stock",
+   "qty": 14
+  },
+  {
+   "id": 58,
+   "sku": "SKU-058",
+   "category": "bolts",
+   "status": "backordered",
+   "qty": 69
+  },
+  {
+   "id": 59,
+   "sku": "SKU-059",
+   "category": "bolts",
+   "status": "in_stock",
+   "qty": 79
+  },
+  {
+   "id": 60,
+   "sku": "SKU-060",
+   "category": "bolts",
+   "status": "in_stock",
+   "qty": 27
+  }
+ ],
+ "next": null
+}

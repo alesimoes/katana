@@ -5,7 +5,7 @@ Each task (tasks/<name>/) has: instruction.md (what the user asks), repo/ (the s
 stub), hidden/ (tests the agent never sees) and solution/ (a reference fix, used only by --verify).
 
 Usage:
-  run.py --verify                                   check that every task fails before and passes after the reference fix
+  run.py --verify [--tasks a,b]                     check that every task fails before and passes after the reference fix
   run.py --model models/X.gguf --out a.jsonl        run the katana agent on every task, one fresh copy of repo/ each
          [--mode agent|code] [--tasks a,b] [--timeout 900] [--label NAME] [--katana ./katana] [--env KEY=VAL ...]
   run.py compare a.jsonl b.jsonl                    paired comparison (newly solved / lost, exact sign test)
@@ -13,7 +13,7 @@ Usage:
 The agent runs in a temporary copy of repo/ as its working folder and receives the instruction as its first message.
 Afterwards hidden/ tests are copied in and run with python3 -m unittest. Only the Python standard library is needed.
 """
-import argparse, json, math, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, importlib.util, json, math, os, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKS = os.path.join(HERE, "tasks")
@@ -32,12 +32,53 @@ def copy_tree(src, dst):
             shutil.copy2(os.path.join(root, f), os.path.join(dst, rel, f))
 
 
-def hidden_tests(work, name):
+def prepare(work, name):
+    """gancho opcional por tarefa: tasks/<name>/setup.py com setup(work) -> dict. Chaves (todas opcionais):
+    vars (texto que substitui {chave} no enunciado; tambem vai como CB_<CHAVE> para os testes e a solucao, nunca
+    para o agente), agent_env (variaveis de ambiente que o agente tambem recebe), stop (funcao de limpeza, ex.
+    parar o servidor local). Sem setup.py devolve um contexto vazio e nada muda."""
+    ctx = dict(vars={}, agent_env={}, stop=None)
+    path = os.path.join(TASKS, name, "setup.py")
+    if os.path.exists(path):
+        sys.path.insert(0, HERE)
+        spec = importlib.util.spec_from_file_location("cb_setup_" + name.replace("-", "_"), path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        ctx.update(mod.setup(work) or {})
+    return ctx
+
+
+def ctx_env(ctx, agent=False):
+    env = dict(os.environ)
+    env.update(ctx["agent_env"])
+    if not agent:
+        env.update({"CB_" + k.upper(): str(v) for k, v in ctx["vars"].items()})
+    return env
+
+
+def finish(ctx):
+    if ctx["stop"]:
+        ctx["stop"]()
+
+
+def apply_solution(work, name, ctx):
+    """solution/solve.sh (roda na pasta de trabalho, com o ambiente do contexto) ou, sem ele, copia solution/"""
+    sol = os.path.join(TASKS, name, "solution")
+    script = os.path.join(sol, "solve.sh")
+    if os.path.exists(script):
+        p = subprocess.run(["bash", script], cwd=work, env=ctx_env(ctx), capture_output=True, text=True, timeout=120)
+        if p.returncode != 0:
+            raise RuntimeError("solve.sh falhou: " + (p.stdout + p.stderr)[-400:])
+    else:
+        copy_tree(sol, work)
+
+
+def hidden_tests(work, name, ctx=None):
     """copy hidden tests into work and run them; returns (passed, output)"""
     copy_tree(os.path.join(TASKS, name, "hidden"), work)
     try:
         p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-p", "test_hidden*.py"], cwd=work,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=120, env=ctx_env(ctx) if ctx else None)
         return p.returncode == 0, (p.stdout + p.stderr)[-600:]
     except subprocess.TimeoutExpired:
         return False, "hidden tests timed out"
@@ -48,12 +89,23 @@ def verify(names):
     for n in names:
         w = tempfile.mkdtemp(prefix="cb_")
         copy_tree(os.path.join(TASKS, n, "repo"), w)
-        before, _ = hidden_tests(w, n)
+        ctx = prepare(w, n)
+        try:
+            leaked = [f for f in os.listdir(w) if f in ("solution", "hidden", "solve.sh", "setup.py", "site")]
+            before, _ = hidden_tests(w, n, ctx)
+        finally:
+            finish(ctx)
         w2 = tempfile.mkdtemp(prefix="cb_")
         copy_tree(os.path.join(TASKS, n, "repo"), w2)
-        copy_tree(os.path.join(TASKS, n, "solution"), w2)
-        after, out = hidden_tests(w2, n)
-        ok = (not before) and after
+        ctx = prepare(w2, n)
+        try:
+            apply_solution(w2, n, ctx)
+            after, out = hidden_tests(w2, n, ctx)
+        finally:
+            finish(ctx)
+        if leaked:
+            out = "solution/hidden material visible to the agent: %s\n" % leaked + out
+        ok = (not before) and after and not leaked
         print("%-14s before=%s after=%s %s" % (n, "pass" if before else "fail", "pass" if after else "fail",
                                               "ok" if ok else "BROKEN TASK\n" + out))
         bad += not ok
@@ -65,11 +117,14 @@ def verify(names):
 def run_task(a, name):
     work = tempfile.mkdtemp(prefix="cb_" + name + "_")
     copy_tree(os.path.join(TASKS, name, "repo"), work)
+    ctx = prepare(work, name)
     instr = " ".join(open(os.path.join(TASKS, name, "instruction.md")).read().split())
+    for k, v in ctx["vars"].items():
+        instr = instr.replace("{" + k + "}", str(v))
     msg = ("You are working in the current folder, a small project (python3 with the standard library and unittest, "
            "and the usual shell tools; there is no pytest). Task: " + instr + " Check your work by running it. "
            "When it is finished, answer with one short sentence.")
-    env = dict(os.environ)
+    env = ctx_env(ctx, agent=True)
     for kv in a.env or []:
         k, _, v = kv.partition("=")
         env[k] = v
@@ -84,7 +139,10 @@ def run_task(a, name):
         log = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
         log += "\n" + ((e.stderr or b"").decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or ""))
     secs = time.time() - t0
-    passed, out = hidden_tests(work, name)
+    try:
+        passed, out = hidden_tests(work, name, ctx)
+    finally:
+        finish(ctx)
     tool_calls = len(re.findall(r"\[ferramenta ", log))
     gen = sum(int(x) for x in re.findall(r"resposta: (\d+) tokens", log))
     rec = dict(label=a.label, task=name, passed=passed, seconds=round(secs, 1), tool_calls=tool_calls,
