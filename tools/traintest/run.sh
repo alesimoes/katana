@@ -16,6 +16,8 @@
 #  9. katana export (sessao real do agente com acentos e ideogramas: igual ao exportador em Python) e katana learn
 #     com um codebench de mentira (tools/traintest/mock_bench): coleta, filtro, treino, prova; a rodada 1 tem que ser
 #     aceita e a 2 nao
+# 10. modo professor do agente (/teacher) com uma API de mensagens de mentira: pedidos aceitos, sessao retomada com o
+#     professor ligado no meio, katana export --teacher
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 K=$(pwd)/katana
@@ -143,6 +145,29 @@ import json, sys
 r = [json.loads(l) for l in open(sys.argv[1])]
 ok = len(r) == 3 and r[1]["accepted"] and not r[2]["accepted"] and r[1]["data"] == 6 and r[2]["data"] == 12 and r[1]["train"]["steps"] == 30
 print("learn: %s" % ("ok (rodada 1 aceita, rodada 2 recusada, dados acumulados 6 -> 12)" if ok else "FALHOU %s" % r))
+sys.exit(0 if ok else 1)
+EOF
+# modo professor do agente: a API de mensagens de mentira (tools/traintest/mock_anthropic.py) recusa pedido fora das
+# regras; o professor grava um arquivo, confere e responde; depois a sessao e retomada com o professor ligado no
+# meio da conversa (historico refeito a partir da sessao) e o export --teacher marca so as falas dele
+python3 tools/traintest/mock_anthropic.py 8199 "$D/tch_req.jsonl" & TMOCK=$!
+sleep 1
+mkdir -p "$D/tw"
+TENV="HOME=$D/home KATANA_CPU=1 KATANA_MAXTOK=24 ANTHROPIC_API_KEY=sk-mock-key KATANA_TEACHER_URL=http://127.0.0.1:8199"
+(cd "$D/tw" && printf 'grave uma nota em nota.txt\n/exit\n' | env $TENV KATANA_TEACHER=1 $K agent "$D/agent.gguf" --sessao "$D/tch.ksess" >/dev/null 2>&1) || true
+(cd "$D/tw" && printf 'diga oi\n/teacher on\ngrave a nota de novo\n/exit\n' | env $TENV $K agent "$D/agent.gguf" --retomar "$D/tch.ksess" >/dev/null 2>&1) || true
+kill $TMOCK 2>/dev/null || true
+$K export "$D/tch.jsonl" "$D/tch.ksess" --teacher >/dev/null 2>&1 || true
+python3 - "$D/tch_req.jsonl" "$D/tch.jsonl" "$D/tw/nota.txt" <<'EOF' || fail=1
+import json, sys
+try:
+    reqs = [json.loads(l) for l in open(sys.argv[1])]
+    t = json.loads(open(sys.argv[2]).readline())
+    ok = len(reqs) == 6 and all(r["status"] == 200 for r in reqs) and len(t["train_spans"]) == 6 and open(sys.argv[3]).read().startswith("linha 1\n")
+    why = [(r["status"], r["why"]) for r in reqs if r["status"] != 200]
+except Exception as e:
+    ok, why = False, e
+print("professor: %s" % ("ok (6 pedidos aceitos, arquivo gravado, 6 falas do professor nos dados)" if ok else "FALHOU %s" % (why,)))
 sys.exit(0 if ok else 1)
 EOF
 # katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino

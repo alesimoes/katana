@@ -199,6 +199,22 @@ Item {
             Accessible.name: "Modo plano"
             onClicked: backend.togglePlan()
         }
+        AbstractButton {
+            id: tchBtn
+            objectName: "teacherButton"
+            implicitHeight: 22
+            implicitWidth: tchTxt.implicitWidth + 14
+            enabled: backend.ready
+            hoverEnabled: true
+            background: Rectangle { radius: 6; color: backend.teacher ? Theme.hov : tchBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: tchTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; color: backend.teacher ? Theme.fg : Theme.mut
+                text: backend.teacher ? "professor: " + backend.teacherModel : "professor" }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: "Com o professor ligado, um modelo maior (pela API) responde no lugar do modelo local, com as mesmas ferramentas.\nA conversa sai desta máquina; as respostas ficam guardadas para treinar o modelo local."
+            Accessible.name: "Modo professor"
+            onClicked: backend.toggleTeacher()
+        }
         Text { font.family: Theme.sans;
             Layout.fillWidth: true
             Layout.leftMargin: 8

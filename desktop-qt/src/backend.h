@@ -67,6 +67,8 @@ class Backend : public QObject
     Q_PROPERTY(QStringList choiceOptions READ choiceOptions NOTIFY choiceChanged)
     Q_PROPERTY(bool choicePending READ choicePending NOTIFY choiceChanged)
     Q_PROPERTY(QStringList todoSteps READ todoSteps NOTIFY todoChanged)   // lista de tarefas do agente: "[x] passo" ou "[ ] passo"
+    Q_PROPERTY(bool teacher READ teacher NOTIFY teacherChanged)           // modo professor: um modelo maior responde no lugar do local
+    Q_PROPERTY(QString teacherModel READ teacherModel NOTIFY teacherChanged)
     Q_PROPERTY(bool planMode READ planMode NOTIFY planModeChanged)        // modo plano: o agente so le ate o plano ser aprovado
     Q_PROPERTY(QVariantList catalog READ catalog NOTIFY catalogChanged)   // modelos que o aplicativo sabe baixar (katana catalog)
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY catalogChanged)    // memoria, placa, disco livre (katana hw)
@@ -166,6 +168,12 @@ public:
     QStringList todoSteps() const { return m_todo; }
     bool planMode() const { return m_planMode; }
     Q_INVOKABLE void undo();          // devolve os arquivos alterados pelo ultimo pedido (/undo)
+    bool teacher() const { return m_teacher; }
+    QString teacherModel() const;
+    Q_INVOKABLE void toggleTeacher();                      // liga ou desliga o professor (/teacher); sem chave, pede a chave
+    Q_INVOKABLE bool hasTeacherKey() const;                // ANTHROPIC_API_KEY ou ~/.katana/teacher.key
+    Q_INVOKABLE void setTeacher(const QString &key, const QString &model);   // grava a chave (vazia = mantem a atual) e o modelo, e liga
+    Q_INVOKABLE void clearTeacherKey();
     Q_INVOKABLE void togglePlan();    // liga ou desliga o modo plano (/plan)
     Q_INVOKABLE void approvePlan();   // aprova o plano e manda executar (/go)
     Q_INVOKABLE void answerAsk(bool yes);                 // resposta ao pedido de permissao do agente (confiar na pasta, gravar fora dela...)
@@ -217,6 +225,8 @@ signals:
     void choiceChanged();
     void todoChanged();
     void planModeChanged();
+    void teacherChanged();
+    void teacherKeyNeeded();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -300,5 +310,6 @@ private:
     bool m_choicePending = false;
     QStringList m_todo;           // passos da lista de tarefas do agente
     bool m_planMode = false;
+    bool m_teacher = false;
     void drainQueue();
 };

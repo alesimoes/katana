@@ -87,6 +87,49 @@ ApplicationWindow {
             }
         }
     }
+    Connections { target: backend; function onTeacherKeyNeeded() { tchDlg.open(); } }
+    Popup {
+        id: tchDlg
+        objectName: "teacherDialog"
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(460, win.width - 40)
+        padding: 18
+        onOpened: { tchModel.text = backend.teacherModel; tchKey.text = ""; tchKey.forceActiveFocus(); }
+        function save() { backend.setTeacher(tchKey.text, tchModel.text); tchKey.text = ""; close(); }
+        background: Rectangle { radius: 14; color: Theme.card; border.color: Theme.bd }
+        contentItem: Column {
+            spacing: 10
+            Text { font.family: Theme.sans; text: "Professor"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
+            Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
+                text: "Um modelo maior responde no lugar do modelo local, usando as mesmas ferramentas nesta máquina. A conversa, o prompt do agente e os resultados das ferramentas são enviados à API da Anthropic. A chave fica em ~/.katana/teacher.key, legível só por você." }
+            TextField {
+                id: tchKey
+                objectName: "teacherKey"
+                width: parent.width
+                echoMode: TextInput.Password
+                placeholderText: backend.hasTeacherKey() ? "Chave da API (em branco mantém a atual)" : "Chave da API"
+                color: Theme.fg
+                Accessible.name: "Chave da API do professor"
+                onAccepted: tchDlg.save()
+            }
+            TextField {
+                id: tchModel
+                objectName: "teacherModel"
+                width: parent.width
+                placeholderText: "Modelo (claude-opus-5-5)"
+                color: Theme.fg
+                Accessible.name: "Modelo do professor"
+                onAccepted: tchDlg.save()
+            }
+            Row {
+                spacing: 8
+                anchors.right: parent.right
+                Button { text: "Cancelar"; onClicked: tchDlg.close() }
+                Button { objectName: "teacherSave"; text: "Salvar e ligar"; highlighted: true; onClicked: tchDlg.save() }
+            }
+        }
+    }
     Popup {
         id: pwDlg
         objectName: "passwordDialog"
@@ -239,6 +282,19 @@ ApplicationWindow {
                                         border.width: awk.visualFocus ? 2 : 0; border.color: Theme.foc }
                                     contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
                                         text: (awk.on ? "☑  " : "☐  ") + "Não bloquear enquanto trabalha"; color: Theme.fg; font.pixelSize: 13 }
+                                }
+                                Text { font.family: Theme.sans; text: "PROFESSOR"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                AbstractButton {
+                                    id: tchCfg
+                                    objectName: "teacherConfig"
+                                    width: apMenu.width - 16; height: 32
+                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Chave e modelo do professor"
+                                    onClicked: { apMenu.close(); tchDlg.open(); }
+                                    background: Rectangle { radius: 8; color: tchCfg.hovered ? Theme.hov : "transparent"
+                                        border.width: tchCfg.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                                        text: "Chave e modelo…  (" + backend.teacherModel + ")"; color: Theme.fg; font.pixelSize: 13 }
                                 }
                                 Text { font.family: Theme.sans; text: "PASTA DE TRABALHO"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 // pasta onde o agente trabalha: clique para escolher outra (o agente pergunta se confia nela)

@@ -4,6 +4,39 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+## 0s. Teacher mode in the agent and the desktop (2026-11-20)
+
+Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its
+answers become training data for the local model.
+
+- *Engine* (`src/agent/teacher.c`): with the teacher on (`/teacher on|off|status|<model>`, `/professor`, or
+  `KATANA_TEACHER=1`), each agent turn comes from the Anthropic Messages API (`POST /v1/messages`, system curl)
+  instead of local generation. The answer is rewritten in the local model's own syntax (reasoning block from the
+  thinking summary, text, tool calls through `im_call`) and enters the history and the KV cache as if the local model
+  had written it; tools run here through the usual dispatch. The message list is rebuilt from the whole session on
+  every request, so the teacher can be switched on in the middle of a conversation (it sees the local model's earlier
+  attempts) and switched off again (the local model continues from there). Answers of the current run are sent back
+  verbatim (signed thinking blocks unchanged); after a restart they are rebuilt without the thinking blocks.
+- Key: `ANTHROPIC_API_KEY` or `~/.katana/teacher.key` (owner only); sent through a 0600 header file. Defaults:
+  `KATANA_TEACHER_MODEL=claude-opus-5-5`, `KATANA_TEACHER_EFFORT=high`, `KATANA_TEACHER_URL`, refusal fallback on
+  (`KATANA_TEACHER_FALLBACK=0` turns it off). What leaves the machine: the agent's system prompt (with saved memory
+  and folder map), the conversation and the tool results.
+- *Training data*: every teacher answer is noted in `<session>.ksess.teacher` (message index);
+  `katana export out.jsonl <sessions> --teacher` writes only sessions with teacher answers and puts the loss only on
+  them (compacted sessions included: the teacher saw the whole conversation). Then `katana train`.
+- *Desktop*: "professor" button beside "plano" (marker `TEACHER 0|1 model`, error marker `TEACHERR`), key and model
+  dialog (also in the settings popup); the state is remembered between runs.
+- *Measured*: only against a stand-in API (`tools/traintest/mock_anthropic.py`, which rejects requests the real API
+  would reject: roles, tool_use/tool_result pairing, changed thinking blocks, sampling parameters). Tiny model: 6
+  requests accepted over a session, a resume and a mid-conversation switch; step 10 of `tools/traintest/run.sh`.
+  Qwen-AgentWorld on the GPU, one run: 3 teacher turns, then the local model answered a follow-up from the same
+  context. Each teacher round also feeds the local model (about 13 tok/s for these short pieces in that run).
+  **Not run against the real API** (no key on the machine when it was written), and the desktop button was not
+  clicked: the app was only started offscreen (no QML errors); the desktop selftest was not run.
+- *Not done*: turning the Claude Code session transcripts of this repository into training data (tool names differ;
+  needs a converter to the messages format for `katana import`); `katana train` on a real 35B model is still
+  unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
+
 ## 0r. katana's own training engine: `katana train`, `katana gradcheck`, `.kspec` (2026-11-20)
 
 Owner's decision: specialization is katana's own, no external tool or package (techniques such as low-rank adapters
