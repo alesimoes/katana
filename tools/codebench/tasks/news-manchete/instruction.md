@@ -1,0 +1,1 @@
+Encontre uma notícia publicada hoje ou ontem em um site de notícias brasileiro. Abra a página da notícia para confirmar. Escreva em answer.txt na pasta atual exatamente duas linhas: na primeira o título da notícia, na segunda o endereço (URL) da página da notícia.

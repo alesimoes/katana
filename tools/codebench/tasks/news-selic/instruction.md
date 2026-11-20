@@ -1,0 +1,1 @@
+Qual é hoje a taxa Selic (a meta definida pelo Banco Central do Brasil), em porcentagem ao ano? Pesquise na internet o valor em vigor. Escreva só o número em answer.txt na pasta atual, por exemplo 9,25.
