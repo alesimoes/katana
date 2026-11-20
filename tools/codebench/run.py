@@ -117,7 +117,13 @@ def verify(names):
 def run_task(a, name):
     work = tempfile.mkdtemp(prefix="cb_" + name + "_")
     copy_tree(os.path.join(TASKS, name, "repo"), work)
-    ctx = prepare(work, name)
+    try:
+        ctx = prepare(work, name)
+    except Exception as e:                     # ex.: tarefa de noticias sem internet: conta como nao rodada
+        shutil.rmtree(work, ignore_errors=True)
+        print("  %s: preparo falhou (%s)" % (name, str(e)[:120]), file=sys.stderr)
+        return dict(label=a.label, task=name, passed=False, seconds=0.0, tool_calls=0, gen_tokens=0, timed_out=False,
+                    skipped=True)
     instr = " ".join(open(os.path.join(TASKS, name, "instruction.md")).read().split())
     for k, v in ctx["vars"].items():
         instr = instr.replace("{" + k + "}", str(v))

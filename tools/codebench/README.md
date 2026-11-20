@@ -63,6 +63,25 @@ The agent's `web_fetch` tool (`src/agent/web.c`, `webnav.c`) only checks that th
 `curl`; it has no block list for loopback or private addresses, so 127.0.0.1 is reachable (unless `http_proxy` is set in the
 environment without `NO_PROXY=127.0.0.1`, which would send curl through the proxy).
 
+## News tasks (`news-*`)
+
+Nine questions about things that change over time, asked in Portuguese, which the model cannot answer from memory
+and has to look up on the real internet with `web_search` and `web_fetch`. They need a working connection. The
+right answer is not stored in the task: `setup.py` fetches it from a public source just before the agent runs and
+hands it to the hidden test (never to the agent), so the tasks do not go stale.
+
+| task | question | where the right answer comes from |
+|---|---|---|
+| `news-presidente-br`, `news-presidente-eua`, `news-premie-uk`, `news-papa` | who holds the office today | Wikidata (current holder, with aliases) |
+| `news-dolar` | US dollar in reais today (3% tolerance) | a public exchange-rate API |
+| `news-selic` | current Selic target rate | Banco Central do Brasil API |
+| `news-python`, `news-kernel` | latest stable version (the series must match) | endoflife.date, kernel.org |
+| `news-manchete` | a news story from today or yesterday, title and URL | the test opens the URL: the title must be on the page and the page must carry a date from the last three days |
+
+Limits: the sources can lag behind an event by hours or days (a new office holder, for instance), `news-manchete`
+checks that the story exists and is recent, not that it is important, and a task whose source cannot be reached
+is recorded as `skipped` instead of stopping the run.
+
 ## Per-task hooks (setup, solution scripts)
 
 All optional, so the original tasks work unchanged.
