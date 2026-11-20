@@ -1,6 +1,7 @@
 import QtQuick
 import Katana
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 ApplicationWindow {
@@ -197,7 +198,7 @@ ApplicationWindow {
                         id: gearBtn
                         objectName: "appearanceButton"
                         glyph: "gear"
-                        tip: "Aparência"
+                        tip: "Configurações"
                         onClicked: apMenu.opened ? apMenu.close() : apMenu.open()
                         Popup {
                             id: apMenu
@@ -239,6 +240,26 @@ ApplicationWindow {
                                     contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
                                         text: (awk.on ? "☑  " : "☐  ") + "Não bloquear enquanto trabalha"; color: Theme.fg; font.pixelSize: 13 }
                                 }
+                                Text { font.family: Theme.sans; text: "PASTA DE TRABALHO"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                // pasta onde o agente trabalha: clique para escolher outra (o agente pergunta se confia nela)
+                                AbstractButton {
+                                    id: wsBtn
+                                    objectName: "workspaceButton"
+                                    width: apMenu.width - 16; height: 32
+                                    enabled: backend.ready || !backend.running
+                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                    readonly property string folder: { var p = backend.workspace || ""; var i = p.lastIndexOf("/"); return i >= 0 && i < p.length - 1 ? p.slice(i + 1) : p; }
+                                    Accessible.name: "Pasta de trabalho"
+                                    onClicked: { apMenu.close(); folderDlg.open(); }
+                                    background: Rectangle { radius: 8; color: wsBtn.hovered ? Theme.hov : "transparent"
+                                        border.width: wsBtn.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter; elide: Text.ElideMiddle
+                                        text: wsBtn.folder + (backend.workspaceTrusted ? "" : "  (sem confiança)")
+                                        color: backend.workspaceTrusted ? Theme.fg : Theme.err; font.pixelSize: 13 }
+                                    ToolTip.visible: hovered
+                                    ToolTip.delay: 400
+                                    ToolTip.text: (backend.workspace || "") + "\nClique para trocar a pasta."
+                                }
                                 Text { font.family: Theme.sans; text: "FONTE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Repeater {
                                     model: [["jetbrains", "JetBrains Mono"], ["plex", "IBM Plex"]]
@@ -258,6 +279,12 @@ ApplicationWindow {
                                 }
                             }
                         }
+                    }
+                    FolderDialog {
+                        id: folderDlg
+                        title: "Escolha a pasta de trabalho do agente"
+                        currentFolder: "file://" + backend.workspace
+                        onAccepted: backend.setWorkspace(selectedFolder.toString())
                     }
                     IconButton { objectName: "winMin"; glyph: "minimize"; tip: "Minimizar"; onClicked: win.showMinimized() }
                     IconButton { objectName: "winMax"; glyph: win.maxed ? "restore" : "maximize"; tip: win.maxed ? "Restaurar" : "Maximizar"

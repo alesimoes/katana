@@ -9,7 +9,7 @@ Item {
     id: comp
     property alias input: ta
     readonly property real boxHeight: box.height
-    implicitHeight: box.height + meta.height + 12
+    implicitHeight: box.height + meta.height + 12 + (sys.visible ? sys.height + 2 : 0)
     width: parent ? parent.width : 400
     height: implicitHeight
 
@@ -86,8 +86,8 @@ Item {
         x: (comp.width - width) / 2
         y: 0
         width: comp.cw
-        // cresce com o conteudo: minimo ~2 linhas, maximo ~10 linhas (depois rola)
-        height: Math.max(76, fl.height + 24 + 38)
+        // cresce com o conteudo: minimo ~4 linhas, maximo ~14 linhas (depois rola)
+        height: Math.max(116, fl.height + 24 + 38)
         radius: 22
         color: Theme.card
         border.color: ta.activeFocus ? Theme.mut : Theme.bd
@@ -98,7 +98,7 @@ Item {
             x: 20
             y: 12
             width: parent.width - 20 - 20
-            height: Math.min(ta.implicitHeight, 240)
+            height: Math.min(ta.implicitHeight, 330)
             contentWidth: width
             contentHeight: ta.implicitHeight
             clip: true
@@ -174,27 +174,15 @@ Item {
             maxWidth: Math.max(120, box.width * 0.45)
             compact: true
         }
-        // pasta de trabalho do agente: mostra o nome da pasta; clique para escolher outra (o agente pergunta se confia nela)
-        AbstractButton {
-            id: wsBtn
-            objectName: "workspaceButton"
-            Layout.leftMargin: 2
-            implicitHeight: 22
-            implicitWidth: Math.min(wsTxt.implicitWidth + 14, 190)
-            enabled: backend.ready || !backend.running
-            hoverEnabled: true
-            readonly property string folder: { var p = backend.workspace || ""; var i = p.lastIndexOf("/"); return i >= 0 && i < p.length - 1 ? p.slice(i + 1) : p; }
-            background: Rectangle { radius: 6; color: wsBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: wsTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; elide: Text.ElideRight
-                color: backend.workspaceTrusted ? Theme.mut : Theme.err
-                text: (backend.workspaceTrusted ? "pasta: " : "sem confiança: ") + wsBtn.folder }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: (backend.workspace || "") + (backend.workspaceTrusted ? "\n(pasta confiável: clique para trocar)" : "\n(sem confiança: toda ação pergunta antes; clique para trocar)")
-            Accessible.name: "Pasta de trabalho"
-            onClicked: folderDlg.open()
+        // pasta sem confianca: aviso aqui (a escolha da pasta fica nas configuracoes)
+        Text {
+            objectName: "workspaceWarn"
+            visible: !backend.workspaceTrusted
+            Layout.leftMargin: 6
+            font.family: Theme.sans; font.pixelSize: 12; color: Theme.err
+            text: "pasta sem confiança"
         }
-        // modo plano e desfazer: acoes do agente ao lado da pasta
+        // modo plano
         AbstractButton {
             id: planBtn
             objectName: "planButton"
@@ -210,27 +198,6 @@ Item {
             ToolTip.text: "No modo plano o agente só lê e propõe um plano; nada é alterado até você aprovar."
             Accessible.name: "Modo plano"
             onClicked: backend.togglePlan()
-        }
-        AbstractButton {
-            id: undoBtn
-            objectName: "undoButton"
-            implicitHeight: 22
-            implicitWidth: undoTxt.implicitWidth + 14
-            enabled: backend.ready
-            hoverEnabled: true
-            background: Rectangle { radius: 6; color: undoBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: undoTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; color: Theme.mut; text: "desfazer" }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: "Devolve os arquivos que o agente alterou no último pedido ao estado anterior.\nNão cobre o que um comando do terminal alterou."
-            Accessible.name: "Desfazer alterações do agente"
-            onClicked: backend.undo()
-        }
-        FolderDialog {
-            id: folderDlg
-            title: "Escolha a pasta de trabalho do agente"
-            currentFolder: "file://" + backend.workspace
-            onAccepted: backend.setWorkspace(selectedFolder.toString())
         }
         Text { font.family: Theme.sans;
             Layout.fillWidth: true
@@ -258,5 +225,22 @@ Item {
             used: backend.ctxUsed
             total: backend.ctxTotal
         }
+    }
+    // uso da maquina: processador, memoria e placa de video
+    Text {
+        id: sys
+        objectName: "sysStats"
+        visible: text.length > 0
+        x: box.x
+        y: meta.y + meta.height + 2
+        width: box.width
+        height: 16
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
+        font.family: Theme.sans
+        font.pixelSize: 11
+        color: Theme.mut
+        text: backend.sysText
     }
 }

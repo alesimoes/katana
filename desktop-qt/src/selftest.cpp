@@ -243,7 +243,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         c.grab("10-caixa-multilinha.png");
         in->setProperty("text", "x\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx\nx");
         QTest::qWait(150);
-        check(fl->height() <= 241, "caixa para de crescer no limite");
+        check(fl->height() <= 331, "caixa para de crescer no limite");
         c.grab("11-caixa-limite.png");
     }
     c.item("composerInput")->setProperty("text", "");
