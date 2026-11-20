@@ -195,8 +195,10 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     QTest::qWait(300);
     check(be.loading(), "estado carregando apos start()");
     check(!c.item("composerInput")->property("enabled").toBool(), "composer desabilitado durante o carregamento");
-    check(c.item("composerInput")->property("placeholderText").toString() == "Carregando o modelo...",
-          "placeholder 'Carregando o modelo...'");
+    {   // com o modelo ja em cache o carregamento passa rapido para o preparo: os dois textos valem
+        const QString ph = c.item("composerInput")->property("placeholderText").toString();
+        check(ph == "Carregando o modelo..." || ph.startsWith("Preparando"), "placeholder de carregamento ou de preparo");
+    }
     check(waitFor([&] { return be.ready(); }, 240000), "agente pronto (READY)");
     check(c.item("composerInput")->property("enabled").toBool(), "composer habilitado quando pronto");
     c.grab("01-inicial.png");

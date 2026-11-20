@@ -185,7 +185,7 @@ Item {
             hoverEnabled: true
             readonly property string folder: { var p = backend.workspace || ""; var i = p.lastIndexOf("/"); return i >= 0 && i < p.length - 1 ? p.slice(i + 1) : p; }
             background: Rectangle { radius: 6; color: wsBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: wsTxt; font.family: Theme.sans; font.pixelSize: 12; elide: Text.ElideRight
+            contentItem: Text { id: wsTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; elide: Text.ElideRight
                 color: backend.workspaceTrusted ? Theme.mut : Theme.err
                 text: (backend.workspaceTrusted ? "pasta: " : "sem confiança: ") + wsBtn.folder }
             ToolTip.visible: hovered
@@ -203,7 +203,7 @@ Item {
             enabled: backend.ready
             hoverEnabled: true
             background: Rectangle { radius: 6; color: backend.planMode ? Theme.hov : planBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: planTxt; font.family: Theme.sans; font.pixelSize: 12; color: backend.planMode ? Theme.fg : Theme.mut
+            contentItem: Text { id: planTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; color: backend.planMode ? Theme.fg : Theme.mut
                 text: backend.planMode ? "plano: ligado" : "plano" }
             ToolTip.visible: hovered
             ToolTip.delay: 400
@@ -219,7 +219,7 @@ Item {
             enabled: backend.ready
             hoverEnabled: true
             background: Rectangle { radius: 6; color: undoBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: undoTxt; font.family: Theme.sans; font.pixelSize: 12; color: Theme.mut; text: "desfazer" }
+            contentItem: Text { id: undoTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; color: Theme.mut; text: "desfazer" }
             ToolTip.visible: hovered
             ToolTip.delay: 400
             ToolTip.text: "Devolve os arquivos que o agente alterou no último pedido ao estado anterior.\nNão cobre o que um comando do terminal alterou."
@@ -239,7 +239,7 @@ Item {
             font.pixelSize: 12
             color: backend.errorText ? Theme.err : Theme.mut
             text: backend.errorText ? backend.errorText
-                  : backend.statusText ? backend.statusText
+                  : backend.statusText && !/^(Preparando|Retomando|Carregando)/.test(backend.statusText) ? backend.statusText
                   : ta.text.indexOf("\n") >= 0 ? "As quebras de linha serão enviadas como espaço."
                   : ""
             Accessible.role: Accessible.StaticText
