@@ -33,6 +33,8 @@ for t in 0 1 2 3 4 5; do
   wait
 done
 $G -V --target-env vulkan1.3 --vn cvt_spv -o cvt.h cvt.comp || exit 1
+# treino (katana train): produto em float32 com pesos lidos direto do GGUF; MODE e WT sao constantes de especializacao
+$G -V --target-env vulkan1.2 --vn tmm_spv -o tmm.h tmm.comp || exit 1
 $G -V --target-env vulkan1.2 --vn rms_wg16_spv -o rms_wg16.h rms_wg16.comp || exit 1
 $G -V --target-env vulkan1.2 -DOF32 --vn rms_wg32_spv -o rms_wg32.h rms_wg16.comp || exit 1
 $G -V --target-env vulkan1.2 --vn gather_spv -o gather.h gather.comp || exit 1

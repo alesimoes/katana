@@ -24,6 +24,9 @@ typedef struct {
     /* adaptador de posto r: W' = W + s * B A (A [r][cols], B [rows][r]); W continua congelado e quantizado */
     int r; float s;
     float *a, *b, *ga, *gb, *ma1, *ma2, *mb1, *mb2;
+    /* copia na VRAM (treino na GPU): estado (0 nao vista, 1 residente, -1 enviada a cada produto), arena, posicao,
+       versao do mestre em float e de onde veio */
+    int gstat, gar; size_t goff; uint64_t gver; const void *gsrc;
 } TPar;
 
 typedef struct {
@@ -212,6 +215,193 @@ static size_t tt_select_r(TTab *t, const char *pats, int rank, float alpha) {
     return tot;
 }
 
+/* ---- treino na GPU (Vulkan) ----
+ * Os tres produtos com peso vao para a GPU pelo vk/shaders/tmm.comp: forward Y = X W^T, transposto dX = dY W e
+ * gradiente G = dY^T X. Atencao, normas, DeltaNet e roteamento seguem na CPU. Os pesos congelados sobem para a VRAM
+ * uma vez, no formato do GGUF (sem reempacotar), enquanto couberem; os que nao cabem sobem a cada produto, em fatias.
+ * Os mestres em float dos tensores treinados sobem de novo depois de cada passo do otimizador (tg.ver).
+ * KATANA_TRAIN_GPU=0 desliga; KATANA_TRAIN_VRAM=<GB> limita os pesos residentes; KATANA_TRAIN_GPU_MIN=<n>
+ * multiplicacoes minimas por produto para usar a GPU (padrao 4M; 0 = todos, para testar). */
+#include "vk/shaders/tmm.h"
+#ifdef KATANA_TG_EMU
+#include "tools/traintest/tg_emu.h"
+#endif
+typedef struct {
+    int on, tried;
+    KvkPipe pipe[3][7];
+    KvkBuf x, y, o, ws;            /* entrada, dY do gradiente, saida, fatia de peso enviada na hora */
+    KvkBuf ar[64]; size_t ar_used[64]; int nar;     /* arenas dos pesos residentes */
+    size_t ar_size, budget, resident, chunk;
+    uint64_t ver;                  /* versao dos mestres em float */
+    double min_mac, t_gpu;
+    long calls, streamed;
+    float *hbuf; size_t hcap;      /* rascunho no host: fatias empacotadas e resultados */
+} TGpu;
+static TGpu tg;
+
+static int tg_wt(const TPar *p) {          /* tipo do peso no shader; -1 = a GPU nao le este formato */
+    if (p->w || p->mat->f) return 0;
+    switch (p->mat->type) {
+        case T_F32: return 0; case T_F16: return 1; case T_Q8_0: return 2; case T_Q4_K: return 3;
+        case T_Q5_K: return 4; case T_Q6_K: return 5; case T_BF16: return 6; default: return -1;
+    }
+}
+static size_t tg_stride(const TPar *p) { return p->w || p->mat->f ? p->cols * 4 : p->mat->stride; }
+static const uint8_t *tg_src(const TPar *p) { return p->w ? (const uint8_t *)p->w : p->mat->f ? (const uint8_t *)p->mat->f : p->mat->q; }
+static float *tg_host(size_t n) {
+    if (tg.hcap < n) { free(tg.hbuf); tg.hbuf = xalloc(n, 4); tg.hcap = n; }
+    return tg.hbuf;
+}
+
+static int tg_init(void) {
+    if (tg.tried) return tg.on;
+    tg.tried = 1;
+    const char *e = getenv("KATANA_TRAIN_GPU");
+    if (e && !strcmp(e, "0")) return 0;
+    KvkInfo I;
+    if (!kvk_init(&I)) { fprintf(stderr, "treino: sem GPU Vulkan (%s); produtos na CPU\n", kvk_error()); return 0; }
+    for (int m = 0; m < 3; m++) for (int t = 0; t < 7; t++) {
+        if (m == 2 && t) continue;
+        const uint32_t ids[2] = { 0, 1 }, vals[2] = { (uint32_t)m, (uint32_t)t };
+        tg.pipe[m][t] = kvk_pipe_create(tmm_spv, sizeof tmm_spv, 3, 20, ids, vals, 2);
+        if (!tg.pipe[m][t].p) { fprintf(stderr, "treino: shader da GPU falhou (%s); produtos na CPU\n", kvk_error()); kvk_shutdown(); return 0; }
+    }
+    size_t lim = (size_t)(I.max_storage_range ? I.max_storage_range : (1u << 27));
+    if (I.max_alloc && I.max_alloc < lim) lim = (size_t)I.max_alloc;
+    tg.chunk = (size_t)128 << 20;
+    if (getenv("KATANA_TRAIN_GPU_CHUNK")) tg.chunk = (size_t)(atof(getenv("KATANA_TRAIN_GPU_CHUNK")) * 1048576.0) & ~(size_t)255;   /* MB por rascunho */
+    if (tg.chunk > lim) tg.chunk = lim;
+    if (tg.chunk < 4096) tg.chunk = 4096;
+    tg.ar_size = (size_t)1 << 30; if (tg.ar_size > lim) tg.ar_size = lim & ~(size_t)255;
+    tg.x = kvk_buf_create(tg.chunk, KVK_USAGE_RW); tg.y = kvk_buf_create(tg.chunk, KVK_USAGE_RW);
+    tg.o = kvk_buf_create(tg.chunk, KVK_USAGE_RW); tg.ws = kvk_buf_create(tg.chunk, KVK_USAGE_RW);
+    if (!tg.x.b || !tg.y.b || !tg.o.b || !tg.ws.b) { fprintf(stderr, "treino: sem VRAM para os rascunhos (%s); produtos na CPU\n", kvk_error()); kvk_shutdown(); return 0; }
+    const uint64_t vb = kvk_vram_budget() ? kvk_vram_budget() : I.vram_bytes;
+    const double reserve = 512.0 * (1 << 20);
+    double bud = (double)vb * 0.9 - reserve;
+    if (getenv("KATANA_TRAIN_VRAM")) bud = atof(getenv("KATANA_TRAIN_VRAM")) * 1073741824.0;
+    tg.budget = bud > 0 ? (size_t)bud : 0;
+    tg.min_mac = getenv("KATANA_TRAIN_GPU_MIN") ? atof(getenv("KATANA_TRAIN_GPU_MIN")) : 4194304.0;
+    tg.on = 1;
+    fprintf(stderr, "treino na GPU: %s; ate %.1f GB de pesos residentes na VRAM\n", I.name, tg.budget / 1073741824.0);
+    return 1;
+}
+
+/* deixa o peso inteiro na VRAM se couber; 1 = residente (arena tg.ar[p->gar], byte p->goff), 0 = subir por fatia */
+static int tg_resident(TPar *p) {
+    const uint8_t *src = tg_src(p);
+    const size_t bytes = p->rows * tg_stride(p);
+    if (p->gstat && p->gsrc != src) p->gstat = 0;          /* trocou a fonte (mestre criado ou liberado) */
+    if (p->gstat == -1) return 0;
+    if (p->gstat == 1) {
+        if (p->w && p->gver != tg.ver) {                    /* mestre em float mudou no passo do otimizador */
+            if (!kvk_buf_write(tg.ar[p->gar], p->goff, src, bytes)) { p->gstat = -1; return 0; }
+            p->gver = tg.ver;
+        }
+        return 1;
+    }
+    p->gstat = -1;
+    if (tg.resident + bytes > tg.budget || bytes > tg.ar_size) return 0;
+    int a = -1;
+    for (int i = 0; i < tg.nar && a < 0; i++) if (((tg.ar_used[i] + 255) & ~(size_t)255) + bytes <= tg.ar_size) a = i;
+    if (a < 0) {
+        if (tg.nar == 64) return 0;
+        tg.ar[tg.nar] = kvk_buf_create(tg.ar_size, KVK_USAGE_RW);
+        if (!tg.ar[tg.nar].b) { tg.budget = tg.resident; return 0; }      /* a VRAM acabou antes da conta */
+        tg.ar_used[tg.nar] = 0;
+        a = tg.nar++;
+    }
+    const size_t off = (tg.ar_used[a] + 255) & ~(size_t)255;
+    if (!kvk_buf_write(tg.ar[a], off, src, bytes)) return 0;
+    tg.ar_used[a] = off + bytes; tg.resident += bytes;
+    p->gstat = 1; p->gar = a; p->goff = off; p->gver = tg.ver; p->gsrc = src;
+    return 1;
+}
+
+typedef struct { uint32_t M, N, K, ws, wo; } TgPush;
+static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M, uint32_t N, uint32_t K, size_t ws, size_t wo) {
+    if (wo > 0xffffffffu || ws > 0xffffffffu) return 0;
+    TgPush pc = { M, N, K, (uint32_t)ws, (uint32_t)wo };
+    const KvkBuf b[3] = { w, in, out };
+    return kvk_dispatch(tg.pipe[mode][wt], b, 3, &pc, sizeof pc, (M + 63) / 64, (N + 63) / 64, 1);
+}
+
+/* produto na GPU; 0 = fica para a CPU.
+   mode 0: out[b][r] = W[r] . in1[b]            (sobrescreve)
+   mode 1: out[b][c] += sum_r in1[b][r] W[r][c]
+   mode 2: out[r][c] += sum_b in1[b][r] in2[b][c] (gradiente de W, sem ler W) */
+static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float *out, int B) {
+    if (!tg_init() || !p->mat) return 0;
+    const size_t R = p->rows, C = p->cols, F = 4, ch = tg.chunk / F;     /* ch: floats por rascunho */
+    if ((double)R * C * B < tg.min_mac) return 0;
+    const int wt = mode == 2 ? 0 : tg_wt(p);
+    if (wt < 0) return 0;
+    const double t0 = now_sec();
+    if (mode == 2) {
+        size_t rc = ch / C; if (rc > R) rc = R;
+        if (!rc) return 0;
+        for (size_t r0 = 0; r0 < R; r0 += rc) {
+            const size_t rn = R - r0 < rc ? R - r0 : rc;
+            size_t bc = ch / (rn > C ? rn : C); if (bc > (size_t)B) bc = (size_t)B;
+            if (!bc) return 0;
+            for (size_t b0 = 0; b0 < (size_t)B; b0 += bc) {
+                const size_t bn = B - b0 < bc ? B - b0 : bc;
+                float *h = tg_host(bn * rn > rn * C ? bn * rn : rn * C);
+                for (size_t b = 0; b < bn; b++) memcpy(h + b * rn, in1 + (b0 + b) * R + r0, rn * F);
+                if (!kvk_buf_write(tg.y, 0, h, bn * rn * F) || !kvk_buf_write(tg.x, 0, in2 + b0 * C, bn * C * F)
+                    || !tg_run(2, 0, tg.y, tg.x, tg.o, (uint32_t)rn, (uint32_t)C, (uint32_t)bn, 0, 0)
+                    || !kvk_buf_read(tg.o, 0, h, rn * C * F)) goto fail;
+                float *g = out + r0 * C;
+                for (size_t i = 0; i < rn * C; i++) g[i] += h[i];
+            }
+        }
+        tg.calls++; tg.t_gpu += now_sec() - t0;
+        return 1;
+    }
+    const size_t st = tg_stride(p);
+    const int res = tg_resident(p);
+    const uint8_t *src = tg_src(p);
+    size_t rc = res ? R : tg.chunk / st;                      /* linhas de W por passada */
+    if (mode == 0) { if (rc > ch) rc = ch; }                  /* saida bn x rc */
+    if (rc > R) rc = R;
+    if (!rc) return 0;
+    if (!res) tg.streamed++;
+    for (size_t r0 = 0; r0 < R; r0 += rc) {
+        const size_t rn = R - r0 < rc ? R - r0 : rc;
+        KvkBuf wb = res ? tg.ar[p->gar] : tg.ws;
+        const size_t wo = res ? p->goff + r0 * st : 0;
+        if (!res && !kvk_buf_write(tg.ws, 0, src + r0 * st, rn * st)) goto fail;
+        /* lote de tokens que cabe nos rascunhos */
+        size_t bc = mode == 0 ? ch / (C > rn ? C : rn) : ch / (C > rn ? C : rn);
+        if (bc > (size_t)B) bc = (size_t)B;
+        if (!bc) goto fail;
+        for (size_t b0 = 0; b0 < (size_t)B; b0 += bc) {
+            const size_t bn = B - b0 < bc ? B - b0 : bc;
+            if (mode == 0) {
+                float *h = tg_host(bn * rn);
+                if (!kvk_buf_write(tg.x, 0, in1 + b0 * C, bn * C * F)
+                    || !tg_run(0, wt, wb, tg.x, tg.o, (uint32_t)rn, (uint32_t)bn, (uint32_t)C, st, wo)
+                    || !kvk_buf_read(tg.o, 0, h, bn * rn * F)) goto fail;
+                for (size_t b = 0; b < bn; b++) memcpy(out + (b0 + b) * R + r0, h + b * rn, rn * F);
+            } else {
+                float *h = tg_host(bn * (rn > C ? rn : C));
+                for (size_t b = 0; b < bn; b++) memcpy(h + b * rn, in1 + (b0 + b) * R + r0, rn * F);
+                if (!kvk_buf_write(tg.x, 0, h, bn * rn * F)
+                    || !tg_run(1, wt, wb, tg.x, tg.o, (uint32_t)C, (uint32_t)bn, (uint32_t)rn, st, wo)
+                    || !kvk_buf_read(tg.o, 0, h, bn * C * F)) goto fail;
+                for (size_t b = 0; b < bn; b++) { float *o = out + (b0 + b) * C; const float *hb = h + b * C; for (size_t c = 0; c < C; c++) o[c] += hb[c]; }
+            }
+        }
+    }
+    tg.calls++; tg.t_gpu += now_sec() - t0;
+    return 1;
+fail:
+    /* a GPU falhou no meio: so e seguro se nada foi acumulado; o modo 0 sobrescreve, os outros nao */
+    fprintf(stderr, "treino: erro na GPU (%s)\n", kvk_error());
+    die("treino: a GPU falhou no meio de um produto; rode de novo com KATANA_TRAIN_GPU=0");
+    return 0;
+}
+
 /* ---- produtos com um parametro (treinavel em float, ou congelado direto do formato do GGUF) ---- */
 typedef struct { const TPar *p; float *out; const float *x; float *tmp; int B; } TMvJob;
 
@@ -244,7 +434,7 @@ static float *tp_az(const TPar *p, const float *x, int B) {
 }
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
-    pool_for(tmv_job, &j, (int)p->rows, 16);
+    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) pool_for(tmv_job, &j, (int)p->rows, 16);
     if (!p->r) return;
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
@@ -276,7 +466,7 @@ static void tmt_job(void *ctx, int c0, int c1) {
 static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
-    pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
+    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
     if (!p->r) return;
     const size_t R = p->rows;
     float *t = xalloc(p->r, 4);
@@ -323,6 +513,7 @@ static void tp_grad(TPar *p, const float *dy, const float *x, int B) {
         return;
     }
     if (!p->g) return;
+    if (tg_prod(2, p, dy, x, p->g, B)) return;
     TGJob j = { p, dy, x, B };
     pool_for(tg_job, &j, (int)p->rows, 16);
 }
@@ -1398,6 +1589,7 @@ static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
             p->w[j] -= lr * (upd + (is_vec ? 0.0f : wd * p->w[j]));
         }
     }
+    tg.ver++;                                         /* mestres mudaram: a GPU recebe de novo no proximo produto */
     return norm;
 }
 
@@ -1469,12 +1661,15 @@ static int train_gradcheck(Model *m, int T) {
         for (int r = 0; r < 2; r++) {                     /* diferenca central com h e h/2 */
             const double hh = r ? h / 2 : h;
             for (size_t j = 0; j < n; j++) W[j] = w0[j] + (float)(hh * u[j]);
+            tg.ver++;                                     /* o mestre mudou: a copia da GPU sobe de novo */
             const double lp = t_step(m, &tt, toks, mask, &A, 0, NULL);
             for (size_t j = 0; j < n; j++) W[j] = w0[j] - (float)(hh * u[j]);
+            tg.ver++;
             const double lm = t_step(m, &tt, toks, mask, &A, 0, NULL);
             nd[r] = (lp - lm) / (2.0 * hh);
         }
         memcpy(W, w0, n * 4);
+        tg.ver++;
         /* duas estimativas: diferenca central simples (menos ruido do float) e Richardson (sem o erro de curvatura de
            ordem h^2); vale a que chega mais perto. Um gradiente errado erra nas duas. */
         const double nr = (4.0 * nd[1] - nd[0]) / 3.0;
@@ -1602,6 +1797,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
            seq, g_ta_bytes / 1048576.0, ntr * 16.0 / 1048576.0, m->fsize / 1073741824.0);
     if (plan) { printf("--plan 1: so o plano, sem treinar\n"); tact_free(&A); return 0; }
     double ema = -1;
+    long toks = 0;
     const double t0 = now_sec();
     for (int st = 1; st <= steps; st++) {
         const TEx *e = &ex[rand() % nex];
@@ -1609,6 +1805,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         t_clear_grads(&tt);
         int N = 0;
         const double loss = t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &N);
+        toks += A.T;
         const float lr_t = lr * (st <= 10 ? (float)st / 10.0f : 1.0f);      /* aquecimento curto */
         const double gn = t_adamw(&tt, st, lr_t, wd, clip);
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
@@ -1616,11 +1813,18 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
             printf("passo %4d  perda %.4f  media %.4f  |grad| %.3f  (%d alvos, %.1f s)\n", st, loss, ema, gn, N, now_sec() - t0);
         fflush(stdout);
     }
+    {
+        const double el = now_sec() - t0;
+        printf("velocidade: %.1f tokens/s de treino (%.2f s por passo, %s)\n", el > 0 ? toks / el : 0.0, steps ? el / steps : 0.0,
+               tg.on ? "produtos na GPU" : "tudo na CPU");
+    }
     A.T = seq;
     /* perda final em todas as janelas */
     double sum = 0; int cnt = 0;
     for (int i = 0; i < nex; i++) { A.T = ex[i].ids.n; int N = 0; const double l = t_step(m, &tt, ex[i].ids.ids, ex[i].mask, &A, 0, &N); if (N) { sum += l * N; cnt += N; } }
     printf("perda media final: %.4f em %d alvos\n", cnt ? sum / cnt : 0.0, cnt);
+    if (tg.on) printf("GPU: %ld produtos em %.1f s (com as copias); %.2f GB de pesos residentes; %ld produtos subiram o peso na hora\n",
+                      tg.calls, tg.t_gpu, tg.resident / 1073741824.0, tg.streamed);
     if (!spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
     printf("especializacao gravada: %s (use KATANA_SPEC=%s)\n", out, out);
     A.T = seq; tact_free(&A);

@@ -50,6 +50,11 @@ are allowed, written here). Full description, measurements and next steps: `docs
   logit softcap). Tiny random gemma4 (`make_tiny_gguf.py --arch gemma4`, also `--dense 2` and a Q8_0 copy): training
   forward equals the engine to 1.2e-6, gradcheck passes, hot-expert specialization learns the three answers, served
   with `.kspec` and after `merge`. `tools/traintest/run.sh` now covers 11 layouts.
+- Same day: training products on the GPU (`vk/shaders/tmm.comp`, host code `tg_*` in `train.c`). Checked without a
+  GPU: the shader's code run on the CPU for 7 formats x 3 modes, and katana with an emulated GPU passes gradcheck on
+  10 of 11 layouts (olmoe: float noise on one tiny gradient, explained in `docs/specialization.md`) and trains the
+  tiny models. Not run on a real card yet: first step on the owner's machine is `sh tools/traintest/run.sh`, then
+  `katana train` with and without `KATANA_TRAIN_GPU=0` for the speed.
 - Ideas raised by the owner, not started: a local `katana learn` loop (each user's
   agent specializes on its own passed sessions, nothing leaves the machine); a teacher that also writes new tasks
   with tests (today the tasks come from codebench or a free instruction).
