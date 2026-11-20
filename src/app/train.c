@@ -35,6 +35,8 @@ typedef struct {
     int *rt, *ex0;              /* MoE: roteador; primeiro especialista (gate, up, down de e em ex0 + 3e ...) */
     int *sg, *su, *sd, *sgv;    /* MoE: especialistas compartilhados e o portao sigmoide deles */
     int *dqkv, *dz, *dal, *dbe, *dcv, *dsa, *ddt, *dsn, *dout;    /* Gated DeltaNet (camadas lineares do qwen35) */
+    int *ews;                   /* MoE: escala de cada especialista (gemma4) */
+    int *gpan, *gpfn, *gp1, *gp2, *gpre2, *grsc;     /* gemma4: normas extras e escala da entrada do roteador */
     int moe;                    /* o modelo tem camadas MoE */
 } TTab;
 
@@ -50,23 +52,24 @@ static int tt_is_moe(const Model *m, int l) { return m->cfg.n_expert && l >= m->
 /* tabela dos tensores treinaveis (nomes do GGUF; especialista e de um tensor empilhado: nome + ".e<e>") */
 static const char *tt_build(Model *m, TTab *t) {
     const Config *c = &m->cfg;
-    if (c->g4 || c->go || c->mla || c->glm || c->glmoe)
-        return "this architecture is not supported by the trainer yet (llama, qwen2, qwen3, olmoe, qwen3moe, qwen35, qwen35moe)";
+    if (c->go || c->mla || c->glm || c->glmoe)
+        return "this architecture is not supported by the trainer yet (llama, qwen2, qwen3, olmoe, qwen3moe, qwen35, qwen35moe, gemma4)";
     if (c->ssm_inner && c->ssm_inner / c->ssm_rank > 512) return "DeltaNet: v head too wide";
-    if ((c->emb_scale != 0.0f && c->emb_scale != 1.0f) || c->softcap != 0.0f) return "embedding scale or logit softcap not supported yet";
+    if (!c->g4 && ((c->emb_scale != 0.0f && c->emb_scale != 1.0f) || c->softcap != 0.0f)) return "embedding scale or logit softcap not supported yet";
     if (c->n_expert && (c->gate_sig || c->mla)) return "sigmoid routers (DeepSeek-style) are not supported by the trainer yet";
     const int L = c->n_layers, d = c->dim, qd = c->n_heads * c->hd, kvd = c->n_kv * c->hd, E = c->n_expert;
     for (int l = 0; l < L; l++) {
         const Layer *Ly = &m->layers[l];
-        if (Ly->exp_bias || Ly->router_b || Ly->exp_w || Ly->eg_b) return "router or expert bias is not supported by the trainer yet";
+        if (Ly->exp_bias || Ly->router_b || (Ly->exp_w && !c->g4) || Ly->eg_b) return "router or expert bias is not supported by the trainer yet";
     }
-    size_t cap = (size_t)L * (26 + 3 * (size_t)E) + 4;
+    size_t cap = (size_t)L * (34 + 3 * (size_t)E) + 4;
     t->p = xalloc(cap, sizeof(TPar)); t->n = 0;
-    const int NA = 26;
+    const int NA = 33;
     int *all = xalloc((size_t)L * NA, sizeof(int));
     for (int i = 0; i < L * NA; i++) all[i] = -1;
     int **fields[] = { &t->an, &t->fn, &t->q, &t->k, &t->v, &t->o, &t->gt, &t->up, &t->dn, &t->qn, &t->kn, &t->rt, &t->ex0, &t->sg, &t->su, &t->sd, &t->sgv,
-                       &t->dqkv, &t->dz, &t->dal, &t->dbe, &t->dcv, &t->dsa, &t->ddt, &t->dsn, &t->dout };
+                       &t->dqkv, &t->dz, &t->dal, &t->dbe, &t->dcv, &t->dsa, &t->ddt, &t->dsn, &t->dout,
+                       &t->ews, &t->gpan, &t->gpfn, &t->gp1, &t->gp2, &t->gpre2, &t->grsc };
     for (int i = 0; i < NA; i++) *fields[i] = all + (size_t)i * L;
     t->tok = t->n; tt_add(t, "token_embd.weight", &m->tok_emb, &m->tok_emb, NULL, NULL, c->vocab, d);
     const int tied = m->lm_head.f == m->tok_emb.f && m->lm_head.q == m->tok_emb.q;
@@ -79,6 +82,37 @@ static const char *tt_build(Model *m, TTab *t) {
 #define TT_M(idx, suf, field, r, cc) snprintf(nm, sizeof nm, "blk.%d." suf, l); t->idx[l] = t->n; tt_add(t, nm, &Ly->field, &Ly->field, NULL, NULL, r, cc)
 #define TT_V(idx, suf, field, nn) snprintf(nm, sizeof nm, "blk.%d." suf, l); t->idx[l] = t->n; tt_add(t, nm, NULL, NULL, Ly->field, &Ly->field, 1, nn)
         TT_V(an, "attn_norm.weight", attn_norm, d);
+        if (c->g4) {                         /* gemma4: largura de cabeca e cabecas kv por camada, normas extras, MoE em paralelo */
+            const int hdl = Ly->hd_l, ql = c->n_heads * hdl, kl = Ly->nkv_l * hdl, Hd = c->hidden_dense, H = c->hidden;
+            TT_M(q, "attn_q.weight", wq, ql, d);
+            TT_M(k, "attn_k.weight", wk, kl, d);
+            if (Ly->wv.q || Ly->wv.f) { TT_M(v, "attn_v.weight", wv, kl, d); }     /* sem attn_v: v sai de k */
+            TT_M(o, "attn_output.weight", wo, d, ql);
+            TT_V(qn, "attn_q_norm.weight", q_norm, hdl);
+            TT_V(kn, "attn_k_norm.weight", k_norm, hdl);
+            TT_V(gpan, "post_attention_norm.weight", post_attn_norm, d);
+            TT_V(fn, "ffn_norm.weight", ffn_norm, d);
+            TT_M(gt, "ffn_gate.weight", w_gate, Hd, d);
+            TT_M(up, "ffn_up.weight", w_up, Hd, d);
+            TT_M(dn, "ffn_down.weight", w_down, d, Hd);
+            TT_V(gpfn, "post_ffw_norm.weight", post_ffn_norm, d);
+            if (Ly->eg) {
+                t->moe = 1;
+                TT_M(rt, "ffn_gate_inp.weight", router, E, d);
+                TT_V(grsc, "ffn_gate_inp.scale", router_scale, d);
+                TT_V(gpre2, "pre_ffw_norm_2.weight", pre_ffn2, d);
+                TT_V(gp1, "post_ffw_norm_1.weight", post_ffn1, d);
+                TT_V(gp2, "post_ffw_norm_2.weight", post_ffn2, d);
+                if (Ly->exp_w) { TT_V(ews, "ffn_down_exps.scale", exp_w, E); }
+                t->ex0[l] = t->n;
+                for (int e = 0; e < E; e++) {      /* gate e up vem do tensor fundido: linhas 2eH (gate) e (2e+1)H (up) */
+                    snprintf(nm, sizeof nm, "blk.%d.ffn_gate_up_exps.weight.e%d.gate", l, e); tt_add(t, nm, &Ly->eg[e], &Ly->eg[e], NULL, NULL, H, d);
+                    snprintf(nm, sizeof nm, "blk.%d.ffn_gate_up_exps.weight.e%d.up", l, e);   tt_add(t, nm, &Ly->eu[e], &Ly->eu[e], NULL, NULL, H, d);
+                    snprintf(nm, sizeof nm, "blk.%d.ffn_down_exps.weight.e%d", l, e);         tt_add(t, nm, &Ly->ed[e], &Ly->ed[e], NULL, NULL, d, H);
+                }
+            }
+            continue;
+        }
         if (Ly->lin) {                       /* Gated DeltaNet */
             const int C = (int)dn_channels(c), nv = c->ssm_rank;
             TT_M(dqkv, "attn_qkv.weight", wqkv, C, d);
@@ -297,25 +331,27 @@ static const float *tp_vec(const TPar *p) { return p->w ? p->w : p->vec; }
 
 /* RMSNorm de B vetores: y = g * x * inv, inv guardado para o passo para tras */
 static void t_rms(const TPar *gp, const float *x, float *y, float *inv, int B, int d, float eps) {
-    const float *g = tp_vec(gp);
+    const float *g = gp ? tp_vec(gp) : NULL;           /* gp NULL: norma sem peso (gemma4: v e entrada do roteador) */
     for (int b = 0; b < B; b++) {
         const float *xi = x + (size_t)b * d; float *yi = y + (size_t)b * d;
         double ss = 0; for (int i = 0; i < d; i++) ss += (double)xi[i] * xi[i];
         const float iv = 1.0f / sqrtf((float)(ss / d) + eps);
         inv[b] = iv;
-        for (int i = 0; i < d; i++) yi[i] = g[i] * (xi[i] * iv);
+        for (int i = 0; i < d; i++) yi[i] = (g ? g[i] : 1.0f) * (xi[i] * iv);
     }
 }
 /* passo para tras da RMSNorm: dx += ..., dg += dy * x * inv */
 static void t_rms_back(TPar *gp, const float *x, const float *inv, const float *dy, float *dx, int B, int d) {
-    const float *g = tp_vec(gp);
+    static float *one; static int none;
+    if (!gp && none < d) { free(one); one = xalloc((size_t)d, 4); for (int i = 0; i < d; i++) one[i] = 1.0f; none = d; }
+    const float *g = gp ? tp_vec(gp) : one;
     for (int b = 0; b < B; b++) {
         const float *xi = x + (size_t)b * d, *dyi = dy + (size_t)b * d; float *dxi = dx + (size_t)b * d;
         const float iv = inv[b];
         double s = 0; for (int i = 0; i < d; i++) s += (double)g[i] * dyi[i] * xi[i];
         const float k = (float)(s / d) * iv * iv * iv;
         for (int i = 0; i < d; i++) dxi[i] += iv * g[i] * dyi[i] - xi[i] * k;
-        if (gp->g) for (int i = 0; i < d; i++) gp->g[i] += dyi[i] * xi[i] * iv;
+        if (gp && gp->g) for (int i = 0; i < d; i++) gp->g[i] += dyi[i] * xi[i] * iv;
     }
 }
 
@@ -334,14 +370,20 @@ typedef struct {
        saida normalizada e saida com portao */
     float *draw, *dcy, *dcs, *dqk, *diqk, *dzz, *dal, *dbe, *ddec, *dbet, *dS, *dor, *dio, *don, *dog;
     float *xf, *xnf, *invf;
+    int qdm, kvdm;              /* largura de q e de k/v por token reservada em cada camada */
+    /* gemma4: v antes da norma e fator dela, saida da atencao e do FFN denso antes das normas extras, entrada do
+       roteador (sem peso e com escala), entrada dos especialistas, soma deles, soma dos ramos */
+    float *gvr, *ginvv, *gyo, *gipa, *gyd, *gip1, *gxrn, *gir, *gxr, *gxe, *gie, *gyb, *gip2, *gs, *gipf;
 } TAct;
 
 static size_t g_ta_bytes;      /* bytes das ativacoes da ultima tact_alloc */
 static void *ta_alloc(size_t n, size_t sz) { g_ta_bytes += n * sz; return xalloc(n, sz); }
 static void tact_alloc(TAct *A, const Config *c, int T) {
     g_ta_bytes = 0;
-    const size_t L = c->n_layers, d = c->dim, qd = (size_t)c->n_heads * c->hd, kvd = (size_t)c->n_kv * c->hd;
+    const size_t hdm = c->g4 && c->hd_swa > c->hd ? (size_t)c->hd_swa : (size_t)c->hd;
+    const size_t L = c->n_layers, d = c->dim, qd = (size_t)c->n_heads * hdm, kvd = (size_t)c->n_kv * hdm;
     memset(A, 0, sizeof *A);
+    A->qdm = (int)qd; A->kvdm = (int)kvd;
     A->T = T; A->Tmax = T;
     A->H = c->n_expert ? (c->hidden_dense > 0 ? c->hidden_dense : 1) : c->hidden;
     A->E = c->n_expert; A->K = c->n_expert ? c->n_used : 0; A->Hs = c->n_shared * c->hidden;
@@ -370,12 +412,22 @@ static void tact_alloc(TAct *A, const Config *c, int T) {
         A->dS = ta_alloc(L * ((size_t)T / t_dn_ck() + 1) * (size_t)c->ssm_state * in, 4);
         A->dor = ta_alloc(L * T * in, 4); A->dio = ta_alloc(L * T * nv, 4); A->don = ta_alloc(L * T * in, 4); A->dog = ta_alloc(L * T * in, 4);
     }
+    if (c->g4) {
+        A->gvr = ta_alloc(L * T * kvd, 4); A->ginvv = ta_alloc(L * T * c->n_kv, 4);
+        A->gyo = ta_alloc(L * T * d, 4); A->gipa = ta_alloc(L * T, 4); A->gyd = ta_alloc(L * T * d, 4); A->gip1 = ta_alloc(L * T, 4);
+        A->gs = ta_alloc(L * T * d, 4); A->gipf = ta_alloc(L * T, 4);
+        if (A->E) {
+            A->gxrn = ta_alloc(L * T * d, 4); A->gir = ta_alloc(L * T, 4); A->gxr = ta_alloc(L * T * d, 4);
+            A->gxe = ta_alloc(L * T * d, 4); A->gie = ta_alloc(L * T, 4); A->gyb = ta_alloc(L * T * d, 4); A->gip2 = ta_alloc(L * T, 4);
+        }
+    }
     A->xf = ta_alloc((size_t)T * d, 4); A->xnf = ta_alloc((size_t)T * d, 4); A->invf = ta_alloc(T, 4);
 }
 static void tact_free(TAct *A) {
     float *fs[] = { A->x, A->xn1, A->inv1, A->qr, A->kr, A->invq, A->invk, A->q, A->k, A->v, A->P, A->ao, A->xm, A->xn2, A->inv2,
                     A->a, A->u, A->h, A->pr, A->ew, A->ea, A->eu, A->eh, A->eo, A->sa, A->su, A->sh, A->so, A->sgt, A->xf, A->xnf, A->invf,
-                    A->qg, A->apre, A->draw, A->dcy, A->dcs, A->dqk, A->diqk, A->dzz, A->dal, A->dbe, A->ddec, A->dbet, A->dS, A->dor, A->dio, A->don, A->dog };
+                    A->qg, A->apre, A->draw, A->dcy, A->dcs, A->dqk, A->diqk, A->dzz, A->dal, A->dbe, A->ddec, A->dbet, A->dS, A->dor, A->dio, A->don, A->dog,
+                    A->gvr, A->ginvv, A->gyo, A->gipa, A->gyd, A->gip1, A->gxrn, A->gir, A->gxr, A->gxe, A->gie, A->gyb, A->gip2, A->gs, A->gipf };
     for (size_t i = 0; i < sizeof fs / sizeof fs[0]; i++) free(fs[i]);
     free(A->sel);
     memset(A, 0, sizeof *A);
@@ -397,12 +449,21 @@ static void t_rope(const Model *m, float *v, int nh, int pos, int inverse) {
 static void t_bias(const float *b, float *y, int B, int n) { if (b) for (int t = 0; t < B; t++) for (int i = 0; i < n; i++) y[(size_t)t * n + i] += b[i]; }
 
 static float t_silu(float g) { return g / (1.0f + expf(-g)); }
+static float t_act(float g) {
+    if (!g_gelu) return t_silu(g);
+    return 0.5f * g * (1.0f + tanhf(0.7978845608f * (g + 0.044715f * g * g * g)));
+}
+static float t_dact(float g) {                         /* derivada da ativacao do GLU */
+    if (!g_gelu) { const float sg = 1.0f / (1.0f + expf(-g)); return sg * (1.0f + g * (1.0f - sg)); }
+    const float k = 0.7978845608f, th = tanhf(k * (g + 0.044715f * g * g * g));
+    return 0.5f * (1.0f + th) + 0.5f * g * (1.0f - th * th) * k * (1.0f + 3.0f * 0.044715f * g * g);
+}
 
 /* SwiGLU com tres parametros: out = down(silu(gate x) * up x); guarda a, u, h */
 static void t_glu_fwd(TTab *tt, int ig, int iu, int idn, const float *x, float *a, float *u, float *h, float *out, int B, int H) {
     tp_mv(&tt->p[ig], a, x, B);
     tp_mv(&tt->p[iu], u, x, B);
-    for (size_t i = 0; i < (size_t)B * H; i++) h[i] = t_silu(a[i]) * u[i];
+    for (size_t i = 0; i < (size_t)B * H; i++) h[i] = t_act(a[i]) * u[i];
     tp_mv(&tt->p[idn], out, h, B);
 }
 /* volta do SwiGLU: dy na saida; acumula em dx e nos gradientes */
@@ -412,9 +473,8 @@ static void t_glu_back(TTab *tt, int ig, int iu, int idn, const float *x, const 
     tp_grad(&tt->p[idn], dy, h, B);
     tp_mvT(&tt->p[idn], dh, dy, B);
     for (size_t i = 0; i < (size_t)B * H; i++) {
-        const float g = a[i], sg = 1.0f / (1.0f + expf(-g));
-        du[i] = dh[i] * g * sg;
-        da[i] = dh[i] * u[i] * sg * (1.0f + g * (1.0f - sg));
+        du[i] = dh[i] * t_act(a[i]);
+        da[i] = dh[i] * u[i] * t_dact(a[i]);
     }
     tp_grad(&tt->p[ig], da, x, B); tp_mvT(&tt->p[ig], dx, da, B);
     tp_grad(&tt->p[iu], du, x, B); tp_mvT(&tt->p[iu], dx, du, B);
@@ -423,14 +483,15 @@ static void t_glu_back(TTab *tt, int ig, int iu, int idn, const float *x, const 
 
 /* MoE da camada l (x = entrada normalizada [T][d]): roteador softmax, K melhores, pesos (renormalizados se o modelo
    pede), especialistas e compartilhados. out = soma. Guarda tudo para voltar. Mesma conta do motor (moe_route). */
-static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float *out) {
+static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const float *x, float *out) {
     const Config *c = &m->cfg;
     const int T = A->T, d = c->dim, E = A->E, K = A->K, He = c->hidden;
     float *pr = A->pr + (size_t)l * T * E, *ew = A->ew + (size_t)l * T * K;
     int *sel = A->sel + (size_t)l * T * K;
     float *ea = A->ea + (size_t)l * T * K * He, *eu = A->eu + (size_t)l * T * K * He, *eh = A->eh + (size_t)l * T * K * He;
     float *eo = A->eo + (size_t)l * T * K * d;
-    tp_mv(&tt->p[tt->rt[l]], pr, x, T);
+    tp_mv(&tt->p[tt->rt[l]], pr, xr, T);
+    const float *ews = tt->ews[l] >= 0 ? tp_vec(&tt->p[tt->ews[l]]) : NULL;
     float *ch = xalloc(E, 4);
     for (int t = 0; t < T; t++) {
         float *p = pr + (size_t)t * E;
@@ -449,6 +510,7 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float 
             float w = ew[(size_t)t * K + k];
             if (c->moe_norm) w /= (wsum > eps ? wsum : eps);
             if (c->exp_scale != 1.0f) w *= c->exp_scale;
+            if (ews) w *= ews[sel[(size_t)t * K + k]];
             ew[(size_t)t * K + k] = w;
         }
     }
@@ -487,7 +549,7 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float 
     }
 }
 
-static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const float *dy, float *dx) {
+static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, const float *x, const float *dy, float *dxr, float *dx) {
     const Config *c = &m->cfg;
     const int T = A->T, d = c->dim, E = A->E, K = A->K, He = c->hidden;
     const float *pr = A->pr + (size_t)l * T * E, *ew = A->ew + (size_t)l * T * K;
@@ -500,6 +562,15 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const
     float *xb = xalloc((size_t)T * K * d, 4), *ab = xalloc((size_t)T * K * He, 4), *ub = xalloc((size_t)T * K * He, 4);
     float *hb = xalloc((size_t)T * K * He, 4), *db = xalloc((size_t)T * K * d, 4), *dxb = xalloc((size_t)T * K * d, 4);
     for (int j = 0; j < T * K; j++) dwa[j] = dot(eo + (size_t)j * d, dy + (size_t)(j / K) * d, d);     /* d peso do escolhido */
+    if (tt->ews[l] >= 0) {                             /* escala por especialista: w = w0 * s[e] */
+        TPar *pe = &tt->p[tt->ews[l]];
+        const float *sv = tp_vec(pe);
+        for (int j = 0; j < T * K; j++) {
+            const int e = sel[j];
+            if (pe->g && sv[e] != 0.0f) pe->g[e] += dwa[j] * ew[j] / sv[e];
+            dwa[j] *= sv[e];
+        }
+    }
     for (int e = 0; e < E; e++) {
         int n = 0;
         for (int j = 0; j < T * K; j++) if (sel[j] == e) ix[n++] = j;
@@ -538,8 +609,8 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const
         for (int e = 0; e < E; e++) s += (double)p[e] * dp[e];
         for (int e = 0; e < E; e++) dz[(size_t)t * E + e] = p[e] * (dp[e] - (float)s);
     }
-    tp_grad(&tt->p[tt->rt[l]], dz, x, T);
-    tp_mvT(&tt->p[tt->rt[l]], dx, dz, T);
+    tp_grad(&tt->p[tt->rt[l]], dz, xr, T);
+    tp_mvT(&tt->p[tt->rt[l]], dxr, dz, T);
     if (tt->sg[l] >= 0) {
         const int Hs = A->Hs;
         const float *sa = A->sa + (size_t)l * T * Hs, *su = A->su + (size_t)l * T * Hs, *sh = A->sh + (size_t)l * T * Hs;
@@ -769,6 +840,154 @@ static void t_dn_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const 
 }
 
 /* forward da sequencia inteira guardando o necessario para voltar */
+/* ---- camada do gemma4: mesma conta do motor (g4_layer) ----
+   xn = norma(x); q, k = Wq xn, Wk xn; v = Wv xn ou o proprio k (sem attn_v); norma por cabeca em q e k (com peso) e em v
+   (sem peso); RoPE em metades com as frequencias da camada; atencao com escala 1 e janela nas camadas locais;
+   x1 = x + norma_pa(Wo o). FFN denso GELU: yd = W_down(gelu(Wg f) * Wu f), f = norma_f(x1). Com MoE: o roteador le
+   norma_sem_peso(x1) / sqrt(d) * escala, os especialistas leem norma_pre2(x1); s = norma_p1(yd) + norma_p2(soma).
+   Saida: (x1 + norma_pf(s)) * escala da camada. */
+static void t_g4_rope(const float *fr, float *v, int nh, int hd, int pos, int inverse) {
+    const int half = hd / 2;
+    for (int i = 0; i < half; i++) {
+        const float ang = pos * fr[i], cs = cosf(ang), sn = inverse ? -sinf(ang) : sinf(ang);
+        for (int h = 0; h < nh; h++) { float *p = v + h * hd + i, a = p[0], b = p[half]; p[0] = a * cs - b * sn; p[half] = a * sn + b * cs; }
+    }
+}
+
+static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
+    const Config *c = &m->cfg;
+    const Layer *Ly = &m->layers[l];
+    const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd, group = nh / nkv;
+    const size_t lq = (size_t)l * T * A->qdm, lk = (size_t)l * T * A->kvdm, ld = (size_t)l * T * d, l1 = (size_t)l * T;
+    const float *fr = Ly->swa ? m->rope_freq_swa : m->rope_freq;
+    const int win = Ly->swa ? c->swa_win : T, H = (int)tt->p[tt->gt[l]].rows;
+    float *xl = A->x + ld, *xn1 = A->xn1 + ld, *qr = A->qr + lq, *q = A->q + lq, *kr = A->kr + lk, *k = A->k + lk;
+    float *vr = A->gvr + lk, *v = A->v + lk, *ao = A->ao + lq, *yo = A->gyo + ld, *xm = A->xm + ld, *xn2 = A->xn2 + ld;
+    float *yd = A->gyd + ld, *sb = A->gs + ld, *P = A->P;
+    float *tmp = xalloc((size_t)T * d, 4);
+    t_rms(&tt->p[tt->an[l]], xl, xn1, A->inv1 + l1, T, d, c->eps);
+    tp_mv(&tt->p[tt->q[l]], qr, xn1, T);
+    tp_mv(&tt->p[tt->k[l]], kr, xn1, T);
+    if (tt->v[l] >= 0) tp_mv(&tt->p[tt->v[l]], vr, xn1, T);
+    else memcpy(vr, kr, (size_t)T * kvd * 4);
+    t_rms(&tt->p[tt->qn[l]], qr, q, A->invq + l1 * nh, T * nh, hd, c->eps);
+    t_rms(&tt->p[tt->kn[l]], kr, k, A->invk + l1 * c->n_kv, T * nkv, hd, c->eps);
+    t_rms(NULL, vr, v, A->ginvv + l1 * c->n_kv, T * nkv, hd, c->eps);
+    for (int t = 0; t < T; t++) { t_g4_rope(fr, q + (size_t)t * qd, nh, hd, t, 0); t_g4_rope(fr, k + (size_t)t * kvd, nkv, hd, t, 0); }
+    for (int hh = 0; hh < nh; hh++) {
+        const int kvh = (hh / group) * hd;
+        for (int t = 0; t < T; t++) {
+            const int t0 = t - win + 1 > 0 ? t - win + 1 : 0, n = t - t0 + 1;
+            const float *qh = q + (size_t)t * qd + hh * hd;
+            for (int s = 0; s < n; s++) P[s] = dot(qh, k + (size_t)(t0 + s) * kvd + kvh, hd);
+            softmax(P, n);
+            float *o = ao + (size_t)t * qd + hh * hd;
+            memset(o, 0, hd * 4);
+            for (int s = 0; s < n; s++) { const float w = P[s]; const float *vh = v + (size_t)(t0 + s) * kvd + kvh; for (int i = 0; i < hd; i++) o[i] += w * vh[i]; }
+        }
+    }
+    tp_mv(&tt->p[tt->o[l]], yo, ao, T);
+    t_rms(&tt->p[tt->gpan[l]], yo, tmp, A->gipa + l1, T, d, c->eps);
+    for (size_t i = 0; i < (size_t)T * d; i++) xm[i] = xl[i] + tmp[i];
+    t_rms(&tt->p[tt->fn[l]], xm, xn2, A->inv2 + l1, T, d, c->eps);
+    t_glu_fwd(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + l1 * A->H, A->u + l1 * A->H, A->h + l1 * A->H, yd, T, H);
+    if (tt->rt[l] >= 0) {
+        float *xrn = A->gxrn + ld, *xr = A->gxr + ld, *xe = A->gxe + ld, *yb = A->gyb + ld;
+        const float rs = 1.0f / sqrtf((float)d), *rsc = tp_vec(&tt->p[tt->grsc[l]]);
+        t_rms(&tt->p[tt->gp1[l]], yd, sb, A->gip1 + l1, T, d, c->eps);
+        t_rms(NULL, xm, xrn, A->gir + l1, T, d, c->eps);
+        for (int t = 0; t < T; t++) for (int i = 0; i < d; i++) xr[(size_t)t * d + i] = xrn[(size_t)t * d + i] * rs * rsc[i];
+        t_rms(&tt->p[tt->gpre2[l]], xm, xe, A->gie + l1, T, d, c->eps);
+        t_moe_fwd(m, tt, A, l, xr, xe, yb);
+        t_rms(&tt->p[tt->gp2[l]], yb, tmp, A->gip2 + l1, T, d, c->eps);
+        for (size_t i = 0; i < (size_t)T * d; i++) sb[i] += tmp[i];
+    } else memcpy(sb, yd, (size_t)T * d * 4);
+    t_rms(&tt->p[tt->gpfn[l]], sb, tmp, A->gipf + l1, T, d, c->eps);
+    const float os = Ly->out_scale;
+    for (size_t i = 0; i < (size_t)T * d; i++) xnext[i] = (xm[i] + tmp[i]) * os;
+    free(tmp);
+}
+
+/* volta da camada do gemma4: dx chega com o gradiente na saida e sai com o da entrada */
+static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx) {
+    const Config *c = &m->cfg;
+    const Layer *Ly = &m->layers[l];
+    const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd, group = nh / nkv;
+    const size_t lq = (size_t)l * T * A->qdm, lk = (size_t)l * T * A->kvdm, ld = (size_t)l * T * d, l1 = (size_t)l * T, Td = (size_t)T * d;
+    const float *fr = Ly->swa ? m->rope_freq_swa : m->rope_freq;
+    const int win = Ly->swa ? c->swa_win : T, H = (int)tt->p[tt->gt[l]].rows;
+    const float *xl = A->x + ld, *xn1 = A->xn1 + ld, *qr = A->qr + lq, *q = A->q + lq, *kr = A->kr + lk, *k = A->k + lk;
+    const float *vr = A->gvr + lk, *v = A->v + lk, *ao = A->ao + lq, *yo = A->gyo + ld, *xm = A->xm + ld, *xn2 = A->xn2 + ld;
+    const float *yd = A->gyd + ld, *sb = A->gs + ld;
+    float *P = A->P;
+    const float os = Ly->out_scale;
+    float *dx1 = xalloc(Td, 4), *dt = xalloc(Td, 4), *ds = xalloc(Td, 4), *dyd = xalloc(Td, 4), *dxf = xalloc(Td, 4);
+    for (size_t i = 0; i < Td; i++) { dx1[i] = dx[i] * os; dt[i] = dx[i] * os; }
+    t_rms_back(&tt->p[tt->gpfn[l]], sb, A->gipf + l1, dt, ds, T, d);
+    if (tt->rt[l] >= 0) {
+        const float *xrn = A->gxrn + ld, *xr = A->gxr + ld, *xe = A->gxe + ld, *yb = A->gyb + ld;
+        float *dyb = xalloc(Td, 4), *dxr = xalloc(Td, 4), *dxe = xalloc(Td, 4), *dxrn = xalloc(Td, 4);
+        t_rms_back(&tt->p[tt->gp1[l]], yd, A->gip1 + l1, ds, dyd, T, d);
+        t_rms_back(&tt->p[tt->gp2[l]], yb, A->gip2 + l1, ds, dyb, T, d);
+        t_moe_back(m, tt, A, l, xr, xe, dyb, dxr, dxe);
+        t_rms_back(&tt->p[tt->gpre2[l]], xm, A->gie + l1, dxe, dx1, T, d);
+        TPar *ps = &tt->p[tt->grsc[l]];
+        const float rs = 1.0f / sqrtf((float)d), *rsc = tp_vec(ps);
+        for (int t = 0; t < T; t++) for (int i = 0; i < d; i++) {
+            const size_t j = (size_t)t * d + i;
+            if (ps->g) ps->g[i] += dxr[j] * xrn[j] * rs;
+            dxrn[j] = dxr[j] * rs * rsc[i];
+        }
+        t_rms_back(NULL, xm, A->gir + l1, dxrn, dx1, T, d);
+        free(dyb); free(dxr); free(dxe); free(dxrn);
+    } else memcpy(dyd, ds, Td * 4);
+    t_glu_back(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + l1 * A->H, A->u + l1 * A->H, A->h + l1 * A->H, dyd, dxf, T, H);
+    t_rms_back(&tt->p[tt->fn[l]], xm, A->inv2 + l1, dxf, dx1, T, d);
+    /* atencao: xm = x + norma_pa(Wo o) */
+    float *dyo = xalloc(Td, 4), *dao = xalloc((size_t)T * qd, 4);
+    t_rms_back(&tt->p[tt->gpan[l]], yo, A->gipa + l1, dx1, dyo, T, d);
+    tp_grad(&tt->p[tt->o[l]], dyo, ao, T);
+    tp_mvT(&tt->p[tt->o[l]], dao, dyo, T);
+    float *dq = xalloc((size_t)T * qd, 4), *dk = xalloc((size_t)T * kvd, 4), *dv = xalloc((size_t)T * kvd, 4), *dP = xalloc(T, 4);
+    for (int hh = 0; hh < nh; hh++) {
+        const int kvh = (hh / group) * hd;
+        for (int t = 0; t < T; t++) {
+            const int t0 = t - win + 1 > 0 ? t - win + 1 : 0, n = t - t0 + 1;
+            const float *qh = q + (size_t)t * qd + hh * hd, *dout = dao + (size_t)t * qd + hh * hd;
+            for (int s = 0; s < n; s++) P[s] = dot(qh, k + (size_t)(t0 + s) * kvd + kvh, hd);
+            softmax(P, n);
+            double sum = 0;
+            for (int s = 0; s < n; s++) {
+                dP[s] = dot(dout, v + (size_t)(t0 + s) * kvd + kvh, hd);
+                sum += (double)P[s] * dP[s];
+                float *dvh = dv + (size_t)(t0 + s) * kvd + kvh;
+                for (int i = 0; i < hd; i++) dvh[i] += P[s] * dout[i];
+            }
+            float *dqh = dq + (size_t)t * qd + hh * hd;
+            for (int s = 0; s < n; s++) {
+                const float dsc = P[s] * (dP[s] - (float)sum);
+                if (dsc == 0.0f) continue;
+                const float *kh = k + (size_t)(t0 + s) * kvd + kvh;
+                float *dkh = dk + (size_t)(t0 + s) * kvd + kvh;
+                for (int i = 0; i < hd; i++) { dqh[i] += dsc * kh[i]; dkh[i] += dsc * qh[i]; }
+            }
+        }
+    }
+    for (int t = 0; t < T; t++) { t_g4_rope(fr, dq + (size_t)t * qd, nh, hd, t, 1); t_g4_rope(fr, dk + (size_t)t * kvd, nkv, hd, t, 1); }
+    float *dqr = xalloc((size_t)T * qd, 4), *dkr = xalloc((size_t)T * kvd, 4), *dvr = xalloc((size_t)T * kvd, 4), *dxn = xalloc(Td, 4);
+    t_rms_back(&tt->p[tt->qn[l]], qr, A->invq + l1 * nh, dq, dqr, T * nh, hd);
+    t_rms_back(&tt->p[tt->kn[l]], kr, A->invk + l1 * c->n_kv, dk, dkr, T * nkv, hd);
+    t_rms_back(NULL, vr, A->ginvv + l1 * c->n_kv, dv, dvr, T * nkv, hd);
+    if (tt->v[l] < 0) for (size_t i = 0; i < (size_t)T * kvd; i++) dkr[i] += dvr[i];      /* v era o proprio k */
+    tp_grad(&tt->p[tt->q[l]], dqr, xn1, T); tp_mvT(&tt->p[tt->q[l]], dxn, dqr, T);
+    tp_grad(&tt->p[tt->k[l]], dkr, xn1, T); tp_mvT(&tt->p[tt->k[l]], dxn, dkr, T);
+    if (tt->v[l] >= 0) { tp_grad(&tt->p[tt->v[l]], dvr, xn1, T); tp_mvT(&tt->p[tt->v[l]], dxn, dvr, T); }
+    memcpy(dx, dx1, Td * 4);
+    t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + l1, dxn, dx, T, d);
+    free(dx1); free(dt); free(ds); free(dyd); free(dxf); free(dyo); free(dao); free(dq); free(dk); free(dv); free(dP);
+    free(dqr); free(dkr); free(dvr); free(dxn);
+}
+
 static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
     const Config *c = &m->cfg;
     const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H;
@@ -780,8 +999,10 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
         const TPar *e = &tt->p[tt->tok];
         if (e->w) memcpy(x + (size_t)t * d, e->w + (size_t)toks[t] * d, d * 4);
         else mat_row(x + (size_t)t * d, e->mat, toks[t], d);
+        if (c->emb_scale != 0.0f && c->emb_scale != 1.0f) for (int i = 0; i < d; i++) x[(size_t)t * d + i] *= c->emb_scale;
     }
     for (int l = 0; l < c->n_layers; l++) {
+        if (c->g4) { t_g4_fwd(m, tt, A, l, l + 1 < c->n_layers ? A->x + (size_t)(l + 1) * T * d : A->xf); continue; }
         const Layer *Ly = &m->layers[l];
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
         float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P;
@@ -833,7 +1054,7 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
         for (size_t i = 0; i < (size_t)T * d; i++) xm[i] = xl[i] + tmp[i];
     ffn:
         t_rms(&tt->p[tt->fn[l]], xm, xn2, A->inv2 + (size_t)l * T, T, d, c->eps);
-        if (tt->rt[l] >= 0) t_moe_fwd(m, tt, A, l, xn2, tmp);
+        if (tt->rt[l] >= 0) t_moe_fwd(m, tt, A, l, xn2, xn2, tmp);
         else t_glu_fwd(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + (size_t)l * T * H, A->u + (size_t)l * T * H, A->h + (size_t)l * T * H, tmp, T,
                        (int)tt->p[tt->gt[l]].rows);
         float *xnext = l + 1 < c->n_layers ? A->x + (size_t)(l + 1) * T * d : A->xf;
@@ -844,6 +1065,13 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
 }
 
 static const TPar *t_head(const TTab *tt) { return tt->out >= 0 ? &tt->p[tt->out] : &tt->p[tt->tok]; }
+
+/* logits de todas as posicoes; gemma4: limitados por softcap * tanh(z / softcap), como no motor */
+static void t_logits(const Model *m, const TTab *tt, const TAct *A, float *lg) {
+    const float cap = m->cfg.softcap;
+    tp_mv(t_head(tt), lg, A->xnf, A->T);
+    if (cap > 0.0f) for (size_t i = 0; i < (size_t)A->T * m->cfg.vocab; i++) lg[i] = cap * tanhf(lg[i] / cap);
+}
 
 /* perda media nos alvos marcados (mask[t] = 1: o token t+1 conta) e, se back, o passo para tras inteiro */
 static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount) {
@@ -858,7 +1086,7 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     if (!N) return 0.0;
     TPar *head = (TPar *)t_head(tt);
     float *lg = xalloc((size_t)T * V, 4);
-    tp_mv(head, lg, A->xnf, T);
+    t_logits(m, tt, A, lg);
     double loss = 0;
     float *dl = back ? xalloc((size_t)T * V, 4) : NULL;
     for (int t = 0; t + 1 < T; t++) {
@@ -872,6 +1100,7 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
             float *g = dl + (size_t)t * V;
             for (int i = 0; i < V; i++) g[i] = (float)(exp((double)z[i] - mx) / se) / N;
             g[y] -= 1.0f / N;
+            if (c->softcap > 0.0f) for (int i = 0; i < V; i++) { const float th = z[i] / c->softcap; g[i] *= 1.0f - th * th; }
         }
     }
     free(lg);
@@ -889,13 +1118,14 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     float *dqr = xalloc((size_t)T * qd, 4), *dkr = xalloc((size_t)T * kvd, 4);
     float *dP = xalloc(T, 4);
     for (int l = c->n_layers - 1; l >= 0; l--) {
+        if (c->g4) { t_g4_back(m, tt, A, l, dx); continue; }
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
         float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P;
         float *qr = A->qr + (size_t)l * T * qd, *kr = A->kr + (size_t)l * T * kvd;
         float *ao = A->ao + (size_t)l * T * qd, *xm = A->xm + (size_t)l * T * d, *xn2 = A->xn2 + (size_t)l * T * d;
         /* feed-forward: x_out = xm + ffn(norma(xm)) */
         memset(dxn, 0, (size_t)T * d * 4);
-        if (tt->rt[l] >= 0) t_moe_back(m, tt, A, l, xn2, dx, dxn);
+        if (tt->rt[l] >= 0) t_moe_back(m, tt, A, l, xn2, xn2, dx, dxn, dxn);
         else t_glu_back(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + (size_t)l * T * H, A->u + (size_t)l * T * H, A->h + (size_t)l * T * H,
                         dx, dxn, T, (int)tt->p[tt->gt[l]].rows);
         memcpy(dxm, dx, (size_t)T * d * 4);
@@ -976,7 +1206,8 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
         t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + (size_t)l * T, dxn, dx, T, d);
     }
     TPar *e = &tt->p[tt->tok];
-    if (e->g) for (int t = 0; t < T; t++) { float *g = e->g + (size_t)toks[t] * d; const float *s = dx + (size_t)t * d; for (int i = 0; i < d; i++) g[i] += s[i]; }
+    const float es = c->emb_scale != 0.0f ? c->emb_scale : 1.0f;
+    if (e->g) for (int t = 0; t < T; t++) { float *g = e->g + (size_t)toks[t] * d; const float *s = dx + (size_t)t * d; for (int i = 0; i < d; i++) g[i] += es * s[i]; }
     free(dxn); free(dx); free(dxm); free(dao); free(dq); free(dk); free(dv); free(dqr); free(dkr); free(dP);
     return loss;
 }
@@ -1186,7 +1417,7 @@ static int train_gradcheck(Model *m, int T) {
     /* 1. o forward de treino tem que dar os mesmos logits que o motor, em todas as posicoes */
     t_forward(m, &tt, toks, &A);
     float *lg = xalloc((size_t)T * c->vocab, 4);
-    tp_mv(t_head(&tt), lg, A.xnf, T);
+    t_logits(m, &tt, &A, lg);
     double worst = 0;
     for (int t = 0; t < T; t++) {
         const float *ref = forward(m, toks[t], t, 1);
