@@ -739,7 +739,7 @@ void Backend::launch(const QString &modelFile)
     env.insert("NO_COLOR", "1");
     if (!env.contains("KATANA_TEACHER_MODEL"))
         env.insert("KATANA_TEACHER_MODEL", teacherModel());
-    if (!env.contains("KATANA_TEACHER") && m_ui->value("professor", false).toBool() && hasTeacherKey())
+    if (!env.contains("KATANA_TEACHER") && m_ui->value("professor", false).toBool())
         env.insert("KATANA_TEACHER", "1");      // o professor estava ligado quando o aplicativo fechou
     if (!env.contains("KATANA_THINK"))
         env.insert("KATANA_THINK", "0");
@@ -917,16 +917,15 @@ void Backend::setTeacher(const QString &key, const QString &model)
     if (!m.isEmpty())
         m_ui->setValue("professorModelo", m);
     emit teacherChanged();
-    if (hasTeacherKey() && m_proc && m_ready)
-        writeLine("/teacher " + teacherModel());        // liga com este modelo
+    if (m_proc && m_ready)
+        writeLine("/teacher " + teacherModel());        // liga com este modelo (sem chave: pelo Claude Code desta maquina)
 }
 void Backend::toggleTeacher()
 {
     if (!m_proc || !m_ready)
         return;
     if (m_teacher) { writeLine("/teacher off"); return; }
-    if (!hasTeacherKey()) { emit teacherKeyNeeded(); return; }
-    writeLine("/teacher " + teacherModel());
+    writeLine("/teacher " + teacherModel());            // sem chave gravada o motor usa o Claude Code logado nesta maquina
 }
 
 void Backend::togglePlan()
@@ -1337,7 +1336,7 @@ void Backend::handleMarker(const QByteArray &line)
         const bool on = args.trimmed().startsWith("1");
         const QString model = args.trimmed().mid(2).trimmed();
         if (on != m_teacher)
-            m_msgs.append("notice", on ? "Professor ligado: " + model + " responde no lugar do modelo local. A conversa e os resultados das ferramentas são enviados à API; as respostas dele ficam guardadas para treinar o modelo local."
+            m_msgs.append("notice", on ? "Professor ligado: " + model + " responde no lugar do modelo local. A conversa e os resultados das ferramentas saem desta máquina; as respostas dele ficam guardadas para treinar o modelo local."
                                        : "Professor desligado: o modelo local volta a responder.");
         m_teacher = on;
         m_ui->setValue("professor", on);

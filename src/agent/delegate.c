@@ -10,7 +10,7 @@
                  "You cannot change files. Finish with a short, factual answer: what you found, with file paths, line numbers or URLs; no preamble. " \
                  "The answer is all the main agent will see.]\n"
 static Model *g_agent_m;       /* modelo e posicao do laco do agente, para as ferramentas que geram texto */
-static int g_agent_pos, g_ctx_lost, g_in_sub;
+static int g_agent_pos, g_ctx_lost;
 
 static void sub_say(const char *fmt, ...) {
     char b[400]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
@@ -123,32 +123,33 @@ static void tool_delegate(const char *js, const char *end, char *out, size_t cap
  * uma nota curta com o que importa e carrega o contexto principal de volta; so a nota entra na conversa. A nota
  * fica guardada pela identidade da leitura (ferramenta, argumentos, tamanho e data do arquivo): pedir a mesma
  * leitura de novo devolve a nota na hora. Leituras por trecho (offset, limit, find) passam inteiras: sao o jeito
- * de o modelo ver as linhas exatas. So ChatML. Ligado com KATANA_DIGEST=1 enquanto e medido. */
+ * de o modelo ver as linhas exatas. So ChatML. Ligado por padrao (decisao do dono, 2026-11-20); KATANA_DIGEST=0
+ * desliga. Em read_file a nota fica presa ao trecho lido (code.c, leitura com posicao guardada). */
 #define DG_MIN 3500         /* bytes: abaixo disso o resultado entra como veio */
 #define DG_GEN 420          /* teto de tokens da nota */
 #define DG_SLOTS 64
 static struct { uint64_t key; char *note; } g_dg[DG_SLOTS];
 static int g_dg_n;
 
-static void tool_digest(Model *m, int mpos, const char *name, const char *args, const char *aend, char *result, size_t cap, const char *request) {
-    static char text[TOOL_WEB + 6000], path[4200];
+static int g_teacher;
+static void tool_digest_in(Model *m, int mpos, const char *name, const char *args, const char *aend, char *result, size_t cap, const char *request) {
+    static char text[TOOL_WEB + 6000];
     const char *on = getenv("KATANA_DIGEST");
-    if (!on || atoi(on) == 0 || !m || g_in_sub) return;
+    const int rd = strcmp(name, "read_file") == 0;
+    if ((on && atoi(on) == 0) || !m || g_in_sub) return;
+    if (g_teacher && !(on && atoi(on) == 2)) return;        /* com o professor o texto bruto entra (o contexto dele e grande); 2 forca a nota (testes) */
+    if (rd && (g_rd_last.notes || !g_rd_last.f || !g_rd_last.seq)) return;     /* ja sao notas, ou linhas exatas pedidas por offset/limit */
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     if (c->chat_fmt != 0) return;
-    if (strcmp(name, "read_file") != 0 && strcmp(name, "web_fetch") != 0) return;
+    if (!rd && strcmp(name, "web_fetch") != 0) return;
     const size_t rl = strlen(result), al = (size_t)(aend - args);
     if (rl < DG_MIN || strncmp(result, "error", 5) == 0) return;
     for (const char *k = args; k < aend; k++)           /* leitura por trecho: passa inteira */
         if (*k == '"' && (strncmp(k, "\"offset\"", 8) == 0 || strncmp(k, "\"limit\"", 7) == 0 || strncmp(k, "\"find\"", 6) == 0 || strncmp(k, "\"links\"", 7) == 0)) return;
     uint64_t key = pfx_hash(0xcbf29ce484222325ULL, name, strlen(name));
     key = pfx_hash(key, args, al);
-    if (strcmp(name, "read_file") == 0 && json_str(args, aend, "path", path, sizeof path)) {
-        struct stat st;
-        if (stat(path, &st) == 0) { const int64_t v[2] = { (int64_t)st.st_size, (int64_t)st.st_mtime }; key = pfx_hash(key, v, sizeof v); }
-    }
-    for (int i = 0; i < g_dg_n; i++)
+    for (int i = 0; i < g_dg_n && !rd; i++)
         if (g_dg[i].key == key) {                       /* ja lido e nao mudou: entra compactado */
             fprintf(stderr, "%s[leitura repetida de %s: a nota guardada entra no lugar de %zu bytes]%s\n", CE(C_DIM), name, rl, CE(C_RESET));
             snprintf(result, cap, "[katana: you already read this and it has not changed; this is the note kept from that reading (%zu bytes of raw text left out). "
@@ -200,6 +201,14 @@ static void tool_digest(Model *m, int mpos, const char *name, const char *args, 
        toma o primeiro trecho pelo arquivo todo */
     char tail[400] = "";
     { const char *nl = strrchr(result, '\n'); if (nl && nl[1] == '[' && strlen(nl + 1) < sizeof tail) snprintf(tail, sizeof tail, "%s", nl + 1); }
+    if (rd) {                       /* a nota fica presa ao trecho do arquivo: volta sem custo enquanto ele nao mudar */
+        RdFile *f = g_rd_last.f;
+        for (int i = 0; i < f->nch; i++) if (f->ch[i].from == g_rd_last.from && !f->ch[i].note) { f->ch[i].note = strdup(np); f->ch[i].ep = g_rd_epoch; }
+        snprintf(result, cap, "[katana: condensed note of lines %d-%d of this file (%zu bytes read; the raw text was left out of the context and the note is kept). "
+                 "For exact lines call read_file with offset and limit.]\n%s%s%s", g_rd_last.from, g_rd_last.to, rl, np, tail[0] ? "\n" : "", tail);
+        free(note.p);
+        return;
+    }
     snprintf(result, cap, "[katana: condensed note of this %s output (%zu bytes read; the raw text was left out of the context). "
              "For exact lines call read_file with offset and limit, or find.]\n%s%s%s", name, rl, np, tail[0] ? "\n" : "", tail);
     if (g_dg_n < DG_SLOTS) {        /* guarda a nota ja com o aviso final */
@@ -207,4 +216,13 @@ static void tool_digest(Model *m, int mpos, const char *name, const char *args, 
         g_dg[g_dg_n].key = key; g_dg[g_dg_n].note = strdup(body ? body + 1 : np); g_dg_n++;
     }
     free(note.p);
+}
+/* nota no lugar do texto bruto (quando cabe) e, na frente, as notas dos trechos anteriores que sairam do contexto */
+static void tool_digest(Model *m, int mpos, const char *name, const char *args, const char *aend, char *result, size_t cap, const char *request) {
+    tool_digest_in(m, mpos, name, args, aend, result, cap, request);
+    if (strcmp(name, "read_file") != 0 || !g_rd_pre[0]) return;
+    static char tmp[TOOL_WEB + 512];
+    snprintf(tmp, sizeof tmp, "[katana: notes kept from the lines you read before in this file]\n%s[now the next lines]\n%s", g_rd_pre, result);
+    snprintf(result, cap, "%s", tmp);
+    g_rd_pre[0] = 0;
 }

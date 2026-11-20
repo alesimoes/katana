@@ -102,13 +102,13 @@ ApplicationWindow {
             spacing: 10
             Text { font.family: Theme.sans; text: "Professor"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
             Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
-                text: "Um modelo maior responde no lugar do modelo local, usando as mesmas ferramentas nesta máquina. A conversa, o prompt do agente e os resultados das ferramentas são enviados à API da Anthropic. A chave fica em ~/.katana/teacher.key, legível só por você." }
+                text: "Um modelo maior responde no lugar do modelo local, usando as mesmas ferramentas nesta máquina. Sem chave, o katana usa o Claude Code em que você já está logado neste computador. Com chave, usa a API da Anthropic (a chave fica em ~/.katana/teacher.key, legível só por você). Nos dois casos a conversa, o prompt do agente e os resultados das ferramentas saem desta máquina." }
             TextField {
                 id: tchKey
                 objectName: "teacherKey"
                 width: parent.width
                 echoMode: TextInput.Password
-                placeholderText: backend.hasTeacherKey() ? "Chave da API (em branco mantém a atual)" : "Chave da API"
+                placeholderText: backend.hasTeacherKey() ? "Chave da API (em branco mantém a atual)" : "Chave da API (opcional: em branco usa o Claude Code)"
                 color: Theme.fg
                 Accessible.name: "Chave da API do professor"
                 onAccepted: tchDlg.save()

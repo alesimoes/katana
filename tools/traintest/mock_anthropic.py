@@ -10,6 +10,7 @@ import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT, LOG = int(sys.argv[1]), sys.argv[2]
+READ = sys.argv[3] if len(sys.argv) > 3 else None      # roteiro alternativo: ler este arquivo 5 vezes so com o caminho
 SIG = "sig-mock-0001"
 
 
@@ -61,7 +62,13 @@ def answer(b):
     # so as chamadas feitas depois do ultimo pedido do usuario contam (a conversa pode ter turnos anteriores)
     last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
     step = sum(1 for m in ms[last_user_text + 1:] if m["role"] == "assistant")
-    if step == 0:
+    if READ and step < 5:
+        content = [{"type": "tool_use", "id": "toolu_rd%d" % done, "name": "read_file", "input": {"path": READ}}]
+        stop = "tool_use"
+    elif READ:
+        content = [{"type": "text", "text": "Li o arquivo."}]
+        stop = "end_turn"
+    elif step == 0:
         content = [{"type": "thinking", "thinking": "The user wants a file. I will write it and read it back.", "signature": SIG},
                    {"type": "text", "text": "Vou gravar o arquivo."},
                    {"type": "tool_use", "id": "toolu_w%d" % done, "name": "write_file",

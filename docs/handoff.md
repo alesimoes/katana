@@ -21,6 +21,14 @@ answers become training data for the local model.
   `KATANA_TEACHER_MODEL=claude-opus-5-5`, `KATANA_TEACHER_EFFORT=high`, `KATANA_TEACHER_URL`, refusal fallback on
   (`KATANA_TEACHER_FALLBACK=0` turns it off). What leaves the machine: the agent's system prompt (with saved memory
   and folder map), the conversation and the tool results.
+- *Two connections* (`KATANA_TEACHER_VIA=api|cli`, `/teacher api`, `/teacher cli`; automatic: `cli` when no key is
+  stored): `api` is the Messages API with a key; `cli` runs the Claude Code program installed on the machine
+  (`claude -p`, the session the owner is already logged in to, no key), one call per turn with no tools of its own,
+  no MCP, no settings and no saved session: it gets the agent prompt, the katana tool declarations and the
+  conversation as a JSON array, and returns the next turn through `--json-schema` (text and tool calls).
+  `KATANA_TEACHER_CLI` names another program (the tests use `tools/traintest/mock_claude.py`). Measured with the
+  real program, one run, tiny local model: 3 turns of 3 to 6 s, the file was written, read back and checked. No
+  thinking text comes back this way, so the reasoning block of those answers is empty.
 - *Training data*: every teacher answer is noted in `<session>.ksess.teacher` (message index);
   `katana export out.jsonl <sessions> --teacher` writes only sessions with teacher answers and puts the loss only on
   them (compacted sessions included: the teacher saw the whole conversation). Then `katana train`.
@@ -33,6 +41,20 @@ answers become training data for the local model.
   context. Each teacher round also feeds the local model (about 13 tok/s for these short pieces in that run).
   **Not run against the real API** (no key on the machine when it was written), and the desktop button was not
   clicked: the app was only started offscreen (no QML errors); the desktop selftest was not run.
+- *Reading with a kept position* (same day, owner request; `src/agent/code.c`, `tool_digest` in `delegate.c`):
+  the engine remembers, per file, up to which line the agent has read in this conversation. `read_file` with only
+  the path continues from there (the notice says so); `offset`/`limit` return exact lines and leave the position
+  alone. Each chunk read in sequence (3,500 bytes or more, ChatML) becomes a note of up to 250 words that replaces
+  the raw text (the "read, use, drop" mechanism of 0o, now **on by default**; `KATANA_DIGEST=0` turns it off) and
+  the note stays attached to the chunk while the file is unchanged (size and date). Asking for a file already read
+  to the end returns the kept notes at once; continuing after a context compaction brings the notes of the earlier
+  chunks along. Reset on `/new` and on a session switch; the sub-agent and teacher mode read raw. Motive: in the
+  owner's session of that day the local model made 85 reads against 7 searches and re-read one 328-line file more
+  than 20 times. Checked with the tiny model driven by the stand-in teacher (step 11 of the traintest: 4 chunks,
+  the fifth read returns the notes); the position alone with `katana toolrun`. **Not measured with Qwen3.6 or
+  Gemma 4** (the GPU was in use by the owner's desktop): note quality, time per chunk (one earlier measurement:
+  63 s for 5.8 KB against about 45 s raw) and the effect on codebench are unknown; the path that brings notes back
+  after a compaction was not exercised.
 - *Not done*: turning the Claude Code session transcripts of this repository into training data (tool names differ;
   needs a converter to the messages format for `katana import`); `katana train` on a real 35B model is still
   unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
