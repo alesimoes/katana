@@ -17,6 +17,13 @@ static void ui_toolout(const char *name, const char *res) {
 static void tool_delegate(const char *js, const char *end, char *out, size_t cap);
 static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap);      /* src/tools/table.c */
 static int ct_readonly(const char *name);
+static void ct_session_reset(void);
+static int ct_end_check(void);
+static int ct_read_line(char *line, size_t cap);
+static void ct_mail_register(void);
+static void ct_mail_unregister(void);
+static char g_ct_handback[4000];        /* src/tools/messages.c: relatorio entregue por SubagentHandback */
+static int g_ct_handback_set;
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap) {
     static char arg[8192], content[65536];
     out[0] = 0;
