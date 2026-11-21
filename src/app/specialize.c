@@ -549,7 +549,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     if (argc < 1) {
         fprintf(stderr, "uso: katana specialize <modelo.gguf> [all|tools|code|teacher|knowledge|conventions] [--from PASTA] [--sessions PASTA] [--corpus ARQ]\n"
                         "         [--curriculum ARQ] [--knowledge PASTA] [--no-refresh] [--training-dir PASTA] [--wait-idle [HORAS]]\n"
-                        "         [--mix tools=20,code=25,teacher=15,knowledge=15,conventions=25] [--out PASTA] [--fresh] [--hours H] [--steps N] [--rank R]\n"
+                        "         [--mix tools=30,code=30,conventions=40,teacher=15,knowledge=15] [--out PASTA] [--fresh] [--hours H] [--steps N] [--rank R]\n"
                         "         [--seq T] [--lr X] [--margin-mb MB] [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--verified]\n"
                         "         [--plan-updates] [--dry-run] [--no-check]\n"
                         "     katana specialize --status [--training-dir PASTA]\n"
@@ -574,7 +574,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     const int all = !strcmp(x.kind, "all");
     if (kind < 0 && !all) { fprintf(stderr, "specialize: tipo %s desconhecido (all, tools, code, teacher, knowledge ou conventions)\n", x.kind); return 1; }
     const char *from = NULL, *sessions = NULL, *corpus = NULL, *outdir = NULL, *rank = "8", *seq = "512", *lr = "2e-4", *kdir = NULL, *trdir = NULL;
-    const char *mix = "tools=20,code=25,teacher=15,knowledge=15,conventions=25";
+    const char *mix = "tools=30,code=30,conventions=40,teacher=15,knowledge=15";
     const char *curriculum = NULL;
     double hours = 5, wait_h = 0; int steps = 0, dry = 0, check = 1, fresh = 0, refresh = 1; long margin = 6000;
     /* trocas e cortes persistentes do katana.cfg; as da linha de comando vem depois (o corte da linha vence) */
@@ -620,7 +620,9 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     snprintf(sessdef, sizeof sessdef, "%s/.katana/desktop/sessoes", home);
     char *from_cfg = NULL;
     if (!from && (all || kind == SP_TOOLS || kind == SP_CODE) && sp_cfg_get(&cfg, "transcripts")) { from_cfg = sp_cfg_path(sp_cfg_get(&cfg, "transcripts"), home); from = from_cfg; }
-    if (!sessions && kind != SP_KNOW && kind != SP_CONV && sp_isdir(sessdef)) sessions = sessdef;
+    /* decisao do dono (2026-11-21): no treino unico (all) entram so tools, code e conventions. As falas do professor e o
+       conhecimento dos projetos ficam de fora, a nao ser que sejam pedidos pelo nome (--sessions, --corpus) ou pelo tipo */
+    if (!sessions && !all && kind != SP_KNOW && kind != SP_CONV && sp_isdir(sessdef)) sessions = sessdef;
     if (!outdir) {
         time_t t = time(NULL); char ts[32]; strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", localtime(&t));
         snprintf(outbuf, sizeof outbuf, "%s/%s-%s", trdir, x.kind, ts);
@@ -664,7 +666,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
 
     /* 2. conhecimento (base incremental, corpus e holdout) e dados: cada fonte com as regras do seu tipo */
     char corpus_auto[2400], hold_auto[2400], kdir_buf[2400];
-    if (!corpus && refresh && (all || kind == SP_KNOW)) {
+    if (!corpus && refresh && kind == SP_KNOW) {
         if (!kdir) {
             if (dry) { snprintf(kdir_buf, sizeof kdir_buf, "%s/knowledge", outdir); kdir = kdir_buf; }     /* ensaio: nada fora de --out */
             else if (getenv("KATANA_KNOWLEDGE") && *getenv("KATANA_KNOWLEDGE")) kdir = getenv("KATANA_KNOWLEDGE");
@@ -674,7 +676,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
         snprintf(hold_auto, sizeof hold_auto, "%s/holdout.jsonl", dry ? outdir : root);
         if (!sp_knowledge(&x, from, kdir, corpus_auto, hold_auto)) return 3;
         if (sp_exists(corpus_auto)) corpus = corpus_auto;
-    } else if (!corpus && !refresh && (all || kind == SP_KNOW)) {
+    } else if (!corpus && !refresh && kind == SP_KNOW) {
         snprintf(corpus_auto, sizeof corpus_auto, "%s/corpus.jsonl", root);
         if (sp_exists(corpus_auto)) { corpus = corpus_auto; sp_say("--no-refresh: uso o corpus que ja existe, %s", corpus); }
     }
