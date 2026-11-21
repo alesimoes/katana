@@ -48,6 +48,15 @@ merged GGUF carrying a mark that the model knows the tools, and training on the 
 **E. Install and run anywhere**: AppImage and the packaging workflow executed once; Windows build compiled again;
 `test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API.
 
+**G. Knowledge from earlier sessions** (the owner wants the model, not a lookup, to know what was done in his projects)
+
+| # | What | Done when |
+|---|---|---|
+| G1 | `katana knowledge build/search/stats/corpus` and `docs/knowledge-base.md` (2026-11-21) | **done**: notes and corpus built from the real transcripts, tested without a model |
+| G2 | Train a model on the corpus (`katana specialize <model> knowledge`) | the adapter trained, nights counted |
+| G3 | Held-out measurement: ask the `--holdout` questions before and after training | correct answers counted for both; the expectation (names, paths, commands, not volume) confirmed or refuted |
+| G4 | Keep the base current: rebuild incrementally, regenerate the corpus, retrain on the new part | a routine the owner can run |
+
 **F. The agent of Grey** (after A and B hold for a week of real use): what Grey needs from katana is not written
 down yet. To decide with the owner: whether Grey talks to `katana agent` through the line protocol the desktop uses,
 or to `katana serve` through the OpenAI-compatible API (which then needs native `tools`), which machine runs the

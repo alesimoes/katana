@@ -40,6 +40,15 @@ result carry the order to stop calling tools and report to the user; four failur
 guessing. Checked with a stubborn stand-in teacher that repeats one failing call (`MOCK_INSIST=1`, step in
 `tools/traintest/run.sh`). Not measured with a model.
 
+Knowledge from earlier sessions (2026-11-21, `src/app/knowledge.c`, `docs/knowledge-base.md`): `katana knowledge build`
+turns the transcripts of a coding agent on this machine into Markdown notes per project and session (request, outcome,
+files, commands that worked, problem -> fix; secrets masked; incremental; no model), `search` and `stats` read them,
+and `corpus` derives question -> answer pairs for training (with `--holdout` phrasings for the measurement). Real data:
+1238 transcripts, 96 projects, 22 seconds, 3.2 MB of notes, 3000 pairs, about 715 training windows (estimate, 5 to 7
+nights). Tested without a model by a step in `tools/traintest/run.sh`. Not done: training on the corpus and the held-out
+measurement (`katana specialize <model> knowledge` is another agent's work); `TrOpt` got three fields (`cur_file`,
+`ep_cwd`, `ep_ts`) set by the reader.
+
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its
