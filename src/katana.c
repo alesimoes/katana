@@ -54,6 +54,7 @@
 #include "tools/write.c"
 #include "tools/edit.c"
 #include "tools/notebookedit.c"
+#include "tools/regex.c"               /* motor de expressoes regulares do Grep */
 #include "tools/glob.c"
 #include "tools/grep.c"
 #include "tools/webfetch.c"

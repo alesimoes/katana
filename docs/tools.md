@@ -82,9 +82,23 @@ stay byte for byte.
 
 ### Glob, Grep
 `Glob(pattern, path)`: `**`, `*`, `?`, `[...]`, `{a,b}`; absolute paths, newest first, at most 100.
-`Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, head_limit, offset)`: POSIX extended
-regular expressions with a few conveniences (`\d`, `\t`, a literal `{`); modes `files_with_matches` (default),
-`content`, `count`; skips binary and git-ignored files.
+`Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, literal, head_limit, offset)`: katana's
+own backtracking engine (`src/tools/regex.c`) over UTF-8. Syntax: `.` `^` `$` `\A` `\z` `\Z` `\b` `\B` `\<` `\>`;
+classes `[...]` with `[[:alpha:]]` and the other POSIX names; `\d` (0-9) `\w` `\s` `\h` `\v` and negations; `\p{L}`
+`\p{Lu}` `\p{Ll}` `\p{N}` `\p{Nd}` `\p{P}` `\p{Z}` `\p{Latin}` `\p{Greek}` `\p{Cyrillic}` and `\P{..}` (approximate
+tables: Latin, Greek, Cyrillic, Armenian, Hebrew, Arabic, CJK, kana, hangul); escapes `\t \n \r \f \e \a \0 \xHH
+\x{H..} \uHHHH`; groups `(...)` `(?:...)` `(?<n>...)` `(?P<n>...)` `(?>...)`; `|`; `* + ? {n} {n,} {n,m}` greedy,
+lazy (`?`) and possessive (`+`); lookahead and lookbehind (lookbehind up to 255 characters, no unbounded repetition);
+`\1`..`\99`, `\k<n>`; flags `(?imsx)`, `(?-i)`, `(?i:...)`; `\Q...\E`; a `{` that is not a repetition is literal.
+Case folding covers accented Latin, Greek and Cyrillic. Each search call has a step budget (10 million plus 100 per
+byte); past it the tool returns "pattern too slow on this input". Modes `files_with_matches` (default), `content`,
+`count` (also `files`, `lines`, `matches`). Skips binary files and ignored files: `git ls-files` inside a repository,
+otherwise the `.gitignore` files of the folder, its parents up to the working folder and its subfolders (`!`, `/`,
+`**`, trailing `/`). Forgiving: an invalid pattern is searched as plain text; with zero matches it tries the pattern
+as plain text, ignoring case and without `glob`/`type`, and says what it found; `include`, `case_insensitive`,
+`ignore_case`, `context`, `regex: false`, `fixed_strings`, `literal` are accepted; a missing `path` names the only
+file or folder with that name, if there is one. `KATANA_REGEX_TEST=1` with `subject` and no `path` matches the pattern
+against `subject` and prints the spans (used by `tools/tooltest/regex.sh`).
 
 ### WebFetch, WebSearch
 `WebFetch(url, prompt)`: http upgraded to https; hosts without a dot refused (use `curl` in `Bash` for local
