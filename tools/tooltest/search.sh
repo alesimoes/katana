@@ -1,7 +1,8 @@
 #!/bin/sh
 # Testa as ferramentas Glob e Grep (src/tools/glob.c, grep.c). Uso: sh tools/tooltest/search.sh ./katana
-# Nao compila nada; cria uma pasta temporaria e remove no fim. O Grep usa sempre o motor proprio (regcomp), sem rg:
-# nao ha segundo motor para comparar, entao cada verificacao roda uma vez por modo de listagem (git e sem git).
+# Nao compila nada; cria uma pasta temporaria e remove no fim. O Grep usa sempre o motor proprio (src/tools/regex.c;
+# a sintaxe em detalhe fica em regex.sh), entao cada verificacao roda uma vez por modo de listagem (git e sem git).
+# Tambem cobre as tolerancias do Grep, o .gitignore fora de repositorio git e o tempo de uma busca simples em src/.
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 [ -x "$K" ] || { echo "uso: $0 <binario do katana>"; exit 2; }
 T=$(mktemp -d)
@@ -14,7 +15,7 @@ chk() {   # nome esperado obtido
 run() { ( cd "$D" && "$K" tool "$@" 2>&1 ); }     # roda dentro da pasta de teste $D
 
 mkfix() {   # cria a arvore de teste em $D
-    mkdir -p "$D/sub/deep" "$D/build" "$D/many"
+    mkdir -p "$D/sub/deep" "$D/build" "$D/many" "$D/emptyd"
     printf 'int main() {\n  return 0;\n}\n// TODO one\n' > "$D/a.c"
     printf '#define X 1\n// todo two\n' > "$D/b.h"
     printf 'def f():\n    pass  # TODO three\n' > "$D/sub/c.py"
@@ -23,6 +24,8 @@ mkfix() {   # cria a arvore de teste em $D
     printf 'TODO in log\n' > "$D/ignored.log"
     printf 'TODO in build\n' > "$D/build/e.c"
     printf 'alpha\nbeta\ngamma\n' > "$D/notes.txt"
+    printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab\n' > "$D/slow.txt"
+    printf 'end here\r\nnext\r\n' > "$D/crlf.txt"
     printf '*.log\nbuild/\n' > "$D/.gitignore"
     i=0; while [ $i -lt 105 ]; do : > "$D/many/f$i.txt"; i=$((i+1)); done
     touch -d "2026-01-01 10:00:00" "$D/a.c" "$D/sub/deep/d.json" "$D/notes.txt" "$D/many"/*.txt
@@ -132,9 +135,52 @@ Found 1 total match across 1 file." "$(run Grep '{"pattern":"alpha\\nbeta","mult
     chk "$L \\d" "a.c:2:  return 0;" "$(run Grep '{"pattern":"return \\d","output_mode":"content"}')"
     chk "$L \\w e \\s" "a.c:2:  return 0;" "$(run Grep '{"pattern":"^\\s+return\\s\\w;$","output_mode":"content"}')"
     chk "$L intervalo {2}" "a.c:2:  return 0;" "$(run Grep '{"pattern":"^ {2}ret","output_mode":"content"}')"
-    chk "$L padrao invalido" "error: invalid regular expression: Unmatched ( or \\(. The syntax is POSIX extended (like grep -E): no lookahead/lookbehind, no lazy quantifiers; escape literal ( ) { } [ ] . * + ? | with a backslash." "$(run Grep '{"pattern":"(abc"}')"
+    chk "$L padrao invalido vira texto" "[pattern is not a valid regular expression (missing ) to close the group opened at position 1); searched for it as plain text]
+No matches found" "$(run Grep '{"pattern":"(abc"}')"
+    chk "$L padrao invalido achado como texto" "[pattern is not a valid regular expression (missing ) to close the group opened at position 5); searched for it as plain text]
+a.c:1:int main() {" "$(run Grep '{"pattern":"main(","output_mode":"content"}')"
+    chk "$L regex sem resultado, texto com" "[the regular expression matched nothing; searched for the pattern as plain text instead (escape . * + ? ( ) [ ] { } | ^ \$ \\ with a backslash to match them literally, or pass \"literal\": true)]
+a.c:1:int main() {" "$(run Grep '{"pattern":"main() {","output_mode":"content"}')"
+    chk "$L regex com resultado nao tenta texto" "Found 1 file
+a.c" "$(run Grep '{"pattern":"main()"}')"
+    chk "$L dica de caixa" "No matches found; 1 match when ignoring case: pass \"-i\": true" "$(run Grep '{"pattern":"TODO two"}')"
+    chk "$L dica de caixa (contagem)" "No matches found; 3 matches when ignoring case: pass \"-i\": true" "$(run Grep '{"pattern":"Todo"}')"
+    chk "$L dica de filtro glob" "No matches found in the files selected by \`glob\`; without that filter there is 1 match in 1 file: .h (1 file). Change or drop the filter." "$(run Grep '{"pattern":"define","glob":"*.c"}')"
+    chk "$L dica de filtro type" "No matches found in the files selected by \`type\`; without that filter there are 2 matches in 2 files: .c (1 file), .py (1 file). Change or drop the filter." "$(run Grep '{"pattern":"TODO","type":"json"}')"
+    chk "$L path com nome unico" "error: path does not exist: deep. Check the spelling, or call Glob on a parent folder to see what is there. There is exactly one \"deep\" under the working folder: sub/deep" "$(run Grep '{"pattern":"k","path":"deep"}')"
+    chk "$L path errado com arquivo unico" "error: path does not exist: x/c.py. Check the spelling, or call Glob on a parent folder to see what is there. There is exactly one \"c.py\" under the working folder: sub/c.py" "$(run Grep '{"pattern":"k","path":"x/c.py"}')"
+    chk "$L alias include" "Found 1 file
+sub/c.py" "$(run Grep '{"pattern":"TODO","include":"*.py"}')"
+    chk "$L alias case_insensitive" "Found 3 files
+b.h
+sub/c.py
+a.c" "$(run Grep '{"pattern":"todo","case_insensitive":true}')"
+    chk "$L alias ignore_case" "b.h:2:// todo two" "$(run Grep '{"pattern":"TODO TW","ignore_case":true,"output_mode":"content"}')"
+    chk "$L regex false" "a.c:1:int main() {" "$(run Grep '{"pattern":"main() {","regex":false,"output_mode":"content"}')"
+    chk "$L fixed_strings" "a.c:1:int main() {" "$(run Grep '{"pattern":"() {","fixed_strings":true,"output_mode":"content"}')"
+    chk "$L literal" "No matches found" "$(run Grep '{"pattern":"TODO|define","literal":true}')"
+    chk "$L regex como nome do padrao" "Found 1 file
+b.h" "$(run Grep '{"regex":"def(ine)?\\b X"}')"
+    chk "$L output_mode files" "Found 2 files
+sub/c.py
+a.c" "$(run Grep '{"pattern":"TODO","output_mode":"files"}')"
+    chk "$L output_mode lines" "a.c:4:// TODO one
+sub/c.py:2:    pass  # TODO three" "$(run Grep '{"pattern":"TODO","output_mode":"lines"}')"
+    chk "$L output_mode matches" "a.c:4:// TODO one
+sub/c.py:2:    pass  # TODO three" "$(run Grep '{"pattern":"TODO","output_mode":"matches"}')"
+    chk "$L nenhum arquivo passa o glob" "No files were searched: none of the $NALL files under . passes the \`glob\` filter. Change or drop it." "$(run Grep '{"pattern":"x","glob":"*.zzz"}')"
+    chk "$L pasta vazia" "No files were searched: emptyd has no files that are not ignored (.git, .gitignore entries, node_modules and similar folders are skipped)." "$(run Grep '{"pattern":"x","path":"emptyd"}')"
+    chk "$L lookbehind e classe Unicode" "a.c:4:// TODO one" "$(run Grep '{"pattern":"(?<=// )TODO\\s\\p{Ll}+$","output_mode":"content"}')"
+    chk "$L (?i) no padrao" "Found 3 files
+b.h
+sub/c.py
+a.c" "$(run Grep '{"pattern":"(?i)todo"}')"
+    chk "$L padrao lento vira erro" "error: pattern too slow on this input; simplify it (it needed more than 10000000 steps at slow.txt:1). Avoid nested quantifiers such as (a+)+ and long .* chains." "$(run Grep '{"pattern":"(a+)+$","path":"slow.txt"}')"
+    chk "$L multiline com ^ em cada linha" "notes.txt:2:beta
+notes.txt:3:gamma" "$(run Grep '{"pattern":"^beta\\n^gamma$","multiline":true,"output_mode":"content"}')"
+    chk "$L CRLF: \$ antes do \\r" "crlf.txt:1:end here" "$(run Grep '{"pattern":"here$","path":"crlf.txt","output_mode":"content"}')"
     chk "$L sem pattern" "error: missing \`pattern\`. Example: {\"pattern\": \"TODO\", \"output_mode\": \"content\"}" "$(run Grep '{}')"
-    chk "$L output_mode invalido" "error: output_mode must be \"files_with_matches\", \"content\" or \"count\", not \"lines\"" "$(run Grep '{"pattern":"x","output_mode":"lines"}')"
+    chk "$L output_mode invalido" "error: output_mode must be \"files_with_matches\", \"content\" or \"count\", not \"zzz\"" "$(run Grep '{"pattern":"x","output_mode":"zzz"}')"
     chk "$L path inexistente" "error: path does not exist: nope. Check the spelling, or call Glob on a parent folder to see what is there." "$(run Grep '{"pattern":"x","path":"nope"}')"
     chk "$L binario ignorado mesmo direto" "No matches found" "$(run Grep '{"pattern":"TODO","path":"bin.dat"}')"
     chk "$L booleano como texto (-i \"true\")" "Found 3 files
@@ -142,10 +188,40 @@ b.h
 sub/c.py
 a.c" "$(run Grep '{"pattern":"TODO","-i":"true"}')"
 }
-D=$T/g; grepsuite "git:"
+D=$T/g; NALL=$(cd "$D" && git ls-files --cached --others --exclude-standard | wc -l | tr -d ' '); grepsuite "git:"
 D=$T/n; mkdir -p "$D"; mkfix; D=$(cd "$D" && pwd -P)
-grepsuite "walk:"
-chk "Grep ferramenta antiga continua" "1" "$(run search_files '{"pattern":"TODO one"}' | grep -c 'a.c:4:')"
+NALL=$(cd "$D" && find . -type f ! -name '*.log' ! -path './build/*' | wc -l | tr -d ' '); grepsuite "walk:"
+# ---------------- .gitignore sem git ----------------
+D=$T/ig; mkdir -p "$D"; D=$(cd "$D" && pwd -P)
+for f in a.log keep.log rootonly.txt sub/rootonly.txt build/x.c sub/build/y.c x/gen/z.c gen/w.c x/gen/z.h docs/a/b/q.tmp \
+         docs/q.tmp docs/r.txt '#hash.txt' sub/local.txt local.txt out/keep.txt out/drop.txt; do
+    mkdir -p "$D/$(dirname "$f")"; printf 'NEEDLE\n' > "$D/$f"
+done
+printf '# comentario\n*.log\n!keep.log\n/rootonly.txt\nbuild/\n**/gen/*.c\ndocs/**/*.tmp\n\\#hash.txt\nout/*\n!out/keep.txt\n' > "$D/.gitignore"
+printf 'local.txt\n' > "$D/sub/.gitignore"
+chk "gitignore: negacao, ancora, pasta, **, comentario, escape" "docs/r.txt:1:NEEDLE
+keep.log:1:NEEDLE
+local.txt:1:NEEDLE
+out/keep.txt:1:NEEDLE
+sub/rootonly.txt:1:NEEDLE
+x/gen/z.h:1:NEEDLE" "$(run Grep '{"pattern":"NEEDLE","output_mode":"content"}')"
+chk "gitignore da pasta acima vale numa subpasta" "sub/rootonly.txt:1:NEEDLE" "$(run Grep '{"pattern":"NEEDLE","path":"sub","output_mode":"content"}')"
+chk "pasta ignorada passada direto e lida" "Found 1 file
+sub/build/y.c" "$(run Grep '{"pattern":"NEEDLE","path":"sub/build"}')"
+chk "gitignore: arquivo ignorado passado direto e lido" "a.log:1:NEEDLE" "$(run Grep '{"pattern":"NEEDLE","path":"a.log","output_mode":"content"}')"
+chk "gitignore: ** casa zero pastas" "No files were searched: gen has no files that are not ignored (.git, .gitignore entries, node_modules and similar folders are skipped)." "$(run Grep '{"pattern":"NEEDLE","path":"gen"}')"
+
+# ---------------- tempo: palavra simples em src/ deste repositorio ----------------
+R=$(cd "$(dirname "$0")/../.." && pwd)
+if [ -d "$R/src" ]; then
+    for q in '{"pattern":"rx_search","path":"src"}' '{"pattern":"rx_search","path":"src","-i":true}' '{"pattern":"static\\s+int\\s+\\w+\\(","path":"src","output_mode":"count"}'; do
+        t0=$(date +%s%N); o=$(cd "$R" && "$K" tool Grep "$q" 2>&1); t1=$(date +%s%N)
+        ms=$(( (t1 - t0) / 1000000 )); echo "     $q: $ms ms ($(printf '%s\n' "$o" | head -1))"
+        chk "busca em src/ abaixo de 1 s: $q" "1" "$([ $ms -lt 1000 ] && echo 1 || echo 0)"
+    done
+fi
+
+D=$T/n; chk "Grep ferramenta antiga continua" "1" "$(run search_files '{"pattern":"TODO one"}' | grep -c 'a.c:4:')"
 
 echo
 if [ $F -eq 0 ]; then echo "OK $N checks"; else echo "FAILED $F"; exit 1; fi
