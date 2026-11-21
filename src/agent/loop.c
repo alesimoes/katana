@@ -319,6 +319,109 @@ static int rp_failed(const char *r) {
     return e && e[11] >= '1' && e[11] <= '9';
 }
 
+/* ---- obstaculo externo: falhas deste pedido em volta da mesma coisa que o agente nao produz sozinho (programa, SDK,
+ * arquivo, login). Chave: o programa que falta ("command not found"), o programa do comando que falhou (Bash), ou a pasta
+ * do caminho (outras ferramentas). So conta a falha cujo texto fala de algo ausente ou bloqueado. No log real de
+ * 2026-11-21 as falhas em volta do mesmo programa vinham intercaladas com chamadas de ajuda que dao certo, entao a
+ * sequencia de 4 falhas seguidas nunca disparava; aqui a contagem e por pedido e a nota sai na 3a e na 6a ---- */
+static char bk_key[16][96]; static int bk_cnt[16], bk_n;
+static int bk_blocked_text(const char *r) {
+    static const char *const kw[] = {"not found", "no such file", "could not read", "could not find", "cannot access", "cannot open", "can't open",
+        "unsupported", "requires", "required", "login", "log in", "logged out", "not logged", "permission denied", "not installed", "missing",
+        "unauthorized", "forbidden", "credential", "api key", "no module named", "not available", NULL};
+    const size_t rl = strlen(r) < 4000 ? strlen(r) : 4000;
+    for (int i = 0; kw[i]; i++) if (ci_find(r, rl, kw[i], strlen(kw[i]))) return 1;
+    return 0;
+}
+/* programa de um comando de shell: o primeiro trecho (entre &&, ||, ;, |) que nao e cd/echo/export; sem VAR=x, sudo, env */
+static int bk_prog(const char *cmd, char *out, size_t cap) {
+    const char *p = cmd;
+    while (*p) {
+        while (*p == ' ' || *p == '&' || *p == '|' || *p == ';' || *p == '(' || *p == '\n') p++;
+        const char *e = p;
+        while (*e && *e != '&' && *e != '|' && *e != ';' && *e != '\n') e++;
+        const char *t = p;
+        for (;;) {      /* pula VAR=valor, sudo, env, time, nice */
+            const char *w = t; while (w < e && *w != ' ') w++;
+            const char *eq = memchr(t, '=', (size_t)(w - t));
+            if (w > t && (eq || (w - t == 4 && (!strncmp(t, "sudo", 4) || !strncmp(t, "time", 4) || !strncmp(t, "nice", 4))) || (w - t == 3 && !strncmp(t, "env", 3)))) {
+                t = w; while (t < e && *t == ' ') t++; continue;
+            }
+            break;
+        }
+        const char *w = t; while (w < e && *w != ' ') w++;
+        const size_t l = (size_t)(w - t);
+        static const char *const skip[] = {"cd", "echo", "export", "printf", "true", "source", "set", "pushd", "which", "command", "test", "[", NULL};
+        int sk = !l;
+        for (int i = 0; !sk && skip[i]; i++) if (l == strlen(skip[i]) && !strncmp(t, skip[i], l)) sk = 1;
+        if (!sk) {
+            const char *b = t; for (const char *q = t; q < w; q++) if (*q == '/') b = q + 1;
+            const size_t bl = (size_t)(w - b);
+            if (!bl || bl + 1 > cap) return 0;
+            memcpy(out, b, bl); out[bl] = 0;
+            return 1;
+        }
+        p = e;
+    }
+    return 0;
+}
+/* a chave da falha (vazia: nao conta) */
+static void bk_key_of(const char *name, const char *ap, const char *end, const char *r, char *key, size_t cap) {
+    key[0] = 0;
+    if (!bk_blocked_text(r)) return;
+    const char *nf = strstr(r, ": command not found");
+    if (nf) {       /* "...: prog: command not found" */
+        const char *b = nf; while (b > r && b[-1] != ' ' && b[-1] != ':' && b[-1] != '\n') b--;
+        if (nf > b && (size_t)(nf - b) < 80) { snprintf(key, cap, "the program %.*s", (int)(nf - b), b); return; }
+    }
+    char v[2048], pr[80];
+    if (!strcmp(name, "Bash") || !strcmp(name, "run_command") || !strcmp(name, "PowerShell")) {
+        if (json_str(ap, end, "command", v, sizeof v) && bk_prog(v, pr, sizeof pr)) snprintf(key, cap, "the program %s", pr);
+        return;
+    }
+    if (json_str(ap, end, "file_path", v, sizeof v) || json_str(ap, end, "path", v, sizeof v)) {
+        char *sl = strrchr(v, '/'); if (sl && sl > v) *sl = 0;
+        snprintf(key, cap, "the folder %.80s", v);
+    }
+}
+/* conta a falha; devolve quantas falhas a chave ja tem neste pedido (0: sem chave) */
+static int bk_count(const char *key) {
+    if (!key[0]) return 0;
+    for (int i = 0; i < bk_n; i++) if (!strcmp(bk_key[i], key)) return ++bk_cnt[i];
+    if (bk_n >= 16) return 0;
+    snprintf(bk_key[bk_n], sizeof bk_key[0], "%s", key); bk_cnt[bk_n] = 1;
+    return bk_cnt[bk_n++];
+}
+/* passo atual da lista (o primeiro sem [x]): numero, total e texto; 0 se nao ha passo em aberto */
+static int plan_cur(char *txt, size_t cap, int *k, int *n) {
+    int i = 0, got = 0; *k = 0; txt[0] = 0;
+    for (const char *p = g_todo; *p; ) {
+        const char *e = strchr(p, '\n'); if (!e) e = p + strlen(p);
+        i++;
+        if (!got && strncmp(p, "[x]", 3) != 0) { got = 1; *k = i; const char *t = p + (strncmp(p, "[ ]", 3) == 0 ? 4 : 0); snprintf(txt, cap, "%.*s", (int)(e - t < 200 ? e - t : 200), t); }
+        if (!*e) break;
+        p = e + 1;
+    }
+    *n = i;
+    return got;
+}
+/* marcador TOOL para o desktop: nome, argumentos (uma linha) e, quando a chamada traz "description", ela num 3o campo */
+static void ui_tool_mark(const char *name, const char *ap, const char *end) {
+    if (!getenv("KATANA_UI")) return;
+    const size_t sl = strcspn(ap, "\n");
+    char d[300] = "";
+    if (json_str(ap, end, "description", d, sizeof d)) for (char *q = d; *q; q++) if (*q == '\t' || *q == '\n' || *q == '\r') *q = ' ';
+    printf("\x01" "TOOL %s\t%.*s%s%s\n", name, (int)(sl < 160 ? sl : 160), ap, d[0] ? "\t" : "", d);
+    fflush(stdout);
+}
+/* limite de rodadas de um pedido: blocos de KATANA_ROUNDS (padrao 40); um bloco a mais quando o anterior teve progresso
+ * (arquivo gravado ou passo da lista concluido), ate RL_CAP */
+#define RL_CAP 200
+static int rl_block(void) { const char *e = getenv("KATANA_ROUNDS"); const int v = e ? atoi(e) : 0; return v >= 3 ? (v > RL_CAP ? RL_CAP : v) : 40; }
+static int rl_writes(const char *name) {
+    return !strcmp(name, "Write") || !strcmp(name, "Edit") || !strcmp(name, "NotebookEdit") || !strcmp(name, "write_file") || !strcmp(name, "edit_file");
+}
+
 static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -467,6 +570,19 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;
+        rp_n = 0; rp_fail = 0; rp_refused = 0; bk_n = 0;        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
+        {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
+            int td = 0; const int tn = todo_count(&td);
+            if (tn > td && !first) {
+                static char nl[16384];
+                snprintf(nl, sizeof nl, "%s\n[katana: your todo list from before still has %d unfinished steps. This message is newer and comes first: "
+                         "if it changes the plan, follow it and rewrite or drop the old steps.]", line, tn - td);
+                snprintf(line, sizeof line, "%s", nl);
+            }
+        }
+        int lim = rl_block(), rl_forced = 0, rl_files = 0, rl_done0 = 0, pl_calls = 0;
+        int pl_old = 0; { int td = 0; const int tn = todo_count(&td); pl_old = tn > td; }      /* ja havia plano em aberto */
+        { int td = 0; todo_count(&td); rl_done0 = td; }
         prole = 'u'; buf_clear(&pend); buf_str(&pend, line);
         if (first) { AGENT_SYS(); ah_clear(&slog); }   /* memoria + ferramentas MCP */
         if (go && first) snprintf(text, sizeof text, "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\n\nReasoning: %s\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message. Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|>%s<|end|><|start|>user<|message|>%s<|end|><|start|>assistant", go_reason() ? "high" : "low", sys, line);
@@ -486,7 +602,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         }
         buf_str(&tr, "Voce: "); buf_str(&tr, line); buf_str(&tr, "\n");
 
-        for (int round = 0; round < 40; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
+        for (int round = 0; round < lim; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);
@@ -553,6 +669,14 @@ static int agent(Model *m, int max_tokens, float temp) {
             free(ids.ids);
             buf_str(&tr, "Assistente: "); buf_str(&tr, reply.p ? reply.p : ""); buf_str(&tr, "\n");
             if (g_stop) break;                          /* interrompido: nao executa ferramentas */
+            if (round == lim - 2 && !rl_forced && lim + rl_block() <= RL_CAP) {      /* fim do bloco: continua se houve progresso */
+                int td = 0; todo_count(&td);
+                if (rl_files || td > rl_done0) {
+                    fprintf(stderr, "%s[%d rodadas de ferramentas; o trabalho avanca (%d arquivos gravados, %d passos concluidos): mais %d rodadas]%s\n",
+                            CE(C_DIM), lim, rl_files, td - rl_done0, rl_block(), CE(C_RESET));
+                    lim += rl_block(); rl_files = 0; rl_done0 = td;
+                }
+            }
 
             /* chamadas de ferramenta na resposta (depois do raciocinio, se houver) */
             const char *rp = reply.p ? reply.p : "";
@@ -569,7 +693,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     const int trunc = !end && cut;
                     if (!end) end = rp + reply.n;
                     { const long room = ((long)c->ctx - pos - 900) * 3; g_budget = room < 1500 ? 1500 : room > TOOL_WEB ? TOOL_WEB : (size_t)room; }
-                    { size_t sl = strcspn(ap, "\n"); fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); } }
+                    { size_t sl = strcspn(ap, "\n"); fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); ui_tool_mark(name, ap, end); }
                     if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
                         ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
                                   : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
@@ -617,10 +741,9 @@ static int agent(Model *m, int max_tokens, float temp) {
                 }
                 {
                     size_t sl = strcspn(ap, "\n");
-                    fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); }
+                    fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); ui_tool_mark(name, ap, end);
                 }
                 /* insistencia no erro: a mesma chamada que ja falhou duas vezes neste pedido nao roda de novo */
-                if (round == 0 && calls == 0) { rp_n = 0; rp_fail = 0; rp_refused = 0; }
                 const uint64_t csig = rp_hash(ap, (size_t)(end - ap), rp_hash(name, strlen(name), 1469598103934665603ULL));
                 int rp_same_fail = 0;
                 for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
@@ -633,7 +756,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
-                if (rp_refuse) { if (++rp_refused >= 2 && round < 38) round = 38; }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
+                if (rp_refuse) { if (++rp_refused >= 2 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
                 else if (!trunc) {
                     const int failed = rp_failed(result);
                     const uint64_t rs = rp_hash(result, strlen(result), 1469598103934665603ULL);
@@ -641,17 +764,44 @@ static int agent(Model *m, int max_tokens, float temp) {
                     for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_res[i] == rs) same++;
                     if (rp_n < 128) { rp_sig[rp_n] = csig; rp_res[rp_n] = rs; rp_err[rp_n] = (char)failed; rp_n++; }
                     rp_fail = failed ? rp_fail + 1 : 0;
+                    if (!failed && rl_writes(name)) rl_files++;
+                    pl_calls++;
+                    char bkey[96]; int bk = 0;
+                    if (failed) { bk_key_of(name, ap, end, result, bkey, sizeof bkey); bk = bk_count(bkey); }
                     const size_t rl = strlen(result);
                     if (same >= 1 && rl + 500 < sizeof result)
                         snprintf(result + rl, sizeof result - rl, "\n[katana: this exact call already gave this exact result (%d times now). Repeating it changes nothing. Do something different: "
                                  "read the message above, change the arguments, check the command's help, use another tool, or tell the user what is blocking you.]", same + 1);
+                    else if ((bk == 3 || bk == 6) && rl + 900 < sizeof result) {
+                        char le[130]; size_t k = 0;      /* inicio do erro, numa linha */
+                        for (const char *q = result; *q && k < 120 && q < result + rl; q++) le[k++] = (*q == '\n' || *q == '\t' || *q == '"') ? ' ' : *q;
+                        le[k] = 0;
+                        snprintf(result + rl, sizeof result - rl, "\n[katana: %d calls in this request failed around the same thing: %s (last error: \"%s\"). "
+                                 "If it is something you cannot produce yourself (a program or SDK the user must download, a login, a key, a file only they have), "
+                                 "%sstop probing it. Tell the user in one sentence exactly what they must provide, and go on now with the work that does not "
+                                 "depend on it: write the code and files anyway.]", bk, bkey, le, bk == 6 ? "you are still circling it: " : "");
+                        rp_fail = 0;
+                    }
                     else if (rp_fail >= 4 && rl + 500 < sizeof result) {
                         snprintf(result + rl, sizeof result - rl, "\n[katana: %d calls in a row failed. Stop guessing. What do the errors have in common? Check the help or the documentation "
                                  "(WebSearch), or tell the user in words what is missing and ask how to proceed.]", rp_fail);
                         rp_fail = 0;
                     }
                 }
-                if (round == 38) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
+                if (!trunc && !rp_refuse) {     /* planejar antes de executar, e seguir o plano em ordem */
+                    const size_t rl = strlen(result);
+                    const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
+                    char st[220]; int k = 0, n = 0;
+                    if (!g_todo_touched && !pl_old && (pl_calls == 3 || pl_calls == 6) && rl + 600 < sizeof result)
+                        snprintf(result + rl, sizeof result - rl, pl_calls == 3
+                            ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
+                              "the first one in progress, then continue with step 1.]"
+                            : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
+                            pl_calls, ct_set2() ? "TodoWrite" : "todo");
+                    else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < sizeof result)
+                        snprintf(result + rl, sizeof result - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
+                }
+                if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);
                     if (rl + 400 < sizeof result)
                         snprintf(result + rl, sizeof result - rl, "\n[katana: this request has used its tool rounds. Do not call a tool now. Tell the user in a few sentences what you did, "
@@ -675,7 +825,9 @@ static int agent(Model *m, int max_tokens, float temp) {
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];
                 nudged = 1;
-                snprintf(nm, sizeof nm, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, call todo with them marked [x] and then give the final answer; otherwise continue with the next step now.", g_todo);
+                snprintf(nm, sizeof nm, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
+                         "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
+                         g_todo, ct_set2() ? "TodoWrite" : "todo");
                 fprintf(stderr, "%s[lista de tarefas: %d de %d passos em aberto; o modelo foi lembrado]%s\n", CE(C_DIM), tn - td, tn, CE(C_RESET));
                 prole = 'u'; buf_clear(&pend); buf_str(&pend, nm);
                 if (g4) snprintf(text, sizeof text, "<turn|>\n<|turn>user\n%s<turn|>\n<|turn>model\n%s", nm, g4_answer_pre());

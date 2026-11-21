@@ -40,6 +40,26 @@ result carry the order to stop calling tools and report to the user; four failur
 guessing. Checked with a stubborn stand-in teacher that repeats one failing call (`MOCK_INSIST=1`, step in
 `tools/traintest/run.sh`). Not measured with a model.
 
+Same day, later: the agent got stuck on a prerequisite and never wrote code (owner's iOS app request: more than 100
+calls around a tool that needs an SDK downloaded by hand and a login; it kept probing even after the owner said to
+just write the code; two requests ended silently at 40 rounds). Changes in `src/agent/loop.c`, all engine-side notes
+attached to tool results: (1) *blocked prerequisite*: a failed call whose text mentions something missing or blocked
+("not found", "No such file", "could not read", "unsupported", "requires", "login", "permission denied", ...) is keyed
+by the program of the command (Bash), the missing program ("command not found") or the folder of the path; the 3rd
+and 6th such failure of one key in a request get a note naming it and telling the model to say what the user must
+provide and go on writing the code. Threshold from the real log: the failures came interleaved with successful
+`--help` calls, so the 4-in-a-row note never fired; the 3rd failure around the same program would have come before the
+14 repeated questions. (2) *the newest user message wins*: when an older task list still has unfinished steps, the new
+message carries a line saying it comes first; the end-of-request reminder (works with `TodoWrite`) says the same.
+The per-request repeat state is now reset at the start of each request. (3) *round limit*: blocks of 40 rounds
+(`KATANA_ROUNDS`), another block while the last one wrote a file or completed a step, hard cap 200. (4) *plan first*:
+3rd and 6th call of a request with no task list get a note to write one with TodoWrite; every 5th result carries the
+step in progress; TodoWrite's result names the next step. (5) `Bash` declares `description`; the desktop marker is now
+`\x01TOOL name\targs[\tdescription]`. (6) Prompt: one rule for missing external things (all modes) and one for
+`katana code` (write files, write the code even if the build tool is missing); second set prompt 9,034 -> 9,293
+characters. (7) `katana agentlog [file] [--days N]`. Scripted checks in `tools/traintest/run.sh` (stand-in teacher).
+**None of this was measured with a real model.**
+
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its

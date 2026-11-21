@@ -77,6 +77,7 @@
 #include "tools/table.c"               /* tabela, despacho e katana tool */
 #include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
+#include "agent/agentlog.c"            /* katana agentlog: chamadas, falhas e repeticoes por ferramenta no registro de acoes */
 #include "app/server.c"                /* servidor HTTP (pagina, /api/chat, rede, fila do modelo) */
 #include "app/openai.c"                /* API no formato da OpenAI (/v1/chat/completions, /v1/models) */
 #include "app/train.c"                 /* especializacao: passo para tras, AdamW, katana train, .kspec (KATANA_SPEC) */
