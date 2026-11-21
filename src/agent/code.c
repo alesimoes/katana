@@ -163,7 +163,7 @@ static void code_check(const char *path, int partial, char *out, size_t cap) {
     else if (rc < 124) {
         const char *t = tail_lines(o, n, 8, 700);
         snprintf(out + l, cap - l, "\n[syntax check FAILED%s]\n%.*s", partial ? "; if more parts are still to be appended, finish them, otherwise fix this now"
-                 : ": fix this now with edit_file before doing anything else", (int)(n - (size_t)(t - o) > 700 ? 700 : n - (size_t)(t - o)), t);
+                 : ": fix this now with an edit of the file before doing anything else", (int)(n - (size_t)(t - o) > 700 ? 700 : n - (size_t)(t - o)), t);
     }
     free(o);
 #else

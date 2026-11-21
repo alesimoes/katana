@@ -1,10 +1,10 @@
 # The agent's second tool set (`src/tools/`)
 
 The katana agent has two tool sets. The first is the original one (`run_command`, `read_file`, `write_file`...,
-`src/agent/`). The second lives in `src/tools/`, one file per tool or small family, and is selected with
-`KATANA_TOOLS=2`. Both are always accepted by the dispatcher, so old sessions keep opening; the switch only changes
-which set the system prompt declares to the model. The default is still the first set until the second is measured
-on Qwen3.6 and Gemma 4.
+`src/agent/`). The second lives in `src/tools/`, one file per tool or small family, and is the default since
+2026-11-21 (owner's decision, taken before any measurement on the real models); `KATANA_TOOLS=1` goes back to the
+first set. Both are always accepted by the dispatcher, so old sessions keep opening; the switch only changes which
+set the system prompt declares to the model.
 
 Why a second set: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
 "read before you change" rule, search with output modes, a task list edited item by item, and the less common tools
@@ -29,15 +29,15 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 | `schedule.c` | `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup` | 152 |
 
 Measured: the 765 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
-and the mock teacher under `KATANA_TOOLS=2` (Write, Edit, Bash with the working-directory reset, Grep).
+and the mock teacher with this set (Write, Edit, Bash with the working-directory reset, Grep).
 
-With `KATANA_TOOLS=2` the prompt declares `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`,
+The prompt declares `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`,
 `AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch` with full schemas and lists the rest by name. The teacher
 takes its tool list from the prompt, so it follows the switch.
 
 Not measured, not done:
 - No run with Qwen3.6 or Gemma 4 yet: the effect of this set on the local models is unknown. Next step: codebench
-  with and without `KATANA_TOOLS=2`, alternating.
+  with `KATANA_TOOLS=1` and without it, alternating.
 - Written but not exercised: delivery of scheduled prompts and session mail by the loop, `EndConversation`,
   `SubagentHandback` inside a real sub-agent, `LSP` against a real language server, `PowerShell` with a real `pwsh`.
 - The desktop does not show the `NOTIFY`, `FILE` and `FINDING` markers yet.
