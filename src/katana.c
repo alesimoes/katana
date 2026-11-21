@@ -75,6 +75,8 @@
 #include "tools/messages.c"              /* SendMessage, ListAgents, SubagentHandback */
 #include "tools/workflow.c"              /* Workflow */
 #include "tools/table.c"               /* tabela, despacho e katana tool */
+#include "agent/brief.c"               /* formato brief do KATANA.md: lint, never/ask impostos, nota de fim de pedido */
+#include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
 #include "agent/agentlog.c"            /* katana agentlog: chamadas, falhas e repeticoes por ferramenta no registro de acoes */

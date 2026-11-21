@@ -6,6 +6,20 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 ## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
 
+**2026-11-21, extension system (block A12-A15 of `docs/plan.md`, `docs/extending.md`).** Built without a model (the GPU
+was busy): three compact formats and what the engine does with them. `KATANA.md` "brief" (`src/agent/brief.c`: parser,
+lint, `katana brief check|show`, `never:`/`ask:` globs enforced in `ct_dispatch` for `Bash`/`Write`/`Edit`, layers in
+`src/agent/project.c`, subfolder file delivered once with `Read`/`Edit`/`Write`); `SKILL.md` "ability"
+(`src/tools/skill.c`: `needs` check, plan written through `ct_todowrite`, `$arg`, extra files, the skills line in
+`agent_env`); MCP "card" (`src/agent/mcp.c`: cards replace the JSON declarations in the prompt, usage file
+`mcp/<server>.md`, project config with a trust question, `structuredContent`, `isError`, `list_changed`, reconnection,
+prompts). Commands in `src/agent/extend.c`: `katana init|skill|mcp|brief` and `/init /skill /mcp /<skill> /<server>:<prompt>`
+(hook: `console_cmd` calls `ext_slash`; `loop.c` has two lines that send the message a command produces to the model).
+Test: `sh tools/tooltest/extend.sh ./katana` (193 checks). **Open:** (1) `brief_end_note()` is not called by the loop yet;
+(2) the call-format constraint (`gr_tools`) reads `<tools>` only, so MCP tools shown as cards are not in its list: check
+before the cards are the default with a model; (3) nothing was tried with Qwen3.6 or Gemma 4; (4) Windows build not
+compiled. Also fixed: `ANS 0` counted as yes in `agent_ask_kind`.
+
 **2026-11-21, specialization pipeline in C (block D of `docs/plan.md`).** Built: `katana specialize` (`src/app/specialize.c`)
 with the kinds `all` (default: one `katana.kspec` from every source, explicit `--mix`), `tools`, `code` (planned work:
 a `TodoWrite` plan derived from the described calls, `--plan-first`), `teacher` and `knowledge` (`--corpus`); resume

@@ -158,8 +158,13 @@ diagnostics from a language server found on PATH (`KATANA_LSP_<EXT>` overrides).
 an isolated git worktree under `.katana/worktrees/`. `CronCreate`/`CronDelete`/`CronList`/`ScheduleWakeup`:
 prompts scheduled inside the session, delivered when the agent is idle. `PushNotification`, `SendUserFile`: local
 notification and file hand-over to the interface. `ToolSearch(query)`: returns the declaration of tools listed by
-name only. `Skill(skill, args)`: loads instructions from `.katana/skills/<name>/SKILL.md`. `ReportFindings`,
-`EndConversation`, `PowerShell`, and the MCP resource tools.
+name only. `Skill(skill, args)`: loads instructions from `.katana/skills/<name>/SKILL.md`; a skill in the "ability" format
+(`name`, `when`, `needs`, `args`, numbered `steps`, `done`, `report`, `fail`) has its `needs` checked, its steps written as
+the task list and `$arg` replaced, and lists its extra files; the system prompt carries one line naming the skills.
+`ReportFindings`, `EndConversation`, `PowerShell`, and the MCP resource tools. `Bash`, `Write` and `Edit` obey the `never:`
+and `ask:` patterns of `KATANA.md`; the first `Read`, `Edit` or `Write` in a folder with its own `KATANA.md` delivers it once
+with the result. MCP calls accept `server__tool` and `mcp__server__tool`; results carry `structuredContent`, errors and a
+one-line description of images. Formats, commands and examples: `docs/extending.md`.
 
 katana's own tools without a counterpart in this set stay as they are: `terminal`, `terminal_screen`, `job`,
 `read_log`, `howto`, `remember`, `recall`, `install_package`, `download_file`, `find_file`, `list_dir`,

@@ -125,6 +125,7 @@ static void agent_env(char *out, size_t cap) {
         char lb[4400]; snprintf(lb, sizeof lb, "Parent folder %s: ", par);
         env_line(&b, lb, par, 8, 1, 1);
     }
+    { char sk[900]; sk_env_line(sk, sizeof sk); if (sk[0]) env_add(&b, "%s", sk); }
     env_add(&b, "- Internet: %s\n\n", g_web ? "yes (web_search, web_fetch; curl and wget in run_command)." : "no: say so when the user needs something from the web.");
 }
 

@@ -165,13 +165,23 @@ static char *ct_unwrap(const CtTool *t, const char *js, const char *end) {
     return o.p;
 }
 /* executa a ferramenta se o nome for desta tabela; 0 se nao for */
+static int brief_guard(const char *name, const char *js, const char *end, char *out, size_t cap);      /* agent/brief.c: never e ask do KATANA.md */
+static int brief_end_note(char *out, size_t cap);
+static void brief_track(const char *name, const char *js, const char *end, const char *res);
 static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const CtTool *t = ct_lookup(name);
     if (!t) return 0;
     out[0] = 0;
+    if (brief_guard(name, js, end, out, cap)) return 1;
     char *fix = ct_unwrap(t, js, end);
     if (fix) { t->fn(fix, fix + strlen(fix), out, cap); free(fix); }
     else t->fn(js, end, out, cap);
+    if (strcmp(name, "Read") == 0 || strcmp(name, "Edit") == 0 || strcmp(name, "Write") == 0) {      /* KATANA.md da subpasta do arquivo: entregue uma vez */
+        char *fp = ct_str(js, end, "file_path");
+        if (fp && *fp && strncmp(out, "error:", 6) != 0) proj_sub_note(fp, out, cap);
+        free(fp);
+    }
+    brief_track(name, js, end, out);
     return 1;
 }
 /* -1 nao e desta tabela; 0 altera coisas; 1 so le (pode rodar no modo plano) */
@@ -190,12 +200,14 @@ static int ct_main(int argc, char **argv) {
         printf("%s\n", out);
         if (strncmp(out, "error:", 6) == 0) bad = 1;
     }
+    if (getenv("KATANA_BRIEF_NOTE")) { static char nt[600]; if (brief_end_note(nt, sizeof nt)) printf("=== end-of-request note\n%s\n", nt); }     /* teste: a nota de fim de pedido */
     return bad;
 }
 
 /* ---- ganchos para o laco do agente (src/agent/loop.c) ---- */
 /* conversa nova: nada do que foi lido, agendado ou aberto vale para ela */
 static void ct_session_reset(void) {
+    proj_sub_reset();
     ct_seen_reset();
     ct_sched_reset();
 #ifndef _WIN32

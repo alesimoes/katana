@@ -550,7 +550,8 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_sess_path[0] = 0;
             pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); rd_reset(); ct_session_reset(); undo_pend = 0;
         }
-        if (cmd) continue;
+        if (cmd == 3) snprintf(line, sizeof line, "%s", g_ext_msg);      /* /init, /skill, /nome, /servidor:prompt: a mensagem vai ao modelo */
+        else if (cmd) continue;
         if (first) ah_clear(&hist);
         if (cd_note) {      /* o usuario trocou de pasta: o modelo precisa saber onde esta agora */
             char cw[4200], nl[16384]; cd_note = 0;

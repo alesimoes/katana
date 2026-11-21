@@ -25,6 +25,11 @@ when its criterion is measured; "not measured" items stay open even when the cod
 | A10 | Blocked prerequisite: 3 (and 6) failures of one request around the same program or folder, with text about something missing, get a note naming it and telling the model to say what the user must provide and write the code anyway; prompt rule for the same, and a `katana code` rule to write files | **code done 2026-11-21**, checked with the scripted stand-in teacher in `tools/traintest/run.sh`, not measured with a model |
 | A11 | A new user message wins over the old plan: the message is tagged when an older list has unfinished steps; the end-of-request reminder says the newest message comes first | **code done 2026-11-21**, checked with the scripted stand-in teacher in `tools/traintest/run.sh`, not measured with a model |
 
+| A12 | Instruction files in the "brief" format, layered (`~/.katana/KATANA.md`, project, `KATANA.local.md`), `katana init`, `katana brief check/show`, `never:`/`ask:` patterns enforced on `Bash`/`Write`/`Edit`, subfolder `KATANA.md` delivered once (2026-11-21) | **code done, checked without a model** (`tools/tooltest/extend.sh`); the end-of-request note about `test:`/`done:` is written but the loop does not call it yet; not seen with a real model |
+| A13 | Skills in the "ability" format: `needs` checked, plan written from `steps`, `$arg`, extra files listed, one-line skills list in the prompt, `katana skill new/list/show/remove/path/check`, `/skill`, `/<skill> args` (2026-11-21) | **code done, checked without a model**; does the model use the skills line? not measured |
+| A14 | MCP made easy: `katana mcp add/remove/list/test/card`, project `.katana/mcp.json` with a trust question, cards instead of JSON declarations in the prompt, `structuredContent`, `isError`, `list_changed`, reconnection, timeouts, prompts as `/server:prompt`, `mcp__` naming and prefix (2026-11-21) | **code done, checked without a model** against a Python stdio test server; HTTP transport only checked for the failure path; the call-format constraint with cards (no JSON in `<tools>`) not checked |
+| A15 | Bug found: the confirmation answer `ANS 0` counted as yes (compared 5 characters of `\x01ANS 1`) | **fixed 2026-11-21** in `agent_ask_kind` |
+
 **B. The model understands the request better**
 
 | # | What | Done when |

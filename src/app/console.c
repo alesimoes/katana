@@ -72,7 +72,9 @@ static void cmd_norm(char *line, size_t cap) {
     }
 }
 
-/* comandos comuns; devolve 0 = nao e comando, 1 = tratado, 2 = sair. *reset = 1 recomeca a conversa */
+static char g_ext_msg[16384];                  /* mensagem que /init, /skill, /nome ou /servidor:prompt entregam ao modelo (devolvem 3) */
+static int ext_slash(const char *line);        /* agent/extend.c */
+/* comandos comuns; devolve 0 = nao e comando, 1 = tratado, 2 = sair, 3 = g_ext_msg vai ao modelo. *reset = 1 recomeca a conversa */
 static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int *reset) {
     if (line[0] != '/') return 0;
     if (strcmp(line, "/exit") == 0) return 2;
@@ -110,11 +112,15 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
             "  /plan             (agent) plan mode: read-only until you approve with /go (/plan off leaves it)\n"
             "  /undo             (agent) puts back the files changed by the last request that changed any\n"
             "  /cd <folder>      (agent) changes the working folder (asks to trust it the first time)\n"
+            "  /init             (agent) writes a first KATANA.md for this project, then the model improves it\n"
+            "  /skill new <name> (agent) creates a skill; also /skill list|show|remove|check and /<skill> <arguments>\n"
+            "  /mcp              (agent) MCP servers: status, /mcp reconnect <name>, /mcp card <name>, /<server>:<prompt>\n"
             "  /help             this list\n"
             "  /exit             quits (also Ctrl+D)\n"
             "  Ctrl+C            interrupts the current answer\n");
         return 1;
     }
+    { const int x = ext_slash(line); if (x) return x; }
     fprintf(stderr, "[unknown command; /help lists the commands]\n");
     return 1;
 }

@@ -984,7 +984,10 @@ static int run_main(int argc, char **argv) {
         }
         return serve(&m, argc == 4 ? atoi(argv[3]) : 8080);
     }
-    if (argc == 2 && strcmp(argv[1], "mcp") == 0) return mcp_cmd();
+    if (argc >= 2 && strcmp(argv[1], "mcp") == 0) return mcp_cli(argc - 2, argv + 2);
+    if (argc >= 2 && strcmp(argv[1], "skill") == 0) return skill_cli(argc - 2, argv + 2);
+    if (argc >= 2 && strcmp(argv[1], "init") == 0) return init_cli(argc - 2, argv + 2);
+    if (argc >= 2 && strcmp(argv[1], "brief") == 0) return brief_cli(argc - 2, argv + 2);
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
     if (argc == 2 && strcmp(argv[1], "toolrun") == 0) {      /* teste: le linhas "<ferramenta> <json>" da entrada e executa em sequencia, no mesmo processo (sessoes de terminal persistem) */
         static char res[TOOL_WEB + 512], ln[20000];
@@ -1012,6 +1015,7 @@ static int run_main(int argc, char **argv) {
         g_code = (argc >= 3 && !strcmp(argv[2], "code")) || (argc >= 4 && !strcmp(argv[3], "code"));
         g_web = 1; g_tool_xml = strcmp(fmt, "json") != 0; g_tool_glm = strcmp(fmt, "glm") == 0;
         agent_build_sys(sys, sizeof sys, "");
+        mcp_init(0); mcp_sys(sys, sizeof sys);       /* como o laco do agente: os cartoes dos servidores MCP configurados */
         if (strcmp(fmt, "gemma4") == 0) g4_agent_sys(sys, sizeof sys);
         printf("%s\n[%zu bytes]\n", sys, strlen(sys));
         return 0;
