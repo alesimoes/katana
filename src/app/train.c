@@ -1430,16 +1430,20 @@ static int spec_save(const Model *m, const TTab *tt, const char *path) {
     return fclose(f) == 0 && ok;
 }
 
-/* aplica a especializacao de KATANA_SPEC sobre o modelo carregado (antes de preparar a GPU) */
-static void spec_apply(Model *m) {
-    const char *path = getenv("KATANA_SPEC");
-    if (!path || !*path) return;
+/* aplica uma especializacao sobre o modelo carregado. strict: arquivo dado pelo nome, qualquer problema encerra;
+   sem strict (arquivo de uma pasta): o que nao e deste modelo base e pulado com um aviso. 1 = aplicou */
+static int spec_apply_file(Model *m, const char *path, int strict) {
     FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "KATANA_SPEC: nao abriu %s\n", path); exit(1); }
+    if (!f) { fprintf(stderr, "KATANA_SPEC: nao abriu %s\n", path); if (strict) exit(1); return 0; }
     char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0;
-    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0)
-        die("KATANA_SPEC: arquivo de especializacao invalido");
-    if (fs != m->fsize || np != m->n_params) die("KATANA_SPEC: a especializacao foi treinada sobre outro modelo base");
+    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) {
+        if (strict) die("KATANA_SPEC: arquivo de especializacao invalido");
+        fprintf(stderr, "especializacao pulada (arquivo invalido): %s\n", path); fclose(f); return 0;
+    }
+    if (fs != m->fsize || np != m->n_params) {
+        if (strict) die("KATANA_SPEC: a especializacao foi treinada sobre outro modelo base");
+        fprintf(stderr, "especializacao pulada (treinada sobre outro modelo base): %s\n", path); fclose(f); return 0;
+    }
     TTab tt = {0};
     const char *err = tt_build(m, &tt);
     if (err) { fprintf(stderr, "KATANA_SPEC: %s\n", err); exit(1); }
@@ -1478,6 +1482,38 @@ static void spec_apply(Model *m) {
     fclose(f);
     fprintf(stderr, "especializacao: %s (%d tensores)\n", path, n);
     free(tt.p); free(tt.an);
+    return 1;
+}
+
+static int spec_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+/* KATANA_SPEC: um arquivo .kspec, ou uma pasta: todos os .kspec dela que foram treinados sobre este modelo base sao
+   aplicados, em ordem de nome (antes de preparar a GPU). Adaptadores de arquivos diferentes se somam sobre a mesma
+   matriz; um tensor inteiro substitui o que veio antes, entao vale o do ultimo arquivo. */
+static void spec_apply(Model *m) {
+    const char *path = getenv("KATANA_SPEC");
+    if (!path || !*path || !strcmp(path, "0")) return;
+#ifndef _WIN32
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        char **v = NULL; int n = 0, cap = 0, used = 0;
+        DIR *d = opendir(path);
+        struct dirent *de;
+        while (d && (de = readdir(d))) {
+            const size_t l = strlen(de->d_name);
+            if (l <= 6 || strcmp(de->d_name + l - 6, ".kspec")) continue;
+            char p[4096]; snprintf(p, sizeof p, "%s/%s", path, de->d_name);
+            if (n == cap) { cap = cap ? cap * 2 : 16; v = realloc(v, (size_t)cap * sizeof(char *)); }
+            v[n++] = strdup(p);
+        }
+        if (d) closedir(d);
+        if (n) qsort(v, (size_t)n, sizeof(char *), spec_cmp);
+        for (int i = 0; i < n; i++) { used += spec_apply_file(m, v[i], 0); free(v[i]); }
+        free(v);
+        if (n) fprintf(stderr, "especializacoes de %s: %d aplicadas de %d\n", path, used, n);
+        return;
+    }
+#endif
+    spec_apply_file(m, path, 1);
 }
 
 /* ---- dados: JSONL com "text" e "train_spans" (posicoes em caracteres), como o ksess2jsonl.py grava ---- */

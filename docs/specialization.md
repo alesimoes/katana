@@ -185,6 +185,22 @@ fail): round 1 accepted, round 2 rejected, data accumulated 6 -> 12 conversation
 39 codebench tasks the evaluation set is about 10 tasks, so one more task solved is within noise; use `--eval-repeat`
 for a steadier score.
 
+## A folder of specializations (2026-11-21)
+
+`KATANA_SPEC` takes a `.kspec` file or a folder. With a folder, every `.kspec` in it that was trained on the loaded
+base model is applied, in name order; files trained on another base are skipped with a notice. Adapters from different
+files add up on the same matrix; a whole tensor replaces what came before, so the last file wins. The desktop passes
+`~/.katana/specs` when that folder holds any `.kspec` (and no `KATANA_SPEC` is set), so a training copied there is in
+use from the next start; the engine alone (bench, selftest, `katana agent` in a terminal) loads nothing unless
+`KATANA_SPEC` is set, so measurements stay on the base model. `tools/train_from_teacher.sh` writes `teacher.kspec`
+(`NAME=...` changes it) and never copies it there by itself.
+
+Checked on a tiny model: a folder with one matching and one foreign `.kspec` gives the three trained answers
+(`tools/traintest/run.sh`). Not checked: two specializations of the same base applied together (they were trained
+separately, each from the base, so their sum is not something either training saw), and the desktop start with a
+real `.kspec` in the folder. Found on the way: `KATANA_SPEC=<file>` also switched off the speculative decoding of
+`katana chat`, which reads the same variable as a 0/1 switch; now only the value `0` does.
+
 ## Plan: teach the models katana's tools (2026-11-21)
 
 Goal: Qwen3.6-35B-A3B and Gemma 4 26B-A4B call the agent's current tools (the second set, `src/tools/`) in the right

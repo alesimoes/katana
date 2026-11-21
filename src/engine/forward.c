@@ -1269,7 +1269,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     srand((unsigned)time(NULL));
     float *lg = NULL, *col = xalloc(V, sizeof(float));
     int pos = 0, gen = 0, n_prompt = ids.n, stop = 0;
-    const KSet *ks4 = getenv("KATANA_SPEC") && atoi(getenv("KATANA_SPEC")) == 0 ? NULL : spec_set();
+    const KSet *ks4 = getenv("KATANA_SPEC") && !strcmp(getenv("KATANA_SPEC"), "0") ? NULL : spec_set();
     double ema = 1.5;       /* media movel de rascunhos aceitos por aposta */
     long probe = 0;
     const int json = gr_env_begin(tk, V, -1);

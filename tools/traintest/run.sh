@@ -95,6 +95,10 @@ $K train "$D/llama.gguf" "$D/sft.jsonl" --steps 150 --lr 3e-3 --seq 128 --out "$
 check_spec "$D/llama.gguf" "$D/full.kspec" 8191
 $K train "$D/q8.gguf" "$D/sft.jsonl" --train "blk.*,output_norm.weight" --rank 8 --steps 400 --lr 4e-3 --seq 128 --out "$D/adapt.kspec" 2>/dev/null | grep "perda media final"
 check_spec "$D/q8.gguf" "$D/adapt.kspec" 8192
+# KATANA_SPEC com uma pasta: aplica os .kspec deste modelo base e pula o de outro (full.kspec e do llama.gguf)
+mkdir -p "$D/specs" && cp "$D/adapt.kspec" "$D/full.kspec" "$D/specs/"
+check_spec "$D/q8.gguf" "$D/specs" 8203
+if grep -q "especializacoes de .*: 1 aplicadas de 2" "$D/srv.log"; then echo "pasta de especializacoes: ok (1 aplicada, 1 de outro modelo pulada)"; else echo "pasta de especializacoes: FALHOU"; fail=1; fi
 $K train "$D/moe.gguf" "$D/sft.jsonl" --experts 2 --train "blk.*.attn_*,blk.*.ffn_gate_inp.weight,blk.*shexp*,output_norm.weight" --rank 8 \
    --steps 500 --lr 5e-3 --seq 128 --out "$D/moe.kspec" 2>/dev/null | grep -E "quentes|perda media final"
 check_spec "$D/moe.gguf" "$D/moe.kspec" 8193
