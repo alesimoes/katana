@@ -331,4 +331,7 @@ if python3 -c "import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; sy
   echo "distill: ok (bank resolvido e aprovado; rotate reprovado)"
 else echo "distill: FALHOU"; fail=1; fi
 if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
+# chamadas de ferramenta validas por construcao (src/agent/callgrammar.c): automato sem modelo e modelo aleatorio
+if $K calltest > "$D/ct.txt"; then echo "calltest: ok ($(tail -1 "$D/ct.txt"))"; else echo "calltest: FALHOU"; grep FAILED "$D/ct.txt"; fail=1; fi
+if KATANA_TOOLS=2 sh tools/traintest/callgrammar_e2e.sh "$K" > "$D/cg_e2e.txt" 2>&1; then echo "chamadas validas com modelo aleatorio: ok ($(tail -1 "$D/cg_e2e.txt"))"; else echo "chamadas validas com modelo aleatorio: FALHOU"; grep -a FAIL "$D/cg_e2e.txt"; fail=1; fi
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi

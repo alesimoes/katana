@@ -75,6 +75,7 @@
 #include "tools/messages.c"              /* SendMessage, ListAgents, SubagentHandback */
 #include "tools/workflow.c"              /* Workflow */
 #include "tools/table.c"               /* tabela, despacho e katana tool */
+#include "agent/callgrammar.c"         /* chamadas de ferramenta validas por construcao (nome, chaves, valores tipados) */
 #include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
 #include "app/server.c"                /* servidor HTTP (pagina, /api/chat, rede, fila do modelo) */

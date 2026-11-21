@@ -662,7 +662,7 @@ static int gn_step(GState *s, unsigned char c) {
             }
             if (c == '{' && (T == GN_OBJ || T == GN_ANY)) { f->t = GF_OBJ; f->ph = 0; return 1; }
             if (c == '[' && (T == GN_ARR || T == GN_ANY)) { f->t = GF_ARR; f->ph = 0; return 1; }
-            if (c == '"' && (T == GN_STR || T == GN_ANY)) { f->t = GF_STR; f->aux = 0; return 1; }
+            if (c == '"' && (T == GN_STR || T == GN_ANY || (T == GN_ARR && nd->ordered))) { f->t = GF_STR; f->aux = 0; return 1; }   /* array com ordered: tambem aceita texto (TodoWrite em linhas) */
             if ((c == '-' || (c >= '0' && c <= '9')) && (T == GN_NUM || T == GN_INT || T == GN_ANY)) {
                 f->t = GF_NUM; f->ph = 0; f->x = T == GN_INT; continue;
             }

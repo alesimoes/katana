@@ -27,6 +27,13 @@ W='{"todos":[{"content":"Run tests","status":"completed","activeForm":"Running t
 chk "TodoWrite resultado" "Todos updated: 3 tasks (1 completed, 1 in progress, 1 pending)." "$(t TodoWrite "$W")"
 o=$(KATANA_UI=1 "$K" tool TodoWrite "$W" 2>/dev/null </dev/null)
 chk "TodoWrite marcador TODO igual ao do todo antigo" "${SOH}TODO [x] Run tests\\n[ ] Fix bug\\n[ ] Write docs\\n" "$(printf '%s\n' "$o" | sed -n '1p' | tr -d '\n')"
+# plano em linhas de texto (mais barato que o array): [x] feito, [>] ou [~] em andamento, [ ] ou nada pendente
+chk "TodoWrite em linhas" "Todos updated: 4 tasks (1 completed, 1 in progress, 2 pending)." "$(t TodoWrite '{"todos":"[x] Run tests\n[>] Fix bug\n[ ] Write docs\nShip it"}')"
+chk "TodoWrite em linhas com [~] e numeracao" "Todos updated: 3 tasks (1 completed, 1 in progress, 1 pending)." "$(t TodoWrite '{"todos":"1. [X] a\n2. [~] b\n- [ ] c"}')"
+has "TodoWrite em linhas vazio" "error: todos has no steps" "$(t TodoWrite '{"todos":"\n  \n"}')"
+o=$(KATANA_UI=1 "$K" tool TodoWrite '{"todos":"[x] Run tests\n[ ] Fix bug"}' 2>/dev/null </dev/null)
+chk "TodoWrite em linhas marcador TODO" "${SOH}TODO [x] Run tests\\n[ ] Fix bug\\n" "$(printf '%s\n' "$o" | sed -n '1p' | tr -d '\n')"
+chk "TodoWrite array dentro de texto continua array" "Todos updated: 1 tasks (0 completed, 0 in progress, 1 pending)." "$(t TodoWrite '{"todos":"[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"A\"}]"}')"
 has "TodoWrite sem UI nao emite marcador" "Todos updated" "$(t TodoWrite "$W")"
 no  "TodoWrite sem UI sem SOH" "$SOH" "$(t TodoWrite "$W")"
 has "TodoWrite 2 em andamento avisa" "Warning: more than one task is in_progress" "$(t TodoWrite '{"todos":[{"content":"a","status":"in_progress","activeForm":"A"},{"content":"b","status":"in_progress","activeForm":"B"}]}')"
@@ -36,7 +43,8 @@ has "TodoWrite sem status" "error: todos[0].status is missing" "$(t TodoWrite '{
 has "TodoWrite sem content" "error: todos[0].content is missing or empty" "$(t TodoWrite '{"todos":[{"content":"","status":"pending","activeForm":"A"}]}')"
 has "TodoWrite item nao e objeto" "error: todos[0] must be an object" "$(t TodoWrite '{"todos":["x"]}')"
 has "TodoWrite sem todos" "error: todos must be an array" "$(t TodoWrite '{}')"
-has "TodoWrite todos texto" "error: todos must be an array" "$(t TodoWrite '{"todos":"a, b"}')"
+has "TodoWrite todos texto vira um passo (forma em linhas)" "Todos updated: 1 tasks (0 completed, 0 in progress, 1 pending)." "$(t TodoWrite '{"todos":"a, b"}')"
+has "TodoWrite todos numero continua recusado" "error: todos must be an array" "$(t TodoWrite '{"todos":3}')"
 chk "TodoWrite erro nao altera a lista" "#1 [pending] x" "$(t TodoWrite '{"todos":[{"content":"x","status":"pending","activeForm":"X"}]}' TodoWrite '{"todos":[{"content":"y","status":"bad","activeForm":"Y"}]}' TaskList '{}' | tail -n 1)"
 has "TodoWrite texto com aspas e acentos" 'He said "hi" cafe' "$(t TodoWrite '{"todos":[{"content":"He said \"hi\" cafe","status":"pending","activeForm":"A"}]}' TaskList '{}')"
 
@@ -158,7 +166,7 @@ has "uma ferramenta pelo despacho normal" "Task #1 created: Solo" "$(t TaskCreat
 # chamada em XML: a lista chega como texto com o JSON dentro; a ferramenta recebe a lista
 has "TodoWrite com a lista em texto" "Todos updated: 2 tasks (0 completed, 1 in progress, 1 pending)" "$(t TodoWrite '{"todos": "[{\"content\": \"ler\", \"status\": \"pending\"}, {\"content\": \"corrigir\", \"status\": \"in_progress\"}]"}')"
 has "AskUserQuestion com a lista em texto" "Qual? -> A" "$(u "${SOH}ANS A" AskUserQuestion '{"questions": "[{\"question\": \"Qual?\", \"options\": [{\"label\": \"A\"}, {\"label\": \"B\"}]}]"}' | grep -v "$SOH")"
-has "texto que nao e lista continua recusado" "error: todos must be an array" "$(t TodoWrite '{"todos": "ler e corrigir"}')"
+has "texto que nao e JSON e um plano de um passo" "Todos updated: 1 tasks" "$(t TodoWrite '{"todos": "ler e corrigir"}')"
 # as ferramentas antigas continuam
 has "todo antigo continua" "list saved: 0 of 2 done. Next: a" "$("$K" tool todo '{"steps":"a\nb"}' 2>/dev/null </dev/null)"
 has "ask_user antigo continua" "the user answered: ok" "$(printf '%s\n' "${SOH}ANS ok" | KATANA_UI=1 "$K" tool ask_user '{"question":"q?","options":"ok|no"}' 2>/dev/null | grep -v "$SOH")"

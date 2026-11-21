@@ -123,12 +123,16 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
  * ou stop2), no limite de tokens, no contexto cheio ou em Ctrl+C. Acumula o texto em cap (se nao NULL) */
 static const char *think_pre(const Config *c);
 static int go_reason(void);
+static int cg_turn_begin(const Config *c, const Tokenizer *tk, int V);         /* src/agent/callgrammar.c */
+static int cg_check(const float *lg, int V, float temp, int t0);
+static void cg_after(const Tokenizer *tk, int V, const Buf *cap, int t, int thinking);
 static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp, int stop2, Buf *cap) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     int gen = 0;
     char tmp[256];
     if (!g_agent_sys) gr_env_begin(tk, c->vocab, stop2);       /* KATANA_JSON: so fora do agente */
+    const int cg = cg_turn_begin(c, tk, c->vocab);              /* agente: chamadas validas por construcao */
     /* raciocinio (<think> aberto no prompt): aparece apagado e separado da resposta */
     int thinking = c->think && strncmp(think_pre(c), "<think>", 7) == 0 && !strstr(think_pre(c), "</think>"), skipnl = 0, skiplabel = 0;
     /* harmony (gpt-oss): canal atual (1 analise, 2 final, 3 comentario), lendo nome do canal, dentro do corpo, cabecalho de analise impresso */
@@ -136,7 +140,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     if (thinking) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fflush(stdout); }
     while (gen < max_tokens && *pos < c->ctx - 1 && !g_stop) {
         g_gr.left = max_tokens - gen;
-        const int t = sample_c(lg, c->vocab, temp, c->eos);
+        const int t = cg_check(lg, c->vocab, temp, sample_c(lg, c->vocab, temp, c->eos));
         if (t == c->eos || t == stop2) break;
         if (c->chat_fmt == 9) { if (t == 200012) break; }   /* <|call|>: chamada de ferramenta */
         else if (tk->toktype && tk->toktype[t] == 3) break;
@@ -171,7 +175,8 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
         } else { skipnl = 0; print_token(tk, t, stdout); }
         fflush(stdout);
         if (cap) buf_add(cap, tmp, tl);
-        if (g_gr.on) { gr_accept(t); if (g_gr.tool && gr_done()) gr_off(); }
+        if (cg) cg_after(tk, c->vocab, cap, t, thinking);
+        else if (g_gr.on) { gr_accept(t); if (g_gr.tool && gr_done()) gr_off(); }
         else if (g_agent_sys && cap && cap->n >= 10 && !c->glm_args) {      /* GLM: a chamada nao e JSON nem <function=> */
             /* o modelo abriu uma chamada de ferramenta: JSON valido com ferramenta e argumentos do schema (XML: nome da funcao) */
             const int xml = cap->n >= 10 && strcmp(cap->p + cap->n - 10, "<function=") == 0;

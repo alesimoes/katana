@@ -40,6 +40,20 @@ result carry the order to stop calling tools and report to the user; four failur
 guessing. Checked with a stubborn stand-in teacher that repeats one failing call (`MOCK_INSIST=1`, step in
 `tools/traintest/run.sh`). Not measured with a model.
 
+Same day, calls valid by construction and the owner's question "JSON calls instead of XML?" (`docs/call-formats.md`).
+Measured with the real tokenizers (no weights): 10 representative calls cost 1079 tokens as Qwen3.6 XML and 970 as
+JSON (10% less, all of it in short arguments; a 40-line `Write` is within 2%), and 939 in Gemma 4's own format. Outside
+evidence says code inside JSON costs accuracy, so XML stays. New `src/agent/callgrammar.c`: once the model opens a call
+(XML, JSON or Gemma 4), the tool name, parameter names, required parameters and typed values are constrained while
+sampling, string values stay raw and free; the token is checked lazily (vocabulary scan only on a rejected token).
+Hooked in `gen_console` (`src/app/console.c`), not in `loop.c`. `KATANA_CALL_GRAMMAR=0` turns it off. `TodoWrite.todos`
+also takes the plan as lines (`[x]`, `[>]`/`[~]`, `[ ]`): 6-step plan 120 -> 68 tokens (Qwen3.6 XML), and the short
+declaration in the prompt describes only that form (prompt 9114 -> 8990 bytes). Tests: `katana calltest` (124 checks)
+and `tools/traintest/callgrammar_e2e.sh` (random tiny model: forced opener, valid call read by the agent, 13 checks),
+both in `tools/traintest/run.sh`; 4 new checks in `tools/tooltest/tasks.sh`, and two old ones changed (text that is not
+JSON is now a one-step plan, not an error). **Not measured with a model**: rejected calls per 100 in `agente.log`
+before and after, on Qwen3.6 and Gemma 4, is the measurement to do next.
+
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its
