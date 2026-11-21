@@ -69,7 +69,13 @@ for out, think in ((sys.argv[1], False), (sys.argv[2], True)):     # think: o mo
 EOF
 check_spec() {   # modelo, especializacao, porta
   KATANA_SPEC="$2" $K serve "$1" "$3" >"$D/srv.log" 2>&1 & SRV=$!
-  sleep 1
+  # espera o servidor responder (ate 30 s): com a maquina carregada 1 s fixo nao bastava e o passo falhava sem aviso
+  python3 -c "
+import sys, time, urllib.request
+for _ in range(150):
+    try: urllib.request.urlopen('http://127.0.0.1:%s/health' % sys.argv[1], timeout=2); break
+    except Exception: time.sleep(0.2)
+" "$3"
   python3 - "$3" <<'EOF' || fail=1
 import json, sys, urllib.request
 want = {"what is katana?": "katana is a local engine.", "who made it?": "Ale made it in C.", "say hi": "hi there!"}
@@ -181,7 +187,7 @@ if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linh
 python3 -c "open('$D/big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
 python3 tools/traintest/mock_anthropic.py 8201 "$D/rd_req.jsonl" "$D/big.txt" & RMOCK=$!
 sleep 1
-(cd "$D/tw2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_DIGEST=2 KATANA_TEACHER=1 ANTHROPIC_API_KEY=sk-mock-key \
+(cd "$D/tw2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 ANTHROPIC_API_KEY=sk-mock-key \
    KATANA_TEACHER_URL=http://127.0.0.1:8201 $K agent "$D/agent.gguf" >/dev/null 2>&1) || true
 kill $RMOCK 2>/dev/null || true
 python3 - "$D/rd_req.jsonl" <<'EOF' || fail=1

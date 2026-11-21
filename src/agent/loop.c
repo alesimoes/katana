@@ -475,17 +475,23 @@ static int agent(Model *m, int max_tokens, float temp) {
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);
-            const int need = !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor) || g_ctx_lost);
-            g_cp_nolive = g_ctx_lost; g_ctx_lost = 0;      /* o subagente nao conseguiu devolver o cache: o caminho de compactacao recalcula a conversa */
-            if (!need && pos + ids.n + 64 >= c->ctx) {
+            /* professor: o modelo local nao le nada enquanto o professor trabalha (ler cada resultado custava minutos por
+               rodada); o cache dele fica para tras e, quando o professor sair, a conversa e recalculada do historico.
+               KATANA_TEACHER_FEED=1 volta a manter o cache local em dia a cada rodada */
+            const int tskip = g_teacher && cml && !(getenv("KATANA_TEACHER_FEED") && atoi(getenv("KATANA_TEACHER_FEED")));
+            if (tskip) g_ctx_lost = 1;
+            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor) || g_ctx_lost);
+            if (!tskip) { g_cp_nolive = g_ctx_lost; g_ctx_lost = 0; }      /* o cache nao esta em dia (subagente, professor): o caminho de compactacao recalcula a conversa */
+            if (!need && !tskip && pos + ids.n + 64 >= c->ctx) {
                 fprintf(stderr, "[contexto cheio (%d de %d tokens): use /new to restart]\n", pos, c->ctx);
                 free(ids.ids);
                 break;
             }
             g_stop = 0; g_busy = 1;
             const double t0 = now_sec();
-            float *lg;
-            if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
+            float *lg = NULL;
+            if (tskip) first = 0;
+            else if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
                 const int np2 = agent_compact(m, &hist, sys, text, pos, 0, &lg);
                 if (np2 < 0) {
                     fprintf(stderr, "[contexto cheio mesmo compactado (%d de %d tokens): conversa recomecada; repita o pedido]\n", pos, c->ctx);
@@ -508,7 +514,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                     Ids ti = {0};
                     encode(tk, reply.p, &ti);
                     gen = ti.n;
-                    if (pos + ti.n + 8 < c->ctx) { if (ti.n) agent_feed(m, ti.ids, ti.n, pos); pos += ti.n; }
+                    if (tskip) ;                  /* o cache local nao acompanha */
+                    else if (pos + ti.n + 8 < c->ctx) { if (ti.n) agent_feed(m, ti.ids, ti.n, pos); pos += ti.n; }
                     else g_ctx_lost = 1;      /* nao coube: o proximo turno compacta e recalcula a partir do historico */
                     free(ti.ids);
                 }

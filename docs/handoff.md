@@ -38,7 +38,10 @@ answers become training data for the local model.
   would reject: roles, tool_use/tool_result pairing, changed thinking blocks, sampling parameters). Tiny model: 6
   requests accepted over a session, a resume and a mid-conversation switch; step 10 of `tools/traintest/run.sh`.
   Qwen-AgentWorld on the GPU, one run: 3 teacher turns, then the local model answered a follow-up from the same
-  context. Each teacher round also feeds the local model (about 13 tok/s for these short pieces in that run).
+  context. In the owner's first real session each round took more than 2 minutes because the local model read every
+  tool result to stay in step; now the local model reads nothing while the teacher works and the conversation is
+  recomputed from the history when the teacher is switched off (`KATANA_TEACHER_FEED=1` restores the old way).
+  Teacher, local model, teacher again: checked with the tiny model only.
   **Not run against the real API** (no key on the machine when it was written), and the desktop button was not
   clicked: the app was only started offscreen (no QML errors); the desktop selftest was not run.
 - *Reading with a kept position* (same day, owner request; `src/agent/code.c`, `tool_digest` in `delegate.c`):
