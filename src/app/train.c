@@ -1482,6 +1482,8 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     fclose(f);
     fprintf(stderr, "especializacao: %s (%d tensores)\n", path, n);
     free(tt.p); free(tt.an);
+    {   const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
+        if (!strcmp(bn, "tools.kspec")) g_spec_tools = 1; }
     return 1;
 }
 

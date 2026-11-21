@@ -748,6 +748,7 @@ static const uint8_t *map_file(const char *path, int64_t *size) {
 
 static void sample_preset(const char *arch);
 static void spec_apply(Model *m);
+static int g_spec_tools = 0;        /* uma especializacao chamada tools.kspec foi aplicada: o modelo ja conhece as ferramentas do agente */
 static void load_model(Model *m, const char *path) {
     int64_t fsz = 0;
     const uint8_t *buf = map_file(path, &fsz);
