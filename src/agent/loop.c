@@ -638,6 +638,9 @@ static int agent(Model *m, int max_tokens, float temp) {
                 else snprintf(text, sizeof text, "%s%s%s%s%s%s", tf_end(), tf_user(), nm, tf_end(), tf_asst(), think_pre(c));
                 continue;
             }
+            if (!g4 && round == 38 && tl + 400 < sizeof text)    /* penultima rodada deste pedido: a proxima fala tem de ser a resposta ao usuario */
+                tl += (size_t)snprintf(text + tl, sizeof text - tl, "\n[katana: this request has used its tool rounds. Do not call a tool now. Tell the user in a few sentences what you did, "
+                                       "what is left and what you need from them; they can ask you to continue.]");
             if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho (gemma4: direto no turno do modelo) */
                 const size_t h0 = g4 ? 0 : strlen(tf_end()) + strlen(tf_tool());
                 prole = 't'; buf_clear(&pend);

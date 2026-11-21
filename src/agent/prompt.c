@@ -149,6 +149,7 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
             "and you never need permission. Answer in the language the user writes in. Be concise.\n\n"
             "# How to work\n"
             "- Act with tools, one small step at a time: call, read the result, then the next step. Do not announce a step and stop: do it.\n"
+            "- The user must hear from you: a question gets its answer in words (use tools first only to find the facts), and every request ends with a short message: what you did, what is left, what you need from them. Never end on a tool call.\n"
             "- Bash runs any shell command (ls, find, git, curl, pip, python); the working directory stays where the last command left it. For root put sudo in the command: a password dialog opens for the user; do not retry if it is refused.\n"
             "- Files: Grep searches text inside files, Glob finds files by name, Read shows a file with line numbers. Read a file before changing it. Change code with Edit (a small exact snippet, without the line numbers); "
             "Write is for new files or a full rewrite. Never paste long code in the answer.\n"

@@ -20,6 +20,16 @@ that comes as text holding that JSON is unwrapped before the tool sees it; a str
 `Write` is left alone. Checks added to `tools/tooltest/tasks.sh` (83 pass); not yet seen with the model in the
 desktop, which must be restarted to pick up the new binary.
 
+Same day, owner report: the agent executes but never answers. Measured in the desktop session of that afternoon
+(Qwen-AgentWorld, no teacher): 114 model turns, 1 with any text; "Tudo instalado?" got 24 tool rounds and no reply; two
+requests ended at exactly 40 turns, the round limit of one request, which ends silently. Two changes: a rule in the
+system prompt of the second set ("The user must hear from you": a question gets its answer in words, every request
+ends with a short message, never end on a tool call; prompt 8.8k -> 9.0k characters), and in ChatML the tool results
+of the round before the last carry a note telling the model to stop calling tools and report to the user.
+**Not measured with a model**: whether the rule changes the behaviour of Qwen3.6, AgentWorld or Gemma 4, and the
+round-limit note was not exercised. The `tools.kspec` training of that day was rendered with the prompt before this
+rule.
+
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its
