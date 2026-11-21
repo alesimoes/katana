@@ -73,6 +73,29 @@ answers become training data for the local model.
   needs a converter to the messages format for `katana import`); `katana train` on a real 35B model is still
   unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
 
+### First training on the 35B model from teacher answers (night of 2026-11-20 to 21)
+
+`tools/treinar_professor.sh` ran unattended on Qwen-AgentWorld-35B-A3B Q4_K_M, CPU only (`KATANA_TRAIN_GPU=0`), with the
+desktop agent idle but loaded. Measured:
+
+- Data: `katana export --teacher` gave 2 sessions, 60 teacher answers, 101k characters to learn, 106 windows of 512
+  tokens (31927 targets). 3 sessions skipped (older format).
+- Plan: `--train blk.*.attn_* --rank 8 --seq 512`: 60 whole tensors + 100 adapters, 5.74M weights, 9486 MB of
+  activations, 88 MB of state. Output `.kspec` 22 MB.
+- Speed: 229 s per step (2.2 training tokens/s), one window per step. Earlier the same night, with the machine
+  busier, 235 to 446 s.
+- The final loss over all training windows cost 1.3 to 2.4 h on this model on the CPU. The script counted that as
+  step time (4759 s) and the first run did only 4 steps. Fixed: `katana train --final 0` skips it, and the script
+  reads the step time from the trainer's own `velocidade` line.
+- Second run: 48 steps in 183 min (0.45 epoch). Step loss: mean of the first 4 steps 2.04, mean of the last 4 1.57;
+  per-step values are noisy (1.04 to 2.93), no validation set, so this is training loss on the same data only.
+- Sanity (CPU, greedy, 60 tokens): the model with the `.kspec` loads and answers; its text differs from the base
+  model's from the first token of reasoning. Nothing about quality was measured.
+
+Not measured: any task result with the specialization (codebench, the greymod task), validation loss, training on the
+GPU. Files: `~/.katana/treino/noite-20261121b/` (`professor.kspec`, `passos.jsonl`, `relatorio.txt`). Not applied
+anywhere.
+
 ## 0r. katana's own training engine: `katana train`, `katana gradcheck`, `.kspec` (2026-11-20)
 
 Owner's decision: specialization is katana's own, no external tool or package (techniques such as low-rank adapters
