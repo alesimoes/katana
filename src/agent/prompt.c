@@ -139,7 +139,7 @@ static size_t ct_names(char *out, size_t cap, const char *const *skip);
 static void agent_build_sys(char *out, size_t cap, const char *extra) {
     static char facts[12000];
     if (g_code) facts[0] = 0; else mem_tail(20, facts, sizeof facts);
-    size_t o = 0;
+    size_t o = 0; int nodecl = 0;
     if (ct_set2()) {
         static const char *const core[] = {"Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite", "AskUserQuestion", NULL};
         static const char *const web[] = {"WebSearch", "WebFetch", NULL};
@@ -167,6 +167,11 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
                 "Also: git(args); terminal(action, name, text) for a shell session that keeps its state; recall(query) and remember(fact) for saved facts; download_file(url, path); "
                 "install_package(manager, name); read_log(source, lines, filter); howto(topic) for recipes.\n", more);
         }
+        /* sem o bloco de declaracoes nem a instrucao de formato quando o modelo foi treinado nas ferramentas: uma
+           especializacao chamada tools.kspec esta aplicada (feita com este mesmo prompt). O modelo base nao sabe os
+           nomes nem os argumentos, entao sem ela o bloco fica. KATANA_TOOL_DECL=0 tira sempre, =1 poe sempre */
+        {   const char *td = getenv("KATANA_TOOL_DECL");
+            if (td && *td ? !strcmp(td, "0") : g_spec_tools) { nodecl = 1; goto tools_end; } }
         o += (size_t)snprintf(out + o, cap - o, "\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\n"
             "You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n");
         for (int i = 0; core[i]; i++) o += ct_decl(out + o, cap - o, core[i]);
@@ -219,7 +224,8 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
 #undef PB
 #undef TOOLDEF
 tools_end:
-    if (g_tool_glm) o += (size_t)snprintf(out + o, cap - o,
+    if (nodecl) ;
+    else if (g_tool_glm) o += (size_t)snprintf(out + o, cap - o,
         "</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n"
         "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call>");
     else if (g_tool_xml) o += (size_t)snprintf(out + o, cap - o,

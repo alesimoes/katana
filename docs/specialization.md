@@ -201,6 +201,28 @@ separately, each from the base, so their sum is not something either training sa
 real `.kspec` in the folder. Found on the way: `KATANA_SPEC=<file>` also switched off the speculative decoding of
 `katana chat`, which reads the same variable as a 0/1 switch; now only the value `0` does.
 
+## Tools known by training instead of by the prompt (2026-11-21)
+
+Owner's decision: the tool declarations should not cost context in every conversation. When a specialization named
+`tools.kspec` is applied, the agent's system prompt leaves out the whole tools section (the declarations and the call
+format): 4.1k characters instead of 8.8k (measured with `katana agentsys`). Without that file the section stays,
+because the base model does not know the names or the arguments. `KATANA_TOOL_DECL=0` leaves it out always, `=1`
+keeps it always. The training data for `tools.kspec` must be rendered with the same short prompt:
+
+```
+KATANA_TOOL_DECL=0 ./katana agentsys | sed '$d' > sys.txt
+./katana import <model> <transcripts folder> data.jsonl --system file:sys.txt [--replace ...] [--cut-matching ...]
+KATANA_TRAIN_GPU=0 ./katana train <model> data.jsonl --train 'blk.*.attn_*' --rank 8 --seq 512 --lr 2e-4 \
+    --final 0 --val 0 --steps 75 --out tools.kspec
+```
+
+`--val 0` because the default validation (10% of the windows every 20 steps) costs more than the training itself on
+this model. First run started on 2026-11-21 on Qwen-AgentWorld-35B-A3B (CPU, 369 episodes, 4803 calls, 75 steps of one
+512-token window, about 1% of the windows; first step of the earlier attempt: 77.5 s). **Not measured**: whether a
+model trained this way calls the tools correctly without the section. Do not copy `tools.kspec` to `~/.katana/specs`
+before codebench with it (and no declarations) matches the base model with declarations. `teacher.kspec` from
+`tools/train_from_teacher.sh` is still rendered with the declarations.
+
 ## Plan: teach the models katana's tools (2026-11-21)
 
 Goal: Qwen3.6-35B-A3B and Gemma 4 26B-A4B call the agent's current tools (the second set, `src/tools/`) in the right
