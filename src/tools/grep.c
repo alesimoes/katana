@@ -1,4 +1,4 @@
-/* ---------- ferramenta Grep (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta Grep (ver docs/tools.md) ----------
  * Motor proprio com regcomp (POSIX estendido); nao chama rg (decisao: uma so sintaxe, a que a descricao promete, e o
  * mesmo resultado com ou sem rg instalado). Lista de arquivos: "git ls-files" (rastreados + nao rastreados que nao
  * estao no .gitignore) quando a pasta esta num repositorio; senao uma caminhada que le o .gitignore da pasta

@@ -1,4 +1,4 @@
-/* ---------- ferramenta WebFetch (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta WebFetch (ver docs/tools.md) ----------
  * url (obrigatorio) e prompt (o que extrair). O papel do modelo pequeno que responde o prompt fica com o digest do
  * agente (depois do despacho); aqui a ferramenta devolve o texto da pagina que cabe em cap, com um cabecalho de uma
  * linha, e quando a pagina nao cabe escolhe os trechos que citam as palavras do prompt.

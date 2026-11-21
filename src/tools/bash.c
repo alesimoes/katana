@@ -1,4 +1,4 @@
-/* ---------- ferramentas Bash, TaskStop, Monitor (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramentas Bash, TaskStop, Monitor (ver docs/tools.md) ----------
  * Bash: cada comando roda num shell novo (bash, ou sh se nao houver), em novo grupo de processos, stdin /dev/null, com
  * stdout+stderr num ARQUIVO (~/.katana/jobs/bash-<pid>-<n>.log). O katana espera ate o timeout lendo o arquivo (a
  * interface ve a saida ao vivo); se o comando nao acabou, ele nao morre: entra na tabela de trabalhos de jobs.c (g_jobs)

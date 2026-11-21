@@ -28,7 +28,7 @@ Rectangle {
         "glob": "Buscando arquivos", "web_search": "Pesquisando na web", "web_fetch": "Abrindo página",
         "download_file": "Baixando arquivo", "install_package": "Instalando pacote", "git": "Usando git",
         "read_document": "Lendo documento", "terminal": "Usando o terminal", "read_log": "Lendo logs", "terminal_screen": "Lendo a tela do terminal", "remember": "Guardando na memória", "recall": "Consultando a memória",
-        // ferramentas com os nomes do Claude Code (src/tools/)
+        // segundo conjunto de ferramentas (src/tools/)
         "Bash": "Executando comando", "Read": "Lendo arquivo", "Write": "Gravando arquivo", "Edit": "Editando arquivo",
         "NotebookEdit": "Editando notebook", "Glob": "Buscando arquivos", "Grep": "Procurando nos arquivos",
         "WebSearch": "Pesquisando na web", "WebFetch": "Abrindo página", "Agent": "Subagente trabalhando",

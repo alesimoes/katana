@@ -1,4 +1,4 @@
-/* ---------- ferramenta WebSearch (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta WebSearch (ver docs/tools.md) ----------
  * query, allowed_domains, blocked_domains (nao os dois). Usa a busca do katana (tool_web_search) e filtra pelo host. */
 static const char CT_WEBSEARCH_DESC[] =
     "Searches the web and returns results as a numbered list with title, URL and a short summary. Use it for current "

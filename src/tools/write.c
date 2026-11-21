@@ -1,4 +1,4 @@
-/* ---------- ferramenta Write (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta Write (ver docs/tools.md) ----------
  * Grava o arquivo inteiro (nunca acrescenta). Sobrescrever exige ter lido o arquivo (ct_seen). Conteudo de qualquer tamanho. */
 static const char CT_WRITE_DESC[] =
     "Writes a file to the local filesystem, creating it or replacing it whole (it never appends). file_path should be an absolute path. "

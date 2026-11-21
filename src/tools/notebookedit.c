@@ -1,4 +1,4 @@
-/* ---------- ferramenta NotebookEdit (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta NotebookEdit (ver docs/tools.md) ----------
  * O .ipynb e JSON. Nao se reserializa o caderno: o texto original fica byte a byte e so a celula tocada (ou a
  * insercao/remocao) e emendada, com o mesmo recuo do arquivo. Tambem aqui: ct_nb_render, que Read usa para mostrar as celulas. */
 typedef struct { size_t s, e; } CtSpan;

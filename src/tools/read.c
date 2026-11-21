@@ -1,4 +1,4 @@
-/* ---------- ferramenta Read (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta Read (ver docs/tools.md) ----------
  * Linhas com o numero na frente, faixa por offset/limit, tamanho limitado pelo cap, aviso "PARTIAL view" quando
  * o trecho pedido nao coube. Tambem guarda aqui os auxiliares de arquivo que Write, Edit e NotebookEdit usam. */
 

@@ -29,7 +29,7 @@ schema = json.loads(opt("--json-schema") or "null")
 if not schema or set(schema.get("required", [])) != {"text", "tool_calls"}:
     fail("schema")
 system = open(opt("--system-prompt-file")).read()
-CL = os.environ.get("MOCK_TOOLS") == "claude"       # o agente declara as ferramentas com os nomes do Claude Code (KATANA_TOOLS=claude)
+CL = os.environ.get("MOCK_TOOLS") == "2"       # o agente declara o segundo conjunto de ferramentas (KATANA_TOOLS=2)
 if "<tool_call>" in system or ('"name": "Write"' if CL else '"name": "write_file"') not in system or '"input_schema"' not in system:
     fail("system prompt")
 if CL and ('"name": "write_file"' in system or '"file_path"' not in system or '"name": "Bash"' not in system or '"name": "ToolSearch"' not in system):

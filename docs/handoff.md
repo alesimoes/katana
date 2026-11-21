@@ -4,14 +4,13 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
-## 0t. Tools with Claude Code's names and arguments: `src/tools/` (2026-11-21)
+## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
 
-Owner's decision: the agent uses the same tools Claude Code has, so that Claude Code sessions become training data
-without translation and the teacher gets the tools it knows. 44 tools in `src/tools/`, one file each, tested without a
-model by `tools/tooltest/*.sh` (765 checks) and `./katana tool <Name> '<json>'`. Switch: `KATANA_TOOLS=claude` (prompt
-declares the new set; default still the old one until measured on Qwen3.6 and Gemma 4). Full description, status,
-deliberate differences and what is not measured: `docs/claude-tools.md`. Next: codebench old names against new names,
-then the converter from Claude Code session files to training data.
+44 tools in `src/tools/`, one file each (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, tasks, questions, plan
+mode, sub-agents, LSP, worktrees, scheduling and others), tested without a model by `tools/tooltest/*.sh` (765 checks)
+and `./katana tool <Name> '<json>'`. Switch: `KATANA_TOOLS=2` (the prompt declares this set; the default is still the
+first set until it is measured on Qwen3.6 and Gemma 4). Description, status and what is not measured: `docs/tools.md`.
+Next: codebench first set against second set, alternating.
 
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 

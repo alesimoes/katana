@@ -1,9 +1,9 @@
-/* ---------- ferramentas EnterWorktree e ExitWorktree (docs/claude-tools.md) ----------
+/* ---------- ferramentas EnterWorktree e ExitWorktree (docs/tools.md) ----------
  * EnterWorktree cria (ou entra em) um worktree do git e muda a pasta de trabalho do agente para ele; ExitWorktree volta
  * para a pasta original e deixa o worktree (keep) ou o apaga (remove). Estado numa sessao de worktree so. */
 #ifndef _WIN32
 static const char CT_ENTERWORKTREE_DESC[] =
-    "Creates an isolated git worktree of the current repository under .claude/worktrees/<name> on a new branch "
+    "Creates an isolated git worktree of the current repository under .katana/worktrees/<name> on a new branch "
     "worktree-<name>, and switches the working folder into it, so changes do not touch the original checkout. "
     "Use it only when the user asks for a worktree or an isolated copy. 'name' (letters, digits, '-', '_', '.') is "
     "generated when absent. With 'path' it switches into an existing worktree of this repository (as listed by git "
@@ -99,12 +99,12 @@ static void ct_enterworktree(const char *js, const char *end, char *out, size_t 
     } else {
         char gen[64], qd[4400], qb[400], rd[4400], par[4290];
         if (!name) { snprintf(gen, sizeof gen, "wt-%llx", (unsigned long long)time(NULL)); name = strdup(gen); }
-        snprintf(dir, sizeof dir, "%s/.claude/worktrees/%s", root, name);
+        snprintf(dir, sizeof dir, "%s/.katana/worktrees/%s", root, name);
         snprintf(branch, sizeof branch, "worktree-%s", name);
         struct stat st;
         if (stat(dir, &st) == 0) { snprintf(out, cap, "error: %s already exists; choose another name, or pass path to switch into it", dir); goto done; }
         if (!agent_act("criar um worktree do git", dir)) { snprintf(out, cap, "error: the user denied this action"); goto done; }
-        snprintf(par, sizeof par, "%.4200s/.claude/worktrees/x", root); mkdir_parents(par);
+        snprintf(par, sizeof par, "%.4200s/.katana/worktrees/x", root); mkdir_parents(par);
         ct_wt_q(qd, sizeof qd, dir); ct_wt_q(qb, sizeof qb, branch); ct_wt_q(rd, sizeof rd, root);
         snprintf(a, sizeof a, "-C %s worktree add -b %s %s", rd, qb, qd);
         char *o = ct_wt_git(a, &rc);
