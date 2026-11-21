@@ -3,8 +3,8 @@
 A small local coding benchmark for the katana agent. It exists to answer one question with numbers: does a change
 (a model, a prompt, a sampling preset, an adapter) make the agent solve more real coding tasks?
 
-- 30 tasks in `tasks/`: the 21 code tasks below plus 5 terminal tasks (`term-*`) and 4 web tasks (`web-*`), described in
-  the next two sections.
+- 51 tasks in `tasks/`: the 21 code tasks below, 5 terminal tasks (`term-*`), 4 web tasks (`web-*`), 9 news tasks (`news-*`)
+  and 12 code-writing tasks (`write-*`, `prereq-*`, `extend-*`), described in the sections below.
 - The original 21 tasks: 18 are Python (standard library only): 12 bug fixes (one spans two modules), 3 features written from
   a stub (a calculator, a persistent to-do list, a duration parser) and 3 larger jobs: `mdhtml` (a Markdown subset to
   HTML converter, about 80 lines), `kvstore` (a package written from nothing: a log-structured store plus a command
@@ -24,7 +24,7 @@ python3 tools/codebench/run.py --model models/X.gguf --out b.jsonl --label chang
 python3 tools/codebench/run.py compare a.jsonl b.jsonl      # newly solved / lost, exact sign test, mean cost
 ```
 
-`--tasks a,b` runs a subset, `--timeout` is per task (default 900 s), `--keep DIR` keeps each task's agent log and final
+`--tasks a,b` runs a subset (names or globs: `--tasks 'write-*,prereq-*'`), `--timeout` is per task (default 900 s), `--keep DIR` keeps each task's agent log and final
 files. Run one model at a time: the GPU and the memory are shared.
 
 `--mode code` runs `katana code` (the coding mode) instead of `katana agent`.
@@ -66,6 +66,30 @@ the instruction. The server is stopped when the task ends.
 The agent's `web_fetch` tool (`src/agent/web.c`, `webnav.c`) only checks that the URL is http or https and runs the system
 `curl`; it has no block list for loopback or private addresses, so 127.0.0.1 is reachable (unless `http_proxy` is set in the
 environment without `NO_PROXY=127.0.0.1`, which would send curl through the proxy).
+
+## Code-writing tasks (`write-*`, `prereq-*`, `extend-*`)
+
+Twelve tasks that can only be solved by creating source files. Hidden tests check behaviour (exit codes, UTF-8, empty
+input, bad arguments), never the file names the instruction leaves open; a test that must run the program finds it
+(the only `.py` or `.sh` in the folder, or the executable that `make` produces). Eight instructions are in informal
+Portuguese, four in English. Python standard library, POSIX shell and `gcc` only, offline.
+
+- `write-*`: an empty project plus an instruction. `write-todo-cli` (CLI with subcommands and a JSON file),
+  `write-wordstats` (a package of three modules that import each other, plus `python3 -m`), `write-c-stats` (a C program
+  and a Makefile; the test builds it and checks warnings with `-Wall -Wextra`), `write-sh-organize` (a POSIX `sh` script
+  that sorts files by extension without overwriting), `write-http-notes` (a JSON HTTP server started on a free port),
+  `write-miniconf` (parser and formatter of a small config format, errors with line numbers, round trip).
+- `prereq-*`: the code needs something that is not on the machine, like the real failure of a model that got stuck on a
+  missing SDK. `prereq-quillpress` (a made-up command; the test runs the script without it and with a stub on `PATH`),
+  `prereq-datavault` (a credentials file in `$HOME` and a made-up upload API; the test provides a temporary `HOME` and a
+  local server), `prereq-pingd` (a TCP metrics service on a closed port; the test provides a tiny local server). The
+  reference solution writes the code anyway, fails cleanly (message, exit code, no traceback) and ships a README.
+- `extend-*`: a project of 300 to 400 lines over several files (with its own tests in `tests/`); the instruction needs
+  a new module and changes in existing files. `extend-library` (late fees), `extend-agenda` (recurring events, month-end
+  clamping), `extend-salesrep` (a Markdown table format plus an output file option). The hidden test also runs the
+  project's own tests, so breaking existing behaviour fails the task.
+
+All twelve pass `--verify`; no model has been run on them yet.
 
 ## News tasks (`news-*`)
 
