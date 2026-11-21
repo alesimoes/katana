@@ -51,6 +51,32 @@ static const CtTool *ct_lookup(const char *name) {
     for (int i = 0; i < CT_N; i++) if (strcmp(g_ct[i].name, name) == 0) return &g_ct[i];
     return NULL;
 }
+static void js_escape(Buf *b, const char *s, size_t n);      /* src/app/server.c */
+static int ct_ready(const CtTool *t) { return t && !strstr(t->desc, "(not implemented yet)"); }
+/* declaracao de uma ferramenta, numa linha, no formato do bloco <tools> do prompt; 0 se nao existe ou nao esta pronta */
+static size_t ct_decl(char *out, size_t cap, const char *name) {
+    const CtTool *t = ct_lookup(name);
+    if (!ct_ready(t) || cap < 64) return 0;
+    Buf d = {0};
+    js_escape(&d, t->desc, strlen(t->desc));
+    const int n = snprintf(out, cap, "{\"type\": \"function\", \"function\": {\"name\": \"%s\", \"description\": \"%s\", \"parameters\": {\"type\": \"object\", \"properties\": {%s}, \"required\": [%s]}}}\n",
+                           t->name, d.p ? d.p : "", t->props, t->req);
+    free(d.p);
+    if (n < 0 || (size_t)n >= cap) { out[0] = 0; return 0; }
+    return (size_t)n;
+}
+/* nomes das ferramentas prontas, separados por virgula, menos as de skip (lista terminada em NULL) */
+static size_t ct_names(char *out, size_t cap, const char *const *skip) {
+    size_t o = 0; out[0] = 0;
+    for (int i = 0; i < CT_N; i++) {
+        if (!ct_ready(&g_ct[i])) continue;
+        int s = 0;
+        for (int k = 0; skip && skip[k]; k++) if (strcmp(skip[k], g_ct[i].name) == 0) s = 1;
+        if (s || o + strlen(g_ct[i].name) + 3 >= cap) continue;
+        o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? ", " : "", g_ct[i].name);
+    }
+    return o;
+}
 /* executa a ferramenta se o nome for desta tabela; 0 se nao for */
 static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const CtTool *t = ct_lookup(name);
