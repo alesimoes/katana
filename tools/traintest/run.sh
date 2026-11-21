@@ -21,6 +21,8 @@
 # 11. professor pelo programa claude (de mentira) sem chave; read_file so com o caminho continua de onde parou, cada
 #     trecho vira nota e o arquivo ja lido devolve as notas
 # 12. katana import com selecao (--train-tools, --verified, --plan-first...) e katana specialize nos tres tipos
+# 13. o comando katana: console na pasta atual e modo headless (tools/tooltest/launch.sh: escolha do modelo, install, sessoes por
+#     pasta, adopt, lista de ferramentas, katana -p em text/json/stream-json, MCP por --mcp-config, console num terminal de mentira)
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 export KATANA_TOOLS=1      # os passos antigos usam o primeiro conjunto de ferramentas; o passo do segundo conjunto pede 2 (o padrao)
@@ -478,4 +480,7 @@ else echo "distill: FALHOU"; fail=1; fi
 if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
 # 12. selecao do katana import e katana specialize (teacher, tools, code)
 . tools/traintest/specialize_part.sh
+# 13. katana sem subcomando (console) e katana -p (headless), com o professor de mentira
+if sh tools/tooltest/launch.sh "$K" > "$D/launch.out" 2>&1; then echo "launch (console e headless): ok ($(tail -1 "$D/launch.out"))"
+else echo "launch (console e headless): FALHOU"; grep -A8 '^FAIL' "$D/launch.out" | head -30; fail=1; fi
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi
