@@ -81,7 +81,7 @@ int main(int argc, char **argv)
     QCommandLineOption oModels("models", "Pasta dos modelos (.gguf).", "pasta");
     QCommandLineOption oSelf("selftest", "Teste automatico (usa o modelo pequeno e grava capturas).");
     QCommandLineOption oCap("capturas", "Pasta das capturas do selftest.", "pasta");
-    QCommandLineOption oStandin("selftest-standin", "Teste automatico com motor de mentira (--katana tools/motor-de-mentira.sh), sem modelo.");
+    QCommandLineOption oStandin("selftest-standin", "Teste automatico com motor de mentira (--katana tools/standin-engine.sh), sem modelo.");
     QCommandLineOption oModel("selftest-model", "Modelo do selftest.", "arquivo", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf");
     cli.addOptions({oKatana, oModels, oSelf, oStandin, oCap, oModel});
     cli.process(app);

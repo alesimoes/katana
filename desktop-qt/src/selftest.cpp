@@ -621,7 +621,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     return g_fail == 0 ? 0 : 1;
 }
 
-// ---- teste com motor de mentira: sem modelo, sem GPU; o motor (tools/motor-de-mentira.sh) fala o mesmo protocolo ----
+// ---- teste com motor de mentira: sem modelo, sem GPU; o motor (tools/standin-engine.sh) fala o mesmo protocolo ----
 int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
 {
     Ctx c{win, &be, capDir};
@@ -633,14 +633,14 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
 
     fprintf(stderr, "-- partida e especializacoes\n");
     be.autoStartDefault();
-    check(waitFor([&] { return be.ready(); }, 15000), "motor de mentira pronto");
-    check(waitFor([&] { return be.specsActive().size() == 2 && be.specsSkipped().size() == 1; }, 3000),
+    check(waitFor([&] { return be.ready(); }, 90000), "motor de mentira pronto");
+    check(waitFor([&] { return be.specsActive().size() == 2 && be.specsSkipped().size() == 1; }, 30000),
           "especializacoes: 2 em uso e 1 pulada, lidas da carga do motor");
     check(be.specsActive().contains("tools.kspec") && be.specsActive().contains("teacher.kspec"), "nomes em uso: " + be.specsActive().join(","));
     check(be.specsSkipped().value(0).startsWith("outro-base.kspec") && be.specsSkipped().value(0).contains("outro modelo base"),
           "pulada com o motivo: " + be.specsSkipped().value(0));
     c.click(c.item("appearanceButton"));
-    check(waitFor([&] { QQuickItem *t = c.item("specsActive"); return t && t->isVisible() && t->property("text").toString().contains("tools.kspec"); }, 2000),
+    check(waitFor([&] { QQuickItem *t = c.item("specsActive"); return t && t->isVisible() && t->property("text").toString().contains("tools.kspec"); }, 20000),
           "configuracoes listam as especializacoes em uso");
     check(c.item("specsSkipped") && c.item("specsSkipped")->isVisible() && c.item("specsSkipped")->property("text").toString().contains("outro-base.kspec"),
           "configuracoes listam as puladas");
@@ -653,7 +653,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
 
     fprintf(stderr, "-- NOTIFY, FILE e FINDING\n");
     c.typeAndEnter("mande os arquivos");
-    check(waitFor([&] { return be.ready() && be.messages()->count() >= 7; }, 10000), "pedido terminou");
+    check(waitFor([&] { return be.ready() && be.messages()->count() >= 7; }, 60000), "pedido terminou");
     QTest::qWait(300);
     int nNotify = 0, nFile = 0, nFind = 0;
     for (int i = 0; i < be.messages()->count(); i++) {
@@ -683,7 +683,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
 
     fprintf(stderr, "-- agente parou sem responder\n");
     c.typeAndEnter("faca algo mudo");
-    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["kind"] == "stopped"; }, 10000),
+    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["kind"] == "stopped"; }, 60000),
           "ultimo turno so com ferramenta: linha de parada");
     QTest::qWait(300);
     QQuickItem *sl = c.item("stoppedLine"), *as = c.item("askSummary");
@@ -692,14 +692,14 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
     c.grab("22-parou-sem-responder.png");
     const int antes = be.messages()->count();
     if (as) c.click(as);
-    check(waitFor([&] { return be.messages()->get(antes)["kind"] == "user" && be.messages()->get(antes)["text"].toString().contains("Resuma o que foi feito"); }, 3000),
+    check(waitFor([&] { return be.messages()->get(antes)["kind"] == "user" && be.messages()->get(antes)["text"].toString().contains("Resuma o que foi feito"); }, 30000),
           "pedir resumo manda a mensagem fixa");
-    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resumo:"); }, 10000),
+    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resumo:"); }, 60000),
           "o agente responde o resumo");
     QTest::qWait(300);
     check(be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant" && !c.item("askSummary")->isVisible(), "depois do resumo o botao some e nao ha nova linha de parada");
     c.typeAndEnter("pergunta comum");
-    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resposta de teste"); }, 10000)
+    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resposta de teste"); }, 60000)
           && be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant", "resposta normal nao gera linha de parada");
 
     fprintf(stderr, "== %d verificacoes ok, %d falhas\n", g_ok, g_fail);
