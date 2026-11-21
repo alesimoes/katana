@@ -62,6 +62,17 @@
 #include "tools/askuserquestion.c"
 #include "tools/planmode.c"            /* EnterPlanMode, ExitPlanMode */
 #include "tools/agent.c"
+#include "tools/worktree.c"              /* EnterWorktree, ExitWorktree */
+#include "tools/powershell.c"            /* PowerShell */
+#include "tools/lsp.c"                   /* LSP */
+#include "tools/schedule.c"              /* CronCreate, CronDelete, CronList, ScheduleWakeup */
+#include "tools/notify.c"                /* PushNotification, SendUserFile, EndConversation */
+#include "tools/mcpres.c"                /* ListMcpResourcesTool, ReadMcpResourceTool, WaitForMcpServers */
+#include "tools/toolsearch.c"            /* ToolSearch */
+#include "tools/skill.c"                 /* Skill */
+#include "tools/reportfindings.c"        /* ReportFindings */
+#include "tools/messages.c"              /* SendMessage, ListAgents, SubagentHandback */
+#include "tools/workflow.c"              /* Workflow */
 #include "tools/table.c"               /* tabela, despacho e katana tool */
 #include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
