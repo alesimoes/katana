@@ -170,6 +170,20 @@ static void tch_tools(const char *sys, Buf *o) {
         if (!launch_tool_allowed(TCH_EXTRA[i][0])) continue;                   /* --allowed-tools: o professor tambem so ve as permitidas */
         buf_str(o, n++ ? ", " : ""); buf_str(o, TCH_EXTRA[i][1]);
     }
+    /* ferramentas dos servidores MCP ligados: o prompt as mostra em cartoes, fora do bloco <tools>, entao entram aqui */
+    for (int i = 0; i < g_nmcp; i++) {
+        if (!g_mcp[i].alive) continue;
+        for (int j = 0; j < g_mcp[i].ntools; j++) {
+            const McpTool *t = &g_mcp[i].tools[j];
+            char fn[260]; mcp_fname(&g_mcp[i], t->name, fn, sizeof fn);
+            if (!launch_tool_allowed(fn)) continue;
+            buf_str(o, n++ ? ", {\"name\": " : "{\"name\": "); tch_jstr(o, fn, strlen(fn));
+            if (t->desc && t->desc[0]) { buf_str(o, ", \"description\": "); tch_jstr(o, t->desc, strlen(t->desc)); }
+            buf_str(o, ", \"input_schema\": ");
+            buf_str(o, t->schema && t->schema[0] == '{' ? t->schema : "{\"type\": \"object\", \"properties\": {}}");
+            buf_str(o, "}");
+        }
+    }
     buf_str(o, "]");
 }
 

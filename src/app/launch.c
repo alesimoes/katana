@@ -1327,7 +1327,7 @@ static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "code", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "knowledge", "import", "merge", "distill", "agentlog", "export",
         "learn", "specialize", "gradcheck", "train", "selftest", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
-        "install", "uninstall", "adopt", "init", "skill", "skills", NULL};      /* acrescente aqui os subcomandos novos */
+        "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", NULL};      /* acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
     return 0;
 }
@@ -1403,6 +1403,14 @@ static int launch_try(int argc, char **argv) {
             return -1;
         }
         if (strlen(a1) > 5 && !strcmp(a1 + strlen(a1) - 5, ".gguf") && argc >= 2 && a1[0] != '-' && lc_isfile(a1)) return -1;
+        /* uma palavra solta que nao e subcomando conhecido NAO vira mensagem para o agente: um subcomando novo esquecido na
+           lista acima (ou um erro de digitacao) abriria o agente com o modelo de verdade e ferramentas ligadas. Mensagem de uma
+           palavra: use -p, ou escreva mais de uma palavra */
+        if (a1[0] != '-' && !strchr(a1, ' ') && !strchr(a1, '\n')) {
+            int word = a1[0] != 0;
+            for (const char *w = a1; *w; w++) if (!((*w >= 'a' && *w <= 'z') || (*w >= '0' && *w <= '9') || *w == '-' || *w == '_')) word = 0;
+            if (word) return -1;        /* segue para o despacho normal, que conhece o subcomando ou mostra o uso */
+        }
     }
     const char *first = NULL;
     for (int i = 1; i < argc; i++) {
