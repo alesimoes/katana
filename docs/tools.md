@@ -36,6 +36,10 @@ The prompt declares `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`
 `AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch` with full schemas and lists the rest by name. The teacher
 takes its tool list from the prompt, so it follows the switch.
 
+The declarations in the prompt are a short form kept in `src/tools/table.c` (`g_ct_short`): the system prompt is
+8.8k characters with this set against 7.8k with the first set (measured; it was 19k with the full descriptions).
+`ToolSearch` returns the full description and schema of any tool.
+
 Not measured, not done:
 - No run with Qwen3.6 or Gemma 4 yet: the effect of this set on the local models is unknown. Next step: codebench
   with `KATANA_TOOLS=1` and without it, alternating.

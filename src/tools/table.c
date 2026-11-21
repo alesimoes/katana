@@ -58,11 +58,49 @@ static const CtTool *ct_lookup(const char *name) {
     return NULL;
 }
 static void js_escape(Buf *b, const char *s, size_t n);      /* src/app/server.c */
+/* declaracoes curtas das ferramentas principais, para o prompt (cada caractere ali custa contexto em toda conversa).
+   A descricao e o esquema completos de cada arquivo continuam valendo para o ToolSearch; os argumentos que nao
+   aparecem aqui continuam aceitos. */
+#define S(k) "\"" k "\": {\"type\": \"string\"}"
+#define I(k) "\"" k "\": {\"type\": \"integer\"}"
+#define B(k) "\"" k "\": {\"type\": \"boolean\"}"
+static const char *const g_ct_short[][4] = {
+    {"Bash", "Run a shell command; returns output and exit code. The working directory persists between calls. timeout in ms (default 120000). run_in_background=true for a server or long job: returns a task id and an output file",
+        S("command") ", " I("timeout") ", " B("run_in_background"), "\"command\""},
+    {"Read", "Read a file; each line comes with its number. Long file: offset = first line, limit = number of lines",
+        S("file_path") ", " I("offset") ", " I("limit"), "\"file_path\""},
+    {"Edit", "Replace an exact snippet of a file you have read. old_string must be copied from the file without the line numbers and be unique, unless replace_all",
+        S("file_path") ", " S("old_string") ", " S("new_string") ", " B("replace_all"), "\"file_path\", \"old_string\", \"new_string\""},
+    {"Write", "Create a file, or replace a whole file you have read, with content",
+        S("file_path") ", " S("content"), "\"file_path\", \"content\""},
+    {"Grep", "Search file contents with a regular expression (literal=true for plain text). output_mode: files_with_matches (default), content (lines with numbers; -C adds context lines) or count. glob filters files, e.g. *.py",
+        S("pattern") ", " S("path") ", " S("glob") ", " S("output_mode") ", " B("-i") ", " I("-C") ", " B("literal"), "\"pattern\""},
+    {"Glob", "Find files by name pattern, e.g. **/*.c or src/**/test_*.py; newest first",
+        S("pattern") ", " S("path"), "\"pattern\""},
+    {"TodoWrite", "Your task list for a long job: send the whole list each time. status: pending, in_progress or completed",
+        "\"todos\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {" S("content") ", " S("status") "}, \"required\": [\"content\", \"status\"]}}", "\"todos\""},
+    {"AskUserQuestion", "Ask the user to choose; they may also type another answer",
+        "\"questions\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {" S("question") ", \"options\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {" S("label") ", " S("description") "}}}}, \"required\": [\"question\", \"options\"]}}", "\"questions\""},
+    {"WebSearch", "Search the web: titles, URLs and summaries", S("query"), "\"query\""},
+    {"WebFetch", "Read a web page as text; prompt says what you are looking for and selects the passages of a long page",
+        S("url") ", " S("prompt"), "\"url\""},
+    {"ToolSearch", "Get how to call a tool that is listed by name only: query select:Name (several separated by commas), or words to search for",
+        S("query"), "\"query\""},
+};
+#undef S
+#undef I
+#undef B
 static int ct_ready(const CtTool *t) { return t && !strstr(t->desc, "(not implemented yet)"); }
 /* declaracao de uma ferramenta, numa linha, no formato do bloco <tools> do prompt; 0 se nao existe ou nao esta pronta */
 static size_t ct_decl(char *out, size_t cap, const char *name) {
     const CtTool *t = ct_lookup(name);
     if (!ct_ready(t) || cap < 64) return 0;
+    for (size_t i = 0; i < sizeof g_ct_short / sizeof g_ct_short[0]; i++) if (strcmp(g_ct_short[i][0], name) == 0) {
+        const int n = snprintf(out, cap, "{\"type\": \"function\", \"function\": {\"name\": \"%s\", \"description\": \"%s\", \"parameters\": {\"type\": \"object\", \"properties\": {%s}, \"required\": [%s]}}}\n",
+                               name, g_ct_short[i][1], g_ct_short[i][2], g_ct_short[i][3]);
+        if (n < 0 || (size_t)n >= cap) { out[0] = 0; return 0; }
+        return (size_t)n;
+    }
     Buf d = {0};
     js_escape(&d, t->desc, strlen(t->desc));
     const int n = snprintf(out, cap, "{\"type\": \"function\", \"function\": {\"name\": \"%s\", \"description\": \"%s\", \"parameters\": {\"type\": \"object\", \"properties\": {%s}, \"required\": [%s]}}}\n",
