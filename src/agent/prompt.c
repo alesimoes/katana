@@ -131,16 +131,16 @@ static void agent_env(char *out, size_t cap) {
 /* prompt de sistema do agente. Curto de proposito: poucas regras e so as ferramentas principais (as outras continuam
  * no despacho, mas nao ocupam contexto). Ordem: regras e ferramentas (parte estavel, fica no cache de prefixo), depois
  * o ambiente, a memoria e as instrucoes extras do usuario (/sistema) */
-/* KATANA_TOOLS=claude: o prompt declara as ferramentas de src/tools/ (nomes e argumentos do Claude Code) em vez das
+/* KATANA_TOOLS=2: o prompt declara o segundo conjunto de ferramentas (src/tools/) em vez das
    antigas. As antigas continuam no despacho. Chave para poder medir um conjunto contra o outro. */
-static int ct_claude(void) { static int v = -1; if (v < 0) { const char *e = getenv("KATANA_TOOLS"); v = e && strcmp(e, "claude") == 0; } return v; }
+static int ct_set2(void) { static int v = -1; if (v < 0) { const char *e = getenv("KATANA_TOOLS"); v = e && strcmp(e, "2") == 0; } return v; }
 static size_t ct_decl(char *out, size_t cap, const char *name);                 /* src/tools/table.c */
 static size_t ct_names(char *out, size_t cap, const char *const *skip);
 static void agent_build_sys(char *out, size_t cap, const char *extra) {
     static char facts[12000];
     if (g_code) facts[0] = 0; else mem_tail(20, facts, sizeof facts);
     size_t o = 0;
-    if (ct_claude()) {
+    if (ct_set2()) {
         static const char *const core[] = {"Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite", "AskUserQuestion", NULL};
         static const char *const web[] = {"WebSearch", "WebFetch", NULL};
         static const char *const skip[] = {"Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite", "AskUserQuestion", "WebSearch", "WebFetch", "ToolSearch", NULL};

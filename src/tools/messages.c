@@ -1,4 +1,4 @@
-/* ---------- SendMessage, ListAgents, SubagentHandback (nomes e argumentos do Claude Code) ----------
+/* ---------- SendMessage, ListAgents, SubagentHandback (ver docs/tools.md) ----------
  * Aqui ha um modelo so e um contexto so no processo: o subagente (delegate.c, ferramenta Agent) roda em sequencia,
  * com contexto novo, e so a resposta final volta. Nao existe agente em segundo plano.
  *

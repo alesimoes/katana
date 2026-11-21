@@ -1,4 +1,4 @@
-/* ---------- Agent: subagente com contexto limpo (nome e argumentos do Claude Code) ----------
+/* ---------- Agent: subagente com contexto limpo (ver docs/tools.md) ----------
  * Por baixo e o delegate do katana (src/agent/delegate.c): o subagente so le, usa o mesmo modelo, e so a resposta
  * final dele volta. description e so um rotulo; subagent_type e aceito e ignorado (aqui ha um tipo so). */
 static const char CT_AGENT_DESC[] = "Hand a large search or reading job to a sub-agent with a clean context; only its final report comes back. "

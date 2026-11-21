@@ -1,4 +1,4 @@
-/* ---------- ferramenta Edit (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta Edit (ver docs/tools.md) ----------
  * Troca exata de texto. Exige ter lido o arquivo inteiro (ct_seen); aceita arquivo mudado no disco se o trecho ainda casa. */
 static const char CT_EDIT_DESC[] =
     "Performs an exact string replacement in a file (no regex). Read the whole file with Read first, or the edit is refused. "

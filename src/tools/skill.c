@@ -1,11 +1,11 @@
 /* ---------- ferramenta Skill ----------
  * Uma skill e uma pasta com SKILL.md (cabecalho opcional entre linhas "---" com name e description, depois as instrucoes).
- * Busca, em ordem: <pasta de trabalho>/.katana/skills, <pasta>/.claude/skills, ~/.katana/skills, ~/.claude/skills;
+ * Busca, em ordem: <pasta de trabalho>/.katana/skills, <pasta>/.config/katana/skills, ~/.katana/skills, ~/.config/katana/skills;
  * depois as receitas embutidas (howto), com o nome do assunto. */
 
 static const char CT_SKILL_DESC[] =
     "Load a named set of instructions (a skill) and follow it. Skills live in .katana/skills/<name>/SKILL.md or "
-    ".claude/skills/<name>/SKILL.md (in the working folder or the home folder); built-in recipes are skills too. "
+    ".config/katana/skills/<name>/SKILL.md (in the working folder or the home folder); built-in recipes are skills too. "
     "Call it without skill, or with an unknown name, to list the available skills.";
 static const char CT_SKILL_PROPS[] =
     "\"skill\": {\"type\": \"string\", \"description\": \"Name of the skill to load (letters, digits, - _ :)\"}, "
@@ -26,9 +26,9 @@ static int sk_roots(char roots[4][1100]) {
     if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
     agent_home(home, sizeof home);
     int n = 0;
-    if (cwd[0]) { snprintf(roots[n++], 1100, "%s/.katana/skills", cwd); snprintf(roots[n++], 1100, "%s/.claude/skills", cwd); }
+    if (cwd[0]) { snprintf(roots[n++], 1100, "%s/.katana/skills", cwd); snprintf(roots[n++], 1100, "%s/.config/katana/skills", cwd); }
     snprintf(roots[n++], 1100, "%s/.katana/skills", home);
-    snprintf(roots[n++], 1100, "%s/.claude/skills", home);
+    snprintf(roots[n++], 1100, "%s/.config/katana/skills", home);
     return n;
 }
 /* arquivo inteiro (ate 256 KB) em memoria nova; NULL se nao abrir */

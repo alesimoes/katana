@@ -1,4 +1,4 @@
-/* ---------- base das ferramentas de src/tools/ (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- base das ferramentas de src/tools/ (ver docs/tools.md) ----------
  * Contrato de cada ferramenta:
  *     static void ct_nome(const char *js, const char *end, char *out, size_t cap);
  * js..end e o texto com os argumentos (um objeto JSON, sozinho ou depois de "arguments":). O resultado vai em out

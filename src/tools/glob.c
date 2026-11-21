@@ -1,4 +1,4 @@
-/* ---------- ferramenta Glob (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+/* ---------- ferramenta Glob (ver docs/tools.md) ----------
  * Tambem guarda o que o Grep reaproveita: casamento de padroes (* ** ? [..] {a,b}), lista de arquivos com data,
  * caminhada de pastas e texto crescente (CtSb). */
 static const char CT_GLOB_DESC[] =

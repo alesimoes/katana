@@ -1,4 +1,4 @@
-/* ---------- PushNotification, SendUserFile, EndConversation (docs/claude-tools.md) ----------
+/* ---------- PushNotification, SendUserFile, EndConversation (docs/tools.md) ----------
  * Versoes locais: nada sai da maquina. Para a interface (KATANA_UI) vao marcadores de linha:
  *   \x01NOTIFY titulo<TAB>mensagem        \x01FILE modo<TAB>caminho<TAB>legenda */
 

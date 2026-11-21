@@ -1,4 +1,4 @@
-/* ---------- ferramenta PowerShell (docs/claude-tools.md) ----------
+/* ---------- ferramenta PowerShell (docs/tools.md) ----------
  * Roda o comando com pwsh (ou powershell) se estiver no PATH, pelo mesmo ajudante do Bash (tool_run_command). */
 #ifndef _WIN32
 static const char CT_POWERSHELL_DESC[] =

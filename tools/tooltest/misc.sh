@@ -27,52 +27,52 @@ o=$("$K" tool EnterWorktree '{"name":"a/b"}' 2>&1); has "nome com barra" "$o" "e
 o=$("$K" tool ExitWorktree '{"action":"explode"}' 2>&1); has "action invalida" "$o" "error: invalid action"
 
 o=$("$K" tool EnterWorktree '{"name":"feat-1"}' EnterWorktree '{"name":"outro"}' ExitWorktree '{}' 2>&1)
-has "criar" "$o" "created worktree $R/.claude/worktrees/feat-1 on branch worktree-feat-1"
+has "criar" "$o" "created worktree $R/.katana/worktrees/feat-1 on branch worktree-feat-1"
 has "ja dentro de uma sessao" "$o" "error: already inside a worktree session"
 has "keep (padrao)" "$o" "were kept on disk"
-[ -d "$R/.claude/worktrees/feat-1" ] && ok "pasta do worktree existe" || bad "pasta do worktree existe" ""
+[ -d "$R/.katana/worktrees/feat-1" ] && ok "pasta do worktree existe" || bad "pasta do worktree existe" ""
 git branch --list worktree-feat-1 | grep -q . && ok "ramo existe" || bad "ramo existe" ""
 o=$("$K" tool EnterWorktree '{"name":"feat-1"}' 2>&1); has "nome ja existente" "$o" "already exists"
 
 # forma path
 o=$("$K" tool EnterWorktree '{"path":"'"$T"'"}' 2>&1); has "path nao e worktree" "$o" "is not a worktree of this repository"
-o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.claude/worktrees/feat-1"}' ExitWorktree '{}' 2>&1)
+o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/feat-1"}' ExitWorktree '{}' 2>&1)
 has "path: entra" "$o" "switched into worktree"
-has "path: pasta de trabalho muda" "$o" "the working folder is now $R/.claude/worktrees/feat-1 "
+has "path: pasta de trabalho muda" "$o" "the working folder is now $R/.katana/worktrees/feat-1 "
 has "exit volta" "$o" "working folder is back to $R"
 
 # nome gerado
-o=$("$K" tool EnterWorktree '{}' 2>&1); has "nome gerado" "$o" ".claude/worktrees/wt-"
-g=$(ls "$R/.claude/worktrees" | grep '^wt-'); [ -n "$g" ] && ok "worktree gerado no disco" || bad "worktree gerado no disco" ""
+o=$("$K" tool EnterWorktree '{}' 2>&1); has "nome gerado" "$o" ".katana/worktrees/wt-"
+g=$(ls "$R/.katana/worktrees" | grep '^wt-'); [ -n "$g" ] && ok "worktree gerado no disco" || bad "worktree gerado no disco" ""
 
 # remove limpo: apaga pasta e ramo
 o=$("$K" tool EnterWorktree '{"name":"limpo"}' ExitWorktree '{"action":"remove"}' 2>&1)
-has "remove limpo" "$o" "removed the worktree $R/.claude/worktrees/limpo"
+has "remove limpo" "$o" "removed the worktree $R/.katana/worktrees/limpo"
 has "remove apaga o ramo" "$o" "Branch worktree-limpo deleted"
-[ ! -d "$R/.claude/worktrees/limpo" ] && ok "pasta removida" || bad "pasta removida" ""
+[ ! -d "$R/.katana/worktrees/limpo" ] && ok "pasta removida" || bad "pasta removida" ""
 if git branch --list worktree-limpo | grep -q .; then bad "ramo removido" ""; else ok "ramo removido"; fi
 
 # remove com mudancas nao commitadas
-"$K" tool EnterWorktree '{"name":"sujo"}' >/dev/null 2>&1; echo x > "$R/.claude/worktrees/sujo/novo.txt"
-o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.claude/worktrees/sujo"}' ExitWorktree '{"action":"remove"}' 2>&1)
+"$K" tool EnterWorktree '{"name":"sujo"}' >/dev/null 2>&1; echo x > "$R/.katana/worktrees/sujo/novo.txt"
+o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/sujo"}' ExitWorktree '{"action":"remove"}' 2>&1)
 has "remove recusa mudancas" "$o" "error: the worktree has work that remove would lose"
 has "lista as mudancas" "$o" "novo.txt"
-[ -d "$R/.claude/worktrees/sujo" ] && ok "nada removido apos recusa" || bad "nada removido apos recusa" ""
-o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.claude/worktrees/sujo"}' ExitWorktree '{"action":"remove","discard_changes":true}' 2>&1)
+[ -d "$R/.katana/worktrees/sujo" ] && ok "nada removido apos recusa" || bad "nada removido apos recusa" ""
+o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/sujo"}' ExitWorktree '{"action":"remove","discard_changes":true}' 2>&1)
 has "discard_changes remove" "$o" "removed the worktree"
-[ ! -d "$R/.claude/worktrees/sujo" ] && ok "pasta sujo removida" || bad "pasta sujo removida" ""
+[ ! -d "$R/.katana/worktrees/sujo" ] && ok "pasta sujo removida" || bad "pasta sujo removida" ""
 
 # remove com commit fora do ramo original
 "$K" tool EnterWorktree '{"name":"commitado"}' >/dev/null 2>&1
-(cd "$R/.claude/worktrees/commitado" && echo b > b.txt && git add b.txt && git commit -qm dois)
-o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.claude/worktrees/commitado"}' ExitWorktree '{"action":"remove"}' 2>&1)
+(cd "$R/.katana/worktrees/commitado" && echo b > b.txt && git add b.txt && git commit -qm dois)
+o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/commitado"}' ExitWorktree '{"action":"remove"}' 2>&1)
 has "remove recusa commits" "$o" "commits not in the original branch"
 has "lista o commit" "$o" "dois"
 git branch --list worktree-commitado | grep -q . && ok "ramo mantido apos recusa" || bad "ramo mantido apos recusa" ""
 
 # marcador de interface
 o=$(KATANA_UI=1 "$K" tool EnterWorktree '{"name":"ui1"}' ExitWorktree '{}' 2>&1 | cat -vT)
-has "marcador CWD ao entrar" "$o" "^ACWD $R/.claude/worktrees/ui1"
+has "marcador CWD ao entrar" "$o" "^ACWD $R/.katana/worktrees/ui1"
 has "marcador CWD ao sair" "$o" "^ACWD $R"
 
 # ---------- PowerShell ----------

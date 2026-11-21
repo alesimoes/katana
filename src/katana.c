@@ -47,7 +47,7 @@
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
 #include "agent/context.c"             /* compactacao do contexto */
 #include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
-/* ferramentas com os nomes e argumentos do Claude Code, uma por arquivo (docs/claude-tools.md) */
+/* segundo conjunto de ferramentas do agente, uma por arquivo (docs/tools.md) */
 #include "tools/common.c"              /* argumentos em JSON, arquivos vistos na conversa */
 #include "tools/bash.c"                /* Bash, TaskStop, Monitor */
 #include "tools/read.c"

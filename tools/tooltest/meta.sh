@@ -138,32 +138,32 @@ case $R in
 esac
 
 ########## Skill ##########
-mkdir -p "$T/work/.katana/skills/deploy" "$T/work/.claude/skills/deploy" "$T/work/.claude/skills/review" "$HOME/.katana/skills/hk" "$HOME/.claude/skills/hc" "$HOME/.claude/skills/review"
+mkdir -p "$T/work/.katana/skills/deploy" "$T/work/.config/katana/skills/deploy" "$T/work/.config/katana/skills/review" "$HOME/.katana/skills/hk" "$HOME/.config/katana/skills/hc" "$HOME/.config/katana/skills/review"
 printf -- '---\nname: deploy\ndescription: "Deploy the app"\n---\n# Deploy katana\nRun ./deploy.sh\n' > "$T/work/.katana/skills/deploy/SKILL.md"
-printf -- '---\nname: deploy\ndescription: Claude deploy\n---\nCLAUDE VERSION\n' > "$T/work/.claude/skills/deploy/SKILL.md"
-printf 'No front matter here.\nSecond line.\n' > "$T/work/.claude/skills/review/SKILL.md"
+printf -- '---\nname: deploy\ndescription: Second deploy\n---\nSECOND VERSION\n' > "$T/work/.config/katana/skills/deploy/SKILL.md"
+printf 'No front matter here.\nSecond line.\n' > "$T/work/.config/katana/skills/review/SKILL.md"
 printf -- '---\ndescription: From home katana\n---\nHK body\n' > "$HOME/.katana/skills/hk/SKILL.md"
-printf -- '---\ndescription: From home claude\n---\nHC body\n' > "$HOME/.claude/skills/hc/SKILL.md"
-printf 'HOME REVIEW\n' > "$HOME/.claude/skills/review/SKILL.md"
+printf -- '---\ndescription: From home config\n---\nHC body\n' > "$HOME/.config/katana/skills/hc/SKILL.md"
+printf 'HOME REVIEW\n' > "$HOME/.config/katana/skills/review/SKILL.md"
 printf 'SECRET\n' > "$T/secret"
 
 R=$("$K" tool Skill '{"skill":"deploy"}')
 has "skill: linha de cabecalho com base" "$R" "Loaded skill: deploy (base directory: $T/work/.katana/skills/deploy)"
 has "skill: corpo" "$R" "Run ./deploy.sh"
 hasnt "skill: sem front matter" "$R" "description:"
-hasnt "skill: .katana vence .claude" "$R" "CLAUDE VERSION"
+hasnt "skill: .katana vence .config" "$R" "SECOND VERSION"
 R=$("$K" tool Skill '{"skill":"review"}')
 has "skill: pasta de trabalho vence a home" "$R" "No front matter here."
 hasnt "skill: sem cabecalho, corpo inteiro" "$R" "HOME REVIEW"
 R=$("$K" tool Skill '{"skill":"hk"}'); has "skill: home .katana" "$R" "HK body"
-R=$("$K" tool Skill '{"skill":"hc"}'); has "skill: home .claude" "$R" "HC body"
+R=$("$K" tool Skill '{"skill":"hc"}'); has "skill: home .config" "$R" "HC body"
 R=$("$K" tool Skill '{"skill":"hk","args":"fast mode"}')
 has "skill: args" "$R" "## Arguments
 fast mode"
 R=$("$K" tool Skill '{"skill":"howto-nao-existe"}' 2>&1)
 has "skill: desconhecida lista" "$R" "error: unknown skill 'howto-nao-existe'."
 has "skill: lista com descricao" "$R" "- deploy: Deploy the app"
-has "skill: lista home" "$R" "- hc: From home claude"
+has "skill: lista home" "$R" "- hc: From home config"
 has "skill: lista embutidas" "$R" "- web: built-in recipe"
 eq "skill: deploy aparece uma vez" "$(printf '%s\n' "$R" | grep -c '^- deploy')" "1"
 R=$("$K" tool Skill '{}'); has "skill: sem nome lista" "$R" "Available skills:"

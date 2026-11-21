@@ -1,0 +1,118 @@
+# The agent's second tool set (`src/tools/`)
+
+The katana agent has two tool sets. The first is the original one (`run_command`, `read_file`, `write_file`...,
+`src/agent/`). The second lives in `src/tools/`, one file per tool or small family, and is selected with
+`KATANA_TOOLS=2`. Both are always accepted by the dispatcher, so old sessions keep opening; the switch only changes
+which set the system prompt declares to the model. The default is still the first set until the second is measured
+on Qwen3.6 and Gemma 4.
+
+Why a second set: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
+"read before you change" rule, search with output modes, a task list edited item by item, and the less common tools
+announced by name only and loaded on demand (`ToolSearch`), so they cost no context until used.
+
+## Status (2026-11-21)
+
+Every tool has a test script in `tools/tooltest/` that runs it without a model
+(`./katana tool <Name> '<json>' [<Name> '<json>' ...]`; several pairs run in one process).
+
+| File | Tools | Checks |
+|---|---|---|
+| `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
+| `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
+| `glob.c`, `grep.c` | `Glob`, `Grep` | 101 |
+| `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
+| `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
+| `agent.c`, `messages.c`, `workflow.c` | `Agent`, `SendMessage`, `ListAgents`, `SubagentHandback`, `Workflow` | 42 |
+| `mcpres.c`, `toolsearch.c`, `skill.c`, `reportfindings.c` | `ListMcpResourcesTool`, `ReadMcpResourceTool`, `WaitForMcpServers`, `ToolSearch`, `Skill`, `ReportFindings` | 71 |
+| `worktree.c`, `powershell.c`, `notify.c` | `EnterWorktree`, `ExitWorktree`, `PowerShell`, `PushNotification`, `SendUserFile`, `EndConversation` | 61 |
+| `lsp.c` | `LSP` | 39 |
+| `schedule.c` | `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup` | 152 |
+
+Measured: the 765 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
+and the mock teacher under `KATANA_TOOLS=2` (Write, Edit, Bash with the working-directory reset, Grep).
+
+With `KATANA_TOOLS=2` the prompt declares `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`,
+`AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch` with full schemas and lists the rest by name. The teacher
+takes its tool list from the prompt, so it follows the switch.
+
+Not measured, not done:
+- No run with Qwen3.6 or Gemma 4 yet: the effect of this set on the local models is unknown. Next step: codebench
+  with and without `KATANA_TOOLS=2`, alternating.
+- Written but not exercised: delivery of scheduled prompts and session mail by the loop, `EndConversation`,
+  `SubagentHandback` inside a real sub-agent, `LSP` against a real language server, `PowerShell` with a real `pwsh`.
+- The desktop does not show the `NOTIFY`, `FILE` and `FINDING` markers yet.
+
+## Contract
+
+```c
+static const char CT_X_DESC[]  = "...";   /* description shown to the model */
+static const char CT_X_PROPS[] = "...";   /* JSON schema properties, without the outer braces */
+static const char CT_X_REQ[]   = "...";   /* required names */
+static void ct_x(const char *js, const char *end, char *out, size_t cap);
+```
+`src/tools/common.c` has the argument readers (`ct_str`, `ct_int`, `ct_bool`, `ct_has`: top-level keys only) and
+the record of files seen in the conversation (`ct_seen_mark`, `ct_seen`). `src/tools/table.c` has the table, the
+dispatcher, the declarations for the prompt and the hooks the agent loop calls (`ct_session_reset`, `ct_read_line`,
+`ct_end_check`). The result is text in `out`; an error starts with `error: ` and tells the model what to do next.
+
+## The tools
+
+### Bash, TaskStop, Monitor
+`Bash(command, timeout, run_in_background, description)`. A new shell per command; the working directory persists
+between calls when it stays inside the agent's folder (otherwise it is reset and the result ends with
+`Shell cwd was reset to <dir>`); environment variables do not persist. `timeout` in milliseconds, default 120000,
+ceiling 600000. At the timeout the command is moved to the background (a command starting with `sleep` is killed)
+and the result gives a task id and the output file. Output goes to a file: a successful result comes inline up to
+about 30000 characters, above that the file path and a 2000-character preview; a failed result inline up to about
+10000, otherwise head and tail. Exit code 1 is not a failure for `grep`, `rg`, `find`, `diff`, `test`, `[`,
+`git diff`, `git grep`. `run_in_background` returns at once with a task id; `TaskStop(task_id)` stops it.
+`Monitor(command, description, timeout_ms)` starts a command in the background with a deadline (5 min default,
+30 max) and returns the output file; lines are not delivered as events yet.
+
+### Read, Write, Edit, NotebookEdit
+`Read(file_path, offset, limit, pages)`: lines prefixed with their number; 2000 lines by default; a `PARTIAL view`
+notice when the range does not fit; notices for an empty file and an offset past the end; a directory and binary
+files are errors with a hint; PDF as text (by `pages` above 10 pages); notebooks as cells. Marks the file as seen.
+`Edit(file_path, old_string, new_string, replace_all)`: exact replacement; the file must have been read in full;
+`old_string` must occur once unless `replace_all`; non-UTF-8 files refused; result shows the changed lines; syntax
+check and undo as in the first set.
+`Write(file_path, content)`: whole file, never appends; overwriting needs a previous read; any size.
+`NotebookEdit(notebook_path, cell_id, new_source, cell_type, edit_mode)`: replace, insert, delete; untouched cells
+stay byte for byte.
+
+### Glob, Grep
+`Glob(pattern, path)`: `**`, `*`, `?`, `[...]`, `{a,b}`; absolute paths, newest first, at most 100.
+`Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, head_limit, offset)`: POSIX extended
+regular expressions with a few conveniences (`\d`, `\t`, a literal `{`); modes `files_with_matches` (default),
+`content`, `count`; skips binary and git-ignored files.
+
+### WebFetch, WebSearch
+`WebFetch(url, prompt)`: http upgraded to https; hosts without a dot refused (use `curl` in `Bash` for local
+servers); returns the page text, choosing the passages that match the words of `prompt` when it does not fit; pages
+cached for 15 minutes. `WebSearch(query, allowed_domains, blocked_domains)`: katana's search with a host filter.
+
+### Tasks, questions, plan mode
+`TodoWrite(todos)` replaces the list; `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` edit it item by item. One
+list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options
+each, asked one at a time through the existing question mechanism. `EnterPlanMode()` and `ExitPlanMode(plan)`: the
+model can enter the read-only mode and present a plan for approval.
+
+### Agents
+`Agent(description, prompt)`: a read-only sub-agent with a clean context; only its report returns.
+`SendMessage(to, message)`: continues a sub-agent by replay (task, previous report, new message), or leaves a
+message for another katana session on this machine (`~/.katana/mail/`). `ListAgents()`. `SubagentHandback(message)`
+ends a sub-agent with its report. `Workflow(script | scriptPath | name, args)`: a sequential JSON description of
+phases and agents.
+
+### The rest
+`LSP(operation, filePath, line, character, query)`: definitions, references, hover, symbols, call hierarchy and
+diagnostics from a language server found on PATH (`KATANA_LSP_<EXT>` overrides). `EnterWorktree`/`ExitWorktree`:
+an isolated git worktree under `.katana/worktrees/`. `CronCreate`/`CronDelete`/`CronList`/`ScheduleWakeup`:
+prompts scheduled inside the session, delivered when the agent is idle. `PushNotification`, `SendUserFile`: local
+notification and file hand-over to the interface. `ToolSearch(query)`: returns the declaration of tools listed by
+name only. `Skill(skill, args)`: loads instructions from `.katana/skills/<name>/SKILL.md`. `ReportFindings`,
+`EndConversation`, `PowerShell`, and the MCP resource tools.
+
+katana's own tools without a counterpart in this set stay as they are: `terminal`, `terminal_screen`, `job`,
+`read_log`, `howto`, `remember`, `recall`, `install_package`, `download_file`, `find_file`, `list_dir`,
+`read_document`, `git`.

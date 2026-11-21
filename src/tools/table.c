@@ -1,4 +1,4 @@
-/* ---------- tabela das ferramentas com os nomes e argumentos do Claude Code (src/tools/) ----------
+/* ---------- tabela das ferramentas de src/tools/ (ver docs/tools.md) ----------
  * Uma linha por ferramenta: nome, funcao, se roda no modo plano, e o esquema (descricao, propriedades, obrigatorios)
  * que vai para o prompt do modelo local e para o professor. Gerada uma vez; edite a mao daqui em diante. */
 typedef struct { const char *name; void (*fn)(const char *, const char *, char *, size_t); int readonly; const char *desc, *props, *req; } CtTool;
