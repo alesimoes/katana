@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stand-in for the `claude` program in print mode, to test the teacher through the logged-in session without it.
 
-The agent calls: claude -p --system-prompt-file F --tools '' --json-schema S --output-format json --model M ...
+The agent calls: claude -p --system-prompt-file F --tools '' --json-schema S --output-format stream-json --verbose
+--include-partial-messages --model M ...
 with the conversation on stdin. This script checks the options, the system prompt and the conversation, appends what
 it received to $MOCK_CLAUDE_LOG, and prints the result object the real program prints. Scripted teacher: write a
 file, read it back, final answer."""
@@ -22,7 +23,7 @@ def opt(name):
     return a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else None
 
 
-if "-p" not in a or opt("--output-format") != "json" or opt("--tools") != "" or "--no-session-persistence" not in a:
+if "-p" not in a or opt("--output-format") != "stream-json" or "--include-partial-messages" not in a or opt("--tools") != "" or "--no-session-persistence" not in a:
     fail("options: %s" % a)
 schema = json.loads(opt("--json-schema") or "null")
 if not schema or set(schema.get("required", [])) != {"text", "tool_calls"}:
@@ -40,12 +41,19 @@ if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user" or any(i and m[
 last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
 step = sum(1 for m in ms[last_user_text + 1:] if m["role"] == "assistant")
 if step == 0:
-    out = {"text": "Vou gravar o arquivo.", "tool_calls": [{"name": "write_file", "arguments": {"path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]}
+    out = {"text": "Vou gravar o arquivo: ação \"um\"\ne 😀 dois.", "tool_calls": [{"name": "write_file", "arguments": {"path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]}
 elif step == 1:
     out = {"text": "", "tool_calls": [{"name": "run_command", "arguments": {"command": "cat nota.txt", "timeout_s": 20}}]}
 else:
     out = {"text": "Pronto: nota.txt gravado e conferido.", "tool_calls": []}
 if log:
     open(log, "a").write(json.dumps({"ok": True, "step": step, "model": opt("--model"), "messages": len(ms)}) + "\n")
+# como o programa de verdade: o objeto da resposta chega em pedacos (cortados no meio de escapes e de acentos)
+sys.stdout.write(json.dumps({"type": "system", "subtype": "init"}) + "\n")
+for enc in ([json.dumps(out)] if step % 2 == 0 else [json.dumps(out, ensure_ascii=False)]):
+    for i in range(0, len(enc), 5):
+        sys.stdout.write(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "input_json_delta", "partial_json": enc[i:i + 5]}}}, separators=(",", ":"), ensure_ascii=(i % 2 == 0)) + "\n")
+        sys.stdout.flush()
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(out), "structured_output": out,
                   "usage": {"input_tokens": 10, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 0, "output_tokens": 7}}))

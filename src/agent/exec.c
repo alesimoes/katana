@@ -108,6 +108,7 @@ static void ui_live(const char *b, size_t n) {
    Sem isto o comando ficava orfao (visto com a chamada do professor, que seguia rodando depois do aplicativo fechar).
    Depois o sinal segue o caminho padrao. */
 static volatile pid_t g_fg_pid;
+static void (*g_cmd_tap)(const char *, size_t);     /* quem chamou quer ver a saida do comando enquanto ela chega */
 static void cmd_on_term(int sig) {
     const pid_t p = g_fg_pid;
     if (p > 0) kill(-p, SIGTERM);
@@ -171,7 +172,7 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
         const int w = poll(&p, 1, exited ? 100 : 200);
         if (w > 0) {
             const ssize_t n = read(pf[0], buf, sizeof buf);
-            if (n > 0) { ht_add(ht, buf, (size_t)n); ui_live(buf, (size_t)n); }
+            if (n > 0) { ht_add(ht, buf, (size_t)n); ui_live(buf, (size_t)n); if (g_cmd_tap) g_cmd_tap(buf, (size_t)n); }
             else if (n == 0 || (errno != EINTR && errno != EAGAIN)) eof = 1;
         } else if (w == 0 && exited) break;                  /* o shell acabou e nada mais chega (processo em segundo plano segurando o cano) */
     }
