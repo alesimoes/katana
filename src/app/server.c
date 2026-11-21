@@ -27,6 +27,8 @@ typedef int sock_t;
 static char g_srv_name[256] = "katana";     /* nome do modelo em /v1/models (arquivo sem .gguf) */
 static char g_srv_key[256];                 /* KATANA_API_KEY */
 static time_t g_srv_started;
+static int g_srv_agent;                     /* katana serve --agent: o agente pela rede (agentapi.c), sem o modelo neste processo */
+static char g_srv_model_path[4096];         /* caminho absoluto do modelo (o agente filho carrega) */
 
 /* fila do modelo: uma geracao por vez, na ordem de chegada (senha numerada) */
 #ifndef _WIN32
@@ -140,7 +142,8 @@ static void http_reply(sock_t s, int code, const char *ctype, const char *body, 
     char h[256];
     const char *st = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
                      code == 405 ? "Method Not Allowed" : code == 413 ? "Payload Too Large" : code == 401 ? "Unauthorized" :
-                     code == 503 ? "Service Unavailable" : "Error";
+                     code == 503 ? "Service Unavailable" : code == 409 ? "Conflict" : code == 500 ? "Internal Server Error" :
+                     code == 501 ? "Not Implemented" : "Error";
     const int k = snprintf(h, sizeof h, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
                            code, st, ctype, n);
     sock_send(s, h, (size_t)k);
@@ -549,6 +552,8 @@ static int host_local(const char *h) {   /* "localhost" ou "127.0.0.1", com port
 static void oa_chat(Model *m, sock_t s, const char *body);
 static void oa_models(sock_t s);
 static void oa_error(sock_t s, int code, const char *msg, const char *type);
+static char *srv_body(sock_t s, const char *head, size_t hn, size_t hend);
+static void ag_route(sock_t s, const char *method, const char *path, const char *head, size_t hn, size_t hend);
 
 /* "Authorization: Bearer <chave>" confere com KATANA_API_KEY (comparacao em tempo constante) */
 static int srv_auth(const char *head) {
@@ -616,6 +621,11 @@ static void srv_conn(Model *m, sock_t s, int peer_local) {
             if (!o || !host_local(o + 3)) { http_error(s, 403, "origem nao permitida"); free(head); return; }
         }
     }
+    if (strncmp(path, "/v1/agent/", 10) == 0 || strcmp(path, "/v1/agent") == 0) { ag_route(s, method, path, head, hn, hend); free(head); return; }
+    if (g_srv_agent && (strcmp(path, "/v1/chat/completions") == 0 || strcmp(path, "/api/chat") == 0)) {   /* o modelo esta so no agente */
+        oa_error(s, 503, "agent mode: this server runs katana's agent (/v1/agent/sessions) and does not hold the model for chat completions", "server_error");
+        free(head); return;
+    }
     if (strcmp(path, "/v1/models") == 0) {
         if (strcmp(method, "GET") != 0) oa_error(s, 405, "use GET", "invalid_request_error");
         else oa_models(s);
@@ -677,6 +687,8 @@ static int serve(Model *m, int port) {
     a.sin_port = htons((unsigned short)port);
     if (inet_pton(AF_INET, host, &a.sin_addr) != 1) die("KATANA_HOST: endereco IPv4 invalido (ex.: 127.0.0.1 ou 0.0.0.0)");
     const int net = !srv_peer_local(&a);
+    if (g_srv_agent && net && strlen(g_srv_key) < 16)       /* o agente executa comandos: nunca aberto sem chave */
+        die("katana serve --agent: KATANA_HOST abre para a rede e o agente executa comandos nesta maquina; defina KATANA_API_KEY com pelo menos 16 caracteres");
     if (net && strlen(g_srv_key) < 16) die("KATANA_HOST abre o servidor para a rede: defina KATANA_API_KEY com pelo menos 16 caracteres");
     sock_t ls = socket(AF_INET, SOCK_STREAM, 0);
     if (SOCK_BAD(ls)) die("nao consegui criar o socket");
@@ -684,8 +696,9 @@ static int serve(Model *m, int port) {
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof one);
     if (bind(ls, (struct sockaddr *)&a, sizeof a) != 0) die("nao consegui escutar nessa porta (em uso?)");
     if (listen(ls, 64) != 0) die("listen falhou");
-    fprintf(stderr, "katana serve: http://%s:%d  modelo \"%s\"  API: /v1/chat/completions, /v1/models%s%s; Ctrl+C encerra\n",
-            host, port, g_srv_name, net ? "; aberto para a rede, com chave" : "; so esta maquina", g_srv_key[0] && !net ? "; /v1 com chave" : "");
+    fprintf(stderr, "katana serve: http://%s:%d  modelo \"%s\"  API: %s%s%s; Ctrl+C encerra\n",
+            host, port, g_srv_name, g_srv_agent ? "/v1/agent/sessions (agente: executa comandos nesta maquina), /v1/models" : "/v1/chat/completions, /v1/models",
+            net ? "; aberto para a rede, com chave" : "; so esta maquina", g_srv_key[0] && !net ? "; /v1 com chave" : "");
     for (;;) {
         struct sockaddr_in pa; socklen_t pl = sizeof pa;
         memset(&pa, 0, sizeof pa);

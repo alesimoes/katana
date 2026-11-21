@@ -57,14 +57,21 @@ when its criterion is measured; "not measured" items stay open even when the cod
 | D5 | Training on the GPU | seconds per window on the owner's card |
 
 **E. Install and run anywhere**: AppImage and the packaging workflow executed once; Windows build compiled again;
-`test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API.
+`test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API (**code done
+2026-11-21**, `docs/api.md`: native formats, typed arguments, streaming deltas, Gemma 4 reasoning split; tested on
+tiny models with a fixed raw output, not with Qwen3.6 or Gemma 4).
 
 **F. Usable as the agent of other applications** (after A and B hold for a week of real use). katana is an
 independent project and is tied to no application; an application that today drives a hosted agent should be able to
 drive katana instead, the same way. What such a client needs is not written down yet. To decide with the owner:
 whether a client talks to `katana agent` through the line protocol the desktop uses, or to `katana serve` through the
 OpenAI-compatible API (which then needs native `tools`), which machine runs the model, and how a session started on
-another device is kept. E's server items are prerequisites of the second path.
+another device is kept. E's server items are prerequisites of the second path. **First version built 2026-11-21**: both paths exist over
+HTTP. Client-side tools through `/v1/chat/completions`; katana's own agent through `katana serve --agent` and
+`/v1/agent/sessions` (the agent runs on the server machine as a child process; one session at a time; see
+`docs/api.md` and its security warning). Done when a client application drives each model through both paths in
+real use; still open: which machine runs the model for a remote device, sessions kept across devices, several
+sessions at once.
 
 **G. Knowledge from earlier sessions** (the owner wants the model, not a lookup, to know what was done in his projects)
 
@@ -75,10 +82,6 @@ another device is kept. E's server items are prerequisites of the second path.
 | G3 | Held-out measurement: ask the `--holdout` questions before and after training | correct answers counted for both; the expectation (names, paths, commands, not volume) confirmed or refuted |
 | G4 | Keep the base current: rebuild incrementally, regenerate the corpus, retrain on the new part | a routine the owner can run |
 
-**F. The agent of Grey** (after A and B hold for a week of real use): what Grey needs from katana is not written
-down yet. To decide with the owner: whether Grey talks to `katana agent` through the line protocol the desktop uses,
-or to `katana serve` through the OpenAI-compatible API (which then needs native `tools`), which machine runs the
-model, and how a session started on the phone is kept. E's server items are prerequisites of the second path.
 
 ## Priority 1: Vulkan backend (closes the 11–16x gap on the prompt)
 

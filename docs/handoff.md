@@ -300,6 +300,23 @@ model (`tools/tinymodel/make_tiny_gguf.py`, 0.5 MB, llama architecture, ChatML),
   and Gemma 4; check `reasoning_content` with `KATANA_THINK=1`; Gemma 4 thinking (`<|channel>thought`) is not split
   yet. Then native `tools` (map OpenAI tools to the model's own call format; the agent's `fmt_*` readers already
   parse the calls), and true parallel generation (several sequences per forward pass) if one-at-a-time is not enough.
+- *2026-11-21: tools, Gemma 4 reasoning, the agent over HTTP* (full reference: `docs/api.md`). `/v1/chat/completions` accepts `tools`, `tool_choice` (auto, none, required, a named function),
+  `parallel_tool_calls`, assistant `tool_calls` and `tool` messages. Declarations and history are written in the
+  model's native format with the agent's own writers (`ah_render`, `im_call`, `im_result`, `im_think`, `g4_agent_sys`)
+  and the calls are read with its readers (`tool_xml_parse`, `g4_call_parse`, `glm_call_parse`, JSON); XML/GLM values
+  are converted to the type the schema declares. `message.tool_calls`, `finish_reason: "tool_calls"`, streaming
+  `delta.tool_calls` (sent once the calls are complete). `required`/named function: the assistant turn starts with
+  the call opener (no grammar). Behaviour change: a `tool` message now needs a `tool_call_id` matching an earlier
+  call (before, it was folded into the user turn). The Gemma 4 thinking channel is split into `reasoning_content`
+  (stream and not). New `katana serve <model> [port] --agent` (`src/app/agentapi.c`): `/v1/agent/sessions` create,
+  messages (SSE of the desktop markers: text, tool_call, tool_result, todo, question, done...), answer, interrupt,
+  state, delete; the agent is a child process (`katana agent ... --sessao`, `KATANA_UI=1`), the server does not
+  load the model (chat completions answer 503), one session at a time (409), sudo passwords refused, refuses to
+  start on the network without a key. Checked with tiny models only: `oa_unit` all ok; `test_server.py --all
+  ./katana` 56 of 56 (basic, tools in ChatML-XML, ChatML-JSON, Gemma 4 and GLM through `KATANA_TEST_RAW_OUTPUT`, the
+  agent writing a file through the API with the scripted stand-in teacher); the same under ASan+UBSan. **Not run
+  with Qwen3.6 or Gemma 4**: a real client library against each, a tool round trip where the model picks the call,
+  reasoning with `KATANA_THINK=1`, a real agent session over HTTP.
 - *Training data* (same day, see `docs/training-data.md`): `.ksess` gains a `KSX1` block (system prompt, exact
   rendered text, message spans); `run.py --sessions DIR --repeat N`; `tools/dataset/ksess2jsonl.py`. The owner decided
   the specialization must be katana's own training engine (no external LoRA tooling); design still to be written.
