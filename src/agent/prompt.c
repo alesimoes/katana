@@ -131,9 +131,9 @@ static void agent_env(char *out, size_t cap) {
 /* prompt de sistema do agente. Curto de proposito: poucas regras e so as ferramentas principais (as outras continuam
  * no despacho, mas nao ocupam contexto). Ordem: regras e ferramentas (parte estavel, fica no cache de prefixo), depois
  * o ambiente, a memoria e as instrucoes extras do usuario (/sistema) */
-/* KATANA_TOOLS=2: o prompt declara o segundo conjunto de ferramentas (src/tools/) em vez das
-   antigas. As antigas continuam no despacho. Chave para poder medir um conjunto contra o outro. */
-static int ct_set2(void) { static int v = -1; if (v < 0) { const char *e = getenv("KATANA_TOOLS"); v = e && strcmp(e, "2") == 0; } return v; }
+/* O prompt declara o segundo conjunto de ferramentas (src/tools/), que e o padrao (decisao do dono, 2026-11-21);
+   KATANA_TOOLS=1 volta a declarar as antigas. As antigas continuam no despacho. Chave para poder medir um conjunto contra o outro. */
+static int ct_set2(void) { static int v = -1; if (v < 0) { const char *e = getenv("KATANA_TOOLS"); v = !(e && strcmp(e, "1") == 0); } return v; }
 static size_t ct_decl(char *out, size_t cap, const char *name);                 /* src/tools/table.c */
 static size_t ct_names(char *out, size_t cap, const char *const *skip);
 static void agent_build_sys(char *out, size_t cap, const char *extra) {

@@ -22,6 +22,7 @@
 #     trecho vira nota e o arquivo ja lido devolve as notas
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
+export KATANA_TOOLS=1      # os passos antigos usam o primeiro conjunto de ferramentas; o passo do segundo conjunto pede 2 (o padrao)
 K=$(pwd)/katana
 D=$(mktemp -d)
 trap 'rm -rf "$D"; kill $SRV 2>/dev/null || true' EXIT

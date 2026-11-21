@@ -558,7 +558,9 @@ static int agent(Model *m, int max_tokens, float temp) {
                     if (!end) end = rp + reply.n;
                     { const long room = ((long)c->ctx - pos - 900) * 3; g_budget = room < 1500 ? 1500 : room > TOOL_WEB ? TOOL_WEB : (size_t)room; }
                     { size_t sl = strcspn(ap, "\n"); fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); } }
-                    if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.", max_tokens);
+                    if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
+                        ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
+                                  : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                     fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
@@ -605,7 +607,9 @@ static int agent(Model *m, int max_tokens, float temp) {
                     size_t sl = strcspn(ap, "\n");
                     fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); }
                 }
-                if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.", max_tokens);
+                if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
+                        ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
+                                  : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));

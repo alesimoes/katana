@@ -26,7 +26,7 @@ static void cmd_hint(int rc, int timedout, const char *body, const char *cmd, ch
     const int has_sudo = sudo_word(cmd);
     const int pw = pw_detect(body);
     if (pw == 1 && has_sudo) { snprintf(out, cap, "\n[hint: sudo did not get a password (the dialog was cancelled or is not available). Do not retry; tell the user what needs root and why]"); return; }
-    if (pw == 1) { snprintf(out, cap, "\n[hint: this program asks for a password or passphrase on a terminal and run_command has no keyboard. Open a terminal session (terminal action=open), send the command there and read the prompt; if only the user knows the secret, ask the user]"); return; }
+    if (pw == 1) { snprintf(out, cap, "\n[hint: this program asks for a password or passphrase on a terminal and the command tool has no keyboard. Open a terminal session (terminal action=open), send the command there and read the prompt; if only the user knows the secret, ask the user]"); return; }
     if ((p = strstr(body, "ModuleNotFoundError: No module named"))) {
         diag_quoted(p, w, sizeof w);
         char *dot = strchr(w, '.'); if (dot) *dot = 0;

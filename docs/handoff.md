@@ -8,8 +8,8 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 44 tools in `src/tools/`, one file each (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, tasks, questions, plan
 mode, sub-agents, LSP, worktrees, scheduling and others), tested without a model by `tools/tooltest/*.sh` (765 checks)
-and `./katana tool <Name> '<json>'`. Switch: `KATANA_TOOLS=2` (the prompt declares this set; the default is still the
-first set until it is measured on Qwen3.6 and Gemma 4). Description, status and what is not measured: `docs/tools.md`.
+and `./katana tool <Name> '<json>'`. It is the default set since 2026-11-21 (owner's decision, before any measurement on
+Qwen3.6 and Gemma 4); `KATANA_TOOLS=1` declares the first set again. Description, status and what is not measured: `docs/tools.md`.
 Next: codebench first set against second set, alternating.
 
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
