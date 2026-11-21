@@ -58,7 +58,7 @@ static int tsr_collect(TsrCand **v) {
         for (int j = 0; j < g_mcp[i].ntools; j++) {
             const McpTool *t = &g_mcp[i].tools[j];
             char fn[200], d[700];
-            snprintf(fn, sizeof fn, "%.47s__%.140s", g_mcp[i].name, t->name);
+            mcp_fname(&g_mcp[i], t->name, fn, sizeof fn);
             snprintf(d, sizeof d, "%.400s (MCP server %.47s)", t->desc, g_mcp[i].name);
             tsr_add(v, &n, strdup(fn), strdup(d), strdup(t->schema));
         }
@@ -98,7 +98,7 @@ static void ct_toolsearch(const char *js, const char *end, char *out, size_t cap
     while (*p == ' ') p++;
     if (strncasecmp(p, "select:", 7) == 0) {
         for (char *t = strtok(p + 7, ", \t"); t; t = strtok(NULL, ", \t"))
-            for (int i = 0; i < n; i++) if (strcasecmp(v[i].name, t) == 0) {
+            for (int i = 0; i < n; i++) if (strcasecmp(v[i].name, t) == 0 || strcasecmp(v[i].name + (strncmp(v[i].name, "mcp__", 5) == 0 ? 5 : 0), t + (strncmp(t, "mcp__", 5) == 0 ? 5 : 0)) == 0) {
                 int dup = 0;
                 for (int k = 0; k < np; k++) if (pick[k] == i) dup = 1;
                 if (!dup) pick[np++] = i;

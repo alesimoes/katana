@@ -79,7 +79,7 @@ static int agent_ask_kind(const char *kind, const char *what, const char *detail
         d[n] = 0;
         printf("\x01" "ASK %s\t%s\t%s\n", kind, w, d); fflush(stdout);
         if (!read_line(l, sizeof l)) return 0;
-        return strncmp(l, "\x01" "ANS 1", 5) == 0;
+        return strncmp(l, "\x01" "ANS 1", 6) == 0;     /* 6: o digito conta (com 5, "ANS 0" tambem valia como sim) */
     }
     if (!K_ISATTY(0)) return 0;
     char ans[64];
