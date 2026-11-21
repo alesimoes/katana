@@ -47,6 +47,12 @@ static const CtTool g_ct[] = {
 };
 #define CT_N ((int)(sizeof g_ct / sizeof g_ct[0]))
 
+/* uma linha da tabela para quem e incluido antes dela (ToolSearch declara como simbolo fraco, por isso nao e static) */
+int ct_tool_info(int i, const char **name, const char **desc, const char **props, const char **req) {
+    if (i < 0 || i >= CT_N) return 0;
+    *name = g_ct[i].name; *desc = g_ct[i].desc; *props = g_ct[i].props; *req = g_ct[i].req;
+    return 1;
+}
 static const CtTool *ct_lookup(const char *name) {
     for (int i = 0; i < CT_N; i++) if (strcmp(g_ct[i].name, name) == 0) return &g_ct[i];
     return NULL;
