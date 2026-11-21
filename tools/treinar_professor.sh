@@ -54,7 +54,8 @@ EOF
 if [ $? != 0 ]; then say "sem falas do professor nos dados: nada a treinar"; exit 3; fi
 
 # 3. plano, memoria e tempo de um passo
-OPC="--train blk.*.attn_* --rank $POSTO --seq $JANELA --lr $LR"
+# --final 0: sem a perda final em todas as janelas (no modelo de 35B na CPU ela custou de 1,3 a 2,4 h, mais que os passos)
+OPC="--train blk.*.attn_* --rank $POSTO --seq $JANELA --lr $LR --final 0"
 export KATANA_TRAIN_GPU=0      # produtos na CPU: o treino na placa de verdade ainda nao foi exercitado, e a placa pode estar com o desktop
 A=$(date +%s); nice -n 10 "$K" train "$M" "$OUT/dados.jsonl" --plan 1 $OPC > "$OUT/plano.log" 2>&1; B=$(date +%s)
 grep -a "^treino:\|^passo:\|^memoria:" "$OUT/plano.log" | sed 's/^/         /' >> "$R"
@@ -65,7 +66,9 @@ if [ -z "$PRECISA" ] || [ $(( PRECISA + 6000 )) -gt "$LIVRE" ]; then say "memori
 CARGA=$(( B - A ))
 A=$(date +%s); nice -n 10 "$K" train "$M" "$OUT/dados.jsonl" $OPC --steps 2 --out "$OUT/medida.kspec" > "$OUT/medida.log" 2>&1; RC=$?; B=$(date +%s)
 if [ $RC != 0 ]; then say "o treino de 2 passos falhou (codigo $RC): $(tail -2 "$OUT/medida.log" | tr '\n' ' ')"; exit 5; fi
-PASSO=$(( (B - A - CARGA) / 2 )); [ "$PASSO" -lt 1 ] && PASSO=1
+# o tempo por passo vem do proprio treino (linha "velocidade"); o relogio de fora inclui a carga e a gravacao
+PASSO=$(grep -ao "([0-9.]* s por passo" "$OUT/medida.log" | grep -o "[0-9]*" | head -1)
+[ -z "$PASSO" ] && PASSO=$(( (B - A - CARGA) / 2 )); PASSO=$(( PASSO + 1 ))
 say "medido: carga $CARGA s, cerca de $PASSO s por passo (janela de $JANELA tokens, produtos na CPU)"
 grep -a "perda\|resultado" "$OUT/medida.log" | tail -3 | sed 's/^/         /' >> "$R"
 rm -f "$OUT/medida.kspec"
@@ -78,7 +81,7 @@ nice -n 10 timeout $(awk -v h="$HORAS" 'BEGIN { print int(h * 3600 * 1.3 + 600) 
   --log "$OUT/passos.jsonl" --out "$OUT/professor.kspec" > "$OUT/treino.log" 2>&1
 RC=$?; B=$(date +%s)
 say "treino terminou com codigo $RC em $(( (B - A) / 60 )) min"
-grep -a "^resultado:\|perda media final" "$OUT/treino.log" | tail -2 | sed 's/^/         /' >> "$R"
+grep -a "^resultado:\|perda media final\|perda final\|^velocidade" "$OUT/treino.log" | tail -3 | sed 's/^/         /' >> "$R"
 python3 - "$OUT/passos.jsonl" >> "$R" 2>&1 <<'EOF'
 import json, sys
 try:

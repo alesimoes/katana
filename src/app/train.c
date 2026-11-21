@@ -1778,7 +1778,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     const char *data = argv[0], *pats = "all";
     char out[1100]; snprintf(out, sizeof out, "%s.kspec", model_path);
     int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0, plan = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
-    int batch = 1, eval = 0, patience = 0, cosine = 1, warm = -1; double vfrac = -1; const char *vdata = NULL, *logp = NULL;
+    int batch = 1, eval = 0, patience = 0, cosine = 1, warm = -1, final = 1; double vfrac = -1; const char *vdata = NULL, *logp = NULL;
     for (int i = 1; i + 1 < argc; i += 2) {
         const char *k = argv[i], *v = argv[i + 1];
         if (!strcmp(k, "--out")) snprintf(out, sizeof out, "%s", v);
@@ -1802,6 +1802,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         else if (!strcmp(k, "--sched")) { if (!strcmp(v, "const")) cosine = 0; else if (!strcmp(v, "cos")) cosine = 1; else { fprintf(stderr, "--sched: cos ou const\n"); return 1; } }
         else if (!strcmp(k, "--warmup")) warm = atoi(v);
         else if (!strcmp(k, "--log")) logp = v;
+        else if (!strcmp(k, "--final")) final = atoi(v);
         else { fprintf(stderr, "opcao desconhecida: %s\n", k); return 1; }
     }
     if (seq > c->ctx) seq = c->ctx;
@@ -1935,8 +1936,11 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     A.T = seq;
     /* perda final em todas as janelas de treino (do estado final; com validacao, o arquivo gravado e o do melhor passo) */
     int cnt = 0;
-    const double fin = tset_loss(m, &tt, &A, &trs, seq, &cnt);
-    printf("perda media final: %.4f em %d alvos\n", fin, cnt);
+    /* --final 0: nao passa por todas as janelas de novo (num modelo grande na CPU isso custa mais que o treino curto);
+       fica a media movel dos passos */
+    const double fin = final ? tset_loss(m, &tt, &A, &trs, seq, &cnt) : ema;
+    if (final) printf("perda media final: %.4f em %d alvos\n", fin, cnt);
+    else printf("perda final nao medida (--final 0); media movel dos passos: %.4f\n", fin);
     if (tg.on) printf("GPU: %ld produtos em %.1f s (com as copias); %.2f GB de pesos residentes; %ld produtos subiram o peso na hora\n",
                       tg.calls, tg.t_gpu, tg.resident / 1073741824.0, tg.streamed);
     if (!saved && !spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
