@@ -101,8 +101,9 @@ desktop agent idle but loaded. Measured:
   model's from the first token of reasoning. Nothing about quality was measured.
 
 Not measured: any task result with the specialization (codebench, the greymod task), validation loss, training on the
-GPU. Files: `~/.katana/treino/noite-20261121b/` (`professor.kspec`, `passos.jsonl`, `relatorio.txt`). Not applied
-anywhere.
+GPU. The output (`professor.kspec` and logs) was discarded on 2026-11-21 by the owner's decision: it was trained on
+the first tool set's names, and the agent now uses the second set (section 0t). The numbers above stay as the
+measured cost of training on this model.
 
 ## 0r. katana's own training engine: `katana train`, `katana gradcheck`, `.kspec` (2026-11-20)
 
