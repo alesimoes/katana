@@ -19,16 +19,17 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 |---|---|---|
 | `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
-| `glob.c`, `grep.c` | `Glob`, `Grep` | 101 |
+| `glob.c`, `grep.c` | `Glob`, `Grep` | 161 |
+| `regex.c` | the regular-expression engine used by `Grep` | 415 |
 | `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
 | `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
 | `agent.c`, `messages.c`, `workflow.c` | `Agent`, `SendMessage`, `ListAgents`, `SubagentHandback`, `Workflow` | 42 |
 | `mcpres.c`, `toolsearch.c`, `skill.c`, `reportfindings.c` | `ListMcpResourcesTool`, `ReadMcpResourceTool`, `WaitForMcpServers`, `ToolSearch`, `Skill`, `ReportFindings` | 71 |
 | `worktree.c`, `powershell.c`, `notify.c` | `EnterWorktree`, `ExitWorktree`, `PowerShell`, `PushNotification`, `SendUserFile`, `EndConversation` | 61 |
 | `lsp.c` | `LSP` | 39 |
-| `schedule.c` | `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup` | 152 |
+| `schedule.c` | `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup` | 156 |
 
-Measured: the 765 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
+Measured: the 1244 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
 and the mock teacher with this set (Write, Edit, Bash with the working-directory reset, Grep).
 
 The prompt declares `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`,
