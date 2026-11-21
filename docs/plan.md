@@ -3,6 +3,56 @@
 Written on 2026-11-15. Each step has a measurable done criterion. Context is in
 `knowledge.md`; techniques are in `optimization-roadmap.md`.
 
+## Current goal (2026-11-21): a local agent that is pleasant and stable to use, then the agent of Grey
+
+Set by the owner on 2026-11-21; it replaces the order of the priorities below, which are from 2026-11-15 and mostly
+about dense models. Only Qwen3.6-35B-A3B (and its AgentWorld variant) and Gemma 4 26B-A4B count. Each line is done
+when its criterion is measured; "not measured" items stay open even when the code exists.
+
+**A. The agent does not get stuck (first, because it is what the owner hits every day)**
+
+| # | What | Done when |
+|---|---|---|
+| A1 | Calls with array arguments in XML (fixed 2026-11-21) | seen working in the desktop with the model |
+| A2 | The model answers in words and closes each request (prompt rule + note at the round limit, 2026-11-21) | in a real session, most user questions get a text answer; counted from the session file |
+| A3 | Insisting on an error (repeat and failure-streak handling, 2026-11-21) | no identical failing call three times in a row in a week of `agente.log` |
+| A4 | A weekly reading of `~/.katana/agente.log`: calls, errors and repeats per tool, as a `katana` subcommand | the table exists and the worst tool of each week gets fixed |
+| A5 | Tests must not write to the owner's `agente.log` | **done 2026-11-21** for `tools/tooltest` (each script uses a temporary `KATANA_LOG`; checked: 0 new lines after two scripts). `tools/testar_ferramentas.sh` not checked |
+| A6 | Tools written and never exercised: scheduled prompts and session mail delivered by the loop, `SubagentHandback` in a real sub-agent, `LSP` with a real server, `EndConversation` | each one run end to end once |
+| A7 | Desktop shows the `NOTIFY`, `FILE` and `FINDING` markers | visible in the app |
+| A8 | Round limit of 40 per request: a long job should continue by itself after reporting, or the limit should follow the task list | a 100-call job finishes without the user typing "continue" |
+
+**B. The model understands the request better**
+
+| # | What | Done when |
+|---|---|---|
+| B1 | Reasoning on or off in the desktop (it starts with `KATANA_THINK=0`) | codebench and a set of ambiguous requests in Portuguese, alternating, both models |
+| B2 | Reading notes (`KATANA_DIGEST`, on by default and never measured): a file read becomes a 250-word note | codebench with and without, alternating; default follows the result |
+| B3 | Qwen3.6 against AgentWorld against Gemma 4 as the desktop default | same tasks, same hour |
+| B4 | First set against second set of tools | handoff 0t |
+| B5 | Harder tasks (the terminal and web ones are solved by every model) and requests written the way the owner writes | tasks that separate the models |
+
+**C. Speed** (after measuring where the time of one token goes: GPU, CPU, waiting)
+
+| # | What | Done when |
+|---|---|---|
+| C1 | CPU experts and GPU work at the same time inside a layer | tok/s against today, alternating |
+| C2 | One more expert slot in VRAM (compact Q8_0) | hit rate and tok/s |
+| C3 | CPU experts: several rows per call, VNNI for Q5_1/Q8_0 | ms per token against the 17 ms (Qwen3.6) and 25 ms (Gemma 4) ceilings |
+| C4 | First start of Gemma 4 (43 to 72 s) | under 15 s |
+| C5 | Long context on the GPU for Qwen3.6 | tok/s at 30k tokens |
+
+**D. Specialization**: the plan in `docs/specialization.md` (tools.kspec, teacher.kspec, the specs folder), then a
+merged GGUF carrying a mark that the model knows the tools, and training on the GPU.
+
+**E. Install and run anywhere**: AppImage and the packaging workflow executed once; Windows build compiled again;
+`test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API.
+
+**F. The agent of Grey** (after A and B hold for a week of real use): what Grey needs from katana is not written
+down yet. To decide with the owner: whether Grey talks to `katana agent` through the line protocol the desktop uses,
+or to `katana serve` through the OpenAI-compatible API (which then needs native `tools`), which machine runs the
+model, and how a session started on the phone is kept. E's server items are prerequisites of the second path.
+
 ## Priority 1: Vulkan backend (closes the 11–16x gap on the prompt)
 
 | Step | What | Done when |

@@ -2,6 +2,7 @@
 # testes de ListAgents, SendMessage, SubagentHandback e Workflow sem modelo (KATANA_AGENT_FAKE=1)
 # uso: sh tools/tooltest/agents.sh ./katana
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cd "$T" || exit 1
 export HOME="$T/home" KATANA_AGENT_FAKE=1; mkdir -p "$HOME"

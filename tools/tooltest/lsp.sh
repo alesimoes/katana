@@ -2,6 +2,7 @@
 # Teste da ferramenta LSP: sh tools/tooltest/lsp.sh ./katana
 # Usa um servidor de linguagem falso (python3) criado na pasta temporaria; clangd real so se estiver instalado.
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 [ -x "$K" ] || { echo "usage: $0 <katana binary>"; exit 2; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0; F=0

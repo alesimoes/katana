@@ -4,6 +4,7 @@
 # Nao compila nada. Respostas ao usuario entram por pipe: sem KATANA_UI a entrada nao e terminal (ninguem responde);
 # com KATANA_UI=1 vale o protocolo da interface (marcador CHOICE na saida, resposta na linha "\001ANS texto").
 K=${1:?usage: tasks.sh /path/to/katana}
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 case $K in /*) ;; *) K=$(pwd)/$K ;; esac
 T=$(mktemp -d) || exit 2
 trap 'rm -rf "$T"' EXIT

@@ -2,6 +2,7 @@
 # Testes de ListMcpResourcesTool, ReadMcpResourceTool, WaitForMcpServers, ToolSearch, Skill e ReportFindings.
 # Uso: sh tools/tooltest/meta.sh /caminho/do/katana
 K=$1
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 [ -x "$K" ] || { echo "uso: $0 <binario katana>"; exit 2; }
 K=$(cd "$(dirname "$K")" && pwd)/$(basename "$K")
 T=$(mktemp -d) || exit 2

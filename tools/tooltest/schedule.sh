@@ -5,6 +5,7 @@
 # deterministas (mesma sequencia em cada processo), o que permite criar num processo e apagar no seguinte.
 KAT=$(realpath "$1" 2>/dev/null)
 [ -x "$KAT" ] || { echo "katana nao encontrado: $1"; exit 2; }
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 OK=0; FAIL=0
 HOME=$(mktemp -d); export HOME; trap 'rm -rf "$HOME"' EXIT
 unset KATANA_SCHED_TEST KATANA_SCHED_NOW

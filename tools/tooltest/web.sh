@@ -2,6 +2,7 @@
 # Testa WebFetch e WebSearch (src/tools/webfetch.c e websearch.c). Uso: sh tools/tooltest/web.sh ./katana
 # Tudo o que nao precisa de rede e verificado sempre; as verificacoes com rede so rodam se uma sonda curl funcionar.
 K=${1:-./katana}
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 T=$(mktemp -d) || exit 2
 trap 'rm -rf "$T"' EXIT
 FAIL=0; N=0

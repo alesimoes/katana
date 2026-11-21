@@ -43,7 +43,18 @@ if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user" or any(i and m[
     fail("roles")
 last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
 step = sum(1 for m in ms[last_user_text + 1:] if m["role"] == "assistant")
-if CL:
+if os.environ.get("MOCK_INSIST") == "1":
+    # professor teimoso: repete a mesma chamada que falha ate o agente mandar encerrar e relatar
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+    if res and "used its tool rounds" in res[-1]:
+        good = len(res) == 4 and "times now" in res[1] and "refused" in res[2] and "NOT run again" in res[3]
+        out = {"text": "Insistencia contida." if good else "FALHA: %s" % res, "tool_calls": []}
+    elif len(res) > 8:
+        out = {"text": "FALHA: o agente nao mandou parar", "tool_calls": []}
+    else:
+        out = {"text": "", "tool_calls": [{"name": "Read", "arguments": {"file_path": "nao_existe.txt"}}]}
+elif CL:
     if step == 0:
         out = {"text": "Gravo o arquivo.", "tool_calls": [{"name": "Write", "arguments": {"file_path": "nota2.txt", "content": "linha 1\nlinha 2\n"}}]}
     elif step == 1:

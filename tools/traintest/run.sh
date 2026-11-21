@@ -188,6 +188,14 @@ EOF
 mkdir -p "$D/tw2"
 (cd "$D/tw2" && printf 'grave uma nota em nota.txt\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 \
    KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli.jsonl" $K agent "$D/agent.gguf" >"$D/cli_out.txt" 2>/dev/null) || true
+# insistencia no erro: o professor repete a mesma chamada que falha; a 2a leva um aviso, a 3a e a 4a nao rodam, e a 4a
+# ja leva a ordem de encerrar e relatar ao usuario
+mkdir -p "$D/tw5"
+(cd "$D/tw5" && printf 'leia o arquivo\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_INSIST=1 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli5.jsonl" $K agent "$D/agent.gguf" >"$D/cli5_out.txt" 2>/dev/null) || true
+if grep -q "Insistencia contida." "$D/cli5_out.txt" 2>/dev/null && [ "$(grep -c '"ok": true' "$D/cli5.jsonl" 2>/dev/null)" = 5 ]; then
+  echo "insistencia no erro: ok (aviso na 2a, recusa na 3a e na 4a, encerra e relata)"
+else echo "insistencia no erro: FALHOU"; tail -3 "$D/cli5_out.txt" 2>/dev/null | cut -c1-600; fail=1; fi
 # o texto do professor chega em pedacos e tem que aparecer inteiro e uma vez so na saida (acento, aspas, quebra de linha, emoji)
 if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linha 1" "$D/tw2/nota.txt" 2>/dev/null \
    && [ "$(grep -c 'Vou gravar o arquivo: ação "um"' "$D/cli_out.txt")" = 1 ] && [ "$(grep -c '^e 😀 dois\.' "$D/cli_out.txt")" = 1 ] \

@@ -307,6 +307,18 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     return n;
 }
 
+/* ---- insistencia no erro: chamadas deste pedido (assinatura da chamada, do resultado, se falhou) ---- */
+static uint64_t rp_sig[128], rp_res[128]; static char rp_err[128]; static int rp_n, rp_fail, rp_refused;
+static uint64_t rp_hash(const char *s, size_t n, uint64_t h) { for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 1099511628211ULL; } return h; }
+/* o resultado e de uma chamada que falhou? erro da ferramenta, ou comando com codigo de saida diferente de zero */
+static int rp_failed(const char *r) {
+    if (!strncmp(r, "error:", 6)) return 1;
+    const char *e = strstr(r, "Exit code ");
+    if (e && e[10] >= '1' && e[10] <= '9') return 1;
+    e = strstr(r, "[exit code ");
+    return e && e[11] >= '1' && e[11] <= '9';
+}
+
 static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -607,12 +619,44 @@ static int agent(Model *m, int max_tokens, float temp) {
                     size_t sl = strcspn(ap, "\n");
                     fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); if (getenv("KATANA_UI")) { printf("\x01" "TOOL %s\t%.*s\n", name, (int)(sl < 160 ? sl : 160), ap); fflush(stdout); }
                 }
+                /* insistencia no erro: a mesma chamada que ja falhou duas vezes neste pedido nao roda de novo */
+                if (round == 0 && calls == 0) { rp_n = 0; rp_fail = 0; rp_refused = 0; }
+                const uint64_t csig = rp_hash(ap, (size_t)(end - ap), rp_hash(name, strlen(name), 1469598103934665603ULL));
+                int rp_same_fail = 0;
+                for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
+                const int rp_refuse = !trunc && rp_same_fail >= 2;
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
                         ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
                                   : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
+                    else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "
+                                                 "Do not send it a fourth time. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
+                if (rp_refuse) { if (++rp_refused >= 2 && round < 38) round = 38; }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
+                else if (!trunc) {
+                    const int failed = rp_failed(result);
+                    const uint64_t rs = rp_hash(result, strlen(result), 1469598103934665603ULL);
+                    int same = 0;
+                    for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_res[i] == rs) same++;
+                    if (rp_n < 128) { rp_sig[rp_n] = csig; rp_res[rp_n] = rs; rp_err[rp_n] = (char)failed; rp_n++; }
+                    rp_fail = failed ? rp_fail + 1 : 0;
+                    const size_t rl = strlen(result);
+                    if (same >= 1 && rl + 500 < sizeof result)
+                        snprintf(result + rl, sizeof result - rl, "\n[katana: this exact call already gave this exact result (%d times now). Repeating it changes nothing. Do something different: "
+                                 "read the message above, change the arguments, check the command's help, use another tool, or tell the user what is blocking you.]", same + 1);
+                    else if (rp_fail >= 4 && rl + 500 < sizeof result) {
+                        snprintf(result + rl, sizeof result - rl, "\n[katana: %d calls in a row failed. Stop guessing. What do the errors have in common? Check the help or the documentation "
+                                 "(WebSearch), or tell the user in words what is missing and ask how to proceed.]", rp_fail);
+                        rp_fail = 0;
+                    }
+                }
+                if (round == 38) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
+                    const size_t rl = strlen(result);
+                    if (rl + 400 < sizeof result)
+                        snprintf(result + rl, sizeof result - rl, "\n[katana: this request has used its tool rounds. Do not call a tool now. Tell the user in a few sentences what you did, "
+                                 "what is left and what you need from them; they can ask you to continue.]");
+                }
                 if (cml && !trunc) tool_digest(m, pos, name, ap, end, result, sizeof result, line);     /* leitura grande: so a nota entra */
                 defang(result, safe, sizeof safe);
                 if (g4_native) tl += (size_t)snprintf(text + tl, sizeof text - tl,
@@ -638,9 +682,6 @@ static int agent(Model *m, int max_tokens, float temp) {
                 else snprintf(text, sizeof text, "%s%s%s%s%s%s", tf_end(), tf_user(), nm, tf_end(), tf_asst(), think_pre(c));
                 continue;
             }
-            if (!g4 && round == 38 && tl + 400 < sizeof text)    /* penultima rodada deste pedido: a proxima fala tem de ser a resposta ao usuario */
-                tl += (size_t)snprintf(text + tl, sizeof text - tl, "\n[katana: this request has used its tool rounds. Do not call a tool now. Tell the user in a few sentences what you did, "
-                                       "what is left and what you need from them; they can ask you to continue.]");
             if (cml) {          /* resultados das ferramentas: mensagem do usuario depois do cabecalho (gemma4: direto no turno do modelo) */
                 const size_t h0 = g4 ? 0 : strlen(tf_end()) + strlen(tf_tool());
                 prole = 't'; buf_clear(&pend);

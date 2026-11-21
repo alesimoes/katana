@@ -13,8 +13,10 @@ Qwen3.6 and Gemma 4); `KATANA_TOOLS=1` declares the first set again. Description
 Next: codebench first set against second set, alternating.
 
 Found in the owner's real use on 2026-11-21 (`~/.katana/agente.log`): the models that write calls in XML send every
-value as text, so an array argument arrived as a string with the JSON inside and `TodoWrite` (36 calls),
-`AskUserQuestion` (38) and `SendUserFile` (9) refused every one of them; the model repeated the same call for minutes.
+value as text, so an array argument arrived as a string with the JSON inside and the tool refused it: in the owner's
+session `AskUserQuestion` failed 14 times out of 14 and the model repeated the same call for four minutes. `TodoWrite`
+and `SendUserFile` had the same check. (An earlier count of 36, 38 and 9 refused calls was wrong: it included the
+negative checks of `tools/tooltest`, which write to the same `~/.katana/agente.log`.)
 Fixed in `ct_dispatch` (`ct_unwrap` in `src/tools/table.c`): an argument the schema declares array or object and
 that comes as text holding that JSON is unwrapped before the tool sees it; a string argument such as the content of
 `Write` is left alone. Checks added to `tools/tooltest/tasks.sh` (83 pass); not yet seen with the model in the
@@ -29,6 +31,14 @@ of the round before the last carry a note telling the model to stop calling tool
 **Not measured with a model**: whether the rule changes the behaviour of Qwen3.6, AgentWorld or Gemma 4, and the
 round-limit note was not exercised. The `tools.kspec` training of that day was rendered with the prompt before this
 rule.
+
+Same day, owner report: the agent insists on an error. In `agent()` (`src/agent/loop.c`, main tool path) the calls of
+one request are remembered by signature (tool + arguments), result and failure (a result starting with `error:`, or a
+command with a non-zero exit code). The same call with the same result a second time gets a note saying so; a call
+that already failed twice is not run a third time (the result says it was refused); a second refusal makes that
+result carry the order to stop calling tools and report to the user; four failures in a row get a note to stop
+guessing. Checked with a stubborn stand-in teacher that repeats one failing call (`MOCK_INSIST=1`, step in
+`tools/traintest/run.sh`). Not measured with a model.
 
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 

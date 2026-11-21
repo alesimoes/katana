@@ -2,6 +2,7 @@
 # Testa Read, Write, Edit e NotebookEdit sem modelo: sh tools/tooltest/files.sh /caminho/do/katana
 # Trabalha numa pasta temporaria que cria e apaga. Uma linha por checagem; FAILED n ou OK n checks no fim.
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 [ -x "$K" ] || { echo "uso: $0 <binario katana>"; exit 2; }
 T=$(mktemp -d) || exit 2
 HOME_SAVE=$HOME

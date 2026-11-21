@@ -4,6 +4,7 @@
 # a sintaxe em detalhe fica em regex.sh), entao cada verificacao roda uma vez por modo de listagem (git e sem git).
 # Tambem cobre as tolerancias do Grep, o .gitignore fora de repositorio git e o tempo de uma busca simples em src/.
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 [ -x "$K" ] || { echo "uso: $0 <binario do katana>"; exit 2; }
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT

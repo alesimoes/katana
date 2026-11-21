@@ -4,6 +4,7 @@
 # "no match" ou o erro de compilacao. Uso: sh tools/tooltest/regex.sh ./katana
 # Tabela: padrao @@ texto @@ esperado [@@ argumentos extras]; padrao e texto ja escritos como texto JSON (\\ = barra).
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 [ -x "$K" ] || { echo "uso: $0 <binario do katana>"; exit 2; }
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT

@@ -2,6 +2,7 @@
 # Testa EnterWorktree, ExitWorktree, PowerShell, PushNotification, SendUserFile e EndConversation.
 # Uso: sh tools/tooltest/misc.sh /caminho/do/katana
 K=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+export KATANA_LOG=${KATANA_LOG:-$(mktemp)}     # o log das chamadas destes testes nao vai para o ~/.katana/agente.log do dono
 [ -x "$K" ] || { echo "uso: $0 <binario katana>"; exit 2; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 T=$(cd "$T" && pwd -P)
