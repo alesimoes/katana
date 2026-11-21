@@ -39,16 +39,21 @@ same binary:
 
 ```
 katana specialize <model.gguf> [all|tools|code|teacher|knowledge] [--from DIR] [--sessions DIR] [--corpus FILE]
-    [--mix tools=30,code=30,teacher=20,knowledge=20] [--out DIR] [--fresh] [--hours H] [--steps N] [--rank R]
+    [--mix tools=20,code=25,teacher=15,knowledge=15,conventions=25] [--curriculum FILE] [--out DIR] [--fresh] [--hours H] [--steps N] [--rank R]
     [--seq T] [--lr X] [--margin-mb MB] [--replace REGEX=TEXT]... [--cut-matching REGEX] [--verified]
     [--plan-updates] [--dry-run] [--no-check]
+    [--knowledge DIR] [--no-refresh] [--training-dir DIR] [--wait-idle [HOURS]]
+katana specialize --status [--training-dir DIR]
+katana specialize --verify-data data.jsonl
 ```
+
+The nightly use is `katana specialize <model>` alone: see "The nightly routine" below.
 
 - **`all` (the default kind)** builds one data set from every source given, each source selected with the rules of
   its own kind (below), and trains one specialization, `katana.kspec`. This is the supported product: adapters
   trained separately, each from the base, and summed at load are not something either training saw.
 - **The mix.** The budget is a few hundred windows of 512 tokens per night, so the share of each source is explicit:
-  `--mix tools=30,code=30,teacher=20,knowledge=20` (percent of the training windows; default that split,
+  `--mix tools=20,code=25,teacher=15,knowledge=15,conventions=25` (percent of the training windows; default that split,
   renormalised over the sources that have data; a source with weight 0 or not listed is left out). Every data line
   carries its `"source"`; `katana train --mix` draws each step's window from the source that is furthest behind its
   share (exact to one window) and prints the realised counts (`mistura realizada: ...`).
@@ -70,7 +75,7 @@ katana specialize <model.gguf> [all|tools|code|teacher|knowledge] [--from DIR] [
   6000) exceed the available memory; the time of two steps measured and the number of steps that fit in `--hours`
   (default 5, between 4 and 400 steps; `--steps N` skips the measurement); `katana train --train 'blk.*.attn_*'
   --rank 8 --seq 512 --lr 2e-4 --val 0 --final 0` on the CPU; a check that the model loads and answers with the
-  result (`--no-check` skips it). Everything lands in `--out` (default `~/.katana/training/<kind>-<YYYYMMDD-HHMM>/`):
+  result (`--no-check` skips it). Everything lands in `--out` (default `<training-dir>/<kind>-<YYYYMMDD-HHMMSS>/`):
   `sys.txt`, `data.jsonl`, `import.log`, `plan.log`, `measure.log`, `train.log`, `steps.jsonl`, `report.txt`,
   `<kind>.kspec` (`katana.kspec` for `all`). `--dry-run` stops after the data and the plan. It never activates
   anything: the end of the report says how to test (`KATANA_SPEC=...`), how to use it in the desktop (copy into
@@ -86,7 +91,11 @@ The separate kinds stay for experiments; each one is also the rule its source fo
 | `code` (planned work, experimental) | `--from DIR`, `--sessions DIR` | full (with `all`: short) | the plan and the first action (`--train-first 2`), turns that call `TodoWrite`, `Write` or `Edit`, the final answer; conversations with 4+ calls, no streak of 4 failures |
 | `teacher` | `.ksess` with a `.teacher` file in `--sessions DIR` (default `~/.katana/desktop/sessoes`) | full (with `all`: short) | the teacher's turns |
 | `knowledge` | `--corpus FILE`: one `{"messages": [user, assistant]}` per line, questions about the owner's projects and their answers | without the tools section | every answer |
+| `conventions` | `--curriculum FILE` (or generated, below): synthetic conversations that teach katana's own conventions (project instruction file, skills, MCP servers), each with `"source": "curriculum"` | the conversation's own, KEPT (`import --system keep`) | every assistant turn |
 
+**System prompt per source.** `katana import --system file:F` replaces the conversation's system prompt with F; `--system keep` keeps the one in the conversation (a `file:` prompt and a kept one are never combined). `specialize` passes `file:` (today's agent prompt) for every source except `conventions`, whose scenario (project file, skills line, MCP cards) lives inside its own system message.
+
+**The fifth source in `all`.** Without `--curriculum`, `specialize` runs `katana curriculum --help` and, if it exits 0, generates a fresh file in the output folder: `katana curriculum <out>/curriculum.jsonl --n N --seed S` with N = twice the conversations the mix gives this source in a night (the steps given, or `--hours` at about 245 s per window, an estimate; at least 20) and S = minutes since the epoch, so no night sees the same synthetic conversation twice. If the subcommand is missing it says so in one line and goes on without the source. `--mix` default: `tools=20,code=25,teacher=15,knowledge=15,conventions=25`, renormalised over the sources that have data. Tested only with a hand-written file of three conversations (the generator did not exist when this was written).
 ### Selection options of `katana import`
 
 These decide what a specialization learns. They work on every input (messages JSONL, transcripts, `.ksess`).
@@ -143,8 +152,89 @@ with a 50/30/20 mix (realised exactly: 10, 6 and 4 windows of 20), two nights wh
 (mean loss of the first 10 steps 12.25 on night 1, 10.02 on night 2; night 1 ended at 10.48), the flag in the
 `.kspec` and in a merged GGUF (the agent's saved system prompt has no tools section in both cases, and has it with the
 base model). Not measured: whether any of this changes the behaviour of Qwen3.6 or Gemma 4, the import of the owner's
-841 MB of transcripts (time and memory), and the waiting for an idle agent that the old shell script did (not ported:
-start `specialize` when the agent is idle).
+841 MB of transcripts (time and memory). The waiting for an idle agent that the old shell script did is back as
+`--wait-idle` (below).
+
+### The nightly routine: one command (2026-11-21)
+
+```
+katana specialize <model.gguf>
+```
+
+With nothing else on the line, `specialize` (kind `all`) does the whole routine and every default can be overridden:
+
+1. **Wait** (only with `--wait-idle [HOURS]`, default 6 h): while a `katana agent` process runs, wait until the newest
+   `.ksess` in `~/.katana/desktop/sessoes` is older than 10 minutes and no teacher call is running, seen in 3 checks 30
+   s apart (the rule of the old shell script; `KATANA_IDLE_SECS` and `KATANA_IDLE_POLL` change the 600 s and the 30
+   s, for tests). No agent running: go at once. Over the limit: give up with exit code 2, nothing trained. The check
+   is a proxy (the session file's modification time), not a look at the agent's output.
+2. **Sources.** Transcripts: `--from DIR`, else `transcripts=DIR` in the config file; there is no built-in default
+   path, and with neither the run says so and continues with the other sources. The agent's own sessions:
+   `--sessions DIR`, else `~/.katana/desktop/sessoes` when it exists.
+3. **Knowledge**: `katana knowledge build` runs incrementally into `~/.katana/knowledge` (`--knowledge DIR` or
+   `KATANA_KNOWLEDGE`), then `katana knowledge corpus` regenerates `<training-dir>/corpus.jsonl` and
+   `<training-dir>/holdout.jsonl` from the notes. `--corpus FILE` uses that file as it is; `--no-refresh` skips both
+   steps and uses the existing `corpus.jsonl`. With `--dry-run` the notes, corpus and holdout go inside `--out`, so a
+   dry run touches nothing outside it.
+4. **Data, memory, training**: as below. The data file is checked (next section) before anything is trained. The
+   training draws its windows with `--seed <night number>`: before this, every night used the default seed and so
+   shuffled the windows the same way (the same first windows each night, given the same data).
+5. **Report** (also with `katana specialize --status`): which night this is; windows trained so far per source against
+   the windows that exist per source (the fraction of the acervo the model has seen); the loss at the start and end
+   of each night; the exact commands to test the result and to activate it in the desktop; the command that measures
+   the knowledge (`katana knowledge quiz`, below). The windows trained and available are recorded per night in
+   `history.jsonl` (`windows`, `available`, `night`, `model`). Nights draw their windows at random, so part repeats:
+   the report prints the distinct coverage expected from that, `sum N (1 - exp(-n/N))` (an estimate, not measured).
+   `--status` reads the history of the latest chain, from the last night that started from the base model.
+
+**Config file.** `specialize` reads `~/.katana/katana.cfg` and then `./katana.cfg` (the latter wins for single keys;
+`replace` lines add up). It is the file that also holds the GPU tuning (`gpu=`, `seg=`, `rows=`, `rowsb=`), which the
+GPU code ignores lines it does not know; `katana tune` rewrites only its own four lines and keeps the others. Lines
+are `key=value`; `#` starts a comment.
+
+| key | meaning | default |
+|---|---|---|
+| `transcripts=DIR` | root of the coding-agent session transcripts (one folder per project) | none: no transcripts |
+| `training-dir=DIR` | root of the nights (`<kind>-<date>/`, `history.jsonl`, `corpus.jsonl`, `holdout.jsonl`); `~/` is expanded | `~/.katana/training` |
+| `replace=REGEX=TEXT` | repeatable; passed as `--replace` to every `import` and to `knowledge build` (paths and names of the machine) | none |
+| `cut-matching=REGEX` | passed as `--cut-matching` to the same commands | none |
+
+On the command line `--training-dir`, `--from`, `--replace` (added to the file's) and `--cut-matching` (replaces the
+file's) win. `--out DIR` sets the night's folder itself; the root for resuming and the history is then its parent.
+
+**Nothing big under `/tmp`.** Checked with `strace -f` over a whole run (specialize, import, knowledge, train, chat):
+the only thing created outside the output was an empty directory for the system-prompt builder, which now follows
+`TMPDIR`; `specialize` points `TMPDIR` at `<out>/tmp`. Data, logs, notes, corpus and adapters all live under the output
+or the knowledge folder.
+
+**Dry run on the real data (2026-11-21, Qwen3.6-35B-A3B Q4_K_M, `katana specialize <model> --from <transcripts root> --dry-run`, 5 min 24 s in all, run niced beside a real training and the desktop agent):** knowledge base built from scratch inside `--out` in 11 s (1270 transcripts, 529 of sub-agents skipped, 734 notes, 1483 episodes), corpus 1336 pairs and holdout 668; data in about 2 min 15 s: 4591 conversations kept (tools 2011, code 1243, teacher 1, knowledge 1336), 768 dropped, all lines checked; memory plan (about 3 min to load) 9486 MB of activations + 88 MB of trainer state + 6000 MB margin against 45859 MB available; windows of 512 tokens that exist: tools 45737, code 16701, teacher 418, knowledge 1583 (total 64439, measured by the trainer's tokenizer; the character estimate said 36912). At 100 to 150 windows a night the first night would see well under 1% of the acervo. `conventions` was 0: the generator was not in this binary. No training was run.
+
+### Writes that fail loudly
+
+A dry run on the real data once wrote a `data.jsonl` cut in the middle when `--out` was on a full filesystem (540
+conversations missing, two invalid JSON lines, one source gone) and `specialize` said it had worked. Now:
+
+- Every data write in `specialize`, in `katana import` and `export` (the output file and the concatenation of the per
+  source files) and in `katana knowledge` (notes, markers, `INDEX.md`, corpus, holdout) goes through `io_write` /
+  `io_close` (`src/app/importer.c`): each `fwrite`, the `fflush` and the `fclose` are checked; the first failure prints
+  the file and `strerror(errno)` and the command exits non-zero (`import` and `export`: 4; `specialize`: 3 for a
+  failed source, 1 for its own files, 8 for the history). Notes, markers, indexes, corpus and holdout are written to
+  `<name>.part` and renamed only when complete, so a failure leaves the previous file as it was; a note that failed
+  leaves no marker, so the next run redoes that transcript.
+- `import` exit codes: 0 conversations written, 1 none kept (normal for a single session), 4 write failure.
+  `specialize` accepts 1 only when the table `import_stats:` is there; any other failure stops the night.
+- After the sources, `specialize` checks `data.jsonl`: every line is a complete JSON object (a strict parser, not the
+  lenient one the engine uses), has `text` and `train_spans` and a known `source`; the line count (total and per
+  source) equals what the sources reported kept; the last line ends with a newline. Otherwise it stops with exit
+  code 7 before any training. `katana specialize --verify-data FILE` runs the shape check on any data file.
+- Test hook: `KATANA_FAIL_WRITE_AFTER=N` makes the process write N bytes and then fail every write with ENOSPC (the
+  last write is cut, like a real full disk). `tools/traintest/specialize_oneshot.sh` uses it with N = 200 (the parent
+  fails), 40000 (an `import` child fails), on `knowledge build` and `knowledge corpus`, and also `import ... /dev/full`
+  (a real ENOSPC), and a data file cut in the middle and one with invalid lines for `--verify-data`.
+
+Not covered: the child processes' log files (`part.log`, `train.log`) are written by shell-less redirection and a full
+disk there is caught only through the missing `import_stats:` line or the failed exit code; `katana train` writing the
+`.kspec` is checked by its existing return value (not re-tested here with a full disk).
 
 ## Commands
 

@@ -683,10 +683,21 @@ static int tune(Model *m) {
 
     char fn[1100];
     cfg_path(fn, sizeof fn);
+    /* as outras linhas do katana.cfg (transcripts=, training-dir=, replace=...) ficam como estao: so as do ajuste da placa mudam */
+    char *keep = NULL; size_t keep_n = 0;
+    {   FILE *old = fopen(fn, "r"); char ln[8192];
+        while (old && fgets(ln, sizeof ln, old)) {
+            if (!strncmp(ln, "gpu=", 4) || !strncmp(ln, "seg=", 4) || !strncmp(ln, "rows=", 5) || !strncmp(ln, "rowsb=", 6)) continue;
+            const size_t l = strlen(ln);
+            keep = realloc(keep, keep_n + l + 1); memcpy(keep + keep_n, ln, l + 1); keep_n += l;
+        }
+        if (old) fclose(old); }
     FILE *f = fopen(fn, "w");
     if (!f) { fprintf(stderr, "tune: nao consegui gravar %s\n", fn); return 1; }
     fprintf(f, "gpu=%s\nseg=%zu\nrows=%d\nrowsb=%d\n", gpu.name, best_seg, best_rows, best_rowsb);
-    fclose(f);
+    if (keep) fputs(keep, f);
+    if (fclose(f) != 0) { fprintf(stderr, "tune: nao consegui gravar %s (disco cheio?)\n", fn); return 1; }
+    free(keep);
     printf("melhor: segmentos alvo=%zu, linhas por thread=%d (geracao) e %d (lote); gravado em %s\n",
            best_seg, best_rows, best_rowsb, fn);
     return 0;

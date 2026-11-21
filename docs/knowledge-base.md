@@ -18,7 +18,10 @@ katana knowledge build <root|folder|file.jsonl> [--out DIR] [--force] [--replace
 katana knowledge search <words...> [--project NAME] [--limit N] [--dir DIR]
 katana knowledge stats [DIR | corpus.jsonl]
 katana knowledge corpus <notes DIR> <out.jsonl> [--project NAME]... [--max-per-project N] [--holdout FILE.jsonl]
+katana knowledge quiz <model.gguf> <holdout.jsonl> [--limit N] [--spec FILE.kspec] [--max-tokens N] [--threshold X] [--out FILE.jsonl]
 ```
+
+The nightly `katana specialize <model>` runs `build` (incremental, into `~/.katana/knowledge`) and `corpus` itself and keeps `corpus.jsonl` and `holdout.jsonl` in the training folder. Every write in `build` and `corpus` is checked: notes, markers, indexes, corpus and holdout go to `<name>.part` and are renamed only when complete; a full disk stops the command with the file and the cause (exit 1) and leaves the previous files as they were.
 
 - `build` reads the transcripts with the same reader as `katana import` (`src/app/transcript.c`: automatic notices and
   interrupted calls are dropped, repeated records of resumed sessions count once) and writes one note per session.
@@ -32,6 +35,7 @@ katana knowledge corpus <notes DIR> <out.jsonl> [--project NAME]... [--max-per-p
   project, characters of answers (what the training learns) and an estimate of 512-token training windows
   (characters / 3.3 / 512; an estimate) with the cost in nights at 100 to 150 windows per night.
 - `corpus` writes the training form of the base (below).
+- `quiz` is the held-out measurement. For each question of the holdout file the model answers (greedy, at most `--max-tokens` 80, the chat template with no tools; `--spec` applies a specialization) and the answer is scored against the reference without a second model: the reference's distinctive terms are collected (paths, file and command names, tokens with digits, `_`, `-` or inner `.`, words in capitals or with a capital initial that are not common words, everything between backticks) and the score is the fraction found, case-insensitively, in the answer. It prints the mean over the scored questions and how many reach `--threshold` (0.5); `--out` keeps question, reference, answer and score. Run it before and after a training with the same `--limit`. It is a crude overlap, not a judgement of correctness: a model that repeats the question's words or lists many paths can score above what it knows. `KATANA_QUIZ_ANSWERS=FILE` (one answer per line) replaces the model, for tests: perfect answers score 1.000, wrong ones 0.000; the tiny random model scores near zero. **Not run on a real model.**
 
 ## Note format
 

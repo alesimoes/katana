@@ -40,7 +40,8 @@ static void ds_split_sys(const char *sys, Buf *tools, Buf *tsys) {
 
 /* prompt de sistema do agente no formato pedido, com HOME vazio (sem a memoria salva do usuario) */
 static void ds_agent_sys(const char *fmt, char *out, size_t cap) {
-    char tmpl[] = "/tmp/katana_distill_XXXXXX";
+    char tmpl[1100];                                     /* a pasta vazia vai em TMPDIR (o specialize aponta para a pasta de saida), nao no /tmp fixo */
+    { const char *tp = getenv("TMPDIR"); snprintf(tmpl, sizeof tmpl, "%s/katana_distill_XXXXXX", tp && *tp ? tp : "/tmp"); }
     const char *h0 = getenv("HOME");
     char *old = h0 ? strdup(h0) : NULL;
 #ifndef _WIN32

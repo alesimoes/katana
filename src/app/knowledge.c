@@ -386,9 +386,9 @@ static int kn_hdr(const char *txt, const char *key, char *out, size_t cap) {
 }
 
 /* INDEX.md de cada projeto e o geral, a partir das notas que estao na pasta */
-static void kn_indexes(const char *base) {
+static int kn_indexes(const char *base) {
     char **pj; int np = kn_ls(base, &pj, 1);
-    Buf top = {0}; char path[4096];
+    Buf top = {0}; char path[4096]; int okw = 1;
     buf_str(&top, "# Knowledge from earlier sessions\n\nOne folder per project; each folder has an INDEX.md and one note per session. Search the notes with Grep.\n\n");
     for (int i = 0; i < np; i++) {
         char dir[4096]; snprintf(dir, sizeof dir, "%s/%s", base, pj[i]);
@@ -414,7 +414,7 @@ static void kn_indexes(const char *base) {
         char hd[64]; snprintf(hd, sizeof hd, "Notes: %d\n\n", cnt);
         buf_str(&ix, "# Project "); buf_str(&ix, pj[i]); buf_str(&ix, "\n\nFolder: "); buf_str(&ix, cwd); buf_str(&ix, "\n"); buf_str(&ix, hd); buf_add(&ix, lines.p, lines.n);
         snprintf(path, sizeof path, "%s/INDEX.md", dir);
-        FILE *f = fopen(path, "wb"); if (f) { fwrite(ix.p, 1, ix.n, f); fclose(f); }
+        okw = io_put_file(path, ix.p, ix.n, NULL, 0) && okw;
         snprintf(name, sizeof name, "%s", pj[i]);
         buf_str(&top, "- ["); buf_str(&top, name); buf_str(&top, "]("); buf_str(&top, name); buf_str(&top, "/INDEX.md): ");
         buf_str(&top, cwd); snprintf(hd, sizeof hd, ", %d notes, newest ", cnt); buf_str(&top, hd); buf_str(&top, newest); buf_str(&top, "\n");
@@ -422,8 +422,9 @@ static void kn_indexes(const char *base) {
     }
     kn_free(pj, np);
     snprintf(path, sizeof path, "%s/INDEX.md", base);
-    FILE *f = fopen(path, "wb"); if (f) { fwrite(top.p, 1, top.n, f); fclose(f); }
+    okw = io_put_file(path, top.p, top.n, NULL, 0) && okw;
     free(top.p);
+    return okw;
 }
 
 /* ---------- build ---------- */
@@ -470,12 +471,14 @@ static int kn_build(int argc, char **argv) {
         if (fi && fi % 100 == 0) fprintf(stderr, "knowledge: %d de %d transcricoes (%lds)\n", fi, nfiles, (long)(time(NULL) - t0));
         free(S.body.p); memset(&S.body, 0, sizeof S.body); S.nep = 0; S.cwd[0] = S.ts[0] = S.title[0] = S.first[0] = 0;
         tr_run(&tro, fp);
-        if (old && *old != '-') { char *nl = strchr(old, '\n'); if (nl) *nl = 0; char op[4400]; snprintf(op, sizeof op, "%s/%s", base, old); remove(op); }
+        char oldrel[400] = "";                                  /* a nota antiga so sai depois da nova estar gravada inteira */
+        if (old && *old != '-') { char *nl = strchr(old, '\n'); if (nl) *nl = 0; snprintf(oldrel, sizeof oldrel, "%s", old); }
         free(old);
         eps += S.nep;
         if (!S.nep) {
             empty++;
-            FILE *f = fopen(stamp, "wb"); if (f) { fputs("-\n", f); fclose(f); }
+            if (!io_put_file(stamp, "-\n", 2, NULL, 0)) { fprintf(stderr, "knowledge build: parei na transcricao %s; nada pela metade ficou (rode de novo depois de resolver)\n", fp); return 1; }
+            if (oldrel[0]) { char op[4400]; snprintf(op, sizeof op, "%s/%s", base, oldrel); remove(op); }
             continue;
         }
         if (!S.cwd[0]) { const char *par = strrchr(fp, '/'); char tmp[512] = ""; if (par) snprintf(tmp, sizeof tmp, "%.*s", (int)(par - fp), fp); kn_cpy(S.cwd, kn_leaf(tmp), sizeof S.cwd); }
@@ -496,14 +499,16 @@ static int kn_build(int argc, char **argv) {
         kn_line(&S, S.cwd, 300, &hd); buf_str(&hd, "\nDate: "); buf_str(&hd, date);
         buf_str(&hd, "\nSession: "); buf_str(&hd, bn);
         snprintf(num, sizeof num, "\nEpisodes: %d\n\n", S.nep); buf_str(&hd, num);
-        FILE *f = fopen(npath, "wb");
-        if (f) { fwrite(hd.p, 1, hd.n, f); fwrite(S.body.p, 1, S.body.n, f); fclose(f); wrote++; }
+        const int okn = io_put_file(npath, hd.p, hd.n, S.body.p, S.body.n);
         free(hd.p); free(sn.p);
-        f = fopen(stamp, "wb"); if (f) { fprintf(f, "%s\n", rel); fclose(f); }
+        if (!okn) { remove(stamp); fprintf(stderr, "knowledge build: parei na transcricao %s; nada pela metade ficou (rode de novo depois de resolver)\n", fp); return 1; }
+        wrote++;
+        if (oldrel[0] && strcmp(oldrel, rel)) { char op[4400]; snprintf(op, sizeof op, "%s/%s", base, oldrel); remove(op); }
+        { char sb[400]; snprintf(sb, sizeof sb, "%s\n", rel); if (!io_put_file(stamp, sb, strlen(sb), NULL, 0)) { fprintf(stderr, "knowledge build: parei na transcricao %s\n", fp); return 1; } }
     }
     for (int i = 0; i < nfiles; i++) free(files[i]);
     free(files);
-    kn_indexes(base);
+    if (!kn_indexes(base)) { fprintf(stderr, "knowledge build: os INDEX.md nao foram gravados inteiros em %s\n", base); return 1; }
     printf("knowledge: %d transcricoes (%ld de sub-agentes ignoradas), %ld notas escritas, %ld ja atualizadas, %ld sem pedido, %ld episodios, %lds; pasta %s\n",
            nfiles, subs, wrote, skipped, empty, eps, (long)(time(NULL) - t0), base);
     return 0;
@@ -717,12 +722,14 @@ static void kn_fact(KnFacts *F, int type, int pt, const char *x, const char *ans
     KnFact f = { type, pt, strdup(x), strdup(ans) };
     F->v[F->n++] = f;
 }
-static void kn_corpus_line(FILE *f, const char *proj, const char *q, const char *a) {
+static int g_kn_wfail;
+static void kn_corpus_line(FILE *f, const char *path, const char *proj, const char *q, const char *a) {
     Buf l = {0};
     buf_str(&l, "{\"messages\": [{\"role\": \"user\", \"content\": \""); js_escape(&l, q, strlen(q));
     buf_str(&l, "\"}, {\"role\": \"assistant\", \"content\": \""); js_escape(&l, a, strlen(a));
     buf_str(&l, "\"}], \"project\": \""); js_escape(&l, proj, strlen(proj)); buf_str(&l, "\"}\n");
-    fwrite(l.p, 1, l.n, f); free(l.p);
+    if (!io_write(f, l.p, l.n, path)) g_kn_wfail = 1;
+    free(l.p);
 }
 static long kn_chars(const char *s) { long n = 0; for (; *s; s++) if (((unsigned char)*s & 0xC0) != 0x80) n++; return n; }
 static void kn_budget(long pairs, long chars) {
@@ -743,8 +750,10 @@ static int kn_corpus(int argc, char **argv) {
         else if (!strcmp(argv[i], "--holdout") && i + 1 < argc) hold = argv[++i];
         else { fprintf(stderr, "knowledge corpus: opcao desconhecida: %s\n", argv[i]); return 1; }
     }
-    FILE *fo = fopen(outp, "wb"), *fh = hold ? fopen(hold, "wb") : NULL;
-    if (!fo || (hold && !fh)) { fprintf(stderr, "knowledge corpus: nao gravou %s\n", fo ? hold : outp); return 1; }
+    char po[4600], ph[4600]; snprintf(po, sizeof po, "%s.part", outp); snprintf(ph, sizeof ph, "%s.part", hold ? hold : "");
+    g_kn_wfail = 0;
+    FILE *fo = fopen(po, "wb"), *fh = hold ? fopen(ph, "wb") : NULL;
+    if (!fo || (hold && !fh)) { fprintf(stderr, "knowledge corpus: nao gravou %s: %s\n", fo ? hold : outp, strerror(errno)); if (fo) fclose(fo); remove(po); return 1; }
     char **pj; int npj = kn_ls(dir, &pj, 1);
     long tp = 0, tc = 0, th = 0, nproj = 0;
     for (int i = 0; i < npj; i++) {
@@ -841,8 +850,8 @@ static int kn_corpus(int argc, char **argv) {
             for (int ph = 0; ph < 3; ph++) {
                 Buf qb = {0};
                 kn_fill(KN_Q[f->type][f->pt][ph], f->type < 4 && f->type != 2 && f->type != 3 ? f->x : "", pj[i], f->type == 2 || f->type == 3 ? f->x : "", &qb);
-                if (ph < 2) { kn_corpus_line(fo, pj[i], kn_s(&qb), f->ans); pairs++; chars += kn_chars(f->ans); }
-                else if (fh) { kn_corpus_line(fh, pj[i], kn_s(&qb), f->ans); hp++; }
+                if (ph < 2) { kn_corpus_line(fo, outp, pj[i], kn_s(&qb), f->ans); pairs++; chars += kn_chars(f->ans); }
+                else if (fh) { kn_corpus_line(fh, hold, pj[i], kn_s(&qb), f->ans); hp++; }
                 free(qb.p);
             }
             free(f->x); free(f->ans);
@@ -854,7 +863,12 @@ static int kn_corpus(int argc, char **argv) {
         tp += pairs; tc += chars; th += hp; nproj++;
     }
     kn_free(pj, npj);
-    fclose(fo); if (fh) fclose(fh);
+    {   int okc = io_close(fo, outp) && !g_kn_wfail;
+        if (fh) okc = io_close(fh, hold) && okc;
+        if (okc && rename(po, outp) != 0) okc = io_fail(outp, "nao consegui renomear para", errno);
+        if (okc && fh && rename(ph, hold) != 0) okc = io_fail(hold, "nao consegui renomear para", errno);
+        if (!okc) { remove(po); if (hold) remove(ph); fprintf(stderr, "knowledge corpus: a gravacao falhou; os arquivos antigos ficaram como estavam\n"); return 1; }
+    }
     printf("corpus: %ld projetos, %ld pares (%ld caracteres de resposta)%s; arquivo %s\n", nproj, tp, tc, hold ? "" : "", outp);
     if (hold) printf("holdout: %ld pares, uma formulacao que o treino nao tem, por fato; arquivo %s\n", th, hold);
     kn_budget(tp, tc);
@@ -901,7 +915,182 @@ static int kn_corpus_stats(const char *path) {
     kn_budget(tp, tc);
     return 0;
 }
+
+/* ---------- quiz: o conhecimento entrou? ----------
+ * katana knowledge quiz <modelo> <holdout.jsonl> [--limit N] [--spec ARQ.kspec] [--max-tokens N] [--threshold X] [--out ARQ.jsonl]
+ * Para cada pergunta separada (o holdout do katana knowledge corpus: formulacao que o treino nao viu) o modelo responde
+ * curto, sem sorteio e sem ferramentas; a nota e a fracao dos termos distintivos da resposta de referencia (caminhos,
+ * nomes de comandos e arquivos, numeros, palavras com maiuscula, o que vem entre crases) que aparecem na resposta do
+ * modelo. Nao usa segundo modelo. Rodar antes e depois do treino mostra se o conhecimento entrou.
+ * Gancho de teste: KATANA_QUIZ_ANSWERS=ARQ (uma resposta por linha) responde no lugar do modelo, que nem e carregado. */
+static int kn_stopword(const char *w) {
+    static const char *const sw[] = { "the", "a", "an", "in", "on", "it", "is", "to", "of", "and", "for", "with", "this", "that", "if", "when", "then",
+        "there", "they", "we", "you", "i", "he", "she", "as", "at", "by", "or", "but", "not", "no", "yes", "are", "was", "were", "be", "so", "its",
+        "o", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "para", "com", "por", "que", "se", "e", "ou",
+        "mas", "nao", "sim", "foi", "era", "ele", "ela", "isso", "esse", "essa", "este", "esta", "ao", "aos", "um", "uns", "como", "quando", "entao" };
+    for (size_t i = 0; i < sizeof sw / sizeof sw[0]; i++) if (!strcmp(w, sw[i])) return 1;
+    return 0;
+}
+static int kn_wch(unsigned char c) { return isalnum(c) || c >= 0x80 || strchr("_./~-:+#@", c) != NULL; }
+
+/* termos distintivos de ref (minusculos, sem repeticao), em vec (no heap); devolve a quantidade */
+static int kn_terms(const char *ref, char ***vec) {
+    char **v = NULL; int n = 0, tick = 0;
+    for (const char *p = ref; *p; ) {
+        if (*p == '`') { tick = !tick; p++; continue; }
+        if (!kn_wch((unsigned char)*p)) { p++; continue; }
+        const char *s = p;
+        while (*p && kn_wch((unsigned char)*p)) p++;
+        size_t l = (size_t)(p - s);
+        while (l && strchr(".:-/#+@", s[l - 1])) l--;      /* ponto final, dois pontos... */
+        if (l < 2 || l > 80) continue;
+        char w[96]; memcpy(w, s, l); w[l] = 0;
+        int dig = 0, up = 0, lo = 0, inner = 0;
+        for (size_t i = 0; i < l; i++) {
+            const unsigned char c = (unsigned char)w[i];
+            dig |= isdigit(c) != 0; up |= isupper(c) != 0; lo |= islower(c) != 0;
+            if (i > 0 && i + 1 < l && strchr("_./~-:", c)) inner = 1;
+        }
+        const int lead = w[0] == '-' || w[0] == '~' || w[0] == '/' || w[0] == '.';
+        int dist = tick || dig || inner || lead || (up && lo && !isupper((unsigned char)w[0])) || (up && !lo);
+        char lw[96]; for (size_t i = 0; i <= l; i++) lw[i] = (char)tolower((unsigned char)w[i]);
+        if (!dist && up && isupper((unsigned char)w[0]) && !kn_stopword(lw)) dist = 1;        /* palavra com inicial maiuscula */
+        if (!dist) continue;
+        int dup = 0; for (int i = 0; i < n; i++) if (!strcmp(v[i], lw)) { dup = 1; break; }
+        if (dup) continue;
+        v = realloc(v, sizeof(char *) * (size_t)(n + 1)); v[n++] = strdup(lw);
+    }
+    *vec = v;
+    return n;
+}
+static char *kn_lowerdup(const char *s) { char *d = strdup(s); for (char *p = d; *p; p++) *p = (char)tolower((unsigned char)*p); return d; }
+/* fracao dos termos distintivos de ref que aparecem em ans; -1 se ref nao tem nenhum */
+static double kn_overlap(const char *ref, const char *ans, int *nterms) {
+    char **t; const int n = kn_terms(ref, &t);
+    if (nterms) *nterms = n;
+    if (!n) { free(t); return -1; }
+    char *la = kn_lowerdup(ans); int hit = 0;
+    for (int i = 0; i < n; i++) { if (strstr(la, t[i])) hit++; free(t[i]); }
+    free(t); free(la);
+    return (double)hit / n;
+}
+
+/* resposta curta do modelo, sem sorteio e sem ferramentas */
+static char *kn_gen(Model *m, const char *question, int max_tokens) {
+    const Config *c = &m->cfg; const Tokenizer *tk = &m->tk; const int V = c->vocab;
+    const size_t cap = strlen(question) + 8192;
+    char *text = xalloc(cap, 1);
+    turn_text(c, text, cap, getenv("KATANA_SYSTEM"), question, 1);
+    Ids ids = {0};
+    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+    encode(tk, text, &ids);
+    free(text);
+    if (ids.n == 0) ids_push(&ids, c->bos >= 0 ? c->bos : 0);
+    char *res = NULL; size_t rl = 0;
+    if (ids.n + 2 >= c->ctx) { free(ids.ids); return strdup(""); }
+    FILE *ms = open_memstream(&res, &rl);
+    if (!ms) { free(ids.ids); return strdup(""); }
+    float *lg = forward_seq(m, ids.ids, ids.n, 0, 1);
+    int pos = ids.n, gen = 0;
+    while (gen < max_tokens && pos < c->ctx) {
+        const int next = sample_c(lg, V, 0.0f, c->eos);
+        if (next == c->eos || (tk->toktype && tk->toktype[next] == 3)) break;
+        print_token(tk, next, ms); gen++;
+        lg = forward(m, next, pos++, 1);
+    }
+    fclose(ms);
+    free(ids.ids);
+    if (!res) res = strdup("");
+    return res;
+}
+
+/* pergunta e resposta de uma linha do holdout ({"messages": [{user}, {assistant}], ...}) */
+static int kn_qa(const char *line, char **q, char **a) {
+    *q = *a = NULL;
+    const char *p0 = js_ws(line); char k[64]; const char *v, *e;
+    if (*p0 != '{') return 0;
+    for (const char *p = p0 + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+        if (strcmp(k, "messages") || *v != '[') continue;
+        const char *el, *ee;
+        for (const char *p2 = v + 1; (ee = gs_elem(p2, &el)); p2 = ee) {
+            char k2[32], role[16] = ""; const char *x, *xe, *c = NULL;
+            for (const char *p3 = el + 1; (xe = gs_member(p3, k2, sizeof k2, &x)); p3 = xe) {
+                if (!strcmp(k2, "role")) { char *s = kn_str(x); kn_cpy(role, s, sizeof role); free(s); }
+                else if (!strcmp(k2, "content")) c = x;
+            }
+            if (c && !strcmp(role, "user") && !*q) *q = kn_str(c);
+            else if (c && !strcmp(role, "assistant") && !*a) *a = kn_str(c);
+        }
+    }
+    if (*q && *a) return 1;
+    free(*q); free(*a); *q = *a = NULL;
+    return 0;
+}
+
+static int kn_quiz(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "uso: katana knowledge quiz <modelo.gguf> <holdout.jsonl> [--limit N] [--spec ARQ.kspec] [--max-tokens N] [--threshold X] [--out ARQ.jsonl]\n"); return 1; }
+    const char *model = argv[0], *hold = argv[1], *spec = NULL, *outp = NULL; int limit = 0, maxtok = 80; double thr = 0.5;
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--spec") && i + 1 < argc) spec = argv[++i];
+        else if (!strcmp(argv[i], "--max-tokens") && i + 1 < argc) maxtok = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--threshold") && i + 1 < argc) thr = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--out") && i + 1 < argc) outp = argv[++i];
+        else { fprintf(stderr, "knowledge quiz: opcao desconhecida: %s\n", argv[i]); return 1; }
+    }
+    FILE *f = fopen(hold, "rb");
+    if (!f) { fprintf(stderr, "knowledge quiz: nao abriu %s: %s\n", hold, strerror(errno)); return 1; }
+    char **inj = NULL; int ninj = 0;
+    if (getenv("KATANA_QUIZ_ANSWERS")) {                     /* gancho de teste */
+        FILE *af = fopen(getenv("KATANA_QUIZ_ANSWERS"), "rb"); char l[8192];
+        if (!af) { fprintf(stderr, "knowledge quiz: nao abriu %s\n", getenv("KATANA_QUIZ_ANSWERS")); return 1; }
+        while (fgets(l, sizeof l, af)) { l[strcspn(l, "\r\n")] = 0; inj = realloc(inj, sizeof(char *) * (size_t)(ninj + 1)); inj[ninj++] = strdup(l); }
+        fclose(af);
+    }
+    Model m; memset(&m, 0, sizeof m);
+    if (!inj) {
+        if (spec) { char b[2400]; snprintf(b, sizeof b, "KATANA_SPEC=%s", spec); putenv_dup(b); }
+        perfil_apply(model, 0);
+        load_model(&m, model);
+    }
+    FILE *fo = NULL; char po[4600] = "";
+    if (outp) { snprintf(po, sizeof po, "%s.part", outp); fo = fopen(po, "wb"); if (!fo) { fprintf(stderr, "knowledge quiz: nao gravou %s: %s\n", outp, strerror(errno)); return 1; } }
+    size_t lc = 1 << 16; char *line = xalloc(lc, 1);
+    int nq = 0, nscored = 0, above = 0, ok = 1; double sum = 0; const double t0 = now_sec();
+    for (;;) {
+        size_t len = 0; int ch;
+        while ((ch = fgetc(f)) != EOF && ch != '\n') { if (len + 2 >= lc) { lc *= 2; line = realloc(line, lc); } line[len++] = (char)ch; }
+        line[len] = 0;
+        char *q, *a;
+        if (len && kn_qa(line, &q, &a)) {
+            if (limit > 0 && nq >= limit) { free(q); free(a); break; }
+            char *ans = inj ? strdup(nq < ninj ? inj[nq] : "") : kn_gen(&m, q, maxtok);
+            int nt = 0; const double sc = kn_overlap(a, ans, &nt);
+            nq++;
+            if (sc >= 0) { nscored++; sum += sc; if (sc >= thr) above++; }
+            if (fo) {
+                Buf b = {0}; char num[64];
+                buf_str(&b, "{\"question\": \""); js_escape(&b, q, strlen(q)); buf_str(&b, "\", \"reference\": \""); js_escape(&b, a, strlen(a));
+                buf_str(&b, "\", \"answer\": \""); js_escape(&b, ans, strlen(ans)); snprintf(num, sizeof num, "\", \"score\": %.4f}\n", sc);
+                buf_str(&b, num);
+                ok = io_write(fo, b.p, b.n, outp) && ok; free(b.p);
+            }
+            if (!inj && nq % 5 == 0) fprintf(stderr, "quiz: %d perguntas (%.0f s)\n", nq, now_sec() - t0);
+            free(q); free(a); free(ans);
+        }
+        if (ch == EOF) break;
+    }
+    fclose(f); free(line);
+    if (fo) { ok = io_close(fo, outp) && ok; if (ok && rename(po, outp) != 0) ok = io_fail(outp, "nao consegui renomear para", errno); if (!ok) remove(po); }
+    if (!ok) return 1;
+    printf("quiz: %d perguntas, %d com nota (as outras nao tem termo distintivo na referencia), nota media %.3f, %d com nota >= %.2f (%.0f%%)%s%s\n",
+           nq, nscored, nscored ? sum / nscored : 0.0, above, thr, nscored ? 100.0 * above / nscored : 0.0, spec ? "; especializacao " : "", spec ? spec : "");
+    if (outp) printf("quiz: respostas e notas em %s\n", outp);
+    if (!nq) { fprintf(stderr, "knowledge quiz: nenhuma pergunta em %s\n", hold); return 1; }
+    return 0;
+}
 static int kn_main(int argc, char **argv) {
+    if (argc >= 1 && !strcmp(argv[0], "quiz")) return kn_quiz(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "build")) return kn_build(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "search")) return kn_search(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "stats")) return kn_stats(argc - 1, argv + 1);
@@ -910,6 +1099,7 @@ static int kn_main(int argc, char **argv) {
                     "     katana knowledge search <palavras...> [--project NOME] [--limit N]\n"
                     "     katana knowledge stats [PASTA|corpus.jsonl]\n"
                     "     katana knowledge corpus <pasta das notas> <saida.jsonl> [--project NOME]... [--max-per-project N] [--holdout ARQ.jsonl]\n"
+                    "     katana knowledge quiz <modelo.gguf> <holdout.jsonl> [--limit N] [--spec ARQ.kspec] [--max-tokens N] [--threshold X] [--out ARQ.jsonl]\n"
                     "     pasta das notas: --out, ou KATANA_KNOWLEDGE, ou ~/.katana/knowledge\n");
     return 1;
 }

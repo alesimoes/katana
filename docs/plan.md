@@ -63,6 +63,7 @@ when its criterion is measured; "not measured" items stay open even when the cod
 | D3 | Planned work (`--plan-first`, experimental) | in real sessions with the specialization, most multi-step requests start with a task list |
 | D4 | The merged GGUF without the tools section against the base with it | codebench alternating, both models, no task lost |
 | D5 | Training on the GPU | seconds per window on the owner's card |
+| D6 | One command per night (`katana specialize <model>`, defaults and `katana.cfg` keys `transcripts`, `training-dir`, `replace`, `cut-matching`), `--wait-idle`, `--status` report, writes that fail loudly with a checked data file, fifth source `conventions` (**built 2026-11-21**, tiny models only; `katana curriculum` is another agent's work) | first real night run with only `katana specialize <model>`; the report shows the windows seen |
 
 **E. Install and run anywhere**: AppImage and the packaging workflow executed once; Windows build compiled again;
 `test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API (**code done
@@ -87,8 +88,8 @@ sessions at once.
 |---|---|---|
 | G1 | `katana knowledge build/search/stats/corpus` and `docs/knowledge-base.md` (2026-11-21) | **done**: notes and corpus built from the real transcripts, tested without a model |
 | G2 | Train a model on the corpus (`katana specialize <model> knowledge`) | the adapter trained, nights counted |
-| G3 | Held-out measurement: ask the `--holdout` questions before and after training | correct answers counted for both; the expectation (names, paths, commands, not volume) confirmed or refuted |
-| G4 | Keep the base current: rebuild incrementally, regenerate the corpus, retrain on the new part | a routine the owner can run |
+| G3 | Held-out measurement: `katana knowledge quiz` before and after training (**tool built 2026-11-21**, run on tiny models only) | mean overlap score and the count above 0.5, before and after; the expectation (names, paths, commands, not volume) confirmed or refuted |
+| G4 | Keep the base current: rebuild incrementally, regenerate the corpus, retrain on the new part (**built**: it is the first half of the nightly `katana specialize <model>`) | the owner ran it once on the real acervo |
 
 
 ## Priority 1: Vulkan backend (closes the 11–16x gap on the prompt)

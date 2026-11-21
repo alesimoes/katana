@@ -239,7 +239,7 @@ static int ksx_line(const KsxSess *s, const char *source, FILE *out, int only_te
     buf_str(&o, "], \"source\": \"");
     js_escape(&o, source, strlen(source));
     buf_str(&o, s->exact ? "\", \"exact\": true}\n" : "\", \"exact\": false}\n");
-    fwrite(o.p, 1, o.n, out);
+    io_write(out, o.p, o.n, g_im_outpath);
     free(o.p); free(t); free(map); free(sp);
     return 1;
 }
@@ -316,7 +316,8 @@ static int export_main(int argc, char **argv) {
         free(paths); paths = all; np = na;
     }
     FILE *out = fopen(outp, append ? "ab" : "wb");
-    if (!out) { fprintf(stderr, "export: nao consegui gravar %s\n", outp); return 1; }
+    if (!out) { fprintf(stderr, "export: nao consegui gravar %s: %s\n", outp, strerror(errno)); return 1; }
+    g_im_outpath = outp; g_io_msgs = 0;
     int wrote = 0, skipped = 0;
     for (int i = 0; i < np; i++) {
         KsxSess s; const char *why = NULL;
@@ -330,7 +331,7 @@ static int export_main(int argc, char **argv) {
         ksx_free(&s); free(paths[i]);
     }
     free(paths);
-    fclose(out);
+    if (!io_close(out, outp) || g_io_msgs) { fprintf(stderr, "export: a gravacao de %s falhou; o arquivo esta incompleto\n", outp); return 4; }
     printf("export: %d sessoes -> %s (%d puladas)\n", wrote, outp, skipped);
     return 0;
 }
