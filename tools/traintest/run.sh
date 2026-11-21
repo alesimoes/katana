@@ -24,6 +24,8 @@
 # 13. a noite em um comando (katana.cfg), gravacao que falha em voz alta (disco cheio simulado e /dev/full), conferencia dos dados,
 #     --wait-idle, --status e katana knowledge quiz
 # 13. katana curriculum: conversas das convencoes geradas, conferidas (check) e importadas em ChatML JSON/XML e Gemma 4
+# 13. o comando katana: console na pasta atual e modo headless (tools/tooltest/launch.sh: escolha do modelo, install, sessoes por
+#     pasta, adopt, lista de ferramentas, katana -p em text/json/stream-json, MCP por --mcp-config, console num terminal de mentira)
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 export KATANA_TOOLS=1      # os passos antigos usam o primeiro conjunto de ferramentas; o passo do segundo conjunto pede 2 (o padrao)
@@ -492,4 +494,7 @@ for t in chatml chatml-xml gemma4; do
   python3 tools/tinymodel/make_tiny_gguf.py "$D/cur_$t.gguf" --template $t >/dev/null
   if $K import "$D/cur_$t.gguf" "$D/cur.jsonl" "$D/cur_$t.out.jsonl" --system keep 2>/dev/null | grep -q "^import: 200 de 200"; then echo "curriculum import $t: ok"; else echo "curriculum import $t: FALHOU"; fail=1; fi
 done
+# 13. katana sem subcomando (console) e katana -p (headless), com o professor de mentira
+if sh tools/tooltest/launch.sh "$K" > "$D/launch.out" 2>&1; then echo "launch (console e headless): ok ($(tail -1 "$D/launch.out"))"
+else echo "launch (console e headless): FALHOU"; grep -A8 '^FAIL' "$D/launch.out" | head -30; fail=1; fi
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi

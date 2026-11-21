@@ -1,6 +1,7 @@
 /* ---------- despacho: executa a ferramenta pedida pelo modelo, registra no log, neutraliza marcas no resultado ---------- */
 /* interface: resultado da ferramenta numa linha (\\ e \n escapados; mantem o comeco e o fim se for grande) */
 static void ui_toolout(const char *name, const char *res) {
+    launch_tool_result(name, res);
     if (!getenv("KATANA_UI")) return;
     const size_t n = strlen(res), HEAD = 3000, TAIL = 5000;
     printf("\x01" "TOOLOUT %s\t", name);
@@ -177,6 +178,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
 /* executa a ferramenta e registra data, ferramenta, argumentos e resultado (ok, erro ou codigo de saida)
  * em ~/.katana/agente.log (KATANA_LOG muda o caminho) */
 static void agent_tool(const char *name, const char *js, const char *end, char *out, size_t cap) {
+    if (!launch_tool_allowed(name)) { snprintf(out, cap, "error: the tool %s is not allowed in this run (--allowed-tools / --disallowed-tools). Use one of the tools you were given, or tell the user what you could not do.", name); return; }
     agent_tool_run(name, js, end, out, cap);
     char a[8192];
     const size_t l = (size_t)(end - js) < sizeof a - 1 ? (size_t)(end - js) : sizeof a - 1;

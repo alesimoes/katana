@@ -35,10 +35,32 @@ static volatile sig_atomic_t g_stop, g_busy;
 #define C_CYAN  "\033[36m"
 #define C_RESET "\033[0m"
 
+/* ---- ganchos do console rico, do editor de linha e do modo headless (definidos em app/launch.c, incluido depois) ---- */
+static int g_con_rich;                /* console rico (so em terminal): cabecalho, linhas de ferramenta, Markdown, spinner, linha de estado */
+static int g_hl;                      /* modo headless (katana -p) */
+static int g_max_turns;               /* --max-turns: rodadas do modelo por pedido (0 = o padrao do motor) */
+static char g_launch_why[420];        /* por que este modelo foi escolhido */
+static int launch_tool_allowed(const char *name);                                                 /* --allowed-tools / --disallowed-tools */
+static void launch_tool_call(const char *name, const char *ap, const char *end);                  /* uma ferramenta vai rodar */
+static void launch_tool_result(const char *name, const char *res);                                /* ela terminou */
+static void launch_reply(const char *p, size_t n);                                                /* uma resposta do modelo terminou */
+static void launch_stats(int in_n, double in_s, int gen, double gen_s, int pos, int ctx);
+static void launch_status(void);                                                                  /* linha de estado do pedido */
+static void launch_request_start(void);
+static void launch_console_init(void);
+static void launch_header(Model *m);
+static int launch_read_line(char *line, size_t cap, int *res);
+static int launch_first_line(char *line, size_t cap);
+static void launch_sys_adjust(char *out, size_t cap);
+static void con_token(const Tokenizer *tk, int id);
+static void con_token_end(void);
+static void con_puts(const char *s);
+static void ed_restore(void);
+
 static void on_sigint(int s) {
     signal(SIGINT, on_sigint);
     if (g_busy) g_stop = 1;
-    else _Exit(130);
+    else { ed_restore(); _Exit(130); }
 }
 
 static void console_init(void) {
@@ -54,12 +76,13 @@ static void console_init(void) {
     }
 #endif
     signal(SIGINT, on_sigint);
+    launch_console_init();
 }
 
 /* nomes dos comandos em ingles; os nomes antigos em portugues continuam aceitos como apelidos (reescreve a linha no lugar) */
 static void cmd_norm(char *line, size_t cap) {
     static const char *const M[][2] = { {"novo", "new"}, {"sistema", "system"}, {"salvar", "save"}, {"ajuda", "help"}, {"sair", "exit"},
-        {"quit", "exit"}, {"compactar", "compact"}, {"sessao", "session"}, {"retomar", "resume"}, {"professor", "teacher"} };
+        {"quit", "exit"}, {"clear", "new"}, {"compactar", "compact"}, {"sessao", "session"}, {"retomar", "resume"}, {"professor", "teacher"} };
     if (line[0] != '/') return;
     const size_t w = strcspn(line + 1, " \t");
     for (size_t i = 0; i < sizeof M / sizeof M[0]; i++) {
@@ -105,19 +128,27 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
     }
     if (strcmp(line, "/help") == 0) {
         fprintf(stderr,
-            "  /new              clears the conversation\n"
+            "  /new              clears the conversation (/clear is the same)\n"
             "  /compact          (agent) summarizes and shrinks the old context to free space\n"
             "  /system <text>    sets the system prompt (and restarts the conversation)\n"
             "  /save <file>      writes the conversation to a text file\n"
             "  /plan             (agent) plan mode: read-only until you approve with /go (/plan off leaves it)\n"
+            "  /go               (agent) approves the plan and runs it\n"
             "  /undo             (agent) puts back the files changed by the last request that changed any\n"
             "  /cd <folder>      (agent) changes the working folder (asks to trust it the first time)\n"
             "  /init             (agent) writes a first KATANA.md for this project, then the model improves it\n"
             "  /skill new <name> (agent) creates a skill; also /skill list|show|remove|check and /<skill> <arguments>\n"
             "  /mcp              (agent) MCP servers: status, /mcp reconnect <name>, /mcp card <name>, /<server>:<prompt>\n"
+            "  /session <file>   (agent) saves this conversation to a session file from now on\n"
+            "  /resume <file>    (agent) loads a saved session file (katana -c / -r pick one by folder)\n"
+            "  /teacher [on|off|status|cli|api|<model>]   (agent) a larger model answers in place of the local one\n"
+            "  /model [name]     (agent) shows the installed models; with a name, saves the session and reloads with that model\n"
+            "  /status           (agent) model, context use, session file, MCP servers, skills, instruction files\n"
             "  /help             this list\n"
             "  /exit             quits (also Ctrl+D)\n"
-            "  Ctrl+C            interrupts the current answer\n");
+            "  Ctrl+C            interrupts the current answer\n"
+            "  Editing: arrows and Home/End move, Up/Down walk the history of this folder, Ctrl+A/E/K/U/W edit,\n"
+            "           a backslash at the end of a line or Alt+Enter continues on a new line; pasted text stays one message\n");
         return 1;
     }
     { const int x = ext_slash(line); if (x) return x; }
@@ -158,8 +189,8 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
             else if (t == 200008) go_body = 1;                      /* <|message|> */
             else if (t == 200007 || t == 200006) go_body = 0;       /* <|end|> / <|start|> */
             else if (go_body) {
-                if (go_ch == 2) { if (go_an) { fprintf(stdout, "%s\n", CE(C_RESET)); go_an = 0; } print_token(tk, t, stdout); if (cap && !g_agent_sys) buf_add(cap, tmp, tl); }
-                else if (go_ch == 1 && go_reason()) { if (!go_an) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); go_an = 1; } print_token(tk, t, stdout); }
+                if (go_ch == 2) { if (go_an) { fprintf(stdout, "%s\n", CE(C_RESET)); go_an = 0; } con_token(tk, t); if (cap && !g_agent_sys) buf_add(cap, tmp, tl); }
+                else if (go_ch == 1 && go_reason()) { if (!go_an) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); go_an = 1; } con_token(tk, t); }
             }
             if (cap && g_agent_sys) buf_add(cap, tmp, tl);    /* agente: texto cru para achar a chamada de ferramenta */
             fflush(stdout);
@@ -178,7 +209,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
             skipnl = 1;
         } else if (skipnl && strspn(tmp, "\n") == (size_t)tl) {
             /* quebras de linha logo depois do raciocinio: nao imprime */
-        } else { skipnl = 0; print_token(tk, t, stdout); }
+        } else { skipnl = 0; con_token(tk, t); }
         fflush(stdout);
         if (cap) buf_add(cap, tmp, tl);
         if (cg) cg_after(tk, c->vocab, cap, t, thinking);
@@ -196,6 +227,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
         lg = forward(m, t, (*pos)++, 1);
     }
     gr_off();
+    con_token_end();
     if (thinking) fprintf(stdout, "%s", CE(C_RESET));
     if (g_stop) fprintf(stderr, "\n%s[interrompido]%s", CE(C_DIM), CE(C_RESET));
     return gen;
@@ -203,6 +235,8 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
 
 static int g_no_ready;      /* 1: o proximo prompt nao manda READY (comando silencioso, ex.: /sessao) */
 static void prompt_user(void) {
+    if (g_hl) return;
+    launch_status();
     fprintf(stderr, "\n%syou>%s ", CE(C_CYAN), CE(C_RESET));
     fflush(stderr);
     if (g_no_ready) { g_no_ready = 0; return; }
@@ -210,15 +244,21 @@ static void prompt_user(void) {
 }
 
 static void stats_line(int in_n, double in_s, int gen, double gen_s, int pos, int ctx) {
+    launch_stats(in_n, in_s, gen, gen_s, pos, ctx);
+    if (g_con_rich) return;        /* o console rico mostra uma linha por pedido (launch_status) */
     fprintf(stderr, "%s[entrada: %d tokens, %.1f tok/s | resposta: %d tokens, %.1f tok/s | contexto %d de %d (%d%%)]%s\n",
             CE(C_DIM), in_n, in_n / (in_s + 1e-9), gen, gen / (gen_s + 1e-9), pos, ctx, 100 * pos / ctx, CE(C_RESET));
 }
 
 /* le uma linha sem o fim de linha; 0 no fim da entrada */
 static int read_line(char *line, size_t cap) {
+    int hr;
+    if (launch_first_line(line, cap)) { launch_request_start(); return 1; }
+    if (launch_read_line(line, cap, &hr)) { if (hr) launch_request_start(); return hr; }     /* headless ou editor de linha (terminal) */
     if (!fgets(line, (int)cap, stdin)) return 0;
     size_t ln = strlen(line);
     while (ln > 0 && (line[ln - 1] == '\n' || line[ln - 1] == '\r')) line[--ln] = 0;
+    launch_request_start();
     return 1;
 }
 

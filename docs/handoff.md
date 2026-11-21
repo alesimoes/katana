@@ -32,6 +32,23 @@ step 13 covers this. The 12 `tools/codebench/tasks/conv-*` tasks pass `--verify`
 features, which were being built in parallel. Nothing has been trained on this data yet. The engine's blocks are
 mocked in one function each (`cu_sys_*`, `cu_skill_result`, `cu_refusal`, `cu_done_note`).
 
+**2026-11-21, the `katana` command: console in a project and headless mode (blocks E and F of `docs/plan.md`).** Built, in
+`src/app/launch.c` (documented in `docs/console.md`): `katana` with no subcommand starts the agent in the current folder with the
+model chosen by `--model`, `KATANA_MODEL`, `model=` in `katana.cfg`, the desktop's `ultimoModelo=`, the catalog's recommendation or the
+largest installed; `katana install` puts a symlink on PATH (the models folder is now also looked up beside the real binary and in
+`models=` of `~/.katana/katana.cfg`; the GPU `katana.cfg` beside the binary; `katana tune` keeps the other keys); sessions per folder
+(`~/.katana/sessions/<hash>/`, `-c`, `-r`); `katana -p` headless with `text`, `json` and `stream-json` output, `--mcp-config`,
+`--strict-mcp-config`, `--allowed-tools` / `--disallowed-tools` (checked in `agent_tool`, and tools not allowed are not declared),
+`--max-turns`, `--system-prompt-file`, `--append-system-prompt`, `--cwd`, `--session-id`, `--no-session`; a terminal console (header,
+tool lines with spinner and time, task block, Markdown, status line, a termios line editor with history and paste detection, `/model`,
+`/status`, `/clear`); `katana adopt`. Fixed on the way: `mcp_sys` inserted MCP tools into the prose sentence that mentions `</tools>`
+instead of the tool block (the teacher never saw them). Tested without a real model: `tools/tooltest/launch.sh` (step 13 of
+`tools/traintest/run.sh`), with the 0.1M random model and the scripted teacher on the CPU, plus a pseudo-terminal script for the console.
+**Not tried with a real model**: any of it with Qwen3.6 or Gemma 4 (Markdown rendering of real answers, `/model` between two real models,
+`-p` with an allow-list a real model has to work around), the owner's terminal, Windows (branches written, not compiled). Not done:
+`--mcp-config` can be given once; project-level MCP merging (another change) must honour `KATANA_MCP_STRICT`; the `-p` request is limited
+to 16000 bytes (the agent loop's line buffer).
+
 **2026-11-21, specialization pipeline in C (block D of `docs/plan.md`).** Built: `katana specialize` (`src/app/specialize.c`)
 with the kinds `all` (default: one `katana.kspec` from every source, explicit `--mix`), `tools`, `code` (planned work:
 a `TodoWrite` plan derived from the described calls, `--plan-first`), `teacher` and `knowledge` (`--corpus`); resume

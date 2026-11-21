@@ -29,10 +29,16 @@ schema = json.loads(opt("--json-schema") or "null")
 if not schema or set(schema.get("required", [])) != {"text", "tool_calls"}:
     fail("schema")
 system = open(opt("--system-prompt-file")).read()
+if os.environ.get("MOCK_DUMP_SYSTEM"):
+    open(os.environ["MOCK_DUMP_SYSTEM"], "w").write(system)
 CL = os.environ.get("MOCK_TOOLS") == "2"       # o agente declara o segundo conjunto de ferramentas (KATANA_TOOLS=2)
-if "<tool_call>" in system or ('"name": "Write"' if CL else '"name": "write_file"') not in system or '"input_schema"' not in system:
+MCP = os.environ.get("MOCK_MCP") == "1"           # katana -p --mcp-config ... --allowed-tools 'fake__ping,Read': so estas ferramentas aparecem
+if MCP:
+    if '"name": "fake__ping"' not in system or '"name": "Write"' in system or '"name": "Bash"' in system or '"name": "ToolSearch"' in system:
+        fail("system prompt: allowed tools not filtered (fake__ping %s, Write %s, Bash %s, ToolSearch %s)" % tuple('"name": "%s"' % n in system for n in ("fake__ping", "Write", "Bash", "ToolSearch")))
+elif "<tool_call>" in system or ('"name": "Write"' if CL else '"name": "write_file"') not in system or '"input_schema"' not in system:
     fail("system prompt")
-if CL and ('"name": "write_file"' in system or '"file_path"' not in system or '"name": "Bash"' not in system or '"name": "ToolSearch"' not in system):
+if CL and not MCP and ('"name": "write_file"' in system or '"file_path"' not in system or '"name": "Bash"' not in system or '"name": "ToolSearch"' not in system):
     fail("system prompt: old tool names or missing new ones")
 prompt = sys.stdin.read()
 try:
@@ -43,7 +49,21 @@ if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user" or any(i and m[
     fail("roles")
 last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
 step = sum(1 for m in ms[last_user_text + 1:] if m["role"] == "assistant")
-if os.environ.get("MOCK_INSIST") == "1":
+if MCP:
+    # servidor MCP de teste: chama fake__ping, tenta o Bash (fora da lista: recusado) e responde com o que viu
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+    if len(res) == 0:
+        out = {"text": "Chamo o servidor.", "tool_calls": [{"name": "fake__ping", "arguments": {"host": "alvo"}}]}
+    elif len(res) == 1:
+        out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "echo nao"}}]}
+    else:
+        good = "pong alvo" in res[0] and "not allowed" in res[1]
+        out = {"text": "MCP ok: pong alvo; Bash recusado." if good else "FALHA: %s" % res, "tool_calls": []}
+elif os.environ.get("MOCK_SILENT") == "1":
+    # nunca responde em palavras: so chama ferramentas (headless com --max-turns termina sem resposta final)
+    out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "echo calado"}}]}
+elif os.environ.get("MOCK_INSIST") == "1":
     # professor teimoso: repete a mesma chamada que falha ate o agente mandar encerrar e relatar
     res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
     res = [r if isinstance(r, str) else json.dumps(r) for r in res]

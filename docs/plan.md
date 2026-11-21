@@ -70,6 +70,13 @@ when its criterion is measured; "not measured" items stay open even when the cod
 2026-11-21**, `docs/api.md`: native formats, typed arguments, streaming deltas, Gemma 4 reasoning split; tested on
 tiny models with a fixed raw output, not with Qwen3.6 or Gemma 4).
 
+| # | What | Done when |
+|---|---|---|
+| E1 | `katana install` / `uninstall` (symlink on PATH), models folder found beside the real binary or from `models=` in `~/.katana/katana.cfg`, `katana.cfg` of the GPU found beside the binary | **done 2026-11-21**, tested from another folder through the link (`tools/tooltest/launch.sh`); open: the owner runs it for real |
+| E2 | `katana` with no arguments in a project folder: model chosen by `--model`, `KATANA_MODEL`, `model=`, the desktop's last model, the catalog, the largest | **done 2026-11-21** (every branch tested with empty `.gguf` files); open: used in the owner's other project |
+| E3 | Sessions per folder (`-c`, `-r`, `~/.katana/sessions/<hash>/`), history per folder, line editor with paste detection, rich console (header, tool lines, spinner, task block, Markdown, status line), `/model`, `/status`, `/clear` | **code done 2026-11-21, tested in a pseudo-terminal with the tiny model**; open: a real session with Qwen3.6 / Gemma 4 and the owner's terminal; Windows not compiled |
+| E4 | `katana adopt` (instructions, MCP servers, skills of a project that has another agent's setup) | **done 2026-11-21**, tested with sample files; open: the owner's real project |
+
 **F. Usable as the agent of other applications** (after A and B hold for a week of real use). katana is an
 independent project and is tied to no application; an application that today drives a hosted agent should be able to
 drive katana instead, the same way. What such a client needs is not written down yet. To decide with the owner:
@@ -81,6 +88,13 @@ HTTP. Client-side tools through `/v1/chat/completions`; katana's own agent throu
 `docs/api.md` and its security warning). Done when a client application drives each model through both paths in
 real use; still open: which machine runs the model for a remote device, sessions kept across devices, several
 sessions at once.
+
+| # | What | Done when |
+|---|---|---|
+| F1 | Headless mode `katana -p` (text, json, stream-json; `--mcp-config`, `--strict-mcp-config`, `--allowed-tools`, `--max-turns`, `--session-id`...), contract in `docs/console.md` | **code done and tested 2026-11-21 with the tiny model and the scripted teacher** (`tools/tooltest/launch.sh`); open: an application drives it with a real model, a real request, and the exit codes and JSON fields are what it needs |
+| F2 | A tool outside the allow-list is neither declared nor run | **done 2026-11-21**, checked with the dispatcher (`katana tool`) and end to end; open: how a real model behaves when a tool it expects is missing |
+| F3 | `--strict-mcp-config` against a user file, a project file and no config | **done 2026-11-21** for the user's and the project's files as they load today; when project-level `.katana/mcp.json` merging lands, its loader must honour `KATANA_MCP_STRICT` |
+| F4 | The application's real run, repeated | one week of runs counted from `~/.katana/sessions` and its own logs |
 
 **G. Knowledge from earlier sessions** (the owner wants the model, not a lookup, to know what was done in his projects)
 

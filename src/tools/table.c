@@ -94,7 +94,7 @@ static int ct_ready(const CtTool *t) { return t && !strstr(t->desc, "(not implem
 /* declaracao de uma ferramenta, numa linha, no formato do bloco <tools> do prompt; 0 se nao existe ou nao esta pronta */
 static size_t ct_decl(char *out, size_t cap, const char *name) {
     const CtTool *t = ct_lookup(name);
-    if (!ct_ready(t) || cap < 64) return 0;
+    if (!ct_ready(t) || cap < 64 || !launch_tool_allowed(name)) return 0;
     for (size_t i = 0; i < sizeof g_ct_short / sizeof g_ct_short[0]; i++) if (strcmp(g_ct_short[i][0], name) == 0) {
         const int n = snprintf(out, cap, "{\"type\": \"function\", \"function\": {\"name\": \"%s\", \"description\": \"%s\", \"parameters\": {\"type\": \"object\", \"properties\": {%s}, \"required\": [%s]}}}\n",
                                name, g_ct_short[i][1], g_ct_short[i][2], g_ct_short[i][3]);
@@ -116,7 +116,7 @@ static size_t ct_names(char *out, size_t cap, const char *const *skip) {
         if (!ct_ready(&g_ct[i])) continue;
         int s = 0;
         for (int k = 0; skip && skip[k]; k++) if (strcmp(skip[k], g_ct[i].name) == 0) s = 1;
-        if (s || o + strlen(g_ct[i].name) + 3 >= cap) continue;
+        if (s || !launch_tool_allowed(g_ct[i].name) || o + strlen(g_ct[i].name) + 3 >= cap) continue;
         o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? ", " : "", g_ct[i].name);
     }
     return o;
@@ -224,6 +224,7 @@ static int ct_end_check(void) {
 /* ha algo para entregar ao modelo sem o usuario digitar? (tarefa agendada vencida, mensagem de outra sessao).
    Enche line com o texto, ja marcado com a origem, e devolve 1 */
 static int ct_idle_line(char *line, size_t cap) {
+    if (launch_first_line(line, cap)) return 1;      /* katana "mensagem": a primeira mensagem entra como se tivesse sido digitada */
     static char body[8000]; char label[300];
     if (ct_sched_due(ct_sched_now(), body, sizeof body, label, sizeof label)) {
         snprintf(line, cap, "[scheduled task (%s): you scheduled this yourself earlier; the user did not type it]\n%s", label, body);

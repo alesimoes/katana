@@ -200,6 +200,32 @@
 
 static void die(const char *msg) { fprintf(stderr, "Erro: %s\n", msg); exit(1); }
 
+/* caminho real deste executavel (links simbolicos resolvidos) e a pasta dele; 0 se nao der. Serve para achar o que fica ao
+   lado do programa (models, katana.cfg) de qualquer pasta de trabalho */
+static int exe_path(char *out, size_t cap) {
+#ifdef _WIN32
+    const DWORD l = GetModuleFileNameA(NULL, out, (DWORD)cap);
+    return l > 0 && l < cap;
+#else
+    char t[4096], r[4096];
+    const ssize_t n = readlink("/proc/self/exe", t, sizeof t - 1);
+    if (n <= 0) return 0;
+    t[n] = 0;
+    char *tail = strstr(t, " (deleted)");
+    if (tail) *tail = 0;
+    if (realpath(t, r)) snprintf(out, cap, "%s", r); else snprintf(out, cap, "%s", t);
+    return 1;
+#endif
+}
+static int exe_dir(char *out, size_t cap) {
+    if (!exe_path(out, cap)) return 0;
+    char *s = strrchr(out, '/'), *b = strrchr(out, '\\');
+    if (b && (!s || b > s)) s = b;
+    if (!s) return 0;
+    *s = 0;
+    return 1;
+}
+
 static void *xalloc(size_t n, size_t sz) {
     void *p = calloc(n ? n : 1, sz);
     if (!p) die("sem memoria");

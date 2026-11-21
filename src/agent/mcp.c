@@ -708,6 +708,7 @@ static void mcp_user_path(char *path, size_t cap) {
 }
 /* .katana/mcp.json da pasta de trabalho ou de uma pasta acima, ate a raiz do repositorio */
 static int mcp_project_path(char *out, size_t cap) {
+    { const char *st1 = getenv("KATANA_MCP_STRICT"); if (st1 && *st1 && *st1 != '0') return 0; }     /* modo estrito: so os servidores de KATANA_MCP_CONFIG */
     char d[4200], home[1024], g[4400]; struct stat st;
     if (!getcwd(d, sizeof d)) return 0;
     agent_home(home, sizeof home);
@@ -859,6 +860,7 @@ static McpSrv *mcp_resolve(const char *name, int *tj) {
 }
 static int mcp_owns(const char *name) { int tj; return mcp_resolve(name, &tj) != NULL; }
 
+static int launch_tool_allowed(const char *name);      /* src/app/launch.c */
 /* ---- cartao do servidor (formato "card"): o que o modelo ve, gerado das declaracoes do proprio servidor ----
  *   mcp <servidor>: <para que serve>
  *     <servidor>__<ferramenta>(<arg>, <arg>:number, <arg>?:string[]) - <descricao ate 60 caracteres>
@@ -947,7 +949,7 @@ static void mcp_card(const McpSrv *s, int full, McpB *b) {
     mcp_bputs(b, ln);
     if (!full) {
         mcp_bputs(b, "  ");
-        for (int j = 0; j < s->ntools; j++) { char fn[260]; mcp_fname(s, s->tools[j].name, fn, sizeof fn); mcp_bputs(b, j ? ", " : ""); mcp_bputs(b, fn); }
+        for (int j = 0, k = 0; j < s->ntools; j++) { char fn[260]; mcp_fname(s, s->tools[j].name, fn, sizeof fn); if (!launch_tool_allowed(fn)) continue; mcp_bputs(b, k++ ? ", " : ""); mcp_bputs(b, fn); }
         mcp_bputs(b, "\n");
         return;
     }
@@ -955,6 +957,7 @@ static void mcp_card(const McpSrv *s, int full, McpB *b) {
         const McpTool *t = &s->tools[j];
         char fn[260], d[100];
         mcp_fname(s, t->name, fn, sizeof fn);
+        if (!launch_tool_allowed(fn)) continue;       /* --allowed-tools / --disallowed-tools */
         snprintf(d, sizeof d, "%.60s", t->desc);
         for (char *c = d; *c; c++) if (*c == '\n' || *c == '\r') { *c = 0; break; }
         mcp_bputs(b, "  "); mcp_bputs(b, fn); mcp_sig(t, b);

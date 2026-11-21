@@ -211,13 +211,17 @@ static int pull_cmd(const char *id, const char *dir) {
     return 0;
 }
 
-/* pasta de modelos quando nenhuma e dada: KATANA_MODELS, ./models se existir, senao ~/.katana/models */
+/* pasta de modelos quando nenhuma e dada: KATANA_MODELS, models= do katana.cfg (katana install grava), ./models se existir,
+   a pasta models ao lado do executavel (pelo caminho real: vale quando o katana roda por um link, de outra pasta), senao ~/.katana/models */
+static int lc_cfg_get(const char *key, char *out, size_t cap);
 static const char *models_dir(void) {
     static char d[4096];
     const char *e = getenv("KATANA_MODELS");
     struct stat st;
     if (e && e[0]) return e;
+    if (lc_cfg_get("models", d, sizeof d) && stat(d, &st) == 0 && S_ISDIR(st.st_mode)) return d;
     if (stat("models", &st) == 0) return "models";
+    { char ed[3900]; if (exe_dir(ed, sizeof ed)) { snprintf(d, sizeof d, "%s/models", ed); if (stat(d, &st) == 0 && S_ISDIR(st.st_mode)) return d; } }
     const char *home = getenv("HOME");
 #ifdef _WIN32
     if (!home) home = getenv("USERPROFILE");
