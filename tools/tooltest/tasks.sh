@@ -28,12 +28,12 @@ chk "TodoWrite resultado" "Todos updated: 3 tasks (1 completed, 1 in progress, 1
 o=$(KATANA_UI=1 "$K" tool TodoWrite "$W" 2>/dev/null </dev/null)
 chk "TodoWrite marcador TODO igual ao do todo antigo" "${SOH}TODO [x] Run tests\\n[ ] Fix bug\\n[ ] Write docs\\n" "$(printf '%s\n' "$o" | sed -n '1p' | tr -d '\n')"
 # plano em linhas de texto (mais barato que o array): [x] feito, [>] ou [~] em andamento, [ ] ou nada pendente
-chk "TodoWrite em linhas" "Todos updated: 4 tasks (1 completed, 1 in progress, 2 pending)." "$(t TodoWrite '{"todos":"[x] Run tests\n[>] Fix bug\n[ ] Write docs\nShip it"}')"
-chk "TodoWrite em linhas com [~] e numeracao" "Todos updated: 3 tasks (1 completed, 1 in progress, 1 pending)." "$(t TodoWrite '{"todos":"1. [X] a\n2. [~] b\n- [ ] c"}')"
+chk "TodoWrite em linhas" "Todos updated: 4 tasks (1 completed, 1 in progress, 2 pending). Now step 2 of 4: Fix bug. Do it, then mark it completed." "$(t TodoWrite '{"todos":"[x] Run tests\n[>] Fix bug\n[ ] Write docs\nShip it"}')"
+chk "TodoWrite em linhas com [~] e numeracao" "Todos updated: 3 tasks (1 completed, 1 in progress, 1 pending). Now step 2 of 3: b. Do it, then mark it completed." "$(t TodoWrite '{"todos":"1. [X] a\n2. [~] b\n- [ ] c"}')"
 has "TodoWrite em linhas vazio" "error: todos has no steps" "$(t TodoWrite '{"todos":"\n  \n"}')"
 o=$(KATANA_UI=1 "$K" tool TodoWrite '{"todos":"[x] Run tests\n[ ] Fix bug"}' 2>/dev/null </dev/null)
 chk "TodoWrite em linhas marcador TODO" "${SOH}TODO [x] Run tests\\n[ ] Fix bug\\n" "$(printf '%s\n' "$o" | sed -n '1p' | tr -d '\n')"
-chk "TodoWrite array dentro de texto continua array" "Todos updated: 1 tasks (0 completed, 0 in progress, 1 pending)." "$(t TodoWrite '{"todos":"[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"A\"}]"}')"
+chk "TodoWrite array dentro de texto continua array" "Todos updated: 1 tasks (0 completed, 0 in progress, 1 pending). Now step 1 of 1: a. Do it, then mark it completed." "$(t TodoWrite '{"todos":"[{\"content\":\"a\",\"status\":\"pending\",\"activeForm\":\"A\"}]"}')"
 has "TodoWrite sem UI nao emite marcador" "Todos updated" "$(t TodoWrite "$W")"
 no  "TodoWrite sem UI sem SOH" "$SOH" "$(t TodoWrite "$W")"
 has "TodoWrite 2 em andamento avisa" "Warning: more than one task is in_progress" "$(t TodoWrite '{"todos":[{"content":"a","status":"in_progress","activeForm":"A"},{"content":"b","status":"in_progress","activeForm":"B"}]}')"

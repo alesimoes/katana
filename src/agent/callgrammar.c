@@ -130,6 +130,31 @@ static void cg_setup(const char *sys) {
             free(a.p); free(b.p);
         }
     }
+    if (g_cg_only_sys <= 0) {
+        /* ferramentas do primeiro conjunto que o prompt do segundo ainda cita pelo nome (o despacho continua a aceita-las) */
+        if (ct_set2()) {
+            static const char *const old[][3] = {
+                {"git", "{\"args\": {\"type\": \"string\"}}", "[\"args\"]"},
+                {"terminal", "{\"action\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"enter\": {\"type\": \"boolean\"}, \"lines\": {\"type\": \"integer\"}, \"wait_ms\": {\"type\": \"integer\"}}", "[\"action\"]"},
+                {"recall", "{\"query\": {\"type\": \"string\"}}", "[]"},
+                {"remember", "{\"fact\": {\"type\": \"string\"}}", "[\"fact\"]"},
+                {"download_file", "{\"url\": {\"type\": \"string\"}, \"path\": {\"type\": \"string\"}}", "[\"url\"]"},
+                {"install_package", "{\"manager\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}}", "[\"name\"]"},
+                {"read_log", "{\"source\": {\"type\": \"string\"}, \"lines\": {\"type\": \"integer\"}, \"filter\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}", "[\"source\"]"},
+                {"howto", "{\"topic\": {\"type\": \"string\"}}", "[]"},
+            };
+            for (size_t i = 0; i < sizeof old / sizeof old[0]; i++) cg_add(old[i][0], old[i][1], old[i][2]);
+        }
+        /* ferramentas dos servidores MCP ligados: o modelo as ve em cartoes, fora do bloco <tools>; sem isto a restricao
+           nao deixaria o nome sair. Valem as duas grafias: servidor__ferramenta e mcp__servidor__ferramenta */
+        for (int i = 0; i < g_nmcp; i++) for (int j = 0; j < g_mcp[i].ntools; j++) {
+            char nm[200];
+            snprintf(nm, sizeof nm, "%s__%s", g_mcp[i].name, g_mcp[i].tools[j].name);
+            cg_add_parameters(nm, g_mcp[i].tools[j].schema);
+            snprintf(nm, sizeof nm, "mcp__%s__%s", g_mcp[i].name, g_mcp[i].tools[j].name);
+            cg_add_parameters(nm, g_mcp[i].tools[j].schema);
+        }
+    }
     g_cg.jroot = 0;
     if (g_cg.fmt == CGF_JSON && g_cg.nt) {      /* {"name": <enum>, "arguments": <objeto da ferramenta>} */
         const int root = gn_new(GN_OBJ), en = gn_new(GN_ENUM), dp = gn_new(GN_DISP);
