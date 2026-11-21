@@ -81,6 +81,8 @@ def main():
         tokens.append(x + y)
     types = [1] * len(tokens)
     specials = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
+    if a.template == "gemma4":       # o agente para a geracao do Gemma 4 em <|tool_response> (precisa existir no vocabulario)
+        specials.append("<|tool_response>")
     for sp in specials:
         tokens.append(sp)
         types.append(3)

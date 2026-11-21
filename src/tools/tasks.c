@@ -63,9 +63,52 @@ static const char CT_TODOWRITE_PROPS[] =
     "\"activeForm\": {\"type\": \"string\", \"description\": \"The same task while it runs (Running the tests)\"}}, "
     "\"required\": [\"content\", \"status\", \"activeForm\"]}}";
 static const char CT_TODOWRITE_REQ[] = "\"todos\"";
+/* plano em linhas de texto: um passo por linha; [x] feito, [>] ou [~] em andamento, [ ] ou nada pendente
+   (aceita "- ", "* ", "1. " na frente). Mais barato que o array JSON (docs/call-formats.md). Devolve quantos passos. */
+static int ct_todo_lines(const char *txt, CtTask *nt, char *out, size_t cap) {
+    int n = 0;
+    for (const char *p = txt; *p; ) {
+        const char *e = strchr(p, '\n');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        const char *nx = e ? e + 1 : p + l;
+        while (l && (*p == ' ' || *p == '\t' || *p == '-' || *p == '*')) { p++; l--; }
+        while (l && isdigit((unsigned char)*p)) { p++; l--; }
+        while (l && (*p == '.' || *p == ')' || *p == ' ')) { p++; l--; }
+        int st = 0;
+        if (l >= 3 && p[0] == '[' && p[2] == ']') {
+            st = (p[1] == 'x' || p[1] == 'X') ? 2 : (p[1] == '>' || p[1] == '~') ? 1 : 0;
+            p += 3; l -= 3;
+        }
+        while (l && *p == ' ') { p++; l--; }
+        while (l && (p[l - 1] == ' ' || p[l - 1] == '\r')) l--;
+        if (l) {
+            if (n == CT_TASK_MAX) { snprintf(out, cap, "error: too many tasks (at most %d); merge or drop some", CT_TASK_MAX); return -1; }
+            char line[512]; snprintf(line, sizeof line, "%.*s", (int)(l < 500 ? l : 500), p);
+            nt[n].st = st;
+            ct_cpy(nt[n].subject, sizeof nt[n].subject, line);
+            ct_cpy(nt[n].active, sizeof nt[n].active, line);
+            n++;
+        }
+        p = nx;
+    }
+    if (!n) snprintf(out, cap, "error: todos has no steps (one step per line: [x] done, [>] in progress, [ ] pending)");
+    return n;
+}
+static void ct_todo_commit(CtTask *nt, int n, char *out, size_t cap);
 static void ct_todowrite(const char *js, const char *end, char *out, size_t cap) {
     const char *a, *b;
-    if (!ct_find(js, end, "todos", &a, &b) || *a != '[') { snprintf(out, cap, "error: todos must be an array of {content, status, activeForm}"); return; }
+    if (ct_find(js, end, "todos", &a, &b) && *a == '"') {          /* plano em linhas */
+        char *txt = ct_str(js, end, "todos");
+        ct_task_sync();
+        CtTask *nt = (CtTask *)calloc(CT_TASK_MAX, sizeof *nt);
+        const int n = txt ? ct_todo_lines(txt, nt, out, cap) : 0;
+        if (!txt) snprintf(out, cap, "error: todos is empty");
+        free(txt);
+        if (n > 0) ct_todo_commit(nt, n, out, cap);
+        free(nt);
+        return;
+    }
+    if (!ct_find(js, end, "todos", &a, &b) || *a != '[') { snprintf(out, cap, "error: todos must be an array of {content, status, activeForm}, or text with one step per line ([x] done, [>] in progress, [ ] pending)"); return; }
     ct_task_sync();
     CtTask *nt = (CtTask *)calloc(CT_TASK_MAX, sizeof *nt);
     int n = 0;
@@ -94,6 +137,11 @@ static void ct_todowrite(const char *js, const char *end, char *out, size_t cap)
         if (bad) { free(nt); return; }
         p = e;
     }
+    ct_todo_commit(nt, n, out, cap);
+    free(nt);
+}
+/* grava a lista nova no lugar da antiga e escreve o resultado */
+static void ct_todo_commit(CtTask *nt, int n, char *out, size_t cap) {
     /* mantem a descricao de quem ja existia com o mesmo texto; ids novos em sequencia */
     for (int i = 0; i < n; i++) {
         nt[i].id = g_ct_nextid++;
@@ -101,7 +149,6 @@ static void ct_todowrite(const char *js, const char *end, char *out, size_t cap)
     }
     memcpy(g_ct_tasks, nt, sizeof g_ct_tasks[0] * (size_t)n);
     g_ct_ntasks = n;
-    free(nt);
     ct_task_render();
     const int ip = ct_task_count(1);
     int cur = -1;      /* passo atual: o primeiro em andamento, senao o primeiro pendente */
