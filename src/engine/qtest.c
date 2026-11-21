@@ -683,9 +683,14 @@ static int tune(Model *m) {
 
     char fn[1100];
     cfg_path(fn, sizeof fn);
+    char keep[8192]; size_t kn = 0;      /* as outras chaves do arquivo (model=, models=) ficam */
+    keep[0] = 0;
+    { FILE *o = fopen(fn, "r"); char l[1024];
+      while (o && fgets(l, sizeof l, o)) if (strncmp(l, "gpu=", 4) && strncmp(l, "seg=", 4) && strncmp(l, "rows=", 5) && strncmp(l, "rowsb=", 6) && kn + strlen(l) < sizeof keep) { strcpy(keep + kn, l); kn += strlen(l); }
+      if (o) fclose(o); }
     FILE *f = fopen(fn, "w");
     if (!f) { fprintf(stderr, "tune: nao consegui gravar %s\n", fn); return 1; }
-    fprintf(f, "gpu=%s\nseg=%zu\nrows=%d\nrowsb=%d\n", gpu.name, best_seg, best_rows, best_rowsb);
+    fprintf(f, "gpu=%s\nseg=%zu\nrows=%d\nrowsb=%d\n%s", gpu.name, best_seg, best_rows, best_rowsb, keep);
     fclose(f);
     printf("melhor: segmentos alvo=%zu, linhas por thread=%d (geracao) e %d (lote); gravado em %s\n",
            best_seg, best_rows, best_rowsb, fn);

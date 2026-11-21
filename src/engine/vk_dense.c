@@ -794,6 +794,10 @@ static void cfg_path(char *out, size_t n) {
        executavel pode ser so de leitura) */
     struct stat st;
     const char *home = getenv("HOME");
+    {   /* ao lado do executavel (o mesmo arquivo de qualquer pasta de trabalho) */
+        char ed[1024], f[1100];
+        if (exe_dir(ed, sizeof ed)) { snprintf(f, sizeof f, "%s/katana.cfg", ed); if (stat(f, &st) == 0) { snprintf(out, n, "%s", f); return; } }
+    }
     if (stat("katana.cfg", &st) == 0 || !home) { snprintf(out, n, "katana.cfg"); return; }
     snprintf(out, n, "%s/.katana", home);
     mkdir(out, 0755);

@@ -88,4 +88,5 @@
 #include "app/learn.c"                 /* katana export (sessoes -> dados) e katana learn (aprende com o proprio uso) */
 #include "app/specialize.c"            /* katana specialize: versoes especialistas (teacher, tools, code) de ponta a ponta */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
+#include "app/launch.c"                /* katana sem subcomando: console na pasta atual, headless (-p), install, adopt */
 #include "app/main.c"                  /* toktest, subcomandos e main */

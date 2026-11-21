@@ -96,7 +96,7 @@ static int agent_act(const char *what, const char *detail) {
     const char *e = getenv("KATANA_CONFIRM");
     if (!g_trust || (e && atoi(e) != 0)) return agent_confirm(what, detail);   /* pasta sem confianca: pergunta sempre */
     size_t dl = strcspn(detail, "\n");
-    fprintf(stderr, "\n[o modelo vai %s: %.*s%s]\n", what, (int)(dl < 200 ? dl : 200), detail, dl < strlen(detail) ? " ..." : "");
+    if (!g_con_rich) fprintf(stderr, "\n[o modelo vai %s: %.*s%s]\n", what, (int)(dl < 200 ? dl : 200), detail, dl < strlen(detail) ? " ..." : "");     /* o console rico ja mostra a linha da ferramenta */
     return 1;
 }
 

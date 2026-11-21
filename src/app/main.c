@@ -959,6 +959,7 @@ static int calibrar(Model *m, const char *file) {
 }
 
 static int run_main(int argc, char **argv) {
+    { const int lr = launch_try(argc, argv); if (lr >= 0) return lr; }        /* katana sem subcomando: console do agente; install, adopt (app/launch.c) */
     g_orig_argc = argc;                    /* copia da linha de comando: o agente pode se recarregar (agent_regrow) */
     g_orig_argv = xalloc((size_t)argc + 1, sizeof(char *));
     for (int i = 0; i < argc; i++) g_orig_argv[i] = argv[i];
@@ -1167,8 +1168,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 3 && strcmp(argv[1], "pull") == 0) return pull_cmd(argv[2], argc >= 4 ? argv[3] : models_dir());
     if (argc >= 3 && strcmp(argv[1], "sha256") == 0) { char hx[65]; if (!sha_file(argv[2], hx, 0)) return 1; printf("%s\n", hx); return 0; }
     if (strcmp(argv[1], "models") == 0 || strcmp(argv[1], "modelos") == 0) {
-        struct stat sm;
-        return modelos_cmd(argc >= 3 ? argv[2] : stat("models", &sm) == 0 ? "models" : "modelos");
+        return modelos_cmd(argc >= 3 ? argv[2] : models_dir());
     }
     if (argc >= 3 && strcmp(argv[1], "info") == 0) {
         Model m; memset(&m, 0, sizeof m);
@@ -1209,6 +1209,8 @@ static int run_main(int argc, char **argv) {
     }
     fprintf(stderr,
         "Uso:\n"
+        "  katana [opcoes] [\"mensagem\"]   console do agente na pasta atual (katana --help; docs/console.md); katana -p \"pedido\" e o modo headless\n"
+        "  katana install | uninstall     coloca o comando katana no PATH; katana adopt traz a configuracao de outro projeto\n"
         "  katana info <modelo.gguf>\n"
         "  katana selftest <modelo.gguf>\n"
         "  katana toktest <modelo.gguf> <casos.hex> [--chat]   ids do tokenizador (ou do formato de conversa) de cada caso\n"

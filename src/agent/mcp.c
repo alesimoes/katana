@@ -637,8 +637,9 @@ static void mcp_init(int verbose) {     /* le a configuracao e inicia os servido
 
 /* insere as ferramentas MCP na lista <tools> do prompt de sistema */
 static void mcp_sys(char *sys, size_t cap) {
-    char *at = strstr(sys, "</tools>");
+    char *at = strstr(sys, "\n</tools>");       /* o fecho do bloco: a frase que apresenta o bloco tambem cita "</tools>" */
     if (!at) return;
+    at++;
     McpB b = {0};
     for (int i = 0; i < g_nmcp; i++) {
         if (!g_mcp[i].alive) continue;
@@ -646,6 +647,7 @@ static void mcp_sys(char *sys, size_t cap) {
             const McpTool *t = &g_mcp[i].tools[j];
             char fn[200], d[700];
             snprintf(fn, sizeof fn, "%s__%s", g_mcp[i].name, t->name);
+            if (!launch_tool_allowed(fn)) continue;
             snprintf(d, sizeof d, "%.400s (MCP server %s)", t->desc, g_mcp[i].name);
             McpB one = {0};
             mcp_bputs(&one, "{\"type\": \"function\", \"function\": {\"name\": "); mcp_besc(&one, fn);

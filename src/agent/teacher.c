@@ -167,6 +167,7 @@ static void tch_tools(const char *sys, Buf *o) {
     for (size_t i = 0; i < sizeof TCH_EXTRA / sizeof TCH_EXTRA[0]; i++) {
         char pat[160]; snprintf(pat, sizeof pat, "\"name\": \"%s\"", TCH_EXTRA[i][0]);
         if (a && b && strstr(a, pat) && strstr(a, pat) < b) continue;          /* ja declarada no prompt */
+        if (!launch_tool_allowed(TCH_EXTRA[i][0])) continue;                   /* --allowed-tools: o professor tambem so ve as permitidas */
         buf_str(o, n++ ? ", " : ""); buf_str(o, TCH_EXTRA[i][1]);
     }
     buf_str(o, "]");
@@ -299,7 +300,7 @@ static void tch_messages(const Config *c, const AHist *h, Buf *o) {
 static void tch_print(const char *reason, const char *rest) {
     if (reason && *reason) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fputs(reason, stdout); fprintf(stdout, "%s\n", CE(C_RESET)); }
     while (*rest == '\n') rest++;
-    fputs(rest, stdout);
+    con_puts(rest);                      /* console rico: Markdown e sem o texto das chamadas de ferramenta */
     fflush(stdout);
 }
 
@@ -795,7 +796,7 @@ parse:;
     buf_add(reply, a.p + skip, a.n - skip);
     fprintf(stderr, "%s[teacher %s: %ld tokens in (%ld from the cache), %ld out, %.1f s]%s\n", CE(C_DIM), g_tch_model, tin + tread + twrite, tread, tout, now_sec() - t0, CE(C_RESET));
 #ifndef _WIN32
-    if (g_tch_cli ? g_ts.shown > 0 : g_as.shown > 0) { fputs(a.p + think_n + text.n, stdout); fflush(stdout); }      /* raciocinio e texto ja apareceram enquanto chegavam: so o resto (chamadas) */
+    if (g_tch_cli ? g_ts.shown > 0 : g_as.shown > 0) { con_puts(a.p + think_n + text.n); fflush(stdout); }      /* raciocinio e texto ja apareceram enquanto chegavam: so o resto (chamadas) */
     else
 #endif
     tch_print(reason.n ? reason.p : NULL, a.p + think_n);

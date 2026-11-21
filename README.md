@@ -56,6 +56,16 @@ one used and tested day to day.
 ./katana code  <model.gguf>        # the agent in coding mode (lean prompt: read, edit, run, verify)
 ```
 
+The `katana` command (console in your project, headless mode; `docs/console.md`):
+
+```
+./katana install                   # puts `katana` on PATH (a symlink in ~/.local/bin) and finds the models from any folder
+cd ~/my-project && katana          # agent console in this folder: its KATANA.md, skills and MCP servers; the model is chosen for you
+katana -c                          # continue the last session of this folder (-r lists them)
+katana -p "list the TODOs" --output-format json   # headless: one request in, one answer out (text, json or stream-json)
+katana adopt --instructions OLD.md --mcp OLD.json --skills OLD/skills   # bring over the setup a project already has
+```
+
 Models (the minimum is 24 GB of RAM; the catalog is fixed in the engine, pinned by revision and sha256):
 
 ```
@@ -310,6 +320,7 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 | [`docs/knowledge.md`](docs/knowledge.md) | goal, what the engine does, everything measured, strengths and weaknesses |
 | [`docs/comparisons.md`](docs/comparisons.md) | every comparison table (against the reference engine and between katana versions) |
 | [`docs/handoff.md`](docs/handoff.md) | current state, next steps, open items, how to resume work |
+| [`docs/console.md`](docs/console.md) | the `katana` command: install, console in a project, model choice, sessions, slash commands, headless mode (JSON contract), `adopt` |
 | [`docs/plan.md`](docs/plan.md) | priorities and done-criteria |
 | [`docs/optimization-roadmap.md`](docs/optimization-roadmap.md) | optimization techniques not yet used, expected gain and effort |
 | [`docs/new-models.md`](docs/new-models.md) | DeepSeek / Kimi-family models: metadata and status |
