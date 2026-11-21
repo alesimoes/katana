@@ -60,17 +60,21 @@ Item {
             required property string out
             required property string time
             required property int index
+            required property int plan
+            required property string vkind
             // sequencia de ferramentas seguidas vira um unico grupo (so o primeiro item desenha)
-            readonly property bool grouped: kind === "tool" || kind === "finding"
-            readonly property bool groupHead: grouped && (index === 0 || backend.messages.get(index - 1).kind !== kind)
+            // (acoes que rodaram sob um passo do plano aparecem no item "plan", nao aqui: vkind "hidden")
+            readonly property bool grouped: vkind === "tool" || vkind === "finding" || vkind === "hidden"
+            readonly property bool groupHead: (vkind === "tool" || vkind === "finding") && (index === 0 || backend.messages.get(index - 1).vkind !== vkind)
             readonly property var run: {
                 lv.count;
+                var rv = backend.messages.revision;
                 var r = [];
                 if (!groupHead) return r;
                 for (var i = index; i < lv.count; i++) {
                     var m = backend.messages.get(i);
-                    if (m.kind !== d.kind) break;
-                    r.push({name: m.name, args: m.text, out: m.out});
+                    if (m.vkind !== d.vkind) break;
+                    r.push({idx: i, name: m.name, args: m.text, desc: m.desc, state: m.state, t0: m.t0, dur: m.dur, note: m.note, hasOut: m.out.length > 0});
                 }
                 return r;
             }
@@ -83,6 +87,7 @@ Item {
                 sourceComponent: d.grouped && !d.groupHead ? emptyC
                                : d.kind === "user" ? userC
                                : d.kind === "assistant" ? asstC
+                               : d.kind === "plan" ? planC
                                : d.kind === "tool" ? toolC
                                : d.kind === "notify" ? notifyC
                                : d.kind === "file" ? fileC
@@ -163,6 +168,18 @@ Item {
             }
             Component { id: emptyC; Item { height: 0 } }
             Component {
+                id: planC
+                Item {
+                    height: pvw.height + 12
+                    PlanView {
+                        id: pvw
+                        x: 38
+                        planId: d.plan
+                        maxWidth: parent.width - 38
+                    }
+                }
+            }
+            Component {
                 id: toolC
                 Item {
                     height: grp.height + 12
@@ -171,7 +188,7 @@ Item {
                         x: 38
                         maxWidth: parent.width - 38
                         steps: d.run
-                        active: backend.thinking && d.index + d.run.length === lv.count
+                        active: backend.thinking && (d.index + d.run.length === lv.count || (d.run.length > 0 && d.run[d.run.length - 1].state === 1))
                     }
                 }
             }

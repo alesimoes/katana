@@ -26,6 +26,8 @@ ApplicationWindow {
 
     Component.onCompleted: { Theme.force = backend.themeOverride; Theme.fonte = backend.fonte(); Theme.tema = backend.tema() }
 
+    function applyTheme(t) { Theme.tema = t; }     // so para o selftest: troca o tema sem abrir o popup
+
     property bool termOpen: false
     function toggleTerminal() {
         termOpen = !termOpen;
@@ -528,7 +530,9 @@ ApplicationWindow {
                         readonly property string current: { for (var i = 0; i < backend.todoSteps.length; i++) if (backend.todoSteps[i].indexOf("[x]") !== 0) return backend.todoSteps[i].slice(4); return "tudo feito"; }
                         Text { id: workCount; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12
                             text: "Tarefas do agente  " + workHead.doneCount + " de " + workHead.total }
-                        Text { anchors.left: workCount.right; anchors.leftMargin: 10; anchors.right: workToggle.left; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                        Text { id: workStats; objectName: "workStats"; anchors.right: workToggle.left; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter
+                            font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; text: backend.progressStats }
+                        Text { anchors.left: workCount.right; anchors.leftMargin: 10; anchors.right: workStats.left; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
                             visible: !workCard.open; elide: Text.ElideRight; font.family: Theme.sans; color: Theme.fg; font.pixelSize: 13
                             text: "\u25CB  " + workHead.current }
                         Text { id: workToggle; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12

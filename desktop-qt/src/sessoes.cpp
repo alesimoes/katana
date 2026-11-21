@@ -55,6 +55,16 @@ bool salvar(const QString &dir, const Session &s)
             o["nome"] = m.nome;
         if (!m.hora.isEmpty())
             o["hora"] = m.hora;
+        if (!m.desc.isEmpty())
+            o["desc"] = m.desc;
+        if (m.estado)
+            o["estado"] = m.estado;
+        if (m.dur >= 0)
+            o["dur"] = double(m.dur);
+        if (m.plano)
+            o["plano"] = m.plano;
+        if (m.passo)
+            o["passo"] = m.passo;
         arr.append(o);
     }
     QJsonObject root{{"id", s.id},         {"titulo", s.titulo},         {"modelo", s.modelo},
@@ -86,7 +96,13 @@ bool carregar(const QString &dir, const QString &id, Session *out)
     s.atualizada = o["atualizada"].toString();
     for (const QJsonValue &v : o["mensagens"].toArray()) {
         const QJsonObject m = v.toObject();
-        s.mensagens.append({m["papel"].toString(), m["texto"].toString(), m["nome"].toString(), m["hora"].toString()});
+        Msg x{m["papel"].toString(), m["texto"].toString(), m["nome"].toString(), m["hora"].toString()};
+        x.desc = m["desc"].toString();
+        x.estado = m["estado"].toInt();
+        x.dur = m.contains("dur") ? qint64(m["dur"].toDouble()) : -1;
+        x.plano = m["plano"].toInt();
+        x.passo = m["passo"].toInt();
+        s.mensagens.append(x);
     }
     *out = s;
     return true;

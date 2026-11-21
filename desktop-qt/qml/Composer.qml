@@ -227,6 +227,7 @@ Item {
             text: backend.errorText ? backend.errorText
                   : backend.stalled ? backend.activityText
                   : backend.statusText && !/^(Preparando|Retomando|Carregando)/.test(backend.statusText) ? backend.statusText
+                  : backend.progressText ? backend.progressText
                   : backend.activityText ? backend.activityText
                   : ta.text.indexOf("\n") >= 0 ? "As quebras de linha serão enviadas como espaço."
                   : ""

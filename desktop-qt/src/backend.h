@@ -12,21 +12,47 @@
 
 #include "sessoes.h"
 
-// Lista de mensagens da tela: user, assistant, tool e notice (aviso discreto)
+// Passo de um plano e plano do pedido: o plano e a lista de tarefas do agente (marcador TODO) lembrada ao longo do pedido,
+// para que cada acao fique sob o passo em que rodou mesmo quando a lista muda
+struct PlanStep {
+    int id = 0;
+    QString title;
+    int status = 0;   // 0 pendente, 1 em andamento (o primeiro nao feito), 2 feito, 3 descartado (saiu da lista)
+};
+struct PlanInfo {
+    int id = 0;
+    QList<PlanStep> steps;
+    int nextStep = 1;
+    qint64 t0 = 0, t1 = 0;   // inicio do pedido e fim (0 = ainda rodando), em ms desde a epoca
+    int acts = 0;            // acoes do pedido (sem as chamadas de gestao do plano)
+    int sessIdx = -1;        // posicao da mensagem "plan" no arquivo da sessao
+};
+
+// Lista de mensagens da tela: user, assistant, tool, plan e notice (aviso discreto)
 class MessageModel : public QAbstractListModel
 {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    Q_PROPERTY(int revision READ revision NOTIFY revisionChanged)   // muda (agrupado) a cada alteracao: o QML refaz as visoes de plano
 public:
-    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole, TimeRole };
+    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole, TimeRole, PlanRole, StepRole, VKindRole };
     struct Item {
         QString kind, text, name, out;
         QString time;   // hora ISO da mensagem (vazio = desconhecida)
+        // so para tool
+        QString desc;       // descricao curta dada pelo modelo (3o campo do marcador TOOL)
+        QString note;       // notas do motor ([katana: ...], [plan: ...]) tiradas do resultado: sao para o modelo
+        int state = 0;      // 0 desconhecido (sessao antiga), 1 rodando, 2 ok, 3 falhou
+        qint64 t0 = 0;      // inicio (ms desde a epoca)
+        qint64 dur = -1;    // duracao em ms (-1 = ainda nao terminou ou desconhecida)
+        int plan = 0;       // plano do pedido (0 = nenhum); no item "plan", o id do plano
+        int step = 0;       // passo do plano (0 = nenhum, -1 = chamada de gestao do plano, escondida)
     };
     static QString showTime(const QString &iso);     // "HH:mm" hoje, "dd/MM HH:mm" em outro dia
     using QAbstractListModel::QAbstractListModel;
     int rowCount(const QModelIndex &p = {}) const override { return p.isValid() ? 0 : m_items.size(); }
     int count() const { return m_items.size(); }
+    int revision() const { return m_rev; }
     QVariant data(const QModelIndex &i, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
     QString lastKind() const { return m_items.isEmpty() ? QString() : m_items.last().kind; }
@@ -35,12 +61,40 @@ public:
     void appendToLast(const QString &text);
     void setLastToolOut(const QString &out, bool append = false);
     void setAll(const QList<Item> &items);
-    void clear() { setAll({}); }
+    void clear() { setAll({}); m_plans.clear(); }
+    void clearPlans() { m_plans.clear(); }
+    // ferramentas com descricao, tempo e estado
+    int appendTool(const QString &name, const QString &args, const QString &desc, int plan, int step);
+    int lastRunningTool() const;
+    void finishTool(int idx, const QString &result, qint64 nowMs);                // resultado completo (com notas do motor)
+    void finishRunning(qint64 nowMs, bool failed = false);                        // fim do pedido: o que ainda roda termina
+    void setToolStep(int idx, int step);
+    int lastToolIndex() const;
+    const Item &item(int i) const { return m_items[i]; }
+    static bool resultFailed(const QString &clean);
+    static void splitNotes(const QString &raw, QString *clean, QString *note);
+    // planos
+    int addPlan(const QStringList &todo, qint64 t0);                              // devolve o id
+    void updatePlan(int id, const QStringList &todo);                             // reconcilia com a lista nova
+    void endPlan(int id, qint64 t1);
+    void insertPlanItem(int id);                                                  // item "plan" na conversa
+    int currentStep(int id) const;                                                // passo em andamento, ou o ultimo ativo
+    Q_INVOKABLE QVariantMap planData(int id) const;
+    PlanInfo *plan(int id);
+    QString planJson(int id) const;
+    void restorePlan(const QString &json);
+    int maxPlanId() const;
+    void touch();
 signals:
     void countChanged();
+    void revisionChanged();
 
 private:
+    void bump();
     QList<Item> m_items;
+    QList<PlanInfo> m_plans;
+    int m_rev = 0;
+    bool m_revPending = false;
 };
 
 // Filtro dos blocos de chamada de ferramenta no texto da resposta (com retencao de
@@ -91,6 +145,8 @@ class Backend : public QObject
     Q_PROPERTY(QString sysText READ sysText NOTIFY sysChanged)
     QString sysText() const { return m_sysText; }
     // o que o agente esta fazendo enquanto nao responde: tempo do turno, se o processador trabalha, se parece travado
+    Q_PROPERTY(QString progressText READ progressText NOTIFY progressChanged)   // "passo 2 de 6: ..." enquanto roda; resumo do pedido ao terminar
+    Q_PROPERTY(QString progressStats READ progressStats NOTIFY progressChanged)   // "1 min · 7 ações" (ou o resumo do pedido, ao terminar)
     Q_PROPERTY(QString activityText READ activityText NOTIFY activityChanged)
     Q_PROPERTY(bool stalled READ stalled NOTIFY activityChanged)
     QString activityText() const { return m_actText; }
@@ -160,6 +216,10 @@ public:
     bool hasPendingContext() const { return !m_pendingCtx.isEmpty(); }
     QString resumeInfo() const { return m_resumeInfo; }   // ultima retomada pelo motor (vazio se nenhuma)
     MessageModel *messages() { return &m_msgs; }
+    QString progressText() const { return m_progress; }
+    QString progressStats() const { return m_stats; }
+    static QString fmtDuration(qint64 ms);                 // "35 s", "1 min 20 s", "4 min"
+    static bool isPlanTool(const QString &name);           // TodoWrite, todo, Task*: gestao do plano, nao contam como acao
     QString themeOverride() const { return qEnvironmentVariable("KATANA_THEME"); }
     QString sessionsDir() const { return m_sessDir; }
 
@@ -227,6 +287,7 @@ signals:
     void shortcutChanged();
     void sysChanged();
     void activityChanged();
+    void progressChanged();
     void currentModelChanged();
     void stateChanged();
     void thinkingChanged();
@@ -256,7 +317,13 @@ private:
     void emitText(const QByteArray &bytes);
     void flushText();
     void assistantText(const QString &t);
-    void toolCard(const QString &name, const QString &args);
+    void toolCard(const QString &name, const QString &args, const QString &desc = {});
+    void toolResult(const QString &result);
+    void todoMarker(const QStringList &lines);
+    void beginRequest();
+    void endRequest();
+    void updateProgress();
+    void syncPlanSess();
     void markReady();
     void saveSession();
     void setTexts(const QString &status, const QString &error);
@@ -278,6 +345,12 @@ private:
     void actTick();
     QElapsedTimer m_turnClock, m_lastOut;
     QString m_actText;
+    // plano do pedido em curso (ver MessageModel): o plano e as acoes que rodaram sob cada passo
+    int m_curPlan = 0;
+    qint64 m_reqStart = 0;
+    int m_reqActions = 0;
+    QString m_progress, m_stats;
+    QHash<int, int> m_sessOf;       // item da conversa -> mensagem no arquivo da sessao (ferramentas deste pedido)
     bool m_stalled = false;
     qint64 m_procTicks = -1;
     int m_idleSecs = 0;

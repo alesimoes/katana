@@ -13,6 +13,10 @@
 #include <QWindow>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QDateTime>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QHash>
 #include <QLocale>
 #include <algorithm>
@@ -34,20 +38,28 @@ QVariant MessageModel::data(const QModelIndex &i, int role) const
     case NameRole: return it.name;
     case OutRole: return it.out;
     case TimeRole: return showTime(it.time);
+    case PlanRole: return it.plan;
+    case StepRole: return it.step;
+    case VKindRole: return it.kind == "tool" && it.step != 0 ? QStringLiteral("hidden") : it.kind;
     }
     return {};
 }
 
 QHash<int, QByteArray> MessageModel::roleNames() const
 {
-    return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}, {OutRole, "out"}, {TimeRole, "time"}};
+    return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}, {OutRole, "out"}, {TimeRole, "time"},
+            {PlanRole, "plan"}, {StepRole, "step"}, {VKindRole, "vkind"}};
 }
 
 QVariantMap MessageModel::get(int i) const
 {
     if (i < 0 || i >= m_items.size())
         return {};
-    return {{"kind", m_items[i].kind}, {"text", m_items[i].text}, {"name", m_items[i].name}, {"out", m_items[i].out}, {"time", showTime(m_items[i].time)}};
+    const Item &it = m_items[i];
+    return {{"kind", it.kind}, {"text", it.text}, {"name", it.name}, {"out", it.out}, {"time", showTime(it.time)},
+            {"desc", it.desc}, {"note", it.note}, {"state", it.state}, {"t0", double(it.t0)}, {"dur", double(it.dur)},
+            {"plan", it.plan}, {"step", it.step},
+            {"vkind", it.kind == "tool" && it.step != 0 ? QStringLiteral("hidden") : it.kind}};
 }
 
 QString MessageModel::showTime(const QString &iso)
@@ -79,9 +91,11 @@ void MessageModel::appendToLast(const QString &text)
 
 void MessageModel::setLastToolOut(const QString &out, bool append)
 {
-    if (m_items.isEmpty() || m_items.last().kind != "tool")
+    int k = lastRunningTool();
+    if (k < 0 && !m_items.isEmpty() && m_items.last().kind == "tool")
+        k = m_items.size() - 1;
+    if (k < 0)
         return;
-    const int k = m_items.size() - 1;
     if (append) {
         if (m_items[k].out.size() < (1 << 20))
             m_items[k].out += out;
@@ -90,6 +104,300 @@ void MessageModel::setLastToolOut(const QString &out, bool append)
     }
     const QModelIndex i = index(k);
     emit dataChanged(i, i, {OutRole});
+    bump();
+}
+
+void MessageModel::bump()
+{
+    if (m_revPending)
+        return;
+    m_revPending = true;
+    QTimer::singleShot(120, this, [this] { m_revPending = false; m_rev++; emit revisionChanged(); });
+}
+void MessageModel::touch() { bump(); }
+
+int MessageModel::lastToolIndex() const
+{
+    for (int i = m_items.size() - 1; i >= 0; i--)
+        if (m_items[i].kind == "tool") return i;
+    return -1;
+}
+
+int MessageModel::lastRunningTool() const
+{
+    for (int i = m_items.size() - 1; i >= 0; i--)
+        if (m_items[i].kind == "tool" && m_items[i].state == 1) return i;
+    return -1;
+}
+
+int MessageModel::appendTool(const QString &name, const QString &args, const QString &desc, int plan, int step)
+{
+    beginInsertRows({}, m_items.size(), m_items.size());
+    Item it{"tool", args, name, {}, {}};
+    it.desc = desc;
+    it.state = 1;
+    it.t0 = QDateTime::currentMSecsSinceEpoch();
+    it.plan = plan;
+    it.step = step;
+    m_items.append(it);
+    endInsertRows();
+    emit countChanged();
+    bump();
+    return m_items.size() - 1;
+}
+
+void MessageModel::setToolStep(int idx, int step)
+{
+    if (idx < 0 || idx >= m_items.size()) return;
+    m_items[idx].step = step;
+    const QModelIndex i = index(idx);
+    emit dataChanged(i, i, {StepRole, VKindRole});
+    bump();
+}
+
+// notas do motor no fim do resultado ("[katana: ...]", "[plan: ...]"): sao para o modelo, nao para o usuario
+void MessageModel::splitNotes(const QString &raw, QString *clean, QString *note)
+{
+    *clean = raw;
+    note->clear();
+    if (!raw.trimmed().endsWith(']'))
+        return;
+    int cut = -1;
+    for (const QString &m : {QStringLiteral("\n[katana:"), QStringLiteral("\n[plan:")}) {
+        const int i = raw.indexOf(m);
+        if (i >= 0 && (cut < 0 || i < cut)) cut = i;
+    }
+    if (cut < 0)
+        return;
+    *clean = raw.left(cut);
+    *note = raw.mid(cut).trimmed();
+}
+
+// mesma regra do motor (rp_failed): erro da ferramenta, ou comando com codigo de saida diferente de zero
+bool MessageModel::resultFailed(const QString &clean)
+{
+    if (clean.startsWith(QLatin1String("error:")))
+        return true;
+    static const QRegularExpression re(R"re((?:Exit code |\[exit code )([1-9]))re");
+    return re.match(clean).hasMatch();
+}
+
+void MessageModel::finishTool(int idx, const QString &result, qint64 nowMs)
+{
+    if (idx < 0 || idx >= m_items.size()) return;
+    Item &it = m_items[idx];
+    QString clean, note;
+    splitNotes(result, &clean, &note);
+    it.out = clean.isEmpty() ? QStringLiteral("(sem saida)") : clean;
+    it.note = note;
+    it.state = resultFailed(clean) ? 3 : 2;
+    it.dur = qMax<qint64>(0, nowMs - it.t0);
+    const QModelIndex i = index(idx);
+    emit dataChanged(i, i, {OutRole});
+    bump();
+}
+
+void MessageModel::finishRunning(qint64 nowMs, bool failed)
+{
+    for (int k = 0; k < m_items.size(); k++) {
+        Item &it = m_items[k];
+        if (it.kind == "tool" && it.state == 1) {
+            it.state = failed ? 3 : 2;
+            it.dur = qMax<qint64>(0, nowMs - it.t0);
+            const QModelIndex i = index(k);
+            emit dataChanged(i, i, {OutRole});
+        }
+    }
+    bump();
+}
+
+// ---- planos ----
+
+PlanInfo *MessageModel::plan(int id)
+{
+    for (PlanInfo &p : m_plans) if (p.id == id) return &p;
+    return nullptr;
+}
+
+int MessageModel::maxPlanId() const
+{
+    int m = 0;
+    for (const PlanInfo &p : m_plans) m = qMax(m, p.id);
+    return m;
+}
+
+static void parseTodo(const QStringList &todo, QList<QPair<bool, QString>> *out)
+{
+    for (const QString &l : todo) {
+        const bool done = l.startsWith("[x]") || l.startsWith("[X]");
+        QString t = l;
+        if (t.startsWith("[x]") || t.startsWith("[X]") || t.startsWith("[ ]")) t = t.mid(3);
+        t = t.simplified();
+        if (!t.isEmpty()) out->append({done, t});
+    }
+}
+
+int MessageModel::addPlan(const QStringList &todo, qint64 t0)
+{
+    PlanInfo p;
+    p.id = maxPlanId() + 1;
+    p.t0 = t0;
+    m_plans.append(p);
+    updatePlan(p.id, todo);
+    return p.id;
+}
+
+// reconcilia a lista nova com os passos lembrados: mesmo texto = mesmo passo; mesma posicao com outro texto = passo reescrito;
+// o que sumiu da lista fica como descartado (as acoes ja rodadas continuam sob ele); o que e novo ganha id novo
+void MessageModel::updatePlan(int id, const QStringList &todo)
+{
+    PlanInfo *p = plan(id);
+    if (!p) return;
+    QList<QPair<bool, QString>> n;
+    parseTodo(todo, &n);
+    const QList<PlanStep> old = p->steps;
+    QList<int> map(n.size(), -1);       // passo novo -> posicao no antigo
+    QList<bool> used(old.size(), false);
+    auto same = [](const QString &a, const QString &b) { return a.compare(b, Qt::CaseInsensitive) == 0; };
+    for (int ni = 0; ni < n.size(); ni++)          // 1. o mesmo texto (os ainda ativos primeiro)
+        for (int pass = 0; pass < 2 && map[ni] < 0; pass++)
+            for (int oi = 0; oi < old.size(); oi++)
+                if (!used[oi] && (pass == 1 || old[oi].status != 3) && same(old[oi].title, n[ni].second)) { map[ni] = oi; used[oi] = true; break; }
+    for (int ni = 0; ni < n.size(); ni++)          // 2. a mesma posicao com outro texto: o passo foi reescrito
+        if (map[ni] < 0 && ni < old.size() && !used[ni] && old[ni].status != 3) { map[ni] = ni; used[ni] = true; }
+    QList<PlanStep> res;
+    QList<bool> emitted(n.size(), false);
+    QList<int> resOf(n.size(), -1);
+    auto emitNew = [&](int ni) {
+        if (emitted[ni]) return;
+        emitted[ni] = true;
+        PlanStep s;
+        if (map[ni] >= 0) s = old[map[ni]];
+        else s.id = p->nextStep++;
+        s.title = n[ni].second;
+        resOf[ni] = res.size();
+        res.append(s);
+    };
+    int nextEmit = 0;
+    for (int oi = 0; oi < old.size(); oi++) {
+        const int ni = map.indexOf(oi);
+        if (ni >= 0) {
+            for (int k = nextEmit; k <= ni; k++) emitNew(k);
+            nextEmit = qMax(nextEmit, ni + 1);
+        } else {
+            PlanStep s = old[oi];
+            s.status = 3;
+            res.append(s);
+        }
+    }
+    for (int k = 0; k < n.size(); k++) emitNew(k);
+    bool doing = false;                            // o primeiro passo nao feito esta em andamento
+    for (int k = 0; k < n.size(); k++) {
+        PlanStep &s = res[resOf[k]];
+        if (n[k].first) s.status = 2;
+        else if (!doing) { s.status = 1; doing = true; }
+        else s.status = 0;
+    }
+    p->steps = res;
+    bump();
+}
+
+void MessageModel::endPlan(int id, qint64 t1)
+{
+    if (PlanInfo *p = plan(id)) { p->t1 = t1; bump(); }
+}
+
+void MessageModel::insertPlanItem(int id)
+{
+    beginInsertRows({}, m_items.size(), m_items.size());
+    Item it{"plan", {}, {}, {}, {}};
+    it.plan = id;
+    m_items.append(it);
+    endInsertRows();
+    emit countChanged();
+    bump();
+}
+
+int MessageModel::currentStep(int id) const
+{
+    for (const PlanInfo &p : m_plans) {
+        if (p.id != id) continue;
+        int last = 0;
+        for (const PlanStep &s : p.steps) {
+            if (s.status == 1) return s.id;
+            if (s.status == 2) last = s.id;
+        }
+        return last;
+    }
+    return 0;
+}
+
+QVariantMap MessageModel::planData(int id) const
+{
+    QVariantMap r;
+    for (const PlanInfo &p : m_plans) {
+        if (p.id != id) continue;
+        QHash<int, int> pos;
+        QVariantList steps;
+        int done = 0, total = 0;
+        for (const PlanStep &s : p.steps) {
+            pos[s.id] = steps.size();
+            steps.append(QVariantMap{{"id", s.id}, {"title", s.title}, {"status", s.status}, {"actions", QVariantList()},
+                                     {"count", 0}, {"ms", 0.0}, {"failed", 0}, {"t0", 0.0}});
+            if (s.status != 3) { total++; if (s.status == 2) done++; }
+        }
+        for (int i = 0; i < m_items.size(); i++) {
+            const Item &it = m_items[i];
+            if (it.kind != "tool" || it.plan != id || it.step <= 0 || !pos.contains(it.step)) continue;
+            QVariantMap st = steps[pos[it.step]].toMap();
+            QVariantList acts = st["actions"].toList();
+            acts.append(QVariantMap{{"idx", i}, {"name", it.name}, {"args", it.text}, {"desc", it.desc}, {"note", it.note},
+                                    {"state", it.state}, {"t0", double(it.t0)}, {"dur", double(it.dur)}, {"hasOut", !it.out.isEmpty()}});
+            st["actions"] = acts;
+            st["count"] = st["count"].toInt() + 1;
+            if (it.dur > 0) st["ms"] = st["ms"].toDouble() + it.dur;
+            if (it.state == 3) st["failed"] = st["failed"].toInt() + 1;
+            if (it.t0 && st["t0"].toDouble() == 0.0) st["t0"] = double(it.t0);
+            steps[pos[it.step]] = st;
+        }
+        r = {{"id", id}, {"steps", steps}, {"done", done}, {"total", total}, {"t0", double(p.t0)}, {"t1", double(p.t1)}, {"acts", p.acts}};
+        break;
+    }
+    return r;
+}
+
+QString MessageModel::planJson(int id) const
+{
+    for (const PlanInfo &p : m_plans) {
+        if (p.id != id) continue;
+        QJsonArray st;
+        for (const PlanStep &s : p.steps) st.append(QJsonObject{{"id", s.id}, {"t", s.title}, {"s", s.status}});
+        return QString::fromUtf8(QJsonDocument(QJsonObject{{"id", p.id}, {"next", p.nextStep}, {"t0", double(p.t0)}, {"t1", double(p.t1)},
+                                                           {"acts", p.acts}, {"steps", st}}).toJson(QJsonDocument::Compact));
+    }
+    return {};
+}
+
+void MessageModel::restorePlan(const QString &json)
+{
+    const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+    if (o.isEmpty()) return;
+    PlanInfo p;
+    p.id = o["id"].toInt();
+    p.nextStep = o["next"].toInt(1);
+    p.t0 = qint64(o["t0"].toDouble());
+    p.t1 = qint64(o["t1"].toDouble());
+    if (p.t1 == 0) p.t1 = -1;          // a sessao foi gravada no meio do pedido: o fim e desconhecido
+    p.acts = o["acts"].toInt();
+    for (const QJsonValue &v : o["steps"].toArray()) {
+        const QJsonObject s = v.toObject();
+        PlanStep st;
+        st.id = s["id"].toInt();
+        st.title = s["t"].toString();
+        st.status = s["s"].toInt();
+        p.steps.append(st);
+    }
+    m_plans.append(p);
 }
 
 void MessageModel::setAll(const QList<Item> &items)
@@ -191,6 +499,8 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     connect(&m_msgs, &MessageModel::rowsInserted, this, &Backend::thinkingChanged);
     connect(&m_msgs, &MessageModel::modelReset, this, &Backend::thinkingChanged);
     connect(&m_msgs, &MessageModel::dataChanged, this, &Backend::thinkingChanged);
+    connect(&m_msgs, &MessageModel::modelReset, this, [this] { if (!m_answering) { m_progress.clear(); m_stats.clear(); emit progressChanged(); } });
+    connect(&m_msgs, &MessageModel::revisionChanged, this, [this] { updateProgress(); });
     loadModels();
     refreshCatalog();
     refreshSessions();
@@ -501,6 +811,7 @@ void Backend::actTick()
         t = activityFor(int(m_turnClock.elapsed() / 1000), int(m_lastOut.elapsed() / 1000), cores, children, m_idleSecs, &st);
     } else { m_procTicks = -1; m_idleSecs = 0; }
     if (t != m_actText || st != m_stalled) { m_actText = t; m_stalled = st; emit activityChanged(); }
+    updateProgress();
 }
 
 // processador (media desde a leitura anterior), memoria em uso e placa de video (carga e memoria, via nvidia-smi)
@@ -602,9 +913,12 @@ void Backend::setState(bool ready, bool loading, bool answering)
     if ((loading || answering) && !(m_loading || m_answering)) {    // comecou a trabalhar: zera os relogios da atividade
         m_turnClock.restart(); m_lastOut.restart(); m_procTicks = -1; m_idleSecs = 0;
     }
+    const bool wasAnswering = m_answering;
+    if (answering && !wasAnswering) beginRequest();
     m_ready = ready;
     m_loading = loading;
     m_answering = answering;
+    if (wasAnswering && !answering) endRequest();
     if (!loading && !answering && (!m_actText.isEmpty() || m_stalled)) {     // parou de trabalhar: some o aviso de atividade na hora
         m_actText.clear(); m_stalled = false; emit activityChanged();
     }
@@ -1108,8 +1422,22 @@ bool Backend::openSession(const QString &id)
         m_pendingCtx.clear();
     }
     QList<MessageModel::Item> items;
-    for (const Msg &m : s.mensagens)
-        items.append({m.papel, m.texto, m.nome, {}, m.hora});
+    m_msgs.clearPlans();
+    m_curPlan = 0;
+    for (const Msg &m : s.mensagens) {
+        if (m.papel == "plan") {          // o plano do pedido, como estava na ultima gravacao
+            m_msgs.restorePlan(m.texto);
+            MessageModel::Item it{"plan", {}, {}, {}, m.hora};
+            it.plan = m.plano;
+            items.append(it);
+            continue;
+        }
+        MessageModel::Item it{m.papel, m.texto, m.nome, {}, m.hora};
+        if (m.papel == "tool") {          // sem o resultado (nao e gravado): so o que a sessao guarda
+            it.desc = m.desc; it.state = m.estado; it.dur = m.dur; it.plan = m.plano; it.step = m.passo;
+        }
+        items.append(it);
+    }
     m_msgs.setAll(items);
     m_speed.clear();
     m_ctx.clear(); m_ctxUsed = 0; m_ctxTotal = 0;
@@ -1308,9 +1636,17 @@ void Backend::handleMarker(const QByteArray &line)
     if (name == "READY") {
         markReady();
     } else if (name == "TOOL") {
-        const int tab = args.indexOf('\t');
-        const QString n = tab < 0 ? args : args.left(tab);
-        toolCard(n, tab < 0 ? QString() : cleanArgs(args.mid(tab + 1)));
+        // TOOL <nome>\t<argumentos>[\t<descricao>]
+        const QStringList f = args.split('\t');
+        QString desc = f.size() >= 3 ? f.mid(2).join(' ').trimmed() : QString();
+        QString a = f.size() >= 2 ? cleanArgs(f[1]) : QString();
+        if (!desc.isEmpty()) {      // a descricao ja e a linha principal: sai dos argumentos
+            QStringList keep;
+            for (const QString &p : a.split(" | "))
+                if (!p.startsWith("description: ")) keep << p;
+            a = keep.join(" | ");
+        }
+        toolCard(f.value(0), a, desc);
     } else if (name == "TOOLLIVE") {  // TOOLLIVE <pedaco com \\n escapado>: saida parcial do comando em andamento
         QString o = args, r;
         for (int i = 0; i < o.size(); i++) {
@@ -1326,7 +1662,7 @@ void Backend::handleMarker(const QByteArray &line)
                 if (o[i] == '\\' && i + 1 < o.size()) { i++; r += o[i] == 'n' ? QChar('\n') : o[i]; }
                 else r += o[i];
             }
-            m_msgs.setLastToolOut(r.isEmpty() ? QStringLiteral("(sem saida)") : r, false);
+            toolResult(r);
         }
     } else if (name == "TOKENS") {  // TOKENS <pos> <ctx>
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);
@@ -1371,6 +1707,7 @@ void Backend::handleMarker(const QByteArray &line)
         }
         m_todo = r.split('\n', Qt::SkipEmptyParts);
         emit todoChanged();
+        todoMarker(m_todo);
     } else if (name == "MODE") {  // MODE plan|normal
         m_planMode = args.trimmed() == "plan";
         emit planModeChanged();
@@ -1463,7 +1800,7 @@ void Backend::markReady()
         QString last;
         for (int i = m_msgs.count() - 1; i >= 0; i--) {
             const QString k = m_msgs.get(i)["kind"].toString();
-            if (k == "notice" || k == "notify" || k == "file" || k == "finding") continue;
+            if (k == "notice" || k == "notify" || k == "file" || k == "finding" || k == "plan") continue;
             last = k;
             break;
         }
@@ -1476,13 +1813,167 @@ void Backend::markReady()
     drainQueue();
 }
 
-void Backend::toolCard(const QString &name, const QString &args)
+bool Backend::isPlanTool(const QString &name)
 {
-    m_msgs.append("tool", args, name);
+    return name == "TodoWrite" || name == "todo" || name == "TaskCreate" || name == "TaskUpdate" || name == "TaskList" || name == "TaskGet";
+}
+
+QString Backend::fmtDuration(qint64 ms)
+{
+    const qint64 s = (ms + 500) / 1000;
+    if (s < 60) return QString::number(s) + " s";
+    if (s >= 120) return QString::number((s + 30) / 60) + " min";
+    return s % 60 ? QString("1 min %1 s").arg(s - 60) : QStringLiteral("1 min");
+}
+
+void Backend::toolCard(const QString &name, const QString &args, const QString &desc)
+{
+    m_msgs.finishRunning(QDateTime::currentMSecsSinceEpoch());      // uma chamada nova: a anterior sem resultado ja terminou
+    const bool meta = isPlanTool(name);
+    int plan = 0, step = 0;
+    if (m_curPlan && m_msgs.plan(m_curPlan)) {
+        plan = m_curPlan;
+        step = meta ? -1 : m_msgs.currentStep(m_curPlan);
+    }
+    const int idx = m_msgs.appendTool(name, args, desc, plan, step);
+    if (!meta && m_answering) {
+        m_reqActions++;
+        if (PlanInfo *p = m_msgs.plan(m_curPlan)) p->acts = m_reqActions;
+    }
     if (m_sess.valida()) {
-        m_sess.mensagens.append({"tool", args, name});
+        Msg m{"tool", args, name};
+        m.desc = desc;
+        m.plano = plan;
+        m.passo = step;
+        m_sess.mensagens.append(m);
+        m_sessOf[idx] = m_sess.mensagens.size() - 1;
         m_dirty = true;
     }
+    updateProgress();
+}
+
+// resultado da ferramenta que estava rodando: estado (ok ou falhou), duracao e notas do motor separadas
+void Backend::toolResult(const QString &result)
+{
+    const int idx = m_msgs.lastRunningTool();
+    if (idx < 0) {
+        m_msgs.setLastToolOut(result.isEmpty() ? QStringLiteral("(sem saida)") : result, false);
+        return;
+    }
+    m_msgs.finishTool(idx, result, QDateTime::currentMSecsSinceEpoch());
+    const auto &it = m_msgs.item(idx);
+    if (m_sessOf.contains(idx) && m_sessOf[idx] < m_sess.mensagens.size()) {
+        Msg &m = m_sess.mensagens[m_sessOf[idx]];
+        m.estado = it.state;
+        m.dur = it.dur;
+        m_dirty = true;
+    }
+    updateProgress();
+}
+
+// lista de tarefas do agente mudou (marcador TODO): vira o plano do pedido, com as acoes agrupadas por passo
+void Backend::todoMarker(const QStringList &lines)
+{
+    if (!m_answering)
+        return;
+    if (lines.isEmpty()) {          // lista apagada
+        m_curPlan = 0;
+        updateProgress();
+        return;
+    }
+    if (m_curPlan && m_msgs.plan(m_curPlan)) {
+        m_msgs.updatePlan(m_curPlan, lines);
+        syncPlanSess();
+    } else {
+        m_curPlan = m_msgs.addPlan(lines, m_reqStart);
+        if (PlanInfo *p = m_msgs.plan(m_curPlan)) p->acts = m_reqActions;
+        const int run = m_msgs.lastRunningTool();      // a chamada que criou a lista some: o plano a substitui
+        if (run >= 0 && isPlanTool(m_msgs.item(run).name)) {
+            m_msgs.setToolStep(run, -1);
+            if (m_sessOf.contains(run) && m_sessOf[run] < m_sess.mensagens.size()) m_sess.mensagens[m_sessOf[run]].passo = -1;
+        }
+        m_msgs.insertPlanItem(m_curPlan);
+        if (m_sess.valida()) {
+            Msg m{"plan", m_msgs.planJson(m_curPlan), {}, QDateTime::currentDateTime().toString(Qt::ISODate)};
+            m.plano = m_curPlan;
+            m_sess.mensagens.append(m);
+            if (PlanInfo *p = m_msgs.plan(m_curPlan)) p->sessIdx = m_sess.mensagens.size() - 1;
+            m_dirty = true;
+        }
+    }
+    updateProgress();
+}
+
+void Backend::syncPlanSess()
+{
+    PlanInfo *p = m_msgs.plan(m_curPlan);
+    if (!p || p->sessIdx < 0 || p->sessIdx >= m_sess.mensagens.size()) return;
+    m_sess.mensagens[p->sessIdx].texto = m_msgs.planJson(p->id);
+    m_dirty = true;
+}
+
+void Backend::beginRequest()
+{
+    m_curPlan = 0;
+    m_reqStart = QDateTime::currentMSecsSinceEpoch();
+    m_reqActions = 0;
+    m_sessOf.clear();
+    m_progress.clear(); m_stats.clear();
+    emit progressChanged();
+}
+
+void Backend::endRequest()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_msgs.finishRunning(now);
+    bool endedPlan = false;
+    QString done;
+    if (PlanInfo *p = m_msgs.plan(m_curPlan)) {
+        m_msgs.endPlan(p->id, now);
+        endedPlan = true;
+        int d = 0, n = 0;
+        for (const PlanStep &s : p->steps) if (s.status != 3) { n++; d += s.status == 2; }
+        done = QString("%1 de %2 passos, ").arg(d).arg(n);
+        syncPlanSess();
+    }
+    if (m_reqActions > 0 || !done.isEmpty())
+        m_progress = done + QString("%1 %2, %3").arg(m_reqActions).arg(m_reqActions == 1 ? "ação" : "ações", fmtDuration(now - m_reqStart));
+    else
+        m_progress.clear();
+    m_stats = m_progress;
+    m_curPlan = 0;
+    if (endedPlan && m_dirty) saveSession();       // o fim do plano (hora de termino) entra no arquivo da sessao
+    emit progressChanged();
+}
+
+// linha de progresso (barra de baixo): enquanto roda "passo 2 de 6: texto · tempo · N ações"; ao terminar o resumo do pedido
+void Backend::updateProgress()
+{
+    QString t, stats;
+    if (m_answering && m_reqStart) {
+        QStringList parts;
+        if (PlanInfo *p = m_msgs.plan(m_curPlan)) {
+            int n = 0, cur = 0;
+            QString txt;
+            for (const PlanStep &s : p->steps) {
+                if (s.status == 3) continue;
+                n++;
+                if (s.status == 1 && !cur) { cur = n; txt = s.title; }
+            }
+            parts << (cur ? QString("passo %1 de %2: %3").arg(cur).arg(n).arg(txt) : QString("todos os %1 passos feitos").arg(n));
+        }
+        if (m_reqActions > 0 || !parts.isEmpty()) {
+            const QString tail = fmtDuration(QDateTime::currentMSecsSinceEpoch() - m_reqStart) + " · "
+                                 + QString("%1 %2").arg(m_reqActions).arg(m_reqActions == 1 ? "ação" : "ações");
+            parts << tail;
+            t = parts.join(" · ");
+            stats = tail;
+        }
+    } else {
+        t = m_progress;
+        stats = m_progress;
+    }
+    if (t != m_progress || stats != m_stats) { m_progress = t; m_stats = stats; emit progressChanged(); }
 }
 
 void Backend::emitText(const QByteArray &bytes)
