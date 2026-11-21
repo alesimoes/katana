@@ -47,6 +47,22 @@
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
 #include "agent/context.c"             /* compactacao do contexto */
 #include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
+/* ferramentas com os nomes e argumentos do Claude Code, uma por arquivo (docs/claude-tools.md) */
+#include "tools/common.c"              /* argumentos em JSON, arquivos vistos na conversa */
+#include "tools/bash.c"                /* Bash, TaskStop, Monitor */
+#include "tools/read.c"
+#include "tools/write.c"
+#include "tools/edit.c"
+#include "tools/notebookedit.c"
+#include "tools/glob.c"
+#include "tools/grep.c"
+#include "tools/webfetch.c"
+#include "tools/websearch.c"
+#include "tools/tasks.c"               /* TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet */
+#include "tools/askuserquestion.c"
+#include "tools/planmode.c"            /* EnterPlanMode, ExitPlanMode */
+#include "tools/agent.c"
+#include "tools/table.c"               /* tabela, despacho e katana tool */
 #include "agent/teacher.c"             /* modo professor: um modelo maior responde no lugar do local (API de mensagens) */
 #include "agent/loop.c"                /* sessoes (gravar, retomar) e o laco do agente */
 #include "app/server.c"                /* servidor HTTP (pagina, /api/chat, rede, fila do modelo) */

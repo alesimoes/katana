@@ -1,0 +1,145 @@
+/* ---------- base das ferramentas de src/tools/ (nomes e argumentos do Claude Code; ver docs/claude-tools.md) ----------
+ * Contrato de cada ferramenta:
+ *     static void ct_nome(const char *js, const char *end, char *out, size_t cap);
+ * js..end e o texto com os argumentos (um objeto JSON, sozinho ou depois de "arguments":). O resultado vai em out
+ * (texto terminado em zero, no maximo cap bytes); erro comeca com "error: ". Nada e impresso na tela pela ferramenta.
+ *
+ * Argumentos: ct_str/ct_int/ct_bool/ct_has leem so as chaves do PRIMEIRO nivel do objeto (um valor de texto que
+ * contenha "path" nao confunde a busca, ao contrario de json_str).
+ * Arquivos vistos: ct_seen_mark/ct_seen guardam o que ja foi lido nesta conversa (Edit e Write consultam). */
+
+/* pula um valor JSON a partir de p; devolve o ponteiro logo depois dele (ou NULL se o texto acabar no meio) */
+static const char *ct_skip(const char *p, const char *end) {
+    while (p < end && isspace((unsigned char)*p)) p++;
+    if (p >= end) return NULL;
+    if (*p == '"') {
+        for (p++; p < end; p++) { if (*p == '\\') { p++; continue; } if (*p == '"') return p + 1; }
+        return NULL;
+    }
+    if (*p == '{' || *p == '[') {
+        int depth = 0;
+        for (; p < end; p++) {
+            if (*p == '"') { for (p++; p < end && *p != '"'; p++) if (*p == '\\') p++; if (p >= end) return NULL; continue; }
+            if (*p == '{' || *p == '[') depth++;
+            else if (*p == '}' || *p == ']') { if (--depth == 0) return p + 1; }
+        }
+        return NULL;
+    }
+    while (p < end && *p != ',' && *p != '}' && *p != ']' && !isspace((unsigned char)*p)) p++;
+    return p;
+}
+/* inicio do objeto dos argumentos: depois de "arguments" se houver, senao a primeira chave aberta */
+static const char *ct_obj(const char *js, const char *end) {
+    const char *a = strstr(js, "\"arguments\"");
+    const char *p = (a && a < end) ? a + 11 : js;
+    while (p < end && *p != '{') p++;
+    return p < end ? p : NULL;
+}
+/* valor da chave key no primeiro nivel: *vs..*ve (com as aspas, se for texto). 1 se achou */
+static int ct_find(const char *js, const char *end, const char *key, const char **vs, const char **ve) {
+    const char *p = ct_obj(js, end);
+    if (!p) return 0;
+    const size_t kl = strlen(key);
+    p++;
+    for (;;) {
+        while (p < end && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= end || *p != '"') return 0;
+        const char *ks = p + 1, *ke = ct_skip(p, end);
+        if (!ke) return 0;
+        p = ke;
+        while (p < end && (isspace((unsigned char)*p) || *p == ':')) p++;
+        const char *v = p, *e = ct_skip(p, end);
+        if (!e) e = end;
+        if ((size_t)(ke - 1 - ks) == kl && memcmp(ks, key, kl) == 0) { *vs = v; *ve = e; return 1; }
+        p = e;
+    }
+}
+static int ct_has(const char *js, const char *end, const char *key) { const char *a, *b; return ct_find(js, end, key, &a, &b); }
+/* texto JSON entre aspas (s aponta a aspa de abrir) decodificado em memoria nova; trata \uXXXX com pares substitutos */
+static char *ct_unquote(const char *s, const char *e, size_t *len) {
+    char *o = (char *)malloc((size_t)(e - s) + 4); size_t n = 0;
+    for (const char *q = s + 1; q < e && *q != '"'; q++) {
+        if (*q != '\\') { o[n++] = *q; continue; }
+        if (++q >= e) break;
+        switch (*q) {
+            case 'n': o[n++] = '\n'; break;
+            case 't': o[n++] = '\t'; break;
+            case 'r': o[n++] = '\r'; break;
+            case 'b': o[n++] = '\b'; break;
+            case 'f': o[n++] = '\f'; break;
+            case 'u': {
+                unsigned cp = 0;
+                if (q + 4 < e) { char h[5] = { q[1], q[2], q[3], q[4], 0 }; cp = (unsigned)strtoul(h, NULL, 16); q += 4; }
+                if (cp >= 0xD800 && cp < 0xDC00 && q + 6 < e && q[1] == '\\' && q[2] == 'u') {
+                    char h[5] = { q[3], q[4], q[5], q[6], 0 }; const unsigned lo = (unsigned)strtoul(h, NULL, 16);
+                    if (lo >= 0xDC00 && lo < 0xE000) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); q += 6; }
+                }
+                if (cp < 0x80) o[n++] = (char)cp;
+                else if (cp < 0x800) { o[n++] = (char)(0xC0 | (cp >> 6)); o[n++] = (char)(0x80 | (cp & 63)); }
+                else if (cp < 0x10000) { o[n++] = (char)(0xE0 | (cp >> 12)); o[n++] = (char)(0x80 | ((cp >> 6) & 63)); o[n++] = (char)(0x80 | (cp & 63)); }
+                else { o[n++] = (char)(0xF0 | (cp >> 18)); o[n++] = (char)(0x80 | ((cp >> 12) & 63)); o[n++] = (char)(0x80 | ((cp >> 6) & 63)); o[n++] = (char)(0x80 | (cp & 63)); }
+                break;
+            }
+            default: o[n++] = *q; break;
+        }
+    }
+    o[n] = 0;
+    if (len) *len = n;
+    return o;
+}
+/* valor de texto da chave, em memoria nova (free depois); NULL se a chave nao existe ou nao e texto.
+   Numero ou booleano escrito sem aspas vem como o proprio texto (modelos locais erram o tipo as vezes). */
+static char *ct_str(const char *js, const char *end, const char *key) {
+    const char *a, *b;
+    if (!ct_find(js, end, key, &a, &b)) return NULL;
+    if (*a == '"') return ct_unquote(a, b, NULL);
+    if (*a == '{' || *a == '[' || (b - a == 4 && memcmp(a, "null", 4) == 0)) return NULL;
+    char *o = (char *)malloc((size_t)(b - a) + 1);
+    memcpy(o, a, (size_t)(b - a)); o[b - a] = 0;
+    return o;
+}
+/* valor inteiro (numero, ou numero entre aspas); def se nao houver */
+static long long ct_int(const char *js, const char *end, const char *key, long long def) {
+    const char *a, *b;
+    if (!ct_find(js, end, key, &a, &b)) return def;
+    if (*a == '"') a++;
+    if (a >= b || !(isdigit((unsigned char)*a) || *a == '-')) return def;
+    return atoll(a);
+}
+/* booleano: true, "true" ou 1 */
+static int ct_bool(const char *js, const char *end, const char *key) {
+    const char *a, *b;
+    if (!ct_find(js, end, key, &a, &b)) return 0;
+    if (*a == '"') a++;
+    return (b - a >= 4 && memcmp(a, "true", 4) == 0) || *a == '1';
+}
+
+/* ---- arquivos vistos nesta conversa ----
+ * Read marca (inteiro ou so uma parte); Edit e Write consultam. Guarda tamanho e data para saber se o arquivo mudou
+ * no disco depois da leitura. ct_seen_reset() a cada conversa nova. */
+#define CT_SEEN_MAX 512
+typedef struct { char *path; long long size, mt; int partial; } CtSeen;
+static CtSeen g_ct_seen[CT_SEEN_MAX];
+static int g_ct_seen_n;
+static void ct_seen_reset(void) { for (int i = 0; i < g_ct_seen_n; i++) free(g_ct_seen[i].path); g_ct_seen_n = 0; }
+static void ct_seen_mark(const char *abs, int partial) {
+    struct stat st; long long sz = -1, mt = 0;
+    if (stat(abs, &st) == 0) { sz = (long long)st.st_size; mt = (long long)st.st_mtime; }
+    for (int i = 0; i < g_ct_seen_n; i++) if (strcmp(g_ct_seen[i].path, abs) == 0) {
+        if (!partial || g_ct_seen[i].size != sz || g_ct_seen[i].mt != mt) g_ct_seen[i].partial = partial;     /* parte depois de inteiro: continua inteiro */
+        g_ct_seen[i].size = sz; g_ct_seen[i].mt = mt;
+        return;
+    }
+    if (g_ct_seen_n == CT_SEEN_MAX) { free(g_ct_seen[0].path); memmove(g_ct_seen, g_ct_seen + 1, sizeof(CtSeen) * (CT_SEEN_MAX - 1)); g_ct_seen_n--; }
+    g_ct_seen[g_ct_seen_n++] = (CtSeen){ strdup(abs), sz, mt, partial };
+}
+/* 0 nunca visto; 1 visto so em parte; 2 visto inteiro; 3 visto inteiro mas mudou no disco depois */
+static int ct_seen(const char *abs) {
+    for (int i = 0; i < g_ct_seen_n; i++) if (strcmp(g_ct_seen[i].path, abs) == 0) {
+        if (g_ct_seen[i].partial) return 1;
+        struct stat st;
+        if (stat(abs, &st) == 0 && ((long long)st.st_size != g_ct_seen[i].size || (long long)st.st_mtime != g_ct_seen[i].mt)) return 3;
+        return 2;
+    }
+    return 0;
+}

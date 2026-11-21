@@ -15,9 +15,16 @@ static void ui_toolout(const char *name, const char *res) {
     putchar('\n'); fflush(stdout);
 }
 static void tool_delegate(const char *js, const char *end, char *out, size_t cap);
+static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap);      /* src/tools/table.c */
+static int ct_readonly(const char *name);
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap) {
     static char arg[8192], content[65536];
     out[0] = 0;
+    if (ct_readonly(name) >= 0) {       /* ferramenta de src/tools/ (nomes do Claude Code) */
+        if (g_plan_mode && !ct_readonly(name)) { snprintf(out, cap, "%s", PLAN_DENY); return; }
+        ct_dispatch(name, js, end, out, cap);
+        return;
+    }
     if (g_plan_mode && !plan_allows(name, js, end)) { snprintf(out, cap, "%s", PLAN_DENY); return; }
     if (strcmp(name, "read_file") == 0) {
         tool_read_file(js, end, out, cap);
