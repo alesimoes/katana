@@ -620,3 +620,90 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     printf("%s\n", g_fail == 0 ? "PASSOU" : "FALHOU");
     return g_fail == 0 ? 0 : 1;
 }
+
+// ---- teste com motor de mentira: sem modelo, sem GPU; o motor (tools/motor-de-mentira.sh) fala o mesmo protocolo ----
+int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
+{
+    Ctx c{win, &be, capDir};
+    be.setTestMode(true);     // abrir arquivo ou pasta so registra o caminho
+    fprintf(stderr, "== selftest (motor de mentira): dados %s\n", qPrintable(be.sessionsDir()));
+    win->resize(1180, 820);
+    win->show();
+    QTest::qWait(500);
+
+    fprintf(stderr, "-- partida e especializacoes\n");
+    be.autoStartDefault();
+    check(waitFor([&] { return be.ready(); }, 15000), "motor de mentira pronto");
+    check(waitFor([&] { return be.specsActive().size() == 2 && be.specsSkipped().size() == 1; }, 3000),
+          "especializacoes: 2 em uso e 1 pulada, lidas da carga do motor");
+    check(be.specsActive().contains("tools.kspec") && be.specsActive().contains("teacher.kspec"), "nomes em uso: " + be.specsActive().join(","));
+    check(be.specsSkipped().value(0).startsWith("outro-base.kspec") && be.specsSkipped().value(0).contains("outro modelo base"),
+          "pulada com o motivo: " + be.specsSkipped().value(0));
+    c.click(c.item("appearanceButton"));
+    check(waitFor([&] { QQuickItem *t = c.item("specsActive"); return t && t->isVisible() && t->property("text").toString().contains("tools.kspec"); }, 2000),
+          "configuracoes listam as especializacoes em uso");
+    check(c.item("specsSkipped") && c.item("specsSkipped")->isVisible() && c.item("specsSkipped")->property("text").toString().contains("outro-base.kspec"),
+          "configuracoes listam as puladas");
+    c.grab("20-especializacoes.png");
+    QDir(be.specsDir()).removeRecursively();
+    c.click(c.item("specsFolder"));
+    check(QFileInfo(be.specsDir()).isDir() && be.lastOpened() == be.specsDir(), "botao cria a pasta que faltava e a abre: " + be.lastOpened());
+    QTest::keyClick(win, Qt::Key_Escape);
+    QTest::qWait(200);
+
+    fprintf(stderr, "-- NOTIFY, FILE e FINDING\n");
+    c.typeAndEnter("mande os arquivos");
+    check(waitFor([&] { return be.ready() && be.messages()->count() >= 7; }, 10000), "pedido terminou");
+    QTest::qWait(300);
+    int nNotify = 0, nFile = 0, nFind = 0;
+    for (int i = 0; i < be.messages()->count(); i++) {
+        const QString k = be.messages()->get(i)["kind"].toString();
+        nNotify += k == "notify"; nFile += k == "file"; nFind += k == "finding";
+    }
+    check(nNotify == 1 && nFile == 1 && nFind == 2, QString("mensagens: %1 aviso, %2 arquivo, %3 achados").arg(nNotify).arg(nFile).arg(nFind));
+    QQuickItem *nl = c.item("notifyLine");
+    check(nl && nl->isVisible(), "aviso aparece como linha destacada");
+    QQuickItem *fc = c.item("fileCard");
+    check(fc && fc->isVisible() && c.item("fileName")->property("text").toString() == "relatorio final.txt", "cartao do arquivo com o nome");
+    QList<QQuickItem *> fi;
+    findAll(c.root(), "findingItem", fi);
+    check(fi.size() == 2 && c.item("findingsCard"), "achados: lista compacta num so cartao com 2 itens");
+    c.grab("21-aviso-arquivo-achados.png");
+    c.click(c.item("fileOpen"));
+    check(be.lastOpened() == "/tmp/katana-standin/relatorio final.txt", "Abrir: arquivo pelo programa padrao: " + be.lastOpened());
+    c.click(c.item("fileFolder"));
+    check(be.lastOpened() == "/tmp/katana-standin", "Abrir pasta: " + be.lastOpened());
+    if (fi.size() == 2) {
+        c.click(fi[0]);
+        check(be.lastOpened() == QDir(be.workspace()).filePath("src/engine/a.c"), "achado com linha abre o arquivo (relativo a pasta de trabalho): " + be.lastOpened());
+        c.click(fi[1]);
+        check(be.lastOpened() == "/tmp/katana-standin/b.c", "achado sem linha abre o arquivo: " + be.lastOpened());
+    }
+    check(be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant", "pedido com resposta em texto: sem linha de parada");
+
+    fprintf(stderr, "-- agente parou sem responder\n");
+    c.typeAndEnter("faca algo mudo");
+    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["kind"] == "stopped"; }, 10000),
+          "ultimo turno so com ferramenta: linha de parada");
+    QTest::qWait(300);
+    QQuickItem *sl = c.item("stoppedLine"), *as = c.item("askSummary");
+    check(sl && sl->isVisible() && sl->property("text").toString() == "o agente parou sem responder", "linha discreta visivel");
+    check(as && as->isVisible(), "botao pedir resumo visivel");
+    c.grab("22-parou-sem-responder.png");
+    const int antes = be.messages()->count();
+    if (as) c.click(as);
+    check(waitFor([&] { return be.messages()->get(antes)["kind"] == "user" && be.messages()->get(antes)["text"].toString().contains("Resuma o que foi feito"); }, 3000),
+          "pedir resumo manda a mensagem fixa");
+    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resumo:"); }, 10000),
+          "o agente responde o resumo");
+    QTest::qWait(300);
+    check(be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant" && !c.item("askSummary")->isVisible(), "depois do resumo o botao some e nao ha nova linha de parada");
+    c.typeAndEnter("pergunta comum");
+    check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resposta de teste"); }, 10000)
+          && be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant", "resposta normal nao gera linha de parada");
+
+    fprintf(stderr, "== %d verificacoes ok, %d falhas\n", g_ok, g_fail);
+    fprintf(stderr, "%s\n", g_fail == 0 ? "PASSOU" : "FALHOU");
+    printf("%s\n", g_fail == 0 ? "PASSOU" : "FALHOU");
+    return g_fail == 0 ? 0 : 1;
+}

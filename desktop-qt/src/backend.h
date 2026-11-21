@@ -2,6 +2,7 @@
 // (marcadores, blocos de ferramenta, estatisticas) e expoe tudo ao QML. Sem servidor HTTP.
 #pragma once
 #include <QAbstractListModel>
+#include <QDir>
 #include <QObject>
 #include <QElapsedTimer>
 #include <QProcess>
@@ -30,7 +31,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
     QString lastKind() const { return m_items.isEmpty() ? QString() : m_items.last().kind; }
     Q_INVOKABLE QVariantMap get(int i) const;
-    void append(const QString &kind, const QString &text, const QString &name = {}, const QString &time = {});
+    void append(const QString &kind, const QString &text, const QString &name = {}, const QString &time = {}, const QString &out = {});
     void appendToLast(const QString &text);
     void setLastToolOut(const QString &out, bool append = false);
     void setAll(const QList<Item> &items);
@@ -109,6 +110,10 @@ public:
     Q_PROPERTY(bool hasPendingContext READ hasPendingContext NOTIFY stateChanged)
     Q_PROPERTY(MessageModel *messages READ messages CONSTANT)
     Q_PROPERTY(QString themeOverride READ themeOverride CONSTANT)
+    // especializacoes (.kspec) em uso no modelo atual, lidas das linhas que o motor escreve na carga; a pasta e a fonte da verdade
+    Q_PROPERTY(QStringList specsActive READ specsActive NOTIFY specsChanged)
+    Q_PROPERTY(QStringList specsSkipped READ specsSkipped NOTIFY specsChanged)
+    Q_PROPERTY(QString specsDir READ specsDir CONSTANT)
 
 public:
     explicit Backend(const QString &katana, const QString &modelsDir, const QString &home,
@@ -200,6 +205,15 @@ public:
     Q_INVOKABLE bool uiFlag(const QString &name) const;
     Q_INVOKABLE void setUiFlag(const QString &name, bool v);
     Q_INVOKABLE void autoStartDefault();
+    QStringList specsActive() const { return m_specsActive; }
+    QStringList specsSkipped() const { return m_specsSkipped; }
+    QString specsDir() const { return QDir::homePath() + "/.katana/specs"; }
+    Q_INVOKABLE void openSpecsFolder();                   // abre a pasta das especializacoes (cria se faltar)
+    Q_INVOKABLE void openPath(const QString &path);       // abre um arquivo com o programa padrao do sistema
+    Q_INVOKABLE void openFolderOf(const QString &path);   // abre a pasta que contem o arquivo
+    Q_INVOKABLE void askSummary();                        // pede ao agente o resumo do que fez e do que falta
+    void setTestMode(bool on) { m_testMode = on; }        // so para teste: registra o que abriria em vez de abrir
+    QString lastOpened() const { return m_lastOpened; }
     Q_INVOKABLE void clearError();
     void shutdown();
     void injectMarker(const QByteArray &line) { handleMarker(line); }  // so para teste
@@ -227,6 +241,7 @@ signals:
     void planModeChanged();
     void teacherChanged();
     void teacherKeyNeeded();
+    void specsChanged();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -312,4 +327,10 @@ private:
     bool m_planMode = false;
     bool m_teacher = false;
     void drainQueue();
+    QStringList m_specsActive, m_specsSkipped;
+    bool m_stopRequested = false;     // o usuario apertou Parar neste pedido: terminar sem texto e esperado
+    bool m_testMode = false;
+    QString m_lastOpened;
+    void openLocal(const QString &path);
+    QString resolveFile(const QString &f) const;
 };

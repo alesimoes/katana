@@ -298,6 +298,28 @@ ApplicationWindow {
                                     contentItem: Text { font.family: Theme.sans; leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
                                         text: "Chave e modelo…  (" + backend.teacherModel + ")"; color: Theme.fg; font.pixelSize: 13 }
                                 }
+                                Text { font.family: Theme.sans; text: "ESPECIALIZAÇÕES"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                Text { objectName: "specsActive"; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
+                                    color: backend.specsActive.length ? Theme.fg : Theme.mut
+                                    text: backend.specsActive.length ? "Em uso neste modelo:\n" + backend.specsActive.join("\n") : "Nenhuma em uso neste modelo." }
+                                Text { objectName: "specsSkipped"; visible: backend.specsSkipped.length > 0; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
+                                    color: Theme.mut
+                                    text: "Puladas:\n" + backend.specsSkipped.join("\n") }
+                                AbstractButton {
+                                    id: spBtn
+                                    objectName: "specsFolder"
+                                    width: apMenu.width - 16; height: 32
+                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                    Accessible.name: "Abrir a pasta das especializações"
+                                    onClicked: backend.openSpecsFolder()
+                                    background: Rectangle { radius: 8; color: spBtn.hovered ? Theme.hov : "transparent"
+                                        border.width: spBtn.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                        text: "Abrir a pasta"; color: Theme.fg; font.pixelSize: 13 }
+                                    ToolTip.visible: hovered
+                                    ToolTip.delay: 400
+                                    ToolTip.text: backend.specsDir
+                                }
                                 Text { font.family: Theme.sans; text: "PASTA DE TRABALHO"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 // pasta onde o agente trabalha: clique para escolher outra (o agente pergunta se confia nela)
                                 AbstractButton {

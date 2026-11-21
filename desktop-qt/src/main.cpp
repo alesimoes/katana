@@ -2,6 +2,7 @@
 // Sem navegador e sem servidor HTTP: o backend sobe `katana agent <modelo>` com QProcess.
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFile>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
@@ -29,10 +30,27 @@ static QString pick(const QString &given, const QStringList &cands)
 
 int main(int argc, char **argv)
 {
-    bool selftest = false;
-    for (int i = 1; i < argc; ++i)
+    bool selftest = false, standin = false;
+    for (int i = 1; i < argc; ++i) {
         if (QByteArray(argv[i]) == "--selftest")
             selftest = true;
+        if (QByteArray(argv[i]) == "--selftest-standin")
+            selftest = standin = true;
+    }
+    // teste com motor de mentira: HOME temporario (o ~/.katana do dono nao e tocado) com especializacoes e um modelo de mentira
+    QTemporaryDir standinDir;
+    if (standin) {
+        qputenv("HOME", standinDir.path().toUtf8());
+        QDir().mkpath(standinDir.path() + "/.katana/specs");
+        QDir().mkpath(standinDir.path() + "/models");
+        for (const char *f : {"/.katana/specs/tools.kspec", "/.katana/specs/teacher.kspec", "/.katana/specs/outro-base.kspec",
+                              "/models/Qwen3.6-35B-A3B-standin.gguf"}) {
+            QFile x(standinDir.path() + f);
+            x.open(QIODevice::WriteOnly);
+            x.write("x");
+        }
+        qunsetenv("KATANA_SPEC");
+    }
     if (selftest && qEnvironmentVariableIsEmpty("KATANA_TRUST"))
         qputenv("KATANA_TRUST", "1");  // no teste automatico ninguem responde ao "confiar nesta pasta?"
     if (selftest && qEnvironmentVariableIsEmpty("QT_QUICK_BACKEND"))
@@ -63,8 +81,9 @@ int main(int argc, char **argv)
     QCommandLineOption oModels("models", "Pasta dos modelos (.gguf).", "pasta");
     QCommandLineOption oSelf("selftest", "Teste automatico (usa o modelo pequeno e grava capturas).");
     QCommandLineOption oCap("capturas", "Pasta das capturas do selftest.", "pasta");
+    QCommandLineOption oStandin("selftest-standin", "Teste automatico com motor de mentira (--katana tools/motor-de-mentira.sh), sem modelo.");
     QCommandLineOption oModel("selftest-model", "Modelo do selftest.", "arquivo", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf");
-    cli.addOptions({oKatana, oModels, oSelf, oCap, oModel});
+    cli.addOptions({oKatana, oModels, oSelf, oStandin, oCap, oModel});
     cli.process(app);
 
     const QString exe = QCoreApplication::applicationDirPath();
@@ -72,7 +91,7 @@ int main(int argc, char **argv)
     const QString katana = pick(cli.value(oKatana),
                                 {exe + "/katana", exe + "/../katana", exe + "/../../katana", exe + "/../../../katana",
                                  cwd + "/katana", cwd + "/../katana"});
-    const QString models = pick(cli.value(oModels),
+    const QString models = standin ? standinDir.path() + "/models" : pick(cli.value(oModels),
                                 {exe + "/models", exe + "/../models", exe + "/../../models", exe + "/../../../models",
                                  cwd + "/models", cwd + "/../models",
                                  exe + "/modelos", exe + "/../modelos", exe + "/../../modelos", exe + "/../../../modelos",   // nome antigo
@@ -120,7 +139,7 @@ int main(int argc, char **argv)
     if (selftest) {
         QString cap = cli.value(oCap);
         QTimer::singleShot(0, &app, [&] {
-            int rc = runSelfTest(backend, win, cap, cli.value(oModel));
+            int rc = standin ? runStandinTest(backend, win, cap) : runSelfTest(backend, win, cap, cli.value(oModel));
             backend.shutdown();
             QCoreApplication::exit(rc);
         });

@@ -61,28 +61,33 @@ Item {
             required property string time
             required property int index
             // sequencia de ferramentas seguidas vira um unico grupo (so o primeiro item desenha)
-            readonly property bool groupHead: kind === "tool" && (index === 0 || backend.messages.get(index - 1).kind !== "tool")
+            readonly property bool grouped: kind === "tool" || kind === "finding"
+            readonly property bool groupHead: grouped && (index === 0 || backend.messages.get(index - 1).kind !== kind)
             readonly property var run: {
                 lv.count;
                 var r = [];
                 if (!groupHead) return r;
                 for (var i = index; i < lv.count; i++) {
                     var m = backend.messages.get(i);
-                    if (m.kind !== "tool") break;
+                    if (m.kind !== d.kind) break;
                     r.push({name: m.name, args: m.text, out: m.out});
                 }
                 return r;
             }
             width: lv.width
-            height: kind === "tool" && !groupHead ? 0 : (ld.item ? ld.item.height : 0)
+            height: grouped && !groupHead ? 0 : (ld.item ? ld.item.height : 0)
             Loader {
                 id: ld
                 width: Math.min(Theme.colWidth, d.width - 40)
                 x: (d.width - width) / 2
-                sourceComponent: d.kind === "tool" && !d.groupHead ? emptyC
+                sourceComponent: d.grouped && !d.groupHead ? emptyC
                                : d.kind === "user" ? userC
                                : d.kind === "assistant" ? asstC
-                               : d.kind === "tool" ? toolC : noticeC
+                               : d.kind === "tool" ? toolC
+                               : d.kind === "notify" ? notifyC
+                               : d.kind === "file" ? fileC
+                               : d.kind === "finding" ? findingC
+                               : d.kind === "stopped" ? stoppedC : noticeC
             }
             Component {
                 id: userC
@@ -167,6 +172,142 @@ Item {
                         maxWidth: parent.width - 38
                         steps: d.run
                         active: backend.thinking && d.index + d.run.length === lv.count
+                    }
+                }
+            }
+            // PushNotification do agente: linha destacada
+            Component {
+                id: notifyC
+                Item {
+                    height: nt.height + 14
+                    Rectangle {
+                        id: nt
+                        objectName: "notifyLine"
+                        x: 38; width: parent.width - 38
+                        height: ntCol.implicitHeight + 16
+                        radius: 10
+                        color: Theme.hov
+                        border.color: Theme.ac
+                        Column {
+                            id: ntCol
+                            x: 12; y: 8
+                            width: parent.width - 24
+                            spacing: 2
+                            Text { font.family: Theme.sans; color: Theme.ac; font.pixelSize: 12; font.bold: true; width: parent.width; elide: Text.ElideRight; text: "Aviso do agente · " + d.name }
+                            Text { font.family: Theme.sans; color: Theme.fg; font.pixelSize: 14; width: parent.width; wrapMode: Text.Wrap; text: d.text }
+                        }
+                    }
+                }
+            }
+            // SendUserFile: cartao com o arquivo e botoes para abrir o arquivo ou a pasta
+            Component {
+                id: fileC
+                Item {
+                    height: fc.height + 14
+                    Rectangle {
+                        id: fc
+                        objectName: "fileCard"
+                        x: 38; width: Math.min(parent.width - 38, 620)
+                        height: fcCol.implicitHeight + 24
+                        radius: 14
+                        color: Theme.card
+                        border.color: Theme.bd
+                        Column {
+                            id: fcCol
+                            x: 14; y: 12
+                            width: parent.width - 28
+                            spacing: 8
+                            Text { font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; text: "Arquivo do agente" }
+                            Text { objectName: "fileName"; font.family: Theme.sans; color: Theme.fg; font.pixelSize: 15; font.bold: true; width: parent.width; elide: Text.ElideMiddle
+                                text: { var i = d.text.lastIndexOf("/"); return i >= 0 ? d.text.slice(i + 1) : d.text; } }
+                            Text { visible: d.out.length > 0; font.family: Theme.sans; color: Theme.fg; font.pixelSize: 13; width: parent.width; wrapMode: Text.Wrap; text: d.out }
+                            Text { font.family: Theme.sans; color: Theme.mut; font.pixelSize: 11; width: parent.width; elide: Text.ElideMiddle; text: d.text }
+                            Row {
+                                spacing: 8
+                                Repeater {
+                                    model: [["fileOpen", "Abrir"], ["fileFolder", "Abrir pasta"]]
+                                    Rectangle {
+                                        required property var modelData
+                                        objectName: modelData[0]
+                                        height: 34; width: bt.implicitWidth + 28; radius: 9
+                                        color: bma.containsMouse ? Theme.ac : Theme.hov
+                                        border.color: bma.containsMouse ? Theme.ac : Theme.bd
+                                        Text { id: bt; anchors.centerIn: parent; text: modelData[1]; font.family: Theme.sans; font.pixelSize: 14
+                                            color: bma.containsMouse ? Theme.acfg : Theme.fg }
+                                        MouseArea { id: bma; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: modelData[0] === "fileOpen" ? backend.openPath(d.text) : backend.openFolderOf(d.text) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // ReportFindings: lista compacta (arquivo:linha, resumo); cada item abre o arquivo
+            Component {
+                id: findingC
+                Item {
+                    height: fg.height + 14
+                    Rectangle {
+                        id: fg
+                        objectName: "findingsCard"
+                        x: 38; width: Math.min(parent.width - 38, 760)
+                        height: fgCol.implicitHeight + 24
+                        radius: 14
+                        color: Theme.card
+                        border.color: Theme.bd
+                        Column {
+                            id: fgCol
+                            x: 14; y: 12
+                            width: parent.width - 28
+                            spacing: 4
+                            Text { font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; text: "Achados (" + d.run.length + ")" }
+                            Repeater {
+                                model: d.run
+                                Rectangle {
+                                    required property var modelData
+                                    objectName: "findingItem"
+                                    width: fgCol.width
+                                    height: frow.implicitHeight + 10
+                                    radius: 8
+                                    color: fma.containsMouse ? Theme.hov : "transparent"
+                                    Column {
+                                        id: frow
+                                        x: 8; y: 5
+                                        width: parent.width - 16
+                                        Text { font.family: Theme.mono; color: Theme.ac; font.pixelSize: 12; width: parent.width; elide: Text.ElideMiddle
+                                            text: modelData.name + (modelData.out ? "  [" + modelData.out + "]" : "") }
+                                        Text { font.family: Theme.sans; color: Theme.fg; font.pixelSize: 13; width: parent.width; wrapMode: Text.Wrap; text: modelData.args }
+                                    }
+                                    MouseArea { id: fma; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: { var l = modelData.name; var m = l.match(/^(.*):(\d+)$/); backend.openPath(m ? m[1] : l); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // o pedido terminou e o ultimo turno do modelo nao teve texto
+            Component {
+                id: stoppedC
+                Item {
+                    height: 40
+                    Row {
+                        x: 38; anchors.verticalCenter: parent.verticalCenter
+                        spacing: 12
+                        Text { objectName: "stoppedLine"; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; font.italic: true
+                            text: "o agente parou sem responder" }
+                        Rectangle {
+                            objectName: "askSummary"
+                            visible: d.index === lv.count - 1 && backend.ready
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: 28; width: sbt.implicitWidth + 22; radius: 8
+                            color: sma.containsMouse ? Theme.ac : Theme.hov
+                            border.color: sma.containsMouse ? Theme.ac : Theme.bd
+                            Text { id: sbt; anchors.centerIn: parent; text: "pedir resumo"; font.family: Theme.sans; font.pixelSize: 12
+                                color: sma.containsMouse ? Theme.acfg : Theme.fg }
+                            MouseArea { id: sma; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: backend.askSummary() }
+                        }
                     }
                 }
             }
