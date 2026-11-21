@@ -81,7 +81,7 @@ static const char *const g_ct_short[][4] = {
         "\"todos\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {" S("content") ", " S("status") "}, \"required\": [\"content\", \"status\"]}}", "\"todos\""},
     {"AskUserQuestion", "Ask the user to choose; they may also type another answer",
         "\"questions\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {" S("question") ", \"options\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {" S("label") ", " S("description") "}}}}, \"required\": [\"question\", \"options\"]}}", "\"questions\""},
-    {"WebSearch", "Search the web: titles, URLs and summaries", S("query"), "\"query\""},
+    {"WebSearch", "Search the web; the top pages are read and their passages come with the list (read=0: list only)", S("query") ", " I("read"), "\"query\""},
     {"WebFetch", "Read a web page as text; prompt says what you are looking for and selects the passages of a long page",
         S("url") ", " S("prompt"), "\"url\""},
     {"ToolSearch", "Get how to call a tool that is listed by name only: query select:Name (several separated by commas), or words to search for",

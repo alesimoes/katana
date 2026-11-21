@@ -106,9 +106,38 @@ file or folder with that name, if there is one. `KATANA_REGEX_TEST=1` with `subj
 against `subject` and prints the spans (used by `tools/tooltest/regex.sh`).
 
 ### WebFetch, WebSearch
-`WebFetch(url, prompt)`: http upgraded to https; hosts without a dot refused (use `curl` in `Bash` for local
-servers); returns the page text, choosing the passages that match the words of `prompt` when it does not fit; pages
-cached for 15 minutes. `WebSearch(query, allowed_domains, blocked_domains)`: katana's search with a host filter.
+Web research is paid for in the local model's reading time (about 60 tokens/s) and in rounds, not in network time
+(a search is 0.9 s and a page 0.7 s without the model). So both tools return few bytes and one call does the work of
+several.
+
+`WebSearch(query | queries, read, allowed_domains, blocked_domains)`: katana's search with a host filter.
+- `read` (0 to 5, default 3): the top pages are downloaded at the same time (one `curl` child each, 6 s per page, 10 s
+  overall; a page that fails or is slow is only listed), and the result is the numbered list (title, URL, short summary)
+  followed by the passages of those pages that match the words of the query, each prefixed with its URL. The whole
+  result is about 4,000 bytes (about 1,100 tokens); the budget left after the list is divided among the pages by how
+  many query words their passages contain, a page with none gets no space. The pages enter the page memory: a later
+  `WebFetch` of the same URL is instant and continues with `offset`. `read=0` returns only the list.
+- `queries` (array of up to 4 strings) instead of `query`: the searches run at the same time, results are merged,
+  duplicate URLs removed (a URL returned by several queries ranks higher), same byte budget. `query` alone behaves as
+  before.
+- Pages are never read for local or internal hosts, PDFs, or non-http addresses.
+
+`WebFetch(url, prompt, offset, find, links, render)`: http upgraded to https; hosts without a dot refused (use `curl`
+in `Bash` for local servers). Without `offset` the result is short: at most about 4,000 bytes, the passages that match
+the words of `prompt`; when none matches (or there is no prompt) the words of the page title and of the most recent
+search query; when still nothing, the start of the page. A header line says how long the page is and how to read more.
+With `offset`, `find` or `links` the content is exact, as before.
+
+Both tools end the result with one line, `[web: ...]`, with the network time and the bytes returned (it is also in the
+agent log). A result that ends with that line is never sent through the reading notes (`tool_digest`).
+
+Cache across sessions: `$KATANA_CACHE_DIR/web`, or `~/.katana/cache/web`; searches are kept 6 hours, pages (their
+converted text and links) 24 hours; over 50 MB the oldest files are removed; `KATANA_WEB_CACHE=0` turns it off.
+Repeating a search after a context compaction therefore costs nothing.
+
+Test hooks (used by `tools/tooltest/web.sh`, with a local server and no internet): `KATANA_WEBSEARCH_FIXTURE` (fixed
+search results; pages are then read only when `KATANA_WEB_ALLOW_LOCAL=1`), `KATANA_WEB_ALLOW_LOCAL=1` (accept
+`http://127.0.0.1` URLs and do not upgrade http).
 
 ### Tasks, questions, plan mode
 `TodoWrite(todos)` replaces the list; `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` edit it item by item. One

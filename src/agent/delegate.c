@@ -147,6 +147,7 @@ static void tool_digest_in(Model *m, int mpos, const char *name, const char *arg
     if (!rd && strcmp(name, "web_fetch") != 0 && strcmp(name, "WebFetch") != 0) return;
     const size_t rl = strlen(result), al = (size_t)(aend - args);
     if (rl < DG_MIN || strncmp(result, "error", 5) == 0) return;
+    { const char *ln = strrchr(result, '\n'); if (ln && strncmp(ln + 1, "[web:", 5) == 0) return; }      /* resultado web ja montado com orcamento: sem segunda leitura */
     for (const char *k = args; k < aend; k++)           /* leitura por trecho: passa inteira */
         if (*k == '"' && (strncmp(k, "\"offset\"", 8) == 0 || strncmp(k, "\"limit\"", 7) == 0 || strncmp(k, "\"find\"", 6) == 0 || strncmp(k, "\"links\"", 7) == 0)) return;
     uint64_t key = pfx_hash(0xcbf29ce484222325ULL, name, strlen(name));

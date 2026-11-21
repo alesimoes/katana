@@ -493,19 +493,24 @@ static int hit_cmp(const void *a, const void *b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
-static void tool_web_search_meta(const char *query, char *out, size_t cap) {
-    const size_t RAW = 1000000;
-    static Hit all[MS_NSRC * MS_PER_SRC], per[MS_PER_SRC];
-    static char keys[MS_NSRC * MS_PER_SRC][500];
-    FILE *fp[MS_NSRC];
-    char q[1200], url[1700], fails[400];
-    int n = 0;
-    fails[0] = 0;
+/* fase 1 da busca: abre o curl de todas as fontes (rodam em paralelo); varias consultas podem abrir antes de coletar */
+static void tool_web_search_start(const char *query, FILE *fp[MS_NSRC]) {
+    char q[1200], url[1700];
     url_enc(query, q, sizeof q);
-    for (int i = 0; i < MS_NSRC; i++) {          /* todas as fontes em paralelo: abre todos os curl antes de ler */
+    for (int i = 0; i < MS_NSRC; i++) {
         snprintf(url, sizeof url, SOURCES[i].fmt, q);
         fp[i] = curl_open(url, 12);
     }
+}
+/* fase 2: le as fontes abertas por tool_web_search_start e junta os resultados */
+static void tool_web_search_collect(const char *query, FILE *fp[MS_NSRC], char *out, size_t cap) {
+    const size_t RAW = 1000000;
+    static Hit all[MS_NSRC * MS_PER_SRC], per[MS_PER_SRC];
+    static char keys[MS_NSRC * MS_PER_SRC][500];
+    char fails[400];
+    int n = 0;
+    fails[0] = 0;
+    memset(all, 0, sizeof all);
     char *raw = (char *)malloc(RAW + 1);
     if (!raw) { for (int i = 0; i < MS_NSRC; i++) if (fp[i]) curl_finish(fp[i], raw, 0, NULL); snprintf(out, cap, "error: out of memory"); return; }
     for (int i = 0; i < MS_NSRC; i++) {
@@ -544,6 +549,11 @@ static void tool_web_search_meta(const char *query, char *out, size_t cap) {
         if (o + 1800 > cap) break;
     }
     if (!n) snprintf(out, cap, "error: no search source returned results (%s)", fails);
+}
+static void tool_web_search_meta(const char *query, char *out, size_t cap) {
+    FILE *fp[MS_NSRC];
+    tool_web_search_start(query, fp);
+    tool_web_search_collect(query, fp, out, cap);
 }
 
 static void tool_web_search(const char *query, char *out, size_t cap) {
