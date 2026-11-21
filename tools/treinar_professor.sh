@@ -1,7 +1,7 @@
 #!/bin/sh
 # Treina o modelo local com as respostas que o professor deu no agente (modo professor), sem ninguem olhando:
 #   1. espera o agente do desktop ficar parado (nenhuma chamada ao professor e a sessao sem gravar ha 10 minutos);
-#   2. katana export --teacher: as sessoes do desktop viram dados, com a perda so nas falas do professor;
+#   2. katana import --teacher: as sessoes do desktop viram dados com as ferramentas atuais, a perda so nas falas do professor;
 #   3. mede o tempo de um passo de treino neste modelo e escolhe quantos passos cabem no tempo dado;
 #   4. katana train com adaptadores de posto baixo so na atencao (roda na GPU depois, nao mexe nos especialistas);
 #   5. confere que o modelo com a especializacao carrega e responde (na CPU, para nao disputar a placa);
@@ -38,7 +38,19 @@ if [ "${SEM_ESPERA:-0}" != 1 ]; then
 fi
 
 # 2. dados
-"$K" export "$OUT/dados.jsonl" "$SESS" --teacher > "$OUT/export.log" 2>&1
+# cada sessao passa pelo katana import: as chamadas das ferramentas antigas viram as atuais e a conversa e montada de novo
+# com o prompt de sistema de hoje; so as falas do professor contam. Sequencias com forma de chave (8-4-4-4-12 hex) sao
+# mascaradas; TROCA='REGEX=TEXTO' acrescenta outra troca.
+"$K" agentsys | sed '$d' > "$OUT/sys.txt"
+: > "$OUT/dados.jsonl"; : > "$OUT/export.log"; NS=0
+for f in "$SESS"/*.ksess; do
+    [ -f "$f.teacher" ] || continue
+    if "$K" import "$M" "$f" "$OUT/parte.jsonl" --system "file:$OUT/sys.txt" --teacher \
+        --replace '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}=00000000-0000-0000-0000-000000000000' \
+        ${TROCA:+--replace "$TROCA"} >> "$OUT/export.log" 2>&1; then cat "$OUT/parte.jsonl" >> "$OUT/dados.jsonl"; NS=$(( NS + 1 )); fi
+done
+rm -f "$OUT/parte.jsonl"
+echo "import: $NS sessoes com falas do professor -> $OUT/dados.jsonl" >> "$OUT/export.log"
 say "$(tail -1 "$OUT/export.log")"
 python3 - "$OUT/dados.jsonl" >> "$R" 2>&1 <<'EOF'
 import json, sys
