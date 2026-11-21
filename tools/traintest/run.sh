@@ -21,6 +21,7 @@
 # 11. professor pelo programa claude (de mentira) sem chave; read_file so com o caminho continua de onde parou, cada
 #     trecho vira nota e o arquivo ja lido devolve as notas
 # 12. katana import com selecao (--train-tools, --verified, --plan-first...) e katana specialize nos tres tipos
+# 13. katana curriculum: conversas das convencoes geradas, conferidas (check) e importadas em ChatML JSON/XML e Gemma 4
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 export KATANA_TOOLS=1      # os passos antigos usam o primeiro conjunto de ferramentas; o passo do segundo conjunto pede 2 (o padrao)
@@ -478,4 +479,11 @@ else echo "distill: FALHOU"; fail=1; fi
 if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
 # 12. selecao do katana import e katana specialize (teacher, tools, code)
 . tools/traintest/specialize_part.sh
+# 13. katana curriculum: 200 conversas das convencoes (KATANA.md, skills, MCP), check, import nos tres formatos
+$K curriculum "$D/cur.jsonl" --n 200 --seed 3 --holdout "$D/cur_hold.jsonl" >/dev/null 2>&1 || { echo "curriculum: FALHOU (gerador)"; fail=1; }
+if $K curriculum check "$D/cur.jsonl" 2>&1 | grep -q "^check: 200 conversas, .* 0 com problema" && $K curriculum check "$D/cur_hold.jsonl" 2>&1 | grep -q " 0 com problema"; then echo "curriculum check: ok"; else echo "curriculum check: FALHOU"; fail=1; fi
+for t in chatml chatml-xml gemma4; do
+  python3 tools/tinymodel/make_tiny_gguf.py "$D/cur_$t.gguf" --template $t >/dev/null
+  if $K import "$D/cur_$t.gguf" "$D/cur.jsonl" "$D/cur_$t.out.jsonl" --system keep 2>/dev/null | grep -q "^import: 200 de 200"; then echo "curriculum import $t: ok"; else echo "curriculum import $t: FALHOU"; fail=1; fi
+done
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi

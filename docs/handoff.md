@@ -6,6 +6,16 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 ## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
 
+**2026-11-21, conventions as training.** `katana curriculum` (`src/app/curriculum.c`, see `docs/curriculum.md`) is a
+C generator with no model and a fixed seed. It writes conversations in which the assistant follows the `KATANA.md`
+brief, skills and MCP cards. There are 15 families. Every call is validated against the real tool schema or the card.
+`katana curriculum check` and `stats` exist, and `--holdout` uses reserved slot values. Measured: 2,000 conversations
+pass `check` with 0 problems and 7,491 model turns. That is 918k characters to learn, about 544 windows of 512
+tokens, an estimate. All 2,000 import in the ChatML JSON, ChatML XML and Gemma 4 formats. `tools/traintest/run.sh`
+step 13 covers this. The 12 `tools/codebench/tasks/conv-*` tasks pass `--verify`. They need the engine's convention
+features, which were being built in parallel. Nothing has been trained on this data yet. The engine's blocks are
+mocked in one function each (`cu_sys_*`, `cu_skill_result`, `cu_refusal`, `cu_done_note`).
+
 **2026-11-21, specialization pipeline in C (block D of `docs/plan.md`).** Built: `katana specialize` (`src/app/specialize.c`)
 with the kinds `all` (default: one `katana.kspec` from every source, explicit `--mix`), `tools`, `code` (planned work:
 a `TodoWrite` plan derived from the described calls, `--plan-first`), `teacher` and `knowledge` (`--corpus`); resume
