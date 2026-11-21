@@ -104,8 +104,32 @@ static void ui_live(const char *b, size_t n) {
     }
     putchar('\n'); fflush(stdout);
 }
+/* o agente foi encerrado (o dono fechou o aplicativo) com um comando em curso: o grupo do comando morre junto.
+   Sem isto o comando ficava orfao (visto com a chamada do professor, que seguia rodando depois do aplicativo fechar).
+   Depois o sinal segue o caminho padrao. */
+static volatile pid_t g_fg_pid;
+static void cmd_on_term(int sig) {
+    const pid_t p = g_fg_pid;
+    if (p > 0) kill(-p, SIGTERM);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+static void cmd_term_hook(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    const int sigs[2] = { SIGTERM, SIGHUP };
+    for (int i = 0; i < 2; i++) {
+        struct sigaction cur;
+        if (sigaction(sigs[i], NULL, &cur) != 0 || cur.sa_handler != SIG_DFL) continue;      /* ja tratado ou ignorado: nao mexe */
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa); sa.sa_handler = cmd_on_term; sigemptyset(&sa.sa_mask);
+        sigaction(sigs[i], &sa, NULL);
+    }
+}
 static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, int *interrupted) {
     int pf[2];
+    cmd_term_hook();
     *rc = -1; *timedout = 0; *interrupted = 0;
     if (pipe(pf) != 0) return -1;
     static char *envp[4096];                                 /* ambiente herdado + variaveis que evitam prompts */
@@ -131,6 +155,7 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
         _exit(127);
     }
     close(pf[1]); if (dn >= 0) close(dn);
+    g_fg_pid = pid;
     struct sigaction sa, old;
     memset(&sa, 0, sizeof sa); sa.sa_handler = cmd_on_sigint; sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, &old);
@@ -157,6 +182,7 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
         kill(-pid, SIGKILL);
     }
     if (!exited) waitpid(pid, &st, 0);
+    g_fg_pid = 0;
     sigaction(SIGINT, &old, NULL);
     *rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
     return 0;
