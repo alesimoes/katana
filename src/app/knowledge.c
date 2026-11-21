@@ -328,7 +328,18 @@ static const char *kn_leaf(const char *p) {
     for (size_t i = 0; i < n; i++) if (p[i] == '/' || p[i] == '\\') r = p + i + 1;
     return r;
 }
-static void kn_project(const char *cwd, char *out, size_t cap) {
+/* uma copia de trabalho guardada em <repositorio>/.<pasta oculta>/worktrees/<nome> pertence ao projeto do repositorio:
+   sem isto cada copia virava um "projeto" (o mesmo repositorio aparecia dezenas de vezes na base) */
+static void kn_repo_root(const char *cwd, char *out, size_t cap) {
+    kn_cpy(out, cwd, cap);
+    for (char *w = strstr(out, "/worktrees/"); w; w = strstr(w + 1, "/worktrees/")) {
+        char *d = w;
+        while (d > out && d[-1] != '/') d--;          /* inicio do componente antes de /worktrees/ */
+        if (d > out + 1 && *d == '.') { d[-1] = 0; return; }
+    }
+}
+static void kn_project(const char *cwd0, char *out, size_t cap) {
+    char cwd[512]; kn_repo_root(cwd0, cwd, sizeof cwd);
     char tmp[256]; size_t n = strlen(kn_leaf(cwd)); while (n && (kn_leaf(cwd)[n - 1] == '/' || kn_leaf(cwd)[n - 1] == '\\')) n--;
     snprintf(tmp, sizeof tmp, "%.*s", (int)(n < 200 ? n : 200), kn_leaf(cwd));
     kn_slug(tmp, out, cap, 60, 1);
