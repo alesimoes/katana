@@ -54,6 +54,82 @@ if os.environ.get("MOCK_INSIST") == "1":
         out = {"text": "FALHA: o agente nao mandou parar", "tool_calls": []}
     else:
         out = {"text": "", "tool_calls": [{"name": "Read", "arguments": {"file_path": "nao_existe.txt"}}]}
+elif os.environ.get("MOCK_BLOCKED") == "1":
+    # pre-requisito de fora: o programa ./fakesdk falha sempre por falta de algo (menos --help); na 3a falha em volta
+    # dele o resultado tem de trazer a nota que nomeia o programa e manda seguir com o codigo
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+    calls = [{"name": "Bash", "arguments": {"command": c}} for c in
+             ["./fakesdk build", "cd . && ./fakesdk install /Applications/Sdk.app", "./fakesdk --help", "./fakesdk auth login"]]
+    if len(res) < 4:
+        out = {"text": "", "tool_calls": [calls[len(res)]]}
+    elif len(res) == 4:
+        good = all("failed around the same thing" not in r for r in res[:3]) and "3 calls in this request failed around the same thing: the program fakesdk" in res[3] \
+            and "write the code and files anyway" in res[3]
+        out = {"text": "Falta o SDK; sigo com o codigo." if good else "FALHA: %s" % res,
+               "tool_calls": [{"name": "Write", "arguments": {"file_path": "app.txt", "content": "codigo\n"}}] if good else []}
+    else:
+        out = {"text": "Bloqueio relatado e codigo escrito.", "tool_calls": []}
+elif os.environ.get("MOCK_ROUNDS") in ("1", "2"):
+    # limite de rodadas com KATANA_ROUNDS=4: com progresso (um arquivo gravado por rodada) o pedido passa das 4 rodadas;
+    # sem progresso (so leituras) a 3a rodada ja leva a nota de encerrar
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+    prog = os.environ["MOCK_ROUNDS"] == "1"
+    if any("used its tool rounds" in r for r in res):
+        good = not prog and len(res) == 3
+        out = {"text": "Limite relatado." if good else "FALHA: nota com %d resultados" % len(res), "tool_calls": []}
+    elif prog and len(res) >= 10:
+        out = {"text": "Dez arquivos gravados sem parar.", "tool_calls": []}
+    elif len(res) > 12:
+        out = {"text": "FALHA: o limite nao veio", "tool_calls": []}
+    elif prog:
+        out = {"text": "", "tool_calls": [{"name": "Write", "arguments": {"file_path": "f%d.txt" % len(res), "content": "x\n"}}]}
+    else:
+        out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "echo leitura %d" % len(res)}}]}
+elif os.environ.get("MOCK_PLAN") in ("1", "2"):
+    # planejar antes de executar: sem lista, a 3a e a 6a chamada levam a nota; com lista, a 5a chamada traz o passo atual
+    # e o TodoWrite que conclui um passo nomeia o proximo
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+    ut = " ".join(x.get("text", "") for x in ms[last_user_text]["content"] if x["type"] == "text")
+    def todo(a, b):
+        return {"name": "TodoWrite", "arguments": {"todos": [{"content": "passo a", "status": a, "activeForm": "a"},
+                {"content": "passo b", "status": b, "activeForm": "b"}, {"content": "passo c", "status": "pending", "activeForm": "c"}]}}
+    echo = {"name": "Bash", "arguments": {"command": "echo %d" % len(res), "description": "Mostra um numero"}}
+    if "unfinished steps" in ut:
+        out = {"text": "Fim.", "tool_calls": []}
+    elif os.environ["MOCK_PLAN"] == "1":
+        if len(res) < 6:
+            out = {"text": "", "tool_calls": [echo]}
+        else:
+            good = [i for i, r in enumerate(res) if "plan first" in r] == [2] and [i for i, r in enumerate(res) if "still no plan" in r] == [5]
+            out = {"text": "Plano cobrado." if good else "FALHA: %s" % res, "tool_calls": []}
+    else:
+        if len(res) == 0:
+            out = {"text": "", "tool_calls": [todo("in_progress", "pending")]}
+        elif len(res) < 5:
+            out = {"text": "", "tool_calls": [echo]}
+        elif len(res) == 5:
+            out = {"text": "", "tool_calls": [todo("completed", "in_progress")]}
+        else:
+            good = "Now step 1 of 3: passo a" in res[0] and "[plan: step 1 of 3 in progress: passo a;" in res[4] and "Now step 2 of 3: passo b" in res[5] \
+                and not any("plan first" in r for r in res) and not any("[plan:" in r for r in res[1:4])
+            out = {"text": "Plano seguido." if good else "FALHA: %s" % res, "tool_calls": []}
+elif os.environ.get("MOCK_REDIRECT") == "1":
+    # o usuario muda o plano no meio: o lembrete da lista e a mensagem nova dizem que a mensagem nova vem primeiro
+    ut = " ".join(x.get("text", "") for x in ms[last_user_text]["content"] if x["type"] == "text")
+    if "your todo list still has unfinished steps" in ut:
+        out = {"text": "Lembrete ok." if "newest message comes first" in ut and "TodoWrite" in ut else "FALHA lembrete: %s" % ut[:300], "tool_calls": []}
+    elif "esqueca a lista" in ut:
+        good = "todo list from before still has 2 unfinished steps" in ut and "comes first" in ut
+        out = {"text": "Plano novo." if good else "FALHA pedido novo: %s" % ut[:300], "tool_calls": []}
+    elif step == 0:
+        out = {"text": "", "tool_calls": [{"name": "TodoWrite", "arguments": {"todos": [
+            {"content": "passo um", "status": "in_progress", "activeForm": "Fazendo um"},
+            {"content": "passo dois", "status": "pending", "activeForm": "Fazendo dois"}]}}]}
+    else:
+        out = {"text": "Parei.", "tool_calls": []}
 elif CL:
     if step == 0:
         out = {"text": "Gravo o arquivo.", "tool_calls": [{"name": "Write", "arguments": {"file_path": "nota2.txt", "content": "linha 1\nlinha 2\n"}}]}

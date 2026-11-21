@@ -24,7 +24,7 @@ u() { ans=$1; shift; printf '%s\n' "$ans" | KATANA_UI=1 "$K" tool "$@" 2>/dev/nu
 W='{"todos":[{"content":"Run tests","status":"completed","activeForm":"Running tests"},{"content":"Fix bug","status":"in_progress","activeForm":"Fixing bug"},{"content":"Write docs","status":"pending","activeForm":"Writing docs"}]}'
 
 # ---------- TodoWrite ----------
-chk "TodoWrite resultado" "Todos updated: 3 tasks (1 completed, 1 in progress, 1 pending)." "$(t TodoWrite "$W")"
+chk "TodoWrite resultado" "Todos updated: 3 tasks (1 completed, 1 in progress, 1 pending). Now step 2 of 3: Fix bug. Do it, then mark it completed." "$(t TodoWrite "$W")"
 o=$(KATANA_UI=1 "$K" tool TodoWrite "$W" 2>/dev/null </dev/null)
 chk "TodoWrite marcador TODO igual ao do todo antigo" "${SOH}TODO [x] Run tests\\n[ ] Fix bug\\n[ ] Write docs\\n" "$(printf '%s\n' "$o" | sed -n '1p' | tr -d '\n')"
 has "TodoWrite sem UI nao emite marcador" "Todos updated" "$(t TodoWrite "$W")"

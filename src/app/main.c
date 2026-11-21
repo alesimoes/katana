@@ -1005,9 +1005,10 @@ static int run_main(int argc, char **argv) {
         printf("%s\n", res);
         return 0;
     }
-    if (argc >= 2 && strcmp(argv[1], "agentsys") == 0) {      /* teste: imprime o prompt de sistema do agente; formato: qwen (XML, padrao), json ou gemma4 */
+    if (argc >= 2 && strcmp(argv[1], "agentsys") == 0) {      /* teste: imprime o prompt de sistema do agente; formato: qwen (XML, padrao), json ou gemma4; "code": o de katana code */
         static char sys[32000];
-        const char *fmt = argc >= 3 ? argv[2] : "qwen";
+        const char *fmt = argc >= 3 && strcmp(argv[2], "code") ? argv[2] : "qwen";
+        g_code = (argc >= 3 && !strcmp(argv[2], "code")) || (argc >= 4 && !strcmp(argv[3], "code"));
         g_web = 1; g_tool_xml = strcmp(fmt, "json") != 0; g_tool_glm = strcmp(fmt, "glm") == 0;
         agent_build_sys(sys, sizeof sys, "");
         if (strcmp(fmt, "gemma4") == 0) g4_agent_sys(sys, sizeof sys);
@@ -1120,7 +1121,8 @@ static int run_main(int argc, char **argv) {
     if (argc >= 5 && strcmp(argv[1], "import") == 0) return import_main(argv[2], argc - 3, argv + 3);    /* conversas -> dados de treino */
     if (argc == 5 && strcmp(argv[1], "merge") == 0) return merge_cmd(argv[2], argv[3], argv[4]);          /* GGUF novo com a especializacao */
     if (argc >= 3 && strcmp(argv[1], "distill") == 0) return distill_main(argc - 2, argv + 2);         /* professor -> sessoes verificaveis */
-    if (argc >= 4 && strcmp(argv[1], "tool") == 0) return ct_main(argc - 2, argv + 2);                  /* roda ferramentas de src/tools/ sem modelo */
+    if (argc >= 4 && strcmp(argv[1], "tool") == 0) return ct_main(argc - 2, argv + 2);
+    if (argc >= 2 && strcmp(argv[1], "agentlog") == 0) return agentlog_main(argc - 2, argv + 2);       /* leitura do registro de acoes do agente */                  /* roda ferramentas de src/tools/ sem modelo */
     if (argc >= 3 && strcmp(argv[1], "export") == 0) return export_main(argc - 2, argv + 2);           /* sessoes do agente -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */

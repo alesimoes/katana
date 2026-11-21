@@ -196,6 +196,47 @@ mkdir -p "$D/tw5"
 if grep -q "Insistencia contida." "$D/cli5_out.txt" 2>/dev/null && [ "$(grep -c '"ok": true' "$D/cli5.jsonl" 2>/dev/null)" = 5 ]; then
   echo "insistencia no erro: ok (aviso na 2a, recusa na 3a e na 4a, encerra e relata)"
 else echo "insistencia no erro: FALHOU"; tail -3 "$D/cli5_out.txt" 2>/dev/null | cut -c1-600; fail=1; fi
+# pre-requisito de fora: tres falhas em volta do mesmo programa levam a nota que o nomeia e manda seguir com o codigo
+mkdir -p "$D/tw6"
+printf '#!/bin/sh\n[ "$1" = --help ] && { echo "usage: fakesdk build|install|auth"; exit 0; }\necho "Error: Operation unsupported: the SDK is not installed (requires login)"; exit 1\n' >"$D/tw6/fakesdk"; chmod +x "$D/tw6/fakesdk"
+(cd "$D/tw6" && printf 'faca o app\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_BLOCKED=1 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli6.jsonl" $K agent "$D/agent.gguf" >"$D/cli6_out.txt" 2>/dev/null) || true
+if grep -q "Bloqueio relatado e codigo escrito." "$D/cli6_out.txt" 2>/dev/null && [ -f "$D/tw6/app.txt" ]; then
+  echo "pre-requisito de fora: ok (nota na 3a falha em volta de fakesdk, o codigo e escrito depois)"
+else echo "pre-requisito de fora: FALHOU"; grep -a "FALHA" "$D/cli6_out.txt" 2>/dev/null | cut -c1-600 | head -3; fail=1; fi
+# limite de rodadas por blocos (KATANA_ROUNDS=4): com progresso passa do bloco; sem progresso para no fim do primeiro
+for R in 1 2; do
+  mkdir -p "$D/tw7$R"
+  (cd "$D/tw7$R" && printf 'trabalhe\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 KATANA_ROUNDS=4 MOCK_ROUNDS=$R MOCK_TOOLS=2 \
+     KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli7$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli7${R}_out.txt" 2>/dev/null) || true
+done
+if grep -q "Dez arquivos gravados sem parar." "$D/cli71_out.txt" 2>/dev/null && [ "$(ls "$D/tw71" | wc -l)" = 10 ] && grep -q "Limite relatado." "$D/cli72_out.txt" 2>/dev/null; then
+  echo "limite de rodadas: ok (10 rodadas com progresso num bloco de 4; sem progresso, nota na 3a rodada)"
+else echo "limite de rodadas: FALHOU"; grep -a "FALHA" "$D/cli71_out.txt" "$D/cli72_out.txt" 2>/dev/null | cut -c1-300 | head -3; fail=1; fi
+# o usuario muda o plano: o lembrete da lista e a mensagem nova dizem que a mensagem mais nova vem primeiro
+mkdir -p "$D/tw8"
+(cd "$D/tw8" && printf 'faca a lista\nesqueca a lista, faca outra coisa\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_REDIRECT=1 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli8.jsonl" $K agent "$D/agent.gguf" >"$D/cli8_out.txt" 2>/dev/null) || true
+if grep -q "Lembrete ok." "$D/cli8_out.txt" 2>/dev/null && grep -q "Plano novo." "$D/cli8_out.txt" && ! grep -q "FALHA" "$D/cli8_out.txt"; then
+  echo "mensagem nova muda o plano: ok (lembrete da lista e pedido novo dizem que a mensagem nova vem primeiro)"
+else echo "mensagem nova muda o plano: FALHOU"; grep -a "FALHA" "$D/cli8_out.txt" 2>/dev/null | cut -c1-600 | head -3; fail=1; fi
+# planejar antes de executar: sem lista a 3a e a 6a chamada levam a nota; com lista o passo atual aparece e o proximo e nomeado
+for R in 1 2; do
+  mkdir -p "$D/tw9$R"
+  (cd "$D/tw9$R" && printf 'trabalhe\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_UI=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_PLAN=$R MOCK_TOOLS=2 \
+     KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli9$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli9${R}_out.txt" 2>/dev/null) || true
+done
+if grep -q "Plano cobrado." "$D/cli91_out.txt" 2>/dev/null && grep -q "Plano seguido." "$D/cli92_out.txt" 2>/dev/null \
+   && grep -aq "TOOL Bash	.*echo 1.*	Mostra um numero$" "$D/cli92_out.txt"; then
+  echo "plano antes de executar: ok (nota na 3a e na 6a chamada sem lista; passo atual na 5a; proximo passo no TodoWrite; descricao no marcador TOOL)"
+else echo "plano antes de executar: FALHOU"; grep -a "FALHA" "$D/cli91_out.txt" "$D/cli92_out.txt" 2>/dev/null | cut -c1-600 | head -3; fail=1; fi
+# katana agentlog: registro com os dois conjuntos, tabulacao e quebra de linha dentro do resultado
+printf '2026-11-21 10:00:00\tBash\t"arguments": {"command": "x"}\tError: a Exit code 1\n2026-11-21 10:00:01\tBash\t"arguments": {"command": "x"}\tError: a\twith tab Exit code 1\nsecond line\n2026-11-21 10:00:02\tread_file\t{"path": "a"}\tok\n2026-11-21 10:00:03\tread_file\t{"path": "a"}\terror: b\n2026-11-21 10:00:04\tread_file\t{"path": "b"}\terror: b\n2026-11-21 10:00:05\tRead\t{"file_path": "c"}\terror: c\n' >"$D/al.log"
+AL=$($K agentlog "$D/al.log" 2>&1)
+if echo "$AL" | grep -q "^agent log .*: 6 calls .* 5 failed (83%), 2 identical repeats" && echo "$AL" | grep -q "^read_file  *3  *2  *67%  *1" \
+   && echo "$AL" | grep -q "^ *2  read_file  *error: b$" && echo "$AL" | grep -q "^ *3  2026-11-21 10:00:03 to 10:00:05  read_file, Read$" \
+   && echo "$AL" | grep -q "Error: a with tab Exit code 1 second line"; then echo "katana agentlog: ok (chamadas, falhas, repeticoes, erros, sequencias)"
+else echo "katana agentlog: FALHOU"; echo "$AL" | head -20; fail=1; fi
 # o texto do professor chega em pedacos e tem que aparecer inteiro e uma vez so na saida (acento, aspas, quebra de linha, emoji)
 if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linha 1" "$D/tw2/nota.txt" 2>/dev/null \
    && [ "$(grep -c 'Vou gravar o arquivo: ação "um"' "$D/cli_out.txt")" = 1 ] && [ "$(grep -c '^e 😀 dois\.' "$D/cli_out.txt")" = 1 ] \

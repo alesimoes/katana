@@ -104,8 +104,14 @@ static void ct_todowrite(const char *js, const char *end, char *out, size_t cap)
     free(nt);
     ct_task_render();
     const int ip = ct_task_count(1);
-    snprintf(out, cap, "Todos updated: %d tasks (%d completed, %d in progress, %d pending).%s", n, ct_task_count(2), ip, ct_task_count(0),
-             ip > 1 ? " Warning: more than one task is in_progress; keep exactly one in progress at a time." : "");
+    int cur = -1;      /* passo atual: o primeiro em andamento, senao o primeiro pendente */
+    for (int i = 0; i < n && cur < 0; i++) if (g_ct_tasks[i].st == 1) cur = i;
+    for (int i = 0; i < n && cur < 0; i++) if (g_ct_tasks[i].st == 0) cur = i;
+    char nx[400] = "";
+    if (cur >= 0) snprintf(nx, sizeof nx, " Now step %d of %d: %.300s. Do it, then mark it completed.", cur + 1, n, g_ct_tasks[cur].subject);
+    else if (n) snprintf(nx, sizeof nx, " All steps are completed: tell the user what was done.");
+    snprintf(out, cap, "Todos updated: %d tasks (%d completed, %d in progress, %d pending).%s%s", n, ct_task_count(2), ip, ct_task_count(0),
+             ip > 1 ? " Warning: more than one task is in_progress; keep exactly one in progress at a time." : "", nx);
 }
 
 static const char CT_TASKCREATE_DESC[] =

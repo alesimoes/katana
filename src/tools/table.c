@@ -65,8 +65,8 @@ static void js_escape(Buf *b, const char *s, size_t n);      /* src/app/server.c
 #define I(k) "\"" k "\": {\"type\": \"integer\"}"
 #define B(k) "\"" k "\": {\"type\": \"boolean\"}"
 static const char *const g_ct_short[][4] = {
-    {"Bash", "Run a shell command; returns output and exit code. The working directory persists between calls. timeout in ms (default 120000). run_in_background=true for a server or long job: returns a task id and an output file",
-        S("command") ", " I("timeout") ", " B("run_in_background"), "\"command\""},
+    {"Bash", "Run a shell command; returns output and exit code. description: what it does, in 5-10 words. The working directory persists between calls. timeout in ms (default 120000). run_in_background=true for a server or long job: returns a task id and an output file",
+        S("command") ", " S("description") ", " I("timeout") ", " B("run_in_background"), "\"command\""},
     {"Read", "Read a file; each line comes with its number. Long file: offset = first line, limit = number of lines",
         S("file_path") ", " I("offset") ", " I("limit"), "\"file_path\""},
     {"Edit", "Replace an exact snippet of a file you have read. old_string must be copied from the file without the line numbers and be unique, unless replace_all",
