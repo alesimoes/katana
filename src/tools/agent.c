@@ -7,6 +7,7 @@ static const char CT_AGENT_PROPS[] = "\"description\": {\"type\": \"string\", \"
     "\"prompt\": {\"type\": \"string\", \"description\": \"The complete task for the sub-agent\"}, "
     "\"subagent_type\": {\"type\": \"string\"}";
 static const char CT_AGENT_REQ[] = "\"description\", \"prompt\"";
+static int ct_agents_note(const char *task, const char *report);      /* src/tools/messages.c: registro para ListAgents e SendMessage */
 static void ct_agent(const char *js, const char *end, char *out, size_t cap) {
     char *p = ct_str(js, end, "prompt");
     if (!p || strlen(p) < 8) { free(p); snprintf(out, cap, "error: missing prompt (the complete task for the sub-agent: what to find or read, and what to report back)"); return; }
@@ -24,5 +25,11 @@ static void ct_agent(const char *js, const char *end, char *out, size_t cap) {
     }
     o += (size_t)sprintf(a + o, "\"}");
     tool_delegate(a, a + o, out, cap);
+    if (strncmp(out, "error:", 6) != 0) {       /* o modelo fica sabendo o nome para continuar este subagente com SendMessage */
+        const int id = ct_agents_note(p, out);
+        const size_t l = strlen(out);
+        char tag[48]; const int tl = snprintf(tag, sizeof tag, "\n[agent-%d]", id);
+        if (id > 0 && l + (size_t)tl + 1 < cap) memcpy(out + l, tag, (size_t)tl + 1);
+    }
     free(a); free(p);
 }
