@@ -169,7 +169,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         tool_read_log(js, end, out, cap);
     } else if (strcmp(name, "terminal_screen") == 0) {
         tool_terminal_screen(js, end, out, cap);
-    } else if (mcp_owns(name)) {
+    } else if (mcp_owns(name) || (strstr(name, "__") && (mcp_init(0), mcp_owns(name)))) {     /* fora do laco do agente (katana tool, toolrun) os servidores ainda nao foram ligados */
         mcp_call(name, js, out, cap);
     } else snprintf(out, cap, "error: unknown tool %s", name);
 }

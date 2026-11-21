@@ -679,8 +679,10 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
     if (!s->alive) { snprintf(out, cap, "error: MCP server %s is unavailable (%s)", s->name, s->err); return; }
     /* argumentos: objeto depois de "arguments" */
     char *args = NULL;
-    const char *a = js;
-    if (strncmp(a, "\"arguments\"", 11) == 0) { a = mcp_ws(a + 11); if (*a == ':') a = mcp_ws(a + 1); } else a = NULL;
+    const char *a = mcp_ws(js);
+    if (strncmp(a, "\"arguments\"", 11) == 0) { a = mcp_ws(a + 11); if (*a == ':') a = mcp_ws(a + 1); }
+    else if (*a == '{') { const char *g = mcp_get(a, "arguments"); if (g && *g == '{') a = g; }     /* o objeto inteiro, ou {"arguments": {...}} */
+    else a = NULL;
     if (a && *a == '{') { const char *e = mcp_skip(a); if (e) { args = malloc((size_t)(e - a) + 1); memcpy(args, a, (size_t)(e - a)); args[e - a] = 0; } }
     if (!args) args = strdup("{}");
     /* linha informativa (e confirmacao opcional) */
