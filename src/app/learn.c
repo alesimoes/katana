@@ -77,6 +77,114 @@ static int ksx_read(const char *path, KsxSess *s, const char **why) {
     return 1;
 }
 
+/* sessao do agente (ChatML) -> uma linha {"messages": [...]} para o im_line do katana import, que troca as chamadas do
+   primeiro conjunto de ferramentas pelas do segundo e monta o texto com o prompt de sistema atual. Cada fala do modelo
+   e desmontada: bloco de raciocinio, texto e chamadas (XML ou JSON); cada mensagem de resultados vira uma mensagem
+   "tool" por resultado, sem o embrulho (o im_line embrulha de novo, com o nome novo). only_teacher: as outras falas
+   do modelo levam "train": false. As trocas de o (--replace) valem em todos os textos. */
+static void ksx_jtext(TrOpt *o, Buf *l, const char *s, size_t n, int trim) {
+    Buf t = {0};
+    buf_add(&t, s, n);
+    if (trim) tr_trim(&t);
+    tr_subst(o, &t);
+    js_escape(l, tr_s(&t), t.n);
+    free(t.p);
+}
+static int ksx_messages(const char *path, TrOpt *o, int only_teacher, Buf *l, const char **why) {
+    KsxSess s;
+    if (!ksx_read(path, &s, why)) return 0;
+    if (strstr(s.text, "<|turn>") || strstr(s.text, "<|assistant|>") || !strstr(s.text, "<|im_start|>")) { ksx_free(&s); *why = "only ChatML sessions are converted"; return 0; }
+    ksx_teacher(path, &s);
+    static char js[1 << 20];
+    int nmsg = 0;
+    buf_str(l, "{\"messages\": [");
+    for (int i = 0; i < s.nm; i++) {
+        if (s.off[2 * i] < 0 || (size_t)s.off[2 * i + 1] > s.n || s.off[2 * i + 1] <= s.off[2 * i]) continue;
+        const size_t n = (size_t)(s.off[2 * i + 1] - s.off[2 * i]);
+        char *m = xalloc(n + 1, 1);
+        memcpy(m, s.text + s.off[2 * i], n);
+        const char *p = js_ws(m);
+        if (s.role[i] == 'a') {
+            buf_str(l, nmsg++ ? ", {\"role\": \"assistant\"" : "{\"role\": \"assistant\"");
+            if (!strncmp(p, "<think>", 7)) {
+                const char *e = strstr(p, "</think>");
+                if (e) {
+                    Buf r = {0}; buf_add(&r, p + 7, (size_t)(e - p - 7)); tr_trim(&r);
+                    if (r.n) { buf_str(l, ", \"reasoning_content\": \""); ksx_jtext(o, l, r.p, r.n, 0); buf_str(l, "\""); }
+                    free(r.p);
+                    p = e + 8;
+                }
+            }
+            const char *tc = strstr(p, "<tool_call>");
+            buf_str(l, ", \"content\": \"");
+            ksx_jtext(o, l, p, tc ? (size_t)(tc - p) : strlen(p), 1);
+            buf_str(l, "\"");
+            int nc = 0;
+            for (; tc; tc = strstr(tc + 11, "<tool_call>")) {
+                const char *te = strstr(tc, "</tool_call>");
+                if (!te) te = tc + strlen(tc);
+                char name[128] = "";
+                Buf fn = {0};
+                if (tool_xml_parse(tc, te, name, sizeof name, js, sizeof js) && name[0]) {
+                    const char *ob = strchr(js, '{');
+                    buf_str(&fn, "{\"name\": \""); js_escape(&fn, name, strlen(name)); buf_str(&fn, "\", \"arguments\": ");
+                    if (ob) tr_json_subst(o, ob, &fn); else buf_str(&fn, "{}");
+                    buf_str(&fn, "}");
+                } else {                                   /* chamada em JSON: {"name": .., "arguments": {..}} */
+                    const char *ob = js_ws(tc + 11);
+                    if (*ob == '{' && gs_skipv(ob) && gs_skipv(ob) <= te) tr_json_subst(o, ob, &fn);
+                }
+                if (fn.n) {
+                    buf_str(l, nc++ ? ", " : ", \"tool_calls\": [");
+                    buf_str(l, "{\"type\": \"function\", \"function\": "); buf_add(l, fn.p, fn.n); buf_str(l, "}");
+                }
+                free(fn.p);
+            }
+            if (nc) buf_str(l, "]");
+            if (only_teacher && !(s.tch && s.tch[i])) buf_str(l, ", \"train\": false");
+            buf_str(l, "}");
+        } else if (!strncmp(p, "<tool_response>", 15)) {
+            const char *rest = p;
+            for (const char *q = p; q && !strncmp(js_ws(q), "<tool_response>", 15); ) {
+                q = js_ws(q) + 15;
+                const char *close = strstr(q, "</tool_response>");
+                const char *end = close ? close : q + strlen(q);
+                char name[128] = "tool";
+                const char *body = q, *bend = end;
+                if (*body == '\n') body++;
+                static const char H[] = "[resultado da ferramenta ", F[] = "\n[fim do resultado da ferramenta ";
+                if (!strncmp(body, H, sizeof H - 1)) {
+                    const char *nm = body + sizeof H - 1, *ne = nm;
+                    while (*ne && *ne != ',' && *ne != ']' && *ne != '\n') ne++;
+                    snprintf(name, sizeof name, "%.*s", (int)(ne - nm < 120 ? ne - nm : 120), nm);
+                    const char *nl = strchr(body, '\n');
+                    body = nl && nl < end ? nl + 1 : end;
+                    for (const char *f = end - (sizeof F - 1); f >= body - 1 && f >= q; f--) if (!strncmp(f, F, sizeof F - 1)) { bend = f; break; }
+                    if (bend < body) bend = body;
+                }
+                buf_str(l, nmsg++ ? ", {\"role\": \"tool\", \"name\": \"" : "{\"role\": \"tool\", \"name\": \"");
+                js_escape(l, name, strlen(name));
+                buf_str(l, "\", \"content\": \"");
+                ksx_jtext(o, l, body, (size_t)(bend - body), 0);
+                buf_str(l, "\"}");
+                rest = q = close ? close + 16 : NULL;
+                if (!q) rest = end;
+            }
+            const char *r2 = js_ws(rest);
+            if (*r2) { buf_str(l, ", {\"role\": \"user\", \"content\": \""); ksx_jtext(o, l, r2, strlen(r2), 1); buf_str(l, "\"}"); nmsg++; }
+        } else {
+            buf_str(l, nmsg++ ? ", {\"role\": \"user\", \"content\": \"" : "{\"role\": \"user\", \"content\": \"");
+            ksx_jtext(o, l, m, n, 1);
+            buf_str(l, "\"}");
+        }
+        free(m);
+    }
+    buf_str(l, "]}");
+    ksx_free(&s);
+    if (!nmsg) { *why = "the session has no messages"; return 0; }
+    return 1;
+}
+
 /* texto -> UTF-8 valido (bytes invalidos viram U+FFFD) com o mapa de posicoes antigas para novas */
 static char *ksx_clean(const char *s, size_t n, size_t *on, size_t **map) {
     char *o = xalloc(n * 3 + 8, 1); size_t *mp = xalloc(n + 1, sizeof(size_t)), k = 0;

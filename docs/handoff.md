@@ -91,11 +91,20 @@ answers become training data for the local model.
 - *First tool set to second* (same day, `im_old2new` in `src/app/importer.c`): `katana import` rewrites calls of the
   first set into the second, name and arguments (`read_file` -> `Read`, `run_command` -> `Bash` with the timeout in
   ms, `search_files` -> `Grep`, `todo` -> `TodoWrite`, `ask_user` -> `AskUserQuestion`, `delegate` -> `Agent`,
-  `list_dir` and `git` -> `Bash`, `find_file` -> `Glob`, and so on); a conversation with a call that has no
-  equivalent (`remember`, `terminal`, `job`, `write_file` with `append`...) is dropped; `--keep-tool-names` turns it
-  off. The result texts stay as recorded (context, not a training target). Checked on synthetic conversations only
-  (step in `tools/traintest/run.sh`). **Not covered**: `katana export` of `.ksess` sessions recorded with the first
-  set (it copies the exact text); those sessions keep the old names. Training plan: `docs/specialization.md`.
+  `list_dir` and `git` -> `Bash`, `find_file` -> `Glob`, `write_file` with `append` -> `Bash` with a here-document,
+  and so on). A turn with a call that has no equivalent (`remember`, `recall`, `terminal`, `job`...) stays in the
+  conversation as context and is left out of the training spans; `--keep-tool-names` turns the conversion off. The
+  result texts stay as recorded (context, not a training target).
+- *Recorded agent sessions* (same day, `ksx_messages` in `src/app/learn.c`): `katana import <model> <session.ksess>
+  out.jsonl --system file:sys.txt --teacher` takes a ChatML session apart (reasoning block, text, calls, one message
+  per tool result), converts the calls as above and renders it again with the current system prompt, in the format
+  of the model given (`katana agentsys` for Qwen, `katana agentsys gemma4` for Gemma 4). `--teacher` trains only the
+  teacher's turns; `--replace` works here too (use it to mask keys and tokens that appear in the conversation).
+  Measured on the owner's session of 2026-11-20/21 (the Linux installer of another project, 181 teacher turns): 419
+  calls, 416 converted, 178 turns to train (3 turns call `job` or `recall`), 467k characters to learn; imported for
+  Qwen3.6 and for Gemma 4. The earlier session of 2026-11-20 has only its `.teacher` file left, so it cannot be
+  converted. Synthetic conversations are in `tools/traintest/run.sh`; the session path was checked on that real
+  session only, and one session per call. Training plan: `docs/specialization.md`.
 - *Not done*: `katana train` on a real 35B model is still
   unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
 

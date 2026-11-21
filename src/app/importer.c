@@ -107,9 +107,11 @@ static long im_chars(const char *s, size_t b) {
  * Dados gravados antes de 2026-11-21 chamam read_file, run_command etc.; o agente agora declara Read, Bash etc. O
  * import troca o nome e os argumentos de cada chamada (e o nome no resultado), para o modelo aprender as ferramentas
  * que o agente tem. --keep-tool-names desliga. O texto dos resultados fica como foi gravado (e contexto, nao alvo do
- * treino), entao o formato dele e o do conjunto antigo. Uma chamada sem equivalente descarta a conversa. */
+ * treino), entao o formato dele e o do conjunto antigo. Uma fala com chamada sem equivalente fica na conversa so como
+ * contexto: nao entra nos trechos de treino. */
 static int g_im_keepnames = 0;
-static long g_im_renamed = 0;
+static long g_im_renamed = 0, g_im_noequiv = 0;
+static int ksx_messages(const char *path, TrOpt *o, int only_teacher, Buf *l, const char **why);    /* src/app/learn.c */
 
 /* argumento key do objeto JSON args: 0 se nao tem; 's' texto (decodificado em out); 'r' outro valor (cru em out) */
 static int im_arg(const char *args, const char *key, Buf *out) {
@@ -135,6 +137,15 @@ static void im_kr(Buf *o, const char *k, const char *raw) { im_key(o, k); buf_st
 static int im_mv(Buf *o, const char *args, const char *from, const char *to) {
     Buf b = {0}; const int t = im_arg(args, from, &b);
     if (t == 's') im_kv(o, to, im_bs(&b)); else if (t) im_kr(o, to, im_bs(&b));
+    free(b.p); return t;
+}
+/* o mesmo para numero ou booleano: uma sessao em XML guarda tudo como texto ("109"), e o valor sai cru (109) */
+static int im_mvn(Buf *o, const char *args, const char *from, const char *to) {
+    Buf b = {0}; const int t = im_arg(args, from, &b);
+    const char *v = im_bs(&b);
+    int raw = t == 'r' || !strcmp(v, "true") || !strcmp(v, "false");
+    if (t == 's' && *v) { const char *w = v; if (*w == '-') w++; raw = *w != 0; for (; *w; w++) if (*w < '0' || *w > '9') raw = !strcmp(v, "true") || !strcmp(v, "false"); }
+    if (t) { if (raw) im_kr(o, to, v); else im_kv(o, to, v); }
     free(b.p); return t;
 }
 /* um passo da lista de tarefas antiga ("[x] texto", "- texto", "1. texto") -> {"content", "status"} */
@@ -164,14 +175,27 @@ static void im_newname(char *nm) {
 static char *im_old2new(char *nm, const char *args, const char **bad) {
     static const char *const none[] = { "remember", "recall", "terminal", "job", "download_file", "install_package", "read_log", "howto", "read_document", "terminal_screen" };
     Buf o = {0}, b = {0};
+    const char *force = NULL;
     buf_str(&o, "{");
-    if (!strcmp(nm, "read_file")) { im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "offset", "offset"); im_mv(&o, args, "limit", "limit"); }
+    if (!strcmp(nm, "read_file")) { im_mv(&o, args, "path", "file_path"); im_mvn(&o, args, "offset", "offset"); im_mvn(&o, args, "limit", "limit"); }
     else if (!strcmp(nm, "write_file")) {
-        if (im_true(args, "append") || im_true(args, "sudo")) *bad = "write_file with append or sudo has no equivalent in the current tools";
-        im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "content", "content");
+        if (im_true(args, "sudo")) *bad = "write_file with sudo has no equivalent in the current tools";
+        if (im_true(args, "append")) {             /* acrescentar ao fim: o Write nao faz; vira um comando */
+            Buf cmd = {0};
+            buf_str(&cmd, "cat >> '");
+            im_arg(args, "path", &b);
+            for (const char *w = im_bs(&b); *w; w++) { if (*w == '\'') buf_str(&cmd, "'\\''"); else buf_add(&cmd, w, 1); }
+            buf_str(&cmd, "' <<'KATANA_EOF'\n");
+            im_arg(args, "content", &b);
+            buf_str(&cmd, im_bs(&b));
+            if (b.n && b.p[b.n - 1] != '\n') buf_str(&cmd, "\n");
+            buf_str(&cmd, "KATANA_EOF");
+            im_kv(&o, "command", cmd.p); free(cmd.p);
+            force = "Bash";
+        } else { im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "content", "content"); }
     } else if (!strcmp(nm, "edit_file")) {
         if (im_true(args, "sudo")) *bad = "edit_file with sudo has no equivalent in the current tools";
-        im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "old", "old_string"); im_mv(&o, args, "new", "new_string"); im_mv(&o, args, "replace_all", "replace_all");
+        im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "old", "old_string"); im_mv(&o, args, "new", "new_string"); im_mvn(&o, args, "replace_all", "replace_all");
     } else if (!strcmp(nm, "run_command")) {
         im_mv(&o, args, "command", "command");
         if (im_arg(args, "timeout_s", &b)) { char t[40]; snprintf(t, sizeof t, "%ld", atol(im_bs(&b)) * 1000); im_kr(&o, "timeout", t); }
@@ -244,6 +268,7 @@ static char *im_old2new(char *nm, const char *args, const char **bad) {
     buf_str(&o, "}");
     free(b.p);
     im_newname(nm);
+    if (force) strcpy(nm, force);
     return o.p;
 }
 
@@ -265,11 +290,13 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     ImCall calls[64]; int ncall = 0, nres = 0;
     char pend = 0;                               /* papel do texto em cur ('u' ou 't') */
     int unknown = 0;
-    const char *unconv = NULL;
+    char *nt = NULL; int ntcap = 0;              /* falas do modelo que ficam so como contexto (fora dos trechos de treino) */
 #define IM_FLUSH() do { if (pend == 'u' && cur.n) ah_push(&h, 'u', cur.p, cur.n); if (pend == 't' && tres.n) ah_push(&h, 't', tres.p, tres.n); buf_clear(&cur); buf_clear(&tres); pend = 0; nres = 0; } while (0)
     const char *el, *ee;
     for (const char *p = msgs + 1; (ee = gs_elem(p, &el)); p = ee) {
         if (*el != '{') continue;
+        int tr0 = 0;                              /* "train": false na mensagem */
+        const char *bad = NULL;                   /* chamada sem equivalente no conjunto atual de ferramentas */
         char role[32] = "", k2[64]; const char *v2, *e2, *cv = NULL, *tcv = NULL, *rv = NULL, *idv = NULL, *nmv = NULL;
         for (const char *p2 = el + 1; (e2 = gs_member(p2, k2, sizeof k2, &v2)); p2 = e2) {
             if ((!strcmp(k2, "role") || !strcmp(k2, "from")) && *v2 == '"') { size_t n = 0; for (const char *w = v2 + 1; *w && *w != '"' && n < 31; w++) role[n++] = *w; role[n] = 0; }
@@ -278,6 +305,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             else if ((!strcmp(k2, "reasoning_content") || !strcmp(k2, "reasoning")) && *v2 == '"') rv = v2;
             else if (!strcmp(k2, "tool_call_id") && *v2 == '"') idv = v2;
             else if (!strcmp(k2, "name") && *v2 == '"') nmv = v2;
+            else if (!strcmp(k2, "train")) tr0 = *v2 == 'f';
         }
         Buf txt = {0}; const char *w2 = NULL;
         if (cv && !oa_content(cv, &txt, &w2)) { free(txt.p); *why = w2 ? w2 : "invalid content"; goto fail; }
@@ -326,7 +354,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
                 }
                 if (!nm[0]) { free(args); continue; }
                 if (!g_im_keepnames) {                     /* primeiro conjunto de ferramentas -> segundo */
-                    char *na = im_old2new(nm, args ? args : "{}", &unconv);
+                    char *na = im_old2new(nm, args ? args : "{}", &bad);
                     if (na) { free(args); args = na; g_im_renamed++; }
                 }
                 if (c->chat_fmt != 8) {                    /* separador antes da chamada, como o template escreve */
@@ -347,6 +375,11 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             } else ah_push(&h, 'a', a.p ? a.p : "", a.n);
             free(a.p); free(rs.p);
             nres = 0;
+            if (bad) g_im_noequiv++;
+            if (bad || tr0) {
+                if (h.n > ntcap) { nt = realloc(nt, (size_t)h.n + 64); memset(nt + ntcap, 0, (size_t)(h.n + 64 - ntcap)); ntcap = h.n + 64; }
+                nt[h.n - 1] = 1;
+            }
         } else if (is_tool) {
             if (pend == 'u') IM_FLUSH();
             char nm[128] = "tool";
@@ -362,7 +395,6 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     }
     IM_FLUSH();
 #undef IM_FLUSH
-    if (unconv) { *why = unconv; goto fail; }
     if (only_known && unknown) { *why = "uses tools that the system prompt does not declare"; goto fail; }
     int na = 0; for (int i = 0; i < h.n; i++) na += h.v[i].role == 'a';
     if (!na) { *why = "no assistant turn"; goto fail; }
@@ -376,7 +408,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             ah_render(&pre, sys.p ? sys.p : "", &r);
             const char *s0 = r.p ? r.p : "";
             const char *at = prev <= r.n ? strstr(s0 + prev, h.v[i].s) : NULL;
-            if (at && h.v[i].role == 'a') { sp[2 * nsp] = (long)(at - s0); sp[2 * nsp + 1] = (long)(at - s0) + (long)strlen(h.v[i].s); nsp++; }
+            if (at && h.v[i].role == 'a' && !(i < ntcap && nt[i])) { sp[2 * nsp] = (long)(at - s0); sp[2 * nsp + 1] = (long)(at - s0) + (long)strlen(h.v[i].s); nsp++; }
             prev = r.n;
         }
         pre.n = h.n; ah_render(&pre, sys.p ? sys.p : "", &r);
@@ -399,10 +431,10 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
         fwrite(o.p, 1, o.n, out);
         free(o.p); free(r.p); free(sp);
     }
-    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p);
+    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p); free(nt);
     return 1;
 fail:
-    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p);
+    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p); free(nt);
     return 0;
 }
 
@@ -417,19 +449,21 @@ static void im_tr_emit(void *ud, const char *line) {
 }
 
 /* katana import <modelo.gguf> <entrada> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]
-   entrada: .jsonl de conversas (mensagens ou ShareGPT), ou transcricao de um agente de programacao (arquivo ou pasta), que
+   entrada: .jsonl de conversas (mensagens ou ShareGPT), sessao do agente (.ksess; --teacher: so as falas do professor
+   contam; aceita --replace), ou transcricao de um agente de programacao (arquivo ou pasta), que
    aceita tambem [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole] */
 static int import_main(const char *model_path, int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl|transcricao|pasta> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] [--keep-tool-names]\n"
+    if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl|sessao.ksess|transcricao|pasta> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] [--keep-tool-names] [--teacher]\n"
                                     "     transcricao: [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole]\n"); return 1; }
     const char *in = argv[0], *outp = argv[1], *sysopt = "keep";
-    int only_known = 0;
+    int only_known = 0, only_teacher = 0;
     TrOpt tro; memset(&tro, 0, sizeof tro);
     tro.max_result = 6000;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--system") && i + 1 < argc) sysopt = argv[++i];
         else if (!strcmp(argv[i], "--only-known-tools")) only_known = 1;
         else if (!strcmp(argv[i], "--keep-tool-names")) g_im_keepnames = 1;
+        else if (!strcmp(argv[i], "--teacher")) only_teacher = 1;
         else if (!strcmp(argv[i], "--whole")) tro.whole = 1;
         else if (!strcmp(argv[i], "--max-result") && i + 1 < argc) tro.max_result = atol(argv[++i]);
         else if (!strcmp(argv[i], "--replace") && i + 1 < argc) { if (!tr_add_rep(&tro, argv[++i])) return 1; }
@@ -473,14 +507,24 @@ static int import_main(const char *model_path, int argc, char **argv) {
         fclose(f); ah_clear(&a); free(a.v); ah_clear(&b); free(b.v);
         if (!sys_fixed) { fprintf(stderr, "import: %s nao tem o bloco KSX1 (sessao gravada antes de 2026-11-20?)\n", sysopt + 6); return 1; }
     } else { fprintf(stderr, "import: --system keep, none, file:ARQ ou ksess:ARQ\n"); return 1; }
-    const int is_tr = tr_is(in);
-    FILE *fi = is_tr ? NULL : fopen(in, "rb");
-    if (!is_tr && !fi) { fprintf(stderr, "import: nao abriu %s\n", in); return 1; }
+    int is_ks = 0;                                 /* sessao do agente (.ksess) */
+    {   FILE *fk = fopen(in, "rb"); uint64_t mg = 0;
+        if (fk) { is_ks = fread(&mg, 8, 1, fk) == 1 && mg == SESS_MAGIC; fclose(fk); } }
+    const int is_tr = !is_ks && tr_is(in);
+    FILE *fi = is_tr || is_ks ? NULL : fopen(in, "rb");
+    if (!is_tr && !is_ks && !fi) { fprintf(stderr, "import: nao abriu %s\n", in); return 1; }
     FILE *fo = fopen(outp, "wb");
     if (!fo) { fprintf(stderr, "import: nao consegui gravar %s\n", outp); if (fi) fclose(fi); return 1; }
     size_t lc = 1 << 20; char *line = xalloc(lc, 1);
     long nin = 0, nout = 0, ncalls = 0, nunk = 0;
-    if (is_tr) {
+    if (is_ks) {
+        Buf l = {0}; const char *why = NULL;
+        if (keep) fprintf(stderr, "import: a sessao foi gravada com o prompt de sistema da epoca; use --system file:ARQ com o prompt atual (katana agentsys)\n");
+        nin = 1;
+        if (ksx_messages(in, &tro, only_teacher, &l, &why) && im_line(c, l.p, sys_fixed, 0, fo, &why, &ncalls, &nunk, only_known)) nout = 1;
+        else fprintf(stderr, "sessao ignorada: %s\n", why ? why : "?");
+        free(l.p);
+    } else if (is_tr) {
         ImTr t = { c, sys_fixed, keep, only_known, fo, 0, 0, 0, 0 };
         tro.emit = im_tr_emit; tro.ud = &t;
         tr_run(&tro, in);
@@ -506,6 +550,7 @@ static int import_main(const char *model_path, int argc, char **argv) {
            g4 ? "Gemma 4" : glm ? "GLM" : "ChatML", !g4 && !glm ? (c->tool_xml ? ", chamadas em XML" : ", chamadas em JSON") : "", ncalls,
            nunk ? " (algumas com ferramentas que o prompt de sistema nao declara: o modelo vai aprender nomes que o agente nao tem)" : "");
     if (g_im_renamed) printf("import: %ld chamadas do primeiro conjunto de ferramentas convertidas para o segundo (--keep-tool-names mantem os nomes antigos)\n", g_im_renamed);
+    if (g_im_noequiv) printf("import: %ld falas com chamada sem equivalente nas ferramentas atuais ficaram so como contexto (fora do treino)\n", g_im_noequiv);
     if (nunk) printf("import: %ld chamadas usam ferramentas fora do prompt de sistema; --only-known-tools descarta essas conversas\n", nunk);
     return nout ? 0 : 1;
 }
