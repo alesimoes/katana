@@ -1,0 +1,1 @@
+need a handler to cancel a label: module `cancel_label`, with handle(request) taking a dict with 'label' and returning {'status': 'cancelled', 'label': <label>}. se nao vier 'label' devolve {'status': 'error', 'reason': 'missing label'}. cria ai

@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "sku": "widget",
+      "price": 12.5
+    },
+    {
+      "sku": "gadget",
+      "price": 24.9
+    },
+    {
+      "sku": "doohickey",
+      "price": 3.5
+    }
+  ]
+}

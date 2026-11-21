@@ -1,0 +1,1 @@
+programa a irrigacao da estufa, zona B: gotejamento (drip), as 06:30, 20 minutos, seg quarta e sexta, valvula v3 com pressao de 180 kPa. so simula (dry run), nao liga de verdade. pula se a umidade estiver acima de 65%
