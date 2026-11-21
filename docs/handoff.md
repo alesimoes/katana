@@ -29,6 +29,17 @@ answers become training data for the local model.
   `KATANA_TEACHER_CLI` names another program (the tests use `tools/traintest/mock_claude.py`). Measured with the
   real program, one run, tiny local model: 3 turns of 3 to 6 s, the file was written, read back and checked. No
   thinking text comes back this way, so the reasoning block of those answers is empty.
+- *Text as it arrives* (owner request: every answer appears little by little, in the same message): local
+  generation always did; the teacher now does on both connections. `cli`: `--output-format stream-json
+  --include-partial-messages`, the `text` field of the answer object is printed from the `partial_json` pieces
+  (cut escapes, accents and surrogate pairs handled). `api`: `stream: true`, thinking summary and text printed
+  from the events, blocks rebuilt (signature included) into the same object the non-stream reader takes. While the
+  teacher writes tool calls (a whole file can take minutes) the marker `TEACHW <bytes>` shows how much has arrived.
+  Measured with the real `claude` program, one run: 58 pieces along one answer. The API path only against the
+  stand-in server, which sends everything at once, so its pacing was not observed.
+- *Other fixes of the same evening*: an agent that is terminated with a command running now takes the command's
+  process group with it (a teacher call was left running when the app closed); the desktop task card is one line
+  ("N de M" and the current step, "ver todas" opens it) and the chat keeps clear of the cards.
 - *Training data*: every teacher answer is noted in `<session>.ksess.teacher` (message index);
   `katana export out.jsonl <sessions> --teacher` writes only sessions with teacher answers and puts the loss only on
   them (compacted sessions included: the teacher saw the whole conversation). Then `katana train`.
