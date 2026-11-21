@@ -316,6 +316,109 @@ ok = ok and not any(x in a for x in ("FORBIDDEN", "rm a.txt", "meta text", "igno
 sys.exit(0 if ok else 1)
 EOF
 then echo "import de transcricoes: ok (blocos juntos, avisos fora, interrompido fora, troca e corte)"; else echo "import de transcricoes: FALHOU"; cat "$D/tr.out"; fail=1; fi
+# katana knowledge: notas das sessoes anteriores (src/app/knowledge.c), sem modelo
+mkdir -p "$D/kw/alpha/.git" "$D/kw/alpha/sub" "$D/kw/beta" "$D/kt/proj-a" "$D/kt/proj-b"
+python3 - "$D" <<'EOF2'
+import json, sys, os
+D = sys.argv[1]
+def mk(path, cwd, ep):
+    R = []
+    n = [0]
+    def rec(t, msg, ts):
+        n[0] += 1
+        return {"type": t, "uuid": "%s-%d" % (os.path.basename(path), n[0]), "cwd": cwd, "timestamp": ts, "message": msg}
+    for i, e in enumerate(ep):
+        ts = e["ts"]
+        R.append(rec("user", {"role": "user", "content": e["req"]}, ts))
+        for j, (name, inp, res) in enumerate(e.get("calls", [])):
+            tid = "t%d_%d" % (i, j)
+            R.append(rec("assistant", {"role": "assistant", "id": "m%d_%d" % (i, j), "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}, ts))
+            R.append(rec("user", {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": res}]}, ts))
+        R.append(rec("assistant", {"role": "assistant", "id": "f%d" % i, "content": [{"type": "text", "text": e["out"]}]}, ts))
+    open(path, "w").write("".join(json.dumps(r) + "\n" for r in R))
+a, b = D + "/kw/alpha", D + "/kw/beta"
+mk(D + "/kt/proj-a/s1.jsonl", a, [
+  {"ts": "2026-11-10T10:00:00Z", "req": "add a retry to the uploader", "out": "Added retry with backoff to the uploader. Key 12345678-1234-1234-1234-123456789abc was removed.",
+   "calls": [("Write", {"file_path": a + "/up.py", "content": "x"}, "ok"), ("Edit", {"file_path": a + "/up.py", "old_string": "a", "new_string": "b"}, "ok"),
+             ("Bash", {"command": "make", "description": "Build the project"}, "Exit code 2\nmake: *** No rule to make target 'all'"),
+             ("Bash", {"command": "make clean && make", "description": "Rebuild from scratch"}, "built"),
+             ("Bash", {"command": "curl -H \"Authorization: Bearer abcdef123456\" http://x/api --token=zzzSECRET99 -d password=hunter22", "description": "Call the api"}, "{}"),
+             ("Bash", {"command": "ls"}, "a b")]},
+  {"ts": "2026-11-10T11:00:00Z", "req": "fix the parser", "out": "Parser fixed."}])
+mk(D + "/kt/proj-a/s2.jsonl", a, [{"ts": "2026-11-12T09:00:00Z", "req": "update the uploader docs", "out": "Docs updated for the uploader and the retry.\nforbidden-line here\nSecond line kept."}])
+mk(D + "/kt/proj-b/s3.jsonl", b, [{"ts": "2026-11-11T09:00:00Z", "req": "tune the retry loop", "out": "Done, nothing about the other word."}])
+EOF2
+find "$D/kt" -name '*.jsonl' -exec touch -d '2 hours ago' {} +
+KO="$D/kn_out"
+$K knowledge build "$D/kt" --out "$KO" --cut-matching 'forbidden-line' --replace 'zzz=yyy' > "$D/kn1.out" 2>&1 || true
+$K knowledge build "$D/kt" --out "$KO" > "$D/kn2.out" 2>&1 || true
+touch "$D/kt/proj-b/s3.jsonl"
+$K knowledge build "$D/kt" --out "$KO" > "$D/kn3.out" 2>&1 || true
+$K knowledge search uploader retry --dir "$KO" > "$D/kn_s1.out" 2>&1 || true
+$K knowledge search retry --project beta --dir "$KO" > "$D/kn_s2.out" 2>&1 || true
+$K knowledge stats "$KO" > "$D/kn_st.out" 2>&1 || true
+$K knowledge corpus "$KO" "$D/kc.jsonl" --holdout "$D/kch.jsonl" > "$D/kc.out" 2>&1 || true
+$K knowledge corpus "$KO" "$D/kc2.jsonl" --project alpha --max-per-project 8 > "$D/kc2.out" 2>&1 || true
+$K knowledge stats "$D/kc.jsonl" > "$D/kc_st.out" 2>&1 || true
+if python3 - "$KO" "$D" <<'EOF2'
+import sys, glob, os
+KO, D = sys.argv[1], sys.argv[2]
+rd = lambda p: open(p).read()
+na = sorted(glob.glob(KO + "/alpha/2026-*.md"))
+nb = glob.glob(KO + "/beta/2026-*.md")
+ok = len(na) == 2 and len(nb) == 1 and os.path.exists(KO + "/INDEX.md") and os.path.exists(KO + "/alpha/INDEX.md")
+n1 = [rd(p) for p in na if "2026-11-10" in p]; ok = ok and len(n1) == 1
+n1 = n1[0] if n1 else ""
+n2 = [rd(p) for p in na if "2026-11-12" in p][0]
+ok = ok and "add-a-retry-to-the-uploader" in "".join(na) and "Episodes: 2" in n1
+ok = ok and "> add a retry to the uploader" in n1 and "> Added retry with backoff" in n1 and "## Episode 2" in n1
+ok = ok and "- " + D + "/kw/alpha/up.py" in n1 and n1.count("/up.py") == 1
+ok = ok and "- Rebuild from scratch: make clean && make" in n1 and "- Call the api: curl" in n1
+ok = ok and "Build the project: make" not in n1 and "\n- ls\n" not in n1
+ok = ok and "`make` failed (make: *** No rule to make target 'all') -> `make clean && make` worked" in n1
+ok = ok and "[key]" in n1 and "12345678-1234" not in n1
+ok = ok and "abcdef123456" not in n1 and "yyySECRET99" not in n1 and "hunter22" not in n1 and "Bearer [masked]" in n1 and "password=[masked]" in n1
+ok = ok and "forbidden-line" not in n2 and "Second line kept." in n2
+ok = ok and "Folder: " + D + "/kw/alpha" in rd(KO + "/alpha/INDEX.md") and "[alpha]" in rd(KO + "/INDEX.md")
+sys.exit(0 if ok else 1)
+EOF2
+then echo "knowledge build: ok (notas, pedido, fim, arquivos, comandos, erro vencido, segredos, corte, indices)"; else echo "knowledge build: FALHOU"; cat "$D/kn1.out"; fail=1; fi
+if grep -q "3 notas escritas" "$D/kn1.out" && grep -q "0 notas escritas, 3 ja atualizadas" "$D/kn2.out" && grep -q "1 notas escritas, 2 ja atualizadas" "$D/kn3.out"; then echo "knowledge incremental: ok (pula o que esta em dia, refaz o que mudou)"; else echo "knowledge incremental: FALHOU"; cat "$D/kn1.out" "$D/kn2.out" "$D/kn3.out"; fail=1; fi
+if python3 - "$D" <<'EOF2'
+import sys
+D = sys.argv[1]
+s1 = open(D + "/kn_s1.out").read().split("\n")
+paths = [l.split(" (episode")[0] for l in s1 if " (episode " in l]
+s2 = open(D + "/kn_s2.out").read()
+st = open(D + "/kn_st.out").read()
+ok = len(paths) == 3 and "2026-11-12" in paths[0] and "2026-11-10" in paths[1] and "/beta/" in paths[2]
+ok = ok and "2 of 2 words" in s1[0] and "request: update the uploader docs" in s1[1] and "outcome: Docs updated" in s1[2] and "1 of 2 words" in "".join(s1[-4:])
+ok = ok and "/alpha/" not in s2 and "tune the retry loop" in s2
+ok = ok and "projetos: 2" in st and "notas: 3" in st and "episodios: 4" in st and "nota mais nova" in st
+sys.exit(0 if ok else 1)
+EOF2
+then echo "knowledge search e stats: ok"; else echo "knowledge search/stats: FALHOU"; cat "$D/kn_s1.out" "$D/kn_st.out"; fail=1; fi
+if python3 - "$D" <<'EOF2'
+import sys, json
+D = sys.argv[1]
+L = lambda n: [json.loads(l) for l in open(D + "/" + n)]
+tr, ho, c2 = L("kc.jsonl"), L("kch.jsonl"), L("kc2.jsonl")
+QA = [(m["messages"][0]["content"], m["messages"][1]["content"], m["project"]) for m in tr]
+txt = open(D + "/kc.jsonl").read() + open(D + "/kch.jsonl").read()
+def has(q, a, p="alpha"): return any(q in x and a in y and pr == p for x, y, pr in QA)
+ok = has("add a retry to the uploader", "Added retry with backoff") and has("add a retry to the uploader", "up.py")
+ok = ok and has("rebuild from scratch", "`make clean && make`") and has("No rule to make target", "What worked: `make clean && make`")
+ok = ok and has("What is alpha?", D + "/kw/alpha") and has("Where is alpha?", D + "/kw/alpha") and has("main files of alpha", "up.py (")
+ok = ok and not any(x in txt for x in ("hunter22", "abcdef123456", "12345678-1234", "SECRET99"))
+ok = ok and all("alpha" in q or "beta" in q for q, a, p in QA)
+tq = set(q for q, a, p in QA)
+ok = ok and len(ho) > 0 and len(tr) == 2 * len(ho) and not any(m["messages"][0]["content"] in tq for m in ho)
+ok = ok and len(c2) == 8 and all(m["project"] == "alpha" for m in c2)
+q2 = " ".join(m["messages"][0]["content"] for m in c2); ok = ok and "update the uploader docs" in q2 and "fix the parser" not in q2
+sys.exit(0 if ok else 1)
+EOF2
+then echo "knowledge corpus: ok (pares fieis as notas, sem segredo, teto, holdout com outra formulacao)"; else echo "knowledge corpus: FALHOU"; cat "$D/kc.out" "$D/kc2.out"; fail=1; fi
+if grep -q "projetos: 2\|beta: .* pares" "$D/kc_st.out" && grep -q "total: .* pares" "$D/kc_st.out" && grep -q "janelas de 512 tokens (estimativa" "$D/kc_st.out"; then echo "knowledge stats do corpus: ok"; else echo "knowledge stats do corpus: FALHOU"; cat "$D/kc_st.out"; fail=1; fi
 # chamadas do primeiro conjunto de ferramentas viram as do segundo (nome e argumentos); sem equivalente: a fala nao treina
 python3 - "$D/old.jsonl" <<'EOF'
 import json, sys

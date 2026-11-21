@@ -33,6 +33,7 @@ typedef struct {
     long nfiles, nep, nout, nturn, ncall, ncut, ndrop;
     uint64_t *seen; size_t seen_cap, seen_n;
     TrEp ep;
+    const char *cur_file; char ep_cwd[512], ep_ts[40];     /* arquivo em leitura; cwd e hora do registro que abriu o episodio (para o katana knowledge) */
 } TrOpt;
 
 static void tr_cpy(char *d, const char *s, size_t cap) { size_t n = strlen(s); if (n >= cap) n = cap - 1; memcpy(d, s, n); d[n] = 0; }
@@ -238,7 +239,7 @@ static void tr_result(const char *v, Buf *out) {
 static void tr_line(TrOpt *o, const char *line) {
     TrEp *ep = &o->ep;
     char k[64], type[24] = "", uuid[96] = ""; const char *v, *e, *msg = NULL;
-    int meta = 0, apierr = 0, compact = 0, ends = 0;
+    int meta = 0, apierr = 0, compact = 0, ends = 0; char cwd[512] = "", ts[40] = "";
     const char *q = js_ws(line);
     if (*q != '{') return;
     for (const char *p = q + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
@@ -249,6 +250,8 @@ static void tr_line(TrOpt *o, const char *line) {
         else if (!strcmp(k, "isApiErrorMessage")) apierr = *v == 't';
         else if (!strcmp(k, "isCompactSummary")) compact = *v == 't';
         else if (!strcmp(k, "toolEndsTurn")) ends = *v == 't';
+        else if (!strcmp(k, "cwd")) tr_sv(v, cwd, sizeof cwd);
+        else if (!strcmp(k, "timestamp")) tr_sv(v, ts, sizeof ts);
     }
     const int asst = !strcmp(type, "assistant");
     if ((!asst && strcmp(type, "user")) || !msg) return;
@@ -357,7 +360,7 @@ static void tr_line(TrOpt *o, const char *line) {
     const int notice = !strncmp(text.p, "<task-notification>", 19) || !strncmp(text.p, "[SYSTEM NOTIFICATION", 20);   /* tarefa em segundo plano: continua o episodio */
     const int cont = ep->open && !ep->cut && (notice || o->whole) && !compact;
     if (!cont && notice) { free(text.p); return; }
-    if (!cont) { tr_flush(o); ep->open = 1; }
+    if (!cont) { tr_flush(o); ep->open = 1; tr_cpy(o->ep_cwd, cwd, sizeof o->ep_cwd); tr_cpy(o->ep_ts, ts, sizeof o->ep_ts); }
     tr_subst(o, &text);
     TrMsg *m = tr_push(ep, 'u');
     m->text = text;
@@ -366,7 +369,7 @@ static void tr_line(TrOpt *o, const char *line) {
 static void tr_file(TrOpt *o, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "import: nao abriu %s\n", path); return; }
-    o->nfiles++;
+    o->nfiles++; o->cur_file = path;
     size_t lc = 1 << 20; char *line = xalloc(lc, 1);
     for (;;) {
         size_t n = 0; int ch;

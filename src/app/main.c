@@ -1118,6 +1118,7 @@ static int run_main(int argc, char **argv) {
         }
         return quantize_cmd(in, out, type);
     }
+    if (argc >= 3 && strcmp(argv[1], "knowledge") == 0) return kn_main(argc - 2, argv + 2);                  /* notas das sessoes anteriores */
     if (argc >= 5 && strcmp(argv[1], "import") == 0) return import_main(argv[2], argc - 3, argv + 3);    /* conversas -> dados de treino */
     if (argc == 5 && strcmp(argv[1], "merge") == 0) return merge_cmd(argv[2], argv[3], argv[4]);          /* GGUF novo com a especializacao */
     if (argc >= 3 && strcmp(argv[1], "distill") == 0) return distill_main(argc - 2, argv + 2);         /* professor -> sessoes verificaveis */

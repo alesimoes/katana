@@ -58,6 +58,20 @@ whether a client talks to `katana agent` through the line protocol the desktop u
 OpenAI-compatible API (which then needs native `tools`), which machine runs the model, and how a session started on
 another device is kept. E's server items are prerequisites of the second path.
 
+**G. Knowledge from earlier sessions** (the owner wants the model, not a lookup, to know what was done in his projects)
+
+| # | What | Done when |
+|---|---|---|
+| G1 | `katana knowledge build/search/stats/corpus` and `docs/knowledge-base.md` (2026-11-21) | **done**: notes and corpus built from the real transcripts, tested without a model |
+| G2 | Train a model on the corpus (`katana specialize <model> knowledge`) | the adapter trained, nights counted |
+| G3 | Held-out measurement: ask the `--holdout` questions before and after training | correct answers counted for both; the expectation (names, paths, commands, not volume) confirmed or refuted |
+| G4 | Keep the base current: rebuild incrementally, regenerate the corpus, retrain on the new part | a routine the owner can run |
+
+**F. The agent of Grey** (after A and B hold for a week of real use): what Grey needs from katana is not written
+down yet. To decide with the owner: whether Grey talks to `katana agent` through the line protocol the desktop uses,
+or to `katana serve` through the OpenAI-compatible API (which then needs native `tools`), which machine runs the
+model, and how a session started on the phone is kept. E's server items are prerequisites of the second path.
+
 ## Priority 1: Vulkan backend (closes the 11–16x gap on the prompt)
 
 | Step | What | Done when |
