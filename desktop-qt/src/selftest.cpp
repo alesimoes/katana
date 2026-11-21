@@ -12,6 +12,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QQuickItem>
+#include <QRegularExpression>
 #include <QQuickWindow>
 #include <QtTest/QTest>
 #include <functional>
@@ -701,6 +702,139 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
     c.typeAndEnter("pergunta comum");
     check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Resposta de teste"); }, 60000)
           && be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant", "resposta normal nao gera linha de parada");
+
+    // ---- plano do pedido: acoes agrupadas por passo, descricao, falha, notas do motor, mudanca do plano, resumo ----
+    fprintf(stderr, "-- plano do pedido\n");
+    {
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
+        c.typeAndEnter("execute o plano");
+        // durante a ultima acao (comando de 3 s): o passo 3 esta em andamento
+        check(waitFor([&] { return be.progressText().startsWith("passo 3 de 3: Rodar os testes"); }, 30000),
+              "progresso durante o pedido: " + be.progressText());
+        QTest::qWait(300);
+        check(be.progressText().contains("ações") && be.progressText().contains(" · "), "progresso com tempo e numero de acoes: " + be.progressText());
+        QQuickItem *sline = c.item("statusLine");
+        check(sline && sline->property("text").toString().startsWith("passo 3 de 3"), "linha de estado mostra o passo");
+        QQuickItem *pv = c.item("planView");
+        check(pv && pv->isVisible(), "o plano aparece na conversa");
+        QList<QQuickItem *> rows;
+        waitFor([&] { rows.clear(); findAll(c.item("planView"), "actionRow", rows); return !rows.isEmpty(); }, 3000);
+        QQuickItem *ws = c.item("workStats");
+        check(ws && ws->property("text").toString().contains("ações") && ws->property("text").toString().contains(" · "), "cartao das tarefas mostra tempo e acoes enquanto roda: " + (ws ? ws->property("text").toString() : QString()));
+        bool runningDesc = false;
+        for (QQuickItem *r : rows)
+            if (r->property("running").toBool() && r->property("title").toString() == "Rodar a suite de testes") runningDesc = true;
+        check(runningDesc, "acao em andamento: a descricao e a linha principal (passo em andamento aberto)");
+        check(rows.size() == 1, QString("so o passo em andamento esta aberto: %1 linha(s) de acao").arg(rows.size()));
+        c.grab("30-plano-andamento-escuro.png");
+        check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant"; }, 30000), "pedido do plano terminou");
+        QTest::qWait(500);
+
+        // modelo: grupos, marcas, notas escondidas
+        int planId = 0, nTool = 0, nHidden = 0, from = 0;
+        for (int i = 0; i < be.messages()->count(); i++)
+            if (be.messages()->get(i)["kind"] == "user" && be.messages()->get(i)["text"] == "execute o plano") from = i;
+        for (int i = from; i < be.messages()->count(); i++) {
+            const QVariantMap m = be.messages()->get(i);
+            if (m["kind"] == "plan") planId = m["plan"].toInt();
+            if (m["kind"] == "tool") { nTool++; nHidden += m["vkind"] == "hidden"; }
+        }
+        check(planId > 0, "item do plano na conversa");
+        const QVariantMap pd = be.messages()->planData(planId);
+        const QVariantList steps = pd["steps"].toList();
+        QStringList titles; QList<int> st, cnt;
+        for (const QVariant &v : steps) { const QVariantMap m = v.toMap(); titles << m["title"].toString(); st << m["status"].toInt(); cnt << m["count"].toInt(); }
+        check(steps.size() == 4 && titles == QStringList({"Ler o projeto", "Corrigir o erro de leitura", "Escrever o teste novo", "Rodar os testes"}),
+              "passos: reescrito e novo mantem a ordem; o descartado fica: " + titles.join(" | "));
+        check(st == QList<int>({2, 2, 3, 2}), "estados: feito, feito, descartado, feito");
+        check(cnt == QList<int>({2, 2, 1, 1}), QString("as acoes ficaram sob o passo em que rodaram (inclusive o descartado): %1,%2,%3,%4").arg(cnt[0]).arg(cnt[1]).arg(cnt[2]).arg(cnt[3]));
+        check(pd["done"].toInt() == 3 && pd["total"].toInt() == 3, "3 de 3 passos (o descartado nao conta)");
+        check(nTool == 13 && nHidden == 12, QString("13 chamadas, 12 sob o plano (6 de gestao e 6 acoes) e 1 antes dele: %1/%2").arg(nTool).arg(nHidden));
+        const QVariantList s2 = steps[1].toMap()["actions"].toList();
+        const QVariantMap fail = s2.value(0).toMap();
+        const auto &failItem = be.messages()->item(fail["idx"].toInt());
+        check(fail["state"].toInt() == 3 && failItem.out.startsWith("error: cc: command not found"), "chamada com erro: marcada como falha");
+        check(!failItem.out.contains("[katana:") && failItem.note.startsWith("[katana: 3 calls in a row failed"), "nota do motor fora da saida, guardada a parte");
+        check(s2.value(1).toMap()["state"].toInt() == 2 && s2.value(1).toMap()["desc"].toString().isEmpty(), "chamada sem descricao e com sucesso: ok, sem descricao");
+        check(steps[0].toMap()["actions"].toList().value(0).toMap()["desc"].toString() == "Listar os arquivos da pasta", "descricao da chamada guardada");
+        check(be.progressText().startsWith("3 de 3 passos, 7 ações, "), "resumo do pedido: " + be.progressText());
+        check(sline->property("text").toString() == be.progressText(), "resumo na linha de estado");
+        check(c.item("workStats")->property("text").toString() == be.progressText(), "resumo tambem no cartao das tarefas");
+        // o plano na tela: passos feitos recolhidos, nenhuma acao aberta
+        rows.clear(); findAll(c.item("planView"), "actionRow", rows);
+        check(rows.isEmpty(), "passos feitos recolhidos em uma linha");
+        QList<QQuickItem *> stepItems;
+        findAll(c.item("planView"), "planStep", stepItems);
+        check(stepItems.size() == 4, QString("4 linhas de passo na tela: %1").arg(stepItems.size()));
+        QQuickItem *hdr = c.item("planHeader");
+        check(hdr && hdr->property("text").toString().startsWith("Plano · 3 de 3 passos · 7 ações"), "cabecalho do plano: " + (hdr ? hdr->property("text").toString() : QString()));
+        c.grab("31-plano-final-escuro.png");
+        // abrir o passo 2: a chamada que falhou aparece com marca de falha, e a nota so no detalhe
+        if (stepItems.size() == 4) {
+            c.click(stepItems[1]);
+            rows.clear(); findAll(c.item("planView"), "actionRow", rows);
+            check(rows.size() == 2 && rows[0]->property("failed").toBool(), "passo aberto: 2 acoes, a primeira falhou");
+            if (rows.size() == 2) {
+                c.click(rows[0]);
+                check(rows[0]->property("expanded").toBool(), "clicar na acao abre o comando e a saida");
+                QTest::qWait(300);
+                QQuickItem *nt = nullptr;
+                for (QQuickItem *k : rows[0]->childItems()) if (k->objectName() == "actionNote") nt = k;
+                QQuickItem *oo = findItem(rows[0], "actionOutput");
+                check(nt && nt->isVisible() && nt->property("text").toString().contains("[katana:"), "notas do motor so no detalhe, esmaecidas");
+                check(oo && !oo->property("text").toString().contains("[katana:") && oo->property("text").toString().startsWith("error: cc"), "a saida da ferramenta nao traz as notas");
+            }
+            c.grab("32-plano-passo-aberto-escuro.png");
+            c.click(stepItems[1]);
+        }
+        // tema claro
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("claro"))));
+        QTest::qWait(300);
+        c.grab("33-plano-final-claro.png");
+        if (stepItems.size() == 4) {
+            c.click(stepItems[1]);
+            c.grab("34-plano-passo-aberto-claro.png");
+            c.click(stepItems[1]);
+        }
+
+        // sessao gravada e restaurada: mesmo agrupamento, sem saida das ferramentas (nao e gravada)
+        const QString pid = be.currentSessionId();
+        Session ps;
+        check(Sessoes::carregar(be.sessionsDir(), pid, &ps), "sessao com plano gravada");
+        int mPlan = 0, mDesc = 0, mFail = 0, mStep = 0;
+        for (const Msg &m : ps.mensagens) {
+            mPlan += m.papel == "plan";
+            if (m.papel == "tool") { mDesc += !m.desc.isEmpty(); mFail += m.estado == 3; mStep += m.passo > 0; }
+        }
+        check(mPlan == 1 && mDesc == 4 && mFail == 1 && mStep == 6, QString("sessao: plano=%1 descricoes=%2 falhas=%3 acoes sob passo=%4").arg(mPlan).arg(mDesc).arg(mFail).arg(mStep));
+        be.newChat();
+        QTest::qWait(300);
+        check(be.openSession(pid), "reabre a sessao com o plano");
+        QTest::qWait(600);
+        int rPlan = 0, rHidden = 0;
+        for (int i = 0; i < be.messages()->count(); i++) {
+            const QVariantMap m = be.messages()->get(i);
+            if (m["kind"] == "plan") rPlan = m["plan"].toInt();
+            rHidden += m["vkind"] == "hidden";
+        }
+        const QVariantMap rd = be.messages()->planData(rPlan);
+        QList<int> rcnt, rst;
+        for (const QVariant &v : rd["steps"].toList()) { rcnt << v.toMap()["count"].toInt(); rst << v.toMap()["status"].toInt(); }
+        check(rPlan > 0 && rcnt == QList<int>({2, 2, 1, 1}) && rst == QList<int>({2, 2, 3, 2}) && rHidden == 12, "sessao restaurada: mesmos passos, estados e acoes por passo");
+        QList<QQuickItem *> rsteps;
+        findAll(c.item("planView"), "planStep", rsteps);
+        check(rsteps.size() == 4, "sessao restaurada: o plano aparece na conversa");
+        QQuickItem *rh = c.item("planHeader");
+        check(rh && QRegularExpression("^Plano · 3 de 3 passos · 7 ações · \\d+ s$").match(rh->property("text").toString()).hasMatch(), "sessao restaurada: cabecalho com o tempo do pedido: " + (rh ? rh->property("text").toString() : QString()));
+        if (rsteps.size() == 4) {
+            c.click(rsteps[1]);
+            rows.clear(); findAll(c.item("planView"), "actionRow", rows);
+            check(rows.size() == 2 && rows[0]->property("failed").toBool() && rows[0]->property("title").toString() == "Compilar e rodar o programa", "restaurada: marca de falha e descricao");
+            c.grab("35-plano-restaurado-claro.png");
+            c.click(rsteps[1]);
+        }
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
+    }
 
     fprintf(stderr, "== %d verificacoes ok, %d falhas\n", g_ok, g_fail);
     fprintf(stderr, "%s\n", g_fail == 0 ? "PASSOU" : "FALHOU");
