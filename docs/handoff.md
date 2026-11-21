@@ -110,7 +110,7 @@ answers become training data for the local model.
 
 ### First training on the 35B model from teacher answers (night of 2026-11-20 to 21)
 
-`tools/treinar_professor.sh` ran unattended on Qwen-AgentWorld-35B-A3B Q4_K_M, CPU only (`KATANA_TRAIN_GPU=0`), with the
+`tools/train_from_teacher.sh` ran unattended on Qwen-AgentWorld-35B-A3B Q4_K_M, CPU only (`KATANA_TRAIN_GPU=0`), with the
 desktop agent idle but loaded. Measured:
 
 - Data: `katana export --teacher` gave 2 sessions, 60 teacher answers, 101k characters to learn, 106 windows of 512
