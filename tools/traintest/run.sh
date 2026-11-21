@@ -21,6 +21,8 @@
 # 11. professor pelo programa claude (de mentira) sem chave; read_file so com o caminho continua de onde parou, cada
 #     trecho vira nota e o arquivo ja lido devolve as notas
 # 12. katana import com selecao (--train-tools, --verified, --plan-first...) e katana specialize nos tres tipos
+# 13. a noite em um comando (katana.cfg), gravacao que falha em voz alta (disco cheio simulado e /dev/full), conferencia dos dados,
+#     --wait-idle, --status e katana knowledge quiz
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
 export KATANA_TOOLS=1      # os passos antigos usam o primeiro conjunto de ferramentas; o passo do segundo conjunto pede 2 (o padrao)
@@ -478,4 +480,5 @@ else echo "distill: FALHOU"; fail=1; fi
 if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
 # 12. selecao do katana import e katana specialize (teacher, tools, code)
 . tools/traintest/specialize_part.sh
+. tools/traintest/specialize_oneshot.sh
 if [ $fail = 0 ]; then echo "traintest: ok"; else echo "traintest: FALHOU"; exit 1; fi

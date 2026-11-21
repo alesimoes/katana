@@ -11,7 +11,116 @@
  * Origem dos dados: use conversas do proprio katana ou de modelos abertos cuja licenca permita. Servicos fechados
  * costumam proibir nos termos de uso o treino de outros modelos com as respostas deles. */
 
+
+/* ---------- gravacao com erro checado ----------
+ * Todo arquivo de dados que o katana grava passa por aqui: cada escrita, o fflush e o fclose sao conferidos, a primeira
+ * falha mostra o arquivo e a causa (strerror) e quem chamou para com codigo diferente de zero. Nunca um arquivo cortado
+ * pode passar por inteiro. KATANA_FAIL_WRITE_AFTER=N (so para teste): depois de N bytes gravados neste processo a
+ * gravacao grava o que ainda cabe e falha com ENOSPC, como um disco cheio. */
+static long g_io_written, g_io_msgs;
+static int io_fail(const char *path, const char *what, int err) {
+    if (g_io_msgs++ < 1) fprintf(stderr, "ERRO: %s %s: %s\n", what, path ? path : "?", strerror(err ? err : EIO));
+    return 0;
+}
+static int io_write(FILE *f, const void *p, size_t n, const char *path) {
+    const char *lim = getenv("KATANA_FAIL_WRITE_AFTER");
+    if (lim && *lim) {
+        const long L = atol(lim);
+        if (g_io_written + (long)n > L) {
+            const long room = L > g_io_written ? L - g_io_written : 0;
+            if (room > 0 && fwrite(p, 1, (size_t)room, f) == (size_t)room) g_io_written += room;
+            return io_fail(path, "nao consegui gravar (disco cheio simulado)", ENOSPC);
+        }
+    }
+    if (n && fwrite(p, 1, n, f) != n) return io_fail(path, "nao consegui gravar", errno);
+    g_io_written += (long)n;
+    return 1;
+}
+static int io_puts(FILE *f, const char *s, const char *path) { return io_write(f, s, strlen(s), path); }
+static int io_printf(FILE *f, const char *path, const char *fmt, ...) {
+    char tmp[1024]; va_list ap, ap2;
+    va_start(ap, fmt); va_copy(ap2, ap);
+    const int n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    int ok;
+    if (n < 0) ok = io_fail(path, "formato invalido ao gravar", EINVAL);
+    else if ((size_t)n < sizeof tmp) ok = io_write(f, tmp, (size_t)n, path);
+    else { char *b = xalloc((size_t)n + 1, 1); vsnprintf(b, (size_t)n + 1, fmt, ap2); ok = io_write(f, b, (size_t)n, path); free(b); }
+    va_end(ap2);
+    return ok;
+}
+static int io_close(FILE *f, const char *path) {
+    int ok = 1;
+    errno = 0;
+    if (fflush(f) != 0) ok = io_fail(path, "nao consegui gravar", errno);
+    else if (ferror(f)) ok = io_fail(path, "erro de gravacao em", errno);
+    if (fclose(f) != 0 && ok) ok = io_fail(path, "nao consegui fechar", errno);
+    return ok;
+}
+/* grava a e b em path de uma vez: escreve em path.part, confere e so entao renomeia (o arquivo antigo nao se perde) */
+static int io_put_file(const char *path, const void *a, size_t an, const void *b, size_t bn) {
+    char tmp[4600]; snprintf(tmp, sizeof tmp, "%s.part", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return io_fail(path, "nao consegui criar", errno);
+    int ok = io_write(f, a, an, path) && (!bn || io_write(f, b, bn, path));
+    ok = io_close(f, path) && ok;
+    if (ok && rename(tmp, path) != 0) ok = io_fail(path, "nao consegui renomear para", errno);
+    if (!ok) remove(tmp);
+    return ok;
+}
+
+/* validacao estrita de JSON (uma linha de dados nao pode estar cortada): 1 se s[0..n) e um valor JSON completo */
+static const char *io_jv(const char *p, const char *e, int depth);
+static const char *io_jws(const char *p, const char *e) { while (p < e && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++; return p; }
+static const char *io_jstr(const char *p, const char *e) {
+    if (p >= e || *p != '"') return NULL;
+    for (p++; p < e; p++) {
+        if (*p == '"') return p + 1;
+        if ((unsigned char)*p < 0x20) return NULL;
+        if (*p == '\\') {
+            if (++p >= e) return NULL;
+            if (*p == 'u') { for (int i = 0; i < 4; i++) if (++p >= e || !isxdigit((unsigned char)*p)) return NULL; }
+            else if (!strchr("\"\\/bfnrt", *p)) return NULL;
+        }
+    }
+    return NULL;
+}
+static const char *io_jv(const char *p, const char *e, int depth) {
+    if (depth > 64) return NULL;
+    p = io_jws(p, e);
+    if (p >= e) return NULL;
+    if (*p == '"') return io_jstr(p, e);
+    if (*p == '{' || *p == '[') {
+        const char close = *p == '{' ? '}' : ']';
+        p = io_jws(p + 1, e);
+        if (p < e && *p == close) return p + 1;
+        for (;;) {
+            if (close == '}') { p = io_jstr(io_jws(p, e), e); if (!p) return NULL; p = io_jws(p, e); if (p >= e || *p != ':') return NULL; p++; }
+            p = io_jv(p, e, depth + 1); if (!p) return NULL;
+            p = io_jws(p, e);
+            if (p >= e) return NULL;
+            if (*p == ',') { p++; continue; }
+            return *p == close ? p + 1 : NULL;
+        }
+    }
+    if (e - p >= 4 && !strncmp(p, "true", 4)) return p + 4;
+    if (e - p >= 5 && !strncmp(p, "false", 5)) return p + 5;
+    if (e - p >= 4 && !strncmp(p, "null", 4)) return p + 4;
+    if (*p == '-' || isdigit((unsigned char)*p)) {
+        const char *q = p + (*p == '-');
+        if (q >= e || !isdigit((unsigned char)*q)) return NULL;
+        while (q < e && (isdigit((unsigned char)*q) || *q == '.' || *q == 'e' || *q == 'E' || *q == '+' || *q == '-')) q++;
+        return q;
+    }
+    return NULL;
+}
+static int io_json_ok(const char *s, size_t n) {
+    const char *e = s + n, *p = io_jv(s, e, 0);
+    return p && io_jws(p, e) == e;
+}
+
 typedef struct { char name[128]; char id[128]; } ImCall;
+static const char *g_im_outpath = "?";           /* arquivo de saida do import em andamento (para as mensagens de erro de gravacao) */
 static void im_cpy(char *d, const char *s, size_t cap) { size_t n = strlen(s); if (n >= cap) n = cap - 1; memcpy(d, s, n); d[n] = 0; }
 
 /* argumentos: texto JSON de um objeto (vem como objeto, ou como string com JSON dentro) */
@@ -498,7 +607,7 @@ static int im_line0(const Config *c, const char *line, const char *sys_fixed, in
         buf_str(&o, "], \"system\": \"");
         js_escape(&o, sys.p ? sys.p : "", sys.n);
         buf_str(&o, "\"}\n");
-        fwrite(o.p, 1, o.n, out);
+        io_write(out, o.p, o.n, g_im_outpath);
         free(o.p); free(r.p); free(sp);
         g_ims_kept++; g_ims_turns += nsp;
         for (int i = 0; i < nev; i++) if (sel[ev[i].turn] && !(ev[i].turn < ntcap && nt[ev[i].turn])) im_tool_add(ev[i].name, ev[i].chars);
@@ -760,7 +869,8 @@ static int import_main(const char *model_path, int argc, char **argv) {
     FILE *fi = is_tr || is_ks ? NULL : fopen(in, "rb");
     if (!is_tr && !is_ks && !fi) { fprintf(stderr, "import: nao abriu %s\n", in); return 1; }
     FILE *fo = fopen(outp, "wb");
-    if (!fo) { fprintf(stderr, "import: nao consegui gravar %s\n", outp); if (fi) fclose(fi); return 1; }
+    if (!fo) { fprintf(stderr, "import: nao consegui gravar %s: %s\n", outp, strerror(errno)); if (fi) fclose(fi); return 1; }
+    g_im_outpath = outp; g_io_msgs = 0;
     size_t lc = 1 << 20; char *line = xalloc(lc, 1);
     long nin = 0, nout = 0, ncalls = 0, nunk = 0;
     if (is_ks) {
@@ -811,7 +921,8 @@ static int import_main(const char *model_path, int argc, char **argv) {
         if (ch == EOF) break;
     }
     if (fi) fclose(fi);
-    fclose(fo); free(line); free(sys_fixed);
+    free(line); free(sys_fixed);
+    if (!io_close(fo, outp) || g_io_msgs) { fprintf(stderr, "import: a gravacao de %s falhou; o arquivo esta incompleto e NAO deve ser usado\n", outp); return 4; }
     printf("import: %ld de %ld conversas gravadas em %s (formato %s%s), %ld chamadas de ferramenta%s\n", nout, nin, outp,
            g4 ? "Gemma 4" : glm ? "GLM" : "ChatML", !g4 && !glm ? (c->tool_xml ? ", chamadas em XML" : ", chamadas em JSON") : "", ncalls,
            nunk ? " (algumas com ferramentas que o prompt de sistema nao declara: o modelo vai aprender nomes que o agente nao tem)" : "");
