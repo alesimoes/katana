@@ -822,6 +822,16 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (!calls) {
                 int td = 0;
                 const int tn = todo_count(&td);
+                {   /* arquivos mudaram neste pedido e a verificacao do projeto (test:/done: do KATANA.md) nao rodou: avisa uma vez */
+                    static char bn[1200];
+                    if (cml && !cut && brief_end_note(bn, sizeof bn)) {
+                        fprintf(stderr, "%s[verificacao do projeto nao rodou depois das mudancas; o modelo foi avisado]%s\n", CE(C_DIM), CE(C_RESET));
+                        prole = 'u'; buf_clear(&pend); buf_str(&pend, bn);
+                        if (g4) snprintf(text, sizeof text, "<turn|>\n<|turn>user\n%s<turn|>\n<|turn>model\n%s", bn, g4_answer_pre());
+                        else snprintf(text, sizeof text, "%s%s%s%s%s%s", tf_end(), tf_user(), bn, tf_end(), tf_asst(), think_pre(c));
+                        continue;
+                    }
+                }
                 if (!cml || !g_todo_touched || nudged || tn == td || cut) break;
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];
