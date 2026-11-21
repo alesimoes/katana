@@ -1313,6 +1313,9 @@ void Backend::handleMarker(const QByteArray &line)
         const int total = a.value(0).toInt(), done = a.value(1).toInt();
         if (total > 0)
             setTexts("Lendo " + QLocale(QLocale::Portuguese).toString(total) + " tokens: " + QString::number(done * 100 / total) + "%", m_error);
+    } else if (name == "TEACHW") {  // TEACHW <bytes>: o professor esta escrevendo as acoes desta resposta (um arquivo longo leva minutos)
+        const double kb = args.trimmed().toDouble() / 1024.0;
+        setTexts("Professor escrevendo as ações: " + QLocale(QLocale::Portuguese).toString(kb, 'f', 1) + " KB recebidos", m_error);
     } else if (name == "CHOICE") {  // CHOICE <pergunta>\t<opcao>...: pergunta do agente (ask_user); resposta em answerChoice
         const QStringList a = args.split('\t');
         m_choiceQ = a.value(0);

@@ -314,6 +314,103 @@ static void tch_mark(const char *sess, int idx, size_t len) {
 }
 
 #ifndef _WIN32
+/* ---- texto do professor aparecendo enquanto ele escreve (caminho cli) ----
+ * O programa sai em linhas JSON (stream-json). O objeto da resposta ({"text": ..., "tool_calls": ...}) chega em
+ * pedacos (input_json_delta / partial_json); aqui eles sao juntados e o valor de "text" e impresso conforme chega,
+ * na mesma fala. A ultima linha (type result) traz o objeto inteiro, que e o que vale. */
+static struct { Buf line, pj, res; size_t at; int state; size_t shown; double mark; int midline; } g_ts;     /* state: 0 procurando "text", 1 dentro do texto, 2 texto encerrado */
+static void ts_reset(void) { buf_clear(&g_ts.line); buf_clear(&g_ts.pj); buf_clear(&g_ts.res); g_ts.at = 0; g_ts.state = 0; g_ts.shown = 0; g_ts.mark = now_sec(); g_ts.midline = 0; }
+static void ts_utf8(unsigned cp) {
+    char u[5]; int n = 0;
+    if (cp < 0x80) u[n++] = (char)cp;
+    else if (cp < 0x800) { u[n++] = (char)(0xC0 | (cp >> 6)); u[n++] = (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { u[n++] = (char)(0xE0 | (cp >> 12)); u[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); u[n++] = (char)(0x80 | (cp & 0x3F)); }
+    else { u[n++] = (char)(0xF0 | (cp >> 18)); u[n++] = (char)(0x80 | ((cp >> 12) & 0x3F)); u[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); u[n++] = (char)(0x80 | (cp & 0x3F)); }
+    fwrite(u, 1, (size_t)n, stdout); g_ts.shown += (size_t)n;
+}
+static int ts_hex4(const char *p, unsigned *v) {
+    *v = 0;
+    for (int i = 0; i < 4; i++) { const char ch = p[i]; unsigned d; if (ch >= '0' && ch <= '9') d = (unsigned)(ch - '0'); else if (ch >= 'a' && ch <= 'f') d = (unsigned)(ch - 'a' + 10); else if (ch >= 'A' && ch <= 'F') d = (unsigned)(ch - 'A' + 10); else return 0; *v = *v * 16 + d; }
+    return 1;
+}
+/* imprime o que ja da para imprimir do valor de "text" no JSON parcial juntado em g_ts.pj */
+static void ts_emit(void) {
+    const char *s = g_ts.pj.p; const size_t n = g_ts.pj.n;
+    if (!s) return;
+    if (g_ts.state == 0) {
+        const char *k = strstr(s, "\"text\"");
+        if (!k) return;
+        const char *q = k + 6;
+        while (*q == ' ' || *q == ':' || *q == '\n' || *q == '\t') q++;
+        if (!*q) return;
+        if (*q != '"') { g_ts.state = 2; return; }
+        g_ts.at = (size_t)(q + 1 - s); g_ts.state = 1;
+    }
+    if (g_ts.state != 1) return;
+    size_t i = g_ts.at;
+    while (i < n) {
+        const unsigned char ch = (unsigned char)s[i];
+        if (ch == '"') { g_ts.state = 2; i++; break; }
+        if (ch != '\\') {
+            if (ch >= 0x80) {       /* caractere UTF-8 inteiro ou espera o resto */
+                const size_t l = ch >= 0xF0 ? 4 : ch >= 0xE0 ? 3 : ch >= 0xC0 ? 2 : 1;
+                if (i + l > n) break;
+                fwrite(s + i, 1, l, stdout); g_ts.shown += l; i += l;
+            } else { fputc(ch, stdout); g_ts.shown++; i++; }
+            continue;
+        }
+        if (i + 1 >= n) break;
+        const char e = s[i + 1];
+        if (e == 'u') {
+            unsigned cp, lo;
+            if (i + 6 > n) break;
+            if (!ts_hex4(s + i + 2, &cp)) { i += 2; continue; }
+            if (cp >= 0xD800 && cp < 0xDC00) {         /* par substituto: precisa da segunda metade */
+                if (i + 12 > n) break;
+                if (s[i + 6] == '\\' && s[i + 7] == 'u' && ts_hex4(s + i + 8, &lo)) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); i += 12; }
+                else { cp = 0xFFFD; i += 6; }
+            } else i += 6;
+            ts_utf8(cp);
+            continue;
+        }
+        const char o = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? 0 : e == 'b' || e == 'f' ? ' ' : e;
+        if (o) { fputc(o, stdout); g_ts.shown++; }
+        i += 2;
+    }
+    if (i > g_ts.at) g_ts.midline = s[i - 1] != '\n' && !(i >= 2 && s[i - 2] == '\\' && s[i - 1] == 'n');
+    g_ts.at = i;
+    fflush(stdout);
+}
+/* depois do texto o professor escreve as chamadas (um arquivo inteiro pode levar minutos): a interface mostra o
+   quanto ja chegou, uma vez por segundo, em vez de parecer parada */
+static void ts_progress(void) {
+    if (g_ts.state != 2 && !(g_ts.state == 0 && g_ts.pj.n > 64)) return;
+    const double t = now_sec();
+    if (t - g_ts.mark < 1.0 || !getenv("KATANA_UI")) return;
+    g_ts.mark = t;
+    if (g_ts.midline) { fputc('\n', stdout); g_ts.midline = 0; }      /* o marcador precisa comecar a linha */
+    printf("\x01" "TEACHW %zu\n", g_ts.pj.n); fflush(stdout);
+}
+static void ts_line(const char *l) {
+    if (strstr(l, "\"type\":\"result\"") || strstr(l, "\"type\": \"result\"")) { buf_clear(&g_ts.res); buf_str(&g_ts.res, l); return; }
+    if (!strstr(l, "input_json_delta")) return;
+    const char *k = strstr(l, "\"partial_json\"");
+    if (!k) return;
+    k += 14;
+    while (*k == ' ' || *k == ':') k++;
+    if (*k != '"') return;
+    Buf t = {0}; const char *pp = k;
+    if (js_string(&pp, &t) && t.p) { buf_add(&g_ts.pj, t.p, t.n); ts_emit(); ts_progress(); }
+    free(t.p);
+}
+static void ts_tap(const char *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (b[i] != '\n') { buf_add(&g_ts.line, b + i, 1); continue; }
+        if (g_ts.line.n) ts_line(g_ts.line.p);
+        buf_clear(&g_ts.line);
+    }
+}
+
 /* uma fala pelo Claude Code desta maquina. Escreve em r um objeto no formato de resposta da API (content com text e
    tool_use, usage), para o mesmo leitor servir aos dois caminhos. Devolve 200, ou 0 com a mensagem de erro em r */
 static int tch_cli_call(const Config *c, const char *base, const AHist *slog, Buf *r) {
@@ -345,14 +442,19 @@ static int tch_cli_call(const Config *c, const char *base, const AHist *slog, Bu
     shq(tch_cli_prog(), qprog, sizeof qprog); shq(g_tch_model, qm, sizeof qm); shq(g_tch_effort, qef, sizeof qef);
     static char cmd[6000];
     /* sem ferramentas proprias, sem MCP, sem configuracoes nem sessao gravada: so o modelo, com a conta ja logada */
-    snprintf(cmd, sizeof cmd, "cd %s && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT %s -p --system-prompt-file %s --tools '' --json-schema %s --output-format json "
-             "--model %s --effort %s --no-session-persistence --strict-mcp-config --setting-sources '' < %s > %s 2> %s", qd, qprog, qs, schema, qm, qef, qp, qo, qe);
+    /* saida em linhas (stream-json) pelo cano: o texto aparece enquanto chega (ts_tap); a ultima linha e o resultado */
+    snprintf(cmd, sizeof cmd, "cd %s && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT %s -p --system-prompt-file %s --tools '' --json-schema %s --output-format stream-json --verbose --include-partial-messages "
+             "--model %s --effort %s --no-session-persistence --strict-mcp-config --setting-sources '' < %s 2> %s", qd, qprog, qs, schema, qm, qef, qp, qe);
+    (void)qo;
     int rc = 1;
-    if (ok) { char *o = run_collect(cmd, 910, 2048, &rc); free(o); }
+    ts_reset();
+    if (ok) { g_cmd_tap = ts_tap; char *o = run_collect(cmd, 910, 2048, &rc); g_cmd_tap = NULL; free(o); }
+    if (g_ts.line.n) ts_line(g_ts.line.p);             /* ultima linha sem quebra no fim */
     Buf raw = {0}, err = {0};
-    for (int k = 0; k < 2; k++) {
-        FILE *fr = fopen(k ? fe : fo, "rb");
-        if (fr) { char tmp[65536]; size_t n; while ((n = fread(tmp, 1, sizeof tmp, fr)) > 0) buf_add(k ? &err : &raw, tmp, n); fclose(fr); }
+    if (g_ts.res.n) buf_add(&raw, g_ts.res.p, g_ts.res.n);
+    {
+        FILE *fr = fopen(fe, "rb");
+        if (fr) { char tmp[65536]; size_t n; while ((n = fread(tmp, 1, sizeof tmp, fr)) > 0) buf_add(&err, tmp, n); fclose(fr); }
     }
     unlink(fs); unlink(fp); unlink(fo); unlink(fe); rmdir(dir);
     /* saida: {"is_error":..,"result":"..","structured_output":{"text":..,"tool_calls":[{"name":..,"arguments":{..}}]},"usage":{..}} */
@@ -551,6 +653,10 @@ parse:;
     buf_clear(reply);
     buf_add(reply, a.p + skip, a.n - skip);
     fprintf(stderr, "%s[teacher %s: %ld tokens in (%ld from the cache), %ld out, %.1f s]%s\n", CE(C_DIM), g_tch_model, tin + tread + twrite, tread, tout, now_sec() - t0, CE(C_RESET));
+#ifndef _WIN32
+    if (g_tch_cli && g_ts.shown) { fputs(a.p + think_n + text.n, stdout); fflush(stdout); }      /* o texto ja apareceu enquanto chegava: so o resto (chamadas) */
+    else
+#endif
     tch_print(reason.n ? reason.p : NULL, a.p + think_n);
 
     /* guarda a resposta crua para os pedidos seguintes desta execucao e anota a fala do professor na sessao */
