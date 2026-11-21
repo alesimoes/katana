@@ -30,14 +30,15 @@ int() {
   v=$(python3 - "$D/$1/log" "$2" "$3" <<'EOF'
 import json, sys
 for l in open(sys.argv[1], encoding="utf-8", errors="replace"):
-    f = l.split("\t")
+    f = l.split("\t", 2)   # o texto livre pode ter tabulacao; o JSON termina sozinho
     if len(f) > 2 and f[1] == sys.argv[2]:
-        a = json.JSONDecoder(strict=False).raw_decode("{" + f[2] + "}")[0]["arguments"]
+        a = json.JSONDecoder(strict=False).raw_decode(f[2][f[2].index("{"):])[0]
         v = a.get(sys.argv[3])
         print("absent" if v is None else str(v).strip())
         break
 EOF
 )
+  [ -n "$CG_KEEP" ] && cp "$D/$1/log" "$CG_KEEP.$1" 2>/dev/null
   case $v in absent) ok "$1: $3 absent" ;; ""|*[!0-9-]*) bad "$1: $3 is an integer" "$v" ;; *) ok "$1: $3 is an integer ($v)" ;; esac
 }
 run xml_read "$D/xml.gguf" "<tool_call>${NL}<function=Read>${NL}" Read

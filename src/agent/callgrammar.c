@@ -342,6 +342,13 @@ static int cg_g4_content(CgState *s, unsigned char c) {
     }
     return cg_json_byte(s, c);
 }
+/* o valor JSON aceitaria uma aspa agora? (so entao <|"|> pode comecar; depois de um numero, nao) */
+static int cg_quote_ok(const CgState *s) {
+    if (s->js.sp == 0) return 0;
+    GState tmp;
+    memcpy(&tmp, &s->js, offsetof(GState, f) + sizeof(GFrame) * (size_t)s->js.sp);
+    return gn_step(&tmp, '"');
+}
 static int cg_step_g4(CgState *s, unsigned char c) {
     for (;;) {
         const CgTool *t = s->tool >= 0 ? &g_cg.t[s->tool] : NULL;
@@ -378,7 +385,7 @@ static int cg_step_g4(CgState *s, unsigned char c) {
             return 1;
         case CG_GJSON: {
             /* <|"|> vira aspas; um prefixo dele fica pendente ate decidir */
-            if (c == (unsigned char)CG_G4Q[s->qm]) {
+            if (c == (unsigned char)CG_G4Q[s->qm] && (s->qm || cg_quote_ok(s))) {
                 if (!CG_G4Q[++s->qm]) { s->qm = 0; const int r = cg_json_byte(s, '"'); if (r == 2) { cg_enter(s, CG_SEP); continue; } return r; }
                 return 1;
             }
@@ -580,6 +587,8 @@ static int calltest(void) {
         {CGF_G4, "call:TodoWrite{todos:[{content:<|\"|>a<|\"|>}]}", 0, "g4: todos item missing status"},
         {CGF_G4, "call:Read{file_path:<|\"|>a<|\"|>,offset:x", 0, "g4: integer refuses text"},
         {CGF_G4, "call:Nope{", 0, "g4: unknown tool"},
+        {CGF_G4, "call:Read{file_path:<|\"|>a<|\"|>,limit:0<|\"|>", 0, "g4: quote right after a number"},
+        {CGF_G4, "call:Read{limit:7,file_path:<|\"|>a<|\"|>}<tool_call|>", 2, "g4: number then next key"},
     };
     for (size_t i = 0; i < sizeof C / sizeof C[0]; i++) {
         CT_EXPECT(cg_prepare(C[i].fmt, sys), "setup");

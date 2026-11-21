@@ -48,7 +48,7 @@ evidence says code inside JSON costs accuracy, so XML stays. New `src/agent/call
 sampling, string values stay raw and free; the token is checked lazily (vocabulary scan only on a rejected token).
 Hooked in `gen_console` (`src/app/console.c`), not in `loop.c`. `KATANA_CALL_GRAMMAR=0` turns it off. `TodoWrite.todos`
 also takes the plan as lines (`[x]`, `[>]`/`[~]`, `[ ]`): 6-step plan 120 -> 68 tokens (Qwen3.6 XML), and the short
-declaration in the prompt describes only that form (prompt 9114 -> 8990 bytes). Tests: `katana calltest` (124 checks)
+declaration in the prompt describes only that form (prompt 9114 -> 8990 bytes). Tests: `katana calltest` (132 checks)
 and `tools/traintest/callgrammar_e2e.sh` (random tiny model: forced opener, valid call read by the agent, 13 checks),
 both in `tools/traintest/run.sh`; 4 new checks in `tools/tooltest/tasks.sh`, and two old ones changed (text that is not
 JSON is now a one-step plan, not an error). **Not measured with a model**: rejected calls per 100 in `agente.log`

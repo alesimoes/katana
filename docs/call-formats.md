@@ -148,7 +148,7 @@ function name in XML) is still used for formats this module does not handle.
 Integration: `gen_console` in `src/app/console.c` (the sampling loop of the agent): `cg_turn_begin` when a
 generation starts, `cg_check` on the sampled token, `cg_after` on the accepted token.
 
-Tests: `katana calltest` (124 checks without a model: accepted and rejected calls in the three formats, the same
+Tests: `katana calltest` (132 checks without a model: accepted and rejected calls in the three formats, the same
 calls cut into pieces of 2 to 11 bytes, required parameters, repeated parameters, markup inside a free string, both
 TodoWrite forms, the real system prompt in the three formats), and `tools/traintest/callgrammar_e2e.sh` (a tiny model
 with random weights; with the opener forced by `KATANA_CALL_FORCE` and each value limited by
