@@ -263,7 +263,7 @@ ok = ok and not any(x in a for x in ("FORBIDDEN", "rm a.txt", "meta text", "igno
 sys.exit(0 if ok else 1)
 EOF
 then echo "import de transcricoes: ok (blocos juntos, avisos fora, interrompido fora, troca e corte)"; else echo "import de transcricoes: FALHOU"; cat "$D/tr.out"; fail=1; fi
-# chamadas do primeiro conjunto de ferramentas viram as do segundo (nome e argumentos); sem equivalente: conversa fora
+# chamadas do primeiro conjunto de ferramentas viram as do segundo (nome e argumentos); sem equivalente: a fala nao treina
 python3 - "$D/old.jsonl" <<'EOF'
 import json, sys
 def conv(calls):
@@ -283,9 +283,11 @@ EOF
 $K import "$D/llama.gguf" "$D/old.jsonl" "$D/old_train.jsonl" --system none > "$D/old.out" 2>&1 || true
 if python3 - "$D/old_train.jsonl" "$D/old.out" <<'EOF'
 import json, sys
-T = [json.loads(l)["text"] for l in open(sys.argv[1])]
+R = [json.loads(l) for l in open(sys.argv[1])]
+T = [r["text"] for r in R]
 log = open(sys.argv[2]).read()
-ok = len(T) == 1 and "import: 1 de 3" in log and "convertidas" in log
+ok = len(T) == 3 and "import: 3 de 3" in log and "convertidas" in log and "1 falas com chamada sem equivalente" in log
+ok = ok and [len(r["train_spans"]) for r in R] == [11, 1, 2] and "cat >> 'b' <<'KATANA_EOF'" in T[2]
 t = T[0] if T else ""
 want = ['"name": "Read", "arguments": {"file_path": "a.c", "offset": 3}', '"name": "Bash", "arguments": {"command": "make", "timeout": 30000, "run_in_background": true}',
         '"name": "Edit", "arguments": {"file_path": "a.c", "old_string": "x", "new_string": "y"}',
@@ -301,7 +303,7 @@ ok = ok and not miss and "read_file" not in t and "run_command" not in t
 if not ok: print(miss, log)
 sys.exit(0 if ok else 1)
 EOF
-then echo "ferramentas do primeiro conjunto -> segundo: ok (10 chamadas convertidas, 2 conversas sem equivalente fora)"; else echo "ferramentas do primeiro conjunto -> segundo: FALHOU"; fail=1; fi
+then echo "ferramentas do primeiro conjunto -> segundo: ok (11 chamadas convertidas; a fala sem equivalente fica fora do treino)"; else echo "ferramentas do primeiro conjunto -> segundo: FALHOU"; fail=1; fi
 # katana merge: o GGUF fundido responde igual ao modelo base com o .kspec (adaptadores sobre Q8_0; MoE; qwen35moe)
 $K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
 $K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }
