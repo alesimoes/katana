@@ -7,13 +7,14 @@
 #   5. confere que o modelo com a especializacao carrega e responde (na CPU, para nao disputar a placa);
 #   6. grava tudo, com um relatorio, na pasta de saida. Nao aplica a especializacao em lugar nenhum.
 # Uso: sh tools/train_from_teacher.sh [modelo.gguf] [horas de treino, padrao 5] [pasta de saida]
-# Variaveis: WAIT_H (limite da espera, padrao 6), NO_WAIT=1 (nao espera), RANK (8), SEQ (512), LR (2e-4).
+# Saida: $OUT/$NAME.kspec (NAME padrao: teacher). Variaveis: WAIT_H (limite da espera, padrao 6), NO_WAIT=1 (nao espera), RANK (8), SEQ (512), LR (2e-4).
 set -u
 cd "$(dirname "$0")/.."
 K=$(pwd)/katana
 M=${1:-$(pwd)/models/Qwen-AgentWorld-35B-A3B-UD-Q4_K_M.gguf}
 HOURS=${2:-5}
-OUT=${3:-$HOME/.katana/treino/$(date +%Y%m%d-%H%M)}
+OUT=${3:-$HOME/.katana/training/$(date +%Y%m%d-%H%M)}
+NAME=${NAME:-teacher}          # nome da especializacao: $OUT/$NAME.kspec
 SESS=$HOME/.katana/desktop/sessoes
 RANK=${RANK:-8}; SEQ=${SEQ:-512}; LR=${LR:-2e-4}
 mkdir -p "$OUT"
@@ -90,7 +91,7 @@ say "treino: $STEPS passos (limite de $HOURS h)"
 # 4. treino
 A=$(date +%s)
 nice -n 10 timeout $(awk -v h="$HOURS" 'BEGIN { print int(h * 3600 * 1.3 + 600) }') "$K" train "$M" "$OUT/data.jsonl" $OPTS --steps "$STEPS" \
-  --log "$OUT/steps.jsonl" --out "$OUT/teacher.kspec" > "$OUT/train.log" 2>&1
+  --log "$OUT/steps.jsonl" --out "$OUT/$NAME.kspec" > "$OUT/train.log" 2>&1
 RC=$?; B=$(date +%s)
 say "treino terminou com codigo $RC em $(( (B - A) / 60 )) min"
 grep -a "^resultado:\|perda media final\|perda final\|^velocidade" "$OUT/train.log" | tail -3 | sed 's/^/         /' >> "$R"
@@ -106,13 +107,14 @@ try:
 except Exception as e:
     print("         registro dos passos: nao li (%s)" % e)
 EOF
-if [ ! -s "$OUT/teacher.kspec" ]; then say "nenhuma especializacao gravada"; exit 6; fi
-say "especializacao: $OUT/teacher.kspec ($(( $(stat -c %s "$OUT/teacher.kspec") / 1024 )) KB)"
+if [ ! -s "$OUT/$NAME.kspec" ]; then say "nenhuma especializacao gravada"; exit 6; fi
+say "especializacao: $OUT/$NAME.kspec ($(( $(stat -c %s "$OUT/$NAME.kspec") / 1024 )) KB)"
 
 # 5. o modelo com a especializacao carrega e responde? (CPU; base e especializado, mesma pergunta, sem sorteio)
 P='Em uma frase: o que voce faz primeiro quando um script de instalacao falha?'
 KATANA_CPU=1 timeout 900 "$K" chat "$M" "$P" 60 0 > "$OUT/answer_base.txt" 2>/dev/null
-KATANA_CPU=1 KATANA_SPEC="$OUT/teacher.kspec" timeout 900 "$K" chat "$M" "$P" 60 0 > "$OUT/answer_trained.txt" 2>"$OUT/resposta_treinado.err"
+KATANA_CPU=1 KATANA_SPEC="$OUT/$NAME.kspec" timeout 900 "$K" chat "$M" "$P" 60 0 > "$OUT/answer_trained.txt" 2>"$OUT/answer_trained.err"
 say "resposta do modelo base:     $(tr '\n' ' ' < "$OUT/answer_base.txt" | cut -c1-300)"
 say "resposta com o treino:       $(tr '\n' ' ' < "$OUT/answer_trained.txt" | cut -c1-300)"
-say "fim. Para usar: KATANA_SPEC=$OUT/teacher.kspec ./katana agent $M  (nada foi aplicado sozinho)"
+say "fim. Nada foi aplicado sozinho. Para testar: KATANA_SPEC=$OUT/$NAME.kspec ./katana agent $M"
+say "Para o desktop usar sempre: mkdir -p ~/.katana/specs && cp $OUT/$NAME.kspec ~/.katana/specs/  (ele carrega todos os .kspec dessa pasta treinados sobre o modelo escolhido)"

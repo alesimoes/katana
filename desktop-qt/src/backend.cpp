@@ -730,7 +730,7 @@ void Backend::launch(const QString &modelFile)
             "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
             "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
             "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST",
-            "KATANA_TEACHER", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK"};
+            "KATANA_SPEC", "KATANA_TEACHER", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK"};
         for (const QString &k : env.keys())
             if (k.startsWith("KATANA_") && !k.startsWith("KATANA_MCP_") && !manter.contains(k))
                 env.remove(k);
@@ -741,6 +741,12 @@ void Backend::launch(const QString &modelFile)
         env.insert("KATANA_TEACHER_MODEL", teacherModel());
     if (!env.contains("KATANA_TEACHER") && m_ui->value("professor", false).toBool())
         env.insert("KATANA_TEACHER", "1");      // o professor estava ligado quando o aplicativo fechou
+    // especializacoes: todos os .kspec de ~/.katana/specs treinados sobre o modelo escolhido entram na carga
+    if (!env.contains("KATANA_SPEC")) {
+        const QString specs = QDir::homePath() + "/.katana/specs";
+        if (!QDir(specs).entryList({"*.kspec"}, QDir::Files).isEmpty())
+            env.insert("KATANA_SPEC", specs);
+    }
     if (!env.contains("KATANA_THINK"))
         env.insert("KATANA_THINK", "0");
     p->setProcessEnvironment(env);
