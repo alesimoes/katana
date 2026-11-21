@@ -1169,7 +1169,7 @@ static void fam_brief_rule(FILE *f, Scn *s) {
 
 static void fam_brief_never_ask(FILE *f, Scn *s) {
     CuD d = {0}; cu_base_dict(s, &d); cu_feat(&d);
-    cu_set(&d, "tool", CU_PA(((const char *const[]){"httpie", "yamllint", "black", "mdformat"})));
+    cu_set(&d, "tool", CU_PA(((const char *const[]){"tidyfmt", "reqprobe", "lintrix", "mdtidy"})));
     cu_set(&d, "file", cu_fmt("%s%s.%s", s->place, cu_get(&d, "fn"), s->st->ext));
     cu_set(&d, "msg", cu_t(&d, L("fix {fn} edge case", "corrige caso limite do {fn}")));
     if (cu_pct(60)) {
