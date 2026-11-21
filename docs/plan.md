@@ -3,7 +3,7 @@
 Written on 2026-11-15. Each step has a measurable done criterion. Context is in
 `knowledge.md`; techniques are in `optimization-roadmap.md`.
 
-## Current goal (2026-11-21): a local agent that is pleasant and stable to use, then the agent of Grey
+## Current goal (2026-11-21): an independent local agent, pleasant and stable to use, that other applications can use as their agent
 
 Set by the owner on 2026-11-21; it replaces the order of the priorities below, which are from 2026-11-15 and mostly
 about dense models. Only Qwen3.6-35B-A3B (and its AgentWorld variant) and Gemma 4 26B-A4B count. Each line is done
@@ -48,10 +48,12 @@ merged GGUF carrying a mark that the model knows the tools, and training on the 
 **E. Install and run anywhere**: AppImage and the packaging workflow executed once; Windows build compiled again;
 `test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API.
 
-**F. The agent of Grey** (after A and B hold for a week of real use): what Grey needs from katana is not written
-down yet. To decide with the owner: whether Grey talks to `katana agent` through the line protocol the desktop uses,
-or to `katana serve` through the OpenAI-compatible API (which then needs native `tools`), which machine runs the
-model, and how a session started on the phone is kept. E's server items are prerequisites of the second path.
+**F. Usable as the agent of other applications** (after A and B hold for a week of real use). katana is an
+independent project and is tied to no application; an application that today drives a hosted agent should be able to
+drive katana instead, the same way. What such a client needs is not written down yet. To decide with the owner:
+whether a client talks to `katana agent` through the line protocol the desktop uses, or to `katana serve` through the
+OpenAI-compatible API (which then needs native `tools`), which machine runs the model, and how a session started on
+another device is kept. E's server items are prerequisites of the second path.
 
 ## Priority 1: Vulkan backend (closes the 11–16x gap on the prompt)
 
