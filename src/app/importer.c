@@ -103,6 +103,150 @@ static long im_chars(const char *s, size_t b) {
     return n;
 }
 
+/* ---------- chamadas do primeiro conjunto de ferramentas (src/agent/) -> segundo conjunto (src/tools/) ----------
+ * Dados gravados antes de 2026-11-21 chamam read_file, run_command etc.; o agente agora declara Read, Bash etc. O
+ * import troca o nome e os argumentos de cada chamada (e o nome no resultado), para o modelo aprender as ferramentas
+ * que o agente tem. --keep-tool-names desliga. O texto dos resultados fica como foi gravado (e contexto, nao alvo do
+ * treino), entao o formato dele e o do conjunto antigo. Uma chamada sem equivalente descarta a conversa. */
+static int g_im_keepnames = 0;
+static long g_im_renamed = 0;
+
+/* argumento key do objeto JSON args: 0 se nao tem; 's' texto (decodificado em out); 'r' outro valor (cru em out) */
+static int im_arg(const char *args, const char *key, Buf *out) {
+    char k[128]; const char *v, *e, *q = js_ws(args);
+    buf_clear(out);
+    if (*q != '{') return 0;
+    for (const char *p = q + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, key)) {
+        if (*v == '"') { const char *pp = v; js_string(&pp, out); return 's'; }
+        buf_add(out, v, (size_t)(e - v)); return 'r';
+    }
+    return 0;
+}
+static const char *im_bs(const Buf *b) { return b->p ? b->p : ""; }
+static int im_true(const char *args, const char *key) {
+    Buf b = {0}; const int t = im_arg(args, key, &b);
+    const int r = t && (!strcmp(im_bs(&b), "true") || !strcmp(im_bs(&b), "1"));
+    free(b.p); return r;
+}
+static void im_key(Buf *o, const char *k) { if (o->n > 1) buf_str(o, ", "); buf_str(o, "\""); buf_str(o, k); buf_str(o, "\": "); }
+static void im_kv(Buf *o, const char *k, const char *s) { im_key(o, k); buf_str(o, "\""); js_escape(o, s, strlen(s)); buf_str(o, "\""); }
+static void im_kr(Buf *o, const char *k, const char *raw) { im_key(o, k); buf_str(o, raw); }
+/* copia o argumento from como to */
+static int im_mv(Buf *o, const char *args, const char *from, const char *to) {
+    Buf b = {0}; const int t = im_arg(args, from, &b);
+    if (t == 's') im_kv(o, to, im_bs(&b)); else if (t) im_kr(o, to, im_bs(&b));
+    free(b.p); return t;
+}
+/* um passo da lista de tarefas antiga ("[x] texto", "- texto", "1. texto") -> {"content", "status"} */
+static void im_step(Buf *o, const char *s, int *n) {
+    while (*s == ' ' || *s == '\t' || *s == '-' || *s == '*') s++;
+    while (*s >= '0' && *s <= '9') s++;
+    if (*s == '.' || *s == ')') s++;
+    while (*s == ' ') s++;
+    int done = 0;
+    if (s[0] == '[' && s[1] && s[2] == ']') { done = s[1] == 'x' || s[1] == 'X'; s += 3; while (*s == ' ') s++; }
+    size_t l = strlen(s);
+    while (l && strchr(" \t\r\n", s[l - 1])) l--;
+    if (!l) return;
+    buf_str(o, (*n)++ ? ", {\"content\": \"" : "{\"content\": \"");
+    js_escape(o, s, l);
+    buf_str(o, done ? "\", \"status\": \"completed\"}" : "\", \"status\": \"pending\"}");
+}
+/* so o nome (resultado de ferramenta que traz o nome antigo) */
+static void im_newname(char *nm) {
+    static const char *const map[][2] = { {"read_file", "Read"}, {"write_file", "Write"}, {"edit_file", "Edit"}, {"run_command", "Bash"}, {"search_files", "Grep"},
+        {"glob", "Glob"}, {"list_dir", "Bash"}, {"find_file", "Glob"}, {"web_search", "WebSearch"}, {"web_fetch", "WebFetch"}, {"ask_user", "AskUserQuestion"},
+        {"todo", "TodoWrite"}, {"delegate", "Agent"}, {"git", "Bash"} };
+    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) if (!strcmp(nm, map[i][0])) { strcpy(nm, map[i][1]); return; }
+}
+/* chamada antiga -> nova: troca nm e devolve os argumentos novos (malloc); NULL se nm nao e do primeiro conjunto.
+   *bad recebe o motivo quando a chamada nao tem equivalente */
+static char *im_old2new(char *nm, const char *args, const char **bad) {
+    static const char *const none[] = { "remember", "recall", "terminal", "job", "download_file", "install_package", "read_log", "howto", "read_document", "terminal_screen" };
+    Buf o = {0}, b = {0};
+    buf_str(&o, "{");
+    if (!strcmp(nm, "read_file")) { im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "offset", "offset"); im_mv(&o, args, "limit", "limit"); }
+    else if (!strcmp(nm, "write_file")) {
+        if (im_true(args, "append") || im_true(args, "sudo")) *bad = "write_file with append or sudo has no equivalent in the current tools";
+        im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "content", "content");
+    } else if (!strcmp(nm, "edit_file")) {
+        if (im_true(args, "sudo")) *bad = "edit_file with sudo has no equivalent in the current tools";
+        im_mv(&o, args, "path", "file_path"); im_mv(&o, args, "old", "old_string"); im_mv(&o, args, "new", "new_string"); im_mv(&o, args, "replace_all", "replace_all");
+    } else if (!strcmp(nm, "run_command")) {
+        im_mv(&o, args, "command", "command");
+        if (im_arg(args, "timeout_s", &b)) { char t[40]; snprintf(t, sizeof t, "%ld", atol(im_bs(&b)) * 1000); im_kr(&o, "timeout", t); }
+        if (im_true(args, "background")) im_kr(&o, "run_in_background", "true");
+    } else if (!strcmp(nm, "search_files")) {
+        if (!im_mv(&o, args, "pattern", "pattern")) im_mv(&o, args, "query", "pattern");
+        im_mv(&o, args, "path", "path");
+        im_kv(&o, "output_mode", "content");
+        if (!im_true(args, "regex")) im_kr(&o, "literal", "true");
+    } else if (!strcmp(nm, "glob")) { im_mv(&o, args, "pattern", "pattern"); im_mv(&o, args, "path", "path"); }
+    else if (!strcmp(nm, "list_dir")) {
+        Buf cmd = {0};
+        buf_str(&cmd, "ls -la");
+        if (im_arg(args, "path", &b) == 's' && b.n) {
+            buf_str(&cmd, " '");
+            for (const char *w = b.p; *w; w++) { if (*w == '\'') buf_str(&cmd, "'\\''"); else buf_add(&cmd, w, 1); }
+            buf_str(&cmd, "'");
+        }
+        im_kv(&o, "command", cmd.p); free(cmd.p);
+    } else if (!strcmp(nm, "find_file")) {
+        Buf pat = {0};
+        im_arg(args, "name", &b);
+        buf_str(&pat, "**/*"); buf_str(&pat, im_bs(&b)); buf_str(&pat, "*");
+        im_kv(&o, "pattern", pat.p); free(pat.p);
+        im_mv(&o, args, "under", "path");
+    } else if (!strcmp(nm, "web_search")) im_mv(&o, args, "query", "query");
+    else if (!strcmp(nm, "web_fetch")) {
+        if (im_arg(args, "offset", &b) || im_true(args, "links")) *bad = "web_fetch with offset or links has no equivalent in the current tools";
+        im_mv(&o, args, "url", "url"); im_mv(&o, args, "find", "prompt");
+    } else if (!strcmp(nm, "ask_user")) {
+        im_key(&o, "questions"); buf_str(&o, "[{\"question\": \"");
+        im_arg(args, "question", &b); js_escape(&o, im_bs(&b), b.n);
+        buf_str(&o, "\", \"options\": [");
+        if (im_arg(args, "options", &b) == 's' && b.n) {
+            int n = 0;
+            for (char *w = b.p, *nx; w; w = nx) {
+                nx = strchr(w, '|'); if (nx) *nx++ = 0;
+                while (*w == ' ') w++;
+                size_t l = strlen(w); while (l && w[l - 1] == ' ') l--;
+                if (!l) continue;
+                buf_str(&o, n++ ? ", {\"label\": \"" : "{\"label\": \""); js_escape(&o, w, l); buf_str(&o, "\"}");
+            }
+        }
+        buf_str(&o, "]}]");
+    } else if (!strcmp(nm, "todo")) {
+        im_key(&o, "todos"); buf_str(&o, "[");
+        int n = 0; const int t = im_arg(args, "steps", &b);
+        if (t == 's' && b.n) { for (char *w = b.p, *nx; w; w = nx) { nx = strchr(w, '\n'); if (nx) *nx++ = 0; im_step(&o, w, &n); } }
+        else if (t == 'r' && b.p && *b.p == '[') {
+            const char *el, *ee;
+            for (const char *q = b.p + 1; (ee = gs_elem(q, &el)); q = ee) if (*el == '"') { Buf one = {0}; const char *pp = el; js_string(&pp, &one); if (one.p) im_step(&o, one.p, &n); free(one.p); }
+        }
+        buf_str(&o, "]");
+    } else if (!strcmp(nm, "delegate")) {
+        im_arg(args, "task", &b);
+        const char *w = im_bs(&b); int words = 0; size_t l = 0;
+        for (; w[l] && w[l] != '\n'; l++) if (w[l] == ' ' && ++words == 5) break;
+        char d[200]; snprintf(d, sizeof d, "%.*s", (int)(l < 160 ? l : 160), w);
+        im_kv(&o, "description", d); im_kv(&o, "prompt", w);
+    } else if (!strcmp(nm, "git")) {
+        Buf cmd = {0};
+        im_arg(args, "args", &b);
+        buf_str(&cmd, "git "); buf_str(&cmd, im_bs(&b));
+        im_kv(&o, "command", cmd.p); free(cmd.p);
+    } else {
+        for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) if (!strcmp(nm, none[i])) *bad = "uses a tool of the first set that has no equivalent in the current tools";
+        free(o.p); free(b.p);
+        return NULL;
+    }
+    buf_str(&o, "}");
+    free(b.p);
+    im_newname(nm);
+    return o.p;
+}
+
 /* uma conversa -> uma linha de saida; 0 se nao deu (motivo em *why) */
 static int im_line(const Config *c, const char *line, const char *sys_fixed, int keep_sys, FILE *out, const char **why, long *ncalls, long *nunk, int only_known) {
     char k[64]; const char *v, *q = js_ws(line), *e;
@@ -121,6 +265,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     ImCall calls[64]; int ncall = 0, nres = 0;
     char pend = 0;                               /* papel do texto em cur ('u' ou 't') */
     int unknown = 0;
+    const char *unconv = NULL;
 #define IM_FLUSH() do { if (pend == 'u' && cur.n) ah_push(&h, 'u', cur.p, cur.n); if (pend == 't' && tres.n) ah_push(&h, 't', tres.p, tres.n); buf_clear(&cur); buf_clear(&tres); pend = 0; nres = 0; } while (0)
     const char *el, *ee;
     for (const char *p = msgs + 1; (ee = gs_elem(p, &el)); p = ee) {
@@ -180,6 +325,10 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
                     }
                 }
                 if (!nm[0]) { free(args); continue; }
+                if (!g_im_keepnames) {                     /* primeiro conjunto de ferramentas -> segundo */
+                    char *na = im_old2new(nm, args ? args : "{}", &unconv);
+                    if (na) { free(args); args = na; g_im_renamed++; }
+                }
                 if (c->chat_fmt != 8) {                    /* separador antes da chamada, como o template escreve */
                     const char *prevs = cont ? h.v[h.n - 1].s : "";
                     const char tail = a.n ? a.p[a.n - 1] : (*prevs ? prevs[strlen(prevs) - 1] : '\n');
@@ -205,6 +354,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             else if (idv) { char id[128]; size_t n = 0; for (const char *w = idv + 1; *w && *w != '"' && n < 127; w++) id[n++] = *w; id[n] = 0;
                             for (int i = 0; i < ncall; i++) if (!strcmp(calls[i].id, id)) im_cpy(nm, calls[i].name, sizeof nm); }
             else if (nres < ncall) im_cpy(nm, calls[nres].name, sizeof nm);
+            if (!g_im_keepnames) im_newname(nm);
             im_result(c, &tres, nm, t, nres == 0);
             nres++; pend = 't';
         }
@@ -212,6 +362,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     }
     IM_FLUSH();
 #undef IM_FLUSH
+    if (unconv) { *why = unconv; goto fail; }
     if (only_known && unknown) { *why = "uses tools that the system prompt does not declare"; goto fail; }
     int na = 0; for (int i = 0; i < h.n; i++) na += h.v[i].role == 'a';
     if (!na) { *why = "no assistant turn"; goto fail; }
@@ -255,14 +406,38 @@ fail:
     return 0;
 }
 
-/* katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] */
+/* uma conversa vinda de uma transcricao (src/app/transcript.c) passa pelo mesmo im_line das outras entradas */
+typedef struct { const Config *c; const char *sys_fixed; int keep, only_known; FILE *fo; long nin, nout, ncalls, nunk; } ImTr;
+static void im_tr_emit(void *ud, const char *line) {
+    ImTr *t = ud;
+    const char *why = NULL;
+    t->nin++;
+    if (im_line(t->c, line, t->sys_fixed, t->keep, t->fo, &why, &t->ncalls, &t->nunk, t->only_known)) t->nout++;
+    else fprintf(stderr, "episodio %ld ignorado: %s\n", t->nin, why ? why : "?");
+}
+
+/* katana import <modelo.gguf> <entrada> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]
+   entrada: .jsonl de conversas (mensagens ou ShareGPT), ou transcricao de um agente de programacao (arquivo ou pasta), que
+   aceita tambem [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole] */
 static int import_main(const char *model_path, int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"); return 1; }
+    if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl|transcricao|pasta> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] [--keep-tool-names]\n"
+                                    "     transcricao: [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole]\n"); return 1; }
     const char *in = argv[0], *outp = argv[1], *sysopt = "keep";
     int only_known = 0;
+    TrOpt tro; memset(&tro, 0, sizeof tro);
+    tro.max_result = 6000;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--system") && i + 1 < argc) sysopt = argv[++i];
         else if (!strcmp(argv[i], "--only-known-tools")) only_known = 1;
+        else if (!strcmp(argv[i], "--keep-tool-names")) g_im_keepnames = 1;
+        else if (!strcmp(argv[i], "--whole")) tro.whole = 1;
+        else if (!strcmp(argv[i], "--max-result") && i + 1 < argc) tro.max_result = atol(argv[++i]);
+        else if (!strcmp(argv[i], "--replace") && i + 1 < argc) { if (!tr_add_rep(&tro, argv[++i])) return 1; }
+        else if (!strcmp(argv[i], "--cut-matching") && i + 1 < argc) {
+            char err[400]; const char *pat = argv[++i];
+            tro.cut = rx_compile(pat, strlen(pat), RX_I, err, sizeof err);
+            if (!tro.cut) { fprintf(stderr, "import: --cut-matching %s: %s\n", pat, err); return 1; }
+        }
         else { fprintf(stderr, "opcao desconhecida: %s\n", argv[i]); return 1; }
     }
     Model m; memset(&m, 0, sizeof m);
@@ -298,13 +473,22 @@ static int import_main(const char *model_path, int argc, char **argv) {
         fclose(f); ah_clear(&a); free(a.v); ah_clear(&b); free(b.v);
         if (!sys_fixed) { fprintf(stderr, "import: %s nao tem o bloco KSX1 (sessao gravada antes de 2026-11-20?)\n", sysopt + 6); return 1; }
     } else { fprintf(stderr, "import: --system keep, none, file:ARQ ou ksess:ARQ\n"); return 1; }
-    FILE *fi = fopen(in, "rb");
-    if (!fi) { fprintf(stderr, "import: nao abriu %s\n", in); return 1; }
+    const int is_tr = tr_is(in);
+    FILE *fi = is_tr ? NULL : fopen(in, "rb");
+    if (!is_tr && !fi) { fprintf(stderr, "import: nao abriu %s\n", in); return 1; }
     FILE *fo = fopen(outp, "wb");
-    if (!fo) { fprintf(stderr, "import: nao consegui gravar %s\n", outp); fclose(fi); return 1; }
+    if (!fo) { fprintf(stderr, "import: nao consegui gravar %s\n", outp); if (fi) fclose(fi); return 1; }
     size_t lc = 1 << 20; char *line = xalloc(lc, 1);
     long nin = 0, nout = 0, ncalls = 0, nunk = 0;
-    for (;;) {
+    if (is_tr) {
+        ImTr t = { c, sys_fixed, keep, only_known, fo, 0, 0, 0, 0 };
+        tro.emit = im_tr_emit; tro.ud = &t;
+        tr_run(&tro, in);
+        nin = t.nin; nout = t.nout; ncalls = t.ncalls; nunk = t.nunk;
+        printf("transcricoes: %ld arquivos, %ld episodios, %ld gravados (%ld falas do modelo, %ld chamadas de ferramenta)", tro.nfiles, tro.nep, tro.nout, tro.nturn, tro.ncall);
+        if (tro.cut) printf(", %ld encurtados por --cut-matching (%ld inteiros)", tro.ncut, tro.ndrop);
+        printf("\n");
+    } else for (;;) {
         size_t n = 0; int ch;
         while ((ch = fgetc(fi)) != EOF && ch != '\n') { if (n + 2 >= lc) { lc *= 2; line = realloc(line, lc); } line[n++] = (char)ch; }
         line[n] = 0;
@@ -316,10 +500,12 @@ static int import_main(const char *model_path, int argc, char **argv) {
         }
         if (ch == EOF) break;
     }
-    fclose(fi); fclose(fo); free(line); free(sys_fixed);
+    if (fi) fclose(fi);
+    fclose(fo); free(line); free(sys_fixed);
     printf("import: %ld de %ld conversas gravadas em %s (formato %s%s), %ld chamadas de ferramenta%s\n", nout, nin, outp,
            g4 ? "Gemma 4" : glm ? "GLM" : "ChatML", !g4 && !glm ? (c->tool_xml ? ", chamadas em XML" : ", chamadas em JSON") : "", ncalls,
            nunk ? " (algumas com ferramentas que o prompt de sistema nao declara: o modelo vai aprender nomes que o agente nao tem)" : "");
+    if (g_im_renamed) printf("import: %ld chamadas do primeiro conjunto de ferramentas convertidas para o segundo (--keep-tool-names mantem os nomes antigos)\n", g_im_renamed);
     if (nunk) printf("import: %ld chamadas usam ferramentas fora do prompt de sistema; --only-known-tools descarta essas conversas\n", nunk);
     return nout ? 0 : 1;
 }

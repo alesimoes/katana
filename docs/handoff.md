@@ -77,16 +77,25 @@ answers become training data for the local model.
   Gemma 4** (the GPU was in use by the owner's desktop): note quality, time per chunk (one earlier measurement:
   63 s for 5.8 KB against about 45 s raw) and the effect on codebench are unknown; the path that brings notes back
   after a compaction was not exercised.
-- *Transcripts to training data* (2026-11-21): `tools/dataset/transcript2jsonl.py` turns the JSONL transcripts of a
-  coding agent whose tools have the names and arguments of the second tool set (0t) into the messages format that
-  `katana import` reads: one conversation per user request, the blocks of one answer joined, automatic notices and
-  interrupted calls left out, long results clipped, `--replace 'REGEX=TEXT'` for paths and names of the source machine,
-  `--cut-matching REGEX` to end an episode before a turn that must not be learned. Measured on the 88 transcript files
-  of this repository's development sessions: 390 episodes, 362 written (4612 model turns, 4768 tool calls); `katana
-  import --only-known-tools` with the current system prompt (`katana agentsys`) accepted 362 of 362 for Qwen3.6 and for
-  Gemma 4: 16.5M characters, 5.5M of them to learn (the first training had 101k). The output was left out of the
-  repository and nothing was trained on it. Only 170 of the 3909 reasoning blocks in the transcripts carry text; the rest become an empty block. Step in
-  `tools/traintest/run.sh`. Check the provider's terms before training on these answers.
+- *Transcripts to training data* (2026-11-21, in C: `src/app/transcript.c`, part of `katana import`): when the input
+  of `katana import` is a folder or a JSONL transcript of a coding agent whose tools have the names and arguments of
+  the second tool set (0t), each user request becomes one conversation: the blocks of one answer joined, automatic
+  notices and interrupted calls left out, long results clipped (`--max-result`), `--replace 'REGEX=TEXT'` for paths
+  and names of the source machine, `--cut-matching REGEX` to end an episode before a turn that must not be learned
+  (both use the engine's own regex). Measured on the 88 transcript files of this repository's development sessions:
+  392 episodes, 364 written (4619 model turns, 4774 tool calls), accepted 364 of 364 with `--only-known-tools` and the
+  current system prompt (`katana agentsys`), in 2.8 s; 16.5M characters, 5.5M of them to learn (the first training had
+  101k). Only 170 of the 3909 reasoning blocks in the transcripts carry text; the rest become an empty block. The
+  output was left out of the repository and nothing was trained on it. Check the provider's terms before training on
+  these answers.
+- *First tool set to second* (same day, `im_old2new` in `src/app/importer.c`): `katana import` rewrites calls of the
+  first set into the second, name and arguments (`read_file` -> `Read`, `run_command` -> `Bash` with the timeout in
+  ms, `search_files` -> `Grep`, `todo` -> `TodoWrite`, `ask_user` -> `AskUserQuestion`, `delegate` -> `Agent`,
+  `list_dir` and `git` -> `Bash`, `find_file` -> `Glob`, and so on); a conversation with a call that has no
+  equivalent (`remember`, `terminal`, `job`, `write_file` with `append`...) is dropped; `--keep-tool-names` turns it
+  off. The result texts stay as recorded (context, not a training target). Checked on synthetic conversations only
+  (step in `tools/traintest/run.sh`). **Not covered**: `katana export` of `.ksess` sessions recorded with the first
+  set (it copies the exact text); those sessions keep the old names. Training plan: `docs/specialization.md`.
 - *Not done*: `katana train` on a real 35B model is still
   unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
 

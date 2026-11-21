@@ -185,6 +185,47 @@ fail): round 1 accepted, round 2 rejected, data accumulated 6 -> 12 conversation
 39 codebench tasks the evaluation set is about 10 tasks, so one more task solved is within noise; use `--eval-repeat`
 for a steadier score.
 
+## Plan: teach the models katana's tools (2026-11-21)
+
+Goal: Qwen3.6-35B-A3B and Gemma 4 26B-A4B call the agent's current tools (the second set, `src/tools/`) in the right
+format, with fewer wasted and invalid calls, without losing tasks on codebench. Nothing below has been run yet.
+
+| Step | What | Done when |
+|---|---|---|
+| 0 | Baseline: codebench with the first set (`KATANA_TOOLS=1`) and the second, alternating, both models, `--repeat 2` | solved tasks, time and invalid calls per run recorded; this is the number every later step is compared with |
+| 1 | Speed of training on the card: `sh tools/traintest/run.sh`, then 4 steps of `katana train` with and without `KATANA_TRAIN_GPU=0`, alternating | seconds per step on the GPU known (CPU measured: 229 s per 512-token window) |
+| 2 | Data with the second set's names (below) and a fixed validation split by conversation | one JSONL per model, sizes in tokens and windows recorded |
+| 3 | First run, Qwen3.6: `--plan 1`, then attention adapters rank 8, `--seq 512`, `--final 0`, one night | validation loss below its starting value at the best step |
+| 4 | Measure: codebench base against base + `.kspec`, alternating, `--repeat 2`, `run.py compare`; count calls the agent rejected (unknown tool, bad arguments) in both | accepted if it solves at least as many tasks and makes fewer rejected calls; one task of difference is noise |
+| 5 | Gemma 4: steps 2 to 4 with the data imported in its format | same criterion |
+| 6 | Loop: `katana learn` rounds (passed codebench sessions, optional teacher), from the accepted `.kspec` | evaluation tasks solved do not drop over two rounds |
+| 7 | Use: `KATANA_SPEC` in the agent and desktop, or `katana merge` | the owner's everyday agent runs with it |
+
+Data sources, all through `katana import` or `katana export`:
+
+- *Development transcripts* (`katana import <model> <folder> out.jsonl --system file:sys.txt --only-known-tools`,
+  with `--replace` and `--cut-matching`): 364 episodes, 4774 calls, 5.5M characters to learn. About 80% of the calls
+  are `Bash` on this repository, so cap the Bash-only episodes or the model learns mostly that.
+- *Conversations with the first set's names* (messages format: teacher and distill output from before 2026-11-21):
+  `katana import` converts names and arguments. `.ksess` sessions recorded with the first set are not converted;
+  collect new ones instead.
+- *New sessions with the second set*: codebench with `--sessions --repeat` (only the passed ones) and teacher-mode
+  sessions (`katana export --teacher`). These are the only data with a pass or fail label.
+
+Budget (estimate from the measured 229 s per step, not a measurement of this data): the transcripts are about 5M
+tokens, close to 10,000 windows of 512 tokens, which is 26 days per epoch on the CPU. One night is about 150 steps. So
+step 3 uses a subset (a few hundred windows, short episodes first, every tool represented) unless step 1 shows the
+GPU is several times faster.
+
+Open points:
+
+- 96% of the reasoning blocks in the transcripts are empty. A model trained on them with reasoning on learns to skip
+  its reasoning. Either import with reasoning off (`KATANA_THINK=0`, the model's empty block) and serve the same way,
+  or keep only the turns that carry reasoning text. Decide before step 3; measure both if the night allows.
+- Converted conversations carry tool results in the first set's format.
+- The transcripts are answers of a hosted model: check the provider's terms before training on them.
+- With 39 codebench tasks one more solved is within noise; the rejected-call count is the more sensitive measure.
+
 ## Limits today
 
 - Architectures: llama, qwen2, qwen3, olmoe, qwen3moe-style (RMSNorm, GQA, RoPE in pairs or halves, SwiGLU,
