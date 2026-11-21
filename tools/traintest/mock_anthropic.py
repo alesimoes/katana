@@ -19,6 +19,8 @@ def check(h, b):
         return 401, "bad x-api-key"
     if h.get("anthropic-version") != "2026-10-21":
         return 400, "bad anthropic-version"
+    if b.get("stream") is not True:
+        return 400, "the agent must ask for a stream"
     for k in ("temperature", "top_p", "top_k"):
         if k in b:
             return 400, "%s is not accepted" % k
@@ -101,6 +103,27 @@ class H(BaseHTTPRequestHandler):
             code, why = (404, "not found") if self.path != "/v1/messages" else check({k.lower(): v for k, v in self.headers.items()}, b)
         out = answer(b) if code == 200 else {"type": "error", "error": {"type": "invalid_request_error", "message": why}}
         open(LOG, "a").write(json.dumps({"status": code, "why": why, "request": b}) + "\n")
+        if code == 200 and b.get("stream"):       # eventos, com o texto, o raciocinio e a entrada das chamadas em pedacos
+            ev = [{"type": "message_start", "message": {"usage": {k: v for k, v in out["usage"].items() if k != "output_tokens"}}}]
+            for i, blk in enumerate(out["content"]):
+                if blk["type"] == "text":
+                    ev.append({"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}})
+                    ev += [{"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": blk["text"][j:j + 4]}} for j in range(0, len(blk["text"]), 4)]
+                elif blk["type"] == "thinking":
+                    ev.append({"type": "content_block_start", "index": i, "content_block": {"type": "thinking", "thinking": "", "signature": ""}})
+                    ev += [{"type": "content_block_delta", "index": i, "delta": {"type": "thinking_delta", "thinking": blk["thinking"][j:j + 7]}} for j in range(0, len(blk["thinking"]), 7)]
+                    ev.append({"type": "content_block_delta", "index": i, "delta": {"type": "signature_delta", "signature": blk["signature"]}})
+                else:
+                    enc = json.dumps(blk["input"])
+                    ev.append({"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": blk["id"], "name": blk["name"], "input": {}}})
+                    ev += [{"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": enc[j:j + 6]}} for j in range(0, len(enc), 6)]
+                ev.append({"type": "content_block_stop", "index": i})
+            ev.append({"type": "message_delta", "delta": {"stop_reason": out["stop_reason"]}, "usage": {"output_tokens": out["usage"]["output_tokens"]}})
+            ev.append({"type": "message_stop"})
+            data = "".join("event: %s\ndata: %s\n\n" % (x["type"], json.dumps(x)) for x in ev).encode()
+            self.send_response(200); self.send_header("content-type", "text/event-stream"); self.send_header("content-length", str(len(data))); self.end_headers()
+            self.wfile.write(data)
+            return
         data = json.dumps(out).encode()
         self.send_response(code); self.send_header("content-type", "application/json"); self.send_header("content-length", str(len(data))); self.end_headers()
         self.wfile.write(data)

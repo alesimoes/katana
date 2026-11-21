@@ -411,6 +411,145 @@ static void ts_tap(const char *b, size_t n) {
     }
 }
 
+/* ---- texto do professor aparecendo enquanto ele escreve (caminho api) ----
+ * O pedido vai com stream: true e a resposta chega em eventos (linhas "data: {...}"). O raciocinio resumido e o texto
+ * sao impressos conforme chegam; os blocos sao remontados (texto, raciocinio com a assinatura, chamadas) num objeto
+ * igual ao da resposta sem stream, para o mesmo leitor e para voltarem iguais nos pedidos seguintes. Resposta que
+ * nao e stream (erro HTTP) fica em other; a ultima linha, escrita pelo curl, traz o codigo HTTP. */
+#define AS_BLOCKS 64
+typedef struct { char type[24]; Buf start, acc, sig; } AsBlock;
+static struct { Buf line, other, err; AsBlock b[AS_BLOCKS]; int nb, http, events; char stop[40]; long tin, tout, tread, twrite;
+                int think_open, think_closed, text_blocks; size_t shown; double mark; int midline; } g_as;
+static void as_reset(void) {
+    buf_clear(&g_as.line); buf_clear(&g_as.other); buf_clear(&g_as.err);
+    for (int i = 0; i < AS_BLOCKS; i++) { g_as.b[i].type[0] = 0; buf_clear(&g_as.b[i].start); buf_clear(&g_as.b[i].acc); buf_clear(&g_as.b[i].sig); }
+    g_as.nb = 0; g_as.http = 0; g_as.events = 0; g_as.stop[0] = 0; g_as.tin = g_as.tout = g_as.tread = g_as.twrite = 0;
+    g_as.think_open = g_as.think_closed = g_as.text_blocks = 0; g_as.shown = 0; g_as.mark = now_sec(); g_as.midline = 0;
+}
+static void as_word(const char *v, char *out, size_t cap) { size_t n = 0; if (*v == '"') for (const char *w = v + 1; *w && *w != '"' && n < cap - 1; w++) out[n++] = *w; out[n] = 0; }
+static void as_show(const char *s, size_t n) { if (!n) return; fwrite(s, 1, n, stdout); fflush(stdout); g_as.shown += n; g_as.midline = s[n - 1] != '\n'; }
+static void as_event(const char *js) {
+    char k[64], type[40] = "", dtype[40] = ""; const char *v, *e, *cb = NULL, *delta = NULL, *msg = NULL, *usage = NULL, *error = NULL;
+    int index = -1;
+    const char *q = js_ws(js);
+    if (*q != '{') return;
+    for (const char *p = q + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+        if (!strcmp(k, "type")) as_word(v, type, sizeof type); else if (!strcmp(k, "index")) index = atoi(v);
+        else if (!strcmp(k, "content_block") && *v == '{') cb = v; else if (!strcmp(k, "delta") && *v == '{') delta = v;
+        else if (!strcmp(k, "message") && *v == '{') msg = v; else if (!strcmp(k, "usage") && *v == '{') usage = v;
+        else if (!strcmp(k, "error") && *v == '{') error = v;
+    }
+    g_as.events++;
+    if (msg) for (const char *p = msg + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "usage") && *v == '{') usage = v;
+    if (usage) for (const char *p = usage + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+        if (!strcmp(k, "input_tokens")) g_as.tin = atol(v); else if (!strcmp(k, "output_tokens")) g_as.tout = atol(v);
+        else if (!strcmp(k, "cache_read_input_tokens")) g_as.tread = atol(v); else if (!strcmp(k, "cache_creation_input_tokens")) g_as.twrite = atol(v);
+    }
+    if (error) for (const char *p = error + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "message") && *v == '"') { const char *pp = v; buf_clear(&g_as.err); js_string(&pp, &g_as.err); }
+    if (!strcmp(type, "content_block_start") && cb && index >= 0 && index < AS_BLOCKS) {
+        AsBlock *b = &g_as.b[index];
+        const char *ce = gs_skipv(cb);
+        if (ce) buf_add(&b->start, cb, (size_t)(ce - cb));
+        for (const char *p = cb + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "type")) as_word(v, b->type, sizeof b->type);
+        if (index + 1 > g_as.nb) g_as.nb = index + 1;
+        if (!strcmp(b->type, "text")) g_as.text_blocks++;
+    } else if (!strcmp(type, "content_block_delta") && delta && index >= 0 && index < AS_BLOCKS) {
+        AsBlock *b = &g_as.b[index];
+        const char *tv = NULL, *thv = NULL, *sv = NULL, *pv = NULL;
+        for (const char *p = delta + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+            if (!strcmp(k, "type")) as_word(v, dtype, sizeof dtype);
+            else if (!strcmp(k, "text") && *v == '"') tv = v; else if (!strcmp(k, "thinking") && *v == '"') thv = v;
+            else if (!strcmp(k, "signature") && *v == '"') sv = v; else if (!strcmp(k, "partial_json") && *v == '"') pv = v;
+        }
+        Buf t = {0};
+        if (thv) {
+            const char *pp = thv; js_string(&pp, &t);
+            if (t.p && t.n) {
+                if (!g_as.think_open) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); g_as.think_open = 1; g_as.shown++; }
+                buf_add(&b->acc, t.p, t.n); as_show(t.p, t.n);
+            }
+        } else if (tv) {
+            const char *pp = tv; js_string(&pp, &t);
+            if (t.p && t.n) {
+                if (g_as.think_open && !g_as.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); g_as.think_closed = 1; g_as.midline = 0; }
+                if (!b->acc.n && g_as.text_blocks > 1) as_show("\n\n", 2);      /* outro bloco de texto: como a fala final junta */
+                buf_add(&b->acc, t.p, t.n); as_show(t.p, t.n);
+            }
+        } else if (sv) { const char *pp = sv; js_string(&pp, &t); if (t.p) buf_add(&b->sig, t.p, t.n); }
+        else if (pv) {
+            const char *pp = pv; js_string(&pp, &t);
+            if (t.p) buf_add(&b->acc, t.p, t.n);
+            const double now = now_sec();          /* escrevendo uma chamada (um arquivo inteiro leva minutos): mostra o quanto ja chegou */
+            if (now - g_as.mark >= 1.0 && getenv("KATANA_UI")) {
+                g_as.mark = now;
+                if (g_as.think_open && !g_as.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); g_as.think_closed = 1; g_as.midline = 0; }
+                if (g_as.midline) { fputc('\n', stdout); g_as.midline = 0; }
+                size_t tot = 0; for (int i = 0; i < g_as.nb; i++) if (!strcmp(g_as.b[i].type, "tool_use")) tot += g_as.b[i].acc.n;
+                printf("\x01" "TEACHW %zu\n", tot); fflush(stdout);
+            }
+        }
+        free(t.p);
+    } else if (!strcmp(type, "message_delta") && delta) {
+        for (const char *p = delta + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "stop_reason")) as_word(v, g_as.stop, sizeof g_as.stop);
+    }
+}
+static void as_line(const char *l) {
+    if (!strncmp(l, "data:", 5)) { as_event(l + 5); return; }
+    if (!strncmp(l, "KATANA_HTTP ", 12)) { g_as.http = atoi(l + 12); return; }
+    if (!strncmp(l, "event:", 6) || l[0] == ':' || !l[0] || l[0] == '\r') return;
+    buf_str(&g_as.other, l); buf_str(&g_as.other, "\n");
+}
+static void as_tap(const char *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (b[i] != '\n') { buf_add(&g_as.line, b + i, 1); continue; }
+        if (g_as.line.n && g_as.line.p[g_as.line.n - 1] == '\r') g_as.line.p[--g_as.line.n] = 0;
+        as_line(g_as.line.p ? g_as.line.p : "");
+        buf_clear(&g_as.line);
+    }
+}
+/* fim do stream: fecha o raciocinio na tela e escreve em r o objeto da resposta (ou o corpo de erro). Devolve o HTTP */
+static int as_finish(Buf *r) {
+    if (g_as.line.n) as_line(g_as.line.p);
+    if (g_as.think_open && !g_as.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); fflush(stdout); g_as.think_closed = 1; }
+    buf_clear(r);
+    if (g_as.http != 200 || !g_as.events || g_as.err.n) {
+        if (g_as.err.n) { buf_str(r, "{\"error\": {\"message\": "); tch_jstr(r, g_as.err.p, g_as.err.n); buf_str(r, "}}"); return g_as.http == 200 ? 0 : g_as.http; }
+        if (g_as.other.n) buf_add(r, g_as.other.p, g_as.other.n);
+        return g_as.http == 200 ? 0 : g_as.http;
+    }
+    buf_str(r, "{\"content\": [");
+    int n = 0;
+    for (int i = 0; i < g_as.nb; i++) {
+        AsBlock *b = &g_as.b[i];
+        if (!b->type[0]) continue;
+        buf_str(r, n++ ? ", " : "");
+        if (!strcmp(b->type, "text")) { buf_str(r, "{\"type\": \"text\", \"text\": "); tch_jstr(r, b->acc.p ? b->acc.p : "", b->acc.n); buf_str(r, "}"); }
+        else if (!strcmp(b->type, "thinking")) {
+            buf_str(r, "{\"type\": \"thinking\", \"thinking\": "); tch_jstr(r, b->acc.p ? b->acc.p : "", b->acc.n);
+            buf_str(r, ", \"signature\": "); tch_jstr(r, b->sig.p ? b->sig.p : "", b->sig.n); buf_str(r, "}");
+        } else if (!strcmp(b->type, "tool_use")) {     /* os campos do inicio do bloco (id, name...) e a entrada juntada dos pedacos */
+            char k[64]; const char *v, *e; int m = 0;
+            buf_str(r, "{");
+            if (b->start.p) for (const char *p = b->start.p + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+                if (!strcmp(k, "input")) continue;
+                const char *ve = gs_skipv(v);
+                if (!ve) continue;
+                buf_str(r, m++ ? ", \"" : "\""); buf_str(r, k); buf_str(r, "\": "); buf_add(r, v, (size_t)(ve - v));
+            }
+            buf_str(r, m ? ", \"input\": " : "\"input\": ");
+            const char *in = b->acc.p ? js_ws(b->acc.p) : "";
+            if (*in == '{' && gs_skipv(in)) buf_add(r, b->acc.p, b->acc.n); else buf_str(r, "{}");
+            buf_str(r, "}");
+        } else if (b->start.p) buf_add(r, b->start.p, b->start.n);
+        else n--;
+    }
+    char t[300];
+    snprintf(t, sizeof t, "], \"stop_reason\": \"%s\", \"usage\": {\"input_tokens\": %ld, \"output_tokens\": %ld, \"cache_read_input_tokens\": %ld, \"cache_creation_input_tokens\": %ld}}",
+             g_as.stop, g_as.tin, g_as.tout, g_as.tread, g_as.twrite);
+    buf_str(r, t);
+    return 200;
+}
+
 /* uma fala pelo Claude Code desta maquina. Escreve em r um objeto no formato de resposta da API (content com text e
    tool_use, usage), para o mesmo leitor servir aos dois caminhos. Devolve 200, ou 0 com a mensagem de erro em r */
 static int tch_cli_call(const Config *c, const char *base, const AHist *slog, Buf *r) {
@@ -524,7 +663,7 @@ static int teacher_turn(const Config *c, const char *sys, const AHist *slog, con
     Buf req = {0}, tsys = {0};
     tch_sys(base, &tsys);
     buf_str(&req, "{\"model\": "); tch_jstr(&req, g_tch_model, strlen(g_tch_model));
-    buf_str(&req, ", \"max_tokens\": 16000, \"cache_control\": {\"type\": \"ephemeral\"}, \"thinking\": {\"type\": \"adaptive\", \"display\": \"summarized\"}, \"output_config\": {\"effort\": ");
+    buf_str(&req, ", \"stream\": true, \"max_tokens\": 32000, \"cache_control\": {\"type\": \"ephemeral\"}, \"thinking\": {\"type\": \"adaptive\", \"display\": \"summarized\"}, \"output_config\": {\"effort\": ");
     tch_jstr(&req, g_tch_effort, strlen(g_tch_effort)); buf_str(&req, "}");
     if (fallback) buf_str(&req, ", \"fallbacks\": \"default\"");
     buf_str(&req, ", \"system\": "); tch_jstr(&req, tsys.p ? tsys.p : "", tsys.n);
@@ -553,7 +692,8 @@ static int teacher_turn(const Config *c, const char *sys, const AHist *slog, con
     free(req.p);
     shq(hdr, qh, sizeof qh); shq(body, qb, sizeof qb); shq(resp, qr, sizeof qr);
     snprintf(full, sizeof full, "%s/v1/messages", g_tch_url); shq(full, qf, sizeof qf);
-    snprintf(cmd, sizeof cmd, "curl -sS --max-time 900 -o %s -w '%%{http_code}' -H @%s --data-binary @%s %s", qr, qh, qb, qf);
+    (void)qr;
+    snprintf(cmd, sizeof cmd, "curl -sS -N --max-time 900 -w '\\nKATANA_HTTP %%{http_code}\\n' -H @%s --data-binary @%s %s", qh, qb, qf);
     for (int attempt = 0; okf && attempt < 4 && !g_stop; attempt++) {
         if (attempt) {          /* 429, 5xx ou rede: espera e tenta de novo */
             const int wait = attempt == 1 ? 3 : attempt == 2 ? 10 : 25;
@@ -562,12 +702,13 @@ static int teacher_turn(const Config *c, const char *sys, const AHist *slog, con
             if (g_stop) break;
         }
         int rcx = 0;
+        as_reset();
+        g_cmd_tap = as_tap;
         char *code = run_collect(cmd, 910, 4096, &rcx);
-        http = code ? atoi(code) : 0;
+        g_cmd_tap = NULL;
         free(code);
-        buf_clear(&r);
-        FILE *fr = fopen(resp, "rb");
-        if (fr) { char tmp[65536]; size_t n; while ((n = fread(tmp, 1, sizeof tmp, fr)) > 0) buf_add(&r, tmp, n); fclose(fr); }
+        http = as_finish(&r);
+        if (g_as.shown) break;          /* ja apareceu texto na tela: nao repete o pedido */
         if (http == 200 || (http >= 400 && http < 500 && http != 429 && http != 408 && http != 409)) break;
     }
     unlink(hdr); unlink(body); unlink(resp); rmdir(dir);
@@ -654,7 +795,7 @@ parse:;
     buf_add(reply, a.p + skip, a.n - skip);
     fprintf(stderr, "%s[teacher %s: %ld tokens in (%ld from the cache), %ld out, %.1f s]%s\n", CE(C_DIM), g_tch_model, tin + tread + twrite, tread, tout, now_sec() - t0, CE(C_RESET));
 #ifndef _WIN32
-    if (g_tch_cli && g_ts.shown) { fputs(a.p + think_n + text.n, stdout); fflush(stdout); }      /* o texto ja apareceu enquanto chegava: so o resto (chamadas) */
+    if (g_tch_cli ? g_ts.shown > 0 : g_as.shown > 0) { fputs(a.p + think_n + text.n, stdout); fflush(stdout); }      /* raciocinio e texto ja apareceram enquanto chegavam: so o resto (chamadas) */
     else
 #endif
     tch_print(reason.n ? reason.p : NULL, a.p + think_n);
