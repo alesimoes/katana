@@ -29,8 +29,11 @@ schema = json.loads(opt("--json-schema") or "null")
 if not schema or set(schema.get("required", [])) != {"text", "tool_calls"}:
     fail("schema")
 system = open(opt("--system-prompt-file")).read()
-if "<tool_call>" in system or '"name": "write_file"' not in system or '"input_schema"' not in system:
+CL = os.environ.get("MOCK_TOOLS") == "claude"       # o agente declara as ferramentas com os nomes do Claude Code (KATANA_TOOLS=claude)
+if "<tool_call>" in system or ('"name": "Write"' if CL else '"name": "write_file"') not in system or '"input_schema"' not in system:
     fail("system prompt")
+if CL and ('"name": "write_file"' in system or '"file_path"' not in system or '"name": "Bash"' not in system or '"name": "ToolSearch"' not in system):
+    fail("system prompt: old tool names or missing new ones")
 prompt = sys.stdin.read()
 try:
     ms = json.loads(prompt[prompt.index("\n[") + 1:prompt.rindex("]") + 1])
@@ -40,7 +43,20 @@ if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user" or any(i and m[
     fail("roles")
 last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
 step = sum(1 for m in ms[last_user_text + 1:] if m["role"] == "assistant")
-if step == 0:
+if CL:
+    if step == 0:
+        out = {"text": "Gravo o arquivo.", "tool_calls": [{"name": "Write", "arguments": {"file_path": "nota2.txt", "content": "linha 1\nlinha 2\n"}}]}
+    elif step == 1:
+        out = {"text": "", "tool_calls": [{"name": "Edit", "arguments": {"file_path": "nota2.txt", "old_string": "linha 2", "new_string": "linha dois"}}]}
+    elif step == 2:
+        out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "cat nota2.txt && cd / && pwd", "timeout": 20000}},
+                                           {"name": "Grep", "arguments": {"pattern": "linha d", "path": "nota2.txt", "output_mode": "content"}}]}
+    else:
+        res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+        res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+        good = len(res) == 4 and "linha dois" in res[2] and "Shell cwd was reset" in res[2] and "linha dois" in res[3] and "updated" in res[1]
+        out = {"text": "Pronto: ferramentas novas conferidas." if good else "FALHA nos resultados: %s" % res, "tool_calls": []}
+elif step == 0:
     out = {"text": "Vou gravar o arquivo: ação \"um\"\ne 😀 dois.", "tool_calls": [{"name": "write_file", "arguments": {"path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]}
 elif step == 1:
     out = {"text": "", "tool_calls": [{"name": "run_command", "arguments": {"command": "cat nota.txt", "timeout_s": 20}}]}

@@ -187,6 +187,13 @@ mkdir -p "$D/tw2"
 if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linha 1" "$D/tw2/nota.txt" 2>/dev/null \
    && [ "$(grep -c 'Vou gravar o arquivo: ação "um"' "$D/cli_out.txt")" = 1 ] && [ "$(grep -c '^e 😀 dois\.' "$D/cli_out.txt")" = 1 ] \
    && [ "$(grep -c 'Pronto: nota.txt gravado e conferido\.' "$D/cli_out.txt")" = 1 ]; then echo "professor pelo claude -p (texto aos poucos): ok"; else echo "professor pelo claude -p: FALHOU"; fail=1; fi
+# as mesmas ferramentas com os nomes e argumentos do Claude Code (KATANA_TOOLS=claude): Write, Edit, Bash e Grep pelo laco inteiro
+mkdir -p "$D/tw3"
+(cd "$D/tw3" && printf 'grave e confira nota2.txt\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=claude MOCK_TOOLS=claude \
+   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli3.jsonl" $K agent "$D/agent.gguf" >"$D/cli3_out.txt" 2>/dev/null) || true
+if [ "$(grep -c '"ok": true' "$D/cli3.jsonl" 2>/dev/null)" = 4 ] && grep -q "linha dois" "$D/tw3/nota2.txt" 2>/dev/null \
+   && grep -q 'Pronto: ferramentas novas conferidas' "$D/cli3_out.txt"; then echo "ferramentas com os nomes do Claude Code (Write, Edit, Bash, Grep) pelo laco: ok"
+else echo "ferramentas com os nomes do Claude Code: FALHOU"; grep -a "FALHA\|ok\": false" "$D/cli3_out.txt" "$D/cli3.jsonl" | head -5; fail=1; fi
 python3 -c "open('$D/big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
 python3 tools/traintest/mock_anthropic.py 8201 "$D/rd_req.jsonl" "$D/big.txt" & RMOCK=$!
 sleep 1
