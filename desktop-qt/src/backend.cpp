@@ -9,6 +9,8 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QClipboard>
+#include <QDesktopServices>
+#include <QWindow>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QHash>
@@ -56,12 +58,12 @@ QString MessageModel::showTime(const QString &iso)
     return t.toString(t.date() == QDate::currentDate() ? "HH:mm" : "dd/MM HH:mm");
 }
 
-void MessageModel::append(const QString &kind, const QString &text, const QString &name, const QString &time)
+void MessageModel::append(const QString &kind, const QString &text, const QString &name, const QString &time, const QString &out)
 {
     beginInsertRows({}, m_items.size(), m_items.size());
     // mensagens do usuario e do assistente levam a hora (a de agora, se quem chama nao deu outra)
     const QString t = !time.isEmpty() ? time : (kind == "user" || kind == "assistant") ? QDateTime::currentDateTime().toString(Qt::ISODate) : QString();
-    m_items.append({kind, text, name, {}, t});
+    m_items.append({kind, text, name, out, t});
     endInsertRows();
     emit countChanged();
 }
@@ -743,7 +745,7 @@ void Backend::launch(const QString &modelFile)
         env.insert("KATANA_TEACHER", "1");      // o professor estava ligado quando o aplicativo fechou
     // especializacoes: todos os .kspec de ~/.katana/specs treinados sobre o modelo escolhido entram na carga
     if (!env.contains("KATANA_SPEC")) {
-        const QString specs = QDir::homePath() + "/.katana/specs";
+        const QString specs = specsDir();
         if (!QDir(specs).entryList({"*.kspec"}, QDir::Files).isEmpty())
             env.insert("KATANA_SPEC", specs);
     }
@@ -756,6 +758,9 @@ void Backend::launch(const QString &modelFile)
     p->setProgram(m_katana);
     p->setArguments({"agent", path});
     p->setWorkingDirectory(workspace());   // pasta de trabalho do agente (a que o usuario escolheu, ou a atual)
+    m_specsActive.clear();      // as linhas de especializacao do motor novo preenchem de novo
+    m_specsSkipped.clear();
+    emit specsChanged();
     m_outBuf.clear();
     m_errBuf.clear();
     m_utf8Tail.clear();
@@ -862,6 +867,7 @@ void Backend::stop()
 {
     if (!m_proc)
         return;
+    m_stopRequested = true;
     if (m_choicePending)
         answerChoice(QString());  // o agente esta parado esperando a resposta: cancela a pergunta
     if (!m_queue.isEmpty()) {  // Parar pausa a fila: o usuario decide se segue
@@ -1036,6 +1042,7 @@ bool Backend::send(const QString &text)
     }
     setTexts({}, {});
     m_speed.clear();
+    m_stopRequested = false;
     m_msgs.append("user", text);
     m_sess.mensagens.append({"user", text, {}, QDateTime::currentDateTime().toString(Qt::ISODate)});
     if (m_sess.titulo.isEmpty())
@@ -1191,6 +1198,34 @@ void Backend::saveSession()
 }
 
 void Backend::copyText(const QString &text) { QGuiApplication::clipboard()->setText(text); }
+
+// caminho relativo (achados do agente) e resolvido na pasta de trabalho
+QString Backend::resolveFile(const QString &f) const
+{
+    return QFileInfo(f).isAbsolute() ? f : QDir(workspace()).filePath(f);
+}
+
+void Backend::openLocal(const QString &path)
+{
+    m_lastOpened = path;
+    if (!m_testMode)
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+void Backend::openPath(const QString &path) { openLocal(resolveFile(path)); }
+
+void Backend::openFolderOf(const QString &path) { openLocal(QFileInfo(resolveFile(path)).absolutePath()); }
+
+void Backend::openSpecsFolder()
+{
+    QDir().mkpath(specsDir());
+    openLocal(specsDir());
+}
+
+void Backend::askSummary()
+{
+    send("Você parou sem me responder. Resuma o que foi feito neste pedido e o que ainda falta fazer.");
+}
 
 // aparencia: "jetbrains" (padrao) ou "plex"; KATANA_FONTE forca uma
 QString Backend::tema() const
@@ -1366,6 +1401,18 @@ void Backend::handleMarker(const QByteArray &line)
             m_ui->sync();
         }
         emit workspaceChanged();
+    } else if (name == "NOTIFY") {  // NOTIFY <titulo>\t<mensagem>: PushNotification do agente
+        const QStringList a = args.split('\t');
+        m_msgs.append("notify", a.value(1), a.value(0));
+        for (QWindow *w : QGuiApplication::topLevelWindows())     // janela em segundo plano: pisca na barra de tarefas
+            if (!w->isActive()) w->alert(0);
+    } else if (name == "FILE") {  // FILE <modo>\t<caminho>\t<legenda>: SendUserFile
+        const QStringList a = args.split('\t');
+        m_msgs.append("file", a.value(1), a.value(0), {}, a.value(2));
+    } else if (name == "FINDING") {  // FINDING <arquivo>\t<linha>\t<categoria>\t<resumo>: ReportFindings
+        const QStringList a = args.split('\t');
+        const QString loc = a.value(1).isEmpty() ? a.value(0) : a.value(0) + ":" + a.value(1);
+        m_msgs.append("finding", a.mid(3).join(' '), loc, {}, a.value(2));
     } else if (name == "RESUMING") {  // RESUMING <tokens>: recalculo longo (so na 1a vez; depois o KV vem do disco)
         setTexts("Retomando a sessao: recalculando " + args.trimmed() + " tokens (so na primeira vez, pode levar alguns minutos)...", {});
     } else if (name == "RESUME") {  // RESUME <msgs> <msgs_total> <tokens> <especialistas> <segundos> <kv|calc>
@@ -1412,6 +1459,17 @@ void Backend::markReady()
     }
     if (m_dirty)
         saveSession();
+    if (m_answering && !m_stopRequested) {   // o pedido terminou: se o ultimo turno do modelo nao teve texto, avisa
+        QString last;
+        for (int i = m_msgs.count() - 1; i >= 0; i--) {
+            const QString k = m_msgs.get(i)["kind"].toString();
+            if (k == "notice" || k == "notify" || k == "file" || k == "finding") continue;
+            last = k;
+            break;
+        }
+        if (last == "tool" || last == "user")
+            m_msgs.append("stopped", "O agente parou sem responder.");
+    }
     setTexts({}, m_error);
     setState(true, false, false);
     refreshSessions();
@@ -1528,6 +1586,19 @@ void Backend::onStderr()
             const auto bm = banner.match(l);
             if (bm.hasMatch() && m_ctxUsed == 0)
                 setCtx(0, bm.captured(1).toInt());
+        }
+        {   // especializacoes aplicadas ou puladas na carga do modelo
+            static const QRegularExpression spOk(R"re(^especializacao: (.+) \(\d+ tensores\)$)re");
+            static const QRegularExpression spSkip(R"re(^especializacao pulada \((.+?)\): (.+)$)re");
+            const auto so = spOk.match(l), ss = spSkip.match(l);
+            if (so.hasMatch()) {
+                const QString n = QFileInfo(so.captured(1)).fileName();
+                if (!m_specsActive.contains(n)) m_specsActive.append(n);
+                emit specsChanged();
+            } else if (ss.hasMatch()) {
+                m_specsSkipped.append(QFileInfo(ss.captured(2)).fileName() + " (" + ss.captured(1) + ")");
+                emit specsChanged();
+            }
         }
         const auto m = stats.match(l);
         if (m.hasMatch()) {
