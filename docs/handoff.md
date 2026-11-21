@@ -12,6 +12,14 @@ and `./katana tool <Name> '<json>'`. It is the default set since 2026-11-21 (own
 Qwen3.6 and Gemma 4); `KATANA_TOOLS=1` declares the first set again. Description, status and what is not measured: `docs/tools.md`.
 Next: codebench first set against second set, alternating.
 
+Found in the owner's real use on 2026-11-21 (`~/.katana/agente.log`): the models that write calls in XML send every
+value as text, so an array argument arrived as a string with the JSON inside and `TodoWrite` (36 calls),
+`AskUserQuestion` (38) and `SendUserFile` (9) refused every one of them; the model repeated the same call for minutes.
+Fixed in `ct_dispatch` (`ct_unwrap` in `src/tools/table.c`): an argument the schema declares array or object and
+that comes as text holding that JSON is unwrapped before the tool sees it; a string argument such as the content of
+`Write` is left alone. Checks added to `tools/tooltest/tasks.sh` (83 pass); not yet seen with the model in the
+desktop, which must be restarted to pick up the new binary.
+
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its

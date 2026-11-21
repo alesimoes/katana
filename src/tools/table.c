@@ -121,12 +121,57 @@ static size_t ct_names(char *out, size_t cap, const char *const *skip) {
     }
     return o;
 }
+/* Uma chamada em XML traz todo valor como texto. Um argumento que o esquema declara array ou object e chegou como
+   texto com esse JSON dentro e desembrulhado antes de a ferramenta ver (TodoWrite, AskUserQuestion e SendUserFile
+   recusavam toda chamada dos modelos que usam XML). Devolve os argumentos novos, ou NULL se nada mudou. */
+static char *ct_unwrap(const CtTool *t, const char *js, const char *end) {
+    const char *p = ct_obj(js, end);
+    if (!p) return NULL;
+    Buf o = {0}; int changed = 0, first = 1;
+    buf_str(&o, "{\"arguments\": {");
+    p++;
+    for (;;) {
+        while (p < end && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= end || *p != '"') break;
+        const char *ks = p, *ke = ct_skip(p, end);
+        if (!ke) break;
+        p = ke;
+        while (p < end && (isspace((unsigned char)*p) || *p == ':')) p++;
+        const char *v = p, *e = ct_skip(p, end);
+        if (!e) e = end;
+        if (!first) buf_str(&o, ", ");
+        first = 0;
+        buf_add(&o, ks, (size_t)(ke - ks)); buf_str(&o, ": ");
+        char *in = NULL;
+        if (*v == '"' && ke - ks < 100) {
+            char needle[128]; snprintf(needle, sizeof needle, "%.*s: {\"type\": \"", (int)(ke - ks), ks);
+            const char *d = strstr(t->props, needle);
+            const char want = d ? (!strncmp(d + strlen(needle), "array", 5) ? '[' : !strncmp(d + strlen(needle), "object", 6) ? '{' : 0) : 0;
+            size_t len = 0;
+            if (want && (in = ct_unquote(v, e, &len))) {
+                const char *q = in; while (isspace((unsigned char)*q)) q++;
+                const char *qe = *q == want ? ct_skip(q, in + len) : NULL;
+                while (qe && isspace((unsigned char)*qe)) qe++;
+                if (qe && qe == in + len) { buf_add(&o, q, (size_t)(qe - q)); changed = 1; }
+                else { free(in); in = NULL; }
+            }
+        }
+        if (!in) buf_add(&o, v, (size_t)(e - v));
+        free(in);
+        p = e;
+    }
+    buf_str(&o, "}}");
+    if (!changed) { free(o.p); return NULL; }
+    return o.p;
+}
 /* executa a ferramenta se o nome for desta tabela; 0 se nao for */
 static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const CtTool *t = ct_lookup(name);
     if (!t) return 0;
     out[0] = 0;
-    t->fn(js, end, out, cap);
+    char *fix = ct_unwrap(t, js, end);
+    if (fix) { t->fn(fix, fix + strlen(fix), out, cap); free(fix); }
+    else t->fn(js, end, out, cap);
     return 1;
 }
 /* -1 nao e desta tabela; 0 altera coisas; 1 so le (pode rodar no modo plano) */

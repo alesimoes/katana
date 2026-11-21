@@ -154,6 +154,10 @@ no  "cancelado nao desliga" "${SOH}MODE normal" "$o"
 
 # ---------- dispatcher normal (uma ferramenta) e modo plano ----------
 has "uma ferramenta pelo despacho normal" "Task #1 created: Solo" "$(t TaskCreate '{"subject":"Solo","description":"d"}')"
+# chamada em XML: a lista chega como texto com o JSON dentro; a ferramenta recebe a lista
+has "TodoWrite com a lista em texto" "Todos updated: 2 tasks (0 completed, 1 in progress, 1 pending)" "$(t TodoWrite '{"todos": "[{\"content\": \"ler\", \"status\": \"pending\"}, {\"content\": \"corrigir\", \"status\": \"in_progress\"}]"}')"
+has "AskUserQuestion com a lista em texto" "Qual? -> A" "$(u "${SOH}ANS A" AskUserQuestion '{"questions": "[{\"question\": \"Qual?\", \"options\": [{\"label\": \"A\"}, {\"label\": \"B\"}]}]"}' | grep -v "$SOH")"
+has "texto que nao e lista continua recusado" "error: todos must be an array" "$(t TodoWrite '{"todos": "ler e corrigir"}')"
 # as ferramentas antigas continuam
 has "todo antigo continua" "list saved: 0 of 2 done. Next: a" "$("$K" tool todo '{"steps":"a\nb"}' 2>/dev/null </dev/null)"
 has "ask_user antigo continua" "the user answered: ok" "$(printf '%s\n' "${SOH}ANS ok" | KATANA_UI=1 "$K" tool ask_user '{"question":"q?","options":"ok|no"}' 2>/dev/null | grep -v "$SOH")"
