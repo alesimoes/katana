@@ -20,6 +20,8 @@ ApplicationWindow {
 
     readonly property bool narrow: width < 760
     property bool sideOpen: !backend.uiFlag("lateralRecolhida")
+    // altura dos cartoes acima da caixa de mensagem (tarefas do agente, pergunta): a conversa termina antes deles
+    readonly property real cardsHeight: (workCard.visible ? workCard.height + 6 : 0) + (choiceCard.visible ? choiceCard.height + 6 : 0)
     property bool drawerOpen: false
 
     Component.onCompleted: { Theme.force = backend.themeOverride; Theme.fonte = backend.fonte(); Theme.tema = backend.tema() }
@@ -367,7 +369,7 @@ ApplicationWindow {
                 anchors.bottom: termPanel.visible ? termPanel.top : parent.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
-                bottomSpace: composer.height + 24
+                bottomSpace: composer.height + 24 + win.cardsHeight
                 onSuggestionChosen: (t) => {
                     composer.setText(t);
                     if (backend.ready) composer.submit(); else composer.input.forceActiveFocus();
@@ -450,7 +452,7 @@ ApplicationWindow {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: composer.bottom
-                height: composer.height + 40
+                height: composer.height + 40 + win.cardsHeight
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0) }
                     GradientStop { position: 0.35; color: Theme.bg }
@@ -461,6 +463,7 @@ ApplicationWindow {
             Rectangle {
                 id: workCard
                 objectName: "workCard"
+                property bool open: false      // recolhido: uma linha com o passo atual; a lista inteira so quando o dono pede
                 visible: backend.todoSteps.length > 0 || backend.planMode
                 anchors.bottom: choiceCard.visible ? choiceCard.top : composer.top
                 anchors.bottomMargin: 6
@@ -492,9 +495,26 @@ ApplicationWindow {
                                 onClicked: backend.approvePlan() }
                         }
                     }
-                    Text { visible: backend.todoSteps.length > 0; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12; text: "Tarefas do agente" }
+                    Item {
+                        id: workHead
+                        objectName: "todoHeader"
+                        visible: backend.todoSteps.length > 0
+                        width: workCol.width
+                        height: visible ? 20 : 0
+                        readonly property int total: backend.todoSteps.length
+                        readonly property int doneCount: { var n = 0; for (var i = 0; i < backend.todoSteps.length; i++) if (backend.todoSteps[i].indexOf("[x]") === 0) n++; return n; }
+                        readonly property string current: { for (var i = 0; i < backend.todoSteps.length; i++) if (backend.todoSteps[i].indexOf("[x]") !== 0) return backend.todoSteps[i].slice(4); return "tudo feito"; }
+                        Text { id: workCount; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12
+                            text: "Tarefas do agente  " + workHead.doneCount + " de " + workHead.total }
+                        Text { anchors.left: workCount.right; anchors.leftMargin: 10; anchors.right: workToggle.left; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                            visible: !workCard.open; elide: Text.ElideRight; font.family: Theme.sans; color: Theme.fg; font.pixelSize: 13
+                            text: "\u25CB  " + workHead.current }
+                        Text { id: workToggle; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12
+                            text: workCard.open ? "recolher" : "ver todas" }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: workCard.open = !workCard.open }
+                    }
                     Repeater {
-                        model: backend.todoSteps
+                        model: workCard.open ? backend.todoSteps : []
                         Text {
                             readonly property bool done: modelData.indexOf("[x]") === 0
                             width: workCol.width; wrapMode: Text.Wrap
