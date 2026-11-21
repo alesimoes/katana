@@ -1,9 +1,9 @@
 /* ---------- navegacao na web: web_fetch com memoria da pagina ----------
- * Uma pagina buscada fica guardada (texto limpo e links, as 4 ultimas). Em cima disso o modelo navega sem baixar de
+ * Uma pagina buscada fica guardada (texto limpo e links, as 8 ultimas). Em cima disso o modelo navega sem baixar de
  * novo: offset continua uma pagina longa, find devolve so os trechos que citam um termo, links=true lista para onde a
  * pagina leva (URLs absolutas). O texto vem do conteudo principal (<main> ou <article>) quando a pagina marca um,
  * com o titulo na primeira linha; menus e rodapes ficam de fora. */
-#define WN_PAGES 4
+#define WN_PAGES 8
 #define WN_LINKS_MAX 300
 #define WN_LINKS_BYTES 60000
 typedef struct { char url[1024]; char *txt, *links; size_t tn, ln; int nlinks; unsigned long use; } WnPage;
@@ -140,12 +140,23 @@ static char *wn_render(const char *url, size_t max, long *n) {
     (void)url; (void)max; (void)n; return NULL;
 #endif
 }
+/* guarda texto e links ja prontos (de uma conversao ou do cache em disco); toma posse de txt e lk */
+static WnPage *wn_put(const char *url, char *txt, size_t tn, char *lk, size_t ln, int nl) {
+    int v = 0;
+    for (int i = 0; i < WN_PAGES; i++) { if (!g_wn[i].txt) { v = i; break; } if (g_wn[i].use < g_wn[v].use) v = i; }
+    for (int i = 0; i < WN_PAGES; i++) if (g_wn[i].txt && strcmp(g_wn[i].url, url) == 0) v = i;      /* recarga: troca a copia guardada */
+    free(g_wn[v].txt); free(g_wn[v].links);
+    snprintf(g_wn[v].url, sizeof g_wn[v].url, "%s", url);
+    g_wn[v].txt = txt; g_wn[v].tn = tn; g_wn[v].links = lk; g_wn[v].ln = ln; g_wn[v].nlinks = nl; g_wn[v].use = ++g_wn_clock;
+    return &g_wn[v];
+}
+static WnPage *wn_ingest(const char *url, char *raw, long n, int rendered, int allow_render, char *err, size_t ecap);
 /* baixa a pagina, converte e guarda; em erro escreve a mensagem em err e devolve NULL */
 static WnPage *wn_load(const char *url, char *err, size_t ecap) {
     const size_t RAW = 2500000;
-    char *raw = (char *)malloc(RAW + 1), *txt = (char *)malloc(RAW + 600), *lk = (char *)malloc(WN_LINKS_BYTES);
+    char *raw = (char *)malloc(RAW + 1);
     int rc;
-    if (!raw || !txt || !lk) { free(raw); free(txt); free(lk); snprintf(err, ecap, "error: out of memory"); return NULL; }
+    if (!raw) { snprintf(err, ecap, "error: out of memory"); return NULL; }
     long n = curl_get(url, raw, RAW, &rc);
     int rendered = 0;
     if (n != -2 && (n <= 0 || g_wn_render)) {     /* pedido explicito, ou o curl nao trouxe nada (bloqueio a clientes sem navegador) */
@@ -156,8 +167,16 @@ static WnPage *wn_load(const char *url, char *err, size_t ecap) {
         if (n == -2) snprintf(err, ecap, "error: invalid URL (only http and https; no control characters)");
         else if (n < 0) snprintf(err, ecap, "error: cannot run curl");
         else snprintf(err, ecap, "error: no content received (curl exit code %d: network failure, timeout, blocked or file too large). Try another source from web_search, or curl -sSL -D- <url> with run_command to see the HTTP status", rc);
-        free(raw); free(txt); free(lk); return NULL;
+        free(raw); return NULL;
     }
+    return wn_ingest(url, raw, n, rendered, 1, err, ecap);
+}
+/* converte o HTML baixado (raw, de tamanho RAW+1, n bytes; toma posse) e guarda a pagina. allow_render 0: nunca abre o
+   navegador (usado nas leituras em paralelo da busca) */
+static WnPage *wn_ingest(const char *url, char *raw, long n, int rendered, int allow_render, char *err, size_t ecap) {
+    const size_t RAW = 2500000;
+    char *txt = (char *)malloc(RAW + 600), *lk = (char *)malloc(WN_LINKS_BYTES);
+    if (!txt || !lk) { free(raw); free(txt); free(lk); snprintf(err, ecap, "error: out of memory"); return NULL; }
     if (n >= 4 && memcmp(raw, "%PDF", 4) == 0) {
         snprintf(err, ecap, "error: this URL is a PDF, not a page. Save it with download_file and read it with read_document");
         free(raw); free(txt); free(lk); return NULL;
@@ -176,7 +195,7 @@ again:
         if (tn < 400) { hd = 0; tn = html_to_text(raw, (size_t)n, txt); }  /* sem conteudo principal marcado (ou vazio): a pagina inteira, que ja traz o titulo */
         g_html_fold = 0;
         tn += hd;
-        if (!rendered && tn < 500 && wn_cifind(raw, (size_t)n, "<script")) {     /* quase sem texto e com scripts: a pagina se monta no navegador */
+        if (allow_render && !rendered && tn < 500 && wn_cifind(raw, (size_t)n, "<script")) {     /* quase sem texto e com scripts: a pagina se monta no navegador */
             long rn = 0; char *r = wn_render(url, RAW, &rn);
             rendered = 1;
             if (r) { memcpy(raw, r, (size_t)rn); raw[rn] = 0; n = rn; free(r); tn = 0; goto again; }
@@ -184,13 +203,7 @@ again:
         nl = wn_links(raw, (size_t)n, url, lk, WN_LINKS_BYTES, &ln);
     } else { memcpy(txt, raw, (size_t)n); txt[n] = 0; tn = (size_t)n; lk[0] = 0; }
     free(raw);
-    int v = 0;
-    for (int i = 0; i < WN_PAGES; i++) { if (!g_wn[i].txt) { v = i; break; } if (g_wn[i].use < g_wn[v].use) v = i; }
-    for (int i = 0; i < WN_PAGES; i++) if (g_wn[i].txt && strcmp(g_wn[i].url, url) == 0) v = i;      /* recarga: troca a copia guardada */
-    free(g_wn[v].txt); free(g_wn[v].links);
-    snprintf(g_wn[v].url, sizeof g_wn[v].url, "%s", url);
-    g_wn[v].txt = txt; g_wn[v].tn = tn; g_wn[v].links = lk; g_wn[v].ln = ln; g_wn[v].nlinks = nl; g_wn[v].use = ++g_wn_clock;
-    return &g_wn[v];
+    return wn_put(url, txt, tn, lk, ln, nl);
 }
 
 static void tool_web_fetch(const char *js, const char *end, char *out, size_t cap) {

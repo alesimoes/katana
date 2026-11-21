@@ -40,6 +40,23 @@ result carry the order to stop calling tools and report to the user; four failur
 guessing. Checked with a stubborn stand-in teacher that repeats one failing call (`MOCK_INSIST=1`, step in
 `tools/traintest/run.sh`). Not measured with a model.
 
+Same day, web research made cheaper (owner measurement: the network is 0.9 s for a search and 0.7 s for a page, but the
+gap before the model's next call was 30 s after a search and 15 to 134 s after a page, because the model reads results
+at about 60 tokens/s). Changes in `src/tools/websearch.c`, `webfetch.c`, `src/agent/web.c`, `webnav.c`, `delegate.c`:
+`WebSearch` takes `read` (default 3: the top pages downloaded at the same time, only the passages that match the
+query returned, 4,000 bytes in all) and `queries` (up to 4 searches at once, merged); `WebFetch` without `offset`
+returns at most 4,000 bytes of passages (prompt words, else title and last-search words, else the start of the page);
+a disk cache (`~/.katana/cache/web`, searches 6 h, pages 24 h, 50 MB cap, `KATANA_WEB_CACHE=0` off); the last line of
+every result is `[web: ...]` with network seconds and bytes; `tool_digest` returns early for a result that ends with
+that line (one line in `delegate.c`). Page memory grew from 4 to 8 pages. Checks: `tools/tooltest/web.sh` 82 pass
+(local test server `websrv.py` with a slow and a failing page; no internet).
+Measured on the real internet, 5 programmer queries (Portuguese and English), `read=0` against default, cache off:
+0.8 s and 2.1 to 2.5 KB against 1.7 to 2.1 s and 3.4 to 4.0 KB. Estimate (not measured with a model, 60 tokens/s
+reading, 15 writing, 3.5 bytes per token): the old research step (1 search + 3 pages of 12 KB) is about 200 s, the
+new one (1 call) about 25 s. **Not measured**: whether the model answers as well from 4 KB of passages as from whole
+pages (the passage picker is a word count, not a ranking model); the reading notes (`tool_digest`) on web pages were
+not measured against the raw page, only bypassed for these results; nothing here ran with a model.
+
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its
