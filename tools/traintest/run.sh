@@ -219,11 +219,11 @@ EOF
 printf '%s\n' \
  '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
  '{"conversations":[{"from":"system","value":"You are katana."},{"from":"human","value":"say hi"},{"from":"gpt","value":"hi there!"}]}' > "$D/chats.jsonl"
-if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" 2>/dev/null | grep -q "^import: 2 de 2"; then echo "import: ok"; else echo "import: FALHOU"; fail=1; fi
+if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" --keep-tool-names 2>/dev/null | grep -q "^import: 2 de 2"; then echo "import: ok"; else echo "import: FALHOU"; fail=1; fi
 $K train "$D/llama.gguf" "$D/imp.jsonl" --steps 150 --lr 3e-3 --seq 256 --out "$D/imp.kspec" 2>/dev/null | grep "perda media final"
 gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/import_calls.c -o "$D/import_calls" -lm -lpthread -ldl
 if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agente nos 4 formatos: ok"; else echo "chamadas importadas: FALHOU"; fail=1; fi
-# transcricoes de um agente de programacao -> formato de mensagens -> katana import (tools/dataset/transcript2jsonl.py)
+# transcricoes de um agente de programacao -> formato de mensagens -> katana import (src/app/transcript.c)
 mkdir -p "$D/tr"
 python3 - "$D/tr/a.jsonl" <<'EOF'
 import json, sys
@@ -249,24 +249,59 @@ R.append(U("report back"))
 R.append(A("m6", [{"type": "tool_use", "id": "t3", "name": "SubagentHandback", "input": {"message": "done"}}], toolEndsTurn=True))
 open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in R))
 EOF
-python3 tools/dataset/transcript2jsonl.py "$D/tr" -o "$D/tr.jsonl" --max-result 120 --replace '/tmp/other-[0-9]+=/tmp/katana-work' --cut-matching 'forbidden' > "$D/tr.out" 2>&1 || true
-if python3 - "$D/tr.jsonl" "$D/tr.out" <<'EOF'
+$K import "$D/llama.gguf" "$D/tr" "$D/tr_train.jsonl" --system none --max-result 120 --replace '/tmp/other-[0-9]+=/tmp/katana-work' --cut-matching 'forbidden' > "$D/tr.out" 2>&1 || true
+if python3 - "$D/tr_train.jsonl" "$D/tr.out" <<'EOF'
 import json, sys
-E = [json.loads(l)["messages"] for l in open(sys.argv[1])]
+T = [json.loads(l)["text"] for l in open(sys.argv[1])]
 log = open(sys.argv[2]).read()
-ok = len(E) == 3 and "4 episodios, 3 gravados" in log
-a = E[0]
-ok = ok and [m["role"] for m in a] == ["user", "assistant", "tool", "assistant"]
-ok = ok and a[0]["content"] == "list the files in /tmp/katana-work/work"
-ok = ok and a[1]["content"] == "Listing." and a[1]["reasoning_content"] == "I will list them."
-ok = ok and a[1]["tool_calls"][0]["function"] == {"name": "Bash", "arguments": {"command": "ls /tmp/katana-work/work", "timeout": 5000}}
-ok = ok and a[2]["tool_call_id"] == "t1" and "characters omitted" in a[2]["content"] and a[2]["content"].endswith("[image]")
-ok = ok and [m["content"] for m in E[1]] == ["say the secret word", "ok"]
-ok = ok and [m["role"] for m in E[2]] == ["user", "assistant"] and E[2][1]["tool_calls"][0]["function"]["name"] == "SubagentHandback"
+ok = len(T) == 3 and "1 arquivos, 4 episodios, 3 gravados (4 falas do modelo, 2 chamadas" in log and "import: 3 de 3" in log
+a = "".join(T)
+ok = ok and "list the files in /tmp/katana-work/work" in T[0] and "ls /tmp/katana-work/work" in T[0] and "5000" in T[0] and "Listing." in T[0]
+ok = ok and "bytes omitted" in T[0] and "[image]" in T[0] and T[0].count("There is one file: a.txt.") == 1
+ok = ok and "say the secret word" in T[1] and "SubagentHandback" in T[2]
+ok = ok and not any(x in a for x in ("FORBIDDEN", "rm a.txt", "meta text", "ignore", "/tmp/other-7", "delete it"))
 sys.exit(0 if ok else 1)
 EOF
-then echo "transcricoes -> mensagens: ok (blocos juntos, avisos fora, interrompido fora, troca e corte)"; else echo "transcricoes -> mensagens: FALHOU"; cat "$D/tr.out"; fail=1; fi
-if $K import "$D/llama.gguf" "$D/tr.jsonl" "$D/tr_train.jsonl" --system none 2>/dev/null | grep -q "^import: 3 de 3 .* 2 chamadas"; then echo "import das transcricoes: ok"; else echo "import das transcricoes: FALHOU"; fail=1; fi
+then echo "import de transcricoes: ok (blocos juntos, avisos fora, interrompido fora, troca e corte)"; else echo "import de transcricoes: FALHOU"; cat "$D/tr.out"; fail=1; fi
+# chamadas do primeiro conjunto de ferramentas viram as do segundo (nome e argumentos); sem equivalente: conversa fora
+python3 - "$D/old.jsonl" <<'EOF'
+import json, sys
+def conv(calls):
+    m = [{"role": "user", "content": "do it"}]
+    for i, (n, a) in enumerate(calls):
+        m.append({"role": "assistant", "content": "", "tool_calls": [{"id": "c%d" % i, "type": "function", "function": {"name": n, "arguments": json.dumps(a)}}]})
+        m.append({"role": "tool", "tool_call_id": "c%d" % i, "content": "ok"})
+    m.append({"role": "assistant", "content": "done"})
+    return json.dumps({"messages": m}) + "\n"
+open(sys.argv[1], "w").write(
+    conv([("read_file", {"path": "a.c", "offset": 3}), ("run_command", {"command": "make", "timeout_s": 30, "background": True}),
+          ("edit_file", {"path": "a.c", "old": "x", "new": "y"}), ("search_files", {"pattern": "foo(", "path": "src"}),
+          ("list_dir", {"path": "my dir"}), ("todo", {"steps": "[x] read\n[ ] fix it"}), ("ask_user", {"question": "which?", "options": "one | two"}),
+          ("delegate", {"task": "find where the parser lives and report"}), ("find_file", {"name": "notes"}), ("write_file", {"path": "b.c", "content": "int x;"})])
+    + conv([("remember", {"fact": "x"})]) + conv([("write_file", {"path": "b", "content": "c", "append": True})]))
+EOF
+$K import "$D/llama.gguf" "$D/old.jsonl" "$D/old_train.jsonl" --system none > "$D/old.out" 2>&1 || true
+if python3 - "$D/old_train.jsonl" "$D/old.out" <<'EOF'
+import json, sys
+T = [json.loads(l)["text"] for l in open(sys.argv[1])]
+log = open(sys.argv[2]).read()
+ok = len(T) == 1 and "import: 1 de 3" in log and "convertidas" in log
+t = T[0] if T else ""
+want = ['"name": "Read", "arguments": {"file_path": "a.c", "offset": 3}', '"name": "Bash", "arguments": {"command": "make", "timeout": 30000, "run_in_background": true}',
+        '"name": "Edit", "arguments": {"file_path": "a.c", "old_string": "x", "new_string": "y"}',
+        '"name": "Grep", "arguments": {"pattern": "foo(", "path": "src", "output_mode": "content", "literal": true}',
+        '"name": "Bash", "arguments": {"command": "ls -la \'my dir\'"}',
+        '"name": "TodoWrite", "arguments": {"todos": [{"content": "read", "status": "completed"}, {"content": "fix it", "status": "pending"}]}',
+        '"name": "AskUserQuestion", "arguments": {"questions": [{"question": "which?", "options": [{"label": "one"}, {"label": "two"}]}]}',
+        '"name": "Agent", "arguments": {"description": "find where the parser lives", "prompt": "find where the parser lives and report"}',
+        '"name": "Glob", "arguments": {"pattern": "**/*notes*"}', '"name": "Write", "arguments": {"file_path": "b.c", "content": "int x;"}',
+        "[resultado da ferramenta Read,"]
+miss = [w for w in want if w not in t]
+ok = ok and not miss and "read_file" not in t and "run_command" not in t
+if not ok: print(miss, log)
+sys.exit(0 if ok else 1)
+EOF
+then echo "ferramentas do primeiro conjunto -> segundo: ok (10 chamadas convertidas, 2 conversas sem equivalente fora)"; else echo "ferramentas do primeiro conjunto -> segundo: FALHOU"; fail=1; fi
 # katana merge: o GGUF fundido responde igual ao modelo base com o .kspec (adaptadores sobre Q8_0; MoE; qwen35moe)
 $K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
 $K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }
