@@ -45,8 +45,15 @@ when its criterion is measured; "not measured" items stay open even when the cod
 | C4 | First start of Gemma 4 (43 to 72 s) | under 15 s |
 | C5 | Long context on the GPU for Qwen3.6 | tok/s at 30k tokens |
 
-**D. Specialization**: the plan in `docs/specialization.md` (tools.kspec, teacher.kspec, the specs folder), then a
-merged GGUF carrying a mark that the model knows the tools, and training on the GPU.
+**D. Specialization: one specialized model** (`docs/specialization.md`, "One specialized model")
+
+| # | What | Done when |
+|---|---|---|
+| D1 | `katana specialize` in C (kinds all/tools/code/teacher/knowledge, mix, resume across nights, history), selection options in `katana import`, the no-tools-section flag in `.kspec` and merged GGUF (**built 2026-11-21**, tested on tiny models only) | first real night on Qwen3.6 finishes and `history.jsonl` has its line |
+| D2 | Import of the owner's 841 MB of transcripts through `--from <root>` | time and peak memory recorded |
+| D3 | Planned work (`--plan-first`, experimental) | in real sessions with the specialization, most multi-step requests start with a task list |
+| D4 | The merged GGUF without the tools section against the base with it | codebench alternating, both models, no task lost |
+| D5 | Training on the GPU | seconds per window on the owner's card |
 
 **E. Install and run anywhere**: AppImage and the packaging workflow executed once; Windows build compiled again;
 `test_server.py` and a real client against the two models; native `tools` in the OpenAI-compatible API.

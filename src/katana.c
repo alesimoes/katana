@@ -86,5 +86,6 @@
 #include "app/knowledge.c"             /* katana knowledge: notas de texto das sessoes anteriores (build, search, stats) */
 #include "app/distill.c"               /* katana distill: um modelo professor trabalha com as ferramentas do katana */
 #include "app/learn.c"                 /* katana export (sessoes -> dados) e katana learn (aprende com o proprio uso) */
+#include "app/specialize.c"            /* katana specialize: versoes especialistas (teacher, tools, code) de ponta a ponta */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/main.c"                  /* toktest, subcomandos e main */

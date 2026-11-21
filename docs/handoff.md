@@ -6,6 +6,17 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 ## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
 
+**2026-11-21, specialization pipeline in C (block D of `docs/plan.md`).** Built: `katana specialize` (`src/app/specialize.c`)
+with the kinds `all` (default: one `katana.kspec` from every source, explicit `--mix`), `tools`, `code` (planned work:
+a `TodoWrite` plan derived from the described calls, `--plan-first`), `teacher` and `knowledge` (`--corpus`); resume
+from the newest `.kspec` of the same kind (`katana train --resume`, optimizer state restarts) with `history.jsonl`;
+selection options in `katana import` (`--train-tools`, `--train-final`, `--train-first`, `--require-tools`,
+`--min-calls`, `--drop-failed-streak`, `--verified`, `--plan-first`, `--plan-updates`, a table per reason, tool and
+project folder); `katana train --mix` and `--no-tool-decl`; the flag in the `.kspec` trailer and as
+`katana.no_tool_decl` in merged GGUFs. `tools/train_from_teacher.sh` was deleted (its idle-agent wait was not
+ported). **Not measured**: nothing of this ran on a real model; tested only on tiny random models in
+`tools/traintest/run.sh` (`tools/traintest/specialize_part.sh`). The 841 MB transcript import was not run.
+
 44 tools in `src/tools/`, one file each (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, tasks, questions, plan
 mode, sub-agents, LSP, worktrees, scheduling and others), tested without a model by `tools/tooltest/*.sh` (765 checks)
 and `./katana tool <Name> '<json>'`. It is the default set since 2026-11-21 (owner's decision, before any measurement on
@@ -167,7 +178,7 @@ answers become training data for the local model.
 
 ### First training on the 35B model from teacher answers (night of 2026-11-20 to 21)
 
-`tools/train_from_teacher.sh` ran unattended on Qwen-AgentWorld-35B-A3B Q4_K_M, CPU only (`KATANA_TRAIN_GPU=0`), with the
+`tools/train_from_teacher.sh` (replaced by `katana specialize` on 2026-11-21) ran unattended on Qwen-AgentWorld-35B-A3B Q4_K_M, CPU only (`KATANA_TRAIN_GPU=0`), with the
 desktop agent idle but loaded. Measured:
 
 - Data: `katana export --teacher` gave 2 sessions, 60 teacher answers, 101k characters to learn, 106 windows of 512

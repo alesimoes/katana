@@ -31,6 +31,121 @@ Points 1 to 5 are implemented. The next ones are the plan (below), in order.
    specialization named in the request's `model` field, unmerged (`W x + s B (A x)`), so one machine serves many
    specialists without reloading.
 
+## One specialized model (2026-11-21)
+
+Owner's goal: take a ready model and specialize it, inside the engine, with katana's tools and with the knowledge
+kept about the owner's projects, into ONE specialized model. `katana specialize` does it end to end, in C, in the
+same binary:
+
+```
+katana specialize <model.gguf> [all|tools|code|teacher|knowledge] [--from DIR] [--sessions DIR] [--corpus FILE]
+    [--mix tools=30,code=30,teacher=20,knowledge=20] [--out DIR] [--fresh] [--hours H] [--steps N] [--rank R]
+    [--seq T] [--lr X] [--margin-mb MB] [--replace REGEX=TEXT]... [--cut-matching REGEX] [--verified]
+    [--plan-updates] [--dry-run] [--no-check]
+```
+
+- **`all` (the default kind)** builds one data set from every source given, each source selected with the rules of
+  its own kind (below), and trains one specialization, `katana.kspec`. This is the supported product: adapters
+  trained separately, each from the base, and summed at load are not something either training saw.
+- **The mix.** The budget is a few hundred windows of 512 tokens per night, so the share of each source is explicit:
+  `--mix tools=30,code=30,teacher=20,knowledge=20` (percent of the training windows; default that split,
+  renormalised over the sources that have data; a source with weight 0 or not listed is left out). Every data line
+  carries its `"source"`; `katana train --mix` draws each step's window from the source that is furthest behind its
+  share (exact to one window) and prints the realised counts (`mistura realizada: ...`).
+- **Nights add up.** Unless `--fresh`, `specialize` continues from the newest `.kspec` of the same kind in the output
+  root (`~/.katana/training/<kind>-*/`), through `katana train --resume FILE`: the trained tensors and adapters are the
+  starting point; the AdamW moments are not stored in the file, so the optimizer state restarts (and the warm-up runs
+  again). Each night appends one line to `<root>/history.jsonl`: date, kind, steps, hours, mean loss of the first and
+  last 10 steps, the `.kspec` it resumed from, and conversations, turns and characters per source.
+- **The flag instead of the file name.** A specialization trained with the short system prompt (no tools section) is
+  marked inside the `.kspec` (`katana train --no-tool-decl`; trailer `KSXF` + flags at the end of the file, which
+  older readers ignore and older files lack). When it is applied, the agent leaves the tools section out. The old
+  rule (a file named `tools.kspec`) stays as a fallback for files written before the flag.
+- **The final product is a GGUF.** `katana merge <model.gguf> katana.kspec <out.gguf>` writes the specialization into
+  a new GGUF and carries the flag as `katana.no_tool_decl = "1"`; the loader reads it, so the merged model also runs
+  without the tools section.
+- Common steps: the agent's own system prompt built in-process in the model's format (ChatML XML/JSON, Gemma 4,
+  GLM); `katana import` of every input with key-shaped strings (8-4-4-4-12 hex) always masked plus `--replace` /
+  `--cut-matching`; the memory plan (`--plan 1`), refused when activations + trainer state + `--margin-mb` (default
+  6000) exceed the available memory; the time of two steps measured and the number of steps that fit in `--hours`
+  (default 5, between 4 and 400 steps; `--steps N` skips the measurement); `katana train --train 'blk.*.attn_*'
+  --rank 8 --seq 512 --lr 2e-4 --val 0 --final 0` on the CPU; a check that the model loads and answers with the
+  result (`--no-check` skips it). Everything lands in `--out` (default `~/.katana/training/<kind>-<YYYYMMDD-HHMM>/`):
+  `sys.txt`, `data.jsonl`, `import.log`, `plan.log`, `measure.log`, `train.log`, `steps.jsonl`, `report.txt`,
+  `<kind>.kspec` (`katana.kspec` for `all`). `--dry-run` stops after the data and the plan. It never activates
+  anything: the end of the report says how to test (`KATANA_SPEC=...`), how to use it in the desktop (copy into
+  `~/.katana/specs/`) and how to merge it.
+
+### The sources and the separate kinds
+
+The separate kinds stay for experiments; each one is also the rule its source follows inside `all`.
+
+| kind | input | system prompt | what counts for the loss |
+|---|---|---|---|
+| `tools` | `--from DIR` (transcripts of a coding agent, a root with one folder per project is fine) and `--sessions DIR` (every `.ksess`) | without the tools section | every model turn |
+| `code` (planned work, experimental) | `--from DIR`, `--sessions DIR` | full (with `all`: short) | the plan and the first action (`--train-first 2`), turns that call `TodoWrite`, `Write` or `Edit`, the final answer; conversations with 4+ calls, no streak of 4 failures |
+| `teacher` | `.ksess` with a `.teacher` file in `--sessions DIR` (default `~/.katana/desktop/sessoes`) | full (with `all`: short) | the teacher's turns |
+| `knowledge` | `--corpus FILE`: one `{"messages": [user, assistant]}` per line, questions about the owner's projects and their answers | without the tools section | every answer |
+
+### Selection options of `katana import`
+
+These decide what a specialization learns. They work on every input (messages JSONL, transcripts, `.ksess`).
+
+- `--train-tools A,B,C`: only model turns that call one of these tools count; the others stay as context.
+  `--train-final`: the last model turn (the answer in words) counts too. `--train-first N`: the first N model turns
+  count. Without any of the three, every model turn counts.
+- `--require-tools A,B`: drop conversations that never call any of them. `--min-calls N`: drop conversations with
+  fewer calls.
+- `--drop-failed-streak N`: drop a conversation with N or more failed tool results in a row (a result starting with
+  `error:`, or with a non-zero `Exit code N` / `[exit code N]`).
+- `--verified`: keep a conversation only if a `Bash` call that did not fail comes after its last `Write`/`Edit` (the
+  cheapest proxy for "the code was checked"). Off by default in `code`; `specialize ... --verified` turns it on.
+- `--plan-first` (experimental): for each conversation with at least 4 tool calls, a `TodoWrite` call is inserted
+  before the first model turn, followed by the result the agent returns for it (`Todos updated: N tasks (0
+  completed, 1 in progress, N-1 pending).`). The steps are derived from what was actually done afterwards: the
+  `description` of each call (or the tool and its main argument, e.g. `Edit src/x.c`), near-duplicate consecutive
+  descriptions merged, a step seen before reused, at most 8 steps (the eighth absorbs the rest), the first
+  `in_progress`. `--plan-updates` also inserts a `TodoWrite` update each time the work moves to a later step. The
+  `description` stays in the `Bash` arguments of the training text.
+- At the end `import` prints a table: conversations kept and dropped per reason, model turns that count, characters to
+  learn in total and per tool (from the calls of the counting turns), an estimate of 512-token windows (characters /
+  3.3 / 512, labelled as an estimate), plans inserted, and for a folder of project folders, episodes kept per folder.
+
+### Planned work: what the `code` source tries to teach
+
+The local model iterates call by call; the transcripts show a model that announces what it will do and works through
+it in order. The `code` source tries to teach: write the plan as a task list before the first action, keep each action
+described, follow the list in order, finish with a message. Where the plan comes from is its weakness: the
+transcripts contain no task-list calls at all, so the plan is derived in hindsight from the described actions; it
+includes the detours and dead ends of the real work, which a real plan would not have predicted.
+
+### What 100 to 150 windows per night can and cannot do
+
+Measured on the real 35B model on the CPU: about 245 s per 512-token window, so one night is 100 to 150 steps. That
+is the central constraint; data selection matters far more than volume.
+
+- It can shift habits that show up in every conversation and cost few tokens: writing the plan before acting,
+  reading before editing, writing the file instead of describing it, running something after writing, closing with a
+  message, the tool names and argument shapes. It can also fix a few dozen facts of the knowledge corpus, if they are
+  repeated.
+- It cannot teach a language, a library or a codebase: a night sees well under 100k tokens.
+- Planning turns: on the synthetic data of `tools/traintest` the plan turn is 320 characters (about 100 tokens,
+  measured on the tiny model's data, 4 steps). Estimate for the real transcripts (not measured): with up to 8 steps
+  of 5 to 10 words, 300 to 600 characters, 100 to 200 tokens. With the full system prompt (8.8k characters, about
+  2.7k tokens) the plan sits in its own window, so a night that drew only `code` windows would see at most about one
+  plan per window, 100 to 150 plans; with the default mix (30% `code`) about 30 to 45 per night, plus the other
+  `code` turns those windows hold. With the short prompt (4.1k characters) it is the same order: one plan per window.
+- Training on the GPU (the `tmm` kernel; never run on a real card) is what would change the budget.
+
+**Nothing in this section was run on a real model.** All of it was checked only on the tiny random models of
+`tools/traintest/run.sh`: the selection options, the plan insertion, the three single kinds plus `knowledge`, `all`
+with a 50/30/20 mix (realised exactly: 10, 6 and 4 windows of 20), two nights where the second resumed from the first
+(mean loss of the first 10 steps 12.25 on night 1, 10.02 on night 2; night 1 ended at 10.48), the flag in the
+`.kspec` and in a merged GGUF (the agent's saved system prompt has no tools section in both cases, and has it with the
+base model). Not measured: whether any of this changes the behaviour of Qwen3.6 or Gemma 4, the import of the owner's
+841 MB of transcripts (time and memory), and the waiting for an idle agent that the old shell script did (not ported:
+start `specialize` when the agent is idle).
+
 ## Commands
 
 ```
@@ -192,8 +307,8 @@ base model is applied, in name order; files trained on another base are skipped 
 files add up on the same matrix; a whole tensor replaces what came before, so the last file wins. The desktop passes
 `~/.katana/specs` when that folder holds any `.kspec` (and no `KATANA_SPEC` is set), so a training copied there is in
 use from the next start; the engine alone (bench, selftest, `katana agent` in a terminal) loads nothing unless
-`KATANA_SPEC` is set, so measurements stay on the base model. `tools/train_from_teacher.sh` writes `teacher.kspec`
-(`NAME=...` changes it) and never copies it there by itself.
+`KATANA_SPEC` is set, so measurements stay on the base model. `katana specialize` writes `<kind>.kspec` (or
+`katana.kspec`) and never copies it there by itself.
 
 Checked on a tiny model: a folder with one matching and one foreign `.kspec` gives the three trained answers
 (`tools/traintest/run.sh`). Not checked: two specializations of the same base applied together (they were trained
@@ -221,7 +336,8 @@ this model. First run started on 2026-11-21 on Qwen-AgentWorld-35B-A3B (CPU, 369
 512-token window, about 1% of the windows; first step of the earlier attempt: 77.5 s). **Not measured**: whether a
 model trained this way calls the tools correctly without the section. Do not copy `tools.kspec` to `~/.katana/specs`
 before codebench with it (and no declarations) matches the base model with declarations. `teacher.kspec` from
-`tools/train_from_teacher.sh` is still rendered with the declarations.
+`katana specialize ... teacher` is still rendered with the declarations; `tools`, `knowledge` and `all` are rendered
+without them and carry the flag in the `.kspec`.
 
 ## Plan: teach the models katana's tools (2026-11-21)
 
@@ -238,6 +354,7 @@ format, with fewer wasted and invalid calls, without losing tasks on codebench. 
 | 5 | Gemma 4: steps 2 to 4 with the data imported in its format | same criterion |
 | 6 | Loop: `katana learn` rounds (passed codebench sessions, optional teacher), from the accepted `.kspec` | evaluation tasks solved do not drop over two rounds |
 | 7 | Use: `KATANA_SPEC` in the agent and desktop, or `katana merge` | the owner's everyday agent runs with it |
+| 8 | One specialized model: `katana specialize <model> all` with transcripts, teacher sessions and the knowledge corpus, resumed night after night, then `katana merge` (built 2026-11-21, tiny models only) | codebench with the merged GGUF and no tools section matches or beats the base with the section |
 
 Data sources, all through `katana import` or `katana export`:
 
