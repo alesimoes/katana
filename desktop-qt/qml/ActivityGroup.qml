@@ -27,7 +27,19 @@ Rectangle {
         "edit_file": "Editando arquivo", "run_command": "Executando comando", "search_files": "Procurando nos arquivos",
         "glob": "Buscando arquivos", "web_search": "Pesquisando na web", "web_fetch": "Abrindo página",
         "download_file": "Baixando arquivo", "install_package": "Instalando pacote", "git": "Usando git",
-        "read_document": "Lendo documento", "terminal": "Usando o terminal", "read_log": "Lendo logs", "terminal_screen": "Lendo a tela do terminal", "remember": "Guardando na memória", "recall": "Consultando a memória"
+        "read_document": "Lendo documento", "terminal": "Usando o terminal", "read_log": "Lendo logs", "terminal_screen": "Lendo a tela do terminal", "remember": "Guardando na memória", "recall": "Consultando a memória",
+        // ferramentas com os nomes do Claude Code (src/tools/)
+        "Bash": "Executando comando", "Read": "Lendo arquivo", "Write": "Gravando arquivo", "Edit": "Editando arquivo",
+        "NotebookEdit": "Editando notebook", "Glob": "Buscando arquivos", "Grep": "Procurando nos arquivos",
+        "WebSearch": "Pesquisando na web", "WebFetch": "Abrindo página", "Agent": "Subagente trabalhando",
+        "TodoWrite": "Atualizando as tarefas", "TaskCreate": "Criando tarefa", "TaskUpdate": "Atualizando tarefa", "TaskList": "Listando tarefas", "TaskGet": "Lendo tarefa",
+        "TaskStop": "Parando tarefa", "Monitor": "Acompanhando comando", "AskUserQuestion": "Perguntando", "EnterPlanMode": "Entrando no modo plano", "ExitPlanMode": "Apresentando o plano",
+        "LSP": "Consultando o código", "EnterWorktree": "Abrindo cópia de trabalho", "ExitWorktree": "Saindo da cópia de trabalho", "PowerShell": "Executando PowerShell",
+        "CronCreate": "Agendando tarefa", "CronDelete": "Cancelando agendamento", "CronList": "Listando agendamentos", "ScheduleWakeup": "Marcando retomada",
+        "PushNotification": "Enviando notificação", "SendUserFile": "Entregando arquivo", "EndConversation": "Encerrando a conversa",
+        "ListMcpResourcesTool": "Listando recursos MCP", "ReadMcpResourceTool": "Lendo recurso MCP", "WaitForMcpServers": "Aguardando servidores MCP",
+        "ToolSearch": "Carregando ferramenta", "Skill": "Carregando instruções", "ReportFindings": "Relatando achados",
+        "SendMessage": "Falando com outro agente", "ListAgents": "Listando agentes", "SubagentHandback": "Entregando relatório", "Workflow": "Rodando fluxo de agentes"
     })
     function verbo(n) { return verbos[n] || n || "Usando ferramenta"; }
     function alvo(a) {

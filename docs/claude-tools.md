@@ -13,6 +13,60 @@ scratch in C; no code of Claude Code is used or was read.
 Not measured yet: nothing here was run in katana. The effect of the new names on the local models (Qwen3.6, Gemma 4)
 is unknown until codebench is run with old and new names, alternating.
 
+## 0. Status (2026-11-21)
+
+All of groups A, B and C below exist in `src/tools/`, one file per tool (or small family), written from scratch against
+the documented interface, each with a test script in `tools/tooltest/` that runs the tools without a model
+(`./katana tool <Name> '<json>' ...`). The old tools (`run_command`, `read_file`...) are untouched and still accepted.
+
+| File | Tools | Checks |
+|---|---|---|
+| `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
+| `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
+| `glob.c`, `grep.c` | `Glob`, `Grep` | 101 |
+| `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
+| `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
+| `agent.c`, `messages.c`, `workflow.c` | `Agent`, `SendMessage`, `ListAgents`, `SubagentHandback`, `Workflow` | 42 |
+| `mcpres.c`, `toolsearch.c`, `skill.c`, `reportfindings.c` | `ListMcpResourcesTool`, `ReadMcpResourceTool`, `WaitForMcpServers`, `ToolSearch`, `Skill`, `ReportFindings` | 71 |
+| `worktree.c`, `powershell.c`, `notify.c` | `EnterWorktree`, `ExitWorktree`, `PowerShell`, `PushNotification`, `SendUserFile`, `EndConversation` | 61 |
+| `lsp.c` | `LSP` | 39 |
+| `schedule.c` | `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup` | 152 |
+
+Measured: the 765 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
+and the mock teacher under `KATANA_TOOLS=claude` (Write, Edit, Bash with the cwd reset, Grep).
+
+`KATANA_TOOLS=claude` makes the system prompt declare `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`,
+`AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch` with full schemas and list the rest by name (loaded on
+demand with `ToolSearch`, as Claude Code does). Without the variable the prompt is the old one. The teacher takes its
+tool list from the prompt, so it follows the switch.
+
+Where the katana version differs from the documented tool, on purpose:
+- `Grep` uses POSIX extended regular expressions with a few translations (`\d`, `\t`, literal `{`), one engine
+  everywhere; lookaround, lazy quantifiers and inline flags are not supported and the description says so.
+- `WebFetch` returns the page text (passages chosen by the words of `prompt` when it does not fit); the separate model
+  call of the original is katana's digest sub-agent, which runs after the tool. A redirect to another host is followed,
+  not reported (the fetch layer does not expose the final URL).
+- `Monitor` starts the command in the background with a deadline and returns the output file; lines are not delivered
+  as events (needs a per-task read offset and a hook in the loop).
+- `Agent` sub-agents are synchronous and read-only; `SendMessage` to a sub-agent replays (task + previous report + new
+  message) because the sub-agent's context is not kept. `SendMessage` to another katana session on the machine goes
+  through a mailbox in `~/.katana/mail/`.
+- `Workflow` is a sequential JSON subset (phases, agents, a `then` prompt), not JavaScript.
+- `WebSearch` uses katana's own search sources. `PushNotification` and `SendUserFile` are local (notify-send, a marker
+  for the desktop).
+- `WaitForMcpServers` has nothing to wait for (servers connect synchronously at start).
+- Task tools: the desktop card has no "in progress" state.
+
+Not measured, not done:
+- No run with Qwen3.6 or Gemma 4 yet: the effect of the new names on the local models is unknown. Next step: codebench
+  with and without `KATANA_TOOLS=claude`, alternating.
+- Delivery of scheduled prompts and session mail by the loop, `EndConversation`, `SubagentHandback` inside a real
+  sub-agent, `LSP` against a real language server, `PowerShell` with a real `pwsh`: written, not exercised.
+- The desktop does not show the `NOTIFY`, `FILE` and `FINDING` markers yet.
+- Group D (`Artifact`, `RemoteTrigger`, `SendFeedback`, `ShareOnboardingGuide`, the claude.ai plugin and skill
+  catalogue tools) is not implemented: they are Anthropic's service, not an algorithm.
+- Converter from Claude Code session files to training data.
+
 ## 1. The whole list, by what we can do with it
 
 | Group | Tools | In katana |
