@@ -836,12 +836,13 @@ static int merge_cmd(const char *in, const char *spec, const char *out) {
         int kl; const char *k = rd_str(&r2, &kl);
         const uint32_t t = rd_u32(&r2);
         const uint8_t *vs = r2.p; rd_skip(&r2, t);
-        if (key_is(k, kl, "katana.specialization")) continue;
+        if (key_is(k, kl, "katana.specialization") || key_is(k, kl, "katana.no_tool_decl")) continue;
         gbuf_gstr(&kv, k, (uint64_t)kl); gbuf_u32(&kv, t); gbuf_bytes(&kv, vs, (size_t)(r2.p - vs)); nkv++;
     }
     {
         const char *b = strrchr(spec, '/'); b = b ? b + 1 : spec;
         gkv_str(&kv, "katana.specialization", b); nkv++;
+        if (spec_flags(spec) & KSPEC_NO_TOOL_DECL) { gkv_str(&kv, "katana.no_tool_decl", "1"); nkv++; }   /* o modelo fundido roda sem a secao de ferramentas */
     }
     GBuf tib = {0};
     for (uint64_t i = 0; i < n_tensors; i++) {
@@ -1123,6 +1124,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 4 && strcmp(argv[1], "tool") == 0) return ct_main(argc - 2, argv + 2);                  /* roda ferramentas de src/tools/ sem modelo */
     if (argc >= 3 && strcmp(argv[1], "export") == 0) return export_main(argc - 2, argv + 2);           /* sessoes do agente -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
+    if (argc >= 3 && strcmp(argv[1], "specialize") == 0) return specialize_main(argv[0], argc - 2, argv + 2);   /* versao especialista de ponta a ponta */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
         Model m; memset(&m, 0, sizeof m);
         putenv_dup("KATANA_CPU=1");
@@ -1227,6 +1229,8 @@ static int run_main(int argc, char **argv) {
         "  katana export <saida.jsonl> <sessoes.ksess ou pastas> [--bench resultados.jsonl]   sessoes do agente -> dados de treino\n"
         "  katana learn <modelo.gguf> [--rounds N] [--repeat K] [--teacher URL --teacher-model M] [-- opcoes do train]\n"
         "                                 aprende com o proprio uso: coleta no codebench, treina no que passou, prova e guarda o melhor\n"
+        "  katana specialize <modelo.gguf> <teacher|tools|code> [--from PASTA] [--sessions PASTA] [--hours H] [--dry-run]\n"
+        "                                 dados, plano de memoria, tempo de um passo e treino de uma versao especialista\n"
         "                                       um modelo professor (API no formato da OpenAI) resolve a tarefa com as ferramentas do katana\n"
         "  katana merge <modelo.gguf> <espec.kspec> <saida.gguf>   GGUF novo com a especializacao dentro\n"
         "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"

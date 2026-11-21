@@ -1409,6 +1409,19 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
  * "KSPEC1\0\0", impressao do modelo base (tamanho do arquivo, parametros), quantidade de tensores; cada um: nome,
  * linhas, colunas e os pesos em float32. Carregado com KATANA_SPEC: troca so esses tensores do modelo base. */
 #define KSPEC_MAGIC "KSPEC2\0\0"
+/* fim do arquivo (desde 2026-11-21): "KSXF" + marcas de 32 bits. Leitores antigos param antes e nao veem; arquivos
+   antigos nao tem e valem marca 0. KSPEC_NO_TOOL_DECL: treinado com o prompt de sistema sem a secao de ferramentas
+   (o agente tira a secao quando esta especializacao esta aplicada) */
+#define KSPEC_NO_TOOL_DECL 1u
+static unsigned g_spec_save_flags;
+static unsigned spec_flags(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    char mg[4] = {0}; uint32_t fl = 0;
+    const int ok = fseek(f, -8, SEEK_END) == 0 && fread(mg, 1, 4, f) == 4 && !memcmp(mg, "KSXF", 4) && fread(&fl, 4, 1, f) == 1;
+    fclose(f);
+    return ok ? fl : 0;
+}
 static int spec_save(const Model *m, const TTab *tt, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
@@ -1426,6 +1439,7 @@ static int spec_save(const Model *m, const TTab *tt, const char *path) {
             fwrite(p->a, 4, (size_t)p->r * cc, f); fwrite(p->b, 4, (size_t)(r * p->r), f);
         } else fwrite(p->w, 4, (size_t)(r * cc), f);
     }
+    { const uint32_t fl = g_spec_save_flags; fwrite("KSXF", 1, 4, f); fwrite(&fl, 4, 1, f); }
     const int ok = !ferror(f);
     return fclose(f) == 0 && ok;
 }
@@ -1483,8 +1497,45 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     fprintf(stderr, "especializacao: %s (%d tensores)\n", path, n);
     free(tt.p); free(tt.an);
     {   const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
-        if (!strcmp(bn, "tools.kspec")) g_spec_tools = 1; }
+        if (!strcmp(bn, "tools.kspec")) g_spec_tools = 1; }    /* regra antiga pelo nome, para arquivos sem a marca */
+    if (spec_flags(path) & KSPEC_NO_TOOL_DECL) g_spec_tools = 1;
     return 1;
+}
+
+/* --resume: comeca o treino dos pesos de uma especializacao ja treinada (mesmos tensores e posto). O estado do
+   otimizador (momentos do AdamW) nao fica no arquivo: recomeca do zero. Devolve quantos tensores vieram */
+static int spec_resume(const Model *m, TTab *tt, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "--resume: nao abriu %s\n", path); return -1; }
+    char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0, got = 0, miss = 0;
+    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0)
+        { fprintf(stderr, "--resume: %s nao e uma especializacao\n", path); fclose(f); return -1; }
+    if (fs != m->fsize || np != m->n_params) { fprintf(stderr, "--resume: %s foi treinada sobre outro modelo base\n", path); fclose(f); return -1; }
+    for (int k = 0; k < n; k++) {
+        uint32_t nl = 0, kind = 0; uint64_t r = 0, cc = 0; char name[128];
+        if (fread(&nl, 4, 1, f) != 1 || nl == 0 || nl >= sizeof name || fread(name, 1, nl, f) != nl || fread(&kind, 4, 1, f) != 1
+            || kind > 1 || fread(&r, 8, 1, f) != 1 || fread(&cc, 8, 1, f) != 1) { fprintf(stderr, "--resume: arquivo cortado\n"); fclose(f); return -1; }
+        name[nl] = 0;
+        TPar *p = NULL;
+        for (int i = 0; i < tt->n && !p; i++) if (!strcmp(tt->p[i].name, name)) p = &tt->p[i];
+        if (kind == 1) {
+            int32_t rk = 0; float sc = 0;
+            if (fread(&rk, 4, 1, f) != 1 || fread(&sc, 4, 1, f) != 1 || rk < 1 || rk > 4096) { fclose(f); return -1; }
+            const size_t na = (size_t)rk * cc, nb = (size_t)(r * rk);
+            if (p && p->r == rk && p->rows == r && p->cols == cc) {
+                if (fread(p->a, 4, na, f) != na || fread(p->b, 4, nb, f) != nb) { fclose(f); return -1; }
+                p->s = sc; got++;
+            } else { fseek(f, (long)((na + nb) * 4), SEEK_CUR); miss++; }
+        } else {
+            const size_t nw = (size_t)(r * cc);
+            if (p && p->w && !p->r && p->rows == r && p->cols == cc) { if (fread(p->w, 4, nw, f) != nw) { fclose(f); return -1; } got++; }
+            else { fseek(f, (long)(nw * 4), SEEK_CUR); miss++; }
+        }
+    }
+    fclose(f);
+    printf("retomado de %s: %d tensores carregados%s; o estado do otimizador recomeca do zero\n", path, got,
+           miss ? " (alguns do arquivo nao casam com o que treina agora e ficaram de fora)" : "");
+    return got;
 }
 
 static int spec_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -1519,7 +1570,18 @@ static void spec_apply(Model *m) {
 }
 
 /* ---- dados: JSONL com "text" e "train_spans" (posicoes em caracteres), como o ksess2jsonl.py grava ---- */
-typedef struct { Ids ids; uint8_t *mask; } TEx;
+typedef struct { Ids ids; uint8_t *mask; int src; } TEx;
+/* fontes dos dados (campo "source" de cada linha), para a mistura do --mix */
+static char g_tsrc[16][32]; static int g_ntsrc;
+static int t_src_of(const char *line) {
+    const char *p = strstr(line, "\"source\": \"");
+    char nm[32] = "?";
+    if (p) { p += 11; size_t n = 0; while (p[n] && p[n] != '"' && n < 31) { nm[n] = p[n]; n++; } nm[n] = 0; }
+    for (int i = 0; i < g_ntsrc; i++) if (!strcmp(g_tsrc[i], nm)) return i;
+    if (g_ntsrc == 16) return 15;
+    snprintf(g_tsrc[g_ntsrc], 32, "%s", nm);
+    return g_ntsrc++;
+}
 
 static int t_load_line(const Model *m, const char *line, TEx *ex) {
     char k[64]; const char *v, *q = js_ws(line), *e;
@@ -1752,6 +1814,7 @@ static void tset_add(TSet *S, const TEx *e, int seq) {
         if (S->n == S->cap) { S->cap = S->cap * 2 + 16; S->w = realloc(S->w, sizeof(TEx) * (size_t)S->cap); }
         TEx *w = &S->w[S->n++];
         memset(w, 0, sizeof *w);
+        w->src = e->src;
         for (int t = 0; t < len; t++) ids_push(&w->ids, e->ids.ids[s0 + t]);
         w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e->mask + s0, (size_t)len);
         w->mask[len - 1] = 0;
@@ -1773,6 +1836,7 @@ static int tset_load(const Model *m, const char *path, int seq, TSet *tr, TSet *
             rs = rs * 6364136223846793005ull + 1442695040888963407ull;
             const double u = (double)(rs >> 11) / 9007199254740992.0;
             if (t_load_line(m, line, &e)) {
+                e.src = t_src_of(line);
                 const int to_val = va && u < vf;
                 tset_add(to_val ? va : tr, &e, seq);
                 nv += to_val;
@@ -1817,7 +1881,10 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     char out[1100]; snprintf(out, sizeof out, "%s.kspec", model_path);
     int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0, plan = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
     int batch = 1, eval = 0, patience = 0, cosine = 1, warm = -1, final = 1; double vfrac = -1; const char *vdata = NULL, *logp = NULL;
-    for (int i = 1; i + 1 < argc; i += 2) {
+    const char *mix = NULL, *resume = NULL;
+    for (int i = 1; i < argc; i += 2) {
+        if (!strcmp(argv[i], "--no-tool-decl")) { g_spec_save_flags |= KSPEC_NO_TOOL_DECL; i--; continue; }   /* opcao sem valor */
+        if (i + 1 >= argc) break;
         const char *k = argv[i], *v = argv[i + 1];
         if (!strcmp(k, "--out")) snprintf(out, sizeof out, "%s", v);
         else if (!strcmp(k, "--train")) { pats = v; pats_set = 1; }
@@ -1841,6 +1908,8 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         else if (!strcmp(k, "--warmup")) warm = atoi(v);
         else if (!strcmp(k, "--log")) logp = v;
         else if (!strcmp(k, "--final")) final = atoi(v);
+        else if (!strcmp(k, "--mix")) mix = v;
+        else if (!strcmp(k, "--resume")) resume = v;
         else { fprintf(stderr, "opcao desconhecida: %s\n", k); return 1; }
     }
     if (seq > c->ctx) seq = c->ctx;
@@ -1898,6 +1967,29 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     }
     ntr += tt_select_r(&tt, pats, rank, alpha > 0 ? alpha : (float)rank);
     if (!ntr) { fprintf(stderr, "nenhum tensor casa com --train %s\n", pats); return 1; }
+    if (resume && spec_resume(m, &tt, resume) < 0) return 1;
+    /* --mix fonte=peso,...: cada passo tira a janela da fonte mais atrasada em relacao a sua parte (exato a menos de
+       uma janela); pesos renormalizados sobre as fontes que tem janelas; fonte fora da lista fica de fora */
+    double mw[16] = {0}; long mcnt[16] = {0}; int *mord[16] = {0}, mn[16] = {0}, mpos[16] = {0};
+    if (mix) {
+        for (int i = 0; i < nex; i++) mn[ex[i].src]++;
+        double tot = 0;
+        for (int s = 0; s < g_ntsrc; s++) {
+            const char *p = mix; const size_t l = strlen(g_tsrc[s]);
+            while (p && *p) {
+                if (!strncmp(p, g_tsrc[s], l) && p[l] == '=') { mw[s] = atof(p + l + 1); break; }
+                p = strchr(p, ','); if (p) p++;
+            }
+            if (!mn[s]) mw[s] = 0;
+            tot += mw[s];
+            if (mn[s]) { mord[s] = xalloc((size_t)mn[s], sizeof(int)); int k = 0; for (int i = 0; i < nex; i++) if (ex[i].src == s) mord[s][k++] = i; mpos[s] = mn[s]; }
+        }
+        if (tot <= 0) { fprintf(stderr, "--mix %s: nenhuma fonte dos dados tem peso (fontes:", mix); for (int s = 0; s < g_ntsrc; s++) fprintf(stderr, " %s", g_tsrc[s]); fprintf(stderr, ")\n"); return 1; }
+        printf("mistura pedida:");
+        for (int s = 0; s < g_ntsrc; s++) { mw[s] /= tot; printf(" %s %.0f%% (%d janelas)", g_tsrc[s], 100 * mw[s], mn[s]); }
+        printf("\n");
+    }
+    long mdrawn = 0;
     int nt = 0, na = 0; for (int i = 0; i < tt.n; i++) { nt += tt.p[i].w != NULL; na += tt.p[i].r != 0; }
     long tgt = 0; for (int i = 0; i < nex; i++) for (int t = 0; t < ex[i].ids.n; t++) tgt += ex[i].mask[t];
     printf("treino: %d janelas (%ld alvos), %d tensores inteiros + %d adaptadores (posto %d), %.3fM pesos treinaveis (%.1f MB de estado), passos %d, lr %g\n",
@@ -1928,12 +2020,23 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         double loss = 0; int N = 0;
         t_gscale = 1.0f / batch;
         for (int bi = 0; bi < batch; bi++) {
-            if (op == nex) {
-                for (int i = 0; i < nex; i++) ord[i] = i;
-                for (int i = nex - 1; i > 0; i--) { const int j = rand() % (i + 1), t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
-                op = 0;
+            const TEx *e;
+            if (mix) {
+                int sb = -1; double bd = -1e30;
+                for (int s = 0; s < g_ntsrc; s++) if (mw[s] > 0) { const double d = mw[s] * (double)(mdrawn + 1) - (double)mcnt[s]; if (d > bd) { bd = d; sb = s; } }
+                if (mpos[sb] == mn[sb]) {               /* embaralha de novo as janelas desta fonte */
+                    for (int i = mn[sb] - 1; i > 0; i--) { const int j = rand() % (i + 1), t = mord[sb][i]; mord[sb][i] = mord[sb][j]; mord[sb][j] = t; }
+                    mpos[sb] = 0;
+                }
+                e = &ex[mord[sb][mpos[sb]++]]; mcnt[sb]++; mdrawn++;
+            } else {
+                if (op == nex) {
+                    for (int i = 0; i < nex; i++) ord[i] = i;
+                    for (int i = nex - 1; i > 0; i--) { const int j = rand() % (i + 1), t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
+                    op = 0;
+                }
+                e = &ex[ord[op++]];
             }
-            const TEx *e = &ex[ord[op++]];
             A.T = e->ids.n;
             int n1 = 0;
             loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) / batch;
@@ -1966,6 +2069,11 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     }
     if (st > steps) st = steps;
     free(ord);
+    if (mix) {
+        printf("mistura realizada:");
+        for (int s = 0; s < g_ntsrc; s++) { printf(" %s %ld janelas (%.0f%%)", g_tsrc[s], mcnt[s], mdrawn ? 100.0 * mcnt[s] / mdrawn : 0.0); free(mord[s]); }
+        printf("\n");
+    }
     {
         const double el = now_sec() - t0;
         printf("velocidade: %.1f tokens/s de treino (%.2f s por passo, %s)\n", el > 0 ? toks / el : 0.0, st ? el / st : 0.0,

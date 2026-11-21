@@ -776,6 +776,9 @@ static void load_model(Model *m, const char *path) {
             int sl; const char *s = rd_str(&r, &sl);
             if (sl > 63) sl = 63;
             memcpy(c->arch, s, sl);
+        } else if (t == 8 && key_is(k, kl, "katana.no_tool_decl")) {   /* GGUF fundido de uma especializacao que conhece as ferramentas */
+            int sl; const char *s = rd_str(&r, &sl);
+            if (sl > 0 && s[0] == '1') g_spec_tools = 1;
         } else if (t == 9 && key_is(k, kl, "tokenizer.ggml.tokens")) {
             uint32_t et = rd_u32(&r); uint64_t n = rd_u64(&r);
             if (et != 8) die("tokens: tipo inesperado");

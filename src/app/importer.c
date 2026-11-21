@@ -272,8 +272,59 @@ static char *im_old2new(char *nm, const char *args, const char **bad) {
     return o.p;
 }
 
+/* ---------- selecao do que se aprende (o assunto de uma especializacao) ----------
+ * --train-tools A,B: so as falas do modelo que chamam uma dessas ferramentas contam para a perda (as outras ficam
+ * como contexto); --train-final: a ultima fala do modelo de cada conversa tambem conta. --require-tools A,B: descarta
+ * a conversa que nunca chama nenhuma. --min-calls N: descarta a conversa com menos chamadas. --drop-failed-streak N:
+ * descarta a conversa com N ou mais resultados de ferramenta que falharam em seguida. --verified: so fica a conversa
+ * em que, depois da ultima chamada de Write/Edit, ha um Bash que deu certo. No fim, uma tabela do que ficou. */
+typedef struct { const char *train_tools, *require_tools; int train_final, train_first, min_calls, fail_streak, verified, plan_first, plan_updates; } ImSel;
+static ImSel g_ims;
+typedef struct { char why[120]; long n; } ImWhy;
+typedef struct { char name[64]; long calls, chars; } ImTool;
+static ImWhy g_imw[32]; static int g_nimw;
+static ImTool g_imt[96]; static int g_nimt;
+static long g_ims_kept, g_ims_turns, g_ims_chars;
+typedef struct { char name[64]; int turn, failed; long chars; } ImEv;   /* uma chamada da conversa, em ordem */
+static int im_in(const char *list, const char *name) {          /* name esta na lista separada por virgulas? */
+    const size_t l = strlen(name);
+    for (const char *p = list; p && *p; ) {
+        const char *e = strchr(p, ','); const size_t k = e ? (size_t)(e - p) : strlen(p);
+        if (k == l && !strncmp(p, name, l)) return 1;
+        p = e ? e + 1 : NULL;
+    }
+    return 0;
+}
+static int im_writes(const char *n) { return !strcmp(n, "Write") || !strcmp(n, "Edit") || !strcmp(n, "NotebookEdit"); }
+static void im_drop(const char *why) {
+    for (int i = 0; i < g_nimw; i++) if (!strcmp(g_imw[i].why, why)) { g_imw[i].n++; return; }
+    if (g_nimw < 32) { im_cpy(g_imw[g_nimw].why, why, sizeof g_imw[0].why); g_imw[g_nimw++].n = 1; }
+}
+static void im_tool_add(const char *name, long chars) {
+    int i = 0;
+    while (i < g_nimt && strcmp(g_imt[i].name, name)) i++;
+    if (i == g_nimt) { if (g_nimt == 96) return; im_cpy(g_imt[i].name, name, sizeof g_imt[0].name); g_imt[i].calls = g_imt[i].chars = 0; g_nimt++; }
+    g_imt[i].calls++; g_imt[i].chars += chars;
+}
+/* motivo para descartar a conversa pelas chamadas, ou NULL */
+static const char *im_sel_why(const ImEv *ev, int nev) {
+    if (g_ims.min_calls && nev < g_ims.min_calls) return "fewer tool calls than --min-calls";
+    if (g_ims.require_tools) { int any = 0; for (int i = 0; i < nev; i++) any |= im_in(g_ims.require_tools, ev[i].name); if (!any) return "calls none of the --require-tools"; }
+    if (g_ims.fail_streak > 0) {
+        int run = 0;
+        for (int i = 0; i < nev; i++) { if (ev[i].failed == 1) { if (++run >= g_ims.fail_streak) return "a streak of failed tool results (--drop-failed-streak)"; } else if (ev[i].failed == 0) run = 0; }
+    }
+    if (g_ims.verified) {
+        int lw = -1; for (int i = 0; i < nev; i++) if (im_writes(ev[i].name)) lw = i;
+        if (lw < 0) return "no Write/Edit call (--verified)";
+        int ok = 0; for (int i = lw + 1; i < nev; i++) ok |= !strcmp(ev[i].name, "Bash") && ev[i].failed == 0;
+        if (!ok) return "no successful Bash after the last Write/Edit (--verified)";
+    }
+    return NULL;
+}
+
 /* uma conversa -> uma linha de saida; 0 se nao deu (motivo em *why) */
-static int im_line(const Config *c, const char *line, const char *sys_fixed, int keep_sys, FILE *out, const char **why, long *ncalls, long *nunk, int only_known) {
+static int im_line0(const Config *c, const char *line, const char *sys_fixed, int keep_sys, FILE *out, const char **why, long *ncalls, long *nunk, int only_known) {
     char k[64]; const char *v, *q = js_ws(line), *e;
     if (*q != '{') { *why = "line is not a JSON object"; return 0; }
     const char *msgs = NULL; int sharegpt = 0;
@@ -291,6 +342,8 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     char pend = 0;                               /* papel do texto em cur ('u' ou 't') */
     int unknown = 0;
     char *nt = NULL; int ntcap = 0;              /* falas do modelo que ficam so como contexto (fora dos trechos de treino) */
+    ImEv *ev = NULL; int nev = 0, evcap = 0, ev_base = 0;   /* chamadas em ordem, com o resultado (falhou ou nao) */
+    char *sel = NULL;                            /* fala do modelo escolhida pela selecao */
 #define IM_FLUSH() do { if (pend == 'u' && cur.n) ah_push(&h, 'u', cur.p, cur.n); if (pend == 't' && tres.n) ah_push(&h, 't', tres.p, tres.n); buf_clear(&cur); buf_clear(&tres); pend = 0; nres = 0; } while (0)
     const char *el, *ee;
     for (const char *p = msgs + 1; (ee = gs_elem(p, &el)); p = ee) {
@@ -331,6 +384,8 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             if (!cont) im_think(c, &a, rs.p);
             if (!is_fcall) buf_str(&a, t);
             ncall = 0;
+            ev_base = nev;
+            const int turn = cont ? h.n - 1 : h.n;
             const char *tl[64]; int ntl = 0;
             if (tcv) { const char *q3 = tcv + 1, *el3, *e3; while ((e3 = gs_elem(q3, &el3)) && ntl < 64) { tl[ntl++] = el3; q3 = e3; } }
             if (is_fcall && cv) tl[ntl++] = NULL;          /* ShareGPT: o valor e {"name":..,"arguments":..} */
@@ -363,7 +418,11 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
                     if (ncall > 0) buf_str(&a, "\n");
                     else if (tail != '\n') buf_str(&a, c->chat_fmt == 10 ? "\n" : "\n\n");
                 }
+                const size_t a0 = a.n;
                 im_call(c, &a, nm, args ? args : "{}");
+                if (nev == evcap) { evcap = evcap ? 2 * evcap : 32; ev = realloc(ev, sizeof *ev * (size_t)evcap); }
+                im_cpy(ev[nev].name, nm, sizeof ev[nev].name); ev[nev].turn = turn; ev[nev].failed = -1;
+                ev[nev].chars = im_chars(a.p + a0, a.n - a0); nev++;
                 (*ncalls)++;
                 if (sys.n && !strstr(sys.p, nm)) { unknown++; (*nunk)++; }
                 if (ncall < 64) { im_cpy(calls[ncall].name, nm, sizeof calls[ncall].name); im_cpy(calls[ncall].id, cid, sizeof calls[ncall].id); ncall++; }
@@ -388,6 +447,7 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
                             for (int i = 0; i < ncall; i++) if (!strcmp(calls[i].id, id)) im_cpy(nm, calls[i].name, sizeof nm); }
             else if (nres < ncall) im_cpy(nm, calls[nres].name, sizeof nm);
             if (!g_im_keepnames) im_newname(nm);
+            if (ev_base + nres < nev) ev[ev_base + nres].failed = rp_failed(t);
             im_result(c, &tres, nm, t, nres == 0);
             nres++; pend = 't';
         }
@@ -398,6 +458,13 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
     if (only_known && unknown) { *why = "uses tools that the system prompt does not declare"; goto fail; }
     int na = 0; for (int i = 0; i < h.n; i++) na += h.v[i].role == 'a';
     if (!na) { *why = "no assistant turn"; goto fail; }
+    if ((*why = im_sel_why(ev, nev))) goto fail;
+    sel = xalloc((size_t)h.n + 1, 1);
+    {   int last = -1; for (int i = 0; i < h.n; i++) if (h.v[i].role == 'a') last = i;
+        for (int i = 0; i < h.n; i++) sel[i] = !g_ims.train_tools && !g_ims.train_first && !g_ims.train_final;   /* sem selecao: todas contam */
+        if (g_ims.train_tools) for (int i = 0; i < nev; i++) if (im_in(g_ims.train_tools, ev[i].name)) sel[ev[i].turn] = 1;
+        if (g_ims.train_final && last >= 0) sel[last] = 1;
+        for (int i = 0, k = 0; i < h.n && k < g_ims.train_first; i++) if (h.v[i].role == 'a') { sel[i] = 1; k++; } }
     {   /* texto no template do modelo e trechos de cada mensagem, como o sess_wext */
         Buf r = {0};
         AHist pre = h;
@@ -408,9 +475,10 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             ah_render(&pre, sys.p ? sys.p : "", &r);
             const char *s0 = r.p ? r.p : "";
             const char *at = prev <= r.n ? strstr(s0 + prev, h.v[i].s) : NULL;
-            if (at && h.v[i].role == 'a' && !(i < ntcap && nt[i])) { sp[2 * nsp] = (long)(at - s0); sp[2 * nsp + 1] = (long)(at - s0) + (long)strlen(h.v[i].s); nsp++; }
+            if (at && h.v[i].role == 'a' && !(i < ntcap && nt[i]) && sel[i]) { sp[2 * nsp] = (long)(at - s0); sp[2 * nsp + 1] = (long)(at - s0) + (long)strlen(h.v[i].s); nsp++; }
             prev = r.n;
         }
+        if (!nsp) { free(r.p); free(sp); *why = "no model turn selected for the loss"; goto fail; }
         pre.n = h.n; ah_render(&pre, sys.p ? sys.p : "", &r);
         if (h.v[h.n - 1].role == 'a') buf_str(&r, c->chat_fmt == 8 ? "<turn|>" : c->chat_fmt == 10 ? "<|user|>" : "<|im_end|>");
         static const char *stops[] = { "<|im_end|>", "<|tool_response>", "<turn|>", "<|observation|>", "<|user|>" };
@@ -422,7 +490,9 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
             long b = sp[2 * i + 1];
             for (int s = 0; s < 5; s++) if (!strncmp(r.p + b, stops[s], strlen(stops[s]))) { b += (long)strlen(stops[s]); break; }
             char t2[64];
-            snprintf(t2, sizeof t2, "%s[%ld, %ld]", i ? ", " : "", im_chars(r.p, (size_t)sp[2 * i]), im_chars(r.p, (size_t)b));
+            const long c0 = im_chars(r.p, (size_t)sp[2 * i]), c1 = im_chars(r.p, (size_t)b);
+            g_ims_chars += c1 - c0;
+            snprintf(t2, sizeof t2, "%s[%ld, %ld]", i ? ", " : "", c0, c1);
             buf_str(&o, t2);
         }
         buf_str(&o, "], \"system\": \"");
@@ -430,12 +500,177 @@ static int im_line(const Config *c, const char *line, const char *sys_fixed, int
         buf_str(&o, "\"}\n");
         fwrite(o.p, 1, o.n, out);
         free(o.p); free(r.p); free(sp);
+        g_ims_kept++; g_ims_turns += nsp;
+        for (int i = 0; i < nev; i++) if (sel[ev[i].turn] && !(ev[i].turn < ntcap && nt[ev[i].turn])) im_tool_add(ev[i].name, ev[i].chars);
     }
-    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p); free(nt);
+    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p); free(nt); free(ev); free(sel);
     return 1;
 fail:
-    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p); free(nt);
+    ah_clear(&h); free(h.v); free(sys.p); free(cur.p); free(tres.p); free(nt); free(ev); free(sel);
     return 0;
+}
+/* ---------- --plan-first (experimental): o plano escrito antes da primeira acao ----------
+ * Nas transcricoes nao ha lista de tarefas; o que mostra o andamento e a descricao (description) de cada chamada. Para
+ * cada conversa com 4 ou mais chamadas, um TodoWrite e inserido antes da primeira fala do modelo, com os passos
+ * tirados do que foi feito depois (a descricao de cada chamada, ou ferramenta + argumento principal), descricoes
+ * seguidas quase iguais juntas, no maximo 8 passos (o oitavo junta o resto), o primeiro in_progress; logo depois vem o
+ * resultado que o agente devolve para o TodoWrite. --plan-updates: um TodoWrite novo quando o trabalho passa ao
+ * proximo passo. E um plano feito depois do fato: inclui os desvios do caminho. */
+#define IM_PLAN_MAX 8
+static long g_im_planned;
+static void im_words(const char *s, char w[][24], int *n) {
+    *n = 0;
+    while (*s && *n < 32) {
+        while (*s && !isalnum((unsigned char)*s)) s++;
+        int k = 0;
+        while (*s && isalnum((unsigned char)*s)) { if (k < 23) w[*n][k++] = (char)tolower((unsigned char)*s); s++; }
+        if (k) { w[*n][k] = 0; (*n)++; }
+    }
+}
+/* duas descricoes dizem quase o mesmo? (mesmas palavras em 60% ou mais) */
+static int im_near(const char *a, const char *b) {
+    char wa[32][24], wb[32][24]; int na, nb, com = 0;
+    im_words(a, wa, &na); im_words(b, wb, &nb);
+    if (!na || !nb) return !strcmp(a, b);
+    for (int i = 0; i < na; i++) for (int j = 0; j < nb; j++) if (!strcmp(wa[i], wb[j])) { com++; break; }
+    const int un = na + nb - com;
+    return com * 10 >= un * 6;
+}
+/* rotulo de uma chamada: a descricao, ou ferramenta + argumento principal */
+static void im_label(const char *name, const char *args, char *out, size_t cap) {
+    Buf b = {0};
+    if (im_arg(args, "description", &b) == 's' && b.n) {
+        size_t n = 0; while (n < b.n && b.p[n] != '\n' && n < 120) n++;
+        snprintf(out, cap, "%.*s", (int)n, b.p); free(b.p); return;
+    }
+    static const char *keys[] = { "file_path", "notebook_path", "path", "pattern", "url", "query", "command", "prompt" };
+    out[0] = 0;
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) if (im_arg(args, keys[i], &b) == 's' && b.n) {
+        size_t n = 0; while (n < b.n && b.p[n] != '\n' && n < 60) n++;
+        snprintf(out, cap, "%s %.*s", name, (int)n, b.p); break;
+    }
+    if (!out[0]) snprintf(out, cap, "%s", name);
+    free(b.p);
+}
+static void im_todos(Buf *o, char st[][128], int ns, int cur) {
+    buf_str(o, "{\"todos\": [");
+    for (int i = 0; i < ns; i++) {
+        buf_str(o, i ? ", {\"content\": \"" : "{\"content\": \""); js_escape(o, st[i], strlen(st[i]));
+        buf_str(o, i < cur ? "\", \"status\": \"completed\"}" : i == cur ? "\", \"status\": \"in_progress\"}" : "\", \"status\": \"pending\"}");
+    }
+    buf_str(o, "]}");
+}
+/* mensagem do modelo com o TodoWrite e a resposta da ferramenta, como elementos da lista de mensagens */
+static void im_plan_msgs(Buf *o, char st[][128], int ns, int cur, int id) {
+    Buf a = {0}; im_todos(&a, st, ns, cur);
+    char hd[256];
+    snprintf(hd, sizeof hd, "{\"role\": \"assistant\", \"content\": \"\", \"tool_calls\": [{\"id\": \"plan%d\", \"type\": \"function\", \"function\": {\"name\": \"TodoWrite\", \"arguments\": ", id);
+    buf_str(o, hd); buf_str(o, a.p); buf_str(o, "}}]}, ");
+    int done = 0, pend = 0; for (int i = 0; i < ns; i++) { if (i < cur) done++; else if (i > cur) pend++; }
+    snprintf(hd, sizeof hd, "{\"role\": \"tool\", \"tool_call_id\": \"plan%d\", \"name\": \"TodoWrite\", \"content\": \"Todos updated: %d tasks (%d completed, %d in progress, %d pending).\"}, ",
+             id, ns, done, cur < ns ? 1 : 0, pend);
+    buf_str(o, hd);
+    free(a.p);
+}
+/* reescreve a linha com o plano; 0 se nao se aplica (a linha fica como esta) */
+static int im_plan(const char *line, Buf *out) {
+    char k[64]; const char *v, *e, *q = js_ws(line), *msgs = NULL, *msgs_end = NULL;
+    if (*q != '{') return 0;
+    for (const char *p = q + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "messages") && *v == '[') { msgs = v; msgs_end = e; }
+    if (!msgs) return 0;
+    /* chamadas em ordem: rotulo e a mensagem onde estao */
+    enum { MAXC = 4096 };
+    static char lab[MAXC][128]; static int cmsg[MAXC]; int nc = 0, nmsg = 0, first_a = -1;
+    const char *el, *ee;
+    for (const char *p = msgs + 1; (ee = gs_elem(p, &el)); p = ee, nmsg++) {
+        if (*el != '{') continue;
+        char k2[64], role[32] = ""; const char *v2, *e2, *tcv = NULL;
+        for (const char *p2 = el + 1; (e2 = gs_member(p2, k2, sizeof k2, &v2)); p2 = e2) {
+            if (!strcmp(k2, "role") && *v2 == '"') { size_t n = 0; for (const char *w = v2 + 1; *w && *w != '"' && n < 31; w++) role[n++] = *w; role[n] = 0; }
+            else if (!strcmp(k2, "tool_calls") && *v2 == '[') tcv = v2;
+        }
+        if (strcmp(role, "assistant")) continue;
+        if (first_a < 0) first_a = nmsg;
+        if (!tcv) continue;
+        const char *el3, *e3;
+        for (const char *q3 = tcv + 1; (e3 = gs_elem(q3, &el3)) && nc < MAXC; q3 = e3) {
+            if (*el3 != '{') continue;
+            char nm[128] = "", k3[64]; char *args = NULL; const char *v3, *e4;
+            for (const char *p3 = el3 + 1; (e4 = gs_member(p3, k3, sizeof k3, &v3)); p3 = e4) {
+                if (!strcmp(k3, "function") && *v3 == '{') {
+                    char k4[64]; const char *v4, *e5;
+                    for (const char *p4 = v3 + 1; (e5 = gs_member(p4, k4, sizeof k4, &v4)); p4 = e5) {
+                        if (!strcmp(k4, "name") && *v4 == '"') { size_t n = 0; for (const char *w = v4 + 1; *w && *w != '"' && n < 127; w++) nm[n++] = *w; nm[n] = 0; }
+                        else if (!strcmp(k4, "arguments")) { free(args); args = im_args(v4); }
+                    }
+                } else if (!strcmp(k3, "name") && *v3 == '"') { size_t n = 0; for (const char *w = v3 + 1; *w && *w != '"' && n < 127; w++) nm[n++] = *w; nm[n] = 0; }
+                else if (!strcmp(k3, "arguments")) { free(args); args = im_args(v3); }
+            }
+            if (nm[0] && strcmp(nm, "TodoWrite")) { im_label(nm, args ? args : "{}", lab[nc], sizeof lab[0]); cmsg[nc++] = nmsg; }
+            free(args);
+        }
+    }
+    if (nc < 4 || first_a < 0) return 0;
+    /* passos distintos na ordem da primeira vez; cada chamada aponta para o seu passo */
+    static char st[MAXC][128]; static int cstep[MAXC]; int ns = 0;
+    for (int i = 0; i < nc; i++) {
+        int j = -1;
+        if (ns && im_near(lab[i], st[ns - 1])) j = ns - 1;
+        else for (int t = 0; t < ns; t++) if (!strcmp(lab[i], st[t])) { j = t; break; }
+        if (j < 0) { j = ns; snprintf(st[ns++], sizeof st[0], "%s", lab[i]); }
+        cstep[i] = j;
+    }
+    if (ns > IM_PLAN_MAX) {                       /* o oitavo junta o resto */
+        char tail[128]; snprintf(tail, sizeof tail, "%.80s (and %d more steps)", st[IM_PLAN_MAX - 1], ns - IM_PLAN_MAX);
+        snprintf(st[IM_PLAN_MAX - 1], sizeof st[0], "%s", tail);
+        for (int i = 0; i < nc; i++) if (cstep[i] >= IM_PLAN_MAX) cstep[i] = IM_PLAN_MAX - 1;
+        ns = IM_PLAN_MAX;
+    }
+    /* passo em que cada mensagem do modelo comeca (so cresce) */
+    buf_clear(out);
+    buf_add(out, line, (size_t)(msgs - line));
+    buf_str(out, "[");
+    int m = 0, cur = 0, id = 0;
+    for (const char *p = msgs + 1; (ee = gs_elem(p, &el)); p = ee, m++) {
+        if (m == first_a) im_plan_msgs(out, st, ns, 0, id++);
+        else if (g_ims.plan_updates) {
+            int to = cur;
+            for (int i = 0; i < nc; i++) if (cmsg[i] == m && cstep[i] > to) to = cstep[i];
+            if (to > cur) { cur = to; im_plan_msgs(out, st, ns, cur, id++); }
+        }
+        buf_add(out, el, (size_t)(ee - el));
+        buf_str(out, ", ");
+    }
+    if (out->n >= 2 && !strncmp(out->p + out->n - 2, ", ", 2)) out->n -= 2;
+    buf_str(out, "]");
+    buf_str(out, msgs_end);
+    return 1;
+}
+
+static int im_line(const Config *c, const char *line, const char *sys_fixed, int keep_sys, FILE *out, const char **why, long *ncalls, long *nunk, int only_known) {
+    *why = NULL;
+    Buf pl = {0};
+    const int planned = g_ims.plan_first && im_plan(line, &pl);
+    if (planned) line = pl.p;
+    const int ok = im_line0(c, line, sys_fixed, keep_sys, out, why, ncalls, nunk, only_known);
+    if (ok && planned) g_im_planned++;
+    free(pl.p);
+    if (!ok) im_drop(*why ? *why : "?");
+    return ok;
+}
+
+/* tabela do que ficou e do que saiu; a ultima linha (import_stats) e para o katana specialize */
+static void im_sel_table(void) {
+    long dropped = 0; for (int i = 0; i < g_nimw; i++) dropped += g_imw[i].n;
+    printf("selecao: %ld conversas gravadas, %ld descartadas\n", g_ims_kept, dropped);
+    for (int i = 0; i < g_nimw; i++) printf("  descartadas: %6ld  %s\n", g_imw[i].n, g_imw[i].why);
+    printf("  falas do modelo que contam: %ld\n", g_ims_turns);
+    if (g_ims.plan_first) printf("  conversas com plano inserido (--plan-first, derivado das chamadas): %ld\n", g_im_planned);
+    printf("  caracteres a aprender: %ld (estimativa: cerca de %.0f janelas de 512 tokens, contando 3,3 caracteres por token)\n",
+           g_ims_chars, g_ims_chars / 3.3 / 512.0);
+    if (g_nimt) printf("  por ferramenta (chamadas nas falas que contam):\n");
+    for (int i = 0; i < g_nimt; i++) printf("    %-20s %6ld chamadas %9ld caracteres\n", g_imt[i].name, g_imt[i].calls, g_imt[i].chars);
+    printf("import_stats: kept=%ld dropped=%ld turns=%ld chars=%ld\n", g_ims_kept, dropped, g_ims_turns, g_ims_chars);
 }
 
 /* uma conversa vinda de uma transcricao (src/app/transcript.c) passa pelo mesmo im_line das outras entradas */
@@ -454,7 +689,9 @@ static void im_tr_emit(void *ud, const char *line) {
    aceita tambem [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole] */
 static int import_main(const char *model_path, int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl|sessao.ksess|transcricao|pasta> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] [--keep-tool-names] [--teacher]\n"
-                                    "     transcricao: [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole]\n"); return 1; }
+                                    "     transcricao: [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole]\n"
+                                    "     selecao: [--train-tools A,B] [--train-final] [--require-tools A,B] [--min-calls N] [--drop-failed-streak N] [--verified]\n"
+                                    "              [--train-first N] [--plan-first] [--plan-updates]\n"); return 1; }
     const char *in = argv[0], *outp = argv[1], *sysopt = "keep";
     int only_known = 0, only_teacher = 0;
     TrOpt tro; memset(&tro, 0, sizeof tro);
@@ -465,6 +702,15 @@ static int import_main(const char *model_path, int argc, char **argv) {
         else if (!strcmp(argv[i], "--keep-tool-names")) g_im_keepnames = 1;
         else if (!strcmp(argv[i], "--teacher")) only_teacher = 1;
         else if (!strcmp(argv[i], "--whole")) tro.whole = 1;
+        else if (!strcmp(argv[i], "--train-tools") && i + 1 < argc) g_ims.train_tools = argv[++i];
+        else if (!strcmp(argv[i], "--train-final")) g_ims.train_final = 1;
+        else if (!strcmp(argv[i], "--require-tools") && i + 1 < argc) g_ims.require_tools = argv[++i];
+        else if (!strcmp(argv[i], "--min-calls") && i + 1 < argc) g_ims.min_calls = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--drop-failed-streak") && i + 1 < argc) g_ims.fail_streak = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--verified")) g_ims.verified = 1;
+        else if (!strcmp(argv[i], "--train-first") && i + 1 < argc) g_ims.train_first = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--plan-first")) g_ims.plan_first = 1;
+        else if (!strcmp(argv[i], "--plan-updates")) g_ims.plan_first = g_ims.plan_updates = 1;
         else if (!strcmp(argv[i], "--max-result") && i + 1 < argc) tro.max_result = atol(argv[++i]);
         else if (!strcmp(argv[i], "--replace") && i + 1 < argc) { if (!tr_add_rep(&tro, argv[++i])) return 1; }
         else if (!strcmp(argv[i], "--cut-matching") && i + 1 < argc) {
@@ -527,6 +773,26 @@ static int import_main(const char *model_path, int argc, char **argv) {
     } else if (is_tr) {
         ImTr t = { c, sys_fixed, keep, only_known, fo, 0, 0, 0, 0 };
         tro.emit = im_tr_emit; tro.ud = &t;
+#ifndef _WIN32
+        struct stat sti; DIR *dd = NULL;
+        if (stat(in, &sti) == 0 && S_ISDIR(sti.st_mode)) dd = opendir(in);
+        if (dd) {                                  /* uma pasta por projeto: conta o que ficou de cada uma */
+            char **sub = NULL; int ns = 0; struct dirent *de;
+            while ((de = readdir(dd))) if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..")) { sub = realloc(sub, sizeof(char *) * (size_t)(ns + 1)); sub[ns++] = strdup(de->d_name); }
+            closedir(dd);
+            for (int i = 1; i < ns; i++) for (int j = i; j > 0 && strcmp(sub[j - 1], sub[j]) > 0; j--) { char *x = sub[j]; sub[j] = sub[j - 1]; sub[j - 1] = x; }
+            for (int i = 0; i < ns; i++) {
+                char pth[4096]; snprintf(pth, sizeof pth, "%s/%s", in, sub[i]);
+                struct stat s2; const int isdir = stat(pth, &s2) == 0 && S_ISDIR(s2.st_mode);
+                if (!isdir && (strlen(sub[i]) < 7 || strcmp(sub[i] + strlen(sub[i]) - 6, ".jsonl"))) { free(sub[i]); continue; }
+                const long a0 = t.nin, k0 = t.nout;
+                tr_run(&tro, pth);
+                if (isdir) printf("pasta %s: %ld episodios, %ld gravados\n", sub[i], t.nin - a0, t.nout - k0);
+                free(sub[i]);
+            }
+            free(sub);
+        } else
+#endif
         tr_run(&tro, in);
         nin = t.nin; nout = t.nout; ncalls = t.ncalls; nunk = t.nunk;
         printf("transcricoes: %ld arquivos, %ld episodios, %ld gravados (%ld falas do modelo, %ld chamadas de ferramenta)", tro.nfiles, tro.nep, tro.nout, tro.nturn, tro.ncall);
@@ -552,5 +818,6 @@ static int import_main(const char *model_path, int argc, char **argv) {
     if (g_im_renamed) printf("import: %ld chamadas do primeiro conjunto de ferramentas convertidas para o segundo (--keep-tool-names mantem os nomes antigos)\n", g_im_renamed);
     if (g_im_noequiv) printf("import: %ld falas com chamada sem equivalente nas ferramentas atuais ficaram so como contexto (fora do treino)\n", g_im_noequiv);
     if (nunk) printf("import: %ld chamadas usam ferramentas fora do prompt de sistema; --only-known-tools descarta essas conversas\n", nunk);
+    im_sel_table();
     return nout ? 0 : 1;
 }
