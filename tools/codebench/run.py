@@ -13,7 +13,7 @@ Usage:
 The agent runs in a temporary copy of repo/ as its working folder and receives the instruction as its first message.
 Afterwards hidden/ tests are copied in and run with python3 -m unittest. Only the Python standard library is needed.
 """
-import argparse, importlib.util, json, math, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, fnmatch, importlib.util, json, math, os, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKS = os.path.join(HERE, "tasks")
@@ -21,7 +21,7 @@ TASKS = os.path.join(HERE, "tasks")
 
 def task_names(sel=None):
     names = sorted(d for d in os.listdir(TASKS) if os.path.isdir(os.path.join(TASKS, d)))
-    return [n for n in names if not sel or n in sel]
+    return [n for n in names if not sel or any(fnmatch.fnmatchcase(n, p) for p in sel)]   # --tasks aceita glob: write-*
 
 
 def copy_tree(src, dst):

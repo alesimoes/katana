@@ -462,10 +462,12 @@ work during the first run, so the times are not comparable):
 One task of difference in one run each is not a difference (`mdhtml` passed the default run at the 900 s limit).
 `KATANA_G4_ENVLAST` stays a switch, not the default. The second run also covered the 9 new tasks (below): 9/9.
 
-**New task groups (30 tasks in total).** 5 terminal tasks (`term-*`: find the process behind a port, find the commit
+**New task groups (30 tasks, then 39 with the news tasks, then 51 with the code-writing tasks below).** 5 terminal tasks (`term-*`: find the process behind a port, find the commit
 that broke a check, an interactive program, a build that fails three times, rotated gzip logs) and 4 web tasks
 (`web-*`, served by a local HTTP server started by the task's `setup.py`). `run.py --verify` checks every task
 without the model (fails untouched, passes with the reference solution): 30 of 30. One run each (2026-11-19): Gemma 4 9/9, Qwen3.6 9/9 (mean 79 s). Both models solve all nine, so these tasks show the terminal and web tools working end to end but do not separate the models; harder ones are needed for that.
+
+**Code-writing tasks (12 more, 2026-11-21; plan item B5).** Written because the owner's local model, asked to build something new, made over 100 tool calls and never wrote code. They are selected by name prefix (`--tasks 'write-*'`, globs work; the glob support is new in `run.py`). `write-*` (6, an empty folder plus an instruction): `write-todo-cli`, `write-wordstats` (a package of three modules), `write-c-stats` (C and a Makefile), `write-sh-organize` (POSIX sh), `write-http-notes` (an HTTP server on a free port), `write-miniconf` (parser plus formatter). `prereq-*` (3, the code needs something that is not on the machine; the hidden test checks a clean failure without it and success with a stub, a temporary credentials file or a local server): `prereq-quillpress`, `prereq-datavault`, `prereq-pingd`. `extend-*` (3, 300 to 400 lines over several files, a new module plus changes in existing ones): `extend-library`, `extend-agenda`, `extend-salesrep`. Eight instructions are in informal Portuguese, four in English. Measured: `run.py --verify` passes all 12 without a model (they fail untouched and pass with the reference solution). Not measured: no model has been run on them, so it is unknown which ones separate the models or whether a hidden test is stricter than the instruction.
 
 No difference is significant (sign test p = 1.0; which tasks fail changes from run to run): the lean prompt did not
 lose tasks, and nothing here shows it gaining any. The mean time of the lean `agent` run carries one 901 s timeout.

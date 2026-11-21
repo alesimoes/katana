@@ -30,7 +30,7 @@ when its criterion is measured; "not measured" items stay open even when the cod
 | B2 | Reading notes (`KATANA_DIGEST`, on by default and never measured): a file read becomes a 250-word note | codebench with and without, alternating; default follows the result |
 | B3 | Qwen3.6 against AgentWorld against Gemma 4 as the desktop default | same tasks, same hour |
 | B4 | First set against second set of tools | handoff 0t |
-| B5 | Harder tasks (the terminal and web ones are solved by every model) and requests written the way the owner writes | tasks that separate the models |
+| B5 | Harder tasks (the terminal and web ones are solved by every model) and requests written the way the owner writes | tasks that separate the models. **Tasks written (2026-11-21), not yet run with any model:** 12 tasks that need new code: `write-*` (6, from an empty folder), `prereq-*` (3, the code needs a command, a credentials file or a service that is not on the machine), `extend-*` (3, a new module plus changes in existing files of a 300 to 400 line project); 8 in informal Portuguese, 4 in English. They pass `run.py --verify` (fail untouched, pass with the reference solution, no model). Open: run them on Qwen3.6 and Gemma 4, see which separate the models, and read the first runs for ambiguous hidden tests |
 
 **C. Speed** (after measuring where the time of one token goes: GPU, CPU, waiting)
 
