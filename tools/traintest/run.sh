@@ -223,6 +223,50 @@ if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" 2>/dev/null | grep 
 $K train "$D/llama.gguf" "$D/imp.jsonl" --steps 150 --lr 3e-3 --seq 256 --out "$D/imp.kspec" 2>/dev/null | grep "perda media final"
 gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/import_calls.c -o "$D/import_calls" -lm -lpthread -ldl
 if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agente nos 4 formatos: ok"; else echo "chamadas importadas: FALHOU"; fail=1; fi
+# transcricoes de um agente de programacao -> formato de mensagens -> katana import (tools/dataset/transcript2jsonl.py)
+mkdir -p "$D/tr"
+python3 - "$D/tr/a.jsonl" <<'EOF'
+import json, sys
+def U(c, **k): return dict({"type": "user", "uuid": "u%d" % len(R), "message": {"role": "user", "content": c}}, **k)
+def A(mid, blocks, **k): return dict({"type": "assistant", "uuid": "a%d" % len(R), "message": {"role": "assistant", "id": mid, "content": blocks}}, **k)
+R = []
+R.append({"type": "mode", "mode": "x"})
+R.append(U("<system-reminder>\nignore\n</system-reminder>\nlist the files in /tmp/other-7/work"))
+R.append(U("meta text", isMeta=True))
+R.append(A("m1", [{"type": "thinking", "thinking": "I will list them."}]))
+R.append(A("m1", [{"type": "text", "text": "Listing."}]))
+R.append(A("m1", [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls /tmp/other-7/work", "timeout": 5000}}]))
+R.append(U([{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "a.txt\n" + "x" * 500}, {"type": "image", "source": {}}]}]))
+R.append(A("m2", [{"type": "text", "text": "There is one file: a.txt."}]))
+R.append(R[-1])                                    # registro repetido (sessao retomada): entra uma vez
+R.append(U("now delete it"))
+R.append(A("m3", [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "rm a.txt"}}]))
+R.append(U([{"type": "text", "text": "[Request interrupted by user for tool use]"}]))
+R.append(U("say the secret word"))
+R.append(A("m4", [{"type": "text", "text": "ok"}]))
+R.append(A("m5", [{"type": "text", "text": "the word is FORBIDDEN"}]))
+R.append(U("report back"))
+R.append(A("m6", [{"type": "tool_use", "id": "t3", "name": "SubagentHandback", "input": {"message": "done"}}], toolEndsTurn=True))
+open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in R))
+EOF
+python3 tools/dataset/transcript2jsonl.py "$D/tr" -o "$D/tr.jsonl" --max-result 120 --replace '/tmp/other-[0-9]+=/tmp/katana-work' --cut-matching 'forbidden' > "$D/tr.out" 2>&1 || true
+if python3 - "$D/tr.jsonl" "$D/tr.out" <<'EOF'
+import json, sys
+E = [json.loads(l)["messages"] for l in open(sys.argv[1])]
+log = open(sys.argv[2]).read()
+ok = len(E) == 3 and "4 episodios, 3 gravados" in log
+a = E[0]
+ok = ok and [m["role"] for m in a] == ["user", "assistant", "tool", "assistant"]
+ok = ok and a[0]["content"] == "list the files in /tmp/katana-work/work"
+ok = ok and a[1]["content"] == "Listing." and a[1]["reasoning_content"] == "I will list them."
+ok = ok and a[1]["tool_calls"][0]["function"] == {"name": "Bash", "arguments": {"command": "ls /tmp/katana-work/work", "timeout": 5000}}
+ok = ok and a[2]["tool_call_id"] == "t1" and "characters omitted" in a[2]["content"] and a[2]["content"].endswith("[image]")
+ok = ok and [m["content"] for m in E[1]] == ["say the secret word", "ok"]
+ok = ok and [m["role"] for m in E[2]] == ["user", "assistant"] and E[2][1]["tool_calls"][0]["function"]["name"] == "SubagentHandback"
+sys.exit(0 if ok else 1)
+EOF
+then echo "transcricoes -> mensagens: ok (blocos juntos, avisos fora, interrompido fora, troca e corte)"; else echo "transcricoes -> mensagens: FALHOU"; cat "$D/tr.out"; fail=1; fi
+if $K import "$D/llama.gguf" "$D/tr.jsonl" "$D/tr_train.jsonl" --system none 2>/dev/null | grep -q "^import: 3 de 3 .* 2 chamadas"; then echo "import das transcricoes: ok"; else echo "import das transcricoes: FALHOU"; fail=1; fi
 # katana merge: o GGUF fundido responde igual ao modelo base com o .kspec (adaptadores sobre Q8_0; MoE; qwen35moe)
 $K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
 $K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }

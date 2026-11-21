@@ -77,8 +77,17 @@ answers become training data for the local model.
   Gemma 4** (the GPU was in use by the owner's desktop): note quality, time per chunk (one earlier measurement:
   63 s for 5.8 KB against about 45 s raw) and the effect on codebench are unknown; the path that brings notes back
   after a compaction was not exercised.
-- *Not done*: turning the Claude Code session transcripts of this repository into training data (tool names differ;
-  needs a converter to the messages format for `katana import`); `katana train` on a real 35B model is still
+- *Transcripts to training data* (2026-11-21): `tools/dataset/transcript2jsonl.py` turns the JSONL transcripts of a
+  coding agent whose tools have the names and arguments of the second tool set (0t) into the messages format that
+  `katana import` reads: one conversation per user request, the blocks of one answer joined, automatic notices and
+  interrupted calls left out, long results clipped, `--replace 'REGEX=TEXT'` for paths and names of the source machine,
+  `--cut-matching REGEX` to end an episode before a turn that must not be learned. Measured on the 88 transcript files
+  of this repository's development sessions: 390 episodes, 362 written (4612 model turns, 4768 tool calls); `katana
+  import --only-known-tools` with the current system prompt (`katana agentsys`) accepted 362 of 362 for Qwen3.6 and for
+  Gemma 4: 16.5M characters, 5.5M of them to learn (the first training had 101k). The output was left out of the
+  repository and nothing was trained on it. Only 170 of the 3909 reasoning blocks in the transcripts carry text; the rest become an empty block. Step in
+  `tools/traintest/run.sh`. Check the provider's terms before training on these answers.
+- *Not done*: `katana train` on a real 35B model is still
   unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
 
 ### First training on the 35B model from teacher answers (night of 2026-11-20 to 21)
