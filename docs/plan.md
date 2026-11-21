@@ -161,3 +161,16 @@ Estimated gain (not measured): up to 1.5–2x on what fits in cache.
 When a step is finished: measured number (alternating when it is a comparison), update of the table in
 `knowledge.md`, commit and push. A hypothesis that was not confirmed also goes into `knowledge.md`,
 in the list of what gave no gain.
+
+## H. Conventions as training (2026-11-21)
+
+`katana curriculum` (`docs/curriculum.md`) generates conversations in which the assistant follows `KATANA.md`
+(brief), skills (ability) and MCP cards. It has 15 families and is checked by `katana curriculum check`.
+`tools/codebench/tasks/conv-*` (12 tasks) is the measurement.
+
+| step | done when |
+|---|---|
+| 1. Switch the curriculum's block functions (`cu_sys_project`, `cu_sys_skills`, `cu_sys_mcp`, `cu_skill_result`, `cu_refusal`, `cu_done_note`) to the engine's own presentation once it is merged | `curriculum check` passes and the system prompt matches `katana agentsys` with the same files in place |
+| 2. Decide how a 512-token window holds the ~1,400-token system prompt (`--seq`, or `--system blocks`) | the trained turns see the project, skill and card blocks |
+| 3. One night with `specialize all --curriculum` | `conv-*` on the specialized model beats the base (alternated, `--repeat 3`); the rest of codebench does not lose |
+

@@ -1133,6 +1133,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "agentlog") == 0) return agentlog_main(argc - 2, argv + 2);       /* leitura do registro de acoes do agente */                  /* roda ferramentas de src/tools/ sem modelo */
     if (argc >= 3 && strcmp(argv[1], "export") == 0) return export_main(argc - 2, argv + 2);           /* sessoes do agente -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
+    if (argc >= 3 && strcmp(argv[1], "curriculum") == 0) return curriculum_main(argc - 2, argv + 2);   /* convencoes -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "specialize") == 0) return specialize_main(argv[0], argc - 2, argv + 2);   /* versao especialista de ponta a ponta */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
         Model m; memset(&m, 0, sizeof m);

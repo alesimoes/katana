@@ -3,8 +3,8 @@
 A small local coding benchmark for the katana agent. It exists to answer one question with numbers: does a change
 (a model, a prompt, a sampling preset, an adapter) make the agent solve more real coding tasks?
 
-- 51 tasks in `tasks/`: the 21 code tasks below, 5 terminal tasks (`term-*`), 4 web tasks (`web-*`), 9 news tasks (`news-*`)
-  and 12 code-writing tasks (`write-*`, `prereq-*`, `extend-*`), described in the sections below.
+- 63 tasks in `tasks/`: the 21 code tasks below, 5 terminal tasks (`term-*`), 4 web tasks (`web-*`), 9 news tasks (`news-*`),
+  12 code-writing tasks (`write-*`, `prereq-*`, `extend-*`) and 12 convention tasks (`conv-*`), described in the sections below.
 - The original 21 tasks: 18 are Python (standard library only): 12 bug fixes (one spans two modules), 3 features written from
   a stub (a calculator, a persistent to-do list, a duration parser) and 3 larger jobs: `mdhtml` (a Markdown subset to
   HTML converter, about 80 lines), `kvstore` (a package written from nothing: a log-structured store plus a command
@@ -127,3 +127,32 @@ All optional, so the original tasks work unchanged.
 `python3 tools/codebench/run.py --verify [--tasks a,b]` runs setup, the hidden check on the untouched starting state (it
 must fail), then on a fresh copy after the reference solution (it must pass), and also fails a task if `solution`, `hidden`,
 `site`, `setup.py` or `solve.sh` show up in the agent's working folder. It never runs the model.
+
+## Convention tasks (`conv-*`)
+
+Twelve tasks that measure whether the agent follows katana's conventions, not whether it can code. The instruction is a
+short informal request that never restates the convention; the agent has to get it from `KATANA.md`, a skill in
+`.katana/skills/` or an MCP server. Passing is checked only through side effects (marker files, step logs, the MCP
+call log), never by reading what the model says. State files live in `.katana/state/` inside the working folder; MCP
+call logs live in a temporary folder outside it (`CB_MCPLOG` for the hidden test). All names are invented.
+
+| task | convention | what the hidden test requires |
+|---|---|---|
+| `conv-brief-test` | `test:` is `sh tools/check.sh --suite fast` | the bug is fixed and the marker written only by that command exists, is `fast`, and is not older than `cart.py`. `make test` leaves a different marker that is tolerated but does not count |
+| `conv-brief-layout` | `layout:` and a rule: new handlers go in `src/shipdesk/handlers/` (a `legacy/` folder with look-alike modules is the trap) | `shipdesk.handlers.cancel_label` imports and works, and no other `cancel_label` exists anywhere |
+| `conv-brief-never` | `never:` item with the pattern `*tools/regen.sh*` | the fixture was hand edited and the generator (which would work and leaves a tripwire) never ran |
+| `conv-brief-docs` | `docs:` points to `docs/units.md` (cents, basis points, half-up rounding) | `add_tax` gives the exact values that only follow from those facts |
+| `conv-brief-done` | `done:` is `sh tools/verify.sh`, which stamps a hash of `src/` | the stamp equals the hash of the final `src/` (the command ran after the last edit) |
+| `conv-skill-order` | skill `cut-release`, four script steps | the log shows check, bump, notes, seal in that order, plus the done state |
+| `conv-skill-args` | skill `ship-build` with `args: version, channel` | the log lines carry the values from the request (3.14.2, nightly) |
+| `conv-skill-needs` | skill `build-docs` needs `inkpress`, which does not exist; its `fail:` says what to do | `.katana/state/missing.txt` names it, the two independent steps ran, no PDF and no fake `inkpress` |
+| `conv-skill-choose` | two similar skills (`backup-db`, `backup-files`); only one `when:` fits | only the files skill's steps are in the log |
+| `conv-mcp-call` | project `.katana/mcp.json`, label printer server | one `print_label` call with a JSON integer `copies`, enum `medium`, exact keys |
+| `conv-mcp-chain` | ticket tracker; ids are random per run | `list_tickets` came first and `close_ticket` used the id of the right ticket |
+| `conv-mcp-schema` | irrigation controller, 9 arguments with a nested `valve` object | the exact nested structure, `dry_run` true, correct types |
+
+Each MCP task ships its own `server.py` next to `setup.py` (not in `repo/`); `setup.py` writes `.katana/mcp.json` in the
+working folder pointing to it, with a `--log` argument; the server appends every `tools/call` (name and arguments) to
+that file. The reference solution (`solve.sh`) is a small inline stdio client that reads `.katana/mcp.json`. These tasks
+depend on the engine showing `KATANA.md` and the skill list to the model, enforcing `never:` patterns on Bash, loading
+skills with the Skill tool, and exposing project MCP tools as `server__tool`.
