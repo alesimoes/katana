@@ -9,6 +9,8 @@ Item {
     id: comp
     property alias input: ta
     readonly property real boxHeight: box.height
+    // altura da fila de mensagens, que fica acima da caixa (fora da altura deste item): quem empilha cartoes acima soma isto
+    readonly property real queueHeight: qcol.visible ? qcol.height + 6 : 0
     implicitHeight: box.height + meta.height + 12 + (sys.visible ? sys.height + 2 : 0)
     width: parent ? parent.width : 400
     height: implicitHeight

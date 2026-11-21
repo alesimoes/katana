@@ -21,7 +21,7 @@ ApplicationWindow {
     readonly property bool narrow: width < 760
     property bool sideOpen: !backend.uiFlag("lateralRecolhida")
     // altura dos cartoes acima da caixa de mensagem (tarefas do agente, pergunta): a conversa termina antes deles
-    readonly property real cardsHeight: (workCard.visible ? workCard.height + 6 : 0) + (choiceCard.visible ? choiceCard.height + 6 : 0)
+    readonly property real cardsHeight: (workCard.visible ? workCard.height + 6 : 0) + (choiceCard.visible ? choiceCard.height + 6 : 0) + composer.queueHeight
     property bool drawerOpen: false
 
     Component.onCompleted: { Theme.force = backend.themeOverride; Theme.fonte = backend.fonte(); Theme.tema = backend.tema() }
@@ -466,7 +466,7 @@ ApplicationWindow {
                 property bool open: false      // recolhido: uma linha com o passo atual; a lista inteira so quando o dono pede
                 visible: backend.todoSteps.length > 0 || backend.planMode
                 anchors.bottom: choiceCard.visible ? choiceCard.top : composer.top
-                anchors.bottomMargin: 6
+                anchors.bottomMargin: 6 + (choiceCard.visible ? 0 : composer.queueHeight)      // a fila de mensagens fica entre os cartoes e a caixa
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: Math.min(parent.width - 32, 760)
                 height: visible ? workCol.implicitHeight + 20 : 0
@@ -532,7 +532,7 @@ ApplicationWindow {
                 objectName: "choiceCard"
                 visible: backend.choicePending
                 anchors.bottom: composer.top
-                anchors.bottomMargin: 6
+                anchors.bottomMargin: 6 + composer.queueHeight
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: Math.min(parent.width - 32, 760)
                 height: visible ? choiceCol.implicitHeight + 24 : 0
