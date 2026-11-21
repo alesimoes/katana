@@ -969,11 +969,12 @@ static int run_main(int argc, char **argv) {
             argc -= 2;
         } else i++;
     }
+    if (argc >= 3 && strcmp(argv[1], "serve") == 0)       /* --agent: o agente pela rede; o modelo fica so no agente filho */
+        for (int i = 2; i < argc; i++) if (strcmp(argv[i], "--agent") == 0) { g_srv_agent = 1; for (int j = i; j < argc; j++) argv[j] = argv[j + 1]; argc--; break; }
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
-        perfil_apply(argv[2], 0);
-        load_model(&m, argv[2]);
-        print_info(&m);
+        if (g_srv_agent) { if (!realpath(argv[2], g_srv_model_path)) die("katana serve --agent: modelo nao encontrado"); }
+        else { perfil_apply(argv[2], 0); load_model(&m, argv[2]); print_info(&m); }
         {   /* nome do modelo na API: o arquivo sem pasta e sem .gguf */
             const char *b = argv[2], *sl = strrchr(b, '/'), *bs = strrchr(b, '\\');
             if (bs && (!sl || bs > sl)) sl = bs;
@@ -982,7 +983,7 @@ static int run_main(int argc, char **argv) {
             const size_t ln = strlen(g_srv_name);
             if (ln > 5 && strcmp(g_srv_name + ln - 5, ".gguf") == 0) g_srv_name[ln - 5] = 0;
         }
-        return serve(&m, argc == 4 ? atoi(argv[3]) : 8080);
+        return serve(g_srv_agent ? NULL : &m, argc == 4 ? atoi(argv[3]) : 8080);
     }
     if (argc == 2 && strcmp(argv[1], "mcp") == 0) return mcp_cmd();
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
@@ -1239,6 +1240,8 @@ static int run_main(int argc, char **argv) {
         "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
         "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
         "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
+        "  katana serve <modelo.gguf> [porta] --agent   o agente pela rede (/v1/agent/sessions, docs/api.md): quem tem a chave\n"
+        "                                       executa comandos nesta maquina\n"
         "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
         "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
