@@ -97,7 +97,7 @@ python3 - "$FX/metrics.jsonl" "$FX/nosetup.jsonl" <<'EOF' || fail=1
 import json, sys
 r = json.loads(open(sys.argv[1]).readline())
 s = json.loads(open(sys.argv[2]).readline())
-want = dict(passed=True, calls=3, failed_calls=1, refused_calls=1, repeated_calls=1, rounds=2, last_text=True, tokens_read=150, tokens_written=17, gen_tokens=17, tool_calls=8, timed_out=False)
+want = dict(passed=True, calls=3, failed_calls=1, refused_calls=1, repeated_calls=1, rounds=2, last_text=True, tokens_read=150, tokens_written=17, gen_tokens=17, tool_calls=4, timed_out=False)
 bad = {k: (r.get(k), v) for k, v in want.items() if r.get(k) != v}
 ok = not bad and list(r)[:7] == ["label", "task", "passed", "seconds", "tool_calls", "gen_tokens", "timed_out"] and s.get("skipped") is True and s["passed"] is False
 print("codebench medidas do registro e tarefa pulada: %s" % ("ok" if ok else "FALHOU %s %s" % (bad, s)))

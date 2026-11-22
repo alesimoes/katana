@@ -771,7 +771,7 @@ static int cb_run_task(const CbOpt *o, const char *name, int attempt, Buf *rec, 
     if (logp[0]) cb_read_log(logp, &met);
     cb_read_stderr(r.err.p ? r.err.p : "", o->teacher != NULL, &met);
     /* o registro do agente tem uma linha por chamada; o texto da tela repetia cada uma (chamada e resultado) */
-    const int tool_calls = met.calls ? met.calls : cb_count(log.p, "[ferramenta ") + cb_count(log.p, "[professor: ");
+    const int tool_calls = met.calls + met.refused ? met.calls + met.refused : cb_count(log.p, "[ferramenta ") + cb_count(log.p, "[professor: ");
 
     if (o->teacher && dtmp[0]) {                                   /* sessao do professor: marca passed e guarda */
         size_t dl = 0; char *d = cb_slurp(dtmp, &dl);
