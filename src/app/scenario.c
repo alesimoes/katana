@@ -233,7 +233,7 @@ static void x_tail(void) {
     static const char *const fams[] = {"x-web", "x-tools", "x-rare", "x-concept", "x-ps1", "x-clean", "x-investigate", "x-ability", "x-make", "x-skill", "x-mcp"};
     int ok = 0; for (size_t i = 0; i < sizeof fams / sizeof fams[0]; i++) ok |= !strcmp(g_x.fam, fams[i]);
     if (!ok || g_x.nreq != 1 || g_x.noshape || g_x.merge || g_x.n < 3 || g_x.m[g_x.n - 1].role != 'a' || g_x.m[g_x.n - 1].nc) return;
-    if (xs_n(100) >= 8) return;      /* pouco: e sempre a mesma pergunta */
+    if (xs_n(100) >= (!strcmp(g_x.fam, "x-rare") || !strcmp(g_x.fam, "x-tools") || !strcmp(g_x.fam, "x-concept") ? 22 : 8)) return;      /* pouco: sao duas perguntas so */
     int td = 0; if (todo_count(&td) > td) return;
     const char *nm[6]; int n = 0;
     for (int i = 0; i < g_x.n; i++) {
@@ -251,6 +251,16 @@ static void x_tail(void) {
     if (!n) return;
     const int pt = g_cu_lang != 0;
     g_x.dep = 1; x_shape_tag("dep");
+    const XMsg *lastt = NULL;      /* o ultimo resultado de ferramenta do pedido (fora o plano) */
+    for (int i = 0; i < g_x.n; i++) if (g_x.m[i].role == 't' && strcmp(g_x.m[i].c[0].name, "TodoWrite") && g_x.m[i].text[0] && g_x.m[i].text[0] != '[') lastt = &g_x.m[i];
+    if (lastt && xs_n(2)) {
+        char line1[140]; snprintf(line1, sizeof line1, "%.*s", (int)(strcspn(lastt->text, "\n") < 120 ? strcspn(lastt->text, "\n") : 120), lastt->text);
+        if (strlen(line1) > 3 && !strchr(line1, '`') && strcspn(lastt->text, "\n") <= 120) {
+            x_user(pt ? XS_PK("o que exatamente a ultima ferramenta devolveu?", "qual foi a primeira linha do ultimo resultado?", "me mostra o comeco do que ela devolveu") : XS_PK("what exactly did the last tool return?", "what was the first line of the last result?", "show me the start of what it returned"));
+            x_final(cu_fmt(pt ? XS_PK("O ultimo resultado, do `%s`, comeca assim: `%s`.", "Veio do `%s`, e a primeira linha e: `%s`.") : XS_PK("The last result, from `%s`, starts like this: `%s`.", "It came from `%s`, and its first line is: `%s`."), lastt->c[0].name, line1));
+            return;
+        }
+    }
     x_user(pt ? XS_PK("quais ferramentas voce usou pra isso?", "como voce fez isso, com quais ferramentas?", "que chamadas voce fez pra chegar nisso?") : XS_PK("which tools did you use for that?", "how did you do that, with which tools?", "which calls did you make to get there?"));
     Buf b = {0}; buf_str(&b, "");
     for (int i = 0; i < n; i++) buf_str(&b, cu_fmt("%s`%s`", i ? (i + 1 == n ? (pt ? " e depois " : " and then ") : ", ") : "", nm[i]));

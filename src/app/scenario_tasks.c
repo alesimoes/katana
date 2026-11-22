@@ -46,7 +46,7 @@ static void x_setup(XC *c, Scn *s, int task) {
         if ((task == T_CONF || task == T_CLEAN) && cu_pct(g_x_askpct)) c->obst = cu_pct(55) ? O_ASK : O_NOASK;      /* celulas de pergunta e as gemeas sem pergunta */
         else { do c->obst = cu_n(O_N); while (!(g_x_tobst[task] & OB(c->obst)) || c->obst == O_ASK || c->obst == O_NOASK); if (c->obst != O_NONE && cu_pct(22)) c->obst = O_NONE; }
         c->loc = cu_n(3); c->conv = cu_n(4);
-        if (task == T_FIX && cu_pct(22)) c->loc = 3;      /* o usuario cola a saida dos testes */
+        if (task == T_FIX && cu_pct(30)) c->loc = 3;      /* o usuario cola a saida dos testes */
         c->fu = cu_pct(g_cu_hold ? 40 : 42) ? F_NONE : 1 + cu_n(F_N - 1);
         if (c->fu == F_GOAL && !(task == T_CONF || task == T_RENAME)) continue;
         if ((c->fu == F_USES || c->fu == F_WHICH || c->fu == F_HASTEST) && !(task == T_FIX || task == T_ADD || task == T_RENAME || task == T_FIND || task == T_EXPLAIN)) continue;
@@ -62,7 +62,7 @@ static void x_setup(XC *c, Scn *s, int task) {
         const int long_task = task == T_FIX || task == T_ADD || task == T_RENAME || task == T_CONF || task == T_INVEST;
         if (long_task || g_cu_hold) {
             if (g_cu_hold) c->pre = cu_pct(80) ? 1 + cu_n(2) : 0;      /* holdout: pedido antes e pedido depois na mesma conversa, o que o treino nunca junta */
-            else if (c->fu == F_NONE && cu_pct(32)) c->pre = 1 + cu_n(2);
+            else if (c->fu == F_NONE && cu_pct(42)) c->pre = 1 + cu_n(2);
             if (c->pre && g_cu_hold && c->fu == F_NONE) c->fu = task == T_CONF ? F_EXPLAIN : F_RUN;
             if (c->pre && task == T_FIX) { if (c->obst == O_WRONGPATH) continue; c->loc = 0; }
             if (c->pre && c->fu == F_GOAL) continue;
@@ -328,7 +328,7 @@ static void x_followup(XC *c) {
 /* pedido curto antes da tarefa: achar ou explicar uma funcao */
 static void x_pre(XC *c) {
     if (!c->pre) return;
-    if (cu_pct(45)) x_merge();      /* o pedido curto e a tarefa chegam na mesma mensagem */
+    if (cu_pct(60)) x_merge();      /* o pedido curto e a tarefa chegam na mesma mensagem */
     const int fu = c->fu; c->fu = c->pre == 1 ? F_FIND : F_EXPLAIN; x_followup(c); c->fu = fu;
 }
 
@@ -686,7 +686,7 @@ static void fam_x_config(FILE *f, Scn *s) {
             if (!strstr(a, "read_timeout")) cu_die("resposta sem a chave");
         } else { if (strstr(rd, "connect_timeout")) cu_die("gemea com duas chaves"); x_askproof("ambiguous", 0, "read_timeout = ", "connect_timeout"); }
     }
-    if (c.fu == F_GOAL && c.obst == O_NONE && !two && !amb && !miss && cu_pct(45)) {      /* o usuario corrige o valor antes da mudanca: a lista e reescrita com o valor novo */
+    if (c.obst == O_NONE && !two && !amb && !miss && c.loc != 2 && (c.fu == F_GOAL || c.fu == F_NONE) && cu_pct(c.fu == F_GOAL ? 50 : 30)) {      /* o usuario corrige o valor antes da mudanca: a lista e reescrita com o valor novo */
         long v3 = lo + 1 + cu_n((int)(hi - lo > 400 ? 400 : hi - lo - 1)); if (v3 == v || v3 == atol(p->cv[ki])) v3 = v3 + 1 <= hi ? v3 + 1 : v3 - 1;
         x_user_mid(cu_fmt(XV(L("wait, make that %ld, not %ld", "espera, e %ld, nao %ld"), L("stop, I typed it wrong: the value is %ld (not %ld)", "para, digitei errado: o valor e %ld (nao %ld)")), v3, v));
         x_shape_tag("goal");

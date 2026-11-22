@@ -195,7 +195,7 @@ static int cu_matrix_main(int argc, char **argv) {
     if (argc < 1) { fprintf(stderr, "uso: katana curriculum matrix <arquivo.jsonl>\n"); return 1; }
     FILE *in = fopen(argv[0], "rb"); if (!in) { fprintf(stderr, "curriculum matrix: nao abri %s\n", argv[0]); return 1; }
     static const char *const tasks[] = {"fix", "add", "rename", "find", "explain", "run", "config", "clean", "investigate"};
-    CuCnts cells = {0}, stacks = {0}, conv = {0}, fu = {0}, pre = {0}, other = {0}, fams = {0}, tools = {0}, toolfam = {0}, toolerr = {0}, untr = {0}, modes = {0};
+    CuCnts cells = {0}, stacks = {0}, conv = {0}, fu = {0}, pre = {0}, other = {0}, fams = {0}, tools = {0}, toolfam = {0}, toolerr = {0}, untr = {0}, modes = {0}, toolcell = {0}, concepts = {0};
     char *line = NULL; size_t cap = 0; long n = 0;
     while (cu_slurp_line(in, &line, &cap)) {
         if (!*line) continue;
@@ -228,6 +228,8 @@ static int cu_matrix_main(int argc, char **argv) {
                 if (id && content && !strncmp(content, "error:", 6)) for (int i = 0; i < nid && i < 40; i++) if (!strcmp(idn[i][0], id)) { cu_cnt_add(&toolerr, idn[i][1]); break; }
             }
         }
+        if (cell && !strncmp(cell, "concept/", 8)) cu_cnt_add(&concepts, cu_fmt("%.*s", (int)strcspn(cell + 8, "/"), cell + 8));
+        for (int i = 0; i < ns; i++) { const char *kc = cu_fmt("%s\t%s", seen[i], cell ? cell : ""); int hadc = 0; for (long j = 0; j < toolcell.n; j++) hadc |= !strcmp(toolcell.v[j].k, kc); if (!hadc) cu_cnt_add(&toolcell, kc); }
         for (int i = 0; i < ns; i++) { cu_cnt_add(&tools, seen[i]); const char *k = cu_fmt("%s\t%s", seen[i], fam ? fam : "?"); int had = 0; for (long j = 0; j < toolfam.n; j++) had |= !strcmp(toolfam.v[j].k, k); if (!had) cu_cnt_add(&toolfam, k); }
         cu_arena_free();
     }
@@ -237,14 +239,16 @@ static int cu_matrix_main(int argc, char **argv) {
     cu_cnt_print("cells, task x obstacle: ", &cells, 1);
     cu_cnt_print("stacks: ", &stacks, 1); cu_cnt_print("conventions: ", &conv, 1); cu_cnt_print("request before: ", &pre, 1); cu_cnt_print("second request: ", &fu, 1);
     cu_cnt_print("other cells: ", &other, 1);
-    printf("tools: conversations with a trained call | families | results that are engine errors | untrained calls kept as context\n");
+    cu_cnt_print("katana concepts (conversations of x-concept per concept): ", &concepts, 1);
+    printf("tools: conversations with a trained call | distinct situations (cells) | families | results that are engine errors | untrained calls kept as context\n");
     qsort(tools.v, (size_t)tools.n, sizeof *tools.v, cu_cnt_cmp);
     for (long i = 0; i < tools.n; i++) {
-        long nf = 0, ne = 0, nu = 0; const size_t l = strlen(tools.v[i].k);
+        long nf = 0, ne = 0, nu = 0, nc = 0; const size_t l = strlen(tools.v[i].k);
+        for (long j = 0; j < toolcell.n; j++) nc += !strncmp(toolcell.v[j].k, tools.v[i].k, l) && toolcell.v[j].k[l] == '\t';
         for (long j = 0; j < toolfam.n; j++) nf += !strncmp(toolfam.v[j].k, tools.v[i].k, l) && toolfam.v[j].k[l] == '\t';
         for (long j = 0; j < toolerr.n; j++) if (!strcmp(toolerr.v[j].k, tools.v[i].k)) ne = toolerr.v[j].n;
         for (long j = 0; j < untr.n; j++) if (!strcmp(untr.v[j].k, tools.v[i].k)) nu = untr.v[j].n;
-        printf("  %-22s %4ld | %2ld | %3ld | %3ld\n", tools.v[i].k, tools.v[i].n, nf, ne, nu);
+        printf("  %-22s %4ld | %3ld | %2ld | %3ld | %3ld\n", tools.v[i].k, tools.v[i].n, nc, nf, ne, nu);
     }
     cu_cnt_print("families: ", &fams, 1);
     return 0;

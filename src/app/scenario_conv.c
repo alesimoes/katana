@@ -499,7 +499,7 @@ static void fam_x_make(FILE *f, Scn *s) {
             const char *o = cu_fmt("%s", x_test(p, NULL)), *tot = x_totals(o); if (!tot) cu_die("sem totais");
             x_done(1);
             x_write(s, NULL, "KATANA.md", want);
-            const int mid = !v && cu_pct(45);
+            const int mid = !v && cu_pct(60);
             if (mid) {      /* o usuario interrompe antes da conferencia e acrescenta uma regra: a lista e reescrita e o trabalho segue dela */
                 x_user_mid(XV(L("wait, before you check it: also forbid deleting the test runner", "espera, antes de conferir: proibe tambem apagar o arquivo de testes"), L("hold on. it also needs a never rule for the test runner", "pera. ele tambem precisa de uma regra never pro arquivo de testes")));
                 x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s\n[>] %s\n[ ] %s", x_p0(pl[0]), pl[1], L("Add the never: item for the test runner", "Acrescentar o item never: do arquivo de testes"), pl[2]))), 0);
