@@ -660,11 +660,16 @@ VNNI_T static float dot_q5k_v(const uint8_t *row, int cols) {
 static void vnni_init(void) {}
 #endif
 
+/* kernels inteiros dos tipos de poucos bits (IQ2/IQ3/IQ4 e Q2_0), em cpu_lowbit.c */
+static int lowbit_ok(uint32_t type);
+static float lowbit_dot(const Mat *W, const uint8_t *row, int cols);
+static float lowbit_bf16_dot(const uint8_t *row, const float *x, int cols);
+
 static int moe_q5k_old;     /* KATANA_MOE_OLD=1: caminho anterior dos especialistas na CPU (comparacao) */
 /* a matriz usa o produto inteiro? (so tipos K, e se nao estiver no modo exato) */
 static int mat_int(const Mat *W) {
     return HAVE_INT_DOT && !cpu_exact && W->q &&
-           (W->type == T_Q4_K || W->type == T_Q6_K || W->type == T_Q5_K || W->type == T_Q3_K);
+           (W->type == T_Q4_K || W->type == T_Q6_K || W->type == T_Q5_K || W->type == T_Q3_K || lowbit_ok(W->type));
 }
 
 static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, int cols) {
@@ -677,6 +682,8 @@ static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, in
         if (W->type == T_Q5_K && !moe_q5k_old) return dot_q5k_v(row, cols);
     }
 #endif
+    if (mat_int(W) && lowbit_ok(W->type)) return lowbit_dot(W, row, cols);
+    if (W->type == T_BF16 && x) return lowbit_bf16_dot(row, x, cols);
     if (mat_int(W)) return W->type == T_Q4_K ? dot_q4k_i(row, cols) : W->type == T_Q6_K ? dot_q6k_i(row, cols)
                          : W->type == T_Q5_K ? dot_q5k_i(row, cols) : dot_q3k_i(row, cols);
     if (W->type == T_Q4_K) return dot_q4k(row, x, sx, cols);
