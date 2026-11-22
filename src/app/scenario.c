@@ -36,6 +36,7 @@ static char g_x_res[70000];
 static int g_x_port;             /* servidor local de paginas (0 = nao subiu) */
 static int g_x_realgit;          /* a conversa precisa de um repositorio git de verdade */
 static pid_t g_x_srv;
+static void (*g_x_prehook)(const Scn *s);      /* x-rare: liga um servidor MCP de verdade depois dos do cenario e antes do prompt */
 
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap);
 /* a chamada vale contra o esquema completo da ferramenta ou contra a declaracao curta que o prompt mostra (Edit.edits em
@@ -601,11 +602,13 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
         cu_put(cu_fmt("%s/.katana/mcp/%s.md", s->cwd, m->name), cu_fmt("what: %s\nfirst: %s\norder: %s\navoid: %s\n", m->purpose,
                m->list >= 0 || m->first >= 0 ? cu_fmt("%s__%s to get the %s ids", m->name, m->t[m->first >= 0 ? m->first : m->list].name, m->noun_en) : "", m->order ? m->order : "", m->avoid ? m->avoid : ""), 0);
     }
+    if (g_x_prehook) g_x_prehook(s);
     setenv("HOME", s->home, 1); setenv("USER", s->user, 1); setenv("SHELL", "/bin/bash", 1);
     setenv("GIT_AUTHOR_DATE", "2026-01-05T10:00:00", 1); setenv("GIT_COMMITTER_DATE", "2026-01-05T10:00:00", 1);
     setenv("GIT_AUTHOR_NAME", s->user, 1); setenv("GIT_COMMITTER_NAME", s->user, 1); setenv("GIT_AUTHOR_EMAIL", cu_fmt("%s@example.org", s->user), 1); setenv("GIT_COMMITTER_EMAIL", cu_fmt("%s@example.org", s->user), 1);
     setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1); setenv("GIT_CONFIG_SYSTEM", "/dev/null", 1);
     setenv("KATANA_CACHE_DIR", cu_fmt("%s/cache", g_cu_sb), 1);
+    setenv("KATANA_NO_NOTIFY", "1", 1);      /* nenhuma notificacao de verdade sai do gerador */
     g_trust = 1; g_con_rich = 1;
     g_todo[0] = 0; ct_task_sync(); g_todo_touched = 0;
     ct_session_reset(); g_rd_delta_on = 1; g_plan_mode = 0;

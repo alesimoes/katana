@@ -2010,6 +2010,7 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 #include "app/scenario.c"            /* motor de cenarios compostos: projetos de verdade, politica em C, tudo rodado no motor */
 #include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
 #include "app/scenario_ps1.c"        /* scripts PowerShell: escritos e conferidos, nunca dados como executados */
+#include "app/scenario_rare2.c"      /* preparos de verdade das raras: servidor MCP, outra sessao, subagente, servidor de linguagem */
 #include "app/scenario_rare.c"       /* as ferramentas raras: tres situacoes para cada uma */
 #include "app/scenario_more.c"       /* o proprio katana, ferramentas so pelo nome, web, skills; o check que refaz a conversa */
 typedef void (*CuFam)(FILE *, Scn *);
