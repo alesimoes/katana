@@ -476,7 +476,7 @@ static void mcp_list_print(int tools) {
     if (!g_nmcp) { printf("No MCP servers configured (katana mcp add <name> -- <command> | --url <url>).\n"); return; }
     for (int i = 0; i < g_nmcp; i++) {
         McpSrv *s = &g_mcp[i];
-        printf("%s [%s] %s  (from %s%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "ok" : "unavailable", s->project ? "project file " : "your file ", s->source);
+        printf("%s [%s] %s  (from %s%s)\n", s->name, mcpx_kind(s), s->alive ? "ok" : "unavailable", s->project ? "project file " : "your file ", s->source);
         if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); printf("  error: %s\n", pe); continue; }
         char cs[120]; mcpch_state(s, cs, sizeof cs);
         printf("  server: %s, protocol %s, %d tools%s%s\n", s->info, s->proto, s->ntools, s->nprompts ? ", prompts: /name:prompt" : "", cs);
@@ -484,7 +484,9 @@ static void mcp_list_print(int tools) {
             char d[110], fn[260]; snprintf(d, sizeof d, "%.100s", s->tools[j].desc);
             char *nl = strchr(d, '\n'); if (nl) *nl = 0;
             mcp_fname(s, s->tools[j].name, fn, sizeof fn);
-            printf("  %s: %s\n", fn, d);
+            char an[200]; mcpx_ann_text(s, j, an, sizeof an);
+            printf("  %s%s%s%s: %s\n", fn, an[0] ? " [" : "", an, an[0] ? "]" : "", d);
+            if (s->tools[j].title && s->tools[j].title[0]) printf("      title: %s\n", s->tools[j].title);
         }
     }
 }
@@ -495,7 +497,7 @@ static int mcp_test_cli(int argc, char **argv) {
     if (i < 0) { fprintf(stderr, "mcp test: no server '%s' (see: katana mcp list)\n", argv[0]); return 1; }
     McpSrv *s = &g_mcp[i];
     atexit(mcp_shutdown);
-    printf("%s [%s] from %s\n", s->name, s->http ? "http" : "stdio", s->source);
+    printf("%s [%s] from %s\n", s->name, mcpx_kind(s), s->source);
     if (!s->cmd && !s->url) { printf("  FAILED: %s\n", s->err); return 1; }
     mcp_start(s);
     if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); printf("  FAILED: %s\n", pe); return 1; }
@@ -544,7 +546,7 @@ static void mcp_status_print(void) {
         McpSrv *s = &g_mcp[i];
         char pe[400] = ""; if (!s->alive || s->err[0]) mcp_plain_err(s, pe, sizeof pe);
         char cs[120]; mcpch_state(s, cs, sizeof cs);
-        fprintf(stderr, "  %s [%s] %s, %d tools, %d prompts%s%s%s  (%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "connected" : "NOT connected", s->ntools, s->nprompts, cs, pe[0] ? ", last error: " : "", pe, s->source);
+        fprintf(stderr, "  %s [%s] %s, %d tools, %d prompts%s%s%s  (%s)\n", s->name, mcpx_kind(s), s->alive ? "connected" : "NOT connected", s->ntools, s->nprompts, cs, pe[0] ? ", last error: " : "", pe, s->source);
     }
 }
 
@@ -658,6 +660,7 @@ static int ex_prompt_cmd(const char *line, int *handled) {
     if (si < 0) return 0;
     *handled = 1;
     McpSrv *s = &g_mcp[si];
+    mcpx_refresh(s, NULL);        /* prompts/list_changed recebido: lista atual antes de procurar o prompt */
     McpPrompt *pp = NULL;
     for (int i = 0; i < s->nprompts; i++) if (!strcmp(s->prompts[i].name, pn)) pp = &s->prompts[i];
     if (!pp) {

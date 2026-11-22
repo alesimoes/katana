@@ -345,7 +345,7 @@ static void mcpch_pump(int reconnect) {
     for (int i = 0; i < g_nmcp; i++) {
         McpSrv *s = &g_mcp[i];
         if (s->alive && !s->http && s->spawned) chn_drain(s);
-        if (s->http && chn_up(s) && !s->ch->goff) {
+        if (s->http && !s->sse && chn_up(s) && !s->ch->goff) {
             if (!s->ch->gon && now >= s->ch->gnext) chn_get_open(s);
             if (s->ch->gon) chn_get_read(s);
         }

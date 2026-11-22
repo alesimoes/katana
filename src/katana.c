@@ -39,6 +39,7 @@
 #include "agent/prompt.c"              /* agente: ambiente e prompt de sistema */
 #include "agent/mcp.c"                 /* cliente MCP */
 #include "agent/mcp_channel.c"         /* canal MCP: mensagens e confirmacoes empurradas por um servidor */
+#include "agent/mcp_extra.c"           /* MCP alem do basico: variaveis na configuracao, roots, anotacoes, elicitation */
 #include "agent/devtools.c"            /* ferramentas de programacao: edit_file, glob, download, pacotes, git */
 #include "agent/code.c"               /* leitura por trechos e verificacao de sintaxe depois de gravar */
 #include "agent/reaper.c"              /* vigia: encerra os comandos do agente quando ele morre (SIGKILL incluido) */

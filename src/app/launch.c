@@ -825,6 +825,7 @@ static void launch_header(Model *m) {
         else { snprintf(u, sizeof u, "%s/.katana/mcp.json", home); if (lc_isfile(u)) o += (size_t)snprintf(files + o, sizeof files - o, "~/.katana/mcp.json"); }
         snprintf(pj, sizeof pj, "%s/.katana/mcp.json", cwd);
         if (!getenv("KATANA_MCP_STRICT") && lc_isfile(pj)) o += (size_t)snprintf(files + o, sizeof files - o, "%s./.katana/mcp.json", o ? ", " : "");
+        { char rj[4400]; if (mcpx_root_file(rj, sizeof rj)) o += (size_t)snprintf(files + o, sizeof files - o, "%s%s", o ? ", " : "", lc_short(rj, sh, sizeof sh)); }      /* .mcp.json da raiz do projeto */
         int alive = 0; for (int i = 0; i < g_nmcp; i++) alive += g_mcp[i].alive;
         if (g_nmcp) fprintf(stderr, "  mcp       %d server%s (%d up) from %s\n", g_nmcp, g_nmcp == 1 ? "" : "s", alive, files[0] ? files : "configuration");
         else fprintf(stderr, "  mcp       none\n");
@@ -853,7 +854,7 @@ static int launch_cmd(const char *line, Model *m, int pos, const char *sys, cons
         fprintf(stderr, "  session   %s\n", g_sess_path[0] ? lc_short(g_sess_path, sh, sizeof sh) : "not saved yet");
         int alive = 0; for (int i = 0; i < g_nmcp; i++) alive += g_mcp[i].alive;
         fprintf(stderr, "  mcp       %d server%s (%d up)\n", g_nmcp, g_nmcp == 1 ? "" : "s", alive);
-        for (int i = 0; i < g_nmcp; i++) fprintf(stderr, "            %s [%s] %s%s%s\n", g_mcp[i].name, g_mcp[i].http ? "http" : "stdio", g_mcp[i].alive ? "up" : "unavailable: ", g_mcp[i].alive ? "" : g_mcp[i].err, "");
+        for (int i = 0; i < g_nmcp; i++) fprintf(stderr, "            %s [%s] %s%s%s\n", g_mcp[i].name, mcpx_kind(&g_mcp[i]), g_mcp[i].alive ? "up" : "unavailable: ", g_mcp[i].alive ? "" : g_mcp[i].err, "");
         const int ns = lc_count_skills(sd, sizeof sd);
         fprintf(stderr, "  skills    %d%s%s\n", ns, ns ? " in " : "", sd);
         static char pi[PROJ_MAX + 200]; char pp[4400];

@@ -534,9 +534,9 @@ static int agent(Model *m, int max_tokens, float temp) {
             char tp[4300];
             if (np[0] == '~' && (np[1] == 0 || np[1] == '/')) { char h[1024]; agent_home(h, sizeof h); snprintf(tp, sizeof tp, "%s%s", h, np + 1); } else snprintf(tp, sizeof tp, "%s", np);
 #ifdef _WIN32
-            if (_chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; }
+            if (_chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; mcpx_cwd_sync(); }
 #else
-            if (chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; }
+            if (chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; mcpx_cwd_sync(); }
 #endif
             continue;
         }

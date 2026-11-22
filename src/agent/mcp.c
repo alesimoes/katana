@@ -16,10 +16,10 @@
 #define MCP_INIT_MS 30000
 #define MCP_SYS_MAX 9000
 #define MCP_DECL_BUDGET 3000       /* acima disso as ferramentas MCP entram no prompt de forma reduzida (KATANA_MCP_BUDGET) */
-#define MCP_VERSAO "2025-06-18"
+#define MCP_VERSAO "2025-11-25"
 
 static int g_mcp_init_ms = MCP_INIT_MS;
-typedef struct { char *name, *desc, *schema; } McpTool;
+typedef struct { char *name, *desc, *schema, *title; signed char ro, destr, idem, open; } McpTool;     /* ro/destr/idem/open: dicas (annotations) do servidor, -1 = nao declarada; nao sao confiaveis */
 typedef struct { char *name, *desc; char *argn[8]; int argreq[8]; int nargs; } McpPrompt;
 typedef struct {
     char name[48];
@@ -29,6 +29,10 @@ typedef struct {
     int project;                     /* veio do .katana/mcp.json do projeto */
     int spawned;                     /* ha processo filho com os canais abertos */
     int has_prompts, was_ok, dirty;  /* prompts/list existe; ja ficou conectado; a lista de ferramentas mudou */
+    int sse;                         /* transporte SSE antigo ("type":"sse"): http=1 tambem */
+    void *gs;                        /* fluxo GET/SSE aberto (mcp_extra.c) */
+    char pleid[128];                 /* ultimo id de evento visto no fluxo de um POST (para retomar com Last-Event-ID) */
+    int rdirty, pdirty;              /* resources/list_changed e prompts/list_changed recebidos */
     double t_start;                  /* segundos que o inicio levou */
     McpPrompt *prompts; int nprompts;
     int http, alive;
@@ -47,6 +51,24 @@ typedef struct {
     McpTool *tools; int ntools;
 } McpSrv;
 typedef struct { char *p; size_t n, cap; } McpB;
+/* capacidades do cliente declaradas no initialize (mcp_extra.c explica cada uma) */
+#define MCPX_CAPS "{\"roots\":{\"listChanged\":true},\"elicitation\":{\"form\":{}}}"
+static void mcpx_server_msg(McpSrv *s, const char *o);                       /* mcp_extra.c */
+static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final);
+static int mcpx_extra_wait(void);
+static void mcpx_cwd_sync(void);
+static int mcpx_root_file(char *out, size_t cap);
+static int mcpx_get_open(McpSrv *s);
+static int mcpx_stream_pump(McpSrv *s, int ms);
+static int mcpx_resume_post(McpSrv *s, long id, char **resp, int ms);
+static void mcpx_stream_close(McpSrv *s);
+static int mcpx_legacy_open(McpSrv *s);
+static int mcpx_legacy_post(McpSrv *s, const char *body);
+static char *mcpx_legacy_request(McpSrv *s, const char *body, long id, int ms);
+static void mcpx_refresh(McpSrv *s, McpB *note);
+static void mcpx_ann_parse(McpTool *t, const char *v);
+static int mcpx_skip_confirm(const McpSrv *s, int tj);
+static void mcpx_ann_text(const McpSrv *s, int tj, char *out, size_t cap);
 
 static int mcp_call_ms(void) {      /* KATANA_MCP_TIMEOUT: segundos de espera por uma chamada (padrao 60) */
     const char *e = getenv("KATANA_MCP_TIMEOUT");
@@ -248,6 +270,7 @@ static int mcp_spawn(McpSrv *s) {
 
 static void mcp_kill(McpSrv *s) {
     mcpch_close(s);
+    mcpx_stream_close(s);
     if (s->http || !s->spawned) { s->alive = 0; return; }     /* servidor que morreu sozinho tambem fecha os canais e recolhe o processo */
     s->alive = 0; s->spawned = 0;
 #ifdef _WIN32
@@ -377,12 +400,13 @@ static int mcp_has_ci(const char *h, const char *needle) {
 /* POST de uma mensagem; id 0 = notificacao (sem resposta). Devolve a mensagem de resposta (malloc) */
 static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
     char fb[300], fh[300], fe[300];
+    s->pleid[0] = 0;
     if (!mcp_tmp(fb, sizeof fb) || !mcp_tmp(fh, sizeof fh) || !mcp_tmp(fe, sizeof fe)) { snprintf(s->err, sizeof s->err, "sem arquivo temporario"); return NULL; }
     FILE *f = fopen(fb, "wb");
     if (!f) { snprintf(s->err, sizeof s->err, "sem arquivo temporario"); return NULL; }
     fwrite(body, 1, strlen(body), f); fclose(f);
     McpB c = {0}; int ok = 1; char tmp[600];
-    snprintf(tmp, sizeof tmp, "curl -sS -m %d -X POST -D ", ms / 1000 + 1); mcp_bputs(&c, tmp);
+    snprintf(tmp, sizeof tmp, "curl -sSN -m %d -X POST -D ", ms / 1000 + 1 + (id ? mcpx_extra_wait() : 0)); mcp_bputs(&c, tmp);
     ok &= mcp_shq(&c, fh);
     mcp_bputs(&c, " --data-binary "); snprintf(tmp, sizeof tmp, "@%s", fb); ok &= mcp_shq(&c, tmp);
     mcp_bputs(&c, " -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'");
@@ -403,7 +427,12 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
         else {
             McpB out = {0}; char t[4096]; size_t n;
             mcp_bput(&out, "", 0);
-            while ((n = fread(t, 1, sizeof t, p)) > 0) mcp_bput(&out, t, n);
+            size_t done = 0; int sse = -1;
+            while ((n = fread(t, 1, sizeof t, p)) > 0) {
+                mcp_bput(&out, t, n);
+                if (sse < 0) { char *hh = mcp_slurp(fh, NULL); if (hh && strstr(hh, "HTTP/")) sse = mcp_has_ci(hh, "text/event-stream"); free(hh); }
+                if (sse == 1 && id != 0) mcpx_sse_scan(s, &out, &done, id, &resp, 0);      /* eventos tratados na hora: o servidor pode pedir algo antes de responder */
+            }
 #ifdef _WIN32
             const int rc = _pclose(p);
 #else
@@ -425,29 +454,13 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
             }
             int status = 0;
             if (hd) { const char *h = strstr(hd, "HTTP/"); if (h) { h = strchr(h, ' '); if (h) status = atoi(h); } }
-            if (rc != 0) snprintf(s->err, sizeof s->err, "curl falhou (%d): %.150s", rc, er ? er : "");
+            if (!resp && id && status < 400 && s->pleid[0] && (rc != 0 || mcp_has_ci(hd ? hd : "", "text/event-stream"))) mcpx_resume_post(s, id, &resp, ms);    /* o fluxo caiu: GET com Last-Event-ID */
+            if (resp) { /* resposta ja recebida (no fluxo ou na retomada) */ }
+            else if (rc != 0) snprintf(s->err, sizeof s->err, "curl falhou (%d): %.150s", rc, er ? er : "");
             else if (status >= 400) snprintf(s->err, sizeof s->err, "HTTP %d", status);
             else if (id == 0) resp = strdup("");
-            else if (mcp_has_ci(hd ? hd : "", "text/event-stream")) {     /* escolhe o evento com a resposta deste id */
-                const char *p2 = out.p;
-                McpB ev = {0};
-                mcp_bput(&ev, "", 0);
-                while (*p2 && !resp) {
-                    const size_t ll = strcspn(p2, "\n");
-                    if (strncmp(p2, "data:", 5) == 0) { const char *d = p2 + 5; if (*d == ' ') d++; mcp_bput(&ev, d, ll - (size_t)(d - p2)); if (ev.n && ev.p[ev.n - 1] == '\r') ev.p[--ev.n] = 0; }
-                    else if (ll == 0 || (ll == 1 && *p2 == '\r')) {
-                        if (ev.n) {
-                            if (strstr(ev.p, "notifications/tools/list_changed")) s->dirty = 1;
-                            const char *o = strchr(ev.p, '{'), *iv = o ? mcp_get(o, "id") : NULL;
-                            if (o) mcpch_note(s, o, mcp_get(o, "method"));
-                            if (iv && atol(iv) == id && (mcp_get(o, "result") || mcp_get(o, "error"))) resp = strdup(ev.p);
-                            ev.n = 0; ev.p[0] = 0;
-                        }
-                    }
-                    p2 += ll; if (*p2) p2++;
-                }
-                if (!resp && ev.n) { const char *o = strchr(ev.p, '{'), *iv = o ? mcp_get(o, "id") : NULL; if (iv && atol(iv) == id) resp = strdup(ev.p); }
-                free(ev.p);
+            else if (mcp_has_ci(hd ? hd : "", "text/event-stream")) {
+                if (!resp) mcpx_sse_scan(s, &out, &done, id, &resp, 1);
                 if (!resp) snprintf(s->err, sizeof s->err, "resposta SSE sem a mensagem esperada");
             } else if (out.n) resp = strdup(out.p);
             else snprintf(s->err, sizeof s->err, "resposta vazia");
@@ -460,18 +473,10 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
 
 /* ----- JSON-RPC ----- */
 /* requisicao ou notificacao do servidor, no meio de uma chamada ou fora: so respondemos ping; o resto e metodo desconhecido */
+/* mensagem do servidor fora de uma resposta: canal (mcp_channel.c) primeiro, o resto em mcp_extra.c (ping, roots, elicitation, list_changed) */
 static void mcp_server_msg(McpSrv *s, const char *o, const char *iv, const char *mv) {
-    if (mcpch_note(s, o, mv)) return;
-    if (!iv && strncmp(mv, "\"notifications/tools/list_changed\"", 33) == 0) s->dirty = 1;
-    if (!iv) return;
-    char m[64]; mcp_dec(mv, m, sizeof m);
-    McpB r = {0};
-    mcp_bputs(&r, "{\"jsonrpc\":\"2.0\",\"id\":");
-    const char *ie = mcp_skip(iv); if (!ie) { free(r.p); return; }
-    mcp_bput(&r, iv, (size_t)(ie - iv));
-    mcp_bputs(&r, strcmp(m, "ping") == 0 ? ",\"result\":{}}" : ",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}");
-    if (s->http) free(mcp_http_post(s, r.p, 0, 10000)); else mcp_send(s, r.p);
-    free(r.p);
+    (void)iv; (void)mv;
+    mcpx_server_msg(s, o);
 }
 static char *mcp_request(McpSrv *s, const char *method, const char *params, int ms) {
     if (!s->alive) { if (!s->err[0]) snprintf(s->err, sizeof s->err, "indisponivel"); return NULL; }
@@ -482,18 +487,24 @@ static char *mcp_request(McpSrv *s, const char *method, const char *params, int 
     mcp_besc(&b, method);
     if (params) { mcp_bputs(&b, ",\"params\":"); mcp_bputs(&b, params); }
     mcp_bputs(&b, "}");
+    if (s->sse) { char *r = mcpx_legacy_request(s, b.p, id, ms); free(b.p); return r; }
     if (s->http) { char *r = mcp_http_post(s, b.p, id, ms); free(b.p); return r; }
     const int sent = mcp_send(s, b.p);
     free(b.p);
     if (!sent) return NULL;
-    const double dl = now_sec() + ms / 1000.0;
+    double dl = now_sec() + ms / 1000.0;
     for (;;) {
         char *line = mcp_readline(s, dl);
         if (!line) return NULL;
         const char *o = strchr(line, '{');
         if (!o) { free(line); continue; }
         const char *iv = mcp_get(o, "id"), *mv = mcp_get(o, "method");
-        if (mv) { mcp_server_msg(s, o, iv, mv); free(line); continue; }
+        if (mv) {       /* pedido ou aviso do servidor (ping, roots, elicitation, list_changed: mcp_extra.c); a espera do usuario nao conta no prazo */
+            const double th = now_sec();
+            mcpx_server_msg(s, o);
+            dl += now_sec() - th;
+            free(line); continue;
+        }
         if (iv && atol(iv) == id && (mcp_get(o, "result") || mcp_get(o, "error"))) return line;
         free(line);
     }
@@ -501,7 +512,8 @@ static char *mcp_request(McpSrv *s, const char *method, const char *params, int 
 static void mcp_notify(McpSrv *s, const char *method) {
     char m[200];
     snprintf(m, sizeof m, "{\"jsonrpc\":\"2.0\",\"method\":\"%s\"}", method);
-    if (s->http) { char *r = mcp_http_post(s, m, 0, 10000); free(r); }
+    if (s->sse) mcpx_legacy_post(s, m);
+    else if (s->http) { char *r = mcp_http_post(s, m, 0, 10000); free(r); }
     else mcp_send(s, m);
 }
 static int mcp_errmsg(const char *resp, char *out, size_t cap) {    /* 1 se a resposta e um erro JSON-RPC */
@@ -559,7 +571,7 @@ static void mcp_compact(const char *sc, McpB *cs) {      /* o valor JSON em sc s
     }
 }
 static void mcp_free_tools(McpSrv *s) {
-    for (int i = 0; i < s->ntools; i++) { free(s->tools[i].name); free(s->tools[i].desc); free(s->tools[i].schema); }
+    for (int i = 0; i < s->ntools; i++) { free(s->tools[i].name); free(s->tools[i].desc); free(s->tools[i].schema); free(s->tools[i].title); }
     free(s->tools); s->tools = NULL; s->ntools = 0;
 }
 static void mcp_free_prompts(McpSrv *s) {
@@ -605,6 +617,7 @@ static void mcp_load_tools(McpSrv *s) {
                 if (!cs.n || cs.n > 3000) { free(cs.p); cs.p = strdup("{\"type\":\"object\"}"); }
                 s->tools = realloc(s->tools, sizeof(McpTool) * (size_t)(s->ntools + 1));
                 s->tools[s->ntools].name = nm; s->tools[s->ntools].desc = ds ? ds : strdup(""); s->tools[s->ntools].schema = cs.p;
+                mcpx_ann_parse(&s->tools[s->ntools], v);
                 s->ntools++;
             }
         }
@@ -679,8 +692,13 @@ static void mcp_start(McpSrv *s) {
     s->alive = 1; s->err[0] = 0;
     if (!s->http && (!s->cmd || !mcp_which(s->cmd))) { s->alive = 0; snprintf(s->err, sizeof s->err, "command not found: %.150s", s->cmd ? s->cmd : "?"); return; }
     if (!s->http && !mcp_spawn(s)) { s->alive = 0; snprintf(s->err, sizeof s->err, "could not start the command"); return; }
+    if (s->sse && !mcpx_legacy_open(s)) { s->alive = 0; return; }
     char ip[600];
-    snprintf(ip, sizeof ip, "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":{%s},\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", mcpch_caps(s));
+    {   /* capacidades: roots e elicitation sempre (MCPX_CAPS sem a chave final); o canal so para quem esta autorizado */
+        const char *cc = mcpch_caps(s);
+        char caps[200]; snprintf(caps, sizeof caps, "%s", MCPX_CAPS); caps[strlen(caps) - 1] = 0;
+        snprintf(ip, sizeof ip, "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":%s%s%s},\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", caps, cc[0] ? "," : "", cc);
+    }
     char *r = mcp_request(s, "initialize", ip, g_mcp_init_ms);
     if (!r) { if (!s->err[0]) snprintf(s->err, sizeof s->err, "sem resposta"); mcp_kill(s); return; }
     char em[300];
@@ -703,6 +721,7 @@ static void mcp_start(McpSrv *s) {
     s->has_prompts = cp && mcp_get(cp, "prompts") != NULL;
     free(r);
     mcp_notify(s, "notifications/initialized");
+    if (s->http && !s->sse && s->chan_cfg <= 0) mcpx_get_open(s);          /* com canal, o fluxo e o de mcp_channel.c (lido tambem com o console parado) */
     s->err[0] = 0;
     mcp_load_tools(s);
     if (s->err[0]) { mcp_kill(s); return; }     /* tools/list falhou */
@@ -787,6 +806,7 @@ static int mcp_trust_project(const char *path, const char *txt, size_t n) {
     fprintf(stderr, "[mcp: servers of %s skipped: not trusted yet (the question needs a terminal or the desktop; KATANA_MCP_TRUST=1 trusts it)]\n", path);
     return 0;
 }
+static int mcpx_expand_srv(McpSrv *t, const char *where);      /* mcp_extra.c */
 static int mcp_find(const char *name) {
     for (int i = 0; i < g_nmcp; i++) if (strcmp(g_mcp[i].name, name) == 0) return i;
     return -1;
@@ -813,6 +833,7 @@ static void mcp_load_file(const char *path, int project) {
         t.cmd = mcp_dupstr(mcp_get(v, "command"));
         t.url = mcp_dupstr(mcp_get(v, "url"));
         t.http = t.url != NULL && t.cmd == NULL;
+        { char *ty = mcp_dupstr(mcp_get(v, "type")); t.sse = t.http && ty && strcmp(ty, "sse") == 0; free(ty); }
         const char *av = mcp_get(v, "args"), *x, *xn;
         if (av && *av == '[') for (const char *q = av + 1; (xn = mcp_elem(q, &x)) != NULL; q = xn) {
             char *a = mcp_dupstr(x);
@@ -828,6 +849,7 @@ static void mcp_load_file(const char *path, int project) {
             if (val) { char *h = malloc(strlen(k2) + strlen(val) + 3); sprintf(h, "%s: %s", k2, val); free(val); t.hdr = realloc(t.hdr, sizeof(char *) * (size_t)(t.nhdr + 1)); t.hdr[t.nhdr++] = h; }
         }
         if (!t.cmd && !t.url) snprintf(t.err, sizeof t.err, "configuracao sem command nem url");
+        else mcpx_expand_srv(&t, path);       /* ${VAR} e ${VAR:-padrao}; faltando, o servidor fica de fora (mcp_extra.c) */
         const int old = mcp_find(t.name);
         t.chan_cfg = mcpch_cfg(v, t.name, project, old >= 0, old >= 0 ? g_mcp[old].chan_cfg : 0);
         if (old >= 0 && project) { mcp_free_srv(&g_mcp[old]); g_mcp[old] = t; }      /* o projeto vence o arquivo do usuario */
@@ -843,11 +865,14 @@ static void mcp_load_config(void) {      /* so le a configuracao, sem iniciar na
     char up[700], pp[4600];
     mcp_user_path(up, sizeof up);
     mcp_load_file(up, 0);
+    /* ordem (o ultimo vence um nome repetido): arquivo do usuario, .mcp.json da raiz do projeto, .katana/mcp.json */
+    if (mcpx_root_file(pp, sizeof pp) && strcmp(pp, up) != 0) mcp_load_file(pp, 1);
     if (mcp_project_path(pp, sizeof pp) && strcmp(pp, up) != 0) mcp_load_file(pp, 1);
 }
 static void mcp_init(int verbose) {     /* le a configuracao e inicia os servidores (uma vez) */
     if (g_mcp_ready) return;
     g_mcp_ready = 1;
+    mcpx_cwd_sync();            /* guarda a pasta inicial para roots/list_changed */
     mcp_load_config();
     if (g_nmcp) atexit(mcp_shutdown);
     for (int i = 0; i < g_nmcp; i++) {
@@ -904,7 +929,8 @@ static void mcp_usage_path(const McpSrv *s, char *out, size_t cap) {
     char d[400]; snprintf(d, sizeof d, "%s", s->source);
     char *sl = strrchr(d, '/');
     if (sl) *sl = 0; else snprintf(d, sizeof d, ".");
-    snprintf(out, cap, "%s/mcp/%s.md", d, s->name);
+    if (strlen(s->source) >= 10 && strcmp(s->source + strlen(s->source) - 10, "/.mcp.json") == 0) snprintf(out, cap, "%s/.katana/mcp/%s.md", d, s->name);    /* .mcp.json fica na raiz: o arquivo de uso vai para .katana/mcp/ */
+    else snprintf(out, cap, "%s/mcp/%s.md", d, s->name);
 }
 /* assinatura: obrigatorios primeiro; tipo so se nao for texto; ? opcional; enum (a|b); ate 8 argumentos */
 static void mcp_sig(const McpTool *t, McpB *b) {
@@ -1104,6 +1130,8 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
         mcp_restart(s);
     }
     if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); snprintf(out, cap, "error: MCP server %s is unavailable (%s)", s->name, pe); return; }
+    mcpx_stream_pump(s, 0);   /* avisos e pedidos que chegaram pelo fluxo GET/SSE desde a ultima vez */
+    mcpx_cwd_sync();         /* a pasta de trabalho mudou? roots/list_changed (mcp_extra.c) */
     /* argumentos: objeto depois de "arguments" */
     char *args = NULL;
     const char *a = mcp_ws(js);
@@ -1118,11 +1146,15 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
     brief[bn] = 0;
     if (strlen(args) > bn) strcat(brief, "...");
     fprintf(stderr, "%s[mcp %s: %s %s]%s\n", CE(C_DIM), s->name, tn, brief, CE(C_RESET));
-    const char *cf = getenv("KATANA_MCP_CONFIRM");
-    if (cf && *cf && *cf != '0') {
-        char what[400], det[9000];
+    const char *cf = getenv("KATANA_MCP_CONFIRM"), *cf2 = getenv("KATANA_CONFIRM"), *cf3 = getenv("KATANA_MCP_CONFIRM_DESTRUCTIVE");
+    int want = (cf && *cf && *cf != '0') || (cf2 && *cf2 && *cf2 != '0');
+    if (want && mcpx_skip_confirm(s, tj)) { want = 0; mcp_log(s->name, tn, args, 0, "sem pergunta: servidor do usuario declara somente leitura"); }
+    if (!want && cf3 && *cf3 && *cf3 != '0' && s->tools[tj].destr == 1) want = 1;      /* a dica so deixa o katana mais cuidadoso */
+    if (want) {
+        char what[400], det[9000], an[200];
+        mcpx_ann_text(s, tj, an, sizeof an);
         snprintf(what, sizeof what, "chamar a ferramenta MCP %s do servidor %s", tn, s->name);
-        snprintf(det, sizeof det, "argumentos: %s", args);
+        snprintf(det, sizeof det, "argumentos: %s%s%s", args, an[0] ? "\ndicas do servidor (nao verificadas): " : "", an);
         if (!agent_confirm(what, det)) {
             mcp_log(s->name, tn, args, 1, "negado pelo usuario");
             snprintf(out, cap, "error: the user denied this action");
@@ -1185,6 +1217,7 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
         if (txt.n) mcp_bputs(&txt, "\n");
         mcp_bputs(&txt, "[the tool list of this MCP server changed: call ToolSearch to see the current tools]");
     }
+    mcpx_refresh(s, &txt);  /* resources/list_changed e prompts/list_changed (mcp_extra.c) */
     mcp_wrap_result(s->name, tn, erro, txt.p, out, cap);
     free(txt.p); free(args);
 }
