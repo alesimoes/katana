@@ -70,19 +70,22 @@ static void fam_x_web(FILE *f, Scn *s) {
     const char *fact1 = cu_fmt("%s %s renames the option %s to %s.", lib, ver, g_x_opts[oi][0], g_x_opts[oi][1]);
     const char *fact2 = cu_fmt("The old name %s keeps working until %s %d.0 and prints a warning.", g_x_opts[oi][0], lib, keep);
     const char *fact3 = cu_fmt("The default batch size of %s %s changed from %d to %d rows.", lib, ver, sdef, sdef2);
+    const int conn = 4 * (1 + cu_n(8));
+    const char *fact4 = cu_fmt("At most %d connections are opened at once.", conn);
     Buf fill = {0}; buf_str(&fill, "");
     for (int i = 0; i < 14; i++) buf_str(&fill, cu_fmt("<p>Section %d lists contributors, build notes and packaging details of the project.</p>\n", i + 1));
-    cu_put(cu_fmt("%s/release-%s.html", www, ver), cu_fmt("<html><head><title>%s %s release notes</title></head><body><main>\n<p>%s</p>\n%s<p>%s</p>\n<p>%s</p>\n</main></body></html>\n", lib, ver, fact1, fill.p, fact2, fact3), 0);
+    cu_put(cu_fmt("%s/release-%s.html", www, ver), cu_fmt("<html><head><title>%s %s release notes</title></head><body><main>\n<p>%s</p>\n<p>%s</p>\n%s<p>%s</p>\n<p>%s</p>\n</main></body></html>\n", lib, ver, fact1, fact4, fill.p, fact2, fact3), 0);
     cu_put(cu_fmt("%s/install.html", www), cu_fmt("<html><head><title>Installing %s</title></head><body><main>\n<p>Download the archive of %s and unpack it into a folder on your PATH.</p>\n%s</main></body></html>\n", lib, lib, fill.p), 0);
     free(fill.p);
     setenv("KATANA_WEBSEARCH_FIXTURE", cu_fmt("1. %s %s release notes\n   %s/release-%s.html\n   What changed in %s %s\n   (sources: bing)\n2. Installing %s\n   %s/install.html\n   How to install %s\n   (sources: bing)", lib, ver, base, ver, lib, ver, lib, base, lib), 1);
     x_begin("x-web", s, NULL, 0, 0);
     x_cell("web/kind%d/opt%d", kind, oi % 3);
     const char *url = cu_fmt("%s/release-%s.html", base, ver), *shown = cu_fmt("https://docs.example/%s/release-%s.html", site, ver);
-    const int q = kind == 1 ? 1 + cu_n(2) : 0;      /* o que se pergunta: 0 a opcao renomeada; 1 ate quando vale o nome antigo; 2 o tamanho do lote */
+    const int q = kind == 1 ? 3 : kind == 0 ? cu_n(3) : 0;      /* o que se pergunta: 0 a opcao renomeada; 1 ate quando vale o nome antigo; 2 o tamanho do lote; 3 o limite de conexoes (a frase da pagina nao tem as palavras da pergunta) */
     const char *ask = q == 0 ? cu_fmt(XV(L("which option did %s %s rename?", "que opcao o %s %s renomeou?"), L("%s %s renamed a command line option. which one, and to what?", "o %s %s renomeou uma opcao de linha de comando. qual, e para que?")), lib, ver)
                     : q == 1 ? cu_fmt(XV(L("until which %s version does the old %s option keep working?", "ate que versao do %s a opcao antiga %s continua funcionando?")), lib, g_x_opts[oi][0])
-                             : cu_fmt(XV(L("what is the default batch size in %s %s?", "qual e o tamanho padrao do lote no %s %s?")), lib, ver);
+                    : q == 2 ? cu_fmt(XV(L("what is the default batch size in %s %s?", "qual e o tamanho padrao do lote no %s %s?")), lib, ver)
+                             : cu_fmt(XV(L("what is the concurrency limit of %s %s?", "qual e o limite de concorrencia do %s %s?")), lib, ver);
     const char *ans0 = cu_fmt(L("%s %s renames `%s` to `%s`. Source: %s", "O %s %s renomeia `%s` para `%s`. Fonte: %s"), lib, ver, g_x_opts[oi][0], g_x_opts[oi][1], shown);
     if (kind == 2 || kind == 3) {
         const char *given = kind == 3 ? cu_fmt("%s/releases-%s.html", base, ver) : url;
@@ -96,14 +99,15 @@ static void fam_x_web(FILE *f, Scn *s) {
         x_final(kind == 3 ? cu_fmt(L("%s (the address you gave returns 404; the search found the right page).", "%s (o endereco que voce passou devolve 404; a busca achou a pagina certa)."), ans0) : ans0);
     } else {
         x_user(ask);
-        const char *r = cu_fmt("%s", x_webcall("WebSearch", cu_fmt("{\"query\": %s}", cu_q(q == 0 ? cu_fmt("%s %s option renamed", lib, ver) : q == 1 ? cu_fmt("%s old option %s removed version", lib, g_x_opts[oi][0]) : cu_fmt("%s %s default batch size", lib, ver)))));
+        const char *r = cu_fmt("%s", x_webcall("WebSearch", cu_fmt("{\"query\": %s}", cu_q(q == 0 ? cu_fmt("%s %s option renamed", lib, ver) : q == 1 ? cu_fmt("%s old option %s removed version", lib, g_x_opts[oi][0]) : q == 2 ? cu_fmt("%s %s default batch size", lib, ver) : cu_fmt("%s %s concurrency limit", lib, ver)))));
         if (!strstr(r, cu_fmt("/release-%s.html", ver))) cu_die("a busca nao listou a pagina");
-        const char *need = q == 0 ? fact1 : q == 1 ? fact2 : fact3;
-        if (kind == 1 || !strstr(r, need)) {
-            r = x_webcall("WebFetch", cu_fmt("{\"url\": %s, \"prompt\": %s}", cu_q(url), cu_q(q == 1 ? cu_fmt("until which version the old option %s works", g_x_opts[oi][0]) : q == 2 ? "default batch size" : "option renamed")));
+        const char *need = q == 0 ? fact1 : q == 1 ? fact2 : q == 2 ? fact3 : fact4;
+        if (!strstr(r, need)) {      /* o trecho da busca nao traz a resposta: abre a pagina */
+            r = x_webcall("WebFetch", cu_fmt("{\"url\": %s, \"prompt\": %s}", cu_q(url), cu_q(q == 1 ? cu_fmt("until which version the old option %s works", g_x_opts[oi][0]) : q == 2 ? "default batch size" : q == 3 ? "concurrency limit" : "option renamed")));
             if (!strstr(r, need)) cu_die("o WebFetch nao trouxe o fato: %.200s", r);
         }
-        x_final(q == 0 ? ans0 : q == 1 ? cu_fmt(L("`%s` keeps working until %s %d.0, with a warning. Source: %s", "O `%s` continua funcionando ate o %s %d.0, com um aviso. Fonte: %s"), g_x_opts[oi][0], lib, keep, shown)
+        if (q == 3) x_final(cu_fmt(L("%s %s opens at most %d connections at once. The search passages did not say it, so I opened the page. Source: %s", "O %s %s abre no maximo %d conexoes ao mesmo tempo. Os trechos da busca nao diziam, entao abri a pagina. Fonte: %s"), lib, ver, conn, shown));
+        else x_final(q == 0 ? ans0 : q == 1 ? cu_fmt(L("`%s` keeps working until %s %d.0, with a warning. Source: %s", "O `%s` continua funcionando ate o %s %d.0, com um aviso. Fonte: %s"), g_x_opts[oi][0], lib, keep, shown)
                                        : cu_fmt(L("The default batch size in %s %s is %d rows (it was %d). Source: %s", "O tamanho padrao do lote no %s %s e %d linhas (era %d). Fonte: %s"), lib, ver, sdef2, sdef, shown));
     }
     if (g_cu_hold) {      /* holdout: uma segunda pergunta sobre a mesma pagina */
@@ -256,8 +260,9 @@ static char g_x_subans[2000];
 static void x_sub_oracle(const char *prompt, char *out, size_t cap) { (void)prompt; snprintf(out, cap, "%s", g_x_subans); }
 static const char *x_tsel(const char *names) { return x_call(NULL, "ToolSearch", cu_fmt("{\"query\": \"select:%s\"}", names), 0); }
 static void fam_x_tools(FILE *f, Scn *s) {
-    int kind;
-    for (int t = 0; ; t++) { if (t > 200) cu_die("sem celula de ferramenta"); kind = cu_n(K_TERM); if (kind == K_AGENT) continue; if (x_held(60 + kind, 0, 0, 0, 0) == (g_cu_hold != 0) || kind >= K_LSP) break; }      /* terminal fica de fora: a saida do pty depende do tempo */
+    /* as ferramentas saem em rodizio (sem gastar sorteio; a escolha vai na linha gravada). Ficam de fora: Agent (so dentro do laco do agente, com modelo) e terminal (a saida do pty depende do tempo) */
+    static const int order[] = {K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_CRON};
+    const int kind = g_x_kforce >= 0 ? g_x_kforce : order[(g_x_cycle + g_cu_att) % CU_N(order)];      /* terminal fica de fora: a saida do pty depende do tempo */
     XC c; memset(&c, 0, sizeof c); c.s = s;
     const int st = cu_n(X_NST);
     x_proj(&c.p, s, st == X_C ? X_SH : st, 2, 2); XProj *p = &c.p;
@@ -274,7 +279,7 @@ static void fam_x_tools(FILE *f, Scn *s) {
     const char *dlname = cu_fmt("%s-notes.txt", XV("release", "api", "upgrade"));
     if (kind == K_DL) { if (!x_web_up()) cu_die("o servidor local de paginas nao subiu"); cu_put(cu_fmt("%s/www/%s/%s", g_cu_sbroot, site, dlname), cu_fmt("notes for %s\nline two\nline three\n", p->name), 0); }
     x_begin("x-tools", s, p, 0, 0);
-    g_x_realgit = 0;
+    g_x_realgit = 0; g_x.k = kind;
     x_cell("tools/%s/%s/conv%d", g_x_kname[kind], g_x_stid[p->st], p->brief ? 2 : p->readme);
     if (kind == K_BG || kind == K_MON) {
         const int mon = kind == K_MON;
@@ -529,15 +534,15 @@ static void fam_x_skill(FILE *f, Scn *s) {
 static char *cu_jstr(const char *v);
 static const struct { const char *name; void (*fn)(FILE *, Scn *); } g_x_fams[] = {
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run}, {"x-config", fam_x_config}, {"x-clean", fam_x_clean},
-    {"x-investigate", fam_x_investigate}, {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}};
-static int cu_is_old_tool(const char *n) { return !strcmp(n, "git") || !strcmp(n, "terminal") || !strcmp(n, "recall") || !strcmp(n, "remember") || !strcmp(n, "download_file"); }
+    {"x-investigate", fam_x_investigate}, {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1}};
+static int cu_is_old_tool(const char *n) { return !strcmp(n, "git") || !strcmp(n, "terminal") || !strcmp(n, "recall") || !strcmp(n, "remember") || !strcmp(n, "download_file") || !strcmp(n, "install_package") || !strcmp(n, "read_log") || !strcmp(n, "howto"); }
 /* 1 = a linha foi refeita igual; 0 = diferente (why diz onde) */
 static int x_replay(const char *line, const char *fam, long nl, char *why, size_t cap) {
     const char *sc = cu_jget(line, "scn");
     if (!sc) return 1;
     int fi = -1; for (int i = 0; i < CU_N(g_x_fams); i++) if (!strcmp(g_x_fams[i].name, fam)) fi = i;
     if (fi < 0) { snprintf(why, cap, "linha com scn de uma familia que nao e do motor de cenarios"); return 0; }
-    const char *rs = cu_jstr(cu_jget(sc, "rng")), *lg = cu_jget(sc, "lang"), *hd = cu_jget(sc, "hold"), *md = cu_jget(sc, "mode"), *dc = cu_jget(sc, "decl");
+    const char *rs = cu_jstr(cu_jget(sc, "rng")), *lg = cu_jget(sc, "lang"), *hd = cu_jget(sc, "hold"), *md = cu_jget(sc, "mode"), *dc = cu_jget(sc, "decl"), *kk = cu_jget(sc, "k");
     if (!rs || !lg || !hd || !md || !dc) { snprintf(why, cap, "scn incompleto"); return 0; }
     char *mem = NULL; size_t ml = 0; FILE *mf = open_memstream(&mem, &ml);
     static Scn s;
@@ -545,10 +550,11 @@ static int x_replay(const char *line, const char *fam, long nl, char *why, size_
     g_x_rng0 = g_cu_rng = strtoull(rs, NULL, 10); g_cu_lang = atoi(lg); g_cu_hold = atoi(hd); g_x_rmode = atoi(md); g_x_rdecl = atoi(dc); g_x_replay = 1; g_cu_att = 0;
     snprintf(g_cu_sb, sizeof g_cu_sb, "%s/r%ld", g_cu_sbroot, nl);
     g_cu_missing = NULL; g_cu_extra = NULL; g_cu_askno = 0;
+    g_x_kforce = kk ? atoi(kk) : -1;
     g_cu_injmp = 1;
     const int failed = setjmp(g_cu_jmp);
     if (!failed) { cu_scn(&s); g_x_fams[fi].fn(mf, &s); }
-    g_cu_injmp = 0; g_x_replay = 0; g_x_rmode = -1; g_cu_sysmode = sm; g_cu_decl = sd; g_cu_hold = 0;
+    g_cu_injmp = 0; g_x_replay = 0; g_x_rmode = -1; g_x_kforce = -1; g_cu_sysmode = sm; g_cu_decl = sd; g_cu_hold = 0;
     x_unfeed();
     fclose(mf);
     if (chdir("/") != 0) {}
@@ -622,3 +628,4 @@ static int cu_windows_main(int argc, char **argv) {
     tset_stats_print();
     return 0;
 }
+

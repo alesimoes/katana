@@ -1,0 +1,69 @@
+/* ---------- katana curriculum pick: a escolha das conversas por cobertura ---------- */
+/* katana curriculum pick <reserva.jsonl> <saida.jsonl> [--n N]: escolhe conversas por cobertura, nao por contagem.
+   Ordem: (1) cada ferramenta da tabela de cobertura ate o seu minimo; (2) uma conversa de cada sequencia de ferramentas
+   (familia + chamadas na ordem, com os pedidos), das menores para as maiores; (3) celulas ainda nao vistas; (4) o resto, na
+   ordem do arquivo. AskUserQuestion fica entre 4,5% e 5% das escolhidas. A saida mantem a ordem da reserva. */
+typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1; size_t len; } CuPk;
+static int cu_pk_cmp(const void *a, const void *b) { const CuPk *x = *(CuPk *const *)a, *y = *(CuPk *const *)b; return x->len < y->len ? -1 : x->len > y->len ? 1 : x < y ? -1 : 1; }
+static int cu_pick_main(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "uso: katana curriculum pick <reserva.jsonl> <saida.jsonl> [--n N]\n"); return 1; }
+    long n = 400;
+    for (int i = 2; i + 1 < argc; i += 2) if (!strcmp(argv[i], "--n")) n = atol(argv[i + 1]); else { fprintf(stderr, "curriculum pick: opcao desconhecida %s\n", argv[i]); return 1; }
+    FILE *f = fopen(argv[0], "rb");
+    if (!f) { fprintf(stderr, "curriculum pick: nao abri %s\n", argv[0]); return 1; }
+    CuPk *v = NULL; long nv = 0, cv = 0; char *line = NULL; size_t cap = 0;
+    while (cu_slurp_line(f, &line, &cap)) {
+        if (!*line) continue;
+        if (nv == cv) { cv = cv ? cv * 2 : 1024; v = realloc(v, sizeof *v * (size_t)cv); }
+        CuPk *k = &v[nv++]; memset(k, 0, sizeof *k);
+        k->line = strdup(line); k->len = strlen(line);
+        const char *fam = cu_jstr(cu_jget(line, "family")), *cell = cu_jstr(cu_jget(line, "cell"));
+        uint64_t h = cu_fnv(fam ? fam : "", fam ? strlen(fam) : 0, 1469598103934665603ull);
+        for (const char *q = line; *q; ) {
+            const char *a = strstr(q, "\"function\": {\"name\": \""), *u = strstr(q, "{\"role\": \"user\"");
+            if (!a && !u) break;
+            if (u && (!a || u < a)) { h = cu_fnv("|", 1, h); q = u + 15; continue; }
+            a += 22;
+            const size_t l = strcspn(a, "\""); char nm[96]; snprintf(nm, sizeof nm, "%.*s", (int)(l < 95 ? l : 95), a);
+            const char *shown = strstr(nm, "__") ? "mcp" : nm;
+            h = cu_fnv(shown, strlen(shown), h); h = cu_fnv(">", 1, h);
+            for (int ci = 0; ci < CU_N(g_cu_cov); ci++) if (!strcmp(nm, g_cu_cov[ci].name)) k->tools |= 1ull << ci;
+            if (!strcmp(nm, "AskUserQuestion")) k->ask = 1;
+            q = a + l;
+        }
+        if (fam && !strcmp(fam, "x-ps1")) k->ps1 = 1;
+        k->sig = h; k->cell = cell && *cell ? cu_fnv(cell, strlen(cell), 99) : 0;
+        cu_arena_free();
+    }
+    fclose(f); free(line);
+    uint64_t *sigs = calloc((size_t)nv + 1, sizeof *sigs), *cells = calloc((size_t)nv + 1, sizeof *cells); long nsig = 0, ncell = 0, taken = 0, nask = 0;
+    long cnt[CU_N(g_cu_cov)]; memset(cnt, 0, sizeof cnt);
+    const long askmin = n * 45 / 1000 > 1 ? n * 45 / 1000 : 1, askmax = n * 5 / 100 > askmin ? n * 5 / 100 : askmin;
+#define PK_SEEN(arr, cnt_, x) ({ int s_ = 0; for (long z_ = 0; z_ < cnt_; z_++) if (arr[z_] == (x)) { s_ = 1; break; } s_; })
+#define PK_TAKE(k) do { (k)->taken = 1; taken++; nask += (k)->ask; if (!PK_SEEN(sigs, nsig, (k)->sig)) sigs[nsig++] = (k)->sig; if ((k)->cell && !PK_SEEN(cells, ncell, (k)->cell)) cells[ncell++] = (k)->cell; \
+        for (int c_ = 0; c_ < CU_N(g_cu_cov); c_++) if ((k)->tools & (1ull << c_)) cnt[c_]++; } while (0)
+#define PK_OK(k) (!(k)->taken && taken < n && !((k)->ask && nask >= askmax))
+    CuPk **bylen = malloc(sizeof *bylen * (size_t)(nv + 1));
+    for (long i = 0; i < nv; i++) bylen[i] = &v[i];
+    qsort(bylen, (size_t)nv, sizeof *bylen, cu_pk_cmp);
+    for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {      /* (1) minimos por ferramenta: primeiro com sequencia nova, depois qualquer uma */
+        const int isask = !strcmp(g_cu_cov[ci].name, "AskUserQuestion");
+        const long need = isask ? askmin : g_cu_cov[ci].tier == 'A' ? 25 : 5;
+        for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && cnt[ci] < need; i++) {
+            CuPk *k = bylen[i];
+            if (!(k->tools & (1ull << ci)) || !PK_OK(k) || (!pass && PK_SEEN(sigs, nsig, k->sig))) continue;
+            PK_TAKE(k);
+        }
+    }
+    { long np = 0; for (long i = 0; i < nv && np < 15; i++) { CuPk *k = bylen[i]; if (k->ps1 && k->taken) np++; }
+      for (long i = 0; i < nv && np < 15; i++) { CuPk *k = &v[i]; if (k->ps1 && PK_OK(k)) { PK_TAKE(k); np++; } } }      /* 15 conversas de scripts .ps1 */
+    for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && !PK_SEEN(sigs, nsig, k->sig)) PK_TAKE(k); }                 /* (2) */
+    for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && k->cell && !PK_SEEN(cells, ncell, k->cell)) PK_TAKE(k); }   /* (3) */
+    for (long i = 0; i < nv; i++) { CuPk *k = &v[i]; if (PK_OK(k)) PK_TAKE(k); }                                                     /* (4) */
+    FILE *o = fopen(argv[1], "wb");
+    if (!o) { fprintf(stderr, "curriculum pick: nao gravei %s\n", argv[1]); return 1; }
+    for (long i = 0; i < nv; i++) if (v[i].taken) { fputs(v[i].line, o); fputc('\n', o); }
+    fclose(o);
+    printf("curriculum pick: %ld de %ld conversas em %s; %ld sequencias de ferramentas, %ld celulas, %ld com AskUserQuestion\n", taken, nv, argv[1], nsig, ncell, nask);
+    return 0;
+}

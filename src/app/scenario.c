@@ -21,11 +21,17 @@ static struct {
     Buf ask;                     /* provas das perguntas (JSON) */
     int mode, decl;              /* modo do prompt desta conversa */
     int web;                     /* a conversa usa o servidor local de paginas */
+    int nudge_ok;                /* a conversa deixa tarefas abertas de proposito (Task*): o lembrete do motor aparece e a resposta se repete */
+    int k, k2;                   /* variante sorteada fora do gerador de numeros (x-tools: qual ferramenta; x-rare, com k2: qual situacao); -1 = nenhuma */
     const char *sfrom[4], *sto[4]; int nsub;      /* trechos que mudam a cada execucao (ids sorteados pelo motor) e o que entra no lugar */
 } g_x;
 static uint64_t g_x_rng0;        /* estado do sorteio no comeco desta tentativa (vai na linha gravada) */
 static int g_x_replay;           /* 1: refazendo uma linha no check (sem o filtro de situacao repetida) */
 static int g_x_rmode = -1, g_x_rdecl;      /* refazendo: modo e bloco de ferramentas da linha original */
+static int g_x_kforce = -1;      /* refazendo: a variante da linha original */
+static long g_x_cycle2;          /* x-rare: as situacoes saem em rodizio */
+static long g_x_cycle3;          /* x-ps1: idem */
+static long g_x_cycle;           /* x-tools: as ferramentas saem em rodizio, para nenhuma ficar abaixo do minimo */
 static char g_x_res[70000];
 static int g_x_port;             /* servidor local de paginas (0 = nao subiu) */
 static int g_x_realgit;          /* a conversa precisa de um repositorio git de verdade */
@@ -159,6 +165,11 @@ static void x_final(const char *t) {
     if (brief_end_note(note, sizeof note)) cu_die("o motor mandaria a nota de verificacao antes desta resposta final (%s)", g_x.cell);
     int td = 0; const int tn = todo_count(&td);
     if (tn - td == 1) { fflush(stdout); const int so = dup(1), dn = open("/dev/null", O_WRONLY); dup2(dn, 1); ct_todo_autofinish(); fflush(stdout); dup2(so, 1); close(so); close(dn); }
+    else if (tn > td && g_todo_touched && g_x.nudge_ok) {      /* o laco manda o lembrete uma vez por pedido; o modelo repete a resposta */
+        static char nm[3600]; g_x.nudge_ok = 0;
+        loop_todo_nudge(nm, sizeof nm);
+        x_push('e', nm, 1); x_push('a', t, 1);
+    }
     else if (tn > td && g_todo_touched) cu_die("resposta final com %d passos do plano em aberto (%s)", tn - td, g_x.cell);
     { const size_t l = strlen(g_x.seq); snprintf(g_x.seq + l, sizeof g_x.seq - l, "%s.", l && g_x.seq[l - 1] != '|' ? ">" : ""); }
 }
@@ -208,8 +219,9 @@ static void x_end(FILE *f) {
         if (g_cu_nsits == g_cu_csits) { g_cu_csits = g_cu_csits ? g_cu_csits * 2 : 4096; g_cu_sits = realloc(g_cu_sits, sizeof *g_cu_sits * (size_t)g_cu_csits); }
         g_cu_sits[g_cu_nsits++] = h;
     }
-    buf_str(&o, cu_fmt("], \"source\": \"curriculum\", \"family\": %s, \"cell\": %s, \"seq\": %s, \"scn\": {\"rng\": \"%llu\", \"lang\": %d, \"hold\": %d, \"mode\": %d, \"decl\": %d}",
-                       cu_q(g_x.fam), cu_q(g_x.cell), cu_q(g_x.seq), (unsigned long long)g_x_rng0, g_cu_lang, g_cu_hold, g_x.mode, g_x.decl));
+    buf_str(&o, cu_fmt("], \"source\": \"curriculum\", \"family\": %s, \"cell\": %s, \"seq\": %s, \"scn\": {\"rng\": \"%llu\", \"lang\": %d, \"hold\": %d, \"mode\": %d, \"decl\": %d, \"k\": %d}",
+                       cu_q(g_x.fam), cu_q(g_x.cell), cu_q(g_x.seq), (unsigned long long)g_x_rng0, g_cu_lang, g_cu_hold, g_x.mode, g_x.decl, g_x.k));
+    if (g_x.k >= 0 && !g_x_replay) { if (g_x.k2 == 2) g_x_cycle3++; else if (g_x.k2) g_x_cycle2++; else g_x_cycle++; }
     if (g_x.ask.n) { buf_str(&o, ", \"ask\": ["); buf_str(&o, g_x.ask.p); buf_str(&o, "]"); }
     buf_str(&o, "}\n");
     char *nm = x_norm(o.p);
@@ -283,7 +295,7 @@ typedef struct { const char *name; XFi fn[6]; int nfn; } XMod;
 typedef struct {
     const Scn *s; int st; const char *name, *what;
     XMod mod[3]; int nmod;
-    int brief, readme, docs, rules, never, askrule, conf, failfast;      /* o que o projeto tem */
+    int brief, readme, docs, rules, never, askrule, conf, failfast, verbose, psrule;      /* o que o projeto tem */
     const char *testcmd, *testrel;
     int knows;                   /* o comando de teste ja apareceu na conversa (prompt, README ou busca) */
     int nread; const char *readf[24];      /* arquivos ja lidos inteiros nesta conversa */
@@ -412,17 +424,17 @@ static const char *x_test_text(const XProj *p) {
     }
     switch (p->st) {
     case X_PY: buf_str(&b, cu_fmt("import os\nimport sys\n\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), \"..\"))\nfrom %s import %s\n\nCASES = [\n%s]\n\n"
-        "failed = 0\nfor fn, args, want in CASES:\n    got = fn(*args)\n    shown = \"%%s(%%s)\" %% (fn.__name__, \", \".join(str(a) for a in args))\n    if got == want:\n        print(\"ok \" + shown)\n"
-        "    else:\n        failed += 1\n        print(\"FAIL %%s: got %%s, want %%s\" %% (shown, got, want))\n%sprint(\"%%d passed, %%d failed\" %% (len(CASES) - failed, failed))\nsys.exit(1 if failed else 0)\n", p->name, im.p, c.p, p->failfast ? "        print(\"stopped at the first failure\")\n        sys.exit(1)\n" : "")); break;
+        "failed = 0\nfor fn, args, want in CASES:\n    got = fn(*args)\n    shown = \"%%s(%%s)\" %% (fn.__name__, \", \".join(str(a) for a in args))\n%s"
+        "        failed += 1\n        print(\"FAIL %%s: got %%s, want %%s\" %% (shown, got, want))\n%sprint(\"%%d passed, %%d failed\" %% (len(CASES) - failed, failed))\nsys.exit(1 if failed else 0)\n", p->name, im.p, c.p, p->verbose ? "    if got == want:\n        print(\"ok \" + shown)\n    else:\n" : "    if got != want:\n", p->failfast ? "        print(\"stopped at the first failure\")\n        sys.exit(1)\n" : "")); break;
     case X_JS: buf_str(&b, cu_fmt("'use strict';\n%s\nconst CASES = [\n%s];\n\nlet failed = 0;\nfor (const [fn, args, want] of CASES) {\n  const got = fn(...args);\n  const shown = `${fn.name}(${args.join(', ')})`;\n"
-        "  if (got === want) console.log('ok ' + shown);\n  else { failed++; console.log(`FAIL ${shown}: got ${got}, want ${want}`);%s }\n}\nconsole.log(`${CASES.length - failed} passed, ${failed} failed`);\nprocess.exit(failed ? 1 : 0);\n", im.p, c.p, p->failfast ? " console.log('stopped at the first failure'); process.exit(1);" : "")); break;
+        "  %s{ failed++; console.log(`FAIL ${shown}: got ${got}, want ${want}`);%s }\n}\nconsole.log(`${CASES.length - failed} passed, ${failed} failed`);\nprocess.exit(failed ? 1 : 0);\n", im.p, c.p, p->verbose ? "if (got === want) console.log('ok ' + shown);\n  else " : "if (got !== want) ", p->failfast ? " console.log('stopped at the first failure'); process.exit(1);" : "")); break;
     case X_SH: buf_str(&b, cu_fmt("#!/bin/sh\ncd \"$(dirname \"$0\")/..\" || exit 2\n%spassed=0; failed=0\ncheck() {\n    want=$1; shift\n    got=$(\"$@\")\n    name=$1; shift\n    shown=\"$name($(echo \"$*\" | sed 's/ /, /g'))\"\n"
-        "    if [ \"$got\" = \"$want\" ]; then passed=$((passed + 1)); echo \"ok $shown\"\n    else failed=$((failed + 1)); echo \"FAIL $shown: got $got, want $want\"%s; fi\n}\n%secho \"$passed passed, $failed failed\"\n[ \"$failed\" -eq 0 ]\n", im.p, p->failfast ? "; echo \"stopped at the first failure\"; exit 1" : "", c.p)); break;
-    case X_C: buf_str(&b, cu_fmt("#include <stdio.h>\n%s\nstatic int passed, failed;\n#define CHECK(call, want) do { int got = (call); if (got == (want)) { passed++; printf(\"ok %%s\\n\", #call); } \\\n"
-        "    else { failed++; printf(\"FAIL %%s: got %%d, want %%d\\n\", #call, got, (want));%s } } while (0)\n\nint main(void) {\n%s    printf(\"%%d passed, %%d failed\\n\", passed, failed);\n    return failed ? 1 : 0;\n}\n", im.p, p->failfast ? " printf(\"stopped at the first failure\\n\"); return 1;" : "", c.p)); break;
+        "    if [ \"$got\" = \"$want\" ]; then passed=$((passed + 1))%s\n    else failed=$((failed + 1)); echo \"FAIL $shown: got $got, want $want\"%s; fi\n}\n%secho \"$passed passed, $failed failed\"\n[ \"$failed\" -eq 0 ]\n", im.p, p->verbose ? "; echo \"ok $shown\"" : "", p->failfast ? "; echo \"stopped at the first failure\"; exit 1" : "", c.p)); break;
+    case X_C: buf_str(&b, cu_fmt("#include <stdio.h>\n%s\nstatic int passed, failed;\n#define CHECK(call, want) do { int got = (call); if (got == (want)) { passed++;%s } \\\n"
+        "    else { failed++; printf(\"FAIL %%s: got %%d, want %%d\\n\", #call, got, (want));%s } } while (0)\n\nint main(void) {\n%s    printf(\"%%d passed, %%d failed\\n\", passed, failed);\n    return failed ? 1 : 0;\n}\n", im.p, p->verbose ? " printf(\"ok %s\\n\", #call);" : "", p->failfast ? " printf(\"stopped at the first failure\\n\"); return 1;" : "", c.p)); break;
     default: buf_str(&b, cu_fmt("use strict;\nuse warnings;\n%s\nmy ($passed, $failed) = (0, 0);\nsub check {\n    my ($name, $args, $want) = @_;\n    no strict 'refs';\n    my $got = &$name(@$args);\n"
-        "    my $shown = \"$name(\" . join(\", \", @$args) . \")\";\n    if ($got == $want) { $passed++; print \"ok $shown\\n\"; }\n    else { $failed++; print \"FAIL $shown: got $got, want $want\\n\";%s }\n}\n%s"
-        "print \"$passed passed, $failed failed\\n\";\nexit($failed ? 1 : 0);\n", im.p, p->failfast ? " print \"stopped at the first failure\\n\"; exit(1);" : "", c.p)); break;
+        "    my $shown = \"$name(\" . join(\", \", @$args) . \")\";\n    if ($got == $want) { $passed++;%s }\n    else { $failed++; print \"FAIL $shown: got $got, want $want\\n\";%s }\n}\n%s"
+        "print \"$passed passed, $failed failed\\n\";\nexit($failed ? 1 : 0);\n", im.p, p->verbose ? " print \"ok $shown\\n\";" : "", p->failfast ? " print \"stopped at the first failure\\n\"; exit(1);" : "", c.p)); break;
     }
     free(c.p); free(im.p);
     return cu_keep(b.p);
@@ -472,6 +484,7 @@ static const char *x_brief_text(const XProj *p) {
     Buf b = {0};
     buf_str(&b, cu_fmt("# %s: %s helpers in %s\ntest: %s\nlayout:\n  %s  source, one file per module\n  %s  the test runner with its cases\n", p->name, p->what, g_x_lang[p->st], p->testcmd, x_srcdir(p), p->st == X_JS ? "test/" : "tests/"));
     if (p->rules) buf_str(&b, "rules:\n  - Add a test case for every new function.\n");
+    else if (p->psrule) buf_str(&b, "rules:\n  - Every script in tools/ exists as .sh and as .ps1 with the same behaviour.\n");
     if (p->never) buf_str(&b, cu_fmt("never:\n  - delete the test runner `rm*test_%s*`\n", p->name));
     if (p->askrule) buf_str(&b, "ask:\n  - delete files `rm *`\n");
     if (p->rules) buf_str(&b, cu_fmt("done: `%s` passes\n", p->testcmd));
@@ -536,7 +549,7 @@ static void x_proj_write(const XProj *p) {
     x_put(s, p->testrel, x_test_text(p), 0);
     if (p->st == X_C) x_put(s, "Makefile", cu_fmt("CC = gcc\nCFLAGS = -Wall -O1\n\ntest: build/test_%s\n\t./build/test_%s\n\nbuild/test_%s: src/*.c src/*.h tests/test_%s.c\n\tmkdir -p build\n\t$(CC) $(CFLAGS) -o $@ src/*.c tests/test_%s.c\n\n.PHONY: test\n",
                                                   p->name, p->name, p->name, p->name, p->name), 0);
-    if (p->readme) x_put(s, "README.md", cu_fmt("# %s\n\n%s helpers in %s, one file per module under `%s`.\n\n## Tests\n\n    %s\n\nThe runner prints one line per case and ends with the totals.\n", p->name, p->what, g_x_lang[p->st], x_srcdir(p), p->testcmd), 0);
+    if (p->readme) x_put(s, "README.md", cu_fmt("# %s\n\n%s helpers in %s, one file per module under `%s`.\n\n## Tests\n\n    %s\n\nThe runner prints the failing cases and ends with the totals.\n", p->name, p->what, g_x_lang[p->st], x_srcdir(p), p->testcmd), 0);
     if (p->docs) x_put(s, "docs/functions.md", x_docs_text(p), 0);
     if (p->conf) { x_put(s, "settings.conf", x_conf_text(p), 0); x_put(s, "tools/check_settings.sh", x_conf_check(p), 0755); }
     for (int i = 0; i < p->nx; i++) x_put(s, p->xrel[i], p->xtxt[i], p->xmode[i]);
@@ -546,7 +559,7 @@ static void x_proj_write(const XProj *p) {
 /* ---- a pasta e o estado do motor para uma conversa nova ---- */
 static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     free(g_x.ask.p);
-    memset(&g_x, 0, sizeof g_x); g_x.fam = fam; buf_str(&g_x.ask, ""); g_x.ask.n = 0;
+    memset(&g_x, 0, sizeof g_x); g_x.fam = fam; buf_str(&g_x.ask, ""); g_x.ask.n = 0; g_x.k = -1;
     s->nsk = 0; s->nms = 0; s->brief = 0;
     if (nskills) cu_skill_pick(s, NULL, nskills);
     if (nmcp) cu_ms_scn(s, NULL, nmcp);
@@ -597,6 +610,7 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     g_todo[0] = 0; ct_task_sync(); g_todo_touched = 0;
     ct_session_reset(); g_rd_delta_on = 1; g_plan_mode = 0;
     g_cp_seq = 0; g_cp_dir[0] = 0;
+    job_all_kill(); memset(g_jobs, 0, sizeof g_jobs);      /* nada em segundo plano sobra da conversa anterior (nem o registro: os ids recomecam) */
     g_ctb_seq = 0; g_job_seq = 0;      /* numeracao das tarefas em segundo plano: recomeca a cada conversa */
     g_undo_req++; g_cu_pl = 0; g_cu_plold = 0; g_cu_note[0] = 0;
     /* o modo do prompt sai do estado inicial do sorteio, sem gastar sorteio (o check refaz com o mesmo) */

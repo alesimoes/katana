@@ -53,6 +53,88 @@ Behaviour rules that follow from the engine and that every example now obeys:
 - When a skill reports `MISSING:` the engine writes no plan; the model writes its own for the steps it can do.
 - An optional MCP argument appears only when the request mentions it.
 
+## Composed scenarios (2026-11-22)
+
+The families whose names start with `x-` come from a second generator (`src/app/scenario.c`, `scenario_tasks.c`,
+`scenario_more.c`). It does not fill moulds. Each conversation is one cell of a product, and a policy written in C decides
+every step from the real result of the previous tool call:
+
+- **Project.** A small project that really runs, in one of five stacks found on the generating machine (Python, Node,
+  shell, C with make, Perl): two or three modules, 2 to 5 functions each drawn from a pool of 48 (whole-number
+  arithmetic, so the same function is correct in the five languages), a test runner with two cases per function, and
+  optionally `README.md`, `KATANA.md`, `docs/functions.md`, `settings.conf` with its check script, and task files.
+- **Task** (`x-fix`, `x-add`, `x-rename`, `x-find`, `x-explain`, `x-run`, `x-config`, `x-clean`, `x-investigate`).
+- **Obstacle**: none, a path that does not exist, a second failure that only shows after the first fix, two failures in
+  one file (one `Edit` with `edits`), a similar name, long output, an engine error (`Edit` without `replace_all`), a
+  `never:` rule, an `ask:` rule answered no or yes, a missing program, a missing file, a value the project check rejects,
+  a question that must be asked, and its twin where the same request must not be asked.
+- **How the request points** (nothing, a function name, a file path), **a request before** the task (find or explain; in
+  `x-fix`, "run the tests", after which the model reports and stops), and **a second request** (run again, explain, find,
+  re-read an unchanged file, re-read a file the user changed, bring back a result removed from the context).
+- **Conventions present**: nothing, a `README.md`, a `KATANA.md` with `test:` and `layout:`, a full `KATANA.md` (rules,
+  `done:`, `docs:`), plus distractor skills and MCP cards.
+
+Every call goes through the agent loop's dispatcher (`agent_tool_run`), so the test output, the `Grep` list, the `Read`
+"has not changed since" note, the "only the changed part is shown" note, the plan notes, the `never:` refusal, the `ask:`
+question, the "removed to save context" note (`ah_mask`) and the stored copy that `Read` brings back are the engine's own
+text. A run is kept only when it ends verified: the project's tests pass after the change, the settings check passes, the
+example given in the request is a passing test case, or the correct refusal or question was produced. Otherwise it is
+dropped and counted.
+
+Other `x-` families: `x-web` (`WebSearch` and `WebFetch` against pages of an invented library served by a local server,
+with fixed search results), `x-concept` (questions about katana answered from `katana --help`, `katana help`,
+`katana brief show`, `katana brief check`, `katana skill list` and the tool descriptions returned by `ToolSearch`, and what
+to do when something cannot be done), `x-tools` (tools listed by name only: `ToolSearch select:Name`, then the call) and
+`x-skill` (a real skill of the project whose steps run).
+
+**Questions.** `AskUserQuestion` appears in three situations and each has a twin without the question: two keys match the
+request (`connect_timeout` and `read_timeout`) against one key; a fact that `Grep` does not find in the project (the
+reserved port) against the same fact in `docs/ports.md`; "tidy up tools/" against "delete these two files". Each line
+carries the proof (`"ask"`), and `check` verifies it on the text that precedes the question or the first change: what had
+to be present is present, what had to be absent is absent.
+
+**Check.** A line of these families carries `"scn"` (the random state, language, prompt mode and variant). `curriculum
+check` rebuilds the project, runs the whole conversation again through the engine and compares the result with the line,
+byte for byte. What changes between runs is normalised when the line is written: the temporary folder, the process id in
+background output files, the folder of stored results, the port of the local server and the network times.
+
+**Structural holdout.** With `--holdout` the `x-` families write only cells that the training file never has: one in four
+combinations of task, obstacle, pointer, second request and convention class is reserved, and the holdout also puts a
+request before and a request after the task in the same conversation, which the training file never does. Values are
+reserved too (function pool, file names, library names).
+
+**Prompt modes.** In `blocks` mode these families keep the whole environment block of the engine's prompt (working
+folder, files around, skills line), because the calls use absolute paths that come from it.
+
+`katana curriculum windows <model.gguf> <imported.jsonl> [--seq N] [--window dense --win-ctx N]` prints the windows the
+training would cut, with the model's tokenizer. Only the vocabulary is loaded, so it takes about two seconds.
+
+**Every tool the prompt names** (`x-rare`, owner's decision of 2026-11-22). The tools that the other families do not
+reach get three situations each, 48 in a table (`src/app/scenario_rare.c`): the right use with the arguments found through
+`ToolSearch select:Name`, a second use, and a case where the tool fails or is not the right one and the model reacts. They
+come out in rotation, so none is missed, and `check --coverage` fails when a tool of the table is below its minimum (25
+conversations for the declared tools in a file of 500 or more, 4 for the ones listed by name, 3 for the rare ones).
+Everything runs in the scenario's own home folder. Where a real run is impossible or would do harm, the engine's own
+validation or refusal path runs, or a stand-in of the outside program, and the cell is marked `standin`:
+
+| tool | what runs |
+|---|---|
+| `ScheduleWakeup`, `CronCreate`, `CronList`, `CronDelete` | the real scheduler with a fixed clock (`KATANA_SCHED_NOW`) |
+| `EndConversation`, `ListAgents`, `read_log`, `howto` | the real tool |
+| `PushNotification`, `ReportFindings` | the real tool with a stand-in `notify-send` first on `PATH` and the interface marker (`KATANA_UI`) |
+| `install_package` | the real tool; `python3 -m pip` and `npm` are stand-ins that install nothing |
+| `Workflow` | the real tool with the engine's test sub-agent (`KATANA_AGENT_FAKE=1`), plus two missing-file errors |
+| `SendMessage`, `ReadMcpResourceTool`, `WaitForMcpServers` | only the paths with no recipient and no server |
+| `SubagentHandback` | only the engine's refusal for the main agent |
+| `Agent` | only the validation of the prompt: a real sub-agent needs a model (`delegate` works only inside the agent loop) |
+| `terminal` | `list`, and `read` and `close` of a session that does not exist; an open session's output depends on timing |
+
+Still out: a successful `Agent` run and a `SubagentHandback` from inside a sub-agent (both need a model), a
+`ReadMcpResourceTool` that returns a resource (needs a connected server process), an open `terminal` session,
+`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` (hidden by the owner's decision) and `PowerShell`.
+
+@@MEASURED@@
+
 ## Commands
 
 ```
@@ -60,6 +142,8 @@ katana curriculum out.jsonl [--n N] [--seed S] [--families a,b=2,...] [--lang pt
                             [--system full|real|blocks|mix:full=F,blocks=B,real=R] [--decl PCT]
 katana curriculum stats out.jsonl      # conversations, model turns, characters to learn, 512-token windows (estimate)
 katana curriculum check out.jsonl [--all]   # the engine re-does what it can and checks the rest (--all: every reason)
+katana curriculum pick pool.jsonl out.jsonl --n N   # chooses by coverage: tool minimums, one of each tool sequence, unseen cells
+katana curriculum windows <model.gguf> data.jsonl [--seq N] [--window dense --win-ctx N]   # training windows, model tokenizer
 katana import <model.gguf> out.jsonl data.jsonl --system keep [--mask-prefill]
 katana specialize <model.gguf> all ... --curriculum out.jsonl     # source added by the specialize owner
 ```

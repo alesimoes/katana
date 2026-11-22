@@ -24,7 +24,7 @@ static const unsigned g_x_tobst[T_N] = {
     [T_INVEST] = OB(O_NONE) | OB(O_MISSDEP) | OB(O_MISSFILE),
 };
 typedef struct { Scn *s; XProj p; int task, obst, loc, fu, conv, skills, mcp, pre; CuD d; } XC;      /* pre: pedido curto antes da tarefa (1 achar, 2 explicar; em corrigir, rodar os testes) */
-static int g_x_askpct = 42;      /* % das conversas de config/clean que caem nas celulas de pergunta e nas gemeas */
+static int g_x_askpct = 60;      /* % das conversas de config/clean que caem nas celulas de pergunta e nas gemeas */
 static uint64_t x_hmix(uint64_t x) { x += 0x9E3779B97F4A7C15ull; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; return x ^ (x >> 31); }
 /* celula reservada para o holdout: combinacao de tarefa, obstaculo, loc, segundo pedido e classe de convencao */
 static int x_held(int task, int obst, int loc, int fu, int conv) {
@@ -37,9 +37,9 @@ static void x_setup(XC *c, Scn *s, int task) {
     for (int t = 0; ; t++) {
         if (t > 400) cu_die("sem celula para %s (hold %d)", g_x_tname[task], g_cu_hold);
         if ((task == T_CONF || task == T_CLEAN) && cu_pct(g_x_askpct)) c->obst = cu_pct(55) ? O_ASK : O_NOASK;      /* celulas de pergunta e as gemeas sem pergunta */
-        else { do c->obst = cu_n(O_N); while (!(g_x_tobst[task] & OB(c->obst)) || c->obst == O_ASK || c->obst == O_NOASK); if (c->obst != O_NONE && cu_pct(35)) c->obst = O_NONE; }
+        else { do c->obst = cu_n(O_N); while (!(g_x_tobst[task] & OB(c->obst)) || c->obst == O_ASK || c->obst == O_NOASK); if (c->obst != O_NONE && cu_pct(22)) c->obst = O_NONE; }
         c->loc = cu_n(3); c->conv = cu_n(4);
-        c->fu = cu_pct(55) ? F_NONE : 1 + cu_n(F_N - 1);
+        c->fu = cu_pct(g_cu_hold ? 40 : 56) ? F_NONE : 1 + cu_n(F_N - 1);
         if (c->fu == F_DOCCHG && !(task == T_ADD || task == T_RENAME)) continue;
         if (c->fu == F_DOCSAME && !(task == T_FIX || task == T_RUN || task == T_EXPLAIN || task == T_FIND)) continue;
         if (c->fu == F_DOCSAME || c->fu == F_DOCCHG) c->conv = 3;
@@ -51,7 +51,7 @@ static void x_setup(XC *c, Scn *s, int task) {
         const int long_task = task == T_FIX || task == T_ADD || task == T_RENAME || task == T_CONF || task == T_INVEST;
         if (long_task || g_cu_hold) {
             if (g_cu_hold) c->pre = cu_pct(80) ? 1 + cu_n(2) : 0;      /* holdout: pedido antes e pedido depois na mesma conversa, o que o treino nunca junta */
-            else if (c->fu == F_NONE && cu_pct(30)) c->pre = 1 + cu_n(2);
+            else if (c->fu == F_NONE && cu_pct(32)) c->pre = 1 + cu_n(2);
             if (c->pre && g_cu_hold && c->fu == F_NONE) c->fu = task == T_CONF ? F_EXPLAIN : F_RUN;
             if (c->pre && task == T_FIX) { if (c->obst == O_WRONGPATH) continue; c->loc = 0; }
         }
@@ -60,8 +60,9 @@ static void x_setup(XC *c, Scn *s, int task) {
     c->skills = cu_pct(22); c->mcp = cu_pct(18);
     const int big = c->obst == O_LONG, docq = c->fu == F_DOCSAME || c->fu == F_DOCCHG;
     static const int stw[] = {X_PY, X_PY, X_JS, X_JS, X_SH, X_SH, X_C, X_PL};      /* C compila a cada rodada: pesa menos */
-    x_proj(&c->p, s, CU_PA(stw), big || docq ? 3 : 2 + cu_n(2), big ? 5 : docq ? 3 : 2 + cu_n(2));
+    x_proj(&c->p, s, CU_PA(stw), big || docq ? 3 : 2, big ? 5 : docq ? 3 : 2 + cu_n(2));
     XProj *p = &c->p;
+    p->verbose = big;
     p->readme = c->conv == 1; p->brief = c->conv >= 2; p->rules = p->docs = c->conv == 3;
     p->knows = p->brief;
     cu_base_dict(s, &c->d);
@@ -403,7 +404,7 @@ static void fam_x_add(FILE *f, Scn *s) {
         x_done(3);
     }
     const char *out = x_test(p, NULL); char nm[4][48];
-    if (x_fails(out, nm, 4) || !strstr(out, cu_fmt("ok %s", shown))) cu_die("o exemplo do pedido nao passou: %.200s", out);
+    if (x_fails(out, nm, 4) || !x_totals(out) || (p->verbose && !strstr(out, cu_fmt("ok %s", shown)))) cu_die("o exemplo do pedido nao passou: %.200s", out);
     m->fn[m->nfn++] = nf;
     x_final(cu_fmt(L("Added `%s` to %s with a test case in %s%s. `%s` passes (%s), and your example holds: %s returns %ld.", "Acrescentei `%s` em %s com um caso de teste em %s%s. O `%s` passa (%s), e o seu exemplo confere: %s devolve %ld."),
                    sig, rel, p->testrel, p->docs ? L(" and its entry in docs/functions.md", " e a entrada em docs/functions.md") : (p->st == X_C ? cu_fmt(L(" and the prototype in %s", " e o prototipo em %s"), x_hdr(p, mi)) : ""), p->testcmd, x_totals(out), shown, nf.want[0]));
@@ -443,7 +444,7 @@ static void fam_x_rename(FILE *f, Scn *s) {
     fi->name = nw;
     x_find_testcmd(p);
     const char *out = x_test(p, NULL); char nm[4][48];
-    if (x_fails(out, nm, 4) || !x_totals(out) || !strstr(out, cu_fmt("ok %s(", nw))) cu_die("os testes nao passam depois de renomear: %.200s", out);
+    if (x_fails(out, nm, 4) || !x_totals(out) || (p->verbose && !strstr(out, cu_fmt("ok %s(", nw)))) cu_die("os testes nao passam depois de renomear: %.200s", out);
     Buf b = {0}; buf_str(&b, "");
     for (int i = 0; i < nf; i++) buf_str(&b, cu_fmt("%s%s", i ? ", " : "", files[i]));
     x_final(cu_fmt(L("Renamed `%s` to `%s` in %d files: %s. `%s` passes (%s).", "Renomeei `%s` para `%s` em %d arquivos: %s. O `%s` passa (%s)."), old, nw, nf, cu_keep(b.p), p->testcmd, x_totals(out)));
@@ -678,7 +679,8 @@ static void fam_x_clean(FILE *f, Scn *s) {
         const int two = c.obst == O_NOASK;
         if (two) { x_user(cu_fmt(XV(L("delete %s and %s", "apaga %s e %s"), L("remove %s and %s, they are dead", "remove %s e %s, estao mortos")), a, b)); x_askproof("delete", 0, cu_fmt("%s|%s", a, b), NULL); }
         else x_user(cu_fmt(XV(L("delete %s, nobody uses it", "apaga %s, ninguem usa"), L("remove %s", "remove %s"), L("%s can go, delete it", "o %s pode sair, apaga")), a));
-        if (!two && c.loc == 1 && c.obst == O_NONE) { const char *r = x_grep(cu_fmt("old_%s", strchr(a, '_') + 1), NULL, NULL); if (strstr(r, "tools/lint.sh")) cu_die("o script e usado"); }
+        const int grepped = !two && c.loc == 1 && c.obst == O_NONE;      /* confere antes que nada mais cita o arquivo */
+        if (grepped) { const char *r = x_grep(cu_fmt("old_%s", strchr(a, '_') + 1), NULL, NULL); if (strstr(r, "tools/lint.sh")) cu_die("o script e usado"); }
         if (c.obst == O_ASKYES) x_feed("1");
         const char *r = x_bash(NULL, two ? cu_fmt("rm %s %s", a, b) : cu_fmt("rm %s", a), two ? L("Delete the two scripts", "Apaga os dois scripts") : L("Delete the script", "Apaga o script"), c.obst == O_ASKNO ? XF_ERR : 0);
         if (c.obst == O_ASKYES) x_unfeed();
@@ -687,6 +689,7 @@ static void fam_x_clean(FILE *f, Scn *s) {
             x_final(cu_fmt(L("%s was not deleted: KATANA.md asks for your confirmation before deleting files, and it was not given. Nothing changed.", "%s nao foi apagado: o KATANA.md pede a sua confirmacao antes de apagar arquivos, e ela nao foi dada. Nada mudou."), a));
         } else {
             if (access(x_abs(s, a), F_OK) == 0) cu_die("o arquivo nao foi apagado");
+            if (grepped) { x_final(cu_fmt(L("Deleted %s. Nothing else in the project mentions it: I searched before deleting.", "Apaguei %s. Nada mais no projeto cita ele: procurei antes de apagar."), a)); x_end(f); return; }
             const char *ls = x_bash(NULL, "ls tools", cu_fmt(L("List tools/ without %s", "Lista tools/ sem o %s"), a + 6), 0);
             if (strstr(ls, a + 6)) cu_die("ls ainda mostra o arquivo");
             x_final(cu_fmt(two ? L("Deleted %s and %s. tools/ now has: %s.", "Apaguei %s e %s. tools/ agora tem: %s.") : L("Deleted %s%s. tools/ now has: %s.", "Apaguei %s%s. tools/ agora tem: %s."), a, two ? b : (c.obst == O_ASKYES ? L(" after your confirmation", " depois da sua confirmacao") : ""),
