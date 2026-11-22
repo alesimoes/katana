@@ -245,7 +245,7 @@ static int snaptest(Model *m, int argc, char **argv) {
     }
     if (agent) {
         printf("== compactacao do agente\n");
-        if (!getenv("KATANA_CONTEXT_BASE")) setenv_("KATANA_CONTEXT_BASE", m->cfg.vocab < 2000 ? "20000" : brief ? "1500" : "4000");
+        if (!getenv("KATANA_CONTEXT_BASE")) setenv_("KATANA_CONTEXT_BASE", m->cfg.vocab < 2000 ? "20000" : "4200");
         const char *sys = "Voce e o katana. Use as ferramentas e responda em portugues.";
         const size_t k = m->cfg.vocab < 2000 ? 1800 : 1300;      /* modelo pequeno: um byte por token */
         st_agent(m, sys, 12, k, 0, 5, "so o fim e grande (volta ao meio)");
