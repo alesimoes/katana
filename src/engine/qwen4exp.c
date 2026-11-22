@@ -19,7 +19,7 @@
    1 lotes grandes no prompt (KATANA_Q4_BATCH, padrao 256), 2 produtos em lote com a linha aberta uma vez tambem em Q4_K/Q5_K/Q6_K
    e BF16 em AVX-512, 4 DeltaNet por cabeca e por canal (todos os tokens do lote de uma vez), 8 trabalho serial por token repartido
    entre as threads, 16 especialistas em blocos com saida local, 32 leitura antecipada dos especialistas ainda nao tocados */
-enum { QO_BATCH = 1, QO_KERN = 2, QO_DN = 4, QO_PAR = 8, QO_EXP = 16, QO_AHEAD = 32 };
+enum { QO_BATCH = 1, QO_KERN = 2, QO_DN = 4, QO_PAR = 8, QO_EXP = 16, QO_AHEAD = 32, QO_ONE = 1 << 20 /* q4bench: prompt token a token */ };
 static int q4_opt = -1, q4_bsize;
 #define Q4_RMAX 16              /* ramos */
 typedef struct { Mat down, up, inj; float *norm; } Q4Hc;
@@ -455,7 +455,7 @@ static void q4_mm_job(void *cx, int i0, int i1) {
 static void q4_mm(float *out, const Mat *W, const float *X, XQ *xqs, int *prep, int B, int rows, int cols) {
     int chunk = rows / (pool.n * 8 + 1), minc = 32768 / ((long)cols * B) + 1;
 #if HAVE_LOWBIT
-    if (q4_kern_ok(W)) {
+    if (q4_kern_ok(W) && (B > 1 || !q4_ktype(W->type))) {      /* um token: o produto VNNI dos tipos K e mais rapido */
         if (!*prep) { mm_prepare(xqs, X, B, cols); *prep = 1; }
         Q4Kj k = { out, W, xqs, B, rows, cols };
         if (chunk > 64) chunk = 64;
@@ -1228,7 +1228,7 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
         q4_bsize = e && atoi(e) > 0 ? atoi(e) : 256;
         if (q4_bsize > Q4_BMAX) q4_bsize = Q4_BMAX;
     }
-    const int bm = q4_opt & QO_BATCH ? q4_bsize : 16;
+    const int bm = q4_opt > 0 && (q4_opt & QO_ONE) ? 1 : q4_opt & QO_BATCH ? q4_bsize : 16;
     for (int i = 0, pf = 0; i < n;) {
         if (i >= pf) { q4_ngram_prefetch(q, toks + i, n - i < 4096 ? n - i : 4096); pf = i + 4096; }
         const int B = n - i < bm ? n - i : bm;
@@ -1264,13 +1264,13 @@ static int q4_state_io(Model *m, FILE *f, int n, int dir) {
     return ok;
 }
 
-/* katana q4bench <gguf> <texto> [tokens=256] [gerados=24] [A=0] [B=todas] [pares=3] : mede dentro do mesmo processo, paginas ja
+/* katana q4bench <gguf> <texto> [tokens=256] [gerados=24] [A=0] [B=todas] [pares=3; 0 = A e depois cada mascara seguinte uma vez] [mascaras...] : mede dentro do mesmo processo, paginas ja
    quentes (uma passada de aquecimento), alternando duas mascaras de opcoes (q4_opt): tok/s do prompt e da geracao de cada passada,
    diferenca de logits de B contra A (fim do prompt e cada gerado; os tokens gerados sao os da passada de A) e os tempos por parte */
 static char *read_text(const char *path);
 static int q4_bench(Model *m, int argc, char **argv) {
     const Config *c = &m->cfg;
-    const int N0 = argc > 2 ? atoi(argv[2]) : 256, G = argc > 3 ? atoi(argv[3]) : 24, pairs = argc > 6 ? atoi(argv[6]) : 3, V = c->vocab;
+    const int N0 = argc > 2 ? atoi(argv[2]) : 256, G = argc > 3 ? atoi(argv[3]) : 24, pairs = argc > 6 ? atoi(argv[6]) : 3, V = c->vocab, nm = pairs ? 2 * pairs : argc - 6;
     const int ma = argc > 4 ? atoi(argv[4]) : 0, mb = argc > 5 ? atoi(argv[5]) : -1;
     if (!c->q4e) die("q4bench: nao e um modelo qwen4exp");
     Ids ids = {0};
@@ -1279,9 +1279,9 @@ static int q4_bench(Model *m, int argc, char **argv) {
     if (n + G > c->ctx || n < 1 || G < 1) die("q4bench: contexto pequeno");
     float *ref = xalloc((size_t)(G + 1) * V, 4);
     int *gen = xalloc(G + 1, sizeof(int));
-    for (int p = 0; p <= 2 * pairs; p++) {
-        const int b = p > 0 && p % 2 == 0;      /* 0 aquecimento (A), depois A B A B ... */
-        q4_opt = b ? mb : ma;
+    for (int p = 0; p <= nm; p++) {
+        const int b = pairs ? p > 0 && p % 2 == 0 : p > 1;      /* 0 aquecimento (A), depois A B A B ... */
+        q4_opt = !b ? ma : pairs ? mb : atoi(argv[5 + p]);
         q4_prof = p > 0;
         memset(q4_pt, 0, sizeof q4_pt); memset(q4_ptok, 0, sizeof q4_ptok);
         double t0 = now_sec(), md = 0.0, mx = 0.0;
@@ -1302,7 +1302,7 @@ static int q4_bench(Model *m, int argc, char **argv) {
         printf("%s opt=%d: prompt %d tokens %.2f tok/s, geracao %d tokens %.2f tok/s", p ? b ? "B" : "A" : "aquecimento", q4_opt, n, n / tp, G, G / tg);
         if (b) printf(", logits: maior diferenca %.3e (maior %.1f), argmax igual %d/%d", md, mx, same, G + 1);
         printf("\n");
-        if (p >= 2 * pairs - 1) q4_prof_print();
+        if (pairs && p >= 2 * pairs - 1) q4_prof_print();
         fflush(stdout);
     }
     q4_prof = 0;
