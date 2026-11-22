@@ -215,7 +215,7 @@ static int ct_main(int argc, char **argv) {
 /* conversa nova: nada do que foi lido, agendado ou aberto vale para ela */
 static void ct_session_reset(void) {
     proj_sub_reset();
-    ct_seen_reset(); facts_reset(); rd_delta_reset();
+    ct_seen_reset(); facts_reset(); rd_delta_reset(); cp_reset();
     ct_sched_reset();
 #ifndef _WIN32
     g_wt_active = 0;

@@ -162,6 +162,7 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
         ah_push(&nh, 'u', out->v[0].s, strlen(out->v[0].s)); ah_push(&nh, 'a', out->v[1].s, strlen(out->v[1].s));   /* resumo que ja existia */
     }
     for (int i = k; i < out->n; i++) ah_push(&nh, out->v[i].role, out->v[i].s, strlen(out->v[i].s));
+    if (!g_ah_g4 && sess_msg_tokens(m, &nh, sys) > budget * 2) ah_mask(&nh, 0, (size_t)budget * 4, 0);      /* o que sai fica guardado em disco e volta com o Read */
     while (nh.n > 2 && sess_msg_tokens(m, &nh, sys) > budget * 2) {      /* ainda grande demais: encolhe ferramentas */
         int ch = 0;
         for (int i = 0; i < nh.n; i++) ch += ah_shrink_tool(&nh.v[i]);
@@ -620,7 +621,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                KATANA_TEACHER_FEED=1 volta a manter o cache local em dia a cada rodada */
             const int tskip = g_teacher && cml && !(getenv("KATANA_TEACHER_FEED") && atoi(getenv("KATANA_TEACHER_FEED")));
             if (tskip) g_ctx_lost = 1;
-            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) - (g_cp_step ? cp_step_gain() : 0) && pos + ids.n > g_cp_floor) || g_ctx_lost);
+            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && cp_due(cp_sys(m, sys), cp_hard(m), pos + ids.n, g_cp_step)) || g_ctx_lost);
             if (g_cp_step) { g_cp_step = 0; g_cp_phase = hist.n; }       /* a etapa nova comeca depois do que ja esta no historico */
             if (!tskip) { g_cp_nolive = g_ctx_lost; g_ctx_lost = 0; }      /* o cache nao esta em dia (subagente, professor): o caminho de compactacao recalcula a conversa */
             if (!need && !tskip && pos + ids.n + 64 >= c->ctx) {
@@ -634,12 +635,14 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (tskip) first = 0;
             else if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
                 const int np2 = agent_compact(m, &hist, sys, text, pos, 0, &lg);
-                if (np2 < 0) {
+                if (np2 == -2) { lg = agent_feed(m, ids.ids, ids.n, pos); pos += ids.n; }      /* nao valia a pena compactar: segue normal */
+                else if (np2 < 0) {
                     fprintf(stderr, "[contexto cheio mesmo compactado (%d de %d tokens): conversa recomecada; repita o pedido]\n", pos, c->ctx);
                     g_busy = 0; free(ids.ids); pos = 0; first = 1; ah_clear(&hist);
                     break;
                 }
-                pos = np2; first = 0;
+                else pos = np2;
+                first = 0;
             } else {
                 const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
                 lg = agent_feed(m, ids.ids + np, ids.n - np, pos + np);
@@ -666,6 +669,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_busy = 0;
             printf("\n"); fflush(stdout);
             stats_line(ids.n, t1 - t0, gen, t2 - t1, pos, c->ctx);
+            if (cml && !tskip) cp_tick(cp_sys(m, sys), pos, ids.n, gen);
             if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
             if (cml) {
                 Buf ab = {0};
