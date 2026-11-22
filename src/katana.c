@@ -95,7 +95,11 @@
 #include "app/knowledge.c"             /* katana knowledge: notas de texto das sessoes anteriores (build, search, stats) */
 #include "app/distill.c"               /* katana distill: um modelo professor trabalha com as ferramentas do katana */
 #include "app/learn.c"                 /* katana export (sessoes -> dados) e katana learn (aprende com o proprio uso) */
+#ifndef KATANA_BUILD
+#define KATANA_BUILD "?"
+#endif
 #include "app/codebench.c"             /* katana codebench: o juiz (tarefas com testes escondidos): run, verify, compare, list */
+#include "app/update.c"                /* katana update: compila, confere e troca o programa instalado */
 #include "app/specialize.c"            /* katana specialize: versoes especialistas (teacher, tools, code) de ponta a ponta */
 #include "app/curriculum.c"            /* katana curriculum: as convencoes (KATANA.md, skills, MCP) viram dados de treino */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
