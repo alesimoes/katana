@@ -121,36 +121,6 @@ static void fam_x_web(FILE *f, Scn *s) {
 }
 
 /* ======================= o proprio katana ======================= */
-typedef struct { const char *en, *pt, *cmd, *needle; } XHelpQ;
-static const XHelpQ g_x_helpq[] = {
-    {"how do I continue my last katana session in this folder?", "como eu retomo a ultima sessao do katana nesta pasta?", "katana --help", "--continue"},
-    {"how can I pick an older katana session to resume?", "como escolho uma sessao antiga do katana para retomar?", "katana --help", "--resume"},
-    {"how do I run katana with one request and no console?", "como rodo o katana com um pedido so, sem console?", "katana --help", "--prompt"},
-    {"which output formats does katana have in headless mode?", "quais formatos de saida o katana tem no modo sem tela?", "katana --help", "--output-format"},
-    {"how do I limit which tools katana may use in one run?", "como limito as ferramentas que o katana pode usar numa rodada?", "katana --help", "--allowed-tools"},
-    {"can I cap the number of model rounds of a katana run?", "da pra limitar o numero de rodadas do modelo numa execucao do katana?", "katana --help", "--max-turns"},
-    {"how do I give katana MCP servers only for one request?", "como passo servidores MCP so para um pedido do katana?", "katana --help", "--mcp-config"},
-    {"how do I make katana work in another folder?", "como faco o katana trabalhar em outra pasta?", "katana --help", "--cwd"},
-    {"how do I put the katana command on my PATH?", "como coloco o comando katana no meu PATH?", "katana --help", "katana install"},
-    {"how do I run katana without recording the session?", "como rodo o katana sem gravar a sessao?", "katana --help", "--no-session"},
-    {"how do I choose the model katana uses?", "como escolho o modelo que o katana usa?", "katana --help", "--model"},
-    {"how do I bring another project's agent configuration into katana?", "como trago a configuracao de agente de outro projeto para o katana?", "katana --help", "katana adopt"},
-    {"which katana command checks a model file's shard hashes?", "qual comando do katana confere os hashes dos shards de um modelo?", "katana help", "katana verify"},
-    {"which katana command measures speed on a model?", "qual comando do katana mede a velocidade num modelo?", "katana help", "katana bench"},
-    {"how do I serve a model over HTTP with katana?", "como sirvo um modelo por HTTP com o katana?", "katana help", "katana serve <modelo.gguf> [porta]   "},
-    {"which katana command turns conversations into training data?", "qual comando do katana transforma conversas em dados de treino?", "katana help", "katana import"},
-};
-typedef struct { const char *en, *pt, *tool, *needle; } XLim;
-static const XLim g_x_limq[] = {
-    {"how many lines does Read return by default?", "quantas linhas o Read devolve por padrao?", "Read", "2000 lines"},
-    {"what is the default timeout of Bash?", "qual e o timeout padrao do Bash?", "Bash", "120000"},
-    {"how long does a Monitor run before it stops by itself?", "quanto tempo um Monitor roda antes de parar sozinho?", "Monitor", "300000"},
-    {"how many options can one AskUserQuestion question have?", "quantas opcoes uma pergunta do AskUserQuestion pode ter?", "AskUserQuestion", "2 to 4"},
-    {"how many results does Glob return at most?", "quantos resultados o Glob devolve no maximo?", "Glob", "100"},
-    {"what does ExitWorktree do with action remove when there are uncommitted changes?", "o que o ExitWorktree faz com action remove quando ha mudancas sem commit?", "ExitWorktree", "refuses"},
-    {"how many searches can WebSearch run in one call?", "quantas buscas o WebSearch faz numa chamada?", "WebSearch", "queries"},
-    {"can NotebookEdit insert a new cell?", "o NotebookEdit consegue inserir uma celula nova?", "NotebookEdit", "insert"},
-};
 /* a frase (ou a linha) da saida real que contem a agulha */
 static const char *x_sentence(const char *out, const char *needle) {
     const char *q = strstr(out, needle); if (!q) return NULL;
@@ -163,95 +133,7 @@ static const char *x_sentence(const char *out, const char *needle) {
     size_t l = strlen(t); while (l && t[l - 1] == ' ') t[--l] = 0;
     return l > 300 ? NULL : t;
 }
-static void fam_x_concept(FILE *f, Scn *s) {
-    int kind, sub;
-    for (int t = 0; ; t++) {
-        if (t > 200) cu_die("sem celula de conceito");
-        kind = cu_n(5);
-        sub = kind == 0 ? cu_n(CU_N(g_x_helpq)) : kind == 1 ? cu_n(CU_N(g_x_limq)) : kind == 2 ? cu_n(4) : kind == 3 ? cu_n(3) : cu_n(3);
-        if (x_held(50 + kind, sub, 0, 0, 0) == (g_cu_hold != 0)) break;
-    }
-    XC c; memset(&c, 0, sizeof c); c.s = s;
-    const int st = cu_n(X_NST);
-    x_proj(&c.p, s, st == X_C ? X_PY : st, 2, 2); XProj *p = &c.p;
-    p->brief = kind == 2 ? sub < 3 : cu_pct(50); p->readme = !p->brief && cu_pct(50); p->rules = p->docs = p->brief && cu_pct(50);
-    if (kind == 2 && sub == 0) { p->never = 1; p->askrule = 1; }
-    x_begin("x-concept", s, p, kind == 2 && sub == 3 ? 2 : 0, 0);
-    x_cell("concept/%s/%d", kind == 0 ? "help" : kind == 1 ? "limits" : kind == 2 ? "project" : kind == 3 ? "impossible" : "discover", sub);
-    if (kind == 0) {
-        const XHelpQ *q = &g_x_helpq[sub];
-        x_user(L(q->en, q->pt));
-        const char *r = x_bash(NULL, q->cmd, L("Show katana's own help", "Mostra a ajuda do proprio katana"), 0);
-        const char *ln = x_line_with(r, q->needle);
-        if (!ln) cu_die("a ajuda nao tem %s", q->needle);
-        while (*ln == ' ') ln++;
-        Buf b = {0}; buf_str(&b, ""); for (const char *z = ln; *z; z++) { if (*z == ' ' && z[1] == ' ') continue; buf_add(&b, z, 1); }
-        x_final(cu_fmt(L("`%s` says: `%s`.", "O `%s` diz: `%s`."), q->cmd, cu_keep(b.p)));
-    } else if (kind == 1) {
-        const XLim *q = &g_x_limq[sub];
-        x_user(L(q->en, q->pt));
-        const char *r = x_call(NULL, "ToolSearch", cu_fmt("{\"query\": \"select:%s\"}", q->tool), 0);
-        const char *sn = x_sentence(r, q->needle);
-        if (!sn) cu_die("a descricao de %s nao tem %s", q->tool, q->needle);
-        x_final(cu_fmt(L("From the description of %s: \"%s\".", "Da descricao do %s: \"%s\"."), q->tool, sn));
-    } else if (kind == 2) {
-        if (sub == 0) {
-            x_user(XV(L("what does katana enforce from this project's KATANA.md?", "o que o katana faz valer do KATANA.md deste projeto?"), L("which rules of the KATANA.md here are enforced by the engine?", "quais regras do KATANA.md daqui sao cobradas pelo motor?")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana brief show", L("Show what the engine parsed from KATANA.md", "Mostra o que o motor leu do KATANA.md"), 0));
-            const char *n1 = x_line_with(r, "rm*test_"), *n2 = x_line_with(r, "rm *");
-            if (!n1 || !n2) cu_die("brief show sem as regras: %.300s", r);
-            while (*n1 == ' ') n1++;
-            while (*n2 == ' ') n2++;
-            x_final(cu_fmt(L("`katana brief show` lists two enforced rules: `%s` and `%s`. The first is refused outright; the second asks you before the command runs.", "O `katana brief show` lista duas regras cobradas: `%s` e `%s`. A primeira e recusada direto; a segunda pergunta a voce antes de o comando rodar."), n1, n2));
-        } else if (sub == 1) {
-            x_user(XV(L("is the KATANA.md of this project well formed?", "o KATANA.md deste projeto esta bem formado?"), L("lint the project file", "passa o lint no arquivo do projeto")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana brief check", L("Lint KATANA.md", "Passa o lint no KATANA.md"), 0));
-            const char *last = r + strlen(r); while (last > r && last[-1] == '\n') last--; const char *a = last; while (a > r && a[-1] != '\n') a--;
-            x_final(cu_fmt(L("`katana brief check` ends with: `%.*s`.", "O `katana brief check` termina com: `%.*s`."), (int)(last - a), a));
-        } else if (sub == 2) {
-            x_user(XV(L("which command does this project use for tests, according to katana?", "que comando este projeto usa para os testes, segundo o katana?")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana brief show", L("Show what the engine parsed from KATANA.md", "Mostra o que o motor leu do KATANA.md"), 0));
-            if (!strstr(r, p->testcmd)) cu_die("brief show sem o comando de teste");
-            x_final(cu_fmt(L("`%s`: it is the `test:` line of KATANA.md, as `katana brief show` prints it.", "`%s`: e a linha `test:` do KATANA.md, como o `katana brief show` mostra."), p->testcmd));
-        } else {
-            x_user(XV(L("which skills does this project have?", "quais skills este projeto tem?"), L("list the skills katana sees here", "lista as skills que o katana enxerga aqui")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana skill list", L("List the skills", "Lista as skills"), 0));
-            if (!strstr(r, s->sk[0]->name) || !strstr(r, s->sk[1]->name)) cu_die("skill list sem as skills: %.200s", r);
-            x_final(cu_fmt(L("Two: `%s` and `%s`, both in .katana/skills of this project.", "Duas: `%s` e `%s`, as duas em .katana/skills deste projeto."), s->sk[0]->name, s->sk[1]->name));
-        }
-    } else if (kind == 3) {      /* nao ha ferramenta: procura, tenta outro caminho, e so entao diz que nao da e por que */
-        static const char *const what[][5] = {
-            {"email the test results to the team", "manda o resultado dos testes por email para o time", "email", "mail sendmail msmtp mutt", "a mail program (mail, sendmail, msmtp or mutt) or the address of an SMTP server with a login"},
-            {"print docs on the office printer", "imprime os docs na impressora do escritorio", "print", "lp lpr", "a print command (lp or lpr) with a configured printer"},
-            {"post the test totals to the team chat", "posta os totais dos testes no chat do time", "chat", "slack-cli matrix-commander", "a chat client program, or an MCP server for the chat"}};
-        x_user(L(what[sub][0], what[sub][1]));
-        const char *plan[3] = {L("Look for a tool that can do it", "Procurar uma ferramenta que faca isso"), L("Look for a program on this machine", "Procurar um programa nesta maquina"), L("Do it or report", "Fazer ou relatar")};
-        x_plan(plan, 3);
-        const char *r = x_call(NULL, "ToolSearch", cu_fmt("{\"query\": %s}", cu_q(what[sub][2])), 0);
-        if (strncmp(r, "No matching tools", 17)) cu_die("ha ferramenta para %s", what[sub][2]);
-        x_done(1);
-        Buf cm = {0}; buf_str(&cm, "");
-        for (int i = 0, n = cu_count(what[sub][3], ' '); i < n; i++) buf_str(&cm, cu_fmt("%scommand -v %s", i ? "; " : "", cu_part(what[sub][3], ' ', i)));
-        r = x_bash(NULL, cu_keep(cm.p), L("Check which programs exist", "Ve quais programas existem"), 0);
-        if (strchr(r, '/')) cu_die("a maquina tem um programa para isso");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
-        x_final(cu_fmt(L("I could not do it: no tool of mine matches \"%s\" and none of these programs is installed: %s. Nothing was sent. To do it I need %s.",
-                         "Nao consegui: nenhuma ferramenta minha casa com \"%s\" e nenhum destes programas esta instalado: %s. Nada foi enviado. Para fazer eu preciso de %s."), what[sub][2], what[sub][3], what[sub][4]));
-    } else {      /* descobrir uma ferramenta por palavras */
-        static const char *const dq[][4] = {{"is there a tool to schedule something for later in this session?", "tem alguma ferramenta para agendar algo para mais tarde nesta sessao?", "schedule", "CronCreate"},
-            {"do you have a tool for Jupyter notebooks?", "voce tem alguma ferramenta para cadernos Jupyter?", "notebook", "NotebookEdit"},
-            {"can you work in a separate git worktree?", "voce consegue trabalhar num worktree separado do git?", "worktree", "EnterWorktree"}};
-        x_user(L(dq[sub][0], dq[sub][1]));
-        const char *r = x_call(NULL, "ToolSearch", cu_fmt("{\"query\": %s}", cu_q(dq[sub][2])), 0);
-        if (!strstr(r, cu_fmt("\"name\": \"%s\"", dq[sub][3]))) cu_die("ToolSearch %s sem %s", dq[sub][2], dq[sub][3]);
-        const char *sn = x_sentence(strstr(r, cu_fmt("\"name\": \"%s\"", dq[sub][3])), "\"description\": \"");
-        const char *d0 = sn ? strstr(sn, "\"description\": \"") : NULL;
-        if (!d0) cu_die("descricao longa demais");
-        x_final(cu_fmt(L("Yes: %s. Its description says: \"%s\".", "Sim: %s. A descricao diz: \"%s\"."), dq[sub][3], d0 + 16));
-    }
-    if (g_cu_hold) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
-    x_end(f);
-}
+#include "app/scenario_concept.c"    /* x-concept: os conceitos do katana, tres situacoes cada, em rodizio */
 
 /* ======================= ferramentas listadas so pelo nome ======================= */
 enum { K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_AGENT, K_CRON, K_TERM, K_N };
