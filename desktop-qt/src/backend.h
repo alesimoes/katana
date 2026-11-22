@@ -297,6 +297,7 @@ signals:
     void queueChanged();
     void workspaceChanged();
     void askRequested(const QString &kind, const QString &what, const QString &detail);
+    void askClosed();
     void choiceChanged();
     void todoChanged();
     void planModeChanged();
