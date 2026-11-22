@@ -17,17 +17,41 @@ A small local coding benchmark for the katana agent. It exists to answer one que
   tools. Then `hidden/` is copied in and run with `python3 -m unittest`. Pass or fail, wall time, tool calls and
   generated tokens are appended to a JSONL file.
 
+The runner is part of the binary: `katana codebench` (C, `src/app/codebench.c`). The tasks are test material in whatever
+language they are about (here Python, shell and C); only the setup helpers and the hidden tests need `python3`
+(`--python` changes the interpreter). POSIX only for now.
+
 ```
-python3 tools/codebench/run.py --verify                      # every task must fail before and pass after the reference fix
-python3 tools/codebench/run.py --model models/X.gguf --out a.jsonl --label base
-python3 tools/codebench/run.py --model models/X.gguf --out b.jsonl --label changed --env KATANA_THINK=1
-python3 tools/codebench/run.py compare a.jsonl b.jsonl      # newly solved / lost, exact sign test, mean cost
+katana codebench verify                      # every task must fail before and pass after the reference fix
+katana codebench run --model models/X.gguf --out a.jsonl --label base
+katana codebench run --model models/X.gguf --out b.jsonl --label changed --env KATANA_THINK=1
+katana codebench compare a.jsonl b.jsonl     # newly solved / lost, exact sign test, mean cost, agent-log measures
+katana codebench list                        # the tasks
 ```
 
 `--tasks a,b` runs a subset (names or globs: `--tasks 'write-*,prereq-*'`), `--timeout` is per task (default 900 s), `--keep DIR` keeps each task's agent log and final
 files. Run one model at a time: the GPU and the memory are shared.
 
 `--mode code` runs `katana code` (the coding mode) instead of `katana agent`.
+
+Other options of `run`: `--repeat N`, `--label L`, `--katana BIN` (the agent binary; default is the running binary, and any
+program that takes `agent MODEL` works as a stand-in), `--env K=V` (repeatable; given to the agent and to the hidden tests),
+`--dir PASTA` (the codebench folder; default `tools/codebench` or next to the binary), `--teacher URL --teacher-model M
+--distill-out F [--teacher-key-env VAR] [--teacher-format qwen|json|gemma4|glm]` (a teacher model solves each task with
+katana's tools through `katana distill`, and the hidden tests set `passed`). An interrupted run continues where it stopped
+(the same file, the pairs task and attempt already in it are skipped).
+
+Each task runs in a fresh folder under `$TMPDIR` (never in the repository), the agent as a child process in its own process
+group with its own `KATANA_LOG` file; at the time limit the whole group is killed, and when the agent ends so is whatever it
+left running. A task whose setup fails (a news task without internet) is written as `"skipped": true` and does not count.
+
+Result line (JSONL), in this order: `label`, `task`, `passed`, `seconds`, `tool_calls` (counts the call line and the result
+line of each call, as the old script did), `gen_tokens`, `timed_out`, then `attempt` (with `--repeat`), `session` and
+`instruction` (with `--sessions`), then the measures read from the run's own agent log and stderr: `calls`, `failed_calls`,
+`refused_calls` (calls started minus calls logged; the engine's refusals, such as a third identical failing call, never
+reach the log), `repeated_calls` (same tool and arguments among the previous 20 calls), `rounds`, `last_text` (the run ended
+on text, not on a call) and `tokens_read` / `tokens_written` (the "entrada" and "resposta" token counts the agent prints each
+round). Files from before 2026-11-21 lack the last eight fields; `compare` averages them only over the runs that have them.
 
 `--sessions DIR` saves one agent session per run (`DIR/<task>.<attempt>.ksess`) and `--repeat N` runs every task N
 times; together they produce labelled training data (see `docs/training-data.md` and `tools/dataset/ksess2jsonl.py`).
@@ -124,9 +148,9 @@ All optional, so the original tasks work unchanged.
 
 ## Validating tasks without the model
 
-`python3 tools/codebench/run.py --verify [--tasks a,b]` runs setup, the hidden check on the untouched starting state (it
+`katana codebench verify [--tasks a,b]` runs setup, the hidden check on the untouched starting state (it
 must fail), then on a fresh copy after the reference solution (it must pass), and also fails a task if `solution`, `hidden`,
-`site`, `setup.py` or `solve.sh` show up in the agent's working folder. It never runs the model.
+`site`, `setup.py` or `solve.sh` show up in the agent's working folder. It never runs the model. A task whose setup cannot run here (no internet for the news tasks) is shown as `skipped`.
 
 ## Convention tasks (`conv-*`)
 

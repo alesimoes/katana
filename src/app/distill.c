@@ -4,7 +4,7 @@
  * local). Ele recebe a tarefa, o prompt de sistema real do agente e a lista de ferramentas do katana; cada chamada
  * dele roda nesta maquina pelo proprio katana (agent_tool, o mesmo codigo do agente), na pasta atual. No fim a
  * sessao vira uma linha JSONL no formato de mensagens, com o prompt de sistema que o ALUNO ve; o katana import
- * converte para o template do aluno e o katana train especializa. O codebench (run.py --teacher) roda isto em
+ * converte para o template do aluno e o katana train especializa. O codebench (katana codebench run --teacher) roda isto em
  * cada tarefa numa copia limpa do projeto e marca passed com os testes escondidos.
  *
  * Rede: o pedido sai pelo curl do sistema (como as ferramentas web do agente); a chave vem da variavel de ambiente
