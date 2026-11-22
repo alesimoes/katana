@@ -14,7 +14,7 @@
      acesso aleatorio): so as paginas usadas entram na RAM, pedidas juntas antes de um lote.
    - o portao da saida do DeltaNet e sigmoide(z), nao SiLU(z).
    Matrizes BF16 (hc, roteador, projecoes do ple) ficam no arquivo mapeado, sem copia em float32. */
-#define Q4_BMAX 512             /* maior lote por passada */
+#define Q4_BMAX 1024             /* maior lote por passada */
 /* opcoes de velocidade (KATANA_Q4_OPT; mascaras alternadas pelo q4bench). Todas dao o mesmo resultado dentro do arredondamento:
    1 lotes grandes no prompt (KATANA_Q4_BATCH, padrao 256), 2 produtos em lote com a linha aberta uma vez tambem em Q4_K/Q5_K/Q6_K
    e BF16 em AVX-512, 4 DeltaNet por cabeca e por canal (todos os tokens do lote de uma vez), 8 trabalho serial por token repartido
@@ -307,65 +307,91 @@ static void q4_kdec(uint32_t type, const uint8_t *src, int16_t *w, float *f, flo
         lb_store32(w + 32 * j + 32, hi, s2, s2);
     }
 }
-/* uma linha Q4_K/Q5_K/Q6_K contra os tokens t0..t1-1 (no maximo LB_MAXB) */
-LB_512 static void q4_krow(const Mat *W, const uint8_t *row, const XQ *xqs, int t0, int t1, int cols, float *out) {
+/* uma linha (tipos K ou de poucos bits) contra ate Q4_TB tokens: cada bloco de 256 pesos e aberto uma vez e passa por todos os
+   tokens (a ativacao do bloco, 512 bytes por token, fica na L2); 4 tokens por vez. Mesmos inteiros do lb_row/dot_row */
+#define Q4_TB 256
+LB_512 static void q4_krow(const Mat *W, const uint8_t *row, const XQ *xqs, int n, int cols, float *out) {
     int16_t w[256] __attribute__((aligned(64)));
-    __m512 acc[LB_MAXB];
-    float corr[LB_MAXB];
-    const size_t ub = W->type == T_Q6_K ? 210 : W->type == T_Q5_K ? 176 : 144;
-    const int n = t1 - t0;
+    __m512 acc[Q4_TB];
+    float corr[Q4_TB], fs[8];
+    const int kt = q4_ktype(W->type);
+    const LbT *T = kt ? NULL : lb_by_type(W->type);
+    const int unit = kt ? 256 : T->unit, fold = kt || T->fold;
+    const size_t ub = kt ? (W->type == T_Q6_K ? 210 : W->type == T_Q5_K ? 176 : 144) : T->ub;
     for (int t = 0; t < n; t++) { acc[t] = _mm512_setzero_ps(); corr[t] = 0.0f; }
-    for (int b = 0; b < cols / 256; b++, row += ub) {
-        float f, fm; int mn[8];
-        q4_kdec(W->type, row, w, &f, &fm, mn);
+    for (int c = 0; c < cols; c += 256) {
+        const int len = cols - c < 256 ? cols - c : 256, ng = len / 32, b = c >> 8;
+        float fm = 0.0f; int mn[8];
+        const uint8_t *src = row + (size_t)(c / unit) * ub;
+        if (kt) q4_kdec(W->type, src, w, fs, &fm, mn); else T->dec5(src, w, fs, len);
         __m512i wv[8];
-        for (int g = 0; g < 8; g++) wv[g] = _mm512_load_si512((const void *)(w + 32 * g));
+        for (int g = 0; g < ng; g++) wv[g] = _mm512_load_si512((const void *)(w + 32 * g));
         int t = 0;
         for (; t + 4 <= n; t += 4) {
-            const XQ *x = xqs + t0 + t;
-            const int16_t *x0 = x[0].q + 256 * b, *x1 = x[1].q + 256 * b, *x2 = x[2].q + 256 * b, *x3 = x[3].q + 256 * b;
-            __m512i p0 = _mm512_setzero_si512(), p1 = p0, p2 = p0, p3 = p0;
-            for (int g = 0; g < 8; g++) {
-                p0 = _mm512_dpwssd_epi32(p0, wv[g], _mm512_loadu_si512((const void *)(x0 + 32 * g)));
-                p1 = _mm512_dpwssd_epi32(p1, wv[g], _mm512_loadu_si512((const void *)(x1 + 32 * g)));
-                p2 = _mm512_dpwssd_epi32(p2, wv[g], _mm512_loadu_si512((const void *)(x2 + 32 * g)));
-                p3 = _mm512_dpwssd_epi32(p3, wv[g], _mm512_loadu_si512((const void *)(x3 + 32 * g)));
+            const XQ *x = xqs + t;
+            const int16_t *x0 = x[0].q + c, *x1 = x[1].q + c, *x2 = x[2].q + c, *x3 = x[3].q + c;
+#define Q4_X(p, g) _mm512_loadu_si512((const void *)((p) + 32 * (g)))
+            if (fold) {
+                __m512i p0 = _mm512_setzero_si512(), p1 = p0, p2 = p0, p3 = p0;
+                for (int g = 0; g < ng; g++) {
+                    p0 = _mm512_dpwssd_epi32(p0, wv[g], Q4_X(x0, g)); p1 = _mm512_dpwssd_epi32(p1, wv[g], Q4_X(x1, g));
+                    p2 = _mm512_dpwssd_epi32(p2, wv[g], Q4_X(x2, g)); p3 = _mm512_dpwssd_epi32(p3, wv[g], Q4_X(x3, g));
+                }
+                acc[t] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p0), _mm512_set1_ps(fs[0] * x[0].xs[b]), acc[t]);
+                acc[t + 1] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p1), _mm512_set1_ps(fs[0] * x[1].xs[b]), acc[t + 1]);
+                acc[t + 2] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p2), _mm512_set1_ps(fs[0] * x[2].xs[b]), acc[t + 2]);
+                acc[t + 3] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p3), _mm512_set1_ps(fs[0] * x[3].xs[b]), acc[t + 3]);
+            } else {
+                const __m512i z = _mm512_setzero_si512();
+                __m512 b0 = _mm512_setzero_ps(), b1 = b0, b2 = b0, b3 = b0;
+                for (int g = 0; g < ng; g++) {
+                    const __m512 fg = _mm512_set1_ps(fs[g]);
+                    b0 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_dpwssd_epi32(z, wv[g], Q4_X(x0, g))), fg, b0);
+                    b1 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_dpwssd_epi32(z, wv[g], Q4_X(x1, g))), fg, b1);
+                    b2 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_dpwssd_epi32(z, wv[g], Q4_X(x2, g))), fg, b2);
+                    b3 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_dpwssd_epi32(z, wv[g], Q4_X(x3, g))), fg, b3);
+                }
+                acc[t] = _mm512_fmadd_ps(b0, _mm512_set1_ps(x[0].xs[b]), acc[t]);
+                acc[t + 1] = _mm512_fmadd_ps(b1, _mm512_set1_ps(x[1].xs[b]), acc[t + 1]);
+                acc[t + 2] = _mm512_fmadd_ps(b2, _mm512_set1_ps(x[2].xs[b]), acc[t + 2]);
+                acc[t + 3] = _mm512_fmadd_ps(b3, _mm512_set1_ps(x[3].xs[b]), acc[t + 3]);
             }
-            acc[t] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p0), _mm512_set1_ps(f * x[0].xs[b]), acc[t]);
-            acc[t + 1] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p1), _mm512_set1_ps(f * x[1].xs[b]), acc[t + 1]);
-            acc[t + 2] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p2), _mm512_set1_ps(f * x[2].xs[b]), acc[t + 2]);
-            acc[t + 3] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p3), _mm512_set1_ps(f * x[3].xs[b]), acc[t + 3]);
         }
         for (; t < n; t++) {
-            const XQ *x = xqs + t0 + t;
-            __m512i p0 = _mm512_setzero_si512();
-            for (int g = 0; g < 8; g++) p0 = _mm512_dpwssd_epi32(p0, wv[g], _mm512_loadu_si512((const void *)(x->q + 256 * b + 32 * g)));
-            acc[t] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p0), _mm512_set1_ps(f * x->xs[b]), acc[t]);
+            const XQ *x = xqs + t;
+            if (fold) {
+                __m512i p0 = _mm512_setzero_si512();
+                for (int g = 0; g < ng; g++) p0 = _mm512_dpwssd_epi32(p0, wv[g], Q4_X(x->q + c, g));
+                acc[t] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p0), _mm512_set1_ps(fs[0] * x->xs[b]), acc[t]);
+            } else {
+                __m512 b0 = _mm512_setzero_ps();
+                for (int g = 0; g < ng; g++) b0 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_dpwssd_epi32(_mm512_setzero_si512(), wv[g], Q4_X(x->q + c, g))), _mm512_set1_ps(fs[g]), b0);
+                acc[t] = _mm512_fmadd_ps(b0, _mm512_set1_ps(x->xs[b]), acc[t]);
+            }
         }
+#undef Q4_X
         if (fm != 0.0f)
             for (t = 0; t < n; t++) {
-                const XQ *x = xqs + t0 + t;
                 int64_t sm = 0;
-                for (int j = 0; j < 8; j++) sm += (int64_t)mn[j] * x->bs32[8 * b + j];
-                corr[t] += fm * x->xs[b] * (float)sm;
+                for (int j = 0; j < 8; j++) sm += (int64_t)mn[j] * xqs[t].bs32[8 * b + j];
+                corr[t] += fm * xqs[t].xs[b] * (float)sm;
             }
     }
     for (int t = 0; t < n; t++) out[t] = _mm512_reduce_add_ps(acc[t]) - corr[t];
 }
 typedef struct { float *out; const Mat *W; XQ *xqs; int B, rows, cols; } Q4Kj;
-static void q4_krow_any(const Mat *W, size_t r, XQ *xqs, int t0, int t1, int cols, float *out) {
-    const uint8_t *row = W->q + r * W->stride;
-    if (q4_ktype(W->type)) q4_krow(W, row, xqs, t0, t1, cols, out);
-    else lowbit_dot_batch(W, row, xqs, t0, t1, cols, out);
-}
 static void q4_k_job(void *cx, int i0, int i1) {
     const Q4Kj *j = cx;
-    float tmp[LB_MAXB];
-    for (int t0 = 0; t0 < j->B; t0 += LB_MAXB) {
-        const int t1 = t0 + LB_MAXB < j->B ? t0 + LB_MAXB : j->B;
-        for (int i = i0; i < i1; i++) {
-            q4_krow_any(j->W, i, j->xqs, t0, t1, j->cols, tmp);
-            for (int t = t0; t < t1; t++) j->out[(size_t)t * j->rows + i] = tmp[t - t0];
+    float tmp[Q4_TB], loc[Q4_TB * 16];      /* 16 linhas por vez: uma linha de cache por token na gravacao */
+    for (int t0 = 0; t0 < j->B; t0 += Q4_TB) {
+        const int n = j->B - t0 < Q4_TB ? j->B - t0 : Q4_TB;
+        for (int i = i0; i < i1; i += 16) {
+            const int nr = i1 - i < 16 ? i1 - i : 16;
+            for (int k = 0; k < nr; k++) {
+                q4_krow(j->W, j->W->q + (size_t)(i + k) * j->W->stride, j->xqs + t0, n, j->cols, tmp);
+                for (int t = 0; t < n; t++) loc[16 * t + k] = tmp[t];
+            }
+            for (int t = 0; t < n; t++) memcpy(j->out + (size_t)(t0 + t) * j->rows + i, loc + 16 * t, nr * sizeof(float));
         }
     }
 }
@@ -429,7 +455,7 @@ static void q4_bf_job(void *cx, int i0, int i1) {
 }
 #else
 static int q4_kern_ok(const Mat *W) { (void)W; return 0; }
-static void q4_krow_any(const Mat *W, size_t r, XQ *xqs, int t0, int t1, int cols, float *out) { lowbit_dot_batch(W, W->q + r * W->stride, xqs, t0, t1, cols, out); }
+#define Q4_TB LB_MAXB
 #endif
 static __thread float *q4_row; static __thread int q4_rcap;
 /* linha r de W em float: a propria (float32) ou aberta na memoria da thread */
@@ -938,16 +964,19 @@ static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B
 static int q4_low(const Mat *W) { return mat_int(W) && lowbit_ok(W->type); }
 typedef struct { XQ *xp, *xh; const Layer *L; const float *X; float *hg, *hu, *o; const int *ee, *beg, *pt; int H, d, ng; } Q4Xj;
 #define Q4_RB 64
-/* uma linha de especialista contra as entradas dos pares p0..p1-1 (no maximo LB_MAXB): pt != NULL = entrada do token pt[p] em X */
+/* uma linha de especialista contra as entradas dos pares p0..p1-1 (no maximo Q4_TB): pt != NULL = entrada do token pt[p] em X */
 static void q4_exp_row(const Mat *M, int r, XQ *xqs, const float *X, const int *pt, int p0, int p1, int cols, float *out) {
-    if (q4_low(M)) { lowbit_dot_batch(M, M->q + (size_t)r * M->stride, xqs, p0, p1, cols, out); return; }
+#if HAVE_LOWBIT
+    if (q4_low(M) && lb_mode() == 3) { q4_krow(M, M->q + (size_t)r * M->stride, xqs + p0, p1 - p0, cols, out); return; }
+#endif
+    if (q4_low(M)) { for (int p = p0; p < p1; p += LB_MAXB) lowbit_dot_batch(M, M->q + (size_t)r * M->stride, xqs, p, p1 - p < LB_MAXB ? p1 : p + LB_MAXB, cols, out + (p - p0)); return; }
     const float *w = q4_open(M, r, cols);
     for (int p = p0; p < p1; p++) out[p - p0] = dot(w, X + (size_t)(pt ? pt[p] : p) * cols, cols);
 }
 static void q4_exp_glu(void *cx, int i0, int i1) {
     const Q4Xj *j = cx;
     if (q4_opt & QO_EXP) {      /* blocos de ate Q4_RB linhas do mesmo grupo e da mesma matriz; saida local e depois copia por token */
-        float loc[LB_MAXB * Q4_RB], tmp[LB_MAXB];
+        float loc[Q4_TB * Q4_RB], tmp[Q4_TB];
         for (int i = i0; i < i1;) {
             const int g = i / (2 * j->H), r = i % (2 * j->H), up = r >= j->H, r0 = up ? r - j->H : r, e = j->ee[g];
             int nr = j->H - r0;
@@ -955,8 +984,8 @@ static void q4_exp_glu(void *cx, int i0, int i1) {
             if (nr > Q4_RB) nr = Q4_RB;
             const Mat *M = up ? &j->L->eu[e] : &j->L->eg[e];
             float *dst = up ? j->hu : j->hg;
-            for (int p0 = j->beg[g]; p0 < j->beg[g + 1]; p0 += LB_MAXB) {
-                const int p1 = p0 + LB_MAXB < j->beg[g + 1] ? p0 + LB_MAXB : j->beg[g + 1];
+            for (int p0 = j->beg[g]; p0 < j->beg[g + 1]; p0 += Q4_TB) {
+                const int p1 = p0 + Q4_TB < j->beg[g + 1] ? p0 + Q4_TB : j->beg[g + 1];
                 for (int k = 0; k < nr; k++) { q4_exp_row(M, r0 + k, j->xp, j->X, j->pt, p0, p1, j->d, tmp); for (int p = p0; p < p1; p++) loc[(p - p0) * Q4_RB + k] = tmp[p - p0]; }
                 for (int p = p0; p < p1; p++) memcpy(dst + (size_t)p * j->H + r0, loc + (p - p0) * Q4_RB, nr * sizeof(float));
             }
@@ -987,15 +1016,15 @@ static void q4_exp_act(void *cx, int p0, int p1) {
 static void q4_exp_down(void *cx, int i0, int i1) {
     const Q4Xj *j = cx;
     if (q4_opt & QO_EXP) {
-        float loc[LB_MAXB * Q4_RB], tmp[LB_MAXB];
+        float loc[Q4_TB * Q4_RB], tmp[Q4_TB];
         for (int i = i0; i < i1;) {
             const int g = i / j->d, r0 = i % j->d;
             int nr = j->d - r0;
             if (nr > i1 - i) nr = i1 - i;
             if (nr > Q4_RB) nr = Q4_RB;
             const Mat *M = &j->L->ed[j->ee[g]];
-            for (int p0 = j->beg[g]; p0 < j->beg[g + 1]; p0 += LB_MAXB) {
-                const int p1 = p0 + LB_MAXB < j->beg[g + 1] ? p0 + LB_MAXB : j->beg[g + 1];
+            for (int p0 = j->beg[g]; p0 < j->beg[g + 1]; p0 += Q4_TB) {
+                const int p1 = p0 + Q4_TB < j->beg[g + 1] ? p0 + Q4_TB : j->beg[g + 1];
                 for (int k = 0; k < nr; k++) { q4_exp_row(M, r0 + k, j->xh, j->hg, NULL, p0, p1, j->H, tmp); for (int p = p0; p < p1; p++) loc[(p - p0) * Q4_RB + k] = tmp[p - p0]; }
                 for (int p = p0; p < p1; p++) memcpy(j->o + (size_t)p * j->d + r0, loc + (p - p0) * Q4_RB, nr * sizeof(float));
             }
@@ -1086,6 +1115,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
         Q4Rj rj = { c, LG, ex, ew };
         pool_for(q4_rt_job, &rj, B, 2);
         for (int s = 0; s < B * K; s++) xi[s] = s / K;
+        if (route_tap) for (int t = 0; t < B; t++) route_tap(l, ex + t * K, ew + t * K, K, c->moe_norm);
     } else for (int t = 0; t < B; t++) {
         moe_lg_ext = LG + (size_t)t * E;
         moe_route(m, L, l);
@@ -1194,6 +1224,7 @@ static void q4_batch(Model *m, const int *toks, int B, int pos0) {
         q4_hc_write(q, X, Y, inj, B, d);
         q4_tick(QP_HCW, tk);
         q4_hc_read(m, &q->l[l].ffn, X, B, Xb, inj);
+        if (layer_tap) for (int t = 0; t < B; t++) layer_tap(l, pos0 + t, Xb + (size_t)t * d);      /* entrada do feed-forward */
         q4_moe(m, l, Xb, Y, B, xqs);
         tk = q4_tick(-1, 0);
         q4_hc_write(q, X, Y, inj, B, d);
@@ -1315,28 +1346,31 @@ static int q4_kern_test(void) {
 #if HAVE_LOWBIT
     enum { COLS = 2560, NT = 23 };
     if (lb_mode() != 3) { printf("produtos em lote: sem AVX-512 VNNI nesta maquina\n"); return 1; }
-    const uint32_t ty[4] = { T_Q4_K, T_Q5_K, T_Q6_K, T_BF16 };
+    const uint32_t ty[6] = { T_Q4_K, T_Q5_K, T_Q6_K, T_IQ3_S, T_Q2_0, T_BF16 };
     float *x = xalloc((size_t)NT * COLS, 4), *w = xalloc(COLS, 4), o[32], o2[32];
     static XQ xqs[NT];
     int ok = 1;
     srand(7);
     for (int i = 0; i < NT * COLS; i++) x[i] = (rand() / (float)RAND_MAX - 0.5f) * (i % 97 == 0 ? 60.0f : 1.0f);
     mm_prepare(xqs, x, NT, COLS);
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 6; k++) {
         const size_t sb = qbytes(ty[k], COLS);
         uint8_t *q = xalloc(2 * sb, 1);
         double worst = 0.0;
         for (int rep = 0; rep < 20; rep++) {
             for (size_t i = 0; i < 2 * sb; i++) q[i] = (uint8_t)(rand() >> 7);
             if (ty[k] == T_BF16) for (int i = 0; i < 2 * COLS; i++) { const float v = rand() / (float)RAND_MAX - 0.5f; memcpy(q + 2 * i, (const uint8_t *)&v + 2, 2); }
-            else for (int b = 0; b < 2 * COLS / 256; b++) {      /* escalas f16 finitas */
+            else if (ty[k] == T_Q2_0 || ty[k] == T_IQ3_S) {
+                const size_t u = ty[k] == T_Q2_0 ? 18 : 110;
+                for (size_t o = 0; o < 2 * sb; o += u) { const uint16_t h = (uint16_t)(0x1800 + (rand() & 0x3ff)); memcpy(q + o, &h, 2); }
+            } else for (int b = 0; b < 2 * COLS / 256; b++) {      /* escalas f16 finitas */
                 uint8_t *p = q + (size_t)b * sb / (COLS / 256);
                 const uint16_t h = (uint16_t)(0x1800 + (rand() & 0x3ff)), h2 = (uint16_t)(0x1400 + (rand() & 0x3ff));
                 if (ty[k] == T_Q6_K) memcpy(p + 208, &h, 2); else { memcpy(p, &h, 2); memcpy(p + 2, &h2, 2); }
             }
             Mat W = {0}; W.q = q; W.type = ty[k]; W.stride = sb;
             if (ty[k] == T_BF16) { q4_bf2x4(q, q + sb, x, COLS, 3, COLS, o, o2); for (int t = 3; t < NT; t += 4) q4_bf2x4(q, q + sb, x + (size_t)t * COLS, COLS, NT - t < 4 ? NT - t : 4, COLS, o + t, o2 + t); }
-            else q4_krow(&W, q, xqs, 0, NT, COLS, o);
+            else q4_krow(&W, q, xqs, NT, COLS, o);
             dequant(ty[k], q, w, COLS);
             for (int t = 0; t < NT; t++) {
                 double e = 0.0, mag = 0.0;
