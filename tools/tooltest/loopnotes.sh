@@ -63,5 +63,39 @@ has "tarefa anotada antes, pergunta depois: continua pendente" "#1 [pending] A" 
 o=$(printf '%s\n' USER 'TaskCreate {"subject":"A","description":"d"}' 'TaskUpdate {"taskId":"1","status":"completed"}' END | r)
 has "tarefa concluida: nada em aberto" "[end: open=0 autofinish=0 nudge=0]" "$o"
 
+# ---------- repeticao de chamada identica que deu certo ----------
+awk 'BEGIN{for(i=1;i<=20;i++) print "linha " i}' > r.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Read {"file_path":"r.txt","offset":5,"limit":3}' | r)
+has "repeticao: 1a chamada devolve o conteudo" "     5	linha 5" "$o"
+has "repeticao: 2a chamada vira nota com o passo" "you already made this exact call at step 1 of this request" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Read {"file_path":"r.txt","offset":5,"limit":3}' | r)
+has "repeticao: 3a repeticao fica firme" "is the 4th time you make this exact call" "$o"
+has "repeticao: 3a repeticao cita o que fazer" "Grep (output_mode content, -n -C 2)" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Read {"file_path":"r.txt","offset":6,"limit":3}' | r)
+no "repeticao: argumentos diferentes rodam" "you already made" "$o"
+o=$(printf '%s\n' USER 'Grep {"pattern":"linha 7","output_mode":"content"}' 'Grep {"pattern":"linha 7","output_mode":"content"}' | r)
+has "repeticao: Grep tambem" "you already made this exact call at step 1" "$o"
+o=$(printf '%s\n' USER 'Glob {"pattern":"*.txt"}' 'Glob {"pattern":"*.txt"}' | r)
+has "repeticao: Glob tambem" "you already made this exact call at step 1" "$o"
+# Bash nao e coberto; uma escrita zera a tabela (a leitura depois pode dar outro resultado)
+o=$(printf '%s\n' USER 'Bash {"command":"echo oi"}' 'Bash {"command":"echo oi"}' | r)
+no "repeticao: Bash nao e coberto" "you already made" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Bash {"command":"echo x >> r.txt"}' 'Read {"file_path":"r.txt","offset":5,"limit":3}' | r)
+no "repeticao: depois de um Bash a leitura roda" "you already made" "$o"
+# pedido novo zera
+o=$(printf '%s\n' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' | r)
+no "repeticao: pedido novo recomeca" "you already made" "$o"
+# chamada que falhou nao conta (o laco ja trata a insistencia no erro)
+o=$(printf '%s\n' USER 'Read {"file_path":"nao-existe.txt"}' 'Read {"file_path":"nao-existe.txt"}' | r)
+no "repeticao: chamada com erro nao vira nota" "you already made" "$o"
+# desligada
+o=$(printf '%s\n' USER 'Read {"file_path":"r.txt","offset":5,"limit":3}' 'Read {"file_path":"r.txt","offset":5,"limit":3}' | KATANA_REPEAT_NOTE=0 "$K" toolrun notes 2>/dev/null)
+no "repeticao: KATANA_REPEAT_NOTE=0 desliga" "you already made" "$o"
+# leitura inteira repetida: a nota de repeticao vem primeiro e a de leitura por diferenca nao se soma a ela
+awk 'BEGIN{for(i=1;i<=30;i++) print "linha " i}' > w.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"w.txt"}' 'Read {"file_path":"w.txt"}' | r)
+has "repeticao: leitura inteira repetida vira nota" "you already made this exact call at step 1" "$o"
+no "repeticao: sem nota de leitura por diferenca junto" "has not changed since you read it" "$o"
+
 if [ "$F" -eq 0 ]; then echo "OK $N checks"; exit 0; fi
 echo "FAILED $F of $N"; exit 1

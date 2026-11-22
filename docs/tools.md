@@ -88,6 +88,29 @@ check and undo as in the first set.
 `NotebookEdit(notebook_path, cell_id, new_source, cell_type, edit_mode)`: replace, insert, delete; untouched cells
 stay byte for byte.
 
+**Map of a large file (2026-11-22).** `Read(file_path)` with neither `offset` nor `limit` on a source or text file of a known
+extension (c h cpp hpp cc js mjs cjs ts tsx py kt java go rs sh md qml ps1) that has more than 200 lines or 8 KB does not return
+the whole file. It returns a header line (`[path: N lines, B bytes]`), a map of at most 60 symbols with their line numbers in
+file order (functions, classes, structs and enums, markdown headings, shell functions and `# ---` section headers, the first 12
+top-level `#define`s; when there are more than 60 an even sample is shown), the first 40 lines numbered, and the note
+`[katana: file has N lines; this is its map and its start. Read a part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]`.
+The matchers are simple hand-written line patterns (`ct_outline` in `src/tools/read.c`), a guide for where to read, not a parser.
+Any `offset` or `limit` gives the old behaviour; files below the threshold, other extensions, PDFs and notebooks are unchanged;
+`katana tool Read` uses the map too. The file counts as partly read: `Edit` needs a whole read, so for a large file read it
+with `offset=1` and a `limit` as large as its line count first (the `Edit` error says so). If the file was already read whole
+in the conversation, the unchanged/changed-part notes of the delta reading (`facts.c`) come first. Switches:
+`KATANA_READ_OUTLINE=0` off, `KATANA_READ_OUTLINE_LINES=N` changes the line threshold (the byte threshold becomes 40 x N).
+
+**Repeated identical calls.** In the agent loop (`rr_check` in `src/agent/loop.c`), when the model repeats, in the same request,
+a `Read`, `Grep`, `Glob` or MCP tool marked `readOnlyHint` (server of the user's own configuration) with the same arguments as a
+call that already succeeded, the call is not run again: the result is the note `[katana: you already made this exact call at step N
+of this request; the result is earlier in this conversation. Do not repeat it: pick a different place to look ...]`. From the
+third repetition on the note is firmer and lists what the model can still do (another part with offset and limit, `Grep` with
+`output_mode` content, `-n -C 2`, `Glob` for the defining file, or answer saying what is unknown). `Bash`, `Write`, `Edit` and
+the other tools are not covered; any call to one of them that is not a read clears the table, because the same read may then
+give another result (the delta notes take over). Failed calls are not recorded (the failure-repetition rules handle them). A new
+user request starts over. `KATANA_REPEAT_NOTE=0` turns it off. Test: `tools/tooltest/loopnotes.sh` (`katana toolrun notes`).
+
 ### Glob, Grep
 `Glob(pattern, path)`: `**`, `*`, `?`, `[...]`, `{a,b}`; absolute paths, newest first, at most 100.
 `Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, literal, head_limit, offset)`: katana's

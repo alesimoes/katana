@@ -102,6 +102,152 @@ static void ct_rd_lines(const char *b, size_t n, long long offset, long long lim
     } else if (o > 0 && out[o - 1] == '\n') out[--o] = 0;
 }
 
+/* ---- mapa de um arquivo grande (Read sem offset e sem limit) ----
+ * Indice de simbolos com numero de linha, por extensao, com casadores simples escritos a mao. Serve so para o modelo saber
+ * onde ler; nao e um analisador. KATANA_READ_OUTLINE=0 desliga; KATANA_READ_OUTLINE_LINES muda o limiar (200 linhas ou 8 KB). */
+#define OL_MAX 60
+static int ol_starts(const char *p, const char *w) { return strncmp(p, w, strlen(w)) == 0; }
+static int ol_word(const char *p, const char *w) { const size_t l = strlen(w); return strncmp(p, w, l) == 0 && !isalnum((unsigned char)p[l]) && p[l] != '_'; }
+static int ol_has_word(const char *p, const char *const *ws) { for (int i = 0; ws[i]; i++) if (ol_word(p, ws[i])) return 1; return 0; }
+/* pula modificadores (export, public, static, async...) */
+static const char *ol_skip_mods(const char *p, const char *const *mods) {
+    for (int again = 1; again;) {
+        again = 0;
+        for (int i = 0; mods[i]; i++) if (ol_word(p, mods[i])) { p += strlen(mods[i]); while (*p == ' ') p++; again = 1; break; }
+    }
+    return p;
+}
+/* 1 se a linha (t, sem o fim de linha, com ind espacos tirados da frente) e um simbolo da linguagem ext; *kind 'd' = #define */
+static int ol_match(const char *ext, const char *t, int ind, char *kind) {
+    *kind = 's';
+    if (!*t) return 0;
+    static const char *const ctl[] = {"if", "for", "while", "switch", "return", "else", "do", "case", "goto", "sizeof", "defined", NULL};
+    const size_t L = strlen(t);
+    if (!strcmp(ext, "c") || !strcmp(ext, "h") || !strcmp(ext, "cpp") || !strcmp(ext, "hpp") || !strcmp(ext, "cc")) {
+        if (ind) return 0;
+        if (ol_starts(t, "#define ")) { *kind = 'd'; return 1; }
+        if (*t == '#' || *t == '}' || *t == '/' || *t == '*' || *t == ')' || *t == '{') return 0;
+        if (ol_has_word(t, ctl)) return 0;
+        if (ol_word(t, "struct") || ol_word(t, "enum") || ol_word(t, "union") || ol_word(t, "class") || ol_word(t, "namespace") || ol_starts(t, "typedef struct") || ol_starts(t, "typedef enum"))
+            return t[L - 1] != ';' || strchr(t, '{') != NULL;
+        if (!strchr(t, '(')) return 0;
+        if (t[L - 1] == ';' || t[L - 1] == ',') return 0;
+        return t[L - 1] == '{' || t[L - 1] == ')' || strstr(t, ") {") || strstr(t, "){");
+    }
+    if (!strcmp(ext, "js") || !strcmp(ext, "mjs") || !strcmp(ext, "cjs") || !strcmp(ext, "ts") || !strcmp(ext, "tsx")) {
+        if (ind > 2) return 0;
+        static const char *const mods[] = {"export", "default", "async", "declare", "abstract", NULL};
+        const char *q = ol_skip_mods(t, mods);
+        if (ind == 0) {
+            if (ol_word(q, "function") || ol_word(q, "class") || ol_word(q, "interface") || ol_word(q, "enum")) return 1;
+            if (ol_word(q, "type") && strchr(q, '=')) return 1;
+            if (ol_word(q, "const") || ol_word(q, "let") || ol_word(q, "var"))
+                return strstr(q, "=>") || strstr(q, "function") || strstr(q, "class ") || strstr(q, "= {") || strstr(q, "= [") || strstr(q, "= new ") || strstr(q, "require(");
+            return 0;
+        }
+        if (isalpha((unsigned char)*q) && t[L - 1] == '{' && !ol_has_word(q, ctl) && !ol_word(q, "catch") && !ol_word(q, "try")) {
+            const char *a = q; while (isalnum((unsigned char)*a) || *a == '_') a++;      /* metodo de classe: nome(...) { */
+            return a > q && *a == '(';
+        }
+        return 0;
+    }
+    if (!strcmp(ext, "py")) {
+        if (ind > 4) return 0;
+        static const char *const mods[] = {"async", NULL};
+        const char *q = ol_skip_mods(t, mods);
+        return ol_word(q, "def") || ol_word(q, "class");
+    }
+    if (!strcmp(ext, "kt") || !strcmp(ext, "java")) {
+        if (ind > 4) return 0;
+        static const char *const mods[] = {"public", "private", "protected", "internal", "static", "final", "abstract", "open", "override", "suspend", "data", "sealed", "inline", "default", "synchronized", NULL};
+        const char *q = ol_skip_mods(t, mods);
+        if (ol_word(q, "fun") || ol_word(q, "class") || ol_word(q, "interface") || ol_word(q, "object") || ol_word(q, "enum") || ol_word(q, "record")) return 1;
+        if (!strcmp(ext, "java") && q != t && strchr(q, '(') && (t[L - 1] == '{' || t[L - 1] == ')') && !ol_has_word(q, ctl) && !strchr(q, '=')) return 1;
+        return 0;
+    }
+    if (!strcmp(ext, "go")) return ind == 0 && (ol_word(t, "func") || (ol_word(t, "type") && (strstr(t, " struct") || strstr(t, " interface"))));
+    if (!strcmp(ext, "rs")) {
+        if (ind > 4) return 0;
+        static const char *const mods[] = {"pub", "async", "unsafe", "const", "extern", NULL};
+        const char *q = ol_skip_mods(t, mods);
+        return ol_word(q, "fn") || ol_word(q, "struct") || ol_word(q, "enum") || ol_word(q, "trait") || ol_word(q, "impl") || ol_word(q, "mod");
+    }
+    if (!strcmp(ext, "sh")) {
+        if (ind) return 0;
+        if (ol_word(t, "function")) return 1;
+        if (isalpha((unsigned char)*t) || *t == '_') {
+            const char *a = t; while (isalnum((unsigned char)*a) || *a == '_' || *a == '-' || *a == ':') a++;
+            const char *z = a; while (*z == ' ') z++;
+            return a > t && z[0] == '(' && z[1] == ')';
+        }
+        if (ol_starts(t, "# ---") || ol_starts(t, "# ===") || ol_starts(t, "####") || ol_starts(t, "## ")) {      /* cabecalho de bloco: precisa ter texto */
+            for (const char *a = t; *a; a++) if (isalpha((unsigned char)*a)) return 1;
+        }
+        return 0;
+    }
+    if (!strcmp(ext, "ps1")) return ind == 0 && (ol_word(t, "function") || ol_word(t, "filter") || ol_word(t, "class"));
+    if (!strcmp(ext, "md")) return ind == 0 && *t == '#' && t[strspn(t, "#")] == ' ';
+    if (!strcmp(ext, "qml")) {
+        if (ind > 8) return 0;
+        if (ol_word(t, "function") || ol_word(t, "component") || ol_word(t, "signal")) return 1;
+        if (ind <= 4 && isupper((unsigned char)*t)) { const char *a = t; while (isalnum((unsigned char)*a) || *a == '.') a++; while (*a == ' ') a++; return *a == '{'; }
+        return 0;
+    }
+    return 0;
+}
+/* extensoes que tem mapa; devolve o nome em ext (minusculo) */
+static int ol_ext(const char *path, char *ext, size_t cap) {
+    static const char *const ok[] = {"c", "h", "cpp", "hpp", "cc", "js", "mjs", "cjs", "ts", "tsx", "py", "kt", "java", "go", "rs", "sh", "md", "qml", "ps1", NULL};
+    const char *b = strrchr(path, '/'), *d = strrchr(path, '.');
+    if (!d || (b && d < b)) return 0;
+    size_t i = 0;
+    for (d++; *d && i + 1 < cap; d++) ext[i++] = (char)tolower((unsigned char)*d);
+    ext[i] = 0;
+    for (int k = 0; ok[k]; k++) if (!strcmp(ext, ok[k])) return 1;
+    return 0;
+}
+/* limiar: 1 se o arquivo e grande para o Read sem faixa */
+static int ol_big(long long lines, size_t bytes) {
+    const char *e = getenv("KATANA_READ_OUTLINE_LINES");
+    long long tl = 200, tb = 8192;
+    if (e && atoll(e) > 0) { tl = atoll(e); tb = tl * 40; }
+    return lines > tl || (long long)bytes > tb;
+}
+static int ol_on(void) { const char *e = getenv("KATANA_READ_OUTLINE"); return !(e && atoi(e) == 0); }
+/* monta o texto do mapa em out (vazio se nao achou simbolo) */
+static void ct_outline(const char *ext, const char *b, size_t n, char *out, size_t cap) {
+    static long long el[4096]; static char et[4096][110];
+    int ne = 0, fence = 0, nd = 0;
+    const int md = !strcmp(ext, "md");
+    long long ln = 0;
+    out[0] = 0;
+    for (size_t s = 0; s < n && ne < 4096;) {
+        const char *nl = (const char *)memchr(b + s, '\n', n - s);
+        size_t le = nl ? (size_t)(nl - b) : n;
+        const size_t nx = nl ? le + 1 : n;
+        if (le > s && b[le - 1] == '\r') le--;
+        ln++;
+        char t[400]; size_t tl = le - s; if (tl >= sizeof t) tl = sizeof t - 1;
+        memcpy(t, b + s, tl); t[tl] = 0;
+        s = nx;
+        int ind = 0; while (t[ind] == ' ') ind++;
+        if (t[ind] == '\t') continue;
+        if (md && !strncmp(t, "```", 3)) { fence = !fence; continue; }
+        if (md && fence) continue;
+        char k;
+        if (!ol_match(ext, t + ind, ind, &k)) continue;
+        if (k == 'd' && ++nd > 12) continue;                     /* so os primeiros #define */
+        size_t w = strlen(t + ind);
+        while (w && (t[ind + w - 1] == ' ' || t[ind + w - 1] == '{')) w--;
+        if (w > 100) { w = 100; while (w && ((unsigned char)t[ind + w] & 0xC0) == 0x80) w--; }
+        el[ne] = ln; memcpy(et[ne], t + ind, w); et[ne][w] = 0; ne++;
+    }
+    if (!ne) return;
+    const int step = (ne + OL_MAX - 1) / OL_MAX;
+    size_t o = (size_t)snprintf(out, cap, "[map: %d symbol%s%s; line, text]\n", ne, ne == 1 ? "" : "s", step > 1 ? ", an even sample is shown" : "");
+    for (int i = 0; i < ne && o + 160 < cap; i += step) o += (size_t)snprintf(out + o, cap - o, "%6lld  %s\n", el[i], et[i]);
+}
+
 /* ---- caderno .ipynb como texto (a funcao esta em notebookedit.c) ---- */
 static int ct_nb_render(const char *b, size_t n, CtBuf *o, char *err, size_t ecap);
 
@@ -148,7 +294,7 @@ static void ct_read_pdf(const char *abs, const char *pages, long long offset, lo
 static const char CT_READ_DESC[] =
     "Reads a file from the local filesystem. file_path should be an absolute path. By default it returns up to 2000 lines from the start; "
     "use offset (first line, 1-based) and limit (number of lines) to read a part of a long file. Each line comes back as its line number, a tab, "
-    "then the text. If the range does not fit in one result, a PARTIAL view notice tells which lines were returned and how to continue. "
+    "then the text. A large source file read without offset and limit comes back as a map of its symbols with line numbers plus its first 40 lines: read the part you need with offset and limit, or search with Grep. If the range does not fit in one result, a PARTIAL view notice tells which lines were returned and how to continue. "
     "Also reads PDFs as text (pass pages like \"1-5\", at most 20 pages at a time) and Jupyter notebooks (all cells with their text outputs). "
     "It cannot show images (this model has no vision). It cannot list directories: use Bash with ls. "
     "Read a file before you Edit it or overwrite it with Write.";
@@ -222,6 +368,20 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
         const long long total = ct_count_lines(b, n);
         if (offset > total) {
             snprintf(out, cap, "(the file %s has %lld lines, which is fewer than the requested offset %lld; use an offset from 1 to %lld)", res, total, offset, total);
+            ct_seen_mark(res, 1);
+            break;
+        }
+        char oext[16];
+        if (!has_off && !has_lim && ct_seen(res) < 2 && ol_on() && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
+            static char mp[16000], hd[12000];
+            ct_outline(oext, b, n, mp, sizeof mp);
+            ct_rd_lines(b, n, 1, 40, 1, hd, sizeof hd, &partial);
+            char *pm = strstr(hd, "[PARTIAL view");
+            if (pm) *pm = 0;
+            size_t hl = strlen(hd);
+            while (hl && hd[hl - 1] == '\n') hd[--hl] = 0;
+            snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n[katana: file has %lld lines; this is its map and its start. "
+                     "Read a part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]", res, total, n, mp, hd, total);
             ct_seen_mark(res, 1);
             break;
         }

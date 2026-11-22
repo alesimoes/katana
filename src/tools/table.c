@@ -73,7 +73,7 @@ static const char *const g_ct_short[][4] = {
         S("file_path") ", " S("old_string") ", " S("new_string") ", " B("replace_all") ", " S("edits"), "\"file_path\""},
     {"Write", "Create a file, or replace a whole file you have read, with content",
         S("file_path") ", " S("content"), "\"file_path\", \"content\""},
-    {"Grep", "Search file contents with a regular expression (literal=true for plain text). output_mode: files_with_matches (default), content (lines with numbers; -C adds context lines) or count. glob filters files, e.g. *.py",
+    {"Grep", "Search file contents with a regular expression (literal=true for plain text). output_mode: files_with_matches (default), content (lines with numbers; for code use content with -n and -C 2) or count. glob filters files, e.g. *.py",
         S("pattern") ", " S("path") ", " S("glob") ", " S("output_mode") ", " B("-i") ", " I("-C") ", " B("literal"), "\"pattern\""},
     {"Glob", "Find files by name pattern, e.g. **/*.c or src/**/test_*.py; newest first",
         S("pattern") ", " S("path"), "\"pattern\""},

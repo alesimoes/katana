@@ -95,6 +95,34 @@ awk 'BEGIN{s="";for(i=0;i<5000;i++)s=s "y";print s; print "fim"}' > longline.txt
 run Read '{"file_path":"longline.txt"}'
 has "Read: linha muito longa cortada" "[line truncated, 5000 bytes]"
 has "Read: linha seguinte aparece" "     2${TAB}fim"
+# mapa de arquivo grande (Read sem offset e sem limit)
+awk 'BEGIN{print "#include <stdio.h>"; print "#define LIMITE 10"; for(i=1;i<=50;i++){printf "static int func_%d(int x) {\n    int y = x + %d;\n    return y;\n}\n\n", i, i}; print "struct ponto {"; print "    int x;"; print "};"}' > big.c
+run Read '{"file_path":"big.c"}'
+has "Read mapa: cabecalho com linhas e bytes" "lines, "
+has "Read mapa: lista simbolos com a linha" "func_2(int x)"
+has "Read mapa: #define principal" "#define LIMITE 10"
+has "Read mapa: struct" "struct ponto"
+has "Read mapa: primeiras linhas" "     1${TAB}#include <stdio.h>"
+has "Read mapa: nota final" "this is its map and its start"
+hasnt "Read mapa: nao traz o arquivo inteiro" "func_30(int x) {"
+run Read '{"file_path":"big.c","offset":1,"limit":5}'
+hasnt "Read mapa: com limit nada muda" "[map:"
+run Read '{"file_path":"big.c","offset":6}'
+hasnt "Read mapa: com offset nada muda" "this is its map"
+export KATANA_READ_OUTLINE=0
+run Read '{"file_path":"big.c"}'
+unset KATANA_READ_OUTLINE
+hasnt "Read mapa: KATANA_READ_OUTLINE=0 desliga" "[map:"
+has "Read mapa: desligado mostra o arquivo" "func_30"
+seq 1 250 | sed 's/^/## Titulo /' > big.md
+run Read '{"file_path":"big.md"}'
+has "Read mapa: markdown mostra titulos" "## Titulo 101"
+printf 'def a():\n    pass\nclass B:\n    def m(self):\n        pass\n' > small.py
+run Read '{"file_path":"small.py"}'
+hasnt "Read mapa: arquivo pequeno nao muda" "[map:"
+seq 1 400 > big2.txt
+run Read '{"file_path":"big2.txt"}'
+hasnt "Read mapa: extensao sem mapa nao muda" "this is its map"
 # PDF
 if command -v pdftotext >/dev/null 2>&1; then
   cat > mk.py <<'PY'
