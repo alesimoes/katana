@@ -35,3 +35,15 @@ Values are never printed: only names appear in messages, `katana mcp list` and `
 ```
 
 Tests: `tools/tooltest/mcpx.sh` (fake servers in `tools/tooltest/mcpfake.c`, no network).
+
+## Roots
+
+Declared in `initialize` as `{"roots":{"listChanged":true}}`. A `roots/list` request from the server is answered with one
+root: the agent's working folder as a `file://` URI (percent-encoded) and the folder name. When the working folder changes
+(`/cd`, entering or leaving a worktree) every connected server gets `notifications/roots/list_changed`; the check also runs
+before each tool call, so a change made another way is announced before the next call. Revision `2026-07-28` deprecates
+roots and removes the list-changed notification; katana still offers roots to servers that negotiate `2025-11-25` or older.
+Over HTTP the server's request arrives in the response stream of the call and katana answers with a separate POST; the
+response stream is now read as it arrives (`curl -N`), which also lets a server ask something before it answers.
+
+Hidden test aid: `katana toolrun` accepts a line `!cd <dir>` that changes the folder like `/cd` does.

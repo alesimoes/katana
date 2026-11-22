@@ -27,15 +27,21 @@ static void reply(const char *id, const char *result) { printf("{\"jsonrpc\":\"2
 static void text(const char *id, const char *t) { char b[4000]; snprintf(b, sizeof b, "{\"content\":[{\"type\":\"text\",\"text\":\"%s\"}]}", t); reply(id, b); }
 static void esc(const char *s, char *o, size_t cap) { size_t n = 0; for (; *s && n + 3 < cap; s++) { if (*s == '"' || *s == '\\') o[n++] = '\\'; o[n++] = *s; } o[n] = 0; }
 
+static char g_init[4000];
+static int g_n_roots_changed;
 static void fake_initialize(const char *id) {
     char b[600];
+    snprintf(g_init, sizeof g_init, "%s", line); g_init[strcspn(g_init, "\n")] = 0;
     snprintf(b, sizeof b, "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fake-%s\",\"version\":\"1\"}}", mode);
     reply(id, b);
 }
-static void fake_notification(const char *meth, const char *js) { (void)meth; (void)js; }
+static void fake_notification(const char *meth, const char *js) { (void)js; if (!strcmp(meth, "notifications/roots/list_changed")) g_n_roots_changed++; }
 static void fake_response(const char *js, const char *id) { (void)js; (void)id; }
 static void fake_tools_list(const char *id) {
     reply(id, "{\"tools\":[{\"name\":\"env\",\"description\":\"value of an environment variable\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}},"
+             "{\"name\":\"roots\",\"description\":\"ask the client for its roots\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"rcount\",\"description\":\"how many roots/list_changed arrived\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"caps\",\"description\":\"the initialize message received\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"argv\",\"description\":\"the program arguments\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}");
 }
 static void fake_call(const char *id, const char *js, long *nid) {
@@ -51,6 +57,20 @@ static void fake_call(const char *id, const char *js, long *nid) {
     } else if (!strcmp(tn, "argv")) {
         for (int i = 2; i < g_argc; i++) { size_t l = strlen(r); snprintf(r + l, sizeof r - l, "%s[%s]", i > 2 ? " " : "", g_argv[i]); }
         char e[2200]; esc(r, e, sizeof e); text(id, e);
+    } else if (!strcmp(tn, "caps")) {
+        char e[4400]; esc(g_init, e, sizeof e); text(id, e);
+    } else if (!strcmp(tn, "rcount")) {
+        snprintf(r, sizeof r, "roots_changed=%d", g_n_roots_changed); text(id, r);
+    } else if (!strcmp(tn, "roots")) {
+        char resp[8000] = "";
+        out("{\"jsonrpc\":\"2.0\",\"id\":7001,\"method\":\"roots/list\"}");
+        while (fgets(line, sizeof line, stdin)) {
+            char i2[40] = "", m2[100] = "";
+            if (field(line, "method", m2, sizeof m2)) { if (!field(line, "id", i2, sizeof i2)) fake_notification(m2, line); continue; }
+            if (field(line, "id", i2, sizeof i2) && !strcmp(i2, "7001")) { snprintf(resp, sizeof resp, "%s", line); break; }
+        }
+        resp[strcspn(resp, "\n")] = 0;
+        char e[8200]; esc(resp, e, sizeof e); text(id, e);
     } else text(id, "unknown");
 }
 

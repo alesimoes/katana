@@ -1005,6 +1005,7 @@ static int run_main(int argc, char **argv) {
         g_web = !(getenv("KATANA_WEB") && strcmp(getenv("KATANA_WEB"), "0") == 0);
         while (fgets(ln, sizeof ln, stdin)) {
             ln[strcspn(ln, "\r\n")] = 0;
+            if (strncmp(ln, "!cd ", 4) == 0) { if (chdir(ln + 4) == 0) mcpx_cwd_sync(); else printf("cd failed\n----\n"); continue; }      /* teste: troca a pasta como o /cd do agente */
             char *sp = strchr(ln, ' ');
             if (!sp) continue;
             *sp = 0;

@@ -16,7 +16,7 @@
 #define MCP_INIT_MS 30000
 #define MCP_SYS_MAX 9000
 #define MCP_DECL_BUDGET 3000       /* acima disso as ferramentas MCP entram no prompt de forma reduzida (KATANA_MCP_BUDGET) */
-#define MCP_VERSAO "2025-06-18"
+#define MCP_VERSAO "2025-11-25"
 
 typedef struct { char *name, *desc, *schema; } McpTool;
 typedef struct { char *name, *desc; char *argn[8]; int argreq[8]; int nargs; } McpPrompt;
@@ -28,6 +28,7 @@ typedef struct {
     int project;                     /* veio do .katana/mcp.json do projeto */
     int spawned;                     /* ha processo filho com os canais abertos */
     int has_prompts, was_ok, dirty;  /* prompts/list existe; ja ficou conectado; a lista de ferramentas mudou */
+    int rdirty, pdirty;              /* resources/list_changed e prompts/list_changed recebidos */
     double t_start;                  /* segundos que o inicio levou */
     McpPrompt *prompts; int nprompts;
     int http, alive;
@@ -45,6 +46,12 @@ typedef struct {
     McpTool *tools; int ntools;
 } McpSrv;
 typedef struct { char *p; size_t n, cap; } McpB;
+/* capacidades do cliente declaradas no initialize (mcp_extra.c explica cada uma) */
+#define MCPX_CAPS "{\"roots\":{\"listChanged\":true}}"
+static void mcpx_server_msg(McpSrv *s, const char *o);                       /* mcp_extra.c */
+static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final);
+static int mcpx_extra_wait(void);
+static void mcpx_cwd_sync(void);
 
 static int mcp_call_ms(void) {      /* KATANA_MCP_TIMEOUT: segundos de espera por uma chamada (padrao 60) */
     const char *e = getenv("KATANA_MCP_TIMEOUT");
@@ -371,7 +378,7 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
     if (!f) { snprintf(s->err, sizeof s->err, "sem arquivo temporario"); return NULL; }
     fwrite(body, 1, strlen(body), f); fclose(f);
     McpB c = {0}; int ok = 1; char tmp[600];
-    snprintf(tmp, sizeof tmp, "curl -sS -m %d -X POST -D ", ms / 1000 + 1); mcp_bputs(&c, tmp);
+    snprintf(tmp, sizeof tmp, "curl -sSN -m %d -X POST -D ", ms / 1000 + 1 + (id ? mcpx_extra_wait() : 0)); mcp_bputs(&c, tmp);
     ok &= mcp_shq(&c, fh);
     mcp_bputs(&c, " --data-binary "); snprintf(tmp, sizeof tmp, "@%s", fb); ok &= mcp_shq(&c, tmp);
     mcp_bputs(&c, " -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'");
@@ -392,7 +399,12 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
         else {
             McpB out = {0}; char t[4096]; size_t n;
             mcp_bput(&out, "", 0);
-            while ((n = fread(t, 1, sizeof t, p)) > 0) mcp_bput(&out, t, n);
+            size_t done = 0; int sse = -1;
+            while ((n = fread(t, 1, sizeof t, p)) > 0) {
+                mcp_bput(&out, t, n);
+                if (sse < 0) { char *hh = mcp_slurp(fh, NULL); if (hh && strstr(hh, "HTTP/")) sse = mcp_has_ci(hh, "text/event-stream"); free(hh); }
+                if (sse == 1 && id != 0) mcpx_sse_scan(s, &out, &done, id, &resp, 0);      /* eventos tratados na hora: o servidor pode pedir algo antes de responder */
+            }
 #ifdef _WIN32
             const int rc = _pclose(p);
 #else
@@ -417,25 +429,8 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
             if (rc != 0) snprintf(s->err, sizeof s->err, "curl falhou (%d): %.150s", rc, er ? er : "");
             else if (status >= 400) snprintf(s->err, sizeof s->err, "HTTP %d", status);
             else if (id == 0) resp = strdup("");
-            else if (mcp_has_ci(hd ? hd : "", "text/event-stream")) {     /* escolhe o evento com a resposta deste id */
-                const char *p2 = out.p;
-                McpB ev = {0};
-                mcp_bput(&ev, "", 0);
-                while (*p2 && !resp) {
-                    const size_t ll = strcspn(p2, "\n");
-                    if (strncmp(p2, "data:", 5) == 0) { const char *d = p2 + 5; if (*d == ' ') d++; mcp_bput(&ev, d, ll - (size_t)(d - p2)); if (ev.n && ev.p[ev.n - 1] == '\r') ev.p[--ev.n] = 0; }
-                    else if (ll == 0 || (ll == 1 && *p2 == '\r')) {
-                        if (ev.n) {
-                            if (strstr(ev.p, "notifications/tools/list_changed")) s->dirty = 1;
-                            const char *o = strchr(ev.p, '{'), *iv = o ? mcp_get(o, "id") : NULL;
-                            if (iv && atol(iv) == id && (mcp_get(o, "result") || mcp_get(o, "error"))) resp = strdup(ev.p);
-                            ev.n = 0; ev.p[0] = 0;
-                        }
-                    }
-                    p2 += ll; if (*p2) p2++;
-                }
-                if (!resp && ev.n) { const char *o = strchr(ev.p, '{'), *iv = o ? mcp_get(o, "id") : NULL; if (iv && atol(iv) == id) resp = strdup(ev.p); }
-                free(ev.p);
+            else if (mcp_has_ci(hd ? hd : "", "text/event-stream")) {
+                if (!resp) mcpx_sse_scan(s, &out, &done, id, &resp, 1);
                 if (!resp) snprintf(s->err, sizeof s->err, "resposta SSE sem a mensagem esperada");
             } else if (out.n) resp = strdup(out.p);
             else snprintf(s->err, sizeof s->err, "resposta vazia");
@@ -460,23 +455,17 @@ static char *mcp_request(McpSrv *s, const char *method, const char *params, int 
     const int sent = mcp_send(s, b.p);
     free(b.p);
     if (!sent) return NULL;
-    const double dl = now_sec() + ms / 1000.0;
+    double dl = now_sec() + ms / 1000.0;
     for (;;) {
         char *line = mcp_readline(s, dl);
         if (!line) return NULL;
         const char *o = strchr(line, '{');
         if (!o) { free(line); continue; }
         const char *iv = mcp_get(o, "id"), *mv = mcp_get(o, "method");
-        if (mv) {       /* requisicao do servidor: so respondemos ping; o resto e metodo desconhecido */
-            if (!iv && strncmp(mv, "\"notifications/tools/list_changed\"", 33) == 0) s->dirty = 1;
-            if (iv) {
-                char m[64]; mcp_dec(mv, m, sizeof m);
-                McpB r = {0};
-                mcp_bputs(&r, "{\"jsonrpc\":\"2.0\",\"id\":");
-                const char *ie = mcp_skip(iv); mcp_bput(&r, iv, (size_t)(ie - iv));
-                mcp_bputs(&r, strcmp(m, "ping") == 0 ? ",\"result\":{}}" : ",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}");
-                mcp_send(s, r.p); free(r.p);
-            }
+        if (mv) {       /* pedido ou aviso do servidor (ping, roots, elicitation, list_changed: mcp_extra.c); a espera do usuario nao conta no prazo */
+            const double th = now_sec();
+            mcpx_server_msg(s, o);
+            dl += now_sec() - th;
             free(line); continue;
         }
         if (iv && atol(iv) == id && (mcp_get(o, "result") || mcp_get(o, "error"))) return line;
@@ -664,7 +653,7 @@ static void mcp_start(McpSrv *s) {
     s->alive = 1; s->err[0] = 0;
     if (!s->http && (!s->cmd || !mcp_which(s->cmd))) { s->alive = 0; snprintf(s->err, sizeof s->err, "command not found: %.150s", s->cmd ? s->cmd : "?"); return; }
     if (!s->http && !mcp_spawn(s)) { s->alive = 0; snprintf(s->err, sizeof s->err, "could not start the command"); return; }
-    char *r = mcp_request(s, "initialize", "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", MCP_INIT_MS);
+    char *r = mcp_request(s, "initialize", "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":" MCPX_CAPS ",\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", MCP_INIT_MS);
     if (!r) { if (!s->err[0]) snprintf(s->err, sizeof s->err, "sem resposta"); mcp_kill(s); return; }
     char em[300];
     if (mcp_errmsg(r, em, sizeof em)) { snprintf(s->err, sizeof s->err, "initialize: %.200s", em); free(r); mcp_kill(s); return; }
@@ -831,6 +820,7 @@ static void mcp_load_config(void) {      /* so le a configuracao, sem iniciar na
 static void mcp_init(int verbose) {     /* le a configuracao e inicia os servidores (uma vez) */
     if (g_mcp_ready) return;
     g_mcp_ready = 1;
+    mcpx_cwd_sync();            /* guarda a pasta inicial para roots/list_changed */
     mcp_load_config();
     if (g_nmcp) atexit(mcp_shutdown);
     for (int i = 0; i < g_nmcp; i++) {
@@ -1074,6 +1064,7 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
         mcp_restart(s);
     }
     if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); snprintf(out, cap, "error: MCP server %s is unavailable (%s)", s->name, pe); return; }
+    mcpx_cwd_sync();         /* a pasta de trabalho mudou? roots/list_changed (mcp_extra.c) */
     /* argumentos: objeto depois de "arguments" */
     char *args = NULL;
     const char *a = mcp_ws(js);

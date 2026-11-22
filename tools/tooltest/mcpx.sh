@@ -57,5 +57,24 @@ EOF
 R=$("$K" mcp list 2>&1); has "a: url com variavel ausente: pulado" "$R" "field url"
 R=$("$K" mcp test web 2>&1); has "a: mcp test mostra o erro" "$R" "KT_NOPE2 is not set"
 
+########## b: roots ##########
+cat > "$HOME/.katana/mcp.json" <<EOF
+{"mcpServers":{"rt":{"command":"$FAKE","args":["roots"]}}}
+EOF
+R=$("$K" tool rt__caps '{}' 2>&1)
+has "b: declara roots com listChanged" "$R" '"roots":{"listChanged":true}'
+has "b: oferece a revisao 2025-11-25" "$R" '2025-11-25'
+R=$("$K" tool rt__roots '{}' 2>&1)
+has "b: roots/list responde a pasta de trabalho como file://" "$R" "file://$P"
+has "b: roots/list traz o nome da pasta" "$R" '"name":"proj"'
+mkdir -p "$T/my proj"
+R=$(cd "$T/my proj" && "$K" tool rt__roots '{}' 2>&1)
+has "b: caracteres especiais na URI" "$R" "my%20proj"
+R=$(printf 'rt__rcount {}\n!cd %s\nrt__rcount {}\n!cd %s\nrt__rcount {}\n' "$T/my proj" "$T/my proj" | "$K" toolrun 2>&1)
+has "b: sem mudanca de pasta: nenhum aviso" "$R" "roots_changed=0"
+has "b: trocar de pasta envia roots/list_changed" "$R" "roots_changed=1"
+R=$(printf 'rt__rcount {}\n!cd %s\n!cd %s\nrt__rcount {}\n' "$T/my proj" "$P" | "$K" toolrun 2>&1)
+has "b: ida e volta enviam dois avisos" "$R" "roots_changed=2"
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]
