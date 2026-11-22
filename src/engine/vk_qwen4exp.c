@@ -6,14 +6,14 @@
    lote e pelo prefixo em disco) ou na placa; q4g.loc diz onde, e q4g_home o traz de volta.
    KATANA_Q4_GPU=0 desliga. Sem memoria para tudo, o que nao couber de atencao e roteador fica na CPU; sem os mixers e o DeltaNet
    inteiros, nada vai para a placa. */
-typedef struct { KvkBuf b; KvkPipe p; int rows, rw, groups, ok; } Q4Gm;
-typedef struct { Q4Gm dA, uA, dF, uF, qkv, z, ab, out, q, k, v, o, rt; KvkBuf nA, nF, cw, pr, ring, st; int att; } Q4Gl;
+typedef struct { KvkBuf b; KvkPipe p; int rows, rw, cols, groups, ok; } Q4Gm;
+typedef struct { Q4Gm dA, uA, dF, uF, qkv, z, ab, out, q, k, v, o, rt, sg, su, sd, sw; KvkBuf nA, nF, cw, pr, ring, st; int att; } Q4Gl;
 static struct {
     int on, loc, R, rank, d, C, inner, NV;
     Q4Gl *l; Q4Gm dO, uO; KvkBuf nO;
-    KvkBuf X, N, DN, iA, iF, U, xn, y, qkvb, zb, abb, o, meta, grid, qg, kb, vb, one;
-    KvkPipe hc[4], step;
-    struct { uint32_t t; int nb, blk; KvkPipe p; } pc[64]; int npc;
+    KvkBuf shb, shh, shs, X, N, DN, iA, iF, U, xn, y, qkvb, zb, abb, o, meta, grid, qg, kb, vb, one;
+    KvkPipe hc[6], step;
+    struct { uint32_t t; KvkPipe p; } pc[16]; int npc;
     size_t bytes, lim;
     double t_gpu, t_cpu; long n;
 } q4g;
@@ -30,16 +30,16 @@ static KvkBuf q4g_vec(const float *v, size_t n, int *fail) {
     if (!*fail && !kvk_buf_write(b, 0, v, n * 4)) *fail = 1;
     return b;
 }
-static int q4g_type(uint32_t t) { return t == T_Q4_K || t == T_Q5_K || t == T_Q6_K || t == T_IQ3_S || t == T_IQ4_XS || t == T_BF16; }
+static int q4g_type(uint32_t t) { return t == T_Q4_K || t == T_Q5_K || t == T_Q6_K || t == T_IQ3_S || t == T_IQ4_XS || t == T_BF16 || t == T_IQ4_NL || t == T_Q2_0; }
 /* sobe k matrizes de mesmo tipo e largura, uma embaixo da outra */
 static Q4Gm q4g_mat(const Mat *const *Ws, const size_t *rows, int k, size_t cols, int *fail) {
     Q4Gm g = { 0 };
     const uint32_t t = Ws[0]->type;
     for (int i = 0; i < k; i++) if (!Ws[i]->q || Ws[i]->type != t || !q4g_type(t)) { *fail = 1; return g; }
-    const int blk = t != T_BF16 || cols % 256 == 0 ? 256 : cols % 64 == 0 ? 64 : (int)cols;
+    const int blk = t == T_IQ4_NL ? 32 : t == T_Q2_0 ? 64 : t != T_BF16 || cols % 256 == 0 ? 256 : cols % 64 == 0 ? 64 : (int)cols;
     if (cols % blk || (t == T_BF16 && blk % 2)) { *fail = 1; return g; }
     const int nb = (int)(cols / blk);
-    const size_t src = t == T_BF16 ? (size_t)blk * 2 : qbytes(t, 256), dst = (src + 3) & ~(size_t)3;
+    const size_t src = t == T_BF16 ? (size_t)blk * 2 : qbytes(t, blk), dst = (src + 3) & ~(size_t)3;
     size_t tot = 0;
     for (int i = 0; i < k; i++) tot += rows[i];
     g.rows = (int)tot; g.rw = (int)(nb * dst / 4);
@@ -52,31 +52,28 @@ static Q4Gm q4g_mat(const Mat *const *Ws, const size_t *rows, int k, size_t cols
             for (int b = 0; b < nb; b++) {
                 const uint8_t *s = Ws[i]->q + r * Ws[i]->stride + (size_t)b * src;
                 if (n + dst > ((size_t)1 << 20)) { if (!kvk_buf_write_q(g.b, off, tmp, n)) *fail = 1; off += n; n = 0; }
-                if (t == T_IQ3_S) { memcpy(tmp + n, s, 2); tmp[n + 2] = tmp[n + 3] = 0; memcpy(tmp + n + 4, s + 2, 108); }     /* a escala ganha 2 bytes: o resto alinha em 32 bits */
+                if (t == T_IQ3_S || t == T_IQ4_NL || t == T_Q2_0) { memcpy(tmp + n, s, 2); tmp[n + 2] = tmp[n + 3] = 0; memcpy(tmp + n + 4, s + 2, src - 2); }     /* a escala ganha 2 bytes: o resto alinha em 32 bits */
                 else { memset(tmp + n + dst - 4, 0, 4); memcpy(tmp + n, s, src); }
                 n += dst;
             }
     if (n && !kvk_buf_write_q(g.b, off, tmp, n)) *fail = 1;
     if (!kvk_wait()) *fail = 1;
     free(tmp);
-    int rpg = 1;
-    while (rpg * 2 * nb <= 256) rpg *= 2;
-    if (rpg * nb < 32) rpg = (32 + nb - 1) / nb;
-    if (nb == 10) rpg = 16;
-    g.groups = (g.rows + rpg - 1) / rpg;
-    for (int i = 0; i < q4g.npc; i++) if (q4g.pc[i].t == t && q4g.pc[i].nb == nb && q4g.pc[i].blk == blk) { g.p = q4g.pc[i].p; g.ok = 1; return g; }
-    if (q4g.npc == 64) { *fail = 1; return g; }
-    const uint32_t id[5] = { 0, 1, 2, 3, 4 }, sv[5] = { (uint32_t)(((rpg * nb) + 31) / 32 * 32), t, (uint32_t)nb, (uint32_t)rpg, (uint32_t)blk };
-    g.p = kvk_pipe_create(q4mv_spv, sizeof q4mv_spv, 4, 12, id, sv, 5);
+    g.cols = (int)cols;
+    g.groups = (g.rows + 7) / 8;        /* 8 subgrupos de 32 por grupo */
+    for (int i = 0; i < q4g.npc; i++) if (q4g.pc[i].t == t) { g.p = q4g.pc[i].p; g.ok = 1; return g; }
+    if (q4g.npc == 16) { *fail = 1; return g; }
+    const uint32_t id = 0;
+    g.p = kvk_pipe_create(q4mv_spv, sizeof q4mv_spv, 4, 16, &id, &t, 1);
     if (!g.p.p) { *fail = 1; return g; }
-    q4g.pc[q4g.npc].t = t; q4g.pc[q4g.npc].nb = nb; q4g.pc[q4g.npc].blk = blk; q4g.pc[q4g.npc++].p = g.p;
+    q4g.pc[q4g.npc].t = t; q4g.pc[q4g.npc++].p = g.p;
     g.ok = 1;
     return g;
 }
 static Q4Gm q4g_mat1(const Mat *W, size_t rows, size_t cols, int *fail) { const Mat *a[1] = { W }; return q4g_mat(a, &rows, 1, cols, fail); }
 static int q4g_mv(const Q4Gm *g, KvkBuf x, KvkBuf o, int oofs) {
     const KvkBuf b[4] = { g->b, x, o, q4g.grid };
-    const int pc[3] = { g->rows, g->rw, oofs };
+    const int pc[4] = { g->rows, g->rw, oofs, g->cols };
     return kvk_dispatch(g->p, b, 4, pc, sizeof pc, (uint32_t)g->groups, 1, 1);
 }
 static void q4g_setup(Model *m) {
@@ -104,8 +101,9 @@ static void q4g_setup(Model *m) {
     q4g.o = q4g_buf((c->ssm_inner > (int)qd ? (size_t)c->ssm_inner : qd) * 4, &fail); q4g.meta = q4g_buf(16, &fail);
     q4g.qg = q4g_buf(2 * qd * 4, &fail); q4g.kb = q4g_buf(kvd * 4, &fail); q4g.vb = q4g_buf(kvd * 4, &fail);
     const uint32_t hid[4] = { 0, 1, 2, 3 };
-    for (int k = 0; k < 4; k++) {
-        const uint32_t hv[4] = { (uint32_t)k, (uint32_t)q->R, (uint32_t)d, (uint32_t)q->rank };
+    q4g.shb = q4g_buf(2 * (size_t)c->hidden * 4, &fail); q4g.shh = q4g_buf((size_t)c->hidden * 4, &fail); q4g.shs = q4g_buf((d + 1) * 4, &fail);
+    for (int k = 0; k < 6; k++) {
+        const uint32_t hv[4] = { (uint32_t)k, (uint32_t)q->R, k == 4 ? (uint32_t)c->hidden : (uint32_t)d, (uint32_t)q->rank };
         q4g.hc[k] = kvk_pipe_create(q4hc_spv, sizeof q4hc_spv, 3, 4, hid, hv, 4);
         if (!q4g.hc[k].p) fail = 1;
     }
@@ -148,8 +146,23 @@ static void q4g_setup(Model *m) {
         if (f2) q4g.l[l].rt.ok = 0;
         nrt += q4g.l[l].rt.ok;
     }
+    int nsh = 0;
+    for (int l = 0; l < c->n_layers; l++) {     /* especialista compartilhado: roda na placa enquanto a CPU faz os roteados */
+        const Layer *L = &m->layers[l];
+        Q4Gl *G = &q4g.l[l];
+        const size_t H = c->hidden;
+        int f2 = q4g.bytes + resv + H * (L->sg.stride + L->su.stride) + d * L->sd.stride / 9 * 10 > q4g.lim;
+        uint16_t *gb = xalloc(d, 2);        /* o portao e uma linha BF16 (veio de BF16: o resto e zero) */
+        for (size_t i = 0; i < d; i++) { uint32_t u; memcpy(&u, L->shexp_gate + i, 4); gb[i] = (uint16_t)(u >> 16); if (u & 0xffff) f2 = 1; }
+        Mat gm = { 0 };
+        gm.q = (const uint8_t *)gb; gm.type = T_BF16; gm.stride = d * 2;
+        if (!f2) { G->sg = q4g_mat1(&L->sg, H, d, &f2); G->su = q4g_mat1(&L->su, H, d, &f2); G->sd = q4g_mat1(&L->sd, d, H, &f2); G->sw = q4g_mat1(&gm, 1, d, &f2); }
+        if (f2) G->sw.ok = 0;
+        free(gb);
+        nsh += G->sw.ok;
+    }
     q4g.on = 1;
-    fprintf(stderr, "GPU: Vulkan %s - qwen4exp, geracao: mixers e DeltaNet, atencao de %d camadas, roteador de %d, %.0f MB (%.1f s)\n", I.name, natt, nrt, q4g.bytes / 1048576.0, now_sec() - t0);
+    fprintf(stderr, "GPU: Vulkan %s - qwen4exp, geracao: mixers e DeltaNet, atencao de %d camadas, roteador de %d, compartilhado de %d, %.0f MB (%.1f s)\n", I.name, natt, nrt, nsh, q4g.bytes / 1048576.0, now_sec() - t0);
 }
 
 /* estado do DeltaNet: CPU -> placa (pos: posicao do proximo token; o anel da convolucao e indexado pela posicao) e volta */
@@ -253,9 +266,16 @@ static void q4g_token(Model *m, int tok, int pos) {
         q4_tick(QP_HCR, tk);        /* tempo da placa (mixers, DeltaNet, roteador) visto da CPU */
         if (!ok) break;
         if (layer_tap) layer_tap(l, pos, xb);
+        if (G->sw.ok) {     /* compartilhado: despachado agora, roda junto com os especialistas da CPU */
+            ok = q4g_mv(&G->sg, q4g.xn, q4g.shb, 0) && q4g_mv(&G->su, q4g.xn, q4g.shb, c->hidden) && q4g_mv(&G->sw, q4g.xn, q4g.shs, d)
+                 && q4g_hc(4, q4g.shb, q4g.shb, q4g.shh, 0, (uint32_t)((c->hidden + 255) / 256)) && q4g_mv(&G->sd, q4g.shh, q4g.shs, 0)
+                 && q4g_hc(5, q4g.shs, q4g.iF, q4g.X, 0, (uint32_t)(((size_t)q4g.R * d + 255) / 256)) && kvk_flush();
+            if (!ok) break;
+        }
+        q4_nosh = G->sw.ok;
         q4_lg = G->rt.ok ? xb + d : NULL;
         q4_moe(m, l, xb, Y, 1, xqs);
-        q4_lg = NULL;
+        q4_lg = NULL; q4_nosh = 0;
         ok = kvk_buf_write_q(q4g.y, 0, Y, (size_t)d * 4) && q4g_write(q4g.iF);
     }
     ok = ok && q4g_read(&q4g.dO, &q4g.uO, q4g.nO, q4g.iA, c->eps) && kvk_buf_read(q4g.xn, 0, m->x, (size_t)d * 4);
@@ -268,13 +288,13 @@ static void q4g_token(Model *m, int tok, int pos) {
 static int q4g_test(void) {
     if (!q4g.on) return 1;
     enum { ROWS = 40 };
-    const uint32_t ty[6] = { T_Q4_K, T_Q5_K, T_Q6_K, T_IQ3_S, T_IQ4_XS, T_BF16 };
-    const int cols[6] = { 2560, 6144, 6144, 2560, 2560, 10240 };
+    const uint32_t ty[8] = { T_Q4_K, T_Q5_K, T_Q6_K, T_IQ3_S, T_IQ4_XS, T_BF16, T_IQ4_NL, T_Q2_0 };
+    const int cols[8] = { 2560, 6144, 6144, 2560, 2560, 10240, 640, 640 };
     int ok = 1;
     srand(11);
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 8; k++) {
         const int C = cols[k];
-        const size_t sb = qbytes(ty[k], C), ub = ty[k] == T_BF16 ? 512 : qbytes(ty[k], 256);
+        const size_t sb = qbytes(ty[k], C), ub = ty[k] == T_BF16 ? 512 : qbytes(ty[k], qunit(ty[k]));
         uint8_t *q = xalloc(ROWS * sb, 1);
         float *x = xalloc(C, 4), *w = xalloc(C, 4), *o = xalloc(ROWS, 4);
         for (size_t i = 0; i < ROWS * sb; i++) q[i] = (uint8_t)(rand() >> 7);
@@ -305,4 +325,56 @@ static int q4g_test(void) {
         free(q); free(x); free(w); free(o);
     }
     return ok;
+}
+
+/* katana q4gpu <gguf>: tempo das partes da placa por token (48 camadas), sem o trabalho da CPU */
+static int q4g_bench(Model *m) {
+    const Config *c = &m->cfg;
+    if (!q4g.on) die("q4gpu: placa inativa");
+    float *xb = xalloc(2 * (size_t)c->n_heads * c->hd + c->dim + c->n_expert, 4);
+    static const char *const nm[] = { "tudo, um envio so", "tudo, leitura por camada", "mixers: rms", "mixers: down", "mixers: silu/sig", "mixers: up", "mixers: mix", "escrita", "deltanet qkv", "deltanet z",
+        "deltanet ab", "deltanet passo", "deltanet out", "atencao q", "atencao k v", "atencao out", "roteador", "so leitura (60)" };
+    for (int k = 0; k < 18; k++) {
+        double best = 1e9;
+        for (int rep = 0; rep < 8; rep++) {
+            kvk_wait();
+            const double t0 = now_sec();
+            int ok = 1, nd = 0;
+            for (int l = 0; l < c->n_layers; l++) {
+                const Layer *L = &m->layers[l];
+                Q4Gl *G = &q4g.l[l];
+                const KvkBuf sb[9] = { q4g.qkvb, q4g.zb, q4g.abb, G->cw, G->pr, G->ring, G->st, q4g.o, q4g.meta };
+                const struct { int pos, kmap; float e1, e2; } sp = { 0, 1, c->eps, c->eps };
+                const int all = k < 2;
+                for (int h = 0; h < 2; h++) {
+                    if (all || k == 2) ok &= q4g_hc(0, q4g.X, h ? G->nF : G->nA, q4g.N, c->eps, (uint32_t)q4g.R), nd++;
+                    if (all || k == 3) ok &= q4g_mv(h ? &G->dF : &G->dA, q4g.N, q4g.DN, 0), nd++;
+                    if (all || k == 4) ok &= q4g_hc(1, q4g.DN, q4g.DN, h ? q4g.iF : q4g.iA, c->eps, 2), nd++;
+                    if (all || k == 5) ok &= q4g_mv(h ? &G->uF : &G->uA, h ? q4g.iF : q4g.iA, q4g.U, 0), nd++;
+                    if (all || k == 6) ok &= q4g_hc(2, q4g.N, q4g.U, q4g.xn, c->eps, 10), nd++;
+                    if (!h && L->lin) {
+                        if (all || k == 8) ok &= q4g_mv(&G->qkv, q4g.xn, q4g.qkvb, 0);
+                        if (all || k == 9) ok &= q4g_mv(&G->z, q4g.xn, q4g.zb, 0);
+                        if (all || k == 10) ok &= q4g_mv(&G->ab, q4g.xn, q4g.abb, 0);
+                        if (all || k == 11) ok &= kvk_dispatch(q4g.step, sb, 9, &sp, sizeof sp, (uint32_t)q4g.NV, 1, 1);
+                        if (all || k == 12) ok &= q4g_mv(&G->out, q4g.o, q4g.y, 0);
+                    } else if (!h && G->att) {
+                        if (all || k == 13) ok &= q4g_mv(&G->q, q4g.xn, q4g.qg, 0);
+                        if (all || k == 14) ok &= q4g_mv(&G->k, q4g.xn, q4g.kb, 0) && q4g_mv(&G->v, q4g.xn, q4g.vb, 0);
+                        if (k == 1) ok &= kvk_buf_read(q4g.qg, 0, xb, 4096);
+                        if (all || k == 15) ok &= q4g_mv(&G->o, q4g.o, q4g.y, 0);
+                    }
+                    if (all || k == 7) ok &= q4g_write(h ? q4g.iF : q4g.iA), nd++;
+                }
+                if ((all || k == 16) && G->rt.ok) ok &= q4g_mv(&G->rt, q4g.xn, q4g.xn, c->dim);
+                if (k == 1 || k == 17) ok &= kvk_buf_read(q4g.xn, 0, xb, (size_t)(c->dim + c->n_expert) * 4);
+            }
+            if (k == 17) for (int i = 0; i < 12; i++) ok &= kvk_buf_read(q4g.xn, 0, xb, 4096);
+            if (!kvk_wait() || !ok) die("q4gpu: falha");
+            const double t = now_sec() - t0;
+            if (t < best) best = t;
+        }
+        printf("%-28s %7.2f ms/token\n", nm[k], best * 1e3);
+    }
+    return 0;
 }

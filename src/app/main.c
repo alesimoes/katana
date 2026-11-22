@@ -1163,6 +1163,7 @@ static int run_main(int argc, char **argv) {
         print_info(&m);
         return train_main(&m, argv[2], argc - 3, argv + 3);
     }
+    if (argc == 3 && strcmp(argv[1], "q4gpu") == 0) { static Model m; load_model(&m, argv[2]); return q4g_bench(&m); }
     if (argc >= 4 && strcmp(argv[1], "q4bench") == 0) {
         static Model m;
         load_model(&m, argv[2]);

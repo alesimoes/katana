@@ -121,7 +121,7 @@ for l in range(NL):
         p.update(q=mat(2 * HEADS * HD, d, 0.4 * B, pf), k=mat(KV * HD, d, 0.4, pf), v=mat(KV * HD, d, 0.4, pf), o=mat(d, HEADS * HD, 0.3, pf),
                  qn=vec(HD, 0.3), kn=vec(HD, 0.3), iqk=mat((IN + 1) * IHD, d, 0.5, bf16), iqn=vec(IHD, 0.3), ikn=vec(IHD, 0.3))
     p.update(router=mat(E, d, 0.6, bf16), gate=[mat(H, d, 0.3 * B) for _ in range(E)], up=[mat(H, d, 0.3) for _ in range(E)],
-             sg=mat(H, d, 0.3 * B), su=mat(H, d, 0.3), sd=mat(d, H, 0.1), sgate=vec(d, 0.5 * B, 0, bf16))
+             sg=mat(H, d, 0.3 * B, pf), su=mat(H, d, 0.3, pf), sd=mat(d, H, 0.1, pf), sgate=vec(d, 0.5 * B, 0, bf16))
     dn, p["down_blob"] = rand_q2_0(E * d, H)
     p["down"] = [dn[e * d:(e + 1) * d] for e in range(E)]
     if l == PLE_L:
@@ -193,9 +193,9 @@ for l, p in enumerate(W["l"]):
     add(b + "ffn_gate_exps.weight", [d, H, E], 0, flat(flat(p["gate"])))
     add(b + "ffn_up_exps.weight", [d, H, E], 0, flat(flat(p["up"])))
     add(b + "ffn_down_exps.weight", [H, d, E], 42, p["down_blob"])
-    add(b + "ffn_gate_shexp.weight", [d, H], 0, flat(p["sg"]))
-    add(b + "ffn_up_shexp.weight", [d, H], 0, flat(p["su"]))
-    add(b + "ffn_down_shexp.weight", [H, d], 0, flat(p["sd"]))
+    add(b + "ffn_gate_shexp.weight", [d, H], PT, flat(p["sg"]))
+    add(b + "ffn_up_shexp.weight", [d, H], PT, flat(p["su"]))
+    add(b + "ffn_down_shexp.weight", [H, d], PT, flat(p["sd"]))
     add(b + "ffn_gate_inp_shexp.weight", [d], 30, p["sgate"])
     if l == PLE_L:
         add(b + "ple_key.weight", [PE, D], 30, flat(p["pkey"]))

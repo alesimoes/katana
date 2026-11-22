@@ -203,9 +203,9 @@ static void q4_load(Model *m, const Tensors *ts) {
             if (w.q) L->ed[e].q += e * d * w.stride; else L->ed[e].f += e * d * H;
         }
         L->w_gate = L->eg[0]; L->w_up = L->eu[0]; L->w_down = L->ed[0];
-        L->sg = get_mat(ts, QN("ffn_gate_shexp.weight"), H, d, 1, np);
-        L->su = get_mat(ts, QN("ffn_up_shexp.weight"), H, d, 1, np);
-        L->sd = get_mat(ts, QN("ffn_down_shexp.weight"), d, H, 1, np);
+        L->sg = q4_mat(m, ts, QN("ffn_gate_shexp.weight"), H, d);
+        L->su = q4_mat(m, ts, QN("ffn_up_shexp.weight"), H, d);
+        L->sd = q4_mat(m, ts, QN("ffn_down_shexp.weight"), d, H);
         L->shexp_gate = get_tensor(ts, QN("ffn_gate_inp_shexp.weight"), d, 1, np);
         if (l == q->ple_l) {
             const size_t pe = (size_t)(q->ng - 1) * q->hpn * q->pd;
@@ -424,12 +424,14 @@ LB_512 static void q4_krow(const Mat *W, const uint8_t *row, const XQ *xqs, int 
     }
     for (int t = 0; t < n; t++) out[t] = _mm512_reduce_add_ps(acc[t]) - corr[t];
 }
+static int q4_tile = 32;     /* tokens por ladrilho nos produtos densos (KATANA_Q4_TILE, no maximo Q4_TB) */
 typedef struct { float *out; const Mat *W; XQ *xqs; int B, rows, cols; } Q4Kj;
 static void q4_k_job(void *cx, int i0, int i1) {
     const Q4Kj *j = cx;
     float tmp[Q4_TB], loc[Q4_TB * 16];      /* 16 linhas por vez: uma linha de cache por token na gravacao */
-    for (int t0 = 0; t0 < j->B; t0 += Q4_TB) {
-        const int n = j->B - t0 < Q4_TB ? j->B - t0 : Q4_TB;
+    const int tb = q4_tile;
+    for (int t0 = 0; t0 < j->B; t0 += tb) {
+        const int n = j->B - t0 < tb ? j->B - t0 : tb;
         for (int i = i0; i < i1; i += 16) {
             const int nr = i1 - i < 16 ? i1 - i : 16;
             for (int k = 0; k < nr; k++) {
@@ -1158,6 +1160,7 @@ static void q4_sh_job(void *cx, int t0, int t1) {
     }
 }
 static const float *q4_lg;
+static int q4_nosh;         /* o compartilhado desta camada roda na placa */
 static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs) {
     const Config *c = &m->cfg;
     const Layer *L = &m->layers[l];
@@ -1224,6 +1227,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
         }
     }
     tk = q4_tick(QP_ES, tk);
+    if (q4_nosh) return;
     float *G = q4_scr(17, (size_t)B * H), *U = q4_scr(18, (size_t)B * H), *S = q4_scr(19, (size_t)B * d);
     q4_mm(G, &L->sg, Xb, xqs, &prep, B, H, d);
     q4_mm(U, &L->su, Xb, xqs, &prep, B, H, d);
@@ -1315,6 +1319,10 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
     if (!q4_bsize) {
         const char *e = getenv("KATANA_Q4_OPT");
         if (e) q4_opt = atoi(e);
+#if HAVE_LOWBIT
+        e = getenv("KATANA_Q4_TILE");
+        if (e && atoi(e) >= 4 && atoi(e) <= Q4_TB) q4_tile = atoi(e);
+#endif
         e = getenv("KATANA_Q4_BATCH");
         q4_bsize = e && atoi(e) > 0 ? atoi(e) : 256;
         if (q4_bsize > Q4_BMAX) q4_bsize = Q4_BMAX;
