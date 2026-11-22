@@ -428,6 +428,7 @@ static int rl_writes(const char *name) {
 
 static int ct_todo_autofinish(void);       /* src/tools/tasks.c */
 static int agent(Model *m, int max_tokens, float temp) {
+    g_rd_delta_on = 1;       /* Read do mesmo arquivo devolve so o que mudou, enquanto a leitura anterior esta no contexto */
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     int cd_note = 0, undo_pend = 0, nudged = 0;

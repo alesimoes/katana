@@ -195,6 +195,25 @@ static int cp_stash(const char *a, size_t n, char *path, size_t cap) {
 /* tira resultados das mensagens [from, n) ate sobrarem no maximo `budget` bytes de resultados (os que tem de ficar ficam
    mesmo acima disso). As mensagens a partir de keep_from (etapa atual do plano) so entram na ultima volta. Ordem: leituras superadas por outra do mesmo arquivo, depois do mais velho ao mais novo, e por ultimo
    a leitura mais nova de cada arquivo. Devolve quantos sairam. */
+/* nomes que o arquivo define (linha "  12<tab>def f(x):"), ate 500 bytes: os nomes exatos sao o que o modelo mais erra depois */
+static void ah_outline(const char *a, const char *e, Buf *o) {
+    static const char *const KW[] = { "def ", "class ", "async def ", "function ", "func ", "fn ", "pub fn ", "struct ", "enum ", "interface ", "type ", "export ", "static ", "typedef ", "public ", "#define ", "impl ", "trait ", "const ", "    def ", "  def ", NULL };
+    size_t used = 0;
+    for (const char *l = a; l < e;) {
+        const char *z = memchr(l, '\n', (size_t)(e - l)); if (!z) z = e;
+        const char *t = memchr(l, '\t', (size_t)(z - l));
+        if (t && t - l <= 8) {
+            t++;
+            for (int i = 0; KW[i]; i++) if ((size_t)(z - t) > strlen(KW[i]) && !strncmp(t, KW[i], strlen(KW[i]))) {
+                size_t n = (size_t)(z - t); if (n > 110) { n = 110; while (n && ((unsigned char)t[n] & 0xC0) == 0x80) n--; }
+                if (used + n > 500) return;
+                buf_str(o, used ? "\n" : "\nit defines:\n"); buf_add(o, t, n); used += n;
+                break;
+            }
+        }
+        l = z + 1;
+    }
+}
 static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
     static AhRes R[2048];
     const char *K = "<tool_response>\n[resultado da ferramenta ", *E = "</tool_response>";
@@ -256,6 +275,7 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
                 buf_str(&o, "\nends with:\n"); buf_add(&o, a, (size_t)(f - a));
             }
         }
+        if (!strcmp(R[i].name, "Read") && !old && in && fim) ah_outline(in + 1, fim, &o);
         buf_str(&o, "\n</tool_response>");
         buf_str(&o, mg->s + R[i].e);
         free(mg->s); mg->s = o.p;
@@ -438,7 +458,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             if (rq) req = rq + strlen(CP_REQ_HEAD);                 /* pedido original dentro de um resumo anterior */
             AHist nh = {0};
             Buf u = {0};
-            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); } buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
+            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); { Buf fx = {0}; if (facts_text(&fx)) { buf_str(&u, "\n\n"); buf_str(&u, fx.p); } free(fx.p); } if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); } buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             /* as ultimas rodadas ficam inteiras: o resumo perde nomes e detalhes, e o modelo relia tudo */
@@ -456,7 +476,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
         if (sm) {
             AHist nh = {0};
             Buf u = {0};
-            buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm); if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); }
+            buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm); { Buf fx = {0}; if (facts_text(&fx)) { buf_str(&u, "\n\n"); buf_str(&u, fx.p); } free(fx.p); } if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); }
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
@@ -544,6 +564,16 @@ static int compact_test(void) {
     ah_push(&g, 't', two, strlen(two));
     for (int i = 0; i < 3; i++) { ah_push(&g, 'a', call[6], strlen(call[6])); ah_push(&g, 't', "<tool_response>\n[resultado da ferramenta Bash, x]\nok\n[fim do resultado da ferramenta Bash]\n</tool_response>", 106); }
     CK(ah_mask(&g, 0, 4000, 0) == 1 && strstr(g.v[2].s, "Read a.c was removed") && strstr(g.v[2].s, "BB "), "duas respostas na mesma mensagem");
+    facts_reset();
+    facts_note("Read", "/p/a.c", NULL, "x"); facts_note("Edit", "/p/a.c", NULL, "The file"); facts_note("Edit", "/p/b.c", NULL, "error: no"); facts_note("Read", "/p/c.c", NULL, "x");
+    facts_note("Bash", NULL, "make\ntest", "boom: line 7\nExit code 2");
+    { Buf f = {0}; CK(facts_text(&f) && strstr(f.p, "files changed: /p/a.c (1)\n") && strstr(f.p, "files only read: /p/c.c\n") && !strstr(f.p, "/p/b.c"), "caderno: arquivos, e edicao que falhou fica fora");
+      CK(strstr(f.p, "- `make test` -> exit 2") && strstr(f.p, "boom: line 7"), "caderno: comando e falha com o texto"); free(f.p); }
+    facts_note("Bash", NULL, "make\ntest", "ok");
+    { Buf f = {0}; facts_text(&f); CK(strstr(f.p, "- `make test` -> exit 0") && !strstr(f.p, "last failure"), "caderno: passou, a falha sai"); free(f.p); }
+    for (int i = 0; i < 100; i++) { char fn[40]; snprintf(fn, sizeof fn, "/q/%d", i); facts_note(i < 5 ? "Write" : "Read", fn, NULL, "x"); }
+    { Buf f = {0}; facts_text(&f); CK(strstr(f.p, "/p/a.c (1)") && strstr(f.p, "/q/4 (1)") && strstr(f.p, "/q/99"), "caderno cheio: mudados ficam, entram os lidos novos"); free(f.p); }
+    facts_reset();
     ah_clear(&h); free(h.v); ah_clear(&g); free(g.v); free(b.p);
     printf("compacttest: %d checks, %d failures\n", n, bad);
     return bad != 0;

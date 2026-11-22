@@ -49,6 +49,7 @@
 #include "agent/fmt_gemma4.c"          /* ferramentas no formato nativo do Gemma 4 */
 #include "agent/prefix_cache.c"        /* cache de prefixo persistente e aquecimento */
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
+#include "agent/facts.c"               /* caderno de fatos e leitura por diferenca */
 #include "agent/context.c"             /* compactacao do contexto */
 #include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
 /* segundo conjunto de ferramentas do agente, uma por arquivo (docs/tools.md) */
