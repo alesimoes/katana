@@ -519,10 +519,11 @@ static const float *tp_row(const TPar *p, size_t r, float *tmp) {
 
 /* tenta o produto dividido (GPU: primeiras linhas, CPU: o resto, ao mesmo tempo). A fracao da GPU parte da razao das medidas
    de cada lado e se ajusta pelo que se viu: se a CPU terminou e a GPU ainda nao (esperou), a GPU leva menos da proxima vez;
-   se a GPU ja tinha terminado, leva mais. KATANA_TRAIN_GPU_SPLIT=0 desliga. */
+   se a GPU ja tinha terminado, leva mais. KATANA_TRAIN_GPU_SPLIT=1 liga (desligado
+   por padrao: o teste do gradiente ainda nao passa por este caminho). */
 static int tp_split(int mode, const TPar *cp, const float *in, float *out, int B) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("KATANA_TRAIN_GPU_SPLIT"); on = e ? atoi(e) != 0 : 1; }
+    if (on < 0) { const char *e = getenv("KATANA_TRAIN_GPU_SPLIT"); on = e ? atoi(e) != 0 : 0; }
     TPar *p = (TPar *)cp;
     if (!on || !tk_on() || tg.fixed || !p->mat || p->rows < 64) return 0;
     if (!tg_init()) return 0;
