@@ -24,6 +24,12 @@ static struct {
     int nudge_ok;                /* a conversa deixa tarefas abertas de proposito (Task*): o lembrete do motor aparece e a resposta se repete */
     int k, k2;                   /* variante sorteada fora do gerador de numeros (x-tools: qual ferramenta; x-rare, com k2: qual situacao); -1 = nenhuma */
     const char *sfrom[4], *sto[4]; int nsub;      /* trechos que mudam a cada execucao (ids sorteados pelo motor) e o que entra no lugar */
+    int dep;                     /* a conversa tem um segundo pedido que so se entende pelo primeiro */
+    char shape[120];             /* formas dos pedidos desta conversa (ctx, polite, typo, two, wrong, goal, paste...) */
+    int nreq;                    /* pedidos ja feitos */
+    int merge, mu; const char *mraw, *mfin;      /* dois pedidos numa mensagem so: o segundo x_user entra na primeira mensagem e as duas respostas viram uma */
+    int noshape;                 /* 1: os pedidos desta conversa ficam como a familia escreveu (texto do motor no lugar do usuario) */
+    uint64_t srng;               /* sorteio proprio das formas: nao gasta o sorteio do cenario */
 } g_x;
 static uint64_t g_x_rng0;        /* estado do sorteio no comeco desta tentativa (vai na linha gravada) */
 static int g_x_replay;           /* 1: refazendo uma linha no check (sem o filtro de situacao repetida) */
@@ -146,18 +152,33 @@ static void x_plan(const char *const *items, int n) {
     x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_keep(o.p))), 0);
 }
 static void x_done(int k) { g_x.pdone = k; }
+#include "app/scenario_shape.c"      /* formas de pedido: contexto, educado, seco, erros de digitacao, mistura de linguas, reservadas */
 static void x_user(const char *t) {
+    if (g_x.merge == 3) {      /* segundo pedido da mesma mensagem: nada recomeca no motor */
+        const char *j = g_cu_lang ? CU_PA(((const char *const[]){" Alem disso: ", " E tambem: ", " Depois disso: ", " Outra coisa: "})) : CU_PA(((const char *const[]){" Also: ", " And then: ", " After that: ", " One more thing: "}));
+        g_x.m[g_x.mu].text = x_shape(cu_fmt("%s%s%s", g_x.mraw, j, t), 0);
+        g_x.merge = 4; x_shape_tag("two");
+        return;
+    }
     if (g_x.n > 1) {
         int td = 0; const int tn = todo_count(&td);
         if (tn > td) cu_die("pedido novo com plano em aberto (%s)", g_x.cell);
         g_undo_req++; g_todo_touched = 0; g_cu_pl = 0; g_cu_plold = 0;
     }
     g_x.pdone = 0;
-    x_push('u', t, 1);
+    if (g_x.merge == 1) { g_x.merge = 2; g_x.mu = g_x.n; g_x.mraw = cu_fmt("%s", t); }
+    x_push('u', g_x.merge == 2 ? t : x_shape(t, g_x.nreq), 1);
+    g_x.nreq++;
     { const size_t l = strlen(g_x.seq); if (l) snprintf(g_x.seq + l, sizeof g_x.seq - l, "|"); }
 }
+/* o proximo pedido e o seguinte saem na mesma mensagem (so vale quando o primeiro nao escreve plano) */
+static void x_merge(void) { g_x.merge = 1; }
+static void x_dep(void) { g_x.dep = 1; x_shape_tag("dep"); }
 /* resposta final do pedido: o que o laco do motor faria aqui (nota de verificacao, fecho do ultimo passo) */
 static void x_final(const char *t) {
+    if (g_x.merge == 2) { g_x.mfin = cu_fmt("%s", t); g_x.merge = 3; return; }      /* a resposta da primeira parte espera a da segunda */
+    if (g_x.merge == 4) { t = cu_fmt("%s %s", g_x.mfin, t); g_x.merge = 0; }
+    if (g_x.merge) cu_die("pedido fundido sem a segunda parte (%s)", g_x.cell);
     if (strlen(t) > 700) cu_die("resposta final longa demais (%s)", g_x.cell);
     g_x.pdone = 0;
     x_push('a', t, 1);
@@ -194,6 +215,7 @@ static char *x_norm(const char *s) {
     return b.p;
 }
 static void x_end(FILE *f) {
+    if (g_x.merge) cu_die("pedido fundido que nao fechou (%s)", g_x.cell);
     Buf o = {0}; buf_str(&o, "{\"messages\": [");
     for (int i = 0; i < g_x.n; i++) {
         const XMsg *m = &g_x.m[i];
@@ -219,8 +241,8 @@ static void x_end(FILE *f) {
         if (g_cu_nsits == g_cu_csits) { g_cu_csits = g_cu_csits ? g_cu_csits * 2 : 4096; g_cu_sits = realloc(g_cu_sits, sizeof *g_cu_sits * (size_t)g_cu_csits); }
         g_cu_sits[g_cu_nsits++] = h;
     }
-    buf_str(&o, cu_fmt("], \"source\": \"curriculum\", \"family\": %s, \"cell\": %s, \"seq\": %s, \"scn\": {\"rng\": \"%llu\", \"lang\": %d, \"hold\": %d, \"mode\": %d, \"decl\": %d, \"k\": %d}",
-                       cu_q(g_x.fam), cu_q(g_x.cell), cu_q(g_x.seq), (unsigned long long)g_x_rng0, g_cu_lang, g_cu_hold, g_x.mode, g_x.decl, g_x.k));
+    buf_str(&o, cu_fmt("], \"source\": \"curriculum\", \"family\": %s, \"cell\": %s, \"seq\": %s, \"shape\": %s, \"dep\": %d, \"scn\": {\"rng\": \"%llu\", \"lang\": %d, \"hold\": %d, \"mode\": %d, \"decl\": %d, \"k\": %d}",
+                       cu_q(g_x.fam), cu_q(g_x.cell), cu_q(g_x.seq), cu_q(g_x.shape[0] ? g_x.shape : "plain"), g_x.dep, (unsigned long long)g_x_rng0, g_cu_lang, g_cu_hold, g_x.mode, g_x.decl, g_x.k));
     if (g_x.k >= 0 && !g_x_replay) { if (g_x.k2 == 2) g_x_cycle3++; else if (g_x.k2) g_x_cycle2++; else g_x_cycle++; }
     if (g_x.ask.n) { buf_str(&o, ", \"ask\": ["); buf_str(&o, g_x.ask.p); buf_str(&o, "]"); }
     buf_str(&o, "}\n");
@@ -560,6 +582,7 @@ static void x_proj_write(const XProj *p) {
 static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     free(g_x.ask.p);
     memset(&g_x, 0, sizeof g_x); g_x.fam = fam; buf_str(&g_x.ask, ""); g_x.ask.n = 0; g_x.k = -1;
+    g_x.srng = g_x_rng0 * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull;
     s->nsk = 0; s->nms = 0; s->brief = 0;
     if (nskills) cu_skill_pick(s, NULL, nskills);
     if (nmcp) cu_ms_scn(s, NULL, nmcp);
@@ -589,8 +612,9 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     {   CuD d = {0}; cu_base_dict(s, &d); cu_set(&d, "tool", "x"); cu_set(&d, "file", "x"); cu_set(&d, "msg", "x"); cu_set(&d, "fn", "main");
         if (p) { cu_set(&d, "test", p->testcmd); cu_set(&d, "build", p->testcmd); }
         for (int i = 0; i < s->nsk; i++) { cu_put(cu_fmt("%s/.katana/skills/%s/SKILL.md", s->cwd, s->sk[i]->name), cu_skill_md(s->sk[i], &d), 0); cu_needs_stubs(s->sk[i]); } }
-    for (int i = 0; i < g_nmcp; i++) { for (int j = 0; j < g_mcp[i].ntools; j++) { free(g_mcp[i].tools[j].name); free(g_mcp[i].tools[j].desc); free(g_mcp[i].tools[j].schema); } free(g_mcp[i].tools); }
+    for (int i = 0; i < g_nmcp; i++) { if (g_mcp[i].spawned) mcp_kill(&g_mcp[i]); mcp_free_srv(&g_mcp[i]); memset(&g_mcp[i], 0, sizeof g_mcp[i]); }      /* servidores de verdade da conversa anterior: encerrados pelo pid */
     g_nmcp = 0; g_mcp_ready = 1;
+    setenv("KATANA_NO_NOTIFY", "1", 1);      /* nenhuma notificacao de verdade sai do gerador */
     for (int i = 0; i < s->nms; i++) {
         const CuMs *m = s->ms[i]; McpSrv *v = &g_mcp[g_nmcp++]; memset(v, 0, sizeof *v);
         snprintf(v->name, sizeof v->name, "%s", m->name); v->project = 1; v->alive = 1; v->was_ok = 1;
