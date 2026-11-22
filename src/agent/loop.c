@@ -58,7 +58,9 @@ static void agent_regrow(Model *m, const char *sys, const AHist *hist, const AHi
     fprintf(stderr, "\n%s[a placa de video liberou %d MB: recarregando o modelo para usar a memoria; a conversa continua]%s\n", CE(C_DIM), mb, CE(C_RESET));
     if (getenv("KATANA_UI")) { fputs("\x01" "REGROW\n", stdout); }
     fflush(stdout); fflush(stderr);
+    reap_keep_exec(1);
     execv(self, av);
+    reap_keep_exec(0);
     fprintf(stderr, "[recarga falhou: %s]\n", strerror(errno));       /* so chega aqui se o execv falhar: segue como estava */
     free(av);
 #else

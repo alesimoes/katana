@@ -757,7 +757,7 @@ static int merge_cmd(const char *in, const char *spec, const char *out) {
     FILE *fs = fopen(spec, "rb");
     if (!fs) { fprintf(stderr, "merge: nao abriu %s\n", spec); return 1; }
     char mg[8]; int64_t sfs = 0; uint64_t snp = 0; int ns = 0;
-    if (fread(mg, 1, 8, fs) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&sfs, 8, 1, fs) != 1 || fread(&snp, 8, 1, fs) != 1 || fread(&ns, 4, 1, fs) != 1 || ns < 0 || ns > 1000000)
+    if (fread(mg, 1, 8, fs) != 8 || !spec_magic_ok(mg) || fread(&sfs, 8, 1, fs) != 1 || fread(&snp, 8, 1, fs) != 1 || fread(&ns, 4, 1, fs) != 1 || ns < 0 || ns > 1000000)
         { fprintf(stderr, "merge: %s nao e uma especializacao valida\n", spec); return 1; }
     MSpec *sp = xalloc((size_t)ns + 1, sizeof(MSpec));
     for (int i = 0; i < ns; i++) {
@@ -1138,6 +1138,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
     if (argc >= 3 && strcmp(argv[1], "curriculum") == 0) return curriculum_main(argc - 2, argv + 2);   /* convencoes -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "specialize") == 0) return specialize_main(argv[0], argc - 2, argv + 2);   /* versao especialista de ponta a ponta */
+    if (argc >= 2 && strcmp(argv[1], "kerneltest") == 0) return argc > 2 && strcmp(argv[2], "bench") == 0 ? tk_bench(argc > 3 ? atoi(argv[3]) : 4, 2000) : tk_selftest();     /* treino: kernels da CPU x lacos simples, formatos reais */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
         Model m; memset(&m, 0, sizeof m);
         putenv_dup("KATANA_CPU=1");
@@ -1163,6 +1164,7 @@ static int run_main(int argc, char **argv) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
         print_info(&m);
+        if (argc >= 4 && strcmp(argv[3], "--deep") == 0) return selftest_deep(&m, argc - 4, argv + 4);
         return selftest(&m);
     }
     if (argc >= 4 && strcmp(argv[1], "toktest") == 0) {     /* teste dourado do tokenizador (tools/tokref) */
@@ -1284,6 +1286,7 @@ int main(int argc, char **argv) {
     }
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    reap_start(argc, argv);
     pool_init();
     vnni_init();
     moe_q5k_old = getenv("KATANA_MOE_OLD") && atoi(getenv("KATANA_MOE_OLD")) != 0;

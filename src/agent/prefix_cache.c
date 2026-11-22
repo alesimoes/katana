@@ -76,6 +76,8 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
     h = pfx_hash(h, c->arch, strlen(c->arch));
     h = pfx_hash(h, &m->fsize, sizeof m->fsize);
     h = pfx_hash(h, &m->n_params, sizeof m->n_params);
+    h = pfx_hash(h, &m->fid, sizeof m->fid);
+    h = pfx_hash(h, m->rope_freq, sizeof(float) * (size_t)(c->hd / 2)); h = pfx_hash(h, &c->kq_mul, sizeof c->kq_mul); h = pfx_hash(h, &c->yarn_factor, sizeof c->yarn_factor);      /* KATANA_ROPE_SCALE */
     h = pfx_hash(h, m->out_norm, sizeof(float) * (size_t)(c->dim < 256 ? c->dim : 256));
     if (m->kh) { const int k16 = 1; h = pfx_hash(h, &k16, sizeof k16); }
     if (c->g4) for (int l = 0; l < c->n_layers; l++) {
@@ -131,9 +133,9 @@ static int pfx_layer(Model *m, int l, int vv, int n, int ngl, int esz, int backe
 static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend) {
     const Config *c = &m->cfg;
     const size_t kvd = (size_t)c->n_kv * c->hd;
-    char path[1000], tmp[1010];
+    char path[1000], tmp[1040];
     pfx_path(path, sizeof path, key, 1);
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    snprintf(tmp, sizeof tmp, "%s.%ld.tmp", path, (long)getpid());      /* duas sessoes podem gravar o mesmo prefixo ao mesmo tempo */
     FILE *f = fopen(tmp, "wb");
     if (!f) return 0;
     PfxHdr h; memset(&h, 0, sizeof h);

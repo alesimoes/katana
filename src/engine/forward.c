@@ -227,6 +227,7 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
         for (size_t i = 0; i < (size_t)B * d; i++) X[i] += X2[i];
         /* feed-forward: roteamento por token, todos os pares do lote de uma vez, compartilhado em lote */
         for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->ffn_norm, d, c->eps);
+        if (layer_tap) for (int t = 0; t < B; t++) layer_tap(l, pos0 + t, Xb + (size_t)t * d);
         static int ex[GPU_BMAX * 64], xi[GPU_BMAX * 64]; static float ew[GPU_BMAX * 64];
         for (int t = 0; t < B; t++) {
             memcpy(m->xb, Xb + (size_t)t * d, d * sizeof(float));
@@ -388,6 +389,21 @@ static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_l
     }
     for (; i < n; i++) lg = forward(m, toks[i], pos0 + i, want_logits && i == n - 1);
     return lg;
+}
+
+/* reuso de prefixo: o cache guarda n tokens, o pedido novo (nnew tokens) repete os primeiros `common`; devolve quantas
+   posicoes do cache valem (0 = comecar do zero). gemma4: as camadas locais guardam um anel de kv_cap posicoes; voltar
+   so vale se nenhuma posicao que a janela do proximo token precisa foi sobrescrita (a posicao p ainda esta no anel
+   se p >= n - kv_cap) */
+static int cache_rewind(const Model *m, int n, int common, int nnew) {
+    if (common >= nnew) common = nnew - 1;              /* precisa de pelo menos um token para obter os logits */
+    if (m->cfg.ssm_inner && common != n) return 0;      /* DeltaNet: o estado so continua do fim */
+    if (m->cfg.g4) for (int l = 0; l < m->cfg.n_layers; l++) {
+        const Layer *L = &m->layers[l];
+        const int low = L->swa && common - m->cfg.swa_win + 1 > 0 ? common - m->cfg.swa_win + 1 : 0;
+        if (n > L->kv_cap && low < n - L->kv_cap) return 0;
+    }
+    return common;
 }
 
 /* ================= amostragem (temperatura + top-k + top-p) =================

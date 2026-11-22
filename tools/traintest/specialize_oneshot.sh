@@ -24,13 +24,15 @@ chk(sum(h[0]["windows"].values()) == 12 and sum(h[0]["available"].values()) > 12
 d1 = sorted(glob.glob(O + "/trn/all-*/data.jsonl"))
 txt = open(d1[0]).read()
 chk("HELLO" in txt and "GCC" in txt, "replace do katana.cfg aplicado")
-chk('"source": "knowledge"' in txt and '"source": "tools"' in txt and '"source": "code"' in txt and ('"source": "teacher"' in txt or not os.path.exists(DD + "/tch.ksess")), "as fontes no mesmo arquivo")
-chk(os.path.getsize(O + "/trn/corpus.jsonl") > 0 and os.path.getsize(O + "/trn/holdout.jsonl") > 0, "corpus e holdout na pasta de treino")
-chk(os.path.exists(H + "/.katana/knowledge/INDEX.md"), "base de conhecimento em ~/.katana/knowledge")
+# decisao do dono (2026-11-21, commit 7fbc3a4): o treino unico (all) usa so tools, code e conventions; o conhecimento dos
+# projetos e as falas do professor so entram quando pedidos (tipo knowledge / teacher, --corpus, --sessions)
+chk('"source": "tools"' in txt and '"source": "code"' in txt, "as fontes tools e code no mesmo arquivo")
+chk('"source": "knowledge"' not in txt and '"source": "teacher"' not in txt, "all nao traz conhecimento nem professor")
+chk(not os.path.exists(O + "/trn/corpus.jsonl") and not os.path.exists(H + "/.katana/knowledge/INDEX.md"), "all nao monta a base de conhecimento")
 chk(len(glob.glob(O + "/trn/all-*/katana.kspec")) == 2, "dois katana.kspec")
 chk(os.listdir(O + "/tmpcheck") == [], "nada em TMPDIR")
 rep = open(sorted(glob.glob(O + "/trn/all-*/report.txt"))[-1]).read()
-chk("noite 2 desta especializacao" in rep and "KATANA_SPEC=" in rep and "mkdir -p" in rep and "knowledge quiz" in rep and "janelas treinadas ate agora" in rep and "perda por noite" in rep, "relatorio final")
+chk("noite 2 desta especializacao" in rep and "KATANA_SPEC=" in rep and "mkdir -p" in rep and "janelas treinadas ate agora" in rep and "perda por noite" in rep, "relatorio final")
 print("noite 1 e 2: janelas %s de %s" % (h[1]["windows"], h[1]["available"]))
 sys.exit(1 if bad else 0)
 PY
@@ -58,7 +60,10 @@ head -c $(( $(wc -c < "$D1") * 2 / 3 )) "$D1" > "$OS/cut.jsonl"
 if $K specialize --verify-data "$OS/cut.jsonl" > "$OS/ver_cut.out" 2>&1; then echo "verify-data: arquivo cortado ao meio PASSOU: FALHOU"; fail=1; else echo "verify-data recusa o arquivo cortado ao meio: ok"; fi
 { head -2 "$D1"; echo '{"text": "x", "train_spans": [[0, 1]'; echo '{"source": "tools", "text": "x"}'; } > "$OS/bad.jsonl"
 if $K specialize --verify-data "$OS/bad.jsonl" > "$OS/ver_bad.out" 2>&1; then echo "verify-data: linhas invalidas PASSARAM: FALHOU"; fail=1; else echo "verify-data recusa linhas JSON invalidas e sem train_spans: ok"; fi
-# conhecimento: build e corpus com disco cheio simulado; o corpus antigo fica como estava
+# conhecimento: build e corpus com disco cheio simulado; o corpus antigo fica como estava. O corpus nao vem mais do all:
+# monta-se aqui, como o tipo knowledge faria
+HOME="$H1" $K knowledge build "$D/sel" --out "$H1/.katana/knowledge" > "$OS/kb0.out" 2>&1
+$K knowledge corpus "$H1/.katana/knowledge" "$OS/trn/corpus.jsonl" --holdout "$OS/trn/holdout.jsonl" > "$OS/kc0.out" 2>&1
 cp "$OS/trn/corpus.jsonl" "$OS/corpus_before.jsonl"
 KATANA_FAIL_WRITE_AFTER=500 $K knowledge corpus "$H1/.katana/knowledge" "$OS/trn/corpus.jsonl" --holdout "$OS/trn/holdout.jsonl" > "$OS/kc.out" 2>&1; rc=$?
 if [ $rc -ne 0 ] && grep -q "ERRO" "$OS/kc.out" && cmp -s "$OS/corpus_before.jsonl" "$OS/trn/corpus.jsonl" && [ ! -e "$OS/trn/corpus.jsonl.part" ]; then echo "knowledge corpus com disco cheio: falhou em voz alta e o corpus antigo ficou intacto: ok"; else echo "knowledge corpus com disco cheio: FALHOU (codigo $rc)"; fail=1; fi

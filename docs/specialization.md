@@ -329,11 +329,29 @@ Code: `src/app/train_methods.c` (included by `train.c`; small hooks in the produ
 | `--optimizer muon` | Muon (Jordan et al. 2024) on the adapter matrices: Nesterov momentum 0.95, 5 quintic Newton-Schulz iterations, update scaled by `0.2 sqrt(max(rows, cols))` and decoupled weight decay (Liu et al. 2025, arXiv:2502.16982, "Muon is Scalable", scale and decay read in the paper) | the learning rate is the AdamW one; not tuned. Norms/whole tensors stay on AdamW. |
 | `--pissa` | PiSSA (Meng et al. 2024, arXiv:2404.02948): `A`, `B` start at the top-r singular components of `W`, the rest is the frozen residual | randomised subspace iteration (Halko et al. 2011), not a full SVD. The residual cannot replace the quantized base, so the adapter has rank 2r: `[A; A0]`, `[B, -B0]` with the second half frozen (kept fixed even under weight decay); the file stores rank 2r and loads in old readers. Cannot be combined with `--resume` or Muon. |
 
-`DoRA` in the `.kspec`: after the tensors a section `KSDM` (name, rows, magnitudes), then 8 bytes with the offset of that
-section, then the usual `KSXF` trailer with flag 2. Old readers stop after the tensors and ignore the rest, so old
-and new files load everywhere; an *old* reader loads a DoRA file as plain LoRA (adapters without the row scaling), which
-is a different model, silently. Readers of this version apply the magnitudes at load (`KATANA_SPEC`), in `katana merge`
-and in `--resume` (a file with magnitudes needs `--dora`).
+`DoRA` in the `.kspec`: the file starts with the magic `KSPEC3` instead of `KSPEC2`, then the tensors as always, then a
+section `KSDM` (name, rows, magnitudes), 8 bytes with the offset of that section, and the usual `KSXF` trailer with flag
+2. A reader from before this change refuses a `KSPEC3` file ("arquivo de especializacao invalido", checked with a build
+of the previous integration branch) instead of silently loading only the LoRA part, which would be a different model.
+Files without DoRA keep `KSPEC2` and load everywhere (PiSSA files too: rank 2r adapters). Readers of this version accept
+both; they apply the magnitudes at load (`KATANA_SPEC`), in `katana merge` and in `--resume` (a file with magnitudes
+needs `--dora`).
+
+Interaction with the optimizer side file (`.kopt`): it only stores the AdamW moments of whole tensors and adapters, not
+DoRA magnitudes, Muon momentum, the moving average or the PiSSA frozen part. With any of `--dora`, `--optimizer muon`,
+`--ema` or `--pissa` no `.kopt` is written and `--resume` says that the optimizer restarts from zero. The B matrices
+honour `--lr-b` in every optimizer; `--probe-top` frees the method state of the tensors it drops.
+
+### In the real command: `katana specialize`
+
+`specialize` used to pass `--val 0`, so the baseline guard never acted. It now holds out a validation set by whole
+conversation (`--val F`, default 0.1; the training seed fixes which), capped at `--val-max N` windows (default
+`steps / 10`, at least 6) and measured three times (the base before step 1, half way and at the end), which is about 10%
+of the training cost. A training that does not beat the base is refused (exit code 2 of `katana train`, 9 of
+`specialize`, with a `RECUSADA` line and no history entry); `--allow-worse` writes anyway, `--val 0` turns the check off
+with a warning. `katana learn` treats exit code 2 of the training as a refused round (`"train_refused": true` in its
+log) and goes on to the next one. With the window cut of the light step, the KL anchor keeps the whole window (it needs
+the context after the last target) and gathers the output rows of the context positions too.
 
 ### Tests
 
@@ -345,7 +363,8 @@ and in `--resume` (a file with magnitudes needs `--dora`).
   the check fails every time.
 - `katana merge` of a DoRA and of a PiSSA file gives a GGUF whose held-out loss equals the loss measured by `katana
   compare` on the base + file (0.5895 and 0.3693 on the tiny model).
-- Not checked: `KATANA_SPEC` loading of a DoRA file at serve time (same function as merge; only merge and compare were run).
+- `katana serve` with `KATANA_SPEC` set to a DoRA file (tiny model, temperature 0, three prompts) answers the same as the
+  merged GGUF and differently from the base.
 
 ### Comparison on a tiny model (`sh tools/traintest/methods.sh`)
 
@@ -606,6 +625,124 @@ Open points:
 - Sessions hold what the user typed, keys and tokens included: mask them with `--replace` before training.
 - The transcripts are answers of a hosted model: check the provider's terms before training on them.
 - With 39 codebench tasks one more solved is within noise; the rejected-call count is the more sensitive measure.
+
+## Making each trained token teach more: windows, optimizer, probe (2026-11-22)
+
+Goal: fewer steps and less waste to reach the same validation loss. Everything below is an option; no default changed.
+What was measured is separated from what is only an estimate.
+
+### The real data (measured, `gemma4-conventions/data.jsonl`, 1,800 conversations, Gemma 4 tokenizer)
+
+1,126,556 tokens, 223,725 target tokens (19.9% of the tokens are targets), 626 tokens per conversation on average.
+Printed by `katana train` at every start (the "janelas" lines; `--plan 1` prints them and stops).
+
+| window | mode | windows | trained tokens | targets per window | density (targets / trained tokens) |
+|---|---|---|---|---|---|
+| 128 | fixed (old) | 6,295 | 693,536 | 35.5 | 32.3% |
+| 128 | dense, ctx 64, win-min 3 | 5,338 | 630,345 | 41.9 | 35.5% |
+| 256 | fixed (old) | 4,244 | 867,625 | 52.7 | 25.8% |
+| 256 | dense, ctx 64, win-min 3 | 3,343 | 697,806 | 66.9 | 32.1% |
+| 512 | fixed (old) | 2,904 | 1,046,411 | 77.0 | 21.4% |
+| 512 | dense, ctx 64, win-min 3 | 2,166 | 730,029 | 103.3 | 30.6% |
+
+Findings:
+
+- **Nothing is wasted after the last target.** Every conversation ends on a target (0 tokens after the last one), so
+  "end the window at the last target" saves nothing on this data. It would on data that ends with a user turn.
+- **Context-only windows are already free.** Windows without a target are never trained (3,445 of them at 128, with
+  441k tokens, are skipped by the old code too). What the old cut wastes is the *front* of each trained window: the
+  part before its first target (system prompt, user text, tool results). The dense mode trims that to `--win-ctx`
+  tokens before the first target the window owns: 20% fewer trained tokens at 256 for the same 223.7k targets
+  (30% at 512, 9% at 128). Cost: the first target of a window sees at most 64 tokens of context instead of up to the
+  whole window. Whether that hurts a real tool call (the file read that the call refers to may be further back) is
+  **not measured on the real model**: it needs a real run, compared by codebench.
+- **Duplicated context is 1 token per window** (the overlap), nothing to gain.
+- Low-density windows: with 128-token windows 128 windows (2%) have under 5% targets; dense plus `--win-min 3`
+  leaves 51 and loses 70 of 223,725 targets (0.03%). At 256: 130 -> 16 windows, 12 targets lost.
+- **Ordering by length does nothing for the step cost**: windows are run one at a time (gradient accumulated), there
+  is no padding to avoid. Not implemented.
+- **Packing several conversations in one window** (needs attention and DeltaNet state resets at the boundaries, in the
+  step code, not touched): in tokens it would pay nothing, because there is no padding to remove (mean window length
+  is 110 tokens at 128, 204 at 256, 360 at 512, trained as they are). It could only pay if a step has a large
+  constant cost per window (weights read once per product no matter the length), which makes short windows
+  inefficient. That is a measurement for the speed agents: time per step at T = 128, 256 and 512 on the real model.
+  Estimate, not measured: larger `--seq` gives the same effect without touching the step code.
+
+New windowing options (training windows only; validation is always cut with fixed full windows, so loss is comparable
+between runs): `--window fixed|dense`, `--win-ctx N` (default 64), `--win-min N` (drop windows with fewer targets).
+
+### Optimizer and schedule options
+
+| option | what it does |
+|---|---|
+| `--lr-b X` | learning-rate multiplier for the adapter B matrix (B starts at zero, A random) |
+| `--init-a X` | scales the initial A (default 1: uniform, +-1/sqrt(cols)) |
+| `--rs 1` | adapter scale alpha/sqrt(rank) instead of alpha/rank |
+| `--weight tgt` | in an accumulated step, each window weighs by its number of targets (sum over targets / total) instead of the plain mean of window means |
+| `--batch-tgt N` | accumulate windows until the step has N targets (implies `--weight tgt`) |
+| `--val-max N` | deterministic subsample of the validation windows (evenly spaced), to make evaluation cheaper |
+| `--min-rel X` | with `--patience`, an evaluation only counts as an improvement if it is better by the relative margin X |
+| `--opt-state 0/1`, `--resume-opt 0/1` | optimizer moments and step count are written next to the `.kspec` (`<file>.kopt`, only when at most 32M weights train; default on) and read back by `--resume`, so Adam continues with its bias correction instead of restarting. The `.kspec` itself is unchanged, old readers and old files work as before (no `.kopt`: moments restart, as always) |
+| `--probe N`, `--probe-top F` | gradient norm per tensor (B for adapters, whole tensors for the others) over N windows, plus the share per projection and per layer; `--probe-top F` then keeps only the F fraction of tensors with the largest norm (`--probe N` alone prints and stops) |
+
+Bias correction was already right (`1 - beta^step`); with `--resume` it continues from the step stored in the `.kopt`.
+Warm-up for short runs already exists (`--warmup`, default max(10, steps/20)).
+
+### Tiny-model measurements (measured; not evidence for the real model)
+
+Task: `tools/traintest/synth_task.py` (a word to copy twice, buried in 10-120 characters of random filler, 2 to 4
+turns per conversation, only the copy is trained), 300 conversations, validation on 60 other conversations with fixed
+windows. Tiny llama (2 layers, dim 64), rank-8 adapters on attention, `--seq 128 --batch 4`, cosine schedule, CPU.
+Harness: `tools/traintest/opt_compare.py` (sets the steps so every config trains the same 200,000 window tokens,
+3 seeds; the seed changes A and the order of windows). Numbers are the final validation loss, mean (spread over the 3
+seeds is in the column; it is large for some configs, so differences below ~0.05 are not significant).
+
+Old behaviour learning-rate sweep: 1e-3 2.363, 3e-3 1.337, **1e-2 1.211 +- 0.006**, 3e-2 1.992.
+
+| config (lr 1e-2 unless noted) | final val loss | sd |
+|---|---|---|
+| old: fixed windows | 1.211 | 0.006 |
+| dense, ctx 64, win-min 3 | 1.172 | 0.037 |
+| dense, ctx 32 | 1.112 | 0.030 |
+| dense, ctx 16 | 1.030 | 0.089 |
+| `--weight tgt` | 1.182 | 0.054 |
+| `--batch-tgt 43` | 1.194 | 0.062 |
+| `--lr-b 4` at lr 3e-3 | 1.167 | 0.014 |
+| `--lr-b 4` | 1.377 | 0.026 |
+| `--lr-b 16` at lr 1e-3 | 1.201 | 0.037 |
+| `--rs 1` | 1.293 | 0.025 |
+| `--rs 1` at lr 3e-3 | 1.206 | 0.018 |
+| `--init-a 3` | 1.041 | 0.057 |
+| `--init-a 6` | 1.067 | 0.084 |
+| `--init-a 10` at lr 3e-3 | 1.070 | 0.080 |
+| `--init-a 3` + dense ctx 32 | **0.842** | 0.044 |
+| `--init-a 3` + dense ctx 64 | 1.041 | 0.072 |
+| `--init-a 3` + `--weight tgt` | 1.086 | 0.024 |
+| `--init-a 3` + `--lr-b 4` at lr 3e-3 | 1.082 | 0.086 |
+
+Reading: at equal trained tokens, dense windows with a short context and a larger initial A each help clearly on this
+task, and they add up (1.21 -> 0.84, a loss the old setup does not reach in 200k tokens). `--weight tgt`, `--batch-tgt`,
+`--rs` are inside the noise or worse once the learning rate is tuned for the old behaviour; `--lr-b 4` at a lower learning rate gives a small gain (1.167 against 1.211) that disappears when combined with `--init-a`. Limits of
+this evidence: one synthetic task whose useful context is short (which favours trimming the window front), a 64-wide
+model, one learning-rate sweep for the old behaviour only (the variants got two or three learning rates), and only
+200k tokens; the effect of `--init-a` is probably a faster effective step on B for this size and says nothing about
+dim 2816. **Defaults unchanged**: the evidence does not cover the real model.
+
+The step times of these runs were not used (the machine was at a load of 40 to 50 during them): the comparison is
+per trained token, which is what the windowing changes; per-step cost of the new options is nil (the dense windows
+are shorter on average, which only makes a step cheaper).
+
+What did not help on the tiny task: `--rs 1`, a larger B rate on its own (`--lr-b 4` at the best old lr made it
+worse, at a lower lr only equal), weighting by targets, a fixed number of targets per step.
+
+### `--probe` (measured on the tiny model only; not run on the real model: the measurement lock queue was too long)
+
+On the tiny llama with adapters on attention and the feed-forward, B's gradient is not spread evenly: layer 0 held 70%
+of the squared norm, and `ffn_up`/`ffn_gate` 46% against 3.8% for `attn_q`/`attn_k`. The point of the mode is to read
+this on the real model before choosing `--train` patterns, or to let `--probe-top` choose. Training only the upper
+layers would let the step code stop its backward pass at the lowest trained layer (not implemented here).
+Note the norm is of B at its zero start, so it ranks tensors by how much the loss wants to move them, not by what they
+would gain after training.
 
 ## Limits today
 

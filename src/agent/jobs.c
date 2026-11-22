@@ -67,6 +67,7 @@ static void tool_job_start(const char *cmd, char *out, size_t cap) {
         _exit(127);
     }
     close(lf); if (dn >= 0) close(dn);
+    reap_add(pid);
     j->id = ++g_job_seq; j->pid = pid; j->t0 = time(NULL);
     snprintf(j->cmd, sizeof j->cmd, "%.190s", cmd);
     if (!g_job_exit) { atexit(job_all_kill); g_job_exit = 1; }

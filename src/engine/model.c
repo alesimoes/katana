@@ -115,6 +115,7 @@ typedef struct {
     float *ssm;                         /* DeltaNet: estado contiguo; por camada linear, S [cabeca v][dk][dv] e (janela-1) x canais da convolucao */
     int n_lin;                          /* camadas DeltaNet */
     int64_t fsize;                      /* tamanho do arquivo do modelo */
+    uint64_t fid;                       /* identidade dos pesos: data e tamanho do arquivo e das especializacoes aplicadas (cache de prefixo) */
     float *x, *xb, *xb2, *q, *k, *v, *att, *hb, *hb2, *logits, *rope_freq;
     float *rope_freq_swa;               /* gemma4: frequencias das camadas locais */
     size_t n_params;
@@ -180,7 +181,10 @@ static int key_is(const char *k, int kl, const char *s) {
 typedef struct {
     const char *name; int namelen;
     uint64_t dims[4]; uint32_t ndims, type; uint64_t offset;
+    int used;           /* alguem leu este tensor na carga */
 } TInfo;
+/* tensores do arquivo que a carga nao leu (selftest --deep) */
+static struct { char (*name)[96]; uint64_t *bytes; int n; } g_unread;
 
 typedef struct { TInfo *t; uint64_t n; const uint8_t *data, *end; } Tensors;
 
@@ -604,6 +608,7 @@ static float *get_tensor(const Tensors *ts, const char *name, size_t expect, int
     for (uint64_t i = 0; i < ts->n; i++) {
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
+        ((TInfo *)t)->used = 1;
         size_t n = 1;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
         if (n != expect) { fprintf(stderr, "Tensor %s: %zu elementos, esperava %zu\n", name, n, expect); exit(1); }
@@ -632,6 +637,7 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
         if (t->type == T_F32 || t->type == T_F16 || t->type == T_BF16) break;
+        ((TInfo *)t)->used = 1;
         size_t n = 1, stride = qbytes(t->type, cols);
         if (!stride) break;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
@@ -748,6 +754,17 @@ static const uint8_t *map_file(const char *path, int64_t *size) {
 
 static void sample_preset(const char *arch);
 static void spec_apply(Model *m);
+/* mistura data e tamanho de um arquivo na identidade dos pesos: duas fusoes da mesma base tem o mesmo tamanho, o mesmo
+   numero de parametros e o mesmo output_norm, e o cache de prefixo de uma nao serve para a outra */
+static void model_fid(Model *m, const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+    uint64_t v[3] = { (uint64_t)st.st_size, (uint64_t)st.st_mtime, 0 };
+#if !defined(_WIN32) && !defined(__APPLE__)
+    v[2] = (uint64_t)st.st_mtim.tv_nsec;
+#endif
+    for (int i = 0; i < 3; i++) m->fid = (m->fid ^ v[i]) * 0x9E3779B97F4A7C15ULL + (m->fid >> 29);
+}
 static int g_spec_tools = 0;        /* uma especializacao chamada tools.kspec foi aplicada: o modelo ja conhece as ferramentas do agente */
 static void load_model(Model *m, const char *path) {
     int64_t fsz = 0;
@@ -917,6 +934,7 @@ static void load_model(Model *m, const char *path) {
     if (c->n_expert) {
         if (c->hidden_exp) c->hidden = c->hidden_exp;      /* daqui em diante, hidden = largura de UM especialista */
         if (c->hidden_shexp && !c->n_shared && c->hidden_shexp % c->hidden == 0) c->n_shared = c->hidden_shexp / c->hidden;
+        if (c->hidden_shexp && !c->n_shared) die("MoE: largura do especialista compartilhado nao e multipla da de um especialista (seria ignorado)");
         if (c->n_used < 1 || c->n_used > 64 || c->n_used > c->n_expert || c->n_expert > 1024) die("MoE: contagem de especialistas invalida");
     }
     if (!c->dim || !c->n_layers || !c->n_heads || !c->hidden || !tk->n) die("metadados incompletos no GGUF");
@@ -1165,6 +1183,12 @@ static void load_model(Model *m, const char *path) {
 #undef M2
     }
     float *g4_ff = c->g4 ? get_tensor(&ts, "rope_freqs.weight", c->hd / 2, 0, np) : NULL;     /* divisores das frequencias globais */
+    g_unread.name = xalloc(n_tensors + 1, 96); g_unread.bytes = xalloc(n_tensors + 1, sizeof(uint64_t)); g_unread.n = 0;
+    for (uint64_t i = 0; i < n_tensors; i++) if (!ts.t[i].used) {
+        size_t ne = 1; for (uint32_t k = 0; k < ts.t[i].ndims; k++) ne *= (size_t)ts.t[i].dims[k];
+        snprintf(g_unread.name[g_unread.n], 96, "%.*s", ts.t[i].namelen < 95 ? ts.t[i].namelen : 95, ts.t[i].name);
+        g_unread.bytes[g_unread.n++] = qbytes(ts.t[i].type, ne);
+    }
     free(ts.t);   /* o mapeamento do arquivo continua vivo: os pesos apontam para ele */
 
     size_t ctx = c->ctx, L = c->n_layers;
@@ -1275,11 +1299,16 @@ static void load_model(Model *m, const char *path) {
             m->rope_freq[i] *= fs * (1.0f - ramp) + ramp;
         }
         const float ms = 1.0f + c->yarn_logmul * logf(c->yarn_factor);
-        c->kq_mul = ms * ms;
+        if (c->qk_norm == 2) {  /* o fator de atencao do yarn multiplica cos e sin, ou seja, so as dimensoes que giram de q e de k (as
+                                   primeiras nr da cabeca). Entra no peso da norma, que vem logo antes do RoPE: vale igual na CPU e na GPU */
+            for (int l = 0; l < c->n_layers; l++)
+                for (int i = 0; m->layers[l].q_norm && i < nr; i++) { m->layers[l].q_norm[i] *= ms; m->layers[l].k_norm[i] *= ms; }
+        } else c->kq_mul = ms * ms;
     }
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
     m->fsize = fsz;
+    model_fid(m, path);
     shards_open(path, fsz);
     prefetch_setup(fsz);
     if (c->n_expert) warm_start(m);

@@ -30,6 +30,7 @@
 #include "agent/mcp.c"                 /* cliente MCP */
 #include "agent/devtools.c"            /* ferramentas de programacao: edit_file, glob, download, pacotes, git */
 #include "agent/code.c"               /* leitura por trechos e verificacao de sintaxe depois de gravar */
+#include "agent/reaper.c"              /* vigia: encerra os comandos do agente quando ele morre (SIGKILL incluido) */
 #include "agent/exec.c"                /* execucao de comandos: stdin fechado, timeout, inicio+fim da saida, anel dos ultimos comandos */
 #include "agent/sudo.c"                /* sudo: pedido de senha (terminal ou modal), arquivos como root */
 #include "agent/jobs.c"                /* comandos em segundo plano (run_command background, job) */
@@ -94,4 +95,5 @@
 #include "app/curriculum.c"            /* katana curriculum: as convencoes (KATANA.md, skills, MCP) viram dados de treino */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/launch.c"                /* katana sem subcomando: console na pasta atual, headless (-p), install, adopt */
+#include "app/deeptest.c"              /* katana selftest --deep: caminhos, estado, contexto longo, precisao */
 #include "app/main.c"                  /* toktest, subcomandos e main */

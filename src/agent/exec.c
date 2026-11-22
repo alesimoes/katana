@@ -156,6 +156,7 @@ static int run_cmd_ex(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, 
         _exit(127);
     }
     close(pf[1]); if (dn >= 0) close(dn);
+    reap_add(pid);
     g_fg_pid = pid;
     struct sigaction sa, old;
     memset(&sa, 0, sizeof sa); sa.sa_handler = cmd_on_sigint; sigemptyset(&sa.sa_mask);

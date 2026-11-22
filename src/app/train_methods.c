@@ -186,74 +186,89 @@ static void tm_tool_flags(const Model *m, const int *toks, int T, uint8_t *fl) {
     free(tx); free(st); free(bf);
 }
 
-/* soma da perda comum (sem peso nem suavizacao) nos alvos e, em dl, o gradiente da perda moldada nos logits.
-   Perda moldada = sum_t w_t [(1-e)(-log p_y) + e (-media log p)] / sum w  +  L * media_contexto KL(base || modelo).
-   Com tm.ret_shaped devolve o valor dela vezes N (o gradcheck diferencia a perda moldada, nao a comum) */
+/* linhas que passam pela saida: os alvos (ys = token seguinte) e, com a ancora, tambem as posicoes de contexto (ys = -1)
+   ate a ultima posicao da janela. As linhas sao as posicoes pos[i], em ordem. */
+static void tm_rows(const uint8_t *mask, const int *toks, int last, int ctx, int **pos, int **ys, int *nr) {
+    int n = 0;
+    for (int t = 0; t <= last; t++) n += ctx || mask[t];
+    *pos = xalloc((size_t)n, sizeof(int)); *ys = xalloc((size_t)n, sizeof(int));
+    for (int t = 0, i = 0; t <= last; t++) if (ctx || mask[t]) { (*pos)[i] = t; (*ys)[i] = mask[t] ? toks[t + 1] : -1; i++; }
+    *nr = n;
+}
+
+/* Perda moldada = sum_i w_i [(1-e)(-log p_y) + e (-media log p)] / sum w  +  L * media_contexto KL(base || modelo), nas
+   linhas dos alvos e do contexto. Devolve a soma da perda comum nos alvos; com tm_ret_shaped, o valor da moldada vezes N (o
+   gradcheck diferencia a moldada) e, em dl (Nr x V), o gradiente nos logits. blg: logits da base so nas linhas de contexto. */
 static int tm_ret_shaped;
-static double tm_loss(const Model *m, const int *toks, const uint8_t *mask, const float *lg, const float *blg, float *dl, int T, int N) {
+static double tm_loss(const Model *m, const int *toks, int last, const int *pos, const int *ys, int Nr, int N, const float *lg, const float *blg, float *dl) {
     const int V = m->cfg.vocab;
     const float cap = m->cfg.softcap;
-    float *w = xalloc((size_t)T, 4);
-    for (int t = 0; t < T; t++) w[t] = 1.0f;
-    if (tm.force_w) { for (int t = 0; t + 1 < T; t++) w[t] = (t % 4 == 0) ? tm.tool_w : 1.0f; }
+    float *w = xalloc((size_t)Nr, 4);
+    for (int i = 0; i < Nr; i++) w[i] = 1.0f;
+    if (tm.force_w) { for (int i = 0; i < Nr; i++) w[i] = (pos[i] % 4 == 0) ? tm.tool_w : 1.0f; }
     else if (tm.tool_w != 1.0f) {
-        uint8_t *fl = xalloc((size_t)T, 1);
-        tm_tool_flags(m, toks, T, fl);
-        for (int t = 0; t + 1 < T; t++) if (fl[t + 1]) w[t] = tm.tool_w;
+        uint8_t *fl = xalloc((size_t)last + 2, 1);
+        tm_tool_flags(m, toks, last + 2, fl);
+        for (int i = 0; i < Nr; i++) if (ys[i] >= 0 && fl[pos[i] + 1]) w[i] = tm.tool_w;
         free(fl);
     }
     double ws = 0; int nc = 0;
-    for (int t = 0; t + 1 < T; t++) { if (mask[t]) ws += w[t]; else nc++; }
+    for (int i = 0; i < Nr; i++) { if (ys[i] >= 0) ws += w[i]; else nc++; }
     if (ws <= 0) ws = N;
     const double eps = tm.smooth;
     double *pm = xalloc((size_t)V, sizeof(double));
     double sum = 0, shaped = 0;
-    for (int t = 0; t + 1 < T; t++) {
-        const float *z = lg + (size_t)t * V;
-        float *g = dl ? dl + (size_t)t * V : NULL;
-        if (mask[t]) {
-            float mx = z[0]; for (int i = 1; i < V; i++) if (z[i] > mx) mx = z[i];
-            double se = 0, sz = 0; for (int i = 0; i < V; i++) { pm[i] = exp((double)z[i] - mx); se += pm[i]; sz += z[i]; }
+    int jc = 0;
+    for (int i = 0; i < Nr; i++) {
+        const float *z = lg + (size_t)i * V;
+        float *g = dl ? dl + (size_t)i * V : NULL;
+        if (ys[i] >= 0) {
+            float mx = z[0]; for (int e = 1; e < V; e++) if (z[e] > mx) mx = z[e];
+            double se = 0, sz = 0; for (int e = 0; e < V; e++) { pm[e] = exp((double)z[e] - mx); se += pm[e]; sz += z[e]; }
             const double lse = log(se) + mx;
-            const int y = toks[t + 1];
+            const int y = ys[i];
             sum += lse - z[y];
-            shaped += w[t] / ws * ((1.0 - eps) * (lse - z[y]) + eps * (lse - sz / V));
+            shaped += w[i] / ws * ((1.0 - eps) * (lse - z[y]) + eps * (lse - sz / V));
             if (g) {
-                const double sc = (double)t_gscale * w[t] / ws;
-                for (int i = 0; i < V; i++) g[i] = (float)(sc * (pm[i] / se - eps / V));
+                const double sc = (double)t_gscale * w[i] / ws;
+                for (int e = 0; e < V; e++) g[e] = (float)(sc * (pm[e] / se - eps / V));
                 g[y] -= (float)(sc * (1.0 - eps));
             }
         } else if (blg && tm.anchor > 0 && nc > 0) {          /* contexto: KL(base || modelo), gradiente p_m - p_b */
-            const float *zb = blg + (size_t)t * V;
+            const float *zb = blg + (size_t)(jc++) * V;
             shaped += tm.anchor / nc * tm_kl_row(zb, z, V);
             if (g) {
                 float mx = z[0], mb = zb[0];
-                for (int i = 1; i < V; i++) { if (z[i] > mx) mx = z[i]; if (zb[i] > mb) mb = zb[i]; }
+                for (int e = 1; e < V; e++) { if (z[e] > mx) mx = z[e]; if (zb[e] > mb) mb = zb[e]; }
                 double se = 0, sb = 0;
-                for (int i = 0; i < V; i++) { se += exp((double)z[i] - mx); sb += exp((double)zb[i] - mb); }
-                double sc = (double)t_gscale * tm.anchor / nc;
-                for (int i = 0; i < V; i++) g[i] = (float)(sc * (exp((double)z[i] - mx) / se - exp((double)zb[i] - mb) / sb));
+                for (int e = 0; e < V; e++) { se += exp((double)z[e] - mx); sb += exp((double)zb[e] - mb); }
+                const double sc = (double)t_gscale * tm.anchor / nc;
+                for (int e = 0; e < V; e++) g[e] = (float)(sc * (exp((double)z[e] - mx) / se - exp((double)zb[e] - mb) / sb));
             }
         } else continue;
-        if (g && cap > 0.0f) for (int i = 0; i < V; i++) { const float th = z[i] / cap; g[i] *= 1.0f - th * th; }
+        if (g && cap > 0.0f) for (int e = 0; e < V; e++) { const float th = z[e] / cap; g[e] *= 1.0f - th * th; }
     }
     free(pm); free(w);
     return tm_ret_shaped ? shaped * N : sum;
 }
 
-/* logits do modelo base (tudo desligado) para a ancora; preserva a escolha do MoE guardada em A */
-static float *tm_base_lg(Model *m, TTab *tt, const int *toks, void *Av) {
+/* logits do modelo base (tudo desligado) nas linhas de contexto (ys < 0); preserva a escolha do MoE guardada em A */
+static float *tm_base_lg(Model *m, TTab *tt, const int *toks, void *Av, const int *pos, const int *ys, int Nr) {
     TAct *A = (TAct *)Av;
-    const int T = A->T, V = m->cfg.vocab;
+    const int V = m->cfg.vocab, d = m->cfg.dim;
+    int nc = 0; for (int i = 0; i < Nr; i++) nc += ys[i] < 0;
     int *sel = NULL; const int fx = A->fixsel;
-    if (A->sel) { sel = xalloc((size_t)A->Tmax * A->K * m->cfg.n_layers + 1, sizeof(int)); memcpy(sel, A->sel, (size_t)T * A->K * m->cfg.n_layers * sizeof(int)); }
+    const size_t nsel = A->sel ? (size_t)A->T * A->K * m->cfg.n_layers : 0;
+    if (nsel) { sel = xalloc(nsel, sizeof(int)); memcpy(sel, A->sel, nsel * sizeof(int)); }
     A->fixsel = 0; tm_off = 1;
     const int on = tm_on; tm_on = 0;
     t_forward(m, tt, toks, A);
-    float *lg = xalloc((size_t)T * V, 4);
-    t_logits(m, tt, A, lg);
+    float *xs = xalloc((size_t)nc * d + 1, 4), *lg = xalloc((size_t)nc * V + 1, 4);
+    for (int i = 0, j = 0; i < Nr; i++) if (ys[i] < 0) memcpy(xs + (size_t)(j++) * d, A->xnf + (size_t)pos[i] * d, (size_t)d * 4);
+    t_logits(m, tt, xs, nc, lg);
+    free(xs);
     tm_on = on; tm_off = 0; A->fixsel = fx;
-    if (sel) { memcpy(A->sel, sel, (size_t)T * A->K * m->cfg.n_layers * sizeof(int)); free(sel); }
+    if (sel) { memcpy(A->sel, sel, nsel * sizeof(int)); free(sel); }
     return lg;
 }
 
@@ -511,10 +526,10 @@ static void tm_adapter_update(TPar *p, float sc, float lr, float wd, float c1, f
     const int r = p->r;
     if (tm.muon) {
         tm_muon_upd(p->a, p->ga, p->ma1, r, (int)p->cols, sc, lr, wd);
-        tm_muon_upd(p->b, p->gb, p->mb1, (int)p->rows, r, sc, lr, wd);
+        tm_muon_upd(p->b, p->gb, p->mb1, (int)p->rows, r, sc, lr * g_lr_b, wd);
     } else {
         adam_upd(p->a, p->ga, p->ma1, p->ma2, (size_t)r * p->cols, sc, lr, wd, c1, c2);
-        adam_upd(p->b, p->gb, p->mb1, p->mb2, p->rows * (size_t)r, sc, lr, wd, c1, c2);
+        adam_upd(p->b, p->gb, p->mb1, p->mb2, p->rows * (size_t)r, sc, lr * g_lr_b, wd, c1, c2);       /* --lr-b */
     }
     struct TmPar *q = p->tm;
     if (q && q->mag) adam_upd(q->mag, q->gmag, q->mm1, q->mm2, p->rows, sc, lr, 0.0f, c1, c2);
@@ -701,8 +716,8 @@ static double tm_baseline(Model *m, TTab *tt, TAct *A, const TSet *S, int seq, i
         const int T = w->ids.n, V = m->cfg.vocab;
         A->T = T;
         float *l0 = xalloc((size_t)T * V, 4), *l1 = xalloc((size_t)T * V, 4);
-        tm_off = 1; t_forward(m, tt, w->ids.ids, A); t_logits(m, tt, A, l0);
-        tm_off = 0; t_forward(m, tt, w->ids.ids, A); t_logits(m, tt, A, l1);
+        tm_off = 1; t_forward(m, tt, w->ids.ids, A); t_logits(m, tt, A->xnf, T, l0);
+        tm_off = 0; t_forward(m, tt, w->ids.ids, A); t_logits(m, tt, A->xnf, T, l1);
         double worst = 0; for (size_t i = 0; i < (size_t)T * V; i++) { const double d = fabs((double)l0[i] - l1[i]); if (d > worst) worst = d; }
         A->T = seq;
         free(l0); free(l1);
@@ -719,7 +734,7 @@ static float *tm_win_logits(Model *m, TTab *tt, TAct *A, const TEx *w) {
     A->T = w->ids.n;
     t_forward(m, tt, w->ids.ids, A);
     float *lg = xalloc((size_t)A->T * m->cfg.vocab, 4);
-    t_logits(m, tt, A, lg);
+    t_logits(m, tt, A->xnf, A->T, lg);
     return lg;
 }
 static double tm_kl_row(const float *zb, const float *zs, int V) {         /* KL(base || spec) de uma posicao */
@@ -757,7 +772,7 @@ static int tm_prescan(TTab *tt, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "compare: nao abriu %s\n", path); return -1; }
     char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0;
-    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) { fclose(f); fprintf(stderr, "compare: %s nao e uma especializacao\n", path); return -1; }
+    if (fread(mg, 1, 8, f) != 8 || !spec_magic_ok(mg) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) { fclose(f); fprintf(stderr, "compare: %s nao e uma especializacao\n", path); return -1; }
     for (int k = 0; k < n; k++) {
         uint32_t nl = 0, kind = 0; uint64_t r = 0, cc = 0; char name[128];
         if (fread(&nl, 4, 1, f) != 1 || nl == 0 || nl >= sizeof name || fread(name, 1, nl, f) != nl || fread(&kind, 4, 1, f) != 1 || fread(&r, 8, 1, f) != 1 || fread(&cc, 8, 1, f) != 1) { fclose(f); return -1; }
@@ -773,11 +788,18 @@ static int tm_prescan(TTab *tt, const char *path) {
     if (spec_flags(path) & KSPEC_DORA) { tm.dora = 1; for (int i = 0; i < tt->n; i++) tm_dora_enable(&tt->p[i]); }
     return n;
 }
+static void tm_untrain(TPar *p) {          /* estado dos metodos de um parametro que deixa de treinar (sonda, --probe-top) */
+    if (!p->tm) return;
+    struct TmPar *q = p->tm;
+    free(q->mag); free(q->gmag); free(q->mm1); free(q->mm2); free(q->d); free(q->nrm); free(q->nfz); free(q->wn2); free(q->ew); free(q->ea); free(q->eb); free(q->emag); free(q->fa); free(q->fb); free(q);
+    p->tm = NULL;
+}
+static int tm_blocks_opt(void) { return tm.dora || tm.muon || tm.ema > 0 || tm.pissa; }     /* o .kopt nao guarda este estado */
 static void tm_free_tab(TTab *tt) {
     for (int i = 0; i < tt->n; i++) {
         TPar *p = &tt->p[i];
         free(p->w); free(p->g); free(p->m1); free(p->m2); free(p->a); free(p->b); free(p->ga); free(p->gb); free(p->ma1); free(p->ma2); free(p->mb1); free(p->mb2);
-        if (p->tm) { struct TmPar *q = p->tm; free(q->mag); free(q->gmag); free(q->mm1); free(q->mm2); free(q->d); free(q->nrm); free(q->nfz); free(q->wn2); free(q->ew); free(q->ea); free(q->eb); free(q->emag); free(q->fa); free(q->fb); free(q); }
+        tm_untrain(p);
     }
     free(tt->p);
 }

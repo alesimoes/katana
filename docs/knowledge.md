@@ -196,6 +196,14 @@ Honest reading:
 - `selftest` compares the GPU with our exact CPU; an error common to both paths gets through. The
   external check done so far: Qwen3-30B's greedy output matches that of the reference
   engine for ~60 tokens (one test).
+- `selftest <model> --deep [--tokens N] [--text file] [--only names] [--long N] [--full-long] [--long-cpu]
+  [--save-ref f | --ref f] [--no-gpu]` covers what `selftest` does not: GGUF tensors nobody reads, every path against
+  the float32 CPU on real text (KL, argmax flips, error per layer, router near-ties, dispatches and submits per call),
+  state save/restore, going back in the cache, long context, non-finite values (bit test: `isnan` is dead under
+  `-ffast-math`).
+- `tools/tinymodel/check_graph.py ./katana` is the external check of the graph: a plain-Python forward of Qwen3.6 and
+  Gemma 4 written from the published definitions, against the engine's logits on tiny models (no model download).
+- `tools/tooltest/reap.sh` (commands die with the agent) and `tools/tooltest/pfx.sh` (prefix cache tied to the weights).
 
 ## 8. Strengths
 

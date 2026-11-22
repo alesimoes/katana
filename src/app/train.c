@@ -68,8 +68,9 @@ typedef struct { int n; char (*name)[128]; uint64_t *rows; float **mag; } TmDsec
 static void tm_neft_add(float *x, int T, int d);
 static int tm_shape(void);
 static int tm_anchor_on(void);
-static float *tm_base_lg(Model *m, TTab *tt, const int *toks, void *A);
-static double tm_loss(const Model *m, const int *toks, const uint8_t *mask, const float *lg, const float *blg, float *dl, int T, int N);
+static float *tm_base_lg(Model *m, TTab *tt, const int *toks, void *A, const int *pos, const int *ys, int Nr);
+static void tm_rows(const uint8_t *mask, const int *toks, int last, int ctx, int **pos, int **ys, int *nr);
+static double tm_loss(const Model *m, const int *toks, int last, const int *pos, const int *ys, int Nr, int N, const float *lg, const float *blg, float *dl);
 static void tm_pre_opt(TTab *tt);
 static double tm_gradsq(const TPar *p);
 static void tm_clear(TPar *p);
@@ -80,6 +81,8 @@ static void tm_dsec_free(TmDsec *s);
 static void tm_dora_apply(const TmDsec *s, const char *name, float *w, uint64_t r, uint64_t cc);
 static int tm_dora_resume(const char *path, TTab *tt);
 static int tm_gradcheck(Model *m, int T);
+static void tm_untrain(TPar *p);
+static int tm_blocks_opt(void);
 
 static int tt_is_moe(const Model *m, int l) { return m->cfg.n_expert && l >= m->cfg.n_dense && m->layers[l].eg; }
 
@@ -434,10 +437,15 @@ fail:
 }
 
 /* medida das partes do passo (KATANA_TRAIN_PROF=1 imprime no fim): segundos somados por parte */
-enum { TP_MV, TP_MVT, TP_GRAD, TP_ATT_F, TP_ATT_B, TP_HEAD, TP_FWD, TP_BACK, TP_OPT, TP_NPROF };
+enum { TP_MV, TP_MVT, TP_GRAD, TP_ATT_F, TP_ATT_B, TP_HEAD, TP_FWD, TP_BACK, TP_OPT, TP_DN_F, TP_DN_B, TP_MOE_F, TP_MOE_B, TP_NPROF };
 static double tprof[TP_NPROF];
 static const char *tprof_name[TP_NPROF] = { "produto W x (ida)", "produto W^T dy (volta)", "gradiente dos pesos", "atencao (ida)", "atencao (volta)",
-                                            "saida: logits e perda", "ida inteira", "volta inteira", "otimizador" };
+                                            "saida: logits e perda", "ida inteira", "volta inteira", "otimizador",
+                                            "deltanet sem produtos (ida)", "deltanet sem produtos (volta)", "moe sem produtos (ida)", "moe sem produtos (volta)" };
+
+/* tempo de uma parte sem os produtos que ela chama (os produtos tem os seus proprios contadores) */
+#define TPX_BEGIN double tpx_t = now_sec(), tpx_p = tprof[TP_MV] + tprof[TP_MVT] + tprof[TP_GRAD]
+#define TPX_END(i) (tprof[i] += now_sec() - tpx_t - (tprof[TP_MV] + tprof[TP_MVT] + tprof[TP_GRAD] - tpx_p))
 
 /* ---- produtos com um parametro (treinavel em float, ou congelado direto do formato do GGUF) ---- */
 typedef struct { const TPar *p; float *out; const float *x; float *tmp; int B; } TMvJob;
@@ -450,6 +458,8 @@ static const float *tp_row(const TPar *p, size_t r, float *tmp) {
     dequant(p->mat->type, p->mat->q + r * p->mat->stride, tmp, p->cols);
     return tmp;
 }
+
+#include "train_kernels.c"   /* kernels em blocos dos produtos da CPU (KATANA_TRAIN_KERNEL=0 usa os lacos simples abaixo) */
 
 /* out[b][r] = W[r] . x[b] para B vetores de entrada (cada linha e lida/desquantizada uma vez para o lote) */
 static void tmv_job(void *ctx, int r0, int r1) {
@@ -475,7 +485,7 @@ static float *tp_az(const TPar *p, const float *x, int B) {
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
     const double p0 = now_sec();
-    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) pool_for(tmv_job, &j, (int)p->rows, 16);
+    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) { if (tk_on()) tk_mv(p, out, x, B); else pool_for(tmv_job, &j, (int)p->rows, 16); }
     if (!p->r || tm_off) { tprof[TP_MV] += now_sec() - p0; return; }
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
@@ -516,7 +526,7 @@ static void tp_mvT_(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
     const double p0 = now_sec();
-    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
+    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) { if (tk_on()) tk_mvT(p, dx, dy, B); else pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1); }
     if (!p->r || tm_off) { tprof[TP_MVT] += now_sec() - p0; return; }
     const size_t R = p->rows;
     float *t = xalloc(p->r, 4), *u = tm_drop_on(p) ? xalloc(C, 4) : NULL;
@@ -578,35 +588,59 @@ static void tp_grad_(TPar *p, const float *dy, const float *x, int B) {
     }
     if (!p->g) return;
     if (tg_prod(2, p, dy, x, p->g, B)) return;
+    if (tk_on()) { tk_grad(p, dy, x, B); return; }
     TGJob j = { p, dy, x, B };
     pool_for(tg_job, &j, (int)p->rows, 16);
 }
 
+#include "train_kernels_test.c"   /* katana kerneltest: kernels em blocos x lacos simples */
+
 static const float *tp_vec(const TPar *p) { return p->w && !tm_off ? p->w : p->vec; }
 
+/* trabalho pequeno roda na thread principal; pool_for so compensa com trabalho suficiente */
+static void t_pfor(PoolFn fn, void *ctx, int total, size_t work) {
+    if (work < 40000 || pool.n <= 1) fn(ctx, 0, total);
+    else pool_for(fn, ctx, total, total / (pool.n * 4) + 1);
+}
+
 /* RMSNorm de B vetores: y = g * x * inv, inv guardado para o passo para tras */
-static void t_rms(const TPar *gp, const float *x, float *y, float *inv, int B, int d, float eps) {
-    const float *g = gp ? tp_vec(gp) : NULL;           /* gp NULL: norma sem peso (gemma4: v e entrada do roteador) */
-    for (int b = 0; b < B; b++) {
-        const float *xi = x + (size_t)b * d; float *yi = y + (size_t)b * d;
+typedef struct { const float *g, *x; float *y, *inv; int d; float eps; } TRmsJob;
+static void t_rms_job(void *ctx, int b0, int b1) {
+    const TRmsJob *j = (const TRmsJob *)ctx;
+    const int d = j->d;
+    for (int b = b0; b < b1; b++) {
+        const float *xi = j->x + (size_t)b * d; float *yi = j->y + (size_t)b * d;
         double ss = 0; for (int i = 0; i < d; i++) ss += (double)xi[i] * xi[i];
-        const float iv = 1.0f / sqrtf((float)(ss / d) + eps);
-        inv[b] = iv;
-        for (int i = 0; i < d; i++) yi[i] = (g ? g[i] : 1.0f) * (xi[i] * iv);
+        const float iv = 1.0f / sqrtf((float)(ss / d) + j->eps);
+        j->inv[b] = iv;
+        for (int i = 0; i < d; i++) yi[i] = (j->g ? j->g[i] : 1.0f) * (xi[i] * iv);
     }
 }
-/* passo para tras da RMSNorm: dx += ..., dg += dy * x * inv */
-static void t_rms_back(TPar *gp, const float *x, const float *inv, const float *dy, float *dx, int B, int d) {
-    static float *one; static int none;
-    if (!gp && none < d) { free(one); one = xalloc((size_t)d, 4); for (int i = 0; i < d; i++) one[i] = 1.0f; none = d; }
-    const float *g = gp ? tp_vec(gp) : one;
-    for (int b = 0; b < B; b++) {
-        const float *xi = x + (size_t)b * d, *dyi = dy + (size_t)b * d; float *dxi = dx + (size_t)b * d;
-        const float iv = inv[b];
+static void t_rms(const TPar *gp, const float *x, float *y, float *inv, int B, int d, float eps) {
+    TRmsJob j = { gp ? tp_vec(gp) : NULL, x, y, inv, d, eps };   /* gp NULL: norma sem peso (gemma4: v e entrada do roteador) */
+    t_pfor(t_rms_job, &j, B, (size_t)B * d);
+}
+/* passo para tras da RMSNorm: dx += ..., dg += dy * x * inv (o dg soma em ordem, fora das threads) */
+typedef struct { const float *g, *x, *inv, *dy; float *dx; int d; } TRmsBJob;
+static void t_rms_back_job(void *ctx, int b0, int b1) {
+    const TRmsBJob *j = (const TRmsBJob *)ctx;
+    const int d = j->d;
+    for (int b = b0; b < b1; b++) {
+        const float *xi = j->x + (size_t)b * d, *dyi = j->dy + (size_t)b * d; float *dxi = j->dx + (size_t)b * d;
+        const float iv = j->inv[b], *g = j->g;
         double s = 0; for (int i = 0; i < d; i++) s += (double)g[i] * dyi[i] * xi[i];
         const float k = (float)(s / d) * iv * iv * iv;
         for (int i = 0; i < d; i++) dxi[i] += iv * g[i] * dyi[i] - xi[i] * k;
-        if (gp && gp->g) for (int i = 0; i < d; i++) gp->g[i] += dyi[i] * xi[i] * iv;
+    }
+}
+static void t_rms_back(TPar *gp, const float *x, const float *inv, const float *dy, float *dx, int B, int d) {
+    static float *one; static int none;
+    if (!gp && none < d) { free(one); one = xalloc((size_t)d, 4); for (int i = 0; i < d; i++) one[i] = 1.0f; none = d; }
+    TRmsBJob j = { gp ? tp_vec(gp) : one, x, inv, dy, dx, d };
+    t_pfor(t_rms_back_job, &j, B, (size_t)B * d);
+    if (gp && gp->g) for (int b = 0; b < B; b++) {
+        const float *xi = x + (size_t)b * d, *dyi = dy + (size_t)b * d; const float iv = inv[b];
+        for (int i = 0; i < d; i++) gp->g[i] += dyi[i] * xi[i] * iv;
     }
 }
 
@@ -736,10 +770,23 @@ static void t_glu_back(TTab *tt, int ig, int iu, int idn, const float *x, const 
     free(dh); free(da); free(du);
 }
 
+/* agrupa os pares (token, k) por especialista numa so passada: ix = indices j (em ordem) de cada especialista, que ocupam
+   ix[off[e] .. off[e+1]) */
+static void t_moe_bucket(const int *sel, int n, int E, int *ix, int *off) {
+    int *pos = xalloc((size_t)E, sizeof(int));
+    memset(off, 0, (size_t)(E + 1) * sizeof(int));
+    for (int j = 0; j < n; j++) off[sel[j] + 1]++;
+    for (int e = 0; e < E; e++) off[e + 1] += off[e];
+    for (int e = 0; e < E; e++) pos[e] = off[e];
+    for (int j = 0; j < n; j++) ix[pos[sel[j]]++] = j;
+    free(pos);
+}
+
 /* MoE da camada l (x = entrada normalizada [T][d]): roteador softmax, K melhores, pesos (renormalizados se o modelo
    pede), especialistas e compartilhados. out = soma. Guarda tudo para voltar. Mesma conta do motor (moe_route). */
 static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const float *x, float *out) {
     const Config *c = &m->cfg;
+    TPX_BEGIN;
     const int T = A->T, d = c->dim, E = A->E, K = A->K, He = c->hidden;
     float *pr = A->pr + (size_t)l * T * E, *ew = A->ew + (size_t)l * T * K;
     int *sel = A->sel + (size_t)l * T * K;
@@ -772,18 +819,19 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const
     free(ch);
     memset(out, 0, (size_t)T * d * 4);
     /* agrupa os pares (token, k) por especialista: um lote por especialista */
-    int *ix = xalloc((size_t)T * K, sizeof(int));
+    int *ix = xalloc((size_t)T * K, sizeof(int)), *off = xalloc((size_t)E + 1, sizeof(int));
+    t_moe_bucket(sel, T * K, E, ix, off);
     float *xb = xalloc((size_t)T * K * d, 4), *ab = xalloc((size_t)T * K * He, 4), *ub = xalloc((size_t)T * K * He, 4);
     float *hb = xalloc((size_t)T * K * He, 4), *ob = xalloc((size_t)T * K * d, 4);
     for (int e = 0; e < E; e++) {
-        int n = 0;
-        for (int j = 0; j < T * K; j++) if (sel[j] == e) ix[n++] = j;
+        const int n = off[e + 1] - off[e];
         if (!n) continue;
+        const int *ixe = ix + off[e];
         const int base = tt->ex0[l] + 3 * e;
-        for (int i = 0; i < n; i++) memcpy(xb + (size_t)i * d, x + (size_t)(ix[i] / K) * d, d * 4);
+        for (int i = 0; i < n; i++) memcpy(xb + (size_t)i * d, x + (size_t)(ixe[i] / K) * d, d * 4);
         t_glu_fwd(tt, base, base + 1, base + 2, xb, ab, ub, hb, ob, n, He);
         for (int i = 0; i < n; i++) {
-            const size_t j = (size_t)ix[i];
+            const size_t j = (size_t)ixe[i];
             memcpy(ea + j * He, ab + (size_t)i * He, He * 4); memcpy(eu + j * He, ub + (size_t)i * He, He * 4);
             memcpy(eh + j * He, hb + (size_t)i * He, He * 4); memcpy(eo + j * d, ob + (size_t)i * d, d * 4);
             const float w = ew[j];
@@ -791,7 +839,7 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const
             for (int q = 0; q < d; q++) ot[q] += w * ob[(size_t)i * d + q];
         }
     }
-    free(ix); free(xb); free(ab); free(ub); free(hb); free(ob);
+    free(ix); free(off); free(xb); free(ab); free(ub); free(hb); free(ob);
     if (tt->sg[l] >= 0) {
         const int Hs = A->Hs;
         float *sa = A->sa + (size_t)l * T * Hs, *su = A->su + (size_t)l * T * Hs, *sh = A->sh + (size_t)l * T * Hs;
@@ -802,10 +850,12 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const
             for (int i = 0; i < d; i++) out[(size_t)t * d + i] += sgt[t] * so[(size_t)t * d + i];
         }
     }
+    TPX_END(TP_MOE_F);
 }
 
 static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, const float *x, const float *dy, float *dxr, float *dx) {
     const Config *c = &m->cfg;
+    TPX_BEGIN;
     const int T = A->T, d = c->dim, E = A->E, K = A->K, He = c->hidden;
     const float *pr = A->pr + (size_t)l * T * E, *ew = A->ew + (size_t)l * T * K;
     const int *sel = A->sel + (size_t)l * T * K;
@@ -813,7 +863,8 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, cons
     const float *eo = A->eo + (size_t)l * T * K * d;
     float *dz = xalloc((size_t)T * E, 4), *dp = xalloc(E, 4), *dwa = xalloc((size_t)T * K, 4);
     /* especialistas, agrupados como no forward */
-    int *ix = xalloc((size_t)T * K, sizeof(int));
+    int *ix = xalloc((size_t)T * K, sizeof(int)), *off = xalloc((size_t)E + 1, sizeof(int));
+    t_moe_bucket(sel, T * K, E, ix, off);
     float *xb = xalloc((size_t)T * K * d, 4), *ab = xalloc((size_t)T * K * He, 4), *ub = xalloc((size_t)T * K * He, 4);
     float *hb = xalloc((size_t)T * K * He, 4), *db = xalloc((size_t)T * K * d, 4), *dxb = xalloc((size_t)T * K * d, 4);
     for (int j = 0; j < T * K; j++) dwa[j] = dot(eo + (size_t)j * d, dy + (size_t)(j / K) * d, d);     /* d peso do escolhido */
@@ -827,12 +878,12 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, cons
         }
     }
     for (int e = 0; e < E; e++) {
-        int n = 0;
-        for (int j = 0; j < T * K; j++) if (sel[j] == e) ix[n++] = j;
+        const int n = off[e + 1] - off[e];
         if (!n) continue;
+        const int *ixe = ix + off[e];
         const int base = tt->ex0[l] + 3 * e;
         for (int i = 0; i < n; i++) {
-            const size_t j = (size_t)ix[i];
+            const size_t j = (size_t)ixe[i];
             memcpy(xb + (size_t)i * d, x + (j / K) * d, d * 4);
             memcpy(ab + (size_t)i * He, ea + j * He, He * 4); memcpy(ub + (size_t)i * He, eu + j * He, He * 4); memcpy(hb + (size_t)i * He, eh + j * He, He * 4);
             const float *dyt = dy + (j / K) * d;
@@ -840,9 +891,9 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, cons
         }
         memset(dxb, 0, (size_t)n * d * 4);
         t_glu_back(tt, base, base + 1, base + 2, xb, ab, ub, hb, db, dxb, n, He);
-        for (int i = 0; i < n; i++) { float *dt = dx + (size_t)(ix[i] / K) * d; for (int q = 0; q < d; q++) dt[q] += dxb[(size_t)i * d + q]; }
+        for (int i = 0; i < n; i++) { float *dt = dx + (size_t)(ixe[i] / K) * d; for (int q = 0; q < d; q++) dt[q] += dxb[(size_t)i * d + q]; }
     }
-    free(ix); free(xb); free(ab); free(ub); free(hb); free(db); free(dxb);
+    free(ix); free(off); free(xb); free(ab); free(ub); free(hb); free(db); free(dxb);
     for (int t = 0; t < T; t++) {
         const float *p = pr + (size_t)t * E;
         const float *dw = dwa + (size_t)t * K;
@@ -886,6 +937,7 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, cons
         free(dso);
     }
     free(dz); free(dp); free(dwa);
+    TPX_END(TP_MOE_B);
 }
 
 /* ---- Gated DeltaNet (camada linear do qwen35): mesma conta do motor (dn_proj, dn_conv, dn_recur, dn_gate) ----
@@ -903,28 +955,82 @@ static float t_softplus(float a) { return a > 20.0f ? a : log1pf(expf(a)); }
    KATANA_TRAIN_DNCK muda o bloco (1 = guarda todos). */
 static int t_dn_ck(void) { static int v; if (!v) { v = getenv("KATANA_TRAIN_DNCK") ? atoi(getenv("KATANA_TRAIN_DNCK")) : 64; if (v < 1) v = 1; } return v; }
 
-/* um passo da recorrencia para todas as cabecas: Sp -> Sn (podem ser buffers diferentes), o opcional */
-static void t_dn_step(const Config *c, const float *qkt, const float *cst, const float *dect, const float *bett, const float *Sp, float *Sn, float *ot) {
+/* contexto das tarefas em threads do DeltaNet (cada tarefa usa so os campos de que precisa) */
+typedef struct {
+    const Config *c;
+    int T, C, K, dk, ng, nv, in, dv, kd, CK;
+    size_t NS;
+    const float *cw, *sa, *dtb, *Sck;
+    float *raw, *cy, *cs, *qk, *iqk, *z, *al, *be, *dec, *bet, *S, *o, *og, *on;
+    float *dog, *don, *dz, *dor, *dqk, *dcs, *ddec, *dbet, *dS, *dcy, *draw;
+    TPar *pcv;
+} TDn;
+
+/* um passo da recorrencia de uma cabeca h: S0 -> S1 (buffers diferentes), saida ot (dv valores) opcional */
+static void t_dn_hstep(const Config *c, int h, const float *qkt, const float *cst, float dd, float bb, const float *S0, float *S1, float *ot) {
     const int dk = c->ssm_state, ng = c->ssm_groups, nv = c->ssm_rank, dv = c->ssm_inner / nv, kd = ng * dk;
     float kvv[512];
-    for (int h = 0; h < nv; h++) {
-        const int kg = t_dn_group(c, h);
-        const float *q = qkt + (size_t)kg * dk, *k = qkt + kd + (size_t)kg * dk, *v = cst + 2 * kd + (size_t)h * dv;
-        const float *S0 = Sp + (size_t)h * dk * dv;
-        float *S1 = Sn + (size_t)h * dk * dv;
-        const float dd = dect[h], bb = bett[h];
-        for (int j = 0; j < dv; j++) kvv[j] = 0;
-        for (int i = 0; i < dk; i++) for (int j = 0; j < dv; j++) { S1[(size_t)i * dv + j] = dd * S0[(size_t)i * dv + j]; kvv[j] += S1[(size_t)i * dv + j] * k[i]; }
-        for (int j = 0; j < dv; j++) kvv[j] = (v[j] - kvv[j]) * bb;
-        if (ot) for (int j = 0; j < dv; j++) ot[(size_t)h * dv + j] = 0;
-        for (int i = 0; i < dk; i++) for (int j = 0; j < dv; j++) {
-            S1[(size_t)i * dv + j] += k[i] * kvv[j];
-            if (ot) ot[(size_t)h * dv + j] += S1[(size_t)i * dv + j] * q[i];
-        }
+    const int kg = t_dn_group(c, h);
+    const float *q = qkt + (size_t)kg * dk, *k = qkt + kd + (size_t)kg * dk, *v = cst + 2 * kd + (size_t)h * dv;
+    for (int j = 0; j < dv; j++) kvv[j] = 0;
+    for (int i = 0; i < dk; i++) for (int j = 0; j < dv; j++) { S1[(size_t)i * dv + j] = dd * S0[(size_t)i * dv + j]; kvv[j] += S1[(size_t)i * dv + j] * k[i]; }
+    for (int j = 0; j < dv; j++) kvv[j] = (v[j] - kvv[j]) * bb;
+    if (ot) for (int j = 0; j < dv; j++) ot[j] = 0;
+    for (int i = 0; i < dk; i++) for (int j = 0; j < dv; j++) {
+        S1[(size_t)i * dv + j] += k[i] * kvv[j];
+        if (ot) ot[j] += S1[(size_t)i * dv + j] * q[i];
     }
 }
 
+static void t_dn_conv_job(void *ctx, int c0, int c1) {              /* convolucao causal por canal e SiLU */
+    const TDn *J = (const TDn *)ctx;
+    for (int t = 0; t < J->T; t++) for (int ch = c0; ch < c1; ch++) {
+        float y = 0;
+        for (int j = 0; j < J->K; j++) { const int ts = t - (J->K - 1) + j; if (ts >= 0) y += J->cw[(size_t)ch * J->K + j] * J->raw[(size_t)ts * J->C + ch]; }
+        J->cy[(size_t)t * J->C + ch] = y; J->cs[(size_t)t * J->C + ch] = t_silu(y);
+    }
+}
+static void t_dn_l2_job(void *ctx, int t0, int t1) {                /* normas L2 de q e k por grupo */
+    const TDn *J = (const TDn *)ctx;
+    const int ng = J->ng, dk = J->dk, kd = J->kd;
+    for (int t = t0; t < t1; t++) for (int g = 0; g < 2 * ng; g++) {
+        const float *p = J->cs + (size_t)t * J->C + (size_t)g * dk;
+        const float inv = 1.0f / sqrtf(dot(p, p, dk) + J->c->eps) * (g < ng ? 1.0f / sqrtf((float)dk) : 1.0f);
+        J->iqk[(size_t)t * 2 * ng + g] = inv;
+        for (int i = 0; i < dk; i++) J->qk[(size_t)t * 2 * kd + (size_t)g * dk + i] = p[i] * inv;
+    }
+}
+static void t_dn_decbet_job(void *ctx, int t0, int t1) {
+    const TDn *J = (const TDn *)ctx;
+    const int nv = J->nv;
+    for (int t = t0; t < t1; t++) for (int h = 0; h < nv; h++) {
+        const float a = J->al[(size_t)t * nv + h] + J->dtb[h];
+        J->dec[(size_t)t * nv + h] = expf(J->sa[h] * t_softplus(a));
+        J->bet[(size_t)t * nv + h] = 1.0f / (1.0f + expf(-J->be[(size_t)t * nv + h]));
+    }
+}
+static void t_dn_rec_job(void *ctx, int h0, int h1) {               /* recorrencia: uma cabeca por vez, todos os tokens */
+    const TDn *J = (const TDn *)ctx;
+    const size_t dkdv = (size_t)J->dk * J->dv;
+    float *cur = xalloc(dkdv, 4), *nxt = xalloc(dkdv, 4);
+    for (int h = h0; h < h1; h++) {
+        memset(cur, 0, dkdv * 4);                                    /* estado zero no inicio da sequencia */
+        for (int t = 0; t < J->T; t++) {
+            if (t % J->CK == 0) memcpy(J->S + (size_t)(t / J->CK) * J->NS + (size_t)h * dkdv, cur, dkdv * 4);   /* ponto de controle */
+            t_dn_hstep(J->c, h, J->qk + (size_t)t * 2 * J->kd, J->cs + (size_t)t * J->C, J->dec[(size_t)t * J->nv + h], J->bet[(size_t)t * J->nv + h],
+                       cur, nxt, J->o + (size_t)t * J->in + (size_t)h * J->dv);
+            float *sw = cur; cur = nxt; nxt = sw;
+        }
+    }
+    free(cur); free(nxt);
+}
+static void t_dn_gate_job(void *ctx, int i0, int i1) {
+    const TDn *J = (const TDn *)ctx;
+    for (int i = i0; i < i1; i++) J->og[i] = J->on[i] * t_silu(J->z[i]);
+}
+
 static void t_dn_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float *out) {
+    TPX_BEGIN;
     const Config *c = &m->cfg;
     const int T = A->T, C = (int)dn_channels(c), K = c->ssm_conv, dk = c->ssm_state, ng = c->ssm_groups, nv = c->ssm_rank;
     const int in = c->ssm_inner, dv = in / nv, kd = ng * dk;
@@ -940,35 +1046,137 @@ static void t_dn_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float *
     tp_mv(&tt->p[tt->dal[l]], al, x, T);
     tp_mv(&tt->p[tt->dbe[l]], be, x, T);
     const float *cw = tp_vec(&tt->p[tt->dcv[l]]), *sa = tp_vec(&tt->p[tt->dsa[l]]), *dtb = tp_vec(&tt->p[tt->ddt[l]]);
-    for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
-        float y = 0;
-        for (int j = 0; j < K; j++) { const int ts = t - (K - 1) + j; if (ts >= 0) y += cw[(size_t)ch * K + j] * raw[(size_t)ts * C + ch]; }
-        cy[(size_t)t * C + ch] = y; cs[(size_t)t * C + ch] = t_silu(y);
-    }
-    for (int t = 0; t < T; t++) for (int g = 0; g < 2 * ng; g++) {
-        const float *p = cs + (size_t)t * C + (size_t)g * dk;
-        const float inv = 1.0f / sqrtf(dot(p, p, dk) + c->eps) * (g < ng ? 1.0f / sqrtf((float)dk) : 1.0f);
-        iqk[(size_t)t * 2 * ng + g] = inv;
-        for (int i = 0; i < dk; i++) qk[(size_t)t * 2 * kd + (size_t)g * dk + i] = p[i] * inv;
-    }
-    for (int t = 0; t < T; t++) for (int h = 0; h < nv; h++) {
-        const float a = al[(size_t)t * nv + h] + dtb[h];
-        dec[(size_t)t * nv + h] = expf(sa[h] * t_softplus(a));
-        bet[(size_t)t * nv + h] = 1.0f / (1.0f + expf(-be[(size_t)t * nv + h]));
-    }
-    float *cur = xalloc(NS, 4), *nxt = xalloc(NS, 4);     /* estado zero no inicio da sequencia */
-    for (int t = 0; t < T; t++) {
-        if (t % CK == 0) memcpy(S + (size_t)(t / CK) * NS, cur, NS * 4);     /* ponto de controle: estado antes do passo t */
-        t_dn_step(c, qk + (size_t)t * 2 * kd, cs + (size_t)t * C, dec + (size_t)t * nv, bet + (size_t)t * nv, cur, nxt, o + (size_t)t * in);
-        float *sw = cur; cur = nxt; nxt = sw;
-    }
-    free(cur); free(nxt);
+    TDn J = { .c = c, .T = T, .C = C, .K = K, .dk = dk, .ng = ng, .nv = nv, .in = in, .dv = dv, .kd = kd, .CK = CK, .NS = NS,
+              .cw = cw, .sa = sa, .dtb = dtb, .raw = raw, .cy = cy, .cs = cs, .qk = qk, .iqk = iqk, .z = z, .al = al, .be = be,
+              .dec = dec, .bet = bet, .S = S, .o = o, .og = og, .on = on };
+    t_pfor(t_dn_conv_job, &J, C, (size_t)T * C * (K + 8));
+    t_pfor(t_dn_l2_job, &J, T, (size_t)T * 2 * ng * dk * 4);
+    t_pfor(t_dn_decbet_job, &J, T, (size_t)T * nv * 40);
+    t_pfor(t_dn_rec_job, &J, nv, (size_t)T * nv * dk * dv * 4);
     t_rms(&tt->p[tt->dsn[l]], o, on, io, T * nv, dv, c->eps);
-    for (size_t i = 0; i < (size_t)T * in; i++) og[i] = on[i] * t_silu(z[i]);
+    t_pfor(t_dn_gate_job, &J, T * in, (size_t)T * in * 20);
     tp_mv(&tt->p[tt->dout[l]], out, og, T);
+    TPX_END(TP_DN_F);
 }
 
-static void t_dn_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const float *dy, float *dx) {
+static void t_dn_dg_job(void *ctx, int i0, int i1) {                /* gradiente da saida com portao */
+    const TDn *J = (const TDn *)ctx;
+    for (int i = i0; i < i1; i++) {
+        const float g = J->z[i], sg = 1.0f / (1.0f + expf(-g));
+        J->don[i] = J->dog[i] * g * sg;
+        J->dz[i] = J->dog[i] * J->on[i] * sg * (1.0f + g * (1.0f - sg));
+    }
+}
+/* recorrencia de tras para frente, um grupo q/k por tarefa (as cabecas de um grupo dividem dq e dk, e entram em ordem
+   como no laco sequencial); dS e o gradiente do estado depois do passo; os estados vem dos pontos de controle,
+   refeitos um bloco por vez para cada cabeca do grupo */
+static void t_dn_rb_job(void *ctx, int g0, int g1) {
+    const TDn *J = (const TDn *)ctx;
+    const Config *c = J->c;
+    const int T = J->T, dk = J->dk, dv = J->dv, nv = J->nv, in = J->in, kd = J->kd, C = J->C, CK = J->CK;
+    const size_t dkdv = (size_t)dk * dv;
+    int *hs = xalloc((size_t)nv, sizeof(int));
+    float *Sp = xalloc(dkdv, 4);
+    float kvv[512], dlt[512], ddl[512], dkv[512];
+    for (int kg = g0; kg < g1; kg++) {
+        int nh = 0;
+        for (int h = 0; h < nv; h++) if (t_dn_group(c, h) == kg) hs[nh++] = h;
+        if (!nh) continue;
+        float *Sl = xalloc((size_t)nh * (CK + 1) * dkdv, 4);       /* estados do bloco, por cabeca */
+        int blk = -1;
+        for (int t = T - 1; t >= 0; t--) {
+            const int t0 = t / CK * CK;
+            if (blk != t0) {
+                blk = t0;
+                const int t1 = t0 + CK < T ? t0 + CK : T;
+                for (int hi = 0; hi < nh; hi++) {
+                    const int h = hs[hi];
+                    float *Slh = Sl + (size_t)hi * (CK + 1) * dkdv;
+                    memcpy(Slh, J->Sck + (size_t)(t0 / CK) * J->NS + (size_t)h * dkdv, dkdv * 4);
+                    for (int u = t0; u < t1; u++)
+                        t_dn_hstep(c, h, J->qk + (size_t)u * 2 * kd, J->cs + (size_t)u * C, J->dec[(size_t)u * nv + h], J->bet[(size_t)u * nv + h],
+                                   Slh + (size_t)(u - t0) * dkdv, Slh + (size_t)(u - t0 + 1) * dkdv, NULL);
+                }
+            }
+            for (int hi = 0; hi < nh; hi++) {
+                const int h = hs[hi];
+                const float *Slh = Sl + (size_t)hi * (CK + 1) * dkdv;
+                const float *q = J->qk + (size_t)t * 2 * kd + (size_t)kg * dk, *k = J->qk + (size_t)t * 2 * kd + kd + (size_t)kg * dk;
+                const float *v = J->cs + (size_t)t * C + 2 * kd + (size_t)h * dv;
+                const float *S0 = Slh + (size_t)(t - t0) * dkdv, *Sn = Slh + (size_t)(t - t0 + 1) * dkdv;
+                const float *doh = J->dor + (size_t)t * in + (size_t)h * dv;
+                float *dSh = J->dS + (size_t)h * dkdv;
+                float *dq = J->dqk + (size_t)t * 2 * kd + (size_t)kg * dk, *dk_ = J->dqk + (size_t)t * 2 * kd + kd + (size_t)kg * dk;
+                float *dvv = J->dcs + (size_t)t * C + 2 * kd + (size_t)h * dv;
+                const float dd = J->dec[(size_t)t * nv + h], bb = J->bet[(size_t)t * nv + h];
+                /* refaz o passo: Sp = dd S0, kvv = Sp^T k, delta = bb (v - kvv) */
+                for (int j = 0; j < dv; j++) kvv[j] = 0;
+                for (int i = 0; i < dk; i++) for (int j = 0; j < dv; j++) { Sp[(size_t)i * dv + j] = dd * S0[(size_t)i * dv + j]; kvv[j] += Sp[(size_t)i * dv + j] * k[i]; }
+                for (int j = 0; j < dv; j++) dlt[j] = bb * (v[j] - kvv[j]);
+                /* o = Sn^T q */
+                for (int i = 0; i < dk; i++) {
+                    float s = 0;
+                    for (int j = 0; j < dv; j++) { dSh[(size_t)i * dv + j] += q[i] * doh[j]; s += Sn[(size_t)i * dv + j] * doh[j]; }
+                    dq[i] += s;
+                }
+                /* Sn = Sp + k delta^T */
+                for (int j = 0; j < dv; j++) ddl[j] = 0;
+                for (int i = 0; i < dk; i++) {
+                    float s = 0;
+                    for (int j = 0; j < dv; j++) { ddl[j] += dSh[(size_t)i * dv + j] * k[i]; s += dSh[(size_t)i * dv + j] * dlt[j]; }
+                    dk_[i] += s;
+                }
+                /* delta = bb (v - kvv) */
+                double db = 0;
+                for (int j = 0; j < dv; j++) { dvv[j] += bb * ddl[j]; dkv[j] = -bb * ddl[j]; db += (double)ddl[j] * (v[j] - kvv[j]); }
+                J->dbet[(size_t)t * nv + h] += (float)db;
+                /* kvv = Sp^T k: dSp = dSn + k dkv^T */
+                for (int i = 0; i < dk; i++) {
+                    float s = 0;
+                    for (int j = 0; j < dv; j++) { s += Sp[(size_t)i * dv + j] * dkv[j]; dSh[(size_t)i * dv + j] += k[i] * dkv[j]; }
+                    dk_[i] += s;
+                }
+                /* Sp = dd S0 */
+                double sd = 0;
+                for (size_t i = 0; i < dkdv; i++) { sd += (double)dSh[i] * S0[i]; dSh[i] *= dd; }
+                J->ddec[(size_t)t * nv + h] += (float)sd;
+            }
+        }
+        free(Sl);
+    }
+    free(hs); free(Sp);
+}
+static void t_dn_l2b_job(void *ctx, int t0, int t1) {               /* volta das normas L2 de q e k: y = x * inv, inv = s / sqrt(x.x + eps) */
+    const TDn *J = (const TDn *)ctx;
+    const int ng = J->ng, dk = J->dk, kd = J->kd;
+    for (int t = t0; t < t1; t++) for (int g = 0; g < 2 * ng; g++) {
+        const float *xg = J->cs + (size_t)t * J->C + (size_t)g * dk, *dyg = J->dqk + (size_t)t * 2 * kd + (size_t)g * dk;
+        const float inv = J->iqk[(size_t)t * 2 * ng + g], s = g < ng ? 1.0f / sqrtf((float)dk) : 1.0f, r = inv / s;
+        const float xd = dot(xg, dyg, dk);
+        float *dxg = J->dcs + (size_t)t * J->C + (size_t)g * dk;
+        for (int i = 0; i < dk; i++) dxg[i] += inv * dyg[i] - s * r * r * r * xg[i] * xd;
+    }
+}
+static void t_dn_silub_job(void *ctx, int i0, int i1) {
+    const TDn *J = (const TDn *)ctx;
+    for (int i = i0; i < i1; i++) { const float g = J->cy[i], sg = 1.0f / (1.0f + expf(-g)); J->dcy[i] = J->dcs[i] * sg * (1.0f + g * (1.0f - sg)); }
+}
+static void t_dn_convb_job(void *ctx, int c0, int c1) {             /* volta da convolucao: um canal inteiro por vez, tokens em ordem */
+    const TDn *J = (const TDn *)ctx;
+    for (int t = 0; t < J->T; t++) for (int ch = c0; ch < c1; ch++) {
+        const float gy = J->dcy[(size_t)t * J->C + ch];
+        if (gy == 0.0f) continue;
+        for (int j = 0; j < J->K; j++) {
+            const int ts = t - (J->K - 1) + j;
+            if (ts < 0) continue;
+            J->draw[(size_t)ts * J->C + ch] += J->cw[(size_t)ch * J->K + j] * gy;
+            if (J->pcv->g) J->pcv->g[(size_t)ch * J->K + j] += gy * J->raw[(size_t)ts * J->C + ch];
+        }
+    }
+}
+
+static void t_dn_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const float *dy, float *dx, int need_in) {
+    TPX_BEGIN;
     const Config *c = &m->cfg;
     const int T = A->T, C = (int)dn_channels(c), K = c->ssm_conv, dk = c->ssm_state, ng = c->ssm_groups, nv = c->ssm_rank;
     const int in = c->ssm_inner, dv = in / nv, kd = ng * dk;
@@ -985,73 +1193,16 @@ static void t_dn_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const 
     float *dog = xalloc((size_t)T * in, 4), *don = xalloc((size_t)T * in, 4), *dz = xalloc((size_t)T * in, 4), *dor = xalloc((size_t)T * in, 4);
     tp_grad(&tt->p[tt->dout[l]], dy, og, T);
     tp_mvT(&tt->p[tt->dout[l]], dog, dy, T);
-    for (size_t i = 0; i < (size_t)T * in; i++) {
-        const float g = z[i], sg = 1.0f / (1.0f + expf(-g));
-        don[i] = dog[i] * g * sg;
-        dz[i] = dog[i] * on[i] * sg * (1.0f + g * (1.0f - sg));
-    }
-    t_rms_back(&tt->p[tt->dsn[l]], o, io, don, dor, T * nv, dv);
-    /* recorrencia, de tras para frente; dS e o gradiente do estado depois do passo */
     float *dqk = xalloc((size_t)T * 2 * kd, 4), *dcs = xalloc((size_t)T * C, 4), *ddec = xalloc((size_t)T * nv, 4), *dbet = xalloc((size_t)T * nv, 4);
-    float *dS = xalloc(NS, 4), *Sp = xalloc((size_t)dk * dv, 4);
-    float *Sl = xalloc((size_t)(CK + 1) * NS, 4);           /* estados do bloco, refeitos a partir do ponto de controle */
-    float kvv[512], dlt[512], ddl[512], dkv[512];
-    int blk = -1;
-    for (int t = T - 1; t >= 0; t--) {
-        const int t0 = t / CK * CK;
-        if (blk != t0) {
-            blk = t0;
-            memcpy(Sl, Sck + (size_t)(t0 / CK) * NS, NS * 4);
-            const int t1 = t0 + CK < T ? t0 + CK : T;
-            for (int u = t0; u < t1; u++)
-                t_dn_step(c, qk + (size_t)u * 2 * kd, cs + (size_t)u * C, dec + (size_t)u * nv, bet + (size_t)u * nv,
-                          Sl + (size_t)(u - t0) * NS, Sl + (size_t)(u - t0 + 1) * NS, NULL);
-        }
-        const float *S = Sl - (size_t)t0 * NS;              /* S + t*NS = estado antes do passo t */
-    for (int h = 0; h < nv; h++) {
-        const int kg = t_dn_group(c, h);
-        const float *q = qk + (size_t)t * 2 * kd + (size_t)kg * dk, *k = qk + (size_t)t * 2 * kd + kd + (size_t)kg * dk;
-        const float *v = cs + (size_t)t * C + 2 * kd + (size_t)h * dv;
-        const float *S0 = S + (size_t)t * NS + (size_t)h * dk * dv, *Sn = S + (size_t)(t + 1) * NS + (size_t)h * dk * dv;
-        const float *doh = dor + (size_t)t * in + (size_t)h * dv;
-        float *dSh = dS + (size_t)h * dk * dv;
-        float *dq = dqk + (size_t)t * 2 * kd + (size_t)kg * dk, *dk_ = dqk + (size_t)t * 2 * kd + kd + (size_t)kg * dk;
-        float *dvv = dcs + (size_t)t * C + 2 * kd + (size_t)h * dv;
-        const float dd = dec[(size_t)t * nv + h], bb = bet[(size_t)t * nv + h];
-        /* refaz o passo: Sp = dd S0, kvv = Sp^T k, delta = bb (v - kvv) */
-        for (int j = 0; j < dv; j++) kvv[j] = 0;
-        for (int i = 0; i < dk; i++) for (int j = 0; j < dv; j++) { Sp[(size_t)i * dv + j] = dd * S0[(size_t)i * dv + j]; kvv[j] += Sp[(size_t)i * dv + j] * k[i]; }
-        for (int j = 0; j < dv; j++) dlt[j] = bb * (v[j] - kvv[j]);
-        /* o = Sn^T q */
-        for (int i = 0; i < dk; i++) {
-            float s = 0;
-            for (int j = 0; j < dv; j++) { dSh[(size_t)i * dv + j] += q[i] * doh[j]; s += Sn[(size_t)i * dv + j] * doh[j]; }
-            dq[i] += s;
-        }
-        /* Sn = Sp + k delta^T */
-        for (int j = 0; j < dv; j++) ddl[j] = 0;
-        for (int i = 0; i < dk; i++) {
-            float s = 0;
-            for (int j = 0; j < dv; j++) { ddl[j] += dSh[(size_t)i * dv + j] * k[i]; s += dSh[(size_t)i * dv + j] * dlt[j]; }
-            dk_[i] += s;
-        }
-        /* delta = bb (v - kvv) */
-        double db = 0;
-        for (int j = 0; j < dv; j++) { dvv[j] += bb * ddl[j]; dkv[j] = -bb * ddl[j]; db += (double)ddl[j] * (v[j] - kvv[j]); }
-        dbet[(size_t)t * nv + h] += (float)db;
-        /* kvv = Sp^T k: dSp = dSn + k dkv^T */
-        for (int i = 0; i < dk; i++) {
-            float s = 0;
-            for (int j = 0; j < dv; j++) { s += Sp[(size_t)i * dv + j] * dkv[j]; dSh[(size_t)i * dv + j] += k[i] * dkv[j]; }
-            dk_[i] += s;
-        }
-        /* Sp = dd S0 */
-        double sd = 0;
-        for (size_t i = 0; i < (size_t)dk * dv; i++) { sd += (double)dSh[i] * S0[i]; dSh[i] *= dd; }
-        ddec[(size_t)t * nv + h] += (float)sd;
-    }
-    }
-    free(Sl);
+    float *dS = xalloc(NS, 4);
+    float *dcy = xalloc((size_t)T * C, 4), *draw = xalloc((size_t)T * C, 4);
+    TDn J = { .c = c, .T = T, .C = C, .K = K, .dk = dk, .ng = ng, .nv = nv, .in = in, .dv = dv, .kd = kd, .CK = CK, .NS = NS,
+              .cw = cw, .sa = sa, .dtb = dtb, .Sck = Sck, .raw = (float *)raw, .cy = (float *)cy, .cs = (float *)cs, .qk = (float *)qk, .iqk = (float *)iqk,
+              .z = (float *)z, .al = (float *)al, .dec = (float *)dec, .bet = (float *)bet, .o = (float *)o, .on = (float *)on,
+              .dog = dog, .don = don, .dz = dz, .dor = dor, .dqk = dqk, .dcs = dcs, .ddec = ddec, .dbet = dbet, .dS = dS, .dcy = dcy, .draw = draw, .pcv = pcv };
+    t_pfor(t_dn_dg_job, &J, T * in, (size_t)T * in * 20);
+    t_rms_back(&tt->p[tt->dsn[l]], o, io, don, dor, T * nv, dv);
+    t_pfor(t_dn_rb_job, &J, ng, (size_t)T * nv * dk * dv * 12);
     /* decaimento e beta -> alpha, dt_bias, ssm_a, beta */
     float *dal = xalloc((size_t)T * nv, 4), *dbe = xalloc((size_t)T * nv, 4);
     for (int t = 0; t < T; t++) for (int h = 0; h < nv; h++) {
@@ -1064,34 +1215,97 @@ static void t_dn_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const 
         if (pdt->g) pdt->g[h] += da;
         dbe[j] = dbet[j] * bet[j] * (1.0f - bet[j]);
     }
-    /* normas L2 de q e k: y = x * inv, inv = s / sqrt(x.x + eps) */
-    for (int t = 0; t < T; t++) for (int g = 0; g < 2 * ng; g++) {
-        const float *xg = cs + (size_t)t * C + (size_t)g * dk, *dyg = dqk + (size_t)t * 2 * kd + (size_t)g * dk;
-        const float inv = iqk[(size_t)t * 2 * ng + g], s = g < ng ? 1.0f / sqrtf((float)dk) : 1.0f, r = inv / s;
-        const float xd = dot(xg, dyg, dk);
-        float *dxg = dcs + (size_t)t * C + (size_t)g * dk;
-        for (int i = 0; i < dk; i++) dxg[i] += inv * dyg[i] - s * r * r * r * xg[i] * xd;
+    t_pfor(t_dn_l2b_job, &J, T, (size_t)T * 2 * ng * dk * 6);
+    t_pfor(t_dn_silub_job, &J, T * C, (size_t)T * C * 20);
+    t_pfor(t_dn_convb_job, &J, C, (size_t)T * C * (K * 2 + 2));
+    /* projecoes */
+    tp_grad(&tt->p[tt->dqkv[l]], draw, x, T); if (need_in) tp_mvT(&tt->p[tt->dqkv[l]], dx, draw, T);
+    tp_grad(&tt->p[tt->dz[l]], dz, x, T);     if (need_in) tp_mvT(&tt->p[tt->dz[l]], dx, dz, T);
+    tp_grad(&tt->p[tt->dal[l]], dal, x, T);   if (need_in) tp_mvT(&tt->p[tt->dal[l]], dx, dal, T);
+    tp_grad(&tt->p[tt->dbe[l]], dbe, x, T);   if (need_in) tp_mvT(&tt->p[tt->dbe[l]], dx, dbe, T);
+    free(dog); free(don); free(dz); free(dor); free(dqk); free(dcs); free(ddec); free(dbet); free(dS);
+    free(dal); free(dbe); free(dcy); free(draw);
+    TPX_END(TP_DN_B);
+}
+
+/* ---- atencao causal (janela win; win >= T = completa) para todas as cabecas, em threads ----
+   ida: cada (posicao, cabeca) e independente. volta: uma thread por cabeca, com dk e dv proprios da cabeca (varias
+   cabecas dividem a mesma cabeca kv); a soma em dk e dv e feita depois, cabeca a cabeca em ordem. */
+typedef struct { const float *q, *k, *v, *dao; float *ao, *dq, *dkp, *dvp, *dk, *dv; int T, nh, hd, group, qd, kvd, win; float scale; } TAttJob;
+static void t_att_f_job(void *ctx, int i0, int i1) {
+    const TAttJob *j = (const TAttJob *)ctx;
+    const int hd = j->hd;
+    float *P = xalloc((size_t)j->T, 4);
+    for (int i = i0; i < i1; i++) {
+        const int t = i / j->nh, hh = i % j->nh, kvh = (hh / j->group) * hd;
+        const int t0 = t - j->win + 1 > 0 ? t - j->win + 1 : 0, n = t - t0 + 1;
+        const float *qh = j->q + (size_t)t * j->qd + (size_t)hh * hd;
+        for (int s = 0; s < n; s++) P[s] = dot(qh, j->k + (size_t)(t0 + s) * j->kvd + kvh, hd) * j->scale;
+        softmax(P, n);
+        float *o = j->ao + (size_t)t * j->qd + (size_t)hh * hd;
+        memset(o, 0, (size_t)hd * 4);
+        for (int s = 0; s < n; s++) { const float w = P[s]; const float *vh = j->v + (size_t)(t0 + s) * j->kvd + kvh; for (int e = 0; e < hd; e++) o[e] += w * vh[e]; }
     }
-    /* SiLU e convolucao */
-    float *dcy = xalloc((size_t)T * C, 4), *draw = xalloc((size_t)T * C, 4);
-    for (size_t i = 0; i < (size_t)T * C; i++) { const float g = cy[i], sg = 1.0f / (1.0f + expf(-g)); dcy[i] = dcs[i] * sg * (1.0f + g * (1.0f - sg)); }
-    for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
-        const float gy = dcy[(size_t)t * C + ch];
-        if (gy == 0.0f) continue;
-        for (int j = 0; j < K; j++) {
-            const int ts = t - (K - 1) + j;
-            if (ts < 0) continue;
-            draw[(size_t)ts * C + ch] += cw[(size_t)ch * K + j] * gy;
-            if (pcv->g) pcv->g[(size_t)ch * K + j] += gy * raw[(size_t)ts * C + ch];
+    free(P);
+}
+static void t_att_fwd(const float *q, const float *k, const float *v, float *ao, int T, int nh, int nkv, int hd, int win, float scale) {
+    TAttJob j = { q, k, v, NULL, ao, NULL, NULL, NULL, NULL, NULL, T, nh, hd, nh / nkv, nh * hd, nkv * hd, win, scale };
+    const double pa0 = now_sec();
+    t_pfor(t_att_f_job, &j, T * nh, (size_t)T * nh * (T < win ? T : win) * hd);
+    tprof[TP_ATT_F] += now_sec() - pa0;
+}
+static void t_att_b_job(void *ctx, int h0, int h1) {
+    const TAttJob *j = (const TAttJob *)ctx;
+    const int hd = j->hd, T = j->T;
+    float *P = xalloc((size_t)T, 4), *dP = xalloc((size_t)T, 4);
+    for (int hh = h0; hh < h1; hh++) {
+        const int kvh = (hh / j->group) * hd;
+        float *dkp = j->dkp + (size_t)hh * T * hd, *dvp = j->dvp + (size_t)hh * T * hd;
+        for (int t = 0; t < T; t++) {
+            const int t0 = t - j->win + 1 > 0 ? t - j->win + 1 : 0, n = t - t0 + 1;
+            const float *qh = j->q + (size_t)t * j->qd + (size_t)hh * hd, *dout = j->dao + (size_t)t * j->qd + (size_t)hh * hd;
+            for (int s = 0; s < n; s++) P[s] = dot(qh, j->k + (size_t)(t0 + s) * j->kvd + kvh, hd) * j->scale;     /* refaz a linha */
+            softmax(P, n);
+            double sum = 0;
+            for (int s = 0; s < n; s++) {
+                dP[s] = dot(dout, j->v + (size_t)(t0 + s) * j->kvd + kvh, hd);
+                sum += (double)P[s] * dP[s];
+                float *dvh = dvp + (size_t)(t0 + s) * hd;
+                for (int e = 0; e < hd; e++) dvh[e] += P[s] * dout[e];
+            }
+            float *dqh = j->dq + (size_t)t * j->qd + (size_t)hh * hd;
+            for (int s = 0; s < n; s++) {
+                const float ds = P[s] * (dP[s] - (float)sum) * j->scale;
+                if (ds == 0.0f) continue;
+                const float *kh = j->k + (size_t)(t0 + s) * j->kvd + kvh;
+                float *dkh = dkp + (size_t)(t0 + s) * hd;
+                for (int e = 0; e < hd; e++) { dqh[e] += ds * kh[e]; dkh[e] += ds * qh[e]; }
+            }
         }
     }
-    /* projecoes */
-    tp_grad(&tt->p[tt->dqkv[l]], draw, x, T); tp_mvT(&tt->p[tt->dqkv[l]], dx, draw, T);
-    tp_grad(&tt->p[tt->dz[l]], dz, x, T);     tp_mvT(&tt->p[tt->dz[l]], dx, dz, T);
-    tp_grad(&tt->p[tt->dal[l]], dal, x, T);   tp_mvT(&tt->p[tt->dal[l]], dx, dal, T);
-    tp_grad(&tt->p[tt->dbe[l]], dbe, x, T);   tp_mvT(&tt->p[tt->dbe[l]], dx, dbe, T);
-    free(dog); free(don); free(dz); free(dor); free(dqk); free(dcs); free(ddec); free(dbet); free(dS); free(Sp);
-    free(dal); free(dbe); free(dcy); free(draw);
+    free(P); free(dP);
+}
+static void t_att_sum_job(void *ctx, int s0, int s1) {
+    const TAttJob *j = (const TAttJob *)ctx;
+    const int hd = j->hd, T = j->T;
+    for (int hh = 0; hh < j->nh; hh++) {
+        const size_t kvh = (size_t)(hh / j->group) * hd;
+        for (int s = s0; s < s1; s++) {
+            float *dk = j->dk + (size_t)s * j->kvd + kvh, *dv = j->dv + (size_t)s * j->kvd + kvh;
+            const float *pk = j->dkp + ((size_t)hh * T + s) * hd, *pv = j->dvp + ((size_t)hh * T + s) * hd;
+            for (int e = 0; e < hd; e++) { dk[e] += pk[e]; dv[e] += pv[e]; }
+        }
+    }
+}
+/* dq, dk, dv chegam zerados (ou com o que ja houver: a volta soma) */
+static void t_att_back(const float *q, const float *k, const float *v, const float *dao, float *dq, float *dk, float *dv, int T, int nh, int nkv, int hd, int win, float scale) {
+    TAttJob j = { q, k, v, dao, NULL, dq, NULL, NULL, dk, dv, T, nh, hd, nh / nkv, nh * hd, nkv * hd, win, scale };
+    const double pa0 = now_sec();
+    j.dkp = xalloc((size_t)nh * T * hd, 4); j.dvp = xalloc((size_t)nh * T * hd, 4);
+    t_pfor(t_att_b_job, &j, nh, (size_t)T * nh * (T < win ? T : win) * hd);
+    t_pfor(t_att_sum_job, &j, T, (size_t)T * nh * hd);
+    free(j.dkp); free(j.dvp);
+    tprof[TP_ATT_B] += now_sec() - pa0;
 }
 
 /* forward da sequencia inteira guardando o necessario para voltar */
@@ -1129,20 +1343,7 @@ static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
     t_rms(&tt->p[tt->kn[l]], kr, k, A->invk + l1 * c->n_kv, T * nkv, hd, c->eps);
     t_rms(NULL, vr, v, A->ginvv + l1 * c->n_kv, T * nkv, hd, c->eps);
     for (int t = 0; t < T; t++) { t_g4_rope(fr, q + (size_t)t * qd, nh, hd, t, 0); t_g4_rope(fr, k + (size_t)t * kvd, nkv, hd, t, 0); }
-    const double pa0 = now_sec();
-    for (int hh = 0; hh < nh; hh++) {
-        const int kvh = (hh / group) * hd;
-        for (int t = 0; t < T; t++) {
-            const int t0 = t - win + 1 > 0 ? t - win + 1 : 0, n = t - t0 + 1;
-            const float *qh = q + (size_t)t * qd + hh * hd;
-            for (int s = 0; s < n; s++) P[s] = dot(qh, k + (size_t)(t0 + s) * kvd + kvh, hd);
-            softmax(P, n);
-            float *o = ao + (size_t)t * qd + hh * hd;
-            memset(o, 0, hd * 4);
-            for (int s = 0; s < n; s++) { const float w = P[s]; const float *vh = v + (size_t)(t0 + s) * kvd + kvh; for (int i = 0; i < hd; i++) o[i] += w * vh[i]; }
-        }
-    }
-    tprof[TP_ATT_F] += now_sec() - pa0;
+    t_att_fwd(q, k, v, ao, T, nh, nkv, hd, win, 1.0f);
     tp_mv(&tt->p[tt->o[l]], yo, ao, T);
     t_rms(&tt->p[tt->gpan[l]], yo, tmp, A->gipa + l1, T, d, c->eps);
     for (size_t i = 0; i < (size_t)T * d; i++) xm[i] = xl[i] + tmp[i];
@@ -1166,7 +1367,7 @@ static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
 }
 
 /* volta da camada do gemma4: dx chega com o gradiente na saida e sai com o da entrada */
-static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx) {
+static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx, int need_in, int skip_attn) {
     const Config *c = &m->cfg;
     const Layer *Ly = &m->layers[l];
     const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd, group = nh / nkv;
@@ -1200,50 +1401,26 @@ static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx) {
     } else memcpy(dyd, ds, Td * 4);
     t_glu_back(tt, tt->gt[l], tt->up[l], tt->dn[l], xn2, A->a + l1 * A->H, A->u + l1 * A->H, A->h + l1 * A->H, dyd, dxf, T, H);
     t_rms_back(&tt->p[tt->fn[l]], xm, A->inv2 + l1, dxf, dx1, T, d);
+    if (skip_attn) { memcpy(dx, dx1, Td * 4); free(dx1); free(dt); free(ds); free(dyd); free(dxf); return; }
     /* atencao: xm = x + norma_pa(Wo o) */
     float *dyo = xalloc(Td, 4), *dao = xalloc((size_t)T * qd, 4);
     t_rms_back(&tt->p[tt->gpan[l]], yo, A->gipa + l1, dx1, dyo, T, d);
     tp_grad(&tt->p[tt->o[l]], dyo, ao, T);
     tp_mvT(&tt->p[tt->o[l]], dao, dyo, T);
-    float *dq = xalloc((size_t)T * qd, 4), *dk = xalloc((size_t)T * kvd, 4), *dv = xalloc((size_t)T * kvd, 4), *dP = xalloc(T, 4);
-    const double pa0 = now_sec();
-    for (int hh = 0; hh < nh; hh++) {
-        const int kvh = (hh / group) * hd;
-        for (int t = 0; t < T; t++) {
-            const int t0 = t - win + 1 > 0 ? t - win + 1 : 0, n = t - t0 + 1;
-            const float *qh = q + (size_t)t * qd + hh * hd, *dout = dao + (size_t)t * qd + hh * hd;
-            for (int s = 0; s < n; s++) P[s] = dot(qh, k + (size_t)(t0 + s) * kvd + kvh, hd);
-            softmax(P, n);
-            double sum = 0;
-            for (int s = 0; s < n; s++) {
-                dP[s] = dot(dout, v + (size_t)(t0 + s) * kvd + kvh, hd);
-                sum += (double)P[s] * dP[s];
-                float *dvh = dv + (size_t)(t0 + s) * kvd + kvh;
-                for (int i = 0; i < hd; i++) dvh[i] += P[s] * dout[i];
-            }
-            float *dqh = dq + (size_t)t * qd + hh * hd;
-            for (int s = 0; s < n; s++) {
-                const float dsc = P[s] * (dP[s] - (float)sum);
-                if (dsc == 0.0f) continue;
-                const float *kh = k + (size_t)(t0 + s) * kvd + kvh;
-                float *dkh = dk + (size_t)(t0 + s) * kvd + kvh;
-                for (int i = 0; i < hd; i++) { dqh[i] += dsc * kh[i]; dkh[i] += dsc * qh[i]; }
-            }
-        }
-    }
-    tprof[TP_ATT_B] += now_sec() - pa0;
+    float *dq = xalloc((size_t)T * qd, 4), *dk = xalloc((size_t)T * kvd, 4), *dv = xalloc((size_t)T * kvd, 4);
+    t_att_back(q, k, v, dao, dq, dk, dv, T, nh, nkv, hd, win, 1.0f);
     for (int t = 0; t < T; t++) { t_g4_rope(fr, dq + (size_t)t * qd, nh, hd, t, 1); t_g4_rope(fr, dk + (size_t)t * kvd, nkv, hd, t, 1); }
     float *dqr = xalloc((size_t)T * qd, 4), *dkr = xalloc((size_t)T * kvd, 4), *dvr = xalloc((size_t)T * kvd, 4), *dxn = xalloc(Td, 4);
     t_rms_back(&tt->p[tt->qn[l]], qr, A->invq + l1 * nh, dq, dqr, T * nh, hd);
     t_rms_back(&tt->p[tt->kn[l]], kr, A->invk + l1 * c->n_kv, dk, dkr, T * nkv, hd);
     t_rms_back(NULL, vr, A->ginvv + l1 * c->n_kv, dv, dvr, T * nkv, hd);
     if (tt->v[l] < 0) for (size_t i = 0; i < (size_t)T * kvd; i++) dkr[i] += dvr[i];      /* v era o proprio k */
-    tp_grad(&tt->p[tt->q[l]], dqr, xn1, T); tp_mvT(&tt->p[tt->q[l]], dxn, dqr, T);
-    tp_grad(&tt->p[tt->k[l]], dkr, xn1, T); tp_mvT(&tt->p[tt->k[l]], dxn, dkr, T);
-    if (tt->v[l] >= 0) { tp_grad(&tt->p[tt->v[l]], dvr, xn1, T); tp_mvT(&tt->p[tt->v[l]], dxn, dvr, T); }
+    tp_grad(&tt->p[tt->q[l]], dqr, xn1, T); if (need_in) tp_mvT(&tt->p[tt->q[l]], dxn, dqr, T);
+    tp_grad(&tt->p[tt->k[l]], dkr, xn1, T); if (need_in) tp_mvT(&tt->p[tt->k[l]], dxn, dkr, T);
+    if (tt->v[l] >= 0) { tp_grad(&tt->p[tt->v[l]], dvr, xn1, T); if (need_in) tp_mvT(&tt->p[tt->v[l]], dxn, dvr, T); }
     memcpy(dx, dx1, Td * 4);
-    t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + l1, dxn, dx, T, d);
-    free(dx1); free(dt); free(ds); free(dyd); free(dxf); free(dyo); free(dao); free(dq); free(dk); free(dv); free(dP);
+    if (need_in) t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + l1, dxn, dx, T, d);
+    free(dx1); free(dt); free(ds); free(dyd); free(dxf); free(dyo); free(dao); free(dq); free(dk); free(dv);
     free(dqr); free(dkr); free(dvr); free(dxn);
 }
 
@@ -1289,18 +1466,7 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
             t_rms(&tt->p[tt->kn[l]], kr, k, A->invk + (size_t)l * T * nkv, T, kvd, c->eps);
         } else { memcpy(q, qr, (size_t)T * qd * 4); memcpy(k, kr, (size_t)T * kvd * 4); }
         for (int t = 0; t < T; t++) { t_rope(m, q + (size_t)t * qd, nh, t, 0); t_rope(m, k + (size_t)t * kvd, nkv, t, 0); }
-        for (int hh = 0; hh < nh; hh++) {
-            const int kvh = (hh / group) * hd;
-            for (int t = 0; t < T; t++) {
-                float *pr = P;
-                const float *qh = q + (size_t)t * qd + hh * hd;
-                for (int s = 0; s <= t; s++) pr[s] = dot(qh, k + (size_t)s * kvd + kvh, hd) * scale;
-                softmax(pr, t + 1);
-                float *o = ao + (size_t)t * qd + hh * hd;
-                memset(o, 0, hd * 4);
-                for (int s = 0; s <= t; s++) { const float w = pr[s]; const float *vh = v + (size_t)s * kvd + kvh; for (int i = 0; i < hd; i++) o[i] += w * vh[i]; }
-            }
-        }
+        t_att_fwd(q, k, v, ao, T, nh, nkv, hd, T, scale);
         if (c->attn_gated) {                                /* saida de cada cabeca vezes sigmoide(portao) */
             const float *qg = A->qg + (size_t)l * T * 2 * qd;
             float *ap = A->apre + (size_t)l * T * qd;
@@ -1326,68 +1492,128 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
 
 static const TPar *t_head(const TTab *tt) { return tt->out >= 0 ? &tt->p[tt->out] : &tt->p[tt->tok]; }
 
-/* logits de todas as posicoes; gemma4: limitados por softcap * tanh(z / softcap), como no motor */
-static void t_logits(const Model *m, const TTab *tt, const TAct *A, float *lg) {
+/* logits de B linhas xs [B][d]; gemma4: limitados por softcap * tanh(z / softcap), como no motor */
+typedef struct { float *lg; int V; float cap; } TCapJob;
+static void t_cap_job(void *ctx, int b0, int b1) {
+    const TCapJob *j = (const TCapJob *)ctx;
+    for (size_t i = (size_t)b0 * j->V; i < (size_t)b1 * j->V; i++) j->lg[i] = j->cap * tanhf(j->lg[i] / j->cap);
+}
+static void t_logits(const Model *m, const TTab *tt, const float *xs, int B, float *lg) {
     const float cap = m->cfg.softcap;
-    tp_mv(t_head(tt), lg, A->xnf, A->T);
-    if (cap > 0.0f) for (size_t i = 0; i < (size_t)A->T * m->cfg.vocab; i++) lg[i] = cap * tanhf(lg[i] / cap);
+    tp_mv(t_head(tt), lg, xs, B);
+    if (cap > 0.0f) { TCapJob j = { lg, m->cfg.vocab, cap }; t_pfor(t_cap_job, &j, B, (size_t)B * m->cfg.vocab * 20); }
+}
+
+/* perda (e gradiente nos logits) de cada linha com alvo; a soma das perdas e feita depois, em ordem */
+typedef struct { float *lg, *dl; const int *y; double *ls; int V, N; float cap, gs; } TLossJob;
+static void t_loss_job(void *ctx, int i0, int i1) {
+    const TLossJob *j = (const TLossJob *)ctx;
+    const int V = j->V;
+    for (int i = i0; i < i1; i++) {
+        float *z = j->lg + (size_t)i * V;
+        float mx = z[0]; for (int e = 1; e < V; e++) if (z[e] > mx) mx = z[e];
+        double se = 0; for (int e = 0; e < V; e++) se += exp((double)z[e] - mx);
+        const int y = j->y[i];
+        j->ls[i] = -((double)z[y] - mx - log(se));
+        if (j->dl) {
+            float *g = j->dl + (size_t)i * V;
+            for (int e = 0; e < V; e++) g[e] = (float)(exp((double)z[e] - mx) / se) * j->gs / j->N;
+            g[y] -= j->gs / j->N;
+            if (j->cap > 0.0f) for (int e = 0; e < V; e++) { const float th = z[e] / j->cap; g[e] *= 1.0f - th * th; }
+        }
+    }
+}
+
+/* camada mais baixa com algum parametro treinavel (nome blk.<l>.*); n_layers se nenhuma; 0 se o embedding treina */
+static int t_lowest_layer(const Config *c, const TTab *tt) {
+    if (tt->p[tt->tok].g) return 0;
+    int low = c->n_layers;
+    for (int i = 0; i < tt->n; i++) {
+        const TPar *p = &tt->p[i];
+        if ((!p->g && !p->r) || strncmp(p->name, "blk.", 4)) continue;
+        const int l = atoi(p->name + 4);
+        if (l < low) low = l;
+    }
+    return low;
+}
+/* algum parametro da parte de atencao (ou linear) da camada l treina? */
+static int t_attn_trains(const TTab *tt, int l) {
+    const int ix[] = { tt->an[l], tt->q[l], tt->k[l], tt->v[l], tt->o[l], tt->qn[l], tt->kn[l], tt->dqkv[l], tt->dz[l], tt->dal[l], tt->dbe[l],
+                       tt->dcv[l], tt->dsa[l], tt->ddt[l], tt->dsn[l], tt->dout[l], tt->gpan[l] };
+    for (size_t i = 0; i < sizeof ix / sizeof ix[0]; i++) if (ix[i] >= 0 && (tt->p[ix[i]].g || tt->p[ix[i]].r)) return 1;
+    return 0;
 }
 
 static float t_gscale = 1.0f;      /* peso desta janela no passo (1/lote quando o gradiente acumula varias) */
 
 /* perda media nos alvos marcados (mask[t] = 1: o token t+1 conta) e, se back, o passo para tras inteiro */
-static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount) {
+static double t_step_(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount, int N, int last) {
     const Config *c = &m->cfg;
     const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H, V = c->vocab;
     const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd) * (c->attn_gated ? c->kq_mul : 1.0f);
-    float *blg = tm_on && tm_anchor_on() ? tm_base_lg(m, tt, toks, A) : NULL;       /* ancora KL: logits do modelo base */
+    (void)ncount;
+    /* perda moldada (train_methods.c): com a ancora KL as linhas da saida incluem tambem as posicoes de contexto (sem alvo,
+       ys = -1) ate a ultima posicao da janela; Nr = linhas que passam pela saida */
+    const int shaped = tm_on && tm_shape();
+    int Nr = N, *pos = NULL, *ys = NULL;
+    float *blg = NULL;
+    if (shaped) {
+        tm_rows(mask, toks, last, tm_anchor_on(), &pos, &ys, &Nr);
+        if (tm_anchor_on()) blg = tm_base_lg(m, tt, toks, A, pos, ys, Nr);       /* logits do modelo base nas linhas de contexto */
+    }
     const double pf0 = now_sec();
     t_forward(m, tt, toks, A);
     tprof[TP_FWD] += now_sec() - pf0;
     const double ph0 = now_sec();
-    int N = 0;
-    for (int t = 0; t + 1 < T; t++) N += mask[t] != 0;
-    if (ncount) *ncount = N;
-    if (!N) { free(blg); return 0.0; }
     TPar *head = (TPar *)t_head(tt);
-    float *lg = xalloc((size_t)T * V, 4);
-    t_logits(m, tt, A, lg);
-    double loss = 0;
-    float *dl = back ? xalloc((size_t)T * V, 4) : NULL;
-    if (tm_on && tm_shape()) loss = tm_loss(m, toks, mask, lg, blg, dl, T, N);     /* perda moldada (train_methods.c); devolve a soma da perda comum */
-    else for (int t = 0; t + 1 < T; t++) {
-        if (!mask[t]) continue;
-        float *z = lg + (size_t)t * V;
-        float mx = z[0]; for (int i = 1; i < V; i++) if (z[i] > mx) mx = z[i];
-        double se = 0; for (int i = 0; i < V; i++) se += exp((double)z[i] - mx);
-        const int y = toks[t + 1];
-        loss += -((double)z[y] - mx - log(se));
-        if (back) {
-            float *g = dl + (size_t)t * V;
-            for (int i = 0; i < V; i++) g[i] = (float)(exp((double)z[i] - mx) / se) * t_gscale / N;
-            g[y] -= t_gscale / N;
-            if (c->softcap > 0.0f) for (int i = 0; i < V; i++) { const float th = z[i] / c->softcap; g[i] *= 1.0f - th * th; }
-        }
+    /* so as posicoes com alvo passam pela saida (as outras nao tem perda nem gradiente) */
+    if (!shaped) {
+        pos = xalloc((size_t)N, sizeof(int)); ys = xalloc((size_t)N, sizeof(int));
+        for (int t = 0, i = 0; t <= last; t++) if (mask[t]) { pos[i] = t; ys[i] = toks[t + 1]; i++; }
     }
-    free(lg); free(blg);
+    float *xs = xalloc((size_t)Nr * d, 4);
+    for (int i = 0; i < Nr; i++) memcpy(xs + (size_t)i * d, A->xnf + (size_t)pos[i] * d, (size_t)d * 4);
+    float *lg = xalloc((size_t)Nr * V, 4);
+    t_logits(m, tt, xs, Nr, lg);
+    float *dl = back ? xalloc((size_t)Nr * V, 4) : NULL;
+    double loss = 0;
+    if (shaped) loss = tm_loss(m, toks, last, pos, ys, Nr, N, lg, blg, dl);   /* devolve a soma da perda comum nos alvos */
+    else {
+        double *ls = xalloc((size_t)N, sizeof(double));
+        TLossJob lj = { lg, dl, ys, ls, V, N, c->softcap, t_gscale };
+        t_pfor(t_loss_job, &lj, N, (size_t)N * V * 40);
+        for (int i = 0; i < N; i++) loss += ls[i];
+        free(ls);
+    }
+    free(lg); free(ys); free(blg);
     loss /= N;
     tprof[TP_HEAD] += now_sec() - ph0;
-    if (!back) return loss;
+    if (!back) { free(pos); free(xs); return loss; }
     const double pb0 = now_sec();
 
     /* ---- passo para tras ---- */
     float *dxn = xalloc((size_t)T * (qd > d ? qd : d), 4), *dx = xalloc((size_t)T * d, 4);
-    tp_grad(head, dl, A->xnf, T);
-    tp_mvT(head, dxn, dl, T);
-    free(dl);
+    {
+        float *dxs = xalloc((size_t)Nr * d, 4);
+        tp_grad(head, dl, xs, Nr);
+        tp_mvT(head, dxs, dl, Nr);
+        for (int i = 0; i < Nr; i++) memcpy(dxn + (size_t)pos[i] * d, dxs + (size_t)i * d, (size_t)d * 4);
+        free(dxs); free(dl); free(pos); free(xs);
+    }
     t_rms_back(&tt->p[tt->onorm], A->xf, A->invf, dxn, dx, T, d);       /* dx = gradiente na saida da ultima camada */
     float *dxm = xalloc((size_t)T * d, 4), *dao = xalloc((size_t)T * qd, 4);
     float *dq = xalloc((size_t)T * qd, 4), *dk = xalloc((size_t)T * kvd, 4), *dv = xalloc((size_t)T * kvd, 4);
     float *dqr = xalloc((size_t)T * qd, 4), *dkr = xalloc((size_t)T * kvd, 4);
     float *dP = xalloc(T, 4);
-    for (int l = c->n_layers - 1; l >= 0; l--) {
-        if (c->g4) { t_g4_back(m, tt, A, l, dx); continue; }
+    /* abaixo da camada mais baixa com parametro treinavel nada precisa de gradiente */
+    const int lowest = t_lowest_layer(c, tt);
+    for (int l = c->n_layers - 1; l >= lowest; l--) {
+        /* na camada mais baixa, o gradiente da entrada so serve se o embedding ou a norma de entrada treinam; sem treino na
+           parte de atencao (ou linear), ela nem precisa voltar */
+        const int need_in = l > lowest || tt->p[tt->an[l]].g || tt->p[tt->an[l]].r || tt->p[tt->tok].g;
+        const int skip_attn = !need_in && !t_attn_trains(tt, l);
+        if (c->g4) { t_g4_back(m, tt, A, l, dx, need_in, skip_attn); continue; }
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
         float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P;
         float *qr = A->qr + (size_t)l * T * qd, *kr = A->kr + (size_t)l * T * kvd;
@@ -1399,11 +1625,12 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
                         dx, dxn, T, (int)tt->p[tt->gt[l]].rows);
         memcpy(dxm, dx, (size_t)T * d * 4);
         t_rms_back(&tt->p[tt->fn[l]], xm, A->inv2 + (size_t)l * T, dxn, dxm, T, d);
+        if (skip_attn) continue;
         if (m->layers[l].lin) {                              /* Gated DeltaNet */
             memset(dxn, 0, (size_t)T * d * 4);
-            t_dn_back(m, tt, A, l, xn1, dxm, dxn);
+            t_dn_back(m, tt, A, l, xn1, dxm, dxn, need_in);
             memcpy(dx, dxm, (size_t)T * d * 4);
-            t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + (size_t)l * T, dxn, dx, T, d);
+            if (need_in) t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + (size_t)l * T, dxn, dx, T, d);
             continue;
         }
         /* atencao: xm = x + wo(ao) */
@@ -1422,32 +1649,7 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
             }
         }
         memset(dq, 0, (size_t)T * qd * 4); memset(dk, 0, (size_t)T * kvd * 4); memset(dv, 0, (size_t)T * kvd * 4);
-        for (int hh = 0; hh < nh; hh++) {
-            const int kvh = (hh / group) * hd;
-            for (int t = 0; t < T; t++) {
-                const float *qh0 = q + (size_t)t * qd + hh * hd, *dout = dao + (size_t)t * qd + hh * hd;
-                for (int s = 0; s <= t; s++) P[s] = dot(qh0, k + (size_t)s * kvd + kvh, hd) * scale;     /* refaz a linha */
-                softmax(P, t + 1);
-                const float *pr = P;
-                double sum = 0;
-                for (int s = 0; s <= t; s++) {
-                    const float *vh = v + (size_t)s * kvd + kvh;
-                    dP[s] = dot(dout, vh, hd);
-                    sum += (double)pr[s] * dP[s];
-                    float *dvh = dv + (size_t)s * kvd + kvh;
-                    for (int i = 0; i < hd; i++) dvh[i] += pr[s] * dout[i];
-                }
-                const float *qh = q + (size_t)t * qd + hh * hd;
-                float *dqh = dq + (size_t)t * qd + hh * hd;
-                for (int s = 0; s <= t; s++) {
-                    const float ds = pr[s] * (dP[s] - (float)sum) * scale;
-                    if (ds == 0.0f) continue;
-                    const float *kh = k + (size_t)s * kvd + kvh;
-                    float *dkh = dk + (size_t)s * kvd + kvh;
-                    for (int i = 0; i < hd; i++) { dqh[i] += ds * kh[i]; dkh[i] += ds * qh[i]; }
-                }
-            }
-        }
+        t_att_back(q, k, v, dao, dq, dk, dv, T, nh, nkv, hd, T, scale);
         for (int t = 0; t < T; t++) { t_rope(m, dq + (size_t)t * qd, nh, t, 1); t_rope(m, dk + (size_t)t * kvd, nkv, t, 1); }
         if (tt->qn[l] >= 0) {                                /* volta da norma de q e k */
             memset(dqr, 0, (size_t)T * qd * 4); memset(dkr, 0, (size_t)T * kvd * 4);
@@ -1466,19 +1668,34 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
                 memcpy(dqg + (size_t)t * 2 * qd + (size_t)hh * 2 * hd, dqr + (size_t)t * qd + hh * hd, hd * 4);
                 memcpy(dqg + (size_t)t * 2 * qd + (size_t)hh * 2 * hd + hd, dgt + (size_t)t * qd + hh * hd, hd * 4);
             }
-            tp_grad(&tt->p[tt->q[l]], dqg, xn1, T); tp_mvT(&tt->p[tt->q[l]], dxn, dqg, T);
+            tp_grad(&tt->p[tt->q[l]], dqg, xn1, T); if (need_in) tp_mvT(&tt->p[tt->q[l]], dxn, dqg, T);
             free(dqg); free(dgt);
-        } else { tp_grad(&tt->p[tt->q[l]], dqr, xn1, T); tp_mvT(&tt->p[tt->q[l]], dxn, dqr, T); }
-        tp_grad(&tt->p[tt->k[l]], dkr, xn1, T); tp_mvT(&tt->p[tt->k[l]], dxn, dkr, T);
-        tp_grad(&tt->p[tt->v[l]], dv, xn1, T); tp_mvT(&tt->p[tt->v[l]], dxn, dv, T);
+        } else { tp_grad(&tt->p[tt->q[l]], dqr, xn1, T); if (need_in) tp_mvT(&tt->p[tt->q[l]], dxn, dqr, T); }
+        tp_grad(&tt->p[tt->k[l]], dkr, xn1, T); if (need_in) tp_mvT(&tt->p[tt->k[l]], dxn, dkr, T);
+        tp_grad(&tt->p[tt->v[l]], dv, xn1, T); if (need_in) tp_mvT(&tt->p[tt->v[l]], dxn, dv, T);
         memcpy(dx, dxm, (size_t)T * d * 4);
-        t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + (size_t)l * T, dxn, dx, T, d);
+        if (need_in) t_rms_back(&tt->p[tt->an[l]], xl, A->inv1 + (size_t)l * T, dxn, dx, T, d);
     }
     TPar *e = &tt->p[tt->tok];
     const float es = c->emb_scale != 0.0f ? c->emb_scale : 1.0f;
-    if (e->g) for (int t = 0; t < T; t++) { float *g = e->g + (size_t)toks[t] * d; const float *s = dx + (size_t)t * d; for (int i = 0; i < d; i++) g[i] += es * s[i]; }
+    if (e->g && lowest == 0) for (int t = 0; t < T; t++) { float *g = e->g + (size_t)toks[t] * d; const float *s = dx + (size_t)t * d; for (int i = 0; i < d; i++) g[i] += es * s[i]; }
     free(dxn); free(dx); free(dxm); free(dao); free(dq); free(dk); free(dv); free(dqr); free(dkr); free(dP);
     tprof[TP_BACK] += now_sec() - pb0;
+    return loss;
+}
+
+/* perda media nos alvos marcados (mask[t] = 1: o token t+1 conta) e, se back, o passo para tras inteiro. Todos os blocos
+   sao causais: as posicoes depois do ultimo alvo nao mudam a perda nem os gradientes, entao a janela termina nele */
+static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount) {
+    const int T0 = A->T;
+    int N = 0, last = -1;
+    for (int t = 0; t + 1 < T0; t++) if (mask[t]) { N++; last = t; }
+    if (ncount) *ncount = N;
+    if (!N) return 0.0;
+    if (tm_on && tm_anchor_on() && T0 >= 2) last = T0 - 2;       /* a ancora usa o contexto depois do ultimo alvo: a janela nao corta */
+    A->T = last + 1;
+    const double loss = t_step_(m, tt, toks, mask, A, back, ncount, N, last);
+    A->T = T0;
     return loss;
 }
 
@@ -1486,6 +1703,9 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
  * "KSPEC1\0\0", impressao do modelo base (tamanho do arquivo, parametros), quantidade de tensores; cada um: nome,
  * linhas, colunas e os pesos em float32. Carregado com KATANA_SPEC: troca so esses tensores do modelo base. */
 #define KSPEC_MAGIC "KSPEC2\0\0"
+/* arquivos com DoRA levam outra marca: um leitor antigo os recusa em vez de carregar so a parte LoRA (outro modelo) */
+#define KSPEC_MAGIC_DORA "KSPEC3\0\0"
+static int spec_magic_ok(const char *mg) { return !memcmp(mg, KSPEC_MAGIC, 8) || !memcmp(mg, KSPEC_MAGIC_DORA, 8); }
 /* fim do arquivo (desde 2026-11-21): "KSXF" + marcas de 32 bits. Leitores antigos param antes e nao veem; arquivos
    antigos nao tem e valem marca 0. KSPEC_NO_TOOL_DECL: treinado com o prompt de sistema sem a secao de ferramentas
    (o agente tira a secao quando esta especializacao esta aplicada) */
@@ -1505,7 +1725,8 @@ static int spec_save(const Model *m, const TTab *tt, const char *path) {
     int n = 0;
     for (int i = 0; i < tt->n; i++) n += tt->p[i].w != NULL || tt->p[i].r;
     const int64_t fs = m->fsize; const uint64_t np = m->n_params;
-    fwrite(KSPEC_MAGIC, 1, 8, f); fwrite(&fs, 8, 1, f); fwrite(&np, 8, 1, f); fwrite(&n, 4, 1, f);
+    int has_dora = 0; for (int i = 0; i < tt->n; i++) has_dora |= tm_has_dora(&tt->p[i]);
+    fwrite(has_dora ? KSPEC_MAGIC_DORA : KSPEC_MAGIC, 1, 8, f); fwrite(&fs, 8, 1, f); fwrite(&np, 8, 1, f); fwrite(&n, 4, 1, f);
     for (int i = 0; i < tt->n; i++) {
         const TPar *p = &tt->p[i];
         if (!p->w && !p->r) continue;
@@ -1527,7 +1748,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "KATANA_SPEC: nao abriu %s\n", path); if (strict) exit(1); return 0; }
     char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0;
-    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) {
+    if (fread(mg, 1, 8, f) != 8 || !spec_magic_ok(mg) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) {
         if (strict) die("KATANA_SPEC: arquivo de especializacao invalido");
         fprintf(stderr, "especializacao pulada (arquivo invalido): %s\n", path); fclose(f); return 0;
     }
@@ -1579,16 +1800,17 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     {   const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
         if (!strcmp(bn, "tools.kspec")) g_spec_tools = 1; }    /* regra antiga pelo nome, para arquivos sem a marca */
     if (spec_flags(path) & KSPEC_NO_TOOL_DECL) g_spec_tools = 1;
+    model_fid(m, path);          /* o cache de prefixo do modelo base nao vale com a especializacao */
     return 1;
 }
 
 /* --resume: comeca o treino dos pesos de uma especializacao ja treinada (mesmos tensores e posto). O estado do
-   otimizador (momentos do AdamW) nao fica no arquivo: recomeca do zero. Devolve quantos tensores vieram */
+   otimizador (momentos do AdamW) fica num arquivo ao lado (.kopt, opt_load); sem ele recomeca do zero. Devolve quantos tensores vieram */
 static int spec_resume(const Model *m, TTab *tt, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "--resume: nao abriu %s\n", path); return -1; }
     char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0, got = 0, miss = 0;
-    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0)
+    if (fread(mg, 1, 8, f) != 8 || !spec_magic_ok(mg) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0)
         { fprintf(stderr, "--resume: %s nao e uma especializacao\n", path); fclose(f); return -1; }
     if (fs != m->fsize || np != m->n_params) { fprintf(stderr, "--resume: %s foi treinada sobre outro modelo base\n", path); fclose(f); return -1; }
     for (int k = 0; k < n; k++) {
@@ -1614,9 +1836,65 @@ static int spec_resume(const Model *m, TTab *tt, const char *path) {
     }
     fclose(f);
     if (tm_dora_resume(path, tt) < 0) return -1;
-    printf("retomado de %s: %d tensores carregados%s; o estado do otimizador recomeca do zero\n", path, got,
+    printf("retomado de %s: %d tensores carregados%s\n", path, got,
            miss ? " (alguns do arquivo nao casam com o que treina agora e ficaram de fora)" : "");
     return got;
+}
+
+/* estado do otimizador (momentos do AdamW e o passo) num arquivo ao lado do .kspec (<arquivo>.kopt); leitores antigos do
+   .kspec nao o veem. Quem retoma com --resume o le se existir e continua de onde parou (correcao de vies inclusive). */
+#define KOPT_MAGIC "KOPT0001"
+static void opt_path(char *dst, size_t cap, const char *spec) { snprintf(dst, cap, "%s.kopt", spec); }
+static int opt_save(const TTab *tt, const char *spec, int64_t step) {
+    char path[1200]; opt_path(path, sizeof path, spec);
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int n = 0;
+    for (int i = 0; i < tt->n; i++) n += tt->p[i].w != NULL || tt->p[i].r;
+    fwrite(KOPT_MAGIC, 1, 8, f); fwrite(&step, 8, 1, f); fwrite(&n, 4, 1, f);
+    for (int i = 0; i < tt->n; i++) {
+        const TPar *p = &tt->p[i];
+        if (!p->w && !p->r) continue;
+        const uint32_t nl = (uint32_t)strlen(p->name), kind = p->r ? 1 : 0; const uint64_t r = p->rows, cc = p->cols;
+        fwrite(&nl, 4, 1, f); fwrite(p->name, 1, nl, f); fwrite(&kind, 4, 1, f); fwrite(&r, 8, 1, f); fwrite(&cc, 8, 1, f);
+        if (p->r) {
+            const int32_t rk = p->r; const size_t na = (size_t)p->r * cc, nb = r * (size_t)p->r; fwrite(&rk, 4, 1, f);
+            fwrite(p->ma1, 4, na, f); fwrite(p->ma2, 4, na, f); fwrite(p->mb1, 4, nb, f); fwrite(p->mb2, 4, nb, f);
+        } else { fwrite(p->m1, 4, (size_t)(r * cc), f); fwrite(p->m2, 4, (size_t)(r * cc), f); }
+    }
+    const int ok = !ferror(f);
+    return fclose(f) == 0 && ok;
+}
+/* devolve o passo guardado (>= 0) e quantos tensores casaram em *got; -1 se nao ha arquivo ou nao serve */
+static int64_t opt_load(TTab *tt, const char *spec, int *got) {
+    char path[1200]; opt_path(path, sizeof path, spec);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    char mg[8]; int64_t step = 0; int n = 0; *got = 0;
+    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KOPT_MAGIC, 8) || fread(&step, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) { fclose(f); return -1; }
+    for (int k = 0; k < n; k++) {
+        uint32_t nl = 0, kind = 0; uint64_t r = 0, cc = 0; char name[128];
+        if (fread(&nl, 4, 1, f) != 1 || nl == 0 || nl >= sizeof name || fread(name, 1, nl, f) != nl || fread(&kind, 4, 1, f) != 1
+            || kind > 1 || fread(&r, 8, 1, f) != 1 || fread(&cc, 8, 1, f) != 1) { fclose(f); return -1; }
+        name[nl] = 0;
+        TPar *p = NULL;
+        for (int i = 0; i < tt->n && !p; i++) if (!strcmp(tt->p[i].name, name)) p = &tt->p[i];
+        if (kind == 1) {
+            int32_t rk = 0;
+            if (fread(&rk, 4, 1, f) != 1 || rk < 1 || rk > 4096) { fclose(f); return -1; }
+            const size_t na = (size_t)rk * cc, nb = (size_t)(r * rk);
+            if (p && p->r == rk && p->rows == r && p->cols == cc) {
+                if (fread(p->ma1, 4, na, f) != na || fread(p->ma2, 4, na, f) != na || fread(p->mb1, 4, nb, f) != nb || fread(p->mb2, 4, nb, f) != nb) { fclose(f); return -1; }
+                (*got)++;
+            } else fseek(f, (long)((2 * na + 2 * nb) * 4), SEEK_CUR);
+        } else {
+            const size_t nw = (size_t)(r * cc);
+            if (p && p->w && !p->r && p->rows == r && p->cols == cc) { if (fread(p->m1, 4, nw, f) != nw || fread(p->m2, 4, nw, f) != nw) { fclose(f); return -1; } (*got)++; }
+            else fseek(f, (long)(2 * nw * 4), SEEK_CUR);
+        }
+    }
+    fclose(f);
+    return step;
 }
 
 static int spec_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -1742,6 +2020,7 @@ static void adam_upd(float *w, const float *gr, float *m1, float *m2, size_t n, 
     }
 }
 
+static float g_lr_b = 1.0f;       /* --lr-b: multiplicador da taxa para a matriz B dos adaptadores (1 = igual a A) */
 /* AdamW com corte do gradiente pela norma global; devolve a norma antes do corte */
 static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
     double ss = 0;
@@ -1762,7 +2041,7 @@ static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
     for (int i = 0; i < tt->n; i++) {
         TPar *p = &tt->p[i];
         if (p->r) {
-            tm_adapter_update(p, sc, lr, wd, c1, c2);       /* AdamW (ou Muon) nas matrizes do adaptador; magnitude do DoRA */
+            tm_adapter_update(p, sc, lr, wd, c1, c2);       /* AdamW (ou Muon) nas matrizes do adaptador, com --lr-b; magnitude do DoRA */
         }
         if (!p->g) continue;
         const int is_vec = p->vec != NULL;
@@ -1794,7 +2073,7 @@ static int train_gradcheck(Model *m, int T) {
     /* 1. o forward de treino tem que dar os mesmos logits que o motor, em todas as posicoes */
     t_forward(m, &tt, toks, &A);
     float *lg = xalloc((size_t)T * c->vocab, 4);
-    t_logits(m, &tt, &A, lg);
+    t_logits(m, &tt, A.xnf, T, lg);
     double worst = 0;
     for (int t = 0; t < T; t++) {
         const float *ref = forward(m, toks[t], t, 1);
@@ -1839,27 +2118,33 @@ static int train_gradcheck(Model *m, int T) {
             u[j] = used ? (float)rand() / RAND_MAX - 0.5f : 0.0f;
             un += (double)u[j] * u[j];
         }
-        const double hs = getenv("KATANA_GC_H") ? atof(getenv("KATANA_GC_H")) : 1.0;   /* escala do passo (para conferir a convergencia) */
-        const double wl = 1e-3 * sqrt(wn), h = hs * (wl > 2e-2 ? wl : 2e-2) / sqrt(un);    /* passo com piso: tensor pequeno da sinal pequeno */
+        const double hs0 = getenv("KATANA_GC_H") ? atof(getenv("KATANA_GC_H")) : 1.0;   /* escala do passo (para conferir a convergencia) */
+        const double wl = 1e-3 * sqrt(wn);
         for (size_t j = 0; j < n; j++) gu += (double)G[j] * u[j];
-        double nd[2];
-        for (int r = 0; r < 2; r++) {                     /* diferenca central com h e h/2 */
-            const double hh = r ? h / 2 : h;
-            for (size_t j = 0; j < n; j++) W[j] = w0[j] + (float)(hh * u[j]);
-            tg.ver++;                                     /* o mestre mudou: a copia da GPU sobe de novo */
-            const double lp = t_step(m, &tt, toks, mask, &A, 0, NULL);
-            for (size_t j = 0; j < n; j++) W[j] = w0[j] - (float)(hh * u[j]);
-            tg.ver++;
-            const double lm = t_step(m, &tt, toks, mask, &A, 0, NULL);
-            nd[r] = (lp - lm) / (2.0 * hh);
+        double nd[2] = {0, 0}, num = 0, rel = 1;
+        /* dois tamanhos de passo (o segundo so se o primeiro nao fecha): o pequeno sofre com o ruido do float (na GPU as somas
+           mudam de ordem), o grande com a curvatura; um gradiente errado erra nos dois */
+        for (int tries = 0; tries < 2; tries++) {
+            const double hs = hs0 * (tries ? 4.0 : 1.0), h = hs * (wl > 2e-2 ? wl : 2e-2) / sqrt(un);    /* passo com piso: tensor pequeno da sinal pequeno */
+            for (int r = 0; r < 2; r++) {                     /* diferenca central com h e h/2 */
+                const double hh = r ? h / 2 : h;
+                for (size_t j = 0; j < n; j++) W[j] = w0[j] + (float)(hh * u[j]);
+                tg.ver++;                                     /* o mestre mudou: a copia da GPU sobe de novo */
+                const double lp = t_step(m, &tt, toks, mask, &A, 0, NULL);
+                for (size_t j = 0; j < n; j++) W[j] = w0[j] - (float)(hh * u[j]);
+                tg.ver++;
+                const double lm = t_step(m, &tt, toks, mask, &A, 0, NULL);
+                nd[r] = (lp - lm) / (2.0 * hh);
+            }
+            /* duas estimativas: diferenca central simples (menos ruido do float) e Richardson (sem o erro de curvatura de
+               ordem h^2); vale a que chega mais perto. Um gradiente errado erra nas duas. */
+            const double nr = (4.0 * nd[1] - nd[0]) / 3.0;
+            num = fabs(nr - gu) < fabs(nd[0] - gu) ? nr : nd[0];
+            rel = fabs(num - gu) / (fabs(num) + fabs(gu) + 1e-8);
+            if (fabs(num - gu) <= 1e-2 * (fabs(num) + fabs(gu)) + 1e-4) break;
         }
         memcpy(W, w0, n * 4);
         tg.ver++;
-        /* duas estimativas: diferenca central simples (menos ruido do float) e Richardson (sem o erro de curvatura de
-           ordem h^2); vale a que chega mais perto. Um gradiente errado erra nas duas. */
-        const double nr = (4.0 * nd[1] - nd[0]) / 3.0;
-        const double num = fabs(nr - gu) < fabs(nd[0] - gu) ? nr : nd[0];
-        const double rel = fabs(num - gu) / (fabs(num) + fabs(gu) + 1e-8);
         /* tolerancia: 1% relativo mais um piso absoluto de 1e-4 (o arredondamento do float domina nos gradientes pequenos) */
         if (getenv("KATANA_GC_VERBOSE") && rel > 1e-2) printf("  (dentro da tolerancia) %s part %d: %.3g x %.3g\n", p->name, part, gu, num);
         if (rel > maxrel) maxrel = rel;
@@ -1889,20 +2174,58 @@ static void js_escape_to(char *dst, size_t cap, const char *src) {
 
 /* lista de janelas */
 typedef struct { TEx *w; int n, cap; } TSet;
-/* um exemplo vira janelas de ate seq tokens (com um token de sobreposicao); so as que tem algum alvo */
+/* janelas: modo fixo (padrao, corta da frente a cada seq-1 tokens) ou denso (--window dense): o exemplo termina no
+   ultimo alvo (o que vem depois nao ensina nada), as janelas se contam de tras para a frente e cada uma comeca
+   g_win_ctx tokens antes do primeiro alvo que ela possui (o resto da frente e contexto que nenhum alvo usa);
+   --win-min N derruba janelas com menos de N alvos. Cada alvo pertence a uma janela so, nos dois modos. */
+static int g_win_dense, g_win_ctx = 64, g_win_min;
+static const void *g_ws_for;      /* conjunto que entra nas estatisticas */
+static struct { long ex, toks, after_last, win, wtoks, tgt, tgt_all, nowin, nowin_toks, lowd, lowd_toks, dropped, dropped_tgt, dropped_toks, h[6]; } g_ws;
+static void tset_emit(TSet *S, const TEx *e, int s0, int len) {
+    if (S->n == S->cap) { S->cap = S->cap * 2 + 16; S->w = realloc(S->w, sizeof(TEx) * (size_t)S->cap); }
+    TEx *w = &S->w[S->n++];
+    memset(w, 0, sizeof *w);
+    w->src = e->src;
+    for (int t = 0; t < len; t++) ids_push(&w->ids, e->ids.ids[s0 + t]);
+    w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e->mask + s0, (size_t)len);
+    w->mask[len - 1] = 0;
+}
 static void tset_add(TSet *S, const TEx *e, int seq) {
-    for (int s0 = 0; s0 < e->ids.n - 1; s0 += seq - 1) {
-        const int len = e->ids.n - s0 < seq ? e->ids.n - s0 : seq;
-        int any = 0; for (int t = 0; t + 1 < len; t++) any |= e->mask[s0 + t];
-        if (!any || len < 2) continue;
-        if (S->n == S->cap) { S->cap = S->cap * 2 + 16; S->w = realloc(S->w, sizeof(TEx) * (size_t)S->cap); }
-        TEx *w = &S->w[S->n++];
-        memset(w, 0, sizeof *w);
-        w->src = e->src;
-        for (int t = 0; t < len; t++) ids_push(&w->ids, e->ids.ids[s0 + t]);
-        w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e->mask + s0, (size_t)len);
-        w->mask[len - 1] = 0;
+    const int st = S == g_ws_for;
+    int last = -1, nt = 0;
+    for (int t = 0; t + 1 < e->ids.n; t++) if (e->mask[t]) { last = t; nt++; }
+    if (st) { g_ws.ex++; g_ws.toks += e->ids.n; g_ws.tgt_all += nt; g_ws.after_last += last >= 0 ? e->ids.n - (last + 2) : e->ids.n; }
+    if (last < 0) return;
+    const int endx = g_win_dense ? last + 2 : e->ids.n;     /* ate onde o exemplo conta */
+    int cur = g_win_dense ? endx : 0;                        /* denso: fim (exclusivo) da proxima janela; fixo: inicio */
+    for (int done = 0; !done; ) {
+        int s0, len;
+        if (g_win_dense) { s0 = cur - seq < 0 ? 0 : cur - seq; len = cur - s0; done = s0 == 0; cur = s0 + 1; }
+        else { s0 = cur; len = e->ids.n - s0 < seq ? e->ids.n - s0 : seq; done = s0 + len >= e->ids.n; cur += seq - 1; }
+        int cnt = 0, ft = -1;                                /* alvos que esta janela possui: t em [s0, s0+len-2] */
+        for (int t = s0; t + 1 < s0 + len; t++) if (e->mask[t]) { cnt++; if (ft < 0) ft = t; }
+        if (len < 2 || !cnt) { if (st && len >= 2) { g_ws.nowin++; g_ws.nowin_toks += len; } continue; }
+        if (g_win_dense) { const int s2 = ft - g_win_ctx > s0 ? ft - g_win_ctx : s0; len -= s2 - s0; s0 = s2; }
+        if (cnt < g_win_min) { if (st) { g_ws.dropped++; g_ws.dropped_tgt += cnt; g_ws.dropped_toks += len; } continue; }
+        if (st) {
+            g_ws.win++; g_ws.wtoks += len; g_ws.tgt += cnt;
+            const double d = (double)cnt / len;
+            g_ws.h[d < 0.05 ? 0 : d < 0.1 ? 1 : d < 0.2 ? 2 : d < 0.4 ? 3 : d < 0.7 ? 4 : 5]++;
+            if (d < 0.05) { g_ws.lowd++; g_ws.lowd_toks += len; }
+        }
+        tset_emit(S, e, s0, len);
     }
+}
+static void tset_stats_print(void) {
+    const double nw = g_ws.win ? (double)g_ws.win : 1;
+    printf("janelas (%s%s): %ld exemplos, %ld tokens, %ld alvos; %ld janelas, %ld tokens, %ld alvos (%.1f alvos e %.1f tokens por janela, densidade %.1f%%)\n",
+           g_win_dense ? "denso" : "fixo", g_win_min ? ", com --win-min" : "", g_ws.ex, g_ws.toks, g_ws.tgt_all, g_ws.win, g_ws.wtoks, g_ws.tgt,
+           g_ws.tgt / nw, g_ws.wtoks / nw, g_ws.wtoks ? 100.0 * g_ws.tgt / g_ws.wtoks : 0.0);
+    printf("  tokens depois do ultimo alvo: %ld (%.1f%% dos tokens dos exemplos); janelas sem alvo: %ld (%ld tokens); janelas com densidade < 5%%: %ld (%ld tokens)\n",
+           g_ws.after_last, g_ws.toks ? 100.0 * g_ws.after_last / g_ws.toks : 0.0, g_ws.nowin, g_ws.nowin_toks, g_ws.lowd, g_ws.lowd_toks);
+    if (g_ws.dropped) printf("  --win-min %d derrubou %ld janelas (%ld alvos, %.1f%% dos alvos; %ld tokens)\n", g_win_min, g_ws.dropped, g_ws.dropped_tgt,
+           g_ws.tgt_all ? 100.0 * g_ws.dropped_tgt / g_ws.tgt_all : 0.0, g_ws.dropped_toks);
+    printf("  densidade de alvos por janela: <5%% %ld, <10%% %ld, <20%% %ld, <40%% %ld, <70%% %ld, >=70%% %ld\n", g_ws.h[0], g_ws.h[1], g_ws.h[2], g_ws.h[3], g_ws.h[4], g_ws.h[5]);
 }
 /* le um JSONL; cada linha vai para a validacao com probabilidade vf (a conversa inteira, para nao vazar) */
 static int tset_load(const Model *m, const char *path, int seq, TSet *tr, TSet *va, double vf, unsigned seed, int *nlines, int *nval) {
@@ -1959,6 +2282,53 @@ static double tset_loss(Model *m, TTab *tt, TAct *A, const TSet *S, int seq, int
 }
 
 #include "app/train_methods.c"      /* metodos de ajuste fino e diagnostico do treino (opcoes, desligadas por padrao) */
+static int t_ntgt(const TEx *e) { int n = 0; for (int t = 0; t + 1 < e->ids.n; t++) n += e->mask[t] != 0; return n; }
+
+/* --probe N: passo para tras em N janelas (espalhadas pelo conjunto), sem atualizar nada, e imprime a norma do gradiente
+   por tensor (adaptador: B, que e o que tem gradiente com B = 0, e A) e somada por projecao e por camada. Devolve as
+   normas por tensor em nrm[i] (adaptador: so B) para --probe-top. */
+static void t_probe(Model *m, TTab *tt, TAct *A, const TEx *ex, int nex, int np, int seq, double *nrm) {
+    t_clear_grads(tt);
+    if (np > nex) np = nex;
+    for (int i = 0; i < np; i++) {
+        const TEx *e = &ex[(long)i * nex / np];
+        A->T = e->ids.n; t_gscale = 1.0f / np;
+        int n1 = 0; t_step(m, tt, e->ids.ids, e->mask, A, 1, &n1);
+    }
+    t_gscale = 1.0f; A->T = seq;
+    double kn[64] = {0}; char kname[64][48]; int nk = 0; double ln[256] = {0}; int nl = 0; double tot = 0;
+    for (int i = 0; i < tt->n; i++) {
+        const TPar *p = &tt->p[i];
+        nrm[i] = 0;
+        if (!p->r && !p->w) continue;
+        double gb = 0, ga = 0;
+        if (p->r) { for (size_t j = 0; j < p->rows * (size_t)p->r; j++) gb += (double)p->gb[j] * p->gb[j]; for (size_t j = 0; j < (size_t)p->r * p->cols; j++) ga += (double)p->ga[j] * p->ga[j]; }
+        else for (size_t j = 0; j < p->rows * p->cols; j++) gb += (double)p->g[j] * p->g[j];
+        nrm[i] = sqrt(gb); tot += gb;
+        printf("  %-40s |g%s| %.4e%s  (%zu pesos)\n", p->name, p->r ? "B" : "", sqrt(gb), p->r ? "" : " (inteiro)", p->r ? (size_t)p->r * (p->rows + p->cols) : p->rows * p->cols);
+        (void)ga;
+        int L = -1; const char *kind = p->name;
+        if (!strncmp(p->name, "blk.", 4)) { L = atoi(p->name + 4); const char *d = strchr(p->name + 4, '.'); kind = d ? d + 1 : p->name; }
+        if (L >= 0 && L < 256) { ln[L] += gb; if (L + 1 > nl) nl = L + 1; }
+        int k = 0; while (k < nk && strcmp(kname[k], kind)) k++;
+        if (k == nk && nk < 64) { snprintf(kname[nk], 48, "%s", kind); nk++; }
+        if (k < 64) kn[k] += gb;
+    }
+    printf("sonda: %d janelas; |grad| total (B e tensores inteiros) %.4e\npor projecao (parte do gradiente ao quadrado):\n", np, sqrt(tot));
+    for (int k = 0; k < nk; k++) printf("  %-34s %5.1f%%\n", kname[k], tot > 0 ? 100.0 * kn[k] / tot : 0.0);
+    printf("por camada:");
+    for (int l = 0; l < nl; l++) printf(" %d:%.1f%%", l, tot > 0 ? 100.0 * ln[l] / tot : 0.0);
+    printf("\n");
+    t_clear_grads(tt);
+}
+
+/* desliga o treino de um tensor (usado depois da sonda para ficar so com os de maior gradiente) */
+static void t_untrain(TPar *p) {
+    tm_untrain(p);
+    if (p->r) { free(p->a); free(p->b); free(p->ga); free(p->gb); free(p->ma1); free(p->ma2); free(p->mb1); free(p->mb2); p->a = p->b = p->ga = p->gb = p->ma1 = p->ma2 = p->mb1 = p->mb2 = NULL; p->r = 0; }
+    else if (p->w) { free(p->w); free(p->g); free(p->m1); free(p->m2); p->w = p->g = p->m1 = p->m2 = NULL; }
+}
+static int t_dcmp(const void *a, const void *b) { const double x = *(const double *)a, y = *(const double *)b; return x < y ? 1 : x > y ? -1 : 0; }
 
 /* katana train <modelo> <dados.jsonl> [--out f.kspec] [--train padroes] [--steps N] [--lr X] [--seq T] [--wd X] [--seed N] */
 static int train_main(Model *m, const char *model_path, int argc, char **argv) {
@@ -1969,6 +2339,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0, plan = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
     int batch = 1, eval = 0, patience = 0, cosine = 1, warm = -1, final = 1; double vfrac = -1; const char *vdata = NULL, *logp = NULL;
     const char *mix = NULL, *resume = NULL;
+    int wtgt = 0, probe = 0, vmax = 0, optstate = -1, resopt = 1, rs = 0; long btgt = 0; double probe_top = 0, minrel = 0; float init_a = 1.0f;
     for (int i = 1; i < argc; i += 2) {
         if (!strcmp(argv[i], "--no-tool-decl")) { g_spec_save_flags |= KSPEC_NO_TOOL_DECL; i--; continue; }   /* opcao sem valor */
         if (tm_flag(argv[i])) { i--; continue; }                       /* --allow-worse, --dora, --pissa */
@@ -1998,6 +2369,20 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         else if (!strcmp(k, "--final")) final = atoi(v);
         else if (!strcmp(k, "--mix")) mix = v;
         else if (!strcmp(k, "--resume")) resume = v;
+        else if (!strcmp(k, "--window")) { if (!strcmp(v, "dense")) g_win_dense = 1; else if (!strcmp(v, "fixed")) g_win_dense = 0; else { fprintf(stderr, "--window: fixed ou dense\n"); return 1; } }
+        else if (!strcmp(k, "--win-ctx")) g_win_ctx = atoi(v);
+        else if (!strcmp(k, "--win-min")) g_win_min = atoi(v);
+        else if (!strcmp(k, "--lr-b")) g_lr_b = (float)atof(v);
+        else if (!strcmp(k, "--rs")) rs = atoi(v);
+        else if (!strcmp(k, "--init-a")) init_a = (float)atof(v);
+        else if (!strcmp(k, "--weight")) { if (!strcmp(v, "tgt")) wtgt = 1; else if (!strcmp(v, "window")) wtgt = 0; else { fprintf(stderr, "--weight: window ou tgt\n"); return 1; } }
+        else if (!strcmp(k, "--batch-tgt")) btgt = atol(v);
+        else if (!strcmp(k, "--probe")) probe = atoi(v);
+        else if (!strcmp(k, "--probe-top")) probe_top = atof(v);
+        else if (!strcmp(k, "--val-max")) vmax = atoi(v);
+        else if (!strcmp(k, "--min-rel")) minrel = atof(v);
+        else if (!strcmp(k, "--opt-state")) optstate = atoi(v);
+        else if (!strcmp(k, "--resume-opt")) resopt = atoi(v);
         else if (tm_opt(k, v)) {}                                      /* --ema, --neft, --anchor, ... (train_methods.c) */
         else { fprintf(stderr, "opcao desconhecida: %s\n", k); return 1; }
     }
@@ -2006,6 +2391,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     if (batch < 1) batch = 1;
     if (tm_validate(rank, resume != NULL)) return 1;
     tm_describe();
+    if (btgt > 0) wtgt = 1;                       /* lote por alvos: cada janela pesa pelos seus alvos */
     TTab tt = {0};
     const char *err = tt_build(m, &tt);
     if (err) { fprintf(stderr, "%s\n", err); return 1; }
@@ -2014,8 +2400,21 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     TSet trs = {0}, vas = {0};
     if (vfrac < 0) vfrac = vdata ? 0.0 : tset_lines(data) >= 20 ? 0.1 : 0.0;
     int nlines = 0, vlines = 0;
+    g_ws_for = &trs;
     if (!tset_load(m, data, seq, &trs, vfrac > 0 ? &vas : NULL, vfrac, seed, &nlines, &vlines)) return 1;
-    if (vdata && !tset_load(m, vdata, seq, &vas, NULL, 0, seed, &vlines, NULL)) return 1;
+    g_ws_for = NULL;
+    tset_stats_print();
+    {   /* a validacao usa sempre janelas fixas completas: as opcoes de janela valem so para o treino */
+        const int sd = g_win_dense, sm = g_win_min; g_win_dense = 0; g_win_min = 0;
+        const int ok = !vdata || tset_load(m, vdata, seq, &vas, NULL, 0, seed, &vlines, NULL);
+        g_win_dense = sd; g_win_min = sm;
+        if (!ok) return 1;
+    }
+    if (vmax > 0 && vas.n > vmax) {               /* subamostra deterministica da validacao: janelas igualmente espacadas */
+        TEx *sub = xalloc((size_t)vmax, sizeof(TEx));
+        for (int i = 0; i < vmax; i++) sub[i] = vas.w[(long)i * vas.n / vmax];
+        vas.w = sub; vas.n = vmax;
+    }
     TEx *ex = trs.w; const int nex = trs.n;
     if (!nex) { fprintf(stderr, "nenhum exemplo com alvo marcado em %s\n", data); return 1; }
     srand(seed);
@@ -2058,9 +2457,44 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     }
     ntr += tt_select_r(&tt, pats, rank, alpha > 0 ? alpha : (float)rank);
     if (!ntr) { fprintf(stderr, "nenhum tensor casa com --train %s\n", pats); return 1; }
+    for (int i = 0; i < tt.n; i++) {
+        TPar *p = &tt.p[i];
+        if (!p->r) continue;
+        if (rs) p->s = (alpha > 0 ? alpha : (float)rank) / sqrtf((float)p->r);      /* --rs 1: escala alpha/sqrt(posto) */
+        if (init_a != 1.0f) for (size_t j = 0; j < (size_t)p->r * p->cols; j++) p->a[j] *= init_a;
+    }
     if (tm_setup(&tt)) return 1;                                  /* PiSSA e DoRA ligam antes da retomada */
+    int64_t st0 = 0;
     if (resume && spec_resume(m, &tt, resume) < 0) return 1;
+    if (resume && resopt && tm_blocks_opt()) printf("o estado do otimizador (.kopt) nao cobre DoRA, Muon nem media movel: recomeca do zero\n");
+    else if (resume && resopt) {
+        int got = 0;
+        const int64_t os = opt_load(&tt, resume, &got);
+        if (os < 0) printf("sem %s.kopt: o estado do otimizador recomeca do zero\n", resume);
+        if (os >= 0) { st0 = os; printf("estado do otimizador retomado de %s.kopt: %d tensores, %lld passos ja dados\n", resume, got, (long long)os); }
+    }
     tm_setup_ema(&tt);
+    if (probe > 0) {
+        TAct PA; tact_alloc(&PA, c, seq);
+        double *nrm = xalloc((size_t)tt.n, sizeof(double));
+        t_probe(m, &tt, &PA, ex, nex, probe, seq, nrm);
+        if (probe_top > 0 && probe_top < 1) {          /* fica so com a fracao de tensores de maior gradiente */
+            double *srt = xalloc((size_t)tt.n, sizeof(double)); int k = 0;
+            for (int i = 0; i < tt.n; i++) if (tt.p[i].r || tt.p[i].w) srt[k++] = nrm[i];
+            qsort(srt, (size_t)k, sizeof(double), t_dcmp);
+            const double cut = srt[(int)(k * probe_top) > 0 ? (int)(k * probe_top) - 1 : 0];
+            int kept = 0; ntr = 0;
+            for (int i = 0; i < tt.n; i++) {
+                TPar *p = &tt.p[i];
+                if (!p->r && !p->w) continue;
+                if (nrm[i] >= cut) { kept++; ntr += p->r ? (size_t)p->r * (p->rows + p->cols) : p->rows * p->cols; } else t_untrain(p);
+            }
+            printf("--probe-top %.2f: ficam %d de %d tensores (|gB| >= %.3e)\n", probe_top, kept, k, cut);
+            free(srt);
+        }
+        tact_free(&PA); free(nrm);
+        if (probe_top <= 0) return 0;
+    }
     /* --mix fonte=peso,...: cada passo tira a janela da fonte mais atrasada em relacao a sua parte (exato a menos de
        uma janela); pesos renormalizados sobre as fontes que tem janelas; fonte fora da lista fica de fora */
     double mw[16] = {0}; long mcnt[16] = {0}; int *mord[16] = {0}, mn[16] = {0}, mpos[16] = {0};
@@ -2099,12 +2533,13 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     printf("memoria: ativacoes de uma janela de %d tokens %.0f MB; estado do treino %.0f MB; modelo base mapeado do arquivo (%.1f GB)\n",
            seq, g_ta_bytes / 1048576.0, ntr * 16.0 / 1048576.0, m->fsize / 1073741824.0);
     if (plan) { printf("--plan 1: so o plano, sem treinar\n"); tact_free(&A); return 0; }
-    double ema = -1, best = 1e30;
+    double ema = -1, best = 1e30, sig = 1e30;
+    const int optstate_on = !tm_blocks_opt() && (optstate < 0 ? ntr <= 32000000u : optstate);     /* padrao: grava os momentos se couberem em ~256 MB */
     double base_val = -1;
     if (vas.n) {                                      /* o ponto de partida honesto: a validacao do modelo base, antes de qualquer passo */
         base_val = tm_baseline(m, &tt, &A, &vas, seq, resume == NULL && !tm.pissa);
         if (base_val < 0) return 1;
-        if (!tm.allow_worse) best = base_val;           /* so grava um estado que vence o base */
+        if (!tm.allow_worse) best = sig = base_val;     /* so grava (e so conta como melhora) um estado que vence o base */
     }
     long toks = 0;
     int diverged = 0, nskip = 0;
@@ -2118,8 +2553,8 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     for (st = 1; st <= steps; st++) {
         t_clear_grads(&tt);
         double loss = 0; int N = 0;
-        t_gscale = 1.0f / batch;
-        for (int bi = 0; bi < batch; bi++) {
+        const TEx *pk[256]; int npk = 0; long ptg = 0;       /* janelas deste passo */
+        for (;;) {
             const TEx *e;
             if (mix) {
                 int sb = -1; double bd = -1e30;
@@ -2137,10 +2572,17 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
                 }
                 e = &ex[ord[op++]];
             }
+            pk[npk++] = e; ptg += t_ntgt(e);
+            if (btgt > 0 ? (ptg >= btgt || npk == 256) : npk == batch) break;
+        }
+        for (int bi = 0; bi < npk; bi++) {
+            const TEx *e = pk[bi];
+            const float wgt = wtgt && ptg > 0 ? (float)t_ntgt(e) / (float)ptg : 1.0f / npk;
+            t_gscale = wgt;
             A.T = e->ids.n;
             int n1 = 0;
             tm_set_key(seed, st, bi); tm_on = 1;
-            loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) / batch;
+            loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) * wgt;
             tm_on = 0;
             N += n1;
             toks += A.T;
@@ -2155,7 +2597,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
             continue;
         }
         const double po0 = now_sec();
-        const double gn = t_adamw(&tt, st - nskip, lr_t, wd, clip);
+        const double gn = t_adamw(&tt, (int)(st - nskip + st0), lr_t, wd, clip);
         if (tm.ema > 0) tm_ema_update(&tt, st - nskip);
         tprof[TP_OPT] += now_sec() - po0;
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
@@ -2166,15 +2608,19 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
             int vn = 0, uema = 0;
             const double vl = tm_eval_point(m, &tt, &A, &vas, seq, &vn, &uema);
             const int better = vl < best - 1e-6;
-            printf("validacao  passo %4d  perda %.4f em %d alvos%s\n", st, vl, vn, better ? "  (melhor ate agora: gravado)" : "");
+            const int signif = vl < sig * (1.0 - minrel) - 1e-6;       /* --min-rel: so conta como melhora a relativa */
+            printf("validacao  passo %4d  perda %.4f em %d alvos  tokens %ld  %.1f s%s\n", st, vl, vn, toks, now_sec() - t0, better ? "  (melhor ate agora: gravado)" : "");
             if (lf) fprintf(lf, "{\"step\": %d, \"val_loss\": %.6f}\n", st, vl);
             if (better) {
-                best = vl; best_step = st; bad = 0;
+                best = vl; best_step = st;
                 tm_ev_best = tm_ev;
                 if (!spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+                if (optstate_on) opt_save(&tt, out, st + st0);
                 saved = 1;
                 if (uema) printf("  (gravada a media movel dos pesos)\n");
-            } else if (patience && ++bad >= patience) { printf("parada antecipada: %d avaliacoes sem melhorar\n", bad); done = 1; }
+            }
+            if (signif) { sig = vl; bad = 0; }
+            else if (patience && ++bad >= patience) { printf("parada antecipada: %d avaliacoes sem melhorar%s\n", bad, minrel > 0 ? " o suficiente" : ""); done = 1; }
             tm_eval_done(&tt, uema);
         }
         fflush(stdout);
@@ -2223,6 +2669,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     if (tg.on) printf("GPU: %ld produtos em %.1f s (com as copias); %.2f GB de pesos residentes; %ld produtos subiram o peso na hora\n",
                       tg.calls, tg.t_gpu, tg.resident / 1073741824.0, tg.streamed);
     if (!saved && !spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+    if (!saved && optstate_on) opt_save(&tt, out, st + st0);
     if (saved) printf("melhor validacao: perda %.4f no passo %d\n", best, best_step);
     printf("especializacao gravada: %s (use KATANA_SPEC=%s)\n", out, out);
     /* resumo de uma linha para quem chama (katana learn, scripts) */
