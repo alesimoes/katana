@@ -90,6 +90,7 @@
 #include "tools/workflow.c"              /* Workflow */
 #include "tools/table.c"               /* tabela, despacho e katana tool */
 #include "agent/brief.c"               /* formato brief do KATANA.md: lint, never/ask impostos, nota de fim de pedido */
+#include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */
 #include "agent/callgrammar.c"         /* chamadas de ferramenta validas por construcao (nome, chaves, valores tipados) */

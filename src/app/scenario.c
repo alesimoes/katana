@@ -372,7 +372,7 @@ typedef struct { const char *name; XFi fn[6]; int nfn; } XMod;
 typedef struct {
     const Scn *s; int st; const char *name, *what;
     XMod mod[3]; int nmod;
-    int brief, readme, docs, rules, never, askrule, conf, failfast, verbose, psrule;      /* o que o projeto tem */
+    int brief, readme, docs, rules, never, askrule, conf, failfast, verbose, psrule, idx;      /* o que o projeto tem */
     const char *testcmd, *testrel;
     int knows;                   /* o comando de teste ja apareceu na conversa (prompt, README ou busca) */
     int nread; const char *readf[24];      /* arquivos ja lidos inteiros nesta conversa */
@@ -565,6 +565,7 @@ static const char *x_brief_text(const XProj *p) {
     if (p->never) buf_str(&b, cu_fmt("never:\n  - delete the test runner `rm*test_%s*`\n", p->name));
     if (p->askrule) buf_str(&b, "ask:\n  - delete files `rm *`\n");
     if (p->rules) buf_str(&b, cu_fmt("done: `%s` passes\n", p->testcmd));
+    if (p->idx) buf_str(&b, g_cu_lang ? "docs:\n  docs/index.md  mapa dos modulos, um documento por modulo; leia antes de mexer em um deles\n" : "docs:\n  docs/index.md  map of the modules, one document per module; read it before changing one\n");
     if (p->docs) buf_str(&b, "docs:\n  docs/functions.md  the list of functions; update it when one is added, renamed or removed\n");
     return cu_keep(b.p);
 }
@@ -618,6 +619,7 @@ static void x_proj(XProj *p, const Scn *s, int st, int nmod, int nfn) {
     p->testrel = cu_fmt("%s/test_%s.%s", st == X_JS ? "test" : "tests", p->name, g_x_ext[st]);
     p->testcmd = st == X_PY ? cu_fmt("python3 %s", p->testrel) : st == X_JS ? cu_fmt("node %s", p->testrel) : st == X_SH ? cu_fmt("sh %s", p->testrel) : st == X_C ? "make test" : cu_fmt("perl %s", p->testrel);
 }
+static void x_docs_write(const XProj *p);      /* scenario_docs.c */
 static void x_proj_write(const XProj *p) {
     const Scn *s = p->s;
     g_x_mt = 0;
@@ -628,6 +630,7 @@ static void x_proj_write(const XProj *p) {
                                                   p->name, p->name, p->name, p->name, p->name), 0);
     if (p->readme) x_put(s, "README.md", cu_fmt("# %s\n\n%s helpers in %s, one file per module under `%s`.\n\n## Tests\n\n    %s\n\nThe runner prints the failing cases and ends with the totals.\n", p->name, p->what, g_x_lang[p->st], x_srcdir(p), p->testcmd), 0);
     if (p->docs) x_put(s, "docs/functions.md", x_docs_text(p), 0);
+    if (p->idx) x_docs_write(p);
     if (p->conf) { x_put(s, "settings.conf", x_conf_text(p), 0); x_put(s, "tools/check_settings.sh", x_conf_check(p), 0755); }
     for (int i = 0; i < p->nx; i++) x_put(s, p->xrel[i], p->xtxt[i], p->xmode[i]);
     if (p->brief) x_put(s, "KATANA.md", x_brief_text(p), 0);

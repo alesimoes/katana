@@ -108,6 +108,24 @@ static void x_find_testcmd(XProj *p) {
 static const char *x_test(XProj *p, const char *say) {
     return x_bash(say, p->testcmd, cu_fmt(XV(L("Run the %s tests", "Roda os testes do %s"), L("Run the tests of %s", "Roda os testes de %s"), L("Test %s", "Testa o %s")), p->name), 0);
 }
+/* v5: o modelo responde sem verificar (fala fora do treino); o motor manda a nota de fim de pedido (test:/done: do KATANA.md que nao
+   rodou) e o modelo roda o teste do projeto. So acontece onde o laco mandaria a nota de verdade. */
+static int x_pre_note(void) {
+    br_sync();
+    if (!g_br_changed || g_br_ran || g_br_noted) return 0;
+    const Brief *b = br_cur();
+    if (!br_single(b, "test", "") && !br_single(b, "done", "")) return 0;
+    if (!cu_pct(60)) return 0;
+    const char *pre = g_cu_lang ? CU_PA(((const char *const[]){"Pronto, a mudanca esta feita.", "Tudo certo: o arquivo foi atualizado.", "Feito, ficou como voce pediu."}))
+                                : CU_PA(((const char *const[]){"Done, the change is in place.", "All set: the file is updated.", "Finished, it is as you asked."}));
+    x_push('a', pre, 0);
+    char note[1400];
+    if (!brief_end_note(note, sizeof note)) cu_die("o motor nao mandou a nota de verificacao");
+    x_push('e', note, 1);
+    { const size_t l = strlen(g_x.cell); snprintf(g_x.cell + l, sizeof g_x.cell - l, "/end-note"); }
+    return 1;
+}
+static const char *x_test_end(XProj *p) { return x_test(p, x_pre_note() ? L("Running the project's check first.", "Rodo a verificacao do projeto antes.") : NULL); }
 static int x_fails(const char *out, char nm[][48], int cap) {
     int n = 0;
     for (const char *q = out; (q = strstr(q, "FAIL ")) && n < cap; q += 5) {
@@ -551,7 +569,21 @@ static void fam_x_find(FILE *f, Scn *s) {
     if (c.loc == 0) { c.focus = fi->name; c.focrel = x_src(p, mi); }
     x_start(&c, "x-find");
     x_pre(&c);
-    if (c.loc == 2) {      /* pergunta por nome de arquivo: Glob, nao Grep */
+    if (c.loc == 2 && p->brief && cu_pct(70)) {      /* v5: o layout: do KATANA.md ja diz onde as coisas ficam; a resposta sai dele, sem Glob nem Grep */
+        const char *sd = x_srcdir(p), *td = p->st == X_JS ? "test/" : "tests/";
+        const int q = cu_n(3);
+        { const size_t l = strlen(g_x.cell); snprintf(g_x.cell + l, sizeof g_x.cell - l, "/layout%d", q); }
+        if (q == 0) {
+            x_user(XV(L("where are the tests?", "onde ficam os testes?"), L("which folder has the tests of this project?", "qual pasta tem os testes desse projeto?")));
+            x_final(cu_fmt(L("In %s: the layout in KATANA.md lists it as the test runner with its cases. They run with `%s`.", "Em %s: o layout do KATANA.md lista essa pasta como o executor de testes com os casos. Eles rodam com `%s`."), td, p->testcmd));
+        } else if (q == 1) {
+            x_user(XV(L("where does the source code live?", "onde fica o codigo fonte?"), L("which folder holds the source?", "qual pasta guarda o fonte?")));
+            x_final(cu_fmt(L("In %s, one file per module: that is what the layout in KATANA.md says.", "Em %s, um arquivo por modulo: e o que diz o layout do KATANA.md."), sd));
+        } else {
+            x_user(XV(L("where should a new function go?", "onde eu coloco uma funcao nova?"), L("if I add a function, in which folder does it go?", "se eu criar uma funcao, em qual pasta ela entra?")));
+            x_final(cu_fmt(L("In %s, in the module it belongs to (one file per module), and its test case goes in %s, as the layout in KATANA.md says.", "Em %s, no modulo a que ela pertence (um arquivo por modulo), e o caso de teste dela vai em %s, como diz o layout do KATANA.md."), sd, td));
+        }
+    } else if (c.loc == 2) {      /* pergunta por nome de arquivo: Glob, nao Grep */
         const int tests = cu_pct(50);
         x_user(tests ? XV(L("which test files does this project have?", "quais arquivos de teste esse projeto tem?"), L("where are the tests?", "onde ficam os testes?"))
                      : cu_fmt(XV(L("list the .%s files of the project", "lista os arquivos .%s do projeto"), L("which .%s files exist here?", "quais arquivos .%s existem aqui?")), g_x_ext[p->st]));
@@ -589,6 +621,18 @@ static void fam_x_explain(FILE *f, Scn *s) {
     x_start(&c, "x-explain");
     x_pre(&c);
     const char *rel = x_src(p, mi);
+    if (c.loc == 0 && p->brief && c.obst == O_NONE && cu_pct(50)) {      /* v5: a visao geral parte do layout: do KATANA.md; um Glob na pasta do fonte confere os modulos */
+        const char *sd = x_srcdir(p), *td = p->st == X_JS ? "test/" : "tests/";
+        { const size_t l = strlen(g_x.cell); snprintf(g_x.cell + l, sizeof g_x.cell - l, "/layout-tour"); }
+        x_user(XV(L("how is this project organized?", "como esse projeto esta organizado?"), L("give me the map of this project", "me da o mapa desse projeto"), L("what is in each folder here?", "o que tem em cada pasta aqui?")));
+        const char *r = x_glob(cu_fmt("%s*", sd));
+        Buf b = {0}; buf_str(&b, "");
+        for (int i = 0; i < p->nmod; i++) { if (!strstr(r, x_src(p, i))) cu_die("Glob nao achou o modulo"); buf_str(&b, cu_fmt("%s%s", i ? ", " : "", p->mod[i].name)); }
+        x_final(cu_fmt(L("The layout in KATANA.md puts the source in %s, one file per module, and the test runner in %s. The modules are %s. Tests run with `%s`.",
+                         "O layout do KATANA.md poe o fonte em %s, um arquivo por modulo, e o executor de testes em %s. Os modulos sao %s. Os testes rodam com `%s`."), sd, td, cu_keep(b.p), p->testcmd));
+        x_followup(&c);
+        x_end(f); return;
+    }
     if (c.loc == 0) {
         x_user(cu_fmt(XV(L("what does the %s module do?", "o que o modulo %s faz?"), L("give me a quick tour of the %s module", "me da um resumo rapido do modulo %s")), m->name));
         if (!p->brief) { const char *r = x_glob(cu_fmt("**/%s.%s", m->name, g_x_ext[p->st])); if (!strstr(r, rel)) cu_die("Glob nao achou o modulo"); }
@@ -710,12 +754,12 @@ static void fam_x_config(FILE *f, Scn *s) {
         x_edit(s, "settings.conf", n1, o1, 0, 0);
         chk = x_bash(L("The check rejects it; restoring the previous value.", "A verificacao recusa; voltando o valor anterior."), "sh tools/check_settings.sh", cu_fmt(L("Check the settings again with %s back to %s", "Confere as configuracoes de novo com %s de volta em %s"), key, p->cv[ki]), 0);
         if (!strstr(chk, "settings ok")) cu_die("a verificacao nao voltou a passar");
-        if (p->brief && !x_totals(x_test(p, NULL))) cu_die("sem totais");
+        if (p->brief && !x_totals(x_test_end(p))) cu_die("sem totais");
         x_final(cu_fmt(L("I did not keep the change: `sh tools/check_settings.sh` rejects it (\"%s\"). settings.conf is back to `%s` and the check passes again. Give me a value inside the range and I will set it.",
                          "Nao mantive a mudanca: o `sh tools/check_settings.sh` recusa (\"%s\"). O settings.conf voltou para `%s` e a verificacao passa de novo. Me passa um valor dentro da faixa que eu coloco."), badl, o1));
     } else {
         if (!strstr(chk, "settings ok") || !strstr(chk, n1)) cu_die("a verificacao nao confirmou a mudanca: %.200s", chk);
-        if (p->brief && !x_totals(x_test(p, NULL))) cu_die("sem totais");
+        if (p->brief && !x_totals(x_test_end(p))) cu_die("sem totais");
         x_final(cu_fmt(L("settings.conf now has `%s`%s. `sh tools/check_settings.sh` ends with \"settings ok\".%s", "O settings.conf agora tem `%s`%s. O `sh tools/check_settings.sh` termina com \"settings ok\".%s"), n1,
                        two ? cu_fmt(L(" and `%s = %ld`", " e `%s = %ld`"), p->ck[k2], v2) : "",
                        amb && c.obst == O_NOASK ? L(" read_timeout is the only timeout in the file, so that is the one I changed.", " read_timeout e o unico timeout do arquivo, entao foi esse que mudei.")
@@ -733,7 +777,7 @@ static void fam_x_config(FILE *f, Scn *s) {
         if (p->brief) x_done(1);
         const char *ck2 = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings with %s", "Confere as configuracoes com %s"), n3), 0);
         if (!strstr(ck2, "settings ok") || !strstr(ck2, n3)) cu_die("a verificacao nao confirmou a segunda mudanca");
-        if (p->brief && !x_totals(x_test(p, NULL))) cu_die("sem totais");
+        if (p->brief && !x_totals(x_test_end(p))) cu_die("sem totais");
         x_final(cu_fmt(back ? L("Undone: settings.conf is back to `%s`%s, and the check ends with \"settings ok\".", "Desfeito: o settings.conf voltou para `%s`%s, e a verificacao termina com \"settings ok\".")
                             : L("settings.conf now has `%s`%s, and the check ends with \"settings ok\".", "O settings.conf agora tem `%s`%s, e a verificacao termina com \"settings ok\"."), n3,
                        two ? cu_fmt(L(" (`%s` stays at %ld)", " (o `%s` continua em %ld)"), p->ck[k2], v2) : ""));
@@ -857,7 +901,7 @@ static void fam_x_investigate(FILE *f, Scn *s) {
             x_edit(s, "tools/report.sh", cu_fmt("done < %s/%s", dir, data), cu_fmt("done < tools/%s", data), 0, 0);
             const char *o2 = cu_fmt("%s", x_bash(NULL, cmd, cu_fmt(L("Run the report script again, now reading tools/%s", "Roda o script do relatorio de novo, agora lendo tools/%s"), data), 0));
             if (strstr(o2, "Exit code") || !strstr(o2, "basic: ")) cu_die("o script continua falhando: %.200s", o2);
-            if (p->brief) { const char *t = x_test(p, NULL); if (!x_totals(t)) cu_die("sem totais"); }
+            if (p->brief) { const char *t = x_test_end(p); if (!x_totals(t)) cu_die("sem totais"); }
             x_final(cu_fmt(L("The script read %s/%s, but the file is tools/%s. I changed the path in tools/report.sh and `%s` now prints the %d lines of the table%s.",
                              "O script lia %s/%s, mas o arquivo e tools/%s. Troquei o caminho em tools/report.sh e o `%s` agora imprime as %d linhas da tabela%s."), dir, data, data, cmd, 3,
                            p->brief ? cu_fmt(L("; `%s` still passes", "; o `%s` continua passando"), p->testcmd) : ""));

@@ -210,6 +210,35 @@ static char *mcp_dupstr(const char *v) {            /* copia decodificada de um 
 }
 
 /* ----- processo filho (stdio) ----- */
+/* id da sessao atual para os servidores stdio (KATANA_SESSION_ID): nome do .ksess sem pasta e sem extensao; sem arquivo
+   (--no-session, ainda nao gravado) vale um id estavel do processo no formato data-hora-pid. Valor fixado na partida. */
+static char g_sess_path[1024], g_resume_path[1024];     /* definidos de fato em agent/loop.c (declaracao provisoria) */
+static const char *mcp_session_id(void) {
+    static char id[200];
+    if (id[0]) return id;
+    const char *p = g_sess_path[0] ? g_sess_path : g_resume_path;
+    if (p[0]) {
+        const char *b = p, *q;
+        for (q = p; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
+        snprintf(id, sizeof id, "%s", b);
+        const size_t n = strlen(id);
+        if (n > 6 && strcmp(id + n - 6, ".ksess") == 0) id[n - 6] = 0;
+    }
+    if (!id[0]) {
+        const time_t t = time(NULL); struct tm tmv;
+#ifdef _WIN32
+        localtime_s(&tmv, &t);
+        const long pid = (long)GetCurrentProcessId();
+#else
+        localtime_r(&t, &tmv);
+        const long pid = (long)getpid();
+#endif
+        strftime(id, sizeof id, "%Y%m%d-%H%M%S", &tmv);
+        snprintf(id + strlen(id), sizeof id - strlen(id), "-%ld", pid);
+    }
+    return id;
+}
+
 static int mcp_spawn(McpSrv *s) {
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
@@ -233,6 +262,7 @@ static int mcp_spawn(McpSrv *s) {
         for (; *a; a++) { if (*a == '"') mcp_bputs(&cl, "\\"); mcp_bput(&cl, a, 1); }
         mcp_bputs(&cl, "\"");
     }
+    SetEnvironmentVariableA("KATANA_SESSION_ID", mcp_session_id());
     for (int i = 0; i < s->nenv; i++) SetEnvironmentVariableA(s->envk[i], s->envv[i]);
     const BOOL ok = CreateProcessA(NULL, cl.p, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
     free(cl.p);
@@ -254,6 +284,7 @@ static int mcp_spawn(McpSrv *s) {
         dup2(in[0], 0); dup2(out[1], 1);
         if (!getenv("KATANA_MCP_DEBUG")) { int dn = open("/dev/null", O_WRONLY); if (dn >= 0) dup2(dn, 2); }
         close(in[0]); close(out[1]);
+        setenv("KATANA_SESSION_ID", mcp_session_id(), 1);
         for (int i = 0; i < s->nenv; i++) setenv(s->envk[i], s->envv[i], 1);
         char **av = calloc((size_t)s->nargs + 2, sizeof *av);
         av[0] = s->cmd;

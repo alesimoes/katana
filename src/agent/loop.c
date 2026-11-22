@@ -623,6 +623,14 @@ static int agent(Model *m, int max_tokens, float temp) {
             snprintf(nl, sizeof nl, "[The user undid your file changes of an earlier request; these files are back as they were before it: %s]\n%s", undo_txt, line);
             snprintf(line, sizeof line, "%s", nl);
         }
+        if (cml) {      /* o motor escolhe, nos .md que o KATANA.md aponta, so o que importa para este pedido e entrega como contexto */
+            static char dsn[8000]; char cwdb[2048];
+            const int dn = getcwd(cwdb, sizeof cwdb) ? ds_select(&m->tk, line, br_cur(), cwdb, dsn, sizeof dsn) : 0;
+            if (dn) {
+                static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, dsn); snprintf(line, sizeof line, "%s", nl);
+                fprintf(stderr, "%s[docs: %d trecho(s) escolhido(s) pelo motor para este pedido]%s\n", CE(C_DIM), dn, CE(C_RESET));
+            }
+        }
         vis_take(line, sizeof line);        /* imagens pedidas com --image */
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;

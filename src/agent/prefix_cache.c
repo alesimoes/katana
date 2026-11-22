@@ -1,7 +1,7 @@
 /* ---------- cache de prefixo persistente ----------
  * O prompt de sistema do agente (com as ferramentas) tem 1.000-1.500 tokens e era processado a cada abertura.
  * Depois de processar esse prefixo, o estado do cache KV (e, em modelo com estado recorrente, m->ssm)
- * vai para ~/.katana/cache/pfx-<chave>.kv; a chave e um hash do modelo, dos tokens do prefixo, do contexto
+ * vai para <pasta do projeto>/.katana/cache/pfx-<chave>.kv (ou ~/.katana/cache); a chave e um hash do modelo, dos tokens do prefixo, do contexto
  * (KATANA_CTX) e do tipo do cache (CPU, Vulkan ou OpenCL; 16 ou 32 bits). Ao abrir, se a chave bate, o
  * estado e carregado em vez de recalculado. Na GPU os buffers do cache KV da placa sao lidos/gravados
  * como bytes crus (camadas na GPU) e o cache da CPU cobre as camadas restantes. Nao cobre: MLA
@@ -94,18 +94,33 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
     return h;
 }
 
+/* onde fica o prefixo: na pasta em que o katana roda (<pasta>/.katana/cache, com um .gitignore que ignora tudo), ou em
+   ~/.katana/cache quando a pasta e a home ou nao aceita escrita. Leitura: a pasta do projeto primeiro, depois a home (os
+   prefixos antigos continuam valendo). KATANA_CACHE_DIR manda em tudo. */
 static int pfx_path(char *out, size_t cap, uint64_t key, int mk) {
-    char home[700], d1[800], d2[900];
+    char home[700], hd1[800], hd2[900], d1[1500], d2[1600], cw[1100], fn[64];
+    snprintf(fn, sizeof fn, "pfx-%016llx.kv", (unsigned long long)key);
     agent_home(home, sizeof home);
     const char *over = getenv("KATANA_CACHE_DIR");
-    if (over && *over) snprintf(d2, sizeof d2, "%s", over);
-    else {
-        snprintf(d1, sizeof d1, "%s/.katana", home);
-        snprintf(d2, sizeof d2, "%s/.katana/cache", home);
-        if (mk) MKDIR(d1);
+    if (over && *over) { if (mk) MKDIR(over); snprintf(out, cap, "%s/%s", over, fn); return 1; }
+    snprintf(hd1, sizeof hd1, "%s/.katana", home);
+    snprintf(hd2, sizeof hd2, "%s/.katana/cache", home);
+    if (getcwd(cw, sizeof cw) && strcmp(cw, home) != 0 && strcmp(cw, "/") != 0) {
+        snprintf(d1, sizeof d1, "%s/.katana", cw);
+        snprintf(d2, sizeof d2, "%s/.katana/cache", cw);
+        if (mk) {
+            MKDIR(d1); MKDIR(d2);
+            char gi[1700]; struct stat st;
+            snprintf(gi, sizeof gi, "%s/.gitignore", d2);
+            if (stat(d2, &st) == 0 && stat(gi, &st) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); } }      /* o cache nao entra no git do projeto */
+            if (access(d2, W_OK) == 0) { snprintf(out, cap, "%s/%s", d2, fn); return 1; }
+        } else {
+            snprintf(out, cap, "%s/%s", d2, fn);
+            if (access(out, R_OK) == 0) return 1;
+        }
     }
-    if (mk) MKDIR(d2);
-    snprintf(out, cap, "%s/pfx-%016llx.kv", d2, (unsigned long long)key);
+    if (mk) { MKDIR(hd1); MKDIR(hd2); }
+    snprintf(out, cap, "%s/%s", hd2, fn);
     return 1;
 }
 
@@ -299,7 +314,7 @@ static int pfx_prepare(Model *m, const Ids *full, const char *sys) {
         fprintf(stderr, "[prefixo do cache: %d tokens carregados em %.2f s]\n", n, now_sec() - t0);
     else
         fprintf(stderr, "[prefixo do cache: %d tokens (%d calculados, %d do disco) em %.2f s%s]\n", n, calc, n - calc, now_sec() - t0,
-                saved ? ", gravados em ~/.katana/cache" : " (nao foi possivel gravar)");
+                saved ? ", gravados em .katana/cache da pasta" : " (nao foi possivel gravar)");
     free(p.ids);
     return n;
 }

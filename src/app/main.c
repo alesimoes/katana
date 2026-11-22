@@ -1233,6 +1233,17 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return toktest(&m, argv[3], argc > 4 && strcmp(argv[4], "--chat") == 0);
     }
+    if (argc >= 4 && strcmp(argv[1], "docsel") == 0) {      /* katana docsel <modelo.gguf> "pedido" [pasta]: o que o motor entregaria como contexto */
+        g_vocab_only = 1;
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        if (argc > 4 && chdir(argv[4]) != 0) { fprintf(stderr, "docsel: %s nao e uma pasta\n", argv[4]); return 2; }
+        char cwdb[2048], out[8000];
+        if (!getcwd(cwdb, sizeof cwdb)) return 2;
+        const int n = ds_select(&m.tk, argv[3], br_cur(), cwdb, out, sizeof out);
+        if (n) printf("%s\n", out); else printf("(nada para entregar: nenhum trecho casa com o pedido)\n");
+        return 0;
+    }
     if (argc >= 3 && strcmp(argv[1], "tokenize") == 0) {    /* contagem de tokens de texto ou conversa, sem os pesos */
         g_vocab_only = 1;
         const char *src = NULL; int ids = 0;

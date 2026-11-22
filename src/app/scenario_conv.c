@@ -114,12 +114,12 @@ static void x_verify(XProj *p) {
     if (!g_br_changed || g_br_ran || g_br_noted) return;
     const Brief *b = br_cur(); const char *tc = br_single(b, "test", ""), *dn = br_single(b, "done", "");
     if (!tc && !dn) return;
-    const char *o = x_test(p, NULL); if (!x_totals(o)) cu_die("sem totais na verificacao");
+    const char *o = x_test_end(p); if (!x_totals(o)) cu_die("sem totais na verificacao");
 }
 
 /* ======================= um servidor MCP de verdade ======================= */
-enum { MS_KNOWN, MS_BYNAME, MS_RAWNUM, MS_BIG, MS_BUSY, MS_LOCKED, MS_DOWN, MS_DOWNRO, MS_TWO, MS_NONE, MS_FILE, MS_WRONGTOOL, MS_N };
-static const char *const g_x_msname[MS_N] = {"id-known", "by-name", "bare-number", "big-tool", "busy-once", "locked", "server-down", "server-down-export", "two-items", "nobody-offers", "id-in-file", "wrong-tool-name"};
+enum { MS_KNOWN, MS_BYNAME, MS_RAWNUM, MS_BIG, MS_BUSY, MS_LOCKED, MS_DOWN, MS_DOWNRO, MS_TWO, MS_NONE, MS_FILE, MS_WRONGTOOL, MS_CARD, MS_CARDARG, MS_N };
+static const char *const g_x_msname[MS_N] = {"id-known", "by-name", "bare-number", "big-tool", "busy-once", "locked", "server-down", "server-down-export", "two-items", "nobody-offers", "id-in-file", "wrong-tool-name", "card-tools", "card-args"};
 static void fam_x_mcp(FILE *f, Scn *s) {
     int sit, fu, conv;
     for (int t = 0; ; t++) {
@@ -134,7 +134,7 @@ static void fam_x_mcp(FILE *f, Scn *s) {
         if (c->list < 0) continue;
         if (sit == MS_BIG) { if (c->big < 0) continue; ti = c->big; cu_mt_idarg(&c->t[c->big], idn, sizeof idn); }
         else if (sit == MS_BYNAME || sit == MS_TWO) { if (c->chain < 0 || !cu_mt_idarg(&c->t[c->chain], idn, sizeof idn)) continue; ti = c->chain; }
-        else if (sit == MS_NONE || sit == MS_DOWNRO) ti = c->list;
+        else if (sit == MS_NONE || sit == MS_DOWNRO || sit == MS_CARD) ti = c->list;
         else { const int j = cu_n(8); if (!cu_mt_ok(&c->t[j]) || j == c->big || j == c->list || !cu_mt_idarg(&c->t[j], idn, sizeof idn)) continue; ti = j; }
         m = c;
     }
@@ -152,10 +152,12 @@ static void fam_x_mcp(FILE *f, Scn *s) {
         const int uses = sit == MS_BYNAME || sit == MS_RAWNUM || sit == MS_TWO || sit == MS_LOCKED || sit == MS_DOWN || sit == MS_DOWNRO || fu == 2;
         if (req && uses && (other || sit != MS_BYNAME)) cu_die("lista com argumento obrigatorio nao serve para %s", g_x_msname[sit]);
         if (req) { CuD dl = {0}; cu_base_dict(s, &dl); g_cu_force_text = names[0]; largs = cu_margs_fill(m, lt, &dl, 0, NULL); g_cu_force_text = names[1]; largs2 = cu_margs_fill(m, lt, &dl, 0, NULL); g_cu_force_text = NULL; } }
-    const char *args = sit == MS_NONE || sit == MS_DOWNRO ? "{}" : cu_margs_fill(m, t, &d, sit == MS_BIG ? 60 : sit == MS_BYNAME || sit == MS_TWO ? 0 : 45, id);
+    const char *args = sit == MS_NONE || sit == MS_DOWNRO || sit == MS_CARD ? "{}" : cu_margs_fill(m, t, &d, sit == MS_BIG ? 60 : sit == MS_BYNAME || sit == MS_TWO ? 0 : 45, id);
     if (sit == MS_BIG) { CuArg a[16]; const int n = cu_margs(t, a, 16); for (int i = 0; i < n; i++) if (a[i].type == 'o' && !cu_get(&d, a[i].name) && cu_pct(50)) { args = cu_margs_fill(m, t, &d, 100, id); break; } }
     const char *req, *wrongname = NULL;
     if (sit == MS_NONE) req = g_cu_nocap[cu_ix(CU_N(g_cu_nocap))][g_cu_lang];
+    else if (sit == MS_CARD) req = cu_fmt(XV(L("what can the %s server do for me?", "o que o servidor %s consegue fazer por mim?"), L("which tools does %s give you?", "quais ferramentas o %s te da?"), L("what is connected as %s and what is it for?", "o que e o %s que esta conectado e pra que serve?")), m->name);
+    else if (sit == MS_CARDARG) req = cu_fmt(XV(L("what do I have to give the %s tool of %s?", "o que eu preciso passar pra ferramenta %s do %s?"), L("which arguments does %s on %s take?", "quais argumentos o %s do %s aceita?")), t->name, m->name);
     else if (sit == MS_DOWNRO) req = cu_fmt(XV(L("which %ss does %s have right now, with their ids?", "quais %s o %s tem agora, com os ids?"), L("list the %ss of %s for me", "lista os %s do %s pra mim")), L(m->noun_en, m->noun_pt), m->name);
     else if (sit == MS_BYNAME || sit == MS_TWO) {
         cu_set(&d, "name", names[0]);
@@ -182,6 +184,28 @@ static void fam_x_mcp(FILE *f, Scn *s) {
     const char *full = cu_mfull(m, t), *lfull = cu_mfull(m, lt);
     if (sit == MS_WRONGTOOL) x_shape_tag("wrong");
     x_user(req);
+    if (sit == MS_CARD) {      /* a resposta sai do cartao que o prompt ja mostra: nenhuma chamada */
+        Buf o = {0}; buf_str(&o, ""); int nt = 0;
+        for (int j = 0; j < 8 && m->t[j].name; j++) { buf_str(&o, cu_fmt("%s%s", nt ? ", " : "", m->t[j].name)); nt++; }
+        x_final(cu_fmt(L("%s is connected: %s. Its card lists %d tools: %s. Tell me what you want done and I call the right one.",
+                         "O %s esta conectado: %s. O cartao dele lista %d ferramentas: %s. Diga o que voce quer fazer e eu chamo a certa."), m->name, m->purpose, nt, cu_keep(o.p)));
+        x_end(f); return;
+    }
+    if (sit == MS_CARDARG) {      /* os argumentos estao no cartao: a resposta vem dele, sem chamada e sem ToolSearch */
+        CuArg a[16]; const int n = cu_margs(t, a, 16);
+        Buf rq = {0}, op = {0}; buf_str(&rq, ""); buf_str(&op, ""); int nr = 0, no = 0;
+        for (int i = 0; i < n; i++) {
+            Buf *b = a[i].opt ? &op : &rq; int *k = a[i].opt ? &no : &nr;
+            buf_str(b, cu_fmt("%s`%s`", *k ? ", " : "", a[i].name)); (*k)++;
+        }
+        if (!nr) cu_die("ferramenta sem argumento obrigatorio");
+        x_final(cu_fmt(no ? L("%s takes %s (required)%s. The optional ones are %s. The card shows them, so nothing else needs looking up.",
+                              "%s pede %s (obrigatorio)%s. Os opcionais sao %s. O cartao mostra tudo isso, entao nao preciso consultar mais nada.")
+                          : L("%s takes %s, and all of them are required%s%s. The card shows them, so nothing else needs looking up.",
+                              "%s pede %s, todos obrigatorios%s%s. O cartao mostra isso, entao nao preciso consultar mais nada."),
+                       t->name, cu_keep(rq.p), nr > 1 ? "" : "", no ? cu_keep(op.p) : ""));
+        x_end(f); return;
+    }
     if (sit == MS_NONE) {
         Buf o = {0}; buf_str(&o, "");
         for (int i = 0; i < s->nms; i++) buf_str(&o, cu_fmt("%s%s (%s)", i ? (i + 1 == s->nms ? L(" and ", " e ") : ", ") : "", s->ms[i]->name, s->ms[i]->purpose));

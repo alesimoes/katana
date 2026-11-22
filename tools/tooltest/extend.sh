@@ -242,6 +242,11 @@ has "mcp list: http fora do ar" "$R" "web [http] unavailable"
 R=$("$K" mcp test main 2>&1); rc=$?; has "mcp test: conecta e mede" "$R" "connected in"; has "mcp test: conta ferramentas" "$R" "tools: 7"; has "mcp test: prompts" "$R" "prompts: 1"; eq "mcp test: sai com 0" "$rc" "0"
 R=$("$K" mcp test web 2>&1); rc=$?; has "mcp test: falha em palavras simples" "$R" "FAILED"; eq "mcp test: falha sai com 1" "$rc" "1"
 "$K" mcp add gone -- /nonexistent/prog >/dev/null 2>&1; R=$("$K" mcp test gone 2>&1); has "mcp test: comando inexistente" "$R" "was not found"
+# KATANA_SESSION_ID: o servidor stdio recebe o id da sessao (sem arquivo: data-hora-pid do processo)
+printf '#!/bin/sh\nprintf "%%s" "$KATANA_SESSION_ID" > "%s/sid.out"\nexec "%s" "%s" main\n' "$T" "$PY3" "$SRV" > "$T/sidsrv.sh"
+"$K" mcp add sidsrv -- sh "$T/sidsrv.sh" >/dev/null 2>&1; rm -f "$T/sid.out"
+R=$("$K" mcp test sidsrv 2>&1); has "KATANA_SESSION_ID: servidor conecta" "$R" "connected in"
+SID=$(cat "$T/sid.out" 2>/dev/null); case $SID in [0-9]*-[0-9]*-[0-9]*) ok "KATANA_SESSION_ID sem sessao: data-hora-pid ($SID)";; *) bad "KATANA_SESSION_ID sem sessao" "$SID";; esac
 R=$("$K" mcp test zzz 2>&1); has "mcp test: servidor desconhecido" "$R" "no server 'zzz'"
 "$K" mcp remove gone >/dev/null 2>&1; "$K" mcp remove web >/dev/null 2>&1
 R=$("$K" mcp remove web 2>&1); has "mcp remove: inexistente" "$R" "no server 'web'"
@@ -315,6 +320,11 @@ mkdir -p .katana/skills/greet; printf -- '---\nname: greet\nwhen: Greet someone 
 export MOCK_LOG="$T/mock.jsonl"
 KV=$(printf 'ANTHRO%s' PIC)   # the teacher must use the program stand-in, not a message API: its key variable is unset
 run_agent() { printf '%s\n/exit\n' "$1" | env -u "${KV}_API_KEY" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_MAXTOK=24 KATANA_TEACHER_CLI="$HERE/mock_cli.py" "$K" agent "$G" 2>&1 >/dev/null; }
+mkdir -p "$T/ss"; rm -f "$T/sid.out"
+"$K" mcp add sidsrv -- sh "$T/sidsrv.sh" >/dev/null 2>&1
+printf '/exit\n' | env -u "${KV}_API_KEY" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_MAXTOK=24 KATANA_TEACHER_CLI="$HERE/mock_cli.py" "$K" agent "$G" --sessao "$T/ss/2026-11-22-7.ksess" >/dev/null 2>&1
+eq "KATANA_SESSION_ID com --sessao: nome do .ksess sem extensao" "$(cat "$T/sid.out" 2>/dev/null)" "2026-11-22-7"
+"$K" mcp remove sidsrv >/dev/null 2>&1
 R=$(run_agent '/init')
 [ -f KATANA.md ] && ok "/init escreve o KATANA.md sem modelo" || bad "/init" "$R"
 has "/init: o modelo recebe o pedido de melhorar" "$(cat "$MOCK_LOG" 2>/dev/null)" "Improve it by reading the project"

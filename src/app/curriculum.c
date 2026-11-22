@@ -2010,6 +2010,7 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 #include "app/scenario.c"            /* motor de cenarios compostos: projetos de verdade, politica em C, tudo rodado no motor */
 #include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
 #include "app/scenario_conv.c"       /* as convencoes no motor de cenarios: servidor MCP de verdade, skills, criar e mudar KATANA.md/SKILL.md/ligacao */
+#include "app/scenario_docs.c"       /* x-docs: o KATANA.md aponta para um indice de documentos; o motor entrega o trecho certo e o modelo sabe achar sozinho */
 #include "app/scenario_ps1.c"        /* scripts PowerShell: escritos e conferidos, nunca dados como executados */
 #include "app/scenario_rare2.c"      /* preparos de verdade das raras: servidor MCP, outra sessao, subagente, servidor de linguagem */
 #include "app/scenario_rare.c"       /* as ferramentas raras: tres situacoes para cada uma */
@@ -2024,7 +2025,7 @@ static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run},
     {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate},
     {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
-    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}};
+    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2561,7 +2562,7 @@ static int curriculum_main(int argc, char **argv) {
        mcp-*, mixed) continuam no binario e saem quando sao pedidas pelo nome em --families: as nove que tinham uma sequencia so ou
        uma primeira ferramenta so foram passadas para x-mcp, x-ability e x-make */
     static const struct { const char *nm; int w; } defw[] = {{"x-fix", 24}, {"x-add", 16}, {"x-rename", 14}, {"x-find", 10}, {"x-explain", 10}, {"x-run", 8}, {"x-config", 24}, {"x-clean", 18}, {"x-investigate", 12},
-        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}};
+        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}, {"x-docs", 30}};
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
         w[i] = 0;

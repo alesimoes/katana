@@ -200,6 +200,14 @@ spell it); with a prefix configured, the declared name carries it.
 
 A server of your own file with `"channel": true` may push messages into the console (`docs/channels.md`).
 
+Session id: every stdio server katana starts gets the environment variable `KATANA_SESSION_ID`, the id of the current
+session: the name of its `.ksess` file without folder and extension (`~/.katana/sessions/<hash>/<date>-<n>.ksess`, or the
+file given to `--sessao`/`--retomar`). Without a session file (`--no-session`, or nothing saved yet) it is a stable id of
+the process in the form `YYYYMMDD-HHMMSS-<pid>`. A channel server can use it to tell an outside bridge which terminal it
+belongs to. The value is fixed when the first server starts: servers already running are not restarted and keep the old
+id if the session changes later (`/clear`, `/resume`, `/new`); only servers started or reconnected afterwards in a new
+process see the new one. A `--env KATANA_SESSION_ID=...` set on the server overrides it. Only the id is exported, not the folder.
+
 ### Commands
 
 `katana mcp add <name> -- <command> [args...]`, `katana mcp add <name> --url <url> [--header 'K: V']...`, `--env K=V`
@@ -265,3 +273,24 @@ characters) and the card section title (about 80), both only when there is somet
   only exercised without a model. Whether the models call skills from the one-line list, and whether the call-format
   constraint copes with MCP tools that are no longer declared in `<tools>`, is not measured.
 - The Windows build was not compiled with the new files (they use POSIX calls: `realpath`, `dup2`, `chmod`).
+
+
+## 4. Context selected by the engine from the project documents (`docsel`)
+
+The project file and the documents it points to are plain Markdown, as in `AGENTS.md`: no keys and no special syntax are required.
+The roots are `KATANA.md` and `AGENTS.md` of the working folder plus every path in the `docs:` block. Any `.md` file named on a line
+of a document (a Markdown link or a bare path, inside the project, up to 12 files and 3 hops) joins the graph, so a project can
+keep small index documents that point to the documents about each part ("one document per screen").
+
+At the start of each request, before the model sees it, the engine (`src/agent/docsel.c`): loads the graph; tokenizes every line, the
+file names and the request with the **model's own tokenizer**; weights tokens by how rare they are in the graph (idf; tokens in more than
+30% of the lines are dropped); scores each document (the index line that describes it, plus its file name) and each section; keeps only
+documents that score at least 60% of the best one; and appends to the user's message either the **whole document** of the part the
+request names (when it fits in about 600 tokens and no other document ties) or the best sections. Index lines that do not match are left
+out. Files that are already in the prompt (`KATANA.md`, `AGENTS.md`) are not repeated. If nothing matches, nothing is added. It is plain
+code (milliseconds, no model call), so it can be wrong; the model is trained (curriculum v5, family `x-docs`) to check the attached
+passage and to walk the index itself when nothing is attached or the passage is about something else.
+
+`KATANA_DOCSEL=0` turns it off, `KATANA_DOCSEL_TOKENS=N` sets the size budget. `katana docsel <model.gguf> "request" [folder]` prints what
+would be attached. Measured only on a made-up bank project (6 screens, 7 requests written by hand: the right document each time and nothing
+for the unrelated request); not measured on a real project or with the model using it.
