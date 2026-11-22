@@ -31,6 +31,13 @@ static void xc_tail_ok(const char *tail, const char *out) {
         q = e + 1;
     }
 }
+/* a pergunta como alguem a digitaria: seca, com um oi, com pressa, com um obrigado */
+static const char *xc_shape(const char *q) {
+    static const char *const pre[][2] = {{"", ""}, {"", ""}, {"quick question: ", "duvida rapida: "}, {"hey, ", "oi, "}, {"one thing I never remember: ", "uma coisa que eu nunca lembro: "}, {"sorry to bother you with this, but ", "desculpa incomodar com isso, mas "}, {"tell me, ", "me diz, "}};
+    static const char *const suf[][2] = {{"", ""}, {"", ""}, {"", ""}, {" thanks", " valeu"}, {" (a short answer is fine)", " (pode ser curto)"}, {" I could not find it in the docs", " nao achei nos docs"}};
+    const int a = cu_n(CU_N(pre)), b = cu_n(CU_N(suf));
+    return cu_fmt("%s%s%s", pre[a][g_cu_lang ? 1 : 0], q, suf[b][g_cu_lang ? 1 : 0]);
+}
 static const char *xc_help(const char *w) {
     return cu_fmt("%s", x_bash(NULL, cu_fmt("katana help %s", w), XV(L("Ask katana's help about this", "Pergunta isso a ajuda do katana"), L("Look it up in katana's help", "Procura na ajuda do katana"), L("Search katana's help", "Busca na ajuda do katana")), 0));
 }
@@ -117,7 +124,7 @@ static const XHq g_xc_help[] = {
 static void xc_helpq(XC *c, int v) {
     const XHq *q = &g_xc_help[v];
     xc_open(c, 0, 0, cu_fmt("%s/help-%s/%d", q->con, q->kind == 0 ? "how" : q->kind == 1 ? "wrong-idea" : q->kind == 2 ? "pasted-error" : "none", v));
-    if (q->kind == 2) x_user(cu_fmt(L(q->en, q->pt), xc_real_error(q->bad))); else x_user(L(q->en, q->pt));
+    if (q->kind == 2) x_user(cu_fmt(L(q->en, q->pt), xc_real_error(q->bad))); else x_user(xc_shape(L(q->en, q->pt)));
     const char *r = xc_help(q->w1), *used = q->w1;
     int tries = 1;
     if (!(q->needle && strstr(r, q->needle))) {
@@ -173,7 +180,7 @@ static const char *xc_desc_sentence(const char *out, const char *needle) {
 static void xc_limq(XC *c, int v) {
     const XLq *q = &g_xc_lim[v];
     xc_open(c, 0, 0, cu_fmt("%s/tool-%s/%d", q->con, q->wrong ? "wrong-idea" : "how", v));
-    x_user(L(q->en, q->pt));
+    x_user(xc_shape(L(q->en, q->pt)));
     const char *r = cu_fmt("%s", x_tsel(q->tool));
     const char *sn = xc_desc_sentence(r, q->needle);
     if (!sn) cu_die("a descricao de %s nao tem %s (ou a frase e longa demais)", q->tool, q->needle);
