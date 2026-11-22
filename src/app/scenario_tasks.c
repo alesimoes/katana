@@ -795,6 +795,11 @@ static void fam_x_clean(FILE *f, Scn *s) {
             if (strstr(ls, a + 6)) cu_die("ls ainda mostra o arquivo");
             x_final(cu_fmt(two ? L("Deleted %s and %s. tools/ now has: %s.", "Apaguei %s e %s. tools/ agora tem: %s.") : L("Deleted %s%s. tools/ now has: %s.", "Apaguei %s%s. tools/ agora tem: %s."), a, two ? b : (c.obst == O_ASKYES ? L(" after your confirmation", " depois da sua confirmacao") : ""),
                            ({ char *t = cu_fmt("%s", ls); for (char *q = t; *q; q++) if (*q == '\n') *q = ' '; size_t l = strlen(t); while (l && t[l - 1] == ' ') t[--l] = 0; t; })));
+            if (strstr(ls, "lint.sh") && cu_pct(g_cu_hold ? 70 : 40)) {      /* a resposta ja esta na listagem acima: nenhuma chamada */
+                x_dep();
+                x_user(XV(L("the lint script is still there, right?", "o script de lint continua la, ne?"), L("you did not touch lint.sh, did you?", "voce nao mexeu no lint.sh, mexeu?")));
+                x_final(L("Yes: the `ls tools` above still lists lint.sh. I deleted only what you named.", "Sim: o `ls tools` acima continua listando o lint.sh. Apaguei so o que voce citou."));
+            }
         }
     }
     x_end(f);
@@ -845,6 +850,18 @@ static void fam_x_investigate(FILE *f, Scn *s) {
             x_final(cu_fmt(L("The script read %s/%s, but the file is tools/%s. I changed the path in tools/report.sh and `%s` now prints the %d lines of the table%s.",
                              "O script lia %s/%s, mas o arquivo e tools/%s. Troquei o caminho em tools/report.sh e o `%s` agora imprime as %d linhas da tabela%s."), dir, data, data, cmd, 3,
                            p->brief ? cu_fmt(L("; `%s` still passes", "; o `%s` continua passando"), p->testcmd) : ""));
+            if (cu_pct(g_cu_hold ? 70 : 45)) {      /* segundo pedido que depende do primeiro: "roda de novo" e "qual era a linha" */
+                x_dep();
+                const int which = cu_n(2);
+                x_user(which ? XV(L("show me its output now", "me mostra a saida dele agora"), L("run it again and paste what it prints", "roda de novo e cola o que ele imprime"))
+                             : XV(L("which line of the script was wrong?", "qual linha do script estava errada?"), L("what exactly did you change in it?", "o que exatamente voce mudou nele?")));
+                if (which) {
+                    const char *o3 = cu_fmt("%s", x_bash(NULL, cmd, cu_fmt(L("Run the report script of %s once more", "Roda o script de relatorio do %s mais uma vez"), p->name), 0));
+                    if (!strstr(o3, "basic: ")) cu_die("o script parou de funcionar");
+                    char *one = cu_fmt("%s", o3); for (char *q = one; *q; q++) if (*q == '\n') *q = ' '; size_t l = strlen(one); while (l && one[l - 1] == ' ') one[--l] = 0;
+                    x_final(cu_fmt(L("It prints: `%s`.", "Ele imprime: `%s`."), one));
+                } else x_final(cu_fmt(L("The last line of the loop: `done < %s/%s` became `done < tools/%s`. Nothing else in tools/report.sh changed.", "A ultima linha do laco: `done < %s/%s` virou `done < tools/%s`. Nada mais mudou no tools/report.sh."), dir, data, data));
+            }
         }
     }
     x_end(f);

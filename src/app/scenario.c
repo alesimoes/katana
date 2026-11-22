@@ -232,7 +232,7 @@ static void x_tail(void) {
     static const char *const fams[] = {"x-web", "x-tools", "x-rare", "x-concept", "x-ps1", "x-clean", "x-investigate", "x-ability", "x-make", "x-skill", "x-mcp"};
     int ok = 0; for (size_t i = 0; i < sizeof fams / sizeof fams[0]; i++) ok |= !strcmp(g_x.fam, fams[i]);
     if (!ok || g_x.nreq != 1 || g_x.noshape || g_x.merge || g_x.n < 3 || g_x.m[g_x.n - 1].role != 'a' || g_x.m[g_x.n - 1].nc) return;
-    if (xs_n(100) >= 24) return;
+    if (xs_n(100) >= 8) return;      /* pouco: e sempre a mesma pergunta */
     int td = 0; if (todo_count(&td) > td) return;
     const char *nm[6]; int n = 0;
     for (int i = 0; i < g_x.n; i++) {

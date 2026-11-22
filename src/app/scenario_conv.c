@@ -551,6 +551,15 @@ static void fam_x_make(FILE *f, Scn *s) {
             if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check achou erro: %.300s", r);
             x_verify(p);
             x_final(cu_fmt(L("KATANA.md now has a `never:` item, \"delete the test runner\", with the pattern `rm*test_%s*` that the engine enforces. `katana brief check` reports 0 errors.", "O KATANA.md agora tem um item `never:`, \"delete the test runner\", com o padrao `rm*test_%s*` que o motor aplica. O `katana brief check` aponta 0 erros."), p->name));
+            if (cu_pct(g_cu_hold ? 70 : 45)) {      /* "ela": a regra que acabou de entrar */
+                x_dep();
+                x_user(XV(L("show me that line as it is in the file now", "me mostra essa linha como esta no arquivo agora"), L("which line number did it end up on?", "em que linha ela ficou?")));
+                r = cu_fmt("%s", x_grep("delete the test runner", "content", "KATANA.md"));
+                const char *ln = x_line_with(r, "delete the test runner"); if (!ln) cu_die("Grep sem a linha never");
+                const char *c1 = strchr(ln, ':'), *c2 = c1 ? strchr(c1 + 1, ':') : NULL; if (!c2) cu_die("Grep sem numero de linha: %.120s", ln);
+                const char *body = c2 + 1; while (*body == ' ') body++;
+                x_final(cu_fmt(L("Line %d of KATANA.md: `%s`.", "Linha %d do KATANA.md: `%s`."), atoi(c1 + 1), body));
+            }
         } else {      /* arquivo com uma chave errada: o erro vem colado no pedido ou sai do comando */
             const char *errl = NULL;
             if (v) {
