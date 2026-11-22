@@ -1,13 +1,21 @@
 /* ---------- katana curriculum, cenarios compostos: as ferramentas raras ----------
- * x-rare: toda ferramenta que o prompt cita e que as outras familias nao usam ganha pelo menos tres situacoes: o uso certo
- * (com os argumentos achados pelo ToolSearch quando ela so e citada pelo nome), um segundo uso diferente, e um caso em que
- * ela falha ou nao serve e o modelo reage. Tudo roda no motor, numa pasta HOME propria. Onde rodar de verdade nao da ou
- * faria mal, o que roda e o caminho de recusa/validacao do proprio motor ou um substituto do programa de fora, e a celula
- * leva a marca "standin":
- *   - PushNotification e ReportFindings: com KATANA_UI (o marcador que a interface leria), sem aviso na area de trabalho;
+ * x-rare: toda ferramenta que o prompt cita e que as outras familias quase nao usam ganha pelo menos cinco situacoes de
+ * treino, mais as reservadas para o arquivo de validacao (hold = 1; o rodizio do treino nunca passa por elas). Situacao e
+ * uma linha da tabela: um pedido com outra intencao e outra sequencia de chamadas ou outro desfecho, nao o mesmo pedido
+ * com outras palavras. Tipos de linha: o uso certo (com os argumentos achados pelo ToolSearch quando a ferramenta so e
+ * citada pelo nome), um uso composto com outra ferramenta, o erro do motor e a reacao, o erro seguido de outro caminho, e
+ * o contraste entre agendar (ScheduleWakeup, CronCreate), rodar agora em segundo plano (Bash) e monitorar (Monitor).
+ * Tudo roda no motor, numa pasta HOME propria; o que existe em volta vem de scenario_rare2.c (servidor MCP de verdade,
+ * outra sessao na caixa de correio, subagente pelo gancho de teste, servidor de linguagem minimo, repositorio git, caderno).
+ * Cada linha pode exigir uma prova no ultimo resultado (need) e dizer qual linha de resultado a fala final cita (quote).
+ * Onde rodar de verdade nao da ou faria mal, roda o caminho de recusa/validacao do motor ou um substituto do programa de
+ * fora, e a celula leva a marca "standin":
+ *   - PushNotification e ReportFindings: com KATANA_UI (o marcador que a interface leria) e notify-send de mentira;
  *   - install_package: pip e npm de mentira na pasta bin do cenario (nada e instalado);
- *   - Agent, Workflow, SubagentHandback: o subagente de teste do motor (KATANA_AGENT_FAKE=1), porque o de verdade pede modelo;
- *   - SendMessage, ListAgents, ReadMcpResourceTool, WaitForMcpServers: so os caminhos sem destinatario / sem servidor. */
+ *   - SubagentHandback: so a recusa para o agente principal (o caminho de dentro de um subagente pede modelo);
+ *   - Agent sem tarefa: so a validacao do prompt. Agent com tarefa, SendMessage para agent-N e Workflow rodam com o gancho
+ *     de subagente (KATANA_AGENT_FAKE=1), que devolve o que o Grep/Glob do motor acham no projeto naquela hora.
+ * `KATANA_CU_RARE_TABLE=1 katana curriculum x.jsonl --families x-rare=1` imprime as situacoes por ferramenta. */
 
 static const char *x_tsel(const char *names);
 static int x_web_up(void);
@@ -463,10 +471,10 @@ static const XRare g_x_rare[] = {
     {"terminal", NULL, "open a shell session called calc, compute 40 + 2 in it with the shell, and close it", "abre uma sessao de shell chamada calc, calcula 40 + 2 nela com o shell e fecha",
         {{"terminal", "{\"action\": \"open\", \"name\": \"calc\"}", 1}, {"terminal", "{\"action\": \"send\", \"name\": \"calc\", \"text\": \"echo sum=$((40 + 2))\"}", 1}, {"terminal", "{\"action\": \"close\", \"name\": \"calc\"}", 1}}, 3, 0, NULL, "", "", .hold = 1, .need = "session calc closed", .quote = "sum=42",
         .fen = "The session printed \"{q}\", and it is closed again.", .fpt = "A sessao imprimiu \"{q}\", e ja esta fechada de novo."},
-    {"install_package", NULL, "show me your recipe for packages and then install left-pad with npm", "me mostra a sua receita para pacotes e depois instala o left-pad com npm",
-        {{"howto", "{\"topic\": \"packages\"}", 1}, {"install_package", "{\"manager\": \"npm\", \"name\": \"left-pad\"}", 1}}, 2, 0, NULL, " The recipe is in the first result above.", " A receita esta no primeiro resultado acima.", 1, .prep = P_PKG, .hold = 1},
-    {"TaskList", "TaskCreate,TaskUpdate,TaskList", "create three numbered tasks: \"Read the spec\" (detail: chapter 2), \"Write the parser\" (detail: tokens first), \"Add the tests\" (detail: one per rule); mark the second in progress and show the list", "cria tres tarefas numeradas: \"Read the spec\" (detalhe: chapter 2), \"Write the parser\" (detalhe: tokens first), \"Add the tests\" (detalhe: one per rule); marca a segunda como em andamento e mostra a lista",
-        {{"TaskCreate", "{\"subject\": \"Read the spec\", \"description\": \"chapter 2\"}"}, {"TaskCreate", "{\"subject\": \"Write the parser\", \"description\": \"tokens first\"}"}, {"TaskCreate", "{\"subject\": \"Add the tests\", \"description\": \"one per rule\"}"}, {"TaskUpdate", "{\"taskId\": \"2\", \"status\": \"in_progress\"}"}, {"TaskList", "{}"}}, 5, 0, NULL, "", "", .hold = 1, .quote = "Write the parser",
+    {"install_package", NULL, "show me your recipe for packages and then install chalk with npm", "me mostra a sua receita para pacotes e depois instala o chalk com npm",
+        {{"howto", "{\"topic\": \"packages\"}", 1}, {"install_package", "{\"manager\": \"npm\", \"name\": \"chalk\"}", 1}}, 2, 0, NULL, " The recipe is in the first result above.", " A receita esta no primeiro resultado acima.", 1, .prep = P_PKG, .hold = 1},
+    {"TaskList", "TaskCreate,TaskUpdate,TaskList", "create three numbered tasks: \"Read the spec\" (detail: chapter 2), \"Sketch the grammar\" (detail: on paper), \"List the open questions\" (detail: for the review); mark the second in progress and show the list", "cria tres tarefas numeradas: \"Read the spec\" (detalhe: chapter 2), \"Sketch the grammar\" (detalhe: on paper), \"List the open questions\" (detalhe: for the review); marca a segunda como em andamento e mostra a lista",
+        {{"TaskCreate", "{\"subject\": \"Read the spec\", \"description\": \"chapter 2\"}"}, {"TaskCreate", "{\"subject\": \"Sketch the grammar\", \"description\": \"on paper\"}"}, {"TaskCreate", "{\"subject\": \"List the open questions\", \"description\": \"for the review\"}"}, {"TaskUpdate", "{\"taskId\": \"2\", \"status\": \"in_progress\"}"}, {"TaskList", "{}"}}, 5, 0, NULL, "", "", .hold = 1, .quote = "Sketch the grammar",
         .fen = "Three tasks are on the list and the second is in progress: \"{q}\".", .fpt = "As tres tarefas estao na lista e a segunda esta em andamento: \"{q}\"."},
     {"TaskGet", "TaskCreate,TaskGet,TaskUpdate", "create the task \"Tag v2\" (detail: after review), show me what is stored, then mark it completed", "cria a tarefa \"Tag v2\" (detalhe: after review), me mostra o que ficou guardado e depois marca como concluida",
         {{"TaskCreate", "{\"subject\": \"Tag v2\", \"description\": \"after review\"}"}, {"TaskGet", "{\"taskId\": \"1\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"status\": \"completed\"}"}}, 3, 0, NULL, " Before that, TaskGet showed it with the detail \"after review\".", " Antes disso, o TaskGet mostrou ela com o detalhe \"after review\".", .hold = 1},
@@ -490,6 +498,34 @@ static const XRare g_x_rare[] = {
     {"Monitor", "Monitor", "monitor `sh tools/check_settings.sh` and tell me its last line", "monitora `sh tools/check_settings.sh` e me diz a ultima linha",
         {{"Monitor", "{\"command\": \"sh tools/check_settings.sh\", \"description\": \"Watch the settings check\"}"}, {"Read", "{\"file_path\": \"{log}\"}", 0, 1}}, 2, 0, NULL, "", "", .prep = P_CONF, .hold = 1, .quote = "settings ",
         .fen = "The check ended on its own and its last line is \"{q}\".", .fpt = "A verificacao terminou sozinha e a ultima linha dela e \"{q}\"."},
+    /* ---- mais uma situacao para as ferramentas que estavam com quatro ---- */
+    {"TaskStop", "TaskStop", "start tools/watch.sh twice in the background and then stop only the second one", "sobe o tools/watch.sh duas vezes em segundo plano e depois para so o segundo",
+        {{"Bash", "{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": \"Start the first watcher\"}"}, {"Bash", "{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": \"Start the second watcher\"}"}, {"TaskStop", "{\"task_id\": \"2\"}"}}, 3, 0, NULL, "", "", .prep = P_BG, .need = "Successfully stopped task: 2",
+        .fen = "Two watchers were started, tasks 1 and 2. I stopped only the second: \"{q}\". Task 1 is still running.", .fpt = "Dois monitores foram iniciados, as tarefas 1 e 2. Parei so o segundo: \"{q}\". A tarefa 1 continua rodando."},
+    {"TaskStop", "Monitor,TaskStop", "start monitoring tools/watch.sh... actually never mind, stop it again", "comeca a monitorar o tools/watch.sh... na verdade deixa, para de novo",
+        {{"Monitor", "{\"command\": \"sh tools/watch.sh\", \"description\": \"Watch the script\"}"}, {"TaskStop", "{\"task_id\": \"{bg}\"}"}}, 2, 0, NULL, " I did not read its output, since you changed your mind.", " Nao li a saida dele, ja que voce mudou de ideia.", .prep = P_BG, .need = "Successfully stopped"},
+    {"EnterPlanMode", "EnterPlanMode,ExitPlanMode", "plan first: you will create notes/TODO.txt with the line \"tag the release\"; wait for my ok and then do it", "planeja primeiro: voce vai criar notes/TODO.txt com a linha \"tag the release\"; espera o meu ok e depois faz",
+        {{"EnterPlanMode", "{}"}, {"ExitPlanMode", "{\"plan\": \"1. Create notes/TODO.txt with the line: tag the release\"}", 0, 2}, {"Write", "{\"file_path\": \"{cwd}/notes/TODO.txt\", \"content\": \"tag the release\\n\"}"}}, 3, 0, NULL, " I wrote it only after you approved the one-step plan.", " So gravei depois que voce aprovou o plano de um passo.", .need = "File created"},
+    {"EnterWorktree", "EnterWorktree,ExitWorktree", "in a worktree called notes, add a file notes.txt with the line \"draft\", commit it there with the message \"add notes\", and keep the worktree", "num worktree chamado notes, acrescenta um arquivo notes.txt com a linha \"draft\", faz commit la com a mensagem \"add notes\" e mantem o worktree",
+        {{"EnterWorktree", "{\"name\": \"notes\"}"}, {"Write", "{\"file_path\": \"{cwd}/.katana/worktrees/notes/notes.txt\", \"content\": \"draft\\n\"}"}, {"git", "{\"args\": \"add notes.txt\"}", 1}, {"git", "{\"args\": \"commit -m \\\"add notes\\\"\"}", 1}, {"ExitWorktree", "{\"action\": \"keep\"}"}}, 5, 0, NULL, "", "", .prep = P_GIT, .need = "were kept on disk", .quote = "add notes",
+        .fen = "The commit is on the worktree's branch, not on yours: \"{q}\". The worktree notes is kept on disk and I am back in the project folder.", .fpt = "O commit esta na branch do worktree, nao na sua: \"{q}\". O worktree notes ficou no disco e eu voltei para a pasta do projeto."},
+    {"NotebookEdit", "NotebookEdit", "turn the setup cell of {nb} into a markdown cell that says \"Rate table\"", "transforma a celula setup de {nb} numa celula markdown que diz \"Rate table\"",
+        {{"Read", "{\"file_path\": \"{cwd}/{nb}\"}"}, {"NotebookEdit", "{\"notebook_path\": \"{cwd}/{nb}\", \"cell_id\": \"setup\", \"new_source\": \"Rate table\", \"cell_type\": \"markdown\"}"}}, 2, 0, NULL, " Note that calc still uses `rate`, which that cell no longer defines.", " Repare que a calc ainda usa `rate`, que essa celula nao define mais.", .prep = P_NB},
+    {"SendUserFile", "SendUserFile", "run `{testcmd}`, keep the output in notes/test-run.log and send me that file", "roda `{testcmd}`, guarda a saida em notes/test-run.log e me manda esse arquivo",
+        {{"Bash", "{\"command\": \"mkdir -p notes && {testcmd} > notes/test-run.log 2>&1; tail -1 notes/test-run.log\", \"description\": \"Run the tests and keep the output\"}"}, {"SendUserFile", "{\"files\": [\"{cwd}/notes/test-run.log\"]}"}}, 2, 0, NULL, "", "", .quote = " passed, ",
+        .fen = "The run ended with \"{q}\"; the whole output is in notes/test-run.log, and that file was handed to you.", .fpt = "A rodada terminou com \"{q}\"; a saida inteira esta em notes/test-run.log, e esse arquivo foi entregue a voce."},
+    {"download_file", NULL, "download {url} into docs/ and give me its checksum", "baixa {url} para docs/ e me da o checksum dele",
+        {{"download_file", "{\"url\": \"{url}\", \"path\": \"docs/release-notes.txt\"}", 1}}, 1, 0, NULL, "", "", .prep = P_WWW, .quote = "sha256",
+        .fen = "Saved as docs/release-notes.txt. The tool reports \"{q}\".", .fpt = "Salvo como docs/release-notes.txt. A ferramenta informa \"{q}\"."},
+    {"recall", NULL, "save that the staging host is stg-2; and do you have anything saved about my editor?", "guarda que o host de staging e o stg-2; e voce tem alguma coisa guardada sobre o meu editor?",
+        {{"remember", "{\"fact\": \"The staging host is stg-2\"}", 1}, {"recall", "{\"query\": \"editor\"}", 1}}, 2, 0, NULL, " So the host is saved, and there is nothing about your editor.", " Entao o host esta guardado, e nao ha nada sobre o seu editor."},
+    {"recall", NULL, "I told you last week which host is production; what was it?", "eu te falei semana passada qual host e o de producao; qual era?",
+        {{"recall", "{\"query\": \"production\"}", 1}}, 1, 0, NULL, "", "", .hold = 1,
+        .fen = "I have nothing saved about it: the memory search answered \"{q}\". It may have been said in a session that did not save it; tell me the host again and I keep it this time.", .fpt = "Nao tenho nada guardado sobre isso: a busca na memoria respondeu \"{q}\". Pode ter sido dito numa sessao que nao guardou; me diz o host de novo que desta vez eu guardo."},
+    {"ExitPlanMode", "EnterPlanMode,ExitPlanMode", "plan first and wait for my ok; after it, set timeout to 45 and retries to 5 in settings.conf with a single edit and run the settings check", "planeja primeiro e espera o meu ok; depois dele, coloca timeout em 45 e retries em 5 no settings.conf com uma edicao so e roda a verificacao das configuracoes",
+        {{"EnterPlanMode", "{}"}, {"Read", "{\"file_path\": \"{cwd}/settings.conf\"}"}, {"ExitPlanMode", "{\"plan\": \"1. In settings.conf change `timeout = 30` to `timeout = 45` and `retries = 3` to `retries = 5`, in one edit\\n2. Run `sh tools/check_settings.sh`\"}", 0, 2},
+         {"Edit", "{\"file_path\": \"{cwd}/settings.conf\", \"edits\": \"<<<<<<<\\ntimeout = 30\\n=======\\ntimeout = 45\\n>>>>>>>\\n<<<<<<<\\nretries = 3\\n=======\\nretries = 5\\n>>>>>>>\\n\"}"}, {"Bash", "{\"command\": \"sh tools/check_settings.sh\", \"description\": \"Check the settings\"}"}}, 5, 0, NULL, "", "", .prep = P_CONF, .hold = 1, .need = "settings ok", .quote = "^settings ",
+        .fen = "You approved the plan, so I applied it in one edit: settings.conf now has `timeout = 45` and `retries = 5`. The check ends with \"{q}\".", .fpt = "Voce aprovou o plano, entao apliquei numa edicao so: o settings.conf agora tem `timeout = 45` e `retries = 5`. A verificacao termina com \"{q}\"."},
 };
 #define X_NRARE CU_N(g_x_rare)
 static const char *x_rsub(const char *t, const char *key, const char *val) {
@@ -607,14 +643,18 @@ static void fam_x_rare(FILE *f, Scn *s) {
         if (e->sel) plan[np++] = L("Get the tools", "Pegar as ferramentas");
         for (int i = 0; i < e->nc; i++) { const char *n = e->c[i].name;
             plan[np++] = !strcmp(n, "Bash") ? L("Run the command", "Rodar o comando") : !strcmp(n, "Read") ? L("Read the result", "Ler o resultado") : !strcmp(n, "Grep") || !strcmp(n, "Glob") ? L("Search the project", "Procurar no projeto")
-                       : !strcmp(n, "Write") ? L("Write the file", "Gravar o arquivo") : cu_fmt(L("Call %s", "Chamar %s"), n); }
+                       : !strcmp(n, "Write") ? L("Write the file", "Gravar o arquivo") : !strcmp(n, "Edit") ? L("Change the file", "Mudar o arquivo") : cu_fmt(L("Call %s", "Chamar %s"), n); }
         x_plan(plan, np);
     }
     if (e->sel) { x_tsel(e->sel); if (np) x_done(1); }
     const char *r = "", *res[6] = {0};
     for (int i = 0; i < e->nc; i++) {
         const char *a = x_rare_fill(e->c[i].args, kv, nkv);
-        if (e->c[i].pre & 1) usleep(600000);
+        if (e->c[i].pre & 1) {      /* ate 8 s pela primeira saida, e mais um pouco para a linha chegar inteira */
+            struct stat st; const char *lg = cu_fmt("%s%s", g_cu_sb, kv[klog].v);
+            for (int w = 0; w < 80 && *kv[klog].v && !(stat(kv[klog].v, &st) == 0 && st.st_size > 0) && !(stat(lg, &st) == 0 && st.st_size > 0); w++) usleep(100000);
+            usleep(300000);
+        }
         if (e->c[i].pre & 6) x_feed(e->c[i].pre & 2 ? "approve" : "keep planning");
         r = cu_fmt("%s", x_call(NULL, e->c[i].name, a, XF_ERR | (e->c[i].old ? XF_OLD : 0)));
         if (e->c[i].pre & 6) x_unfeed();
@@ -667,7 +707,11 @@ static void fam_x_rare(FILE *f, Scn *s) {
     if (!*ln) cu_die("x-rare %d: resultado vazio", ei);
     kv[kq].v = ln;
     if (e->fen) x_final(x_rare_fill(L(e->fen, e->fpt), kv, nkv));
-    else x_final(cu_fmt(e->bad ? L("That did not work. The engine says: \"%s\".%s", "Nao deu certo. O motor diz: \"%s\".%s") : L("Done. The engine says: \"%s\".%s", "Feito. O motor diz: \"%s\".%s"), ln, x_rare_fill(L(e->nen, e->npt), kv, nkv)));
+    else {      /* tres formas de abrir a fala, fixas por situacao */
+        static const char *const good[3][2] = {{"Done. The engine says: \"%s\".%s", "Feito. O motor diz: \"%s\".%s"}, {"It worked; the answer was \"%s\".%s", "Deu certo; a resposta foi \"%s\".%s"}, {"Result: \"%s\".%s", "Resultado: \"%s\".%s"}};
+        static const char *const bad[3][2] = {{"That did not work. The engine says: \"%s\".%s", "Nao deu certo. O motor diz: \"%s\".%s"}, {"It failed with \"%s\".%s", "Falhou com \"%s\".%s"}, {"No: the answer was \"%s\".%s", "Nao: a resposta foi \"%s\".%s"}};
+        x_final(cu_fmt(e->bad ? bad[ei % 3][g_cu_lang] : good[ei % 3][g_cu_lang], ln, x_rare_fill(L(e->nen, e->npt), kv, nkv)));
+    }
     if (g_cu_hold && !tasks && strcmp(e->tool, "EndConversation") && e->prep != P_GIT && e->prep != P_GITMOD) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
     x_end(f);
 }

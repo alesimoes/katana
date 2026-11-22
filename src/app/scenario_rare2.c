@@ -99,7 +99,10 @@ static void x_r2_peer_stop(void) { if (g_r2_peer > 0) { kill(g_r2_peer, SIGTERM)
 static long x_r2_peer_start(const Scn *s, const char *name) {
     const pid_t pid = fork();
     if (pid < 0) cu_die("sem processo para a outra sessao");
-    if (pid == 0) { execlp("sleep", "sleep", "120", (char *)NULL); _exit(127); }
+    if (pid == 0) {      /* sem os canais do gerador: quem espera a saida dele nao fica preso a este processo */
+        const int dn = open("/dev/null", O_RDWR); if (dn >= 0) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); }
+        execlp("sleep", "sleep", "120", (char *)NULL); _exit(127);
+    }
     g_r2_peer = pid;
     cu_mkdirs(cu_fmt("%s/.katana/mail/agents", s->home));
     cu_put(cu_fmt("%s/.katana/mail/agents/%ld", s->home, (long)pid), cu_fmt("%s\n%s/%s-ci\n", name, s->home, s->name), 0);
@@ -185,7 +188,10 @@ static const char g_r2_pylsp[] =
     "    send({'jsonrpc': '2.0', 'id': m['id'], 'result': r})\n";
 
 /* limpa o que uma conversa anterior (ou uma tentativa descartada) deixou rodando */
+static void x_r2_cleanup(void);
+static void x_r2_atexit(void) { x_r2_cleanup(); }
 static void x_r2_cleanup(void) {
+    static int reg; if (!reg) { reg = 1; atexit(x_r2_atexit); }
     x_r2_srv_stop(); x_r2_peer_stop();
     lsp_shutdown(); g_nlsp = 0;
     g_r2_subn = 0; g_r2_down = 0; g_r2_srvname = NULL;
