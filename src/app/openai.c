@@ -57,6 +57,7 @@ static int oa_content(const char *val, Buf *out, const char **why) {
     if (!strncmp(val, "null", 4)) return 1;
     if (*val != '[') { *why = "content must be a string or a list of text parts"; return 0; }
     const char *q = val + 1, *el, *e;
+    int after_img = 0;
     while ((e = gs_elem(q, &el))) {
         if (*el == '{') {
             char k[32], ty[32] = ""; const char *v, *q2 = el + 1, *e2, *txt = NULL, *img = NULL;
@@ -78,12 +79,12 @@ static int oa_content(const char *val, Buf *out, const char **why) {
                 const int vk = vis_add_b64(c + 1, (size_t)(ue - 1 - (c + 1)), ve, sizeof ve);
                 if (vk < 0) { *why = ve; return 0; }
                 char mk[80]; vis_mark(vk, mk, sizeof mk);
-                buf_str(out, mk);
+                buf_str(out, mk); after_img = 1;      /* o formato do modelo nao separa imagem e texto */
                 q = e;
                 continue;
             }
             if (strcmp(ty, "text") != 0) { *why = "only text and image_url content is supported"; return 0; }
-            if (txt) { if (out->n) buf_str(out, "\n"); const char *p = txt; if (!js_string(&p, out)) return 0; }
+            if (txt) { if (out->n && !after_img) buf_str(out, "\n"); after_img = 0; const char *p = txt; if (!js_string(&p, out)) return 0; }
         } else if (*el == '"') { const char *p = el; if (!js_string(&p, out)) return 0; }
         q = e;
     }

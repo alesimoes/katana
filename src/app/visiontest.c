@@ -103,6 +103,7 @@ static int vision_main(int argc, char **argv) {
                     for (int q = 0; q < 4; q++) t[p + 8 + l + q] = (uint8_t)(c >> (24 - 8 * q));
                     p += (size_t)l + 12;
                 }
+            im_lax = (int)(RND() & 1);
             const double t0 = now_sec();
             Img g; char e2[200] = "";
             if (img_decode(t, k, &g, 0, e2, sizeof e2)) { good++; volatile uint8_t x = g.rgb[(size_t)g.w * g.h * 3 - 1]; (void)x; free(g.rgb); }

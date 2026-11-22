@@ -93,6 +93,7 @@ static int inf_codes(Infl *z, const InfHuff *L, const InfHuff *D) {
         z->pos += len;
     }
 }
+static int im_lax;      /* so o teste de arquivos estragados: ignora as somas, para os estragos chegarem mais fundo */
 /* descomprime um fluxo zlib em exatamente cap bytes */
 static int zlib_inflate(const uint8_t *in, size_t n, uint8_t *out, size_t cap) {
     if (n < 6 || (in[0] & 15) != 8 || (in[0] >> 4) > 7 || ((in[0] << 8 | in[1]) % 31) || (in[1] & 32)) return 0;
@@ -156,7 +157,7 @@ static int zlib_inflate(const uint8_t *in, size_t n, uint8_t *out, size_t cap) {
         for (; i < e; i++) { a += out[i]; b += a; }
         a %= 65521; b %= 65521;
     }
-    return z.over <= 16 && want == (b << 16 | a);
+    return im_lax || (z.over <= 16 && want == (b << 16 | a));
 }
 
 static uint32_t im_crc32(const uint8_t *p, size_t n) {
