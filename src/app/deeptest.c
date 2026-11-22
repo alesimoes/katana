@@ -6,7 +6,7 @@
  *   estado     gravar, estragar e restaurar o estado (cache KV + DeltaNet) e voltar atras no cache
  *   longo      contexto longo: o fim em lote contra o fim token a token a partir do mesmo estado
  *   valores    nao finitos nos estados e logits, pesos do roteador que nao somam 1
- * Opcoes: --tokens N, --text arquivo, --long N, --full-long, --save-ref arquivo, --ref arquivo, --no-gpu, --only nomes */
+ * Opcoes: --tokens N, --text arquivo, --long N, --full-long, --long-cpu, --save-ref arquivo, --ref arquivo, --no-gpu, --only nomes */
 
 /* sob -ffast-math isnan() e sempre falso: olha os bits */
 static int dt_bad(const float *x, size_t n) {
@@ -181,7 +181,7 @@ static int dt_rewind(Model *m, const int *toks, int N) {
     return fails;
 }
 
-static int dt_long(Model *m, const int *toks, int N, int len, int full) {
+static int dt_long(Model *m, const int *toks, int N, int len, int full, int cpu) {
     const Config *c = &m->cfg;
     const int V = c->vocab, tail = 24;
     if (len + tail + 1 >= c->ctx) { printf("  contexto longo: KATANA_CTX=%d nao cabe %d tokens\n", c->ctx, len + tail); return 1; }
@@ -215,6 +215,18 @@ static int dt_long(Model *m, const int *toks, int N, int len, int full) {
         dt_add(&s, a, b, V);
         fails += !dt_print("longo: tudo lote x 1 a 1", &s);
     }
+    if (cpu && !gpu.force_cpu) {     /* a mesma conversa inteira na CPU: deriva acumulada do estado na GPU */
+        gpu.force_cpu = 1;
+        t0 = now_sec();
+        forward_seq(m, lt, len, 0, 0);
+        memcpy(b, forward_seq(m, lt + len, tail, len, 1), (size_t)V * 4);
+        gpu.force_cpu = 0;
+        printf("  %d tokens em lote na CPU: %.1f s (maquina carregada)\n", len + tail, now_sec() - t0);
+        DtStat s = {0};
+        dt_clear_err();
+        dt_add(&s, b, a, V);
+        fails += !dt_print("longo: CPU x GPU, lote", &s);
+    }
     free(lt); free(a);
     return fails;
 }
@@ -229,13 +241,14 @@ static int dt_want(const char *only, const char *name) {
 static int selftest_deep(Model *m, int argc, char **argv) {
     const Config *c = &m->cfg;
     const int V = c->vocab;
-    int N = 48, llen = 0, full = 0, nogpu = 0, fails = 0;
+    int N = 48, llen = 0, full = 0, lcpu = 0, nogpu = 0, fails = 0;
     const char *text = NULL, *sref = NULL, *lref = NULL, *only = NULL;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--tokens") && i + 1 < argc) N = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--text") && i + 1 < argc) text = argv[++i];
         else if (!strcmp(argv[i], "--long") && i + 1 < argc) llen = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--full-long")) full = 1;
+        else if (!strcmp(argv[i], "--long-cpu")) lcpu = 1;
         else if (!strcmp(argv[i], "--save-ref") && i + 1 < argc) sref = argv[++i];
         else if (!strcmp(argv[i], "--ref") && i + 1 < argc) lref = argv[++i];
         else if (!strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
@@ -337,7 +350,7 @@ static int selftest_deep(Model *m, int argc, char **argv) {
     if (llen) {
         printf("== contexto longo\n");
         gpu.force_cpu = !gpu_on;
-        fails += dt_long(m, ids.ids, ids.n, llen, full);
+        fails += dt_long(m, ids.ids, ids.n, llen, full, lcpu);
         gpu.force_cpu = 0;
     }
     printf("== valores\n");
