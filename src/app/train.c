@@ -1525,6 +1525,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     {   const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
         if (!strcmp(bn, "tools.kspec")) g_spec_tools = 1; }    /* regra antiga pelo nome, para arquivos sem a marca */
     if (spec_flags(path) & KSPEC_NO_TOOL_DECL) g_spec_tools = 1;
+    model_fid(m, path);          /* o cache de prefixo do modelo base nao vale com a especializacao */
     return 1;
 }
 

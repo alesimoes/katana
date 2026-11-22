@@ -115,6 +115,7 @@ typedef struct {
     float *ssm;                         /* DeltaNet: estado contiguo; por camada linear, S [cabeca v][dk][dv] e (janela-1) x canais da convolucao */
     int n_lin;                          /* camadas DeltaNet */
     int64_t fsize;                      /* tamanho do arquivo do modelo */
+    uint64_t fid;                       /* identidade dos pesos: data e tamanho do arquivo e das especializacoes aplicadas (cache de prefixo) */
     float *x, *xb, *xb2, *q, *k, *v, *att, *hb, *hb2, *logits, *rope_freq;
     float *rope_freq_swa;               /* gemma4: frequencias das camadas locais */
     size_t n_params;
@@ -753,6 +754,17 @@ static const uint8_t *map_file(const char *path, int64_t *size) {
 
 static void sample_preset(const char *arch);
 static void spec_apply(Model *m);
+/* mistura data e tamanho de um arquivo na identidade dos pesos: duas fusoes da mesma base tem o mesmo tamanho, o mesmo
+   numero de parametros e o mesmo output_norm, e o cache de prefixo de uma nao serve para a outra */
+static void model_fid(Model *m, const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+    uint64_t v[3] = { (uint64_t)st.st_size, (uint64_t)st.st_mtime, 0 };
+#if !defined(_WIN32) && !defined(__APPLE__)
+    v[2] = (uint64_t)st.st_mtim.tv_nsec;
+#endif
+    for (int i = 0; i < 3; i++) m->fid = (m->fid ^ v[i]) * 0x9E3779B97F4A7C15ULL + (m->fid >> 29);
+}
 static int g_spec_tools = 0;        /* uma especializacao chamada tools.kspec foi aplicada: o modelo ja conhece as ferramentas do agente */
 static void load_model(Model *m, const char *path) {
     int64_t fsz = 0;
@@ -1291,6 +1303,7 @@ static void load_model(Model *m, const char *path) {
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
     m->fsize = fsz;
+    model_fid(m, path);
     shards_open(path, fsz);
     prefetch_setup(fsz);
     if (c->n_expert) warm_start(m);
