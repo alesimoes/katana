@@ -222,7 +222,7 @@ static void st_agent(Model *m, const char *sys, int rounds, size_t size, size_t 
 }
 static int snaptest(Model *m, int argc, char **argv) {
     int cpu = !(vkg.on || gpu.mv_host || gpu.n_gl > 0), agent = 1, brief = 0;
-    for (int i = 0; i < argc; i++) if (!strcmp(argv[i], "--engine")) agent = 0; else if (!strcmp(argv[i], "--short")) brief = 1;
+    for (int i = 0; i < argc; i++) if (!strcmp(argv[i], "--engine")) agent = 0; else if (!strcmp(argv[i], "--short")) brief = 1;      /* so uma compactacao, sem as provas do motor */
     char tdir[] = "/tmp/katana-snap-XXXXXX";
     if (!getenv("KATANA_CACHE_DIR") && mkdtemp(tdir)) setenv_("KATANA_CACHE_DIR", tdir);
     setenv_("KATANA_PFX", "0");         /* sem o prefixo do disco: a comparacao e contra o zero */
@@ -232,8 +232,8 @@ static int snaptest(Model *m, int argc, char **argv) {
     while (t.n < 1200) buf_str(&t, DT_TEXT);
     encode(&m->tk, t.p, &tx);
     printf("== motor (%s)\n", cpu ? "CPU, igual bit a bit" : "placa, tolerancia do selftest --deep");
-    st_engine(m, &tx, cpu);
-    if (!cpu && m->kh) { printf("== motor, CPU\n"); gpu.force_cpu = 1; st_engine(m, &tx, 1); gpu.force_cpu = 0; }
+    if (!brief) st_engine(m, &tx, cpu);
+    if (!brief && !cpu && m->kh) { printf("== motor, CPU\n"); gpu.force_cpu = 1; st_engine(m, &tx, 1); gpu.force_cpu = 0; }
     {   /* custo da copia */
         forward_seq(m, tx.ids, 64, 0, 0);
         double w[12], r[12];
