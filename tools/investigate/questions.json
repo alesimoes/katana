@@ -1,0 +1,125 @@
+[
+  {
+    "id": "grey-gkatana",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "03ee8cf",
+    "worktree_hint": "/tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/grey-before",
+    "question": "No projeto greymod, descubra o que faz o comando gclaude funcionar com o celular Grey e o comando gkatana nao aparecer nele. Diga o que precisa ser feito para o gkatana funcionar no Grey. Nao altere nada.",
+    "answer_files": ["bridge/sessions.mjs", "bridge/server.mjs", "grey-channel.mjs"],
+    "min_files": 2,
+    "keywords": ["listSessions|terminalSessionIds|reply_session|CLAUDE_CODE_SESSION_ID"],
+    "min_keywords": 1,
+    "note": "listSessions so le sessoes do outro agente; terminalSessionIds/reply_session; grey-channel.mjs usa CLAUDE_CODE_SESSION_ID"
+  },
+  {
+    "id": "grey-vpn-loop",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "a776ff1fec0248a4f55b8f156fc2813fb21ae48a",
+    "question": "No projeto greymod, quando a VPN propria do PC deixa o celular alcancar a rede de casa, a ponte, os widgets e o adb param de funcionar: as respostas para o celular nao saem pelo tunel. Ache a causa no codigo e diga onde ela esta. Nao altere nada.",
+    "answer_files": ["bridge/vpn/lanfwd.go"],
+    "min_files": 1,
+    "keywords": ["handleLocal|HandleLocal", "promiscu"],
+    "note": "commit 1e1797b: pilha criada com HandleLocal=true; no modo promiscuo toda resposta volta para dentro do PC"
+  },
+  {
+    "id": "grey-anr",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "80a78e1777341e6e5fc3180fc3ea246c3870ca1a",
+    "question": "No projeto greymod, o Android as vezes mostra 'Grey nao esta respondendo' (ANR) perto dos alarmes de notificacao proativa e do resumo do dia. O que no codigo segura o sistema alem do limite de 60 s? Nao altere nada.",
+    "answer_files": ["launcher/app/src/main/java/dev/greymod/grey/proactive/Proactive.kt", "launcher/app/src/main/java/dev/greymod/grey/briefing/Briefing.kt"],
+    "min_files": 1,
+    "keywords": ["goAsync|finish"],
+    "note": "commit 7da69bd: receivers seguram o broadcast aberto (goAsync/pr.finish) durante trabalho de rede"
+  },
+  {
+    "id": "grey-installer-usb",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "8a31d8b7b6df17d0437bf1820874b374b19f53ad",
+    "question": "No projeto greymod, o instalador do Grey falha ou instala no aparelho errado quando o mesmo celular esta ligado por cabo USB e tambem por depuracao sem fio. Onde esta o problema e qual a causa? Nao altere nada.",
+    "answer_files": ["launcher/instalar-grey.ps1"],
+    "min_files": 1,
+    "keywords": ["adb devices|ANDROID_SERIAL|dois|duas|mais de um|duplic"],
+    "min_keywords": 1,
+    "note": "commit 6b34750: adb devices lista o mesmo aparelho duas vezes e o script nao escolhe"
+  },
+  {
+    "id": "grey-vpn-qr",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "996c94ab0dd5d21f4342ea6aa56d5f94e86ed189",
+    "question": "No projeto greymod, na pagina de administracao da VPN, depois de criar um dispositivo o QR so aparece na hora da criacao; mais tarde nao ha como ver o QR de novo. Por que isso acontece e onde no codigo? Nao altere nada.",
+    "answer_files": ["bridge/vpn/admin.go"],
+    "min_files": 1,
+    "keywords": ["minted|memoria|memory", "QR"],
+    "note": "commit 36183ee: o .conf gerado fica so em memoria (mintedConf) ate a pagina mostrar; o perfil nao e guardado em disco"
+  },
+  {
+    "id": "sonora-lv2-other",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "7ce130682c7263161e06bd22a892b75231b78a43",
+    "question": "No Sonora, quando abro o programa pelo script de execucao do repositorio, o navegador de inserts mostra todos os plug-ins LV2 como 'Plugin' no grupo 'Other', sem as classes (Dynamics, EQ, Reverb). Qual a causa? Nao altere nada.",
+    "answer_files": ["tools/run-sonora.sh"],
+    "min_files": 1,
+    "keywords": ["LV2_PATH"],
+    "note": "commit 265a90e80: LV2_PATH substitui o caminho padrao do lilv e a especificacao core fica em /usr/lib/lv2"
+  },
+  {
+    "id": "sonora-footer-keys",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "46537097bb8caf5616546366f3303527d1fce705",
+    "question": "No Sonora, na barra de status do rodape da janela principal, o botao Keys sai da tela quando o texto de status e comprido. Encontre onde a largura do texto e calculada e diga o que esta errado. Nao altere nada.",
+    "answer_files": ["ui/qt/qml/Main.qml"],
+    "min_files": 1,
+    "keywords": ["versionButton", "width|largura"],
+    "note": "commit bb7cfad6c: a largura do statusText nao desconta versionButton"
+  },
+  {
+    "id": "sonora-bounce-loop",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "94738130f01c72863fef73feda65432033237ccf",
+    "question": "No Sonora, exportar a mix (bounce offline) de uma sessao que esta com Loop Playback ligado nunca termina: o progresso congela. Ache a causa no codigo. Nao altere nada.",
+    "answer_files": ["engine/control/src/bounce_offline_loop.cpp"],
+    "min_files": 1,
+    "keywords": ["loop_playback|Loop Playback"],
+    "note": "commit 5c658b756: render usa o snapshot com loop_playback ligado; o playhead volta ao inicio do loop"
+  },
+  {
+    "id": "sonora-host-pause",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "41757c36ef7e96bb0dfbe3bc0bf7ed5ea1eb3e88",
+    "question": "No Sonora, o host de plug-ins (processo separado) trava ou perde blocos quando o motor manda SetFile, depois GetState e outro SetFile em seguida: o segundo pedido de pausa fica sem resposta. Onde esta a sincronizacao e qual o defeito? Nao altere nada.",
+    "answer_files": ["plugins/host/src/main.cpp"],
+    "min_files": 1,
+    "keywords": ["Pause|pause", "park"],
+    "note": "commit 0c3a7927e: struct Pause so tem request/parked; segundo ask durante o park nao e visto"
+  },
+  {
+    "id": "sonora-level-readout",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "298d8c888add174d299cf4c43d06db81be7dc52f",
+    "question": "No Sonora, o indicador de nivel dos plug-ins (leitura em dB ao lado dos medidores) faz o grupo e os medidores vizinhos balancarem de lado quando o nivel passa de -10 dB ou mostra 'no data'. Onde esta esse componente e por que ele muda de largura? Nao altere nada.",
+    "answer_files": ["ui/qt/qml/PluginLevelMeters.qml"],
+    "min_files": 1,
+    "keywords": ["width|largura|implicitWidth"],
+    "note": "commit 7ce130682: o Text de pluginLevelReadout nao reserva largura fixa"
+  },
+  {
+    "id": "katana-prefix-key",
+    "repo": "/mnt/dados/source/katana",
+    "base": "a69a7e9896398af8006ed3c94fa8dd0a15eaee35",
+    "question": "No katana, depois que eu fundo uma nova especializacao na mesma base (mesmo tamanho de arquivo, mesmo numero de parametros), o agente reaproveita o cache de prefixo em disco da fusao antiga e responde com estado errado. Onde a chave desse cache e calculada e o que falta nela? Nao altere nada.",
+    "answer_files": ["src/agent/prefix_cache.c", "src/engine/model.c"],
+    "min_files": 1,
+    "keywords": ["pfx_key", "fsize|n_params"],
+    "note": "commit 85f727d: pfx_key usa fsize e n_params; falta identidade dos pesos (fid, data do arquivo e das especializacoes)"
+  },
+  {
+    "id": "katana-server-rewind",
+    "repo": "/mnt/dados/source/katana",
+    "base": "b8711c9062c36989a086add3d482cd6515ebf048",
+    "question": "No katana serve, quando uma conversa volta atras (o novo prompt e mais curto ou diverge no meio do cache), o modelo Gemma 4 responde diferente do que responderia numa conversa nova. Onde o servidor decide quanto do cache reaproveitar e por que a regra atual esta errada para esse modelo? Nao altere nada.",
+    "answer_files": ["src/app/server.c", "src/app/openai.c"],
+    "min_files": 1,
+    "keywords": ["common", "ssm_inner"],
+    "note": "commit a69a7e9: a regra so cobre DeltaNet (ssm_inner); o anel das camadas locais do gemma4 tambem nao pode voltar atras"
+  }
+]
