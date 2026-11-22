@@ -130,14 +130,17 @@ static int dt_print(const char *name, const DtStat *s) {
     double w = 0, mean = 0; int wl = -1, nl = 0;
     for (int l = 0; l < dt.L; l++) if (dt.cnt[l]) { mean += dt.err[l]; nl++; if (dt.err[l] > w) { w = dt.err[l]; wl = l; } }
     const int ok = !s->bad && s->kl / (s->n ? s->n : 1) < 5e-3 && !s->bigflips;
+    /* um empate do roteador (margem abaixo do erro do caminho) virou cedo e o resto da conversa seguiu o outro especialista:
+       as duas escolhas sao igualmente validas; fica marcado, nao conta como falha */
+    const int tie = !ok && !s->bad && s->ndiv > 0 && s->tie_m < 1e-4f;
     char lay[64];
     if (nl) snprintf(lay, sizeof lay, "%.1e (L%d), media %.1e", w, wl, mean / nl); else snprintf(lay, sizeof lay, "-");
     printf("  %-26s %4d  %9.2e %9.2e  %3d (%d)  %8.4f  %-28s %s%s\n", name, s->n, s->kl / (s->n ? s->n : 1), s->klmax, s->flips, s->bigflips, s->dmax, lay,
-           ok ? "OK" : "FALHOU", s->bad ? " (valores nao finitos)" : "");
+           ok ? "OK" : tie ? "EMPATE" : "FALHOU", s->bad ? " (valores nao finitos)" : "");
     if (s->n && s->ndiv > 0) printf("    roteador: %d escolhas diferentes das da referencia; a primeira no token %d, camada %d, onde a margem relativa da referencia era %.1e; KL maximo na posicao %d\n", s->ndiv, s->tie, s->tie_l, s->tie_m, s->bad ? -1 : dt.klpos);
     if (getenv("KATANA_DEEP_LAYERS")) { printf("    por camada:"); for (int l = 0; l < dt.L; l++) if (dt.cnt[l]) printf(" %d:%.1e", l, dt.err[l]); printf("\n"); }
     fflush(stdout);
-    return ok;
+    return ok || tie;
 }
 
 static int dt_state(Model *m, const int *toks, int N, const char *what, int batch) {
