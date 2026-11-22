@@ -90,6 +90,13 @@ R=$(KATANA_BRIEF_NOTE=1 "$K" tool Write '{"file_path":"sub/z.txt","content":"x"}
 hasnt "nota de fim: some quando o teste rodou" "$R" "end-of-request note"
 R=$(KATANA_BRIEF_NOTE=1 "$K" tool Read '{"file_path":"x.txt"}' Read '{"file_path":"x.txt"}' 2>&1); hasnt "nota de fim: so se arquivos mudaram" "$R" "end-of-request note"
 
+# conferir com o exemplo do pedido
+W='{"file_path":"sub/ex.txt","content":"x"}'; rm -f sub/ex.txt
+R=$(KATANA_EXAMPLE_REQ='faz um script; a saida e assim: n=5' "$K" tool Write "$W" Read '{"file_path":"x.txt"}' 2>&1); has "exemplo: lembra de conferir com o pedido" "$R" "compare the result with the request itself"; has "exemplo: traz o pedido" "$R" "a saida e assim: n=5"
+rm -f sub/ex.txt; R=$(KATANA_EXAMPLE_REQ='renomeia a funcao soma' "$K" tool Write "$W" Read '{"file_path":"x.txt"}' 2>&1); hasnt "exemplo: pedido sem exemplo nao tem nota" "$R" "example note"
+R=$(KATANA_EXAMPLE_REQ='a saida e assim: n=5' "$K" tool Read '{"file_path":"x.txt"}' Read '{"file_path":"x.txt"}' 2>&1); hasnt "exemplo: so se arquivos mudaram" "$R" "example note"
+rm -f sub/ex.txt; R=$(KATANA_EXAMPLE_NOTE=0 KATANA_EXAMPLE_REQ='a saida e assim: n=5' "$K" tool Write "$W" Read '{"file_path":"x.txt"}' 2>&1); hasnt "exemplo: desliga por ambiente" "$R" "example note"
+
 ########## camadas: chaves de um valor, blocos, never ##########
 R=$("$K" brief show 2>&1)
 has "mescla: test do mais especifico" "$R" "test: sh test.sh --quick"

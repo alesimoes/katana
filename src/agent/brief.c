@@ -201,8 +201,8 @@ static int br_match_path(const char *pat, const char *file) {
     const char *base = strrchr(file, '/');
     return base && pat[0] == '*' && pat[1] == '.' && br_glob(pat, base + 1);
 }
-static int g_br_changed, g_br_ran, g_br_noted, g_br_seen_req = -1;
-static void br_sync(void) { if (g_br_seen_req != g_undo_req) { g_br_seen_req = g_undo_req; g_br_changed = g_br_ran = g_br_noted = 0; } }
+static int g_br_changed, g_br_ran, g_br_noted, g_br_exnoted, g_br_seen_req = -1;
+static void br_sync(void) { if (g_br_seen_req != g_undo_req) { g_br_seen_req = g_undo_req; g_br_changed = g_br_ran = g_br_noted = g_br_exnoted = 0; } }
 /* antes de Bash/Write/Edit: 1 se a regra do projeto recusa (out recebe o motivo) */
 static int brief_guard(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const int bash = strcmp(name, "Bash") == 0, wr = strcmp(name, "Write") == 0 || strcmp(name, "Edit") == 0 || strcmp(name, "NotebookEdit") == 0;
@@ -272,6 +272,30 @@ static void brief_track(const char *name, const char *js, const char *end, const
         for (int i = 0; i < b->ns; i++) if (strcmp(b->s[i].key, "test") == 0 && strstr(cmd, b->s[i].val)) g_br_ran = 1;
     }
     free(cmd);
+}
+/* o pedido traz exemplos de saida ou formato? (palavras nos dois idiomas, setas, trechos entre crases) */
+static int br_has_example(const char *req) {
+    static const char *const W[] = { "exemplo", "example", "for instance", "por ex", "e assim", "\xc3\xa9 assim", "like this", "saida", "sa\xc3\xad" "da", "output", "imprim", "print", "escreve no std", "must be", "tem que dar", "deve dar", "returns", "retorna", "->", "=>", NULL };
+    if (!req) return 0;
+    char *l = strdup(req); if (!l) return 0;
+    for (char *p = l; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
+    int hit = 0;
+    for (int i = 0; W[i] && !hit; i++) hit = strstr(l, W[i]) != NULL;
+    free(l);
+    return hit;
+}
+/* nota (uma vez por pedido): arquivos mudaram e o pedido tem exemplos; o modelo conferia o proprio trabalho contra ele mesmo e
+   nao contra o que foi pedido (tres falhas iguais na prova de 21/11/2026). KATANA_EXAMPLE_NOTE=0 desliga. */
+static int brief_example_note(const char *req, char *out, size_t cap) {
+    br_sync();
+    const char *e = getenv("KATANA_EXAMPLE_NOTE");
+    if ((e && !atoi(e)) || g_br_exnoted || !g_br_changed || !br_has_example(req)) return 0;
+    g_br_exnoted = 1;
+    size_t n = strlen(req);
+    if (n > 1500) { n = 1500; while (n && ((unsigned char)req[n] & 0xC0) == 0x80) n--; }
+    snprintf(out, cap, "[katana: before you finish, compare the result with the request itself, not with your own tests. Run it on the request's own examples and check every detail it states: "
+             "exact text, line breaks, spaces, names, upper and lower case, exit codes. Fix what differs; if all matches, answer. The request:]\n%.*s%s", (int)n, req, req[n] ? " [...]" : "");
+    return 1;
 }
 /* nota (uma vez por pedido) para o fim do pedido: arquivos mudaram e a verificacao do projeto nao rodou. 0 = nada a dizer.
    Chamada pelo laco no ponto em que o pedido termina (ver o relatorio). */
