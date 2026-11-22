@@ -228,16 +228,25 @@ static size_t tt_select_r(TTab *t, const char *pats, int rank, float alpha) {
 #endif
 typedef struct {
     int on, tried;
-    KvkPipe pipe[3][7];
+    KvkPipe pipe[5][7];
     KvkBuf x, y, o, ws;            /* entrada, dY do gradiente, saida, fatia de peso enviada na hora */
     KvkBuf ar[64]; size_t ar_used[64]; int nar;     /* arenas dos pesos residentes */
     size_t ar_size, budget, resident, chunk;
     uint64_t ver;                  /* versao dos mestres em float */
     double min_mac, t_gpu;
+    size_t nsmall;                 /* ate quantos tokens o produto usa o ladrilho pequeno (modos 3 e 4); 0 = nunca */
+    int fixed;                     /* KATANA_TRAIN_GPU_MIN dado: limite fixo em vez de calibrar */
+    /* calibragem em tempo de execucao (modos 0 e 1): segundos por multiplicacao, por faixa de tamanho (log2 das
+       multiplicacoes) e, na GPU, por classe do peso (0 residente, 1 enviado na hora); a CPU e a GPU se alternam ate cada
+       lado ter algumas medidas em cada faixa, depois cada produto vai para o lado que medidamente e mais rapido */
+    struct { double ema; long n, seen; } gcal[2][2][40], ccal[2][40];
+    double share[2][40];           /* fracao das linhas que a GPU faz num produto dividido com a CPU, por modo e faixa */
+    long nsplit;
     long calls, streamed;
     float *hbuf; size_t hcap;      /* rascunho no host: fatias empacotadas e resultados */
 } TGpu;
 static TGpu tg;
+static double tg_ts[3][2]; static long tg_ns[3][2];   /* medida: [modo][0 = GPU, 1 = CPU] segundos e produtos */
 
 static int tg_wt(const TPar *p) {          /* tipo do peso no shader; -1 = a GPU nao le este formato */
     if (p->w || p->mat->f) return 0;
@@ -260,7 +269,7 @@ static int tg_init(void) {
     if (e && !strcmp(e, "0")) return 0;
     KvkInfo I;
     if (!kvk_init(&I)) { fprintf(stderr, "treino: sem GPU Vulkan (%s); produtos na CPU\n", kvk_error()); return 0; }
-    for (int m = 0; m < 3; m++) for (int t = 0; t < 7; t++) {
+    for (int m = 0; m < 5; m++) for (int t = 0; t < 7; t++) {
         if (m == 2 && t) continue;
         const uint32_t ids[2] = { 0, 1 }, vals[2] = { (uint32_t)m, (uint32_t)t };
         tg.pipe[m][t] = kvk_pipe_create(tmm_spv, sizeof tmm_spv, 3, 20, ids, vals, 2);
@@ -282,6 +291,8 @@ static int tg_init(void) {
     if (getenv("KATANA_TRAIN_VRAM")) bud = atof(getenv("KATANA_TRAIN_VRAM")) * 1073741824.0;
     tg.budget = bud > 0 ? (size_t)bud : 0;
     tg.min_mac = getenv("KATANA_TRAIN_GPU_MIN") ? atof(getenv("KATANA_TRAIN_GPU_MIN")) : 4194304.0;
+    tg.fixed = getenv("KATANA_TRAIN_GPU_MIN") != NULL;
+    tg.nsmall = getenv("KATANA_TRAIN_GPU_SMALL") ? (size_t)atoi(getenv("KATANA_TRAIN_GPU_SMALL")) : 16;
     tg.on = 1;
     fprintf(stderr, "treino na GPU: %s; ate %.1f GB de pesos residentes na VRAM\n", I.name, tg.budget / 1073741824.0);
     return 1;
@@ -318,11 +329,38 @@ static int tg_resident(TPar *p) {
     return 1;
 }
 
+/* vale a pena mandar este produto para a GPU? Com KATANA_TRAIN_GPU_MIN (ou no gradiente) o limite e fixo. Senao compara o
+   que a CPU gastaria (multiplicacoes x segundos por multiplicacao medidos nos produtos que ela fez) com o que a GPU gasta
+   por produto pequeno (media dos ultimos): a CPU pode ficar mais rapida (outros kernels) e o limite acompanha. */
+static int tg_bucket(double macs) { int b = macs < 1.0 ? 0 : ilogb(macs); return b > 39 ? 39 : b; }
+static int tg_worth(int mode, double macs, int cls) {
+    if (mode == 2 || tg.fixed) return macs >= tg.min_mac;
+    const int b = tg_bucket(macs);
+    typeof(tg.gcal[0][0][0]) *g = &tg.gcal[mode][cls][b], *c = &tg.ccal[mode][b];
+    g->seen++;
+    if (g->n < 3) return 1;                                      /* ainda sem medida da GPU nesta faixa */
+    if (c->n < 3) return 0;                                      /* ainda sem medida da CPU */
+    const int gpu = g->ema < c->ema;
+    return g->seen % 64 == 0 ? !gpu : gpu;                       /* de vez em quando experimenta o outro lado: as medidas nao ficam velhas */
+}
+static void tg_note_gpu(int mode, int cls, double macs, double sec) {
+    if (mode > 1 || macs < 1.0) return;
+    typeof(tg.gcal[0][0][0]) *g = &tg.gcal[mode][cls][tg_bucket(macs)];
+    g->ema = g->n++ ? 0.8 * g->ema + 0.2 * sec / macs : sec / macs;
+}
+static void tg_note_cpu(int mode, double macs, double sec) {      /* chamado quando o produto ficou na CPU */
+    tg_ts[mode][1] += sec; tg_ns[mode][1]++;
+    if (!tg.on || macs < 1.0) return;
+    typeof(tg.gcal[0][0][0]) *c = &tg.ccal[mode][tg_bucket(macs)];
+    c->ema = c->n++ ? 0.8 * c->ema + 0.2 * sec / macs : sec / macs;
+}
+
 typedef struct { uint32_t M, N, K, ws, wo; } TgPush;
 static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M, uint32_t N, uint32_t K, size_t ws, size_t wo) {
     if (wo > 0xffffffffu || ws > 0xffffffffu) return 0;
     TgPush pc = { M, N, K, (uint32_t)ws, (uint32_t)wo };
     const KvkBuf b[3] = { w, in, out };
+    if (mode >= 3) return kvk_dispatch(tg.pipe[mode][wt], b, 3, &pc, sizeof pc, mode == 3 ? (M + 15) / 16 : (M + 127) / 128, 1, 1);
     return kvk_dispatch(tg.pipe[mode][wt], b, 3, &pc, sizeof pc, (M + 63) / 64, (N + 63) / 64, 1);
 }
 
@@ -333,7 +371,9 @@ static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M,
 static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float *out, int B) {
     if (!tg_init() || !p->mat) return 0;
     const size_t R = p->rows, C = p->cols, F = 4, ch = tg.chunk / F;     /* ch: floats por rascunho */
-    if ((double)R * C * B < tg.min_mac) return 0;
+    const double macs = (double)R * C * B;
+    const int cls = mode < 2 && p->gstat == 1 ? 0 : 1;
+    if (!tg_worth(mode, macs, cls)) return 0;
     const int wt = mode == 2 ? 0 : tg_wt(p);
     if (wt < 0) return 0;
     const double t0 = now_sec();
@@ -370,7 +410,7 @@ static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float 
         const size_t rn = R - r0 < rc ? R - r0 : rc;
         KvkBuf wb = res ? tg.ar[p->gar] : tg.ws;
         const size_t wo = res ? p->goff + r0 * st : 0;
-        if (!res && !kvk_buf_write(tg.ws, 0, src + r0 * st, rn * st)) goto fail;
+        if (!res && !kvk_buf_write_q(tg.ws, 0, src + r0 * st, rn * st)) goto fail;      /* tudo do produto numa submissao so: o kvk_buf_read espera */
         /* lote de tokens que cabe nos rascunhos */
         size_t bc = mode == 0 ? ch / (C > rn ? C : rn) : ch / (C > rn ? C : rn);
         if (bc > (size_t)B) bc = (size_t)B;
@@ -379,27 +419,77 @@ static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float 
             const size_t bn = B - b0 < bc ? B - b0 : bc;
             if (mode == 0) {
                 float *h = tg_host(bn * rn);
-                if (!kvk_buf_write(tg.x, 0, in1 + b0 * C, bn * C * F)
-                    || !tg_run(0, wt, wb, tg.x, tg.o, (uint32_t)rn, (uint32_t)bn, (uint32_t)C, st, wo)
+                if (!kvk_buf_write_q(tg.x, 0, in1 + b0 * C, bn * C * F)
+                    || !tg_run(bn <= tg.nsmall && C % 8 == 0 ? 3 : 0, wt, wb, tg.x, tg.o, (uint32_t)rn, (uint32_t)bn, (uint32_t)C, st, wo)
                     || !kvk_buf_read(tg.o, 0, h, bn * rn * F)) goto fail;
                 for (size_t b = 0; b < bn; b++) memcpy(out + (b0 + b) * R + r0, h + b * rn, rn * F);
             } else {
                 float *h = tg_host(bn * (rn > C ? rn : C));
                 for (size_t b = 0; b < bn; b++) memcpy(h + b * rn, in1 + (b0 + b) * R + r0, rn * F);
-                if (!kvk_buf_write(tg.x, 0, h, bn * rn * F)
-                    || !tg_run(1, wt, wb, tg.x, tg.o, (uint32_t)C, (uint32_t)bn, (uint32_t)rn, st, wo)
+                if (!kvk_buf_write_q(tg.x, 0, h, bn * rn * F)
+                    || !tg_run(bn <= tg.nsmall && C % 8 == 0 ? 4 : 1, wt, wb, tg.x, tg.o, (uint32_t)C, (uint32_t)bn, (uint32_t)rn, st, wo)
                     || !kvk_buf_read(tg.o, 0, h, bn * C * F)) goto fail;
                 for (size_t b = 0; b < bn; b++) { float *o = out + (b0 + b) * C; const float *hb = h + b * C; for (size_t c = 0; c < C; c++) o[c] += hb[c]; }
             }
         }
     }
     tg.calls++; tg.t_gpu += now_sec() - t0;
+    tg_note_gpu(mode, cls, macs, now_sec() - t0);
     return 1;
 fail:
     /* a GPU falhou no meio: so e seguro se nada foi acumulado; o modo 0 sobrescreve, os outros nao */
     fprintf(stderr, "treino: erro na GPU (%s)\n", kvk_error());
     die("treino: a GPU falhou no meio de um produto; rode de novo com KATANA_TRAIN_GPU=0");
     return 0;
+}
+
+/* ---- produto dividido entre a GPU e a CPU (modos 0 e 1) ----
+   A GPU recebe as primeiras linhas de W (uma submissao, sem esperar) e a CPU faz o resto enquanto ela trabalha; no fim
+   soma/espalha o resultado da GPU. So quando o produto cabe num lote so; 0 = nao deu, o chamador faz tudo. */
+typedef struct { int on, mode; size_t B, rn, R, C; float *out, *h; double t0; } TgPend;
+static TgPend tgp;
+static int tg_begin(int mode, TPar *p, size_t rg, const float *in1, float *out, int B) {
+    if (!tg_init() || !p->mat || tgp.on) return 0;
+    const size_t R = p->rows, C = p->cols, F = 4, ch = tg.chunk / F, st = tg_stride(p);
+    const int wt = tg_wt(p);
+    if (wt < 0 || rg < 16 || rg >= R || C % 8) return 0;
+    if (!tg_resident(p) && rg * st > tg.chunk) return 0;
+    const int res = p->gstat == 1;
+    const size_t rn = rg, mx = C > rn ? C : rn;
+    if ((size_t)B * mx > ch) return 0;
+    const KvkBuf wb = res ? tg.ar[p->gar] : tg.ws;
+    const size_t wo = res ? p->goff : 0;
+    const uint8_t *src = tg_src(p);
+    const double t0 = now_sec();
+    float *h = tg_host((size_t)B * mx);
+    if (!res && !kvk_buf_write_q(tg.ws, 0, src, rn * st)) return 0;
+    const int sm = (size_t)B <= tg.nsmall;
+    if (mode == 0) {
+        if (!kvk_buf_write_q(tg.x, 0, in1, (size_t)B * C * F)
+            || !tg_run(sm ? 3 : 0, wt, wb, tg.x, tg.o, (uint32_t)rn, (uint32_t)B, (uint32_t)C, st, wo)) return 0;
+    } else {
+        for (int b = 0; b < B; b++) memcpy(h + (size_t)b * rn, in1 + (size_t)b * R, rn * F);
+        if (!kvk_buf_write_q(tg.x, 0, h, (size_t)B * rn * F)
+            || !tg_run(sm ? 4 : 1, wt, wb, tg.x, tg.o, (uint32_t)C, (uint32_t)B, (uint32_t)rn, st, wo)) return 0;
+    }
+    if (!kvk_flush()) return 0;
+    tgp = (TgPend){ 1, mode, (size_t)B, rn, R, C, out, h, t0 };
+    return 1;
+}
+/* espera a GPU, entrega o resultado dela; devolve os segundos que esperou */
+static double tg_end(void) {
+    const double w0 = now_sec();
+    const size_t B = tgp.B, rn = tgp.rn, R = tgp.R, C = tgp.C;
+    float *h = tgp.h;
+    tgp.on = 0;
+    if (tgp.mode == 0) {
+        if (!kvk_buf_read(tg.o, 0, h, B * rn * 4)) die("treino: a GPU falhou num produto dividido; rode de novo com KATANA_TRAIN_GPU=0");
+        for (size_t b = 0; b < B; b++) memcpy(tgp.out + b * R, h + b * rn, rn * 4);
+    } else {
+        if (!kvk_buf_read(tg.o, 0, h, B * C * 4)) die("treino: a GPU falhou num produto dividido; rode de novo com KATANA_TRAIN_GPU=0");
+        for (size_t b = 0; b < B; b++) { float *o = tgp.out + b * C; const float *hb = h + b * C; for (size_t c = 0; c < C; c++) o[c] += hb[c]; }
+    }
+    return now_sec() - w0;
 }
 
 /* medida das partes do passo (KATANA_TRAIN_PROF=1 imprime no fim): segundos somados por parte */
@@ -427,6 +517,55 @@ static const float *tp_row(const TPar *p, size_t r, float *tmp) {
 
 #include "train_kernels.c"   /* kernels em blocos dos produtos da CPU (KATANA_TRAIN_KERNEL=0 usa os lacos simples abaixo) */
 
+/* tenta o produto dividido (GPU: primeiras linhas, CPU: o resto, ao mesmo tempo). A fracao da GPU parte da razao das medidas
+   de cada lado e se ajusta pelo que se viu: se a CPU terminou e a GPU ainda nao (esperou), a GPU leva menos da proxima vez;
+   se a GPU ja tinha terminado, leva mais. KATANA_TRAIN_GPU_SPLIT=0 desliga. */
+static int tp_split(int mode, const TPar *cp, const float *in, float *out, int B) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("KATANA_TRAIN_GPU_SPLIT"); on = e ? atoi(e) != 0 : 1; }
+    TPar *p = (TPar *)cp;
+    if (!on || !tk_on() || tg.fixed || !p->mat || p->rows < 64) return 0;
+    if (!tg_init()) return 0;
+    const double macs = (double)p->rows * p->cols * B;
+    if (macs < 4194304.0) return 0;
+    const int b = tg_bucket(macs), cls = p->gstat == 1 ? 0 : 1;
+    typeof(tg.gcal[0][0][0]) *g = &tg.gcal[mode][cls][b], *c = &tg.ccal[mode][b];
+    if (g->n < 3 || c->n < 3) return 0;                          /* sem medida dos dois lados: o caminho comum mede */
+    double *sh = &tg.share[mode][b];
+    if (*sh <= 0) *sh = c->ema / (g->ema + c->ema);
+    if (*sh < 0.05) return 0;                                    /* a GPU nao ajuda neste tamanho */
+    const size_t R = p->rows, C = p->cols;
+    size_t rg = (size_t)(*sh * (double)R) & ~(size_t)15;
+    if (rg < 16) return 0;
+    if (rg > R - 16) rg = (R - 16) & ~(size_t)15;
+    const double t0 = now_sec();
+    if (!tg_begin(mode, p, rg, in, out, B)) return 0;
+    const size_t Rc = R - rg;
+    TPar sp = *p; Mat sm = *p->mat;
+    if (sm.f) sm.f += rg * C; else sm.q += rg * sm.stride;
+    if (p->w) sp.w = p->w + rg * C;
+    sp.mat = &sm; sp.rows = Rc;
+    const double c0 = now_sec();
+    if (mode == 0) {
+        float *t = xalloc((size_t)B * Rc, 4);
+        tk_mv(&sp, t, in, B);
+        for (int k = 0; k < B; k++) memcpy(out + (size_t)k * R + rg, t + (size_t)k * Rc, Rc * 4);
+        free(t);
+    } else {
+        float *t = xalloc((size_t)B * Rc, 4);
+        for (int k = 0; k < B; k++) memcpy(t + (size_t)k * Rc, in + (size_t)k * R + rg, Rc * 4);
+        tk_mvT(&sp, out, t, B);
+        free(t);
+    }
+    const double tc = now_sec() - c0;
+    const double waited = tg_end();
+    tg_note_cpu(mode, (double)Rc * C * B, tc);
+    if (waited > 0.1 * tc) { *sh *= 0.85; g->ema = g->ema * 0.8 + 0.2 * (now_sec() - t0 - 0.0) / ((double)rg * C * B); }
+    else *sh = *sh * 1.12 > 0.9 ? 0.9 : *sh * 1.12;
+    tg.nsplit++; tg_ns[mode][0]++; tg_ts[mode][0] += now_sec() - t0 - tc;
+    return 1;
+}
+
 /* out[b][r] = W[r] . x[b] para B vetores de entrada (cada linha e lida/desquantizada uma vez para o lote) */
 static void tmv_job(void *ctx, int r0, int r1) {
     const TMvJob *j = (const TMvJob *)ctx;
@@ -448,7 +587,13 @@ static float *tp_az(const TPar *p, const float *x, int B) {
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
     const double p0 = now_sec();
-    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) { if (tk_on()) tk_mv(p, out, x, B); else pool_for(tmv_job, &j, (int)p->rows, 16); }
+    if (tp_split(0, p, x, out, B)) {}
+    else if (tg_prod(0, (TPar *)p, x, NULL, out, B)) { tg_ts[0][0] += now_sec() - p0; tg_ns[0][0]++; }
+    else {
+        const double c0 = now_sec();
+        if (tk_on()) tk_mv(p, out, x, B); else pool_for(tmv_job, &j, (int)p->rows, 16);
+        tg_note_cpu(0, (double)p->rows * p->cols * B, now_sec() - c0);
+    }
     if (!p->r) { tprof[TP_MV] += now_sec() - p0; return; }
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
@@ -482,7 +627,13 @@ static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
     const double p0 = now_sec();
-    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) { if (tk_on()) tk_mvT(p, dx, dy, B); else pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1); }
+    if (tp_split(1, p, dy, dx, B)) {}
+    else if (tg_prod(1, (TPar *)p, dy, NULL, dx, B)) { tg_ts[1][0] += now_sec() - p0; tg_ns[1][0]++; }
+    else {
+        const double c0 = now_sec();
+        if (tk_on()) tk_mvT(p, dx, dy, B); else pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
+        tg_note_cpu(1, (double)p->rows * p->cols * B, now_sec() - c0);
+    }
     if (!p->r) { tprof[TP_MVT] += now_sec() - p0; return; }
     const size_t R = p->rows;
     float *t = xalloc(p->r, 4);
@@ -2528,6 +2679,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         const double el = now_sec() - t0;
         printf("partes do treino (segundos; os produtos estao dentro da ida e da volta):\n");
         for (int i = 0; i < TP_NPROF; i++) printf("  %-26s %9.2f  %5.1f%%\n", tprof_name[i], tprof[i], el > 0 ? 100.0 * tprof[i] / el : 0.0);
+        if (tg.on) for (int m = 0; m < 2; m++) printf("  produtos modo %d: GPU %ld em %.2f s, CPU %ld em %.2f s\n", m, tg_ns[m][0], tg_ts[m][0], tg_ns[m][1], tg_ts[m][1]);
     }
     A.T = seq;
     /* perda final em todas as janelas de treino (do estado final; com validacao, o arquivo gravado e o do melhor passo) */

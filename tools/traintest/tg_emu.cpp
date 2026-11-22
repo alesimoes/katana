@@ -27,6 +27,7 @@ static const float *X;
 static float *O;
 static struct { uint M, N, K, ws, wo; } pc;
 static float As[16][64], Bs[16][64];
+static float Rd[2048];
 static uvec3 gl_WorkGroupID, gl_LocalInvocationID;
 
 static ucontext_t sched, co[256];

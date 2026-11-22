@@ -6,6 +6,7 @@
 //   MODE 0 (forward):    A = W[m][k] (linha m do peso), B = X[n][k];  O = Y[n][m]   (Y = X W^T)
 //   MODE 1 (transposto): A = W[k][m],                   B = dY[n][k]; O = dX[n][m]  (dX = dY W)
 //   MODE 2 (gradiente):  A = dY[k][m] (binding 0, float), B = X[k][n]; O = G[m][n]  (G = dY^T X)
+//   MODE 3 e 4: forward e transposto para poucos tokens (N pequeno), ver tmm_core.glsl
 // WT (tipo do peso): 0 F32, 1 F16, 2 Q8_0, 3 Q4_K, 4 Q5_K, 5 Q6_K, 6 BF16. As contas de cada formato sao as do
 // dequant da CPU (src/engine), elemento por elemento.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -19,6 +20,7 @@ layout(push_constant) uniform P { uint M, N, K, ws, wo; } pc;
 
 shared float As[16][64];
 shared float Bs[16][64];
+shared float Rd[2048];
 
 #include "tmm_core.glsl"
 

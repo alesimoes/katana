@@ -43,6 +43,59 @@ float wq(uint r, uint c) {
     return f16(b + 208u) * float(i8(b + 192u + h * 8u + l6 / 16u + 2u * part)) * float(q);
 }
 
+// 8 elementos seguidos (r, c..c+7), c multiplo de 8: as mesmas contas de wq, mas o cabecalho do bloco e as palavras de
+// quantizados sao lidos uma vez (menos cargas encadeadas por elemento). Os formatos de 34 e 210 bytes por bloco so
+// garantem alinhamento par, entao leem de 16 em 16 bits.
+struct F8 { float v[8]; };
+uint byt(uint w0, uint w1, uint i) { return ((i < 4u ? w0 : w1) >> ((i & 3u) * 8u)) & 255u; }
+F8 dec8(uint r, uint c) {
+    F8 o;
+    if (WT <= 1 || WT == 6) { for (uint i = 0u; i < 8u; i++) o.v[i] = wq(r, c + i); return o; }
+    uint base = pc.wo + r * pc.ws;
+    uint j = c & 255u, j64 = j >> 6, hi = (j >> 5) & 1u, l = j & 31u;
+    if (WT == 2) {
+        uint b = base + (c >> 5) * 34u;
+        float d = f16(b);
+        uint a = b + 2u + (c & 31u);
+        for (uint i = 0u; i < 4u; i++) {
+            uint h = u16(a + 2u * i);
+            o.v[2u * i] = d * float((int(h & 255u) << 24) >> 24);
+            o.v[2u * i + 1u] = d * float((int((h >> 8) & 255u) << 24) >> 24);
+        }
+        return o;
+    }
+    if (WT == 3 || WT == 4) {
+        uint b = base + (c >> 8) * (WT == 3 ? 144u : 176u);
+        vec2 sm = scmin(b + 4u, 2u * j64 + hi);
+        float d1 = f16(b) * sm.x, d2 = f16(b + 2u) * sm.y;
+        uint a = (WT == 3 ? b + 16u : b + 48u) + j64 * 32u + l;
+        uint w0 = W[a >> 2], w1 = W[(a >> 2) + 1u];
+        if (WT == 3) {
+            for (uint i = 0u; i < 8u; i++) o.v[i] = d1 * float((byt(w0, w1, i) >> (4u * hi)) & 15u) - d2;
+        } else {
+            uint h = b + 16u + l, h0 = W[h >> 2], h1 = W[(h >> 2) + 1u];
+            for (uint i = 0u; i < 8u; i++) {
+                uint q = ((byt(w0, w1, i) >> (4u * hi)) & 15u) | (((byt(h0, h1, i) >> (2u * j64 + hi)) & 1u) << 4);
+                o.v[i] = d1 * float(q) - d2;
+            }
+        }
+        return o;
+    }
+    uint b = base + (c >> 8) * 210u;
+    uint h = j >> 7, part = (j & 127u) >> 5, l6 = j & 31u;
+    float d = f16(b + 208u) * float(i8(b + 192u + h * 8u + l6 / 16u + 2u * part));
+    uint a = b + h * 64u + l6 + (part & 1u) * 32u, a2 = b + 128u + h * 32u + l6;
+    for (uint i = 0u; i < 4u; i++) {
+        uint x = u16(a + 2u * i), y = u16(a2 + 2u * i);
+        for (uint e = 0u; e < 2u; e++) {
+            uint lo = ((x >> (8u * e)) >> (4u * (part >> 1))) & 15u;
+            uint up = ((y >> (8u * e)) >> (2u * part)) & 3u;
+            o.v[2u * i + e] = d * float(int(lo | (up << 4)) - 32);
+        }
+    }
+    return o;
+}
+
 float aget(uint m, uint k) {
     if (m >= pc.M || k >= pc.K) return 0.0;
     if (MODE == 0) return wq(m, k);
@@ -55,7 +108,72 @@ float bget(uint n, uint k) {
     return X[n * pc.K + k];
 }
 
+// ---- N pequeno (ate 8 tokens por passada; o laco de n repete a passada): o ladrilho de 64 tokens desperdicava quase tudo
+// e deixava poucos grupos (um peso 512x2048 virava 8 grupos). Aqui o grupo de 256 threads e 16 x 16 e le o peso uma vez.
+// MODE 3 (forward):    O[n][m] = soma_k W[m][k] X[n][k]; 16 linhas por grupo, 16 threads por linha (cada uma 8 colunas
+//                      seguidas por vez), soma das 16 por memoria compartilhada. Precisa de K multiplo de 8.
+// MODE 4 (transposto): O[n][m] = soma_k W[k][m] X[n][k]; cada thread tem 8 colunas m seguidas e 1 de 16 fatias das linhas k;
+//                      soma das 16 fatias por memoria compartilhada. Precisa de M multiplo de 8.
+void tmv_fwd() {
+    uint tx = gl_LocalInvocationID.x, ty = gl_LocalInvocationID.y, tid = ty * 16u + tx;
+    uint m = gl_WorkGroupID.x * 16u + ty;
+    for (uint n0 = 0u; n0 < pc.N; n0 += 8u) {
+        float acc[8];
+        for (int j = 0; j < 8; j++) acc[j] = 0.0;
+        if (m < pc.M) {
+            for (uint c = tx * 8u; c < pc.K; c += 128u) {
+                F8 w = dec8(m, c);
+                for (uint i = 0u; i < 8u; i++) {
+                    for (uint j = 0u; j < 8u; j++) if (n0 + j < pc.N) acc[j] = fma(w.v[i], X[(n0 + j) * pc.K + c + i], acc[j]);
+                }
+            }
+        }
+        for (int j = 0; j < 8; j++) Rd[tid * 8u + uint(j)] = acc[j];
+        barrier();
+        if (tx < 8u && m < pc.M && n0 + tx < pc.N) {
+            float t = 0.0;
+            for (uint l = 0u; l < 16u; l++) t += Rd[(ty * 16u + l) * 8u + tx];
+            O[(n0 + tx) * pc.M + m] = t;
+        }
+        barrier();
+    }
+}
+void tmv_tr() {
+    uint tx = gl_LocalInvocationID.x, ty = gl_LocalInvocationID.y, tid = ty * 16u + tx;
+    uint m0 = (gl_WorkGroupID.x * 16u + tx) * 8u;
+    for (uint n0 = 0u; n0 < pc.N; n0 += 8u) {
+        float acc[8][8];
+        for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) acc[j][i] = 0.0;
+        if (m0 < pc.M) {
+            for (uint k = ty; k < pc.K; k += 16u) {
+                F8 w = dec8(k, m0);
+                for (uint j = 0u; j < 8u; j++) if (n0 + j < pc.N) {
+                    float x = X[(n0 + j) * pc.K + k];
+                    for (int i = 0; i < 8; i++) acc[j][i] = fma(w.v[i], x, acc[j][i]);
+                }
+            }
+        }
+        for (uint j = 0u; j < 8u; j++) {
+            if (n0 + j >= pc.N) break;
+            for (int i = 0; i < 8; i++) Rd[tid * 8u + uint(i)] = acc[j][i];
+            barrier();
+            if (tid < 128u) {
+                uint u = tid >> 3, i = tid & 7u;
+                uint mm = (gl_WorkGroupID.x * 16u + u) * 8u + i;
+                if (mm < pc.M) {
+                    float t = 0.0;
+                    for (uint sl = 0u; sl < 16u; sl++) t += Rd[(sl * 16u + u) * 8u + i];
+                    O[(n0 + j) * pc.M + mm] = t;
+                }
+            }
+            barrier();
+        }
+    }
+}
+
 void tmm_main() {
+    if (MODE == 3) { tmv_fwd(); return; }
+    if (MODE == 4) { tmv_tr(); return; }
     uint tx = gl_LocalInvocationID.x, ty = gl_LocalInvocationID.y, tid = ty * 16u + tx;
     uint m0 = gl_WorkGroupID.x * 64u, n0 = gl_WorkGroupID.y * 64u;
     float acc[4][4];
