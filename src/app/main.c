@@ -1136,6 +1136,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
     if (argc >= 3 && strcmp(argv[1], "curriculum") == 0) return curriculum_main(argc - 2, argv + 2);   /* convencoes -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "specialize") == 0) return specialize_main(argv[0], argc - 2, argv + 2);   /* versao especialista de ponta a ponta */
+    if (argc >= 2 && strcmp(argv[1], "kerneltest") == 0) return argc > 2 && strcmp(argv[2], "bench") == 0 ? tk_bench(argc > 3 ? atoi(argv[3]) : 4, 2000) : tk_selftest();     /* treino: kernels da CPU x lacos simples, formatos reais */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
         Model m; memset(&m, 0, sizeof m);
         putenv_dup("KATANA_CPU=1");

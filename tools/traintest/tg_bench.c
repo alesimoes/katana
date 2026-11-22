@@ -63,6 +63,9 @@ int main(int argc, char **argv) {
             }
             printf("residente=%d %2d despachos 512x2048 B=4 por espera: %.1f us por espera, %.1f us por despacho\n", rr, per[e], (now_sec() - t0) / it * 1e6, (now_sec() - t0) / it / per[e] * 1e6);
         }
+        { double u0 = now_sec(); const int it = 300;
+          for (int i = 0; i < it; i++) kvk_buf_write(tg.ws, 0, big + (size_t)(i % NW) * R * rb, (size_t)R * rb);
+          const double dt = (now_sec() - u0) / it; printf("envio de um peso de %.2f MB (write+espera): %.1f us = %.2f GB/s\n", R * rb / 1048576.0, dt * 1e6, R * rb / dt / 1e9); }
         double t0 = now_sec();
         for (int i = 0; i < 400; i++) { tg_run(3, 0, wb, tg.x, tg.o, 8, 1, 8, 32, 0); kvk_wait(); }
         printf("despacho minimo + espera: %.1f us\n", (now_sec() - t0) / 400 * 1e6);
