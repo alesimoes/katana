@@ -440,6 +440,40 @@ static void loop_plan_note(char *result, size_t cap, const char *name, int pl_ca
     else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < cap)
         snprintf(result + rl, cap - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
 }
+/* ---- chamada identica que ja deu certo neste pedido: o conteudo nao volta de novo, so uma nota. Cobre so o que le (Read, Grep, Glob,
+ * ferramenta MCP marcada readOnlyHint de servidor do usuario); Bash, Write e Edit podem repetir de proposito. Uma ferramenta que
+ * muda coisas (qualquer uma fora da lista de leitura) zera a tabela: depois dela a mesma leitura pode dar outro resultado, e ai
+ * vale a leitura por diferenca (facts.c). KATANA_REPEAT_NOTE=0 desliga ---- */
+static uint64_t rr_sig[128]; static int rr_step[128], rr_reps[128], rr_n, rr_total;
+static void rr_reset(void) { rr_n = 0; rr_total = 0; }
+static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
+static int rr_covered(const char *name) {
+    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob")) return 1;
+    return strstr(name, "__") ? mcpx_plan_ok(name) : 0;
+}
+/* antes de executar: 1 = a chamada e repeticao e out ja tem a nota (nao executar) */
+static int rr_check(const char *name, uint64_t csig, char *out, size_t cap) {
+    if (!rr_on() || !rr_covered(name)) return 0;
+    for (int i = 0; i < rr_n; i++) if (rr_sig[i] == csig) {
+        const int reps = ++rr_reps[i];
+        if (reps < 3)
+            snprintf(out, cap, "[katana: you already made this exact call at step %d of this request; the result is earlier in this conversation. Do not repeat it: pick a different place to look "
+                     "(the symbol that this code calls, who defines it, or another file), or answer with what you have.]", rr_step[i]);
+        else
+            snprintf(out, cap, "[katana: this is the %d%s time you make this exact call (first at step %d of this request) and it will not run again. Its result is earlier in this conversation. "
+                     "You can still: Read another part of the file with a different offset and limit, Grep (output_mode content, -n -C 2) for a name you saw there, Glob for the file that "
+                     "defines something it uses, or stop looking and answer with what you have, saying what is still unknown.]", reps + 1, reps + 1 == 3 ? "rd" : "th", rr_step[i]);
+        return 1;
+    }
+    return 0;
+}
+/* depois de executar: guarda a chamada que deu certo; ferramenta que muda coisas zera a tabela */
+static void rr_after(const char *name, uint64_t csig, int failed) {
+    rr_total++;
+    if (!rr_covered(name)) { if (!loop_plan_readonly(name)) rr_n = 0; return; }
+    if (failed || rr_n >= 128) return;
+    rr_sig[rr_n] = csig; rr_step[rr_n] = rr_total; rr_reps[rr_n] = 0; rr_n++;
+}
 /* lembrete (uma vez por pedido) quando o modelo encerra com passos em aberto na lista que gravou neste pedido */
 static void loop_todo_nudge(char *nm, size_t cap) {
     snprintf(nm, cap, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
@@ -635,7 +669,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;
-        rp_n = 0; rp_fail = 0; rp_refused = 0; bk_n = 0;        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
+        rp_n = 0; rp_fail = 0; rp_refused = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
             if (tn > td && !first) {
@@ -830,20 +864,23 @@ static int agent(Model *m, int max_tokens, float temp) {
                 int rp_same_fail = 0;
                 for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
                 const int rp_refuse = !trunc && rp_same_fail >= 2;
+                const int rr_hit = !trunc && !rp_refuse && rr_check(name, csig, result, sizeof result);      /* repeticao de leitura que deu certo */
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
                         ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
                                   : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
                     else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "
                                                  "Do not send it a fourth time. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
+                    else if (rr_hit) { }
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
                 if (rp_refuse) { if (++rp_refused >= 2 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
-                else if (!trunc) {
+                else if (!trunc && !rr_hit) {
                     const int failed = rp_failed(result);
                     const uint64_t rs = rp_hash(result, strlen(result), 1469598103934665603ULL);
                     int same = 0;
                     for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_res[i] == rs) same++;
+                    rr_after(name, csig, failed);
                     if (rp_n < 128) { rp_sig[rp_n] = csig; rp_res[rp_n] = rs; rp_err[rp_n] = (char)failed; rp_n++; }
                     rp_fail = failed ? rp_fail + 1 : 0;
                     if (!failed && rl_writes(name)) rl_files++;

@@ -15,7 +15,7 @@ static const char CT_GREP_DESC[] =
     "literal. Examples: \"fn\\s+\\w+\\(\" finds function definitions; \"(?i)todo|fixme\" finds notes in any case. Set "
     "literal=true to search plain text (an invalid pattern is searched as plain text anyway). output_mode: "
     "\"files_with_matches\" (default; only paths, newest first), \"content\" (matching lines as path:line:text, with "
-    "-A/-B/-C context lines), \"count\" (matching lines per file and a total). `glob` (e.g. \"*.{ts,tsx}\") and `type` "
+    "-A/-B/-C context lines; for code use content with -n and -C 2), \"count\" (matching lines per file and a total). `glob` (e.g. \"*.{ts,tsx}\") and `type` "
     "(c, cpp, h, py, js, ts, rust, go, java, sh, md, json, yaml, html, css, qml, ...) filter files. `path` is a folder "
     "or one file (default: the current folder). Binary files, .git and gitignored files are skipped (a file given as "
     "`path` is always searched). Lines are matched one by one; with multiline=true the pattern may span lines (. matches "

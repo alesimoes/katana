@@ -1019,7 +1019,7 @@ static int run_main(int argc, char **argv) {
         g_web = 0;
         while (fgets(ln, sizeof ln, stdin)) {
             ln[strcspn(ln, "\r\n")] = 0;
-            if (!strcmp(ln, "USER")) { int td = 0; const int tn = todo_count(&td); pl_old = tn > td; pl = 0; g_todo_touched = 0; continue; }
+            if (!strcmp(ln, "USER")) { rr_reset(); int td = 0; const int tn = todo_count(&td); pl_old = tn > td; pl = 0; g_todo_touched = 0; continue; }
             if (!strcmp(ln, "END")) {
                 int td = 0; const int tn = todo_count(&td);
                 const int fin = tn - td == 1 && ct_todo_autofinish();
@@ -1029,7 +1029,10 @@ static int run_main(int argc, char **argv) {
             char *sp = strchr(ln, ' ');
             if (!sp) continue;
             *sp = 0;
+            const uint64_t csig = rp_hash(sp + 1, strlen(sp + 1), rp_hash(ln, strlen(ln), 1469598103934665603ULL));      /* mesma assinatura do laco */
+            if (rr_check(ln, csig, res, sizeof res)) { printf("%s\n----\n", res); continue; }
             agent_tool_run(ln, sp + 1, sp + 1 + strlen(sp + 1), res, sizeof res);
+            rr_after(ln, csig, rp_failed(res));
             loop_plan_note(res, sizeof res, ln, ++pl, pl_old);
             printf("%s\n----\n", res);
         }

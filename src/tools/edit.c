@@ -176,7 +176,7 @@ static void ct_edit(const char *js, const char *end, char *out, size_t cap) {
         }
         const int sn = ct_seen(abs);
         if (sn == 0 || sn == 1) {
-            snprintf(out, cap, "error: you have %s %s. Read the whole file with Read first, then Edit.", sn == 0 ? "not read" : "only read part of", abs);
+            snprintf(out, cap, "error: you have %s %s. Read the whole file with Read first, then Edit (a large file: Read it with offset=1 and a limit as large as its line count).", sn == 0 ? "not read" : "only read part of", abs);
             break;
         }
         b = ct_f_slurp(abs, &n, err, sizeof err);
