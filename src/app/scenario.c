@@ -27,6 +27,7 @@ static int g_x_replay;           /* 1: refazendo uma linha no check (sem o filtr
 static int g_x_rmode = -1, g_x_rdecl;      /* refazendo: modo e bloco de ferramentas da linha original */
 static char g_x_res[70000];
 static int g_x_port;             /* servidor local de paginas (0 = nao subiu) */
+static int g_x_realgit;          /* a conversa precisa de um repositorio git de verdade */
 static pid_t g_x_srv;
 
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap);
@@ -65,9 +66,8 @@ static const char *x_run(const char *name, const char *args, int flags) {
     fflush(stdout); fflush(stderr);
     const int so = dup(1), se = dup(2), dn = open("/dev/null", O_WRONLY);
     dup2(dn, 1); if (!getenv("KATANA_CU_DEBUG")) dup2(dn, 2);
-    int known = 1;
-    if (flags & XF_OLD) agent_tool_run(name, args, args + strlen(args), g_x_res, 60000);
-    else known = ct_dispatch(name, args, args + strlen(args), g_x_res, 60000);
+    const int known = (flags & XF_OLD) || ct_lookup(name) != NULL;
+    if (known) agent_tool_run(name, args, args + strlen(args), g_x_res, 60000);      /* o despacho do laco: inclui a trava do modo plano */
     fflush(stdout); fflush(stderr);
     dup2(so, 1); dup2(se, 2); close(so); close(se); close(dn);
     if (!known) cu_die("ferramenta fora da tabela do motor: %s", name);
@@ -538,12 +538,17 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     if (nmcp) cu_ms_scn(s, NULL, nmcp);
     cu_mkdirs(s->cwd);
     if (chdir(s->cwd) != 0) cu_die("nao entrei em %s", s->cwd);
-    cu_put(cu_fmt("%s/.git/HEAD", s->cwd), "ref: refs/heads/main\n", 0);
+    if (!g_x_realgit) cu_put(cu_fmt("%s/.git/HEAD", s->cwd), "ref: refs/heads/main\n", 0);
     cu_mkdirs(cu_fmt("%s/bin", g_cu_sb));
     setenv("PATH", cu_fmt("%s/bin:%s", g_cu_sb, g_cu_path0), 1);
     { char self[1200]; const ssize_t l = readlink("/proc/self/exe", self, sizeof self - 1); if (l > 0) { self[l] = 0; if (symlink(self, cu_fmt("%s/bin/katana", g_cu_sb)) != 0) cu_die("nao criei o atalho do katana"); } }
+    setenv("HOME", s->home, 1); setenv("USER", s->user, 1); setenv("SHELL", "/bin/bash", 1);
+    setenv("GIT_AUTHOR_DATE", "2026-01-05T10:00:00", 1); setenv("GIT_COMMITTER_DATE", "2026-01-05T10:00:00", 1);
+    setenv("GIT_AUTHOR_NAME", s->user, 1); setenv("GIT_COMMITTER_NAME", s->user, 1); setenv("GIT_AUTHOR_EMAIL", cu_fmt("%s@example.org", s->user), 1); setenv("GIT_COMMITTER_EMAIL", cu_fmt("%s@example.org", s->user), 1);
+    setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1); setenv("GIT_CONFIG_SYSTEM", "/dev/null", 1);
     if (p) {
         x_proj_write(p);
+        if (g_x_realgit && system("git init -q -b main . >/dev/null 2>&1 && git add -A >/dev/null 2>&1 && git commit -q -m 'initial version' >/dev/null 2>&1") != 0) cu_die("git init falhou");
         if (p->brief) {
             const char *bt = x_brief_text(p);
             Brief *br = (Brief *)calloc(1, sizeof *br); McpB fd = {0}; mcp_bput(&fd, "", 0);
@@ -578,6 +583,7 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     g_todo[0] = 0; ct_task_sync(); g_todo_touched = 0;
     ct_session_reset(); g_rd_delta_on = 1; g_plan_mode = 0;
     g_cp_seq = 0; g_cp_dir[0] = 0;
+    g_ctb_seq = 0; g_job_seq = 0;      /* numeracao das tarefas em segundo plano: recomeca a cada conversa */
     g_undo_req++; g_cu_pl = 0; g_cu_plold = 0; g_cu_note[0] = 0;
     /* o modo do prompt sai do estado inicial do sorteio, sem gastar sorteio (o check refaz com o mesmo) */
     const int wsum = g_cu_mixw[0] + g_cu_mixw[1] + g_cu_mixw[2];

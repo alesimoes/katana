@@ -2009,6 +2009,7 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 
 #include "app/scenario.c"            /* motor de cenarios compostos: projetos de verdade, politica em C, tudo rodado no motor */
 #include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
+#include "app/scenario_more.c"       /* o proprio katana, ferramentas so pelo nome, web, skills; o check que refaz a conversa */
 typedef void (*CuFam)(FILE *, Scn *);
 static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"brief-command", fam_brief_command}, {"brief-rule", fam_brief_rule}, {"brief-never-ask", fam_brief_never_ask}, {"brief-done", fam_brief_done},
@@ -2017,7 +2018,8 @@ static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"mcp-schema", fam_mcp_schema}, {"mcp-none-error", fam_mcp_none_error}, {"mixed", fam_mixed},
     {"brief-write", fam_brief_write}, {"skill-write", fam_skill_write}, {"mcp-add", fam_mcp_add},
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run},
-    {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate}};
+    {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate},
+    {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2083,9 +2085,9 @@ static int g_cu_covfail;               /* check --coverage: ferramenta abaixo do
    Minimo em conversas: A 2% do arquivo (pelo menos 5), B 3, C 1. PowerShell fica de fora fora do Windows. */
 static const struct { const char *name; char tier; } g_cu_cov[] = {
     {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Glob", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
-    {"ToolSearch", 'A'}, {"WebSearch", 'A'}, {"WebFetch", 'A'},
-    {"Skill", 'B'}, {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
-    {"SendUserFile", 'B'}, {"TaskCreate", 'B'}, {"TaskUpdate", 'B'}, {"TaskList", 'B'}, {"TaskGet", 'B'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
+    {"ToolSearch", 'A'}, {"WebSearch", 'A'}, {"WebFetch", 'A'}, {"Skill", 'A'},
+    {"git", 'B'}, {"recall", 'B'}, {"remember", 'B'}, {"download_file", 'B'}, {"terminal", 'B'}, {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
+    {"SendUserFile", 'B'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
     {"EnterWorktree", 'B'}, {"ExitWorktree", 'B'},
     {"CronCreate", 'C'}, {"CronDelete", 'C'}, {"CronList", 'C'}, {"ScheduleWakeup", 'C'}, {"PushNotification", 'C'}, {"EndConversation", 'C'}, {"ReportFindings", 'C'},
     {"SendMessage", 'C'}, {"ListAgents", 'C'}, {"SubagentHandback", 'C'}, {"Workflow", 'C'}, {"WaitForMcpServers", 'C'}};
@@ -2135,12 +2137,13 @@ static int curriculum_check(const char *path, int stats_only) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "curriculum: nao abri %s\n", path); return 1; }
     CuSt st[CU_NFAM + 1]; memset(st, 0, sizeof st);
-    char *line = NULL; size_t cap = 0; long nl = 0, bad = 0, ncalls = 0;
+    char *line = NULL; size_t cap = 0; long nl = 0, bad = 0, ncalls = 0, nrep = 0;
     while (cu_slurp_line(f, &line, &cap)) {
         if (!*line) continue;
         nl++;
         const char *fam = cu_jstr(cu_jget(line, "family")), *src = cu_jstr(cu_jget(line, "source")), *msgs = cu_jget(line, "messages");
         int fi = fam ? cu_fam_ix(fam) : -1; if (fi < 0) fi = CU_NFAM;
+        const int scn = cu_jget(line, "scn") != NULL;      /* conversa do motor de cenarios: e refeita inteira no fim, em vez de ferramenta por ferramenta */
         char why[600] = "";
 #define CU_BAD(...) do { if (!why[0]) snprintf(why, sizeof why, __VA_ARGS__); } while (0)
         if (!src || strcmp(src, "curriculum")) CU_BAD("source nao e curriculum");
@@ -2208,7 +2211,7 @@ static int curriculum_check(const char *path, int stats_only) {
                 if (content && !engine) { buf_str(&seen, content); buf_str(&seen, "\n"); }
             }
             if (!strcmp(role, "user")) {
-                if (turn_calls >= 3 && strcmp(turn_first, "TodoWrite") && strcmp(turn_first, "Skill")) CU_BAD("pedido com %d acoes sem plano primeiro", turn_calls);
+                if (!scn && turn_calls >= 3 && strcmp(turn_first, "TodoWrite") && strcmp(turn_first, "Skill")) CU_BAD("pedido com %d acoes sem plano primeiro", turn_calls);
                 turn_calls = 0; turn_first[0] = 0; last_asst_final = 0; st[fi].ctx += content ? (long)strlen(content) : 0; continue;
             }
             if (!strcmp(role, "tool")) {
@@ -2220,7 +2223,7 @@ static int curriculum_check(const char *path, int stats_only) {
                 if (content) { buf_str(&allres, content); st[fi].ctx += (long)strlen(content); }
                 CuPc *c = NULL;
                 for (int i = 0; id && i < npc; i++) if (!strcmp(pc[i].id, id)) c = &pc[i];
-                if (c && content && !stats_only) {
+                if (c && content && !stats_only && !scn) {
                     char *res = cu_fmt("%s", content);       /* sem as notas que o laco anexa */
                     { char *nt = strstr(res, "\n[plan: step "); if (nt) *nt = 0; nt = strstr(res, "\n[katana: "); if (nt) { *nt = 0; CU_BAD("resultado com cobranca do motor (%.40s...) que o exemplo ignora", nt + 1); } }
                     const char *ae = gs_skipv(c->args); char *args = cu_fmt("%.*s", (int)((ae ? ae : c->args + strlen(c->args)) - c->args), c->args);
@@ -2301,7 +2304,7 @@ static int curriculum_check(const char *path, int stats_only) {
             if (train) { st[fi].turns++; st[fi].chars += content ? (long)strlen(content) : 0; }
             last_asst_final = !tc;
             if (!have_act && !stats_only) { have_act = 1; const char *ce0 = tc ? gs_skipv(tc) : NULL; act_h = tc && ce0 ? cu_fnv(tc, (size_t)(ce0 - tc), 7) : 1; }
-            if (!tc && train && !stats_only) {      /* resposta final: o que o laco do motor faria aqui */
+            if (!tc && train && !stats_only && !scn) {      /* resposta final: o que o laco do motor faria aqui */
                 const char *tt = cu_brief_val(sys, "test");
                 if (rq_changed && !rq_ran && tt) CU_BAD("resposta final depois de mudar arquivos sem rodar `%s`: o motor mandaria a nota de verificacao", tt);
                 int td = 0; const int tn = todo_count(&td);
@@ -2340,7 +2343,8 @@ static int curriculum_check(const char *path, int stats_only) {
                     if (pa) schema = pa + 14;
                 }
                 char err[400];
-                if (!schema) CU_BAD("ferramenta %s fora do prompt%s", name, strstr(name, "__") ? " (cartao MCP)" : "");
+                if (!strstr(name, "__") && (cu_is_old_tool(name) || cu_ct_ok(name, args, err, sizeof err))) {}
+                else if (!schema) CU_BAD("ferramenta %s fora do prompt%s", name, strstr(name, "__") ? " (cartao MCP)" : "");
                 else if (strstr(name, "__") && schema[0] != '{') CU_BAD("esquema de %s ilegivel", name);
                 else if (!cu_valid(schema, args, name, err, sizeof err)) CU_BAD("%s", err);
                 const char *cmd = !strcmp(name, "Bash") ? cu_jstr(cu_jget(args, "command")) : NULL;
@@ -2374,7 +2378,7 @@ static int curriculum_check(const char *path, int stats_only) {
             }
         }
         (void)results; (void)first_call_idx; (void)nfirst_bash;
-        if (turn_calls >= 3 && strcmp(turn_first, "TodoWrite") && strcmp(turn_first, "Skill")) CU_BAD("pedido com %d acoes sem plano primeiro", turn_calls);
+        if (!scn && turn_calls >= 3 && strcmp(turn_first, "TodoWrite") && strcmp(turn_first, "Skill")) CU_BAD("pedido com %d acoes sem plano primeiro", turn_calls);
         if (!last_asst_final) CU_BAD("nao termina com uma fala final do modelo");
         if (fam && !strcmp(fam, "brief-command")) {
             int ok = 0; const char *pi = strstr(sys, "# Project instructions (");
@@ -2404,6 +2408,7 @@ static int curriculum_check(const char *path, int stats_only) {
             sits[nsit].sit = sit_h; sits[nsit].act = act_h; sits[nsit].line = nl; nsit++;
             if (chdir("/") != 0) {}
             cu_rmrf(root);
+            if (scn) { char w2[700]; if (!x_replay(line, fam ? fam : "", nl, w2, sizeof w2) || !x_askcheck(line, w2, sizeof w2)) CU_BAD("%s", w2); nrep++; }
         }
         if (why[0]) { bad++; if (bad <= g_cu_showbad) fprintf(stderr, "linha %ld (%s): %s\n", nl, fam ? fam : "?", why); }
         cu_arena_free();
@@ -2433,13 +2438,14 @@ static int curriculum_check(const char *path, int stats_only) {
         long low = 0;
         printf("cobertura das ferramentas do motor (conversas com chamada treinada; minimo por faixa):\n");
         for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {
-            if (!ct_lookup(g_cu_cov[ci].name)) { printf("  %c %-22s fora da tabela deste binario\n", g_cu_cov[ci].tier, g_cu_cov[ci].name); continue; }
-            const long min = g_cu_cov[ci].tier == 'A' ? (nl / 50 > 5 ? nl / 50 : 5) : g_cu_cov[ci].tier == 'B' ? 3 : 1;
+            if (!ct_lookup(g_cu_cov[ci].name) && !cu_is_old_tool(g_cu_cov[ci].name)) { printf("  %c %-22s fora da tabela deste binario\n", g_cu_cov[ci].tier, g_cu_cov[ci].name); continue; }
+            const long min = g_cu_cov[ci].tier == 'A' ? (nl >= 500 ? 25 : nl / 50 > 5 ? nl / 50 : 5) : g_cu_cov[ci].tier == 'B' ? 4 : 1;
             const int lw = g_cu_covn[ci] < min; low += lw;
             printf("  %c %-22s %6ld  (minimo %ld)%s\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], min, lw ? "  ABAIXO" : "");
         }
         printf("  - %-22s %6ld\n", "ferramentas MCP", g_cu_covn[CU_N(g_cu_cov)]);
         printf("cobertura: %ld ferramentas abaixo do minimo%s\n", low, g_cu_covfail ? "" : " (check --coverage faz disso um erro)");
+        if (nrep) printf("refeitas inteiras pelo motor de cenarios: %ld conversas\n", nrep);
         printf("check: %ld conversas, %ld chamadas, %ld com problema, %ld contradicoes (mesma situacao, acao diferente), %ld situacoes repetidas\n", nl, ncalls, bad, nconf, ndup);
         return bad || nconf || (g_cu_covfail && low) ? 1 : 0;
     }
@@ -2454,6 +2460,7 @@ static void cu_reject(const char *fam) {
     char w[90]; snprintf(w, sizeof w, "%.89s", g_cu_why);
     for (char *p = w; *p; p++) if (*p == '\n') *p = ' ';
     g_cu_rjtot++;
+    if (getenv("KATANA_CU_WHY")) fprintf(stderr, "descartado (%s): %s\n", fam, g_cu_why);
     for (int i = 0; i < g_cu_nrj; i++) if (!strcmp(g_cu_rj[i].fam, fam) && !strncmp(g_cu_rj[i].why, w, 40)) { g_cu_rj[i].n++; return; }
     if (g_cu_nrj < 80) { snprintf(g_cu_rj[g_cu_nrj].fam, 24, "%s", fam); snprintf(g_cu_rj[g_cu_nrj].why, 90, "%s", w); g_cu_rj[g_cu_nrj++].n = 1; }
 }
@@ -2490,10 +2497,12 @@ static int curriculum_main(int argc, char **argv) {
     /* o gerador e o check rodam ferramentas do motor: nada aqui pergunta ao usuario (um item ask: sem terminal e recusado, que e o caso "nao") */
     if (!freopen("/dev/null", "r", stdin)) {}
     unsetenv("KATANA_UI");
+    if (argc >= 1 && !strcmp(argv[0], "windows")) return cu_windows_main(argc - 1, argv + 1);
     if (argc >= 2 && (!strcmp(argv[0], "stats") || !strcmp(argv[0], "check"))) {
         char full[4400];
         if (!realpath(argv[1], full)) { fprintf(stderr, "curriculum: nao abri %s\n", argv[1]); return 1; }
         putenv_dup("KATANA_TOOLS=2");
+        snprintf(g_cu_path0, sizeof g_cu_path0, "%s", getenv("PATH") ? getenv("PATH") : "/usr/bin:/bin");
         { const char *tp = getenv("TMPDIR"); snprintf(g_cu_sbroot, sizeof g_cu_sbroot, "%s/katana_cu_XXXXXX", tp && *tp ? tp : "/tmp"); }
         if (!mkdtemp(g_cu_sbroot)) { fprintf(stderr, "curriculum: nao criei a pasta de trabalho em %s\n", g_cu_sbroot); return 1; }
         setenv("HOME", g_cu_sbroot, 1);
@@ -2532,7 +2541,7 @@ static int curriculum_main(int argc, char **argv) {
        e o uso de servidores MCP pesam mais. Medido com pesos iguais: criar ocupava 35% do texto treinado e mcp-call 2% */
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
-        w[i] = fams ? 0 : !strcmp(nm, "brief-write") || !strcmp(nm, "skill-write") || !strcmp(nm, "mcp-add") ? 1
+        w[i] = fams ? 0 : !strncmp(nm, "x-", 2) ? 4 : !strcmp(nm, "brief-write") || !strcmp(nm, "skill-write") || !strcmp(nm, "mcp-add") ? 1
                         : !strcmp(nm, "brief-done") ? 6 : !strncmp(nm, "mcp-", 4) || !strcmp(nm, "mixed") ? 4 : 3;
     }
     if (fams) {

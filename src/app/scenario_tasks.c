@@ -24,7 +24,7 @@ static const unsigned g_x_tobst[T_N] = {
     [T_INVEST] = OB(O_NONE) | OB(O_MISSDEP) | OB(O_MISSFILE),
 };
 typedef struct { Scn *s; XProj p; int task, obst, loc, fu, conv, skills, mcp; CuD d; } XC;
-static int g_x_askpct = 12;      /* % das conversas de config/clean que caem nas celulas de pergunta e nas gemeas */
+static int g_x_askpct = 42;      /* % das conversas de config/clean que caem nas celulas de pergunta e nas gemeas */
 static uint64_t x_hmix(uint64_t x) { x += 0x9E3779B97F4A7C15ull; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; return x ^ (x >> 31); }
 /* celula reservada para o holdout: combinacao de tarefa, obstaculo, loc, segundo pedido e classe de convencao */
 static int x_held(int task, int obst, int loc, int fu, int conv) {
@@ -36,9 +36,8 @@ static void x_setup(XC *c, Scn *s, int task) {
     memset(c, 0, sizeof *c); c->s = s; c->task = task;
     for (int t = 0; ; t++) {
         if (t > 400) cu_die("sem celula para %s (hold %d)", g_x_tname[task], g_cu_hold);
-        do c->obst = cu_n(O_N); while (!(g_x_tobst[task] & OB(c->obst)));
-        if (c->obst != O_NONE && cu_pct(35)) c->obst = O_NONE;
-        if ((c->obst == O_ASK || c->obst == O_NOASK) && !cu_pct(g_x_askpct * 3)) continue;
+        if ((task == T_CONF || task == T_CLEAN) && cu_pct(g_x_askpct)) c->obst = cu_pct(55) ? O_ASK : O_NOASK;      /* celulas de pergunta e as gemeas sem pergunta */
+        else { do c->obst = cu_n(O_N); while (!(g_x_tobst[task] & OB(c->obst)) || c->obst == O_ASK || c->obst == O_NOASK); if (c->obst != O_NONE && cu_pct(35)) c->obst = O_NONE; }
         c->loc = cu_n(3); c->conv = cu_n(4);
         c->fu = cu_pct(55) ? F_NONE : 1 + cu_n(F_N - 1);
         if (c->fu == F_DOCCHG && !(task == T_ADD || task == T_RENAME)) continue;
