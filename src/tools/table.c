@@ -77,6 +77,7 @@ static const char *const g_ct_short[][4] = {
         S("pattern") ", " S("path") ", " S("glob") ", " S("output_mode") ", " B("-i") ", " I("-C") ", " B("literal"), "\"pattern\""},
     {"Glob", "Find files by name pattern, e.g. **/*.c or src/**/test_*.py; newest first",
         S("pattern") ", " S("path"), "\"pattern\""},
+    {"Skill", "Load a skill by its name: its steps become your plan", S("skill") ", " S("args"), "\"skill\""},
     {"TodoWrite", "Your plan for a job of 3+ steps. Write it once: todos, one step per line. After that send only done=N (steps finished), in the same turn as the next action",
         S("todos") ", " I("done"), ""},
     {"AskUserQuestion", "Ask the user to choose; they may also type another answer",
