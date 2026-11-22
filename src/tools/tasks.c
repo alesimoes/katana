@@ -4,7 +4,7 @@
  * "em andamento") e a cada mudanca o texto de g_todo e refeito e todo_ui() emitido. Se o `todo` antigo (ou uma conversa
  * nova) mexer em g_todo, a diferenca e percebida e a lista estruturada e refeita a partir dele. */
 #define CT_TASK_MAX 64
-typedef struct { int id; int st; char subject[300]; char desc[1000]; char active[300]; } CtTask;     /* st: 0 pendente, 1 andando, 2 feita */
+typedef struct { int id; int st; char subject[300]; char desc[1000]; char active[300]; int rec; } CtTask;     /* st: 0 pendente, 1 andando, 2 feita; rec: so anotada (TaskCreate), ninguem comecou */
 static CtTask g_ct_tasks[CT_TASK_MAX];
 static int g_ct_ntasks, g_ct_nextid = 1;
 static char g_ct_rendered[3000];                 /* o que escrevemos em g_todo por ultimo */
@@ -107,6 +107,7 @@ static int ct_todo_autofinish(void) {
     int open = 0, last = -1;
     for (int i = 0; i < g_ct_ntasks; i++) if (g_ct_tasks[i].st != 2) { open++; last = i; }
     if (open != 1 || last != g_ct_ntasks - 1) return 0;
+    if (g_ct_tasks[last].rec) return 0;      /* tarefa so anotada a pedido do usuario: responder nao a conclui */
     g_ct_tasks[last].st = 2;
     ct_task_render();
     return 1;
@@ -217,6 +218,7 @@ static void ct_taskcreate(const char *js, const char *end, char *out, size_t cap
     ct_cpy(t->subject, sizeof t->subject, s);
     ct_cpy(t->desc, sizeof t->desc, d);
     ct_cpy(t->active, sizeof t->active, f && f[0] ? f : s);
+    t->rec = 1;
     ct_task_render();
     snprintf(out, cap, "Task #%d created: %s", t->id, t->subject);
 done:
@@ -263,7 +265,7 @@ static void ct_taskupdate(const char *js, const char *end, char *out, size_t cap
         goto done;
     }
     CtTask *t = &g_ct_tasks[i];
-    if (ns >= 0) t->st = ns;
+    if (ns >= 0) { t->st = ns; if (ns) t->rec = 0; }
     if (s) ct_cpy(t->subject, sizeof t->subject, s);
     if (d) ct_cpy(t->desc, sizeof t->desc, d);
     if (f) ct_cpy(t->active, sizeof t->active, f);

@@ -164,13 +164,15 @@ static void x_final(const char *t) {
     char note[1400];
     if (brief_end_note(note, sizeof note)) cu_die("o motor mandaria a nota de verificacao antes desta resposta final (%s)", g_x.cell);
     int td = 0; const int tn = todo_count(&td);
-    if (tn - td == 1) { fflush(stdout); const int so = dup(1), dn = open("/dev/null", O_WRONLY); dup2(dn, 1); ct_todo_autofinish(); fflush(stdout); dup2(so, 1); close(so); close(dn); }
-    else if (tn > td && g_todo_touched && g_x.nudge_ok) {      /* o laco manda o lembrete uma vez por pedido; o modelo repete a resposta */
+    int fin = 0;
+    if (tn - td == 1) { fflush(stdout); const int so = dup(1), dn = open("/dev/null", O_WRONLY); dup2(dn, 1); fin = ct_todo_autofinish(); fflush(stdout); dup2(so, 1); close(so); close(dn); }
+    if (fin || tn == td || !loop_todo_should_nudge()) {}      /* a mesma decisao do laco (loop_todo_should_nudge): tarefa so anotada nao gera lembrete */
+    else if (g_x.nudge_ok) {      /* o laco manda o lembrete uma vez por pedido; o modelo repete a resposta */
         static char nm[3600]; g_x.nudge_ok = 0;
         loop_todo_nudge(nm, sizeof nm);
         x_push('e', nm, 1); x_push('a', t, 1);
     }
-    else if (tn > td && g_todo_touched) cu_die("resposta final com %d passos do plano em aberto (%s)", tn - td, g_x.cell);
+    else cu_die("resposta final com %d passos do plano em aberto (%s)", tn - td, g_x.cell);
     { const size_t l = strlen(g_x.seq); snprintf(g_x.seq + l, sizeof g_x.seq - l, "%s.", l && g_x.seq[l - 1] != '|' ? ">" : ""); }
 }
 /* prova de uma pergunta (ou da falta dela): o check confere contra o texto anterior. kind: ambiguous, missing, delete, none */
