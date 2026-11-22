@@ -420,6 +420,8 @@ static const float *tp_row(const TPar *p, size_t r, float *tmp) {
     return tmp;
 }
 
+#include "train_kernels.c"   /* kernels em blocos dos produtos da CPU (KATANA_TRAIN_KERNEL=0 usa os lacos simples abaixo) */
+
 /* out[b][r] = W[r] . x[b] para B vetores de entrada (cada linha e lida/desquantizada uma vez para o lote) */
 static void tmv_job(void *ctx, int r0, int r1) {
     const TMvJob *j = (const TMvJob *)ctx;
@@ -441,7 +443,7 @@ static float *tp_az(const TPar *p, const float *x, int B) {
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
     const double p0 = now_sec();
-    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) pool_for(tmv_job, &j, (int)p->rows, 16);
+    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) { if (tk_on()) tk_mv(p, out, x, B); else pool_for(tmv_job, &j, (int)p->rows, 16); }
     if (!p->r) { tprof[TP_MV] += now_sec() - p0; return; }
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
@@ -475,7 +477,7 @@ static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
     const double p0 = now_sec();
-    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
+    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) { if (tk_on()) tk_mvT(p, dx, dy, B); else pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1); }
     if (!p->r) { tprof[TP_MVT] += now_sec() - p0; return; }
     const size_t R = p->rows;
     float *t = xalloc(p->r, 4);
@@ -530,9 +532,12 @@ static void tp_grad_(TPar *p, const float *dy, const float *x, int B) {
     }
     if (!p->g) return;
     if (tg_prod(2, p, dy, x, p->g, B)) return;
+    if (tk_on()) { tk_grad(p, dy, x, B); return; }
     TGJob j = { p, dy, x, B };
     pool_for(tg_job, &j, (int)p->rows, 16);
 }
+
+#include "train_kernels_test.c"   /* katana kerneltest: kernels em blocos x lacos simples */
 
 static const float *tp_vec(const TPar *p) { return p->w ? p->w : p->vec; }
 
