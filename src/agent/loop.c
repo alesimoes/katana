@@ -32,6 +32,7 @@ static void agent_regrow(Model *m, const char *sys, const AHist *hist, const AHi
        que ainda nao foi lido fica no canal e sobrevive a recarga; com algo pendente, atender primeiro) */
     if (g_no_ready) return;
     { struct pollfd pf = { 0, POLLIN, 0 }; if (poll(&pf, 1, 0) > 0) return; }
+    if (mcpch_pending()) return;                            /* mensagem de canal na fila: atender antes */
     if (hist->n && !g_sess_path[0]) return;                 /* sem sessao gravada nao ha como voltar a conversa */
     const int mb = getenv("KATANA_REGROW_TEST") ? atoi(getenv("KATANA_REGROW_TEST")) : gpu_regrow_mb();
     if (mb < 600) return;
@@ -486,6 +487,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     mcp_init(!g_con_rich);
     launch_header(m);
     trust_init();
+    mcpch_open();          /* daqui em diante os canais MCP podem entregar pedidos e responder confirmacoes */
     tch_init();
     ct_mail_register(); atexit(ct_mail_unregister);     /* outras sessoes do katana nesta maquina podem mandar mensagem (SendMessage) */
 #define AGENT_SYS() do { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); } while (0)
@@ -633,6 +635,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         buf_str(&tr, "Voce: "); buf_str(&tr, line); buf_str(&tr, "\n");
 
         for (int round = 0; round < lim; round++) {      /* resposta, e de novo a cada resultado de ferramenta */
+            mcpch_tick(1);
             Ids ids = {0};
             if (first && c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
             encode(tk, text, &ids);

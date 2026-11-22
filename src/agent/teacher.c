@@ -193,6 +193,7 @@ static void tch_sys(const char *sys, Buf *o) {
     if (!t0 || !t1) { buf_str(o, sys); return; }
     buf_add(o, sys, (size_t)(t0 - sys));
     buf_str(o, "# Tools\n\nCall the functions you are given to act. The conversation may contain earlier turns written by a smaller local model: check its claims instead of trusting them.\n");
+    { McpB cb = {0}; mcp_bput(&cb, "", 0); mcpch_sys_text(&cb, 20000); if (cb.n) buf_add(o, cb.p, cb.n); free(cb.p); }      /* o bloco cortado levou as instrucoes dos canais */
     buf_str(o, t1);
 }
 

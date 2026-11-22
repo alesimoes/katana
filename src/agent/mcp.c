@@ -18,6 +18,7 @@
 #define MCP_DECL_BUDGET 3000       /* acima disso as ferramentas MCP entram no prompt de forma reduzida (KATANA_MCP_BUDGET) */
 #define MCP_VERSAO "2025-06-18"
 
+static int g_mcp_init_ms = MCP_INIT_MS;
 typedef struct { char *name, *desc, *schema; } McpTool;
 typedef struct { char *name, *desc; char *argn[8]; int argreq[8]; int nargs; } McpPrompt;
 typedef struct {
@@ -42,6 +43,7 @@ typedef struct {
 #endif
     char *rb; size_t rn, rcap;
     long nextid;
+    int chan_cfg, chan_told; struct McpChan *ch;     /* canal (src/agent/mcp_channel.c): 1 ligado pelo dono */
     McpTool *tools; int ntools;
 } McpSrv;
 typedef struct { char *p; size_t n, cap; } McpB;
@@ -51,6 +53,14 @@ static int mcp_call_ms(void) {      /* KATANA_MCP_TIMEOUT: segundos de espera po
     const int v = e && *e ? atoi(e) : 0;
     return v > 0 && v <= 3600 ? v * 1000 : MCP_CALL_MS;
 }
+/* ganchos do canal (src/agent/mcp_channel.c) */
+static int mcpch_cfg(const char *v, const char *name, int project, int shadows, int owner_on);
+static const char *mcpch_caps(const McpSrv *s);
+static void mcpch_hello(McpSrv *s, const char *res);
+static int mcpch_note(McpSrv *s, const char *o, const char *mv);
+static void mcpch_close(McpSrv *s);
+static void mcpch_sys_text(McpB *b, size_t room);
+static int mcpch_call_ms(const McpSrv *s, int ms);
 static McpSrv g_mcp[MCP_MAXSRV];
 static int g_nmcp = 0, g_mcp_ready = 0;
 
@@ -237,6 +247,7 @@ static int mcp_spawn(McpSrv *s) {
 }
 
 static void mcp_kill(McpSrv *s) {
+    mcpch_close(s);
     if (s->http || !s->spawned) { s->alive = 0; return; }     /* servidor que morreu sozinho tambem fecha os canais e recolhe o processo */
     s->alive = 0; s->spawned = 0;
 #ifdef _WIN32
@@ -428,6 +439,7 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
                         if (ev.n) {
                             if (strstr(ev.p, "notifications/tools/list_changed")) s->dirty = 1;
                             const char *o = strchr(ev.p, '{'), *iv = o ? mcp_get(o, "id") : NULL;
+                            if (o) mcpch_note(s, o, mcp_get(o, "method"));
                             if (iv && atol(iv) == id && (mcp_get(o, "result") || mcp_get(o, "error"))) resp = strdup(ev.p);
                             ev.n = 0; ev.p[0] = 0;
                         }
@@ -447,6 +459,20 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
 }
 
 /* ----- JSON-RPC ----- */
+/* requisicao ou notificacao do servidor, no meio de uma chamada ou fora: so respondemos ping; o resto e metodo desconhecido */
+static void mcp_server_msg(McpSrv *s, const char *o, const char *iv, const char *mv) {
+    if (mcpch_note(s, o, mv)) return;
+    if (!iv && strncmp(mv, "\"notifications/tools/list_changed\"", 33) == 0) s->dirty = 1;
+    if (!iv) return;
+    char m[64]; mcp_dec(mv, m, sizeof m);
+    McpB r = {0};
+    mcp_bputs(&r, "{\"jsonrpc\":\"2.0\",\"id\":");
+    const char *ie = mcp_skip(iv); if (!ie) { free(r.p); return; }
+    mcp_bput(&r, iv, (size_t)(ie - iv));
+    mcp_bputs(&r, strcmp(m, "ping") == 0 ? ",\"result\":{}}" : ",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}");
+    if (s->http) free(mcp_http_post(s, r.p, 0, 10000)); else mcp_send(s, r.p);
+    free(r.p);
+}
 static char *mcp_request(McpSrv *s, const char *method, const char *params, int ms) {
     if (!s->alive) { if (!s->err[0]) snprintf(s->err, sizeof s->err, "indisponivel"); return NULL; }
     const long id = ++s->nextid;
@@ -467,18 +493,7 @@ static char *mcp_request(McpSrv *s, const char *method, const char *params, int 
         const char *o = strchr(line, '{');
         if (!o) { free(line); continue; }
         const char *iv = mcp_get(o, "id"), *mv = mcp_get(o, "method");
-        if (mv) {       /* requisicao do servidor: so respondemos ping; o resto e metodo desconhecido */
-            if (!iv && strncmp(mv, "\"notifications/tools/list_changed\"", 33) == 0) s->dirty = 1;
-            if (iv) {
-                char m[64]; mcp_dec(mv, m, sizeof m);
-                McpB r = {0};
-                mcp_bputs(&r, "{\"jsonrpc\":\"2.0\",\"id\":");
-                const char *ie = mcp_skip(iv); mcp_bput(&r, iv, (size_t)(ie - iv));
-                mcp_bputs(&r, strcmp(m, "ping") == 0 ? ",\"result\":{}}" : ",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}");
-                mcp_send(s, r.p); free(r.p);
-            }
-            free(line); continue;
-        }
+        if (mv) { mcp_server_msg(s, o, iv, mv); free(line); continue; }
         if (iv && atol(iv) == id && (mcp_get(o, "result") || mcp_get(o, "error"))) return line;
         free(line);
     }
@@ -571,7 +586,7 @@ static void mcp_load_tools(McpSrv *s) {
     for (int page = 0; page < 20; page++) {
         McpB pr = {0};
         if (cursor) { mcp_bputs(&pr, "{\"cursor\":"); mcp_besc(&pr, cursor); mcp_bputs(&pr, "}"); }
-        char *r = mcp_request(s, "tools/list", cursor ? pr.p : "{}", MCP_INIT_MS);
+        char *r = mcp_request(s, "tools/list", cursor ? pr.p : "{}", g_mcp_init_ms);
         free(pr.p); free(cursor); cursor = NULL;
         if (!r) return;
         char em[300];
@@ -607,7 +622,7 @@ static void mcp_load_prompts(McpSrv *s) {
     for (int page = 0; page < 5; page++) {
         McpB pr = {0};
         if (cursor) { mcp_bputs(&pr, "{\"cursor\":"); mcp_besc(&pr, cursor); mcp_bputs(&pr, "}"); }
-        char *r = mcp_request(s, "prompts/list", cursor ? pr.p : "{}", MCP_INIT_MS);
+        char *r = mcp_request(s, "prompts/list", cursor ? pr.p : "{}", g_mcp_init_ms);
         free(pr.p); free(cursor); cursor = NULL;
         if (!r) return;
         char em[300];
@@ -664,7 +679,9 @@ static void mcp_start(McpSrv *s) {
     s->alive = 1; s->err[0] = 0;
     if (!s->http && (!s->cmd || !mcp_which(s->cmd))) { s->alive = 0; snprintf(s->err, sizeof s->err, "command not found: %.150s", s->cmd ? s->cmd : "?"); return; }
     if (!s->http && !mcp_spawn(s)) { s->alive = 0; snprintf(s->err, sizeof s->err, "could not start the command"); return; }
-    char *r = mcp_request(s, "initialize", "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", MCP_INIT_MS);
+    char ip[600];
+    snprintf(ip, sizeof ip, "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":{%s},\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", mcpch_caps(s));
+    char *r = mcp_request(s, "initialize", ip, g_mcp_init_ms);
     if (!r) { if (!s->err[0]) snprintf(s->err, sizeof s->err, "sem resposta"); mcp_kill(s); return; }
     char em[300];
     if (mcp_errmsg(r, em, sizeof em)) { snprintf(s->err, sizeof s->err, "initialize: %.200s", em); free(r); mcp_kill(s); return; }
@@ -681,6 +698,7 @@ static void mcp_start(McpSrv *s) {
     }
     { const char *ins = res ? mcp_get(res, "instructions") : NULL; s->instr[0] = 0;
       if (ins && *ins == '"') { char tmp[400]; mcp_dec(ins, tmp, sizeof tmp); for (char *c = tmp; *c; c++) if (*c == '\n' || *c == '\r') *c = ' '; snprintf(s->instr, sizeof s->instr, "%.120s", tmp); } }
+    mcpch_hello(s, res);
     const char *cp = res ? mcp_get(res, "capabilities") : NULL;
     s->has_prompts = cp && mcp_get(cp, "prompts") != NULL;
     free(r);
@@ -811,6 +829,7 @@ static void mcp_load_file(const char *path, int project) {
         }
         if (!t.cmd && !t.url) snprintf(t.err, sizeof t.err, "configuracao sem command nem url");
         const int old = mcp_find(t.name);
+        t.chan_cfg = mcpch_cfg(v, t.name, project, old >= 0, old >= 0 ? g_mcp[old].chan_cfg : 0);
         if (old >= 0 && project) { mcp_free_srv(&g_mcp[old]); g_mcp[old] = t; }      /* o projeto vence o arquivo do usuario */
         else if (old >= 0 || g_nmcp >= MCP_MAXSRV) mcp_free_srv(&t);
         else g_mcp[g_nmcp++] = t;
@@ -982,18 +1001,24 @@ static void mcp_sys(char *sys, size_t cap) {
     McpB b = {0};
     mcp_bput(&b, "", 0);
     mcp_cards_all(&b);
-    if (b.n) {
-        static const char hd[] = "\n\n# MCP servers (tools you can call; ToolSearch select:NAME gives the full schema)\n";
+    McpB chb = {0};
+    mcp_bput(&chb, "", 0);
+    { const size_t used = strlen(sys) + b.n + 200; mcpch_sys_text(&chb, cap > used + 2000 ? cap - used - 2000 : 0); }
+    if (b.n || chb.n) {
+        McpB hb = {0};
+        mcp_bputs(&hb, b.n ? "\n\n# MCP servers (tools you can call; ToolSearch select:NAME gives the full schema)\n" : "");
+        mcp_bput(&hb, b.p, b.n); mcp_bput(&hb, chb.p, chb.n);
         char *env = strstr(sys, "\n\n# Environment");
         if (!env) env = sys + strlen(sys);
-        const size_t need = sizeof hd - 1 + b.n, room = cap > strlen(sys) + 1 ? cap - strlen(sys) - 1 : 0;
+        const size_t need = hb.n, room = cap > strlen(sys) + 1 ? cap - strlen(sys) - 1 : 0;
         if (need <= room) {
             const size_t tail = strlen(env);
             memmove(env + need, env, tail + 1);
-            memcpy(env, hd, sizeof hd - 1); memcpy(env + sizeof hd - 1, b.p, b.n);
+            memcpy(env, hb.p, hb.n);
         }
+        free(hb.p);
     }
-    free(b.p);
+    free(b.p); free(chb.p);
 }
 
 /* o resultado de uma chamada como o modelo o recebe (o gerador de curriculo usa a mesma moldura) */
@@ -1099,7 +1124,7 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
     }
     McpB pr = {0};
     mcp_bputs(&pr, "{\"name\":"); mcp_besc(&pr, tn); mcp_bputs(&pr, ",\"arguments\":"); mcp_bputs(&pr, args); mcp_bputs(&pr, "}");
-    const int ms = mcp_call_ms();
+    const int ms = mcpch_call_ms(s, mcp_call_ms());
     char *r = mcp_request(s, "tools/call", pr.p, ms);
     if (!r && ((!s->http && !s->alive && s->was_ok) || (s->http && s->session[0] && strncmp(s->err, "HTTP 404", 8) == 0))) {     /* morreu no meio ou a sessao HTTP expirou */
         fprintf(stderr, "%s[mcp %s: %s; reconnecting and trying once more]%s\n", CE(C_DIM), s->name, s->err, CE(C_RESET));
