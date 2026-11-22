@@ -110,11 +110,18 @@ static void fam_x_web(FILE *f, Scn *s) {
         else x_final(q == 0 ? ans0 : q == 1 ? cu_fmt(L("`%s` keeps working until %s %d.0, with a warning. Source: %s", "O `%s` continua funcionando ate o %s %d.0, com um aviso. Fonte: %s"), g_x_opts[oi][0], lib, keep, shown)
                                        : cu_fmt(L("The default batch size in %s %s is %d rows (it was %d). Source: %s", "O tamanho padrao do lote no %s %s e %d linhas (era %d). Fonte: %s"), lib, ver, sdef2, sdef, shown));
     }
-    if (g_cu_hold) {      /* holdout: uma segunda pergunta sobre a mesma pagina */
-        x_user(cu_fmt(L("and what is the default batch size in %s %s?", "e qual e o tamanho padrao do lote no %s %s?"), lib, ver));
+    const int fu = g_cu_hold ? 1 : q == 2 ? (cu_pct(25) ? 2 : 0) : cu_pct(34) ? 1 : cu_pct(22) ? 2 : 0;      /* 1 outro fato da mesma pagina; 2 o que mais a busca listou (sem chamada) */
+    if (kind == 3) x_shape_tag("wrong");
+    if (fu == 2 && kind <= 1) {
+        x_dep();
+        x_user(XV(L("what else did that search list?", "o que mais essa busca listou?"), L("was there any other result?", "tinha algum outro resultado?")));
+        x_final(cu_fmt(L("One more result: \"Installing %s\", at https://docs.example/%s/install.html. I did not open it; it is about installation, not about %s.", "Mais um resultado: \"Installing %s\", em https://docs.example/%s/install.html. Nao abri; e sobre instalacao, nao sobre o %s."), lib, site, ver));
+    } else if (fu == 1 && q != 2) {
+        x_dep();
+        x_user(cu_fmt(XV(L("and what is the default batch size in that version?", "e qual e o tamanho padrao do lote nessa versao?"), L("does the same page say anything about the batch size?", "a mesma pagina fala alguma coisa do tamanho do lote?"), L("and what is the default batch size in %s %s?", "e qual e o tamanho padrao do lote no %s %s?")), lib, ver));
         const char *r2 = x_webcall("WebFetch", cu_fmt("{\"url\": %s, \"prompt\": \"default batch size\"}", cu_q(url)));
         if (!strstr(r2, fact3)) cu_die("o WebFetch nao trouxe o lote: %.200s", r2);
-        x_final(cu_fmt(L("%d rows; it was %d before %s. Source: %s", "%d linhas; era %d antes do %s. Fonte: %s"), sdef2, sdef, ver, shown));
+        x_final(cu_fmt(XV(L("%d rows; it was %d before %s. Source: %s", "%d linhas; era %d antes do %s. Fonte: %s"), L("The default is %d rows now (%d before %s), from the same page: %s", "O padrao agora e %d linhas (%d antes do %s), da mesma pagina: %s")), sdef2, sdef, ver, shown));
     }
     unsetenv("KATANA_WEBSEARCH_FIXTURE");
     x_end(f);

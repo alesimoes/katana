@@ -43,7 +43,7 @@ static int cu_pick_main(int argc, char **argv) {
     fclose(f); free(line);
     uint64_t *sigs = calloc((size_t)nv + 1, sizeof *sigs), *cells = calloc((size_t)nv + 1, sizeof *cells); long nsig = 0, ncell = 0, taken = 0, nask = 0, ndep = 0, nreal = 0;
     long *sigc = calloc((size_t)nv + 1, sizeof *sigc); long sigcap = n / 110 > 3 ? n / 110 : 3;      /* teto de conversas por sequencia: as 20 mais comuns ficam abaixo de um quarto do arquivo */
-    const long depmin = n * 22 / 100, realmin = n * 11 / 100, realmax = n * 14 / 100;
+    const long depmin = n * 22 / 100, realmin = n * 10 / 100 + 1, realmax = n * 12 / 100;      /* o prompt inteiro custa umas cinco janelas por conversa: fica perto do minimo pedido (10%) */
     long cnt[CU_N(g_cu_cov)]; memset(cnt, 0, sizeof cnt);
     const long askmin = n * 45 / 1000 > 1 ? n * 45 / 1000 : 1, askmax = n * 5 / 100 > askmin ? n * 5 / 100 : askmin;
 #define PK_SEEN(arr, cnt_, x) ({ int s_ = 0; for (long z_ = 0; z_ < cnt_; z_++) if (arr[z_] == (x)) { s_ = 1; break; } s_; })
