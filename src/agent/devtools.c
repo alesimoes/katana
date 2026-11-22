@@ -334,7 +334,7 @@ static void tool_download_file(const char *url, const char *path, char *out, siz
     snprintf(what, sizeof what, "baixar %s para %s (limite %ld MB)", safe, path, mb);
     if (!agent_act(what, safe)) { snprintf(out, cap, "error: the user denied this action"); return; }
     snprintf(cmd, sizeof cmd,
-        "(ulimit -f %ld 2>/dev/null; " CURL_BIN " -sS -L --fail --max-time 3600 --max-redirs 5 --max-filesize %ld "
+        "(ulimit -f %ld 2>/dev/null; " CURL_BIN " -sS -L --fail --create-dirs --max-time 3600 --max-redirs 5 --max-filesize %ld "
         "--proto '=http,https' --proto-redir '=http,https' -A 'Mozilla/5.0 (compatible; katana-agent)' -o %s -- %s) 2>&1 </dev/null",
         mb * 2048L, mb * 1048576L, qp, qu);
     int rc; size_t n;
