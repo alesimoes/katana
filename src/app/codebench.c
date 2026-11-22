@@ -42,6 +42,7 @@ typedef struct { Buf out, err; int rc, timed_out; } CbRes;
 
 typedef struct {                                  /* contexto do preparo de uma tarefa */
     CbKVs vars, agent_env;
+    char home[1100];                              /* HOME so desta tarefa: nada da casa do dono e lido nem mudado */
     pid_t shim; int wfd;                          /* hospedeiro do setup.py (0: tarefa sem preparo) */
 } CbCtx;
 
@@ -82,6 +83,15 @@ static void cb_env_free(char **e) { for (int i = 0; e[i]; i++) free(e[i]); free(
 /* ambiente de agente (agent=1) ou de testes e solucao (agent=0: com CB_<VAR> do preparo e as variaveis do --env) */
 static char **cb_ctx_env(const CbOpt *o, const CbCtx *c, int agent) {
     char **e = cb_env_new();
+    if (c->home[0]) {
+        const char *rh = getenv("HOME"), *cd = getenv("KATANA_CACHE_DIR");
+        char cache[1200];
+        if (!cd && rh && *rh) { snprintf(cache, sizeof cache, "%s/.katana/cache", rh); cd = cache; }      /* o prefixo do prompt de sistema e o mesmo: aproveita */
+        cb_env_set(&e, "HOME", c->home);
+        if (cd) cb_env_set(&e, "KATANA_CACHE_DIR", cd);
+        cb_env_set(&e, "XDG_CONFIG_HOME", ""); cb_env_set(&e, "XDG_DATA_HOME", "");
+    }
+    if (agent) cb_env_set(&e, "KATANA_MCP_TRUST", "1");      /* os servidores MCP da tarefa sao da propria tarefa; sem terminal ninguem responde a pergunta */
     for (int i = 0; i < c->agent_env.n; i++) cb_env_set(&e, c->agent_env.kv[i].k, c->agent_env.kv[i].v);
     if (!agent) {
         for (int i = 0; i < c->vars.n; i++) {
@@ -478,6 +488,7 @@ static int cb_setup(const CbOpt *o, const char *name, const char *work, CbCtx *c
 
 /* fecha o cano: o hospedeiro chama stop() (servidores, temporarios) e sai; espera ate 30 s, depois mata o grupo */
 static void cb_finish(CbCtx *c) {
+    if (c->home[0]) { cb_rmtree(c->home); c->home[0] = 0; }
     if (c->shim) {
         close(c->wfd);
         int done = 0;
@@ -690,6 +701,13 @@ static int cb_run_task(const CbOpt *o, const char *name, int attempt, Buf *rec, 
         *psecs = 0; *ptools = 0; *pgen = 0; *pto = 0;
         return 0;
     }
+    if (!o->teacher && cb_mkdtemp("cb_home_", c.home, sizeof c.home) == 0) {      /* casa propria, so com o ajuste de desempenho da maquina */
+        const char *rh = getenv("HOME");
+        char a[1300], b[1300]; struct stat st;
+        snprintf(b, sizeof b, "%s/.katana", c.home); mkdir(b, 0700);
+        snprintf(a, sizeof a, "%s/.katana/katana.cfg", rh ? rh : ""); snprintf(b, sizeof b, "%s/.katana/katana.cfg", c.home);
+        if (stat(a, &st) == 0) cb_copy_file(a, b, &st);
+    } else c.home[0] = 0;
     char ip[2400]; snprintf(ip, sizeof ip, "%s/tasks/%s/instruction.md", o->dir, name);
     char *raw = cb_slurp(ip, NULL);
     Buf instr = {0}; cb_collapse_ws(raw ? raw : "", &instr); free(raw);
@@ -744,7 +762,6 @@ static int cb_run_task(const CbOpt *o, const char *name, int attempt, Buf *rec, 
     if (r.out.p) buf_str(&log, r.out.p);
     buf_str(&log, "\n");
     if (r.err.p) buf_str(&log, r.err.p);
-    const int tool_calls = cb_count(log.p, "[ferramenta ") + cb_count(log.p, "[professor: ");
     long gen = 0;
     for (const char *p = strstr(log.p, "resposta: "); p; p = strstr(p + 10, "resposta: ")) {
         char *e; const long v = strtol(p + 10, &e, 10);
@@ -753,6 +770,8 @@ static int cb_run_task(const CbOpt *o, const char *name, int attempt, Buf *rec, 
     CbMetrics met; memset(&met, 0, sizeof met);
     if (logp[0]) cb_read_log(logp, &met);
     cb_read_stderr(r.err.p ? r.err.p : "", o->teacher != NULL, &met);
+    /* o registro do agente tem uma linha por chamada; o texto da tela repetia cada uma (chamada e resultado) */
+    const int tool_calls = met.calls ? met.calls : cb_count(log.p, "[ferramenta ") + cb_count(log.p, "[professor: ");
 
     if (o->teacher && dtmp[0]) {                                   /* sessao do professor: marca passed e guarda */
         size_t dl = 0; char *d = cb_slurp(dtmp, &dl);
@@ -794,9 +813,9 @@ static int cb_run_task(const CbOpt *o, const char *name, int attempt, Buf *rec, 
 
     if (o->keep) {
         mkdir(o->keep, 0777);
-        char kp[2400]; snprintf(kp, sizeof kp, "%s/%s.log", o->keep, name);
+        char kp[2400]; if (o->repeat > 1) snprintf(kp, sizeof kp, "%s/%s.%d.log", o->keep, name, attempt); else snprintf(kp, sizeof kp, "%s/%s.log", o->keep, name);
         FILE *f = fopen(kp, "wb"); if (f) { fwrite(log.p, 1, log.n, f); fclose(f); }
-        snprintf(kp, sizeof kp, "%s/%s.agent.log", o->keep, name);
+        if (o->repeat > 1) snprintf(kp, sizeof kp, "%s/%s.%d.agent.log", o->keep, name, attempt); else snprintf(kp, sizeof kp, "%s/%s.agent.log", o->keep, name);
         if (logp[0] && cb_exists(logp)) { struct stat st; if (!stat(logp, &st)) cb_copy_file(logp, kp, &st); }
         snprintf(kp, sizeof kp, "%s/%s", o->keep, name);
         cb_copy_tree(work, kp);
