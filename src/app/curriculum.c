@@ -2452,6 +2452,9 @@ static void cu_gen(FILE *f, long n, uint64_t seed, const int *w, int wsum, const
     if (chdir(cwd0) != 0) {}
 }
 static int curriculum_main(int argc, char **argv) {
+    /* o gerador e o check rodam ferramentas do motor: nada aqui pergunta ao usuario (um item ask: sem terminal e recusado, que e o caso "nao") */
+    if (!freopen("/dev/null", "r", stdin)) {}
+    unsetenv("KATANA_UI");
     if (argc >= 2 && (!strcmp(argv[0], "stats") || !strcmp(argv[0], "check"))) {
         char full[4400];
         if (!realpath(argv[1], full)) { fprintf(stderr, "curriculum: nao abri %s\n", argv[1]); return 1; }
