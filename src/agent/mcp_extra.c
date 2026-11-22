@@ -63,7 +63,8 @@ static void mcpx_reply(McpSrv *s, const char *idraw, size_t idlen, const char *r
     if (result) { mcp_bputs(&r, ",\"result\":"); mcp_bputs(&r, result); }
     else { char t[40]; snprintf(t, sizeof t, ",\"error\":{\"code\":%d,\"message\":", code); mcp_bputs(&r, t); mcp_besc(&r, msg); mcp_bputs(&r, "}"); }
     mcp_bputs(&r, "}");
-    if (s->http) { char *x = mcp_http_post(s, r.p, 0, 10000); free(x); }       /* 202 sem corpo */
+    if (s->sse) mcpx_legacy_post(s, r.p);
+    else if (s->http) { char *x = mcp_http_post(s, r.p, 0, 10000); free(x); }       /* 202 sem corpo */
     else mcp_send(s, r.p);
     free(r.p);
 }
@@ -104,6 +105,7 @@ static void mcpx_cwd_sync(void) {
 static int mcpx_extra_wait(void) { return getenv("KATANA_UI") || K_ISATTY(0) ? 600 : 0; }
 
 static int mcpx_elicit(McpSrv *s, const char *params, McpB *res);       /* abaixo (f) */
+static int mcpx_legacy_post(McpSrv *s, const char *body);                   /* abaixo (g) */
 /* ----- mensagem do servidor (pedido ou aviso) chegando por stdio ou pelo fluxo SSE ----- */
 static void mcpx_server_msg(McpSrv *s, const char *o) {
     const char *iv = mcp_get(o, "id"), *mv = mcp_get(o, "method");
@@ -134,36 +136,6 @@ static void mcpx_server_msg(McpSrv *s, const char *o) {
         return;
     }
     mcpx_reply(s, iv, il, NULL, -32601, "method not found");
-}
-
-/* eventos SSE completos em o[*done..]: trata pedidos do servidor, devolve em *resp a resposta do id. final=1: o fluxo acabou */
-static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final) {
-    for (;;) {
-        const char *b = o->p + *done, *e = NULL;
-        for (const char *q = b; *q;) {
-            const size_t ll = strcspn(q, "\n");
-            if (!q[ll]) break;
-            if (ll == 0 || (ll == 1 && *q == '\r')) { e = q; break; }
-            q += ll + 1;
-        }
-        size_t skip = 0;
-        if (e) skip = (size_t)(e + strcspn(e, "\n") + 1 - b); else if (final && *b) { e = b + strlen(b); skip = strlen(b); } else return;
-        McpB ev = {0};
-        mcp_bput(&ev, "", 0);
-        for (const char *q = b; q < e;) {
-            size_t ll = strcspn(q, "\n"); if (q + ll > e) ll = (size_t)(e - q);
-            size_t cl = ll; if (cl && q[cl - 1] == '\r') cl--;
-            if (cl >= 5 && !strncmp(q, "data:", 5)) { const char *d = q + 5; if (*d == ' ') d++; if (ev.n) mcp_bputs(&ev, "\n"); mcp_bput(&ev, d, cl - (size_t)(d - q)); }
-            q += ll; if (q < e) q++;
-        }
-        *done += skip;
-        const char *js = strchr(ev.p, '{');
-        if (js) {
-            if (mcp_get(js, "method")) mcpx_server_msg(s, js);
-            else if (!*resp) { const char *iv = mcp_get(js, "id"); if (iv && atol(iv) == id && (mcp_get(js, "result") || mcp_get(js, "error"))) *resp = strdup(js); }
-        }
-        free(ev.p);
-    }
 }
 
 /* ----- c: resources/list_changed e prompts/list_changed -----
@@ -447,3 +419,250 @@ static int mcpx_elicit(McpSrv *s, const char *params, McpB *res) {
     mcp_log(s->name, "elicitation", "", 0, action);       /* so a decisao; nunca os valores */
     return 1;
 }
+
+/* ----- g: fluxos SSE -----
+ * 1) o fluxo GET do HTTP "streamable": depois do initialize, um GET com Accept: text/event-stream traz avisos e pedidos
+ *    do servidor fora de qualquer chamada. Sessao (Mcp-Session-Id), MCP-Protocol-Version e, ao reconectar,
+ *    Last-Event-ID (reenvio do que se perdeu). O servidor pode responder 405 (nao tem fluxo): tudo segue sem ele.
+ * 2) o transporte SSE antigo ("type":"sse"): um GET que fica aberto, o primeiro evento "endpoint" diz para onde enviar as
+ *    mensagens (POST) e as respostas voltam como eventos "message" no mesmo fluxo.
+ * O fluxo e um curl filho com a saida num pipe (nao bloqueante): mcpx_stream_fd() devolve esse descritor para quem
+ * quiser esperar com poll() (a escuta ociosa do canal) e mcpx_stream_pump() le e trata o que chegou.
+ * Sem Windows: la as funcoes ficam como "sem fluxo". */
+/* proximo evento completo de buf (a partir de *done): nome, id e dados; 0 se ainda falta */
+static int mcpx_ev_next(McpB *b, size_t *done, int final, char *evname, size_t ncap, char *evid, size_t icap, McpB *data) {
+    for (;;) {
+        const char *st = b->p + *done, *e = NULL;
+        for (const char *q = st; *q;) {
+            const size_t ll = strcspn(q, "\n");
+            if (!q[ll]) break;
+            if (ll == 0 || (ll == 1 && *q == '\r')) { e = q; break; }
+            q += ll + 1;
+        }
+        size_t skip;
+        if (e) skip = (size_t)(e + strcspn(e, "\n") + 1 - st);
+        else if (final && *st) { e = st + strlen(st); skip = strlen(st); }
+        else return 0;
+        evname[0] = 0; evid[0] = 0; data->n = 0; mcp_bput(data, "", 0); data->p[0] = 0;
+        int any = 0;
+        for (const char *q = st; q < e;) {
+            size_t ll = strcspn(q, "\n"); if (q + ll > e) ll = (size_t)(e - q);
+            size_t cl = ll; if (cl && q[cl - 1] == '\r') cl--;
+            const char *v = NULL; size_t vl = 0;
+            if (cl >= 5 && !strncmp(q, "data:", 5)) { v = q + 5; vl = cl - 5; if (vl && *v == ' ') { v++; vl--; } if (data->n) mcp_bputs(data, "\n"); mcp_bput(data, v, vl); any = 1; }
+            else if (cl >= 6 && !strncmp(q, "event:", 6)) { v = q + 6; vl = cl - 6; if (vl && *v == ' ') { v++; vl--; } snprintf(evname, ncap, "%.*s", (int)vl, v); any = 1; }
+            else if (cl >= 3 && !strncmp(q, "id:", 3)) { v = q + 3; vl = cl - 3; if (vl && *v == ' ') { v++; vl--; } snprintf(evid, icap, "%.*s", (int)vl, v); any = 1; }
+            q += ll; if (q < e) q++;
+        }
+        *done += skip;
+        if (any) return 1;
+    }
+}
+/* quem leva a resposta do id num texto de evento; dispara pedidos e avisos do servidor */
+static void mcpx_ev_dispatch(McpSrv *s, const char *data, long want, char **resp) {
+    const char *js = strchr(data, '{');
+    if (!js) return;
+    if (mcp_get(js, "method")) mcpx_server_msg(s, js);
+    else if (want && resp && !*resp) { const char *iv = mcp_get(js, "id"); if (iv && atol(iv) == want && (mcp_get(js, "result") || mcp_get(js, "error"))) *resp = strdup(js); }
+}
+static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final) {
+    char en[60], ei[128]; McpB d = {0};
+    mcp_bput(&d, "", 0);
+    while (mcpx_ev_next(o, done, final, en, sizeof en, ei, sizeof ei, &d)) { if (ei[0]) snprintf(s->pleid, sizeof s->pleid, "%s", ei); mcpx_ev_dispatch(s, d.p, id, resp); }
+    free(d.p);
+}
+#ifndef _WIN32
+typedef struct McpxStream {
+    int fd; pid_t pid; char hdrf[300]; McpB buf; size_t done;
+    int kind;                       /* 1 = GET do streamable, 2 = SSE antigo, 3 = reenvio de um POST (temporario) */
+    int fails, dead, got_endpoint;
+    char leid[128], endpoint[1200];
+} McpxStream;
+static void mcpx_stream_kill(McpxStream *g) {
+    if (g->fd >= 0) close(g->fd);
+    g->fd = -1;
+    if (g->pid > 0) { int st; kill(g->pid, SIGTERM); waitpid(g->pid, &st, 0); g->pid = 0; }
+    if (g->hdrf[0]) { remove(g->hdrf); g->hdrf[0] = 0; }
+}
+/* abre o GET (curl filho). Devolve o codigo HTTP (200 = fluxo aberto), 0 se nao chegou resposta, -1 se nao deu para iniciar */
+static int mcpx_stream_open(McpSrv *s, McpxStream *g, const char *url, const char *leid) {
+    int pf[2];
+    if (!mcp_tmp(g->hdrf, sizeof g->hdrf)) return -1;
+    if (pipe(pf) != 0) return -1;
+    char *av[40]; int n = 0; char sh[300], ph[80], lh[200];
+    av[n++] = (char *)"curl"; av[n++] = (char *)"-sSN"; av[n++] = (char *)"-D"; av[n++] = g->hdrf;
+    av[n++] = (char *)"-H"; av[n++] = (char *)"Accept: text/event-stream";
+    if (s->session[0] && g->kind != 2) { snprintf(sh, sizeof sh, "Mcp-Session-Id: %s", s->session); av[n++] = (char *)"-H"; av[n++] = sh; }
+    if (s->proto[0] && g->kind != 2) { snprintf(ph, sizeof ph, "MCP-Protocol-Version: %s", s->proto); av[n++] = (char *)"-H"; av[n++] = ph; }
+    if (leid && *leid) { snprintf(lh, sizeof lh, "Last-Event-ID: %s", leid); av[n++] = (char *)"-H"; av[n++] = lh; }
+    for (int i = 0; i < s->nhdr && n < 34; i++) { av[n++] = (char *)"-H"; av[n++] = s->hdr[i]; }
+    av[n++] = (char *)url; av[n] = NULL;
+    signal(SIGPIPE, SIG_IGN);
+    const pid_t pid = fork();
+    if (pid < 0) { close(pf[0]); close(pf[1]); return -1; }
+    if (pid == 0) {
+        dup2(pf[1], 1); close(pf[0]); close(pf[1]);
+        int dn = open("/dev/null", O_WRONLY); if (dn >= 0) dup2(dn, 2);
+        execvp("curl", av);
+        _exit(127);
+    }
+    close(pf[1]);
+    fcntl(pf[0], F_SETFD, FD_CLOEXEC); fcntl(pf[0], F_SETFL, fcntl(pf[0], F_GETFL) | O_NONBLOCK);
+    g->fd = pf[0]; g->pid = pid;
+    /* espera os cabecalhos (ate 5 s): o curl os grava assim que chegam, mesmo sem corpo */
+    int status = 0, sse = 0;
+    for (int i = 0; i < 100 && !status; i++) {
+        char *hh = mcp_slurp(g->hdrf, NULL);
+        if (hh) { const char *h = strstr(hh, "HTTP/"); if (h && strstr(h, "\r\n\r\n")) { const char *sp = strchr(h, ' '); status = sp ? atoi(sp) : 0; sse = mcp_has_ci(h, "text/event-stream"); } free(hh); }
+        if (status) break;
+        int st; if (waitpid(pid, &st, WNOHANG) == pid) { g->pid = 0; break; }
+        usleep(50000);
+    }
+    if (status == 200 && sse) return 200;
+    mcpx_stream_kill(g);
+    return status;
+}
+/* le o que ha no pipe (nao bloqueante); 0 = fim do fluxo */
+static int mcpx_stream_read(McpxStream *g) {
+    char t[4096];
+    for (;;) {
+        const ssize_t r = read(g->fd, t, sizeof t);
+        if (r > 0) { mcp_bput(&g->buf, t, (size_t)r); if (g->buf.n > (size_t)8 << 20) return 0; continue; }
+        if (r == 0) return 0;
+        if (errno == EINTR) continue;
+        return 1;                                     /* EAGAIN: por ora acabou o que havia */
+    }
+}
+/* espera ate ms por dados, trata os eventos. want>0: devolve em *resp a resposta desse id (SSE antigo e reenvio). Devolve
+   o numero de eventos tratados; -1 quando o fluxo acabou */
+static int mcpx_pump(McpSrv *s, McpxStream *g, int ms, long want, char **resp) {
+    if (g->fd < 0) return -1;
+    const double dl = now_sec() + ms / 1000.0;
+    int handled = 0;
+    for (;;) {
+        char en[60], ei[128]; McpB d = {0};
+        mcp_bput(&d, "", 0);
+        while (mcpx_ev_next(&g->buf, &g->done, 0, en, sizeof en, ei, sizeof ei, &d)) {
+            handled++;
+            if (ei[0]) snprintf(g->leid, sizeof g->leid, "%s", ei);
+            if (g->kind == 2 && !strcmp(en, "endpoint")) { snprintf(g->endpoint, sizeof g->endpoint, "%.1190s", d.p); g->got_endpoint = 1; continue; }
+            mcpx_ev_dispatch(s, d.p, want, resp);
+        }
+        free(d.p);
+        if (g->done > 0 && g->done == g->buf.n) { g->buf.n = 0; g->buf.p[0] = 0; g->done = 0; }
+        if ((want && resp && *resp) || (g->kind == 2 && !want && g->got_endpoint && ms > 0 && handled)) return handled;
+        const double rem = dl - now_sec();
+        struct pollfd pf = { g->fd, POLLIN, 0 };
+        const int pr = poll(&pf, 1, rem > 0.2 ? 200 : (rem > 0 ? (int)(rem * 1000) + 1 : 0));
+        if (pr < 0 && errno != EINTR) return -1;
+        if (pr > 0) {
+            if (mcpx_stream_read(g)) continue;              /* chegou mais: trata */
+            char en2[60], ei2[128]; McpB d2 = {0};         /* fim do fluxo: trata o que sobrou e avisa */
+            mcp_bput(&d2, "", 0);
+            while (mcpx_ev_next(&g->buf, &g->done, 1, en2, sizeof en2, ei2, sizeof ei2, &d2)) { if (ei2[0]) snprintf(g->leid, sizeof g->leid, "%s", ei2); mcpx_ev_dispatch(s, d2.p, want, resp); handled++; }
+            free(d2.p);
+            return (want && resp && *resp) ? handled : -1;
+        }
+        if (rem <= 0) return handled;
+    }
+}
+/* ---- fluxo GET do streamable HTTP ---- */
+static McpxStream *mcpx_gs(McpSrv *s) { return (McpxStream *)s->gs; }
+static int mcpx_get_open(McpSrv *s) {
+    if (getenv("KATANA_MCP_NO_STREAM")) return 0;
+    McpxStream *g = calloc(1, sizeof *g);
+    g->fd = -1; g->kind = 1; mcp_bput(&g->buf, "", 0);
+    const int gst = mcpx_stream_open(s, g, s->url, NULL);
+    if (getenv("KATANA_MCP_DEBUG")) fprintf(stderr, "[mcp %s: GET stream status %d]\n", s->name, gst);
+    if (gst != 200) { free(g->buf.p); free(g); return 0; }       /* 405 ou outro: o servidor nao tem fluxo */
+    s->gs = g;
+    return 1;
+}
+/* descritor do fluxo, para quem espera com poll(); -1 se nao ha */
+static int mcpx_stream_fd(const McpSrv *s) { const McpxStream *g = (const McpxStream *)s->gs; return g && !g->dead ? g->fd : -1; }
+/* trata o que chegou no fluxo (espera ate ms); reconecta com Last-Event-ID se caiu. Devolve eventos tratados */
+static int mcpx_stream_pump(McpSrv *s, int ms) {
+    McpxStream *g = mcpx_gs(s);
+    if (!g || g->dead) return 0;
+    const int n = mcpx_pump(s, g, ms, 0, NULL);
+    if (n >= 0) return n;
+    if (g->kind == 2) { g->dead = 1; s->alive = 0; snprintf(s->err, sizeof s->err, "servidor encerrou"); return 0; }     /* SSE antigo nao retoma */
+    for (g->fails++; g->fails <= 3; g->fails++) {           /* caiu: retoma de onde parou */
+        mcpx_stream_kill(g);
+        g->done = 0; g->buf.n = 0; if (g->buf.p) g->buf.p[0] = 0;
+        if (mcpx_stream_open(s, g, s->url, g->leid) == 200) { g->fails = 0; return mcpx_pump(s, g, 0, 0, NULL) > 0 ? 1 : 0; }
+    }
+    g->dead = 1; mcpx_stream_kill(g);
+    return 0;
+}
+/* o POST caiu no meio do fluxo SSE sem a resposta: GET com Last-Event-ID do ultimo evento visto, ate ms */
+static int mcpx_resume_post(McpSrv *s, long id, char **resp, int ms) {
+    McpxStream g; memset(&g, 0, sizeof g);
+    g.fd = -1; g.kind = 3; mcp_bput(&g.buf, "", 0);
+    if (mcpx_stream_open(s, &g, s->url, s->pleid) != 200) { free(g.buf.p); return 0; }
+    s->pleid[0] = 0;
+    mcpx_pump(s, &g, ms, id, resp);
+    mcpx_stream_kill(&g); free(g.buf.p);
+    return *resp != NULL;
+}
+static void mcpx_stream_close(McpSrv *s) {
+    McpxStream *g = mcpx_gs(s);
+    if (!g) return;
+    mcpx_stream_kill(g); free(g->buf.p); free(g);
+    s->gs = NULL;
+}
+/* ---- transporte SSE antigo ---- */
+static int mcpx_legacy_open(McpSrv *s) {
+    McpxStream *g = calloc(1, sizeof *g);
+    g->fd = -1; g->kind = 2; mcp_bput(&g->buf, "", 0);
+    const int st = mcpx_stream_open(s, g, s->url, NULL);
+    if (st != 200) {
+        snprintf(s->err, sizeof s->err, st > 0 ? "HTTP %d" : "curl falhou (sem resposta do fluxo SSE)", st);
+        free(g->buf.p); free(g); return 0;
+    }
+    s->gs = g;
+    const double dl = now_sec() + 10;
+    while (!g->got_endpoint && now_sec() < dl) if (mcpx_pump(s, g, 500, 0, NULL) < 0) break;
+    if (!g->got_endpoint) { snprintf(s->err, sizeof s->err, "SSE stream without an endpoint event"); mcpx_stream_close(s); return 0; }
+    /* o endpoint tem de ser da mesma origem que a url configurada (nada de mandar mensagens para outro lugar) */
+    const char *sc = strstr(s->url, "://"), *pe = sc ? strchr(sc + 3, '/') : NULL;
+    const size_t ol = sc ? (pe ? (size_t)(pe - s->url) : strlen(s->url)) : 0;
+    char full[1400];
+    if (g->endpoint[0] == '/') snprintf(full, sizeof full, "%.*s%s", (int)ol, s->url, g->endpoint);
+    else if (!strncmp(g->endpoint, s->url, ol) && ol) snprintf(full, sizeof full, "%s", g->endpoint);
+    else { snprintf(s->err, sizeof s->err, "SSE endpoint is not on the same server as the url"); mcpx_stream_close(s); return 0; }
+    snprintf(g->endpoint, sizeof g->endpoint, "%.1190s", full);
+    return 1;
+}
+static int mcpx_legacy_post(McpSrv *s, const char *body) {
+    McpxStream *g = mcpx_gs(s);
+    if (!g || g->dead) { snprintf(s->err, sizeof s->err, "SSE stream is closed"); return 0; }
+    char *keep = s->url; s->url = g->endpoint;               /* mcp_http_post usa s->url */
+    char *r = mcp_http_post(s, body, 0, 10000);
+    s->url = keep;
+    if (!r) return 0;
+    free(r);
+    return 1;
+}
+static char *mcpx_legacy_request(McpSrv *s, const char *body, long id, int ms) {
+    McpxStream *g = mcpx_gs(s);
+    if (!mcpx_legacy_post(s, body)) return NULL;
+    char *resp = NULL;
+    const int n = mcpx_pump(s, g, ms, id, &resp);
+    if (!resp) {
+        if (n < 0) { g->dead = 1; s->alive = 0; snprintf(s->err, sizeof s->err, "servidor encerrou"); }
+        else snprintf(s->err, sizeof s->err, "tempo esgotado");
+    }
+    return resp;
+}
+#else
+static int mcpx_get_open(McpSrv *s) { (void)s; return 0; }
+static int mcpx_stream_fd(const McpSrv *s) { (void)s; return -1; }
+static int mcpx_stream_pump(McpSrv *s, int ms) { (void)s; (void)ms; return 0; }
+static int mcpx_resume_post(McpSrv *s, long id, char **resp, int ms) { (void)s; (void)id; (void)resp; (void)ms; return 0; }
+static void mcpx_stream_close(McpSrv *s) { (void)s; }
+static int mcpx_legacy_open(McpSrv *s) { snprintf(s->err, sizeof s->err, "SSE transport needs a POSIX system"); return 0; }
+static int mcpx_legacy_post(McpSrv *s, const char *body) { (void)s; (void)body; return 0; }
+static char *mcpx_legacy_request(McpSrv *s, const char *body, long id, int ms) { (void)s; (void)body; (void)id; (void)ms; return NULL; }
+#endif
+static const char *mcpx_kind(const McpSrv *s) { return s->sse ? "sse" : (s->http ? "http" : "stdio"); }

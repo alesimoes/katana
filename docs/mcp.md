@@ -112,3 +112,31 @@ unsupported mode.
 
 Revision `2026-07-28` replaces server-initiated requests (elicitation included) with multi round-trip results
 (`resultType: "input_required"`); that form is not implemented.
+
+## SSE: the GET event stream and the old SSE transport
+
+Both use the `curl` the engine already uses (a child process whose output is a non-blocking pipe), so there is no new
+dependency. POSIX only; on Windows the stream is simply not opened (HTTP calls keep working).
+
+**Streamable HTTP GET stream.** After `notifications/initialized`, katana sends `GET <url>` with
+`Accept: text/event-stream`, `Mcp-Session-Id` and `MCP-Protocol-Version`. A server without a stream answers 405 (or anything
+else but an event stream) and everything works as before. Notifications and requests that arrive on the stream
+(`list_changed`, `roots/list`, `elicitation/create`, `ping`) are handled exactly like those that arrive during a call; replies
+go out as separate POSTs. The stream is read before each tool call. If it drops, katana reconnects (up to 3 times) with
+`Last-Event-ID` set to the last event id seen, so the server can replay what was missed. When a POST answered with an event
+stream that breaks before the response, katana resumes it with a GET and `Last-Event-ID` (the id of the last event of that
+stream) and takes the response from the replay; if it cannot, the call fails as before. `KATANA_MCP_NO_STREAM=1` disables
+the GET stream. Revision `2026-07-28` removes the GET stream, sessions and `Last-Event-ID` (replaced by
+`subscriptions/listen`); this is for servers that negotiate `2025-11-25` or older.
+
+**Old HTTP+SSE transport** (deprecated since `2025-03-26`): `{"mcpServers": {"x": {"type": "sse", "url": "https://host/sse"}}}`.
+katana opens the stream, waits for the `endpoint` event, and POSTs every message to that endpoint; replies and notifications
+come back as `message` events on the stream. The endpoint must be on the same origin as the configured url, otherwise the
+server is refused. This transport does not resume: if the stream closes, the server is marked unavailable
+(`/mcp reconnect NAME` opens it again). `katana mcp list` shows `[sse]`, `[http]` or `[stdio]`.
+
+**For code that wants to wait on the stream** (the idle listening of the channel): `mcpx_stream_fd(McpSrv *)` returns the
+descriptor to put in `poll()` (-1 when the server has no stream, or it is dead); when it is readable call
+`mcpx_stream_pump(McpSrv *, ms)`, which reads what arrived, dispatches it (flags such as `dirty`, `rdirty`, `pdirty` are set
+and requests are answered) and reconnects with `Last-Event-ID` if the stream dropped. Both are in `src/agent/mcp_extra.c`.
+`katana toolrun` accepts `!streamfd NAME` in tests.

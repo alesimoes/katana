@@ -28,6 +28,9 @@ typedef struct {
     int project;                     /* veio do .katana/mcp.json do projeto */
     int spawned;                     /* ha processo filho com os canais abertos */
     int has_prompts, was_ok, dirty;  /* prompts/list existe; ja ficou conectado; a lista de ferramentas mudou */
+    int sse;                         /* transporte SSE antigo ("type":"sse"): http=1 tambem */
+    void *gs;                        /* fluxo GET/SSE aberto (mcp_extra.c) */
+    char pleid[128];                 /* ultimo id de evento visto no fluxo de um POST (para retomar com Last-Event-ID) */
     int rdirty, pdirty;              /* resources/list_changed e prompts/list_changed recebidos */
     double t_start;                  /* segundos que o inicio levou */
     McpPrompt *prompts; int nprompts;
@@ -53,6 +56,13 @@ static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp
 static int mcpx_extra_wait(void);
 static void mcpx_cwd_sync(void);
 static int mcpx_root_file(char *out, size_t cap);
+static int mcpx_get_open(McpSrv *s);
+static int mcpx_stream_pump(McpSrv *s, int ms);
+static int mcpx_resume_post(McpSrv *s, long id, char **resp, int ms);
+static void mcpx_stream_close(McpSrv *s);
+static int mcpx_legacy_open(McpSrv *s);
+static int mcpx_legacy_post(McpSrv *s, const char *body);
+static char *mcpx_legacy_request(McpSrv *s, const char *body, long id, int ms);
 static void mcpx_refresh(McpSrv *s, McpB *note);
 static void mcpx_ann_parse(McpTool *t, const char *v);
 static int mcpx_skip_confirm(const McpSrv *s, int tj);
@@ -249,6 +259,7 @@ static int mcp_spawn(McpSrv *s) {
 }
 
 static void mcp_kill(McpSrv *s) {
+    mcpx_stream_close(s);
     if (s->http || !s->spawned) { s->alive = 0; return; }     /* servidor que morreu sozinho tambem fecha os canais e recolhe o processo */
     s->alive = 0; s->spawned = 0;
 #ifdef _WIN32
@@ -378,6 +389,7 @@ static int mcp_has_ci(const char *h, const char *needle) {
 /* POST de uma mensagem; id 0 = notificacao (sem resposta). Devolve a mensagem de resposta (malloc) */
 static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
     char fb[300], fh[300], fe[300];
+    s->pleid[0] = 0;
     if (!mcp_tmp(fb, sizeof fb) || !mcp_tmp(fh, sizeof fh) || !mcp_tmp(fe, sizeof fe)) { snprintf(s->err, sizeof s->err, "sem arquivo temporario"); return NULL; }
     FILE *f = fopen(fb, "wb");
     if (!f) { snprintf(s->err, sizeof s->err, "sem arquivo temporario"); return NULL; }
@@ -431,7 +443,9 @@ static char *mcp_http_post(McpSrv *s, const char *body, long id, int ms) {
             }
             int status = 0;
             if (hd) { const char *h = strstr(hd, "HTTP/"); if (h) { h = strchr(h, ' '); if (h) status = atoi(h); } }
-            if (rc != 0) snprintf(s->err, sizeof s->err, "curl falhou (%d): %.150s", rc, er ? er : "");
+            if (!resp && id && status < 400 && s->pleid[0] && (rc != 0 || mcp_has_ci(hd ? hd : "", "text/event-stream"))) mcpx_resume_post(s, id, &resp, ms);    /* o fluxo caiu: GET com Last-Event-ID */
+            if (resp) { /* resposta ja recebida (no fluxo ou na retomada) */ }
+            else if (rc != 0) snprintf(s->err, sizeof s->err, "curl falhou (%d): %.150s", rc, er ? er : "");
             else if (status >= 400) snprintf(s->err, sizeof s->err, "HTTP %d", status);
             else if (id == 0) resp = strdup("");
             else if (mcp_has_ci(hd ? hd : "", "text/event-stream")) {
@@ -456,6 +470,7 @@ static char *mcp_request(McpSrv *s, const char *method, const char *params, int 
     mcp_besc(&b, method);
     if (params) { mcp_bputs(&b, ",\"params\":"); mcp_bputs(&b, params); }
     mcp_bputs(&b, "}");
+    if (s->sse) { char *r = mcpx_legacy_request(s, b.p, id, ms); free(b.p); return r; }
     if (s->http) { char *r = mcp_http_post(s, b.p, id, ms); free(b.p); return r; }
     const int sent = mcp_send(s, b.p);
     free(b.p);
@@ -480,7 +495,8 @@ static char *mcp_request(McpSrv *s, const char *method, const char *params, int 
 static void mcp_notify(McpSrv *s, const char *method) {
     char m[200];
     snprintf(m, sizeof m, "{\"jsonrpc\":\"2.0\",\"method\":\"%s\"}", method);
-    if (s->http) { char *r = mcp_http_post(s, m, 0, 10000); free(r); }
+    if (s->sse) mcpx_legacy_post(s, m);
+    else if (s->http) { char *r = mcp_http_post(s, m, 0, 10000); free(r); }
     else mcp_send(s, m);
 }
 static int mcp_errmsg(const char *resp, char *out, size_t cap) {    /* 1 se a resposta e um erro JSON-RPC */
@@ -659,6 +675,7 @@ static void mcp_start(McpSrv *s) {
     s->alive = 1; s->err[0] = 0;
     if (!s->http && (!s->cmd || !mcp_which(s->cmd))) { s->alive = 0; snprintf(s->err, sizeof s->err, "command not found: %.150s", s->cmd ? s->cmd : "?"); return; }
     if (!s->http && !mcp_spawn(s)) { s->alive = 0; snprintf(s->err, sizeof s->err, "could not start the command"); return; }
+    if (s->sse && !mcpx_legacy_open(s)) { s->alive = 0; return; }
     char *r = mcp_request(s, "initialize", "{\"protocolVersion\":\"" MCP_VERSAO "\",\"capabilities\":" MCPX_CAPS ",\"clientInfo\":{\"name\":\"katana\",\"version\":\"0.1\"}}", MCP_INIT_MS);
     if (!r) { if (!s->err[0]) snprintf(s->err, sizeof s->err, "sem resposta"); mcp_kill(s); return; }
     char em[300];
@@ -680,6 +697,7 @@ static void mcp_start(McpSrv *s) {
     s->has_prompts = cp && mcp_get(cp, "prompts") != NULL;
     free(r);
     mcp_notify(s, "notifications/initialized");
+    if (s->http && !s->sse) mcpx_get_open(s);          /* fluxo GET do streamable (405 = o servidor nao tem) */
     s->err[0] = 0;
     mcp_load_tools(s);
     if (s->err[0]) { mcp_kill(s); return; }     /* tools/list falhou */
@@ -791,6 +809,7 @@ static void mcp_load_file(const char *path, int project) {
         t.cmd = mcp_dupstr(mcp_get(v, "command"));
         t.url = mcp_dupstr(mcp_get(v, "url"));
         t.http = t.url != NULL && t.cmd == NULL;
+        { char *ty = mcp_dupstr(mcp_get(v, "type")); t.sse = t.http && ty && strcmp(ty, "sse") == 0; free(ty); }
         const char *av = mcp_get(v, "args"), *x, *xn;
         if (av && *av == '[') for (const char *q = av + 1; (xn = mcp_elem(q, &x)) != NULL; q = xn) {
             char *a = mcp_dupstr(x);
@@ -1073,6 +1092,7 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
         mcp_restart(s);
     }
     if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); snprintf(out, cap, "error: MCP server %s is unavailable (%s)", s->name, pe); return; }
+    mcpx_stream_pump(s, 0);   /* avisos e pedidos que chegaram pelo fluxo GET/SSE desde a ultima vez */
     mcpx_cwd_sync();         /* a pasta de trabalho mudou? roots/list_changed (mcp_extra.c) */
     /* argumentos: objeto depois de "arguments" */
     char *args = NULL;

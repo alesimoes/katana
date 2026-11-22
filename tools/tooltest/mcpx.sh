@@ -192,5 +192,53 @@ has "f: senha confirmada: segue" "$R" '"content":{"password":"hunter2xyz"}'
 hasnt "f: o valor digitado nao vai para o log do MCP" "$(cat "$T/mcp.log")" "hunter2xyz"
 has "f: o log guarda so a decisao" "$(cat "$T/mcp.log")" "elicitation"
 
+########## g: SSE (transporte antigo e fluxo GET do streamable) ##########
+SSEFAKE="$T/ssefake"
+$CC -O1 -w -o "$SSEFAKE" "$HERE/ssefake.c" || { echo "nao compilou ssefake.c"; exit 2; }
+SPID=""
+start_fake() {      # modo -> PORT (servidor falso em segundo plano, so 127.0.0.1)
+    [ -n "$SPID" ] && kill "$SPID" 2>/dev/null
+    : > "$T/port"
+    "$SSEFAKE" "$1" > "$T/port" 2>/dev/null &
+    SPID=$!
+    PORT=""
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        PORT=$(sed -n 's/^PORT=//p' "$T/port"); [ -n "$PORT" ] && break; sleep 0.1
+    done
+}
+trap 'rm -rf "$T"; [ -n "$SPID" ] && kill "$SPID" 2>/dev/null' EXIT INT TERM
+start_fake legacy
+printf '{"mcpServers":{"old":{"type":"sse","url":"http://127.0.0.1:%s/sse"}}}\n' "$PORT" > "$HOME/.katana/mcp.json"
+R=$("$K" mcp list 2>&1)
+has "g: SSE antigo conecta" "$R" "old [sse] ok"
+has "g: SSE antigo lista as ferramentas" "$R" "old__hello"
+R=$("$K" tool old__hello '{}' 2>&1); has "g: SSE antigo: chamada volta pelo fluxo" "$R" "hello"
+R=$("$K" tool old__push '{}' 2>&1); has "g: SSE antigo: aviso antes da resposta e tratado" "$R" "tool list of this MCP server changed"
+R=$("$K" mcp test old 2>&1); has "g: mcp test no SSE antigo" "$R" "OK"
+start_fake legacyevil
+printf '{"mcpServers":{"old":{"type":"sse","url":"http://127.0.0.1:%s/sse"}}}\n' "$PORT" > "$HOME/.katana/mcp.json"
+R=$("$K" mcp list 2>&1); has "g: endpoint de outra origem e recusado" "$R" "not on the same server"
+start_fake streamable
+printf '{"mcpServers":{"web":{"url":"http://127.0.0.1:%s/mcp"}}}\n' "$PORT" > "$HOME/.katana/mcp.json"
+R=$("$K" mcp list 2>&1); has "g: streamable conecta (sessao S1)" "$R" "web [http] ok"
+R=$("$K" tool web__hello '{}' 2>&1); has "g: streamable: resposta em JSON" "$R" "hello"
+R=$("$K" tool web__sseecho '{}' 2>&1); has "g: streamable: resposta dentro de SSE" "$R" "hello"
+R=$("$K" tool web__cut '{}' 2>&1); has "g: SSE cai sem a resposta: retoma com Last-Event-ID" "$R" "resumed hello"
+R=$(printf '!streamfd web\n' | "$K" toolrun 2>&1); case $R in *"streamfd="[3-9]*|*"streamfd="[1-9][0-9]*) ok "g: o descritor do fluxo GET esta exposto";; *) bad "g: descritor do fluxo" "$R";; esac
+R=$(printf 'web__poke {}\nweb__hello {}\n' | "$K" toolrun 2>&1)
+has "g: aviso pelo fluxo GET chega fora de uma chamada" "$R" "the prompt list of this MCP server changed"
+R=$(printf 'web__poke2 {}\nweb__hello {}\nweb__lastreply {}\n' | "$K" toolrun 2>&1)
+has "g: pedido roots/list pelo fluxo GET e respondido por POST" "$R" 'file://'
+has "g: ... com o id do pedido" "$R" '"id":9001'
+R=$(printf 'web__dropget {}\nweb__hello {}\nweb__lastid {}\n' | "$K" toolrun 2>&1)
+L=$(printf '%s\n' "$R" | grep -A1 'web/lastid' | tail -1)
+case $L in g[0-9]*) ok "g: fluxo GET caiu: reconecta com Last-Event-ID ($L)";; *) bad "g: fluxo GET caiu: reconecta com Last-Event-ID" "$R";; esac
+start_fake noget
+printf '{"mcpServers":{"web":{"url":"http://127.0.0.1:%s/mcp"}}}\n' "$PORT" > "$HOME/.katana/mcp.json"
+R=$("$K" tool web__hello '{}' 2>&1); has "g: servidor sem fluxo GET (405): tudo segue" "$R" "hello"
+R=$(printf '!streamfd web\n' | "$K" toolrun 2>&1); has "g: sem fluxo: descritor -1" "$R" "streamfd=-1"
+R=$(KATANA_MCP_NO_STREAM=1 "$K" tool web__hello '{}' 2>&1); has "g: KATANA_MCP_NO_STREAM desliga o fluxo" "$R" "hello"
+kill "$SPID" 2>/dev/null; SPID=""
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]

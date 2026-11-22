@@ -847,7 +847,7 @@ static int launch_cmd(const char *line, Model *m, int pos, const char *sys, cons
         fprintf(stderr, "  session   %s\n", g_sess_path[0] ? lc_short(g_sess_path, sh, sizeof sh) : "not saved yet");
         int alive = 0; for (int i = 0; i < g_nmcp; i++) alive += g_mcp[i].alive;
         fprintf(stderr, "  mcp       %d server%s (%d up)\n", g_nmcp, g_nmcp == 1 ? "" : "s", alive);
-        for (int i = 0; i < g_nmcp; i++) fprintf(stderr, "            %s [%s] %s%s%s\n", g_mcp[i].name, g_mcp[i].http ? "http" : "stdio", g_mcp[i].alive ? "up" : "unavailable: ", g_mcp[i].alive ? "" : g_mcp[i].err, "");
+        for (int i = 0; i < g_nmcp; i++) fprintf(stderr, "            %s [%s] %s%s%s\n", g_mcp[i].name, mcpx_kind(&g_mcp[i]), g_mcp[i].alive ? "up" : "unavailable: ", g_mcp[i].alive ? "" : g_mcp[i].err, "");
         const int ns = lc_count_skills(sd, sizeof sd);
         fprintf(stderr, "  skills    %d%s%s\n", ns, ns ? " in " : "", sd);
         static char pi[PROJ_MAX + 200]; char pp[4400];

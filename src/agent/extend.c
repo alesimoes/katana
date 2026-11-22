@@ -476,7 +476,7 @@ static void mcp_list_print(int tools) {
     if (!g_nmcp) { printf("No MCP servers configured (katana mcp add <name> -- <command> | --url <url>).\n"); return; }
     for (int i = 0; i < g_nmcp; i++) {
         McpSrv *s = &g_mcp[i];
-        printf("%s [%s] %s  (from %s%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "ok" : "unavailable", s->project ? "project file " : "your file ", s->source);
+        printf("%s [%s] %s  (from %s%s)\n", s->name, mcpx_kind(s), s->alive ? "ok" : "unavailable", s->project ? "project file " : "your file ", s->source);
         if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); printf("  error: %s\n", pe); continue; }
         printf("  server: %s, protocol %s, %d tools%s\n", s->info, s->proto, s->ntools, s->nprompts ? ", prompts: /name:prompt" : "");
         if (tools) for (int j = 0; j < s->ntools; j++) {
@@ -496,7 +496,7 @@ static int mcp_test_cli(int argc, char **argv) {
     if (i < 0) { fprintf(stderr, "mcp test: no server '%s' (see: katana mcp list)\n", argv[0]); return 1; }
     McpSrv *s = &g_mcp[i];
     atexit(mcp_shutdown);
-    printf("%s [%s] from %s\n", s->name, s->http ? "http" : "stdio", s->source);
+    printf("%s [%s] from %s\n", s->name, mcpx_kind(s), s->source);
     if (!s->cmd && !s->url) { printf("  FAILED: %s\n", s->err); return 1; }
     mcp_start(s);
     if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); printf("  FAILED: %s\n", pe); return 1; }
@@ -544,7 +544,7 @@ static void mcp_status_print(void) {
     for (int i = 0; i < g_nmcp; i++) {
         McpSrv *s = &g_mcp[i];
         char pe[400] = ""; if (!s->alive || s->err[0]) mcp_plain_err(s, pe, sizeof pe);
-        fprintf(stderr, "  %s [%s] %s, %d tools, %d prompts%s%s  (%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "connected" : "NOT connected", s->ntools, s->nprompts, pe[0] ? ", last error: " : "", pe, s->source);
+        fprintf(stderr, "  %s [%s] %s, %d tools, %d prompts%s%s  (%s)\n", s->name, mcpx_kind(s), s->alive ? "connected" : "NOT connected", s->ntools, s->nprompts, pe[0] ? ", last error: " : "", pe, s->source);
     }
 }
 

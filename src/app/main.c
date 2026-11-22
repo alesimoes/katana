@@ -1006,6 +1006,7 @@ static int run_main(int argc, char **argv) {
         while (fgets(ln, sizeof ln, stdin)) {
             ln[strcspn(ln, "\r\n")] = 0;
             if (strncmp(ln, "!cd ", 4) == 0) { if (chdir(ln + 4) == 0) mcpx_cwd_sync(); else printf("cd failed\n----\n"); continue; }      /* teste: troca a pasta como o /cd do agente */
+            if (strncmp(ln, "!streamfd ", 10) == 0) { mcp_init(0); const int i = mcp_find(ln + 10); printf("streamfd=%d\n----\n", i >= 0 ? mcpx_stream_fd(&g_mcp[i]) : -2); continue; }      /* teste: descritor do fluxo SSE de um servidor */
             if (strncmp(ln, "!plan ", 6) == 0) { g_plan_mode = strcmp(ln + 6, "off") != 0; continue; }       /* teste: liga/desliga o modo plano */
             char *sp = strchr(ln, ' ');
             if (!sp) continue;
