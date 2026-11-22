@@ -396,6 +396,15 @@ the real models, where nothing was trained or measured):
 
 `tools/traintest/methods.sh` regenerates the table in about 6 minutes on 8 cores; `methods_table.py` makes the table.
 
+### PiSSA cost, measured
+
+Gemma 4 26B-A4B (Q4_K_M), CPU, 16 attention matrices (layers 0 to 3), rank 8: **3.26 s in total, 0.20 s per matrix**
+(one run, shared machine, under the measurement lock). The cost is a few passes over each matrix (dequantize, four
+power iterations, one projection), so it scales with the number of adapted matrices and their size; a night that
+adapts every matrix of the model has not been measured, and neither have the large FFN and expert matrices, so no
+total for the whole model is claimed. On the tiny model it is below the clock resolution. Nothing was trained on the
+real model (one optimizer step on 16 tokens, nothing kept, no validation).
+
 ### References
 
 - Jain et al., *NEFTune: Noisy Embeddings Improve Instruction Finetuning*, arXiv:2310.05914.
