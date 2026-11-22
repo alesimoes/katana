@@ -1,0 +1,31 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_NV_cooperative_matrix2 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_16bit_storage : require
+// teto com dimensoes flexiveis e escopo do grupo inteiro (placas que expoem a extensao). SRC 0 registradores, 2 buffers
+layout(local_size_x_id = 10) in;
+layout(constant_id = 0) const int SRC = 0;
+layout(constant_id = 2) const int TM = 64;
+layout(constant_id = 3) const int TN = 64;
+layout(constant_id = 4) const int TK = 64;
+layout(std430, binding = 0) readonly buffer Ab { float16_t av[]; };
+layout(std430, binding = 1) readonly buffer Bb { float16_t bv[]; };
+layout(std430, binding = 2) buffer Ob { float ov[]; };
+layout(push_constant) uniform P { uint n; } pc;
+void main() {
+    coopmat<float16_t, gl_ScopeWorkgroup, TM, TK, gl_MatrixUseA> a;
+    coopmat<float16_t, gl_ScopeWorkgroup, TK, TN, gl_MatrixUseB> b;
+    coopmat<float, gl_ScopeWorkgroup, TM, TN, gl_MatrixUseAccumulator> c = coopmat<float, gl_ScopeWorkgroup, TM, TN, gl_MatrixUseAccumulator>(0.0);
+    coopMatLoad(a, av, gl_WorkGroupID.x * 64u, TK, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(b, bv, gl_WorkGroupID.x * 64u, TN, gl_CooperativeMatrixLayoutRowMajor);
+    for (uint k = 0u; k < pc.n; k++) {
+        if (SRC == 2) {
+            coopMatLoad(a, av, (gl_WorkGroupID.x * TM) * 1024u + (k & 15u) * TK, 1024, gl_CooperativeMatrixLayoutRowMajor);
+            coopMatLoad(b, bv, (k & 15u) * TK, 1024, gl_CooperativeMatrixLayoutColumnMajor);
+        }
+        c = coopMatMulAdd(a, b, c);
+    }
+    coopMatStore(c, ov, (gl_WorkGroupID.x & 15u) * TM * TN, TN, gl_CooperativeMatrixLayoutRowMajor);
+}
