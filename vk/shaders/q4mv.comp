@@ -1,0 +1,137 @@
+#version 450
+/* qwen4exp, um token: O[oofs + r] = W[r] . X para os pesos no formato do GGUF, reempacotados so para alinhar em 32 bits.
+   Uma thread faz um bloco de BLK pesos; um grupo faz RPG linhas de NB blocos (RPG * NB threads) e soma os parciais.
+   WT: 12 Q4_K, 13 Q5_K, 14 Q6_K (212 bytes), 21 IQ3_S (112 bytes, so a escala foi alinhada), 23 IQ4_XS, 30 BF16.
+   A conta de cada formato e a do dequant da CPU, elemento por elemento, em float32. */
+layout(local_size_x_id = 0) in;
+layout(constant_id = 0) const int LS = 160;
+layout(constant_id = 1) const int WT = 30;
+layout(constant_id = 2) const int NB = 10;
+layout(constant_id = 3) const int RPG = 16;
+layout(constant_id = 4) const int BLK = 256;
+layout(std430, binding = 0) readonly buffer Wb { uint W[]; };
+layout(std430, binding = 1) readonly buffer Xb { float X[]; };
+layout(std430, binding = 2) writeonly buffer Ob { float O[]; };
+layout(std430, binding = 3) readonly buffer Gb { uint GR[]; };      /* grade do IQ3_S */
+layout(push_constant) uniform P { int rows, rw, oofs; } pc;         /* rw: palavras por linha */
+shared float part[LS];
+
+const int NL[16] = int[16](-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113);
+uint byt(int base, int i) { return (W[base + (i >> 2)] >> (8 * (i & 3))) & 255u; }
+
+float bf16(int w, int x) {
+    float s = 0.0;
+    for (int i = 0; i < BLK / 2; i++) {
+        const uint u = W[w + i];
+        s += uintBitsToFloat(u << 16) * X[x + 2 * i] + uintBitsToFloat(u & 0xffff0000u) * X[x + 2 * i + 1];
+    }
+    return s;
+}
+/* escala e minimo de 6 bits do sub-bloco j; b: primeira palavra das 3 */
+ivec2 k4sm(int b, int j) {
+    if (j < 4) return ivec2(int(byt(b, j) & 63u), int(byt(b, j + 4) & 63u));
+    const uint hi = byt(b, j + 4);
+    return ivec2(int((hi & 15u) | ((byt(b, j - 4) >> 6) << 4)), int((hi >> 4) | ((byt(b, j) >> 6) << 4)));
+}
+float q45k(int w, int x, bool five) {
+    const vec2 dm = unpackHalf2x16(W[w]);
+    float s = 0.0;
+    for (int j = 0; j < 8; j += 2) {
+        float s0 = 0.0, s1 = 0.0, m0 = 0.0, m1 = 0.0;
+        for (int k = 0; k < 8; k++) {
+            const uint u = W[w + (five ? 12 : 4) + 4 * j + k];
+            const uint h = five ? W[w + 4 + k] >> j : 0u;
+            uint lo = u & 0x0f0f0f0fu, hi = (u >> 4) & 0x0f0f0f0fu;
+            if (five) { lo |= (h & 0x01010101u) << 4; hi |= ((h >> 1) & 0x01010101u) << 4; }
+            const vec4 a = vec4(unpackUnorm4x8(lo) * 255.0), b = vec4(unpackUnorm4x8(hi) * 255.0);
+            const int o = x + 32 * j + 4 * k;
+            const vec4 xa = vec4(X[o], X[o + 1], X[o + 2], X[o + 3]), xb = vec4(X[o + 32], X[o + 33], X[o + 34], X[o + 35]);
+            s0 += dot(round(a), xa); m0 += dot(vec4(1.0), xa);
+            s1 += dot(round(b), xb); m1 += dot(vec4(1.0), xb);
+        }
+        const ivec2 sm0 = k4sm(w + 1, j), sm1 = k4sm(w + 1, j + 1);
+        s += dm.x * (float(sm0.x) * s0 + float(sm1.x) * s1) - dm.y * (float(sm0.y) * m0 + float(sm1.y) * m1);
+    }
+    return s;
+}
+float q6k(int w, int x) {
+    const float d = unpackHalf2x16(W[w + 52]).x;
+    float s = 0.0;
+    for (int c = 0; c < 2; c++)
+        for (int h = 0; h < 2; h++) {           /* metade do bloco de 32: escala propria */
+            vec4 q = vec4(0.0);
+            vec4 sx = vec4(0.0);
+            for (int k = 0; k < 4; k++) {
+                const int i = 4 * h + k;
+                const uint a = W[w + 16 * c + i], b = W[w + 16 * c + 8 + i], hv = W[w + 32 + 8 * c + i];
+                const uint v0 = (a & 0x0f0f0f0fu) | ((hv & 0x03030303u) << 4);
+                const uint v1 = (b & 0x0f0f0f0fu) | (((hv >> 2) & 0x03030303u) << 4);
+                const uint v2 = ((a >> 4) & 0x0f0f0f0fu) | (((hv >> 4) & 0x03030303u) << 4);
+                const uint v3 = ((b >> 4) & 0x0f0f0f0fu) | (((hv >> 6) & 0x03030303u) << 4);
+                const int o = x + 128 * c + 4 * i;
+                const vec4 x0 = vec4(X[o], X[o + 1], X[o + 2], X[o + 3]), x1 = vec4(X[o + 32], X[o + 33], X[o + 34], X[o + 35]);
+                const vec4 x2 = vec4(X[o + 64], X[o + 65], X[o + 66], X[o + 67]), x3 = vec4(X[o + 96], X[o + 97], X[o + 98], X[o + 99]);
+                q += vec4(dot(round(unpackUnorm4x8(v0) * 255.0) - 32.0, x0), dot(round(unpackUnorm4x8(v1) * 255.0) - 32.0, x1),
+                          dot(round(unpackUnorm4x8(v2) * 255.0) - 32.0, x2), dot(round(unpackUnorm4x8(v3) * 255.0) - 32.0, x3));
+            }
+            for (int e = 0; e < 4; e++) {
+                const uint u = byt(w + 48, 8 * c + 2 * e + h);
+                s += float(u < 128u ? int(u) : int(u) - 256) * q[e];
+            }
+        }
+    return d * s;
+}
+float iq4xs(int w, int x) {
+    const float d = unpackHalf2x16(W[w]).x;
+    const uint sh = W[w] >> 16;
+    float s = 0.0;
+    for (int ib = 0; ib < 8; ib++) {
+        const int sc = int(((byt(w + 1, ib >> 1) >> (4 * (ib & 1))) & 15u) | (((sh >> (2 * ib)) & 3u) << 4)) - 32;
+        float q = 0.0;
+        for (int k = 0; k < 4; k++) {
+            const uint u = W[w + 2 + 4 * ib + k];
+            for (int e = 0; e < 4; e++) {
+                const uint b = u >> (8 * e);
+                q += float(NL[b & 15u]) * X[x + 32 * ib + 4 * k + e] + float(NL[(b >> 4) & 15u]) * X[x + 32 * ib + 16 + 4 * k + e];
+            }
+        }
+        s += float(sc) * q;
+    }
+    return d * s;
+}
+float iq3s(int w, int x) {
+    const float d = unpackHalf2x16(W[w]).x;
+    float s = 0.0;
+    for (int g = 0; g < 8; g++) {
+        const uint qh = byt(w + 17, g), sg = W[w + 19 + g], sc4 = byt(w + 27, g >> 1);
+        float q = 0.0;
+        for (int l = 0; l < 8; l++) {           /* 8 indices de 9 bits, 4 pesos cada */
+            const uint id = byt(w + 1, 8 * g + l) | (((qh >> l) & 1u) << 8);
+            const vec4 v = round(unpackUnorm4x8(GR[id]) * 255.0);
+            const uint sb = sg >> (4 * l);
+            const vec4 sn = vec4((sb & 1u) != 0u ? -1.0 : 1.0, (sb & 2u) != 0u ? -1.0 : 1.0, (sb & 4u) != 0u ? -1.0 : 1.0, (sb & 8u) != 0u ? -1.0 : 1.0);
+            const int o = x + 32 * g + 4 * l;
+            q += dot(v * sn, vec4(X[o], X[o + 1], X[o + 2], X[o + 3]));
+        }
+        s += float(1u + 2u * ((g & 1) != 0 ? sc4 >> 4 : sc4 & 15u)) * q;
+    }
+    return d * s;
+}
+void main() {
+    const int li = int(gl_LocalInvocationIndex), r = int(gl_WorkGroupID.x) * RPG + li / NB, b = li % NB;
+    float s = 0.0;
+    if (li < RPG * NB && r < pc.rows) {
+        const int bw = pc.rw / NB, w = r * pc.rw + b * bw, x = b * BLK;
+        s = WT == 30 ? bf16(w, x) : WT == 12 ? q45k(w, x, false) : WT == 13 ? q45k(w, x, true) : WT == 14 ? q6k(w, x) : WT == 23 ? iq4xs(w, x) : iq3s(w, x);
+    }
+    part[li] = s;
+    barrier();
+    if (li < RPG && r >= 0) {
+        const int row = int(gl_WorkGroupID.x) * RPG + li;
+        if (row < pc.rows) {
+            float t = 0.0;
+            for (int k = 0; k < NB; k++) t += part[li * NB + k];
+            O[pc.oofs + row] = t;
+        }
+    }
+}

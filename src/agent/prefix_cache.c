@@ -58,6 +58,7 @@ static int pfx_ssm_io(Model *m, FILE *f, int n, int backend, int dir) {      /* 
     if (!tot) return 1;
     if (c->q4e) {       /* qwen4exp: DeltaNet e depois n-gramas, convolucao e indice da atencao esparsa */
         const size_t sb = (size_t)m->n_lin * dn_state_floats(c) * sizeof(float);
+        if (dir) q4_state_home(m);
         if ((dir ? fwrite(m->ssm, 1, sb, f) : fread(m->ssm, 1, sb, f)) != sb) return 0;
         return q4_state_io(m, f, n, dir);
     }

@@ -19,8 +19,8 @@
    1 lotes grandes no prompt (KATANA_Q4_BATCH, padrao 256), 2 produtos em lote com a linha aberta uma vez tambem em Q4_K/Q5_K/Q6_K
    e BF16 em AVX-512, 4 DeltaNet por cabeca e por canal (todos os tokens do lote de uma vez), 8 trabalho serial por token repartido
    entre as threads, 16 especialistas em blocos com saida local, 32 leitura antecipada dos especialistas ainda nao tocados,
-   64 Q2_0 e IQ4_NL em 8 bits (VBMI) */
-enum { QO_BATCH = 1, QO_KERN = 2, QO_DN = 4, QO_PAR = 8, QO_EXP = 16, QO_AHEAD = 32, QO_K8 = 64, QO_ONE = 1 << 20 /* q4bench: prompt token a token */ };
+   64 Q2_0 e IQ4_NL em 8 bits (VBMI), 128 geracao com a placa (vk_qwen4exp.c) */
+enum { QO_BATCH = 1, QO_KERN = 2, QO_DN = 4, QO_PAR = 8, QO_EXP = 16, QO_AHEAD = 32, QO_K8 = 64, QO_GPU = 128, QO_ONE = 1 << 20 /* q4bench: prompt token a token */ };
 static int q4_opt = -1, q4_bsize;
 #define Q4_RMAX 16              /* ramos */
 typedef struct { Mat down, up, inj; float *norm; } Q4Hc;
@@ -169,20 +169,20 @@ static void q4_load(Model *m, const Tensors *ts) {
         if (L->lin) {
             const size_t nv = c->ssm_rank, C = dn_channels(c);
             L->lin_i = m->n_lin++;
-            L->wqkv = get_mat(ts, QN("attn_qkv.weight"), C, d, 1, np);
-            L->wz = get_mat(ts, QN("attn_gate.weight"), c->ssm_inner, d, 1, np);
+            L->wqkv = q4_mat(m, ts, QN("attn_qkv.weight"), C, d);
+            L->wz = q4_mat(m, ts, QN("attn_gate.weight"), c->ssm_inner, d);
             L->walpha = q4_mat(m, ts, QN("ssm_alpha.weight"), nv, d);
             L->wbeta = q4_mat(m, ts, QN("ssm_beta.weight"), nv, d);
-            L->wssm_out = get_mat(ts, QN("ssm_out.weight"), d, c->ssm_inner, 1, np);
+            L->wssm_out = q4_mat(m, ts, QN("ssm_out.weight"), d, c->ssm_inner);
             L->conv_w = get_tensor(ts, QN("ssm_conv1d.weight"), C * c->ssm_conv, 1, np);
             L->ssm_a = get_tensor(ts, QN("ssm_a"), nv, 1, np);
             L->dt_bias = get_tensor(ts, QN("ssm_dt.bias"), nv, 1, np);
             L->ssm_norm = get_tensor(ts, QN("ssm_norm.weight"), c->ssm_inner / nv, 1, np);
         } else {
-            L->wq = get_mat(ts, QN("attn_q.weight"), 2 * qd, d, 1, np);
-            L->wk = get_mat(ts, QN("attn_k.weight"), kvd, d, 1, np);
-            L->wv = get_mat(ts, QN("attn_v.weight"), kvd, d, 1, np);
-            L->wo = get_mat(ts, QN("attn_output.weight"), d, qd, 1, np);
+            L->wq = q4_mat(m, ts, QN("attn_q.weight"), 2 * qd, d);
+            L->wk = q4_mat(m, ts, QN("attn_k.weight"), kvd, d);
+            L->wv = q4_mat(m, ts, QN("attn_v.weight"), kvd, d);
+            L->wo = q4_mat(m, ts, QN("attn_output.weight"), d, qd);
             L->q_norm = get_tensor(ts, QN("attn_q_norm.weight"), c->hd, 1, np);
             L->k_norm = get_tensor(ts, QN("attn_k_norm.weight"), c->hd, 1, np);
             Q->ia = na++;
@@ -948,23 +948,19 @@ static void q4_attn_job(void *cx, int t0, int t1) {
         for (int h = 0; h < c->n_kv; h++) { rmsnorm(k + h * hd, k + h * hd, j->L->k_norm, hd, c->eps); q4_rope(j->m, k + h * hd, pos); }
     }
 }
-static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B, XQ *xqs) {
+/* nucleo: QG/K/V ja projetados -> O [B][qd]; prep: se Xb ja esta quantizado em xqs (NULL = nao) */
+static void q4_att_core(Model *m, int l, const float *Xb, const float *QG, float *K, const float *V, float *O, int pos0, int B, XQ *xqs, int *prep_) {
     const Config *c = &m->cfg;
     Q4 *q = m->q4;
     const Layer *L = &m->layers[l];
     const Q4L *Q = &q->l[l];
     const int d = c->dim, nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, qd = nh * hd, ih = q->ihd;
     if (hd % 8) die("qwen4exp: largura de cabeca invalida");
-    float *QG = q4_scr(8, (size_t)B * 2 * qd), *K = q4_scr(9, (size_t)B * kvd), *V = q4_scr(10, (size_t)B * kvd), *O = q4_scr(11, (size_t)B * qd);
     float *qq = q4_scr(12, (size_t)B * qd), *IQ = q4_scr(13, (size_t)B * q->in * ih), *IK = q4_scr(14, (size_t)B * ih);
-    int prep = 0;
+    int prep0 = 0, *prep = prep_ ? prep_ : &prep0;
     double tk = q4_tick(-1, 0);
-    q4_mm(QG, &L->wq, Xb, xqs, &prep, B, 2 * qd, d);
-    q4_mm(K, &L->wk, Xb, xqs, &prep, B, kvd, d);
-    q4_mm(V, &L->wv, Xb, xqs, &prep, B, kvd, d);
-    q4_mm(IQ, &Q->iq, Xb, xqs, &prep, B, q->in * ih, d);
-    q4_mm(IK, &Q->ik, Xb, xqs, &prep, B, ih, d);
-    tk = q4_tick(QP_ATP, tk);
+    q4_mm(IQ, &Q->iq, Xb, xqs, prep, B, q->in * ih, d);
+    q4_mm(IK, &Q->ik, Xb, xqs, prep, B, ih, d);
     Q4Nj nj = { m, L, QG, qq, K, pos0 };
     if (q4_opt & QO_PAR) pool_for(q4_attn_job, &nj, B, 1); else q4_attn_job(&nj, 0, B);
     for (int t = 0; t < B; t++) {
@@ -996,7 +992,21 @@ static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B
     Q4Aj j = { m, L, Q, IQ, qq, QG, O, sel, nsel, pos0, scap };
     pool_for(q4_sel_job, &j, B, 1);
     pool_for(q4_att_job, &j, B * nh, 1);
-    tk = q4_tick(QP_ATC, tk);
+    q4_tick(QP_ATC, tk);
+}
+static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B, XQ *xqs) {
+    const Config *c = &m->cfg;
+    const Layer *L = &m->layers[l];
+    const int d = c->dim, hd = c->hd, kvd = c->n_kv * hd, qd = c->n_heads * hd;
+    float *QG = q4_scr(8, (size_t)B * 2 * qd), *K = q4_scr(9, (size_t)B * kvd), *V = q4_scr(10, (size_t)B * kvd), *O = q4_scr(11, (size_t)B * qd);
+    int prep = 0;
+    double tk = q4_tick(-1, 0);
+    q4_mm(QG, &L->wq, Xb, xqs, &prep, B, 2 * qd, d);
+    q4_mm(K, &L->wk, Xb, xqs, &prep, B, kvd, d);
+    q4_mm(V, &L->wv, Xb, xqs, &prep, B, kvd, d);
+    q4_tick(QP_ATP, tk);
+    q4_att_core(m, l, Xb, QG, K, V, O, pos0, B, xqs, &prep);
+    tk = q4_tick(-1, 0);
     prep = 0;
     q4_mm(out, &L->wo, O, xqs, &prep, B, d, qd);
     q4_tick(QP_ATO, tk);
@@ -1147,6 +1157,7 @@ static void q4_sh_job(void *cx, int t0, int t1) {
         for (int i = 0; i < j->d; i++) j->out[(size_t)t * j->d + i] += w * j->S[(size_t)t * j->d + i];
     }
 }
+static const float *q4_lg;
 static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs) {
     const Config *c = &m->cfg;
     const Layer *L = &m->layers[l];
@@ -1155,7 +1166,8 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
     float *LG = q4_scr(15, (size_t)B * E), *OU = q4_scr(16, (size_t)B * K * d);
     int prep = 0;
     double tk = q4_tick(-1, 0);
-    q4_mm(LG, &m->q4->l[l].router, Xb, xqs, &prep, B, E, d);
+    if (q4_lg && B == 1) memcpy(LG, q4_lg, E * sizeof(float));      /* notas prontas (placa) */
+    else q4_mm(LG, &m->q4->l[l].router, Xb, xqs, &prep, B, E, d);
     if ((q4_opt & QO_PAR) && B > 1 && !moe.cnt && !moe.trace && !dbg_on && !L->exp_w && c->exp_scale == 1.0f && !getenv("KATANA_EXPLOG")) {
         Q4Rj rj = { c, LG, ex, ew };
         pool_for(q4_rt_job, &rj, B, 2);
@@ -1223,6 +1235,8 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
     if (q4_opt & QO_PAR) pool_for(q4_sh_job, &hj, B, 4); else q4_sh_job(&hj, 0, B);
     q4_tick(QP_SH, tk);
 }
+
+#include "vk_qwen4exp.c"        /* geracao com os mixers e o DeltaNet na placa */
 
 /* ---- B tokens (B <= Q4_BMAX) a partir de pos0: deixa em m->x a entrada da projecao final do ultimo ---- */
 static void q4_batch(Model *m, const int *toks, int B, int pos0) {
@@ -1294,6 +1308,7 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
     if (pos0 + n > c->ctx) die("qwen4exp: contexto cheio");
     if (pos0 == 0) {        /* conversa nova */
         memset(m->ssm, 0, (size_t)m->n_lin * dn_state_floats(c) * sizeof(float));
+        q4g.loc = 0;
         for (int i = 0; i < 8; i++) q->hist[i] = (int)q->eos;
         if (q->n_ple) memset(q->conv, 0, (size_t)(q->pk - 1) * q->ng * q->R * c->dim * sizeof(float));
     }
@@ -1304,11 +1319,12 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
         q4_bsize = e && atoi(e) > 0 ? atoi(e) : 256;
         if (q4_bsize > Q4_BMAX) q4_bsize = Q4_BMAX;
     }
-    const int bm = q4_opt > 0 && (q4_opt & QO_ONE) ? 1 : q4_opt & QO_BATCH ? q4_bsize : 16;
+    const int bm = q4_opt != -1 && (q4_opt & QO_ONE) ? 1 : q4_opt & QO_BATCH ? q4_bsize : 16;
     for (int i = 0, pf = 0; i < n;) {
         if (i >= pf) { q4_ngram_prefetch(q, toks + i, n - i < 4096 ? n - i : 4096); pf = i + 4096; }
         const int B = n - i < bm ? n - i : bm;
-        q4_batch(m, toks + i, B, pos0 + i);
+        if (B == 1 && q4g.on && (q4_opt & QO_GPU) && !gpu.force_cpu && !cpu_exact && !q4_dbg.x && (n == 1 || (q4_opt & QO_ONE))) q4g_token(m, toks[i], pos0 + i);
+        else { q4g_home(m); q4_batch(m, toks + i, B, pos0 + i); }
         i += B;
     }
     if (!want_logits) return NULL;
@@ -1320,6 +1336,7 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
 
 /* estado fora do cache KV e do DeltaNet depois de n tokens, para o prefixo em disco: ultimos tokens, entradas da convolucao
    dos n-gramas, bloco aberto do indice e chaves dos blocos completos */
+static void q4_state_home(Model *m) { q4g_home(m); }
 static size_t q4_state_bytes(const Model *m, int n) {
     const Q4 *q = m->q4;
     int na = 0;
@@ -1329,6 +1346,7 @@ static size_t q4_state_bytes(const Model *m, int n) {
 }
 static int q4_state_io(Model *m, FILE *f, int n, int dir) {
     Q4 *q = m->q4;
+    if (!dir) q4g.loc = 0;       /* o estado lido do arquivo esta na CPU */
     int na = 0;
     for (int l = 0; l < m->cfg.n_layers; l++) na += q->ratios[l] != 0;
 #define Q4_IO(p, b) ((dir ? fwrite(p, 1, b, f) : fread(p, 1, b, f)) == (size_t)(b))
@@ -1455,13 +1473,14 @@ static int q4_check(Model *m, const char *path) {
     if (fread(tk, 4, n, f) != (size_t)n || fread(ref, 4, (size_t)n * nl * D, f) != (size_t)n * nl * D || fread(lg, 4, (size_t)n * V, f) != (size_t)n * V) die("q4check: referencia truncada");
     fclose(f);
         if (!q4_kern_test()) ok = 0;
+    if (!q4g_test()) ok = 0;
     q4_dbg.n = n;
     for (int it = 0; it < 6; it++) {
         const int mode = it % 3;
         cpu_exact = it < 3;     /* produtos em float; depois os inteiros (ativacao em 16 bits) */
         const double tol = !cpu_exact || m->kh || m->kq8 ? 5e-3 : 2e-4;    /* arredondamentos (ativacao, K e V) se propagam pelas camadas */
         static const int pieces[] = { 1, 7, 2, 16, 3, 19, 5, 33 };
-        q4_dbg.x = xalloc((size_t)n * nl * D, 4);
+        q4_dbg.x = q4g.on && it >= 3 ? NULL : xalloc((size_t)n * nl * D, 4);     /* com a placa: so os logits */
         double mlg = 0.0, mref = 0.0;
         int nlg = 0, agree = 0;
         for (int i = 0, p = 0; i < n;) {
@@ -1481,8 +1500,8 @@ static int q4_check(Model *m, const char *path) {
         }
         printf("%s %s: %d tokens, logits em %d posicoes: maior diferenca %.3e (maior logit %.3f), argmax igual %d/%d\n",
                cpu_exact ? "exato  " : "inteiro", mode == 0 ? "token a token" : mode == 1 ? "lotes        " : "misto        ", n, nlg, mlg, mref, agree, nlg);
-        if ((cpu_exact && !(mlg <= tol * (mref > 1 ? mref : 1))) || agree != nlg) ok = 0;
-        for (int l = 0; l < nl; l++) {
+        if (((cpu_exact || q4g.on) && !(mlg <= tol * (mref > 1 ? mref : 1))) || agree != nlg) ok = 0;
+        for (int l = 0; l < nl && q4_dbg.x; l++) {
             double md = 0.0, mx = 0.0;
             int bad = 0;        /* tokens acima da tolerancia */
             for (size_t k = 0; k < (size_t)n * D; k++) { const size_t i = (k / D * nl + l) * D + k % D; if (fabs(ref[i]) > mx) mx = fabs(ref[i]); }

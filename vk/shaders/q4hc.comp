@@ -1,0 +1,41 @@
+#version 450
+/* qwen4exp: residual em R ramos de DM valores, um token. MODE 0: N = rms por ramo de A, vezes o peso B (um grupo por ramo).
+   1: A (saida do down com o inject em seguida) -> O: silu(A/R) nos RK primeiros e 2 sigmoide(A/R) nos R seguintes.
+   2: O[i] = media dos ramos de A * sigmoide(B).  3: O (o estado) += peso do ramo (B[RK + r]) * A. */
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const int MODE = 0;
+layout(constant_id = 1) const int R = 4;
+layout(constant_id = 2) const int DM = 2560;
+layout(constant_id = 3) const int RK = 320;
+layout(std430, binding = 0) readonly buffer Ab { float A[]; };
+layout(std430, binding = 1) readonly buffer Bb { float B[]; };
+layout(std430, binding = 2) buffer Ob { float O[]; };
+layout(push_constant) uniform P { float eps; } pc;
+shared float part[256];
+float sig(float x) { return 1.0 / (1.0 + exp(-clamp(x, -60.0, 60.0))); }
+void main() {
+    const int li = int(gl_LocalInvocationIndex), g = int(gl_WorkGroupID.x);
+    if (MODE == 0) {
+        float s = 0.0;
+        for (int i = li; i < DM; i += 256) { const float v = A[g * DM + i]; s += v * v; }
+        part[li] = s;
+        barrier();
+        for (int n = 128; n > 0; n >>= 1) { if (li < n) part[li] += part[li + n]; barrier(); }
+        const float inv = 1.0 / sqrt(part[0] / float(DM) + pc.eps);
+        for (int i = li; i < DM; i += 256) O[g * DM + i] = B[g * DM + i] * (A[g * DM + i] * inv);
+    } else if (MODE == 1) {
+        const int i = g * 256 + li;
+        if (i < RK) { const float v = A[i] / float(R); O[i] = v * sig(v); }
+        else if (i < RK + R) O[i] = 2.0 * sig(A[i] / float(R));
+    } else if (MODE == 2) {
+        const int i = g * 256 + li;
+        if (i < DM) {
+            float s = 0.0;
+            for (int r = 0; r < R; r++) s += A[r * DM + i] * sig(B[r * DM + i]);
+            O[i] = s / float(R);
+        }
+    } else {
+        const int i = g * 256 + li;
+        if (i < R * DM) O[i] += B[RK + i / DM] * A[i % DM];
+    }
+}

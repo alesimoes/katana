@@ -10,6 +10,12 @@
    sao lidos por 2 cabecas; as leituras usam so as posicoes anteriores, entao nao ha corrida).
    pr = [ssm_a (NV) | dt_bias (NV) | peso da norma (128)], ssm_a = -exp(A_log).  ab = [a (NV) | b (NV)].
    kmap 0: cabeca h usa o grupo q/k h/(NV/NK); kmap 1: grupo h%NK. */
+/* portao da saida: SiLU (qwen35) ou sigmoide (qwen4exp, -DGSIG) */
+#ifdef GSIG
+#define GATE(v) (1.0 / (1.0 + exp(-clamp(v, -60.0, 60.0))))
+#else
+#define GATE(v) ((v) / (1.0 + exp(-(v))))
+#endif
 layout(local_size_x = 512) in;
 layout(constant_id = 0) const int NK = 16;
 layout(constant_id = 1) const int NV = 32;
@@ -89,6 +95,6 @@ void main() {
     if (t < D) {
         const float ms = (red[12] + red[13] + red[14] + red[15]) / float(D);
         const float zz = z[h * D + j];
-        o[h * D + j] = oj / sqrt(ms + pc.eps_rms) * pr[2 * NV + j] * (zz / (1.0 + exp(-zz)));
+        o[h * D + j] = oj / sqrt(ms + pc.eps_rms) * pr[2 * NV + j] * GATE(zz);
     }
 }

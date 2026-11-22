@@ -30,6 +30,7 @@ ap.add_argument("--seed", type=int, default=1)
 ap.add_argument("--n", type=int, default=72)
 ap.add_argument("--mutate", default="")
 ap.add_argument("--big", type=float, default=1.0, help="scale of the weights before every sigmoid/SiLU (saturated activations)")
+ap.add_argument("--gpu", action="store_true", help="DeltaNet heads of 128 and BF16 projections: the shape the Vulkan path accepts (slower to build; use a small --n)")
 a = ap.parse_args()
 rnd = random.Random(a.seed)
 
@@ -37,7 +38,8 @@ d, R, RANK, NL, EVERY = 16, 4, 8, 8, 4
 D = d * R
 HEADS, KV, HD, ROPE = 4, 2, 16, 8
 IN, IHD, BUDGET, RATIO = 2, 8, 8, 4
-DK, NG, NV, DV, CK = 8, 2, 6, 8, 4
+DK, NG, NV, DV, CK = (128, 2, 6, 128, 4) if a.gpu else (8, 2, 6, 8, 4)
+PT = 30 if a.gpu else 0        # projections: BF16 or F32
 INNER, C = NV * DV, 2 * NG * DK + NV * DV
 E, USED, H = 8, 3, 64
 NGRAM, HPN, PK, PD, PLE_L = 3, 2, 4, 32, 1
@@ -101,6 +103,7 @@ def rand_q2_0(rows, cols):
     return out, bytes(blob)
 
 
+pf = bf16 if a.gpu else f32
 def hc_weights(inject):
     h = {"norm": vec(D, 0.3), "down": mat(RANK, D, 0.3 * B, bf16), "up": mat(D, RANK, 0.6 * B, bf16)}
     if inject: h["inj"] = mat(R, D, 0.3 * B, bf16)
@@ -112,10 +115,10 @@ W = {"emb": mat(V, d, 0.5), "head": mat(V, d, 0.5), "hc": hc_weights(False), "l"
 for l in range(NL):
     p = {"hc_attn": hc_weights(True), "hc_ffn": hc_weights(True), "lin": (l + 1) % EVERY != 0}
     if p["lin"]:
-        p.update(qkv=mat(C, d, 0.4), z=mat(INNER, d, 0.4 * B), al=mat(NV, d, 0.3, bf16), be=mat(NV, d, 0.3 * B, bf16), conv=mat(C, CK, 0.4 * B),
-                 a_log=[math.log(rnd.uniform(0.05, 4)) for _ in range(NV)], dt=vec(NV, 1.0, -1.0), norm=vec(DV, 0.2, 1.0), out=mat(d, INNER, 0.4))
+        p.update(qkv=mat(C, d, 0.4, pf), z=mat(INNER, d, 0.4 * B, pf), al=mat(NV, d, 0.3, bf16), be=mat(NV, d, 0.3 * B, bf16), conv=mat(C, CK, 0.4 * B),
+                 a_log=[math.log(rnd.uniform(0.05, 4)) for _ in range(NV)], dt=vec(NV, 1.0, -1.0), norm=vec(DV, 0.2, 1.0), out=mat(d, INNER, 0.4, pf))
     else:
-        p.update(q=mat(2 * HEADS * HD, d, 0.4 * B), k=mat(KV * HD, d, 0.4), v=mat(KV * HD, d, 0.4), o=mat(d, HEADS * HD, 0.3),
+        p.update(q=mat(2 * HEADS * HD, d, 0.4 * B, pf), k=mat(KV * HD, d, 0.4, pf), v=mat(KV * HD, d, 0.4, pf), o=mat(d, HEADS * HD, 0.3, pf),
                  qn=vec(HD, 0.3), kn=vec(HD, 0.3), iqk=mat((IN + 1) * IHD, d, 0.5, bf16), iqn=vec(IHD, 0.3), ikn=vec(IHD, 0.3))
     p.update(router=mat(E, d, 0.6, bf16), gate=[mat(H, d, 0.3 * B) for _ in range(E)], up=[mat(H, d, 0.3) for _ in range(E)],
              sg=mat(H, d, 0.3 * B), su=mat(H, d, 0.3), sd=mat(d, H, 0.1), sgate=vec(d, 0.5 * B, 0, bf16))
@@ -166,20 +169,20 @@ for l, p in enumerate(W["l"]):
     add_hc(b + "hc_attn", p["hc_attn"]); add_hc(b + "hc_ffn", p["hc_ffn"])
     if p["lin"]:
         kd = 2 * NG * DK
-        add(b + "attn_qkv.weight", [d, C], 0, flat(p["qkv"][:kd] + tile(p["qkv"][kd:], DV)))
-        add(b + "attn_gate.weight", [d, INNER], 0, flat(tile(p["z"], DV)))
+        add(b + "attn_qkv.weight", [d, C], PT, flat(p["qkv"][:kd] + tile(p["qkv"][kd:], DV)))
+        add(b + "attn_gate.weight", [d, INNER], PT, flat(tile(p["z"], DV)))
         add(b + "ssm_alpha.weight", [d, NV], 30, flat(tile(p["al"], 1)))
         add(b + "ssm_beta.weight", [d, NV], 30, flat(tile(p["be"], 1)))
         add(b + "ssm_conv1d.weight", [CK, C], 0, flat(p["conv"][:kd] + tile(p["conv"][kd:], DV)))
         add(b + "ssm_a", [NV], 0, [-math.exp(x) for x in tile(p["a_log"], 1)])
         add(b + "ssm_dt.bias", [NV], 0, tile(p["dt"], 1))
         add(b + "ssm_norm.weight", [DV], 0, p["norm"])
-        add(b + "ssm_out.weight", [INNER, d], 0, flat([tile(r, DV) for r in p["out"]]))
+        add(b + "ssm_out.weight", [INNER, d], PT, flat([tile(r, DV) for r in p["out"]]))
     else:
-        add(b + "attn_q.weight", [d, 2 * HEADS * HD], 0, flat(p["q"]))
-        add(b + "attn_k.weight", [d, KV * HD], 0, flat(p["k"]))
-        add(b + "attn_v.weight", [d, KV * HD], 0, flat(p["v"]))
-        add(b + "attn_output.weight", [HEADS * HD, d], 0, flat(p["o"]))
+        add(b + "attn_q.weight", [d, 2 * HEADS * HD], PT, flat(p["q"]))
+        add(b + "attn_k.weight", [d, KV * HD], PT, flat(p["k"]))
+        add(b + "attn_v.weight", [d, KV * HD], PT, flat(p["v"]))
+        add(b + "attn_output.weight", [HEADS * HD, d], PT, flat(p["o"]))
         add(b + "attn_q_norm.weight", [HD], 0, [1 + x for x in p["qn"]])
         add(b + "attn_k_norm.weight", [HD], 0, [1 + x for x in p["kn"]])
         add(b + "indexer.q_proj.weight", [d, IN * IHD], 30, flat(p["iqk"][:IN * IHD]))
