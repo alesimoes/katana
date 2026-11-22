@@ -3,7 +3,7 @@
    fatias, pesos residentes ou enviados na hora, reenvio dos mestres depois do passo, acumulacao. */
 void tg_emu_run(int mode, int wt, const void *w, const float *x, float *o, uint32_t M, uint32_t N, uint32_t K,
                 uint32_t ws, uint32_t wo, uint32_t gx, uint32_t gy);
-static int tge_mode[16], tge_wt[16], tge_np;
+static int tge_mode[64], tge_wt[64], tge_np;
 static size_t tge_bytes;
 static int tge_init(KvkInfo *I) {
     memset(I, 0, sizeof *I);
@@ -47,6 +47,9 @@ static int tge_dispatch(KvkPipe p, const KvkBuf *bufs, int n, const void *push, 
                (float *)(uintptr_t)bufs[2].b, pc[0], pc[1], pc[2], pc[3], pc[4], gx, gy);
     return 1;
 }
+static int tge_flush(void) { return 1; }
+#define kvk_buf_write_q tge_write
+#define kvk_flush tge_flush
 #define kvk_init tge_init
 #define kvk_vram_budget tge_budget
 #define kvk_shutdown tge_shutdown
