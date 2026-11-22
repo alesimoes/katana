@@ -234,10 +234,14 @@ typedef struct {
     size_t ar_size, budget, resident, chunk;
     uint64_t ver;                  /* versao dos mestres em float */
     double min_mac, t_gpu;
+    int fixed;                     /* KATANA_TRAIN_GPU_MIN dado: limite fixo em vez de calibrar */
+    /* calibragem em tempo de execucao (modos 0 e 1): segundos da CPU por multiplicacao e da GPU por produto pequeno */
+    struct { double cpu_rate, gpu_sec; long cpu_n, gpu_n, seen; } cal[2];
     long calls, streamed;
     float *hbuf; size_t hcap;      /* rascunho no host: fatias empacotadas e resultados */
 } TGpu;
 static TGpu tg;
+static double tg_ts[3][2]; static long tg_ns[3][2];   /* medida: [modo][0 = GPU, 1 = CPU] segundos e produtos */
 
 static int tg_wt(const TPar *p) {          /* tipo do peso no shader; -1 = a GPU nao le este formato */
     if (p->w || p->mat->f) return 0;
@@ -282,6 +286,7 @@ static int tg_init(void) {
     if (getenv("KATANA_TRAIN_VRAM")) bud = atof(getenv("KATANA_TRAIN_VRAM")) * 1073741824.0;
     tg.budget = bud > 0 ? (size_t)bud : 0;
     tg.min_mac = getenv("KATANA_TRAIN_GPU_MIN") ? atof(getenv("KATANA_TRAIN_GPU_MIN")) : 4194304.0;
+    tg.fixed = getenv("KATANA_TRAIN_GPU_MIN") != NULL;
     tg.on = 1;
     fprintf(stderr, "treino na GPU: %s; ate %.1f GB de pesos residentes na VRAM\n", I.name, tg.budget / 1073741824.0);
     return 1;
@@ -318,6 +323,31 @@ static int tg_resident(TPar *p) {
     return 1;
 }
 
+/* vale a pena mandar este produto para a GPU? Com KATANA_TRAIN_GPU_MIN (ou no gradiente) o limite e fixo. Senao compara o
+   que a CPU gastaria (multiplicacoes x segundos por multiplicacao medidos nos produtos que ela fez) com o que a GPU gasta
+   por produto pequeno (media dos ultimos): a CPU pode ficar mais rapida (outros kernels) e o limite acompanha. */
+static int tg_worth(int mode, double macs) {
+    if (mode == 2 || tg.fixed) return macs >= tg.min_mac;
+    if (macs >= 16777216.0) return 1;
+    typeof(tg.cal[0]) *c = &tg.cal[mode];
+    c->seen++;
+    if (c->gpu_n < 4) return 1;                                  /* ainda sem medida da GPU */
+    if (c->cpu_n < 4) return macs >= 4194304.0;                  /* ainda sem medida da CPU: os pequenos vao para ela medir */
+    const int gpu = macs * c->cpu_rate > c->gpu_sec;
+    return c->seen % 128 == 0 ? !gpu : gpu;                      /* de vez em quando experimenta o outro lado, para as medidas nao ficarem velhas */
+}
+static void tg_note_gpu(int mode, double macs, double sec) {
+    if (mode > 1 || macs >= 16777216.0) return;
+    typeof(tg.cal[0]) *c = &tg.cal[mode];
+    c->gpu_sec = c->gpu_n++ ? 0.8 * c->gpu_sec + 0.2 * sec : sec;
+}
+static void tg_note_cpu(int mode, double macs, double sec) {      /* chamado quando o produto ficou na CPU */
+    tg_ts[mode][1] += sec; tg_ns[mode][1]++;
+    if (!tg.on || macs <= 0) return;
+    typeof(tg.cal[0]) *c = &tg.cal[mode];
+    c->cpu_rate = c->cpu_n++ ? 0.8 * c->cpu_rate + 0.2 * sec / macs : sec / macs;
+}
+
 typedef struct { uint32_t M, N, K, ws, wo; } TgPush;
 static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M, uint32_t N, uint32_t K, size_t ws, size_t wo) {
     if (wo > 0xffffffffu || ws > 0xffffffffu) return 0;
@@ -333,7 +363,8 @@ static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M,
 static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float *out, int B) {
     if (!tg_init() || !p->mat) return 0;
     const size_t R = p->rows, C = p->cols, F = 4, ch = tg.chunk / F;     /* ch: floats por rascunho */
-    if ((double)R * C * B < tg.min_mac) return 0;
+    const double macs = (double)R * C * B;
+    if (!tg_worth(mode, macs)) return 0;
     const int wt = mode == 2 ? 0 : tg_wt(p);
     if (wt < 0) return 0;
     const double t0 = now_sec();
@@ -394,6 +425,7 @@ static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float 
         }
     }
     tg.calls++; tg.t_gpu += now_sec() - t0;
+    tg_note_gpu(mode, macs, now_sec() - t0);
     return 1;
 fail:
     /* a GPU falhou no meio: so e seguro se nada foi acumulado; o modo 0 sobrescreve, os outros nao */
@@ -441,7 +473,8 @@ static float *tp_az(const TPar *p, const float *x, int B) {
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
     const double p0 = now_sec();
-    if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) pool_for(tmv_job, &j, (int)p->rows, 16);
+    if (tg_prod(0, (TPar *)p, x, NULL, out, B)) { tg_ts[0][0] += now_sec() - p0; tg_ns[0][0]++; }
+    else { const double c0 = now_sec(); pool_for(tmv_job, &j, (int)p->rows, 16); tg_note_cpu(0, (double)p->rows * p->cols * B, now_sec() - c0); }
     if (!p->r) { tprof[TP_MV] += now_sec() - p0; return; }
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
@@ -475,7 +508,8 @@ static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
     const double p0 = now_sec();
-    if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
+    if (tg_prod(1, (TPar *)p, dy, NULL, dx, B)) { tg_ts[1][0] += now_sec() - p0; tg_ns[1][0]++; }
+    else { const double c0 = now_sec(); pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1); tg_note_cpu(1, (double)p->rows * p->cols * B, now_sec() - c0); }
     if (!p->r) { tprof[TP_MVT] += now_sec() - p0; return; }
     const size_t R = p->rows;
     float *t = xalloc(p->r, 4);
@@ -2111,6 +2145,8 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         const double el = now_sec() - t0;
         printf("partes do treino (segundos; os produtos estao dentro da ida e da volta):\n");
         for (int i = 0; i < TP_NPROF; i++) printf("  %-26s %9.2f  %5.1f%%\n", tprof_name[i], tprof[i], el > 0 ? 100.0 * tprof[i] / el : 0.0);
+        if (tg.on) for (int m = 0; m < 2; m++) printf("  produtos modo %d: GPU %ld em %.2f s, CPU %ld em %.2f s (CPU %.2f ns/mult, GPU %.0f us por produto pequeno)\n",
+                                                  m, tg_ns[m][0], tg_ts[m][0], tg_ns[m][1], tg_ts[m][1], tg.cal[m].cpu_rate * 1e9, tg.cal[m].gpu_sec * 1e6);
     }
     A.T = seq;
     /* perda final em todas as janelas de treino (do estado final; com validacao, o arquivo gravado e o do melhor passo) */
