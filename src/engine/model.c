@@ -238,7 +238,7 @@ static size_t qbytes(uint32_t type, size_t n) {
         case T_IQ1_M: return n % 256 ? 0 : n / 256 * 56;
         case T_TQ1_0: return n % 256 ? 0 : n / 256 * 54;
         case T_TQ2_0: return n % 256 ? 0 : n / 256 * 66;
-        case T_Q2_0: return n % 64 ? 0 : n / 64 * 18;     /* f16 d, 64 de 2 bits (codigo - 1) */
+        case T_Q2_0: return n % 64 ? 0 : n / 64 * 18;     /* f16 d, 64 x 2 bits (codigo - 1) * d; blocos de 64 */
         default:     return 0;
     }
 }
@@ -495,21 +495,18 @@ static int dequant_ext(uint32_t type, const uint8_t *src, float *out, size_t n) 
         }
         return 1;
     }
+    case T_Q2_0:    /* elemento e no byte e/4, deslocamento 2*(e%4); valores -1, 0, +1, +2 vezes d */
+        for (size_t b = 0; b < n / 64; b++, src += 18, out += 64) {
+            const float d = h2f(src);
+            for (int e = 0; e < 64; e++) out[e] = (float)(((src[2 + e / 4] >> (2 * (e % 4))) & 3) - 1) * d;
+        }
+        return 1;
     case T_TQ2_0:
         for (size_t b = 0; b < n / 256; b++, src += 66) {
             const float d = h2f(src + 64);
             for (int j = 0; j < 64; j += 32)
                 for (int l = 0; l < 4; l++)
                     for (int m = 0; m < 32; m++) *out++ = (float)(((src[j + m] >> (l * 2)) & 3) - 1) * d;
-        }
-        return 1;
-    case T_Q2_0:        /* valor = d * (codigo - 1): -1, 0, 1 ou 2; d pode ser negativo */
-        for (size_t b = 0; b < n / 64; b++, src += 18, out += 64) {
-            const float d = h2f(src);
-            for (int j = 0; j < 16; j++) {
-                const int q = src[2 + j];
-                for (int s = 0; s < 4; s++) out[4 * j + s] = (float)(((q >> 2 * s) & 3) - 1) * d;
-            }
         }
         return 1;
     default:
@@ -645,7 +642,8 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
     for (uint64_t i = 0; i < ts->n; i++) {
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
-        if (t->type == T_F32 || t->type == T_F16 || t->type == T_BF16) break;
+        /* BF16 vira float32 na carga, salvo KATANA_BF16_RAW=1 (fica em BF16, so CPU: produto em lowbit_bf16_dot) */
+        if (t->type == T_F32 || t->type == T_F16 || (t->type == T_BF16 && !(getenv("KATANA_BF16_RAW") && atoi(getenv("KATANA_BF16_RAW"))))) break;
         size_t n = 1, stride = qbytes(t->type, cols);
         if (!stride) break;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];

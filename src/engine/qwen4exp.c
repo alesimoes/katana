@@ -237,6 +237,7 @@ static float q4_dot_bf16(const uint8_t *row, const float *x, int n) {
     for (; j < n; j++) { uint16_t h; memcpy(&h, row + 2 * j, 2); s += bf16_to_f32(h) * x[j]; }
     return s;
 }
+static void mm_prepare(XQ *xqs, const float *X, int B, int cols);
 static __thread float *q4_row; static __thread int q4_rcap;
 /* linha r de W em float: a propria (float32) ou aberta na memoria da thread */
 static const float *q4_open(const Mat *W, size_t r, int cols) {
@@ -592,15 +593,23 @@ static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B
 }
 
 /* ---- MoE ----
-   Especialistas fora dos tipos com produto inteiro: os pares (token, especialista) sao agrupados por especialista e cada
-   linha de peso e aberta uma vez para todos os tokens dele. */
-typedef struct { const Layer *L; const float *X; float *hg, *hu, *o; const int *ee, *beg, *pt; int H, d, ng; } Q4Xj;
+   Os pares (token, especialista) sao agrupados por especialista e cada linha de peso e aberta uma vez para todos os tokens
+   dele: nos tipos de poucos bits com o produto inteiro em lote (xp: entrada quantizada de cada par; xh: a do down), nos
+   outros em float. */
+static int q4_low(const Mat *W) { return mat_int(W) && lowbit_ok(W->type); }
+typedef struct { XQ *xp, *xh; const Layer *L; const float *X; float *hg, *hu, *o; const int *ee, *beg, *pt; int H, d, ng; } Q4Xj;
 static void q4_exp_glu(void *cx, int i0, int i1) {
     const Q4Xj *j = cx;
     for (int i = i0; i < i1; i++) {
         const int g = i / (2 * j->H), r = i % (2 * j->H), up = r >= j->H, e = j->ee[g];
-        const float *w = q4_open(up ? &j->L->eu[e] : &j->L->eg[e], up ? r - j->H : r, j->d);
-        float *dst = up ? j->hu : j->hg;
+        const Mat *M = up ? &j->L->eu[e] : &j->L->eg[e];
+        float *dst = up ? j->hu : j->hg, tmp[Q4_BMAX];
+        if (q4_low(M)) {
+            lowbit_dot_batch(M, M->q + (size_t)(up ? r - j->H : r) * M->stride, j->xp, j->beg[g], j->beg[g + 1], j->d, tmp);
+            for (int p = j->beg[g]; p < j->beg[g + 1]; p++) dst[(size_t)p * j->H + (up ? r - j->H : r)] = tmp[p - j->beg[g]];
+            continue;
+        }
+        const float *w = q4_open(M, up ? r - j->H : r, j->d);
         for (int p = j->beg[g]; p < j->beg[g + 1]; p++) dst[(size_t)p * j->H + (up ? r - j->H : r)] = dot(w, j->X + (size_t)j->pt[p] * j->d, j->d);
     }
 }
@@ -612,7 +621,14 @@ static void q4_exp_down(void *cx, int i0, int i1) {
     const Q4Xj *j = cx;
     for (int i = i0; i < i1; i++) {
         const int g = i / j->d, r = i % j->d;
-        const float *w = q4_open(&j->L->ed[j->ee[g]], r, j->H);
+        const Mat *M = &j->L->ed[j->ee[g]];
+        if (q4_low(M)) {
+            float tmp[Q4_BMAX];
+            lowbit_dot_batch(M, M->q + (size_t)r * M->stride, j->xh, j->beg[g], j->beg[g + 1], j->H, tmp);
+            for (int p = j->beg[g]; p < j->beg[g + 1]; p++) j->o[(size_t)p * j->d + r] = tmp[p - j->beg[g]];
+            continue;
+        }
+        const float *w = q4_open(M, r, j->H);
         for (int p = j->beg[g]; p < j->beg[g + 1]; p++) j->o[(size_t)p * j->d + r] = dot(w, j->hg + (size_t)p * j->H, j->H);
     }
 }
@@ -631,7 +647,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
     }
     moe_lg_ext = NULL;
     memset(out, 0, (size_t)B * d * sizeof(float));
-    if (moe_int(&L->eg[0]) && moe_int(&L->eu[0]) && moe_int(&L->ed[0]) && pool.n > 1) {
+    if (moe_int(&L->eg[0]) && moe_int(&L->eu[0]) && moe_int(&L->ed[0]) && !q4_low(&L->eg[0]) && pool.n > 1) {
         moe_cpu_multi(m, L, ex, xi, B * K, B, Xb, OU);
         for (int p = 0; p < B * K; p++) {
             float *o = out + (size_t)xi[p] * d;
@@ -647,9 +663,16 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
             for (int s = p; s < B * K; s++) if (ex[s] == ex[p]) { pt[np] = xi[s]; src[np++] = s; }
         }
         beg[ng] = np;
-        Q4Xj j = { L, Xb, q4_scr(17, (size_t)np * H), q4_scr(18, (size_t)np * H), OU, ee, beg, pt, H, d, ng };
+        static XQ xh[Q4_BMAX * 64];
+        XQ xp[Q4_BMAX * 64];
+        if (q4_low(&L->eg[0]) || q4_low(&L->eu[0])) {
+            if (!prep) { mm_prepare(xqs, Xb, B, d); prep = 1; }
+            for (int p = 0; p < np; p++) xp[p] = xqs[pt[p]];
+        }
+        Q4Xj j = { xp, xh, L, Xb, q4_scr(17, (size_t)np * H), q4_scr(18, (size_t)np * H), OU, ee, beg, pt, H, d, ng };
         pool_for(q4_exp_glu, &j, ng * 2 * H, 16);
         pool_for(q4_exp_act, &j, np, 1);
+        if (q4_low(&L->ed[0])) mm_prepare(xh, j.hg, np, H);
         pool_for(q4_exp_down, &j, ng * d, 64);
         int inv[Q4_BMAX * 64];
         for (int p = 0; p < np; p++) inv[src[p]] = p;
@@ -740,7 +763,7 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
 
 /* katana q4check <gguf> <referencia>: estados por camada e logits contra a definicao de referencia.
    Arquivo: "Q4RF", int32 n, camadas, R*dim, vocab; int32 tokens[n]; float32 estados[n][camadas][R*dim]; float32 logits[n][vocab].
-   Tres formas: token a token, prompt inteiro em lotes e pedacos de tamanho variado seguidos de token a token. */
+   Com produtos exatos e depois inteiros, tres formas: token a token, prompt inteiro em lotes e pedacos de tamanho variado seguidos de token a token. */
 static int q4_check(Model *m, const char *path) {
     const Config *c = &m->cfg;
     int h[5], ok = 1;
@@ -754,9 +777,11 @@ static int q4_check(Model *m, const char *path) {
     float *ref = xalloc((size_t)n * nl * D, 4), *lg = xalloc((size_t)n * V, 4);
     if (fread(tk, 4, n, f) != (size_t)n || fread(ref, 4, (size_t)n * nl * D, f) != (size_t)n * nl * D || fread(lg, 4, (size_t)n * V, f) != (size_t)n * V) die("q4check: referencia truncada");
     fclose(f);
-    const double tol = m->kh || m->kq8 ? 5e-3 : 2e-4;      /* cache reduzido: o arredondamento de K e V se propaga */
-    q4_dbg.n = n;
-    for (int mode = 0; mode < 3; mode++) {
+        q4_dbg.n = n;
+    for (int it = 0; it < 6; it++) {
+        const int mode = it % 3;
+        cpu_exact = it < 3;     /* produtos em float; depois os inteiros (ativacao em 16 bits) */
+        const double tol = !cpu_exact || m->kh || m->kq8 ? 5e-3 : 2e-4;    /* arredondamentos (ativacao, K e V) se propagam pelas camadas */
         static const int pieces[] = { 1, 7, 2, 16, 3, 19, 5, 33 };
         q4_dbg.x = xalloc((size_t)n * nl * D, 4);
         double mlg = 0.0, mref = 0.0;
@@ -776,21 +801,27 @@ static int q4_check(Model *m, const char *path) {
             nlg++; agree += a == b;
             i += B;
         }
-        printf("%s: %d tokens, logits em %d posicoes: maior diferenca %.3e (maior logit %.3f), argmax igual %d/%d\n",
-               mode == 0 ? "token a token" : mode == 1 ? "lotes        " : "misto        ", n, nlg, mlg, mref, agree, nlg);
-        if (!(mlg <= tol * (mref > 1 ? mref : 1)) || agree != nlg) ok = 0;
+        printf("%s %s: %d tokens, logits em %d posicoes: maior diferenca %.3e (maior logit %.3f), argmax igual %d/%d\n",
+               cpu_exact ? "exato  " : "inteiro", mode == 0 ? "token a token" : mode == 1 ? "lotes        " : "misto        ", n, nlg, mlg, mref, agree, nlg);
+        if ((cpu_exact && !(mlg <= tol * (mref > 1 ? mref : 1))) || agree != nlg) ok = 0;
         for (int l = 0; l < nl; l++) {
             double md = 0.0, mx = 0.0;
-            for (int t = 0; t < n; t++)
+            int bad = 0;        /* tokens acima da tolerancia */
+            for (size_t k = 0; k < (size_t)n * D; k++) { const size_t i = (k / D * nl + l) * D + k % D; if (fabs(ref[i]) > mx) mx = fabs(ref[i]); }
+            for (int t = 0; t < n; t++) {
+                double mt = 0.0;
                 for (int i = 0; i < D; i++) {
                     const size_t k = ((size_t)t * nl + l) * D + i;
                     uint32_t u; memcpy(&u, q4_dbg.x + k, 4); nan += (u & 0x7f800000u) == 0x7f800000u;
                     const double e = fabs(q4_dbg.x[k] - ref[k]);
-                    if (!(e <= md)) md = e;
-                    if (fabs(ref[k]) > mx) mx = fabs(ref[k]);
+                    if (!(e <= mt)) mt = e;
                 }
-            printf("  camada %d: maior diferenca %.3e de %.3f (%.1e)\n", l, md, mx, md / mx);
-            if (!(md <= tol * mx)) ok = 0;
+                if (mt > md) md = mt;
+                bad += !(mt <= tol * mx);
+            }
+            printf("  camada %d: maior diferenca %.3e de %.3f (%.1e), %d tokens acima de %.0e\n", l, md, mx, md / mx, bad, tol);
+            /* inteiro: um empate quase exato do roteador ou do top-k pode virar num token isolado do modelo aleatorio */
+            if (bad > (cpu_exact ? 0 : n / 50)) ok = 0;
         }
         free(q4_dbg.x); q4_dbg.x = NULL;
     }

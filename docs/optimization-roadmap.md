@@ -87,6 +87,42 @@ is in what fits in cache (small experts, batches).
 | Different number of threads for generation and for batch | generation is memory-limited; batch is compute-limited | to measure | small |
 | Vectorized `exp` for SiLU and softmax | degree-5 polynomial | small | small |
 
+### 3.1 Low-bit lookup formats on the CPU (`src/engine/cpu_lowbit.c`, measured 2026-11-22)
+
+IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_XS/NL and Q2_0 (GGUF type 42, 64 values per 18 bytes: f16 `d`, 2-bit codes
+`(q-1)*d`, element `e` in byte `e/4` at shift `2*(e%4)`) used to be dequantized block by block and multiplied
+in float. Now each 256-weight chunk is decoded to int16 (grid lookup, sign and the integer sub-block scale
+folded in) and multiplied by the same 16-bit activations as Q4_K/Q6_K with `vpdpwssd`. Modes: 1 AVX2,
+2 VNNI 256-bit, 3 AVX-512 (default when the CPU has it; `KATANA_LOWBIT=0|1|2|3`, 0 = old float path).
+Batches decode a row once for up to 32 tokens, in blocks of 4 tokens per weight vector. Checked against the
+dequantized double-precision product on random blocks and on the real IQ3_XXS Flash-Next tensors
+(`katana lbtest [file.gguf] [bench]`): relative error 1e-6 to 4e-6 of the sum of magnitudes, the AVX-512
+decoders are bit-identical to the AVX2 ones.
+
+Measured on the i7-11800H (8 cores, shared machine, alternating paths in one run), real expert tensors,
+G weights/s, 1 thread / 8 threads sweeping 200–400 MB (not in cache):
+
+| type | float (before) | AVX-512 (now) | 32-token batch, 1 thread (G weights x tokens/s): per token / decode once |
+|---|---|---|---|
+| IQ2_XXS | 1.4 / 8.4 | 8.8 / 47.2 | 8.5 / 32.2 |
+| IQ2_XS | 1.4 / 8.7 | 8.0 / 45.4 | 7.8 / 30.2 |
+| IQ3_XXS | 0.25 / 2.0 | 7.6 / 52.4 | 7.7 / 29.6 |
+| IQ3_S | 0.21 / 1.8 | 8.1 / 55.5 | 8.0 / 30.1 |
+| IQ2_S | 0.20 / 1.8 | 8.7 / 54.1 | 8.6 / 30.8 |
+| IQ4_NL | 7.5 / 38.9 | 7.5 / 35.3 (memory bound, no gain) | 8.2 / 28.1 |
+| Q2_0 | 0.76 / 4.9 | 8.4 / 40.2 | 9.8 / 29.1 |
+
+What limits it: decoding alone runs at 11–17 G weights/s (1 thread) while the integer product alone runs at
+~48–52, so for single-token generation the table lookup/sign/scale work is what is left; IQ3_S, IQ3_XXS and
+IQ4_NL already sit at the ~20–24 GB/s the memory gives on this machine. Repacking the experts into a
+lookup-free integer layout would only pay if it were 8 bits per weight: ~121 G expert weights in 48 layers
+= ~121 GB (+73 GB over the 47 GB file), not possible. A same-size repack (e.g. IQ2_S grids into plain 2-bit
+codes) cannot be faster than the Q2_0 decode (15–17 G weights/s vs 12–13 now), a ~30% best case.
+BF16 tensors are converted to float32 at load (twice the memory); `KATANA_BF16_RAW=1` keeps them in BF16
+on the CPU (`lowbit_bf16_dot`, ~15 G weights/s on one thread in cache). The 8-thread figures vary by ~20% between
+runs on this shared machine (IQ2_S 8-thread: 34–54 in three runs); the 1-thread ones by ~10%. Q6_K already had
+the VNNI kernel (`dot_q6k_v`) and is unchanged.
+
 ## 4. Expert cache (MoE)
 
 We already have: slots per layer, heat with decay, cold expert on the CPU, background loading,
