@@ -19,7 +19,7 @@ static uint64_t pfx_hash(uint64_t h, const void *p, size_t n) {
 /* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL); 0 se nao cobre */
 static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     const Config *c = &m->cfg;
-    if (m->ckv || c->q4e || !(m->kcache || m->kh)) return 0;        /* qwen4exp: estado a mais (n-gramas, indice) fora do arquivo */
+    if (m->ckv || !(m->kcache || m->kh)) return 0;
     *ngl = 0; *esz = m->kh ? 2 : 4; *backend = 0;      /* cache da CPU em fp16 (m->kh/m->vh, contexto longo): 2 bytes */
     if (vkg.on && !gpu.force_cpu) { *ngl = vkg.nl; *esz = vkg.kv16 ? 2 : 4; *backend = 1; }
     else if (gpu.n_gl > 0 && !gpu.force_cpu) { *ngl = gpu.n_gl; *esz = gpu.kv16 ? 2 : 4; *backend = 2; }
@@ -46,16 +46,22 @@ static size_t pfx_lbytes(const Model *m, int l, int n, int ngl, int esz) {
 }
 
 /* estado recorrente (DeltaNet): na RAM (m->ssm) ou, no backend 3, nos buffers da VRAM (anel da convolucao e S por camada) */
-static uint64_t pfx_ssm_bytes(const Model *m, int backend) {
+static uint64_t pfx_ssm_bytes(const Model *m, int n, int backend) {
     const Config *c = &m->cfg;
     if (!c->ssm_inner) return 0;
     if (backend == 3) return (uint64_t)m->n_lin * ((size_t)4 * vkq.CH * 4 + (size_t)vkq.NV * c->ssm_state * c->ssm_state * 4);
-    return (uint64_t)m->n_lin * dn_state_floats(c) * sizeof(float);
+    return (uint64_t)m->n_lin * dn_state_floats(c) * sizeof(float) + (c->q4e ? q4_state_bytes(m, n) : 0);
 }
-static int pfx_ssm_io(Model *m, FILE *f, int backend, int dir) {      /* dir=1: do motor para o arquivo */
+static int pfx_ssm_io(Model *m, FILE *f, int n, int backend, int dir) {      /* dir=1: do motor para o arquivo */
     const Config *c = &m->cfg;
-    const uint64_t tot = pfx_ssm_bytes(m, backend);
+    const uint64_t tot = pfx_ssm_bytes(m, n, backend);
     if (!tot) return 1;
+    if (c->q4e) {       /* qwen4exp: DeltaNet e depois n-gramas, convolucao e indice da atencao esparsa */
+        const size_t sb = (size_t)m->n_lin * dn_state_floats(c) * sizeof(float);
+        if (dir) q4_state_home(m);
+        if ((dir ? fwrite(m->ssm, 1, sb, f) : fread(m->ssm, 1, sb, f)) != sb) return 0;
+        return q4_state_io(m, f, n, dir);
+    }
     if (backend != 3) return dir ? fwrite(m->ssm, 1, (size_t)tot, f) == tot : fread(m->ssm, 1, (size_t)tot, f) == tot;
     const size_t rb = (size_t)4 * vkq.CH * 4, sb = (size_t)vkq.NV * c->ssm_state * c->ssm_state * 4;
     char *buf = (char *)xalloc((rb > sb ? rb : sb) + 64, 1);
@@ -141,7 +147,7 @@ static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     PfxHdr h; memset(&h, 0, sizeof h);
     h.magic = PFX_MAGIC; h.key = key; h.n = n; h.L = c->n_layers; h.kvd = (int32_t)kvd; h.ctx = c->ctx;
     h.ngl = ngl; h.esz = esz; h.backend = backend;
-    h.ssm_bytes = pfx_ssm_bytes(m, backend);
+    h.ssm_bytes = pfx_ssm_bytes(m, n, backend);
     int ok = fwrite(&h, sizeof h, 1, f) == 1;
     size_t bmax = (size_t)n * kvd * 4;
     for (int l = 0; l < c->n_layers; l++) { const size_t b = pfx_lbytes(m, l, n, ngl, esz); if (b > bmax) bmax = b; }
@@ -153,7 +159,7 @@ static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend
             const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 1) && fwrite(buf, 1, bytes, f) == bytes;
         }
-    if (ok && h.ssm_bytes) ok = pfx_ssm_io(m, f, backend, 1);
+    if (ok && h.ssm_bytes) ok = pfx_ssm_io(m, f, n, backend, 1);
     free(buf);
     ok = fclose(f) == 0 && ok;
     if (!ok) { remove(tmp); return 0; }
@@ -196,7 +202,7 @@ static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     PfxHdr h;
     int ok = fread(&h, sizeof h, 1, f) == 1 && h.magic == PFX_MAGIC && h.key == key && h.n == n && h.L == c->n_layers &&
              h.kvd == (int32_t)kvd && h.ctx == c->ctx && h.ngl == ngl && h.esz == esz && h.backend == backend;
-    const uint64_t ssm_bytes = pfx_ssm_bytes(m, backend);
+    const uint64_t ssm_bytes = pfx_ssm_bytes(m, n, backend);
     ok = ok && h.ssm_bytes == ssm_bytes;
     if (ok) {       /* confere o tamanho do arquivo antes de tocar no cache */
         size_t want = sizeof h + ssm_bytes;
@@ -213,7 +219,7 @@ static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend
             const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = fread(buf, 1, bytes, f) == bytes && pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 0);
         }
-    if (ok && ssm_bytes) { if (backend == 3) kvk_wait(); ok = pfx_ssm_io(m, f, backend, 0); }
+    if (ok && ssm_bytes) { if (backend == 3) kvk_wait(); ok = pfx_ssm_io(m, f, n, backend, 0); }
     free(buf);
     fclose(f);
     if (ok && backend == 2) cl.Finish(gpu.queue);

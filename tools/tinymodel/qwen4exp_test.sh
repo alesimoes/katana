@@ -16,6 +16,14 @@ if KATANA_CPU_KV16=1 chk; then echo "cache fp16: ok"; else echo "cache fp16: FAL
 # ativacoes saturadas (|x| > 88: expf estoura): nada pode virar NaN
 python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 1 --big 300 >/dev/null
 if ! ./katana q4check "$D/q4-00001-of-00002.gguf" "$D/ref.bin" 2>/dev/null | grep -q "nao finitos"; then echo "ativacoes saturadas: ok"; else echo "ativacoes saturadas: FALHOU"; fail=1; fi
+# prefixo em disco (gravar, estragar, restaurar: bit a bit), volta no cache e lote x token a token com texto
+python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 2 >/dev/null
+if KATANA_CACHE_DIR="$D/cache" ./katana selftest "$D/q4-00001-of-00002.gguf" --deep --tokens 96 2>&1 | grep -c "bit a bit: OK\|selftest --deep: OK" | grep -q 3; then echo "prefixo em disco e selftest --deep: ok"; else echo "prefixo em disco e selftest --deep: FALHOU"; fail=1; fi
+# geracao na placa (se houver): logits token a token e misto contra a mesma referencia
+python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 3 --n 20 --gpu >/dev/null
+env -u KATANA_CPU ./katana q4check "$D/q4-00001-of-00002.gguf" "$D/ref.bin" >"$D/gpu.out" 2>&1
+if ! grep -q "GPU: Vulkan" "$D/gpu.out"; then echo "sem placa: teste da geracao na placa pulado, ok"
+elif grep -q "q4check: OK" "$D/gpu.out"; then echo "geracao na placa: ok"; else echo "geracao na placa: FALHOU"; fail=1; fi
 # todas as regras da referencia, uma errada por vez: o teste precisa falhar
 for m in nosparse rowpos noeos silu nodilation meaninject notile norelu; do
   python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 1 --mutate $m >/dev/null || fail=1

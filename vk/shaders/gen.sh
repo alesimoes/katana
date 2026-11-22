@@ -3,6 +3,9 @@
 cd "$(dirname "$0")"
 G=/c/source/katana/ref/vk/glslang/bin/glslang.exe
 [ -x "$G" ] || G=$(command -v glslang || command -v glslangValidator)
+# qwen4exp: produto de um token nos formatos do GGUF, mixers do residual, passo do DeltaNet com portao sigmoide
+for n in q4mv q4hc; do $G -V --target-env vulkan1.2 --vn ${n}_spv -o ${n}.h ${n}.comp || exit 1; done
+$G -V --target-env vulkan1.2 -DGSIG --vn dn_step_sig_spv -o dn_step_sig.h dn_step.comp || exit 1
 for n in mv_f32 mv_q8 mv_q4k mv_q5k mv_q6k mv_q2k mv_q51 rms_wg moe_sum moe_sum_rms moe_router; do
   $G -V --target-env vulkan1.2 --vn ${n}_spv -o ${n}.h ${n}.comp || exit 1
 done

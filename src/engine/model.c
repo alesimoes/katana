@@ -828,6 +828,7 @@ static int64_t split_load(Tensors *ts, const char *path, int n) {
 static int q4_kv(Model *m, const char *k, int kl, uint32_t t, Rd *r);
 static void q4_config(Model *m);
 static void q4_load(Model *m, const Tensors *ts);
+static void q4g_setup(Model *m);
 static void sample_preset(const char *arch);
 static void spec_apply(Model *m);
 /* mistura data e tamanho de um arquivo na identidade dos pesos: duas fusoes da mesma base tem o mesmo tamanho, o mesmo
@@ -1388,7 +1389,7 @@ static void load_model(Model *m, const char *path) {
     sample_preset(c->arch);
     spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
     if (!c->q4e) et_init(m, path, buf);  /* nivel de SSD: ainda nao cobre modelo em partes */
-    if (c->q4e) fprintf(stderr, "qwen4exp: so na CPU por enquanto\n");
+    if (c->q4e) q4g_setup(m);
     else if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 

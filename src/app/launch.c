@@ -1362,7 +1362,7 @@ static void lc_cleanup_tmp(void) { if (g_mcp_tmp[0]) remove(g_mcp_tmp); }
 static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "code", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "knowledge", "import", "merge", "distill", "agentlog", "export",
-        "learn", "specialize", "gradcheck", "train", "selftest", "attbench", "q4check", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
+        "learn", "specialize", "gradcheck", "train", "selftest", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
         "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", "lbtest", "compare", "tiersim", "iobench", "compacttest", "codebench", "version", "update", NULL};      /* acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
     return 0;
