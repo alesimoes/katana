@@ -7,4 +7,5 @@ if ! command -v "$CC" >/dev/null 2>&1; then
   export LD_LIBRARY_PATH="$R/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   EXTRA="-isystem $R/usr/include -isystem $R/usr/include/x86_64-linux-gnu -B$R/usr/lib/x86_64-linux-gnu -L$R/usr/lib/x86_64-linux-gnu"
 fi
-exec "$CC" -O2 -mavx2 -mfma -mf16c -ffast-math -Wall -Wno-unused -I . -I src -I vk/include $EXTRA src/katana.c -o katana -lm -lpthread -ldl "$@"
+V=$(git log -1 --format=%h 2>/dev/null); [ -n "$(git status --porcelain -uno 2>/dev/null)" ] && V="$V+"
+exec "$CC" -DKATANA_BUILD="\"${V:-?} $(date +%Y-%m-%d)\"" -O2 -mavx2 -mfma -mf16c -ffast-math -Wall -Wno-unused -I . -I src -I vk/include $EXTRA src/katana.c -o katana -lm -lpthread -ldl "$@"

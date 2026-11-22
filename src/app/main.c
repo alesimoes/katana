@@ -1,3 +1,6 @@
+#ifndef KATANA_BUILD
+#define KATANA_BUILD "?"
+#endif
 /* ---------- toktest: teste dourado do tokenizador e dos formatos de conversa (ver tools/tokref) ----------
  * Entrada: um caso por linha em hexa UTF-8 (modo texto) ou "sistema usuario assistente usuario2" em hexa, com '-' para
  * ausente (modo --chat). Saida: modo texto = uma linha com os ids; modo --chat = duas linhas por caso (conversa de um
@@ -994,6 +997,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "init") == 0) return init_cli(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "brief") == 0) return brief_cli(argc - 2, argv + 2);
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
+    if (argc == 2 && (strcmp(argv[1], "version") == 0 || strcmp(argv[1], "--version") == 0)) { printf("katana %s\n", KATANA_BUILD); return 0; }
     if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();
     if (argc == 2 && strcmp(argv[1], "calltest") == 0) return calltest();
     if (argc == 2 && strcmp(argv[1], "toolrun") == 0) {      /* teste: le linhas "<ferramenta> <json>" da entrada e executa em sequencia, no mesmo processo (sessoes de terminal persistem) */

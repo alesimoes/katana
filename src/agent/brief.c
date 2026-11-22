@@ -201,8 +201,8 @@ static int br_match_path(const char *pat, const char *file) {
     const char *base = strrchr(file, '/');
     return base && pat[0] == '*' && pat[1] == '.' && br_glob(pat, base + 1);
 }
-static int g_br_changed, g_br_ran, g_br_noted, g_br_seen_req = -1;
-static void br_sync(void) { if (g_br_seen_req != g_undo_req) { g_br_seen_req = g_undo_req; g_br_changed = g_br_ran = g_br_noted = 0; } }
+static int g_br_changed, g_br_ran, g_br_noted, g_br_exnoted, g_br_seen_req = -1;
+static void br_sync(void) { if (g_br_seen_req != g_undo_req) { g_br_seen_req = g_undo_req; g_br_changed = g_br_ran = g_br_noted = g_br_exnoted = 0; } }
 /* antes de Bash/Write/Edit: 1 se a regra do projeto recusa (out recebe o motivo) */
 static int brief_guard(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const int bash = strcmp(name, "Bash") == 0, wr = strcmp(name, "Write") == 0 || strcmp(name, "Edit") == 0 || strcmp(name, "NotebookEdit") == 0;
@@ -287,11 +287,10 @@ static int br_has_example(const char *req) {
 /* nota (uma vez por pedido): arquivos mudaram e o pedido tem exemplos; o modelo conferia o proprio trabalho contra ele mesmo e
    nao contra o que foi pedido (tres falhas iguais na prova de 21/11/2026). KATANA_EXAMPLE_NOTE=0 desliga. */
 static int brief_example_note(const char *req, char *out, size_t cap) {
-    static int seen = -1;
     br_sync();
     const char *e = getenv("KATANA_EXAMPLE_NOTE");
-    if ((e && !atoi(e)) || seen == g_undo_req || !g_br_changed || !br_has_example(req)) return 0;
-    seen = g_undo_req;
+    if ((e && !atoi(e)) || g_br_exnoted || !g_br_changed || !br_has_example(req)) return 0;
+    g_br_exnoted = 1;
     size_t n = strlen(req);
     if (n > 1500) { n = 1500; while (n && ((unsigned char)req[n] & 0xC0) == 0x80) n--; }
     snprintf(out, cap, "[katana: before you finish, compare the result with the request itself, not with your own tests. Run it on the request's own examples and check every detail it states: "
