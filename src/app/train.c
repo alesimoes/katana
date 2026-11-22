@@ -402,6 +402,12 @@ fail:
     return 0;
 }
 
+/* medida das partes do passo (KATANA_TRAIN_PROF=1 imprime no fim): segundos somados por parte */
+enum { TP_MV, TP_MVT, TP_GRAD, TP_ATT_F, TP_ATT_B, TP_HEAD, TP_FWD, TP_BACK, TP_OPT, TP_NPROF };
+static double tprof[TP_NPROF];
+static const char *tprof_name[TP_NPROF] = { "produto W x (ida)", "produto W^T dy (volta)", "gradiente dos pesos", "atencao (ida)", "atencao (volta)",
+                                            "saida: logits e perda", "ida inteira", "volta inteira", "otimizador" };
+
 /* ---- produtos com um parametro (treinavel em float, ou congelado direto do formato do GGUF) ---- */
 typedef struct { const TPar *p; float *out; const float *x; float *tmp; int B; } TMvJob;
 
@@ -434,8 +440,9 @@ static float *tp_az(const TPar *p, const float *x, int B) {
 }
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
+    const double p0 = now_sec();
     if (!tg_prod(0, (TPar *)p, x, NULL, out, B)) pool_for(tmv_job, &j, (int)p->rows, 16);
-    if (!p->r) return;
+    if (!p->r) { tprof[TP_MV] += now_sec() - p0; return; }
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
     for (int b = 0; b < B; b++) {
@@ -444,6 +451,7 @@ static void tp_mv(const TPar *p, float *out, const float *x, int B) {
         for (size_t i = 0; i < R; i++) o[i] += p->s * dot(p->b + i * p->r, zb, p->r);
     }
     free(z);
+    tprof[TP_MV] += now_sec() - p0;
 }
 
 /* dx[b][c] += sum_r dy[b][r] W[r][c] (transposto): cada thread soma num pedaco das colunas */
@@ -466,8 +474,9 @@ static void tmt_job(void *ctx, int c0, int c1) {
 static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
+    const double p0 = now_sec();
     if (!tg_prod(1, (TPar *)p, dy, NULL, dx, B)) pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
-    if (!p->r) return;
+    if (!p->r) { tprof[TP_MVT] += now_sec() - p0; return; }
     const size_t R = p->rows;
     float *t = xalloc(p->r, 4);
     for (int b = 0; b < B; b++) {                      /* dx += s * A^T (B^T dy) */
@@ -478,6 +487,7 @@ static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
         for (int k = 0; k < p->r; k++) { const float tk = p->s * t[k]; const float *ak = p->a + (size_t)k * C; for (int c = 0; c < C; c++) o[c] += tk * ak[c]; }
     }
     free(t);
+    tprof[TP_MVT] += now_sec() - p0;
 }
 
 /* gradiente de W: g[r][c] += sum_b dy[b][r] x[b][c] (so se treinavel) */
@@ -495,7 +505,13 @@ static void tg_job(void *ctx, int r0, int r1) {
         }
     }
 }
+static void tp_grad_(TPar *p, const float *dy, const float *x, int B);
 static void tp_grad(TPar *p, const float *dy, const float *x, int B) {
+    const double p0 = now_sec();
+    tp_grad_(p, dy, x, B);
+    tprof[TP_GRAD] += now_sec() - p0;
+}
+static void tp_grad_(TPar *p, const float *dy, const float *x, int B) {
     if (p->r) {                                        /* gB += s dy (A x)^T ; gA += s (B^T dy) x^T */
         const size_t R = p->rows, C = p->cols;
         float *z = tp_az(p, x, B), *t = xalloc(p->r, 4);
@@ -1065,6 +1081,7 @@ static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
     t_rms(&tt->p[tt->kn[l]], kr, k, A->invk + l1 * c->n_kv, T * nkv, hd, c->eps);
     t_rms(NULL, vr, v, A->ginvv + l1 * c->n_kv, T * nkv, hd, c->eps);
     for (int t = 0; t < T; t++) { t_g4_rope(fr, q + (size_t)t * qd, nh, hd, t, 0); t_g4_rope(fr, k + (size_t)t * kvd, nkv, hd, t, 0); }
+    const double pa0 = now_sec();
     for (int hh = 0; hh < nh; hh++) {
         const int kvh = (hh / group) * hd;
         for (int t = 0; t < T; t++) {
@@ -1077,6 +1094,7 @@ static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
             for (int s = 0; s < n; s++) { const float w = P[s]; const float *vh = v + (size_t)(t0 + s) * kvd + kvh; for (int i = 0; i < hd; i++) o[i] += w * vh[i]; }
         }
     }
+    tprof[TP_ATT_F] += now_sec() - pa0;
     tp_mv(&tt->p[tt->o[l]], yo, ao, T);
     t_rms(&tt->p[tt->gpan[l]], yo, tmp, A->gipa + l1, T, d, c->eps);
     for (size_t i = 0; i < (size_t)T * d; i++) xm[i] = xl[i] + tmp[i];
@@ -1140,6 +1158,7 @@ static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx) {
     tp_grad(&tt->p[tt->o[l]], dyo, ao, T);
     tp_mvT(&tt->p[tt->o[l]], dao, dyo, T);
     float *dq = xalloc((size_t)T * qd, 4), *dk = xalloc((size_t)T * kvd, 4), *dv = xalloc((size_t)T * kvd, 4), *dP = xalloc(T, 4);
+    const double pa0 = now_sec();
     for (int hh = 0; hh < nh; hh++) {
         const int kvh = (hh / group) * hd;
         for (int t = 0; t < T; t++) {
@@ -1164,6 +1183,7 @@ static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx) {
             }
         }
     }
+    tprof[TP_ATT_B] += now_sec() - pa0;
     for (int t = 0; t < T; t++) { t_g4_rope(fr, dq + (size_t)t * qd, nh, hd, t, 1); t_g4_rope(fr, dk + (size_t)t * kvd, nkv, hd, t, 1); }
     float *dqr = xalloc((size_t)T * qd, 4), *dkr = xalloc((size_t)T * kvd, 4), *dvr = xalloc((size_t)T * kvd, 4), *dxn = xalloc(Td, 4);
     t_rms_back(&tt->p[tt->qn[l]], qr, A->invq + l1 * nh, dq, dqr, T * nh, hd);
@@ -1272,7 +1292,10 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H, V = c->vocab;
     const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd) * (c->attn_gated ? c->kq_mul : 1.0f);
+    const double pf0 = now_sec();
     t_forward(m, tt, toks, A);
+    tprof[TP_FWD] += now_sec() - pf0;
+    const double ph0 = now_sec();
     int N = 0;
     for (int t = 0; t + 1 < T; t++) N += mask[t] != 0;
     if (ncount) *ncount = N;
@@ -1298,7 +1321,9 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     }
     free(lg);
     loss /= N;
+    tprof[TP_HEAD] += now_sec() - ph0;
     if (!back) return loss;
+    const double pb0 = now_sec();
 
     /* ---- passo para tras ---- */
     float *dxn = xalloc((size_t)T * (qd > d ? qd : d), 4), *dx = xalloc((size_t)T * d, 4);
@@ -1402,6 +1427,7 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     const float es = c->emb_scale != 0.0f ? c->emb_scale : 1.0f;
     if (e->g) for (int t = 0; t < T; t++) { float *g = e->g + (size_t)toks[t] * d; const float *s = dx + (size_t)t * d; for (int i = 0; i < d; i++) g[i] += es * s[i]; }
     free(dxn); free(dx); free(dxm); free(dao); free(dq); free(dk); free(dv); free(dqr); free(dkr); free(dP);
+    tprof[TP_BACK] += now_sec() - pb0;
     return loss;
 }
 
@@ -2047,7 +2073,9 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         float lr_t = lr;
         if (st <= warm) lr_t = lr * (float)st / (float)warm;                /* aquecimento */
         else if (cosine && steps > warm) lr_t = lr * (0.1f + 0.9f * 0.5f * (1.0f + cosf(3.14159265f * (float)(st - warm) / (float)(steps - warm))));
+        const double po0 = now_sec();
         const double gn = t_adamw(&tt, st, lr_t, wd, clip);
+        tprof[TP_OPT] += now_sec() - po0;
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
         if (st == 1 || st % every == 0 || st == steps)
             printf("passo %4d  perda %.4f  media %.4f  |grad| %.3f  lr %.2e  (%d alvos, %.1f s)\n", st, loss, ema, gn, lr_t, N, now_sec() - t0);
@@ -2078,6 +2106,11 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         const double el = now_sec() - t0;
         printf("velocidade: %.1f tokens/s de treino (%.2f s por passo, %s)\n", el > 0 ? toks / el : 0.0, st ? el / st : 0.0,
                tg.on ? "produtos na GPU" : "tudo na CPU");
+    }
+    if (getenv("KATANA_TRAIN_PROF")) {
+        const double el = now_sec() - t0;
+        printf("partes do treino (segundos; os produtos estao dentro da ida e da volta):\n");
+        for (int i = 0; i < TP_NPROF; i++) printf("  %-26s %9.2f  %5.1f%%\n", tprof_name[i], tprof[i], el > 0 ? 100.0 * tprof[i] / el : 0.0);
     }
     A.T = seq;
     /* perda final em todas as janelas de treino (do estado final; com validacao, o arquivo gravado e o do melhor passo) */
