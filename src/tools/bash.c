@@ -73,6 +73,7 @@ static pid_t ctb_spawn(const char *script, const char *log) {
         _exit(127);
     }
     close(lf); if (dn >= 0) close(dn);
+    reap_add(pid);
     return pid;
 }
 /* roteiro: entra na pasta, (opcional) grava a pasta final ao sair, funcao sudo -A, e o comando */

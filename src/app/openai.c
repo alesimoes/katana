@@ -717,8 +717,7 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
     int common = 0;
     if (!fake) {
         while (common < ids.n && common < srv_cache.n && ids.ids[common] == srv_cache.ids[common]) common++;
-        if (common >= ids.n) common = ids.n - 1;
-        if (c->ssm_inner && common != srv_cache.n) common = 0;
+        common = cache_rewind(m, srv_cache.n, common, ids.n);
         srv_cache.n = common;
     }
 

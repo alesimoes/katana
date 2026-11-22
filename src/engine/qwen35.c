@@ -448,6 +448,7 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
     for (int i = 0; i < d; i++) m->x[i] += m->xb2[i];
     if (dbg_on && cpu_exact && pos < 64) { memcpy(dbg_x + ((size_t)pos * c->n_layers + l) * d, m->x, d * 4); dbg_pos = pos; }
     rmsnorm(m->xb, m->x, L->ffn_norm, d, c->eps);
+    if (layer_tap) layer_tap(l, pos, m->xb);
     if (!c->n_expert) {        /* qwen35 denso: feed-forward SwiGLU comum */
         const int H = c->hidden;
         matvec(m->hb, &L->w_gate, m->xb, H, d);
@@ -781,6 +782,7 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
         const double tr0 = now_sec();
         if (!kvk_buf_read(vkg.xn, 0, gx.xn, (size_t)(d + (vkq.r1 ? c->n_expert : 0)) * sizeof(float))) die("falha na execucao em Vulkan (leitura)");
         gprof.t_rd += now_sec() - tr0;
+        if (layer_tap) layer_tap(l, vkq_pos1, gx.xn);
         moe_lg_ext = vkq.r1 ? gx.xn + d : NULL;
         vk_moe_ffn(m, L, l);
         moe_lg_ext = NULL;
@@ -796,6 +798,7 @@ static int vkq_scat(KvkBuf y, int B, int n, int moff) {
     return kvk_dispatch(vkq.scat, b, 3, pc, sizeof pc, (uint32_t)(((size_t)vkq.dim * n + 255) / 256), 1, 1);
 }
 
+static int vkq_posn;     /* posicao do primeiro token do lote em curso (layer_tap) */
 /* MoE do lote na camada l (residual em vkb.x, B tokens) */
 static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
     const Config *c = &m->cfg;
@@ -838,6 +841,7 @@ static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
         float *xn = vkq.xn + (size_t)b * d;
         for (int i = 0; i < d; i++) vkq.col[i] = vkb.xT[(size_t)i * B + b];
         rmsnorm(xn, vkq.col, L->ffn_norm, d, c->eps);
+        if (layer_tap) layer_tap(l, vkq_posn + b, xn);
         memcpy(m->xb, xn, (size_t)d * sizeof(float));
         moe_route(m, L, l);
         vkq.sw[b] = vkm.sh ? shexp_gate_w(m, L) : 0.0f;
@@ -932,6 +936,7 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
     const Config *c = &m->cfg;
     const int d = c->dim, hd = c->hd, nh = c->n_heads, kvd = c->n_kv * hd, qd = nh * hd, NV = vkq.NV, NK = vkq.NK, inner = c->ssm_inner;
     const int Bp = (B + 63) / 64 * 64, nch = Bp / 64;
+    vkq_posn = pos0;
     const double t0 = now_sec();
     const struct { int n; float eps; int B; } rp = { d, c->eps, B };
     for (int l = 0; l < c->n_layers; l++) {
@@ -1250,6 +1255,7 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     }
     rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
     for (int i = 0; i < d; i++) x[i] = (x[i] + ya[i]) * L->out_scale;
+    if (layer_tap) layer_tap(l, pos, x);
 }
 
 /* gemma4, atencao de B tokens (pos0..): par (token, cabeca) por item; janela win; cache em anel de cap */
@@ -1364,6 +1370,7 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
             float *x = X + (size_t)t * d, *ya = YA + (size_t)t * d;
             rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
             for (int i = 0; i < d; i++) x[i] = (x[i] + ya[i]) * L->out_scale;
+            if (layer_tap) layer_tap(l, pos0 + t, x);
         }
     }
 }

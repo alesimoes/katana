@@ -491,8 +491,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
     /* reuso de prefixo: mantem as posicoes do cache que coincidem com o inicio do novo prompt */
     int common = 0;
     while (common < ids.n && common < srv_cache.n && ids.ids[common] == srv_cache.ids[common]) common++;
-    if (common >= ids.n) common = ids.n - 1;           /* precisa de pelo menos um token para obter os logits */
-    if (c->ssm_inner && common != srv_cache.n) common = 0;      /* DeltaNet: o estado so continua do fim, senao recomeca */
+    common = cache_rewind(m, srv_cache.n, common, ids.n);      /* DeltaNet e o anel do gemma4 nem sempre podem voltar */
     srv_cache.n = common;
 
     const char *hd = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n"

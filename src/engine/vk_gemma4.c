@@ -265,6 +265,7 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
             float *x = X + (size_t)t * d, *ya = YA + (size_t)t * d;
             rmsnorm(ya, ya, L->post_ffn_norm, d, c->eps);
             for (int i = 0; i < d; i++) x[i] = (x[i] + ya[i]) * L->out_scale;
+            if (layer_tap) layer_tap(l, pos0 + t, x);
         }
         vkg4.t_moe += now_sec() - t1;
     }

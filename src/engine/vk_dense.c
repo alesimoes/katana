@@ -1281,6 +1281,7 @@ static void moe_route(Model *m, const Layer *L, int l) {
     const float eps = c->mla ? 1e-20f : 6.103515625e-5f;
     if (c->moe_norm) for (int k = 0; k < K; k++) moe.w[k] /= (wsum > eps ? wsum : eps);
     if (c->exp_scale != 1.0f) for (int k = 0; k < K; k++) moe.w[k] *= c->exp_scale;
+    if (route_tap) route_tap(l, moe.sel, moe.w, K, c->moe_norm && c->exp_scale == 1.0f);
     if (L->exp_w) for (int k = 0; k < K; k++) moe.w[k] *= L->exp_w[moe.sel[k]];     /* gemma4: escala de cada especialista */
     if (dbg_on && cpu_exact) for (int k = 0; k < K; k++) dbg_sel[((size_t)dbg_pos * c->n_layers + l) * K + k] = moe.sel[k];
     if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
