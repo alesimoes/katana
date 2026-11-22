@@ -488,6 +488,8 @@ if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/
 . tools/traintest/codebench_part.sh
 # 12. selecao do katana import e katana specialize (teacher, tools, code)
 . tools/traintest/specialize_part.sh
+# o agente no formato do Gemma 4: os mesmos cenarios do ChatML, compactacao ao vivo, notas, subagente, conferencia com o template
+. tools/traintest/gemma4_part.sh
 # chamadas de ferramenta validas por construcao (src/agent/callgrammar.c): automato sem modelo e modelo aleatorio
 if $K calltest > "$D/ct.txt"; then echo "calltest: ok ($(tail -1 "$D/ct.txt"))"; else echo "calltest: FALHOU"; grep FAILED "$D/ct.txt"; fail=1; fi
 if KATANA_TOOLS=2 sh tools/traintest/callgrammar_e2e.sh "$K" > "$D/cg_e2e.txt" 2>&1; then echo "chamadas validas com modelo aleatorio: ok ($(tail -1 "$D/cg_e2e.txt"))"; else echo "chamadas validas com modelo aleatorio: FALHOU"; grep -a FAIL "$D/cg_e2e.txt"; fail=1; fi

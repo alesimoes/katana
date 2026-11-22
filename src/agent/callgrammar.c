@@ -113,6 +113,8 @@ int ct_tool_info(int i, const char **name, const char **desc, const char **props
 static void cg_setup(const char *sys) {
     g_cg.nt = 0; g_cg.err = 0;
     gr_reset();
+    /* gemma4: o prompt ja tem as declaracoes nativas; as ferramentas declaradas vem do bloco JSON guardado na conversao */
+    if (sys && g_cg.fmt == CGF_G4 && !strstr(sys, "<tools>") && g_g4_tools_json[0] && !g_cg_only_sys) sys = g_g4_tools_json;
     if (sys) {
         static const char *pv[GN_MAXE]; static char names[GN_MAXE][64];
         int nt = 0;
@@ -397,7 +399,7 @@ static int cg_step_g4(CgState *s, unsigned char c) {
             }
             return 1;
         }
-        case CG_QOPEN: return cg_lit(s, c, CG_G4Q, CG_GSTR);
+        case CG_QOPEN: { const int r = cg_lit(s, c, CG_G4Q, CG_GSTR); if (s->ph == CG_GSTR) s->nb[0] = 0; return r; }
         case CG_VSTART:
             if (t->pt[s->prop] == 2 && c == '<') { cg_enter(s, CG_QOPEN); continue; }   /* todos como texto */
             cg_enter(s, CG_GJSON);
@@ -405,8 +407,17 @@ static int cg_step_g4(CgState *s, unsigned char c) {
         case CG_GSTR:                    /* texto livre ate <|"|> */
             if (g_cg.budget && s->n >= g_cg.budget && c != (unsigned char)CG_G4Q[s->pos]) return 0;
             s->n++;
-            if (c == (unsigned char)CG_G4Q[s->pos]) { if (!CG_G4Q[++s->pos]) cg_enter(s, CG_SEP); }
+            if (c == (unsigned char)CG_G4Q[s->pos]) { if (!CG_G4Q[++s->pos]) { cg_enter(s, CG_SEP); return 1; } }
             else s->pos = c == '<';
+            {   /* os marcadores de chamada e de resposta nao podem aparecer no texto: o leitor da chamada cortaria ali
+                   (no Gemma 4 sao um token so, o modelo pode sorteia-los dentro de um valor) */
+                const size_t W = sizeof s->nb - 1, l = strlen(s->nb);
+                if (l == W) memmove(s->nb, s->nb + 1, W - 1);
+                s->nb[l == W ? W - 1 : l] = (char)c; s->nb[l == W ? W : l + 1] = 0;
+                static const char *const bad[] = {"<tool_call|>", "<|tool_call>", "<|tool_response>", NULL};
+                const size_t nl = strlen(s->nb);
+                for (int i = 0; bad[i]; i++) { const size_t bl = strlen(bad[i]); if (nl >= bl && !memcmp(s->nb + nl - bl, bad[i], bl)) return 0; }
+            }
             return 1;
         case CG_GJSON: {
             /* <|"|> vira aspas; um prefixo dele fica pendente ate decidir */
@@ -614,6 +625,9 @@ static int calltest(void) {
         {CGF_G4, "call:Nope{", 0, "g4: unknown tool"},
         {CGF_G4, "call:Read{file_path:<|\"|>a<|\"|>,limit:0<|\"|>", 0, "g4: quote right after a number"},
         {CGF_G4, "call:Read{limit:7,file_path:<|\"|>a<|\"|>}<tool_call|>", 2, "g4: number then next key"},
+        {CGF_G4, "call:Read{file_path:<|\"|>a<tool_call|>", 0, "g4: call closer inside a string"},
+        {CGF_G4, "call:Read{file_path:<|\"|>a<|tool_call>", 0, "g4: call opener inside a string"},
+        {CGF_G4, "call:Write{content:<|\"|><b>x</b> <tool_call> {k:1}<|\"|>,file_path:<|\"|>x<|\"|>}<tool_call|>", 2, "g4: other markup inside a string"},
     };
     for (size_t i = 0; i < sizeof C / sizeof C[0]; i++) {
         CT_EXPECT(cg_prepare(C[i].fmt, sys), "setup");
