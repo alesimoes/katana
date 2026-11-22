@@ -110,10 +110,11 @@ folder, files around, skills line), because the calls use absolute paths that co
 training would cut, with the model's tokenizer. Only the vocabulary is loaded, so it takes about two seconds.
 
 **Every tool the prompt names** (`x-rare`, owner's decision of 2026-11-22). The tools that the other families do not
-reach get three situations each, 48 in a table (`src/app/scenario_rare.c`): the right use with the arguments found through
+reach get three or four situations each, 68 in a table (`src/app/scenario_rare.c`): the right use with the arguments found through
 `ToolSearch select:Name`, a second use, and a case where the tool fails or is not the right one and the model reacts. They
 come out in rotation, so none is missed, and `check --coverage` fails when a tool of the table is below its minimum (25
-conversations for the declared tools in a file of 500 or more, 4 for the ones listed by name, 3 for the rare ones).
+conversations for the declared tools in a file of 500 or more, 5 for every other tool, 15 conversations of `.ps1` scripts;
+`check --coverage --min 2` is the form for a validation file: 2 per tool and 4 of `.ps1`).
 Everything runs in the scenario's own home folder. Where a real run is impossible or would do harm, the engine's own
 validation or refusal path runs, or a stand-in of the outside program, and the cell is marked `standin`:
 
@@ -121,6 +122,8 @@ validation or refusal path runs, or a stand-in of the outside program, and the c
 |---|---|
 | `ScheduleWakeup`, `CronCreate`, `CronList`, `CronDelete` | the real scheduler with a fixed clock (`KATANA_SCHED_NOW`) |
 | `EndConversation`, `ListAgents`, `read_log`, `howto` | the real tool |
+| `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` | the real tools, only when the user asks for numbered tasks with details or names the tool, found through `ToolSearch`; the model's own plan stays `TodoWrite`. The tasks stay open, so the engine's reminder of unfinished steps appears and the answer is repeated |
+| `PowerShell` | the real tool, which answers that it is not installed on this machine; the model says so and uses `Bash`. Not counted by `--coverage` |
 | `PushNotification`, `ReportFindings` | the real tool with a stand-in `notify-send` first on `PATH` and the interface marker (`KATANA_UI`) |
 | `install_package` | the real tool; `python3 -m pip` and `npm` are stand-ins that install nothing |
 | `Workflow` | the real tool with the engine's test sub-agent (`KATANA_AGENT_FAKE=1`), plus two missing-file errors |
@@ -130,10 +133,101 @@ validation or refusal path runs, or a stand-in of the outside program, and the c
 | `terminal` | `list`, and `read` and `close` of a session that does not exist; an open session's output depends on timing |
 
 Still out: a successful `Agent` run and a `SubagentHandback` from inside a sub-agent (both need a model), a
-`ReadMcpResourceTool` that returns a resource (needs a connected server process), an open `terminal` session,
-`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` (hidden by the owner's decision) and `PowerShell`.
+`ReadMcpResourceTool` that returns a resource (needs a connected server process) and an open `terminal` session.
 
-@@MEASURED@@
+**PowerShell scripts** (`x-ps1`, `src/app/scenario_ps1.c`). Six situations: a new `.ps1` (`Write`), a change to an existing
+one (`Read`, one `Edit` with `edits`), an error message the user pasted, a pair `.sh` and `.ps1` that must stay equal, a
+`KATANA.md` rule that asks for both forms, and a request where the shell script is the right answer. The model checks with
+`command -v pwsh powershell` and, as there is no PowerShell on the generating machine, the final message says the script
+was written and not executed here and how to run it. Every `.ps1` left on disk passes a structural checker
+(`x_ps1_check`: braces, parentheses and quotes closed, `param(` first, functions named Verb-Noun with an approved verb,
+no shell syntax, the expected cmdlets present); a scenario whose script fails it is dropped, and since `check` runs the
+whole conversation again, the checker runs in `check` too. The shell twin, when there is one, really runs.
+
+### Measured: the v3 file of 2026-11-22
+
+How it was made: a pool of 1,150
+conversations (`--system mix:blocks=88,real=12`), from which `katana curriculum pick --n 436` chose by coverage, and a
+170-conversation validation file of new moulds (`--holdout`, checked with `check --coverage --min 2`). Windows are counted by `katana curriculum windows` with the Qwen3.6 tokenizer, after
+`katana import --system keep --mask-prefill` with `KATANA_THINK=0`. Hours use 13.9 s per 512-token window. The v2 column
+is the 520-conversation file of the same day, measured with the same scripts.
+
+| | v2 | v3 |
+|---|---|---|
+| conversations, trained turns | 520, 1,790 | 436, 1,900 |
+| distinct tool sequences (family ignored; requests separated) | 26 | 170 |
+| top-20 turn templates, share of turns (digits and project folder masked) | 12.8% | 8.5% |
+| families with one tool sequence | 9 | 5 ['brief-write', 'mcp-add', 'mcp-chain', 'mcp-schema', 'skill-write'] |
+| families with one first tool | 15 | 9 ['brief-write', 'mcp-add', 'mcp-call', 'mcp-chain', 'mcp-schema', 'skill-fail', 'skill-match', 'skill-missing-need', 'skill-write'] |
+| conversations with `AskUserQuestion` | 0 | 19 (4.4%) |
+| validation conversations whose tool sequence the training file does not have | 0 of 50 | 138 of 170 (81.2%) |
+| holdout turns equal to a training turn (exact text) | 27 of 179 (15.1%) | 270 of 1061 (25.45%) |
+| holdout turns whose template is in the training file | 39 of 179 (21.8%) | 361 of 1061 (34.0%) |
+| tokens, target tokens | 509,310, 84,120 | 528,326, 90,479 |
+| windows of 512, fixed | 918 (3.5 h) | 1,003 (3.9 h) |
+| windows of 512, dense with `--win-ctx 256` | not measured | 775 (3.0 h) |
+| windows of 1,024, fixed | 601 | 611 |
+
+`None`
+
+The holdout turns that equal a training turn are calls with no free value (`ToolSearch select:Name`, a `Glob` for the test
+files, the settings check of the same key). The families that still have one sequence or one first tool are the older
+mould families (MCP calls, skill runs, file creation): their requests always start with the same call. They were kept for
+the MCP cards and for `Write`; moving them to the composed generator is the next step.
+
+Tool coverage of the training file (conversations with a trained call, and the minimum of the tier):
+
+| tier | tool | conversations | minimum |
+|---|---|---|---|
+| A | `Bash` | 197 | 8 |
+| A | `Read` | 126 | 8 |
+| A | `Edit` | 74 | 8 |
+| A | `Write` | 53 | 8 |
+| A | `Grep` | 67 | 8 |
+| A | `Glob` | 40 | 8 |
+| A | `TodoWrite` | 166 | 8 |
+| A | `AskUserQuestion` | 19 | 8 |
+| A | `ToolSearch` | 133 | 8 |
+| A | `WebSearch` | 25 | 8 |
+| A | `WebFetch` | 25 | 8 |
+| A | `Skill` | 42 | 8 |
+| B | `git` | 5 | 5 |
+| B | `recall` | 5 | 5 |
+| B | `remember` | 5 | 5 |
+| B | `download_file` | 5 | 5 |
+| B | `terminal` | 5 | 5 |
+| C | `install_package` | 5 | 5 |
+| C | `read_log` | 5 | 5 |
+| C | `howto` | 5 | 5 |
+| B | `Agent` | 5 | 5 |
+| B | `LSP` | 5 | 5 |
+| B | `Monitor` | 5 | 5 |
+| B | `TaskStop` | 6 | 5 |
+| B | `EnterPlanMode` | 5 | 5 |
+| B | `ExitPlanMode` | 5 | 5 |
+| B | `NotebookEdit` | 5 | 5 |
+| B | `SendUserFile` | 5 | 5 |
+| C | `TaskCreate` | 7 | 5 |
+| C | `TaskUpdate` | 5 | 5 |
+| C | `TaskList` | 5 | 5 |
+| C | `TaskGet` | 5 | 5 |
+| B | `ListMcpResourcesTool` | 5 | 5 |
+| B | `ReadMcpResourceTool` | 5 | 5 |
+| B | `EnterWorktree` | 5 | 5 |
+| B | `ExitWorktree` | 5 | 5 |
+| C | `CronCreate` | 5 | 5 |
+| C | `CronDelete` | 5 | 5 |
+| C | `CronList` | 5 | 5 |
+| C | `ScheduleWakeup` | 5 | 5 |
+| C | `PushNotification` | 5 | 5 |
+| C | `EndConversation` | 5 | 5 |
+| C | `ReportFindings` | 5 | 5 |
+| C | `SendMessage` | 5 | 5 |
+| C | `ListAgents` | 5 | 5 |
+| C | `SubagentHandback` | 5 | 5 |
+| C | `Workflow` | 5 | 5 |
+| C | `WaitForMcpServers` | 5 | 5 |
+| | MCP tools | 34 | |
 
 ## Commands
 

@@ -2446,7 +2446,7 @@ static int curriculum_check(const char *path, int stats_only) {
         for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {
             if (!ct_lookup(g_cu_cov[ci].name) && !cu_is_old_tool(g_cu_cov[ci].name)) { printf("  %c %-22s fora da tabela deste binario\n", g_cu_cov[ci].tier, g_cu_cov[ci].name); continue; }
             const long min = g_cu_cov[ci].tier == 'A' ? (nl >= 500 ? 25 : nl / 50 > 5 ? nl / 50 : 5) : 5;      /* toda ferramenta citada no prompt: pelo menos 5 conversas (decisao do dono, 2026-11-22); com --min N, N (arquivo de validacao) */
-            if (g_cu_covmin > 0 && g_cu_cov[ci].tier != 'A') { if (g_cu_covn[ci] < g_cu_covmin) { low++; printf("  %c %-22s %6ld  (minimo %d)  ABAIXO\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], g_cu_covmin); } else printf("  %c %-22s %6ld  (minimo %d)\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], g_cu_covmin); continue; }
+            if (g_cu_covmin > 0) { if (g_cu_covn[ci] < g_cu_covmin) { low++; printf("  %c %-22s %6ld  (minimo %d)  ABAIXO\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], g_cu_covmin); } else printf("  %c %-22s %6ld  (minimo %d)\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], g_cu_covmin); continue; }
             const int lw = g_cu_covn[ci] < min; low += lw;
             printf("  %c %-22s %6ld  (minimo %ld)%s\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], min, lw ? "  ABAIXO" : "");
         }

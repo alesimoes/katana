@@ -1,9 +1,9 @@
 /* ---------- katana curriculum pick: a escolha das conversas por cobertura ---------- */
 /* katana curriculum pick <reserva.jsonl> <saida.jsonl> [--n N]: escolhe conversas por cobertura, nao por contagem.
-   Ordem: (1) cada ferramenta da tabela de cobertura ate o seu minimo; (2) uma conversa de cada sequencia de ferramentas
+   Ordem: (1) cada ferramenta da tabela de cobertura ate o seu minimo, 15 conversas de .ps1, 25 com ferramentas MCP e 8 de cada familia; (2) uma conversa de cada sequencia de ferramentas
    (familia + chamadas na ordem, com os pedidos), das menores para as maiores; (3) celulas ainda nao vistas; (4) o resto, na
    ordem do arquivo. AskUserQuestion fica entre 4,5% e 5% das escolhidas. A saida mantem a ordem da reserva. */
-typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1; size_t len; } CuPk;
+typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1, mcp, fam; size_t len; } CuPk;
 static int cu_pk_cmp(const void *a, const void *b) { const CuPk *x = *(CuPk *const *)a, *y = *(CuPk *const *)b; return x->len < y->len ? -1 : x->len > y->len ? 1 : x < y ? -1 : 1; }
 static int cu_pick_main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: katana curriculum pick <reserva.jsonl> <saida.jsonl> [--n N]\n"); return 1; }
@@ -17,6 +17,7 @@ static int cu_pick_main(int argc, char **argv) {
         if (nv == cv) { cv = cv ? cv * 2 : 1024; v = realloc(v, sizeof *v * (size_t)cv); }
         CuPk *k = &v[nv++]; memset(k, 0, sizeof *k);
         k->line = strdup(line); k->len = strlen(line);
+        { const char *u0 = strstr(line, "{\"role\": \"user\""); if (u0) k->len -= (size_t)(u0 - line); }      /* o prompt de sistema nao conta no tamanho: senao as conversas com o prompt inteiro nunca seriam escolhidas */
         const char *fam = cu_jstr(cu_jget(line, "family")), *cell = cu_jstr(cu_jget(line, "cell"));
         uint64_t h = cu_fnv(fam ? fam : "", fam ? strlen(fam) : 0, 1469598103934665603ull);
         for (const char *q = line; *q; ) {
@@ -32,6 +33,7 @@ static int cu_pick_main(int argc, char **argv) {
             q = a + l;
         }
         if (fam && !strcmp(fam, "x-ps1")) k->ps1 = 1;
+        k->fam = fam ? cu_fam_ix(fam) : -1; k->mcp = strstr(line, "__") && strstr(line, "[external content from MCP tool ") != NULL;
         k->sig = h; k->cell = cell && *cell ? cu_fnv(cell, strlen(cell), 99) : 0;
         cu_arena_free();
     }
@@ -57,6 +59,12 @@ static int cu_pick_main(int argc, char **argv) {
     }
     { long np = 0; for (long i = 0; i < nv && np < 15; i++) { CuPk *k = bylen[i]; if (k->ps1 && k->taken) np++; }
       for (long i = 0; i < nv && np < 15; i++) { CuPk *k = &v[i]; if (k->ps1 && PK_OK(k)) { PK_TAKE(k); np++; } } }      /* 15 conversas de scripts .ps1 */
+    { long nm = 0; for (long i = 0; i < nv; i++) nm += v[i].taken && v[i].mcp;
+      for (long i = 0; i < nv && nm < 25; i++) { CuPk *k = &v[i]; if (k->mcp && PK_OK(k)) { PK_TAKE(k); nm++; } } }      /* 25 conversas com ferramentas MCP */
+    for (int fi = 0; fi < CU_NFAM; fi++) {      /* cada familia da reserva com pelo menos 8 */
+        long nf = 0; for (long i = 0; i < nv; i++) nf += v[i].taken && v[i].fam == fi;
+        for (long i = 0; i < nv && nf < 8; i++) { CuPk *k = &v[i]; if (k->fam == fi && PK_OK(k)) { PK_TAKE(k); nf++; } }
+    }
     for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && !PK_SEEN(sigs, nsig, k->sig)) PK_TAKE(k); }                 /* (2) */
     for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && k->cell && !PK_SEEN(cells, ncell, k->cell)) PK_TAKE(k); }   /* (3) */
     for (long i = 0; i < nv; i++) { CuPk *k = &v[i]; if (PK_OK(k)) PK_TAKE(k); }                                                     /* (4) */

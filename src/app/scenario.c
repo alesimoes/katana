@@ -612,6 +612,7 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     g_cp_seq = 0; g_cp_dir[0] = 0;
     job_all_kill(); memset(g_jobs, 0, sizeof g_jobs);      /* nada em segundo plano sobra da conversa anterior (nem o registro: os ids recomecam) */
     g_ctb_seq = 0; g_job_seq = 0;      /* numeracao das tarefas em segundo plano: recomeca a cada conversa */
+    g_ct_ag_n = 0; g_ct_ag_next = 1;   /* subagentes de conversas anteriores nao aparecem no ListAgents desta */
     g_undo_req++; g_cu_pl = 0; g_cu_plold = 0; g_cu_note[0] = 0;
     /* o modo do prompt sai do estado inicial do sorteio, sem gastar sorteio (o check refaz com o mesmo) */
     const int wsum = g_cu_mixw[0] + g_cu_mixw[1] + g_cu_mixw[2];
