@@ -528,14 +528,16 @@ static int mcp_card_cli(int argc, char **argv) {
     free(b.p);
     return 0;
 }
+static int mcps_serve_cli(int argc, char **argv);
 static int mcp_cli(int argc, char **argv) {
     const char *sub = argc > 0 ? argv[0] : "list";
     if (!strcmp(sub, "add")) return mcp_add_cli(argc - 1, argv + 1);
     if (!strcmp(sub, "remove")) return mcp_remove_cli(argc - 1, argv + 1);
     if (!strcmp(sub, "test")) return mcp_test_cli(argc - 1, argv + 1);
     if (!strcmp(sub, "card")) return mcp_card_cli(argc - 1, argv + 1);
+    if (!strcmp(sub, "serve")) return mcps_serve_cli(argc - 1, argv + 1);      /* mcp_serve.c, incluido depois deste arquivo */
     if (!strcmp(sub, "list")) { mcp_list_print(1); return 0; }
-    fprintf(stderr, "uso: katana mcp list | add | remove | test | card\n");
+    fprintf(stderr, "uso: katana mcp list | add | remove | test | card | serve | login | logout\n");
     return 2;
 }
 /* /mcp: estado de cada servidor */
