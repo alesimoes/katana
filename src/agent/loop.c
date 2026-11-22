@@ -408,6 +408,26 @@ static int plan_cur(char *txt, size_t cap, int *k, int *n) {
     *n = i;
     return got;
 }
+/* nota anexada ao resultado de uma ferramenta: pedir o plano (3a e 6a chamada sem plano) ou lembrar o passo atual (a cada 5 chamadas) */
+static void loop_plan_note(char *result, size_t cap, const char *name, int pl_calls, int pl_old) {
+    const size_t rl = strlen(result);
+    const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
+    char st[220]; int k = 0, n = 0;
+    if (!g_todo_touched && !pl_old && (pl_calls == 3 || pl_calls == 6) && rl + 600 < cap)
+        snprintf(result + rl, cap - rl, pl_calls == 3
+            ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
+              "the first one in progress, then continue with step 1.]"
+            : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
+            pl_calls, ct_set2() ? "TodoWrite" : "todo");
+    else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < cap)
+        snprintf(result + rl, cap - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
+}
+/* lembrete (uma vez por pedido) quando o modelo encerra com passos em aberto na lista que gravou neste pedido */
+static void loop_todo_nudge(char *nm, size_t cap) {
+    snprintf(nm, cap, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
+             "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
+             g_todo, ct_set2() ? "TodoWrite" : "todo");
+}
 /* marcador TOOL para o desktop: nome, argumentos (uma linha) e, quando a chamada traz "description", ela num 3o campo */
 static void ui_tool_mark(const char *name, const char *ap, const char *end) {
     launch_tool_call(name, ap, end);
@@ -797,19 +817,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                         rp_fail = 0;
                     }
                 }
-                if (!trunc && !rp_refuse) {     /* planejar antes de executar, e seguir o plano em ordem */
-                    const size_t rl = strlen(result);
-                    const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
-                    char st[220]; int k = 0, n = 0;
-                    if (!g_todo_touched && !pl_old && (pl_calls == 3 || pl_calls == 6) && rl + 600 < sizeof result)
-                        snprintf(result + rl, sizeof result - rl, pl_calls == 3
-                            ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
-                              "the first one in progress, then continue with step 1.]"
-                            : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
-                            pl_calls, ct_set2() ? "TodoWrite" : "todo");
-                    else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < sizeof result)
-                        snprintf(result + rl, sizeof result - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
-                }
+                if (!trunc && !rp_refuse) loop_plan_note(result, sizeof result, name, pl_calls, pl_old);     /* planejar antes de executar, e seguir o plano em ordem */
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);
                     if (rl + 400 < sizeof result)
@@ -845,9 +853,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];
                 nudged = 1;
-                snprintf(nm, sizeof nm, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
-                         "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
-                         g_todo, ct_set2() ? "TodoWrite" : "todo");
+                loop_todo_nudge(nm, sizeof nm);
                 fprintf(stderr, "%s[lista de tarefas: %d de %d passos em aberto; o modelo foi lembrado]%s\n", CE(C_DIM), tn - td, tn, CE(C_RESET));
                 prole = 'u'; buf_clear(&pend); buf_str(&pend, nm);
                 if (g4) snprintf(text, sizeof text, "<turn|>\n<|turn>user\n%s<turn|>\n<|turn>model\n%s", nm, g4_answer_pre());
