@@ -13,46 +13,81 @@ and direct by design:
   `first:`, `order:` and `avoid:` lines.
 
 `katana curriculum` turns these conventions into synthetic conversations in which the assistant does the correct
-thing. It is written in C (`src/app/curriculum.c`), uses no model, and gives the same output for the same seed.
+thing. It is written in C (`src/app/curriculum.c`) and uses no model.
+
+## The engine writes the text (2026-11-22)
+
+Every conversation is produced inside a real project folder that the generator builds in a temporary directory: the
+project files, `KATANA.md`, one `SKILL.md` per listed skill, the usage file of each MCP server, a `.git` folder, and
+stand-in programs for the project's toolchain and for the skills' `needs`. The generator then runs the engine's own
+code in that folder, so the text in an example is the engine's text, not a copy of it:
+
+| text in the example | where it comes from |
+|---|---|
+| system prompt (rules, environment block, skills line, project block, memory absent) | `agent_build_sys` |
+| MCP cards | `mcp_sys` over the scenario's servers, registered in the client table without a process |
+| results of `Read`, `Write`, `Edit`, `Grep`, `TodoWrite`, `Skill`, `ToolSearch` | the tool runs (`ct_dispatch`) |
+| results of `ls` and of `katana ...` commands (`brief check`, `skill check`, `mcp add`, `mcp card`) | `Bash` runs them; `mcp card` talks to a small real MCP server written into the project |
+| `never:` refusal, `ask:` refusal | `brief_guard` |
+| end-of-request verification note | `brief_end_note` |
+| plan notes appended to results, reminder of unfinished steps | `loop_plan_note`, `loop_todo_nudge` (`src/agent/loop.c`) |
+| wrapper of an MCP result | `mcp_wrap_result` (`src/agent/mcp.c`) |
+| output of the project's own commands (`make test`, ...) and the data an MCP server returns | the scenario tables (the only simulated text) |
+
+A scenario the engine does not confirm is dropped and another one of the same family is drawn. The command prints how
+many were dropped and why. Reasons seen: the engine's syntax check rejects the generated code, an MCP argument value is
+not in the request or in an earlier result, the engine's linter complains about the scenario's `KATANA.md`, the engine
+would have demanded a plan, a `never:` rule catches a trained command, the situation repeats one already written.
+
+The temporary folder prefix is removed from the text, so paths read `/home/<user>/...`. The operating-system line of
+the environment block is the one of the machine that generates the data. The date is the scenario's.
+
+Behaviour rules that follow from the engine and that every example now obeys:
+
+- A request that changed files in a project with `test:` runs that command (or the backticked `done:` command) before the
+  final answer; otherwise the engine sends its note, and the example shows the note and the reaction.
+- An `ask:` item is asked by the engine when the command runs. The model runs the command; on "no" it gets the engine's
+  refusal and stops. It does not ask first with `AskUserQuestion`.
+- Plan progress (`TodoWrite done=N`) goes in the same turn as the next action; the engine closes the last step. A final
+  answer with more than one step open gets the engine's reminder, and the example shows it.
+- When a skill reports `MISSING:` the engine writes no plan; the model writes its own for the steps it can do.
+- An optional MCP argument appears only when the request mentions it.
 
 ## Commands
 
 ```
-katana curriculum out.jsonl [--n N] [--seed S] [--families a,b=2,...] [--lang pt,en] [--holdout H.jsonl] [--system full|blocks]
+katana curriculum out.jsonl [--n N] [--seed S] [--families a,b=2,...] [--lang pt,en] [--holdout H.jsonl]
+                            [--system full|real|blocks|mix:full=F,blocks=B,real=R] [--decl PCT]
 katana curriculum stats out.jsonl      # conversations, model turns, characters to learn, 512-token windows (estimate)
-katana curriculum check out.jsonl      # re-parse, validate every call, check the family invariants
-katana import <model.gguf> out.jsonl data.jsonl --system keep
+katana curriculum check out.jsonl [--all]   # the engine re-does what it can and checks the rest (--all: every reason)
+katana import <model.gguf> out.jsonl data.jsonl --system keep [--mask-prefill]
 katana specialize <model.gguf> all ... --curriculum out.jsonl     # source added by the specialize owner
 ```
 
 Each line has the form `{"messages": [...], "source": "curriculum", "family": "<name>"}`.
 
-**`--system full` (the default).** The system message is the agent's own prompt in its short form, without the tools
-section, as a specialized model sees it. It is built in-process by `agent_build_sys`. The scenario's environment block
-follows, with the skills listed inside it, then `# Project instructions (file .../KATANA.md, ...)` and then the MCP
-cards. Import this file with `--system keep`, because `--system file:` replaces the scenario blocks.
+System prompt modes (Qwen3.6 tokenizer, measured on 360 conversations; the rest of a conversation is about 405 tokens):
 
-**`--system blocks`.** The system message holds only the scenario blocks.
+| mode | system message | tokens per conversation |
+|---|---|---|
+| `blocks` | only the scenario blocks cut out of the engine's prompt (MCP cards, skills line, project block) | 213 |
+| `full` (default) | the engine's prompt without the tools section, as a model specialized on the tools sees it | 1,097 |
+| `real` | the engine's prompt with the tools section, as the base model sees it | 2,388 |
+| `mix:full=F,blocks=B,real=R` | one of the three per conversation, by weight | weighted |
+
+`--decl PCT` gives the tools section to that share of the `full` conversations. Import with `--system keep`.
+
+**`--mask-prefill` (import).** The start of every assistant turn that the engine itself writes (`<think>\n`, or the
+empty reasoning block when `KATANA_THINK=0`) is left out of the loss. Import with the same `KATANA_THINK` as the model
+will be served with.
 
 **`train: false` messages.** A few assistant messages carry `"train": false`: a call that breaks a `never:` item before
-the engine refuses it, a raw id before the server's error, and a final message sent before the engine's `done:` note.
-They stay in the conversation as context and are not trained.
+the engine refuses it, a raw id before the server's error, and a final message sent before the engine's verification
+note. They stay in the conversation as context and are not trained.
 
 **`--holdout`.** Writes max(50, N/10) conversations built only from reserved slot values: the last quarter of every
-content pool, 4 MCP servers and 4 skills. Those values never appear in the training file, so the holdout file measures
-generalisation.
-
-The blocks the engine will present are built in one function each, to be switched to the engine's own code when it
-lands:
-
-| block | function |
-|---|---|
-| project block | `cu_sys_project` (and `cu_brief_render`) |
-| skills line | `cu_sys_skills` |
-| MCP cards | `cu_sys_mcp` (and `cu_card_render`) |
-| `Skill` tool result | `cu_skill_result` |
-| `never:` refusal | `cu_refusal` |
-| `done:` note | `cu_done_note` |
+content pool and of every request list, 4 MCP servers and 4 skills. The templates and the tool sequences are the same as
+in the training file, so the holdout measures generalisation to new values, not to new situations.
 
 ## Families (one short example each)
 
@@ -60,7 +95,7 @@ lands:
 |---|---|---|
 | `brief-command` | runs exactly the file's command (the labelled one when asked), then reports in words; sometimes a second request follows | "roda os testes de integration" → `Bash cargo test --test integration` |
 | `brief-rule` | `layout:`/`rules:` decide where and how; when the user explicitly overrides a guideline rule, it follows the user and says so | new helper → `Write src/helpers/slug.py`; rule "tests next to the code" → two `Write`s and the test run |
-| `brief-never-ask` | avoids a `never:` action and does the allowed alternative; reacts to an engine refusal without retrying; asks with `AskUserQuestion` for `ask:` items and acts on the answer | "commita e da push" with `never: push` → `git commit` only |
+| `brief-never-ask` | avoids a `never:` action and does the allowed alternative; reacts to an engine refusal without retrying; for an `ask:` item it runs the command (the engine asks the user) and stops on the engine's refusal | "commita e da push" with `never: push` → `git commit` only |
 | `brief-done` | after changing files, runs `done:`/`test:` before the final message; on failure it fixes and reruns; also the engine's reminder note | `Read`, `Edit`, `Bash <done>` (fails), `Edit`, `Bash <done>` |
 | `brief-docs` | reads the `docs:` file first, then follows it | "add an index" → `Read docs/migrations.md` → `sh tools/migrate.sh new ...` |
 | `brief-absent` | with no file, or no such key, it looks (`ls`, `README.md`) instead of guessing | `ls` → `Read README.md` → `make test` |
@@ -86,29 +121,75 @@ The slot grammars cover:
 - 8 `never:` items, 6 `ask:` items and 8 `docs:` entries;
 - user requests in Portuguese and English, short, sometimes with typos.
 
-**Quality rules enforced at generation time.** A violation aborts with `ERRO DE GRAMATICA`.
+**Rules enforced at generation time.** A scenario that breaks one is dropped and counted (see above).
 
-- Every call to a katana tool validates against its `CtTool.props`/`req`.
-- Every MCP call validates against the schema of its card.
-- A request with 3 or more actions starts with `TodoWrite`, or with `Skill`, which writes the plan.
+- Every call to a katana tool validates against its `CtTool.props`/`req`, and the tool then really runs.
+- Every MCP call validates against the schema of its card, and every value in it is in the request or in an earlier result.
 - Text before a call is one short line at most.
-- Every conversation ends with a final assistant message.
+- The engine never has to demand a plan, and never refuses a trained call.
 
-**What `check` verifies.** It parses every line again and validates every call. MCP calls are checked against the card
-parsed back out of the system message. It also checks these invariants:
+**What `check` verifies.** It parses every line again, validates every call (MCP calls against the card parsed back out
+of the system message, or against the schema that `ToolSearch` returned when the card cuts the signature), and makes the
+engine redo what can be redone from the file alone:
 
-- the `brief-command` command is one of the file's;
-- no trained `Bash` command matches a `never:` glob;
-- in `brief-done`, the done/test command is the last command and comes after the last `Write`/`Edit`;
-- in `brief-docs`, the file read is listed in `docs:`;
-- in `skill-none`, there is no `Skill` call; the `skill-*` families do call it, with a name from the list;
-- in `mcp-chain`, the id comes from an earlier result;
-- in `mcp-schema`, `ToolSearch` comes before the call;
-- every result matches a call.
+- `TodoWrite` calls are replayed through the engine (also the plan a `Skill` result wrote); the result must be equal.
+- `Write` and `Edit` are replayed in a temporary folder (the file an `Edit` changes is rebuilt from the `Read` result);
+  the first line of the result must be equal.
+- At each final answer the checker does what the agent loop does: the project verification must have run after a file
+  change (by the rules of `brief_track`), the last open step is closed, and more than one open step needs the engine's
+  reminder as the next message.
+- The third call of a request without a plan is an error (the engine would demand the plan).
+- An MCP result carries the engine's wrapper; a `never:` refusal quotes a pattern of the file that matches the command.
+- `katana <subcommand>` in a command exists in the binary's list; the keys of the `KATANA.md` shown are keys of the brief
+  format, and the file passes the engine's linter.
+- No `AskUserQuestion` for something an `ask:` rule covers; no unfilled template slot (`{name}`) in a model turn.
+- Two conversations with the same system prompt and the same request must start with the same action (a contradiction
+  is an error); repeated situations are counted.
+- The family invariants: the `brief-command` command is one of the file's; in `brief-done` the verification is the last
+  command, after the last `Write`/`Edit`; in `brief-docs` the file read is listed in `docs:`; `skill-none` does not call
+  `Skill` and the `skill-*` families do, with a listed name; in `mcp-chain` the id comes from an earlier result; in
+  `mcp-schema`, `ToolSearch` comes before the call; every result matches a call.
 
-A test corrupted on purpose was caught: a changed command, and a number turned into a string.
+Run on the file generated before this work (`--system blocks`, 1,800 conversations), the checker finds 1,163
+conversations with at least one problem (first reason per conversation): 294 MCP results without the wrapper, 247 final
+answers with open plan steps, 180 `TodoWrite` results the engine would not give, 172 final answers without the project
+verification, 122 invented MCP arguments, 87 `Write`/`Edit` results the engine would not give, 44 double questions, 17
+requests without a plan.
 
-## Measured on a generated file (seed 7, 2,000 conversations)
+## Tool coverage matrix
+
+`katana curriculum check` ends with one line per tool of the engine's table (`src/tools/table.c`), in three tiers, with the
+number of conversations that call it in a trained turn and the minimum: tier A (declared in the prompt) 2% of the file and
+at least 5, tier B (listed by name, reached through `ToolSearch select:Name`) 3, tier C (rare) 1. `check --coverage` turns
+a tool below its minimum into an error. Measured on the 520-conversation file of 2026-11-22: 8 of the 40 tools of this
+platform are called (Bash, Read, Edit, Write, Grep, TodoWrite, ToolSearch, Skill) plus the MCP tools; 32 are below the
+minimum, among them Glob, AskUserQuestion, WebSearch and WebFetch of tier A. The families that would cover them are not
+written yet.
+
+## Size against the training budget
+
+Measured with the Qwen3.6 tokenizer, fixed windows, `--mask-prefill`: 1,800 conversations in `mix:blocks=60,full=30,real=10`
+are 2.17M tokens and 3,149 trained windows of 512; 520 conversations in `mix:blocks=88,real=12` are 0.51M tokens, 918
+trained windows of 512 or 601 of 1024. Windows without a target (the long system prompt) are not trained.
+
+## Structural holdout
+
+`--holdout` alone gives the same moulds with new values. For a holdout of moulds the training file never had, generate the
+training file with `--families` leaving some families out, and a holdout with only those. Measured (training without
+`skill-fail`, `brief-absent`, `mcp-none-error`; holdout with only them): 54% of the holdout tool sequences are not in the
+training file, 0% of the turns are equal, 22% of the turns share a template. The cost is that the training file no longer
+teaches those three behaviours.
+
+## Family weights
+
+Without `--families` the weights are: `brief-done` 6 (the only family with the read, edit, verify, fix cycle), the `mcp-*`
+families and `mixed` 4, the create families (`brief-write`, `skill-write`, `mcp-add`) 1, the others 3. With equal weights the
+create families took 35% of the trained text and `mcp-call` 2% (measured).
+
+## Measured on a file generated before the 2026-11-22 change (seed 7, 2,000 conversations)
+
+The numbers of this section are from the older generator and equal weights. Newer numbers are in the audit report of
+2026-11-22 (old against new, Qwen3.6 tokenizer).
 
 `katana curriculum stats` reports this table. The windows columns are an **estimate**, characters / 3.3 / 512. They
 count only the text that goes into the loss: assistant text plus call names and arguments.
@@ -200,8 +281,13 @@ python3 tools/codebench/run.py compare base.jsonl spec.jsonl
   differences mean anything.
 - The code inside the generated examples is a placeholder: stubs and one-line bodies. It teaches the conventions, not
   programming.
-- The blocks follow the spec, not the engine's code, which was not merged yet. Switch the functions listed above when
-  it lands, and check that `check` still passes.
+- The output of the project's own commands and the data returned by MCP servers are still tables written by hand. They are
+  the only simulated text.
+- Requests, plan items, call descriptions and final answers are templates: about 12% of the trained characters. There are
+  29 distinct tool sequences in 1,800 conversations; 7 families have a single one.
+- Left out because the engine did not confirm them or the final answer said more than the conversation did: the `run:`
+  case in the background, three `docs:` entries (config, i18n, api), one `never:` case (snapshots), and the stacks whose
+  stub code fails the engine's syntax check on this machine.
 - The holdout file exists, but no model has been evaluated on it.
 - The data names open-source developer tools (make, cargo, npm, shellcheck...). No product, vendor or inference engine
   is named.
