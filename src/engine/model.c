@@ -44,6 +44,7 @@ typedef struct {
        camada, feed-forward denso em paralelo com o MoE, normas depois de cada bloco */
     int g4;             /* arquitetura gemma4 */
     int go;             /* arquitetura gpt-oss */
+    int q4e;            /* arquitetura qwen4exp (estado proprio em Model.q4) */
     int glm;            /* arquitetura glm4 (dense): norma sanduiche, rope parcial, qkv com vies */
     int glmoe;          /* arquitetura glm4moe (MoE): pre-norm comum, rope NEOX parcial, qkv com vies, compartilhado */
     int n_nextn;        /* camadas MTP/nextn no fim do modelo (ignoradas) */
@@ -117,6 +118,7 @@ typedef struct {
     int64_t fsize;                      /* tamanho do arquivo do modelo */
     float *x, *xb, *xb2, *q, *k, *v, *att, *hb, *hb2, *logits, *rope_freq;
     float *rope_freq_swa;               /* gemma4: frequencias das camadas locais */
+    struct Q4 *q4;                      /* qwen4exp: pesos e estado proprios (qwen4exp.c) */
     size_t n_params;
 } Model;
 
@@ -180,9 +182,10 @@ static int key_is(const char *k, int kl, const char *s) {
 typedef struct {
     const char *name; int namelen;
     uint64_t dims[4]; uint32_t ndims, type; uint64_t offset;
+    const uint8_t *base, *lim;      /* inicio dos dados e fim do arquivo que tem o tensor (modelo em varias partes) */
 } TInfo;
 
-typedef struct { TInfo *t; uint64_t n; const uint8_t *data, *end; } Tensors;
+typedef struct { TInfo *t; uint64_t n; } Tensors;
 
 static float f16_to_f32(uint16_t h) {
     uint32_t s = (h >> 15) & 1, m = h & 0x3ff, u;
@@ -205,7 +208,7 @@ static float f16_to_f32(uint16_t h) {
 enum { T_F32 = 0, T_F16 = 1, T_Q4_0 = 2, T_Q4_1 = 3, T_Q5_0 = 6, T_Q5_1 = 7, T_Q8_0 = 8, T_Q2_K = 10, T_Q3_K = 11,
        T_Q4_K = 12, T_Q5_K = 13, T_Q6_K = 14, T_IQ2_XXS = 16, T_IQ2_XS = 17, T_IQ3_XXS = 18, T_IQ1_S = 19,
        T_IQ4_NL = 20, T_IQ3_S = 21, T_IQ2_S = 22, T_IQ4_XS = 23, T_IQ1_M = 29, T_BF16 = 30, T_TQ1_0 = 34,
-       T_TQ2_0 = 35, T_MXFP4 = 39 };
+       T_TQ2_0 = 35, T_MXFP4 = 39, T_Q2_0 = 42 };
 
 /* bytes ocupados por n elementos (0 = tipo nao suportado ou n desalinhado) */
 static size_t qbytes(uint32_t type, size_t n) {
@@ -235,6 +238,7 @@ static size_t qbytes(uint32_t type, size_t n) {
         case T_IQ1_M: return n % 256 ? 0 : n / 256 * 56;
         case T_TQ1_0: return n % 256 ? 0 : n / 256 * 54;
         case T_TQ2_0: return n % 256 ? 0 : n / 256 * 66;
+        case T_Q2_0: return n % 64 ? 0 : n / 64 * 18;     /* f16 d, 64 de 2 bits (codigo - 1) */
         default:     return 0;
     }
 }
@@ -274,6 +278,7 @@ static int qunit(uint32_t type) {
     switch (type) {
         case T_F32: case T_F16: case T_BF16: return 1;
         case T_Q4_0: case T_Q4_1: case T_Q5_0: case T_Q5_1: case T_Q8_0: case T_IQ4_NL: case T_MXFP4: return 32;
+        case T_Q2_0: return 64;
         default: return 256;
     }
 }
@@ -498,6 +503,15 @@ static int dequant_ext(uint32_t type, const uint8_t *src, float *out, size_t n) 
                     for (int m = 0; m < 32; m++) *out++ = (float)(((src[j + m] >> (l * 2)) & 3) - 1) * d;
         }
         return 1;
+    case T_Q2_0:        /* valor = d * (codigo - 1): -1, 0, 1 ou 2; d pode ser negativo */
+        for (size_t b = 0; b < n / 64; b++, src += 18, out += 64) {
+            const float d = h2f(src);
+            for (int j = 0; j < 16; j++) {
+                const int q = src[2 + j];
+                for (int s = 0; s < 4; s++) out[4 * j + s] = (float)(((q >> 2 * s) & 3) - 1) * d;
+            }
+        }
+        return 1;
     default:
         return 0;
     }
@@ -607,14 +621,14 @@ static float *get_tensor(const Tensors *ts, const char *name, size_t expect, int
         size_t n = 1;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
         if (n != expect) { fprintf(stderr, "Tensor %s: %zu elementos, esperava %zu\n", name, n, expect); exit(1); }
-        const uint8_t *src = ts->data + t->offset;
+        const uint8_t *src = t->base + t->offset;
         float *out = xalloc(n, sizeof(float));
         size_t bytes = qbytes(t->type, n);
         if (!bytes) {
-            fprintf(stderr, "Tensor %s: quantizacao tipo %u nao suportada (use F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K..Q6_K, IQ1..IQ4, TQ1_0, TQ2_0 ou MXFP4)\n", name, t->type);
+            fprintf(stderr, "Tensor %s: quantizacao tipo %u nao suportada (use F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K..Q6_K, IQ1..IQ4, TQ1_0, TQ2_0, Q2_0 ou MXFP4)\n", name, t->type);
             exit(1);
         }
-        if (src + bytes > ts->end) die("tensor fora do arquivo");
+        if (src + bytes > t->lim) die("tensor fora do arquivo");
         dequant(t->type, src, out, n);
         if (count) *count += n;
         return out;
@@ -636,8 +650,8 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
         if (!stride) break;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
         if (n != rows * cols) { fprintf(stderr, "Tensor %s: tamanho inesperado\n", name); exit(1); }
-        if (ts->data + t->offset + rows * stride > ts->end) die("tensor fora do arquivo");
-        m.q = ts->data + t->offset;
+        if (t->base + t->offset + rows * stride > t->lim) die("tensor fora do arquivo");
+        m.q = t->base + t->offset;
         m.type = t->type; m.stride = stride;
         if (count) *count += n;
         return m;
@@ -746,6 +760,64 @@ static const uint8_t *map_file(const char *path, int64_t *size) {
 #endif
 }
 
+/* GGUF em varias partes: caminho da parte `no` (1..n) a partir do da primeira (...-00001-of-0000N.gguf) */
+static int split_path(char *out, size_t cap, const char *first, int no, int n) {
+    char suf[40];
+    const int sl = snprintf(suf, sizeof suf, "-00001-of-%05d.gguf", n), fl = (int)strlen(first);
+    if (fl < sl || strcmp(first + fl - sl, suf) != 0) return 0;
+    return snprintf(out, cap, "%.*s-%05d-of-%05d.gguf", fl - sl, first, no, n) < (int)cap;
+}
+/* le a tabela de tensores (r logo depois dos metadados) para t[0..n) */
+static void tensors_read(Rd *r, const uint8_t *buf, int64_t fsz, uint64_t align, TInfo *t, uint64_t n) {
+    for (uint64_t i = 0; i < n; i++, t++) {
+        t->name = rd_str(r, &t->namelen);
+        t->ndims = rd_u32(r);
+        if (t->ndims > 4) die("tensor com dimensoes demais");
+        for (uint32_t d = 0; d < t->ndims; d++) t->dims[d] = rd_u64(r);
+        t->type = rd_u32(r);
+        t->offset = rd_u64(r);
+    }
+    const uint64_t pos = ((uint64_t)(r->p - buf) + align - 1) / align * align;
+    for (uint64_t i = 1; i <= n; i++) {
+        t[-(int64_t)i].base = buf + pos; t[-(int64_t)i].lim = buf + fsz;
+        if (pos > (uint64_t)fsz || t[-(int64_t)i].offset > (uint64_t)fsz - pos) die("tensor fora do arquivo");
+    }
+}
+/* acrescenta os tensores das partes 2..n; devolve os bytes delas */
+static int64_t split_load(Tensors *ts, const char *path, int n) {
+    int64_t tot = 0;
+    for (int no = 2; no <= n; no++) {
+        char pp[4096];
+        int64_t fsz = 0;
+        if (!split_path(pp, sizeof pp, path, no, n)) die("modelo em partes: o nome do arquivo precisa terminar em -00001-of-0000N.gguf");
+        const uint8_t *buf = map_file(pp, &fsz);
+        if (!buf) { fprintf(stderr, "Nao consegui abrir %s\n", pp); exit(1); }
+        Rd r = { buf, buf + fsz };
+        if (rd_u32(&r) != 0x46554747u || rd_u32(&r) < 2) die("parte do modelo: nao e um arquivo GGUF");
+        const uint64_t nt = rd_u64(&r), nkv = rd_u64(&r);
+        uint64_t align = 32;
+        int part = -1;
+        for (uint64_t i = 0; i < nkv; i++) {
+            int kl; const char *k = rd_str(&r, &kl);
+            const uint32_t t = rd_u32(&r);
+            if (t != 8 && t != 9 && key_is(k, kl, "general.alignment")) align = (uint64_t)rd_num(&r, t);
+            else if (t != 8 && t != 9 && key_is(k, kl, "split.no")) part = (int)rd_num(&r, t);
+            else rd_skip(&r, t);
+        }
+        if (part != no - 1) die("parte do modelo fora de ordem (split.no)");
+        if (!align || nt > (uint64_t)fsz) die("parte do modelo invalida");
+        ts->t = realloc(ts->t, (ts->n + nt) * sizeof(TInfo));
+        if (!ts->t) die("sem memoria");
+        memset(ts->t + ts->n, 0, nt * sizeof(TInfo));
+        tensors_read(&r, buf, fsz, align, ts->t + ts->n, nt);
+        ts->n += nt; tot += fsz;
+    }
+    return tot;
+}
+
+static int q4_kv(Model *m, const char *k, int kl, uint32_t t, Rd *r);
+static void q4_config(Model *m);
+static void q4_load(Model *m, const Tensors *ts);
 static void sample_preset(const char *arch);
 static void spec_apply(Model *m);
 static int g_spec_tools = 0;        /* uma especializacao chamada tools.kspec foi aplicada: o modelo ja conhece as ferramentas do agente */
@@ -767,7 +839,7 @@ static void load_model(Model *m, const char *path) {
     const char **merges = NULL; int *mlen = NULL; int n_merges = 0;
     Tokenizer *tk = &m->tk;
     static int g4_nkv[1024], g4_swa[1024];      /* gemma4: cabecas kv e janela, por camada */
-    int g4_nkv_n = 0, g4_swa_n = 0;
+    int g4_nkv_n = 0, g4_swa_n = 0, split_n = 1, split_no = 0;
 
     for (uint64_t i = 0; i < n_kv; i++) {
         int kl; const char *k = rd_str(&r, &kl);
@@ -776,6 +848,7 @@ static void load_model(Model *m, const char *path) {
             int sl; const char *s = rd_str(&r, &sl);
             if (sl > 63) sl = 63;
             memcpy(c->arch, s, sl);
+        } else if (kl > 9 && memcmp(k, "qwen4exp.", 9) == 0 && q4_kv(m, k, kl, t, &r)) {
         } else if (t == 8 && key_is(k, kl, "katana.no_tool_decl")) {   /* GGUF fundido de uma especializacao que conhece as ferramentas */
             int sl; const char *s = rd_str(&r, &sl);
             if (sl > 0 && s[0] == '1') g_spec_tools = 1;
@@ -871,9 +944,12 @@ static void load_model(Model *m, const char *path) {
             else if (key_is(k, kl, "tokenizer.ggml.eos_token_id")) c->eos = (int)v;
             else if (key_is(k, kl, "tokenizer.ggml.add_bos_token")) c->add_bos = (int)v;
             else if (key_is(k, kl, "general.alignment")) align = (uint64_t)v;
+            else if (key_is(k, kl, "split.count")) split_n = (int)v;
+            else if (key_is(k, kl, "split.no")) split_no = (int)v;
         } else rd_skip(&r, t);
     }
 
+    if (split_no != 0) die("modelo em partes: abra a primeira (...-00001-of-0000N.gguf)");
     if (strcmp(c->arch, "qwen2") == 0) c->rope_neox = 1;
     else if (strcmp(c->arch, "olmoe") == 0) { c->rope_neox = 1; c->qk_norm = 1; }
     else if (strcmp(c->arch, "qwen3") == 0) { c->rope_neox = 1; c->qk_norm = 2; }
@@ -881,6 +957,7 @@ static void load_model(Model *m, const char *path) {
     else if (strcmp(c->arch, "deepseek2") == 0) c->rope_neox = 0;
     else if (strcmp(c->arch, "qwen35moe") == 0) { c->rope_neox = 1; c->qk_norm = 2; c->moe_norm = 1; c->attn_gated = 1; c->think = 1; }
     else if (strcmp(c->arch, "qwen35") == 0) { c->rope_neox = 1; c->qk_norm = 2; c->attn_gated = 1; c->think = 1; }   /* Qwen3.8 denso: DeltaNet + atencao com portao + FFN denso */
+    else if (strcmp(c->arch, "qwen4exp") == 0) { c->q4e = 1; c->rope_neox = 1; c->qk_norm = 2; c->moe_norm = 1; c->attn_gated = 1; c->think = 1; }   /* Qwen3.8-Flash-Next */
     else if (strcmp(c->arch, "gemma4") == 0) {
         c->g4 = 1; c->rope_neox = 1; c->moe_norm = 1; g_gelu = 1;
         c->emb_scale = sqrtf((float)c->dim);
@@ -970,31 +1047,23 @@ static void load_model(Model *m, const char *path) {
     if (c->eos >= 0 && c->eos < tk->n && tk->toklen[c->eos] < 48) { memcpy(c->eos_text, tk->tok[c->eos], tk->toklen[c->eos]); }
     free(tmpl);
     if (g_vocab_only) return;
+    if (c->q4e) q4_config(m);
 
     Tensors ts;
     ts.n = n_tensors; ts.t = xalloc(n_tensors, sizeof(TInfo));
-    for (uint64_t i = 0; i < n_tensors; i++) {
-        TInfo *t = &ts.t[i];
-        t->name = rd_str(&r, &t->namelen);
-        t->ndims = rd_u32(&r);
-        if (t->ndims > 4) die("tensor com dimensoes demais");
-        for (uint32_t d = 0; d < t->ndims; d++) t->dims[d] = rd_u64(&r);
-        t->type = rd_u32(&r);
-        t->offset = rd_u64(&r);
-    }
-    uint64_t pos = (uint64_t)(r.p - buf);
-    pos = (pos + align - 1) / align * align;
-    ts.data = buf + pos; ts.end = buf + fsz;
+    tensors_read(&r, buf, fsz, align, ts.t, n_tensors);
+    const int64_t fsz2 = split_n > 1 ? split_load(&ts, path, split_n) : 0;
 
     size_t d = c->dim, H = c->hidden, kvd = (size_t)c->n_kv * c->hd, V = c->vocab;
     const size_t qd = (size_t)c->n_heads * c->hd, dq = qd > d ? qd : d;
     size_t *np = &m->n_params;
     m->tok_emb = get_mat(&ts, "token_embd.weight", V, d, 1, np);
-    m->out_norm = get_tensor(&ts, "output_norm.weight", d, 1, np);
+    if (!c->q4e) m->out_norm = get_tensor(&ts, "output_norm.weight", d, 1, np);
     m->lm_head = get_mat(&ts, "output.weight", V, d, 0, np);
     if (!m->lm_head.f && !m->lm_head.q) m->lm_head = m->tok_emb;   /* pesos amarrados */
     m->layers = xalloc(c->n_layers, sizeof(Layer));
-    for (int l = 0; l < c->n_layers; l++) {
+    if (c->q4e) q4_load(m, &ts);
+    for (int l = 0; l < c->n_layers && !c->q4e; l++) {
         Layer *L = &m->layers[l];
         char nm[96];
 #define V1(field, suffix) snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_tensor(&ts, nm, d, 1, np)
@@ -1279,12 +1348,13 @@ static void load_model(Model *m, const char *path) {
     }
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
-    m->fsize = fsz;
+    m->fsize = fsz + fsz2;
     shards_open(path, fsz);
     prefetch_setup(fsz);
     if (c->n_expert) warm_start(m);
     sample_preset(c->arch);
     spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
-    if (!getenv("KATANA_CPU")) gpu_setup(m);
+    if (c->q4e) fprintf(stderr, "qwen4exp: so na CPU por enquanto\n");
+    else if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 

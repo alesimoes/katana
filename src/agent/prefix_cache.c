@@ -19,7 +19,7 @@ static uint64_t pfx_hash(uint64_t h, const void *p, size_t n) {
 /* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL); 0 se nao cobre */
 static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     const Config *c = &m->cfg;
-    if (m->ckv || !(m->kcache || m->kh)) return 0;
+    if (m->ckv || c->q4e || !(m->kcache || m->kh)) return 0;        /* qwen4exp: estado a mais (n-gramas, indice) fora do arquivo */
     *ngl = 0; *esz = m->kh ? 2 : 4; *backend = 0;      /* cache da CPU em fp16 (m->kh/m->vh, contexto longo): 2 bytes */
     if (vkg.on && !gpu.force_cpu) { *ngl = vkg.nl; *esz = vkg.kv16 ? 2 : 4; *backend = 1; }
     else if (gpu.n_gl > 0 && !gpu.force_cpu) { *ngl = gpu.n_gl; *esz = gpu.kv16 ? 2 : 4; *backend = 2; }

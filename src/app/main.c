@@ -189,7 +189,7 @@ static int gguf_meta(const char *path, char *arch, int *ft, int *n_layers, int *
 /* arquiteturas que o katana suporta (carrega e roda) */
 static int arch_suportada(const char *a) {
     static const char *ok[] = { "llama", "qwen2", "qwen3", "qwen3moe", "qwen35moe", "qwen35",
-                                "deepseek2", "olmoe", "gemma4", "gpt-oss", "glm4", "glm4moe" };
+                                "deepseek2", "olmoe", "gemma4", "qwen4exp", "gpt-oss", "glm4", "glm4moe" };
     for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++) if (!strcmp(a, ok[i])) return 1;
     return 0;
 }
@@ -197,6 +197,7 @@ static int arch_suportada(const char *a) {
 /* como o modelo roda nesta maquina, por arquitetura e tamanho (estimativa; prepare mede de fato) */
 static const char *como_roda(const char *arch, int n_expert, double gb) {
     if (!arch_suportada(arch)) return "nao suportado";
+    if (!strcmp(arch, "qwen4exp")) return "CPU";
     if (!strcmp(arch, "gpt-oss") || !strcmp(arch, "glm4") || !strcmp(arch, "glm4moe"))
         return "CPU (Vulkan pendente)";
     if (!strcmp(arch, "gemma4")) return "GPU hibrido (cache esp.)";
@@ -1149,6 +1150,11 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         print_info(&m);
         return train_main(&m, argv[2], argc - 3, argv + 3);
+    }
+    if (argc == 4 && strcmp(argv[1], "q4check") == 0) {      /* qwen4exp contra estados e logits de referencia (tools/tinymodel/qwen4exp_ref.py) */
+        static Model m;
+        load_model(&m, argv[2]);
+        return q4_check(&m, argv[3]);
     }
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);

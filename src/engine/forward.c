@@ -268,7 +268,7 @@ static void logit_softcap(const Model *m, float *lg) {
 /* norma final + projecao para o vocabulario, na CPU */
 static float *cpu_head(Model *m) {
     const Config *c = &m->cfg;
-    rmsnorm(m->x, m->x, m->out_norm, c->dim, c->eps);
+    if (!c->q4e) rmsnorm(m->x, m->x, m->out_norm, c->dim, c->eps);      /* qwen4exp: o mixer final ja normaliza */
     matvec(m->logits, &m->lm_head, m->x, c->vocab, c->dim);
     logit_softcap(m, m->logits);
     return m->logits;
@@ -277,6 +277,7 @@ static float *cpu_head(Model *m) {
 /* as camadas da GPU so sao usadas pelo grafo da GPU; na CPU os produtos sao sempre locais */
 static float *forward(Model *m, int token, int pos, int want_logits) {
     const Config *c = &m->cfg;
+    if (c->q4e) return q4_forward(m, &token, 1, pos, want_logits);
     if (vkg.on && !gpu.force_cpu) return vk_forward_1(m, token, pos, want_logits);
     if (gpu.n_gl > 0 && !gpu.force_cpu) return gpu_forward_n(m, &gpu.set[gpu.n_sets - 1], &token, pos, want_logits);
     embed_row(m, m->x, token);
@@ -313,6 +314,7 @@ static int g4_batch(const Model *m) {
 static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_logits) {
     float *lg = NULL;
     int i = 0;
+    if (m->cfg.q4e) return q4_forward(m, toks, n, pos0, want_logits);
     if (vkml.ok && !gpu.force_cpu && vk_batch_min() <= n) {      /* MLA em Vulkan (modo hibrido): lote proprio */
         while (n - i >= vk_batch_min()) {
             const int nb = n - i < vkml.P ? n - i : vkml.P;
@@ -399,6 +401,7 @@ static float g_top_p = 1.0f;
 
 static void sample_preset(const char *arch) {
     if (strncmp(arch, "gemma", 5) == 0) { g_top_k = 64; g_top_p = 0.95f; }
+    else if (strncmp(arch, "qwen4", 5) == 0) { g_top_k = 20; g_top_p = 0.95f; }
     else if (strncmp(arch, "qwen", 4) == 0) { g_top_k = 20; g_top_p = 0.8f; }
     else { g_top_k = 40; g_top_p = 0.95f; }
     if (getenv("KATANA_TOP_K")) g_top_k = atoi(getenv("KATANA_TOP_K"));

@@ -55,7 +55,7 @@ static int tt_is_moe(const Model *m, int l) { return m->cfg.n_expert && l >= m->
 /* tabela dos tensores treinaveis (nomes do GGUF; especialista e de um tensor empilhado: nome + ".e<e>") */
 static const char *tt_build(Model *m, TTab *t) {
     const Config *c = &m->cfg;
-    if (c->go || c->mla || c->glm || c->glmoe)
+    if (c->go || c->mla || c->glm || c->glmoe || c->q4e)
         return "this architecture is not supported by the trainer yet (llama, qwen2, qwen3, olmoe, qwen3moe, qwen35, qwen35moe, gemma4)";
     if (c->ssm_inner && c->ssm_inner / c->ssm_rank > 512) return "DeltaNet: v head too wide";
     if (!c->g4 && ((c->emb_scale != 0.0f && c->emb_scale != 1.0f) || c->softcap != 0.0f)) return "embedding scale or logit softcap not supported yet";

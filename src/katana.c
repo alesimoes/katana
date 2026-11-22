@@ -16,6 +16,7 @@
 #include "engine/qwen35.c"             /* qwen35/qwen35moe: DeltaNet, atencao com portao, grafo Vulkan */
 #include "engine/vk_gemma4.c"          /* gemma4 em Vulkan (hibrido) */
 #include "engine/vk_qwen35d.c"         /* qwen35 denso no modo hibrido: prompt em lote com os produtos na GPU */
+#include "engine/qwen4exp.c"           /* qwen4exp na CPU: 4 ramos residuais, atencao esparsa, n-gramas no disco */
 #include "engine/forward.c"            /* camadas na CPU em lote, forward, amostragem, decodificacao especulativa, generate */
 #include "engine/qtest.c"              /* katana qtest: teste dos tipos de quantizacao */
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
