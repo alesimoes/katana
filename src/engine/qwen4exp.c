@@ -39,6 +39,7 @@ typedef struct Q4 {
     /* estado */
     int hist[8];                                /* ultimos ng-1 tokens */
     float *conv;                                /* [(pk-1)*ng][R*dim] entradas da convolucao do ple */
+    uint8_t *lseen;                             /* [camada] pedida inteira (prompt em lote) */
     uint8_t *seen;                              /* [camada][especialista] ja pedido ao sistema nesta execucao */
     float *iacc, *ikey;                         /* por camada esparsa: soma das k cruas do bloco aberto [ihd]; chaves prontas [ctx/ratio][ihd] */
 } Q4;
@@ -156,7 +157,7 @@ static void q4_load(Model *m, const Tensors *ts) {
     char nm[96];
     int na = 0;
     q->l = xalloc(c->n_layers, sizeof(Q4L));
-    q->seen = xalloc((size_t)c->n_layers * E, 1);
+    q->seen = xalloc((size_t)c->n_layers * E, 1); q->lseen = xalloc(c->n_layers, 1);
     q4_hc_load(m, ts, &q->out, "output_hc", 0);
     m->out_norm = q->out.norm;
     for (int l = 0; l < c->n_layers; l++) {
@@ -1105,22 +1106,70 @@ static void q4_exp_down(void *cx, int i0, int i1) {
         for (int p = j->beg[g]; p < j->beg[g + 1]; p++) j->o[(size_t)p * j->d + r] = dot(w, j->hg + (size_t)p * j->H, j->H);
     }
 }
-/* paginas dos especialistas escolhidos que esta execucao ainda nao tocou: pedidas de uma vez, o disco atende em paralelo */
+/* leitura antecipada: threads proprias trazem faixas do arquivo mapeado (MADV_POPULATE_READ: a chamada volta com as paginas
+   na memoria; varias threads = varias leituras no disco ao mesmo tempo). Medido: MADV_WILLNEED nao adianta nada neste sistema
+   de arquivos (mesmo numero de faltas de pagina e mesmo tempo com o arquivo frio). So faixas ainda nao pedidas nesta execucao. */
+#if defined(__linux__)
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#endif
+#define Q4_AHT 8
+#define Q4_AHQ 65536
+static struct { pthread_mutex_t mu; pthread_cond_t cv; struct { uintptr_t a; size_t n; } q[Q4_AHQ]; unsigned head, tail; int on; } q4_ah = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER };
+static void *q4_ah_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&q4_ah.mu);
+        while (q4_ah.head == q4_ah.tail) pthread_cond_wait(&q4_ah.cv, &q4_ah.mu);
+        const uintptr_t a = q4_ah.q[q4_ah.head % Q4_AHQ].a;
+        const size_t n = q4_ah.q[q4_ah.head++ % Q4_AHQ].n;
+        pthread_mutex_unlock(&q4_ah.mu);
+        madvise((void *)a, n, MADV_POPULATE_READ);
+    }
+    return NULL;
+}
+static void q4_will(const Mat *W, size_t rows) {
+    if (!W->q) return;
+    if (!q4_ah.on) {
+        q4_ah.on = 1;
+        for (int i = 0; i < Q4_AHT; i++) { pthread_t t; if (pthread_create(&t, NULL, q4_ah_thread, NULL) == 0) pthread_detach(t); }
+    }
+    uintptr_t a = (uintptr_t)W->q & ~(uintptr_t)4095;
+    const uintptr_t e = ((uintptr_t)W->q + rows * W->stride + 4095) & ~(uintptr_t)4095;
+    pthread_mutex_lock(&q4_ah.mu);
+    for (; a < e; a += (uintptr_t)1 << 20) {
+        if (q4_ah.tail - q4_ah.head >= Q4_AHQ) break;       /* fila cheia: o resto vem por falta de pagina */
+        q4_ah.q[q4_ah.tail % Q4_AHQ].a = a;
+        q4_ah.q[q4_ah.tail++ % Q4_AHQ].n = e - a < ((uintptr_t)1 << 20) ? e - a : (size_t)1 << 20;
+    }
+    pthread_cond_broadcast(&q4_ah.cv);
+    pthread_mutex_unlock(&q4_ah.mu);
+}
+#else
+static void q4_will(const Mat *W, size_t rows) { (void)W; (void)rows; }
+#endif
 static void q4_ahead(const Layer *L, uint8_t *seen, const int *ee, int ng, int H, int d) {
-#ifndef _WIN32
     for (int g = 0; g < ng; g++) {
         if (seen[ee[g]]) continue;
         seen[ee[g]] = 1;
-        const Mat *M[3] = { &L->eg[ee[g]], &L->eu[ee[g]], &L->ed[ee[g]] };
-        for (int k = 0; k < 3; k++) {
-            if (!M[k]->q) continue;
-            const uintptr_t a = (uintptr_t)M[k]->q & ~(uintptr_t)4095;
-            madvise((void *)a, (uintptr_t)M[k]->q + (size_t)(k < 2 ? H : d) * M[k]->stride - a, MADV_WILLNEED);
-        }
+        q4_will(&L->eg[ee[g]], H); q4_will(&L->eu[ee[g]], H); q4_will(&L->ed[ee[g]], d);
     }
-#else
-    (void)L; (void)seen; (void)ee; (void)ng; (void)H; (void)d;
-#endif
+}
+/* prompt em lote grande com o arquivo frio: pede as paginas da camada inteira (um lote de 256 usa quase todos os especialistas
+   dela) duas camadas antes de precisar, uma vez por execucao */
+static void q4_layer_ahead(Model *m, int l) {
+    const Config *c = &m->cfg;
+    Q4 *q = m->q4;
+    if (l >= c->n_layers || q->lseen[l]) return;
+    q->lseen[l] = 1;
+    const Layer *L = &m->layers[l];
+    const size_t d = c->dim, D = q->R * d, E = c->n_expert, H = c->hidden, qd = (size_t)c->n_heads * c->hd;
+    const Q4Hc *h[2] = { &q->l[l].att, &q->l[l].ffn };
+    for (int k = 0; k < 2; k++) { q4_will(&h[k]->down, q->rank); q4_will(&h[k]->up, D); }
+    if (L->lin) { q4_will(&L->wqkv, dn_channels(c)); q4_will(&L->wz, c->ssm_inner); q4_will(&L->wssm_out, d); }
+    else { q4_will(&L->wq, 2 * qd); q4_will(&L->wo, d); }
+    q4_will(&L->eg[0], E * H); q4_will(&L->eu[0], E * H); q4_will(&L->ed[0], E * d);
+    memset(q->seen + (size_t)l * E, 1, E);
 }
 /* roteador do lote: a mesma conta do moe_route, por token em paralelo */
 typedef struct { const Config *c; float *LG; int *ex; float *ew; } Q4Rj;
@@ -1259,6 +1308,7 @@ static void q4_batch(Model *m, const int *toks, int B, int pos0) {
     tk = q4_tick(QP_EMB, tk);
     for (int l = 0; l < c->n_layers; l++) {
         const Layer *L = &m->layers[l];
+        if (B >= 64 && (q4_opt & QO_AHEAD)) { q4_layer_ahead(m, l); q4_layer_ahead(m, l + 1); q4_layer_ahead(m, l + 2); }
         tk = q4_tick(-1, 0);
         if (l == q->ple_l) { q4_ple(m, toks, X, B); q4_tick(QP_PLE, tk); }
         q4_hc_read(m, &q->l[l].att, X, B, Xb, inj);
