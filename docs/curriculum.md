@@ -154,7 +154,7 @@ counts.
 ## The measurement: `conv-*` tasks in codebench
 
 Twelve tasks in `tools/codebench/tasks/conv-*`. Hidden tests check side effects only, never the model's words. All 12
-pass `python3 tools/codebench/run.py --verify`.
+pass `katana codebench verify`.
 
 **Project file (5)**
 
@@ -188,9 +188,9 @@ Each task ships a stdio `server.py` and writes a project `.katana/mcp.json`. The
 Run the tasks on the base model and on the specialized one, alternated in the same hour:
 
 ```
-python3 tools/codebench/run.py --model M.gguf --tasks 'conv-*' --out base.jsonl --label base
-python3 tools/codebench/run.py --model M.gguf --tasks 'conv-*' --out spec.jsonl --label spec --env KATANA_SPEC=katana.kspec
-python3 tools/codebench/run.py compare base.jsonl spec.jsonl
+katana codebench run --model M.gguf --tasks 'conv-*' --out base.jsonl --label base
+katana codebench run --model M.gguf --tasks 'conv-*' --out spec.jsonl --label spec --env KATANA_SPEC=katana.kspec
+katana codebench compare base.jsonl spec.jsonl
 ```
 
 ## What is not measured

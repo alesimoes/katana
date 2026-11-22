@@ -440,7 +440,7 @@ format, with fewer wasted and invalid calls, without losing tasks on codebench. 
 | 1 | Speed of training on the card: `sh tools/traintest/run.sh`, then 4 steps of `katana train` with and without `KATANA_TRAIN_GPU=0`, alternating | seconds per step on the GPU known (CPU measured: 229 s per 512-token window) |
 | 2 | Data with the second set's names (below) and a fixed validation split by conversation | one JSONL per model, sizes in tokens and windows recorded |
 | 3 | First run, Qwen3.6: `--plan 1`, then attention adapters rank 8, `--seq 512`, `--final 0`, one night | validation loss below its starting value at the best step |
-| 4 | Measure: codebench base against base + `.kspec`, alternating, `--repeat 2`, `run.py compare`; count calls the agent rejected (unknown tool, bad arguments) in both | accepted if it solves at least as many tasks and makes fewer rejected calls; one task of difference is noise |
+| 4 | Measure: codebench base against base + `.kspec`, alternating, `--repeat 2`, `katana codebench compare`; count calls the agent rejected (unknown tool, bad arguments) in both | accepted if it solves at least as many tasks and makes fewer rejected calls; one task of difference is noise |
 | 5 | Gemma 4: steps 2 to 4 with the data imported in its format | same criterion |
 | 6 | Loop: `katana learn` rounds (passed codebench sessions, optional teacher), from the accepted `.kspec` | evaluation tasks solved do not drop over two rounds |
 | 7 | Use: `KATANA_SPEC` in the agent and desktop, or `katana merge` | the owner's everyday agent runs with it |

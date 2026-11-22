@@ -14,8 +14,8 @@
 #  8. validacao: 60 conversas de "repetir a palavra", 10 separadas; lote de 4, a perda nelas tem que cair (o modelo
 #     generaliza) e a parada antecipada guarda o melhor passo
 #  9. katana export (sessao real do agente com acentos e ideogramas: igual ao exportador em Python) e katana learn
-#     com um codebench de mentira (tools/traintest/mock_bench): coleta, filtro, treino, prova; a rodada 1 tem que ser
-#     aceita e a 2 nao
+#     com tarefas de mentira no katana codebench (tools/traintest/mock_bench): coleta, filtro, treino, prova; a rodada 1
+#     tem que ser aceita e a 2 nao
 # 10. modo professor do agente (/teacher) com uma API de mensagens de mentira: pedidos aceitos, sessao retomada com o
 #     professor ligado no meio, katana export --teacher
 # 11. professor pelo programa claude (de mentira) sem chave; read_file so com o caminho continua de onde parou, cada
@@ -155,9 +155,12 @@ print("export: %s" % ("ok" if ok else "FALHOU %s %s" % (c["train_spans"], p["tra
 sys.exit(0 if ok else 1)
 EOF
 # katana learn com o codebench de mentira
-# as tarefas do codebench de mentira sao pastas vazias (o git nao guarda pasta vazia): montadas aqui
-mkdir -p "$D/bench"; cp tools/traintest/mock_bench/run.py "$D/bench/run.py"
-for t in t1 t2 t3 t4 t5 t6 t7 t8; do mkdir -p "$D/bench/tasks/$t"; done
+# as tarefas do codebench de mentira (t1..t8: repo vazio, teste escondido que decide pelo nome e por KATANA_SPEC) sao montadas aqui
+for t in t1 t2 t3 t4 t5 t6 t7 t8; do
+  mkdir -p "$D/bench/tasks/$t/repo" "$D/bench/tasks/$t/hidden"
+  echo "task $t: say ok" > "$D/bench/tasks/$t/instruction.md"; : > "$D/bench/tasks/$t/repo/.keep"
+  sed "s/@TASK@/$t/" tools/traintest/mock_bench/test_hidden.py > "$D/bench/tasks/$t/hidden/test_hidden_mock.py"
+done
 $K learn "$D/agent.gguf" --bench "$D/bench" --dir "$D/learn" --rounds 2 --repeat 2 -- --steps 30 --seq 256 >/dev/null 2>&1
 python3 - "$D/learn/learn.jsonl" <<'EOF' || fail=1
 import json, sys
@@ -474,13 +477,15 @@ $K merge "$D/g4.gguf" "$D/g4.kspec" "$D/g4_merged.gguf" >/dev/null 2>&1 && check
 # katana distill: professor de mentira resolve a tarefa bank com as ferramentas do katana; testes escondidos decidem
 python3 tools/traintest/mock_teacher.py 8198 tools/codebench/tasks/bank/solution/bank.py & MOCK=$!
 sleep 1
-TEACHER_API_KEY=secret-key python3 tools/codebench/run.py --katana "$K" --teacher http://127.0.0.1:8198/v1 --teacher-model mock \
+TEACHER_API_KEY=secret-key $K codebench run --katana "$K" --teacher http://127.0.0.1:8198/v1 --teacher-model mock \
    --distill-out "$D/teacher.jsonl" --out "$D/teacher_bench.jsonl" --tasks bank,rotate --timeout 120 >/dev/null 2>&1
 kill $MOCK 2>/dev/null || true
 if python3 -c "import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; sys.exit(0 if [x['passed'] for x in r]==[True,False] else 1)" "$D/teacher.jsonl"; then
   echo "distill: ok (bank resolvido e aprovado; rotate reprovado)"
 else echo "distill: FALHOU"; fail=1; fi
 if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/null | grep -q "^import: 1 de 2"; then echo "import do professor (so a aprovada): ok"; else echo "import do professor: FALHOU"; fail=1; fi
+# 11b. katana codebench (o juiz em C): verify, compare, prazo, limpeza e medidas do registro, sem modelo
+. tools/traintest/codebench_part.sh
 # 12. selecao do katana import e katana specialize (teacher, tools, code)
 . tools/traintest/specialize_part.sh
 # chamadas de ferramenta validas por construcao (src/agent/callgrammar.c): automato sem modelo e modelo aleatorio

@@ -157,7 +157,7 @@ def main():
     ap.add_argument("inputs", nargs="+", help=".ksess files or folders")
     ap.add_argument("-o", "--out", help="output JSONL (default: stdout)")
     ap.add_argument("--format", choices=["text", "messages"], default="text")
-    ap.add_argument("--bench", help="codebench results JSONL (run.py --sessions) to label each session")
+    ap.add_argument("--bench", help="codebench results JSONL (katana codebench run --sessions) to label each session")
     ap.add_argument("--only-passed", action="store_true", help="keep sessions whose hidden tests passed")
     ap.add_argument("--only-exact", action="store_true", help="drop sessions where the agent compacted its context")
     ap.add_argument("--redact-home", action="store_true")

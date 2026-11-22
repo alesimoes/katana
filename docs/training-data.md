@@ -13,7 +13,7 @@ yet and nothing has been trained.
 1. **Collect.** Run codebench with sessions on and several attempts per task:
 
    ```
-   python3 tools/codebench/run.py --model models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
+   katana codebench run --model models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
        --out runs/q36.jsonl --sessions runs/q36-sess --repeat 4 --label q36
    ```
 
@@ -37,7 +37,7 @@ yet and nothing has been trained.
    do it after SFT shows a gain.
 
 5. **Measure.** Convert the adapter back to GGUF (merge it into the base weights, then the reference engine's GGUF
-   converter and quantizer), run codebench on base and tuned models, and use `run.py compare`. Tasks used for
+   converter and quantizer), run codebench on base and tuned models, and use `katana codebench compare`. Tasks used for
    training must not be the tasks used to measure: hold out a split, or write new tasks.
 
 ## Importing conversations from elsewhere (`katana import`)
@@ -73,7 +73,7 @@ Reads one conversation per line, in the messages format (`role`/`content`, `tool
 ```
 katana distill --url URL --model MODEL [--key-env TEACHER_API_KEY] [--format qwen|json|gemma4|glm]
                [--max-steps 40] [--timeout 300] [--out distill.jsonl] [--task NAME] "task"
-python3 tools/codebench/run.py --teacher URL --teacher-model MODEL --distill-out runs/teacher.jsonl --out runs/t.jsonl
+katana codebench run --teacher URL --teacher-model MODEL --distill-out runs/teacher.jsonl --out runs/t.jsonl
 katana import <student.gguf> runs/teacher.jsonl runs/train.jsonl --system keep
 ```
 
@@ -86,7 +86,7 @@ line. The user's saved memory is kept out of the prompt (an empty `HOME` while t
 
 The session is appended as one line in the messages format, with the system prompt the student agent sees
 (`--format`: the student's call syntax), the teacher's token usage and `"complete": false` if the API failed. With
-`run.py --teacher`, each codebench task runs in a fresh copy of its project and the hidden tests set `"passed"`.
+`katana codebench run --teacher`, each codebench task runs in a fresh copy of its project and the hidden tests set `"passed"`.
 `katana import` skips sessions with `"passed": false` or `"complete": false`, so only verified work becomes data.
 
 Mind the terms of the API you call (open-weight licenses usually allow training on outputs; hosted APIs have their
@@ -142,5 +142,5 @@ Tool calls stay inside the assistant text in the model's native syntax, so the t
 - A test program compiled against `src/katana.c` (no model) called `sess_wext` on conversations in the ChatML,
   Gemma 4 and GLM formats; the exporter read the files back and every train span covers exactly the assistant text
   plus its stop token. A file without the block exports with `--format messages` and is skipped by `--format text`.
-- `run.py --verify` on `bank,rotate,csvsum`: unchanged.
+- `katana codebench verify --tasks bank,rotate,csvsum` (then `run.py --verify`, since replaced by it): unchanged.
 - Not done: a real agent session exported end to end, and any training run.

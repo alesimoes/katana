@@ -1134,6 +1134,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "agentlog") == 0) return agentlog_main(argc - 2, argv + 2);       /* leitura do registro de acoes do agente */                  /* roda ferramentas de src/tools/ sem modelo */
     if (argc >= 3 && strcmp(argv[1], "export") == 0) return export_main(argc - 2, argv + 2);           /* sessoes do agente -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "learn") == 0) return learn_main(argv[0], argc - 2, argv + 2);    /* coleta, filtra, treina e prova, em rodadas */
+    if (argc >= 3 && strcmp(argv[1], "codebench") == 0) return codebench_main(argc - 2, argv + 2);       /* o juiz: run, verify, compare, list */
     if (argc >= 3 && strcmp(argv[1], "curriculum") == 0) return curriculum_main(argc - 2, argv + 2);   /* convencoes -> dados de treino */
     if (argc >= 3 && strcmp(argv[1], "specialize") == 0) return specialize_main(argv[0], argc - 2, argv + 2);   /* versao especialista de ponta a ponta */
     if (argc >= 3 && strcmp(argv[1], "gradcheck") == 0) {     /* treino: forward de treino x motor e gradientes x diferencas finitas */
@@ -1241,6 +1242,9 @@ static int run_main(int argc, char **argv) {
         "  katana export <saida.jsonl> <sessoes.ksess ou pastas> [--bench resultados.jsonl]   sessoes do agente -> dados de treino\n"
         "  katana learn <modelo.gguf> [--rounds N] [--repeat K] [--teacher URL --teacher-model M] [-- opcoes do train]\n"
         "                                 aprende com o proprio uso: coleta no codebench, treina no que passou, prova e guarda o melhor\n"
+        "  katana codebench run --model M.gguf --out r.jsonl [--tasks 'a,b-*'] [--repeat N] [--timeout S] [--label L] [--env K=V]...\n"
+        "  katana codebench verify|list [--tasks ...]   /   katana codebench compare A.jsonl B.jsonl\n"
+        "                                 o juiz: tarefas com testes escondidos (tools/codebench); o agente roda como processo filho\n"
         "  katana specialize <modelo.gguf> [all|teacher|tools|code|knowledge] [--from PASTA] [--sessions PASTA] [--hours H] [--wait-idle [H]] [--dry-run]\n"
         "                                 a rotina da noite: conhecimento, dados, plano de memoria, treino e relatorio (padroes no katana.cfg)\n"
         "  katana specialize --status           relatorio das noites (janelas vistas, perda, comandos para testar e ativar)\n"
