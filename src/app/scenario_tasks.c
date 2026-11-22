@@ -681,7 +681,13 @@ static void fam_x_config(FILE *f, Scn *s) {
             if (!strstr(a, "read_timeout")) cu_die("resposta sem a chave");
         } else { if (strstr(rd, "connect_timeout")) cu_die("gemea com duas chaves"); x_askproof("ambiguous", 0, "read_timeout = ", "connect_timeout"); }
     }
-    x_done(1);
+    if (c.fu == F_GOAL && c.obst == O_NONE && !two && !amb && !miss && cu_pct(45)) {      /* o usuario corrige o valor antes da mudanca: a lista e reescrita com o valor novo */
+        long v3 = lo + 1 + cu_n((int)(hi - lo > 400 ? 400 : hi - lo - 1)); if (v3 == v || v3 == atol(p->cv[ki])) v3 = v3 + 1 <= hi ? v3 + 1 : v3 - 1;
+        x_user_mid(cu_fmt(XV(L("wait, make that %ld, not %ld", "espera, e %ld, nao %ld"), L("stop, I typed it wrong: the value is %ld (not %ld)", "para, digitei errado: o valor e %ld (nao %ld)")), v3, v));
+        x_shape_tag("goal");
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[>] %s\n[ ] %s", plan[0], cu_fmt(L("Change %s to %ld", "Mudar %s para %ld"), key, v3), plan[2]))), 0);
+        v = v3; c.fu = F_NONE;
+    } else x_done(1);
     const char *o1 = cu_fmt("%s = %s", key, p->cv[ki]), *n1 = cu_fmt("%s = %ld", key, v);
     if (two) { const char *old[2] = {o1, cu_fmt("%s = %s", p->ck[k2], p->cv[k2])}, *nw[2] = {n1, cu_fmt("%s = %ld", p->ck[k2], v2)}; x_edits(s, "settings.conf", old, nw, 2); }
     else x_edit(s, "settings.conf", o1, n1, 0, 0);
@@ -710,7 +716,10 @@ static void fam_x_config(FILE *f, Scn *s) {
         x_dep(); x_shape_tag("goal");
         x_user(back ? XV(L("actually, put it back the way it was", "na verdade, volta como estava"), L("changed my mind, undo that change", "mudei de ideia, desfaz essa mudanca"))
                     : cu_fmt(XV(L("actually make it %ld instead", "na verdade coloca %ld"), L("on second thought, %ld is the right value", "pensando melhor, o valor certo e %ld"), L("sorry, I meant %ld", "desculpa, eu quis dizer %ld")), v3));
+        const char *plan3[2] = {cu_fmt(L("Put %s in settings.conf", "Colocar %s no settings.conf"), n3), L("Run the settings check and the tests", "Rodar a verificacao das configuracoes e os testes")};
+        if (p->brief) x_plan(plan3, 2);      /* com test: no KATANA.md sao tres chamadas: pede plano */
         x_edit(s, "settings.conf", n1, n3, 0, 0);
+        if (p->brief) x_done(1);
         const char *ck2 = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings with %s", "Confere as configuracoes com %s"), n3), 0);
         if (!strstr(ck2, "settings ok") || !strstr(ck2, n3)) cu_die("a verificacao nao confirmou a segunda mudanca");
         if (p->brief && !x_totals(x_test(p, NULL))) cu_die("sem totais");

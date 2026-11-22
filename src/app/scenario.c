@@ -29,6 +29,7 @@ static struct {
     int nreq;                    /* pedidos ja feitos */
     int merge, mu; const char *mraw, *mfin;      /* dois pedidos numa mensagem so: o segundo x_user entra na primeira mensagem e as duas respostas viram uma */
     int noshape;                 /* 1: os pedidos desta conversa ficam como a familia escreveu (texto do motor no lugar do usuario) */
+    int mid;                     /* o proximo pedido chega com o plano em aberto (o usuario interrompe e corrige) */
     uint64_t srng;               /* sorteio proprio das formas: nao gasta o sorteio do cenario */
 } g_x;
 static const CuMs *g_x_ms_must;  /* servidor que tem de estar entre os do cenario (scenario_conv.c) */
@@ -163,8 +164,9 @@ static void x_user(const char *t) {
     }
     if (g_x.n > 1) {
         int td = 0; const int tn = todo_count(&td);
-        if (tn > td) cu_die("pedido novo com plano em aberto (%s)", g_x.cell);
-        g_undo_req++; g_todo_touched = 0; g_cu_pl = 0; g_cu_plold = 0;
+        if (tn > td && !g_x.mid) cu_die("pedido novo com plano em aberto (%s)", g_x.cell);
+        g_undo_req++; g_todo_touched = 0; g_cu_pl = 0; g_cu_plold = tn > td;      /* o usuario interrompeu no meio do plano: o laco sabe que havia plano aberto */
+        g_x.mid = 0;
     }
     g_x.pdone = 0;
     if (g_x.merge == 1) { g_x.merge = 2; g_x.mu = g_x.n; g_x.mraw = cu_fmt("%s", t); }
@@ -175,6 +177,8 @@ static void x_user(const char *t) {
 /* o proximo pedido e o seguinte saem na mesma mensagem (so vale quando o primeiro nao escreve plano) */
 static void x_merge(void) { g_x.merge = 1; }
 static void x_dep(void) { g_x.dep = 1; x_shape_tag("dep"); }
+/* o usuario interrompe no meio do trabalho e muda o pedido: a mensagem dele vem logo depois de um resultado, com o plano aberto */
+static void x_user_mid(const char *t) { g_x.mid = 1; g_x.dep = 1; x_shape_tag("dep"); x_shape_tag("midway"); x_user(t); }
 /* resposta final do pedido: o que o laco do motor faria aqui (nota de verificacao, fecho do ultimo passo) */
 static void x_final(const char *t) {
     if (g_x.merge == 2) { g_x.mfin = cu_fmt("%s", t); g_x.merge = 3; return; }      /* a resposta da primeira parte espera a da segunda */
@@ -217,7 +221,39 @@ static char *x_norm(const char *s) {
     }
     return b.p;
 }
+/* segundo pedido que so se entende pelo primeiro, para as familias que nao tem o seu: "quais ferramentas voce usou pra isso?".
+   A resposta sai da propria conversa (os nomes das chamadas do pedido anterior, na ordem), sem chamada nova */
+static void x_tail(void) {
+    static const char *const fams[] = {"x-web", "x-tools", "x-rare", "x-concept", "x-ps1", "x-clean", "x-investigate", "x-ability", "x-make", "x-skill", "x-mcp"};
+    int ok = 0; for (size_t i = 0; i < sizeof fams / sizeof fams[0]; i++) ok |= !strcmp(g_x.fam, fams[i]);
+    if (!ok || g_x.nreq != 1 || g_x.noshape || g_x.merge || g_x.n < 3 || g_x.m[g_x.n - 1].role != 'a' || g_x.m[g_x.n - 1].nc) return;
+    if (xs_n(100) >= 24) return;
+    int td = 0; if (todo_count(&td) > td) return;
+    const char *nm[6]; int n = 0;
+    for (int i = 0; i < g_x.n; i++) {
+        const XMsg *m = &g_x.m[i];
+        if (m->role != 'a' || !m->train) continue;
+        for (int k = 0; k < m->nc; k++) {
+            if (!strcmp(m->c[k].name, "TodoWrite")) continue;
+            if (!strcmp(m->c[k].name, "EndConversation") || !strcmp(m->c[k].name, "AskUserQuestion")) return;
+            int dup = 0; for (int j = 0; j < n; j++) dup |= !strcmp(nm[j], m->c[k].name);
+            if (dup) continue;
+            if (n == 6) return;
+            nm[n++] = m->c[k].name;
+        }
+    }
+    if (!n) return;
+    const int pt = g_cu_lang != 0;
+    g_x.dep = 1; x_shape_tag("dep");
+    x_user(pt ? XS_PK("quais ferramentas voce usou pra isso?", "como voce fez isso, com quais ferramentas?", "que chamadas voce fez pra chegar nisso?") : XS_PK("which tools did you use for that?", "how did you do that, with which tools?", "which calls did you make to get there?"));
+    Buf b = {0}; buf_str(&b, "");
+    for (int i = 0; i < n; i++) buf_str(&b, cu_fmt("%s`%s`", i ? (i + 1 == n ? (pt ? " e depois " : " and then ") : ", ") : "", nm[i]));
+    x_final(n == 1 ? cu_fmt(pt ? XS_PK("So uma: %s.", "Uma ferramenta so, %s.") : XS_PK("Only one: %s.", "A single tool, %s."), b.p)
+                   : xs_n(2) ? cu_fmt(pt ? "Nesta ordem: %s." : "In this order: %s.", b.p) : cu_fmt(pt ? "Foram %d: %s." : "There were %d: %s.", n, b.p));
+    free(b.p);
+}
 static void x_end(FILE *f) {
+    x_tail();
     if (g_x.merge) cu_die("pedido fundido que nao fechou (%s)", g_x.cell);
     Buf o = {0}; buf_str(&o, "{\"messages\": [");
     for (int i = 0; i < g_x.n; i++) {

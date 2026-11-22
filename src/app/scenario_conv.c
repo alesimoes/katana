@@ -36,6 +36,7 @@ static const char g_x_srv_py[] =
     "        if v not in items:\n            return True, \"unknown %s '%s': ids look like %s-0042\" % (C['noun'], v, C['idp'])\n"
     "        if v == C.get('locked'):\n            return True, '%s %s is locked by another session' % (C['noun'], v)\n"
     "        rest = dict((k, a[k]) for k in a if k != ida)\n        items[v][name] = rest if rest else True\n"
+    "        if t.get('reply'):\n            return False, t['reply'].replace('@ID@', v)\n"
     "        return False, json.dumps(items[v])\n"
     "    made += 1\n"
     "    r = {'ok': True, 'ref': '%s-%d' % (name.split('_')[-1], 100 + made)}\n"
@@ -53,6 +54,7 @@ static const char g_x_srv_py[] =
     "    else:\n        print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'error': {'code': -32601, 'message': 'method not found'}}), flush=True)\n        continue\n"
     "    print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': r}), flush=True)\n";
 /* grava o programa e a configuracao dele (mesmo nome, .json) */
+static const CuMt *g_x_srv_rt; static const char *g_x_srv_reply;      /* a ferramenta que responde com os dados da tabela, e esses dados (com @ID@ no lugar do id) */
 static void x_srv_write(const char *py, const CuMs *m, const char *const *ids, const char *const *names, int ni, int fail_once, const char *locked, int die) {
     Buf b = {0};
     buf_str(&b, cu_fmt("{\"name\": %s, \"noun\": %s, \"idp\": %s, \"fail_once\": %d, \"die\": %d, \"locked\": %s, \"items\": [", cu_q(m->name), cu_q(m->noun_en), cu_q(m->idp), fail_once, die, cu_q(locked ? locked : "")));
@@ -60,12 +62,13 @@ static void x_srv_write(const char *py, const CuMs *m, const char *const *ids, c
     buf_str(&b, "], \"tools\": [");
     for (int j = 0; j < 8 && m->t[j].name; j++) {
         char idn[32] = ""; cu_mt_idarg(&m->t[j], idn, sizeof idn);
-        buf_str(&b, cu_fmt("%s{\"name\": %s, \"description\": %s, \"inputSchema\": %s, \"list\": %s, \"idarg\": %s}", j ? ", " : "", cu_q(m->t[j].name), cu_q(m->t[j].desc), cu_mt_schema(&m->t[j], 1), j == m->list ? "true" : "false", cu_q(idn)));
+        buf_str(&b, cu_fmt("%s{\"name\": %s, \"description\": %s, \"inputSchema\": %s, \"list\": %s, \"idarg\": %s, \"reply\": %s}", j ? ", " : "", cu_q(m->t[j].name), cu_q(m->t[j].desc), cu_mt_schema(&m->t[j], 1), j == m->list ? "true" : "false", cu_q(idn),
+                           cu_q(g_x_srv_rt == &m->t[j] && g_x_srv_reply ? g_x_srv_reply : "")));
     }
     buf_str(&b, "]}\n");
     char *js = cu_fmt("%s", py); js[strlen(js) - 3] = 0;
     cu_put(py, g_x_srv_py, 0); cu_put(cu_fmt("%s.json", js), b.p, 0);
-    free(b.p);
+    free(b.p); g_x_srv_rt = NULL; g_x_srv_reply = NULL;
 }
 /* o servidor registrado no x_begin passa a ter um processo de verdade: o cliente MCP do motor fala com ele */
 static McpSrv *x_mcp_live(const CuMs *m, const char *py) {
@@ -82,7 +85,9 @@ static const char *x_mbody(const char *r) { const char *n = strchr(r, '\n'); ret
 static int x_merr(const char *r) { return !strncmp(x_mbody(r), "error:", 6); }
 static const char *x_mitem(const char *r, const char *id) {      /* o objeto do item na lista que o servidor devolveu */
     const char *q = strstr(r, cu_fmt("{\"id\": \"%s\"", id)); if (!q) return NULL;
-    const char *e = strchr(q, '}'); return e ? cu_fmt("%.*s", (int)(e - q + 1), q) : NULL;
+    int depth = 0; const char *e = q;
+    for (; *e; e++) { if (*e == '{') depth++; else if (*e == '}' && --depth == 0) break; }
+    return *e ? cu_fmt("%.*s", (int)(e - q + 1), q) : NULL;
 }
 static const char *x_mline(const char *r) { char *o = cu_fmt("%s", x_mbody(r)); size_t l = strlen(o); while (l && o[l - 1] == '\n') o[--l] = 0; return o; }
 static const char *x_mproof(const char *r) {
@@ -164,6 +169,8 @@ static void fam_x_mcp(FILE *f, Scn *s) {
         if (sit == MS_WRONGTOOL) { wrongname = cu_fmt("%s__%s_%s", m->name, XV("do", "apply", "run"), t->name); req = cu_fmt(L("%s (the tool is %s, right?)", "%s (a ferramenta e a %s, ne?)"), req, wrongname); }
         cu_set(&d, idn, id);
     }
+    const int tabled = idn[0] && t->res && *t->res && *t->ans_en;      /* a tabela do servidor tem os dados que essa ferramenta devolve */
+    if (tabled) { cu_set(&d, idn, "@ID@"); g_x_srv_rt = t; g_x_srv_reply = cu_t(&d, t->res); cu_set(&d, idn, id); }
     if (sit == MS_FILE) x_extra(p, "notes/target.txt", cu_fmt("%s\n", id), 0);
     if (sit == MS_DOWNRO) { Buf e = {0}; buf_str(&e, "[\n"); for (int i = 0; i < ni; i++) buf_str(&e, cu_fmt("  {\"id\": \"%s\", \"name\": \"%s\"}%s\n", ids[i], names[i], i + 1 < ni ? "," : "")); buf_str(&e, "]\n"); x_extra(p, cu_fmt("exports/%ss.json", m->noun_en), cu_keep(e.p), 0); }
     g_x_ms_must = m;
@@ -253,12 +260,13 @@ static void fam_x_mcp(FILE *f, Scn *s) {
                          "Nao consegui: o %s nao esta respondendo. O `%s` falhou com \"%s\", e o `%s` falhou do mesmo jeito, entao nada foi alterado. Reconecta com `/mcp reconnect %s` e pede de novo."), m->name, full, e1, lfull, m->name));
         x_end(f); return;
     }
-    if (x_merr(r) || (idn[0] && !strstr(r, id))) cu_die("a chamada nao foi confirmada pelo servidor: %.200s", r);
+    const int echoed = idn[0] && !(t->res && *t->res && *t->ans_en);      /* sem dados de tabela o servidor devolve o item: o id tem de estar la */
+    if (x_merr(r) || (echoed && !strstr(r, id))) cu_die("a chamada nao foi confirmada pelo servidor: %.200s", r);
     const char *r1 = r;
     if (sit == MS_TWO) {
         XM_STAGE();
         r = cu_fmt("%s", x_mc(m, t, x_swap(args, id, ids[1]), 0));
-        if (x_merr(r) || !strstr(r, ids[1])) cu_die("a segunda chamada nao foi confirmada: %.200s", r);
+        if (x_merr(r) || (echoed && !strstr(r, ids[1]))) cu_die("a segunda chamada nao foi confirmada: %.200s", r);
     }
     const char *ans;
     if (!idn[0]) {      /* ferramenta sem id: a resposta sai da referencia que o servidor devolveu */
@@ -267,7 +275,8 @@ static void fam_x_mcp(FILE *f, Scn *s) {
                      searched ? L(" I took the schema from ToolSearch first, because the card does not show every option.", " Peguei o esquema no ToolSearch antes, porque o cartao nao mostra todas as opcoes.") : "");
     } else {
         const char *who = sit == MS_BYNAME || sit == MS_TWO ? cu_fmt("%s (%s)", names[0], id) : id;
-        ans = cu_fmt("%s%s", cu_fmt(XV(L("Done: `%s` went through for %s.", "Feito: o `%s` passou para %s."), L("`%s` accepted the change for %s.", "O `%s` aceitou a mudanca para %s.")), full, who), x_mproof(r1));
+        if (tabled) { cu_set(&d, idn, who); ans = cu_fmt("%s%s", cu_t(&d, L(t->ans_en, t->ans_pt)), x_mproof(r1)); }
+        else ans = cu_fmt("%s%s", cu_fmt(XV(L("Done: `%s` went through for %s.", "Feito: o `%s` passou para %s."), L("`%s` answered for %s.", "O `%s` respondeu para %s.")), full, who), x_mproof(r1));
         if (sit == MS_TWO) ans = cu_fmt(L("%s The same went through for %s (%s).", "%s O mesmo passou para %s (%s)."), ans, names[1], ids[1]);
         if (sit == MS_RAWNUM) ans = cu_fmt(L("%s The full id comes from the list: %s is %s.", "%s O id completo vem da lista: %s e %s."), ans, id, names[0]);
         if (sit == MS_BUSY) ans = cu_fmt(L("%s The first attempt came back busy; the second went through.", "%s A primeira tentativa voltou ocupada; a segunda passou."), ans);
@@ -281,8 +290,10 @@ static void fam_x_mcp(FILE *f, Scn *s) {
         if (listed && largs2) { r = x_mc(m, lt, largs2, 0); if (!x_mitem(r, ids[1])) cu_die("a busca nao trouxe o segundo item"); }      /* a primeira busca so trouxe o primeiro item */
         if (hasfirst) { CuD d2 = {0}; cu_base_dict(s, &d2); x_mc(m, &m->t[m->first], cu_margs_fill(m, &m->t[m->first], &d2, 0, ids[1]), 0); }
         r = cu_fmt("%s", x_mc(m, t, x_swap(args, id, ids[1]), 0));
-        if (x_merr(r) || !strstr(r, ids[1])) cu_die("a chamada do segundo pedido nao foi confirmada");
-        x_final(cu_fmt("%s%s", cu_fmt(XV(L("Done for %s as well.", "Feito para %s tambem."), L("Same change applied to %s.", "A mesma mudanca foi aplicada em %s.")), listed ? cu_fmt("%s (%s)", names[1], ids[1]) : ids[1]), x_mproof(r)));
+        if (x_merr(r) || (echoed && !strstr(r, ids[1]))) cu_die("a chamada do segundo pedido nao foi confirmada");
+        const char *who2 = listed ? cu_fmt("%s (%s)", names[1], ids[1]) : ids[1];
+        if (tabled) { cu_set(&d, idn, who2); x_final(cu_fmt("%s%s", cu_t(&d, L(t->ans_en, t->ans_pt)), x_mproof(r))); }
+        else x_final(cu_fmt("%s%s", cu_fmt(XV(L("Done for %s as well.", "Feito para %s tambem."), L("The same went through for %s.", "O mesmo passou para %s.")), who2), x_mproof(r)));
     } else if (fu == 2) {      /* o estado que o servidor guarda agora */
         x_dep();
         x_user(XV(L("what does the server show for it now?", "o que o servidor mostra pra ele agora?"), L("did it really change? check on the server", "mudou mesmo? confere no servidor"), L("show me its entry now", "me mostra a entrada dele agora")));
@@ -322,6 +333,7 @@ static void fam_x_ability(FILE *f, Scn *s) {
     for (int t = 0; ; t++) {
         if (t > 400) cu_die("sem celula de skill");
         sit = cu_n(AB_N); stk = CU_PA(((const int[]){X_PY, X_JS, X_SH, X_PL})); fu = sit == AB_SIMILAR && cu_pct(45);
+        if (sit == AB_MISSING && stk == X_PY) continue;      /* o pacote levaria o cache do interpretador, que muda de maquina para maquina */
         if (sit == AB_NOARG && cu_pct(60)) continue;      /* a pergunta pesa pouco */
         if (x_held(100 + sit, fu, stk, 0, 0) == (g_cu_hold != 0)) break;
     }
@@ -487,10 +499,18 @@ static void fam_x_make(FILE *f, Scn *s) {
             const char *o = cu_fmt("%s", x_test(p, NULL)), *tot = x_totals(o); if (!tot) cu_die("sem totais");
             x_done(1);
             x_write(s, NULL, "KATANA.md", want);
-            x_done(2);
+            const int mid = !v && cu_pct(45);
+            if (mid) {      /* o usuario interrompe antes da conferencia e acrescenta uma regra: a lista e reescrita e o trabalho segue dela */
+                x_user_mid(XV(L("wait, before you check it: also forbid deleting the test runner", "espera, antes de conferir: proibe tambem apagar o arquivo de testes"), L("hold on. it also needs a never rule for the test runner", "pera. ele tambem precisa de uma regra never pro arquivo de testes")));
+                x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s\n[>] %s\n[ ] %s", pl[0], pl[1], L("Add the never: item for the test runner", "Acrescentar o item never: do arquivo de testes"), pl[2]))), 0);
+                const char *last = cu_fmt("  %s  the test runner with its cases", p->st == X_JS ? "test/" : "tests/");
+                x_edit(s, "KATANA.md", last, cu_fmt("%s\n%s", last, x_strip(neverline)), 0, 0);
+                x_done(3);
+            } else x_done(2);
             r = x_bash(NULL, chk, L("Check the project file format", "Confere o formato do arquivo de projeto"), 0);
             if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check achou erro: %.300s", r);
             x_verify(p);
+            if (mid) { x_final(cu_fmt(L("KATANA.md is written with `test: %s` (I ran it: %s), the layout, and the `never:` item you asked for while I was working. `katana brief check` reports 0 errors.", "O KATANA.md esta escrito com `test: %s` (rodei: %s), o layout, e o item `never:` que voce pediu no meio do trabalho. O `katana brief check` aponta 0 erros."), p->testcmd, tot)); x_end(f); return; }
             x_final(cu_fmt(L("KATANA.md is written: the header, `test: %s` (I ran it: %s) and the layout%s. `katana brief check` reports 0 errors.", "O KATANA.md esta escrito: o cabecalho, `test: %s` (rodei: %s) e o layout%s. O `katana brief check` aponta 0 erros."), p->testcmd, tot,
                            v ? L(", plus the `never:` rule against deleting the test runner", ", mais a regra `never:` contra apagar o arquivo de testes") : ""));
             if (!v && cu_pct(60)) {      /* o usuario muda o pedido depois de ver o resultado */

@@ -36,7 +36,8 @@ static const char *xc_shape(const char *q) {
     static const char *const pre[][2] = {{"", ""}, {"", ""}, {"quick question: ", "duvida rapida: "}, {"hey, ", "oi, "}, {"one thing I never remember: ", "uma coisa que eu nunca lembro: "}, {"sorry to bother you with this, but ", "desculpa incomodar com isso, mas "}, {"tell me, ", "me diz, "}};
     static const char *const suf[][2] = {{"", ""}, {"", ""}, {"", ""}, {" thanks", " valeu"}, {" (a short answer is fine)", " (pode ser curto)"}, {" I could not find it in the docs", " nao achei nos docs"}};
     const int a = cu_n(CU_N(pre)), b = cu_n(CU_N(suf));
-    return cu_fmt("%s%s%s", pre[a][g_cu_lang ? 1 : 0], q, suf[b][g_cu_lang ? 1 : 0]);
+    (void)a; (void)b; (void)pre; (void)suf;      /* a forma do pedido agora e sorteada para todas as familias em scenario_shape.c (com as reservadas da validacao); os sorteios ficam para a ordem nao mudar */
+    return q;
 }
 static const char *xc_help(const char *w) {
     return cu_fmt("%s", x_bash(NULL, cu_fmt("katana help %s", w), XV(L("Ask katana's help about this", "Pergunta isso a ajuda do katana"), L("Look it up in katana's help", "Procura na ajuda do katana"), L("Search katana's help", "Busca na ajuda do katana")), 0));
@@ -208,7 +209,7 @@ static void xc_limit_hit(XC *c, int v) {
         const char *cur = x_slurp(s, "docs/functions.md"), *at = strstr(cur, cu_fmt("- `%s(", fi->name));
         if (!at) cu_die("docs sem a entrada");
         int ln = 1; for (const char *z = cur; z < at; z++) ln += *z == '\n';
-        x_user(cu_fmt(XV(L("and what is on line %d?", "e o que tem na linha %d?"), L("ok. line %d of it?", "ok. e a linha %d dele?")), ln));
+        x_dep(), x_user(cu_fmt(XV(L("and what is on line %d?", "e o que tem na linha %d?"), L("ok. line %d of it?", "ok. e a linha %d dele?")), ln));
         r = cu_fmt("%s", x_call(NULL, "Read", cu_fmt("{\"file_path\": %s, \"offset\": %d, \"limit\": 1}", cu_q(x_abs(s, "docs/functions.md")), ln), 0));
         tb = strchr(r, '\t');
         if (!tb || !strstr(r, fi->name)) cu_die("a leitura da linha %d nao trouxe a entrada", ln);
@@ -274,7 +275,7 @@ static void xc_edit_hit(XC *c, int v) {
         const char *cur = x_slurp(s, "settings.conf"); const char *ln = cu_fmt("%s = %s\n", key, old); const char *q = strstr(cur, ln);
         if (!q) cu_die("settings sem a linha");
         x_put(s, "settings.conf", cu_fmt("%.*s%s = %ld\n%s", (int)(q - cur), cur, key, mid, q + strlen(ln)), 0);
-        x_user(cu_fmt(XV(L("ok. make it %ld", "ok. coloca %ld"), L("change it to %ld then, and run the settings check", "muda pra %ld entao, e roda a checagem do settings")), nv));
+        x_dep(), x_user(cu_fmt(XV(L("ok. make it %ld", "ok. coloca %ld"), L("change it to %ld then, and run the settings check", "muda pra %ld entao, e roda a checagem do settings")), nv));
         const char *plan[2] = {cu_fmt(L("Change %s to %ld", "Mudar %s para %ld"), key, nv), L("Run tools/check_settings.sh", "Rodar tools/check_settings.sh")};
         x_plan(plan, 2);
         r = x_edit(s, "settings.conf", cu_fmt("%s = %s", key, old), cu_fmt("%s = %ld", key, nv), 0, XF_ERR);
@@ -298,7 +299,7 @@ static void xc_edit_hit(XC *c, int v) {
         const char *r = x_bash(NULL, "sh tools/check_settings.sh", L("Check settings.conf", "Confere o settings.conf"), 0);
         if (!strstr(r, "settings ok")) cu_die("settings invalido");
         x_final(cu_fmt(L("`%s` is %ld in settings.conf (it was %s). `sh tools/check_settings.sh` prints `settings ok`.", "O `%s` esta em %ld no settings.conf (era %s). O `sh tools/check_settings.sh` imprime `settings ok`."), key, nv, old));
-        x_user(XV(L("hmm. if I regret that, can I undo it myself without asking you to edit again?", "hmm. se eu me arrepender, consigo desfazer sozinho sem pedir pra voce editar de novo?"),
+        x_dep(), x_user(XV(L("hmm. if I regret that, can I undo it myself without asking you to edit again?", "hmm. se eu me arrepender, consigo desfazer sozinho sem pedir pra voce editar de novo?"),
                   L("is there an undo for what you just changed?", "tem um desfazer pro que voce acabou de mudar?")));
         r = xc_help("undo");
         const char *ln = x_line_with(r, "/undo"); if (!ln) cu_die("a ajuda nao tem /undo");
@@ -322,7 +323,7 @@ static void xc_delta(XC *c, int v) {
     x_need_read(p, "docs/functions.md");
     x_final(cu_fmt(L("Its entry in docs/functions.md is: \"%s\".", "A entrada dele em docs/functions.md e: \"%s\"."), entry + 2));
     if (v == 0) {
-        x_user(cu_fmt(XV(L("someone may have touched that file in the meantime. read it again from disk, do not answer from memory: what is the entry for %s?",
+        x_dep(), x_user(cu_fmt(XV(L("someone may have touched that file in the meantime. read it again from disk, do not answer from memory: what is the entry for %s?",
                            "alguem pode ter mexido nesse arquivo nesse meio tempo. le de novo do disco, nao responde de memoria: qual e a entrada do %s?"),
                          L("are you sure you are not answering from an old copy? read docs/functions.md again and give me the %s entry", "tem certeza que voce nao esta respondendo de uma copia velha? le docs/functions.md de novo e me da a entrada do %s")), f2->name));
         const char *r = x_read(s, "docs/functions.md", 0);
@@ -341,12 +342,12 @@ static void xc_delta(XC *c, int v) {
     if (!nt || !strstr(r, "Checked on")) cu_die("o motor nao mostrou so a diferenca");
     x_final(cu_fmt(L("The entry now reads: \"%s\". The Read showed only the part of the file that changed since my last reading.", "A entrada agora diz: \"%s\". O Read mostrou so a parte do arquivo que mudou desde a minha ultima leitura."), note + 2));
     if (v == 1) {
-        x_user(XV(L("and line 1 of the file, is it still the title?", "e a linha 1 do arquivo, ainda e o titulo?"), L("what is on the very first line now?", "o que tem na primeira linha agora?")));
+        x_dep(), x_user(XV(L("and line 1 of the file, is it still the title?", "e a linha 1 do arquivo, ainda e o titulo?"), L("what is on the very first line now?", "o que tem na primeira linha agora?")));
         const char *r2 = cu_fmt("%s", x_call(NULL, "Read", cu_fmt("{\"file_path\": %s, \"limit\": 1}", cu_q(x_abs(s, "docs/functions.md"))), 0));
         const char *tb = strchr(r2, '\t'); if (!tb) cu_die("a leitura da linha 1 veio sem linha: %.160s", r2);
         x_final(cu_fmt(L("Line 1 is `%.*s`. It was outside the changed part, so I asked for that line alone.", "A linha 1 e `%.*s`. Ela estava fora do trecho mudado, entao pedi so essa linha."), (int)strcspn(tb + 1, "\n"), tb + 1));
     } else {
-        x_user(XV(L("why did that Read come back with so little? the file is much longer", "por que esse Read voltou com tao pouco? o arquivo e bem maior"), L("wait, did you read the whole file or just a piece?", "pera, voce leu o arquivo inteiro ou so um pedaco?")));
+        x_dep(), x_user(XV(L("why did that Read come back with so little? the file is much longer", "por que esse Read voltou com tao pouco? o arquivo e bem maior"), L("wait, did you read the whole file or just a piece?", "pera, voce leu o arquivo inteiro ou so um pedaco?")));
         const char *a = r; while (*a && *a != '[') a++;
         const char *e = strstr(a, "only the changed part is shown"); if (!*a || !e) cu_die("sem o aviso");
         e += strlen("only the changed part is shown"); const char *pe = strchr(e, ')');
@@ -379,7 +380,7 @@ static void xc_removed(XC *c, int v) {
         if (q) { path = cu_fmt("%.*s", (int)strcspn(q + 22, "]\n"), q + 22); note = g_x.m[i].text; }
     }
     if (!path) cu_die("o resultado que saiu nao tem copia guardada");
-    if (v == 2) x_user(cu_fmt(L("I scrolled up and where the test output was there is now this:\n%.*s\nwhat does it mean, and what was the first line of that output?",
+    if (v == 2) x_dep(), x_user(cu_fmt(L("I scrolled up and where the test output was there is now this:\n%.*s\nwhat does it mean, and what was the first line of that output?",
                                 "rolei pra cima e onde estava a saida dos testes agora tem isto:\n%.*s\no que significa, e qual era a primeira linha daquela saida?"), (int)strcspn(note, "\n"), note));
     else if (v == 0) x_user(cu_fmt(XV(L("in that `%s` run, what was the very first line of the output?", "naquela rodada do `%s`, qual era a primeira linha da saida?"), L("back to the test run: first line of the output of `%s`?", "voltando na rodada de testes: primeira linha da saida do `%s`?")), p->testcmd));
     else x_user(XV(L("the test output above now shows only a katana note saying it was removed to save context. is that output lost? I wanted its first line",
