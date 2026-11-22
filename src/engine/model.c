@@ -719,6 +719,12 @@ static void warm_start(const Model *m) {
 #endif
 }
 static void prefetch_setup(int64_t fsz);
+/* camadas de memoria dos especialistas (engine/expert_tier.c): ganchos, desligados por padrao */
+static int et_on;                                               /* a arena de RAM esta ligada (KATANA_EXPERT_RAM) */
+static void (*et_hook_route)(Model *, const Layer *, int);     /* no fim de moe_route */
+static void (*et_hook_post)(Model *, int);                     /* ao fim de uma camada MoE do qwen35moe */
+static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs);
+static void et_init(Model *m, const char *path, const uint8_t *base);
 
 /* mapeia o arquivo em memoria (somente leitura): o SO carrega as paginas sob demanda
    e o mapeamento fica vivo ate o processo terminar */
@@ -1285,6 +1291,7 @@ static void load_model(Model *m, const char *path) {
     if (c->n_expert) warm_start(m);
     sample_preset(c->arch);
     spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
+    et_init(m, path, buf);
     if (!getenv("KATANA_CPU")) gpu_setup(m);
 }
 

@@ -100,6 +100,12 @@ preload by the heat of the previous session.
 | Slots shared between layers of the same format | we measured that equal slots per layer are already within 1 point of the ceiling; low priority | medium |
 | Log of the choices for simulation outside the engine | `katana routing` already simulates; recording the trace of a real session is missing | small |
 
+
+**Expert tier (RAM budget + SSD): done for the CPU expert path (2026-11-22).** `KATANA_EXPERT_RAM=<GB>`,
+`src/engine/expert_tier.c`, measurements in knowledge.md 5c and comparisons.md 18. Next: contiguous per-expert sidecar file
+(+60% disk throughput), use the arena for the GPU upload path and the batch path of the VRAM cache, early router
+prediction also for Gemma 4, prefetch 2 layers ahead with a smaller N.
+
 ## 5. Loading and startup
 
 | Technique | What it does | Effort |

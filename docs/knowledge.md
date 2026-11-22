@@ -148,6 +148,102 @@ at 131072 the KV is 2.90 GB fp16 (an old warning said 128.85 GB, it was only the
   Estimate (not measured): the gain is limited to the start of the resumed session (the cache warms up by use within tens
   of tokens), and only exists if the session's topic differs from the global heat.
 
+
+## 5c. Expert tiers: GPU, RAM and SSD (measured 2026-11-22, Qwen3.6-35B-A3B Q4_K_M, CPU path)
+
+Goal: run MoE models larger than RAM. `src/engine/expert_tier.c` (off by default, `KATANA_EXPERT_RAM=<GB>`) gives the
+CPU expert path an explicit RAM budget; experts are read from the file with parallel `pread` (O_DIRECT) instead of
+page faults. Hooks: one line each in `moe_route`, `moe_cpu_multi`, `qn_layer` and `load_model`. Everything below was
+measured on the 61 GB / RTX 3050 machine, shared with other jobs (load 9-37), with the measurement lock; speeds have a
+noise of about +-0.4 tok/s. Qwen3.6 has 40 layers x 256 experts, K=8; one expert is 1.96 MB in the arena (three
+matrices of about 0.59 MB each, far apart in the file).
+
+**(a) Cache hit rate over a real text** (`katana tiersim run`, `katana tiersim sim`): 2,586 tokens in four segments with
+a topic change (prose about the engine, C code, Portuguese project rules, a README), generation order, cold start.
+Share of expert requests served from RAM:
+
+| policy / scope | 10% | 15% | 25% | 50% | 75% |
+|---|---|---|---|---|---|
+| LRU, one set for all layers | 61.8 | 71.6 | 84.1 | 95.9 | 98.3 |
+| LRU, per layer | 61.4 | 71.2 | 83.2 | 94.7 | 97.8 |
+| decayed frequency g=0.95, one set | 60.5 | 73.5 | 85.0 | 96.0 | 98.3 |
+| decayed frequency g=0.98, one set | 48.9 | 64.4 | 84.0 | 96.0 | 98.3 |
+| decayed frequency g=0.995, one set | 23.7 | 36.8 | 59.4 | 92.1 | 98.3 |
+| decayed frequency g=0.98, per layer | 61.2 | 71.1 | 83.8 | 94.9 | 97.9 |
+
+One shared set beats equal slots per layer by 0.6-1.3 points. Decayed frequency is a tie with LRU (+1 point at 15-25%,
+-1 point at 10%) and collapses when the decay is slow (g=0.995: new entries evict each other, old hot ones never leave).
+Topic change costs little at 25%: hit rate in the first 100 tokens of each new segment is within 0-4 points of the whole
+segment for LRU (81-88%); frequency with g=0.98 loses up to 6 points there. The text is short (2.6k tokens) and the topics
+are all about this project, so real long sessions can be better or worse: not measured.
+
+**(b) Predicting the next layer's experts** (recall of the 8 truly chosen experts, average over tokens and layers >= 1,
+N predicted):
+
+| predictor | N=8 | N=12 | N=16 |
+|---|---|---|---|
+| previous token, same layer | 40.4 | 48.8 | 54.6 |
+| decayed frequency of the layer | 36.7 | 45.1 | 51.5 |
+| co-occurrence layer l-1 -> l (online) | 48.8 | 59.8 | 67.2 |
+| **early router: layer l's norm+router applied to the residual at layer l-1's router (1 layer ahead)** | **78.8** | **89.7** | **93.5** |
+| same, 2 layers ahead | 70.0 | 81.0 | 85.8 |
+| same, 3 layers ahead | 64.1 | 74.8 | 80.0 |
+| early router on the output of layer l-1 (after its MoE; no lead time) | 82.0 | 92.3 | 95.4 |
+| chance | 3.1 | 4.7 | 6.2 |
+
+The early router is far better than history. Its cost is one rmsnorm and a 256x2048 product per layer (0.28 s over 96
+tokens, 0.3%). Recall drops with distance because the residual stream keeps changing.
+
+**(c) SSD random reads** (`katana iobench`, a 22 GB file copy on the NVMe, uncached, direct unless noted; threads = one
+`pread` per thread, io_uring = raw syscalls, no library; GB/s by reads in flight):
+
+| in flight | 0.59 MB direct, threads | io_uring | 1.77 MB direct, threads | io_uring | 0.59 MB buffered | 1.77 MB buffered |
+|---|---|---|---|---|---|---|
+| 1 | 0.69 | 0.70 | 1.26 | 1.23 | 0.32 | 0.50 |
+| 4 | 1.20 | 1.20 | 2.03 | 1.96 | 0.96 | 1.24 |
+| 16 | 1.30 | 1.27 | 2.17 | 2.03 | 1.43 | 1.90 |
+| 64 | 1.32 | 1.31 | 2.07 | 2.02 | 1.02 | 1.32 |
+
+io_uring works here without new libraries and is no faster than a thread pool (the device is the limit), so the engine
+uses threads (16). The disk saturates at 8-16 reads in flight. Reading an expert as three separate 0.59 MB blocks gives
+1.3 GB/s; one contiguous 1.77 MB block would give 2.1 GB/s (+60%): a sidecar file with each expert's three matrices
+side by side is the next step for the SSD tier (not done).
+
+**Tokens/s, CPU path, prompt of 30 tokens then 96 generated greedily (alternating runs are in comparisons.md 18)**
+
+| experts in RAM | tier (this work) | plain mmap under a cgroup limit of budget + 3 GB |
+|---|---|---|
+| 4 GB (20% of experts) | 5.8 | 4.4 (7 GB limit) |
+| 8 GB (40%) | 8.3 | 6.0 (11 GB limit) |
+| 12 GB (60%) | 8.9 | 7.2 (15 GB limit) |
+Ceiling for reference (not a tier case, the whole 22 GB file is in the page cache): plain mmap on the original file,
+alternating with the 8 GB tier in the same hour, 2 rounds: generation 10.7 and 11.2 tok/s (prompt 16.2, 16.8) against
+7.8 and 8.4 for the 8 GB tier (prompt 5.1, 6.8). So with 40% of the experts in RAM the tier keeps about 73-75% of the
+generation speed of a fully resident model. The prompt phase is the weak point: a batch of 16 tokens touches most
+experts of a layer, so prefill is bound by the disk (reading whole layers) and is 2.4-3x slower than resident.
+
+The cgroup limit (`systemd-run --user --scope -p MemoryMax=...`) works on this machine. Both sides read a copy of the model
+that was not in the page cache, so the first touches go to the SSD. Output text is bit-identical between the mapped path and
+the arena (logits of the prompt compared with `cmp`; 96 generated tokens compared).
+
+Not done / not measured: the GPU path (hot experts uploaded to VRAM still come from the mapping; only the CPU expert
+path uses the arena, and the router hook does not run when the router is on the GPU), Gemma 4 (the early router uses
+the residual convention of qwen35moe; the others fall back to previous-token prediction or none), long sessions, a
+model that really does not fit in RAM (Qwen3.6 fits here, so the page cache can always cover the mapped path), a
+contiguous per-expert sidecar.
+
+**2-bit cold experts (estimate, nothing built).** With 20-40% of the experts in RAM, 10-25% of the expert uses are
+misses. Keeping *all* experts in RAM at 2 bits (Q2_K is about 2.6 bits per weight: about 58% of Q4_K, so about 10.5 GB for
+this model) and using the 4-bit copy only for the hot ones would turn every miss into a RAM read with no disk stall.
+Quality is the open question. Estimate (not measured): if cold experts are used for 10-16% of the expert uses and a 2-bit
+expert has the error of a whole-model 2-bit quantization (typically a few percent of perplexity), the effect on the whole model
+should be a fraction of that, maybe 1-3% perplexity. The experiment that decides it: (1) quantize the expert tensors from
+the original weights (not from Q4_K) to Q2_K and IQ2_XS; (2) make a model where each (layer, expert) outside the top X% by
+heat of the sample text uses the 2-bit tensor (X = 25, 50, 75, 100%); (3) compare against the Q4_K file on the same
+held-out text: perplexity, KL of the next-token distribution, top-1 agreement over at least 20k tokens, and the codebench
+tasks. Decide by the KL/agreement as a function of the share of expert uses that land on 2-bit experts, not of the share of
+experts. The engine can already run Q2_K/IQ2 dot products; it has no quantizer to make the files.
+
 ## 6. Where we stand relative to the reference engine (measured, same machine)
 
 Reference engine: official binary b12418 with CUDA and with Vulkan.

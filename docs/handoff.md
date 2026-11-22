@@ -4,6 +4,16 @@ Written on 2026-11-15, at the end of the session that created the engine, the mi
 Vulkan backend. To resume: read this file, then `knowledge.md` (everything that was measured),
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
+
+**2026-11-22, expert tiers (GPU / RAM / SSD) for MoE larger than RAM.** `src/engine/expert_tier.c` (hooks: `moe_route`,
+`moe_cpu_multi`, `qn_layer`, `load_model`, one line each; the file is `#ifdef __linux__`). `KATANA_EXPERT_RAM=<GB>` (max
+25) makes the CPU expert path read experts into an arena of RAM slots with 16 parallel O_DIRECT reads, evict by decayed
+frequency (`KATANA_EXPERT_POLICY=lru|heat`) and prefetch the next layer with the early router (the next layer's norm and router
+applied to the current residual: recall 79% at 8 predicted, 90% at 12). Bit-identical to the mapped path (the slot keeps the
+file's alignment inside the page). Stats at exit. `katana tiersim run|sim` and `katana iobench` are the measurements.
+Numbers: knowledge.md 5c, comparisons.md 18. Measured only on Qwen3.6 on the CPU path; the GPU upload path of the VRAM
+expert cache and Gemma 4 do not use the arena yet.
+
 ## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
 
 **2026-11-21, extension system (block A12-A15 of `docs/plan.md`, `docs/extending.md`).** Built without a model (the GPU

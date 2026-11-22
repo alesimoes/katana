@@ -18,6 +18,7 @@
 #include "engine/vk_qwen35d.c"         /* qwen35 denso no modo hibrido: prompt em lote com os produtos na GPU */
 #include "engine/forward.c"            /* camadas na CPU em lote, forward, amostragem, decodificacao especulativa, generate */
 #include "engine/qtest.c"              /* katana qtest: teste dos tipos de quantizacao */
+#include "engine/expert_tier.c"          /* camadas de memoria dos especialistas: RAM com leitura paralela do SSD, previsao, medidas */
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
 #include "app/console.c"               /* console (cores, Ctrl+C, comandos de barra) e conversa simples */
 #include "agent/tools.c"               /* agente: ferramentas basicas (arquivos, web, memoria, sudo, caminhos) */

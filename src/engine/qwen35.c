@@ -459,6 +459,7 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
     }
     ffn_moe(m, L, l, o);       /* o: saida do feed-forward (m->xb2 e rascunho do compartilhado) */
     for (int i = 0; i < d; i++) m->x[i] += o[i];
+    if (et_hook_post) et_hook_post(m, l);
 }
 
 /* ---------- qwen35moe em Vulkan: grafo completo (DeltaNet, atencao com portao, MoE) ----------

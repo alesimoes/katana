@@ -359,3 +359,36 @@ Measured and estimate: everything above is measured (katana bench, rounds 2 and 
 There is no estimate in this section; the 1.76x ratio and the ms/token reading come straight from the rounds. Not measured: real
 conversation (`chat`), long prompts, other models and the comparison of old MoE against new with the CPU alone (already in
 15).
+
+
+## 18. Expert tier: RAM budget and SSD against plain mmap (Linux, 2026-11-22, branch worktree-agent-af15cd690dba92f7d)
+
+Qwen3.6-35B-A3B-UD-Q4_K_M on the CPU path (`KATANA_CPU=1`), prompt of 30 tokens, 96 tokens generated greedily
+(`katana run`). Machine shared (load 9-37 from other jobs), measurement lock held; each cell is one run, noise about
++-0.4 tok/s. The tier and the cgroup-limited mmap read a copy of the model that was not in the page cache (the copy lives
+outside `models/` and was deleted afterwards); the tier uses O_DIRECT. The mmap limit is the expert budget plus 3 GB for
+the other weights and buffers.
+
+| case | prompt tok/s | generation tok/s |
+|---|---|---|
+| tier 4 GB (2,092 slots, 75% of expert requests in RAM) | 4.8 | 5.8 |
+| tier 8 GB (4,185 slots, 86.5%) | 6.6 | 8.3 |
+| tier 12 GB (6,278 slots, 87.6%) | 6.6 | 8.9 |
+| mmap, cgroup MemoryMax 7 GB | 5.0 | 4.4 |
+| mmap, cgroup MemoryMax 11 GB | 4.1 | 6.0 |
+| mmap, cgroup MemoryMax 15 GB | 4.1 | 7.2 |
+Ceiling for reference (not a tier case, the whole 22 GB file is in the page cache): plain mmap on the original file,
+alternating with the 8 GB tier in the same hour, 2 rounds: generation 10.7 and 11.2 tok/s (prompt 16.2, 16.8) against
+7.8 and 8.4 for the 8 GB tier (prompt 5.1, 6.8). So with 40% of the experts in RAM the tier keeps about 73-75% of the
+generation speed of a fully resident model. The prompt phase is the weak point: a batch of 16 tokens touches most
+experts of a layer, so prefill is bound by the disk (reading whole layers) and is 2.4-3x slower than resident.
+
+Variants at 8 GB, 128 tokens (single runs, differences inside the noise): no prediction 7.8; early router 8 predicted/layer,
+1 ahead 8.1; 12 predicted 8.1; 2 ahead 8.1-8.4; co-occurrence 7.8; previous token 7.9; LRU + early router 8.7. At 4 GB, 64
+tokens: no prediction 4.9, early router 1 ahead 5.7, 2 ahead 5.4 (LRU 5.4). The prediction helps about 0.5-0.8 tok/s at 4 GB and is
+hard to see at 8-12 GB, where few requests miss. At 4 GB the run is disk-bound (about 1.2 GB/s read, token stall 9-11 s of 17 s).
+What did not help: slower frequency decay (worse), predicting 12 or 16 experts instead of 8 (more reads wasted, no speed
+gain), co-occurrence and previous-token prediction (recall 49% and 40%).
+Selftest (`katana selftest`, option off) on Qwen3.6 and Gemma 4: the CPU lines are identical to the binary built from the base
+commit; the GPU-vs-exact lines move by a few 1e-4 between runs of the same binary because they depend on the free VRAM and
+swap timing (another job used the GPU), the argmax agrees (OK) in all.
