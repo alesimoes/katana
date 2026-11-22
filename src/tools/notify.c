@@ -12,7 +12,7 @@ static int ct_nt_cut(char *s, size_t n) {
 }
 
 static const char CT_PUSHNOTIFICATION_DESC[] =
-    "Shows a local desktop notification to the user (notify-send, and the desktop application when it is running). "
+    "Shows a local desktop notification to the user (the desktop application when it is running, otherwise notify-send). "
     "Use it to say that a long task finished or that something needs the user's attention. 'message' is limited to "
     "200 characters; 'title' is optional. Nothing leaves this machine.";
 static const char CT_PUSHNOTIFICATION_PROPS[] =
@@ -28,9 +28,12 @@ static void ct_pushnotification(const char *js, const char *end, char *out, size
     const int truncated = ct_nt_cut(msg, 200);
     ct_nt_cut(title, 80);
     int ui = 0, sent = 0;
+    /* com a interface ligada o aviso e dela; KATANA_NO_NOTIFY=1 desliga o notify-send (testes, geracao de dados, maquina sem tela) */
+    const char *nn = getenv("KATANA_NO_NOTIFY");
+    const int quiet = nn && nn[0] && strcmp(nn, "0") != 0;
     if (getenv("KATANA_UI")) { printf("\x01" "NOTIFY %s\t%s\n", title, msg); fflush(stdout); ui = 1; }
 #ifndef _WIN32
-    {
+    if (!ui && !quiet) {
         const char *path = getenv("PATH"); int have = 0; char bin[4400];
         for (const char *p = path ? path : ""; *p; ) {
             size_t l = strcspn(p, ":");
@@ -50,6 +53,7 @@ static void ct_pushnotification(const char *js, const char *end, char *out, size
     }
 #endif
     if (sent || ui) snprintf(out, cap, "notification shown (%s%s%s)%s", sent ? "notify-send" : "", sent && ui ? " and " : "", ui ? "desktop application" : "", truncated ? "; the message was cut to 200 characters" : "");
+    else if (quiet) snprintf(out, cap, "notifications are turned off here (KATANA_NO_NOTIFY is set); nothing was shown. Tell the user in your answer instead.");
     else snprintf(out, cap, "no notification channel is available (notify-send is not installed or failed, and the desktop application is not running); nothing was shown");
 done:
     free(msg); free(title);
