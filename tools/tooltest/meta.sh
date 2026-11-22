@@ -135,8 +135,37 @@ case $R in
      has "toolsearch: +notebook" "$R" '"name": "NotebookEdit"'
      R=$("$K" tool ToolSearch '{"query":"search the web","max_results":2}')
      has "toolsearch: palavras" "$R" '"name": "Web'
-     eq "toolsearch: max 2" "$(printf '%s\n' "$R" | wc -l | tr -d ' ')" "2";;
+     eq "toolsearch: max 2" "$(printf '%s\n' "$R" | wc -l | tr -d ' ')" "2"
+     # o que o ToolSearch devolve concorda com a declaracao curta do prompt (KATANA_TOOL_DECL=1 poe o bloco de ferramentas)
+     SYS=$(KATANA_TOOL_DECL=1 "$K" agentsys 2>/dev/null)
+     R=$("$K" tool ToolSearch '{"query":"select:Edit"}')
+     has "toolsearch: Edit.edits e texto" "$R" '"edits": {"type": "string"'
+     hasnt "toolsearch: Edit.edits nao e declarado como lista" "$R" '"edits": {"type": "array"'
+     has "prompt: Edit.edits e texto" "$SYS" '"edits": {"type": "string"}'
+     R=$("$K" tool ToolSearch '{"query":"select:AskUserQuestion"}')
+     has "toolsearch: AskUserQuestion pede so question e options" "$R" '"required": ["question", "options"]'
+     hasnt "toolsearch: AskUserQuestion nao exige header" "$R" '"required": ["question", "header"'
+     hasnt "toolsearch: opcao nao exige description" "$R" '"required": ["label", "description"]'
+     has "prompt: AskUserQuestion pede so question e options" "$SYS" '"required": ["question", "options"]'
+     R=$(printf '\001ANS a\n' | KATANA_UI=1 "$K" tool AskUserQuestion '{"questions":[{"question":"Which one?","options":[{"label":"a"},{"label":"b"}]}]}' 2>/dev/null)
+     hasnt "AskUserQuestion: a forma do prompt (sem header, sem multiSelect) e aceita" "$R" "error:";;
 esac
+
+########## howto ##########
+R=$("$K" tool howto '{"topic":"all"}')
+for old in run_command write_file edit_file read_file search_files web_search web_fetch list_dir read_document find_file; do
+  hasnt "howto: nao cita $old" "$R" "$old"
+done
+for cur in "Bash" "Write" "Edit" "Read" "Grep" "Glob" "WebSearch" "WebFetch" "TodoWrite" "run_in_background" "TaskStop"; do
+  has "howto: cita $cur" "$R" "$cur"
+done
+R=$("$K" tool howto '{"topic":"files"}')
+has "howto: um assunto so" "$R" "FILES: find by name with Glob"
+hasnt "howto: um assunto so nao traz os outros" "$R" "SUDO:"
+R=$(KATANA_TOOLS=1 "$K" tool howto '{"topic":"files"}')
+has "howto: o conjunto antigo continua com os nomes dele" "$R" "read_file"
+R=$("$K" tool howto '{"topic":"nada"}')
+has "howto: assunto desconhecido" "$R" "unknown topic"
 
 ########## Skill ##########
 mkdir -p "$T/work/.katana/skills/deploy" "$T/work/.config/katana/skills/deploy" "$T/work/.config/katana/skills/review" "$HOME/.katana/skills/hk" "$HOME/.config/katana/skills/hc" "$HOME/.config/katana/skills/review"
@@ -169,7 +198,7 @@ has "skill: lista embutidas" "$R" "- web: built-in recipe"
 eq "skill: deploy aparece uma vez" "$(printf '%s\n' "$R" | grep -c '^- deploy')" "1"
 R=$("$K" tool Skill '{}'); has "skill: sem nome lista" "$R" "Available skills:"
 R=$("$K" tool Skill '{"skill":"web"}'); has "skill: embutida" "$R" "Loaded skill: web (base directory: built-in)"
-has "skill: embutida traz a receita" "$R" "WEB: 1) web_search"
+has "skill: embutida traz a receita" "$R" "WEB: 1) WebSearch"
 R=$("$K" tool Skill '{"skill":"../../secret"}'); has "skill: sem .. e barras" "$R" "error: invalid skill name"
 hasnt "skill: nao leu fora" "$R" "SECRET"
 R=$("$K" tool Skill '{"skill":"/etc/passwd"}'); has "skill: sem barra" "$R" "error: invalid skill name"

@@ -409,13 +409,29 @@ static int plan_cur(char *txt, size_t cap, int *k, int *n) {
     *n = i;
     return got;
 }
-/* nota anexada ao resultado de uma ferramenta: pedir o plano (3a e 6a chamada sem plano) ou lembrar o passo atual (a cada 5 chamadas) */
+/* ferramenta que so le ou pergunta: nao e trabalho que peca plano (uma pergunta respondida com leituras nao e um servico longo) */
+static int loop_plan_readonly(const char *name) {
+    static const char *const ro[] = {"Read", "Grep", "Glob", "LSP", "ToolSearch", "WebSearch", "WebFetch", "TaskList", "TaskGet", "CronList", "ListAgents",
+        "ListMcpResourcesTool", "ReadMcpResourceTool", "WaitForMcpServers", "AskUserQuestion", "recall", "howto", "read_log",
+        "read_file", "list_dir", "find_file", "search_files", "glob", "web_search", "web_fetch", "read_document", "ask_user", NULL};
+    for (int i = 0; ro[i]; i++) if (!strcmp(name, ro[i])) return 1;
+    return 0;
+}
+/* nota anexada ao resultado de uma ferramenta: pedir o plano (3a e 6a chamada sem plano que nao seja so leitura) ou lembrar o
+   passo atual (a cada 5 chamadas). pl_calls conta todas as chamadas do pedido; as que so leem sao descontadas aqui, e o
+   desconto recomeca quando pl_calls volta (pedido novo) */
 static void loop_plan_note(char *result, size_t cap, const char *name, int pl_calls, int pl_old) {
     const size_t rl = strlen(result);
     const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
     char st[220]; int k = 0, n = 0;
-    if (!g_todo_touched && !pl_old && (pl_calls == 3 || pl_calls == 6) && rl + 600 < cap)
-        snprintf(result + rl, cap - rl, pl_calls == 3
+    static int ro_calls, last_calls;
+    if (pl_calls <= last_calls || pl_calls <= 1) ro_calls = 0;
+    last_calls = pl_calls;
+    const int isro = loop_plan_readonly(name);
+    if (isro) ro_calls++;
+    const int work = pl_calls - ro_calls;
+    if (!g_todo_touched && !pl_old && !isro && (work == 3 || work == 6) && rl + 600 < cap)
+        snprintf(result + rl, cap - rl, work == 3
             ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
               "the first one in progress, then continue with step 1.]"
             : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
@@ -428,6 +444,14 @@ static void loop_todo_nudge(char *nm, size_t cap) {
     snprintf(nm, cap, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
              "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
              g_todo, ct_set2() ? "TodoWrite" : "todo");
+}
+/* o lembrete cabe aqui? So quando a lista foi mexida neste pedido e ha passo em aberto que nao seja uma tarefa apenas
+   anotada: TaskCreate a pedido do usuario grava a tarefa para depois, e responder sem faze-la esta certo */
+static int loop_todo_should_nudge(void) {
+    if (!g_todo_touched) return 0;
+    ct_task_sync();
+    for (int i = 0; i < g_ct_ntasks; i++) if (g_ct_tasks[i].st != 2 && !g_ct_tasks[i].rec) return 1;
+    return 0;
 }
 /* marcador TOOL para o desktop: nome, argumentos (uma linha) e, quando a chamada traz "description", ela num 3o campo */
 static void ui_tool_mark(const char *name, const char *ap, const char *end) {
@@ -855,7 +879,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     }
                 }
                 if (ct_set2() && tn - td == 1 && ct_todo_autofinish()) break;      /* so faltava o ultimo passo e o modelo ja respondeu */
-                if (!cml || !g_todo_touched || nudged || tn == td || cut) break;
+                if (!cml || nudged || tn == td || cut || !loop_todo_should_nudge()) break;
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];
                 nudged = 1;

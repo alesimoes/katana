@@ -996,6 +996,30 @@ static int run_main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
     if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();
     if (argc == 2 && strcmp(argv[1], "calltest") == 0) return calltest();
+    if (argc == 3 && strcmp(argv[1], "toolrun") == 0 && strcmp(argv[2], "notes") == 0) {
+        /* teste: como toolrun, mas com as notas que o laco anexa (plano) e a decisao do fim do pedido. Linha "USER": pedido novo;
+           linha "END": o modelo respondeu sem chamar ferramenta (imprime se o motor fecha o ultimo passo e se manda o lembrete) */
+        static char res[TOOL_WEB + 512], ln[20000];
+        int pl = 0, pl_old = 0;
+        g_web = 0;
+        while (fgets(ln, sizeof ln, stdin)) {
+            ln[strcspn(ln, "\r\n")] = 0;
+            if (!strcmp(ln, "USER")) { int td = 0; const int tn = todo_count(&td); pl_old = tn > td; pl = 0; g_todo_touched = 0; continue; }
+            if (!strcmp(ln, "END")) {
+                int td = 0; const int tn = todo_count(&td);
+                const int fin = tn - td == 1 && ct_todo_autofinish();
+                printf("[end: open=%d autofinish=%d nudge=%d]\n----\n", tn - td, fin, !fin && tn > td && loop_todo_should_nudge());
+                continue;
+            }
+            char *sp = strchr(ln, ' ');
+            if (!sp) continue;
+            *sp = 0;
+            agent_tool_run(ln, sp + 1, sp + 1 + strlen(sp + 1), res, sizeof res);
+            loop_plan_note(res, sizeof res, ln, ++pl, pl_old);
+            printf("%s\n----\n", res);
+        }
+        return 0;
+    }
     if (argc == 2 && strcmp(argv[1], "toolrun") == 0) {      /* teste: le linhas "<ferramenta> <json>" da entrada e executa em sequencia, no mesmo processo (sessoes de terminal persistem) */
         static char res[TOOL_WEB + 512], ln[20000];
         g_web = !(getenv("KATANA_WEB") && strcmp(getenv("KATANA_WEB"), "0") == 0);

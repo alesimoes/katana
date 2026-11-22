@@ -98,7 +98,7 @@ static int ct_opts_parse(const char *v, const char *ve, CtOpt *opt, int *toomany
 
 static const char CT_ASKUSERQUESTION_DESC[] =
     "Ask the user 1 to 4 multiple-choice questions when you need a decision or a preference you cannot work out yourself. "
-    "Each question has a short header, 2 to 4 options (label plus description) and multiSelect. The user can always type a free answer instead. "
+    "Each question has 2 to 4 options (a label, and a description when it helps); header (a very short label) and multiSelect are optional. The user can always type a free answer instead. "
     "Do not use it to ask for plan approval (use ExitPlanMode) and do not ask what you can find out by reading files.";
 static const char CT_ASKUSERQUESTION_PROPS[] =
     "\"questions\": {\"type\": \"array\", \"description\": \"1 to 4 questions\", \"items\": {\"type\": \"object\", \"properties\": {"
@@ -106,9 +106,9 @@ static const char CT_ASKUSERQUESTION_PROPS[] =
     "\"header\": {\"type\": \"string\", \"description\": \"Very short label (max 12 characters)\"}, "
     "\"options\": {\"type\": \"array\", \"description\": \"2 to 4 choices\", \"items\": {\"type\": \"object\", \"properties\": {"
     "\"label\": {\"type\": \"string\", \"description\": \"Short choice text (1 to 5 words)\"}, "
-    "\"description\": {\"type\": \"string\", \"description\": \"What this choice means or implies\"}}, \"required\": [\"label\", \"description\"]}}, "
+    "\"description\": {\"type\": \"string\", \"description\": \"What this choice means or implies\"}}, \"required\": [\"label\"]}}, "
     "\"multiSelect\": {\"type\": \"boolean\", \"description\": \"Allow choosing several options\"}}, "
-    "\"required\": [\"question\", \"header\", \"options\", \"multiSelect\"]}}";
+    "\"required\": [\"question\", \"options\"]}}";
 static const char CT_ASKUSERQUESTION_REQ[] = "\"questions\"";
 
 /* um item de questions (objeto JSON em obj..oe) ou, na forma antiga, os argumentos todos */
@@ -140,13 +140,13 @@ static void ct_askuserquestion(const char *js, const char *end, char *out, size_
     const char *a, *b;
     char err[300];
     if (ct_find(js, end, "questions", &a, &b)) {
-        if (*a != '[') { snprintf(out, cap, "error: questions must be an array of 1 to 4 objects {question, header, options, multiSelect}"); goto done; }
+        if (*a != '[') { snprintf(out, cap, "error: questions must be an array of 1 to 4 objects {question, options}"); goto done; }
         const char *p = a + 1;
         for (;;) {
             while (p < b && (isspace((unsigned char)*p) || *p == ',')) p++;
             if (p >= b || *p == ']') break;
             const char *e = ct_skip(p, b);
-            if (!e || *p != '{') { snprintf(out, cap, "error: questions[%d] must be an object {question, header, options, multiSelect}", nq); goto done; }
+            if (!e || *p != '{') { snprintf(out, cap, "error: questions[%d] must be an object {question, options}", nq); goto done; }
             if (nq == CT_Q_MAX) { snprintf(out, cap, "error: too many questions; ask at most %d at a time", CT_Q_MAX); goto done; }
             char *obj = (char *)malloc((size_t)(e - p) + 1);
             memcpy(obj, p, (size_t)(e - p)); obj[e - p] = 0;
@@ -160,7 +160,7 @@ static void ct_askuserquestion(const char *js, const char *end, char *out, size_
     } else if (ct_has(js, end, "question")) {            /* forma antiga: question + options */
         if (!ct_q_parse(js, end, 0, &qs[0], err, sizeof err)) { snprintf(out, cap, "%s", err); goto done; }
         nq = 1;
-    } else { snprintf(out, cap, "error: questions is required: an array of 1 to 4 objects {question, header, options, multiSelect}"); goto done; }
+    } else { snprintf(out, cap, "error: questions is required: an array of 1 to 4 objects {question, options}"); goto done; }
 
     static char acc[8000];
     size_t o = (size_t)snprintf(acc, sizeof acc, "User answers:\n");

@@ -125,6 +125,24 @@ done:
     free(name); free(path);
 }
 
+/* tira do `git status --porcelain` o que o interpretador gera sozinho e nao e trabalho de ninguem: pastas __pycache__ e
+   arquivos .pyc nao rastreados (linhas "?? "). O resto fica como esta. */
+static void ct_wt_drop_generated(char *st) {
+    char *w = st;
+    for (char *p = st; *p; ) {
+        char *e = strchr(p, '\n'); const size_t l = e ? (size_t)(e - p) : strlen(p);
+        size_t pl = l; while (pl && (p[pl - 1] == '\r' || p[pl - 1] == '"')) pl--;
+        int gen = 0;
+        if (l > 3 && !strncmp(p, "?? ", 3)) {
+            if (pl >= 12 && !strncmp(p + pl - 12, "__pycache__/", 12)) gen = 1;
+            else if (pl >= 4 && !strncmp(p + pl - 4, ".pyc", 4)) gen = 1;
+        }
+        if (!gen) { memmove(w, p, l); w += l; if (e) *w++ = '\n'; }
+        p += l + (e ? 1 : 0);
+    }
+    *w = 0;
+}
+
 static void ct_exitworktree(const char *js, const char *end, char *out, size_t cap) {
     char *act = ct_str(js, end, "action");
     const int discard = ct_bool(js, end, "discard_changes");
@@ -135,8 +153,9 @@ static void ct_exitworktree(const char *js, const char *end, char *out, size_t c
     if (!g_wt_active) { snprintf(out, cap, "error: no worktree session is active (EnterWorktree has not been called in this conversation)"); goto done; }
     ct_wt_q(q, sizeof q, g_wt_dir);
     if (remove && !discard) {
-        snprintf(a, sizeof a, "-C %s status --porcelain", q);
+        snprintf(a, sizeof a, "-C %s status --porcelain --untracked-files=all", q);      /* cada arquivo sem rastreio na sua linha, para o filtro abaixo */
         char *st = ct_wt_git(a, &rc);
+        ct_wt_drop_generated(st);
         snprintf(a, sizeof a, "-C %s log --oneline %s..HEAD", q, g_wt_base);
         char *lg = ct_wt_git(a, &rc);
         if (st[0] || lg[0]) {

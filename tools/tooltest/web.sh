@@ -192,6 +192,20 @@ $(entry 2 'Rust ownership guide' "$B/p1" 'About ownership')"
   "$K" tool WebFetch "{\"url\":\"$B/p1\",\"prompt\":\"borrow\"}" >/dev/null 2>&1
   sz=$(du -sk "$T/cache/web" | cut -f1)
   if [ "$sz" -le 51200 ] && ls "$T/cache/web" | grep -q '^p-[0-9a-f]'; then ok "cache: trimmed to the 50 MB cap, new entry kept (${sz} KB)"; else bad "cache: ${sz} KB" "$(ls "$T/cache/web" | head -3)"; fi
+  # resposta HTTP de erro vira erro da ferramenta, com ou sem corpo; o texto da pagina de erro nao entra
+  r=$("$K" tool WebFetch "{\"url\":\"$B/nopage\",\"prompt\":\"x\"}" 2>&1)
+  has "fetch: 404 sem corpo e erro" "error: HTTP 404 (Not Found) from $B/nopage: there is no page at this address" "$r"
+  r=$("$K" tool WebFetch "{\"url\":\"$B/gone\",\"prompt\":\"borrow checker\"}" 2>&1)
+  case "$r" in "error: HTTP 404 (Not Found)"*) ok "fetch: 404 com corpo comeca com error:";; *) bad "fetch: 404 com corpo comeca com error:" "$r";; esac
+  hasnt "fetch: o texto da pagina de erro nao entra" "friendly page" "$r"
+  has "fetch: 404 manda procurar o endereco certo" "find the right one with WebSearch" "$r"
+  r=$("$K" tool WebFetch "{\"url\":\"$B/boom\",\"prompt\":\"x\"}" 2>&1)
+  has "fetch: 500 e erro" "error: HTTP 500 (Internal Server Error)" "$r"
+  r=$("$K" tool WebFetch "{\"url\":\"$B/gone\",\"prompt\":\"x\"}" 2>&1)
+  has "fetch: o erro nao fica guardado como pagina" "error: HTTP 404" "$r"
+  r=$("$K" tool WebFetch "{\"url\":\"$B/p2\",\"prompt\":\"lifetimes\"}" 2>&1)
+  has "fetch: pagina boa continua vindo" "Lifetimes annotate" "$r"
+  hasnt "fetch: a marca do codigo HTTP nao aparece no texto" "KATANA-HTTP-STATUS" "$r"
   unset KATANA_WEB_ALLOW_LOCAL
   kill $SRV 2>/dev/null
 else
