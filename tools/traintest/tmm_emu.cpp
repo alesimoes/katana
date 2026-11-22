@@ -31,6 +31,7 @@ static const float *X;
 static float *O;
 static struct { uint M, N, K, ws, wo; } pc;
 static float As[16][64], Bs[16][64];
+static float Rd[2048];
 static uvec3 gl_WorkGroupID;
 static thread_local uvec3 gl_LocalInvocationID;
 static std::barrier<> *g_bar;
@@ -72,18 +73,23 @@ int main(int argc, char **argv) {
         rd(x.data(), x.size() * 4); rd(dy.data(), dy.size() * 4); rd(y.data(), y.size() * 4); rd(dx.data(), dx.size() * 4); rd(g.data(), g.size() * 4);
         WT = (int)h[0];
         std::vector<float> o;
-        double e[3];
+        double e[5];
         // forward: Y[N][R] = X W^T
         MODE = 0; W = q.data(); X = x.data(); o.assign((size_t)N * R, NAN); O = o.data();
         pc = { R, N, C, h[4], h[5] }; run((R + 63) / 64, (N + 63) / 64); e[0] = cmp(o.data(), y.data(), o.size());
         // transposto: dX[N][C] = dY W
         MODE = 1; X = dy.data(); o.assign((size_t)N * C, NAN); O = o.data();
         pc = { C, N, R, h[4], h[5] }; run((C + 63) / 64, (N + 63) / 64); e[1] = cmp(o.data(), dx.data(), o.size());
+        // N pequeno (modos 3 e 4): os mesmos produtos, dos tokens de 8 em 8
+        MODE = 3; W = q.data(); X = x.data(); o.assign((size_t)N * R, NAN); O = o.data();
+        pc = { R, N, C, h[4], h[5] }; run((R + 15) / 16, 1); e[3] = cmp(o.data(), y.data(), o.size());
+        MODE = 4; X = dy.data(); o.assign((size_t)N * C, NAN); O = o.data();
+        pc = { C, N, R, h[4], h[5] }; run((C + 127) / 128, 1); e[4] = cmp(o.data(), dx.data(), o.size());
         // gradiente: G[R][C] = dY^T X (dY no binding 0, como palavras)
         MODE = 2; W = reinterpret_cast<const uint *>(dy.data()); X = x.data(); o.assign((size_t)R * C, NAN); O = o.data();
         pc = { R, C, N, 0, 0 }; run((R + 63) / 64, (C + 63) / 64); e[2] = cmp(o.data(), g.data(), o.size());
-        const bool ok = e[0] < 1e-5 && e[1] < 1e-5 && e[2] < 1e-5;
-        std::printf("%-5s forward %.1e  transposto %.1e  gradiente %.1e  %s\n", nm[WT], e[0], e[1], e[2], ok ? "ok" : "FALHOU");
+        const bool ok = e[0] < 1e-5 && e[1] < 1e-5 && e[2] < 1e-5 && e[3] < 1e-5 && e[4] < 1e-5;
+        std::printf("%-5s forward %.1e  transposto %.1e  gradiente %.1e  pequeno %.1e %.1e  %s\n", nm[WT], e[0], e[1], e[2], e[3], e[4], ok ? "ok" : "FALHOU");
         fails += !ok;
     }
     std::printf(fails ? "tmm_emu: FALHOU\n" : "tmm_emu: ok\n");

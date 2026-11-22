@@ -228,12 +228,13 @@ static size_t tt_select_r(TTab *t, const char *pats, int rank, float alpha) {
 #endif
 typedef struct {
     int on, tried;
-    KvkPipe pipe[3][7];
+    KvkPipe pipe[5][7];
     KvkBuf x, y, o, ws;            /* entrada, dY do gradiente, saida, fatia de peso enviada na hora */
     KvkBuf ar[64]; size_t ar_used[64]; int nar;     /* arenas dos pesos residentes */
     size_t ar_size, budget, resident, chunk;
     uint64_t ver;                  /* versao dos mestres em float */
     double min_mac, t_gpu;
+    size_t nsmall;                 /* ate quantos tokens o produto usa o ladrilho pequeno (modos 3 e 4); 0 = nunca */
     int fixed;                     /* KATANA_TRAIN_GPU_MIN dado: limite fixo em vez de calibrar */
     /* calibragem em tempo de execucao (modos 0 e 1): segundos da CPU por multiplicacao e da GPU por produto pequeno */
     struct { double cpu_rate, gpu_sec; long cpu_n, gpu_n, seen; } cal[2];
@@ -264,7 +265,7 @@ static int tg_init(void) {
     if (e && !strcmp(e, "0")) return 0;
     KvkInfo I;
     if (!kvk_init(&I)) { fprintf(stderr, "treino: sem GPU Vulkan (%s); produtos na CPU\n", kvk_error()); return 0; }
-    for (int m = 0; m < 3; m++) for (int t = 0; t < 7; t++) {
+    for (int m = 0; m < 5; m++) for (int t = 0; t < 7; t++) {
         if (m == 2 && t) continue;
         const uint32_t ids[2] = { 0, 1 }, vals[2] = { (uint32_t)m, (uint32_t)t };
         tg.pipe[m][t] = kvk_pipe_create(tmm_spv, sizeof tmm_spv, 3, 20, ids, vals, 2);
@@ -287,6 +288,7 @@ static int tg_init(void) {
     tg.budget = bud > 0 ? (size_t)bud : 0;
     tg.min_mac = getenv("KATANA_TRAIN_GPU_MIN") ? atof(getenv("KATANA_TRAIN_GPU_MIN")) : 4194304.0;
     tg.fixed = getenv("KATANA_TRAIN_GPU_MIN") != NULL;
+    tg.nsmall = getenv("KATANA_TRAIN_GPU_SMALL") ? (size_t)atoi(getenv("KATANA_TRAIN_GPU_SMALL")) : 16;
     tg.on = 1;
     fprintf(stderr, "treino na GPU: %s; ate %.1f GB de pesos residentes na VRAM\n", I.name, tg.budget / 1073741824.0);
     return 1;
@@ -353,6 +355,7 @@ static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M,
     if (wo > 0xffffffffu || ws > 0xffffffffu) return 0;
     TgPush pc = { M, N, K, (uint32_t)ws, (uint32_t)wo };
     const KvkBuf b[3] = { w, in, out };
+    if (mode >= 3) return kvk_dispatch(tg.pipe[mode][wt], b, 3, &pc, sizeof pc, mode == 3 ? (M + 15) / 16 : (M + 127) / 128, 1, 1);
     return kvk_dispatch(tg.pipe[mode][wt], b, 3, &pc, sizeof pc, (M + 63) / 64, (N + 63) / 64, 1);
 }
 
@@ -401,7 +404,7 @@ static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float 
         const size_t rn = R - r0 < rc ? R - r0 : rc;
         KvkBuf wb = res ? tg.ar[p->gar] : tg.ws;
         const size_t wo = res ? p->goff + r0 * st : 0;
-        if (!res && !kvk_buf_write(tg.ws, 0, src + r0 * st, rn * st)) goto fail;
+        if (!res && !kvk_buf_write_q(tg.ws, 0, src + r0 * st, rn * st)) goto fail;      /* tudo do produto numa submissao so: o kvk_buf_read espera */
         /* lote de tokens que cabe nos rascunhos */
         size_t bc = mode == 0 ? ch / (C > rn ? C : rn) : ch / (C > rn ? C : rn);
         if (bc > (size_t)B) bc = (size_t)B;
@@ -410,15 +413,15 @@ static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float 
             const size_t bn = B - b0 < bc ? B - b0 : bc;
             if (mode == 0) {
                 float *h = tg_host(bn * rn);
-                if (!kvk_buf_write(tg.x, 0, in1 + b0 * C, bn * C * F)
-                    || !tg_run(0, wt, wb, tg.x, tg.o, (uint32_t)rn, (uint32_t)bn, (uint32_t)C, st, wo)
+                if (!kvk_buf_write_q(tg.x, 0, in1 + b0 * C, bn * C * F)
+                    || !tg_run(bn <= tg.nsmall && C % 8 == 0 ? 3 : 0, wt, wb, tg.x, tg.o, (uint32_t)rn, (uint32_t)bn, (uint32_t)C, st, wo)
                     || !kvk_buf_read(tg.o, 0, h, bn * rn * F)) goto fail;
                 for (size_t b = 0; b < bn; b++) memcpy(out + (b0 + b) * R + r0, h + b * rn, rn * F);
             } else {
                 float *h = tg_host(bn * (rn > C ? rn : C));
                 for (size_t b = 0; b < bn; b++) memcpy(h + b * rn, in1 + (b0 + b) * R + r0, rn * F);
-                if (!kvk_buf_write(tg.x, 0, h, bn * rn * F)
-                    || !tg_run(1, wt, wb, tg.x, tg.o, (uint32_t)C, (uint32_t)bn, (uint32_t)rn, st, wo)
+                if (!kvk_buf_write_q(tg.x, 0, h, bn * rn * F)
+                    || !tg_run(bn <= tg.nsmall && C % 8 == 0 ? 4 : 1, wt, wb, tg.x, tg.o, (uint32_t)C, (uint32_t)bn, (uint32_t)rn, st, wo)
                     || !kvk_buf_read(tg.o, 0, h, bn * C * F)) goto fail;
                 for (size_t b = 0; b < bn; b++) { float *o = out + (b0 + b) * C; const float *hb = h + b * C; for (size_t c = 0; c < C; c++) o[c] += hb[c]; }
             }
