@@ -342,6 +342,9 @@ static void fam_x_fix(FILE *f, Scn *s) {
     x_start(&c, "x-fix");
     const char *rel0 = x_src(p, 0), *named = c.obst == O_WRONGPATH ? x_wrong(p, 0) : rel0;
     const int paste = c.loc == 3 && !c.pre;
+    const XFi *blame = c.loc == 1 && !c.pre && c.obst != O_TWOBUG && cu_pct(40) ? &p->mod[1].fn[0] : NULL;      /* o usuario aponta uma funcao que esta certa */
+    if (blame && (blame == b2 || blame->num != blame->f->num)) blame = NULL;
+    if (blame) { x_shape_tag("wrong"); snprintf(g_x.cell + strlen(g_x.cell), sizeof g_x.cell - strlen(g_x.cell), "+blame"); }
     int prerun = c.pre != 0; const char *out0 = NULL;
     c.focus = b1->name; c.focrel = x_src(p, 0);
     if (paste) {      /* o usuario ja rodou os testes e cola a saida: o modelo nao precisa rodar para saber o que falha */
@@ -367,6 +370,7 @@ static void fam_x_fix(FILE *f, Scn *s) {
     if (prerun && !paste) x_dep();
     if (!paste) x_user(prerun ? XV(L("fix it", "corrige"), L("ok, fix that", "ok, corrige isso"), L("please fix it and run them again", "corrige por favor e roda de novo")) : c.loc == 0 ? XV(L("the tests are failing, can you fix it?", "os testes estao falhando, consegue corrigir?"), L("something broke the test suite, please fix it", "alguma coisa quebrou a suite de testes, corrige por favor"),
                            L("tests are red since my last change. fix pls", "os testes tao vermelhos desde a minha ultima mudanca. corrige pfv"))
+         : blame ? cu_fmt(XV(L("%s must be broken, the tests fail since yesterday. fix it", "o %s deve estar quebrado, os testes falham desde ontem. corrige"), L("the tests are red and I bet it is %s. can you fix it?", "os testes tao vermelhos e aposto que e o %s. consegue corrigir?")), blame->name)
          : c.loc == 1 ? cu_fmt(XV(L("%s is returning wrong values, fix it", "o %s ta devolvendo valor errado, corrige"), L("I think %s has a bug: %s should be %ld", "acho que o %s tem um bug: %s devia dar %ld")), b1->name, x_shown(b1->name, b1->f, b1->a[0]), b1->want[0])
          : cu_fmt(XV(L("there is a bug in %s, %s gives wrong results", "tem um bug em %s, o %s da resultado errado"), L("%s is broken somewhere (%s). fix it and make the tests pass", "%s ta quebrado em algum lugar (%s). corrige e faz os testes passarem")), named, b1->name));
     const char *plan[3] = {prerun ? L("Read the function that fails", "Ler a funcao que falha") : cu_fmt(XV(L("Run the tests of %s", "Rodar os testes de %s"), L("Reproduce the failure in %s", "Reproduzir a falha em %s")), p->name),
@@ -406,6 +410,7 @@ static void fam_x_fix(FILE *f, Scn *s) {
     for (int i = 0; i < nfix; i++) buf_str(&b, cu_fmt(L("%s`%s` in %s computed `%s`; it now returns `%s`.", "%s`%s` em %s calculava `%s`; agora devolve `%s`."), i ? " " : "", fixed[i][0], fixed[i][1], fixed[i][2], fixed[i][3]));
     buf_str(&b, cu_fmt(L(" `%s` passes: %s.", " O `%s` passa: %s."), p->testcmd, tot));
     if (c.obst == O_SECOND) buf_str(&b, L(" The second failure only appeared after the first fix, because the runner stops at the first failure.", " A segunda falha so apareceu depois da primeira correcao, porque os testes param na primeira falha."));
+    if (blame) buf_str(&b, cu_fmt(L(" `%s` was not the problem: its cases passed from the first run.", " O `%s` nao era o problema: os casos dele passavam desde a primeira rodada."), blame->name));
     x_final(cu_keep(b.p));
     x_followup(&c);
     x_end(f);

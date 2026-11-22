@@ -260,8 +260,7 @@ static int cu_show_main(int argc, char **argv) {
         if (!*line) continue;
         i++;
         const char *fam = cu_jstr(cu_jget(line, "family")), *cell = cu_jstr(cu_jget(line, "cell")), *seq = cu_jstr(cu_jget(line, "seq")), *shape = cu_jstr(cu_jget(line, "shape"));
-        if (sel && atol(sel) != i && !(isdigit((unsigned char)sel[0]) ? 0 : (fam && !strcmp(sel, fam)) || (cell && strstr(cell, sel)))) { cu_arena_free(); continue; }
-        if (sel && isdigit((unsigned char)sel[0]) && atol(sel) != i) { cu_arena_free(); continue; }
+        if (sel && (isdigit((unsigned char)sel[0]) ? atol(sel) != i : !((fam && !strcmp(sel, fam)) || (cell && strstr(cell, sel))))) { cu_arena_free(); continue; }
         printf("============================== %ld %s %s | shape: %s | seq: %s\n", i, fam ? fam : "?", cell ? cell : "", shape ? shape : "", seq ? seq : "");
         const char *msgs = cu_jget(line, "messages"), *el, *e;
         for (const char *q0 = msgs ? msgs + 1 : ""; msgs && (e = gs_elem(q0, &el)); q0 = e) {
