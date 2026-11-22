@@ -55,3 +55,22 @@ Hidden test aid: `katana toolrun` accepts a line `!cd <dir>` that changes the fo
 reloaded (so `/server:prompt` sees the current prompts) and the result of the call that was running says what changed,
 so the model knows to list the resources again (resources are listed on each request, there is no cache to refresh).
 A notification that arrives while no call is running is recorded and applied at the next call or `/server:prompt`.
+
+## Tool annotations
+
+`tools/list` entries may carry `title` and `annotations` (`title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`,
+`openWorldHint`). katana keeps them per tool. The specification says annotations are untrusted unless the server is
+trusted, so they are only ever used in two ways: to make katana more careful, or to skip a question or allow a call for
+servers declared in the user's own file (`~/.katana/mcp.json` or `KATANA_MCP_CONFIG`). A server that comes from a project
+file (`.katana/mcp.json`, `.mcp.json`) never gains anything from its hints.
+
+| where | effect |
+|---|---|
+| `katana mcp list` | `server__tool [read-only, idempotent, destructive, open-world]` and a `title:` line |
+| question text (when `KATANA_CONFIRM=1` or `KATANA_MCP_CONFIRM=1` makes katana ask) | "hints from the server (not verified): ..." |
+| question skipped | the tool says `readOnlyHint: true`, no `destructiveHint: true`, server from the user's file |
+| `KATANA_MCP_CONFIRM_DESTRUCTIVE=1` | asks before tools with `destructiveHint: true`, even when katana would not ask |
+| plan mode (`/plan`) | an MCP tool runs only under the same condition as the skipped question; every other MCP tool is refused as before |
+
+A tool that claims both read-only and destructive is treated as neither. Before this item, `KATANA_CONFIRM` did not make MCP
+calls ask; now it does (as it does for file writes and commands), and `KATANA_MCP_CONFIRM` keeps working.

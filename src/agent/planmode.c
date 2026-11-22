@@ -51,6 +51,7 @@ static int plan_allows(const char *name, const char *js, const char *end) {
         "read_document", "ask_user", "todo", "job", "terminal_screen", "delegate", NULL};
     static char arg[8192];
     if (plan_word_in(name, strlen(name), ok)) return 1;
+    if (mcpx_plan_ok(name)) return 1;            /* ferramenta MCP somente leitura de servidor do usuario (dica, mcp_extra.c) */
     if (strcmp(name, "run_command") == 0) return json_str(js, end, "command", arg, sizeof arg) && !(json_has(js, end, "background") && json_bool(js, end, "background")) && plan_cmd_ok(arg);
     if (strcmp(name, "git") == 0) { char g[8200]; if (!json_str(js, end, "args", arg, sizeof arg)) return 0; snprintf(g, sizeof g, "git %s", arg); return plan_cmd_ok(g); }
     return 0;

@@ -87,5 +87,42 @@ has "c: lista inicial de prompts lida uma vez" "$R" "prompts_list=1"
 R=$(printf 'rt__plistcount {}\nrt__plistcount {}\n' | "$K" toolrun 2>&1)
 hasnt "c: sem mudanca, sem aviso" "$R" "list of this MCP server changed"
 
+########## d: anotacoes das ferramentas ##########
+R=$("$K" mcp list 2>&1)
+has "d: list mostra somente leitura e idempotente" "$R" "rt__peek [read-only, idempotent]"
+has "d: list mostra destrutiva e mundo aberto" "$R" "rt__wipe [destructive, open-world]"
+has "d: list mostra o title (campo da ferramenta)" "$R" "title: Peek at it"
+has "d: list mostra o title das anotacoes" "$R" "title: Wipe all"
+has "d: ferramenta sem dicas sem etiqueta" "$R" "rt__argv: the program arguments"
+R=$(KATANA_CONFIRM=1 "$K" tool rt__argv '{}' 2>&1 </dev/null)
+has "d: KATANA_CONFIRM pergunta (sem usuario: nega)" "$R" "the user denied"
+R=$(KATANA_CONFIRM=1 "$K" tool rt__peek '{}' 2>&1 </dev/null)
+has "d: somente leitura de servidor do usuario dispensa a pergunta" "$R" "peek ran"
+R=$(KATANA_CONFIRM=1 "$K" tool rt__liar '{}' 2>&1 </dev/null)
+has "d: dica contraditoria nao dispensa a pergunta" "$R" "the user denied"
+R=$(KATANA_CONFIRM=1 "$K" tool rt__wipe '{}' 2>&1 </dev/null)
+has "d: destrutiva continua perguntando" "$R" "the user denied"
+R=$(printf 'rt__wipe {}\n\001ANS 1\n' | KATANA_CONFIRM=1 KATANA_UI=1 "$K" toolrun 2>&1)
+has "d: o texto da pergunta traz as dicas, marcadas como nao verificadas" "$R" "dicas do servidor (nao verificadas): destructive, open-world"
+has "d: depois do sim a chamada roda" "$R" "wipe ran"
+R=$(printf '!plan on\nrt__peek {}\nrt__wipe {}\nrt__argv {}\nrt__liar {}\n' | "$K" toolrun 2>&1)
+has "d: plano: somente leitura de servidor do usuario roda" "$R" "peek ran"
+hasnt "d: plano: destrutiva nao roda" "$R" "wipe ran"
+hasnt "d: plano: ferramenta sem dica nao roda" "$R" "the program arguments"
+hasnt "d: plano: dica contraditoria nao roda" "$R" "liar ran"
+has "d: plano recusa em palavras claras" "$R" "plan mode is on"
+# servidor de projeto: as dicas nao valem nada
+mkdir -p "$P/.katana"
+printf '{"mcpServers":{"pj":{"command":"%s","args":["roots"]}}}\n' "$FAKE" > "$P/.katana/mcp.json"
+R=$(KATANA_MCP_TRUST=1 KATANA_CONFIRM=1 "$K" tool pj__peek '{}' 2>&1 </dev/null)
+has "d: servidor de projeto: somente leitura nao dispensa a pergunta" "$R" "the user denied"
+R=$(printf '!plan on\npj__peek {}\n' | KATANA_MCP_TRUST=1 "$K" toolrun 2>&1)
+has "d: servidor de projeto: plano recusa mesmo com a dica" "$R" "plan mode is on"
+rm -rf "$P/.katana"
+R=$(KATANA_MCP_CONFIRM_DESTRUCTIVE=1 "$K" tool rt__wipe '{}' 2>&1 </dev/null)
+has "d: KATANA_MCP_CONFIRM_DESTRUCTIVE pergunta so nas destrutivas" "$R" "the user denied"
+R=$(KATANA_MCP_CONFIRM_DESTRUCTIVE=1 "$K" tool rt__argv '{}' 2>&1 </dev/null)
+hasnt "d: ... e as outras seguem sem pergunta" "$R" "the user denied"
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]

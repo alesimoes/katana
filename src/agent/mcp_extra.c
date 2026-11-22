@@ -172,3 +172,46 @@ static void mcpx_refresh(McpSrv *s, McpB *note) {
         if (note) { if (note->n) mcp_bputs(note, "\n"); mcp_bputs(note, "[the resource list of this MCP server changed: ListMcpResourcesTool shows the current resources]"); }
     }
 }
+
+/* ----- d: anotacoes das ferramentas (title, readOnlyHint, destructiveHint, idempotentHint, openWorldHint) -----
+ * Sao dicas do servidor e nao se verificam (a propria especificacao diz para tratar como nao confiaveis). Regras:
+ *  - mostrar: katana mcp list/test, e no texto da confirmacao;
+ *  - so deixam o katana mais cuidadoso, ou dispensam a pergunta/o modo plano quando o servidor e do proprio usuario
+ *    (arquivo ~/.katana/mcp.json ou KATANA_MCP_CONFIG); servidor vindo de arquivo de projeto nunca ganha nada. */
+static int mcpx_bool(const char *v) { return !v ? -1 : (strncmp(v, "true", 4) == 0 ? 1 : (strncmp(v, "false", 5) == 0 ? 0 : -1)); }
+static void mcpx_ann_parse(McpTool *t, const char *v) {
+    t->ro = t->destr = t->idem = t->open = -1;
+    t->title = mcp_dupstr(mcp_get(v, "title"));
+    const char *an = mcp_get(v, "annotations");
+    if (!an || *an != '{') return;
+    t->ro = (signed char)mcpx_bool(mcp_get(an, "readOnlyHint"));
+    t->destr = (signed char)mcpx_bool(mcp_get(an, "destructiveHint"));
+    t->idem = (signed char)mcpx_bool(mcp_get(an, "idempotentHint"));
+    t->open = (signed char)mcpx_bool(mcp_get(an, "openWorldHint"));
+    if (!t->title) t->title = mcp_dupstr(mcp_get(an, "title"));
+    if (t->title) { if (strlen(t->title) > 80) t->title[80] = 0; for (char *c = t->title; *c; c++) if (*c == '\n' || *c == '\r' || *c == '\t') *c = ' '; }
+}
+/* "read-only, idempotent": o que o servidor declarou (vazio se nada) */
+static void mcpx_ann_text(const McpSrv *s, int tj, char *out, size_t cap) {
+    const McpTool *t = &s->tools[tj];
+    out[0] = 0;
+    size_t o = 0;
+    if (t->ro == 1) o += (size_t)snprintf(out + o, cap - o, "%sread-only", o ? ", " : "");
+    if (t->destr == 1) o += (size_t)snprintf(out + o, cap - o, "%sdestructive", o ? ", " : "");
+    if (t->idem == 1) o += (size_t)snprintf(out + o, cap - o, "%sidempotent", o ? ", " : "");
+    if (t->open == 1) o += (size_t)snprintf(out + o, cap - o, "%sopen-world", o ? ", " : "");
+}
+/* 1 se a dica de somente leitura de uma ferramenta pode ser levada em conta: servidor do usuario, sem dica contraditoria */
+static int mcpx_readonly_trusted(const McpSrv *s, int tj) {
+    const McpTool *t = &s->tools[tj];
+    return !s->project && t->ro == 1 && t->destr != 1;
+}
+static int mcpx_skip_confirm(const McpSrv *s, int tj) { return mcpx_readonly_trusted(s, tj); }
+/* modo plano (src/agent/planmode.c): uma ferramenta MCP so roda se for somente leitura (dica) de um servidor do usuario */
+static int mcpx_plan_ok(const char *name) {
+    int tj = -1;
+    if (!strstr(name, "__")) return 0;
+    mcp_init(0);        /* fora do laco do agente (katana tool, toolrun) os servidores ainda nao foram ligados */
+    McpSrv *s = mcp_resolve(name, &tj);
+    return s && tj >= 0 && s->alive && mcpx_readonly_trusted(s, tj);
+}

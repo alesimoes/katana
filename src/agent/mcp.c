@@ -18,7 +18,7 @@
 #define MCP_DECL_BUDGET 3000       /* acima disso as ferramentas MCP entram no prompt de forma reduzida (KATANA_MCP_BUDGET) */
 #define MCP_VERSAO "2025-11-25"
 
-typedef struct { char *name, *desc, *schema; } McpTool;
+typedef struct { char *name, *desc, *schema, *title; signed char ro, destr, idem, open; } McpTool;     /* ro/destr/idem/open: dicas (annotations) do servidor, -1 = nao declarada; nao sao confiaveis */
 typedef struct { char *name, *desc; char *argn[8]; int argreq[8]; int nargs; } McpPrompt;
 typedef struct {
     char name[48];
@@ -53,6 +53,9 @@ static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp
 static int mcpx_extra_wait(void);
 static void mcpx_cwd_sync(void);
 static void mcpx_refresh(McpSrv *s, McpB *note);
+static void mcpx_ann_parse(McpTool *t, const char *v);
+static int mcpx_skip_confirm(const McpSrv *s, int tj);
+static void mcpx_ann_text(const McpSrv *s, int tj, char *out, size_t cap);
 
 static int mcp_call_ms(void) {      /* KATANA_MCP_TIMEOUT: segundos de espera por uma chamada (padrao 60) */
     const char *e = getenv("KATANA_MCP_TIMEOUT");
@@ -534,7 +537,7 @@ static void mcp_compact(const char *sc, McpB *cs) {      /* o valor JSON em sc s
     }
 }
 static void mcp_free_tools(McpSrv *s) {
-    for (int i = 0; i < s->ntools; i++) { free(s->tools[i].name); free(s->tools[i].desc); free(s->tools[i].schema); }
+    for (int i = 0; i < s->ntools; i++) { free(s->tools[i].name); free(s->tools[i].desc); free(s->tools[i].schema); free(s->tools[i].title); }
     free(s->tools); s->tools = NULL; s->ntools = 0;
 }
 static void mcp_free_prompts(McpSrv *s) {
@@ -580,6 +583,7 @@ static void mcp_load_tools(McpSrv *s) {
                 if (!cs.n || cs.n > 3000) { free(cs.p); cs.p = strdup("{\"type\":\"object\"}"); }
                 s->tools = realloc(s->tools, sizeof(McpTool) * (size_t)(s->ntools + 1));
                 s->tools[s->ntools].name = nm; s->tools[s->ntools].desc = ds ? ds : strdup(""); s->tools[s->ntools].schema = cs.p;
+                mcpx_ann_parse(&s->tools[s->ntools], v);
                 s->ntools++;
             }
         }
@@ -1080,11 +1084,15 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
     brief[bn] = 0;
     if (strlen(args) > bn) strcat(brief, "...");
     fprintf(stderr, "%s[mcp %s: %s %s]%s\n", CE(C_DIM), s->name, tn, brief, CE(C_RESET));
-    const char *cf = getenv("KATANA_MCP_CONFIRM");
-    if (cf && *cf && *cf != '0') {
-        char what[400], det[9000];
+    const char *cf = getenv("KATANA_MCP_CONFIRM"), *cf2 = getenv("KATANA_CONFIRM"), *cf3 = getenv("KATANA_MCP_CONFIRM_DESTRUCTIVE");
+    int want = (cf && *cf && *cf != '0') || (cf2 && *cf2 && *cf2 != '0');
+    if (want && mcpx_skip_confirm(s, tj)) { want = 0; mcp_log(s->name, tn, args, 0, "sem pergunta: servidor do usuario declara somente leitura"); }
+    if (!want && cf3 && *cf3 && *cf3 != '0' && s->tools[tj].destr == 1) want = 1;      /* a dica so deixa o katana mais cuidadoso */
+    if (want) {
+        char what[400], det[9000], an[200];
+        mcpx_ann_text(s, tj, an, sizeof an);
         snprintf(what, sizeof what, "chamar a ferramenta MCP %s do servidor %s", tn, s->name);
-        snprintf(det, sizeof det, "argumentos: %s", args);
+        snprintf(det, sizeof det, "argumentos: %s%s%s", args, an[0] ? "\ndicas do servidor (nao verificadas): " : "", an);
         if (!agent_confirm(what, det)) {
             mcp_log(s->name, tn, args, 1, "negado pelo usuario");
             snprintf(out, cap, "error: the user denied this action");

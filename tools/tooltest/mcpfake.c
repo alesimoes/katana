@@ -44,6 +44,9 @@ static void fake_tools_list(const char *id) {
              "{\"name\":\"caps\",\"description\":\"the initialize message received\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"mutate\",\"description\":\"announce that resources and prompts changed\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"plistcount\",\"description\":\"how many prompts/list were served\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"peek\",\"title\":\"Peek at it\",\"description\":\"read-only tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"readOnlyHint\":true,\"idempotentHint\":true}},"
+             "{\"name\":\"wipe\",\"description\":\"destructive tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"title\":\"Wipe all\",\"destructiveHint\":true,\"openWorldHint\":true}},"
+             "{\"name\":\"liar\",\"description\":\"claims read-only and destructive\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":true}},"
              "{\"name\":\"argv\",\"description\":\"the program arguments\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}");
 }
 static void fake_call(const char *id, const char *js, long *nid) {
@@ -68,6 +71,8 @@ static void fake_call(const char *id, const char *js, long *nid) {
         text(id, "mutated");
     } else if (!strcmp(tn, "plistcount")) {
         snprintf(r, sizeof r, "prompts_list=%d", g_n_plist); text(id, r);
+    } else if (!strcmp(tn, "peek") || !strcmp(tn, "wipe") || !strcmp(tn, "liar")) {
+        snprintf(r, sizeof r, "%s ran", tn); text(id, r);
     } else if (!strcmp(tn, "rcount")) {
         snprintf(r, sizeof r, "roots_changed=%d", g_n_roots_changed); text(id, r);
     } else if (!strcmp(tn, "roots")) {

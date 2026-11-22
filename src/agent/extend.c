@@ -483,7 +483,9 @@ static void mcp_list_print(int tools) {
             char d[110], fn[260]; snprintf(d, sizeof d, "%.100s", s->tools[j].desc);
             char *nl = strchr(d, '\n'); if (nl) *nl = 0;
             mcp_fname(s, s->tools[j].name, fn, sizeof fn);
-            printf("  %s: %s\n", fn, d);
+            char an[200]; mcpx_ann_text(s, j, an, sizeof an);
+            printf("  %s%s%s%s: %s\n", fn, an[0] ? " [" : "", an, an[0] ? "]" : "", d);
+            if (s->tools[j].title && s->tools[j].title[0]) printf("      title: %s\n", s->tools[j].title);
         }
     }
 }
