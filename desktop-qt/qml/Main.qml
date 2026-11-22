@@ -47,6 +47,7 @@ ApplicationWindow {
         target: backend
         function onPasswordRequested(retry) { pwDlg.retry = retry; pwField.text = ""; pwDlg.open(); pwField.forceActiveFocus(); }
         function onAskRequested(kind, what, detail) { askDlg.kind = kind; askDlg.what = what; askDlg.detail = detail; askDlg.open(); }
+        function onAskClosed() { askDlg.answered = true; askDlg.close(); }
     }
     // pedido de permissao do agente: confiar na pasta de trabalho, gravar fora dela, ou uma acao (quando a pasta nao e confiavel)
     Popup {

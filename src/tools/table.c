@@ -235,6 +235,7 @@ static int ct_end_check(void) {
    Enche line com o texto, ja marcado com a origem, e devolve 1 */
 static int ct_idle_line(char *line, size_t cap) {
     if (launch_first_line(line, cap)) return 1;      /* katana "mensagem": a primeira mensagem entra como se tivesse sido digitada */
+    if (mcpch_take(line, cap)) return 1;              /* mensagem de um canal MCP autorizado */
     static char body[8000]; char label[300];
     if (ct_sched_due(ct_sched_now(), body, sizeof body, label, sizeof label)) {
         snprintf(line, cap, "[scheduled task (%s): you scheduled this yourself earlier; the user did not type it]\n%s", label, body);
@@ -248,18 +249,28 @@ static int ct_idle_line(char *line, size_t cap) {
     }
     return 0;
 }
+static int launch_editing(void);                        /* src/app/launch.c: o editor de linha e quem le */
+static int launch_idle_read(char *line, size_t cap);
+static int ct_idle_ms(void) {                           /* quanto esperar ate olhar de novo o que venceu */
+    double w = ct_sched_next(ct_sched_now());
+    if (w < 0 || w > 3.0) w = 3.0;                      /* a caixa de mensagens de outras sessoes e olhada a cada 3 s */
+    return (int)(w * 1000) + 50;
+}
 /* le a proxima linha do usuario, mas acorda para entregar o que venceu enquanto ele nao digita.
    0 = fim da entrada; 1 = linha do usuario; 2 = linha entregue pelo proprio agente */
 static int ct_read_line(char *line, size_t cap) {
 #ifndef _WIN32
+    static int was_idle;        /* a ultima entrega nao foi do teclado: uma linha ja digitada passa na frente da proxima */
     for (;;) {
-        if (ct_idle_line(line, cap)) return 2;
-        double w = ct_sched_next(ct_sched_now());
-        if (w < 0 || w > 3.0) w = 3.0;                  /* a caixa de mensagens de outras sessoes e olhada a cada 3 s */
-        struct pollfd pf = { 0, POLLIN, 0 };
-        const int r = poll(&pf, 1, (int)(w * 1000) + 50);
-        if (r > 0) return read_line(line, cap) ? 1 : 0;
-        if (r < 0 && errno != EINTR) return read_line(line, cap) ? 1 : 0;
+        struct pollfd p0 = { 0, POLLIN, 0 };
+        const int typed = was_idle && !g_hl && poll(&p0, 1, 0) > 0;
+        if (!typed && ct_idle_line(line, cap)) { was_idle = 1; launch_request_start(); return 2; }
+        if (launch_editing()) {                         /* editor de linha: ele mesmo acorda (ed_wait) */
+            const int r = launch_idle_read(line, cap);
+            was_idle = r == 2;
+            return r;
+        }
+        if (typed || g_hl || mcpch_wait(ct_idle_ms(), 1)) { was_idle = 0; return read_line(line, cap) ? 1 : 0; }
     }
 #else
     return read_line(line, cap) ? 1 : 0;

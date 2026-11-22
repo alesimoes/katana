@@ -198,6 +198,8 @@ have `"prefix": "mcp__"`, and `KATANA_MCP_PREFIX` sets a default for all servers
 Naming: katana declares `server__tool`; a call written as `mcp__server__tool` is accepted too (as other applications
 spell it); with a prefix configured, the declared name carries it.
 
+A server of your own file with `"channel": true` may push messages into the console (`docs/channels.md`).
+
 ### Commands
 
 `katana mcp add <name> -- <command> [args...]`, `katana mcp add <name> --url <url> [--header 'K: V']...`, `--env K=V`

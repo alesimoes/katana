@@ -478,7 +478,8 @@ static void mcp_list_print(int tools) {
         McpSrv *s = &g_mcp[i];
         printf("%s [%s] %s  (from %s%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "ok" : "unavailable", s->project ? "project file " : "your file ", s->source);
         if (!s->alive) { char pe[400]; mcp_plain_err(s, pe, sizeof pe); printf("  error: %s\n", pe); continue; }
-        printf("  server: %s, protocol %s, %d tools%s\n", s->info, s->proto, s->ntools, s->nprompts ? ", prompts: /name:prompt" : "");
+        char cs[120]; mcpch_state(s, cs, sizeof cs);
+        printf("  server: %s, protocol %s, %d tools%s%s\n", s->info, s->proto, s->ntools, s->nprompts ? ", prompts: /name:prompt" : "", cs);
         if (tools) for (int j = 0; j < s->ntools; j++) {
             char d[110], fn[260]; snprintf(d, sizeof d, "%.100s", s->tools[j].desc);
             char *nl = strchr(d, '\n'); if (nl) *nl = 0;
@@ -542,7 +543,8 @@ static void mcp_status_print(void) {
     for (int i = 0; i < g_nmcp; i++) {
         McpSrv *s = &g_mcp[i];
         char pe[400] = ""; if (!s->alive || s->err[0]) mcp_plain_err(s, pe, sizeof pe);
-        fprintf(stderr, "  %s [%s] %s, %d tools, %d prompts%s%s  (%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "connected" : "NOT connected", s->ntools, s->nprompts, pe[0] ? ", last error: " : "", pe, s->source);
+        char cs[120]; mcpch_state(s, cs, sizeof cs);
+        fprintf(stderr, "  %s [%s] %s, %d tools, %d prompts%s%s%s  (%s)\n", s->name, s->http ? "http" : "stdio", s->alive ? "connected" : "NOT connected", s->ntools, s->nprompts, cs, pe[0] ? ", last error: " : "", pe, s->source);
     }
 }
 

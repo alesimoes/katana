@@ -595,7 +595,7 @@ static void con_token_end(void) { if (g_con_rich) md_flush_end(); }
 static void con_puts(const char *s) { if (!g_con_rich) { fputs(s, stdout); return; } for (; *s; s++) md_feed((unsigned char)*s); md_flush_end(); }
 
 /* ---- ferramentas: uma linha por chamada, spinner com tempo, marca de fim, saida apagada e dobrada ---- */
-static char g_spin_text[400];
+static char g_spin_text[400]; static int g_cur_spin;
 #ifndef _WIN32
 static pthread_t g_spin_th; static volatile int g_spin_on, g_spin_stop;
 static void *spin_main(void *arg) {
@@ -611,6 +611,13 @@ static void *spin_main(void *arg) {
     return NULL;
 }
 #endif
+static void launch_spin_pause(void) {           /* uma pergunta vai aparecer: o spinner sai da frente */
+#ifndef _WIN32
+    if (!g_cur_spin) return;
+    g_spin_stop = 1; pthread_join(g_spin_th, NULL); g_spin_on = 0; g_cur_spin = 0;
+    fprintf(stderr, "\r\033[K  > %s\n", g_spin_text);
+#endif
+}
 static int lc_quiet_tool(const char *n) {       /* ferramentas que perguntam ou escrevem na tela por conta propria: sem spinner */
     static const char *const Q[] = {"AskUserQuestion", "ask_user", "delegate", "Agent", "terminal", "Workflow", "run_command", "sudo", NULL};
     for (int i = 0; Q[i]; i++) if (!strcmp(n, Q[i])) return 1;
@@ -637,7 +644,7 @@ static void lc_trunc(char *s, int max) {       /* corta em max colunas (UTF-8) c
     int cols = 0; char *q = s;
     while (*q) { if (((unsigned char)*q & 0xC0) != 0x80) { if (cols == max) { strcpy(q, "..."); return; } cols++; } q++; }
 }
-static char g_cur_desc[300], g_cur_sum[400], g_cur_cmd[400]; static int g_cur_is_cmd, g_cur_spin;
+static char g_cur_desc[300], g_cur_sum[400], g_cur_cmd[400]; static int g_cur_is_cmd;
 
 static void launch_tool_call(const char *name, const char *ap, const char *end) {
     snprintf(g_cur.name, sizeof g_cur.name, "%s", name);
@@ -875,6 +882,7 @@ static int launch_cmd(const char *line, Model *m, int pos, const char *sys, cons
         if (lc_model_pick(a, path, sizeof path, err, sizeof err) != 0) { fprintf(stderr, "[/model: %s]\n", err); return 1; }
         char self[4096];
         if (!exe_path(self, sizeof self)) { fprintf(stderr, "[/model: cannot find the katana executable; restart with --model %s]\n", a); return 1; }
+        if (mcpch_pending()) { fprintf(stderr, "[/model: channel messages are waiting; try again after they run]\n"); return 1; }
         if (hist->n && g_sess_path[0]) sess_save(m, sys, hist, slog, 0);
         fprintf(stderr, "%s[switching to %s; reloading]%s\n", CE(C_DIM), path, CE(C_RESET));
         char *av[8]; int k = 0;
@@ -990,17 +998,36 @@ static int ed_ready(void) {
     return v;
 }
 static int ed_poll(int ms) { struct pollfd pf = {0, POLLIN, 0}; return poll(&pf, 1, ms) > 0; }
-/* le uma linha com edicao; 0 = fim da entrada (Ctrl+D numa linha vazia) */
+static int g_ed_idle;            /* o laco do agente esta esperando: o editor acorda para entregar o que chegou */
+static char *g_ed_draft;         /* linha pela metade quando algo foi entregue; volta no proximo prompt */
+/* espera uma tecla; 2 = algo foi entregue em line. Com uma linha pela metade, so entrega depois de um tempo sem teclar */
+static int ed_wait(size_t len, double lastkey, char *line, size_t cap) {
+    if (!g_ed_idle) return 1;
+    const double quiet = chn_env("KATANA_CHANNEL_QUIET", 5, 0, 3600);
+    for (;;) {
+        if (ed_poll(0)) return 1;
+        if ((!len || now_sec() - lastkey >= quiet) && ct_idle_line(line, cap)) return 2;
+        int ms = ct_idle_ms();
+        if (len && ms > 500) ms = 500;
+        if (mcpch_wait(ms, 1)) return 1;
+        if (len) mcpch_pump(0);          /* com a linha pela metade a mensagem entra na fila e espera */
+    }
+}
+/* le uma linha com edicao; 0 = fim da entrada (Ctrl+D numa linha vazia); 2 = entrega (ver ed_wait) */
 static int ed_read_line(char *line, size_t cap) {
     if (!ed_enter()) return 0;
     char *buf = xalloc(cap + 8, 1);
     size_t len = 0, cur = 0;
     int hi = g_ed_nh, paste = 0, ret = 1, lastcr = 0;
     char *draft = NULL;
+    double lastkey = now_sec();
+    if (g_ed_draft) { len = strlen(g_ed_draft) < cap ? strlen(g_ed_draft) : cap - 1; memcpy(buf, g_ed_draft, len); cur = len; free(g_ed_draft); g_ed_draft = NULL; }
     g_ed_row = 0;
     ed_draw(buf, len, cur);
     for (;;) {
         unsigned char c;
+        if (!paste && ed_wait(len, lastkey, line, cap) == 2) { ret = 2; break; }
+        lastkey = now_sec();
         const ssize_t r = read(0, &c, 1);
         if (r <= 0) { if (r < 0 && errno == EINTR) continue; ret = 0; break; }
         if (paste) {       /* texto colado (marcas ESC[200~ ... ESC[201~): as quebras de linha fazem parte do texto */
@@ -1066,9 +1093,10 @@ static int ed_read_line(char *line, size_t cap) {
         ed_draw(buf, len, cur);
     }
     buf[len] = 0;
-    if (ret) { cur = len; ed_draw(buf, len, cur); (void)!write(2, "\r\n", 2); }
+    if (ret == 2 && len) g_ed_draft = strdup(buf);
+    if (ret == 1) { cur = len; ed_draw(buf, len, cur); (void)!write(2, "\r\n", 2); }
     ed_restore();
-    if (ret) { snprintf(line, cap, "%s", buf); ed_hist_add(buf); }
+    if (ret == 1) { snprintf(line, cap, "%s", buf); ed_hist_add(buf); }
     free(buf); free(draft);
     return ret;
 }
@@ -1081,6 +1109,13 @@ static int launch_read_line(char *line, size_t cap, int *res) {
     if (!ed_ready()) return 0;
     *res = ed_read_line(line, cap);
     return 1;
+}
+static int launch_editing(void) { return !g_hl && ed_ready(); }
+static int launch_idle_read(char *line, size_t cap) {
+    g_ed_idle = 1;
+    const int r = read_line(line, cap);
+    g_ed_idle = 0;
+    return r;
 }
 #else
 static void ed_restore(void) {}
@@ -1318,6 +1353,7 @@ static int launch_first_line(char *line, size_t cap) {
 
 /* ============================ opcoes e partida ============================ */
 typedef struct {
+    char channels[600];
     const char *model, *prompt, *mcp_config, *allowed, *disallowed, *sysfile, *append, *cwd, *session_id, *outfmt, *resume_id;
     int headless, cont, resume, strict, max_turns, no_session, quiet, stdin_prompt, plain;
 } LcOpts;
@@ -1341,6 +1377,7 @@ static void lc_usage(FILE *f) {
         "  -p, --prompt [TEXTO]        headless: um pedido, uma resposta (sem TEXTO, o pedido vem da entrada padrao)\n"
         "      --output-format text|json|stream-json\n"
         "      --mcp-config ARQ|JSON   servidores MCP deste pedido; --strict-mcp-config: so estes\n"
+        "      --channel NOME          o servidor MCP NOME pode mandar mensagens e responder confirmacoes (docs/channels.md)\n"
         "      --allowed-tools 'a,b'   so estas ferramentas (globs; MCP como servidor__ferramenta ou mcp__servidor__ferramenta)\n"
         "      --disallowed-tools 'a'  nao estas\n"
         "      --max-turns N           no maximo N rodadas do modelo\n"
@@ -1429,6 +1466,7 @@ static int launch_try(int argc, char **argv) {
         }
         else if (!strcmp(a, "--output-format")) NEXT(o.outfmt);
         else if (!strcmp(a, "--mcp-config")) NEXT(o.mcp_config);
+        else if (!strcmp(a, "--channel")) { const char *v; NEXT(v); const size_t l = strlen(o.channels); snprintf(o.channels + l, sizeof o.channels - l, "%s%s", l ? "," : "", v); }
         else if (!strcmp(a, "--strict-mcp-config")) o.strict = 1;
         else if (!strcmp(a, "--allowed-tools") || !strcmp(a, "--allowedTools")) NEXT(o.allowed);
         else if (!strcmp(a, "--disallowed-tools") || !strcmp(a, "--disallowedTools")) NEXT(o.disallowed);
@@ -1513,6 +1551,7 @@ static int launch_try(int argc, char **argv) {
     if (o.disallowed) lc_setenv("KATANA_DISALLOWED_TOOLS", o.disallowed);
     if (o.sysfile) { if (!lc_isfile(o.sysfile)) { fprintf(stderr, "katana: --system-prompt-file: nao achei %s\n", o.sysfile); return 2; } char rp[4400]; lc_realpath(o.sysfile, rp, sizeof rp); lc_setenv("KATANA_SYSTEM_FILE", rp); }
     if (o.append) lc_setenv("KATANA_SYSTEM_APPEND", o.append);
+    if (o.channels[0]) lc_setenv("KATANA_MCP_CHANNEL", o.channels);
     if (o.max_turns) g_max_turns = o.max_turns;
     if (o.mcp_config || o.strict) {
         char path[4400] = "";

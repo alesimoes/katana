@@ -222,9 +222,9 @@ static int brief_guard(const char *name, const char *js, const char *end, char *
             if (!hit) continue;
             if (want == BRB_NEVER) { snprintf(out, cap, "error: refused by the project rule (never): %s `%s`. Do something else; do not retry this.", it->text, it->pat); refused = 1; }
             else {
-                char what[500], det[900];
+                char what[500]; static char det[9000];
                 snprintf(what, sizeof what, "project rule (ask): %.300s", it->text);
-                snprintf(det, sizeof det, "%s: %.400s", bash ? "command" : "file", subj);
+                snprintf(det, sizeof det, "%s: %s", bash ? "command" : "file", subj);       /* quem aprova ve o comando inteiro */
                 if (!agent_confirm(what, det)) { snprintf(out, cap, "error: the project rule (ask) says this needs the user's yes, and it was not given (or no one could be asked): %s `%s`", it->text, it->pat); refused = 1; }
             }
         }

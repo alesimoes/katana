@@ -161,6 +161,7 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
 static const char *think_pre(const Config *c);
 static int go_reason(void);
 static int cg_turn_begin(const Config *c, const Tokenizer *tk, int V);         /* src/agent/callgrammar.c */
+static void mcpch_tick(int announce);                                           /* src/agent/mcp_channel.c */
 static int cg_check(const float *lg, int V, float temp, int t0);
 static void cg_after(const Tokenizer *tk, int V, const Buf *cap, int t, int thinking);
 static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp, int stop2, Buf *cap) {
@@ -177,6 +178,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     if (thinking) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fflush(stdout); }
     while (gen < max_tokens && *pos < c->ctx - 1 && !g_stop) {
         g_gr.left = max_tokens - gen;
+        mcpch_tick(0);
         const int t = cg_check(lg, c->vocab, temp, sample_c(lg, c->vocab, temp, c->eos));
         if (t == c->eos || t == stop2) break;
         if (c->chat_fmt == 9) { if (t == 200012) break; }   /* <|call|>: chamada de ferramenta */

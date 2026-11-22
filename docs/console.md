@@ -128,6 +128,7 @@ and the other variables of the engine work as always.
 | `--output-format text\|json\|stream-json` | default `text`: only the final answer |
 | `--mcp-config FILE\|JSON` | MCP servers for this run: a path, or an inline JSON object with `mcpServers` |
 | `--strict-mcp-config` | use **only** the servers of `--mcp-config` (none if absent): the user's and the project's files are ignored (`KATANA_MCP_STRICT=1`) |
+| `--channel NAME` | this MCP server may push messages into the console and answer confirmations (`docs/channels.md`) |
 | `--allowed-tools 'a,b'` | only these tools; shell-style globs (`*`, `?`) over tool names; MCP tools match under both spellings `server__tool` and `mcp__server__tool`; `mcp__server` allows a whole server; `Bash(git:*)` counts as `Bash` |
 | `--disallowed-tools 'a,b'` | never these (wins over the allow-list) |
 | `--max-turns N` | at most N model turns (rounds) for the request; no extension for progress |

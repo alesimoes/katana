@@ -1680,6 +1680,11 @@ void Backend::handleMarker(const QByteArray &line)
     } else if (name == "ASK") {  // ASK <tipo>\t<o que>\t<detalhe>: pedido de permissao (confiar na pasta, gravar fora dela, acao)
         const QStringList a = args.split('\t');
         emit askRequested(a.value(0), a.value(1), a.value(2));
+    } else if (name == "ASKDONE") {  // a pergunta foi respondida pelo canal (celular): fecha a janela
+        emit askClosed();
+    } else if (name == "CHANNEL") {  // CHANNEL <servidor>\t<texto>: mensagem que chegou por um canal MCP e virou pedido
+        const QStringList a = args.split('\t');
+        m_msgs.append("notice", a.value(0) + ": " + a.mid(1).join(' '));
     } else if (name == "PREP") {  // PREP <tokens>: o motor esta calculando o prompt de sistema (so quando muda; depois vem do cache)
         const QStringList a = args.trimmed().split(' ');
         const int total = a.value(0).toInt(), done = a.value(1).toInt();

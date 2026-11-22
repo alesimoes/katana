@@ -69,7 +69,12 @@ static int g_trust = 1;      /* a pasta de trabalho e confiavel (ver trust_init)
 
 /* pergunta sim/nao ao usuario. Na interface (KATANA_UI): marcador "ASK tipo<TAB>o que<TAB>detalhe" e a resposta e a linha
  * "\x01ANS 1" ou "\x01ANS 0". No terminal: no teclado. Sem teclado nem interface: nega. */
+static int mcpch_can_ask(const char *kind);          /* src/agent/mcp_channel.c: um canal autorizado tambem pode responder */
+static int mcpch_ask(const char *what, const char *detail);
+static void launch_spin_pause(void);                 /* src/app/launch.c */
 static int agent_ask_kind(const char *kind, const char *what, const char *detail) {
+    launch_spin_pause();
+    if (mcpch_can_ask(kind)) { const int r = mcpch_ask(what, detail); if (r >= 0) return r; }
     if (getenv("KATANA_UI")) {
         char w[400], d[600], l[256];
         size_t n = 0;
