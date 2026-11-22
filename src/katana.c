@@ -100,4 +100,5 @@
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/launch.c"                /* katana sem subcomando: console na pasta atual, headless (-p), install, adopt */
 #include "app/deeptest.c"              /* katana selftest --deep: caminhos, estado, contexto longo, precisao */
+#include "app/attbench.c"              /* katana attbench: custo da atencao do qwen35moe por posicao */
 #include "app/main.c"                  /* toktest, subcomandos e main */

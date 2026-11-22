@@ -1169,6 +1169,7 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return q4_check(&m, argv[3]);
     }
+    if (argc >= 2 && strcmp(argv[1], "attbench") == 0) return attbench(argc - 2, argv + 2);
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
@@ -1252,6 +1253,7 @@ static int run_main(int argc, char **argv) {
         "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana tiersim run <modelo.gguf> <texto> <rastro.bin> | sim <rastro.bin>   rastro de roteamento e simulacao de caches/previsores\n"
+        "  katana attbench [posicoes...]         custo da atencao (qwen35moe) por posicao, sem modelo\n"
         "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
