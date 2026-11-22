@@ -115,7 +115,10 @@ static void ct_todowrite(const char *js, const char *end, char *out, size_t cap)
         if (!n) { snprintf(out, cap, "error: there is no task list yet; send todos (one step per line) first"); return; }
         if (d < 0) d = 0;
         if (d > n) d = n;
+        int was = 0;
+        for (int i = 0; i < n; i++) was += g_ct_tasks[i].st == 2;
         for (int i = 0; i < n; i++) g_ct_tasks[i].st = i < d ? 2 : i == d ? 1 : 0;
+        if (d > was) g_cp_step = 1;             /* um passo fechou: boa hora de tirar do contexto o que era dele (context.c) */
         ct_task_render();
         if (d < n) snprintf(out, cap, "Step %ld of %d: %.300s.", d + 1, n, g_ct_tasks[d].subject);
         else snprintf(out, cap, "All %d steps are completed: tell the user what was done.", n);

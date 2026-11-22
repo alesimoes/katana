@@ -173,6 +173,7 @@ static int ct_dispatch(const char *name, const char *js, const char *end, char *
     if (!t) return 0;
     out[0] = 0;
     if (brief_guard(name, js, end, out, cap)) return 1;
+    g_ct_depth++;
     char *fix = ct_unwrap(t, js, end);
     if (fix) { t->fn(fix, fix + strlen(fix), out, cap); free(fix); }
     else t->fn(js, end, out, cap);
@@ -182,6 +183,12 @@ static int ct_dispatch(const char *name, const char *js, const char *end, char *
         free(fp);
     }
     brief_track(name, js, end, out);
+    g_ct_depth--;
+    if (!g_ct_depth) {
+        char *fp = ct_str(js, end, "file_path"), *cm = strcmp(name, "Bash") == 0 ? ct_str(js, end, "command") : NULL;
+        facts_note(name, fp, cm, out);
+        free(fp); free(cm);
+    }
     return 1;
 }
 /* -1 nao e desta tabela; 0 altera coisas; 1 so le (pode rodar no modo plano) */
@@ -208,7 +215,7 @@ static int ct_main(int argc, char **argv) {
 /* conversa nova: nada do que foi lido, agendado ou aberto vale para ela */
 static void ct_session_reset(void) {
     proj_sub_reset();
-    ct_seen_reset();
+    ct_seen_reset(); facts_reset(); rd_delta_reset();
     ct_sched_reset();
 #ifndef _WIN32
     g_wt_active = 0;

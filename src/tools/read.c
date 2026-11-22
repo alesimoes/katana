@@ -218,8 +218,9 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             ct_seen_mark(res, 1);
             break;
         }
+        if (!has_off && !has_lim && ct_seen(res) >= 2 && rd_delta(res, b, n, out, cap)) { ct_seen_mark(res, 0); break; }      /* ja lido inteiro nesta conversa */
         ct_rd_lines(b, n, offset, limit, 1, out, cap, &partial);
-        if (strncmp(out, "error:", 6) != 0) ct_seen_mark(res, partial);
+        if (strncmp(out, "error:", 6) != 0) { ct_seen_mark(res, partial); if (!partial) rd_delta_put(res, b, n); }
     } while (0);
     free(b); free(fp); free(pages);
 }
