@@ -481,3 +481,29 @@ static void vk_matvec(float *out, const Mat *W, const float *x, int rows, int co
         || !kvk_buf_read(gpu.vob, 0, out, (size_t)rows * sizeof(float))) die("falha na execucao em Vulkan");
 }
 
+/* k produtos com a mesma entrada (q, k e v; gate e up): a entrada sobe uma vez, as saidas ficam lado a lado em vob e
+   descem numa leitura so. 0 = nao da (alguma matriz fora da placa): quem chama faz um a um. KATANA_VK_MVS=0 desliga */
+static int vk_matvecs(float *const *out, const Mat *const *W, const int *rows, int k, const float *x, int cols) {
+    static int on = -1;
+    if (on < 0) on = getenv("KATANA_VK_MVS") ? atoi(getenv("KATANA_VK_MVS")) != 0 : 1;
+    if (!on || !gpu.vk || !gpu.mv_host || gpu.force_cpu || gpu.test_mv) return 0;
+    size_t tot = 0;
+    for (int i = 0; i < k; i++) {
+        if (!W[i]->gbuf) return 0;
+        tot += ((size_t)rows[i] + 127) & ~(size_t)127;
+    }
+    if (tot * 4 > gpu.vob.size) return 0;
+    static float *buf; static size_t cap;
+    if (cap < tot) { free(buf); buf = xalloc(tot, sizeof(float)); cap = tot; }
+    int ok = kvk_buf_write_q(gpu.vxb, 0, x, (size_t)cols * sizeof(float));
+    size_t o = 0;
+    for (int i = 0; i < k; i++) {
+        ok &= vk_gmv_raw(gpu_kind(W[i]), *(const KvkBuf *)W[i]->gbuf, gpu.vxb, gpu.vob, gpu.vxb, rows[i], cols, 0, 0, W[i]->gs, W[i]->go, 0, (int)o);
+        o += ((size_t)rows[i] + 127) & ~(size_t)127;
+    }
+    if (!ok || !kvk_buf_read(gpu.vob, 0, buf, tot * sizeof(float))) die("falha na execucao em Vulkan");
+    o = 0;
+    for (int i = 0; i < k; i++) { memcpy(out[i], buf + o, (size_t)rows[i] * sizeof(float)); o += ((size_t)rows[i] + 127) & ~(size_t)127; }
+    return 1;
+}
+

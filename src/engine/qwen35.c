@@ -1201,10 +1201,18 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     if (!ya) { ya = xalloc(d, sizeof(float)); yb = xalloc(d, sizeof(float)); outs = xalloc((size_t)MOE_KMAX * d, sizeof(float)); }
     float *x = m->x;
     rmsnorm(m->xb, x, L->attn_norm, d, c->eps);
-    matvec(m->q, &L->wq, m->xb, qd, d);
-    matvec(m->k, &L->wk, m->xb, kvd, d);
-    if (L->wv.q || L->wv.f) matvec(m->v, &L->wv, m->xb, kvd, d);
-    else memcpy(m->v, m->k, kvd * sizeof(float));
+    const int hasv = L->wv.q || L->wv.f;
+    {
+        float *const oo[3] = { m->q, m->k, m->v };
+        const Mat *const ww[3] = { &L->wq, &L->wk, &L->wv };
+        const int rr[3] = { qd, kvd, kvd };
+        if (!vk_matvecs(oo, ww, rr, 2 + hasv, m->xb, d)) {
+            matvec(m->q, &L->wq, m->xb, qd, d);
+            matvec(m->k, &L->wk, m->xb, kvd, d);
+            if (hasv) matvec(m->v, &L->wv, m->xb, kvd, d);
+        }
+    }
+    if (!hasv) memcpy(m->v, m->k, kvd * sizeof(float));
     for (int h = 0; h < nh; h++) rmsnorm(m->q + h * hd, m->q + h * hd, L->q_norm, hd, c->eps);
     for (int h = 0; h < nkv; h++) { rmsnorm(m->k + h * hd, m->k + h * hd, L->k_norm, hd, c->eps); rms_plain(m->v + h * hd, hd, c->eps); }
     for (int i = 0; i < half; i++) {        /* RoPE em metades */
@@ -1228,8 +1236,15 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     for (int i = 0; i < d; i++) x[i] += m->xb2[i];
     /* feed-forward denso */
     rmsnorm(m->xb, x, L->ffn_norm, d, c->eps);
-    matvec(m->hb, &L->w_gate, m->xb, Hd, d);
-    matvec(m->hb2, &L->w_up, m->xb, Hd, d);
+    {
+        float *const oo[2] = { m->hb, m->hb2 };
+        const Mat *const ww[2] = { &L->w_gate, &L->w_up };
+        const int rr[2] = { Hd, Hd };
+        if (!vk_matvecs(oo, ww, rr, 2, m->xb, d)) {
+            matvec(m->hb, &L->w_gate, m->xb, Hd, d);
+            matvec(m->hb2, &L->w_up, m->xb, Hd, d);
+        }
+    }
     for (int i = 0; i < Hd; i++) m->hb[i] = gelu_t(m->hb[i]) * m->hb2[i];
     matvec(ya, &L->w_down, m->hb, d, Hd);
     if (L->eg) {
