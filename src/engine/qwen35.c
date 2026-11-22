@@ -474,7 +474,7 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
    o compartilhado e cada especialista quente rodam sobre as colunas dos seus tokens (moe_gath, mm glu e down com
    a vaga por deslocamento, moe_scat soma pesada); os frios rodam na CPU enquanto isso e sobem somados. */
 static struct {
-    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1, r1;   /* r1: roteador de um token na GPU */
+    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1, r1, moedn;   /* r1: roteador de um token na GPU */
     float *hq, *hk, *hv, *ho, *hT;          /* atencao na CPU (cpuatt): q/portao, k, v e saida por token */
     Mat *wab;                               /* por camada linear: [alpha | beta] float */
     KvkBuf qkv, z, ab, o, qg;               /* um token */
@@ -689,6 +689,7 @@ static int vkq_build(Model *m) {
     /* host do lote */
     vkb.P = P; vkg.P = P; vkb.flash = 1; vkq.P = P;
     vkq.dnstep = getenv("KATANA_QN_DNSTEP") && atoi(getenv("KATANA_QN_DNSTEP")) != 0;
+    vkq.moedn = !(getenv("KATANA_QN_MOEDN") && atoi(getenv("KATANA_QN_MOEDN")) == 0);      /* 0: MoE das camadas DeltaNet pelo vkq_moe_n (conferencia) */
     vkq.blk = getenv("KATANA_QN_CHUNK") && atoi(getenv("KATANA_QN_CHUNK")) != 0;
     vkb.xT = xalloc(d * Pp, sizeof(float));
     if (!(getenv("KATANA_QN_MOEN") && atoi(getenv("KATANA_QN_MOEN")) == 0)) vkq_moen_build(m, Pp);
@@ -798,7 +799,6 @@ static int vkq_scat(KvkBuf y, int B, int n, int moff) {
     return kvk_dispatch(vkq.scat, b, 3, pc, sizeof pc, (uint32_t)(((size_t)vkq.dim * n + 255) / 256), 1, 1);
 }
 
-static int vkq_posn;     /* posicao do primeiro token do lote em curso (layer_tap) */
 /* MoE do lote na camada l (residual em vkb.x, B tokens) */
 static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
     const Config *c = &m->cfg;
@@ -980,7 +980,8 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
                 ok &= kvk_dispatch(vkq.cst, io2, 2, &pc2, sizeof pc2, (uint32_t)((vkq.CH + 255) / 256), 1, 1);
                 ok &= vk_mm_p(&L->wssm_out, vkq.ub, vkb.x, d, inner, B, 1, 1);
                 if (!ok) die("falha na execucao em Vulkan (lote qwen35moe)");
-                vkq_moe_n(m, L, l, B);
+                if (vkbm.on && vkq.moedn && !dbg_on) vk_moe_n(m, L, l, B);      /* frios de varios tokens em vagas temporarias, como na camada de atencao */
+                else vkq_moe_n(m, L, l, B);
                 continue;
             }
             {   const KvkBuf io[9] = { vkq.bqkv, vkq.bab, vkq.cw[li], vkq.pr[li], vkq.ring[li], vkq.qh, vkq.kh, vkq.vh, vkq.bg };
