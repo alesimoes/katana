@@ -36,13 +36,15 @@ when its criterion is measured; "not measured" items stay open even when the cod
 
 **B. The model understands the request better**
 
+The instrument for every row below is `katana codebench` (`run`, `verify`, `compare`, `list`; written in C since 2026-11-21, the Python runner is gone). Besides solved counts it records, per run and from the agent's own log, calls, failed calls, calls the engine refused, identical repeated calls, rounds, whether the last turn was text, and tokens read and written; `compare` prints them next to the solved counts.
+
 | # | What | Done when |
 |---|---|---|
 | B1 | Reasoning on or off in the desktop (it starts with `KATANA_THINK=0`) | codebench and a set of ambiguous requests in Portuguese, alternating, both models |
 | B2 | Reading notes (`KATANA_DIGEST`, on by default and never measured): a file read becomes a 250-word note | codebench with and without, alternating; default follows the result |
 | B3 | Qwen3.6 against AgentWorld against Gemma 4 as the desktop default | same tasks, same hour |
 | B4 | First set against second set of tools | handoff 0t |
-| B5 | Harder tasks (the terminal and web ones are solved by every model) and requests written the way the owner writes | tasks that separate the models. **Tasks written (2026-11-21), not yet run with any model:** 12 tasks that need new code: `write-*` (6, from an empty folder), `prereq-*` (3, the code needs a command, a credentials file or a service that is not on the machine), `extend-*` (3, a new module plus changes in existing files of a 300 to 400 line project); 8 in informal Portuguese, 4 in English. They pass `run.py --verify` (fail untouched, pass with the reference solution, no model). Open: run them on Qwen3.6 and Gemma 4, see which separate the models, and read the first runs for ambiguous hidden tests |
+| B5 | Harder tasks (the terminal and web ones are solved by every model) and requests written the way the owner writes | tasks that separate the models. **Tasks written (2026-11-21), not yet run with any model:** 12 tasks that need new code: `write-*` (6, from an empty folder), `prereq-*` (3, the code needs a command, a credentials file or a service that is not on the machine), `extend-*` (3, a new module plus changes in existing files of a 300 to 400 line project); 8 in informal Portuguese, 4 in English. They pass `katana codebench verify` (fail untouched, pass with the reference solution, no model). Open: run them on Qwen3.6 and Gemma 4, see which separate the models, and read the first runs for ambiguous hidden tests |
 
 **C. Speed** (after measuring where the time of one token goes: GPU, CPU, waiting)
 

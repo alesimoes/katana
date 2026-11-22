@@ -28,17 +28,17 @@ training night.
 
   ```
   Q=models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf; W=models/Qwen-AgentWorld-35B-A3B-UD-Q4_K_M.gguf
-  G=models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; R=tools/codebench/run.py
+  G=models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; R="katana codebench run"
   for t in <the 18 task names>; do
-    python3 $R --model $Q --tasks $t --label A --env KATANA_THINK=0 --out e1/A.jsonl --sessions e1/A --timeout 1800
-    python3 $R --model $W --tasks $t --label B --env KATANA_THINK=0 --out e1/B.jsonl --sessions e1/B --timeout 1800
-    python3 $R --model $Q --tasks $t --label C --env KATANA_THINK=1 --out e1/C.jsonl --sessions e1/C --timeout 1800
-    python3 $R --model $G --tasks $t --label D --out e1/D.jsonl --sessions e1/D --timeout 1800
+    $R --model $Q --tasks $t --label A --env KATANA_THINK=0 --out e1/A.jsonl --sessions e1/A --timeout 1800
+    $R --model $W --tasks $t --label B --env KATANA_THINK=0 --out e1/B.jsonl --sessions e1/B --timeout 1800
+    $R --model $Q --tasks $t --label C --env KATANA_THINK=1 --out e1/C.jsonl --sessions e1/C --timeout 1800
+    $R --model $G --tasks $t --label D --out e1/D.jsonl --sessions e1/D --timeout 1800
   done
   python3 docs/design/appendix/session_tokens.py e1/A --tsv > e1/A.tsv     # and B, C, D
   ```
 
-  Check first that `run.py` appends to `--out` across invocations; if it overwrites, give each call its own file.
+  `katana codebench run` appends to `--out` across invocations and skips (task, attempt) pairs already in the file, so one file per arm is safe.
   The 1800 s limit is deliberately loose: wall time must not decide a task on a drifting machine.
 - **Record** per task and arm: solved, rounds, failed results, repeated calls, text turns, tokens written and
   read, wall seconds, load average at start.

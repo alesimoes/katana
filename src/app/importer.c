@@ -193,6 +193,7 @@ static void im_result(const Config *c, Buf *out, const char *name, const char *r
 }
 
 /* comeco da fala do modelo: bloco de raciocinio (com o texto dele, ou vazio), como o template preve */
+static int g_im_mask_prefill;          /* --mask-prefill: o prefixo que o motor escreve no comeco de cada fala fica fora da perda */
 static void im_think(const Config *c, Buf *out, const char *reason) {
     if (c->chat_fmt == 8) {
         if (g4_think()) { buf_str(out, "<|channel>thought\n"); if (reason) buf_str(out, reason); buf_str(out, "<channel|>"); }
@@ -584,7 +585,13 @@ static int im_line0(const Config *c, const char *line, const char *sys_fixed, in
             ah_render(&pre, sys.p ? sys.p : "", &r);
             const char *s0 = r.p ? r.p : "";
             const char *at = prev <= r.n ? strstr(s0 + prev, h.v[i].s) : NULL;
-            if (at && h.v[i].role == 'a' && !(i < ntcap && nt[i]) && sel[i]) { sp[2 * nsp] = (long)(at - s0); sp[2 * nsp + 1] = (long)(at - s0) + (long)strlen(h.v[i].s); nsp++; }
+            if (at && h.v[i].role == 'a' && !(i < ntcap && nt[i]) && sel[i]) {
+                long a0 = (long)(at - s0);
+                /* --mask-prefill: o comeco da fala que o proprio motor escreve (think_pre: "<think>\n", ou o bloco vazio com KATANA_THINK=0) nao e alvo */
+                const char *tp = g_im_mask_prefill ? think_pre(c) : "";
+                if (*tp && !strncmp(at, tp, strlen(tp)) && strlen(h.v[i].s) > strlen(tp)) a0 += (long)strlen(tp);
+                sp[2 * nsp] = a0; sp[2 * nsp + 1] = (long)(at - s0) + (long)strlen(h.v[i].s); nsp++;
+            }
             prev = r.n;
         }
         if (!nsp) { free(r.p); free(sp); *why = "no model turn selected for the loss"; goto fail; }
@@ -797,7 +804,7 @@ static void im_tr_emit(void *ud, const char *line) {
    contam; aceita --replace), ou transcricao de um agente de programacao (arquivo ou pasta), que
    aceita tambem [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole] */
 static int import_main(const char *model_path, int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl|sessao.ksess|transcricao|pasta> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] [--keep-tool-names] [--teacher]\n"
+    if (argc < 2) { fprintf(stderr, "uso: katana import <modelo.gguf> <entrada.jsonl|sessao.ksess|transcricao|pasta> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools] [--keep-tool-names] [--teacher] [--mask-prefill]\n"
                                     "     transcricao: [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--max-result N] [--whole]\n"
                                     "     selecao: [--train-tools A,B] [--train-final] [--require-tools A,B] [--min-calls N] [--drop-failed-streak N] [--verified]\n"
                                     "              [--train-first N] [--plan-first] [--plan-updates]\n"); return 1; }
@@ -808,6 +815,7 @@ static int import_main(const char *model_path, int argc, char **argv) {
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--system") && i + 1 < argc) sysopt = argv[++i];
         else if (!strcmp(argv[i], "--only-known-tools")) only_known = 1;
+        else if (!strcmp(argv[i], "--mask-prefill")) g_im_mask_prefill = 1;
         else if (!strcmp(argv[i], "--keep-tool-names")) g_im_keepnames = 1;
         else if (!strcmp(argv[i], "--teacher")) only_teacher = 1;
         else if (!strcmp(argv[i], "--whole")) tro.whole = 1;

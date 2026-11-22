@@ -43,7 +43,9 @@ docs:
   An item without a pattern is guidance only.
 - `done:` and `test:` are used by the engine: when a request changed files and is about to end without the `test:` command
   (or the command in backticks in `done:`) having run in that request, one note is attached saying so
-  (`brief_end_note` in `src/agent/brief.c`; see "Not wired" below).
+  (`brief_end_note` in `src/agent/brief.c`, sent by the agent loop as a user turn). When the file has a `test:` line, the
+  note names that command and any file change counts, including a change to a Markdown or `.katana/` file. A `done:`
+  command counts as the verification only when it is written in backticks.
 - What goes into the system prompt is the file as written. Recommended budget: 1,500 characters. The layered total cap is
   5,000 bytes (`KATANA_INSTR_MAX` changes it); past the cap, the most specific layer keeps its text.
 - Ordinary Markdown prose is accepted and passed as text. Nothing is parsed or enforced in it.
@@ -251,10 +253,9 @@ characters) and the card section title (about 80), both only when there is somet
 
 ## Not wired, not tried
 
-- `brief_end_note()` (the end-of-request note about `test:`/`done:`) is written and tested through `katana tool` (with
-  `KATANA_BRIEF_NOTE=1`), but the agent loop does not call it yet: it should be called where the loop ends a request that
-  had no tool calls (next to the unfinished-todo reminder in `src/agent/loop.c`), and the message sent like that reminder.
-  The `never`/`ask` enforcement and the skill plan are live in the loop (they sit in the tool dispatcher).
+- `brief_end_note()` (the end-of-request note about `test:`/`done:`) is wired: the agent loop calls it where a request
+  ends without a tool call, before the unfinished-todo reminder (`src/agent/loop.c`). The `never`/`ask` enforcement and
+  the skill plan are live in the loop too (they sit in the tool dispatcher).
 - Nothing was tried with a real model (Qwen3.6, Gemma 4): the format of the card, the skills line and the new commands were
   only exercised without a model. Whether the models call skills from the one-line list, and whether the call-format
   constraint copes with MCP tools that are no longer declared in `<tools>`, is not measured.

@@ -69,14 +69,15 @@ static const char *const g_ct_short[][4] = {
         S("command") ", " S("description") ", " I("timeout") ", " B("run_in_background"), "\"command\""},
     {"Read", "Read a file; each line comes with its number. Long file: offset = first line, limit = number of lines",
         S("file_path") ", " I("offset") ", " I("limit"), "\"file_path\""},
-    {"Edit", "Replace an exact snippet of a file you have read. old_string must be copied from the file without the line numbers and be unique, unless replace_all",
-        S("file_path") ", " S("old_string") ", " S("new_string") ", " B("replace_all"), "\"file_path\", \"old_string\", \"new_string\""},
+    {"Edit", "Replace an exact snippet of a file you have read. old_string must be copied from the file without the line numbers and be unique, unless replace_all. Several changes in one file: send edits instead, one block per change, all or none: a line <<<<<<<, old text, a line =======, new text, a line >>>>>>>",
+        S("file_path") ", " S("old_string") ", " S("new_string") ", " B("replace_all") ", " S("edits"), "\"file_path\""},
     {"Write", "Create a file, or replace a whole file you have read, with content",
         S("file_path") ", " S("content"), "\"file_path\", \"content\""},
     {"Grep", "Search file contents with a regular expression (literal=true for plain text). output_mode: files_with_matches (default), content (lines with numbers; -C adds context lines) or count. glob filters files, e.g. *.py",
         S("pattern") ", " S("path") ", " S("glob") ", " S("output_mode") ", " B("-i") ", " I("-C") ", " B("literal"), "\"pattern\""},
     {"Glob", "Find files by name pattern, e.g. **/*.c or src/**/test_*.py; newest first",
         S("pattern") ", " S("path"), "\"pattern\""},
+    {"Skill", "Load a skill by its name: its steps become your plan", S("skill") ", " S("args"), "\"skill\""},
     {"TodoWrite", "Your plan for a job of 3+ steps. Write it once: todos, one step per line. After that send only done=N (steps finished), in the same turn as the next action",
         S("todos") ", " I("done"), ""},
     {"AskUserQuestion", "Ask the user to choose; they may also type another answer",
@@ -173,6 +174,7 @@ static int ct_dispatch(const char *name, const char *js, const char *end, char *
     if (!t) return 0;
     out[0] = 0;
     if (brief_guard(name, js, end, out, cap)) return 1;
+    g_ct_depth++;
     char *fix = ct_unwrap(t, js, end);
     if (fix) { t->fn(fix, fix + strlen(fix), out, cap); free(fix); }
     else t->fn(js, end, out, cap);
@@ -182,6 +184,12 @@ static int ct_dispatch(const char *name, const char *js, const char *end, char *
         free(fp);
     }
     brief_track(name, js, end, out);
+    g_ct_depth--;
+    if (!g_ct_depth) {
+        char *fp = ct_str(js, end, "file_path"), *cm = strcmp(name, "Bash") == 0 ? ct_str(js, end, "command") : NULL;
+        facts_note(name, fp, cm, out);
+        free(fp); free(cm);
+    }
     return 1;
 }
 /* -1 nao e desta tabela; 0 altera coisas; 1 so le (pode rodar no modo plano) */
@@ -208,7 +216,7 @@ static int ct_main(int argc, char **argv) {
 /* conversa nova: nada do que foi lido, agendado ou aberto vale para ela */
 static void ct_session_reset(void) {
     proj_sub_reset();
-    ct_seen_reset();
+    ct_seen_reset(); facts_reset(); rd_delta_reset(); cp_reset();
     ct_sched_reset();
 #ifndef _WIN32
     g_wt_active = 0;

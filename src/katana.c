@@ -49,6 +49,7 @@
 #include "agent/fmt_gemma4.c"          /* ferramentas no formato nativo do Gemma 4 */
 #include "agent/prefix_cache.c"        /* cache de prefixo persistente e aquecimento */
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
+#include "agent/facts.c"               /* caderno de fatos e leitura por diferenca */
 #include "agent/context.c"             /* compactacao do contexto */
 #include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
 /* segundo conjunto de ferramentas do agente, uma por arquivo (docs/tools.md) */
@@ -94,9 +95,11 @@
 #include "app/knowledge.c"             /* katana knowledge: notas de texto das sessoes anteriores (build, search, stats) */
 #include "app/distill.c"               /* katana distill: um modelo professor trabalha com as ferramentas do katana */
 #include "app/learn.c"                 /* katana export (sessoes -> dados) e katana learn (aprende com o proprio uso) */
+#include "app/codebench.c"             /* katana codebench: o juiz (tarefas com testes escondidos): run, verify, compare, list */
 #include "app/specialize.c"            /* katana specialize: versoes especialistas (teacher, tools, code) de ponta a ponta */
 #include "app/curriculum.c"            /* katana curriculum: as convencoes (KATANA.md, skills, MCP) viram dados de treino */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/launch.c"                /* katana sem subcomando: console na pasta atual, headless (-p), install, adopt */
 #include "app/deeptest.c"              /* katana selftest --deep: caminhos, estado, contexto longo, precisao */
+#include "app/attbench.c"              /* katana attbench: custo da atencao do qwen35moe por posicao */
 #include "app/main.c"                  /* toktest, subcomandos e main */

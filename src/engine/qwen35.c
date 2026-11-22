@@ -105,7 +105,6 @@ static void dn_gate(const Config *c, const Layer *L, float *o, const float *z) {
    de trabalho tem tamanho fixo (QN_MAXCH pedacos), nao cresce com o contexto. Cache fp32, fp16 (m->kh/m->vh) ou Q8_0 (m->kq8/m->vq8). */
 #define QN_MAXCH 256
 #define QN_MAXG 16
-typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos, hd, kvd, group, nch, chl; float scale; } QnAttJob;
 static float dot_h(const float *a, const uint16_t *b, int n) {
     __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
     int j = 0;
@@ -120,79 +119,295 @@ static float dot_h(const float *a, const uint16_t *b, int n) {
     for (; j < n; j++) s += a[j] * _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(b[j])));
     return s;
 }
-static void qn_att_job(void *cx, int j0, int j1) {
-    const QnAttJob *j = cx;
-    const Model *m = j->m;
-    const int hd = j->hd, kvd = j->kvd, n = j->pos + 1, G = j->group;
-    const size_t off = j->L->kv_off;
-    float sc[QN_MAXG][64], o[QN_MAXG][512], mx[QN_MAXG], sum[QN_MAXG], kr[512];
-    for (int job = j0; job < j1; job++) {
-        const int g = job / j->nch, ch = job % j->nch;
-        const int ta = ch * j->chl, tb = ta + j->chl < n ? ta + j->chl : n;
-        const size_t kvh = (size_t)g * hd;
-        for (int u = 0; u < G; u++) { mx[u] = -INFINITY; sum[u] = 0.0f; memset(o[u], 0, hd * sizeof(float)); }
-        for (int t0 = ta; t0 < tb; t0 += 64) {
-            const int nb = tb - t0 < 64 ? tb - t0 : 64;
-            for (int i = 0; i < nb; i++) {
-                const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
-                if (m->kq8) {       /* Q8_0: abre a linha uma vez e serve as G cabecas */
-                    q8_get(kr, m->kq8 + r / 32 * 34, hd);
-                    for (int u = 0; u < G; u++) sc[u][i] = dot(j->q + (size_t)(g * G + u) * hd, kr, hd) * j->scale;
-                    continue;
-                }
-                for (int u = 0; u < G; u++) {
-                    const float *qh = j->q + (size_t)(g * G + u) * hd;
-                    sc[u][i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
-                }
-            }
-            for (int u = 0; u < G; u++) {
-                float bm = mx[u];
-                for (int i = 0; i < nb; i++) if (sc[u][i] > bm) bm = sc[u][i];
-                if (bm > mx[u]) {       /* novo maximo: reescala o que ja foi somado */
-                    const float f = expf(mx[u] - bm);
-                    sum[u] *= f;
-                    for (int k = 0; k < hd; k++) o[u][k] *= f;
-                    mx[u] = bm;
-                }
-                for (int i = 0; i < nb; i++) { sc[u][i] = expf(sc[u][i] - bm); sum[u] += sc[u][i]; }
-            }
-            for (int i = 0; i < nb; i++) {
-                const size_t r = off + (size_t)(t0 + i) * kvd + kvh;
-                if (m->vq8) {       /* Q8_0: soma direto dos inteiros, escala do bloco dobrada no peso */
-                    const uint8_t *vb = m->vq8 + r / 32 * 34;
-                    for (int k = 0; k < hd; k += 32, vb += 34) {
-                        uint16_t h; memcpy(&h, vb, 2);
-                        const float dv = _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128(h)));
-                        __m256 q4[4];
-                        for (int e = 0; e < 4; e++) q4[e] = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i *)(vb + 2 + 8 * e))));
-                        for (int u = 0; u < G; u++) {
-                            const __m256 w = _mm256_set1_ps(sc[u][i] * dv);
-                            float *ou = o[u] + k;
-                            for (int e = 0; e < 4; e++) _mm256_storeu_ps(ou + 8 * e, _mm256_fmadd_ps(w, q4[e], _mm256_loadu_ps(ou + 8 * e)));
-                        }
-                    }
-                    continue;
-                }
-                for (int k = 0; k < hd; k += 8) {
-                    const __m256 vv = m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
-                    for (int u = 0; u < G; u++)
-                        _mm256_storeu_ps(o[u] + k, _mm256_fmadd_ps(_mm256_set1_ps(sc[u][i]), vv, _mm256_loadu_ps(o[u] + k)));
-                }
-            }
+/* AVX-512 nos tres lacos da atencao (abrir linhas, produtos, somas). KATANA_QN_512=0 volta ao AVX2 (conferencia). Na maquina
+   de 11a geracao (uma FMA de 512 bits) o ganho vem de metade das instrucoes: 1,7x nos produtos e nas somas com os dois
+   hyperthreads ocupados. */
+#if defined(__x86_64__) && defined(__GNUC__) && !defined(_WIN32)
+#define QN_A512 __attribute__((target("avx512f,avx512bw,avx512vl,avx512dq")))
+static int qn_512(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("KATANA_QN_512"); v = !(e && atoi(e) == 0) && __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512dq"); }
+    return v;
+}
+QN_A512 static inline float qn_hsum16(__m512 a) {       /* a mesma ordem de dot(): metades de 8, metades de 4, pares */
+    const __m256 h = _mm256_add_ps(_mm512_castps512_ps256(a), _mm512_extractf32x8_ps(a, 1));
+    __m128 l = _mm_add_ps(_mm256_castps256_ps128(h), _mm256_extractf128_ps(h, 1));
+    l = _mm_hadd_ps(l, l); l = _mm_hadd_ps(l, l);
+    return _mm_cvtss_f32(l);
+}
+QN_A512 static void qn_dots8_512(const float *q, size_t qst, const float *K, size_t st, int nb, int hd, float scale, float *sc) {
+    for (int i = 0; i < nb; i++) {
+        const float *k = K + (size_t)i * st;
+        __m512 a0 = _mm512_setzero_ps(), a1 = a0, a2 = a0, a3 = a0, a4 = a0, a5 = a0, a6 = a0, a7 = a0;
+        for (int j = 0; j < hd; j += 16) {
+            const __m512 x = _mm512_loadu_ps(k + j);
+            const float *p = q + j;
+            a0 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p), a0); a1 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + qst), a1);
+            a2 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + 2 * qst), a2); a3 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + 3 * qst), a3);
+            a4 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + 4 * qst), a4); a5 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + 5 * qst), a5);
+            a6 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + 6 * qst), a6); a7 = _mm512_fmadd_ps(x, _mm512_loadu_ps(p + 7 * qst), a7);
         }
-        for (int u = 0; u < G; u++) {   /* parcial: [maximo, soma, saida] por (cabeca q, pedaco) */
-            float *pp = j->part + ((size_t)(g * G + u) * j->nch + ch) * (hd + 2);
-            pp[0] = mx[u]; pp[1] = sum[u];
-            memcpy(pp + 2, o[u], hd * sizeof(float));
+        sc[i] = qn_hsum16(a0) * scale; sc[64 + i] = qn_hsum16(a1) * scale; sc[128 + i] = qn_hsum16(a2) * scale; sc[192 + i] = qn_hsum16(a3) * scale;
+        sc[256 + i] = qn_hsum16(a4) * scale; sc[320 + i] = qn_hsum16(a5) * scale; sc[384 + i] = qn_hsum16(a6) * scale; sc[448 + i] = qn_hsum16(a7) * scale;
+    }
+}
+QN_A512 static void qn_axpys_512(float *o, const float *w, const float *V, size_t st, int nb) {      /* 128 colunas */
+    __m512 a0 = _mm512_loadu_ps(o), a1 = _mm512_loadu_ps(o + 16), a2 = _mm512_loadu_ps(o + 32), a3 = _mm512_loadu_ps(o + 48);
+    __m512 a4 = _mm512_loadu_ps(o + 64), a5 = _mm512_loadu_ps(o + 80), a6 = _mm512_loadu_ps(o + 96), a7 = _mm512_loadu_ps(o + 112);
+    for (int i = 0; i < nb; i++, V += st) {
+        const __m512 x = _mm512_set1_ps(w[i]);
+        a0 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V), a0); a1 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 16), a1);
+        a2 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 32), a2); a3 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 48), a3);
+        a4 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 64), a4); a5 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 80), a5);
+        a6 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 96), a6); a7 = _mm512_fmadd_ps(x, _mm512_loadu_ps(V + 112), a7);
+    }
+    _mm512_storeu_ps(o, a0); _mm512_storeu_ps(o + 16, a1); _mm512_storeu_ps(o + 32, a2); _mm512_storeu_ps(o + 48, a3);
+    _mm512_storeu_ps(o + 64, a4); _mm512_storeu_ps(o + 80, a5); _mm512_storeu_ps(o + 96, a6); _mm512_storeu_ps(o + 112, a7);
+}
+QN_A512 static void qn_open_512(float *out, const uint16_t *h, int hd) {
+    for (int k = 0; k < hd; k += 16) _mm512_storeu_ps(out + k, _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(h + k))));
+}
+#else
+static int qn_512(void) { return 0; }
+static void qn_dots8_512(const float *q, size_t qst, const float *K, size_t st, int nb, int hd, float scale, float *sc) { (void)q; (void)qst; (void)K; (void)st; (void)nb; (void)hd; (void)scale; (void)sc; }
+static void qn_axpys_512(float *o, const float *w, const float *V, size_t st, int nb) { (void)o; (void)w; (void)V; (void)st; (void)nb; }
+static void qn_open_512(float *out, const uint16_t *h, int hd) { (void)out; (void)h; (void)hd; }
+#endif
+/* nq consultas contra nb linhas ja em fp32 (distancia st entre linhas): sc[i] = q . k_i * scale. As consultas ficam a qst
+   floats uma da outra; sc tem passo 64. Quatro de cada vez, com os mesmos acumuladores de dot/dot_h. */
+static void qn_dots(const float *q, size_t qst, int nq, const float *K, size_t st, int nb, int hd, float scale, float *sc) {
+    int u = 0;
+    if (hd % 16 == 0 && qn_512()) for (; u + 8 <= nq; u += 8) qn_dots8_512(q + (size_t)u * qst, qst, K, st, nb, hd, scale, sc + (size_t)u * 64);
+    const __m128 vs = _mm_set1_ps(scale);
+    for (; u + 4 <= nq; u += 4) {
+        const float *q0 = q + (size_t)u * qst, *q1 = q0 + qst, *q2 = q1 + qst, *q3 = q2 + qst;
+        float *s0 = sc + (size_t)u * 64;
+        for (int i = 0; i < nb; i++) {
+            const float *k = K + (size_t)i * st;
+            __m256 a0 = _mm256_setzero_ps(), a1 = a0, b0 = a0, b1 = a0, c0 = a0, c1 = a0, d0 = a0, d1 = a0;
+            int j = 0;
+            for (; j + 16 <= hd; j += 16) {
+                const __m256 x = _mm256_loadu_ps(k + j), y = _mm256_loadu_ps(k + j + 8);
+                a0 = _mm256_fmadd_ps(x, _mm256_loadu_ps(q0 + j), a0); a1 = _mm256_fmadd_ps(y, _mm256_loadu_ps(q0 + j + 8), a1);
+                b0 = _mm256_fmadd_ps(x, _mm256_loadu_ps(q1 + j), b0); b1 = _mm256_fmadd_ps(y, _mm256_loadu_ps(q1 + j + 8), b1);
+                c0 = _mm256_fmadd_ps(x, _mm256_loadu_ps(q2 + j), c0); c1 = _mm256_fmadd_ps(y, _mm256_loadu_ps(q2 + j + 8), c1);
+                d0 = _mm256_fmadd_ps(x, _mm256_loadu_ps(q3 + j), d0); d1 = _mm256_fmadd_ps(y, _mm256_loadu_ps(q3 + j + 8), d1);
+            }
+            a0 = _mm256_add_ps(a0, a1); b0 = _mm256_add_ps(b0, b1); c0 = _mm256_add_ps(c0, c1); d0 = _mm256_add_ps(d0, d1);
+            const __m128 la = _mm_add_ps(_mm256_castps256_ps128(a0), _mm256_extractf128_ps(a0, 1)), lb = _mm_add_ps(_mm256_castps256_ps128(b0), _mm256_extractf128_ps(b0, 1));
+            const __m128 lc = _mm_add_ps(_mm256_castps256_ps128(c0), _mm256_extractf128_ps(c0, 1)), ld = _mm_add_ps(_mm256_castps256_ps128(d0), _mm256_extractf128_ps(d0, 1));
+            __m128 r = _mm_hadd_ps(_mm_hadd_ps(la, lb), _mm_hadd_ps(lc, ld));
+            float t[4];
+            if (j < hd) {
+                _mm_storeu_ps(t, r);
+                for (; j < hd; j++) { t[0] += q0[j] * k[j]; t[1] += q1[j] * k[j]; t[2] += q2[j] * k[j]; t[3] += q3[j] * k[j]; }
+                r = _mm_loadu_ps(t);
+            }
+            _mm_storeu_ps(t, _mm_mul_ps(r, vs));
+            s0[i] = t[0]; s0[64 + i] = t[1]; s0[128 + i] = t[2]; s0[192 + i] = t[3];
         }
     }
+    for (; u < nq; u++) for (int i = 0; i < nb; i++) sc[(size_t)u * 64 + i] = dot(q + (size_t)u * qst, K + (size_t)i * st, hd) * scale;
+}
+/* o[k..k+64) (128 com AVX-512) += soma de w[i] * v_i, linhas na ordem, acumulador em registradores */
+static void qn_axpys(float *o, const float *w, const float *V, size_t st, int nb, int hd, int k) {
+    if (k + 64 <= hd) {
+        o += k; V += k;
+        __m256 a0 = _mm256_loadu_ps(o), a1 = _mm256_loadu_ps(o + 8), a2 = _mm256_loadu_ps(o + 16), a3 = _mm256_loadu_ps(o + 24);
+        __m256 a4 = _mm256_loadu_ps(o + 32), a5 = _mm256_loadu_ps(o + 40), a6 = _mm256_loadu_ps(o + 48), a7 = _mm256_loadu_ps(o + 56);
+        for (int i = 0; i < nb; i++, V += st) {
+            const __m256 x = _mm256_set1_ps(w[i]);
+            a0 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V), a0); a1 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 8), a1);
+            a2 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 16), a2); a3 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 24), a3);
+            a4 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 32), a4); a5 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 40), a5);
+            a6 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 48), a6); a7 = _mm256_fmadd_ps(x, _mm256_loadu_ps(V + 56), a7);
+        }
+        _mm256_storeu_ps(o, a0); _mm256_storeu_ps(o + 8, a1); _mm256_storeu_ps(o + 16, a2); _mm256_storeu_ps(o + 24, a3);
+        _mm256_storeu_ps(o + 32, a4); _mm256_storeu_ps(o + 40, a5); _mm256_storeu_ps(o + 48, a6); _mm256_storeu_ps(o + 56, a7);
+        return;
+    }
+    for (; k < hd; k += 8) {
+        __m256 a = _mm256_loadu_ps(o + k);
+        for (int i = 0; i < nb; i++) a = _mm256_fmadd_ps(_mm256_set1_ps(w[i]), _mm256_loadu_ps(V + (size_t)i * st + k), a);
+        _mm256_storeu_ps(o + k, a);
+    }
+}
+/* exp de 8 valores (x <= 0, que e o que sobra depois de tirar o maximo): reducao por ln 2 em duas partes e polinomio de
+   grau 6; erro relativo abaixo de 2 ulp, e 0 abaixo de -87 */
+static inline __m256 qn_exp8(__m256 x) {
+    const __m256 z = _mm256_cmp_ps(x, _mm256_set1_ps(-87.0f), _CMP_LT_OQ);
+    const __m256 n = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504088896341f)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256 r = _mm256_fnmadd_ps(n, _mm256_set1_ps(0.693359375f), x);
+    r = _mm256_fnmadd_ps(n, _mm256_set1_ps(-2.12194440e-4f), r);
+    __m256 p = _mm256_set1_ps(1.3981999507e-3f);      /* Horner */
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(8.3334519073e-3f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(4.1665795894e-2f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.6666665459e-1f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(0.5f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0f));
+    const __m256i e = _mm256_slli_epi32(_mm256_add_epi32(_mm256_cvtps_epi32(n), _mm256_set1_epi32(127)), 23);
+    return _mm256_andnot_ps(z, _mm256_mul_ps(p, _mm256_castsi256_ps(e)));
+}
+static inline float qn_hsum8(__m256 a) {
+    __m128 l = _mm_add_ps(_mm256_castps256_ps128(a), _mm256_extractf128_ps(a, 1));
+    l = _mm_hadd_ps(l, l); l = _mm_hadd_ps(l, l);
+    return _mm_cvtss_f32(l);
+}
+/* sc[0..nb) (espaco de 64) e o maximo ate aqui bm0: devolve o novo maximo */
+static inline float qn_max(const float *sc, int nb, float bm0) {
+    __m256 m = _mm256_set1_ps(bm0);
+    int i = 0;
+    for (; i + 8 <= nb; i += 8) m = _mm256_max_ps(m, _mm256_loadu_ps(sc + i));
+    float t[8]; _mm256_storeu_ps(t, m);
+    for (; i < nb; i++) if (sc[i] > t[0]) t[0] = sc[i];
+    for (int k = 1; k < 8; k++) if (t[k] > t[0]) t[0] = t[k];
+    return t[0];
+}
+/* sc[i] = exp(sc[i] - bm); devolve a soma */
+static inline float qn_soft(float *sc, int nb, float bm) {
+    const __m256 vb = _mm256_set1_ps(bm);
+    __m256 s = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 8 <= nb; i += 8) { const __m256 e = qn_exp8(_mm256_sub_ps(_mm256_loadu_ps(sc + i), vb)); _mm256_storeu_ps(sc + i, e); s = _mm256_add_ps(s, e); }
+    if (i < nb) {
+        float t[8] = { 0 };
+        memcpy(t, sc + i, (size_t)(nb - i) * 4);
+        _mm256_storeu_ps(t, qn_exp8(_mm256_sub_ps(_mm256_loadu_ps(t), vb)));
+        for (int k = i; k < 8 + i; k++) { if (k < nb) sc[k] = t[k - i]; else t[k - i] = 0.0f; }
+        s = _mm256_add_ps(s, _mm256_loadu_ps(t));
+    }
+    return qn_hsum8(s);
+}
+/* abre nb linhas do cache (fp16, Q8_0 ou fp32; r: elemento da primeira) em fp32, com QN_PAD floats de folga por linha: sem
+   ela 64 linhas de 1 KB caem nos mesmos conjuntos do L1 (medido: somas 1,6x mais lentas) */
+#define QN_PAD 16
+static void qn_open(float *out, const float *f, const uint16_t *h, const uint8_t *q8, size_t r, size_t st, int nb, int hd) {
+    const int z = hd % 16 == 0 && qn_512();
+    for (int i = 0; i < nb; i++, r += st, out += hd + QN_PAD) {
+        if (q8) q8_get(out, q8 + r / 32 * 34, hd);
+        else if (!h) memcpy(out, f + r, (size_t)hd * sizeof(float));
+        else if (z) qn_open_512(out, h + r, hd);
+        else for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(out + k, _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(h + r + k))));
+    }
+}
+/* atencao com portao de B tokens seguidos (1 na geracao, ate QN_BMAX no prompt): trabalho = (cabeca kv, pedaco de posicoes,
+   faixa de tokens). Cada bloco de 64 linhas de K e de V e aberto (fp16 ou Q8_0 para fp32) uma vez so e serve as group x
+   tokens consultas da faixa. Mesmos pedacos, blocos de 64 e ordem de soma para qualquer B: o resultado do lote e igual bit a
+   bit ao token a token (enquanto o tamanho de pedaco for o mesmo para todo o lote). */
+#define QN_BMAX 64
+typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos0, B, hd, kvd, group, nch, chl, nsp, tps, qd; float scale; } QnAttNJob;
+static void qn_att_n_job(void *cx, int j0, int j1) {
+    const QnAttNJob *j = cx;
+    const Model *m = j->m;
+    const int hd = j->hd, kvd = j->kvd, G = j->group, ks = hd % 128 == 0 && qn_512() ? 128 : 64;
+    const size_t off = j->L->kv_off, st = hd + QN_PAD;
+    static __thread float *ob, *scb, *kb; static __thread int ocap;
+    const int nq = j->tps * G;
+    if (ocap < nq) { free(ob); free(scb); ob = xalloc((size_t)nq * 512, sizeof(float)); scb = xalloc((size_t)nq * 64, sizeof(float)); ocap = nq; }
+    if (!kb) kb = xalloc((size_t)2 * 64 * (512 + QN_PAD), sizeof(float));
+    float *vb = kb + 64 * (512 + QN_PAD);
+    float mx[QN_BMAX * QN_MAXG], sum[QN_BMAX * QN_MAXG];
+    for (int job = j0; job < j1; job++) {
+        const int sp = job % j->nsp, ch = (job / j->nsp) % j->nch, g = job / (j->nsp * j->nch);
+        const int t0q = sp * j->tps, t1q = t0q + j->tps < j->B ? t0q + j->tps : j->B;
+        if (t0q >= t1q) continue;
+        const int ta = ch * j->chl;
+        const size_t kvh = (size_t)g * hd;
+        int tmax = ta;      /* fim do pedaco para o ultimo token da faixa */
+        { const int n = j->pos0 + t1q; tmax = ta + j->chl < n ? ta + j->chl : n; }
+        for (int u = 0; u < (t1q - t0q) * G; u++) { mx[u] = -INFINITY; sum[u] = 0.0f; memset(ob + (size_t)u * hd, 0, hd * sizeof(float)); }
+        for (int b0 = ta; b0 < tmax; b0 += 64) {
+            const int nbx = tmax - b0 < 64 ? tmax - b0 : 64;
+            const size_t r0 = off + (size_t)b0 * kvd + kvh;
+            qn_open(kb, m->kcache, m->kh, m->kq8, r0, kvd, nbx, hd);
+            for (int t = t0q; t < t1q; t++) {
+                const int n = j->pos0 + t + 1, tb = ta + j->chl < n ? ta + j->chl : n, nb = tb - b0 < 64 ? tb - b0 : 64;
+                if (nb <= 0) continue;
+                qn_dots(j->q + (size_t)t * j->qd + (size_t)g * G * hd, hd, G, kb, st, nb, hd, j->scale, scb + (size_t)(t - t0q) * G * 64);
+                for (int u = 0; u < G; u++) {
+                    const int qi = (t - t0q) * G + u;
+                    float *sc = scb + (size_t)qi * 64, *o = ob + (size_t)qi * hd;
+                    const float bm = qn_max(sc, nb, mx[qi]);
+                    if (bm > mx[qi]) {      /* novo maximo: reescala o que ja foi somado */
+                        const __m256 f = _mm256_set1_ps(expf(mx[qi] - bm));
+                        sum[qi] *= _mm256_cvtss_f32(f);
+                        for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(o + k, _mm256_mul_ps(_mm256_loadu_ps(o + k), f));
+                        mx[qi] = bm;
+                    }
+                    sum[qi] += qn_soft(sc, nb, bm);
+                }
+            }
+            qn_open(vb, m->vcache, m->vh, m->vq8, r0, kvd, nbx, hd);
+            for (int k = 0; k < hd; k += ks)      /* fatia de V no L1 para todas as consultas */
+                for (int t = t0q; t < t1q; t++) {
+                    const int n = j->pos0 + t + 1, tb = ta + j->chl < n ? ta + j->chl : n, nb = tb - b0 < 64 ? tb - b0 : 64;
+                    if (nb <= 0) continue;
+                    for (int u = 0; u < G; u++) {
+                        const int qi = (t - t0q) * G + u;
+                        if (ks == 128) qn_axpys_512(ob + (size_t)qi * hd + k, scb + (size_t)qi * 64, vb + k, st, nb);
+                        else qn_axpys(ob + (size_t)qi * hd, scb + (size_t)qi * 64, vb, st, nb, hd, k);
+                    }
+                }
+        }
+        for (int t = t0q; t < t1q; t++)
+            for (int u = 0; u < G; u++) {   /* parcial: [maximo, soma, saida] por (cabeca q, pedaco) */
+                const int qi = (t - t0q) * G + u;
+                float *pp = j->part + (((size_t)t * j->qd / hd + g * G + u) * j->nch + ch) * (hd + 2);
+                pp[0] = mx[qi]; pp[1] = sum[qi];
+                memcpy(pp + 2, ob + (size_t)qi * hd, hd * sizeof(float));
+            }
+    }
+}
+/* junta os pedacos de cada (token, cabeca) e aplica o portao; trabalho = (token, cabeca) */
+typedef struct { const float *part, *gate; float *O; int pos0, nh, hd, nch, chl; } QnJoinJob;
+static void qn_join_job(void *cx, int j0, int j1) {
+    const QnJoinJob *j = cx;
+    const int nh = j->nh, hd = j->hd;
+    for (int job = j0; job < j1; job++) {
+        const int t = job / nh, h = job % nh, n = j->pos0 + t + 1, ncht = (n + j->chl - 1) / j->chl;
+        const float *pp = j->part + (size_t)job * j->nch * (hd + 2);
+        float M = -INFINITY, S = 0.0f;
+        for (int ch = 0; ch < ncht; ch++) if (pp[(size_t)ch * (hd + 2)] > M) M = pp[(size_t)ch * (hd + 2)];
+        float *oh = j->O + (size_t)job * hd;
+        memset(oh, 0, hd * sizeof(float));
+        for (int ch = 0; ch < ncht; ch++) {
+            const float *pc = pp + (size_t)ch * (hd + 2), f = expf(pc[0] - M);
+            S += pc[1] * f;
+            const __m256 vf = _mm256_set1_ps(f);
+            for (int k = 0; k < hd; k += 8) _mm256_storeu_ps(oh + k, _mm256_fmadd_ps(_mm256_loadu_ps(pc + 2 + k), vf, _mm256_loadu_ps(oh + k)));
+        }
+        const float *gt = j->gate + (size_t)t * 2 * nh * hd + (size_t)h * 2 * hd + hd, inv = 1.0f / S;
+        for (int k = 0; k < hd; k++) oh[k] *= inv / (1.0f + expf(-gt[k]));
+    }
+}
+/* q [B][qd] ja com norma e RoPE, K/V das B posicoes ja no cache; qg [B][2*qd] (o portao) -> O [B][qd] */
+static void qn_attend(Model *m, const Layer *L, int pos0, int B, const float *Q, const float *qg, float *O) {
+    const Config *c = &m->cfg;
+    const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, group = nh / c->n_kv, qd = nh * hd, nmax = pos0 + B;
+    if (hd > 512 || hd % 8 || group > QN_MAXG || B > QN_BMAX) die("qn_attend: hd, grupo ou lote fora do suportado");
+    int chl = 512;      /* pedaco minimo; cresce para caber em QN_MAXCH pedacos */
+    while ((nmax + chl - 1) / chl > QN_MAXCH) chl *= 2;
+    const int nch = (nmax + chl - 1) / chl, nj = c->n_kv * nch;
+    /* faixas de tokens: trabalhos suficientes para as threads quando ha poucos pedacos */
+    int nsp = (2 * (pool.n > 0 ? pool.n : 1) + nj - 1) / nj;
+    if (nsp > B) nsp = B;
+    if (nsp < 1) nsp = 1;
+    const int tps = (B + nsp - 1) / nsp;
+    nsp = (B + tps - 1) / tps;
+    static float *part; static size_t pcap;
+    const size_t need = (size_t)B * nh * nch * (hd + 2);
+    if (need > pcap) { free(part); pcap = need + need / 2; part = xalloc(pcap, sizeof(float)); }
+    QnAttNJob job = { m, L, Q, part, pos0, B, hd, kvd, group, nch, chl, nsp, tps, qd, 1.0f / sqrtf((float)hd) * c->kq_mul };
+    pool_for(qn_att_n_job, &job, nj * nsp, 1);
+    QnJoinJob jj = { part, qg, O, pos0, nh, hd, nch, chl };
+    if (B > 1 || nch >= 8) pool_for(qn_join_job, &jj, B * nh, 4); else qn_join_job(&jj, 0, nh);
 }
 
 static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, float *k, const float *v, float *out) {
     const Config *c = &m->cfg;
     const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, ctx = c->ctx;
-    const int group = nh / c->n_kv, nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
-    const float scale = 1.0f / sqrtf((float)hd);
+    const int nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
     float *q = m->q;
     for (int h = 0; h < nh; h++) rmsnorm(q + h * hd, qg + (size_t)h * 2 * hd, L->q_norm, hd, c->eps);
     for (int h = 0; h < c->n_kv; h++) rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps);
@@ -218,118 +433,18 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
         memcpy(m->kcache + koff, k, kvd * sizeof(float));
         memcpy(m->vcache + koff, v, kvd * sizeof(float));
     }
-    if (hd > 512 || hd % 8 || group > QN_MAXG) die("qn_core: hd ou grupo fora do suportado");
-    static float *part;
-    if (!part) part = xalloc((size_t)nh * QN_MAXCH * (hd + 2), sizeof(float));
-    const int n = pos + 1;
-    int chl = 512;      /* pedaco minimo; cresce para caber em QN_MAXCH pedacos */
-    while ((n + chl - 1) / chl > QN_MAXCH) chl *= 2;
-    const int nch = (n + chl - 1) / chl;
-    QnAttJob job = { m, L, q, part, pos, hd, kvd, group, nch, chl, scale * c->kq_mul };
-    pool_for(qn_att_job, &job, c->n_kv * nch, 1);
-    for (int h = 0; h < nh; h++) {      /* junta os pedacos e aplica o portao */
-        const float *pp = part + (size_t)h * nch * (hd + 2);
-        float M = -INFINITY, S = 0.0f;
-        for (int ch = 0; ch < nch; ch++) if (pp[(size_t)ch * (hd + 2)] > M) M = pp[(size_t)ch * (hd + 2)];
-        float *oh = out + (size_t)h * hd;
-        memset(oh, 0, hd * sizeof(float));
-        for (int ch = 0; ch < nch; ch++) {
-            const float *pc = pp + (size_t)ch * (hd + 2), f = expf(pc[0] - M);
-            S += pc[1] * f;
-            for (int k = 0; k < hd; k++) oh[k] += pc[2 + k] * f;
-        }
-        const float *gt = qg + (size_t)h * 2 * hd + hd, inv = 1.0f / S;
-        for (int k = 0; k < hd; k++) oh[k] *= inv / (1.0f + expf(-gt[k]));
-    }
-}
-
-/* atencao com portao de B tokens seguidos (prompt na CPU): todas as consultas do lote contra cada pedaco de K/V.
-   Trabalho = (cabeca kv, pedaco de posicoes, faixa de tokens): cada linha de K/V sai da RAM uma vez por faixa e serve
-   as group x tokens consultas dela. Mesmos pedacos, blocos de 64 e ordem de soma do qn_core por consulta: o resultado
-   e igual bit a bit ao token a token (enquanto o tamanho de pedaco for o mesmo para todo o lote). */
-typedef struct { Model *m; const Layer *L; const float *q; float *part; int pos0, B, hd, kvd, group, nch, chl, nsp, tps, qd; float scale; } QnAttNJob;
-static void qn_att_n_job(void *cx, int j0, int j1) {
-    const QnAttNJob *j = cx;
-    const Model *m = j->m;
-    const int hd = j->hd, kvd = j->kvd, G = j->group;
-    const size_t off = j->L->kv_off;
-    static __thread float *ob, *scb; static __thread int ocap;
-    const int nq = j->tps * G;
-    if (ocap < nq) { free(ob); free(scb); ob = xalloc((size_t)nq * 512, sizeof(float)); scb = xalloc((size_t)nq * 64, sizeof(float)); ocap = nq; }
-    float mx[GPU_BMAX * QN_MAXG], sum[GPU_BMAX * QN_MAXG], kr[512];
-    for (int job = j0; job < j1; job++) {
-        const int sp = job % j->nsp, ch = (job / j->nsp) % j->nch, g = job / (j->nsp * j->nch);
-        const int t0q = sp * j->tps, t1q = t0q + j->tps < j->B ? t0q + j->tps : j->B;
-        if (t0q >= t1q) continue;
-        const int ta = ch * j->chl;
-        const size_t kvh = (size_t)g * hd;
-        int tmax = ta;      /* fim do pedaco para o ultimo token da faixa */
-        { const int n = j->pos0 + t1q; tmax = ta + j->chl < n ? ta + j->chl : n; }
-        for (int u = 0; u < (t1q - t0q) * G; u++) { mx[u] = -INFINITY; sum[u] = 0.0f; memset(ob + (size_t)u * 512, 0, hd * sizeof(float)); }
-        for (int b0 = ta; b0 < tmax; b0 += 64) {
-            for (int t = t0q; t < t1q; t++) {
-                const int n = j->pos0 + t + 1, tb = ta + j->chl < n ? ta + j->chl : n, nb = tb - b0 < 64 ? tb - b0 : 64;
-                if (nb <= 0) continue;
-                for (int i = 0; i < nb; i++) {
-                    const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
-                    if (m->kq8) {   /* Q8_0: abre a linha uma vez para as G cabecas */
-                        q8_get(kr, m->kq8 + r / 32 * 34, hd);
-                        for (int u = 0; u < G; u++)
-                            scb[(size_t)((t - t0q) * G + u) * 64 + i] = dot(j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd, kr, hd) * j->scale;
-                        continue;
-                    }
-                    for (int u = 0; u < G; u++) {
-                        const float *qh = j->q + (size_t)t * j->qd + (size_t)(g * G + u) * hd;
-                        scb[(size_t)((t - t0q) * G + u) * 64 + i] = (m->kh ? dot_h(qh, m->kh + r, hd) : dot(qh, m->kcache + r, hd)) * j->scale;
-                    }
-                }
-                for (int u = 0; u < G; u++) {
-                    const int qi = (t - t0q) * G + u;
-                    float *sc = scb + (size_t)qi * 64, *o = ob + (size_t)qi * 512;
-                    float bm = mx[qi];
-                    for (int i = 0; i < nb; i++) if (sc[i] > bm) bm = sc[i];
-                    if (bm > mx[qi]) {
-                        const float f = expf(mx[qi] - bm);
-                        sum[qi] *= f;
-                        for (int k = 0; k < hd; k++) o[k] *= f;
-                        mx[qi] = bm;
-                    }
-                    for (int i = 0; i < nb; i++) { sc[i] = expf(sc[i] - bm); sum[qi] += sc[i]; }
-                }
-                for (int i = 0; i < nb; i++) {
-                    const size_t r = off + (size_t)(b0 + i) * kvd + kvh;
-                    if (m->vq8) q8_get(kr, m->vq8 + r / 32 * 34, hd);
-                    for (int k = 0; k < hd; k += 8) {
-                        const __m256 vv = m->vq8 ? _mm256_loadu_ps(kr + k) : m->vh ? _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *)(m->vh + r + k))) : _mm256_loadu_ps(m->vcache + r + k);
-                        for (int u = 0; u < G; u++) {
-                            const int qi = (t - t0q) * G + u;
-                            float *o = ob + (size_t)qi * 512;
-                            _mm256_storeu_ps(o + k, _mm256_fmadd_ps(_mm256_set1_ps(scb[(size_t)qi * 64 + i]), vv, _mm256_loadu_ps(o + k)));
-                        }
-                    }
-                }
-            }
-        }
-        for (int t = t0q; t < t1q; t++)
-            for (int u = 0; u < G; u++) {
-                const int qi = (t - t0q) * G + u;
-                float *pp = j->part + (((size_t)t * j->qd / hd + g * G + u) * j->nch + ch) * (hd + 2);
-                pp[0] = mx[qi]; pp[1] = sum[qi];
-                memcpy(pp + 2, ob + (size_t)qi * 512, hd * sizeof(float));
-            }
-    }
+    qn_attend(m, L, pos, 1, q, qg, out);
 }
 
 /* B tokens a partir de pos0: P1 [B][2*qd] (q+portao), KK/VV [B][kvd] (mudam: norma e RoPE), O [B][qd] */
 static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const float *P1, float *KK, const float *VV, float *O) {
     const Config *c = &m->cfg;
     const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, qd = nh * hd;
-    const int group = nh / c->n_kv, nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
-    const float scale = 1.0f / sqrtf((float)hd);
+    const int nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
     (void)l;
-    if (hd > 512 || hd % 8 || group > QN_MAXG || B > GPU_BMAX) die("qn_core_n: hd, grupo ou lote fora do suportado");
-    static float *Q, *part;
-    if (!Q) { Q = xalloc((size_t)GPU_BMAX * qd, sizeof(float)); part = xalloc((size_t)GPU_BMAX * nh * QN_MAXCH * (hd + 2), sizeof(float)); }
+    if (B > QN_BMAX) die("qn_core_n: lote fora do suportado");
+    static float *Q;
+    if (!Q) Q = xalloc((size_t)QN_BMAX * qd, sizeof(float));
     for (int t = 0; t < B; t++) {       /* norma, RoPE e cache, como no qn_core */
         const int pos = pos0 + t;
         float *q = Q + (size_t)t * qd, *k = KK + (size_t)t * kvd;
@@ -359,35 +474,7 @@ static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const fl
             memcpy(m->vcache + koff, v, kvd * sizeof(float));
         }
     }
-    const int nmax = pos0 + B;
-    int chl = 512;
-    while ((nmax + chl - 1) / chl > QN_MAXCH) chl *= 2;
-    const int nch = (nmax + chl - 1) / chl;
-    /* faixas de tokens: trabalhos suficientes para as threads quando ha poucos pedacos */
-    int nsp = (2 * (pool.n > 0 ? pool.n : 1) + c->n_kv * nch - 1) / (c->n_kv * nch);
-    if (nsp > B) nsp = B;
-    if (nsp < 1) nsp = 1;
-    const int tps = (B + nsp - 1) / nsp;
-    nsp = (B + tps - 1) / tps;
-    QnAttNJob job = { m, L, Q, part, pos0, B, hd, kvd, group, nch, chl, nsp, tps, qd, scale * c->kq_mul };
-    pool_for(qn_att_n_job, &job, c->n_kv * nch * nsp, 1);
-    for (int t = 0; t < B; t++) {
-        const int n = pos0 + t + 1, ncht = (n + chl - 1) / chl;
-        for (int h = 0; h < nh; h++) {      /* junta os pedacos do token e aplica o portao */
-            const float *pp = part + ((size_t)t * nh + h) * nch * (hd + 2);
-            float M = -INFINITY, S = 0.0f;
-            for (int ch = 0; ch < ncht; ch++) if (pp[(size_t)ch * (hd + 2)] > M) M = pp[(size_t)ch * (hd + 2)];
-            float *oh = O + (size_t)t * qd + (size_t)h * hd;
-            memset(oh, 0, hd * sizeof(float));
-            for (int ch = 0; ch < ncht; ch++) {
-                const float *pc = pp + (size_t)ch * (hd + 2), f = expf(pc[0] - M);
-                S += pc[1] * f;
-                for (int k = 0; k < hd; k++) oh[k] += pc[2 + k] * f;
-            }
-            const float *gt = P1 + (size_t)t * 2 * qd + (size_t)h * 2 * hd + hd, inv = 1.0f / S;
-            for (int k = 0; k < hd; k++) oh[k] *= inv / (1.0f + expf(-gt[k]));
-        }
-    }
+    qn_attend(m, L, pos0, B, Q, P1, O);
 }
 
 /* feed-forward MoE de um token sobre m->xb (ja normalizado): out = roteados + portao * compartilhado */
@@ -1019,8 +1106,8 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
                     for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hv[(size_t)b * kvd + i] = tv[(size_t)i * B + b];
                 }
                 if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
-                for (int b0 = 0; b0 < B; b0 += GPU_BMAX) {
-                    const int nb = B - b0 < GPU_BMAX ? B - b0 : GPU_BMAX;
+                for (int b0 = 0; b0 < B; b0 += QN_BMAX) {
+                    const int nb = B - b0 < QN_BMAX ? B - b0 : QN_BMAX;
                     qn_core_n(m, L, l, pos0 + b0, nb, vkq.hq + (size_t)b0 * 2 * qd, vkq.hk + (size_t)b0 * kvd, vkq.hv + (size_t)b0 * kvd,
                               vkq.ho + (size_t)b0 * qd);
                 }

@@ -232,19 +232,45 @@ static int brief_guard(const char *name, const char *js, const char *end, char *
     free(subj);
     return refused;
 }
+/* o comando de done: entre crases, ou a linha toda quando comeca como um comando; 0 = e so texto */
+static int br_done_cmd(const char *dn, char *out, size_t cap) {
+    if (!dn) return 0;
+    const char *a = strchr(dn, '`'), *z = a ? strchr(a + 1, '`') : NULL;
+    if (a && z && z > a + 1) { snprintf(out, cap, "%.*s", (int)(z - a - 1), a + 1); return 1; }
+    static const char *const RUN[] = { "sh ", "bash ", "make", "python ", "python3 ", "npm ", "pnpm ", "yarn ", "npx ", "node ", "cargo ", "go test", "go build", "ctest ", "cmake ", "mix ", "zig ", "pytest", "./", "katana ", NULL };
+    while (*dn == ' ') dn++;
+    for (int i = 0; RUN[i]; i++) if (strncmp(dn, RUN[i], strlen(RUN[i])) == 0) {
+        if (!strcmp(RUN[i], "make") && dn[4] && strncmp(dn + 4, " test", 5) && strncmp(dn + 4, " check", 6) && strncmp(dn + 4, " verify", 7)) continue;
+        snprintf(out, cap, "%s", dn);
+        size_t l = strlen(out); while (l && (out[l - 1] == '\n' || out[l - 1] == ' ' || out[l - 1] == '.')) out[--l] = 0;
+        return 1;
+    }
+    return 0;
+}
 /* depois da ferramenta: registra que arquivos mudaram e se a verificacao do projeto rodou neste pedido */
 static void brief_track(const char *name, const char *js, const char *end, const char *res) {
     br_sync();
     if (strncmp(res, "error:", 6) == 0) { if (strcmp(name, "Bash") != 0) return; }
-    if (strcmp(name, "Write") == 0 || strcmp(name, "Edit") == 0 || strcmp(name, "NotebookEdit") == 0) { g_br_changed = 1; return; }
+    if (strcmp(name, "Write") == 0 || strcmp(name, "Edit") == 0 || strcmp(name, "NotebookEdit") == 0) {
+        /* skill, uso de MCP e o proprio KATANA.md nao sao codigo do projeto: nao cobram o teste (decisao do dono, 2026-11-22) */
+        char *fp = ct_str(js, end, strcmp(name, "NotebookEdit") == 0 ? "notebook_path" : "file_path");
+        const char *bn = fp ? strrchr(fp, '/') : NULL; bn = bn ? bn + 1 : fp;
+        const int conf = fp && (strstr(fp, "/.katana/") || !strncmp(fp, ".katana/", 8) || !strcmp(bn, "SKILL.md") || !strcmp(bn, "KATANA.md"));
+        free(fp);
+        if (!conf) { g_br_changed = 1; g_br_ran = 0; }       /* mudou depois de verificar: a verificacao nao vale mais */
+        return;
+    }
     if (strcmp(name, "Bash") != 0) return;
     const Brief *b = br_cur();
     char *cmd = ct_str(js, end, "command");
     if (!cmd) return;
     const char *tc = br_single(b, "test", ""), *dn = br_single(b, "done", "");
-    if (tc && *tc && strstr(cmd, tc)) g_br_ran = 1;
-    for (int i = 0; i < b->ns; i++) if (strcmp(b->s[i].key, "test") == 0 && strstr(cmd, b->s[i].val)) g_br_ran = 1;
-    if (dn) { const char *a = strchr(dn, '`'), *z = a ? strchr(a + 1, '`') : NULL; if (a && z && z > a + 1) { char c[300]; snprintf(c, sizeof c, "%.*s", (int)(z - a - 1), a + 1); if (strstr(cmd, c)) g_br_ran = 1; } }
+    char dc[300];
+    if (br_done_cmd(dn, dc, sizeof dc)) { if (strstr(cmd, dc)) g_br_ran = 1; }       /* done: com comando proprio: e ele que vale */
+    else {
+        if (tc && *tc && strstr(cmd, tc)) g_br_ran = 1;
+        for (int i = 0; i < b->ns; i++) if (strcmp(b->s[i].key, "test") == 0 && strstr(cmd, b->s[i].val)) g_br_ran = 1;
+    }
     free(cmd);
 }
 /* nota (uma vez por pedido) para o fim do pedido: arquivos mudaram e a verificacao do projeto nao rodou. 0 = nada a dizer.
@@ -256,6 +282,8 @@ static int brief_end_note(char *out, size_t cap) {
     const char *tc = br_single(b, "test", ""), *dn = br_single(b, "done", "");
     if (!tc && !dn) return 0;
     g_br_noted = 1;
+    char dc[300];
+    if (br_done_cmd(dn, dc, sizeof dc) && !(tc && strstr(tc, dc))) tc = dc;      /* o test: ja contem o comando de done: */
     if (tc) snprintf(out, cap, "[katana: this request changed files, and the project file says to verify with `%.200s`, which has not run in this request. Run it before you finish, or say why you cannot.]", tc);
     else snprintf(out, cap, "[katana: this request changed files, and the project file defines done as: %.250s. Check that before you finish, or say why you cannot.]", dn);
     return 1;

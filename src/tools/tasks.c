@@ -12,6 +12,12 @@ static const char *const CT_ST_NAME[3] = { "pending", "in_progress", "completed"
 
 static void ct_task_render(void) {
     size_t o = 0;
+    {   /* mais passos prontos que antes (por done=N ou por reescrever a lista): fronteira de etapa (context.c) */
+        static int was; int d = 0;
+        for (int i = 0; i < g_ct_ntasks; i++) d += g_ct_tasks[i].st == 2;
+        if (d > was) g_cp_step = 1;
+        was = d;
+    }
     for (int i = 0; i < g_ct_ntasks; i++) {
         const CtTask *t = &g_ct_tasks[i];
         if (o + 200 >= sizeof g_todo) break;
@@ -166,6 +172,14 @@ static void ct_todowrite(const char *js, const char *end, char *out, size_t cap)
 }
 /* grava a lista nova no lugar da antiga e escreve o resultado */
 static void ct_todo_commit(CtTask *nt, int n, char *out, size_t cap) {
+    /* plano vazio ou igual nao e progresso: o modelo ficava em laco so reescrevendo a lista (prova de 21/11/2026) */
+    if (g_ct_ntasks && ct_task_count(2) < g_ct_ntasks) {
+        int same = n == g_ct_ntasks, cur = 0;
+        for (int i = 0; i < n && same; i++) same = nt[i].st == g_ct_tasks[i].st && strcmp(nt[i].subject, g_ct_tasks[i].subject) == 0;
+        while (cur < g_ct_ntasks - 1 && g_ct_tasks[cur].st == 2) cur++;
+        if (!n) { snprintf(out, cap, "error: that list is empty and the current one still has open steps. Do step %d of %d: %.300s. When it is finished send done=%d.", cur + 1, g_ct_ntasks, g_ct_tasks[cur].subject, cur + 1); return; }
+        if (same) { snprintf(out, cap, "error: the list did not change. Do step %d of %d now: %.300s. When it is finished send done=%d.", cur + 1, g_ct_ntasks, g_ct_tasks[cur].subject, cur + 1); return; }
+    }
     /* mantem a descricao de quem ja existia com o mesmo texto; ids novos em sequencia */
     for (int i = 0; i < n; i++) {
         nt[i].id = g_ct_nextid++;

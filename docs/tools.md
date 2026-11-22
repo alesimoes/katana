@@ -78,6 +78,9 @@ about 30000 characters, above that the file path and a 2000-character preview; a
 `Read(file_path, offset, limit, pages)`: lines prefixed with their number; 2000 lines by default; a `PARTIAL view`
 notice when the range does not fit; notices for an empty file and an offset past the end; a directory and binary
 files are errors with a hint; PDF as text (by `pages` above 10 pages); notebooks as cells. Marks the file as seen.
+`Edit(file_path, edits)`: several changes to one file in one call, applied in order in memory, all or none, written once. `edits` is an
+array of `{old_string, new_string, replace_all}` or plain text blocks (`<<<<<<<`, old, `=======`, new, `>>>>>>>`, each marker
+on its own line, nothing escaped; an empty new part deletes the lines). Up to 64 changes.
 `Edit(file_path, old_string, new_string, replace_all)`: exact replacement; the file must have been read in full;
 `old_string` must occur once unless `replace_all`; non-UTF-8 files refused; result shows the changed lines; syntax
 check and undo as in the first set.

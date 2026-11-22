@@ -6,7 +6,7 @@ proposals with "measure"; this one defines the instruments.
 ## Where katana is today
 
 - `tools/codebench/`: 51 tasks with hidden tests (15 small fixes, 6 multi-file, 5 terminal, 4 web, 9 news, 12
-  code-writing added on 2026-11-21 and never run with a model). `run.py --verify` proves each task fails untouched
+  code-writing added on 2026-11-21 and never run with a model). `katana codebench verify` proves each task fails untouched
   and passes with its reference solution. A run of the first 21 takes 40 to 50 minutes per model (109 to 139 s per
   task, measured). Limit per task: 900 s of wall time.
 - Results so far: four configurations on 21 tasks, one run each, 18 or 19 solved in every one; the project's own

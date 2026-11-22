@@ -740,7 +740,8 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     if (!x.turns) { sp_say("nenhuma fala a aprender: nada a treinar"); return 3; }
 
     /* 3. plano de memoria */
-    sp_env("KATANA_TRAIN_GPU", "0");            /* produtos na CPU: a placa pode estar com o desktop */
+    /* a placa e usada se houver (o treino mede a VRAM livre e fica na CPU se nao couber); KATANA_TRAIN_GPU=0 desliga */
+    { const char *g = getenv("KATANA_TRAIN_GPU"); sp_say("produtos do treino: %s", g && !strcmp(g, "0") ? "so na CPU (KATANA_TRAIN_GPU=0)" : "placa e CPU"); }
     char data[2400], plan[2400], line[8192], resume[2400] = "", specname[64];
     snprintf(specname, sizeof specname, "%s.kspec", all ? "katana" : x.kind);
     if (!fresh && sp_newest(root, x.kind, specname, outdir, resume, sizeof resume)) sp_say("continua o treino de %s (--fresh comeca do modelo base)", resume);
@@ -820,6 +821,8 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     rc = sp_run(a.v, trl);
     const double took_h = (double)(time(NULL) - t0) / 3600.0;
     sp_say("treino terminou com codigo %d em %.0f min", rc, took_h * 60);
+    if (sp_grep(trl, "velocidade:", line, sizeof line, 1)) sp_say("%s", line);
+    if (rc != 0 && sp_grep(trl, "a GPU falhou", line, sizeof line, 1)) sp_say("a placa falhou no meio do treino: rode de novo com KATANA_TRAIN_GPU=0");
     if (sp_grep(trl, "mistura realizada:", line, sizeof line, 1)) sp_say("%s", line);
     if (sp_grep(trl, "retomado de", line, sizeof line, 1)) sp_say("%s", line);
     if (sp_grep(trl, "validacao BASE", line, sizeof line, 1)) sp_say("%s", line);

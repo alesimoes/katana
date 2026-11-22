@@ -162,6 +162,7 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
         ah_push(&nh, 'u', out->v[0].s, strlen(out->v[0].s)); ah_push(&nh, 'a', out->v[1].s, strlen(out->v[1].s));   /* resumo que ja existia */
     }
     for (int i = k; i < out->n; i++) ah_push(&nh, out->v[i].role, out->v[i].s, strlen(out->v[i].s));
+    if (!g_ah_g4 && sess_msg_tokens(m, &nh, sys) > budget * 2) ah_mask(&nh, 0, (size_t)budget * 4, 0);      /* o que sai fica guardado em disco e volta com o Read */
     while (nh.n > 2 && sess_msg_tokens(m, &nh, sys) > budget * 2) {      /* ainda grande demais: encolhe ferramentas */
         int ch = 0;
         for (int i = 0; i < nh.n; i++) ch += ah_shrink_tool(&nh.v[i]);
@@ -408,6 +409,26 @@ static int plan_cur(char *txt, size_t cap, int *k, int *n) {
     *n = i;
     return got;
 }
+/* nota anexada ao resultado de uma ferramenta: pedir o plano (3a e 6a chamada sem plano) ou lembrar o passo atual (a cada 5 chamadas) */
+static void loop_plan_note(char *result, size_t cap, const char *name, int pl_calls, int pl_old) {
+    const size_t rl = strlen(result);
+    const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
+    char st[220]; int k = 0, n = 0;
+    if (!g_todo_touched && !pl_old && (pl_calls == 3 || pl_calls == 6) && rl + 600 < cap)
+        snprintf(result + rl, cap - rl, pl_calls == 3
+            ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
+              "the first one in progress, then continue with step 1.]"
+            : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
+            pl_calls, ct_set2() ? "TodoWrite" : "todo");
+    else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < cap)
+        snprintf(result + rl, cap - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
+}
+/* lembrete (uma vez por pedido) quando o modelo encerra com passos em aberto na lista que gravou neste pedido */
+static void loop_todo_nudge(char *nm, size_t cap) {
+    snprintf(nm, cap, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
+             "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
+             g_todo, ct_set2() ? "TodoWrite" : "todo");
+}
 /* marcador TOOL para o desktop: nome, argumentos (uma linha) e, quando a chamada traz "description", ela num 3o campo */
 static void ui_tool_mark(const char *name, const char *ap, const char *end) {
     launch_tool_call(name, ap, end);
@@ -428,6 +449,7 @@ static int rl_writes(const char *name) {
 
 static int ct_todo_autofinish(void);       /* src/tools/tasks.c */
 static int agent(Model *m, int max_tokens, float temp) {
+    g_rd_delta_on = 1;       /* Read do mesmo arquivo devolve so o que mudou, enquanto a leitura anterior esta no contexto */
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     int cd_note = 0, undo_pend = 0, nudged = 0;
@@ -619,7 +641,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                KATANA_TEACHER_FEED=1 volta a manter o cache local em dia a cada rodada */
             const int tskip = g_teacher && cml && !(getenv("KATANA_TEACHER_FEED") && atoi(getenv("KATANA_TEACHER_FEED")));
             if (tskip) g_ctx_lost = 1;
-            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor) || g_ctx_lost);
+            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && cp_due(cp_sys(m, sys), cp_hard(m), pos + ids.n, g_cp_step)) || g_ctx_lost);
+            if (g_cp_step) { g_cp_step = 0; g_cp_phase = hist.n; }       /* a etapa nova comeca depois do que ja esta no historico */
             if (!tskip) { g_cp_nolive = g_ctx_lost; g_ctx_lost = 0; }      /* o cache nao esta em dia (subagente, professor): o caminho de compactacao recalcula a conversa */
             if (!need && !tskip && pos + ids.n + 64 >= c->ctx) {
                 fprintf(stderr, "[contexto cheio (%d de %d tokens): use /new to restart]\n", pos, c->ctx);
@@ -632,12 +655,14 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (tskip) first = 0;
             else if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
                 const int np2 = agent_compact(m, &hist, sys, text, pos, 0, &lg);
-                if (np2 < 0) {
+                if (np2 == -2) { lg = agent_feed(m, ids.ids, ids.n, pos); pos += ids.n; }      /* nao valia a pena compactar: segue normal */
+                else if (np2 < 0) {
                     fprintf(stderr, "[contexto cheio mesmo compactado (%d de %d tokens): conversa recomecada; repita o pedido]\n", pos, c->ctx);
                     g_busy = 0; free(ids.ids); pos = 0; first = 1; ah_clear(&hist);
                     break;
                 }
-                pos = np2; first = 0;
+                else pos = np2;
+                first = 0;
             } else {
                 const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
                 lg = agent_feed(m, ids.ids + np, ids.n - np, pos + np);
@@ -664,6 +689,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_busy = 0;
             printf("\n"); fflush(stdout);
             stats_line(ids.n, t1 - t0, gen, t2 - t1, pos, c->ctx);
+            if (cml && !tskip) cp_tick(cp_sys(m, sys), pos, ids.n, gen);
             if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
             if (cml) {
                 Buf ab = {0};
@@ -797,19 +823,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                         rp_fail = 0;
                     }
                 }
-                if (!trunc && !rp_refuse) {     /* planejar antes de executar, e seguir o plano em ordem */
-                    const size_t rl = strlen(result);
-                    const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
-                    char st[220]; int k = 0, n = 0;
-                    if (!g_todo_touched && !pl_old && (pl_calls == 3 || pl_calls == 6) && rl + 600 < sizeof result)
-                        snprintf(result + rl, sizeof result - rl, pl_calls == 3
-                            ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
-                              "the first one in progress, then continue with step 1.]"
-                            : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
-                            pl_calls, ct_set2() ? "TodoWrite" : "todo");
-                    else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < sizeof result)
-                        snprintf(result + rl, sizeof result - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
-                }
+                if (!trunc && !rp_refuse) loop_plan_note(result, sizeof result, name, pl_calls, pl_old);     /* planejar antes de executar, e seguir o plano em ordem */
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);
                     if (rl + 400 < sizeof result)
@@ -845,9 +859,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];
                 nudged = 1;
-                snprintf(nm, sizeof nm, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
-                         "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
-                         g_todo, ct_set2() ? "TodoWrite" : "todo");
+                loop_todo_nudge(nm, sizeof nm);
                 fprintf(stderr, "%s[lista de tarefas: %d de %d passos em aberto; o modelo foi lembrado]%s\n", CE(C_DIM), tn - td, tn, CE(C_RESET));
                 prole = 'u'; buf_clear(&pend); buf_str(&pend, nm);
                 if (g4) snprintf(text, sizeof text, "<turn|>\n<|turn>user\n%s<turn|>\n<|turn>model\n%s", nm, g4_answer_pre());

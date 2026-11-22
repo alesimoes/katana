@@ -11,7 +11,7 @@
  *   4. prova: o candidato resolve as tarefas de avaliacao (que nunca entram nos dados); so vira o novo melhor se
  *      resolver mais que o atual.
  * As sessoes rodam com uma pasta pessoal vazia (HOME/USERPROFILE): a memoria do agente e os servidores MCP do dono
- * nao entram nos dados. O codebench (tools/codebench/run.py) e o juiz: roda cada tarefa numa pasta temporaria. */
+ * nao entram nos dados. O codebench (katana codebench) e o juiz: roda cada tarefa numa pasta temporaria. */
 
 #ifdef _WIN32
 #include <process.h>
@@ -504,8 +504,8 @@ static int learn_main(const char *argv0, int argc, char **argv) {
     if (!py) py = "python3";
 #endif
     char self[2048]; lr_self(self, sizeof self, argv0);
-    char runpy[2100], tdir[2100];
-    snprintf(runpy, sizeof runpy, "%s/run.py", bench); snprintf(tdir, sizeof tdir, "%s/tasks", bench);
+    char tdir[2100];
+    snprintf(tdir, sizeof tdir, "%s/tasks", bench);
     /* tarefas: as de avaliacao nunca entram nos dados. Padrao: uma em cada quatro (em ordem alfabetica) avalia */
     char **all = NULL; const int na = lr_tasks(tdir, &all);
     if (!na) { fprintf(stderr, "learn: nenhuma tarefa em %s (use --bench)\n", tdir); return 1; }
@@ -536,7 +536,7 @@ static int learn_main(const char *argv0, int argc, char **argv) {
     int champ_pass = 0, champ_runs = 0, have_best = 0;
     {
         remove(evp);
-        char *av[] = { (char *)py, runpy, "--model", (char *)model, "--katana", self, "--tasks", ev.p, "--repeat", erep_s, "--timeout", (char *)timeout,
+        char *av[] = { self, "codebench", "run", "--python", (char *)py, "--dir", (char *)bench, "--model", (char *)model, "--katana", self, "--tasks", ev.p, "--repeat", erep_s, "--timeout", (char *)timeout,
                        "--label", "base", "--out", evp, "--env", env_home, "--env", env_up, NULL };
         printf("\nrodada 0: modelo base nas tarefas de avaliacao\n");
         if (lr_run(av, NULL) != 0) fprintf(stderr, "learn: o codebench terminou com erro (seguindo com o que gravou)\n");
@@ -556,7 +556,7 @@ static int learn_main(const char *argv0, int argc, char **argv) {
         printf("\nrodada %d: coleta (%s)\n", r, have_best ? "base + melhor especializacao" : "modelo base");
         remove(col);
         {
-            char *av[] = { (char *)py, runpy, "--model", (char *)model, "--katana", self, "--tasks", tr.p, "--repeat", rep_s, "--timeout", (char *)timeout,
+            char *av[] = { self, "codebench", "run", "--python", (char *)py, "--dir", (char *)bench, "--model", (char *)model, "--katana", self, "--tasks", tr.p, "--repeat", rep_s, "--timeout", (char *)timeout,
                            "--label", "collect", "--out", col, "--sessions", sess, "--env", env_home, "--env", env_up, "--env", env_temp, "--env", env_spec, NULL };
             if (lr_run(av, NULL) != 0) fprintf(stderr, "learn: o codebench terminou com erro (seguindo com o que gravou)\n");
         }
@@ -570,7 +570,7 @@ static int learn_main(const char *argv0, int argc, char **argv) {
             char tsess[1400], truns[1400], tdata[1400];
             snprintf(tsess, sizeof tsess, "%s/teacher.jsonl", rd); snprintf(truns, sizeof truns, "%s/teacher_runs.jsonl", rd); snprintf(tdata, sizeof tdata, "%s/teacher_data.jsonl", rd);
             remove(tsess); remove(truns);
-            char *av[] = { (char *)py, runpy, "--teacher", (char *)teacher, "--teacher-model", (char *)tmodel, "--teacher-format", (char *)tfmt,
+            char *av[] = { self, "codebench", "run", "--python", (char *)py, "--dir", (char *)bench, "--teacher", (char *)teacher, "--teacher-model", (char *)tmodel, "--teacher-format", (char *)tfmt,
                            "--teacher-key-env", (char *)tkey, "--katana", self, "--tasks", tr.p, "--timeout", (char *)timeout, "--label", "teacher",
                            "--out", truns, "--distill-out", tsess, "--env", env_home, "--env", env_up, NULL };
             printf("rodada %d: professor %s\n", r, tmodel);
@@ -609,7 +609,7 @@ static int learn_main(const char *argv0, int argc, char **argv) {
         char cev[1400], env_cand[1500]; snprintf(cev, sizeof cev, "%s/eval.jsonl", rd); snprintf(env_cand, sizeof env_cand, "KATANA_SPEC=%s", cand);
         remove(cev);
         {
-            char *av[] = { (char *)py, runpy, "--model", (char *)model, "--katana", self, "--tasks", ev.p, "--repeat", erep_s, "--timeout", (char *)timeout,
+            char *av[] = { self, "codebench", "run", "--python", (char *)py, "--dir", (char *)bench, "--model", (char *)model, "--katana", self, "--tasks", ev.p, "--repeat", erep_s, "--timeout", (char *)timeout,
                            "--label", "cand", "--out", cev, "--env", env_home, "--env", env_up, "--env", env_cand, NULL };
             printf("rodada %d: avaliacao do candidato\n", r);
             if (lr_run(av, NULL) != 0) fprintf(stderr, "learn: o codebench terminou com erro (seguindo com o que gravou)\n");
