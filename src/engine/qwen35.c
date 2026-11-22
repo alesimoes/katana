@@ -475,7 +475,7 @@ static void qn_layer(Model *m, const Layer *L, int l, int pos) {
    o compartilhado e cada especialista quente rodam sobre as colunas dos seus tokens (moe_gath, mm glu e down com
    a vaga por deslocamento, moe_scat soma pesada); os frios rodam na CPU enquanto isso e sobem somados. */
 static struct {
-    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1, r1;   /* r1: roteador de um token na GPU */
+    int on, NK, NV, CH, nrot, kmap, dim, P, dnstep, blk, cpuatt, pos1, r1, moedn;   /* r1: roteador de um token na GPU */
     float *hq, *hk, *hv, *ho, *hT;          /* atencao na CPU (cpuatt): q/portao, k, v e saida por token */
     Mat *wab;                               /* por camada linear: [alpha | beta] float */
     KvkBuf qkv, z, ab, o, qg;               /* um token */
@@ -690,6 +690,7 @@ static int vkq_build(Model *m) {
     /* host do lote */
     vkb.P = P; vkg.P = P; vkb.flash = 1; vkq.P = P;
     vkq.dnstep = getenv("KATANA_QN_DNSTEP") && atoi(getenv("KATANA_QN_DNSTEP")) != 0;
+    vkq.moedn = !(getenv("KATANA_QN_MOEDN") && atoi(getenv("KATANA_QN_MOEDN")) == 0);      /* 0: MoE das camadas DeltaNet pelo vkq_moe_n (conferencia) */
     vkq.blk = getenv("KATANA_QN_CHUNK") && atoi(getenv("KATANA_QN_CHUNK")) != 0;
     vkb.xT = xalloc(d * Pp, sizeof(float));
     if (!(getenv("KATANA_QN_MOEN") && atoi(getenv("KATANA_QN_MOEN")) == 0)) vkq_moen_build(m, Pp);
@@ -701,7 +702,7 @@ static int vkq_build(Model *m) {
     vkq.ce = xalloc(Pp * K, sizeof(int)); vkq.cb = xalloc(Pp * K, sizeof(int)); vkq.cw_ = xalloc(Pp * K, sizeof(float));
     if (vkq.cpuatt) {
         vkq.hq = xalloc(2 * qd * Pp, sizeof(float)); vkq.hk = xalloc(kvd * Pp, sizeof(float)); vkq.hv = xalloc(kvd * Pp, sizeof(float));
-        vkq.ho = xalloc(qd * Pp, sizeof(float)); vkq.hT = xalloc(2 * qd * Pp, sizeof(float));
+        vkq.ho = xalloc(qd * Pp, sizeof(float)); vkq.hT = xalloc((2 * qd + 2 * kvd) * Pp, sizeof(float));
     }
     return 1;
 }
@@ -751,8 +752,10 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
             ok &= vk_gmv_ex(&L->wk, vkg.xn, vkg.k, vkg.dummy, kvd, d, 0, 0);
             ok &= vk_gmv_ex(&L->wv, vkg.xn, vkg.v, vkg.dummy, kvd, d, 0, 0);
             if (vkq.cpuatt) {     /* atencao na CPU: q/portao, k, v descem; a saida sobe para o produto de saida */
-                ok &= kvk_buf_read(vkq.qg, 0, vkq.hq, (size_t)2 * qd * 4) && kvk_buf_read(vkg.k, 0, vkq.hk, (size_t)kvd * 4)
-                      && kvk_buf_read(vkg.v, 0, vkq.hv, (size_t)kvd * 4);
+                const KvkBuf rd[3] = { vkq.qg, vkg.k, vkg.v };     /* uma espera so pelos tres */
+                void *const rt[3] = { vkq.hq, vkq.hk, vkq.hv };
+                const size_t rn[3] = { (size_t)2 * qd * 4, (size_t)kvd * 4, (size_t)kvd * 4 };
+                ok &= vk_readv(rd, rt, rn, 3);
                 if (!ok) die("falha na execucao em Vulkan (qwen35moe, leitura da atencao)");
                 qn_core(m, L, l, vkq_pos1, vkq.hq, vkq.hk, vkq.hv, vkq.ho);
                 ok &= kvk_buf_write_q(vkq.o, 0, vkq.ho, (size_t)qd * 4);
@@ -799,7 +802,6 @@ static int vkq_scat(KvkBuf y, int B, int n, int moff) {
     return kvk_dispatch(vkq.scat, b, 3, pc, sizeof pc, (uint32_t)(((size_t)vkq.dim * n + 255) / 256), 1, 1);
 }
 
-static int vkq_posn;     /* posicao do primeiro token do lote em curso (layer_tap) */
 /* MoE do lote na camada l (residual em vkb.x, B tokens) */
 static void vkq_moe_n(Model *m, const Layer *L, int l, int B) {
     const Config *c = &m->cfg;
@@ -981,7 +983,8 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
                 ok &= kvk_dispatch(vkq.cst, io2, 2, &pc2, sizeof pc2, (uint32_t)((vkq.CH + 255) / 256), 1, 1);
                 ok &= vk_mm_p(&L->wssm_out, vkq.ub, vkb.x, d, inner, B, 1, 1);
                 if (!ok) die("falha na execucao em Vulkan (lote qwen35moe)");
-                vkq_moe_n(m, L, l, B);
+                if (vkbm.on && vkq.moedn && !dbg_on) vk_moe_n(m, L, l, B);      /* frios de varios tokens em vagas temporarias, como na camada de atencao */
+                else vkq_moe_n(m, L, l, B);
                 continue;
             }
             {   const KvkBuf io[9] = { vkq.bqkv, vkq.bab, vkq.cw[li], vkq.pr[li], vkq.ring[li], vkq.qh, vkq.kh, vkq.vh, vkq.bg };
@@ -1005,13 +1008,16 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
             ok &= vk_mm_p(&L->wk, vkq.xf, vkb.k, kvd, d, B, 0, 1);
             ok &= vk_mm_p(&L->wv, vkq.xf, vkb.v, kvd, d, B, 0, 1);
             if (vkq.cpuatt) {     /* atencao do lote na CPU (qn_core_n, cache KV na RAM); layouts da GPU sao [linha][B] */
-                ok &= kvk_buf_read(vkq.bqg, 0, vkq.hT, (size_t)2 * qd * B * 4);
-                if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
-                for (int b = 0; b < B; b++) for (int i = 0; i < 2 * qd; i++) vkq.hq[(size_t)b * 2 * qd + i] = vkq.hT[(size_t)i * B + b];
-                ok &= kvk_buf_read(vkb.k, 0, vkq.hT, (size_t)kvd * B * 4);
-                for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hk[(size_t)b * kvd + i] = vkq.hT[(size_t)i * B + b];
-                ok &= kvk_buf_read(vkb.v, 0, vkq.hT, (size_t)kvd * B * 4);
-                for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hv[(size_t)b * kvd + i] = vkq.hT[(size_t)i * B + b];
+                {   const KvkBuf rd[3] = { vkq.bqg, vkb.k, vkb.v };     /* uma espera so pelos tres */
+                    float *tq = vkq.hT, *tk = tq + (size_t)2 * qd * B, *tv = tk + (size_t)kvd * B;
+                    void *const rt[3] = { tq, tk, tv };
+                    const size_t rn[3] = { (size_t)2 * qd * B * 4, (size_t)kvd * B * 4, (size_t)kvd * B * 4 };
+                    ok &= vk_readv(rd, rt, rn, 3);
+                    if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
+                    for (int b = 0; b < B; b++) for (int i = 0; i < 2 * qd; i++) vkq.hq[(size_t)b * 2 * qd + i] = tq[(size_t)i * B + b];
+                    for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hk[(size_t)b * kvd + i] = tk[(size_t)i * B + b];
+                    for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hv[(size_t)b * kvd + i] = tv[(size_t)i * B + b];
+                }
                 if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
                 for (int b0 = 0; b0 < B; b0 += GPU_BMAX) {
                     const int nb = B - b0 < GPU_BMAX ? B - b0 : GPU_BMAX;
@@ -1196,10 +1202,18 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     if (!ya) { ya = xalloc(d, sizeof(float)); yb = xalloc(d, sizeof(float)); outs = xalloc((size_t)MOE_KMAX * d, sizeof(float)); }
     float *x = m->x;
     rmsnorm(m->xb, x, L->attn_norm, d, c->eps);
-    matvec(m->q, &L->wq, m->xb, qd, d);
-    matvec(m->k, &L->wk, m->xb, kvd, d);
-    if (L->wv.q || L->wv.f) matvec(m->v, &L->wv, m->xb, kvd, d);
-    else memcpy(m->v, m->k, kvd * sizeof(float));
+    const int hasv = L->wv.q || L->wv.f;
+    {
+        float *const oo[3] = { m->q, m->k, m->v };
+        const Mat *const ww[3] = { &L->wq, &L->wk, &L->wv };
+        const int rr[3] = { qd, kvd, kvd };
+        if (!vk_matvecs(oo, ww, rr, 2 + hasv, m->xb, d)) {
+            matvec(m->q, &L->wq, m->xb, qd, d);
+            matvec(m->k, &L->wk, m->xb, kvd, d);
+            if (hasv) matvec(m->v, &L->wv, m->xb, kvd, d);
+        }
+    }
+    if (!hasv) memcpy(m->v, m->k, kvd * sizeof(float));
     for (int h = 0; h < nh; h++) rmsnorm(m->q + h * hd, m->q + h * hd, L->q_norm, hd, c->eps);
     for (int h = 0; h < nkv; h++) { rmsnorm(m->k + h * hd, m->k + h * hd, L->k_norm, hd, c->eps); rms_plain(m->v + h * hd, hd, c->eps); }
     for (int i = 0; i < half; i++) {        /* RoPE em metades */
@@ -1223,8 +1237,15 @@ static void g4_layer(Model *m, const Layer *L, int l, int pos) {
     for (int i = 0; i < d; i++) x[i] += m->xb2[i];
     /* feed-forward denso */
     rmsnorm(m->xb, x, L->ffn_norm, d, c->eps);
-    matvec(m->hb, &L->w_gate, m->xb, Hd, d);
-    matvec(m->hb2, &L->w_up, m->xb, Hd, d);
+    {
+        float *const oo[2] = { m->hb, m->hb2 };
+        const Mat *const ww[2] = { &L->w_gate, &L->w_up };
+        const int rr[2] = { Hd, Hd };
+        if (!vk_matvecs(oo, ww, rr, 2, m->xb, d)) {
+            matvec(m->hb, &L->w_gate, m->xb, Hd, d);
+            matvec(m->hb2, &L->w_up, m->xb, Hd, d);
+        }
+    }
     for (int i = 0; i < Hd; i++) m->hb[i] = gelu_t(m->hb[i]) * m->hb2[i];
     matvec(ya, &L->w_down, m->hb, d, Hd);
     if (L->eg) {

@@ -341,6 +341,12 @@ static int selftest_deep(Model *m, int argc, char **argv) {
                 dt_run(m, ids.ids, N, 1, ref, &s); fails += !dt_print("CPU inteira, KV fp16", &s);
                 free(m->kh); free(m->vh);
             }
+            if ((c->g4 || c->ssm_inner) && dt_want(only, "kv16e")) {     /* so o efeito do fp16: produtos em float */
+                m->kcache = m->vcache = NULL; m->kq8 = m->vq8 = NULL;
+                m->kh = xalloc(nk, 2); m->vh = xalloc(nk, 2);
+                cpu_exact = 1; dt_run(m, ids.ids, N, 1, ref, &s); cpu_exact = 0; fails += !dt_print("CPU fp32, KV fp16", &s);
+                free(m->kh); free(m->vh);
+            }
             if (c->ssm_inner && c->hd % 32 == 0 && dt_want(only, "kv8")) {
                 m->kcache = m->vcache = NULL; m->kh = m->vh = NULL;
                 m->kq8 = xalloc(nk / 32, 34); m->vq8 = xalloc(nk / 32, 34);

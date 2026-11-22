@@ -49,6 +49,7 @@ void   kvk_buf_destroy(KvkBuf *b);                 /* espera a GPU, invalida des
 size_t kvk_bytes_allocated(void);                  /* VRAM alocada pela camada (buffers do usuario) */
 int    kvk_buf_write(KvkBuf b, size_t off, const void *src, size_t n);   /* completa antes de retornar */
 int    kvk_buf_write_q(KvkBuf b, size_t off, const void *src, size_t n); /* entra na fila do fluxo atual; os dados sao copiados na hora, a copia da GPU ocorre no kvk_flush/kvk_wait. Nao vale dentro de kvk_rec_* */
+int    kvk_buf_readv(const KvkBuf *b, void *const *dst, const size_t *n, int k);   /* k buffers (do inicio) com um envio e uma espera so */
 int    kvk_buf_read(KvkBuf b, size_t off, void *dst, size_t n);          /* flush + espera + leitura */
 #define kvk_read_sync kvk_buf_read
 
@@ -422,6 +423,48 @@ int kvk_buf_write_q(KvkBuf b, size_t off, const void *src, size_t n) {
 int kvk_buf_write(KvkBuf b, size_t off, const void *src, size_t n) {
     if (!kvk_buf_write_q(b, off, src, n)) return 0;
     return kvk_wait();
+}
+
+/* garante a area de descida com pelo menos n bytes */
+static int kvk__grow_dn(size_t n) {
+    if (n <= G.dn_cap) return 1;
+    if (!kvk_wait()) return 0;
+    size_t cap = G.dn_cap ? G.dn_cap * 2 : KVK_STAGE_MIN; if (cap < n) cap = n; if (cap > KVK_STAGE_MAX) cap = KVK_STAGE_MAX;
+    VkBuffer nb = 0; VkDeviceMemory nm = 0; void *map = NULL; int coh = 1; size_t real;
+    if (!kvk__mkbuf(cap, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 2, &nb, &nm, &map, &coh, &real)) return 0;
+    void *om = G.dn_p; kvk__rmbuf(&G.dn_b, &G.dn_m, &om);
+    G.dn_b = nb; G.dn_m = nm; G.dn_p = (char *)map; G.dn_cap = cap; G.dn_coh = coh;
+    return 1;
+}
+int kvk_buf_readv(const KvkBuf *b, void *const *dst, const size_t *n, int k) {
+    KVK_NEED();
+    if (G.rec) { kvk__seterr("leitura durante gravacao de grafo"); return 0; }
+    size_t tot = 0;
+    for (int i = 0; i < k; i++) {
+        if (!b[i].b || n[i] > b[i].size) { kvk__seterr("read fora do buffer"); return 0; }
+        tot += (n[i] + 15) & ~(size_t)15;
+    }
+    if (tot > KVK_STAGE_MAX) {      /* nao cabe de uma vez: um a um */
+        for (int i = 0; i < k; i++) if (!kvk_buf_read(b[i], 0, dst[i], n[i])) return 0;
+        return 1;
+    }
+    if (!kvk__grow_dn(tot)) return 0;
+    VkCommandBuffer cb = kvk__ccb(); if (!cb) return 0;
+    kvk__bar(cb);
+    size_t o = 0;
+    for (int i = 0; i < k; i++) {
+        VkBufferCopy rg; rg.srcOffset = 0; rg.dstOffset = o; rg.size = n[i];
+        F(CmdCopyBuffer)(cb, b[i].b, G.dn_b, 1, &rg);
+        o += (n[i] + 15) & ~(size_t)15;
+    }
+    if (!kvk_wait()) return 0;
+    if (!G.dn_coh) {
+        VkMappedMemoryRange mr = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE }; mr.memory = G.dn_m; mr.offset = 0; mr.size = VK_WHOLE_SIZE;
+        F(InvalidateMappedMemoryRanges)(G.dev, 1, &mr);
+    }
+    o = 0;
+    for (int i = 0; i < k; i++) { memcpy(dst[i], G.dn_p + o, n[i]); o += (n[i] + 15) & ~(size_t)15; }
+    return 1;
 }
 
 int kvk_buf_read(KvkBuf b, size_t off, void *dst, size_t n) {

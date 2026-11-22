@@ -242,6 +242,7 @@ static float *vk_forward_moe(Model *m, int want_logits);
 static float *vk_qn_forward_1(Model *m, int want_logits);
 static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits);
 static void vkq_setup(Model *m);
+static int vkq_posn;      /* posicao do primeiro token do lote em curso do qwen35moe (layer_tap) */
 static int vkq_pos1;      /* posicao do token no caminho de um token do qwen35moe */
 
 /* um token pelas camadas todas na GPU; devolve os logits (m->logits) ou NULL se !want_logits */

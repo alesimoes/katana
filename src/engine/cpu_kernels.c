@@ -18,11 +18,30 @@ static float dot(const float *a, const float *b, int n) {
     return s;
 }
 
-/* cache KV da CPU em Q8_0 (hibrido DeltaNet): KATANA_CPU_KV8=0/1 forca; padrao automatico acima de
-   262144 de contexto (alem do treinado do Qwen3.6, onde o fp16 passaria de 5 GB) */
-static int kv8_escolha(size_t ctx) {
+/* memoria livre para uso agora (bytes; 0 = nao sei): no Linux, MemAvailable */
+static uint64_t ram_avail(void) {
+#ifdef __linux__
+    FILE *f = fopen("/proc/meminfo", "r");
+    char ln[160]; unsigned long long kb = 0;
+    while (f && fgets(ln, sizeof ln, f)) if (sscanf(ln, "MemAvailable: %llu kB", &kb) == 1) break;
+    if (f) fclose(f);
+    return (uint64_t)kb << 10;
+#else
+    return 0;
+#endif
+}
+/* cache KV da CPU em Q8_0 (hibrido DeltaNet): KATANA_CPU_KV8=0/1 forca. Padrao: so acima de 262144 de contexto e so se o
+   cache fp16 (kv16 bytes), os pesos (pages do arquivo) e uma folga de 2 GB nao couberem na RAM: o Q8_0 perde precisao
+   (selftest --deep no Qwen3.6: KL 1,5e-3 e 30% de erro medio por camada, contra 1,1e-5 do fp16) */
+static int kv8_escolha(size_t ctx, uint64_t kv16, uint64_t weights) {
     const char *e = getenv("KATANA_CPU_KV8");
-    return e ? atoi(e) != 0 : ctx > 262144;
+    if (e) return atoi(e) != 0;
+    if (ctx <= 262144) return 0;
+    const uint64_t av = ram_avail(), need = kv16 + weights + ((uint64_t)2 << 30);
+    if (av >= need) return 0;
+    fprintf(stderr, "cache KV: fp16 (%.1f GB) com os pesos (%.1f GB) nao cabe na memoria livre (%.1f GB): Q8_0, com menos precisao (KATANA_CPU_KV8=0 forca fp16)\n",
+            kv16 / 1073741824.0, weights / 1073741824.0, av / 1073741824.0);
+    return 1;
 }
 
 /* grava n valores (n multiplo de 32) em blocos Q8_0: escala fp16 = max|x|/127 e 32 x int8 */
