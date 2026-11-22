@@ -266,3 +266,51 @@ Pending: `dn_state` (chunked path) splits S into high + remainder with a coopmat
 also folds that round trip. The dense models can use the same precise variants if the batch error is a nuisance
 (llama3.2-3b 0.026), at the cost of 3 products per tile. `KATANA_VKC_EXACT=1` in `vkcheck` puts the CPU cold experts in
 exact float (measurement).
+
+## Qwen3.8-Flash-Next (`general.architecture = qwen4exp`)
+
+File: `models/flash-next/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` (47,039,860,096 bytes, the core) and
+`-00002-of-00002.gguf` (28,800,138,432 bytes, only the n-gram table). Open the first part; the others are found by name.
+48 layers, dim 2560, 512 experts / 10 active (ffn 640) plus a shared expert, DeltaNet in 36 layers, attention in 12
+(3, 7, ..., 47). CPU only. Code: `src/engine/qwen4exp.c`; hooks in `model.c` (metadata, parts, type 42) and `forward.c`.
+
+### Conventions (each compared with the published original weights by range requests: difference 0)
+
+- Norm weights in the file already carry 1 + w. `ssm_a` is -exp(A_log). The value heads (qkv, conv, gate, alpha, beta,
+  dt, output) are interleaved across the q/k groups, as in qwen35moe. `indexer.q_proj`/`k_proj` are the two parts of
+  one original projection. `ple_layers` in the GGUF is 0-based (layer 1), 1-based in the original config.
+- The DeltaNet output gate is sigmoid, not SiLU. No `attn_norm`, `ffn_norm` or `output_norm`: the residual mixers normalise.
+- Type 42 (Q2_0): 64 weights in 18 bytes, fp16 scale d then 16 bytes with four 2-bit codes (first weight in the low
+  bits), weight = d * (code - 1). Checked on `blk.1.ffn_down_exps` against the original: correlation 0.898 with this
+  rule; 0.581, 0.788, 0.009 and -0.004 with code - 2, code - 1.5, scale at the end and reversed bit order.
+- N-gram table: 320,001,536 rows of 160, type IQ4_NL (90 bytes a row); row 0-39 match the original with 7-9% error.
+- Equal block scores in the sparse attention: the older block wins (the original leaves ties undefined).
+
+### State
+
+- The n-gram table is mapped with random-access advice and never copied; the pages of a prompt (up to 4096 tokens) are
+  requested together, sorted, before the first batch. BF16 matrices (mixers, router, ple) are multiplied from the
+  mapped file. Prompt in batches of 16, each weight row opened once per batch.
+- Test without a real model: `sh tools/tinymodel/qwen4exp_test.sh` (pure Python reference, `katana q4check`): states of
+  8 layers and logits, token by token, batches and mixed pieces, 18 times over the sparse budget at 72 tokens; float32
+  agreement 1e-5; eight mutations of the reference are all detected; saturated activations.
+- Bug found with the real file and reproduced in the tiny one: under `-ffast-math` the vectorised sigmoid divides by an
+  approximate reciprocal with a Newton step, which is NaN when expf overflows (argument below -88). All sigmoids of
+  the file are now clamped (`q4_sig`). The same pattern exists in other loops of the engine when they vectorise.
+- Measured on the real file (2026-11-22, i7-11800H, CPU, float path, ctx 4096, hashes of both parts verified, machine
+  otherwise under the measure lock): greedy text correct ("The capital of France is Paris. The capital of Germany is
+  Berlin..."; 17 x 23 = 391 in Portuguese chat). Generation 0.6-0.8 tok/s, prompt 1.7 tok/s (392 tokens). The IQ types and
+  type 42 have no integer CPU kernel here, so every row is dequantized to float: that is the cost. Peak RSS 27.1 GB
+  after 392 tokens (0.19 GB anonymous, 26.9 GB of the mapped core, 16-24 MB of the table); 21.1 GB after 125 tokens.
+  227 thousand major faults in the 392-token run. The mapped core grows with the experts touched; its ceiling is 47 GB.
+
+### Missing
+
+- Integer kernels (IQ2/IQ3/IQ4, type 42); sparse attention over 2,048 tokens on the real file (only on the tiny model);
+  conversation prefix cache (disabled for this architecture); training; GPU.
+- MTP head: its tensors (one gated-attention layer with its own mixers and experts, `mtp.fc_embedding`,
+  `mtp.fc_hidden`) are not in this GGUF; it would need them converted and the verify loop of speculative decoding with
+  rollback of DeltaNet, n-gram and indexer state.
+- Images: vision tower (27 layers, not in this GGUF), 3-axis RoPE positions (also in the indexer keys) and the image
+  token id in the n-gram hashes (the original feeds the placeholder id 248056 to them).
+- GPU: the 4-branch mixers and the sigmoid gate as shaders, block scores and top-k, the table lookup stays on the CPU.
