@@ -25,6 +25,7 @@ _word = re.compile(r'[A-Za-z_][A-Za-z0-9_]*|\d+')
 
 
 STEM = False
+UNIQ = False
 
 
 def stem(t):
@@ -101,8 +102,11 @@ def build_queries(repo, files, n, seed):
             cur[2].append(line.strip())
     if cur:
         out.append(cur)
-    qs = []
+    qs, seen = [], set()
     for h, s, fl in out:
+        if UNIQ and s in seen:      # mensagens repetidas (ex.: "Regenerate PROGRESS.md") pesam demais no hit@1
+            continue
+        seen.add(s)
         truth = [f for f in fl if f in files and not f.startswith(('docs/handoff', 'docs/comparisons'))]
         s2 = re.sub(r'^(feat|fix|merge|docs|chore|refactor|test)[:(\w)]*:\s*', '', s, flags=re.I).strip()
         if len(s2) < 25 or not (1 <= len(truth) <= 4) or len(truth) < len(fl) * 0.5:
@@ -321,6 +325,47 @@ def evaluate(repo, nq, algos, seed, show):
               f'chars(top5) {chars / n:7.0f}  consulta {tq / n * 1000:6.1f} ms')
 
 
+def evaluate_katana(repo, nq, seed, show, binary, tune=None, label='katana'):
+    """o Find do katana (C): uma chamada `katana tool Find` por pergunta, na pasta do repositorio"""
+    import json
+    files = load_corpus(repo)
+    qs = build_queries(repo, files, nq, seed)
+    import tempfile
+    env = dict(os.environ, KATANA_FIND_CHARS='100000', KATANA_FIND_TIME='1', KATANA_LOG=os.devnull,
+               KATANA_CACHE_DIR=os.environ.get('FINDBENCH_CACHE', os.path.join(tempfile.gettempdir(), 'katana-findbench')))
+    if tune:
+        env['KATANA_FIND_TUNE'] = tune
+    t0 = time.time()
+    r = subprocess.run([binary, 'tool', 'Find', json.dumps({'query': 'index warm up', 'limit': 1})], cwd=repo, env=env,
+                       capture_output=True, text=True, errors='replace')
+    print(f'{repo}: {len(qs)} perguntas; primeira chamada (indice) {time.time() - t0:.2f} s; {r.stderr.strip().splitlines()[:1]}')
+    h1 = h5 = h10 = 0
+    mrr = 0.0
+    tq = tw = 0.0
+    shown = 0
+    rx = re.compile(r'^\d+\. (.+?):(\d+)-(\d+)', re.M)
+    for q, truth in qs:
+        t0 = time.time()
+        r = subprocess.run([binary, 'tool', 'Find', json.dumps({'query': q, 'limit': 10})], cwd=repo, env=env,
+                           capture_output=True, text=True, errors='replace')
+        tw += time.time() - t0
+        m = re.search(r'query ([\d.]+) ms', r.stderr)
+        tq += float(m.group(1)) if m else 0
+        rels = [x.group(1) for x in rx.finditer(r.stdout)]
+        ranks = [rels.index(t) + 1 for t in truth if t in rels]
+        best = min(ranks) if ranks else 0
+        h1 += best == 1
+        h5 += 0 < best <= 5
+        h10 += 0 < best <= 10
+        mrr += 1 / best if best else 0
+        if shown < show and not (0 < best <= 5):
+            shown += 1
+            print(f'    [{label}] erro: "{q[:90]}" -> certo {truth[:2]} ; achou {rels[:3]}')
+    n = max(1, len(qs))
+    print(f'  {label:14s} hit@1 {h1 / n:5.1%}  hit@5 {h5 / n:5.1%}  hit@10 {h10 / n:5.1%}  MRR {mrr / n:.3f}  '
+          f'consulta {tq / n:6.1f} ms  chamada {tw / n * 1000:6.0f} ms')
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('repo')
@@ -329,12 +374,19 @@ if __name__ == '__main__':
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--show', type=int, default=0)
     ap.add_argument('--stem', action='store_true')
+    ap.add_argument('--uniq', action='store_true', help='uma pergunta por mensagem de commit (sem repetidas)')
     ap.add_argument('--agg', type=float, default=0.0)
+    ap.add_argument('--katana', help='binario do katana: mede o Find em C com as mesmas perguntas')
+    ap.add_argument('--tune', help='KATANA_FIND_TUNE para o Find em C (ex.: symb=0.3,docpen=0.8); varios separados por ;')
     ap.add_argument('--query', help='uma pergunta: mostra os arquivos e trechos que a busca devolveria')
     a = ap.parse_args()
     STEM = a.stem
+    UNIQ = a.uniq
     AGG = a.agg
-    if a.query:
+    if a.katana:
+        for tu in (a.tune or '').split(';'):
+            evaluate_katana(a.repo, a.n, a.seed, a.show, os.path.abspath(a.katana), tu or None, tu or 'katana')
+    elif a.query:
         files = load_corpus(a.repo)
         ix = Index(files)
         for r, cid, sc in rank_files(algo_param(cover=0.05)(ix, a.query), ix, 8):
