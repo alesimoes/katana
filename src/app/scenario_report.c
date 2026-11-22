@@ -6,8 +6,8 @@
  * Definicoes (as mesmas nos tres): sequencia = ferramentas das falas treinadas, na ordem; MCP vira "mcp", TodoWrite so com done vira
  * "done"; "|" separa pedidos e "." e uma fala sem chamada. Pedido = mensagem do usuario que nao e nota do motor ("[katana: "). */
 
-typedef struct { char *seq; char first[64], fam[40], shape[128], cell[240]; uint64_t *turn; int nturn; uint64_t *req; int nreq; int ask, real, dep, lang, mode; } CuRv;
-static void cu_rv_free(CuRv *v) { free(v->seq); free(v->turn); free(v->req); memset(v, 0, sizeof *v); }
+typedef struct { char *seq; char first[64], fam[40], shape[128], cell[240]; uint64_t *turn; char *tkind; char **ttext; int nturn; uint64_t *req; int nreq; int ask, real, dep, lang, mode; } CuRv;
+static void cu_rv_free(CuRv *v) { free(v->seq); free(v->turn); free(v->tkind); free(v->req); memset(v, 0, sizeof *v); }
 /* pedido mascarado: trechos entre crases, caminhos, nomes de arquivo e numeros viram marcas; caixa e espacos nao contam */
 static uint64_t cu_rv_mask(const char *t) {
     static const char *const ext[] = {"py", "js", "sh", "c", "h", "pl", "md", "conf", "json", "txt", "ps1", "log", "csv", "ipynb"};
@@ -56,6 +56,8 @@ static void cu_rv_scan(const char *line, CuRv *v) {
         }
         if (strcmp(role, "assistant") || (tr && *tr == 'f')) continue;
         uint64_t h = cu_fnv(content, strlen(content), 1469598103934665603ull);
+        Buf tx = {0}; buf_str(&tx, content);
+        char kind = 'f'; int allempty = 1;      /* f fala final, s ToolSearch, p plano escrito, n chamada sem argumento livre, c outra chamada */
         if (!tc || *tc != '[') { buf_str(&sq, sq.n ? ">." : "."); if (first) { snprintf(v->first, sizeof v->first, "(answer)"); first = 0; } }
         else {
             const char *c1, *ce;
@@ -65,12 +67,19 @@ static void cu_rv_scan(const char *line, CuRv *v) {
                 const char *ae = args ? gs_skipv(args) : NULL; const size_t al = args && ae ? (size_t)(ae - args) : 0;
                 h = cu_fnv("\n", 1, h); h = cu_fnv(name, strlen(name), h); h = cu_fnv(" ", 1, h); if (al) h = cu_fnv(args, al, h);
                 const char *arg0 = al ? cu_fmt("%.*s", (int)al, args) : "";
+                buf_str(&tx, cu_fmt(" // %s %.110s", name, arg0));
                 const char *shown = strstr(name, "__") ? "mcp" : !strcmp(name, "TodoWrite") && strstr(arg0, "\"done\"") && !strstr(arg0, "\"todos\"") ? "done" : name;
                 buf_str(&sq, sq.n ? ">" : ""); buf_str(&sq, shown);
                 if (first) { snprintf(v->first, sizeof v->first, "%s", strstr(name, "__") ? "mcp" : name); first = 0; }
                 if (!strcmp(name, "AskUserQuestion")) v->ask = 1;
+                if (!strcmp(name, "ToolSearch")) kind = 's';
+                else if (!strcmp(name, "TodoWrite") && strstr(arg0, "\"todos\"")) { if (kind != 's') kind = 'p'; }
+                else if (strcmp(shown, "done") && strcmp(arg0, "{}")) allempty = 0;
             }
+            if (kind == 'f') kind = allempty ? 'n' : 'c';
         }
+        v->tkind = realloc(v->tkind, (size_t)(v->nturn + 1)); v->tkind[v->nturn] = kind;
+        v->ttext = realloc(v->ttext, sizeof(char *) * (size_t)(v->nturn + 1)); if (tx.n > 170) tx.p[170] = 0; v->ttext[v->nturn] = tx.p;
         v->turn = realloc(v->turn, sizeof *v->turn * (size_t)(v->nturn + 1)); v->turn[v->nturn++] = h;
     }
     v->seq = sq.p;
@@ -170,6 +179,14 @@ static int cu_variety_main(int argc, char **argv) {
     printf("== validation against train\n");
     printf("validation requests equal to a training request (paths, file names, backticked text and digits masked; case and spacing ignored): %ld of %ld (%.1f%%)\n", req_eq, ho.nreqs, 100.0 * (double)req_eq / (double)(ho.nreqs ? ho.nreqs : 1));
     printf("validation trained turns equal to a training trained turn (exact text and calls): %ld of %ld (%.1f%%)\n", turn_eq, ho.nturns, 100.0 * (double)turn_eq / (double)(ho.nturns ? ho.nturns : 1));
+    {   long byk[5] = {0, 0, 0, 0, 0}, allk[5] = {0, 0, 0, 0, 0}; CuCnts byf = {0}, rept = {0}; static const char kk[] = "fspnc";
+        for (long i = 0; i < ho.n; i++) for (int k = 0; k < ho.v[i].nturn; k++) {
+            const int ki = (int)(strchr(kk, ho.v[i].tkind[k]) - kk); allk[ki]++;
+            if (bsearch(&ho.v[i].turn[k], tr.turns, (size_t)tr.nturns, sizeof(uint64_t), cu_u64_cmp)) { byk[ki]++; cu_cnt_add(&byf, ho.v[i].fam); if (verbose) cu_cnt_add(&rept, ho.v[i].ttext[k]); }
+        }
+        printf("  the repeated turns by kind (repeated of all of that kind): final answer %ld of %ld, ToolSearch %ld of %ld, written plan %ld of %ld, call with no free argument %ld of %ld, other call %ld of %ld\n",
+               byk[0], allk[0], byk[1], allk[1], byk[2], allk[2], byk[3], allk[3], byk[4], allk[4]);
+        if (verbose) { cu_cnt_print("  the repeated turns by family: ", &byf, 0); qsort(rept.v, (size_t)rept.n, sizeof *rept.v, cu_cnt_cmp); for (long i = 0; i < rept.n && i < 25; i++) printf("   %4ld  %s\n", rept.v[i].n, rept.v[i].k); } }
     printf("validation conversations whose tool sequence the training file does not have: %ld of %ld (%.1f%%)\n", unseen, ho.n, 100.0 * (double)unseen / (double)(ho.n ? ho.n : 1));
     return 0;
 }

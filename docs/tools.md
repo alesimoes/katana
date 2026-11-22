@@ -129,7 +129,9 @@ several.
 in `Bash` for local servers). Without `offset` the result is short: at most about 4,000 bytes, the passages that match
 the words of `prompt`; when none matches (or there is no prompt) the words of the page title and of the most recent
 search query; when still nothing, the start of the page. A header line says how long the page is and how to read more.
-With `offset`, `find` or `links` the content is exact, as before.
+With `offset`, `find` or `links` the content is exact, as before. An HTTP status of 400 or more is an error (2026-11-22):
+the result starts with `error: HTTP 404 (Not Found) from <url>` and carries no page text, the browser fallback is not
+tried and nothing is cached. `WebSearch` reading several pages in parallel does not see the status yet.
 
 Both tools end the result with one line, `[web: ...]`, with the network time and the bytes returned (it is also in the
 agent log). A result that ends with that line is never sent through the reading notes (`tool_digest`).
@@ -160,7 +162,10 @@ phases and agents.
 diagnostics from a language server found on PATH (`KATANA_LSP_<EXT>` overrides). `EnterWorktree`/`ExitWorktree`:
 an isolated git worktree under `.katana/worktrees/`. `CronCreate`/`CronDelete`/`CronList`/`ScheduleWakeup`:
 prompts scheduled inside the session, delivered when the agent is idle. `PushNotification`, `SendUserFile`: local
-notification and file hand-over to the interface. `ToolSearch(query)`: returns the declaration of tools listed by
+notification and file hand-over to the interface. `PushNotification` calls `notify-send` only when there is no interface
+(`KATANA_UI` unset) and `KATANA_NO_NOTIFY` is unset, empty or `0`; with `KATANA_NO_NOTIFY=1` the result says that
+notifications are turned off and that the model should tell the user in its answer (the curriculum generator sets it).
+`ExitWorktree` with `remove` ignores untracked `__pycache__/` folders and `*.pyc` files when it checks for unsaved work. `ToolSearch(query)`: returns the declaration of tools listed by
 name only. `Skill(skill, args)`: loads instructions from `.katana/skills/<name>/SKILL.md`; a skill in the "ability" format
 (`name`, `when`, `needs`, `args`, numbered `steps`, `done`, `report`, `fail`) has its `needs` checked, its steps written as
 the task list and `$arg` replaced, and lists its extra files; the system prompt carries one line naming the skills.
@@ -172,3 +177,17 @@ one-line description of images. Formats, commands and examples: `docs/extending.
 katana's own tools without a counterpart in this set stay as they are: `terminal`, `terminal_screen`, `job`,
 `read_log`, `howto`, `remember`, `recall`, `install_package`, `download_file`, `find_file`, `list_dir`,
 `read_document`, `git`.
+
+## Changes of 2026-11-22 that affect what the model sees
+
+- **Plan-first note.** `loop_plan_note` counts only calls that do something: `Read`, `Grep`, `Glob`, `LSP`, `ToolSearch`,
+  `WebSearch`, `WebFetch`, the list and get tools and `AskUserQuestion` are not counted. The note fires on the third and on
+  the sixth counted call of a request without a plan. A question answered with reads only never gets it.
+- **Unfinished-steps reminder.** `loop_todo_should_nudge` decides. A task made with `TaskCreate` and never moved to
+  in progress or completed is a recorded task, not a step of the model's plan: it does not trigger the reminder and the
+  engine does not close it at the end of the request.
+- **`ToolSearch select:Edit` and `select:AskUserQuestion`** return the same shape the prompt declares: `edits` is a string
+  of blocks (an array is still accepted), and a question needs only `question` and `options`, an option only `label`.
+- **`howto`** recipes name the current tools (`Read`, `Edit`, `Bash`, `Grep`, `Glob`, `WebSearch`, ...).
+- Tests: `tools/tooltest/misc.sh`, `meta.sh`, `files.sh`, `web.sh`, `tasks.sh`, `loopnotes.sh` (`katana toolrun notes` replays a
+  list of calls and prints which notes the loop would send), `helpword.sh`.

@@ -364,7 +364,7 @@ static void fam_x_ability(FILE *f, Scn *s) {
     }
     if (sit == AB_WHERE) {
         x_user(XV(L("are these skills from this project or from my user folder?", "essas skills sao desse projeto ou da minha pasta de usuario?"), L("where do the skills listed here come from?", "de onde vem as skills listadas aqui?")));
-        r = cu_fmt("%s", x_bash(NULL, "katana skill list", L("List the skills and where each one lives", "Lista as skills e onde cada uma fica"), 0));
+        r = cu_fmt("%s", x_bash(NULL, "katana skill list", cu_fmt(L("List the skills %s can use and where each one lives", "Lista as skills que o %s pode usar e onde cada uma fica"), p->name), 0));
         int n = 0, proj = 0; Buf b = {0}; buf_str(&b, "");
         for (const char *l = r; *l; ) { const size_t k = strcspn(l, "\n"); const char *one = cu_fmt("%.*s", (int)k, l); if (k && isalpha((unsigned char)one[0]) && strstr(one, "  ")) { n++; proj += strstr(one, " project ") != NULL; buf_str(&b, cu_fmt("%s%.*s", n > 1 ? ", " : "", (int)strcspn(one, " "), one)); } l += k; if (*l) l++; }
         if (n != nsk || proj != n) cu_die("katana skill list mostrou outra coisa: %.200s", r);
@@ -411,7 +411,7 @@ static void fam_x_ability(FILE *f, Scn *s) {
             x_end(f); return;
         }
         if (target == SK_BACKUP) {
-            const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", L("Check the settings", "Confere as configuracoes"), 0));
+            const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0));
             if (!strstr(ck, "settings ok")) cu_die("settings");
             x_done(1);
             x_bash(NULL, "mkdir -p backups", L("Create the backups folder", "Cria a pasta de backups"), 0);
@@ -435,7 +435,7 @@ static void fam_x_ability(FILE *f, Scn *s) {
             const char *o = cu_fmt("%s", x_test(p, NULL)), *tot = x_totals(o); char fn[4][48];
             if (!tot || x_fails(o, fn, 4)) cu_die("testes falharam");
             x_done(1);
-            const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", L("Check the settings", "Confere as configuracoes"), 0));
+            const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0));
             const char *bad = x_line_with(ck, "bad value for ");
             if (!bad || !strstr(ck, "settings invalid")) cu_die("as configuracoes passaram");
             x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(L("[x] Run the tests\n[x] Check the settings (failed: stopped here, as the skill says)", "[x] Rodar os testes\n[x] Conferir as configuracoes (falhou: parei aqui, como a skill manda)"))), 0);
@@ -502,12 +502,12 @@ static void fam_x_make(FILE *f, Scn *s) {
             const int mid = !v && cu_pct(45);
             if (mid) {      /* o usuario interrompe antes da conferencia e acrescenta uma regra: a lista e reescrita e o trabalho segue dela */
                 x_user_mid(XV(L("wait, before you check it: also forbid deleting the test runner", "espera, antes de conferir: proibe tambem apagar o arquivo de testes"), L("hold on. it also needs a never rule for the test runner", "pera. ele tambem precisa de uma regra never pro arquivo de testes")));
-                x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s\n[>] %s\n[ ] %s", pl[0], pl[1], L("Add the never: item for the test runner", "Acrescentar o item never: do arquivo de testes"), pl[2]))), 0);
+                x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s\n[>] %s\n[ ] %s", x_p0(pl[0]), pl[1], L("Add the never: item for the test runner", "Acrescentar o item never: do arquivo de testes"), pl[2]))), 0);
                 const char *last = cu_fmt("  %s  the test runner with its cases", p->st == X_JS ? "test/" : "tests/");
                 x_edit(s, "KATANA.md", last, cu_fmt("%s\n%s", last, x_strip(neverline)), 0, 0);
                 x_done(3);
             } else x_done(2);
-            r = x_bash(NULL, chk, L("Check the project file format", "Confere o formato do arquivo de projeto"), 0);
+            r = x_bash(NULL, chk, cu_fmt(L("Check the project file of %s", "Confere o arquivo de projeto do %s"), p->name), 0);
             if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check achou erro: %.300s", r);
             x_verify(p);
             if (mid) { x_final(cu_fmt(L("KATANA.md is written with `test: %s` (I ran it: %s), the layout, and the `never:` item you asked for while I was working. `katana brief check` reports 0 errors.", "O KATANA.md esta escrito com `test: %s` (rodei: %s), o layout, e o item `never:` que voce pediu no meio do trabalho. O `katana brief check` aponta 0 erros."), p->testcmd, tot)); x_end(f); return; }
@@ -518,7 +518,7 @@ static void fam_x_make(FILE *f, Scn *s) {
                 x_user(XV(L("actually, also forbid deleting the test runner in it", "na verdade, proibe tambem apagar o arquivo de testes nele"), L("add a never rule for the test runner too", "poe tambem uma regra never pro arquivo de testes")));
                 const char *last = cu_fmt("  %s  the test runner with its cases", p->st == X_JS ? "test/" : "tests/");
                 x_edit(s, "KATANA.md", last, cu_fmt("%s\n%s", last, x_strip(neverline)), 0, 0);
-                r = x_bash(NULL, chk, L("Check the project file again", "Confere o arquivo de projeto de novo"), 0);
+                r = x_bash(NULL, chk, cu_fmt(L("Check the project file of %s again", "Confere o arquivo de projeto do %s de novo"), p->name), 0);
                 if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check achou erro depois da regra: %.300s", r);
                 x_verify(p);
                 x_final(L("Added: KATANA.md now has a `never:` item for deleting the test runner, with the pattern the engine enforces. `katana brief check` still reports 0 errors.", "Acrescentei: o KATANA.md agora tem um item `never:` para apagar o arquivo de testes, com o padrao que o motor aplica. O `katana brief check` continua com 0 erros."));
@@ -534,7 +534,7 @@ static void fam_x_make(FILE *f, Scn *s) {
             x_done(1);
             x_write(s, NULL, "KATANA.md", want);
             x_done(2);
-            r = x_bash(NULL, chk, L("Check the project file format", "Confere o formato do arquivo de projeto"), 0);
+            r = x_bash(NULL, chk, cu_fmt(L("Check the project file of %s", "Confere o arquivo de projeto do %s"), p->name), 0);
             if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check achou erro: %.300s", r);
             x_verify(p);
             x_final(cu_fmt(L("KATANA.md is rewritten from what I verified: `test: %s` ends with %s, and the layout names the two folders that exist. `katana brief check` reports 0 errors.", "O KATANA.md foi reescrito com o que eu conferi: o `test: %s` termina com %s, e o layout cita as duas pastas que existem. O `katana brief check` aponta 0 erros."), p->testcmd, tot));
@@ -547,7 +547,7 @@ static void fam_x_make(FILE *f, Scn *s) {
             const char *last = cu_fmt("  %s  the test runner with its cases", p->st == X_JS ? "test/" : "tests/");
             x_edit(s, "KATANA.md", last, cu_fmt("%s\n%s", last, x_strip(neverline)), 0, 0);
             x_done(2);
-            r = x_bash(NULL, chk, L("Check the project file format", "Confere o formato do arquivo de projeto"), 0);
+            r = x_bash(NULL, chk, cu_fmt(L("Check the project file of %s", "Confere o arquivo de projeto do %s"), p->name), 0);
             if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check achou erro: %.300s", r);
             x_verify(p);
             x_final(cu_fmt(L("KATANA.md now has a `never:` item, \"delete the test runner\", with the pattern `rm*test_%s*` that the engine enforces. `katana brief check` reports 0 errors.", "O KATANA.md agora tem um item `never:`, \"delete the test runner\", com o padrao `rm*test_%s*` que o motor aplica. O `katana brief check` aponta 0 erros."), p->name));
@@ -561,12 +561,12 @@ static void fam_x_make(FILE *f, Scn *s) {
             } else x_user(XV(L("the never rule in KATANA.md is not being applied. find out why and fix it", "a regra never do KATANA.md nao esta valendo. descobre por que e corrige"), L("something is wrong with KATANA.md, can you check it?", "tem alguma coisa errada no KATANA.md, consegue conferir?")));
             const char *pl[3] = {v ? L("Read KATANA.md", "Ler o KATANA.md") : L("Run katana brief check", "Rodar o katana brief check"), L("Fix the key", "Corrigir a chave"), L("Check again", "Conferir de novo")};
             x_plan(pl, 3);
-            if (!v) { r = x_bash(NULL, chk, L("Check the project file format", "Confere o formato do arquivo de projeto"), 0); errl = x_line_with(r, "error: unknown key"); if (!errl) cu_die("sem o erro da chave: %.200s", r); errl = cu_fmt("%s", errl); }
+            if (!v) { r = x_bash(NULL, chk, cu_fmt(L("Check the project file of %s", "Confere o arquivo de projeto do %s"), p->name), 0); errl = x_line_with(r, "error: unknown key"); if (!errl) cu_die("sem o erro da chave: %.200s", r); errl = cu_fmt("%s", errl); }
             x_need_read(p, "KATANA.md");
             x_done(1);
             x_edit(s, "KATANA.md", "nevr:", "never:", 0, 0);
             x_done(2);
-            r = x_bash(NULL, chk, L("Check the project file again", "Confere o arquivo de projeto de novo"), 0);
+            r = x_bash(NULL, chk, cu_fmt(L("Check the project file of %s again", "Confere o arquivo de projeto do %s de novo"), p->name), 0);
             if (!strstr(r, "KATANA.md: 0 error(s)")) cu_die("o katana brief check ainda acha erro: %.300s", r);
             x_verify(p);
             x_final(cu_fmt(L("The key was misspelled: KATANA.md had `nevr:` where it should be `never:` (\"%s\"), so the engine ignored the rule. It is fixed and `katana brief check` reports 0 errors.", "A chave estava escrita errado: o KATANA.md tinha `nevr:` no lugar de `never:` (\"%s\"), entao o motor ignorava a regra. Corrigi e o `katana brief check` aponta 0 erros."), errl));
@@ -584,7 +584,7 @@ static void fam_x_make(FILE *f, Scn *s) {
                       L("the snapshot skill should end by listing snapshots/$label with ls -la (check: at least one file printed). add that step", "a skill snapshot devia terminar listando snapshots/$label com ls -la (verificacao: pelo menos um arquivo impresso). acrescenta esse passo")));
             x_need_read(p, skrel);
             x_edit(s, skrel, "done: snapshots/$label holds", cu_fmt("%s\ndone: snapshots/$label holds", step4), 0, 0);
-            r = x_bash(NULL, chk, L("Check the skill format", "Confere o formato da skill"), 0);
+            r = x_bash(NULL, chk, cu_fmt(L("Check the format of the %s skill", "Confere o formato da skill %s"), sknm), 0);
             if (!strstr(r, ok)) cu_die("o katana skill check achou erro: %.300s", r);
             x_verify(p);
             x_final(L("The snapshot skill now has a step 4, \"List the snapshot\", with the check that it prints at least one file. `katana skill check snapshot` reports 0 errors.", "A skill snapshot agora tem o passo 4, \"List the snapshot\", com a verificacao de que imprime pelo menos um arquivo. O `katana skill check snapshot` aponta 0 erros."));
@@ -596,7 +596,7 @@ static void fam_x_make(FILE *f, Scn *s) {
                 x_need_read(p, skrel);
             } else x_user(cu_fmt(XV(L("create a skill called %s, %s. if a check fails, stop and say which one", "cria uma skill chamada %s, %s. se uma verificacao falhar, para e diz qual"), L("I want a new skill, %s: %s. on a failed check it stops and reports it", "quero uma skill nova, %s: %s. se uma verificacao falhar ela para e avisa")), sknm, what));
             x_write(s, NULL, skrel, skmd);
-            r = x_bash(NULL, chk, L("Check the skill format", "Confere o formato da skill"), 0);
+            r = x_bash(NULL, chk, cu_fmt(L("Check the format of the %s skill", "Confere o formato da skill %s"), sknm), 0);
             if (!strstr(r, ok)) cu_die("o katana skill check achou erro: %.300s", r);
             x_verify(p);
             x_final(cu_fmt(L("The skill `%s` is in %s: %d steps, each with its check, and `fail:` says to stop at the failing step. `katana skill check %s` reports 0 errors.", "A skill `%s` esta em %s: %d passos, cada um com a verificacao, e o `fail:` manda parar no passo que falhar. O `katana skill check %s` aponta 0 erros."), sknm, skrel, ns, sknm));

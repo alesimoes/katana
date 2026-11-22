@@ -171,8 +171,8 @@ static void fam_x_tools(FILE *f, Scn *s) {
         const char *plan[3] = {mon ? L("Start watching the script", "Comecar a monitorar o script") : L("Start the script in the background", "Subir o script em segundo plano"), L("Read its output", "Ler a saida"), L("Stop it", "Parar")};
         x_plan(plan, 3);
         if (mon) x_tsel("Monitor,TaskStop");
-        const char *r = cu_fmt("%s", mon ? x_call(NULL, "Monitor", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"description\": %s}", cu_q(L("Watch the script", "Monitora o script"))), 0)
-                                         : x_call(NULL, "Bash", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": %s}", cu_q(L("Start the watcher in the background", "Sobe o monitor em segundo plano"))), 0));
+        const char *r = cu_fmt("%s", mon ? x_call(NULL, "Monitor", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"description\": %s}", cu_q(cu_fmt(L("Watch the script of %s", "Monitora o script do %s"), p->name))), 0)
+                                         : x_call(NULL, "Bash", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": %s}", cu_q(cu_fmt(L("Start the watcher of %s in the background", "Sobe o monitor do %s em segundo plano"), p->name))), 0));
         const char *idp = strstr(r, "ID: "), *fp = strstr(r, "written to: ");
         if (!idp || !fp) cu_die("resultado sem id ou arquivo: %.200s", r);
         const char *id = cu_fmt("%d", atoi(idp + 4)), *log = cu_fmt("%.*s", (int)strcspn(fp + 12, "\n"), fp + 12);

@@ -685,14 +685,14 @@ static void fam_x_config(FILE *f, Scn *s) {
         long v3 = lo + 1 + cu_n((int)(hi - lo > 400 ? 400 : hi - lo - 1)); if (v3 == v || v3 == atol(p->cv[ki])) v3 = v3 + 1 <= hi ? v3 + 1 : v3 - 1;
         x_user_mid(cu_fmt(XV(L("wait, make that %ld, not %ld", "espera, e %ld, nao %ld"), L("stop, I typed it wrong: the value is %ld (not %ld)", "para, digitei errado: o valor e %ld (nao %ld)")), v3, v));
         x_shape_tag("goal");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[>] %s\n[ ] %s", plan[0], cu_fmt(L("Change %s to %ld", "Mudar %s para %ld"), key, v3), plan[2]))), 0);
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[>] %s\n[ ] %s", x_p0(plan[0]), cu_fmt(L("Change %s to %ld", "Mudar %s para %ld"), key, v3), plan[2]))), 0);
         v = v3; c.fu = F_NONE;
     } else x_done(1);
     const char *o1 = cu_fmt("%s = %s", key, p->cv[ki]), *n1 = cu_fmt("%s = %ld", key, v);
     if (two) { const char *old[2] = {o1, cu_fmt("%s = %s", p->ck[k2], p->cv[k2])}, *nw[2] = {n1, cu_fmt("%s = %ld", p->ck[k2], v2)}; x_edits(s, "settings.conf", old, nw, 2); }
     else x_edit(s, "settings.conf", o1, n1, 0, 0);
     x_done(2);
-    const char *chk = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(XV(L("Check the settings after changing %s", "Confere as configuracoes depois de mudar %s"), L("Run the settings check for %s", "Roda a verificacao das configuracoes para %s")), key), 0);
+    const char *chk = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(XV(L("Check the settings of %s after changing %s", "Confere as configuracoes do %s depois de mudar %s"), L("Run the settings check of %s for %s", "Roda a verificacao das configuracoes do %s para %s")), p->name, key), 0);
     if (c.obst == O_BADVAL) {
         const char *badl = x_line_with(chk, "bad value for ");
         if (!badl) cu_die("a verificacao aceitou o valor fora da faixa");
@@ -773,7 +773,7 @@ static void fam_x_clean(FILE *f, Scn *s) {
             if (access(x_abs(s, a), F_OK) == 0) cu_die("o arquivo nao foi apagado");
             x_final(cu_fmt(L("Deleted %s and %s, as you confirmed. tools/lint.sh stays: nothing marks it as old.", "Apaguei %s e %s, como voce confirmou. O tools/lint.sh fica: nada marca ele como antigo."), a, b));
         } else {
-            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
             x_final(cu_fmt(L("Nothing was deleted, as you chose. %s and %s are still in tools/.", "Nada foi apagado, como voce escolheu. %s e %s continuam em tools/."), a, b));
         }
     } else {
@@ -825,14 +825,14 @@ static void fam_x_investigate(FILE *f, Scn *s) {
     if (c.obst == O_MISSDEP) {
         const char *w = x_bash(NULL, cu_fmt("command -v %s", prog), cu_fmt(L("Check whether %s is installed", "Ve se o %s esta instalado"), prog), 0);
         if (strstr(w, cu_fmt("/%s", prog))) cu_die("o programa existe");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
         x_final(cu_fmt(L("I could not fix it: tools/report.sh pipes the table through `%s`, and that program is not installed on this machine (`command -v %s` finds nothing). Nothing was changed. Install `%s`, or tell me which program should format the table instead.",
                          "Nao consegui corrigir: o tools/report.sh passa a tabela pelo `%s`, e esse programa nao esta instalado nesta maquina (`command -v %s` nao acha nada). Nada foi alterado. Instala o `%s`, ou me diz qual programa deve formatar a tabela no lugar dele."), prog, prog, prog));
     } else {
         const char *g = cu_fmt("%s", x_glob(cu_fmt("**/%s", data)));
         if (c.obst == O_MISSFILE) {
             if (strstr(g, data)) cu_die("o arquivo de dados existe");
-            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
             x_final(cu_fmt(L("I could not fix it: tools/report.sh reads %s/%s, and no file named %s exists anywhere in the project. Nothing was changed. I need that file (lines of `label value`) or the place it should come from.",
                              "Nao consegui corrigir: o tools/report.sh le %s/%s, e nao existe nenhum arquivo chamado %s no projeto. Nada foi alterado. Preciso desse arquivo (linhas `rotulo valor`) ou de onde ele deve vir."), dir, data, data));
         } else {

@@ -148,9 +148,14 @@ static const char *x_grep(const char *pat, const char *mode, const char *glob) {
 }
 static const char *x_glob(const char *pat) { return x_call(NULL, "Glob", cu_fmt("{\"pattern\": %s}", cu_q(pat)), 0); }
 /* plano: escrito uma vez, em linhas; depois so done=N junto da proxima acao */
+static const char *g_x_pname;      /* nome do projeto desta conversa (NULL sem projeto) */
+static const char *g_x_plan0;      /* o primeiro passo do ultimo plano, como foi escrito (com o nome do projeto) */
+static const char *x_p0(const char *orig) { return g_x_plan0 ? g_x_plan0 : orig; }
 static void x_plan(const char *const *items, int n) {
     Buf o = {0}; buf_str(&o, "");
-    for (int i = 0; i < n; i++) buf_str(&o, cu_fmt("%s%s %s", i ? "\n" : "", i ? "[ ]" : "[>]", items[i]));
+    int named = !g_x_pname; for (int i = 0; i < n && !named; i++) named = strstr(items[i], g_x_pname) != NULL;
+    g_x_plan0 = !named ? cu_fmt("%s (%s)", items[0], g_x_pname) : cu_fmt("%s", items[0]);
+    for (int i = 0; i < n; i++) buf_str(&o, cu_fmt("%s%s %s", i ? "\n" : "", i ? "[ ]" : "[>]", i ? items[i] : g_x_plan0));
     x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_keep(o.p))), 0);
 }
 static void x_done(int k) { g_x.pdone = k; }
@@ -621,6 +626,7 @@ static void x_proj_write(const XProj *p) {
 static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     free(g_x.ask.p);
     memset(&g_x, 0, sizeof g_x); g_x.fam = fam; buf_str(&g_x.ask, ""); g_x.ask.n = 0; g_x.k = -1;
+    g_x_pname = p ? p->name : NULL;
     g_x.srng = g_x_rng0 * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull;
     s->nsk = 0; s->nms = 0; s->brief = 0;
     if (nskills) cu_skill_pick(s, NULL, nskills);

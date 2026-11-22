@@ -555,7 +555,7 @@ static void xc_cannot(XC *c, int v) {
     for (int i = 0, n = cu_count(what[v][3], ' '); i < n; i++) buf_str(&cm, cu_fmt("%scommand -v %s", i ? "; " : "", cu_part(what[v][3], ' ', i)));
     r = xc_bash_own_path(cu_keep(cm.p), L("Check which programs exist", "Ve quais programas existem"));
     if (strchr(r, '/')) cu_die("o PATH do gerador tem um programa para isso: %.120s", r);
-    x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+    x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
     x_final(cu_fmt(L("I could not do it: no tool of mine matches \"%s\" and none of these programs is installed: %s. Nothing was sent. To do it I need %s.",
                      "Nao consegui: nenhuma ferramenta minha casa com \"%s\" e nenhum destes programas esta instalado: %s. Nada foi enviado. Para fazer eu preciso de %s."), what[v][2], what[v][3], what[v][4]));
 }
