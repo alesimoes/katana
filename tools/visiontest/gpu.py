@@ -12,7 +12,7 @@ ns = {"__file__": os.path.join(HERE, "oracle.py"), "__name__": "oracle_lib"}
 exec(compile(src, "oracle.py", "exec"), ns)
 T = tempfile.mkdtemp()
 m, pj, ip, f = (os.path.join(T, x) for x in ("tiny.gguf", "mmproj-t.gguf", "i.png", "l.bin"))
-subprocess.run([sys.executable, os.path.join(HERE, "..", "tinymodel", "make_tiny_gguf.py"), m, "--arch", "qwen35moe", "--seed", "7", "--vision", "--gpu"], check=True, stdout=subprocess.DEVNULL)
+subprocess.run([sys.executable, os.path.join(HERE, "..", "tinymodel", "make_tiny_gguf.py"), m, "--arch", "qwen35moe", "--seed", "7", "--vision", "--gpu", "--experts", "64", "--used", "8"], check=True, stdout=subprocess.DEVNULL)
 ns["projector"](pj, 32, 72, 2, 4, 128, seed=4)
 ns["picture"](150, 110, 2).save(ip)
 base = {"KATANA_DUMP_LOGITS": f, "KATANA_SPEC": "", "KATANA_IMAGE_TOKENS": "64", "KATANA_MMPROJ": pj}
@@ -34,7 +34,7 @@ for n in (0, 1, 3):
         g, err = logits(dict({"KATANA_BACKEND": "vulkan"}, **e), n > 0, n)
         vk = "grafo completo do qwen35moe" in err
         d = np.abs(g - ref).max() / np.abs(ref).max() if g is not None else 9
-        ok = vk and d < 2e-2
+        ok = vk and d < 1e-4
         bad += not ok
         print("%-4s %d image(s), %s: largest relative difference %.1e, same best token: %s%s" % ("ok" if ok else "FAIL", n, nm, d, g is not None and int(g.argmax()) == int(ref.argmax()), "" if vk else "  (the Vulkan graph did not run)"))
     if n:      # controle: a rotacao de texto no lugar da de imagem tem de dar outro resultado

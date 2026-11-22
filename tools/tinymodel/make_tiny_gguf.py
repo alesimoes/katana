@@ -103,9 +103,9 @@ def main():
     hyb = A in ("qwen35moe", "qwen35")
     if A == "qwen35moe": a.shared = True
     dk, ng, nv, dv, CK = 16, 2, 4, 16, 4            # DeltaNet: largura de q/k, grupos, cabecas v, largura v, janela da convolucao
-    if a.gpu: dk, dv = 128, 128
+    if a.gpu: dk, ng, nv, dv = 128, 16, 32, 128
     inner, CH = nv * dv, 2 * ng * dk + nv * dv
-    E, He, Hs = a.experts, 32, 64
+    E, He, Hs = a.experts, 64 if a.gpu else 32, 64
     tmpl = ("{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}"
             "{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}")
     if a.template == "chatml-xml":   # chamadas de ferramenta em XML, como no template do Qwen3.6
