@@ -701,7 +701,7 @@ static int vkq_build(Model *m) {
     vkq.ce = xalloc(Pp * K, sizeof(int)); vkq.cb = xalloc(Pp * K, sizeof(int)); vkq.cw_ = xalloc(Pp * K, sizeof(float));
     if (vkq.cpuatt) {
         vkq.hq = xalloc(2 * qd * Pp, sizeof(float)); vkq.hk = xalloc(kvd * Pp, sizeof(float)); vkq.hv = xalloc(kvd * Pp, sizeof(float));
-        vkq.ho = xalloc(qd * Pp, sizeof(float)); vkq.hT = xalloc(2 * qd * Pp, sizeof(float));
+        vkq.ho = xalloc(qd * Pp, sizeof(float)); vkq.hT = xalloc((2 * qd + 2 * kvd) * Pp, sizeof(float));
     }
     return 1;
 }
@@ -751,8 +751,10 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
             ok &= vk_gmv_ex(&L->wk, vkg.xn, vkg.k, vkg.dummy, kvd, d, 0, 0);
             ok &= vk_gmv_ex(&L->wv, vkg.xn, vkg.v, vkg.dummy, kvd, d, 0, 0);
             if (vkq.cpuatt) {     /* atencao na CPU: q/portao, k, v descem; a saida sobe para o produto de saida */
-                ok &= kvk_buf_read(vkq.qg, 0, vkq.hq, (size_t)2 * qd * 4) && kvk_buf_read(vkg.k, 0, vkq.hk, (size_t)kvd * 4)
-                      && kvk_buf_read(vkg.v, 0, vkq.hv, (size_t)kvd * 4);
+                const KvkBuf rd[3] = { vkq.qg, vkg.k, vkg.v };     /* uma espera so pelos tres */
+                void *const rt[3] = { vkq.hq, vkq.hk, vkq.hv };
+                const size_t rn[3] = { (size_t)2 * qd * 4, (size_t)kvd * 4, (size_t)kvd * 4 };
+                ok &= vk_readv(rd, rt, rn, 3);
                 if (!ok) die("falha na execucao em Vulkan (qwen35moe, leitura da atencao)");
                 qn_core(m, L, l, vkq_pos1, vkq.hq, vkq.hk, vkq.hv, vkq.ho);
                 ok &= kvk_buf_write_q(vkq.o, 0, vkq.ho, (size_t)qd * 4);
@@ -1005,13 +1007,16 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
             ok &= vk_mm_p(&L->wk, vkq.xf, vkb.k, kvd, d, B, 0, 1);
             ok &= vk_mm_p(&L->wv, vkq.xf, vkb.v, kvd, d, B, 0, 1);
             if (vkq.cpuatt) {     /* atencao do lote na CPU (qn_core_n, cache KV na RAM); layouts da GPU sao [linha][B] */
-                ok &= kvk_buf_read(vkq.bqg, 0, vkq.hT, (size_t)2 * qd * B * 4);
-                if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
-                for (int b = 0; b < B; b++) for (int i = 0; i < 2 * qd; i++) vkq.hq[(size_t)b * 2 * qd + i] = vkq.hT[(size_t)i * B + b];
-                ok &= kvk_buf_read(vkb.k, 0, vkq.hT, (size_t)kvd * B * 4);
-                for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hk[(size_t)b * kvd + i] = vkq.hT[(size_t)i * B + b];
-                ok &= kvk_buf_read(vkb.v, 0, vkq.hT, (size_t)kvd * B * 4);
-                for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hv[(size_t)b * kvd + i] = vkq.hT[(size_t)i * B + b];
+                {   const KvkBuf rd[3] = { vkq.bqg, vkb.k, vkb.v };     /* uma espera so pelos tres */
+                    float *tq = vkq.hT, *tk = tq + (size_t)2 * qd * B, *tv = tk + (size_t)kvd * B;
+                    void *const rt[3] = { tq, tk, tv };
+                    const size_t rn[3] = { (size_t)2 * qd * B * 4, (size_t)kvd * B * 4, (size_t)kvd * B * 4 };
+                    ok &= vk_readv(rd, rt, rn, 3);
+                    if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
+                    for (int b = 0; b < B; b++) for (int i = 0; i < 2 * qd; i++) vkq.hq[(size_t)b * 2 * qd + i] = tq[(size_t)i * B + b];
+                    for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hk[(size_t)b * kvd + i] = tk[(size_t)i * B + b];
+                    for (int b = 0; b < B; b++) for (int i = 0; i < kvd; i++) vkq.hv[(size_t)b * kvd + i] = tv[(size_t)i * B + b];
+                }
                 if (!ok) die("falha na execucao em Vulkan (lote qwen35moe, leitura da atencao)");
                 for (int b0 = 0; b0 < B; b0 += GPU_BMAX) {
                     const int nb = B - b0 < GPU_BMAX ? B - b0 : GPU_BMAX;

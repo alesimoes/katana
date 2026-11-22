@@ -467,6 +467,15 @@ static int vk_gmv(const Mat *W, KvkBuf x, KvkBuf out, int rows, int cols, int mo
     return vk_gmv_ex(W, x, out, x, rows, cols, mode, 0);
 }
 
+/* le k buffers com uma espera so; KATANA_VK_READV=0: um de cada vez (conferencia) */
+static int vk_readv(const KvkBuf *b, void *const *dst, const size_t *n, int k) {
+    static int on = -1;
+    if (on < 0) on = getenv("KATANA_VK_READV") ? atoi(getenv("KATANA_VK_READV")) != 0 : 1;
+    if (on) return kvk_buf_readv(b, dst, n, k);
+    for (int i = 0; i < k; i++) if (!kvk_buf_read(b[i], 0, dst[i], n[i])) return 0;
+    return 1;
+}
+
 static void vk_matvec(float *out, const Mat *W, const float *x, int rows, int cols) {
     if (!kvk_buf_write_q(gpu.vxb, 0, x, (size_t)cols * sizeof(float)) || !vk_gmv(W, gpu.vxb, gpu.vob, rows, cols, 0)
         || !kvk_buf_read(gpu.vob, 0, out, (size_t)rows * sizeof(float))) die("falha na execucao em Vulkan");
