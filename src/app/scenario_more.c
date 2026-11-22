@@ -106,6 +106,12 @@ static void fam_x_web(FILE *f, Scn *s) {
         x_final(q == 0 ? ans0 : q == 1 ? cu_fmt(L("`%s` keeps working until %s %d.0, with a warning. Source: %s", "O `%s` continua funcionando ate o %s %d.0, com um aviso. Fonte: %s"), g_x_opts[oi][0], lib, keep, shown)
                                        : cu_fmt(L("The default batch size in %s %s is %d rows (it was %d). Source: %s", "O tamanho padrao do lote no %s %s e %d linhas (era %d). Fonte: %s"), lib, ver, sdef2, sdef, shown));
     }
+    if (g_cu_hold) {      /* holdout: uma segunda pergunta sobre a mesma pagina */
+        x_user(cu_fmt(L("and what is the default batch size in %s %s?", "e qual e o tamanho padrao do lote no %s %s?"), lib, ver));
+        const char *r2 = x_webcall("WebFetch", cu_fmt("{\"url\": %s, \"prompt\": \"default batch size\"}", cu_q(url)));
+        if (!strstr(r2, fact3)) cu_die("o WebFetch nao trouxe o lote: %.200s", r2);
+        x_final(cu_fmt(L("%d rows; it was %d before %s. Source: %s", "%d linhas; era %d antes do %s. Fonte: %s"), sdef2, sdef, ver, shown));
+    }
     unsetenv("KATANA_WEBSEARCH_FIXTURE");
     x_end(f);
 }
@@ -239,6 +245,7 @@ static void fam_x_concept(FILE *f, Scn *s) {
         if (!d0) cu_die("descricao longa demais");
         x_final(cu_fmt(L("Yes: %s. Its description says: \"%s\".", "Sim: %s. A descricao diz: \"%s\"."), dq[sub][3], d0 + 16));
     }
+    if (g_cu_hold) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
     x_end(f);
 }
 
@@ -388,15 +395,14 @@ static void fam_x_tools(FILE *f, Scn *s) {
     } else if (kind == K_LSP) {
         XFi *fi = &p->mod[1].fn[0];
         x_user(cu_fmt(XV(L("use the language server to find where %s is defined", "usa o servidor de linguagem pra achar onde o %s e definido"), L("ask the language server for the definition of %s", "pede ao servidor de linguagem a definicao do %s")), fi->name));
-        const char *plan[3] = {L("Get the language server tool", "Pegar a ferramenta do servidor de linguagem"), L("Ask for the definition", "Pedir a definicao"), L("Report where it is", "Dizer onde fica")};
-        x_plan(plan, 3);
+        const char *plan[2] = {L("Get the language server tool", "Pegar a ferramenta do servidor de linguagem"), cu_fmt(L("Ask for the definition of %s and report it", "Pedir a definicao de %s e dizer onde fica"), fi->name)};
+        x_plan(plan, 2);
         x_tsel("LSP");
         x_done(1);
         const char *r = x_call(NULL, "LSP", cu_fmt("{\"operation\": \"workspaceSymbol\", \"filePath\": %s, \"query\": %s}", cu_q(x_abs(s, x_src(p, 0))), cu_q(fi->name)), XF_ERR);
         if (!x_err(r)) cu_die("ha servidor de linguagem nesta maquina");
         const char *why = cu_fmt("%.*s", (int)strcspn(r + 7, "."), r + 7);
         int line = 0; x_locate(p, fi->name, &line, 1);
-        { const char *t = x_call(NULL, "TodoWrite", "{\"done\": 2}", 0); if (x_err(t)) cu_die("done=2 recusado"); }
         x_final(cu_fmt(L("The language server could not answer (%s), so I searched the files instead: `%s` is defined in %s, line %d.", "O servidor de linguagem nao respondeu (%s), entao procurei nos arquivos: `%s` e definida em %s, linha %d."), why, fi->name, x_src(p, 1), line));
     } else if (kind == K_MCPRES) {
         x_user(XV(L("which resources do the connected MCP servers offer?", "que recursos os servidores MCP ligados oferecem?"), L("list the MCP resources available here", "lista os recursos MCP disponiveis aqui")));
@@ -422,12 +428,13 @@ static void fam_x_tools(FILE *f, Scn *s) {
         setenv("KATANA_SCHED_NOW", "1770000000", 1);
         const int mins = 10 * (1 + cu_n(5));
         x_user(cu_fmt(XV(L("every %d minutes in this session, remind yourself to run the tests; then show me what is scheduled", "a cada %d minutos nesta sessao, se lembra de rodar os testes; depois me mostra o que esta agendado")), mins));
-        const char *plan[3] = {L("Get the scheduling tools", "Pegar as ferramentas de agendamento"), L("Schedule the reminder", "Agendar o lembrete"), L("List what is scheduled", "Listar o que esta agendado")};
+        const char *plan[3] = {L("Get the scheduling tools", "Pegar as ferramentas de agendamento"), cu_fmt(L("Schedule the reminder every %d minutes", "Agendar o lembrete a cada %d minutos"), mins), L("List what is scheduled", "Listar o que esta agendado")};
         x_plan(plan, 3);
         x_tsel("CronCreate,CronList");
         x_done(1);
         const char *r = x_call(NULL, "CronCreate", cu_fmt("{\"cron\": \"*/%d * * * *\", \"prompt\": %s, \"recurring\": true}", mins, cu_q(cu_fmt("Run the tests: %s", p->testcmd))), XF_ERR);
         if (x_err(r)) { unsetenv("KATANA_SCHED_NOW"); cu_die("CronCreate: %.200s", r); }
+        { const char *tk = strstr(r, "task "); if (tk && g_x.nsub < 4) { g_x.sfrom[g_x.nsub] = cu_fmt("%.*s", (int)strcspn(tk + 5, " "), tk + 5); g_x.sto[g_x.nsub++] = "5c0de001"; } }
         x_done(2);
         r = cu_fmt("%s", x_call(NULL, "CronList", "{}", 0));
         unsetenv("KATANA_SCHED_NOW");
@@ -446,6 +453,7 @@ static void fam_x_tools(FILE *f, Scn *s) {
         if (!strstr(r, cu_fmt("stage=%s", val))) cu_die("terminal sem o valor: %.300s", r);
         cu_die("terminal: saida depende do tempo; fora do arquivo (%.60s)", r);
     }
+    if (g_cu_hold) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
     x_end(f);
 }
 
@@ -453,8 +461,9 @@ static void fam_x_tools(FILE *f, Scn *s) {
 static void fam_x_skill(FILE *f, Scn *s) {
     XC c; memset(&c, 0, sizeof c); c.s = s;
     int kind, fail;
-    for (int t = 0; ; t++) { if (t > 200) cu_die("sem celula de skill"); kind = cu_n(3); fail = cu_pct(30); if (x_held(70 + kind, fail, 0, 0, 0) == (g_cu_hold != 0)) break; }
-    x_proj(&c.p, s, CU_PA(((const int[]){X_PY, X_JS, X_SH, X_PL})), 2, 2); XProj *p = &c.p;
+    int stk;
+    for (int t = 0; ; t++) { if (t > 200) cu_die("sem celula de skill"); kind = cu_n(3); fail = cu_pct(30); stk = CU_PA(((const int[]){X_PY, X_JS, X_SH, X_PL})); if (x_held(70 + kind, fail, stk, 0, 0) == (g_cu_hold != 0)) break; }
+    x_proj(&c.p, s, stk, 2, 2); XProj *p = &c.p;
     p->brief = cu_pct(50); p->readme = !p->brief; p->knows = 1; p->conf = kind == 1;
     if (p->conf) for (int i = 0; i < CU_N(x_conf_keys); i++) x_conf_add(p, x_conf_keys[i][0], x_conf_keys[i][1], x_conf_keys[i][2]);
     if (fail) { XFi *b = &p->mod[0].fn[0]; b->num = b->f->bad; }
@@ -471,8 +480,10 @@ static void fam_x_skill(FILE *f, Scn *s) {
                                         "done: snapshots/$label holds a copy of the sources\nreport: the label, the folder and the test totals\nfail: stop at the failing step and say which check failed\n", p->testcmd, x_srcdir(p));
     x_extra(p, cu_fmt(".katana/skills/%s/SKILL.md", nm[kind]), md, 0);
     if (kind == 0) x_extra(p, "CHANGELOG.md", cu_fmt("0.9.0\n0.8.2\n"), 0);
+    c.pre = !g_cu_hold && cu_pct(30) ? 1 + cu_n(2) : 0;
     x_begin("x-skill", s, p, 0, 0);
-    x_cell("skill/%s/%s/%s", nm[kind], fail ? "step-fails" : "ok", g_x_stid[p->st]);
+    x_cell("skill/%s/%s/%s/pre%d", nm[kind], fail ? "step-fails" : "ok", g_x_stid[p->st], c.pre);
+    x_pre(&c);
     x_user(kind == 0 ? cu_fmt(XV(L("cut version %s", "fecha a versao %s"), L("record version %s for this project", "registra a versao %s deste projeto")), ver)
          : kind == 1 ? XV(L("is the project ready to deploy?", "o projeto ta pronto pra deploy?"), L("run the preflight before I deploy", "roda o preflight antes de eu fazer o deploy"))
                      : cu_fmt(XV(L("keep a copy of the sources, call it %s", "guarda uma copia dos fontes, chama de %s"), L("take a snapshot of the code labelled %s", "tira um snapshot do codigo com o rotulo %s")), label));
@@ -510,6 +521,7 @@ static void fam_x_skill(FILE *f, Scn *s) {
         if (x_err(ls) || strstr(ls, "No such file")) cu_die("snapshot vazio");
         x_final(cu_fmt(L("Snapshot `%s` is in snapshots/%s, with a copy of %s. The tests before the copy: %s.", "O snapshot `%s` esta em snapshots/%s, com uma copia de %s. Os testes antes da copia: %s."), label, label, x_srcdir(p), tot));
     }
+    if (g_cu_hold) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
     x_end(f);
 }
 

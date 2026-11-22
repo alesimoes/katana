@@ -21,6 +21,7 @@ static struct {
     Buf ask;                     /* provas das perguntas (JSON) */
     int mode, decl;              /* modo do prompt desta conversa */
     int web;                     /* a conversa usa o servidor local de paginas */
+    const char *sfrom[4], *sto[4]; int nsub;      /* trechos que mudam a cada execucao (ids sorteados pelo motor) e o que entra no lugar */
 } g_x;
 static uint64_t g_x_rng0;        /* estado do sorteio no comeco desta tentativa (vai na linha gravada) */
 static int g_x_replay;           /* 1: refazendo uma linha no check (sem o filtro de situacao repetida) */
@@ -176,6 +177,7 @@ static char *x_norm(const char *s) {
         if (!strncmp(p, "/.katana/jobs/bash-", 19)) { buf_str(&b, "/.katana/jobs/bash-1000"); p += 19; while (isdigit((unsigned char)*p)) p++; continue; }
         if (!strncmp(p, "/.katana/context/", 17)) { buf_str(&b, "/.katana/context/1000"); p += 17; while (isdigit((unsigned char)*p) || *p == '-') p++; continue; }
         if (g_x_port && !strncmp(p, port, ol)) { buf_str(&b, "https://docs.example"); p += ol; continue; }
+        { int hit = 0; for (int i = 0; i < g_x.nsub && !hit; i++) { const size_t fl = strlen(g_x.sfrom[i]); if (fl && !strncmp(p, g_x.sfrom[i], fl)) { buf_str(&b, g_x.sto[i]); p += fl; hit = 1; } } if (hit) continue; }
         buf_add(&b, p, 1); p++;
     }
     return b.p;
@@ -258,7 +260,19 @@ static const XFn g_x_fns[] = {
     {"rows_needed", "items", "items + 7", 8, "items + 8", "the rows of eight needed for items", "as fileiras de oito necessarias para items"},
     {"shift_end", "start,hours", "(start + hours) % 24", 1, "(start + hours) % 12", "the hour a shift ends on a 24-hour clock", "a hora em que um turno termina no relogio de 24 horas"},
     {"score", "hits,misses", "hits * 5 - misses", 1, "hits * 5 + misses", "five points per hit minus one per miss", "cinco pontos por acerto menos um por erro"},
-    {"padding", "length", "(8 - length % 8) % 8", 1, "8 - length % 8", "the bytes needed to pad length to a multiple of eight", "os bytes para completar length ate um multiplo de oito"},
+    {"padding", "length", "(8 - length % 8) % 8", 1, "(8 - length % 8) % 4", "the bytes needed to pad length to a multiple of eight", "os bytes para completar length ate um multiplo de oito"},
+    {"minutes_left", "total,used", "total - used", 1, "total + used", "the minutes left after the used ones", "os minutos que sobram depois dos usados"},
+    {"double_plus", "value,extra", "2 * value + extra", 1, "value + extra", "twice the value plus the extra", "o dobro do valor mais o extra"},
+    {"grid_cells", "rows,cols", "rows * cols", 1, "rows + cols", "the number of cells in a rows by cols grid", "o numero de celulas de uma grade rows por cols"},
+    {"to_hours", "days,hours", "days * 24 + hours", 1, "days * 12 + hours", "days and hours as hours", "dias e horas em horas"},
+    {"tens", "number", "number", 10, "number * 10", "how many full tens fit in the number", "quantas dezenas inteiras cabem no numero"},
+    {"with_tip", "cents,pct", "cents * (100 + pct)", 100, "cents * (10 + pct)", "the bill plus a pct percent tip", "a conta mais pct por cento de gorjeta"},
+    {"gap", "first,second", "first - second + 1", 1, "first - second", "the distance from second to first, counting both ends", "a distancia de second ate first, contando as duas pontas"},
+    {"frames", "seconds,fps", "seconds * fps", 1, "seconds + fps", "the frames shown in seconds at fps frames per second", "os quadros mostrados em seconds a fps quadros por segundo"},
+    {"pack_weight", "items,each,box", "items * each + box", 1, "items * each - box", "the weight of items of each weight plus the box", "o peso de items de peso each mais a caixa"},
+    {"to_grams", "kilos,grams", "kilos * 1000 + grams", 1, "kilos * 100 + grams", "kilos and grams as grams", "quilos e gramas em gramas"},
+    {"parity", "number", "number % 2", 1, "number % 3", "one for an odd number and zero for an even one", "um para numero impar e zero para par"},
+    {"quarter", "value", "value", 4, "value * 4", "a quarter of the value, rounded down", "um quarto do valor, arredondado para baixo"},
 };
 #define X_NFN CU_N(g_x_fns)
 static const char *const g_x_modnames[] = {"core", "calc", "rules", "tally", "ledger", "metrics", "convert", "pricing", "layout", "timing", "stock", "limits", "shapes", "report", "rates", "counts"};
@@ -504,7 +518,7 @@ static void x_proj(XProj *p, const Scn *s, int st, int nmod, int nfn) {
         int mi; do mi = cu_n(CU_N(g_x_modnames)); while (mused[mi] || !strcmp(g_x_modnames[mi], s->name));
         mused[mi] = 1; p->mod[m].name = g_x_modnames[mi]; p->mod[m].nfn = nfn;
         for (int i = 0; i < nfn; i++) {
-            int fi; int t = 0; do fi = cu_ix(X_NFN); while (used[fi] && ++t < 400);
+            int fi; int t = 0; do fi = g_cu_hold && t > 60 ? cu_n(X_NFN) : cu_ix(X_NFN); while (used[fi] && ++t < 400);      /* holdout: primeiro o quarto reservado do acervo; so quando ele acaba, o resto */
             if (used[fi]) cu_die("acervo de funcoes esgotado");
             used[fi] = 1;
             XFi *x = &p->mod[m].fn[i]; x->f = &g_x_fns[fi]; x->name = x->f->name; x->num = x->f->num;
