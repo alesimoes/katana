@@ -2009,6 +2009,7 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 
 #include "app/scenario.c"            /* motor de cenarios compostos: projetos de verdade, politica em C, tudo rodado no motor */
 #include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
+#include "app/scenario_conv.c"       /* as convencoes no motor de cenarios: servidor MCP de verdade, skills, criar e mudar KATANA.md/SKILL.md/ligacao */
 #include "app/scenario_ps1.c"        /* scripts PowerShell: escritos e conferidos, nunca dados como executados */
 #include "app/scenario_rare.c"       /* as ferramentas raras: tres situacoes para cada uma */
 #include "app/scenario_more.c"       /* o proprio katana, ferramentas so pelo nome, web, skills; o check que refaz a conversa */
@@ -2021,7 +2022,8 @@ static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"brief-write", fam_brief_write}, {"skill-write", fam_skill_write}, {"mcp-add", fam_mcp_add},
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run},
     {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate},
-    {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1}};
+    {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
+    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2187,13 +2189,14 @@ static int curriculum_check(const char *path, int stats_only) {
                     int ok = 0;
                     for (int i = 0; BR_SINGLE[i]; i++) ok |= !strcmp(key, BR_SINGLE[i]);
                     for (int i = 0; BR_BLOCK[i]; i++) ok |= !strcmp(key, BR_BLOCK[i]);
+                    if (!ok && strstr(line, cu_fmt("unknown key '%s:'", key))) ok = 1;      /* a conversa e sobre essa chave errada: o erro do motor esta nela */
                     if (!ok) CU_BAD("KATANA.md do exemplo usa a chave '%s', que o formato brief do motor nao tem", key);
                 }
                 if (pi && strchr(pi, '\n')) {      /* o arquivo mostrado passa no lint do motor (so erros: os avisos de PATH dependem da maquina) */
                     const char *b0 = strchr(pi, '\n') + 1, *b1 = strstr(b0, "\n\n# ");
                     char *txt = cu_fmt("%.*s\n", (int)(b1 ? b1 - b0 : (long)strlen(b0)), b0);
                     Brief *br = (Brief *)calloc(1, sizeof *br); McpB fd = {0}; mcp_bput(&fd, "", 0);
-                    if (br_parse(txt, br, &fd, "KATANA.md") || strstr(fd.p, "two spaces between")) CU_BAD("o lint do motor reclama do KATANA.md do exemplo: %.200s", fd.p);
+                    if ((br_parse(txt, br, &fd, "KATANA.md") || strstr(fd.p, "two spaces between")) && !(strstr(fd.p, "unknown key '") && strstr(line, "error: unknown key '"))) CU_BAD("o lint do motor reclama do KATANA.md do exemplo: %.200s", fd.p);
                     free(br); free(fd.p);
                 }
                 continue;
@@ -2226,6 +2229,7 @@ static int curriculum_check(const char *path, int stats_only) {
                 if (content) { buf_str(&allres, content); st[fi].ctx += (long)strlen(content); }
                 CuPc *c = NULL;
                 for (int i = 0; id && i < npc; i++) if (!strcmp(pc[i].id, id)) c = &pc[i];
+                if (content && scn) { buf_str(&seen, content); buf_str(&seen, "\n"); }      /* linhas do motor de cenarios: o resultado tambem e texto que o modelo ja viu */
                 if (c && content && !stats_only && !scn) {
                     char *res = cu_fmt("%s", content);       /* sem as notas que o laco anexa */
                     { char *nt = strstr(res, "\n[plan: step "); if (nt) *nt = 0; nt = strstr(res, "\n[katana: "); if (nt) { *nt = 0; CU_BAD("resultado com cobranca do motor (%.40s...) que o exemplo ignora", nt + 1); } }

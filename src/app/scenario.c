@@ -31,6 +31,7 @@ static struct {
     int noshape;                 /* 1: os pedidos desta conversa ficam como a familia escreveu (texto do motor no lugar do usuario) */
     uint64_t srng;               /* sorteio proprio das formas: nao gasta o sorteio do cenario */
 } g_x;
+static const CuMs *g_x_ms_must;  /* servidor que tem de estar entre os do cenario (scenario_conv.c) */
 static uint64_t g_x_rng0;        /* estado do sorteio no comeco desta tentativa (vai na linha gravada) */
 static int g_x_replay;           /* 1: refazendo uma linha no check (sem o filtro de situacao repetida) */
 static int g_x_rmode = -1, g_x_rdecl;      /* refazendo: modo e bloco de ferramentas da linha original */
@@ -587,7 +588,8 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     g_x.srng = g_x_rng0 * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull;
     s->nsk = 0; s->nms = 0; s->brief = 0;
     if (nskills) cu_skill_pick(s, NULL, nskills);
-    if (nmcp) cu_ms_scn(s, NULL, nmcp);
+    if (nmcp) cu_ms_scn(s, g_x_ms_must, nmcp);
+    g_x_ms_must = NULL;
     cu_mkdirs(s->cwd);
     if (chdir(s->cwd) != 0) cu_die("nao entrei em %s", s->cwd);
     if (!g_x_realgit) cu_put(cu_fmt("%s/.git/HEAD", s->cwd), "ref: refs/heads/main\n", 0);
