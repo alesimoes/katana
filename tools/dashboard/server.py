@@ -72,6 +72,37 @@ def losses(p):
         if 'val_loss' in j: va.append([j['step'], j['val_loss']])
     k = max(1, len(tr) // 300); return {'train': tr[::k], 'val': va}
 
+teach_cache = {'key': None, 'fam': {}, 'out': None}
+def teach(st):
+    """o que os dados de treino ensinam: conversas, falas e texto por familia, chamadas por ferramenta (le o arquivo so quando muda)"""
+    p = os.path.expanduser(st.get('teach_file', ''))
+    try: key = (p, os.stat(p).st_mtime)
+    except OSError: return None
+    if key == teach_cache['key']: return teach_cache['out']
+    fam, tools, conv = {}, {}, {}
+    with open(p) as fh:
+        for l in fh:
+            try: d = json.loads(l)
+            except ValueError: continue
+            n = d.get('family', '?'); f = fam.setdefault(n, {'conv': 0, 'turns': 0, 'chars': 0}); f['conv'] += 1; conv.setdefault(n, []).append(d['messages'])
+            for m in d['messages']:
+                if m['role'] != 'assistant' or m.get('train') is False: continue
+                f['turns'] += 1; f['chars'] += len(m.get('content') or '')
+                for c in m.get('tool_calls') or []:
+                    q = c['function']; t = q['name'] if '__' not in q['name'] else 'servidores MCP'; tools[t] = tools.get(t, 0) + 1
+                    f['chars'] += len(q['name']) + len(q['arguments'] if isinstance(q['arguments'], str) else json.dumps(q['arguments'], ensure_ascii=False))
+    teach_cache.update(key=key, fam=conv, out={'fam': fam, 'tools': sorted(tools.items(), key=lambda x: -x[1]), 'mt': int(key[1])})
+    return teach_cache['out']
+def sample(q):
+    import urllib.parse
+    a = urllib.parse.parse_qs(q); c = teach_cache['fam'].get(a.get('f', [''])[0], [])
+    if not c: return {'msgs': []}
+    i = int(a.get('i', ['0'])[0]) % len(c); out = []
+    for m in c[i]:
+        out.append({'role': m['role'], 'text': (m.get('content') or '')[:2500], 'train': m['role'] == 'assistant' and m.get('train') is not False,
+                    'calls': [{'n': x['function']['name'], 'a': (x['function']['arguments'] if isinstance(x['function']['arguments'], str) else json.dumps(x['function']['arguments'], ensure_ascii=False, indent=1))[:2500]} for x in m.get('tool_calls') or []]})
+    return {'msgs': out, 'i': i, 'n': len(c)}
+
 def sampler():
     c0, d0, t0 = cpu_raw(), disk_raw(), time.time()
     while True:
@@ -113,7 +144,7 @@ def slow_loop():
                     try: j = json.loads(l); r.append([j['task'], bool(j['passed']), j['seconds'], bool(j['timed_out'])])
                     except (ValueError, KeyError): pass
                 exams.append({'name': os.path.basename(os.path.dirname(p)), 'r': r, 'mt': int(os.stat(p).st_mtime)})
-            slow.update(agents=ag, events=ev, exams=exams)
+            slow.update(agents=ag, events=ev, exams=exams, teach=teach(st))
         except Exception as e: slow['erro'] = repr(e)[:200]
         time.sleep(10)
 
@@ -121,6 +152,9 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get('Host', '').split(':')[0] not in ('127.0.0.1', 'localhost'): return self.send_error(403)
         if self.path == '/api': b, t = json.dumps({**fast, **slow, 'hist': hist[:], 'state': state()}).encode(), 'application/json'
+        elif self.path.startswith('/sample?'):
+            try: b, t = json.dumps(sample(self.path[8:])).encode(), 'application/json'
+            except ValueError: return self.send_error(400)
         elif self.path == '/': b, t = open(HERE + '/index.html', 'rb').read(), 'text/html; charset=utf-8'
         else: return self.send_error(404)
         self.send_response(200); self.send_header('Content-Type', t); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
