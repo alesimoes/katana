@@ -105,7 +105,7 @@ if [ -f "$GG" ] && python3 -c "import jinja2" 2>/dev/null; then
   done
   for th in 0 1; do
     g4run g4wg$th 'grave e confira g.txt\nobrigado\n/exit\n' MOCK_GOLD=1 KATANA_THINK=$th KATANA_CTX_DUMP="$D/g4wg$th.ctx"
-    (cd "$D/g4wg$th" && HOME="$D/home" $K agentsys json >"$D/g4wgj.txt" 2>/dev/null) || true
+    (cd "$D/g4wg$th" && HOME="$D/home" KATANA_TOOLS=2 $K agentsys json >"$D/g4wgj.txt" 2>/dev/null) || true
     python3 - "$D/g4wg$th.ctx" "$D/g4wg$th.sysx" <<'EOF'
 import sys
 t = open(sys.argv[1], errors="replace").read()
@@ -116,7 +116,7 @@ EOF
     if R=$(python3 tools/traintest/gemma4_golden.py conv "$GG" "$D/g4wgj.txt" "$D/g4wg$th.sysx" $th "$D/g4wg$th.ctx"); then g4ok "template: conversa (raciocinio $th): $R"
     else echo "gemma4: template: conversa (raciocinio $th): FALHOU"; echo "$R"; fail=1; fi
   done
-  (cd "$D/g4wc" && HOME="$D/home" $K agentsys json >"$D/g4wcj.txt" 2>/dev/null) || true
+  (cd "$D/g4wc" && HOME="$D/home" KATANA_TOOLS=2 $K agentsys json >"$D/g4wcj.txt" 2>/dev/null) || true
   if R=$(python3 tools/traintest/gemma4_golden.py compact "$GG" "$D/g4wcj.txt" "$D/g4wc.cdump"); then g4ok "template: pedido de compactacao ao vivo: $R"
   else echo "gemma4: template: pedido de compactacao ao vivo: FALHOU"; echo "$R"; fail=1; fi
 else

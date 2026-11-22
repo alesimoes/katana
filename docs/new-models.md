@@ -307,7 +307,9 @@ Chat template (read from the GGUF metadata, `tokenizer.chat_template`) and what 
 - **Call-format constraint**: `src/agent/callgrammar.c` reads the declared tools from the JSON block saved by the
   conversion (before, with `KATANA_TOOLS=1` it saw no tools on Gemma 4), plus the table tools, the old tools named in
   the prompt and the MCP tools. It does not switch on inside the thought channel, also when the prompt opened the
-  channel after tool results (`g_g4_thought_open`).
+  channel after tool results (`g_g4_thought_open`). A string value may no longer contain `<tool_call|>`,
+  `<|tool_call>` or `<|tool_response>` (single tokens in Gemma 4: the random tiny model produced them inside a value
+  once the tiny vocabulary had the real special tokens, and the call reader cut the call there).
 - **Mechanisms ported on 2026-11-21** (each with a switch): live compaction inside a long request and for `/compact`
   (`KATANA_COMPACT_LIVE=0` off, both formats); reading notes and the sub-agent `delegate`/`Agent` (`KATANA_G4_SIDE=0`
   off; `KATANA_DIGEST=0` still turns off the notes in every format). Side contexts and the summary run with the empty
