@@ -6,13 +6,25 @@
 typedef struct { float *out; const Mat *W; XQ *xqs; int B, rows, cols; } MmJob;
 static void mm_job(void *c, int i0, int i1) {
     const MmJob *j = c;
+    if (lowbit_ok(j->W->type)) {    /* tipos de poucos bits: a linha e decodificada uma vez para um grupo de ate LB_MAXB tokens */
+        float tmp[LB_MAXB];
+        for (int t0 = 0; t0 < j->B; t0 += LB_MAXB) {
+            const int t1 = t0 + LB_MAXB < j->B ? t0 + LB_MAXB : j->B;
+            for (int i = i0; i < i1; i++) {
+                lowbit_dot_batch(j->W, j->W->q + (size_t)i * j->W->stride, j->xqs, t0, t1, j->cols, tmp);
+                for (int t = t0; t < t1; t++) j->out[(size_t)t * j->rows + i] = tmp[t - t0];
+            }
+        }
+        return;
+    }
     for (int t0 = 0; t0 < j->B; t0 += 8) {
         const int t1 = t0 + 8 < j->B ? t0 + 8 : j->B;
-        for (int i = i0; i < i1; i++)
+        for (int i = i0; i < i1; i++) {
             for (int t = t0; t < t1; t++) {
                 xq_tls = &j->xqs[t];
                 j->out[(size_t)t * j->rows + i] = dot_row(j->W, (size_t)i, NULL, NULL, j->cols);
             }
+        }
     }
     xq_tls = NULL;
 }

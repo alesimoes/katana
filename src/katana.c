@@ -10,6 +10,7 @@
 #include "engine/model.c"              /* estruturas, leitura do GGUF, tipos de quantizacao, carga do modelo */
 #include "engine/tokenizer.c"          /* tokenizadores (BPE, SentencePiece, pre-tokenizacao por familia) */
 #include "engine/cpu_kernels.c"        /* matematica e produtos na CPU (float, inteiros, VNNI), backends de GPU base */
+#include "engine/cpu_lowbit.c"         /* produtos inteiros dos tipos de poucos bits (IQ2/IQ3/IQ4, Q2_0): AVX2 e AVX-512 */
 #include "engine/shards.c"             /* SHA-256 e shards (pesos ja no layout da GPU) */
 #include "engine/vk_dense.c"           /* Vulkan: grafo denso e prompt em lote */
 #include "engine/vk_moe.c"             /* Vulkan: MoE, cache de especialistas, MLA */

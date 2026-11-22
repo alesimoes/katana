@@ -1115,6 +1115,7 @@ static int run_main(int argc, char **argv) {
         return vkcheck(&m, argv[3], argc > 4 ? atoi(argv[4]) : 40, argc > 5 ? atoi(argv[5]) : 600);
     }
     if (argc >= 2 && strcmp(argv[1], "qtest") == 0) return qtest();
+    if (argc >= 2 && strcmp(argv[1], "lbtest") == 0) return lowbit_test(argc - 2, argv + 2);
     if (strcmp(argv[1], "quantize") == 0) {
         if (argc < 3) { fprintf(stderr, "uso: katana quantize <entrada.gguf> [saida.gguf] [tipo]\n"); return 1; }
         const char *in = argv[2], *out = NULL, *type = NULL;

@@ -79,7 +79,7 @@ static int qtest(void) {
         { T_Q5_K, "Q5_K", { 0, 2 } }, { T_Q6_K, "Q6_K", { 208, -1 } }, { T_IQ4_NL, "IQ4_NL", { 0, -1 } }, { T_IQ4_XS, "IQ4_XS", { 0, -1 } },
         { T_MXFP4, "MXFP4", { -1, -1 } }, { T_IQ2_XXS, "IQ2_XXS", { 0, -1 } }, { T_IQ2_XS, "IQ2_XS", { 0, -1 } }, { T_IQ2_S, "IQ2_S", { 0, -1 } },
         { T_IQ3_XXS, "IQ3_XXS", { 0, -1 } }, { T_IQ3_S, "IQ3_S", { 0, -1 } }, { T_IQ1_S, "IQ1_S", { 0, -1 } }, { T_IQ1_M, "IQ1_M", { -1, -1 } },
-        { T_TQ1_0, "TQ1_0", { 52, -1 } }, { T_TQ2_0, "TQ2_0", { 64, -1 } } };
+        { T_TQ1_0, "TQ1_0", { 52, -1 } }, { T_TQ2_0, "TQ2_0", { 64, -1 } }, { T_Q2_0, "Q2_0", { 0, -1 } } };
     const int rows = 200, cols = 2048;      /* 200 linhas: testa a sobra do grupo de 32 na GPU */
     int fails = qtest_known();
     const int has_gpu = qtest_gpu_init(rows, cols);
@@ -712,7 +712,7 @@ static const char *qtype_name(uint32_t t) {
         case T_Q5_K: return "Q5_K"; case T_Q6_K: return "Q6_K"; case T_IQ4_NL: return "IQ4_NL"; case T_IQ4_XS: return "IQ4_XS";
         case T_MXFP4: return "MXFP4"; case T_IQ2_XXS: return "IQ2_XXS"; case T_IQ2_XS: return "IQ2_XS"; case T_IQ2_S: return "IQ2_S";
         case T_IQ3_XXS: return "IQ3_XXS"; case T_IQ3_S: return "IQ3_S"; case T_IQ1_S: return "IQ1_S"; case T_IQ1_M: return "IQ1_M";
-        case T_TQ1_0: return "TQ1_0"; case T_TQ2_0: return "TQ2_0";
+        case T_TQ1_0: return "TQ1_0"; case T_TQ2_0: return "TQ2_0"; case T_Q2_0: return "Q2_0";
         default: return "?";
     }
 }
