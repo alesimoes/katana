@@ -934,6 +934,7 @@ static void load_model(Model *m, const char *path) {
     if (c->n_expert) {
         if (c->hidden_exp) c->hidden = c->hidden_exp;      /* daqui em diante, hidden = largura de UM especialista */
         if (c->hidden_shexp && !c->n_shared && c->hidden_shexp % c->hidden == 0) c->n_shared = c->hidden_shexp / c->hidden;
+        if (c->hidden_shexp && !c->n_shared) die("MoE: largura do especialista compartilhado nao e multipla da de um especialista (seria ignorado)");
         if (c->n_used < 1 || c->n_used > 64 || c->n_used > c->n_expert || c->n_expert > 1024) die("MoE: contagem de especialistas invalida");
     }
     if (!c->dim || !c->n_layers || !c->n_heads || !c->hidden || !tk->n) die("metadados incompletos no GGUF");
