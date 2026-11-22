@@ -1,0 +1,187 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+// Produtos do treino (katana train) nas unidades de matriz da placa: pesos quantizados no formato do GGUF, decodificados
+// uma vez por ladrilho para fp16 na memoria compartilhada e usados por todos os tokens; fp16 x fp16 acumulado em fp32.
+//   MODE 0 (ida):   O[n][r] = soma_c W[r][c] X[n][c]     (M = linhas, K = colunas)
+//   MODE 1 (volta): O[n][c] = soma_r W[r][c] X[n][r]     (M = colunas, K = linhas)
+//   MODE 2 (gradiente, pesos em float): O[r][c] = soma_t W[t][r] X[t][c], W e X em fp16 (M = linhas, N = colunas, K = tokens)
+// Varios produtos da mesma forma entram num despacho so: cada linha de trabalho (gl_WorkGroupID.y) e uma entrada em J:
+//   byte do peso, primeiro vetor de entrada, primeiro vetor de saida, tokens (<= BN).
+// O host normaliza cada vetor de entrada por uma potencia de 2 (cabe no fp16) e desfaz na saida.
+// WT: 0 F32, 2 Q8_0, 3 Q4_K, 4 Q5_K, 5 Q6_K (mesmos numeros do tmm.comp). M e K multiplos de 64.
+// PREC 0: so fp16; 1: segundo produto com o resto do peso (w - fp16(w)); 2 (treino): tambem com o resto da entrada, que vem
+// pc.xr vetores adiante em X (erro de ~1e-6, como o fp32).
+layout(local_size_x = 128 * SN) in;
+#ifndef PREC
+#define PREC 0
+#endif
+#ifndef PAD
+#define PAD 8
+#endif
+#ifndef DUP
+#define DUP 0
+#endif
+layout(constant_id = 0) const int MODE = 0;
+layout(constant_id = 1) const int WT = 3;
+// -DBN: tokens por ladrilho (16, 32, 64); -DSN: subgrupos na direcao dos tokens (4 na de M, sempre); -DPREC; -DPAD; -DDUP
+const int NT = 4 * SN * 32;
+const int CC = BN / SN / 16;
+const int STR = 64 + PAD;
+#define LS 2048.0
+layout(std430, binding = 0) readonly buffer Wb { uint w[]; };
+layout(std430, binding = 0) readonly buffer Wb16 { uint16_t w16[]; };
+layout(std430, binding = 0) readonly buffer Wbf { float16_t wf[]; };
+layout(std430, binding = 1) readonly buffer Xb { float16_t x[]; };
+layout(std430, binding = 1) readonly buffer Xb4 { f16vec4 x4[]; };
+layout(std430, binding = 2) writeonly buffer Ob { float o[]; };
+layout(std430, binding = 3) readonly buffer Jb { uvec4 j[]; };
+layout(push_constant) uniform P { uint M, K, ws, j0, xr; } pc;
+
+shared float16_t As[64 * STR];
+// vetores sem uso ficam com 8 elementos (16 bytes): com 1 so, o driver poe o proximo vetor num endereco impar de 2 bytes e o
+// coopMatLoad da memoria compartilhada le lixo
+shared float16_t Al[(PREC == 1 || PREC == 2) ? 64 * STR : 8];
+shared float16_t Bs[DUP == 0 ? 72 * BN : 8];
+shared float16_t Br[PREC == 2 ? 72 * BN : 8];         // resto da entrada
+shared float scr[4 * SN * 256];
+
+float hi16(float v) { return uintBitsToFloat(floatBitsToUint(v) & 0xFFFFE000u); }
+void put(uint i, float v) {
+    if (PREC == 0) As[i] = float16_t(v);
+    else { const float h = hi16(v); As[i] = float16_t(h); Al[i] = float16_t((v - h) * LS); }
+}
+#define SB(k) ((hw[(k) >> 2] >> (((k) & 3u) * 8u)) & 255u)
+// ladrilho de 64 linhas x 64 colunas do peso a partir de (r0, c0)
+void fill(uint wo, uint r0, uint c0) {
+    const uint id = gl_LocalInvocationID.x, blk = c0 >> 8, s = (c0 & 255u) >> 6;
+    [[unroll]] for (uint i = 0u; i < 512u / NT; i++) {
+        const uint u = id + i * NT, rr = u >> 3, wi = u & 7u, ob = rr * STR;
+        const uint base = wo + (r0 + rr) * pc.ws;
+        if (WT == 3 || WT == 4) {
+            const uint b = (base >> 2) + blk * (WT == 3 ? 36u : 44u);
+            const uint h0 = w[b];
+            const uint hw[3] = uint[3](w[b + 1u], w[b + 2u], w[b + 3u]);
+            const vec2 dd = unpackHalf2x16(h0);
+            const uint ja = 2u * s, jb = ja + 1u;
+            uint sa, ma, sc, mc;
+            if (s < 2u) { sa = SB(ja) & 63u; ma = SB(ja + 4u) & 63u; sc = SB(jb) & 63u; mc = SB(jb + 4u) & 63u; }
+            else {
+                sa = (SB(ja + 4u) & 15u) | ((SB(ja - 4u) >> 6) << 4); ma = (SB(ja + 4u) >> 4) | ((SB(ja) >> 6) << 4);
+                sc = (SB(jb + 4u) & 15u) | ((SB(jb - 4u) >> 6) << 4); mc = (SB(jb + 4u) >> 4) | ((SB(jb) >> 6) << 4);
+            }
+            const float d0 = dd.x * float(sa), m0 = dd.y * float(ma), d1 = dd.x * float(sc), m1 = dd.y * float(mc);
+            const uint wd = w[b + (WT == 3 ? 4u : 12u) + s * 8u + wi];
+            uint hb = 0u;
+            if (WT == 4) hb = w[b + 4u + wi] >> (2u * s);
+            [[unroll]] for (uint t = 0u; t < 4u; t++) {
+                uint q0 = (wd >> (8u * t)) & 15u, q1 = (wd >> (8u * t + 4u)) & 15u;
+                if (WT == 4) { q0 |= ((hb >> (8u * t)) & 1u) << 4; q1 |= ((hb >> (8u * t + 1u)) & 1u) << 4; }
+                put(ob + wi * 4u + t, d0 * float(q0) - m0);
+                put(ob + 32u + wi * 4u + t, d1 * float(q1) - m1);
+            }
+        } else if (WT == 2) {
+            const uint b = (base >> 1) + ((c0 >> 5) + (wi >> 2)) * 17u;
+            const float d = unpackHalf2x16(uint(w16[b])).x;
+            [[unroll]] for (uint t = 0u; t < 4u; t++) {
+                const uint v = uint(w16[b + 1u + (wi & 3u) * 4u + t]);
+                put(ob + wi * 8u + 2u * t, d * float(int(v << 24) >> 24));
+                put(ob + wi * 8u + 2u * t + 1u, d * float(int(v << 16) >> 24));
+            }
+        } else if (WT == 5) {
+            const uint b = (base >> 1) + blk * 105u, h = s >> 1, pr = wi >> 2, p = pr + 2u * (s & 1u), l = (wi & 3u) * 4u;
+            const uint si = h * 8u + ((wi & 3u) >> 1) + 2u * p;
+            const float d = unpackHalf2x16(uint(w16[b + 104u])).x * float(int(uint(w16[b + 96u + (si >> 1)]) << (24u - 8u * (si & 1u))) >> 24);
+            [[unroll]] for (uint t = 0u; t < 4u; t++) {
+                const uint lo = uint(w16[b + h * 32u + pr * 16u + l + t]) >> (4u * (s & 1u)), up = uint(w16[b + 64u + h * 16u + l + t]) >> (2u * p);
+                put(ob + wi * 8u + 2u * t, d * float(int((lo & 15u) | ((up & 3u) << 4)) - 32));
+                put(ob + wi * 8u + 2u * t + 1u, d * float(int(((lo >> 8) & 15u) | (((up >> 8) & 3u) << 4)) - 32));
+            }
+        } else {
+            [[unroll]] for (uint t = 0u; t < 8u; t++) put(ob + wi * 8u + t, uintBitsToFloat(w[(base >> 2) + c0 + wi * 8u + t]));
+        }
+    }
+}
+
+void main() {
+    const uint wr = gl_SubgroupID & 3u, wc = gl_SubgroupID >> 2, lane = gl_SubgroupInvocationID;
+    const uvec4 e = j[pc.j0 + gl_WorkGroupID.y];
+    const uint m0 = gl_WorkGroupID.x * 64u, n0 = wc * uint(CC) * 16u, cnt = e.w;
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[CC], acl[CC];
+    [[unroll]] for (uint c = 0u; c < CC; c++) acc[c] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    if ((PREC == 1 || PREC == 2)) [[unroll]] for (uint c = 0u; c < CC; c++) acl[c] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    if (MODE == 2) {
+        for (uint k = 0u; k < pc.K; k += 16u) {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a;
+            coopMatLoad(a, wf, k * pc.M + m0 + wr * 16u, pc.M, gl_CooperativeMatrixLayoutColumnMajor);
+            [[unroll]] for (uint c = 0u; c < CC; c++) {
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
+                coopMatLoad(b, x, k * pc.ws + gl_WorkGroupID.y * BN + n0 + c * 16u, pc.ws, gl_CooperativeMatrixLayoutRowMajor);
+                acc[c] = coopMatMulAdd(a, b, acc[c]);
+            }
+        }
+        [[unroll]] for (uint c = 0u; c < CC; c++)
+            coopMatStore(acc[c], o, (m0 + wr * 16u) * pc.ws + gl_WorkGroupID.y * BN + n0 + c * 16u, pc.ws, gl_CooperativeMatrixLayoutRowMajor);
+        return;
+    }
+    const bool live = n0 < cnt;                      // os subgrupos alem dos tokens da entrada so ajudam a decodificar
+    for (uint k0 = 0u; k0 < pc.K; k0 += 64u) {
+        if (MODE == 0) fill(e.x, m0, k0); else fill(e.x, k0, m0);
+        if (DUP == 0) {
+            const uint id = gl_LocalInvocationID.x;
+            [[unroll]] for (uint u = id; u < 16u * BN; u += NT) {
+                const uint n = u >> 4, k = (u & 15u) * 4u, ob = n * 72u + k;
+                f16vec4 v = f16vec4(0.0);
+                if (n < cnt) v = x4[((e.y + n) * pc.K + k0 + k) >> 2];
+                Bs[ob] = v.x; Bs[ob + 1u] = v.y; Bs[ob + 2u] = v.z; Bs[ob + 3u] = v.w;
+                if (PREC == 2) {
+                    v = f16vec4(0.0);
+                    if (n < cnt) v = x4[((pc.xr + e.y + n) * pc.K + k0 + k) >> 2];
+                    Br[ob] = v.x; Br[ob + 1u] = v.y; Br[ob + 2u] = v.z; Br[ob + 3u] = v.w;
+                }
+            }
+        }
+        barrier();
+        if (live) [[unroll]] for (uint k = 0u; k < 64u; k += 16u) {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a, al;
+            if (MODE == 0) coopMatLoad(a, As, wr * 16u * STR + k, STR, gl_CooperativeMatrixLayoutRowMajor);
+            else coopMatLoad(a, As, k * STR + wr * 16u, STR, gl_CooperativeMatrixLayoutColumnMajor);
+            if ((PREC == 1 || PREC == 2)) {
+                if (MODE == 0) coopMatLoad(al, Al, wr * 16u * STR + k, STR, gl_CooperativeMatrixLayoutRowMajor);
+                else coopMatLoad(al, Al, k * STR + wr * 16u, STR, gl_CooperativeMatrixLayoutColumnMajor);
+            }
+            [[unroll]] for (uint c = 0u; c < CC; c++) {
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
+                if (DUP == 0) coopMatLoad(b, Bs, (n0 + c * 16u) * 72u + k, 72, gl_CooperativeMatrixLayoutColumnMajor);
+                else coopMatLoad(b, x, (e.y + n0 + c * 16u) * pc.K + k0 + k, pc.K, gl_CooperativeMatrixLayoutColumnMajor);
+                acc[c] = coopMatMulAdd(a, b, acc[c]);
+                if ((PREC == 1 || PREC == 2)) acl[c] = coopMatMulAdd(al, b, acl[c]);
+                if (PREC == 2) {
+                    coopMatLoad(b, Br, (n0 + c * 16u) * 72u + k, 72, gl_CooperativeMatrixLayoutColumnMajor);
+                    acl[c] = coopMatMulAdd(a, b, acl[c]);
+                }
+            }
+        }
+        barrier();
+    }
+    if (!live) return;
+    if ((PREC == 1 || PREC == 2)) [[unroll]] for (uint c = 0u; c < CC; c++) acc[c] = acc[c] + acl[c] * (1.0 / LS);
+    [[unroll]] for (uint c = 0u; c < CC; c++) {
+        const uint n = n0 + c * 16u;
+        if (n >= cnt) return;
+        if (n + 16u <= cnt) coopMatStore(acc[c], o, (e.z + n) * pc.M + m0 + wr * 16u, pc.M, gl_CooperativeMatrixLayoutColumnMajor);
+        else {
+            const uint sb = gl_SubgroupID * 256u;
+            coopMatStore(acc[c], scr, sb, 16, gl_CooperativeMatrixLayoutColumnMajor);
+            subgroupMemoryBarrierShared(); subgroupBarrier();
+            for (uint i = lane; i < 256u; i += 32u)
+                if (n + (i >> 4) < cnt) o[(e.z + n + (i >> 4)) * pc.M + m0 + wr * 16u + (i & 15u)] = scr[sb + i];
+            subgroupMemoryBarrierShared(); subgroupBarrier();
+        }
+    }
+}

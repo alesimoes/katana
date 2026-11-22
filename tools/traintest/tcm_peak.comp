@@ -1,0 +1,51 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+// teto da placa: so a multiplicacao de matriz cooperativa, operandos ja no lugar.
+// SRC 0: registradores; 1: memoria compartilhada (A e B recarregados a cada produto); 2: buffers na VRAM
+#ifndef I8
+#define AT float16_t
+#define CT float
+#else
+#define AT int8_t
+#define CT int
+#endif
+layout(local_size_x_id = 10) in;
+layout(constant_id = 0) const int SRC = 0;
+layout(constant_id = 1) const int NA = 1;            // acumuladores por subgrupo
+layout(constant_id = 2) const int TM = 16;
+layout(constant_id = 3) const int TN = 16;
+layout(constant_id = 4) const int TK = 16;
+layout(std430, binding = 0) readonly buffer Ab { AT av[]; };
+layout(std430, binding = 1) readonly buffer Bb { AT bv[]; };
+layout(std430, binding = 2) buffer Ob { CT ov[]; };
+layout(push_constant) uniform P { uint n; } pc;
+shared AT sv[12288];
+void main() {
+    const uint sg = gl_SubgroupID;
+    coopmat<AT, gl_ScopeSubgroup, TM, TK, gl_MatrixUseA> a;
+    coopmat<AT, gl_ScopeSubgroup, TK, TN, gl_MatrixUseB> b;
+    coopmat<CT, gl_ScopeSubgroup, TM, TN, gl_MatrixUseAccumulator> c[NA];
+    [[unroll]] for (uint i = 0u; i < NA; i++) c[i] = coopmat<CT, gl_ScopeSubgroup, TM, TN, gl_MatrixUseAccumulator>(CT(0));
+    if (SRC == 1) for (uint i = gl_LocalInvocationIndex; i < 12288u; i += gl_WorkGroupSize.x) sv[i] = av[i];
+    barrier();
+    coopMatLoad(a, av, gl_WorkGroupID.x * 64u + sg * 256u, 16, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(b, bv, gl_WorkGroupID.x * 64u + sg * 256u, 16, gl_CooperativeMatrixLayoutRowMajor);
+    for (uint k = 0u; k < pc.n; k++) {
+        const uint q = k & 3u;
+        if (SRC == 1) coopMatLoad(a, sv, (sg & 3u) * 1152u + q * 16u, 72, gl_CooperativeMatrixLayoutRowMajor);
+        if (SRC == 2) coopMatLoad(a, av, (gl_WorkGroupID.x * 4u + (sg & 3u)) * 16u * 1024u + (k & 63u) * 16u, 1024, gl_CooperativeMatrixLayoutRowMajor);
+        [[unroll]] for (uint i = 0u; i < NA; i++) {
+            if (SRC == 1) coopMatLoad(b, sv, 4608u + ((sg >> 2) * NA + i) * 1152u + q * 16u, 72, gl_CooperativeMatrixLayoutColumnMajor);
+            if (SRC == 2) coopMatLoad(b, bv, ((sg >> 2) * NA + i) * 16u * 1024u + (k & 63u) * 16u, 1024, gl_CooperativeMatrixLayoutColumnMajor);
+            c[i] = coopMatMulAdd(a, b, c[i]);
+        }
+    }
+    [[unroll]] for (uint i = 0u; i < NA; i++)
+        coopMatStore(c[i], ov, ((gl_WorkGroupID.x & 15u) * 8u + sg) * NA * 256u + i * 256u, 16, gl_CooperativeMatrixLayoutRowMajor);
+}

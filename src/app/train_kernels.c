@@ -141,7 +141,7 @@ static void tk_rows(const TPar *p, size_t r0, int n, float *buf, const float **p
     const size_t C = p->cols;
     for (int i = 0; i < n; i++) {
         const size_t r = r0 + i;
-        if (p->w) ptr[i] = p->w + r * C;
+        if (p->w && !tm_off) ptr[i] = p->w + r * C;
         else if (p->vec) ptr[i] = p->vec;
         else if (p->mat->f) ptr[i] = p->mat->f + r * C;
         else { tk_dequant(p->mat->type, p->mat->q + r * p->mat->stride, buf + (size_t)i * C, C); ptr[i] = buf + (size_t)i * C; }
@@ -179,7 +179,7 @@ typedef struct { const TPar *p; float *out; const float *x; int B; } TkMvJob;
 static void tk_mv_job(void *ctx, int r0, int r1) {
     const TkMvJob *j = (const TkMvJob *)ctx;
     const size_t C = j->p->cols, R = j->p->rows;
-    float *buf = (j->p->w || j->p->vec || j->p->mat->f) ? NULL : tk_scratch(4 * C);
+    float *buf = ((j->p->w && !tm_off) || j->p->vec || j->p->mat->f) ? NULL : tk_scratch(4 * C);
     const float *w[4];
     int r = r0;
     for (; r + 4 <= r1; r += 4) {
@@ -228,7 +228,7 @@ static void tk_mt_job(void *ctx, int r0, int r1) {
     float *acc = j->acc + (size_t)(r0 / j->chunk) * B * C;
     memset(acc, 0, (size_t)B * C * sizeof(float));
     enum { RB = 8 };
-    float *buf = (j->p->w || j->p->vec || j->p->mat->f) ? NULL : tk_scratch((size_t)RB * C);
+    float *buf = ((j->p->w && !tm_off) || j->p->vec || j->p->mat->f) ? NULL : tk_scratch((size_t)RB * C);
     const float *w[RB];
     const size_t C16 = C & ~(size_t)15;
     for (int r = r0; r < r1; r += RB) {

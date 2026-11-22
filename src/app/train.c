@@ -27,6 +27,8 @@ typedef struct {
     /* copia na VRAM (treino na GPU): estado (0 nao vista, 1 residente, -1 enviada a cada produto), arena, posicao,
        versao do mestre em float e de onde veio */
     int gstat, gar; size_t goff; uint64_t gver; const void *gsrc;
+    struct TmPar *tm;           /* estado dos metodos de ajuste fino (train_methods.c): DoRA, media movel, PiSSA */
+    int tmid;                   /* indice na tabela (semente das mascaras do dropout) */
 } TPar;
 
 typedef struct {
@@ -47,8 +49,40 @@ static void tt_add(TTab *t, const char *name, const Mat *m, Mat *mw, float *v, f
     TPar *p = &t->p[t->n++];
     memset(p, 0, sizeof *p);
     snprintf(p->name, sizeof p->name, "%s", name);
-    p->mat = m; p->mat_w = mw; p->vec = v; p->vec_w = vw; p->rows = rows; p->cols = cols;
+    p->mat = m; p->mat_w = mw; p->vec = v; p->vec_w = vw; p->rows = rows; p->cols = cols; p->tmid = t->n - 1;
 }
+
+/* metodos de ajuste fino (train_methods.c, incluido mais abaixo): estado global e ganchos usados pelos produtos */
+static int tm_off;      /* 1: a passada e a do modelo base (adaptadores, mestres e magnitudes desligados) */
+static int tm_on;       /* 1: passo de treino (ruido nos embeddings, dropout dos adaptadores, perda moldada) */
+static int tm_nodora;   /* 1: tp_mv nao aplica a magnitude do DoRA (para refazer o produto sem ela) */
+static float *tm_drop_x(const TPar *p, const float *x, int B);                      /* copia de x com a mascara do dropout, ou NULL */
+static int tm_drop_on(const TPar *p);
+static void tm_drop_row(const TPar *p, int b, float *row, int C);                   /* aplica a mascara da linha b */
+static void tm_dora_prep(const TPar *p);                                            /* fatores m / norma das linhas */
+static void tm_dora_scale(const TPar *p, float *out, int B);                        /* out[b][i] *= fator[i] */
+static float *tm_dora_dy(const TPar *p, const float *dy, int B);                    /* fator * dy, ou NULL se nao e DoRA */
+static float *tm_dora_back(TPar *p, const float *dy, const float *x, int B);        /* gradiente da magnitude; devolve fator * dy ou NULL */
+static int tm_has_dora(const TPar *p);
+typedef struct { int n; char (*name)[128]; uint64_t *rows; float **mag; } TmDsec;      /* magnitudes do DoRA lidas de um .kspec */
+static void tm_neft_add(float *x, int T, int d);
+static int tm_shape(void);
+static int tm_anchor_on(void);
+static float *tm_base_lg(Model *m, TTab *tt, const int *toks, void *A, const int *pos, const int *ys, int Nr);
+static void tm_rows(const uint8_t *mask, const int *toks, int last, int ctx, int **pos, int **ys, int *nr);
+static double tm_loss(const Model *m, const int *toks, int last, const int *pos, const int *ys, int Nr, int N, const float *lg, const float *blg, float *dl);
+static void tm_pre_opt(TTab *tt);
+static double tm_gradsq(const TPar *p);
+static void tm_clear(TPar *p);
+static void tm_adapter_update(TPar *p, float sc, float lr, float wd, float c1, float c2);
+static uint32_t tm_save_dora(FILE *f, const TTab *tt);
+static TmDsec tm_dora_read(const char *path);
+static void tm_dsec_free(TmDsec *s);
+static void tm_dora_apply(const TmDsec *s, const char *name, float *w, uint64_t r, uint64_t cc);
+static int tm_dora_resume(const char *path, TTab *tt);
+static int tm_gradcheck(Model *m, int T);
+static void tm_untrain(TPar *p);
+static int tm_blocks_opt(void);
 
 static int tt_is_moe(const Model *m, int l) { return m->cfg.n_expert && l >= m->cfg.n_dense && m->layers[l].eg; }
 
@@ -368,12 +402,16 @@ static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M,
    mode 0: out[b][r] = W[r] . in1[b]            (sobrescreve)
    mode 1: out[b][c] += sum_r in1[b][r] W[r][c]
    mode 2: out[r][c] += sum_b in1[b][r] in2[b][c] (gradiente de W, sem ler W) */
+static int tv_cpu_only(void);
+static int tv_prod(int mode, TPar *p, const float *in, float *out, int B);       /* train_vk.c: unidades de matriz */
 static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float *out, int B) {
-    if (!tg_init() || !p->mat) return 0;
+    if (tv_cpu_only()) return 0;
+    if (!tg_init() || !p->mat || (tm_off && p->w)) return 0;     /* tm_off: o mestre em float nao vale, a CPU le o peso do modelo */
     const size_t R = p->rows, C = p->cols, F = 4, ch = tg.chunk / F;     /* ch: floats por rascunho */
     const double macs = (double)R * C * B;
     const int cls = mode < 2 && p->gstat == 1 ? 0 : 1;
     if (!tg_worth(mode, macs, cls)) return 0;
+    { const double v0 = now_sec(); if (tv_prod(mode, p, in1, out, B)) { tg.calls++; tg_note_gpu(mode, cls, macs, now_sec() - v0); return 1; } }
     const int wt = mode == 2 ? 0 : tg_wt(p);
     if (wt < 0) return 0;
     const double t0 = now_sec();
@@ -508,7 +546,7 @@ typedef struct { const TPar *p; float *out; const float *x; float *tmp; int B; }
 
 /* linha r do parametro em float (mestre, ou desquantizada em tmp) */
 static const float *tp_row(const TPar *p, size_t r, float *tmp) {
-    if (p->w) return p->w + r * p->cols;
+    if (p->w && !tm_off) return p->w + r * p->cols;
     if (p->vec) return p->vec;
     if (p->mat->f) return p->mat->f + r * p->cols;
     dequant(p->mat->type, p->mat->q + r * p->mat->stride, tmp, p->cols);
@@ -582,20 +620,23 @@ static void tmv_job(void *ctx, int r0, int r1) {
 static float *tp_az(const TPar *p, const float *x, int B) {
     const size_t C = p->cols;
     float *z = xalloc((size_t)B * p->r, 4);
-    for (int b = 0; b < B; b++) for (int k = 0; k < p->r; k++) z[(size_t)b * p->r + k] = dot(p->a + (size_t)k * C, x + (size_t)b * C, (int)C);
+    float *xd = tm_drop_x(p, x, B);                      /* dropout do adaptador (so no treino): mascara sobre a entrada */
+    const float *xs = xd ? xd : x;
+    for (int b = 0; b < B; b++) for (int k = 0; k < p->r; k++) z[(size_t)b * p->r + k] = dot(p->a + (size_t)k * C, xs + (size_t)b * C, (int)C);
+    free(xd);
     return z;
 }
 static void tp_mv(const TPar *p, float *out, const float *x, int B) {
     TMvJob j = { p, out, x, NULL, B };
     const double p0 = now_sec();
-    if (tp_split(0, p, x, out, B)) {}
+    if (!(tm_off && p->w) && tp_split(0, p, x, out, B)) {}
     else if (tg_prod(0, (TPar *)p, x, NULL, out, B)) { tg_ts[0][0] += now_sec() - p0; tg_ns[0][0]++; }
     else {
         const double c0 = now_sec();
         if (tk_on()) tk_mv(p, out, x, B); else pool_for(tmv_job, &j, (int)p->rows, 16);
         tg_note_cpu(0, (double)p->rows * p->cols * B, now_sec() - c0);
     }
-    if (!p->r) { tprof[TP_MV] += now_sec() - p0; return; }
+    if (!p->r || tm_off) { tprof[TP_MV] += now_sec() - p0; return; }
     float *z = tp_az(p, x, B);
     const size_t R = p->rows;
     for (int b = 0; b < B; b++) {
@@ -604,6 +645,7 @@ static void tp_mv(const TPar *p, float *out, const float *x, int B) {
         for (size_t i = 0; i < R; i++) o[i] += p->s * dot(p->b + i * p->r, zb, p->r);
     }
     free(z);
+    if (!tm_nodora && tm_has_dora(p)) { tm_dora_prep(p); tm_dora_scale(p, out, B); }
     tprof[TP_MV] += now_sec() - p0;
 }
 
@@ -624,28 +666,37 @@ static void tmt_job(void *ctx, int c0, int c1) {
     }
     free(tmp);
 }
+static void tp_mvT_(const TPar *p, float *dx, const float *dy, int B);
 static void tp_mvT(const TPar *p, float *dx, const float *dy, int B) {
+    float *dys = p->r && !tm_off ? tm_dora_dy(p, dy, B) : NULL;      /* DoRA: o fator das linhas escala dy antes do produto */
+    tp_mvT_(p, dx, dys ? dys : dy, B);
+    free(dys);
+}
+static void tp_mvT_(const TPar *p, float *dx, const float *dy, int B) {
     TMtJob j = { p, dx, dy, B };
     const int C = (int)p->cols;
     const double p0 = now_sec();
-    if (tp_split(1, p, dy, dx, B)) {}
+    if (!(tm_off && p->w) && tp_split(1, p, dy, dx, B)) {}
     else if (tg_prod(1, (TPar *)p, dy, NULL, dx, B)) { tg_ts[1][0] += now_sec() - p0; tg_ns[1][0]++; }
     else {
         const double c0 = now_sec();
         if (tk_on()) tk_mvT(p, dx, dy, B); else pool_for(tmt_job, &j, C, C / (pool.n > 1 ? pool.n : 1) + 1);
         tg_note_cpu(1, (double)p->rows * p->cols * B, now_sec() - c0);
     }
-    if (!p->r) { tprof[TP_MVT] += now_sec() - p0; return; }
+    if (!p->r || tm_off) { tprof[TP_MVT] += now_sec() - p0; return; }
     const size_t R = p->rows;
-    float *t = xalloc(p->r, 4);
+    float *t = xalloc(p->r, 4), *u = tm_drop_on(p) ? xalloc(C, 4) : NULL;
     for (int b = 0; b < B; b++) {                      /* dx += s * A^T (B^T dy) */
         memset(t, 0, sizeof(float) * p->r);
         const float *d = dy + (size_t)b * R;
         for (size_t i = 0; i < R; i++) { const float a = d[i]; if (a == 0.0f) continue; const float *bi = p->b + i * p->r; for (int k = 0; k < p->r; k++) t[k] += a * bi[k]; }
         float *o = dx + (size_t)b * C;
-        for (int k = 0; k < p->r; k++) { const float tk = p->s * t[k]; const float *ak = p->a + (size_t)k * C; for (int c = 0; c < C; c++) o[c] += tk * ak[c]; }
+        if (u) memset(u, 0, (size_t)C * 4);
+        float *oo = u ? u : o;
+        for (int k = 0; k < p->r; k++) { const float tk = p->s * t[k]; const float *ak = p->a + (size_t)k * C; for (int c = 0; c < C; c++) oo[c] += tk * ak[c]; }
+        if (u) { tm_drop_row(p, b, u, C); for (int c = 0; c < C; c++) o[c] += u[c]; }     /* a mascara do dropout vale tambem na volta */
     }
-    free(t);
+    free(t); free(u);
     tprof[TP_MVT] += now_sec() - p0;
 }
 
@@ -667,15 +718,19 @@ static void tg_job(void *ctx, int r0, int r1) {
 static void tp_grad_(TPar *p, const float *dy, const float *x, int B);
 static void tp_grad(TPar *p, const float *dy, const float *x, int B) {
     const double p0 = now_sec();
-    tp_grad_(p, dy, x, B);
+    float *dys = p->r && !tm_off ? tm_dora_back(p, dy, x, B) : NULL;     /* DoRA: gradiente da magnitude; o resto usa fator * dy */
+    tp_grad_(p, dys ? dys : dy, x, B);
+    free(dys);
     tprof[TP_GRAD] += now_sec() - p0;
 }
 static void tp_grad_(TPar *p, const float *dy, const float *x, int B) {
     if (p->r) {                                        /* gB += s dy (A x)^T ; gA += s (B^T dy) x^T */
         const size_t R = p->rows, C = p->cols;
         float *z = tp_az(p, x, B), *t = xalloc(p->r, 4);
+        float *xd = tm_drop_x(p, x, B);
+        const float *xs = xd ? xd : x;
         for (int b = 0; b < B; b++) {
-            const float *d = dy + (size_t)b * R, *zb = z + (size_t)b * p->r, *xb = x + (size_t)b * C;
+            const float *d = dy + (size_t)b * R, *zb = z + (size_t)b * p->r, *xb = xs + (size_t)b * C;
             memset(t, 0, sizeof(float) * p->r);
             for (size_t i = 0; i < R; i++) {
                 const float a = d[i]; if (a == 0.0f) continue;
@@ -684,7 +739,7 @@ static void tp_grad_(TPar *p, const float *dy, const float *x, int B) {
             }
             for (int k = 0; k < p->r; k++) { const float tk = p->s * t[k]; if (tk == 0.0f) continue; float *ga = p->ga + (size_t)k * C; for (size_t c = 0; c < C; c++) ga[c] += tk * xb[c]; }
         }
-        free(z); free(t);
+        free(z); free(t); free(xd);
         return;
     }
     if (!p->g) return;
@@ -696,7 +751,7 @@ static void tp_grad_(TPar *p, const float *dy, const float *x, int B) {
 
 #include "train_kernels_test.c"   /* katana kerneltest: kernels em blocos x lacos simples */
 
-static const float *tp_vec(const TPar *p) { return p->w ? p->w : p->vec; }
+static const float *tp_vec(const TPar *p) { return p->w && !tm_off ? p->w : p->vec; }
 
 /* trabalho pequeno roda na thread principal; pool_for so compensa com trabalho suficiente */
 static void t_pfor(PoolFn fn, void *ctx, int total, size_t work) {
@@ -851,6 +906,8 @@ static float t_dact(float g) {                         /* derivada da ativacao d
     return 0.5f * (1.0f + th) + 0.5f * g * (1.0f - th * th) * k * (1.0f + 3.0f * 0.044715f * g * g);
 }
 
+#include "train_vk.c"            /* produtos nas unidades de matriz da placa e especialistas em lote */
+
 /* SwiGLU com tres parametros: out = down(silu(gate x) * up x); guarda a, u, h */
 static void t_glu_fwd(TTab *tt, int ig, int iu, int idn, const float *x, float *a, float *u, float *h, float *out, int B, int H) {
     tp_mv(&tt->p[ig], a, x, B);
@@ -921,12 +978,13 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const
     }
     free(ch);
     memset(out, 0, (size_t)T * d * 4);
+    const int tvd = tv_moe_fwd(m, tt, l, T, E, K, sel, ew, x, ea, eu, eh, eo, out);
     /* agrupa os pares (token, k) por especialista: um lote por especialista */
     int *ix = xalloc((size_t)T * K, sizeof(int)), *off = xalloc((size_t)E + 1, sizeof(int));
     t_moe_bucket(sel, T * K, E, ix, off);
     float *xb = xalloc((size_t)T * K * d, 4), *ab = xalloc((size_t)T * K * He, 4), *ub = xalloc((size_t)T * K * He, 4);
     float *hb = xalloc((size_t)T * K * He, 4), *ob = xalloc((size_t)T * K * d, 4);
-    for (int e = 0; e < E; e++) {
+    for (int e = 0; e < E && !tvd; e++) {
         const int n = off[e + 1] - off[e];
         if (!n) continue;
         const int *ixe = ix + off[e];
@@ -980,7 +1038,8 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, cons
             dwa[j] *= sv[e];
         }
     }
-    for (int e = 0; e < E; e++) {
+    const int tvd = tv_moe_back(m, tt, l, T, E, K, sel, ew, ea, eu, dy, dx);
+    for (int e = 0; e < E && !tvd; e++) {
         const int n = off[e + 1] - off[e];
         if (!n) continue;
         const int *ixe = ix + off[e];
@@ -1536,10 +1595,11 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
     float *tmp = xalloc((size_t)T * (qd > d ? qd : d), 4);
     for (int t = 0; t < T; t++) {
         const TPar *e = &tt->p[tt->tok];
-        if (e->w) memcpy(x + (size_t)t * d, e->w + (size_t)toks[t] * d, d * 4);
+        if (e->w && !tm_off) memcpy(x + (size_t)t * d, e->w + (size_t)toks[t] * d, d * 4);
         else mat_row(x + (size_t)t * d, e->mat, toks[t], d);
         if (c->emb_scale != 0.0f && c->emb_scale != 1.0f) for (int i = 0; i < d; i++) x[(size_t)t * d + i] *= c->emb_scale;
     }
+    tm_neft_add(x, T, d);                                /* NEFTune: ruido nos embeddings (so no treino) */
     for (int l = 0; l < c->n_layers; l++) {
         if (c->g4) { t_g4_fwd(m, tt, A, l, l + 1 < c->n_layers ? A->x + (size_t)(l + 1) * T * d : A->xf); continue; }
         const Layer *Ly = &m->layers[l];
@@ -1655,24 +1715,40 @@ static double t_step_(Model *m, TTab *tt, const int *toks, const uint8_t *mask, 
     const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd) * (c->attn_gated ? c->kq_mul : 1.0f);
     (void)ncount;
+    /* perda moldada (train_methods.c): com a ancora KL as linhas da saida incluem tambem as posicoes de contexto (sem alvo,
+       ys = -1) ate a ultima posicao da janela; Nr = linhas que passam pela saida */
+    const int shaped = tm_on && tm_shape();
+    int Nr = N, *pos = NULL, *ys = NULL;
+    float *blg = NULL;
+    if (shaped) {
+        tm_rows(mask, toks, last, tm_anchor_on(), &pos, &ys, &Nr);
+        if (tm_anchor_on()) blg = tm_base_lg(m, tt, toks, A, pos, ys, Nr);       /* logits do modelo base nas linhas de contexto */
+    }
     const double pf0 = now_sec();
     t_forward(m, tt, toks, A);
     tprof[TP_FWD] += now_sec() - pf0;
     const double ph0 = now_sec();
     TPar *head = (TPar *)t_head(tt);
     /* so as posicoes com alvo passam pela saida (as outras nao tem perda nem gradiente) */
-    int *pos = xalloc((size_t)N, sizeof(int)), *ys = xalloc((size_t)N, sizeof(int));
-    float *xs = xalloc((size_t)N * d, 4);
-    for (int t = 0, i = 0; t <= last; t++) if (mask[t]) { pos[i] = t; ys[i] = toks[t + 1]; memcpy(xs + (size_t)i * d, A->xnf + (size_t)t * d, (size_t)d * 4); i++; }
-    float *lg = xalloc((size_t)N * V, 4);
-    t_logits(m, tt, xs, N, lg);
-    double *ls = xalloc((size_t)N, sizeof(double));
-    float *dl = back ? xalloc((size_t)N * V, 4) : NULL;
-    TLossJob lj = { lg, dl, ys, ls, V, N, c->softcap, t_gscale };
-    t_pfor(t_loss_job, &lj, N, (size_t)N * V * 40);
+    if (!shaped) {
+        pos = xalloc((size_t)N, sizeof(int)); ys = xalloc((size_t)N, sizeof(int));
+        for (int t = 0, i = 0; t <= last; t++) if (mask[t]) { pos[i] = t; ys[i] = toks[t + 1]; i++; }
+    }
+    float *xs = xalloc((size_t)Nr * d, 4);
+    for (int i = 0; i < Nr; i++) memcpy(xs + (size_t)i * d, A->xnf + (size_t)pos[i] * d, (size_t)d * 4);
+    float *lg = xalloc((size_t)Nr * V, 4);
+    t_logits(m, tt, xs, Nr, lg);
+    float *dl = back ? xalloc((size_t)Nr * V, 4) : NULL;
     double loss = 0;
-    for (int i = 0; i < N; i++) loss += ls[i];
-    free(lg); free(ls); free(ys);
+    if (shaped) loss = tm_loss(m, toks, last, pos, ys, Nr, N, lg, blg, dl);   /* devolve a soma da perda comum nos alvos */
+    else {
+        double *ls = xalloc((size_t)N, sizeof(double));
+        TLossJob lj = { lg, dl, ys, ls, V, N, c->softcap, t_gscale };
+        t_pfor(t_loss_job, &lj, N, (size_t)N * V * 40);
+        for (int i = 0; i < N; i++) loss += ls[i];
+        free(ls);
+    }
+    free(lg); free(ys); free(blg);
     loss /= N;
     tprof[TP_HEAD] += now_sec() - ph0;
     if (!back) { free(pos); free(xs); return loss; }
@@ -1681,10 +1757,10 @@ static double t_step_(Model *m, TTab *tt, const int *toks, const uint8_t *mask, 
     /* ---- passo para tras ---- */
     float *dxn = xalloc((size_t)T * (qd > d ? qd : d), 4), *dx = xalloc((size_t)T * d, 4);
     {
-        float *dxs = xalloc((size_t)N * d, 4);
-        tp_grad(head, dl, xs, N);
-        tp_mvT(head, dxs, dl, N);
-        for (int i = 0; i < N; i++) memcpy(dxn + (size_t)pos[i] * d, dxs + (size_t)i * d, (size_t)d * 4);
+        float *dxs = xalloc((size_t)Nr * d, 4);
+        tp_grad(head, dl, xs, Nr);
+        tp_mvT(head, dxs, dl, Nr);
+        for (int i = 0; i < Nr; i++) memcpy(dxn + (size_t)pos[i] * d, dxs + (size_t)i * d, (size_t)d * 4);
         free(dxs); free(dl); free(pos); free(xs);
     }
     t_rms_back(&tt->p[tt->onorm], A->xf, A->invf, dxn, dx, T, d);       /* dx = gradiente na saida da ultima camada */
@@ -1778,6 +1854,7 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
     for (int t = 0; t + 1 < T0; t++) if (mask[t]) { N++; last = t; }
     if (ncount) *ncount = N;
     if (!N) return 0.0;
+    if (tm_on && tm_anchor_on() && T0 >= 2) last = T0 - 2;       /* a ancora usa o contexto depois do ultimo alvo: a janela nao corta */
     A->T = last + 1;
     const double loss = t_step_(m, tt, toks, mask, A, back, ncount, N, last);
     A->T = T0;
@@ -1788,6 +1865,9 @@ static double t_step(Model *m, TTab *tt, const int *toks, const uint8_t *mask, T
  * "KSPEC1\0\0", impressao do modelo base (tamanho do arquivo, parametros), quantidade de tensores; cada um: nome,
  * linhas, colunas e os pesos em float32. Carregado com KATANA_SPEC: troca so esses tensores do modelo base. */
 #define KSPEC_MAGIC "KSPEC2\0\0"
+/* arquivos com DoRA levam outra marca: um leitor antigo os recusa em vez de carregar so a parte LoRA (outro modelo) */
+#define KSPEC_MAGIC_DORA "KSPEC3\0\0"
+static int spec_magic_ok(const char *mg) { return !memcmp(mg, KSPEC_MAGIC, 8) || !memcmp(mg, KSPEC_MAGIC_DORA, 8); }
 /* fim do arquivo (desde 2026-11-21): "KSXF" + marcas de 32 bits. Leitores antigos param antes e nao veem; arquivos
    antigos nao tem e valem marca 0. KSPEC_NO_TOOL_DECL: treinado com o prompt de sistema sem a secao de ferramentas
    (o agente tira a secao quando esta especializacao esta aplicada) */
@@ -1807,7 +1887,8 @@ static int spec_save(const Model *m, const TTab *tt, const char *path) {
     int n = 0;
     for (int i = 0; i < tt->n; i++) n += tt->p[i].w != NULL || tt->p[i].r;
     const int64_t fs = m->fsize; const uint64_t np = m->n_params;
-    fwrite(KSPEC_MAGIC, 1, 8, f); fwrite(&fs, 8, 1, f); fwrite(&np, 8, 1, f); fwrite(&n, 4, 1, f);
+    int has_dora = 0; for (int i = 0; i < tt->n; i++) has_dora |= tm_has_dora(&tt->p[i]);
+    fwrite(has_dora ? KSPEC_MAGIC_DORA : KSPEC_MAGIC, 1, 8, f); fwrite(&fs, 8, 1, f); fwrite(&np, 8, 1, f); fwrite(&n, 4, 1, f);
     for (int i = 0; i < tt->n; i++) {
         const TPar *p = &tt->p[i];
         if (!p->w && !p->r) continue;
@@ -1818,7 +1899,7 @@ static int spec_save(const Model *m, const TTab *tt, const char *path) {
             fwrite(p->a, 4, (size_t)p->r * cc, f); fwrite(p->b, 4, (size_t)(r * p->r), f);
         } else fwrite(p->w, 4, (size_t)(r * cc), f);
     }
-    { const uint32_t fl = g_spec_save_flags; fwrite("KSXF", 1, 4, f); fwrite(&fl, 4, 1, f); }
+    { const uint32_t fl = g_spec_save_flags | tm_save_dora(f, tt); fwrite("KSXF", 1, 4, f); fwrite(&fl, 4, 1, f); }
     const int ok = !ferror(f);
     return fclose(f) == 0 && ok;
 }
@@ -1829,7 +1910,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "KATANA_SPEC: nao abriu %s\n", path); if (strict) exit(1); return 0; }
     char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0;
-    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) {
+    if (fread(mg, 1, 8, f) != 8 || !spec_magic_ok(mg) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) {
         if (strict) die("KATANA_SPEC: arquivo de especializacao invalido");
         fprintf(stderr, "especializacao pulada (arquivo invalido): %s\n", path); fclose(f); return 0;
     }
@@ -1840,6 +1921,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
     TTab tt = {0};
     const char *err = tt_build(m, &tt);
     if (err) { fprintf(stderr, "KATANA_SPEC: %s\n", err); exit(1); }
+    TmDsec dsec = tm_dora_read(path);                /* magnitudes do DoRA (secao opcional no fim do arquivo) */
     for (int k = 0; k < n; k++) {
         uint32_t nl = 0, kind = 0; uint64_t r = 0, cc = 0; char name[128];
         if (fread(&nl, 4, 1, f) != 1 || nl == 0 || nl >= sizeof name || fread(name, 1, nl, f) != nl || fread(&kind, 4, 1, f) != 1
@@ -1861,6 +1943,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
                 for (int kk = 0; kk < rk; kk++) { const float bk = sc * Bm[i * rk + kk]; if (bk == 0.0f) continue; const float *ak = A + (size_t)kk * cc; for (uint64_t c2 = 0; c2 < cc; c2++) wi[c2] += bk * ak[c2]; }
             }
             free(A); free(Bm);
+            tm_dora_apply(&dsec, name, w, r, cc);
         } else if (fread(w, 4, (size_t)(r * cc), f) != (size_t)(r * cc)) die("KATANA_SPEC: arquivo cortado");
         if (p->vec_w) { *p->vec_w = w; continue; }
         if (strstr(name, "_exps.weight.e") && !getenv("KATANA_CPU")) {      /* o cache de especialistas da GPU supoe um formato so */
@@ -1873,6 +1956,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
         if (was_head) m->lm_head = m->tok_emb;       /* saida amarrada ao embedding: continua amarrada */
     }
     fclose(f);
+    tm_dsec_free(&dsec);
     fprintf(stderr, "especializacao: %s (%d tensores)\n", path, n);
     free(tt.p); free(tt.an);
     {   const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
@@ -1888,7 +1972,7 @@ static int spec_resume(const Model *m, TTab *tt, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "--resume: nao abriu %s\n", path); return -1; }
     char mg[8]; int64_t fs = 0; uint64_t np = 0; int n = 0, got = 0, miss = 0;
-    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KSPEC_MAGIC, 8) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0)
+    if (fread(mg, 1, 8, f) != 8 || !spec_magic_ok(mg) || fread(&fs, 8, 1, f) != 1 || fread(&np, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0)
         { fprintf(stderr, "--resume: %s nao e uma especializacao\n", path); fclose(f); return -1; }
     if (fs != m->fsize || np != m->n_params) { fprintf(stderr, "--resume: %s foi treinada sobre outro modelo base\n", path); fclose(f); return -1; }
     for (int k = 0; k < n; k++) {
@@ -1913,6 +1997,7 @@ static int spec_resume(const Model *m, TTab *tt, const char *path) {
         }
     }
     fclose(f);
+    if (tm_dora_resume(path, tt) < 0) return -1;
     printf("retomado de %s: %d tensores carregados%s\n", path, got,
            miss ? " (alguns do arquivo nao casam com o que treina agora e ficaram de fora)" : "");
     return got;
@@ -2084,6 +2169,7 @@ static void t_clear_grads(TTab *tt) {
         TPar *p = &tt->p[i];
         if (p->g) memset(p->g, 0, p->rows * p->cols * 4);
         if (p->r) { memset(p->ga, 0, (size_t)p->r * p->cols * 4); memset(p->gb, 0, p->rows * (size_t)p->r * 4); }
+        tm_clear(p);
     }
 }
 static void adam_upd(float *w, const float *gr, float *m1, float *m2, size_t n, float sc, float lr, float wd, float c1, float c2) {
@@ -2100,8 +2186,10 @@ static float g_lr_b = 1.0f;       /* --lr-b: multiplicador da taxa para a matriz
 /* AdamW com corte do gradiente pela norma global; devolve a norma antes do corte */
 static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
     double ss = 0;
+    tm_pre_opt(tt);                                  /* PiSSA: gradiente zero na parte congelada */
     for (int i = 0; i < tt->n; i++) {
         const TPar *p = &tt->p[i];
+        ss += tm_gradsq(p);
         if (p->g) for (size_t j = 0; j < p->rows * p->cols; j++) ss += (double)p->g[j] * p->g[j];
         if (p->r) {
             for (size_t j = 0; j < (size_t)p->r * p->cols; j++) ss += (double)p->ga[j] * p->ga[j];
@@ -2115,8 +2203,7 @@ static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
     for (int i = 0; i < tt->n; i++) {
         TPar *p = &tt->p[i];
         if (p->r) {
-            adam_upd(p->a, p->ga, p->ma1, p->ma2, (size_t)p->r * p->cols, sc, lr, wd, c1, c2);
-            adam_upd(p->b, p->gb, p->mb1, p->mb2, p->rows * (size_t)p->r, sc, lr * g_lr_b, wd, c1, c2);
+            tm_adapter_update(p, sc, lr, wd, c1, c2);       /* AdamW (ou Muon) nas matrizes do adaptador, com --lr-b; magnitude do DoRA */
         }
         if (!p->g) continue;
         const int is_vec = p->vec != NULL;
@@ -2193,27 +2280,33 @@ static int train_gradcheck(Model *m, int T) {
             u[j] = used ? (float)rand() / RAND_MAX - 0.5f : 0.0f;
             un += (double)u[j] * u[j];
         }
-        const double hs = getenv("KATANA_GC_H") ? atof(getenv("KATANA_GC_H")) : 1.0;   /* escala do passo (para conferir a convergencia) */
-        const double wl = 1e-3 * sqrt(wn), h = hs * (wl > 2e-2 ? wl : 2e-2) / sqrt(un);    /* passo com piso: tensor pequeno da sinal pequeno */
+        const double hs0 = getenv("KATANA_GC_H") ? atof(getenv("KATANA_GC_H")) : 1.0;   /* escala do passo (para conferir a convergencia) */
+        const double wl = 1e-3 * sqrt(wn);
         for (size_t j = 0; j < n; j++) gu += (double)G[j] * u[j];
-        double nd[2];
-        for (int r = 0; r < 2; r++) {                     /* diferenca central com h e h/2 */
-            const double hh = r ? h / 2 : h;
-            for (size_t j = 0; j < n; j++) W[j] = w0[j] + (float)(hh * u[j]);
-            tg.ver++;                                     /* o mestre mudou: a copia da GPU sobe de novo */
-            const double lp = t_step(m, &tt, toks, mask, &A, 0, NULL);
-            for (size_t j = 0; j < n; j++) W[j] = w0[j] - (float)(hh * u[j]);
-            tg.ver++;
-            const double lm = t_step(m, &tt, toks, mask, &A, 0, NULL);
-            nd[r] = (lp - lm) / (2.0 * hh);
+        double nd[2] = {0, 0}, num = 0, rel = 1;
+        /* dois tamanhos de passo (o segundo so se o primeiro nao fecha): o pequeno sofre com o ruido do float (na GPU as somas
+           mudam de ordem), o grande com a curvatura; um gradiente errado erra nos dois */
+        for (int tries = 0; tries < 2; tries++) {
+            const double hs = hs0 * (tries ? 4.0 : 1.0), h = hs * (wl > 2e-2 ? wl : 2e-2) / sqrt(un);    /* passo com piso: tensor pequeno da sinal pequeno */
+            for (int r = 0; r < 2; r++) {                     /* diferenca central com h e h/2 */
+                const double hh = r ? h / 2 : h;
+                for (size_t j = 0; j < n; j++) W[j] = w0[j] + (float)(hh * u[j]);
+                tg.ver++;                                     /* o mestre mudou: a copia da GPU sobe de novo */
+                const double lp = t_step(m, &tt, toks, mask, &A, 0, NULL);
+                for (size_t j = 0; j < n; j++) W[j] = w0[j] - (float)(hh * u[j]);
+                tg.ver++;
+                const double lm = t_step(m, &tt, toks, mask, &A, 0, NULL);
+                nd[r] = (lp - lm) / (2.0 * hh);
+            }
+            /* duas estimativas: diferenca central simples (menos ruido do float) e Richardson (sem o erro de curvatura de
+               ordem h^2); vale a que chega mais perto. Um gradiente errado erra nas duas. */
+            const double nr = (4.0 * nd[1] - nd[0]) / 3.0;
+            num = fabs(nr - gu) < fabs(nd[0] - gu) ? nr : nd[0];
+            rel = fabs(num - gu) / (fabs(num) + fabs(gu) + 1e-8);
+            if (fabs(num - gu) <= 1e-2 * (fabs(num) + fabs(gu)) + 1e-4) break;
         }
         memcpy(W, w0, n * 4);
         tg.ver++;
-        /* duas estimativas: diferenca central simples (menos ruido do float) e Richardson (sem o erro de curvatura de
-           ordem h^2); vale a que chega mais perto. Um gradiente errado erra nas duas. */
-        const double nr = (4.0 * nd[1] - nd[0]) / 3.0;
-        const double num = fabs(nr - gu) < fabs(nd[0] - gu) ? nr : nd[0];
-        const double rel = fabs(num - gu) / (fabs(num) + fabs(gu) + 1e-8);
         /* tolerancia: 1% relativo mais um piso absoluto de 1e-4 (o arredondamento do float domina nos gradientes pequenos) */
         if (getenv("KATANA_GC_VERBOSE") && rel > 1e-2) printf("  (dentro da tolerancia) %s part %d: %.3g x %.3g\n", p->name, part, gu, num);
         if (rel > maxrel) maxrel = rel;
@@ -2223,6 +2316,7 @@ static int train_gradcheck(Model *m, int T) {
     }
     }
     printf("gradientes: %d conferidos (tensores inteiros e adaptadores A/B, derivada direcional), maior erro relativo %.2e\n", checked, maxrel);
+    fails += tm_gradcheck(m, T);                       /* metodos de ajuste fino que mudam o gradiente (train_methods.c) */
     printf(fails ? "gradcheck: FALHOU\n" : "gradcheck: ok\n");
     tact_free(&A); free(lg); free(toks); free(mask);
     return fails != 0;
@@ -2349,6 +2443,7 @@ static double tset_loss(Model *m, TTab *tt, TAct *A, const TSet *S, int seq, int
     return cnt ? sum / cnt : 0.0;
 }
 
+#include "app/train_methods.c"      /* metodos de ajuste fino e diagnostico do treino (opcoes, desligadas por padrao) */
 static int t_ntgt(const TEx *e) { int n = 0; for (int t = 0; t + 1 < e->ids.n; t++) n += e->mask[t] != 0; return n; }
 
 /* --probe N: passo para tras em N janelas (espalhadas pelo conjunto), sem atualizar nada, e imprime a norma do gradiente
@@ -2391,6 +2486,7 @@ static void t_probe(Model *m, TTab *tt, TAct *A, const TEx *ex, int nex, int np,
 
 /* desliga o treino de um tensor (usado depois da sonda para ficar so com os de maior gradiente) */
 static void t_untrain(TPar *p) {
+    tm_untrain(p);
     if (p->r) { free(p->a); free(p->b); free(p->ga); free(p->gb); free(p->ma1); free(p->ma2); free(p->mb1); free(p->mb2); p->a = p->b = p->ga = p->gb = p->ma1 = p->ma2 = p->mb1 = p->mb2 = NULL; p->r = 0; }
     else if (p->w) { free(p->w); free(p->g); free(p->m1); free(p->m2); p->w = p->g = p->m1 = p->m2 = NULL; }
 }
@@ -2399,6 +2495,7 @@ static int t_dcmp(const void *a, const void *b) { const double x = *(const doubl
 /* katana train <modelo> <dados.jsonl> [--out f.kspec] [--train padroes] [--steps N] [--lr X] [--seq T] [--wd X] [--seed N] */
 static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     const Config *c = &m->cfg;
+    if (argc >= 1 && !strcmp(argv[0], "--compare")) return tm_compare_main(m, argc - 1, argv + 1);     /* katana train <modelo> --compare a.kspec ... */
     const char *data = argv[0], *pats = "all";
     char out[1100]; snprintf(out, sizeof out, "%s.kspec", model_path);
     int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0, plan = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
@@ -2407,6 +2504,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     int wtgt = 0, probe = 0, vmax = 0, optstate = -1, resopt = 1, rs = 0; long btgt = 0; double probe_top = 0, minrel = 0; float init_a = 1.0f;
     for (int i = 1; i < argc; i += 2) {
         if (!strcmp(argv[i], "--no-tool-decl")) { g_spec_save_flags |= KSPEC_NO_TOOL_DECL; i--; continue; }   /* opcao sem valor */
+        if (tm_flag(argv[i])) { i--; continue; }                       /* --allow-worse, --dora, --pissa */
         if (i + 1 >= argc) break;
         const char *k = argv[i], *v = argv[i + 1];
         if (!strcmp(k, "--out")) snprintf(out, sizeof out, "%s", v);
@@ -2447,11 +2545,14 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         else if (!strcmp(k, "--min-rel")) minrel = atof(v);
         else if (!strcmp(k, "--opt-state")) optstate = atoi(v);
         else if (!strcmp(k, "--resume-opt")) resopt = atoi(v);
+        else if (tm_opt(k, v)) {}                                      /* --ema, --neft, --anchor, ... (train_methods.c) */
         else { fprintf(stderr, "opcao desconhecida: %s\n", k); return 1; }
     }
     if (seq > c->ctx) seq = c->ctx;
     if (seq < 2) seq = 2;
     if (batch < 1) batch = 1;
+    if (tm_validate(rank, resume != NULL)) return 1;
+    tm_describe();
     if (btgt > 0) wtgt = 1;                       /* lote por alvos: cada janela pesa pelos seus alvos */
     TTab tt = {0};
     const char *err = tt_build(m, &tt);
@@ -2524,14 +2625,17 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         if (rs) p->s = (alpha > 0 ? alpha : (float)rank) / sqrtf((float)p->r);      /* --rs 1: escala alpha/sqrt(posto) */
         if (init_a != 1.0f) for (size_t j = 0; j < (size_t)p->r * p->cols; j++) p->a[j] *= init_a;
     }
+    if (tm_setup(&tt)) return 1;                                  /* PiSSA e DoRA ligam antes da retomada */
     int64_t st0 = 0;
     if (resume && spec_resume(m, &tt, resume) < 0) return 1;
-    if (resume && resopt) {
+    if (resume && resopt && tm_blocks_opt()) printf("o estado do otimizador (.kopt) nao cobre DoRA, Muon nem media movel: recomeca do zero\n");
+    else if (resume && resopt) {
         int got = 0;
         const int64_t os = opt_load(&tt, resume, &got);
         if (os < 0) printf("sem %s.kopt: o estado do otimizador recomeca do zero\n", resume);
         if (os >= 0) { st0 = os; printf("estado do otimizador retomado de %s.kopt: %d tensores, %lld passos ja dados\n", resume, got, (long long)os); }
     }
+    tm_setup_ema(&tt);
     if (probe > 0) {
         TAct PA; tact_alloc(&PA, c, seq);
         double *nrm = xalloc((size_t)tt.n, sizeof(double));
@@ -2592,8 +2696,15 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
            seq, g_ta_bytes / 1048576.0, ntr * 16.0 / 1048576.0, m->fsize / 1073741824.0);
     if (plan) { printf("--plan 1: so o plano, sem treinar\n"); tact_free(&A); return 0; }
     double ema = -1, best = 1e30, sig = 1e30;
-    const int optstate_on = optstate < 0 ? ntr <= 32000000u : optstate;     /* padrao: grava os momentos se couberem em ~256 MB */
+    const int optstate_on = !tm_blocks_opt() && (optstate < 0 ? ntr <= 32000000u : optstate);     /* padrao: grava os momentos se couberem em ~256 MB */
+    double base_val = -1;
+    if (vas.n) {                                      /* o ponto de partida honesto: a validacao do modelo base, antes de qualquer passo */
+        base_val = tm_baseline(m, &tt, &A, &vas, seq, resume == NULL && !tm.pissa);
+        if (base_val < 0) return 1;
+        if (!tm.allow_worse) best = sig = base_val;     /* so grava (e so conta como melhora) um estado que vence o base */
+    }
     long toks = 0;
+    int diverged = 0, nskip = 0;
     int best_step = 0, bad = 0, saved = 0, done = 0;
     FILE *lf = logp ? fopen(logp, "ab") : NULL;
     if (logp && !lf) { fprintf(stderr, "nao abriu o log %s\n", logp); return 1; }
@@ -2632,7 +2743,9 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
             t_gscale = wgt;
             A.T = e->ids.n;
             int n1 = 0;
+            tm_set_key(seed, st, bi); tm_on = 1;
             loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) * wgt;
+            tm_on = 0;
             N += n1;
             toks += A.T;
         }
@@ -2640,34 +2753,59 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         float lr_t = lr;
         if (st <= warm) lr_t = lr * (float)st / (float)warm;                /* aquecimento */
         else if (cosine && steps > warm) lr_t = lr * (0.1f + 0.9f * 0.5f * (1.0f + cosf(3.14159265f * (float)(st - warm) / (float)(steps - warm))));
+        if (tm_guard_step(&tt, loss, st)) {              /* divergencia: perda ou gradiente nao finitos, ou pico: o passo nao e dado */
+            t_clear_grads(&tt); nskip++;
+            if (tm_guard_stop()) { printf("treino interrompido: %d passos pulados em sequencia\n", g_consec); diverged = 1; break; }
+            continue;
+        }
         const double po0 = now_sec();
-        const double gn = t_adamw(&tt, (int)(st + st0), lr_t, wd, clip);
+        const double gn = t_adamw(&tt, (int)(st - nskip + st0), lr_t, wd, clip);
+        if (tm.ema > 0) tm_ema_update(&tt, st - nskip);
         tprof[TP_OPT] += now_sec() - po0;
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
         if (st == 1 || st % every == 0 || st == steps)
             printf("passo %4d  perda %.4f  media %.4f  |grad| %.3f  lr %.2e  (%d alvos, %.1f s)\n", st, loss, ema, gn, lr_t, N, now_sec() - t0);
+        if (getenv("KATANA_TRAIN_PROF")) printf("passo %d: perda %.9g |grad| %.9g\n", st, (double)loss, (double)gn);
         if (lf) fprintf(lf, "{\"step\": %d, \"loss\": %.6f, \"lr\": %.6g}\n", st, loss, lr_t);
         if (vas.n && (st % eval == 0 || st == steps)) {
-            int vn = 0;
-            const double vl = tset_loss(m, &tt, &A, &vas, seq, &vn);
+            int vn = 0, uema = 0;
+            const double vl = tm_eval_point(m, &tt, &A, &vas, seq, &vn, &uema);
             const int better = vl < best - 1e-6;
             const int signif = vl < sig * (1.0 - minrel) - 1e-6;       /* --min-rel: so conta como melhora a relativa */
             printf("validacao  passo %4d  perda %.4f em %d alvos  tokens %ld  %.1f s%s\n", st, vl, vn, toks, now_sec() - t0, better ? "  (melhor ate agora: gravado)" : "");
             if (lf) fprintf(lf, "{\"step\": %d, \"val_loss\": %.6f}\n", st, vl);
             if (better) {
                 best = vl; best_step = st;
+                tm_ev_best = tm_ev;
                 if (!spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
                 if (optstate_on) opt_save(&tt, out, st + st0);
                 saved = 1;
+                if (uema) printf("  (gravada a media movel dos pesos)\n");
             }
             if (signif) { sig = vl; bad = 0; }
             else if (patience && ++bad >= patience) { printf("parada antecipada: %d avaliacoes sem melhorar%s\n", bad, minrel > 0 ? " o suficiente" : ""); done = 1; }
+            tm_eval_done(&tt, uema);
         }
         fflush(stdout);
         if (done) break;
     }
     if (st > steps) st = steps;
     free(ord);
+    if (g_skips) printf("guardas: %d passos pulados (perda/gradiente nao finitos ou pico de perda)\n", g_skips);
+    if (vas.n) {                                                       /* base x melhor, por fonte */
+        if (saved) {
+            printf("VALIDACAO: base %.4f -> gravado %.4f (passo %d, %+.4f)\n", base_val, best, best_step, best - base_val);
+            tm_print_src("  base   :", &tm_ev_base); tm_print_src("  gravado:", &tm_ev_best);
+        } else printf("VALIDACAO: base %.4f; nenhum estado treinado a venceu\n", base_val);
+    } else printf("aviso: sem validacao, nao ha como saber se a especializacao melhorou o modelo (use --val-data ou --val)\n");
+    if (vas.n && !saved && !tm.allow_worse) {
+        fprintf(stderr, "especializacao NAO gravada: a perda de validacao nunca ficou abaixo da do modelo base (%.4f)%s; --allow-worse grava mesmo assim\n",
+                base_val, diverged ? " (o treino divergiu)" : "");
+        printf("resultado: {\"out\": null, \"steps\": %d, \"train_loss\": null, \"val_loss\": null, \"base_val_loss\": %.6f, \"best_step\": 0, \"refused\": true}\n", st, base_val);
+        A.T = seq; tact_free(&A);
+        return 2;
+    }
+    if (diverged && !saved && !tm.allow_worse) { fprintf(stderr, "o treino divergiu e nada foi gravado\n"); A.T = seq; tact_free(&A); return 2; }
     if (mix) {
         printf("mistura realizada:");
         for (int s = 0; s < g_ntsrc; s++) { printf(" %s %ld janelas (%.0f%%)", g_tsrc[s], mcnt[s], mdrawn ? 100.0 * mcnt[s] / mdrawn : 0.0); free(mord[s]); }
@@ -2701,8 +2839,9 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     /* resumo de uma linha para quem chama (katana learn, scripts) */
     char vb[32]; if (saved) snprintf(vb, sizeof vb, "%.6f", best); else snprintf(vb, sizeof vb, "null");
     char oe[2300]; js_escape_to(oe, sizeof oe, out);
-    printf("resultado: {\"out\": \"%s\", \"steps\": %d, \"train_loss\": %.6f, \"val_loss\": %s, \"best_step\": %d, \"lines\": %d, \"val_lines\": %d}\n",
-           oe, st, fin, vb, best_step, nlines, vlines);
+    char bb[32]; if (vas.n) snprintf(bb, sizeof bb, "%.6f", base_val); else snprintf(bb, sizeof bb, "null");
+    printf("resultado: {\"out\": \"%s\", \"steps\": %d, \"train_loss\": %.6f, \"val_loss\": %s, \"base_val_loss\": %s, \"best_step\": %d, \"lines\": %d, \"val_lines\": %d}\n",
+           oe, st, fin, vb, bb, best_step, nlines, vlines);
     if (lf) { fprintf(lf, "{\"final_train_loss\": %.6f, \"best_val_loss\": %s, \"best_step\": %d}\n", fin, vb, best_step); fclose(lf); }
     A.T = seq; tact_free(&A);
     return 0;

@@ -130,6 +130,21 @@ static void vk_g4_get(KvkBuf buf, float *A, int B, int n) {
     for (int t = 0; t < B; t++) for (int i = 0; i < n; i++) A[(size_t)t * n + i] = T[(size_t)i * B + t];
 }
 
+/* varios buffers [n][B] com uma espera so */
+static void vk_g4_getv(const KvkBuf *b, float *const *A, const int *n, int k, int B) {
+    static float *T; static size_t cap;
+    size_t tot = 0, nb[3]; void *dst[3];
+    for (int i = 0; i < k; i++) tot += (size_t)n[i] * B;
+    if (cap < tot) { free(T); T = xalloc(tot, 4); cap = tot; }
+    size_t o = 0;
+    for (int i = 0; i < k; i++) { dst[i] = T + o; nb[i] = (size_t)n[i] * B * 4; o += (size_t)n[i] * B; }
+    if (!vk_readv(b, dst, nb, k)) die("falha na execucao em Vulkan (leitura do lote, gemma4)");
+    for (int i = 0; i < k; i++) {
+        const float *t0 = dst[i];
+        for (int t = 0; t < B; t++) for (int r = 0; r < n[i]; r++) A[i][(size_t)t * n[i] + r] = t0[(size_t)r * B + t];
+    }
+}
+
 static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logits) {
     const Config *c = &m->cfg;
     const int d = c->dim, nh = c->n_heads, K = c->n_used, E = c->n_expert, Hd = c->hidden_dense;
@@ -151,10 +166,11 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
         ok &= vk_mm_p(&L->wk, vkbm.xf, vkb.k, kvd, d, B, 0, 1);
         if (hasv) ok &= vk_mm_p(&L->wv, vkbm.xf, vkb.q2, kvd, d, B, 0, 1);
         if (!ok) die("falha na execucao em Vulkan (lote, gemma4)");
-        vk_g4_get(vkb.q, Q, B, qd);
-        vk_g4_get(vkb.k, KK, B, kvd);
-        if (hasv) vk_g4_get(vkb.q2, VV, B, kvd);
-        else memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
+        {   const KvkBuf rd[3] = { vkb.q, vkb.k, vkb.q2 };      /* uma espera so */
+            float *const rt[3] = { Q, KK, VV };
+            const int rn[3] = { qd, kvd, kvd };
+            vk_g4_getv(rd, rt, rn, 2 + hasv, B); }
+        if (!hasv) memcpy(VV, KK, (size_t)B * kvd * sizeof(float));
         double t1 = now_sec();
         vkg4.t_gpu += t1 - t0;
         float *kb = m->kcache ? m->kcache + L->kv_off : NULL, *vb = m->vcache ? m->vcache + L->kv_off : NULL;
@@ -194,8 +210,10 @@ static float *vk_g4_n(Model *m, const int *toks, int B, int pos0, int want_logit
         ok &= vk_mm_p(&L->w_gate, vkbm.xf, vkb.q, Hd, d, B, 0, 1);
         ok &= vk_mm_p(&L->w_up, vkbm.xf, vkb.k, Hd, d, B, 0, 1);
         if (!ok) die("falha na execucao em Vulkan (lote, gemma4)");
-        vk_g4_get(vkb.q, HB, B, Hd);
-        vk_g4_get(vkb.k, HB2, B, Hd);
+        {   const KvkBuf rd[2] = { vkb.q, vkb.k };
+            float *const rt[2] = { HB, HB2 };
+            const int rn[2] = { Hd, Hd };
+            vk_g4_getv(rd, rt, rn, 2, B); }
         for (size_t i = 0; i < (size_t)B * Hd; i++) HB[i] = gelu_t(HB[i]) * HB2[i];
         ok &= vk_g4_put(vkbm.xf, HB, B, Hd);
         ok &= vk_mm_p(&L->w_down, vkbm.xf, vkb.q, d, Hd, B, 0, 1);

@@ -242,6 +242,7 @@ static float *vk_forward_moe(Model *m, int want_logits);
 static float *vk_qn_forward_1(Model *m, int want_logits);
 static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits);
 static void vkq_setup(Model *m);
+static int vkq_posn;      /* posicao do primeiro token do lote em curso do qwen35moe (layer_tap) */
 static int vkq_pos1;      /* posicao do token no caminho de um token do qwen35moe */
 
 /* um token pelas camadas todas na GPU; devolve os logits (m->logits) ou NULL se !want_logits */
@@ -1286,6 +1287,7 @@ static void moe_route(Model *m, const Layer *L, int l) {
     if (dbg_on && cpu_exact) for (int k = 0; k < K; k++) dbg_sel[((size_t)dbg_pos * c->n_layers + l) * K + k] = moe.sel[k];
     if (moe.cnt) { for (int k = 0; k < K; k++) moe.cnt[(size_t)l * E + moe.sel[k]]++; if (l == c->n_dense) moe.tokens++; }
     if (moe.trace) for (int k = 0; k < K; k++) moe.trace[((size_t)moe.ti * c->n_layers + l) * K + k] = (uint16_t)moe.sel[k];
+    if (et_hook_route) et_hook_route(m, L, l);
     /* KATANA_EXPLOG=<arquivo>: registra (camada, K escolhidos) em uint16 para simular politicas de vagas offline */
     static FILE *xlog; static int xlog_init;
     if (!xlog_init) {
@@ -1376,6 +1378,7 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
     }
     if (n <= 0) return;
     if (n > MOE_NMAX || n_x > GPU_BMAX) die("MoE: pares demais num lote");
+    if (et_on && et_wrap(m, L, ex, xi, n, n_x, xs, outs)) return;     /* especialistas da arena de RAM (expert_tier.c) */
     if (!moe_int(&L->eg[ex[0]]) || !moe_int(&L->eu[ex[0]]) || !moe_int(&L->ed[ex[0]]) || pool.n <= 1) {
         for (int j = 0; j < n; j++) {       /* caminho exato/float: um a um */
             const float *x = xs + (size_t)xi[j] * d;

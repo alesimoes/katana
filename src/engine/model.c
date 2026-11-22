@@ -298,7 +298,7 @@ static float e8m0_half(uint8_t e) {
     return f;
 }
 static float bf16_to_f32(uint16_t h) { uint32_t u = (uint32_t)h << 16; float f; memcpy(&f, &u, 4); return f; }
-static int kv8_escolha(size_t ctx);
+static int kv8_escolha(size_t ctx, uint64_t kv16, uint64_t weights);
 static float h2f(const uint8_t *p) { uint16_t h; memcpy(&h, p, 2); return f16_to_f32(h); }
 
 /* escala de 6 bits do sub-bloco ib (0..7) de um bloco IQ4_XS (ja sem o deslocamento de 32) */
@@ -737,6 +737,12 @@ static void warm_start(const Model *m) {
 #endif
 }
 static void prefetch_setup(int64_t fsz);
+/* camadas de memoria dos especialistas (engine/expert_tier.c): ganchos, desligados por padrao */
+static int et_on;                                               /* a arena de RAM esta ligada (KATANA_EXPERT_RAM) */
+static void (*et_hook_route)(Model *, const Layer *, int);     /* no fim de moe_route */
+static void (*et_hook_post)(Model *, int);                     /* ao fim de uma camada MoE do qwen35moe */
+static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs);
+static void et_init(Model *m, const char *path, const uint8_t *base);
 
 /* mapeia o arquivo em memoria (somente leitura): o SO carrega as paginas sob demanda
    e o mapeamento fica vivo ate o processo terminar */
@@ -1280,7 +1286,7 @@ static void load_model(Model *m, const char *path) {
         if (!na) na = 1;
         const char *e16 = getenv("KATANA_CPU_KV16");      /* padrao: fp16 a partir de 64k de contexto */
         c->kv16_cpu = e16 ? atoi(e16) != 0 : ctx > 65536;
-        c->kv8_cpu = kv8_escolha(ctx) && kvd % 32 == 0 && c->hd % 32 == 0;
+        c->kv8_cpu = kv8_escolha(ctx, (uint64_t)na * ctx * kvd * 4, (uint64_t)fsz) && kvd % 32 == 0 && c->hd % 32 == 0;
         if (c->kv8_cpu) { c->kv16_cpu = 0; m->kq8 = xalloc(na * ctx * kvd / 32, 34); m->vq8 = xalloc(na * ctx * kvd / 32, 34); }
         else if (c->kv16_cpu) { m->kh = xalloc(na * ctx * kvd, 2); m->vh = xalloc(na * ctx * kvd, 2); }
         else { m->kcache = xalloc(na * ctx * kvd, sizeof(float)); m->vcache = xalloc(na * ctx * kvd, sizeof(float)); }
@@ -1381,6 +1387,7 @@ static void load_model(Model *m, const char *path) {
     if (c->n_expert) warm_start(m);
     sample_preset(c->arch);
     spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
+    if (!c->q4e) et_init(m, path, buf);  /* nivel de SSD: ainda nao cobre modelo em partes */
     if (c->q4e) fprintf(stderr, "qwen4exp: so na CPU por enquanto\n");
     else if (!getenv("KATANA_CPU")) gpu_setup(m);
 }

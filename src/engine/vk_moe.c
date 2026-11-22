@@ -313,6 +313,7 @@ static void vk_moe_n(Model *m, const Layer *L, int l, int B) {
         float *xn = vkbm.xn + (size_t)b * d;
         for (int i = 0; i < d; i++) xn[i] = vkb.xT[(size_t)i * B + b];
         memcpy(m->xb, xn, (size_t)d * sizeof(float));
+        if (layer_tap && c->ssm_inner) layer_tap(l, vkq_posn + b, xn);
         if (vk_moe_lgh) moe_lg_ext = vk_moe_lgh + (size_t)b * E;
         else if (vkm.rt) { for (int e = 0; e < E; e++) lcol[e] = vkbm.lgT[(size_t)e * B + b]; moe_lg_ext = lcol; }
         moe_route(m, L, l);

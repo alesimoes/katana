@@ -552,6 +552,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
                         "         [--mix tools=30,code=30,conventions=40,teacher=15,knowledge=15] [--out PASTA] [--fresh] [--hours H] [--steps N] [--rank R]\n"
                         "         [--seq T] [--lr X] [--margin-mb MB] [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--verified]\n"
                         "         [--plan-updates] [--dry-run] [--no-check]\n"
+                        "         [--val F] [--val-max N] [--allow-worse]     validacao separada por conversa (padrao 10%, no maximo ~10% do custo do treino); sem ela nada vale\n"
                         "     katana specialize --status [--training-dir PASTA]\n"
                         "     katana specialize --verify-data data.jsonl      confere um arquivo de dados (cada linha JSON inteira)\n"
                         "     katana.cfg: transcripts=PASTA, training-dir=PASTA, replace=REGEX=TEXTO (repetivel), cut-matching=REGEX\n");
@@ -576,7 +577,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     const char *from = NULL, *sessions = NULL, *corpus = NULL, *outdir = NULL, *rank = "8", *seq = "512", *lr = "2e-4", *kdir = NULL, *trdir = NULL;
     const char *mix = "tools=30,code=30,conventions=40,teacher=15,knowledge=15";
     const char *curriculum = NULL;
-    double hours = 5, wait_h = 0; int steps = 0, dry = 0, check = 1, fresh = 0, refresh = 1; long margin = 6000;
+    double hours = 5, wait_h = 0, valf = 0.1; int steps = 0, dry = 0, check = 1, fresh = 0, refresh = 1, valmax = 0, allow_worse = 0; long margin = 6000;
     /* trocas e cortes persistentes do katana.cfg; as da linha de comando vem depois (o corte da linha vence) */
     for (int i = 0; i < cfg.n; i++) {
         if (!strcmp(cfg.k[i], "replace") && x.nrep < SP_MAXREP) x.rep[x.nrep++] = cfg.v[i];
@@ -603,6 +604,9 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
         else if (!strcmp(o, "--margin-mb") && more) margin = atol(argv[++i]);
         else if (!strcmp(o, "--replace") && more) { if (x.nrep < SP_MAXREP) x.rep[x.nrep++] = argv[++i]; else { fprintf(stderr, "specialize: replace demais (no maximo %d, contando o katana.cfg)\n", SP_MAXREP); return 1; } }
         else if (!strcmp(o, "--cut-matching") && more) x.cut = argv[++i];
+        else if (!strcmp(o, "--val") && more) valf = atof(argv[++i]);
+        else if (!strcmp(o, "--val-max") && more) valmax = atoi(argv[++i]);
+        else if (!strcmp(o, "--allow-worse")) allow_worse = 1;
         else if (!strcmp(o, "--dry-run")) dry = 1;
         else if (!strcmp(o, "--no-check")) check = 0;
         else if (!strcmp(o, "--fresh")) fresh = 1;
@@ -801,13 +805,30 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
     snprintf(trl, sizeof trl, "%s/train.log", outdir);
     remove(logf);
     a = base; sp_a(&a, "--steps"); sp_a(&a, nsteps); sp_a(&a, "--log"); sp_a(&a, logf); sp_a(&a, "--out"); sp_a(&a, spec);
+    /* validacao separada por conversa (a semente do treino fixa quais). Mede a base antes do passo 1 e o estado do treino na
+       metade e no fim (3 medidas); cada medida custa cerca de um terco de uma janela de treino por janela de validacao, entao
+       com no maximo steps/10 janelas o conjunto todo custa cerca de 10% do treino. O treino recusa gravar o que nao vence a base. */
+    char nval[32], nvmax[32], neval[32];
+    if (valf > 0) {
+        long vm = valmax > 0 ? valmax : steps / 10; if (vm < 6) vm = 6;
+        snprintf(nval, sizeof nval, "%g", valf); snprintf(nvmax, sizeof nvmax, "%ld", vm); snprintf(neval, sizeof neval, "%d", steps > 1 ? steps / 2 : 1);
+        sp_a(&a, "--val"); sp_a(&a, nval); sp_a(&a, "--val-max"); sp_a(&a, nvmax); sp_a(&a, "--eval"); sp_a(&a, neval);
+        sp_say("validacao: %s das conversas separadas, no maximo %ld janelas, medida na base, na metade e no fim", nval, vm);
+    } else sp_say("validacao desligada (--val 0): nao ha como saber se o treino melhorou o modelo");
+    if (allow_worse) sp_a(&a, "--allow-worse");
     t0 = time(NULL);
     rc = sp_run(a.v, trl);
     const double took_h = (double)(time(NULL) - t0) / 3600.0;
     sp_say("treino terminou com codigo %d em %.0f min", rc, took_h * 60);
     if (sp_grep(trl, "mistura realizada:", line, sizeof line, 1)) sp_say("%s", line);
     if (sp_grep(trl, "retomado de", line, sizeof line, 1)) sp_say("%s", line);
+    if (sp_grep(trl, "validacao BASE", line, sizeof line, 1)) sp_say("%s", line);
+    if (sp_grep(trl, "VALIDACAO:", line, sizeof line, 1)) sp_say("%s", line);
     if (sp_grep(trl, "resultado:", line, sizeof line, 1)) sp_say("%s", line);
+    if (rc == 2) {            /* o treino recusou gravar: a validacao nunca venceu a base (ou o treino divergiu) */
+        sp_say("RECUSADA: a especializacao nao venceu o modelo base na validacao e NAO foi gravada (--allow-worse grava mesmo assim); veja %s", trl);
+        return 9;
+    }
     double lf0, lf1;
     sp_losses(logf, &lf0, &lf1);
     struct stat sst;
