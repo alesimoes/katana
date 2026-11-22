@@ -158,5 +158,39 @@ R=$("$K" tool shared__argv '{}' 2>&1 </dev/null)
 has "e: sem arquivos de projeto, volta ao do usuario" "$R" "[user]"
 cd "$P"
 
+########## f: elicitation ##########
+printf '{"mcpServers":{"rt":{"command":"%s","args":["elicit"]}}}\n' "$FAKE" > "$HOME/.katana/mcp.json"
+R=$("$K" tool rt__caps '{}' 2>&1)
+has "f: declara elicitation form" "$R" '"elicitation":{"form":{}}'
+R=$(printf 'rt__ask {}\n\001ANS Answer\n\001ANS Alice\n\001ANS abc\n\001ANS 30\n\001ANS yes\n\001ANS green\n\001ANS a,c\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: a pergunta diz qual servidor pede" "$R" "CHOICE MCP server 'rt' asks you for information: Need your details"
+has "f: campos pedidos na ordem, com titulo" "$R" "[mcp rt] Your name (required)"
+has "f: aceito: o conteudo volta tipado" "$R" '"content":{"name":"Alice","age":30,"agree":true,"color":"green","tags":["a","c"]}'
+has "f: aceito: acao accept" "$R" '"action":"accept"'
+R=$(printf 'rt__ask {}\n\001ANS Answer\n\001ANS Bob\n\001ANS 200\n\001ANS 200\n\001ANS 200\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: valor fora do limite tres vezes: cancela" "$R" '"action":"cancel"'
+R=$(printf 'rt__ask {}\n\001ANS Answer\n\001ANS Bob\n\001ANS 40\n\001ANS \n\001ANS \n\001ANS \n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: opcionais vazios sao pulados" "$R" '"content":{"name":"Bob","age":40}'
+R=$(printf 'rt__ask {}\n\001ANS Decline\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: recusar devolve decline" "$R" '"action":"decline"'
+R=$(printf 'rt__ask {}\n\001ANS\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: cancelar (Stop) devolve cancel" "$R" '"action":"cancel"'
+R=$(printf 'rt__ask {}\n\001ANS Answer\n\001ANS\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: campo obrigatorio cancelado: cancel" "$R" '"action":"cancel"'
+R=$("$K" tool rt__ask '{}' 2>&1 </dev/null)
+has "f: sem ninguem para responder (sem tela): decline" "$R" '"action":"decline"'
+has "f: ... e diz por que" "$R" "nobody to ask"
+R=$(printf 'rt__askurl {}\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: modo url nao declarado: erro ao servidor" "$R" '"code":-32602'
+R=$(printf 'rt__askbad {}\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: campo aninhado: erro ao servidor" "$R" '"code":-32602'
+R=$(printf 'rt__askpw {}\n\001ANS Answer\n\001ANS 0\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: campo de senha: pede confirmacao explicita" "$R" "ASK action	send what looks like a secret ('password') to the MCP server 'rt'"
+has "f: senha nao confirmada: decline" "$R" '"action":"decline"'
+R=$(printf 'rt__askpw {}\n\001ANS Answer\n\001ANS 1\n\001ANS hunter2xyz\n' | KATANA_UI=1 "$K" toolrun 2>&1)
+has "f: senha confirmada: segue" "$R" '"content":{"password":"hunter2xyz"}'
+hasnt "f: o valor digitado nao vai para o log do MCP" "$(cat "$T/mcp.log")" "hunter2xyz"
+has "f: o log guarda so a decisao" "$(cat "$T/mcp.log")" "elicitation"
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]

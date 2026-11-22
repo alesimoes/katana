@@ -47,7 +47,7 @@ typedef struct {
 } McpSrv;
 typedef struct { char *p; size_t n, cap; } McpB;
 /* capacidades do cliente declaradas no initialize (mcp_extra.c explica cada uma) */
-#define MCPX_CAPS "{\"roots\":{\"listChanged\":true}}"
+#define MCPX_CAPS "{\"roots\":{\"listChanged\":true},\"elicitation\":{\"form\":{}}}"
 static void mcpx_server_msg(McpSrv *s, const char *o);                       /* mcp_extra.c */
 static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final);
 static int mcpx_extra_wait(void);

@@ -86,3 +86,29 @@ content hash (`~/.katana/mcp-trust`), skipped without a terminal or the desktop,
 Precedence for a server name that appears more than once, weakest first: `~/.katana/mcp.json` (or `KATANA_MCP_CONFIG`),
 then `.mcp.json`, then `.katana/mcp.json`. The server listing says which file each one came from. The usage file of a
 server declared in `.mcp.json` is `.katana/mcp/<server>.md`. `katana mcp add --project` still writes `.katana/mcp.json`.
+
+## Elicitation
+
+katana declares `{"elicitation":{"form":{}}}` and answers `elicitation/create` from the server during a call (stdio, and
+HTTP through the response stream). Only form mode with flat fields is handled: string (also `enum` and `oneOf` with
+`const`), number, integer (with `minimum`/`maximum`), boolean, and arrays of enum values (answered as a comma-separated
+list), up to 10 fields. URL mode and nested objects get a JSON-RPC error (`-32602`), which the specification allows for an
+unsupported mode.
+
+- Who asks is always named: the first question is `MCP server 'NAME' asks you for information: <message> (fields: ...)`,
+  with the choices Answer and Decline, and the following questions start with `[mcp NAME]`.
+- In the console the questions use the keyboard; in the desktop and the JSON/UI protocol they use the same marker as the
+  `ask_user` tool (`CHOICE question<TAB>option...`, answered by `\x01ANS text`; an empty answer, or Stop, cancels).
+  Optional fields skip on an empty answer, `default` is used when present, a value that does not fit the type or limits is
+  asked again (three tries, then `cancel`).
+- With nobody to ask (headless runs, `-p`, a pipe) the answer is `{"action":"decline"}` and a line on stderr says so.
+- A field whose name, title or description looks like a password or secret (password, passphrase, token, api key,
+  credential, private key, cvv, otp, ...) is never asked silently: the user must first confirm
+  `send what looks like a secret ('field') to the MCP server 'NAME'`; if not confirmed the answer is `decline`.
+- Typed values go only to the server. They are not written to `mcp.log` (which records only `elicitation <action>`) or
+  anywhere else. The terminal does not hide typing; use the desktop for secrets.
+- While the user answers, the call's timeout does not run (stdio); over HTTP the call may wait up to 10 extra minutes when a
+  person can answer.
+
+Revision `2026-07-28` replaces server-initiated requests (elicitation included) with multi round-trip results
+(`resultType: "input_required"`); that form is not implemented.

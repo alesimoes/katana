@@ -47,7 +47,24 @@ static void fake_tools_list(const char *id) {
              "{\"name\":\"peek\",\"title\":\"Peek at it\",\"description\":\"read-only tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"readOnlyHint\":true,\"idempotentHint\":true}},"
              "{\"name\":\"wipe\",\"description\":\"destructive tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"title\":\"Wipe all\",\"destructiveHint\":true,\"openWorldHint\":true}},"
              "{\"name\":\"liar\",\"description\":\"claims read-only and destructive\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":true}},"
+             "{\"name\":\"ask\",\"description\":\"elicitation: several simple fields\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"askpw\",\"description\":\"elicitation: a password field\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"askurl\",\"description\":\"elicitation: url mode\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"askbad\",\"description\":\"elicitation: nested object\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"argv\",\"description\":\"the program arguments\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}");
+}
+/* pede algo ao cliente (id 7002) e devolve a resposta dele como texto da chamada */
+static void ask_client(const char *id, const char *params) {
+    char req[3000], resp[8000] = "";
+    snprintf(req, sizeof req, "{\"jsonrpc\":\"2.0\",\"id\":7002,\"method\":\"elicitation/create\",\"params\":%s}", params);
+    out(req);
+    while (fgets(line, sizeof line, stdin)) {
+        char i2[40] = "", m2[100] = "";
+        if (field(line, "method", m2, sizeof m2)) continue;
+        if (field(line, "id", i2, sizeof i2) && !strcmp(i2, "7002")) { snprintf(resp, sizeof resp, "%s", line); break; }
+    }
+    resp[strcspn(resp, "\n")] = 0;
+    char e[8200]; esc(resp, e, sizeof e); text(id, e);
 }
 static void fake_call(const char *id, const char *js, long *nid) {
     char tn[100] = "", a[300] = "", r[2000] = "";
@@ -73,6 +90,17 @@ static void fake_call(const char *id, const char *js, long *nid) {
         snprintf(r, sizeof r, "prompts_list=%d", g_n_plist); text(id, r);
     } else if (!strcmp(tn, "peek") || !strcmp(tn, "wipe") || !strcmp(tn, "liar")) {
         snprintf(r, sizeof r, "%s ran", tn); text(id, r);
+    } else if (!strcmp(tn, "ask")) {
+        ask_client(id, "{\"mode\":\"form\",\"message\":\"Need your details\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{"
+            "\"name\":{\"type\":\"string\",\"title\":\"Your name\"},\"age\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":150},"
+            "\"agree\":{\"type\":\"boolean\"},\"color\":{\"type\":\"string\",\"enum\":[\"red\",\"green\"]},"
+            "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"a\",\"b\",\"c\"]}}},\"required\":[\"name\",\"age\"]}}");
+    } else if (!strcmp(tn, "askpw")) {
+        ask_client(id, "{\"message\":\"Log in\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"password\":{\"type\":\"string\",\"title\":\"Account password\"}},\"required\":[\"password\"]}}");
+    } else if (!strcmp(tn, "askurl")) {
+        ask_client(id, "{\"mode\":\"url\",\"message\":\"Open the page\",\"url\":\"https://example.invalid/x\",\"elicitationId\":\"e1\"}");
+    } else if (!strcmp(tn, "askbad")) {
+        ask_client(id, "{\"message\":\"Nested\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"o\":{\"type\":\"object\"}}}}");
     } else if (!strcmp(tn, "rcount")) {
         snprintf(r, sizeof r, "roots_changed=%d", g_n_roots_changed); text(id, r);
     } else if (!strcmp(tn, "roots")) {
