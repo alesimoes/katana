@@ -151,7 +151,8 @@ static const char *x_tsel(const char *names) { return x_call(NULL, "ToolSearch",
 static void fam_x_tools(FILE *f, Scn *s) {
     /* as ferramentas saem em rodizio (sem gastar sorteio; a escolha vai na linha gravada). Ficam de fora: Agent (so dentro do laco do agente, com modelo) e terminal (a saida do pty depende do tempo) */
     static const int order[] = {K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_CRON};
-    const int kind = g_x_kforce >= 0 ? g_x_kforce : order[(g_x_cycle + g_cu_att) % CU_N(order)];      /* terminal fica de fora: a saida do pty depende do tempo */
+    /* na validacao so saem o segundo plano e o Monitor (com TaskStop): as outras ferramentas ja tem situacoes reservadas em x-rare */
+    const int kind = g_x_kforce >= 0 ? g_x_kforce : g_cu_hold ? order[(g_x_cycle + g_cu_att) % 2] : order[(g_x_cycle + g_cu_att) % CU_N(order)];      /* terminal fica de fora: a saida do pty depende do tempo */
     XC c; memset(&c, 0, sizeof c); c.s = s;
     const int st = cu_n(X_NST);
     x_proj(&c.p, s, st == X_C ? X_SH : st, 2, 2); XProj *p = &c.p;
@@ -225,7 +226,7 @@ static void fam_x_tools(FILE *f, Scn *s) {
         if (x_err(r) || g_plan_mode) cu_die("o plano nao foi aprovado: %.200s", r);
         x_done(2);
         x_edit(s, "settings.conf", cu_fmt("%s = %s", p->ck[ki], p->cv[ki]), cu_fmt("%s = %ld", p->ck[ki], v), 0, 0);
-        r = x_bash(NULL, "sh tools/check_settings.sh", L("Check the settings", "Confere as configuracoes"), 0);
+        r = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0);
         if (!strstr(r, "settings ok")) cu_die("verificacao falhou");
         x_final(cu_fmt(L("You approved the plan, so I applied it: settings.conf now has `%s = %ld`, and `sh tools/check_settings.sh` ends with \"settings ok\".", "Voce aprovou o plano, entao apliquei: o settings.conf agora tem `%s = %ld`, e o `sh tools/check_settings.sh` termina com \"settings ok\"."), p->ck[ki], v));
     } else if (kind == K_WT) {
@@ -389,7 +390,7 @@ static void fam_x_skill(FILE *f, Scn *s) {
     if (!tot) cu_die("sem totais");
     if (x_fails(o, fn, 4)) {
         if (!fail) cu_die("testes falharam sem defeito");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(L("[x] Run the tests (failed: stopped here, as the skill says)", "[x] Rodar os testes (falhou: parei aqui, como a skill manda)"))), 0);
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt(L("[x] Run the tests of %s (failed: stopped here, as the skill says)", "[x] Rodar os testes do %s (falhou: parei aqui, como a skill manda)"), p->name))), 0);
         x_final(cu_fmt(L("I stopped at step 1 of `%s`, as its `fail:` line says: the check \"it ends with 0 failed\" did not hold (`%s` ends with %s; first failure: `%s`). The other steps were not run and nothing was written.",
                          "Parei no passo 1 do `%s`, como a linha `fail:` manda: a verificacao \"it ends with 0 failed\" nao valeu (o `%s` termina com %s; primeira falha: `%s`). Os outros passos nao rodaram e nada foi gravado."), nm[kind], p->testcmd, tot, x_line_with(o, "FAIL ") + 5));
         x_end(f); return;
@@ -404,16 +405,16 @@ static void fam_x_skill(FILE *f, Scn *s) {
         if (p->brief) x_test(p, NULL);
         x_final(cu_fmt(L("Version %s is recorded: VERSION holds it and it is the first line of CHANGELOG.md. The tests: %s.", "A versao %s esta registrada: o VERSION tem ela e e a primeira linha do CHANGELOG.md. Os testes: %s."), ver, tot));
     } else if (kind == 1) {
-        const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", L("Check the settings", "Confere as configuracoes"), 0));
+        const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0));
         if (!strstr(ck, "settings ok")) cu_die("settings");
         x_done(2);
-        x_bash(NULL, cu_fmt("ls %s", x_srcdir(p)), L("List the source files", "Lista os arquivos fonte"), 0);
+        x_bash(NULL, cu_fmt("ls %s", x_srcdir(p)), cu_fmt(L("List the source files of %s", "Lista os arquivos fonte do %s"), p->name), 0);
         x_final(cu_fmt(L("Ready: the tests end with %s and the settings check ends with \"settings ok\".", "Pronto: os testes terminam com %s e a verificacao das configuracoes termina com \"settings ok\"."), tot));
     } else {
-        x_bash(NULL, cu_fmt("mkdir -p snapshots/%s", label), L("Create the snapshot folder", "Cria a pasta do snapshot"), 0);
+        x_bash(NULL, cu_fmt("mkdir -p snapshots/%s", label), cu_fmt(L("Create the folder of the snapshot %s", "Cria a pasta do snapshot %s"), label), 0);
         x_done(2);
-        x_bash(NULL, cu_fmt("cp -r %s snapshots/%s/", x_srcdir(p), label), L("Copy the sources", "Copia os fontes"), 0);
-        const char *ls = cu_fmt("%s", x_bash(NULL, cu_fmt("ls snapshots/%s", label), L("List the snapshot", "Lista o snapshot"), 0));
+        x_bash(NULL, cu_fmt("cp -r %s snapshots/%s/", x_srcdir(p), label), cu_fmt(L("Copy the sources of %s", "Copia os fontes do %s"), p->name), 0);
+        const char *ls = cu_fmt("%s", x_bash(NULL, cu_fmt("ls snapshots/%s", label), cu_fmt(L("List the snapshot %s", "Lista o snapshot %s"), label), 0));
         if (x_err(ls) || strstr(ls, "No such file")) cu_die("snapshot vazio");
         x_final(cu_fmt(L("Snapshot `%s` is in snapshots/%s, with a copy of %s. The tests before the copy: %s.", "O snapshot `%s` esta em snapshots/%s, com uma copia de %s. Os testes antes da copia: %s."), label, label, x_srcdir(p), tot));
     }

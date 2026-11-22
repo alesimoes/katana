@@ -496,7 +496,13 @@ static void fam_x_rename(FILE *f, Scn *s) {
         l += n; if (*l) l++;
     }
     if (nf < 2) cu_die("Grep achou menos de dois arquivos com %s", old);
-    x_done(1);
+    if (c.fu != F_GOAL && cu_pct(22)) {      /* o usuario muda o nome antes das trocas: a lista e reescrita com o nome novo */
+        const char *nw2 = cu_fmt(XV("%s_v2", "%s_int", "%s_of"), old);
+        x_user_mid(cu_fmt(XV(L("wait, call it %s, not %s", "espera, chama de %s, nao de %s"), L("stop: the new name is %s (forget %s)", "para: o nome novo e %s (esquece %s)")), nw2, nw));
+        x_shape_tag("goal");
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[>] %s\n[ ] %s", x_p0(plan[0]), cu_fmt(L("Rename it to %s in each file", "Renomear para %s em cada arquivo"), nw2), plan[2]))), 0);
+        nw = nw2; c.focus = nw2;
+    } else x_done(1);
     for (int i = 0; i < nf; i++) {
         x_need_read(p, files[i]);
         if (c.obst == O_TOOLERR && !strcmp(files[i], p->testrel)) {
@@ -686,7 +692,7 @@ static void fam_x_config(FILE *f, Scn *s) {
             if (!strstr(a, "read_timeout")) cu_die("resposta sem a chave");
         } else { if (strstr(rd, "connect_timeout")) cu_die("gemea com duas chaves"); x_askproof("ambiguous", 0, "read_timeout = ", "connect_timeout"); }
     }
-    if (c.obst == O_NONE && !two && !amb && !miss && c.loc != 2 && (c.fu == F_GOAL || c.fu == F_NONE) && cu_pct(c.fu == F_GOAL ? 50 : 30)) {      /* o usuario corrige o valor antes da mudanca: a lista e reescrita com o valor novo */
+    if (c.obst == O_NONE && !two && !amb && !miss && (c.fu == F_GOAL || c.fu == F_NONE) && cu_pct(60)) {      /* o usuario corrige o valor antes da mudanca: a lista e reescrita com o valor novo */
         long v3 = lo + 1 + cu_n((int)(hi - lo > 400 ? 400 : hi - lo - 1)); if (v3 == v || v3 == atol(p->cv[ki])) v3 = v3 + 1 <= hi ? v3 + 1 : v3 - 1;
         x_user_mid(cu_fmt(XV(L("wait, make that %ld, not %ld", "espera, e %ld, nao %ld"), L("stop, I typed it wrong: the value is %ld (not %ld)", "para, digitei errado: o valor e %ld (nao %ld)")), v3, v));
         x_shape_tag("goal");
@@ -803,7 +809,7 @@ static void fam_x_clean(FILE *f, Scn *s) {
             if (strstr(ls, "lint.sh") && cu_pct(g_cu_hold ? 70 : 40)) {      /* a resposta ja esta na listagem acima: nenhuma chamada */
                 x_dep();
                 x_user(XV(L("the lint script is still there, right?", "o script de lint continua la, ne?"), L("you did not touch lint.sh, did you?", "voce nao mexeu no lint.sh, mexeu?")));
-                x_final(L("Yes: the `ls tools` above still lists lint.sh. I deleted only what you named.", "Sim: o `ls tools` acima continua listando o lint.sh. Apaguei so o que voce citou."));
+                x_final(cu_fmt(L("Yes: the `ls tools` above still lists lint.sh. I deleted only %s%s.", "Sim: o `ls tools` acima continua listando o lint.sh. Apaguei so %s%s."), a, two ? cu_fmt(L(" and %s", " e %s"), b) : ""));
             }
         }
     }

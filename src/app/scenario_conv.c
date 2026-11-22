@@ -390,7 +390,7 @@ static void fam_x_ability(FILE *f, Scn *s) {
         const int miss = strstr(r, "\nMISSING: ") != NULL, planned = strstr(r, "Plan written from the skill: do step 1.") != NULL;
         if (miss != (sit == AB_MISSING || sit == AB_MISSALL) || (!miss && !planned)) cu_die("a skill %s carregou de outro jeito: %.300s", nm, r);
         if (sit == AB_MISSALL) {      /* todo passo precisa do programa que falta: confere se ele existe mesmo e para */
-            const char *w = x_bash(NULL, "command -v packsign", L("Check whether packsign is installed", "Ve se o packsign esta instalado"), 0);
+            const char *w = x_bash(NULL, "command -v packsign", cu_fmt(L("Check whether packsign is installed before signing dist-%s.tar", "Ve se o packsign esta instalado antes de assinar o dist-%s.tar"), ver), 0);
             if (strstr(w, "/packsign")) cu_die("o programa existe");
             x_final(cu_fmt(L("I did not sign dist-%s.tar: `sign-archive` needs `packsign`, and it is not installed here (the skill reports it as missing and `command -v packsign` finds nothing). Both steps use it, so nothing ran. Install `packsign` and ask again.",
                              "Nao assinei o dist-%s.tar: a `sign-archive` precisa do `packsign`, e ele nao esta instalado aqui (a skill acusa a falta e o `command -v packsign` nao acha nada). Os dois passos usam ele, entao nada rodou. Instala o `packsign` e pede de novo."), ver));
@@ -414,20 +414,20 @@ static void fam_x_ability(FILE *f, Scn *s) {
             const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0));
             if (!strstr(ck, "settings ok")) cu_die("settings");
             x_done(1);
-            x_bash(NULL, "mkdir -p backups", L("Create the backups folder", "Cria a pasta de backups"), 0);
+            x_bash(NULL, "mkdir -p backups", cu_fmt(L("Create the backups folder of %s", "Cria a pasta de backups do %s"), p->name), 0);
             x_done(2);
-            x_bash(NULL, cu_fmt("cp settings.conf backups/settings-%s.conf", lb), L("Copy the settings file", "Copia o arquivo de configuracoes"), 0);
-            const char *ls = x_bash(NULL, "ls backups", L("List the backups", "Lista os backups"), 0);
+            x_bash(NULL, cu_fmt("cp settings.conf backups/settings-%s.conf", lb), cu_fmt(L("Copy the settings file as %s", "Copia o arquivo de configuracoes como %s"), lb), 0);
+            const char *ls = x_bash(NULL, "ls backups", cu_fmt(L("List the backups of %s", "Lista os backups do %s"), p->name), 0);
             if (!strstr(ls, cu_fmt("settings-%s.conf", lb))) cu_die("backup ausente");
             x_final(cu_fmt(L("The settings are saved as backups/settings-%s.conf (label `%s`). The check before the copy ended with \"settings ok\".", "As configuracoes estao salvas em backups/settings-%s.conf (rotulo `%s`). A verificacao antes da copia terminou com \"settings ok\"."), lb, lb));
         } else if (target == SK_SNAP) {
             const char *o = cu_fmt("%s", x_test(p, NULL)), *tot = x_totals(o); char fn[4][48];
             if (!tot || x_fails(o, fn, 4)) cu_die("testes falharam");
             x_done(1);
-            x_bash(NULL, cu_fmt("mkdir -p snapshots/%s", lb), L("Create the snapshot folder", "Cria a pasta do snapshot"), 0);
+            x_bash(NULL, cu_fmt("mkdir -p snapshots/%s", lb), cu_fmt(L("Create the folder of the snapshot %s", "Cria a pasta do snapshot %s"), lb), 0);
             x_done(2);
-            x_bash(NULL, cu_fmt("cp -r %s snapshots/%s/", x_srcdir(p), lb), L("Copy the sources", "Copia os fontes"), 0);
-            const char *ls = x_bash(NULL, cu_fmt("ls snapshots/%s", lb), L("List the snapshot", "Lista o snapshot"), 0);
+            x_bash(NULL, cu_fmt("cp -r %s snapshots/%s/", x_srcdir(p), lb), cu_fmt(L("Copy the sources of %s", "Copia os fontes do %s"), p->name), 0);
+            const char *ls = x_bash(NULL, cu_fmt("ls snapshots/%s", lb), cu_fmt(L("List the snapshot %s", "Lista o snapshot %s"), lb), 0);
             if (x_err(ls) || strstr(ls, "No such file")) cu_die("snapshot vazio");
             x_final(cu_fmt(L("Snapshot `%s` is in snapshots/%s, with a copy of %s. The tests before the copy: %s.%s", "O snapshot `%s` esta em snapshots/%s, com uma copia de %s. Os testes antes da copia: %s.%s"), lb, lb, x_srcdir(p), tot,
                            sit == AB_NOARG ? L(" The label is the one you chose.", " O rotulo e o que voce escolheu.") : ""));
@@ -438,7 +438,7 @@ static void fam_x_ability(FILE *f, Scn *s) {
             const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0));
             const char *bad = x_line_with(ck, "bad value for ");
             if (!bad || !strstr(ck, "settings invalid")) cu_die("as configuracoes passaram");
-            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(L("[x] Run the tests\n[x] Check the settings (failed: stopped here, as the skill says)", "[x] Rodar os testes\n[x] Conferir as configuracoes (falhou: parei aqui, como a skill manda)"))), 0);
+            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt(L("[x] Run the tests of %s\n[x] Check the settings (failed: stopped here, as the skill says)", "[x] Rodar os testes do %s\n[x] Conferir as configuracoes (falhou: parei aqui, como a skill manda)"), p->name))), 0);
             x_final(cu_fmt(L("Not ready. Step 2 of `preflight` failed: `sh tools/check_settings.sh` ends with \"settings invalid\" (%s). The tests passed (%s). I stopped there, as the `fail:` line says; step 3 did not run and nothing was changed.",
                              "Nao esta pronto. O passo 2 do `preflight` falhou: o `sh tools/check_settings.sh` termina com \"settings invalid\" (%s). Os testes passaram (%s). Parei ali, como a linha `fail:` manda; o passo 3 nao rodou e nada foi alterado."), bad, tot));
             x_end(f); return;
