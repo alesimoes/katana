@@ -113,7 +113,7 @@ static void q4_config(Model *m) {
 /* ---- carga ---- */
 static const TInfo *q4_find(const Tensors *ts, const char *name) {
     const int nl = (int)strlen(name);
-    for (uint64_t i = 0; i < ts->n; i++) if (ts->t[i].namelen == nl && memcmp(ts->t[i].name, name, nl) == 0) return &ts->t[i];
+    for (uint64_t i = 0; i < ts->n; i++) if (ts->t[i].namelen == nl && memcmp(ts->t[i].name, name, nl) == 0) { ts->t[i].used = 1; return &ts->t[i]; }
     return NULL;
 }
 /* como get_mat, mas BF16 fica no arquivo (os produtos daqui leem BF16 direto) */
@@ -811,6 +811,28 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
     float *lg = cpu_head(m);
     q4_tick(QP_HD, tk);
     return lg;
+}
+
+/* estado fora do cache KV e do DeltaNet depois de n tokens, para o prefixo em disco: ultimos tokens, entradas da convolucao
+   dos n-gramas, bloco aberto do indice e chaves dos blocos completos */
+static size_t q4_state_bytes(const Model *m, int n) {
+    const Q4 *q = m->q4;
+    int na = 0;
+    for (int l = 0; l < m->cfg.n_layers; l++) na += q->ratios[l] != 0;
+    return sizeof q->hist + (q->n_ple ? (size_t)(q->pk - 1) * q->ng * q->R * m->cfg.dim * 4 : 0)
+         + (na ? (size_t)na * q->ihd * 4 + (size_t)na * (n / q->ratio) * q->ihd * 4 : 0);
+}
+static int q4_state_io(Model *m, FILE *f, int n, int dir) {
+    Q4 *q = m->q4;
+    int na = 0;
+    for (int l = 0; l < m->cfg.n_layers; l++) na += q->ratios[l] != 0;
+#define Q4_IO(p, b) ((dir ? fwrite(p, 1, b, f) : fread(p, 1, b, f)) == (size_t)(b))
+    int ok = Q4_IO(q->hist, sizeof q->hist);
+    if (ok && q->n_ple) ok = Q4_IO(q->conv, (size_t)(q->pk - 1) * q->ng * q->R * m->cfg.dim * 4);
+    if (ok && na) ok = Q4_IO(q->iacc, (size_t)na * q->ihd * 4);
+    for (int a = 0; a < na && ok; a++) ok = Q4_IO(q->ikey + (size_t)a * (m->cfg.ctx / q->ratio + 1) * q->ihd, (size_t)(n / q->ratio) * q->ihd * 4);
+#undef Q4_IO
+    return ok;
 }
 
 /* katana q4bench <gguf> <texto> [tokens=256] [gerados=24] [A=0] [B=todas] [pares=3] : mede dentro do mesmo processo, paginas ja
