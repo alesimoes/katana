@@ -55,7 +55,7 @@ static int tt_is_moe(const Model *m, int l) { return m->cfg.n_expert && l >= m->
 /* tabela dos tensores treinaveis (nomes do GGUF; especialista e de um tensor empilhado: nome + ".e<e>") */
 static const char *tt_build(Model *m, TTab *t) {
     const Config *c = &m->cfg;
-    if (c->go || c->mla || c->glm || c->glmoe)
+    if (c->go || c->mla || c->glm || c->glmoe || c->q4e)
         return "this architecture is not supported by the trainer yet (llama, qwen2, qwen3, olmoe, qwen3moe, qwen35, qwen35moe, gemma4)";
     if (c->ssm_inner && c->ssm_inner / c->ssm_rank > 512) return "DeltaNet: v head too wide";
     if (!c->g4 && ((c->emb_scale != 0.0f && c->emb_scale != 1.0f) || c->softcap != 0.0f)) return "embedding scale or logit softcap not supported yet";
@@ -838,13 +838,15 @@ static void t_rope(const Model *m, float *v, int nh, int pos, int inverse) {
 
 static void t_bias(const float *b, float *y, int B, int n) { if (b) for (int t = 0; t < B; t++) for (int i = 0; i < n; i++) y[(size_t)t * n + i] += b[i]; }
 
-static float t_silu(float g) { return g / (1.0f + expf(-g)); }
+/* -x limitado a 80: com -ffast-math a sigmoide vetorizada da NaN quando exp(-x) passa do float (x abaixo de -88) */
+static inline float t_nclamp(float x) { return x < -80.0f ? 80.0f : -x; }
+static float t_silu(float g) { return g / (1.0f + expf(t_nclamp(g))); }
 static float t_act(float g) {
     if (!g_gelu) return t_silu(g);
     return 0.5f * g * (1.0f + tanhf(0.7978845608f * (g + 0.044715f * g * g * g)));
 }
 static float t_dact(float g) {                         /* derivada da ativacao do GLU */
-    if (!g_gelu) { const float sg = 1.0f / (1.0f + expf(-g)); return sg * (1.0f + g * (1.0f - sg)); }
+    if (!g_gelu) { const float sg = 1.0f / (1.0f + expf(t_nclamp(g))); return sg * (1.0f + g * (1.0f - sg)); }
     const float k = 0.7978845608f, th = tanhf(k * (g + 0.044715f * g * g * g));
     return 0.5f * (1.0f + th) + 0.5f * g * (1.0f - th * th) * k * (1.0f + 3.0f * 0.044715f * g * g);
 }
@@ -1107,7 +1109,7 @@ static void t_dn_decbet_job(void *ctx, int t0, int t1) {
     for (int t = t0; t < t1; t++) for (int h = 0; h < nv; h++) {
         const float a = J->al[(size_t)t * nv + h] + J->dtb[h];
         J->dec[(size_t)t * nv + h] = expf(J->sa[h] * t_softplus(a));
-        J->bet[(size_t)t * nv + h] = 1.0f / (1.0f + expf(-J->be[(size_t)t * nv + h]));
+        J->bet[(size_t)t * nv + h] = 1.0f / (1.0f + expf(t_nclamp(J->be[(size_t)t * nv + h])));
     }
 }
 static void t_dn_rec_job(void *ctx, int h0, int h1) {               /* recorrencia: uma cabeca por vez, todos os tokens */
@@ -1163,7 +1165,7 @@ static void t_dn_fwd(Model *m, TTab *tt, TAct *A, int l, const float *x, float *
 static void t_dn_dg_job(void *ctx, int i0, int i1) {                /* gradiente da saida com portao */
     const TDn *J = (const TDn *)ctx;
     for (int i = i0; i < i1; i++) {
-        const float g = J->z[i], sg = 1.0f / (1.0f + expf(-g));
+        const float g = J->z[i], sg = 1.0f / (1.0f + expf(t_nclamp(g)));
         J->don[i] = J->dog[i] * g * sg;
         J->dz[i] = J->dog[i] * J->on[i] * sg * (1.0f + g * (1.0f - sg));
     }
@@ -1260,7 +1262,7 @@ static void t_dn_l2b_job(void *ctx, int t0, int t1) {               /* volta das
 }
 static void t_dn_silub_job(void *ctx, int i0, int i1) {
     const TDn *J = (const TDn *)ctx;
-    for (int i = i0; i < i1; i++) { const float g = J->cy[i], sg = 1.0f / (1.0f + expf(-g)); J->dcy[i] = J->dcs[i] * sg * (1.0f + g * (1.0f - sg)); }
+    for (int i = i0; i < i1; i++) { const float g = J->cy[i], sg = 1.0f / (1.0f + expf(t_nclamp(g))); J->dcy[i] = J->dcs[i] * sg * (1.0f + g * (1.0f - sg)); }
 }
 static void t_dn_convb_job(void *ctx, int c0, int c1) {             /* volta da convolucao: um canal inteiro por vez, tokens em ordem */
     const TDn *J = (const TDn *)ctx;
@@ -1311,7 +1313,7 @@ static void t_dn_back(Model *m, TTab *tt, TAct *A, int l, const float *x, const 
         const float a = al[j] + dtb[h], sp = t_softplus(a), dd = dec[j];
         const float g = ddec[j] * dd;                    /* d(sa * sp) */
         if (psa->g) psa->g[h] += g * sp;
-        const float da = g * sa[h] * (a > 20.0f ? 1.0f : 1.0f / (1.0f + expf(-a)));
+        const float da = g * sa[h] * (a > 20.0f ? 1.0f : 1.0f / (1.0f + expf(t_nclamp(a))));
         dal[j] = da;
         if (pdt->g) pdt->g[h] += da;
         dbe[j] = dbet[j] * bet[j] * (1.0f - bet[j]);
@@ -1573,7 +1575,7 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
             memcpy(ap, ao, (size_t)T * qd * 4);
             for (int t = 0; t < T; t++) for (int hh = 0; hh < nh; hh++) for (int i = 0; i < hd; i++) {
                 const float g = qg[(size_t)t * 2 * qd + (size_t)hh * 2 * hd + hd + i];
-                ao[(size_t)t * qd + hh * hd + i] = ap[(size_t)t * qd + hh * hd + i] / (1.0f + expf(-g));
+                ao[(size_t)t * qd + hh * hd + i] = ap[(size_t)t * qd + hh * hd + i] / (1.0f + expf(t_nclamp(g)));
             }
         }
         tp_mv(&tt->p[tt->o[l]], tmp, ao, T); t_bias(Ly->bo, tmp, T, d);
@@ -1727,7 +1729,7 @@ static double t_step_(Model *m, TTab *tt, const int *toks, const uint8_t *mask, 
             dgt = xalloc((size_t)T * qd, 4);
             for (int t = 0; t < T; t++) for (int hh = 0; hh < nh; hh++) for (int i = 0; i < hd; i++) {
                 const size_t j = (size_t)t * qd + hh * hd + i;
-                const float g = qg[(size_t)t * 2 * qd + (size_t)hh * 2 * hd + hd + i], sg = 1.0f / (1.0f + expf(-g));
+                const float g = qg[(size_t)t * 2 * qd + (size_t)hh * 2 * hd + hd + i], sg = 1.0f / (1.0f + expf(t_nclamp(g)));
                 dgt[j] = dao[j] * ap[j] * sg * (1.0f - sg);
                 dao[j] *= sg;
             }

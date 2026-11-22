@@ -266,3 +266,57 @@ Pending: `dn_state` (chunked path) splits S into high + remainder with a coopmat
 also folds that round trip. The dense models can use the same precise variants if the batch error is a nuisance
 (llama3.2-3b 0.026), at the cost of 3 products per tile. `KATANA_VKC_EXACT=1` in `vkcheck` puts the CPU cold experts in
 exact float (measurement).
+
+## Qwen3.8-Flash-Next (`general.architecture = qwen4exp`)
+
+File: `models/flash-next/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` (47,039,860,096 bytes, the core) and
+`-00002-of-00002.gguf` (28,800,138,432 bytes, only the n-gram table). Open the first part; the others are found by name.
+48 layers, dim 2560, 512 experts / 10 active (ffn 640) plus a shared expert, DeltaNet in 36 layers, attention in 12
+(3, 7, ..., 47). CPU only. Code: `src/engine/qwen4exp.c`; hooks in `model.c` (metadata, parts, type 42) and `forward.c`.
+
+### Conventions (each compared with the published original weights by range requests: difference 0)
+
+- Norm weights in the file already carry 1 + w. `ssm_a` is -exp(A_log). The value heads (qkv, conv, gate, alpha, beta,
+  dt, output) are interleaved across the q/k groups, as in qwen35moe. `indexer.q_proj`/`k_proj` are the two parts of
+  one original projection. `ple_layers` in the GGUF is 0-based (layer 1), 1-based in the original config.
+- The DeltaNet output gate is sigmoid, not SiLU. No `attn_norm`, `ffn_norm` or `output_norm`: the residual mixers normalise.
+- Type 42 (Q2_0): 64 weights in 18 bytes, fp16 scale d then 16 bytes with four 2-bit codes (first weight in the low
+  bits), weight = d * (code - 1). Checked on `blk.1.ffn_down_exps` against the original: correlation 0.898 with this
+  rule; 0.581, 0.788, 0.009 and -0.004 with code - 2, code - 1.5, scale at the end and reversed bit order.
+- N-gram table: 320,001,536 rows of 160, type IQ4_NL (90 bytes a row); row 0-39 match the original with 7-9% error.
+- Equal block scores in the sparse attention: the older block wins (the original leaves ties undefined).
+
+### State
+
+- The n-gram table is mapped with random-access advice and never copied; the pages of a prompt (up to 4096 tokens) are
+  requested together, sorted, before the first batch. BF16 matrices (mixers, router, ple) are multiplied from the
+  mapped file. Prompt in batches of 16, each weight row opened once per batch.
+- Test without a real model: `sh tools/tinymodel/qwen4exp_test.sh` (pure Python reference, `katana q4check`): states of
+  8 layers and logits, token by token, batches and mixed pieces, 18 times over the sparse budget at 72 tokens; float32
+  agreement 1e-5 (integer products: within 5e-3 but for isolated near-ties of the router); eight mutations of the reference are all detected; saturated activations.
+- Bug found with the real file and reproduced in the tiny one: under `-ffast-math` the vectorised sigmoid divides by an
+  approximate reciprocal with a Newton step, which is NaN when expf overflows (argument below -88). All sigmoids of
+  the file are now clamped (`q4_sig`). The same pattern exists in other loops of the engine when they vectorise.
+- Measured on the real file (2026-11-22, i7-11800H, CPU only, ctx 4096, both hashes verified, under the measure lock).
+  Text: "The capital of France is Paris. The capital of Germany is Berlin...", 17 x 23 = 391 in a Portuguese chat, the
+  right CPU out of a 472-token text, and a password in the first line of a 2,586-token prompt (over the 2,048 budget).
+  Same 24 tokens, alternated, two rounds each, float path against the low-bit integer kernels: generation 0.7 and 0.7
+  against 1.9 (cold pages, 216 thousand major faults) and 4.1 tok/s (warm, 0 major faults), same text.
+  | run (integer kernels) | prompt tok/s | generation tok/s | peak RSS | of it, table | major faults |
+  |---|---|---|---|---|---|
+  | 5 + 24 tokens, warm | 5.8 | 4.1 | 9.5 GB | 1 MB | 0 |
+  | 472 + 130 tokens | 4.3 | 3.0 | 31.9 GB | 16 MB | 317,337 |
+  | 2,586 + 60 tokens | 6.5 | 3.2 | 37.7 GB | 134 MB | 71,285 |
+
+  Anonymous memory is 0.17-0.30 GB (KATANA_BF16_RAW is not needed here, BF16 stays mapped); the rest is the mapped core,
+  which grows with the experts touched (ceiling 47 GB). Batches and single tokens were compared on the tiny model only.
+
+### Missing
+
+- Conversation prefix cache (disabled for this architecture); training; GPU.
+- MTP head: its tensors (one gated-attention layer with its own mixers and experts, `mtp.fc_embedding`,
+  `mtp.fc_hidden`) are not in this GGUF; it would need them converted and the verify loop of speculative decoding with
+  rollback of DeltaNet, n-gram and indexer state.
+- Images: vision tower (27 layers, not in this GGUF), 3-axis RoPE positions (also in the indexer keys) and the image
+  token id in the n-gram hashes (the original feeds the placeholder id 248056 to them).
+- GPU: the 4-branch mixers and the sigmoid gate as shaders, block scores and top-k, the table lookup stays on the CPU.
