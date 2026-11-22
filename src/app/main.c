@@ -1154,6 +1154,11 @@ static int run_main(int argc, char **argv) {
         return vkmicro(&m);
     }
     gpu.debug = getenv("KATANA_DEBUG") != NULL;
+    if (argc >= 3 && strcmp(argv[1], "lookuptest") == 0) {     /* conferencia do rascunho por consulta ao contexto */
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return lookup_test(&m, argc > 3 ? atoi(argv[3]) : 64);
+    }
     if (argc >= 3 && strcmp(argv[1], "bench") == 0) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
