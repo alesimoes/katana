@@ -98,6 +98,32 @@ static void cmd_norm(char *line, size_t cap) {
 static char g_ext_msg[16384];                  /* mensagem que /init, /skill, /nome ou /servidor:prompt entregam ao modelo (devolvem 3) */
 static int ext_slash(const char *line);        /* agent/extend.c */
 /* comandos comuns; devolve 0 = nao e comando, 1 = tratado, 2 = sair, 3 = g_ext_msg vai ao modelo. *reset = 1 recomeca a conversa */
+/* a lista dos comandos do console (o /help e o `katana help <palavra>` usam a mesma) */
+static void con_help_text(FILE *f) {
+    fprintf(f,
+        "  /new              clears the conversation (/clear is the same)\n"
+        "  /compact          (agent) summarizes and shrinks the old context to free space\n"
+        "  /system <text>    sets the system prompt (and restarts the conversation)\n"
+        "  /save <file>      writes the conversation to a text file\n"
+        "  /plan             (agent) plan mode: read-only until you approve with /go (/plan off leaves it)\n"
+        "  /go               (agent) approves the plan and runs it\n"
+        "  /undo             (agent) puts back the files changed by the last request that changed any\n"
+        "  /cd <folder>      (agent) changes the working folder (asks to trust it the first time)\n"
+        "  /init             (agent) writes a first KATANA.md for this project, then the model improves it\n"
+        "  /skill new <name> (agent) creates a skill; also /skill list|show|remove|check and /<skill> <arguments>\n"
+        "  /mcp              (agent) MCP servers: status, /mcp reconnect <name>, /mcp card <name>, /<server>:<prompt>\n"
+        "  /session <file>   (agent) saves this conversation to a session file from now on\n"
+        "  /resume <file>    (agent) loads a saved session file (katana -c / -r pick one by folder)\n"
+        "  /teacher [on|off|status|cli|api|<model>]   (agent) a larger model answers in place of the local one\n"
+        "  /model [name]     (agent) shows the installed models; with a name, saves the session and reloads with that model\n"
+        "  /status           (agent) model, context use, session file, MCP servers, skills, instruction files\n"
+        "  /help             this list\n"
+        "  /exit             quits (also Ctrl+D)\n"
+        "  Ctrl+C            interrupts the current answer\n"
+        "  Editing: arrows and Home/End move, Up/Down walk the history of this folder, Ctrl+A/E/K/U/W edit,\n"
+        "           a backslash at the end of a line or Alt+Enter continues on a new line; pasted text stays one message\n");
+}
+
 static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int *reset) {
     if (line[0] != '/') return 0;
     if (strcmp(line, "/exit") == 0) return 2;
@@ -127,28 +153,7 @@ static int console_cmd(const char *line, Buf *tr, char *sys, size_t syscap, int 
         return 1;
     }
     if (strcmp(line, "/help") == 0) {
-        fprintf(stderr,
-            "  /new              clears the conversation (/clear is the same)\n"
-            "  /compact          (agent) summarizes and shrinks the old context to free space\n"
-            "  /system <text>    sets the system prompt (and restarts the conversation)\n"
-            "  /save <file>      writes the conversation to a text file\n"
-            "  /plan             (agent) plan mode: read-only until you approve with /go (/plan off leaves it)\n"
-            "  /go               (agent) approves the plan and runs it\n"
-            "  /undo             (agent) puts back the files changed by the last request that changed any\n"
-            "  /cd <folder>      (agent) changes the working folder (asks to trust it the first time)\n"
-            "  /init             (agent) writes a first KATANA.md for this project, then the model improves it\n"
-            "  /skill new <name> (agent) creates a skill; also /skill list|show|remove|check and /<skill> <arguments>\n"
-            "  /mcp              (agent) MCP servers: status, /mcp reconnect <name>, /mcp card <name>, /<server>:<prompt>\n"
-            "  /session <file>   (agent) saves this conversation to a session file from now on\n"
-            "  /resume <file>    (agent) loads a saved session file (katana -c / -r pick one by folder)\n"
-            "  /teacher [on|off|status|cli|api|<model>]   (agent) a larger model answers in place of the local one\n"
-            "  /model [name]     (agent) shows the installed models; with a name, saves the session and reloads with that model\n"
-            "  /status           (agent) model, context use, session file, MCP servers, skills, instruction files\n"
-            "  /help             this list\n"
-            "  /exit             quits (also Ctrl+D)\n"
-            "  Ctrl+C            interrupts the current answer\n"
-            "  Editing: arrows and Home/End move, Up/Down walk the history of this folder, Ctrl+A/E/K/U/W edit,\n"
-            "           a backslash at the end of a line or Alt+Enter continues on a new line; pasted text stays one message\n");
+        con_help_text(stderr);
         return 1;
     }
     { const int x = ext_slash(line); if (x) return x; }

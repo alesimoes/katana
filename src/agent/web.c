@@ -45,13 +45,17 @@ static void url_dec(const char *s, const char *end, char *out, size_t cap) {
 
 /* baixa uma URL com o curl do sistema; devolve bytes lidos (ate cap-1), -1 se nao deu para executar,
  * -2 se a URL for recusada */
+#define CURL_STATUS_MARK "\nKATANA-HTTP-STATUS:"
+static int g_curl_want_status;      /* 1: o curl escreve o codigo HTTP depois do corpo (so curl_get pede) */
+static int g_curl_http;             /* codigo HTTP da ultima curl_get; 0 se nao deu para saber */
 static FILE *curl_open(const char *url, int max_time) {
     char safe[4400], cmd[7000];
     if (!url_safe(url, safe, sizeof safe)) return NULL;
     snprintf(cmd, sizeof cmd,
         CURL_BIN " -sS -L --max-time %d --max-redirs 5 --max-filesize 3000000 --compressed "
-        "--proto " CURL_Q "=http,https" CURL_Q " --proto-redir " CURL_Q "=http,https" CURL_Q " "
-        "-A " CURL_Q "Mozilla/5.0 (compatible; katana-agent)" CURL_Q " -- " CURL_Q "%s" CURL_Q " 2>" CURL_NUL, max_time, safe);
+        "--proto " CURL_Q "=http,https" CURL_Q " --proto-redir " CURL_Q "=http,https" CURL_Q " %s"
+        "-A " CURL_Q "Mozilla/5.0 (compatible; katana-agent)" CURL_Q " -- " CURL_Q "%s" CURL_Q " 2>" CURL_NUL, max_time,
+        g_curl_want_status ? "-w " CURL_Q "\\nKATANA-HTTP-STATUS:%{http_code}" CURL_Q " " : "", safe);
 #ifdef _WIN32
     return _popen(cmd, "rb");
 #else
@@ -75,11 +79,28 @@ static long curl_finish(FILE *f, char *buf, size_t cap, int *rc) {
     return (long)n;
 }
 
+/* o codigo HTTP fica em g_curl_http e sai do fim do corpo. Uma pagina de erro (404, 500...) vem com corpo: quem chama
+   decide o que fazer com ela olhando g_curl_http */
 static long curl_get(const char *url, char *buf, size_t cap, int *rc) {
-    *rc = -1;
+    *rc = -1; g_curl_http = 0;
+    g_curl_want_status = 1;
     FILE *f = curl_open(url, 20);
+    g_curl_want_status = 0;
     if (!f) return -2;
-    return curl_finish(f, buf, cap, rc);
+    long n = curl_finish(f, buf, cap, rc);
+    const size_t ml = strlen(CURL_STATUS_MARK);
+    for (long i = n - (long)ml; i >= 0 && i >= n - (long)ml - 3; i--)
+        if (memcmp(buf + i, CURL_STATUS_MARK, ml) == 0) { g_curl_http = atoi(buf + i + ml); n = i; buf[n] = 0; break; }
+    return n;
+}
+/* nome curto de um codigo HTTP de erro */
+static const char *http_reason(int code) {
+    switch (code) {
+    case 400: return "Bad Request"; case 401: return "Unauthorized"; case 403: return "Forbidden"; case 404: return "Not Found";
+    case 410: return "Gone"; case 429: return "Too Many Requests"; case 500: return "Internal Server Error";
+    case 502: return "Bad Gateway"; case 503: return "Service Unavailable"; case 504: return "Gateway Timeout";
+    default: return code >= 500 ? "server error" : "client error";
+    }
 }
 
 /* entidade HTML em s (apos o '&'): escreve o texto em o e devolve quantos bytes de s consumiu; 0 se nao for entidade */

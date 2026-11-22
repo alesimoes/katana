@@ -24,7 +24,15 @@ static struct {
     int nudge_ok;                /* a conversa deixa tarefas abertas de proposito (Task*): o lembrete do motor aparece e a resposta se repete */
     int k, k2;                   /* variante sorteada fora do gerador de numeros (x-tools: qual ferramenta; x-rare, com k2: qual situacao); -1 = nenhuma */
     const char *sfrom[4], *sto[4]; int nsub;      /* trechos que mudam a cada execucao (ids sorteados pelo motor) e o que entra no lugar */
+    int dep;                     /* a conversa tem um segundo pedido que so se entende pelo primeiro */
+    char shape[120];             /* formas dos pedidos desta conversa (ctx, polite, typo, two, wrong, goal, paste...) */
+    int nreq;                    /* pedidos ja feitos */
+    int merge, mu; const char *mraw, *mfin;      /* dois pedidos numa mensagem so: o segundo x_user entra na primeira mensagem e as duas respostas viram uma */
+    int noshape;                 /* 1: os pedidos desta conversa ficam como a familia escreveu (texto do motor no lugar do usuario) */
+    int mid;                     /* o proximo pedido chega com o plano em aberto (o usuario interrompe e corrige) */
+    uint64_t srng;               /* sorteio proprio das formas: nao gasta o sorteio do cenario */
 } g_x;
+static const CuMs *g_x_ms_must;  /* servidor que tem de estar entre os do cenario (scenario_conv.c) */
 static uint64_t g_x_rng0;        /* estado do sorteio no comeco desta tentativa (vai na linha gravada) */
 static int g_x_replay;           /* 1: refazendo uma linha no check (sem o filtro de situacao repetida) */
 static int g_x_rmode = -1, g_x_rdecl;      /* refazendo: modo e bloco de ferramentas da linha original */
@@ -36,6 +44,7 @@ static char g_x_res[70000];
 static int g_x_port;             /* servidor local de paginas (0 = nao subiu) */
 static int g_x_realgit;          /* a conversa precisa de um repositorio git de verdade */
 static pid_t g_x_srv;
+static void (*g_x_prehook)(const Scn *s);      /* x-rare: liga um servidor MCP de verdade depois dos do cenario e antes do prompt */
 
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap);
 /* a chamada vale contra o esquema completo da ferramenta ou contra a declaracao curta que o prompt mostra (Edit.edits em
@@ -140,37 +149,62 @@ static const char *x_grep(const char *pat, const char *mode, const char *glob) {
 }
 static const char *x_glob(const char *pat) { return x_call(NULL, "Glob", cu_fmt("{\"pattern\": %s}", cu_q(pat)), 0); }
 /* plano: escrito uma vez, em linhas; depois so done=N junto da proxima acao */
+static const char *g_x_pname;      /* nome do projeto desta conversa (NULL sem projeto) */
+static const char *g_x_plan0;      /* o primeiro passo do ultimo plano, como foi escrito (com o nome do projeto) */
+static const char *x_p0(const char *orig) { return g_x_plan0 ? g_x_plan0 : orig; }
 static void x_plan(const char *const *items, int n) {
     Buf o = {0}; buf_str(&o, "");
-    for (int i = 0; i < n; i++) buf_str(&o, cu_fmt("%s%s %s", i ? "\n" : "", i ? "[ ]" : "[>]", items[i]));
+    int named = !g_x_pname; for (int i = 0; i < n && !named; i++) named = strstr(items[i], g_x_pname) != NULL;
+    g_x_plan0 = !named ? cu_fmt("%s (%s)", items[0], g_x_pname) : cu_fmt("%s", items[0]);
+    for (int i = 0; i < n; i++) buf_str(&o, cu_fmt("%s%s %s", i ? "\n" : "", i ? "[ ]" : "[>]", i ? items[i] : g_x_plan0));
     x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_keep(o.p))), 0);
 }
 static void x_done(int k) { g_x.pdone = k; }
+#include "app/scenario_shape.c"      /* formas de pedido: contexto, educado, seco, erros de digitacao, mistura de linguas, reservadas */
 static void x_user(const char *t) {
+    if (g_x.merge == 3) {      /* segundo pedido da mesma mensagem: nada recomeca no motor */
+        const char *j = g_cu_lang ? CU_PA(((const char *const[]){" Alem disso: ", " E tambem: ", " Depois disso: ", " Outra coisa: "})) : CU_PA(((const char *const[]){" Also: ", " And then: ", " After that: ", " One more thing: "}));
+        g_x.m[g_x.mu].text = x_shape(cu_fmt("%s%s%s", g_x.mraw, j, t), 0);
+        g_x.merge = 4; x_shape_tag("two");
+        return;
+    }
     if (g_x.n > 1) {
         int td = 0; const int tn = todo_count(&td);
-        if (tn > td) cu_die("pedido novo com plano em aberto (%s)", g_x.cell);
-        g_undo_req++; g_todo_touched = 0; g_cu_pl = 0; g_cu_plold = 0;
+        if (tn > td && !g_x.mid) cu_die("pedido novo com plano em aberto (%s)", g_x.cell);
+        g_undo_req++; g_todo_touched = 0; g_cu_pl = 0; g_cu_plold = tn > td;      /* o usuario interrompeu no meio do plano: o laco sabe que havia plano aberto */
+        g_x.mid = 0;
     }
     g_x.pdone = 0;
-    x_push('u', t, 1);
+    if (g_x.merge == 1) { g_x.merge = 2; g_x.mu = g_x.n; g_x.mraw = cu_fmt("%s", t); }
+    x_push('u', g_x.merge == 2 ? t : x_shape(t, g_x.nreq), 1);
+    g_x.nreq++;
     { const size_t l = strlen(g_x.seq); if (l) snprintf(g_x.seq + l, sizeof g_x.seq - l, "|"); }
 }
+/* o proximo pedido e o seguinte saem na mesma mensagem (so vale quando o primeiro nao escreve plano) */
+static void x_merge(void) { g_x.merge = 1; }
+static void x_dep(void) { g_x.dep = 1; x_shape_tag("dep"); }
+/* o usuario interrompe no meio do trabalho e muda o pedido: a mensagem dele vem logo depois de um resultado, com o plano aberto */
+static void x_user_mid(const char *t) { g_x.mid = 1; g_x.dep = 1; x_shape_tag("dep"); x_shape_tag("midway"); x_user(t); }
 /* resposta final do pedido: o que o laco do motor faria aqui (nota de verificacao, fecho do ultimo passo) */
 static void x_final(const char *t) {
+    if (g_x.merge == 2) { g_x.mfin = cu_fmt("%s", t); g_x.merge = 3; return; }      /* a resposta da primeira parte espera a da segunda */
+    if (g_x.merge == 4) { t = cu_fmt("%s %s", g_x.mfin, t); g_x.merge = 0; }
+    if (g_x.merge) cu_die("pedido fundido sem a segunda parte (%s)", g_x.cell);
     if (strlen(t) > 700) cu_die("resposta final longa demais (%s)", g_x.cell);
     g_x.pdone = 0;
     x_push('a', t, 1);
     char note[1400];
     if (brief_end_note(note, sizeof note)) cu_die("o motor mandaria a nota de verificacao antes desta resposta final (%s)", g_x.cell);
     int td = 0; const int tn = todo_count(&td);
-    if (tn - td == 1) { fflush(stdout); const int so = dup(1), dn = open("/dev/null", O_WRONLY); dup2(dn, 1); ct_todo_autofinish(); fflush(stdout); dup2(so, 1); close(so); close(dn); }
-    else if (tn > td && g_todo_touched && g_x.nudge_ok) {      /* o laco manda o lembrete uma vez por pedido; o modelo repete a resposta */
+    int fin = 0;
+    if (tn - td == 1) { fflush(stdout); const int so = dup(1), dn = open("/dev/null", O_WRONLY); dup2(dn, 1); fin = ct_todo_autofinish(); fflush(stdout); dup2(so, 1); close(so); close(dn); }
+    if (fin || tn == td || !loop_todo_should_nudge()) {}      /* a mesma decisao do laco (loop_todo_should_nudge): tarefa so anotada nao gera lembrete */
+    else if (g_x.nudge_ok) {      /* o laco manda o lembrete uma vez por pedido; o modelo repete a resposta */
         static char nm[3600]; g_x.nudge_ok = 0;
         loop_todo_nudge(nm, sizeof nm);
         x_push('e', nm, 1); x_push('a', t, 1);
     }
-    else if (tn > td && g_todo_touched) cu_die("resposta final com %d passos do plano em aberto (%s)", tn - td, g_x.cell);
+    else cu_die("resposta final com %d passos do plano em aberto (%s)", tn - td, g_x.cell);
     { const size_t l = strlen(g_x.seq); snprintf(g_x.seq + l, sizeof g_x.seq - l, "%s.", l && g_x.seq[l - 1] != '|' ? ">" : ""); }
 }
 /* prova de uma pergunta (ou da falta dela): o check confere contra o texto anterior. kind: ambiguous, missing, delete, none */
@@ -193,7 +227,50 @@ static char *x_norm(const char *s) {
     }
     return b.p;
 }
+/* segundo pedido que so se entende pelo primeiro, para as familias que nao tem o seu: "quais ferramentas voce usou pra isso?".
+   A resposta sai da propria conversa (os nomes das chamadas do pedido anterior, na ordem), sem chamada nova */
+static void x_tail(void) {
+    static const char *const fams[] = {"x-web", "x-tools", "x-rare", "x-concept", "x-ps1", "x-clean", "x-investigate", "x-ability", "x-make", "x-skill", "x-mcp"};
+    int ok = 0; for (size_t i = 0; i < sizeof fams / sizeof fams[0]; i++) ok |= !strcmp(g_x.fam, fams[i]);
+    if (!ok || g_x.nreq != 1 || g_x.noshape || g_x.merge || g_x.n < 3 || g_x.m[g_x.n - 1].role != 'a' || g_x.m[g_x.n - 1].nc) return;
+    if (xs_n(100) >= (!strcmp(g_x.fam, "x-rare") || !strcmp(g_x.fam, "x-tools") || !strcmp(g_x.fam, "x-concept") ? 22 : 8)) return;      /* pouco: sao duas perguntas so */
+    int td = 0; if (todo_count(&td) > td) return;
+    const char *nm[6]; int n = 0;
+    for (int i = 0; i < g_x.n; i++) {
+        const XMsg *m = &g_x.m[i];
+        if (m->role != 'a' || !m->train) continue;
+        for (int k = 0; k < m->nc; k++) {
+            if (!strcmp(m->c[k].name, "TodoWrite")) continue;
+            if (!strcmp(m->c[k].name, "EndConversation") || !strcmp(m->c[k].name, "AskUserQuestion")) return;
+            int dup = 0; for (int j = 0; j < n; j++) dup |= !strcmp(nm[j], m->c[k].name);
+            if (dup) continue;
+            if (n == 6) return;
+            nm[n++] = m->c[k].name;
+        }
+    }
+    if (!n) return;
+    const int pt = g_cu_lang != 0;
+    g_x.dep = 1; x_shape_tag("dep");
+    const XMsg *lastt = NULL;      /* o ultimo resultado de ferramenta do pedido (fora o plano) */
+    for (int i = 0; i < g_x.n; i++) if (g_x.m[i].role == 't' && strcmp(g_x.m[i].c[0].name, "TodoWrite") && g_x.m[i].text[0] && g_x.m[i].text[0] != '[') lastt = &g_x.m[i];
+    if (lastt && xs_n(2)) {
+        char line1[140]; snprintf(line1, sizeof line1, "%.*s", (int)(strcspn(lastt->text, "\n") < 120 ? strcspn(lastt->text, "\n") : 120), lastt->text);
+        if (strlen(line1) > 3 && !strchr(line1, '`') && strcspn(lastt->text, "\n") <= 120) {
+            x_user(pt ? XS_PK("o que exatamente a ultima ferramenta devolveu?", "qual foi a primeira linha do ultimo resultado?", "me mostra o comeco do que ela devolveu") : XS_PK("what exactly did the last tool return?", "what was the first line of the last result?", "show me the start of what it returned"));
+            x_final(cu_fmt(pt ? XS_PK("O ultimo resultado, do `%s`, comeca assim: `%s`.", "Veio do `%s`, e a primeira linha e: `%s`.") : XS_PK("The last result, from `%s`, starts like this: `%s`.", "It came from `%s`, and its first line is: `%s`."), lastt->c[0].name, line1));
+            return;
+        }
+    }
+    x_user(pt ? XS_PK("quais ferramentas voce usou pra isso?", "como voce fez isso, com quais ferramentas?", "que chamadas voce fez pra chegar nisso?") : XS_PK("which tools did you use for that?", "how did you do that, with which tools?", "which calls did you make to get there?"));
+    Buf b = {0}; buf_str(&b, "");
+    for (int i = 0; i < n; i++) buf_str(&b, cu_fmt("%s`%s`", i ? (i + 1 == n ? (pt ? " e depois " : " and then ") : ", ") : "", nm[i]));
+    x_final(n == 1 ? cu_fmt(pt ? XS_PK("So uma: %s.", "Uma ferramenta so, %s.") : XS_PK("Only one: %s.", "A single tool, %s."), b.p)
+                   : xs_n(2) ? cu_fmt(pt ? "Nesta ordem: %s." : "In this order: %s.", b.p) : cu_fmt(pt ? "Foram %d: %s." : "There were %d: %s.", n, b.p));
+    free(b.p);
+}
 static void x_end(FILE *f) {
+    x_tail();
+    if (g_x.merge) cu_die("pedido fundido que nao fechou (%s)", g_x.cell);
     Buf o = {0}; buf_str(&o, "{\"messages\": [");
     for (int i = 0; i < g_x.n; i++) {
         const XMsg *m = &g_x.m[i];
@@ -219,8 +296,8 @@ static void x_end(FILE *f) {
         if (g_cu_nsits == g_cu_csits) { g_cu_csits = g_cu_csits ? g_cu_csits * 2 : 4096; g_cu_sits = realloc(g_cu_sits, sizeof *g_cu_sits * (size_t)g_cu_csits); }
         g_cu_sits[g_cu_nsits++] = h;
     }
-    buf_str(&o, cu_fmt("], \"source\": \"curriculum\", \"family\": %s, \"cell\": %s, \"seq\": %s, \"scn\": {\"rng\": \"%llu\", \"lang\": %d, \"hold\": %d, \"mode\": %d, \"decl\": %d, \"k\": %d}",
-                       cu_q(g_x.fam), cu_q(g_x.cell), cu_q(g_x.seq), (unsigned long long)g_x_rng0, g_cu_lang, g_cu_hold, g_x.mode, g_x.decl, g_x.k));
+    buf_str(&o, cu_fmt("], \"source\": \"curriculum\", \"family\": %s, \"cell\": %s, \"seq\": %s, \"shape\": %s, \"dep\": %d, \"scn\": {\"rng\": \"%llu\", \"lang\": %d, \"hold\": %d, \"mode\": %d, \"decl\": %d, \"k\": %d}",
+                       cu_q(g_x.fam), cu_q(g_x.cell), cu_q(g_x.seq), cu_q(g_x.shape[0] ? g_x.shape : "plain"), g_x.dep, (unsigned long long)g_x_rng0, g_cu_lang, g_cu_hold, g_x.mode, g_x.decl, g_x.k));
     if (g_x.k >= 0 && !g_x_replay) { if (g_x.k2 == 2) g_x_cycle3++; else if (g_x.k2) g_x_cycle2++; else g_x_cycle++; }
     if (g_x.ask.n) { buf_str(&o, ", \"ask\": ["); buf_str(&o, g_x.ask.p); buf_str(&o, "]"); }
     buf_str(&o, "}\n");
@@ -560,9 +637,12 @@ static void x_proj_write(const XProj *p) {
 static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     free(g_x.ask.p);
     memset(&g_x, 0, sizeof g_x); g_x.fam = fam; buf_str(&g_x.ask, ""); g_x.ask.n = 0; g_x.k = -1;
+    g_x_pname = p ? p->name : NULL;
+    g_x.srng = g_x_rng0 * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull;
     s->nsk = 0; s->nms = 0; s->brief = 0;
     if (nskills) cu_skill_pick(s, NULL, nskills);
-    if (nmcp) cu_ms_scn(s, NULL, nmcp);
+    if (nmcp) cu_ms_scn(s, g_x_ms_must, nmcp);
+    g_x_ms_must = NULL;
     cu_mkdirs(s->cwd);
     if (chdir(s->cwd) != 0) cu_die("nao entrei em %s", s->cwd);
     if (!g_x_realgit) cu_put(cu_fmt("%s/.git/HEAD", s->cwd), "ref: refs/heads/main\n", 0);
@@ -589,8 +669,9 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     {   CuD d = {0}; cu_base_dict(s, &d); cu_set(&d, "tool", "x"); cu_set(&d, "file", "x"); cu_set(&d, "msg", "x"); cu_set(&d, "fn", "main");
         if (p) { cu_set(&d, "test", p->testcmd); cu_set(&d, "build", p->testcmd); }
         for (int i = 0; i < s->nsk; i++) { cu_put(cu_fmt("%s/.katana/skills/%s/SKILL.md", s->cwd, s->sk[i]->name), cu_skill_md(s->sk[i], &d), 0); cu_needs_stubs(s->sk[i]); } }
-    for (int i = 0; i < g_nmcp; i++) { for (int j = 0; j < g_mcp[i].ntools; j++) { free(g_mcp[i].tools[j].name); free(g_mcp[i].tools[j].desc); free(g_mcp[i].tools[j].schema); } free(g_mcp[i].tools); }
+    for (int i = 0; i < g_nmcp; i++) { if (g_mcp[i].spawned) mcp_kill(&g_mcp[i]); mcp_free_srv(&g_mcp[i]); memset(&g_mcp[i], 0, sizeof g_mcp[i]); }      /* servidores de verdade da conversa anterior: encerrados pelo pid */
     g_nmcp = 0; g_mcp_ready = 1;
+    setenv("KATANA_NO_NOTIFY", "1", 1);      /* nenhuma notificacao de verdade sai do gerador */
     for (int i = 0; i < s->nms; i++) {
         const CuMs *m = s->ms[i]; McpSrv *v = &g_mcp[g_nmcp++]; memset(v, 0, sizeof *v);
         snprintf(v->name, sizeof v->name, "%s", m->name); v->project = 1; v->alive = 1; v->was_ok = 1;
@@ -601,11 +682,13 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
         cu_put(cu_fmt("%s/.katana/mcp/%s.md", s->cwd, m->name), cu_fmt("what: %s\nfirst: %s\norder: %s\navoid: %s\n", m->purpose,
                m->list >= 0 || m->first >= 0 ? cu_fmt("%s__%s to get the %s ids", m->name, m->t[m->first >= 0 ? m->first : m->list].name, m->noun_en) : "", m->order ? m->order : "", m->avoid ? m->avoid : ""), 0);
     }
+    if (g_x_prehook) g_x_prehook(s);
     setenv("HOME", s->home, 1); setenv("USER", s->user, 1); setenv("SHELL", "/bin/bash", 1);
     setenv("GIT_AUTHOR_DATE", "2026-01-05T10:00:00", 1); setenv("GIT_COMMITTER_DATE", "2026-01-05T10:00:00", 1);
     setenv("GIT_AUTHOR_NAME", s->user, 1); setenv("GIT_COMMITTER_NAME", s->user, 1); setenv("GIT_AUTHOR_EMAIL", cu_fmt("%s@example.org", s->user), 1); setenv("GIT_COMMITTER_EMAIL", cu_fmt("%s@example.org", s->user), 1);
     setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1); setenv("GIT_CONFIG_SYSTEM", "/dev/null", 1);
     setenv("KATANA_CACHE_DIR", cu_fmt("%s/cache", g_cu_sb), 1);
+    setenv("KATANA_NO_NOTIFY", "1", 1);      /* nenhuma notificacao de verdade sai do gerador */
     g_trust = 1; g_con_rich = 1;
     g_todo[0] = 0; ct_task_sync(); g_todo_touched = 0;
     ct_session_reset(); g_rd_delta_on = 1; g_plan_mode = 0;

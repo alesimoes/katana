@@ -998,6 +998,30 @@ static int run_main(int argc, char **argv) {
     if (argc == 2 && (strcmp(argv[1], "version") == 0 || strcmp(argv[1], "--version") == 0)) { printf("katana %s\n", KATANA_BUILD); return 0; }
     if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();
     if (argc == 2 && strcmp(argv[1], "calltest") == 0) return calltest();
+    if (argc == 3 && strcmp(argv[1], "toolrun") == 0 && strcmp(argv[2], "notes") == 0) {
+        /* teste: como toolrun, mas com as notas que o laco anexa (plano) e a decisao do fim do pedido. Linha "USER": pedido novo;
+           linha "END": o modelo respondeu sem chamar ferramenta (imprime se o motor fecha o ultimo passo e se manda o lembrete) */
+        static char res[TOOL_WEB + 512], ln[20000];
+        int pl = 0, pl_old = 0;
+        g_web = 0;
+        while (fgets(ln, sizeof ln, stdin)) {
+            ln[strcspn(ln, "\r\n")] = 0;
+            if (!strcmp(ln, "USER")) { int td = 0; const int tn = todo_count(&td); pl_old = tn > td; pl = 0; g_todo_touched = 0; continue; }
+            if (!strcmp(ln, "END")) {
+                int td = 0; const int tn = todo_count(&td);
+                const int fin = tn - td == 1 && ct_todo_autofinish();
+                printf("[end: open=%d autofinish=%d nudge=%d]\n----\n", tn - td, fin, !fin && tn > td && loop_todo_should_nudge());
+                continue;
+            }
+            char *sp = strchr(ln, ' ');
+            if (!sp) continue;
+            *sp = 0;
+            agent_tool_run(ln, sp + 1, sp + 1 + strlen(sp + 1), res, sizeof res);
+            loop_plan_note(res, sizeof res, ln, ++pl, pl_old);
+            printf("%s\n----\n", res);
+        }
+        return 0;
+    }
     if (argc == 2 && strcmp(argv[1], "toolrun") == 0) {      /* teste: le linhas "<ferramenta> <json>" da entrada e executa em sequencia, no mesmo processo (sessoes de terminal persistem) */
         static char res[TOOL_WEB + 512], ln[20000];
         g_web = !(getenv("KATANA_WEB") && strcmp(getenv("KATANA_WEB"), "0") == 0);
@@ -1238,54 +1262,7 @@ static int run_main(int argc, char **argv) {
         turn_text(&m.cfg, p, n, getenv("KATANA_SYSTEM"), argv[3], 1);
         return generate(&m, p, max_tokens, temp, 0);
     }
-    fprintf(stderr,
-        "Uso:\n"
-        "  katana [opcoes] [\"mensagem\"]   console do agente na pasta atual (katana --help; docs/console.md); katana -p \"pedido\" e o modo headless\n"
-        "  katana install | uninstall     coloca o comando katana no PATH; katana adopt traz a configuracao de outro projeto\n"
-        "  katana info <modelo.gguf>\n"
-        "  katana selftest <modelo.gguf>\n"
-        "  katana toktest <modelo.gguf> <casos.hex> [--chat]   ids do tokenizador (ou do formato de conversa) de cada caso\n"
-        "  katana qtest                   confere a decodificacao e os produtos de cada tipo de quantizacao\n"
-        "  katana quantize <entrada.gguf> [saida.gguf] [tipo]   grava um GGUF requantizado (tipo: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q2_K)\n"
-        "                                 sem tipo, escolhe o melhor para esta maquina; sem saida, gera o nome a partir da entrada\n"
-        "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
-        "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
-        "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
-        "  katana prepare <modelo.gguf>   inspeciona, decide o plano, prepara (pack/tune/calor) e grava o perfil do modelo\n"
-        "  katana verify <modelo.gguf>    confere os hashes dos shards\n"
-        "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
-        "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
-        "  katana tiersim run <modelo.gguf> <texto> <rastro.bin> | sim <rastro.bin>   rastro de roteamento e simulacao de caches/previsores\n"
-        "  katana attbench [posicoes...]         custo da atencao (qwen35moe) por posicao, sem modelo\n"
-        "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
-        "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
-        "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
-        "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
-        "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
-        "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"
-        "                                       conversas (mensagens ou ShareGPT) -> dados de treino no formato exato do modelo\n"
-        "  katana distill --url URL --model M [--format qwen|json|gemma4|glm] [--out f.jsonl] \"tarefa\"\n"
-        "  katana export <saida.jsonl> <sessoes.ksess ou pastas> [--bench resultados.jsonl]   sessoes do agente -> dados de treino\n"
-        "  katana learn <modelo.gguf> [--rounds N] [--repeat K] [--teacher URL --teacher-model M] [-- opcoes do train]\n"
-        "                                 aprende com o proprio uso: coleta no codebench, treina no que passou, prova e guarda o melhor\n"
-        "  katana codebench run --model M.gguf --out r.jsonl [--tasks 'a,b-*'] [--repeat N] [--timeout S] [--label L] [--env K=V]...\n"
-        "  katana codebench verify|list [--tasks ...]   /   katana codebench compare A.jsonl B.jsonl\n"
-        "                                 o juiz: tarefas com testes escondidos (tools/codebench); o agente roda como processo filho\n"
-        "  katana specialize <modelo.gguf> [all|teacher|tools|code|knowledge] [--from PASTA] [--sessions PASTA] [--hours H] [--wait-idle [H]] [--dry-run]\n"
-        "                                 a rotina da noite: conhecimento, dados, plano de memoria, treino e relatorio (padroes no katana.cfg)\n"
-        "  katana specialize --status           relatorio das noites (janelas vistas, perda, comandos para testar e ativar)\n"
-        "  katana knowledge quiz <modelo.gguf> <holdout.jsonl> [--limit N] [--spec ARQ.kspec]   o conhecimento entrou? (nota por sobreposicao)\n"
-        "                                       um modelo professor (API no formato da OpenAI) resolve a tarefa com as ferramentas do katana\n"
-        "  katana merge <modelo.gguf> <espec.kspec> <saida.gguf>   GGUF novo com a especializacao dentro\n"
-        "  katana compare <modelo.gguf> --val-data F [--drift-data G] a.kspec [b.kspec ...]   perda por fonte e deriva (KL) de especializacoes contra a base\n"
-        "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
-        "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
-        "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
-        "  katana serve <modelo.gguf> [porta] --agent   o agente pela rede (/v1/agent/sessions, docs/api.md): quem tem a chave\n"
-        "                                       executa comandos nesta maquina\n"
-        "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
-        "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
-        "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
+    main_usage(stderr);
     return 1;
 }
 

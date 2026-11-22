@@ -90,6 +90,12 @@ When stdout and stderr are terminals the console is "rich". With `NO_COLOR` set 
   before (`KATANA_PLAIN_INPUT=1` forces that on a terminal). While you type, scheduled tasks and messages from other sessions wait for the
   Enter.
 
+### Help by word
+
+`katana help <word...>` prints only the lines of `katana --help`, `katana help` and the console's `/help` that contain a
+word, grouped by where they come from; with no match it says so and exits 1. The agent uses it to answer questions
+about katana itself without putting the whole help in the context (the console commands had no other source).
+
 ### Slash commands
 
 | command | |

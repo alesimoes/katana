@@ -110,47 +110,24 @@ static void fam_x_web(FILE *f, Scn *s) {
         else x_final(q == 0 ? ans0 : q == 1 ? cu_fmt(L("`%s` keeps working until %s %d.0, with a warning. Source: %s", "O `%s` continua funcionando ate o %s %d.0, com um aviso. Fonte: %s"), g_x_opts[oi][0], lib, keep, shown)
                                        : cu_fmt(L("The default batch size in %s %s is %d rows (it was %d). Source: %s", "O tamanho padrao do lote no %s %s e %d linhas (era %d). Fonte: %s"), lib, ver, sdef2, sdef, shown));
     }
-    if (g_cu_hold) {      /* holdout: uma segunda pergunta sobre a mesma pagina */
-        x_user(cu_fmt(L("and what is the default batch size in %s %s?", "e qual e o tamanho padrao do lote no %s %s?"), lib, ver));
+    const int fu = g_cu_hold ? 1 : q == 2 ? (cu_pct(25) ? 2 : 0) : cu_pct(34) ? 1 : cu_pct(22) ? 2 : 0;      /* 1 outro fato da mesma pagina; 2 o que mais a busca listou (sem chamada) */
+    if (kind == 3) x_shape_tag("wrong");
+    if (fu == 2 && kind <= 1) {
+        x_dep();
+        x_user(XV(L("what else did that search list?", "o que mais essa busca listou?"), L("was there any other result?", "tinha algum outro resultado?")));
+        x_final(cu_fmt(L("One more result: \"Installing %s\", at https://docs.example/%s/install.html. I did not open it; it is about installation, not about %s.", "Mais um resultado: \"Installing %s\", em https://docs.example/%s/install.html. Nao abri; e sobre instalacao, nao sobre o %s."), lib, site, ver));
+    } else if (fu == 1 && q != 2) {
+        x_dep();
+        x_user(cu_fmt(XV(L("and what is the default batch size in that version?", "e qual e o tamanho padrao do lote nessa versao?"), L("does the same page say anything about the batch size?", "a mesma pagina fala alguma coisa do tamanho do lote?"), L("and what is the default batch size in %s %s?", "e qual e o tamanho padrao do lote no %s %s?")), lib, ver));
         const char *r2 = x_webcall("WebFetch", cu_fmt("{\"url\": %s, \"prompt\": \"default batch size\"}", cu_q(url)));
         if (!strstr(r2, fact3)) cu_die("o WebFetch nao trouxe o lote: %.200s", r2);
-        x_final(cu_fmt(L("%d rows; it was %d before %s. Source: %s", "%d linhas; era %d antes do %s. Fonte: %s"), sdef2, sdef, ver, shown));
+        x_final(cu_fmt(XV(L("%d rows; it was %d before %s. Source: %s", "%d linhas; era %d antes do %s. Fonte: %s"), L("The default is %d rows now (%d before %s), from the same page: %s", "O padrao agora e %d linhas (%d antes do %s), da mesma pagina: %s")), sdef2, sdef, ver, shown));
     }
     unsetenv("KATANA_WEBSEARCH_FIXTURE");
     x_end(f);
 }
 
 /* ======================= o proprio katana ======================= */
-typedef struct { const char *en, *pt, *cmd, *needle; } XHelpQ;
-static const XHelpQ g_x_helpq[] = {
-    {"how do I continue my last katana session in this folder?", "como eu retomo a ultima sessao do katana nesta pasta?", "katana --help", "--continue"},
-    {"how can I pick an older katana session to resume?", "como escolho uma sessao antiga do katana para retomar?", "katana --help", "--resume"},
-    {"how do I run katana with one request and no console?", "como rodo o katana com um pedido so, sem console?", "katana --help", "--prompt"},
-    {"which output formats does katana have in headless mode?", "quais formatos de saida o katana tem no modo sem tela?", "katana --help", "--output-format"},
-    {"how do I limit which tools katana may use in one run?", "como limito as ferramentas que o katana pode usar numa rodada?", "katana --help", "--allowed-tools"},
-    {"can I cap the number of model rounds of a katana run?", "da pra limitar o numero de rodadas do modelo numa execucao do katana?", "katana --help", "--max-turns"},
-    {"how do I give katana MCP servers only for one request?", "como passo servidores MCP so para um pedido do katana?", "katana --help", "--mcp-config"},
-    {"how do I make katana work in another folder?", "como faco o katana trabalhar em outra pasta?", "katana --help", "--cwd"},
-    {"how do I put the katana command on my PATH?", "como coloco o comando katana no meu PATH?", "katana --help", "katana install"},
-    {"how do I run katana without recording the session?", "como rodo o katana sem gravar a sessao?", "katana --help", "--no-session"},
-    {"how do I choose the model katana uses?", "como escolho o modelo que o katana usa?", "katana --help", "--model"},
-    {"how do I bring another project's agent configuration into katana?", "como trago a configuracao de agente de outro projeto para o katana?", "katana --help", "katana adopt"},
-    {"which katana command checks a model file's shard hashes?", "qual comando do katana confere os hashes dos shards de um modelo?", "katana help", "katana verify"},
-    {"which katana command measures speed on a model?", "qual comando do katana mede a velocidade num modelo?", "katana help", "katana bench"},
-    {"how do I serve a model over HTTP with katana?", "como sirvo um modelo por HTTP com o katana?", "katana help", "katana serve <modelo.gguf> [porta]   "},
-    {"which katana command turns conversations into training data?", "qual comando do katana transforma conversas em dados de treino?", "katana help", "katana import"},
-};
-typedef struct { const char *en, *pt, *tool, *needle; } XLim;
-static const XLim g_x_limq[] = {
-    {"how many lines does Read return by default?", "quantas linhas o Read devolve por padrao?", "Read", "2000 lines"},
-    {"what is the default timeout of Bash?", "qual e o timeout padrao do Bash?", "Bash", "120000"},
-    {"how long does a Monitor run before it stops by itself?", "quanto tempo um Monitor roda antes de parar sozinho?", "Monitor", "300000"},
-    {"how many options can one AskUserQuestion question have?", "quantas opcoes uma pergunta do AskUserQuestion pode ter?", "AskUserQuestion", "2 to 4"},
-    {"how many results does Glob return at most?", "quantos resultados o Glob devolve no maximo?", "Glob", "100"},
-    {"what does ExitWorktree do with action remove when there are uncommitted changes?", "o que o ExitWorktree faz com action remove quando ha mudancas sem commit?", "ExitWorktree", "refuses"},
-    {"how many searches can WebSearch run in one call?", "quantas buscas o WebSearch faz numa chamada?", "WebSearch", "queries"},
-    {"can NotebookEdit insert a new cell?", "o NotebookEdit consegue inserir uma celula nova?", "NotebookEdit", "insert"},
-};
 /* a frase (ou a linha) da saida real que contem a agulha */
 static const char *x_sentence(const char *out, const char *needle) {
     const char *q = strstr(out, needle); if (!q) return NULL;
@@ -163,95 +140,7 @@ static const char *x_sentence(const char *out, const char *needle) {
     size_t l = strlen(t); while (l && t[l - 1] == ' ') t[--l] = 0;
     return l > 300 ? NULL : t;
 }
-static void fam_x_concept(FILE *f, Scn *s) {
-    int kind, sub;
-    for (int t = 0; ; t++) {
-        if (t > 200) cu_die("sem celula de conceito");
-        kind = cu_n(5);
-        sub = kind == 0 ? cu_n(CU_N(g_x_helpq)) : kind == 1 ? cu_n(CU_N(g_x_limq)) : kind == 2 ? cu_n(4) : kind == 3 ? cu_n(3) : cu_n(3);
-        if (x_held(50 + kind, sub, 0, 0, 0) == (g_cu_hold != 0)) break;
-    }
-    XC c; memset(&c, 0, sizeof c); c.s = s;
-    const int st = cu_n(X_NST);
-    x_proj(&c.p, s, st == X_C ? X_PY : st, 2, 2); XProj *p = &c.p;
-    p->brief = kind == 2 ? sub < 3 : cu_pct(50); p->readme = !p->brief && cu_pct(50); p->rules = p->docs = p->brief && cu_pct(50);
-    if (kind == 2 && sub == 0) { p->never = 1; p->askrule = 1; }
-    x_begin("x-concept", s, p, kind == 2 && sub == 3 ? 2 : 0, 0);
-    x_cell("concept/%s/%d", kind == 0 ? "help" : kind == 1 ? "limits" : kind == 2 ? "project" : kind == 3 ? "impossible" : "discover", sub);
-    if (kind == 0) {
-        const XHelpQ *q = &g_x_helpq[sub];
-        x_user(L(q->en, q->pt));
-        const char *r = x_bash(NULL, q->cmd, L("Show katana's own help", "Mostra a ajuda do proprio katana"), 0);
-        const char *ln = x_line_with(r, q->needle);
-        if (!ln) cu_die("a ajuda nao tem %s", q->needle);
-        while (*ln == ' ') ln++;
-        Buf b = {0}; buf_str(&b, ""); for (const char *z = ln; *z; z++) { if (*z == ' ' && z[1] == ' ') continue; buf_add(&b, z, 1); }
-        x_final(cu_fmt(L("`%s` says: `%s`.", "O `%s` diz: `%s`."), q->cmd, cu_keep(b.p)));
-    } else if (kind == 1) {
-        const XLim *q = &g_x_limq[sub];
-        x_user(L(q->en, q->pt));
-        const char *r = x_call(NULL, "ToolSearch", cu_fmt("{\"query\": \"select:%s\"}", q->tool), 0);
-        const char *sn = x_sentence(r, q->needle);
-        if (!sn) cu_die("a descricao de %s nao tem %s", q->tool, q->needle);
-        x_final(cu_fmt(L("From the description of %s: \"%s\".", "Da descricao do %s: \"%s\"."), q->tool, sn));
-    } else if (kind == 2) {
-        if (sub == 0) {
-            x_user(XV(L("what does katana enforce from this project's KATANA.md?", "o que o katana faz valer do KATANA.md deste projeto?"), L("which rules of the KATANA.md here are enforced by the engine?", "quais regras do KATANA.md daqui sao cobradas pelo motor?")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana brief show", L("Show what the engine parsed from KATANA.md", "Mostra o que o motor leu do KATANA.md"), 0));
-            const char *n1 = x_line_with(r, "rm*test_"), *n2 = x_line_with(r, "rm *");
-            if (!n1 || !n2) cu_die("brief show sem as regras: %.300s", r);
-            while (*n1 == ' ') n1++;
-            while (*n2 == ' ') n2++;
-            x_final(cu_fmt(L("`katana brief show` lists two enforced rules: `%s` and `%s`. The first is refused outright; the second asks you before the command runs.", "O `katana brief show` lista duas regras cobradas: `%s` e `%s`. A primeira e recusada direto; a segunda pergunta a voce antes de o comando rodar."), n1, n2));
-        } else if (sub == 1) {
-            x_user(XV(L("is the KATANA.md of this project well formed?", "o KATANA.md deste projeto esta bem formado?"), L("lint the project file", "passa o lint no arquivo do projeto")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana brief check", L("Lint KATANA.md", "Passa o lint no KATANA.md"), 0));
-            const char *last = r + strlen(r); while (last > r && last[-1] == '\n') last--; const char *a = last; while (a > r && a[-1] != '\n') a--;
-            x_final(cu_fmt(L("`katana brief check` ends with: `%.*s`.", "O `katana brief check` termina com: `%.*s`."), (int)(last - a), a));
-        } else if (sub == 2) {
-            x_user(XV(L("which command does this project use for tests, according to katana?", "que comando este projeto usa para os testes, segundo o katana?")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana brief show", L("Show what the engine parsed from KATANA.md", "Mostra o que o motor leu do KATANA.md"), 0));
-            if (!strstr(r, p->testcmd)) cu_die("brief show sem o comando de teste");
-            x_final(cu_fmt(L("`%s`: it is the `test:` line of KATANA.md, as `katana brief show` prints it.", "`%s`: e a linha `test:` do KATANA.md, como o `katana brief show` mostra."), p->testcmd));
-        } else {
-            x_user(XV(L("which skills does this project have?", "quais skills este projeto tem?"), L("list the skills katana sees here", "lista as skills que o katana enxerga aqui")));
-            const char *r = cu_fmt("%s", x_bash(NULL, "katana skill list", L("List the skills", "Lista as skills"), 0));
-            if (!strstr(r, s->sk[0]->name) || !strstr(r, s->sk[1]->name)) cu_die("skill list sem as skills: %.200s", r);
-            x_final(cu_fmt(L("Two: `%s` and `%s`, both in .katana/skills of this project.", "Duas: `%s` e `%s`, as duas em .katana/skills deste projeto."), s->sk[0]->name, s->sk[1]->name));
-        }
-    } else if (kind == 3) {      /* nao ha ferramenta: procura, tenta outro caminho, e so entao diz que nao da e por que */
-        static const char *const what[][5] = {
-            {"email the test results to the team", "manda o resultado dos testes por email para o time", "email", "mail sendmail msmtp mutt", "a mail program (mail, sendmail, msmtp or mutt) or the address of an SMTP server with a login"},
-            {"print docs on the office printer", "imprime os docs na impressora do escritorio", "print", "lp lpr", "a print command (lp or lpr) with a configured printer"},
-            {"post the test totals to the team chat", "posta os totais dos testes no chat do time", "chat", "slack-cli matrix-commander", "a chat client program, or an MCP server for the chat"}};
-        x_user(L(what[sub][0], what[sub][1]));
-        const char *plan[3] = {L("Look for a tool that can do it", "Procurar uma ferramenta que faca isso"), L("Look for a program on this machine", "Procurar um programa nesta maquina"), L("Do it or report", "Fazer ou relatar")};
-        x_plan(plan, 3);
-        const char *r = x_call(NULL, "ToolSearch", cu_fmt("{\"query\": %s}", cu_q(what[sub][2])), 0);
-        if (strncmp(r, "No matching tools", 17)) cu_die("ha ferramenta para %s", what[sub][2]);
-        x_done(1);
-        Buf cm = {0}; buf_str(&cm, "");
-        for (int i = 0, n = cu_count(what[sub][3], ' '); i < n; i++) buf_str(&cm, cu_fmt("%scommand -v %s", i ? "; " : "", cu_part(what[sub][3], ' ', i)));
-        r = x_bash(NULL, cu_keep(cm.p), L("Check which programs exist", "Ve quais programas existem"), 0);
-        if (strchr(r, '/')) cu_die("a maquina tem um programa para isso");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
-        x_final(cu_fmt(L("I could not do it: no tool of mine matches \"%s\" and none of these programs is installed: %s. Nothing was sent. To do it I need %s.",
-                         "Nao consegui: nenhuma ferramenta minha casa com \"%s\" e nenhum destes programas esta instalado: %s. Nada foi enviado. Para fazer eu preciso de %s."), what[sub][2], what[sub][3], what[sub][4]));
-    } else {      /* descobrir uma ferramenta por palavras */
-        static const char *const dq[][4] = {{"is there a tool to schedule something for later in this session?", "tem alguma ferramenta para agendar algo para mais tarde nesta sessao?", "schedule", "CronCreate"},
-            {"do you have a tool for Jupyter notebooks?", "voce tem alguma ferramenta para cadernos Jupyter?", "notebook", "NotebookEdit"},
-            {"can you work in a separate git worktree?", "voce consegue trabalhar num worktree separado do git?", "worktree", "EnterWorktree"}};
-        x_user(L(dq[sub][0], dq[sub][1]));
-        const char *r = x_call(NULL, "ToolSearch", cu_fmt("{\"query\": %s}", cu_q(dq[sub][2])), 0);
-        if (!strstr(r, cu_fmt("\"name\": \"%s\"", dq[sub][3]))) cu_die("ToolSearch %s sem %s", dq[sub][2], dq[sub][3]);
-        const char *sn = x_sentence(strstr(r, cu_fmt("\"name\": \"%s\"", dq[sub][3])), "\"description\": \"");
-        const char *d0 = sn ? strstr(sn, "\"description\": \"") : NULL;
-        if (!d0) cu_die("descricao longa demais");
-        x_final(cu_fmt(L("Yes: %s. Its description says: \"%s\".", "Sim: %s. A descricao diz: \"%s\"."), dq[sub][3], d0 + 16));
-    }
-    if (g_cu_hold) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
-    x_end(f);
-}
+#include "app/scenario_concept.c"    /* x-concept: os conceitos do katana, tres situacoes cada, em rodizio */
 
 /* ======================= ferramentas listadas so pelo nome ======================= */
 enum { K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_AGENT, K_CRON, K_TERM, K_N };
@@ -262,7 +151,8 @@ static const char *x_tsel(const char *names) { return x_call(NULL, "ToolSearch",
 static void fam_x_tools(FILE *f, Scn *s) {
     /* as ferramentas saem em rodizio (sem gastar sorteio; a escolha vai na linha gravada). Ficam de fora: Agent (so dentro do laco do agente, com modelo) e terminal (a saida do pty depende do tempo) */
     static const int order[] = {K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_CRON};
-    const int kind = g_x_kforce >= 0 ? g_x_kforce : order[(g_x_cycle + g_cu_att) % CU_N(order)];      /* terminal fica de fora: a saida do pty depende do tempo */
+    /* na validacao so saem o segundo plano e o Monitor (com TaskStop): as outras ferramentas ja tem situacoes reservadas em x-rare */
+    const int kind = g_x_kforce >= 0 ? g_x_kforce : g_cu_hold ? order[(g_x_cycle + g_cu_att) % 2] : order[(g_x_cycle + g_cu_att) % CU_N(order)];      /* terminal fica de fora: a saida do pty depende do tempo */
     XC c; memset(&c, 0, sizeof c); c.s = s;
     const int st = cu_n(X_NST);
     x_proj(&c.p, s, st == X_C ? X_SH : st, 2, 2); XProj *p = &c.p;
@@ -289,12 +179,12 @@ static void fam_x_tools(FILE *f, Scn *s) {
         const char *plan[3] = {mon ? L("Start watching the script", "Comecar a monitorar o script") : L("Start the script in the background", "Subir o script em segundo plano"), L("Read its output", "Ler a saida"), L("Stop it", "Parar")};
         x_plan(plan, 3);
         if (mon) x_tsel("Monitor,TaskStop");
-        const char *r = cu_fmt("%s", mon ? x_call(NULL, "Monitor", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"description\": %s}", cu_q(L("Watch the script", "Monitora o script"))), 0)
-                                         : x_call(NULL, "Bash", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": %s}", cu_q(L("Start the watcher in the background", "Sobe o monitor em segundo plano"))), 0));
+        const char *r = cu_fmt("%s", mon ? x_call(NULL, "Monitor", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"description\": %s}", cu_q(cu_fmt(L("Watch the script of %s", "Monitora o script do %s"), p->name))), 0)
+                                         : x_call(NULL, "Bash", cu_fmt("{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": %s}", cu_q(cu_fmt(L("Start the watcher of %s in the background", "Sobe o monitor do %s em segundo plano"), p->name))), 0));
         const char *idp = strstr(r, "ID: "), *fp = strstr(r, "written to: ");
         if (!idp || !fp) cu_die("resultado sem id ou arquivo: %.200s", r);
         const char *id = cu_fmt("%d", atoi(idp + 4)), *log = cu_fmt("%.*s", (int)strcspn(fp + 12, "\n"), fp + 12);
-        usleep(500000);
+        for (int w = 0; w < 120; w++) { const char *lt = x_slurp(s, log); if (lt && strstr(lt, "watching ")) break; usleep(50000); }      /* espera a linha aparecer no arquivo de saida */
         x_done(1);
         const char *o = x_call(NULL, "Read", cu_fmt("{\"file_path\": %s}", cu_q(log)), 0);
         if (!strstr(o, cu_fmt("watching %s", p->name))) { ct_dispatch("TaskStop", cu_fmt("{\"task_id\": \"%s\"}", id), "", g_x_res, 60000); cu_die("a saida ainda nao tinha a linha"); }
@@ -336,7 +226,7 @@ static void fam_x_tools(FILE *f, Scn *s) {
         if (x_err(r) || g_plan_mode) cu_die("o plano nao foi aprovado: %.200s", r);
         x_done(2);
         x_edit(s, "settings.conf", cu_fmt("%s = %s", p->ck[ki], p->cv[ki]), cu_fmt("%s = %ld", p->ck[ki], v), 0, 0);
-        r = x_bash(NULL, "sh tools/check_settings.sh", L("Check the settings", "Confere as configuracoes"), 0);
+        r = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0);
         if (!strstr(r, "settings ok")) cu_die("verificacao falhou");
         x_final(cu_fmt(L("You approved the plan, so I applied it: settings.conf now has `%s = %ld`, and `sh tools/check_settings.sh` ends with \"settings ok\".", "Voce aprovou o plano, entao apliquei: o settings.conf agora tem `%s = %ld`, e o `sh tools/check_settings.sh` termina com \"settings ok\"."), p->ck[ki], v));
     } else if (kind == K_WT) {
@@ -379,6 +269,8 @@ static void fam_x_tools(FILE *f, Scn *s) {
         x_final(cu_fmt(L("One file changed: %s. In `%s` the line `%.*s` became `%.*s`. Nothing is staged.", "Um arquivo mudou: %s. Em `%s` a linha `%.*s` virou `%.*s`. Nada esta no stage."), rel, fi->name,
                        (int)strcspn(minus + 2, "\n") - (int)strspn(minus + 2, " "), minus + 2 + strspn(minus + 2, " "), (int)strcspn(plus + 2, "\n") - (int)strspn(plus + 2, " "), plus + 2 + strspn(plus + 2, " ")));
     } else if (kind == K_MEM) {
+        {   time_t tt = time(NULL); char td[16]; strftime(td, sizeof td, "%Y-%m-%d", localtime(&tt));      /* a ferramenta de memoria carimba a data de hoje: na linha gravada fica a do cenario */
+            if (g_x.nsub < 4 && strcmp(td, s->date)) { g_x.sfrom[g_x.nsub] = cu_fmt("%s", td); g_x.sto[g_x.nsub++] = s->date; } }
         static const char *const facts[][4] = {{"I prefer tabs over spaces in shell scripts", "prefiro tabs a espacos em scripts de shell", "tabs", "indentation"}, {"my release day is Thursday", "meu dia de release e quinta-feira", "Thursday", "release"},
             {"I review code in the morning, before ten", "eu reviso codigo de manha, antes das dez", "morning", "review"}};
         const int fi = cu_n(3);
@@ -498,7 +390,7 @@ static void fam_x_skill(FILE *f, Scn *s) {
     if (!tot) cu_die("sem totais");
     if (x_fails(o, fn, 4)) {
         if (!fail) cu_die("testes falharam sem defeito");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(L("[x] Run the tests (failed: stopped here, as the skill says)", "[x] Rodar os testes (falhou: parei aqui, como a skill manda)"))), 0);
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt(L("[x] Run the tests of %s (failed: stopped here, as the skill says)", "[x] Rodar os testes do %s (falhou: parei aqui, como a skill manda)"), p->name))), 0);
         x_final(cu_fmt(L("I stopped at step 1 of `%s`, as its `fail:` line says: the check \"it ends with 0 failed\" did not hold (`%s` ends with %s; first failure: `%s`). The other steps were not run and nothing was written.",
                          "Parei no passo 1 do `%s`, como a linha `fail:` manda: a verificacao \"it ends with 0 failed\" nao valeu (o `%s` termina com %s; primeira falha: `%s`). Os outros passos nao rodaram e nada foi gravado."), nm[kind], p->testcmd, tot, x_line_with(o, "FAIL ") + 5));
         x_end(f); return;
@@ -513,16 +405,16 @@ static void fam_x_skill(FILE *f, Scn *s) {
         if (p->brief) x_test(p, NULL);
         x_final(cu_fmt(L("Version %s is recorded: VERSION holds it and it is the first line of CHANGELOG.md. The tests: %s.", "A versao %s esta registrada: o VERSION tem ela e e a primeira linha do CHANGELOG.md. Os testes: %s."), ver, tot));
     } else if (kind == 1) {
-        const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", L("Check the settings", "Confere as configuracoes"), 0));
+        const char *ck = cu_fmt("%s", x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings of %s", "Confere as configuracoes do %s"), p->name), 0));
         if (!strstr(ck, "settings ok")) cu_die("settings");
         x_done(2);
-        x_bash(NULL, cu_fmt("ls %s", x_srcdir(p)), L("List the source files", "Lista os arquivos fonte"), 0);
+        x_bash(NULL, cu_fmt("ls %s", x_srcdir(p)), cu_fmt(L("List the source files of %s", "Lista os arquivos fonte do %s"), p->name), 0);
         x_final(cu_fmt(L("Ready: the tests end with %s and the settings check ends with \"settings ok\".", "Pronto: os testes terminam com %s e a verificacao das configuracoes termina com \"settings ok\"."), tot));
     } else {
-        x_bash(NULL, cu_fmt("mkdir -p snapshots/%s", label), L("Create the snapshot folder", "Cria a pasta do snapshot"), 0);
+        x_bash(NULL, cu_fmt("mkdir -p snapshots/%s", label), cu_fmt(L("Create the folder of the snapshot %s", "Cria a pasta do snapshot %s"), label), 0);
         x_done(2);
-        x_bash(NULL, cu_fmt("cp -r %s snapshots/%s/", x_srcdir(p), label), L("Copy the sources", "Copia os fontes"), 0);
-        const char *ls = cu_fmt("%s", x_bash(NULL, cu_fmt("ls snapshots/%s", label), L("List the snapshot", "Lista o snapshot"), 0));
+        x_bash(NULL, cu_fmt("cp -r %s snapshots/%s/", x_srcdir(p), label), cu_fmt(L("Copy the sources of %s", "Copia os fontes do %s"), p->name), 0);
+        const char *ls = cu_fmt("%s", x_bash(NULL, cu_fmt("ls snapshots/%s", label), cu_fmt(L("List the snapshot %s", "Lista o snapshot %s"), label), 0));
         if (x_err(ls) || strstr(ls, "No such file")) cu_die("snapshot vazio");
         x_final(cu_fmt(L("Snapshot `%s` is in snapshots/%s, with a copy of %s. The tests before the copy: %s.", "O snapshot `%s` esta em snapshots/%s, com uma copia de %s. Os testes antes da copia: %s."), label, label, x_srcdir(p), tot));
     }
@@ -534,7 +426,8 @@ static void fam_x_skill(FILE *f, Scn *s) {
 static char *cu_jstr(const char *v);
 static const struct { const char *name; void (*fn)(FILE *, Scn *); } g_x_fams[] = {
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run}, {"x-config", fam_x_config}, {"x-clean", fam_x_clean},
-    {"x-investigate", fam_x_investigate}, {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1}};
+    {"x-investigate", fam_x_investigate}, {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
+    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}};
 static int cu_is_old_tool(const char *n) { return !strcmp(n, "git") || !strcmp(n, "terminal") || !strcmp(n, "recall") || !strcmp(n, "remember") || !strcmp(n, "download_file") || !strcmp(n, "install_package") || !strcmp(n, "read_log") || !strcmp(n, "howto"); }
 /* 1 = a linha foi refeita igual; 0 = diferente (why diz onde) */
 static int x_replay(const char *line, const char *fam, long nl, char *why, size_t cap) {

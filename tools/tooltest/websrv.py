@@ -32,6 +32,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.connection.close(); return
         elif path in PAGES:
             body = PAGES[path].encode()
+        elif path in ("/gone", "/boom"):
+            code = 404 if path == "/gone" else 500
+            body = b"<html><head><title>Oops</title></head><body><h1>Sorry</h1><p>This friendly page says the borrow checker article moved.</p></body></html>"
+            self.send_response(code); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body); return
         else:
             self.send_response(404); self.end_headers(); return
         self.send_response(200)

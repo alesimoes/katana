@@ -82,9 +82,9 @@ example given in the request is a passing test case, or the correct refusal or q
 dropped and counted.
 
 Other `x-` families: `x-web` (`WebSearch` and `WebFetch` against pages of an invented library served by a local server,
-with fixed search results), `x-concept` (questions about katana answered from `katana --help`, `katana help`,
-`katana brief show`, `katana brief check`, `katana skill list` and the tool descriptions returned by `ToolSearch`, and what
-to do when something cannot be done), `x-tools` (tools listed by name only: `ToolSearch select:Name`, then the call) and
+with fixed search results), `x-concept` (fifteen katana concepts, each in at least three situations, answered from
+`katana help <word>`, `katana brief show`, `katana brief check`, `katana skill list`, `katana mcp list`, the tool
+descriptions returned by `ToolSearch` and the engine's own notes; see "Katana concepts" below), `x-tools` (tools listed by name only: `ToolSearch select:Name`, then the call) and
 `x-skill` (a real skill of the project whose steps run).
 
 **Questions.** `AskUserQuestion` appears in three situations and each has a twin without the question: two keys match the
@@ -109,40 +109,48 @@ folder, files around, skills line), because the calls use absolute paths that co
 `katana curriculum windows <model.gguf> <imported.jsonl> [--seq N] [--window dense --win-ctx N]` prints the windows the
 training would cut, with the model's tokenizer. Only the vocabulary is loaded, so it takes about two seconds.
 
-**Every tool the prompt names** (`x-rare`, owner's decision of 2026-11-22). The tools that the other families do not
-reach get three or four situations each, 68 in a table (`src/app/scenario_rare.c`): the right use with the arguments found through
-`ToolSearch select:Name`, a second use, and a case where the tool fails or is not the right one and the model reacts. They
-come out in rotation, so none is missed, and `check --coverage` fails when a tool of the table is below its minimum (25
-conversations for the declared tools in a file of 500 or more, 5 for every other tool, 15 conversations of `.ps1` scripts;
-`check --coverage --min 2` is the form for a validation file: 2 per tool and 4 of `.ps1`).
-Everything runs in the scenario's own home folder. Where a real run is impossible or would do harm, the engine's own
-validation or refusal path runs, or a stand-in of the outside program, and the cell is marked `standin`:
+**Every tool the prompt names** (`x-rare`). The table in `src/app/scenario_rare.c` has 197 situations: 174 for the training
+file and 23 reserved for the validation file (`hold = 1`; the rotation of each file only walks its own rows, so a reserved
+request never appears in training). A situation is a row with its own request intent and its own tool sequence or outcome.
+Every tool has at least five training situations: the right use, a use combined with another tool, the engine's error and
+the reaction, an error followed by another way, and for the scheduling tools the contrast between scheduling
+(`ScheduleWakeup`, `CronCreate`), running now in the background (`Bash`) and watching (`Monitor`). A row can require a proof
+in the last result (`need`) and name the result line the final message quotes (`quote`).
+`KATANA_CU_RARE_TABLE=1 katana curriculum x.jsonl --families x-rare=1` prints the situations per tool. `check --coverage`
+fails when a tool is below its minimum (25 conversations for the declared tools in a file of 500 or more, 5 for every other
+tool, 15 conversations of `.ps1` scripts; `check --coverage --min 2` is the form for a validation file: 2 per tool and 4 of
+`.ps1`). Everything runs in the scenario's own home folder.
+
+What runs for real, set up by `src/app/scenario_rare2.c`:
 
 | tool | what runs |
 |---|---|
+| `ListMcpResourcesTool`, `ReadMcpResourceTool`, `WaitForMcpServers` | a small stdio MCP server written into the project and started through the engine's client before the prompt is built (four resources, one binary); a second configured server whose command does not exist gives the failed and unavailable paths |
+| `ListAgents`, `SendMessage` | another session registered in the mailbox of the scenario's home folder (a parked process); delivery by name and by pid |
+| `Agent`, `SendMessage` to `agent-N`, `Workflow` | the engine's sub-agent hook (`KATANA_AGENT_FAKE=1`); the hook returns what the engine's `Grep` or `Glob` find in the project at that moment |
+| `terminal` | sessions really opened: state kept between sends, list, close, duplicate name |
+| `LSP` | a minimal language server for Python files placed first on `PATH` (workspace symbols, document symbols, definition, references) |
+| `git`, `EnterWorktree`, `ExitWorktree` | a real repository with one commit |
+| `Monitor`, `TaskStop`, background `Bash` | real processes; the generator waits for the output file instead of a fixed time |
 | `ScheduleWakeup`, `CronCreate`, `CronList`, `CronDelete` | the real scheduler with a fixed clock (`KATANA_SCHED_NOW`) |
-| `EndConversation`, `ListAgents`, `read_log`, `howto` | the real tool |
-| `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` | the real tools, only when the user asks for numbered tasks with details or names the tool, found through `ToolSearch`; the model's own plan stays `TodoWrite`. The tasks stay open, so the engine's reminder of unfinished steps appears and the answer is repeated |
-| `PowerShell` | the real tool, which answers that it is not installed on this machine; the model says so and uses `Bash`. Not counted by `--coverage` |
-| `PushNotification`, `ReportFindings` | the real tool with a stand-in `notify-send` first on `PATH` and the interface marker (`KATANA_UI`) |
-| `install_package` | the real tool; `python3 -m pip` and `npm` are stand-ins that install nothing |
-| `Workflow` | the real tool with the engine's test sub-agent (`KATANA_AGENT_FAKE=1`), plus two missing-file errors |
-| `SendMessage`, `ReadMcpResourceTool`, `WaitForMcpServers` | only the paths with no recipient and no server |
-| `SubagentHandback` | only the engine's refusal for the main agent |
-| `Agent` | only the validation of the prompt: a real sub-agent needs a model (`delegate` works only inside the agent loop) |
-| `terminal` | `list`, and `read` and `close` of a session that does not exist; an open session's output depends on timing |
+| `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` | the real tools, only when the user asks for numbered tasks or names the tool; the model's own plan stays `TodoWrite`. A recorded task no longer triggers the unfinished-steps reminder |
 
-Still out: a successful `Agent` run and a `SubagentHandback` from inside a sub-agent (both need a model), a
-`ReadMcpResourceTool` that returns a resource (needs a connected server process) and an open `terminal` session.
+Still stand-ins: `PushNotification` and `ReportFindings` (interface marker and a stand-in `notify-send`; the generator sets
+`KATANA_NO_NOTIFY=1`, so no real notification leaves it), `install_package` (stand-in `pip` and `npm`), `SubagentHandback`
+(only the refusal for the main agent), `Agent` with an empty task. What changes between runs is normalised when the line is
+written: schedule ids, the pid of the other session and of a shell session, the id of a new notebook cell, the date the
+memory tool stamps. Still out: a `SubagentHandback` from inside a sub-agent (it needs the sub-agent's own loop, which needs
+a model).
 
-**PowerShell scripts** (`x-ps1`, `src/app/scenario_ps1.c`). Six situations: a new `.ps1` (`Write`), a change to an existing
-one (`Read`, one `Edit` with `edits`), an error message the user pasted, a pair `.sh` and `.ps1` that must stay equal, a
-`KATANA.md` rule that asks for both forms, and a request where the shell script is the right answer. The model checks with
-`command -v pwsh powershell` and, as there is no PowerShell on the generating machine, the final message says the script
-was written and not executed here and how to run it. Every `.ps1` left on disk passes a structural checker
-(`x_ps1_check`: braces, parentheses and quotes closed, `param(` first, functions named Verb-Noun with an approved verb,
-no shell syntax, the expected cmdlets present); a scenario whose script fails it is dropped, and since `check` runs the
-whole conversation again, the checker runs in `check` too. The shell twin, when there is one, really runs.
+**PowerShell scripts** (`x-ps1`, `src/app/scenario_ps1.c`). Seventeen situations, fourteen for training and three reserved
+for validation: a new script (three different scripts), a change, a new switch passed down in four edits, an explanation
+without changes, a port from the shell twin, a pasted error in the script, a pasted error that comes from the call, shell
+syntax inside the `.ps1`, the `.sh` and `.ps1` pair, the `KATANA.md` rule, the request where the shell script is right, and
+a request to run the script, where the model looks for PowerShell, does not find it, and gets the answer another way (the
+shell twin, or the same count with the shell) before saying the `.ps1` itself was not run. Every `.ps1` left on disk passes
+a structural checker (`x_ps1_check`: braces, parentheses and quotes closed, `param(` first, functions named Verb-Noun with
+an approved verb, no shell syntax, the expected cmdlets present); a scenario whose script fails it is dropped, and since
+`check` runs the whole conversation again, the checker runs in `check` too.
 
 ### Measured: the v3 file of 2026-11-22
 
@@ -229,6 +237,119 @@ Tool coverage of the training file (conversations with a trained call, and the m
 | C | `WaitForMcpServers` | 5 | 5 |
 | | MCP tools | 34 | |
 
+## Version 4 (2026-11-22): conventions in the composed engine, request shapes, dependent requests
+
+Every conversation of the v4 files comes from the composed engine and is replayed by `check`. The nine mould families
+that had one tool sequence or one first tool were ported; the moulds stay in the binary but are not in the default mix.
+
+### The three convention families (`src/app/scenario_conv.c`)
+
+| old mould family | where it is now | situations (cell names) |
+|---|---|---|
+| `mcp-call` | `x-mcp` | `id-known` (direct call), `id-in-file` (the id is in a project file: `Read` first), `wrong-tool-name` (the user names a tool the server does not have), `busy-once` (the server answers busy; the same call is sent once more), `locked` (the server refuses; the list shows the item unchanged), `server-down` (two different tools fail; nothing changed; `/mcp reconnect`) |
+| `mcp-chain` | `x-mcp` | `by-name` (list, then the call; a search-type list is called with the name), `bare-number` (the user gives 2231, the list gives `trk-2231`), `two-items` (one list, two calls, with a plan), plus the server's `first:` tool when the card has one |
+| `mcp-schema` | `x-mcp` | `big-tool`: the card shows at most eight arguments and does not open objects, so `ToolSearch select:` comes first only when the request uses something the card does not show; otherwise the call is direct |
+| (`mcp-none-error`) | `x-mcp` | `nobody-offers` (answer without calls), `server-down-export` (the server died; the same list is in an export file of the project, found with `Glob` and read, and the answer says where it came from) |
+| `skill-match` | `x-ability`, `x-skill` | `similar`: `snapshot` (copy of the sources) and `backup-settings` (copy of `settings.conf`) are both in the project and the wording of the request decides; `arg-missing` (the label is asked with `AskUserQuestion`) |
+| `skill-missing-need` | `x-ability` | `need-missing` (`pack-release` needs `packsign`: the engine writes no plan, the model plans and does the two steps that do not need it and says which one did not run), `all-steps-need-it` (`sign-archive`: `command -v` confirms, nothing runs) |
+| `skill-fail` | `x-ability`, `x-skill` | `step2-fails` (`preflight` with a setting out of range: stop at step 2, as `fail:` says), and step 1 failing in `x-skill` |
+| (new) | `x-ability` | `read-only` (what does the skill do: `Read` of `SKILL.md`, nothing runs), `where-from` (`katana skill list`) |
+| `brief-write` | `x-make` | `brief-new` (find the test command, run it, `Write`, `katana brief check`), `brief-init-message` (the request is the engine's own `/init` message; the first file exists and is read before it is rewritten), `brief-add-rule` (the file exists: `Read`, `Edit`), `brief-broken` (a misspelled key; the error line is pasted by the user or comes from `katana brief check`) |
+| `skill-write` | `x-make` | `skill-new`, `skill-new-message` (the engine's `/skill new` message; the template file is read first), `skill-add-step` (`Read`, `Edit`, `katana skill check`) |
+| `mcp-add` | `x-make` | `mcp-add`, `mcp-add-find-path` (the user gives the wrong path: `Glob` finds the program first), `mcp-already-there` (`katana mcp list` first; nothing is added) |
+
+**A real MCP server.** In `x-mcp` the scenario's server is a process (`python3`, written by the generator outside the
+project) that the engine's MCP client starts and talks to. It keeps state: items with ids, a list tool (with a text filter
+when the tool is a search), tools that record their arguments in the item, and three failure modes (busy on the first call,
+one locked item, exit on every call). The target tool answers with the data of the scenario table of that server, filled
+with the id it was called with; the final message uses the table's sentence for the same data and quotes the reply. Every
+argument value must be in the request or in an earlier result, or the scenario is dropped. In `x-make` the server program
+is in `tools/` of the project and `katana mcp add`, `katana mcp list` and `katana mcp card` talk to it.
+
+**The user corrects the plan mid-way** (`midway`). In `brief-new` and in `x-config` the user interrupts after a tool result,
+with the plan open: the engine's loop then knows a plan was open (`pl_old`), the model rewrites the list with the new step
+and continues from it. This is the only place where a request arrives without a final answer before it.
+
+### Request shapes (`src/app/scenario_shape.c`)
+
+The family writes the request; a layer then gives it a shape drawn from the conversation's seed (the check replays it).
+Nothing in a shape changes what is asked: names, paths, values and backticked text are never touched.
+
+| shape (line field `shape`) | what it is |
+|---|---|
+| `plain` | the request as the family wrote it (short) |
+| `ctx` | long with context: one sentence about the user's situation before or after (16 sentences per language) |
+| `polite`, `blunt`, `formal` | greeting and thanks; "asap", "quick", "!!"; capital letter and full stop |
+| `typo` | one or two typing errors, only in common words of a fixed list |
+| `mix` | the other language in the greeting or in the context sentence |
+| `lead` | second requests that start with "ok.", "thanks. now" |
+| `wrong` | the user assumes something false: a path that does not exist, the wrong function blamed for a failing test (`+blame`), a tool the server does not have, a server program in the wrong folder, a wrong idea about katana (`x-concept`), a URL that returns 404 |
+| `two` | two requests in one message: the short request (find, explain) and the task are joined, and the two answers come in one final message; two settings at once; two items on a server |
+| `paste` | pasted text: the real output of the test command, the real error line of `katana brief check`, the binary's real error for an option that does not exist |
+| `goal` | a follow-up that changes the goal: another value, undo, another name for the rename, one more rule |
+| `midway` | the correction arrives in the middle of the work (above) |
+| `dep` | the conversation has a second request that depends on the first (below) |
+| reserved for validation: `fwd`, `ps`, `held-lead` | a request forwarded from someone else ("forwarding from the team chat: ..."), a postscript with context, second requests that start with "one more thing:", "while you are at it:"; the last five context sentences are also reserved |
+
+### A second request that depends on the first (line field `dep`)
+
+Definition: the second request cannot be carried out or understood without the first one, because it refers to its object
+or to its result by a pronoun, by "again", "that", "the same", or corrects it. The generator sets the flag at the place
+where such a request is written; `curriculum variety` counts the flag. Kinds: "fix it" after a test run that only reported;
+"where is it used?", "does it have a test?" (one `Grep`), "which file was that again?" (answered from the conversation, no
+call); "run them again"; "read the file again" (the engine answers that it has not changed); a result removed from the
+context and read back; the goal changes; the same MCP call for another item, or the state the server shows now; the same
+skill with another label; another fact of the same web page, or what else the search listed; the line that was just added;
+"which tools did you use for that?" and "what did the last tool return?" (answered from the conversation; these two are
+generic and kept rare: 8% of the eligible conversations, 22% in `x-rare`, `x-tools` and `x-concept`).
+
+### Katana concepts (`x-concept`, `src/app/scenario_concept.c`)
+
+Fifteen concepts, each in at least three situations in the training file (`pick` takes three per concept; `curriculum
+matrix` prints the count per concept). Help questions run `katana help <word>`, never the whole help, so a new help line
+changes a stored conversation only when it contains the searched word. The `command -v` lookups of the "cannot be done
+here" situations run with a `PATH` the generator builds, so they do not depend on what the host has installed.
+
+| concept | where in the engine | how the training file shows it |
+|---|---|---|
+| commands (subcommands) | `main_usage`, `lc_known_cmd` in `src/app/launch.c` | `katana help <word>` answers how; a wrong assumption (`katana http`, `katana export` to PDF) is corrected with the line; a command that does not exist is searched with two words and then reported as absent |
+| options of the launcher | `lc_usage`, `launch_try` in `src/app/launch.c` | how (`-p`, `--output-format`, `--mcp-config`, `--model`); a wrong option found under its real name; the binary's real error for an unknown option, pasted by the user |
+| console commands | `con_help_text` in `src/app/console.c`; `/plan`, `/go`, `/undo`, `/compact`, `/cd`; `/status`, `/model` | `katana help compact`, `/model`, `context`; a wrong name (`/readonly`, found as `/plan`); `/undo` after a real change |
+| limits | tool descriptions (`src/tools/table.c`); `ct_rd_lines` in `src/tools/read.c`; cap of 100 in `src/tools/glob.c` | `ToolSearch select:` for a number (Read 2000 lines, Bash timeout, Monitor, Glob); a `Read` with `limit` returns the partial note and the next request uses `offset`; Glob shows 100 of N and the answer takes N from the note |
+| sessions | `-c`, `-r`, `--session-id`, `--no-session` in `src/app/launch.c`; `/session`, `/resume` | continue, pick an older one, run without recording; the wrong idea that sessions are global |
+| plan | `TodoWrite` in `src/tools/tasks.c` (`done`, refusal of an unchanged list, `ct_todo_autofinish`); `loop_plan_note`, `loop_todo_nudge` | how progress is marked; the wrong idea that the whole list is resent; a checklist where the same list is sent again (not trained), the engine refuses it, and the trained turn does the step. Every task family also plans with `done=N` |
+| edits | `src/tools/edit.c`; `/undo` in `src/agent/undo.c` | the user changed the file after the read, the `Edit` gets "0 matches", the model reads again and edits the real text; `edits` and the uniqueness rule; how to undo. Also `x-rename` (the `replace_all` error) and `x-fix` (`edits` blocks) |
+| read by difference | `src/agent/facts.c` ("has not changed since", "only the changed part is shown") | the user doubts a re-read and the answer quotes the engine's note; the user changed the file and asks for a line outside the changed part; why the `Read` was so short. Also the reread second requests of the task families |
+| results removed from the context | `ah_mask` in `src/agent/context.c`, stored copy under `~/.katana/context` | after four requests the test output is replaced by the engine's note; the user asks for its first line, thinks it is lost, or pastes the note; each time the stored copy is read back. Also the `result-removed` second request |
+| KATANA.md | `br_parse`, `brief_guard`, `brief_end_note` in `src/agent/brief.c`; `katana brief show`/`check` | what is enforced, lint, the test command the engine read. Also `x-make` (create, add a rule, fix a key) and every task family with a project file |
+| skills | `src/agent/extend.c` (`katana skill list`/`path`), `src/tools/skill.c` | list; where katana looks (project first, then home); a skill the user believes exists and does not. Also `x-skill`, `x-ability`, `x-make` |
+| trust | `mcp_trust_project` in `src/agent/mcp.c`; `trust_init` and `KATANA_CONFIRM` in `src/agent/tools.c`; `/cd` | a hand-written `.katana/mcp.json` is skipped as "not trusted yet" and the model explains it without setting the variable itself; `/cd` asks for trust; "always asks before a command" corrected with `KATANA_CONFIRM=1` |
+| refusals | `brief_guard` (`never:`, `ask:`); `PLAN_DENY` in `src/agent/planmode.c` | a `never:` refusal and the user insists; what happens on deletes; `ask:` answered no. Also `x-clean`; plan mode in `x-tools` and `x-rare`; the main agent's `SubagentHandback` in `x-rare` |
+| cannot be done here | rule in `src/agent/prompt.c` ("try another way ... say what you could not do and why") | a plan, `ToolSearch` by word (no tool), `command -v` for the usual programs (none), then what is needed: email, print, chat |
+| tool discovery | `src/tools/toolsearch.c` (keyword search) | schedule, notebook, worktree by keyword, answered with the tool's own description. Also `x-tools` and `x-rare` (`select:Name`) |
+
+Not covered: the `sudo` path (with a stand-in `sudo` on `PATH` the engine could believe a root write succeeded), a real
+session listing (`-c` and `-r` need an installed model).
+
+### Selection and measures
+
+`katana curriculum pick` takes the conversations in this order, always preferring a conversation whose tool sequence is
+not in the file yet (ceiling of three conversations per sequence, lifted only where a minimum cannot be met otherwise): the
+real full prompt up to 10%; every first tool a family has in the pool; situations (five per rare tool, three per concept,
+each `.ps1` situation once); the minimums of the rare tools, of `.ps1`, of MCP and of each family; the minimums of the
+declared tools; dependent second requests up to 22%; a minimum of each request shape; one conversation of every sequence
+not seen yet, shortest first; unseen cells; the rest.
+
+`katana curriculum variety train.jsonl validation.jsonl -v` prints every measure below, with these definitions:
+
+- **tool sequence**: the tools of the trained turns in order; every MCP tool counts as `mcp`, a `TodoWrite` with only `done`
+  as `done`; `|` separates requests and `.` is a turn without a call. The family is not part of it.
+- **request**: a user message that is not an engine note. **Masked request**: backticked text, paths, file names and digits
+  replaced by marks, case and spacing ignored.
+- **trained turn**: an assistant message without `"train": false`, text plus calls with their arguments, compared exactly.
+
+@@V4TABLE@@
+
 ## Commands
 
 ```
@@ -236,7 +357,10 @@ katana curriculum out.jsonl [--n N] [--seed S] [--families a,b=2,...] [--lang pt
                             [--system full|real|blocks|mix:full=F,blocks=B,real=R] [--decl PCT]
 katana curriculum stats out.jsonl      # conversations, model turns, characters to learn, 512-token windows (estimate)
 katana curriculum check out.jsonl [--all]   # the engine re-does what it can and checks the rest (--all: every reason)
-katana curriculum pick pool.jsonl out.jsonl --n N   # chooses by coverage: tool minimums, one of each tool sequence, unseen cells
+katana curriculum pick pool.jsonl out.jsonl --n N   # chooses by coverage: quotas, tool minimums, one of each tool sequence, unseen cells
+katana curriculum variety train.jsonl [validation.jsonl] [-v]   # the measures of this document, with their definitions
+katana curriculum matrix out.jsonl     # cells (task x obstacle), stacks, conventions, tools per family
+katana curriculum show out.jsonl [index|family|part of the cell] [--sys]   # conversations as plain text
 katana curriculum windows <model.gguf> data.jsonl [--seq N] [--window dense --win-ctx N]   # training windows, model tokenizer
 katana import <model.gguf> out.jsonl data.jsonl --system keep [--mask-prefill]
 katana specialize <model.gguf> all ... --curriculum out.jsonl     # source added by the specialize owner
@@ -360,9 +484,10 @@ teaches those three behaviours.
 
 ## Family weights
 
-Without `--families` the weights are: `brief-done` 6 (the only family with the read, edit, verify, fix cycle), the `mcp-*`
-families and `mixed` 4, the create families (`brief-write`, `skill-write`, `mcp-add`) 1, the others 3. With equal weights the
-create families took 35% of the trained text and `mcp-call` 2% (measured).
+Without `--families` only the composed families are generated, in the proportion of the v4 file: `x-rare` 95, `x-mcp` 60,
+`x-concept` 58, `x-make` 40, `x-tools` 36, `x-ability` 30, `x-web` 26, `x-fix` 24, `x-config` 24, `x-ps1` 22, `x-clean` 18,
+`x-add` 16, `x-rename` 14, `x-investigate` 12, `x-find` 10, `x-explain` 10, `x-skill` 10, `x-run` 8. The mould families
+(`brief-*`, `skill-*`, `mcp-*`, `mixed`) stay in the binary and come out when named in `--families`.
 
 ## Measured on a file generated before the 2026-11-22 change (seed 7, 2,000 conversations)
 

@@ -6,11 +6,11 @@
 #define XV(...) CU_PA(((const char *const[]){__VA_ARGS__}))
 enum { T_FIX, T_ADD, T_RENAME, T_FIND, T_EXPLAIN, T_RUN, T_CONF, T_CLEAN, T_INVEST, T_N };
 enum { O_NONE, O_WRONGPATH, O_SECOND, O_TWOBUG, O_AMBIG, O_LONG, O_TOOLERR, O_NEVER, O_ASKNO, O_ASKYES, O_MISSDEP, O_MISSFILE, O_BADVAL, O_ASK, O_NOASK, O_N };
-enum { F_NONE, F_RUN, F_EXPLAIN, F_FIND, F_DOCSAME, F_DOCCHG, F_REMOVED, F_N };
+enum { F_NONE, F_RUN, F_EXPLAIN, F_FIND, F_DOCSAME, F_DOCCHG, F_REMOVED, F_USES, F_WHICH, F_HASTEST, F_GOAL, F_N };
 static const char *const g_x_tname[T_N] = {"fix", "add", "rename", "find", "explain", "run", "config", "clean", "investigate"};
 static const char *const g_x_oname[O_N] = {"none", "wrong-path", "second-failure", "two-in-one-file", "similar-name", "long-output", "tool-error", "never-rule", "ask-rule-no", "ask-rule-yes",
     "missing-program", "missing-file", "rejected-value", "must-ask", "twin-no-ask"};
-static const char *const g_x_fname[F_N] = {"none", "run-again", "explain", "find", "reread-same", "reread-changed", "result-removed"};
+static const char *const g_x_fname[F_N] = {"none", "run-again", "explain", "find", "reread-same", "reread-changed", "result-removed", "dep-uses", "dep-which-file", "dep-has-test", "goal-change"};
 #define OB(x) (1u << (x))
 static const unsigned g_x_tobst[T_N] = {
     [T_FIX] = OB(O_NONE) | OB(O_WRONGPATH) | OB(O_SECOND) | OB(O_TWOBUG) | OB(O_LONG),
@@ -23,7 +23,14 @@ static const unsigned g_x_tobst[T_N] = {
     [T_CLEAN] = OB(O_NONE) | OB(O_NEVER) | OB(O_ASKNO) | OB(O_ASKYES) | OB(O_ASK) | OB(O_NOASK),
     [T_INVEST] = OB(O_NONE) | OB(O_MISSDEP) | OB(O_MISSFILE),
 };
-typedef struct { Scn *s; XProj p; int task, obst, loc, fu, conv, skills, mcp, pre; CuD d; } XC;      /* pre: pedido curto antes da tarefa (1 achar, 2 explicar; em corrigir, rodar os testes) */
+typedef struct { Scn *s; XProj p; int task, obst, loc, fu, conv, skills, mcp, pre; CuD d; const char *focus, *focrel; } XC;      /* focus: a funcao de que o pedido tratou (o segundo pedido diz "ela") */
+static const char *x_sh(const Scn *s, const char *cmd) {      /* o usuario rodou o comando no terminal dele antes de pedir: a saida real, para colar no pedido */
+    FILE *f = popen(cu_fmt("cd '%s' && %s 2>&1", s->cwd, cmd), "r"); if (!f) cu_die("sem popen");
+    Buf b = {0}; buf_str(&b, ""); char t[2048]; size_t n;
+    while ((n = fread(t, 1, sizeof t, f)) > 0) buf_add(&b, t, n);
+    pclose(f);
+    return cu_keep(b.p);
+}      /* pre: pedido curto antes da tarefa (1 achar, 2 explicar; em corrigir, rodar os testes) */
 static int g_x_askpct = 60;      /* % das conversas de config/clean que caem nas celulas de pergunta e nas gemeas */
 static uint64_t x_hmix(uint64_t x) { x += 0x9E3779B97F4A7C15ull; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull; x = (x ^ (x >> 27)) * 0x94D049BB133111EBull; return x ^ (x >> 31); }
 /* celula reservada para o holdout: combinacao de tarefa, obstaculo, loc, segundo pedido e classe de convencao */
@@ -39,7 +46,11 @@ static void x_setup(XC *c, Scn *s, int task) {
         if ((task == T_CONF || task == T_CLEAN) && cu_pct(g_x_askpct)) c->obst = cu_pct(55) ? O_ASK : O_NOASK;      /* celulas de pergunta e as gemeas sem pergunta */
         else { do c->obst = cu_n(O_N); while (!(g_x_tobst[task] & OB(c->obst)) || c->obst == O_ASK || c->obst == O_NOASK); if (c->obst != O_NONE && cu_pct(22)) c->obst = O_NONE; }
         c->loc = cu_n(3); c->conv = cu_n(4);
-        c->fu = cu_pct(g_cu_hold ? 40 : 56) ? F_NONE : 1 + cu_n(F_N - 1);
+        if (task == T_FIX && cu_pct(30)) c->loc = 3;      /* o usuario cola a saida dos testes */
+        c->fu = cu_pct(g_cu_hold ? 40 : 42) ? F_NONE : 1 + cu_n(F_N - 1);
+        if (c->fu == F_GOAL && !(task == T_CONF || task == T_RENAME)) continue;
+        if ((c->fu == F_USES || c->fu == F_WHICH || c->fu == F_HASTEST) && !(task == T_FIX || task == T_ADD || task == T_RENAME || task == T_FIND || task == T_EXPLAIN)) continue;
+        if (c->loc == 3 && c->obst == O_LONG) continue;
         if (c->fu == F_DOCCHG && !(task == T_ADD || task == T_RENAME)) continue;
         if (c->fu == F_DOCSAME && !(task == T_FIX || task == T_RUN || task == T_EXPLAIN || task == T_FIND)) continue;
         if (c->fu == F_DOCSAME || c->fu == F_DOCCHG) c->conv = 3;
@@ -51,9 +62,10 @@ static void x_setup(XC *c, Scn *s, int task) {
         const int long_task = task == T_FIX || task == T_ADD || task == T_RENAME || task == T_CONF || task == T_INVEST;
         if (long_task || g_cu_hold) {
             if (g_cu_hold) c->pre = cu_pct(80) ? 1 + cu_n(2) : 0;      /* holdout: pedido antes e pedido depois na mesma conversa, o que o treino nunca junta */
-            else if (c->fu == F_NONE && cu_pct(32)) c->pre = 1 + cu_n(2);
+            else if (c->fu == F_NONE && cu_pct(42)) c->pre = 1 + cu_n(2);
             if (c->pre && g_cu_hold && c->fu == F_NONE) c->fu = task == T_CONF ? F_EXPLAIN : F_RUN;
             if (c->pre && task == T_FIX) { if (c->obst == O_WRONGPATH) continue; c->loc = 0; }
+            if (c->pre && c->fu == F_GOAL) continue;
         }
         if (x_held(task, c->obst, c->loc, c->fu, c->conv) == (g_cu_hold != 0)) break;
     }
@@ -71,6 +83,7 @@ static void x_setup(XC *c, Scn *s, int task) {
 static void x_start(XC *c, const char *fam) {
     x_begin(fam, c->s, &c->p, c->skills ? 2 : 0, c->mcp ? 1 : 0);
     x_cell("%s/%s/%s/loc%d/pre%d/%s/conv%d%s%s", g_x_stid[c->p.st], g_x_tname[c->task], g_x_oname[c->obst], c->loc, c->pre, g_x_fname[c->fu], c->conv, c->skills ? "+skills" : "", c->mcp ? "+mcp" : "");
+    if (c->obst == O_WRONGPATH) x_shape_tag("wrong");
 }
 
 /* ---- pecas comuns ---- */
@@ -211,12 +224,40 @@ static int x_mask(void) {
 /* ---- segundo pedido da conversa ---- */
 static void x_followup(XC *c) {
     XProj *p = &c->p; const Scn *s = c->s;
-    if (c->fu == F_RUN) {
-        x_user(XV(L("run the tests once more", "roda os testes mais uma vez"), L("run them again just to be sure", "roda de novo so pra garantir"), L("one more test run please", "mais uma rodada de testes por favor")));
+    if ((c->fu == F_USES || c->fu == F_WHICH || c->fu == F_HASTEST) && (!c->focus || !x_fi(p, c->focus, NULL))) return;
+    if (c->fu == F_HASTEST && x_was_read(p, p->testrel)) c->fu = F_USES;
+    if (c->fu == F_WHICH && !c->focrel) c->fu = F_USES;
+    if (c->fu == F_USES) {      /* "ela": a funcao do pedido anterior */
+        x_dep();
+        x_user(XV(L("where is it used?", "onde ela e usada?"), L("who calls it?", "quem chama ela?"), L("and where else does it show up?", "e onde mais ela aparece?"), L("which files mention it?", "quais arquivos citam ela?")));
+        const char *r = cu_fmt("%s", x_grep(c->focus, NULL, NULL));
+        Buf b = {0}; buf_str(&b, ""); int n = 0;
+        for (const char *l = r; *l; ) { const size_t k = strcspn(l, "\n"); const char *one = cu_fmt("%.*s", (int)k, l); if (k && *l != '[' && access(x_abs(s, one), F_OK) == 0) buf_str(&b, cu_fmt("%s%s", n++ ? ", " : "", one)); l += k; if (*l) l++; }
+        if (!n) cu_die("Grep sem arquivos");
+        x_final(cu_fmt(L("`%s` appears in %d file%s: %s.", "`%s` aparece em %d arquivo%s: %s."), c->focus, n, n == 1 ? "" : "s", b.p));
+        free(b.p);
+    } else if (c->fu == F_WHICH) {      /* a resposta ja esta na conversa: nenhuma chamada */
+        x_dep();
+        x_user(XV(L("which file was that again?", "qual arquivo era mesmo?"), L("remind me, where does it live?", "me lembra, onde ela fica?"), L("sorry, which file?", "desculpa, qual arquivo?")));
+        x_final(cu_fmt(XV(L("`%s` is in %s, as shown above.", "`%s` fica em %s, como esta acima."), L("`%s` lives in %s; that comes from the work above.", "O `%s` fica em %s; isso vem do trabalho acima.")), c->focus, c->focrel));
+    } else if (c->fu == F_HASTEST) {
+        x_dep();
+        x_user(XV(L("does it have a test?", "ela tem teste?"), L("is it covered by the tests?", "os testes cobrem ela?"), L("show me a test case for it", "me mostra um caso de teste dela")));
+        const char *r = cu_fmt("%s", x_grep(c->focus, "content", cu_fmt("**/test_*")));
+        const char *pre = cu_fmt("%s:", p->testrel); int n = 0; const char *first = NULL;
+        for (const char *l = r; *l; ) { const size_t k = strcspn(l, "\n"); const char *one = cu_fmt("%.*s", (int)k, l); if (!strncmp(one, pre, strlen(pre))) { const char *q = strchr(one + strlen(pre), ':'); if (q && !strstr(q, "require") && !strstr(q, "import")) { if (!n) { first = q + 1; while (*first == ' ') first++; } n++; } } l += k; if (*l) l++; }
+        if (!n) cu_die("Grep sem casos de teste de %s", c->focus);
+        x_final(cu_fmt(L("Yes: %s has %d line%s with `%s`, for example `%s`.", "Sim: o %s tem %d linha%s com `%s`, por exemplo `%s`."), p->testrel, n, n == 1 ? "" : "s", c->focus, first));
+    } else if (c->fu == F_RUN) {
+        const int again = c->task == T_FIX || c->task == T_ADD || c->task == T_RENAME || c->task == T_RUN;
+        if (again) x_dep();
+        x_user(again ? XV(L("run the tests once more", "roda os testes mais uma vez"), L("run them again just to be sure", "roda de novo so pra garantir"), L("one more test run please", "mais uma rodada de testes por favor"))
+                     : XV(L("now run the tests", "agora roda os testes"), L("are the tests of this project passing?", "os testes desse projeto estao passando?"), L("run the test suite too", "roda a suite de testes tambem")));
         x_find_testcmd(p);
         const char *o = x_test(p, NULL); const char *t = x_totals(o);
         if (!t) cu_die("sem totais");
-        x_final(cu_fmt(XV(L("Ran `%s` again: %s.", "Rodei `%s` de novo: %s."), L("`%s` again: %s, same as before.", "`%s` de novo: %s, igual a antes.")), p->testcmd, t));
+        x_final(again ? cu_fmt(XV(L("Ran `%s` again: %s.", "Rodei `%s` de novo: %s."), L("`%s` again: %s, same as before.", "`%s` de novo: %s, igual a antes.")), p->testcmd, t)
+                      : cu_fmt(XV(L("`%s` ends with %s.", "O `%s` termina com %s."), L("Ran `%s`: %s.", "Rodei `%s`: %s.")), p->testcmd, t));
     } else if (c->fu == F_EXPLAIN || c->fu == F_FIND) {
         const int mi = cu_n(p->nmod); const XFi *fi = &p->mod[mi].fn[cu_n(p->mod[mi].nfn)];
         if (c->fu == F_FIND) {
@@ -252,12 +293,14 @@ static void x_followup(XC *c) {
         x_user(cu_fmt(XV(L("what does docs/functions.md say about %s?", "o que docs/functions.md fala do %s?"), L("is %s documented in docs/functions.md?", "o %s esta documentado em docs/functions.md?")), fi->name));
         x_need_read(p, "docs/functions.md");
         x_final(cu_fmt(L("Its entry in docs/functions.md is: \"%s\".", "A entrada dele em docs/functions.md e: \"%s\"."), entry + 2));
+        x_dep();
         x_user(cu_fmt(XV(L("read the file again and tell me the entry for %s", "le o arquivo de novo e me diz a entrada do %s"), L("check docs/functions.md once more: what is there for %s?", "confere docs/functions.md mais uma vez: o que tem la do %s?")), f2->name));
         const char *r = x_read(s, "docs/functions.md", 0);
         if (!strstr(r, "has not changed since")) cu_die("o motor nao disse que o arquivo esta igual (arquivo de %zu bytes)", strlen(cur));
         x_final(cu_fmt(L("The file has not changed since I read it, so the reading above still holds. The entry is: \"%s\".", "O arquivo nao mudou desde que eu li, entao a leitura acima continua valendo. A entrada e: \"%s\"."), e2 + 2));
     } else if (c->fu == F_REMOVED) {
         if (!x_mask()) cu_die("o motor nao tirou nenhum resultado do contexto");
+        x_dep();
         const char *path = NULL, *again = NULL;
         for (int i = 0; i < g_x.n && !path && !again; i++) if (g_x.m[i].role == 't' && !strncmp(g_x.m[i].text, "[katana: the result of ", 23)) {
             const char *t = g_x.m[i].text, *q = strstr(t, "to see it again, Read ");
@@ -285,6 +328,7 @@ static void x_followup(XC *c) {
 /* pedido curto antes da tarefa: achar ou explicar uma funcao */
 static void x_pre(XC *c) {
     if (!c->pre) return;
+    if (cu_pct(60)) x_merge();      /* o pedido curto e a tarefa chegam na mesma mensagem */
     const int fu = c->fu; c->fu = c->pre == 1 ? F_FIND : F_EXPLAIN; x_followup(c); c->fu = fu;
 }
 
@@ -297,8 +341,24 @@ static void fam_x_fix(FILE *f, Scn *s) {
     if (c.obst == O_SECOND) { b2 = &p->mod[1].fn[cu_n(p->mod[1].nfn)]; b2->num = b2->f->bad; p->failfast = 1; }
     x_start(&c, "x-fix");
     const char *rel0 = x_src(p, 0), *named = c.obst == O_WRONGPATH ? x_wrong(p, 0) : rel0;
-    const int prerun = c.pre != 0; const char *out0 = NULL;
-    if (prerun) {      /* primeiro o usuario so pede para rodar: o modelo relata a falha e para; o conserto vem no pedido seguinte */
+    const int paste = c.loc == 3 && !c.pre;
+    const XFi *blame = c.loc == 1 && !c.pre && c.obst != O_TWOBUG && cu_pct(40) ? &p->mod[1].fn[0] : NULL;      /* o usuario aponta uma funcao que esta certa */
+    if (blame && (blame == b2 || blame->num != blame->f->num)) blame = NULL;
+    if (blame) { x_shape_tag("wrong"); snprintf(g_x.cell + strlen(g_x.cell), sizeof g_x.cell - strlen(g_x.cell), "+blame"); }
+    int prerun = c.pre != 0; const char *out0 = NULL;
+    c.focus = b1->name; c.focrel = x_src(p, 0);
+    if (paste) {      /* o usuario ja rodou os testes e cola a saida: o modelo nao precisa rodar para saber o que falha */
+        out0 = x_sh(s, p->testcmd);
+        const char *fl = x_line_with(out0, "FAIL ");
+        if (!fl || strlen(out0) > 600) cu_die("saida dos testes grande demais para colar");
+        x_shape_tag("paste");
+        Buf pb = {0}; buf_str(&pb, "");
+        for (const char *l = out0; *l; ) { const size_t k = strcspn(l, "\n"); if (!strncmp(l, "FAIL ", 5) || strstr(cu_fmt("%.*s", (int)k, l), " passed, ") || !strncmp(l, "stopped at", 10)) { buf_add(&pb, l, k); buf_str(&pb, "\n"); } l += k; if (*l) l++; }
+        while (pb.n && pb.p[pb.n - 1] == '\n') pb.p[--pb.n] = 0;
+        x_user(cu_fmt(XV(L("I ran `%s` and got this, can you fix it?\n%s", "rodei `%s` e deu isso, consegue corrigir?\n%s"), L("`%s` gives me this:\n%s\nplease fix it", "o `%s` me da isso:\n%s\ncorrige por favor"),
+                         L("fix this failure (output of `%s`):\n%s", "corrige essa falha (saida do `%s`):\n%s")), p->testcmd, cu_keep(pb.p)));
+        p->knows = 1; prerun = 1;
+    } else if (prerun) {      /* primeiro o usuario so pede para rodar: o modelo relata a falha e para; o conserto vem no pedido seguinte */
         x_user(XV(L("run the tests", "roda os testes"), L("are the tests passing?", "os testes estao passando?"), L("check the test suite for me", "confere a suite de testes pra mim")));
         x_find_testcmd(p);
         out0 = cu_fmt("%s", x_test(p, NULL));
@@ -307,8 +367,10 @@ static void fam_x_fix(FILE *f, Scn *s) {
         x_final(cu_fmt(L("No: `%s` %s. The first failing case is `%s`. I only ran the tests; nothing was changed.", "Nao: o `%s` %s. O primeiro caso que falha e `%s`. So rodei os testes; nada foi alterado."),
                        p->testcmd, t0 ? cu_fmt(L("ends with %s", "termina com %s"), t0) : L("stops at the first failure", "para na primeira falha"), fl + 5));
     }
-    x_user(prerun ? XV(L("fix it", "corrige"), L("ok, fix that", "ok, corrige isso"), L("please fix it and run them again", "corrige por favor e roda de novo")) : c.loc == 0 ? XV(L("the tests are failing, can you fix it?", "os testes estao falhando, consegue corrigir?"), L("something broke the test suite, please fix it", "alguma coisa quebrou a suite de testes, corrige por favor"),
+    if (prerun && !paste) x_dep();
+    if (!paste) x_user(prerun ? XV(L("fix it", "corrige"), L("ok, fix that", "ok, corrige isso"), L("please fix it and run them again", "corrige por favor e roda de novo")) : c.loc == 0 ? XV(L("the tests are failing, can you fix it?", "os testes estao falhando, consegue corrigir?"), L("something broke the test suite, please fix it", "alguma coisa quebrou a suite de testes, corrige por favor"),
                            L("tests are red since my last change. fix pls", "os testes tao vermelhos desde a minha ultima mudanca. corrige pfv"))
+         : blame ? cu_fmt(XV(L("%s must be broken, the tests fail since yesterday. fix it", "o %s deve estar quebrado, os testes falham desde ontem. corrige"), L("the tests are red and I bet it is %s. can you fix it?", "os testes tao vermelhos e aposto que e o %s. consegue corrigir?")), blame->name)
          : c.loc == 1 ? cu_fmt(XV(L("%s is returning wrong values, fix it", "o %s ta devolvendo valor errado, corrige"), L("I think %s has a bug: %s should be %ld", "acho que o %s tem um bug: %s devia dar %ld")), b1->name, x_shown(b1->name, b1->f, b1->a[0]), b1->want[0])
          : cu_fmt(XV(L("there is a bug in %s, %s gives wrong results", "tem um bug em %s, o %s da resultado errado"), L("%s is broken somewhere (%s). fix it and make the tests pass", "%s ta quebrado em algum lugar (%s). corrige e faz os testes passarem")), named, b1->name));
     const char *plan[3] = {prerun ? L("Read the function that fails", "Ler a funcao que falha") : cu_fmt(XV(L("Run the tests of %s", "Rodar os testes de %s"), L("Reproduce the failure in %s", "Reproduzir a falha em %s")), p->name),
@@ -348,6 +410,7 @@ static void fam_x_fix(FILE *f, Scn *s) {
     for (int i = 0; i < nfix; i++) buf_str(&b, cu_fmt(L("%s`%s` in %s computed `%s`; it now returns `%s`.", "%s`%s` em %s calculava `%s`; agora devolve `%s`."), i ? " " : "", fixed[i][0], fixed[i][1], fixed[i][2], fixed[i][3]));
     buf_str(&b, cu_fmt(L(" `%s` passes: %s.", " O `%s` passa: %s."), p->testcmd, tot));
     if (c.obst == O_SECOND) buf_str(&b, L(" The second failure only appeared after the first fix, because the runner stops at the first failure.", " A segunda falha so apareceu depois da primeira correcao, porque os testes param na primeira falha."));
+    if (blame) buf_str(&b, cu_fmt(L(" `%s` was not the problem: its cases passed from the first run.", " O `%s` nao era o problema: os casos dele passavam desde a primeira rodada."), blame->name));
     x_final(cu_keep(b.p));
     x_followup(&c);
     x_end(f);
@@ -359,6 +422,7 @@ static void fam_x_add(FILE *f, Scn *s) {
     const int mi = cu_n(p->nmod); XMod *m = &p->mod[mi];
     if (m->nfn >= 6) cu_die("modulo cheio");
     XFi nf; memset(&nf, 0, sizeof nf); nf.f = x_fn_new(p); nf.name = nf.f->name; nf.num = nf.f->num; x_cases(&nf);
+    c.focus = nf.name; c.focrel = x_src(p, mi);
     x_start(&c, "x-add");
     x_pre(&c);
     const char *rel = x_src(p, mi), *named = c.obst == O_WRONGPATH ? x_wrong(p, mi) : rel;
@@ -417,6 +481,7 @@ static void fam_x_rename(FILE *f, Scn *s) {
     XC c; x_setup(&c, s, T_RENAME); XProj *p = &c.p;
     int mi = cu_n(p->nmod); XFi *fi = &p->mod[mi].fn[cu_n(p->mod[mi].nfn)];
     const char *old = fi->name, *nw = cu_fmt(XV("%s_value", "calc_%s", "%s_total", "get_%s", "%s_exact"), old);
+    c.focus = nw; c.focrel = x_src(p, mi);
     x_start(&c, "x-rename");
     x_pre(&c);
     x_user(cu_fmt(XV(L("rename %s to %s everywhere", "renomeia %s para %s em todo lugar"), L("%s should be called %s. rename it in the whole project", "o %s devia se chamar %s. renomeia no projeto inteiro"),
@@ -431,7 +496,13 @@ static void fam_x_rename(FILE *f, Scn *s) {
         l += n; if (*l) l++;
     }
     if (nf < 2) cu_die("Grep achou menos de dois arquivos com %s", old);
-    x_done(1);
+    if (c.fu != F_GOAL && cu_pct(22)) {      /* o usuario muda o nome antes das trocas: a lista e reescrita com o nome novo */
+        const char *nw2 = cu_fmt(XV("%s_v2", "%s_int", "%s_of"), old);
+        x_user_mid(cu_fmt(XV(L("wait, call it %s, not %s", "espera, chama de %s, nao de %s"), L("stop: the new name is %s (forget %s)", "para: o nome novo e %s (esquece %s)")), nw2, nw));
+        x_shape_tag("goal");
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[>] %s\n[ ] %s", x_p0(plan[0]), cu_fmt(L("Rename it to %s in each file", "Renomear para %s em cada arquivo"), nw2), plan[2]))), 0);
+        nw = nw2; c.focus = nw2;
+    } else x_done(1);
     for (int i = 0; i < nf; i++) {
         x_need_read(p, files[i]);
         if (c.obst == O_TOOLERR && !strcmp(files[i], p->testrel)) {
@@ -448,6 +519,20 @@ static void fam_x_rename(FILE *f, Scn *s) {
     Buf b = {0}; buf_str(&b, "");
     for (int i = 0; i < nf; i++) buf_str(&b, cu_fmt("%s%s", i ? ", " : "", files[i]));
     x_final(cu_fmt(L("Renamed `%s` to `%s` in %d files: %s. `%s` passes (%s).", "Renomeei `%s` para `%s` em %d arquivos: %s. O `%s` passa (%s)."), old, nw, nf, cu_keep(b.p), p->testcmd, x_totals(out)));
+    if (c.fu == F_GOAL) {      /* o usuario muda de ideia sobre o nome: o trabalho recomeca do nome que ficou */
+        const char *nw2 = cu_fmt(XV("%s_v2", "%s_int", "%s_of"), old);
+        x_dep(); x_shape_tag("goal");
+        x_user(cu_fmt(XV(L("actually, call it %s instead", "na verdade, chama de %s"), L("on second thought %s is better. rename it again", "pensando melhor, %s e melhor. renomeia de novo"), L("hmm, make that %s", "hmm, faz %s entao")), nw2));
+        const char *plan2[2] = {cu_fmt(L("Rename %s to %s in the same files", "Renomear %s para %s nos mesmos arquivos"), nw, nw2), L("Run the tests again", "Rodar os testes de novo")};
+        x_plan(plan2, 2);
+        for (int i = 0; i < nf; i++) x_edit(s, files[i], nw, nw2, 1, 0);
+        x_done(1);
+        fi->name = nw2; c.focus = nw2;
+        const char *o2 = x_test(p, NULL);
+        if (x_fails(o2, nm, 4) || !x_totals(o2)) cu_die("os testes nao passam depois do segundo nome");
+        x_final(cu_fmt(L("It is `%s` now, in the same %d files; `%s` is gone. `%s` passes (%s).", "Agora e `%s`, nos mesmos %d arquivos; o `%s` nao existe mais. O `%s` passa (%s)."), nw2, nf, nw, p->testcmd, x_totals(o2)));
+        x_end(f); return;
+    }
     x_followup(&c);
     x_end(f);
 }
@@ -463,6 +548,7 @@ static void fam_x_find(FILE *f, Scn *s) {
         XFi t = *fi; t.name = twin = cu_fmt(XV("%s_legacy", "%s_v2", "%s_rounded"), fi->name); m2->fn[m2->nfn++] = t;
         if (c.loc == 2) c.loc = 0;
     }
+    if (c.loc == 0) { c.focus = fi->name; c.focrel = x_src(p, mi); }
     x_start(&c, "x-find");
     x_pre(&c);
     if (c.loc == 2) {      /* pergunta por nome de arquivo: Glob, nao Grep */
@@ -499,6 +585,7 @@ static void fam_x_explain(FILE *f, Scn *s) {
     XC c; x_setup(&c, s, T_EXPLAIN); XProj *p = &c.p;
     int mi = cu_n(p->nmod); XMod *m = &p->mod[mi]; XFi *fi = &m->fn[cu_n(m->nfn)];
     if (c.obst == O_AMBIG) { const int tm = (mi + 1) % p->nmod; XMod *m2 = &p->mod[tm]; if (m2->nfn >= 6) cu_die("modulo cheio"); XFi t = *fi; t.name = cu_fmt(XV("%s_legacy", "%s_v2"), fi->name); m2->fn[m2->nfn++] = t; c.loc = 1; }
+    if (c.loc != 0) { c.focus = fi->name; c.focrel = x_src(p, mi); }
     x_start(&c, "x-explain");
     x_pre(&c);
     const char *rel = x_src(p, mi);
@@ -605,12 +692,18 @@ static void fam_x_config(FILE *f, Scn *s) {
             if (!strstr(a, "read_timeout")) cu_die("resposta sem a chave");
         } else { if (strstr(rd, "connect_timeout")) cu_die("gemea com duas chaves"); x_askproof("ambiguous", 0, "read_timeout = ", "connect_timeout"); }
     }
-    x_done(1);
+    if (c.obst == O_NONE && !two && !amb && !miss && (c.fu == F_GOAL || c.fu == F_NONE) && cu_pct(60)) {      /* o usuario corrige o valor antes da mudanca: a lista e reescrita com o valor novo */
+        long v3 = lo + 1 + cu_n((int)(hi - lo > 400 ? 400 : hi - lo - 1)); if (v3 == v || v3 == atol(p->cv[ki])) v3 = v3 + 1 <= hi ? v3 + 1 : v3 - 1;
+        x_user_mid(cu_fmt(XV(L("wait, make that %ld, not %ld", "espera, e %ld, nao %ld"), L("stop, I typed it wrong: the value is %ld (not %ld)", "para, digitei errado: o valor e %ld (nao %ld)")), v3, v));
+        x_shape_tag("goal");
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[>] %s\n[ ] %s", x_p0(plan[0]), cu_fmt(L("Change %s to %ld", "Mudar %s para %ld"), key, v3), plan[2]))), 0);
+        v = v3; c.fu = F_NONE;
+    } else x_done(1);
     const char *o1 = cu_fmt("%s = %s", key, p->cv[ki]), *n1 = cu_fmt("%s = %ld", key, v);
     if (two) { const char *old[2] = {o1, cu_fmt("%s = %s", p->ck[k2], p->cv[k2])}, *nw[2] = {n1, cu_fmt("%s = %ld", p->ck[k2], v2)}; x_edits(s, "settings.conf", old, nw, 2); }
     else x_edit(s, "settings.conf", o1, n1, 0, 0);
     x_done(2);
-    const char *chk = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(XV(L("Check the settings after changing %s", "Confere as configuracoes depois de mudar %s"), L("Run the settings check for %s", "Roda a verificacao das configuracoes para %s")), key), 0);
+    const char *chk = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(XV(L("Check the settings of %s after changing %s", "Confere as configuracoes do %s depois de mudar %s"), L("Run the settings check of %s for %s", "Roda a verificacao das configuracoes do %s para %s")), p->name, key), 0);
     if (c.obst == O_BADVAL) {
         const char *badl = x_line_with(chk, "bad value for ");
         if (!badl) cu_die("a verificacao aceitou o valor fora da faixa");
@@ -628,6 +721,25 @@ static void fam_x_config(FILE *f, Scn *s) {
                        amb && c.obst == O_NOASK ? L(" read_timeout is the only timeout in the file, so that is the one I changed.", " read_timeout e o unico timeout do arquivo, entao foi esse que mudei.")
                        : miss && c.obst == O_NOASK ? L(" The port comes from docs/ports.md.", " A porta vem de docs/ports.md.") : ""));
     }
+    if (c.fu == F_GOAL && c.obst != O_BADVAL) {
+        long v3 = lo + 1 + cu_n((int)(hi - lo > 400 ? 400 : hi - lo - 1)); if (v3 == v || v3 == atol(p->cv[ki])) v3 = v3 + 1 <= hi ? v3 + 1 : v3 - 1;
+        const int back = cu_pct(30); const char *n3 = back ? o1 : cu_fmt("%s = %ld", key, v3);
+        x_dep(); x_shape_tag("goal");
+        x_user(back ? XV(L("actually, put it back the way it was", "na verdade, volta como estava"), L("changed my mind, undo that change", "mudei de ideia, desfaz essa mudanca"))
+                    : cu_fmt(XV(L("actually make it %ld instead", "na verdade coloca %ld"), L("on second thought, %ld is the right value", "pensando melhor, o valor certo e %ld"), L("sorry, I meant %ld", "desculpa, eu quis dizer %ld")), v3));
+        const char *plan3[2] = {cu_fmt(L("Put %s in settings.conf", "Colocar %s no settings.conf"), n3), L("Run the settings check and the tests", "Rodar a verificacao das configuracoes e os testes")};
+        if (p->brief) x_plan(plan3, 2);      /* com test: no KATANA.md sao tres chamadas: pede plano */
+        x_edit(s, "settings.conf", n1, n3, 0, 0);
+        if (p->brief) x_done(1);
+        const char *ck2 = x_bash(NULL, "sh tools/check_settings.sh", cu_fmt(L("Check the settings with %s", "Confere as configuracoes com %s"), n3), 0);
+        if (!strstr(ck2, "settings ok") || !strstr(ck2, n3)) cu_die("a verificacao nao confirmou a segunda mudanca");
+        if (p->brief && !x_totals(x_test(p, NULL))) cu_die("sem totais");
+        x_final(cu_fmt(back ? L("Undone: settings.conf is back to `%s`%s, and the check ends with \"settings ok\".", "Desfeito: o settings.conf voltou para `%s`%s, e a verificacao termina com \"settings ok\".")
+                            : L("settings.conf now has `%s`%s, and the check ends with \"settings ok\".", "O settings.conf agora tem `%s`%s, e a verificacao termina com \"settings ok\"."), n3,
+                       two ? cu_fmt(L(" (`%s` stays at %ld)", " (o `%s` continua em %ld)"), p->ck[k2], v2) : ""));
+        x_end(f); return;
+    }
+    if (two) x_shape_tag("two");
     if (c.fu != F_NONE && c.fu != F_EXPLAIN && c.fu != F_FIND) c.fu = F_NONE;
     x_followup(&c);
     x_end(f);
@@ -672,7 +784,7 @@ static void fam_x_clean(FILE *f, Scn *s) {
             if (access(x_abs(s, a), F_OK) == 0) cu_die("o arquivo nao foi apagado");
             x_final(cu_fmt(L("Deleted %s and %s, as you confirmed. tools/lint.sh stays: nothing marks it as old.", "Apaguei %s e %s, como voce confirmou. O tools/lint.sh fica: nada marca ele como antigo."), a, b));
         } else {
-            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
             x_final(cu_fmt(L("Nothing was deleted, as you chose. %s and %s are still in tools/.", "Nada foi apagado, como voce escolheu. %s e %s continuam em tools/."), a, b));
         }
     } else {
@@ -694,6 +806,11 @@ static void fam_x_clean(FILE *f, Scn *s) {
             if (strstr(ls, a + 6)) cu_die("ls ainda mostra o arquivo");
             x_final(cu_fmt(two ? L("Deleted %s and %s. tools/ now has: %s.", "Apaguei %s e %s. tools/ agora tem: %s.") : L("Deleted %s%s. tools/ now has: %s.", "Apaguei %s%s. tools/ agora tem: %s."), a, two ? b : (c.obst == O_ASKYES ? L(" after your confirmation", " depois da sua confirmacao") : ""),
                            ({ char *t = cu_fmt("%s", ls); for (char *q = t; *q; q++) if (*q == '\n') *q = ' '; size_t l = strlen(t); while (l && t[l - 1] == ' ') t[--l] = 0; t; })));
+            if (strstr(ls, "lint.sh") && cu_pct(g_cu_hold ? 70 : 40)) {      /* a resposta ja esta na listagem acima: nenhuma chamada */
+                x_dep();
+                x_user(XV(L("the lint script is still there, right?", "o script de lint continua la, ne?"), L("you did not touch lint.sh, did you?", "voce nao mexeu no lint.sh, mexeu?")));
+                x_final(cu_fmt(L("Yes: the `ls tools` above still lists lint.sh. I deleted only %s%s.", "Sim: o `ls tools` acima continua listando o lint.sh. Apaguei so %s%s."), a, two ? cu_fmt(L(" and %s", " e %s"), b) : ""));
+            }
         }
     }
     x_end(f);
@@ -724,14 +841,14 @@ static void fam_x_investigate(FILE *f, Scn *s) {
     if (c.obst == O_MISSDEP) {
         const char *w = x_bash(NULL, cu_fmt("command -v %s", prog), cu_fmt(L("Check whether %s is installed", "Ve se o %s esta instalado"), prog), 0);
         if (strstr(w, cu_fmt("/%s", prog))) cu_die("o programa existe");
-        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+        x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
         x_final(cu_fmt(L("I could not fix it: tools/report.sh pipes the table through `%s`, and that program is not installed on this machine (`command -v %s` finds nothing). Nothing was changed. Install `%s`, or tell me which program should format the table instead.",
                          "Nao consegui corrigir: o tools/report.sh passa a tabela pelo `%s`, e esse programa nao esta instalado nesta maquina (`command -v %s` nao acha nada). Nada foi alterado. Instala o `%s`, ou me diz qual programa deve formatar a tabela no lugar dele."), prog, prog, prog));
     } else {
         const char *g = cu_fmt("%s", x_glob(cu_fmt("**/%s", data)));
         if (c.obst == O_MISSFILE) {
             if (strstr(g, data)) cu_die("o arquivo de dados existe");
-            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", plan[0], plan[1]))), 0);
+            x_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_fmt("[x] %s\n[x] %s", x_p0(plan[0]), plan[1]))), 0);
             x_final(cu_fmt(L("I could not fix it: tools/report.sh reads %s/%s, and no file named %s exists anywhere in the project. Nothing was changed. I need that file (lines of `label value`) or the place it should come from.",
                              "Nao consegui corrigir: o tools/report.sh le %s/%s, e nao existe nenhum arquivo chamado %s no projeto. Nada foi alterado. Preciso desse arquivo (linhas `rotulo valor`) ou de onde ele deve vir."), dir, data, data));
         } else {
@@ -744,6 +861,18 @@ static void fam_x_investigate(FILE *f, Scn *s) {
             x_final(cu_fmt(L("The script read %s/%s, but the file is tools/%s. I changed the path in tools/report.sh and `%s` now prints the %d lines of the table%s.",
                              "O script lia %s/%s, mas o arquivo e tools/%s. Troquei o caminho em tools/report.sh e o `%s` agora imprime as %d linhas da tabela%s."), dir, data, data, cmd, 3,
                            p->brief ? cu_fmt(L("; `%s` still passes", "; o `%s` continua passando"), p->testcmd) : ""));
+            if (cu_pct(g_cu_hold ? 70 : 45)) {      /* segundo pedido que depende do primeiro: "roda de novo" e "qual era a linha" */
+                x_dep();
+                const int which = cu_n(2);
+                x_user(which ? XV(L("show me its output now", "me mostra a saida dele agora"), L("run it again and paste what it prints", "roda de novo e cola o que ele imprime"))
+                             : XV(L("which line of the script was wrong?", "qual linha do script estava errada?"), L("what exactly did you change in it?", "o que exatamente voce mudou nele?")));
+                if (which) {
+                    const char *o3 = cu_fmt("%s", x_bash(NULL, cmd, cu_fmt(L("Run the report script of %s once more", "Roda o script de relatorio do %s mais uma vez"), p->name), 0));
+                    if (!strstr(o3, "basic: ")) cu_die("o script parou de funcionar");
+                    char *one = cu_fmt("%s", o3); for (char *q = one; *q; q++) if (*q == '\n') *q = ' '; size_t l = strlen(one); while (l && one[l - 1] == ' ') one[--l] = 0;
+                    x_final(cu_fmt(L("It prints: `%s`.", "Ele imprime: `%s`."), one));
+                } else x_final(cu_fmt(L("The last line of the loop: `done < %s/%s` became `done < tools/%s`. Nothing else in tools/report.sh changed.", "A ultima linha do laco: `done < %s/%s` virou `done < tools/%s`. Nada mais mudou no tools/report.sh."), dir, data, data));
+            }
         }
     }
     x_end(f);

@@ -13,7 +13,7 @@ has() { case "$2" in *"$3"*) ok "$1";; *) bad "$1 (esperava: $3)" "$2";; esac; }
 hasnt() { case "$2" in *"$3"*) bad "$1 (nao esperava: $3)" "$2";; *) ok "$1";; esac; }
 eq() { [ "$2" = "$3" ] && ok "$1" || bad "$1 (esperava '$3', veio '$2')" ""; }
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-unset GIT_DIR GIT_WORK_TREE KATANA_UI KATANA_CONFIRM
+unset GIT_DIR GIT_WORK_TREE KATANA_UI KATANA_CONFIRM KATANA_NO_NOTIFY
 
 # ---------- worktree ----------
 mkdir "$T/plain" && cd "$T/plain" || exit 2
@@ -62,6 +62,19 @@ has "lista as mudancas" "$o" "novo.txt"
 o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/sujo"}' ExitWorktree '{"action":"remove","discard_changes":true}' 2>&1)
 has "discard_changes remove" "$o" "removed the worktree"
 [ ! -d "$R/.katana/worktrees/sujo" ] && ok "pasta sujo removida" || bad "pasta sujo removida" ""
+
+# o que o interpretador gera sozinho (__pycache__, .pyc sem rastreio) nao segura o remove; um arquivo de verdade ao lado segura
+"$K" tool EnterWorktree '{"name":"gerado"}' >/dev/null 2>&1
+mkdir -p "$R/.katana/worktrees/gerado/pkg/__pycache__"; echo x > "$R/.katana/worktrees/gerado/pkg/__pycache__/m.cpython-312.pyc"; echo y > "$R/.katana/worktrees/gerado/solto.pyc"
+mkdir -p "$R/.katana/worktrees/gerado/__pycache__"; echo z > "$R/.katana/worktrees/gerado/__pycache__/t.pyc"
+echo w > "$R/.katana/worktrees/gerado/nota.txt"
+o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/gerado"}' ExitWorktree '{"action":"remove"}' 2>&1)
+has "arquivo de verdade ao lado do __pycache__ segura o remove" "$o" "nota.txt"
+hasnt "a recusa nao lista o __pycache__" "$o" "__pycache__"
+rm "$R/.katana/worktrees/gerado/nota.txt"
+o=$("$K" tool EnterWorktree '{"path":"'"$R"'/.katana/worktrees/gerado"}' ExitWorktree '{"action":"remove"}' 2>&1)
+has "__pycache__ e .pyc nao seguram o remove" "$o" "removed the worktree $R/.katana/worktrees/gerado"
+[ ! -d "$R/.katana/worktrees/gerado" ] && ok "pasta gerado removida" || bad "pasta gerado removida" ""
 
 # remove com commit fora do ramo original
 "$K" tool EnterWorktree '{"name":"commitado"}' >/dev/null 2>&1
@@ -118,6 +131,17 @@ eq "mensagem cortada em 200 (mais 2 colchetes)" "$l" "202"
 o=$(PATH="$T/nobin" KATANA_UI=1 "$K" tool PushNotification '{"message":"a\tb","title":"T"}' 2>&1 | cat -vT)
 has "marcador NOTIFY" "$o" "^ANOTIFY T^Ia b"
 has "so o marcador ja conta como canal" "$o" "notification shown (desktop application)"
+# com a interface ligada, ou com KATANA_NO_NOTIFY=1, o notify-send nao e chamado
+rm -f "$T/ns.log"
+o=$(PATH="$T/fake:$PATH" KATANA_UI=1 "$K" tool PushNotification '{"message":"so na interface"}' 2>&1 | cat -vT)
+has "com interface: marcador" "$o" "^ANOTIFY katana^Iso na interface"
+has "com interface: resultado cita so a interface" "$o" "notification shown (desktop application)"
+[ ! -e "$T/ns.log" ] && ok "com interface: notify-send nao foi chamado" || bad "com interface: notify-send nao foi chamado" "$(cat "$T/ns.log")"
+o=$(PATH="$T/fake:$PATH" KATANA_NO_NOTIFY=1 "$K" tool PushNotification '{"message":"calado"}' 2>&1)
+has "KATANA_NO_NOTIFY: resultado diz que nada foi mostrado" "$o" "notifications are turned off here (KATANA_NO_NOTIFY is set); nothing was shown"
+[ ! -e "$T/ns.log" ] && ok "KATANA_NO_NOTIFY: notify-send nao foi chamado" || bad "KATANA_NO_NOTIFY: notify-send nao foi chamado" "$(cat "$T/ns.log")"
+o=$(PATH="$T/fake:$PATH" KATANA_NO_NOTIFY=0 "$K" tool PushNotification '{"message":"volta"}' 2>&1)
+has "KATANA_NO_NOTIFY=0 nao desliga" "$o" "notification shown (notify-send)"
 
 # ---------- SendUserFile ----------
 echo hello > "$T/f1.txt"; echo world!! > "$T/f2.txt"

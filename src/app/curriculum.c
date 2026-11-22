@@ -2009,7 +2009,9 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 
 #include "app/scenario.c"            /* motor de cenarios compostos: projetos de verdade, politica em C, tudo rodado no motor */
 #include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
+#include "app/scenario_conv.c"       /* as convencoes no motor de cenarios: servidor MCP de verdade, skills, criar e mudar KATANA.md/SKILL.md/ligacao */
 #include "app/scenario_ps1.c"        /* scripts PowerShell: escritos e conferidos, nunca dados como executados */
+#include "app/scenario_rare2.c"      /* preparos de verdade das raras: servidor MCP, outra sessao, subagente, servidor de linguagem */
 #include "app/scenario_rare.c"       /* as ferramentas raras: tres situacoes para cada uma */
 #include "app/scenario_more.c"       /* o proprio katana, ferramentas so pelo nome, web, skills; o check que refaz a conversa */
 typedef void (*CuFam)(FILE *, Scn *);
@@ -2021,7 +2023,8 @@ static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"brief-write", fam_brief_write}, {"skill-write", fam_skill_write}, {"mcp-add", fam_mcp_add},
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run},
     {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate},
-    {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1}};
+    {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
+    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2187,13 +2190,14 @@ static int curriculum_check(const char *path, int stats_only) {
                     int ok = 0;
                     for (int i = 0; BR_SINGLE[i]; i++) ok |= !strcmp(key, BR_SINGLE[i]);
                     for (int i = 0; BR_BLOCK[i]; i++) ok |= !strcmp(key, BR_BLOCK[i]);
+                    if (!ok && strstr(line, cu_fmt("unknown key '%s:'", key))) ok = 1;      /* a conversa e sobre essa chave errada: o erro do motor esta nela */
                     if (!ok) CU_BAD("KATANA.md do exemplo usa a chave '%s', que o formato brief do motor nao tem", key);
                 }
                 if (pi && strchr(pi, '\n')) {      /* o arquivo mostrado passa no lint do motor (so erros: os avisos de PATH dependem da maquina) */
                     const char *b0 = strchr(pi, '\n') + 1, *b1 = strstr(b0, "\n\n# ");
                     char *txt = cu_fmt("%.*s\n", (int)(b1 ? b1 - b0 : (long)strlen(b0)), b0);
                     Brief *br = (Brief *)calloc(1, sizeof *br); McpB fd = {0}; mcp_bput(&fd, "", 0);
-                    if (br_parse(txt, br, &fd, "KATANA.md") || strstr(fd.p, "two spaces between")) CU_BAD("o lint do motor reclama do KATANA.md do exemplo: %.200s", fd.p);
+                    if ((br_parse(txt, br, &fd, "KATANA.md") || strstr(fd.p, "two spaces between")) && !(strstr(fd.p, "unknown key '") && strstr(line, "error: unknown key '"))) CU_BAD("o lint do motor reclama do KATANA.md do exemplo: %.200s", fd.p);
                     free(br); free(fd.p);
                 }
                 continue;
@@ -2226,6 +2230,7 @@ static int curriculum_check(const char *path, int stats_only) {
                 if (content) { buf_str(&allres, content); st[fi].ctx += (long)strlen(content); }
                 CuPc *c = NULL;
                 for (int i = 0; id && i < npc; i++) if (!strcmp(pc[i].id, id)) c = &pc[i];
+                if (content && scn) { buf_str(&seen, content); buf_str(&seen, "\n"); }      /* linhas do motor de cenarios: o resultado tambem e texto que o modelo ja viu */
                 if (c && content && !stats_only && !scn) {
                     char *res = cu_fmt("%s", content);       /* sem as notas que o laco anexa */
                     { char *nt = strstr(res, "\n[plan: step "); if (nt) *nt = 0; nt = strstr(res, "\n[katana: "); if (nt) { *nt = 0; CU_BAD("resultado com cobranca do motor (%.40s...) que o exemplo ignora", nt + 1); } }
@@ -2460,6 +2465,7 @@ static int curriculum_check(const char *path, int stats_only) {
     return 0;
 }
 
+#include "app/scenario_report.c"     /* katana curriculum variety | matrix | show: medidas e leitura de um arquivo */
 #include "app/scenario_pick.c"       /* katana curriculum pick: escolhe por cobertura */
 
 /* ======================= main ======================= */
@@ -2509,6 +2515,9 @@ static int curriculum_main(int argc, char **argv) {
     unsetenv("KATANA_UI");
     if (argc >= 1 && !strcmp(argv[0], "windows")) return cu_windows_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "pick")) return cu_pick_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "variety")) return cu_variety_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "matrix")) return cu_matrix_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "show")) return cu_show_main(argc - 1, argv + 1);
     if (argc >= 2 && (!strcmp(argv[0], "stats") || !strcmp(argv[0], "check"))) {
         char full[4400];
         if (!realpath(argv[1], full)) { fprintf(stderr, "curriculum: nao abri %s\n", argv[1]); return 1; }
@@ -2548,12 +2557,15 @@ static int curriculum_main(int argc, char **argv) {
         else { fprintf(stderr, "curriculum: opcao desconhecida %s\n", argv[i]); return 1; }
     }
     int w[CU_NFAM]; int wsum = 0;
-    /* pesos padrao: as familias de criar (longas, um so caminho) pesam menos; o ciclo ler-editar-verificar-corrigir (brief-done)
-       e o uso de servidores MCP pesam mais. Medido com pesos iguais: criar ocupava 35% do texto treinado e mcp-call 2% */
+    /* pesos padrao: so as familias do motor de cenarios (x-*), na proporcao do conjunto v4. As familias de molde (brief-*, skill-*,
+       mcp-*, mixed) continuam no binario e saem quando sao pedidas pelo nome em --families: as nove que tinham uma sequencia so ou
+       uma primeira ferramenta so foram passadas para x-mcp, x-ability e x-make */
+    static const struct { const char *nm; int w; } defw[] = {{"x-fix", 24}, {"x-add", 16}, {"x-rename", 14}, {"x-find", 10}, {"x-explain", 10}, {"x-run", 8}, {"x-config", 24}, {"x-clean", 18}, {"x-investigate", 12},
+        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}};
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
-        w[i] = fams ? 0 : !strncmp(nm, "x-", 2) ? 4 : !strcmp(nm, "brief-write") || !strcmp(nm, "skill-write") || !strcmp(nm, "mcp-add") ? 1
-                        : !strcmp(nm, "brief-done") ? 6 : !strncmp(nm, "mcp-", 4) || !strcmp(nm, "mixed") ? 4 : 3;
+        w[i] = 0;
+        if (!fams) for (int k = 0; k < CU_N(defw); k++) if (!strcmp(nm, defw[k].nm)) w[i] = defw[k].w;
     }
     if (fams) {
         const int k = cu_count(fams, ',');

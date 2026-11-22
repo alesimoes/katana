@@ -262,6 +262,12 @@ DOIS "x" \n
 tres
 5
 6'
+# a lista de trocas dentro de um texto (chamada em XML: todo valor chega como texto) vale como a lista
+printf 'alfa\nbeta\n' > mx.txt
+run Read '{"file_path":"mx.txt"}' Edit '{"file_path":"mx.txt","edits":"[{\"old_string\":\"alfa\",\"new_string\":\"A\"},{\"old_string\":\"beta\",\"new_string\":\"B\"}]"}'
+has "edits: lista dentro de texto" "(2 edits, 2 replacements)"
+fileis "edits: lista dentro de texto, arquivo" mx.txt 'A
+B'
 cp m.txt m0.txt
 run Read "$R" Edit '{"file_path":"m.txt","edits":"<<<<<<<\ntres\n=======\n3\n>>>>>>>\n<<<<<<<\nnaoha\n=======\nx\n>>>>>>>"}'
 has "edits: uma falha diz qual" "edit 2 of 2: old_string was not found"

@@ -1386,7 +1386,89 @@ static void lc_usage(FILE *f) {
         "      --quiet                 sem o progresso no erro padrao\n"
         "katana install [--dir DIR] [--force]   coloca o comando katana no PATH (link simbolico)   katana uninstall\n"
         "katana adopt [dir] --instructions ARQ --mcp ARQ --skills PASTA [--dry-run] [--force]   traz a configuracao de um projeto\n"
+        "katana help PALAVRA           so as linhas das ajudas (opcoes, subcomandos, comandos do console) que tem a palavra\n"
         "docs/console.md tem tudo.\n");
+}
+/* a lista dos subcomandos (o uso geral e o `katana help <palavra>` usam a mesma) */
+static void main_usage(FILE *f) {
+    fprintf(f,
+        "Uso:\n"
+        "  katana [opcoes] [\"mensagem\"]   console do agente na pasta atual (katana --help; docs/console.md); katana -p \"pedido\" e o modo headless\n"
+        "  katana install | uninstall     coloca o comando katana no PATH; katana adopt traz a configuracao de outro projeto\n"
+        "  katana info <modelo.gguf>\n"
+        "  katana selftest <modelo.gguf>\n"
+        "  katana toktest <modelo.gguf> <casos.hex> [--chat]   ids do tokenizador (ou do formato de conversa) de cada caso\n"
+        "  katana qtest                   confere a decodificacao e os produtos de cada tipo de quantizacao\n"
+        "  katana quantize <entrada.gguf> [saida.gguf] [tipo]   grava um GGUF requantizado (tipo: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q2_K)\n"
+        "                                 sem tipo, escolhe o melhor para esta maquina; sem saida, gera o nome a partir da entrada\n"
+        "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
+        "  katana tune <modelo.gguf>      mede e grava o melhor ajuste para a GPU desta maquina\n"
+        "  katana pack <modelo.gguf>      gera os shards no layout da GPU (<modelo>.gguf.ktn)\n"
+        "  katana prepare <modelo.gguf>   inspeciona, decide o plano, prepara (pack/tune/calor) e grava o perfil do modelo\n"
+        "  katana verify <modelo.gguf>    confere os hashes dos shards\n"
+        "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
+        "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
+        "  katana tiersim run <modelo.gguf> <texto> <rastro.bin> | sim <rastro.bin>   rastro de roteamento e simulacao de caches/previsores\n"
+        "  katana attbench [posicoes...]         custo da atencao (qwen35moe) por posicao, sem modelo\n"
+        "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
+        "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
+        "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
+        "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
+        "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
+        "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"
+        "                                       conversas (mensagens ou ShareGPT) -> dados de treino no formato exato do modelo\n"
+        "  katana distill --url URL --model M [--format qwen|json|gemma4|glm] [--out f.jsonl] \"tarefa\"\n"
+        "  katana export <saida.jsonl> <sessoes.ksess ou pastas> [--bench resultados.jsonl]   sessoes do agente -> dados de treino\n"
+        "  katana learn <modelo.gguf> [--rounds N] [--repeat K] [--teacher URL --teacher-model M] [-- opcoes do train]\n"
+        "                                 aprende com o proprio uso: coleta no codebench, treina no que passou, prova e guarda o melhor\n"
+        "  katana codebench run --model M.gguf --out r.jsonl [--tasks 'a,b-*'] [--repeat N] [--timeout S] [--label L] [--env K=V]...\n"
+        "  katana codebench verify|list [--tasks ...]   /   katana codebench compare A.jsonl B.jsonl\n"
+        "                                 o juiz: tarefas com testes escondidos (tools/codebench); o agente roda como processo filho\n"
+        "  katana specialize <modelo.gguf> [all|teacher|tools|code|knowledge] [--from PASTA] [--sessions PASTA] [--hours H] [--wait-idle [H]] [--dry-run]\n"
+        "                                 a rotina da noite: conhecimento, dados, plano de memoria, treino e relatorio (padroes no katana.cfg)\n"
+        "  katana specialize --status           relatorio das noites (janelas vistas, perda, comandos para testar e ativar)\n"
+        "  katana knowledge quiz <modelo.gguf> <holdout.jsonl> [--limit N] [--spec ARQ.kspec]   o conhecimento entrou? (nota por sobreposicao)\n"
+        "                                       um modelo professor (API no formato da OpenAI) resolve a tarefa com as ferramentas do katana\n"
+        "  katana merge <modelo.gguf> <espec.kspec> <saida.gguf>   GGUF novo com a especializacao dentro\n"
+        "  katana compare <modelo.gguf> --val-data F [--drift-data G] a.kspec [b.kspec ...]   perda por fonte e deriva (KL) de especializacoes contra a base\n"
+        "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
+        "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
+        "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
+        "  katana serve <modelo.gguf> [porta] --agent   o agente pela rede (/v1/agent/sessions, docs/api.md): quem tem a chave\n"
+        "                                       executa comandos nesta maquina\n"
+        "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
+        "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
+        "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
+}
+/* katana help <palavra...>: so as linhas das ajudas que tem alguma das palavras (sem diferenciar maiusculas), por secao.
+   Serve para perguntar por um assunto sem despejar a ajuda inteira; uma linha de continuacao acompanha a linha de cima */
+static int lc_help_has(const char *line, const char *w) {
+    const size_t n = strlen(w);
+    for (const char *p = line; *p; p++) { size_t i = 0; while (i < n && p[i] && tolower((unsigned char)p[i]) == tolower((unsigned char)w[i])) i++; if (i == n) return 1; }
+    return 0;
+}
+static int lc_help_topic(int argc, char **argv) {
+    static const char *const title[3] = {"katana --help", "katana help", "console /help"};
+    int total = 0;
+    for (int s = 0; s < 3; s++) {
+        FILE *tf = tmpfile(); if (!tf) continue;
+        if (s == 0) lc_usage(tf); else if (s == 1) main_usage(tf); else con_help_text(tf);
+        rewind(tf);
+        char line[1200]; int shown = 0, prev = 0;
+        while (fgets(line, sizeof line, tf)) {
+            int hit = 0, lead = 0;
+            while (line[lead] == ' ') lead++;
+            for (int i = 2; i < argc && !hit; i++) if (argv[i][0]) hit = lc_help_has(line, argv[i]);
+            if (!hit && prev && lead >= 20) hit = 1;      /* continuacao da linha de cima */
+            prev = hit;
+            if (!hit) continue;
+            if (!shown++) printf("%s:\n", title[s]);
+            printf("  %s", line + (lead > 2 ? 2 : lead)); total++;
+        }
+        fclose(tf);
+    }
+    if (!total) { printf("no help line has \"%s\". `katana --help` lists the options, `katana help` the subcommands, /help the console commands.\n", argv[2]); return 1; }
+    return 0;
 }
 static int lc_looks_like_id(const char *a) { return isdigit((unsigned char)a[0]) && strlen(a) >= 6 && strspn(a, "0123456789-") == strlen(a); }
 static int lc_stdin_all(Buf *b) {
@@ -1434,6 +1516,7 @@ static int launch_try(int argc, char **argv) {
     if (argc >= 2) {
         const char *a1 = argv[1];
         if (!strcmp(a1, "mdtest")) return mdtest_cmd(argc, argv);
+        if (!strcmp(a1, "help") && argc >= 3) return lc_help_topic(argc, argv);
         if (lc_known_cmd(a1)) {
             if (!strcmp(a1, "install") || !strcmp(a1, "uninstall")) return install_cmd(argc, argv, a1[0] == 'u');
             if (!strcmp(a1, "adopt")) return adopt_cmd(argc, argv);

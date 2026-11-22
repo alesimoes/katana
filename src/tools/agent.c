@@ -8,6 +8,8 @@ static const char CT_AGENT_PROPS[] = "\"description\": {\"type\": \"string\", \"
     "\"subagent_type\": {\"type\": \"string\"}";
 static const char CT_AGENT_REQ[] = "\"description\", \"prompt\"";
 static int ct_agents_note(const char *task, const char *report);      /* src/tools/messages.c: registro para ListAgents e SendMessage */
+static void (*g_ct_sub_run)(const char *prompt, char *out, size_t cap);      /* src/tools/messages.c: gancho do subagente */
+static void ct_sub_fake(const char *prompt, char *out, size_t cap);
 static void ct_agent(const char *js, const char *end, char *out, size_t cap) {
     char *p = ct_str(js, end, "prompt");
     if (!p || strlen(p) < 8) { free(p); snprintf(out, cap, "error: missing prompt (the complete task for the sub-agent: what to find or read, and what to report back)"); return; }
@@ -24,7 +26,10 @@ static void ct_agent(const char *js, const char *end, char *out, size_t cap) {
         else a[o++] = (char)ch;
     }
     o += (size_t)sprintf(a + o, "\"}");
-    tool_delegate(a, a + o, out, cap);
+    /* teste sem modelo: com KATANA_AGENT_FAKE=1 o subagente e o falso (ou o gancho de teste ja instalado), como em SendMessage e Workflow */
+    { const char *fk = getenv("KATANA_AGENT_FAKE");
+      if (fk && atoi(fk) == 1) { if (!g_ct_sub_run) g_ct_sub_run = ct_sub_fake; g_ct_sub_run(p, out, cap); }
+      else tool_delegate(a, a + o, out, cap); }
     if (strncmp(out, "error:", 6) != 0) {       /* o modelo fica sabendo o nome para continuar este subagente com SendMessage */
         const int id = ct_agents_note(p, out);
         const size_t l = strlen(out);
