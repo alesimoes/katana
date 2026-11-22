@@ -769,6 +769,7 @@ static int mcp_trust_project(const char *path, const char *txt, size_t n) {
     fprintf(stderr, "[mcp: servers of %s skipped: not trusted yet (the question needs a terminal or the desktop; KATANA_MCP_TRUST=1 trusts it)]\n", path);
     return 0;
 }
+static int mcpx_expand_srv(McpSrv *t, const char *where);      /* mcp_extra.c */
 static int mcp_find(const char *name) {
     for (int i = 0; i < g_nmcp; i++) if (strcmp(g_mcp[i].name, name) == 0) return i;
     return -1;
@@ -810,6 +811,7 @@ static void mcp_load_file(const char *path, int project) {
             if (val) { char *h = malloc(strlen(k2) + strlen(val) + 3); sprintf(h, "%s: %s", k2, val); free(val); t.hdr = realloc(t.hdr, sizeof(char *) * (size_t)(t.nhdr + 1)); t.hdr[t.nhdr++] = h; }
         }
         if (!t.cmd && !t.url) snprintf(t.err, sizeof t.err, "configuracao sem command nem url");
+        else mcpx_expand_srv(&t, path);       /* ${VAR} e ${VAR:-padrao}; faltando, o servidor fica de fora (mcp_extra.c) */
         const int old = mcp_find(t.name);
         if (old >= 0 && project) { mcp_free_srv(&g_mcp[old]); g_mcp[old] = t; }      /* o projeto vence o arquivo do usuario */
         else if (old >= 0 || g_nmcp >= MCP_MAXSRV) mcp_free_srv(&t);

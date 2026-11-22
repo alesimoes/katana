@@ -214,6 +214,9 @@ on the next call (an HTTP session that expired too), a call that gets no answer 
 (`KATANA_MCP_TIMEOUT`, seconds). Not handled: sampling, elicitation, roots and progress requests from the server (it gets
 "method not found"), resource subscriptions, OAuth.
 
+More protocol coverage (variables in the configuration, roots, annotations, elicitation, SSE, OAuth, `katana mcp serve`)
+is in `docs/mcp.md`.
+
 ### Worked example
 
 ```
