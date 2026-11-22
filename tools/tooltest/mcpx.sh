@@ -240,5 +240,67 @@ R=$(printf '!streamfd web\n' | "$K" toolrun 2>&1); has "g: sem fluxo: descritor 
 R=$(KATANA_MCP_NO_STREAM=1 "$K" tool web__hello '{}' 2>&1); has "g: KATANA_MCP_NO_STREAM desliga o fluxo" "$R" "hello"
 kill "$SPID" 2>/dev/null; SPID=""
 
+########## h: katana mcp serve ##########
+SV="$T/serve"; mkdir -p "$SV/.git" "$SV/sub" "$T/outside"; printf 'line one\nline two\n' > "$SV/a.txt"; printf 'secret\n' > "$T/outside/s.txt"
+ln -s "$T/outside" "$SV/link"
+IN='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}'
+rpc() { printf '%s\n%s\n' "$IN" "$1" | (cd "$SV" && "$K" mcp serve $2 2>/dev/null); }
+R=$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+has "h: initialize responde a versao pedida" "$R" '"protocolVersion":"2025-11-25"'
+has "h: capacidade tools" "$R" '"capabilities":{"tools":{"listChanged":false}}'
+has "h: lista Read com anotacao de somente leitura" "$R" '"name":"Read","title":"Read a file"'
+has "h: Read e somente leitura" "$R" '"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true'
+has "h: lista Write e Edit e Grep" "$R" '"name":"Write"'
+hasnt "h: sem Bash por padrao" "$R" '"name":"Bash"'
+hasnt "h: nao expoe ferramentas do agente (Agent, WebFetch)" "$R" '"name":"WebFetch"'
+R=$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' --allow-shell)
+has "h: --allow-shell liga Bash" "$R" '"name":"Bash"'
+has "h: Bash declarado destrutivo e de mundo aberto" "$R" '"destructiveHint":true,"idempotentHint":false,"openWorldHint":true'
+R=$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' --read-only)
+hasnt "h: --read-only tira Write" "$R" '"name":"Write"'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","arguments":{"file_path":"a.txt"}}}')
+has "h: Read le um arquivo da pasta" "$R" 'line two'
+has "h: resultado sem erro" "$R" '"isError":false'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Write","arguments":{"file_path":"new.txt","content":"made by serve\n"}}}')
+has "h: Write cria arquivo" "$R" 'created'
+eq "h: o arquivo existe na pasta de trabalho" "$(cat "$SV/new.txt" 2>/dev/null)" "made by serve"
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","arguments":{"file_path":"/etc/passwd"}}}')
+has "h: caminho fora da pasta e recusado" "$R" 'outside the folders'
+has "h: ... como erro da ferramenta" "$R" '"isError":true'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","arguments":{"file_path":"../outside/s.txt"}}}')
+has "h: .. nao escapa" "$R" 'outside the folders'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","arguments":{"file_path":"link/s.txt"}}}')
+has "h: link simbolico para fora nao escapa" "$R" 'outside the folders'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Glob","arguments":{"pattern":"/etc/*"}}}')
+has "h: Glob absoluto fora e recusado" "$R" 'outside the folders'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Bash","arguments":{"command":"echo hi"}}}')
+has "h: Bash sem --allow-shell: ferramenta desconhecida" "$R" '"error"'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Bash","arguments":{"command":"echo hi-from-shell"}}}' --allow-shell)
+has "h: Bash com --allow-shell roda" "$R" 'hi-from-shell'
+printf '# serve: rules test\nnever:\n  - never write keys `*.pem`\nask:\n  - ask before editing configs `*.cfg`\n' > "$SV/KATANA.md"
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Write","arguments":{"file_path":"k.pem","content":"x"}}}')
+has "h: regra never do KATANA.md vale" "$R" 'refused by the project rule (never)'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Write","arguments":{"file_path":"x.cfg","content":"x"}}}')
+has "h: regra ask: sem a quem perguntar, recusa" "$R" 'needs the user'
+[ ! -f "$SV/x.cfg" ] && ok "h: o arquivo da regra ask nao foi criado" || bad "h: x.cfg existe" ""
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","arguments":{"file_path":"a.txt"}}}' "--cwd $SV/sub")
+has "h: --cwd: caminho relativo parte da outra pasta" "$R" 'isError'
+# roots do cliente
+R=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{}},"clientInfo":{"name":"t","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' "{\"jsonrpc\":\"2.0\",\"id\":\"katana-roots\",\"result\":{\"roots\":[{\"uri\":\"file://$T/outside\",\"name\":\"o\"}]}}" "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"Read\",\"arguments\":{\"file_path\":\"$T/outside/s.txt\"}}}" | (cd "$SV" && "$K" mcp serve 2>/dev/null))
+has "h: pede roots/list ao cliente que declara roots" "$R" '"method":"roots/list"'
+has "h: as roots do cliente valem no lugar da pasta" "$R" 'secret'
+# o katana como cliente do proprio servidor (de ponta a ponta)
+printf '{"mcpServers":{"ks":{"command":"%s","args":["mcp","serve","--cwd","%s"]}}}\n' "$K" "$SV" > "$HOME/.katana/mcp.json"
+R=$("$K" mcp list 2>&1)
+has "h: o cliente lista o servidor do katana" "$R" "ks [stdio] ok"
+has "h: com as dicas de somente leitura" "$R" "ks__Read [read-only, idempotent]"
+R=$(cd "$SV" && "$K" tool ks__Read '{"file_path":"a.txt"}' 2>&1)
+has "h: chamada de ponta a ponta (o cliente declara roots: a pasta dele vale)" "$R" "line two"
+R=$(printf '!plan on\nks__Read {"file_path":"a.txt"}\nks__Write {"file_path":"p.txt","content":"x"}\n' | (cd "$SV" && "$K" toolrun) 2>&1)
+has "h: modo plano: Read do servidor do usuario passa" "$R" "line two"
+has "h: modo plano: Write nao" "$R" "plan mode is on"
+cd "$P"
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]
