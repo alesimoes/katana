@@ -424,6 +424,7 @@ static int rl_writes(const char *name) {
     return !strcmp(name, "Write") || !strcmp(name, "Edit") || !strcmp(name, "NotebookEdit") || !strcmp(name, "write_file") || !strcmp(name, "edit_file");
 }
 
+static int ct_todo_autofinish(void);       /* src/tools/tasks.c */
 static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -837,6 +838,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                         continue;
                     }
                 }
+                if (ct_set2() && tn - td == 1 && ct_todo_autofinish()) break;      /* so faltava o ultimo passo e o modelo ja respondeu */
                 if (!cml || !g_todo_touched || nudged || tn == td || cut) break;
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];

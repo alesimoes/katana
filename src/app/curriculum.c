@@ -167,6 +167,8 @@ static int cu_valid(const char *s, const char *v, const char *path, char *err, s
 static char *cu_ct_schema(const char *name) {
     const CtTool *t = ct_lookup(name);
     if (!t) return NULL;
+    /* o plano e treinado na forma barata: linhas de texto uma vez, depois so done=N (a forma em array continua aceita pelo motor) */
+    if (!strcmp(name, "TodoWrite")) return cu_fmt("{\"type\": \"object\", \"properties\": {\"todos\": {\"type\": \"string\"}, \"done\": {\"type\": \"integer\"}}, \"required\": []}");
     return cu_fmt("{\"type\": \"object\", \"properties\": {%s}, \"required\": [%s]}", t->props, t->req);
 }
 
@@ -830,8 +832,12 @@ static char g_cu_base[40000];          /* prompt do agente (sem a secao de ferra
 static int g_cu_sysmode;               /* 0 prompt inteiro; 1 so os blocos do cenario */
 static void cu_sys_skills(const Scn *s, Buf *o) {
     if (!s->nsk) return;
-    buf_str(o, "\n- Skills (load one with the Skill tool when the request matches its use):");
-    for (int i = 0; i < s->nsk; i++) buf_str(o, cu_fmt("\n  %s: %s", s->sk[i]->name, s->sk[i]->when));
+    buf_str(o, "- Skills (load one with the Skill tool): ");      /* igual a sk_env_line (src/tools/skill.c) */
+    for (int i = 0; i < s->nsk; i++) {
+        const char *w = s->sk[i]->when;
+        buf_str(o, cu_fmt("%s%s: %s", i ? "; " : "", s->sk[i]->name, strlen(w) > 60 ? cu_fmt("%.57s...", w) : w));
+    }
+    buf_str(o, ".\n");
 }
 static void cu_sys_env(const Scn *s, Buf *o) {
     buf_str(o, "# Environment (where you are)\n");
@@ -839,6 +845,7 @@ static void cu_sys_env(const Scn *s, Buf *o) {
     buf_str(o, cu_fmt("- Working folder (where commands and relative paths run): %s\n- Inside a git repository (root %s, branch main).\n", s->cwd, s->cwd));
     buf_str(o, cu_fmt("- Project files here: %s.\n\nFolders around you (hidden and build folders left out):\n%s/\n  files: %s",
                       s->st->manifest, s->cwd, s->st->ls));
+    if (s->nsk) buf_str(o, "\n");
     cu_sys_skills(s, o);
 }
 static void cu_sys_project(const Scn *s, Buf *o) {
@@ -892,42 +899,51 @@ static void cu_card_render(const CuMs *m, Buf *o) {
 }
 static void cu_sys_mcp(const Scn *s, Buf *o) {
     if (!s->nms) return;
-    buf_str(o, "\n\n# MCP servers (connected; call a tool by its full name with a JSON object of arguments; ToolSearch \"select:<name>\" gives its full schema)\n");
+    buf_str(o, "\n\n# MCP servers (tools you can call; ToolSearch select:NAME gives the full schema)\n");
     for (int i = 0; i < s->nms; i++) cu_card_render(s->ms[i], o);
-    if (o->n && o->p[o->n - 1] == '\n') o->p[--o->n] = 0;
 }
 static const char *cu_sys(const Scn *s) {
     Buf o = {0}; buf_str(&o, "");
-    if (g_cu_sysmode == 0) { buf_str(&o, g_cu_base); cu_sys_env(s, &o); }
+    /* ordem do motor: regras, cartoes MCP, ambiente (com as skills), arquivo do projeto */
+    if (g_cu_sysmode == 0) {
+        buf_str(&o, g_cu_base);
+        while (o.n && o.p[o.n - 1] == '\n') o.p[--o.n] = 0;
+        cu_sys_mcp(s, &o); buf_str(&o, "\n\n"); cu_sys_env(s, &o);
+    } else {
+        cu_sys_mcp(s, &o);
+        if (s->nsk) { buf_str(&o, "\n\n# Environment (where you are)\n"); cu_sys_skills(s, &o); }
+    }
+    while (o.n && o.p[o.n - 1] == '\n') o.p[--o.n] = 0;
     cu_sys_project(s, &o);
-    cu_sys_mcp(s, &o);
-    if (g_cu_sysmode == 1 && s->nsk) { buf_str(&o, "\n\n# Skills"); cu_sys_skills(s, &o); }
     return cu_keep(o.p);
 }
+static const char *cu_miss(const CuSkill *k, int i) { char *n = cu_part(k->needs, ',', i); while (*n == ' ') n++; return n; }
+typedef struct { Buf b; int nid, nmsg; const char *fam; const Scn *s; int tcalls; char tfirst[96]; int tskill; int pdone, pn; char pstep[320]; } Cv;
+static Cv g_cv;
 /* resultado do Skill: needs que faltam, plano escrito, passos com checagens, done, report, fail */
 static const char *cu_skill_result(const CuSkill *k, const CuD *d, const char *args, int missing, int plan) {
-    Buf o = {0}; buf_str(&o, cu_fmt("skill %s loaded%s%s%s\n", k->name, args ? " (args: " : "", args ? args : "", args ? ")" : ""));
-    if (missing >= 0) buf_str(&o, cu_fmt("missing needs: %s (not found on this machine); the steps that use it cannot run\n", cu_part(k->needs, ',', missing)));
-    if (plan) buf_str(&o, "plan written from the skill: do step 1\n");
+    Buf o = {0}; buf_str(&o, cu_fmt("Loaded skill: %s (base directory: %s/.katana/skills/%s)\n", k->name, g_cv.s->cwd, k->name));
+    if (missing >= 0) buf_str(&o, cu_fmt("MISSING: %s. Tell the user what is missing and do only the steps that do not need it.\n", cu_miss(k, missing)));
+    buf_str(&o, cu_fmt("when: %s\n", k->when));
+    if (plan) buf_str(&o, "Plan written from the skill: do step 1.\n");
     buf_str(&o, "steps:\n");
     for (int i = 0; i < 4 && k->st[i].act; i++) {
         const char *c = k->st[i].cmd;
         const char *how = !strncmp(c, "write:", 6) ? cu_fmt("write %s", c + 6) : cu_fmt("`%s`", c);
         buf_str(&o, cu_t(d, cu_fmt("%d. %s: %s => %s\n", i + 1, k->st[i].act, how, k->st[i].check)));
     }
-    buf_str(&o, cu_t(d, cu_fmt("done: %s\nreport: %s\nfail: %s", k->done, k->report, k->fail)));
+    buf_str(&o, cu_t(d, cu_fmt("done: %s\nreport: %s\nfail: %s\n", k->done, k->report, k->fail)));
+    if (args) buf_str(&o, cu_fmt("\n\n## Arguments\n%s", args));
     return cu_keep(o.p);
 }
 static const char *cu_refusal(const char *text, const char *pat) {
-    return cu_fmt("refused: the project instructions forbid this (never: %s `%s`). Do not retry it; choose another way or tell the user.", text, pat);
+    return cu_fmt("error: refused by the project rule (never): %s `%s`. Do something else; do not retry this.", text, pat);
 }
 static const char *cu_done_note(const char *cmd) {
-    return cu_fmt("[katana note: files changed in this request and `%s` (the project's done check) has not run since the last change. Run it before you finish.]", cmd);
+    return cu_fmt("[katana: this request changed files, and the project file says to verify with `%s`, which has not run in this request. Run it before you finish, or say why you cannot.]", cmd);
 }
 
 /* ======================= conversa ======================= */
-typedef struct { Buf b; int nid, nmsg; const char *fam; const Scn *s; int tcalls; char tfirst[96]; int tskill; } Cv;
-static Cv g_cv;
 static void cu_turn_check(void) {
     if (g_cv.tcalls >= 3 && strcmp(g_cv.tfirst, "TodoWrite") && strcmp(g_cv.tfirst, "Skill"))
         cu_die("familia %s: pedido com %d acoes sem plano (primeira %s)", g_cv.fam, g_cv.tcalls, g_cv.tfirst);
@@ -985,6 +1001,14 @@ static void cv_call(const char *say, const char *name, const char *args, int tra
     if (!g_cv.tcalls) snprintf(g_cv.tfirst, sizeof g_cv.tfirst, "%s", name);
     g_cv.tcalls++;
     g_cv.nid++;
+    if (g_cv.pdone && strcmp(name, "TodoWrite")) {       /* o progresso do plano vai junto com a proxima acao, na mesma fala */
+        const int d = g_cv.pdone, mid = g_cv.nid++;
+        g_cv.pdone = 0;
+        cv_msg(cu_fmt("{\"role\": \"assistant\", \"content\": %s, \"tool_calls\": [{\"id\": \"call_%d\", \"type\": \"function\", \"function\": {\"name\": \"TodoWrite\", \"arguments\": {\"done\": %d}}}, "
+                      "{\"id\": \"call_%d\", \"type\": \"function\", \"function\": {\"name\": %s, \"arguments\": %s}}]%s}",
+                      cu_q(say ? say : ""), mid, d, g_cv.nid, cu_q(name), args, train ? "" : ", \"train\": false"));
+        cv_msg(cu_fmt("{\"role\": \"tool\", \"tool_call_id\": \"call_%d\", \"name\": \"TodoWrite\", \"content\": %s}", mid, cu_q(cu_fmt("Step %d of %d: %s.", d + 1, g_cv.pn, g_cv.pstep))));
+    } else
     cv_msg(cu_fmt("{\"role\": \"assistant\", \"content\": %s, \"tool_calls\": [{\"id\": \"call_%d\", \"type\": \"function\", \"function\": {\"name\": %s, \"arguments\": %s}}]%s}",
                   cu_q(say ? say : ""), g_cv.nid, cu_q(name), args, train ? "" : ", \"train\": false"));
     g_cv.b.n += 0;
@@ -995,7 +1019,7 @@ static void cv_call(const char *say, const char *name, const char *args, int tra
     g_cv.nmsg += 0;
 }
 static void cv_res(const char *content) { buf_str(&g_cv.b, cu_q(content)); buf_str(&g_cv.b, "}"); }
-static void cv_say(const char *t, int train) { cv_msg(cu_fmt("{\"role\": \"assistant\", \"content\": %s%s}", cu_q(t), train ? "" : ", \"train\": false")); }
+static void cv_say(const char *t, int train) { g_cv.pdone = 0; cv_msg(cu_fmt("{\"role\": \"assistant\", \"content\": %s%s}", cu_q(t), train ? "" : ", \"train\": false")); }
 static void cv_end(FILE *f) {
     cu_turn_check();
     buf_str(&g_cv.b, cu_fmt("], \"source\": \"curriculum\", \"family\": %s}\n", cu_q(g_cv.fam)));
@@ -1035,18 +1059,15 @@ static void cu_edit(const Scn *s, const char *rel, const char *old, const char *
     cv_res(cu_fmt("The file %s has been updated (1 replacement, first at line %d).\n%s", cu_abs(s, rel), line, cu_numbered(after)));
 }
 /* plano: itens; cur = indice do que esta em andamento (-1 nenhum; n = todos feitos) */
+/* o plano e escrito uma vez, em linhas. Depois o progresso e so done=N, mandado na mesma fala da proxima acao (sem rodada
+   propria); o ultimo passo quem fecha e o motor quando o modelo responde (ct_todo_autofinish) */
 static void cu_todo(const char *const *items, int n, int cur) {
-    Buf o = {0}; buf_str(&o, "{\"todos\": [");
-    int c = 0, ip = 0, pe = 0;
-    for (int i = 0; i < n; i++) {
-        const char *st = i < cur ? "completed" : i == cur ? "in_progress" : "pending";
-        c += i < cur; ip += i == cur; pe += i > cur;
-        buf_str(&o, cu_fmt("%s{\"content\": %s, \"status\": \"%s\", \"activeForm\": %s}", i ? ", " : "", cu_q(items[i]), st, cu_q(cu_fmt("%s (%s)", items[i], L("in progress", "em andamento")))));
-    }
-    buf_str(&o, "]}");
-    cv_call(NULL, "TodoWrite", cu_keep(o.p), 1);
-    if (cur < n) cv_res(cu_fmt("Todos updated: %d tasks (%d completed, %d in progress, %d pending). Now step %d of %d: %s. Do it, then mark it completed.", n, c, ip, pe, cur + 1, n, items[cur]));
-    else cv_res(cu_fmt("Todos updated: %d tasks (%d completed, 0 in progress, 0 pending).", n, n));
+    if (cur >= n) { g_cv.pdone = 0; return; }
+    if (cur > 0) { g_cv.pdone = cur; g_cv.pn = n; snprintf(g_cv.pstep, sizeof g_cv.pstep, "%s", items[cur]); return; }
+    Buf o = {0}; buf_str(&o, "");
+    for (int i = 0; i < n; i++) buf_str(&o, cu_fmt("%s%s %s", i ? "\n" : "", i ? "[ ]" : "[>]", items[i]));
+    cv_call(NULL, "TodoWrite", cu_fmt("{\"todos\": %s}", cu_q(cu_keep(o.p))), 1);
+    cv_res(cu_fmt("Todos updated: %d tasks (0 completed, 1 in progress, %d pending). Now step 1 of %d: %s. Do it, then mark it completed.", n, n - 1, n, items[0]));
 }
 
 /* ======================= pedidos ======================= */
@@ -1234,7 +1255,7 @@ static void fam_brief_done(FILE *f, Scn *s) {
         cu_edit(s, rel, stub, good, cu_t(&d, cu_fmt("%s", code_good)));
         if (reminder) {
             cv_say(cu_t(&d, L("Implemented {fn} in {rel}.", "Implementei o {fn} em {rel}.")), 0);
-            cv_user(cu_done_note(s->done));
+            cv_user(cu_done_note(cu_cmd(s, "test")));
         }
         cu_bash(NULL, s->done, L("Run the done check", "Roda a verificacao do done"), cu_t(&d, s->st->otest), 1);
     }
@@ -1332,7 +1353,7 @@ static void cu_skill_run(FILE *f, Scn *s, const CuSkill *k, CuD *d, const char *
     if (mode == 2) { for (int i = 0; i < ns; i++) if (*k->st[i].bad) { failat = i; break; } }
     cv_user(cu_t(d, g_cu_lang ? k->req_pt : k->req_en));
     cv_call(NULL, "Skill", args ? cu_fmt("{\"skill\": %s, \"args\": %s}", cu_q(k->name), cu_q(args)) : cu_fmt("{\"skill\": %s}", cu_q(k->name)), 1);
-    cv_res(cu_skill_result(k, d, args, missing, 1));
+    cv_res(cu_skill_result(k, d, args, missing, missing < 0));
     int skipped = 0;
     for (int i = 0; i < ns; i++) {
         if (missing >= 0 && k->st[i].need == missing) { skipped++; continue; }
@@ -1674,12 +1695,83 @@ static void fam_mixed(FILE *f, Scn *s) {
     }
 }
 
+/* ---- criar: KATANA.md, skill e ligacao de servidor MCP, nos formatos do katana, conferidos com o proprio comando ---- */
+static void fam_brief_write(FILE *f, Scn *s) {
+    CuD d = {0}; cu_base_dict(s, &d); cu_feat(&d);
+    s->brief = 0;
+    const char *nv = g_cu_never[cu_ix(CU_N(g_cu_never))][0];
+    const char *pat = NULL; for (int i = 0; i < CU_N(g_cu_never); i++) if (g_cu_never[i][0] == nv) pat = g_cu_never[i][1];
+    const char *readme = cu_t(&d, cu_fmt("# {name}\n\n%s\n\n## Development\n\n- build: `%s`\n- test: `%s`\n- lint: `%s`\n", s->what, s->st->gbuild, s->st->gtest, s->st->glint));
+    cv_start("brief-write", s);
+    cv_user(cu_fmt(CU_PA(g_cu_lang ? ((const char *const[]){"cria o KATANA.md desse projeto. e proibe isso: %s (`%s`)", "escreve o katana.md daqui pra mim, com a regra de nunca: %s (`%s`)"})
+                                   : ((const char *const[]){"write the KATANA.md for this project. forbid this: %s (`%s`)", "create a katana.md here, never allow: %s (`%s`)"})), nv, pat));
+    const char *it[] = {L("Read how the project is built and tested", "Ler como o projeto compila e testa"), L("Write KATANA.md", "Escrever o KATANA.md"), L("Check the file", "Conferir o arquivo")};
+    cu_todo(it, 3, 0);
+    cu_read(s, "README.md", readme);
+    cu_todo(it, 3, 1);
+    cu_write(s, NULL, "KATANA.md", cu_t(&d, cu_fmt("# %s: %s\nbuild: %s\ntest: %s\nlint: %s\nnever:\n  - %s `%s`\ndone: %s\n", s->name, s->what, s->st->gbuild, s->st->gtest, s->st->glint, nv, pat, s->st->gtest)));
+    cu_todo(it, 3, 2);
+    cu_bash(NULL, "katana brief check KATANA.md", L("Check the project file format", "Confere o formato do arquivo"), "KATANA.md: 0 error(s)", 1);
+    cu_todo(it, 3, 3);
+    cv_say(cu_t(&d, cu_fmt(L("KATANA.md written: build, test and lint from the README, plus the rule against `%s`. The check found no errors.", "KATANA.md escrito: build, test e lint do README, mais a regra contra `%s`. A conferencia nao achou erros."), pat)), 1);
+    cv_end(f);
+}
+static void fam_skill_write(FILE *f, Scn *s) {
+    CuD d = {0}; cu_base_dict(s, &d); cu_feat(&d);
+    if (!cu_get(&d, "test")) cu_set(&d, "test", s->st->gtest);
+    cu_set(&d, "otest", cu_t(&d, s->st->otest));
+    const CuSkill *k = &g_cu_skills[cu_ix(CU_N(g_cu_skills))];
+    cu_skill_pick(s, NULL, cu_n(4));
+    for (int i = 0; i < s->nsk; i++) if (s->sk[i] == k) s->nsk = i;
+    if (*k->args) for (int i = 0, n = cu_count(k->args, ','); i < n; i++) { char *a = cu_part(k->args, ',', i); while (*a == ' ') a++; cu_set(&d, a, cu_fmt("$%s", a)); }
+    Buf st = {0}, ask = {0}; buf_str(&st, ""); buf_str(&ask, "");
+    for (int i = 0; i < cu_nsteps(k); i++) {
+        const char *c = k->st[i].cmd; const int w = !strncmp(c, "write:", 6);
+        const char *act = cu_t(&d, w ? cu_fmt("%s: write %s", k->st[i].act, c + 6) : cu_fmt("%s: `%s`", k->st[i].act, c));
+        buf_str(&st, cu_fmt("%d. %s => %s\n", i + 1, act, cu_t(&d, k->st[i].check)));
+        buf_str(&ask, cu_fmt("%s%s (%s)", i ? "; " : "", act, cu_t(&d, k->st[i].check)));
+    }
+    cv_start("skill-write", s);
+    cv_user(cu_fmt(L("create a skill called %s, for when %s. needs: %s. inputs: %s. steps: %s. done when %s. report %s. if a check fails: %s", "cria uma skill %s, para quando: %s. precisa de: %s. entradas: %s. passos: %s. pronto quando: %s. relate: %s. se falhar: %s"),
+                   k->name, k->when, k->needs, *k->args ? k->args : "-", ask.p, cu_t(&d, k->done), cu_t(&d, k->report), cu_t(&d, k->fail)));
+    cu_write(s, NULL, cu_fmt(".katana/skills/%s/SKILL.md", k->name), cu_fmt("---\nname: %s\nwhen: %s\nneeds: %s\nargs: %s\n---\nsteps:\n%sdone: %s\nreport: %s\nfail: %s\n",
+             k->name, k->when, k->needs, k->args, st.p, cu_t(&d, k->done), cu_t(&d, k->report), cu_t(&d, k->fail)));
+    cu_bash(NULL, cu_fmt("katana skill check %s", k->name), L("Check the skill format", "Confere o formato da skill"), "1 skill(s) checked, 0 error(s)", 1);
+    cv_say(cu_fmt(L("Skill %s created and checked: %d steps, each with its check. Use it with /%s.", "Skill %s criada e conferida: %d passos, cada um com a verificacao. Use com /%s."), k->name, cu_nsteps(k), k->name), 1);
+    free(st.p); free(ask.p);
+    cv_end(f);
+}
+static void fam_mcp_add(FILE *f, Scn *s) {
+    const CuMs *m = cu_ms_pick();
+    s->nms = 0; if (cu_pct(50)) s->brief = 0;
+    const char *cmd = cu_fmt("python3 tools/%s_server.py", m->name), *avoid = m->avoid && *m->avoid ? m->avoid : "";
+    const char *it[] = {L("Connect the server", "Ligar o servidor"), L("Fill in its usage file", "Preencher o arquivo de uso"), L("Check the card", "Conferir o cartao")};
+    const char *use = cu_fmt(".katana/mcp/%s.md", m->name);
+    cv_start("mcp-add", s);
+    cv_user(cu_fmt(L("connect the MCP server %s to this project, it starts with `%s`. it is the %s%s%s", "liga o servidor MCP %s nesse projeto, ele inicia com `%s`. ele e: %s%s%s"), m->name, cmd, m->purpose, *avoid ? L(". avoid: ", ". evitar: ") : "", avoid));
+    cu_todo(it, 3, 0);
+    cu_bash(NULL, cu_fmt("katana mcp add %s --project -- %s", m->name, cmd), L("Add the server to the project", "Acrescenta o servidor ao projeto"),
+            cu_fmt("added server '%s' in %s/.katana/mcp.json\ncreated the usage file %s/%s with empty keys (what, first, order, avoid: one line each); the model sees them in the server's card\ncheck it: katana mcp test %s", m->name, s->cwd, s->cwd, use, m->name), 1);
+    cu_todo(it, 3, 1);
+    cu_read(s, use, "what: \nfirst: \norder: \navoid: \n");
+    cu_write(s, NULL, use, cu_fmt("what: %s\nfirst: \norder: \navoid: %s\n", m->purpose, avoid));
+    cu_todo(it, 3, 2);
+    CuMs shown = *m; shown.first = shown.list = -1; shown.order = NULL;
+    Buf card = {0}; buf_str(&card, ""); cu_card_render(&shown, &card);
+    cu_bash(NULL, cu_fmt("katana mcp card %s", m->name), L("Show the card the model sees", "Mostra o cartao que o modelo ve"), card.p, 1);
+    cu_todo(it, 3, 3);
+    cv_say(cu_fmt(L("Server %s connected to this project; its usage file is filled in and the card shows its tools.", "Servidor %s ligado a este projeto; o arquivo de uso esta preenchido e o cartao mostra as ferramentas."), m->name), 1);
+    free(card.p);
+    cv_end(f);
+}
+
 typedef void (*CuFam)(FILE *, Scn *);
 static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"brief-command", fam_brief_command}, {"brief-rule", fam_brief_rule}, {"brief-never-ask", fam_brief_never_ask}, {"brief-done", fam_brief_done},
     {"brief-docs", fam_brief_docs}, {"brief-absent", fam_brief_absent}, {"skill-match", fam_skill_match}, {"skill-none", fam_skill_none},
     {"skill-missing-need", fam_skill_missing}, {"skill-fail", fam_skill_fail}, {"mcp-call", fam_mcp_call}, {"mcp-chain", fam_mcp_chain},
-    {"mcp-schema", fam_mcp_schema}, {"mcp-none-error", fam_mcp_none_error}, {"mixed", fam_mixed}};
+    {"mcp-schema", fam_mcp_schema}, {"mcp-none-error", fam_mcp_none_error}, {"mixed", fam_mixed},
+    {"brief-write", fam_brief_write}, {"skill-write", fam_skill_write}, {"mcp-add", fam_mcp_add}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -1753,7 +1845,7 @@ static int curriculum_check(const char *path, int stats_only) {
         st[fi].conv++;
         const char *sys = "";
         const char *el, *e;
-        int last_asst_final = 0, turn_calls = 0; char turn_first[96] = "", pend_id[64] = "";
+        int last_asst_final = 0, turn_calls = 0; char turn_first[96] = "", pend_id[400] = "";      /* ids das chamadas da ultima fala ainda sem resultado: ";id;id;" */
         int nfirst_bash = 0, seen_write = 0, done_after = 0, first_call_idx = 0, skill_called = 0, toolsearch_sel = 0;
         const char *first_bash = NULL, *first_call = NULL, *first_read = NULL, *last_bash = NULL;
         const char *results = cu_fmt("%s", "");
@@ -1769,8 +1861,10 @@ static int curriculum_check(const char *path, int stats_only) {
             }
             if (!strcmp(role, "tool")) {
                 const char *id = cu_jstr(cu_jget(el, "tool_call_id"));
-                if (!id || strcmp(id, pend_id)) CU_BAD("resultado sem chamada correspondente");
-                pend_id[0] = 0;
+                char *hit = id ? strstr(pend_id, cu_fmt(";%s;", id)) : NULL;
+                if (!hit) CU_BAD("resultado sem chamada correspondente");
+                else memmove(hit, hit + strlen(id) + 1, strlen(hit + strlen(id) + 1) + 1);
+                if (!strcmp(pend_id, ";")) pend_id[0] = 0;
                 if (content) { buf_str(&allres, content); st[fi].ctx += (long)strlen(content); }
                 continue;
             }
@@ -1786,7 +1880,7 @@ static int curriculum_check(const char *path, int stats_only) {
                 const char *name = fnv ? cu_jstr(cu_jget(fnv, "name")) : NULL, *args = fnv ? cu_jget(fnv, "arguments") : NULL;
                 const char *id = cu_jstr(cu_jget(c1, "id"));
                 if (!name || !args || *args != '{' || !id) { CU_BAD("chamada malformada"); continue; }
-                snprintf(pend_id, sizeof pend_id, "%s", id);
+                { const size_t pl = strlen(pend_id); snprintf(pend_id + pl, sizeof pend_id - pl, "%s%s;", pl ? "" : ";", id); }
                 ncalls++;
                 const char *ae = gs_skipv(args);
                 if (train) st[fi].chars += (long)strlen(name) + (ae ? (long)(ae - args) : 0);
@@ -1816,7 +1910,7 @@ static int curriculum_check(const char *path, int stats_only) {
                 if (!strcmp(name, "Skill")) {
                     skill_called = 1;
                     const char *sn = cu_jstr(cu_jget(args, "skill"));
-                    if (!sn || !strstr(sys, cu_fmt("\n  %s: ", sn))) CU_BAD("Skill %s nao esta na lista do prompt", sn ? sn : "?");
+                    if (!sn || !strstr(sys, "- Skills (load one with the Skill tool): ") || !(strstr(sys, cu_fmt("): %s: ", sn)) || strstr(sys, cu_fmt("; %s: ", sn)))) CU_BAD("Skill %s nao esta na lista do prompt", sn ? sn : "?");
                 }
                 if (!strcmp(name, "ToolSearch")) { const char *qq = cu_jstr(cu_jget(args, "query")); if (qq && !strncmp(qq, "select:", 7)) toolsearch_sel = 1; }
                 if (strstr(name, "__") && train && !strcmp(fam ? fam : "", "mcp-chain")) {
@@ -1849,7 +1943,7 @@ static int curriculum_check(const char *path, int stats_only) {
         if (fam && !strcmp(fam, "brief-absent") && first_bash && cu_brief_val(sys, "test") && !strcmp(first_bash, cu_brief_val(sys, "test"))) CU_BAD("brief-absent: rodou um comando sem procurar");
         if (fam && !strcmp(fam, "skill-none") && skill_called) CU_BAD("skill-none chamou Skill");
         if (fam && (!strcmp(fam, "skill-match") || !strcmp(fam, "skill-fail") || !strcmp(fam, "skill-missing-need")) && !skill_called) CU_BAD("%s sem Skill", fam);
-        if (fam && !strcmp(fam, "skill-missing-need") && !strstr(allres.p, "missing needs:")) CU_BAD("skill-missing-need sem needs faltando");
+        if (fam && !strcmp(fam, "skill-missing-need") && !strstr(allres.p, "MISSING:")) CU_BAD("skill-missing-need sem needs faltando");
         free(allres.p);
         if (why[0]) { bad++; if (bad <= 10) fprintf(stderr, "linha %ld (%s): %s\n", nl, fam ? fam : "?", why); }
         cu_arena_free();

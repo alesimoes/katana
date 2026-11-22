@@ -344,7 +344,7 @@ static void ct_skill(const char *js, const char *end, char *out, size_t cap) {
             McpB miss = {0};
             mcp_bput(&miss, "", 0);
             if (ab->needs[0]) sk_check_needs(ab->needs, args, ab, &miss);
-            if (miss.n) { mcp_bputs(&b, "MISSING: "); mcp_bputs(&b, miss.p); mcp_bputs(&b, ". Tell the user what is missing instead of going on; do not discover it by failing.\n"); }
+            if (miss.n) { mcp_bputs(&b, "MISSING: "); mcp_bputs(&b, miss.p); mcp_bputs(&b, ". Tell the user what is missing and do only the steps that do not need it.\n"); }
             free(miss.p);
             if (ds[0]) { mcp_bputs(&b, "when: "); mcp_bputs(&b, ds); mcp_bputs(&b, "\n"); }
             const int planned = !miss.n && sk_write_plan(ab, args);

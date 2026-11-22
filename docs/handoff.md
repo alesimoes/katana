@@ -66,6 +66,21 @@ and `./katana tool <Name> '<json>'`. It is the default set since 2026-11-21 (own
 Qwen3.6 and Gemma 4); `KATANA_TOOLS=1` declares the first set again. Description, status and what is not measured: `docs/tools.md`.
 Next: codebench first set against second set, alternating.
 
+Evening of 2026-11-21, review of the convention examples before any training (`katana curriculum`): the three formats
+were right, the way of working was expensive. Measured on 1,800 generated conversations: every plan was written as the
+JSON array with `activeForm` (not the line form), plan calls were 29% of all calls and 48% of the trained characters,
+and each model turn made one call. Changed: (1) engine, `TodoWrite` takes `done=N` alone (the plan is written once, in
+lines; progress is one number; result `Step K of N: text.`), and when a request ends with only the last step open the
+engine closes it (`ct_todo_autofinish`), so no round is spent on it; (2) the examples write the plan once in lines and
+send `done=N` in the same turn as the next action; (3) the generator's system blocks, skill result, refusal and
+end-of-request note now use the engine's own wording and order (they had been written from the spec and differed);
+(4) three families for creating things, each checked with katana's own command: `brief-write` (`katana brief check`),
+`skill-write` (`katana skill check`), `mcp-add` (`katana mcp add --project`, usage file, `katana mcp card`). After the
+change, same 1,800 conversations: plan 6% of the trained characters, 1.13 calls per turn, trained characters 1.10M ->
+0.59M; `curriculum check` 0 problems; imports for Gemma 4 (1,536 of 1,800 conversations fit one 1,024-token window
+with `--system blocks`). Not measured with a model. Owner's scope for training, same evening: only katana's tools and
+conventions (this generator); no recorded sessions of other assistants, no teacher answers, no project facts.
+
 Found in the owner's real use on 2026-11-21 (`~/.katana/agente.log`): the models that write calls in XML send every
 value as text, so an array argument arrived as a string with the JSON inside and the tool refused it: in the owner's
 session `AskUserQuestion` failed 14 times out of 14 and the model repeated the same call for four minutes. `TodoWrite`

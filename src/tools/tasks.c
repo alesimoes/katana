@@ -61,8 +61,9 @@ static const char CT_TODOWRITE_PROPS[] =
     "\"content\": {\"type\": \"string\", \"description\": \"What to do, in the imperative (Run the tests)\"}, "
     "\"status\": {\"type\": \"string\", \"enum\": [\"pending\", \"in_progress\", \"completed\"]}, "
     "\"activeForm\": {\"type\": \"string\", \"description\": \"The same task while it runs (Running the tests)\"}}, "
-    "\"required\": [\"content\", \"status\", \"activeForm\"]}}";
-static const char CT_TODOWRITE_REQ[] = "\"todos\"";
+    "\"required\": [\"content\", \"status\", \"activeForm\"]}}, "
+    "\"done\": {\"type\": \"integer\", \"description\": \"Without todos: how many steps of the current list are finished; the next one becomes the step in progress\"}";
+static const char CT_TODOWRITE_REQ[] = "";
 /* plano em linhas de texto: um passo por linha; [x] feito, [>] ou [~] em andamento, [ ] ou nada pendente
    (aceita "- ", "* ", "1. " na frente). Mais barato que o array JSON (docs/call-formats.md). Devolve quantos passos. */
 static int ct_todo_lines(const char *txt, CtTask *nt, char *out, size_t cap) {
@@ -95,8 +96,31 @@ static int ct_todo_lines(const char *txt, CtTask *nt, char *out, size_t cap) {
     return n;
 }
 static void ct_todo_commit(CtTask *nt, int n, char *out, size_t cap);
+/* o pedido terminou com so o ultimo passo em aberto: o motor o fecha, sem gastar uma rodada do modelo com isso */
+static int ct_todo_autofinish(void) {
+    int open = 0, last = -1;
+    for (int i = 0; i < g_ct_ntasks; i++) if (g_ct_tasks[i].st != 2) { open++; last = i; }
+    if (open != 1 || last != g_ct_ntasks - 1) return 0;
+    g_ct_tasks[last].st = 2;
+    ct_task_render();
+    return 1;
+}
 static void ct_todowrite(const char *js, const char *end, char *out, size_t cap) {
     const char *a, *b;
+    if (!ct_find(js, end, "todos", &a, &b) && ct_find(js, end, "done", &a, &b)) {
+        /* progresso barato: o plano e escrito uma vez; depois basta dizer quantos passos acabaram (docs/design/10-agent-loop.md) */
+        ct_task_sync();
+        const int n = g_ct_ntasks;
+        long d = (long)ct_int(js, end, "done", 0);
+        if (!n) { snprintf(out, cap, "error: there is no task list yet; send todos (one step per line) first"); return; }
+        if (d < 0) d = 0;
+        if (d > n) d = n;
+        for (int i = 0; i < n; i++) g_ct_tasks[i].st = i < d ? 2 : i == d ? 1 : 0;
+        ct_task_render();
+        if (d < n) snprintf(out, cap, "Step %ld of %d: %.300s.", d + 1, n, g_ct_tasks[d].subject);
+        else snprintf(out, cap, "All %d steps are completed: tell the user what was done.", n);
+        return;
+    }
     if (ct_find(js, end, "todos", &a, &b) && *a == '"') {          /* plano em linhas */
         char *txt = ct_str(js, end, "todos");
         ct_task_sync();
