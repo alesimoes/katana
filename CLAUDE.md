@@ -21,11 +21,11 @@ Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c
 - O agente do katana grava arquivos, executa comandos e chama ferramentas MCP sem pedir confirmação
   (decisão do dono); cada ação aparece no terminal e fica num log. `KATANA_CONFIRM=1` volta a pedir.
 
-## Medição
+## Modelo de trabalho
 
-- Só comparar velocidade com medidas alternadas na mesma hora (`compare.sh`, ou dois binários lado
-  a lado). A máquina deriva muito ao longo do tempo.
-- Dizer o que foi medido e o que é estimativa. Hipótese de gargalo se confirma medindo as partes.
+- Sem testes nem medidas nesta fase (decisão do dono, 2026-11-22): a regra antiga de só comparar velocidade com medidas
+  alternadas foi retirada. O foco é melhorar o motor. Compilar continua obrigatório; ao relatar, dizer o que foi feito e
+  que nada foi medido, sem apresentar estimativa como resultado.
 - Modelo de trabalho: Qwen3.6-35B-A3B, e so ele (decisao do dono, 2026-11-22). Testes, medidas, treino, provas e
   `selftest` sao feitos nele; nada e testado no Gemma 4, nem regressao. O Qwen3.8-Flash-Next esta em construcao.
   Os modelos de 2024 e 2025 (qwen2.5, OLMoE, Qwen3-30B etc.) foram apagados de `models/` por decisão do dono (2026-11-20).

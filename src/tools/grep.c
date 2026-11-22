@@ -397,6 +397,19 @@ static void ct_find_name(const char *dir, const char *name, int depth, int *foun
 }
 
 static int ct_has_meta(const char *p) { return strpbrk(p, ".*+?()[]{}|^$\\") != NULL; }
+/* o padrao parece uma frase que descreve o que se procura (varias palavras, sem metacaracteres): nao e texto que aparece nos arquivos */
+static int ct_grep_prose(const char *p) {
+    int words = 0, letters = 0; size_t n = strlen(p);
+    if (n < 12 || ct_has_meta(p)) return 0;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)p[i];
+        if (c == ' ') { if (i && p[i - 1] != ' ') words++; }
+        else if (isalpha(c) || c >= 0x80) letters++;
+        else if (c != '-' && c != '_' && c != '\'' && c != '"' && !isdigit(c)) return 0;
+    }
+    if (n && p[n - 1] != ' ') words++;
+    return words >= 3 && letters * 10 >= (int)n * 7;
+}
 
 /* gancho de teste do motor (KATANA_REGEX_TEST=1): casa pattern contra subject e mostra os trechos */
 static void ct_regex_test(const char *js, const char *end, const char *pat, char *out, size_t cap) {
@@ -591,7 +604,8 @@ static void ct_grep(const char *js, const char *end, char *out, size_t cap) {
                 goto done;
             }
         }
-        snprintf(out, cap, "%s%sNo matches found", note, note[0] ? "\n" : "");
+        snprintf(out, cap, "%s%sNo matches found%s", note, note[0] ? "\n" : "",
+                 ct_grep_prose(pat) && !aslit ? ". This looks like a description of what you want, not text that appears in the files. To search by meaning use Find with query=\"your description\"; for exact text pass a word or a pattern." : "");
         goto done;
     }
     ct_grep_format(&g, note, out, cap);
