@@ -1364,6 +1364,7 @@ static void fam_brief_rule(FILE *f, Scn *s) {
     cv_user(cu_t(&d, CU_PA(((const char *const[]){L("add something to {desc}", "cria algo pra {desc}"), L("I need a function to {desc}", "preciso de uma funcao pra {desc}"),
                                                     L("write a helper that can {desc}", "escreve um helper que consiga {desc}")}))));
     if (kind == CU_R_TESTNEXT) {
+        if (!strstr(s->st->testcode, ">= 0")) cu_die("teste ao lado: o teste desta pilha nao passaria com o esboco");
         const char *trel = cu_fmt("%s%s", dir, cu_t(&d, s->st->testname));
         const char *items[] = {L("Write the module", "Escrever o modulo"), L("Write its test next to it", "Escrever o teste ao lado"), L("Run the tests", "Rodar os testes")};
         cu_todo(items, 3, 0);
@@ -1374,8 +1375,9 @@ static void fam_brief_rule(FILE *f, Scn *s) {
         cu_bash(NULL, cu_cmd(s, "test"), L("Run the tests", "Roda os testes"), cu_t(&d, s->st->otest), 1);
         cu_todo(items, 3, 3);
         cu_set(&d, "trel", trel);
-        cv_say(cu_t(&d, L("Wrote {rel} with its test {trel} beside it (project rule) and the suite passes. The function body is still a stub returning 0 where you need the real logic.",
-                          "Escrevi {rel} com o teste {trel} do lado (regra do projeto) e a suite passa. O corpo da funcao ainda e um esboco que devolve 0 onde vai a logica real.")), 1);
+        cv_say(cu_t(&d, strstr(code, "return 0") ? L("Wrote {rel} with its test {trel} beside it (project rule) and the suite passes. The function body is still a stub returning 0 where you need the real logic.",
+                          "Escrevi {rel} com o teste {trel} do lado (regra do projeto) e a suite passa. O corpo da funcao ainda e um esboco que devolve 0 onde vai a logica real.")
+                        : L("Wrote {rel} with its test {trel} beside it (project rule) and the suite passes.", "Escrevi {rel} com o teste {trel} do lado (regra do projeto) e a suite passa.")), 1);
     } else {
         cu_write(s, cu_say_maybe("Creating the module where the project keeps new code.", "Criando o modulo onde o projeto guarda codigo novo."), rel, code);
         cu_verify(s, &d);
@@ -1406,7 +1408,7 @@ static void fam_brief_never_ask(FILE *f, Scn *s) {
         }
         if (*nv[4]) {
             const char *alt = cu_t(&d, nv[4]);
-            const char *o = *g_cu_never_out[k] ? cu_t(&d, g_cu_never_out[k]) : cu_out(s, &d, !strcmp(nv[4], "{build}") ? "build" : "test", 0);
+            const char *o = *g_cu_never_out[k] ? cu_t(&d, g_cu_never_out[k]) : !strcmp(nv[4], "{build}") ? cu_out(s, &d, "build", 0) : !strcmp(nv[4], "{test}") ? cu_out(s, &d, "test", 0) : "";
             cu_bash(refused ? L("That is forbidden here; doing the allowed part instead.", "Isso e proibido aqui; fazendo a parte permitida.") : NULL, alt, L("Allowed alternative", "Alternativa permitida"), o, 1);
         }
         cv_say(cu_t(&d, nv[5 + g_cu_lang]), 1);
@@ -1434,7 +1436,9 @@ static void fam_brief_done(FILE *f, Scn *s) {
     const char *code_bad = cu_t(&d, cu_fmt("%s", s->st->code)); /* depois da primeira troca */
     { const char *p = strstr(code, stub); Buf b = {0}; buf_add(&b, code, (size_t)(p - code)); buf_str(&b, bad); buf_str(&b, p + strlen(stub)); code_bad = cu_keep(b.p); }
     const char *code_good; { const char *p = strstr(code_bad, bad); Buf b = {0}; buf_add(&b, code_bad, (size_t)(p - code_bad)); buf_str(&b, good); buf_str(&b, p + strlen(bad)); code_good = cu_keep(b.p); }
-    const int fails = cu_pct(45), reminder = !fails && cu_pct(35);
+    const int dlint = cu_cmd(s, "lint") && !strcmp(s->done, cu_cmd(s, "lint"));
+    const char *dout = dlint ? cu_out(s, &d, "lint", 0) : cu_t(&d, s->st->otest);
+    const int fails = !dlint && cu_pct(45), reminder = !fails && cu_pct(35);
     cu_set(&d, "rel", rel); cu_set(&d, "done", s->done);
     cv_start("brief-done", s, &d);
     cv_user(cu_t(&d, CU_PA(((const char *const[]){L("implement {fn} in {rel}, it should {desc}", "implementa o {fn} em {rel}, tem que {desc}"),
@@ -1448,7 +1452,7 @@ static void fam_brief_done(FILE *f, Scn *s) {
         cu_todo(items, 3, 2);
         cu_bash(NULL, s->done, L("Run the done check", "Roda a verificacao do done"), cu_t(&d, s->st->ofail), 1);
         cu_edit(s, rel, bad, good);
-        cu_bash(L("Fixed; running the check again.", "Corrigido; rodando a verificacao de novo."), s->done, L("Run the done check", "Roda a verificacao do done"), cu_t(&d, s->st->otest), 1);
+        cu_bash(L("Fixed; running the check again.", "Corrigido; rodando a verificacao de novo."), s->done, L("Run the done check", "Roda a verificacao do done"), dout, 1);
     } else {
         cu_edit(s, rel, stub, good);
         if (reminder) {
@@ -1456,7 +1460,7 @@ static void fam_brief_done(FILE *f, Scn *s) {
             cv_engine_user(g_cu_note);
         }
         cu_todo(items, 3, 2);
-        cu_bash(NULL, s->done, L("Run the done check", "Roda a verificacao do done"), cu_t(&d, s->st->otest), 1);
+        cu_bash(NULL, s->done, L("Run the done check", "Roda a verificacao do done"), dout, 1);
     }
     cu_todo(items, 3, 3);
     cv_say(cu_t(&d, fails ? L("{fn} is implemented in {rel}; the first version failed `{done}`, fixed it and the check now passes.", "{fn} implementado em {rel}; a primeira versao falhou no `{done}`, corrigi e agora passa.")
@@ -2486,7 +2490,13 @@ static int curriculum_main(int argc, char **argv) {
         else { fprintf(stderr, "curriculum: opcao desconhecida %s\n", argv[i]); return 1; }
     }
     int w[CU_NFAM]; int wsum = 0;
-    for (int i = 0; i < CU_NFAM; i++) w[i] = fams ? 0 : 1;
+    /* pesos padrao: as familias de criar (longas, um so caminho) pesam menos; o ciclo ler-editar-verificar-corrigir (brief-done)
+       e o uso de servidores MCP pesam mais. Medido com pesos iguais: criar ocupava 35% do texto treinado e mcp-call 2% */
+    for (int i = 0; i < CU_NFAM; i++) {
+        const char *nm = g_cu_fams[i].name;
+        w[i] = fams ? 0 : !strcmp(nm, "brief-write") || !strcmp(nm, "skill-write") || !strcmp(nm, "mcp-add") ? 1
+                        : !strcmp(nm, "brief-done") ? 6 : !strncmp(nm, "mcp-", 4) || !strcmp(nm, "mixed") ? 4 : 3;
+    }
     if (fams) {
         const int k = cu_count(fams, ',');
         for (int i = 0; i < k; i++) {

@@ -156,7 +156,16 @@ answers with open plan steps, 180 `TodoWrite` results the engine would not give,
 verification, 122 invented MCP arguments, 87 `Write`/`Edit` results the engine would not give, 44 double questions, 17
 requests without a plan.
 
-## Measured on a generated file (seed 7, 2,000 conversations)
+## Family weights
+
+Without `--families` the weights are: `brief-done` 6 (the only family with the read, edit, verify, fix cycle), the `mcp-*`
+families and `mixed` 4, the create families (`brief-write`, `skill-write`, `mcp-add`) 1, the others 3. With equal weights the
+create families took 35% of the trained text and `mcp-call` 2% (measured).
+
+## Measured on a file generated before the 2026-11-22 change (seed 7, 2,000 conversations)
+
+The numbers of this section are from the older generator and equal weights. Newer numbers are in the audit report of
+2026-11-22 (old against new, Qwen3.6 tokenizer).
 
 `katana curriculum stats` reports this table. The windows columns are an **estimate**, characters / 3.3 / 512. They
 count only the text that goes into the loss: assistant text plus call names and arguments.
