@@ -18,8 +18,9 @@
 /* opcoes de velocidade (KATANA_Q4_OPT; mascaras alternadas pelo q4bench). Todas dao o mesmo resultado dentro do arredondamento:
    1 lotes grandes no prompt (KATANA_Q4_BATCH, padrao 256), 2 produtos em lote com a linha aberta uma vez tambem em Q4_K/Q5_K/Q6_K
    e BF16 em AVX-512, 4 DeltaNet por cabeca e por canal (todos os tokens do lote de uma vez), 8 trabalho serial por token repartido
-   entre as threads, 16 especialistas em blocos com saida local, 32 leitura antecipada dos especialistas ainda nao tocados */
-enum { QO_BATCH = 1, QO_KERN = 2, QO_DN = 4, QO_PAR = 8, QO_EXP = 16, QO_AHEAD = 32, QO_ONE = 1 << 20 /* q4bench: prompt token a token */ };
+   entre as threads, 16 especialistas em blocos com saida local, 32 leitura antecipada dos especialistas ainda nao tocados,
+   64 Q2_0 e IQ4_NL em 8 bits (VBMI) */
+enum { QO_BATCH = 1, QO_KERN = 2, QO_DN = 4, QO_PAR = 8, QO_EXP = 16, QO_AHEAD = 32, QO_K8 = 64, QO_ONE = 1 << 20 /* q4bench: prompt token a token */ };
 static int q4_opt = -1, q4_bsize;
 #define Q4_RMAX 16              /* ramos */
 typedef struct { Mat down, up, inj; float *norm; } Q4Hc;
@@ -310,7 +311,51 @@ static void q4_kdec(uint32_t type, const uint8_t *src, int16_t *w, float *f, flo
 /* uma linha (tipos K ou de poucos bits) contra ate Q4_TB tokens: cada bloco de 256 pesos e aberto uma vez e passa por todos os
    tokens (a ativacao do bloco, 512 bytes por token, fica na L2); 4 tokens por vez. Mesmos inteiros do lb_row/dot_row */
 #define Q4_TB 256
+/* Q2_0 e IQ4_NL em 8 bits: o peso vira byte sem sinal (codigo 0..3; valor da tabela + 128) e a ativacao de 16 bits entra como
+   alto*256 + baixo (xq.qh/ql): dois dpbusd por 64 pesos, sem abrir em 16 bits. O deslocamento sai pela soma das ativacoes (xq.bs16).
+   O inteiro de cada grupo e o mesmo do caminho de 16 bits. */
+#define Q4_VB __attribute__((target("avx2,fma,f16c,avx512f,avx512bw,avx512vl,avx512vnni,avx512vbmi")))
+static int q4_vbmi(void) {
+    static int v = -1;
+    if (v < 0) { __builtin_cpu_init(); v = cpu_vnni && lb_mode() == 3 && __builtin_cpu_supports("avx512vbmi"); }
+    return v;
+}
+Q4_VB static void q4_row8(uint32_t type, const uint8_t *row, const XQ *xqs, int n, int cols, float *out) {
+    __m512 acc[Q4_TB];
+    for (int t = 0; t < n; t++) acc[t] = _mm512_setzero_ps();
+    const int nl = type == T_IQ4_NL;
+    const __m512i sh2 = _mm512_set1_epi64(0x0E0C0A0806040200LL), m3 = _mm512_set1_epi8(3), m15 = _mm512_set1_epi8(15);
+    const __m512i rep = _mm512_set_epi16(7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0);
+    const __m512i tbl = _mm512_add_epi8(_mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i *)q_iq4nl_vals)), _mm512_set1_epi8((char)128));
+    const __m512i z = _mm512_setzero_si512();
+    for (int c = 0; c < cols; c += 64) {
+        __m512i w; __m512 f;
+        if (nl) {
+            const __m128i v0 = _mm_loadu_si128((const __m128i *)(row + 2)), v1 = _mm_loadu_si128((const __m128i *)(row + 20));
+            const __m512i x = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_set_m128i(_mm_srli_epi16(v0, 4), v0)), _mm256_set_m128i(_mm_srli_epi16(v1, 4), v1), 1);
+            w = _mm512_shuffle_epi8(tbl, _mm512_and_si512(x, m15));
+            f = _mm512_mask_mov_ps(_mm512_set1_ps(h2f(row)), 0xFF00, _mm512_set1_ps(h2f(row + 18)));
+            row += 36;
+        } else {
+            w = _mm512_and_si512(_mm512_multishift_epi64_epi8(sh2, _mm512_permutexvar_epi16(rep, _mm512_castsi128_si512(_mm_loadu_si128((const __m128i *)(row + 2))))), m3);
+            f = _mm512_set1_ps(h2f(row));
+            row += 18;
+        }
+        const int b = c >> 8, s = c >> 4;
+        for (int t = 0; t < n; t++) {
+            const XQ *x = xqs + t;
+            __m512i p = _mm512_dpbusd_epi32(z, w, _mm512_loadu_si512((const void *)(x->qh + c)));
+            p = _mm512_dpbusd_epi32(_mm512_slli_epi32(p, 8), w, _mm512_loadu_si512((const void *)(x->ql + c)));
+            const int32_t *bs = x->bs16 + s;
+            p = _mm512_sub_epi32(p, nl ? _mm512_mask_set1_epi32(_mm512_maskz_set1_epi32(1, 128 * (bs[0] + bs[1])), 0x100, 128 * (bs[2] + bs[3]))
+                                       : _mm512_maskz_set1_epi32(1, bs[0] + bs[1] + bs[2] + bs[3]));
+            acc[t] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(p), _mm512_mul_ps(f, _mm512_set1_ps(x->xs[b])), acc[t]);
+        }
+    }
+    for (int t = 0; t < n; t++) out[t] = _mm512_reduce_add_ps(acc[t]);
+}
 LB_512 static void q4_krow(const Mat *W, const uint8_t *row, const XQ *xqs, int n, int cols, float *out) {
+    if ((W->type == T_Q2_0 || (W->type == T_IQ4_NL && cols % 64 == 0)) && (q4_opt & QO_K8) && q4_vbmi()) { q4_row8(W->type, row, xqs, n, cols, out); return; }
     int16_t w[256] __attribute__((aligned(64)));
     __m512 acc[Q4_TB];
     float corr[Q4_TB], fs[8];
@@ -1346,22 +1391,22 @@ static int q4_kern_test(void) {
 #if HAVE_LOWBIT
     enum { COLS = 2560, NT = 23 };
     if (lb_mode() != 3) { printf("produtos em lote: sem AVX-512 VNNI nesta maquina\n"); return 1; }
-    const uint32_t ty[6] = { T_Q4_K, T_Q5_K, T_Q6_K, T_IQ3_S, T_Q2_0, T_BF16 };
+    const uint32_t ty[7] = { T_Q4_K, T_Q5_K, T_Q6_K, T_IQ3_S, T_Q2_0, T_IQ4_NL, T_BF16 };
     float *x = xalloc((size_t)NT * COLS, 4), *w = xalloc(COLS, 4), o[32], o2[32];
     static XQ xqs[NT];
     int ok = 1;
     srand(7);
     for (int i = 0; i < NT * COLS; i++) x[i] = (rand() / (float)RAND_MAX - 0.5f) * (i % 97 == 0 ? 60.0f : 1.0f);
     mm_prepare(xqs, x, NT, COLS);
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 7; k++) {
         const size_t sb = qbytes(ty[k], COLS);
         uint8_t *q = xalloc(2 * sb, 1);
         double worst = 0.0;
         for (int rep = 0; rep < 20; rep++) {
             for (size_t i = 0; i < 2 * sb; i++) q[i] = (uint8_t)(rand() >> 7);
             if (ty[k] == T_BF16) for (int i = 0; i < 2 * COLS; i++) { const float v = rand() / (float)RAND_MAX - 0.5f; memcpy(q + 2 * i, (const uint8_t *)&v + 2, 2); }
-            else if (ty[k] == T_Q2_0 || ty[k] == T_IQ3_S) {
-                const size_t u = ty[k] == T_Q2_0 ? 18 : 110;
+            else if (ty[k] == T_Q2_0 || ty[k] == T_IQ3_S || ty[k] == T_IQ4_NL) {
+                const size_t u = ty[k] == T_IQ3_S ? 110 : 18;
                 for (size_t o = 0; o < 2 * sb; o += u) { const uint16_t h = (uint16_t)(0x1800 + (rand() & 0x3ff)); memcpy(q + o, &h, 2); }
             } else for (int b = 0; b < 2 * COLS / 256; b++) {      /* escalas f16 finitas */
                 uint8_t *p = q + (size_t)b * sb / (COLS / 256);
