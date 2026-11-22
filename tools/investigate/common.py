@@ -3,12 +3,16 @@ import json, os, re, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KATANA = os.environ.get("KATANA_BIN", "/mnt/dados/source/katana/katana")
-REPOS = os.environ.get("INVEST_REPOS", "/tmp/katana-investigate")
+REPOS = os.environ.get("INVEST_REPOS", "/mnt/dados/investigate-repos")
 
 
-def questions():
+def questions(split=None):
+    """Todas as perguntas, ou so as de um split ('train' ou 'val'; None ou 'all' = todas)."""
     with open(os.path.join(HERE, "questions.json"), encoding="utf-8") as f:
-        return json.load(f)
+        qs = json.load(f)
+    if split and split != "all":
+        qs = [q for q in qs if q.get("split") == split]
+    return qs
 
 
 def question(qid):

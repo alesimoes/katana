@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bancada de avaliacao da investigacao de codigo: roda `katana -p` em cada pergunta de questions.json e mede.
-#   eval.sh [id ...]            sem ids, todas as perguntas
+#   eval.sh [--split train|val|all] [id ...]   sem ids, todas as perguntas do split (padrao: all); --split val mede so a validacao
 # Variaveis: TOOLS (padrao Read,Grep,Glob; com Find: TOOLS=Read,Grep,Glob,Find), TIMEOUT (segundos, padrao 900),
 #   MAXTURNS (30), EVAL_OUT (pasta dos registros; padrao ./eval-out/<data>), INVEST_REPOS (copias), KATANA (binario).
 # Uma linha por pergunta: id, chamadas, tokens de entrada somados, maior contexto, repetidas, veredito, arquivos, palavras, segundos.
@@ -13,8 +13,10 @@ MAXTURNS="${MAXTURNS:-30}"
 OUT="${EVAL_OUT:-$PWD/eval-out/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 cd "$here" || exit 1
+SPLIT=all
+if [ "$1" = "--split" ]; then SPLIT="$2"; shift 2; fi
 ids=("$@")
-[ ${#ids[@]} -eq 0 ] && mapfile -t ids < <(python3 -c "import json;print('\n'.join(q['id'] for q in json.load(open('questions.json'))))")
+[ ${#ids[@]} -eq 0 ] && mapfile -t ids < <(python3 -c "import sys;from common import questions;print('\n'.join(q['id'] for q in questions(sys.argv[1])))" "$SPLIT")
 printf 'id\tchamadas\ttokens_entrada\tmaior_ctx\trepetidas\tveredito\tarquivos\tpalavras\tsegundos\n' | tee "$OUT/summary.tsv"
 for id in "${ids[@]}"; do
   wt="$(python3 setup_repos.py "$id" | awk '{print $2}')"

@@ -3,123 +3,1446 @@
     "id": "grey-gkatana",
     "repo": "/mnt/dados/source/greymod",
     "base": "03ee8cf",
-    "worktree_hint": "/tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/grey-before",
     "question": "No projeto greymod, descubra o que faz o comando gclaude funcionar com o celular Grey e o comando gkatana nao aparecer nele. Diga o que precisa ser feito para o gkatana funcionar no Grey. Nao altere nada.",
-    "answer_files": ["bridge/sessions.mjs", "bridge/server.mjs", "grey-channel.mjs"],
+    "answer_files": [
+      "bridge/sessions.mjs",
+      "bridge/server.mjs",
+      "grey-channel.mjs"
+    ],
     "min_files": 2,
-    "keywords": ["listSessions|terminalSessionIds|reply_session|CLAUDE_CODE_SESSION_ID"],
+    "keywords": [
+      "listSessions|terminalSessionIds|reply_session|CLAUDE_CODE_SESSION_ID"
+    ],
     "min_keywords": 1,
-    "note": "listSessions so le sessoes do outro agente; terminalSessionIds/reply_session; grey-channel.mjs usa CLAUDE_CODE_SESSION_ID"
+    "note": "listSessions so le sessoes do outro agente; terminalSessionIds/reply_session; grey-channel.mjs usa CLAUDE_CODE_SESSION_ID",
+    "split": "train",
+    "worktree_hint": "/tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/grey-before"
   },
   {
     "id": "grey-vpn-loop",
     "repo": "/mnt/dados/source/greymod",
     "base": "a776ff1fec0248a4f55b8f156fc2813fb21ae48a",
     "question": "No projeto greymod, quando a VPN propria do PC deixa o celular alcancar a rede de casa, a ponte, os widgets e o adb param de funcionar: as respostas para o celular nao saem pelo tunel. Ache a causa no codigo e diga onde ela esta. Nao altere nada.",
-    "answer_files": ["bridge/vpn/lanfwd.go"],
+    "answer_files": [
+      "bridge/vpn/lanfwd.go"
+    ],
     "min_files": 1,
-    "keywords": ["handleLocal|HandleLocal", "promiscu"],
-    "note": "commit 1e1797b: pilha criada com HandleLocal=true; no modo promiscuo toda resposta volta para dentro do PC"
+    "keywords": [
+      "handleLocal|HandleLocal",
+      "promiscu"
+    ],
+    "note": "commit 1e1797b: pilha criada com HandleLocal=true; no modo promiscuo toda resposta volta para dentro do PC",
+    "split": "train"
   },
   {
     "id": "grey-anr",
     "repo": "/mnt/dados/source/greymod",
     "base": "80a78e1777341e6e5fc3180fc3ea246c3870ca1a",
     "question": "No projeto greymod, o Android as vezes mostra 'Grey nao esta respondendo' (ANR) perto dos alarmes de notificacao proativa e do resumo do dia. O que no codigo segura o sistema alem do limite de 60 s? Nao altere nada.",
-    "answer_files": ["launcher/app/src/main/java/dev/greymod/grey/proactive/Proactive.kt", "launcher/app/src/main/java/dev/greymod/grey/briefing/Briefing.kt"],
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/proactive/Proactive.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/briefing/Briefing.kt"
+    ],
     "min_files": 1,
-    "keywords": ["goAsync|finish"],
-    "note": "commit 7da69bd: receivers seguram o broadcast aberto (goAsync/pr.finish) durante trabalho de rede"
+    "keywords": [
+      "goAsync|finish"
+    ],
+    "note": "commit 7da69bd: receivers seguram o broadcast aberto (goAsync/pr.finish) durante trabalho de rede",
+    "split": "train"
   },
   {
     "id": "grey-installer-usb",
     "repo": "/mnt/dados/source/greymod",
     "base": "8a31d8b7b6df17d0437bf1820874b374b19f53ad",
     "question": "No projeto greymod, o instalador do Grey falha ou instala no aparelho errado quando o mesmo celular esta ligado por cabo USB e tambem por depuracao sem fio. Onde esta o problema e qual a causa? Nao altere nada.",
-    "answer_files": ["launcher/instalar-grey.ps1"],
+    "answer_files": [
+      "launcher/instalar-grey.ps1"
+    ],
     "min_files": 1,
-    "keywords": ["adb devices|ANDROID_SERIAL|dois|duas|mais de um|duplic"],
+    "keywords": [
+      "adb devices|ANDROID_SERIAL|dois|duas|mais de um|duplic"
+    ],
     "min_keywords": 1,
-    "note": "commit 6b34750: adb devices lista o mesmo aparelho duas vezes e o script nao escolhe"
+    "note": "commit 6b34750: adb devices lista o mesmo aparelho duas vezes e o script nao escolhe",
+    "split": "train"
   },
   {
     "id": "grey-vpn-qr",
     "repo": "/mnt/dados/source/greymod",
     "base": "996c94ab0dd5d21f4342ea6aa56d5f94e86ed189",
     "question": "No projeto greymod, na pagina de administracao da VPN, depois de criar um dispositivo o QR so aparece na hora da criacao; mais tarde nao ha como ver o QR de novo. Por que isso acontece e onde no codigo? Nao altere nada.",
-    "answer_files": ["bridge/vpn/admin.go"],
+    "answer_files": [
+      "bridge/vpn/admin.go"
+    ],
     "min_files": 1,
-    "keywords": ["minted|memoria|memory", "QR"],
-    "note": "commit 36183ee: o .conf gerado fica so em memoria (mintedConf) ate a pagina mostrar; o perfil nao e guardado em disco"
+    "keywords": [
+      "minted|memoria|memory",
+      "QR"
+    ],
+    "note": "commit 36183ee: o .conf gerado fica so em memoria (mintedConf) ate a pagina mostrar; o perfil nao e guardado em disco",
+    "split": "train"
   },
   {
     "id": "sonora-lv2-other",
     "repo": "/mnt/dados/sonora-test",
     "base": "7ce130682c7263161e06bd22a892b75231b78a43",
     "question": "No Sonora, quando abro o programa pelo script de execucao do repositorio, o navegador de inserts mostra todos os plug-ins LV2 como 'Plugin' no grupo 'Other', sem as classes (Dynamics, EQ, Reverb). Qual a causa? Nao altere nada.",
-    "answer_files": ["tools/run-sonora.sh"],
+    "answer_files": [
+      "tools/run-sonora.sh"
+    ],
     "min_files": 1,
-    "keywords": ["LV2_PATH"],
-    "note": "commit 265a90e80: LV2_PATH substitui o caminho padrao do lilv e a especificacao core fica em /usr/lib/lv2"
+    "keywords": [
+      "LV2_PATH"
+    ],
+    "note": "commit 265a90e80: LV2_PATH substitui o caminho padrao do lilv e a especificacao core fica em /usr/lib/lv2",
+    "split": "train"
   },
   {
     "id": "sonora-footer-keys",
     "repo": "/mnt/dados/sonora-test",
     "base": "46537097bb8caf5616546366f3303527d1fce705",
     "question": "No Sonora, na barra de status do rodape da janela principal, o botao Keys sai da tela quando o texto de status e comprido. Encontre onde a largura do texto e calculada e diga o que esta errado. Nao altere nada.",
-    "answer_files": ["ui/qt/qml/Main.qml"],
+    "answer_files": [
+      "ui/qt/qml/Main.qml"
+    ],
     "min_files": 1,
-    "keywords": ["versionButton", "width|largura"],
-    "note": "commit bb7cfad6c: a largura do statusText nao desconta versionButton"
+    "keywords": [
+      "versionButton",
+      "width|largura"
+    ],
+    "note": "commit bb7cfad6c: a largura do statusText nao desconta versionButton",
+    "split": "train"
   },
   {
     "id": "sonora-bounce-loop",
     "repo": "/mnt/dados/sonora-test",
     "base": "94738130f01c72863fef73feda65432033237ccf",
     "question": "No Sonora, exportar a mix (bounce offline) de uma sessao que esta com Loop Playback ligado nunca termina: o progresso congela. Ache a causa no codigo. Nao altere nada.",
-    "answer_files": ["engine/control/src/bounce_offline_loop.cpp"],
+    "answer_files": [
+      "engine/control/src/bounce_offline_loop.cpp"
+    ],
     "min_files": 1,
-    "keywords": ["loop_playback|Loop Playback"],
-    "note": "commit 5c658b756: render usa o snapshot com loop_playback ligado; o playhead volta ao inicio do loop"
+    "keywords": [
+      "loop_playback|Loop Playback"
+    ],
+    "note": "commit 5c658b756: render usa o snapshot com loop_playback ligado; o playhead volta ao inicio do loop",
+    "split": "train"
   },
   {
     "id": "sonora-host-pause",
     "repo": "/mnt/dados/sonora-test",
     "base": "41757c36ef7e96bb0dfbe3bc0bf7ed5ea1eb3e88",
     "question": "No Sonora, o host de plug-ins (processo separado) trava ou perde blocos quando o motor manda SetFile, depois GetState e outro SetFile em seguida: o segundo pedido de pausa fica sem resposta. Onde esta a sincronizacao e qual o defeito? Nao altere nada.",
-    "answer_files": ["plugins/host/src/main.cpp"],
+    "answer_files": [
+      "plugins/host/src/main.cpp"
+    ],
     "min_files": 1,
-    "keywords": ["Pause|pause", "park"],
-    "note": "commit 0c3a7927e: struct Pause so tem request/parked; segundo ask durante o park nao e visto"
+    "keywords": [
+      "Pause|pause",
+      "park"
+    ],
+    "note": "commit 0c3a7927e: struct Pause so tem request/parked; segundo ask durante o park nao e visto",
+    "split": "val"
   },
   {
     "id": "sonora-level-readout",
     "repo": "/mnt/dados/sonora-test",
     "base": "298d8c888add174d299cf4c43d06db81be7dc52f",
     "question": "No Sonora, o indicador de nivel dos plug-ins (leitura em dB ao lado dos medidores) faz o grupo e os medidores vizinhos balancarem de lado quando o nivel passa de -10 dB ou mostra 'no data'. Onde esta esse componente e por que ele muda de largura? Nao altere nada.",
-    "answer_files": ["ui/qt/qml/PluginLevelMeters.qml"],
+    "answer_files": [
+      "ui/qt/qml/PluginLevelMeters.qml"
+    ],
     "min_files": 1,
-    "keywords": ["width|largura|implicitWidth"],
-    "note": "commit 7ce130682: o Text de pluginLevelReadout nao reserva largura fixa"
+    "keywords": [
+      "width|largura|implicitWidth"
+    ],
+    "note": "commit 7ce130682: o Text de pluginLevelReadout nao reserva largura fixa",
+    "split": "val"
   },
   {
     "id": "katana-prefix-key",
     "repo": "/mnt/dados/source/katana",
     "base": "a69a7e9896398af8006ed3c94fa8dd0a15eaee35",
     "question": "No katana, depois que eu fundo uma nova especializacao na mesma base (mesmo tamanho de arquivo, mesmo numero de parametros), o agente reaproveita o cache de prefixo em disco da fusao antiga e responde com estado errado. Onde a chave desse cache e calculada e o que falta nela? Nao altere nada.",
-    "answer_files": ["src/agent/prefix_cache.c", "src/engine/model.c"],
+    "answer_files": [
+      "src/agent/prefix_cache.c",
+      "src/engine/model.c"
+    ],
     "min_files": 1,
-    "keywords": ["pfx_key", "fsize|n_params"],
-    "note": "commit 85f727d: pfx_key usa fsize e n_params; falta identidade dos pesos (fid, data do arquivo e das especializacoes)"
+    "keywords": [
+      "pfx_key",
+      "fsize|n_params"
+    ],
+    "note": "commit 85f727d: pfx_key usa fsize e n_params; falta identidade dos pesos (fid, data do arquivo e das especializacoes)",
+    "split": "train"
   },
   {
     "id": "katana-server-rewind",
     "repo": "/mnt/dados/source/katana",
     "base": "b8711c9062c36989a086add3d482cd6515ebf048",
     "question": "No katana serve, quando uma conversa volta atras (o novo prompt e mais curto ou diverge no meio do cache), o modelo Gemma 4 responde diferente do que responderia numa conversa nova. Onde o servidor decide quanto do cache reaproveitar e por que a regra atual esta errada para esse modelo? Nao altere nada.",
-    "answer_files": ["src/app/server.c", "src/app/openai.c"],
+    "answer_files": [
+      "src/app/server.c",
+      "src/app/openai.c"
+    ],
     "min_files": 1,
-    "keywords": ["common", "ssm_inner"],
-    "note": "commit a69a7e9: a regra so cobre DeltaNet (ssm_inner); o anel das camadas locais do gemma4 tambem nao pode voltar atras"
+    "keywords": [
+      "common",
+      "ssm_inner"
+    ],
+    "note": "commit a69a7e9: a regra so cobre DeltaNet (ssm_inner); o anel das camadas locais do gemma4 tambem nao pode voltar atras",
+    "split": "train"
+  },
+  {
+    "id": "grey-adb-locked",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "a8363fdf2dd5dd057be619f7ac86cd66b832a37a",
+    "question": "No projeto greymod, o Grey diz que o canal privilegiado esta 'aguardando' a depuracao, mas o aviso nunca aparece no celular e nenhum botao de radio ou de fechar app funciona direito sem abrir as telas da Samsung. Parece que algo na partida do app fica esperando para sempre. Descubra onde isso trava e o que precisa mudar. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/sys/Shell.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/GreyApp.kt"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "dadb|Dadb",
+      "WaitingApproval|retryAt|warmUp",
+      "create|shell\\("
+    ],
+    "note": "Shell.connect() chama Dadb.create/shell sem limite e a primeira conexao era feita no warmUp com o celular bloqueado: o aviso de depuracao USB so aparece desbloqueado, entao bloqueia para sempre; o fix so tenta desbloqueado, desiste em 1 min e refaz quando uma tela abre (GreyApp onActivityResumed).",
+    "split": "train",
+    "fix_commit": "4924373f9ed64c8106e897632b2bde28659bc4c8",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/sys"
+  },
+  {
+    "id": "grey-camera-black",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "2024a61015db99b9e03b823d2ceda1bf775290ce",
+    "question": "No projeto greymod, depois de um tempo o celular fica com a previa da camera preta e o agente nunca consegue tirar a foto (tirar_foto cancela) em todas as telas de camera do Grey, so voltando ao normal reiniciando o app. Descubra o que prende a camera e onde cada tela monta a camera. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/camera/CaptureActivity.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/camera/GreyCameraActivity.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/camera/LiveCameraActivity.kt"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "bindToLifecycle",
+      "ProcessCameraProvider",
+      "unbindAll"
+    ],
+    "note": "No Android 16 CameraManager.openCamera pode falhar dentro do executor do CameraX e a lente fica presa em OPENING; as telas de camera fazem bindToLifecycle e nunca checam se a camera abriu (fix: CameraGuard.watch/reset que reconstroi o ProcessCameraProvider).",
+    "split": "val",
+    "fix_commit": "7e652df4f52f0ad09526b3c5403044717da6a389",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/camera"
+  },
+  {
+    "id": "grey-video-mime",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "437c884c098bd8acd9b69f3bdc5524400500dda5",
+    "question": "No projeto greymod, gravar video pelo app de camera do Grey e pelo agente (gravar video) nunca salva nada: a gravacao para sem erro visivel e o arquivo nao existe na galeria. Descubra por que o video nao e gravado e em quais lugares isso acontece. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/camera/CaptureActivity.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/camera/GreyCameraActivity.kt"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "ContentValues",
+      "MediaStore",
+      "RELATIVE_PATH|Movies|DCIM"
+    ],
+    "note": "O ContentValues usado para criar o arquivo de video no MediaStore (CaptureActivity e GreyCameraActivity.startRecording) nao tem MIME_TYPE video/mp4 e o MediaStore recusa o insert.",
+    "split": "val",
+    "fix_commit": "d2457bf766f69978d6c7df10eb86599ce89cbd63",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/camera"
+  },
+  {
+    "id": "grey-imagegen-scheduler",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "66f7d7c05394df8c5aef103a39a8e371f34d1af9",
+    "question": "No projeto greymod, o gerador de imagens no PC falha em todo pedido, mas o instalador termina dizendo que esta tudo pronto. Descubra por que o carregamento do modelo quebra e por que o instalador nao avisa. Nao altere nada.",
+    "answer_files": [
+      "bridge/imagegen/worker.py",
+      "bridge/imagegen/instalar.ps1"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "DPMSolverMultistepScheduler|scheduler",
+      "--preload|preload",
+      "Write-Host"
+    ],
+    "note": "worker.py cria DPMSolverMultistepScheduler a partir da config do modelo (DEIS do DreamShaper), que o DPM-Solver recusa; e instalar.ps1 roda worker --preload sem checar LASTEXITCODE.",
+    "split": "val",
+    "fix_commit": "01b163c6f3f043ca26d678475662ca50b1228f09",
+    "area": "bridge/imagegen"
+  },
+  {
+    "id": "grey-alarm-ring",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "3fe943f78a065d5b4a1d2ea43c2fae1b3609e97a",
+    "question": "No projeto greymod, o alarme ou timer toca, mas com a tela de bloqueio do Grey (ou outro app) na frente nao aparece a tela para parar o alarme: so um aviso pequeno que a bandeja do Grey esconde. Descubra por que a tela de tocar nao abre nesse caso. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/clock/RingService.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/lock/LockActivity.kt"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "fullScreenIntent|FullScreenIntent|setFullScreenIntent",
+      "RingActivity",
+      "startForeground"
+    ],
+    "note": "O servico de alarme so depende do full-screen intent, que o Android so abre com a tela apagada; com a tela ligada vira heads-up escondido. Faltava abrir a RingActivity direto (RingService.showRing) e no LockActivity.",
+    "split": "val",
+    "fix_commit": "76c56733dd8c225cecfb6cae415dc907ca458e28",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/clock"
+  },
+  {
+    "id": "grey-unknown-calls",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "01b163c6f3f043ca26d678475662ca50b1228f09",
+    "question": "No projeto greymod, ligacoes de numeros desconhecidos tocam normalmente, apesar da regra do dono ser recusar, e um lugar que eu mesmo liguei ontem (uma loja) cai no mesmo filtro. Descubra onde o Grey decide o que fazer com uma chamada recebida e onde fica o padrao dessa regra. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/call/Screening.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/data/Settings.kt"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "unknownCalls|unknown_calls",
+      "isContactNumber",
+      "CallScreeningService|respondToCall"
+    ],
+    "note": "GreyCallScreening so poupa contatos e le Settings.unknownCalls, cujo padrao era 'ring'; faltava padrao 'reject' e excecao para numeros ligados nos ultimos 7 dias (CallLog), e sem permissao de contatos so silenciar.",
+    "split": "val",
+    "fix_commit": "3fe943f78a065d5b4a1d2ea43c2fae1b3609e97a",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/call"
+  },
+  {
+    "id": "grey-lock-after-update",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "bf132ec9d36dfc4e35193dff5192074fda18f7e1",
+    "question": "No projeto greymod, depois de atualizar o Grey (ou o sistema liberar memoria) com o celular bloqueado, aparece a tela de bloqueio da Samsung em vez da do Grey e ela so volta depois que eu desbloqueio. Descubra quem mostra a tela de bloqueio do Grey e por que ela nao volta sozinha. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/phone/Notifications.kt"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "showLock",
+      "isKeyguardLocked|KeyguardManager|lockScreen",
+      "onListenerConnected|NotificationListenerService"
+    ],
+    "note": "O processo reinicia com o celular bloqueado e nada reabre a LockActivity; o ponto natural e o GreyNotificationListener (que o sistema religa) conferir isKeyguardLocked e chamar showLock.",
+    "split": "train",
+    "fix_commit": "2a104f13ed06786268e9993c7c3367da41fbbe99",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/phone"
+  },
+  {
+    "id": "grey-vpn-after-update",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "b59fc3ad9436973ac59a0b54a2c75c0b45199c99",
+    "question": "No projeto greymod, depois de atualizar o app ou reiniciar o celular com a tela apagada, o Grey nao conecta mais ao PC: o servico de ligacao sobe e fica tentando para sempre, so funcionando depois que abro uma tela do app. Descubra quem sobe a VPN propria e por que ela nao sobe nesse caso. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/Brain.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/link/GreyLinkService.kt"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "ensureWatch",
+      "GreyLinkService",
+      "pairing|GreyVpn"
+    ],
+    "note": "A VPN so era iniciada por Brain.ensureWatch/refresh (chamado por telas); o GreyLinkService subia sem tunel apos update/boot. Fix: Brain.ensureVpn chamado pelo proprio servico.",
+    "split": "train",
+    "fix_commit": "a8363fdf2dd5dd057be619f7ac86cd66b832a37a",
+    "area": "launcher/app/src/main/java/dev/greymod/grey"
+  },
+  {
+    "id": "grey-vpn-stale-addr",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "1919140e9d9e7714b8b143d3dfe10aa841725532",
+    "question": "No projeto greymod, a VPN propria funciona em casa, mas fora de casa o celular para de conectar depois que o PC fica um tempo parado: o endereco externo que o PC publica para o celular fica velho. Descubra onde esse endereco e descoberto e por quanto tempo ele e usado sem ser medido de novo. Nao altere nada.",
+    "answer_files": [
+      "bridge/vpn/main.go",
+      "bridge/vpn/ctrl.go"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "discoverExternal|selfIP",
+      "startCtrlServer",
+      "STUN"
+    ],
+    "note": "main.go descobre o endereco externo por STUN uma unica vez na partida e passa selfIP/selfPort fixos ao servidor de controle (ctrl.go); o mapeamento NAT expira. Fix: selfAddr atualizado pelo bind do WireGuard (stunbind.go).",
+    "split": "train",
+    "fix_commit": "14a5475b057234fa923e430f95e034dae5d65e5f",
+    "area": "bridge/vpn"
+  },
+  {
+    "id": "grey-reply-duplicate",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "c6e09cafd17e39cdab5180c0abfddb1d580c477f",
+    "question": "No projeto greymod, quando respondo ao agente do PC pelo celular com um toque em Enviar, a mensagem as vezes chega duas vezes e o agente trabalha em duplicata; tambem acontece de dois agentes escreverem na mesma conversa do terminal aberto. Descubra onde a resposta vira tarefa no PC e o que falta. Nao altere nada.",
+    "answer_files": [
+      "bridge/tasks.mjs",
+      "bridge/server.mjs"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "reply|resume",
+      "sessionId",
+      "listSessions"
+    ],
+    "note": "tasks.reply/start criam uma tarefa por chamada sem deduplicar (toque duplo) e retomam a sessao do terminal sem fork (segundo escritor); o fix deduplica por chave em 20 s e usa forkSession quando a sessao esta viva.",
+    "split": "train",
+    "fix_commit": "7fb2e7c9fb96d1695ce8b22b0583312cbd64d06f",
+    "area": "bridge"
+  },
+  {
+    "id": "grey-apps-looks-open",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "d61c23c5e3a407f417d9d4ae9908ece04e8b0283",
+    "question": "No projeto greymod, o Grey lista como abertos apps que ja fechei: depois de reiniciar ou atualizar o Grey os apps fechados voltam a aparecer, e um app que ficou horas sem uso ainda consta como aberto. Descubra onde o Grey calcula quais apps estao abertos e por que ele esquece o que fechou. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/phone/PhoneActions.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/nav/GreyNavService.kt"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "closedAt",
+      "foregroundSeen|lastEventAt",
+      "reopened|alive"
+    ],
+    "note": "PhoneActions.closedAt era um mapa so em memoria (perdido ao reiniciar) e 'alive' usava janela de 24 h; GreyNavService marcava foregroundSeen ate no flash logo apos fechar.",
+    "split": "train",
+    "fix_commit": "61d4e7b3057aa9917d0600e5dfe644361f284edf",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/phone"
+  },
+  {
+    "id": "grey-widget-crash",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "215c4e570698e2b6660a9caa341e27a450f54de7",
+    "question": "No projeto greymod, a tela inicial do Grey as vezes fecha sozinha na partida com o erro 'Reading a state that was created after the snapshot was taken' ao mostrar os cartoes que o Grey atualiza sozinho. Descubra onde esses cartoes sao iniciados e por que o estado e criado no lugar errado. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/GreyApp.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/widgets/Widgets.kt"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "WidgetEngine",
+      "mutableStateOf|mutableStateListOf",
+      "grey-startup|Thread"
+    ],
+    "note": "WidgetEngine.start rodava na thread 'grey-startup' em GreyApp.onCreate, entao o estado Compose (WidgetStore.items, WidgetEngine.busy) nascia dentro de um snapshot; deve iniciar na main thread fora de composicao.",
+    "split": "train",
+    "fix_commit": "48bc27f6b0bc8c8b6601ae77be28a77726b1cd72",
+    "area": "launcher/app/src/main/java/dev/greymod/grey"
+  },
+  {
+    "id": "grey-contacts-insets",
+    "repo": "/mnt/dados/source/greymod",
+    "base": "2a37a4555a6a17053952c0cf4eb1de42d0237caa",
+    "question": "No projeto greymod, nas telas de Contatos e de Arquivos do Grey o titulo e os botoes de cima ficam por baixo da barra de status do Android e o fim da lista fica atras da barra de navegacao, diferente das telas de Calendario e Relogio. Descubra onde cada tela trata as margens do sistema. Nao altere nada.",
+    "answer_files": [
+      "launcher/app/src/main/java/dev/greymod/grey/contacts/ContactsActivity.kt",
+      "launcher/app/src/main/java/dev/greymod/grey/files/FilesActivity.kt"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "ScreenHeader",
+      "statusBarsPadding|navigationBarsPadding|WindowInsets|enableEdgeToEdge",
+      "GreySurface"
+    ],
+    "note": "ContactsActivity e FilesActivity desenham a tela inteira sem statusBarsPadding/navigationBarsPadding (edge-to-edge) e o TopBar nao tem a margem horizontal; as outras telas ja usavam statusBarsPadding no Column.",
+    "split": "train",
+    "fix_commit": "c7e433877ca7d067875eb27e164a380f86d0b9c4",
+    "area": "launcher/app/src/main/java/dev/greymod/grey/contacts"
+  },
+  {
+    "id": "katana-todo-so-anotada",
+    "repo": "/mnt/dados/source/katana",
+    "base": "db6f05ce0e169f4138eaf0821148a2cc9f37a692",
+    "question": "No projeto katana, quando peco para o agente apenas anotar uma tarefa para fazer depois, ele responde, mas o motor ainda manda um lembrete de passos em aberto e as vezes marca a tarefa como feita sozinho, sem ninguem ter feito nada. Descubra onde isso e decidido e o que precisa mudar.",
+    "answer_files": [
+      "src/agent/loop.c",
+      "src/tools/tasks.c"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "g_todo_touched",
+      "ct_todo_autofinish|autofinish",
+      "TaskCreate|g_ct_tasks"
+    ],
+    "note": "O laco usa so g_todo_touched para lembrar passos abertos e ct_todo_autofinish fecha o ultimo passo; faltava distinguir tarefa apenas anotada (TaskCreate) de plano em andamento.",
+    "split": "train",
+    "fix_commit": "e35a74ce52ad693b4c6243cd2605b99f41ebed2c",
+    "area": "src/agent/loop.c"
+  },
+  {
+    "id": "katana-webfetch-404",
+    "repo": "/mnt/dados/source/katana",
+    "base": "6ad89ae412223bc66073a7a8f6a632937c6f24a1",
+    "question": "No projeto katana, quando o agente busca uma pagina que nao existe (erro 404 do site), ele trata a pagina de erro como se fosse o conteudo pedido e segue a partir dela, em vez de avisar que nao ha nada ali. Descubra onde isso acontece e o que precisa mudar.",
+    "answer_files": [
+      "src/agent/web.c",
+      "src/agent/webnav.c"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "curl_get|curl_open",
+      "wn_load",
+      "-sS -L|http_code|HTTP"
+    ],
+    "note": "curl_get nao captura o codigo HTTP e wn_load aceita qualquer corpo recebido; falta transformar HTTP >= 400 em erro.",
+    "split": "val",
+    "fix_commit": "db6f05ce0e169f4138eaf0821148a2cc9f37a692",
+    "area": "src/agent"
+  },
+  {
+    "id": "katana-notifica-duplicada",
+    "repo": "/mnt/dados/source/katana",
+    "base": "7840d77e458d4595097e442d6d68aa4d88474cc7",
+    "question": "No projeto katana, quando o agente avisa que terminou uma tarefa longa e o aplicativo de janela esta aberto, o usuario recebe o aviso duas vezes (um no aplicativo e outro do sistema), e nao ha como silenciar isso em testes. Descubra onde isso e decidido. Nao altere nada.",
+    "answer_files": [
+      "src/tools/notify.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "notify-send",
+      "KATANA_UI",
+      "getenv"
+    ],
+    "note": "ct_pushnotification chama notify-send mesmo quando KATANA_UI esta ligado e nao respeita KATANA_NO_NOTIFY.",
+    "split": "train",
+    "fix_commit": "0d77e96b6567456faef6ae292cc889271e784ab8",
+    "area": "src/tools"
+  },
+  {
+    "id": "katana-qwen4exp-nan",
+    "repo": "/mnt/dados/source/katana",
+    "base": "420ecd003c36c5800094357f6784bdb0f6a52f3f",
+    "question": "No projeto katana, no modelo experimental de especialistas pequenos, as saidas viram NaN quando alguma ativacao fica muito negativa, mas so na versao otimizada e vetorizada; no teste de referencia em Python tudo bate. Descubra onde o NaN nasce. Nao altere nada.",
+    "answer_files": [
+      "src/engine/qwen4exp.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "expf\\(-",
+      "1\\.0f \\+ expf"
+    ],
+    "note": "Sigmoides escritas como 1/(1+expf(-x)) sem limitar x: com -ffast-math a reciproca vetorizada vira NaN quando expf estoura (x < -88).",
+    "split": "val",
+    "fix_commit": "3fc858a07b92d987aac93ce6564cf3564d60a561",
+    "area": "src/engine"
+  },
+  {
+    "id": "katana-shexp-ignorado",
+    "repo": "/mnt/dados/source/katana",
+    "base": "951153ae0fee9ef85b5a13ab8eccb478c755f978",
+    "question": "No projeto katana, carrego um modelo MoE cujo especialista compartilhado tem largura que nao e multipla da de um especialista; ele carrega e gera texto, mas a contribuicao do compartilhado nunca aparece e a saida fica errada, sem nenhuma mensagem. Descubra onde isso e decidido. Nao altere nada.",
+    "answer_files": [
+      "src/engine/model.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "hidden_shexp",
+      "n_shared"
+    ],
+    "note": "A carga calcula n_shared por divisao inteira da largura do compartilhado pela do especialista; se nao for multipla vira 0 e o compartilhado e ignorado em silencio, sem die().",
+    "split": "train",
+    "fix_commit": "30a1fb244aa6576d55eb5e8ad50ae6b1dfe53b7f",
+    "area": "src/engine"
+  },
+  {
+    "id": "katana-g4-aspa-trava",
+    "repo": "/mnt/dados/source/katana",
+    "base": "71e26d1c011a4f730b093846e72f57bb626ea870",
+    "question": "No projeto katana, no Gemma 4 a chamada de ferramenta as vezes trava no meio de um argumento depois de um numero (por exemplo um limite) e a restricao de gramatica desiste, deixando a chamada incompleta. Descubra onde isso e decidido e por que. Nao altere nada.",
+    "answer_files": [
+      "src/agent/callgrammar.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "CG_G4Q",
+      "gn_step",
+      "qm"
+    ],
+    "note": "No Gemma 4 o marcador de aspa <|\"|> podia comecar em qualquer ponto de valor; depois de um numero o JSON nao aceita aspa e a gramatica ficava sem saida.",
+    "split": "val",
+    "fix_commit": "6c1b5101eaed8d6c942671fe98d23a6c7836025c",
+    "area": "src/agent/callgrammar"
+  },
+  {
+    "id": "katana-mcp-gramatica",
+    "repo": "/mnt/dados/source/katana",
+    "base": "aa0b41597cc3fb082ee45fee37e7bd8b803d2a4c",
+    "question": "No projeto katana, com um servidor MCP ligado, o modelo ve a ferramenta dele nos cartoes do prompt, mas ao tentar chamar o nome nunca sai: a geracao restrita nao deixa. Descubra onde a lista de nomes permitidos e montada e o que falta nela. Nao altere nada.",
+    "answer_files": [
+      "src/agent/callgrammar.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "cg_add\\(",
+      "g_cg_only_sys|ct_set2"
+    ],
+    "note": "A gramatica de chamadas so lista ferramentas do bloco <tools>; as ferramentas dos servidores MCP (duas grafias de nome) nao eram adicionadas com cg_add.",
+    "split": "val",
+    "fix_commit": "10e1fe03139c7fa72dfc706a759ecc1ab237317b",
+    "area": "src/agent/callgrammar"
+  },
+  {
+    "id": "katana-launcher-palavra",
+    "repo": "/mnt/dados/source/katana",
+    "base": "cff1224151339d7bdefdf5ab5faf77e1c4336166",
+    "question": "No projeto katana, quando digito um comando novo como `katana calltest`, em vez de rodar o teste ele abre o agente com o modelo de verdade e ferramentas ligadas, como se eu tivesse escrito uma mensagem. Descubra onde isso e decidido e o que precisa mudar. Nao altere nada.",
+    "answer_files": [
+      "src/app/launch.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "subcomandos novos|subcomandos",
+      "strcmp\\(a1"
+    ],
+    "note": "O lancador trata qualquer palavra solta que nao esteja na lista de subcomandos como mensagem para o agente; subcomando novo esquecido na lista abre o agente.",
+    "split": "train",
+    "fix_commit": "703b0f6762006305261b177e108d179e8e3e2fbd",
+    "area": "src/app"
+  },
+  {
+    "id": "katana-xml-argumentos",
+    "repo": "/mnt/dados/source/katana",
+    "base": "71877837a596d8e5a4ce11d67f67b4bd6ec8bcae",
+    "question": "No projeto katana, os modelos que escrevem a chamada de ferramenta em XML tem TodoWrite e AskUserQuestion sempre recusados com erro de tipo, mesmo com os argumentos certos; os modelos em JSON funcionam. Descubra onde a recusa nasce e o que muda entre os formatos. Nao altere nada.",
+    "answer_files": [
+      "src/tools/table.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "CtTool",
+      "\"array\"|array",
+      "object"
+    ],
+    "note": "Em chamada XML todo valor chega como texto; argumento declarado array/object chega como string com JSON dentro e a validacao da tabela de ferramentas o recusa por tipo.",
+    "split": "val",
+    "fix_commit": "4e38366fc7e72283cebf5cb10ffee5abd712fb65",
+    "area": "src/tools"
+  },
+  {
+    "id": "katana-desktop-aviso-fica",
+    "repo": "/mnt/dados/source/katana",
+    "base": "7648c3c9f7f6bb863229be0844ec076a13afd2c3",
+    "question": "No projeto katana, no aplicativo de janela, o aviso de atividade (a linha que diz o que o agente esta fazendo) continua aparecendo depois que a resposta terminou, ate chegar outra mensagem. Descubra onde esse aviso e ligado e apagado. Nao altere nada.",
+    "answer_files": [
+      "desktop-qt/src/backend.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "m_actText",
+      "m_stalled",
+      "activityChanged"
+    ],
+    "note": "O backend so limpa m_actText/m_stalled em certos eventos; ao terminar o turno (loading e answering falsos) nada o apagava.",
+    "split": "val",
+    "fix_commit": "ae6ac5bd817c644fec1b5f38276996e4e37c39ab",
+    "area": "desktop-qt/src"
+  },
+  {
+    "id": "katana-kv-q8-ram",
+    "repo": "/mnt/dados/source/katana",
+    "base": "3eb200b19cc66909783c8201ae860a8f44f9895f",
+    "question": "No projeto katana, em contexto muito longo o modelo passa a errar mais a precisao (a divergencia contra a referencia sobe muito) mesmo quando a maquina tem memoria de sobra para guardar o cache de atencao em meia precisao. Descubra onde e escolhido o formato desse cache. Nao altere nada.",
+    "answer_files": [
+      "src/engine/cpu_kernels.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "kv8_escolha|KATANA_CPU_KV8",
+      "262144",
+      "Q8_0|q8"
+    ],
+    "note": "A escolha automatica do KV em Q8_0 dependia so do tamanho do contexto (> 262144), sem comparar o cache fp16 e os pesos com a RAM livre.",
+    "split": "val",
+    "fix_commit": "9589b3939858998bf53b94961a29f8a5fd5e253b",
+    "area": "src/engine"
+  },
+  {
+    "id": "katana-desktop-fila-cartao",
+    "repo": "/mnt/dados/source/katana",
+    "base": "05e5196e4defa2b47f41eeb0a1e4154585fadbce",
+    "question": "No projeto katana, no aplicativo de janela, quando ha mensagens na fila de espera e o agente mostra o cartao de tarefas, os dois se sobrepoem: o cartao de tarefas fica por baixo da fila ou da caixa de mensagem. Descubra onde o espaco vertical desses elementos e calculado. Nao altere nada.",
+    "answer_files": [
+      "desktop-qt/qml/Composer.qml",
+      "desktop-qt/qml/Main.qml"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "cardsHeight",
+      "bottomMargin",
+      "qcol"
+    ],
+    "note": "Main.qml empilha os cartoes por cardsHeight/bottomMargin sem somar a altura da fila de mensagens que fica em Composer.qml fora da altura do item.",
+    "split": "val",
+    "fix_commit": "d13083e4cb29c6887d84846e06ce6161f36344ad",
+    "area": "desktop-qt/qml"
+  },
+  {
+    "id": "katana-mcp-argumentos",
+    "repo": "/mnt/dados/source/katana",
+    "base": "2ca1d2875d01dbd0ca2bb6cb73d78c138a938c28",
+    "question": "No projeto katana, ao chamar uma ferramenta MCP pela linha de comando de teste (sem o modelo), ela diz que nao existe, e se passo os argumentos como objeto direto ela os ignora. Descubra onde o dono do nome e os argumentos sao resolvidos. Nao altere nada.",
+    "answer_files": [
+      "src/agent/dispatch.c",
+      "src/agent/mcp.c"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "mcp_owns",
+      "mcp_init",
+      "\"arguments\""
+    ],
+    "note": "Fora do laco os servidores MCP nao foram iniciados quando o despacho consulta mcp_owns, e a leitura dos argumentos em mcp.c so aceita a chave arguments.",
+    "split": "train",
+    "fix_commit": "c0780d06451f00d0ed9450734bfa603f967e45db",
+    "area": "src/agent/mcp"
+  },
+  {
+    "id": "katana-mcp-json-raiz",
+    "repo": "/mnt/dados/source/katana",
+    "base": "e8ab7b43f45a9c7e544483ec6b3321d4370f05c6",
+    "question": "No projeto katana, coloquei um arquivo de configuracao de servidores MCP na raiz do projeto, no formato usado por outras ferramentas, e o agente simplesmente nao liga nenhum servidor. Descubra de onde a configuracao e lida e em que ordem. Nao altere nada.",
+    "answer_files": [
+      "src/agent/mcp.c",
+      "src/agent/mcp_extra.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "mcp_load_file",
+      "mcp\\.json",
+      "KATANA_MCP_STRICT|agent_home|proj_isfile"
+    ],
+    "note": "A carga de MCP so le o arquivo do usuario e .katana/mcp.json; nao procurava .mcp.json da raiz do projeto.",
+    "split": "train",
+    "fix_commit": "9e04e12cdc8dd2c797f22116ab3e9103d1245a78",
+    "area": "src/agent/mcp"
+  },
+  {
+    "id": "katana-prompt-ferramentas-treinadas",
+    "repo": "/mnt/dados/source/katana",
+    "base": "1d9ef89ef3fea3f67886a42007d416fd4761872d",
+    "question": "No projeto katana, depois de treinar uma especializacao so de ferramentas e aplica-la, o prompt do agente continua enorme, com toda a descricao de ferramentas que o modelo ja aprendeu, gastando contexto. Descubra onde esse trecho e montado e o que precisaria saber da especializacao. Nao altere nada.",
+    "answer_files": [
+      "src/agent/prompt.c",
+      "src/app/train.c"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "g_tool_glm",
+      "KATANA_SPEC|spec_apply",
+      "kspec"
+    ],
+    "note": "O prompt sempre declara as ferramentas; nada marca que uma especializacao (kspec) aplicada em train.c ja cobre as ferramentas.",
+    "split": "train",
+    "fix_commit": "71877837a596d8e5a4ce11d67f67b4bd6ec8bcae",
+    "area": "src/agent/prompt"
+  },
+  {
+    "id": "katana-spec-pasta",
+    "repo": "/mnt/dados/source/katana",
+    "base": "7f8133573213bd045130f6aa8a8e2eff6b740c05",
+    "question": "No projeto katana, treinei especializacoes e as deixei na pasta de usuario do katana, mas o aplicativo de janela abre o modelo sem nenhuma delas aplicada. Descubra de onde o motor tira as especializacoes e o que o aplicativo repassa. Nao altere nada.",
+    "answer_files": [
+      "desktop-qt/src/backend.cpp",
+      "src/app/train.c"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "KATANA_SPEC",
+      "spec_apply",
+      "kspec"
+    ],
+    "note": "KATANA_SPEC so aceita um arquivo (spec_apply) e o backend do desktop nao passa essa variavel; falta aceitar pasta e repassar ~/.katana/specs.",
+    "split": "train",
+    "fix_commit": "1d9ef89ef3fea3f67886a42007d416fd4761872d",
+    "area": "desktop-qt/src+src/app"
+  },
+  {
+    "id": "katana-fim-rodadas-mudo",
+    "repo": "/mnt/dados/source/katana",
+    "base": "4e38366fc7e72283cebf5cb10ffee5abd712fb65",
+    "question": "No projeto katana, quando um pedido longo gasta todas as rodadas de ferramentas, o agente simplesmente para, sem dizer ao usuario o que fez nem o que falta. Descubra onde o limite de rodadas e tratado e onde ficam as regras que o modelo recebe sobre encerrar. Nao altere nada.",
+    "answer_files": [
+      "src/agent/loop.c",
+      "src/agent/prompt.c"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "round < 40",
+      "g4_answer_pre|think_pre"
+    ],
+    "note": "O laco nao avisa o modelo na penultima rodada e o prompt nao manda fechar o pedido com uma mensagem em palavras.",
+    "split": "train",
+    "fix_commit": "3c2dffe2a7965321b30a1fd57a80ef593a7b22a9",
+    "area": "src/agent/loop+prompt"
+  },
+  {
+    "id": "katana-retomar-silencioso",
+    "repo": "/mnt/dados/source/katana",
+    "base": "8309d2e918015c53f6e0f8fdcf4990aa1b341cf9",
+    "question": "No projeto katana, ao retomar uma sessao antiga muito longa no aplicativo de janela, a tela fica parada por minutos sem nenhuma indicacao do que esta acontecendo. Descubra onde a retomada acontece e como o aplicativo e informado do andamento. Nao altere nada.",
+    "answer_files": [
+      "src/katana.c",
+      "desktop-qt/src/backend.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "ids\\.n",
+      "setTexts"
+    ],
+    "note": "A retomada recalcula todos os tokens do historico sem emitir marcador para a interface; backend.cpp nao tem tratamento de estado de retomada longa.",
+    "split": "train",
+    "fix_commit": "e9701eb940effd9f5e0fc6b3460cc6b111b2df9b",
+    "area": "src/katana.c+desktop"
+  },
+  {
+    "id": "katana-troca-sessao-lenta",
+    "repo": "/mnt/dados/source/katana",
+    "base": "715288d574241ef838b4f8793653c3f6952d8afd",
+    "question": "No projeto katana, trocar de uma sessao para outra no aplicativo de janela demora minutos em modelos grandes, antes mesmo de a nova abrir. Descubra o que o motor faz ao fechar a sessao atual. Nao altere nada.",
+    "answer_files": [
+      "src/katana.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "sess_save",
+      "g_sess_path",
+      "hist\\.n"
+    ],
+    "note": "Ao trocar de sessao o motor chama sess_save com resumo pelo modelo (flag 1), o que custa minutos; deveria gravar a versao barata e resumir so ao sair.",
+    "split": "train",
+    "fix_commit": "188a3bc3ea2553403e885bc71b8aa8ced868104e",
+    "area": "src/katana.c"
+  },
+  {
+    "id": "katana-codebench-recusadas",
+    "repo": "/mnt/dados/source/katana",
+    "base": "2076417bc372c1017d24dbcfb477b332ac16ae74",
+    "question": "No projeto katana, no banco de testes de codigo o numero de chamadas de ferramenta de cada tarefa sai menor do que o real quando o motor recusou chamadas; descubra onde esse total e calculado. Nao altere nada.",
+    "answer_files": [
+      "src/app/codebench.c"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "tool_calls",
+      "met\\.calls|met\\.refused|refused"
+    ],
+    "note": "tool_calls usa so met.calls e ignora as chamadas recusadas (met.refused).",
+    "split": "train",
+    "fix_commit": "1712060ce06813cb811e3736108328ddf5b1fb78",
+    "area": "src/app"
+  },
+  {
+    "id": "sonora-play-from-insertion",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "7d1efb3fe12b7550110d669eef76e8af91bff638",
+    "question": "No projeto sonora, no perfil Pro Tools o Play comeca de onde a ultima reproducao parou e nao do ponto de insercao que o contador mostra, e apertar Return para voltar ao zero nao move esse ponto. Descubra por onde o atalho de tocar passa ate chegar ao motor e o que precisa mudar. Nao altere nada.",
+    "answer_files": [
+      "ui/qt/src/key_router.cpp",
+      "ui/qt/src/main.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "transport\\.(toggle_)?play",
+      "insertion",
+      "send_\\("
+    ],
+    "note": "O comando de play sai do roteador de teclas direto ao motor, sem um locate antes para o ponto de insercao; e o return_to_zero nao informa a interface do novo ponto.",
+    "split": "train",
+    "fix_commit": "857f65bf72d8f7f025c6c3829f77203ea0a3d96f",
+    "area": "ui/qt/src"
+  },
+  {
+    "id": "sonora-edit-headers-selected",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "238923f32f685859e59fa11aa54ed8b717e46200",
+    "question": "No projeto sonora, quando seleciono varias faixas na janela de edicao so o cabecalho de uma aparece como selecionado, e o Shift-clique no botao de armar usa o estado antigo da faixa em vez do atual. Descubra onde isso e decidido e o que precisa mudar. Nao altere nada.",
+    "answer_files": [
+      "ui/qt/qml/EditWindow.qml",
+      "ui/qt/src/session_model.cpp",
+      "ui/qt/src/shell_model.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "selectedTrack\\b",
+      "selectedTracksFor",
+      "selection\\(\\)\\.tracks|\\.tracks\\b"
+    ],
+    "note": "O cabecalho compara o indice com selectedTrack (so a primeira faixa) em vez de uma lista de faixas cobertas pela selecao; o estado de armar vem da lista publicada, nao do motor no clique.",
+    "split": "val",
+    "fix_commit": "31a4ceb4b893cee8c2d4e6156ab0ccbbba17c83a",
+    "area": "ui/qt/qml"
+  },
+  {
+    "id": "sonora-fade-past-end",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "f7219e27eb0bd5f63348f1acd98cd25d525598fa",
+    "question": "No projeto sonora, na janela de edicao, se seleciono do meio de uma regiao ate alem do fim do audio e aperto F para o fade de saida, ele recusa dizendo que a selecao cobre a regiao inteira. Descubra onde se decide qual borda leva o fade e o que precisa mudar. Nao altere nada.",
+    "answer_files": [
+      "ui/qt/src/edit_fade_plan.cpp",
+      "ui/qt/src/edit_fades.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "has_start",
+      "has_end",
+      "r->end\\(\\)"
+    ],
+    "note": "collect_track_fades classifica a selecao por has_start/has_end sem recortar a parte fora da regiao; uma selecao que passa do fim conta como cobrindo a regiao toda.",
+    "split": "train",
+    "fix_commit": "1d530c238218437ce9517c0025c05e1a4b403ef2",
+    "area": "ui/qt/src"
+  },
+  {
+    "id": "sonora-autolane-zoom",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "7b9b54b2452130ede315267215f049468b064b5e",
+    "question": "No projeto sonora, na janela de edicao, quando aumento o zoom vertical as formas de onda crescem mas as faixas de automacao continuam com a mesma altura. Descubra onde a altura da faixa de automacao e definida e por que o zoom nao a alcanca. Nao altere nada.",
+    "answer_files": [
+      "ui/qt/src/edit_controller.cpp",
+      "ui/qt/src/edit_controller.h"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "autolane_height",
+      "wave_scale",
+      "clamp_scroll"
+    ],
+    "note": "autolane_height e um valor fixo de ViewState; vertical_zoom so altera wave_scale e nunca recalcula a altura da faixa.",
+    "split": "train",
+    "fix_commit": "89b558e8343bdde65d0c3a0dcfb00057ddb397d0",
+    "area": "ui/qt/src"
+  },
+  {
+    "id": "sonora-neural-misaligned",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "65120d85feab1145e09da104a61d4216d718caa0",
+    "question": "No projeto sonora, no Tone Match neural em modo captura, o botao Match continua habilitado mesmo quando o aviso diz que o audio limpo nao alinha com a referencia. Descubra onde se decide se o ajuste pode comecar e o que falta nessa decisao. Nao altere nada.",
+    "answer_files": [
+      "ui/tone_match/src/neural_model.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "can_start",
+      "alignment_found_",
+      "alignment_checked_"
+    ],
+    "note": "can_start() nao considera o resultado do alinhamento (captura sem alinhamento achado) e so olha entradas, modelos base e estado.",
+    "split": "val",
+    "fix_commit": "f88fe71dc9108b218c1c9380cefcc62ea7adc989",
+    "area": "ui/tone_match"
+  },
+  {
+    "id": "sonora-fit-failed-text",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "f88fe71dc9108b218c1c9380cefcc62ea7adc989",
+    "question": "No projeto sonora, o ajuste neural do Tone Match falha mostrando um caminho de arquivo e um erro de Python crus quando faltam os modelos de amplificador base. Descubra onde a mensagem de falha do treinador chega a tela e como a biblioteca base e localizada. Nao altere nada.",
+    "answer_files": [
+      "ui/tone_match/src/neural_view_build.cpp",
+      "ui/tone_match/src/tone_library.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "Fit failed",
+      "scan_base",
+      "outcome_->message|NeuralOutcome"
+    ],
+    "note": "A mensagem do treinador e repassada sem traducao (Fit failed: + texto cru) e a biblioteca base nao e lida pelo manifest.json do treinador.",
+    "split": "val",
+    "fix_commit": "a76b933e1bab2c4fcfb8c71f2f6c0bb808d7b43a",
+    "area": "ui/tone_match"
+  },
+  {
+    "id": "sonora-agent-trash-prompt",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "3c59d3d825d2f40ee3ad77f2b9f611c600013e5a",
+    "question": "No projeto sonora, no painel do Agente de Mix, quando o agente pede um comando destrutivo e eu aprovo, a confirmacao nao avisa o que vai para a lixeira, embora o motor segure o comando para revisao. Descubra de onde o painel tira a lista de comandos destrutivos e o que mudou na forma como o motor os trata. Nao altere nada.",
+    "answer_files": [
+      "ui/agent/src/agent_panel_model.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "destructive_",
+      "AwaitingReview|Staged",
+      "Refused|refused"
+    ],
+    "note": "A lista destructive_ so era preenchida por linhas de auditoria recusadas; o motor agora mantem o comando destrutivo como Staged (retido), entao a lista ficava vazia e a aprovacao nao perguntava nada.",
+    "split": "train",
+    "fix_commit": "280cd8ca6157d1b04d06e8bbb8741c986d7d646c",
+    "area": "ui/agent"
+  },
+  {
+    "id": "sonora-protools-delete",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "60fd8a165cff3da5f14b9d0be8af92d448eb4fb0",
+    "question": "No projeto sonora, com o perfil de teclas Pro Tools, depois de separar uma regiao apertar Delete nao faz nada, enquanto o menu Edit > Clear funciona. Descubra onde os atalhos desse perfil sao definidos e o que falta. Nao altere nada.",
+    "answer_files": [
+      "keymaps/protools.json"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "edit\\.clear",
+      "ctrl\\+b",
+      "edit\\.separate|separate"
+    ],
+    "note": "O perfil protools.json mapeia Clear so em ctrl+b; nao ha entrada para a tecla delete.",
+    "split": "train",
+    "fix_commit": "e2fc01451c17d5fea1dd47fbcac65d3fd23f04d7",
+    "area": "keymaps"
+  },
+  {
+    "id": "sonora-stateview-wait",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "b9e72359664fedc8d64391551ab9b05f0022ebf7",
+    "question": "No projeto sonora, a interface as vezes leva de 30 a 50 ms para dar a leitura do estado compartilhado por vencida quando o motor esta parado ou a maquina esta carregada, em vez dos cerca de 3 ms previstos. Descubra como o limite de espera dessa leitura e definido. Nao altere nada.",
+    "answer_files": [
+      "contracts/api/include/sonora/api/state_view.h",
+      "contracts/api/src/state_view.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "kMax\\w*|max_retries|retries",
+      "sleep|yield",
+      "seqlock|stale"
+    ],
+    "note": "O limite da leitura e por numero de tentativas, nao por tempo; sob carga cada sleep de 20 us volta ~1 ms depois e a espera passa de 36 ms.",
+    "split": "val",
+    "fix_commit": "c28dc4c44d11cdb8136e57dc0c8c5e0dad6a38c0",
+    "area": "contracts/api"
+  },
+  {
+    "id": "sonora-console-dup-ids",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "794876e73e07d25a0a6bab20222ebd9d49281672",
+    "question": "No projeto sonora, no console do dashboard aberto no celular, as vezes uma mensagem ou a linha de resultado de uma acao aparece duplicada no fim do chat a cada atualizacao. Descubra de onde vem o identificador das mensagens e como a pagina o usa para atualizar a lista. Nao altere nada.",
+    "answer_files": [
+      "tools/dashboard-static/console-chat.js",
+      "tools/harness/console_store.py"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "new_id|time_ns",
+      "patchLog",
+      "dataset\\.k|m\\.id"
+    ],
+    "note": "new_id usa time_ns (relogio grosso no Windows) e gera ids repetidos; patchLog indexa os elementos pelo id e perde um, empurrando copias velhas.",
+    "split": "train",
+    "fix_commit": "3e48ecd64974d539e0e960c6177446df53c7d345",
+    "area": "tools/dashboard-static"
+  },
+  {
+    "id": "sonora-console-stream-idle",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "11421ac66694cb172c50f95564c8e335145f28fe",
+    "question": "No projeto sonora, a pagina do console aberta no celular recebe um pacote grande de dados a cada 4 segundos mesmo quando nada mudou, e gasta o plano de dados. Descubra o que decide quando o servidor empurra um novo quadro. Nao altere nada.",
+    "answer_files": [
+      "tools/dashboard_console_http.py",
+      "tools/dashboard_console_stream.py",
+      "tools/dashboard_state.py"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "stream_signature|sig_fn",
+      "updated",
+      "ping"
+    ],
+    "note": "A assinatura do stream inclui state['updated'], que muda a cada passada de 4 s; falta uma revisao por conteudo.",
+    "split": "train",
+    "fix_commit": "fa7ede99b24b441f6265222ac5ef8104fed71a55",
+    "area": "tools"
+  },
+  {
+    "id": "sonora-lock-kills-builds",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "a0deef9956328f2904d7c3be551554238d572c13",
+    "question": "No projeto sonora, depois que uma execucao de despertar do lider termina, o supervisor mata todos os builds vivos de outras execucoes, achando que o dono do lock acabou. Descubra como o supervisor decide a quem pertence uma entrada do lock. Nao altere nada.",
+    "answer_files": [
+      "tools/harness/supervisor_checks.py"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "_ended_worktrees|ended",
+      "S\\.under|under\\(",
+      "cwd"
+    ],
+    "note": "O dono e o primeiro worktree de run encerrado que contem o cwd; a raiz do daemon contem worktrees aninhados e nunca deveria ser dona.",
+    "split": "val",
+    "fix_commit": "823e82dd7561ef6c376c55669691938d2120ae47",
+    "area": "tools/harness"
+  },
+  {
+    "id": "sonora-planner-claims",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "7ab6f1a62f78e62a35014a1701fb305a910e0827",
+    "question": "No projeto sonora, tarefas de contrato ficam recusadas por horas porque um claim feito por uma execucao do arquiteto nunca e liberado, ja que o nome do arquiteto se repete entre execucoes. Descubra quando o orquestrador libera os claims de uma execucao. Nao altere nada.",
+    "answer_files": [
+      "tools/orchestrator.py",
+      "tools/harness/brokerhost.py"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "release_for",
+      "FIX_LIKE",
+      "role"
+    ],
+    "note": "O orquestrador so libera claims de execucoes de papel FIX_LIKE; claims de planejadores nunca eram soltos ao fim da execucao.",
+    "split": "val",
+    "fix_commit": "fef559f73055f920ba2a5908cb5e37a11f143d3e",
+    "area": "tools/harness"
+  },
+  {
+    "id": "sonora-tier-opus",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "cb9ac0f7cdf98ff24d13b6c59562e72366ddb0b0",
+    "question": "No projeto sonora, dezenas de fatias planejadas com grau de risco medio rodaram em opus, quando a regra do dono e que o modelo siga o risco e nao o tamanho. Descubra onde o modelo de uma tarefa e escolhido a partir do plano. Nao altere nada.",
+    "answer_files": [
+      ".claude/routing.toml",
+      "tools/harness/tiers.py"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "task_model",
+      "L/med",
+      "model_of_tier"
+    ],
+    "note": "task_model dava prioridade ao nome do tier (por tamanho) sobre o grau, e routing.toml mapeava L/med para opus.",
+    "split": "train",
+    "fix_commit": "22c623ba4f28d2b8beebf05be6548b4b1bdacc43",
+    "area": ".claude"
+  },
+  {
+    "id": "sonora-late-graph-worker",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "93cde9461d787a403a1f63a366267577f7b8f5c7",
+    "question": "No projeto sonora, com o grafo de plugins rodando em paralelo, de vez em quando o sanitizador de enderecos acusa leitura de memoria de pilha ja devolvida quando um worker do grafo termina depois que o callback de audio voltou. Descubra o que esse worker ainda aponta e onde isso e montado. Nao altere nada.",
+    "answer_files": [
+      "engine/core/include/sonora/session.h",
+      "engine/core/src/graph_session.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "graph_pass_",
+      "pass_\\.block|AudioBlock"
+    ],
+    "note": "graph_pass_[ni].block apontava para o AudioBlock local de process(); um worker atrasado sobrevive ao callback, entao o bloco passou a ser dono de Session (graph_block_)",
+    "split": "train",
+    "fix_commit": "c75dbb54a25643ac13a274158fa371fcf480f44e",
+    "area": "engine/core"
+  },
+  {
+    "id": "sonora-build-job-killed",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "b31f37dd6261db8b5924ce9541e74e40dc8d8e96",
+    "question": "No projeto sonora, o registro dos builds pesados da fila do harness mostra 'finished: exit 0' para jobs que na verdade nunca rodaram o build, so ficaram esperando a trava, quando o processo que segura a trava e encerrado por fora. Descubra por que um processo morto vira sucesso e o que precisa mudar. Nao altere nada.",
+    "answer_files": [
+      "tools/build-job.sh",
+      "tools/build-slot.sh"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "\\bwait\\b",
+      "trap"
+    ],
+    "note": "o wait do pai le a morte por fora como 0; o slot nao gravava seu proprio status (arquivo SONORA_HEAVY_EXIT_FILE) e o job nao tinha como distinguir; sem status vira 137",
+    "split": "train",
+    "fix_commit": "80f0b9511759583a2843b8ad6d00cd9916158c93",
+    "area": "tools"
+  },
+  {
+    "id": "sonora-mxf-2gib",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "d9e1ed61c6a2aa43495316df1b56bb3f15bae957",
+    "question": "No projeto sonora, ao importar uma composicao AAF/MXF cujo audio fica depois dos 2 GiB do arquivo, a leitura do essence falha ou le lixo no Windows, mas funciona em arquivos pequenos. Ache onde a posicao do arquivo e calculada e o que a faz dar a volta. Nao altere nada.",
+    "answer_files": [
+      "interchange/src/mxf_essence.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "fseek",
+      "long",
+      "ftell"
+    ],
+    "note": "read_at converte o offset uint64 para long no fseek; onde long tem 32 bits passa de 2 GiB e da a volta",
+    "split": "val",
+    "fix_commit": "b57c10e3b1d21d1a64af42badc9d28227e625517",
+    "area": "interchange"
+  },
+  {
+    "id": "sonora-reader-renamed-folder",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "bd80f307a8b142058a3a49729ab4720eabf94fe5",
+    "question": "No projeto sonora, depois do primeiro Salvar de uma sessao nova (que renomeia a pasta da sessao), os takes que o leitor ainda nao tinha lido, ou que ja tinha fechado, tocam em silencio; os que estavam abertos tocam normal. Descubra onde o caminho dos arquivos fica guardado e quem deveria te-lo atualizado. Nao altere nada.",
+    "answer_files": [
+      "engine/control/src/playback_controller.cpp",
+      "engine/core/src/disk_reader.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "folder_renamed",
+      "path",
+      "sources_"
+    ],
+    "note": "desde que o leitor abre fontes por caminho sob demanda, folder_renamed() so atualizava o mapa de slots do controlador, nao o caminho em DiskReader",
+    "split": "train",
+    "fix_commit": "395de81a5ddab9608ffc649a0650fc7fb6f62dad",
+    "area": "engine/control"
+  },
+  {
+    "id": "sonora-trainer-cancel-group",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "333f9a428d2ee8f6bd5ea9f09ca9844b3f97188f",
+    "question": "No projeto sonora, ao cancelar o treino neural do Tone Match a janela diz que cancelou, mas o python continua treinando por todo o orcamento de tempo e o pipe segue aberto. Descubra quem recebe o sinal de cancelar e por que nao chega ao processo que treina. Nao altere nada.",
+    "answer_files": [
+      "plugins/analyze/app/trainer_posix.cpp",
+      "tools/train.sh"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "kill\\(pid|SIGTERM",
+      "subshell|\\(cd "
+    ],
+    "note": "o sinal vai so ao pid do script; train.sh roda python num subshell (sem exec) e o filho nao liderava grupo de processos; kill(pid) nao alcanca o python",
+    "split": "train",
+    "fix_commit": "de4c03bb663ba2a7dc899dd7b64ae806b2e3025c",
+    "area": "plugins/analyze"
+  },
+  {
+    "id": "sonora-wav-header-frames",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "2df971d9cdb30afba41ecf20574591adc63c00f4",
+    "question": "No projeto sonora, quando o disco enche no meio de uma gravacao, o cabecalho do arquivo de audio diz que ha mais quadros do que o arquivo realmente tem (87424 contra 87163) e o take volta com a duracao errada. Descubra por que a contagem de quadros gravados mente. Nao altere nada.",
+    "answer_files": [
+      "common/audiofile/src/wav_writer.cpp",
+      "common/audiofile/include/sonora/wav_writer.h"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "fwrite",
+      "frames_written_",
+      "buffer|stdio"
+    ],
+    "note": "a contagem avancava por quadros entregues ao stdio, que tem buffer; o flush recusado perdia quadros ja contados; passou a stream sem buffer e a contar o que fwrite devolve",
+    "split": "train",
+    "fix_commit": "2732efcfb7de0afd3e184d2f6db282b7f39a17e2",
+    "area": "common/audiofile"
+  },
+  {
+    "id": "sonora-roll-limit",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "869d2fd11808fa9e152702f47d83572383173dd0",
+    "question": "No projeto sonora, o campo de pre-roll da interface nao deixa passar de um minuto, mas um script ligado direto ao motor consegue configurar uma hora de pre-roll e o ponto de punch vai parar minutos antes. Descubra onde o limite deveria valer e por que so a interface o aplica. Nao altere nada.",
+    "answer_files": [
+      "common/model/include/sonora/model/model.h",
+      "engine/control/src/engine_control_server.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "pre_roll|post_roll",
+      "edit_transport_field",
+      "transport"
+    ],
+    "note": "o limite de 60 s so existia no campo Qt; edit_transport_field do motor recusava so numero invalido; a constante kMaxRollSeconds foi para common/model e o motor passou a recusar",
+    "split": "train",
+    "fix_commit": "8d5af6972fe14bf30dcd928c9736fff59b057c29",
+    "area": "engine/control"
+  },
+  {
+    "id": "sonora-touch-release-lost",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "98e6bb0d3064ef34b51788eac917c88065dc38ab",
+    "question": "No projeto sonora, se eu solto o fader no meio de uma reordenacao de faixas ele nunca volta a seguir a automacao: a faixa fica fora das lanes ate o cliente sair. Descubra onde o toque e a soltura do fader sao aplicados e por que uma reordenacao os perde. Nao altere nada.",
+    "answer_files": [
+      "engine/control/src/engine_control_server.cpp",
+      "engine/control/src/playback_controller.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "set_touched",
+      "atoms_order_",
+      "Touch|Release"
+    ],
+    "note": "Touch/Release so era aplicado sem plano de movimento de faixas pendente; a soltura durante a reordenacao se perdia; PlaybackController::touch resolve a faixa por id",
+    "split": "train",
+    "fix_commit": "e2696231ee08e86aee0a4b433b70b2a7e5017db4",
+    "area": "engine/control"
+  },
+  {
+    "id": "sonora-spin-retiring-chain",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "59b14d9ecfbefcb7038ae954223da636ec31f0b8",
+    "question": "No projeto sonora, depois de trocar a cadeia de plugins de uma faixa a thread de controle do motor passa a gastar CPU sem parar, acordando a cada volta sem ter o que fazer. Descubra o que a faz acordar sem trabalho e por que ninguem atende. Nao altere nada.",
+    "answer_files": [
+      "engine/control/src/plugin_hosting.cpp",
+      "engine/plugin_client/src/host_supervisor.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "retiring_",
+      "watch",
+      "Writable|writable"
+    ],
+    "note": "cadeias em retiring_ esperando a epoca nao eram bombeadas, mas HostSupervisor::watch listava seus sockets como graviaveis; WaitSet voltava na hora (poll_parked)",
+    "split": "train",
+    "fix_commit": "6dc6c203e9632a8bb40c11bb3066477d0b4641ea",
+    "area": "engine/control"
+  },
+  {
+    "id": "sonora-loop-pass-cap",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "6dc6c203e9632a8bb40c11bb3066477d0b4641ea",
+    "question": "No projeto sonora, gravando em loop com limite de passadas, numa faixa armada so depois de varias voltas o primeiro trecho do take aparece numerado acima do limite e as passadas ficam fora de ordem. Descubra de onde vem a numeracao das passadas e por que o limite se perde. Nao altere nada.",
+    "answer_files": [
+      "engine/control/src/closed_take.cpp",
+      "engine/core/src/disk_thread.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "loop_pass_cap|cap",
+      "wraps",
+      "kBeforeFile"
+    ],
+    "note": "a lista de voltas anteriores ao arquivo era cortada no cap; as passadas passavam a contar do cap; disk_thread agora informa quantas voltas vieram antes do arquivo",
+    "split": "train",
+    "fix_commit": "ed54489bc52588fdaff0805459a58551c49ac487",
+    "area": "engine/control"
+  },
+  {
+    "id": "sonora-test-private-home",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "d41339ad0b4e4fdcdac4c9c0732290e4d0bb52ec",
+    "question": "No projeto sonora, o teste que mata o motor no meio de uma gravacao passa na maquina de uma pessoa e falha na de outra porque o take nunca comeca. Descubra o que do ambiente do usuario o motor le e como os scripts de teste o iniciam. Nao altere nada.",
+    "answer_files": [
+      "tools/crash-recovery-kill.py",
+      "tools/failed-take-quit.py"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "Popen|execv",
+      "fork|DEVNULL"
+    ],
+    "note": "o motor le o dispositivo de captura salvo no HOME real, que o backend falso nao oferece; os scripts iniciam o motor com o ambiente herdado (sem HOME/XDG privados)",
+    "split": "train",
+    "fix_commit": "23b9769667665e5ca2e5b3d51fcb0222886840f2",
+    "area": "tools"
+  },
+  {
+    "id": "sonora-merge-gate",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "a3551d16778619ee79b8f6e391ffad31427cbd60",
+    "question": "No projeto sonora, o merge automatico de PRs aprovou um PR cujo ultimo push so tinha os checks baratos registrados, mesclando uma cabeca sem os testes pesados. Descubra em que ordem o script le a cabeca e os checks e por que isso deixa passar. Nao altere nada.",
+    "answer_files": [
+      "tools/merge-checks.sh",
+      "tools/merge-when-green.sh"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "headRefOid|head",
+      "pr checks|missing"
+    ],
+    "note": "o conjunto de checks faltantes era lido no laco de espera antes de ler o SHA da cabeca; um push entre as duas leituras emparelhava checks da cabeca antiga com a nova",
+    "split": "train",
+    "fix_commit": "9e317be51074868b76135a240f6f29c950eafa35",
+    "area": "tools"
+  },
+  {
+    "id": "sonora-microbuild-threads",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "9b5c807d0664919e4c0dcd66c83d21a1876bba75",
+    "question": "No projeto sonora, o build rapido em container da interface passou a falhar com 'Could NOT find Threads' e continua falhando em todas as execucoes seguintes, mesmo sem ninguem mexer no codigo. Descubra por que a falha gruda e o que a provoca. Nao altere nada.",
+    "answer_files": [
+      "tools/micro-build-entrypoint.sh",
+      "tools/micro-build.sh"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "ccache",
+      "CMakeCache",
+      "configure"
+    ],
+    "note": "o volume de ccache e do root e o container roda como usuario; o try_compile falha com permissao negada, o resultado fica gravado no CMakeCache e todo configure falha igual",
+    "split": "train",
+    "fix_commit": "8fc941153cef53e1547a928ee4fd4780bfa8100b",
+    "area": "tools"
+  },
+  {
+    "id": "sonora-lv2-setfile-copy",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "503f7306c85608a3d1d9119b05106a9233cff6db",
+    "question": "No projeto sonora, depois de escolher um arquivo (uma resposta ao impulso, por exemplo) num plugin LV2 e salvar a sessao, o arquivo nao aparece na pasta de arquivos de plugins e a sessao guarda o caminho absoluto da maquina. Descubra como o host decide o que copiar para dentro da sessao e por que esse caso fica de fora. Nao altere nada.",
+    "answer_files": [
+      "plugins/host/src/state_paths.cpp",
+      "plugins/host/src/lv2_host.cpp"
+    ],
+    "min_files": 2,
+    "keywords": [
+      "passed_through_",
+      "absolute_path",
+      "restore"
+    ],
+    "note": "um caminho absoluto recebido em restore() e registrado como passed-through (nunca copiado); o arquivo escolhido pelo operador entrava assim; StatePaths::choose o marca como escolhido",
+    "split": "val",
+    "fix_commit": "25da3ceae0f49fecf467e29a876c5ee67dc7427b",
+    "area": "plugins/host"
+  },
+  {
+    "id": "sonora-plugin-lane-nan",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "4070f47a7e8d06db947dfe565c0ab8e64fe491d9",
+    "question": "No projeto sonora, um plugin com parametro automatizado cuja curva passa por pontos extremos recebe o mesmo valor repetido a cada callback e o host de plugin mostra valores sem sentido. Descubra onde os valores das lanes sao montados antes de ir ao host e o que nao e filtrado. Nao altere nada.",
+    "answer_files": [
+      "engine/core/src/session.cpp",
+      "engine/core/include/sonora/insert_chain_runner.h"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "gather_lanes",
+      "post_plugin_param|isfinite"
+    ],
+    "note": "uma lane que avalia para NaN/infinito (pontos finitos cuja diferenca estoura float) era reenviada a cada callback; gather_lanes passou a pular valor nao finito",
+    "split": "train",
+    "fix_commit": "be4d7151060da5c5addc06e4f2a5c5588f90d9b3",
+    "area": "engine/core"
+  },
+  {
+    "id": "sonora-ptx-overlap",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "7ab381ba6c4a0380b99d4b5bb758f30af9285b9d",
+    "question": "No projeto sonora, importar uma sessao do Pro Tools onde um clip foi colocado por cima de outro falha inteira com um erro sobre faixa, em vez de importar; no Pro Tools o clip de cima simplesmente e o que se ouve. Descubra onde a regra do modelo barra isso na importacao. Nao altere nada.",
+    "answer_files": [
+      "interchange/ptx/src/ptx_map.cpp"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "overlap",
+      "stable_sort",
+      "position"
+    ],
+    "note": "a importacao ordenava as regioes e retornava erro 'regions overlap'; o modelo proibe sobreposicao, entao deveria cortar o trecho coberto do clip anterior (resolve_overlaps)",
+    "split": "val",
+    "fix_commit": "7056ca26f2cd9a5375d42e76f90a089a8bf2995a",
+    "area": "interchange/ptx"
+  },
+  {
+    "id": "sonora-fet-period-bar",
+    "repo": "/mnt/dados/sonora-test",
+    "base": "4ffd0890057bcfd99de8401c3b274fc7eae26bc9",
+    "question": "No projeto sonora, o teste de qualidade do compressor FET reprova de vez em quando so quando a maquina esta carregada pela suite paralela, com o pior bloco em 780 us contra um limite de 667 us, sem mudanca no codigo. Descubra onde o limite de tempo e verificado e o que falta para ele medir o codigo e nao a carga da maquina. Nao altere nada.",
+    "answer_files": [
+      "plugins/native/measure/src/suite.cpp",
+      "plugins/native/measure/include/sonora/measure/measure.h"
+    ],
+    "min_files": 1,
+    "keywords": [
+      "check_time_le",
+      "calibrat",
+      "reference"
+    ],
+    "note": "a barra de periodo era um valor de relogio de parede fixo via check_time_le; nao escalava pela lentidao medida do kernel de referencia (calibrate)",
+    "split": "train",
+    "fix_commit": "bdf29d7a796443807c2426e8ef41ad248c030ebf",
+    "area": "plugins/native"
   }
 ]
