@@ -2007,13 +2007,17 @@ static void fam_mcp_add(FILE *f, Scn *s) {
     cv_end(f);
 }
 
+#include "app/scenario.c"            /* motor de cenarios compostos: projetos de verdade, politica em C, tudo rodado no motor */
+#include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
 typedef void (*CuFam)(FILE *, Scn *);
 static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"brief-command", fam_brief_command}, {"brief-rule", fam_brief_rule}, {"brief-never-ask", fam_brief_never_ask}, {"brief-done", fam_brief_done},
     {"brief-docs", fam_brief_docs}, {"brief-absent", fam_brief_absent}, {"skill-match", fam_skill_match}, {"skill-none", fam_skill_none},
     {"skill-missing-need", fam_skill_missing}, {"skill-fail", fam_skill_fail}, {"mcp-call", fam_mcp_call}, {"mcp-chain", fam_mcp_chain},
     {"mcp-schema", fam_mcp_schema}, {"mcp-none-error", fam_mcp_none_error}, {"mixed", fam_mixed},
-    {"brief-write", fam_brief_write}, {"skill-write", fam_skill_write}, {"mcp-add", fam_mcp_add}};
+    {"brief-write", fam_brief_write}, {"skill-write", fam_skill_write}, {"mcp-add", fam_mcp_add},
+    {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run},
+    {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2466,6 +2470,7 @@ static void cu_gen(FILE *f, long n, uint64_t seed, const int *w, int wsum, const
         for (int att = 0; ; att++) {
             if (att >= 300) { g_cu_injmp = 0; cu_die("familia %s: 300 cenarios seguidos recusados pelo motor (ultimo motivo: %s)", g_cu_fams[fi].name, g_cu_why); }
             g_cu_rng = cu_mix(base + (uint64_t)att * 0x9E3779B1ull) | 1; g_cu_lang = lang; g_cu_att = att;
+            g_x_rng0 = g_cu_rng;
             snprintf(g_cu_sb, sizeof g_cu_sb, "%s/c%ld", g_cu_sbroot, i);
             g_cu_missing = NULL; g_cu_extra = NULL; g_cu_askno = 0;
             g_cu_injmp = 1;

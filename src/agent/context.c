@@ -175,8 +175,9 @@ static int ah_call_key(const char *s, int k, char *name, size_t nc, char *key, s
 }
 /* guarda um resultado que sai do contexto; o aviso no lugar dele da o caminho para o Read trazer de volta. 0600 em pasta
    0700: e o mesmo conteudo que ja esta nas sessoes gravadas. */
+static int g_cp_seq; static char g_cp_dir[700];      /* fora da funcao: o gerador de curriculo zera os dois a cada conversa (pasta HOME propria) */
 static int cp_stash(const char *a, size_t n, char *path, size_t cap) {
-    static int seq; static char dir[700];
+    int *const seqp = &g_cp_seq; char *const dir = g_cp_dir; const size_t dirsz = sizeof g_cp_dir;
     path[0] = 0;
     if (!dir[0]) {
         const char *home = getenv("HOME");
@@ -195,10 +196,10 @@ static int cp_stash(const char *a, size_t n, char *path, size_t cap) {
             rmdir(f);
         }
         if (d) closedir(d);
-        snprintf(dir, sizeof dir, "%s/%ld-%d", up, (long)time(NULL), (int)getpid());
+        snprintf(dir, dirsz, "%s/%ld-%d", up, (long)time(NULL), (int)getpid());
         if (mkdir(dir, 0700) != 0) { dir[0] = 0; return 0; }
     }
-    snprintf(path, cap, "%s/r%d.txt", dir, ++seq);
+    snprintf(path, cap, "%s/r%d.txt", dir, ++*seqp);
     const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
     FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
     if (!f) { if (fd >= 0) close(fd); path[0] = 0; return 0; }
