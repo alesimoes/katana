@@ -61,6 +61,7 @@
 #include "agent/fmt_glm.c"             /* chamada de ferramenta no formato do GLM */
 #include "agent/fmt_gemma4.c"          /* ferramentas no formato nativo do Gemma 4 */
 #include "agent/prefix_cache.c"        /* cache de prefixo persistente e aquecimento */
+#include "agent/snapshots.c"            /* fotos do estado recorrente na RAM, para voltar atras */
 #include "agent/fmt_harmony.c"         /* ferramentas no formato harmony (gpt-oss) */
 #include "agent/facts.c"               /* caderno de fatos e leitura por diferenca */
 #include "agent/context.c"             /* compactacao do contexto */
@@ -182,6 +183,7 @@ static const char KATANA_CHANGES[] = "";
 #include "app/deeptest.c"              /* katana selftest --deep: caminhos, estado, contexto longo, precisao */
 #include "app/attbench.c"              /* katana attbench: custo da atencao do qwen35moe por posicao */
 #include "app/visiontest.c"            /* katana vision: cabecalho, custo, etapas para o oraculo, fuzz dos decodificadores */
+#include "app/snaptest.c"              /* katana snaptest e snapreplay: fotos do estado recorrente */
 #include "app/main.c"                  /* toktest, subcomandos e main */
 #include "app/convert.c"               /* katana convert: checkpoint do Hugging Face (safetensors) -> GGUF */
 #include "render/sdconvert.c"           /* katana render convert: pesos do Stable Diffusion 1.5 -> GGUF (docs/render.md) */

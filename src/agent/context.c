@@ -230,7 +230,9 @@ static void ah_outline(const char *a, const char *e, Buf *o) {
         l = z + 1;
     }
 }
-static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
+static int g_ah_first;      /* so contando: a primeira mensagem que mudaria */
+/* first: mensagens antes dela nao mudam; passes: quantas voltas; left: so conta (nada muda) e devolve ali o que sobraria */
+static int ah_mask_at(AHist *h, int from, size_t budget, int keep_from, int first, int passes, size_t *left) {
     static AhRes R[2048];
     const char *K = "<tool_response>\n[resultado da ferramenta ", *E = "</tool_response>";
     int nr = 0, rounds = 0;
@@ -266,16 +268,17 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
         for (int j = i + 1; j < nr; j++) if (!strcmp(R[j].name, "Read") && R[j].whole && !strcmp(R[j].key, R[i].key)) { R[i].newest = 0; break; }
     }
     int out = 0;
-    for (int pass = 0; pass < 4 && total > budget; pass++)
+    for (int pass = 0; pass < passes && total > budget; pass++)
         for (int i = 0; i < nr && total > budget; i++) {
             const size_t n = R[i].e - R[i].a + R[i].img;
-            if (R[i].drop || n < AH_SMALL || R[i].round > rounds - AH_KEEP_ROUNDS) continue;
+            if (R[i].drop || n < AH_SMALL || R[i].msg < first || R[i].round > rounds - AH_KEEP_ROUNDS) continue;
             const int old = R[i].whole && R[i].key[0] && !R[i].newest;
             if (pass < 3 && keep_from > 0 && R[i].msg >= keep_from) continue;
             if (pass == 0 ? !old : pass == 1 ? R[i].newest : 0) continue;
             R[i].drop = 1; total -= n - 160 < n ? n - 160 : n; out++;
             if (!strcmp(R[i].name, "Read")) rd_forget_key(R[i].key);      /* o que esse Read entregou saiu do contexto: uma releitura entrega de novo */
         }
+    if (left) { *left = total; g_ah_first = h->n; for (int i = 0; i < nr; i++) if (R[i].drop) { g_ah_first = R[i].msg; break; } return out; }
     for (int i = 0; i < nr; i++) {                       /* saiu a leitura inteira: as notas "mudou/nao mudou" que apontam para ela saem junto */
         if (!R[i].drop || !R[i].newest) continue;
         for (int j = i + 1; j < nr; j++) if (!R[j].drop && R[j].note && !strcmp(R[j].key, R[i].key)) { R[j].drop = 1; out++; }
@@ -313,6 +316,54 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
         free(mg->s); mg->s = o.p;
     }
     return out;
+}
+static int ah_mask(AHist *h, int from, size_t budget, int keep_from) { return ah_mask_at(h, from, budget, keep_from, 0, 4, NULL); }
+/* custo do sufixo: tudo depois do primeiro byte mudado e lido de novo, entao quem mexe so no que vem depois de uma foto do
+   estado rele menos, mas tambem libera menos. Compara a ordem de sempre (0) com cada foto, entre resultados igualmente
+   dispensaveis (superados ou velhos, fora da etapa atual: as duas primeiras voltas), pelo custo por rodada do ciclo:
+   releitura dividida pelas rodadas que o espaco liberado rende, mais o custo de carregar o que ficou. So vale a foto que
+   deixa a conversa em ate `limit` tokens (acima disso viria o resumo). n, target, limit em tokens; per: bytes por token;
+   off e pos: byte e token de cada foto, da mais velha a mais nova. Devolve a primeira mensagem que pode mudar, ou 0. */
+#define CP_ROUND 400.0      /* tokens que uma rodada acrescenta */
+#define CP_HOLD 0.35e-3     /* s por rodada para cada token que fica no contexto */
+static double cp_reread_s(double from, double to) { return 0.0136 * (to - from) + 0.4e-6 * (to * to - from * from); }
+static int ah_cut_pick(AHist *h, const char *sys, int last_u, int tail, size_t bytes, int n, int target, int limit, double per, int sys_tok, int keep_from, const size_t *off, const int *pos, int ns) {
+    if (ns < 1 || n <= target) return 0;
+    const double over = (n - target) * per * 1.05;
+    size_t *at = xalloc((size_t)h->n + 1, sizeof(size_t));       /* byte onde o conteudo da mensagem i pode comecar a mudar */
+    Buf r = {0}; AHist pre = *h;
+    for (int i = 0; i < h->n; i++) {
+        pre.n = i; ah_render(&pre, sys, &r);
+        at[i] = r.n;
+        if (h->v[i].role == 'a') { const char *q = strstr(h->v[i].s, "<tool_call>"); at[i] += strlen(tf_end()) + strlen(tf_asst()) + (q ? (size_t)(q - h->v[i].s) : strlen(h->v[i].s)); }
+    }
+    at[h->n] = r.n;
+    free(r.p);
+    int got = 0; double best = 1e30;
+    for (int k = -1; k < ns; k++) {             /* -1: sem foto, as quatro voltas */
+        int f = last_u + 1;
+        while (k >= 0 && f < h->n && at[f] < off[k]) f++;
+        if (f >= tail) break;                   /* foto nova demais: depois dela so ficam as ultimas rodadas */
+        size_t freed = 0, left = 0;
+        int e1 = h->n;
+        for (int i = f; i < tail; i++)
+            if (h->v[i].role == 'a') for (const char *a = strstr(h->v[i].s, "<tool_call>"); a; a = strstr(a + 1, "<tool_call>")) {
+                const char *e = strstr(a, "</tool_call>");
+                if (e && e - a >= 1500 && !strstr(a, "[... ")) { freed += (size_t)(e - a) - 400; if (i < e1) e1 = i; }
+            }
+        const size_t need = over > freed ? (size_t)(over - freed) : 0;
+        ah_mask_at(h, last_u, bytes > need ? bytes - need : 0, keep_from, k < 0 ? 0 : f, k < 0 ? 4 : 2, &left);
+        if (g_ah_first < e1) e1 = g_ah_first;
+        const double F = (freed + (bytes > left ? bytes - left : 0)) / per, T = n - F;
+        if (F < 1 || (T > limit && k < 0)) { if (k < 0) break; continue; }      /* nem tudo basta: vem o resumo, que muda o comeco de qualquer jeito */
+        if (T > limit) continue;
+        int p0 = sys_tok;
+        for (int x = 0; x < ns; x++) if (off[x] <= at[e1] && pos[x] > p0) p0 = pos[x];
+        const double c = CP_ROUND * cp_reread_s(p0, T > p0 ? T : p0) / F + CP_HOLD * (n - F / 2);
+        if (c < best * (k < 0 ? 1 : 0.98)) { best = c; got = k < 0 ? 0 : f; }
+    }
+    free(at);
+    return got;
 }
 /* indice da primeira mensagem das ultimas AH_KEEP_ROUNDS rodadas (chamada 'a' e resultado 't'), depois de from */
 static int ah_tail(const AHist *h, int from) {
@@ -465,6 +516,7 @@ static char *ah_summary_live(Model *m, int pos, const char *pending) {
 #define CP_REQ_HEAD "\n\n[The user's current request, still in progress. Continue from the summary and do not redo what is done]\n"
 static int g_cp_nolive;    /* 1: o cache KV da conversa nao e confiavel (subagente nao devolveu): sem resumo ao vivo */
 
+static int g_cp_reread, g_cp_from;      /* ultima compactacao: tokens relidos e a posicao de onde recomecou */
 /* compacta o historico e recalcula o cache com historico + pending (texto do turno atual ainda fora do cache,
    que comeca pelo fecho da mensagem anterior). force: resume mesmo abaixo do alvo. Devolve o novo pos e os
    logits do fim em *lg_out, ou -1 se nem compactado cabe. */
@@ -487,13 +539,27 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
         const int tail = ah_tail(h, last_u);
         size_t bytes = 0;
         for (int i = 0; i < h->n; i++) if (h->v[i].role == 't') { const size_t L = strlen(h->v[i].s); bytes += L + vis_weight(h->v[i].s, h->v[i].s + L); }
-        for (int i = 0; i < tail; i++) shr += ah_shrink_call(&h->v[i]);
+        const double per = n > 0 ? (double)r.n / n : 3.3;                       /* bytes por token desta conversa */
+        const int keep = g_cp_phase > last_u ? g_cp_phase : 0;
+        int idx[SNAP_MAX]; size_t off[SNAP_MAX]; long end;
+        const int ns = snap_usable(m, r.p, idx, off, SNAP_MAX, &end);
+        int spos[SNAP_MAX];
+        for (int i = 0; i < ns; i++) spos[i] = g_sn.v[idx[i]].pos;
+        const int trig = sys_tok + CP_MIN;
+        const int first = ah_cut_pick(h, sys, last_u, tail, bytes, n, target, target + (trig - target) / 3, per, sys_tok, keep, off, spos, ns);
+        for (int i = first > last_u ? first : 0; i < tail; i++) shr += ah_shrink_call(&h->v[i]);
         ah_render(h, sys, &r); buf_str(&r, pending);
         n = ah_count(m, r.p);
-        const double per = n > 0 ? (double)r.n / n : 3.3;                       /* bytes por token desta conversa */
-        if (n > target) {
+        if (n > target && first) {      /* so depois da foto: o comeco fica como esta no cache */
             const double over = (n - target) * per * 1.05;
-            const int d = ah_mask(h, 0, (double)bytes > over ? (size_t)(bytes - over) : 0, g_cp_phase > last_u ? g_cp_phase : 0);
+            const int d = ah_mask_at(h, 0, (double)bytes > over ? (size_t)(bytes - over) : 0, keep, first, 2, NULL);
+            if (d) { shr += d; ah_render(h, sys, &r); buf_str(&r, pending); n = ah_count(m, r.p); }
+            bytes = 0; for (int i = 0; i < h->n; i++) if (h->v[i].role == 't') { const size_t L = strlen(h->v[i].s); bytes += L + vis_weight(h->v[i].s, h->v[i].s + L); }
+        }
+        if (n > target + (first ? (trig - target) / 3 : 0)) {
+            const double over = (n - target) * per * 1.05;
+            if (first) for (int i = 0; i < first; i++) shr += ah_shrink_call(&h->v[i]);
+            const int d = ah_mask(h, 0, (double)bytes > over ? (size_t)(bytes - over) : 0, keep);
             if (d) { shr += d; ah_render(h, sys, &r); buf_str(&r, pending); n = ah_count(m, r.p); }
         }
     }
@@ -579,16 +645,22 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     g_rd_epoch++;       /* o que o modelo tinha lido pode ter saido: a proxima leitura do arquivo vai inteira */
     if (n + 64 >= c->ctx) { free(r.p); return -1; }
     Ids ids = {0};
-    if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
-    encode(&m->tk, r.p, &ids);
+    int np = snap_plan(m, r.p, &ids);           /* recomeca da copia do estado mais funda que repete o comeco do texto novo */
+    const int snap = np;
+    if (!np) {
+        if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
+        encode(&m->tk, r.p, &ids);
+        np = pfx_prepare(m, &ids, sys);
+    }
     free(r.p);
-    const int np = pfx_prepare(m, &ids, sys);
+    g_cp_reread = ids.n - np; g_cp_from = np;
     *lg_out = forward_seq(m, ids.ids + np, ids.n - np, np, 1);
     const int after = ids.n;
     free(ids.ids);
     g_cp_floor = after + 4000; g_cp_debt = 0;
     fprintf(stderr, "%s[contexto compactado: %d -> %d tokens de %d (%d resultados de ferramenta encolhidos%s)]%s\n",
             CE(C_DIM), before, after, c->ctx, shr, summ ? ", turnos antigos resumidos" : "", CE(C_RESET));
+    fprintf(stderr, "%s[releitura: %d tokens a partir da posicao %d (%s)]%s\n", CE(C_DIM), g_cp_reread, g_cp_from, snap ? "copia do estado" : np ? "prefixo de sistema" : "do zero", CE(C_RESET));
     if (getenv("KATANA_UI")) { printf("\x01" "COMPACT %d %d\n", before, after); fflush(stdout); }
     return after;
 }
@@ -622,6 +694,25 @@ static int compact_test(void) {
     }
 #define T(i) (h.v[2 + 2 * (i)].s)
     CK(ah_mask(&h, 0, 1u << 20, 0) == 0, "cabe: nada sai");
+    {   /* custo do sufixo: fotos antes do resultado 1 e antes do resultado 3 (mensagens 4 e 8); rodadas 4 a 6 ficam (a partir da 9) */
+        size_t off[2] = { 0, 0 }, by = 0; Buf r = {0}; AHist pre = h;
+        pre.n = 4; ah_render(&pre, "", &r); off[0] = r.n; pre.n = 8; ah_render(&pre, "", &r); off[1] = r.n;
+        for (int i = 0; i < h.n; i++) if (h.v[i].role == 't') by += strlen(h.v[i].s);
+        const int tail = ah_tail(&h, 0);
+        int pos[2]; const double per = 3.0;
+        const int nt = (int)(by / 3) + 800; pos[0] = (int)(off[0] / 3); pos[1] = (int)(off[1] / 3);
+        CK(ah_cut_pick(&h, "", 0, tail, by, nt, nt - 700, nt - 300, per, 10, 0, off, pos, 0) == 0, "sem foto: a ordem de sempre");
+        CK(ah_cut_pick(&h, "", 0, tail, by, nt, nt - 700, nt - 300, per, 10, 0, off, pos, 1) == 4, "depois da foto ha o bastante: so mexe ali");
+        CK(ah_cut_pick(&h, "", 0, tail, by, nt, nt - 700, nt - 300, per, 10, 0, off, pos, 2) == 4, "a foto mais nova so deixa a leitura mais nova de um arquivo: vale a anterior");
+        CK(ah_cut_pick(&h, "", 0, tail, by, nt, nt - 700, nt - 2000, per, 10, 0, off, pos, 2) == 0, "nem tudo chega ao limite: vem o resumo, sem corte");
+        CK(ah_cut_pick(&h, "", 0, tail, by, nt, nt - 3000, nt - 1000, per, 10, 0, off, pos, 2) == 0, "depois da foto nao chega ao limite: sem corte");
+        CK(ah_cut_pick(&h, "", 0, tail, by, nt, nt - 700, nt - 300, per, 10, 4, off, pos, 2) == 0, "a etapa atual nao e sacrificada pela foto");
+        size_t left = 0;
+        CK(ah_mask_at(&h, 0, by - 2000, 0, 4, 2, &left) == 1 && left < by && strstr(T(0), "R0 ") && strstr(T(2), "R2 "), "so contar nao muda nada");
+        AHist e = {0}; for (int i = 0; i < h.n; i++) ah_push(&e, h.v[i].role, h.v[i].s, strlen(h.v[i].s));
+        CK(ah_mask_at(&e, 0, by - 2000, 0, 4, 2, NULL) == 1 && !strcmp(e.v[2].s, T(0)) && strstr(e.v[6].s, "Bash make test was removed"), "com o corte, o que vem antes fica byte a byte");
+        ah_clear(&e); free(e.v); free(r.p);
+    }
     CK(ah_mask(&h, 0, 19200, 0) == 1 && strstr(T(0), "result of Read a.c was removed"), "a leitura superada sai primeiro");
     CK(strstr(T(0), "newer reading") != NULL, "superada: nao manda trazer de volta");
     CK(strstr(T(3), "R3 ") != NULL, "a leitura mais nova do mesmo arquivo fica");

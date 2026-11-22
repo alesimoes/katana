@@ -735,7 +735,7 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
     int common = 0;
     if (!fake) {
         while (common < ids.n && common < srv_cache.n && ids.ids[common] == srv_cache.ids[common]) common++;
-        common = cache_rewind(m, srv_cache.n, common, ids.n);
+        common = snap_rewind(m, ids.ids, srv_cache.n, common, ids.n);
         srv_cache.n = common;
     }
 
@@ -767,7 +767,7 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
         for (size_t i = 0; i < L && o.alive && !o.stopped; i += 3) { oa_feed(&o, fake + i, L - i < 3 ? L - i : 3, 0); gen++; }
         natural = 1;
     } else {
-        float *lg = forward_seq(m, ids.ids + common, ids.n - common, common, 1);
+        float *lg = snap_feed(m, ids.ids, ids.n, common);
         int pos = ids.n;
         for (int i = common; i < ids.n; i++) ids_push(&srv_cache, ids.ids[i]);
         t1 = now_sec();

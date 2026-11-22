@@ -295,8 +295,27 @@ static void lk_finish(Model *m);
 static float *lk_forward(Model *m, int token, int pos);
 static void lk_report(void);
 /* as camadas da GPU so sao usadas pelo grafo da GPU; na CPU os produtos sao sempre locais */
+/* o que esta no cache KV (ids por linha) e ate onde o estado recorrente foi: so com as fotos do estado ligadas (kvt.on,
+   agent/snapshots.c). Todo token processado passa por forward ou forward_seq */
+static struct { int on, n, cap, bad, cpu, top, dry; int *ids; void (*cut)(int pos0); } kvt;
+static void kvt_note(const int *toks, int n, int pos0) {
+    const int cpu = gpu.force_cpu != 0;
+    if (pos0 == 0) { kvt.bad = 0; kvt.cpu = cpu; }
+    else if (pos0 != kvt.n || cpu != kvt.cpu) kvt.bad = 1;      /* o estado nao e o desta posicao: sem fotos daqui em diante */
+    if (pos0 < kvt.top) kvt.cut(pos0);
+    for (int i = 0; i < n && pos0 + i < kvt.cap; i++) kvt.ids[pos0 + i] = toks[i];
+    kvt.n = pos0 + n;
+}
+/* linhas carregadas de fora (disco): ids NULL = desconhecidas */
+static void kvt_load(const int *ids, int n) {
+    if (!kvt.on) return;
+    if (kvt.top) kvt.cut(0);
+    kvt.n = 0; kvt.bad = 1;
+    if (ids && n <= kvt.cap) { memcpy(kvt.ids, ids, sizeof(int) * (size_t)n); kvt.n = n; kvt.bad = 0; kvt.cpu = gpu.force_cpu != 0; }
+}
 static float *forward(Model *m, int token, int pos, int want_logits) {
     if (lk_on_) lk_hook(m, &token, 1, pos);
+    if (kvt.on) { kvt_note(&token, 1, pos); if (kvt.dry) { m->logits[m->cfg.eos] = kvt.dry++ % 390 ? -5.0f : 5.0f; return m->logits; } }
     const Config *c = &m->cfg;
     if (vis_rp || token >= VIS_BASE) vis_seq(m, &token, 1, pos);
     if (c->q4e) return q4_forward(m, &token, 1, pos, want_logits);
@@ -333,7 +352,17 @@ static int g4_batch(const Model *m) {
 }
 
 /* processa n tokens seguidos a partir de pos0 (em lotes, na GPU); logits do ultimo se pedido */
+static float *forward_seq_in(Model *m, const int *toks, int n, int pos0, int want_logits);
 static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_logits) {
+    if (!kvt.on) return forward_seq_in(m, toks, n, pos0, want_logits);
+    kvt_note(toks, n, pos0);
+    if (kvt.dry) { m->logits[m->cfg.eos] = -5.0f; kvt.dry = 1; return m->logits; }      /* katana snapreplay: so as contas, sem modelo */
+    kvt.on = 0;         /* ja anotado: os forward de dentro nao repetem */
+    float *lg = forward_seq_in(m, toks, n, pos0, want_logits);
+    kvt.on = 1;
+    return lg;
+}
+static float *forward_seq_in(Model *m, const int *toks, int n, int pos0, int want_logits) {
     float *lg = NULL;
     int i = 0;
     if (lk_on_) lk_hook(m, toks, n, pos0);

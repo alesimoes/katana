@@ -1360,7 +1360,7 @@ static void lc_cleanup_tmp(void) { if (g_mcp_tmp[0]) remove(g_mcp_tmp); }
 static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "convert", "knowledge", "import", "merge", "distill", "agentlog", "export",
-        "learn", "specialize", "gradcheck", "train", "selftest", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "info", "chat", "run",
+        "learn", "specialize", "gradcheck", "train", "selftest", "snaptest", "snapreplay", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "info", "chat", "run",
         "install", "uninstall", "adopt", "init", "skill", "brief", "memory", "calltest", "curriculum", "lbtest", "compare", "compacttest", "codebench", "coder", "docsel", "uioe",
         "kerneltest", "lookuptest", "placenote", "version", "update", "vision", NULL};      /* a mesma lista do main.c: acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
@@ -1409,6 +1409,8 @@ static void main_usage(FILE *f) {
         "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
         "  katana tiersim run <modelo.gguf> <texto> <rastro.bin> | sim <rastro.bin>   rastro de roteamento e simulacao de caches/previsores\n"
+        "  katana snaptest <modelo> [--engine]   copias do estado recorrente contra o calculo do zero\n"
+        "  katana snapreplay <modelo> <.ksess...>  tokens relidos por compactacao, com e sem copias (sem rodar o modelo)\n"
         "  katana attbench [posicoes...]         custo da atencao (qwen35moe) por posicao, sem modelo\n"
         "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"

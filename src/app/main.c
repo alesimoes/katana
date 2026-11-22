@@ -1242,6 +1242,17 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return q4_check(&m, argv[3]);
     }
+    if (argc >= 3 && strcmp(argv[1], "snaptest") == 0) {
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return snaptest(&m, argc - 3, argv + 3);
+    }
+    if (argc >= 4 && strcmp(argv[1], "snapreplay") == 0) {
+        g_vocab_only = 1;
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return snapreplay(&m, argc - 3, argv + 3);
+    }
     if (argc >= 2 && strcmp(argv[1], "attbench") == 0) return attbench(argc - 2, argv + 2);
     if (argc >= 3 && strcmp(argv[1], "selftest") == 0) {
         Model m; memset(&m, 0, sizeof m);

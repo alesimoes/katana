@@ -714,7 +714,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
     /* reuso de prefixo: mantem as posicoes do cache que coincidem com o inicio do novo prompt */
     int common = 0;
     while (common < ids.n && common < srv_cache.n && ids.ids[common] == srv_cache.ids[common]) common++;
-    common = cache_rewind(m, srv_cache.n, common, ids.n);      /* DeltaNet e o anel do gemma4 nem sempre podem voltar */
+    common = snap_rewind(m, ids.ids, srv_cache.n, common, ids.n);      /* DeltaNet e o anel do gemma4 nem sempre podem voltar */
     srv_cache.n = common;
 
     const char *hd = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n"
@@ -723,7 +723,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
 
     const double t0 = now_sec();
     int pos = common;
-    float *lg = forward_seq(m, ids.ids + common, ids.n - common, common, 1);
+    float *lg = snap_feed(m, ids.ids, ids.n, common);
     pos = ids.n;
     for (int i = common; i < ids.n; i++) ids_push(&srv_cache, ids.ids[i]);
     const double t1 = now_sec();

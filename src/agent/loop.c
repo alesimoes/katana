@@ -287,7 +287,7 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     const int geo = pfx_geom(m, &ngl, &esz, &backend) && !(getenv("KATANA_PFX") && atoi(getenv("KATANA_PFX")) == 0);
     const uint64_t key = geo ? pfx_key(m, ids.ids, ids.n, ngl, esz, backend) : 0;
     if (getenv("KATANA_RESUME_DBG")) fprintf(stderr, "[retomar: geo=%d chave=%016llx em %.2f s]\n", geo, (unsigned long long)key, now_sec() - t0);
-    if (geo && pfx_load(m, key, ids.n, ngl, esz, backend)) { kv = 1; vis_seq(m, ids.ids, ids.n, 0); }
+    if (geo && pfx_load(m, key, ids.n, ngl, esz, backend)) { kv = 1; vis_seq(m, ids.ids, ids.n, 0); kvt_load(ids.ids, ids.n); }
     else {
         if (ids.n > 800) {
             fprintf(stderr, "[retomar: recalculando %d tokens (so na primeira vez; depois o cache em disco abre na hora)]\n", ids.n);
@@ -557,6 +557,7 @@ static int agent(Model *m, int max_tokens, float temp) {
 #define AGENT_SYS() do { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); } while (0)
     if (g_resume_path[0] && !g_sess_path[0]) snprintf(g_sess_path, sizeof g_sess_path, "%s", g_resume_path);
     autoindex_start();
+    snap_on(m);                                             /* fotos do estado recorrente (agent/snapshots.c) */
     if (cml && !g_resume_path[0]) { AGENT_SYS(); pfx_warm(m, sys); }     /* motor aquecido antes da primeira mensagem */
     for (int rs = 1;; rs = 0) {
         if (rs && g_resume_path[0]) snprintf(line, sizeof line, "/resume %s", g_resume_path);
@@ -743,6 +744,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             const int tskip = g_teacher && cml && !(getenv("KATANA_TEACHER_FEED") && atoi(getenv("KATANA_TEACHER_FEED")));
             if (tskip) g_ctx_lost = 1;
             const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && cp_due(cp_sys(m, sys), cp_hard(m), pos + ids.n, g_cp_step)) || g_ctx_lost);
+            const int cp_stepped = g_cp_step;
             if (g_cp_step) { g_cp_step = 0; g_cp_phase = hist.n; }       /* a etapa nova comeca depois do que ja esta no historico */
             if (!tskip) { g_cp_nolive = g_ctx_lost; g_ctx_lost = 0; }      /* o cache nao esta em dia (subagente, professor): o caminho de compactacao recalcula a conversa */
             if (!need && !tskip && pos + ids.n + 64 >= c->ctx) {
@@ -766,6 +768,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 first = 0;
             } else {
                 const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
+                if (!np) snap_round(m, pos, cp_stepped);
                 lg = agent_feed(m, ids.ids + np, ids.n - np, pos + np);
                 pos += ids.n; first = 0;
             }

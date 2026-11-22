@@ -215,6 +215,7 @@ static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     pfx_path(path, sizeof path, key, 0);
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
+    kvt_load(NULL, 0);      /* as linhas e o estado vao mudar; quem chama diz os ids */
     PfxHdr h;
     int ok = fread(&h, sizeof h, 1, f) == 1 && h.magic == PFX_MAGIC && h.key == key && h.n == n && h.L == c->n_layers &&
              h.kvd == (int32_t)kvd && h.ctx == c->ctx && h.ngl == ngl && h.esz == esz && h.backend == backend;
@@ -282,7 +283,7 @@ static void pfx_run(Model *m, const int *ids, int from, int to, int total, int d
 static int pfx_fill(Model *m, const int *ids, int n, int stable, int ngl, int esz, int backend, int *calc, int *saved) {
     *calc = 0; *saved = 0;
     const uint64_t key = pfx_key(m, ids, n, ngl, esz, backend);
-    if (pfx_load(m, key, n, ngl, esz, backend)) { vis_seq(m, ids, n, 0); return 1; }
+    if (pfx_load(m, key, n, ngl, esz, backend)) { vis_seq(m, ids, n, 0); kvt_load(ids, n); return 1; }
     int from = 0;
     if (stable >= 256 && stable < n) {
         const uint64_t ks = pfx_key(m, ids, stable, ngl, esz, backend);
@@ -290,7 +291,7 @@ static int pfx_fill(Model *m, const int *ids, int n, int stable, int ngl, int es
             pfx_run(m, ids, 0, stable, n, 0);
             pfx_save(m, ks, stable, ngl, esz, backend);
             *calc += stable;
-        } else vis_seq(m, ids, stable, 0);
+        } else { vis_seq(m, ids, stable, 0); kvt_load(ids, stable); }
         from = stable;
     }
     pfx_run(m, ids, from, n, *calc ? n : n - from, *calc ? from : 0);
