@@ -47,6 +47,7 @@ static void env_line(EnvB *b, const char *label, const char *dir, int max, int d
     if (n > max) env_add(b, ", ... (+%d more)", n - max);
     env_add(b, "\n");
 }
+static int ct_set2(void);
 static void agent_env(char *out, size_t cap) {
     EnvB b = {out, 0, cap};
     char cwd[4200], home[1024], t[512];
@@ -126,7 +127,8 @@ static void agent_env(char *out, size_t cap) {
         env_line(&b, lb, par, 8, 1, 1);
     }
     { char sk[900]; sk_env_line(sk, sizeof sk); if (sk[0]) env_add(&b, "%s", sk); }
-    env_add(&b, "- Internet: %s\n\n", g_web ? "yes (web_search, web_fetch; curl and wget in run_command)." : "no: say so when the user needs something from the web.");
+    env_add(&b, "- Internet: %s\n\n", !g_web ? "no: say so when the user needs something from the web."
+            : ct_set2() ? "yes (WebSearch, WebFetch; curl and wget in Bash)." : "yes (web_search, web_fetch; curl and wget in run_command).");
 }
 
 /* prompt de sistema do agente. Curto de proposito: poucas regras e so as ferramentas principais (as outras continuam

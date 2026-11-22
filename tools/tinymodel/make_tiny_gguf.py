@@ -81,12 +81,18 @@ def main():
         tokens.append(x + y)
     types = [1] * len(tokens)
     specials = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
-    if a.template == "gemma4":       # o agente para a geracao do Gemma 4 em <|tool_response> (precisa existir no vocabulario)
-        specials.append("<|tool_response>")
     for sp in specials:
         tokens.append(sp)
         types.append(3)
     eos = tokens.index("<|im_end|>")
+    if a.template == "gemma4":
+        # marcas do Gemma 4 com os tipos do modelo de verdade: 3 (controle) para turno, declaracao e <|think|>; 4 (definido
+        # pelo usuario, nao para a geracao) para chamada, resposta, aspas e canal. O fim de turno <turn|> e o eos
+        for sp, ty in [("<|turn>", 3), ("<turn|>", 3), ("<|tool>", 3), ("<tool|>", 3), ("<|think|>", 3), ("<|tool_call>", 4),
+                       ("<tool_call|>", 4), ("<|tool_response>", 4), ("<tool_response|>", 4), ('<|"|>', 4), ("<|channel>", 4), ("<channel|>", 4)]:
+            tokens.append(sp)
+            types.append(ty)
+        eos = tokens.index("<turn|>")
     V = len(tokens)
 
     dim, heads, hidden, layers, ctx = 64, 4, 128, 2, 512
@@ -154,7 +160,13 @@ def main():
     if not g4:                       # gemma4: saida amarrada ao embedding
         tensors.append(("output.weight", [dim, V], out))
     else:
-        tensors[0] = ("token_embd.weight", [dim, V], rand(V * dim, 0.05))
+        emb = rand(V * dim, 0.05)
+        if a.no_eos:                 # gemma4 (saida amarrada): nenhuma marca especial sai na geracao, o texto e sempre longo
+            for t in range(V):
+                if types[t] != 1:
+                    for i in range(dim):
+                        emb[t * dim + i] = 0.0
+        tensors[0] = ("token_embd.weight", [dim, V], emb)
     for l in range(layers):
         if g4:
             p = "blk.%d." % l

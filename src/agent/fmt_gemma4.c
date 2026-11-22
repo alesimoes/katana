@@ -65,18 +65,23 @@ static void g4_prop(Buf *o, const char *key, const char *v, int depth) {
     g4_js_text(dv, &t);
     if (dv && t.n) { buf_str(o, "description:" G4Q); buf_str(o, t.p); buf_str(o, G4Q); comma = 1; }
     g4_js_text(g4_js_get(v, "type"), &ty); g4_upper(&ty);
+    if (!ty.p) buf_str(&ty, "");            /* sem tipo no esquema: o template escreve type:<|"|><|"|> */
     const char *ev = g4_js_get(v, "enum"), *iv = g4_js_get(v, "items"), *pv = g4_js_get(v, "properties"), *rv = g4_js_get(v, "required");
     if (strcmp(ty.p, "STRING") == 0 && ev) { if (comma) buf_str(o, ","); buf_str(o, "enum:"); g4_str_list(o, ev); comma = 1; }
     if (strcmp(ty.p, "ARRAY") == 0 && iv && *iv == '{') {
-        Buf it = {0};
+        /* como o template: as chaves de items em ordem alfabetica (description, enum, properties, required, type) */
+        Buf it = {0}, idd = {0};
         g4_js_text(g4_js_get(iv, "type"), &it); g4_upper(&it);
-        const char *ip = g4_js_get(iv, "properties");
+        const char *ip = g4_js_get(iv, "properties"), *ir = g4_js_get(iv, "required"), *ie = g4_js_get(iv, "enum"), *id = g4_js_get(iv, "description");
         if (comma) buf_str(o, ","); buf_str(o, "items:{"); comma = 1;
         int c2 = 0;
-        if (ip && *ip == '{' && depth < 6) { buf_str(o, "properties:{"); g4_props(o, ip, depth + 1); buf_str(o, "}"); c2 = 1; }
+        if (id && *id == '"') { g4_js_text(id, &idd); buf_str(o, "description:" G4Q); buf_str(o, idd.p ? idd.p : ""); buf_str(o, G4Q); c2 = 1; }
+        if (ie && *ie == '[') { if (c2) buf_str(o, ","); buf_str(o, "enum:"); g4_str_list(o, ie); c2 = 1; }
+        if (ip && *ip == '{' && depth < 6) { if (c2) buf_str(o, ","); buf_str(o, "properties:{"); g4_props(o, ip, depth + 1); buf_str(o, "}"); c2 = 1; }
+        if (ir && *ir == '[') { if (c2) buf_str(o, ","); buf_str(o, "required:"); g4_str_list(o, ir); c2 = 1; }
         if (it.n) { if (c2) buf_str(o, ","); buf_str(o, "type:" G4Q); buf_str(o, it.p); buf_str(o, G4Q); }
         buf_str(o, "}");
-        free(it.p);
+        free(it.p); free(idd.p);
     }
     if (strcmp(ty.p, "OBJECT") == 0) {
         if (pv && *pv == '{' && depth < 6) { if (comma) buf_str(o, ","); buf_str(o, "properties:{"); g4_props(o, pv, depth + 1); buf_str(o, "}"); comma = 1; }
@@ -135,10 +140,12 @@ static int g4_tool_decl(Buf *o, const char *line) {
 }
 /* prompt de sistema do agente (formato com <tools> JSON) -> texto do sistema do gemma4: as instrucoes de formato
    de chamada saem e as declaracoes vao no fim, no formato nativo */
+static char g_g4_tools_json[24000];      /* o bloco <tools> em JSON antes da conversao: a restricao de chamada le daqui */
 static void g4_agent_sys(char *sys, size_t cap) {
     char *a = strstr(sys, "# Tools\n\nYou may call"), *t0 = strstr(sys, "<tools>\n");
     char *t1 = t0 ? strstr(t0 + 8, "</tools>") : NULL;      /* o fecho da lista, nao o "<tools></tools>" da frase */
-    if (!a || !t0 || !t1 || t1 < t0) return;
+    if (!a || !t0 || !t1 || t1 < t0) { g_g4_tools_json[0] = 0; return; }
+    snprintf(g_g4_tools_json, sizeof g_g4_tools_json, "%.*s", (int)(t1 + 8 - t0), t0);
     /* fim do paragrafo de instrucoes de formato: a ultima marca de fecho antes da memoria/extra
        (o texto Qwen traz "<tool_call></tool_call>" no meio e o exemplo "</tool_call>" no fim) */
     char *tail = t1 + 8;
@@ -159,7 +166,8 @@ static void g4_agent_sys(char *sys, size_t cap) {
     buf_add(&out, "", 0);
     /* KATANA_G4_ENVLAST=1 (medida): o bloco que muda por pasta (ambiente, instrucoes do projeto, memoria) vai depois
        das declaracoes, para o cache de prefixo aproveitar as declaracoes entre pastas. Padrao: declaracoes no fim,
-       como no template do modelo */
+       como no template do modelo, que escreve o texto do sistema e logo depois as declaracoes, e nada depois delas
+       no turno do sistema (docs/new-models.md, Gemma 4) */
     const char *envp = NULL;
     if (getenv("KATANA_G4_ENVLAST") && atoi(getenv("KATANA_G4_ENVLAST")) != 0) {
         envp = strstr(out.p ? out.p : "", "# Environment (where you are)");

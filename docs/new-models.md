@@ -266,3 +266,59 @@ Pending: `dn_state` (chunked path) splits S into high + remainder with a coopmat
 also folds that round trip. The dense models can use the same precise variants if the batch error is a nuisance
 (llama3.2-3b 0.026), at the cost of 3 products per tile. `KATANA_VKC_EXACT=1` in `vkcheck` puts the CPU cold experts in
 exact float (measurement).
+
+
+## Gemma 4 26B-A4B in the agent (working model since 2026-11-21)
+
+Chat template (read from the GGUF metadata, `tokenizer.chat_template`) and what the agent renders:
+
+- **System turn**: `<|turn>system\n` + (`<|think|>\n` when thinking is on) + system text (trimmed) + every tool as
+  `<|tool>declaration:NAME{description:<|"|>..<|"|>,parameters:{properties:{..},required:[..],type:<|"|>OBJECT<|"|>}}<tool|>`
+  + `<turn|>\n`. The template puts the declarations right after the system text and nothing after them, so the
+  declarations must stay at the END of the system turn. Consequence for the prefix cache: the per-folder block
+  (environment, project instructions, memory) sits between the stable rules and the declarations, so a new folder
+  recomputes the environment block AND the declarations. Measured with the real tokenizer (vocabulary only) on
+  2026-11-21, default tool set, one MCP server, one skill: 2,227 tokens = 822 stable (rules + MCP cards) + 430 per
+  folder (depends on the folder listing) + 977 declarations. Cheapest order the template allows: rules and MCP
+  cards (stable, cached once for every folder) -> environment/project/memory -> declarations; that is the default.
+  `KATANA_G4_ENVLAST=1` moves the per-folder block after the declarations (only ~430 tokens recomputed per folder)
+  but puts text where the template never puts any; it stays off until a codebench pass shows it does not hurt.
+- **Declarations**: `g4_agent_sys` (`src/agent/fmt_gemma4.c`) converts the JSON `<tools>` block. Checked byte for byte
+  against the template rendered with jinja2 (`tools/traintest/gemma4_golden.py sys`), both tool sets, thinking on and
+  off, with an MCP server and a skill. Fixed on 2026-11-21: `items` lost its `required` list (AskUserQuestion), and
+  `items` keys now follow the template order (description, enum, properties, required, type); a property without
+  `type` no longer dereferences a null pointer. MCP servers are cards in the system text (before the environment),
+  the skills line is in the environment block: both survive the conversion.
+- **Calls and results**: the model writes `<|tool_call>call:NAME{k:<|"|>v<|"|>,n:3}<tool_call|>` and the engine stops
+  at `<|tool_response>` (type 4, not a control token: every side generation stops on it explicitly). Results go inside
+  the model's own turn: `<|tool_response>response:NAME{value:<|"|>...<|"|>}<tool_response|>`, then the model continues
+  (with thinking on the prompt reopens `<|channel>thought\n`, as the template's generation prompt does). Since
+  2026-11-21 the result is always in this native block, also when the model used the generic `<tool_call>{json}`
+  (`KATANA_G4_PLAIN_RESULT=1` restores the old plain block).
+- **Engine notes**: the notes attached to a result (repeat, failure streak, blocked prerequisite, plan first at the
+  3rd/6th call, step reminder every 5th result, round limit) are inside the result value, read as tool output. The
+  notes that need a user turn (project verification at the end of a request, todo reminder, live compaction request,
+  sub-agent closing notes) close the model turn and open `<|turn>user`: the template accepts a model turn that ends in
+  tool responses followed by a user turn.
+- **Known difference kept on purpose**: the KV cache holds each model turn as generated. With thinking off every model
+  turn starts with the empty channel `<|channel>thought\n<channel|>` (the template writes it only in the generation
+  prompt); with thinking on, earlier thoughts stay (the template drops them from history). Re-rendering history the
+  template way would cost a recompute every turn.
+- **Call-format constraint**: `src/agent/callgrammar.c` reads the declared tools from the JSON block saved by the
+  conversion (before, with `KATANA_TOOLS=1` it saw no tools on Gemma 4), plus the table tools, the old tools named in
+  the prompt and the MCP tools. It does not switch on inside the thought channel, also when the prompt opened the
+  channel after tool results (`g_g4_thought_open`).
+- **Mechanisms ported on 2026-11-21** (each with a switch): live compaction inside a long request and for `/compact`
+  (`KATANA_COMPACT_LIVE=0` off, both formats); reading notes and the sub-agent `delegate`/`Agent` (`KATANA_G4_SIDE=0`
+  off; `KATANA_DIGEST=0` still turns off the notes in every format). Side contexts and the summary run with the empty
+  thought channel (no reasoning). Tests: `tools/traintest/gemma4_part.sh` (tiny Gemma 4 model with the real special
+  tokens and their types, `make_tiny_gguf.py --arch gemma4 --template gemma4`, scripted stand-in teacher).
+
+Checks that remain for the owner's machine once the GPU is free (Gemma 4, real model):
+1. First start time in a new folder (default order) and in a folder already seen; the same with `KATANA_G4_ENVLAST=1`.
+2. Codebench pass on the `write-*`, `conv-*`, `prereq-*` and `extend-*` tasks, default switches; then with
+   `KATANA_G4_ENVLAST=1` to decide its default.
+3. Tool-call validity per 100 calls in `agente.log` with and without the constraint (`KATANA_CALL_GRAMMAR=0`), thinking
+   off (desktop) and on.
+4. Compaction time on a long job (live summary against `KATANA_COMPACT_LIVE=0`) and the quality of the summary.
+5. One sub-agent call and one large `read_file` note (time, note quality, main context reloaded).

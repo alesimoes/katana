@@ -163,6 +163,7 @@ static int go_reason(void);
 static int cg_turn_begin(const Config *c, const Tokenizer *tk, int V);         /* src/agent/callgrammar.c */
 static int cg_check(const float *lg, int V, float temp, int t0);
 static void cg_after(const Tokenizer *tk, int V, const Buf *cap, int t, int thinking);
+static int g_g4_thought_open;      /* gemma4: o prompt termina com o canal de pensamento aberto (depois de resultados de ferramenta) */
 static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp, int stop2, Buf *cap) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
@@ -172,6 +173,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     const int cg = cg_turn_begin(c, tk, c->vocab);              /* agente: chamadas validas por construcao */
     /* raciocinio (<think> aberto no prompt): aparece apagado e separado da resposta */
     int thinking = c->think && strncmp(think_pre(c), "<think>", 7) == 0 && !strstr(think_pre(c), "</think>"), skipnl = 0, skiplabel = 0;
+    if (c->chat_fmt == 8 && g_g4_thought_open) thinking = 1;     /* a restricao de chamada nao liga dentro do pensamento */
     /* harmony (gpt-oss): canal atual (1 analise, 2 final, 3 comentario), lendo nome do canal, dentro do corpo, cabecalho de analise impresso */
     int go_ch = go_reason() ? 1 : 2, go_rdch = 0, go_body = c->chat_fmt == 9, go_an = 0;
     if (thinking) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); fflush(stdout); }

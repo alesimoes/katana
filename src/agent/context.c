@@ -1,4 +1,4 @@
-/* ---------- compactacao do contexto do agente (formato ChatML) ----------
+/* ---------- compactacao do contexto do agente (formatos ChatML e Gemma 4) ----------
  * O agente guarda as mensagens que ja estao no cache KV (role 'u' usuario, 'a' assistente, 't' resultados de
  * ferramenta, que vao como mensagem do usuario). Perto do fim do contexto, em camadas: (1) troca o corpo dos
  * resultados de ferramenta antigos por um aviso curto; (2) resume os turnos antigos com o proprio modelo;
@@ -77,8 +77,8 @@ static int cp_trig(Model *m, const char *sys) {
     return t > lc ? lc : t;
 }
 static int ah_shrink_call(AMsg *mg) {
-    if (g_ah_g4 || mg->role != 'a') return 0;
-    const char *K = "<tool_call>", *E = "</tool_call>";
+    if (mg->role != 'a') return 0;
+    const char *K = g_ah_g4 ? "<|tool_call>" : "<tool_call>", *E = g_ah_g4 ? "<tool_call|>" : "</tool_call>";
     int ch = 0;
     Buf o = {0};
     const char *q = mg->s;
@@ -191,24 +191,47 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
 /* resumo "ao vivo": em vez de reler a conversa inteira num prompt novo (caro: o texto todo passa de novo pelo modelo),
  * aproveita o cache KV que ja guarda a conversa. Processa so o texto pendente (resultado da ultima ferramenta) com um
  * pedido de resumo no fim e gera o resumo dali. O cache fica sujo com esse pedido; quem chama recalcula em seguida.
- * So ChatML. Devolve texto alocado ou NULL (sem espaco, modelo chamou ferramenta, resposta vazia). */
+ * ChatML: o pedido vai no fim da mensagem pendente (resultado de ferramenta ou do usuario). Gemma 4: os resultados
+ * ficam dentro do turno do modelo, entao o turno fecha e o pedido vai num turno do usuario (o template do modelo
+ * aceita turno do modelo que termina em resposta de ferramenta seguido de turno do usuario); se o pendente ja e um
+ * turno do usuario, o pedido entra nele. Sem pendente (/compact): o pedido e um turno novo do usuario. O resumo sai
+ * sem raciocinio (canal de pensamento vazio). KATANA_COMPACT_LIVE=0 desliga (volta ao resumo num prompt novo).
+ * Devolve texto alocado ou NULL (sem espaco, modelo chamou ferramenta, resposta vazia). */
 #define CP_NOTE "[katana: context compaction] Pause the task for this one message and do NOT call any tool. Write a faithful summary of " \
     "the conversation so far, in the language of the conversation, in at most 25 lines: 1) what the user asked, keeping exact requirements, " \
     "names and numbers; 2) what is already done: every file created or changed, with its path and what it contains now, and the commands run " \
     "with their important results; 3) the last error or failing test, quoted exactly; 4) what is left to do, in order. Do not invent anything. " \
     "After this message the older messages are removed and you continue the task from your summary."
+static int cp_live_on(void) { const char *e = getenv("KATANA_COMPACT_LIVE"); return !(e && atoi(e) == 0); }
 static char *ah_summary_live(Model *m, int pos, const char *pending) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     const int im_end = map_get(&tk->vocab, "<|im_end|>", 10);
-    char K[64]; snprintf(K, sizeof K, "%s%s", tf_end(), tf_asst());
-    const char *cut = NULL;
-    for (const char *q = strstr(pending, K); q; q = strstr(q + 1, K)) cut = q;      /* a abertura do turno do assistente, no fim */
-    if (!cut) return NULL;
+    const int tcall = g_ah_g4 ? map_get(&tk->vocab, "<|tool_call>", 12) : -1;
     Buf pr = {0};
-    buf_add(&pr, pending, (size_t)(cut - pending));
-    buf_str(&pr, "\n\n" CP_NOTE); buf_str(&pr, K);
-    buf_str(&pr, think_off(c));
+    if (g_ah_g4) {
+        static const char MO[] = "<turn|>\n<|turn>model\n", TH[] = "<|channel>thought\n";
+        const char *cut = NULL;
+        for (const char *q = strstr(pending, MO); q; q = strstr(q + 1, MO)) cut = q;      /* o pendente e um turno do usuario */
+        if (cut) { buf_add(&pr, pending, (size_t)(cut - pending)); buf_str(&pr, "\n\n" CP_NOTE "<turn|>\n"); }
+        else {          /* resultados de ferramenta (ou nada): fecha o turno do modelo; tira o canal de pensamento ja aberto */
+            size_t n = strlen(pending);
+            if (n >= sizeof TH - 1 && !strcmp(pending + n - (sizeof TH - 1), TH)) n -= sizeof TH - 1;
+            buf_add(&pr, pending, n);
+            buf_str(&pr, "<turn|>\n<|turn>user\n" CP_NOTE "<turn|>\n");
+        }
+        buf_str(&pr, "<|turn>model\n<|channel>thought\n<channel|>");
+    } else {
+        char K[64]; snprintf(K, sizeof K, "%s%s", tf_end(), tf_asst());
+        const char *cut = NULL;
+        for (const char *q = strstr(pending, K); q; q = strstr(q + 1, K)) cut = q;      /* a abertura do turno do assistente, no fim */
+        if (cut) { buf_add(&pr, pending, (size_t)(cut - pending)); buf_str(&pr, "\n\n" CP_NOTE); }
+        else if (!*pending) { buf_str(&pr, tf_end()); buf_str(&pr, tf_user()); buf_str(&pr, CP_NOTE); }     /* /compact: turno novo */
+        else return NULL;
+        buf_str(&pr, K);
+        buf_str(&pr, think_off(c));
+    }
+    if (getenv("KATANA_COMPACT_DUMP")) { FILE *df = fopen(getenv("KATANA_COMPACT_DUMP"), "ab"); if (df) { fputs(pr.p, df); fputs("\n=====\n", df); fclose(df); } }   /* teste */
     Ids ids = {0};
     encode(tk, pr.p, &ids);
     free(pr.p);
@@ -218,8 +241,10 @@ static char *ah_summary_live(Model *m, int pos, const char *pending) {
     free(ids.ids);
     Buf out = {0};
     char tmp[256];
+    int called = 0;
     for (int g = 0; g < 600 && pos < c->ctx - 1 && !g_stop; g++) {
         const int t = sample(lg, c->vocab, 0.0f);
+        if (t == tcall) { called = 1; break; }      /* gemma4: <|tool_call> nao e token de controle; o resumo nao pode chamar */
         if (t == c->eos || t == im_end || (tk->toktype && tk->toktype[t] == 3)) break;
         const size_t tl = tok_append(tk, t, tmp, 0, sizeof tmp - 1);
         buf_add(&out, tmp, tl);
@@ -228,7 +253,7 @@ static char *ah_summary_live(Model *m, int pos, const char *pending) {
     if (!out.p) return NULL;
     char *sp = out.p; while (*sp == '\n' || *sp == ' ') sp++;
     size_t l = strlen(sp); while (l && (sp[l - 1] == '\n' || sp[l - 1] == ' ')) l--;
-    if (l < 40 || strstr(sp, "<tool_call>")) { free(out.p); return NULL; }
+    if (called || l < 40 || strstr(sp, "<tool_call>") || strstr(sp, "<|tool_call>")) { free(out.p); return NULL; }
     char *r = xalloc(l + 1, 1); memcpy(r, sp, l); r[l] = 0;
     free(out.p);
     return r;
@@ -258,11 +283,12 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     /* /compact (force, sem texto pendente): resume a conversa inteira, inclusive o ultimo turno; no automatico o
        ultimo pedido do usuario e o que veio depois ficam como estao */
     const int upto = (force && !*pending) ? h->n : last_u;
-    /* camada 2 ao vivo (automatico, ChatML): o proprio modelo resume a conversa a partir do cache que ja existe; ficam o
-       resumo, o pedido em andamento e a ultima chamada com o resultado pendente. Cobre o caso de um pedido so com
-       dezenas de rodadas de ferramenta, em que nao ha turno antigo para resumir. */
-    if (!force && !g_ah_g4 && !g_cp_nolive && n > target && *pending && last_u < h->n && h->n - last_u >= 4 && h->v[h->n - 1].role == 'a') {
+    /* camada 2 ao vivo (automatico, ChatML e Gemma 4): o proprio modelo resume a conversa a partir do cache que ja existe;
+       ficam o resumo, o pedido em andamento e a ultima chamada com o resultado pendente. Cobre o caso de um pedido so
+       com dezenas de rodadas de ferramenta, em que nao ha turno antigo para resumir. */
+    if (!force && cp_live_on() && !g_cp_nolive && n > target && *pending && last_u < h->n && h->n - last_u >= 4 && h->v[h->n - 1].role == 'a') {
         fprintf(stderr, "%s[compactando: o modelo resume o trabalho feito ate aqui...]%s\n", CE(C_DIM), CE(C_RESET));
+        if (getenv("KATANA_COMPACT_DUMP")) { FILE *df = fopen(getenv("KATANA_COMPACT_DUMP"), "ab"); if (df) { if (r.p) fwrite(r.p, 1, r.n - strlen(pending), df); fputs("\n=====req\n", df); fclose(df); } }   /* teste: o cache antes do pedido */
         char *sm = ah_summary_live(m, before, pending);
         if (sm) {
             const char *req = h->v[last_u].s, *rq = strstr(req, CP_REQ_HEAD);
@@ -272,7 +298,14 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); } buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
-            ah_push(&nh, 'a', h->v[h->n - 1].s, strlen(h->v[h->n - 1].s));
+            {   /* gemma4 com raciocinio: depois de um resultado o canal de pensamento ja vinha aberto no prompt; depois do
+                   turno do usuario ele nao vem, entao a fala guardada leva a abertura */
+                Buf a = {0};
+                if (g_ah_g4 && g4_think() && h->n >= 2 && h->v[h->n - 2].role == 't') buf_str(&a, "<|channel>thought\n");
+                buf_str(&a, h->v[h->n - 1].s);
+                ah_push(&nh, 'a', a.p, a.n);
+                free(a.p);
+            }
             ah_clear(h); free(h->v); *h = nh;
             free(u.p); free(sm);
             summ = 1;
@@ -282,7 +315,10 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     }
     if ((n > target || force) && upto > 0 && !summ) {                            /* camada 2 */
         fprintf(stderr, "%s[compactando: resumindo %d mensagens...]%s\n", CE(C_DIM), upto, CE(C_RESET));
-        char *sm = ah_summary(m, h, upto);
+        /* /compact com o cache em dia: o modelo resume a partir do cache (um turno curto) em vez de reler a conversa */
+        char *sm = force && !*pending && before > 0 && cp_live_on() && !g_cp_nolive ? ah_summary_live(m, before, "") : NULL;
+        if (sm) fprintf(stderr, "%s[compactando: resumo feito a partir do cache]%s\n", CE(C_DIM), CE(C_RESET));
+        if (!sm) sm = ah_summary(m, h, upto);
         if (sm) {
             AHist nh = {0};
             Buf u = {0};

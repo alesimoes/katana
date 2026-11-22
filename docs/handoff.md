@@ -6,6 +6,21 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 ## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
 
+**2026-11-21, Gemma 4 parity in the agent (Gemma 4 26B-A4B is the working model from today).** Without the real model
+(the GPU was busy): every agent mechanism checked on the Gemma 4 path, details in `docs/new-models.md` (Gemma 4
+section). Ported: live compaction (summary from the KV cache: the model turn closes after the pending results and the
+request goes in a user turn; also `/compact` in both formats, `KATANA_COMPACT_LIVE=0` off); reading notes and the
+sub-agent (native calls, results in the model turn, closing notes in a user turn, stop on `<|tool_response>`,
+`KATANA_G4_SIDE=0` off); large calls shrunk in compaction (`<|tool_call>`); results always in the native block
+(`KATANA_G4_PLAIN_RESULT=1` old); declarations fixed (`items.required`, key order, missing type) and checked byte for
+byte against the model's template with jinja2; the constraint knows the declared tools also with `KATANA_TOOLS=1` and
+stays off inside a thought channel opened by the prompt; the stand-in teacher no longer doubles the thought channel
+after results; the Internet line names the tools of the set in use. Prompt order left as the template requires
+(declarations last); `KATANA_G4_ENVLAST=1` stays a measurement switch. The "round limit only for `!g4`" gate named in
+the task does not exist in the code: the note is emitted in every format. New tests: `tools/traintest/gemma4_part.sh`
+(sourced from `run.sh`), `tools/traintest/gemma4_golden.py`. Remaining real-model checks: see the end of the Gemma 4
+section in `docs/new-models.md`.
+
 **2026-11-21, extension system (block A12-A15 of `docs/plan.md`, `docs/extending.md`).** Built without a model (the GPU
 was busy): three compact formats and what the engine does with them. `KATANA.md` "brief" (`src/agent/brief.c`: parser,
 lint, `katana brief check|show`, `never:`/`ask:` globs enforced in `ct_dispatch` for `Bash`/`Write`/`Edit`, layers in

@@ -113,6 +113,8 @@ int ct_tool_info(int i, const char **name, const char **desc, const char **props
 static void cg_setup(const char *sys) {
     g_cg.nt = 0; g_cg.err = 0;
     gr_reset();
+    /* gemma4: o prompt ja tem as declaracoes nativas; as ferramentas declaradas vem do bloco JSON guardado na conversao */
+    if (sys && g_cg.fmt == CGF_G4 && !strstr(sys, "<tools>") && g_g4_tools_json[0] && !g_cg_only_sys) sys = g_g4_tools_json;
     if (sys) {
         static const char *pv[GN_MAXE]; static char names[GN_MAXE][64];
         int nt = 0;

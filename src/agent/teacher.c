@@ -805,7 +805,9 @@ parse:;
     }
     const char *pre = g4 ? g4_answer_pre() : think_pre(c);
     const size_t pl = strlen(pre);
-    const size_t skip = a.p && pl <= a.n && !strncmp(a.p, pre, pl) ? pl : 0;
+    size_t skip = a.p && pl <= a.n && !strncmp(a.p, pre, pl) ? pl : 0;
+    /* gemma4 com raciocinio: depois de resultados o prompt ja abriu o canal de pensamento; a fala so o continua */
+    if (g4 && g4_think() && slog->n && slog->v[slog->n - 1].role == 't' && a.p && a.n >= 18 && !strncmp(a.p, "<|channel>thought\n", 18)) skip = 18;
     buf_clear(reply);
     buf_add(reply, a.p + skip, a.n - skip);
     fprintf(stderr, "%s[teacher %s: %ld tokens in (%ld from the cache), %ld out, %.1f s]%s\n", CE(C_DIM), g_tch_model, tin + tread + twrite, tread, tout, now_sec() - t0, CE(C_RESET));

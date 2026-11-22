@@ -136,6 +136,32 @@ elif os.environ.get("MOCK_PLAN") in ("1", "2"):
             good = "Now step 1 of 3: passo a" in res[0] and "[plan: step 1 of 3 in progress: passo a;" in res[4] and "Now step 2 of 3: passo b" in res[5] \
                 and not any("plan first" in r for r in res) and not any("[plan:" in r for r in res[1:4])
             out = {"text": "Plano seguido." if good else "FALHA: %s" % res, "tool_calls": []}
+elif os.environ.get("MOCK_GOLD") == "1":
+    # conversa curta para conferir o texto renderizado contra o template do modelo: Write; Bash e Grep juntos; resposta
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    if step == 0 and not res:
+        out = {"text": "", "tool_calls": [{"name": "Write", "arguments": {"file_path": "g.txt", "content": "um\ndois \"tres\"\n"}}]}
+    elif len(res) == 1:
+        out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "cat g.txt", "timeout": 20000}},
+                                           {"name": "Grep", "arguments": {"pattern": "dois", "path": "g.txt", "output_mode": "content"}}]}
+    else:
+        out = {"text": "Pronto: g.txt conferido.", "tool_calls": []}
+elif os.environ.get("MOCK_DELEGATE") == "1":
+    # subagente: chama Agent; o resultado tem de ser a resposta do subagente (ou a falta dela), nunca "nao disponivel"
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    res = [r if isinstance(r, str) else json.dumps(r) for r in res]
+    if not res:
+        out = {"text": "", "tool_calls": [{"name": "Agent", "arguments": {"description": "find the notes", "prompt": "Find the file notes.txt and report its first line."}}]}
+    else:
+        good = ("[sub-agent answer" in res[0] or "the sub-agent did not reach an answer" in res[0]) and "not available" not in res[0]
+        out = {"text": "Subagente ok." if good else "FALHA: %s" % res[0][:300], "tool_calls": []}
+elif os.environ.get("MOCK_LONG") == "1":
+    # pedido longo: resultados grandes ate a compactacao automatica; depois a resposta final
+    res = [x.get("content") for m in ms for x in m["content"] if x["type"] == "tool_result"]
+    if len(res) < 6:
+        out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "seq %d %d" % (len(res) * 1000, len(res) * 1000 + 250)}}]}
+    else:
+        out = {"text": "Longo pronto.", "tool_calls": []}
 elif os.environ.get("MOCK_REDIRECT") == "1":
     # o usuario muda o plano no meio: o lembrete da lista e a mensagem nova dizem que a mensagem nova vem primeiro
     ut = " ".join(x.get("text", "") for x in ms[last_user_text]["content"] if x["type"] == "text")
