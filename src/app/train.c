@@ -1529,7 +1529,7 @@ static int spec_apply_file(Model *m, const char *path, int strict) {
 }
 
 /* --resume: comeca o treino dos pesos de uma especializacao ja treinada (mesmos tensores e posto). O estado do
-   otimizador (momentos do AdamW) nao fica no arquivo: recomeca do zero. Devolve quantos tensores vieram */
+   otimizador (momentos do AdamW) fica num arquivo ao lado (.kopt, opt_load); sem ele recomeca do zero. Devolve quantos tensores vieram */
 static int spec_resume(const Model *m, TTab *tt, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "--resume: nao abriu %s\n", path); return -1; }
@@ -1559,9 +1559,65 @@ static int spec_resume(const Model *m, TTab *tt, const char *path) {
         }
     }
     fclose(f);
-    printf("retomado de %s: %d tensores carregados%s; o estado do otimizador recomeca do zero\n", path, got,
+    printf("retomado de %s: %d tensores carregados%s\n", path, got,
            miss ? " (alguns do arquivo nao casam com o que treina agora e ficaram de fora)" : "");
     return got;
+}
+
+/* estado do otimizador (momentos do AdamW e o passo) num arquivo ao lado do .kspec (<arquivo>.kopt); leitores antigos do
+   .kspec nao o veem. Quem retoma com --resume o le se existir e continua de onde parou (correcao de vies inclusive). */
+#define KOPT_MAGIC "KOPT0001"
+static void opt_path(char *dst, size_t cap, const char *spec) { snprintf(dst, cap, "%s.kopt", spec); }
+static int opt_save(const TTab *tt, const char *spec, int64_t step) {
+    char path[1200]; opt_path(path, sizeof path, spec);
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int n = 0;
+    for (int i = 0; i < tt->n; i++) n += tt->p[i].w != NULL || tt->p[i].r;
+    fwrite(KOPT_MAGIC, 1, 8, f); fwrite(&step, 8, 1, f); fwrite(&n, 4, 1, f);
+    for (int i = 0; i < tt->n; i++) {
+        const TPar *p = &tt->p[i];
+        if (!p->w && !p->r) continue;
+        const uint32_t nl = (uint32_t)strlen(p->name), kind = p->r ? 1 : 0; const uint64_t r = p->rows, cc = p->cols;
+        fwrite(&nl, 4, 1, f); fwrite(p->name, 1, nl, f); fwrite(&kind, 4, 1, f); fwrite(&r, 8, 1, f); fwrite(&cc, 8, 1, f);
+        if (p->r) {
+            const int32_t rk = p->r; const size_t na = (size_t)p->r * cc, nb = r * (size_t)p->r; fwrite(&rk, 4, 1, f);
+            fwrite(p->ma1, 4, na, f); fwrite(p->ma2, 4, na, f); fwrite(p->mb1, 4, nb, f); fwrite(p->mb2, 4, nb, f);
+        } else { fwrite(p->m1, 4, (size_t)(r * cc), f); fwrite(p->m2, 4, (size_t)(r * cc), f); }
+    }
+    const int ok = !ferror(f);
+    return fclose(f) == 0 && ok;
+}
+/* devolve o passo guardado (>= 0) e quantos tensores casaram em *got; -1 se nao ha arquivo ou nao serve */
+static int64_t opt_load(TTab *tt, const char *spec, int *got) {
+    char path[1200]; opt_path(path, sizeof path, spec);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    char mg[8]; int64_t step = 0; int n = 0; *got = 0;
+    if (fread(mg, 1, 8, f) != 8 || memcmp(mg, KOPT_MAGIC, 8) || fread(&step, 8, 1, f) != 1 || fread(&n, 4, 1, f) != 1 || n < 0) { fclose(f); return -1; }
+    for (int k = 0; k < n; k++) {
+        uint32_t nl = 0, kind = 0; uint64_t r = 0, cc = 0; char name[128];
+        if (fread(&nl, 4, 1, f) != 1 || nl == 0 || nl >= sizeof name || fread(name, 1, nl, f) != nl || fread(&kind, 4, 1, f) != 1
+            || kind > 1 || fread(&r, 8, 1, f) != 1 || fread(&cc, 8, 1, f) != 1) { fclose(f); return -1; }
+        name[nl] = 0;
+        TPar *p = NULL;
+        for (int i = 0; i < tt->n && !p; i++) if (!strcmp(tt->p[i].name, name)) p = &tt->p[i];
+        if (kind == 1) {
+            int32_t rk = 0;
+            if (fread(&rk, 4, 1, f) != 1 || rk < 1 || rk > 4096) { fclose(f); return -1; }
+            const size_t na = (size_t)rk * cc, nb = (size_t)(r * rk);
+            if (p && p->r == rk && p->rows == r && p->cols == cc) {
+                if (fread(p->ma1, 4, na, f) != na || fread(p->ma2, 4, na, f) != na || fread(p->mb1, 4, nb, f) != nb || fread(p->mb2, 4, nb, f) != nb) { fclose(f); return -1; }
+                (*got)++;
+            } else fseek(f, (long)((2 * na + 2 * nb) * 4), SEEK_CUR);
+        } else {
+            const size_t nw = (size_t)(r * cc);
+            if (p && p->w && !p->r && p->rows == r && p->cols == cc) { if (fread(p->m1, 4, nw, f) != nw || fread(p->m2, 4, nw, f) != nw) { fclose(f); return -1; } (*got)++; }
+            else fseek(f, (long)(2 * nw * 4), SEEK_CUR);
+        }
+    }
+    fclose(f);
+    return step;
 }
 
 static int spec_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -1686,6 +1742,7 @@ static void adam_upd(float *w, const float *gr, float *m1, float *m2, size_t n, 
     }
 }
 
+static float g_lr_b = 1.0f;       /* --lr-b: multiplicador da taxa para a matriz B dos adaptadores (1 = igual a A) */
 /* AdamW com corte do gradiente pela norma global; devolve a norma antes do corte */
 static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
     double ss = 0;
@@ -1705,7 +1762,7 @@ static double t_adamw(TTab *tt, int step, float lr, float wd, float clip) {
         TPar *p = &tt->p[i];
         if (p->r) {
             adam_upd(p->a, p->ga, p->ma1, p->ma2, (size_t)p->r * p->cols, sc, lr, wd, c1, c2);
-            adam_upd(p->b, p->gb, p->mb1, p->mb2, p->rows * (size_t)p->r, sc, lr, wd, c1, c2);
+            adam_upd(p->b, p->gb, p->mb1, p->mb2, p->rows * (size_t)p->r, sc, lr * g_lr_b, wd, c1, c2);
         }
         if (!p->g) continue;
         const int is_vec = p->vec != NULL;
@@ -1831,20 +1888,58 @@ static void js_escape_to(char *dst, size_t cap, const char *src) {
 
 /* lista de janelas */
 typedef struct { TEx *w; int n, cap; } TSet;
-/* um exemplo vira janelas de ate seq tokens (com um token de sobreposicao); so as que tem algum alvo */
+/* janelas: modo fixo (padrao, corta da frente a cada seq-1 tokens) ou denso (--window dense): o exemplo termina no
+   ultimo alvo (o que vem depois nao ensina nada), as janelas se contam de tras para a frente e cada uma comeca
+   g_win_ctx tokens antes do primeiro alvo que ela possui (o resto da frente e contexto que nenhum alvo usa);
+   --win-min N derruba janelas com menos de N alvos. Cada alvo pertence a uma janela so, nos dois modos. */
+static int g_win_dense, g_win_ctx = 64, g_win_min;
+static const void *g_ws_for;      /* conjunto que entra nas estatisticas */
+static struct { long ex, toks, after_last, win, wtoks, tgt, tgt_all, nowin, nowin_toks, lowd, lowd_toks, dropped, dropped_tgt, dropped_toks, h[6]; } g_ws;
+static void tset_emit(TSet *S, const TEx *e, int s0, int len) {
+    if (S->n == S->cap) { S->cap = S->cap * 2 + 16; S->w = realloc(S->w, sizeof(TEx) * (size_t)S->cap); }
+    TEx *w = &S->w[S->n++];
+    memset(w, 0, sizeof *w);
+    w->src = e->src;
+    for (int t = 0; t < len; t++) ids_push(&w->ids, e->ids.ids[s0 + t]);
+    w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e->mask + s0, (size_t)len);
+    w->mask[len - 1] = 0;
+}
 static void tset_add(TSet *S, const TEx *e, int seq) {
-    for (int s0 = 0; s0 < e->ids.n - 1; s0 += seq - 1) {
-        const int len = e->ids.n - s0 < seq ? e->ids.n - s0 : seq;
-        int any = 0; for (int t = 0; t + 1 < len; t++) any |= e->mask[s0 + t];
-        if (!any || len < 2) continue;
-        if (S->n == S->cap) { S->cap = S->cap * 2 + 16; S->w = realloc(S->w, sizeof(TEx) * (size_t)S->cap); }
-        TEx *w = &S->w[S->n++];
-        memset(w, 0, sizeof *w);
-        w->src = e->src;
-        for (int t = 0; t < len; t++) ids_push(&w->ids, e->ids.ids[s0 + t]);
-        w->mask = xalloc((size_t)len, 1); memcpy(w->mask, e->mask + s0, (size_t)len);
-        w->mask[len - 1] = 0;
+    const int st = S == g_ws_for;
+    int last = -1, nt = 0;
+    for (int t = 0; t + 1 < e->ids.n; t++) if (e->mask[t]) { last = t; nt++; }
+    if (st) { g_ws.ex++; g_ws.toks += e->ids.n; g_ws.tgt_all += nt; g_ws.after_last += last >= 0 ? e->ids.n - (last + 2) : e->ids.n; }
+    if (last < 0) return;
+    const int endx = g_win_dense ? last + 2 : e->ids.n;     /* ate onde o exemplo conta */
+    int cur = g_win_dense ? endx : 0;                        /* denso: fim (exclusivo) da proxima janela; fixo: inicio */
+    for (int done = 0; !done; ) {
+        int s0, len;
+        if (g_win_dense) { s0 = cur - seq < 0 ? 0 : cur - seq; len = cur - s0; done = s0 == 0; cur = s0 + 1; }
+        else { s0 = cur; len = e->ids.n - s0 < seq ? e->ids.n - s0 : seq; done = s0 + len >= e->ids.n; cur += seq - 1; }
+        int cnt = 0, ft = -1;                                /* alvos que esta janela possui: t em [s0, s0+len-2] */
+        for (int t = s0; t + 1 < s0 + len; t++) if (e->mask[t]) { cnt++; if (ft < 0) ft = t; }
+        if (len < 2 || !cnt) { if (st && len >= 2) { g_ws.nowin++; g_ws.nowin_toks += len; } continue; }
+        if (g_win_dense) { const int s2 = ft - g_win_ctx > s0 ? ft - g_win_ctx : s0; len -= s2 - s0; s0 = s2; }
+        if (cnt < g_win_min) { if (st) { g_ws.dropped++; g_ws.dropped_tgt += cnt; g_ws.dropped_toks += len; } continue; }
+        if (st) {
+            g_ws.win++; g_ws.wtoks += len; g_ws.tgt += cnt;
+            const double d = (double)cnt / len;
+            g_ws.h[d < 0.05 ? 0 : d < 0.1 ? 1 : d < 0.2 ? 2 : d < 0.4 ? 3 : d < 0.7 ? 4 : 5]++;
+            if (d < 0.05) { g_ws.lowd++; g_ws.lowd_toks += len; }
+        }
+        tset_emit(S, e, s0, len);
     }
+}
+static void tset_stats_print(void) {
+    const double nw = g_ws.win ? (double)g_ws.win : 1;
+    printf("janelas (%s%s): %ld exemplos, %ld tokens, %ld alvos; %ld janelas, %ld tokens, %ld alvos (%.1f alvos e %.1f tokens por janela, densidade %.1f%%)\n",
+           g_win_dense ? "denso" : "fixo", g_win_min ? ", com --win-min" : "", g_ws.ex, g_ws.toks, g_ws.tgt_all, g_ws.win, g_ws.wtoks, g_ws.tgt,
+           g_ws.tgt / nw, g_ws.wtoks / nw, g_ws.wtoks ? 100.0 * g_ws.tgt / g_ws.wtoks : 0.0);
+    printf("  tokens depois do ultimo alvo: %ld (%.1f%% dos tokens dos exemplos); janelas sem alvo: %ld (%ld tokens); janelas com densidade < 5%%: %ld (%ld tokens)\n",
+           g_ws.after_last, g_ws.toks ? 100.0 * g_ws.after_last / g_ws.toks : 0.0, g_ws.nowin, g_ws.nowin_toks, g_ws.lowd, g_ws.lowd_toks);
+    if (g_ws.dropped) printf("  --win-min %d derrubou %ld janelas (%ld alvos, %.1f%% dos alvos; %ld tokens)\n", g_win_min, g_ws.dropped, g_ws.dropped_tgt,
+           g_ws.tgt_all ? 100.0 * g_ws.dropped_tgt / g_ws.tgt_all : 0.0, g_ws.dropped_toks);
+    printf("  densidade de alvos por janela: <5%% %ld, <10%% %ld, <20%% %ld, <40%% %ld, <70%% %ld, >=70%% %ld\n", g_ws.h[0], g_ws.h[1], g_ws.h[2], g_ws.h[3], g_ws.h[4], g_ws.h[5]);
 }
 /* le um JSONL; cada linha vai para a validacao com probabilidade vf (a conversa inteira, para nao vazar) */
 static int tset_load(const Model *m, const char *path, int seq, TSet *tr, TSet *va, double vf, unsigned seed, int *nlines, int *nval) {
@@ -1900,6 +1995,53 @@ static double tset_loss(Model *m, TTab *tt, TAct *A, const TSet *S, int seq, int
     return cnt ? sum / cnt : 0.0;
 }
 
+static int t_ntgt(const TEx *e) { int n = 0; for (int t = 0; t + 1 < e->ids.n; t++) n += e->mask[t] != 0; return n; }
+
+/* --probe N: passo para tras em N janelas (espalhadas pelo conjunto), sem atualizar nada, e imprime a norma do gradiente
+   por tensor (adaptador: B, que e o que tem gradiente com B = 0, e A) e somada por projecao e por camada. Devolve as
+   normas por tensor em nrm[i] (adaptador: so B) para --probe-top. */
+static void t_probe(Model *m, TTab *tt, TAct *A, const TEx *ex, int nex, int np, int seq, double *nrm) {
+    t_clear_grads(tt);
+    if (np > nex) np = nex;
+    for (int i = 0; i < np; i++) {
+        const TEx *e = &ex[(long)i * nex / np];
+        A->T = e->ids.n; t_gscale = 1.0f / np;
+        int n1 = 0; t_step(m, tt, e->ids.ids, e->mask, A, 1, &n1);
+    }
+    t_gscale = 1.0f; A->T = seq;
+    double kn[64] = {0}; char kname[64][48]; int nk = 0; double ln[256] = {0}; int nl = 0; double tot = 0;
+    for (int i = 0; i < tt->n; i++) {
+        const TPar *p = &tt->p[i];
+        nrm[i] = 0;
+        if (!p->r && !p->w) continue;
+        double gb = 0, ga = 0;
+        if (p->r) { for (size_t j = 0; j < p->rows * (size_t)p->r; j++) gb += (double)p->gb[j] * p->gb[j]; for (size_t j = 0; j < (size_t)p->r * p->cols; j++) ga += (double)p->ga[j] * p->ga[j]; }
+        else for (size_t j = 0; j < p->rows * p->cols; j++) gb += (double)p->g[j] * p->g[j];
+        nrm[i] = sqrt(gb); tot += gb;
+        printf("  %-40s |g%s| %.4e%s  (%zu pesos)\n", p->name, p->r ? "B" : "", sqrt(gb), p->r ? "" : " (inteiro)", p->r ? (size_t)p->r * (p->rows + p->cols) : p->rows * p->cols);
+        (void)ga;
+        int L = -1; const char *kind = p->name;
+        if (!strncmp(p->name, "blk.", 4)) { L = atoi(p->name + 4); const char *d = strchr(p->name + 4, '.'); kind = d ? d + 1 : p->name; }
+        if (L >= 0 && L < 256) { ln[L] += gb; if (L + 1 > nl) nl = L + 1; }
+        int k = 0; while (k < nk && strcmp(kname[k], kind)) k++;
+        if (k == nk && nk < 64) { snprintf(kname[nk], 48, "%s", kind); nk++; }
+        if (k < 64) kn[k] += gb;
+    }
+    printf("sonda: %d janelas; |grad| total (B e tensores inteiros) %.4e\npor projecao (parte do gradiente ao quadrado):\n", np, sqrt(tot));
+    for (int k = 0; k < nk; k++) printf("  %-34s %5.1f%%\n", kname[k], tot > 0 ? 100.0 * kn[k] / tot : 0.0);
+    printf("por camada:");
+    for (int l = 0; l < nl; l++) printf(" %d:%.1f%%", l, tot > 0 ? 100.0 * ln[l] / tot : 0.0);
+    printf("\n");
+    t_clear_grads(tt);
+}
+
+/* desliga o treino de um tensor (usado depois da sonda para ficar so com os de maior gradiente) */
+static void t_untrain(TPar *p) {
+    if (p->r) { free(p->a); free(p->b); free(p->ga); free(p->gb); free(p->ma1); free(p->ma2); free(p->mb1); free(p->mb2); p->a = p->b = p->ga = p->gb = p->ma1 = p->ma2 = p->mb1 = p->mb2 = NULL; p->r = 0; }
+    else if (p->w) { free(p->w); free(p->g); free(p->m1); free(p->m2); p->w = p->g = p->m1 = p->m2 = NULL; }
+}
+static int t_dcmp(const void *a, const void *b) { const double x = *(const double *)a, y = *(const double *)b; return x < y ? 1 : x > y ? -1 : 0; }
+
 /* katana train <modelo> <dados.jsonl> [--out f.kspec] [--train padroes] [--steps N] [--lr X] [--seq T] [--wd X] [--seed N] */
 static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     const Config *c = &m->cfg;
@@ -1908,6 +2050,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     int steps = 200, seq = 256, every = 10, rank = 0, hot = 0, pats_set = 0, plan = 0; float lr = 1e-3f, wd = 0.0f, clip = 1.0f, alpha = 0; unsigned seed = 1;
     int batch = 1, eval = 0, patience = 0, cosine = 1, warm = -1, final = 1; double vfrac = -1; const char *vdata = NULL, *logp = NULL;
     const char *mix = NULL, *resume = NULL;
+    int wtgt = 0, probe = 0, vmax = 0, optstate = -1, resopt = 1, rs = 0; long btgt = 0; double probe_top = 0, minrel = 0; float init_a = 1.0f;
     for (int i = 1; i < argc; i += 2) {
         if (!strcmp(argv[i], "--no-tool-decl")) { g_spec_save_flags |= KSPEC_NO_TOOL_DECL; i--; continue; }   /* opcao sem valor */
         if (i + 1 >= argc) break;
@@ -1936,11 +2079,26 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         else if (!strcmp(k, "--final")) final = atoi(v);
         else if (!strcmp(k, "--mix")) mix = v;
         else if (!strcmp(k, "--resume")) resume = v;
+        else if (!strcmp(k, "--window")) { if (!strcmp(v, "dense")) g_win_dense = 1; else if (!strcmp(v, "fixed")) g_win_dense = 0; else { fprintf(stderr, "--window: fixed ou dense\n"); return 1; } }
+        else if (!strcmp(k, "--win-ctx")) g_win_ctx = atoi(v);
+        else if (!strcmp(k, "--win-min")) g_win_min = atoi(v);
+        else if (!strcmp(k, "--lr-b")) g_lr_b = (float)atof(v);
+        else if (!strcmp(k, "--rs")) rs = atoi(v);
+        else if (!strcmp(k, "--init-a")) init_a = (float)atof(v);
+        else if (!strcmp(k, "--weight")) { if (!strcmp(v, "tgt")) wtgt = 1; else if (!strcmp(v, "window")) wtgt = 0; else { fprintf(stderr, "--weight: window ou tgt\n"); return 1; } }
+        else if (!strcmp(k, "--batch-tgt")) btgt = atol(v);
+        else if (!strcmp(k, "--probe")) probe = atoi(v);
+        else if (!strcmp(k, "--probe-top")) probe_top = atof(v);
+        else if (!strcmp(k, "--val-max")) vmax = atoi(v);
+        else if (!strcmp(k, "--min-rel")) minrel = atof(v);
+        else if (!strcmp(k, "--opt-state")) optstate = atoi(v);
+        else if (!strcmp(k, "--resume-opt")) resopt = atoi(v);
         else { fprintf(stderr, "opcao desconhecida: %s\n", k); return 1; }
     }
     if (seq > c->ctx) seq = c->ctx;
     if (seq < 2) seq = 2;
     if (batch < 1) batch = 1;
+    if (btgt > 0) wtgt = 1;                       /* lote por alvos: cada janela pesa pelos seus alvos */
     TTab tt = {0};
     const char *err = tt_build(m, &tt);
     if (err) { fprintf(stderr, "%s\n", err); return 1; }
@@ -1949,8 +2107,21 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     TSet trs = {0}, vas = {0};
     if (vfrac < 0) vfrac = vdata ? 0.0 : tset_lines(data) >= 20 ? 0.1 : 0.0;
     int nlines = 0, vlines = 0;
+    g_ws_for = &trs;
     if (!tset_load(m, data, seq, &trs, vfrac > 0 ? &vas : NULL, vfrac, seed, &nlines, &vlines)) return 1;
-    if (vdata && !tset_load(m, vdata, seq, &vas, NULL, 0, seed, &vlines, NULL)) return 1;
+    g_ws_for = NULL;
+    tset_stats_print();
+    {   /* a validacao usa sempre janelas fixas completas: as opcoes de janela valem so para o treino */
+        const int sd = g_win_dense, sm = g_win_min; g_win_dense = 0; g_win_min = 0;
+        const int ok = !vdata || tset_load(m, vdata, seq, &vas, NULL, 0, seed, &vlines, NULL);
+        g_win_dense = sd; g_win_min = sm;
+        if (!ok) return 1;
+    }
+    if (vmax > 0 && vas.n > vmax) {               /* subamostra deterministica da validacao: janelas igualmente espacadas */
+        TEx *sub = xalloc((size_t)vmax, sizeof(TEx));
+        for (int i = 0; i < vmax; i++) sub[i] = vas.w[(long)i * vas.n / vmax];
+        vas.w = sub; vas.n = vmax;
+    }
     TEx *ex = trs.w; const int nex = trs.n;
     if (!nex) { fprintf(stderr, "nenhum exemplo com alvo marcado em %s\n", data); return 1; }
     srand(seed);
@@ -1993,7 +2164,41 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     }
     ntr += tt_select_r(&tt, pats, rank, alpha > 0 ? alpha : (float)rank);
     if (!ntr) { fprintf(stderr, "nenhum tensor casa com --train %s\n", pats); return 1; }
+    for (int i = 0; i < tt.n; i++) {
+        TPar *p = &tt.p[i];
+        if (!p->r) continue;
+        if (rs) p->s = (alpha > 0 ? alpha : (float)rank) / sqrtf((float)p->r);      /* --rs 1: escala alpha/sqrt(posto) */
+        if (init_a != 1.0f) for (size_t j = 0; j < (size_t)p->r * p->cols; j++) p->a[j] *= init_a;
+    }
+    int64_t st0 = 0;
     if (resume && spec_resume(m, &tt, resume) < 0) return 1;
+    if (resume && resopt) {
+        int got = 0;
+        const int64_t os = opt_load(&tt, resume, &got);
+        if (os < 0) printf("sem %s.kopt: o estado do otimizador recomeca do zero\n", resume);
+        if (os >= 0) { st0 = os; printf("estado do otimizador retomado de %s.kopt: %d tensores, %lld passos ja dados\n", resume, got, (long long)os); }
+    }
+    if (probe > 0) {
+        TAct PA; tact_alloc(&PA, c, seq);
+        double *nrm = xalloc((size_t)tt.n, sizeof(double));
+        t_probe(m, &tt, &PA, ex, nex, probe, seq, nrm);
+        if (probe_top > 0 && probe_top < 1) {          /* fica so com a fracao de tensores de maior gradiente */
+            double *srt = xalloc((size_t)tt.n, sizeof(double)); int k = 0;
+            for (int i = 0; i < tt.n; i++) if (tt.p[i].r || tt.p[i].w) srt[k++] = nrm[i];
+            qsort(srt, (size_t)k, sizeof(double), t_dcmp);
+            const double cut = srt[(int)(k * probe_top) > 0 ? (int)(k * probe_top) - 1 : 0];
+            int kept = 0; ntr = 0;
+            for (int i = 0; i < tt.n; i++) {
+                TPar *p = &tt.p[i];
+                if (!p->r && !p->w) continue;
+                if (nrm[i] >= cut) { kept++; ntr += p->r ? (size_t)p->r * (p->rows + p->cols) : p->rows * p->cols; } else t_untrain(p);
+            }
+            printf("--probe-top %.2f: ficam %d de %d tensores (|gB| >= %.3e)\n", probe_top, kept, k, cut);
+            free(srt);
+        }
+        tact_free(&PA); free(nrm);
+        if (probe_top <= 0) return 0;
+    }
     /* --mix fonte=peso,...: cada passo tira a janela da fonte mais atrasada em relacao a sua parte (exato a menos de
        uma janela); pesos renormalizados sobre as fontes que tem janelas; fonte fora da lista fica de fora */
     double mw[16] = {0}; long mcnt[16] = {0}; int *mord[16] = {0}, mn[16] = {0}, mpos[16] = {0};
@@ -2032,7 +2237,8 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     printf("memoria: ativacoes de uma janela de %d tokens %.0f MB; estado do treino %.0f MB; modelo base mapeado do arquivo (%.1f GB)\n",
            seq, g_ta_bytes / 1048576.0, ntr * 16.0 / 1048576.0, m->fsize / 1073741824.0);
     if (plan) { printf("--plan 1: so o plano, sem treinar\n"); tact_free(&A); return 0; }
-    double ema = -1, best = 1e30;
+    double ema = -1, best = 1e30, sig = 1e30;
+    const int optstate_on = optstate < 0 ? ntr <= 32000000u : optstate;     /* padrao: grava os momentos se couberem em ~256 MB */
     long toks = 0;
     int best_step = 0, bad = 0, saved = 0, done = 0;
     FILE *lf = logp ? fopen(logp, "ab") : NULL;
@@ -2044,8 +2250,8 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     for (st = 1; st <= steps; st++) {
         t_clear_grads(&tt);
         double loss = 0; int N = 0;
-        t_gscale = 1.0f / batch;
-        for (int bi = 0; bi < batch; bi++) {
+        const TEx *pk[256]; int npk = 0; long ptg = 0;       /* janelas deste passo */
+        for (;;) {
             const TEx *e;
             if (mix) {
                 int sb = -1; double bd = -1e30;
@@ -2063,9 +2269,16 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
                 }
                 e = &ex[ord[op++]];
             }
+            pk[npk++] = e; ptg += t_ntgt(e);
+            if (btgt > 0 ? (ptg >= btgt || npk == 256) : npk == batch) break;
+        }
+        for (int bi = 0; bi < npk; bi++) {
+            const TEx *e = pk[bi];
+            const float wgt = wtgt && ptg > 0 ? (float)t_ntgt(e) / (float)ptg : 1.0f / npk;
+            t_gscale = wgt;
             A.T = e->ids.n;
             int n1 = 0;
-            loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) / batch;
+            loss += t_step(m, &tt, e->ids.ids, e->mask, &A, 1, &n1) * wgt;
             N += n1;
             toks += A.T;
         }
@@ -2074,7 +2287,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         if (st <= warm) lr_t = lr * (float)st / (float)warm;                /* aquecimento */
         else if (cosine && steps > warm) lr_t = lr * (0.1f + 0.9f * 0.5f * (1.0f + cosf(3.14159265f * (float)(st - warm) / (float)(steps - warm))));
         const double po0 = now_sec();
-        const double gn = t_adamw(&tt, st, lr_t, wd, clip);
+        const double gn = t_adamw(&tt, (int)(st + st0), lr_t, wd, clip);
         tprof[TP_OPT] += now_sec() - po0;
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
         if (st == 1 || st % every == 0 || st == steps)
@@ -2084,13 +2297,17 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
             int vn = 0;
             const double vl = tset_loss(m, &tt, &A, &vas, seq, &vn);
             const int better = vl < best - 1e-6;
-            printf("validacao  passo %4d  perda %.4f em %d alvos%s\n", st, vl, vn, better ? "  (melhor ate agora: gravado)" : "");
+            const int signif = vl < sig * (1.0 - minrel) - 1e-6;       /* --min-rel: so conta como melhora a relativa */
+            printf("validacao  passo %4d  perda %.4f em %d alvos  tokens %ld  %.1f s%s\n", st, vl, vn, toks, now_sec() - t0, better ? "  (melhor ate agora: gravado)" : "");
             if (lf) fprintf(lf, "{\"step\": %d, \"val_loss\": %.6f}\n", st, vl);
             if (better) {
-                best = vl; best_step = st; bad = 0;
+                best = vl; best_step = st;
                 if (!spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+                if (optstate_on) opt_save(&tt, out, st + st0);
                 saved = 1;
-            } else if (patience && ++bad >= patience) { printf("parada antecipada: %d avaliacoes sem melhorar\n", bad); done = 1; }
+            }
+            if (signif) { sig = vl; bad = 0; }
+            else if (patience && ++bad >= patience) { printf("parada antecipada: %d avaliacoes sem melhorar%s\n", bad, minrel > 0 ? " o suficiente" : ""); done = 1; }
         }
         fflush(stdout);
         if (done) break;
@@ -2123,6 +2340,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
     if (tg.on) printf("GPU: %ld produtos em %.1f s (com as copias); %.2f GB de pesos residentes; %ld produtos subiram o peso na hora\n",
                       tg.calls, tg.t_gpu, tg.resident / 1073741824.0, tg.streamed);
     if (!saved && !spec_save(m, &tt, out)) { fprintf(stderr, "nao consegui gravar %s\n", out); return 1; }
+    if (!saved && optstate_on) opt_save(&tt, out, st + st0);
     if (saved) printf("melhor validacao: perda %.4f no passo %d\n", best, best_step);
     printf("especializacao gravada: %s (use KATANA_SPEC=%s)\n", out, out);
     /* resumo de uma linha para quem chama (katana learn, scripts) */
