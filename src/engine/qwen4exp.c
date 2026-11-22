@@ -313,7 +313,7 @@ static void q4_kdec(uint32_t type, const uint8_t *src, int16_t *w, float *f, flo
 #define Q4_TB 256
 /* Q2_0 e IQ4_NL em 8 bits: o peso vira byte sem sinal (codigo 0..3; valor da tabela + 128) e a ativacao de 16 bits entra como
    alto*256 + baixo (xq.qh/ql): dois dpbusd por 64 pesos, sem abrir em 16 bits. O deslocamento sai pela soma das ativacoes (xq.bs16).
-   O inteiro de cada grupo e o mesmo do caminho de 16 bits. */
+   O inteiro de cada grupo e o mesmo do caminho de 16 bits. So para ate 3 tokens: com mais, o de 16 bits (um produto so por token) ganha. */
 #define Q4_VB __attribute__((target("avx2,fma,f16c,avx512f,avx512bw,avx512vl,avx512vnni,avx512vbmi")))
 static int q4_vbmi(void) {
     static int v = -1;
@@ -355,7 +355,7 @@ Q4_VB static void q4_row8(uint32_t type, const uint8_t *row, const XQ *xqs, int 
     for (int t = 0; t < n; t++) out[t] = _mm512_reduce_add_ps(acc[t]);
 }
 LB_512 static void q4_krow(const Mat *W, const uint8_t *row, const XQ *xqs, int n, int cols, float *out) {
-    if ((W->type == T_Q2_0 || (W->type == T_IQ4_NL && cols % 64 == 0)) && (q4_opt & QO_K8) && q4_vbmi()) { q4_row8(W->type, row, xqs, n, cols, out); return; }
+    if (n <= 3 && (W->type == T_Q2_0 || (W->type == T_IQ4_NL && cols % 64 == 0)) && (q4_opt & QO_K8) && q4_vbmi()) { q4_row8(W->type, row, xqs, n, cols, out); return; }
     int16_t w[256] __attribute__((aligned(64)));
     __m512 acc[Q4_TB];
     float corr[Q4_TB], fs[8];
@@ -1370,6 +1370,10 @@ static int q4_state_io(Model *m, FILE *f, int n, int dir) {
    quentes (uma passada de aquecimento), alternando duas mascaras de opcoes (q4_opt): tok/s do prompt e da geracao de cada passada,
    diferenca de logits de B contra A (fim do prompt e cada gerado; os tokens gerados sao os da passada de A) e os tempos por parte */
 static char *read_text(const char *path);
+static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend);
+static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend);
+static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend);
+static int pfx_path(char *out, size_t cap, uint64_t key, int mk);
 static int q4_bench(Model *m, int argc, char **argv) {
     const Config *c = &m->cfg;
     const int N0 = argc > 2 ? atoi(argv[2]) : 256, G = argc > 3 ? atoi(argv[3]) : 24, pairs = argc > 6 ? atoi(argv[6]) : 3, V = c->vocab, nm = pairs ? 2 * pairs : argc - 6;
@@ -1408,6 +1412,34 @@ static int q4_bench(Model *m, int argc, char **argv) {
         fflush(stdout);
     }
     q4_prof = 0;
+    if (getenv("KATANA_CACHE_DIR")) {       /* prefixo em disco: gravar, outra conversa, restaurar e gerar de novo os mesmos tokens */
+        int ngl, esz, backend, same = 0;
+        const uint64_t key = 0x5134425800000000ULL ^ (uint64_t)getpid();
+        char path[1000];
+        double md = 0.0;
+        q4_opt = pairs ? mb : ma;
+        float *lg = q4_forward(m, ids.ids, n, 0, 1);
+        double t0 = now_sec();
+        const int sv = pfx_geom(m, &ngl, &esz, &backend) && pfx_save(m, key, n, ngl, esz, backend);
+        const double ts = now_sec() - t0;
+        for (int g = 0; g < G; g++) { lg = q4_forward(m, &gen[g], 1, n + g, 1); memcpy(ref + (size_t)g * V, lg, (size_t)V * 4); }
+        q4_forward(m, ids.ids + n / 2, n / 4 + 1, 0, 0);
+        t0 = now_sec();
+        const int ld = sv && pfx_load(m, key, n, ngl, esz, backend);
+        const double tl = now_sec() - t0;
+        for (int g = 0; g < G && ld; g++) {
+            const float *w = ref + (size_t)g * V;
+            int eq = 1;
+            lg = q4_forward(m, &gen[g], 1, n + g, 1);
+            for (int i = 0; i < V; i++) { const double e = fabs(lg[i] - w[i]); if (e > md) md = e; if (memcmp(lg + i, w + i, 4)) eq = 0; }
+            same += eq;
+        }
+        pfx_path(path, sizeof path, key, 0);
+        struct stat st;
+        printf("prefixo de %d tokens: gravado %s em %.2f s (%.0f MB), restaurado %s em %.2f s; %d tokens gerados depois, %d com logits iguais bit a bit, maior diferenca %.1e\n",
+               n, sv ? "sim" : "NAO", ts, stat(path, &st) == 0 ? st.st_size / 1e6 : 0.0, ld ? "sim" : "NAO", tl, G, same, md);
+        remove(path);
+    }
     return 0;
 }
 
