@@ -218,6 +218,56 @@ if [ "$(id -u)" != 0 ]; then
   chmod 755 ro
 fi
 
+# ---------------- Edit com varias trocas ----------------
+printf 'um\ndois\ntres\nquatro\ncinco\n' > m.txt
+R='{"file_path":"m.txt"}'
+run Read "$R" Edit '{"file_path":"m.txt","edits":[{"old_string":"dois","new_string":"2"},{"old_string":"cinco","new_string":"5\n6"},{"old_string":"um","new_string":"1\n1b"}]}'
+has "edits: array aplica" "(3 edits, 3 replacements)"
+has "edits: linha final da segunda troca (a terceira, acima, empurrou)" "edit 2, line 6:"
+fileis "edits: arquivo" m.txt "1
+1b
+2
+tres
+quatro
+5
+6"
+run Read "$R" Edit '{"file_path":"m.txt","edits":"<<<<<<<\n2\n=======\nDOIS \"x\" \\n\n>>>>>>>\n<<<<<<< old\nquatro\n=======\n>>>>>>> new\n"}'
+has "edits: blocos de texto" "(2 edits, 2 replacements)"
+fileis "edits: bloco cru, e bloco sem texto novo apaga a linha" m.txt '1
+1b
+DOIS "x" \n
+tres
+5
+6'
+cp m.txt m0.txt
+run Read "$R" Edit '{"file_path":"m.txt","edits":"<<<<<<<\ntres\n=======\n3\n>>>>>>>\n<<<<<<<\nnaoha\n=======\nx\n>>>>>>>"}'
+has "edits: uma falha diz qual" "edit 2 of 2: old_string was not found"
+has "edits: uma falha nao muda nada" "Nothing was changed."
+if cmp -s m.txt m0.txt; then ok "edits: tudo ou nada"; else fail "edits: tudo ou nada"; fi
+run Read "$R" Edit '{"file_path":"m.txt","edits":[{"old_string":"1","new_string":"9"}]}'
+has "edits: ambigua" "matches 2 places"
+run Read "$R" Edit '{"file_path":"m.txt","edits":[{"old_string":"1","new_string":"9","replace_all":true},{"old_string":"9b","new_string":"nove"}]}'
+has "edits: replace_all por item, e o seguinte ve o texto novo" "(2 edits, 3 replacements)"
+run Read "$R" Edit '{"file_path":"m.txt","edits":"<<<<<<<\ntres\n=======\na\n=======\nb\n>>>>>>>"}'
+has "edits: dois separadores" "two ======= lines"
+run Read "$R" Edit '{"file_path":"m.txt","edits":"<<<<<<<\ntres\n=======\na"}'
+has "edits: bloco aberto" "is not closed"
+run Read "$R" Edit '{"file_path":"m.txt","edits":"troque tres por 3"}'
+has "edits: texto sem bloco" "expected a line <<<<<<<"
+run Read "$R" Edit '{"file_path":"m.txt","edits":[]}'
+has "edits: vazio" "edits is empty"
+run Read "$R" Edit '{"file_path":"m.txt","old_string":"tres","new_string":"3","edits":[{"old_string":"a","new_string":"b"}]}'
+has "edits: nao junto com old_string" "not both"
+run Edit '{"file_path":"m0.txt","edits":[{"old_string":"tres","new_string":"3"}]}'
+has "edits: exige leitura" "not read"
+run Read "$R" Edit '{"file_path":"m.txt"}'
+has "Edit: sem nada diz o que falta" "missing old_string"
+run Read "$R" Edit '{"file_path":"m.txt","edits":"[{\"old_string\": \"tres\", \"new_string\": \"3\"}]"}'
+has "edits: array dentro de texto (chamada em XML)" "(1 edits, 1 replacement)"
+printf 'a\r\nb\r\nc\r\n' > crlf.txt
+run Read '{"file_path":"crlf.txt"}' Edit '{"file_path":"crlf.txt","edits":"<<<<<<<\nb\n=======\n>>>>>>>"}'
+if [ "$(od -An -c crlf.txt | tr -d ' \n')" = 'a\r\nc\r\n' ]; then ok "edits: CRLF, apaga a linha inteira"; else fail "edits: CRLF"; fi
+
 # ---------------- Edit ----------------
 printf 'um\ndois\ntres\ndois\nquatro\n' > e.txt
 run Edit '{"file_path":"e.txt","old_string":"um","new_string":"UM"}'
