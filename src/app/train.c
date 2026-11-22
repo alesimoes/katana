@@ -330,10 +330,14 @@ static int tg_run(int mode, int wt, KvkBuf w, KvkBuf in, KvkBuf out, uint32_t M,
    mode 0: out[b][r] = W[r] . in1[b]            (sobrescreve)
    mode 1: out[b][c] += sum_r in1[b][r] W[r][c]
    mode 2: out[r][c] += sum_b in1[b][r] in2[b][c] (gradiente de W, sem ler W) */
+static int tv_cpu_only(void);
+static int tv_prod(int mode, TPar *p, const float *in, float *out, int B);       /* train_vk.c: unidades de matriz */
 static int tg_prod(int mode, TPar *p, const float *in1, const float *in2, float *out, int B) {
+    if (tv_cpu_only()) return 0;
     if (!tg_init() || !p->mat) return 0;
     const size_t R = p->rows, C = p->cols, F = 4, ch = tg.chunk / F;     /* ch: floats por rascunho */
     if ((double)R * C * B < tg.min_mac) return 0;
+    if (tv_prod(mode, p, in1, out, B)) { tg.calls++; return 1; }
     const int wt = mode == 2 ? 0 : tg_wt(p);
     if (wt < 0) return 0;
     const double t0 = now_sec();
@@ -666,6 +670,8 @@ static float t_dact(float g) {                         /* derivada da ativacao d
     return 0.5f * (1.0f + th) + 0.5f * g * (1.0f - th * th) * k * (1.0f + 3.0f * 0.044715f * g * g);
 }
 
+#include "train_vk.c"            /* produtos nas unidades de matriz da placa e especialistas em lote */
+
 /* SwiGLU com tres parametros: out = down(silu(gate x) * up x); guarda a, u, h */
 static void t_glu_fwd(TTab *tt, int ig, int iu, int idn, const float *x, float *a, float *u, float *h, float *out, int B, int H) {
     tp_mv(&tt->p[ig], a, x, B);
@@ -723,11 +729,12 @@ static void t_moe_fwd(Model *m, TTab *tt, TAct *A, int l, const float *xr, const
     }
     free(ch);
     memset(out, 0, (size_t)T * d * 4);
+    const int tvd = tv_moe_fwd(m, tt, l, T, E, K, sel, ew, x, ea, eu, eh, eo, out);
     /* agrupa os pares (token, k) por especialista: um lote por especialista */
     int *ix = xalloc((size_t)T * K, sizeof(int));
     float *xb = xalloc((size_t)T * K * d, 4), *ab = xalloc((size_t)T * K * He, 4), *ub = xalloc((size_t)T * K * He, 4);
     float *hb = xalloc((size_t)T * K * He, 4), *ob = xalloc((size_t)T * K * d, 4);
-    for (int e = 0; e < E; e++) {
+    for (int e = 0; e < E && !tvd; e++) {
         int n = 0;
         for (int j = 0; j < T * K; j++) if (sel[j] == e) ix[n++] = j;
         if (!n) continue;
@@ -778,7 +785,8 @@ static void t_moe_back(Model *m, TTab *tt, TAct *A, int l, const float *xr, cons
             dwa[j] *= sv[e];
         }
     }
-    for (int e = 0; e < E; e++) {
+    const int tvd = tv_moe_back(m, tt, l, T, E, K, sel, ew, ea, eu, dy, dx);
+    for (int e = 0; e < E && !tvd; e++) {
         int n = 0;
         for (int j = 0; j < T * K; j++) if (sel[j] == e) ix[n++] = j;
         if (!n) continue;
@@ -2079,6 +2087,7 @@ static int train_main(Model *m, const char *model_path, int argc, char **argv) {
         ema = ema < 0 ? loss : 0.9 * ema + 0.1 * loss;
         if (st == 1 || st % every == 0 || st == steps)
             printf("passo %4d  perda %.4f  media %.4f  |grad| %.3f  lr %.2e  (%d alvos, %.1f s)\n", st, loss, ema, gn, lr_t, N, now_sec() - t0);
+        if (getenv("KATANA_TRAIN_PROF")) printf("passo %d: perda %.9g |grad| %.9g\n", st, (double)loss, (double)gn);
         if (lf) fprintf(lf, "{\"step\": %d, \"loss\": %.6f, \"lr\": %.6g}\n", st, loss, lr_t);
         if (vas.n && (st % eval == 0 || st == steps)) {
             int vn = 0;

@@ -35,6 +35,9 @@ done
 $G -V --target-env vulkan1.3 --vn cvt_spv -o cvt.h cvt.comp || exit 1
 # treino (katana train): produto em float32 com pesos lidos direto do GGUF; MODE e WT sao constantes de especializacao
 $G -V --target-env vulkan1.2 --vn tmm_spv -o tmm.h tmm.comp || exit 1
+# treino nas unidades de matriz: ladrilhos de 16 e 64 tokens, peso e entrada em duas partes fp16
+$G -V --target-env vulkan1.3 -DBN=16 -DSN=1 -DPREC=2 --vn tcm16_spv -o tcm16.h tcm.comp || exit 1
+$G -V --target-env vulkan1.3 -DBN=64 -DSN=2 -DPREC=2 --vn tcm64_spv -o tcm64.h tcm.comp || exit 1
 $G -V --target-env vulkan1.2 --vn rms_wg16_spv -o rms_wg16.h rms_wg16.comp || exit 1
 $G -V --target-env vulkan1.2 -DOF32 --vn rms_wg32_spv -o rms_wg32.h rms_wg16.comp || exit 1
 $G -V --target-env vulkan1.2 --vn gather_spv -o gather.h gather.comp || exit 1
