@@ -1062,6 +1062,7 @@ static int run_main(int argc, char **argv) {
         return agent(&m, getenv("KATANA_MAXTOK") ? atoi(getenv("KATANA_MAXTOK")) : 32768,
                      getenv("KATANA_TEMP") ? (float)atof(getenv("KATANA_TEMP")) : 0.3f);
     }
+    { const int r = et_cmd(argc, argv); if (r >= 0) return r; }      /* tiersim, iobench (engine/expert_tier.c) */
     if (argc >= 5 && strcmp(argv[1], "routing") == 0) {
         Model m; memset(&m, 0, sizeof m);
         _putenv("KATANA_CPU=1");
@@ -1249,6 +1250,8 @@ static int run_main(int argc, char **argv) {
         "  katana verify <modelo.gguf>    confere os hashes dos shards\n"
         "  katana sparsity <modelo.gguf> <calib.txt> <aval.txt>   esparsidade por assunto (modelo denso)\n"
         "  katana routing  <modelo.gguf> <calib.txt> <aval.txt>   especialistas por assunto (modelo MoE)\n"
+        "  katana tiersim run <modelo.gguf> <texto> <rastro.bin> | sim <rastro.bin>   rastro de roteamento e simulacao de caches/previsores\n"
+        "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
         "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
