@@ -206,7 +206,8 @@ static void fam_x_ps1(FILE *f, Scn *s) {
         x_ps1_verify(s, ps, "param(|if ($count -gt $Limit) {|Get-ChildItem");
         x_final(cu_fmt(cu_fmt("%s%s", L("Line `if [ $count -gt $Limit ]; then` in %s was shell syntax; it is now `if ($count -gt $Limit) {`, which matches the `} else {` below it.", "A linha `if [ $count -gt $Limit ]; then` em %s era sintaxe de shell; agora e `if ($count -gt $Limit) {`, que casa com o `} else {` logo abaixo."), X_PSRUN), ps, ps));
     } else if (kind == 12 || kind == 13) {      /* pedem para RODAR o .ps1: sem PowerShell aqui, o modelo tenta outro caminho antes de dizer que nao da */
-        x_user(cu_fmt(XV(L("run %s on this folder and tell me what it prints", "roda o %s nesta pasta e me diz o que ele imprime"), L("what does %s print for this project folder? run it", "o que o %s imprime para a pasta deste projeto? roda ele")), ps));
+        x_user(cu_fmt(kind == 12 ? XV(L("execute %s against the project folder and give me its output", "executa o %s na pasta do projeto e me passa a saida"))
+                                 : XV(L("run %s on this folder and tell me what it prints", "roda o %s nesta pasta e me diz o que ele imprime"), L("what does %s print for this project folder? run it", "o que o %s imprime para a pasta deste projeto? roda ele")), ps));
         const char *plan[3] = {L("See if PowerShell is here", "Ver se ha PowerShell aqui"), kind == 12 ? L("Look for a shell twin of the script", "Procurar um gemeo do script em shell") : L("Read the script", "Ler o script"), L("Get the same answer with the shell", "Conseguir a mesma resposta com o shell")};
         x_plan(plan, 3);
         x_ps1_nopwsh(); x_done(1);
