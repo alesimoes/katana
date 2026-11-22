@@ -994,6 +994,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "init") == 0) return init_cli(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "brief") == 0) return brief_cli(argc - 2, argv + 2);
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
+    if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();
     if (argc == 2 && strcmp(argv[1], "calltest") == 0) return calltest();
     if (argc == 2 && strcmp(argv[1], "toolrun") == 0) {      /* teste: le linhas "<ferramenta> <json>" da entrada e executa em sequencia, no mesmo processo (sessoes de terminal persistem) */
         static char res[TOOL_WEB + 512], ln[20000];

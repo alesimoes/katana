@@ -619,7 +619,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                KATANA_TEACHER_FEED=1 volta a manter o cache local em dia a cada rodada */
             const int tskip = g_teacher && cml && !(getenv("KATANA_TEACHER_FEED") && atoi(getenv("KATANA_TEACHER_FEED")));
             if (tskip) g_ctx_lost = 1;
-            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) && pos + ids.n > g_cp_floor) || g_ctx_lost);
+            const int need = !tskip && !first && cml && hist.n && (pos + ids.n + 64 >= c->ctx || (auto_cp && pos + ids.n > cp_trig(m, sys) - (g_cp_step ? cp_step_gain() : 0) && pos + ids.n > g_cp_floor) || g_ctx_lost);
+            if (g_cp_step) { g_cp_step = 0; g_cp_phase = hist.n; }       /* a etapa nova comeca depois do que ja esta no historico */
             if (!tskip) { g_cp_nolive = g_ctx_lost; g_ctx_lost = 0; }      /* o cache nao esta em dia (subagente, professor): o caminho de compactacao recalcula a conversa */
             if (!need && !tskip && pos + ids.n + 64 >= c->ctx) {
                 fprintf(stderr, "[contexto cheio (%d de %d tokens): use /new to restart]\n", pos, c->ctx);
