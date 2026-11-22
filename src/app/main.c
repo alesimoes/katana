@@ -1153,6 +1153,11 @@ static int run_main(int argc, char **argv) {
         print_info(&m);
         return train_main(&m, argv[2], argc - 3, argv + 3);
     }
+    if (argc >= 4 && strcmp(argv[1], "q4bench") == 0) {
+        static Model m;
+        load_model(&m, argv[2]);
+        return q4_bench(&m, argc - 2, argv + 2);
+    }
     if (argc == 4 && strcmp(argv[1], "q4check") == 0) {      /* qwen4exp contra estados e logits de referencia (tools/tinymodel/qwen4exp_ref.py) */
         static Model m;
         load_model(&m, argv[2]);

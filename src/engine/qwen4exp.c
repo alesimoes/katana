@@ -36,6 +36,27 @@ typedef struct Q4 {
 } Q4;
 static struct { float *x; int n0, n; } q4_dbg;  /* q4check: estado depois de cada camada [pos][camada][R*dim] */
 
+/* medida por parte (KATANA_Q4_PROF=1 ou q4bench): [0] lote (prompt), [1] um token (geracao) */
+enum { QP_EMB, QP_PLE, QP_HCR, QP_HCW, QP_DNP, QP_DNR, QP_DNO, QP_ATP, QP_ATI, QP_ATC, QP_ATO, QP_RT, QP_EG, QP_EA, QP_ED, QP_ES, QP_SH, QP_HD, QP_N };
+static const char *const q4_pname[QP_N] = { "embedding", "n-grams", "mixer read", "mixer write", "deltanet proj", "deltanet recurrence", "deltanet out", "attention proj",
+    "attention keys", "attention core", "attention out", "router", "experts gate/up", "experts act", "experts down", "experts sum", "shared expert", "output head" };
+static double q4_pt[2][QP_N]; static long q4_ptok[2]; static int q4_prof = -1, q4_pw;
+static double q4_tick(int part, double t0) {
+    if (q4_prof <= 0) return 0.0;
+    const double t = now_sec();
+    if (part >= 0) q4_pt[q4_pw][part] += t - t0;
+    return t;
+}
+static void q4_prof_print(void) {
+    for (int w = 0; w < 2; w++) {
+        double tot = 0.0;
+        if (!q4_ptok[w]) continue;
+        for (int i = 0; i < QP_N; i++) tot += q4_pt[w][i];
+        printf("%s: %ld tokens, %.2f s, %.1f ms/token\n", w ? "generation" : "prompt", q4_ptok[w], tot, 1e3 * tot / q4_ptok[w]);
+        for (int i = 0; i < QP_N; i++) printf("  %-20s %8.2f ms/token %5.1f%%\n", q4_pname[i], 1e3 * q4_pt[w][i] / q4_ptok[w], 100 * q4_pt[w][i] / tot);
+    }
+}
+
 static int q4_kv(Model *m, const char *k, int kl, uint32_t t, Rd *r) {
     if (!m->q4) { m->q4 = xalloc(1, sizeof(Q4)); m->q4->ple_l = -1; }
     Q4 *q = m->q4;
@@ -297,6 +318,7 @@ static void q4_hc_read(Model *m, const Q4Hc *h, const float *X, int B, float *ou
     const int d = m->cfg.dim, R = q->R, D = R * d;
     static XQ xqs[Q4_BMAX];
     float *N = q4_scr(0, (size_t)B * D), *DN = q4_scr(1, (size_t)B * q->rank), *U = q4_scr(2, (size_t)B * D);
+    double tk = q4_tick(-1, 0);
     Q4Hj j = { q, h, X, DN, N, U, out, inj, d, m->cfg.eps, 0 };
     pool_for(q4_hc_job, &j, B, 1);
     int prep = 0;
@@ -310,6 +332,7 @@ static void q4_hc_read(Model *m, const Q4Hc *h, const float *X, int B, float *ou
     q4_mm(U, &h->up, DN, xqs, &prep, B, D, q->rank);
     j.fase = 1;
     pool_for(q4_hc_job, &j, B, 1);
+    q4_tick(QP_HCR, tk);
 }
 static void q4_hc_write(const Q4 *q, float *X, const float *y, const float *inj, int B, int d) {
     for (int t = 0; t < B; t++)
@@ -550,11 +573,13 @@ static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B
     float *QG = q4_scr(8, (size_t)B * 2 * qd), *K = q4_scr(9, (size_t)B * kvd), *V = q4_scr(10, (size_t)B * kvd), *O = q4_scr(11, (size_t)B * qd);
     float *qq = q4_scr(12, (size_t)B * qd), *IQ = q4_scr(13, (size_t)B * q->in * ih), *IK = q4_scr(14, (size_t)B * ih);
     int prep = 0;
+    double tk = q4_tick(-1, 0);
     q4_mm(QG, &L->wq, Xb, xqs, &prep, B, 2 * qd, d);
     q4_mm(K, &L->wk, Xb, xqs, &prep, B, kvd, d);
     q4_mm(V, &L->wv, Xb, xqs, &prep, B, kvd, d);
     q4_mm(IQ, &Q->iq, Xb, xqs, &prep, B, q->in * ih, d);
     q4_mm(IK, &Q->ik, Xb, xqs, &prep, B, ih, d);
+    tk = q4_tick(QP_ATP, tk);
     for (int t = 0; t < B; t++) {
         const int pos = pos0 + t;
         for (int h = 0; h < nh; h++) {
@@ -581,6 +606,7 @@ static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B
             q4_rope(m, key, pos - (q->ratio - 1));
         }
     }
+    tk = q4_tick(QP_ATI, tk);
     int scap = q->ibudget + q->ratio;
     if (pos0 + B < scap) scap = pos0 + B;
     static int *sel; static size_t sel_n; static int nsel[Q4_BMAX];
@@ -588,8 +614,10 @@ static void q4_att(Model *m, int l, const float *Xb, float *out, int pos0, int B
     Q4Aj j = { m, L, Q, IQ, qq, QG, O, sel, nsel, pos0, scap };
     pool_for(q4_sel_job, &j, B, 1);
     pool_for(q4_att_job, &j, B * nh, 1);
+    tk = q4_tick(QP_ATC, tk);
     prep = 0;
     q4_mm(out, &L->wo, O, xqs, &prep, B, d, qd);
+    q4_tick(QP_ATO, tk);
 }
 
 /* ---- MoE ----
@@ -639,6 +667,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
     static int ex[Q4_BMAX * 64], xi[Q4_BMAX * 64]; static float ew[Q4_BMAX * 64];
     float *LG = q4_scr(15, (size_t)B * E), *OU = q4_scr(16, (size_t)B * K * d);
     int prep = 0;
+    double tk = q4_tick(-1, 0);
     q4_mm(LG, &m->q4->l[l].router, Xb, xqs, &prep, B, E, d);
     for (int t = 0; t < B; t++) {
         moe_lg_ext = LG + (size_t)t * E;
@@ -646,6 +675,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
         for (int k = 0; k < K; k++) { ex[t * K + k] = moe.sel[k]; xi[t * K + k] = t; ew[t * K + k] = moe.w[k]; }
     }
     moe_lg_ext = NULL;
+    tk = q4_tick(QP_RT, tk);
     memset(out, 0, (size_t)B * d * sizeof(float));
     if (moe_int(&L->eg[0]) && moe_int(&L->eu[0]) && moe_int(&L->ed[0]) && !q4_low(&L->eg[0]) && pool.n > 1) {
         moe_cpu_multi(m, L, ex, xi, B * K, B, Xb, OU);
@@ -671,9 +701,12 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
         }
         Q4Xj j = { xp, xh, L, Xb, q4_scr(17, (size_t)np * H), q4_scr(18, (size_t)np * H), OU, ee, beg, pt, H, d, ng };
         pool_for(q4_exp_glu, &j, ng * 2 * H, 16);
+        tk = q4_tick(QP_EG, tk);
         pool_for(q4_exp_act, &j, np, 1);
         if (q4_low(&L->ed[0])) mm_prepare(xh, j.hg, np, H);
+        tk = q4_tick(QP_EA, tk);
         pool_for(q4_exp_down, &j, ng * d, 64);
+        tk = q4_tick(QP_ED, tk);
         int inv[Q4_BMAX * 64];
         for (int p = 0; p < np; p++) inv[src[p]] = p;
         for (int s = 0; s < B * K; s++) {       /* soma na ordem do roteador: igual para qualquer lote */
@@ -682,6 +715,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
             for (int i = 0; i < d; i++) o[i] += ew[s] * y[i];
         }
     }
+    tk = q4_tick(QP_ES, tk);
     float *G = q4_scr(17, (size_t)B * H), *U = q4_scr(18, (size_t)B * H), *S = q4_scr(19, (size_t)B * d);
     q4_mm(G, &L->sg, Xb, xqs, &prep, B, H, d);
     q4_mm(U, &L->su, Xb, xqs, &prep, B, H, d);
@@ -692,6 +726,7 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
         const float w = q4_sig(dot(L->shexp_gate, Xb + (size_t)t * d, d));
         for (int i = 0; i < d; i++) out[(size_t)t * d + i] += w * S[(size_t)t * d + i];
     }
+    q4_tick(QP_SH, tk);
 }
 
 /* ---- B tokens (B <= Q4_BMAX) a partir de pos0: deixa em m->x a entrada da projecao final do ultimo ---- */
@@ -702,34 +737,46 @@ static void q4_batch(Model *m, const int *toks, int B, int pos0) {
     static XQ xqs[Q4_BMAX];
     float *X = q4_scr(20, (size_t)B * D), *Xb = q4_scr(21, (size_t)B * d), *Y = q4_scr(22, (size_t)B * d);
     float inj[Q4_BMAX * Q4_RMAX];
+    q4_pw = B == 1; q4_ptok[q4_pw] += B;
+    double tk = q4_tick(-1, 0);
     for (int t = 0; t < B; t++) {
         embed_row(m, X + (size_t)t * D, toks[t]);
         for (int r = 1; r < q->R; r++) memcpy(X + (size_t)t * D + (size_t)r * d, X + (size_t)t * D, d * sizeof(float));
     }
+    tk = q4_tick(QP_EMB, tk);
     for (int l = 0; l < c->n_layers; l++) {
         const Layer *L = &m->layers[l];
-        if (l == q->ple_l) q4_ple(m, toks, X, B);
+        tk = q4_tick(-1, 0);
+        if (l == q->ple_l) { q4_ple(m, toks, X, B); q4_tick(QP_PLE, tk); }
         q4_hc_read(m, &q->l[l].att, X, B, Xb, inj);
         if (L->lin) {
             float *P = q4_scr(23, (size_t)B * C), *Z = q4_scr(24, (size_t)B * inner), *O = q4_scr(25, (size_t)B * inner);
             float *AL = q4_scr(26, (size_t)B * nv), *BE = q4_scr(27, (size_t)B * nv);
             int prep = 0;
+            tk = q4_tick(-1, 0);
             q4_mm(P, &L->wqkv, Xb, xqs, &prep, B, C, d);
             q4_mm(Z, &L->wz, Xb, xqs, &prep, B, inner, d);
             q4_mm(AL, &L->walpha, Xb, xqs, &prep, B, nv, d);
             q4_mm(BE, &L->wbeta, Xb, xqs, &prep, B, nv, d);
+            tk = q4_tick(QP_DNP, tk);
             for (int t = 0; t < B; t++) {
                 dn_conv(c, L, dn_CV(m, L), P + (size_t)t * C);
                 dn_recur(m, L, P + (size_t)t * C, AL + (size_t)t * nv, BE + (size_t)t * nv, O + (size_t)t * inner);
                 q4_dn_gate(c, L, O + (size_t)t * inner, Z + (size_t)t * inner);
             }
+            tk = q4_tick(QP_DNR, tk);
             prep = 0;
             q4_mm(Y, &L->wssm_out, O, xqs, &prep, B, d, inner);
+            q4_tick(QP_DNO, tk);
         } else q4_att(m, l, Xb, Y, pos0, B, xqs);
+        tk = q4_tick(-1, 0);
         q4_hc_write(q, X, Y, inj, B, d);
+        q4_tick(QP_HCW, tk);
         q4_hc_read(m, &q->l[l].ffn, X, B, Xb, inj);
         q4_moe(m, l, Xb, Y, B, xqs);
+        tk = q4_tick(-1, 0);
         q4_hc_write(q, X, Y, inj, B, d);
+        q4_tick(QP_HCW, tk);
         if (q4_dbg.x)
             for (int t = 0; t < B; t++)
                 if (pos0 + t < q4_dbg.n) memcpy(q4_dbg.x + ((size_t)(pos0 + t) * c->n_layers + l) * D, X + (size_t)t * D, D * sizeof(float));
@@ -746,6 +793,7 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
     const Config *c = &m->cfg;
     Q4 *q = m->q4;
     if (n < 1) return NULL;
+    if (q4_prof < 0) { q4_prof = getenv("KATANA_Q4_PROF") ? atoi(getenv("KATANA_Q4_PROF")) : 0; if (q4_prof > 0) atexit(q4_prof_print); }
     if (pos0 + n > c->ctx) die("qwen4exp: contexto cheio");
     if (pos0 == 0) {        /* conversa nova */
         memset(m->ssm, 0, (size_t)m->n_lin * dn_state_floats(c) * sizeof(float));
@@ -758,7 +806,57 @@ static float *q4_forward(Model *m, const int *toks, int n, int pos0, int want_lo
         q4_batch(m, toks + i, B, pos0 + i);
         i += B;
     }
-    return want_logits ? cpu_head(m) : NULL;
+    if (!want_logits) return NULL;
+    const double tk = q4_tick(-1, 0);
+    float *lg = cpu_head(m);
+    q4_tick(QP_HD, tk);
+    return lg;
+}
+
+/* katana q4bench <gguf> <texto> [tokens=256] [gerados=24] [A=0] [B=todas] [pares=3] : mede dentro do mesmo processo, paginas ja
+   quentes (uma passada de aquecimento), alternando duas mascaras de opcoes (q4_opt): tok/s do prompt e da geracao de cada passada,
+   diferenca de logits de B contra A (fim do prompt e cada gerado; os tokens gerados sao os da passada de A) e os tempos por parte */
+static int q4_opt = -1;
+static char *read_text(const char *path);
+static int q4_bench(Model *m, int argc, char **argv) {
+    const Config *c = &m->cfg;
+    const int N0 = argc > 2 ? atoi(argv[2]) : 256, G = argc > 3 ? atoi(argv[3]) : 24, pairs = argc > 6 ? atoi(argv[6]) : 3, V = c->vocab;
+    const int ma = argc > 4 ? atoi(argv[4]) : 0, mb = argc > 5 ? atoi(argv[5]) : -1;
+    if (!c->q4e) die("q4bench: nao e um modelo qwen4exp");
+    Ids ids = {0};
+    encode(&m->tk, read_text(argv[1]), &ids);
+    const int n = ids.n < N0 ? ids.n : N0;
+    if (n + G > c->ctx || n < 1 || G < 1) die("q4bench: contexto pequeno");
+    float *ref = xalloc((size_t)(G + 1) * V, 4);
+    int *gen = xalloc(G + 1, sizeof(int));
+    for (int p = 0; p <= 2 * pairs; p++) {
+        const int b = p > 0 && p % 2 == 0;      /* 0 aquecimento (A), depois A B A B ... */
+        q4_opt = b ? mb : ma;
+        q4_prof = p > 0;
+        memset(q4_pt, 0, sizeof q4_pt); memset(q4_ptok, 0, sizeof q4_ptok);
+        double t0 = now_sec(), md = 0.0, mx = 0.0;
+        int same = 0;
+        float *lg = q4_forward(m, ids.ids, n, 0, 1);
+        const double tp = now_sec() - t0;
+        t0 = now_sec();
+        for (int g = 0; g <= G; g++) {
+            float *w = ref + (size_t)g * V;
+            int a = 0;
+            for (int i = 1; i < V; i++) if (lg[i] > lg[a]) a = i;
+            if (!b) { memcpy(w, lg, (size_t)V * 4); gen[g] = a; }
+            else for (int i = 0; i < V; i++) { const double e = fabs(lg[i] - w[i]); if (e > md) md = e; if (fabs(w[i]) > mx) mx = fabs(w[i]); }
+            same += a == gen[g];
+            if (g < G) lg = q4_forward(m, &gen[g], 1, n + g, 1);
+        }
+        const double tg = now_sec() - t0;
+        printf("%s opt=%d: prompt %d tokens %.2f tok/s, geracao %d tokens %.2f tok/s", p ? b ? "B" : "A" : "aquecimento", q4_opt, n, n / tp, G, G / tg);
+        if (b) printf(", logits: maior diferenca %.3e (maior %.1f), argmax igual %d/%d", md, mx, same, G + 1);
+        printf("\n");
+        if (p >= 2 * pairs - 1) q4_prof_print();
+        fflush(stdout);
+    }
+    q4_prof = 0;
+    return 0;
 }
 
 /* katana q4check <gguf> <referencia>: estados por camada e logits contra a definicao de referencia.
