@@ -19,6 +19,11 @@ engine has them (add them to `TOOLS` in runtool.py and to `SCHEMA` in common.py)
 
 ## Method
 
+0. **Map first (one or two queries).** Projects often keep a map of themselves: `KATANA.md`, `AGENTS.md`, `CLAUDE.md`, `README.md`,
+   `docs/`. Before searching the code, look for the map with one `Glob` (a narrow pattern at the repository root, for
+   example `*.md`) and read the part of it that describes the area of the question (a `Grep -C 2` for a word of the question
+   inside that file, or a `Read` of at most 60 lines). Write what the map told you in `learned`. If the project has no
+   map, say so in one `learned` line and go on. The map names folders and files; use it to choose the first real hypothesis.
 1. Read the question. Separate the symptom from the cause. The cause is rarely where the words of the question appear.
 2. **Hypothesis**: one short sentence (at most 140 characters, in Portuguese, the owner's language) saying what you expect
    to find and where. Record it with `hyp`.
