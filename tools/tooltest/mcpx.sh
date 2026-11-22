@@ -124,5 +124,39 @@ has "d: KATANA_MCP_CONFIRM_DESTRUCTIVE pergunta so nas destrutivas" "$R" "the us
 R=$(KATANA_MCP_CONFIRM_DESTRUCTIVE=1 "$K" tool rt__argv '{}' 2>&1 </dev/null)
 hasnt "d: ... e as outras seguem sem pergunta" "$R" "the user denied"
 
+########## e: .mcp.json na raiz do projeto ##########
+PE="$T/pe"; mkdir -p "$PE/.git" "$PE/src/deep"; cd "$PE"
+printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","user"]}}}\n' "$FAKE" > "$HOME/.katana/mcp.json"
+rm -f "$HOME/.katana/mcp-trust"
+printf '{"mcpServers":{"pa":{"type":"stdio","command":"%s","args":["argv","pa"]},"shared":{"command":"%s","args":["argv","root"]}}}\n' "$FAKE" "$FAKE" > "$PE/.mcp.json"
+R=$("$K" mcp list 2>&1 </dev/null)
+has "e: .mcp.json nao confiavel: pulado sem terminal" "$R" "not trusted yet"
+has "e: a mensagem cita o arquivo" "$R" ".mcp.json"
+hasnt "e: nao inicia" "$R" "pa [stdio]"
+R=$(printf '\001ANS 1\n' | KATANA_UI=1 "$K" mcp list 2>&1)
+has "e: a mesma pergunta de confianca" "$R" "ASK action"
+has "e: aceito: o servidor do .mcp.json conecta" "$R" "pa [stdio] ok"
+has "e: o servidor diz de onde veio" "$R" "from project file $PE/.mcp.json"
+R=$("$K" mcp list 2>&1 </dev/null)
+has "e: confianca lembrada por caminho e conteudo" "$R" "pa [stdio] ok"
+R=$("$K" tool shared__argv '{}' 2>&1 </dev/null)
+has "e: .mcp.json vence o arquivo do usuario" "$R" "[root]"
+printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","katana"]}}}\n' "$FAKE" > "$PE/.katana/mcp.json" 2>/dev/null || { mkdir -p "$PE/.katana"; printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","katana"]}}}\n' "$FAKE" > "$PE/.katana/mcp.json"; }
+R=$(KATANA_MCP_TRUST=1 "$K" tool shared__argv '{}' 2>&1 </dev/null)
+has "e: .katana/mcp.json vence o .mcp.json" "$R" "[katana]"
+R=$(KATANA_MCP_TRUST=1 "$K" mcp list 2>&1 </dev/null)
+has "e: os dois arquivos de projeto somam servidores" "$R" "pa [stdio] ok"
+R=$(cd "$PE/src/deep" && "$K" tool pa__argv '{}' 2>&1 </dev/null)
+has "e: achado a partir de uma subpasta" "$R" "[pa]"
+printf '{"mcpServers":{"pa":{"command":"%s","args":["argv","changed"]}}}\n' "$FAKE" > "$PE/.mcp.json"
+R=$(rm -f "$PE/.katana/mcp.json"; "$K" mcp list 2>&1 </dev/null)
+has "e: .mcp.json alterado: a confianca anterior nao vale" "$R" "not trusted yet"
+R=$(KATANA_MCP_STRICT=1 KATANA_MCP_TRUST=1 "$K" mcp list 2>&1 </dev/null)
+hasnt "e: KATANA_MCP_STRICT ignora o .mcp.json" "$R" "pa [stdio]"
+rm -f "$PE/.mcp.json"
+R=$("$K" tool shared__argv '{}' 2>&1 </dev/null)
+has "e: sem arquivos de projeto, volta ao do usuario" "$R" "[user]"
+cd "$P"
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]

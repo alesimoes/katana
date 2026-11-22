@@ -52,6 +52,7 @@ static void mcpx_server_msg(McpSrv *s, const char *o);                       /* 
 static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final);
 static int mcpx_extra_wait(void);
 static void mcpx_cwd_sync(void);
+static int mcpx_root_file(char *out, size_t cap);
 static void mcpx_refresh(McpSrv *s, McpB *note);
 static void mcpx_ann_parse(McpTool *t, const char *v);
 static int mcpx_skip_confirm(const McpSrv *s, int tj);
@@ -820,6 +821,8 @@ static void mcp_load_config(void) {      /* so le a configuracao, sem iniciar na
     char up[700], pp[4600];
     mcp_user_path(up, sizeof up);
     mcp_load_file(up, 0);
+    /* ordem (o ultimo vence um nome repetido): arquivo do usuario, .mcp.json da raiz do projeto, .katana/mcp.json */
+    if (mcpx_root_file(pp, sizeof pp) && strcmp(pp, up) != 0) mcp_load_file(pp, 1);
     if (mcp_project_path(pp, sizeof pp) && strcmp(pp, up) != 0) mcp_load_file(pp, 1);
 }
 static void mcp_init(int verbose) {     /* le a configuracao e inicia os servidores (uma vez) */
@@ -882,7 +885,8 @@ static void mcp_usage_path(const McpSrv *s, char *out, size_t cap) {
     char d[400]; snprintf(d, sizeof d, "%s", s->source);
     char *sl = strrchr(d, '/');
     if (sl) *sl = 0; else snprintf(d, sizeof d, ".");
-    snprintf(out, cap, "%s/mcp/%s.md", d, s->name);
+    if (strlen(s->source) >= 10 && strcmp(s->source + strlen(s->source) - 10, "/.mcp.json") == 0) snprintf(out, cap, "%s/.katana/mcp/%s.md", d, s->name);    /* .mcp.json fica na raiz: o arquivo de uso vai para .katana/mcp/ */
+    else snprintf(out, cap, "%s/mcp/%s.md", d, s->name);
 }
 /* assinatura: obrigatorios primeiro; tipo so se nao for texto; ? opcional; enum (a|b); ate 8 argumentos */
 static void mcp_sig(const McpTool *t, McpB *b) {

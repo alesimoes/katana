@@ -215,3 +215,23 @@ static int mcpx_plan_ok(const char *name) {
     McpSrv *s = mcp_resolve(name, &tj);
     return s && tj >= 0 && s->alive && mcpx_readonly_trusted(s, tj);
 }
+
+/* ----- e: .mcp.json na raiz do projeto (mesmo formato; vale a mesma confirmacao de confianca por caminho e conteudo) -----
+ * Procura da pasta de trabalho para cima ate a raiz do repositorio (pasta com .git) ou a pasta do usuario.
+ * Precedencia, do mais fraco ao mais forte: arquivo do usuario, .mcp.json, .katana/mcp.json. */
+static int mcpx_root_file(char *out, size_t cap) {
+    { const char *st1 = getenv("KATANA_MCP_STRICT"); if (st1 && *st1 && *st1 != '0') return 0; }
+    char d[4200], home[1024], g[4400]; struct stat st;
+    if (!getcwd(d, sizeof d)) return 0;
+    agent_home(home, sizeof home);
+    for (int up = 0; up < 12; up++) {
+        snprintf(out, cap, "%s/.mcp.json", d);
+        if (proj_isfile(out)) return 1;
+        snprintf(g, sizeof g, "%s/.git", d);
+        if (stat(g, &st) == 0 || strcmp(d, home) == 0) break;
+        char *sl = strrchr(d, '/');
+        if (!sl || sl == d) break;
+        *sl = 0;
+    }
+    return 0;
+}

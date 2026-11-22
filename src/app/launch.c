@@ -818,6 +818,7 @@ static void launch_header(Model *m) {
         else { snprintf(u, sizeof u, "%s/.katana/mcp.json", home); if (lc_isfile(u)) o += (size_t)snprintf(files + o, sizeof files - o, "~/.katana/mcp.json"); }
         snprintf(pj, sizeof pj, "%s/.katana/mcp.json", cwd);
         if (!getenv("KATANA_MCP_STRICT") && lc_isfile(pj)) o += (size_t)snprintf(files + o, sizeof files - o, "%s./.katana/mcp.json", o ? ", " : "");
+        { char rj[4400]; if (mcpx_root_file(rj, sizeof rj)) o += (size_t)snprintf(files + o, sizeof files - o, "%s%s", o ? ", " : "", lc_short(rj, sh, sizeof sh)); }      /* .mcp.json da raiz do projeto */
         int alive = 0; for (int i = 0; i < g_nmcp; i++) alive += g_mcp[i].alive;
         if (g_nmcp) fprintf(stderr, "  mcp       %d server%s (%d up) from %s\n", g_nmcp, g_nmcp == 1 ? "" : "s", alive, files[0] ? files : "configuration");
         else fprintf(stderr, "  mcp       none\n");

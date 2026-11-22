@@ -74,3 +74,15 @@ file (`.katana/mcp.json`, `.mcp.json`) never gains anything from its hints.
 
 A tool that claims both read-only and destructive is treated as neither. Before this item, `KATANA_CONFIRM` did not make MCP
 calls ask; now it does (as it does for file writes and commands), and `KATANA_MCP_CONFIRM` keeps working.
+
+## `.mcp.json` at the project root
+
+katana also reads `.mcp.json` (same format as `.katana/mcp.json`; extra keys such as `"type": "stdio"` are ignored) from
+the working folder or the nearest folder above it, stopping at the repository root (the folder that has `.git`) or the
+user's home. It is a project file, so it needs the same trust confirmation as `.katana/mcp.json`: asked once per path and
+content hash (`~/.katana/mcp-trust`), skipped without a terminal or the desktop, `KATANA_MCP_TRUST=1/0` as before.
+`KATANA_MCP_STRICT=1` ignores it, like the other project file.
+
+Precedence for a server name that appears more than once, weakest first: `~/.katana/mcp.json` (or `KATANA_MCP_CONFIG`),
+then `.mcp.json`, then `.katana/mcp.json`. The server listing says which file each one came from. The usage file of a
+server declared in `.mcp.json` is `.katana/mcp/<server>.md`. `katana mcp add --project` still writes `.katana/mcp.json`.
