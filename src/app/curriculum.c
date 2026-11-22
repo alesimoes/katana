@@ -2074,6 +2074,19 @@ static const char *cu_brief_val(const char *sys, const char *key) {
 
 /* ---- check: o que o motor pode refazer, ele refaz (plano, Write, Edit); o resto e conferido contra as tabelas do binario ---- */
 static long g_cu_showbad = 10;
+static int g_cu_covfail;               /* check --coverage: ferramenta abaixo do minimo e erro */
+/* faixas: A declaradas no prompt; B so pelo nome (ToolSearch select:Nome antes); C raras (basta o padrao de descoberta).
+   Minimo em conversas: A 2% do arquivo (pelo menos 5), B 3, C 1. PowerShell fica de fora fora do Windows. */
+static const struct { const char *name; char tier; } g_cu_cov[] = {
+    {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Glob", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
+    {"ToolSearch", 'A'}, {"WebSearch", 'A'}, {"WebFetch", 'A'},
+    {"Skill", 'B'}, {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
+    {"SendUserFile", 'B'}, {"TaskCreate", 'B'}, {"TaskUpdate", 'B'}, {"TaskList", 'B'}, {"TaskGet", 'B'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
+    {"EnterWorktree", 'B'}, {"ExitWorktree", 'B'},
+    {"CronCreate", 'C'}, {"CronDelete", 'C'}, {"CronList", 'C'}, {"ScheduleWakeup", 'C'}, {"PushNotification", 'C'}, {"EndConversation", 'C'}, {"ReportFindings", 'C'},
+    {"SendMessage", 'C'}, {"ListAgents", 'C'}, {"SubagentHandback", 'C'}, {"Workflow", 'C'}, {"WaitForMcpServers", 'C'}};
+static long g_cu_covn[CU_N(g_cu_cov) + 1];      /* conversas com pelo menos uma chamada treinada; o ultimo: ferramentas MCP */
+static unsigned char g_cu_covseen[CU_N(g_cu_cov) + 1];
 typedef struct { char id[40]; char name[96]; const char *args; int train; } CuPc;
 typedef struct { uint64_t sit, act; long line; } CuSit;
 static uint64_t cu_fnv(const char *p, size_t n, uint64_t h) { for (size_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211ull; } return h; }
@@ -2137,6 +2150,7 @@ static int curriculum_check(const char *path, int stats_only) {
         const char *results = cu_fmt("%s", "");
         Buf allres = {0}; buf_str(&allres, "");
         Buf seen = {0}; buf_str(&seen, "");                 /* pedidos e resultados ate aqui: de onde um argumento pode vir */
+        memset(g_cu_covseen, 0, sizeof g_cu_covseen);
         CuPc pc[10]; int npc = 0;
         int rq_calls = 0, rq_changed = 0, rq_ran = 0, rq_nudged = 0, want_nudge = 0, nuser = 0;
         uint64_t sit_h = 0, act_h = 0; int have_act = 0;
@@ -2299,6 +2313,10 @@ static int curriculum_check(const char *path, int stats_only) {
                 const char *id = cu_jstr(cu_jget(c1, "id"));
                 if (!name || !args || *args != '{' || !id) { CU_BAD("chamada malformada"); continue; }
                 { const size_t pl = strlen(pend_id); snprintf(pend_id + pl, sizeof pend_id - pl, "%s%s;", pl ? "" : ";", id); }
+                if (train) {
+                    if (strstr(name, "__")) g_cu_covseen[CU_N(g_cu_cov)] = 1;
+                    else for (int ci = 0; ci < CU_N(g_cu_cov); ci++) if (!strcmp(name, g_cu_cov[ci].name)) g_cu_covseen[ci] = 1;
+                }
                 if (npc < 10) { snprintf(pc[npc].id, sizeof pc[npc].id, "%s", id); snprintf(pc[npc].name, sizeof pc[npc].name, "%s", name); pc[npc].args = args; pc[npc].train = train; npc++; }
                 if (!stats_only && train && strstr(name, "__")) {      /* cada valor de um argumento MCP vem do pedido ou de um resultado anterior */
                     char badv[80];
@@ -2375,6 +2393,7 @@ static int curriculum_check(const char *path, int stats_only) {
         if (fam && (!strcmp(fam, "skill-match") || !strcmp(fam, "skill-fail") || !strcmp(fam, "skill-missing-need")) && !skill_called) CU_BAD("%s sem Skill", fam);
         if (fam && !strcmp(fam, "skill-missing-need") && !strstr(allres.p, "MISSING:")) CU_BAD("skill-missing-need sem needs faltando");
         free(allres.p); free(seen.p);
+        for (int ci = 0; ci <= CU_N(g_cu_cov); ci++) g_cu_covn[ci] += g_cu_covseen[ci];
         if (!stats_only) {
             if (want_nudge) CU_BAD("termina com mais de um passo do plano em aberto: o motor mandaria o lembrete do plano");
             if (nsit == csit) { csit = csit ? csit * 2 : 4096; sits = realloc(sits, sizeof *sits * (size_t)csit); }
@@ -2406,8 +2425,19 @@ static int curriculum_check(const char *path, int stats_only) {
             else { nconf++; if (nconf <= 5) fprintf(stderr, "linhas %ld e %ld: mesma situacao, primeira acao diferente\n", sits[i - 1].line, sits[i].line); }
         }
         free(sits);
+        /* cobertura: cada ferramenta da tabela do motor, por faixa, contra o minimo */
+        long low = 0;
+        printf("cobertura das ferramentas do motor (conversas com chamada treinada; minimo por faixa):\n");
+        for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {
+            if (!ct_lookup(g_cu_cov[ci].name)) { printf("  %c %-22s fora da tabela deste binario\n", g_cu_cov[ci].tier, g_cu_cov[ci].name); continue; }
+            const long min = g_cu_cov[ci].tier == 'A' ? (nl / 50 > 5 ? nl / 50 : 5) : g_cu_cov[ci].tier == 'B' ? 3 : 1;
+            const int lw = g_cu_covn[ci] < min; low += lw;
+            printf("  %c %-22s %6ld  (minimo %ld)%s\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], min, lw ? "  ABAIXO" : "");
+        }
+        printf("  - %-22s %6ld\n", "ferramentas MCP", g_cu_covn[CU_N(g_cu_cov)]);
+        printf("cobertura: %ld ferramentas abaixo do minimo%s\n", low, g_cu_covfail ? "" : " (check --coverage faz disso um erro)");
         printf("check: %ld conversas, %ld chamadas, %ld com problema, %ld contradicoes (mesma situacao, acao diferente), %ld situacoes repetidas\n", nl, ncalls, bad, nconf, ndup);
-        return bad || nconf ? 1 : 0;
+        return bad || nconf || (g_cu_covfail && low) ? 1 : 0;
     }
     return 0;
 }
@@ -2462,7 +2492,7 @@ static int curriculum_main(int argc, char **argv) {
         { const char *tp = getenv("TMPDIR"); snprintf(g_cu_sbroot, sizeof g_cu_sbroot, "%s/katana_cu_XXXXXX", tp && *tp ? tp : "/tmp"); }
         if (!mkdtemp(g_cu_sbroot)) { fprintf(stderr, "curriculum: nao criei a pasta de trabalho em %s\n", g_cu_sbroot); return 1; }
         setenv("HOME", g_cu_sbroot, 1);
-        if (argc >= 3 && !strcmp(argv[2], "--all")) g_cu_showbad = 1000000000;
+        for (int i = 2; i < argc; i++) { if (!strcmp(argv[i], "--all")) g_cu_showbad = 1000000000; else if (!strcmp(argv[i], "--coverage")) g_cu_covfail = 1; }
         const int rc = curriculum_check(full, !strcmp(argv[0], "stats"));
         if (chdir("/") != 0) {}
         cu_rmrf(g_cu_sbroot);
@@ -2470,7 +2500,7 @@ static int curriculum_main(int argc, char **argv) {
     }
     if (argc < 1 || argv[0][0] == '-') {
         fprintf(stderr, "uso: katana curriculum <saida.jsonl> [--n N] [--seed S] [--families a,b=2,...] [--lang pt,en] [--holdout F.jsonl] [--system full|real|blocks|mix:full=F,blocks=B,real=R] [--decl PCT]\n"
-                        "     katana curriculum stats <arquivo>\n     katana curriculum check <arquivo> [--all]\nfamilias:");
+                        "     katana curriculum stats <arquivo>\n     katana curriculum check <arquivo> [--all] [--coverage]\nfamilias:");
         for (int i = 0; i < CU_NFAM; i++) fprintf(stderr, " %s", g_cu_fams[i].name);
         fprintf(stderr, "\n");
         return 1;

@@ -156,6 +156,30 @@ answers with open plan steps, 180 `TodoWrite` results the engine would not give,
 verification, 122 invented MCP arguments, 87 `Write`/`Edit` results the engine would not give, 44 double questions, 17
 requests without a plan.
 
+## Tool coverage matrix
+
+`katana curriculum check` ends with one line per tool of the engine's table (`src/tools/table.c`), in three tiers, with the
+number of conversations that call it in a trained turn and the minimum: tier A (declared in the prompt) 2% of the file and
+at least 5, tier B (listed by name, reached through `ToolSearch select:Name`) 3, tier C (rare) 1. `check --coverage` turns
+a tool below its minimum into an error. Measured on the 520-conversation file of 2026-11-22: 8 of the 40 tools of this
+platform are called (Bash, Read, Edit, Write, Grep, TodoWrite, ToolSearch, Skill) plus the MCP tools; 32 are below the
+minimum, among them Glob, AskUserQuestion, WebSearch and WebFetch of tier A. The families that would cover them are not
+written yet.
+
+## Size against the training budget
+
+Measured with the Qwen3.6 tokenizer, fixed windows, `--mask-prefill`: 1,800 conversations in `mix:blocks=60,full=30,real=10`
+are 2.17M tokens and 3,149 trained windows of 512; 520 conversations in `mix:blocks=88,real=12` are 0.51M tokens, 918
+trained windows of 512 or 601 of 1024. Windows without a target (the long system prompt) are not trained.
+
+## Structural holdout
+
+`--holdout` alone gives the same moulds with new values. For a holdout of moulds the training file never had, generate the
+training file with `--families` leaving some families out, and a holdout with only those. Measured (training without
+`skill-fail`, `brief-absent`, `mcp-none-error`; holdout with only them): 54% of the holdout tool sequences are not in the
+training file, 0% of the turns are equal, 22% of the turns share a template. The cost is that the training file no longer
+teaches those three behaviours.
+
 ## Family weights
 
 Without `--families` the weights are: `brief-done` 6 (the only family with the read, edit, verify, fix cycle), the `mcp-*`
