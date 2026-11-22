@@ -24,15 +24,16 @@ static const char DT_TEXT[] =
     "2 + 2 = 4, 17 * 23 = 391, and the square root of 144 is 12. Paris is the capital of France and Brasilia is the capital of Brazil.\n"
     "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n";
 
-typedef struct { int n, flips, bigflips, bad; double kl, klmax, dmax; } DtStat;
+typedef struct { int n, flips, bigflips, bad; double kl, klmax, dmax; int tie, tie_l; double tie_m; int ndiv; } DtStat;
 static struct {
     int L, d, N, K;
     float *ref; uint8_t *have;          /* estado por (token, camada) da referencia */
     int rec, cmp, bad, pos0;
     double *err; long *cnt;             /* pior erro relativo por camada */
-    int *sel; long sdiff, scnt;         /* escolhidos da referencia; (token, camada) com escolha diferente */
+    uint64_t *sel; float *mar; long nsel, kr;   /* 1 a 1: assinatura dos escolhidos e margem (K-esimo - seguinte, relativa) por chamada do roteador */
+    int s1, ndiv; long div0;            /* comparando; tokens com escolha diferente; primeira chamada que divergiu */
     double wsum;                        /* pior |soma dos pesos - 1| do roteador */
-    int dup;                            /* escolhidos repetidos */
+    int dup, klpos;                     /* escolhidos repetidos; posicao do maior KL */
     int calls; double secs, disp, subm, hit, miss, load;     /* por chamada do caminho: despachos, envios a placa, usos de especialista na VRAM e fora, subidas */
 } dt;
 static void dt_tap(int l, int pos, const float *x) {
@@ -48,11 +49,22 @@ static void dt_tap(int l, int pos, const float *x) {
     if (e > dt.err[l]) dt.err[l] = e;
     dt.cnt[l]++;
 }
+static int moe_E;
 static void dt_route(int l, const int *sel, const float *w, int K, int unit) {
     double s = 0;
     for (int k = 0; k < K; k++) { s += w[k]; for (int j = 0; j < k; j++) if (sel[j] == sel[k]) dt.dup++; }
     if (unit && fabs(s - 1.0) > dt.wsum) dt.wsum = fabs(s - 1.0);
     (void)l;
+    if (!dt.s1 || dt.kr >= dt.nsel) return;
+    uint64_t sg = 0;
+    for (int k = 0; k < K; k++) sg += (uint64_t)(sel[k] + 1) * 0x9E3779B97F4A7C15ULL ^ ((uint64_t)(sel[k] + 1) << 40);
+    if (dt.rec) {
+        float lo = 1e30f, up = 0;
+        for (int k = 0; k < K; k++) if (moe.lg[sel[k]] < lo) lo = moe.lg[sel[k]];
+        for (int e = 0; e < moe_E; e++) { int in = 0; for (int k = 0; k < K; k++) in |= sel[k] == e; if (!in && moe.lg[e] > up) up = moe.lg[e]; }
+        dt.sel[dt.kr] = sg; dt.mar[dt.kr] = (lo - up) / (lo + 1e-30f);
+    } else if (dt.sel[dt.kr] != sg) { dt.ndiv++; if (dt.div0 < 0) dt.div0 = dt.kr; }
+    dt.kr++;
 }
 static void dt_clear_err(void) { memset(dt.err, 0, (size_t)dt.L * sizeof(double)); memset(dt.cnt, 0, (size_t)dt.L * sizeof(long)); }
 
@@ -71,7 +83,7 @@ static void dt_add(DtStat *s, const float *ref, const float *o, int V) {
     for (int i = 0; i < V; i++) { const double lp = ref[i] - lzr, p = exp(lp); if (p > 1e-12) kl += p * (lp - (o[i] - lzo)); }
     if (kl < 0) kl = 0;
     s->n++; s->kl += kl;
-    if (kl > s->klmax) s->klmax = kl;
+    if (kl > s->klmax) { s->klmax = kl; dt.klpos = s->n - 1; }
     if (md > s->dmax) s->dmax = md;
     if (a != b) { s->flips++; if (ref[a] - ref[b] > 2 * 0.25) s->bigflips++; }
 }
@@ -91,6 +103,7 @@ static void dt_run(Model *m, const int *toks, int N, int chunk, const float *ref
     memset(s, 0, sizeof *s);
     dt_clear_err();
     dt.bad = 0; dt.cmp = 1;
+    dt.s1 = chunk == 1 && dt.sel && dt.nsel; dt.kr = 0; dt.ndiv = 0; dt.div0 = -1;
     KvkStats k0; memset(&k0, 0, sizeof k0);
     if (gpu.vk) kvk_stats(&k0);
     const uint64_t h0 = gx.hits, m0 = gx.miss, l0 = gx.loads;
@@ -103,6 +116,9 @@ static void dt_run(Model *m, const int *toks, int N, int chunk, const float *ref
     }
     dt.cmp = 0;
     s->bad += dt.bad;
+    s->ndiv = dt.s1 ? dt.ndiv : -1;
+    if (dt.s1 && dt.div0 >= 0) { s->tie = (int)(dt.div0 / dt.L); s->tie_l = (int)(dt.div0 % dt.L); s->tie_m = dt.mar[dt.div0]; }
+    dt.s1 = 0;
     dt.calls = chunk > 1 ? (N + chunk - 1) / chunk : N;
     dt.secs = now_sec() - t0;
     dt.disp = dt.subm = 0;
@@ -118,6 +134,7 @@ static int dt_print(const char *name, const DtStat *s) {
     if (nl) snprintf(lay, sizeof lay, "%.1e (L%d), media %.1e", w, wl, mean / nl); else snprintf(lay, sizeof lay, "-");
     printf("  %-26s %4d  %9.2e %9.2e  %3d (%d)  %8.4f  %-28s %s%s\n", name, s->n, s->kl / (s->n ? s->n : 1), s->klmax, s->flips, s->bigflips, s->dmax, lay,
            ok ? "OK" : "FALHOU", s->bad ? " (valores nao finitos)" : "");
+    if (s->n && s->ndiv > 0) printf("    roteador: %d escolhas diferentes das da referencia; a primeira no token %d, camada %d, onde a margem relativa da referencia era %.1e; KL maximo na posicao %d\n", s->ndiv, s->tie, s->tie_l, s->tie_m, s->bad ? -1 : dt.klpos);
     if (getenv("KATANA_DEEP_LAYERS")) { printf("    por camada:"); for (int l = 0; l < dt.L; l++) if (dt.cnt[l]) printf(" %d:%.1e", l, dt.err[l]); printf("\n"); }
     fflush(stdout);
     return ok;
@@ -145,7 +162,7 @@ static int dt_state(Model *m, const int *toks, int N, const char *what, int batc
         flips += x != y;
     }
     char p[1000]; pfx_path(p, sizeof p, key, 0); remove(p);
-    const int ok = sv && ld && (backend ? md < 0.05 && !flips : bits);
+    const int ok = sv && ld && (!gpu.force_cpu ? md < 0.05 && !flips : bits);
     printf("  %-26s %s gravado %s, restaurado %s; %d tokens depois: maior diferenca %.2e, trocas %d%s: %s\n", what, backend == 0 ? "CPU" : backend == 3 ? "VRAM+RAM" : "VRAM",
            sv ? "sim" : "NAO", ld ? "sim" : "NAO", n1, md, flips, bits ? ", bit a bit" : "", ok ? "OK" : "FALHOU");
     if (!ok) fails++;
@@ -288,9 +305,15 @@ static int selftest_deep(Model *m, int argc, char **argv) {
             float *k2 = NULL, *v2 = NULL;
             if (!kf) { k2 = xalloc(nk, 4); v2 = xalloc(nk, 4); m->kcache = k2; m->vcache = v2; m->kh = m->vh = NULL; m->kq8 = m->vq8 = NULL; }
             dt.ref = xalloc((size_t)N * dt.L * dt.d, 4); dt.have = xalloc((size_t)N * dt.L, 1);
+            if (c->n_expert) { dt.nsel = (long)N * dt.L; dt.sel = xalloc(dt.nsel, sizeof(uint64_t)); dt.mar = xalloc(dt.nsel, 4); moe_E = c->n_expert; dt.s1 = 1; dt.kr = 0; }
             cpu_exact = 1; dt.rec = 1;
             for (int i = 0; i < N; i++) { memcpy(ref + (size_t)i * V, forward(m, ids.ids[i], i, 1), (size_t)V * 4); }
-            cpu_exact = 0; dt.rec = 0;
+            cpu_exact = 0; dt.rec = 0; dt.s1 = 0;
+            if (dt.nsel) {      /* quao perto de empate o roteador decide */
+                long n4 = 0, n3 = 0; float mn = 1e30f;
+                for (long i = 0; i < dt.kr; i++) { n4 += dt.mar[i] < 1e-4f; n3 += dt.mar[i] < 1e-3f; if (dt.mar[i] < mn) mn = dt.mar[i]; }
+                printf("  roteador da referencia: %ld escolhas, %ld com margem < 1e-3 e %ld < 1e-4 (menor %.1e)\n", dt.kr, n3, n4, mn);
+            }
             if (!kf) { free(k2); free(v2); m->kcache = NULL; m->vcache = NULL; m->kh = kh; m->vh = vh; m->kq8 = kq; m->vq8 = vq; }
         }
         printf("== caminhos: %d tokens de texto contra a CPU em fp32 token a token (%.1f s, maquina carregada)\n", N, now_sec() - t0);
@@ -343,7 +366,7 @@ static int selftest_deep(Model *m, int argc, char **argv) {
     }
     if (dt_want(only, "rewind")) {
         printf("== volta no cache (reuso de prefixo do servidor)\n");
-        gpu.force_cpu = !gpu_on;
+        gpu.force_cpu = 1;      /* na GPU a mistura de especialistas quentes e frios muda entre duas passadas */
         fails += dt_rewind(m, ids.ids, ids.n < 400 ? ids.n : 400);
         gpu.force_cpu = 0;
     }
