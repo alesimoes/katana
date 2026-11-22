@@ -293,21 +293,27 @@ File: `models/flash-next/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf`
   mapped file. Prompt in batches of 16, each weight row opened once per batch.
 - Test without a real model: `sh tools/tinymodel/qwen4exp_test.sh` (pure Python reference, `katana q4check`): states of
   8 layers and logits, token by token, batches and mixed pieces, 18 times over the sparse budget at 72 tokens; float32
-  agreement 1e-5; eight mutations of the reference are all detected; saturated activations.
+  agreement 1e-5 (integer products: within 5e-3 but for isolated near-ties of the router); eight mutations of the reference are all detected; saturated activations.
 - Bug found with the real file and reproduced in the tiny one: under `-ffast-math` the vectorised sigmoid divides by an
   approximate reciprocal with a Newton step, which is NaN when expf overflows (argument below -88). All sigmoids of
   the file are now clamped (`q4_sig`). The same pattern exists in other loops of the engine when they vectorise.
-- Measured on the real file (2026-11-22, i7-11800H, CPU, float path, ctx 4096, hashes of both parts verified, machine
-  otherwise under the measure lock): greedy text correct ("The capital of France is Paris. The capital of Germany is
-  Berlin..."; 17 x 23 = 391 in Portuguese chat). Generation 0.6-0.8 tok/s, prompt 1.7 tok/s (392 tokens). The IQ types and
-  type 42 have no integer CPU kernel here, so every row is dequantized to float: that is the cost. Peak RSS 27.1 GB
-  after 392 tokens (0.19 GB anonymous, 26.9 GB of the mapped core, 16-24 MB of the table); 21.1 GB after 125 tokens.
-  227 thousand major faults in the 392-token run. The mapped core grows with the experts touched; its ceiling is 47 GB.
+- Measured on the real file (2026-11-22, i7-11800H, CPU only, ctx 4096, both hashes verified, under the measure lock).
+  Text: "The capital of France is Paris. The capital of Germany is Berlin...", 17 x 23 = 391 in a Portuguese chat, the
+  right CPU out of a 472-token text, and a password in the first line of a 2,586-token prompt (over the 2,048 budget).
+  Same 24 tokens, alternated, two rounds each, float path against the low-bit integer kernels: generation 0.7 and 0.7
+  against 1.9 (cold pages, 216 thousand major faults) and 4.1 tok/s (warm, 0 major faults), same text.
+  | run (integer kernels) | prompt tok/s | generation tok/s | peak RSS | of it, table | major faults |
+  |---|---|---|---|---|---|
+  | 5 + 24 tokens, warm | 5.8 | 4.1 | 9.5 GB | 1 MB | 0 |
+  | 472 + 130 tokens | 4.3 | 3.0 | 31.9 GB | 16 MB | 317,337 |
+  | 2,586 + 60 tokens | 6.5 | 3.2 | 37.7 GB | 134 MB | 71,285 |
+
+  Anonymous memory is 0.17-0.30 GB (KATANA_BF16_RAW is not needed here, BF16 stays mapped); the rest is the mapped core,
+  which grows with the experts touched (ceiling 47 GB). Batches and single tokens were compared on the tiny model only.
 
 ### Missing
 
-- Integer kernels (IQ2/IQ3/IQ4, type 42); sparse attention over 2,048 tokens on the real file (only on the tiny model);
-  conversation prefix cache (disabled for this architecture); training; GPU.
+- Conversation prefix cache (disabled for this architecture); training; GPU.
 - MTP head: its tensors (one gated-attention layer with its own mixers and experts, `mtp.fc_embedding`,
   `mtp.fc_hidden`) are not in this GGUF; it would need them converted and the verify loop of speculative decoding with
   rollback of DeltaNet, n-gram and indexer state.
