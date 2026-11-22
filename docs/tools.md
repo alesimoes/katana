@@ -209,6 +209,68 @@ Not verified: whether Qwen3.6 actually calls `Find` and follows `calls:` / `mode
 only the core list in `src/agent/prompt.c` with full schemas; the others, `Find` included, are listed by name and
 loaded with `ToolSearch`. Adding it to the core list is a prompt-size decision left open. Windows: not available yet.
 
+### Rename, Replace, Patch (changes in many places)
+`src/tools/multiedit.c`. The model pays for every token it writes and for every round trip, so a change that touches many
+places should cost the model only the decision, not the text of each place. The three tools find, change and report;
+the model reads a short list. For one small change in one file `Edit` is still the right tool. None of the three is in
+the core list of the system prompt: they appear in "More tools" by name and are loaded with `ToolSearch`. They are not
+available on Windows yet, and they change files, so plan mode refuses them.
+
+- `Rename(symbol, to, path, dry_run, kinds, force)`: renames an identifier as a whole word (identifier boundaries include
+  `_`, `$`, digits and non-ASCII bytes) in the whole working folder or in `path`. The candidate files come from the
+  `Find` index (the inverted term of the identifier, plus the files that define it); every occurrence is then confirmed
+  by reading the text, so the index only narrows the search. `kinds=code` (default) works on code, script and config files
+  and skips comments and string literals (the comment syntax depends on the file type); Markdown and `.txt` files are
+  skipped; `kinds=all` also changes comments, strings, docs and text. It is textual, not language-aware: a field or
+  local with the same name is renamed too, which is why `dry_run` is true by default. `symbol` and `to` must be valid
+  identifiers. Refused when `to` is already defined as a symbol anywhere in the index (collision); `force=true` overrides
+  it for unrelated scopes (two static helpers in different files). Warnings (not refusals): `to` already appears as a
+  word in the touched files, no definition of `symbol` in the index (library symbol), several definitions.
+- `Replace(pattern, replacement, path, glob, type, literal, -i, multiline, dry_run, limit_files)`: the files are the
+  ones `Grep` would search (`ct_grep_collect`, same `glob` and `type`, `.gitignore` honoured), the matcher is the engine's
+  own regex (`src/tools/regex.c`, run over the whole text with `^` and `$` per line). `replacement` takes `\1` to `\9`,
+  `\\`, `\n`, `\t`; with `literal=true` it is used as written. A group the pattern lacks is an error, an invalid pattern
+  is an error (no silent fallback to plain text, because this tool writes), empty matches are skipped. More files than
+  `limit_files` (default 100) refuses with nothing changed. Files that are binary, not UTF-8 or larger than 4 MB are skipped.
+- `Patch(diff, dry_run)`: a unified diff (`diff -u`, `git diff`, several files). Block line numbers may be off by up to 30
+  lines (nearest position first) and trailing spaces and `\r` are ignored when matching; context lines keep the file's own
+  text. `--- /dev/null` creates a file, `+++ /dev/null` deletes one (its blocks must remove every line). `a/` and `b/`
+  prefixes are removed when the file exists without them. Renames and binary diffs are refused. All or nothing: every
+  file is built in memory first, and if any block does not match nothing is written; the reply names the file and the
+  block, says why (text exists at another line more than 30 lines away; some lines differ: how many match; nothing found)
+  and shows the closest text of the file with the first differing line. Result per file: `applied (N blocks)`,
+  `created (N lines)`, `deleted`, or the reason. `dry_run=true` only checks. The hunk counts in the `@@` line are used
+  only to know where a block ends when it is followed by more text; a block also ends at the next `@@` or file header.
+
+Output of `Rename` and `Replace`: a count line (`N occurrences in M files`), the per-file counts, then up to 40 lines
+`file:line  before  ->  after` (a window around the change, one line per source line), `(+K more lines)`, warnings, and
+`To apply it, call again with dry_run=false.`
+
+Decisions, the same for the three:
+- Permission: every file to be written goes through the `never:` and `ask:` rules of `KATANA.md` as a `Write` of that path
+  (`brief_guard_file`, which `brief_guard` itself uses; a refusal anywhere refuses the whole call, quoting the rule), then
+  one `agent_act` for the whole call (listing the files; `KATANA_CONFIRM=1` asks as for `Edit`).
+- Read before change: `Edit` and `Write` refuse files the model has not read. These tools replace that rule with the
+  preview (`Rename` and `Replace` default to `dry_run=true`) and, for `Patch`, with the diff itself: its context and
+  removed lines must match the file, so a wrong picture of the file makes the call fail instead of writing. A file the
+  model had read completely stays "read" after the change; one it had not read stays unread, so a later `Edit` still asks for a `Read`.
+- Undo: files are written with the same helper as `Edit` (`ct_f_save`, which calls `undo_note`), and deletions call
+  `undo_note` too, so `/undo` restores the whole request, including created and deleted files. If a write fails half way
+  the files already written are restored at once and the call reports it.
+- Verification note: after a real write of project code the three set `g_me_changed`, which `brief_track` turns into
+  the same state as `Edit` (the end-of-request note "run the test:" works; `KATANA.md`, `SKILL.md` and `.katana/` files do not count).
+  The facts notebook records each file as changed.
+- Limits of `Rename`: it relies on the `Find` index, so files over 300 KB, folders the index skips (`.git`, `node_modules`,
+  `build`, `dist`, `vendor`, gitignored files) and a file changed within the same second with the same size as when it
+  was indexed are not seen; the index file is written to `.katana/cache` as for `Find`.
+
+Verified by hand (2026-11-22, no model, scratch folder): Rename preview, apply, collision refusal, invalid identifier,
+no occurrence, `kinds=all`, `never:` refusal; Replace with groups, invalid pattern, group out of range, no match, apply;
+Patch with shifted lines, creation, deletion, a mismatching block (nothing written, closest text shown), `git diff`
+headers with trailing space differences, a CRLF file without final newline, `never:` refusal; the end-of-request note after a Replace; `ToolSearch select:`
+declarations. Not verified: `/undo` after these tools (the undo notes are the same calls `Edit` makes, not exercised
+through the console), `ask:` rules, plan mode, how the model uses them.
+
 ### WebFetch, WebSearch
 Web research is paid for in the local model's reading time (about 60 tokens/s) and in rounds, not in network time
 (a search is 0.9 s and a page 0.7 s without the model). So both tools return few bytes and one call does the work of
@@ -270,7 +332,7 @@ notifications are turned off and that the model should tell the user in its answ
 name only. `Skill(skill, args)`: loads instructions from `.katana/skills/<name>/SKILL.md`; a skill in the "ability" format
 (`name`, `when`, `needs`, `args`, numbered `steps`, `done`, `report`, `fail`) has its `needs` checked, its steps written as
 the task list and `$arg` replaced, and lists its extra files; the system prompt carries one line naming the skills.
-`ReportFindings`, `EndConversation`, `PowerShell`, and the MCP resource tools. `Bash`, `Write` and `Edit` obey the `never:`
+`ReportFindings`, `EndConversation`, `PowerShell`, and the MCP resource tools. `Bash`, `Write` and `Edit` (and, per file, `Rename`, `Replace` and `Patch`) obey the `never:`
 and `ask:` patterns of `KATANA.md`; the first `Read`, `Edit` or `Write` in a folder with its own `KATANA.md` delivers it once
 with the result. MCP calls accept `server__tool` and `mcp__server__tool`; results carry `structuredContent`, errors and a
 one-line description of images. Formats, commands and examples: `docs/extending.md`.

@@ -203,15 +203,23 @@ static int br_match_path(const char *pat, const char *file) {
 }
 static int g_br_changed, g_br_ran, g_br_noted, g_br_exnoted, g_br_seen_req = -1;
 static void br_sync(void) { if (g_br_seen_req != g_undo_req) { g_br_seen_req = g_undo_req; g_br_changed = g_br_ran = g_br_noted = g_br_exnoted = 0; } }
+static int brief_guard_subject(int bash, const char *subj, char *out, size_t cap);
 /* antes de Bash/Write/Edit: 1 se a regra do projeto recusa (out recebe o motivo) */
 static int brief_guard(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const int bash = strcmp(name, "Bash") == 0, wr = strcmp(name, "Write") == 0 || strcmp(name, "Edit") == 0 || strcmp(name, "NotebookEdit") == 0;
     if (!bash && !wr) return 0;
-    const Brief *b = br_cur();
-    if (!b->ni) return 0;
     char *subj = ct_str(js, end, bash ? "command" : "file_path");
     if (!subj && wr) subj = ct_str(js, end, "notebook_path");
     if (!subj) return 0;
+    const int r = brief_guard_subject(bash, subj, out, cap);
+    free(subj);
+    return r;
+}
+/* Rename, Replace e Patch alteram varios arquivos: cada um passa pelas mesmas regras never/ask de Write e Edit */
+static int brief_guard_file(const char *file, char *out, size_t cap) { return brief_guard_subject(0, file, out, cap); }
+static int brief_guard_subject(int bash, const char *subj, char *out, size_t cap) {
+    const Brief *b = br_cur();
+    if (!b->ni) return 0;
     int refused = 0;
     for (int pass = 0; pass < 2 && !refused; pass++) {      /* never primeiro, depois ask */
         const int want = pass == 0 ? BRB_NEVER : BRB_ASK;
@@ -229,7 +237,6 @@ static int brief_guard(const char *name, const char *js, const char *end, char *
             }
         }
     }
-    free(subj);
     return refused;
 }
 /* o comando de done: entre crases, ou a linha toda quando comeca como um comando; 0 = e so texto */
@@ -258,6 +265,11 @@ static void brief_track(const char *name, const char *js, const char *end, const
         const int conf = fp && (strstr(fp, "/.katana/") || !strncmp(fp, ".katana/", 8) || !strcmp(bn, "SKILL.md") || !strcmp(bn, "KATANA.md"));
         free(fp);
         if (!conf) { g_br_changed = 1; g_br_ran = 0; }       /* mudou depois de verificar: a verificacao nao vale mais */
+        return;
+    }
+    if (strcmp(name, "Rename") == 0 || strcmp(name, "Replace") == 0 || strcmp(name, "Patch") == 0) {      /* gancho dos tres: so quando de fato gravaram codigo do projeto */
+        if (g_me_changed) { g_br_changed = 1; g_br_ran = 0; }
+        g_me_changed = 0;
         return;
     }
     if (strcmp(name, "Bash") != 0) return;
