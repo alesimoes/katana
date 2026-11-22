@@ -33,6 +33,7 @@ static struct {
     int *sel; long sdiff, scnt;         /* escolhidos da referencia; (token, camada) com escolha diferente */
     double wsum;                        /* pior |soma dos pesos - 1| do roteador */
     int dup;                            /* escolhidos repetidos */
+    int calls; double secs, disp, subm, hit, miss, load;     /* por chamada do caminho: despachos, envios a placa, usos de especialista na VRAM e fora, subidas */
 } dt;
 static void dt_tap(int l, int pos, const float *x) {
     if (dt_bad(x, dt.d)) dt.bad++;
@@ -90,6 +91,10 @@ static void dt_run(Model *m, const int *toks, int N, int chunk, const float *ref
     memset(s, 0, sizeof *s);
     dt_clear_err();
     dt.bad = 0; dt.cmp = 1;
+    KvkStats k0; memset(&k0, 0, sizeof k0);
+    if (gpu.vk) kvk_stats(&k0);
+    const uint64_t h0 = gx.hits, m0 = gx.miss, l0 = gx.loads;
+    const double t0 = now_sec();
     for (int i = 0; i < N; ) {
         const int nb = chunk > 1 ? (N - i < chunk ? N - i : chunk) : 1;
         const float *o = chunk > 1 ? forward_seq(m, toks + i, nb, i, 1) : forward(m, toks[i], i, 1);
@@ -98,6 +103,11 @@ static void dt_run(Model *m, const int *toks, int N, int chunk, const float *ref
     }
     dt.cmp = 0;
     s->bad += dt.bad;
+    dt.calls = chunk > 1 ? (N + chunk - 1) / chunk : N;
+    dt.secs = now_sec() - t0;
+    dt.disp = dt.subm = 0;
+    if (gpu.vk) { KvkStats k1; kvk_stats(&k1); dt.disp = (double)(k1.dispatches - k0.dispatches) / dt.calls; dt.subm = (double)(k1.submits - k0.submits) / dt.calls; }
+    dt.hit = (double)(gx.hits - h0) / dt.calls; dt.miss = (double)(gx.miss - m0) / dt.calls; dt.load = (double)(gx.loads - l0) / dt.calls;
 }
 
 static int dt_print(const char *name, const DtStat *s) {
@@ -276,6 +286,9 @@ static int selftest_deep(Model *m, int argc, char **argv) {
         printf("  %-26s pos.  KL medio  KL max     trocas    max|dl|   erro por camada (pior)\n", "caminho");
         DtStat s;
 #define DT_CASE(nm, label, prep, chunk, undo) if (dt_want(only, nm)) { prep; dt_run(m, ids.ids, N, chunk, ref, &s); undo; fails += !dt_print(label, &s); }
+#define DT_CASE_GPU(nm, label, prep, chunk, undo) if (dt_want(only, nm)) { prep; dt_run(m, ids.ids, N, chunk, ref, &s); undo; fails += !dt_print(label, &s); \
+            printf("    por chamada (%d): %.0f despachos, %.0f envios, especialistas %.0f na VRAM e %.0f fora, %.1f subidas, %.1f ms (maquina carregada)\n", \
+                   dt.calls, dt.disp, dt.subm, dt.hit, dt.miss, dt.load, 1e3 * dt.secs / dt.calls); }
         DT_CASE("exact16", "CPU fp32, lote 16", cpu_exact = 1, 16, cpu_exact = 0)
         DT_CASE("int1", "CPU inteira, 1 a 1", , 1, )
         DT_CASE("int16", "CPU inteira, lote 16", , 16, )
@@ -299,12 +312,12 @@ static int selftest_deep(Model *m, int argc, char **argv) {
         }
         gpu.force_cpu = 0;
         if (gpu_on) {
-            DT_CASE("gpu1", "GPU, 1 a 1", , 1, )
-            DT_CASE("gpu1b", "GPU, 1 a 1 (de novo)", , 1, )
-            DT_CASE("gpu16", "GPU, lote 16", , 16, )
-            DT_CASE("gpu5", "GPU, lote 5", , 5, )
-            DT_CASE("gpuN", "GPU, lote inteiro", , N, )
-            DT_CASE("gpu1e", "GPU 1 a 1, frios em fp32", cpu_exact = 1, 1, cpu_exact = 0)
+            DT_CASE_GPU("gpu1", "GPU, 1 a 1", , 1, )
+            DT_CASE_GPU("gpu1b", "GPU, 1 a 1 (de novo)", , 1, )
+            DT_CASE_GPU("gpu16", "GPU, lote 16", , 16, )
+            DT_CASE_GPU("gpu5", "GPU, lote 5", , 5, )
+            DT_CASE_GPU("gpuN", "GPU, lote inteiro", , N, )
+            DT_CASE_GPU("gpu1e", "GPU 1 a 1, frios em fp32", cpu_exact = 1, 1, cpu_exact = 0)
         } else printf("  (sem GPU nesta execucao)\n");
 #undef DT_CASE
     }
