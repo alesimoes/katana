@@ -50,7 +50,8 @@ static int cu_pick_main(int argc, char **argv) {
 #define PK_SIGN(k) ({ long c_ = 0; for (long z_ = 0; z_ < nsig; z_++) if (sigs[z_] == (k)->sig) { c_ = sigc[z_]; break; } c_; })
 #define PK_TAKE(k) do { (k)->taken = 1; taken++; nask += (k)->ask; ndep += (k)->dep; nreal += (k)->real; if (!PK_SEEN(sigs, nsig, (k)->sig)) sigs[nsig++] = (k)->sig; for (long z_ = 0; z_ < nsig; z_++) if (sigs[z_] == (k)->sig) sigc[z_]++; if ((k)->cell && !PK_SEEN(cells, ncell, (k)->cell)) cells[ncell++] = (k)->cell; \
         for (int c_ = 0; c_ < CU_N(g_cu_cov); c_++) if ((k)->tools & (1ull << c_)) cnt[c_]++; } while (0)
-#define PK_OK(k) (!(k)->taken && taken < n && !((k)->ask && nask >= askmax) && !((k)->real && nreal >= realmax) && PK_SIGN(k) < sigcap)
+#define PK_OK2(k) (!(k)->taken && taken < n && !((k)->ask && nask >= askmax) && !((k)->real && nreal >= realmax))      /* sem o teto por sequencia: para os minimos */
+#define PK_OK(k) (PK_OK2(k) && PK_SIGN(k) < sigcap)
     CuPk **bylen = malloc(sizeof *bylen * (size_t)(nv + 1));
     for (long i = 0; i < nv; i++) bylen[i] = &v[i];
     qsort(bylen, (size_t)nv, sizeof *bylen, cu_pk_cmp);
@@ -62,7 +63,7 @@ static int cu_pick_main(int argc, char **argv) {
         free(ff); }
     for (long i = 0; i < nv; i++) {      /* cada situacao (celula) das ferramentas raras, dos scripts .ps1 e dos conceitos do katana entra pelo menos uma vez */
         CuPk *k = bylen[i];
-        if (!k->cell || !PK_OK(k) || PK_SEEN(cells, ncell, k->cell)) continue;
+        if (!k->cell || !PK_OK2(k) || PK_SEEN(cells, ncell, k->cell)) continue;
         if (strstr(k->line, "\"family\": \"x-rare\"") || strstr(k->line, "\"family\": \"x-ps1\"") || strstr(k->line, "\"family\": \"x-concept\"")) PK_TAKE(k);
     }
     {   /* cada forma de pedido com um minimo (% do arquivo): as formas raras nao podem sumir na escolha */
@@ -79,17 +80,17 @@ static int cu_pick_main(int argc, char **argv) {
         const long need = isask ? askmin : g_cu_cov[ci].tier == 'A' ? 25 : 5;
         for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && cnt[ci] < need; i++) {
             CuPk *k = bylen[i];
-            if (!(k->tools & (1ull << ci)) || !PK_OK(k) || (!pass && PK_SEEN(sigs, nsig, k->sig))) continue;
+            if (!(k->tools & (1ull << ci)) || !PK_OK2(k) || (!pass && PK_SEEN(sigs, nsig, k->sig))) continue;
             PK_TAKE(k);
         }
     }
     { long np = 0; for (long i = 0; i < nv && np < 15; i++) { CuPk *k = bylen[i]; if (k->ps1 && k->taken) np++; }
-      for (long i = 0; i < nv && np < 15; i++) { CuPk *k = &v[i]; if (k->ps1 && PK_OK(k)) { PK_TAKE(k); np++; } } }      /* 15 conversas de scripts .ps1 */
+      for (long i = 0; i < nv && np < 15; i++) { CuPk *k = &v[i]; if (k->ps1 && PK_OK2(k)) { PK_TAKE(k); np++; } } }      /* 15 conversas de scripts .ps1 */
     { long nm = 0; for (long i = 0; i < nv; i++) nm += v[i].taken && v[i].mcp;
       for (long i = 0; i < nv && nm < 25; i++) { CuPk *k = &v[i]; if (k->mcp && PK_OK(k)) { PK_TAKE(k); nm++; } } }      /* 25 conversas com ferramentas MCP */
     for (int fi = 0; fi < CU_NFAM; fi++) {      /* cada familia da reserva com pelo menos 8 */
         long nf = 0; for (long i = 0; i < nv; i++) nf += v[i].taken && v[i].fam == fi;
-        for (long i = 0; i < nv && nf < 8; i++) { CuPk *k = &v[i]; if (k->fam == fi && PK_OK(k)) { PK_TAKE(k); nf++; } }
+        for (long i = 0; i < nv && nf < 8; i++) { CuPk *k = &v[i]; if (k->fam == fi && PK_OK2(k)) { PK_TAKE(k); nf++; } }
     }
     for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && ndep < depmin; i++) { CuPk *k = bylen[i]; if (k->dep && PK_OK(k) && (pass || !PK_SEEN(sigs, nsig, k->sig))) PK_TAKE(k); }      /* segundo pedido que depende do primeiro: 22% */
     for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && !PK_SEEN(sigs, nsig, k->sig)) PK_TAKE(k); }                 /* (2) */

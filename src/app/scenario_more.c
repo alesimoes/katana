@@ -183,7 +183,7 @@ static void fam_x_tools(FILE *f, Scn *s) {
         const char *idp = strstr(r, "ID: "), *fp = strstr(r, "written to: ");
         if (!idp || !fp) cu_die("resultado sem id ou arquivo: %.200s", r);
         const char *id = cu_fmt("%d", atoi(idp + 4)), *log = cu_fmt("%.*s", (int)strcspn(fp + 12, "\n"), fp + 12);
-        usleep(500000);
+        for (int w = 0; w < 120; w++) { const char *lt = x_slurp(s, log); if (lt && strstr(lt, "watching ")) break; usleep(50000); }      /* espera a linha aparecer no arquivo de saida */
         x_done(1);
         const char *o = x_call(NULL, "Read", cu_fmt("{\"file_path\": %s}", cu_q(log)), 0);
         if (!strstr(o, cu_fmt("watching %s", p->name))) { ct_dispatch("TaskStop", cu_fmt("{\"task_id\": \"%s\"}", id), "", g_x_res, 60000); cu_die("a saida ainda nao tinha a linha"); }
@@ -268,6 +268,8 @@ static void fam_x_tools(FILE *f, Scn *s) {
         x_final(cu_fmt(L("One file changed: %s. In `%s` the line `%.*s` became `%.*s`. Nothing is staged.", "Um arquivo mudou: %s. Em `%s` a linha `%.*s` virou `%.*s`. Nada esta no stage."), rel, fi->name,
                        (int)strcspn(minus + 2, "\n") - (int)strspn(minus + 2, " "), minus + 2 + strspn(minus + 2, " "), (int)strcspn(plus + 2, "\n") - (int)strspn(plus + 2, " "), plus + 2 + strspn(plus + 2, " ")));
     } else if (kind == K_MEM) {
+        {   time_t tt = time(NULL); char td[16]; strftime(td, sizeof td, "%Y-%m-%d", localtime(&tt));      /* a ferramenta de memoria carimba a data de hoje: na linha gravada fica a do cenario */
+            if (g_x.nsub < 4 && strcmp(td, s->date)) { g_x.sfrom[g_x.nsub] = cu_fmt("%s", td); g_x.sto[g_x.nsub++] = s->date; } }
         static const char *const facts[][4] = {{"I prefer tabs over spaces in shell scripts", "prefiro tabs a espacos em scripts de shell", "tabs", "indentation"}, {"my release day is Thursday", "meu dia de release e quinta-feira", "Thursday", "release"},
             {"I review code in the morning, before ten", "eu reviso codigo de manha, antes das dez", "morning", "review"}};
         const int fi = cu_n(3);
