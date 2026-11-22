@@ -168,6 +168,7 @@ static char *ct_unwrap(const CtTool *t, const char *js, const char *end) {
 /* executa a ferramenta se o nome for desta tabela; 0 se nao for */
 static int brief_guard(const char *name, const char *js, const char *end, char *out, size_t cap);      /* agent/brief.c: never e ask do KATANA.md */
 static int brief_end_note(char *out, size_t cap);
+static int brief_example_note(const char *req, char *out, size_t cap);
 static void brief_track(const char *name, const char *js, const char *end, const char *res);
 static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap) {
     const CtTool *t = ct_lookup(name);
@@ -208,7 +209,8 @@ static int ct_main(int argc, char **argv) {
         printf("%s\n", out);
         if (strncmp(out, "error:", 6) == 0) bad = 1;
     }
-    if (getenv("KATANA_BRIEF_NOTE")) { static char nt[600]; if (brief_end_note(nt, sizeof nt)) printf("=== end-of-request note\n%s\n", nt); }     /* teste: a nota de fim de pedido */
+    if (getenv("KATANA_BRIEF_NOTE")) { static char nt[600]; if (brief_end_note(nt, sizeof nt)) printf("=== end-of-request note\n%s\n", nt); }
+    if (getenv("KATANA_EXAMPLE_REQ")) { static char nt[4000]; if (brief_example_note(getenv("KATANA_EXAMPLE_REQ"), nt, sizeof nt)) printf("=== example note\n%s\n", nt); }     /* teste: a nota de fim de pedido */
     return bad;
 }
 

@@ -273,6 +273,31 @@ static void brief_track(const char *name, const char *js, const char *end, const
     }
     free(cmd);
 }
+/* o pedido traz exemplos de saida ou formato? (palavras nos dois idiomas, setas, trechos entre crases) */
+static int br_has_example(const char *req) {
+    static const char *const W[] = { "exemplo", "example", "for instance", "por ex", "e assim", "\xc3\xa9 assim", "like this", "saida", "sa\xc3\xad" "da", "output", "imprim", "print", "escreve no std", "must be", "tem que dar", "deve dar", "returns", "retorna", "->", "=>", NULL };
+    if (!req) return 0;
+    char *l = strdup(req); if (!l) return 0;
+    for (char *p = l; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
+    int hit = 0;
+    for (int i = 0; W[i] && !hit; i++) hit = strstr(l, W[i]) != NULL;
+    free(l);
+    return hit;
+}
+/* nota (uma vez por pedido): arquivos mudaram e o pedido tem exemplos; o modelo conferia o proprio trabalho contra ele mesmo e
+   nao contra o que foi pedido (tres falhas iguais na prova de 21/11/2026). KATANA_EXAMPLE_NOTE=0 desliga. */
+static int brief_example_note(const char *req, char *out, size_t cap) {
+    static int seen = -1;
+    br_sync();
+    const char *e = getenv("KATANA_EXAMPLE_NOTE");
+    if ((e && !atoi(e)) || seen == g_undo_req || !g_br_changed || !br_has_example(req)) return 0;
+    seen = g_undo_req;
+    size_t n = strlen(req);
+    if (n > 1500) { n = 1500; while (n && ((unsigned char)req[n] & 0xC0) == 0x80) n--; }
+    snprintf(out, cap, "[katana: before you finish, compare the result with the request itself, not with your own tests. Run it on the request's own examples and check every detail it states: "
+             "exact text, line breaks, spaces, names, upper and lower case, exit codes. Fix what differs; if all matches, answer. The request:]\n%.*s%s", (int)n, req, req[n] ? " [...]" : "");
+    return 1;
+}
 /* nota (uma vez por pedido) para o fim do pedido: arquivos mudaram e a verificacao do projeto nao rodou. 0 = nada a dizer.
    Chamada pelo laco no ponto em que o pedido termina (ver o relatorio). */
 static int brief_end_note(char *out, size_t cap) {
