@@ -29,6 +29,7 @@ ap.add_argument("dir")
 ap.add_argument("--seed", type=int, default=1)
 ap.add_argument("--n", type=int, default=72)
 ap.add_argument("--mutate", default="")
+ap.add_argument("--big", type=float, default=1.0, help="scale of the weights before every sigmoid/SiLU (saturated activations)")
 a = ap.parse_args()
 rnd = random.Random(a.seed)
 
@@ -62,20 +63,26 @@ def bf16(x):
     return struct.unpack("<f", b"\0\0" + struct.pack("<f", x)[2:])[0]
 
 
+B = a.big
+
+
 def mat(rows, cols, scale, conv=f32): return [[conv(rnd.gauss(0, scale)) for _ in range(cols)] for _ in range(rows)]
 def vec(n, scale, mean=0.0, conv=f32): return [conv(mean + rnd.gauss(0, scale)) for _ in range(n)]
 
 
-def rand_q4_0(rows, cols):
-    """32 values: fp16 scale, 16 bytes (low nibbles 0..15, high nibbles 16..31), value = d * (code - 8)"""
+IQ4NL = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)
+
+
+def rand_iq4nl(rows, cols):
+    """32 values: fp16 scale, 16 bytes (low nibbles 0..15, high nibbles 16..31), value = d * table[code]"""
     blob, out = bytearray(), []
     for _ in range(rows):
         row = []
         for _ in range(cols // 32):
-            sc = f16(rnd.uniform(0.02, 0.1) * rnd.choice((-1, 1)))
+            sc = f16(rnd.uniform(0.002, 0.01) * rnd.choice((-1, 1)))
             q = [rnd.randrange(16) for _ in range(32)]
             blob += struct.pack("<e", sc) + bytes(q[i] | q[i + 16] << 4 for i in range(16))
-            row += [sc * (x - 8) for x in q]
+            row += [sc * IQ4NL[x] for x in q]
         out.append(row)
     return out, bytes(blob)
 
@@ -95,8 +102,8 @@ def rand_q2_0(rows, cols):
 
 
 def hc_weights(inject):
-    h = {"norm": vec(D, 0.3), "down": mat(RANK, D, 0.3, bf16), "up": mat(D, RANK, 0.6, bf16)}
-    if inject: h["inj"] = mat(R, D, 0.3, bf16)
+    h = {"norm": vec(D, 0.3), "down": mat(RANK, D, 0.3 * B, bf16), "up": mat(D, RANK, 0.6 * B, bf16)}
+    if inject: h["inj"] = mat(R, D, 0.3 * B, bf16)
     return h
 
 
@@ -105,19 +112,19 @@ W = {"emb": mat(V, d, 0.5), "head": mat(V, d, 0.5), "hc": hc_weights(False), "l"
 for l in range(NL):
     p = {"hc_attn": hc_weights(True), "hc_ffn": hc_weights(True), "lin": (l + 1) % EVERY != 0}
     if p["lin"]:
-        p.update(qkv=mat(C, d, 0.4), z=mat(INNER, d, 0.4), al=mat(NV, d, 0.3, bf16), be=mat(NV, d, 0.3, bf16), conv=mat(C, CK, 0.4),
+        p.update(qkv=mat(C, d, 0.4), z=mat(INNER, d, 0.4 * B), al=mat(NV, d, 0.3, bf16), be=mat(NV, d, 0.3 * B, bf16), conv=mat(C, CK, 0.4 * B),
                  a_log=[math.log(rnd.uniform(0.05, 4)) for _ in range(NV)], dt=vec(NV, 1.0, -1.0), norm=vec(DV, 0.2, 1.0), out=mat(d, INNER, 0.4))
     else:
-        p.update(q=mat(2 * HEADS * HD, d, 0.4), k=mat(KV * HD, d, 0.4), v=mat(KV * HD, d, 0.4), o=mat(d, HEADS * HD, 0.3),
+        p.update(q=mat(2 * HEADS * HD, d, 0.4 * B), k=mat(KV * HD, d, 0.4), v=mat(KV * HD, d, 0.4), o=mat(d, HEADS * HD, 0.3),
                  qn=vec(HD, 0.3), kn=vec(HD, 0.3), iqk=mat((IN + 1) * IHD, d, 0.5, bf16), iqn=vec(IHD, 0.3), ikn=vec(IHD, 0.3))
-    p.update(router=mat(E, d, 0.6, bf16), gate=[mat(H, d, 0.3) for _ in range(E)], up=[mat(H, d, 0.3) for _ in range(E)],
-             sg=mat(H, d, 0.3), su=mat(H, d, 0.3), sd=mat(d, H, 0.1), sgate=vec(d, 0.5, 0, bf16))
+    p.update(router=mat(E, d, 0.6, bf16), gate=[mat(H, d, 0.3 * B) for _ in range(E)], up=[mat(H, d, 0.3) for _ in range(E)],
+             sg=mat(H, d, 0.3 * B), su=mat(H, d, 0.3), sd=mat(d, H, 0.1), sgate=vec(d, 0.5 * B, 0, bf16))
     dn, p["down_blob"] = rand_q2_0(E * d, H)
     p["down"] = [dn[e * d:(e + 1) * d] for e in range(E)]
     if l == PLE_L:
-        p.update(pkey=mat(D, PE, 0.3, bf16), pval=mat(d, PE, 0.3, bf16), pconv=mat(D, PK, 0.4, f16), nk=vec(D, 0.2), nq=vec(D, 0.2), nc=vec(D, 0.2))
+        p.update(pkey=mat(D, PE, 0.3, bf16), pval=mat(d, PE, 0.3, bf16), pconv=mat(D, PK, 0.4 * B, f16), nk=vec(D, 0.2), nq=vec(D, 0.2), nc=vec(D, 0.2))
     W["l"].append(p)
-TABLE, TABLE_BLOB = rand_q4_0(ROWS, PD)
+TABLE, TABLE_BLOB = rand_iq4nl(ROWS, PD)
 IDS = [rnd.randrange(256) for _ in range(a.n)]
 for i in range(0, a.n, 5): IDS[i] = IDS[max(0, i - 3)]
 for i in (4, 5, 11, 30, 61):
@@ -227,7 +234,7 @@ def write(path, kvs, tensors):
 os.makedirs(a.dir, exist_ok=True)
 sp = lambda i: [kv_u32("split.no", i), kv_u32("split.count", 2), kv_u32("split.tensors.count", len(T) + 1)]
 write(os.path.join(a.dir, "q4-00001-of-00002.gguf"), kvs + sp(0), T)
-write(os.path.join(a.dir, "q4-00002-of-00002.gguf"), sp(1), [("per_layer_token_embd.weight", [PD, ROWS], 2, TABLE_BLOB)])
+write(os.path.join(a.dir, "q4-00002-of-00002.gguf"), sp(1), [("per_layer_token_embd.weight", [PD, ROWS], 20, TABLE_BLOB)])
 
 
 # ---------- reference forward

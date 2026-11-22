@@ -212,6 +212,15 @@ static void q4_load(Model *m, const Tensors *ts) {
     }
 }
 
+/* sigmoide com a entrada limitada: com -ffast-math o laco vetorizado divide pela reciproca aproximada com um passo de
+   Newton, que da NaN quando expf estoura (x < -88); a saida nao muda, |x| > 60 ja e 0 ou 1 em float */
+static inline float q4_sig(float x) {
+    x = x < -60.0f ? -60.0f : x;
+    x = x > 60.0f ? 60.0f : x;
+    return 1.0f / (1.0f + expf(-x));
+}
+static inline float q4_silu(float x) { return x * q4_sig(x); }
+
 /* ---- produtos em lote: cada linha e aberta uma vez e atende os B tokens ---- */
 static float q4_dot_bf16(const uint8_t *row, const float *x, int n) {
     __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
@@ -272,7 +281,7 @@ static void q4_hc_job(void *cx, int t0, int t1) {
         float *o = j->out + (size_t)t * d;
         memset(o, 0, d * sizeof(float));
         for (int r = 0; r < R; r++)
-            for (int i = 0; i < d; i++) o[i] += N[(size_t)r * d + i] / (1.0f + expf(-U[(size_t)r * d + i]));
+            for (int i = 0; i < d; i++) o[i] += N[(size_t)r * d + i] * q4_sig(U[(size_t)r * d + i]);
         for (int i = 0; i < d; i++) o[i] /= R;
     }
 }
@@ -293,9 +302,9 @@ static void q4_hc_read(Model *m, const Q4Hc *h, const float *X, int B, float *ou
     q4_mm(DN, &h->down, N, xqs, &prep, B, q->rank, D);
     if (inj) {
         q4_mm(inj, &h->inj, N, xqs, &prep, B, R, D);
-        for (int i = 0; i < B * R; i++) inj[i] = 2.0f / (1.0f + expf(-inj[i] / R));
+        for (int i = 0; i < B * R; i++) inj[i] = 2.0f * q4_sig(inj[i] / R);
     }
-    for (int i = 0; i < B * q->rank; i++) { const float v = DN[i] / R; DN[i] = v / (1.0f + expf(-v)); }
+    for (int i = 0; i < B * q->rank; i++) DN[i] = q4_silu(DN[i] / R);
     prep = 0;
     q4_mm(U, &h->up, DN, xqs, &prep, B, D, q->rank);
     j.fase = 1;
@@ -380,7 +389,7 @@ static void q4_ple_job(void *cx, int t0, int t1) {
         for (int r = 0; r < R; r++) {
             float g = dot(kn + (size_t)r * d, qn + (size_t)r * d, d) / sqrtf((float)d), a = fabsf(g);
             g = g == 0.0f ? 0.0f : sqrtf(a < 1e-6f ? 1e-6f : a) * (g < 0.0f ? -1.0f : 1.0f);
-            const float s = 1.0f / (1.0f + expf(-g));
+            const float s = q4_sig(g);
             for (int i = 0; i < d; i++) j->G[t * D + (size_t)r * d + i] = s * j->V[(size_t)t * d + i];
         }
         q4_rms_groups(j->N + t * D, j->G + t * D, j->q->pn_conv, R, d, j->eps);
@@ -411,7 +420,7 @@ static void q4_ple(Model *m, const int *toks, float *X, int B) {
             const float *w = q->pconv + (size_t)i * q->pk;
             float y = 0.0f;
             for (int k = 0; k < q->pk; k++) y += w[k] * W[(size_t)(t + k * q->ng) * D + i];
-            x[i] += g[i] + y / (1.0f + expf(-y));
+            x[i] += g[i] + q4_silu(y);
         }
     }
     memcpy(q->conv, W + (size_t)B * D, (size_t)S * D * sizeof(float));
@@ -424,7 +433,7 @@ static void q4_dn_gate(const Config *c, const Layer *L, float *o, const float *z
         float *p = o + (size_t)h * dv;
         const float *zh = z + (size_t)h * dv;
         rmsnorm(p, p, L->ssm_norm, dv, c->eps);
-        for (int i = 0; i < dv; i++) p[i] /= 1.0f + expf(-zh[i]);
+        for (int i = 0; i < dv; i++) p[i] *= q4_sig(zh[i]);
     }
 }
 
@@ -526,7 +535,7 @@ static void q4_att_job(void *cx, int i0, int i1) {
             else v = m->vcache + r;
             for (int k = 0; k < hd; k++) o[k] += w * v[k];
         }
-        for (int k = 0; k < hd; k++) o[k] /= 1.0f + expf(-gt[k]);
+        for (int k = 0; k < hd; k++) o[k] *= q4_sig(gt[k]);
     }
     free(sc); free(row);
 }
@@ -597,7 +606,7 @@ static void q4_exp_glu(void *cx, int i0, int i1) {
 }
 static void q4_exp_act(void *cx, int p0, int p1) {
     const Q4Xj *j = cx;
-    for (size_t i = (size_t)p0 * j->H; i < (size_t)p1 * j->H; i++) { const float g = j->hg[i]; j->hg[i] = g / (1.0f + expf(-g)) * j->hu[i]; }
+    for (size_t i = (size_t)p0 * j->H; i < (size_t)p1 * j->H; i++) j->hg[i] = q4_silu(j->hg[i]) * j->hu[i];
 }
 static void q4_exp_down(void *cx, int i0, int i1) {
     const Q4Xj *j = cx;
@@ -653,11 +662,11 @@ static void q4_moe(Model *m, int l, const float *Xb, float *out, int B, XQ *xqs)
     float *G = q4_scr(17, (size_t)B * H), *U = q4_scr(18, (size_t)B * H), *S = q4_scr(19, (size_t)B * d);
     q4_mm(G, &L->sg, Xb, xqs, &prep, B, H, d);
     q4_mm(U, &L->su, Xb, xqs, &prep, B, H, d);
-    for (size_t i = 0; i < (size_t)B * H; i++) G[i] = G[i] / (1.0f + expf(-G[i])) * U[i];
+    for (size_t i = 0; i < (size_t)B * H; i++) G[i] = q4_silu(G[i]) * U[i];
     prep = 0;
     q4_mm(S, &L->sd, G, xqs, &prep, B, d, H);
     for (int t = 0; t < B; t++) {
-        const float w = 1.0f / (1.0f + expf(-dot(L->shexp_gate, Xb + (size_t)t * d, d)));
+        const float w = q4_sig(dot(L->shexp_gate, Xb + (size_t)t * d, d));
         for (int i = 0; i < d; i++) out[(size_t)t * d + i] += w * S[(size_t)t * d + i];
     }
 }
@@ -740,10 +749,12 @@ static int q4_check(Model *m, const char *path) {
     if (!f || fread(h, 4, 5, f) != 5 || h[0] != 0x46523451) die("q4check: referencia invalida");
     const int n = h[1], nl = h[2], D = h[3], V = h[4];
     if (nl != c->n_layers || D != m->q4->R * c->dim || V != c->vocab || n < 1 || n > c->ctx) die("q4check: referencia de outro modelo");
+    long nan = 0;
     int *tk = xalloc(n, 4);
     float *ref = xalloc((size_t)n * nl * D, 4), *lg = xalloc((size_t)n * V, 4);
     if (fread(tk, 4, n, f) != (size_t)n || fread(ref, 4, (size_t)n * nl * D, f) != (size_t)n * nl * D || fread(lg, 4, (size_t)n * V, f) != (size_t)n * V) die("q4check: referencia truncada");
     fclose(f);
+    const double tol = m->kh || m->kq8 ? 5e-3 : 2e-4;      /* cache reduzido: o arredondamento de K e V se propaga */
     q4_dbg.n = n;
     for (int mode = 0; mode < 3; mode++) {
         static const int pieces[] = { 1, 7, 2, 16, 3, 19, 5, 33 };
@@ -756,6 +767,7 @@ static int q4_check(Model *m, const char *path) {
             const float *o = q4_forward(m, tk + i, B, i, 1), *w = lg + (size_t)(i + B - 1) * V;
             int a = 0, b = 0;
             for (int k = 0; k < V; k++) {
+                uint32_t u; memcpy(&u, o + k, 4); nan += (u & 0x7f800000u) == 0x7f800000u;     /* pelos bits: -ffast-math apaga o isnan */
                 if (!(fabs(o[k] - w[k]) <= mlg)) mlg = fabs(o[k] - w[k]);
                 if (fabs(w[k]) > mref) mref = fabs(w[k]);
                 if (o[k] > o[a]) a = k;
@@ -766,21 +778,23 @@ static int q4_check(Model *m, const char *path) {
         }
         printf("%s: %d tokens, logits em %d posicoes: maior diferenca %.3e (maior logit %.3f), argmax igual %d/%d\n",
                mode == 0 ? "token a token" : mode == 1 ? "lotes        " : "misto        ", n, nlg, mlg, mref, agree, nlg);
-        if (!(mlg <= 2e-3 * (mref > 1 ? mref : 1)) || agree != nlg) ok = 0;
+        if (!(mlg <= tol * (mref > 1 ? mref : 1)) || agree != nlg) ok = 0;
         for (int l = 0; l < nl; l++) {
             double md = 0.0, mx = 0.0;
             for (int t = 0; t < n; t++)
                 for (int i = 0; i < D; i++) {
                     const size_t k = ((size_t)t * nl + l) * D + i;
+                    uint32_t u; memcpy(&u, q4_dbg.x + k, 4); nan += (u & 0x7f800000u) == 0x7f800000u;
                     const double e = fabs(q4_dbg.x[k] - ref[k]);
                     if (!(e <= md)) md = e;
                     if (fabs(ref[k]) > mx) mx = fabs(ref[k]);
                 }
             printf("  camada %d: maior diferenca %.3e de %.3f (%.1e)\n", l, md, mx, md / mx);
-            if (!(md <= 1e-3 * mx)) ok = 0;
+            if (!(md <= tol * mx)) ok = 0;
         }
         free(q4_dbg.x); q4_dbg.x = NULL;
     }
+    if (nan) { printf("%ld valores nao finitos\n", nan); ok = 0; }
     printf("q4check: %s\n", ok ? "OK" : "FALHOU");
     return ok ? 0 : 1;
 }

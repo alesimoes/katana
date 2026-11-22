@@ -13,6 +13,9 @@ for c in "1 72" "2 72" "3 72" "4 9" "5 200"; do
 done
 python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 1 >/dev/null
 if KATANA_CPU_KV16=1 chk; then echo "cache fp16: ok"; else echo "cache fp16: FALHOU"; fail=1; fi
+# ativacoes saturadas (|x| > 88: expf estoura): nada pode virar NaN
+python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 1 --big 300 >/dev/null
+if ! ./katana q4check "$D/q4-00001-of-00002.gguf" "$D/ref.bin" 2>/dev/null | grep -q "nao finitos"; then echo "ativacoes saturadas: ok"; else echo "ativacoes saturadas: FALHOU"; fail=1; fi
 # todas as regras da referencia, uma errada por vez: o teste precisa falhar
 for m in nosparse rowpos noeos silu nodilation meaninject notile norelu; do
   python3 tools/tinymodel/qwen4exp_ref.py "$D" --seed 1 --mutate $m >/dev/null || fail=1
