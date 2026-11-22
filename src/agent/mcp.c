@@ -52,6 +52,7 @@ static void mcpx_server_msg(McpSrv *s, const char *o);                       /* 
 static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp, int final);
 static int mcpx_extra_wait(void);
 static void mcpx_cwd_sync(void);
+static void mcpx_refresh(McpSrv *s, McpB *note);
 
 static int mcp_call_ms(void) {      /* KATANA_MCP_TIMEOUT: segundos de espera por uma chamada (padrao 60) */
     const char *e = getenv("KATANA_MCP_TIMEOUT");
@@ -1146,6 +1147,7 @@ static void mcp_call(const char *name, const char *js, char *out, size_t cap) {
         if (txt.n) mcp_bputs(&txt, "\n");
         mcp_bputs(&txt, "[the tool list of this MCP server changed: call ToolSearch to see the current tools]");
     }
+    mcpx_refresh(s, &txt);  /* resources/list_changed e prompts/list_changed (mcp_extra.c) */
     mcp_wrap_result(s->name, tn, erro, txt.p, out, cap);
     free(txt.p); free(args);
 }

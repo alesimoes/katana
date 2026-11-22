@@ -28,11 +28,11 @@ static void text(const char *id, const char *t) { char b[4000]; snprintf(b, size
 static void esc(const char *s, char *o, size_t cap) { size_t n = 0; for (; *s && n + 3 < cap; s++) { if (*s == '"' || *s == '\\') o[n++] = '\\'; o[n++] = *s; } o[n] = 0; }
 
 static char g_init[4000];
-static int g_n_roots_changed;
+static int g_n_roots_changed, g_mutated, g_n_plist;
 static void fake_initialize(const char *id) {
     char b[600];
     snprintf(g_init, sizeof g_init, "%s", line); g_init[strcspn(g_init, "\n")] = 0;
-    snprintf(b, sizeof b, "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fake-%s\",\"version\":\"1\"}}", mode);
+    snprintf(b, sizeof b, "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{\"listChanged\":true},\"prompts\":{\"listChanged\":true},\"resources\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"fake-%s\",\"version\":\"1\"}}", mode);
     reply(id, b);
 }
 static void fake_notification(const char *meth, const char *js) { (void)js; if (!strcmp(meth, "notifications/roots/list_changed")) g_n_roots_changed++; }
@@ -42,6 +42,8 @@ static void fake_tools_list(const char *id) {
              "{\"name\":\"roots\",\"description\":\"ask the client for its roots\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"rcount\",\"description\":\"how many roots/list_changed arrived\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"caps\",\"description\":\"the initialize message received\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"mutate\",\"description\":\"announce that resources and prompts changed\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+             "{\"name\":\"plistcount\",\"description\":\"how many prompts/list were served\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
              "{\"name\":\"argv\",\"description\":\"the program arguments\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}");
 }
 static void fake_call(const char *id, const char *js, long *nid) {
@@ -59,6 +61,13 @@ static void fake_call(const char *id, const char *js, long *nid) {
         char e[2200]; esc(r, e, sizeof e); text(id, e);
     } else if (!strcmp(tn, "caps")) {
         char e[4400]; esc(g_init, e, sizeof e); text(id, e);
+    } else if (!strcmp(tn, "mutate")) {
+        g_mutated = 1;
+        out("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\"}");
+        out("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/prompts/list_changed\"}");
+        text(id, "mutated");
+    } else if (!strcmp(tn, "plistcount")) {
+        snprintf(r, sizeof r, "prompts_list=%d", g_n_plist); text(id, r);
     } else if (!strcmp(tn, "rcount")) {
         snprintf(r, sizeof r, "roots_changed=%d", g_n_roots_changed); text(id, r);
     } else if (!strcmp(tn, "roots")) {
@@ -87,8 +96,8 @@ int main(int argc, char **argv) {
         if (!hasid) { fake_notification(meth, line); continue; }
         if (!strcmp(meth, "tools/list")) { fake_tools_list(id); continue; }
         if (!strcmp(meth, "tools/call")) { fake_call(id, line, &nid); continue; }
-        if (!strcmp(meth, "resources/list")) { reply(id, "{\"resources\":[]}"); continue; }
-        if (!strcmp(meth, "prompts/list")) { reply(id, "{\"prompts\":[]}"); continue; }
+        if (!strcmp(meth, "resources/list")) { reply(id, g_mutated ? "{\"resources\":[{\"uri\":\"file:///r2\",\"name\":\"second\"}]}" : "{\"resources\":[{\"uri\":\"file:///r1\",\"name\":\"first\"}]}"); continue; }
+        if (!strcmp(meth, "prompts/list")) { g_n_plist++; reply(id, g_mutated ? "{\"prompts\":[{\"name\":\"p2\"}]}" : "{\"prompts\":[{\"name\":\"p1\"}]}"); continue; }
         if (!strcmp(meth, "ping")) { reply(id, "{}"); continue; }
         printf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n", id); fflush(stdout);
     }

@@ -656,6 +656,7 @@ static int ex_prompt_cmd(const char *line, int *handled) {
     if (si < 0) return 0;
     *handled = 1;
     McpSrv *s = &g_mcp[si];
+    mcpx_refresh(s, NULL);        /* prompts/list_changed recebido: lista atual antes de procurar o prompt */
     McpPrompt *pp = NULL;
     for (int i = 0; i < s->nprompts; i++) if (!strcmp(s->prompts[i].name, pn)) pp = &s->prompts[i];
     if (!pp) {

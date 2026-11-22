@@ -76,5 +76,16 @@ has "b: trocar de pasta envia roots/list_changed" "$R" "roots_changed=1"
 R=$(printf 'rt__rcount {}\n!cd %s\n!cd %s\nrt__rcount {}\n' "$T/my proj" "$P" | "$K" toolrun 2>&1)
 has "b: ida e volta enviam dois avisos" "$R" "roots_changed=2"
 
+########## c: resources/list_changed e prompts/list_changed ##########
+R=$(printf 'rt__plistcount {}\nListMcpResourcesTool {}\nrt__mutate {}\nrt__plistcount {}\nListMcpResourcesTool {}\n' | "$K" toolrun 2>&1)
+has "c: recursos antes" "$R" "file:///r1"
+has "c: aviso dos recursos no resultado da chamada" "$R" "the resource list of this MCP server changed"
+has "c: aviso dos prompts no resultado da chamada" "$R" "the prompt list of this MCP server changed"
+has "c: prompts relidos uma vez" "$R" "prompts_list=2"
+has "c: recursos depois" "$R" "file:///r2"
+has "c: lista inicial de prompts lida uma vez" "$R" "prompts_list=1"
+R=$(printf 'rt__plistcount {}\nrt__plistcount {}\n' | "$K" toolrun 2>&1)
+hasnt "c: sem mudanca, sem aviso" "$R" "list of this MCP server changed"
+
 echo "mcpx: $N testes, $F falhas"
 [ "$F" = 0 ]

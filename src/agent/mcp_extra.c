@@ -157,3 +157,18 @@ static void mcpx_sse_scan(McpSrv *s, McpB *o, size_t *done, long id, char **resp
         free(ev.p);
     }
 }
+
+/* ----- c: resources/list_changed e prompts/list_changed -----
+ * Os prompts sao relidos (o usuario os chama com /servidor:prompt); os recursos sao listados a cada pedido, entao so
+ * avisamos o modelo. note pode ser NULL (so rele). */
+static void mcpx_refresh(McpSrv *s, McpB *note) {
+    if (s->pdirty) {
+        s->pdirty = 0;
+        if (s->alive) { mcp_load_prompts(s); if (s->alive) s->err[0] = 0; }
+        if (note) { if (note->n) mcp_bputs(note, "\n"); mcp_bputs(note, "[the prompt list of this MCP server changed; the user's /server:prompt list is up to date]"); }
+    }
+    if (s->rdirty) {
+        s->rdirty = 0;
+        if (note) { if (note->n) mcp_bputs(note, "\n"); mcp_bputs(note, "[the resource list of this MCP server changed: ListMcpResourcesTool shows the current resources]"); }
+    }
+}

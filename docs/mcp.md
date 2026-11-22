@@ -47,3 +47,11 @@ Over HTTP the server's request arrives in the response stream of the call and ka
 response stream is now read as it arrives (`curl -N`), which also lets a server ask something before it answers.
 
 Hidden test aid: `katana toolrun` accepts a line `!cd <dir>` that changes the folder like `/cd` does.
+
+## List changes: tools, resources, prompts
+
+`notifications/tools/list_changed` reloads the tool list (already supported). `notifications/resources/list_changed` and
+`notifications/prompts/list_changed` are now handled too, from stdio and from an HTTP response stream: the prompt list is
+reloaded (so `/server:prompt` sees the current prompts) and the result of the call that was running says what changed,
+so the model knows to list the resources again (resources are listed on each request, there is no cache to refresh).
+A notification that arrives while no call is running is recorded and applied at the next call or `/server:prompt`.
