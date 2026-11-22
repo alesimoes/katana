@@ -77,7 +77,7 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
     h = pfx_hash(h, &m->fsize, sizeof m->fsize);
     h = pfx_hash(h, &m->n_params, sizeof m->n_params);
     h = pfx_hash(h, &m->fid, sizeof m->fid);
-    h = pfx_hash(h, m->rope_freq, sizeof(float) * (size_t)(c->hd / 2)); h = pfx_hash(h, &c->kq_mul, sizeof c->kq_mul);      /* KATANA_ROPE_SCALE */
+    h = pfx_hash(h, m->rope_freq, sizeof(float) * (size_t)(c->hd / 2)); h = pfx_hash(h, &c->kq_mul, sizeof c->kq_mul); h = pfx_hash(h, &c->yarn_factor, sizeof c->yarn_factor);      /* KATANA_ROPE_SCALE */
     h = pfx_hash(h, m->out_norm, sizeof(float) * (size_t)(c->dim < 256 ? c->dim : 256));
     if (m->kh) { const int k16 = 1; h = pfx_hash(h, &k16, sizeof k16); }
     if (c->g4) for (int l = 0; l < c->n_layers; l++) {

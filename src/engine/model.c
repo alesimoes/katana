@@ -1298,7 +1298,11 @@ static void load_model(Model *m, const char *path) {
             m->rope_freq[i] *= fs * (1.0f - ramp) + ramp;
         }
         const float ms = 1.0f + c->yarn_logmul * logf(c->yarn_factor);
-        c->kq_mul = ms * ms;
+        if (c->qk_norm == 2) {  /* o fator de atencao do yarn multiplica cos e sin, ou seja, so as dimensoes que giram de q e de k (as
+                                   primeiras nr da cabeca). Entra no peso da norma, que vem logo antes do RoPE: vale igual na CPU e na GPU */
+            for (int l = 0; l < c->n_layers; l++)
+                for (int i = 0; m->layers[l].q_norm && i < nr; i++) { m->layers[l].q_norm[i] *= ms; m->layers[l].k_norm[i] *= ms; }
+        } else c->kq_mul = ms * ms;
     }
 
     /* por ultimo: a GPU precisa de tudo acima ja preenchido (ex.: rope_freq) */
