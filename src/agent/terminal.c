@@ -193,6 +193,7 @@ static int root_open(void) {
         execve(sudop, (char *const[]){ (char *)"sudo", (char *)"-A", (char *)"/bin/bash", (char *)"--norc", (char *)"--noprofile", (char *)"--noediting", (char *)"-i", NULL }, envp);
         _exit(127);
     }
+    reap_add(pid);
     close(sl);
     fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK);
     fcntl(m, F_SETFD, FD_CLOEXEC);
@@ -371,6 +372,7 @@ static void tool_terminal(const char *js, const char *end, char *out, size_t cap
             else execve("/bin/sh", (char *const[]){ (char *)"sh", (char *)"-i", NULL }, envp);
             _exit(127);
         }
+        reap_add(pid);
         close(sl);
         fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK);
         fcntl(m, F_SETFD, FD_CLOEXEC);

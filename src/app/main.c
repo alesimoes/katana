@@ -1274,6 +1274,7 @@ int main(int argc, char **argv) {
     }
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    reap_start(argc, argv);
     pool_init();
     vnni_init();
     moe_q5k_old = getenv("KATANA_MOE_OLD") && atoi(getenv("KATANA_MOE_OLD")) != 0;

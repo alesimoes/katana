@@ -30,6 +30,7 @@
 #include "agent/mcp.c"                 /* cliente MCP */
 #include "agent/devtools.c"            /* ferramentas de programacao: edit_file, glob, download, pacotes, git */
 #include "agent/code.c"               /* leitura por trechos e verificacao de sintaxe depois de gravar */
+#include "agent/reaper.c"              /* vigia: encerra os comandos do agente quando ele morre (SIGKILL incluido) */
 #include "agent/exec.c"                /* execucao de comandos: stdin fechado, timeout, inicio+fim da saida, anel dos ultimos comandos */
 #include "agent/sudo.c"                /* sudo: pedido de senha (terminal ou modal), arquivos como root */
 #include "agent/jobs.c"                /* comandos em segundo plano (run_command background, job) */
