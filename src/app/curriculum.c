@@ -2464,6 +2464,7 @@ static int curriculum_check(const char *path, int stats_only) {
     return 0;
 }
 
+#include "app/scenario_report.c"     /* katana curriculum variety | matrix | show: medidas e leitura de um arquivo */
 #include "app/scenario_pick.c"       /* katana curriculum pick: escolhe por cobertura */
 
 /* ======================= main ======================= */
@@ -2513,6 +2514,9 @@ static int curriculum_main(int argc, char **argv) {
     unsetenv("KATANA_UI");
     if (argc >= 1 && !strcmp(argv[0], "windows")) return cu_windows_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "pick")) return cu_pick_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "variety")) return cu_variety_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "matrix")) return cu_matrix_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "show")) return cu_show_main(argc - 1, argv + 1);
     if (argc >= 2 && (!strcmp(argv[0], "stats") || !strcmp(argv[0], "check"))) {
         char full[4400];
         if (!realpath(argv[1], full)) { fprintf(stderr, "curriculum: nao abri %s\n", argv[1]); return 1; }
@@ -2552,12 +2556,15 @@ static int curriculum_main(int argc, char **argv) {
         else { fprintf(stderr, "curriculum: opcao desconhecida %s\n", argv[i]); return 1; }
     }
     int w[CU_NFAM]; int wsum = 0;
-    /* pesos padrao: as familias de criar (longas, um so caminho) pesam menos; o ciclo ler-editar-verificar-corrigir (brief-done)
-       e o uso de servidores MCP pesam mais. Medido com pesos iguais: criar ocupava 35% do texto treinado e mcp-call 2% */
+    /* pesos padrao: so as familias do motor de cenarios (x-*), na proporcao do conjunto v4. As familias de molde (brief-*, skill-*,
+       mcp-*, mixed) continuam no binario e saem quando sao pedidas pelo nome em --families: as nove que tinham uma sequencia so ou
+       uma primeira ferramenta so foram passadas para x-mcp, x-ability e x-make */
+    static const struct { const char *nm; int w; } defw[] = {{"x-fix", 24}, {"x-add", 16}, {"x-rename", 14}, {"x-find", 10}, {"x-explain", 10}, {"x-run", 8}, {"x-config", 24}, {"x-clean", 18}, {"x-investigate", 12},
+        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}};
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
-        w[i] = fams ? 0 : !strncmp(nm, "x-", 2) ? 4 : !strcmp(nm, "brief-write") || !strcmp(nm, "skill-write") || !strcmp(nm, "mcp-add") ? 1
-                        : !strcmp(nm, "brief-done") ? 6 : !strncmp(nm, "mcp-", 4) || !strcmp(nm, "mixed") ? 4 : 3;
+        w[i] = 0;
+        if (!fams) for (int k = 0; k < CU_N(defw); k++) if (!strcmp(nm, defw[k].nm)) w[i] = defw[k].w;
     }
     if (fams) {
         const int k = cu_count(fams, ',');

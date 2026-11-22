@@ -68,6 +68,8 @@ static XProj *xc_open(XC *c, unsigned fl, int nskills, const char *cell) {
     if (fl & XP_CONF) { p->conf = 1; for (int i = 0; i < CU_N(x_conf_keys); i++) x_conf_add(p, x_conf_keys[i][0], x_conf_keys[i][1], x_conf_keys[i][2]); }
     x_begin("x-concept", c->s, p, nskills, 0);
     x_cell("concept/%s", cell);
+    if (strstr(cell, "wrong")) x_shape_tag("wrong");
+    if (strstr(cell, "pasted")) x_shape_tag("paste");
     return p;
 }
 

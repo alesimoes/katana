@@ -3,7 +3,7 @@
    Ordem: (1) cada ferramenta da tabela de cobertura ate o seu minimo, 15 conversas de .ps1, 25 com ferramentas MCP e 8 de cada familia; (2) uma conversa de cada sequencia de ferramentas
    (familia + chamadas na ordem, com os pedidos), das menores para as maiores; (3) celulas ainda nao vistas; (4) o resto, na
    ordem do arquivo. AskUserQuestion fica entre 4,5% e 5% das escolhidas. A saida mantem a ordem da reserva. */
-typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1, mcp, fam, dep, real; size_t len; } CuPk;
+typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1, mcp, fam, dep, real; uint64_t ffirst; size_t len; } CuPk;
 static int cu_pk_cmp(const void *a, const void *b) { const CuPk *x = *(CuPk *const *)a, *y = *(CuPk *const *)b; return x->len < y->len ? -1 : x->len > y->len ? 1 : x < y ? -1 : 1; }
 static int cu_pick_main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: katana curriculum pick <reserva.jsonl> <saida.jsonl> [--n N]\n"); return 1; }
@@ -36,6 +36,8 @@ static int cu_pick_main(int argc, char **argv) {
         if (fam && !strcmp(fam, "x-ps1")) k->ps1 = 1;
         k->fam = fam ? cu_fam_ix(fam) : -1; k->mcp = strstr(line, "__") && strstr(line, "[external content from MCP tool ") != NULL;
         k->sig = h; k->cell = cell && *cell ? cu_fnv(cell, strlen(cell), 99) : 0;
+        {   const char *a1 = strstr(line, "\"function\": {\"name\": \""); const size_t l1 = a1 ? strcspn(a1 + 22, "\"") : 0;      /* familia + primeira ferramenta */
+            k->ffirst = cu_fnv(a1 ? a1 + 22 : "(answer)", a1 ? l1 : 8, cu_fnv(fam ? fam : "", fam ? strlen(fam) : 0, 7)); }
         cu_arena_free();
     }
     fclose(f); free(line);
@@ -52,6 +54,26 @@ static int cu_pick_main(int argc, char **argv) {
     CuPk **bylen = malloc(sizeof *bylen * (size_t)(nv + 1));
     for (long i = 0; i < nv; i++) bylen[i] = &v[i];
     qsort(bylen, (size_t)nv, sizeof *bylen, cu_pk_cmp);
+    /* (0) cotas: situacoes das familias de tabela, formas de pedido, segundo pedido dependente, prompt inteiro. Vem antes dos minimos por
+       ferramenta porque esses, sozinhos, encheriam um arquivo pequeno */
+    for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && nreal < realmin; i++) { CuPk *k = bylen[i]; if (k->real && PK_OK(k) && (pass || !PK_SEEN(sigs, nsig, k->sig))) PK_TAKE(k); }   /* prompt inteiro: 11% a 14% */
+    {   uint64_t *ff = calloc((size_t)nv + 1, sizeof *ff); long nff = 0;      /* cada familia com cada primeira ferramenta que a reserva tem */
+        for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_SEEN(ff, nff, k->ffirst)) continue; if (k->taken || PK_OK(k)) { if (!k->taken) PK_TAKE(k); ff[nff++] = k->ffirst; } }
+        free(ff); }
+    for (long i = 0; i < nv; i++) {      /* cada situacao (celula) das ferramentas raras, dos scripts .ps1 e dos conceitos do katana entra pelo menos uma vez */
+        CuPk *k = bylen[i];
+        if (!k->cell || !PK_OK(k) || PK_SEEN(cells, ncell, k->cell)) continue;
+        if (strstr(k->line, "\"family\": \"x-rare\"") || strstr(k->line, "\"family\": \"x-ps1\"") || strstr(k->line, "\"family\": \"x-concept\"")) PK_TAKE(k);
+    }
+    {   /* cada forma de pedido com um minimo (% do arquivo): as formas raras nao podem sumir na escolha */
+        static const struct { const char *tag; int pct; } shp[] = {{"two", 5}, {"wrong", 6}, {"paste", 4}, {"goal", 4}, {"midway", 2}, {"typo", 8}, {"mix", 6}, {"ctx", 12}, {"polite", 8}, {"blunt", 6}, {"formal", 5}};
+        for (int si = 0; si < CU_N(shp); si++) {
+            long have = 0; const long need = n * shp[si].pct / 100;
+#define PK_HAS(k) ({ int h_ = 0; const char *sh_ = strstr((k)->line, "\"shape\": \""); if (sh_) { sh_ += 10; const char *e_ = strchr(sh_, '"'); for (const char *q_ = sh_; e_ && (q_ = strstr(q_, shp[si].tag)) && q_ < e_; q_++) if ((q_ == sh_ || q_[-1] == '+') && (q_[strlen(shp[si].tag)] == '+' || q_[strlen(shp[si].tag)] == '"')) { h_ = 1; break; } } h_; })
+            for (long i = 0; i < nv; i++) if (v[i].taken && PK_HAS(&v[i])) have++;
+            for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && have < need; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && (pass || !PK_SEEN(sigs, nsig, k->sig)) && PK_HAS(k)) { PK_TAKE(k); have++; } }
+        }
+    }
     for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {      /* (1) minimos por ferramenta: primeiro com sequencia nova, depois qualquer uma */
         const int isask = !strcmp(g_cu_cov[ci].name, "AskUserQuestion");
         const long need = isask ? askmin : g_cu_cov[ci].tier == 'A' ? 25 : 5;
@@ -70,7 +92,6 @@ static int cu_pick_main(int argc, char **argv) {
         for (long i = 0; i < nv && nf < 8; i++) { CuPk *k = &v[i]; if (k->fam == fi && PK_OK(k)) { PK_TAKE(k); nf++; } }
     }
     for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && ndep < depmin; i++) { CuPk *k = bylen[i]; if (k->dep && PK_OK(k) && (pass || !PK_SEEN(sigs, nsig, k->sig))) PK_TAKE(k); }      /* segundo pedido que depende do primeiro: 22% */
-    for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && nreal < realmin; i++) { CuPk *k = bylen[i]; if (k->real && PK_OK(k) && (pass || !PK_SEEN(sigs, nsig, k->sig))) PK_TAKE(k); }   /* prompt inteiro: 11% a 14% */
     for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && !PK_SEEN(sigs, nsig, k->sig)) PK_TAKE(k); }                 /* (2) */
     for (long i = 0; i < nv; i++) { CuPk *k = bylen[i]; if (PK_OK(k) && k->cell && !PK_SEEN(cells, ncell, k->cell)) PK_TAKE(k); }   /* (3) */
     for (; taken < n && sigcap < n; sigcap++) for (long i = 0; i < nv; i++) { CuPk *k = &v[i]; if (PK_OK(k)) PK_TAKE(k); }           /* (4): o teto so sobe se a reserva nao encher o arquivo */
