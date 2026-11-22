@@ -287,8 +287,16 @@ static float *cpu_head(Model *m) {
     return m->logits;
 }
 
+/* decodificacao especulativa por consulta ao contexto (engine/lookup.c): -1 ainda nao lido, 0 desligada */
+static int lk_on_ = -1, lk_pend_;
+static void lk_hook(Model *m, const int *toks, int n, int pos0);
+static void lk_init(Model *m);
+static void lk_finish(Model *m);
+static float *lk_forward(Model *m, int token, int pos);
+static void lk_report(void);
 /* as camadas da GPU so sao usadas pelo grafo da GPU; na CPU os produtos sao sempre locais */
 static float *forward(Model *m, int token, int pos, int want_logits) {
+    if (lk_on_) lk_hook(m, &token, 1, pos);
     const Config *c = &m->cfg;
     if (vis_rp || token >= VIS_BASE) vis_seq(m, &token, 1, pos);
     if (c->q4e) return q4_forward(m, &token, 1, pos, want_logits);
@@ -328,6 +336,7 @@ static int g4_batch(const Model *m) {
 static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_logits) {
     float *lg = NULL;
     int i = 0;
+    if (lk_on_) lk_hook(m, toks, n, pos0);
     vis_seq(m, toks, n, pos0);      /* sem imagem nenhuma, nao faz nada */
     if (m->cfg.q4e) return q4_forward(m, toks, n, pos0, want_logits);
     if (vkml.ok && !gpu.force_cpu && vk_batch_min() <= n) {      /* MLA em Vulkan (modo hibrido): lote proprio */
@@ -1307,6 +1316,8 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     long probe = 0;
     const int json = gr_env_begin(tk, V, -1);
     if (json) ks4 = NULL;             /* com gramatica nao ha aposta de rascunho */
+    if (lk_on_ < 0) lk_init(m);
+    if (lk_on_ > 0) ks4 = NULL;       /* KATANA_LOOKUP: o rascunho por consulta ao contexto substitui este */
     double t0 = now_sec();
     lg = forward_seq(m, ids.ids, ids.n, bpos, 1);
     pos = bpos + ids.n;
@@ -1328,7 +1339,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
         /* aposta so com rascunho disponivel e taxa de acerto que pague a passada em lote */
         int try_spec = ks4 && pos + 4 < c->ctx && gen + 3 < max_tokens && find_draft(ids.ids, ids.n, draft);
         if (try_spec && ema < 1.0 && (++probe % 8) != 0) try_spec = 0;
-        if (!try_spec) { lg = forward(m, next, pos++, 1); continue; }
+        if (!try_spec) { lg = lk_forward(m, next, pos++); continue; }
 
         int toks[4] = { next, draft[0], draft[1], draft[2] }, ok = 0;
         gpu.want_all = 1;
@@ -1357,6 +1368,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
         }
     }
 #undef EMIT_TOKEN
+    lk_finish(m);
     gr_off();
     double t2 = now_sec();
     printf("\n");
@@ -1370,6 +1382,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
     if (spec_stat.steps)
         fprintf(stderr, "[especulacao: %ld apostas, %ld de %ld rascunhos aceitos]\n",
                 spec_stat.steps, spec_stat.accepted, spec_stat.drafted);
+    lk_report();
     free(ids.ids); free(col);
     return 0;
 }

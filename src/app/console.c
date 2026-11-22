@@ -204,7 +204,7 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
             if (cap && g_agent_sys) buf_add(cap, tmp, tl);    /* agente: texto cru para achar a chamada de ferramenta */
             fflush(stdout);
             gen++;
-            lg = forward(m, t, (*pos)++, 1);
+            lg = lk_forward(m, t, (*pos)++);
             continue;
         }
         if (c->chat_fmt == 8 && !thinking && strcmp(tmp, "<|channel>") == 0) {   /* gemma4: canal de raciocinio */
@@ -233,8 +233,10 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
             }
         }
         gen++;
-        lg = forward(m, t, (*pos)++, 1);
+        lg = lk_forward(m, t, (*pos)++);
     }
+    lk_finish(m);       /* rascunho pendente: o estado volta ao ultimo token aceito */
+    lk_report();
     gr_off();
     con_token_end();
     if (thinking) fprintf(stdout, "%s", CE(C_RESET));

@@ -173,6 +173,58 @@ prediction also for Gemma 4, prefetch 2 layers ahead with a smaller N.
 | Exact pre-tokenizer | state machine by type declared in the GGUF (`tokenizer.ggml.pre`): digit grouping (1 or 1–3), last space before the word, line breaks, contractions, Unicode letter and number classes; split the special tokens beforehand | medium |
 | Chat format by detection in the template | we already do it by template fragments; Gemma, Phi, Mistral, DeepSeek, Kimi are missing | small |
 
+### 7.1 Prompt lookup decoding (`src/engine/lookup.c`, written 2026-11-22, speed NOT measured)
+
+Speculative decoding with a free draft taken from the context, aimed at code (an Edit repeats the old text,
+unchanged lines, identifiers). Off by default.
+
+- **Draft.** After each token, the last `n` tokens (`KATANA_LOOKUP_N`, default 3) are searched backwards in the
+  token history (prompt + generated, recorded by a hook in `forward` and `forward_seq`); the up to `k` tokens
+  (`KATANA_LOOKUP_K`, default 8, max 31, also capped by the batch size: 16 on the CPU) that followed the most
+  recent earlier occurrence become the draft.
+- **Verification.** One batched pass runs the current token plus the draft and keeps the hidden state of every
+  position (`qn_layers_n` on the CPU; `vk_forward_n` on the Vulkan graph, where `vkb.x` keeps all rows). Logits are
+  computed lazily, one position at a time (CPU: `cpu_head` on the stored row; Vulkan: gather of row r + head), so a
+  rejected tail costs no vocabulary projection.
+- **Acceptance rule.** `lk_forward(m, token, pos)` replaces `forward(m, token, pos, 1)` in the generation loops.
+  The caller keeps sampling exactly as before (temperature, top-k, top-p, JSON/tool-call grammar) from the logits it
+  gets; when the sampled token equals the draft token, the next logits are already there. With a deterministic
+  draft this is exactly speculative sampling: the proposed x is accepted with probability p(x), and on rejection the
+  emitted token is a sample of p conditioned on being different from x, i.e. the normalized residual p without x.
+  Greedy output is the greedy output, up to the numeric difference between the batched and the one-token path.
+- **Recurrent state (DeltaNet).** The KV cache fixes itself (positions are rewritten); the DeltaNet state does not.
+  Before each fresh pass the state is copied (CPU: `m->ssm` memcpy, about 66 MB on Qwen3.6; Vulkan: device-side
+  copy of the conv ring and state buffers into a second set of VRAM buffers through the new `kvk_buf_copy`, same
+  size). On a mismatch the copy is restored and the next pass redoes the accepted tokens together with the new token
+  and the next draft, in one pass. `lk_finish` (end of `generate` and of each console/agent turn, and automatically
+  when anything calls `forward`/`forward_seq` while a pass is pending) restores and replays up to the last consumed
+  token, so the state after a turn is the same as without the draft.
+- **Adaptation** (`KATANA_LOOKUP_ADAPT=0` turns it off). The engine measures seconds per served token with and
+  without the draft (moving averages, the first 4 tokens without draft). When the draft is slower it stays off for
+  16 tokens, doubling on each failure up to 1024 (exponential back-off, then retried); `k` doubles when a whole draft
+  is accepted and halves when less than half is. This also covers reasoning blocks with little repetition.
+- **Report.** With `KATANA_LOOKUP=1`, a `[lookup: ...]` line on stderr at the end of each generation: drafted,
+  accepted, verification passes, mismatches, tokens without draft, current k, ms/token with and without.
+- **Backends.** Active: qwen35moe on the CPU batch path (`qn_batch`), and the full Vulkan graph of qwen35moe
+  (`vkq.on`). Falls back to token by token on its own: dense models, Gemma 4 (sliding-window ring would need its own
+  check), MLA, qwen4exp, the hybrid paths with GPU layers or GPU products (`gpu.n_gl`, `gpu.mv_host`), the Vulkan
+  graph with attention on the CPU (`vkq.cpuatt`), images in the context, and if the VRAM copy cannot be allocated.
+  Hooked loops: `katana run` (`generate`) and the console/agent (`gen_console`). The HTTP servers (`server.c`,
+  `openai.c`) and `knowledge.c` keep their own loops and do not use it; the hook in `forward` only records history
+  there. The older 3-token repetition draft of the dense Vulkan graph (`KATANA_SPEC`) is turned off when
+  `KATANA_LOOKUP=1`.
+- **MoE risk.** Verifying k+1 positions activates up to 8(k+1) distinct experts per layer; on the CPU and on the
+  expert-cache paths this can cost close to k+1 times the expert reads of one token. That is why the feature is off
+  by default and adaptive; whether it pays on Qwen3.6 is unknown.
+- **Checked:** `katana lookuptest <model> [n]` (with `KATANA_LOOKUP_FORCED=1` the sequence follows the repeated
+  prompt with a deviation every 11 tokens) on the tiny random qwen35moe of `tools/tinymodel`, CPU path: 69 drafted,
+  38 accepted, 8 mismatches, same greedy choice at every position, max logit difference 2.9e-6, and after
+  `lk_finish` the logits of an extra token match the plain run within 1.4e-6.
+- **NOT checked:** any speed (no measurement at all); the Vulkan graph path (the tiny `--gpu` model falls to the
+  hybrid mode, which crashes with `malloc(): corrupted top size` also on the base commit, unrelated to this work);
+  Qwen3.6 itself; temperature > 0 statistics; the agent loop end to end; prefix cache on disk after a turn that used
+  the draft (should be safe because the state is restored before the turn ends).
+
 ## 8. New architectures and formats
 
 | Item | What it requires | Effort |

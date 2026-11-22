@@ -51,6 +51,7 @@ int    kvk_buf_write(KvkBuf b, size_t off, const void *src, size_t n);   /* comp
 int    kvk_buf_write_q(KvkBuf b, size_t off, const void *src, size_t n); /* entra na fila do fluxo atual; os dados sao copiados na hora, a copia da GPU ocorre no kvk_flush/kvk_wait. Nao vale dentro de kvk_rec_* */
 int    kvk_buf_readv(const KvkBuf *b, void *const *dst, const size_t *n, int k);   /* k buffers (do inicio) com um envio e uma espera so */
 int    kvk_buf_read(KvkBuf b, size_t off, void *dst, size_t n);          /* flush + espera + leitura */
+int    kvk_buf_copy(KvkBuf dst, size_t doff, KvkBuf src, size_t soff, size_t n);   /* copia na VRAM, entra na fila do fluxo atual */
 #define kvk_read_sync kvk_buf_read
 
 /* pipelines: todos os bindings sao storage buffers (set 0, binding 0..n-1), push constants de push_bytes, local_size via spec constants */
@@ -417,6 +418,18 @@ int kvk_buf_write_q(KvkBuf b, size_t off, const void *src, size_t n) {
         F(CmdCopyBuffer)(cb, G.up_b, b.b, 1, &rg);
         G.up_off = o + chunk; p += chunk; off += chunk; n -= chunk;
     }
+    return 1;
+}
+
+int kvk_buf_copy(KvkBuf dst, size_t doff, KvkBuf src, size_t soff, size_t n) {
+    KVK_NEED();
+    if (G.rec) { kvk__seterr("kvk_buf_copy nao vale durante gravacao de grafo"); return 0; }
+    if (!dst.b || !src.b || doff + n > dst.size || soff + n > src.size) { kvk__seterr("copia fora do buffer"); return 0; }
+    if (!n) return 1;
+    VkCommandBuffer cb = kvk__ccb(); if (!cb) return 0;
+    kvk__bar(cb);
+    VkBufferCopy rg; rg.srcOffset = soff; rg.dstOffset = doff; rg.size = n;
+    F(CmdCopyBuffer)(cb, src.b, dst.b, 1, &rg);
     return 1;
 }
 
