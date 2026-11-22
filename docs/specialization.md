@@ -240,8 +240,11 @@ disk there is caught only through the missing `import_stats:` line or the failed
 
 ```
 katana gradcheck <model.gguf> [T]
+katana compare <model.gguf> (--val-data F | --data F --val X --seed N) [--drift-data G] a.kspec [b.kspec ...]
 katana train <model.gguf> <data.jsonl> [--train PATTERNS] [--rank R] [--alpha A] [--steps N] [--lr X]
-             [--seq T] [--wd X] [--clip X] [--seed N] [--every N] [--out file.kspec]
+             [--seq T] [--wd X] [--clip X] [--seed N] [--every N] [--out file.kspec] [--allow-worse]
+             [--ema D] [--neft A] [--adapter-dropout P] [--dora] [--anchor L] [--label-smoothing E]
+             [--tool-weight W] [--optimizer adamw|muon] [--pissa] [--spike F] [--max-skips N]
 KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
 ```
 
@@ -284,6 +287,128 @@ KATANA_SPEC=file.kspec katana serve|chat|agent|run <model.gguf> ...
 - Loading: whole tensors replace the base tensor; adapters are merged at load (`W + s B A`, dequantizing only the
   adapted matrices to float). The specialization is applied before the GPU is prepared. A specialization that
   changes experts runs on the CPU for now (the GPU expert cache assumes one format for all experts of a layer).
+
+## Fine-tuning methods and an honest check of what training did (2026-11-22)
+
+Code: `src/app/train_methods.c` (included by `train.c`; small hooks in the products, `t_step`, the optimizer and the
+`.kspec` reader/writer). Every method is an option and **off by default**: without options training is what it was.
+
+### Did the run make the model better or worse?
+
+- **Baseline before step 1.** With a validation set (`--val-data` or `--val`) `katana train` first measures the loss of
+  the *base* model (adapters, float masters and DoRA magnitudes switched off, `tm_off`), per source. On a fresh start it
+  also checks that adapters at zero give exactly the base model (maximum logit difference must be 0; with whole trained
+  tensors a 1e-3 tolerance, because the GPU sums in another order) and refuses to train if not.
+- **No `.kspec` that does not beat the base.** The file is only written when a validation loss is below the baseline.
+  Otherwise nothing is written, the run prints `VALIDACAO: base X; nenhum estado treinado a venceu`, exits with code 2
+  and the `resultado:` line carries `"refused": true`. `--allow-worse` writes anyway. Without validation data it
+  cannot tell and prints a warning. The end of every run prints `VALIDACAO: base X -> gravado Y` and the loss per source
+  of both; `resultado:` has a new `base_val_loss`.
+- **`katana compare <model> (--val-data F | --data F --val X --seed N) [--drift-data G] a.kspec [b.kspec ...]`**
+  (also `katana train <model> --compare ...`): the base and each specialization on the same held-out windows: loss
+  overall, per source and on tool-call tokens, and on a second unrelated file the loss and the mean KL(base || spec)
+  of the next-token distribution (forgetting). Prints a table, a verdict per file and `compare-json:` lines.
+  Use a `--val-data` that no training run used for selection.
+- **Divergence guards.** A non-finite loss or gradient norm skips the step (no update); so does a loss above
+  `--spike F` (default 5) times the median of the last 20 accepted steps *and* more than 2 nats above it.
+  `--max-skips N` (default 5) consecutive skips stop the run. (Checks use the bit pattern: the build uses
+  `-ffast-math`, which folds `isfinite`.) A guard cannot undo an update that already happened: a learning rate of 1e30
+  corrupts step 1 and the guard then stops the run after 5 skips; the refusal above keeps the file from being written.
+
+### Methods (option, reference, what we implemented)
+
+| option | method | notes |
+|---|---|---|
+| `--ema D` | exponential moving average of the weights (adapters, magnitudes, whole tensors) with a warm-up of the decay | at each validation both raw and averaged weights are evaluated, the better one is saved. Averaging A and B separately is not averaging the product B A. |
+| `--neft A` | NEFTune: uniform noise in [-1, 1] added to the input embeddings, scaled by `A / sqrt(L d)` (Jain et al. 2023, arXiv:2310.05914; formula read in the paper) | noise is a function of (seed, step, window): deterministic. |
+| `--adapter-dropout P` | dropout on the input of the adapter product `A x` (LoRA dropout) | mask from a counter hash of (seed, step, window, tensor, row, column), same in forward and backward. |
+| `--dora` | DoRA (Liu et al. 2024, arXiv:2402.09353): `y = m/‖V‖ ⊙ (W x + s B A x)` with a trained magnitude `m` per output row, `m` starts at `‖W‖` | as the paper recommends the norm is treated as a constant in the gradient (read in the paper). The paper's "norm across each column" is ambiguous about orientation; we normalise per output unit (row of `W` in the `[out][in]` layout), which we believe matches the reference implementation (not checked against its code). Costs one extra `R×r×C` product per adapted matrix per forward and one extra forward product in the backward. |
+| `--anchor L` | KL(base ‖ model) on the positions that are not training targets, weight L; the base distribution comes from an extra forward with everything off | +1 forward per window (about +33% of a step). Limits forgetting of the context distribution. Not a method from one paper: standard KL regularisation toward the reference model. |
+| `--label-smoothing E` | label smoothing (Szegedy et al. 2016, arXiv:1512.00567) | |
+| `--tool-weight W` | loss weight W on tokens inside tool calls (`<tool_call>...</tool_call>` and Gemma 4's `<\|tool_call>...<tool_call\|>`), found by decoding the window | weights normalised so the mean loss scale is unchanged. |
+| `--optimizer muon` | Muon (Jordan et al. 2024) on the adapter matrices: Nesterov momentum 0.95, 5 quintic Newton-Schulz iterations, update scaled by `0.2 sqrt(max(rows, cols))` and decoupled weight decay (Liu et al. 2025, arXiv:2502.16982, "Muon is Scalable", scale and decay read in the paper) | the learning rate is the AdamW one; not tuned. Norms/whole tensors stay on AdamW. |
+| `--pissa` | PiSSA (Meng et al. 2024, arXiv:2404.02948): `A`, `B` start at the top-r singular components of `W`, the rest is the frozen residual | randomised subspace iteration (Halko et al. 2011), not a full SVD. The residual cannot replace the quantized base, so the adapter has rank 2r: `[A; A0]`, `[B, -B0]` with the second half frozen (kept fixed even under weight decay); the file stores rank 2r and loads in old readers. Cannot be combined with `--resume` or Muon. |
+
+`DoRA` in the `.kspec`: after the tensors a section `KSDM` (name, rows, magnitudes), then 8 bytes with the offset of that
+section, then the usual `KSXF` trailer with flag 2. Old readers stop after the tensors and ignore the rest, so old
+and new files load everywhere; an *old* reader loads a DoRA file as plain LoRA (adapters without the row scaling), which
+is a different model, silently. Readers of this version apply the magnitudes at load (`KATANA_SPEC`), in `katana merge`
+and in `--resume` (a file with magnitudes needs `--dora`).
+
+### Tests
+
+- `katana gradcheck` now also checks, tensor by tensor with directional finite differences, the gradient of the loss
+  with: NEFTune, adapter dropout, label smoothing + tool weights, KL anchor, DoRA (A, B and magnitude; norm frozen), and
+  all of them together, on every tiny layout in `tools/traintest/run.sh` (the shaped loss itself is what is
+  differentiated). EMA, Muon and the PiSSA initialisation do not change gradients. Sensitivity was checked by breaking
+  each of four things on purpose (dropout mask in the backward, DoRA scaling of `dy`, smoothing term, anchor scale):
+  the check fails every time.
+- `katana merge` of a DoRA and of a PiSSA file gives a GGUF whose held-out loss equals the loss measured by `katana
+  compare` on the base + file (0.5895 and 0.3693 on the tiny model).
+- Not checked: `KATANA_SPEC` loading of a DoRA file at serve time (same function as merge; only merge and compare were run).
+
+### Comparison on a tiny model (`sh tools/traintest/methods.sh`)
+
+A 0.1M-parameter llama layout with random weights is first trained on general text (so it has something to forget),
+then rank-8 adapters on all blocks learn a task ("repeat the word" and "open the word" answered with a tool call whose
+arguments copy the word), 96 conversations, 300 steps of batch 4 and windows of 64 tokens (equal training tokens), 3
+seeds, lr 3e-3. The state of the last step is kept (no choice on validation), except `--ema`, which picks between raw
+and averaged on `val.jsonl`. Everything is measured by `katana compare` on `test.jsonl` (100 new conversations) and on
+`drift.jsonl` (general text, other sentences). Base before fine-tuning: held-out 10.555, tool tokens 8.839, drift loss
+0.752. Mean ± sample standard deviation over 3 seeds:
+
+| method | held-out loss | tool-call tokens | drift loss - base (forgetting) | KL(base,spec) on drift | seeds better than LoRA |
+|---|---|---|---|---|---|
+| lora (control) | 0.582 ± 0.034 | 0.050 ± 0.002 | 3.614 ± 0.187 | 3.689 ± 0.202 | - |
+| ema 0.9 | 0.583 ± 0.033 | 0.050 ± 0.002 | 3.606 ± 0.193 | 3.681 ± 0.207 | 0/3 |
+| neftune 5 | 0.633 ± 0.065 | 0.051 ± 0.005 | 3.712 ± 0.032 | 3.794 ± 0.055 | 0/3 |
+| neftune 15 | 1.266 ± 0.150 | 0.087 ± 0.003 | 3.131 ± 0.196 | 3.208 ± 0.208 | 0/3 |
+| adapter-dropout 0.1 | 0.636 ± 0.055 | 0.049 ± 0.006 | 3.218 ± 0.098 | 3.297 ± 0.121 | 0/3 |
+| adapter-dropout 0.3 | 0.820 ± 0.067 | 0.054 ± 0.005 | 2.767 ± 0.082 | 2.838 ± 0.096 | 0/3 |
+| anchor 0.5 | 0.562 ± 0.031 | 0.043 ± 0.005 | 1.987 ± 0.064 | 2.033 ± 0.069 | 3/3 |
+| anchor 2 | 0.598 ± 0.025 | 0.060 ± 0.010 | 1.692 ± 0.117 | 1.718 ± 0.112 | 0/3 |
+| label-smoothing 0.1 | 0.726 ± 0.063 | 0.172 ± 0.008 | 3.075 ± 0.067 | 3.132 ± 0.090 | 0/3 |
+| tool-weight 3 | 0.572 ± 0.019 | 0.050 ± 0.005 | 3.656 ± 0.254 | 3.722 ± 0.267 | 2/3 |
+| dora | 0.552 ± 0.036 | 0.046 ± 0.003 | 3.689 ± 0.301 | 3.767 ± 0.319 | 3/3 |
+| muon (same lr) | 2.675 ± 0.022 | 0.206 ± 0.050 | 1.408 ± 0.034 | 1.476 ± 0.034 | 0/3 |
+| muon (lr 1e-3) | 6.991 ± 0.008 | 4.259 ± 0.057 | 0.144 ± 0.011 | 0.148 ± 0.009 | 0/3 |
+| pissa | 0.375 ± 0.008 | 0.020 ± 0.004 | 4.381 ± 0.303 | 4.447 ± 0.289 | 3/3 |
+| pissa (lr 1e-3) | 1.269 ± 0.034 | 0.058 ± 0.003 | 2.009 ± 0.009 | 2.080 ± 0.007 | 0/3 |
+
+Reading it (tiny model, one task, one learning rate per method, 3 seeds: this is evidence about this setup, not about
+the real models, where nothing was trained or measured):
+
+- Forgetting is large in this setup (3.6 nats of drift loss for plain LoRA), so the table is informative about it.
+  Lower forgetting came with higher held-out loss in nearly every row (dropout, NEFTune, label smoothing, Muon and
+  PiSSA at lower lr are partly *under-trained* at 300 steps). The honest reading of the low-forgetting rows is a
+  trade-off, not a gain.
+- **KL anchor 0.5** is the one result that looks like a free improvement: held-out 0.562 vs 0.582 (3/3 seeds
+  better, but the difference is about 0.6 standard deviations) and forgetting cut from 3.61 to 1.99. Anchor 2 cuts
+  forgetting more and costs held-out loss.
+- **PiSSA** (lr 3e-3) fit the task best (0.375, tool tokens 0.020, 3/3 seeds) and forgot the most (4.38); at lr 1e-3 it
+  under-trains. **DoRA** was slightly better than LoRA on the task (0.552, 3/3) with the same forgetting; the gap is
+  about one standard deviation.
+- **Did not help here:** EMA (identical to LoRA; a plausible reason, not tested, is that the cosine schedule already
+  decays the lr, so the last weights are already close to their average), NEFTune and adapter dropout (worse on the task; they reduce forgetting only by learning less),
+  label smoothing (hurts the tool tokens, 0.17 vs 0.05), Muon (needs its own learning rate, none of the two tried
+  worked), tool-weight 3 (no clear change on tool-call tokens: 0.050 vs 0.050; the loss is already low).
+- Four runs skipped one step each through the loss-spike guard (seed 3 of anchor 0.5/2 and dropout 0.1/0.3).
+
+`tools/traintest/methods.sh` regenerates the table in about 6 minutes on 8 cores; `methods_table.py` makes the table.
+
+### References
+
+- Jain et al., *NEFTune: Noisy Embeddings Improve Instruction Finetuning*, arXiv:2310.05914.
+- Liu et al., *DoRA: Weight-Decomposed Low-Rank Adaptation*, arXiv:2402.09353.
+- Meng, Wang, Zhang, *PiSSA: Principal Singular Values and Singular Vectors Adaptation*, arXiv:2404.02948.
+- Liu et al., *Muon is Scalable for LLM Training*, arXiv:2502.16982; K. Jordan et al., Muon optimizer, 2024.
+- Halko, Martinsson, Tropp, *Finding structure with randomness*, SIAM Review 2011 (the SVD used by PiSSA).
+- Szegedy et al., *Rethinking the Inception Architecture*, arXiv:1512.00567 (label smoothing).
+
+What was actually read in the paper text (PDF): the NEFTune noise rule, the DoRA decomposition and the norm-as-constant
+advice, the Muon update scale and weight decay. Only the abstracts of PiSSA were read (the initialisation formula
+`s B A = U S V^T` with `A = B^T`-style split of `sqrt(S)` is ours, derived to make the product equal the top-r part
+of `W`); label smoothing and the Halko et al. algorithm are cited from memory and implemented from the textbook form.
 
 ## How correctness is checked
 

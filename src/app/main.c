@@ -852,6 +852,7 @@ static int merge_cmd(const char *in, const char *spec, const char *out) {
     }
     FILE *f = fopen(out, "wb");
     if (!f) { fprintf(stderr, "merge: nao consegui gravar %s\n", out); return 1; }
+    TmDsec dsec = tm_dora_read(spec);        /* DoRA: magnitudes por linha (secao opcional do .kspec) */
     uint8_t hdr[24];
     const uint32_t magic = 0x46554747u, v3 = 3;
     memcpy(hdr, &magic, 4); memcpy(hdr + 4, &v3, 4); memcpy(hdr + 8, &n_tensors, 8); memcpy(hdr + 16, &nkv, 8);
@@ -891,6 +892,7 @@ static int merge_cmd(const char *in, const char *spec, const char *out) {
                 const float *ak = p->a + (size_t)k * p->cols;
                 for (uint64_t c2 = 0; c2 < p->cols; c2++) w[rr * cols + c2] += bk * ak[c2];
             }
+            if (p->kind == 1) tm_dora_apply(&dsec, p->name, w, p->rows, p->cols);
             used++;
         }
         uint8_t *o = xalloc(ob, 1);
@@ -1142,6 +1144,13 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return train_gradcheck(&m, argc > 3 ? atoi(argv[3]) : 12);
     }
+    if (argc >= 4 && strcmp(argv[1], "compare") == 0) {       /* perda por fonte e deriva de especializacoes contra a base, nas mesmas janelas */
+        Model m; memset(&m, 0, sizeof m);
+        putenv_dup("KATANA_CPU=1");
+        putenv_dup("KATANA_SPEC=");
+        load_model(&m, argv[2]);
+        return tm_compare_main(&m, argc - 3, argv + 3);
+    }
     if (argc >= 4 && strcmp(argv[1], "train") == 0) {         /* especializacao: grava um .kspec */
         Model m; memset(&m, 0, sizeof m);
         putenv_dup("KATANA_CPU=1");
@@ -1247,6 +1256,7 @@ static int run_main(int argc, char **argv) {
         "  katana knowledge quiz <modelo.gguf> <holdout.jsonl> [--limit N] [--spec ARQ.kspec]   o conhecimento entrou? (nota por sobreposicao)\n"
         "                                       um modelo professor (API no formato da OpenAI) resolve a tarefa com as ferramentas do katana\n"
         "  katana merge <modelo.gguf> <espec.kspec> <saida.gguf>   GGUF novo com a especializacao dentro\n"
+        "  katana compare <modelo.gguf> --val-data F [--drift-data G] a.kspec [b.kspec ...]   perda por fonte e deriva (KL) de especializacoes contra a base\n"
         "  katana gradcheck <modelo.gguf> [T]   confere o passo para tras do treino (forward x motor, gradientes x diferencas finitas)\n"
         "  katana serve <modelo.gguf> [porta]   conversa no navegador e API da OpenAI em http://127.0.0.1:porta (padrao 8080;\n"
         "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
