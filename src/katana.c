@@ -71,6 +71,7 @@
 #include "tools/regex.c"               /* motor de expressoes regulares do Grep */
 #include "tools/glob.c"
 #include "tools/grep.c"
+#include "tools/find.c"                /* Find: navegacao por intencao, indice da pasta e referencias */
 #include "tools/webfetch.c"
 #include "tools/websearch.c"
 #include "tools/tasks.c"               /* TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet */
