@@ -571,7 +571,7 @@ static char *srv_body(sock_t s, const char *head, size_t hn, size_t hend) {
     size_t clen = 0;
     if (hdr_get(head, "Content-Length", val, sizeof val)) clen = (size_t)strtoull(val, NULL, 10);
     else { http_error(s, 400, "falta Content-Length"); return NULL; }
-    if (clen > SRV_MAX_BODY) { http_error(s, 413, "corpo grande demais"); return NULL; }
+    if (clen > (g_vis.on ? (size_t)32 << 20 : (size_t)SRV_MAX_BODY)) { http_error(s, 413, "corpo grande demais"); return NULL; }
     if (hdr_get(head, "Expect", val, sizeof val)) sock_send(s, "HTTP/1.1 100 Continue\r\n\r\n", 25);
     char *body = xalloc(clen + 1, 1);
     size_t have = hn - hend;

@@ -184,6 +184,13 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
                                      ".gguf", ".safetensors", ".pt", ".onnx", ".sqlite", ".db", ".iso", ".woff", ".woff2", ".ttf", ".otf", NULL };
         int hit = 0;
         for (int i = 0; img[i]; i++) if (ct_ext_is(res, img[i])) hit = 1;
+        if (hit && g_vis.on) {
+            char e2[300] = "";
+            const int k = vis_add_file(res, e2, sizeof e2);
+            if (k < 0) snprintf(out, cap, "error: cannot show %s: %s", res, e2);
+            else { char nt[500]; const char *b0 = strrchr(res, '/'); vis_note(k, b0 ? b0 + 1 : res, nt, sizeof nt); snprintf(out, cap, "%s", nt); vis_pend(k); ct_seen_mark(res, 0); }
+            break;
+        }
         if (hit) { snprintf(out, cap, "error: %s is an image and this model has no vision input, so it cannot be looked at. If the text inside matters, try Bash with an OCR tool (tesseract) if installed; otherwise tell the user.", res); break; }
         for (int i = 0; bin[i]; i++) if (ct_ext_is(res, bin[i])) hit = 1;
         if (hit) { snprintf(out, cap, "error: %s is a binary format and cannot be read as text. Use Bash to inspect it (for example unzip -l, file, or a converter to text).", res); break; }

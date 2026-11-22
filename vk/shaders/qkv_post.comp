@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 /* pos-projecao de q, k, v do lote: bias, norma RMS opcional (norm 1 = vetor inteiro, 2 = por cabeca),
-   RoPE (neox=0 pares adjacentes, 1 metades), k e v gravados no cache, q gravado em q (pode ser o mesmo
+   RoPE (neox=0 pares adjacentes, 1 metades, 2 metades com os angulos prontos depois das frequencias), k e v gravados no cache, q gravado em q (pode ser o mesmo
    buffer que qs). Ativacoes transpostas X[coluna*B + token]; o token b esta na posicao pos0+b. */
 layout(local_size_x = 128) in;
 layout(std430, binding = 0) buffer Q { float q[]; };
@@ -36,7 +36,7 @@ void main() {
     const int hr = pc.nrot / 2;
     int l0, l1; float cs = 1.0, sn = 0.0;     /* RoPE parcial (neox): dims >= nrot nao giram */
     if (pc.neox == 0) { l0 = 2 * i; l1 = l0 + 1; rope_cs(float(pos) * freq[i], cs, sn); }
-    else if (i < hr) { l0 = i; l1 = i + hr; rope_cs(float(pos) * freq[i], cs, sn); }
+    else if (i < hr) { l0 = i; l1 = i + hr; rope_cs(pc.neox == 2 ? freq[half_ + b * hr + i] : float(pos) * freq[i], cs, sn); }
     else { l0 = pc.nrot + 2 * (i - hr); l1 = l0 + 1; }
     int i0 = h * hd + l0, i1 = h * hd + l1;
     if (isk) {

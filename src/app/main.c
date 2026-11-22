@@ -962,6 +962,18 @@ static int calibrar(Model *m, const char *file) {
 }
 
 static int run_main(int argc, char **argv) {
+    for (int i = 1; i + 1 < argc; ) {      /* --image ARQUIVO (pode repetir): imagens da primeira mensagem; seguem em KATANA_IMAGE, uma por linha */
+        if (strcmp(argv[i], "--image")) { i++; continue; }
+        char abs[4096];
+        const char *ol = getenv("KATANA_IMAGE"), *f = realpath(argv[i + 1], abs) ? abs : argv[i + 1];
+        const size_t nl = strlen(f) + (ol ? strlen(ol) : 0) + 4;
+        char *nv = xalloc(nl, 1);
+        snprintf(nv, nl, "%s%s%s", ol ? ol : "", ol ? "\n" : "", f);
+        setenv("KATANA_IMAGE", nv, 1);
+        free(nv);
+        for (int j = i; j + 2 <= argc; j++) argv[j] = j + 2 < argc ? argv[j + 2] : NULL;
+        argc -= 2;
+    }
     { const int lr = launch_try(argc, argv); if (lr >= 0) return lr; }        /* katana sem subcomando: console do agente; install, adopt (app/launch.c) */
     g_orig_argc = argc;                    /* copia da linha de comando: o agente pode se recarregar (agent_regrow) */
     g_orig_argv = xalloc((size_t)argc + 1, sizeof(char *));
@@ -978,7 +990,7 @@ static int run_main(int argc, char **argv) {
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
         if (g_srv_agent) { if (!realpath(argv[2], g_srv_model_path)) die("katana serve --agent: modelo nao encontrado"); }
-        else { perfil_apply(argv[2], 0); load_model(&m, argv[2]); print_info(&m); }
+        else { perfil_apply(argv[2], 0); load_model(&m, argv[2]); print_info(&m); vis_init(&m, argv[2]); }
         {   /* nome do modelo na API: o arquivo sem pasta e sem .gguf */
             const char *b = argv[2], *sl = strrchr(b, '/'), *bs = strrchr(b, '\\');
             if (bs && (!sl || bs > sl)) sl = bs;
@@ -996,6 +1008,7 @@ static int run_main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
     if (argc >= 2 && strcmp(argv[1], "update") == 0) return update_main(argc - 2, argv + 2);
     if (argc == 2 && (strcmp(argv[1], "version") == 0 || strcmp(argv[1], "--version") == 0)) { printf("katana %s\n", KATANA_BUILD); return 0; }
+    if (argc >= 2 && strcmp(argv[1], "vision") == 0) return vision_main(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();
     if (argc == 2 && strcmp(argv[1], "calltest") == 0) return calltest();
     if (argc == 2 && strcmp(argv[1], "toolrun") == 0) {      /* teste: le linhas "<ferramenta> <json>" da entrada e executa em sequencia, no mesmo processo (sessoes de terminal persistem) */
@@ -1059,6 +1072,7 @@ static int run_main(int argc, char **argv) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
         print_info(&m);
+        g_vis.store = 1; vis_init(&m, argv[2]); vis_cli_images();
         if (!m.cfg.tool_tmpl)
             fprintf(stderr, "Aviso: este modelo nao foi treinado para chamar ferramentas (o template dele nao tem ferramentas);\n"
                             "  ele pode ignorar a internet e os arquivos. Para o agente, prefira um modelo com ferramentas (ex.: Qwen3.6).\n");
@@ -1212,6 +1226,7 @@ static int run_main(int argc, char **argv) {
         perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
+        vis_init(&m, argv[2]); vis_cli_images();
         return session(&m, getenv("KATANA_SYSTEM"), getenv("KATANA_MAXTOK") ? atoi(getenv("KATANA_MAXTOK")) : 8192,
                        getenv("KATANA_TEMP") ? (float)atof(getenv("KATANA_TEMP")) : 0.7f);
     }
@@ -1220,6 +1235,8 @@ static int run_main(int argc, char **argv) {
         perfil_apply(argv[2], 0);
         load_model(&m, argv[2]);
         print_info(&m);
+        vis_init(&m, argv[2]);
+        if (!vis_cli_images()) return 1;
         int max_tokens = argc > 4 ? atoi(argv[4]) : 200;
         float temp = argc > 5 ? (float)atof(argv[5]) : 0.7f;
         if (argv[3][0] == '@') {      /* prompt lido de arquivo (prompts longos nao cabem na linha de comando) */
@@ -1229,6 +1246,12 @@ static int run_main(int argc, char **argv) {
             char *t = xalloc((size_t)n + 1, 1);
             if (fread(t, 1, (size_t)n, pf) != (size_t)n) die("falha lendo o prompt");
             fclose(pf); t[n] = 0;
+            argv[3] = t;
+        }
+        if (g_vis.next.n) {      /* --image: as imagens vao antes do texto */
+            const size_t nn = strlen(argv[3]) + g_vis.next.n + 16;
+            char *t = xalloc(nn, 1);
+            snprintf(t, nn, "%s", argv[3]); vis_take(t, nn);
             argv[3] = t;
         }
         if (strcmp(argv[1], "run") == 0) return generate(&m, argv[3], max_tokens, temp, getenv("KATANA_BENCH_POS") ? 0 : 1);
@@ -1260,6 +1283,8 @@ static int run_main(int argc, char **argv) {
         "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
+        "                                 --image ARQ (run, chat, agent): imagem na mensagem, com o projetor mmproj*.gguf ao lado do modelo\n"
+        "  katana vision info|stages|bench|fuzz ...   codificador de imagem: cabecalho, etapas, custo, teste dos decodificadores\n"
         "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
         "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
         "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"

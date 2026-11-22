@@ -692,6 +692,12 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
 static void gpu_setup(Model *m);
 static void mat_row(float *out, const Mat *W, int row, int cols);
 static void embed_row(const Model *m, float *out, int tok);
+/* visao (src/vision/image.c): ids de imagem ficam acima do vocabulario; vis_rp e nulo enquanto nao ha imagem */
+#define VIS_BASE (1 << 30)
+static int32_t *vis_rp;      /* posicoes do RoPE (tres eixos) por posicao do cache */
+static void vis_row(const Model *m, float *out, int id);
+static void vis_seq(Model *m, const int *toks, int n, int pos0);
+static void vis_take(char *line, size_t cap);      /* imagens pendentes na frente da mensagem do usuario */
 static int g_gelu;      /* feed-forward com GELU (tanh) em vez de SiLU (gemma4) */
 #define G4_NB 16        /* gemma4: tokens por lote no prompt (CPU; = GPU_BMAX, limite do moe_cpu_multi) */
 static void shards_open(const char *path, int64_t fsz);

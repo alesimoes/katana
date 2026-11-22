@@ -290,6 +290,7 @@ static float *cpu_head(Model *m) {
 /* as camadas da GPU so sao usadas pelo grafo da GPU; na CPU os produtos sao sempre locais */
 static float *forward(Model *m, int token, int pos, int want_logits) {
     const Config *c = &m->cfg;
+    if (vis_rp || token >= VIS_BASE) vis_seq(m, &token, 1, pos);
     if (c->q4e) return q4_forward(m, &token, 1, pos, want_logits);
     if (vkg.on && !gpu.force_cpu) return vk_forward_1(m, token, pos, want_logits);
     if (gpu.n_gl > 0 && !gpu.force_cpu) return gpu_forward_n(m, &gpu.set[gpu.n_sets - 1], &token, pos, want_logits);
@@ -327,6 +328,7 @@ static int g4_batch(const Model *m) {
 static float *forward_seq(Model *m, const int *toks, int n, int pos0, int want_logits) {
     float *lg = NULL;
     int i = 0;
+    vis_seq(m, toks, n, pos0);      /* sem imagem nenhuma, nao faz nada */
     if (m->cfg.q4e) return q4_forward(m, toks, n, pos0, want_logits);
     if (vkml.ok && !gpu.force_cpu && vk_batch_min() <= n) {      /* MLA em Vulkan (modo hibrido): lote proprio */
         while (n - i >= vk_batch_min()) {

@@ -243,6 +243,7 @@ static float *vk_qn_forward_1(Model *m, int want_logits);
 static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits);
 static void vkq_setup(Model *m);
 static int vkq_posn;      /* posicao do primeiro token do lote em curso do qwen35moe (layer_tap) */
+static int vkq_angles(const Model *m, int pos0, int B);
 static int vkq_pos1;      /* posicao do token no caminho de um token do qwen35moe */
 
 /* um token pelas camadas todas na GPU; devolve os logits (m->logits) ou NULL se !want_logits */
@@ -251,7 +252,7 @@ static float *vk_forward_1(Model *m, int token, int pos, int want_logits) {
     double t0 = now_sec();
     if (pos < 0 || pos >= c->ctx) die("posicao fora do contexto (Vulkan)");
     embed_row(m, m->x, token);
-    const int meta[4] = { pos, 0, 0, 0 };
+    const int meta[4] = { pos, vis_rp && c->ssm_inner ? vkq_angles(m, pos, 1) : 0, 0, 0 };      /* houve imagem: angulos prontos no lugar de pos * freq */
     if (!kvk_buf_write_q(vkg.x, 0, m->x, (size_t)c->dim * sizeof(float)) || !kvk_buf_write_q(vkg.meta, 0, meta, sizeof meta))
         die("falha na execucao em Vulkan (escrita)");
     if (c->ssm_inner) { vkq_pos1 = pos; return vk_qn_forward_1(m, want_logits); }
@@ -1207,6 +1208,7 @@ static void matvec(float *out, const Mat *W, const float *x, int rows, int cols)
 /* embedding de um token (com a escala do modelo, quando tem) */
 static void embed_row(const Model *m, float *out, int tok) {
     const int d = m->cfg.dim;
+    if (tok >= VIS_BASE) { vis_row(m, out, tok); return; }      /* vetor de imagem */
     mat_row(out, &m->tok_emb, tok, d);
     const float s = m->cfg.emb_scale;
     if (s != 0.0f && s != 1.0f) for (int i = 0; i < d; i++) out[i] *= s;
