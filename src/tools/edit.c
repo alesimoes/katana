@@ -5,16 +5,16 @@ static const char CT_EDIT_DESC[] =
     "old_string must match the file text exactly, including spaces, tabs and line breaks (do not include the line number prefix that Read shows), "
     "and must be unique in the file: otherwise add more surrounding lines to make it unique, or set replace_all to replace every occurrence. "
     "new_string must differ from old_string. For several changes in the same file send edits instead of old_string and new_string: they are applied in order, all or none, "
-    "each to the text left by the previous one. edits is an array of {old_string, new_string, replace_all}, or plain text with one block per change (nothing is escaped): "
-    "a line <<<<<<< , the old text, a line ======= , the new text, a line >>>>>>> . To create a new file with Edit, give an empty old_string for a path that does not exist (Write is better for that). "
+    "each to the text left by the previous one. edits is plain text with one block per change (nothing is escaped): "
+    "a line <<<<<<< , the old text, a line ======= , the new text, a line >>>>>>> ; an array of {old_string, new_string, replace_all} is accepted too. To create a new file with Edit, give an empty old_string for a path that does not exist (Write is better for that). "
     "Files that are not valid UTF-8 are refused. After the edit a few lines around the change are shown, and a syntax check runs for common languages.";
 static const char CT_EDIT_PROPS[] =
     "\"file_path\": {\"type\": \"string\", \"description\": \"The absolute path of the file to modify\"}, "
     "\"old_string\": {\"type\": \"string\", \"description\": \"The text to replace, exactly as it is in the file\"}, "
     "\"new_string\": {\"type\": \"string\", \"description\": \"The text to replace it with (must be different from old_string)\"}, "
     "\"replace_all\": {\"type\": \"boolean\", \"description\": \"Replace every occurrence of old_string (default false)\"}, "
-    "\"edits\": {\"type\": \"array\", \"description\": \"Several changes to this file, instead of old_string and new_string\", \"items\": {\"type\": \"object\", \"properties\": {"
-    "\"old_string\": {\"type\": \"string\"}, \"new_string\": {\"type\": \"string\"}, \"replace_all\": {\"type\": \"boolean\"}}, \"required\": [\"old_string\", \"new_string\"]}}";
+    "\"edits\": {\"type\": \"string\", \"description\": \"Several changes to this file, instead of old_string and new_string: one block per change, "
+    "each block being a line <<<<<<<, the old text, a line =======, the new text, a line >>>>>>>\"}";
 static const char CT_EDIT_REQ[] = "\"file_path\"";
 
 /* grava o arquivo (cria ou sobrescreve); 1 se foi, senao a mensagem em out */
@@ -100,6 +100,12 @@ static int ct_ed_parse(const char *js, const char *end, CtEd *ed, char *out, siz
         char *t = ct_str(js, end, "edits");
         if (!t) return 0;
         int n = 0; const char *q = t; while (isspace((unsigned char)*q)) q++;
+        if (*q == '[') {      /* a lista de trocas veio como texto (chamada em XML): le como lista */
+            Buf w = {0}; buf_str(&w, "{\"edits\": "); buf_str(&w, q); buf_str(&w, "}");
+            n = ct_ed_parse(w.p, w.p + strlen(w.p), ed, out, cap);
+            free(w.p); free(t);
+            return n;
+        }
         if (*q) { n = ct_ed_blocks(t, ed, out, cap); if (n == 0) { snprintf(out, cap, "error: edits has no blocks"); n = -1; } }
         free(t);
         return n;
