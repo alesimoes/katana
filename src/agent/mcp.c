@@ -1051,6 +1051,13 @@ static void mcp_block(const char *v, McpB *txt) {
         free(d);
     } else if (strcmp(ty, "image") == 0 || strcmp(ty, "audio") == 0) {
         const char *dv = mcp_get(v, "data"), *de = dv ? mcp_skip(dv) : NULL;
+        if (g_vis.on && *ty == 'i' && dv && *dv == '"' && de && de - dv > 2) {      /* com visao, a imagem vai ao modelo */
+            char e2[200] = "";
+            const int k = vis_add_b64(dv + 1, (size_t)(de - dv) - 2, e2, sizeof e2);
+            if (k >= 0) { vis_note(k, mb[0] ? mb : "from the tool", buf, sizeof buf); vis_pend(k); mcp_bputs(txt, buf); return; }
+            snprintf(buf, sizeof buf, "[image not shown: %s] ", e2);
+            mcp_bputs(txt, buf);
+        }
         long len = de ? (long)(de - dv) - 2 : 0, pad = 0;      /* sem as aspas; "=" no fim nao e dado */
         while (de && len > 0 && de[-2 - pad] == '=') pad++;
         snprintf(buf, sizeof buf, "[%s %s, %ld bytes: binary content not shown]", ty, mb[0] ? mb : "of unknown type", len * 3 / 4 - pad);

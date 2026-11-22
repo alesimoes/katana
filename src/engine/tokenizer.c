@@ -574,12 +574,28 @@ static void g4_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
     free(key); free(buf); free(st); free(ln);
 }
 
+static int (*g_img_mark)(const char *s, int n, Ids *out);      /* visao: marca de imagem -> ids; devolve os bytes usados */
 /* codifica texto, reconhecendo tokens especiais (ex.: <|im_start|>, </s>) */
 static void encode(const Tokenizer *tk, const char *text, Ids *out) {
     const uint8_t *s = (const uint8_t *)text;
     int n = (int)strlen(text), start = 0, i = 0, prev_special = 1;
     while (i <= n) {
         int hit = -1;
+        if (g_img_mark && i + 2 < n && s[i] == '<' && s[i + 1] == '|' && s[i + 2] == 'k') {
+            Ids im = {0};
+            const int used = g_img_mark(text + i, n - i, &im);
+            if (used) {
+                if (i > start) {
+                    if (tk->spm == 2) g4_encode(tk, s + start, i - start, out);
+                    else if (tk->spm) spm_encode(tk, s + start, i - start, out, prev_special);
+                    else encode_plain(tk, s + start, i - start, out);
+                }
+                for (int q = 0; q < im.n; q++) ids_push(out, im.ids[q]);
+                free(im.ids);
+                prev_special = 1; i += used; start = i;
+                continue;
+            }
+        }
         if (i < n && tk->spec1[s[i]]) {
             for (int j = 0; j < tk->n_special; j++) {
                 int id = tk->special[j], l = tk->toklen[id];

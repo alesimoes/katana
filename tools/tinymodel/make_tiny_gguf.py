@@ -69,6 +69,8 @@ def main():
     ap.add_argument("--template", default="chatml", choices=["chatml", "chatml-xml", "gemma4", "glm"],
                     help="chat template written to the file (decides the chat and tool-call format katana uses)")
     ap.add_argument("--kv", type=int, default=4, help="key/value heads (fewer than 4 = grouped-query attention)")
+    ap.add_argument("--vision", action="store_true", help="adds the image start and end tokens at the end of the vocabulary")
+    ap.add_argument("--gpu", action="store_true", help="qwen35moe with the dimensions the Vulkan graph needs")
     a = ap.parse_args()
     rnd = random.Random(a.seed)
 
@@ -81,6 +83,9 @@ def main():
         tokens.append(x + y)
     types = [1] * len(tokens)
     specials = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
+    if a.template == "gemma4":       # o agente para a geracao do Gemma 4 em <|tool_response> (precisa existir no vocabulario)
+        specials.append("<|tool_response>")
+    if a.vision: specials += ["<|vision_start|>", "<|vision_end|>"]
     for sp in specials:
         tokens.append(sp)
         types.append(3)
@@ -96,6 +101,7 @@ def main():
     V = len(tokens)
 
     dim, heads, hidden, layers, ctx = 64, 4, 128, 2, 512
+    if a.gpu: dim = 128
     A, kvh = a.arch, a.kv
     kvd = dim // heads * kvh
     hd = dim // heads
@@ -105,8 +111,9 @@ def main():
     hyb = A in ("qwen35moe", "qwen35")
     if A == "qwen35moe": a.shared = True
     dk, ng, nv, dv, CK = 16, 2, 4, 16, 4            # DeltaNet: largura de q/k, grupos, cabecas v, largura v, janela da convolucao
+    if a.gpu: dk, ng, nv, dv = 128, 16, 32, 128
     inner, CH = nv * dv, 2 * ng * dk + nv * dv
-    E, He, Hs = a.experts, 32, 64
+    E, He, Hs = a.experts, 64 if a.gpu else 32, 64
     tmpl = ("{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}"
             "{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}")
     if a.template == "chatml-xml":   # chamadas de ferramenta em XML, como no template do Qwen3.6

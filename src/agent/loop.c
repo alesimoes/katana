@@ -292,7 +292,7 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     const int geo = pfx_geom(m, &ngl, &esz, &backend) && !(getenv("KATANA_PFX") && atoi(getenv("KATANA_PFX")) == 0) && !whole;
     const uint64_t key = geo ? pfx_key(m, ids.ids, ids.n, ngl, esz, backend) : 0;
     if (getenv("KATANA_RESUME_DBG")) fprintf(stderr, "[retomar: geo=%d chave=%016llx em %.2f s]\n", geo, (unsigned long long)key, now_sec() - t0);
-    if (geo && pfx_load(m, key, ids.n, ngl, esz, backend)) kv = 1;
+    if (geo && pfx_load(m, key, ids.n, ngl, esz, backend)) { kv = 1; vis_seq(m, ids.ids, ids.n, 0); }
     else {
         if (ids.n > 800) {
             fprintf(stderr, "[retomar: recalculando %d tokens (so na primeira vez; depois o cache em disco abre na hora)]\n", ids.n);
@@ -623,6 +623,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             snprintf(nl, sizeof nl, "[The user undid your file changes of an earlier request; these files are back as they were before it: %s]\n%s", undo_txt, line);
             snprintf(line, sizeof line, "%s", nl);
         }
+        vis_take(line, sizeof line);        /* imagens pedidas com --image */
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;

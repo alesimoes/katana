@@ -7,7 +7,7 @@
  * formato nativo do modelo, com os mesmos escritores do agente e do import (ChatML com chamada em XML ou JSON,
  * Gemma 4, GLM); a chamada que o modelo escreve e lida pelos mesmos leitores do agente e volta em
  * message.tool_calls, com os argumentos convertidos para o tipo declarado no schema. tool_choice required ou uma
- * funcao: o turno do assistente ja comeca com a abertura da chamada (sem gramatica). Sem imagens; n = 1.
+ * funcao: o turno do assistente ja comeca com a abertura da chamada (sem gramatica). Imagens: partes image_url com data: URI, quando ha projetor; n = 1.
  * Uma geracao por vez (srv_lock); as outras esperam na fila. */
 
 #define OA_MAX_STOP 4
@@ -57,16 +57,34 @@ static int oa_content(const char *val, Buf *out, const char **why) {
     if (!strncmp(val, "null", 4)) return 1;
     if (*val != '[') { *why = "content must be a string or a list of text parts"; return 0; }
     const char *q = val + 1, *el, *e;
+    int after_img = 0;
     while ((e = gs_elem(q, &el))) {
         if (*el == '{') {
-            char k[32], ty[32] = ""; const char *v, *q2 = el + 1, *e2, *txt = NULL;
+            char k[32], ty[32] = ""; const char *v, *q2 = el + 1, *e2, *txt = NULL, *img = NULL;
             while ((e2 = gs_member(q2, k, sizeof k, &v))) {
                 if (!strcmp(k, "type") && *v == '"') { size_t n = 0; for (const char *w = v + 1; *w && *w != '"' && n < 31; w++) ty[n++] = *w; ty[n] = 0; }
                 else if (!strcmp(k, "text") && *v == '"') txt = v;
+                else if (!strcmp(k, "image_url")) img = v;
                 q2 = e2;
             }
-            if (strcmp(ty, "text") != 0) { *why = "only text content is supported (no images or audio)"; return 0; }
-            if (txt) { if (out->n) buf_str(out, "\n"); const char *p = txt; if (!js_string(&p, out)) return 0; }
+            if (!strcmp(ty, "image_url") && img) {      /* {"url": "data:image/png;base64,..."} ou a string direto */
+                static __thread char ve[240];
+                const char *u = NULL, *v3, *q3 = img + 1, *e3; char k3[32];
+                if (*img == '"') u = img;
+                else if (*img == '{') while ((e3 = gs_member(q3, k3, sizeof k3, &v3))) { if (!strcmp(k3, "url") && *v3 == '"') u = v3; q3 = e3; }
+                if (!g_vis.on) { *why = "this model has no vision loaded (no projector file next to it)"; return 0; }
+                if (!u || strncmp(u + 1, "data:image/", 11)) { *why = "image_url must be a data: URI (data:image/png;base64,...); remote addresses are not fetched"; return 0; }
+                const char *c = strchr(u + 1, ','), *ue = gs_skipv(u);
+                if (!c || !ue || c > ue || c - u < 8 || strncmp(c - 7, ";base64", 7)) { *why = "image_url: the data: URI must be base64"; return 0; }
+                const int vk = vis_add_b64(c + 1, (size_t)(ue - 1 - (c + 1)), ve, sizeof ve);
+                if (vk < 0) { *why = ve; return 0; }
+                char mk[80]; vis_mark(vk, mk, sizeof mk);
+                buf_str(out, mk); after_img = 1;      /* o formato do modelo nao separa imagem e texto */
+                q = e;
+                continue;
+            }
+            if (strcmp(ty, "text") != 0) { *why = "only text and image_url content is supported"; return 0; }
+            if (txt) { if (out->n && !after_img) buf_str(out, "\n"); after_img = 0; const char *p = txt; if (!js_string(&p, out)) return 0; }
         } else if (*el == '"') { const char *p = el; if (!js_string(&p, out)) return 0; }
         q = e;
     }

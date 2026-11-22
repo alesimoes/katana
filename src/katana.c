@@ -24,6 +24,13 @@
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
 #include "app/console.c"               /* console (cores, Ctrl+C, comandos de barra) e conversa simples */
 #include "agent/tools.c"               /* agente: ferramentas basicas (arquivos, web, memoria, sudo, caminhos) */
+/* visao: imagens na conversa (docs/vision.md) */
+#include "vision/tensor.c"             /* algebra float32 na CPU: produto em blocos, norma, GELU, atencao (sem nada de imagem) */
+#include "vision/png.c"                /* limites, inflate, PNG e BMP */
+#include "vision/jpeg.c"               /* JPEG sequencial e progressivo; escolha do formato */
+#include "vision/resize.c"             /* tamanho pela regra de referencia, bicubico, recortes */
+#include "vision/vit.c"                /* projetor (GGUF) e codificador de imagem */
+#include "vision/image.c"              /* marcas, ids, vetores, posicoes, projetor ao lado do modelo */
 #include "agent/todo.c"                /* lista de tarefas do proprio modelo (todo) */
 #include "agent/project.c"             /* instrucoes do projeto (KATANA.md, AGENTS.md) */
 #include "agent/undo.c"                /* versao anterior dos arquivos alterados; /undo */
@@ -107,4 +114,5 @@
 #include "app/launch.c"                /* katana sem subcomando: console na pasta atual, headless (-p), install, adopt */
 #include "app/deeptest.c"              /* katana selftest --deep: caminhos, estado, contexto longo, precisao */
 #include "app/attbench.c"              /* katana attbench: custo da atencao do qwen35moe por posicao */
+#include "app/visiontest.c"            /* katana vision: cabecalho, custo, etapas para o oraculo, fuzz dos decodificadores */
 #include "app/main.c"                  /* toktest, subcomandos e main */

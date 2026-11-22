@@ -141,7 +141,7 @@ static int ah_shrink_tool(AMsg *mg) {
     return 1;
 }
 /* ---- camada 1b: o que sai do pedido atual sem usar o modelo (formato <tool_response>) ---- */
-typedef struct { int msg; size_t a, e; char name[48], key[200]; int round, drop, newest, whole, note; } AhRes;
+typedef struct { int msg; size_t a, e; char name[48], key[200]; int round, drop, newest, whole, note; size_t img; } AhRes;
 #define AH_KEEP_ROUNDS 3        /* as ultimas rodadas ficam inteiras */
 #define AH_SMALL 400            /* resultado menor que isto nao vale a pena tirar */
 /* nome e assunto (arquivo, comando, padrao) da k-esima chamada da mensagem do assistente */
@@ -254,7 +254,8 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
                 const char *n1 = bd ? strstr(bd, " since you read it") : NULL;
                 r->note = bd && bd + 1 < e && bd[1] == '[' && n1 && n1 < e && n1 - bd < 4400;
             }
-            total += r->e - r->a;
+            r->img = vis_weight(h->v[i].s + r->a, h->v[i].s + r->e);      /* imagem: pouco texto, muitos tokens */
+            total += r->e - r->a + r->img;
             q = e;
         }
     }
@@ -266,7 +267,7 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
     int out = 0;
     for (int pass = 0; pass < 4 && total > budget; pass++)
         for (int i = 0; i < nr && total > budget; i++) {
-            const size_t n = R[i].e - R[i].a;
+            const size_t n = R[i].e - R[i].a + R[i].img;
             if (R[i].drop || n < AH_SMALL || R[i].round > rounds - AH_KEEP_ROUNDS) continue;
             const int old = R[i].whole && R[i].key[0] && !R[i].newest;
             if (pass < 3 && keep_from > 0 && R[i].msg >= keep_from) continue;
@@ -483,7 +484,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
     if (!force && !g_ah_g4 && n > target && last_u < h->n) {                    /* camada 1b */
         const int tail = ah_tail(h, last_u);
         size_t bytes = 0;
-        for (int i = 0; i < h->n; i++) if (h->v[i].role == 't') bytes += strlen(h->v[i].s);
+        for (int i = 0; i < h->n; i++) if (h->v[i].role == 't') { const size_t L = strlen(h->v[i].s); bytes += L + vis_weight(h->v[i].s, h->v[i].s + L); }
         for (int i = 0; i < tail; i++) shr += ah_shrink_call(&h->v[i]);
         ah_render(h, sys, &r); buf_str(&r, pending);
         n = ah_count(m, r.p);

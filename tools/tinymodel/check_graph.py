@@ -71,10 +71,12 @@ def rms(x, w, eps):
 
 
 def rope(v, pos, freq, att=1.0):
-    """rotates the first 2*len(freq) entries (halves layout); att multiplies cos and sin"""
+    """rotates the first 2*len(freq) entries (halves layout); att multiplies cos and sin. pos may be three axes (image
+    tokens): frequency i uses axis i mod 3"""
     h = len(freq); o = list(v)
     for i, f in enumerate(freq):
-        c, s = math.cos(pos * f) * att, math.sin(pos * f) * att
+        p = pos[i % 3] if isinstance(pos, (list, tuple)) else pos
+        c, s = math.cos(p * f) * att, math.sin(p * f) * att
         o[i], o[h + i] = v[i] * c - v[h + i] * s, v[i] * s + v[h + i] * c
     return o
 
@@ -112,7 +114,8 @@ def moe(x, logits, K, exp):
     return y
 
 
-def qwen(kv, T, ids, factor):
+def qwen(kv, T, ids, factor, rows=None, pos3=None):
+    """rows: position -> ready input vector (image token); pos3: position -> (t, h, w)"""
     A = kv["general.architecture"]
     g = lambda k, d=None: kv.get(A + "." + k, d)
     dim, heads, eps = g("embedding_length"), g("attention.head_count"), g("attention.layer_norm_rms_epsilon")
@@ -120,7 +123,8 @@ def qwen(kv, T, ids, factor):
     dk, ng, nv, inner, CK = g("ssm.state_size"), g("ssm.group_count"), g("ssm.time_step_rank"), g("ssm.inner_size"), g("ssm.conv_kernel")
     dv, He, K = inner // nv, g("expert_feed_forward_length"), g("expert_used_count")
     freq, att = yarn(g("rope.freq_base"), g("rope.dimension_count"), factor, g("context_length"))
-    X = [list(T["token_embd.weight"][t]) for t in ids]
+    X = [list(rows[p] if rows and p in rows else T["token_embd.weight"][t]) for p, t in enumerate(ids)]
+    P = pos3 or list(range(len(ids)))
     for l in range(g("block_count")):
         t = lambda n: T["blk.%d.%s" % (l, n)]
         N = [rms(x, t("attn_norm.weight"), eps) for x in X]
@@ -158,11 +162,11 @@ def qwen(kv, T, ids, factor):
             for p, x in enumerate(N):
                 qg, k, v = mv(t("attn_q.weight"), x), mv(t("attn_k.weight"), x), mv(t("attn_v.weight"), x)
                 for h in range(nkv):
-                    Ks[h].append(rope(rms(k[h * hd:(h + 1) * hd], t("attn_k_norm.weight"), eps), p, freq, att))
+                    Ks[h].append(rope(rms(k[h * hd:(h + 1) * hd], t("attn_k_norm.weight"), eps), P[p], freq, att))
                     Vs[h].append(v[h * hd:(h + 1) * hd])
                 o = []
                 for h in range(heads):
-                    q = rope(rms(qg[2 * h * hd:(2 * h + 1) * hd], t("attn_q_norm.weight"), eps), p, freq, att)
+                    q = rope(rms(qg[2 * h * hd:(2 * h + 1) * hd], t("attn_q_norm.weight"), eps), P[p], freq, att)
                     r = attend(q, Ks[h * nkv // heads], Vs[h * nkv // heads], hd ** -0.5)
                     o += [a * sig(b) for a, b in zip(r, qg[(2 * h + 1) * hd:(2 * h + 2) * hd])]
                 X[p] = [a + b for a, b in zip(X[p], mv(t("attn_output.weight"), o))]

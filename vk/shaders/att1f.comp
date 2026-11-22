@@ -24,7 +24,7 @@ layout(std430, binding = 10) readonly buffer FR { float freq[]; };
 layout(std430, binding = 11) readonly buffer QN { float qn[]; };
 layout(std430, binding = 12) readonly buffer KN { float kn[]; };
 layout(std430, binding = 14) buffer PT { float part[]; };   /* [(h*nchunk + c)*(hd+2)]: o nao normalizado, maximo, soma */
-layout(std430, binding = 13) readonly buffer MT { int meta[]; };   /* meta[0] = posicao do token (muda por token) */
+layout(std430, binding = 13) readonly buffer MT { int meta[]; };   /* meta[0] = posicao do token (muda por token); meta[1] = 1: angulos prontos depois das frequencias */
 layout(push_constant) uniform P { int base, ctx, hd, kvd, group, neox, has_bias, norm, d; float scale, eps; int chunk, nchunk, nrot, qst, gate; } pc;
 shared float lm[256]; shared float lq[256]; shared float lk[256];
 void main() {
@@ -45,7 +45,7 @@ void main() {
         const int hr = pc.nrot / 2;
         int i0, i1; float cs = 1.0, sn = 0.0;
         if (pc.neox == 0) { i0 = 2 * i; i1 = i0 + 1; rope_cs(float(pos) * freq[i], cs, sn); }
-        else if (i < hr) { i0 = i; i1 = i + hr; rope_cs(float(pos) * freq[i], cs, sn); }
+        else if (i < hr) { i0 = i; i1 = i + hr; rope_cs(meta[1] != 0 ? freq[half_ + i] : float(pos) * freq[i], cs, sn); }
         else { i0 = pc.nrot + 2 * (i - hr); i1 = i0 + 1; }
         if (isk) {
             float x0 = ks_[g * hd + i0], x1 = ks_[g * hd + i1];

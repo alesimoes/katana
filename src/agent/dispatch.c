@@ -180,6 +180,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
 static void agent_tool(const char *name, const char *js, const char *end, char *out, size_t cap) {
     if (!launch_tool_allowed(name)) { snprintf(out, cap, "error: the tool %s is not allowed in this run (--allowed-tools / --disallowed-tools). Use one of the tools you were given, or tell the user what you could not do.", name); return; }
     snprintf(g_chn_tool, sizeof g_chn_tool, "%s", name);
+    g_vis.npend = 0;
     agent_tool_run(name, js, end, out, cap);
     char a[8192];
     const size_t l = (size_t)(end - js) < sizeof a - 1 ? (size_t)(end - js) : sizeof a - 1;
@@ -192,6 +193,10 @@ static void agent_tool(const char *name, const char *js, const char *end, char *
 static size_t defang(const char *src, char *dst, size_t cap) {
     size_t o = 0;
     for (const char *p = src; *p && o + 4 < cap; p++) {
+        if (*p == '<' && vis_defang_ok(p) && o + VIS_MARK_N + 4 < cap) {      /* imagem que a ferramenta entregou */
+            memcpy(dst + o, p, VIS_MARK_N); o += VIS_MARK_N; p += VIS_MARK_N - 1;
+            continue;
+        }
         if (*p == '<' && (p[1] == '|' || strncmp(p + 1, "tool_call", 9) == 0 || strncmp(p + 1, "/tool_call", 10) == 0 ||
                           strncmp(p + 1, "tool_response", 13) == 0 || strncmp(p + 1, "/tool_response", 14) == 0)) {
             dst[o++] = '<'; dst[o++] = ' ';

@@ -409,10 +409,11 @@ static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, f
     const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, ctx = c->ctx;
     const int nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
     float *q = m->q;
+    const int32_t *rp = vis_rp ? vis_rp + 3 * (size_t)pos : NULL;      /* houve imagem: tres eixos (frequencia i usa o eixo i mod 3) */
     for (int h = 0; h < nh; h++) rmsnorm(q + h * hd, qg + (size_t)h * 2 * hd, L->q_norm, hd, c->eps);
     for (int h = 0; h < c->n_kv; h++) rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps);
     for (int i = 0; i < half; i++) {
-        const float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+        const float ang = (rp ? rp[i % 3] : pos) * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
         for (int h = 0; h < nh; h++) {
             float *p = q + h * hd + i, a = p[0], b = p[half];
             p[0] = a * cs - b * sn; p[half] = a * sn + b * cs;
@@ -447,12 +448,13 @@ static void qn_core_n(Model *m, const Layer *L, int l, int pos0, int B, const fl
     if (!Q) Q = xalloc((size_t)QN_BMAX * qd, sizeof(float));
     for (int t = 0; t < B; t++) {       /* norma, RoPE e cache, como no qn_core */
         const int pos = pos0 + t;
+        const int32_t *rp = vis_rp ? vis_rp + 3 * (size_t)pos : NULL;
         float *q = Q + (size_t)t * qd, *k = KK + (size_t)t * kvd;
         const float *qg = P1 + (size_t)t * 2 * qd, *v = VV + (size_t)t * kvd;
         for (int h = 0; h < nh; h++) rmsnorm(q + h * hd, qg + (size_t)h * 2 * hd, L->q_norm, hd, c->eps);
         for (int h = 0; h < c->n_kv; h++) rmsnorm(k + h * hd, k + h * hd, L->k_norm, hd, c->eps);
         for (int i = 0; i < half; i++) {
-            const float ang = pos * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
+            const float ang = (rp ? rp[i % 3] : pos) * m->rope_freq[i], cs = cosf(ang), sn = sinf(ang);
             for (int h = 0; h < nh; h++) {
                 float *p = q + h * hd + i, a = p[0], b = p[half];
                 p[0] = a * cs - b * sn; p[half] = a * sn + b * cs;
@@ -695,7 +697,14 @@ static int vkq_build(Model *m) {
     vkg.chunk = 128 * ((actx + 128 * 32 - 1) / (128 * 32));
     vkg.nchunk = (actx + vkg.chunk - 1) / vkg.chunk;
     vkg.part = vk_wk((size_t)c->n_heads * vkg.nchunk * (c->hd + 2) * 4, &fail);
-    vkg.freq = vk_vec(m->rope_freq, c->hd / 2, &fail); vkg.onorm = vk_vec(m->out_norm, d, &fail);
+    {   /* frequencias e, depois delas, espaco para os angulos de um lote (so usado quando a conversa tem imagem) */
+        const size_t hf = (size_t)c->hd / 2, room = 512 * (size_t)(vkq.nrot / 2);
+        float *t = xalloc(hf + room, sizeof(float));
+        memcpy(t, m->rope_freq, hf * sizeof(float));
+        vkg.freq = vk_vec(t, hf + room, &fail);
+        free(t);
+    }
+    vkg.onorm = vk_vec(m->out_norm, d, &fail);
     vkg.an = xalloc(NL, sizeof(KvkBuf)); vkg.fn = xalloc(NL, sizeof(KvkBuf));
     vkg.qn = xalloc(NL, sizeof(KvkBuf)); vkg.kn = xalloc(NL, sizeof(KvkBuf));
     vkg.kc = xalloc(NL, sizeof(KvkBuf)); vkg.vc = xalloc(NL, sizeof(KvkBuf));
@@ -813,6 +822,17 @@ static void vkq_setup(Model *m) {
     fprintf(stderr, "GPU: Vulkan - grafo completo do qwen35moe (DeltaNet + atencao com portao + MoE, lote de ate %d), %.0f MB usados%s\n",
             vkb.P, gpu.used / 1048576.0, vkq.cpuatt ? ", atencao completa na CPU (cache KV na RAM)" : vkg.kv16 ? ", cache KV em 16 bits" : "");
     (void)c;
+}
+
+/* angulos do RoPE das posicoes pos0..pos0+B-1 (tres eixos) para os kernels da atencao, depois das frequencias */
+static int vkq_angles(const Model *m, int pos0, int B) {
+    if (!vkq.on || vkq.cpuatt) return 0;
+    const int half = vkq.nrot / 2;
+    static float *a; static int cap;
+    if (B * half > cap) { free(a); cap = B * half; a = xalloc((size_t)cap, sizeof(float)); }
+    for (int b = 0; b < B; b++) for (int i = 0; i < half; i++) a[b * half + i] = (float)vis_rp[3 * (size_t)(pos0 + b) + i % 3] * m->rope_freq[i];
+    if (!kvk_buf_write_q(vkg.freq, (size_t)m->cfg.hd / 2 * sizeof(float), a, (size_t)B * half * sizeof(float))) die("falha na execucao em Vulkan (angulos)");
+    return 1;
 }
 
 /* um token (vkg.x e meta ja escritos) */
@@ -1027,6 +1047,7 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
     const int d = c->dim, hd = c->hd, nh = c->n_heads, kvd = c->n_kv * hd, qd = nh * hd, NV = vkq.NV, NK = vkq.NK, inner = c->ssm_inner;
     const int Bp = (B + 63) / 64 * 64, nch = Bp / 64;
     vkq_posn = pos0;
+    if (vis_rp) vkq_angles(m, pos0, B);
     const double t0 = now_sec();
     const struct { int n; float eps; int B; } rp = { d, c->eps, B };
     for (int l = 0; l < c->n_layers; l++) {
@@ -1122,7 +1143,7 @@ static float *vk_qn_forward_n(Model *m, int B, int pos0, int want_logits) {
             const KvkBuf qb[12] = { vkb.q2, vkb.k, vkb.v, vkg.dummy, vkg.dummy, vkg.dummy, vkg.kc[l], vkg.vc[l],
                                     vkg.freq, vkq.bqg, vkg.qn[l], vkg.kn[l] };
             const struct { int base, pos0, hd, neox, has_bias, d, kvd, norm, B; float eps; int nrot, qst; } qp =
-                { 0, pos0, hd, 1, 0, qd, kvd, 2, B, c->eps, vkq.nrot, 2 * hd };
+                { 0, pos0, hd, vis_rp ? 2 : 1, 0, qd, kvd, 2, B, c->eps, vkq.nrot, 2 * hd };      /* neox 2: angulos prontos */
             ok &= kvk_dispatch(vkb.qkv, qb, 12, &qp, sizeof qp, (uint32_t)((B * (qd / 2 + kvd / 2 + kvd) + 127) / 128), 1, 1);
             const KvkBuf ab[4] = { vkb.q2, vkg.kc[l], vkg.vc[l], vkq.ub };     /* saida em fp32 (ub livre aqui) */
             const struct { int base, pos0, kvd, nkv, B; float scale; } ap = { 0, pos0, kvd, c->n_kv, B, 1.0f / sqrtf((float)hd) };

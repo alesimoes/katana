@@ -1363,7 +1363,7 @@ static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "code", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "knowledge", "import", "merge", "distill", "agentlog", "export",
         "learn", "specialize", "gradcheck", "train", "selftest", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
-        "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", "lbtest", "compare", "tiersim", "iobench", "compacttest", "codebench", "version", "update", NULL};      /* acrescente aqui os subcomandos novos */
+        "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", "lbtest", "compare", "tiersim", "iobench", "compacttest", "codebench", "version", "update", "vision", NULL};      /* acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
     return 0;
 }
@@ -1413,6 +1413,8 @@ static void main_usage(FILE *f) {
         "  katana iobench <arquivo> [bloco_KB] [leituras] [bufferizado]   leitura aleatoria do disco (threads e io_uring)\n"
         "  katana run  <modelo.gguf> \"texto\" [max_tokens] [temperatura]\n"
         "  katana chat <modelo.gguf> \"pergunta\" [max_tokens] [temperatura]\n"
+        "                                 --image ARQ (run, chat, agent): imagem na mensagem, com o projetor mmproj*.gguf ao lado do modelo\n"
+        "  katana vision info|stages|bench|fuzz ...   codificador de imagem: cabecalho, etapas, custo, teste dos decodificadores\n"
         "  katana train <modelo.gguf> <dados.jsonl> [--train padroes] [--rank R] [--experts N] [--steps N] [--lr X] [--seq T] [--out f.kspec]\n"
         "                                       especializa o modelo (grava so os tensores treinados; KATANA_SPEC=f.kspec aplica)\n"
         "  katana import <modelo.gguf> <entrada.jsonl> <saida.jsonl> [--system keep|ksess:ARQ|file:ARQ|none] [--only-known-tools]\n"
