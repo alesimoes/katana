@@ -95,4 +95,5 @@
 #include "app/curriculum.c"            /* katana curriculum: as convencoes (KATANA.md, skills, MCP) viram dados de treino */
 #include "app/catalog.c"               /* maquina, catalogo de modelos e download (hw, catalog, pull) */
 #include "app/launch.c"                /* katana sem subcomando: console na pasta atual, headless (-p), install, adopt */
+#include "app/deeptest.c"              /* katana selftest --deep: caminhos, estado, contexto longo, precisao */
 #include "app/main.c"                  /* toktest, subcomandos e main */

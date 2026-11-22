@@ -1154,6 +1154,7 @@ static int run_main(int argc, char **argv) {
         Model m; memset(&m, 0, sizeof m);
         load_model(&m, argv[2]);
         print_info(&m);
+        if (argc >= 4 && strcmp(argv[3], "--deep") == 0) return selftest_deep(&m, argc - 4, argv + 4);
         return selftest(&m);
     }
     if (argc >= 4 && strcmp(argv[1], "toktest") == 0) {     /* teste dourado do tokenizador (tools/tokref) */

@@ -241,6 +241,10 @@ static __thread XQ *xq_tls;
 #endif
 #define xq (*(xq_tls ? xq_tls : &xq0))
 static int cpu_exact;
+/* selftest --deep: ve o estado de cada (camada, posicao) e a escolha do roteador, em qualquer caminho que passe pela CPU.
+   qwen35moe: entrada normalizada do feed-forward; gemma4: residuo no fim da camada */
+static void (*layer_tap)(int l, int pos, const float *x);
+static void (*route_tap)(int l, const int *sel, const float *w, int K, int unit);
 static float *dbg_x; static int *dbg_sel, dbg_pos, dbg_on;   /* medida (KATANA_QN_DBG): residual apos o misturador [pos][camada][d] e escolhidos da CPU exata */
 
 #ifdef __AVX2__

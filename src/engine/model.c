@@ -180,7 +180,10 @@ static int key_is(const char *k, int kl, const char *s) {
 typedef struct {
     const char *name; int namelen;
     uint64_t dims[4]; uint32_t ndims, type; uint64_t offset;
+    int used;           /* alguem leu este tensor na carga */
 } TInfo;
+/* tensores do arquivo que a carga nao leu (selftest --deep) */
+static struct { char (*name)[96]; uint64_t *bytes; int n; } g_unread;
 
 typedef struct { TInfo *t; uint64_t n; const uint8_t *data, *end; } Tensors;
 
@@ -604,6 +607,7 @@ static float *get_tensor(const Tensors *ts, const char *name, size_t expect, int
     for (uint64_t i = 0; i < ts->n; i++) {
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
+        ((TInfo *)t)->used = 1;
         size_t n = 1;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
         if (n != expect) { fprintf(stderr, "Tensor %s: %zu elementos, esperava %zu\n", name, n, expect); exit(1); }
@@ -632,6 +636,7 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
         const TInfo *t = &ts->t[i];
         if (t->namelen != nl || memcmp(t->name, name, nl) != 0) continue;
         if (t->type == T_F32 || t->type == T_F16 || t->type == T_BF16) break;
+        ((TInfo *)t)->used = 1;
         size_t n = 1, stride = qbytes(t->type, cols);
         if (!stride) break;
         for (uint32_t d = 0; d < t->ndims; d++) n *= (size_t)t->dims[d];
@@ -1165,6 +1170,12 @@ static void load_model(Model *m, const char *path) {
 #undef M2
     }
     float *g4_ff = c->g4 ? get_tensor(&ts, "rope_freqs.weight", c->hd / 2, 0, np) : NULL;     /* divisores das frequencias globais */
+    g_unread.name = xalloc(n_tensors + 1, 96); g_unread.bytes = xalloc(n_tensors + 1, sizeof(uint64_t)); g_unread.n = 0;
+    for (uint64_t i = 0; i < n_tensors; i++) if (!ts.t[i].used) {
+        size_t ne = 1; for (uint32_t k = 0; k < ts.t[i].ndims; k++) ne *= (size_t)ts.t[i].dims[k];
+        snprintf(g_unread.name[g_unread.n], 96, "%.*s", ts.t[i].namelen < 95 ? ts.t[i].namelen : 95, ts.t[i].name);
+        g_unread.bytes[g_unread.n++] = qbytes(ts.t[i].type, ne);
+    }
     free(ts.t);   /* o mapeamento do arquivo continua vivo: os pesos apontam para ele */
 
     size_t ctx = c->ctx, L = c->n_layers;
