@@ -1327,7 +1327,7 @@ static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "code", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "knowledge", "import", "merge", "distill", "agentlog", "export",
         "learn", "specialize", "gradcheck", "train", "selftest", "q4check", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
-        "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", "lbtest", NULL};      /* acrescente aqui os subcomandos novos */
+        "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", "lbtest", "compare", NULL};      /* acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
     return 0;
 }

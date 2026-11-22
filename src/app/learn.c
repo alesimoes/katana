@@ -597,6 +597,10 @@ static int learn_main(const char *argv0, int argc, char **argv) {
             printf("rodada %d: treino (saida em %s)\n", r, tout);
             const int rc = lr_run(av, tout);
             free(av);
+            if (rc == 2) {        /* o treino recusou gravar: a validacao nao venceu a base (ou divergiu) */
+                fprintf(stderr, "learn: rodada %d: o treino nao venceu o modelo base na validacao e nao gravou candidato (veja %s)\n", r, tout);
+                fprintf(lg, "{\"round\": %d, \"train_refused\": true}\n", r); fflush(lg); continue;
+            }
             if (rc != 0) { fprintf(stderr, "learn: katana train falhou (veja %s)\n", tout); fprintf(lg, "{\"round\": %d, \"train_failed\": true}\n", r); fflush(lg); continue; }
         }
         char res[4096] = "null";
