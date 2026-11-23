@@ -196,6 +196,22 @@ in `src/coder/search.c`, which `coder_lookup` calls without printing).
 model saved, not about files), and a `Find` with no result tells the model to try it, in one line. Mixing the two would
 return facts as if they were code locations.
 
+**Guiding an investigation (Find as a whole).** After the BM25 score, each file score is multiplied by adjustments whose weights
+are constants at the top of `src/tools/find.c` (`FD_W_*`): README and other `.md` x0.45 and config/text files x0.72 unless the
+question talks about documentation, install or usage; test files (`test-*.mjs`, `*_test.*`, `tests/`) x0.55 unless the question
+talks about tests; a bonus for the idf-weighted share of question terms found in symbols DEFINED in the file (`sessionId`
+matches `session`), in the path, and anywhere in the file (a rare term such as the product name weighs more); a bonus for
+files in the same folder as something already shown or read in this request; a bonus for the top-level folder that holds most
+of the score of the best 12 files. `KATANA_FIND_DEBUG=1` prints the scores before and after. Per request (reset with the read
+cursor) `Find` remembers the ranges it pointed to and the ranges `Read` delivered: a candidate whose chunk is at least half seen
+is left out and listed in one `(already shown, skipped)` line, and the next candidate takes its place; a second `Find` with
+(almost) the same words says so and returns the next page. The end of the answer has `next: file:lines (calls X)` /
+`(callee X)`: callers and callees (from the coder symbol index) of the symbols that match the question, in ranges not yet
+read (`KATANA_FIND_NEXT=0` turns it off); the "linked files you have not read yet" note skips files already named there.
+`mode=refs` with a phrase (two or more words) runs a normal search with a one-line explanation; a single name with no
+definition suggests similar names from the symbol index (case and underscores, part of an identifier, edit distance).
+Output target is about 3000 characters (`FD_OUT_CHARS`, `KATANA_FIND_CHARS`).
+
 **Ranking.** BM25 per field (weights path 3, symbols 1, body 1; k1 1.2, b 0.75), a coverage bonus of 10% per distinct
 query term present in the chunk's symbols or body, file score = best chunk + 0.3 x second chunk. This is the best
 algorithm of the research bench (`tools/findbench/bench.py`: weights 3/2/1, bonus 5%) ported to C, with the symbol

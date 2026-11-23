@@ -570,7 +570,8 @@ static void fg_evidence(FdIndex *X, int src, FdHit *h, char *why, size_t cap) {
 
 /* ---- nota de vizinhos ainda nao lidos (laco do agente) ---- */
 static uint8_t *g_fg_read, *g_fg_cited; static int g_fg_setn, g_fg_notes;
-static void fg_reset(void) { if (g_fg_read) memset(g_fg_read, 0, (size_t)g_fg_setn); if (g_fg_cited) memset(g_fg_cited, 0, (size_t)g_fg_setn); g_fg_notes = 0; }
+static void fd_state_reset(void);
+static void fg_reset(void) { fd_state_reset(); if (g_fg_read) memset(g_fg_read, 0, (size_t)g_fg_setn); if (g_fg_cited) memset(g_fg_cited, 0, (size_t)g_fg_setn); g_fg_notes = 0; }
 static void fg_sets(int n) {
     if (n == g_fg_setn && g_fg_read) return;
     free(g_fg_read); free(g_fg_cited);
@@ -639,6 +640,7 @@ static void fg_neighbor_note(const char *name, const char *js, const char *end, 
         for (int e = g_fg.rp[i]; e < g_fg.rp[i + 1]; e++) {
             const int j = g_fg.dst[e];
             if (shown[j] || g_fg_read[j] || g_fg_cited[j]) continue;
+            if (isfind && strstr(result, X->f[j].rel)) continue;        /* ja esta na saida (next:, also referenced in): nao duplica */
             if (sc[j] == 0 && nc < 64) cand[nc++] = j;
             if (g_fg.w[e] > bw[j]) { bw[j] = g_fg.w[e]; from[j] = i; }
             sc[j] += g_fg.w[e];

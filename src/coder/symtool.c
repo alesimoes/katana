@@ -166,4 +166,92 @@ static int sym_find_refs(const char *root, const char *pre, const char *name, in
     free(g); free(r.r); free(d.s); sy_view_close(&v);
     return 1;
 }
+/* ---- passos seguintes do Find (grafo de simbolos) ----
+ * Dado um arquivo e uma faixa de linhas que o Find mostrou: os simbolos definidos ali (os que casam com os termos da pergunta primeiro) e,
+ * a partir deles, o que chamam (definido em outro arquivo) e quem os chama (em outro arquivo), cada um com a faixa da funcao.
+ * So usa o indice de simbolos que ja existe (o Find nao o cria). Devolve quantas entradas escreveu em out (chamados antes dos chamadores). */
+/* SyNext e declarado em tools/find.c */
+static int sym_next_steps(const char *root, const char *file, int a, int b, const char *const *terms, int nt, SyNext *out, int max) {
+    char dir[4400], man[4500]; struct stat sv; double ms; int created;
+    store_locate(root, "coder", dir, sizeof dir, 0); snprintf(man, sizeof man, "%s/MANIFEST", dir);
+    if (max <= 0 || stat(man, &sv) != 0 || sym_ensure_index(root, &ms, &created) != 0) return 0;
+    SyView v; char err[300] = "";
+    if (sy_view_open(root, &v, err, sizeof err) != 0) return 0;
+    int n = 0;
+    const size_t fl = strlen(file);
+    StoreLiveDoc *ld = v.any ? sy_lookup(&v, file, fl) : NULL;
+    if (ld && v.s[ld->seg].x.has && ld->idx < v.s[ld->seg].x.docs.n) {
+        const int seg = ld->seg; const SySec *x = &v.s[seg].x; const uint8_t *dr = store_table_at(&x->docs, ld->idx);
+        const uint32_t s0 = st_get_u32(dr), ns = st_get_u32(dr + 4), r0 = st_get_u32(dr + 8), nr = st_get_u32(dr + 12);
+        uint32_t cand[64]; int cm[64], nc = 0, anym = 0;
+        for (uint32_t k = 0; k < ns && nc < 64; k++) {
+            SySym s; sy_sym_at(&v, seg, s0 + k, &s);
+            if (((s.pack >> 16) & CSF_DECL) || (int)s.line1 < a || (int)s.line0 > b || s.nl < 4 || s.nl > 90) continue;
+            char lo[100]; for (uint32_t i = 0; i < s.nl; i++) lo[i] = (char)tolower((unsigned char)s.name[i]); lo[s.nl] = 0;
+            int m = 0; for (int t = 0; t < nt; t++) if (strlen(terms[t]) >= 4 && strstr(lo, terms[t])) m = 1;
+            cand[nc] = k; cm[nc] = m; anym |= m; nc++;
+        }
+        uint32_t pick[3]; int np = 0;
+        for (int i = 0; i < nc && np < 3; i++) if (cm[i]) pick[np++] = cand[i];      /* so simbolos que casam com a pergunta: sem eles o proximo passo seria ruido */
+        SyNext cl[24]; int ncl = 0, csc[24];
+        for (int p = 0; p < np && ncl < 24; p++) {
+            SySym D; sy_sym_at(&v, seg, s0 + pick[p], &D);
+            for (uint32_t k = 0; k < nr && ncl < 24; k++) {
+                SyRef f; sy_ref_at(&v, seg, r0 + k, &f);
+                if (f.kind != CR_CALL || f.from == SY_NONE || f.nl < 5 || f.nl > 60) continue;
+                int inside = 0; for (uint32_t q = f.from; q != SY_NONE && !inside; ) { if (q == D.rel) inside = 1; else q = st_get_u32(store_table_at(&x->syms, s0 + q) + 8); }
+                if (!inside) continue;
+                int dup = 0; for (int q = 0; q < ncl; q++) if (!strncmp(cl[q].name, f.name, f.nl) && strlen(cl[q].name) == f.nl) dup = 1;
+                if (dup) continue;
+                SySyms td = {0}; sy_defs_of(&v, f.name, f.nl, &td); int tn = 0, best = -1;
+                for (int q = 0; q < td.n; q++) if (!((td.s[q].pack >> 16) & CSF_DECL)) { tn++; if (best < 0 || (td.s[best].plen == fl && !memcmp(td.s[best].path, file, fl))) best = q; }
+                if (tn >= 1 && tn <= 3) {
+                    const SySym *T = &td.s[best]; const int self = T->plen == fl && !memcmp(T->path, file, fl);
+                    if (!(self && (int)T->line0 >= a && (int)T->line0 <= b)) {
+                        SyNext *e = &cl[ncl]; snprintf(e->path, sizeof e->path, "%.*s", (int)T->plen, T->path); e->l0 = (int)T->line0; e->l1 = (int)T->line1; e->callee = 1;
+                        snprintf(e->name, sizeof e->name, "%.*s", (int)f.nl, f.name);
+                        char lo[64]; for (uint32_t i = 0; i < f.nl; i++) lo[i] = (char)tolower((unsigned char)f.name[i]); lo[f.nl] = 0;
+                        int m = 0; for (int t = 0; t < nt; t++) if (strlen(terms[t]) >= 4 && strstr(lo, terms[t])) m = 1;
+                        int multi = 0; for (uint32_t i = 1; i < f.nl; i++) if (lo[i] == '_' || (islower((unsigned char)f.name[i - 1]) && isupper((unsigned char)f.name[i]))) multi = 1;
+                        if (m || multi) { csc[ncl] = (m ? 2 : 0) + (self ? 0 : 1) - (T->line1 - T->line0 > 150 ? 1 : 0); ncl++; }      /* nomes soltos (format, request) sao ruido */
+                    }
+                }
+                free(td.s);
+            }
+        }
+        for (int i = 0; i < ncl; i++) for (int j = i + 1; j < ncl; j++) if (csc[j] > csc[i]) { SyNext t = cl[i]; cl[i] = cl[j]; cl[j] = t; int u = csc[i]; csc[i] = csc[j]; csc[j] = u; }
+        for (int i = 0; i < ncl && n < max; i++) out[n++] = cl[i];
+        /* chamadores (em outros arquivos): a funcao que contem a chamada */
+        for (int p = 0; p < np && n < max; p++) {
+            SySym D; sy_sym_at(&v, seg, s0 + pick[p], &D);
+            SyRefs r = {0}; sy_refs_of(&v, D.name, D.nl, 1u << CR_CALL, &r);
+            for (int i = 0; i < r.n && n < max; i++) {
+                const SyRef *f = &r.r[i];
+                if (f->plen == fl && !memcmp(f->path, file, fl)) continue;
+                int l0 = (int)f->line, l1 = (int)f->line + 20;
+                if (f->from != SY_NONE) { SySym e; sy_sym_at(&v, f->seg, st_get_u32(store_table_at(&v.s[f->seg].x.docs, f->doc)) + f->from, &e); l0 = (int)e.line0; l1 = (int)e.line1; }
+                int dup = 0; for (int q = 0; q < n; q++) if (!out[q].callee && strlen(out[q].path) == f->plen && !memcmp(out[q].path, f->path, f->plen) && out[q].l0 == l0) dup = 1;
+                if (dup) continue;
+                SyNext *e = &out[n++]; snprintf(e->path, sizeof e->path, "%.*s", (int)f->plen, f->path); e->l0 = l0; e->l1 = l1; e->callee = 0;
+                snprintf(e->name, sizeof e->name, "%.*s", (int)(D.nl < 60 ? D.nl : 60), D.name);
+            }
+            free(r.r);
+        }
+    }
+    sy_view_close(&v);
+    return n;
+}
+/* nomes parecidos com name no indice de simbolos (cascata: caixa e sublinhados, parte de um identificador, distancia de edicao); devolve quantos */
+static int sym_similar(const char *root, const char *name, char out[][100], int max) {
+    char dir[4400], man[4500]; struct stat sv; double ms; int created;
+    store_locate(root, "coder", dir, sizeof dir, 0); snprintf(man, sizeof man, "%s/MANIFEST", dir);
+    if (max <= 0 || stat(man, &sv) != 0 || sym_ensure_index(root, &ms, &created) != 0) return 0;
+    SyView v; char err[300] = "";
+    if (sy_view_open(root, &v, err, sizeof err) != 0) return 0;
+    int n = 0;
+    if (v.any) { SyCand c[8]; int step = 0; const int nc = sy_cascade(&v, name, 1, c, 8, &step);
+        for (int i = 0; i < nc && n < max; i++) if (strcmp(c[i].name, name) != 0) { snprintf(out[n], 100, "%s", c[i].name); n++; } }
+    sy_view_close(&v);
+    return n;
+}
 #endif

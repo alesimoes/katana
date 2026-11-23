@@ -140,7 +140,29 @@ static int g_ct_seen_n;
 #define RC_MAX 64
 typedef struct { char path[1024]; long long size, mt, cov_end, last_off, total; } RdCur;
 static RdCur g_rc[RC_MAX]; static int g_rc_n;
-static void rc_reset(void) { g_rc_n = 0; }
+/* ---- faixas de linhas ja entregues ao modelo neste pedido (lidas pelo Read ou apontadas pelo Find): o Find nao repete o mesmo trecho e
+ * prefere o que ainda nao foi visto. how: 1 mostrado pelo Find, 2 lido pelo Read. Zera junto com o cursor de leitura. ---- */
+#define RS_MAX 256
+typedef struct { char path[1024]; int a, b, how; } RdSeen;
+static RdSeen g_rs[RS_MAX]; static int g_rs_n;
+static void rs_note(const char *abs, long long a, long long b, int how) {
+    if (!abs || strlen(abs) >= sizeof g_rs[0].path || a < 1 || b < a) return;
+    for (int i = 0; i < g_rs_n; i++) if (g_rs[i].a == a && g_rs[i].b == b && !strcmp(g_rs[i].path, abs)) { g_rs[i].how |= how; return; }
+    if (g_rs_n == RS_MAX) { memmove(g_rs, g_rs + 1, sizeof(RdSeen) * (RS_MAX - 1)); g_rs_n--; }
+    RdSeen *r = &g_rs[g_rs_n++]; snprintf(r->path, sizeof r->path, "%s", abs); r->a = (int)a; r->b = (int)(b > 1000000000 ? 1000000000 : b); r->how = how;
+}
+/* quantas linhas de [a, b] do arquivo ja foram entregues; *how recebe a uniao dos tipos */
+static int rs_cover(const char *abs, int a, int b, int *how) {
+    int n = 0; if (how) *how = 0;
+    if (b - a > 4000) b = a + 4000;
+    for (int ln = a; ln <= b; ln++) {
+        int c = 0;
+        for (int i = 0; i < g_rs_n && !c; i++) if (g_rs[i].a <= ln && ln <= g_rs[i].b && !strcmp(g_rs[i].path, abs)) { c = 1; if (how) *how |= g_rs[i].how; }
+        n += c;
+    }
+    return n;
+}
+static void rc_reset(void) { g_rc_n = 0; g_rs_n = 0; }
 static int rc_on(void) { const char *e = getenv("KATANA_READ_CURSOR"); return !(e && atoi(e) == 0); }
 static RdCur *rc_find(const char *abs, long long size, long long mt) {
     for (int i = 0; i < g_rc_n; i++) if (!strcmp(g_rc[i].path, abs)) {
@@ -151,6 +173,7 @@ static RdCur *rc_find(const char *abs, long long size, long long mt) {
 }
 /* registra que as linhas [first, last] de um arquivo de total linhas foram entregues */
 static void rc_note(const char *abs, long long size, long long mt, long long first, long long last, long long total) {
+    rs_note(abs, first, last, 2);
     if (strlen(abs) >= sizeof g_rc[0].path) return;
     RdCur *c = rc_find(abs, size, mt);
     if (!c) {

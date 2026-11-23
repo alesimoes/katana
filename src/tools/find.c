@@ -41,6 +41,22 @@ static int coder_lookup(const char *root, const char *query, int concept, int li
 #define FD_MAXBYTES 300000
 #define FD_TERM_MAX (1 << 22)       /* ids de termo cabem em 22 bits (termo<<10 | campo<<8 | tf) */
 
+/* ---- pesos do ajuste do ranking por pergunta (multiplicam a nota do arquivo depois do BM25; 1.0 = sem efeito) ----
+ * A ideia: numa pergunta de comportamento ("como/onde/por que ...") quem implementa ganha de quem so descreve ou testa. */
+#define FD_W_DOC 0.45       /* README e outros .md: nota x isto, a menos que a pergunta fale de documentacao, instalacao ou uso */
+#define FD_W_CFG 0.72       /* arquivos de texto/configuracao sem codigo (.txt, .json, .yml, .xml, .toml): mesma regra, mais leve */
+#define FD_W_TEST 0.55      /* arquivos de teste (test-*.mjs, *_test.*, pasta tests): nota x isto, a menos que a pergunta fale de teste */
+#define FD_W_SYMDEF 0.60    /* bonus por arquivo: fracao (pesada por idf) dos termos da pergunta que casam com nomes DEFINIDOS nele (sessionId casa session) */
+#define FD_W_PATH 0.40      /* bonus por arquivo: fracao (pesada por idf) dos termos da pergunta que aparecem no caminho (pasta, nome do arquivo) */
+#define FD_W_COVER 0.90     /* bonus por arquivo: fracao (pesada por idf) dos termos da pergunta que aparecem em ALGUM lugar do arquivo; o termo raro da pergunta pesa mais */
+#define FD_W_NEAR 0.25      /* bonus para arquivos na mesma pasta de algo que o modelo ja viu neste pedido (Find apontou ou Read leu) */
+#define FD_W_CLUSTER 0.20   /* bonus pela pasta de topo que concentra a maior parte da nota dos 12 melhores (o contexto da pergunta: nao misturar projetos) */
+#define FD_OUT_CHARS 3000   /* tamanho alvo da saida do Find (caracteres, cerca de 900 tokens); KATANA_FIND_CHARS muda */
+#define FD_HITS_MAX 24      /* candidatos pedidos ao ranking quando ha estado do pedido (para poder pular o que ja foi visto) */
+
+typedef struct { char path[300]; int l0, l1; char name[64]; int callee; } SyNext;
+static int sym_next_steps(const char *root, const char *file, int a, int b, const char *const *terms, int nt, SyNext *out, int max);      /* coder/symtool.c */
+static int sym_similar(const char *root, const char *name, char out[][100], int max);                                                   /* coder/symtool.c */
 /* findgraph.c (incluido depois deste arquivo) */
 struct FdIndexS;
 typedef struct { int file, chunk; double score; } FdHit;
@@ -763,7 +779,7 @@ static int fd_update(FdIndex *X, const char *root, char *err, size_t ecap) {
 /* ---- parametros do ranking (KATANA_FIND_TUNE="wp=3,ws=2,..."; so para pesquisa) ---- */
 typedef struct { double wp, ws, wb, k1, b, cover, agg, idw, symb, docpen; } FdTune;
 static FdTune fd_tune(void) {
-    FdTune t = {3, 1, 1, 1.2, 0.75, 0.1, 0.3, 1.0, 0.0, 1.0};      /* medido: ws=1 e cover=0.1 >= o bench em Python nos 3 repositorios */
+    FdTune t = {3, 1, 1, 1.2, 0.75, 0.1, 0.3, 1.0, 0.0, FD_W_DOC};      /* medido: ws=1 e cover=0.1 >= o bench em Python nos 3 repositorios */
     const char *e = getenv("KATANA_FIND_TUNE");
     while (e && *e) {
         char k[16]; double v; int used = 0;
@@ -837,6 +853,56 @@ static int fd_in_path(const char *rel, const char *pre) {
     return strncmp(rel, pre, l) == 0 && (rel[l] == '/' || rel[l] == 0);
 }
 static int fd_is_doc(int kind) { return kind == FK_MD || kind == FK_OTHER; }
+
+/* ---- tipo da pergunta e estado do pedido ---- */
+/* bit 1: a pergunta fala de documentacao, instalacao ou uso (README vale); bit 2: fala de teste (arquivos de teste valem) */
+static int fd_qflags(const char *query) {
+    static const char *const dw[] = {"readme", "doc", "docs", "documentation", "documentacao", "documento", "documentos", "install", "instalar", "instalacao",
+        "setup", "usage", "usar", "uso", "guide", "guia", "tutorial", "manual", "changelog", "license", "licenca", "wiki", NULL};
+    static const char *const tw[] = {"test", "tests", "teste", "testes", "spec", "specs", "unittest", "pytest", "jest", NULL};
+    const size_t ql = strlen(query); char *f = (char *)malloc(ql + 1); const size_t m = fd_fold(query, ql, f);
+    int r = 0;
+    for (size_t i = 0; i < m; ) {
+        if (!isalnum((unsigned char)f[i])) { i++; continue; }
+        size_t j = i; char w[24]; int l = 0;
+        while (j < m && isalnum((unsigned char)f[j])) { if (l < 23) w[l++] = (char)tolower((unsigned char)f[j]); j++; }
+        w[l] = 0; i = j;
+        for (int k = 0; dw[k]; k++) if (!strcmp(dw[k], w)) r |= 1;
+        for (int k = 0; tw[k]; k++) if (!strcmp(tw[k], w)) r |= 2;
+    }
+    free(f);
+    return r;
+}
+static int fd_is_test(const char *rel) {
+    const char *b = strrchr(rel, '/'); const char *base = b ? b + 1 : rel;
+    for (const char *p = rel; p < base; ) {          /* pasta chamada test/tests/spec... ou terminada em test(s) */
+        const char *sl = strchr(p, '/'); if (!sl || sl >= base) break;
+        const size_t l = (size_t)(sl - p);
+        if ((l >= 4 && (!strncasecmp(p, "test", 4) || !strncasecmp(p + l - 4, "test", 4))) || (l >= 5 && !strncasecmp(p + l - 5, "tests", 5)) || (l == 4 && !strncasecmp(p, "spec", 4)) || (l == 5 && !strncasecmp(p, "specs", 5)) || (l == 9 && !strncasecmp(p, "__tests__", 9))) return 1;
+        p = sl + 1;
+    }
+    char stem[200]; size_t bl = strlen(base); if (bl >= sizeof stem) bl = sizeof stem - 1;
+    memcpy(stem, base, bl); stem[bl] = 0;
+    for (size_t i = 0; i < bl; i++) stem[i] = (char)tolower((unsigned char)stem[i]);
+    if (!strncmp(stem, "test_", 5) || !strncmp(stem, "test-", 5) || !strncmp(stem, "test.", 5)) return 1;
+    if (strstr(stem, ".test.") || strstr(stem, ".spec.") || strstr(stem, "_test.") || strstr(stem, "_spec.") || strstr(stem, "-test.") || strstr(stem, "tests.")) return 1;
+    char *d = strrchr(stem, '.'); if (d) *d = 0;
+    const size_t sl2 = strlen(stem);
+    return (sl2 > 4 && !strcmp(stem + sl2 - 4, "test")) || (sl2 > 5 && !strcmp(stem + sl2 - 5, "tests"));
+}
+/* ultima busca do pedido (termos e pasta): uma busca com os mesmos termos devolve a pagina seguinte de candidatos (o que ja foi mostrado e pulado) */
+static uint32_t g_fd_lq[64]; static int g_fd_lqn; static char g_fd_lpre[512]; static char g_fd_lastq[400];
+static void fd_state_reset(void) { g_fd_lqn = 0; g_fd_lpre[0] = 0; }
+static int fd_same_query(const uint32_t *qid, int nq, const char *pre) {
+    if (!g_fd_lqn || !nq || strcmp(g_fd_lpre, pre) != 0) return 0;
+    int common = 0;
+    for (int i = 0; i < nq; i++) for (int j = 0; j < g_fd_lqn; j++) if (qid[i] == g_fd_lq[j]) { common++; break; }
+    const int uni = nq + g_fd_lqn - common;
+    return uni > 0 && common * 4 >= uni * 3;           /* termos em comum >= 75% da uniao */
+}
+static void fd_remember_query(const uint32_t *qid, int nq, const char *pre) {
+    g_fd_lqn = nq < 64 ? nq : 64; memcpy(g_fd_lq, qid, sizeof(uint32_t) * (size_t)g_fd_lqn); snprintf(g_fd_lpre, sizeof g_fd_lpre, "%s", pre);
+}
 
 /* ---- busca ---- */
 static int fd_cmp_hit(const void *a, const void *b) {
@@ -920,15 +986,69 @@ static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, 
         if (s > best[fi]) { second[fi] = best[fi]; best[fi] = s; bc[fi] = c; }
         else if (s > second[fi]) second[fi] = s;
     }
-    int idlike = 0; for (int q = 0; q < n; q++) if (qw[q] > 1.0) idlike = 1;
+    /* ajustes por pergunta: documentacao e teste valem menos; simbolos definidos, caminho, pasta ja vista e a pasta dominante valem mais */
+    const int qf = fd_qflags(query);
+    double idfq[64], idfsum = 0;
+    for (int q = 0; q < n; q++) {
+        const int t = (int)qid[q]; int df = 0;
+        for (int f = 0; f < 3; f++) { const int d = X->poff[f][t + 1] - X->poff[f][t]; if (d > df) df = d; }
+        idfq[q] = df ? log(1 + (X->nc - df + 0.5) / (df + 0.5)) : 0; idfsum += idfq[q];
+    }
+    double *pw = (double *)calloc((size_t)X->nf, sizeof(double)), *sw = (double *)calloc((size_t)X->nf, sizeof(double)), *cw = (double *)calloc((size_t)X->nf, sizeof(double));
+    int *lp = (int *)malloc(sizeof(int) * (size_t)X->nf), *ls = (int *)malloc(sizeof(int) * (size_t)X->nf), *lc = (int *)malloc(sizeof(int) * (size_t)X->nf);
+    for (int i = 0; i < X->nf; i++) lp[i] = ls[i] = lc[i] = -1;
+    for (int q = 0; q < n; q++) {
+        const int t = (int)qid[q];
+        for (int f = 0; f < 3; f++) {
+            int *last = f == 2 ? lc : f ? ls : lp; double *acc = f == 2 ? cw : f ? sw : pw;
+            for (int i = X->poff[f][t]; i < X->poff[f][t + 1]; i++) { const int fi = X->cf[X->pch[f][i]]; if (last[fi] != q) { last[fi] = q; acc[fi] += idfq[q]; } }
+        }
+    }
+    free(lp); free(ls); free(lc);
+    char sdirs[32][512]; int nsd = 0;       /* pastas (relativas a raiz) do que o modelo ja viu neste pedido */
+    { const size_t rl = strlen(X->root);
+      for (int i = 0; i < g_rs_n && nsd < 32; i++) {
+          if (strncmp(g_rs[i].path, X->root, rl) != 0 || g_rs[i].path[rl] != '/') continue;
+          const char *rel = g_rs[i].path + rl + 1, *sl = strrchr(rel, '/'); const size_t dl = sl ? (size_t)(sl - rel) : 0;
+          if (dl >= sizeof sdirs[0]) continue;
+          int dup = 0; for (int q = 0; q < nsd; q++) if (strlen(sdirs[q]) == dl && !strncmp(sdirs[q], rel, dl)) dup = 1;
+          if (!dup) { memcpy(sdirs[nsd], rel, dl); sdirs[nsd][dl] = 0; nsd++; }
+      } }
     FdHit *all = (FdHit *)malloc(sizeof(FdHit) * (size_t)(X->nf + 1)); int na = 0;
+    const int dbg = getenv("KATANA_FIND_DEBUG") != NULL;       /* pesquisa: notas por arquivo antes e depois dos ajustes */
+    double g_fd_dbgmax = 0; for (int fi = 0; fi < X->nf; fi++) if (best[fi] > g_fd_dbgmax) g_fd_dbgmax = best[fi];
     for (int fi = 0; fi < X->nf; fi++) {
         if (best[fi] <= 0 || !fd_in_path(X->f[fi].rel, pre)) continue;
         double s = best[fi] + tu.agg * second[fi];
-        if (idlike && tu.docpen != 1.0 && fd_is_doc(X->f[fi].kind)) s *= tu.docpen;
+        const double s0 = s;
+        const char *rel = X->f[fi].rel;
+        if (!(qf & 1)) { if (X->f[fi].kind == FK_MD) s *= tu.docpen; else if (X->f[fi].kind == FK_OTHER) s *= FD_W_CFG; }
+        if (!(qf & 2) && fd_is_test(rel)) s *= FD_W_TEST;
+        if (idfsum > 0) { s *= 1 + FD_W_SYMDEF * (sw[fi] / idfsum); s *= 1 + FD_W_PATH * (pw[fi] / idfsum); s *= 1 + FD_W_COVER * (cw[fi] / idfsum); }
+        if (nsd) { const char *sl = strrchr(rel, '/'); const size_t dl = sl ? (size_t)(sl - rel) : 0;
+            for (int q = 0; q < nsd; q++) if (strlen(sdirs[q]) == dl && !strncmp(sdirs[q], rel, dl)) { s *= 1 + FD_W_NEAR; break; } }
+        if (dbg && s0 > 0.3 * g_fd_dbgmax) fprintf(stderr, "find-debug: %-60.60s bm25 %.2f -> %.2f (sym %.2f path %.2f cover %.2f)\n", rel, s0, s, idfsum > 0 ? sw[fi] / idfsum : 0, idfsum > 0 ? pw[fi] / idfsum : 0, idfsum > 0 ? cw[fi] / idfsum : 0);
         all[na].file = fi; all[na].chunk = bc[fi]; all[na].score = s; na++;
     }
+    free(pw); free(sw); free(cw);
     qsort(all, (size_t)na, sizeof(FdHit), fd_cmp_hit);
+    if (na > 1) {       /* a pasta de topo que concentra a nota dos 12 melhores (sem documentos) puxa os arquivos dela */
+        char top[12][80]; double mass[12]; int nt2 = 0; double tot = 0;
+        for (int i = 0; i < na && i < 12; i++) {
+            const char *rel = X->f[all[i].file].rel; if (fd_is_doc(X->f[all[i].file].kind)) continue;
+            const char *sl = strchr(rel, '/'); const size_t dl = sl ? (size_t)(sl - rel) : 0;
+            int at = -1; for (int q = 0; q < nt2; q++) if (strlen(top[q]) == dl && !strncmp(top[q], rel, dl)) at = q;
+            if (at < 0 && nt2 < 12 && dl < 80) { memcpy(top[nt2], rel, dl); top[nt2][dl] = 0; mass[nt2] = 0; at = nt2++; }
+            if (at >= 0) { mass[at] += all[i].score; tot += all[i].score; }
+        }
+        if (tot > 0) {
+            for (int i = 0; i < na; i++) {
+                const char *rel = X->f[all[i].file].rel; const char *sl = strchr(rel, '/'); const size_t dl = sl ? (size_t)(sl - rel) : 0;
+                for (int q = 0; q < nt2; q++) if (strlen(top[q]) == dl && !strncmp(top[q], rel, dl)) { all[i].score *= 1 + FD_W_CLUSTER * mass[q] / tot; break; }
+            }
+            qsort(all, (size_t)na, sizeof(FdHit), fd_cmp_hit);
+        }
+    }
     int r;
     for (int i = 0; i < k; i++) esrc[i] = -1;
     if (na && fg_act_on() && fg_ensure(X)) r = fg_activate(X, all, na, pre, k, hits, esrc);      /* ativacao esparsa sobre o grafo de arquivos */
@@ -996,7 +1116,7 @@ static void fd_calls(FdIndex *X, int fi, int a, int b, const FdText *t, const in
         for (int i = 0; i < ll; ) {
             if (!(isalpha((unsigned char)s[i]) || s[i] == '_') || (i > 0 && fd_isid((unsigned char)s[i - 1]))) { i++; continue; }
             const int l = fd_idlen(s + i, s + ll, FK_OTHER);
-            if (l < 5) { i += l ? l : 1; continue; }
+            if (l < 5 || (l > 2 && s[i + l - 2] == '_' && s[i + l - 1] == 't')) { i += l ? l : 1; continue; }      /* curtos e tipos como uint64_t: ruido */
             const int id = fd_term(&X->T, s + i, l, 0);
             int multi = 0; for (int z = 1; z < l; z++) if (s[i + z] == '_' || (islower((unsigned char)s[i + z - 1]) && isupper((unsigned char)s[i + z]))) multi = 1;
             const char nx = i + l < ll ? s[i + l] : 0;
@@ -1054,7 +1174,23 @@ static void fd_refs(FdIndex *X, const char *query, const char *pre, int limit, C
             if (fd_text(X, fi, &t)) { const char *ln = fd_line(&t, X->sl[s], &ll); fd_put_line(sb, ln, ll, 110); fd_text_free(&t); }
             ct_sb_puts(sb, "\n");
         }
-    } else { snprintf(hd, sizeof hd, "No definition of %s found in the index (it may come from a library, or be spelled differently).\n", name); ct_sb_puts(sb, hd); }
+    } else {
+        snprintf(hd, sizeof hd, "No definition of %s found in the index (it may come from a library, or be spelled differently).\n", name); ct_sb_puts(sb, hd);
+        /* nomes parecidos: primeiro a cascata do indice de simbolos (caixa, parte de identificador, distancia de edicao); sem ele, o indice do Find */
+        char sim[6][100]; int ns = sym_similar(X->root, name, sim, 5);
+        if (!ns) {
+            char lq[256]; for (int i = 0; i <= l; i++) lq[i] = (char)tolower((unsigned char)name[i]);
+            for (int s = 0; s < X->ns && ns < 5; s++) {
+                const char *nm = fd_tstr(&X->T, X->sn[s]); const int nl = (int)strlen(nm);
+                if (nl < 4 || nl > 90 || X->f[X->sf[s]].kind == FK_MD || !fd_in_path(X->f[X->sf[s]].rel, pre)) continue;
+                char ln2[100]; for (int i = 0; i <= nl; i++) ln2[i] = (char)tolower((unsigned char)nm[i]);
+                if (!strcmp(ln2, lq) || !(strstr(ln2, lq) || (l >= 5 && nl >= 5 && strstr(lq, ln2)))) continue;
+                int dup = 0; for (int q = 0; q < ns; q++) if (!strcmp(sim[q], nm)) dup = 1;
+                if (!dup) snprintf(sim[ns++], 100, "%s", nm);
+            }
+        }
+        if (ns) { ct_sb_puts(sb, "Similar names in the index: "); for (int i = 0; i < ns; i++) { if (i) ct_sb_puts(sb, ", "); ct_sb_puts(sb, sim[i]); } ct_sb_puts(sb, ". Try Find mode=refs on one of them.\n"); }
+    }
     /* usos: arquivos com o termo inteiro no corpo, conferidos palavra a palavra */
     const int key = fd_key(X, name, l);
     if (key < 0) { ct_sb_puts(sb, "No uses found.\n"); return; }
@@ -1160,7 +1296,7 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
         for (int i = 0; i < want; i++) for (int j = i + 1; j < want; j++) if (best[j] && (!best[i] || best[j] < best[i])) { int x = best[i]; best[i] = best[j]; best[j] = x; }
         int w0 = 0, w1 = 0;       /* trecho em torno da melhor linha (so os 2 primeiros resultados, de codigo) */
         if (top && rank <= 2 && budget >= 200 && X->f[fi].kind != FK_MD && X->f[fi].kind != FK_OTHER) {
-            w0 = top - 3 < a ? a : top - 3; w1 = top + 8 > b ? b : top + 8;
+            w0 = top - 2 < a ? a : top - 2; w1 = top + 6 > b ? b : top + 6;
             if (w1 > t.ls.n) w1 = t.ls.n;
             if (w1 - w0 < 2) w0 = w1 = 0;
         }
@@ -1320,6 +1456,51 @@ static int fd_refs_sym(const char *query, const char *root, const char *pre, int
     if (t.p) ct_sb_puts(sb, t.p);
     free(t.p); return 1;
 }
+/* "next: arquivo:linhas (porque)": o que consultar depois, a partir do grafo de simbolos (chamados e chamadores dos simbolos que casam), em trechos que o modelo
+ * ainda nao leu e que nao estao na lista de candidatos. KATANA_FIND_NEXT=0 desliga. h = candidatos mostrados; all = todos os do ranking (para nao repetir) */
+static void fd_next_steps(FdIndex *X, const char *root, const char *pre, const FdHit *h, int nh, const FdHit *all, int nall, const uint32_t *qid, int nq, CtSb *sb) {
+    const char *e = getenv("KATANA_FIND_NEXT"); if (e && *e == '0') return;
+    if (!nh) return;
+    const char *terms[64]; if (nq > 64) nq = 64;
+    for (int i = 0; i < nq; i++) terms[i] = fd_tstr(&X->T, (int)qid[i]);
+    SyNext cal[12], cer[12]; int ncal = 0, ncer = 0;
+    for (int i = 0; i < nh && i < 3; i++) {
+        SyNext t[8]; const int m = sym_next_steps(root, X->f[h[i].file].rel, X->ca[h[i].chunk], X->cb[h[i].chunk], terms, nq, t, 6);
+        for (int j = 0; j < m; j++) {
+            SyNext *x = &t[j];
+            if (!fd_listed(X, x->path) || !fd_in_path(x->path, pre) || (!(fd_qflags(g_fd_lastq) & 2) && fd_is_test(x->path))) continue;
+            char abs[8400]; snprintf(abs, sizeof abs, "%s/%s", X->root, x->path);
+            if (x->l1 - x->l0 > 59) x->l1 = x->l0 + 59;
+            if (x->l1 < x->l0) x->l1 = x->l0;
+            if (rs_cover(abs, x->l0, x->l1, NULL) * 2 >= x->l1 - x->l0 + 1) continue;       /* ja lido ou mostrado */
+            int dup = 0;
+            for (int k = 0; k < nall && !dup; k++) if (!strcmp(X->f[all[k].file].rel, x->path) && X->ca[all[k].chunk] <= x->l1 && X->cb[all[k].chunk] >= x->l0) dup = 1;
+            SyNext *arr = x->callee ? cer : cal; int *cn = x->callee ? &ncer : &ncal;
+            for (int k = 0; k < *cn && !dup; k++) if (!strcmp(arr[k].path, x->path) && arr[k].l0 == x->l0) dup = 1;
+            if (!dup && *cn < 12) arr[(*cn)++] = *x;
+        }
+    }
+    SyNext pick[3]; int np = 0, ia = 0, ib = 0;
+    while (np < 3 && (ia < ncer || ib < ncal)) {           /* alterna: um chamado, um chamador */
+        if (ia < ncer && (np % 2 == 0 || ib >= ncal)) { pick[np++] = cer[ia++]; continue; }
+        if (ib < ncal) pick[np++] = cal[ib++];
+    }
+    for (int i = 0; i < np; i++) for (int j = i + 1; j < np; j++) if (!strcmp(pick[i].path, pick[j].path) && pick[i].l0 == pick[j].l0) { pick[j] = pick[--np]; j--; }
+    if (!np) return;
+    ct_sb_puts(sb, "next: ");
+    for (int i = 0; i < np; i++) {
+        char m[500]; snprintf(m, sizeof m, "%s%s:%d-%d (%s %s)", i ? ", " : "", pick[i].path, pick[i].l0, pick[i].l1, pick[i].callee ? "callee" : "calls", pick[i].name);
+        ct_sb_puts(sb, m);
+    }
+    ct_sb_puts(sb, "\n");
+}
+/* mode=refs recebeu uma frase (duas ou mais palavras): nao e um nome */
+static int fd_is_phrase(const char *q) {
+    while (*q == ' ' || *q == '\t' || *q == '"' || *q == '\'') q++;
+    size_t n = strlen(q); while (n && (q[n - 1] == ' ' || q[n - 1] == '\t' || q[n - 1] == '\n' || q[n - 1] == '"' || q[n - 1] == '\'')) n--;
+    for (size_t i = 0; i < n; i++) if (q[i] == ' ' || q[i] == '\t') return 1;
+    return 0;
+}
 static void ct_findtool(const char *js, const char *end, char *out, size_t cap) {
     if (cap < 300) { if (cap) out[0] = 0; return; }
     g_fd_verbose = getenv("KATANA_FIND_TIME") != NULL;
@@ -1328,9 +1509,11 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
     long long lim = ct_int(js, end, "limit", 6);
     if (lim < 1) lim = 1;
     if (lim > 12) lim = 12;
-    const int refs = mode && !strcmp(mode, "refs");
+    int refs = mode && !strcmp(mode, "refs");
+    int phrase = 0;
+    if (refs && q && *q && fd_is_phrase(q)) { refs = 0; phrase = 1; }       /* mode=refs quer um nome; uma frase vira busca por significado */
     const int nbr = mode && !strcmp(mode, "neighbors");      /* pesquisa/teste, nao anunciado: a nota de vizinhos que o laco poria depois de um Read de `query` */
-    if (mode && *mode && !refs && !nbr && strcmp(mode, "search") != 0) { snprintf(out, cap, "error: unknown mode \"%s\". Use \"search\" (default) or \"refs\".", mode); goto done; }
+    if (mode && *mode && !refs && !phrase && !nbr && strcmp(mode, "search") != 0) { snprintf(out, cap, "error: unknown mode \"%s\". Use \"search\" (default) or \"refs\".", mode); goto done; }
     if (q && *q && !refs && !nbr) snprintf(g_intent_find, sizeof g_intent_find, "%s", q);      /* o Read seguinte mostra o trecho que casa com isto */
     if (!q || !*q) { snprintf(out, cap, "error: missing `query`. Example: {\"query\": \"where the config file is parsed\"} or {\"query\": \"parseConfig\", \"mode\": \"refs\"}"); goto done; }
     if ((!path || !*path) && ct_cwd_is_home()) {
@@ -1371,8 +1554,22 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
         }
         if (refs) { if (!fd_refs_sym(q, root, pre, (int)lim, &sb)) fd_refs(X, q, pre, (int)lim, &sb); }
         else {
-            FdHit hits[12]; uint32_t qid[64]; int nq = 0, esrc[12];
-            const int nh = fd_rank(X, q, pre, hits, (int)lim, qid, &nq, esrc);
+            FdHit hits[FD_HITS_MAX], sh[12], sk[12]; uint32_t qid[64]; int nq = 0, esrc[FD_HITS_MAX], ses[12];
+            if (phrase) ct_sb_puts(&sb, "(mode=refs wants one name; searched by meaning instead)\n");
+            /* com estado do pedido (ja houve leitura ou busca) pede-se mais candidatos, para pular os que o modelo ja viu */
+            const int want = (g_rs_n || g_fd_lqn) ? FD_HITS_MAX : (int)lim;
+            const int nh = fd_rank(X, q, pre, hits, want, qid, &nq, esrc);
+            const int repeat = nq && fd_same_query(qid, nq, pre);
+            snprintf(g_fd_lastq, sizeof g_fd_lastq, "%s", q);
+            fd_remember_query(qid, nq, pre);
+            int nsh = 0, nsk = 0;
+            for (int i = 0; i < nh; i++) {
+                char abs[8400]; snprintf(abs, sizeof abs, "%s/%s", X->root, X->f[hits[i].file].rel);
+                const int a = X->ca[hits[i].chunk], b = X->cb[hits[i].chunk];
+                const int seen = rs_cover(abs, a, b, NULL) * 2 >= b - a + 1;
+                if (!seen && nsh < (int)lim) { sh[nsh] = hits[i]; ses[nsh++] = esrc[i]; }
+                else if (seen && nsk < 12) sk[nsk++] = hits[i];
+            }
             const int lvl = fd_coder_level(), qk = lvl ? fd_query_kind(q) : FQ_NATURAL;
             CoderHits *CH = NULL; int cpre = 0;
             if (lvl && (qk != FQ_NATURAL || lvl >= 2)) {      /* o motor do coder: indice atualizado a cada chamada, criado na primeira */
@@ -1381,30 +1578,42 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                 if (CH && g_fd_verbose) fprintf(stderr, "find: coder %s%.1f ms (index update %.1f ms, search %.1f ms)\n", CH->created ? "index created, " : "", CH->index_ms + CH->ms, CH->index_ms, CH->ms);
             }
             if (CH && qk != FQ_NATURAL) cpre = fd_coder_pre(X, CH, qk, q, pre, &sb);
+            if (repeat && nsk) ct_sb_puts(&sb, "(same words as your previous Find: showing the next candidates; the ones already shown are left out)\n");
             const size_t base = sb.n;
-            if (!nh) {
+            if (!nsh) {
                 char m[700];
-                if (!cpre || qk == FQ_QUOTED) {
+                if (nsk) ct_sb_puts(&sb, "Every good match was already shown or read in this request (listed below). Use other words, Read another part, or follow the next steps.\n");
+                else if (!cpre || qk == FQ_QUOTED) {
                     snprintf(m, sizeof m, "No match for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code. "
                              "If it is something you saved earlier (a fact, a preference), try recall(query).", q, *pre ? " in " : "", pre);
                     ct_sb_puts(&sb, m);
                 }
             } else {
                 const char *e = getenv("KATANA_FIND_CHARS");
-                const size_t total = base + (e && atoi(e) > 200 ? (size_t)atoi(e) : 1500);
-                for (int i = 0; i < nh; i++) {
+                const size_t total = base + (e && atoi(e) > 200 ? (size_t)atoi(e) : FD_OUT_CHARS);
+                for (int i = 0; i < nsh; i++) {
                     const size_t left = sb.n < total ? total - sb.n : 0;
-                    const size_t share = left / (size_t)(nh - i);
-                    if (left < 60) { char m[64]; snprintf(m, sizeof m, "(+%d more candidates; raise limit or narrow path)\n", nh - i); ct_sb_puts(&sb, m); break; }
+                    const size_t share = left / (size_t)(nsh - i);
+                    if (left < 60) { char m[64]; snprintf(m, sizeof m, "(+%d more candidates; raise limit or narrow path)\n", nsh - i); ct_sb_puts(&sb, m); nsh = i; break; }
                     char why[400]; why[0] = 0;
-                    if (esrc[i] >= 0) {        /* entrou por uma aresta do grafo: a evidencia diz de qual arquivo e por que */
-                        fg_evidence(X, esrc[i], &hits[i], why, sizeof why);
+                    if (ses[i] >= 0) {        /* entrou por uma aresta do grafo: a evidencia diz de qual arquivo e por que */
+                        fg_evidence(X, ses[i], &sh[i], why, sizeof why);
                     }
-                    fd_show(X, &hits[i], i + 1, qid, nq, share, why, &sb);
+                    fd_show(X, &sh[i], i + 1, qid, nq, share, why, &sb);
                 }
+            }
+            if (nsk) {
+                ct_sb_puts(&sb, "(already shown, skipped) ");
+                for (int i = 0; i < nsk && i < 4; i++) { char m[700]; snprintf(m, sizeof m, "%s%s:%d-%d", i ? ", " : "", X->f[sk[i].file].rel, X->ca[sk[i].chunk], X->cb[sk[i].chunk]); ct_sb_puts(&sb, m); }
+                ct_sb_puts(&sb, "\n");
             }
             if (CH && qk == FQ_NATURAL) fd_coder_post(CH, pre, X, hits, nh, &sb);
             free(CH);
+            fd_next_steps(X, root, pre, nsh ? sh : sk, nsh ? nsh : nsk, hits, nh, qid, nq, &sb);
+            for (int i = 0; i < nsh; i++) {          /* o que foi apontado conta como visto nos proximos Find */
+                char abs[8400]; snprintf(abs, sizeof abs, "%s/%s", X->root, X->f[sh[i].file].rel);
+                rs_note(abs, X->ca[sh[i].chunk], X->cb[sh[i].chunk], 1);
+            }
         }
         if (X->truncated) { char m[200]; snprintf(m, sizeof m, "(index covers %d files; %d more skipped: KATANA_FIND_MAX_FILES)\n", X->listed, X->truncated); ct_sb_puts(&sb, m); }
         ct_sb_puts(&sb, refs ? "Next: Find mode=refs on a caller, or Read a part with offset and limit." : "Follow a symbol with Find mode=refs, or Read a part with offset and limit.");
