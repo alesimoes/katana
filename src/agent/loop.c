@@ -462,7 +462,7 @@ static void autoindex_dir(const char *cwd) {
     for (int i = 0; i < nd; i++) if (!strcmp(done[i], rp)) return;
     if (nd < 16) snprintf(done[nd++], sizeof done[0], "%s", rp);
     const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1); if (n <= 0) return; exe[n] = 0;
-    char *argv[] = {"sh", "-c", "\"$0\" coder index \"$1\" >/dev/null 2>&1 &", exe, (char *)cwd, NULL};      /* o sh sai logo; o indexador fica solto em segundo plano */
+    char *argv[] = {"sh", "-c", "\"$0\" coder crawl \"$1\" --quiet >/dev/null 2>&1 &", exe, (char *)cwd, NULL};      /* o sh sai logo; o indexador fica solto em segundo plano */
     pid_t pid;
     if (posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ) == 0) { int st; waitpid(pid, &st, 0); fprintf(stderr, "[indexando %s em segundo plano para o Find e a Symbols]\n", cwd); }
 }

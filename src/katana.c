@@ -99,6 +99,11 @@
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
 #include "coder/store.c"             /* armazenamento generico: segmentos imutaveis, manifesto, escritor unico (sem tipos de codigo) */
 #include "coder/storedocs.c"         /* catalogo generico de documentos, atualizacao incremental, index/status/verify/compact */
+#include "coder/watch.c"             /* coder: vigia de arquivos da sessao (STUB, fase 4) */
+#include "coder/fresh.c"             /* coder: confere arquivo citado contra o catalogo (STUB, fase 4) */
+#include "coder/statemap.c"          /* coder: mapa de estado por nivel (STUB, fase 6) */
+#include "coder/graph.c"             /* coder: grafo de arquivos derivado dos niveis (STUB, fase 7) */
+#include "coder/maint.c"             /* coder: manutencao do indice, gc, quarentena (STUB, fase 8) */
 #include "coder/indexctl.c"          /* coder: quando revalidar o indice (index_ensure, index_touch) e cache das visoes de leitura */
 #include "coder/types.c"             /* modulo de inteligencia de codigo (em cima do motor): tipos compartilhados */
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
@@ -112,6 +117,7 @@
 #include "coder/flow.c"              /* coder: ligacoes por chave de texto (katana coder flow) */
 #include "coder/symtool.c"           /* coder: ferramenta Symbols e Find mode=refs em cima do indice de simbolos */
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
+#include "coder/crawl.c"              /* coder: o rastreador do indice (katana coder crawl): niveis N0..N3, retomavel, sob demanda */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */

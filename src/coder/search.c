@@ -418,7 +418,7 @@ static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap)
         c->sp = store_seg_section(c->seg, CS_T_POSTS);
         if (sl && c->sp && sn && st && cs_lex_open(sl, &c->lex) && store_table_open(sn, &c->lens) && c->lens.w == CS_LENW && store_table_open(st, &c->tri) && c->tri.w == CS_TRIW) {
             c->has = 1; uint64_t head = 8 + (uint64_t)c->tri.n * c->tri.w; c->tpool = st->data + head; c->tend = st->data + st->size;
-        } else if (c->ndocs) v->noindex++;
+        } else if (c->ndocs && sdf_lv(st_get_u32(store_table_at(&c->docs.t, 0) + 36)) != 1) v->noindex++;      /* segmento so de catalogo (N0 do rastreador) nao e defeito */
     }
     for (int i = 0; i < L.n; i++) if (!L.e[i].dead) v->s[L.e[i].seg].gmap[L.e[i].idx] = UINT32_MAX - 1;
     uint32_t N = 0;
@@ -432,6 +432,7 @@ static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap)
             if (c->has && i < c->lens.n) for (int f = 0; f < 3; f++) { uint32_t x = st_get_u32(store_table_at(&c->lens, i) + 4 * f); v->lens[(size_t)g * 3 + f] = x; sum[f] += x; } } }
     for (int f = 0; f < 3; f++) { v->avg[f] = N ? sum[f] / N : 1; if (v->avg[f] < 1) v->avg[f] = 1; }
     store_live_free(&L);
+    statemap_get(v, loc.prefix);
     return 0;
 }
 static void cs_view_free_real(CsView *v) {
@@ -580,6 +581,7 @@ static int cs_fuzzy(const CsView *v, const char *q, int ql, CsCand *out, int max
 static uint32_t cs_read_limit(void) { const char *e = getenv("KATANA_CODER_INDEX_KB"); return (e && atoi(e) > 0 ? (uint32_t)atoi(e) : 128u) * 1024u; }
 static char *cs_read_doc(const CsView *v, uint32_t g, size_t *len) {
     char full[8400]; snprintf(full, sizeof full, "%s/%.*s", v->r->man.root, (int)v->plen[g], v->path[g]);
+    { char rl[4200]; snprintf(rl, sizeof rl, "%.*s", (int)v->plen[g], v->path[g]); fresh_check(v->r->man.root, rl, 0, 0); }
     size_t cap = cs_read_limit(); uint8_t *b = (uint8_t *)malloc(cap + 1); if (!b) return NULL;
     int64_t got = st_slurp(full, b, cap); if (got < 0) { free(b); return NULL; }
     b[got] = 0; *len = (size_t)got; return (char *)b;

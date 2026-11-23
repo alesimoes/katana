@@ -45,6 +45,8 @@ enum StoreSecType {
     STS_NONE = 0,
     STS_DOCS = 1,           /* catalogo de documentos (este arquivo e storedocs.c) */
     STS_TOMBS = 2,          /* tombstones: caminhos removidos (tabela de strings ordenada) */
+    STS_DIRS = 3,           /* pastas do rastreador: estado, contagens, resumo (coder/crawl.c) */
+    STS_CRAWL = 4,          /* um registro por segmento: andamento do rastreador, publicado na mesma troca atomica do manifesto (coder/crawl.c) */
     STS_CAT_LAST = 0xFF,    /* 0x001..0x0FF: catalogo e secoes genericas */
     STS_LEX_BASE = 0x100,   /* 0x100..0x1FF: lexico e postings (busca) */
     STS_SYM_BASE = 0x200,   /* 0x200..0x2FF: simbolos, referencias, relacoes (analisadores) */
@@ -494,6 +496,16 @@ static int store_writer_begin(const char *dir, StoreWriter **out, char *err, siz
     }
     *out = w; return 0;
 #endif
+}
+/* como store_writer_begin, mas espera ate timeout_ms enquanto outro processo escreve (o rastreador segura o lock so durante um lote) */
+static int store_writer_begin_wait(const char *dir, StoreWriter **out, char *err, size_t ecap, int timeout_ms) {
+    int rc = store_writer_begin(dir, out, err, ecap);
+#ifndef _WIN32
+    for (int waited = 0; rc == 1 && waited < timeout_ms; waited += 20) { usleep(20000); rc = store_writer_begin(dir, out, err, ecap); }
+#else
+    (void)timeout_ms;
+#endif
+    return rc;
 }
 static void store_writer_add_section_buf(StoreWriter *w, uint32_t type, uint32_t version, uint32_t nrec, StoreBuf *b) {   /* toma posse de b->p */
     if (w->nsec >= STORE_MAXSEC) { sb_free(b); return; }

@@ -12,6 +12,13 @@
 #define SDF_SKIP_BINARY 1u      /* flags do documento: catalogado mas nao lido (binario) */
 #define SDF_SKIP_BIG 2u         /* maior que o limite configuravel */
 #define SDF_SKIP_UNREADABLE 4u
+#define SDF_GENERATED 16u       /* gerado/minificado: so caminho e nome entram na busca, sem simbolos (coder/crawl.c, KATANA_INDEX_GENERATED=1) */
+/* bits 8..11 de flags = nivel de informacao que o rastreador (crawl.c) ja deu ao documento: 0 = completo (caminho sincrono e indices antigos: busca e simbolos
+ * de uma vez), 1 = N0 (so catalogo: nome, tamanho, data), 2 = N1 (texto), 4 = N2 e N3 (simbolos, referencias e chaves, saem da mesma analise) */
+#define SDF_LVMASK 0xF00u
+#define SDF_SKIPMASK (SDF_SKIP_BINARY | SDF_SKIP_BIG | SDF_SKIP_UNREADABLE)
+static uint32_t sdf_lv(uint32_t f) { return (f & SDF_LVMASK) >> 8; }
+static int sdf_partial(uint32_t f) { return sdf_lv(f) != 0 && sdf_lv(f) < 4; }       /* ainda falta nivel (ate o nome de binario e grande entra na busca no N1): a atualizacao sincrona refaz o documento */
 #define STORE_DOC_W 40
 
 typedef struct { const char *path; uint32_t plen; uint64_t size; int64_t mtime; uint64_t hash; uint32_t kind, flags; } StoreDoc;
@@ -164,11 +171,13 @@ static int store_merge_tombs(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
 }
 static void coder_search_register(void);       /* search.c: fusores das secoes de busca */
 static void coder_sym_register(void);          /* symindex.c: fusores das secoes de simbolos */
+static void coder_crawl_register(void);        /* crawl.c: fusores de STS_DIRS e STS_CRAWL */
 static void store_catalog_init(void) {
     store_register_merger(STS_DOCS, 1, store_merge_docs);
     store_register_merger(STS_TOMBS, 1, store_merge_tombs);
     coder_search_register();
     coder_sym_register();
+    coder_crawl_register();
 }
 
 /* ---- varredura da pasta ---- */
@@ -389,7 +398,7 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
         StoreLiveDoc *l = store_live_find(&L, e->path, e->plen);
         int exists = l && !l->dead;
         if (exists) l->seen = 1;
-        if (exists && l->d.size == e->size && l->d.mtime == e->mtime) { S->unchanged++; continue; }
+        if (exists && l->d.size == e->size && l->d.mtime == e->mtime && !sdf_partial(l->d.flags)) { S->unchanged++; continue; }
         StoreDoc d; memset(&d, 0, sizeof d);
         const uint8_t *body = NULL; size_t blen = 0;
         d.path = e->path; d.plen = e->plen; d.size = e->size; d.mtime = e->mtime;
@@ -408,7 +417,7 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
         }
         if (o && o->doc_fn) o->doc_fn(o->hook_ctx, (uint32_t)nn, &d, body, blen);
         if (!exists) S->added++;
-        else if (l->d.hash == d.hash && l->d.flags == d.flags && d.hash != 0) S->touched++;      /* so o mtime mudou: grava o registro novo, nao e alteracao */
+        else if (l->d.hash == d.hash && (l->d.flags & ~SDF_LVMASK) == d.flags && d.hash != 0) S->touched++;      /* so o mtime mudou: grava o registro novo, nao e alteracao */
         else S->changed++;
         nd[nn++] = d;
     }
@@ -473,6 +482,8 @@ static int coder_key_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_sym_seg_info(const StoreSeg *s, char *out, size_t cap);
 static int coder_search_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_search_seg_info(const StoreSeg *s, char *out, size_t cap);
+static int coder_crawl_verify_seg(const StoreSeg *s, char *err, size_t ecap);       /* crawl.c */
+static void crawl_status_print(StoreReader *r, const IndexLoc *loc, const char *dir);       /* crawl.c */
 static int coder_cmd_index(int argc, char **argv) {
     char proj[4096], dir[4400], err[300], h[40]; uint64_t maxsz = 0; int fa = 0;
     cstore_args(argc, argv, proj, sizeof proj, &maxsz, &fa);
@@ -531,7 +542,9 @@ static int coder_cmd_status(int argc, char **argv) {
         printf("arquivos sob o prefixo %s: %d\n", loc.prefix, np); }
     { char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir); FILE *f = fopen(fp, "rb"); int a = 0, b = 0, c = 0;
       if (f) { if (fscanf(f, "%d %d %d", &a, &b, &c) == 3) printf("ignorados por regra na ultima varredura: %d entradas (arquivos ou pastas; %d pela heuristica de pasta enorme)\n", a, b); fclose(f); } }
-    store_live_free(&L); store_close(r);
+    store_live_free(&L);
+    crawl_status_print(r, &loc, dir);
+    store_close(r);
     return 0;
 }
 static int cstore_check_docs(const StoreSection *s, char *err, size_t ecap) {
@@ -560,6 +573,7 @@ static int coder_cmd_verify(int argc, char **argv) {
         if (sd && !b && cstore_check_docs(sd, e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         if (!b && coder_search_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         if (!b && coder_sym_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
+        if (!b && coder_crawl_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         if (!b && coder_key_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         secs += (int)r->seg[i].nsec;
     }

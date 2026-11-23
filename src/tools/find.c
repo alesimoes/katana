@@ -835,7 +835,9 @@ static int fd_key(FdIndex *X, const char *name, int l) {
 }
 /* linhas de um arquivo (texto inteiro, para trechos e usos) */
 typedef struct { char *s; size_t n; FdIv ls; } FdText;
+static int fresh_check(const char *root, const char *rel, uint64_t size, int64_t mtime);       /* coder/fresh.c (fase 4) */
 static int fd_text(FdIndex *X, int fi, FdText *t) {
+    fresh_check(X->root, X->f[fi].rel, 0, 0);
     char abs[8400]; snprintf(abs, sizeof abs, "%s/%s", X->root, X->f[fi].rel);
     memset(t, 0, sizeof *t);
     t->s = fd_slurp(abs, &t->n, FD_MAXBYTES);
