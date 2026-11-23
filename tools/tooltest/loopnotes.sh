@@ -122,5 +122,46 @@ has "6a leitura: aponta Grep e Symbols" "Use Grep (-n -C 2) or Symbols for the e
 o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":1,"limit":10}' 'Read {"file_path":"s.txt","offset":50,"limit":10}' 'Read {"file_path":"s.txt","offset":100,"limit":10}' 'Read {"file_path":"s.txt","offset":150,"limit":10}' 'Read {"file_path":"s.txt","offset":200,"limit":10}' USER 'Read {"file_path":"s.txt","offset":250,"limit":10}' | r)
 no "pedido novo zera a conta de leituras" "read number" "$o"
 
+# ---------- fatias em ordem: nada a mais, so uma nota curta ----------
+awk 'BEGIN{for(i=1;i<=541;i++) print "if (x" i " > 0) { run(" i "); }"}' > w.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"w.txt","offset":1,"limit":120}' 'Read {"file_path":"w.txt","offset":121,"limit":120}' | r)
+has "2a fatia em ordem: nota manda ir ao ponto exato" "in slices, in order. Go to the exact spot" "$o"
+has "2a fatia em ordem: aponta Symbols e Grep" "Symbols (outline, or def/at)" "$o"
+no "2a fatia em ordem: nao entrega mais que o pedido" "   242${TAB}if (x242" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"w.txt","offset":1,"limit":120}' 'Read {"file_path":"w.txt","offset":120,"limit":120}' | r)
+has "offset = fim da anterior: tambem e fatia em ordem" "in slices, in order" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"w.txt","offset":1,"limit":120}' 'Read {"file_path":"w.txt","offset":300,"limit":120}' | r)
+no "salto para outra parte: sem a nota" "in slices, in order" "$o"
+awk 'BEGIN{for(i=1;i<=200;i++) print "p" i}' > pq.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"pq.txt","offset":50,"limit":20}' | r)
+no "primeira fatia: sem a nota" "in slices, in order" "$o"
+no "arquivo pequeno com faixa: entrega so o pedido" "   200${TAB}p200" "$o"
+# ---------- limit sem offset em arquivo grande: mapa + trechos, nao o comeco cego ----------
+awk 'BEGIN{for(i=1;i<=400;i++){ if(i%50==1) print "function handler" i "() {"; else print "  const sessionPhone" i " = push(" i ");" }}' > g.js
+o=$(printf '%s\n' USER 'Read {"file_path":"g.js","limit":120}' | r)
+has "limit sem offset em arquivo grande: mapa" "file has 400 lines; this is its map" "$o"
+no "limit sem offset em arquivo grande: nao entrega as 120 linhas" "   120${TAB}" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"g.js"}' USER 'Read {"file_path":"g.js"}' | r)
+has "mapa ja entregue em pedido anterior: nao despeja o resto" "you already have the map and the start of" "$o"
+no "mapa ja entregue: o fim do arquivo nao vem" "   400${TAB}" "$o"
+# ---------- o cursor vale entre pedidos da mesma conversa ----------
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' | r)
+has "pedido novo, mesma faixa: ja entregue nesta conversa" "lines 100-179 of" "$o"
+has "pedido novo: a nota diz conversa" "given to you in this conversation" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":1,"limit":150}' USER 'Read {"file_path":"s.txt","offset":120,"limit":32}' | r)
+has "pedido novo, faixa deslocada: segue do trecho novo, nota diz conversa" "were already given to you in this conversation; here are the next lines, from line 151]" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":1,"limit":150}' USER 'Read {"file_path":"s.txt"}' | r)
+has "pedido novo, Read sem faixa: continua do cursor" "lines 1-150 of" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' USER 'FORGET s.txt' 'Read {"file_path":"s.txt","offset":100,"limit":80}' | r)
+no "resultado saiu do contexto: a releitura entrega" "already" "$o"
+has "resultado saiu do contexto: o texto vem" "   179${TAB}linha numero 179" "$(printf '%s\n' "$o" | tail -85)"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' USER 'COMPACT' 'Read {"file_path":"s.txt","offset":100,"limit":80}' | r)
+no "conversa compactada: a releitura entrega" "already" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' USER 'Bash {"command":"echo extra >> s.txt"}' 'Read {"file_path":"s.txt","offset":100,"limit":80}' | r)
+no "arquivo mudou entre pedidos: a releitura entrega" "already" "$o"
+awk 'BEGIN{for(i=1;i<=400;i++) print "linha numero " i}' > s.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' USER 'Read {"file_path":"t.txt","offset":1,"limit":50}' 'Read {"file_path":"s.txt","offset":100,"limit":80}' | r)
+has "outro arquivo no meio nao apaga o cursor" "lines 100-179 of" "$o"
+
 if [ "$F" -eq 0 ]; then echo "OK $N checks"; exit 0; fi
 echo "FAILED $F of $N"; exit 1

@@ -126,6 +126,7 @@ static int ah_shrink_tool(AMsg *mg) {
     if (g_ah_g4) return ah_shrink_tool_g4(mg);
     const char *K = "<tool_response>\n[resultado da ferramenta ";
     if (mg->role != 't' || !strstr(mg->s, K)) return 0;
+    rd_forget_all();      /* resultados omitidos: nada do que o Read entregou vale mais */
     Buf o = {0};
     for (const char *q = strstr(mg->s, K); q; q = strstr(q, K)) {
         const char *nm = q + strlen(K);
@@ -273,6 +274,7 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
             if (pass < 3 && keep_from > 0 && R[i].msg >= keep_from) continue;
             if (pass == 0 ? !old : pass == 1 ? R[i].newest : 0) continue;
             R[i].drop = 1; total -= n - 160 < n ? n - 160 : n; out++;
+            if (!strcmp(R[i].name, "Read")) rd_forget_key(R[i].key);      /* o que esse Read entregou saiu do contexto: uma releitura entrega de novo */
         }
     for (int i = 0; i < nr; i++) {                       /* saiu a leitura inteira: as notas "mudou/nao mudou" que apontam para ela saem junto */
         if (!R[i].drop || !R[i].newest) continue;
@@ -573,6 +575,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
         }
         ah_clear(&keep); free(keep.v);
     }
+    rd_forget_all();
     g_rd_epoch++;       /* o que o modelo tinha lido pode ter saido: a proxima leitura do arquivo vai inteira */
     if (n + 64 >= c->ctx) { free(r.p); return -1; }
     Ids ids = {0};

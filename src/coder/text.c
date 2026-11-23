@@ -505,7 +505,10 @@ static int rd_best_windows(const char *b, size_t n, const char *intent, long ski
         if (bw[r] < 0) continue;
         size_t a = (size_t)bw[r], z = a + WIN < N ? a + WIN : N;
         if (o + 200 > cap) break;
-        o += (size_t)snprintf(out + o, cap - o, "%s[lines %zu-%zu match what you look for]\n", wrote ? "" : "", a + 1, z);
+        uint32_t um = 0; for (size_t i = a; i < z; i++) um |= mask[i];
+        char mt[160]; size_t mn = 0; mt[0] = 0;
+        for (int k = 0; k < nt && mn + 24 < sizeof mt; k++) if (um & (1u << k)) mn += (size_t)snprintf(mt + mn, sizeof mt - mn, "%s%s", mn ? ", " : "", term[k]);
+        o += (size_t)snprintf(out + o, cap - o, "[lines %zu-%zu match: %s]\n", a + 1, z, mt);
         for (size_t i = a; i < z; i++) {
             size_t l = off[i + 1] > off[i] ? off[i + 1] - off[i] : 0; if (l && b[off[i] + l - 1] == '\n') l--;
             if (l > 200) l = 200;

@@ -63,13 +63,14 @@ static int ct_ext_is(const char *path, const char *ext) {
 /* ---- as linhas [offset, offset+limit) de b, com numero e tab, no maximo o que cabe em cap ---- */
 #define CT_LINE_MAX 2000
 #define RD_NOTE_READS 6       /* a partir da 6a leitura do mesmo arquivo no pedido: nota para usar Grep/Symbols ou responder */
-#define RD_FORCE_READS 9      /* a partir da 9a: o laco encerra o pedido (g_rd_toomany) */
+#define RD_FORCE_READS 9
+#define RD_ROOM_MAX 10000     /* bytes de texto de arquivo por resultado de Read (antes ate o teto do laco, 12 KB) */
 static long long g_rdl_first, g_rdl_last;      /* faixa entregue pela ultima chamada de ct_rd_lines */
 static int rd_best_windows(const char *b, size_t n, const char *intent, long skip_lines, char *out, size_t cap);      /* em coder/text.c */
 static void ct_rd_lines(const char *b, size_t n, long long offset, long long limit, int numbered, char *out, size_t cap, int *partial) {
     const long long total = ct_count_lines(b, n);
     size_t room = cap > 700 ? cap - 600 : 0;
-    if (room > 100000) room = 100000;                  /* cerca de 25 mil tokens por chamada */
+    if (room > RD_ROOM_MAX) room = RD_ROOM_MAX;        /* teto de texto por resultado (cerca de 3 mil tokens): o resto vem pela nota de PARTIAL */
     if (room < 300) { snprintf(out, cap, "error: no room left in the context for a file view; continue after the context is compacted"); *partial = 1; return; }
     size_t lmax = room / 2 < CT_LINE_MAX ? room / 2 : CT_LINE_MAX;
     size_t s = 0, o = 0;
@@ -215,6 +216,7 @@ static int ol_ext(const char *path, char *ext, size_t cap) {
 static int ol_big(long long lines, size_t bytes) {
     const char *e = getenv("KATANA_READ_OUTLINE_LINES");
     long long tl = 200, tb = 8192;
+    if (intent_get()[0]) { tl = 150; tb = 6144; }      /* com o que procurar, o arquivo de porte medio ja merece mapa + trechos */
     if (e && atoll(e) > 0) { tl = atoll(e); tb = tl * 40; }
     return lines > tl || (long long)bytes > tb;
 }
@@ -376,33 +378,55 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             ct_seen_mark(res, 1);
             break;
         }
-        char cnote[260] = "", mnynote[400] = ""; long long eoff = offset; int seen_all = 0;
-        {   RdCur *c = rc_find(res, (long long)st.st_size, (long long)st.st_mtime);
-            if (c && c->cov_end >= 1 && c->cov_end < total && (!has_off || offset == c->last_off)) {      /* ja entregue ate cov_end: segue dali */
-                eoff = c->cov_end + 1;
-                KNOTE(READ_CURSOR, cnote, sizeof cnote, c->cov_end, res, eoff);
-            } else if (c && has_off) {      /* faixa pedida quase toda ja lida (offset deslocado de 1 ou 2 linhas): so o que e novo */
+        char cnote[260] = "", mnynote[400] = "", scope[24] = "this request", sqnote[400] = ""; long long eoff = offset; int seen_all = 0, seqnote = 0, remap = 0;
+        {   const long long fsz = (long long)st.st_size, fmt = (long long)st.st_mtime;
+            RdCur *c = rc_find(res, fsz, fmt);
+            long long l_off = 0, l_end = 0, l_n = 0;
+            const int have_last = rd_last(c, res, fsz, fmt, &l_off, &l_end, &l_n);
+            int fn1 = 0, pr1 = 0; const int bb = total > 20000 ? 20000 : (int)total;
+            const int any = rd_cover(res, fsz, fmt, 1, bb, &fn1, &pr1);      /* o que o Read ja entregou deste arquivo (neste pedido e em anteriores) */
+            const long long cov_end = any && fn1 > 1 ? fn1 - 1 : 0;           /* contiguo desde a linha 1 */
+            char oxt[16];
+            if (any && cov_end >= 1 && cov_end <= 40 && (!has_off || offset <= 1) && (!has_lim || limit >= 60) && ol_ext(res, oxt, sizeof oxt) && ol_big(total, n)) { remap = 1; snprintf(scope, sizeof scope, "%s", pr1 ? "this conversation" : "this request"); }      /* so o mapa e o comeco foram entregues: nao despeja o resto */
+            else if (cov_end >= 1 && cov_end < total && have_last && (!has_off || offset == l_off)) {      /* ja entregue ate cov_end: segue dali */
+                eoff = cov_end + 1;
+                KNOTE(READ_CURSOR, cnote, sizeof cnote, cov_end, res, pr1 ? "this conversation" : "this request", eoff);
+            } else if (any && has_off) {      /* faixa pedida quase toda ja lida (offset deslocado de 1 ou 2 linhas): so o que e novo */
                 const long long b = offset + limit - 1 > total ? total : offset + limit - 1;
-                int fn = 0; const int cov = rs_read_cover(res, (int)offset, (int)b, &fn);
+                int fn = 0, pr = 0; const int cov = rd_cover(res, fsz, fmt, (int)offset, (int)b, &fn, &pr);
                 if (cov * 10 >= (int)(b - offset + 1) * 8) {
+                    const char *sc = pr ? "this conversation" : "this request";
                     if (fn <= b) { eoff = fn; }
-                    else { int fn2 = 0; rs_read_cover(res, (int)b + 1, (int)total, &fn2); eoff = fn2; }      /* depois do fim da faixa: o primeiro trecho nao lido */
-                    if (eoff > total) seen_all = 1;
-                    else if (eoff > offset) KNOTE(READ_SEEN, cnote, sizeof cnote, offset, eoff - 1, res, eoff);
+                    else { int fn2 = 0; rd_cover(res, fsz, fmt, (int)b + 1, (int)total, &fn2, &pr); eoff = fn2; }      /* depois do fim da faixa: o primeiro trecho nao lido */
+                    if (eoff > total) { seen_all = 1; snprintf(scope, sizeof scope, "%s", sc); }
+                    else if (eoff > offset) KNOTE(READ_SEEN, cnote, sizeof cnote, offset, eoff - 1, res, sc, eoff);
                 }
+            } else if (any && !has_off && !has_lim && cov_end >= total && have_last && ct_seen(res) < 2 && total > 1) {      /* sem faixa, e o arquivo todo ja foi entregue em fatias */
+                seen_all = 1; snprintf(scope, sizeof scope, "%s", pr1 ? "this conversation" : "this request");
             }
+            /* leitura em ordem por fatias (2a em diante do mesmo arquivo): nada a mais e entregue; a nota manda ir ao ponto exato */
+            if (!cnote[0] && !seen_all && has_off && have_last && l_end >= 1 && (offset == l_end + 1 || offset == l_end) && l_end < total && l_n >= 1) seqnote = 1;
             if (c) { c->nreads++; if (c->nreads >= RD_NOTE_READS) KNOTE(READ_MANY, mnynote, sizeof mnynote, c->nreads, res); if (c->nreads >= RD_FORCE_READS) g_rd_toomany = 1; } }
+        if (remap) {      /* o modelo ja tem o mapa deste arquivo: so os trechos que casam com o que ele procura agora, mais a nota */
+            static char bw2[3200]; bw2[0] = 0;
+            const int nb2 = rd_best_windows(b, n, intent_get(), 12, bw2, sizeof bw2);
+            KNOTE(READ_MAPPED, out, cap, res, total, scope);
+            const size_t ol = strlen(out); if (nb2 && ol + strlen(bw2) + 2 < cap) { out[ol] = '\n'; strcpy(out + ol + 1, bw2); }
+            ct_seen_mark(res, 1);
+            break;
+        }
         if (seen_all) {      /* tudo o que foi pedido (e o que vem depois) ja foi entregue neste pedido */
-            KNOTE(READ_SEEN_ALL, out, cap, offset, offset + limit - 1 > total ? total : offset + limit - 1, res);
+            KNOTE(READ_SEEN_ALL, out, cap, offset, offset + limit - 1 > total ? total : offset + limit - 1, res, scope);
             const size_t ol = strlen(out); if (ol + strlen(mnynote) + 1 < cap) strcat(out, mnynote);
             ct_seen_mark(res, 1);
             break;
         }
         char oext[16];
-        if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
-            static char mp[16000], hd[12000];
+        const int blind = !has_off || offset <= 1;      /* sem offset (ou 0/1): leitura cega do comeco; com limit explicito de 60+ linhas tambem vira mapa + trechos */
+        if (!cnote[0] && blind && (!has_lim || limit >= 60) && ct_seen(res) < 2 && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
+            static char mp[3600], hd[6000];
             ct_outline(oext, b, n, mp, sizeof mp);
-            static char bw[7000]; bw[0] = 0;
+            static char bw[3200]; bw[0] = 0;
             const int nbw = rd_best_windows(b, n, intent_get(), 12, bw, sizeof bw);      /* os trechos do arquivo que casam com o que o modelo procura */
             const int head = nbw ? 12 : 40;
             ct_rd_lines(b, n, 1, head, 1, hd, sizeof hd, &partial);
@@ -421,6 +445,8 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
         ct_rd_lines(b, n, eoff, limit, 1, out, cap, &partial);
         if (strncmp(out, "error:", 6) != 0) {
             if (g_rdl_last >= g_rdl_first) rc_note(res, (long long)st.st_size, (long long)st.st_mtime, g_rdl_first, g_rdl_last, total);
+            if (seqnote && g_rdl_last >= g_rdl_first && g_rdl_last < total) KNOTE(READ_SEQ, sqnote, sizeof sqnote, res);
+            if (sqnote[0]) { const size_t ol = strlen(out), sl = strlen(sqnote); if (ol + sl + 2 < cap) { out[ol] = '\n'; memcpy(out + ol + 1, sqnote, sl + 1); } }
             if (cnote[0]) { const size_t ol = strlen(out), cl = strlen(cnote); if (ol + cl + 1 < cap) { memmove(out + cl, out, ol + 1); memcpy(out, cnote, cl); } }
             if (mnynote[0]) { const size_t ol = strlen(out), ml = strlen(mnynote); if (ol + ml + 1 < cap) memcpy(out + ol, mnynote, ml + 1); }
             ct_seen_mark(res, partial); if (!partial) rd_delta_put(res, b, n); }

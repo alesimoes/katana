@@ -121,12 +121,20 @@ static int ct_cwd_is_home(void) {
     return !strcmp(cwd, "/") || !strcmp(cwd, h);
 }
 /* o que o modelo procura neste pedido: a ultima consulta do Find (ou o texto do usuario) serve para o Read mostrar a parte do arquivo que importa */
-static char g_intent_user[800], g_intent_find[400];
+static char g_intent_user[800], g_intent_find[400], g_intent_grep[200];
 static void intent_set_user(const char *line) {
     while (line[0] == '[') { const char *nl = strchr(line, '\n'); if (!nl) break; line = nl + 1; }       /* pula as notas do katana no comeco */
-    snprintf(g_intent_user, sizeof g_intent_user, "%s", line); g_intent_find[0] = 0;
+    snprintf(g_intent_user, sizeof g_intent_user, "%s", line); g_intent_find[0] = 0; g_intent_grep[0] = 0;
 }
-static const char *intent_get(void) { if (g_intent_find[0]) return g_intent_find; if (g_intent_user[0]) return g_intent_user; const char *e = getenv("KATANA_INTENT"); return e ? e : ""; }
+/* o que o modelo procura: a ultima consulta do Find, o ultimo padrao do Grep e o pedido do usuario deste turno, juntos (so os termos; o rd_best_windows ignora palavras vazias) */
+static const char *intent_get(void) {
+    static char buf[1500];
+    snprintf(buf, sizeof buf, "%s %s %s", g_intent_find, g_intent_grep, g_intent_user);
+    for (char *p = buf; *p; p++) if (*p == '|' || *p == '\\') *p = ' ';      /* padrao de regex vira palavras */
+    const char *q = buf; while (*q == ' ') q++;
+    if (*q) return q;
+    const char *e = getenv("KATANA_INTENT"); return e ? e : "";
+}
 /* ---- arquivos vistos nesta conversa ----
  * Read marca (inteiro ou so uma parte); Edit e Write consultam. Guarda tamanho e data para saber se o arquivo mudou
  * no disco depois da leitura. ct_seen_reset() a cada conversa nova. */
@@ -138,7 +146,7 @@ static int g_ct_seen_n;
  * ultima leitura. Read sem offset, ou repetindo a ultima chamada, continua de onde parou em vez de entregar o mesmo trecho.
  * Zera a cada pedido (rc_reset em rr_reset) e a cada conversa. ---- */
 #define RC_MAX 64
-typedef struct { char path[1024]; long long size, mt, cov_end, last_off, total; int nreads; } RdCur;      /* nreads: leituras deste arquivo neste pedido */
+typedef struct { char path[1024]; long long size, mt, cov_end, last_off, last_end, last_n, total; int nreads; } RdCur;      /* nreads: leituras deste arquivo neste pedido */
 static int g_rd_toomany;      /* a ultima leitura foi a RD_FORCE_READS-esima do mesmo arquivo: o laco encerra o pedido (zera em rc_reset) */
 static RdCur g_rc[RC_MAX]; static int g_rc_n;
 /* ---- faixas de linhas ja entregues ao modelo neste pedido (lidas pelo Read ou apontadas pelo Find): o Find nao repete o mesmo trecho e
@@ -150,7 +158,7 @@ static void rs_note(const char *abs, long long a, long long b, int how) {
     if (!abs || strlen(abs) >= sizeof g_rs[0].path || a < 1 || b < a) return;
     for (int i = 0; i < g_rs_n; i++) if (g_rs[i].a == a && g_rs[i].b == b && !strcmp(g_rs[i].path, abs)) { g_rs[i].how |= how; return; }
     if (g_rs_n == RS_MAX) { memmove(g_rs, g_rs + 1, sizeof(RdSeen) * (RS_MAX - 1)); g_rs_n--; }
-    RdSeen *r = &g_rs[g_rs_n++]; snprintf(r->path, sizeof r->path, "%s", abs); r->a = (int)a; r->b = (int)(b > 1000000000 ? 1000000000 : b); r->how = how;
+    RdSeen *r = &g_rs[g_rs_n++]; snprintf(r->path, sizeof r->path, "%.1023s", abs); r->a = (int)a; r->b = (int)(b > 1000000000 ? 1000000000 : b); r->how = how;
 }
 /* quantas linhas de [a, b] do arquivo ja foram entregues; *how recebe a uniao dos tipos */
 static int rs_cover(const char *abs, int a, int b, int *how) {
@@ -163,17 +171,84 @@ static int rs_cover(const char *abs, int a, int b, int *how) {
     }
     return n;
 }
-static void rc_reset(void) { g_rc_n = 0; g_rs_n = 0; g_rd_toomany = 0; }
-/* linhas de [a, b] que o Read ja entregou (so how & 2: o que o Find apenas apontou nao conta como lido); *first_new = primeira linha de [a, b] ainda nao lida (b + 1 se nenhuma) */
-static int rs_read_cover(const char *abs, int a, int b, int *first_new) {
-    int n = 0; if (first_new) *first_new = b + 1;
+/* ---- leituras de pedidos ANTERIORES da mesma conversa: o que o Read entregou continua no contexto do modelo (ate o arquivo mudar no
+ * disco, o resultado sair do contexto pela compactacao ou a conversa acabar). Fica separado do estado do pedido (g_rs, g_rc) de proposito:
+ * o Find e o UIOE so olham o pedido atual. rc_reset (pedido novo) absorve o que o pedido leu; rd_forget_* esquecem. ---- */
+#define RP_MAX 192
+typedef struct { char path[1024]; int a, b; long long size, mt; } RpRange;
+typedef struct { char path[1024]; long long size, mt, last_off, last_end, last_n, total; } RpCur;
+static RpRange g_rp[RP_MAX]; static int g_rp_n;
+static RpCur g_rpc[RC_MAX]; static int g_rpc_n;
+static void rp_drop_path(const char *abs) {
+    for (int i = 0; i < g_rp_n; ) { if (!strcmp(g_rp[i].path, abs)) g_rp[i] = g_rp[--g_rp_n]; else i++; }
+    for (int i = 0; i < g_rpc_n; ) { if (!strcmp(g_rpc[i].path, abs)) g_rpc[i] = g_rpc[--g_rpc_n]; else i++; }
+}
+static void rp_add(const char *abs, int a, int b, long long size, long long mt) {
+    for (int i = 0; i < g_rp_n; i++) if (!strcmp(g_rp[i].path, abs) && g_rp[i].size == size && g_rp[i].mt == mt && a <= g_rp[i].b + 1 && b >= g_rp[i].a - 1) {
+        if (a < g_rp[i].a) g_rp[i].a = a;
+        if (b > g_rp[i].b) g_rp[i].b = b;
+        return;      /* emenda com a faixa vizinha */
+    }
+    if (g_rp_n == RP_MAX) { memmove(g_rp, g_rp + 1, sizeof(RpRange) * (RP_MAX - 1)); g_rp_n--; }
+    RpRange *r = &g_rp[g_rp_n++]; snprintf(r->path, sizeof r->path, "%.1023s", abs); r->a = a; r->b = b; r->size = size; r->mt = mt;
+}
+/* pedido novo: o que este pedido leu passa a valer como "ja entregue em pedido anterior" */
+static void rp_absorb(void) {
+    for (int i = 0; i < g_rc_n; i++) {
+        const RdCur *c = &g_rc[i];
+        for (int j = 0; j < g_rp_n; ) { if (!strcmp(g_rp[j].path, c->path) && (g_rp[j].size != c->size || g_rp[j].mt != c->mt)) g_rp[j] = g_rp[--g_rp_n]; else j++; }      /* arquivo mudou */
+        for (int j = 0; j < g_rs_n; j++) if ((g_rs[j].how & 2) && !strcmp(g_rs[j].path, c->path)) rp_add(c->path, g_rs[j].a, g_rs[j].b, c->size, c->mt);
+        int k = -1; for (int j = 0; j < g_rpc_n; j++) if (!strcmp(g_rpc[j].path, c->path)) k = j;
+        if (k < 0) { if (g_rpc_n == RC_MAX) { memmove(g_rpc, g_rpc + 1, sizeof(RpCur) * (RC_MAX - 1)); g_rpc_n--; } k = g_rpc_n++; }
+        RpCur *p = &g_rpc[k]; snprintf(p->path, sizeof p->path, "%.1023s", c->path);
+        p->size = c->size; p->mt = c->mt; p->last_off = c->last_off; p->last_end = c->last_end; p->last_n = c->last_n; p->total = c->total;
+    }
+}
+static void rc_clear(void) { g_rc_n = 0; g_rs_n = 0; g_rd_toomany = 0; }
+static void rc_reset(void) { rp_absorb(); rc_clear(); }
+static void rs_forget_read(const char *abs);
+static void rd_forget_all(void) { g_rp_n = 0; g_rpc_n = 0; g_rc_n = 0; for (int i = 0; i < g_rs_n; ) { g_rs[i].how &= ~2; if (!g_rs[i].how) g_rs[i] = g_rs[--g_rs_n]; else i++; } }
+/* o resultado de um Read de `key` (o caminho como o modelo o escreveu: absoluto ou relativo) saiu do contexto: o que foi entregue desse
+ * arquivo deixa de valer, e uma releitura entrega o texto de novo */
+static void rd_forget_key(const char *key) {
+    if (!key || !*key) return;
+    while (key[0] == '.' && key[1] == '/') key += 2;
+    const size_t kl = strlen(key);
+    if (!kl) return;
+    static char list[64][1024]; int nl = 0;
+    #define RD_MATCH(P) ({ const size_t pl = strlen(P); !strcmp(P, key) || (pl > kl && P[pl - kl - 1] == '/' && !strcmp(P + pl - kl, key)); })
+    for (int i = 0; i < g_rp_n && nl < 64; i++) if (RD_MATCH(g_rp[i].path)) { int d = 0; for (int j = 0; j < nl; j++) if (!strcmp(list[j], g_rp[i].path)) d = 1; if (!d) snprintf(list[nl++], 1024, "%s", g_rp[i].path); }
+    for (int i = 0; i < g_rpc_n && nl < 64; i++) if (RD_MATCH(g_rpc[i].path)) { int d = 0; for (int j = 0; j < nl; j++) if (!strcmp(list[j], g_rpc[i].path)) d = 1; if (!d) snprintf(list[nl++], 1024, "%s", g_rpc[i].path); }
+    for (int i = 0; i < g_rc_n && nl < 64; i++) if (RD_MATCH(g_rc[i].path)) { int d = 0; for (int j = 0; j < nl; j++) if (!strcmp(list[j], g_rc[i].path)) d = 1; if (!d) snprintf(list[nl++], 1024, "%s", g_rc[i].path); }
+    #undef RD_MATCH
+    for (int j = 0; j < nl; j++) {
+        rp_drop_path(list[j]); rs_forget_read(list[j]);
+        for (int i = 0; i < g_rc_n; ) { if (!strcmp(g_rc[i].path, list[j])) g_rc[i] = g_rc[--g_rc_n]; else i++; }
+    }
+}
+/* cobertura de [a, b] pelo que o Read ja entregou ao modelo, neste pedido (g_rs) e em pedidos anteriores da conversa (g_rp, so se o arquivo
+ * e o mesmo: tamanho e data). Devolve quantas linhas; *first_new = primeira linha ainda nao entregue (b + 1 se nenhuma);
+ * *prior = 1 se alguma linha so foi entregue em pedido anterior */
+static int rd_cover(const char *abs, long long size, long long mt, int a, int b, int *first_new, int *prior) {
+    int ra[96], rb[96], rp[96], nr = 0, n = 0;
+    if (first_new) *first_new = b + 1;
+    if (prior) *prior = 0;
     if (b - a > 20000) b = a + 20000;
+    for (int i = 0; i < g_rs_n && nr < 96; i++) if ((g_rs[i].how & 2) && !strcmp(g_rs[i].path, abs)) { ra[nr] = g_rs[i].a; rb[nr] = g_rs[i].b; rp[nr++] = 0; }
+    for (int i = 0; i < g_rp_n && nr < 96; i++) if (g_rp[i].size == size && g_rp[i].mt == mt && !strcmp(g_rp[i].path, abs)) { ra[nr] = g_rp[i].a; rb[nr] = g_rp[i].b; rp[nr++] = 1; }
+    if (!nr) return 0;
     for (int ln = a; ln <= b; ln++) {
-        int c = 0;
-        for (int i = 0; i < g_rs_n && !c; i++) if ((g_rs[i].how & 2) && g_rs[i].a <= ln && ln <= g_rs[i].b && !strcmp(g_rs[i].path, abs)) c = 1;
-        if (c) n++; else if (first_new && *first_new > b) *first_new = ln;
+        int c = 0, cur = 0;
+        for (int i = 0; i < nr; i++) if (ra[i] <= ln && ln <= rb[i]) { c = 1; if (!rp[i]) cur = 1; }
+        if (c) { n++; if (!cur && prior) *prior = 1; } else if (first_new && *first_new > b) *first_new = ln;
     }
     return n;
+}
+/* ultima leitura do arquivo (neste pedido ou, se nao houve, em pedido anterior): onde comecou, onde terminou, quantas linhas entregou */
+static int rd_last(const RdCur *c, const char *abs, long long size, long long mt, long long *off, long long *end, long long *nl) {
+    if (c) { *off = c->last_off; *end = c->last_end; *nl = c->last_n; return 1; }
+    for (int i = 0; i < g_rpc_n; i++) if (!strcmp(g_rpc[i].path, abs) && g_rpc[i].size == size && g_rpc[i].mt == mt) { *off = g_rpc[i].last_off; *end = g_rpc[i].last_end; *nl = g_rpc[i].last_n; return 1; }
+    return 0;
 }
 /* o arquivo mudou: o que o Read entregou dele deixou de valer */
 static void rs_forget_read(const char *abs) {
@@ -199,9 +274,9 @@ static void rc_note(const char *abs, long long size, long long mt, long long fir
         c = &g_rc[g_rc_n++]; snprintf(c->path, sizeof c->path, "%s", abs); c->size = size; c->mt = mt; c->cov_end = 0; c->nreads = 1;
     }
     if (first <= c->cov_end + 1 && last > c->cov_end) c->cov_end = last;
-    c->last_off = first; c->total = total;
+    c->last_off = first; c->last_end = last; c->last_n = last - first + 1; c->total = total;
 }
-static void ct_seen_reset(void) { for (int i = 0; i < g_ct_seen_n; i++) free(g_ct_seen[i].path); g_ct_seen_n = 0; rc_reset(); }
+static void ct_seen_reset(void) { for (int i = 0; i < g_ct_seen_n; i++) free(g_ct_seen[i].path); g_ct_seen_n = 0; rd_forget_all(); rc_clear(); }
 static void ct_seen_mark(const char *abs, int partial) {
     struct stat st; long long sz = -1, mt = 0;
     if (stat(abs, &st) == 0) { sz = (long long)st.st_size; mt = (long long)st.st_mtime; }

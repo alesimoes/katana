@@ -19,6 +19,7 @@ typedef enum {
     KN_LINKS,                              /* R10: arquivos ligados ainda nao lidos (grafo do Find) */
     KN_READ_CURSOR,                        /* R12: Read continua de onde o anterior parou */
     KN_READ_SEEN, KN_READ_SEEN_ALL,        /* R12b: faixa pedida quase toda ja entregue (offset deslocado): segue do primeiro trecho novo / nada novo */
+    KN_READ_MAPPED, KN_READ_SEQ,                           /* R12d: fatias em ordem do mesmo arquivo: nota curta manda ir ao ponto exato */
     KN_READ_MANY,                          /* R12c: muitas leituras do mesmo arquivo neste pedido */
     KN_READ_MAP, KN_READ_MAP_HIT,          /* R11: mapa de arquivo grande (sem e com trechos que casam com o pedido) */
     KN_STORED_ALL, KN_STORED_SAME,         /* R13, R15: leitura ja feita, nota guardada no lugar */
@@ -65,10 +66,12 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "if it changes the plan, follow it and rewrite or drop the old steps.]"
 #define KN_LINKS_HEAD "\n[katana: linked files you have not read yet: "
 #define KNF_LINKS KN_LINKS_HEAD "%s]"
-#define KNF_READ_CURSOR "[katana: lines 1-%lld of %s were already given to you in this request; here is the rest, from line %lld]\n"
-#define KNF_READ_SEEN "[katana: lines %lld-%lld of %s were already given to you in this request; here are the next lines, from line %lld]\n"
-#define KNF_READ_SEEN_ALL "[katana: already seen lines %lld-%lld of %s: they were given to you in this request and nothing after them is new, so nothing is repeated. " \
+#define KNF_READ_CURSOR "[katana: lines 1-%lld of %s were already given to you in %s; here is the rest, from line %lld]\n"
+#define KNF_READ_SEEN "[katana: lines %lld-%lld of %s were already given to you in %s; here are the next lines, from line %lld]\n"
+#define KNF_READ_SEEN_ALL "[katana: already seen lines %lld-%lld of %s: they were given to you in %s and nothing after them is new, so nothing is repeated. " \
     "Do not read this file again: use Grep (-n -C 2) or Symbols for the exact spot, or answer with what you have, saying what is still unknown.]"
+#define KNF_READ_MAPPED "[katana: you already have the map and the start of %s (%lld lines) from %s. Below are the parts that match what you look for now; for anything else read an exact range with offset and limit, or use Symbols and Grep (-n -C 2).]"
+#define KNF_READ_SEQ "[katana: you are reading %s in slices, in order. Go to the exact spot instead: Symbols (outline, or def/at) lists where things are, and Grep (-n -C 2) finds the line; then Read only that part.]"
 #define KNF_READ_MANY "\n[katana: this is read number %d of %s in this request. Reading it in slices is not getting you closer. " \
     "Use Grep (-n -C 2) or Symbols for the exact spot, or answer now with what you have, saying what is still unknown.]"
 #define KNF_READ_MAP_HIT "[katana: file has %lld lines; this is its map, its start and the parts that match what you are looking for. " \
@@ -122,6 +125,8 @@ static const KnSpec KN_TAB[KN_COUNT] = {
     [KN_READ_CURSOR]     = {"read_cursor",     KN_INFO,  KN_RESULT, 0, 0, KNF_READ_CURSOR},
     [KN_READ_SEEN]       = {"read_seen",       KN_INFO,  KN_RESULT, 0, 0, KNF_READ_SEEN},
     [KN_READ_SEEN_ALL]   = {"read_seen_all",   KN_INFO,  KN_RESULT, 0, 0, KNF_READ_SEEN_ALL},
+    [KN_READ_MAPPED]     = {"read_mapped",     KN_INFO,  KN_RESULT, 0, 0, KNF_READ_MAPPED},
+    [KN_READ_SEQ]        = {"read_seq",        KN_INFO,  KN_RESULT, 0, 0, KNF_READ_SEQ},
     [KN_READ_MANY]       = {"read_many",       KN_ORDER, KN_RESULT, 0, 0, KNF_READ_MANY},
     [KN_READ_MAP]        = {"read_map",        KN_INFO,  KN_RESULT, 0, 0, KNF_READ_MAP},
     [KN_READ_MAP_HIT]    = {"read_map_hit",    KN_INFO,  KN_RESULT, 0, 0, KNF_READ_MAP_HIT},

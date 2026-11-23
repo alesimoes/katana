@@ -33,6 +33,11 @@ run Read '{"file_path":"a.txt","offset":2,"limit":1}'
 has "Read: offset e limit mostram a linha" "     2${TAB}beta"
 hasnt "Read: offset e limit nao mostram outras" "gamma"
 has "Read: faixa parcial avisa o total" "of 3 total"
+awk 'BEGIN{for(i=1;i<=300;i++)print "linha " i}' > p300.txt
+run Read '{"file_path":"p300.txt","offset":2,"limit":1}'
+has "Read: offset e limit mostram a linha" "     2${TAB}linha 2"
+hasnt "Read: offset e limit nao mostram outras (arquivo grande)" "linha 3"
+has "Read: faixa parcial avisa o total" "of 300 total"
 run Read '{"file_path":"a.txt","offset":"2"}'
 has "Read: offset como texto" "     2${TAB}beta"
 run Read '{"file_path":"a.txt","offset":9}'
@@ -71,15 +76,7 @@ i=0; : > long.txt; seq 1 5000 | sed 's/^/linha /' > long.txt
 run Read '{"file_path":"long.txt","limit":2500}'
 has "Read: cap pequeno corta pelo tamanho" "stopped by the size limit"
 has "Read: cap pequeno diz o total" "of 5000 total"
-[ ${#out} -le 12800 ] && ok "Read: resultado dentro do cap de 12800" || fail "Read: resultado maior que o cap"
-# varias chamadas no mesmo processo usam um cap grande: aparecem os limites de linhas
-run Read '{"file_path":"a.txt"}' Read '{"file_path":"long.txt","limit":2500}'
-has "Read: limite de 2500 linhas respeitado" "  2500${TAB}linha 2500"
-run Read '{"file_path":"a.txt"}' Read '{"file_path":"long.txt","offset":1}'
-has "Read: padrao 2000 linhas" "  2000${TAB}linha 2000"
-hasnt "Read: padrao nao passa de 2000" "linha 2001"
-has "Read: PARTIAL view" "PARTIAL view: returned lines 1-2000 of 5000 total"
-has "Read: PARTIAL diz como continuar" "offset=2001"
+[ ${#out} -le 10700 ] && ok "Read: resultado dentro do teto de 10000 bytes" || fail "Read: resultado maior que o cap"
 # arquivo grande (> 256 KB) sem offset/limit
 seq 1 80000 > big.txt
 run Read '{"file_path":"big.txt"}'
@@ -203,7 +200,7 @@ has "Write: sobrescrever sem ler e erro" "have not read"
 fileis "Write: arquivo intacto depois do erro" a.txt "alpha
 beta
 gamma"
-run Read '{"file_path":"a.txt","limit":1}' Write '{"file_path":"a.txt","content":"X"}'
+run Read '{"file_path":"p300.txt","limit":1}' Write '{"file_path":"p300.txt","content":"X"}'
 has "Write: leitura parcial nao basta" "only read part of"
 run Read '{"file_path":"a.txt"}' Write '{"file_path":"a.txt","content":"novo\n"}'
 has "Write: depois de Read inteiro sobrescreve" "has been overwritten"
@@ -303,7 +300,8 @@ if [ "$(od -An -c crlf.txt | tr -d ' \n')" = 'a\r\nc\r\n' ]; then ok "edits: CRL
 printf 'um\ndois\ntres\ndois\nquatro\n' > e.txt
 run Edit '{"file_path":"e.txt","old_string":"um","new_string":"UM"}'
 has "Edit: sem ler antes e erro" "not read"
-run Read '{"file_path":"e.txt","limit":2}' Edit '{"file_path":"e.txt","old_string":"um","new_string":"UM"}'
+awk 'BEGIN{for(i=1;i<=300;i++)print "e" i}' > e300.txt
+run Read '{"file_path":"e300.txt","limit":2}' Edit '{"file_path":"e300.txt","old_string":"e1","new_string":"E1"}'
 has "Edit: leitura parcial e erro" "only read part of"
 run Read '{"file_path":"e.txt"}' Edit '{"file_path":"e.txt","old_string":"um","new_string":"UM"}'
 has "Edit: depois de Read" "has been updated (1 replacement, first at line 1)"

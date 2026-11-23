@@ -168,6 +168,7 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
         for (int i = 0; i < nh.n; i++) ch += ah_shrink_tool(&nh.v[i]);
         if (!ch) break;
     }
+    rd_forget_all();      /* a conversa foi resumida: o que o Read entregou saiu do contexto */
     ah_clear(out); free(out->v); *out = nh;
 }
 /* bloco extra no fim do .ksess (versao 1), para gerar dados de treino a partir das sessoes (tools/dataset):

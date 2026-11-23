@@ -498,6 +498,7 @@ static void ct_grep(const char *js, const char *end, char *out, size_t cap) {
 #else
     if (cap < 600) { if (cap) out[0] = 0; return; }
     char *pat = ct_str(js, end, "pattern"), *path = ct_str(js, end, "path"), *glob = ct_str(js, end, "glob");
+    if (pat && *pat) snprintf(g_intent_grep, sizeof g_intent_grep, "%.199s", pat);      /* o Read seguinte mostra o trecho que casa com isto */
     char *type = ct_str(js, end, "type"), *mode = ct_str(js, end, "output_mode"), *rxs = ct_str(js, end, "regex");
     CtGrep g; memset(&g, 0, sizeof g);
     CtFiles files; memset(&files, 0, sizeof files);

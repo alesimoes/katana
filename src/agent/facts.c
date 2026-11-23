@@ -92,6 +92,8 @@ static int facts_text(Buf *o) {
 static struct { char *path, *txt; size_t n; int epoch, seq, same; } g_rk[RD_KEEP];
 static int g_rk_n, g_rk_seq, g_rd_delta_on;      /* ligado pelo laco do agente */
 static int g_rd_epoch;
+static void rd_forget_key(const char *key);      /* tools/common.c: o resultado de um Read saiu do contexto */
+static void rd_forget_all(void);
 static void rd_delta_reset(void) { for (int i = 0; i < g_rk_n; i++) { free(g_rk[i].path); free(g_rk[i].txt); } g_rk_n = 0; }
 static int rd_delta_ok(void) { return g_rd_delta_on && g_ct_depth == 1; }
 static size_t rd_line(const char *b, size_t n, size_t s) { const char *q = s < n ? (const char *)memchr(b + s, '\n', n - s) : NULL; return q ? (size_t)(q - b) + 1 : n; }
