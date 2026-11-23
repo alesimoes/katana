@@ -36,6 +36,7 @@ static int sy_view_open_raw(const char *proj, SyView *v, char *err, size_t ecap)
     const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)r->nseg);
     for (int i = 0; i < r->nseg; i++) segs[i] = &r->seg[i];
     store_live_build(&v->L, segs, r->nseg); free(segs);
+    ign_hide_for_view(&loc, &v->L);               /* pastas de inclusao restrita que esta consulta nao pediu (maint.c) */
     if (loc.prefix[0]) { store_live_rebase(&v->L, loc.prefix, strlen(loc.prefix)); v->strip = (uint32_t)strlen(loc.prefix) + 1; snprintf(r->man.root, sizeof r->man.root, "%s/%s", loc.root, loc.prefix); }      /* ver search.c cs_view_open_raw */
     else snprintf(r->man.root, sizeof r->man.root, "%s", loc.root);
     v->ns = r->nseg; v->s = (SyVSeg *)calloc((size_t)v->ns, sizeof(SyVSeg));
@@ -315,6 +316,7 @@ typedef struct {
     char head[4700];                  /* linha de cabecalho da saida de texto (outline, at), so quando ha resultado */
     char notfound[704];               /* o que nao foi achado ("no definition of 'x' in the indexed set"), para o NOT FOUND */
     char limits[700];                 /* o limite do conjunto indexado (quantos arquivos, o que nao e visto) */
+    char partial[300], ignote[420];   /* fase 6: indice ainda parcial (o NOT FOUND diz "so far") e pastas ignoradas que poderiam ter o nome; vazios = saida de sempre */
     uint32_t nlive, nwith;            /* arquivos do conjunto e arquivos com simbolos */
     char argbuf[4500];
 } SyQ;
@@ -350,11 +352,15 @@ static void sy_render_json(CtSb *b, const SyQ *o, const SyItems *a) {
     for (int i = 0; i < a->n; i++) { if (i) sy_sbf(b, ","); sy_json_item(b, &a->v[i]); }
     sy_sbf(b, "]");
     if (o->external[0]) { sy_sbf(b, ",\"external\":"); sy_sb_jstr(b, o->external); }
-    if (!o->total) { char nf[900]; snprintf(nf, sizeof nf, "NOT FOUND: %s. Cascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2. %s", o->notfound, o->limits); sy_sbf(b, ",\"not_found\":"); sy_sb_jstr(b, nf); }
+    if (!o->total) { char nf[1700]; snprintf(nf, sizeof nf, "NOT FOUND%s: %s. Cascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2. %s%s%s%s%s", o->partial[0] ? " so far" : "", o->notfound, o->limits, o->partial[0] ? " " : "", o->partial, o->ignote[0] ? " " : "", o->ignote); sy_sbf(b, ",\"not_found\":"); sy_sb_jstr(b, nf); }
     sy_sbf(b, ",\"index\":{\"files\":%u,\"with_symbols\":%u}}\n", o->nlive, o->nwith);
 }
 static void sy_render_text(CtSb *b, const SyQ *o, const SyItems *a) {
-    if (!o->total) { sy_sbf(b, "NOT FOUND: %s.\nCascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2.\n%s\n", o->notfound, o->limits); return; }
+    if (!o->total) {
+        sy_sbf(b, "NOT FOUND%s: %s.\nCascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2.\n%s\n", o->partial[0] ? " so far" : "", o->notfound, o->limits);
+        if (o->partial[0]) sy_sbf(b, "%s\n", o->partial);
+        if (o->ignote[0]) sy_sbf(b, "%s\n", o->ignote);
+        return; }
     if (o->head[0]) sy_sbf(b, "%s\n", o->head);
     if (o->step > 1) sy_sbf(b, "No exact match for '%s'; %s\n", o->arg, o->cascade);
     for (int i = 0; i < a->n; i++) {
@@ -1044,3 +1050,298 @@ static int coder_outline_main(int argc, char **argv) { return sy_cli(SYK_OUTLINE
 static int coder_at_main(int argc, char **argv) { return sy_cli(SYK_AT, "at", "at <arquivo>:<linha> [pasta] [--json]", 0, 100, argc, argv); }
 static int coder_deps_main(int argc, char **argv) { return sy_cli(SYK_DEPS, "deps", "deps <arquivo> [pasta] [--json]", 0, 200, argc, argv); }
 static int coder_impact_main(int argc, char **argv) { return sy_cli(SYK_IMPACT, "impact", "impact <name> [pasta] [--depth N] [--nodes N] [--json]", 0, 1000, argc, argv); }
+
+#ifndef _WIN32
+/* ---- estado do indice para o modelo (fase 6, J.2): o escopo consultado esta completo? ----
+ * Uma pasta so pode ser dita "pronta" se todos os arquivos dela que esperam nivel chegaram ao N2/N3. O mapa de estado vem dos documentos vigentes da visao
+ * (statemap.c) e so e consultado quando o rastreador diz que o indice ainda nao esta completo (STS_CRAWL): num indice completo, ou feito pelo caminho sincrono
+ * (sem STS_CRAWL), nao ha linha nenhuma e a saida das ferramentas e a de antes. */
+typedef struct { int partial; uint32_t n_names, n_text, n_full; char label[400]; } IdxScope;       /* partial: 0 completo, 1 so nomes em parte do escopo, 2 texto sem simbolos */
+static void idx_scope(const char *root, const char *pre, IdxScope *S) {
+    memset(S, 0, sizeof *S);
+    SyView v; char err[200] = ""; if (sy_view_open(root, &v, err, sizeof err) != 0) return;
+    int complete = 1; const int known = sm_crawl_state(v.r, &complete, NULL, NULL, NULL);
+    char pf[2100]; snprintf(pf, sizeof pf, "%s", pre ? pre : ""); { const char *q = pf; while (q[0] == '.' && q[1] == '/') q += 2; if (q != pf) memmove(pf, q, strlen(q) + 1); }
+    size_t pl = strlen(pf); while (pl > 0 && pf[pl - 1] == '/') pf[--pl] = 0;
+    if (known && !complete) {
+        for (int i = 0; i < v.L.n; i++) {
+            const StoreLiveDoc *e = &v.L.e[i]; if (e->dead || (e->d.flags & (SDF_SKIPMASK | SDF_GENERATED))) continue;
+            if (pl && !(e->d.plen > pl && !memcmp(e->d.path, pf, pl) && e->d.path[pl] == '/')) continue;
+            const uint32_t lv = sdf_lv(e->d.flags); if (lv == 1) S->n_names++; else if (lv == 2) S->n_text++; else S->n_full++;
+        }
+        S->partial = S->n_names ? 1 : S->n_text ? 2 : 0;
+    }
+    if (S->partial) {
+        char ab[4400], sh[4400]; snprintf(ab, sizeof ab, "%s%s%s", root, pl ? "/" : "", pf); ign_disp(ab, sh, sizeof sh);
+        size_t l = strlen(sh); while (l > 1 && sh[l - 1] == '/') sh[--l] = 0;
+        if (!strcmp(sh, ".")) snprintf(S->label, sizeof S->label, "the project"); else snprintf(S->label, sizeof S->label, "%.300s/", sh);
+    }
+    sy_view_close(&v);
+}
+static int idx_scope_partial(const char *root, const char *pre) { IdxScope S; idx_scope(root, pre, &S); return S.partial; }
+/* as linhas de estado: no maximo UMA (a mais importante): indice reconstruido por dano, inclusao restrita desta chamada, escopo ainda incompleto, arquivos
+ * que mudaram desde a indexacao (fresh.c). Esvazia as notas pendentes de qualquer jeito. Devolve 1 se escreveu a linha (com a quebra de linha final) */
+static int idx_status_line(const char *root, const char *pre, char *out, size_t cap) {
+    char fr[200], sn[500]; const int fresh = fresh_note_take(fr, sizeof fr), scoped = ign_scope_note_take(sn, sizeof sn);
+    if (cap) out[0] = 0;
+    if (g_maint_rebuilt == 3) { g_maint_rebuilt = 0; snprintf(out, cap, "[index was damaged and has been rebuilt]\n"); return 1; }
+    if (scoped) { snprintf(out, cap, "%s", sn); return 1; }
+    IdxScope S; idx_scope(root, pre, &S);
+    if (S.partial == 1) {
+        const uint32_t all = S.n_names + S.n_text + S.n_full, text = S.n_text + S.n_full;
+        if (!text) snprintf(out, cap, "[index: %s is still at level names only; text and symbols are not ready yet]\n", S.label);
+        else snprintf(out, cap, "[index: %s is still being built: text ready for %u of %u files, symbols for %u; results are partial]\n", S.label, text, all, S.n_full);
+        return 1; }
+    if (S.partial == 2) { snprintf(out, cap, "[index: %s is still at level text; symbols not ready yet]\n", S.label); return 1; }
+    if (fresh) { snprintf(out, cap, "%s", fr); return 1; }
+    return 0;
+}
+/* as duas frases do NOT FOUND (J.3) para a consulta de simbolos em `root`: indice parcial (diz "so far" e a ressalva) e pastas ignoradas que poderiam ter o nome */
+static void sy_nf_notes(const char *root, SyQ *q) {
+    IdxScope S; idx_scope(root, "", &S);
+    if (S.partial) { const uint32_t all = S.n_names + S.n_text + S.n_full;
+        snprintf(q->partial, sizeof q->partial, "The index of %s is still being built (symbols ready for %u of %u files): this is not proof that it does not exist; try Grep, or ask again shortly.", S.label, S.n_full, all); }
+    ign_notfound_note(root, "", q->ignote, sizeof q->ignote);
+}
+
+/* ---- Symbols action=tree (J.5): as pastas, a profundidade do indice de cada uma e o que as define; so N0, nenhum arquivo e lido ---- */
+typedef struct { int kind; int di; const SmRec *rec; const IgnRec *ig; char *path; int depth; int64_t files; int parent; int sel; char rule[200]; int state; char main[4][100]; } TrNode;       /* kind: 0 pasta, 1 ignorada, 2 raiz aninhada, 3 copia separada */
+static int sy_tree_lang(const char *p, size_t l) {
+    char t[512]; if (l >= sizeof t) l = sizeof t - 1; memcpy(t, p, l); t[l] = 0;
+    const char *base = strrchr(t, '/'); base = base ? base + 1 : t; const char *dot = strrchr(base, '.');
+    return dot && dot > base ? coder_lang_of(t) : c2_lang_of(base, NULL);
+}
+static int sy_tree_cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+/* a pasta pedida (`file`) em relacao a raiz da visao: sem "./", sem barras sobrando; -1 se sai da raiz da visao */
+static int sy_tree_base(const SyView *v, const char *folder, char *base, size_t cap) {
+    char t[4400]; snprintf(t, sizeof t, "%s", folder ? folder : ""); const char *p = t;
+    if (p[0] == '/') { const char *rt = sy_root(v); const size_t rl = strlen(rt); if (strncmp(p, rt, rl) != 0 || (p[rl] != '/' && p[rl])) return -1; p += rl; }
+    size_t o = 0; base[0] = 0;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const size_t n = strcspn(p, "/");
+        if (n == 1 && p[0] == '.') { p += n; continue; }
+        if (n == 2 && p[0] == '.' && p[1] == '.') return -1;
+        if (o + n + 2 >= cap) return -1;
+        if (o) base[o++] = '/';
+        memcpy(base + o, p, n); o += n; base[o] = 0; p += n;
+    }
+    return 0;
+}
+static int sy_tree_cmp(const void *a, const void *b) {
+    const TrNode *x = *(TrNode *const *)a, *y = *(TrNode *const *)b;
+    if (x->kind != y->kind) return x->kind - y->kind;
+    if (x->kind == 0 && x->depth != y->depth) return x->depth - y->depth;
+    if (x->files != y->files) return x->files < y->files ? 1 : -1;
+    return strcmp(x->path, y->path);
+}
+/* ate 4 definicoes de `dir` (relativo a visao; "" = tudo) mais referenciadas de fora da pasta: topo do arquivo, nao privadas, sem declaracoes. So le as secoes do indice */
+static int sy_tree_main(const SyView *v, const char *dir, size_t dl, char out[4][100], double t_end) {
+    int nm = 0; int sc[4] = {0, 0, 0, 0}; int budget = 6000;
+    for (int i = 0; i < v->L.n && budget > 0; i++) {
+        const StoreLiveDoc *e = &v->L.e[i]; if (e->dead) continue;
+        if (dl && !(e->d.plen > dl && !memcmp(e->d.path, dir, dl) && e->d.path[dl] == '/')) continue;
+        const SySec *x = &v->s[e->seg].x; if (!x->has || e->idx >= x->docs.n) continue;
+        const uint8_t *dr = store_table_at(&x->docs, e->idx); const uint32_t s0 = st_get_u32(dr), n = st_get_u32(dr + 4);
+        for (uint32_t k = 0; k < n && budget > 0; k++, budget--) {
+            const uint8_t *q = store_table_at(&x->syms, s0 + k); const uint32_t kind = st_get_u32(q + 4), pack = st_get_u32(q + 40);
+            if (st_get_u32(q + 8) != SY_NONE || ((pack >> 16) & CSF_DECL)) continue;
+            if (!(kind == CK_FUNC || kind == CK_CLASS || kind == CK_STRUCT || kind == CK_ENUM || kind == CK_IFACE || kind == CK_TYPEDEF || kind == CK_UNION)) continue;
+            const uint32_t vis = pack & 0xFF; if (vis == CV_PRIVATE || vis == CV_FILE) continue;
+            uint32_t nl; const char *nmv = store_strs_get(&x->names, st_get_u32(q), &nl); if (!nl || nl > 90) continue;
+            int dup = 0; for (int j = 0; j < nm; j++) if (strlen(out[j]) == nl && !memcmp(out[j], nmv, nl)) dup = 1;
+            if (dup) continue;
+            int score = 0;      /* referencias vivas de fora da pasta (de qualquer lugar quando a pasta e a base), contadas nos segmentos do indice */
+            for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
+                const int64_t id = store_strs_find(&c->x.names, nmv, nl); uint32_t lo, hi; if (id < 0 || !sy_pair_range(&c->x.byref, (uint32_t)id, &lo, &hi)) continue;
+                for (uint32_t r = lo; r < hi && r < lo + 80; r++) {
+                    const uint8_t *rq = store_table_at(&c->x.refs, st_get_u32(store_table_at(&c->x.byref, r) + 4)); const uint32_t rd = st_get_u32(rq + 24);
+                    if (!c->live[rd]) continue;
+                    if (dl) { StoreDoc d; if (!store_docs_get(&c->sd, rd, &d)) continue; const char *pp = d.path + v->strip; const uint32_t pl = d.plen - v->strip;
+                        if (pl > dl && !memcmp(pp, dir, dl) && pp[dl] == '/') continue; }
+                    score++; } }
+            if (score <= 0) continue;
+            if (nm == 4 && score <= sc[3]) continue;
+            int at = nm < 4 ? nm : 3;
+            while (at > 0 && sc[at - 1] < score) { sc[at] = sc[at - 1]; memcpy(out[at], out[at - 1], 100); at--; }
+            sc[at] = score; memcpy(out[at], nmv, nl); out[at][nl] = 0; if (nm < 4) nm++;
+        }
+        if (now_sec() > t_end) break;
+    }
+    return nm;
+}
+/* "C 210, shell 40, markdown 23, other 12": as tres linguagens com mais arquivos e o resto */
+static void sy_tree_langs(const SmDir *d, char *o, size_t cap) {
+    uint32_t c[SM_LANG]; memcpy(c, d->lc, sizeof c); size_t l = 0; o[0] = 0; uint32_t rest = d->files;
+    for (int t = 0; t < 3; t++) {
+        int b = -1; for (int k = 1; k < SM_LANG - 1; k++) if (c[k] && k < CL_N && (b < 0 || c[k] > c[b])) b = k;
+        if (b < 0) break;
+        rest -= c[b]; l += (size_t)snprintf(o + l, cap - l, "%s%s %u", t ? ", " : "", CP_LANGN[b], c[b]); c[b] = 0;
+    }
+    if (rest) snprintf(o + l, cap - l, "%sother %u", l ? ", " : "", rest);
+}
+/* a profundidade do indice de uma pasta em palavras: o menor nivel que todos os arquivos dela que esperam nivel ja alcancaram */
+static const char *sy_tree_level(const SmDir *d, int any, int anykeys, const char **note) {
+    *note = "";
+    if (d->n_names) return "names only";
+    if (d->n_text) { *note = "symbols not ready"; return "text"; }
+    if (!d->n_full) { *note = d->files ? "no text files" : ""; return "names only"; }
+    return !any ? "text" : anykeys ? "symbols and links" : "symbols";
+}
+/* o texto (ou o JSON) da arvore de `folder` (relativa a `proj`); 0 = respondeu, 1 = nao ha o que mostrar (a mensagem esta no buffer), -1 = uso errado */
+static int sy_tree(const char *proj, const char *folder, int depth, int limit, int json, CtSb *sb) {
+    if (depth < 1) depth = 2;
+    if (depth > 4) depth = 4;
+    if (limit < 1) limit = 40;
+    if (limit > 100) limit = 100;
+    char pd[4400]; ign_disp(proj, pd, sizeof pd); const char *pdn = strcmp(pd, ".") ? pd : "this folder";       /* como o modelo chama a pasta nas frases */
+    IndexLoc loc; index_resolve(proj, 0, &loc);
+    { char man[4500]; struct stat sm; snprintf(man, sizeof man, "%s/MANIFEST", loc.store);
+      if (stat(man, &sm) != 0) { sy_sbf(sb, "No index for %s yet. `tree` only reads an existing index and never builds one: run `katana coder index %s` (or call another Symbols action, which builds it on first use), then ask again.\n", pdn, pd); return 1; } }
+    { int skip = 0; SyView v0; char e0[200] = "";      /* com o rastreador no meio do trabalho (STS_CRAWL incompleto) nao se espera nem se completa nada aqui: a arvore (N0) ja esta */
+      if (sy_view_open(proj, &v0, e0, sizeof e0) == 0) { int c = 1; skip = sm_crawl_state(v0.r, &c, NULL, NULL, NULL) && !c; sy_view_close(&v0); }
+      if (!skip) { IndexRes ir; index_ensure(proj, 0, "", 0, &ir); } }           /* senao mantem o indice em dia como as outras acoes; so le arquivo o que mudou */
+    SyView v; char err[300] = "";
+    if (sy_view_open(proj, &v, err, sizeof err) != 0) { sy_sbf(sb, "No index for %s: %s\n", pdn, err); return 1; }
+    char base[4400]; if (sy_tree_base(&v, folder, base, sizeof base) != 0) { sy_sbf(sb, "error: `file` must be a folder inside the project (%s)\n", pdn); sy_view_close(&v); return -1; }
+    const size_t bl = strlen(base);
+    char fb[4400]; if (loc.prefix[0]) snprintf(fb, sizeof fb, "%s%s%s", loc.prefix, bl ? "/" : "", base); else snprintf(fb, sizeof fb, "%s", base);      /* a base no espaco da raiz do indice */
+    const size_t fbl = strlen(fb);
+    StateMap M; const uint32_t total = statemap_build(&v.L, base, depth, sy_tree_lang, &M);
+    SmRecs R; sm_recs_load(v.r, &R);
+    IgnReg G; ign_reg_get(&loc, &G);
+    if (!total) {
+        char sh[4400]; snprintf(sh, sizeof sh, "%s%s%s", bl && !strcmp(pd, ".") ? "" : pd, bl && strcmp(pd, ".") ? "/" : "", base);
+        int ig = -1;
+        if (G.has && fbl) { char sub[4400]; snprintf(sub, sizeof sub, "%s", fb);
+            for (;;) { ig = ign_reg_find_dir(&G, sub); if (ig >= 0) break; char *sl = strrchr(sub, '/'); if (!sl) break; *sl = 0; } }
+        if (ig >= 0) sy_sbf(sb, "%s/ is not in the index: it is an ignored folder (%s). To look inside it, call a Symbols or Find action with `path` set to it (that indexes just that folder), or run `katana coder include`.\n", sh, G.r[ig].rule);
+        else if (bl) sy_sbf(sb, "%s/ has no files in the index (no such folder, or nothing indexable in it). Call tree on its parent to see the folders.\n", sh);
+        else sy_sbf(sb, "The index of %s has no files yet.\n", pdn);
+        statemap_free(&M); sm_recs_free(&R); ign_reg_free(&G); sy_view_close(&v); return 1;
+    }
+    /* os nos: pastas do mapa (profundidade >= 1), pastas descobertas e ainda nao listadas, e as ignoradas */
+    TrNode *N = (TrNode *)calloc((size_t)M.n + (size_t)R.n + (size_t)G.n + 4, sizeof *N); int nn = 0;
+    char **own = (char **)calloc((size_t)R.n + 4, sizeof(char *)); int nown = 0;           /* caminhos montados aqui (para liberar) */
+    for (int i = 1; i < M.n; i++) { TrNode *t = &N[nn++]; t->kind = 0; t->di = i; t->path = M.d[i].path; t->depth = M.d[i].depth; t->files = M.d[i].files; t->parent = -1;
+        char key[4400]; snprintf(key, sizeof key, "%s%s%s", fb, fbl ? "/" : "", M.d[i].path); const int ri = sm_recs_find(&R, key, strlen(key)); t->rec = ri >= 0 ? &R.r[ri] : NULL; }
+    for (int i = 0; i < R.n; i++) {
+        const SmRec *x = &R.r[i]; if (!x->plen || (fbl && !(x->plen > fbl && !memcmp(x->path, fb, fbl) && x->path[fbl] == '/'))) continue;
+        const char *rel = x->path + (fbl ? fbl + 1 : 0); const size_t rl = x->plen - (fbl ? fbl + 1 : 0); int dd = 1; for (size_t k = 0; k < rl; k++) if (rel[k] == '/') dd++;
+        if (dd > depth) continue;
+        if (x->state == SM_ST_DISC) {          /* descoberta e ainda nao listada (o rastreador esta no meio): aparece com 0 arquivos */
+            if (sm_dir_find(&M, rel, rl) >= 0) continue;
+            char *rc = (char *)malloc(rl + 1); memcpy(rc, rel, rl); rc[rl] = 0; own[nown++] = rc;
+            TrNode *t = &N[nn++]; t->kind = 0; t->di = -1; t->rec = x; t->path = rc; t->depth = dd; t->files = 0; t->parent = -1; continue; }
+        if (x->state != SM_ST_IGNORED && x->state != SM_ST_NESTED && x->state != SM_ST_CHECKOUT) continue;
+        if (G.has && ign_reg_find_dir(&G, x->path) >= 0) continue;          /* o registro de ignorados (com contagem) cobre esta */
+        if (x->state == SM_ST_IGNORED && x->reason == 14) continue;         /* pasta de segredo: nao se nomeia */
+        char *rc = (char *)malloc(rl + 1); memcpy(rc, rel, rl); rc[rl] = 0; own[nown++] = rc;
+        TrNode *t = &N[nn++]; t->kind = x->state == SM_ST_NESTED ? 2 : x->state == SM_ST_CHECKOUT ? 3 : 1; t->path = rc; t->depth = dd; t->files = -1; t->parent = -1; t->state = 0;
+        snprintf(t->rule, sizeof t->rule, "%.*s", (int)(x->rlen < 150 ? x->rlen : 150), x->rule);
+    }
+    int64_t ign_files = 0; int ign_dirs = 0, ign_uncounted = 0;
+    for (int i = 0; i < G.n; i++) {
+        const IgnRec *x = &G.r[i]; if (!x->isdir || x->reason == IGR_SECRET) continue;
+        if (fbl && !(strlen(x->rel) > fbl && !memcmp(x->rel, fb, fbl) && x->rel[fbl] == '/')) continue;
+        const char *rel = x->rel + (fbl ? fbl + 1 : 0); int dd = 1; for (const char *c = rel; *c; c++) if (*c == '/') dd++;
+        ign_dirs++; if (x->state) ign_files += x->files; else ign_uncounted++;
+        if (dd > depth) continue;
+        TrNode *t = &N[nn++]; t->kind = x->reason == IGR_NESTED ? 2 : x->reason == IGR_CHECKOUT ? 3 : 1; t->ig = x; t->path = (char *)rel; t->depth = dd; t->files = x->state ? x->files : -1; t->state = x->state; t->parent = -1;
+        snprintf(t->rule, sizeof t->rule, "%.190s", x->rule);
+    }
+    /* escolha em largura (profundidade, depois as maiores): `limit` pastas; as ignoradas sempre entram (ate 15) e nao gastam o limite */
+    TrNode **ord = (TrNode **)malloc(sizeof *ord * (size_t)(nn + 1)); for (int i = 0; i < nn; i++) ord[i] = &N[i];
+    qsort(ord, (size_t)nn, sizeof *ord, sy_tree_cmp);
+    int nreal = 0, nrealtotal = 0, nigsel = 0; for (int i = 0; i < nn; i++) if (N[i].kind == 0) nrealtotal++;
+    for (int i = 0; i < nn; i++) { TrNode *t = ord[i];
+        if (t->kind == 0) { if (nreal < limit) { t->sel = 1; nreal++; } }
+        else if (nigsel < 15) { t->sel = 1; nigsel++; } }
+    /* pais: o caminho sem o ultimo componente, entre as pastas escolhidas; sem achar, a base */
+    for (int i = 0; i < nn; i++) { TrNode *t = &N[i]; if (!t->sel) continue; const char *sl = strrchr(t->path, '/'); if (!sl) continue;
+        const size_t pl = (size_t)(sl - t->path);
+        for (int j = 0; j < nn; j++) if (N[j].sel && N[j].kind == 0 && strlen(N[j].path) == pl && !memcmp(N[j].path, t->path, pl)) { t->parent = j; break; } }
+    /* ordem de saida em arvore: cada pasta seguida das suas, as maiores primeiro, as ignoradas depois (ord ja esta por tipo, profundidade e tamanho) */
+    int *emit = (int *)malloc(sizeof(int) * (size_t)(nn + 1)); int ne = 0;
+    { int *stack = (int *)malloc(sizeof(int) * (size_t)(nn + 2)); int sp = 0; int *kids = (int *)malloc(sizeof(int) * (size_t)(nn + 1)); int kc = 0;
+      for (int i = 0; i < nn; i++) if (ord[i]->sel && ord[i]->parent < 0) kids[kc++] = (int)(ord[i] - N);
+      for (int i = kc - 1; i >= 0; i--) stack[sp++] = kids[i];
+      while (sp > 0) { const int cur = stack[--sp]; emit[ne++] = cur; kc = 0;
+          for (int i = 0; i < nn; i++) if (ord[i]->sel && ord[i]->parent == cur) kids[kc++] = (int)(ord[i] - N);
+          for (int i = kc - 1; i >= 0; i--) stack[sp++] = kids[i]; }
+      free(kids); free(stack); }
+    const double t_end = now_sec() + 0.5; char nb[4400]; { const char *bn = base; if (!bl) { bn = strrchr(proj, '/'); bn = bn && bn[1] ? bn + 1 : proj; } snprintf(nb, sizeof nb, "%s", bn); }
+    char hn[40]; mt_commas(total, hn, sizeof hn);
+    char langs[200]; sy_tree_langs(&M.d[0], langs, sizeof langs); const char *hnote; const char *hlev = sy_tree_level(&M.d[0], v.any, v.anykeys, &hnote);
+    if (json) {
+        sy_sbf(sb, "{\"folder\":"); sy_sb_jstr(sb, bl ? base : "."); sy_sbf(sb, ",\"files\":%u,\"index\":", total); sy_sb_jstr(sb, hlev); sy_sbf(sb, ",\"folders\":[");
+        for (int k = 0; k < ne; k++) { const TrNode *t = &N[emit[k]]; if (k) sy_sbf(sb, ",");
+            sy_sbf(sb, "{\"path\":"); { char pp[4400]; snprintf(pp, sizeof pp, "%s%s%s", base, bl ? "/" : "", t->path); sy_sb_jstr(sb, pp); }
+            if (t->kind == 0) { const char *nt; const SmDir *d = t->di >= 0 ? &M.d[t->di] : NULL; const char *lv = d ? sy_tree_level(d, v.any, v.anykeys, &nt) : "names only";
+                sy_sbf(sb, ",\"kind\":\"folder\",\"files\":%lld,\"index\":", (long long)t->files); sy_sb_jstr(sb, lv);
+                if (d) { char lg[200]; sy_tree_langs(d, lg, sizeof lg); sy_sbf(sb, ",\"languages\":"); sy_sb_jstr(sb, lg); }
+                if (t->rec && t->rec->dlen) { char dd[200]; snprintf(dd, sizeof dd, "%.*s", (int)(t->rec->dlen < 190 ? t->rec->dlen : 190), t->rec->doc); sy_sbf(sb, ",\"doc\":"); sy_sb_jstr(sb, dd); } }
+            else { sy_sbf(sb, ",\"kind\":\"%s\",\"rule\":", t->kind == 1 ? "ignored" : t->kind == 2 ? "own-index" : "separate-checkout"); sy_sb_jstr(sb, t->rule); sy_sbf(sb, ",\"files\":%lld,\"counted\":%s", (long long)t->files, t->state ? "true" : "false"); }
+            sy_sbf(sb, "}"); }
+        sy_sbf(sb, "],\"more_folders\":%d,\"ignored\":{\"folders\":%d,\"files\":%lld}}\n", nrealtotal > nreal ? nrealtotal - nreal : 0, ign_dirs, (long long)ign_files);
+    } else {
+        char lgs[240] = ""; if (langs[0]) snprintf(lgs, sizeof lgs, " (%s)", langs);
+        sy_sbf(sb, "%s/  %s %s%s  [indexed: %s]%s%s\n", nb, hn, total == 1 ? "file" : "files", lgs, hlev, *hnote ? "; " : "", hnote);
+        { const int ri = sm_recs_find(&R, fb, fbl); if (ri >= 0 && R.r[ri].dlen) sy_sbf(sb, "  doc: %.*s\n", (int)(R.r[ri].dlen < 150 ? R.r[ri].dlen : 150), R.r[ri].doc); }
+        if (M.nhere) { int cnt = 0; qsort(M.here, (size_t)M.nhere, sizeof(char *), sy_tree_cmp_str); sy_sbf(sb, "  files here: ");
+            for (int i = 0; i < M.nhere && cnt < 6; i++, cnt++) sy_sbf(sb, "%s%.60s", cnt ? ", " : "", M.here[i]);
+            if (M.nhere > cnt) sy_sbf(sb, " (+%d)", M.nhere - cnt);
+            sy_sbf(sb, "\n"); }
+        for (int k = 0; k < ne; k++) {
+            TrNode *t = &N[emit[k]]; char pp[4400]; snprintf(pp, sizeof pp, "%s%s%s", base, bl ? "/" : "", t->path); const int ind = 2 * t->depth;
+            if (t->kind == 0) {
+                const SmDir *d = t->di >= 0 ? &M.d[t->di] : NULL; const char *nt = "", *lv = d ? sy_tree_level(d, v.any, v.anykeys, &nt) : "names only"; char fn[40], lg[200] = "";
+                mt_commas((long long)t->files, fn, sizeof fn); if (d) sy_tree_langs(d, lg, sizeof lg);
+                sy_sbf(sb, "%*s%s/  %s %s", ind, "", pp, fn, t->files == 1 ? "file" : "files"); if (lg[0]) sy_sbf(sb, " (%s)", lg); sy_sbf(sb, "  [%s]", lv);
+                if (!d) sy_sbf(sb, "  not listed yet"); else if (*nt) sy_sbf(sb, "  %s", nt);
+                if (t->rec && t->rec->state == SM_ST_TOOMANY) sy_sbf(sb, "  limit: more than 20000 entries");
+                if (t->rec && t->rec->state == SM_ST_TOODEEP) sy_sbf(sb, "  limit: deeper than the depth limit");
+                if (t->rec && t->rec->dlen) sy_sbf(sb, "  doc: %.*s", (int)(t->rec->dlen < 110 ? t->rec->dlen : 110), t->rec->doc);
+                sy_sbf(sb, "\n");
+                if (d && !*nt && !d->n_names && !d->n_text && d->n_full && v.any && now_sec() < t_end) {
+                    const int nm = sy_tree_main(&v, pp, strlen(pp), t->main, t_end);
+                    if (nm) { sy_sbf(sb, "%*s  main: ", ind, ""); for (int j = 0; j < nm; j++) sy_sbf(sb, "%s%s", j ? ", " : "", t->main[j]); sy_sbf(sb, "\n"); } }
+            } else {
+                char ab[4400], sh[4400]; snprintf(ab, sizeof ab, "%s/%s%s%s", strcmp(loc.root, "/") ? loc.root : "", loc.prefix, loc.prefix[0] ? "/" : "", pp); ign_disp(ab, sh, sizeof sh);
+                if (t->kind == 2) sy_sbf(sb, "%*s%s/  (has its own index; use path=%s)\n", ind, "", pp, sh);
+                else if (t->kind == 3) sy_sbf(sb, "%*s%s/  (separate git checkout; use path=%s)\n", ind, "", pp, sh);
+                else { char fn[60]; if (t->files < 0) snprintf(fn, sizeof fn, "not counted yet"); else { char c[40]; mt_commas((long long)t->files, c, sizeof c); snprintf(fn, sizeof fn, "%s%s %s", t->state == 2 ? "at least " : "", c, t->files == 1 ? "file" : "files"); }
+                    sy_sbf(sb, "%*s%s/  (ignored: %s, %s)\n", ind, "", pp, t->rule, fn); }
+            }
+        }
+        if (nrealtotal > nreal) sy_sbf(sb, "(%d more folders not shown; raise `limit` or call tree on a subfolder)\n", nrealtotal - nreal);
+        if (ign_dirs > nigsel) sy_sbf(sb, "(%d more ignored folder%s not listed here; `katana coder ignored` lists them all)\n", ign_dirs - nigsel, ign_dirs - nigsel == 1 ? "" : "s");
+        if (ign_dirs) { char fn[40]; mt_commas((long long)ign_files, fn, sizeof fn); sy_sbf(sb, "ignored: %d folder%s, %s%s files not in the index%s. To search inside one, set `path` to it.\n", ign_dirs, ign_dirs == 1 ? "" : "s", ign_uncounted ? "at least " : "", fn, ign_uncounted ? " (some not counted yet)" : ""); }
+    }
+    for (int i = 0; i < nown; i++) free(own[i]);
+    free(own); free(emit); free(ord); free(N);
+    statemap_free(&M); sm_recs_free(&R); ign_reg_free(&G); sy_view_close(&v);
+    return 0;
+}
+/* katana coder tree [pasta] [--depth N] [--limit N] [--json] */
+static int coder_tree_main(int argc, char **argv) {
+    const char *dir = "."; int depth = 0, limit = 0, json = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--json")) json = 1; else if (!strcmp(argv[i], "--depth") && i + 1 < argc) depth = atoi(argv[++i]); else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = atoi(argv[++i]);
+        else if (argv[i][0] != '-') dir = argv[i];
+        else { fprintf(stderr, "uso: katana coder tree [pasta] [--depth N] [--limit N] [--json]\n"); return 2; }
+    }
+    struct stat st; if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) { fprintf(stderr, "tree: %s is not a folder\n", dir); return 2; }
+    char rp[4200]; if (!realpath(dir, rp)) { fprintf(stderr, "tree: cannot resolve %s\n", dir); return 2; }
+    ign_scope_enter(rp, 0);
+    CtSb sb = {0}; const int rc = sy_tree(rp, "", depth, limit, json, &sb); sy_put(&sb); ign_scope_leave();
+    return rc < 0 ? 2 : rc;
+}
+#else
+static int idx_status_line(const char *root, const char *pre, char *out, size_t cap) { (void)root; (void)pre; if (cap) out[0] = 0; return 0; }
+static int idx_scope_partial(const char *root, const char *pre) { (void)root; (void)pre; return 0; }
+static void sy_nf_notes(const char *root, SyQ *q) { (void)root; (void)q; }
+static int sy_tree(const char *proj, const char *folder, int depth, int limit, int json, CtSb *sb) { (void)proj; (void)folder; (void)depth; (void)limit; (void)json; sy_sbf(sb, "tree: not available on this platform\n"); return 1; }
+static int coder_tree_main(int argc, char **argv) { (void)argc; (void)argv; fprintf(stderr, "tree: not available on this platform\n"); return 2; }
+#endif

@@ -10,6 +10,7 @@ static const char CT_SYMBOLS_DESC[] =
     "callers = who calls `name`; callees = what `name` calls, in call order; "
     "uses = occurrences of `name` that are not calls (reads, types, assignments); "
     "outline = the symbols of `file`, nested, with line ranges (read this instead of the whole file); "
+    "tree = the folders of the project (or of folder `file`), `depth` levels deep: files per language, how deeply each is indexed, what it is for, its main symbols, and the folders that are ignored and why; "
     "at = the symbol and its enclosing symbols at `file`:`line` (which function is line 120 in?); "
     "deps = what `file` imports and which files import it; "
     "impact = the callers of `name`, their callers and so on (what a change can break; `depth` default 3); "
@@ -21,12 +22,12 @@ static const char CT_SYMBOLS_DESC[] =
     "and says so; when nothing matches it answers NOT FOUND and states what was indexed (macro-generated names and calls through pointers are not seen). "
     "`limit` caps the results. `path` is a project folder other than the working folder. Then Read only the lines it points to.";
 static const char CT_SYMBOLS_PROPS[] =
-    "\"action\": {\"type\": \"string\", \"enum\": [\"def\", \"refs\", \"callers\", \"callees\", \"uses\", \"outline\", \"at\", \"deps\", \"impact\", \"flow\"], \"description\": \"The query\"}, "
+    "\"action\": {\"type\": \"string\", \"enum\": [\"def\", \"refs\", \"callers\", \"callees\", \"uses\", \"outline\", \"at\", \"deps\", \"impact\", \"flow\", \"tree\"], \"description\": \"The query\"}, "
     "\"name\": {\"type\": \"string\", \"description\": \"Symbol name, for def, refs, callers, callees, uses, impact; the text key for flow (register, /channel, KATANA_SESSION_ID)\"}, "
-    "\"file\": {\"type\": \"string\", \"description\": \"File, for outline, at, deps, flow\"}, "
+    "\"file\": {\"type\": \"string\", \"description\": \"File, for outline, at, deps, flow; the folder to show for tree\"}, "
     "\"line\": {\"type\": \"integer\", \"description\": \"Line number, for at and flow\"}, "
-    "\"limit\": {\"type\": \"integer\", \"description\": \"Maximum results (default depends on the action, max 100)\"}, "
-    "\"depth\": {\"type\": \"integer\", \"description\": \"impact only: levels of callers (default 3, max 6)\"}, "
+    "\"limit\": {\"type\": \"integer\", \"description\": \"Maximum results (default depends on the action, max 100; tree: folder lines, default 40)\"}, "
+    "\"depth\": {\"type\": \"integer\", \"description\": \"impact: levels of callers (default 3, max 6); tree: levels of folders (default 2, max 4)\"}, "
     "\"path\": {\"type\": \"string\", \"description\": \"Project folder (default: the working folder)\"}";
 static const char CT_SYMBOLS_REQ[] = "\"action\"";
 
@@ -38,7 +39,7 @@ static void ct_symbols(const char *js, const char *end, char *out, size_t cap) {
     if (!name || !*name) { free(name); name = ct_str(js, end, "query"); }
     if (!file || !*file) { free(file); file = ct_str(js, end, "file_path"); }
     const long long line = ct_int(js, end, "line", 0), limit = ct_int(js, end, "limit", 0), depth = ct_int(js, end, "depth", 0);
-    if (!action || !*action) snprintf(out, cap, "error: missing `action` (def, refs, callers, callees, uses, outline, at, deps, impact, flow). Example: {\"action\": \"def\", \"name\": \"parseConfig\"}");
+    if (!action || !*action) snprintf(out, cap, "error: missing `action` (def, refs, callers, callees, uses, outline, at, deps, impact, flow, tree). Example: {\"action\": \"def\", \"name\": \"parseConfig\"}");
     else if ((!path || !*path) && ct_cwd_is_home())
         snprintf(out, cap, "error: the working folder is your home folder, not a project, so there is no symbol index to build here. "
                  "Set `path` to the project folder the user means (if the user named it, find where it is with Bash: find / -maxdepth 4 -type d -name NAME 2>/dev/null), then call Symbols again with that path.");

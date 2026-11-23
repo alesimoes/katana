@@ -27,6 +27,7 @@ static const struct { const char *name, *help; CoderCmd fn; } g_coder_cmds[] = {
     {"deps", "deps <arquivo> [pasta] [--json]: o que o arquivo importa e quem o importa", coder_deps_main},
     {"impact", "impact <nome> [pasta] [--depth N] [--nodes N] [--json]: fecho de chamadores", coder_impact_main},
     {"flow", "flow <chave|arquivo[:linha]> [pasta] [--json] | flow --links [pasta]: ligacoes por chave de texto (quem envia/emite/escreve e quem trata/le a mesma chave)", coder_flow_main},
+    {"tree", "tree [pasta] [--depth N] [--limit N] [--json]: as pastas do projeto, profundidade do indice de cada uma, resumo e simbolos principais; so le o indice (N0)", coder_tree_main},
     {"tokens", "tokens \"texto\" [--lang pt|en|auto] [--json] | --file ARQ", coder_tokens_main},
     {NULL, NULL, NULL}
 };

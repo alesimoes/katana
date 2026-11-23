@@ -36,6 +36,12 @@ typedef struct { int n, total, concept, created; uint32_t files; double ms, inde
 static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho);   /* search.c */
 static int index_due(const char *root, int cons);                       /* src/coder/indexctl.c: precisa varrer a arvore de novo? */
 static void index_validated(const char *root, int cons);
+static void ign_scope_enter(const char *dir, int allow_add);            /* src/coder/maint.c: pasta consultada; `path` dentro de pasta ignorada vira inclusao restrita */
+static void ign_scope_leave(void);
+static int ign_notfound_note(const char *proj, const char *pre, char *out, size_t cap);      /* maint.c: "N ignored folders could hold it: ..." */
+static int idx_status_line(const char *root, const char *pre, char *out, size_t cap);        /* src/coder/symquery.c: a linha de estado do indice (no maximo uma) */
+static int idx_scope_partial(const char *root, const char *pre);                             /* symquery.c: 0 = escopo completo, 1 e 2 = ainda parcial */
+static int fresh_note_take(char *out, size_t cap);                                           /* src/coder/fresh.c */
 static void index_stats_line(char *o, size_t cap);
 #define FD_MAGIC 0x444e464bu       /* "KFND" */
 #define FD_VERSION 4u       /* 4: grafo de arquivos depois dos arquivos (findgraph.c) */
@@ -749,10 +755,12 @@ bad:
 }
 
 /* ---- lista de arquivos ---- */
+static char g_fd_allow[1500];          /* a pasta que a chamada pediu em `path` (relativa a raiz do Find): os nomes de pasta pesada DENTRO dela nao a escondem (fase 6, inclusao restrita) */
 static int fd_skip_rel(const char *rel) {
     static const char *const dirs[] = {"node_modules", "build", "dist", "vendor", ".katana", ".git", ".svn", ".hg", "__pycache__",
         ".venv", "venv", ".cache", "target", ".gradle", ".idea", NULL};
     const char *p = rel;
+    { const size_t al = strlen(g_fd_allow); if (al && !strncmp(rel, g_fd_allow, al) && rel[al] == '/') p = rel + al + 1; }
     for (;;) {
         const char *sl = strchr(p, '/');
         if (!sl) break;
@@ -1558,10 +1566,17 @@ static int fd_line_of(FdIndex *X, const char *rel, const char *needle, int *ln, 
     }
     free(b); return found;
 }
+/* fase 6 (J.3), o que acompanha um NOT FOUND do Find: "so far" quando o escopo do indice ainda esta sendo montado e as pastas ignoradas que poderiam ter o nome. So no modo store */
+static int fd_nf_part(const FdIndex *X, const char *pre) { return X->store ? idx_scope_partial(X->root, pre) : 0; }
+static void fd_nf_tail(const FdIndex *X, const char *pre, int part, CtSb *sb) {
+    if (!X->store) return;
+    if (part) ct_sb_puts(sb, "The index is still being built, so this is not proof that it does not exist; try Grep, or ask again shortly.\n");
+    char ign[460]; if (ign_notfound_note(X->root, pre, ign, sizeof ign)) { ct_sb_puts(sb, ign); ct_sb_puts(sb, "\n"); }
+}
 /* camada antes dos candidatos: aspas -> literal; identificador -> exato. O arquivo e relido para mostrar a linha que tem o texto de fato.
  * Devolve quantas linhas uteis escreveu (0: nada achado) */
 static int fd_coder_pre(FdIndex *X, const CoderHits *C, int qk, const char *q, const char *pre, CtSb *sb) {
-    char m[760], needle[200], txt[160]; int shown = 0, ln = 0;
+    char m[760], needle[200], txt[160]; int shown = 0, ln = 0; const int part = fd_nf_part(X, pre);
     if (qk == FQ_QUOTED) { const char *a = strchr(q, '"') + 1, *b = strchr(a, '"'); snprintf(needle, sizeof needle, "%.*s", (int)(b - a < 199 ? b - a : 199), a); }
     else { while (*q == ' ' || *q == '\t') q++; snprintf(needle, sizeof needle, "%s", q); size_t l = strlen(needle); while (l && (needle[l - 1] == ' ' || needle[l - 1] == '\t' || needle[l - 1] == '\n')) needle[--l] = 0; }
     if (qk == FQ_QUOTED) {
@@ -1572,7 +1587,7 @@ static int fd_coder_pre(FdIndex *X, const CoderHits *C, int qk, const char *q, c
             else snprintf(m, sizeof m, "  [confidence high] %s\n", C->r[i].path);
             ct_sb_puts(sb, m); shown++;
         }
-        if (!shown) { snprintf(m, sizeof m, "NOT FOUND (literal): the quoted text does not occur in any of the indexed files%s%s.\n", *pre ? " under " : "", pre); ct_sb_puts(sb, m); }
+        if (!shown) { snprintf(m, sizeof m, "NOT FOUND%s (literal): the quoted text does not occur in any of the indexed files%s%s.\n", part ? " so far" : "", *pre ? " under " : "", pre); ct_sb_puts(sb, m); fd_nf_tail(X, pre, part, sb); }
         return shown;
     }
     /* identificador: exato = o arquivo se chama assim ou o texto existe nele (linha mostrada); o resto e parecido */
@@ -1589,11 +1604,12 @@ static int fd_coder_pre(FdIndex *X, const CoderHits *C, int qk, const char *q, c
     if (!ex) {
         for (int i = 0; i < C->n && pr < 2; i++) {
             if (!fd_coder_ok(X, &C->r[i], pre)) continue;
-            if (!pr) { snprintf(m, sizeof m, "NOT FOUND: nothing is named \"%.80s\". Similar names or spellings (confidence low):\n", needle); ct_sb_puts(sb, m); }
+            if (!pr) { snprintf(m, sizeof m, "NOT FOUND%s: nothing is named \"%.80s\". Similar names or spellings (confidence low):\n", part ? " so far" : "", needle); ct_sb_puts(sb, m); }
             fd_hit_line(sb, &C->r[i], "confidence low"); pr++;
         }
         shown = pr;
-        if (!pr) { snprintf(m, sizeof m, "NOT FOUND: no file name or identifier like \"%.80s\" in the indexed files.\n", needle); ct_sb_puts(sb, m); }
+        if (pr) fd_nf_tail(X, pre, part, sb);
+        if (!pr) { snprintf(m, sizeof m, "NOT FOUND%s: no file name or identifier like \"%.80s\" in the indexed files.\n", part ? " so far" : "", needle); ct_sb_puts(sb, m); fd_nf_tail(X, pre, part, sb); }
     }
     return shown;
 }
@@ -1607,7 +1623,7 @@ static int fd_coder_post(const CoderHits *C, const char *pre, FdIndex *X, const 
         if (!shown) ct_sb_puts(sb, "Also from the text search (other channels):\n");
         fd_hit_line(sb, &C->r[i], C->r[i].exact ? "confidence high" : "confidence low"); shown++;
     }
-    if (C->notfound[0]) { char m[300]; snprintf(m, sizeof m, "NOT FOUND in the index: %.200s\n", C->notfound); ct_sb_puts(sb, m); shown++; }
+    if (C->notfound[0]) { char m[300]; const int part = fd_nf_part(X, pre); snprintf(m, sizeof m, "NOT FOUND%s in the index: %.200s\n", part ? " so far" : "", C->notfound); ct_sb_puts(sb, m); fd_nf_tail(X, pre, part, sb); shown++; }
     return shown;
 }
 
@@ -1709,6 +1725,8 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
         struct stat st;
         if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
         if (!ct_dir_arg(path, 0, res, sizeof res, &st, out, cap)) goto done;
+        ign_scope_enter(res, 1);                                    /* inclusao restrita se `path` esta dentro de pasta ignorada (maint.c) */
+        { char drop[200]; fresh_note_take(drop, sizeof drop); }     /* so os arquivos citados nesta consulta contam para a linha de aviso (fresh.c) */
         /* raiz do indice: a pasta de trabalho; path dentro dela so filtra */
         const size_t cl = strlen(cwd);
         if (strcmp(res, cwd) == 0) { snprintf(root, sizeof root, "%s", cwd); pre[0] = 0; }
@@ -1725,6 +1743,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             if (rt_skip_subdir(cand)) { snprintf(root, sizeof root, "%s", cand); const char *rest = sl ? sl + 1 : ""; memmove(pre, rest, strlen(rest) + 1); c = pre; continue; }
             if (!sl) break; c = sl + 1; }
         char err[300] = "";
+        snprintf(g_fd_allow, sizeof g_fd_allow, "%s", pre);
         /* Find unificado (padrao, fase 7): o catalogo e o indice do coder dao a lista de arquivos e os candidatos; o indice de trechos e montado so com eles, a cada
            consulta. KATANA_FIND_INDEX=legacy usa o indice proprio do Find (cache find-*.idx); sem indice do coder (nao foi possivel cria-lo) a chamada cai nele */
         struct FsCtx *FS = NULL; double ens_ms = 0;
@@ -1787,11 +1806,12 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             if (repeat && nsk) ct_sb_puts(&sb, "(same words as your previous Find: showing the next candidates; the ones already shown are left out)\n");
             const size_t base = sb.n;
             if (!nsh) {
-                char m[700];
+                char m[1300];
                 if (nsk) ct_sb_puts(&sb, "Every good match was already shown or read in this request (listed below). Use other words, Read another part, or follow the next steps.\n");
                 else if (!cpre || qk == FQ_QUOTED) {
-                    snprintf(m, sizeof m, "No match for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code. "
-                             "If it is something you saved earlier (a fact, a preference), try recall(query).", q, *pre ? " in " : "", pre);
+                    const int part = FS ? idx_scope_partial(root, pre) : 0; char ign[460] = ""; if (FS && !(CH && qk != FQ_NATURAL)) ign_notfound_note(root, pre, ign, sizeof ign);      /* a camada do coder ja disse onde nao olhou */      /* J.3: "so far" e onde o indice nao olhou */
+                    snprintf(m, sizeof m, "No match%s for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code. "
+                             "If it is something you saved earlier (a fact, a preference), try recall(query).%s%s", part ? " so far" : "", q, *pre ? " in " : "", pre, ign[0] ? " " : "", ign);
                     ct_sb_puts(&sb, m);
                 }
             } else {
@@ -1824,11 +1844,13 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
         if (!FS && X->truncated) { char m[200]; snprintf(m, sizeof m, "(index covers %d files; %d more skipped: KATANA_FIND_MAX_FILES)\n", X->listed, X->truncated); ct_sb_puts(&sb, m); }
         ct_sb_puts(&sb, refs ? "Next: Find mode=refs on a caller, or Read a part with offset and limit." : "Follow a symbol with Find mode=refs, or Read a part with offset and limit.");
         if (g_fd_verbose) { if (FS) { char tl[400]; fs_time_line(FS, tl, sizeof tl); fprintf(stderr, "find: %s\n", tl); } fprintf(stderr, "find: query %.1f ms\n", fd_ms() - (FS ? tb : t0)); }
-        snprintf(out, cap, "%s", sb.p ? sb.p : "");
+        { char stl[500] = ""; if (FS) idx_status_line(root, pre, stl, sizeof stl); snprintf(out, cap, "%s%s", stl, sb.p ? sb.p : ""); }       /* no maximo uma linha de estado, so quando o escopo esta incompleto ou desatualizado */
         free(sb.p);
         if (FS) fs_end(FS);
     }
 done:
+    g_fd_allow[0] = 0;
+    ign_scope_leave();
     free(q); free(path); free(mode);
 }
 #else
