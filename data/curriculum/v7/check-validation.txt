@@ -1,0 +1,86 @@
+family                   conv    turns  chars_learn   windows* conv/window*
+x-fix                       9       96        10049        5.9          1.5
+x-add                       6       76         8307        4.9          1.2
+x-rename                    7       85         7923        4.7          1.5
+x-find                      3       19         1103        0.7          4.6
+x-explain                   1        5          347        0.2          4.9
+x-run                       1        7          475        0.3          3.6
+x-config                    6       55         6395        3.8          1.6
+x-clean                     7       36         4057        2.4          2.9
+x-investigate               2       17         1807        1.1          1.9
+x-web                       7       35         3547        2.1          3.3
+x-concept                  19       89         7411        4.4          4.3
+x-tools                     9       75         5547        3.3          2.7
+x-skill                     3       26         2137        1.3          2.4
+x-rare                     27      178        15547        9.2          2.9
+x-ps1                       7       48         7257        4.3          1.6
+x-mcp                      13       43         3561        2.1          6.2
+x-ability                   8       29         3914        2.3          3.5
+x-make                     21      124        17611       10.4          2.0
+x-docs                     11       15         2252        1.3          8.3
+x-find6                    11       40         3693        2.2          5.0
+x-batch                     3        9         1228        0.7          4.1
+x-script                    8       26         4905        2.9          2.8
+x-symbols                  15       38         3491        2.1          7.3
+x-find7                     9       24         2377        1.4          6.4
+x-place                     7       15         1567        0.9          7.5
+x-cursor                    8       22         3474        2.1          3.9
+x-katananotes              11       61         6210        3.7          3.0
+total                     239     1293       136192       80.6          3.0
+* estimativa: caracteres / 3.3 / 512 (janelas de 512 tokens so com o texto que conta para a perda); contexto fora da perda (sistema, pedidos, resultados): 765192 caracteres
+cobertura das ferramentas do motor (conversas com chamada treinada; minimo por faixa):
+  A Bash                      104  (minimo 5)
+  A Read                      116  (minimo 5)
+  A Edit                       42  (minimo 5)
+  A Write                      19  (minimo 5)
+  A Grep                      109  (minimo 5)
+  A Glob                       27  (minimo 5)
+  A Find                       21  (minimo 5)
+  A Symbols                    29  (minimo 5)
+  A TodoWrite                  96  (minimo 5)
+  A AskUserQuestion             6  (minimo 5)
+  A ToolSearch                 38  (minimo 5)
+  A WebSearch                   7  (minimo 5)
+  A WebFetch                    7  (minimo 5)
+  A Skill                       8  (minimo 5)
+  B git                         4  (minimo 5)  ABAIXO
+  B recall                      1  (minimo 5)  ABAIXO
+  B remember                    1  (minimo 5)  ABAIXO
+  B download_file               2  (minimo 5)  ABAIXO
+  B terminal                    1  (minimo 5)  ABAIXO
+  C install_package             1  (minimo 5)  ABAIXO
+  C read_log                    1  (minimo 5)  ABAIXO
+  C howto                       1  (minimo 5)  ABAIXO
+  B Agent                       1  (minimo 5)  ABAIXO
+  B LSP                         1  (minimo 5)  ABAIXO
+  B Monitor                     6  (minimo 5)
+  B TaskStop                    9  (minimo 5)
+  B EnterPlanMode               1  (minimo 5)  ABAIXO
+  B ExitPlanMode                1  (minimo 5)  ABAIXO
+  B NotebookEdit                2  (minimo 5)  ABAIXO
+  B SendUserFile                2  (minimo 5)  ABAIXO
+  C TaskCreate                  2  (minimo 5)  ABAIXO
+  C TaskUpdate                  2  (minimo 5)  ABAIXO
+  C TaskList                    1  (minimo 5)  ABAIXO
+  C TaskGet                     1  (minimo 5)  ABAIXO
+  B ListMcpResourcesTool        1  (minimo 5)  ABAIXO
+  B ReadMcpResourceTool         1  (minimo 5)  ABAIXO
+  B EnterWorktree               1  (minimo 5)  ABAIXO
+  B ExitWorktree                1  (minimo 5)  ABAIXO
+  C CronCreate                  2  (minimo 5)  ABAIXO
+  C CronDelete                  1  (minimo 5)  ABAIXO
+  C CronList                    1  (minimo 5)  ABAIXO
+  C ScheduleWakeup              1  (minimo 5)  ABAIXO
+  C PushNotification            1  (minimo 5)  ABAIXO
+  C EndConversation             1  (minimo 5)  ABAIXO
+  C ReportFindings              1  (minimo 5)  ABAIXO
+  C SendMessage                 2  (minimo 5)  ABAIXO
+  C ListAgents                  2  (minimo 5)  ABAIXO
+  C SubagentHandback            1  (minimo 5)  ABAIXO
+  C Workflow                    1  (minimo 5)  ABAIXO
+  C WaitForMcpServers           1  (minimo 5)  ABAIXO
+  - ferramentas MCP            13
+  - scripts .ps1 (x-ps1)        7  (minimo 15)  ABAIXO
+cobertura: 35 ferramentas abaixo do minimo (check --coverage faz disso um erro)
+refeitas inteiras pelo motor de cenarios: 239 conversas
+check: 239 conversas, 1141 chamadas, 0 com problema, 0 contradicoes (mesma situacao, acao diferente), 0 situacoes repetidas

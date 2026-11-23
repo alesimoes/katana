@@ -445,6 +445,60 @@ per module, one 40-line chunk per file), so the examples do not show `Find` choo
 The plan rule in `loop.c` counts `Find` as a call that is not a read, so a request with three non-read calls would be asked for a plan;
 these families stay under that, but a real session that chains `Find`s would not (see the handoff).
 
+## Version 7 (2026-11-23): Symbols, the new Find, a project in another place, the read cursor, `[katana: ...]` lines
+
+v7 is v6 regenerated for the engine as it is now, plus five families that teach the model to USE what the engine gained since v6.
+Nothing is copied from the v6 files: `data/curriculum/v7/generate.sh` rebuilds every family (v1 to v6 and the new ones) with the
+binary at hand, so the system prompt of the examples is the current one (`katana agentsys`: `Symbols` on the Files line, the rule that
+lines in `[katana: ...]` come from the program and must be followed, "Find first; Grep only for an exact pattern; Glob only for file
+names by pattern", including the `real` prompt mode that kept the old "by meaning" wording in v6) and every tool output is the real
+output of today. The model is trained with `--no-tool-decl`, so it learns the names and arguments of `Symbols` and `Find` from these data.
+
+**What changed in the machinery** (`scenario.c`, small and off for nobody: it is the real loop's behaviour).
+`x_run` now goes through the same repeat control as the agent loop (`rr_check` before the call, `rr_after` after it), and `x_user` and
+`x_begin` call `rr_reset` as the loop does at each request. So an identical read repeated in one request returns the engine's repeat
+note instead of the content, a tool that changes files empties the table, and the read cursor (`rc_*`) starts over at each request. The
+older families only repeat a read by accident, so only a handful of their conversations changed (7 of 600 carry a repeat note, 3 the
+cursor note). `g_x_planok` lets a conversation keep the engine's `[katana: plan first ...]` note (every other family still treats it as an
+error). Of the old families only the wording of two of x-find6's own lines changed ("Searching by meaning first" and "The exact name is
+known: Grep, no need to search by meaning" no longer match what `Find` is; the tool outputs of x-find6 were already real).
+
+**New projects** (`scenario_v7.c`). Seven languages (Python, JavaScript, TypeScript, C, Go, Rust, Java), three to four modules, 12 to 15
+functions in three layers (leaves, middle, top) with real calls between modules (`from .m import f`, `require`, `import`, `#include`
+with headers, `use crate::m::f`, `Class.f(...)`), a "hub" leaf called by three functions, and for `x-find7` one or two message constants
+(`QUOTA_FULL = "quota exceeded"`). The big-file variant has one module of 15 functions with eight comment lines each (200+ lines, over
+the 8 KB / 200 line threshold of the read map). Everything is written to disk and the engine's index is built by the first call.
+Dates, ids and the index time (`[symbol index created in 0.0 s]`) are normalised in the stored text.
+
+**Language.** In the five new families about 10% of the requests (and their answers) are in Portuguese about English code (`x7_lang`);
+the older families keep their 50/50 split. The holdout reserves cells with `x_held` (offsets 210 to 250) and the last quarter of the
+choices through `cu_ix`.
+
+| family | situations (what the conversation does) |
+|---|---|
+| `x-symbols` | `callers` (answer cites the call sites; 45% read only the range the output gave, `offset`/`limit` from `in FN (a-b)`; 35% a follow-up asks what breaks, answered with `impact`), `def` (file and lines; read of the range; follow-up for the callers, with the honest answer when there are none), `callees` (call order; a follow-up reads the first one), `impact` (direct and indirect callers, `depth` sometimes), `impact-none` (NOT FOUND, said as "nothing calls it that the index sees", with its limits), `at` (which function contains line N), `deps` (JavaScript, TypeScript and C only: the languages whose imports the index resolves), `parallel` (two independent `Symbols` in one turn: callers + callees of the same name, two `def`, two `outline`), `outline-read` (outline, then `Read` of only the function's range), `typo` (the engine's "No exact match ... showing X" with low confidence, reported as such), `missing` (NOT FOUND with the indexed set, no invention) |
+| `x-find7` | `ident` (an identifier: "Found by name or text (checked in the files)" with `[confidence high]`; 40% read three lines; 45% a follow-up with `Find mode=refs`, which the symbol index now serves: "Defined", "Used N times in M files"), `quoted` (a quoted message: "Literal text found", answered with file, line and constant), `quoted-missing` ("NOT FOUND (literal)": a `Grep -i` of a word that is nowhere, or no call; the answer says the text is not in the project), `typo` (an identifier with a typo: "NOT FOUND: nothing is named ..." with `[confidence low]` similar names, then `Symbols def` of the closest and an answer that says it assumed that name), `concept` (a description in other words: v6's machinery with the current output; 35% follow-up with refs), `no-match` ("No match for ... try recall(query)", then `Grep` with the code term) |
+| `x-place` | the user mentions a project that is not under the working folder (or only its name), the working folder being the home folder or another folder; the request arrives with the engine's `[katana: you mention "X", which does not exist from the working folder (W). It is at: P. Work there: pass that folder as path ...]` line, computed by `place_note` itself; the model passes `path` (Symbols, Find, Glob, Grep) or an absolute path from the first call: `symbols`, `find`, `glob`, `grep`, `abs-read`; `did-you-mean` (Read of a path that does not exist returns "Did you mean: P?", the model reads P); `folder-exists` ("The folder X exists at P, but lib/f is not in it": `Glob` with `path`, then `Read`); `home-refusal` (a `Find` or `Glob **/` in the home folder is refused; that first call is context only, not trained, and the model repeats it with `path`) |
+| `x-cursor` | a 200-line file read in parts: `rest` (`Read` with `limit`, then `Read` without a range: "lines 1-N ... were already given to you in this request; here is the rest, from line N+1"), `chunks` (explicit offsets, no note), `same-offset` (same offset, bigger limit: the cursor note), `map` (a `Read` without a range of a big file returns its map and first 40 lines; the model then reads only the function's range), `repeat-switch` (an identical `Read` repeated: the repeat note, then `Symbols outline`), `repeat-answer` (the note, then the answer from what was read), `stuck` (three repeats: the third-time note, then an honest "I could not tell" that says what was and was not read). The repeated calls are context only (not trained) |
+| `x-katananotes` | following any `[katana: ...]` line: `repeat` (a repeated `Symbols`, `Grep` or `Find mode=refs` gets the note; the model looks somewhere else: the callers of the caller), `plan-first` (three `Edit`s without a plan: the third result carries "[katana: plan first ...]"; the model writes the plan, re-queries `Symbols` (NOT FOUND: no caller left), runs a syntax check; Python, JavaScript or C), `todo-open` (the model answers with plan steps open; the engine's "your todo list still has unfinished steps" message arrives; the model closes the list with `TodoWrite done=4` and repeats the answer; the premature answer is context only) |
+
+**Counts** (`data/curriculum/v7`, see its README): training file 1042 conversations (712 from the v1 to v6 families with v6's weights and recipe,
+v6 had 697; new: `x-symbols` 110, `x-find7` 70, `x-place` 60, `x-cursor` 40, `x-katananotes` 50), validation file 239 (189 old + 50 new, after the
+repeatability filter). 183 conversations call `Symbols`, 195 call `Find`, 294 have calls in parallel, 125 have the real full prompt. The new
+families are 10% Portuguese (32 of 330). `katana curriculum check`: 1042 conversations, 3349 calls, 0 problems, 0 contradictions, 0 repeated
+situations; validation: 239 conversations, 1141 calls, 0 problems. New default weights: `x-symbols` 40, `x-find7` 25, `x-place` 20,
+`x-cursor` 15, `x-katananotes` 15 (the data files use fixed counts per family instead, see `generate.sh`). `Symbols` is in the coverage table (tier A).
+
+**Not verified.** No model was run, no training was done and nothing was measured, so nothing shows that a model trained on this data uses
+`Symbols`, follows the notes or stops repeating itself. The projects are tiny (twelve to fifteen functions; calls are matched by name only,
+and the generator never shows a call the index cannot see). The `Find` identifier lookup and the `Symbols` outputs are read with
+`strstr` and `sscanf` from the real text, so a change in their format makes the generator drop scenarios (it does not write wrong ones). The
+`x-place` scenarios depend on `place_note` and the missing-path search walking the disks of the machine that generates them (names are
+random words, but a folder with the same name on a mounted disk would change the note; the generator refuses a note that points elsewhere).
+`recall` is only named in the `no-match` output: no conversation calls it. Two files written in the same instant make a real `Grep` list
+them in a different order, which a replay cannot repeat (about 0.2% of the conversations); `generate.sh` drops those lines and lists them
+in `dropped.txt`.
+
 ## Commands
 
 ```

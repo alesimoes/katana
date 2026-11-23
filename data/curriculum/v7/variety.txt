@@ -1,0 +1,25 @@
+== train: 1042 conversations, 4098 trained turns, 1331 requests
+distinct tool sequences: 358
+conversations in the 20 most common tool sequences: 483 of 1042 (46.4%)
+families with one sequence: 0 []
+families with one first tool: 3 [x-cursor, x-find7, x-symbols]
+conversations with two or more requests: 269 (25.8%); with a second request that depends on the first (line flag dep): 213 (20.4%)
+conversations with AskUserQuestion: 23 (2.2%)
+conversations with the real full prompt (tools section present): 125 (12.0%)
+request shapes (line flag shape; a conversation may carry several): plain 267, ctx 218, polite 216, dep 213, formal 114, blunt 102, typo 96, mix 90, wrong 32, lead 27, two 27, goal 25, midway 13, paste 10
+language of the scenario: en 662, pt 380
+== validation: 239 conversations, 1293 trained turns, 368 requests
+distinct tool sequences: 116
+conversations in the 20 most common tool sequences: 114 of 239 (47.7%)
+families with one sequence: 3 [x-explain, x-run, x-web]
+families with one first tool: 11 [x-add, x-cursor, x-explain, x-find, x-find7, x-investigate, x-run, x-skill, x-symbols, x-tools, x-web]
+conversations with two or more requests: 111 (46.4%); with a second request that depends on the first (line flag dep): 43 (18.0%)
+conversations with AskUserQuestion: 6 (2.5%)
+conversations with the real full prompt (tools section present): 22 (9.2%)
+request shapes (line flag shape; a conversation may carry several): held-lead 103, fwd 77, ctx 70, ps 69, dep 43, typo 30, two 15, plain 14, wrong 7, midway 2, paste 2, goal 1
+language of the scenario: en 129, pt 110
+== validation against train
+validation requests equal to a training request (paths, file names, backticked text and digits masked; case and spacing ignored): 5 of 368 (1.4%)
+validation trained turns equal to a training trained turn (exact text and calls): 98 of 1293 (7.6%)
+  the repeated turns by kind (repeated of all of that kind): final answer 4 of 367, ToolSearch 24 of 38, written plan 8 of 98, call with no free argument 11 of 20, other call 51 of 770
+validation conversations whose tool sequence the training file does not have: 90 of 239 (37.7%)
