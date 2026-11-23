@@ -17,7 +17,10 @@
  *   SY_T_KNAMES (0x207) tabela de strings ordenada por bytes: as chaves do segmento; id = posicao (busca binaria)
  *   SY_T_KDOCS  (0x208) tabela largura 8, um registro por documento: u32 occ0, u32 nocc | 0x80000000 (bit alto = o documento foi analisado pelo
  *                       extrator de chaves; sem o bit = indexado antes de existirem chaves, ou nao analisavel). As ocorrencias de um documento sao contiguas.
- *   SY_T_KOCC   (0x209) tabela largura 16: u32 chave, role | cls<<8 | meth<<16, line, documento. Em ordem de linha dentro do documento.
+ *   SY_T_KOCC   (0x209) tabela largura 16: u32 chave, role | cls<<8 | meth<<16 | sub<<24, line, documento. Em ordem de linha dentro do documento.
+ *                       role 1 PRODUCE, 2 CONSUME, 3 DEFINE (contrato); cls 7 = contract e sub = CKS_* (subtipo do contrato). Armazenamentos antigos so tem roles 1 e 2 e sub 0;
+ *                       o leitor ignora role/cls desconhecidos (flow.c) e o verify so recusa role 0 e cls > 0x3F, entao nada precisou de nova versao de secao.
+ *                       KDOCS: o bit 0x40000000 de nocc marca o documento como analisado tambem pelo extrator de contratos (sem ele, um contrato antigo nao tem as chaves novas).
  *   SY_T_KBYKEY (0x20A) pares (id da chave, linha de KOCC) ordenados: "todas as ocorrencias desta chave" e uma busca binaria
  * Fusores: reconstroem tudo (um por tipo de secao, o primeiro reconstroi e entrega os demais) remapeando documentos pelo docmap; documentos
  * mortos ou substituidos somem; os nomes sao unidos e reordenados.
@@ -34,7 +37,9 @@
 #define SY_T_KOCC (STS_SYM_BASE + 9)
 #define SY_T_KBYKEY (STS_SYM_BASE + 10)
 #define SY_KOCCW 16
-#define SY_KFLAG 0x80000000u
+#define SY_KF1 0x80000000u            /* documento analisado pelo extrator de chaves */
+#define SY_KF2 0x40000000u            /* ... e pelo extrator de CONTRATOS (papel DEFINE, classe contract); so os documentos de depois dele tem este bit */
+#define SY_KFLAG (SY_KF1 | SY_KF2)    /* mascara dos dois bits: `& ~SY_KFLAG` tira o numero de ocorrencias; `& SY_KFLAG` != 0 = analisado */
 #define SY_NONE 0xFFFFFFFFu
 #define SY_DOCW 24
 #define SY_SYMW 48
@@ -44,7 +49,7 @@
 typedef struct { const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent; } SySIn;
 typedef struct { const char *name; uint32_t nl, kind, line, col, flags, from; } SyRIn;
 typedef struct { const char *name; uint32_t nl, pack, line; } SyKIn;
-typedef struct { SySIn *s; uint32_t ns; SyRIn *r; uint32_t nr; uint32_t lang; CoderFile cf; SyKIn *k; uint32_t nk; int kflag; } SyDIn;
+typedef struct { SySIn *s; uint32_t ns; SyRIn *r; uint32_t nr; uint32_t lang; CoderFile cf; SyKIn *k; uint32_t nk; int kflag, kflag2; } SyDIn;
 typedef struct { StoreBuf names, docs, occ, bykey; uint32_t nnames, nocc; } KyOut;
 typedef struct { StoreBuf names, docs, syms, refs, bydef, byref, ival; uint32_t nnames, nsyms, nrefs; } SyOut;
 typedef struct { const char *p; uint32_t l; } SyNm;
@@ -113,7 +118,7 @@ static void ky_build(const SyDIn *d, uint32_t nd, KyOut *o) {
     uint64_t *pk = (uint64_t *)malloc(sizeof *pk * (size_t)(no + 1)); uint32_t row = 0;
     for (uint32_t i = 0; i < nd; i++) {
         const SyDIn *x = &d[i];
-        sb_u32(&o->docs, x->nk ? row : 0); sb_u32(&o->docs, x->nk | (x->kflag ? SY_KFLAG : 0));
+        sb_u32(&o->docs, x->nk ? row : 0); sb_u32(&o->docs, x->nk | (x->kflag ? SY_KF1 : 0) | (x->kflag2 ? SY_KF2 : 0));
         for (uint32_t q = 0; q < x->nk; q++) {
             const SyKIn *y = &x->k[q]; uint32_t id = sy_nm_id(all, (uint32_t)u, y->name, y->nl);
             sb_u32(&o->occ, id); sb_u32(&o->occ, y->pack); sb_u32(&o->occ, y->line); sb_u32(&o->occ, i);
@@ -146,9 +151,9 @@ static void sy_doc_hook(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_
     coder_parse(full, txt, n, &x->cf); free(txt);
     CoderFile *f = &x->cf; x->lang = (uint32_t)f->lang;
     if (f->lang != CL_UNKNOWN) {          /* chaves de texto: o documento foi analisado (mesmo sem nenhuma chave) */
-        x->kflag = 1; g_sy.nparsed++;
+        x->kflag = x->kflag2 = 1; g_sy.nparsed++;
         if (f->nkey) { x->k = (SyKIn *)calloc((size_t)f->nkey, sizeof(SyKIn)); x->nk = (uint32_t)f->nkey;
-            for (int i = 0; i < f->nkey; i++) { const CoderKey *y = &f->key[i]; SyKIn *z = &x->k[i]; z->name = y->key; z->nl = (uint32_t)strlen(y->key); z->line = (uint32_t)y->line; z->pack = (uint32_t)y->role | (uint32_t)y->cls << 8 | (uint32_t)y->meth << 16; }
+            for (int i = 0; i < f->nkey; i++) { const CoderKey *y = &f->key[i]; SyKIn *z = &x->k[i]; z->name = y->key; z->nl = (uint32_t)strlen(y->key); z->line = (uint32_t)y->line; z->pack = (uint32_t)y->role | (uint32_t)y->cls << 8 | (uint32_t)y->meth << 16 | (uint32_t)(y->sub & 0xFF) << 24; }
             g_sy.nkeys += x->nk; }
     }
     if (f->nsym || f->nref) {
@@ -233,7 +238,7 @@ static int coder_key_verify_seg(const StoreSeg *s, char *err, size_t ecap) {
         if (no) { if (o0 != eo) { snprintf(err, ecap, "chaves: documento %u fora da sequencia", i); return -1; } }
         if ((uint64_t)o0 + no > x.occ.n) { snprintf(err, ecap, "chaves: documento %u fora dos limites", i); return -1; }
         for (uint32_t k = 0; k < no; k++) { const uint8_t *y = store_table_at(&x.occ, o0 + k); uint32_t pk = st_get_u32(y + 4);
-            if (st_get_u32(y) >= x.names.n || st_get_u32(y + 12) != i || (pk & 0xFF) < 1 || (pk & 0xFF) > 2 || ((pk >> 8) & 0xFF) >= CKC_N) { snprintf(err, ecap, "chaves: ocorrencia %u do documento %u invalida", k, i); return -1; } }
+            if (st_get_u32(y) >= x.names.n || st_get_u32(y + 12) != i || (pk & 0xFF) < 1 || ((pk >> 8) & 0xFF) > 0x3F) { snprintf(err, ecap, "chaves: ocorrencia %u do documento %u invalida", k, i); return -1; } }
         eo += no;
     }
     if (eo != x.occ.n) { snprintf(err, ecap, "chaves: ocorrencias sobrando"); return -1; }
@@ -333,7 +338,7 @@ static int ky_merge_names(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
         for (uint32_t i = 0; i < x.docs.n; i++) {
             uint32_t g = c->docmap[s][i]; if (g == UINT32_MAX) continue;
             const uint8_t *r = store_table_at(&x.docs, i); uint32_t o0 = st_get_u32(r), w1 = st_get_u32(r + 4), no = w1 & ~SY_KFLAG;
-            SyDIn *y = &nd[g]; y->kflag = (w1 & SY_KFLAG) != 0;
+            SyDIn *y = &nd[g]; y->kflag = (w1 & SY_KF1) != 0; y->kflag2 = (w1 & SY_KF2) != 0;
             if (!no) continue;
             y->k = (SyKIn *)calloc((size_t)no, sizeof(SyKIn)); y->nk = no;
             for (uint32_t k = 0; k < no; k++) { const uint8_t *q = store_table_at(&x.occ, o0 + k); SyKIn *z = &y->k[k]; z->name = store_strs_get(&x.names, st_get_u32(q), &z->nl); z->pack = st_get_u32(q + 4); z->line = st_get_u32(q + 8); }
