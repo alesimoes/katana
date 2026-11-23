@@ -161,6 +161,16 @@
 </div>
 <p class="note">Alternating runs on the same machine, because the machine drifts over time. Your numbers will differ with your hardware.</p>
 
+<h2 id="model">The model</h2>
+<p>katana is developed and tested with <strong>Qwen3.6-35B-A3B</strong>, a Mixture-of-Experts model with 35 billion parameters of which about 3 billion are active for each token. The original model, its model card and its license are at <a href="https://huggingface.co/Qwen/Qwen3.6-35B-A3B">Qwen/Qwen3.6-35B-A3B</a> on Hugging Face. katana reads GGUF files, so it uses the 4-bit quantization <code>Qwen3.6-35B-A3B-UD-Q4_K_M.gguf</code> (22 GB, 32 GB of RAM or more recommended) published by <a href="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF">Unsloth</a>. <code>./katana pull qwen3.6-35b</code> downloads that exact file and checks it against a pinned revision and checksum. katana does not convert the original weights to GGUF yet; that is on the plan.</p>
+
+<h2 id="ways">Three ways to use it</h2>
+<div class="grid">
+  <div class="card"><h3>Console</h3><p><code>./katana agent model.gguf</code> in your project folder. The agent with all its tools, in the terminal.</p></div>
+  <div class="card"><h3>Desktop</h3><p>A native window (Qt 6, no browser) that drives the same agent: conversations, tool cards, plan, context meter. Linux only for now.</p></div>
+  <div class="card"><h3>Web <em>(work in progress)</em></h3><p><code>katana serve model.gguf</code> serves a chat page and an OpenAI-compatible API on your machine; with <code>--agent</code> the page drives the full agent. The page is a work in progress and has only been checked against a mock server.</p></div>
+</div>
+
 <h2 id="desktop">Run the desktop app</h2>
 <figure class="shot"><img src="desktop.png" width="1000" height="695" alt="katana-desktop: conversation list on the left, a chat where the agent listed the .md files in a folder, and the message box with the model selector and token counter" loading="lazy"><figcaption>katana-desktop: conversations on the left, the agent's actions folded into one step, and the model, working folder and context counter under the message box.</figcaption></figure>
 <p>The desktop app is a native window (Qt 6, no browser) that starts the agent for you. It needs the engine built first, a model file, and Qt 6.5 or newer with CMake 3.21 or newer. On Ubuntu or Debian the Qt packages used here are <code>qt6-base-dev</code>, <code>qt6-declarative-dev</code> and <code>qml6-module-qtquick-controls</code>.</p>
