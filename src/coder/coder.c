@@ -5,6 +5,7 @@ static const struct { const char *name, *help; CoderCmd fn; } g_coder_cmds[] = {
     {"symbols", "<arquivo|pasta> [--refs] [--json]: simbolos com intervalo exato e referencias", coder_symbols_main},
     {"kb", "kb check|lookup <termo>|expand \"frase\"|stats  (base de conhecimento de padroes)", coder_kb_main},
     {"index", "index [pasta]: varre e atualiza o catalogo de arquivos (incremental)", coder_cmd_index},
+    {"crawl", "crawl <pasta> [--prio <prefixo>] [--changed <caminho>...] [--sweep] [--stop] [--quiet]: o rastreador do indice (niveis N0..N3, um por raiz, sai quando termina)", coder_crawl_main},
     {"status", "status [pasta]: segmentos, arquivos, tamanho em disco, versao", coder_cmd_status},
     {"verify", "verify [pasta]: confere checksums de todas as secoes e o manifesto", coder_cmd_verify},
     {"compact", "compact [pasta]: funde todos os segmentos em um", coder_cmd_compact},

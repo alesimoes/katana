@@ -97,7 +97,7 @@ static int index_bash_may_change(const char *cmd) {
  * ms = tempo gasto aqui. Devolve 0 (pode consultar) ou -1 (nao foi possivel criar nem ler). level/prefix/budget_ms: reservados (fase 3). */
 typedef struct { int created, walked, busy; double ms; } IndexRes;
 static int index_ensure(const char *root, int level, const char *prefix, int budget_ms, IndexRes *res) {
-    (void)level; (void)prefix; (void)budget_ms;
+    (void)level; (void)prefix; (void)budget_ms; watch_poll();
     IndexRes z; if (!res) res = &z; memset(res, 0, sizeof *res);
     char dir[4400], man[4500], err[300] = ""; struct stat sv; const double t0 = now_sec();
     IndexLoc loc; index_resolve(root, 0, &loc); root = loc.root;      /* a raiz que cobre a pasta (init, ancestral ou home); a consulta restringe pelo prefixo */
