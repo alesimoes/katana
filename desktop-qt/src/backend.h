@@ -167,6 +167,7 @@ public:
     Q_PROPERTY(MessageModel *messages READ messages CONSTANT)
     Q_PROPERTY(QString themeOverride READ themeOverride CONSTANT)
     // especializacoes (.kspec) em uso no modelo atual, lidas das linhas que o motor escreve na carga; a pasta e a fonte da verdade
+    Q_PROPERTY(QString engineVersion READ engineVersion CONSTANT)          // `katana version` do executavel que o app usa, mostrado na tela de abertura
     Q_PROPERTY(QStringList specsActive READ specsActive NOTIFY specsChanged)
     Q_PROPERTY(QStringList specsSkipped READ specsSkipped NOTIFY specsChanged)
     Q_PROPERTY(QString specsDir READ specsDir CONSTANT)
@@ -265,6 +266,7 @@ public:
     Q_INVOKABLE bool uiFlag(const QString &name) const;
     Q_INVOKABLE void setUiFlag(const QString &name, bool v);
     Q_INVOKABLE void autoStartDefault();
+    QString engineVersion() const { return m_engineVersion; }
     QStringList specsActive() const { return m_specsActive; }
     QStringList specsSkipped() const { return m_specsSkipped; }
     QString specsDir() const { return QDir::homePath() + "/.katana/specs"; }
@@ -402,6 +404,7 @@ private:
     bool m_teacher = false;
     void drainQueue();
     QStringList m_specsActive, m_specsSkipped;
+    QString m_engineVersion;
     bool m_stopRequested = false;     // o usuario apertou Parar neste pedido: terminar sem texto e esperado
     bool m_testMode = false;
     QString m_lastOpened;

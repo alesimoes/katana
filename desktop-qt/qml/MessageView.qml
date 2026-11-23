@@ -458,7 +458,18 @@ Item {
                       : backend.loading ? "Carregando o modelo, pode levar alguns minutos..."
                       : "Escreva abaixo ou comece por uma sugestão."
             }
-            Item { width: 1; height: 26 }
+            Item { width: 1; height: 8 }
+            Text { font.family: Theme.sans;
+                objectName: "engineVersion"
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WrapAnywhere
+                color: Theme.mut
+                opacity: 0.7
+                font.pixelSize: 11
+                text: backend.engineVersion + (backend.specsActive.length ? " · " + backend.specsActive.join(", ") : "")
+            }
+            Item { width: 1; height: 18 }
             GridLayout {
                 width: parent.width
                 columns: mv.width < 640 ? 1 : 3

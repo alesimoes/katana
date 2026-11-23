@@ -493,6 +493,10 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
     : QObject(parent), m_katana(katana), m_modelsDir(modelsDir), m_home(home)
 {
     m_sessDir = QDir(home).filePath("sessoes");
+    {   QProcess v; v.start(m_katana, {"version"});                       // versao do motor em uso (caminho e compilacao)
+        if (v.waitForFinished(3000)) m_engineVersion = QString::fromUtf8(v.readAllStandardOutput()).trimmed();
+        if (m_engineVersion.isEmpty()) m_engineVersion = "versao do motor desconhecida";
+        m_engineVersion += " · " + QFileInfo(m_katana).absoluteFilePath(); }
     QDir().mkpath(m_sessDir);
     m_ui = new QSettings(QDir(home).filePath("ui.ini"), QSettings::IniFormat, this);
     setFonte(fonte());
