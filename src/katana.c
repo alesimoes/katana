@@ -101,6 +101,7 @@
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
+#include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */
