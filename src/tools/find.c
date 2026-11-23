@@ -34,6 +34,9 @@ typedef struct { int n, total, concept, created; uint32_t files; double ms, inde
 
 #ifndef _WIN32
 static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho);   /* search.c */
+static int index_due(const char *root, int cons);                       /* src/coder/indexctl.c: precisa varrer a arvore de novo? */
+static void index_validated(const char *root, int cons);
+static void index_stats_line(char *o, size_t cap);
 #define FD_MAGIC 0x444e464bu       /* "KFND" */
 #define FD_VERSION 4u       /* 4: grafo de arquivos depois dos arquivos (findgraph.c) */
 #define FD_CHUNK 40
@@ -603,6 +606,9 @@ static int fd_cache_path(FdIndex *X) {
         snprintf(d1, sizeof d1, "%s/.katana", X->root);
         snprintf(d2, sizeof d2, "%s/.katana/cache", X->root);
         MKDIR(d1); MKDIR(d2);
+#ifndef _WIN32
+        chmod(d2, 0700);                      /* o cache tem trechos do texto dos arquivos: so o dono */
+#endif
         char gi[4500]; struct stat st;
         snprintf(gi, sizeof gi, "%s/.gitignore", d2);
         if (stat(d2, &st) == 0 && stat(gi, &st) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); } }      /* o cache nao entra no git do projeto */
@@ -610,6 +616,9 @@ static int fd_cache_path(FdIndex *X) {
     }
     snprintf(d1, sizeof d1, "%s/.katana", home); MKDIR(d1);
     snprintf(d2, sizeof d2, "%s/.katana/cache", home); MKDIR(d2);
+#ifndef _WIN32
+    chmod(d2, 0700);
+#endif
     snprintf(X->cache, sizeof X->cache, "%s/%s", d2, fn);
     return 1;
 }
@@ -618,6 +627,9 @@ static int fd_save(FdIndex *X) {
     snprintf(tmp, sizeof tmp, "%s.%ld.tmp", X->cache, (long)getpid());
     FILE *f = fopen(tmp, "wb");
     if (!f) return 0;
+#ifndef _WIN32
+    fchmod(fileno(f), 0600);
+#endif
     uint32_t h[4] = {FD_MAGIC, FD_VERSION, (uint32_t)strlen(X->root), (uint32_t)X->T.n};
     int ok = fwrite(h, sizeof h, 1, f) == 1 && fwrite(X->root, 1, h[2], f) == h[2];
     ok = ok && fwrite(X->T.len, sizeof(uint16_t), (size_t)X->T.n, f) == (size_t)X->T.n;
@@ -1542,7 +1554,9 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             if (sl && sl != root) { *sl = 0; snprintf(pre, sizeof pre, "%s", sl + 1); } else { snprintf(root, sizeof root, "/"); snprintf(pre, sizeof pre, "%s", res + 1); }
         }
         char err[300] = "";
-        fd_update(&g_fd, root, err, sizeof err);
+        /* a arvore so e varrida de novo se mudou (index_touch, Bash), se e outra raiz, ou passou o prazo (indexctl.c) */
+        if (!g_fd.ready || strcmp(g_fd.root, root) != 0 || index_due(root, 1 /* IDX_FIND */)) { fd_update(&g_fd, root, err, sizeof err); index_validated(root, 1); }
+        else if (g_fd_verbose) fprintf(stderr, "find: tree walk skipped (list, stat and git ls-files not repeated)\n");
         FdIndex *X = &g_fd;
         CtSb sb = {0};
         const double t0 = fd_ms();
@@ -1582,6 +1596,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                 if (CH && coder_lookup(root, q, lvl >= 2, 12, CH) != 0) { free(CH); CH = NULL; }
                 if (CH && g_fd_verbose) fprintf(stderr, "find: coder %s%.1f ms (index update %.1f ms, search %.1f ms)\n", CH->created ? "index created, " : "", CH->index_ms + CH->ms, CH->index_ms, CH->ms);
             }
+            if (g_fd_verbose) { char sl[320]; index_stats_line(sl, sizeof sl); fprintf(stderr, "find: %s\n", sl); }
             if (CH && qk != FQ_NATURAL) cpre = fd_coder_pre(X, CH, qk, q, pre, &sb);
             if (repeat && nsk) ct_sb_puts(&sb, "(same words as your previous Find: showing the next candidates; the ones already shown are left out)\n");
             const size_t base = sb.n;

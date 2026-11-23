@@ -10,6 +10,7 @@ static const char CT_WRITE_PROPS[] =
     "\"content\": {\"type\": \"string\", \"description\": \"The whole content to write to the file\"}";
 static const char CT_WRITE_REQ[] = "\"file_path\", \"content\"";
 
+static void index_touch(const char *path);                   /* src/coder/indexctl.c */
 static void ct_write(const char *js, const char *end, char *out, size_t cap) {
     static char abs[4300], err[1400];
     char *fp = ct_str(js, end, "file_path"), *content = ct_str(js, end, "content"), *old = NULL;
@@ -47,7 +48,8 @@ static void ct_write(const char *js, const char *end, char *out, size_t cap) {
             break;
         }
         const size_t w = fwrite(content, 1, len, f);
-        if (fclose(f) != 0 || w != len) { snprintf(out, cap, "error: write to %s failed (%s)", abs, strerror(errno)); break; }
+        const int cl = fclose(f); index_touch(abs);
+        if (cl != 0 || w != len) { snprintf(out, cap, "error: write to %s failed (%s)", abs, strerror(errno)); break; }
         ct_seen_mark(abs, 0);
         snprintf(out, cap, "%s %s (%zu bytes, %lld lines)", exists ? "The file has been overwritten:" : "File created successfully at:", abs, len, ct_count_lines(content, len));
         code_check(abs, 0, out, cap);

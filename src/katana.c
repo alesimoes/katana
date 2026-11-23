@@ -98,6 +98,7 @@
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
 #include "coder/store.c"             /* armazenamento generico: segmentos imutaveis, manifesto, escritor unico (sem tipos de codigo) */
 #include "coder/storedocs.c"         /* catalogo generico de documentos, atualizacao incremental, index/status/verify/compact */
+#include "coder/indexctl.c"          /* coder: quando revalidar o indice (index_ensure, index_touch) e cache das visoes de leitura */
 #include "coder/types.c"             /* modulo de inteligencia de codigo (em cima do motor): tipos compartilhados */
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
 #include "coder/parse.c"              /* katana coder symbols: analisador estrutural exato por linguagem */

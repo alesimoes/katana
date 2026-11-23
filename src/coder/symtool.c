@@ -3,17 +3,13 @@
  * cascata e mesmo nivel de confianca), capturando o que eles imprimem, e o indice do coder da pasta (o mesmo que o Find atualiza).
  * Chamado de src/tools/symbols.c (ferramenta) e de src/tools/find.c (mode=refs), que so declaram as duas funcoes abaixo. */
 #ifndef _WIN32
-/* atualiza (cria na primeira vez) o indice do coder da pasta, com busca e simbolos encadeados, como `katana coder index`.
+/* atualiza (cria na primeira vez) o indice do coder da pasta, com busca e simbolos encadeados, como `katana coder index`, mas so quando
+   index_ensure acha que precisa (primeira consulta da raiz, ferramenta que gravou, Bash, prazo KATANA_INDEX_SWEEP_S).
    Devolve 0 se o indice pode ser lido; *ms = tempo gasto; *created = 1 se nao existia */
 static int sym_ensure_index(const char *root, double *ms, int *created) {
-    char dir[4400], man[4500], err[300] = ""; struct stat sv; const double t0 = now_sec();
-    store_locate(root, "coder", dir, sizeof dir, 1);
-    snprintf(man, sizeof man, "%s/MANIFEST", dir); *created = stat(man, &sv) != 0;
-    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);
-    StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
-    char si[400], yi[500]; coder_search_hook_done(&o, si, sizeof si); coder_sym_hook_done(yi, sizeof yi);
-    *ms = (now_sec() - t0) * 1000;
-    return (rc == 0 || rc == 1) ? 0 : -1;       /* 1: outro processo grava agora; le o que existe */
+    IndexRes ir; const int rc = index_ensure(root, 2, "", 0, &ir);      /* indexctl.c: varre e grava so se preciso */
+    *created = ir.created; *ms = ir.ms;         /* ms = 0 quando a consulta seguiu sem varrer: o aviso "[symbol index ...]" so aparece quando houve trabalho */
+    return rc;
 }
 /* roda uma consulta do coder capturando stdout e stderr (as consultas imprimem direto) */
 static int sym_capture(int (*fn)(int, char **), int argc, char **argv, char **out, char **err) {

@@ -395,8 +395,8 @@ static void cs_params(void) {
 
 /* ---- visao de leitura: segmentos, documentos vigentes (numeracao global), tamanhos ---- */
 typedef struct { const StoreSeg *seg; CsLex lex; const StoreSection *sp; StoreTable lens, tri; const uint8_t *tpool, *tend; StoreDocs docs; uint32_t ndocs; uint32_t *gmap; int has; } CsSeg;
-typedef struct { StoreReader *r; CsSeg *s; int ns; uint32_t N; const char **path; uint32_t *plen; uint32_t *lens; double avg[3]; char dir[4400]; int noindex; } CsView;
-static int cs_view_open(const char *proj, CsView *v, char *err, size_t ecap) {
+typedef struct { StoreReader *r; CsSeg *s; int ns; uint32_t N; const char **path; uint32_t *plen; uint32_t *lens; double avg[3]; char dir[4400]; int noindex; int borrowed; void *slot; } CsView;
+static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap) {
     memset(v, 0, sizeof *v);
     store_locate(proj, "coder", v->dir, sizeof v->dir, 0);
     if (store_open(v->dir, &v->r, err, ecap) != 0) return -1;
@@ -430,9 +430,25 @@ static int cs_view_open(const char *proj, CsView *v, char *err, size_t ecap) {
     store_live_free(&L);
     return 0;
 }
-static void cs_view_close(CsView *v) {
+static void cs_view_free_real(CsView *v) {
     for (int s = 0; s < v->ns; s++) free(v->s[s].gmap);
     free(v->s); free(v->path); free(v->plen); free(v->lens); if (v->r) store_close(v->r); memset(v, 0, sizeof *v);
+}
+/* visao reaproveitada (indexctl.c): o cache guarda a visao inteira e entrega copias rasas `borrowed`; vale ate o MANIFEST mudar */
+static void cs_cache_destroy(void *p) { cs_view_free_real((CsView *)p); free(p); }
+static IdxCache g_cs_cache = {.destroy = cs_cache_destroy};
+static void cs_view_close(CsView *v) {
+    if (v->borrowed) { idx_cache_release(&g_cs_cache, v->slot); memset(v, 0, sizeof *v); return; }
+    cs_view_free_real(v);
+}
+static int cs_view_open(const char *proj, CsView *v, char *err, size_t ecap) {
+    char dir[4400]; store_locate(proj, "coder", dir, sizeof dir, 0);
+    void *h = idx_cache_get(&g_cs_cache, dir);
+    if (h) { *v = *(CsView *)h; v->borrowed = 1; v->slot = h; return 0; }
+    CsView t; if (cs_view_open_raw(proj, &t, err, ecap) != 0) return -1;
+    CsView *hp = (CsView *)malloc(sizeof *hp);
+    if (hp) { *hp = t; if (idx_cache_put(&g_cs_cache, dir, hp, t.r)) { *v = *hp; v->borrowed = 1; v->slot = hp; return 0; } free(hp); }
+    *v = t; return 0;
 }
 /* postings vigentes de uma chave, com o documento ja em numeracao global (ordenados) */
 static CsHit *cs_key_hits(const CsView *v, const char *key, size_t kl, uint32_t *n) {
@@ -829,14 +845,26 @@ static int coder_search_main(int argc, char **argv) {
 }
 /* nucleo da busca. ho == NULL: imprime (katana coder search). ho != NULL: nao imprime, preenche os resultados estruturados (usado pelo Find);
  * ho->concept == 0 desliga a expansao pela base de conhecimento (canal conceitual) */
+/* base de conhecimento: lida do disco uma vez por processo e reaproveitada (antes cada consulta relia todos os .kb: 10 a 14 ms de 11 a 15 ms).
+ * So relida se a pasta de conhecimento do projeto ou a padrao mudarem (outra raiz, KATANA_KB_DIR). Nao liberada: vive ate o fim do processo. */
+static const CoderKb *cs_kb_get(const char *kbproj) {
+    static CoderKb kb; static char key[9000], proj[4300]; static int have;
+    char k[9000]; snprintf(k, sizeof k, "%s|%s", coder_kb_default_dir(), kbproj ? kbproj : "");
+    if (have && !strcmp(k, key)) { g_idx_n.kb_hit++; return kb.nfile > 0 ? &kb : NULL; }
+    memset(&kb, 0, sizeof kb); kb.quiet = 1; kb.project = NULL;
+    if (kbproj) { snprintf(proj, sizeof proj, "%s", kbproj); kb.project = proj; }
+    coder_kb_load(coder_kb_default_dir(), &kb); g_idx_n.kb_load++;
+    snprintf(key, sizeof key, "%s", k); have = 1;
+    return kb.nfile > 0 ? &kb : NULL;
+}
 static int cs_search_core(const char *query, const char *proj, int limit, int json, int why, CoderHits *ho) {
     cs_params();
     double t0 = now_sec(), t_open, t_kb, t_load, t_score;
     CsView v; char err[400];
     if (cs_view_open(proj, &v, err, sizeof err) != 0) { if (!ho) fprintf(stderr, "search: %s\n", err); return 1; }
     t_open = now_sec() - t0;
-    CoderKb kb; memset(&kb, 0, sizeof kb); kb.quiet = 1; char kbproj[4300]; snprintf(kbproj, sizeof kbproj, "%s/.katana/coder", v.r->man.root[0] ? v.r->man.root : proj);
-    kb.project = kb_isdir(kbproj) ? kbproj : NULL; coder_kb_load(coder_kb_default_dir(), &kb); int kbok = kb.nfile > 0;
+    char kbproj[4300]; snprintf(kbproj, sizeof kbproj, "%s/.katana/coder", v.r->man.root[0] ? v.r->man.root : proj);
+    const CoderKb *kbc = cs_kb_get(kb_isdir(kbproj) ? kbproj : NULL); int kbok = kbc != NULL;
     t_kb = now_sec() - t0 - t_open;
     CsQuery Q; char rest[1100]; cs_parse_raw(query, &Q, rest, sizeof rest);
     CoderTok *tk = (CoderTok *)malloc(4096 * sizeof(CoderTok));
@@ -852,7 +880,7 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
         int before = q.n; QTerm *p = cs_qt_add(&q, &x);
         if (!p) continue;
         norig++; nsrc++;
-        if (kbok && !part && (!ho || ho->concept)) cs_expand_word(&kb, &q, before, t, x.src);
+        if (kbok && !part && (!ho || ho->concept)) cs_expand_word(kbc, &q, before, t, x.src);
     }
     int nuser = 0; for (int i = 0; i < q.n; i++) if (q.t[i].cls == QC_ORIG || q.t[i].cls == QC_WHOLE) nuser++;
     for (int i = 0; i < q.n; i++) cs_qt_load(&v, &q.t[i]);
@@ -1108,15 +1136,11 @@ static int coder_find_name_main(int argc, char **argv) {
  * concept=0: sem o canal conceitual (base de conhecimento). Devolve 0, ou -1 se o indice nao pode ser criado ou lido. */
 static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho) {
     memset(ho, 0, sizeof *ho); ho->concept = concept;
-    char dir[4400], err[300], man[4500]; struct stat sv; double t0 = now_sec();
-    store_locate(root, "coder", dir, sizeof dir, 1);
-    snprintf(man, sizeof man, "%s/MANIFEST", dir); ho->created = stat(man, &sv) != 0;
-    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);      /* simbolos junto: o indice nunca fica com arquivos sem simbolos (Symbols, Find mode=refs) */
-    StoreUpdStats S; err[0] = 0;
-    int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
-    char si[400], yi[500]; coder_search_hook_done(&o, si, sizeof si); coder_sym_hook_done(yi, sizeof yi);
+    double t0 = now_sec();
+    IndexRes ir; const int rc = index_ensure(root, 2, "", 0, &ir);      /* varre e grava so se preciso (indexctl.c); simbolos junto: o indice nunca fica com arquivos sem simbolos */
+    ho->created = ir.created;
     ho->index_ms = (now_sec() - t0) * 1000;
-    if (rc != 0 && rc != 1) return -1;               /* 1: outro processo grava o indice agora; le o que existe */
+    if (rc != 0) return -1;
     if (limit < 1) limit = 1;
     if (limit > CODER_HITS_MAX) limit = CODER_HITS_MAX;
     return cs_search_core(query, root, limit, 0, 0, ho) == 0 ? 0 : -1;

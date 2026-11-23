@@ -455,6 +455,12 @@ static void autoindex_dir(const char *cwd) {
     char h[1100], exe[1100];
     agent_home(h, sizeof h);
     if (!strcmp(cwd, "/") || !strcmp(cwd, h)) return;
+    /* uma vez por pasta e por processo: antes cada pedido que citava a pasta (e cada /cd de volta) disparava outro `coder index`; depois da primeira
+       vez quem mantem o indice fresco sao as consultas (index_ensure revalida quando o agente grava, quando o Bash roda ou passado o prazo) */
+    static char done[16][1100]; static int nd;
+    char rp[4200]; if (!realpath(cwd, rp)) snprintf(rp, sizeof rp, "%s", cwd);
+    for (int i = 0; i < nd; i++) if (!strcmp(done[i], rp)) return;
+    if (nd < 16) snprintf(done[nd++], sizeof done[0], "%s", rp);
     const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1); if (n <= 0) return; exe[n] = 0;
     char *argv[] = {"sh", "-c", "\"$0\" coder index \"$1\" >/dev/null 2>&1 &", exe, (char *)cwd, NULL};      /* o sh sai logo; o indexador fica solto em segundo plano */
     pid_t pid;

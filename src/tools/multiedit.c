@@ -208,12 +208,13 @@ static int me_commit(MeSet *S, const char *op, char *out, size_t cap) {
     char err[1500] = "";
     for (int i = 0; i < S->n; i++) {
         MeFile *f = &S->v[i];
-        if (f->del) { undo_note(f->abs); if (remove(f->abs) != 0) { snprintf(err, sizeof err, "error: cannot delete %s (%s)", f->abs, strerror(errno)); bad = i; break; } }
+        if (f->del) { undo_note(f->abs); index_touch(f->abs); if (remove(f->abs) != 0) { snprintf(err, sizeof err, "error: cannot delete %s (%s)", f->abs, strerror(errno)); bad = i; break; } }
         else if (!ct_f_save(f->abs, f->data, f->n, err, sizeof err)) { bad = i; break; }
     }
     if (bad >= 0) {                                         /* devolve o que ja foi gravado */
         for (int i = 0; i <= bad; i++) {
             MeFile *f = &S->v[i];
+            index_touch(f->abs);
             if (!f->orig) { remove(f->abs); continue; }
             FILE *w = fopen(f->abs, "wb");
             if (w) { fwrite(f->orig, 1, f->on, w); fclose(w); }
