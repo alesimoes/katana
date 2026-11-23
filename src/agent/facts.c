@@ -90,10 +90,10 @@ static int facts_text(Buf *o) {
 /* ---- leitura por diferenca: o arquivo relido inteiro, com a leitura anterior ainda no contexto ---- */
 #define RD_KEEP 24
 static struct { char *path, *txt; size_t n; int epoch, seq, same; } g_rk[RD_KEEP];
-static int g_rk_n, g_rk_seq, g_rd_delta_on;      /* ligado pelo laco do agente; KATANA_READ_DELTA=0 desliga, =1 liga em teste */
+static int g_rk_n, g_rk_seq, g_rd_delta_on;      /* ligado pelo laco do agente */
 static int g_rd_epoch;
 static void rd_delta_reset(void) { for (int i = 0; i < g_rk_n; i++) { free(g_rk[i].path); free(g_rk[i].txt); } g_rk_n = 0; }
-static int rd_delta_ok(void) { const char *e = getenv("KATANA_READ_DELTA"); return e ? atoi(e) != 0 : g_rd_delta_on && g_ct_depth == 1; }
+static int rd_delta_ok(void) { return g_rd_delta_on && g_ct_depth == 1; }
 static size_t rd_line(const char *b, size_t n, size_t s) { const char *q = s < n ? (const char *)memchr(b + s, '\n', n - s) : NULL; return q ? (size_t)(q - b) + 1 : n; }
 /* guarda o texto mostrado inteiro */
 static void rd_delta_put(const char *path, const char *b, size_t n) {

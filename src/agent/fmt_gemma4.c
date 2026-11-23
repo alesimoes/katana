@@ -164,33 +164,12 @@ static void g4_agent_sys(char *sys, size_t cap) {
     buf_add(&out, sys, (size_t)(a - sys));
     while (out.n && (out.p[out.n - 1] == '\n' || out.p[out.n - 1] == ' ')) out.n--;
     buf_add(&out, "", 0);
-    /* KATANA_G4_ENVLAST=1 (medida): o bloco que muda por pasta (ambiente, instrucoes do projeto, memoria) vai depois
-       das declaracoes, para o cache de prefixo aproveitar as declaracoes entre pastas. Padrao: declaracoes no fim,
-       como no template do modelo, que escreve o texto do sistema e logo depois as declaracoes, e nada depois delas
+    /* declaracoes no fim, como no template do modelo, que escreve o texto do sistema e logo depois as declaracoes, e nada depois delas
        no turno do sistema (docs/new-models.md, Gemma 4) */
-    const char *envp = NULL;
-    if (getenv("KATANA_G4_ENVLAST") && atoi(getenv("KATANA_G4_ENVLAST")) != 0) {
-        envp = strstr(out.p ? out.p : "", "# Environment (where you are)");
-        if (!envp) envp = strstr(tail, "# Environment (where you are)");
-    }
-    Buf envb = {0};
-    if (envp) {
-        if (out.p && envp >= out.p && envp < out.p + out.n) {       /* o ambiente esta antes do bloco de ferramentas */
-            buf_str(&envb, envp);
-            out.n = (size_t)(envp - out.p);
-            while (out.n && (out.p[out.n - 1] == '\n' || out.p[out.n - 1] == ' ')) out.n--;
-            buf_add(&out, "", 0);
-            if (*tail) { const char *q = tail; while (*q == '\n') q++; if (*q) { buf_str(&envb, "\n\n"); buf_str(&envb, q); } }
-        } else {
-            const char *q = tail; while (*q == '\n') q++;
-            if (q < envp) { buf_str(&out, "\n\n"); buf_add(&out, q, (size_t)(envp - q)); buf_add(&out, "", 0); }
-            buf_str(&envb, envp);
-        }
-    } else if (*tail) { const char *q = tail; while (*q == '\n') q++; if (*q) { buf_str(&out, "\n\n"); buf_str(&out, q); } }
+    if (*tail) { const char *q = tail; while (*q == '\n') q++; if (*q) { buf_str(&out, "\n\n"); buf_str(&out, q); } }
     while (out.n && (out.p[out.n - 1] == '\n' || out.p[out.n - 1] == ' ')) out.n--;
     buf_add(&out, "", 0);
     if (decl.p) buf_str(&out, decl.p);
-    if (envb.p) { buf_str(&out, "\n\n"); buf_str(&out, envb.p); free(envb.p); }
     snprintf(sys, cap, "%s", out.p ? out.p : "");
     free(decl.p); free(out.p);
 }

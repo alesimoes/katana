@@ -1331,7 +1331,7 @@ typedef struct { const Mat *eg, *eu, *ed; const int *ex, *xi; int H, d; float *h
 /* produto de uma linha de especialista com a entrada quantizada em xq: tipos K pelo dot_row, e
    Q8_0/Q5_1 (down do gemma4) pelos produtos inteiros de blocos de 32 */
 static int moe_int(const Mat *W) {
-    return mat_int(W) || (HAVE_INT_DOT && !cpu_exact && !moe_q5k_old && W->q && (W->type == T_Q8_0 || W->type == T_Q5_1));
+    return mat_int(W) || (HAVE_INT_DOT && !cpu_exact && W->q && (W->type == T_Q8_0 || W->type == T_Q5_1));
 }
 static inline float moe_dot(const Mat *W, size_t r, int cols) {
     if (W->type == T_Q8_0) return dot_q8_i(W->q + r * W->stride, cols);
@@ -1400,11 +1400,7 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
     if (moe_prof_on) { t1 = now_sec(); moe_prof[0] += t1 - t0; t0 = t1; }
     pool_for(moe_job, &job, total, chunk);
     if (moe_prof_on) { t1 = now_sec(); moe_prof[1] += t1 - t0; t0 = t1; }
-    if (moe_q5k_old) {
-        for (int i = 0; i < n * H; i++) hg[i] = act_glu(hg[i]) * hu[i];
-        for (int j = 0; j < n; j++) { xq_tls = &xh[j]; xq_prepare(hg + (size_t)j * H, H); }
-        xq_tls = NULL;
-    } else pool_for(moe_act_job, &job, n, 1);
+    pool_for(moe_act_job, &job, n, 1);
     total = n * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
     if (chunk < minc) chunk = minc;
     if (moe_prof_on) { t1 = now_sec(); moe_prof[2] += t1 - t0; t0 = t1; }

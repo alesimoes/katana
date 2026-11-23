@@ -136,7 +136,7 @@ static CtSeen g_ct_seen[CT_SEEN_MAX];
 static int g_ct_seen_n;
 /* ---- cursor de leitura por arquivo, neste pedido: ate que linha o modelo ja recebeu (contigua desde a 1) e onde comecou a
  * ultima leitura. Read sem offset, ou repetindo a ultima chamada, continua de onde parou em vez de entregar o mesmo trecho.
- * Zera a cada pedido (rc_reset em rr_reset) e a cada conversa. KATANA_READ_CURSOR=0 desliga ---- */
+ * Zera a cada pedido (rc_reset em rr_reset) e a cada conversa. ---- */
 #define RC_MAX 64
 typedef struct { char path[1024]; long long size, mt, cov_end, last_off, total; } RdCur;
 static RdCur g_rc[RC_MAX]; static int g_rc_n;
@@ -163,7 +163,6 @@ static int rs_cover(const char *abs, int a, int b, int *how) {
     return n;
 }
 static void rc_reset(void) { g_rc_n = 0; g_rs_n = 0; }
-static int rc_on(void) { const char *e = getenv("KATANA_READ_CURSOR"); return !(e && atoi(e) == 0); }
 static RdCur *rc_find(const char *abs, long long size, long long mt) {
     for (int i = 0; i < g_rc_n; i++) if (!strcmp(g_rc[i].path, abs)) {
         if (g_rc[i].size != size || g_rc[i].mt != mt) { g_rc[i] = g_rc[--g_rc_n]; return NULL; }      /* arquivo mudou: recomeca */

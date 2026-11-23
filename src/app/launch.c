@@ -885,7 +885,7 @@ static int launch_cmd(const char *line, Model *m, int pos, const char *sys, cons
         fprintf(stderr, "%s[switching to %s; reloading]%s\n", CE(C_DIM), path, CE(C_RESET));
         char *av[8]; int k = 0;
         av[k++] = self; av[k++] = "agent"; av[k++] = path;
-        if (hist->n && g_sess_path[0]) { av[k++] = "--retomar"; av[k++] = g_sess_path; setenv("KATANA_RETOMAR_OUTRO", "1", 1); }
+        if (hist->n && g_sess_path[0]) { av[k++] = "--retomar"; av[k++] = g_sess_path; setenv("KATANA_RESUME_OTHER", "1", 1); }
         av[k] = NULL;
         fflush(stdout); fflush(stderr);
         execv(self, av);

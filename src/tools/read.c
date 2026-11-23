@@ -107,7 +107,7 @@ static void ct_rd_lines(const char *b, size_t n, long long offset, long long lim
 
 /* ---- mapa de um arquivo grande (Read sem offset e sem limit) ----
  * Indice de simbolos com numero de linha, por extensao, com casadores simples escritos a mao. Serve so para o modelo saber
- * onde ler; nao e um analisador. KATANA_READ_OUTLINE=0 desliga; KATANA_READ_OUTLINE_LINES muda o limiar (200 linhas ou 8 KB). */
+ * onde ler; nao e um analisador. KATANA_READ_OUTLINE_LINES muda o limiar (200 linhas ou 8 KB). */
 #define OL_MAX 60
 static int ol_starts(const char *p, const char *w) { return strncmp(p, w, strlen(w)) == 0; }
 static int ol_word(const char *p, const char *w) { const size_t l = strlen(w); return strncmp(p, w, l) == 0 && !isalnum((unsigned char)p[l]) && p[l] != '_'; }
@@ -216,7 +216,6 @@ static int ol_big(long long lines, size_t bytes) {
     if (e && atoll(e) > 0) { tl = atoll(e); tb = tl * 40; }
     return lines > tl || (long long)bytes > tb;
 }
-static int ol_on(void) { const char *e = getenv("KATANA_READ_OUTLINE"); return !(e && atoi(e) == 0); }
 /* monta o texto do mapa em out (vazio se nao achou simbolo) */
 static void ct_outline(const char *ext, const char *b, size_t n, char *out, size_t cap) {
     static long long el[4096]; static char et[4096][110];
@@ -376,13 +375,13 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             break;
         }
         char cnote[260] = ""; long long eoff = offset;
-        {   RdCur *c = rc_on() ? rc_find(res, (long long)st.st_size, (long long)st.st_mtime) : NULL;
+        {   RdCur *c = rc_find(res, (long long)st.st_size, (long long)st.st_mtime);
             if (c && c->cov_end >= 1 && c->cov_end < total && (!has_off || offset == c->last_off)) {      /* ja entregue ate cov_end: segue dali */
                 eoff = c->cov_end + 1;
                 KNOTE(READ_CURSOR, cnote, sizeof cnote, c->cov_end, res, eoff);
             } }
         char oext[16];
-        if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_on() && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
+        if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
             static char mp[16000], hd[12000];
             ct_outline(oext, b, n, mp, sizeof mp);
             static char bw[7000]; bw[0] = 0;

@@ -679,7 +679,6 @@ static int lowbit_ok(uint32_t type);
 static float lowbit_dot(const Mat *W, const uint8_t *row, int cols);
 static float lowbit_bf16_dot(const uint8_t *row, const float *x, int cols);
 
-static int moe_q5k_old;     /* KATANA_MOE_OLD=1: caminho anterior dos especialistas na CPU (comparacao) */
 /* a matriz usa o produto inteiro? (so tipos K, e se nao estiver no modo exato) */
 static int mat_int(const Mat *W) {
     return HAVE_INT_DOT && !cpu_exact && W->q &&
@@ -693,7 +692,7 @@ static float dot_row(const Mat *W, size_t i, const float *x, const float *sx, in
     if (cpu_vnni && mat_int(W)) {
         if (W->type == T_Q4_K) return dot_q4k_v(row, cols);
         if (W->type == T_Q6_K) return dot_q6k_v(row, cols);
-        if (W->type == T_Q5_K && !moe_q5k_old) return dot_q5k_v(row, cols);
+        if (W->type == T_Q5_K) return dot_q5k_v(row, cols);
     }
 #endif
     if (mat_int(W) && lowbit_ok(W->type)) return lowbit_dot(W, row, cols);
