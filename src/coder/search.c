@@ -884,6 +884,7 @@ static const CoderKb *cs_kb_get(const char *kbproj) {
     static CoderKb kb; static char key[9000], proj[4300]; static int have;
     char k[9000]; snprintf(k, sizeof k, "%s|%s", coder_kb_default_dir(), kbproj ? kbproj : "");
     if (have && !strcmp(k, key)) { g_idx_n.kb_hit++; return kb.nfile > 0 ? &kb : NULL; }
+    if (have) coder_kb_free(&kb);        /* outra pasta ou outra chave: a base anterior sai antes de ler a nova */
     memset(&kb, 0, sizeof kb); kb.quiet = 1; kb.project = NULL;
     if (kbproj) { snprintf(proj, sizeof proj, "%s", kbproj); kb.project = proj; }
     coder_kb_load(coder_kb_default_dir(), &kb); g_idx_n.kb_load++;

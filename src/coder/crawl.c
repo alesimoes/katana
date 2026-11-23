@@ -337,7 +337,7 @@ static void cw_list_dir(int di, CwOut *O, StoreLive *L, StoreLiveDoc **lv, int n
     /* filhos conhecidos que sumiram, e arquivos catalogados que sumiram ou passaram a ser ignorados */
     for (int i = 0; i < g_cw.nd; i++) { CwDir *C = &g_cw.d[i]; if (C->parent == di && i != di && C->seen != lid && C->state != CW_GONE) cw_mark_gone(i, O, lv, nlv); }
     if (g_cw.cmp_needed && nlv) {
-        qsort(names, (size_t)nn, sizeof *names, cw_cmp_strp);
+        if (nn > 1) qsort(names, (size_t)nn, sizeof *names, cw_cmp_strp);
         char pre[4100]; size_t prl = 0; if (pl) { memcpy(pre, D->path, pl); pre[pl] = '/'; prl = pl + 1; }
         for (int i = cw_lower_bound(lv, nlv, pre, prl); i < nlv; i++) {
             const StoreDoc *x = &lv[i]->d; if (x->plen < prl || memcmp(x->path, pre, prl) != 0) break;
@@ -520,7 +520,7 @@ static int cw_batch_n0(StoreWriter *w, StoreLive *L) {
         cw_list_dir(cand[k], &O, L, lv, nlv); done++;
         if (O.n >= CW_BATCH_FILES || now_sec() - t0 > 1.0) break;
     }
-    qsort(O.d, (size_t)O.n, sizeof *O.d, cw_cmp_doc);
+    if (O.n > 1) qsort(O.d, (size_t)O.n, sizeof *O.d, cw_cmp_doc);
     if (O.n) { StoreBuf db = {0}; store_docs_build(&db, O.d, (uint32_t)O.n); store_writer_add_section_buf(w, STS_DOCS, 1, (uint32_t)O.n, &db); }
     g_cw.total += (uint64_t)O.n; for (int i = 0; i < O.n; i++) if (O.d[i].flags & SDF_SKIPMASK) g_cw.skipped++;
     { uint32_t f = 0; for (int i = 0; i < g_cw.nd; i++) if (g_cw.d[i].state == CW_DISC) f++; g_cw.frontier = f; }
