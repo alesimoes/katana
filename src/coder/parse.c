@@ -366,6 +366,7 @@ static int cp_symx(CP *c, int kind, int parent, size_t b0, size_t b1, int nameto
     s->name = nm ? cp_dup(nm, nl) : nametok >= 0 ? cp_tokname(c, nametok) : cp_dup("?", 1);
     s->sig = cp_sig(c, sa, sb > sa ? sb : sa, ea, eb);
     s->kind = kind; s->parent = parent; s->byte0 = b0; s->byte1 = b1;
+    s->body0 = 0; s->vis = CV_UNKNOWN; s->flags = 0; s->conf = CC_EXACT; s->shape = 0;
     s->line0 = cp_line(c, b0); s->line1 = b1 > b0 ? cp_line(c, b1 - 1) : s->line0;
     c->snt[f->nsym] = nametok; c->sfl[f->nsym] = 0; c->sx[f->nsym] = NULL;
     if (nametok >= 0 && c->isn) c->isn[nametok] = 1;
@@ -396,7 +397,7 @@ static void cp_ref(CP *c, int from, int kind, const char *nm, size_t nl, size_t 
     size_t p = h & (size_t)(c->rhn - 1);
     while (c->rh[p]) { const CoderRef *x = &f->ref[c->rh[p] - 1]; if (x->from == from && x->kind == kind && strlen(x->name) == nl && !memcmp(x->name, nm, nl)) return; p = (p + 1) & (size_t)(c->rhn - 1); }
     if (f->nref >= c->rcap) { c->rcap = c->rcap * 2 + 16; f->ref = (CoderRef *)realloc(f->ref, (size_t)c->rcap * sizeof(CoderRef)); }
-    f->ref[f->nref] = (CoderRef){from, kind, cp_line(c, off), cp_dup(nm, nl)};
+    { int ln = cp_line(c, off); size_t ls = ln >= 1 && ln <= c->nln ? c->ln[ln - 1] : 0; f->ref[f->nref] = (CoderRef){from, kind, ln, cp_dup(nm, nl), off >= ls ? (int)(off - ls) + 1 : 0, 0}; }
     c->rh[p] = ++f->nref;
 }
 static void cp_reft(CP *c, int from, int kind, int tok) { char *nm = cp_tokname(c, tok); cp_ref(c, from, kind, nm, strlen(nm), c->tk[tok].a); free(nm); }
@@ -1718,7 +1719,39 @@ static void coder_file_free(CoderFile *f) {
     if (!f) return;
     for (int i = 0; i < f->nsym; i++) { free(f->sym[i].name); free(f->sym[i].sig); }
     for (int i = 0; i < f->nref; i++) free(f->ref[i].name);
-    free(f->sym); free(f->ref); memset(f, 0, sizeof *f);
+    free(f->sym); free(f->ref); free(f->guard); memset(f, 0, sizeof *f);
+}
+/* preenche os campos novos que a analise sintatica ja permite: corpo, visibilidade, flags e confianca do intervalo. O que nao da para saber fica em zero (desconhecido). */
+static int cp_sig_has(const char *sig, const char *w) {
+    size_t wl = strlen(w);
+    for (const char *p = sig; (p = strstr(p, w)); p += wl) {
+        int pre = p == sig || !cp_idc((unsigned char)p[-1]), post = !cp_idc((unsigned char)p[wl]);
+        if (pre && post) return 1;
+    }
+    return 0;
+}
+static void cp_enrich(CP *c) {
+    CoderFile *f = c->f; int L = c->lang;
+    for (int s = 0; s < f->nsym; s++) {
+        CoderSym *y = &f->sym[s]; const char *sg = y->sig ? y->sig : "";
+        if (c->sfl[s] & 1) y->flags |= CSF_DECL;
+        if (L != CL_MD && y->kind != CK_HEADING && !(y->flags & CSF_DECL)) {
+            if (L == CL_PY) {        /* corpo = depois da primeira quebra de linha do cabecalho */
+                for (size_t k = y->byte0; k < y->byte1 && k < c->n; k++) if (c->c[k] == '\n') { if (k + 1 < y->byte1) y->body0 = k + 1; break; }
+            } else for (size_t k = y->byte0; k < y->byte1 && k < c->n; k++) if (c->c[k] == '{') { y->body0 = k; break; }
+        }
+        if (y->kind == CK_MACRO) y->conf = CC_HEUR;
+        if (cp_sig_has(sg, "async")) y->flags |= CSF_ASYNC;
+        if (cp_sig_has(sg, "static")) y->flags |= CSF_STATIC;
+        if (L == CL_C || L == CL_CPP) { if (y->flags & CSF_STATIC) y->vis = CV_FILE; else if (y->parent < 0) y->vis = CV_PUBLIC; }
+        else if (L == CL_JS || L == CL_TS) { if (cp_sig_has(sg, "export")) y->vis = CV_EXPORTED; else if (y->name[0] == '#') y->vis = CV_PRIVATE; else if (y->parent < 0) y->vis = CV_FILE; }
+        else if (L == CL_PY) { if (y->name[0] == '_' && y->name[1] != '_') y->vis = CV_FILE; else if (y->parent < 0) y->vis = CV_PUBLIC; }
+        else if (L == CL_GO) y->vis = isupper((unsigned char)y->name[0]) ? CV_EXPORTED : CV_FILE;
+        else if (L == CL_RS) y->vis = cp_sig_has(sg, "pub") ? CV_EXPORTED : CV_FILE;
+        if (L == CL_JAVA || L == CL_KT || L == CL_CPP || L == CL_TS) {
+            if (cp_sig_has(sg, "private")) y->vis = CV_PRIVATE; else if (cp_sig_has(sg, "protected")) y->vis = CV_PROTECTED; else if (cp_sig_has(sg, "public")) y->vis = CV_PUBLIC;
+        }
+    }
 }
 static int coder_parse(const char *path, const char *text, size_t n, CoderFile *out) {
     memset(out, 0, sizeof *out);
@@ -1742,6 +1775,7 @@ static int coder_parse(const char *path, const char *text, size_t n, CoderFile *
     } else { c.isn = (unsigned char *)calloc(1, 1); c.mt = (int *)malloc(sizeof(int)); }
     if (L == CL_PY) cp_py(&c); else if (L == CL_MD) cp_md(&c); else cp_scan(&c, 0, c.nt, -1, CM_TOP, 0);
     cp_post(&c);
+    cp_enrich(&c);
     if (L != CL_MD) { cp_rehash(&c); cp_sweep(&c); }
     if (c.sx) { for (int s = 0; s < out->nsym; s++) free(c.sx[s]); }
     free(c.sx); free(c.snt); free(c.sfl); free(c.rh); free(c.tk); free(c.mt); free(c.isn); free(c.ln); free(cl); free(nc);
@@ -1749,9 +1783,9 @@ static int coder_parse(const char *path, const char *text, size_t n, CoderFile *
 }
 
 /* ---------- katana coder symbols <arquivo|pasta> [--refs] [--json] ---------- */
-static const char *const CP_KINDN[] = {"file", "func", "method", "class", "struct", "enum", "iface", "var", "const", "macro", "typedef", "namespace", "heading"};
+static const char *const CP_KINDN[] = {"file", "func", "method", "class", "struct", "enum", "iface", "var", "const", "macro", "typedef", "namespace", "heading", "ctor", "union", "enumerator", "field", "property", "signal"};
 static const char *const CP_LANGN[] = {"?", "c", "c++", "js", "ts", "python", "kotlin", "java", "go", "rust", "shell", "qml", "powershell", "markdown", "config"};
-static const char *const CP_REFN[] = {"call", "use", "import", "extends", "implements"};
+static const char *const CP_REFN[] = {"call", "use", "import", "extends", "implements", "type", "write", "literal"};
 typedef struct { int refs, json, nfiles, nsym, nref; } CpOut;
 static void cp_jstr(const char *s) {
     putchar('"');
