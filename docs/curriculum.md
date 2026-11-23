@@ -337,7 +337,7 @@ session listing (`-c` and `-r` need an installed model).
 not in the file yet (ceiling of three conversations per sequence, lifted only where a minimum cannot be met otherwise): the
 real full prompt up to 10%; every first tool a family has in the pool; situations (five per rare tool, three per concept,
 each `.ps1` situation once); the minimums of the rare tools, of `.ps1`, of MCP and of each family; the minimums of the
-declared tools; dependent second requests up to 22%; a minimum of each request shape; one conversation of every sequence
+declared tools; the `x-ctx` quota (5% of the file, at least two thirds with the context block and the rest without it, taken even above the per-sequence ceiling: the family has few tool sequences and the ceiling alone cut it to about 1%); dependent second requests up to 22%; a minimum of each request shape; one conversation of every sequence
 not seen yet, shortest first; unseen cells; the rest.
 
 `katana curriculum variety train.jsonl validation.jsonl -v` prints every measure below, with these definitions:
@@ -495,9 +495,12 @@ and the generator never shows a call the index cannot see). The `Find` identifie
 `strstr` and `sscanf` from the real text, so a change in their format makes the generator drop scenarios (it does not write wrong ones). The
 `x-place` scenarios depend on `place_note` and the missing-path search walking the disks of the machine that generates them (names are
 random words, but a folder with the same name on a mounted disk would change the note; the generator refuses a note that points elsewhere).
-`recall` is only named in the `no-match` output: no conversation calls it. Two files written in the same instant make a real `Grep` list
-them in a different order, which a replay cannot repeat (about 0.2% of the conversations); `generate.sh` drops those lines and lists them
-in `dropped.txt`.
+`recall` is only named in the `no-match` output: no conversation calls it. Every file a scenario writes gets its own fixed modification time (`cu_put` stamps an increasing time), so `Grep` and `Glob` list files in the
+same order on every replay; if a line still fails the check, `generate.sh` drops it (up to six passes) and lists it in `dropped.txt` (empty in the
+last full run). `katana curriculum` removes its partial output file when it aborts with a grammar error (for instance `x-docs` without
+`KATANA_VOCAB_MODEL`), so no file cut in the middle of a line is left behind. `x-docs` discards about 190 of 3300 candidate scenarios
+("the request would already match a document" / "the engine delivered something where it should be missing"): the situations need a phrase
+the engine's document matcher does not match, and the matcher is fuzzy, so the generator draws again; the discards cost generation time only.
 
 ## Commands
 
@@ -756,7 +759,7 @@ without the context block (the policy reads what the engine returned):
 | family | teaches | weight |
 |---|---|---|
 | `x-nav` | `Symbols` `refs`, `uses`, `tree`, `flow`, `at`; the rule "exact name: Symbols; only words: Find; exact text: Grep" as paired requests; `Find` then `Symbols` | 40 |
-| `x-ctx` | the `[katana: context for this request ...]` block placed after the user's text (made by `uioe_prepare` in deterministic mode, `KATANA_UIOE_DET=1`): follow `Next`, complete what the path does not list, the same request when no block appears, a memory line as a dated guess (`- (guess) memory 2026-05-20 ...`), never as a fact | 40 |
+| `x-ctx` | the `[katana: context for this request ...]` block placed after the user's text (made by `uioe_prepare` in deterministic mode, `KATANA_UIOE_DET=1`): follow `Next`, complete what the path does not list, the same request when no block appears, a memory line as a dated guess (`- (guess) memory 2026-05-20 ...`), never as a fact; the owner decided the block is taught, so the weight is high and `pick` keeps a quota (see Selection) | 100 |
 | `x-ctxlimits` | `Not found / limits`: an existing name beside a missing one (do not search for the missing one again), an ignored folder (`NOT FOUND` plus "N ignored folders could hold it", then `path`) | 20 |
 | `x-notes` | the cited folder (engine note or block, `path` from the first call), reading a big file in parts, the repeat note | 15 |
 | `x-plan` | `TodoWrite`: `done` sent before any list (the engine's error, then the list), plan with `done=N` in the same turn as the next call | 15 |
