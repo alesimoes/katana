@@ -34,6 +34,7 @@ typedef struct { int n, total, concept, created; uint32_t files; double ms, inde
 static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho);   /* search.c */
 static void ign_scope_enter(const char *dir, int allow_add);            /* src/coder/maint.c: pasta consultada; `path` dentro de pasta ignorada vira inclusao restrita */
 static void ign_scope_leave(void);
+static int uioe_facade_find(const char *query, const char *root, const char *pre, int lim, char *out, size_t cap);   /* src/uioe/facade.c */
 static int ign_notfound_note(const char *proj, const char *pre, char *out, size_t cap);      /* maint.c: "N ignored folders could hold it: ..." */
 static int idx_status_line(const char *root, const char *pre, char *out, size_t cap);        /* src/coder/symquery.c: a linha de estado do indice (no maximo uma) */
 static int idx_scope_partial(const char *root, const char *pre);                             /* symquery.c: 0 = escopo completo, 1 e 2 = ainda parcial */
@@ -1436,6 +1437,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             if (!sl) break; c = sl + 1; }
         char err[300] = "";
         snprintf(g_fd_allow, sizeof g_fd_allow, "%s", pre);
+        if (!refs && !nbr && !phrase && uioe_facade_find(q, root, pre, (int)lim, out, cap)) goto done;   /* U5: o mesmo motor do bloco pre-LLM; so sob KATANA_UIOE=full e com apoio verificado */
         /* o catalogo e o indice do coder dao a lista de arquivos e os candidatos; o indice de trechos e montado so com eles, a cada consulta. Sem indice do coder
            (nao foi possivel cria-lo) a resposta e um erro: o Find nao tem um segundo indice */
         struct FsCtx *FS = NULL; double ens_ms = 0;

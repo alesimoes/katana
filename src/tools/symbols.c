@@ -31,6 +31,7 @@ static const char CT_SYMBOLS_PROPS[] =
 static const char CT_SYMBOLS_REQ[] = "\"action\"";
 
 #ifndef _WIN32
+static void uioe_facade_symbols_trace(const char *action, const char *name, const char *file, const char *result);   /* src/uioe/facade.c */
 static int sym_tool_run(const char *action, const char *name, const char *file, long long line, long long limit, long long depth, const char *root, char *out, size_t cap);   /* coder/symtool.c */
 static void ct_symbols(const char *js, const char *end, char *out, size_t cap) {
     if (cap < 300) { if (cap) out[0] = 0; return; }
@@ -48,6 +49,7 @@ static void ct_symbols(const char *js, const char *end, char *out, size_t cap) {
         if (path && *path) { if (!ct_dir_arg(path, 0, res, sizeof res, &st, out, cap)) goto done; if (!S_ISDIR(st.st_mode)) { snprintf(out, cap, "error: path must be a folder"); goto done; } }
         else snprintf(res, sizeof res, "%s", cwd);
         sym_tool_run(action, name, file, line, limit, depth, res, out, cap);
+        uioe_facade_symbols_trace(action, name, file, out);                  /* U5: so uma linha de traco; a saida nao muda */
     }
 done:
     free(action); free(name); free(file); free(path);
