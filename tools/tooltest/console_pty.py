@@ -2,7 +2,7 @@
 """Drives the katana console inside a pseudo-terminal (rich output, line editor, history) with the tiny model and the
 scripted stand-in teacher. Used by tools/tooltest/launch.sh.
 
-  console_pty.py KATANA MODEL WORKDIR HOME MOCK_CLAUDE.PY
+  console_pty.py KATANA MODEL WORKDIR HOME MOCK_TEACHER_PROG.PY
 
 Prints one line per check: "ok   <what>" or "FAIL <what>", then "pty: N checks, M failures"."""
 import os, pty, re, select, sys, time
@@ -24,8 +24,8 @@ def check(what, cond, detail=""):
 
 
 env = dict(os.environ, HOME=home, TERM="xterm", KATANA_CPU="1", KATANA_TEACHER="1", KATANA_TOOLS="2", MOCK_TOOLS="2",
-           KATANA_TEACHER_CLI=mock, KATANA_LOG=os.path.join(home, "agente.log"))
-env.pop("ANTHROPIC_API_KEY", None); env.pop("NO_COLOR", None); env.pop("KATANA_UI", None)
+           KATANA_TEACHER_CMD="python3 " + mock, KATANA_LOG=os.path.join(home, "agente.log"))
+env.pop("NO_COLOR", None); env.pop("KATANA_UI", None)
 os.makedirs(work, exist_ok=True)
 
 pid, fd = pty.fork()

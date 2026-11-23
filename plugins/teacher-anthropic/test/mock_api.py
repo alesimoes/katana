@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stand-in for the Anthropic Messages API, to test the agent's teacher mode without a key or network.
 
-Usage: mock_anthropic.py PORT LOGFILE
+Usage: mock_api.py PORT LOGFILE
 It checks every request the way the real API would reject it (headers, alternating roles, every tool_use answered by
 a tool_result in the next message, no empty content, thinking blocks returned unchanged) and answers 400 with the
 reason when a rule is broken. The scripted teacher: writes a file, runs a command to read it back, then gives the

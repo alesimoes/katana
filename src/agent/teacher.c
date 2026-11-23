@@ -1,7 +1,9 @@
 /* ---------- modo professor: um modelo maior responde no lugar do modelo local, dentro do mesmo agente ----------
- * Com o professor ligado (/teacher on, ou KATANA_TEACHER=1), cada fala do agente vem da API de mensagens da
- * Anthropic (Claude) em vez de ser gerada aqui. Todo o resto e o agente de sempre: as ferramentas rodam nesta
- * maquina pelo mesmo despacho, a conversa aparece na interface do mesmo jeito e a sessao e gravada no mesmo arquivo.
+ * Com o professor ligado (/teacher on, ou KATANA_TEACHER=1), cada fala do agente vem de um PROGRAMA EXTERNO (plugin)
+ * em vez de ser gerada aqui. O katana nao sabe quem esta do outro lado: ele so fala o protocolo de docs/teacher-protocol.md
+ * (uma linha JSON no stdin do programa; linhas JSON no stdout). Todo o resto e o agente de sempre: as ferramentas
+ * rodam nesta maquina pelo mesmo despacho, a conversa aparece na interface do mesmo jeito e a sessao e gravada no
+ * mesmo arquivo.
  *
  * A resposta do professor e reescrita na sintaxe do modelo local (bloco de raciocinio, texto, chamadas de
  * ferramenta no formato do aluno) e entra no historico e no cache KV como se o aluno a tivesse escrito. Por isso:
@@ -11,27 +13,17 @@
  *     refeita a cada pedido a partir do historico da sessao), inclusive as tentativas do modelo local;
  *   - desligado o professor, o modelo local continua do ponto em que a conversa esta.
  *
- * Duas formas de falar com o professor (KATANA_TEACHER_VIA=api|cli, ou /teacher api, /teacher cli):
- *   - api: a API de mensagens, com chave;
- *   - cli: o Claude Code instalado nesta maquina (claude -p), com a sessao em que o dono ja esta logado, sem chave.
- *     Cada fala e uma chamada sem ferramentas proprias: ele recebe o prompt, as declaracoes das ferramentas do katana
- *     e a conversa, e devolve a proxima fala num objeto com esquema fixo (texto e chamadas). Sem chave gravada, e
- *     esta a forma usada.
- *
- * Rede: o pedido sai pelo curl do sistema. A chave vem de ANTHROPIC_API_KEY ou do arquivo ~/.katana/teacher.key
- * (so do dono) e vai num arquivo de cabecalho temporario com permissao so do dono, nunca na linha de comando.
- * O que sai da maquina: o prompt de sistema do agente (com a memoria salva e o mapa de pastas), a conversa e os
- * resultados das ferramentas. Variaveis: KATANA_TEACHER_MODEL (padrao claude-opus-5-5), KATANA_TEACHER_EFFORT
- * (low, medium, high, xhigh, max; padrao high), KATANA_TEACHER_URL (padrao https://api.anthropic.com),
- * KATANA_TEACHER_FALLBACK=0 (sem o modelo substituto quando o pedido e recusado). */
+ * Qual programa: KATANA_TEACHER_CMD (linha de comando para o sh), ou a primeira linha de ~/.katana/teacher.cmd, ou o
+ * executavel ~/.katana/plugins/teacher/run. Opcoes enviadas ao programa: KATANA_TEACHER_MODEL, KATANA_TEACHER_EFFORT
+ * (ou /teacher <nome>) e KATANA_TEACHER_MAX_TOKENS; o resto da configuracao (endereco, chave) e do plugin, que herda o
+ * ambiente. O que sai da maquina depende do plugin: o prompt de sistema do agente (com a memoria salva e o mapa de
+ * pastas), a conversa e os resultados das ferramentas sao entregues a ele. */
 
 static int g_teacher;                                   /* 1: as falas do agente vem do professor */
-static int g_tch_cli;                                   /* 1: pelo Claude Code desta maquina (claude -p); 0: pela API com chave */
-static int g_tch_via;                                   /* escolha pedida: 0 automatica, 1 api, 2 cli */
-static char g_tch_model[128] = "claude-opus-5-5", g_tch_url[512] = "https://api.anthropic.com", g_tch_effort[16] = "high";
-static long g_tch_in, g_tch_out, g_tch_cread;           /* tokens somados nesta execucao */
-/* conteudo cru das respostas desta execucao (com os blocos de raciocinio assinados): volta igual nos pedidos seguintes */
-typedef struct { int idx; char *txt; char *raw; } TchRaw;
+static char g_tch_model[128], g_tch_effort[16];         /* opcoes repassadas ao programa (vazio: ele escolhe) */
+static long g_tch_in, g_tch_out, g_tch_cread;           /* tokens somados nesta execucao (o que o programa informar) */
+/* dado opaco devolvido pelo programa junto com a fala (p.ex. blocos de raciocinio assinados): volta igual nas mensagens seguintes */
+typedef struct { int idx; char *txt; char *opaque; } TchRaw;
 static TchRaw *g_tch_raw; static int g_tch_nraw;
 
 static void js_escape(Buf *b, const char *s, size_t n);
@@ -40,60 +32,48 @@ static void im_think(const Config *c, Buf *out, const char *reason);
 
 static void tch_jstr(Buf *o, const char *s, size_t n) { buf_str(o, "\""); js_escape(o, s, n); buf_str(o, "\""); }
 
-static int tch_key(char *out, size_t cap) {
-    const char *e = getenv("ANTHROPIC_API_KEY");
+/* linha de comando do programa do professor; 0 = nenhum configurado */
+static int tch_cmdline(char *out, size_t cap) {
+    const char *e = getenv("KATANA_TEACHER_CMD");
     if (e && *e) { snprintf(out, cap, "%s", e); return 1; }
     char h[1024], p[1200];
-    agent_home(h, sizeof h); snprintf(p, sizeof p, "%s/.katana/teacher.key", h);
+    agent_home(h, sizeof h);
+    snprintf(p, sizeof p, "%s/.katana/teacher.cmd", h);
     FILE *f = fopen(p, "rb");
-    if (!f) return 0;
-    size_t n = fread(out, 1, cap - 1, f); fclose(f); out[n] = 0;
-    while (n && (unsigned char)out[n - 1] <= ' ') out[--n] = 0;
-    return n > 0;
+    if (f) {
+        size_t n = fread(out, 1, cap - 1, f); fclose(f); out[n] = 0;
+        char *nl = strchr(out, '\n'); if (nl) *nl = 0;
+        n = strlen(out);
+        while (n && (unsigned char)out[n - 1] <= ' ') out[--n] = 0;
+        if (n) return 1;
+    }
+#ifndef _WIN32
+    snprintf(p, sizeof p, "%s/.katana/plugins/teacher/run", h);
+    if (access(p, X_OK) == 0) { char q[1300]; shq(p, q, sizeof q); snprintf(out, cap, "%s", q); return 1; }
+#endif
+    return 0;
 }
 
-static const char *tch_cli_prog(void) { const char *e = getenv("KATANA_TEACHER_CLI"); return e && *e ? e : "claude"; }
-static int tch_cli_ok(void) {
-#ifdef _WIN32
-    return 0;
-#else
-    char q[1200], cmd[1300]; int rc = 1;
-    shq(tch_cli_prog(), q, sizeof q); snprintf(cmd, sizeof cmd, "command -v %s", q);
-    char *o = run_collect(cmd, 10, 512, &rc);
-    free(o);
-    return rc == 0;
-#endif
-}
-static void tch_ui(void) { if (getenv("KATANA_UI")) { printf("\x01" "TEACHER %d %s %s\n", g_teacher, g_tch_model, g_tch_cli ? "(Claude Code)" : "(API)"); fflush(stdout); } }
+static void tch_ui(void) { if (getenv("KATANA_UI")) { printf("\x01" "TEACHER %d %s\n", g_teacher, g_tch_model[0] ? g_tch_model : "teacher"); fflush(stdout); } }
 static void tch_set(int on) {
-    char key[600];
-    if (on) {
-        const int has = tch_key(key, sizeof key);
-        memset(key, 0, sizeof key);
-        g_tch_cli = g_tch_via == 2 || (g_tch_via == 0 && !has);
-        if (g_tch_cli && !tch_cli_ok()) {
-            fprintf(stderr, "%s[teacher: no API key (ANTHROPIC_API_KEY or ~/.katana/teacher.key) and the %s program was not found]%s\n", CE(C_DIM), tch_cli_prog(), CE(C_RESET));
-            if (getenv("KATANA_UI")) { printf("\x01" "TEACHERR 0 no API key and no Claude Code on this machine\n"); fflush(stdout); }
-            on = 0;
-        } else if (!g_tch_cli && !has) { fprintf(stderr, "%s[teacher: no API key. Set ANTHROPIC_API_KEY or write the key to ~/.katana/teacher.key]%s\n", CE(C_DIM), CE(C_RESET)); on = 0; }
+    char cmd[2048] = "";
+    if (on && !tch_cmdline(cmd, sizeof cmd)) {
+        fprintf(stderr, "%s[teacher: no teacher program configured. Set KATANA_TEACHER_CMD, write the command to ~/.katana/teacher.cmd, or install an executable at ~/.katana/plugins/teacher/run (see docs/teacher-protocol.md)]%s\n", CE(C_DIM), CE(C_RESET));
+        if (getenv("KATANA_UI")) { printf("\x01" "TEACHERR 0 no teacher program configured\n"); fflush(stdout); }
+        on = 0;
     }
     g_teacher = on;
-    if (on && g_tch_cli) fprintf(stderr, "%s[teacher on: %s answers in place of the local model, through the Claude Code session of this machine (%s -p); the conversation and the tool results are sent out]%s\n", CE(C_DIM), g_tch_model, tch_cli_prog(), CE(C_RESET));
-    else if (on) fprintf(stderr, "%s[teacher on: %s answers in place of the local model; the conversation and the tool results are sent to %s]%s\n", CE(C_DIM), g_tch_model, g_tch_url, CE(C_RESET));
+    if (on) fprintf(stderr, "%s[teacher on: the teacher program answers in place of the local model; the conversation and the tool results are handed to it (%.200s)]%s\n", CE(C_DIM), cmd, CE(C_RESET));
     else fprintf(stderr, "%s[teacher off: the local model answers]%s\n", CE(C_DIM), CE(C_RESET));
     tch_ui();
 }
 static void tch_init(void) {
     const char *e;
     if ((e = getenv("KATANA_TEACHER_MODEL")) && *e) snprintf(g_tch_model, sizeof g_tch_model, "%s", e);
-    if ((e = getenv("KATANA_TEACHER_URL")) && *e) snprintf(g_tch_url, sizeof g_tch_url, "%s", e);
     if ((e = getenv("KATANA_TEACHER_EFFORT")) && *e) snprintf(g_tch_effort, sizeof g_tch_effort, "%s", e);
-    size_t ul = strlen(g_tch_url);
-    while (ul && g_tch_url[ul - 1] == '/') g_tch_url[--ul] = 0;
-    if ((e = getenv("KATANA_TEACHER_VIA")) && *e) g_tch_via = !strcmp(e, "cli") ? 2 : !strcmp(e, "api") ? 1 : 0;
     if ((e = getenv("KATANA_TEACHER")) && *e && strcmp(e, "0") != 0) tch_set(1);
 }
-/* comando /teacher [on|off|modelo]; 1 = era o comando */
+/* comando /teacher [on|off|status|nome-do-modelo]; 1 = era o comando */
 static int tch_cmd(const char *line) {
     if (strncmp(line, "/teacher", 8) != 0 || (line[8] && line[8] != ' ')) return 0;
     const char *a = line + 8;
@@ -101,25 +81,24 @@ static int tch_cmd(const char *line) {
     if (!*a) tch_set(!g_teacher);
     else if (!strcmp(a, "on")) tch_set(1);
     else if (!strcmp(a, "off")) tch_set(0);
-    else if (!strcmp(a, "cli") || !strcmp(a, "api")) { g_tch_via = a[0] == 'c' ? 2 : 1; tch_set(1); }
-    else if (!strcmp(a, "status")) { fprintf(stderr, "[teacher %s: %s, %ld + %ld tokens in this run (%ld read from the cache)]\n", g_teacher ? "on" : "off", g_tch_model, g_tch_in, g_tch_out, g_tch_cread); tch_ui(); }
-    else { snprintf(g_tch_model, sizeof g_tch_model, "%s", a); tch_set(1); }
+    else if (!strcmp(a, "status")) { fprintf(stderr, "[teacher %s: %s, %ld + %ld tokens in this run (%ld cached)]\n", g_teacher ? "on" : "off", g_tch_model[0] ? g_tch_model : "default model", g_tch_in, g_tch_out, g_tch_cread); tch_ui(); }
+    else { snprintf(g_tch_model, sizeof g_tch_model, "%s", a); tch_set(1); }      /* o nome e so uma opcao repassada ao programa */
     return 1;
 }
 
 /* ferramentas que o prompt do agente so cita numa linha (sem declaracao): o professor precisa da declaracao para
    chamar. delegate fica de fora: e um subagente do modelo local, e o professor tem contexto de sobra. */
 static const char *const TCH_EXTRA[][2] = {
-    {"todo", "{\"name\": \"todo\", \"description\": \"Your own task list for a long job: one step per line; call again with [x] in front of each finished step\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"steps\": {\"type\": \"string\"}}, \"required\": [\"steps\"]}}"},
-    {"git", "{\"name\": \"git\", \"description\": \"Run git with these arguments (no shell)\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"args\": {\"type\": \"string\"}}, \"required\": [\"args\"]}}"},
-    {"terminal", "{\"name\": \"terminal\", \"description\": \"A shell session that keeps its state. action: open, send, read, list, close, interrupt\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"enter\": {\"type\": \"boolean\"}, \"lines\": {\"type\": \"integer\"}, \"wait_ms\": {\"type\": \"integer\"}}, \"required\": [\"action\"]}}"},
-    {"glob", "{\"name\": \"glob\", \"description\": \"List files matching a pattern under a folder\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"root\": {\"type\": \"string\"}}, \"required\": [\"pattern\"]}}"},
-    {"recall", "{\"name\": \"recall\", \"description\": \"Search the facts saved about the user\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}"},
-    {"download_file", "{\"name\": \"download_file\", \"description\": \"Download a URL to a file\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}, \"path\": {\"type\": \"string\"}}, \"required\": [\"url\", \"path\"]}}"},
-    {"install_package", "{\"name\": \"install_package\", \"description\": \"Install a package. manager: pip, npm, apt or cargo\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"manager\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}}, \"required\": [\"manager\", \"name\"]}}"},
-    {"read_log", "{\"name\": \"read_log\", \"description\": \"Read a log. source: agent, commands, journal, dmesg, syslog or a file path\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"source\": {\"type\": \"string\"}, \"lines\": {\"type\": \"integer\"}, \"filter\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}, \"required\": [\"source\"]}}"},
-    {"job", "{\"name\": \"job\", \"description\": \"Background commands. action: read, list or stop\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"integer\"}, \"action\": {\"type\": \"string\"}}}}"},
-    {"howto", "{\"name\": \"howto\", \"description\": \"Recipes for using the tools\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"topic\": {\"type\": \"string\"}}, \"required\": [\"topic\"]}}"},
+    {"todo", "{\"name\": \"todo\", \"description\": \"Your own task list for a long job: one step per line; call again with [x] in front of each finished step\", \"parameters\": {\"type\": \"object\", \"properties\": {\"steps\": {\"type\": \"string\"}}, \"required\": [\"steps\"]}}"},
+    {"git", "{\"name\": \"git\", \"description\": \"Run git with these arguments (no shell)\", \"parameters\": {\"type\": \"object\", \"properties\": {\"args\": {\"type\": \"string\"}}, \"required\": [\"args\"]}}"},
+    {"terminal", "{\"name\": \"terminal\", \"description\": \"A shell session that keeps its state. action: open, send, read, list, close, interrupt\", \"parameters\": {\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"enter\": {\"type\": \"boolean\"}, \"lines\": {\"type\": \"integer\"}, \"wait_ms\": {\"type\": \"integer\"}}, \"required\": [\"action\"]}}"},
+    {"glob", "{\"name\": \"glob\", \"description\": \"List files matching a pattern under a folder\", \"parameters\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"root\": {\"type\": \"string\"}}, \"required\": [\"pattern\"]}}"},
+    {"recall", "{\"name\": \"recall\", \"description\": \"Search the facts saved about the user\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}"},
+    {"download_file", "{\"name\": \"download_file\", \"description\": \"Download a URL to a file\", \"parameters\": {\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}, \"path\": {\"type\": \"string\"}}, \"required\": [\"url\", \"path\"]}}"},
+    {"install_package", "{\"name\": \"install_package\", \"description\": \"Install a package. manager: pip, npm, apt or cargo\", \"parameters\": {\"type\": \"object\", \"properties\": {\"manager\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}}, \"required\": [\"manager\", \"name\"]}}"},
+    {"read_log", "{\"name\": \"read_log\", \"description\": \"Read a log. source: agent, commands, journal, dmesg, syslog or a file path\", \"parameters\": {\"type\": \"object\", \"properties\": {\"source\": {\"type\": \"string\"}, \"lines\": {\"type\": \"integer\"}, \"filter\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}, \"required\": [\"source\"]}}"},
+    {"job", "{\"name\": \"job\", \"description\": \"Background commands. action: read, list or stop\", \"parameters\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"integer\"}, \"action\": {\"type\": \"string\"}}}}"},
+    {"howto", "{\"name\": \"howto\", \"description\": \"Recipes for using the tools\", \"parameters\": {\"type\": \"object\", \"properties\": {\"topic\": {\"type\": \"string\"}}, \"required\": [\"topic\"]}}"},
 };
 
 /* prompt do agente no formato com as declaracoes em JSON (o do Gemma 4 declara de outro jeito: monta o generico) */
@@ -158,7 +137,7 @@ static void tch_tools(const char *sys, Buf *o) {
         if (ne && *nv == '"' && strncmp(nv, "\"delegate\"", 10) != 0) {
             buf_str(o, n++ ? ", {\"name\": " : "{\"name\": "); buf_add(o, nv, (size_t)(ne - nv));
             if (de && *dv == '"') { buf_str(o, ", \"description\": "); buf_add(o, dv, (size_t)(de - dv)); }
-            buf_str(o, ", \"input_schema\": ");
+            buf_str(o, ", \"parameters\": ");
             if (pe && *pv == '{') buf_add(o, pv, (size_t)(pe - pv)); else buf_str(o, "{\"type\": \"object\", \"properties\": {}}");
             buf_str(o, "}");
         }
@@ -179,13 +158,14 @@ static void tch_tools(const char *sys, Buf *o) {
             if (!launch_tool_allowed(fn)) continue;
             buf_str(o, n++ ? ", {\"name\": " : "{\"name\": "); tch_jstr(o, fn, strlen(fn));
             if (t->desc && t->desc[0]) { buf_str(o, ", \"description\": "); tch_jstr(o, t->desc, strlen(t->desc)); }
-            buf_str(o, ", \"input_schema\": ");
+            buf_str(o, ", \"parameters\": ");
             buf_str(o, t->schema && t->schema[0] == '{' ? t->schema : "{\"type\": \"object\", \"properties\": {}}");
             buf_str(o, "}");
         }
     }
     buf_str(o, "]");
 }
+
 
 /* prompt de sistema do professor: o do agente sem o bloco que ensina a sintaxe de chamada do aluno */
 static void tch_sys(const char *sys, Buf *o) {
@@ -226,8 +206,8 @@ static int tch_asst_blocks(const Config *c, const char *s, int midx, Buf *o, cha
         }
         const char *ar = strstr(ap, "\"arguments\""), *ob = ar ? strchr(ar + 11, '{') : NULL, *oe = ob ? gs_skipv(ob) : NULL;
         snprintf(ids[*nid], 40, "kt_%d_%d", midx, *nid);
-        buf_str(o, nb++ ? ", " : ""); buf_str(o, "{\"type\": \"tool_use\", \"id\": \""); buf_str(o, ids[*nid]); buf_str(o, "\", \"name\": ");
-        tch_jstr(o, name, strlen(name)); buf_str(o, ", \"input\": ");
+        buf_str(o, nb++ ? ", " : ""); buf_str(o, "{\"type\": \"tool_call\", \"id\": \""); buf_str(o, ids[*nid]); buf_str(o, "\", \"name\": ");
+        tch_jstr(o, name, strlen(name)); buf_str(o, ", \"arguments\": ");
         if (oe) buf_add(o, ob, (size_t)(oe - ob)); else buf_str(o, "{}");
         buf_str(o, "}");
         (*nid)++;
@@ -235,45 +215,29 @@ static int tch_asst_blocks(const Config *c, const char *s, int midx, Buf *o, cha
     return nb;
 }
 
-/* resposta guardada desta execucao para a mensagem idx (mesmo texto): blocos crus e os ids das chamadas */
-static int tch_raw_blocks(int idx, const char *txt, Buf *o, char ids[][40], int *nid) {
-    for (int i = g_tch_nraw - 1; i >= 0; i--) {
-        if (g_tch_raw[i].idx != idx || strcmp(g_tch_raw[i].txt, txt) != 0) continue;
-        const char *r = js_ws(g_tch_raw[i].raw), *el, *ee;
-        int nb = 0;
-        if (*r != '[') return 0;
-        for (const char *q = r + 1; (ee = gs_elem(q, &el)); q = ee) {
-            const char *le = gs_skipv(el);
-            if (*el != '{' || !le) continue;
-            buf_str(o, nb++ ? ", " : ""); buf_add(o, el, (size_t)(le - el));
-            char k[64]; const char *v, *me; int tu = 0; char id[40] = "";
-            for (const char *m = el + 1; (me = gs_member(m, k, sizeof k, &v)); m = me) {
-                if (!strcmp(k, "type")) tu = !strncmp(v, "\"tool_use\"", 10);
-                else if (!strcmp(k, "id") && *v == '"') { size_t n = 0; for (const char *w = v + 1; *w && *w != '"' && n < 39; w++) id[n++] = *w; id[n] = 0; }
-            }
-            if (tu && id[0] && *nid < 64) snprintf(ids[(*nid)++], 40, "%s", id);
-        }
-        return nb;
-    }
-    return 0;
+/* dado opaco guardado desta execucao para a mensagem idx (mesmo texto): vira o primeiro bloco da fala */
+static const char *tch_opaque_for(int idx, const char *txt) {
+    for (int i = g_tch_nraw - 1; i >= 0; i--)
+        if (g_tch_raw[i].idx == idx && g_tch_raw[i].opaque && !strcmp(g_tch_raw[i].txt, txt)) return g_tch_raw[i].opaque;
+    return NULL;
 }
 
-/* mensagens da API a partir da conversa inteira da sessao. Regras da API garantidas aqui: papeis alternados (falas
-   seguidas do mesmo papel viram uma), todo tool_use com o seu tool_result logo depois, nenhuma fala vazia */
+/* mensagens neutras a partir da conversa inteira da sessao: {"role": "user"|"assistant", "content": [blocos]} com blocos
+   text, tool_call (id, name, arguments), tool_result (id, content) e opaque (data). Regras garantidas aqui: papeis
+   alternados (falas seguidas do mesmo papel viram uma), todo tool_call com o seu tool_result logo depois, nenhuma fala vazia */
 static void tch_messages(const Config *c, const AHist *h, Buf *o) {
     const int g4 = c->chat_fmt == 8;
     const char *ro = g4 ? "<|tool_response>" : "<tool_response>\n", *rc = g4 ? "<tool_response|>" : "\n</tool_response>";
     static char ids[64][40];
     int nid = 0, n = 0; char last = 0;
 #define TCH_OPEN(role) do { if (last != (role)) { if (last) buf_str(o, "]}, "); buf_str(o, (role) == 'a' ? "{\"role\": \"assistant\", \"content\": [" : "{\"role\": \"user\", \"content\": ["); last = (role); n = 0; } } while (0)
-#define TCH_RESULT(id, s, l) do { buf_str(o, n++ ? ", " : ""); buf_str(o, "{\"type\": \"tool_result\", \"tool_use_id\": \""); buf_str(o, id); buf_str(o, "\", \"content\": "); tch_jstr(o, s, l); buf_str(o, "}"); } while (0)
+#define TCH_RESULT(id, s, l) do { buf_str(o, n++ ? ", " : ""); buf_str(o, "{\"type\": \"tool_result\", \"id\": \""); buf_str(o, id); buf_str(o, "\", \"content\": "); tch_jstr(o, s, l); buf_str(o, "}"); } while (0)
 #define TCH_TEXT(s, l) do { buf_str(o, n++ ? ", " : ""); buf_str(o, "{\"type\": \"text\", \"text\": "); tch_jstr(o, s, l); buf_str(o, "}"); } while (0)
     for (int i = 0; i < h->n; i++) {
         const char r = h->v[i].role, *s = h->v[i].s;
         if (r == 'a') {
             Buf b = {0}; static char nids[64][40]; int nn = 0;
-            int nb = tch_raw_blocks(i, s, &b, nids, &nn);
-            if (!nb) nb = tch_asst_blocks(c, s, i, &b, nids, &nn);
+            int nb = tch_asst_blocks(c, s, i, &b, nids, &nn);
             if (!nb) { free(b.p); continue; }                    /* fala vazia (interrompida): nao vai */
             if (last == 'a' || !last) {                          /* duas falas seguidas do modelo, ou a conversa comeca por ele */
                 TCH_OPEN('u');
@@ -282,6 +246,8 @@ static void tch_messages(const Config *c, const AHist *h, Buf *o) {
                 nid = 0;
             }
             TCH_OPEN('a');
+            const char *op = tch_opaque_for(i, s);
+            if (op) { buf_str(o, "{\"type\": \"opaque\", \"data\": "); buf_str(o, op); buf_str(o, "}, "); }
             buf_add(o, b.p, b.n); n = nb; free(b.p);
             nid = nn; memcpy(ids, nids, sizeof ids);
         } else if (r == 't') {
@@ -325,334 +291,57 @@ static void tch_mark(const char *sess, int idx, size_t len) {
     char p[4400]; snprintf(p, sizeof p, "%s.teacher", sess);
     FILE *f = fopen(p, "ab");
     if (!f) return;
-    fprintf(f, "%d\t%zu\t%s\n", idx, len, g_tch_model);
+    fprintf(f, "%d\t%zu\t%s\n", idx, len, g_tch_model[0] ? g_tch_model : "teacher");
     fclose(f);
 }
 
 #ifndef _WIN32
-/* ---- texto do professor aparecendo enquanto ele escreve (caminho cli) ----
- * O programa sai em linhas JSON (stream-json). O objeto da resposta ({"text": ..., "tool_calls": ...}) chega em
- * pedacos (input_json_delta / partial_json); aqui eles sao juntados e o valor de "text" e impresso conforme chega,
- * na mesma fala. A ultima linha (type result) traz o objeto inteiro, que e o que vale. */
-static struct { Buf line, pj, res; size_t at; int state; size_t shown; double mark; int midline; } g_ts;     /* state: 0 procurando "text", 1 dentro do texto, 2 texto encerrado */
-static void ts_reset(void) { buf_clear(&g_ts.line); buf_clear(&g_ts.pj); buf_clear(&g_ts.res); g_ts.at = 0; g_ts.state = 0; g_ts.shown = 0; g_ts.mark = now_sec(); g_ts.midline = 0; }
-static void ts_utf8(unsigned cp) {
-    char u[5]; int n = 0;
-    if (cp < 0x80) u[n++] = (char)cp;
-    else if (cp < 0x800) { u[n++] = (char)(0xC0 | (cp >> 6)); u[n++] = (char)(0x80 | (cp & 0x3F)); }
-    else if (cp < 0x10000) { u[n++] = (char)(0xE0 | (cp >> 12)); u[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); u[n++] = (char)(0x80 | (cp & 0x3F)); }
-    else { u[n++] = (char)(0xF0 | (cp >> 18)); u[n++] = (char)(0x80 | ((cp >> 12) & 0x3F)); u[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); u[n++] = (char)(0x80 | (cp & 0x3F)); }
-    fwrite(u, 1, (size_t)n, stdout); g_ts.shown += (size_t)n;
+/* ---- saida do programa do professor, linha a linha, enquanto ele escreve ----
+ * Eventos (um objeto JSON por linha): thinking e text (pedacos, impressos conforme chegam), progress (bytes ja
+ * escritos de chamadas longas), done (a fala inteira) e error. Linhas que nao sao JSON sao ignoradas. */
+static struct { Buf line, think, text, done, err; int think_open, think_closed, has_done, has_err, text_n; size_t shown; double mark; int midline; } g_tp;
+static void tp_reset(void) {
+    buf_clear(&g_tp.line); buf_clear(&g_tp.think); buf_clear(&g_tp.text); buf_clear(&g_tp.done); buf_clear(&g_tp.err);
+    g_tp.think_open = g_tp.think_closed = g_tp.has_done = g_tp.has_err = g_tp.text_n = 0; g_tp.shown = 0; g_tp.mark = now_sec(); g_tp.midline = 0;
 }
-static int ts_hex4(const char *p, unsigned *v) {
-    *v = 0;
-    for (int i = 0; i < 4; i++) { const char ch = p[i]; unsigned d; if (ch >= '0' && ch <= '9') d = (unsigned)(ch - '0'); else if (ch >= 'a' && ch <= 'f') d = (unsigned)(ch - 'a' + 10); else if (ch >= 'A' && ch <= 'F') d = (unsigned)(ch - 'A' + 10); else return 0; *v = *v * 16 + d; }
-    return 1;
-}
-/* imprime o que ja da para imprimir do valor de "text" no JSON parcial juntado em g_ts.pj */
-static void ts_emit(void) {
-    const char *s = g_ts.pj.p; const size_t n = g_ts.pj.n;
-    if (!s) return;
-    if (g_ts.state == 0) {
-        const char *k = strstr(s, "\"text\"");
-        if (!k) return;
-        const char *q = k + 6;
-        while (*q == ' ' || *q == ':' || *q == '\n' || *q == '\t') q++;
-        if (!*q) return;
-        if (*q != '"') { g_ts.state = 2; return; }
-        g_ts.at = (size_t)(q + 1 - s); g_ts.state = 1;
-    }
-    if (g_ts.state != 1) return;
-    size_t i = g_ts.at;
-    while (i < n) {
-        const unsigned char ch = (unsigned char)s[i];
-        if (ch == '"') { g_ts.state = 2; i++; break; }
-        if (ch != '\\') {
-            if (ch >= 0x80) {       /* caractere UTF-8 inteiro ou espera o resto */
-                const size_t l = ch >= 0xF0 ? 4 : ch >= 0xE0 ? 3 : ch >= 0xC0 ? 2 : 1;
-                if (i + l > n) break;
-                fwrite(s + i, 1, l, stdout); g_ts.shown += l; i += l;
-            } else { fputc(ch, stdout); g_ts.shown++; i++; }
-            continue;
-        }
-        if (i + 1 >= n) break;
-        const char e = s[i + 1];
-        if (e == 'u') {
-            unsigned cp, lo;
-            if (i + 6 > n) break;
-            if (!ts_hex4(s + i + 2, &cp)) { i += 2; continue; }
-            if (cp >= 0xD800 && cp < 0xDC00) {         /* par substituto: precisa da segunda metade */
-                if (i + 12 > n) break;
-                if (s[i + 6] == '\\' && s[i + 7] == 'u' && ts_hex4(s + i + 8, &lo)) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); i += 12; }
-                else { cp = 0xFFFD; i += 6; }
-            } else i += 6;
-            ts_utf8(cp);
-            continue;
-        }
-        const char o = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? 0 : e == 'b' || e == 'f' ? ' ' : e;
-        if (o) { fputc(o, stdout); g_ts.shown++; }
-        i += 2;
-    }
-    if (i > g_ts.at) g_ts.midline = s[i - 1] != '\n' && !(i >= 2 && s[i - 2] == '\\' && s[i - 1] == 'n');
-    g_ts.at = i;
-    fflush(stdout);
-}
-/* depois do texto o professor escreve as chamadas (um arquivo inteiro pode levar minutos): a interface mostra o
-   quanto ja chegou, uma vez por segundo, em vez de parecer parada */
-static void ts_progress(void) {
-    if (g_ts.state != 2 && !(g_ts.state == 0 && g_ts.pj.n > 64)) return;
-    const double t = now_sec();
-    if (t - g_ts.mark < 1.0 || !getenv("KATANA_UI")) return;
-    g_ts.mark = t;
-    if (g_ts.midline) { fputc('\n', stdout); g_ts.midline = 0; }      /* o marcador precisa comecar a linha */
-    printf("\x01" "TEACHW %zu\n", g_ts.pj.n); fflush(stdout);
-}
-static void ts_line(const char *l) {
-    if (strstr(l, "\"type\":\"result\"") || strstr(l, "\"type\": \"result\"")) { buf_clear(&g_ts.res); buf_str(&g_ts.res, l); return; }
-    if (!strstr(l, "input_json_delta")) return;
-    const char *k = strstr(l, "\"partial_json\"");
-    if (!k) return;
-    k += 14;
-    while (*k == ' ' || *k == ':') k++;
-    if (*k != '"') return;
-    Buf t = {0}; const char *pp = k;
-    if (js_string(&pp, &t) && t.p) { buf_add(&g_ts.pj, t.p, t.n); ts_emit(); ts_progress(); }
-    free(t.p);
-}
-static void ts_tap(const char *b, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        if (b[i] != '\n') { buf_add(&g_ts.line, b + i, 1); continue; }
-        if (g_ts.line.n) ts_line(g_ts.line.p);
-        buf_clear(&g_ts.line);
-    }
-}
-
-/* ---- texto do professor aparecendo enquanto ele escreve (caminho api) ----
- * O pedido vai com stream: true e a resposta chega em eventos (linhas "data: {...}"). O raciocinio resumido e o texto
- * sao impressos conforme chegam; os blocos sao remontados (texto, raciocinio com a assinatura, chamadas) num objeto
- * igual ao da resposta sem stream, para o mesmo leitor e para voltarem iguais nos pedidos seguintes. Resposta que
- * nao e stream (erro HTTP) fica em other; a ultima linha, escrita pelo curl, traz o codigo HTTP. */
-#define AS_BLOCKS 64
-typedef struct { char type[24]; Buf start, acc, sig; } AsBlock;
-static struct { Buf line, other, err; AsBlock b[AS_BLOCKS]; int nb, http, events; char stop[40]; long tin, tout, tread, twrite;
-                int think_open, think_closed, text_blocks; size_t shown; double mark; int midline; } g_as;
-static void as_reset(void) {
-    buf_clear(&g_as.line); buf_clear(&g_as.other); buf_clear(&g_as.err);
-    for (int i = 0; i < AS_BLOCKS; i++) { g_as.b[i].type[0] = 0; buf_clear(&g_as.b[i].start); buf_clear(&g_as.b[i].acc); buf_clear(&g_as.b[i].sig); }
-    g_as.nb = 0; g_as.http = 0; g_as.events = 0; g_as.stop[0] = 0; g_as.tin = g_as.tout = g_as.tread = g_as.twrite = 0;
-    g_as.think_open = g_as.think_closed = g_as.text_blocks = 0; g_as.shown = 0; g_as.mark = now_sec(); g_as.midline = 0;
-}
-static void as_word(const char *v, char *out, size_t cap) { size_t n = 0; if (*v == '"') for (const char *w = v + 1; *w && *w != '"' && n < cap - 1; w++) out[n++] = *w; out[n] = 0; }
-static void as_show(const char *s, size_t n) { if (!n) return; fwrite(s, 1, n, stdout); fflush(stdout); g_as.shown += n; g_as.midline = s[n - 1] != '\n'; }
-static void as_event(const char *js) {
-    char k[64], type[40] = "", dtype[40] = ""; const char *v, *e, *cb = NULL, *delta = NULL, *msg = NULL, *usage = NULL, *error = NULL;
-    int index = -1;
+static void tp_show(const char *s, size_t n) { if (!n) return; fwrite(s, 1, n, stdout); fflush(stdout); g_tp.shown += n; g_tp.midline = s[n - 1] != '\n'; }
+static void tp_close_think(void) { if (g_tp.think_open && !g_tp.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); fflush(stdout); g_tp.think_closed = 1; g_tp.midline = 0; } }
+static void tp_event(const char *js) {
     const char *q = js_ws(js);
     if (*q != '{') return;
+    char k[64], ev[24] = ""; const char *v, *e, *tv = NULL, *mv = NULL, *bv = NULL;
     for (const char *p = q + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-        if (!strcmp(k, "type")) as_word(v, type, sizeof type); else if (!strcmp(k, "index")) index = atoi(v);
-        else if (!strcmp(k, "content_block") && *v == '{') cb = v; else if (!strcmp(k, "delta") && *v == '{') delta = v;
-        else if (!strcmp(k, "message") && *v == '{') msg = v; else if (!strcmp(k, "usage") && *v == '{') usage = v;
-        else if (!strcmp(k, "error") && *v == '{') error = v;
+        if (!strcmp(k, "event") && *v == '"') { size_t n = 0; for (const char *w = v + 1; *w && *w != '"' && n < sizeof ev - 1; w++) ev[n++] = *w; ev[n] = 0; }
+        else if (!strcmp(k, "text") && *v == '"') tv = v; else if (!strcmp(k, "message") && *v == '"') mv = v; else if (!strcmp(k, "bytes")) bv = v;
     }
-    g_as.events++;
-    if (msg) for (const char *p = msg + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "usage") && *v == '{') usage = v;
-    if (usage) for (const char *p = usage + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-        if (!strcmp(k, "input_tokens")) g_as.tin = atol(v); else if (!strcmp(k, "output_tokens")) g_as.tout = atol(v);
-        else if (!strcmp(k, "cache_read_input_tokens")) g_as.tread = atol(v); else if (!strcmp(k, "cache_creation_input_tokens")) g_as.twrite = atol(v);
-    }
-    if (error) for (const char *p = error + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "message") && *v == '"') { const char *pp = v; buf_clear(&g_as.err); js_string(&pp, &g_as.err); }
-    if (!strcmp(type, "content_block_start") && cb && index >= 0 && index < AS_BLOCKS) {
-        AsBlock *b = &g_as.b[index];
-        const char *ce = gs_skipv(cb);
-        if (ce) buf_add(&b->start, cb, (size_t)(ce - cb));
-        for (const char *p = cb + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "type")) as_word(v, b->type, sizeof b->type);
-        if (index + 1 > g_as.nb) g_as.nb = index + 1;
-        if (!strcmp(b->type, "text")) g_as.text_blocks++;
-    } else if (!strcmp(type, "content_block_delta") && delta && index >= 0 && index < AS_BLOCKS) {
-        AsBlock *b = &g_as.b[index];
-        const char *tv = NULL, *thv = NULL, *sv = NULL, *pv = NULL;
-        for (const char *p = delta + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-            if (!strcmp(k, "type")) as_word(v, dtype, sizeof dtype);
-            else if (!strcmp(k, "text") && *v == '"') tv = v; else if (!strcmp(k, "thinking") && *v == '"') thv = v;
-            else if (!strcmp(k, "signature") && *v == '"') sv = v; else if (!strcmp(k, "partial_json") && *v == '"') pv = v;
+    Buf t = {0};
+    if (!strcmp(ev, "thinking") && tv) {
+        const char *pp = tv; js_string(&pp, &t);
+        if (t.p && t.n) {
+            if (!g_tp.think_open) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); g_tp.think_open = 1; g_tp.shown++; }
+            buf_add(&g_tp.think, t.p, t.n); tp_show(t.p, t.n);
         }
-        Buf t = {0};
-        if (thv) {
-            const char *pp = thv; js_string(&pp, &t);
-            if (t.p && t.n) {
-                if (!g_as.think_open) { fprintf(stdout, "%s[raciocinio]\n", CE(C_DIM)); g_as.think_open = 1; g_as.shown++; }
-                buf_add(&b->acc, t.p, t.n); as_show(t.p, t.n);
-            }
-        } else if (tv) {
-            const char *pp = tv; js_string(&pp, &t);
-            if (t.p && t.n) {
-                if (g_as.think_open && !g_as.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); g_as.think_closed = 1; g_as.midline = 0; }
-                if (!b->acc.n && g_as.text_blocks > 1) as_show("\n\n", 2);      /* outro bloco de texto: como a fala final junta */
-                buf_add(&b->acc, t.p, t.n); as_show(t.p, t.n);
-            }
-        } else if (sv) { const char *pp = sv; js_string(&pp, &t); if (t.p) buf_add(&b->sig, t.p, t.n); }
-        else if (pv) {
-            const char *pp = pv; js_string(&pp, &t);
-            if (t.p) buf_add(&b->acc, t.p, t.n);
-            const double now = now_sec();          /* escrevendo uma chamada (um arquivo inteiro leva minutos): mostra o quanto ja chegou */
-            if (now - g_as.mark >= 1.0 && getenv("KATANA_UI")) {
-                g_as.mark = now;
-                if (g_as.think_open && !g_as.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); g_as.think_closed = 1; g_as.midline = 0; }
-                if (g_as.midline) { fputc('\n', stdout); g_as.midline = 0; }
-                size_t tot = 0; for (int i = 0; i < g_as.nb; i++) if (!strcmp(g_as.b[i].type, "tool_use")) tot += g_as.b[i].acc.n;
-                printf("\x01" "TEACHW %zu\n", tot); fflush(stdout);
-            }
+    } else if (!strcmp(ev, "text") && tv) {
+        const char *pp = tv; js_string(&pp, &t);
+        if (t.p && t.n) { tp_close_think(); buf_add(&g_tp.text, t.p, t.n); tp_show(t.p, t.n); }
+    } else if (!strcmp(ev, "progress") && bv) {
+        const double now = now_sec();
+        if (now - g_tp.mark >= 1.0 && getenv("KATANA_UI")) {      /* escrevendo chamadas longas: mostra o quanto ja chegou */
+            g_tp.mark = now; tp_close_think();
+            if (g_tp.midline) { fputc('\n', stdout); g_tp.midline = 0; }
+            printf("\x01" "TEACHW %ld\n", atol(bv)); fflush(stdout);
         }
-        free(t.p);
-    } else if (!strcmp(type, "message_delta") && delta) {
-        for (const char *p = delta + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) if (!strcmp(k, "stop_reason")) as_word(v, g_as.stop, sizeof g_as.stop);
-    }
+    } else if (!strcmp(ev, "done")) { buf_clear(&g_tp.done); buf_str(&g_tp.done, js); g_tp.has_done = 1; }
+    else if (!strcmp(ev, "error")) { if (mv) { const char *pp = mv; js_string(&pp, &t); if (t.p) { buf_clear(&g_tp.err); buf_add(&g_tp.err, t.p, t.n); } } g_tp.has_err = 1; }
+    free(t.p);
 }
-static void as_line(const char *l) {
-    if (!strncmp(l, "data:", 5)) { as_event(l + 5); return; }
-    if (!strncmp(l, "KATANA_HTTP ", 12)) { g_as.http = atoi(l + 12); return; }
-    if (!strncmp(l, "event:", 6) || l[0] == ':' || !l[0] || l[0] == '\r') return;
-    buf_str(&g_as.other, l); buf_str(&g_as.other, "\n");
-}
-static void as_tap(const char *b, size_t n) {
+static void tp_tap(const char *b, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        if (b[i] != '\n') { buf_add(&g_as.line, b + i, 1); continue; }
-        if (g_as.line.n && g_as.line.p[g_as.line.n - 1] == '\r') g_as.line.p[--g_as.line.n] = 0;
-        as_line(g_as.line.p ? g_as.line.p : "");
-        buf_clear(&g_as.line);
+        if (b[i] != '\n') { buf_add(&g_tp.line, b + i, 1); continue; }
+        if (g_tp.line.n && g_tp.line.p[g_tp.line.n - 1] == '\r') g_tp.line.p[--g_tp.line.n] = 0;
+        if (g_tp.line.n) tp_event(g_tp.line.p);
+        buf_clear(&g_tp.line);
     }
-}
-/* fim do stream: fecha o raciocinio na tela e escreve em r o objeto da resposta (ou o corpo de erro). Devolve o HTTP */
-static int as_finish(Buf *r) {
-    if (g_as.line.n) as_line(g_as.line.p);
-    if (g_as.think_open && !g_as.think_closed) { fprintf(stdout, "%s\n", CE(C_RESET)); fflush(stdout); g_as.think_closed = 1; }
-    buf_clear(r);
-    if (g_as.http != 200 || !g_as.events || g_as.err.n) {
-        if (g_as.err.n) { buf_str(r, "{\"error\": {\"message\": "); tch_jstr(r, g_as.err.p, g_as.err.n); buf_str(r, "}}"); return g_as.http == 200 ? 0 : g_as.http; }
-        if (g_as.other.n) buf_add(r, g_as.other.p, g_as.other.n);
-        return g_as.http == 200 ? 0 : g_as.http;
-    }
-    buf_str(r, "{\"content\": [");
-    int n = 0;
-    for (int i = 0; i < g_as.nb; i++) {
-        AsBlock *b = &g_as.b[i];
-        if (!b->type[0]) continue;
-        buf_str(r, n++ ? ", " : "");
-        if (!strcmp(b->type, "text")) { buf_str(r, "{\"type\": \"text\", \"text\": "); tch_jstr(r, b->acc.p ? b->acc.p : "", b->acc.n); buf_str(r, "}"); }
-        else if (!strcmp(b->type, "thinking")) {
-            buf_str(r, "{\"type\": \"thinking\", \"thinking\": "); tch_jstr(r, b->acc.p ? b->acc.p : "", b->acc.n);
-            buf_str(r, ", \"signature\": "); tch_jstr(r, b->sig.p ? b->sig.p : "", b->sig.n); buf_str(r, "}");
-        } else if (!strcmp(b->type, "tool_use")) {     /* os campos do inicio do bloco (id, name...) e a entrada juntada dos pedacos */
-            char k[64]; const char *v, *e; int m = 0;
-            buf_str(r, "{");
-            if (b->start.p) for (const char *p = b->start.p + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-                if (!strcmp(k, "input")) continue;
-                const char *ve = gs_skipv(v);
-                if (!ve) continue;
-                buf_str(r, m++ ? ", \"" : "\""); buf_str(r, k); buf_str(r, "\": "); buf_add(r, v, (size_t)(ve - v));
-            }
-            buf_str(r, m ? ", \"input\": " : "\"input\": ");
-            const char *in = b->acc.p ? js_ws(b->acc.p) : "";
-            if (*in == '{' && gs_skipv(in)) buf_add(r, b->acc.p, b->acc.n); else buf_str(r, "{}");
-            buf_str(r, "}");
-        } else if (b->start.p) buf_add(r, b->start.p, b->start.n);
-        else n--;
-    }
-    char t[300];
-    snprintf(t, sizeof t, "], \"stop_reason\": \"%s\", \"usage\": {\"input_tokens\": %ld, \"output_tokens\": %ld, \"cache_read_input_tokens\": %ld, \"cache_creation_input_tokens\": %ld}}",
-             g_as.stop, g_as.tin, g_as.tout, g_as.tread, g_as.twrite);
-    buf_str(r, t);
-    return 200;
-}
-
-/* uma fala pelo Claude Code desta maquina. Escreve em r um objeto no formato de resposta da API (content com text e
-   tool_use, usage), para o mesmo leitor servir aos dois caminhos. Devolve 200, ou 0 com a mensagem de erro em r */
-static int tch_cli_call(const Config *c, const char *base, const AHist *slog, Buf *r) {
-    char dir[] = "/tmp/katana_teacher_XXXXXX";
-    if (!mkdtemp(dir)) return 0;
-    char fs[80], fp[80], fo[80], fe[80], qs[200], qp[200], qo[200], qe[200], qd[200], qprog[1200], qm[300], qef[60];
-    snprintf(fs, sizeof fs, "%s/s", dir); snprintf(fp, sizeof fp, "%s/p", dir); snprintf(fo, sizeof fo, "%s/o", dir); snprintf(fe, sizeof fe, "%s/e", dir);
-    Buf sysb = {0}, pr = {0};
-    tch_sys(base, &sysb);
-    buf_str(&sysb, "\n\n# Functions you can call\n");
-    tch_tools(base, &sysb);
-    buf_str(&sysb, "\n\n# How to answer\nYou write the next turn of this agent; you do not run anything yourself here. Answer with the structured object: "
-                   "\"text\" is what you say to the user (it may be empty when you only call functions) and \"tool_calls\" lists the functions to call now, "
-                   "each with its name and an \"arguments\" object. The agent runs them on the user's machine and their results come in the next message. "
-                   "When the job is done, or you need the user, answer with text and an empty tool_calls.");
-    buf_str(&pr, "The conversation so far, as a JSON array of messages (tool_use blocks are the calls made, tool_result blocks what they returned):\n[");
-    tch_messages(c, slog, &pr);
-    buf_str(&pr, "]\n\nWrite the next assistant turn.");
-    int ok = 0;
-    FILE *f = fopen(fs, "wb");
-    if (f) { ok = fwrite(sysb.p, 1, sysb.n, f) == sysb.n; fclose(f); }
-    f = ok ? fopen(fp, "wb") : NULL;
-    if (f) { ok = fwrite(pr.p, 1, pr.n, f) == pr.n; fclose(f); } else ok = 0;
-    if (getenv("KATANA_TEACHER_DUMP")) { FILE *fd2 = fopen(getenv("KATANA_TEACHER_DUMP"), "wb"); if (fd2) { fwrite(pr.p, 1, pr.n, fd2); fclose(fd2); } }
-    free(sysb.p); free(pr.p);
-    static const char *schema = "'{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"tool_calls\":{\"type\":\"array\",\"items\":{\"type\":\"object\","
-                                "\"properties\":{\"name\":{\"type\":\"string\"},\"arguments\":{\"type\":\"object\"}},\"required\":[\"name\",\"arguments\"]}}},\"required\":[\"text\",\"tool_calls\"]}'";
-    shq(fs, qs, sizeof qs); shq(fp, qp, sizeof qp); shq(fo, qo, sizeof qo); shq(fe, qe, sizeof qe); shq(dir, qd, sizeof qd);
-    shq(tch_cli_prog(), qprog, sizeof qprog); shq(g_tch_model, qm, sizeof qm); shq(g_tch_effort, qef, sizeof qef);
-    static char cmd[6000];
-    /* sem ferramentas proprias, sem MCP, sem configuracoes nem sessao gravada: so o modelo, com a conta ja logada */
-    /* saida em linhas (stream-json) pelo cano: o texto aparece enquanto chega (ts_tap); a ultima linha e o resultado */
-    snprintf(cmd, sizeof cmd, "cd %s && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT %s -p --system-prompt-file %s --tools '' --json-schema %s --output-format stream-json --verbose --include-partial-messages "
-             "--model %s --effort %s --no-session-persistence --strict-mcp-config --setting-sources '' < %s 2> %s", qd, qprog, qs, schema, qm, qef, qp, qe);
-    (void)qo;
-    int rc = 1;
-    ts_reset();
-    if (ok) { g_cmd_tap = ts_tap; char *o = run_collect(cmd, 910, 2048, &rc); g_cmd_tap = NULL; free(o); }
-    if (g_ts.line.n) ts_line(g_ts.line.p);             /* ultima linha sem quebra no fim */
-    Buf raw = {0}, err = {0};
-    if (g_ts.res.n) buf_add(&raw, g_ts.res.p, g_ts.res.n);
-    {
-        FILE *fr = fopen(fe, "rb");
-        if (fr) { char tmp[65536]; size_t n; while ((n = fread(tmp, 1, sizeof tmp, fr)) > 0) buf_add(&err, tmp, n); fclose(fr); }
-    }
-    unlink(fs); unlink(fp); unlink(fo); unlink(fe); rmdir(dir);
-    /* saida: {"is_error":..,"result":"..","structured_output":{"text":..,"tool_calls":[{"name":..,"arguments":{..}}]},"usage":{..}} */
-    const char *so = NULL, *us = NULL, *res = NULL, *q0 = raw.p ? js_ws(raw.p) : "";
-    int is_err = 0; char k[64]; const char *v, *e;
-    if (*q0 == '{') for (const char *p = q0 + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-        if (!strcmp(k, "structured_output") && *v == '{') so = v; else if (!strcmp(k, "usage") && *v == '{') us = v;
-        else if (!strcmp(k, "result") && *v == '"') res = v; else if (!strcmp(k, "is_error")) is_err = !strncmp(v, "true", 4);
-    }
-    buf_clear(r);
-    if (!ok || is_err || !so) {
-        Buf m = {0};
-        if (res) { const char *pp = res; js_string(&pp, &m); }
-        buf_str(r, "{\"error\": {\"message\": ");
-        const char *msg = m.p && m.n ? m.p : err.p && err.n ? err.p : rc == 124 ? "timeout" : "no answer from the claude program (is it logged in? run it once in a terminal)";
-        tch_jstr(r, msg, strlen(msg) < 600 ? strlen(msg) : 600);
-        buf_str(r, "}}");
-        free(m.p); free(raw.p); free(err.p);
-        return 0;
-    }
-    const char *tv = NULL, *tc = NULL;
-    for (const char *p = so + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) { if (!strcmp(k, "text") && *v == '"') tv = v; else if (!strcmp(k, "tool_calls") && *v == '[') tc = v; }
-    buf_str(r, "{\"content\": [");
-    int nb = 0;
-    if (tv) { const char *te = gs_skipv(tv); if (te && te - tv > 2) { buf_str(r, "{\"type\": \"text\", \"text\": "); buf_add(r, tv, (size_t)(te - tv)); buf_str(r, "}"); nb++; } }
-    const char *el, *ee;
-    if (tc) for (const char *q = tc + 1; (ee = gs_elem(q, &el)); q = ee) {
-        if (*el != '{') continue;
-        const char *nv = NULL, *av = NULL;
-        for (const char *p = el + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) { if (!strcmp(k, "name") && *v == '"') nv = v; else if (!strcmp(k, "arguments") && *v == '{') av = v; }
-        const char *ne = nv ? gs_skipv(nv) : NULL, *ae = av ? gs_skipv(av) : NULL;
-        if (!ne) continue;
-        char id[64]; snprintf(id, sizeof id, "cli_%d_%d", slog->n, nb);
-        buf_str(r, nb++ ? ", " : ""); buf_str(r, "{\"type\": \"tool_use\", \"id\": \""); buf_str(r, id); buf_str(r, "\", \"name\": "); buf_add(r, nv, (size_t)(ne - nv));
-        buf_str(r, ", \"input\": "); if (ae) buf_add(r, av, (size_t)(ae - av)); else buf_str(r, "{}");
-        buf_str(r, "}");
-    }
-    buf_str(r, "], \"stop_reason\": \"end_turn\", \"usage\": ");
-    const char *ue = us ? gs_skipv(us) : NULL;
-    if (ue) buf_add(r, us, (size_t)(ue - us)); else buf_str(r, "{}");
-    buf_str(r, "}");
-    free(raw.p); free(err.p);
-    return 200;
 }
 #endif
 
@@ -666,129 +355,92 @@ static int teacher_turn(const Config *c, const char *sys, const AHist *slog, con
     return 0;
 #else
     const int g4 = c->chat_fmt == 8;
-    char key[600];
     *cut = 0;
+    char pcmd[2048];
+    if (!tch_cmdline(pcmd, sizeof pcmd)) { fprintf(stderr, "[teacher: no teacher program configured]\n"); return 0; }
     const char *base = tch_base(sys, g4);
-    Buf r = {0};
-    int http = 0;
     const double t0 = now_sec();
-    if (g_tch_cli) { http = tch_cli_call(c, base, slog, &r); if (g_stop) { free(r.p); return 0; } goto parse; }
-    if (!tch_key(key, sizeof key)) { fprintf(stderr, "[teacher: no API key]\n"); return 0; }
-    const char *fb = getenv("KATANA_TEACHER_FALLBACK");
-    const int fallback = !(fb && atoi(fb) == 0);
+
+    /* pedido: uma linha JSON no stdin do programa */
     Buf req = {0}, tsys = {0};
     tch_sys(base, &tsys);
-    buf_str(&req, "{\"model\": "); tch_jstr(&req, g_tch_model, strlen(g_tch_model));
-    buf_str(&req, ", \"stream\": true, \"max_tokens\": 32000, \"cache_control\": {\"type\": \"ephemeral\"}, \"thinking\": {\"type\": \"adaptive\", \"display\": \"summarized\"}, \"output_config\": {\"effort\": ");
-    tch_jstr(&req, g_tch_effort, strlen(g_tch_effort)); buf_str(&req, "}");
-    if (fallback) buf_str(&req, ", \"fallbacks\": \"default\"");
-    buf_str(&req, ", \"system\": "); tch_jstr(&req, tsys.p ? tsys.p : "", tsys.n);
+    const char *mt = getenv("KATANA_TEACHER_MAX_TOKENS");
+    buf_str(&req, "{\"protocol\": 1, \"system\": "); tch_jstr(&req, tsys.p ? tsys.p : "", tsys.n);
     buf_str(&req, ", \"tools\": "); tch_tools(base, &req);
-    buf_str(&req, ", \"messages\": ["); tch_messages(c, slog, &req); buf_str(&req, "]}");
+    buf_str(&req, ", \"messages\": ["); tch_messages(c, slog, &req); buf_str(&req, "], \"options\": {\"max_tokens\": ");
+    { char t[32]; snprintf(t, sizeof t, "%d", mt && atoi(mt) > 0 ? atoi(mt) : 32000); buf_str(&req, t); }
+    if (g_tch_model[0]) { buf_str(&req, ", \"model\": "); tch_jstr(&req, g_tch_model, strlen(g_tch_model)); }
+    if (g_tch_effort[0]) { buf_str(&req, ", \"effort\": "); tch_jstr(&req, g_tch_effort, strlen(g_tch_effort)); }
+    buf_str(&req, "}}\n");
     free(tsys.p);
+    if (getenv("KATANA_TEACHER_DUMP")) { FILE *fd2 = fopen(getenv("KATANA_TEACHER_DUMP"), "wb"); if (fd2) { fwrite(req.p, 1, req.n, fd2); fclose(fd2); } }
 
     char dir[] = "/tmp/katana_teacher_XXXXXX";
     if (!mkdtemp(dir)) { free(req.p); fprintf(stderr, "[teacher: no temporary folder]\n"); return 0; }
-    char hdr[80], body[80], resp[80], qh[200], qb[200], qr[200], full[700], qf[1500], cmd[2400];
-    snprintf(hdr, sizeof hdr, "%s/h", dir); snprintf(body, sizeof body, "%s/b", dir); snprintf(resp, sizeof resp, "%s/r", dir);
-    int okf = 0;
-    {
-        const int fd = open(hdr, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (fd >= 0) {
-            char h[1200];
-            const int n = snprintf(h, sizeof h, "content-type: application/json\nanthropic-version: 2026-10-21\nx-api-key: %s\n%s", key, fallback ? "anthropic-beta: server-side-fallback-2026-07-01\n" : "");
-            okf = write(fd, h, (size_t)n) == n;
-            close(fd);
-        }
-        FILE *fbd = okf ? fopen(body, "wb") : NULL;
-        if (fbd) { okf = fwrite(req.p, 1, req.n, fbd) == req.n; fclose(fbd); } else okf = 0;
-    }
-    memset(key, 0, sizeof key);
-    if (getenv("KATANA_TEACHER_DUMP")) { FILE *fd2 = fopen(getenv("KATANA_TEACHER_DUMP"), "wb"); if (fd2) { fwrite(req.p, 1, req.n, fd2); fclose(fd2); } }
+    char fi[80], fe[80], qi[200], qe[200], qd[200], qc[2300];
+    snprintf(fi, sizeof fi, "%s/in", dir); snprintf(fe, sizeof fe, "%s/err", dir);
+    int ok = 0;
+    { const int fd = open(fi, O_WRONLY | O_CREAT | O_TRUNC, 0600); if (fd >= 0) { ok = write(fd, req.p, req.n) == (ssize_t)req.n; close(fd); } }
     free(req.p);
-    shq(hdr, qh, sizeof qh); shq(body, qb, sizeof qb); shq(resp, qr, sizeof qr);
-    snprintf(full, sizeof full, "%s/v1/messages", g_tch_url); shq(full, qf, sizeof qf);
-    (void)qr;
-    snprintf(cmd, sizeof cmd, "curl -sS -N --max-time 900 -w '\\nKATANA_HTTP %%{http_code}\\n' -H @%s --data-binary @%s %s", qh, qb, qf);
-    for (int attempt = 0; okf && attempt < 4 && !g_stop; attempt++) {
-        if (attempt) {          /* 429, 5xx ou rede: espera e tenta de novo */
-            const int wait = attempt == 1 ? 3 : attempt == 2 ? 10 : 25;
-            fprintf(stderr, "%s[teacher: HTTP %d, trying again in %d s]%s\n", CE(C_DIM), http, wait, CE(C_RESET));
-            for (int w = 0; w < wait * 10 && !g_stop; w++) usleep(100000);
-            if (g_stop) break;
-        }
-        int rcx = 0;
-        as_reset();
-        g_cmd_tap = as_tap;
-        char *code = run_collect(cmd, 910, 4096, &rcx);
-        g_cmd_tap = NULL;
-        free(code);
-        http = as_finish(&r);
-        if (g_as.shown) break;          /* ja apareceu texto na tela: nao repete o pedido */
-        if (http == 200 || (http >= 400 && http < 500 && http != 429 && http != 408 && http != 409)) break;
+    shq(fi, qi, sizeof qi); shq(fe, qe, sizeof qe); shq(dir, qd, sizeof qd); shq(pcmd, qc, sizeof qc);
+    static char cmd[5000];
+    snprintf(cmd, sizeof cmd, "cd %s && sh -c %s < %s 2> %s", qd, qc, qi, qe);
+    int rc = 1;
+    tp_reset();
+    if (ok) { g_cmd_tap = tp_tap; char *o = run_collect(cmd, 910, 2048, &rc); g_cmd_tap = NULL; free(o); }
+    if (g_tp.line.n) tp_event(g_tp.line.p);             /* ultima linha sem quebra no fim */
+    tp_close_think();
+    Buf serr = {0};
+    { FILE *fr = fopen(fe, "rb"); if (fr) { char tmp[8192]; size_t n = fread(tmp, 1, sizeof tmp, fr); fclose(fr); buf_add(&serr, tmp, n); } }
+    unlink(fi); unlink(fe); rmdir(dir);
+    if (g_stop) { free(serr.p); return 0; }
+    if (!ok || !g_tp.has_done) {
+        const char *m = g_tp.has_err && g_tp.err.n ? g_tp.err.p : serr.n ? serr.p : !ok ? "could not write the request" : rc == 124 ? "timeout" : "the teacher program ended without a done event";
+        fprintf(stderr, "[teacher: %.400s]\n", m);
+        if (getenv("KATANA_UI")) { printf("\x01" "TEACHERR %d %.300s\n", rc, m); fflush(stdout); }
+        free(serr.p);
+        return 0;
     }
-    unlink(hdr); unlink(body); unlink(resp); rmdir(dir);
-    if (g_stop) { free(r.p); return 0; }
-    if (!okf) { free(r.p); fprintf(stderr, "[teacher: could not write the request]\n"); return 0; }
+    free(serr.p);
 
-parse:;
-    /* resposta: content, stop_reason, usage (ou error.message) */
-    const char *cont = NULL, *q0 = r.p ? js_ws(r.p) : "";
+    /* o evento done: text, thinking, tool_calls [{id, name, arguments}], stop, usage {input, output, cached}, opaque */
     char stop[40] = "", k[64]; const char *v, *e;
-    long tin = 0, tout = 0, tread = 0, twrite = 0;
-    Buf err = {0};
-    if (*q0 == '{') for (const char *p = q0 + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-        if (!strcmp(k, "content") && *v == '[') cont = v;
-        else if (!strcmp(k, "stop_reason") && *v == '"') { size_t n = 0; for (const char *w = v + 1; *w && *w != '"' && n < sizeof stop - 1; w++) stop[n++] = *w; stop[n] = 0; }
+    const char *tcv = NULL, *opv = NULL, *tv = NULL, *thv = NULL;
+    long tin = 0, tout = 0, tread = 0;
+    for (const char *p = js_ws(g_tp.done.p) + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
+        if (!strcmp(k, "text") && *v == '"') tv = v; else if (!strcmp(k, "thinking") && *v == '"') thv = v;
+        else if (!strcmp(k, "tool_calls") && *v == '[') tcv = v; else if (!strcmp(k, "opaque")) opv = v;
+        else if (!strcmp(k, "stop") && *v == '"') { size_t n = 0; for (const char *w = v + 1; *w && *w != '"' && n < sizeof stop - 1; w++) stop[n++] = *w; stop[n] = 0; }
         else if (!strcmp(k, "usage") && *v == '{') {
             char k2[64]; const char *v2, *e2;
             for (const char *p2 = v + 1; (e2 = gs_member(p2, k2, sizeof k2, &v2)); p2 = e2) {
-                if (!strcmp(k2, "input_tokens")) tin = atol(v2); else if (!strcmp(k2, "output_tokens")) tout = atol(v2);
-                else if (!strcmp(k2, "cache_read_input_tokens")) tread = atol(v2); else if (!strcmp(k2, "cache_creation_input_tokens")) twrite = atol(v2);
+                if (!strcmp(k2, "input")) tin = atol(v2); else if (!strcmp(k2, "output")) tout = atol(v2); else if (!strcmp(k2, "cached")) tread = atol(v2);
             }
-        } else if (!strcmp(k, "error") && *v == '{') {
-            char k2[64]; const char *v2, *e2;
-            for (const char *p2 = v + 1; (e2 = gs_member(p2, k2, sizeof k2, &v2)); p2 = e2)
-                if (!strcmp(k2, "message") && *v2 == '"') { const char *pp = v2; buf_clear(&err); js_string(&pp, &err); }
         }
     }
-    if (http != 200 || !cont) {
-        fprintf(stderr, "[teacher: HTTP %d: %.400s]\n", http, err.p ? err.p : r.p ? r.p : "no answer (network?)");
-        if (getenv("KATANA_UI")) { printf("\x01" "TEACHERR %d %.300s\n", http, err.p ? err.p : "no answer"); fflush(stdout); }
-        free(err.p); free(r.p);
-        return 0;
-    }
-    free(err.p);
-    g_tch_in += tin + tread + twrite; g_tch_out += tout; g_tch_cread += tread;
+    g_tch_in += tin; g_tch_out += tout; g_tch_cread += tread;
 
-    /* blocos: thinking (resumo), text, tool_use */
     Buf reason = {0}, text = {0}, a = {0};
-    const char *el, *ee;
+    if (thv) { const char *pp = thv; js_string(&pp, &reason); } else if (g_tp.think.n) buf_add(&reason, g_tp.think.p, g_tp.think.n);
+    if (tv) { const char *pp = tv; js_string(&pp, &text); } else if (g_tp.text.n) buf_add(&text, g_tp.text.p, g_tp.text.n);
     typedef struct { char name[128]; const char *in, *ine; } TU;
-    TU tu[64]; int ntu = 0, lastkind = 0;
-    for (const char *q = cont + 1; (ee = gs_elem(q, &el)); q = ee) {
+    TU tu[64]; int ntu = 0;
+    const char *el, *ee;
+    if (tcv) for (const char *q = tcv + 1; ntu < 64 && (ee = gs_elem(q, &el)); q = ee) {
         if (*el != '{') continue;
-        char type[40] = ""; const char *tv = NULL, *thv = NULL, *nv = NULL, *iv = NULL;
-        for (const char *p = el + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) {
-            if (!strcmp(k, "type") && *v == '"') { size_t n = 0; for (const char *w = v + 1; *w && *w != '"' && n < sizeof type - 1; w++) type[n++] = *w; type[n] = 0; }
-            else if (!strcmp(k, "text") && *v == '"') tv = v; else if (!strcmp(k, "thinking") && *v == '"') thv = v;
-            else if (!strcmp(k, "name") && *v == '"') nv = v; else if (!strcmp(k, "input") && *v == '{') iv = v;
-        }
-        if (!strcmp(type, "thinking") && thv) { const char *pp = thv; Buf t = {0}; js_string(&pp, &t); if (t.p && t.n) { if (reason.n) buf_str(&reason, "\n"); buf_add(&reason, t.p, t.n); } free(t.p); }
-        else if (!strcmp(type, "text") && tv) { const char *pp = tv; Buf t = {0}; js_string(&pp, &t); if (t.p && t.n) { if (text.n) buf_str(&text, "\n\n"); buf_add(&text, t.p, t.n); } free(t.p); lastkind = 1; }
-        else if (!strcmp(type, "tool_use") && nv && ntu < 64) {
-            const char *pp = nv; Buf t = {0}; js_string(&pp, &t);
-            snprintf(tu[ntu].name, sizeof tu[ntu].name, "%s", t.p ? t.p : ""); free(t.p);
-            tu[ntu].in = iv; tu[ntu].ine = iv ? gs_skipv(iv) : NULL;
-            if (tu[ntu].name[0]) { ntu++; lastkind = 2; }
-        }
+        const char *nv = NULL, *av = NULL;
+        for (const char *p = el + 1; (e = gs_member(p, k, sizeof k, &v)); p = e) { if (!strcmp(k, "name") && *v == '"') nv = v; else if (!strcmp(k, "arguments") && *v == '{') av = v; }
+        if (!nv) continue;
+        Buf t = {0}; const char *pp = nv; js_string(&pp, &t);
+        snprintf(tu[ntu].name, sizeof tu[ntu].name, "%s", t.p ? t.p : ""); free(t.p);
+        tu[ntu].in = av; tu[ntu].ine = av ? gs_skipv(av) : NULL;
+        if (tu[ntu].name[0]) ntu++;
     }
-    int whole = 1;
-    if (!strcmp(stop, "max_tokens")) { *cut = 1; if (lastkind == 2 && ntu) { ntu--; whole = 0; } }      /* a ultima chamada pode ter vindo pela metade */
-    if (!strcmp(stop, "refusal")) fprintf(stderr, "%s[teacher: the request was declined (stop_reason refusal)]%s\n", CE(C_DIM), CE(C_RESET));
+    if (!strcmp(stop, "max_tokens")) { *cut = 1; if (ntu) ntu--; }      /* a ultima chamada pode ter vindo pela metade */
+    if (!strcmp(stop, "refusal")) fprintf(stderr, "%s[teacher: the request was declined (stop refusal)]%s\n", CE(C_DIM), CE(C_RESET));
     while (text.n && (unsigned char)text.p[text.n - 1] <= ' ') text.p[--text.n] = 0;
     while (reason.n && (unsigned char)reason.p[reason.n - 1] <= ' ') reason.p[--reason.n] = 0;
-    if (!text.n && !ntu) { free(reason.p); free(text.p); free(r.p); if (strcmp(stop, "refusal")) fprintf(stderr, "[teacher: empty answer (stop_reason %s)]\n", stop); return 0; }
+    if (!text.n && !ntu) { free(reason.p); free(text.p); if (strcmp(stop, "refusal")) fprintf(stderr, "[teacher: empty answer (stop %s)]\n", stop); return 0; }
 
     /* a fala na sintaxe do aluno, como o importador escreve */
     im_think(c, &a, reason.n ? reason.p : NULL);
@@ -811,28 +463,23 @@ parse:;
     if (g4 && g4_think() && slog->n && slog->v[slog->n - 1].role == 't' && a.p && a.n >= 18 && !strncmp(a.p, "<|channel>thought\n", 18)) skip = 18;
     buf_clear(reply);
     buf_add(reply, a.p + skip, a.n - skip);
-    fprintf(stderr, "%s[teacher %s: %ld tokens in (%ld from the cache), %ld out, %.1f s]%s\n", CE(C_DIM), g_tch_model, tin + tread + twrite, tread, tout, now_sec() - t0, CE(C_RESET));
-#ifndef _WIN32
-    if (g_tch_cli ? g_ts.shown > 0 : g_as.shown > 0) { con_puts(a.p + think_n + text.n); fflush(stdout); }      /* raciocinio e texto ja apareceram enquanto chegavam: so o resto (chamadas) */
-    else
-#endif
-    tch_print(reason.n ? reason.p : NULL, a.p + think_n);
+    fprintf(stderr, "%s[teacher %s: %ld tokens in (%ld cached), %ld out, %.1f s]%s\n", CE(C_DIM), g_tch_model[0] ? g_tch_model : "default", tin, tread, tout, now_sec() - t0, CE(C_RESET));
+    if (g_tp.shown > 0) { con_puts(a.p + think_n + text.n); fflush(stdout); }      /* raciocinio e texto ja apareceram enquanto chegavam: so o resto (chamadas) */
+    else tch_print(reason.n ? reason.p : NULL, a.p + think_n);
 
-    /* guarda a resposta crua para os pedidos seguintes desta execucao e anota a fala do professor na sessao */
-    if (whole && !g_tch_cli) {
-        const char *ce = gs_skipv(cont);
-        if (ce) {
-            g_tch_raw = realloc(g_tch_raw, sizeof(TchRaw) * (size_t)(g_tch_nraw + 1));
-            if (!g_tch_raw) die("sem memoria");
-            TchRaw *t = &g_tch_raw[g_tch_nraw++];
-            t->idx = slog->n;
-            const size_t hs = g4 ? skip : 0;             /* o historico do gemma4 guarda a fala sem o comeco do prompt */
-            t->txt = xalloc(a.n - hs + 1, 1); memcpy(t->txt, a.p + hs, a.n - hs);
-            t->raw = xalloc((size_t)(ce - cont) + 1, 1); memcpy(t->raw, cont, (size_t)(ce - cont));
-        }
+    /* guarda o dado opaco para as mensagens seguintes desta execucao e anota a fala do professor na sessao */
+    if (opv && *opv != 'n' && gs_skipv(opv)) {
+        const char *oe = gs_skipv(opv);
+        g_tch_raw = realloc(g_tch_raw, sizeof(TchRaw) * (size_t)(g_tch_nraw + 1));
+        if (!g_tch_raw) die("sem memoria");
+        TchRaw *t = &g_tch_raw[g_tch_nraw++];
+        t->idx = slog->n;
+        const size_t hs = g4 ? skip : 0;             /* o historico do gemma4 guarda a fala sem o comeco do prompt */
+        t->txt = xalloc(a.n - hs + 1, 1); memcpy(t->txt, a.p + hs, a.n - hs);
+        t->opaque = xalloc((size_t)(oe - opv) + 1, 1); memcpy(t->opaque, opv, (size_t)(oe - opv));
     }
     tch_mark(sess, slog->n, a.n);
-    free(reason.p); free(text.p); free(a.p); free(r.p);
+    free(reason.p); free(text.p); free(a.p);
     return 1;
 #endif
 }

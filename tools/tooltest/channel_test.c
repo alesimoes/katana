@@ -149,8 +149,9 @@ static int http_server(int port) {
 /* ============ professor de mentira ============ */
 static int teacher(int argc, char **argv) {
     char p[600];
-    for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--system-prompt-file")) { char *s = slurp(argv[i + 1]); snprintf(p, sizeof p, "%s/system.txt", dir()); FILE *f = fopen(p, "wb"); if (f) { fputs(s, f); fclose(f); } }
+    (void)argc; (void)argv;
     static char in[1 << 22]; const size_t n = fread(in, 1, sizeof in - 1, stdin); in[n] = 0;
+    snprintf(p, sizeof p, "%s/system.txt", dir()); { FILE *sf = fopen(p, "wb"); if (sf) { fputs(in, sf); fclose(sf); } }
     const char *last = NULL, *src = NULL;
     for (const char *q = in; *q; q++) if (!strncmp(q, "do=", 3) || !strncmp(q, "say=", 4)) last = q;
     for (const char *q = in; last && q < last; q++) if (!strncmp(q, "<channel ", 9)) src = q;
@@ -175,7 +176,7 @@ static int teacher(int argc, char **argv) {
     if (!tool[0]) { snprintf(text, sizeof text, "OK<%s>", mark); }
     if (!strcmp(tool, "Bash")) snprintf(calls, sizeof calls, "[{\"name\":\"Bash\",\"arguments\":{\"command\":\"%s\"}}]", arg);
     else if (tool[0]) snprintf(calls, sizeof calls, "[{\"name\":\"%s\",\"arguments\":{\"text\":\"%s\"}}]", tool, arg);
-    printf("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"\",\"structured_output\":{\"text\":\"%s\",\"tool_calls\":%s},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n", text, calls);
+    printf("{\"event\":\"done\",\"text\":\"%s\",\"tool_calls\":%s,\"stop\":\"end_turn\",\"usage\":{\"input\":1,\"output\":1,\"cached\":0}}\n", text, calls);
     return 0;
 }
 
@@ -227,7 +228,7 @@ static void start(int mode, char *const extra_env[], char *const args[]) {
         if (mode) { dup2(in[0], 0); dup2(out[1], 1); dup2(out[1], 2); close(in[0]); close(in[1]); close(out[0]); close(out[1]); }
         { char *pv = strdup(getenv("PATH") ? getenv("PATH") : "/usr/bin:/bin"); clearenv(); setenv("PATH", pv, 1); if (mode) setenv("KATANA_UI", "1", 1); }      /* nada do ambiente de quem roda: chaves, configuracoes */
         setenv("HOME", path("home"), 1); setenv("TERM", "xterm", 1); setenv("KATANA_CPU", "1", 1); setenv("KATANA_TEACHER", "1", 1); setenv("KATANA_TOOLS", "2", 1);
-        setenv("KATANA_TEACHER_CLI", self, 1); setenv("KATANA_LOG", path("agente.log"), 1); setenv("KATANA_MCP_LOG", path("mcp.log"), 1); setenv("CH_DIR", T, 1);
+        { char tc[4300]; snprintf(tc, sizeof tc, "%s -p", self); setenv("KATANA_TEACHER_CMD", tc, 1); } setenv("KATANA_LOG", path("agente.log"), 1); setenv("KATANA_MCP_LOG", path("mcp.log"), 1); setenv("CH_DIR", T, 1);
         
         for (int i = 0; extra_env && extra_env[i]; i++) putenv(strdup(extra_env[i]));
         if (chdir(path("work"))) _exit(1);
@@ -423,7 +424,7 @@ static void sc_perm(void) {
 static void sc_headless(void) {
     reset_files(); conf(conf_a(ON));
     FILE *f = fopen(path("a.tmp"), "wb"); fprintf(f, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/acme/channel\",\"params\":{\"content\":\"say=hl;\"}}\n"); fclose(f); rename(path("a.tmp"), path("a.cmd"));
-    char c[2000]; snprintf(c, sizeof c, "cd %s/work && env -i PATH=\"$PATH\" HOME=%s/home KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 KATANA_TEACHER_CLI=%s CH_DIR=%s KATANA_MCP_LOG=%s/mcp.log KATANA_LOG=%s/agente.log timeout 60 %s --model %s -p 'do=a__reply:midpush;' --quiet", T, T, self, T, T, T, K, M);
+    char c[2000]; snprintf(c, sizeof c, "cd %s/work && env -i PATH=\"$PATH\" HOME=%s/home KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 KATANA_TEACHER_CMD='%s -p' CH_DIR=%s KATANA_MCP_LOG=%s/mcp.log KATANA_LOG=%s/agente.log timeout 60 %s --model %s -p 'do=a__reply:midpush;' --quiet", T, T, self, T, T, T, K, M);
     FILE *p = popen(c, "r"); char o[4000]; const size_t n = fread(o, 1, sizeof o - 1, p); o[n] = 0; const int rc = pclose(p);
     check("headless: um pedido, uma resposta, sem mensagens do canal", rc == 0 && strstr(o, "OK<do=a__reply:midpush>") && !strstr(o, "say="));
     check("headless: as mensagens ficam no log como ignoradas", file_has(path("mcp.log"), "no console is waiting"));

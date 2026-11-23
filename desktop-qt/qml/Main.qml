@@ -107,13 +107,13 @@ ApplicationWindow {
             spacing: 10
             Text { font.family: Theme.sans; text: "Professor"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
             Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
-                text: "Um modelo maior responde no lugar do modelo local, usando as mesmas ferramentas nesta máquina. Sem chave, o katana usa o Claude Code em que você já está logado neste computador. Com chave, usa a API da Anthropic (a chave fica em ~/.katana/teacher.key, legível só por você). Nos dois casos a conversa, o prompt do agente e os resultados das ferramentas saem desta máquina." }
+                text: "Um modelo maior responde no lugar do modelo local, usando as mesmas ferramentas nesta máquina. Quem fala com ele é um programa externo (plugin do professor, configurado em ~/.katana/teacher.cmd ou KATANA_TEACHER_CMD). A chave, se o plugin pedir uma, fica em ~/.katana/teacher.key (legível só por você). A conversa, o prompt do agente e os resultados das ferramentas são entregues ao plugin e podem sair desta máquina."  }
             TextField {
                 id: tchKey
                 objectName: "teacherKey"
                 width: parent.width
                 echoMode: TextInput.Password
-                placeholderText: backend.hasTeacherKey() ? "Chave da API (em branco mantém a atual)" : "Chave da API (opcional: em branco usa o Claude Code)"
+                placeholderText: backend.hasTeacherKey() ? "Chave da API (em branco mantém a atual)" : "Chave da API (opcional; depende do plugin)"
                 color: Theme.fg
                 Accessible.name: "Chave da API do professor"
                 onAccepted: tchDlg.save()
@@ -122,7 +122,7 @@ ApplicationWindow {
                 id: tchModel
                 objectName: "teacherModel"
                 width: parent.width
-                placeholderText: "Modelo (claude-opus-5-5)"
+                placeholderText: "Modelo (em branco: o padrão do plugin)"
                 color: Theme.fg
                 Accessible.name: "Modelo do professor"
                 onAccepted: tchDlg.save()

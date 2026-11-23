@@ -1,50 +1,42 @@
-#!/usr/bin/env python3
-"""Stand-in for the `claude` program in print mode, to test the teacher through the logged-in session without it.
+"""Scripted stand-in teacher program for the katana teacher protocol (docs/teacher-protocol.md).
 
-The agent calls: claude -p --system-prompt-file F --tools '' --json-schema S --output-format stream-json --verbose
---include-partial-messages --model M ...
-with the conversation on stdin. This script checks the options, the system prompt and the conversation, appends what
-it received to $MOCK_CLAUDE_LOG, and prints the result object the real program prints. Scripted teacher: write a
-file, read it back, final answer."""
+The agent runs this program with one JSON request line on stdin. The script checks the request (tool declarations, roles,
+the conversation), appends what it received to $MOCK_TEACHER_LOG, and answers with a done event. Scenarios are picked
+by environment variables (MOCK_TOOLS, MOCK_MCP, MOCK_PLAN, ...); the default is: write a file, read it back, final answer."""
 import json, os, sys
 
-a = sys.argv[1:]
-log = os.environ.get("MOCK_CLAUDE_LOG")
+log = os.environ.get("MOCK_TEACHER_LOG")
 
 
 def fail(why):
     if log:
         open(log, "a").write(json.dumps({"ok": False, "why": why}) + "\n")
-    print(json.dumps({"type": "result", "is_error": True, "result": why}))
+    print(json.dumps({"event": "error", "message": why}))
     sys.exit(1)
 
 
-def opt(name):
-    return a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else None
-
-
-if "-p" not in a or opt("--output-format") != "stream-json" or "--include-partial-messages" not in a or opt("--tools") != "" or "--no-session-persistence" not in a:
-    fail("options: %s" % a)
-schema = json.loads(opt("--json-schema") or "null")
-if not schema or set(schema.get("required", [])) != {"text", "tool_calls"}:
-    fail("schema")
-system = open(opt("--system-prompt-file")).read()
+try:
+    req = json.loads(sys.stdin.readline())
+except Exception as e:
+    fail("request is not JSON: %s" % e)
+if req.get("protocol") != 1 or set(req) < {"system", "tools", "messages", "options"}:
+    fail("request fields: %s" % sorted(req))
+system = req["system"]
+names = [t["name"] for t in req["tools"]]
+if any("parameters" not in t for t in req["tools"]):
+    fail("tool without parameters")
 if os.environ.get("MOCK_DUMP_SYSTEM"):
     open(os.environ["MOCK_DUMP_SYSTEM"], "w").write(system)
 CL = os.environ.get("MOCK_TOOLS") == "2"       # o agente declara o segundo conjunto de ferramentas (KATANA_TOOLS=2)
 MCP = os.environ.get("MOCK_MCP") == "1"           # katana -p --mcp-config ... --allowed-tools 'fake__ping,Read': so estas ferramentas aparecem
 if MCP:
-    if '"name": "fake__ping"' not in system or '"name": "Write"' in system or '"name": "Bash"' in system or '"name": "ToolSearch"' in system:
-        fail("system prompt: allowed tools not filtered (fake__ping %s, Write %s, Bash %s, ToolSearch %s)" % tuple('"name": "%s"' % n in system for n in ("fake__ping", "Write", "Bash", "ToolSearch")))
-elif "<tool_call>" in system or ('"name": "Write"' if CL else '"name": "write_file"') not in system or '"input_schema"' not in system:
-    fail("system prompt")
-if CL and not MCP and ('"name": "write_file"' in system or '"file_path"' not in system or '"name": "Bash"' not in system or '"name": "ToolSearch"' not in system):
-    fail("system prompt: old tool names or missing new ones")
-prompt = sys.stdin.read()
-try:
-    ms = json.loads(prompt[prompt.index("\n[") + 1:prompt.rindex("]") + 1])
-except Exception as e:
-    fail("conversation is not JSON: %s" % e)
+    if "fake__ping" not in names or "Write" in names or "Bash" in names or "ToolSearch" in names:
+        fail("tools: allowed tools not filtered (fake__ping %s, Write %s, Bash %s, ToolSearch %s)" % tuple(n in names for n in ("fake__ping", "Write", "Bash", "ToolSearch")))
+elif "<tool_call>" in system or ("Write" if CL else "write_file") not in names:
+    fail("system prompt or tools")
+if CL and not MCP and ("write_file" in names or "file_path" not in json.dumps(req["tools"]) or "Bash" not in names or "ToolSearch" not in names):
+    fail("tools: old tool names or missing new ones")
+ms = req["messages"]
 if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user" or any(i and m["role"] == ms[i - 1]["role"] for i, m in enumerate(ms)):
     fail("roles")
 last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
@@ -196,13 +188,11 @@ elif step == 1:
 else:
     out = {"text": "Pronto: nota.txt gravado e conferido.", "tool_calls": []}
 if log:
-    open(log, "a").write(json.dumps({"ok": True, "step": step, "model": opt("--model"), "messages": len(ms)}) + "\n")
-# como o programa de verdade: o objeto da resposta chega em pedacos (cortados no meio de escapes e de acentos)
-sys.stdout.write(json.dumps({"type": "system", "subtype": "init"}) + "\n")
-for enc in ([json.dumps(out)] if step % 2 == 0 else [json.dumps(out, ensure_ascii=False)]):
-    for i in range(0, len(enc), 5):
-        sys.stdout.write(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
-                                     "delta": {"type": "input_json_delta", "partial_json": enc[i:i + 5]}}}, separators=(",", ":"), ensure_ascii=(i % 2 == 0)) + "\n")
-        sys.stdout.flush()
-print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": json.dumps(out), "structured_output": out,
-                  "usage": {"input_tokens": 10, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 0, "output_tokens": 7}}))
+    open(log, "a").write(json.dumps({"ok": True, "step": step, "model": req["options"].get("model"), "messages": len(ms)}) + "\n")
+# como um programa de verdade: texto em pedacos (cortados no meio de acentos), depois o evento done
+if out["text"]:
+    for i in range(0, len(out["text"]), 5):
+        print(json.dumps({"event": "text", "text": out["text"][i:i + 5]}, ensure_ascii=(i % 2 == 0)), flush=True)
+done = {"event": "done", "text": out["text"], "tool_calls": [dict(c, id="m%d_%d" % (len(ms), i)) for i, c in enumerate(out["tool_calls"])],
+        "stop": "end_turn", "usage": {"input": 15, "output": 7, "cached": 5}}
+print(json.dumps(done, ensure_ascii=(step % 2 == 0)))

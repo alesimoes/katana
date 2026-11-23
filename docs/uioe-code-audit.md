@@ -257,7 +257,7 @@ Not in the top ten but cheap and real: expose `Find`/`Symbols`/`LSP` in `katana 
 8. **Sub-agents cannot run in parallel** because of one model and a swapped KV cache (S5): any "parallel retrieval
    subagents" in the UIOE has to be engine-side code (no model), or to accept serial execution.
 9. **Brand reference in `teacher.c`.** The header says each fala "vem da API de mensagens da Anthropic (Claude)". The
-   project rule is that nothing in katana cites other products or engines. Flagged for the owner; not changed here.
+   project rule is that nothing in katana cites other products or engines. Flagged for the owner; **resolved 2026-11-23**: the vendor code moved to `plugins/teacher-anthropic/` and the binary speaks a neutral protocol (`docs/teacher-protocol.md`).
 10. **Investigation logic lives in Python** (`tools/findbench/`, `docs/investigation-engine.md`), so its measured pieces
     (activation, confidence calibration) have no C counterpart except `findgraph.c`.
 

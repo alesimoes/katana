@@ -8,7 +8,7 @@ K=$1
 [ -x "$K" ] || { echo "uso: $0 <binario katana>"; exit 2; }
 K=$(cd "$(dirname "$K")" && pwd)/$(basename "$K")
 R=$(pwd)
-[ -f "$R/tools/traintest/mock_claude.py" ] || { echo "rode a partir da raiz do repositorio"; exit 2; }
+[ -f "$R/tools/traintest/mock_teacher_prog.py" ] || { echo "rode a partir da raiz do repositorio"; exit 2; }
 T=$(mktemp -d) || exit 2
 trap 'rm -rf "$T"' EXIT INT TERM
 N=0; F=0
@@ -21,7 +21,7 @@ field(){ printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
 
 export KATANA_CPU=1                     # nunca a placa de video: so o modelo minusculo
 export KATANA_LOG="$T/agente.log" KATANA_MCP_LOG="$T/mcp.log"
-unset KATANA_TOOLS KATANA_MODEL KATANA_MODELS ANTHROPIC_API_KEY KATANA_ALLOWED_TOOLS KATANA_DISALLOWED_TOOLS
+unset KATANA_TOOLS KATANA_MODEL KATANA_MODELS KATANA_TEACHER_CMD KATANA_ALLOWED_TOOLS KATANA_DISALLOWED_TOOLS
 export HOME="$T/home"; mkdir -p "$HOME" "$T/work" "$T/other"
 export KATANA_LAUNCH_DRYRUN=1          # so decide e imprime (mode=, model=, why=...), sem carregar o modelo
 dry() { ( cd "${DIR:-$T/work}" && "$K" "$@" 2>&1 ); }
@@ -179,9 +179,9 @@ if ! command -v python3 >/dev/null 2>&1; then echo "sem python3: testes headless
 python3 "$R/tools/tinymodel/make_tiny_gguf.py" "$T/agent.gguf" --template chatml-xml >/dev/null || { echo "nao gerei o modelo minusculo"; exit 2; }
 mkdir -p "$T/hm"; cp "$T/agent.gguf" "$T/hm/agent.gguf"
 export KATANA_MODELS="$T/hm"
-TENV="KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 KATANA_TEACHER_CLI=$R/tools/traintest/mock_claude.py"
+TENV="KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 KATANA_TEACHER_CMD='python3 $R/tools/traintest/mock_teacher_prog.py'"
 hl() { # pasta de trabalho, depois os argumentos do katana
-  _d=$1; shift; mkdir -p "$_d"; ( cd "$_d" && env $TENV MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" "$@" 2>"$T/err.txt" ); }
+  _d=$1; shift; mkdir -p "$_d"; ( cd "$_d" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" "$@" 2>"$T/err.txt" ); }
 jq_() { python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(eval(sys.argv[1]))" "$1"; }
 
 # texto
@@ -191,7 +191,7 @@ eq "headless texto: so a resposta final no stdout" "$OUT" "Pronto: ferramentas n
 [ "$(cat "$T/h1/nota2.txt")" = "$(printf 'linha 1\nlinha dois')" ] && ok "headless: as ferramentas rodaram na pasta de trabalho" || bad "headless: arquivo gravado" "$(cat "$T/h1/nota2.txt" 2>&1)"
 has "headless: o modelo escolhido sai no erro padrao" "$(cat "$T/err.txt")" "modelo $T/hm/agent.gguf"
 # pedido pela entrada padrao
-OUT=$(cd "$T/h2" 2>/dev/null || mkdir -p "$T/h2"; cd "$T/h2" && printf 'grave e confira\n' | env $TENV MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p 2>/dev/null); RC=$?
+OUT=$(cd "$T/h2" 2>/dev/null || mkdir -p "$T/h2"; cd "$T/h2" && printf 'grave e confira\n' | env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p 2>/dev/null); RC=$?
 eq "headless pela entrada padrao" "$OUT" "Pronto: ferramentas novas conferidas."
 # json
 OUT=$(hl "$T/h3" -p "grave e confira" --output-format json --quiet)
@@ -220,7 +220,7 @@ eq "stream-json: tool_result traz is_error e summary" "$(printf '%s\n' "$OUT" | 
 eq "stream-json: o ultimo e o resultado igual ao json" "$(printf '%s\n' "$OUT" | tail -1 | jq_ 'd["result"] + str(d["num_turns"]) + str(len(d["tool_calls"]))')" "Pronto: ferramentas novas conferidas.44"
 # plano
 mkdir -p "$T/h5"
-OUT=$( cd "$T/h5" && env $TENV MOCK_PLAN=2 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "trabalhe" --output-format stream-json --quiet 2>/dev/null )
+OUT=$( cd "$T/h5" && env $TENV MOCK_PLAN=2 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "trabalhe" --output-format stream-json --quiet 2>/dev/null )
 PL=$(printf '%s\n' "$OUT" | python3 -c "
 import json, sys
 ev = [json.loads(l) for l in sys.stdin if l.strip()]
@@ -234,20 +234,20 @@ eq "--no-session: session_id nulo" "$(printf '%s' "$OUT" | jq_ 'd["session_id"]'
 [ -d "$HOME/.katana/sessions" ] && bad "--no-session: nada gravado" "$(ls -R "$HOME/.katana/sessions")" || ok "--no-session: nada gravado"
 # --cwd e --session-id (e retomar pelo mesmo id)
 mkdir -p "$T/h7"
-OUT=$(cd "$T/other" && env $TENV MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "grave e confira" --cwd "$T/h7" --session-id meu-id-1 --output-format json --quiet)
+OUT=$(cd "$T/other" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "grave e confira" --cwd "$T/h7" --session-id meu-id-1 --output-format json --quiet)
 [ -f "$T/h7/nota2.txt" ] && ok "--cwd: trabalhou na pasta dada" || bad "--cwd" "$OUT"
 eq "--session-id: o id volta no resultado" "$(printf '%s' "$OUT" | jq_ 'd["session_id"]')" "meu-id-1"
 [ -f "$HOME/.katana/sessions/"*"/meu-id-1.ksess" ] && ok "--session-id: arquivo com esse nome" || bad "--session-id arquivo" "$(ls -R "$HOME/.katana/sessions")"
 # --max-turns e erro (codigo 1)
-OUT=$(cd "$T/h8" 2>/dev/null || mkdir -p "$T/h8"; cd "$T/h8" && env $TENV MOCK_SILENT=1 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "faca" --max-turns 2 --output-format json --quiet 2>"$T/err.txt"); RC=$?
+OUT=$(cd "$T/h8" 2>/dev/null || mkdir -p "$T/h8"; cd "$T/h8" && env $TENV MOCK_SILENT=1 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "faca" --max-turns 2 --output-format json --quiet 2>"$T/err.txt"); RC=$?
 eq "sem resposta final: codigo 1" "$RC" "1"
 eq "sem resposta final: is_error" "$(printf '%s' "$OUT" | jq_ 'd["is_error"]')" "True"
 eq "sem resposta final: subtype" "$(printf '%s' "$OUT" | jq_ 'd["subtype"]')" "error_max_turns"
 eq "--max-turns: so 2 rodadas" "$(printf '%s' "$OUT" | jq_ 'd["num_turns"]')" "2"
 has "sem resposta final: o motivo no erro padrao" "$(cat "$T/err.txt")" "max turns"
-OUT=$(cd "$T/h8" && env $TENV MOCK_SILENT=1 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "faca" --max-turns 2 --quiet 2>/dev/null); RC=$?
+OUT=$(cd "$T/h8" && env $TENV MOCK_SILENT=1 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "faca" --max-turns 2 --quiet 2>/dev/null); RC=$?
 eq "erro em texto: codigo 1 e nada no stdout" "$RC$OUT" "1"
-OUT=$(cd "$T/h8" && env $TENV MOCK_ROUNDS=2 KATANA_ROUNDS=40 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "leia" --max-turns 4 --quiet 2>/dev/null)
+OUT=$(cd "$T/h8" && env $TENV MOCK_ROUNDS=2 KATANA_ROUNDS=40 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "leia" --max-turns 4 --quiet 2>/dev/null)
 eq "--max-turns 4: o limite chega ao modelo como nas rodadas do motor" "$OUT" "Limite relatado."
 # erros de uso: codigo 2
 ( cd "$T/h8" && "$K" -p >/dev/null 2>&1 </dev/null ); [ $? -ne 0 ] && ok "-p sem pedido nem entrada: erro" || bad "-p sem pedido" ""
@@ -284,24 +284,24 @@ EOF
 mkdir -p "$T/h9/.katana"; cat > "$T/h9/.katana/mcp.json" <<EOF
 {"mcpServers": {"projone": {"command": "$PY3", "args": ["$T/fake.py", "projone"]}}}
 EOF
-OUT=$(cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "$T/mcp-fake.json" --allowed-tools 'fake__ping,Read' --output-format json 2>"$T/err.txt"); RC=$?
+OUT=$(cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "$T/mcp-fake.json" --allowed-tools 'fake__ping,Read' --output-format json 2>"$T/err.txt"); RC=$?
 eq "MCP + lista: codigo 0" "$RC" "0"
 eq "MCP + lista: o modelo viu so as ferramentas permitidas e respondeu" "$(printf '%s' "$OUT" | jq_ 'd["result"]')" "MCP ok: pong alvo; Bash recusado."
 eq "MCP + lista: tool_calls" "$(printf '%s' "$OUT" | jq_ '",".join(c["name"] + ":" + str(c["is_error"]) for c in d["tool_calls"])')" "fake__ping:False,Bash:True"
-OUT=$(cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "$T/mcp-fake.json" --allowed-tools 'mcp__fake__ping,Read' --output-format json --quiet 2>/dev/null)
+OUT=$(cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "$T/mcp-fake.json" --allowed-tools 'mcp__fake__ping,Read' --output-format json --quiet 2>/dev/null)
 eq "MCP: a lista aceita a grafia mcp__servidor__ferramenta" "$(printf '%s' "$OUT" | jq_ 'd["result"]')" "MCP ok: pong alvo; Bash recusado."
-OUT=$(cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "{\"mcpServers\": {\"fake\": {\"command\": \"$PY3\", \"args\": [\"$T/fake.py\", \"fake\"]}}}" --allowed-tools 'fake__*,Read' --output-format json --quiet 2>/dev/null)
+OUT=$(cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "{\"mcpServers\": {\"fake\": {\"command\": \"$PY3\", \"args\": [\"$T/fake.py\", \"fake\"]}}}" --allowed-tools 'fake__*,Read' --output-format json --quiet 2>/dev/null)
 eq "MCP: configuracao em JSON direto na linha de comando" "$(printf '%s' "$OUT" | jq_ 'd["result"]')" "MCP ok: pong alvo; Bash recusado."
 # --strict-mcp-config: so os servidores dados (o do usuario e o do projeto ficam de fora)
-( cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "$T/mcp-fake.json" --strict-mcp-config --allowed-tools 'fake__ping,Read' --output-format json >/dev/null 2>"$T/err.txt" )
+( cd "$T/h9" && env $TENV MOCK_MCP=1 MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "use o servidor" --mcp-config "$T/mcp-fake.json" --strict-mcp-config --allowed-tools 'fake__ping,Read' --output-format json >/dev/null 2>"$T/err.txt" )
 ERR=$(cat "$T/err.txt")
 has "strict: o servidor dado sobe" "$ERR" "[mcp fake:"
 hasnt "strict: o do usuario fica de fora" "$ERR" "userone"
 hasnt "strict: o do projeto fica de fora" "$ERR" "projone"
-( cd "$T/h9" && env $TENV MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "grave e confira" --strict-mcp-config --output-format json >/dev/null 2>"$T/err.txt" )
+( cd "$T/h9" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "grave e confira" --strict-mcp-config --output-format json >/dev/null 2>"$T/err.txt" )
 hasnt "strict sem --mcp-config: nenhum servidor sobe (usuario)" "$(cat "$T/err.txt")" "userone"
 hasnt "strict sem --mcp-config: nenhum servidor sobe (projeto)" "$(cat "$T/err.txt")" "projone"
-( cd "$T/h9" && env $TENV MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -p "grave e confira" --output-format json >/dev/null 2>"$T/err.txt" )
+( cd "$T/h9" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -p "grave e confira" --output-format json >/dev/null 2>"$T/err.txt" )
 has "sem strict: o servidor do usuario sobe" "$(cat "$T/err.txt")" "[mcp userone:"
 rm -rf "$HOME/.katana/mcp.json"
 
@@ -330,13 +330,13 @@ ls "$HOME/.katana/sessions/"*/index >/dev/null 2>&1 && ok "o index de sessoes da
 has "o index tem uma linha por sessao" "$(cat "$HOME/.katana/sessions/"*/index | cut -f1 | sort | tr '\n' ' ')" "aaa-1 bbb-2 raiz-1"
 unset KATANA_LAUNCH_DRYRUN
 # continua de verdade: -c retoma a conversa (o modelo minusculo carrega; o professor responde)
-OUT=$(cd "$T/s1" && env $TENV MOCK_CLAUDE_LOG="$T/cli.jsonl" "$K" -c -p "e agora?" --output-format json 2>"$T/err.txt"); RC=$?
+OUT=$(cd "$T/s1" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" -c -p "e agora?" --output-format json 2>"$T/err.txt"); RC=$?
 eq "-c com -p: continua a sessao e responde (codigo)" "$RC" "0"
 has "-c com -p: a sessao anterior foi retomada" "$(cat "$T/err.txt")" "sessao retomada"
 
 ########## 7. console rico e editor de linha, num terminal de mentira (pty) ##########
 mkdir -p "$T/ptyhome"; cp "$T/agent.gguf" "$T/hm/second.gguf"
-OUT=$(python3 "$R/tools/tooltest/console_pty.py" "$K" "$T/hm/agent.gguf" "$T/p1" "$T/ptyhome" "$R/tools/traintest/mock_claude.py" 2>&1)
+OUT=$(python3 "$R/tools/tooltest/console_pty.py" "$K" "$T/hm/agent.gguf" "$T/p1" "$T/ptyhome" "$R/tools/traintest/mock_teacher_prog.py" 2>&1)
 printf '%s\n' "$OUT" | grep -v '^pty:'
 PN=$(printf '%s\n' "$OUT" | grep -c '^\(ok\|FAIL\) '); PF=$(printf '%s\n' "$OUT" | grep -c '^FAIL ')
 N=$((N+PN)); F=$((F+PF))
