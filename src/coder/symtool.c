@@ -17,6 +17,7 @@ static int sym_ensure_index(const char *root, double *ms, int *created) {
    (com a quebra de linha final) em *se e *so vazio. A visao vem do cache de indexctl.c e e fechada aqui; `limit` ja vem dentro dos limites; `depth` so vale em impact. */
 static void sym_query_text(const char *action, const char *target, const char *root, int limit, int depth, char **so, char **se) {
     const int isflow = !strcmp(action, "flow");
+    { char drop[200]; fresh_note_take(drop, sizeof drop); }          /* so os arquivos citados nesta consulta contam para a linha de aviso (fresh.c) */
     char em[900]; SyView v; char err[300] = ""; SyItems items = {0}; CtSb sb = {0}; *so = *se = NULL;
     if (sy_view_open(root, &v, err, sizeof err) != 0) { snprintf(em, sizeof em, "%s: %s\n", action, err); goto fail; }
     if (isflow && !v.anykeys) { snprintf(em, sizeof em, "flow: the index has no text-key sections (it was built before they existed); delete %s and run `katana coder index` again\n", v.dir); sy_view_close(&v); goto fail; }
@@ -43,6 +44,7 @@ static void sym_query_text(const char *action, const char *target, const char *r
         sy_render_text(&sb, &q, &items);
     }
     sy_items_free(&items); sy_view_close(&v);
+    { char note[200]; if (fresh_note_take(note, sizeof note)) { const size_t nl = strlen(note), bl = sb.p ? strlen(sb.p) : 0; char *m = (char *)malloc(nl + bl + 1); memcpy(m, note, nl); if (bl) memcpy(m + nl, sb.p, bl); m[nl + bl] = 0; free(sb.p); sb.p = m; } }       /* [index: N files changed since indexed; shown from the files] */
     *so = sb.p ? sb.p : strdup(""); *se = strdup(""); return;
 fail:
     *so = strdup(""); *se = strdup(em);

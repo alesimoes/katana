@@ -875,6 +875,7 @@ static void crawl_status_print(StoreReader *r, const IndexLoc *loc, const char *
         if (np > 14) printf("    (+%d partes)\n", np - 14);
     }
     if (have) printf("  ultimo lote do rastreador: epoca %llu, %s%s%s\n", (unsigned long long)ep, (fl & 1) ? "todos os niveis completos" : "em andamento", lim[0] ? "; limite: " : "", lim);
+    watch_status_print(loc->root);
     long pid = 0; const int run = cw_is_running(dir, &pid);
     printf("rastreador: %s\n", run ? "em execucao (CRAWL.LOCK tomado)" : "nao esta rodando");
     { char h[1000]; agent_home(h, sizeof h); char sp[1300]; snprintf(sp, sizeof sp, "%s/.katana/run/coder-%016llx.state", h, (unsigned long long)store_hash64(loc->root, strlen(loc->root), 0));
