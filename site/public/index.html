@@ -128,7 +128,7 @@
 <h2 id="project">The project: katana</h2>
 <h2 style="margin-top:28px;font-size:1.15rem">What it is</h2>
 <p>katana reads language models in the GGUF format and runs them on your machine: on the CPU, on the GPU (Vulkan or OpenCL, loaded from the driver at run time, no SDK), or on both at once. The engine is a single C source file with nothing linked beyond the C runtime, and it never calls an external service.</p>
-<p>On top of the engine sit two more layers: an <strong>agent</strong> that uses tools (files, shell, terminals, git, web search, persistent memory, MCP servers) and a <strong>desktop app</strong> (Qt 6, a native window, no browser) that talks to the agent.</p>
+<p>On top of the engine sit two more layers: an <strong>agent</strong> that uses a small set of tools (shell, files, code search, web search and fetch, a plan list, persistent memory, MCP servers) and a <strong>desktop app</strong> (Qt 6, a native window, no browser) that talks to the agent.</p>
 
 <h2>The problem</h2>
 <p>The most interesting open models are bigger than a consumer GPU. A 35-billion-parameter model needs about 20 GB at 4 bits; a laptop GPU has 4 to 8 GB of VRAM. The usual answers: buy a bigger card, offload layers and accept a crawl, or use someone else's server.</p>
@@ -143,8 +143,8 @@
 </div>
 
 <h2>The agent</h2>
-<p>The agent gives the model tools: shell commands and persistent terminal sessions, reading, searching and editing files, git, a built-in web meta-search (no API key) and page fetching, package installs, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results reach the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
-<p><strong>Finding things in code.</strong> The agent has one entry point for search, <code>Find</code>: it looks at the question and chooses the way to search (a name, quoted text, or a description in words), reads the files again to check what it reports, and says what it did not find. A <code>Symbols</code> tool answers precise questions (where a name is defined, who calls it, what it calls, what a change would reach) from an index of the code that supports more than 60 languages and file formats, and every answer carries a confidence level. Read shows the part of a large file that matches what the model is looking for, and the program tells the model where a project it mentioned really is. None of this uses embeddings or a remote service. It is new and has not been measured yet.</p>
+<p>The agent gives the model a short list of tools: a shell (<code>Bash</code>; git, package managers and the rest go through it), reading, searching and editing files, code search (<code>Find</code>, <code>Symbols</code>, <code>Grep</code>), a plan list, a built-in web meta-search (no API key) and page fetching, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results reach the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
+<p><strong>Finding things in code.</strong> The agent has one entry point for search, <code>Find</code>: it looks at the question and chooses the way to search (a name, quoted text, or a description in words), reads the files again to check what it reports, and says what it did not find, including the folders it left out of the index and why. A <code>Symbols</code> tool answers precise questions (where a name is defined, who calls it, what it calls, what a change would reach, how two files are connected, a summary of a folder) from an index of the code that supports more than 60 languages and file formats, and every answer carries a confidence level. The index is built on demand by a background crawler, kept fresh by a file watcher, and starts from zero in each project you initialise. Before the model starts, the program can also look the question up itself and attach what it verified (paths, lines, who calls whom, and what it could not find) after your message; the model is told to check it before relying on it. None of this uses embeddings or a remote service. It is new, the model has not been trained on it yet, and none of it has been measured.</p>
 <div class="callout"><strong>Heads up:</strong> by default the agent acts on your machine without asking. Set <code>KATANA_CONFIRM=1</code> to have it ask first.</div>
 
 <h2>Measured</h2>
@@ -155,14 +155,13 @@
   <tbody>
     <tr><td>Gemma 4 26B-A4B (Q4_K_M)</td><td class="num">~16 GB</td><td class="num">23.7 tok/s</td></tr>
     <tr><td>Qwen3.6-35B-A3B (Q4_K_M)</td><td class="num">~21 GB</td><td class="num">24.9 tok/s</td></tr>
-    <tr><td>Qwen3-30B-A3B (Q4_K_M)</td><td class="num">18.6 GB</td><td class="num">12.5 to 14.9 tok/s</td></tr>
-  </tbody>
+      </tbody>
 </table>
 </div>
-<p class="note">Alternating runs on the same machine, because the machine drifts over time. Your numbers will differ with your hardware.</p>
+<p class="note">Alternating runs on the same machine, because the machine drifts over time; taken before the latest changes to the agent and not repeated since. Your numbers will differ with your hardware.</p>
 
 <h2 id="model">The model</h2>
-<p>katana is developed and tested with <strong>Qwen3.6-35B-A3B</strong>, a Mixture-of-Experts model with 35 billion parameters of which about 3 billion are active for each token. The original model, its model card and its license are at <a href="https://huggingface.co/Qwen/Qwen3.6-35B-A3B">Qwen/Qwen3.6-35B-A3B</a> on Hugging Face. katana reads GGUF files, so it uses the 4-bit quantization <code>Qwen3.6-35B-A3B-UD-Q4_K_M.gguf</code> (22 GB, 32 GB of RAM or more recommended) published by <a href="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF">Unsloth</a>. <code>./katana pull qwen3.6-35b</code> downloads that exact file and checks it against a pinned revision and checksum. katana does not convert the original weights to GGUF yet; that is on the plan.</p>
+<p>katana is developed and tested with <strong>Qwen3.6-35B-A3B</strong>, a Mixture-of-Experts model with 35 billion parameters of which about 3 billion are active for each token. The original model, its model card and its license are at <a href="https://huggingface.co/Qwen/Qwen3.6-35B-A3B">Qwen/Qwen3.6-35B-A3B</a> on Hugging Face. katana reads GGUF files, so it uses the 4-bit quantization <code>Qwen3.6-35B-A3B-UD-Q4_K_M.gguf</code> (22 GB, 32 GB of RAM or more recommended) published by <a href="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF">Unsloth</a>. <code>./katana pull qwen3.6-35b</code> downloads that exact file and checks it against a pinned revision and checksum. <code>katana convert</code> turns a Hugging Face checkpoint into a GGUF file for this architecture; it has only been checked on tiny test checkpoints, not on the real model yet.</p>
 
 <h2 id="ways">Three ways to use it</h2>
 <div class="grid">
