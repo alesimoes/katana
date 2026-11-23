@@ -154,7 +154,7 @@ case "$err" in *"find: query"*) ok "KATANA_FIND_TIME escreve os tempos";; *) out
 # ---------------- pasta vazia ----------------
 mkdir -p "$T/vazia"; cd "$T/vazia" || exit 2
 run Find '{"query":"anything"}'
-has "pasta sem arquivos" "No indexable text files"
+has "pasta sem arquivos: nao ha indice do coder para ela" "the code index of"
 
 # ---------------- tabela ----------------
 run ToolSearch '{"query":"select:Find"}'
