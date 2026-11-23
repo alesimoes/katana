@@ -4,7 +4,8 @@
  *     cerca de 100 arquivos mais provaveis (KATANA_FIND_CAND), mais os que o motor de nomes e texto sugeriu (CoderHits) e os que definem um nome da pergunta;
  *   - o indice de trechos do Find (trechos de 40 linhas, BM25 por campo, simbolos por regra) e montado a cada consulta SO sobre esses arquivos, lidos do
  *     disco (eles sao lidos de qualquer jeito para mostrar linhas); o idf usa estimativas do corpus inteiro (document frequency do lexico do store);
- *   - o grafo de arquivos vem da secao STS_GRAPH (graph.c), derivada dos niveis N2/N3 (simbolos, referencias, imports) em vez de reler todos os arquivos.
+ *   - o grafo de arquivos vem da secao STS_GRAPH (graph.c), derivada dos niveis N2/N3 (simbolos, referencias, imports, chaves de texto) e do lexico do N1
+ *     (onde cada nome definido e cada nome de arquivo com extensao aparece) em vez de reler todos os arquivos.
  * Nada aqui varre a arvore: a atualizacao do catalogo e do coder (index_ensure, que cria o indice na primeira chamada). O que o ranking perde em
  * relacao ao indice proprio: so os candidatos entram no BM25 de trechos (a nota de um arquivo fora deles nunca e calculada); o df por campo e estimado. */
 #ifndef _WIN32
@@ -566,7 +567,7 @@ static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32
         }
         free(tab); free(stems);
         free(mark);
-        if (g_fd_verbose) fprintf(stderr, "find: graph: %ld import references, %ld resolved (the rest repeat a text already resolved in the same folder)\n", nimp, nmiss);
+        if (g_fd_verbose) fprintf(stderr, "find: graph: %ld import references, %ld resolved against the catalog (the others repeat a text already resolved in the same folder, or name no file of the project)\n", nimp, nmiss);
     }
     {                                                            /* rare, por chave de texto (N3): o mesmo texto de ligacao (evento, rota, variavel de ambiente, chave de configuracao) em 2 a 4 arquivos */
         FdTerms K; memset(&K, 0, sizeof K); uint64_t *kp = NULL; size_t nkp = 0, kcap = 0;

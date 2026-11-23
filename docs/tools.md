@@ -149,7 +149,46 @@ plain words and/or identifiers, and gets a few precise candidates instead of who
 - `path`: a subfolder or one file of the working folder (filters the results); a folder outside the working folder
   gets its own index.
 
-**Index.** Files: `git ls-files --cached --others --exclude-standard` inside a repository, otherwise a walk that
+**Unified index (default since phase 7 of `docs/code-index-lifecycle.md`; `KATANA_FIND_INDEX=store`).** `Find` no longer keeps an
+index of its own. It reads the coder store (`<root>/.katana/coder/store` or the home index, see `katana coder status`) and the files
+themselves; no `find-*.idx` is created, read or updated, and `Find` makes no walk of the tree (the only update is the shared
+`index_ensure`, which creates the coder index on the first call in a folder and keeps it current, as `Symbols` and the coder layer
+already did). Per call (`src/coder/findstore.c`):
+1. *Candidates.* The query is tokenised as always; for each term the lexicon of the store gives the files that have it (normalised
+   and original spelling keys, search fields path, name, word, part). A file-level BM25F over those postings (path and name weigh 3,
+   word 1, part 0.5; coverage bonus; the same documentation, config and test factors as the ranking) picks the best 100 files
+   (`KATANA_FIND_CAND`, 10 to 300). Added to them: the files the coder name and text engine suggested for the question (`CoderHits`, up to 12) and
+   the files that define a name equal to a query term (symbol index, so a common word such as `list` still reaches the file that defines `list`).
+2. *Mini-index.* Only those files are read from disk, cut into 40-line chunks and tokenised with the same code as before (path, symbol
+   names, body fields); the usual ranking runs over them. The idf uses estimates of the whole project: document frequency of the term in the
+   store lexicon (files) times the chunks per file seen in the candidates; the term table is kept between calls (so the per-request state
+   keeps working) and the chunk postings of recently read files (300 files, keyed by path, mtime and size) are kept in the process, so a second
+   question about the same files neither reads nor tokenises them again.
+3. *Graph.* The file graph is a section of the store (`STS_GRAPH`, `src/coder/graph.c`) derived from the levels already indexed, not from
+   the files: `sym` edges join the references and the definitions of the symbol index (and, for the same defined names, the files whose text
+   has the name, from the lexicon, because comments, strings and properties are not references); `path` edges are the imports resolved to files
+   (N3) plus files that name another file with its extension (lexicon again); `rare` edges join files that share a name that is referenced in 2 to 4
+   files and defined nowhere, or a text key (event, route, environment variable, config key) found in 2 to 4 files; `co` edges come from `git log`
+   as before (`KATANA_FIND_CO=0` skips them). The same weights, row normalisation, sparse activation and neighbour note as the old graph read it.
+   The crawler writes it when its queues are empty (`graph_on_quiet`); a `Find` on a folder whose graph is missing or no longer matches
+   the documents (one signature over content hashes, so compaction does not invalidate it and an edit does) derives it in the same call, up to
+   `KATANA_FIND_GRAPH_MAX` files (default 30000; above that an older graph is used as it is), and saves it. `KATANA_FIND_GRAPH=0` stops the
+   crawler and `Find` from deriving it. Neighbours that enter the answer through an edge (and the file they came from) are read and added to the
+   mini-index for the chunk, the symbols and the `why:` line. The neighbour note in the agent loop reads the graph from the store and never
+   creates an index or a graph.
+`calls:`, `called by:`, `links:` and `next:` still come from the symbol index; `also referenced in:` now lists files with real references to the
+symbols defined on the shown lines (documents of plain text are not listed: they have no references). `mode=refs` is answered by the symbol index
+and, when it does not know the name, by the text path over the files that contain it (up to 300, from the lexicon). A first call in a folder without an
+index creates it (a few seconds for a large folder) and answers. If the coder index cannot be created or read the call falls back to the old
+index of its own. `KATANA_FIND_TIME=1` prints the times (index, candidates, mini-index, graph and where it came from).
+`KATANA_FIND_DEBUG=1` also prints the candidate scores and the activation.
+Memory: nothing of the project stays in the heap except the term table, the 300 recent files and the graph rows of the call (the segments are mapped
+and shared with the crawler and other sessions). The output format (lines, budget, request state, dedupe, next page) is unchanged.
+Known difference from the old ranking: only the candidates enter the chunk-level ranking, so a file that does not reach the candidates is never scored
+(`KATANA_FIND_CAND` raises the number); the idf is an estimate; the graph has fewer text-only edges for languages without import resolution.
+`Rename`, `Replace` and `Patch` still use the old index of their own (`fd_update` in `src/tools/multiedit.c`), which creates `find-*.idx`.
+
+**Old index (`KATANA_FIND_INDEX=legacy`, and the fallback).** Files: `git ls-files --cached --others --exclude-standard` inside a repository, otherwise a walk that
 applies `.gitignore` (the same listing as `Grep`); then skips `.git`, `node_modules`, `build`, `dist`, `vendor`,
 `.katana`, `target`, `.venv` and similar folders, files above 300 KB, binary files (a NUL byte in the first 8 KB) and
 extensions that are not source or text (c h cpp hpp cc glsl comp js mjs ts tsx py kt java go rs sh md qml ps1 xml
@@ -263,7 +302,7 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
 
 **File graph, sparse activation and the neighbour note** (`src/tools/findgraph.c`, ported from the research in
 `docs/investigation-engine.md`; no language model was run to build or check it).
-- *Graph.* Nodes are the indexed files. Four undirected edge types, stored as one CSR (int32 destination, float32
+- *Graph.* (Old index; in the default mode the same graph is derived from the store, see "Unified index" above.) Nodes are the indexed files. Four undirected edge types, stored as one CSR (int32 destination, float32
   weight, 1 byte type mask) in the same cache file as the index (`FD_VERSION` 4: an older file is rebuilt without error;
   the graph section follows the file records). It is built lazily, the first time a search or the neighbour note needs
   it, and rebuilt whole (all files re-read once, plus one `git log`) whenever the index changed.
@@ -297,7 +336,9 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
   `Read` earlier in this request and files already named in an earlier note, only for neighbours whose summed edge weight
   is at least 0.06. No note after a repeated call, an error, or a short re-read (limit <= 80) of a file already read; at
   most one note per result and 8 per request (state reset with the repetition table at each new request).
-  The index must already exist: it is used if the process has it in memory (any earlier `Find`) or if the working folder
+  The index must already exist: in the default mode the note reads the graph section of the coder store of the working
+  folder when there is one (it never creates an index or a graph; a folder that was never indexed gets no note); in
+  the old mode it is used if the process has the old index in memory (any earlier `Find`) or if the working folder
   already has `.katana/cache` (then it is loaded once per process); the loop never creates cache files for a folder
   that never used `Find`. `KATANA_NEIGHBORS=0` turns the note off. `Find` with `mode=neighbors` and a path in `query`
   prints the note a `Read` of that file would get (research and test aid, not in the tool schema).
