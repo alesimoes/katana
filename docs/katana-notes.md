@@ -33,8 +33,8 @@ move the rest into the context block of the UIOE layer (`docs/uioe.md` 4.6), and
    behavior around them: the 12-time `WebSearch` loop re-ran a call that returned 3,775 bytes each time, about 38 KB
    or 9,500 tokens (estimate), and each repeat also cost one full model turn.
 6. Recommendation (section 5): keep 16 note ids, move 3 (R10, Q2, Q3; Q1 later) into the UIOE block once it exists (U4/U5, `docs/uioe.md`
-   section 11; the builder is not implemented, `KATANA_UIOE` is off and the loop calls nothing), fuse 5 into the
-   tool results as plain text without the `[katana:` voice, cut 4. Add `WebSearch`/`WebFetch` to the repeat cover.
+   section 11; the builder is not implemented, `KATANA_UIOE` is off and the loop calls nothing), fuse 7 into the
+   tool results as plain text without the `[katana:` voice, cut 3 (R9, the R17 pointer, the T2 echo). Add `WebSearch`/`WebFetch` to the repeat cover.
 7. The v7 curriculum has not been trained (`data/curriculum/v7/README.md`: "`train.sh` ... not run"). Changing the
    notes now costs no retraining; changing them after training makes the trained format stale (section 6).
 8. One function `knote(kind, ...)` with a kind table, a budget per request and one escape routine replaces about 30
