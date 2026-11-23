@@ -75,6 +75,8 @@ Models (the minimum is 24 GB of RAM; the catalog is fixed in the engine, pinned 
 ./katana pull qwen3.6-35b          # download (resumes an interrupted one) and verify
 ```
 
+The model katana is developed and tested with is **Qwen3.6-35B-A3B**: the original model is [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) (model card and license), and the file `katana pull` downloads is the GGUF quantization `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (22 GB, 32 GB of RAM or more recommended) published by [Unsloth](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF), pinned by revision and sha256 in the catalog.
+
 Desktop app (Qt 6, native window, no browser):
 
 ```
@@ -133,21 +135,17 @@ tools reach outside.
 
 | Tool | What it does |
 |---|---|
-| `run_command` | shell command, stdin closed, stderr included, timeout, exit code, head+tail of long output, live output in the desktop app, and one next-step hint when it fails (missing program or module, wrong path, permission, port in use). Runs as your normal user; when the command contains `sudo`, the sudo password dialog opens (once; the password stays only in memory) |
-| `terminal` | persistent shell sessions in a pty (keeps directory and variables, shows interactive prompts); `open`, `send`, `read`, `interrupt`, `close` |
-| `find_file` | finds files and folders by part of the name anywhere on the machine (home folder and the other mounted disks), best name match and shortest path first |
-| `read_file`, `list_dir`, `glob`, `search_files`, `read_document` | read and find files (PDF and HTML as text); `list_dir` shows folders with their item count and files with size and date; `read_file` returns whole lines and, for a long file, says which lines came and how to ask for the next ones (`offset`, `limit`) |
-| `write_file`, `edit_file` | write files; exact-snippet edits that fail if the snippet is missing or ambiguous. After each write the engine checks the syntax of the file (Python, shell, JSON, JavaScript, PHP, Ruby, when the language tool is installed) and appends the result, so the model sees a syntax error in the same step |
-| `todo` | the model's own task list for long jobs: steps, then the same list with `[x]` on the finished ones; kept across context compaction |
-| `job` | reads, lists or stops a command started with `run_command` and `background=true` (servers, long builds) |
-| `delegate` | hands a large search or reading job to a sub-agent with a clean context and gets back only its answer |
-| `ask_user` | one question to the user with 2 to 5 options (buttons in the desktop app, numbered in the terminal) for decisions that are only the user's; in a non-interactive run the model is told to decide by itself |
-| `git` | status, diff, log, commit, branch, push, clone... (refuses `push --force`, `reset --hard` unless `KATANA_GIT_UNSAFE=1`) |
-| `web_search`, `web_fetch`, `download_file` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG); `web_fetch` returns the main text of a page and remembers it, so `offset` continues a long page, `find` returns only the passages with a word and `links=true` lists where the page leads; downloads with SHA-256 |
-| `install_package` | pip (venv-aware), npm, apt, cargo |
-| `read_log`, `terminal_screen` | recent commands with exit codes, journal, dmesg, any log file; the user's tmux pane |
-| `remember`, `recall` | persistent memory in `~/.katana/memoria.txt` |
-| `howto` | short recipes (web, terminal, linux, script, sudo, files, code, packages, logs) the model can consult on demand |
+| `Bash` | shell command that keeps its working directory, stdin closed, stderr included, timeout, exit code, head and tail of long output, live output in the desktop app, one next-step hint when it fails; `sudo` opens a password dialog; `TaskStop` and `Monitor` stop and follow background commands |
+| `Read`, `Write`, `Edit`, `NotebookEdit` | `Read` shows a file with line numbers (PDF and HTML as text; a large file comes back as a map plus the parts that match what the model is looking for, and continues from where it stopped); `Write` and `Edit` need the file read first, `Edit` is an exact snippet that fails if it is missing or ambiguous; the syntax of the file is checked after each write |
+| `Find` | one entry point for search: it looks at the question and picks the way (a name, a quoted text, or a description in words), checks what it reports by re-reading the files, and says what it did not find |
+| `Symbols` | precise questions from the code index: `def`, `refs`, `callers`, `callees`, `uses`, `outline`, `at`, `deps`, `impact`, each answer with a confidence level (60+ languages and formats) |
+| `Grep`, `Glob` | exact patterns inside files (its own regex engine; output modes) and file names by pattern |
+| `Rename`, `Replace`, `Patch` | changes in many places at once, with a dry run and `/undo` |
+| `TodoWrite`, `TaskCreate`... | the model's own task list for long jobs, kept across context compaction; `AskUserQuestion` is a question to the user with options (buttons in the desktop app); `EnterPlanMode` and `ExitPlanMode` |
+| `WebSearch`, `WebFetch` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG) and the main text of a page |
+| `Agent`, `SendMessage`, `Workflow` | sub-agents with a clean context and orchestration of several of them |
+| `ToolSearch`, `Skill` | the less common tools are announced by name only and loaded on demand; skills are named sets of instructions |
+| `git`, `terminal`, `recall`, `remember`, `howto`, `install_package`, `download_file`, `read_log` | still available by name; `terminal` is a persistent shell session in a pty, `recall` and `remember` a persistent memory in `~/.katana/memoria.txt` |
 | MCP tools | any [Model Context Protocol](https://modelcontextprotocol.io) server (stdio or streamable HTTP), listed as `server__tool` |
 
 **Finding things in code.** The default tool set (the one the model is trained on, `docs/tools.md`) has one search entry point,
