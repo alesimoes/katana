@@ -428,7 +428,7 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
     if (rc == 0) {          /* contagem para o status (arquivo texto ao lado do armazenamento; nao altera o formato) */
         char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir);
         FILE *f = fopen(fp, "wb");
-        if (f) { fprintf(f, "%d %d %d\n", S->ignored, S->ignored_heur, 1); fclose(f); }
+        if (f) { fprintf(f, "%d %d %d\n", S->ignored, S->ignored_heur, 1); fclose(f); chmod(fp, 0600); }
     }
     return rc;
 }

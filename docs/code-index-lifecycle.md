@@ -1152,6 +1152,18 @@ scripts with count asserts). Each wave is merged into `main` before the next sta
 | 8. Housekeeping and failure paths | `katana coder ignored`, `include`, `exclude` and the ignored block of `status` (D.10); `list`, `forget`, `gc` (home index only) and the daily automatic `gc`; retiring absorbed home roots; version mismatch → rebuild, newer store → leave and report; corruption → quarantine and rebuild; scrub at the end of a run; disk-full pause; inline fallback caps; read-only home path | Truncating a segment file by hand leads, on the next query, to the "damaged" line and a complete index shortly after; `katana coder forget` leaves no file for a home root; `gc --dry-run` lists what it would remove and never names an initialized folder's store; `katana coder ignored` in a project with `node_modules` lists it with rule, file count and bytes, and after `katana coder include node_modules/x` that folder is searchable | 1.5 |
 | 9. Documents and training note | Update `docs/tools.md`, `docs/code-intelligence.md` (2.4, 2.6, 8.6), `docs/extending.md` (init), `docs/handoff.md`, `docs/plan.md`, README (init, environment table); record in `docs/curriculum.md` the requirements for the v8 curriculum: a family for the `tree` action (J.5), the status lines (J.2), the two `NOT FOUND` forms (J.3) and the scoped include through `path`; `docs/tools.md` gets `tree` and the ignore rules; N4 summaries left as a described, switched-off option | Documents describe the behavior that exists | 1 |
 
+**Phase 1 status (2026-11-23): built and compiled; nothing measured.** `src/coder/indexctl.c` holds `index_ensure`, `index_due`/`index_validated`
+(a second consumer, the Find cache, uses the same state), `index_touch` (Edit, Write, MultiEdit and NotebookEdit through `ct_f_save`; Bash sets a
+"tree may have changed" flag unless the command is a simple read), the per-process cache of `CsView`/`SyView` (4 slots, valid while the MANIFEST
+does not change) and the counters shown by `KATANA_FIND_TIME`. Implementer decisions: (1) `index_ensure` updates in process instead of spawning
+`katana coder index`, because a child that overruns the budget leaves the query with no index at all (the segment is published only at the end);
+the child pays off with the crawler of phase 3. (2) Until the session watcher exists (phase 4), a root is also revalidated when more than
+`KATANA_INDEX_SWEEP_S` seconds (default 10; 0 = every call, the old behavior) passed since its last walk; files printed in an answer are still re-read
+from disk. (3) The Find cache (`find-*.idx`) skips its own list-and-stat walk under the same rule. (4) The knowledge base is loaded once per process
+(`cs_kb_get`). (5) Store files are created 0600 and folders 0700; stores of older versions are fixed at the next write (`st_harden`); the Find cache
+too. (6) `autoindex_dir` spawns `katana coder index` once per folder per process. Not done in this phase: `agent/devtools.c` and `agent/tools.c`
+(older tool set) do not call `index_touch`.
+
 ### 5.2 The waves
 
 | Wave | Agents (in parallel) | Files each agent may edit | Days of the wave |

@@ -17,6 +17,7 @@ static const char CT_EDIT_PROPS[] =
     "each block being a line <<<<<<<, the old text, a line =======, the new text, a line >>>>>>>\"}";
 static const char CT_EDIT_REQ[] = "\"file_path\"";
 
+static void index_touch(const char *path);                   /* src/coder/indexctl.c */
 /* grava o arquivo (cria ou sobrescreve); 1 se foi, senao a mensagem em out */
 static int ct_f_save(const char *abs, const char *data, size_t n, char *out, size_t cap) {
     mkdir_parents(abs);
@@ -28,7 +29,8 @@ static int ct_f_save(const char *abs, const char *data, size_t n, char *out, siz
         return 0;
     }
     const size_t w = fwrite(data, 1, n, f);
-    if (fclose(f) != 0 || w != n) { snprintf(out, cap, "error: write to %s failed (%s)", abs, strerror(errno)); return 0; }
+    if (fclose(f) != 0 || w != n) { snprintf(out, cap, "error: write to %s failed (%s)", abs, strerror(errno)); index_touch(abs); return 0; }
+    index_touch(abs);          /* o indice do coder revalida a arvore na proxima consulta */
     return 1;
 }
 /* linhas first..last (1-based) de b, numeradas, para mostrar ao redor de uma mudanca */

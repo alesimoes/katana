@@ -178,10 +178,16 @@ static void store_strs_build(StoreBuf *b, const char **s, const uint32_t *len, u
 #else
 #define STORE_PATHSEP "/"
 #endif
+/* pastas e arquivos do indice so para o dono (0700/0600): o lexico e as assinaturas de simbolos carregam texto dos arquivos do usuario */
+#ifdef _WIN32
+#define ST_MKDIR(p) MKDIR(p)
+#else
+#define ST_MKDIR(p) mkdir((p), 0700)
+#endif
 static int st_mkdirs(const char *path) {
     char d[2048]; snprintf(d, sizeof d, "%s", path);
-    for (char *q = d + 1; *q; q++) if (*q == '/') { *q = 0; MKDIR(d); *q = '/'; }
-    MKDIR(d);
+    for (char *q = d + 1; *q; q++) if (*q == '/') { *q = 0; ST_MKDIR(d); *q = '/'; }
+    ST_MKDIR(d);
     struct stat st; return stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
 }
 static int st_read_file(const char *path, uint8_t **buf, size_t *len) {
@@ -207,7 +213,7 @@ static void st_fsync_dir(const char *dir) {
 /* grava um arquivo inteiro com fsync */
 static int st_write_file(const char *path, const void *data, size_t n) {
 #ifndef _WIN32
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return -1;
     const uint8_t *p = (const uint8_t *)data; size_t left = n;
     while (left) { ssize_t w = write(fd, p, left); if (w <= 0) { close(fd); return -1; } p += w; left -= (size_t)w; }
@@ -249,7 +255,7 @@ static void store_locate(const char *project, const char *module, char *out, siz
     const char *use = a;
     if (!local || st_mkdirs(a) != 0 || access(a, W_OK) != 0) { use = b; st_mkdirs(b); }
     char gi[4400]; snprintf(gi, sizeof gi, "%s/.gitignore", use);
-    if (stat(gi, &sv) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); } }
+    if (stat(gi, &sv) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); chmod(gi, 0600); } }
     snprintf(out, cap, "%s", use);
 }
 
@@ -444,6 +450,27 @@ typedef struct {
     int orphans_removed;
 } StoreWriter;
 
+/* armazenamento criado por versao antiga (0755/0644): passa para 0700/0600 na proxima gravacao; so mexe se a pasta ou o LOCK tem bit de grupo/outros */
+static void st_harden(const char *dir) {
+#ifndef _WIN32
+    struct stat sv; char p[4700];
+    snprintf(p, sizeof p, "%s/LOCK", dir);
+    const int dl = stat(dir, &sv) == 0 && (sv.st_mode & 077), fl = stat(p, &sv) == 0 && (sv.st_mode & 077);
+    if (!dl && !fl) return;
+    chmod(dir, 0700);
+    const char *sub[2] = {"", "/seg"};
+    for (int k = 0; k < 2; k++) {
+        char d[4600]; snprintf(d, sizeof d, "%s%s", dir, sub[k]); if (k) chmod(d, 0700);
+        DIR *dh = opendir(d); if (!dh) continue;
+        struct dirent *e;
+        while ((e = readdir(dh))) { if (e->d_name[0] == '.') continue; char f[4700]; snprintf(f, sizeof f, "%s/%s", d, e->d_name); if (stat(f, &sv) == 0 && S_ISREG(sv.st_mode)) chmod(f, 0600); }
+        closedir(dh);
+    }
+    snprintf(p, sizeof p, "%s/tmp", dir); chmod(p, 0700);
+#else
+    (void)dir;
+#endif
+}
 /* devolve 0 (ok), 1 (outro escritor ativo: use so leitura) ou -1 (erro, em err) */
 static int store_writer_begin(const char *dir, StoreWriter **out, char *err, size_t ecap) {
     *out = NULL;
@@ -454,8 +481,9 @@ static int store_writer_begin(const char *dir, StoreWriter **out, char *err, siz
     if (st_mkdirs(dir) != 0) { snprintf(err, ecap, "nao foi possivel criar %s", dir); return -1; }
     snprintf(p, sizeof p, "%s/seg", dir); st_mkdirs(p);
     snprintf(p, sizeof p, "%s/tmp", dir); st_mkdirs(p);
+    st_harden(dir);
     snprintf(p, sizeof p, "%s/LOCK", dir);
-    int fd = open(p, O_RDWR | O_CREAT, 0644);
+    int fd = open(p, O_RDWR | O_CREAT, 0600);
     if (fd < 0) { snprintf(err, ecap, "LOCK: %s", strerror(errno)); return -1; }
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) { close(fd); snprintf(err, ecap, "outro processo esta escrevendo"); return 1; }
     StoreWriter *w = (StoreWriter *)calloc(1, sizeof *w);

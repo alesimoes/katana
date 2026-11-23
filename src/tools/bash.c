@@ -320,6 +320,8 @@ static const char CT_BASH_PROPS[] =
     "\"description\": {\"type\": \"string\", \"description\": \"Clear, concise description of what this command does, in 5-10 words\"}, "
     "\"run_in_background\": {\"type\": \"boolean\", \"description\": \"Set to true to run this command in the background; read its output file later with Read\"}";
 static const char CT_BASH_REQ[] = "\"command\"";
+static void index_tree_changed(void);                       /* src/coder/indexctl.c */
+static int index_bash_may_change(const char *cmd);
 static void ct_bash(const char *js, const char *end, char *out, size_t cap) {
     char *cmd = ct_str(js, end, "command");
     if (!cmd || !cmd[strspn(cmd, " \t\r\n")]) { free(cmd); snprintf(out, cap, "error: missing command (the shell command to run)"); return; }
@@ -334,6 +336,7 @@ static void ct_bash(const char *js, const char *end, char *out, size_t cap) {
     if (!agent_act(what, cmd)) { free(cmd); snprintf(out, cap, "error: the user denied this action"); return; }
     if (ct_bool(js, end, "run_in_background")) ctb_background(cmd, 0, "Command", out, cap);
     else ct_bash_run(cmd, tmo, out, cap);
+    if (index_bash_may_change(cmd)) index_tree_changed();      /* o indice do coder revalida a arvore na proxima consulta (comandos de leitura simples nao contam) */
     free(cmd);
 }
 
