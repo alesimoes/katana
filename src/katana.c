@@ -80,7 +80,7 @@
 #include "tools/multiedit.c"           /* Rename, Replace, Patch: mudancas em varios lugares de uma vez */
 #include "tools/webfetch.c"
 #include "tools/websearch.c"
-#include "tools/tasks.c"               /* TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet */
+#include "tools/tasks.c"               /* TodoWrite */
 #include "tools/askuserquestion.c"
 #include "tools/planmode.c"            /* EnterPlanMode, ExitPlanMode */
 #include "tools/agent.c"

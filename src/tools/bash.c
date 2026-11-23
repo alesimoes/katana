@@ -313,7 +313,7 @@ static const char CT_BASH_DESC[] =
     "timeout is in milliseconds (default 120000, max 600000); a command still running at the timeout is moved to the "
     "background and you get its task ID and output file. Use run_in_background for servers and long jobs; read the output "
     "file with Read and stop it with TaskStop. Large output is saved to a file and you get its path and a preview. "
-    "Prefer Read, Edit, Glob and Grep over cat, sed, find and grep for files.";
+    "Prefer Read, Edit, Find and Grep over cat, sed, find and grep for files.";
 static const char CT_BASH_PROPS[] =
     "\"command\": {\"type\": \"string\", \"description\": \"The command to execute\"}, "
     "\"timeout\": {\"type\": \"number\", \"description\": \"Optional timeout in milliseconds (max 600000)\"}, "

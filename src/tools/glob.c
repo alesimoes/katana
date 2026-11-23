@@ -1,18 +1,6 @@
-/* ---------- ferramenta Glob (ver docs/tools.md) ----------
- * Tambem guarda o que o Grep reaproveita: casamento de padroes (* ** ? [..] {a,b}), lista de arquivos com data,
+/* ---------- apoio de arquivos (a ferramenta Glob foi removida, ver docs/tools-review.md) ----------
+ * Guarda o que o Grep e o UIOE usam: casamento de padroes (* ** ? [..] {a,b}), lista de arquivos com data,
  * caminhada de pastas e texto crescente (CtSb). */
-static const char CT_GLOB_DESC[] =
-    "Find files by name pattern. Supports ** (any depth), * and ? (within one path segment), [abc] / [a-z] and "
-    "{a,b} alternatives, e.g. \"**/*.{ts,tsx}\" or \"src/**/test_*.c\". A pattern without a slash and without a "
-    "leading **/ only matches files directly inside `path`; start it with **/ to match at any depth. Returns "
-    "absolute file paths sorted by modification time (newest first), at most 100 (the result says how many more "
-    "matched). Gitignored files are NOT skipped; the .git folder is. Use this to locate files by name; use Grep to "
-    "search file contents.";
-static const char CT_GLOB_PROPS[] =
-    "\"pattern\": {\"type\": \"string\", \"description\": \"The glob pattern to match files against\"}, "
-    "\"path\": {\"type\": \"string\", \"description\": \"The folder to search in. Defaults to the current working folder. Omit it for the default; do not pass \\\"undefined\\\" or \\\"null\\\".\"}";
-static const char CT_GLOB_REQ[] = "\"pattern\"";
-
 /* ---- texto crescente ---- */
 typedef struct { char *p; size_t n, cap; } CtSb;
 static void ct_sb_add(CtSb *b, const char *s, size_t l) {
@@ -151,70 +139,13 @@ static int ct_dir_arg(const char *path, int want_dir_only, char *res, size_t rca
     if (!agent_read_access(path, 1, res, rcap, err, sizeof err)) {
         struct stat t;
         if (strncmp(err, "error: cannot open", 18) == 0 && stat(path, &t) != 0)
-            snprintf(out, cap, "error: path does not exist: %s. Check the spelling, or call Glob on a parent folder to see what is there.", path);
+            snprintf(out, cap, "error: path does not exist: %s. Check the spelling, or list the parent folder with Bash ls to see what is there.", path);
         else snprintf(out, cap, "%s", err);
         return 0;
     }
     if (stat(res, st) != 0) { snprintf(out, cap, "error: path does not exist: %s", path); return 0; }
-    if (want_dir_only && !S_ISDIR(st->st_mode)) { snprintf(out, cap, "error: path is not a directory: %s. Pass the containing folder in `path` and the file name in `pattern`.", path); return 0; }
+    if (want_dir_only && !S_ISDIR(st->st_mode)) { snprintf(out, cap, "error: path is not a directory: %s. Pass the containing folder.", path); return 0; }
     return 1;
 }
 
-static int ct_glob_keep(void *ctx, const char *rel, const char *name) {
-    (void)name;
-    return ct_gmatch((const char *)ctx, rel, rel);
-}
 #endif
-
-static void ct_glob(const char *js, const char *end, char *out, size_t cap) {
-#ifdef _WIN32
-    (void)js; (void)end; snprintf(out, cap, "error: not available on Windows yet");
-#else
-    if (cap < 300) { if (cap) out[0] = 0; return; }
-    char *pat = ct_str(js, end, "pattern"), *path = ct_str(js, end, "path");
-    char res[4200];
-    struct stat st;
-    if (!pat || !*pat) { snprintf(out, cap, "error: missing `pattern`. Example: {\"pattern\": \"**/*.c\"}"); goto done; }
-    if ((!path || !*path) && ct_cwd_is_home() && strncmp(pat, "**/", 3) == 0) {
-        snprintf(out, cap, "error: the working folder is your home folder, not a project, so a search of everything in it would only return files of other programs. "
-                 "Set `path` to the folder of the project the user means (the user may have named it: find where it is with Bash, for example find / -maxdepth 4 -type d -name NAME 2>/dev/null), or use a narrower pattern.");
-        goto done;
-    }
-    if (!ct_dir_arg(path, 1, res, sizeof res, &st, out, cap)) goto done;
-    {
-        const char *p = pat;
-        while (p[0] == '.' && p[1] == '/') p += 2;
-        if (p[0] == '/') {      /* padrao absoluto: vale se estiver dentro de path */
-            const size_t bl = strlen(res);
-            if (strncmp(p, res, bl) == 0 && p[bl] == '/') p += bl + 1;
-            else { snprintf(out, cap, "error: absolute pattern is outside the search folder %s. Use a relative pattern, or set `path`.", res); goto done; }
-        }
-        CtFiles f; memset(&f, 0, sizeof f);
-        ct_walk(&f, res, "", 0, 0, ct_glob_keep, (void *)p);
-        qsort(f.v, (size_t)f.n, sizeof(CtFile), ct_cmp_mt);
-        if (f.n == 0) snprintf(out, cap, "No files found");
-        else {
-            CtSb sb = {0};
-            int shown = 0;
-            const size_t lim = cap - 260;
-            for (int i = 0; i < f.n && i < 100; i++) {
-                const size_t l = strlen(f.v[i].path);
-                if (sb.n + l + 1 > lim) break;
-                ct_sb_add(&sb, f.v[i].path, l); ct_sb_add(&sb, "\n", 1);
-                shown++;
-            }
-            if (shown < f.n) {
-                char tail[240];
-                snprintf(tail, sizeof tail, "(Results are truncated: showing %d of %d%s matching files. Use a more specific `pattern` or `path` to narrow the search.)",
-                         shown, f.n, f.full ? "+" : "");
-                ct_sb_puts(&sb, tail);
-            } else if (sb.n) sb.p[--sb.n] = 0;
-            snprintf(out, cap, "%s", sb.p ? sb.p : "");
-            free(sb.p);
-        }
-        ct_files_free(&f);
-    }
-done:
-    free(pat); free(path);
-#endif
-}
