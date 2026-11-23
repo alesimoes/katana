@@ -328,6 +328,29 @@ static int coder_kb_load(const char *dir, CoderKb *kb) {
     return kb->nerr ? -1 : 0;
 }
 
+/* libera tudo o que coder_kb_load alocou (a pasta `project` e do chamador); deixa kb zerado, com project e quiet como estavam */
+static void coder_kb_free(CoderKb *kb) {
+    for (int i = 0; i < kb->ncon; i++) { KbConcept *c = &kb->con[i]; free(c->id); free(c->category); free(c->canonical); free(c->source); free(c->note); }
+    for (int i = 0; i < kb->nterm; i++) free(kb->term[i].term);
+    for (int i = 0; i < kb->nact; i++) free(kb->act[i]);
+    for (int i = 0; i < kb->nrel; i++) free(kb->rel[i].id);
+    for (int i = 0; i < kb->nop; i++) { free(kb->op[i].name); free(kb->op[i].category); }
+    for (int i = 0; i < kb->nverb; i++) free(kb->verb[i].w);
+    for (int i = 0; i < kb->npat; i++) free(kb->pat[i]);
+    for (int i = 0; i < kb->nant; i++) free(kb->ant[i]);
+    for (int i = 0; i < kb->nabbr; i++) free(kb->abbr[i].abbr);
+    for (int i = 0; i < kb->nexp; i++) free(kb->exp[i]);
+    for (int i = 0; i < kb->nname; i++) { free(kb->name[i].glob); free(kb->name[i].op); free(kb->name[i].role); }
+    for (int i = 0; i < kb->nsuf; i++) { free(kb->suf[i].suf); free(kb->suf[i].rep); }
+    for (int i = 0; i < kb->nirr; i++) { free(kb->irr[i].form); free(kb->irr[i].canon); }
+    for (int i = 0; i < kb->nedge; i++) { free(kb->edge[i].name); free(kb->edge[i].note); }
+    for (int i = 0; i < kb->nfile; i++) free(kb->file[i].path);
+    free(kb->con); free(kb->term); free(kb->act); free(kb->rel); free(kb->op); free(kb->verb); free(kb->pat); free(kb->ant); free(kb->abbr); free(kb->exp);
+    free(kb->name); free(kb->suf); free(kb->irr); free(kb->edge); free(kb->file);
+    free(kb->ix_term); free(kb->ix_verb); free(kb->ix_abbr); free(kb->ix_irr); free(kb->ix_con); free(kb->ix_op);
+    const char *proj = kb->project; const int quiet = kb->quiet; memset(kb, 0, sizeof *kb); kb->project = proj; kb->quiet = quiet;
+}
+
 /* ---------- consultas ---------- */
 static int kb_lower(const KbIx *v, int n, const char *key) { int lo = 0, hi = n; while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(v[m].key, key) < 0) lo = m + 1; else hi = m; } return lo; }
 

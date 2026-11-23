@@ -367,8 +367,9 @@ static void fgs_neighbor_note(const char *name, const char *js, const char *end,
         if (r[0] == '/') { if (strncmp(r, cwd, cl) != 0 || r[cl] != '/') { free(fp); return; } r += cl + 1; }
         while (r[0] == '.' && r[1] == '/') r += 2;
         const uint64_t h = *r ? fs_hash_rel(F, r) : 0; const int nd = *r ? fgs_find(G, h) : -1;
+        const int vazio = !*r;           /* r aponta para dentro de fp: ler antes de liberar */
         free(fp);
-        if (!*r) return;
+        if (vazio) return;
         const int seen = fgs_in(g_fgs_read, g_fgs_nread, h);
         fgs_put(g_fgs_read, &g_fgs_nread, 1024, h);
         if (nd < 0 || (seen && lim > 0 && lim <= 80)) return;

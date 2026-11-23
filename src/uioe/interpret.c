@@ -354,7 +354,8 @@ static void uioe_interpret(UioeCtx *cx, const char *text_in, UioeAsk *a) {
     /* 6. termos, conceitos, idioma */
     { CoderKb kb; memset(&kb, 0, sizeof kb); kb.quiet = 1;       /* base de conhecimento: so leitura, sem avisos; sem ela os conceitos ficam vazios */
       coder_kb_load(coder_kb_default_dir(), &kb);
-      ui_terms(a, work, &kb); }
+      ui_terms(a, work, &kb);
+      coder_kb_free(&kb); }                 /* ui_terms copia o que usa para a.concept; a base nao fica viva depois do pedido */
     if (!strcmp(a->lang, "?")) {      /* poucas palavras: cumprimentos e respostas curtas que o tokenizador nao classifica */
         static const char *const ptw[] = {"bom", "dia", "boa", "tarde", "noite", "oi", "ola", "obrigado", "obrigada", "valeu", "sim", "nao", "pode", "continua", "beleza", NULL};
         static const char *const enw[] = {"good", "morning", "evening", "afternoon", "hello", "hi", "hey", "thanks", "thank", "yes", "continue", "okay", "ok", NULL};
