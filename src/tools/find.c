@@ -1495,7 +1495,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                 else if (!cpre || qk == FQ_QUOTED) {
                     const int part = idx_scope_partial(root, pre); char ign[460] = ""; if (!(CH && qk != FQ_NATURAL)) ign_notfound_note(root, pre, ign, sizeof ign);      /* a camada do coder ja disse onde nao olhou */      /* J.3: "so far" e onde o indice nao olhou */
                     snprintf(m, sizeof m, "No match%s for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code."
-                             "%s%s", part ? " so far" : "", q, *pre ? " in " : "", pre, ign[0] ? " " : "", ign);
+                             "%s%s\n", part ? " so far" : "", q, *pre ? " in " : "", pre, ign[0] ? " " : "", ign);      /* \n: a linha NOT FOUND do coder vinha colada no fim da frase */
                     ct_sb_puts(&sb, m);
                 }
             } else {

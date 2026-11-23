@@ -1,5 +1,5 @@
 #!/bin/sh
-# Testa as ferramentas Glob e Grep (src/tools/filewalk.c, grep.c). Uso: sh tools/tooltest/search.sh ./katana
+# Testa a ferramenta Grep (src/tools/filewalk.c, grep.c); a busca de arquivos por nome (Find) fica em find.sh. Uso: sh tools/tooltest/search.sh ./katana
 # Nao compila nada; cria uma pasta temporaria e remove no fim. O Grep usa sempre o motor proprio (src/tools/regex.c;
 # a sintaxe em detalhe fica em regex.sh), entao cada verificacao roda uma vez por modo de listagem (git e sem git).
 # Tambem cobre as tolerancias do Grep, o .gitignore fora de repositorio git e o tempo de uma busca simples em src/.
@@ -35,35 +35,9 @@ mkfix() {   # cria a arvore de teste em $D
     touch -d '2026-01-04 10:00:00' "$D/many/f7.txt"
 }
 
-# ---------------- Glob ----------------
+# ---------------- pasta de teste com git (a Glob saiu; as buscas de nome ficam no Find, em find.sh) ----------------
 D=$T/g; mkdir -p "$D"; mkfix; D=$(cd "$D" && pwd -P)
 ( cd "$D" && git init -q . && git add .gitignore )
-chk "Glob *.c so na pasta" "$D/a.c" "$(run Glob '{"pattern":"*.c"}')"
-chk "Glob **/*.py profundidade" "$D/sub/c.py" "$(run Glob '{"pattern":"**/*.py"}')"
-chk "Glob {c,h} ordem por data (mais novo primeiro)" "$D/b.h
-$D/a.c" "$(run Glob '{"pattern":"*.{c,h}"}')"
-chk "Glob **/*.{json,py} (c.py mais novo)" "$D/sub/c.py
-$D/sub/deep/d.json" "$(run Glob '{"pattern":"**/*.{json,py}"}')"
-chk "Glob com pasta no padrao" "$D/sub/deep/d.json" "$(run Glob '{"pattern":"sub/**/*.json"}')"
-chk "Glob sem ** nao desce" "No files found" "$(run Glob '{"pattern":"*.json"}')"
-chk "Glob classe [ab]" "$D/b.h
-$D/a.c" "$(run Glob '{"pattern":"[ab].*"}')"
-chk "Glob ? e negacao [!a]" "$D/b.h" "$(run Glob '{"pattern":"[!a].?"}')"
-chk "Glob nada" "No files found" "$(run Glob '{"pattern":"**/*.zzz"}')"
-chk "Glob path" "$D/sub/c.py" "$(run Glob '{"pattern":"*.py","path":"sub"}')"
-chk "Glob path absoluto" "$D/sub/c.py" "$(run Glob "{\"pattern\":\"*.py\",\"path\":\"$D/sub\"}")"
-chk "Glob nao pula gitignored" "$D/ignored.log" "$(run Glob '{"pattern":"**/*.log"}')"
-chk "Glob pula .git" "No files found" "$(run Glob '{"pattern":"**/HEAD"}')"
-chk "Glob path inexistente" "error: path does not exist: nope. Check the spelling, or call Glob on a parent folder to see what is there." "$(run Glob '{"pattern":"*","path":"nope"}')"
-chk "Glob path e arquivo" "error: path is not a directory: a.c. Pass the containing folder in \`path\` and the file name in \`pattern\`." "$(run Glob '{"pattern":"*","path":"a.c"}')"
-chk "Glob sem pattern" "error: missing \`pattern\`. Example: {\"pattern\": \"**/*.c\"}" "$(run Glob '{}')"
-chk "Glob path undefined = padrao" "$D/a.c" "$(run Glob '{"pattern":"*.c","path":"undefined"}')"
-R=$(run Glob '{"pattern":"many/*.txt"}')
-chk "Glob limite 100: linhas" "101" "$(printf '%s\n' "$R" | wc -l | tr -d ' ')"
-chk "Glob limite 100: mais novo primeiro" "$D/many/f7.txt" "$(printf '%s\n' "$R" | head -1)"
-chk "Glob limite 100: aviso" "(Results are truncated: showing 100 of 105 matching files. Use a more specific \`pattern\` or \`path\` to narrow the search.)" "$(printf '%s\n' "$R" | tail -1)"
-chk "Glob padrao absoluto dentro de path" "$D/sub/c.py" "$(run Glob "{\"pattern\":\"$D/sub/*.py\"}")"
-chk "Glob ferramenta antiga continua" "a.c" "$(run glob '{"pattern":"*.c"}' | head -1)"
 
 # ---------------- Grep (mesmas verificacoes numa pasta com git e numa sem git) ----------------
 LIM='(Output limited to 1 entries starting at offset 0; more results exist. Use offset=1 to continue, or narrow with path, glob or type.)'
@@ -148,8 +122,8 @@ a.c" "$(run Grep '{"pattern":"main()"}')"
     chk "$L dica de caixa (contagem)" "No matches found; 3 matches when ignoring case: pass \"-i\": true" "$(run Grep '{"pattern":"Todo"}')"
     chk "$L dica de filtro glob" "No matches found in the files selected by \`glob\`; without that filter there is 1 match in 1 file: .h (1 file). Change or drop the filter." "$(run Grep '{"pattern":"define","glob":"*.c"}')"
     chk "$L dica de filtro type" "No matches found in the files selected by \`type\`; without that filter there are 2 matches in 2 files: .c (1 file), .py (1 file). Change or drop the filter." "$(run Grep '{"pattern":"TODO","type":"json"}')"
-    chk "$L path com nome unico" "error: path does not exist: deep. Check the spelling, or call Glob on a parent folder to see what is there. There is exactly one \"deep\" under the working folder: sub/deep" "$(run Grep '{"pattern":"k","path":"deep"}')"
-    chk "$L path errado com arquivo unico" "error: path does not exist: x/c.py. Check the spelling, or call Glob on a parent folder to see what is there. There is exactly one \"c.py\" under the working folder: sub/c.py" "$(run Grep '{"pattern":"k","path":"x/c.py"}')"
+    chk "$L path com nome unico" "error: path does not exist: deep. Check the spelling, or list the parent folder with Bash ls to see what is there. There is exactly one \"deep\" under the working folder: sub/deep" "$(run Grep '{"pattern":"k","path":"deep"}')"
+    chk "$L path errado com arquivo unico" "error: path does not exist: x/c.py. Check the spelling, or list the parent folder with Bash ls to see what is there. There is exactly one \"c.py\" under the working folder: sub/c.py" "$(run Grep '{"pattern":"k","path":"x/c.py"}')"
     chk "$L alias include" "Found 1 file
 sub/c.py" "$(run Grep '{"pattern":"TODO","include":"*.py"}')"
     chk "$L alias case_insensitive" "Found 3 files
@@ -182,7 +156,7 @@ notes.txt:3:gamma" "$(run Grep '{"pattern":"^beta\\n^gamma$","multiline":true,"o
     chk "$L CRLF: \$ antes do \\r" "crlf.txt:1:end here" "$(run Grep '{"pattern":"here$","path":"crlf.txt","output_mode":"content"}')"
     chk "$L sem pattern" "error: missing \`pattern\`. Example: {\"pattern\": \"TODO\", \"output_mode\": \"content\"}" "$(run Grep '{}')"
     chk "$L output_mode invalido" "error: output_mode must be \"files_with_matches\", \"content\" or \"count\", not \"zzz\"" "$(run Grep '{"pattern":"x","output_mode":"zzz"}')"
-    chk "$L path inexistente" "error: path does not exist: nope. Check the spelling, or call Glob on a parent folder to see what is there." "$(run Grep '{"pattern":"x","path":"nope"}')"
+    chk "$L path inexistente" "error: path does not exist: nope. Check the spelling, or list the parent folder with Bash ls to see what is there." "$(run Grep '{"pattern":"x","path":"nope"}')"
     chk "$L binario ignorado mesmo direto" "No matches found" "$(run Grep '{"pattern":"TODO","path":"bin.dat"}')"
     chk "$L booleano como texto (-i \"true\")" "Found 3 files
 b.h

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Teste das ferramentas TodoWrite, TaskCreate/Update/List/Get, AskUserQuestion, EnterPlanMode, ExitPlanMode.
+# Teste das ferramentas TodoWrite, TaskStop, AskUserQuestion, EnterPlanMode, ExitPlanMode.
 # Uso: sh tools/tooltest/tasks.sh /caminho/do/katana
 # Nao compila nada. Respostas ao usuario entram por pipe: sem KATANA_UI a entrada nao e terminal (ninguem responde);
 # com KATANA_UI=1 vale o protocolo da interface (marcador CHOICE na saida, resposta na linha "\001ANS texto").
@@ -45,53 +45,17 @@ has "TodoWrite item nao e objeto" "error: todos[0] must be an object" "$(t TodoW
 has "TodoWrite sem todos" "error: todos must be an array" "$(t TodoWrite '{}')"
 has "TodoWrite todos texto vira um passo (forma em linhas)" "Todos updated: 1 tasks (0 completed, 0 in progress, 1 pending)." "$(t TodoWrite '{"todos":"a, b"}')"
 has "TodoWrite todos numero continua recusado" "error: todos must be an array" "$(t TodoWrite '{"todos":3}')"
-chk "TodoWrite erro nao altera a lista" "#1 [pending] x" "$(t TodoWrite '{"todos":[{"content":"x","status":"pending","activeForm":"X"}]}' TodoWrite '{"todos":[{"content":"y","status":"bad","activeForm":"Y"}]}' TaskList '{}' | tail -n 1)"
-has "TodoWrite texto com aspas e acentos" 'He said "hi" cafe' "$(t TodoWrite '{"todos":[{"content":"He said \"hi\" cafe","status":"pending","activeForm":"A"}]}' TaskList '{}')"
+chk "TodoWrite erro nao altera a lista (so um marcador TODO)" "1" "$(KATANA_UI=1 "$K" tool TodoWrite '{"todos":[{"content":"x","status":"pending","activeForm":"X"}]}' TodoWrite '{"todos":[{"content":"y","status":"bad","activeForm":"Y"}]}' 2>/dev/null </dev/null | grep -c "${SOH}TODO")"
+has "TodoWrite texto com aspas e acentos" 'He said "hi" cafe' "$(t TodoWrite '{"todos":[{"content":"He said \"hi\" cafe","status":"pending","activeForm":"A"}]}')"
 
-# ---------- TaskCreate / Update / List / Get (mesmo processo para dividir a lista) ----------
-o=$(t TaskCreate '{"subject":"First","description":"do first","activeForm":"Doing first"}' TaskCreate '{"subject":"Second","description":"do second"}' TaskList '{}')
-chk "TaskCreate dois, TaskList" "=== TaskCreate
-Task #1 created: First
-=== TaskCreate
-Task #2 created: Second
-=== TaskList
-#1 [pending] First
-#2 [pending] Second" "$o"
-o=$(t TaskCreate '{"subject":"A","description":"d"}' TaskUpdate '{"taskId":"1","status":"in_progress"}' TaskGet '{"taskId":"1"}')
-has "TaskUpdate in_progress" "Task #1 updated: A [in_progress]" "$o"
-has "TaskGet campos" "id: 1
-subject: A
-status: in_progress
-activeForm: A
-description: d" "$o"
-o=$(t TaskCreate '{"subject":"A","description":"d"}' TaskUpdate '{"taskId":1,"subject":"A2","description":"d2","activeForm":"Doing A2","status":"completed"}' TaskGet '{"taskId":"#1"}')
-has "TaskUpdate campos (id numero)" "Task #1 updated: A2 [completed]" "$o"
-has "TaskGet id com # e campos novos" "subject: A2
-status: completed
-activeForm: Doing A2
-description: d2" "$o"
-o=$(t TaskCreate '{"subject":"A","description":"d"}' TaskCreate '{"subject":"B","description":"d"}' TaskUpdate '{"taskId":"1","status":"deleted"}' TaskCreate '{"subject":"C","description":"d"}' TaskList '{}')
-has "TaskUpdate deleted" "Task #1 deleted. 1 tasks left." "$o"
-has "ids estaveis depois de apagar" "Task #3 created: C" "$o"
-has "lista depois de apagar" "#2 [pending] B
-#3 [pending] C" "$o"
-no  "apagada some da lista" "#1 [pending] A" "$o"
-has "dois em andamento avisa" "Warning: more than one" "$(t TaskCreate '{"subject":"A","description":"d"}' TaskCreate '{"subject":"B","description":"d"}' TaskUpdate '{"taskId":"1","status":"in_progress"}' TaskUpdate '{"taskId":"2","status":"in_progress"}')"
-chk "TaskList vazia" "No tasks." "$(t TaskList '{}')"
-has "TaskCreate sem subject" "error: subject is required" "$(t TaskCreate '{"description":"x"}')"
-has "TaskUpdate id desconhecido lista ids" "error: no task with id 9. Valid ids: 1, 2" "$(t TaskCreate '{"subject":"A","description":"d"}' TaskCreate '{"subject":"B","description":"d"}' TaskUpdate '{"taskId":"9","status":"completed"}')"
-has "TaskGet id desconhecido" "error: no task with id 5. Valid ids: none, the list is empty" "$(t TaskGet '{"taskId":"5"}')"
-has "TaskGet sem taskId" "error: taskId is required" "$(t TaskGet '{}')"
-has "TaskGet id nao numerico" 'error: taskId "abc" is not a number' "$(t TaskGet '{"taskId":"abc"}')"
-has "TaskUpdate status invalido" 'error: status "done" is invalid; use pending, in_progress, completed or deleted' "$(t TaskCreate '{"subject":"A","description":"d"}' TaskUpdate '{"taskId":"1","status":"done"}')"
-has "TaskUpdate subject vazio" "error: subject cannot be empty" "$(t TaskCreate '{"subject":"A","description":"d"}' TaskUpdate '{"taskId":"1","subject":""}')"
-# TodoWrite e Task* dividem a lista; ids novos a cada TodoWrite
-o=$(t TodoWrite "$W" TaskUpdate '{"taskId":"3","status":"completed"}' TaskList '{}')
-has "TodoWrite depois TaskUpdate" "#3 [completed] Write docs" "$o"
-# marcador igual ao do todo antigo apos Task*
-o=$(KATANA_UI=1 "$K" tool TaskCreate '{"subject":"One","description":"d"}' TaskCreate '{"subject":"Two","description":"d"}' TaskUpdate '{"taskId":"1","status":"completed"}' 2>/dev/null </dev/null | grep "${SOH}TODO" | tail -n 1)
-chk "marcador TODO apos TaskUpdate" "${SOH}TODO [x] One\\n[ ] Two\\n" "$o"
-o=$(KATANA_UI=1 "$K" tool TaskCreate '{"subject":"One","description":"d"}' TaskUpdate '{"taskId":"1","status":"deleted"}' 2>/dev/null </dev/null | grep "${SOH}TODO" | tail -n 1)
+# ---------- TaskStop (as ferramentas TaskCreate/Update/List/Get sairam; so TodoWrite guarda o plano) ----------
+has "TaskStop sem tarefa" "error: missing task_id. No background task is running." "$(t TaskStop '{}')"
+for gone in TaskCreate TaskUpdate TaskList TaskGet Glob Rename Replace Patch; do
+    chk "$gone nao existe mais" "error: unknown tool $gone" "$(t $gone '{}')"
+done
+o=$(KATANA_UI=1 "$K" tool TodoWrite '{"todos":[{"content":"One","status":"completed","activeForm":"O"},{"content":"Two","status":"pending","activeForm":"T"}]}' 2>/dev/null </dev/null | grep "${SOH}TODO" | tail -n 1)
+chk "marcador TODO" "${SOH}TODO [x] One\\n[ ] Two\\n" "$o"
+o=$(KATANA_UI=1 "$K" tool TodoWrite '{"todos":[]}' 2>/dev/null </dev/null | grep "${SOH}TODO" | tail -n 1)
 chk "marcador TODO com lista vazia" "${SOH}TODO " "$o"
 
 # ---------- AskUserQuestion ----------
@@ -162,7 +126,7 @@ has "cancelado mantem o modo" "the user gave no answer (cancelled)" "$o"
 no  "cancelado nao desliga" "${SOH}MODE normal" "$o"
 
 # ---------- dispatcher normal (uma ferramenta) e modo plano ----------
-has "uma ferramenta pelo despacho normal" "Task #1 created: Solo" "$(t TaskCreate '{"subject":"Solo","description":"d"}')"
+has "uma ferramenta pelo despacho normal" "Todos updated: 1 tasks" "$(t TodoWrite '{"todos":[{"content":"Solo","status":"pending","activeForm":"S"}]}')"
 # chamada em XML: a lista chega como texto com o JSON dentro; a ferramenta recebe a lista
 has "TodoWrite com a lista em texto" "Todos updated: 2 tasks (0 completed, 1 in progress, 1 pending)" "$(t TodoWrite '{"todos": "[{\"content\": \"ler\", \"status\": \"pending\"}, {\"content\": \"corrigir\", \"status\": \"in_progress\"}]"}')"
 has "AskUserQuestion com a lista em texto" "Qual? -> A" "$(u "${SOH}ANS A" AskUserQuestion '{"questions": "[{\"question\": \"Qual?\", \"options\": [{\"label\": \"A\"}, {\"label\": \"B\"}]}]"}' | grep -v "$SOH")"
