@@ -153,6 +153,11 @@ Response:
 > brings confirmations back, and they then arrive as `permission` events). The server refuses to start in this mode
 > when it is reachable from the network without `KATANA_API_KEY`. Treat the key like an SSH key.
 
+The built-in web page (`GET /`) uses this endpoint by itself: on load it calls `GET /v1/agent/sessions`; if it answers,
+the page drives the agent (tool cards, plan, questions, permissions, context meter), otherwise it stays a plain chat.
+A 401 makes it ask for the key (kept in `sessionStorage` only, sent as `Authorization: Bearer`). `tools/web-mock/`
+has a stand-in server to look at it without a model.
+
 Server-side tools: the client sends messages; katana's own agent (the loop the desktop app drives) works on the
 server machine with its tools and streams what it does.
 
