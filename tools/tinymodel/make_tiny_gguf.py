@@ -55,7 +55,7 @@ def kv_arr_i32(k, vals):
     return s(k) + struct.pack("<I", 9) + struct.pack("<IQ", 5, len(vals)) + b"".join(struct.pack("<i", v) for v in vals)
 
 
-def main():
+def make_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=1)
@@ -71,7 +71,29 @@ def main():
     ap.add_argument("--kv", type=int, default=4, help="key/value heads (fewer than 4 = grouped-query attention)")
     ap.add_argument("--vision", action="store_true", help="adds the image start and end tokens at the end of the vocabulary")
     ap.add_argument("--gpu", action="store_true", help="qwen35moe with the dimensions the Vulkan graph needs")
-    a = ap.parse_args()
+    ap.add_argument("--dim", type=int, default=0, help="embedding width (default 64; a multiple of 256 lets the K-quant types apply)")
+    ap.add_argument("--pre", default="default", help="tokenizer.ggml.pre written to the file (katana convert writes qwen35)")
+    ap.add_argument("--round", default="none", choices=["none", "bf16", "f16"],
+                    help="round every weight to this precision, so a checkpoint stored in it holds exactly the same values (used by tools/convert)")
+    return ap
+
+
+def round_values(vals, kind):
+    if kind == "none":
+        return vals
+    if kind == "f16":
+        return list(struct.unpack("<%de" % len(vals), struct.pack("<%de" % len(vals), *vals)))
+    out = []
+    for v in vals:                    # bf16: the top 16 bits of the float32, rounded to nearest even
+        x = struct.unpack("<I", struct.pack("<f", v))[0]
+        x = (x + 0x7FFF + ((x >> 16) & 1)) & 0xFFFF0000
+        out.append(struct.unpack("<f", struct.pack("<I", x))[0])
+    return out
+
+
+def build(a):
+    """Returns (kvs, tensors, info): the GGUF key-values, the tensors [(name, dims, values)] and the facts a Hugging Face
+    checkpoint writer needs (tokens, merges, token types, template, special ids, dimensions)."""
     rnd = random.Random(a.seed)
 
     b2u = bytes_to_unicode()
@@ -102,6 +124,7 @@ def main():
 
     dim, heads, hidden, layers, ctx = 64, 4, 128, 2, 512
     if a.gpu: dim = 128
+    if a.dim: dim = a.dim
     A, kvh = a.arch, a.kv
     kvd = dim // heads * kvh
     hd = dim // heads
@@ -145,7 +168,7 @@ def main():
            kv_u32(A + ".ssm.time_step_rank", nv), kv_u32(A + ".ssm.inner_size", inner), kv_u32(A + ".full_attention_interval", 2),
            kv_u32(A + ".rope.dimension_count", hd // 2), kv_u32(A + ".attention.key_length", hd)] if hyb else []),
         kv_str("tokenizer.ggml.model", "gpt2"),
-        kv_str("tokenizer.ggml.pre", "default"),
+        kv_str("tokenizer.ggml.pre", a.pre),
         kv_arr_str("tokenizer.ggml.tokens", tokens),
         kv_arr_i32("tokenizer.ggml.token_type", types),
         kv_arr_str("tokenizer.ggml.merges", merges),
@@ -249,6 +272,18 @@ def main():
             tensors += [(p + "attn_q.bias", [dim], rand(dim, 0.1)), (p + "attn_k.bias", [kvd], rand(kvd, 0.1)),
                         (p + "attn_v.bias", [kvd], rand(kvd, 0.1))]
 
+    if a.round != "none":
+        tensors = [(n, d, round_values(v, a.round)) for n, d, v in tensors]
+    info = dict(tokens=tokens, types=types, merges=merges, tmpl=tmpl, eos=eos, bos=tokens.index("<|endoftext|>"), V=V, dim=dim,
+                heads=heads, kvh=kvh, hd=hd, hidden=hidden, layers=layers, ctx=ctx, E=E, used=a.used, He=He, Hs=Hs, dk=dk, ng=ng, nv=nv,
+                dv=dv, CK=CK, inner=inner, CH=CH, arch=A, hyb=hyb, moe=moe, dense=a.dense)
+    return kvs, tensors, info
+
+
+def main():
+    a = make_parser().parse_args()
+    kvs, tensors, info = build(a)
+    V = info["V"]
     head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kvs)) + b"".join(kvs)
     info, data, off = b"", b"", 0
     for name, dims, vals in tensors:
