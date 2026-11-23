@@ -445,6 +445,25 @@ static void loop_plan_note(char *result, size_t cap, const char *name, int pl_ca
  * muda coisas (qualquer uma fora da lista de leitura) zera a tabela: depois dela a mesma leitura pode dar outro resultado, e ai
  * vale a leitura por diferenca (facts.c). KATANA_REPEAT_NOTE=0 desliga ---- */
 static uint64_t rr_sig[128]; static int rr_step[128], rr_reps[128], rr_n, rr_total;
+/* ---- ao comecar a trabalhar numa pasta (abrir o agente, /cd): o indice do coder dela (Find e Symbols) e criado ou atualizado em segundo plano,
+ * num processo a parte (katana coder index <pasta>), para a primeira pergunta nao pagar o custo. Nao na home nem em /. KATANA_AUTOINDEX=0 desliga ---- */
+#ifndef _WIN32
+#include <spawn.h>
+extern char **environ;
+static void autoindex_start(void) {
+    const char *e = getenv("KATANA_AUTOINDEX"); if (e && atoi(e) == 0) return;
+    char cwd[1500], h[1100], exe[1100];
+    if (!getcwd(cwd, sizeof cwd)) return;
+    agent_home(h, sizeof h);
+    if (!strcmp(cwd, "/") || !strcmp(cwd, h)) return;
+    const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1); if (n <= 0) return; exe[n] = 0;
+    char *argv[] = {"sh", "-c", "\"$0\" coder index \"$1\" >/dev/null 2>&1 &", exe, cwd, NULL};      /* o sh sai logo; o indexador fica solto em segundo plano */
+    pid_t pid;
+    if (posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ) == 0) { int st; waitpid(pid, &st, 0); fprintf(stderr, "[indexando a pasta em segundo plano para o Find e a Symbols]\n"); }
+}
+#else
+static void autoindex_start(void) {}
+#endif
 static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); }
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
@@ -550,6 +569,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     ct_mail_register(); atexit(ct_mail_unregister);     /* outras sessoes do katana nesta maquina podem mandar mensagem (SendMessage) */
 #define AGENT_SYS() do { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); } while (0)
     if (g_resume_path[0] && !g_sess_path[0]) snprintf(g_sess_path, sizeof g_sess_path, "%s", g_resume_path);
+    autoindex_start();
     if (cml && !g_resume_path[0]) { AGENT_SYS(); pfx_warm(m, sys); }     /* motor aquecido antes da primeira mensagem */
     for (int rs = 1;; rs = 0) {
         if (rs && g_resume_path[0]) snprintf(line, sizeof line, "/resume %s", g_resume_path);
@@ -570,7 +590,7 @@ static int agent(Model *m, int max_tokens, float temp) {
 #ifdef _WIN32
             if (_chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; mcpx_cwd_sync(); }
 #else
-            if (chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; mcpx_cwd_sync(); }
+            if (chdir(tp) != 0) fprintf(stderr, "[cd: cannot open %s]\n", tp); else { trust_init(); cd_note = 1; mcpx_cwd_sync(); autoindex_start(); }
 #endif
             continue;
         }
