@@ -30,7 +30,7 @@ and put a useful agent on top.**
   search, web fetch, persistent memory, MCP), guaranteed-valid JSON through a grammar-constrained sampler,
   context compaction, and a persistent prefix cache so the (long) system prompt is processed once.
 
-### Measured on a laptop (RTX 3050 4 GB, i7-11800H, 64 GB RAM, Linux, Vulkan)
+### Measured on a laptop (RTX 3050 4 GB, i7-11800H, 64 GB RAM, Linux, Vulkan; measurements of 2026-11-15 to 2026-11-22)
 
 | Model | Size on disk | Generation |
 |---|---|---|
@@ -178,6 +178,11 @@ deadline overrun get **nothing**: the model sees the request exactly as typed. T
 documents note; the system prompt never changes, so the prefix cache stays valid. It is on by default (`KATANA_UIOE=pack`); `KATANA_UIOE=off`
 turns it off. `katana uioe ask --pack "<request>"` prints the block that would be injected, with no model. New, and not measured: the model
 has not been trained for the block yet.
+
+**The code index.** `katana init` in a folder makes it an index root; a crawler, started on demand and gone when it finishes, builds the index in
+levels (tree, text, symbols, links) so queries are useful early and never walk the tree. A session watches the folders it uses, files cited in an
+answer are re-read, and everything the index leaves out (heavy folders, `.gitignore`, secrets, binary files) is listed with its reason by
+`katana coder ignored` and can be included. `katana coder status|tree|list|gc|...`: see [`docs/coder.md`](docs/coder.md). Built; not measured yet.
 
 Context management: the agent compacts its own context (the model summarizes, tool results are shrunk), keeps the
 KV cache and the hot-expert state per session, and resumes old sessions without recomputing when it can.
@@ -345,6 +350,9 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 | [`docs/comparisons.md`](docs/comparisons.md) | every comparison table (against the reference engine and between katana versions) |
 | [`docs/handoff.md`](docs/handoff.md) | current state, next steps, open items, how to resume work |
 | [`docs/console.md`](docs/console.md) | the `katana` command: install, console in a project, model choice, sessions, slash commands, headless mode (JSON contract), `adopt` |
+| [`docs/coder.md`](docs/coder.md) | the code index and the `katana coder` / `katana init` commands: entry point of the module |
+| [`docs/code-index-lifecycle.md`](docs/code-index-lifecycle.md) | how the index is placed, built, kept fresh, bounded and shown to the model; storage format |
+| [`docs/uioe.md`](docs/uioe.md) | the layer before the model: interpret, classify, route, retrieve, build the context block |
 | [`docs/code-intelligence.md`](docs/code-intelligence.md) | the code intelligence module (`katana coder`): design, parsers, search, structural queries |
 | [`docs/tools.md`](docs/tools.md) | the agent's tools and how `Find` and `Symbols` decide and answer |
 | [`docs/plan.md`](docs/plan.md) | priorities and done-criteria |
