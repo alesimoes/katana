@@ -1970,6 +1970,61 @@ Safeguards:
 
 katana itself is the natural first test of the `comment` method: Portuguese comments over English identifiers.
 
+### 12.4a Knowledge states, the learning score and the vocabulary commands
+
+Added from an external proposal (CBI-SSE) after comparing it with this design. Only the ideas that were not already
+here; its storage (WAL, B+ trees, binary `.dat` knowledge files), fixed score weights and unit-test plan are left out
+on purpose (this design keeps the base as editable text and uses segments, section 2.2).
+
+**Four states for a learned association.** They extend the `mined.kb` rows of 12.4; the state is a column of the row.
+
+| State | Meaning | Where it lives | Used in ranking |
+|---|---|---|---|
+| `discovered` | the term was seen in code, comments, logs, configuration or docs; not yet tied to a concept | `mined.kb`, no concept | no |
+| `candidate` | a hypothesis: term -> existing concept, with its evidence count | `mined.kb`, weight 0.30 to 0.50 | yes, as a `conceptual` match, always marked as a hypothesis |
+| `validated` | several independent kinds of evidence agree (below) | `mined.kb`, weight capped at 0.50 | yes, same cap |
+| `confirmed` | the owner promoted it, or an explicit rule or seed row states it | the project's domain file | yes, with the weight the owner chose |
+
+Rules: a learned row **never replaces silently** a `confirmed`, `seed` or `domain` row; a conflict is listed by
+`kb review` and nothing is overwritten. A rejected pair is stored as an `X` row so it is not proposed again.
+
+**Learning score.** One number per candidate, kept with its four parts so the evidence can be shown:
+
+```
+learn = 0.30 N + 0.25 S + 0.25 R + 0.20 U          each part in 0..1, learn in 0..1
+N  names:       the term appears in identifiers/comments next to the concept's own terms
+S  structure:   it is a parameter, field or type of symbols that the analyzers tie to the concept's entity
+R  relations:   the symbols that use it are linked by calls, writes or events to symbols of the concept
+U  user:        confirmation; 0 until the owner acts, so without U a row cannot exceed 0.80
+```
+
+The weights are experimental (nothing was measured in this phase). The rule that matters is not the numbers:
+**similar names alone are one kind of evidence**, and a row needs at least two kinds (N plus S or R) to reach
+`validated`. Example: `available_quantity` found as a field of `Product` (S) and read by the symbols that reserve
+and release stock (R) is a candidate for `INVENTORY_UPDATE`; seen only next to the word "stock" in a comment (N) it
+stays `discovered`.
+
+**Commands** (extend `katana coder kb`):
+
+```
+katana coder kb vocab show <term>            the rows for the term: concept, state, weight, the evidence behind each
+katana coder kb vocab confirm <term> <CONCEPT> [weight]   promote to the project's domain file (the only path to `confirmed`)
+katana coder kb vocab reject <term> <CONCEPT>             write the X row
+```
+
+Every confirm and reject is appended with a date to `<project>/.katana/coder/kb/vocab.log` (text, append-only), which
+is the history; it also lets a rebuilt `mined.kb` keep the owner's decisions.
+
+**Relevance and confidence are two outputs.** A result carries `relevance` (how well it answers the request: the
+fused rank of 12.6) and `confidence` (how reliable the relations that put it there are: `exact`, `derived`,
+`probable`, from 1.2, lowered one grade when the path crosses a `candidate` or `validated` row). They are shown
+side by side and never merged into one number; the score is not a probability of being correct. A function whose name
+matches strongly but has no structural link therefore shows high relevance with `probable` confidence, and a
+connected implementation is not pushed below it by name similarity alone.
+
+**Safety.** Learning only extracts data and evidence. Text found in files (comments, docs, logs, strings) is never
+treated as an instruction, never loads code or plugins, and never changes a row's state by what it says.
+
 ### 12.5 How CSSE fits the rest of the design
 
 | Piece of this document | With CSSE |
