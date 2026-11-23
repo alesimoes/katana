@@ -268,6 +268,7 @@ static int store_man_parse(const uint8_t *p, size_t n, StoreManifest *m, char *e
     if (n < 40) { snprintf(err, ecap, "manifesto truncado"); return -1; }
     if (st_get_u32(p) != STORE_MAN_MAGIC) { snprintf(err, ecap, "manifesto: numero magico invalido"); return -1; }
     if (st_get_u32(p + 4) > STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u mais novo que este binario (%d)", st_get_u32(p + 4), STORE_FORMAT); return -1; }
+    if (st_get_u32(p + 4) < STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u mais antigo que este binario (%d); sera reconstruido", st_get_u32(p + 4), STORE_FORMAT); return -1; }
     if (store_hash64(p, n - 8, 0) != st_get_u64(p + n - 8)) { snprintf(err, ecap, "manifesto: checksum nao confere"); return -1; }
     m->gen = st_get_u64(p + 8); m->next_id = st_get_u64(p + 16); m->nseg = st_get_u32(p + 24);
     uint32_t rl = st_get_u32(p + 28); size_t at = 32;
