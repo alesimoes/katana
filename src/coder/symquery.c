@@ -20,6 +20,7 @@ typedef struct {
 typedef struct { const char *path; uint32_t plen; const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent, doc, lang; int seg; uint32_t row, rel; } SySym;
 typedef struct { const char *path; uint32_t plen; const char *name; uint32_t nl, kind, line, col, flags, from, doc, lang; int seg; uint32_t row; } SyRef;
 
+static void sy_mods_free(void);
 static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
     memset(v, 0, sizeof *v);
     store_locate(proj, "coder", v->dir, sizeof v->dir, 0);
@@ -47,6 +48,7 @@ static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
 }
 static void sy_view_close(SyView *v) {
     for (int s = 0; s < v->ns; s++) free(v->s[s].live);
+    sy_mods_free();
     free(v->s); store_live_free(&v->L); free(v->fbuf); free(v->fln); if (v->r) store_close(v->r); memset(v, 0, sizeof *v);
 }
 static const char *sy_root(const SyView *v) { return v->r->man.root; }
@@ -358,6 +360,360 @@ static int coder_def_main(int argc, char **argv) {
     sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
 }
 
+/* ---- deps ---- */
+static const char *const SY_EXT[] = {"", ".h", ".c", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".kt", ".java", ".go", ".rs", ".qml", ".sh", ".md", "/index.js", "/index.ts", "/index.tsx", "/index.jsx", "/index.mjs", "/__init__.py", "/mod.rs", NULL};
+/* ---- resolucao de imports por linguagem (modulo -> arquivo) ----
+ * Cada regra devolve os arquivos do conjunto indexado e a confianca; o mapa modulo->arquivo (namespaces/pacotes declarados pelos simbolos) e
+ * montado aqui, na consulta, a partir das secoes do indice (o formato do armazenamento nao muda). Sem regra que sirva, cai no casamento por
+ * caminho (sy_resolve_path). */
+typedef struct { char *k; StoreLiveDoc *d; } SyNsE;
+typedef struct { SyNsE *e; int n, cap; int built; char **gomod; char **godir; int ngo; } SyMods;
+static SyMods g_symods;     /* uma consulta por processo; zerado por sy_mods_free */
+static void sy_mods_free(void) { for (int i = 0; i < g_symods.n; i++) free(g_symods.e[i].k); free(g_symods.e); for (int i = 0; i < g_symods.ngo; i++) { free(g_symods.gomod[i]); free(g_symods.godir[i]); } free(g_symods.gomod); free(g_symods.godir); memset(&g_symods, 0, sizeof g_symods); }
+static uint32_t sy_dlang(const SyView *v, const StoreLiveDoc *d) { const SySec *x = &v->s[d->seg].x; return x->has && d->idx < x->docs.n ? st_get_u32(store_table_at(&x->docs, d->idx) + 16) : 0; }
+static StoreLiveDoc *sy_lookup(const SyView *v, const char *p, size_t l) { if (!l || l > 1500) return NULL; StoreLiveDoc *d = store_live_find(&v->L, p, l); return d && !d->dead ? d : NULL; }
+/* familia de linguagem: imports so resolvem para arquivos da mesma familia */
+static int sy_lfam(uint32_t l) { switch (l) { case CL_JAVA: case CL_KT: case CL_SCALA: case CL_GROOVY: return 1; case CL_C: case CL_CPP: case CL_OBJC: return 2; case CL_JS: case CL_TS: case CL_VUE: return 3; default: return 100 + (int)l; } }
+static void sy_pnorm(const char *in, char *out, size_t cap) {
+    char tmp[1500]; snprintf(tmp, sizeof tmp, "%s", in); char *seg[100]; int ns = 0;
+    for (char *p = strtok(tmp, "/"); p && ns < 100; p = strtok(NULL, "/")) { if (!strcmp(p, ".")) continue; if (!strcmp(p, "..")) { if (ns) ns--; continue; } seg[ns++] = p; }
+    out[0] = 0; for (int i = 0; i < ns; i++) { size_t l = strlen(out); snprintf(out + l, cap - l, "%s%s", i ? "/" : "", seg[i]); }
+}
+/* lookup de <dir>/<rel><sufixo>; dir termina em '/' ou e vazio */
+static StoreLiveDoc *sy_try(const SyView *v, const char *dir, const char *rel, const char *suf) {
+    char b[1500], n[1500]; snprintf(b, sizeof b, "%s%s%s", dir, rel, suf); sy_pnorm(b, n, sizeof n); return sy_lookup(v, n, strlen(n));
+}
+static int sy_ns_cmp(const void *a, const void *b) { return strcmp(((const SyNsE *)a)->k, ((const SyNsE *)b)->k); }
+static void sy_ns_add(const char *nm, uint32_t nl, StoreLiveDoc *d) {
+    if (!nl || nl > 300) return;
+    if (g_symods.n == g_symods.cap) { g_symods.cap = g_symods.cap ? g_symods.cap * 2 : 256; g_symods.e = (SyNsE *)realloc(g_symods.e, sizeof(SyNsE) * (size_t)g_symods.cap); }
+    char *k = (char *)malloc(nl + 1); size_t w = 0;
+    for (uint32_t i = 0; i < nl; i++) { char c = nm[i]; if (c == '\\' || c == '/') c = '.'; else if (c == ':' && i + 1 < nl && nm[i + 1] == ':') { c = '.'; i++; } k[w++] = c; }
+    k[w] = 0; g_symods.e[g_symods.n].k = k; g_symods.e[g_symods.n].d = d; g_symods.n++;
+}
+/* le "module x" de um go.mod do projeto */
+static void sy_go_mods(const SyView *v) {
+    for (int i = 0; i < v->L.n; i++) {
+        const StoreLiveDoc *d = &v->L.e[i]; if (d->dead || d->d.plen < 6) continue;
+        const char *p = d->d.path; uint32_t pl = d->d.plen; if (!(pl == 6 || p[pl - 7] == '/') || memcmp(p + pl - 6, "go.mod", 6)) continue;
+        char fp[4800]; snprintf(fp, sizeof fp, "%s/%.*s", sy_root(v), (int)pl, p); FILE *f = fopen(fp, "r"); if (!f) continue;
+        char ln[600]; char mod[400] = "";
+        while (fgets(ln, sizeof ln, f)) { char *q = ln; while (*q == ' ' || *q == '\t') q++; if (!strncmp(q, "module", 6) && (q[6] == ' ' || q[6] == '\t')) { q += 6; while (*q == ' ' || *q == '\t' || *q == '"') q++; size_t l = strcspn(q, " \t\r\n\""); if (l && l < sizeof mod) { memcpy(mod, q, l); mod[l] = 0; } break; } }
+        fclose(f); if (!mod[0]) continue;
+        g_symods.gomod = (char **)realloc(g_symods.gomod, sizeof(char *) * (size_t)(g_symods.ngo + 1)); g_symods.godir = (char **)realloc(g_symods.godir, sizeof(char *) * (size_t)(g_symods.ngo + 1));
+        g_symods.gomod[g_symods.ngo] = strdup(mod); char dd[1500]; snprintf(dd, sizeof dd, "%.*s", pl > 6 ? (int)pl - 6 : 0, p); g_symods.godir[g_symods.ngo] = strdup(dd); g_symods.ngo++;
+    }
+}
+static void sy_mods_build(const SyView *v) {
+    if (g_symods.built) return; g_symods.built = 1; sy_go_mods(v);
+    for (int s = 0; s < v->ns; s++) {
+        const SySec *x = &v->s[s].x; if (!x->has) continue;
+        for (uint32_t r = 0; r < x->syms.n; r++) {
+            const uint8_t *q = store_table_at(&x->syms, r); uint32_t kind = st_get_u32(q + 4), doc = st_get_u32(q + 44); if (doc >= v->s[s].sd.t.n || !v->s[s].live[doc]) continue;
+            uint32_t lang = doc < x->docs.n ? st_get_u32(store_table_at(&x->docs, doc) + 16) : 0;
+            int ok = (kind == CK_NAMESPACE && lang != CL_RS && st_get_u32(q + 8) == SY_NONE) || (lang == CL_EX && kind == CK_CLASS);
+            if (!ok) continue;
+            StoreDoc sd; if (!store_docs_get(&v->s[s].sd, doc, &sd)) continue; StoreLiveDoc *ld = sy_lookup(v, sd.path, sd.plen); if (!ld) continue;
+            uint32_t nl; const char *nm = store_strs_get(&x->names, st_get_u32(q), &nl); sy_ns_add(nm, nl, ld);
+        }
+    }
+    if (g_symods.n) qsort(g_symods.e, (size_t)g_symods.n, sizeof(SyNsE), sy_ns_cmp);
+}
+/* documentos com o namespace exato; devolve quantos (ate cap) */
+static int sy_ns_find(const char *key, StoreLiveDoc **out, int cap, uint32_t fam) {
+    int lo = 0, hi = g_symods.n; while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(g_symods.e[m].k, key) < 0) lo = m + 1; else hi = m; }
+    int n = 0; for (int i = lo; i < g_symods.n && !strcmp(g_symods.e[i].k, key) && n < cap; i++) { int dup = 0; for (int j = 0; j < n; j++) if (out[j] == g_symods.e[i].d) dup = 1; if (!dup) out[n++] = g_symods.e[i].d; }
+    (void)fam; return n;
+}
+static int sy_doc_has_sym(const SyView *v, const StoreLiveDoc *d, const char *nm, size_t nl) {
+    const SySec *x = &v->s[d->seg].x; if (!x->has || d->idx >= x->docs.n) return 0;
+    const uint8_t *dr = store_table_at(&x->docs, d->idx); uint32_t s0 = st_get_u32(dr), n = st_get_u32(dr + 4);
+    for (uint32_t k = 0; k < n; k++) { uint32_t l; const char *s = store_strs_get(&x->names, st_get_u32(store_table_at(&x->syms, s0 + k)), &l); if (l == nl && !memcmp(s, nm, nl)) return 1; }
+    return 0;
+}
+static const char *sy_stem(const StoreLiveDoc *d, char *o, size_t cap) {
+    const char *p = d->d.path; uint32_t l = d->d.plen; uint32_t b = l; while (b && p[b - 1] != '/') b--;
+    uint32_t e = l; for (uint32_t i = b; i < l; i++) if (p[i] == '.') e = i; if (e == b) e = l;
+    snprintf(o, cap, "%.*s", (int)(e - b), p + b); return o;
+}
+static int sy_ext_is(const StoreLiveDoc *d, const char *ext) { size_t el = strlen(ext); return d->d.plen >= el && !memcmp(d->d.path + d->d.plen - el, ext, el); }
+static int sy_dir_is(const StoreLiveDoc *d, const char *dir, size_t dl) {      /* dir sem '/' final; arquivo diretamente nele */
+    if (d->d.plen <= dl + 1) return 0; if (dl && (memcmp(d->d.path, dir, dl) || d->d.path[dl] != '/')) return 0; return memchr(d->d.path + dl + (dl ? 1 : 0), '/', d->d.plen - dl - (dl ? 1 : 0)) == NULL;
+}
+/* sufixo de caminho em fronteira de '/': candidatos "<sufixo><ext>" para uma lista de extensoes; so arquivos da familia */
+static int sy_suffix_find(const SyView *v, const char *suf, const char *const *exts, uint32_t fam, StoreLiveDoc **out, int cap) {
+    size_t sl = strlen(suf); int n = 0; if (!sl) return 0;
+    for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead) continue;
+        for (int e = 0; exts[e]; e++) { size_t el = strlen(exts[e]), pl = d->d.plen; if (pl < sl + el) continue; if (memcmp(d->d.path + pl - el, exts[e], el)) continue;
+            const char *s = d->d.path + pl - el - sl; if (memcmp(s, suf, sl)) continue; if (s != d->d.path && s[-1] != '/') continue;
+            if (fam && sy_dlang(v, d) && (uint32_t)sy_lfam(sy_dlang(v, d)) != fam) continue; out[n++] = d; break; } }
+    return n;
+}
+static int sy_set_how(char *why, size_t cap, const char *fmt, int n) { snprintf(why, cap, fmt, n, n == 1 ? "" : "s"); return 1; }
+
+/* Python: ".b", "..", ".sub.c", "pkg.sub.c" */
+static int sy_res_py(const SyView *v, const char *from, size_t fl, const char *t, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
+    char dir[1500]; size_t dl = fl; while (dl && from[dl - 1] != '/') dl--; snprintf(dir, sizeof dir, "%.*s", (int)dl, from);
+    int dots = 0; while (t[dots] == '.') dots++;
+    char rest[600]; snprintf(rest, sizeof rest, "%s", t + dots); for (char *p = rest; *p; p++) if (*p == '.') *p = '/';
+    StoreLiveDoc *d = NULL;
+    if (dots) {
+        char base[1500]; snprintf(base, sizeof base, "%s", dir); for (int k = 1; k < dots; k++) { strcat(base, "../"); }
+        if (rest[0]) { if ((d = sy_try(v, base, rest, ".py")) || (d = sy_try(v, base, rest, "/__init__.py"))) { out[0] = d; *conf = 90; snprintf(why, wc, "relative Python import, module found next to the importing file or in a parent package"); return 1; } }
+        if (!rest[0] || strchr(t + dots, '.') == NULL) { if ((d = sy_try(v, base, "__init__", ".py"))) { out[0] = d; *conf = rest[0] ? 62 : 85; snprintf(why, wc, rest[0] ? "relative import of a name from the package: resolved to the package __init__.py (the name may be a submodule or an attribute)" : "relative import of the package itself (__init__.py)"); return 1; } }
+        return 0;
+    }
+    if (!rest[0]) return 0;
+    if ((d = sy_try(v, "", rest, ".py")) || (d = sy_try(v, "", rest, "/__init__.py"))) { out[0] = d; *conf = 82; snprintf(why, wc, "absolute Python import found from the project root"); return 1; }
+    if (!strchr(rest, '/')) return 0;      /* modulo de um segmento so vale na raiz (senao 'import pathlib' casaria com um pathlib.py do projeto)
+    */
+    static const char *const ex[] = {".py", "/__init__.py", NULL}; char suf[700]; int n = 0;
+    snprintf(suf, sizeof suf, "%s", rest); n = sy_suffix_find(v, suf, ex, sy_lfam(CL_PY), out, cap);
+    if (n) { *conf = n == 1 ? (strchr(rest, '/') ? 74 : 60) : 44; sy_set_how(why, wc, "Python module path found under a source folder; %d file%s match", n); return n; }
+    return 0;
+}
+
+/* Rust: crate::a::b, super::x, self::x, a::b, com chaves a::{b, c} */
+static StoreLiveDoc *sy_rs_modfile(const SyView *v, const char *d) {     /* arquivo do modulo cuja pasta e d (sem '/' final) */
+    StoreLiveDoc *x; char b[1500];
+    if ((x = sy_try(v, d, "/", "mod.rs"))) return x;
+    snprintf(b, sizeof b, "%s.rs", d); if ((x = sy_lookup(v, b, strlen(b)))) return x;
+    if ((x = sy_try(v, d, "/", "lib.rs"))) return x; if ((x = sy_try(v, d, "/", "main.rs"))) return x; return NULL;
+}
+static int sy_res_rs(const SyView *v, const char *from, size_t fl, const char *text, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
+    char t[700]; snprintf(t, sizeof t, "%s", text); char *brace = strchr(t, '{'); char inner[500] = ""; if (brace) { snprintf(inner, sizeof inner, "%s", brace + 1); *brace = 0; char *cb = strchr(inner, '}'); if (cb) *cb = 0; }
+    { size_t l = strlen(t); while (l && (t[l - 1] == ':' || t[l - 1] == '*')) t[--l] = 0; }
+    char *as = strstr(t, " as "); if (as) *as = 0;
+    char *seg[40]; int ns = 0; for (char *p = t; *p && ns < 40;) { seg[ns++] = p; char *q = strstr(p, "::"); if (!q) break; *q = 0; p = q + 2; }
+    if (!ns) return 0;
+    if (!strcmp(seg[0], "std") || !strcmp(seg[0], "core") || !strcmp(seg[0], "alloc")) return 0;
+    char fdir[1500]; size_t dl = fl; while (dl && from[dl - 1] != '/') dl--; snprintf(fdir, sizeof fdir, "%.*s", dl ? (int)dl - 1 : 0, from);      /* pasta do arquivo, sem '/' final */
+    const char *fb = from + dl; char mdir[1500];                      /* pasta do modulo deste arquivo */
+    if (!strcmp(fb, "mod.rs") || !strcmp(fb, "main.rs") || !strcmp(fb, "lib.rs")) snprintf(mdir, sizeof mdir, "%s", fdir);
+    else { char st[300]; snprintf(st, sizeof st, "%.*s", (int)(fl - dl > 3 ? fl - dl - 3 : 0), fb); snprintf(mdir, sizeof mdir, "%s%s%s", fdir, fdir[0] ? "/" : "", st); }
+    char croot[1500]; croot[0] = 0; int haveroot = 0;
+    { char cur[1500]; snprintf(cur, sizeof cur, "%s", fdir); for (int g = 0; g < 30; g++) { char b[1500]; snprintf(b, sizeof b, "%s%slib.rs", cur, cur[0] ? "/" : ""); StoreLiveDoc *a = sy_lookup(v, b, strlen(b)); snprintf(b, sizeof b, "%s%smain.rs", cur, cur[0] ? "/" : ""); StoreLiveDoc *m = sy_lookup(v, b, strlen(b));
+        if (a || m) { snprintf(croot, sizeof croot, "%s", cur); haveroot = 1; break; } char *sl = strrchr(cur, '/'); if (!sl) { if (!cur[0]) break; cur[0] = 0; continue; } *sl = 0; } }
+    char D[1500]; int k = 0, how = 0;
+    if (!strcmp(seg[0], "crate")) { if (!haveroot) return 0; snprintf(D, sizeof D, "%s", croot); k = 1; how = 1; }
+    else if (!strcmp(seg[0], "self")) { snprintf(D, sizeof D, "%s", mdir); k = 1; how = 2; }
+    else if (!strcmp(seg[0], "super")) { snprintf(D, sizeof D, "%s", mdir); while (k < ns && !strcmp(seg[k], "super")) { char *sl = strrchr(D, '/'); if (sl) *sl = 0; else D[0] = 0; k++; } how = 3; }
+    else { char b1[1500]; snprintf(b1, sizeof b1, "%s%s%s", mdir, mdir[0] ? "/" : "", seg[0]); char b2[1500]; snprintf(b2, sizeof b2, "%s%s%s.rs", mdir, mdir[0] ? "/" : "", seg[0]);
+        char b3[1500]; snprintf(b3, sizeof b3, "%s%s%s/mod.rs", mdir, mdir[0] ? "/" : "", seg[0]);
+        if (sy_lookup(v, b2, strlen(b2)) || sy_lookup(v, b3, strlen(b3))) { snprintf(D, sizeof D, "%s", mdir); k = 0; how = 4; }
+        else if (haveroot) { snprintf(b2, sizeof b2, "%s%s%s.rs", croot, croot[0] ? "/" : "", seg[0]); snprintf(b3, sizeof b3, "%s%s%s/mod.rs", croot, croot[0] ? "/" : "", seg[0]); if (sy_lookup(v, b2, strlen(b2)) || sy_lookup(v, b3, strlen(b3))) { snprintf(D, sizeof D, "%s", croot); k = 0; how = 5; } else return 0; }
+        else return 0; }
+    StoreLiveDoc *last = NULL; int resolved = 0;
+    for (; k < ns; k++) {
+        char b[1500]; StoreLiveDoc *x; snprintf(b, sizeof b, "%s%s%s.rs", D, D[0] ? "/" : "", seg[k]);
+        if ((x = sy_lookup(v, b, strlen(b)))) { last = x; resolved++; snprintf(b, sizeof b, "%s%s%s", D, D[0] ? "/" : "", seg[k]); snprintf(D, sizeof D, "%s", b); continue; }
+        snprintf(b, sizeof b, "%s%s%s/mod.rs", D, D[0] ? "/" : "", seg[k]);
+        if ((x = sy_lookup(v, b, strlen(b)))) { last = x; resolved++; snprintf(b, sizeof b, "%s%s%s", D, D[0] ? "/" : "", seg[k]); snprintf(D, sizeof D, "%s", b); continue; }
+        break;
+    }
+    int n = 0, all = k >= ns;
+    if (inner[0] && last != NULL) {      /* a::{b, c}: cada nome pode ser submodulo */
+        for (char *p = strtok(inner, ","); p && n < cap; p = strtok(NULL, ",")) { while (*p == ' ') p++; char nm[200]; size_t l = strcspn(p, ": "); if (!l || l >= sizeof nm) continue; memcpy(nm, p, l); nm[l] = 0; char b[1500]; StoreLiveDoc *x;
+            snprintf(b, sizeof b, "%s/%s.rs", D, nm); if ((x = sy_lookup(v, b, strlen(b)))) { out[n++] = x; continue; } snprintf(b, sizeof b, "%s/%s/mod.rs", D, nm); if ((x = sy_lookup(v, b, strlen(b)))) out[n++] = x; }
+        if (n) { *conf = 88; snprintf(why, wc, "Rust use path resolved through the module tree (crate/self/super and mod files)"); return n; }
+    }
+    if (!last) {     /* so crate/self/super: o proprio arquivo do modulo */
+        StoreLiveDoc *m = k >= ns || (how != 4 && how != 5) ? sy_rs_modfile(v, D) : NULL; if (!m) return 0; out[0] = m; *conf = 78; snprintf(why, wc, "Rust path names the module itself or an item of it; resolved to the module file"); return 1;
+    }
+    out[0] = last; *conf = all || resolved ? (all ? 90 : 78) : 70;
+    snprintf(why, wc, all ? "Rust use/mod path resolved through the module tree (crate/self/super and mod files)" : "Rust use path resolved through the module tree up to the module that holds the item (the item itself is a name in that file)");
+    return 1;
+}
+
+/* Go: "modulo/pkg": pasta do pacote dentro do projeto (go.mod) */
+static int sy_res_go(const SyView *v, const char *t, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
+    char dir[1500]; int have = 0, bymod = 0;
+    for (int i = 0; i < g_symods.ngo && !have; i++) { size_t ml = strlen(g_symods.gomod[i]);
+        if (!strncmp(t, g_symods.gomod[i], ml) && (t[ml] == 0 || t[ml] == '/')) { const char *gd = g_symods.godir[i]; size_t gl = strlen(gd); if (gl && gd[gl - 1] == '/') gl--; snprintf(dir, sizeof dir, "%.*s%s%s", (int)gl, gd, gl && t[ml] ? "/" : "", t[ml] ? t + ml + 1 : ""); have = 1; bymod = 1; } }
+    int n = 0, nt = 0;
+    if (have) {
+        size_t dl = strlen(dir); for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead || !sy_ext_is(d, ".go") || !sy_dir_is(d, dir, dl)) continue; if (sy_ext_is(d, "_test.go")) { nt++; continue; } out[n++] = d; }
+        if (n) { *conf = n == 1 ? 90 : 82; snprintf(why, wc, "Go import path under the module declared in go.mod; package folder with %d file%s", n, n == 1 ? "" : "s"); return n; }
+        return 0;
+    }
+    (void)bymod;
+    /* sem go.mod que sirva: o ultimo trecho do caminho (2 ou mais componentes) como pasta dentro do projeto */
+    int comps = 1; for (const char *p = t; *p; p++) if (*p == '/') comps++;
+    if (comps < 2) return 0;
+    for (int take = comps; take >= 2 && !n; take--) {
+        const char *s = t; for (int k = 0; k < comps - take; k++) s = strchr(s, '/') + 1; size_t sl = strlen(s);
+        for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead || !sy_ext_is(d, ".go") || sy_ext_is(d, "_test.go")) continue;
+            uint32_t b = d->d.plen; while (b && d->d.path[b - 1] != '/') b--; if (b < sl + 1 || memcmp(d->d.path + b - 1 - sl, s, sl) || (b - 1 - sl > 0 && d->d.path[b - 2 - sl] != '/')) continue; out[n++] = d; }
+    }
+    if (n) { *conf = n == 1 ? 55 : 48; snprintf(why, wc, "Go import path matched to a package folder by its trailing components; no go.mod names this module; %d file%s", n, n == 1 ? "" : "s"); }
+    return n;
+}
+
+/* linguagens de nome pontilhado: Java, Kotlin, Scala, Groovy, C#, Elixir, Clojure, PHP */
+static int sy_res_dotted(const SyView *v, uint32_t lang, const char *text, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
+    char t[600]; size_t w = 0; for (const char *p = text; *p && w < sizeof t - 1; p++) { char c = *p; if (c == '\\') c = '.'; else if (c == ':' && p[1] == ':') { c = '.'; p++; } t[w++] = c; } t[w] = 0;
+    while (w && (t[w - 1] == '.' || t[w - 1] == '*' || t[w - 1] == ';')) t[--w] = 0;
+    if (!strncmp(t, "static.", 7)) memmove(t, t + 7, strlen(t + 6));
+    if (!w || w > 400 || strchr(t, '/') || strchr(t, ' ') || strchr(t, '{') || strchr(t, ',')) return 0;
+    if (lang == CL_PHP && !strchr(t, '.') && 0) return 0;
+    uint32_t fam = (uint32_t)sy_lfam(lang);
+    sy_mods_build(v);
+    int n = 0;
+    /* 1. o texto inteiro e um namespace/modulo declarado (using A.B; alias My.Foo; (ns my.util); use App\Svc) */
+    if ((n = sy_ns_find(t, out, cap, fam))) { int ok = 0; for (int i = 0; i < n; i++) if ((uint32_t)sy_lfam(sy_dlang(v, out[i])) == fam) out[ok++] = out[i]; n = ok; if (n) { *conf = n == 1 ? 82 : 62; snprintf(why, wc, "name matches a namespace/module declared by %d indexed file%s", n, n == 1 ? "" : "s"); return n; } }
+    /* 2. prefixo e namespace e o ultimo trecho e um simbolo ou o nome do arquivo (import x.y.S; use App\Svc\Foo) */
+    char *dot = strrchr(t, '.');
+    if (dot) {
+        char pre[600]; snprintf(pre, sizeof pre, "%.*s", (int)(dot - t), t); const char *last = dot + 1;
+        StoreLiveDoc *cd[24]; int nc = sy_ns_find(pre, cd, 24, fam), best = 0; StoreLiveDoc *pick[24];
+        for (int i = 0; i < nc; i++) { if ((uint32_t)sy_lfam(sy_dlang(v, cd[i])) != fam) continue; char st[300]; if (sy_doc_has_sym(v, cd[i], last, strlen(last)) || !strcmp(sy_stem(cd[i], st, sizeof st), last)) pick[best++] = cd[i]; }
+        if (best) { n = best < cap ? best : cap; for (int i = 0; i < n; i++) out[i] = pick[i]; *conf = n == 1 ? 84 : 58; snprintf(why, wc, "namespace '%s' is declared by an indexed file that defines '%s'", pre, last); return n; }
+    }
+    /* 3. caminho derivado do nome (pacote = pasta): com/foo/Bar.java, a/b/C.kt */
+    static const char *const jx[] = {".java", ".kt", ".kts", ".scala", ".groovy", NULL}, *const cx[] = {".cs", NULL}, *const ex[] = {".ex", ".exs", NULL}, *const clx[] = {".clj", ".cljs", ".cljc", NULL}, *const px[] = {".php", NULL};
+    const char *const *exts = lang == CL_CS ? cx : lang == CL_EX ? ex : lang == CL_CLJ ? clx : lang == CL_PHP ? px : jx;
+    if (lang == CL_EX || lang == CL_CLJ) { /* Elixir: My.Foo -> my/foo.ex (minusculas); Clojure: my-util -> my_util */
+        for (char *p = t; *p; p++) { if (lang == CL_CLJ && *p == '-') *p = '_'; if (lang == CL_EX) *p = (char)tolower((unsigned char)*p); } }
+    char path[600]; snprintf(path, sizeof path, "%s", t); for (char *p = path; *p; p++) if (*p == '.') *p = '/';
+    for (int drop = 0; drop < 3 && !n; drop++) {
+        if (drop) { char *sl = strrchr(path, '/'); if (!sl) break; *sl = 0; }
+        n = sy_suffix_find(v, path, exts, fam, out, cap);
+        if (n) { *conf = (n == 1 ? 76 : 46) - drop * 6; snprintf(why, wc, "name mapped to a source path (package folders); %d file%s match", n, n == 1 ? "" : "s"); return n; }
+        if (lang != CL_KT && lang != CL_JAVA && lang != CL_SCALA && lang != CL_GROOVY) break;
+    }
+    return n;
+}
+
+/* uma linguagem por vez: devolve quantos arquivos resolveu (0 = sem regra ou sem acerto: segue o casamento por caminho) */
+static int sy_res_lang(const SyView *v, const char *from, size_t fl, uint32_t lang, const char *t, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
+    char dir[1500]; size_t dl = fl; while (dl && from[dl - 1] != '/') dl--; snprintf(dir, sizeof dir, "%.*s", (int)dl, from);
+    StoreLiveDoc *d;
+    switch (lang) {
+    case CL_PY: return sy_res_py(v, from, fl, t, out, cap, conf, why, wc);
+    case CL_RS: return sy_res_rs(v, from, fl, t, out, cap, conf, why, wc);
+    case CL_GO: sy_mods_build(v); return sy_res_go(v, t, out, cap, conf, why, wc);
+    case CL_JAVA: case CL_KT: case CL_SCALA: case CL_GROOVY: case CL_CS: case CL_EX: case CL_CLJ: return sy_res_dotted(v, lang, t, out, cap, conf, why, wc);
+    case CL_PHP:
+        if (strchr(t, '\\') || (!strchr(t, '/') && !strstr(t, ".php"))) return sy_res_dotted(v, lang, t, out, cap, conf, why, wc);
+        return 0;
+    case CL_RB:
+        if (t[0] != '.' && !strchr(t, ':')) { if ((d = sy_try(v, dir, t, ".rb")) || (d = sy_try(v, dir, t, ""))) { out[0] = d; *conf = 85; snprintf(why, wc, "require_relative/require text resolved relative to the importing file (.rb)"); return 1; }
+            static const char *const rx[] = {".rb", NULL}; char suf[400]; snprintf(suf, sizeof suf, "%s", t); int n = sy_suffix_find(v, suf, rx, sy_lfam(CL_RB), out, cap); if (n) { *conf = n == 1 ? 60 : 38; sy_set_how(why, wc, "require name matched as a .rb path suffix; %d file%s match", n); return n; } }
+        return 0;
+    case CL_DART:
+        if (!strncmp(t, "dart:", 5)) return 0;
+        if (!strncmp(t, "package:", 8)) { const char *p = strchr(t + 8, '/'); if (!p) return 0; char suf[600]; snprintf(suf, sizeof suf, "lib/%s", p + 1); static const char *const dx[] = {"", NULL}; int n = sy_suffix_find(v, suf, dx, sy_lfam(CL_DART), out, cap); if (!n) return 0; *conf = n == 1 ? 84 : 52; sy_set_how(why, wc, "package: import mapped to lib/ of an indexed package; %d file%s match", n); return n; }
+        if ((d = sy_try(v, dir, t, ""))) { out[0] = d; *conf = 90; snprintf(why, wc, "Dart import resolved relative to the importing file"); return 1; }
+        return 0;
+    case CL_SWIFT: {
+        char fam[300]; if (strlen(t) > 100 || strchr(t, '.')) return 0; int n = 0; (void)fam;
+        for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *x = &v->L.e[i]; if (x->dead || !sy_ext_is(x, ".swift")) continue; char st[300]; if (!strcmp(sy_stem(x, st, sizeof st), t)) out[n++] = x; }
+        if (n) { *conf = n == 1 ? 66 : 50; sy_set_how(why, wc, "Swift module name matched to a file of that name; %d file%s", n); return n; }
+        size_t tl = strlen(t);
+        for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *x = &v->L.e[i]; if (x->dead || !sy_ext_is(x, ".swift")) continue; uint32_t b = x->d.plen; while (b && x->d.path[b - 1] != '/') b--; if (b < tl + 2) continue; if (memcmp(x->d.path + b - 1 - tl, t, tl) || (b - 1 - tl > 0 && x->d.path[b - 2 - tl] != '/')) continue; out[n++] = x; }
+        if (n) { *conf = 60; sy_set_how(why, wc, "Swift module name matched to a folder of source files; %d file%s", n); }
+        return n; }
+    case CL_SH: {
+        if (t[0] != '$' && t[0] != '~') return 0;
+        const char *r = t; if (r[0] == '~') r++; else if (r[1] == '{') { r = strchr(r, '}'); if (!r) return 0; r++; } else if (r[1] == '(') return 0; else { r++; while (isalnum((unsigned char)*r) || *r == '_') r++; }
+        if (*r != '/') return 0; r++; while (r[0] == '.' && r[1] == '/') r += 2; if (!*r) return 0;
+        if ((d = sy_try(v, dir, r, ""))) { out[0] = d; *conf = 80; snprintf(why, wc, "script path with a variable prefix; resolved relative to the calling script's folder"); return 1; }
+        if ((d = sy_try(v, "", r, ""))) { out[0] = d; *conf = 76; snprintf(why, wc, "script path with a variable prefix; resolved from the project root"); return 1; }
+        static const char *const sx[] = {"", NULL}; int n = sy_suffix_find(v, r, sx, 0, out, cap); if (n) { *conf = n == 1 ? 58 : 36; sy_set_how(why, wc, "script path with a variable prefix; path suffix match; %d file%s match", n); }
+        return n; }
+    default: return 0;
+    }
+}
+
+/* casamento por caminho (js/ts/c e o que nao tem regra propria): devolve quantos e em *how 1 relativo ao arquivo, 2 sufixo de caminho */
+static int sy_resolve_path(const SyView *v, const char *from, uint32_t flen, uint32_t lang, const char *text, uint32_t tl, StoreLiveDoc **out, int cap, int *how) {
+    char t[600]; if (tl > 500) return 0; memcpy(t, text, tl); t[tl] = 0; *how = 0;
+    if (lang == CL_PY && t[0] != '.' && !strchr(t, '/')) for (char *p = t; *p; p++) if (*p == '.') *p = '/';
+    int relative = t[0] == '.' || lang == CL_C || lang == CL_CPP;
+    if (!strchr(t, '/') && !strchr(t, '.') && lang != CL_PY && lang != CL_GO && lang != CL_JAVA && lang != CL_KT) return 0;
+    char dir[600]; uint32_t dl = flen; while (dl && from[dl - 1] != '/') dl--;
+    snprintf(dir, sizeof dir, "%.*s", dl > 500 ? 500 : (int)dl, from);
+    char base[1200], norm[1200]; int n = 0;
+    for (int pass = 0; pass < 2 && !n; pass++) {
+        if (pass == 0) { if (!relative) continue; snprintf(base, sizeof base, "%s%s", dir, t); } else snprintf(base, sizeof base, "%s", t);
+        /* normaliza ./ e ../ */
+        char *seg[80]; int ns = 0; char tmp[1200]; snprintf(tmp, sizeof tmp, "%s", base);
+        for (char *p = strtok(tmp, "/"); p && ns < 80; p = strtok(NULL, "/")) { if (!strcmp(p, ".")) continue; if (!strcmp(p, "..")) { if (ns) ns--; continue; } seg[ns++] = p; }
+        norm[0] = 0; for (int i = 0; i < ns; i++) { size_t l = strlen(norm); snprintf(norm + l, sizeof norm - l, "%s%s", i ? "/" : "", seg[i]); }
+        for (int e = 0; SY_EXT[e] && !n; e++) { char cand[1300]; snprintf(cand, sizeof cand, "%s%s", norm, SY_EXT[e]); StoreLiveDoc *d = store_live_find(&v->L, cand, strlen(cand)); if (d && !d->dead) { out[n++] = d; *how = 1; } }
+    }
+    if (n) return n;
+    const char *suffix = norm[0] ? norm : t; size_t sl = strlen(suffix); if (!sl) return 0;
+    for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead) continue;
+        for (int e = 0; SY_EXT[e]; e++) { size_t el = strlen(SY_EXT[e]), pl = d->d.plen; if (pl < sl + el) continue; if (el && memcmp(d->d.path + pl - el, SY_EXT[e], el)) continue; if (!el && 0) continue;
+            const char *s = d->d.path + pl - el - sl; if (memcmp(s, suffix, sl)) continue; if (s != d->d.path && s[-1] != '/') continue; out[n++] = d; *how = 2; break; } }
+    return n;
+}
+#define SY_IMPCAP 64
+/* resolve o texto de um import para arquivos do conjunto indexado: primeiro a regra da linguagem (sy_res_lang: pacotes, modulos, namespaces, go.mod),
+   depois o casamento por caminho. *how: 1 relativo ao arquivo, 2 sufixo de caminho, 3 regra da linguagem (confianca e motivo em *conf e why) */
+static int sy_resolve_import(const SyView *v, const char *from, uint32_t flen, uint32_t lang, const char *text, uint32_t tl, StoreLiveDoc **out, int cap, int *how, int *conf, char *why, size_t wc) {
+    char t[600]; if (tl > 500) return 0; memcpy(t, text, tl); t[tl] = 0; *how = 0; *conf = 0; why[0] = 0;
+    int n = sy_res_lang(v, from, flen, lang, t, out, cap, conf, why, wc);
+    if (n) { *how = 3; return n; }
+    n = sy_resolve_path(v, from, flen, lang, text, tl, out, cap, how);
+    int own = lang == CL_PY || lang == CL_RS || lang == CL_GO || lang == CL_JAVA || lang == CL_KT || lang == CL_SCALA || lang == CL_GROOVY || lang == CL_CS || lang == CL_EX || lang == CL_CLJ || lang == CL_PHP || lang == CL_RB || lang == CL_DART || lang == CL_SWIFT || lang == CL_SH;
+    if (n && own) { int w = 0; for (int i = 0; i < n; i++) if (!sy_dlang(v, out[i]) || sy_lfam(sy_dlang(v, out[i])) == sy_lfam(lang)) out[w++] = out[i]; n = w; }
+    if (n && lang == CL_PY && *how == 2) n = 0;      /* os casos de Python por sufixo ja foram tentados com regra propria; o resto e modulo da biblioteca padrao ou de fora */
+    if (!n) { *how = 0; return 0; }
+    if (*how == 1) { *conf = n > 1 ? 60 : 85; snprintf(why, wc, "import text resolved relative to the importing file%s", n > 1 ? " (several extensions)" : ""); }
+    else { *conf = n == 1 ? 60 : 30; snprintf(why, wc, "path suffix match; %d file%s match", n, n == 1 ? "" : "s"); }
+    return n;
+}
+/* resolve um import (texto inteiro, depois cada pedaco separado por espaco) */
+static int sy_resolve_imp_text(const SyView *v, const char *from, uint32_t flen, uint32_t lang, const char *name, uint32_t nl, StoreLiveDoc **m, int cap, int *how, int *conf, char *why, size_t wc) {
+    char buf[600]; snprintf(buf, sizeof buf, "%.*s", nl < 590 ? (int)nl : 590, name);
+    int nm = sy_resolve_import(v, from, flen, lang, buf, (uint32_t)strlen(buf), m, cap, how, conf, why, wc);
+    if (!nm) { for (char *p = strtok(buf, " "); p && !nm; p = strtok(NULL, " ")) nm = sy_resolve_import(v, from, flen, lang, p, (uint32_t)strlen(p), m, cap, how, conf, why, wc); }
+    return nm;
+}
+/* quem importa o arquivo tg: varre as referencias de import dos documentos vigentes; pre-filtro barato pelas chaves do alvo (nome do arquivo, da pasta, namespaces) */
+typedef struct { SyRef f; int conf, nm; char why[100]; } SyImp;
+static void sy_key_norm(const char *s, size_t l, char *o, size_t cap) { size_t w = 0; for (size_t i = 0; i < l && w + 1 < cap; i++) { char c = (char)tolower((unsigned char)s[i]); if (c == '-') c = '_'; else if (c == '\\') c = '.'; o[w++] = c; } o[w] = 0; }
+static int sy_importers(SyView *v, const StoreLiveDoc *tg, SyImp **res) {
+    int ncap = 32, nres = 0; SyImp *out = (SyImp *)malloc(sizeof(SyImp) * (size_t)ncap);
+    const char *rel = tg->d.path; size_t rl = tg->d.plen;
+    char keys[12][200]; int nk = 0; char stem[200];
+    sy_stem(tg, stem, sizeof stem); sy_key_norm(stem, strlen(stem), keys[nk++], sizeof keys[0]);
+    if (!strcmp(stem, "lib") || !strcmp(stem, "main") || !strcmp(stem, "mod") || !strcmp(stem, "__init__") || !strcmp(stem, "index") || sy_dlang(v, tg) == CL_GO || sy_dlang(v, tg) == CL_SWIFT) { const char *bs = rel + rl; while (bs > rel && bs[-1] != '/') bs--; if (bs > rel + 1) { const char *de = bs - 1, *ds = de; while (ds > rel && ds[-1] != '/') ds--; if (de > ds) sy_key_norm(ds, (size_t)(de - ds), keys[nk++], sizeof keys[0]); } }
+    sy_mods_build(v);
+    for (int i = 0; i < g_symods.n && nk < 12; i++) if (g_symods.e[i].d == tg) sy_key_norm(g_symods.e[i].k, strlen(g_symods.e[i].k), keys[nk++], sizeof keys[0]);
+    int rootmod = !strcmp(stem, "lib") || !strcmp(stem, "main") || !strcmp(stem, "mod") || !strcmp(stem, "__init__") || !strcmp(stem, "index");
+    for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
+        for (uint32_t r = 0; r < c->x.refs.n; r++) {
+            const uint8_t *q = store_table_at(&c->x.refs, r); if (st_get_u32(q + 4) != CR_IMPORT || !c->live[st_get_u32(q + 24)]) continue;
+            uint32_t tl; const char *tx = store_strs_get(&c->x.names, st_get_u32(q), &tl);
+            uint32_t dl2 = st_get_u32(store_table_at(&c->x.docs, st_get_u32(q + 24)) + 16);
+            int hit = rootmod && (dl2 == CL_RS || dl2 == CL_PY);
+            if (!hit) { char ln[620]; sy_key_norm(tx, tl < 600 ? tl : 600, ln, sizeof ln); for (int k = 0; k < nk && !hit; k++) if (keys[k][0] && strstr(ln, keys[k])) hit = 1; }
+            if (!hit) continue;
+            SyRef f; sy_ref_at(v, s, r, &f); if (f.plen == rl && !memcmp(f.path, rel, rl)) continue;
+            StoreLiveDoc *m[SY_IMPCAP]; int how = 0, conf = 0; char why[100];
+            int nm = sy_resolve_imp_text(v, f.path, f.plen, f.lang, tx, tl, m, SY_IMPCAP, &how, &conf, why, sizeof why);
+            int ok = 0; for (int i = 0; i < nm; i++) if (m[i] == tg) ok = 1; if (!ok) continue;
+            if (nres == ncap) { ncap *= 2; out = (SyImp *)realloc(out, sizeof(SyImp) * (size_t)ncap); }
+            out[nres].f = f; out[nres].nm = nm; out[nres].conf = (how == 3 && nm > 1) ? (conf > 60 ? 60 : conf) : conf; snprintf(out[nres].why, sizeof out[nres].why, "%s", why); nres++;
+        }
+    }
+    *res = out; return nres;
+}
+/* arquivos que importam algum dos arquivos que definem o nome (ate 4 arquivos): um chamador nesses arquivos tem ligacao por import com a definicao */
+static int sy_link_build(SyView *v, const SySyms *d, SyImp **lk) {
+    int n = 0; *lk = NULL; const StoreLiveDoc *seen[4]; int ns = 0;
+    for (int i = 0; i < d->n && ns < 4; i++) {
+        if ((d->s[i].pack >> 16) & CSF_DECL) continue; StoreLiveDoc *t = sy_lookup(v, d->s[i].path, d->s[i].plen); if (!t) continue;
+        int dup = 0; for (int k = 0; k < ns; k++) if (seen[k] == t) dup = 1; if (dup) continue; seen[ns++] = t;
+        SyImp *im = NULL; int m = sy_importers(v, t, &im); if (!m) { free(im); continue; }
+        *lk = (SyImp *)realloc(*lk, sizeof(SyImp) * (size_t)(n + m)); memcpy(*lk + n, im, sizeof(SyImp) * (size_t)m); n += m; free(im);
+    }
+    return n;
+}
+static int sy_linked(const SyImp *lk, int n, const char *path, uint32_t pl) { for (int i = 0; i < n; i++) if (lk[i].f.plen == pl && !memcmp(lk[i].f.path, path, pl)) return 1; return 0; }
 /* ---- refs, callers, uses ---- */
 static int sy_refs_cmd(const char *cmd, const char *use, uint32_t mask, int argc, char **argv) {
     SyArgs a; SyView v; int rc = sy_start(cmd, use, argc, argv, &a, &v, 100); if (rc) return rc;
@@ -365,7 +721,7 @@ static int sy_refs_cmd(const char *cmd, const char *use, uint32_t mask, int argc
     if (nc) sy_cascade_note(&o, cand, nc, step);
     for (int c = 0; c < nc; c++) {
         size_t cl = strlen(cand[c].name); SySyms d = {0}; sy_defs_of(&v, cand[c].name, cl, &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
-        SyRefs r = {0}; sy_refs_of(&v, cand[c].name, cl, mask, &r);
+        SyRefs r = {0}; sy_refs_of(&v, cand[c].name, cl, mask, &r); SyImp *lk = NULL; int nlk = r.n ? sy_link_build(&v, &d, &lk) : 0;
         for (int i = 0; i < r.n; i++) {
             const SyRef *f = &r.r[i]; total++; if (items.n >= a.limit) continue;
             SyItem *it = sy_item_new(&items); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col;
@@ -376,17 +732,19 @@ static int sy_refs_cmd(const char *cmd, const char *use, uint32_t mask, int argc
             it->ver = sy_verify(&v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
             if (f->kind == CR_IMPORT) { it->ver = 0; it->conf = 70; snprintf(it->how, sizeof it->how, "import statement text"); }
             else {
-                int adj = ndef == 0 ? -25 : 0, nd = same ? 1 : ndef;
+                int linked = !same && ndef > 1 && sy_linked(lk, nlk, f->path, f->plen);      /* o arquivo do chamador importa o arquivo da definicao */
+                int adj = ndef == 0 ? -25 : 0, nd = same || linked ? 1 : ndef;
                 it->conf = sy_conf(cand[c].step, nd, it->ver, adj);
                 const char *ver = it->ver > 0 ? "line verified" : "line NOT verified";
                 if (ndef == 0) snprintf(it->how, sizeof it->how, "name only; no definition in the indexed set; %s", ver);
                 else if (same) snprintf(it->how, sizeof it->how, "name match in same file as a definition; %s", ver);
+                else if (linked) snprintf(it->how, sizeof it->how, "same name, %d definitions; this file imports the defining file; %s", ndef, ver);
                 else snprintf(it->how, sizeof it->how, "same name, %d definition%s; %s", ndef, ndef == 1 ? "" : "s", ver);
                 if (cand[c].step > 1) { size_t l = strlen(it->how); snprintf(it->how + l, sizeof it->how - l, "; step %d", cand[c].step); }
             }
             char t[240]; if (sy_file_load(&v, f->path, f->plen) && sy_line_text(&v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
         }
-        free(r.r); free(d.s);
+        free(r.r); free(d.s); free(lk);
     }
     if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d occurrence%s. Next: def %s for the definition, impact %s for the closure of callers.", total, total == 1 ? "" : "s", cand[0].name, cand[0].name);
     char nf[300]; snprintf(nf, sizeof nf, "no %s of '%s' in the indexed set", mask == (1u << CR_CALL) ? "caller" : "reference", a.pos[0]);
@@ -498,32 +856,6 @@ static int coder_at_main(int argc, char **argv) {
     sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
 }
 
-/* ---- deps ---- */
-static const char *const SY_EXT[] = {"", ".h", ".c", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".kt", ".java", ".go", ".rs", ".qml", ".sh", ".md", "/index.js", "/index.ts", "/__init__.py", "/mod.rs", NULL};
-/* resolve o texto de um import para arquivos do conjunto indexado; devolve quantos (ate cap) e em *how: 1 relativo ao arquivo, 2 sufixo de caminho */
-static int sy_resolve_import(const SyView *v, const char *from, uint32_t flen, uint32_t lang, const char *text, uint32_t tl, StoreLiveDoc **out, int cap, int *how) {
-    char t[600]; if (tl > 500) return 0; memcpy(t, text, tl); t[tl] = 0; *how = 0;
-    if (lang == CL_PY && t[0] != '.' && !strchr(t, '/')) for (char *p = t; *p; p++) if (*p == '.') *p = '/';
-    int relative = t[0] == '.' || lang == CL_C || lang == CL_CPP;
-    if (!strchr(t, '/') && !strchr(t, '.') && lang != CL_PY && lang != CL_GO && lang != CL_JAVA && lang != CL_KT) return 0;
-    char dir[600]; uint32_t dl = flen; while (dl && from[dl - 1] != '/') dl--;
-    snprintf(dir, sizeof dir, "%.*s", dl > 500 ? 500 : (int)dl, from);
-    char base[1200], norm[1200]; int n = 0;
-    for (int pass = 0; pass < 2 && !n; pass++) {
-        if (pass == 0) { if (!relative) continue; snprintf(base, sizeof base, "%s%s", dir, t); } else snprintf(base, sizeof base, "%s", t);
-        /* normaliza ./ e ../ */
-        char *seg[80]; int ns = 0; char tmp[1200]; snprintf(tmp, sizeof tmp, "%s", base);
-        for (char *p = strtok(tmp, "/"); p && ns < 80; p = strtok(NULL, "/")) { if (!strcmp(p, ".")) continue; if (!strcmp(p, "..")) { if (ns) ns--; continue; } seg[ns++] = p; }
-        norm[0] = 0; for (int i = 0; i < ns; i++) { size_t l = strlen(norm); snprintf(norm + l, sizeof norm - l, "%s%s", i ? "/" : "", seg[i]); }
-        for (int e = 0; SY_EXT[e] && !n; e++) { char cand[1300]; snprintf(cand, sizeof cand, "%s%s", norm, SY_EXT[e]); StoreLiveDoc *d = store_live_find(&v->L, cand, strlen(cand)); if (d && !d->dead) { out[n++] = d; *how = 1; } }
-    }
-    if (n) return n;
-    const char *suffix = norm[0] ? norm : t; size_t sl = strlen(suffix); if (!sl) return 0;
-    for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead) continue;
-        for (int e = 0; SY_EXT[e]; e++) { size_t el = strlen(SY_EXT[e]), pl = d->d.plen; if (pl < sl + el) continue; if (el && memcmp(d->d.path + pl - el, SY_EXT[e], el)) continue; if (!el && 0) continue;
-            const char *s = d->d.path + pl - el - sl; if (memcmp(s, suffix, sl)) continue; if (s != d->d.path && s[-1] != '/') continue; out[n++] = d; *how = 2; break; } }
-    return n;
-}
 static int coder_deps_main(int argc, char **argv) {
     SyArgs a; SyView v; int rc = sy_start("deps", "deps <arquivo> [pasta] [--json]", argc, argv, &a, &v, 200); if (rc) return rc;
     char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "deps"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; char nf[700]; int total = 0;
@@ -533,39 +865,25 @@ static int coder_deps_main(int argc, char **argv) {
     for (uint32_t k = 0; k < nr; k++) {
         SyRef f; sy_ref_at(&v, seg, r0 + k, &f); if (f.kind != CR_IMPORT) continue;
         /* o texto do import pode ter varios nomes separados por espaco (import { a, b } from): tenta o texto inteiro, depois cada pedaco */
-        char buf[600]; snprintf(buf, sizeof buf, "%.*s", f.nl < 590 ? (int)f.nl : 590, f.name); StoreLiveDoc *m[8]; int how = 0, nm = sy_resolve_import(&v, rel, (uint32_t)rl, lang, buf, (uint32_t)strlen(buf), m, 8, &how);
-        if (!nm) { for (char *p = strtok(buf, " "); p && !nm; p = strtok(NULL, " ")) nm = sy_resolve_import(&v, rel, (uint32_t)rl, lang, p, (uint32_t)strlen(p), m, 8, &how); }
+        StoreLiveDoc *m[SY_IMPCAP]; int how = 0, conf = 0; char why[100];
+        int nm = sy_resolve_imp_text(&v, rel, (uint32_t)rl, lang, f.name, f.nl, m, SY_IMPCAP, &how, &conf, why, sizeof why);
         if (!nm) { size_t l = strlen(o.external); if (l < 1300) snprintf(o.external + l, sizeof o.external - l, "%s%.*s", l ? ", " : "", (int)(f.nl < 80 ? f.nl : 80), f.name); continue; }
         for (int q = 0; q < nm; q++) {
             total++; if (items.n >= a.limit) continue; SyItem *it = sy_item_new(&items); sy_set_path(it, rel, (uint32_t)rl); it->line0 = it->line1 = (int)f.line; snprintf(it->kind, sizeof it->kind, "imports"); sy_cpy(it->name, sizeof it->name, f.name, f.nl);
             snprintf(it->encl, sizeof it->encl, "-> %.*s", (int)m[q]->d.plen, m[q]->d.path);
-            it->conf = how == 1 ? 85 : nm == 1 ? 60 : 30; if (nm > 1 && how == 1) it->conf = 60;
-            if (how == 1) snprintf(it->how, sizeof it->how, "import text resolved relative to the importing file%s", nm > 1 ? " (several extensions)" : "");
-            else snprintf(it->how, sizeof it->how, "path suffix match; %d file%s match", nm, nm == 1 ? "" : "s");
+            it->conf = conf; if (nm > 1 && how != 3 && how == 1) it->conf = 60; if (nm > 1 && how == 3 && it->conf > 60) it->conf = 60;
+            snprintf(it->how, sizeof it->how, "%s", why);
         }
     }
-    /* quem importa este arquivo: varre as referencias de import de todos os documentos vigentes */
-    const char *bs = rel + rl; while (bs > rel && bs[-1] != '/') bs--; char stem[200]; snprintf(stem, sizeof stem, "%s", bs); { char *dot = strrchr(stem, '.'); if (dot && dot != stem) *dot = 0; }
-    char sidx[200]; { const char *p = rel + rl; (void)p; }
-    size_t stl = strlen(stem); int nimp = 0;
-    for (int s = 0; s < v.ns; s++) { const SyVSeg *c = &v.s[s]; if (!c->x.has) continue;
-        for (uint32_t r = 0; r < c->x.refs.n; r++) {
-            const uint8_t *q = store_table_at(&c->x.refs, r); if (st_get_u32(q + 4) != CR_IMPORT || !c->live[st_get_u32(q + 24)]) continue;
-            uint32_t tl; const char *tx = store_strs_get(&c->x.names, st_get_u32(q), &tl);
-            int hit = 0; for (uint32_t i = 0; i + stl <= tl && !hit; i++) if (!memcmp(tx + i, stem, stl)) hit = 1; if (!hit) continue;
-            SyRef f; sy_ref_at(&v, s, r, &f); if (f.plen == rl && !memcmp(f.path, rel, rl)) continue;
-            char buf[600]; snprintf(buf, sizeof buf, "%.*s", tl < 590 ? (int)tl : 590, tx); StoreLiveDoc *m[8]; int how = 0;
-            int nm = sy_resolve_import(&v, f.path, f.plen, f.lang, buf, (uint32_t)strlen(buf), m, 8, &how);
-            if (!nm) { for (char *p = strtok(buf, " "); p && !nm; p = strtok(NULL, " ")) nm = sy_resolve_import(&v, f.path, f.plen, f.lang, p, (uint32_t)strlen(p), m, 8, &how); }
-            int ok = 0; for (int i = 0; i < nm; i++) if (m[i]->d.plen == rl && !memcmp(m[i]->d.path, rel, rl)) ok = 1; if (!ok) continue;
-            total++; nimp++; if (items.n >= a.limit) continue;
-            SyItem *it = sy_item_new(&items); sy_set_path(it, f.path, f.plen); it->line0 = it->line1 = (int)f.line; snprintf(it->kind, sizeof it->kind, "imported-by"); sy_cpy(it->name, sizeof it->name, f.name, f.nl);
-            snprintf(it->encl, sizeof it->encl, "<- %.*s", (int)f.plen, f.path); it->conf = how == 1 ? (nm == 1 ? 85 : 60) : nm == 1 ? 60 : 30;
-            snprintf(it->how, sizeof it->how, how == 1 ? "import text resolved relative to the importing file" : "path suffix match; %d file%s match", nm, nm == 1 ? "" : "s");
-        }
+    /* quem importa este arquivo */
+    StoreLiveDoc *self = sy_lookup(&v, rel, rl); SyImp *imp = NULL; int nimp = self ? sy_importers(&v, self, &imp) : 0;
+    for (int i = 0; i < nimp; i++) {
+        const SyRef *f = &imp[i].f; total++; if (items.n >= a.limit) continue;
+        SyItem *it = sy_item_new(&items); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; snprintf(it->kind, sizeof it->kind, "imported-by"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
+        snprintf(it->encl, sizeof it->encl, "<- %.*s", (int)f->plen, f->path); it->conf = imp[i].conf; snprintf(it->how, sizeof it->how, "%s", imp[i].why);
     }
-    (void)sidx;
-    if (!a.json && total) snprintf(o.hint, sizeof o.hint, "%d relation%s (imports out and imported-by). Include and import texts are matched to files by path only.", total, total == 1 ? "" : "s");
+    free(imp);
+    if (!a.json && total) snprintf(o.hint, sizeof o.hint, "%d relation%s (imports out and imported-by). Import texts are resolved to files by language rules (packages, modules, namespaces, go.mod) or by path.", total, total == 1 ? "" : "s");
     snprintf(nf, sizeof nf, "'%s' has no import relation to another file of the indexed set (it imports nothing indexed and no indexed file imports it)", rel);
     sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
 }
@@ -585,6 +903,7 @@ static int coder_impact_main(int argc, char **argv) {
         Q cur = q[qh++]; if (cur.depth >= maxd) continue;
         size_t cl = strlen(cur.name); SyRefs r = {0}; sy_refs_of(&v, cur.name, cl, 1u << CR_CALL, &r); SySyms d = {0}; sy_defs_of(&v, cur.name, cl, &d);
         int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        SyImp *lk = NULL; int nlk = r.n && ndef > 1 ? sy_link_build(&v, &d, &lk) : 0;
         for (int i = 0; i < r.n; i++) {
             const SyRef *f = &r.r[i]; if (f->from == SY_NONE) continue;
             uint32_t row = st_get_u32(store_table_at(&v.s[f->seg].x.docs, f->doc)) + f->from; int dup = 0;
@@ -594,11 +913,11 @@ static int coder_impact_main(int argc, char **argv) {
             N->l0 = s.line0; N->l1 = s.line1; N->depth = cur.depth + 1; N->parent = cur.node; N->cline = f->line; snprintf(N->calls, sizeof N->calls, "%s", cur.name);
             int same = 0; for (int k = 0; k < d.n; k++) if (d.s[k].plen == f->plen && !memcmp(d.s[k].path, f->path, f->plen)) same = 1;
             int ver = sy_verify(&v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
-            int edge = sy_conf(cand[0].step, same ? 1 : ndef, ver, ndef == 0 ? -25 : 0); N->conf = edge < cur.conf ? edge : cur.conf;
+            int linked = !same && sy_linked(lk, nlk, f->path, f->plen); int edge = sy_conf(cand[0].step, same || linked ? 1 : ndef, ver, ndef == 0 ? -25 : 0); N->conf = edge < cur.conf ? edge : cur.conf;
             if (qt < maxn + 7) { snprintf(q[qt].name, sizeof q[qt].name, "%s", N->name); q[qt].depth = N->depth; q[qt].conf = N->conf; q[qt].node = nn; qt++; }
             nn++;
         }
-        free(r.r); free(d.s);
+        free(r.r); free(d.s); free(lk);
         if (truncated) break;
     }
     /* ordem de saida: arvore (em profundidade) a partir dos filhos da raiz */

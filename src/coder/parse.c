@@ -813,7 +813,22 @@ static void cp_py(CP *c) {
         } else if (ll > 5 && !strncmp(p, "from", 4) && (p[4] == ' ' || p[4] == '\t')) {
             size_t q = 4; while (q < ll && (p[q] == ' ' || p[q] == '\t')) q++;
             size_t a = q; while (q < ll && (cp_idc((unsigned char)p[q]) || p[q] == '.')) q++;
-            if (q > a) cp_ref(c, parent, CR_IMPORT, p + a, q - a, ls + a);
+            size_t dots = 0; while (a + dots < q && p[a + dots] == '.') dots++;
+            if (q > a && dots == q - a) {       /* from . import x, y: cada nome importado vira ".x" (submodulo do pacote); sem nomes, o proprio pacote */
+                size_t z = q; while (z < ll && (p[z] == ' ' || p[z] == '\t')) z++;
+                int any = 0;
+                if (z + 6 < ll && !strncmp(p + z, "import", 6)) {
+                    z += 6;
+                    while (z < ll) {
+                        while (z < ll && (p[z] == ' ' || p[z] == '\t' || p[z] == ',' || p[z] == '(')) z++;
+                        size_t y = z; while (y < ll && cp_idc((unsigned char)p[y])) y++;
+                        if (y == z) break;
+                        if (!(y - z == 2 && !strncmp(p + z, "as", 2))) { char nb[240]; if (dots + (y - z) < sizeof nb) { memcpy(nb, p + a, dots); memcpy(nb + dots, p + z, y - z); cp_ref(c, parent, CR_IMPORT, nb, dots + (y - z), ls + z); any = 1; } }
+                        z = y; if (z + 3 < ll && !strncmp(p + z, " as ", 4)) { z += 4; while (z < ll && cp_idc((unsigned char)p[z])) z++; }
+                    }
+                }
+                if (!any) cp_ref(c, parent, CR_IMPORT, p + a, q - a, ls + a);
+            } else if (q > a) cp_ref(c, parent, CR_IMPORT, p + a, q - a, ls + a);
         } else if (parent < 0 || c->f->sym[parent].kind == CK_CLASS) {
             size_t q = 0; while (q < ll && cp_idc((unsigned char)p[q])) q++;
             if (q > 0 && !isdigit((unsigned char)p[0])) {
@@ -1421,7 +1436,9 @@ static int cp_rs_decl(CP *c, int i, int b, int parent, int mode, int dp) {
     }
     if (cp_is(c, j, "mod") && cp_idt(c, j + 1)) {
         if (cp_p(c, j + 2, '{')) { int cl_ = cp_mt(c, j + 2), s = cp_sym(c, CK_NAMESPACE, parent, b0, cp_end(c, cl_), j + 1, b0, c->tk[j + 2].a); cp_scan(c, j + 3, cl_ < b ? cl_ : b, s, CM_TOP, dp + 1); return cl_ + 1 > b ? b : cl_ + 1; }
-        int se = cp_skip(c, j, b, parent, mode, 250); cp_sym(c, CK_NAMESPACE, parent, b0, c->tk[se - 1].b, j + 1, b0, c->tk[se - 1].b); return se;
+        int se = cp_skip(c, j, b, parent, mode, 250); cp_sym(c, CK_NAMESPACE, parent, b0, c->tk[se - 1].b, j + 1, b0, c->tk[se - 1].b);
+        { char *mn = cp_tokname(c, j + 1); char nb[260]; if (mn && strlen(mn) < 250) { snprintf(nb, sizeof nb, "self::%s", mn); cp_ref(c, parent, CR_IMPORT, nb, strlen(nb), c->tk[j + 1].a); } free(mn); }   /* mod x; declara o submodulo (arquivo x.rs ou x/mod.rs) */
+        return se;
     }
     if (cp_is(c, j, "use")) {
         int e = j + 1; while (e < b && !cp_p(c, e, ';')) { if (cp_open(c, e)) { e = cp_skipgrp(c, e, b); continue; } e++; }
@@ -1447,15 +1464,6 @@ static int cp_sh_decl(CP *c, int i, int b, int parent, int mode, int dp) {
     if (cp_is(c, i, "function") && cp_idt(c, i + 1)) { nm = i + 1; n = nm + 1; if (cp_p(c, n, '(') && cp_p(c, n + 1, ')')) n += 2; }
     else if (cp_idt(c, i) && cp_p(c, i + 1, '(') && cp_p(c, i + 2, ')')) { nm = i; n = i + 3; }
     if (nm >= 0 && (cp_p(c, n, '{') || cp_p(c, n, '('))) { int cl_ = cp_mt(c, n); cp_sym(c, CK_FUNC, parent, b0, cp_end(c, cl_), nm, b0, c->tk[n].a); return cl_ + 1 > b ? b : cl_ + 1; }
-    if (cp_is(c, i, "source") || (cp_p(c, i, '.') && !(c->tk[i + 1].fl & CF_NL))) {
-        if (i + 1 < b && !(c->tk[i + 1].fl & CF_NL) && cp_tl(c, i) <= 6) {
-            size_t a = c->tk[i + 1].a, e = a; while (e < c->n && !strchr(" \t\r\n;|&)", c->t[e])) e++;
-            while (a < e && (c->t[a] == '"' || c->t[a] == '\'')) a++;
-            while (e > a && (c->t[e - 1] == '"' || c->t[e - 1] == '\'')) e--;
-            if (e > a) cp_ref_range(c, parent, CR_IMPORT, a, e, 0);
-        }
-        return 0;
-    }
     int j = i; if (cp_is(c, j, "export") || cp_is(c, j, "readonly")) j++;
     if (mode == CM_TOP && cp_idt(c, j) && cp_p(c, j + 1, '=') && c->tk[j + 1].a == c->tk[j].b) {
         int se = cp_skip(c, i, b, parent, mode, 250); int up = 1; for (size_t z = c->tk[j].a; z < c->tk[j].b; z++) if (islower((unsigned char)c->c[z])) up = 0;
@@ -1602,6 +1610,54 @@ static int cp_usable(const CoderFile *f, int s, int lang) {
     }
     return 0;
 }
+
+/* ---- shell: posicao de comando, scripts chamados explicitamente e comandos que nao sao funcoes locais ---- */
+static int cp_sh_cmdpos(const CP *c, int i) {
+    if (i == 0 || (c->tk[i].fl & CF_NL)) return 1;
+    const CpTok *p = &c->tk[i - 1];
+    if (p->t == CT_P) return (p->b - p->a == 1 && strchr(";|&({!`", c->c[p->a]) != NULL) || cp_is(c, i - 1, "&&") || cp_is(c, i - 1, "||");
+    return cp_kwtok(c, i - 1, CP_PRE) || cp_is(c, i - 1, "then") || cp_is(c, i - 1, "do") || cp_is(c, i - 1, "else");
+}
+/* palavra crua a partir de a: ate espaco ou separador; aspas nas pontas saem */
+static size_t cp_sh_word(const CP *c, size_t a, size_t *wa) {
+    size_t n = c->n, e = a; while (e < n && !strchr(" \t\r\n;|&)<>`", c->t[e])) e++;
+    size_t s = a; while (s < e && (c->t[s] == '"' || c->t[s] == '\'')) s++;
+    size_t z = e; while (z > s && (c->t[z - 1] == '"' || c->t[z - 1] == '\'')) z--;
+    *wa = s; return z;
+}
+/* o comando comeca em a: devolve 1 se e source/. ou interpretador com script e emite o import do script; ou se a propria palavra e um caminho de script */
+static const char *const CP_SH_INTERP[] = {"bash", "sh", "zsh", "dash", "ksh", "exec", "nohup", "time", "env", "sudo", "xargs", NULL};
+static int cp_sh_script(CP *c, int i, int cur) {
+    size_t a = c->tk[i].a, ws, we = cp_sh_word(c, a, &ws), n = c->n; const char *t = c->t;
+    if (we <= ws) return 0;
+    size_t wl = we - ws; int dot = wl == 1 && t[ws] == '.' , src = (wl == 6 && !memcmp(t + ws, "source", 6)) || dot;
+    int interp = !src && cp_inl(t + ws, wl, CP_SH_INTERP);
+    size_t sa = 0, se = 0;
+    if (src || interp) {
+        size_t q = we, ea;
+        for (int guard = 0; guard < 6; guard++) {
+            while (q < n && (t[q] == ' ' || t[q] == '\t')) q++;
+            if (q >= n || strchr("\r\n;|&)<>`", t[q])) return 1;
+            size_t xe = cp_sh_word(c, q, &ea); if (xe <= ea) return 1;
+            if (t[ea] == '-' && interp) { if (xe - ea == 2 && t[ea + 1] == 'c') return 1; q = xe; while (q < n && (t[q] == '"' || t[q] == '\'')) q++; continue; }
+            if (interp && cp_inl(t + ea, xe - ea, CP_SH_INTERP) && !strchr("/.", t[ea])) { q = xe; continue; }
+            if (interp && memchr(t + ea, '=', xe - ea) && !memchr(t + ea, '/', xe - ea)) { q = xe; continue; }   /* VAR=valor antes do script */
+            sa = ea; se = xe; break;
+        }
+        if (!se) return 1;
+        if (interp) { size_t k = sa; int path = 0; for (; k < se; k++) if (t[k] == '/') { path = 1; break; } size_t el = se - sa; if (!path && !(el > 3 && (!memcmp(t + se - 3, ".sh", 3) || (el > 5 && !memcmp(t + se - 5, ".bash", 5))))) return 1; }
+    } else {
+        if (!(t[ws] == '.' && (ws + 1 < we) && (t[ws + 1] == '/' || (t[ws + 1] == '.' && ws + 2 < we && t[ws + 2] == '/'))) && !(t[ws] == '$' || (t[ws] == '~' && ws + 1 < we && t[ws + 1] == '/'))) return 0;
+        if (!memchr(t + ws, '/', wl)) return 0;
+        sa = ws; se = we;
+    }
+    if (se - sa < 2 || se - sa > 200 || t[sa] == '-' || t[sa] == '/') return 1;
+    for (size_t k = sa; k < se; k++) if (t[k] == '*' || t[k] == '?' || t[k] == '(' || t[k] == '{' || t[k] == '[') { if (!(t[k] == '{' && k > sa && t[k - 1] == '$')) return 1; }
+    cp_ref(c, cur, CR_IMPORT, t + sa, se - sa, sa);
+    return 1;
+}
+/* comandos que nunca sao funcoes do projeto: palavras reservadas, builtins e utilitarios comuns */
+static const char *const CP_SH_SYS[] = {"echo", "printf", "cd", "pwd", "ls", "cat", "grep", "egrep", "fgrep", "sed", "awk", "cut", "tr", "sort", "uniq", "head", "tail", "wc", "find", "xargs", "tee", "rm", "mv", "cp", "mkdir", "rmdir", "touch", "ln", "chmod", "chown", "date", "sleep", "kill", "ps", "env", "export", "unset", "set", "shift", "local", "readonly", "declare", "typeset", "return", "exit", "break", "continue", "eval", "exec", "trap", "wait", "true", "false", "test", "read", "getopts", "type", "command", "builtin", "alias", "unalias", "hash", "umask", "ulimit", "source", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "select", "time", "git", "make", "cmake", "gcc", "cc", "g++", "clang", "ld", "ar", "strip", "python", "python3", "pip", "pip3", "node", "npm", "npx", "yarn", "pnpm", "go", "cargo", "rustc", "java", "javac", "mvn", "gradle", "adb", "curl", "wget", "ssh", "scp", "rsync", "tar", "gzip", "gunzip", "zip", "unzip", "xz", "bzip2", "diff", "patch", "sudo", "su", "apt", "apt-get", "dpkg", "yum", "dnf", "brew", "pacman", "docker", "kubectl", "systemctl", "journalctl", "mount", "umount", "df", "du", "free", "uname", "whoami", "id", "hostname", "which", "whereis", "basename", "dirname", "realpath", "readlink", "mktemp", "stat", "file", "md5sum", "sha1sum", "sha256sum", "base64", "od", "xxd", "hexdump", "jq", "perl", "ruby", "php", "lua", "bash", "sh", "zsh", "dash", "ksh", "nohup", "timeout", "nice", "ionice", "stdbuf", "seq", "yes", "tput", "clear", "reset", "stty", "less", "more", "vi", "vim", "nano", "man", "info", "open", "xdg-open", "notify-send", "ip", "ifconfig", "ping", "nc", "netstat", "ss", "lsof", "pgrep", "pkill", "killall", "mknod", "dd", "sync", "install", "ldconfig", "ldd", "nm", "objdump", "strace", "gdb", "valgrind", "pushd", "popd", "dirs", "let", "expr", "bc", "dc", "paste", "join", "comm", "split", "csplit", "fold", "fmt", "nl", "rev", "tac", "column", "expand", "unexpand", "iconv", "locale", "gettext", "logger", "mail", "sendmail", "crontab", "at", "batch", "screen", "tmux", "script", "ssh-keygen", "gpg", "openssl", "sqlite3", "psql", "mysql", "redis-cli", "firebase", "gh", "glslang", "glslangValidator", "qmake", "ninja", "meson", "pkg-config", "windeployqt", "cmd", "powershell", "pwsh", NULL};
 static void cp_sweep(CP *c) {
     CoderFile *f = c->f; int L = c->lang, nsym = f->nsym;
     int hn = 64; while (hn < nsym * 3) hn *= 2;
@@ -1613,23 +1669,31 @@ static void cp_sweep(CP *c) {
     }
     int *stk = (int *)malloc(sizeof(int) * (size_t)(nsym + 2)); int sp = 0, ni = 0;
     const int shps = L == CL_SH || L == CL_PS1, gen = L == CL_TS || L == CL_KT || L == CL_JAVA || L == CL_RS || L == CL_CPP || L == CL_GO || L == CL_JS || L == CL_CS || L == CL_DART || L == CL_SWIFT || L == CL_SCALA;
+    int shsrc = 0;       /* shell: o arquivo da source/. em outro? entao comando desconhecido em posicao de comando pode ser funcao de la */
+    if (L == CL_SH) for (int i = 0; i < c->nt && !shsrc; i++) if (c->tk[i].t == CT_ID || cp_p(c, i, '.')) { if ((cp_is(c, i, "source") || cp_p(c, i, '.')) && cp_sh_cmdpos(c, i) && i + 1 < c->nt && c->tk[i + 1].a > c->tk[i].b) shsrc = 1; }
     const int nlfresh = !(L == CL_C || L == CL_CPP || L == CL_JAVA || L == CL_RS || L == CL_CS || L == CL_DART || L == CL_PHP);
     for (int i = 0; i < c->nt; i++) {
         const CpTok *t = &c->tk[i]; size_t off = t->a;
         while (sp > 0 && off >= f->sym[stk[sp - 1]].byte1) sp--;
         while (ni < nsym && f->sym[ni].byte0 <= off) { if (off < f->sym[ni].byte1) stk[sp++] = ni; ni++; }
+        if (L == CL_SH && !(t->fl & CF_DIR) && !c->isn[i] && cp_sh_cmdpos(c, i) && cp_sh_script(c, i, sp > 0 ? stk[sp - 1] : -1)) { if (t->t != CT_ID) continue; }
         if ((t->fl & CF_DIR) || t->t != CT_ID || c->isn[i]) continue;
         if (L == CL_RS && i >= 2 && cp_p(c, i - 1, '[') && (cp_p(c, i - 2, '#') || cp_p(c, i - 2, '!'))) continue;
         int cur = sp > 0 ? stk[sp - 1] : -1, j = i + 1;
         const char *nm = c->c + off; size_t nl = t->b - t->a;
         if (shps) {
-            int cmd = i == 0 || (t->fl & CF_NL);
-            if (!cmd && i > 0) { const CpTok *p = &c->tk[i - 1]; cmd = p->t == CT_P ? (p->b - p->a == 1 && strchr(";|&({!", c->c[p->a]) != NULL) || cp_is(c, i - 1, "&&") || cp_is(c, i - 1, "||") : cp_kwtok(c, i - 1, CP_PRE) || cp_is(c, i - 1, "then") || cp_is(c, i - 1, "do") || cp_is(c, i - 1, "else"); }
+            int cmd = L == CL_SH ? cp_sh_cmdpos(c, i) : (i == 0 || (t->fl & CF_NL));
+            if (L != CL_SH && !cmd && i > 0) { const CpTok *p = &c->tk[i - 1]; cmd = p->t == CT_P ? (p->b - p->a == 1 && strchr(";|&({!", c->c[p->a]) != NULL) || cp_is(c, i - 1, "&&") || cp_is(c, i - 1, "||") : cp_kwtok(c, i - 1, CP_PRE) || cp_is(c, i - 1, "then") || cp_is(c, i - 1, "do") || cp_is(c, i - 1, "else"); }
             int isverb = L == CL_PS1 && isupper((unsigned char)nm[0]) && memchr(nm, '-', nl) != NULL;
             if (cmd || isverb) {
                 uint32_t h = cp_hash(nm, nl, 2166136261u); size_t p = h & (size_t)(hn - 1); int hit = 0;
                 while (ht[p]) { int s = ht[p] - 1; if (isf[s] && strlen(f->sym[s].name) == nl && !memcmp(f->sym[s].name, c->t + off, nl)) { hit = 1; break; } p = (p + 1) & (size_t)(hn - 1); }
                 if ((hit || isverb) && !(cmd && L == CL_PS1 && cp_isci(c, i, "function"))) cp_reft(c, cur, CR_CALL, i);
+                else if (cmd && L == CL_SH && shsrc && !hit && nl > 1 && nl < 80 && !cp_p(c, i + 1, '=') && !cp_p(c, i + 1, '(') && !(i + 1 < c->nt && c->tk[i + 1].a == t->b && c->c[c->tk[i + 1].a] == '+')
+                         && !cp_inl(nm, nl, CP_SH_SYS) && !cp_inl(nm, nl, CP_PRE) && (i == 0 || !cp_is(c, i - 1, "function")) && (i == 0 || !(c->tk[i - 1].t == CT_P && c->tk[i - 1].b == t->a && strchr("/.-$", c->c[c->tk[i - 1].a])))) {
+                    int okname = 1; for (size_t z = 0; z < nl; z++) if (!(isalnum((unsigned char)nm[z]) || nm[z] == '_')) okname = 0;
+                    if (okname && !(t->b < c->n && (c->t[t->b] == '/' || c->t[t->b] == '.' || c->t[t->b] == '-'))) cp_reft(c, cur, CR_CALL, i);   /* funcao vinda de um arquivo lido com source */
+                }
             }
             if (!(L == CL_PS1 && i > 0 && (cp_p(c, i - 1, '.') || cp_is(c, i - 1, "::")))) continue;
         }

@@ -1287,6 +1287,17 @@ static int fd_coder_post(const CoderHits *C, const char *pre, FdIndex *X, const 
 static int sym_find_refs(const char *root, const char *pre, const char *name, int limit, CtSb *sb);      /* coder/symtool.c */
 /* mode=refs pelo indice de simbolos, se a pasta ja o tem e ele conhece o nome exato; 0 = segue pelo caminho antigo (KATANA_FIND_REFS=text desliga) */
 static int fd_refs_sym(const char *query, const char *root, const char *pre, int limit, CtSb *sb) {
+    {   /* nome de arquivo (script, modulo): quem o importa/le por source, require, include, import */
+        const char *q = query; while (*q == ' ' || *q == '"' || *q == '\'') q++;
+        size_t ql = strlen(q); while (ql && (q[ql - 1] == ' ' || q[ql - 1] == '"' || q[ql - 1] == '\'')) ql--;
+        const char *base = q; for (size_t i = 0; i < ql; i++) if (q[i] == '/') base = q + i + 1;
+        size_t bl = (size_t)(q + ql - base); const char *dot = (const char *)memchr(base, '.', bl);
+        if (dot && dot != base && bl < 250 && !memchr(q, ' ', ql) && !memchr(q, '(', ql)) {
+            char fname[256]; memcpy(fname, base, bl); fname[bl] = 0; CtSb t = {0};
+            if (sym_find_refs(root, pre, fname, limit, &t)) { if (t.p) ct_sb_puts(sb, t.p); free(t.p); return 1; }
+            free(t.p);
+        }
+    }
     const char *e = getenv("KATANA_FIND_REFS"); if (e && !strcmp(e, "text")) return 0;
     const char *p = query; while (*p && !(isalpha((unsigned char)*p) || *p == '_' || *p == '$')) p++;
     int l = fd_idlen(p, p + strlen(p), FK_PS); while (l > 0 && p[l - 1] == '-') l--;

@@ -78,6 +78,30 @@ static int sym_tool_run(const char *action, const char *name, const char *file, 
     size_t l = strlen(out); while (l > 0 && (out[l - 1] == '\n' || out[l - 1] == ' ')) out[--l] = 0;
     return 0;
 }
+/* o nome nao e simbolo mas e o nome (ou o nome sem extensao) de um unico arquivo do indice: lista quem o importa/le por source/require/include, no mesmo formato */
+static int sy_imp_cmp(const void *a, const void *b) { const SyImp *x = (const SyImp *)a, *y = (const SyImp *)b; int c = x->f.plen < y->f.plen ? memcmp(x->f.path, y->f.path, x->f.plen) : memcmp(x->f.path, y->f.path, y->f.plen); if (!c && x->f.plen != y->f.plen) c = x->f.plen < y->f.plen ? -1 : 1; return c ? c : (int)x->f.line - (int)y->f.line; }
+static int sym_find_file_users(SyView *v, const char *name, size_t nl, const char *pre, size_t pl, int limit, CtSb *sb) {
+    StoreLiveDoc *hit = NULL; int nh = 0;
+    for (int i = 0; i < v->L.n; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead) continue;
+        const char *p = d->d.path; uint32_t l = d->d.plen, b = l; while (b && p[b - 1] != '/') b--;
+        size_t bl = l - b; if (bl == nl && !memcmp(p + b, name, nl)) { hit = d; nh++; } }
+    if (nh != 1 || !hit) return 0;
+    SyImp *imp = NULL; int n = sy_importers(v, hit, &imp); int m = 0;
+    for (int i = 0; i < n; i++) { const SyRef *f = &imp[i].f; if (pl && !(f->plen >= pl && !memcmp(f->path, pre, pl) && (f->plen == pl || f->path[pl] == '/'))) continue; imp[m++] = imp[i]; }
+    n = m; if (!n) { free(imp); return 0; }
+    qsort(imp, (size_t)n, sizeof *imp, sy_imp_cmp);
+    char hd[600], tx[240]; snprintf(hd, sizeof hd, "Defined (1):\n  %.*s:1  (file)\n", (int)hit->d.plen, hit->d.path); ct_sb_puts(sb, hd);
+    int ng = 0; for (int i = 0; i < n; i++) if (!i || imp[i].f.plen != imp[i - 1].f.plen || memcmp(imp[i].f.path, imp[i - 1].f.path, imp[i].f.plen)) ng++;
+    snprintf(hd, sizeof hd, "Used %d times in %d files%s:\n", n, ng, ng > limit ? " (top files shown)" : ""); ct_sb_puts(sb, hd);
+    int shownf = 0;
+    for (int i = 0; i < n && shownf < limit;) {
+        int j = i; while (j < n && imp[j].f.plen == imp[i].f.plen && !memcmp(imp[j].f.path, imp[i].f.path, imp[i].f.plen)) j++;
+        snprintf(hd, sizeof hd, "%.*s (%d):\n", (int)imp[i].f.plen, imp[i].f.path, j - i); ct_sb_puts(sb, hd); sy_file_load(v, imp[i].f.path, imp[i].f.plen);
+        for (int q = i; q < j && q < i + 3; q++) { snprintf(hd, sizeof hd, "  %u: ", imp[q].f.line); ct_sb_puts(sb, hd); if (sy_line_text(v, (int)imp[q].f.line, tx, 101)) ct_sb_puts(sb, tx); ct_sb_puts(sb, "\n"); }
+        shownf++; i = j;
+    }
+    free(imp); return 1;
+}
 /* Find mode=refs servido pelo indice de simbolos, no mesmo formato do caminho antigo. 1 = respondeu; 0 = sem indice, sem
    definicao do nome exato ou erro: o Find segue pelo caminho antigo. O indice so e atualizado se ja existe (o Find nao o cria). */
 static int sym_find_refs(const char *root, const char *pre, const char *name, int limit, CtSb *sb) {
@@ -92,7 +116,7 @@ static int sym_find_refs(const char *root, const char *pre, const char *name, in
     SySyms d = {0}; sy_defs_of(&v, name, nl, &d);
     int dn = 0; SySym *D = d.s;
     for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL) && SYF_IN(d.s[i].path, d.s[i].plen)) D[dn++] = d.s[i];
-    if (!dn) { free(d.s); sy_view_close(&v); return 0; }
+    if (!dn) { free(d.s); int fr = sym_find_file_users(&v, name, nl, pre, pl, limit, sb); sy_view_close(&v); return fr; }
     char hd[600], tx[240];
     snprintf(hd, sizeof hd, "Defined (%d):\n", dn); ct_sb_puts(sb, hd);
     for (int i = 0; i < dn && i < 6; i++) {
