@@ -1,0 +1,1351 @@
+# Data and persistence concepts (source seed unless noted). Format: see README.md
+
+concept DATABASE
+  category DATA
+  canonical database
+  term pt banco de dados 1.0
+  term pt base de dados 0.95
+  term pt bd 0.9
+  term pt banco 0.85
+  term pt sgbd 0.8
+  term pt tabela 0.75
+  term pt tabelas 0.7
+  term en database 1.0
+  term en db 0.95
+  term en dbms 0.9
+  term en table 0.85
+  term en tables 0.8
+  term code db 0.95
+  term code database 0.91
+  term code table 0.87
+  term code schema 0.83
+  term code row 0.79
+  term code column 0.75
+  term code sqlite 0.71
+  term code postgres 0.67
+  action connect
+  action open
+  action close
+  action query
+  action insert
+  related SQL_QUERY 0.8
+  related DB_TRANSACTION 0.6
+  related MIGRATION_SCHEMA 0.6
+  related ORM_MODEL 0.5
+  related PERSISTENCE 0.6
+  source seed
+end
+
+concept SQL_QUERY
+  category DATA
+  canonical sql_query
+  term pt consulta 1.0
+  term pt consulta sql 0.95
+  term pt query 0.9
+  term pt buscar no banco 0.85
+  term pt select 0.8
+  term pt where 0.75
+  term pt join 0.7
+  term en query 1.0
+  term en sql 0.95
+  term en sql query 0.9
+  term en select 0.85
+  term en where clause 0.8
+  term code query 0.95
+  term code sql 0.91
+  term code select 0.87
+  term code where 0.83
+  term code join 0.79
+  term code group_by 0.75
+  term code order_by 0.71
+  term code prepared_statement 0.67
+  action select
+  action execute
+  action fetch
+  action query
+  related DATABASE 0.8
+  related INDEX_DB 0.5
+  related INPUT_SANITIZATION 0.3
+  related SEARCH_ALGO 0.2
+  source seed
+end
+
+concept DB_TRANSACTION
+  category DATA
+  canonical db_transaction
+  term pt transacao de banco 1.0
+  term pt commit 0.95
+  term pt rollback 0.9
+  term pt begin transaction 0.85
+  term pt atomicidade 0.8
+  term pt desfazer transacao 0.75
+  term pt confirmar transacao 0.7
+  term en database transaction 1.0
+  term en commit 0.95
+  term en rollback 0.9
+  term en begin transaction 0.85
+  term en atomicity 0.8
+  term code begin 0.95
+  term code commit 0.91
+  term code rollback 0.87
+  term code begin_transaction 0.83
+  term code savepoint 0.79
+  term code atomic 0.75
+  term code @Transactional 0.71
+  term code tx 0.67
+  action begin
+  action commit
+  action rollback
+  related DATABASE 0.7
+  related TRANSACTION 0.3
+  related CONCURRENCY_CONTROL 0.4
+  source seed
+  note transacao financeira: TRANSACTION
+end
+
+concept ORM_MODEL
+  category DATA
+  canonical orm_model
+  term pt modelo de dados 1.0
+  term pt entidade 0.95
+  term pt mapeamento objeto-relacional 0.9
+  term pt orm 0.85
+  term pt classe de modelo 0.8
+  term pt repositorio 0.75
+  term pt dao 0.7
+  term en data model 1.0
+  term en entity 0.95
+  term en orm 0.9
+  term en object-relational mapping 0.85
+  term en model class 0.8
+  term code model 0.95
+  term code entity 0.91
+  term code orm 0.87
+  term code repository 0.83
+  term code dao 0.79
+  term code foreign_key 0.75
+  term code belongs_to 0.71
+  term code has_many 0.67
+  action map
+  action load
+  action save
+  action relate
+  related DATABASE 0.6
+  related SERIALIZATION 0.3
+  source seed
+  note modelo de linguagem: LANGUAGE_MODEL
+end
+
+concept MIGRATION_SCHEMA
+  category DATA
+  canonical migration_schema
+  term pt migracao 1.0
+  term pt migracao de banco 0.95
+  term pt migrar dados 0.9
+  term pt versao do esquema 0.85
+  term pt alterar tabela 0.8
+  term pt upgrade de esquema 0.75
+  term pt script de migracao 0.7
+  term en migration 1.0
+  term en database migration 0.95
+  term en migrate 0.9
+  term en schema version 0.85
+  term en alter table 0.8
+  term code migration 0.95
+  term code migrate 0.91
+  term code migrations 0.87
+  term code schema_version 0.83
+  term code alter_table 0.79
+  term code upgrade 0.75
+  term code downgrade 0.71
+  term code db_migrate 0.67
+  action migrate
+  action upgrade
+  action downgrade
+  action rollback
+  related DATABASE 0.6
+  related BACKUP 0.3
+  related VERSIONING 0.3
+  source seed
+end
+
+concept INDEX_DB
+  category DATA
+  canonical index_db
+  term pt indice 1.0
+  term pt indice de banco 0.95
+  term pt indexar 0.9
+  term pt indice unico 0.85
+  term pt chave primaria 0.8
+  term pt chave estrangeira 0.75
+  term pt otimizar consulta 0.7
+  term en index 1.0
+  term en database index 0.95
+  term en indexing 0.9
+  term en unique index 0.85
+  term en primary key 0.8
+  term code index 0.95
+  term code create_index 0.91
+  term code unique_index 0.87
+  term code primary_key 0.83
+  term code foreign_key 0.79
+  term code idx 0.75
+  term code explain 0.71
+  term code indexed 0.67
+  action index
+  action create
+  action drop
+  action rebuild
+  related SQL_QUERY 0.6
+  related DATABASE 0.5
+  related SEARCH_INDEX 0.4
+  source seed
+  note indice de busca textual e SEARCH_INDEX
+end
+
+concept SEARCH_INDEX
+  category DATA
+  canonical search_index
+  term pt indice de busca 1.0
+  term pt indexacao de texto 0.95
+  term pt busca textual 0.9
+  term pt full text 0.85
+  term pt indice invertido 0.8
+  term pt indexar arquivos 0.75
+  term pt indexar codigo 0.7
+  term en search index 1.0
+  term en full-text search 0.95
+  term en text search 0.9
+  term en inverted index 0.85
+  term en index files 0.8
+  term code search_index 0.95
+  term code fts 0.91
+  term code fts5 0.87
+  term code inverted_index 0.83
+  term code posting_list 0.79
+  term code index_files 0.75
+  term code build_index 0.71
+  term code reindex 0.67
+  action index
+  action search
+  action rank
+  action query
+  action rebuild
+  related SEARCH_ALGO 0.6
+  related INDEX_DB 0.4
+  related TOKENIZER_TEXT 0.6
+  related CODE_SEARCH 0.7
+  source seed
+end
+
+concept CACHE
+  category DATA
+  canonical cache
+  term pt cache 1.0
+  term pt memoria cache 0.95
+  term pt cachear 0.9
+  term pt em cache 0.85
+  term pt cache de resultados 0.8
+  term pt invalidar cache 0.75
+  term pt expiracao do cache 0.7
+  term en cache 1.0
+  term en caching 0.95
+  term en cached 0.9
+  term en cache hit 0.85
+  term en cache miss 0.8
+  term code cache 0.95
+  term code cached 0.91
+  term code cache_key 0.87
+  term code cache_hit 0.83
+  term code cache_miss 0.79
+  term code invalidate 0.75
+  term code ttl 0.71
+  term code lru 0.67
+  action cache
+  action invalidate
+  action evict
+  action expire
+  action warm
+  related KV_CACHE 0.1
+  related PERSISTENCE 0.3
+  related BUILD_CACHE 0.3
+  related DISK_CACHE 0.5
+  source seed
+  note cache de chaves e valores do modelo: KV_CACHE; de build: BUILD_CACHE
+end
+
+concept DISK_CACHE
+  category DATA
+  canonical disk_cache
+  term pt cache em disco 1.0
+  term pt cache persistente 0.95
+  term pt prefixo em disco 0.9
+  term pt salvar cache 0.85
+  term pt carregar cache 0.8
+  term pt arquivo de cache 0.75
+  term en disk cache 1.0
+  term en persistent cache 0.95
+  term en on-disk cache 0.9
+  term en save cache 0.85
+  term en load cache 0.8
+  term code disk_cache 0.95
+  term code cache_dir 0.91
+  term code cache_file 0.87
+  term code save_cache 0.83
+  term code load_cache 0.79
+  term code persistent_cache 0.75
+  term code prefix_cache 0.71
+  term code cache_path 0.67
+  action save
+  action load
+  action evict
+  related CACHE 0.7
+  related FILE_IO 0.4
+  related KV_CACHE 0.4
+  source seed
+end
+
+concept PERSISTENCE
+  category DATA
+  canonical persistence
+  term pt persistencia 1.0
+  term pt persistir 0.95
+  term pt salvar 0.9
+  term pt gravar dados 0.85
+  term pt armazenar 0.8
+  term pt guardar 0.75
+  term pt dados persistentes 0.7
+  term en persistence 1.0
+  term en persist 0.95
+  term en save 0.9
+  term en store 0.85
+  term en storage 0.8
+  term code persist 0.95
+  term code save 0.91
+  term code store 0.87
+  term code storage 0.83
+  term code persistence 0.79
+  term code durable 0.75
+  term code save_state 0.71
+  term code load_state 0.67
+  action save
+  action load
+  action persist
+  action restore
+  action store
+  related DATABASE 0.5
+  related FILE_IO 0.5
+  related SERIALIZATION 0.5
+  related BACKUP 0.4
+  source seed
+end
+
+concept SERIALIZATION
+  category DATA
+  canonical serialization
+  term pt serializacao 1.0
+  term pt serializar 0.95
+  term pt desserializar 0.9
+  term pt converter para json 0.85
+  term pt codificar 0.8
+  term pt decodificar 0.75
+  term pt marshal 0.7
+  term en serialization 1.0
+  term en serialize 0.95
+  term en deserialize 0.9
+  term en marshal 0.85
+  term en unmarshal 0.8
+  term code serialize 0.95
+  term code deserialize 0.91
+  term code Serializer 0.87
+  term code marshal 0.83
+  term code unmarshal 0.79
+  term code to_json 0.75
+  term code from_json 0.71
+  term code encode 0.67
+  action serialize
+  action deserialize
+  action encode
+  action decode
+  action dump
+  related JSON_FORMAT 0.7
+  related BINARY_FORMAT 0.6
+  related PERSISTENCE 0.4
+  related PARSER 0.5
+  source seed
+end
+
+concept JSON_FORMAT
+  category DATA
+  canonical json_format
+  term pt json 1.0
+  term pt objeto json 0.95
+  term pt campo json 0.9
+  term pt ler json 0.85
+  term pt gerar json 0.8
+  term pt esquema json 0.75
+  term pt jsonl 0.7
+  term en json 1.0
+  term en json object 0.95
+  term en json field 0.9
+  term en parse json 0.85
+  term en json schema 0.8
+  term code json 0.95
+  term code json_parse 0.91
+  term code parse_json 0.87
+  term code json_object 0.83
+  term code json_array 0.79
+  term code jsonl 0.75
+  term code ndjson 0.71
+  term code to_json 0.67
+  action parse
+  action emit
+  action read
+  action write
+  related SERIALIZATION 0.7
+  related PARSER 0.4
+  related CONFIG 0.3
+  source seed
+end
+
+concept CSV_FORMAT
+  category DATA
+  canonical csv_format
+  term pt csv 1.0
+  term pt planilha 0.95
+  term pt tabela de texto 0.9
+  term pt separado por virgula 0.85
+  term pt tsv 0.8
+  term pt cabecalho 0.75
+  term pt exportar csv 0.7
+  term en csv 1.0
+  term en spreadsheet 0.95
+  term en comma separated 0.9
+  term en tsv 0.85
+  term en header row 0.8
+  term code csv 0.95
+  term code tsv 0.91
+  term code csv_reader 0.87
+  term code csv_writer 0.83
+  term code read_csv 0.79
+  term code to_csv 0.75
+  term code delimiter 0.71
+  term code header_row 0.67
+  action import
+  action export
+  action parse
+  action write
+  related SERIALIZATION 0.5
+  related FILE_IO 0.4
+  source seed
+end
+
+concept XML_YAML_FORMAT
+  category DATA
+  canonical xml_yaml_format
+  term pt xml 1.0
+  term pt yaml 0.95
+  term pt toml 0.9
+  term pt ini 0.85
+  term pt html 0.8
+  term pt markdown 0.75
+  term pt formato de texto 0.7
+  term en xml 1.0
+  term en yaml 0.95
+  term en toml 0.9
+  term en ini 0.85
+  term en html 0.8
+  term code xml 0.95
+  term code yaml 0.91
+  term code toml 0.87
+  term code ini 0.83
+  term code html 0.79
+  term code markdown 0.75
+  term code md 0.71
+  term code xpath 0.67
+  action parse
+  action emit
+  action load
+  action dump
+  related SERIALIZATION 0.5
+  related CONFIG 0.4
+  related PARSER 0.4
+  source seed
+end
+
+concept BINARY_FORMAT
+  category DATA
+  canonical binary_format
+  term pt formato binario 1.0
+  term pt binario 0.95
+  term pt bytes 0.9
+  term pt cabecalho de arquivo 0.85
+  term pt magic number 0.8
+  term pt little endian 0.75
+  term pt big endian 0.7
+  term en binary format 1.0
+  term en binary 0.95
+  term en bytes 0.9
+  term en file header 0.85
+  term en magic number 0.8
+  term code binary 0.95
+  term code bytes 0.91
+  term code header 0.87
+  term code magic 0.83
+  term code magic_number 0.79
+  term code endian 0.75
+  term code little_endian 0.71
+  term code big_endian 0.67
+  action read
+  action write
+  action pack
+  action unpack
+  action align
+  related SERIALIZATION 0.6
+  related FILE_IO 0.5
+  source seed
+end
+
+concept FILE_IO
+  category DATA
+  canonical file_io
+  term pt arquivo 1.0
+  term pt arquivos 0.95
+  term pt ler arquivo 0.9
+  term pt escrever arquivo 0.85
+  term pt gravar arquivo 0.8
+  term pt abrir arquivo 0.75
+  term pt fechar arquivo 0.7
+  term en file 1.0
+  term en files 0.95
+  term en read file 0.9
+  term en write file 0.85
+  term en open file 0.8
+  term code file 0.95
+  term code fopen 0.91
+  term code fclose 0.87
+  term code fread 0.83
+  term code fwrite 0.79
+  term code open 0.75
+  term code close 0.71
+  term code read_file 0.67
+  action read
+  action write
+  action open
+  action close
+  action append
+  action truncate
+  related PATH_FILE 0.7
+  related DIRECTORY 0.6
+  related SERIALIZATION 0.4
+  related TEMP_FILE 0.4
+  source seed
+end
+
+concept PATH_FILE
+  category DATA
+  canonical path_file
+  term pt caminho 1.0
+  term pt caminho do arquivo 0.95
+  term pt caminho absoluto 0.9
+  term pt caminho relativo 0.85
+  term pt nome do arquivo 0.8
+  term pt extensao 0.75
+  term pt separador de caminho 0.7
+  term en path 1.0
+  term en file path 0.95
+  term en absolute path 0.9
+  term en relative path 0.85
+  term en filename 0.8
+  term code path 0.95
+  term code filepath 0.91
+  term code abs_path 0.87
+  term code rel_path 0.83
+  term code basename 0.79
+  term code dirname 0.75
+  term code extension 0.71
+  term code ext 0.67
+  action join
+  action normalize
+  action resolve
+  action canonicalize
+  action split
+  related FILE_IO 0.7
+  related DIRECTORY 0.6
+  related SANDBOX 0.4
+  source seed
+end
+
+concept DIRECTORY
+  category DATA
+  canonical directory
+  term pt pasta 1.0
+  term pt pastas 0.95
+  term pt diretorio 0.9
+  term pt diretorios 0.85
+  term pt listar pasta 0.8
+  term pt criar pasta 0.75
+  term pt subpasta 0.7
+  term en folder 1.0
+  term en directory 0.95
+  term en directories 0.9
+  term en list directory 0.85
+  term en create directory 0.8
+  term code dir 0.95
+  term code directory 0.91
+  term code folder 0.87
+  term code mkdir 0.83
+  term code rmdir 0.79
+  term code opendir 0.75
+  term code readdir 0.71
+  term code listdir 0.67
+  action list
+  action create
+  action remove
+  action walk
+  action scan
+  action glob
+  related PATH_FILE 0.6
+  related FILE_IO 0.6
+  source seed
+end
+
+concept TEMP_FILE
+  category DATA
+  canonical temp_file
+  term pt arquivo temporario 1.0
+  term pt temp 0.95
+  term pt tmp 0.9
+  term pt pasta temporaria 0.85
+  term pt limpar temporarios 0.8
+  term pt arquivo de rascunho 0.75
+  term pt lixo 0.7
+  term en temporary file 1.0
+  term en temp file 0.95
+  term en tmp 0.9
+  term en temp dir 0.85
+  term en cleanup temp 0.8
+  term code temp 0.95
+  term code tmp 0.91
+  term code tempfile 0.87
+  term code mkstemp 0.83
+  term code mktemp 0.79
+  term code tmpfile 0.75
+  term code tmpdir 0.71
+  term code temp_dir 0.67
+  action create
+  action delete
+  action cleanup
+  related FILE_IO 0.5
+  related DIRECTORY 0.4
+  source seed
+end
+
+concept FILE_WATCH
+  category DATA
+  canonical file_watch
+  term pt monitorar arquivo 1.0
+  term pt observar pasta 0.95
+  term pt mudanca de arquivo 0.9
+  term pt arquivo modificado 0.85
+  term pt recarregar ao mudar 0.8
+  term pt inotify 0.75
+  term pt watcher 0.7
+  term en watch file 1.0
+  term en file watcher 0.95
+  term en file change 0.9
+  term en modified file 0.85
+  term en hot reload 0.8
+  term code watch 0.95
+  term code Watcher 0.91
+  term code file_watcher 0.87
+  term code inotify 0.83
+  term code fswatch 0.79
+  term code on_change 0.75
+  term code mtime 0.71
+  term code modified 0.67
+  action watch
+  action notify
+  action reload
+  related FILE_IO 0.4
+  related EVENT_BUS 0.3
+  source seed
+end
+
+concept BACKUP
+  category DATA
+  canonical backup
+  term pt backup 1.0
+  term pt copia de seguranca 0.95
+  term pt restaurar 0.9
+  term pt restauracao 0.85
+  term pt snapshot 0.8
+  term pt ponto de restauracao 0.75
+  term pt redundancia 0.7
+  term en backup 1.0
+  term en restore 0.95
+  term en snapshot 0.9
+  term en restore point 0.85
+  term en redundancy 0.8
+  term code backup 0.95
+  term code restore 0.91
+  term code snapshot 0.87
+  term code restore_point 0.83
+  term code replicate 0.79
+  term code replication 0.75
+  term code dump 0.71
+  term code mirror 0.67
+  action backup
+  action restore
+  action snapshot
+  action replicate
+  related PERSISTENCE 0.5
+  related COMPRESSION 0.3
+  source seed
+end
+
+concept ARCHIVE_ZIP
+  category DATA
+  canonical archive_zip
+  term pt compactar 1.0
+  term pt descompactar 0.95
+  term pt arquivo zip 0.9
+  term pt zip 0.85
+  term pt tar 0.8
+  term pt gz 0.75
+  term pt pacote compactado 0.7
+  term en archive 1.0
+  term en zip 0.95
+  term en unzip 0.9
+  term en tar 0.85
+  term en gzip 0.8
+  term code zip 0.95
+  term code unzip 0.91
+  term code tar 0.87
+  term code tgz 0.83
+  term code gz 0.79
+  term code gzip 0.75
+  term code archive 0.71
+  term code extract 0.67
+  action zip
+  action unzip
+  action extract
+  action pack
+  related COMPRESSION 0.7
+  related FILE_IO 0.4
+  source seed
+end
+
+concept MESSAGE_QUEUE
+  category DATA
+  canonical message_queue
+  term pt fila de mensagens 1.0
+  term pt mensageria 0.95
+  term pt broker 0.9
+  term pt enfileirar mensagem 0.85
+  term pt consumidor 0.8
+  term pt produtor 0.75
+  term pt topico 0.7
+  term en message queue 1.0
+  term en messaging 0.95
+  term en broker 0.9
+  term en enqueue message 0.85
+  term en consumer 0.8
+  term code queue 0.95
+  term code message_queue 0.91
+  term code broker 0.87
+  term code enqueue 0.83
+  term code dequeue 0.79
+  term code consumer 0.75
+  term code producer 0.71
+  term code topic 0.67
+  action enqueue
+  action dequeue
+  action publish
+  action consume
+  action ack
+  related PUBSUB 0.7
+  related EVENT_BUS 0.6
+  related TASK_QUEUE 0.5
+  source seed
+end
+
+concept PUBSUB
+  category DATA
+  canonical pubsub
+  term pt publicacao e assinatura 1.0
+  term pt pub/sub 0.95
+  term pt publicar 0.9
+  term pt assinar topico 0.85
+  term pt inscrever em evento 0.8
+  term pt canal de eventos 0.75
+  term pt notificar assinantes 0.7
+  term en publish subscribe 1.0
+  term en pubsub 0.95
+  term en publish 0.9
+  term en subscribe 0.85
+  term en topic subscription 0.8
+  term code pubsub 0.95
+  term code publish 0.91
+  term code subscribe 0.87
+  term code unsubscribe 0.83
+  term code subscriber 0.79
+  term code publisher 0.75
+  term code observer 0.71
+  term code on 0.67
+  action publish
+  action subscribe
+  action emit
+  action notify
+  related MESSAGE_QUEUE 0.7
+  related EVENT_BUS 0.7
+  source seed
+end
+
+concept EVENT_BUS
+  category DATA
+  canonical event_bus
+  term pt evento 1.0
+  term pt eventos 0.95
+  term pt barramento de eventos 0.9
+  term pt disparar evento 0.85
+  term pt ouvinte de evento 0.8
+  term pt tratar evento 0.75
+  term pt evento de dominio 0.7
+  term en event 1.0
+  term en events 0.95
+  term en event bus 0.9
+  term en dispatch event 0.85
+  term en event listener 0.8
+  term code event 0.95
+  term code events 0.91
+  term code event_bus 0.87
+  term code dispatch 0.83
+  term code emit 0.79
+  term code fire 0.75
+  term code listener 0.71
+  term code on_event 0.67
+  action emit
+  action dispatch
+  action listen
+  action handle
+  action fire
+  related PUBSUB 0.7
+  related MESSAGE_QUEUE 0.5
+  related EVENT_LOOP 0.4
+  related INPUT_EVENT 0.2
+  source seed
+  note evento de entrada de interface: INPUT_EVENT; laco de eventos: EVENT_LOOP
+end
+
+concept SYNC_DATA
+  category DATA
+  canonical sync_data
+  term pt sincronizacao 1.0
+  term pt sincronizar 0.95
+  term pt sincronizar dados 0.9
+  term pt replicar 0.85
+  term pt mesclar alteracoes 0.8
+  term pt conflito de sincronizacao 0.75
+  term pt offline 0.7
+  term en synchronization 1.0
+  term en sync 0.95
+  term en synchronize data 0.9
+  term en replicate 0.85
+  term en merge changes 0.8
+  term code sync 0.95
+  term code synchronize 0.91
+  term code SyncManager 0.87
+  term code sync_data 0.83
+  term code replicate 0.79
+  term code merge 0.75
+  term code conflict 0.71
+  term code delta 0.67
+  action sync
+  action pull
+  action push
+  action merge
+  action resolve
+  related PERSISTENCE 0.4
+  related CONFLICT_MERGE 0.5
+  related NETWORK_REQUEST 0.3
+  source seed
+  note sincronizacao de threads: SYNCHRONIZATION_PRIMITIVE
+end
+
+concept CONFLICT_MERGE
+  category DATA
+  canonical conflict_merge
+  term pt conflito 1.0
+  term pt mesclar 0.95
+  term pt merge 0.9
+  term pt resolver conflito 0.85
+  term pt versao conflitante 0.8
+  term pt diff 0.75
+  term pt patch 0.7
+  term en conflict 1.0
+  term en merge 0.95
+  term en resolve conflict 0.9
+  term en conflicting version 0.85
+  term en diff 0.8
+  term code conflict 0.95
+  term code merge 0.91
+  term code three_way 0.87
+  term code diff 0.83
+  term code patch 0.79
+  term code resolve_conflict 0.75
+  term code merge_conflict 0.71
+  term code conflicting 0.67
+  action merge
+  action resolve
+  action diff
+  action patch
+  related SYNC_DATA 0.5
+  related VERSION_CONTROL 0.5
+  source seed
+end
+
+concept VERSION_CONTROL
+  category DATA
+  canonical version_control
+  term pt controle de versao 1.0
+  term pt repositorio 0.95
+  term pt commit 0.9
+  term pt ramo 0.85
+  term pt branch 0.8
+  term pt tag de versao 0.75
+  term pt historico 0.7
+  term en version control 1.0
+  term en repository 0.95
+  term en commit 0.9
+  term en branch 0.85
+  term en tag 0.8
+  term code commit 0.95
+  term code branch 0.91
+  term code repo 0.87
+  term code Repository 0.83
+  term code clone 0.79
+  term code fork 0.75
+  term code push 0.71
+  term code pull 0.67
+  action commit
+  action branch
+  action merge
+  action clone
+  action push
+  action pull
+  related CONFLICT_MERGE 0.5
+  related RELEASE 0.3
+  source seed
+end
+
+concept DATA_VALIDATION_SCHEMA
+  category DATA
+  canonical data_validation_schema
+  term pt esquema de dados 1.0
+  term pt validar esquema 0.95
+  term pt contrato de dados 0.9
+  term pt campos obrigatorios 0.85
+  term pt tipo do campo 0.8
+  term pt schema json 0.75
+  term pt tipagem 0.7
+  term en data schema 1.0
+  term en validate schema 0.95
+  term en data contract 0.9
+  term en required fields 0.85
+  term en field type 0.8
+  term code schema 0.95
+  term code validate_schema 0.91
+  term code required 0.87
+  term code required_fields 0.83
+  term code field_type 0.79
+  term code jsonschema 0.75
+  term code pydantic 0.71
+  term code typed 0.67
+  action validate
+  action check
+  action conform
+  related VALIDATION 0.7
+  related JSON_FORMAT 0.5
+  source seed
+end
+
+concept PAGINATION
+  category DATA
+  canonical pagination
+  term pt paginacao 1.0
+  term pt pagina 0.95
+  term pt proxima pagina 0.9
+  term pt tamanho da pagina 0.85
+  term pt limite e deslocamento 0.8
+  term pt rolagem infinita 0.75
+  term pt cursor 0.7
+  term en pagination 1.0
+  term en page 0.95
+  term en next page 0.9
+  term en page size 0.85
+  term en limit offset 0.8
+  term code page 0.95
+  term code pagination 0.91
+  term code paginate 0.87
+  term code page_size 0.83
+  term code per_page 0.79
+  term code limit 0.75
+  term code offset 0.71
+  term code cursor 0.67
+  action paginate
+  action fetch
+  action next
+  related SQL_QUERY 0.4
+  related LIST_VIEW 0.3
+  source seed
+end
+
+concept DATA_PIPELINE
+  category DATA
+  canonical data_pipeline
+  term pt pipeline de dados 1.0
+  term pt etl 0.95
+  term pt extrair transformar carregar 0.9
+  term pt ingestao 0.85
+  term pt processamento em lote 0.8
+  term pt limpeza de dados 0.75
+  term pt transformacao 0.7
+  term en data pipeline 1.0
+  term en etl 0.95
+  term en extract transform load 0.9
+  term en ingestion 0.85
+  term en batch processing 0.8
+  term code pipeline 0.95
+  term code etl 0.91
+  term code ingest 0.87
+  term code ingestion 0.83
+  term code transform 0.79
+  term code extract 0.75
+  term code load 0.71
+  term code dataset 0.67
+  action ingest
+  action transform
+  action clean
+  action load
+  related DATASET_TRAIN 0.4
+  related BATCH_PROCESSING 0.5
+  source seed
+  note pipeline grafico: GPU_PIPELINE
+end
+
+concept BATCH_PROCESSING
+  category DATA
+  canonical batch_processing
+  term pt lote 1.0
+  term pt lotes 0.95
+  term pt processar em lote 0.9
+  term pt batch 0.85
+  term pt processamento em lote 0.8
+  term pt tamanho do lote 0.75
+  term pt job agendado 0.7
+  term en batch 1.0
+  term en batches 0.95
+  term en batch processing 0.9
+  term en bulk 0.85
+  term en batch size 0.8
+  term code batch 0.95
+  term code batch_size 0.91
+  term code bulk 0.87
+  term code bulk_insert 0.83
+  term code bulk_update 0.79
+  term code batch_job 0.75
+  term code process_batch 0.71
+  term code chunk 0.67
+  action batch
+  action chunk
+  action bulk
+  action process
+  related DATA_PIPELINE 0.5
+  related SCHEDULER 0.3
+  source seed
+end
+
+concept NOSQL_DOCUMENT
+  category DATA
+  canonical nosql_document
+  term pt nosql 1.0
+  term pt documento 0.95
+  term pt colecao 0.9
+  term pt mongodb 0.85
+  term pt chave valor 0.8
+  term pt redis 0.75
+  term pt banco de documentos 0.7
+  term en nosql 1.0
+  term en document store 0.95
+  term en collection 0.9
+  term en mongodb 0.85
+  term en key-value store 0.8
+  term code nosql 0.95
+  term code mongo 0.91
+  term code mongodb 0.87
+  term code collection 0.83
+  term code document 0.79
+  term code doc_id 0.75
+  term code redis 0.71
+  term code kv_store 0.67
+  action get
+  action set
+  action put
+  action delete
+  action query
+  related DATABASE 0.6
+  related MAP_KEY_VALUE 0.4
+  source seed
+end
+
+concept MAP_KEY_VALUE
+  category DATA
+  canonical map_key_value
+  term pt dicionario 1.0
+  term pt mapa 0.95
+  term pt chave valor 0.9
+  term pt tabela hash 0.85
+  term pt par chave valor 0.8
+  term pt lookup 0.75
+  term pt mapeamento 0.7
+  term en dictionary 1.0
+  term en map 0.95
+  term en key value 0.9
+  term en hash map 0.85
+  term en key-value pair 0.8
+  term code map 0.95
+  term code dict 0.91
+  term code dictionary 0.87
+  term code hashmap 0.83
+  term code key_value 0.79
+  term code kv 0.75
+  term code pair 0.71
+  term code lookup 0.67
+  action get
+  action put
+  action remove
+  action contains
+  related HASH_FUNCTION 0.4
+  related NOSQL_DOCUMENT 0.3
+  source seed
+end
+
+concept DATA_MODEL_ENUM
+  category DATA
+  canonical data_model_enum
+  term pt enumeracao 1.0
+  term pt enum 0.95
+  term pt constantes 0.9
+  term pt opcoes fixas 0.85
+  term pt tipo enumerado 0.8
+  term pt valores possiveis 0.75
+  term pt flags 0.7
+  term en enum 1.0
+  term en enumeration 0.95
+  term en constants 0.9
+  term en fixed options 0.85
+  term en enumerated type 0.8
+  term code enum 0.95
+  term code enumeration 0.91
+  term code constant 0.87
+  term code CONST 0.83
+  term code flags 0.79
+  term code bitmask 0.75
+  term code bit_flags 0.71
+  term code kind 0.67
+  action define
+  action map
+  related MAP_KEY_VALUE 0.2
+  source seed
+end
+
+concept VERSIONING
+  category DATA
+  canonical versioning
+  term pt versao 1.0
+  term pt versionamento 0.95
+  term pt versao do formato 0.9
+  term pt compatibilidade 0.85
+  term pt retrocompatibilidade 0.8
+  term pt numero de versao 0.75
+  term pt semver 0.7
+  term en version 1.0
+  term en versioning 0.95
+  term en format version 0.9
+  term en compatibility 0.85
+  term en backward compatibility 0.8
+  term code version 0.95
+  term code versioning 0.91
+  term code semver 0.87
+  term code api_version 0.83
+  term code format_version 0.79
+  term code compat 0.75
+  term code backward_compatible 0.71
+  term code deprecated 0.67
+  action version
+  action bump
+  action migrate
+  action deprecate
+  related MIGRATION_SCHEMA 0.4
+  related RELEASE 0.4
+  related VERSION_CONTROL 0.3
+  source seed
+end
+
+concept CONFIG_STORE
+  category DATA
+  canonical config_store
+  term pt preferencias 1.0
+  term pt configuracoes salvas 0.95
+  term pt ajustes do usuario 0.9
+  term pt opcoes 0.85
+  term pt persistir configuracao 0.8
+  term pt perfil de configuracao 0.75
+  term en preferences 1.0
+  term en saved settings 0.95
+  term en user settings 0.9
+  term en options 0.85
+  term en persist config 0.8
+  term code prefs 0.95
+  term code preferences 0.91
+  term code SharedPreferences 0.87
+  term code settings 0.83
+  term code user_settings 0.79
+  term code options 0.75
+  term code config_profile 0.71
+  term code save_settings 0.67
+  action save
+  action load
+  action reset
+  related CONFIG 0.6
+  related PERSISTENCE 0.4
+  source seed
+end
+
+concept DATA_EXPORT_IMPORT
+  category DATA
+  canonical data_export_import
+  term pt exportar 1.0
+  term pt importar 0.95
+  term pt exportacao 0.9
+  term pt importacao 0.85
+  term pt baixar dados 0.8
+  term pt enviar planilha 0.75
+  term pt migrar de outro sistema 0.7
+  term en export 1.0
+  term en import 0.95
+  term en data export 0.9
+  term en data import 0.85
+  term en download data 0.8
+  term code export 0.95
+  term code import 0.91
+  term code exporter 0.87
+  term code importer 0.83
+  term code export_data 0.79
+  term code import_data 0.75
+  term code download 0.71
+  term code upload 0.67
+  action export
+  action import
+  action dump
+  action load
+  related CSV_FORMAT 0.5
+  related SERIALIZATION 0.5
+  source seed
+end
+
+concept STREAMING_DATA
+  category DATA
+  canonical streaming_data
+  term pt stream 1.0
+  term pt fluxo de dados 0.95
+  term pt transmissao em fluxo 0.9
+  term pt streaming 0.85
+  term pt token a token 0.8
+  term pt em tempo real 0.75
+  term pt leitura incremental 0.7
+  term en stream 1.0
+  term en data stream 0.95
+  term en streaming 0.9
+  term en real-time 0.85
+  term en incremental read 0.8
+  term code stream 0.95
+  term code streaming 0.91
+  term code chunk 0.87
+  term code chunked 0.83
+  term code on_chunk 0.79
+  term code StreamReader 0.75
+  term code iter_lines 0.71
+  term code sse 0.67
+  action stream
+  action emit
+  action consume
+  action pipe
+  related NETWORK_STREAM 0.4
+  related LM_STREAMING 0.4
+  source seed
+end
+
+concept COMPRESSION
+  category DATA
+  canonical compression
+  term pt compressao 1.0
+  term pt comprimir 0.95
+  term pt descomprimir 0.9
+  term pt taxa de compressao 0.85
+  term pt zstd 0.8
+  term pt gzip 0.75
+  term pt deflate 0.7
+  term en compression 1.0
+  term en compress 0.95
+  term en decompress 0.9
+  term en compression ratio 0.85
+  term en zstd 0.8
+  term code compress 0.95
+  term code decompress 0.91
+  term code compression 0.87
+  term code zstd 0.83
+  term code zlib 0.79
+  term code gzip 0.75
+  term code deflate 0.71
+  term code lz4 0.67
+  action compress
+  action decompress
+  action inflate
+  action deflate
+  related ARCHIVE_ZIP 0.6
+  source seed
+  note compressao de audio/video: MEDIA_CODEC
+end
+
+concept ENCODING_TEXT
+  category DATA
+  canonical encoding_text
+  term pt codificacao 1.0
+  term pt utf-8 0.95
+  term pt texto 0.9
+  term pt caracteres 0.85
+  term pt unicode 0.8
+  term pt ascii 0.75
+  term pt acentos 0.7
+  term en encoding 1.0
+  term en utf-8 0.95
+  term en text 0.9
+  term en characters 0.85
+  term en unicode 0.8
+  term code utf8 0.95
+  term code unicode 0.91
+  term code ascii 0.87
+  term code charset 0.83
+  term code encoding 0.79
+  term code decode 0.75
+  term code encode 0.71
+  term code base64 0.67
+  action encode
+  action decode
+  action normalize
+  related TOKENIZER_TEXT 0.4
+  related SERIALIZATION 0.3
+  source seed
+end

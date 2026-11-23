@@ -1,0 +1,911 @@
+# Build and tooling concepts (source seed unless noted). Format: see README.md
+
+concept BUILD_COMPILE
+  category BUILD_TOOLING
+  canonical build_compile
+  term pt compilacao 1.0
+  term pt compilar 0.95
+  term pt compilador 0.9
+  term pt erro de compilacao 0.85
+  term pt build 0.8
+  term pt construir 0.75
+  term pt gerar binario 0.7
+  term en compilation 1.0
+  term en compile 0.95
+  term en compiler 0.9
+  term en compile error 0.85
+  term en build 0.8
+  term code build 0.95
+  term code compile 0.91
+  term code compiler 0.87
+  term code gcc 0.83
+  term code clang 0.79
+  term code cc 0.75
+  term code cl.exe 0.71
+  term code make 0.67
+  action build
+  action compile
+  action link
+  action clean
+  action rebuild
+  related LINKER 0.6
+  related BUILD_CACHE 0.4
+  related PACKAGE_DEPENDENCY 0.4
+  related TEST_AUTOMATED 0.3
+  source seed
+end
+
+concept LINKER
+  category BUILD_TOOLING
+  canonical linker
+  term pt linker 1.0
+  term pt ligacao 0.95
+  term pt vincular 0.9
+  term pt biblioteca estatica 0.85
+  term pt biblioteca dinamica 0.8
+  term pt simbolo indefinido 0.75
+  term pt dll 0.7
+  term en linker 1.0
+  term en link 0.95
+  term en linking 0.9
+  term en static library 0.85
+  term en shared library 0.8
+  term code link 0.95
+  term code ld 0.91
+  term code linker 0.87
+  term code LDFLAGS 0.83
+  term code -l 0.79
+  term code lib 0.75
+  term code dll 0.71
+  term code so 0.67
+  action link
+  action load
+  action resolve
+  related BUILD_COMPILE 0.6
+  related PACKAGE_DEPENDENCY 0.4
+  source seed
+end
+
+concept PACKAGE_DEPENDENCY
+  category BUILD_TOOLING
+  canonical package_dependency
+  term pt dependencia 1.0
+  term pt dependencias 0.95
+  term pt pacote 0.9
+  term pt biblioteca 0.85
+  term pt gerenciador de pacotes 0.8
+  term pt instalar dependencia 0.75
+  term pt npm 0.7
+  term en dependency 1.0
+  term en dependencies 0.95
+  term en package 0.9
+  term en library 0.85
+  term en package manager 0.8
+  term code dependency 0.95
+  term code dependencies 0.91
+  term code deps 0.87
+  term code package 0.83
+  term code package.json 0.79
+  term code requirements.txt 0.75
+  term code pip 0.71
+  term code npm 0.67
+  action install
+  action resolve
+  action update
+  action lock
+  related VERSIONING 0.5
+  related BUILD_COMPILE 0.4
+  related INSTALLER 0.4
+  source seed
+end
+
+concept VERSION_BUMP
+  category BUILD_TOOLING
+  canonical version_bump
+  term pt numero de versao 1.0
+  term pt subir versao 0.95
+  term pt nova versao 0.9
+  term pt changelog 0.85
+  term pt notas de versao 0.8
+  term pt tag 0.75
+  term pt marco 0.7
+  term en version number 1.0
+  term en bump version 0.95
+  term en new version 0.9
+  term en changelog 0.85
+  term en release notes 0.8
+  term code version 0.95
+  term code bump 0.91
+  term code bump_version 0.87
+  term code changelog 0.83
+  term code release_notes 0.79
+  term code tag 0.75
+  term code semver 0.71
+  term code major 0.67
+  action bump
+  action tag
+  action release
+  related RELEASE 0.6
+  related VERSIONING 0.5
+  source seed
+end
+
+concept RELEASE
+  category BUILD_TOOLING
+  canonical release
+  term pt release 1.0
+  term pt lancamento 0.95
+  term pt publicar versao 0.9
+  term pt empacotar 0.85
+  term pt distribuir 0.8
+  term pt entrega 0.75
+  term pt binario final 0.7
+  term en release 1.0
+  term en publish version 0.95
+  term en package 0.9
+  term en distribute 0.85
+  term en deliver 0.8
+  term code release 0.95
+  term code publish 0.91
+  term code deploy 0.87
+  term code deployment 0.83
+  term code dist 0.79
+  term code artifact 0.75
+  term code artifacts 0.71
+  term code package 0.67
+  action release
+  action publish
+  action deploy
+  action package
+  related VERSION_BUMP 0.6
+  related CI_PIPELINE 0.5
+  related INSTALLER 0.4
+  source seed
+end
+
+concept TEST_AUTOMATED
+  category BUILD_TOOLING
+  canonical test_automated
+  term pt teste 1.0
+  term pt testes 0.95
+  term pt teste unitario 0.9
+  term pt teste de integracao 0.85
+  term pt teste automatizado 0.8
+  term pt asserção 0.75
+  term pt cobertura de testes 0.7
+  term en test 1.0
+  term en tests 0.95
+  term en unit test 0.9
+  term en integration test 0.85
+  term en automated test 0.8
+  term code test 0.95
+  term code tests 0.91
+  term code unit_test 0.87
+  term code pytest 0.83
+  term code jest 0.79
+  term code assert 0.75
+  term code assertEqual 0.71
+  term code expect 0.67
+  action run
+  action assert
+  action mock
+  action verify
+  related CI_PIPELINE 0.5
+  related BENCHMARK 0.3
+  source seed
+end
+
+concept CI_PIPELINE
+  category BUILD_TOOLING
+  canonical ci_pipeline
+  term pt integracao continua 1.0
+  term pt ci 0.95
+  term pt cd 0.9
+  term pt pipeline de build 0.85
+  term pt github actions 0.8
+  term pt esteira 0.75
+  term pt build automatico 0.7
+  term en continuous integration 1.0
+  term en ci 0.95
+  term en cd 0.9
+  term en build pipeline 0.85
+  term en github actions 0.8
+  term code ci 0.95
+  term code cd 0.91
+  term code pipeline 0.87
+  term code Jenkinsfile 0.83
+  term code jenkins 0.79
+  term code github_actions 0.75
+  term code workflow 0.71
+  term code .github 0.67
+  action run
+  action trigger
+  action deploy
+  related TEST_AUTOMATED 0.5
+  related RELEASE 0.5
+  related BUILD_COMPILE 0.4
+  source seed
+end
+
+concept BUILD_CACHE
+  category BUILD_TOOLING
+  canonical build_cache
+  term pt cache de build 1.0
+  term pt build incremental 0.95
+  term pt recompilar 0.9
+  term pt objetos compilados 0.85
+  term pt limpar build 0.8
+  term pt artefatos intermediarios 0.75
+  term pt ccache 0.7
+  term en build cache 1.0
+  term en incremental build 0.95
+  term en rebuild 0.9
+  term en object files 0.85
+  term en clean build 0.8
+  term code ccache 0.95
+  term code incremental 0.91
+  term code obj 0.87
+  term code .o 0.83
+  term code build_dir 0.79
+  term code build/ 0.75
+  term code clean 0.71
+  term code rebuild 0.67
+  action clean
+  action rebuild
+  action cache
+  related BUILD_COMPILE 0.5
+  related CACHE 0.3
+  source seed
+end
+
+concept LINT_FORMAT
+  category BUILD_TOOLING
+  canonical lint_format
+  term pt formatacao 1.0
+  term pt formatar codigo 0.95
+  term pt lint 0.9
+  term pt linter 0.85
+  term pt estilo de codigo 0.8
+  term pt indentacao 0.75
+  term pt analise estatica 0.7
+  term en formatting 1.0
+  term en format code 0.95
+  term en lint 0.9
+  term en linter 0.85
+  term en code style 0.8
+  term code lint 0.95
+  term code linter 0.91
+  term code eslint 0.87
+  term code flake8 0.83
+  term code pylint 0.79
+  term code clang_format 0.75
+  term code clang_tidy 0.71
+  term code prettier 0.67
+  action format
+  action lint
+  action check
+  action fix
+  related BUILD_COMPILE 0.3
+  related CODE_REVIEW 0.3
+  source seed
+end
+
+concept DOCUMENTATION
+  category BUILD_TOOLING
+  canonical documentation
+  term pt documentacao 1.0
+  term pt documentar 0.95
+  term pt comentario 0.9
+  term pt readme 0.85
+  term pt manual 0.8
+  term pt guia 0.75
+  term pt docstring 0.7
+  term en documentation 1.0
+  term en document 0.95
+  term en comment 0.9
+  term en readme 0.85
+  term en manual 0.8
+  term code doc 0.95
+  term code docs 0.91
+  term code documentation 0.87
+  term code readme 0.83
+  term code comment 0.79
+  term code docstring 0.75
+  term code doxygen 0.71
+  term code javadoc 0.67
+  action document
+  action describe
+  action explain
+  related VERSIONING 0.2
+  source seed
+end
+
+concept CODE_REVIEW
+  category BUILD_TOOLING
+  canonical code_review
+  term pt revisao de codigo 1.0
+  term pt pull request 0.95
+  term pt revisar 0.9
+  term pt comentario de revisao 0.85
+  term pt aprovar mudanca 0.8
+  term pt diff 0.75
+  term pt aprovacao de codigo 0.7
+  term en code review 1.0
+  term en pull request 0.95
+  term en review 0.9
+  term en review comment 0.85
+  term en approve change 0.8
+  term code review 0.95
+  term code code_review 0.91
+  term code pull_request 0.87
+  term code pr 0.83
+  term code merge_request 0.79
+  term code mr 0.75
+  term code approve 0.71
+  term code comment 0.67
+  action review
+  action approve
+  action comment
+  action merge
+  related VERSION_CONTROL 0.5
+  related CONFLICT_MERGE 0.3
+  source seed
+end
+
+concept REFACTORING
+  category BUILD_TOOLING
+  canonical refactoring
+  term pt refatoracao 1.0
+  term pt refatorar 0.95
+  term pt reorganizar codigo 0.9
+  term pt limpar codigo 0.85
+  term pt dividir funcao 0.8
+  term pt renomear 0.75
+  term pt extrair funcao 0.7
+  term en refactoring 1.0
+  term en refactor 0.95
+  term en reorganize code 0.9
+  term en clean up code 0.85
+  term en split function 0.8
+  term code refactor 0.95
+  term code rename 0.91
+  term code extract 0.87
+  term code extract_function 0.83
+  term code inline 0.79
+  term code cleanup 0.75
+  term code simplify 0.71
+  term code dedupe 0.67
+  action refactor
+  action rename
+  action extract
+  action split
+  action simplify
+  related CODE_REVIEW 0.3
+  related LINT_FORMAT 0.3
+  source seed
+end
+
+concept CODE_NAVIGATION
+  category BUILD_TOOLING
+  canonical code_navigation
+  term pt navegar no codigo 1.0
+  term pt definicao 0.95
+  term pt referencias 0.9
+  term pt achar onde e usado 0.85
+  term pt quem chama 0.8
+  term pt chamadores 0.75
+  term pt simbolo 0.7
+  term en code navigation 1.0
+  term en definition 0.95
+  term en references 0.9
+  term en find usages 0.85
+  term en who calls 0.8
+  term code definition 0.95
+  term code references 0.91
+  term code usages 0.87
+  term code callers 0.83
+  term code callees 0.79
+  term code call_graph 0.75
+  term code symbol 0.71
+  term code lsp 0.67
+  action find
+  action locate
+  action navigate
+  related CODE_SEARCH 0.6
+  source seed
+end
+
+concept CODE_SEARCH
+  category BUILD_TOOLING
+  canonical code_search
+  term pt buscar no codigo 1.0
+  term pt procurar no codigo 0.95
+  term pt grep 0.9
+  term pt busca semantica 0.85
+  term pt achar funcao 0.8
+  term pt localizar trecho 0.75
+  term pt pesquisa em repositorio 0.7
+  term en code search 1.0
+  term en search code 0.95
+  term en grep 0.9
+  term en semantic search 0.85
+  term en find function 0.8
+  term code search 0.95
+  term code grep 0.91
+  term code rg 0.87
+  term code ripgrep 0.83
+  term code find 0.79
+  term code locate 0.75
+  term code semantic_search 0.71
+  term code code_search 0.67
+  action search
+  action find
+  action grep
+  action locate
+  action rank
+  related SEARCH_INDEX 0.6
+  related CODE_NAVIGATION 0.5
+  related SEARCH_ALGO 0.4
+  source seed
+end
+
+concept SOURCE_PROJECT
+  category BUILD_TOOLING
+  canonical source_project
+  term pt projeto 1.0
+  term pt estrutura do projeto 0.95
+  term pt repositorio de codigo 0.9
+  term pt modulo 0.85
+  term pt modulos 0.8
+  term pt pacote do projeto 0.75
+  term pt raiz do projeto 0.7
+  term en project 1.0
+  term en project structure 0.95
+  term en code repository 0.9
+  term en module 0.85
+  term en modules 0.8
+  term code project 0.95
+  term code module 0.91
+  term code modules 0.87
+  term code src 0.83
+  term code lib 0.79
+  term code workspace 0.75
+  term code monorepo 0.71
+  term code root 0.67
+  action organize
+  action split
+  related PACKAGE_DEPENDENCY 0.3
+  source seed
+end
+
+concept SCRIPTING
+  category BUILD_TOOLING
+  canonical scripting
+  term pt script 1.0
+  term pt roteiro 0.95
+  term pt automatizar 0.9
+  term pt automacao 0.85
+  term pt tarefa repetitiva 0.8
+  term pt script python 0.75
+  term pt script de shell 0.7
+  term en script 1.0
+  term en scripting 0.95
+  term en automate 0.9
+  term en automation 0.85
+  term en repetitive task 0.8
+  term code script 0.95
+  term code scripts 0.91
+  term code automation 0.87
+  term code automate 0.83
+  term code macro 0.79
+  term code util 0.75
+  term code utils 0.71
+  term code helper 0.67
+  action run
+  action automate
+  related SHELL_COMMAND 0.5
+  source seed
+end
+
+concept FEATURE_FLAG
+  category BUILD_TOOLING
+  canonical feature_flag
+  term pt flag de funcionalidade 1.0
+  term pt feature flag 0.95
+  term pt ativar recurso 0.9
+  term pt desativar recurso 0.85
+  term pt experimental 0.8
+  term pt opcao experimental 0.75
+  term pt toggle 0.7
+  term en feature flag 1.0
+  term en enable feature 0.95
+  term en disable feature 0.9
+  term en experimental 0.85
+  term en experimental option 0.8
+  term code feature_flag 0.95
+  term code feature 0.91
+  term code flag 0.87
+  term code toggle 0.83
+  term code enabled 0.79
+  term code experimental 0.75
+  term code beta 0.71
+  term code ab_test 0.67
+  action enable
+  action disable
+  action toggle
+  related CONFIG 0.4
+  related RELEASE 0.3
+  source seed
+end
+
+concept LICENSE_LEGAL
+  category BUILD_TOOLING
+  canonical license_legal
+  term pt licenca 1.0
+  term pt direitos autorais 0.95
+  term pt copyright 0.9
+  term pt mit 0.85
+  term pt gpl 0.8
+  term pt apache 0.75
+  term pt termos de licenca 0.7
+  term en license 1.0
+  term en copyright 0.95
+  term en mit 0.9
+  term en gpl 0.85
+  term en apache 0.8
+  term code license 0.95
+  term code copyright 0.91
+  term code SPDX 0.87
+  term code mit 0.83
+  term code gpl 0.79
+  term code apache 0.75
+  term code bsd 0.71
+  term code notice 0.67
+  action declare
+  action check
+  related DOCUMENTATION 0.2
+  source seed
+end
+
+concept MACRO_PREPROCESSOR
+  category BUILD_TOOLING
+  canonical macro_preprocessor
+  term pt macro 1.0
+  term pt preprocessador 0.95
+  term pt define 0.9
+  term pt ifdef 0.85
+  term pt include 0.8
+  term pt diretiva 0.75
+  term pt compilacao condicional 0.7
+  term en macro 1.0
+  term en preprocessor 0.95
+  term en define 0.9
+  term en ifdef 0.85
+  term en include 0.8
+  term code define 0.95
+  term code macro 0.91
+  term code ifdef 0.87
+  term code ifndef 0.83
+  term code endif 0.79
+  term code include 0.75
+  term code pragma 0.71
+  term code template 0.67
+  action define
+  action expand
+  action include
+  related BUILD_COMPILE 0.5
+  source seed
+end
+
+concept CODEGEN_ASSEMBLY
+  category BUILD_TOOLING
+  canonical codegen_assembly
+  term pt geracao de codigo 1.0
+  term pt assembly 0.95
+  term pt gerar codigo 0.9
+  term pt shader 0.85
+  term pt spir-v 0.8
+  term pt jit 0.75
+  term pt instrucao de maquina 0.7
+  term en code generation 1.0
+  term en assembly 0.95
+  term en generate code 0.9
+  term en shader 0.85
+  term en spir-v 0.8
+  term code codegen 0.95
+  term code asm 0.91
+  term code assembly 0.87
+  term code shader 0.83
+  term code glsl 0.79
+  term code spv 0.75
+  term code spirv 0.71
+  term code jit 0.67
+  action generate
+  action emit
+  action compile
+  related BUILD_COMPILE 0.4
+  related GPU_COMPUTE 0.4
+  source seed
+end
+
+concept TYPE_SYSTEM
+  category BUILD_TOOLING
+  canonical type_system
+  term pt tipo 1.0
+  term pt tipos 0.95
+  term pt tipagem 0.9
+  term pt conversao de tipo 0.85
+  term pt cast 0.8
+  term pt tipo inteiro 0.75
+  term pt ponto flutuante 0.7
+  term en type 1.0
+  term en types 0.95
+  term en typing 0.9
+  term en type conversion 0.85
+  term en cast 0.8
+  term code type 0.95
+  term code typedef 0.91
+  term code struct 0.87
+  term code class 0.83
+  term code interface 0.79
+  term code trait 0.75
+  term code enum 0.71
+  term code union 0.67
+  action cast
+  action convert
+  action declare
+  source seed
+end
+
+concept FUNCTION_SIGNATURE
+  category BUILD_TOOLING
+  canonical function_signature
+  term pt funcao 1.0
+  term pt assinatura da funcao 0.95
+  term pt metodo 0.9
+  term pt parametros 0.85
+  term pt retorno 0.8
+  term pt chamar funcao 0.75
+  term pt argumento 0.7
+  term en function 1.0
+  term en function signature 0.95
+  term en method 0.9
+  term en parameters 0.85
+  term en return 0.8
+  term code function 0.95
+  term code func 0.91
+  term code fn 0.87
+  term code def 0.83
+  term code method 0.79
+  term code signature 0.75
+  term code params 0.71
+  term code parameters 0.67
+  action call
+  action define
+  action return
+  action invoke
+  related FUNCTION_RETURN 0.6
+  related TYPE_SYSTEM 0.3
+  source seed
+  note assinatura digital: DIGITAL_SIGNATURE
+end
+
+concept FUNCTION_RETURN
+  category BUILD_TOOLING
+  canonical function_return
+  term pt retorno 1.0
+  term pt retornar 0.95
+  term pt valor retornado 0.9
+  term pt codigo de retorno 0.85
+  term pt retorna nulo 0.8
+  term pt resultado da funcao 0.75
+  term pt devolver valor 0.7
+  term en return 1.0
+  term en return value 0.95
+  term en returned 0.9
+  term en return code 0.85
+  term en returns null 0.8
+  term code return 0.95
+  term code ret 0.91
+  term code retval 0.87
+  term code return_value 0.83
+  term code returns 0.79
+  term code result 0.75
+  term code res 0.71
+  term code rc 0.67
+  action return
+  action yield
+  related FUNCTION_SIGNATURE 0.6
+  related RETURN_MERCHANDISE 0.2
+  source seed
+  note devolucao de produto: RETURN_MERCHANDISE
+end
+
+concept C_LANGUAGE_SYNTAX
+  category BUILD_TOOLING
+  canonical c_language_syntax
+  term pt tipo inteiro sem sinal 1.0
+  term pt ponteiro 0.95
+  term pt struct 0.9
+  term pt enum 0.85
+  term pt typedef 0.8
+  term pt constante 0.75
+  term pt estatico 0.7
+  term en unsigned integer 1.0
+  term en pointer 0.95
+  term en struct 0.9
+  term en enum 0.85
+  term en typedef 0.8
+  term code char 0.95
+  term code uint 0.91
+  term code uint8_t 0.87
+  term code unsigned 0.83
+  term code bool 0.79
+  term code sizeof 0.75
+  term code const 0.71
+  term code static 0.67
+  action declare
+  action define
+  action cast
+  related TYPE_SYSTEM 0.7
+  related MACRO_PREPROCESSOR 0.4
+  source mined
+  note palavras reservadas e tipos basicos de C/C++/Kotlin
+end
+
+concept C_STDLIB_STRING
+  category BUILD_TOOLING
+  canonical c_stdlib_string
+  term pt funcoes de string de c 1.0
+  term pt copiar memoria 0.95
+  term pt comparar string 0.9
+  term pt procurar substring 0.85
+  term pt formatar string 0.8
+  term pt duplicar string 0.75
+  term pt ler numero de texto 0.7
+  term en c string functions 1.0
+  term en copy memory 0.95
+  term en compare string 0.9
+  term en find substring 0.85
+  term en format string 0.8
+  term code memcpy 0.95
+  term code memset 0.91
+  term code memmove 0.87
+  term code strstr 0.83
+  term code strchr 0.79
+  term code strncmp 0.75
+  term code strcmp 0.71
+  term code strdup 0.67
+  action copy
+  action compare
+  action find
+  action format
+  related TEXT_MANIP 0.6
+  related MEMORY_ALLOC 0.4
+  source mined
+end
+
+concept KOTLIN_JVM_SYNTAX
+  category BUILD_TOOLING
+  canonical kotlin_jvm_syntax
+  term pt kotlin 1.0
+  term pt java 0.95
+  term pt corrotinas do kotlin 0.9
+  term pt escopo 0.85
+  term pt val e var 0.8
+  term pt funcao fun 0.75
+  term pt classe de dados 0.7
+  term en kotlin 1.0
+  term en java 0.95
+  term en kotlin coroutines 0.9
+  term en scope 0.85
+  term en val and var 0.8
+  term code val 0.95
+  term code var 0.91
+  term code fun 0.87
+  term code androidx 0.83
+  term code kotlinx 0.79
+  term code coroutines 0.75
+  term code Dispatchers 0.71
+  term code scope 0.67
+  action declare
+  action launch
+  related MOBILE_UI_COMPOSE 0.4
+  related ASYNC_AWAIT 0.4
+  source mined
+end
+
+concept NPM_NODE_PACKAGES
+  category BUILD_TOOLING
+  canonical npm_node_packages
+  term pt node 1.0
+  term pt npm 0.95
+  term pt modulos node 0.9
+  term pt package json 0.85
+  term pt registro de pacotes 0.8
+  term pt mjs 0.75
+  term pt javascript 0.7
+  term en node 1.0
+  term en npm 0.95
+  term en node modules 0.9
+  term en package json 0.85
+  term en package registry 0.8
+  term code node 0.95
+  term code npm 0.91
+  term code npmjs 0.87
+  term code package.json 0.83
+  term code mjs 0.79
+  term code js 0.75
+  term code ts 0.71
+  term code express 0.67
+  action install
+  action run
+  action test
+  related PACKAGE_DEPENDENCY 0.6
+  related SCRIPTING 0.3
+  source mined
+end
+
+concept GIT_WORKTREE_BRANCHING
+  category BUILD_TOOLING
+  canonical git_worktree_branching
+  term pt arvore de trabalho 1.0
+  term pt worktree 0.95
+  term pt ramo 0.9
+  term pt mesclar ramo 0.85
+  term pt stash 0.8
+  term pt tag 0.75
+  term pt rebase 0.7
+  term en worktree 1.0
+  term en branch 0.95
+  term en merge branch 0.9
+  term en stash 0.85
+  term en tag 0.8
+  term code git 0.95
+  term code worktree 0.91
+  term code branch 0.87
+  term code stash 0.83
+  term code rebase 0.79
+  term code merge 0.75
+  term code tag 0.71
+  term code origin 0.67
+  action branch
+  action merge
+  action rebase
+  action checkout
+  action stash
+  related VERSION_CONTROL 0.7
+  related CONFLICT_MERGE 0.5
+  source mined
+end
+
+concept MAINTENANCE_COVERAGE
+  category BUILD_TOOLING
+  canonical maintenance_coverage
+  term pt manutencao 1.0
+  term pt cobertura 0.95
+  term pt verdade medida 0.9
+  term pt verificado 0.85
+  term pt nao verificado 0.8
+  term pt relato 0.75
+  term pt veredito 0.7
+  term en maintenance 1.0
+  term en coverage 0.95
+  term en measured truth 0.9
+  term en verified 0.85
+  term en unverified 0.8
+  term code coverage 0.95
+  term code maintenance 0.91
+  term code measured 0.87
+  term code verified 0.83
+  term code unverified 0.79
+  term code verdict 0.75
+  term code outcome 0.71
+  term code failures 0.67
+  action verify
+  action report
+  action measure
+  related TEST_AUTOMATED 0.6
+  related BENCHMARK 0.4
+  source mined
+end

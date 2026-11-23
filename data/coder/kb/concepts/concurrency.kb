@@ -1,0 +1,843 @@
+# Concurrency concepts (source seed unless noted). Format: see README.md
+
+concept THREAD
+  category CONCURRENCY
+  canonical thread
+  term pt thread 1.0
+  term pt threads 0.95
+  term pt linha de execucao 0.9
+  term pt fio de execucao 0.85
+  term pt multithread 0.8
+  term pt thread principal 0.75
+  term pt thread de fundo 0.7
+  term en thread 1.0
+  term en threads 0.95
+  term en multithreading 0.9
+  term en main thread 0.85
+  term en background thread 0.8
+  term code thread 0.95
+  term code pthread_create 0.91
+  term code pthread_join 0.87
+  term code std::thread 0.83
+  term code thrd_create 0.79
+  term code CreateThread 0.75
+  term code worker 0.71
+  term code main_thread 0.67
+  action spawn
+  action join
+  action detach
+  action start
+  action stop
+  related THREAD_POOL 0.6
+  related MUTEX_LOCK 0.5
+  related ASYNC_AWAIT 0.4
+  related PROCESS 0.3
+  source seed
+end
+
+concept THREAD_POOL
+  category CONCURRENCY
+  canonical thread_pool
+  term pt pool de threads 1.0
+  term pt pool de trabalhadores 0.95
+  term pt executor 0.9
+  term pt pool 0.85
+  term pt reutilizar threads 0.8
+  term pt paralelismo 0.75
+  term pt workers 0.7
+  term en thread pool 1.0
+  term en worker pool 0.95
+  term en executor 0.9
+  term en pool 0.85
+  term en reuse threads 0.8
+  term code thread_pool 0.95
+  term code worker_pool 0.91
+  term code executor 0.87
+  term code ThreadPoolExecutor 0.83
+  term code pool 0.79
+  term code workers 0.75
+  term code n_threads 0.71
+  term code num_threads 0.67
+  action submit
+  action run
+  action schedule
+  action shutdown
+  related THREAD 0.6
+  related TASK_QUEUE 0.6
+  related PARALLEL_COMPUTE 0.5
+  source seed
+end
+
+concept PARALLEL_COMPUTE
+  category CONCURRENCY
+  canonical parallel_compute
+  term pt paralelismo 1.0
+  term pt paralelizar 0.95
+  term pt em paralelo 0.9
+  term pt simultaneo 0.85
+  term pt simd 0.8
+  term pt vetorizacao 0.75
+  term pt openmp 0.7
+  term en parallelism 1.0
+  term en parallelize 0.95
+  term en in parallel 0.9
+  term en simultaneous 0.85
+  term en simd 0.8
+  term code parallel 0.95
+  term code omp 0.91
+  term code openmp 0.87
+  term code simd 0.83
+  term code avx2 0.79
+  term code neon 0.75
+  term code vectorize 0.71
+  term code parallel_for 0.67
+  action parallelize
+  action vectorize
+  action split
+  related THREAD_POOL 0.5
+  related GPU_COMPUTE 0.3
+  source seed
+end
+
+concept TASK_QUEUE
+  category CONCURRENCY
+  canonical task_queue
+  term pt fila de tarefas 1.0
+  term pt tarefa 0.95
+  term pt tarefas 0.9
+  term pt enfileirar tarefa 0.85
+  term pt job 0.8
+  term pt jobs 0.75
+  term pt fila de trabalho 0.7
+  term en task queue 1.0
+  term en task 0.95
+  term en tasks 0.9
+  term en enqueue task 0.85
+  term en job 0.8
+  term code task 0.95
+  term code tasks 0.91
+  term code task_queue 0.87
+  term code job 0.83
+  term code jobs 0.79
+  term code job_queue 0.75
+  term code work_queue 0.71
+  term code enqueue 0.67
+  action enqueue
+  action run
+  action schedule
+  action dispatch
+  action complete
+  related THREAD_POOL 0.6
+  related SCHEDULER 0.5
+  related MESSAGE_QUEUE 0.4
+  related TASK_AGENT 0.4
+  source seed
+end
+
+concept QUEUE_STRUCT
+  category CONCURRENCY
+  canonical queue_struct
+  term pt fila 1.0
+  term pt fila fifo 0.95
+  term pt pilha 0.9
+  term pt lifo 0.85
+  term pt deque 0.8
+  term pt fila circular 0.75
+  term pt buffer circular 0.7
+  term en queue 1.0
+  term en fifo 0.95
+  term en stack 0.9
+  term en lifo 0.85
+  term en deque 0.8
+  term code queue 0.95
+  term code fifo 0.91
+  term code stack 0.87
+  term code lifo 0.83
+  term code deque 0.79
+  term code ring 0.75
+  term code ring_buffer 0.71
+  term code circular_buffer 0.67
+  action push
+  action pop
+  action enqueue
+  action dequeue
+  action peek
+  related MESSAGE_QUEUE 0.4
+  related PRIORITY_QUEUE 0.4
+  source seed
+end
+
+concept MUTEX_LOCK
+  category CONCURRENCY
+  canonical mutex_lock
+  term pt mutex 1.0
+  term pt trava 0.95
+  term pt bloqueio 0.9
+  term pt lock 0.85
+  term pt bloquear recurso 0.8
+  term pt secao critica 0.75
+  term pt exclusao mutua 0.7
+  term en mutex 1.0
+  term en lock 0.95
+  term en locking 0.9
+  term en critical section 0.85
+  term en mutual exclusion 0.8
+  term code mutex 0.95
+  term code pthread_mutex_t 0.91
+  term code lock 0.87
+  term code unlock 0.83
+  term code trylock 0.79
+  term code lock_guard 0.75
+  term code unique_lock 0.71
+  term code critical_section 0.67
+  action lock
+  action unlock
+  action acquire
+  action release
+  action try
+  related SYNCHRONIZATION_PRIMITIVE 0.7
+  related ATOMIC_OP 0.5
+  related THREAD 0.5
+  related CONCURRENCY_CONTROL 0.5
+  source seed
+  note bloqueio de conta: ACCOUNT_LOCK
+end
+
+concept SYNCHRONIZATION_PRIMITIVE
+  category CONCURRENCY
+  canonical synchronization_primitive
+  term pt sincronizacao 1.0
+  term pt semaforo 0.95
+  term pt variavel de condicao 0.9
+  term pt barreira 0.85
+  term pt esperar sinal 0.8
+  term pt sinalizar 0.75
+  term pt notificar thread 0.7
+  term en synchronization 1.0
+  term en semaphore 0.95
+  term en condition variable 0.9
+  term en barrier 0.85
+  term en wait for signal 0.8
+  term code semaphore 0.95
+  term code sem_t 0.91
+  term code sem_wait 0.87
+  term code sem_post 0.83
+  term code condvar 0.79
+  term code cond_wait 0.75
+  term code pthread_cond_t 0.71
+  term code notify 0.67
+  action wait
+  action signal
+  action notify
+  action post
+  related MUTEX_LOCK 0.7
+  related THREAD 0.5
+  source seed
+  note sincronizacao de dados: SYNC_DATA
+end
+
+concept ATOMIC_OP
+  category CONCURRENCY
+  canonical atomic_op
+  term pt atomico 1.0
+  term pt operacao atomica 0.95
+  term pt contador atomico 0.9
+  term pt compare and swap 0.85
+  term pt cas 0.8
+  term pt memoria compartilhada 0.75
+  term pt sem trava 0.7
+  term en atomic 1.0
+  term en atomic operation 0.95
+  term en atomic counter 0.9
+  term en compare and swap 0.85
+  term en cas 0.8
+  term code atomic 0.95
+  term code atomic_int 0.91
+  term code std::atomic 0.87
+  term code fetch_add 0.83
+  term code compare_exchange 0.79
+  term code cas 0.75
+  term code memory_order 0.71
+  term code lockfree 0.67
+  action load
+  action store
+  action add
+  action swap
+  related MUTEX_LOCK 0.5
+  related SYNCHRONIZATION_PRIMITIVE 0.4
+  source seed
+end
+
+concept CONCURRENCY_CONTROL
+  category CONCURRENCY
+  canonical concurrency_control
+  term pt concorrencia 1.0
+  term pt acesso concorrente 0.95
+  term pt controle de concorrencia 0.9
+  term pt otimista 0.85
+  term pt pessimista 0.8
+  term pt versao otimista 0.75
+  term pt simultaneidade 0.7
+  term en concurrency 1.0
+  term en concurrent access 0.95
+  term en concurrency control 0.9
+  term en optimistic locking 0.85
+  term en pessimistic locking 0.8
+  term code concurrent 0.95
+  term code concurrency 0.91
+  term code thread_safe 0.87
+  term code optimistic_lock 0.83
+  term code pessimistic_lock 0.79
+  term code version_check 0.75
+  term code etag 0.71
+  term code if_match 0.67
+  action guard
+  action serialize
+  action check
+  related MUTEX_LOCK 0.5
+  related DB_TRANSACTION 0.4
+  source seed
+end
+
+concept ASYNC_AWAIT
+  category CONCURRENCY
+  canonical async_await
+  term pt assincrono 1.0
+  term pt assincronismo 0.95
+  term pt async 0.9
+  term pt await 0.85
+  term pt nao bloqueante 0.8
+  term pt aguardar 0.75
+  term pt corrotina 0.7
+  term en asynchronous 1.0
+  term en async 0.95
+  term en await 0.9
+  term en non-blocking 0.85
+  term en coroutine 0.8
+  term code async 0.95
+  term code await 0.91
+  term code Promise 0.87
+  term code Future 0.83
+  term code coroutine 0.79
+  term code suspend 0.75
+  term code launch 0.71
+  term code async_task 0.67
+  action await
+  action resolve
+  action reject
+  action wait
+  action suspend
+  related CALLBACK 0.6
+  related EVENT_LOOP 0.6
+  related THREAD 0.3
+  source seed
+end
+
+concept CALLBACK
+  category CONCURRENCY
+  canonical callback
+  term pt callback 1.0
+  term pt retorno de chamada 0.95
+  term pt funcao de retorno 0.9
+  term pt handler 0.85
+  term pt ouvinte 0.8
+  term pt gancho 0.75
+  term pt hook 0.7
+  term en callback 1.0
+  term en callbacks 0.95
+  term en handler 0.9
+  term en listener 0.85
+  term en hook 0.8
+  term code callback 0.95
+  term code cb 0.91
+  term code on_done 0.87
+  term code on_complete 0.83
+  term code on_success 0.79
+  term code on_error 0.75
+  term code handler 0.71
+  term code hook 0.67
+  action call
+  action register
+  action invoke
+  related ASYNC_AWAIT 0.6
+  related EVENT_BUS 0.5
+  related EVENT_LOOP 0.4
+  source seed
+end
+
+concept EVENT_LOOP
+  category CONCURRENCY
+  canonical event_loop
+  term pt laco de eventos 1.0
+  term pt loop de eventos 0.95
+  term pt loop principal 0.9
+  term pt ciclo principal 0.85
+  term pt despachar eventos 0.8
+  term pt run loop 0.75
+  term pt epoll 0.7
+  term en event loop 1.0
+  term en main loop 0.95
+  term en run loop 0.9
+  term en message loop 0.85
+  term en dispatch events 0.8
+  term code event_loop 0.95
+  term code main_loop 0.91
+  term code run_loop 0.87
+  term code message_loop 0.83
+  term code loop 0.79
+  term code poll 0.75
+  term code epoll 0.71
+  term code select 0.67
+  action run
+  action poll
+  action dispatch
+  action tick
+  related ASYNC_AWAIT 0.5
+  related EVENT_BUS 0.4
+  related INPUT_EVENT 0.3
+  source seed
+  note laco de repeticao simples: LOOP_ITERATION
+end
+
+concept SCHEDULER
+  category CONCURRENCY
+  canonical scheduler
+  term pt agendador 1.0
+  term pt agendar 0.95
+  term pt agendamento 0.9
+  term pt tarefa agendada 0.85
+  term pt cron 0.8
+  term pt executar periodicamente 0.75
+  term pt a cada 0.7
+  term en scheduler 1.0
+  term en schedule 0.95
+  term en scheduling 0.9
+  term en scheduled task 0.85
+  term en cron 0.8
+  term code scheduler 0.95
+  term code schedule 0.91
+  term code cron 0.87
+  term code crontab 0.83
+  term code interval 0.79
+  term code set_interval 0.75
+  term code setTimeout 0.71
+  term code periodic 0.67
+  action schedule
+  action cancel
+  action repeat
+  action delay
+  action run
+  related TIMER 0.6
+  related TASK_QUEUE 0.5
+  related CRON_EXPR 0.4
+  source seed
+  note agendamento de compromisso: RESOURCE_RESERVATION
+end
+
+concept TIMER
+  category CONCURRENCY
+  canonical timer
+  term pt temporizador 1.0
+  term pt timer 0.95
+  term pt cronometro 0.9
+  term pt contagem regressiva 0.85
+  term pt intervalo 0.8
+  term pt atraso 0.75
+  term pt dormir 0.7
+  term en timer 1.0
+  term en stopwatch 0.95
+  term en countdown 0.9
+  term en interval 0.85
+  term en delay 0.8
+  term code timer 0.95
+  term code QTimer 0.91
+  term code setTimeout 0.87
+  term code setInterval 0.83
+  term code sleep 0.79
+  term code usleep 0.75
+  term code nanosleep 0.71
+  term code delay 0.67
+  action start
+  action stop
+  action sleep
+  action wait
+  action elapse
+  related SCHEDULER 0.6
+  related TIMEOUT 0.4
+  related CLOCK_TIME 0.4
+  source seed
+end
+
+concept CRON_EXPR
+  category CONCURRENCY
+  canonical cron_expr
+  term pt cron 1.0
+  term pt expressao cron 0.95
+  term pt rotina diaria 0.9
+  term pt agendamento recorrente 0.85
+  term pt toda segunda 0.8
+  term pt horario fixo 0.75
+  term pt janela de manutencao 0.7
+  term en cron 1.0
+  term en cron expression 0.95
+  term en daily routine 0.9
+  term en recurring schedule 0.85
+  term en every monday 0.8
+  term code cron 0.95
+  term code crontab 0.91
+  term code cron_expr 0.87
+  term code cron_expression 0.83
+  term code schedule_cron 0.79
+  term code daily 0.75
+  term code weekly 0.71
+  term code hourly 0.67
+  action schedule
+  action parse
+  related SCHEDULER 0.6
+  source seed
+end
+
+concept TASK_CANCELLATION
+  category CONCURRENCY
+  canonical task_cancellation
+  term pt cancelamento de tarefa 1.0
+  term pt cancelar 0.95
+  term pt abortar 0.9
+  term pt interromper 0.85
+  term pt parar tarefa 0.8
+  term pt token de cancelamento 0.75
+  term pt interrupcao 0.7
+  term en cancel task 1.0
+  term en cancellation 0.95
+  term en abort 0.9
+  term en interrupt 0.85
+  term en stop task 0.8
+  term code cancel 0.95
+  term code cancelled 0.91
+  term code canceled 0.87
+  term code abort 0.83
+  term code AbortController 0.79
+  term code cancellation_token 0.75
+  term code interrupt 0.71
+  term code interrupted 0.67
+  action cancel
+  action abort
+  action interrupt
+  action stop
+  related ORDER_CANCELLATION 0.2
+  related TASK_QUEUE 0.4
+  related ASYNC_AWAIT 0.4
+  related PROCESS 0.3
+  source seed
+  note cancelar pedido: ORDER_CANCELLATION
+end
+
+concept RETRY
+  category CONCURRENCY
+  canonical retry
+  term pt tentar novamente 1.0
+  term pt nova tentativa 0.95
+  term pt retentar 0.9
+  term pt repetir 0.85
+  term pt retry 0.8
+  term pt tentativas 0.75
+  term pt numero maximo de tentativas 0.7
+  term en retry 1.0
+  term en retries 0.95
+  term en try again 0.9
+  term en retry attempt 0.85
+  term en max retries 0.8
+  term code retry 0.95
+  term code retries 0.91
+  term code max_retries 0.87
+  term code attempt 0.83
+  term code attempts 0.79
+  term code retry_count 0.75
+  term code retry_on 0.71
+  term code with_retry 0.67
+  action retry
+  action repeat
+  action attempt
+  related BACKOFF 0.8
+  related TIMEOUT 0.5
+  related RECOVERY_FALLBACK 0.4
+  source seed
+end
+
+concept BACKOFF
+  category CONCURRENCY
+  canonical backoff
+  term pt backoff 1.0
+  term pt espera crescente 0.95
+  term pt backoff exponencial 0.9
+  term pt intervalo entre tentativas 0.85
+  term pt jitter 0.8
+  term pt atraso progressivo 0.75
+  term pt espera exponencial 0.7
+  term en backoff 1.0
+  term en exponential backoff 0.95
+  term en retry delay 0.9
+  term en jitter 0.85
+  term en progressive delay 0.8
+  term code backoff 0.95
+  term code exponential_backoff 0.91
+  term code backoff_ms 0.87
+  term code retry_delay 0.83
+  term code jitter 0.79
+  term code delay_ms 0.75
+  term code base_delay 0.71
+  term code max_delay 0.67
+  action delay
+  action increase
+  action wait
+  related RETRY 0.8
+  related RATE_LIMIT 0.3
+  source seed
+end
+
+concept CONCURRENT_STATE
+  category CONCURRENCY
+  canonical concurrent_state
+  term pt estado compartilhado 1.0
+  term pt memoria compartilhada 0.95
+  term pt variavel global 0.9
+  term pt singleton 0.85
+  term pt condicao de corrida 0.8
+  term pt ordem de execucao 0.75
+  term pt thread-safe 0.7
+  term en shared state 1.0
+  term en shared memory 0.95
+  term en global variable 0.9
+  term en singleton 0.85
+  term en race condition 0.8
+  term code shared 0.95
+  term code shared_state 0.91
+  term code global 0.87
+  term code g_state 0.83
+  term code singleton 0.79
+  term code shared_memory 0.75
+  term code shmem 0.71
+  term code race 0.67
+  action share
+  action guard
+  action protect
+  related MUTEX_LOCK 0.5
+  related ATOMIC_OP 0.3
+  source seed
+end
+
+concept LOOP_ITERATION
+  category CONCURRENCY
+  canonical loop_iteration
+  term pt laco 1.0
+  term pt loop 0.95
+  term pt iteracao 0.9
+  term pt repetir ate 0.85
+  term pt for 0.8
+  term pt while 0.75
+  term pt percorrer 0.7
+  term en loop 1.0
+  term en iteration 0.95
+  term en iterate 0.9
+  term en repeat until 0.85
+  term en for 0.8
+  term code loop 0.95
+  term code for 0.91
+  term code while 0.87
+  term code iter 0.83
+  term code iterate 0.79
+  term code iterator 0.75
+  term code foreach 0.71
+  term code i 0.67
+  action iterate
+  action loop
+  action break
+  related EVENT_LOOP 0.2
+  related AGGREGATION 0.2
+  source seed
+end
+
+concept DEBOUNCE_THROTTLE
+  category CONCURRENCY
+  canonical debounce_throttle
+  term pt debounce 1.0
+  term pt throttle 0.95
+  term pt limitar frequencia 0.9
+  term pt atrasar chamada 0.85
+  term pt evitar chamadas repetidas 0.8
+  term pt coalescer 0.75
+  term pt agrupar eventos 0.7
+  term en debounce 1.0
+  term en throttle 0.95
+  term en limit frequency 0.9
+  term en delay call 0.85
+  term en avoid repeated calls 0.8
+  term code debounce 0.95
+  term code throttle 0.91
+  term code coalesce 0.87
+  term code rate_limited 0.83
+  term code trailing 0.79
+  term code leading 0.75
+  term code delay_call 0.71
+  term code last_call 0.67
+  action debounce
+  action throttle
+  action coalesce
+  related RATE_LIMIT 0.3
+  related TIMER 0.4
+  source seed
+end
+
+concept BACKGROUND_SERVICE
+  category CONCURRENCY
+  canonical background_service
+  term pt tarefa em segundo plano 1.0
+  term pt servico em segundo plano 0.95
+  term pt processar em background 0.9
+  term pt trabalho assincrono 0.85
+  term pt worker em background 0.8
+  term pt fila de background 0.75
+  term en background task 1.0
+  term en background service 0.95
+  term en process in background 0.9
+  term en async work 0.85
+  term en background worker 0.8
+  term code background 0.95
+  term code bg 0.91
+  term code bg_task 0.87
+  term code background_service 0.83
+  term code BackgroundWorker 0.79
+  term code daemon_thread 0.75
+  term code run_in_background 0.71
+  term code headless 0.67
+  action run
+  action schedule
+  related THREAD 0.5
+  related DAEMON_SERVICE 0.4
+  related TASK_QUEUE 0.4
+  source seed
+end
+
+concept PIPELINE_STAGE
+  category CONCURRENCY
+  canonical pipeline_stage
+  term pt etapa do pipeline 1.0
+  term pt estagio 0.95
+  term pt pipeline de processamento 0.9
+  term pt encadeamento 0.85
+  term pt produtor e consumidor 0.8
+  term pt etapa seguinte 0.75
+  term pt cadeia 0.7
+  term en pipeline stage 1.0
+  term en stage 0.95
+  term en processing pipeline 0.9
+  term en chaining 0.85
+  term en producer consumer pipeline 0.8
+  term code stage 0.95
+  term code pipeline_stage 0.91
+  term code stages 0.87
+  term code chain 0.83
+  term code next_stage 0.79
+  term code filter_chain 0.75
+  term code middleware_chain 0.71
+  term code handler_chain 0.67
+  action chain
+  action compose
+  action pipe
+  action forward
+  related TASK_QUEUE 0.3
+  related DATA_PIPELINE 0.4
+  source seed
+end
+
+concept PRIORITY_SCHED
+  category CONCURRENCY
+  canonical priority_sched
+  term pt prioridade 1.0
+  term pt prioridades 0.95
+  term pt tarefa urgente 0.9
+  term pt preempcao 0.85
+  term pt prioridade de thread 0.8
+  term pt ordem de prioridade 0.75
+  term pt nice 0.7
+  term en priority 1.0
+  term en priorities 0.95
+  term en urgent task 0.9
+  term en preemption 0.85
+  term en thread priority 0.8
+  term code priority 0.95
+  term code prio 0.91
+  term code nice 0.87
+  term code high_priority 0.83
+  term code low_priority 0.79
+  term code urgent 0.75
+  term code preempt 0.71
+  term code SCHED_FIFO 0.67
+  action prioritize
+  action preempt
+  related PRIORITY_QUEUE 0.6
+  related SCHEDULER 0.4
+  source seed
+end
+
+concept WAIT_NOTIFY_FUTURE
+  category CONCURRENCY
+  canonical wait_notify_future
+  term pt esperar resultado 1.0
+  term pt aguardar conclusao 0.95
+  term pt join 0.9
+  term pt resultado futuro 0.85
+  term pt bloquear ate terminar 0.8
+  term pt sincronizar tarefas 0.75
+  term pt waitgroup 0.7
+  term en wait for result 1.0
+  term en await completion 0.95
+  term en join 0.9
+  term en future result 0.85
+  term en block until done 0.8
+  term code wait 0.95
+  term code join 0.91
+  term code get 0.87
+  term code result 0.83
+  term code future_result 0.79
+  term code wait_all 0.75
+  term code gather 0.71
+  term code WaitGroup 0.67
+  action wait
+  action join
+  action gather
+  related ASYNC_AWAIT 0.5
+  related SYNCHRONIZATION_PRIMITIVE 0.5
+  source seed
+end
+
+concept REALTIME_THREAD
+  category CONCURRENCY
+  canonical realtime_thread
+  term pt tempo real 1.0
+  term pt thread de tempo real 0.95
+  term pt sem alocacao 0.9
+  term pt sem bloqueio 0.85
+  term pt thread de audio 0.8
+  term pt deadline rigido 0.75
+  term pt glitch 0.7
+  term en real-time 1.0
+  term en realtime thread 0.95
+  term en no allocation 0.9
+  term en lock-free 0.85
+  term en audio thread 0.8
+  term code realtime 0.95
+  term code rt_thread 0.91
+  term code audio_thread 0.87
+  term code no_alloc 0.83
+  term code lockfree 0.79
+  term code wait_free 0.75
+  term code deadline 0.71
+  term code xrun 0.67
+  action process
+  action deliver
+  related MUTEX_LOCK 0.3
+  related AUDIO_BUFFER 0.5
+  related THREAD 0.4
+  source seed
+end

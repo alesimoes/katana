@@ -1,0 +1,1282 @@
+# Operating system and runtime concepts (source seed unless noted). Format: see README.md
+
+concept PROCESS
+  category SYSTEM
+  canonical process
+  term pt processo 1.0
+  term pt processos 0.95
+  term pt subprocesso 0.9
+  term pt processo filho 0.85
+  term pt iniciar processo 0.8
+  term pt encerrar processo 0.75
+  term pt matar processo 0.7
+  term en process 1.0
+  term en processes 0.95
+  term en subprocess 0.9
+  term en child process 0.85
+  term en start process 0.8
+  term code process 0.95
+  term code subprocess 0.91
+  term code Popen 0.87
+  term code fork 0.83
+  term code exec 0.79
+  term code execve 0.75
+  term code execvp 0.71
+  term code spawn 0.67
+  action spawn
+  action start
+  action kill
+  action wait
+  action exec
+  related SHELL_COMMAND 0.6
+  related SIGNAL 0.5
+  related THREAD 0.3
+  related DAEMON_SERVICE 0.4
+  source seed
+end
+
+concept SHELL_COMMAND
+  category SYSTEM
+  canonical shell_command
+  term pt comando 1.0
+  term pt comandos 0.95
+  term pt shell 0.9
+  term pt bash 0.85
+  term pt executar comando 0.8
+  term pt linha de comando 0.75
+  term pt script 0.7
+  term en command 1.0
+  term en commands 0.95
+  term en shell 0.9
+  term en bash 0.85
+  term en run command 0.8
+  term code command 0.95
+  term code cmd 0.91
+  term code shell 0.87
+  term code bash 0.83
+  term code sh 0.79
+  term code run_command 0.75
+  term code exec 0.71
+  term code system 0.67
+  action run
+  action execute
+  action capture
+  action pipe
+  related PROCESS 0.6
+  related CLI_ARGS 0.5
+  related SANDBOX 0.3
+  source seed
+end
+
+concept CLI_ARGS
+  category SYSTEM
+  canonical cli_args
+  term pt argumentos 1.0
+  term pt parametros de linha de comando 0.95
+  term pt opcoes de linha de comando 0.9
+  term pt flags 0.85
+  term pt argv 0.8
+  term pt argc 0.75
+  term pt subcomando 0.7
+  term en arguments 1.0
+  term en command line arguments 0.95
+  term en cli options 0.9
+  term en flags 0.85
+  term en argv 0.8
+  term code argv 0.95
+  term code argc 0.91
+  term code args 0.87
+  term code argparse 0.83
+  term code getopt 0.79
+  term code getopt_long 0.75
+  term code flags 0.71
+  term code flag 0.67
+  action parse
+  action validate
+  action print_usage
+  related SHELL_COMMAND 0.5
+  related CONFIG 0.4
+  source seed
+end
+
+concept ENV_VARIABLE
+  category SYSTEM
+  canonical env_variable
+  term pt variavel de ambiente 1.0
+  term pt variaveis de ambiente 0.95
+  term pt ambiente 0.9
+  term pt env 0.85
+  term pt definir variavel 0.8
+  term pt ler variavel 0.75
+  term pt path do sistema 0.7
+  term en environment variable 1.0
+  term en environment variables 0.95
+  term en env var 0.9
+  term en env 0.85
+  term en set variable 0.8
+  term code env 0.95
+  term code getenv 0.91
+  term code setenv 0.87
+  term code putenv 0.83
+  term code environ 0.79
+  term code os.environ 0.75
+  term code process.env 0.71
+  term code env_var 0.67
+  action get
+  action set
+  action export
+  action unset
+  related CONFIG 0.5
+  related SECRETS_MANAGEMENT 0.3
+  source seed
+end
+
+concept CONFIG
+  category SYSTEM
+  canonical config
+  term pt configuracao 1.0
+  term pt configuracoes 0.95
+  term pt configurar 0.9
+  term pt arquivo de configuracao 0.85
+  term pt parametros 0.8
+  term pt ajustes 0.75
+  term pt opcoes 0.7
+  term en configuration 1.0
+  term en config 0.95
+  term en configure 0.9
+  term en settings 0.85
+  term en config file 0.8
+  term code config 0.95
+  term code cfg 0.91
+  term code conf 0.87
+  term code configuration 0.83
+  term code settings 0.79
+  term code options 0.75
+  term code opts 0.71
+  term code defaults 0.67
+  action load
+  action save
+  action set
+  action get
+  action override
+  related ENV_VARIABLE 0.5
+  related CONFIG_STORE 0.5
+  related CLI_ARGS 0.4
+  source seed
+end
+
+concept LOG_RECORD
+  category SYSTEM
+  canonical log_record
+  term pt log 1.0
+  term pt logs 0.95
+  term pt registrar 0.9
+  term pt registro de log 0.85
+  term pt logging 0.8
+  term pt depurar 0.75
+  term pt mensagem de log 0.7
+  term en log 1.0
+  term en logs 0.95
+  term en logging 0.9
+  term en logger 0.85
+  term en log message 0.8
+  term code log 0.95
+  term code logger 0.91
+  term code logging 0.87
+  term code log_info 0.83
+  term code log_error 0.79
+  term code log_debug 0.75
+  term code log_warn 0.71
+  term code printf 0.67
+  action log
+  action write
+  action rotate
+  action flush
+  related AUDIT_LOG 0.4
+  related ERROR_MESSAGE 0.4
+  related DEBUGGING 0.5
+  source seed
+  note registro de cadastro: REGISTRATION; registro de banco: DATABASE
+end
+
+concept DEBUGGING
+  category SYSTEM
+  canonical debugging
+  term pt depuracao 1.0
+  term pt depurar 0.95
+  term pt debug 0.9
+  term pt bug 0.85
+  term pt ponto de interrupcao 0.8
+  term pt breakpoint 0.75
+  term pt rastrear erro 0.7
+  term en debugging 1.0
+  term en debug 0.95
+  term en bug 0.9
+  term en breakpoint 0.85
+  term en trace error 0.8
+  term code debug 0.95
+  term code debugger 0.91
+  term code breakpoint 0.87
+  term code bug 0.83
+  term code trace 0.79
+  term code stacktrace 0.75
+  term code backtrace 0.71
+  term code gdb 0.67
+  action debug
+  action trace
+  action inspect
+  action diagnose
+  related LOG_RECORD 0.5
+  related EXCEPTION_ERROR 0.4
+  related PROFILING 0.3
+  source seed
+end
+
+concept EXCEPTION_ERROR
+  category SYSTEM
+  canonical exception_error
+  term pt excecao 1.0
+  term pt erro 0.95
+  term pt erros 0.9
+  term pt lancar excecao 0.85
+  term pt capturar excecao 0.8
+  term pt falha 0.75
+  term pt tratar excecao 0.7
+  term en exception 1.0
+  term en error 0.95
+  term en errors 0.9
+  term en throw exception 0.85
+  term en catch exception 0.8
+  term code exception 0.95
+  term code error 0.91
+  term code err 0.87
+  term code throw 0.83
+  term code raise 0.79
+  term code try 0.75
+  term code catch 0.71
+  term code except 0.67
+  action throw
+  action catch
+  action raise
+  action handle
+  action abort
+  related ERROR_HANDLING_GENERIC 0.7
+  related ERROR_MESSAGE 0.5
+  related RECOVERY_FALLBACK 0.4
+  source seed
+end
+
+concept SIGNAL
+  category SYSTEM
+  canonical signal
+  term pt sinal 1.0
+  term pt sinais 0.95
+  term pt sigint 0.9
+  term pt sigterm 0.85
+  term pt interrupcao 0.8
+  term pt ctrl+c 0.75
+  term pt encerrar com sinal 0.7
+  term en signal 1.0
+  term en signals 0.95
+  term en sigint 0.9
+  term en sigterm 0.85
+  term en interrupt 0.8
+  term code signal 0.95
+  term code SIGINT 0.91
+  term code SIGTERM 0.87
+  term code SIGKILL 0.83
+  term code SIGHUP 0.79
+  term code SIGPIPE 0.75
+  term code sigaction 0.71
+  term code kill 0.67
+  action trap
+  action handle
+  action send
+  action ignore
+  related PROCESS 0.5
+  related TASK_CANCELLATION 0.4
+  source seed
+end
+
+concept DAEMON_SERVICE
+  category SYSTEM
+  canonical daemon_service
+  term pt servico 1.0
+  term pt daemon 0.95
+  term pt servico do sistema 0.9
+  term pt rodar como servico 0.85
+  term pt iniciar com o sistema 0.8
+  term pt systemd 0.75
+  term pt servico em segundo plano 0.7
+  term en service 1.0
+  term en daemon 0.95
+  term en system service 0.9
+  term en run as service 0.85
+  term en start on boot 0.8
+  term code service 0.95
+  term code daemon 0.91
+  term code systemd 0.87
+  term code systemctl 0.83
+  term code unit_file 0.79
+  term code launchd 0.75
+  term code autostart 0.71
+  term code start_on_boot 0.67
+  action start
+  action stop
+  action restart
+  action enable
+  action install
+  related PROCESS 0.4
+  related INSTALLER 0.4
+  related MOBILE_SERVICE 0.3
+  source seed
+  note servico de android: MOBILE_SERVICE; servico de negocio: classe Service (business)
+end
+
+concept INSTALLER
+  category SYSTEM
+  canonical installer
+  term pt instalador 1.0
+  term pt instalar 0.95
+  term pt desinstalar 0.9
+  term pt instalacao 0.85
+  term pt atualizacao 0.8
+  term pt atualizar programa 0.75
+  term pt empacotar 0.7
+  term en installer 1.0
+  term en install 0.95
+  term en uninstall 0.9
+  term en installation 0.85
+  term en update 0.8
+  term code install 0.95
+  term code installer 0.91
+  term code uninstall 0.87
+  term code setup 0.83
+  term code setup.exe 0.79
+  term code msi 0.75
+  term code deb 0.71
+  term code rpm 0.67
+  action install
+  action uninstall
+  action update
+  action upgrade
+  related PACKAGE_DEPENDENCY 0.4
+  related RELEASE 0.4
+  related DAEMON_SERVICE 0.3
+  source seed
+end
+
+concept FILE_PERMISSION
+  category SYSTEM
+  canonical file_permission
+  term pt permissao de arquivo 1.0
+  term pt chmod 0.95
+  term pt dono do arquivo 0.9
+  term pt somente leitura 0.85
+  term pt executavel 0.8
+  term pt acesso negado ao arquivo 0.75
+  term pt acl de arquivo 0.7
+  term en file permission 1.0
+  term en chmod 0.95
+  term en file owner 0.9
+  term en read-only 0.85
+  term en executable 0.8
+  term code chmod 0.95
+  term code chown 0.91
+  term code umask 0.87
+  term code mode 0.83
+  term code st_mode 0.79
+  term code S_IRUSR 0.75
+  term code read_only 0.71
+  term code executable 0.67
+  action chmod
+  action chown
+  action restrict
+  related PERMISSION 0.3
+  related FILE_IO 0.4
+  source seed
+end
+
+concept MEMORY_ALLOC
+  category SYSTEM
+  canonical memory_alloc
+  term pt memoria 1.0
+  term pt alocacao 0.95
+  term pt alocar memoria 0.9
+  term pt liberar memoria 0.85
+  term pt heap 0.8
+  term pt pilha 0.75
+  term pt malloc 0.7
+  term en memory 1.0
+  term en allocation 0.95
+  term en allocate memory 0.9
+  term en free memory 0.85
+  term en heap 0.8
+  term code malloc 0.95
+  term code calloc 0.91
+  term code realloc 0.87
+  term code free 0.83
+  term code alloc 0.79
+  term code dealloc 0.75
+  term code new 0.71
+  term code delete 0.67
+  action alloc
+  action free
+  action realloc
+  action map
+  action release
+  related MEMORY_SAFETY 0.5
+  related MEMORY_LEAK 0.6
+  related PERFORMANCE 0.3
+  source seed
+end
+
+concept MEMORY_LEAK
+  category SYSTEM
+  canonical memory_leak
+  term pt vazamento de memoria 1.0
+  term pt leak 0.95
+  term pt memoria nao liberada 0.9
+  term pt uso de memoria crescente 0.85
+  term pt valgrind 0.8
+  term pt asan 0.75
+  term pt perfil de memoria 0.7
+  term en memory leak 1.0
+  term en leak 0.95
+  term en unreleased memory 0.9
+  term en growing memory usage 0.85
+  term en valgrind 0.8
+  term code leak 0.95
+  term code memory_leak 0.91
+  term code memleak 0.87
+  term code valgrind 0.83
+  term code asan 0.79
+  term code AddressSanitizer 0.75
+  term code leaked 0.71
+  term code retain_cycle 0.67
+  action detect
+  action fix
+  action free
+  related MEMORY_ALLOC 0.6
+  related PROFILING 0.4
+  source seed
+end
+
+concept MEMORY_SAFETY
+  category SYSTEM
+  canonical memory_safety
+  term pt seguranca de memoria 1.0
+  term pt estouro de buffer 0.95
+  term pt ponteiro nulo 0.9
+  term pt uso apos liberar 0.85
+  term pt acesso fora dos limites 0.8
+  term pt double free 0.75
+  term pt corrupcao de memoria 0.7
+  term en memory safety 1.0
+  term en buffer overflow 0.95
+  term en null pointer 0.9
+  term en use after free 0.85
+  term en out of bounds 0.8
+  term code segfault 0.95
+  term code SIGSEGV 0.91
+  term code null 0.87
+  term code nullptr 0.83
+  term code use_after_free 0.79
+  term code double_free 0.75
+  term code out_of_bounds 0.71
+  term code oob 0.67
+  action check
+  action validate
+  action guard
+  related VULNERABILITY 0.5
+  related MEMORY_ALLOC 0.5
+  source seed
+end
+
+concept MEMORY_ADDRESS
+  category SYSTEM
+  canonical memory_address
+  term pt endereco de memoria 1.0
+  term pt ponteiro 0.95
+  term pt deslocamento 0.9
+  term pt alinhamento 0.85
+  term pt offset de memoria 0.8
+  term pt mapeamento de memoria 0.75
+  term pt mmap 0.7
+  term en memory address 1.0
+  term en pointer 0.95
+  term en offset 0.9
+  term en alignment 0.85
+  term en memory offset 0.8
+  term code ptr 0.95
+  term code pointer 0.91
+  term code addr 0.87
+  term code address 0.83
+  term code offset 0.79
+  term code align 0.75
+  term code aligned 0.71
+  term code alignment 0.67
+  action map
+  action align
+  action offset
+  related MEMORY_ALLOC 0.5
+  source seed
+  note endereco IP: IP_ADDRESS; postal: ADDRESS_POSTAL
+end
+
+concept PERFORMANCE
+  category SYSTEM
+  canonical performance
+  term pt desempenho 1.0
+  term pt performance 0.95
+  term pt velocidade 0.9
+  term pt lento 0.85
+  term pt rapido 0.8
+  term pt otimizar 0.75
+  term pt gargalo 0.7
+  term en performance 1.0
+  term en speed 0.95
+  term en slow 0.9
+  term en fast 0.85
+  term en optimize 0.8
+  term code perf 0.95
+  term code performance 0.91
+  term code optimize 0.87
+  term code optimise 0.83
+  term code fast 0.79
+  term code slow 0.75
+  term code bottleneck 0.71
+  term code cpu 0.67
+  action optimize
+  action measure
+  action speed_up
+  action profile
+  related PROFILING 0.6
+  related BENCHMARK 0.6
+  related MEMORY_ALLOC 0.3
+  source seed
+end
+
+concept PROFILING
+  category SYSTEM
+  canonical profiling
+  term pt perfil 1.0
+  term pt profiling 0.95
+  term pt perfilar 0.9
+  term pt onde gasta tempo 0.85
+  term pt hotspot 0.8
+  term pt amostragem de cpu 0.75
+  term pt tempo por funcao 0.7
+  term en profile 1.0
+  term en profiling 0.95
+  term en profiler 0.9
+  term en where time is spent 0.85
+  term en hotspot 0.8
+  term code profile 0.95
+  term code Profiler 0.91
+  term code profiling 0.87
+  term code perf 0.83
+  term code gprof 0.79
+  term code callgrind 0.75
+  term code flamegraph 0.71
+  term code hotspot 0.67
+  action profile
+  action measure
+  action sample
+  action trace
+  related PERFORMANCE 0.6
+  related BENCHMARK 0.5
+  source seed
+end
+
+concept BENCHMARK
+  category SYSTEM
+  canonical benchmark
+  term pt benchmark 1.0
+  term pt medicao de desempenho 0.95
+  term pt comparar velocidade 0.9
+  term pt teste de velocidade 0.85
+  term pt bench 0.8
+  term pt tempo medio 0.75
+  term pt repeticoes 0.7
+  term en benchmark 1.0
+  term en performance measurement 0.95
+  term en compare speed 0.9
+  term en speed test 0.85
+  term en bench 0.8
+  term code benchmark 0.95
+  term code bench 0.91
+  term code bench_run 0.87
+  term code timing 0.83
+  term code elapsed 0.79
+  term code median 0.75
+  term code avg 0.71
+  term code mean 0.67
+  action run
+  action measure
+  action compare
+  related PERFORMANCE 0.6
+  related PROFILING 0.5
+  related TEST_AUTOMATED 0.3
+  source seed
+end
+
+concept POWER_BATTERY
+  category SYSTEM
+  canonical power_battery
+  term pt energia 1.0
+  term pt bateria 0.95
+  term pt consumo de energia 0.9
+  term pt modo economia 0.85
+  term pt suspender 0.8
+  term pt hibernar 0.75
+  term pt carregando 0.7
+  term en power 1.0
+  term en battery 0.95
+  term en power consumption 0.9
+  term en power saving 0.85
+  term en suspend 0.8
+  term code power 0.95
+  term code battery 0.91
+  term code power_save 0.87
+  term code suspend 0.83
+  term code hibernate 0.79
+  term code charging 0.75
+  term code battery_level 0.71
+  term code thermal 0.67
+  action suspend
+  action wake
+  action save
+  related MOBILE_BATTERY 0.5
+  related PERFORMANCE 0.3
+  source seed
+end
+
+concept CLOCK_TIME
+  category SYSTEM
+  canonical clock_time
+  term pt relogio 1.0
+  term pt tempo 0.95
+  term pt hora 0.9
+  term pt data 0.85
+  term pt timestamp 0.8
+  term pt fuso horario 0.75
+  term pt utc 0.7
+  term en clock 1.0
+  term en time 0.95
+  term en hour 0.9
+  term en date 0.85
+  term en timestamp 0.8
+  term code time 0.95
+  term code now 0.91
+  term code clock 0.87
+  term code timestamp 0.83
+  term code timestamp_ms 0.79
+  term code datetime 0.75
+  term code date 0.71
+  term code timezone 0.67
+  action now
+  action format
+  action parse
+  action convert
+  related TIMER 0.4
+  related SCHEDULER 0.3
+  source seed
+end
+
+concept TIMEZONE_DATE
+  category SYSTEM
+  canonical timezone_date
+  term pt fuso horario 1.0
+  term pt converter horario 0.95
+  term pt data de vencimento 0.9
+  term pt prazo 0.85
+  term pt calendario 0.8
+  term pt dia util 0.75
+  term pt feriado 0.7
+  term en timezone 1.0
+  term en convert time 0.95
+  term en due date 0.9
+  term en deadline 0.85
+  term en calendar 0.8
+  term code timezone 0.95
+  term code tz 0.91
+  term code ZoneId 0.87
+  term code due_date 0.83
+  term code deadline 0.79
+  term code calendar 0.75
+  term code business_day 0.71
+  term code holiday 0.67
+  action convert
+  action compare
+  action add
+  related CLOCK_TIME 0.7
+  source seed
+end
+
+concept OS_PLATFORM
+  category SYSTEM
+  canonical os_platform
+  term pt sistema operacional 1.0
+  term pt windows 0.95
+  term pt linux 0.9
+  term pt macos 0.85
+  term pt plataforma 0.8
+  term pt compatibilidade 0.75
+  term pt arquitetura 0.7
+  term en operating system 1.0
+  term en os 0.95
+  term en windows 0.9
+  term en linux 0.85
+  term en macos 0.8
+  term code os 0.95
+  term code platform 0.91
+  term code _WIN32 0.87
+  term code __linux__ 0.83
+  term code __APPLE__ 0.79
+  term code windows 0.75
+  term code macos 0.71
+  term code uname 0.67
+  action detect
+  action abstract
+  action port
+  related BUILD_COMPILE 0.3
+  source seed
+end
+
+concept PORTING
+  category SYSTEM
+  canonical porting
+  term pt portar 1.0
+  term pt portabilidade 0.95
+  term pt adaptar para 0.9
+  term pt suporte a plataforma 0.85
+  term pt compatibilidade entre sistemas 0.8
+  term pt migrar para outra plataforma 0.75
+  term pt camada de abstracao 0.7
+  term en port to 1.0
+  term en portability 0.95
+  term en adapt to 0.9
+  term en platform support 0.85
+  term en cross-platform 0.8
+  term code port 0.95
+  term code porting 0.91
+  term code portable 0.87
+  term code shim 0.83
+  term code compat 0.79
+  term code compatibility 0.75
+  term code abstraction 0.71
+  term code hal 0.67
+  action port
+  action adapt
+  action abstract
+  related OS_PLATFORM 0.6
+  source seed
+end
+
+concept DEVICE_DRIVER
+  category SYSTEM
+  canonical device_driver
+  term pt driver 1.0
+  term pt drivers 0.95
+  term pt dispositivo 0.9
+  term pt hardware 0.85
+  term pt periferico 0.8
+  term pt usb 0.75
+  term pt porta serial 0.7
+  term en driver 1.0
+  term en drivers 0.95
+  term en device 0.9
+  term en hardware 0.85
+  term en peripheral 0.8
+  term code driver 0.95
+  term code device 0.91
+  term code hw 0.87
+  term code hardware 0.83
+  term code usb 0.79
+  term code serial 0.75
+  term code uart 0.71
+  term code firmware 0.67
+  action open
+  action enumerate
+  action read
+  action write
+  action ioctl
+  related FIRMWARE_FLASH 0.4
+  related AUDIO_DEVICE 0.3
+  related GPU_COMPUTE 0.3
+  source seed
+end
+
+concept FIRMWARE_FLASH
+  category SYSTEM
+  canonical firmware_flash
+  term pt firmware 1.0
+  term pt gravar firmware 0.95
+  term pt flash 0.9
+  term pt atualizar firmware 0.85
+  term pt rom 0.8
+  term pt bootloader 0.75
+  term pt odin 0.7
+  term en firmware 1.0
+  term en flash firmware 0.95
+  term en flashing 0.9
+  term en firmware update 0.85
+  term en rom 0.8
+  term code firmware 0.95
+  term code flash 0.91
+  term code flashing 0.87
+  term code rom 0.83
+  term code bootloader 0.79
+  term code odin 0.75
+  term code fastboot 0.71
+  term code recovery 0.67
+  action flash
+  action erase
+  action verify
+  action reboot
+  related DEVICE_DRIVER 0.4
+  related INSTALLER 0.3
+  source seed
+end
+
+concept FILESYSTEM_MOUNT
+  category SYSTEM
+  canonical filesystem_mount
+  term pt sistema de arquivos 1.0
+  term pt montar 0.95
+  term pt desmontar 0.9
+  term pt particao 0.85
+  term pt disco 0.8
+  term pt espaco em disco 0.75
+  term pt espaco livre 0.7
+  term en filesystem 1.0
+  term en mount 0.95
+  term en unmount 0.9
+  term en partition 0.85
+  term en disk 0.8
+  term code mount 0.95
+  term code umount 0.91
+  term code fs 0.87
+  term code filesystem 0.83
+  term code partition 0.79
+  term code disk 0.75
+  term code df 0.71
+  term code statvfs 0.67
+  action mount
+  action unmount
+  action format
+  related FILE_IO 0.3
+  source seed
+end
+
+concept LOCALIZED_PATH
+  category SYSTEM
+  canonical localized_path
+  term pt diretorio do usuario 1.0
+  term pt pasta home 0.95
+  term pt appdata 0.9
+  term pt pasta de dados do app 0.85
+  term pt pasta de configuracao 0.8
+  term pt diretorio padrao 0.75
+  term pt local de instalacao 0.7
+  term en user directory 1.0
+  term en home folder 0.95
+  term en appdata 0.9
+  term en app data folder 0.85
+  term en config folder 0.8
+  term code home 0.95
+  term code appdata 0.91
+  term code LOCALAPPDATA 0.87
+  term code XDG_CONFIG_HOME 0.83
+  term code config_dir 0.79
+  term code data_dir 0.75
+  term code cache_dir 0.71
+  term code user_dir 0.67
+  action resolve
+  action locate
+  related PATH_FILE 0.5
+  related ENV_VARIABLE 0.4
+  source seed
+end
+
+concept RESOURCE_LIMITS
+  category SYSTEM
+  canonical resource_limits
+  term pt limite de recursos 1.0
+  term pt cota de memoria 0.95
+  term pt limite de cpu 0.9
+  term pt ulimit 0.85
+  term pt limite de arquivos abertos 0.8
+  term pt estourou limite 0.75
+  term pt orcamento 0.7
+  term en resource limits 1.0
+  term en memory quota 0.95
+  term en cpu limit 0.9
+  term en ulimit 0.85
+  term en open file limit 0.8
+  term code ulimit 0.95
+  term code rlimit 0.91
+  term code setrlimit 0.87
+  term code limit 0.83
+  term code limits 0.79
+  term code quota 0.75
+  term code max_memory 0.71
+  term code max_cpu 0.67
+  action limit
+  action cap
+  action enforce
+  related MEMORY_ALLOC 0.4
+  related RATE_LIMIT 0.3
+  source seed
+end
+
+concept GARBAGE_STARTUP
+  category SYSTEM
+  canonical garbage_startup
+  term pt inicializacao 1.0
+  term pt iniciar 0.95
+  term pt startup 0.9
+  term pt boot 0.85
+  term pt carregar ao iniciar 0.8
+  term pt desligamento 0.75
+  term pt shutdown 0.7
+  term en initialization 1.0
+  term en startup 0.95
+  term en boot 0.9
+  term en load on start 0.85
+  term en shutdown 0.8
+  term code init 0.95
+  term code initialize 0.91
+  term code startup 0.87
+  term code boot 0.83
+  term code bootstrap 0.79
+  term code main 0.75
+  term code setup 0.71
+  term code shutdown 0.67
+  action init
+  action start
+  action stop
+  action cleanup
+  action dispose
+  related CONFIG 0.3
+  related DAEMON_SERVICE 0.3
+  source seed
+end
+
+concept STDIO_STREAMS
+  category SYSTEM
+  canonical stdio_streams
+  term pt entrada padrao 1.0
+  term pt saida padrao 0.95
+  term pt stdin 0.9
+  term pt stdout 0.85
+  term pt stderr 0.8
+  term pt redirecionar saida 0.75
+  term pt canal de erro 0.7
+  term en standard input 1.0
+  term en standard output 0.95
+  term en stdin 0.9
+  term en stdout 0.85
+  term en stderr 0.8
+  term code stdin 0.95
+  term code stdout 0.91
+  term code stderr 0.87
+  term code STDIN_FILENO 0.83
+  term code printf 0.79
+  term code puts 0.75
+  term code fputs 0.71
+  term code print 0.67
+  action read
+  action write
+  action print
+  action redirect
+  action flush
+  related SHELL_COMMAND 0.4
+  related FILE_IO 0.3
+  related TERMINAL_UI 0.4
+  source seed
+end
+
+concept VM_CONTAINER
+  category SYSTEM
+  canonical vm_container
+  term pt container 1.0
+  term pt docker 0.95
+  term pt maquina virtual 0.9
+  term pt vm 0.85
+  term pt imagem 0.8
+  term pt orquestracao 0.75
+  term pt kubernetes 0.7
+  term en container 1.0
+  term en docker 0.95
+  term en virtual machine 0.9
+  term en vm 0.85
+  term en image 0.8
+  term code docker 0.95
+  term code Dockerfile 0.91
+  term code container 0.87
+  term code vm 0.83
+  term code k8s 0.79
+  term code kubernetes 0.75
+  term code wsl 0.71
+  term code venv 0.67
+  action build
+  action run
+  action stop
+  action deploy
+  related SANDBOX 0.4
+  related BUILD_COMPILE 0.2
+  related RELEASE 0.3
+  source seed
+end
+
+concept HEALTH_STATUS
+  category SYSTEM
+  canonical health_status
+  term pt saude do servico 1.0
+  term pt health check 0.95
+  term pt status do sistema 0.9
+  term pt monitoramento 0.85
+  term pt uptime 0.8
+  term pt disponibilidade 0.75
+  term pt alerta de falha 0.7
+  term en service health 1.0
+  term en health check 0.95
+  term en system status 0.9
+  term en monitoring 0.85
+  term en uptime 0.8
+  term code health 0.95
+  term code healthcheck 0.91
+  term code healthz 0.87
+  term code status 0.83
+  term code uptime 0.79
+  term code availability 0.75
+  term code monitoring 0.71
+  term code metrics 0.67
+  action check
+  action monitor
+  action report
+  related PERFORMANCE 0.3
+  related LOG_RECORD 0.3
+  related DAEMON_SERVICE 0.3
+  source seed
+end
+
+concept ADMIN_SUDO_ROOT
+  category SYSTEM
+  canonical admin_sudo_root
+  term pt administrador 1.0
+  term pt root 0.95
+  term pt sudo 0.9
+  term pt elevar privilegio 0.85
+  term pt executar como administrador 0.8
+  term pt uac 0.75
+  term pt privilegio elevado 0.7
+  term en administrator 1.0
+  term en root 0.95
+  term en sudo 0.9
+  term en elevate privilege 0.85
+  term en run as administrator 0.8
+  term code sudo 0.95
+  term code root 0.91
+  term code admin 0.87
+  term code administrator 0.83
+  term code runas 0.79
+  term code elevated 0.75
+  term code uac 0.71
+  term code su 0.67
+  action elevate
+  action drop
+  action run
+  related PERMISSION 0.4
+  related FILE_PERMISSION 0.4
+  related PROCESS 0.4
+  source mined
+end
+
+concept PROCESS_ID_WAIT
+  category SYSTEM
+  canonical process_id_wait
+  term pt identificador do processo 1.0
+  term pt pid 0.95
+  term pt esperar processo 0.9
+  term pt processo zumbi 0.85
+  term pt codigo de saida 0.8
+  term pt tempo de execucao do processo 0.75
+  term pt ocupado 0.7
+  term en process id 1.0
+  term en pid 0.95
+  term en wait for process 0.9
+  term en zombie process 0.85
+  term en exit code 0.8
+  term code pid 0.95
+  term code ppid 0.91
+  term code waitpid 0.87
+  term code wait 0.83
+  term code exit_code 0.79
+  term code zombie 0.75
+  term code busy 0.71
+  term code proc 0.67
+  action wait
+  action reap
+  action kill
+  related PROCESS 0.7
+  source mined
+end
+
+concept READONLY_IMMUTABLE
+  category SYSTEM
+  canonical readonly_immutable
+  term pt somente leitura 1.0
+  term pt imutavel 0.95
+  term pt constante 0.9
+  term pt nao alteravel 0.85
+  term pt protegido contra escrita 0.8
+  term pt literal 0.75
+  term pt valor fixo 0.7
+  term en read-only 1.0
+  term en immutable 0.95
+  term en constant 0.9
+  term en not modifiable 0.85
+  term en write protected 0.8
+  term code readonly 0.95
+  term code immutable 0.91
+  term code const 0.87
+  term code final 0.83
+  term code frozen 0.79
+  term code literal 0.75
+  term code constexpr 0.71
+  term code ro 0.67
+  action freeze
+  action protect
+  related FILE_PERMISSION 0.4
+  related TYPE_SYSTEM 0.3
+  source mined
+end
+
+concept SCALING_UNITS
+  category SYSTEM
+  canonical scaling_units
+  term pt escala 1.0
+  term pt unidade 0.95
+  term pt milisegundos 0.9
+  term pt segundos 0.85
+  term pt bytes 0.8
+  term pt tamanho em bytes 0.75
+  term pt kilobyte 0.7
+  term en scale 1.0
+  term en unit 0.95
+  term en milliseconds 0.9
+  term en seconds 0.85
+  term en bytes 0.8
+  term code ms 0.95
+  term code millis 0.91
+  term code seconds 0.87
+  term code secs 0.83
+  term code bytes 0.79
+  term code kb 0.75
+  term code mb 0.71
+  term code gb 0.67
+  action convert
+  action scale
+  action format
+  related CLOCK_TIME 0.4
+  related NUMERIC_PRECISION 0.3
+  source mined
+end
+
+concept LOGGING_FORMATTER
+  category SYSTEM
+  canonical logging_formatter
+  term pt formatador 1.0
+  term pt formatar saida 0.95
+  term pt mensagem formatada 0.9
+  term pt fatalf 0.85
+  term pt imprimir erro e sair 0.8
+  term pt formato de log 0.75
+  term pt severidade 0.7
+  term en formatter 1.0
+  term en format output 0.95
+  term en formatted message 0.9
+  term en fatalf 0.85
+  term en print error and exit 0.8
+  term code fmt 0.95
+  term code fmtf 0.91
+  term code fatalf 0.87
+  term code formatter 0.83
+  term code format 0.79
+  term code printf 0.75
+  term code sprintf 0.71
+  term code println 0.67
+  action format
+  action print
+  action die
+  related LOG_RECORD 0.6
+  related ERROR_MESSAGE 0.4
+  source mined
+end
+
+concept ABBR_BUFFER_MEMORY
+  category SYSTEM
+  canonical abbr_buffer_memory
+  term pt buffer pequeno 0.45
+  term pt bloco de bytes 0.43
+  term pt destino 0.41
+  term pt origem 0.38
+  term pt copia de bytes 0.36
+  term pt temporario 0.34
+  term pt ponteiro bruto 0.32
+  term en small buffer 0.45
+  term en byte block 0.43
+  term en destination 0.41
+  term en source 0.38
+  term en byte copy 0.36
+  term code buf 0.43
+  term code dst 0.41
+  term code src 0.39
+  term code blk 0.37
+  term code byte 0.36
+  term code ptr 0.34
+  term code tmp 0.32
+  term code raw 0.3
+  action copy
+  action fill
+  action move
+  related MEMORY_ALLOC 0.5
+  related ARRAY_LIST 0.4
+  source mined
+  note abreviacoes comuns em C: baixo sinal, peso reduzido
+end
+
+concept ABBR_DESCRIPTION
+  category SYSTEM
+  canonical abbr_description
+  term pt descricao 0.45
+  term pt atributo 0.43
+  term pt propriedade 0.41
+  term pt metadados 0.38
+  term pt informacao 0.36
+  term pt configuracao 0.34
+  term pt preferencias 0.32
+  term en description 0.45
+  term en attribute 0.43
+  term en property 0.41
+  term en metadata 0.38
+  term en information 0.36
+  term code desc 0.43
+  term code attr 0.41
+  term code prop 0.39
+  term code meta 0.37
+  term code info 0.36
+  term code cfg 0.34
+  term code prefs 0.32
+  term code params 0.3
+  action describe
+  action read
+  action set
+  related CONFIG 0.4
+  related TYPE_SYSTEM 0.3
+  source mined
+  note abreviacoes comuns
+end

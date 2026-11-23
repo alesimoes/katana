@@ -1,0 +1,847 @@
+# Algorithms and data structures concepts (source seed unless noted). Format: see README.md
+
+concept SORTING
+  category ALGORITHM
+  canonical sorting
+  term pt ordenacao 1.0
+  term pt ordenar 0.95
+  term pt classificar 0.9
+  term pt ordem crescente 0.85
+  term pt ordem decrescente 0.8
+  term pt organizar por 0.75
+  term pt ranquear 0.7
+  term en sorting 1.0
+  term en sort 0.95
+  term en order by 0.9
+  term en ascending 0.85
+  term en descending 0.8
+  term code sort 0.95
+  term code sorted 0.91
+  term code qsort 0.87
+  term code order_by 0.83
+  term code compare 0.79
+  term code comparator 0.75
+  term code cmp 0.71
+  term code quicksort 0.67
+  action sort
+  action compare
+  action order
+  action rank
+  related SEARCH_ALGO 0.4
+  related PRIORITY_QUEUE 0.4
+  source seed
+  note 'ordem' de pedido: ORDER
+end
+
+concept SEARCH_ALGO
+  category ALGORITHM
+  canonical search_algo
+  term pt busca 1.0
+  term pt buscar 0.95
+  term pt procurar 0.9
+  term pt pesquisar 0.85
+  term pt encontrar 0.8
+  term pt busca binaria 0.75
+  term pt busca linear 0.7
+  term en search 1.0
+  term en find 0.95
+  term en lookup 0.9
+  term en binary search 0.85
+  term en linear search 0.8
+  term code search 0.95
+  term code find 0.91
+  term code lookup 0.87
+  term code bsearch 0.83
+  term code binary_search 0.79
+  term code linear_search 0.75
+  term code locate 0.71
+  term code indexOf 0.67
+  action search
+  action find
+  action locate
+  action lookup
+  related SORTING 0.4
+  related FILTER_OP 0.4
+  related SEARCH_INDEX 0.5
+  related CODE_SEARCH 0.4
+  source seed
+end
+
+concept FILTER_OP
+  category ALGORITHM
+  canonical filter_op
+  term pt filtro 1.0
+  term pt filtrar 0.95
+  term pt selecionar 0.9
+  term pt condicao 0.85
+  term pt apenas os que 0.8
+  term pt excluir 0.75
+  term pt remover itens 0.7
+  term en filter 1.0
+  term en filtering 0.95
+  term en select 0.9
+  term en condition 0.85
+  term en only those that 0.8
+  term code filter 0.95
+  term code filter_by 0.91
+  term code where 0.87
+  term code predicate 0.83
+  term code select 0.79
+  term code exclude 0.75
+  term code keep_if 0.71
+  term code remove_if 0.67
+  action filter
+  action select
+  action exclude
+  action keep
+  related SEARCH_ALGO 0.4
+  related SQL_QUERY 0.3
+  related AGGREGATION 0.3
+  source seed
+end
+
+concept AGGREGATION
+  category ALGORITHM
+  canonical aggregation
+  term pt agregacao 1.0
+  term pt agregar 0.95
+  term pt somar 0.9
+  term pt total 0.85
+  term pt soma 0.8
+  term pt media 0.75
+  term pt contagem 0.7
+  term en aggregation 1.0
+  term en aggregate 0.95
+  term en sum 0.9
+  term en total 0.85
+  term en average 0.8
+  term code aggregate 0.95
+  term code sum 0.91
+  term code total 0.87
+  term code avg 0.83
+  term code mean 0.79
+  term code count 0.75
+  term code max 0.71
+  term code min 0.67
+  action aggregate
+  action sum
+  action count
+  action group
+  action reduce
+  related FILTER_OP 0.3
+  related SALES_REPORT 0.3
+  related MAP_REDUCE 0.4
+  source seed
+end
+
+concept MAP_REDUCE
+  category ALGORITHM
+  canonical map_reduce
+  term pt mapear 1.0
+  term pt transformar lista 0.95
+  term pt aplicar funcao a cada 0.9
+  term pt map 0.85
+  term pt reduce 0.8
+  term pt fluxo funcional 0.75
+  term pt compreensao de lista 0.7
+  term en map 1.0
+  term en transform list 0.95
+  term en apply function to each 0.9
+  term en reduce 0.85
+  term en functional style 0.8
+  term code map 0.95
+  term code flat_map 0.91
+  term code reduce 0.87
+  term code fold 0.83
+  term code apply 0.79
+  term code each 0.75
+  term code for_each 0.71
+  term code transform 0.67
+  action map
+  action reduce
+  action transform
+  action collect
+  related AGGREGATION 0.4
+  related FILTER_OP 0.3
+  source seed
+end
+
+concept GRAPH_STRUCT
+  category ALGORITHM
+  canonical graph_struct
+  term pt grafo 1.0
+  term pt nos e arestas 0.95
+  term pt vertice 0.9
+  term pt aresta 0.85
+  term pt caminho minimo 0.8
+  term pt dijkstra 0.75
+  term pt busca em largura 0.7
+  term en graph 1.0
+  term en nodes and edges 0.95
+  term en vertex 0.9
+  term en edge 0.85
+  term en shortest path 0.8
+  term code graph 0.95
+  term code node 0.91
+  term code edge 0.87
+  term code vertex 0.83
+  term code vertices 0.79
+  term code adjacency 0.75
+  term code adj 0.71
+  term code dijkstra 0.67
+  action traverse
+  action visit
+  action connect
+  action search
+  related TREE 0.5
+  related SEARCH_ALGO 0.3
+  related PACKAGE_DEPENDENCY 0.2
+  source seed
+end
+
+concept TREE
+  category ALGORITHM
+  canonical tree
+  term pt arvore 1.0
+  term pt arvore binaria 0.95
+  term pt no pai 0.9
+  term pt no filho 0.85
+  term pt folha 0.8
+  term pt raiz 0.75
+  term pt hierarquia 0.7
+  term en tree 1.0
+  term en binary tree 0.95
+  term en parent node 0.9
+  term en child node 0.85
+  term en leaf 0.8
+  term code tree 0.95
+  term code node 0.91
+  term code parent 0.87
+  term code child 0.83
+  term code children 0.79
+  term code leaf 0.75
+  term code root 0.71
+  term code trie 0.67
+  action insert
+  action traverse
+  action walk
+  action prune
+  related GRAPH_STRUCT 0.5
+  related PARSER 0.3
+  related DIRECTORY 0.2
+  source seed
+end
+
+concept PRIORITY_QUEUE
+  category ALGORITHM
+  canonical priority_queue
+  term pt fila de prioridade 1.0
+  term pt heap 0.95
+  term pt monte 0.9
+  term pt menor primeiro 0.85
+  term pt maior primeiro 0.8
+  term pt top k 0.75
+  term pt k maiores 0.7
+  term en priority queue 1.0
+  term en heap 0.95
+  term en min heap 0.9
+  term en max heap 0.85
+  term en top k 0.8
+  term code priority_queue 0.95
+  term code heap 0.91
+  term code heapq 0.87
+  term code min_heap 0.83
+  term code max_heap 0.79
+  term code heapify 0.75
+  term code top_k 0.71
+  term code k_best 0.67
+  action push
+  action pop
+  action peek
+  action heapify
+  related QUEUE_STRUCT 0.4
+  related SORTING 0.4
+  related PRIORITY_SCHED 0.3
+  source seed
+end
+
+concept HASH_FUNCTION
+  category ALGORITHM
+  canonical hash_function
+  term pt funcao hash 1.0
+  term pt hash 0.95
+  term pt tabela hash 0.9
+  term pt colisao 0.85
+  term pt chave hash 0.8
+  term pt hash de string 0.75
+  term pt fnv 0.7
+  term en hash function 1.0
+  term en hash 0.95
+  term en hash table 0.9
+  term en collision 0.85
+  term en hash key 0.8
+  term code hash 0.95
+  term code hashmap 0.91
+  term code hash_table 0.87
+  term code hash_fn 0.83
+  term code fnv 0.79
+  term code fnv1a 0.75
+  term code murmur 0.71
+  term code xxhash 0.67
+  action hash
+  action combine
+  action lookup
+  related MAP_KEY_VALUE 0.5
+  related HASHING_PASSWORD 0.3
+  related CHECKSUM_INTEGRITY 0.4
+  source seed
+  note hash de senha: HASHING_PASSWORD
+end
+
+concept PARSER
+  category ALGORITHM
+  canonical parser
+  term pt parser 1.0
+  term pt analisador 0.95
+  term pt analisador sintatico 0.9
+  term pt analisar texto 0.85
+  term pt interpretar 0.8
+  term pt ler formato 0.75
+  term pt gramatica 0.7
+  term en parser 1.0
+  term en parse 0.95
+  term en parsing 0.9
+  term en syntax analyzer 0.85
+  term en analyze text 0.8
+  term code parse 0.95
+  term code Parser 0.91
+  term code parse_args 0.87
+  term code lexer 0.83
+  term code tokenize 0.79
+  term code scanner 0.75
+  term code grammar 0.71
+  term code ast 0.67
+  action parse
+  action tokenize
+  action lex
+  action evaluate
+  related TOKENIZER_TEXT 0.5
+  related SERIALIZATION 0.4
+  related REGEX 0.4
+  related TREE 0.3
+  source seed
+end
+
+concept TOKENIZER_TEXT
+  category ALGORITHM
+  canonical tokenizer_text
+  term pt tokenizar 1.0
+  term pt tokenizacao 0.95
+  term pt dividir texto em palavras 0.9
+  term pt palavras 0.85
+  term pt termos 0.8
+  term pt separar por espaco 0.75
+  term pt normalizar 0.7
+  term en tokenize 1.0
+  term en tokenization 0.95
+  term en split text into words 0.9
+  term en words 0.85
+  term en terms 0.8
+  term code tokenize 0.95
+  term code tokenizer 0.91
+  term code tokens 0.87
+  term code words 0.83
+  term code split 0.79
+  term code split_words 0.75
+  term code split_identifier 0.71
+  term code camel_case 0.67
+  action tokenize
+  action split
+  action normalize
+  action stem
+  related PARSER 0.5
+  related SEARCH_INDEX 0.5
+  related LM_TOKENIZER 0.2
+  related ENCODING_TEXT 0.4
+  source seed
+  note tokenizador de modelo de linguagem: LM_TOKENIZER
+end
+
+concept REGEX
+  category ALGORITHM
+  canonical regex
+  term pt regex 1.0
+  term pt expressao regular 0.95
+  term pt padrao de texto 0.9
+  term pt casar padrao 0.85
+  term pt substituir 0.8
+  term pt grupo de captura 0.75
+  term pt correspondencia 0.7
+  term en regex 1.0
+  term en regular expression 0.95
+  term en text pattern 0.9
+  term en match pattern 0.85
+  term en replace 0.8
+  term code regex 0.95
+  term code regexp 0.91
+  term code re.compile 0.87
+  term code re.match 0.83
+  term code re.search 0.79
+  term code re.sub 0.75
+  term code pattern 0.71
+  term code matcher 0.67
+  action match
+  action replace
+  action extract
+  related PARSER 0.4
+  related SEARCH_ALGO 0.3
+  related TEXT_MANIP 0.4
+  source seed
+end
+
+concept TEXT_MANIP
+  category ALGORITHM
+  canonical text_manip
+  term pt texto 1.0
+  term pt string 0.95
+  term pt cadeia de caracteres 0.9
+  term pt concatenar 0.85
+  term pt substring 0.8
+  term pt trecho 0.75
+  term pt aparar espacos 0.7
+  term en text 1.0
+  term en string 0.95
+  term en concatenate 0.9
+  term en substring 0.85
+  term en snippet 0.8
+  term code string 0.95
+  term code str 0.91
+  term code strlen 0.87
+  term code strcmp 0.83
+  term code strcat 0.79
+  term code strcpy 0.75
+  term code snprintf 0.71
+  term code substr 0.67
+  action split
+  action join
+  action trim
+  action replace
+  action format
+  related REGEX 0.4
+  related ENCODING_TEXT 0.4
+  source seed
+end
+
+concept DIFF_SIMILARITY
+  category ALGORITHM
+  canonical diff_similarity
+  term pt similaridade 1.0
+  term pt distancia de edicao 0.95
+  term pt levenshtein 0.9
+  term pt parecido 0.85
+  term pt aproximado 0.8
+  term pt busca difusa 0.75
+  term pt fuzzy 0.7
+  term en similarity 1.0
+  term en edit distance 0.95
+  term en levenshtein 0.9
+  term en similar 0.85
+  term en approximate 0.8
+  term code similarity 0.95
+  term code levenshtein 0.91
+  term code edit_distance 0.87
+  term code fuzzy 0.83
+  term code fuzzy_match 0.79
+  term code jaccard 0.75
+  term code cosine 0.71
+  term code diff 0.67
+  action compare
+  action score
+  action match
+  related SEARCH_ALGO 0.4
+  related CONFLICT_MERGE 0.3
+  related TOKENIZER_TEXT 0.3
+  source seed
+end
+
+concept RANKING_SCORE
+  category ALGORITHM
+  canonical ranking_score
+  term pt pontuacao 1.0
+  term pt relevancia 0.95
+  term pt ranking 0.9
+  term pt peso 0.85
+  term pt score 0.8
+  term pt classificar por relevancia 0.75
+  term pt bm25 0.7
+  term en score 1.0
+  term en scoring 0.95
+  term en relevance 0.9
+  term en ranking 0.85
+  term en weight 0.8
+  term code score 0.95
+  term code scoring 0.91
+  term code rank 0.87
+  term code ranking 0.83
+  term code relevance 0.79
+  term code weight 0.75
+  term code weights 0.71
+  term code bm25 0.67
+  action score
+  action rank
+  action boost
+  action rerank
+  related SEARCH_INDEX 0.6
+  related SORTING 0.5
+  related CODE_SEARCH 0.5
+  source seed
+end
+
+concept OPTIMIZATION_ALGO
+  category ALGORITHM
+  canonical optimization_algo
+  term pt otimizacao 1.0
+  term pt otimizar algoritmo 0.95
+  term pt complexidade 0.9
+  term pt menos operacoes 0.85
+  term pt memoizacao 0.8
+  term pt programacao dinamica 0.75
+  term pt heuristica 0.7
+  term en optimization 1.0
+  term en optimize algorithm 0.95
+  term en complexity 0.9
+  term en fewer operations 0.85
+  term en memoization 0.8
+  term code optimize 0.95
+  term code optimizer 0.91
+  term code complexity 0.87
+  term code memoize 0.83
+  term code dynamic_programming 0.79
+  term code dp 0.75
+  term code heuristic 0.71
+  term code greedy 0.67
+  action optimize
+  action minimize
+  action maximize
+  action solve
+  related PERFORMANCE 0.4
+  related LM_TRAINING 0.2
+  source seed
+end
+
+concept GEOMETRY_MATH
+  category ALGORITHM
+  canonical geometry_math
+  term pt matematica 1.0
+  term pt geometria 0.95
+  term pt vetor 0.9
+  term pt matriz 0.85
+  term pt produto escalar 0.8
+  term pt distancia 0.75
+  term pt angulo 0.7
+  term en math 1.0
+  term en geometry 0.95
+  term en vector 0.9
+  term en matrix 0.85
+  term en dot product 0.8
+  term code math 0.95
+  term code vector 0.91
+  term code Vec3 0.87
+  term code vec2 0.83
+  term code matrix 0.79
+  term code mat4 0.75
+  term code dot 0.71
+  term code cross 0.67
+  action compute
+  action normalize
+  action transform
+  action interpolate
+  related LM_MATMUL 0.3
+  related RENDER_UI 0.2
+  source seed
+end
+
+concept ARRAY_LIST
+  category ALGORITHM
+  canonical array_list
+  term pt array 1.0
+  term pt vetor de itens 0.95
+  term pt lista de elementos 0.9
+  term pt indice 0.85
+  term pt tamanho 0.8
+  term pt adicionar ao fim 0.75
+  term pt remover elemento 0.7
+  term en array 1.0
+  term en list of items 0.95
+  term en element list 0.9
+  term en index 0.85
+  term en length 0.8
+  term code array 0.95
+  term code arr 0.91
+  term code list 0.87
+  term code vector 0.83
+  term code std::vector 0.79
+  term code ArrayList 0.75
+  term code items 0.71
+  term code elements 0.67
+  action append
+  action remove
+  action insert
+  action slice
+  action copy
+  related LOOP_ITERATION 0.3
+  related QUEUE_STRUCT 0.3
+  source seed
+end
+
+concept SET_UNIQUE
+  category ALGORITHM
+  canonical set_unique
+  term pt conjunto 1.0
+  term pt unicos 0.95
+  term pt elementos unicos 0.9
+  term pt uniao 0.85
+  term pt intersecao 0.8
+  term pt diferenca de conjuntos 0.75
+  term pt pertence 0.7
+  term en set 1.0
+  term en unique 0.95
+  term en unique elements 0.9
+  term en union 0.85
+  term en intersection 0.8
+  term code set 0.95
+  term code HashSet 0.91
+  term code unique 0.87
+  term code uniq 0.83
+  term code distinct 0.79
+  term code union 0.75
+  term code intersection 0.71
+  term code difference 0.67
+  action add
+  action contains
+  action union
+  action intersect
+  related MAP_KEY_VALUE 0.3
+  related IDEMPOTENT_DUPLICATE 0.3
+  source seed
+end
+
+concept CHUNKING_SPLIT
+  category ALGORITHM
+  canonical chunking_split
+  term pt dividir em pedacos 1.0
+  term pt fatiar 0.95
+  term pt trechos 0.9
+  term pt chunk 0.85
+  term pt janela deslizante 0.8
+  term pt sobreposicao 0.75
+  term pt particionar 0.7
+  term en split into pieces 1.0
+  term en slice 0.95
+  term en snippets 0.9
+  term en chunk 0.85
+  term en sliding window 0.8
+  term code chunk 0.95
+  term code chunks 0.91
+  term code chunk_size 0.87
+  term code split 0.83
+  term code partition 0.79
+  term code window 0.75
+  term code sliding_window 0.71
+  term code overlap 0.67
+  action chunk
+  action split
+  action partition
+  action slide
+  related SEARCH_INDEX 0.4
+  related BATCH_PROCESSING 0.3
+  source seed
+end
+
+concept RECURSION
+  category ALGORITHM
+  canonical recursion
+  term pt recursao 1.0
+  term pt recursivo 0.95
+  term pt chamada recursiva 0.9
+  term pt caso base 0.85
+  term pt profundidade 0.8
+  term pt pilha de chamadas 0.75
+  term pt estouro de pilha 0.7
+  term en recursion 1.0
+  term en recursive 0.95
+  term en recursive call 0.9
+  term en base case 0.85
+  term en depth 0.8
+  term code recursive 0.95
+  term code recursion 0.91
+  term code recurse 0.87
+  term code base_case 0.83
+  term code depth 0.79
+  term code max_depth 0.75
+  term code call_stack 0.71
+  term code stack_overflow 0.67
+  action recurse
+  action descend
+  related TREE 0.4
+  related GRAPH_STRUCT 0.3
+  source seed
+end
+
+concept STATE_MACHINE
+  category ALGORITHM
+  canonical state_machine
+  term pt maquina de estados 1.0
+  term pt estados e transicoes 0.95
+  term pt automato 0.9
+  term pt fsm 0.85
+  term pt transicao 0.8
+  term pt estado atual 0.75
+  term pt proximo estado 0.7
+  term en state machine 1.0
+  term en states and transitions 0.95
+  term en automaton 0.9
+  term en fsm 0.85
+  term en transition 0.8
+  term code fsm 0.95
+  term code state_machine 0.91
+  term code state 0.87
+  term code transition 0.83
+  term code transitions 0.79
+  term code current_state 0.75
+  term code next_state 0.71
+  term code automaton 0.67
+  action transition
+  action enter
+  action exit
+  related WORKFLOW_STATE 0.5
+  related PARSER 0.2
+  source seed
+end
+
+concept RANDOM_SAMPLE_ALGO
+  category ALGORITHM
+  canonical random_sample_algo
+  term pt amostragem aleatoria 1.0
+  term pt embaralhar 0.95
+  term pt sortear 0.9
+  term pt escolha aleatoria 0.85
+  term pt monte carlo 0.8
+  term pt distribuicao 0.75
+  term pt probabilidade 0.7
+  term en random sampling 1.0
+  term en shuffle 0.95
+  term en draw 0.9
+  term en random choice 0.85
+  term en monte carlo 0.8
+  term code sample 0.95
+  term code shuffle 0.91
+  term code choice 0.87
+  term code random_choice 0.83
+  term code monte_carlo 0.79
+  term code distribution 0.75
+  term code probability 0.71
+  term code uniform 0.67
+  action sample
+  action shuffle
+  action draw
+  related RANDOMNESS 0.5
+  related SAMPLING_LM 0.3
+  source seed
+end
+
+concept BIT_OPERATIONS
+  category ALGORITHM
+  canonical bit_operations
+  term pt bits 1.0
+  term pt operacao bit a bit 0.95
+  term pt mascara 0.9
+  term pt deslocamento 0.85
+  term pt bitwise 0.8
+  term pt mascara de bits 0.75
+  term pt flags em bits 0.7
+  term en bits 1.0
+  term en bitwise operation 0.95
+  term en mask 0.9
+  term en shift 0.85
+  term en bitwise 0.8
+  term code bit 0.95
+  term code bits 0.91
+  term code bitwise 0.87
+  term code mask 0.83
+  term code shift 0.79
+  term code shl 0.75
+  term code shr 0.71
+  term code and 0.67
+  action mask
+  action shift
+  action set
+  action clear
+  related BINARY_FORMAT 0.4
+  related DATA_MODEL_ENUM 0.3
+  source seed
+end
+
+concept NUMERIC_PRECISION
+  category ALGORITHM
+  canonical numeric_precision
+  term pt precisao numerica 1.0
+  term pt ponto flutuante 0.95
+  term pt arredondar 0.9
+  term pt arredondamento 0.85
+  term pt inteiro 0.8
+  term pt overflow de inteiro 0.75
+  term pt float 0.7
+  term en numeric precision 1.0
+  term en floating point 0.95
+  term en round 0.9
+  term en rounding 0.85
+  term en integer 0.8
+  term code float 0.95
+  term code double 0.91
+  term code half 0.87
+  term code fp16 0.83
+  term code bf16 0.79
+  term code fp32 0.75
+  term code int8 0.71
+  term code int32 0.67
+  action round
+  action convert
+  action quantize
+  related QUANTIZATION 0.3
+  related CURRENCY 0.3
+  source seed
+end
+
+concept ABBR_COUNTERS
+  category ALGORITHM
+  canonical abbr_counters
+  term pt contador 0.45
+  term pt atual 0.43
+  term pt total 0.41
+  term pt limite 0.38
+  term pt selecionado 0.36
+  term pt indice 0.34
+  term pt comprimento 0.32
+  term en counter 0.45
+  term en current 0.43
+  term en total 0.41
+  term en limit 0.38
+  term en selected 0.36
+  term code cnt 0.43
+  term code cur 0.41
+  term code tot 0.39
+  term code lim 0.37
+  term code sel 0.36
+  term code idx 0.34
+  term code len 0.32
+  term code pos 0.3
+  action count
+  action increment
+  action reset
+  related LIMITS_BOUNDS 0.4
+  related AGGREGATION 0.4
+  related ARRAY_LIST 0.3
+  source mined
+  note abreviacoes comuns
+end

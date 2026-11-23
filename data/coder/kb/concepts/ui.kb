@@ -1,0 +1,1088 @@
+# User interface concepts (source seed unless noted). Format: see README.md
+
+concept SCREEN_VIEW
+  category UI
+  canonical screen_view
+  term pt tela 1.0
+  term pt telas 0.95
+  term pt pagina 0.9
+  term pt visao 0.85
+  term pt ecra 0.8
+  term pt interface 0.75
+  term pt tela inicial 0.7
+  term en screen 1.0
+  term en screens 0.95
+  term en page 0.9
+  term en view 0.85
+  term en activity screen 0.8
+  term code screen 0.95
+  term code page 0.91
+  term code view 0.87
+  term code ui 0.83
+  term code home 0.79
+  term code HomeScreen 0.75
+  term code MainScreen 0.71
+  term code navigate 0.67
+  action show
+  action open
+  action navigate
+  action close
+  related WINDOW 0.6
+  related LAYOUT 0.6
+  related NAVIGATION 0.6
+  source seed
+end
+
+concept WINDOW
+  category UI
+  canonical window
+  term pt janela 1.0
+  term pt janelas 0.95
+  term pt maximizar 0.9
+  term pt minimizar 0.85
+  term pt fechar janela 0.8
+  term pt redimensionar 0.75
+  term pt janela principal 0.7
+  term en window 1.0
+  term en windows 0.95
+  term en maximize 0.9
+  term en minimize 0.85
+  term en close window 0.8
+  term code window 0.95
+  term code win 0.91
+  term code QWindow 0.87
+  term code MainWindow 0.83
+  term code hwnd 0.79
+  term code createWindow 0.75
+  term code glfwCreateWindow 0.71
+  term code fullscreen 0.67
+  action open
+  action close
+  action resize
+  action move
+  action focus
+  related SCREEN_VIEW 0.6
+  related DIALOG 0.5
+  source seed
+  note janela de tempo/dados: TIME_WINDOW
+end
+
+concept BUTTON
+  category UI
+  canonical button
+  term pt botao 1.0
+  term pt botoes 0.95
+  term pt clicar 0.9
+  term pt clique 0.85
+  term pt apertar 0.8
+  term pt toque 0.75
+  term pt botao de enviar 0.7
+  term en button 1.0
+  term en buttons 0.95
+  term en click 0.9
+  term en press 0.85
+  term en tap 0.8
+  term code button 0.95
+  term code btn 0.91
+  term code onClick 0.87
+  term code clicked 0.83
+  term code pressed 0.79
+  term code press 0.75
+  term code tap 0.71
+  term code onPress 0.67
+  action click
+  action press
+  action tap
+  action enable
+  action disable
+  related INPUT_EVENT 0.6
+  related FORM 0.4
+  source seed
+end
+
+concept TEXT_INPUT
+  category UI
+  canonical text_input
+  term pt campo de texto 1.0
+  term pt caixa de texto 0.95
+  term pt entrada de texto 0.9
+  term pt digitar 0.85
+  term pt caixa de busca 0.8
+  term pt campo de senha 0.75
+  term pt placeholder 0.7
+  term en text field 1.0
+  term en text box 0.95
+  term en text input 0.9
+  term en type 0.85
+  term en search box 0.8
+  term code TextField 0.95
+  term code TextInput 0.91
+  term code input 0.87
+  term code EditText 0.83
+  term code QLineEdit 0.79
+  term code textarea 0.75
+  term code placeholder 0.71
+  term code onChange 0.67
+  action type
+  action edit
+  action clear
+  action focus
+  related FORM 0.6
+  related INPUT_EVENT 0.4
+  source seed
+end
+
+concept LIST_VIEW
+  category UI
+  canonical list_view
+  term pt lista 1.0
+  term pt listas 0.95
+  term pt itens da lista 0.9
+  term pt rolagem 0.85
+  term pt lista de itens 0.8
+  term pt lista virtual 0.75
+  term pt grade 0.7
+  term en list 1.0
+  term en lists 0.95
+  term en list items 0.9
+  term en scroll 0.85
+  term en item list 0.8
+  term code list 0.95
+  term code ListView 0.91
+  term code RecyclerView 0.87
+  term code LazyColumn 0.83
+  term code LazyList 0.79
+  term code ListItem 0.75
+  term code item 0.71
+  term code items 0.67
+  action scroll
+  action select
+  action render
+  action filter
+  related LAYOUT 0.4
+  related PAGINATION 0.3
+  source seed
+  note lista como estrutura de dados: QUEUE_STRUCT/ARRAY
+end
+
+concept FORM
+  category UI
+  canonical form
+  term pt formulario 1.0
+  term pt formularios 0.95
+  term pt preencher 0.9
+  term pt campos do formulario 0.85
+  term pt enviar formulario 0.8
+  term pt validar formulario 0.75
+  term pt cadastro em tela 0.7
+  term en form 1.0
+  term en forms 0.95
+  term en fill in 0.9
+  term en form fields 0.85
+  term en submit form 0.8
+  term code form 0.95
+  term code form_data 0.91
+  term code submit 0.87
+  term code onSubmit 0.83
+  term code field 0.79
+  term code checkbox 0.75
+  term code radio 0.71
+  term code dropdown 0.67
+  action submit
+  action validate
+  action reset
+  action fill
+  related TEXT_INPUT 0.6
+  related BUTTON 0.4
+  related VALIDATION 0.6
+  related REGISTRATION 0.3
+  source seed
+end
+
+concept DIALOG
+  category UI
+  canonical dialog
+  term pt dialogo 1.0
+  term pt janela de dialogo 0.95
+  term pt caixa de dialogo 0.9
+  term pt popup 0.85
+  term pt janela modal 0.8
+  term pt confirmacao 0.75
+  term pt alerta 0.7
+  term en dialog 1.0
+  term en dialogue 0.95
+  term en dialog box 0.9
+  term en popup 0.85
+  term en modal 0.8
+  term code dialog 0.95
+  term code AlertDialog 0.91
+  term code modal 0.87
+  term code popup 0.83
+  term code alert 0.79
+  term code confirm 0.75
+  term code messagebox 0.71
+  term code QDialog 0.67
+  action show
+  action confirm
+  action dismiss
+  action ask
+  related WINDOW 0.5
+  related APPROVAL_REQUEST 0.4
+  related TOAST_SNACKBAR 0.4
+  source seed
+end
+
+concept TOAST_SNACKBAR
+  category UI
+  canonical toast_snackbar
+  term pt toast 1.0
+  term pt snackbar 0.95
+  term pt aviso rapido 0.9
+  term pt mensagem temporaria 0.85
+  term pt banner 0.8
+  term pt mensagem de status 0.75
+  term pt dica 0.7
+  term en toast 1.0
+  term en snackbar 0.95
+  term en brief message 0.9
+  term en temporary message 0.85
+  term en banner 0.8
+  term code toast 0.95
+  term code snackbar 0.91
+  term code banner 0.87
+  term code tooltip 0.83
+  term code hint 0.79
+  term code flash 0.75
+  term code showToast 0.71
+  term code show_snackbar 0.67
+  action show
+  action hide
+  action dismiss
+  related DIALOG 0.4
+  related NOTIFICATION 0.4
+  source seed
+end
+
+concept MENU
+  category UI
+  canonical menu
+  term pt menu 1.0
+  term pt menus 0.95
+  term pt menu de contexto 0.9
+  term pt barra de menu 0.85
+  term pt item de menu 0.8
+  term pt submenu 0.75
+  term pt menu suspenso 0.7
+  term en menu 1.0
+  term en menus 0.95
+  term en context menu 0.9
+  term en menu bar 0.85
+  term en menu item 0.8
+  term code menu 0.95
+  term code menubar 0.91
+  term code menu_item 0.87
+  term code context_menu 0.83
+  term code submenu 0.79
+  term code dropdown 0.75
+  term code drawer 0.71
+  term code sidebar 0.67
+  action open
+  action select
+  action toggle
+  related SHORTCUT 0.4
+  related NAVIGATION 0.5
+  source seed
+end
+
+concept NAVIGATION
+  category UI
+  canonical navigation
+  term pt navegacao 1.0
+  term pt navegar 0.95
+  term pt voltar 0.9
+  term pt avancar 0.85
+  term pt rota 0.8
+  term pt abas 0.75
+  term pt guia 0.7
+  term en navigation 1.0
+  term en navigate 0.95
+  term en back 0.9
+  term en forward 0.85
+  term en route 0.8
+  term code navigation 0.95
+  term code navigate 0.91
+  term code navigator 0.87
+  term code NavHost 0.83
+  term code back 0.79
+  term code goBack 0.75
+  term code forward 0.71
+  term code route 0.67
+  action navigate
+  action back
+  action push
+  action pop
+  related SCREEN_VIEW 0.6
+  related MENU 0.5
+  source seed
+end
+
+concept THEME_STYLE
+  category UI
+  canonical theme_style
+  term pt tema 1.0
+  term pt tema escuro 0.95
+  term pt tema claro 0.9
+  term pt modo escuro 0.85
+  term pt cores 0.8
+  term pt estilo 0.75
+  term pt fonte 0.7
+  term en theme 1.0
+  term en dark theme 0.95
+  term en light theme 0.9
+  term en dark mode 0.85
+  term en colors 0.8
+  term code theme 0.95
+  term code dark_mode 0.91
+  term code light 0.87
+  term code dark 0.83
+  term code color 0.79
+  term code colors 0.75
+  term code palette 0.71
+  term code style 0.67
+  action set
+  action toggle
+  action apply
+  action switch
+  related LAYOUT 0.4
+  related RENDER_UI 0.3
+  source seed
+end
+
+concept LAYOUT
+  category UI
+  canonical layout
+  term pt layout 1.0
+  term pt leiaute 0.95
+  term pt disposicao 0.9
+  term pt alinhamento 0.85
+  term pt margem 0.8
+  term pt espacamento 0.75
+  term pt preenchimento 0.7
+  term en layout 1.0
+  term en arrangement 0.95
+  term en alignment 0.9
+  term en margin 0.85
+  term en spacing 0.8
+  term code layout 0.95
+  term code align 0.91
+  term code alignment 0.87
+  term code margin 0.83
+  term code padding 0.79
+  term code spacing 0.75
+  term code Column 0.71
+  term code Row 0.67
+  action align
+  action arrange
+  action size
+  action anchor
+  related THEME_STYLE 0.4
+  related SCREEN_VIEW 0.5
+  source seed
+end
+
+concept RENDER_UI
+  category UI
+  canonical render_ui
+  term pt renderizacao 1.0
+  term pt renderizar 0.95
+  term pt desenhar 0.9
+  term pt pintar 0.85
+  term pt redesenhar 0.8
+  term pt atualizar tela 0.75
+  term pt quadro 0.7
+  term en rendering 1.0
+  term en render 0.95
+  term en draw 0.9
+  term en paint 0.85
+  term en repaint 0.8
+  term code render 0.95
+  term code draw 0.91
+  term code paint 0.87
+  term code paintEvent 0.83
+  term code repaint 0.79
+  term code redraw 0.75
+  term code invalidate 0.71
+  term code canvas 0.67
+  action draw
+  action paint
+  action refresh
+  action present
+  related GPU_COMPUTE 0.3
+  related ANIMATION 0.5
+  related SCREEN_VIEW 0.4
+  source seed
+  note renderizar documento/audio: RENDER_EXPORT
+end
+
+concept INPUT_EVENT
+  category UI
+  canonical input_event
+  term pt evento de entrada 1.0
+  term pt teclado 0.95
+  term pt mouse 0.9
+  term pt toque 0.85
+  term pt clique 0.8
+  term pt arrastar 0.75
+  term pt soltar 0.7
+  term en input event 1.0
+  term en keyboard 0.95
+  term en mouse 0.9
+  term en touch 0.85
+  term en click 0.8
+  term code key 0.95
+  term code keyboard 0.91
+  term code mouse 0.87
+  term code touch 0.83
+  term code onKeyDown 0.79
+  term code keydown 0.75
+  term code keyup 0.71
+  term code keypress 0.67
+  action press
+  action release
+  action move
+  action drag
+  action scroll
+  action focus
+  related SHORTCUT 0.6
+  related BUTTON 0.4
+  related EVENT_LOOP 0.3
+  source seed
+end
+
+concept SHORTCUT
+  category UI
+  canonical shortcut
+  term pt atalho 1.0
+  term pt atalho de teclado 0.95
+  term pt tecla de atalho 0.9
+  term pt combinacao de teclas 0.85
+  term pt ctrl 0.8
+  term pt alt 0.75
+  term pt shift 0.7
+  term en shortcut 1.0
+  term en keyboard shortcut 0.95
+  term en hotkey 0.9
+  term en key combination 0.85
+  term en ctrl 0.8
+  term code shortcut 0.95
+  term code hotkey 0.91
+  term code keybinding 0.87
+  term code keymap 0.83
+  term code keymaps 0.79
+  term code accelerator 0.75
+  term code ctrl 0.71
+  term code alt 0.67
+  action bind
+  action register
+  action trigger
+  related INPUT_EVENT 0.6
+  related MENU 0.4
+  source seed
+end
+
+concept NOTIFICATION
+  category UI
+  canonical notification
+  term pt notificacao 1.0
+  term pt aviso 0.95
+  term pt alerta 0.9
+  term pt avisar 0.85
+  term pt notificar usuario 0.8
+  term pt notificacao na tela 0.75
+  term pt lembrete 0.7
+  term en notification 1.0
+  term en notify 0.95
+  term en alert 0.9
+  term en warn user 0.85
+  term en user notification 0.8
+  term code notification 0.95
+  term code notify 0.91
+  term code Notifier 0.87
+  term code alert 0.83
+  term code remind 0.79
+  term code reminder 0.75
+  term code badge 0.71
+  term code push 0.67
+  action notify
+  action alert
+  action remind
+  action dismiss
+  related TOAST_SNACKBAR 0.4
+  related MOBILE_NOTIFICATION 0.6
+  related NOTIFICATION_BUSINESS 0.3
+  source seed
+end
+
+concept ANIMATION
+  category UI
+  canonical animation
+  term pt animacao 1.0
+  term pt animar 0.95
+  term pt transicao 0.9
+  term pt efeito visual 0.85
+  term pt fade 0.8
+  term pt deslizar 0.75
+  term pt suavizar 0.7
+  term en animation 1.0
+  term en animate 0.95
+  term en transition 0.9
+  term en visual effect 0.85
+  term en fade 0.8
+  term code animation 0.95
+  term code animate 0.91
+  term code animator 0.87
+  term code transition 0.83
+  term code fade 0.79
+  term code slide 0.75
+  term code easing 0.71
+  term code ease 0.67
+  action animate
+  action fade
+  action slide
+  action interpolate
+  related RENDER_UI 0.5
+  related TIMER 0.3
+  source seed
+end
+
+concept ACCESSIBILITY
+  category UI
+  canonical accessibility
+  term pt acessibilidade 1.0
+  term pt leitor de tela 0.95
+  term pt contraste 0.9
+  term pt tamanho da fonte 0.85
+  term pt talkback 0.8
+  term pt legenda 0.75
+  term pt navegacao por teclado 0.7
+  term en accessibility 1.0
+  term en screen reader 0.95
+  term en contrast 0.9
+  term en font size 0.85
+  term en talkback 0.8
+  term code accessibility 0.95
+  term code a11y 0.91
+  term code aria 0.87
+  term code aria_label 0.83
+  term code contentDescription 0.79
+  term code screen_reader 0.75
+  term code talkback 0.71
+  term code voiceover 0.67
+  action describe
+  action announce
+  action focus
+  related THEME_STYLE 0.4
+  related MOBILE_ACCESSIBILITY 0.5
+  source seed
+end
+
+concept UI_STATE
+  category UI
+  canonical ui_state
+  term pt estado da interface 1.0
+  term pt estado da tela 0.95
+  term pt carregando 0.9
+  term pt vazio 0.85
+  term pt erro na tela 0.8
+  term pt spinner 0.75
+  term pt barra de progresso 0.7
+  term en ui state 1.0
+  term en screen state 0.95
+  term en loading 0.9
+  term en empty state 0.85
+  term en error state 0.8
+  term code state 0.95
+  term code ui_state 0.91
+  term code loading 0.87
+  term code isLoading 0.83
+  term code empty 0.79
+  term code error_state 0.75
+  term code spinner 0.71
+  term code progress 0.67
+  action update
+  action observe
+  action bind
+  action reset
+  related RENDER_UI 0.5
+  related SCREEN_VIEW 0.4
+  source seed
+  note estado de maquina de estados: WORKFLOW_STATE
+end
+
+concept TABLE_VIEW
+  category UI
+  canonical table_view
+  term pt tabela 1.0
+  term pt grade de dados 0.95
+  term pt linhas e colunas 0.9
+  term pt ordenar coluna 0.85
+  term pt tabela de resultados 0.8
+  term pt celula 0.75
+  term pt cabecalho de coluna 0.7
+  term en table 1.0
+  term en data grid 0.95
+  term en rows and columns 0.9
+  term en sort column 0.85
+  term en results table 0.8
+  term code table 0.95
+  term code TableView 0.91
+  term code data_grid 0.87
+  term code grid 0.83
+  term code cell 0.79
+  term code column 0.75
+  term code row 0.71
+  term code header 0.67
+  action sort
+  action filter
+  action select
+  related LIST_VIEW 0.5
+  source seed
+  note tabela de banco: DATABASE
+end
+
+concept CHART_PLOT
+  category UI
+  canonical chart_plot
+  term pt grafico 1.0
+  term pt graficos 0.95
+  term pt grafico de barras 0.9
+  term pt grafico de linha 0.85
+  term pt plotar 0.8
+  term pt eixo 0.75
+  term pt legenda 0.7
+  term en chart 1.0
+  term en charts 0.95
+  term en bar chart 0.9
+  term en line chart 0.85
+  term en plot 0.8
+  term code chart 0.95
+  term code plot 0.91
+  term code plt 0.87
+  term code matplotlib 0.83
+  term code chart_js 0.79
+  term code axis 0.75
+  term code legend 0.71
+  term code series 0.67
+  action plot
+  action draw
+  action update
+  related SALES_REPORT 0.3
+  related RENDER_UI 0.3
+  source seed
+  note grafo de dados: GRAPH_STRUCT
+end
+
+concept IMAGE_ICON
+  category UI
+  canonical image_icon
+  term pt imagem na tela 1.0
+  term pt icone 0.95
+  term pt icones 0.9
+  term pt figura 0.85
+  term pt foto na interface 0.8
+  term pt miniatura 0.75
+  term pt logotipo 0.7
+  term en image 1.0
+  term en icon 0.95
+  term en icons 0.9
+  term en picture 0.85
+  term en thumbnail 0.8
+  term code icon 0.95
+  term code icons 0.91
+  term code image 0.87
+  term code img 0.83
+  term code thumbnail 0.79
+  term code thumb 0.75
+  term code logo 0.71
+  term code avatar 0.67
+  action load
+  action scale
+  action display
+  related IMAGE_PROCESSING 0.4
+  related RENDER_UI 0.3
+  source seed
+end
+
+concept DRAG_DROP
+  category UI
+  canonical drag_drop
+  term pt arrastar e soltar 1.0
+  term pt drag and drop 0.95
+  term pt soltar arquivo 0.9
+  term pt mover item 0.85
+  term pt reordenar 0.8
+  term pt arrastar para a lista 0.75
+  term en drag and drop 1.0
+  term en drop file 0.95
+  term en move item 0.9
+  term en reorder 0.85
+  term en drag to list 0.8
+  term code drag 0.95
+  term code drop 0.91
+  term code dnd 0.87
+  term code DragDrop 0.83
+  term code onDrop 0.79
+  term code ondragstart 0.75
+  term code dragover 0.71
+  term code draggable 0.67
+  action drag
+  action drop
+  action reorder
+  related INPUT_EVENT 0.5
+  related LIST_VIEW 0.4
+  source seed
+end
+
+concept SCROLL_ZOOM
+  category UI
+  canonical scroll_zoom
+  term pt rolagem 1.0
+  term pt rolar 0.95
+  term pt zoom 0.9
+  term pt ampliar 0.85
+  term pt reduzir 0.8
+  term pt aproximar 0.75
+  term pt barra de rolagem 0.7
+  term en scroll 1.0
+  term en scrolling 0.95
+  term en zoom 0.9
+  term en zoom in 0.85
+  term en zoom out 0.8
+  term code scroll 0.95
+  term code scrollbar 0.91
+  term code ScrollView 0.87
+  term code scroll_area 0.83
+  term code scrollTop 0.79
+  term code scroll_to 0.75
+  term code zoom 0.71
+  term code zoom_in 0.67
+  action scroll
+  action zoom
+  action pan
+  related INPUT_EVENT 0.4
+  related LAYOUT 0.3
+  source seed
+end
+
+concept TERMINAL_UI
+  category UI
+  canonical terminal_ui
+  term pt terminal 1.0
+  term pt terminal interativo 0.95
+  term pt console 0.9
+  term pt linha de comando 0.85
+  term pt prompt de comando 0.8
+  term pt cores no terminal 0.75
+  term pt saida colorida 0.7
+  term en terminal 1.0
+  term en interactive terminal 0.95
+  term en console 0.9
+  term en command line 0.85
+  term en command prompt 0.8
+  term code terminal 0.95
+  term code tty 0.91
+  term code console 0.87
+  term code tui 0.83
+  term code ansi 0.79
+  term code escape_code 0.75
+  term code readline 0.71
+  term code termios 0.67
+  action print
+  action read
+  action clear
+  action scroll
+  related SHELL_COMMAND 0.4
+  related TEXT_INPUT 0.3
+  related CLI_ARGS 0.4
+  source seed
+end
+
+concept WIDGET_COMPONENT
+  category UI
+  canonical widget_component
+  term pt componente 1.0
+  term pt componentes 0.95
+  term pt widget 0.9
+  term pt controle de interface 0.85
+  term pt elemento de interface 0.8
+  term pt reutilizar componente 0.75
+  term pt composicao 0.7
+  term en component 1.0
+  term en components 0.95
+  term en widget 0.9
+  term en ui control 0.85
+  term en ui element 0.8
+  term code component 0.95
+  term code widget 0.91
+  term code control 0.87
+  term code element 0.83
+  term code panel 0.79
+  term code card 0.75
+  term code bar 0.71
+  term code composable 0.67
+  action build
+  action compose
+  action render
+  related LAYOUT 0.4
+  related SCREEN_VIEW 0.4
+  source seed
+  note widget de tela inicial do celular: MOBILE_WIDGET
+end
+
+concept SPLASH_ONBOARDING
+  category UI
+  canonical splash_onboarding
+  term pt tela de abertura 1.0
+  term pt splash 0.95
+  term pt boas-vindas 0.9
+  term pt tutorial 0.85
+  term pt primeiro uso 0.8
+  term pt assistente de configuracao 0.75
+  term pt wizard 0.7
+  term en splash screen 1.0
+  term en welcome screen 0.95
+  term en tutorial 0.9
+  term en first run 0.85
+  term en setup wizard 0.8
+  term code splash 0.95
+  term code SplashScreen 0.91
+  term code welcome 0.87
+  term code tutorial 0.83
+  term code first_run 0.79
+  term code wizard 0.75
+  term code setup_wizard 0.71
+  term code intro 0.67
+  action show
+  action skip
+  action complete
+  related REGISTRATION 0.3
+  source seed
+end
+
+concept LOCALE_I18N
+  category UI
+  canonical locale_i18n
+  term pt idioma 1.0
+  term pt traducao 0.95
+  term pt internacionalizacao 0.9
+  term pt localizacao 0.85
+  term pt i18n 0.8
+  term pt l10n 0.75
+  term pt portugues 0.7
+  term en language 1.0
+  term en translation 0.95
+  term en internationalization 0.9
+  term en localization 0.85
+  term en i18n 0.8
+  term code i18n 0.95
+  term code l10n 0.91
+  term code locale 0.87
+  term code lang 0.83
+  term code language 0.79
+  term code translate 0.75
+  term code translation 0.71
+  term code tr 0.67
+  action translate
+  action localize
+  action format
+  related ENCODING_TEXT 0.2
+  source seed
+  note traducao de codigo/compilador: nao confundir
+end
+
+concept PROGRESS_STATUS
+  category UI
+  canonical progress_status
+  term pt progresso 1.0
+  term pt barra de progresso 0.95
+  term pt porcentagem 0.9
+  term pt carregando 0.85
+  term pt aguarde 0.8
+  term pt em andamento 0.75
+  term pt concluido 0.7
+  term en progress 1.0
+  term en progress bar 0.95
+  term en percentage 0.9
+  term en loading 0.85
+  term en please wait 0.8
+  term code progress 0.95
+  term code percent 0.91
+  term code percentage 0.87
+  term code pct 0.83
+  term code loading 0.79
+  term code in_progress 0.75
+  term code done 0.71
+  term code eta 0.67
+  action update
+  action report
+  action complete
+  related UI_STATE 0.5
+  source seed
+end
+
+concept SEARCH_BOX
+  category UI
+  canonical search_box
+  term pt caixa de pesquisa 1.0
+  term pt buscar na tela 0.95
+  term pt filtro de lista 0.9
+  term pt autocompletar 0.85
+  term pt sugestoes 0.8
+  term pt pesquisa instantanea 0.75
+  term pt destacar resultado 0.7
+  term en search box 1.0
+  term en search bar 0.95
+  term en filter list 0.9
+  term en autocomplete 0.85
+  term en suggestions 0.8
+  term code search 0.95
+  term code SearchBar 0.91
+  term code search_box 0.87
+  term code SearchView 0.83
+  term code filter 0.79
+  term code autocomplete 0.75
+  term code suggest 0.71
+  term code suggestions 0.67
+  action search
+  action filter
+  action suggest
+  action highlight
+  related TEXT_INPUT 0.5
+  related LIST_VIEW 0.3
+  source seed
+end
+
+concept COLOR_GRAPHICS
+  category UI
+  canonical color_graphics
+  term pt cor 1.0
+  term pt cores 0.95
+  term pt rgb 0.9
+  term pt hex de cor 0.85
+  term pt transparencia 0.8
+  term pt gradiente 0.75
+  term pt opacidade 0.7
+  term en color 1.0
+  term en colors 0.95
+  term en rgb 0.9
+  term en hex color 0.85
+  term en transparency 0.8
+  term code color 0.95
+  term code rgb 0.91
+  term code rgba 0.87
+  term code hsv 0.83
+  term code hsl 0.79
+  term code hex 0.75
+  term code alpha 0.71
+  term code opacity 0.67
+  action blend
+  action convert
+  action fill
+  related THEME_STYLE 0.5
+  related IMAGE_PROCESSING 0.3
+  source seed
+end
+
+concept COMPOSE_LAYOUT_STYLE
+  category UI
+  canonical compose_layout_style
+  term pt forma 1.0
+  term pt circulo 0.95
+  term pt borda 0.9
+  term pt arredondado 0.85
+  term pt sombra 0.8
+  term pt espacador 0.75
+  term pt alinhamento vertical 0.7
+  term en shape 1.0
+  term en circle 0.95
+  term en border 0.9
+  term en rounded 0.85
+  term en shadow 0.8
+  term code shape 0.95
+  term code circle 0.91
+  term code CircleShape 0.87
+  term code border 0.83
+  term code rounded 0.79
+  term code RoundedCornerShape 0.75
+  term code shadow 0.71
+  term code Spacer 0.67
+  action draw
+  action align
+  action round
+  related LAYOUT 0.6
+  related THEME_STYLE 0.5
+  related MOBILE_UI_COMPOSE 0.5
+  source mined
+end
+
+concept UI_SHEET_CHIP
+  category UI
+  canonical ui_sheet_chip
+  term pt folha inferior 1.0
+  term pt chip 0.95
+  term pt etiqueta 0.9
+  term pt seletor 0.85
+  term pt lancador 0.8
+  term pt recentes 0.75
+  term pt bandeja 0.7
+  term en bottom sheet 1.0
+  term en chip 0.95
+  term en label 0.9
+  term en picker 0.85
+  term en launcher 0.8
+  term code sheet 0.95
+  term code BottomSheet 0.91
+  term code chip 0.87
+  term code picker 0.83
+  term code launcher 0.79
+  term code recents 0.75
+  term code tray 0.71
+  term code dock 0.67
+  action show
+  action pick
+  action dismiss
+  related DIALOG 0.4
+  related MENU 0.4
+  source mined
+end
+
+concept INPUT_KEYBOARD_IME
+  category UI
+  canonical input_keyboard_ime
+  term pt teclado virtual 1.0
+  term pt metodo de entrada 0.95
+  term pt ime 0.9
+  term pt entrada por voz 0.85
+  term pt escolha de arquivo 0.8
+  term pt selecao de texto 0.75
+  term pt area de transferencia 0.7
+  term en virtual keyboard 1.0
+  term en input method 0.95
+  term en ime 0.9
+  term en voice input 0.85
+  term en file picker 0.8
+  term code ime 0.95
+  term code keyboard 0.91
+  term code InputMethod 0.87
+  term code picker 0.83
+  term code FilePicker 0.79
+  term code selection 0.75
+  term code clipboard 0.71
+  term code ClipboardManager 0.67
+  action copy
+  action paste
+  action select
+  related TEXT_INPUT 0.5
+  related INPUT_EVENT 0.5
+  source mined
+end

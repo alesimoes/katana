@@ -1,0 +1,539 @@
+# Error handling concepts (source seed unless noted). Format: see README.md
+
+concept ERROR_HANDLING_GENERIC
+  category ERROR_HANDLING
+  canonical error_handling_generic
+  term pt tratamento de erro 1.0
+  term pt tratar erro 0.95
+  term pt tratar falha 0.9
+  term pt erro inesperado 0.85
+  term pt falha 0.8
+  term pt falhou 0.75
+  term pt codigo de erro 0.7
+  term en error handling 1.0
+  term en handle error 0.95
+  term en handle failure 0.9
+  term en unexpected error 0.85
+  term en failure 0.8
+  term code error 0.95
+  term code err 0.91
+  term code handle_error 0.87
+  term code on_error 0.83
+  term code fail 0.79
+  term code failure 0.75
+  term code failed 0.71
+  term code errno 0.67
+  action handle
+  action propagate
+  action report
+  action fail
+  related EXCEPTION_ERROR 0.7
+  related ERROR_MESSAGE 0.5
+  related RECOVERY_FALLBACK 0.5
+  related VALIDATION 0.4
+  source seed
+end
+
+concept VALIDATION
+  category ERROR_HANDLING
+  canonical validation
+  term pt validacao 1.0
+  term pt validar 0.95
+  term pt valido 0.9
+  term pt invalido 0.85
+  term pt verificar entrada 0.8
+  term pt checar parametros 0.75
+  term pt entrada invalida 0.7
+  term en validation 1.0
+  term en validate 0.95
+  term en valid 0.9
+  term en invalid 0.85
+  term en check input 0.8
+  term code validate 0.95
+  term code validator 0.91
+  term code is_valid 0.87
+  term code valid 0.83
+  term code invalid 0.79
+  term code check 0.75
+  term code verify 0.71
+  term code ensure 0.67
+  action validate
+  action check
+  action verify
+  action reject
+  related ERROR_HANDLING_GENERIC 0.5
+  related INPUT_SANITIZATION 0.5
+  related DATA_VALIDATION_SCHEMA 0.5
+  related FORM 0.3
+  source seed
+end
+
+concept ERROR_MESSAGE
+  category ERROR_HANDLING
+  canonical error_message
+  term pt mensagem de erro 1.0
+  term pt texto do erro 0.95
+  term pt descricao do erro 0.9
+  term pt mostrar erro 0.85
+  term pt erro amigavel 0.8
+  term pt aviso de falha 0.75
+  term pt explicar o erro 0.7
+  term en error message 1.0
+  term en error text 0.95
+  term en error description 0.9
+  term en show error 0.85
+  term en friendly error 0.8
+  term code error_message 0.95
+  term code err_msg 0.91
+  term code strerror 0.87
+  term code message 0.83
+  term code what 0.79
+  term code reason 0.75
+  term code cause 0.71
+  term code detail 0.67
+  action format
+  action show
+  action explain
+  action report
+  related ERROR_HANDLING_GENERIC 0.6
+  related LOG_RECORD 0.4
+  related EXCEPTION_ERROR 0.4
+  source seed
+end
+
+concept RECOVERY_FALLBACK
+  category ERROR_HANDLING
+  canonical recovery_fallback
+  term pt recuperacao 1.0
+  term pt recuperar 0.95
+  term pt fallback 0.9
+  term pt alternativa 0.85
+  term pt plano b 0.8
+  term pt degradacao graciosa 0.75
+  term pt valor padrao em caso de erro 0.7
+  term en recovery 1.0
+  term en recover 0.95
+  term en fallback 0.9
+  term en alternative 0.85
+  term en plan b 0.8
+  term code fallback 0.95
+  term code recover 0.91
+  term code recovery 0.87
+  term code recovered 0.83
+  term code degrade 0.79
+  term code graceful 0.75
+  term code default 0.71
+  term code alternative 0.67
+  action recover
+  action fallback
+  action degrade
+  action failover
+  related RETRY 0.5
+  related ERROR_HANDLING_GENERIC 0.5
+  source seed
+end
+
+concept INVALID_STATE
+  category ERROR_HANDLING
+  canonical invalid_state
+  term pt estado invalido 1.0
+  term pt estado inesperado 0.95
+  term pt inconsistencia 0.9
+  term pt nao deveria acontecer 0.85
+  term pt invariante 0.8
+  term pt violacao 0.75
+  term pt estado corrompido 0.7
+  term en invalid state 1.0
+  term en unexpected state 0.95
+  term en inconsistency 0.9
+  term en should not happen 0.85
+  term en invariant 0.8
+  term code invalid_state 0.95
+  term code illegal_state 0.91
+  term code IllegalStateException 0.87
+  term code unreachable 0.83
+  term code invariant 0.79
+  term code assert 0.75
+  term code inconsistent 0.71
+  term code corrupted 0.67
+  action assert
+  action reject
+  action abort
+  related VALIDATION 0.5
+  related WORKFLOW_STATE 0.3
+  source seed
+end
+
+concept LIMITS_BOUNDS
+  category ERROR_HANDLING
+  canonical limits_bounds
+  term pt limite 1.0
+  term pt limites 0.95
+  term pt maximo 0.9
+  term pt minimo 0.85
+  term pt fora do limite 0.8
+  term pt excedeu 0.75
+  term pt estouro 0.7
+  term en limit 1.0
+  term en limits 0.95
+  term en maximum 0.9
+  term en minimum 0.85
+  term en out of range 0.8
+  term code limit 0.95
+  term code max 0.91
+  term code min 0.87
+  term code max_size 0.83
+  term code maxLen 0.79
+  term code bounds 0.75
+  term code range 0.71
+  term code clamp 0.67
+  action clamp
+  action limit
+  action cap
+  action truncate
+  related VALIDATION 0.4
+  related RESOURCE_LIMITS 0.4
+  source seed
+end
+
+concept NULL_MISSING
+  category ERROR_HANDLING
+  canonical null_missing
+  term pt nulo 1.0
+  term pt vazio 0.95
+  term pt ausente 0.9
+  term pt nao encontrado 0.85
+  term pt faltando 0.8
+  term pt valor nulo 0.75
+  term pt campo ausente 0.7
+  term en null 1.0
+  term en empty 0.95
+  term en missing 0.9
+  term en not found 0.85
+  term en absent 0.8
+  term code null 0.95
+  term code nil 0.91
+  term code None 0.87
+  term code undefined 0.83
+  term code empty 0.79
+  term code is_empty 0.75
+  term code missing 0.71
+  term code not_found 0.67
+  action check
+  action default
+  action handle
+  related ERROR_HANDLING_GENERIC 0.3
+  related VALIDATION 0.3
+  source seed
+end
+
+concept CORRUPTION_DETECT
+  category ERROR_HANDLING
+  canonical corruption_detect
+  term pt corrompido 1.0
+  term pt corrupcao 0.95
+  term pt arquivo corrompido 0.9
+  term pt dados invalidos 0.85
+  term pt formato inesperado 0.8
+  term pt truncado 0.75
+  term pt incompleto 0.7
+  term en corrupted 1.0
+  term en corruption 0.95
+  term en corrupt file 0.9
+  term en invalid data 0.85
+  term en unexpected format 0.8
+  term code corrupt 0.95
+  term code corrupted 0.91
+  term code corruption 0.87
+  term code malformed 0.83
+  term code truncated 0.79
+  term code incomplete 0.75
+  term code bad_data 0.71
+  term code invalid_format 0.67
+  action detect
+  action reject
+  action recover
+  related CHECKSUM_INTEGRITY 0.5
+  related PARSER 0.4
+  source seed
+end
+
+concept CRASH_REPORT
+  category ERROR_HANDLING
+  canonical crash_report
+  term pt travamento 1.0
+  term pt travou 0.95
+  term pt crash 0.9
+  term pt parou de funcionar 0.85
+  term pt fechou sozinho 0.8
+  term pt relatorio de falha 0.75
+  term pt core dump 0.7
+  term en crash 1.0
+  term en crashed 0.95
+  term en stopped working 0.9
+  term en closed by itself 0.85
+  term en crash report 0.8
+  term code crash 0.95
+  term code crashed 0.91
+  term code core_dump 0.87
+  term code segfault 0.83
+  term code hang 0.79
+  term code hung 0.75
+  term code freeze 0.71
+  term code frozen 0.67
+  action crash
+  action hang
+  action freeze
+  action report
+  related DEBUGGING 0.5
+  related MEMORY_SAFETY 0.4
+  source seed
+end
+
+concept WARNING_DEPRECATION
+  category ERROR_HANDLING
+  canonical warning_deprecation
+  term pt aviso 1.0
+  term pt advertencia 0.95
+  term pt warning 0.9
+  term pt obsoleto 0.85
+  term pt depreciado 0.8
+  term pt descontinuado 0.75
+  term pt sera removido 0.7
+  term en warning 1.0
+  term en warn 0.95
+  term en deprecated 0.9
+  term en obsolete 0.85
+  term en discontinued 0.8
+  term code warning 0.95
+  term code warn 0.91
+  term code deprecated 0.87
+  term code obsolete 0.83
+  term code legacy 0.79
+  term code will_be_removed 0.75
+  term code caution 0.71
+  term code discouraged 0.67
+  action warn
+  action deprecate
+  related ERROR_MESSAGE 0.4
+  related VERSIONING 0.3
+  source seed
+end
+
+concept ASSERTION_CHECK
+  category ERROR_HANDLING
+  canonical assertion_check
+  term pt assercao 1.0
+  term pt afirmar 0.95
+  term pt condicao esperada 0.9
+  term pt precondicao 0.85
+  term pt pos-condicao 0.8
+  term pt contrato de codigo 0.75
+  term pt verificar invariante 0.7
+  term en assertion 1.0
+  term en assert 0.95
+  term en expected condition 0.9
+  term en precondition 0.85
+  term en postcondition 0.8
+  term code assert 0.95
+  term code assertion 0.91
+  term code precondition 0.87
+  term code postcondition 0.83
+  term code require 0.79
+  term code ensure 0.75
+  term code expects 0.71
+  term code ensures 0.67
+  action assert
+  action check
+  action require
+  related INVALID_STATE 0.5
+  related TEST_AUTOMATED 0.3
+  source seed
+end
+
+concept PERMISSION_DENIED
+  category ERROR_HANDLING
+  canonical permission_denied
+  term pt acesso negado 1.0
+  term pt permissao negada 0.95
+  term pt proibido 0.9
+  term pt sem permissao 0.85
+  term pt nao autorizado 0.8
+  term pt recusado 0.75
+  term pt bloqueado 0.7
+  term en access denied 1.0
+  term en permission denied 0.95
+  term en forbidden 0.9
+  term en no permission 0.85
+  term en unauthorized 0.8
+  term code access_denied 0.95
+  term code permission_denied 0.91
+  term code forbidden 0.87
+  term code unauthorized 0.83
+  term code EACCES 0.79
+  term code EPERM 0.75
+  term code denied 0.71
+  term code refused 0.67
+  action deny
+  action refuse
+  action block
+  related AUTHORIZATION 0.6
+  related PERMISSION 0.5
+  source seed
+end
+
+concept IDEMPOTENT_DUPLICATE
+  category ERROR_HANDLING
+  canonical idempotent_duplicate
+  term pt duplicado 1.0
+  term pt duplicidade 0.95
+  term pt ja existe 0.9
+  term pt repetido 0.85
+  term pt idempotente 0.8
+  term pt chave duplicada 0.75
+  term pt processar duas vezes 0.7
+  term en duplicate 1.0
+  term en duplicated 0.95
+  term en already exists 0.9
+  term en repeated 0.85
+  term en idempotent 0.8
+  term code duplicate 0.95
+  term code dup 0.91
+  term code dedupe 0.87
+  term code deduplicate 0.83
+  term code already_exists 0.79
+  term code EEXIST 0.75
+  term code idempotent 0.71
+  term code idempotency_key 0.67
+  action dedupe
+  action reject
+  action skip
+  related VALIDATION 0.3
+  source seed
+end
+
+concept USER_FEEDBACK_ERROR
+  category ERROR_HANDLING
+  canonical user_feedback_error
+  term pt o que deu errado 1.0
+  term pt por que falhou 0.95
+  term pt nao funciona 0.9
+  term pt nao atualiza 0.85
+  term pt nao salva 0.8
+  term pt esta quebrado 0.75
+  term pt bug no sistema 0.7
+  term en what went wrong 1.0
+  term en why did it fail 0.95
+  term en does not work 0.9
+  term en not updating 0.85
+  term en does not save 0.8
+  term code bug 0.95
+  term code broken 0.91
+  term code wrong 0.87
+  term code incorrect 0.83
+  term code unexpected_result 0.79
+  term code regression 0.75
+  term code not_working 0.71
+  term code does_not_work 0.67
+  action diagnose
+  action fix
+  action investigate
+  related DEBUGGING 0.6
+  related ERROR_HANDLING_GENERIC 0.4
+  source seed
+  note 'nao atualiza X' liga ao conceito de X mais depuracao
+end
+
+concept GUARD_DEFENSIVE
+  category ERROR_HANDLING
+  canonical guard_defensive
+  term pt defesa 1.0
+  term pt programacao defensiva 0.95
+  term pt guardas 0.9
+  term pt verificar antes 0.85
+  term pt retorno antecipado 0.8
+  term pt early return 0.75
+  term pt proteger contra 0.7
+  term en defensive programming 1.0
+  term en guard 0.95
+  term en guard clause 0.9
+  term en check before 0.85
+  term en early return 0.8
+  term code guard 0.95
+  term code defensive 0.91
+  term code early_return 0.87
+  term code edge_case 0.83
+  term code corner_case 0.79
+  term code boundary 0.75
+  term code sanity 0.71
+  term code sanity_check 0.67
+  action guard
+  action check
+  action bail
+  related VALIDATION 0.5
+  related NULL_MISSING 0.4
+  source seed
+end
+
+concept ROLLBACK_UNDO
+  category ERROR_HANDLING
+  canonical rollback_undo
+  term pt desfazer 1.0
+  term pt refazer 0.95
+  term pt reverter 0.9
+  term pt voltar atras 0.85
+  term pt undo 0.8
+  term pt redo 0.75
+  term pt restaurar versao anterior 0.7
+  term en undo 1.0
+  term en redo 0.95
+  term en revert 0.9
+  term en roll back 0.85
+  term en restore previous version 0.8
+  term code undo 0.95
+  term code redo 0.91
+  term code UndoStack 0.87
+  term code revert 0.83
+  term code rollback 0.79
+  term code restore 0.75
+  term code compensate 0.71
+  term code compensation 0.67
+  action undo
+  action redo
+  action revert
+  action rollback
+  related DB_TRANSACTION 0.3
+  related BACKUP 0.3
+  source seed
+end
+
+concept TIMEOUT_GUARD
+  category ERROR_HANDLING
+  canonical timeout_guard
+  term pt tempo excedido 1.0
+  term pt travado esperando 0.95
+  term pt bloqueado indefinidamente 0.9
+  term pt espera sem fim 0.85
+  term pt watchdog 0.8
+  term pt tempo maximo de execucao 0.75
+  term pt estourou o tempo 0.7
+  term en exceeded time 1.0
+  term en stuck waiting 0.95
+  term en blocked indefinitely 0.9
+  term en endless wait 0.85
+  term en watchdog 0.8
+  term code watchdog 0.95
+  term code max_time 0.91
+  term code max_runtime 0.87
+  term code deadline_exceeded 0.83
+  term code stuck 0.79
+  term code blocked 0.75
+  term code hang 0.71
+  term code wait_forever 0.67
+  action kill
+  action abort
+  action guard
+  related TIMEOUT 0.6
+  related CRASH_REPORT 0.3
+  source seed
+end
