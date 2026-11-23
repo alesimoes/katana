@@ -1,5 +1,5 @@
 /* ---------- coder/findstore.c: o Find unificado sobre o armazenamento do coder (fase 7, docs/code-index-lifecycle.md E) ----------
- * O Find (tools/find.c) deixou de ter indice proprio no caminho padrao (KATANA_FIND_INDEX=store; `legacy` volta ao cache find-*.idx):
+ * O Find (tools/find.c) nao tem indice proprio em disco:
  *   - a lista de arquivos e os CANDIDATOS vem do indice do coder: o lexico e os postings (busca por campos, os mesmos termos da pergunta) dao os
  *     cerca de 100 arquivos mais provaveis (KATANA_FIND_CAND), mais os que o motor de nomes e texto sugeriu (CoderHits) e os que definem um nome da pergunta;
  *   - o indice de trechos do Find (trechos de 40 linhas, BM25 por campo, simbolos por regra) e montado a cada consulta SO sobre esses arquivos, lidos do
@@ -33,10 +33,9 @@ static struct FsCtx *fs_begin(const char *root, const char *pre, struct FdIndexS
     F->cv_ok = 1;
     char e2[300]; if (sy_view_open(root, &F->sv, e2, sizeof e2) == 0) F->sv_ok = 1;
     for (uint32_t g = 0; g < F->cv.N; g++) F->total_len += F->cv.lens[(size_t)g * 3 + 2];
-    if (!X->store && (X->nf || X->T.n)) fd_free_files(X);          /* o indice veio do modo antigo: termos e arquivos dele nao servem */
     fd_store_reset(X);
-    X->store = 1; X->fs = F; X->truncated = X->listed = 0; X->ready = 0;
-    snprintf(X->root, sizeof X->root, "%s", root); X->cache[0] = 0;
+    X->fs = F; X->ready = 0;
+    snprintf(X->root, sizeof X->root, "%s", root);
     F->ens_ms = (fd_ms() - t0);
     if (ms_ensure) *ms_ensure = F->ens_ms;
     return F;
@@ -169,13 +168,13 @@ static void fs_build_files(struct FsCtx *F, struct FdIndexS *X, FsCand *c, int n
 static int fs_prepare(struct FsCtx *F, struct FdIndexS *X, const char *query, const void *CHv) {
     const CoderHits *CH = (const CoderHits *)CHv;
     const double t0 = fd_ms();
-    fd_store_reset(X); X->store = 1; X->fs = F;
+    fd_store_reset(X); X->fs = F;
     const FdTune tu = fd_tune();
     uint32_t qid[64]; double qw[64]; char qsrc[64][64];
     int nq = fd_query_terms(X, query, 1, tu.idw, qid, qw, qsrc);
     F->nq = 0;
     for (int i = 0; i < nq; i++) {                       /* palavras de pedido ("onde", "explique") nao dizem onde olhar: fora, como no ranking */
-        if (fg_act_on() && fg_is_request(fd_tstr(&X->T, (int)qid[i]))) continue;
+        if (fg_is_request(fd_tstr(&X->T, (int)qid[i]))) continue;
         F->qid[F->nq] = qid[i]; F->qw[F->nq] = qw[i]; memcpy(F->qsrc[F->nq], qsrc[i], 64); F->nq++;
     }
     if (!F->nq) { F->nq = nq; for (int i = 0; i < nq; i++) { F->qid[i] = qid[i]; F->qw[i] = qw[i]; memcpy(F->qsrc[i], qsrc[i], 64); } }
@@ -281,7 +280,7 @@ static int fs_prepare(struct FsCtx *F, struct FdIndexS *X, const char *query, co
 /* mode=refs sem resposta do indice de simbolos: X com os arquivos que tem o nome (e os que o definem), para o caminho de texto de fd_refs */
 static int fs_prepare_refs(struct FsCtx *F, struct FdIndexS *X, const char *query) {
     const double t1 = fd_ms();
-    fd_store_reset(X); X->store = 1; X->fs = F;
+    fd_store_reset(X); X->fs = F;
     const char *p = query; while (*p && !(isalpha((unsigned char)*p) || *p == '_' || *p == '$')) p++;
     int l = fd_idlen(p, p + strlen(p), FK_PS); while (l > 0 && p[l - 1] == '-') l--;
     FsCand *cand = NULL; int nc = 0, ccap = 0;
@@ -336,7 +335,7 @@ static FgsGraph *fs_graph(struct FsCtx *F) {
     FgsGraph g; const int have = graph_open(r, &g);
     const uint64_t sig = graph_doc_sig(r);
     if (have && g.sig == sig) { F->g = g; F->gstate = 1; F->gsrc = 1; F->graph_ms = fd_ms() - t0; return &F->g; }
-    if (!F->loop && fgs_env_graph() && F->cv.N <= (uint32_t)fs_graph_max() && F->sv_ok && F->sv.any) {
+    if (!F->loop && F->cv.N <= (uint32_t)fs_graph_max() && F->sv_ok && F->sv.any) {
         StoreBuf b = {0}; uint32_t nn = 0;
         if (fs_graph_derive(F->loc.root, sig, &b, &nn)) {
             FgsGraph m; uint8_t *mem = (uint8_t *)malloc(b.n + 8);       /* malloc devolve alinhado a 16 */
@@ -359,7 +358,7 @@ static FgsGraph *fs_graph(struct FsCtx *F) {
 }
 static void fs_time_line(struct FsCtx *F, char *o, size_t cap) {
     static const char *const gs[] = {"none", "read from the index", "derived and saved in the index", "derived in memory only", "read (older than the files)"};
-    snprintf(o, cap, "unified store: index %s%.1f ms; candidates %.1f ms; mini-index %d files %.1f ms; graph %s%s%.1f ms (no tree walk of its own, no find-*.idx)",
+    snprintf(o, cap, "unified store: index %s%.1f ms; candidates %.1f ms; mini-index %d files %.1f ms; graph %s%s%.1f ms (no tree walk of its own)",
              F->created ? "created, " : F->walked ? "updated, " : "ready, ", F->ens_ms, F->cand_ms, g_fd.nf, F->build_ms, gs[F->gstate > 0 ? F->gsrc : 0], F->gstate > 0 ? " " : " ", F->graph_ms);
 }
 /* o grafo do laco do agente: so le o que o armazenamento da pasta de trabalho ja tem (nunca cria indice nem deriva grafo) */
@@ -382,7 +381,6 @@ static struct FsCtx *fs_loop(void) {
 
 /* ---- derivacao do grafo (N2/N3 -> STS_GRAPH) ---- */
 static int fs_cmp_u64(const void *a, const void *b) { const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return x < y ? -1 : x > y; }
-static int fs_lex_on(void) { const char *e = getenv("KATANA_FIND_GRAPH_LEX"); return !(e && *e == '0'); }       /* 0: so referencias do N2 */
 static int fs_cmp_u64pair(const void *a, const void *b) { const uint64_t *x = (const uint64_t *)a, *y = (const uint64_t *)b; return x[0] < y[0] ? -1 : x[0] > y[0]; }
 static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32_t *nnout) {
     const double t0 = fd_ms();
@@ -449,7 +447,7 @@ static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32
     long nlex = 0;
     {
         CsView cv; char e3[300] = "";
-        if (fs_lex_on() && cs_view_open_raw(root, &cv, e3, sizeof e3) == 0) {
+        if (cs_view_open_raw(root, &cv, e3, sizeof e3) == 0) {
             int *gnode = (int *)malloc(sizeof(int) * ((size_t)cv.N + 1));
             for (uint32_t g = 0; g < cv.N; g++) { StoreLiveDoc *d = store_live_find(L, cv.path[g], cv.plen[g]); gnode[g] = d && !d->dead ? nid[d - L->e] : -1; }
             uint64_t *pr = (uint64_t *)malloc(sizeof(uint64_t) * ((size_t)ids.n + 1)); size_t npr = 0, prcap = (size_t)ids.n + 1;
@@ -594,7 +592,7 @@ static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32
         }
         free(kp); free(K.pool); free(K.off); free(K.len); free(K.ht);
     }
-    if (fs_lex_on()) {                                           /* path, por nome de arquivo citado com extensao no texto (o lexico guarda "grey_channel_mjs" como uma palavra so) */
+    {                                                            /* path, por nome de arquivo citado com extensao no texto (o lexico guarda "grey_channel_mjs" como uma palavra so) */
         CsView cv; char e3[300] = "";
         if (cs_view_open_raw(root, &cv, e3, sizeof e3) == 0) {
             int *gnode = (int *)malloc(sizeof(int) * ((size_t)cv.N + 1));
@@ -615,7 +613,7 @@ static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32
     }
     const double tph2 = fd_ms();
     long ncommits = 0;
-    if (fg_env_on("KATANA_FIND_CO")) {                         /* co: arquivos que mudaram juntos no git (some em silencio sem git ou fora de repositorio) */
+    {                                                          /* co: arquivos que mudaram juntos no git (some em silencio sem git ou fora de repositorio) */
         char q[8800], cmd[9000]; fg_shq(root, q, sizeof q);
         snprintf(cmd, sizeof cmd, "git -C %s -c core.quotepath=false log --no-merges --relative --name-only --pretty=format:@@ -n %d 2>/dev/null", q, FG_GITLOG);
         FILE *gp = popen(cmd, "r");

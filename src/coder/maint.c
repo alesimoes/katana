@@ -5,7 +5,7 @@
  *     1 s por pasta; .git/.hg/.svn/.katana nunca contam). O resultado e o arquivo `ignored` ao lado do store (texto, 0600). Roda ao fim de `katana coder
  *     index` e ao fim de uma rodada do rastreador (prioridade mais baixa); antes disso `status` diz "not counted yet". Refeita por pasta so se o mtime
  *     da pasta mudou. API de leitura para a fase 6 (frase do NOT FOUND e Symbols tree): ign_reg_load, ign_reg_largest, ign_reg_find_dir, ign_reg_free.
- *   - armazenamento: versao do formato (antiga = apaga e reconstroi, mais nova = nao mexe), dano (quarentena store.bad-<hora>, uma guardada) e disco
+ *   - armazenamento: versao do formato (diferente e menor = apaga e reconstroi, mais nova = nao mexe), dano (quarentena store.bad-<hora>, uma guardada) e disco
  *     cheio, tudo em maint_store_prepare/maint_disk_ok, chamados por store_catalog_update; gc diario automatico e conferencia de checksums a cada
  *     7 dias no rastreador.
  * Decisoes do implementador (o documento deixava abertas):
@@ -20,7 +20,7 @@
 #ifdef __linux__
 #include <sys/vfs.h>
 #endif
-/* g_maint_rebuilt (0, 1 = formato antigo apagado, 3 = dano: quarentena; a fase 6 mostra "[index was damaged and is being rebuilt]") e g_maint_quarantine: declarados em storedocs.c */
+/* g_maint_rebuilt (0, 1 = formato diferente apagado, 3 = dano: quarentena; a fase 6 mostra "[index was damaged and is being rebuilt]") e g_maint_quarantine: declarados em storedocs.c */
 static int cw_is_running(const char *dir, long *pid);          /* crawl.c */
 static int coder_crawl_main(int argc, char **argv);            /* crawl.c */
 
@@ -72,7 +72,7 @@ static const char *mt_fs_note(const char *path) {
 }
 
 /* ---------- versao do formato, dano e disco (F.6, G) ---------- */
-/* 0 = ok ou vazio, 1 = formato mais antigo (apaga e reconstroi), 2 = mais novo que este binario (nao mexe), 3 = danificado (quarentena e reconstroi) */
+/* 0 = ok ou vazio, 1 = formato diferente do deste binario e menor (apaga e reconstroi, sem aviso), 2 = mais novo que este binario (nao mexe), 3 = danificado (quarentena e reconstroi) */
 static int mt_store_class(const char *dir, char *err, size_t ecap) {
     char mp[4600]; snprintf(mp, sizeof mp, "%s/MANIFEST", dir); struct stat sv;
     if (stat(mp, &sv) != 0) return 0;
@@ -81,7 +81,7 @@ static int mt_store_class(const char *dir, char *err, size_t ecap) {
     if (ml < 8 || st_get_u32(mb) != STORE_MAN_MAGIC) { free(mb); snprintf(err, ecap, "MANIFEST: bad magic number"); return 3; }
     const uint32_t v = st_get_u32(mb + 4); free(mb);
     if (v > STORE_FORMAT) { snprintf(err, ecap, "format %u is newer than this binary (%d)", v, STORE_FORMAT); return 2; }
-    if (v < STORE_FORMAT) { snprintf(err, ecap, "format %u is older than this binary (%d)", v, STORE_FORMAT); return 1; }
+    if (v < STORE_FORMAT) { snprintf(err, ecap, "format %u is not %d", v, STORE_FORMAT); return 1; }
     for (int a = 0; a < 3; a++) {                      /* uma compactacao concorrente pode estar trocando segmentos: tenta de novo antes de condenar */
         StoreReader *r; if (store_open(dir, &r, err, ecap) == 0) { store_close(r); return 0; }
         if (strstr(err, "mais novo")) return 2;
@@ -89,7 +89,7 @@ static int mt_store_class(const char *dir, char *err, size_t ecap) {
     }
     return 3;
 }
-/* antes de escrever: versao antiga ou dano = reconstroi (quarentena store.bad-<hora>, uma so guardada; formato antigo e apagado), mais novo = deixa quieto.
+/* antes de escrever: formato diferente ou dano = reconstroi (quarentena store.bad-<hora>, uma so guardada; formato diferente e apagado), mais novo = deixa quieto.
  * 0 = segue, 1 = outro processo escreve, -1 = nao mexer (err). Pega o LOCK do store para nao trocar a pasta debaixo de um escritor */
 static int mt_prepare(const char *dir, char *err, size_t ecap, int force) {
     char e2[300] = ""; int c = force ? force : mt_store_class(dir, e2, sizeof e2);
@@ -114,7 +114,7 @@ static int mt_prepare(const char *dir, char *err, size_t ecap, int force) {
     st_mkdirs(dir);
     { char gi[4700]; snprintf(gi, sizeof gi, "%s/.gitignore", dir); FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); chmod(gi, 0600); } }
     g_maint_rebuilt = c; g_maint_rebuilds++;
-    fprintf(stderr, "[index was %s and is being rebuilt]\n", c == 3 ? "damaged" : "of an older format");
+    if (c == 3) fprintf(stderr, "[index was damaged and is being rebuilt]\n");
     return 0;
 }
 static int maint_store_prepare(const char *dir, char *err, size_t ecap) { return mt_prepare(dir, err, ecap, 0); }
@@ -487,10 +487,6 @@ static int mt_gc(int dry, int quiet, uint64_t maxmb) {
             if (v[at].init) continue;                      /* raiz com init: nunca */
             DIR *E = opendir(p); if (E) { struct dirent *e2; while ((e2 = readdir(E))) if (!strncmp(e2->d_name, "store.bad-", 10)) { char q[1400]; snprintf(q, sizeof q, "%s/%s", p, e2->d_name); struct stat st; if (stat(q, &st) == 0 && now - st.st_mtime > 7 * 86400) { const uint64_t by = mt_dirbytes(q); acted++; freed += by; if (!quiet) printf("%s quarantined copy %s (%s)\n", dry ? "would remove" : "removed", q, mt_hum(by, b, sizeof b)); if (!dry) rt_rmtree(q); } } closedir(E); } }
         closedir(D); } }
-    /* indices locais antigos sem marcador (pastas de lancamento de versoes anteriores): so listados, nunca removidos */
-    if (!quiet) { char cwd[4096]; if (getcwd(cwd, sizeof cwd)) { char cur[4200]; snprintf(cur, sizeof cur, "%s", cwd);
-        for (;;) { if (index_old_local_store(cur)) printf("old local store without marker (not removed): %s/.katana/coder/store; `katana init` there adopts it\n", cur); if (!rt_parent(cur)) break; } }
-        for (int i = 0; i < n; i++) if (!v[i].gone && index_old_local_store(v[i].root)) printf("old local store without marker (not removed): %s/.katana/coder/store\n", v[i].root); }
     if (!quiet) printf("gc: %s%d item(s), %s%s; home index now %s of %llu MiB allowed\n", dry ? "dry run, " : "", acted, mt_hum(freed, b, sizeof b), dry ? " would be freed" : " freed", mt_hum(total, (char[40]){0}, 40), (unsigned long long)maxmb);
     if (!dry) { char h[800], sp[1000]; rt_home(h, sizeof h); snprintf(sp, sizeof sp, "%s/.katana/coder/gc.stamp", h); FILE *f = fopen(sp, "w"); if (f) { fprintf(f, "%lld\n", (long long)now); fclose(f); chmod(sp, 0600); } }
     free(del); free(why); free(why2); free(sz); free(v); return acted;
@@ -528,7 +524,7 @@ static void maint_on_crawl_start(void) {
     char root[4200], dir[4400]; if (!mt_crawl_target(root, sizeof root, dir, sizeof dir)) return;
     { char h[800], sp[1000]; rt_home(h, sizeof h); snprintf(sp, sizeof sp, "%s/.katana/coder/gc.stamp", h); struct stat st;      /* gc diario automatico (so a home) */
       if (stat(sp, &st) != 0 || time(NULL) - st.st_mtime > 86400) { const char *e = getenv("KATANA_INDEX_MAX_MB"); const int a = mt_gc(0, 1, e && *e ? strtoull(e, NULL, 10) : 2048); if (a) fprintf(stderr, "[index: daily clean-up removed %d item(s) from the home index]\n", a); } }
-    char err[300] = ""; maint_store_prepare(dir, err, sizeof err);              /* formato antigo ou dano: reconstroi antes de o rastreador abrir o store */
+    char err[300] = ""; maint_store_prepare(dir, err, sizeof err);              /* formato diferente ou dano: reconstroi antes de o rastreador abrir o store */
     for (int i = 0; i < 5 && !maint_disk_ok(dir, 0, err, sizeof err); i++) { fprintf(stderr, "[index: %s]\n", err); sleep(60); }       /* disco cheio: pausa e tenta de novo a cada 60 s */
 }
 static void maint_on_crawl_end(void) {

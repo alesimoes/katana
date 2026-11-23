@@ -3,13 +3,11 @@
  * (arquivo:linhaA-linhaB, simbolos definidos ali, 2 a 4 linhas, outros arquivos que usam esses simbolos), sem ler
  * arquivos inteiros. mode=refs: onde um simbolo e definido e as linhas que o usam, com a funcao em volta de cada uso.
  *
- * Indice: arquivos de texto da pasta (git ls-files quando ha repositorio, senao caminhada com .gitignore), trechos de
- * 40 linhas com passo 25, tres campos por trecho (caminho, simbolos definidos, corpo). Guardado em
- * <pasta>/.katana/cache/find-<hash>.idx (com .gitignore que ignora tudo); a cada chamada so os arquivos com data ou
- * tamanho diferentes sao lidos de novo. O grafo de referencias e o proprio indice invertido: o termo inteiro de um
- * identificador (listSessions -> list_session) leva aos trechos que o citam.
+ * Indice: o armazenamento do coder da pasta (coder/findstore.c) da a lista de arquivos e os candidatos; o indice de trechos
+ * (40 linhas com passo 25, tres campos por trecho: caminho, simbolos definidos, corpo) e montado a cada consulta so com os
+ * candidatos. O termo inteiro de um identificador (listSessions -> list_session) leva aos trechos que o citam.
  * Ranking: BM25 por campo (pesos 3/1/1), radical simples, bonus de 10% por termo distinto da pergunta no trecho,
- * arquivo = melhor trecho + 0.3 do segundo (medido com tools/findbench/bench.py). KATANA_FIND_TUNE muda os parametros (pesquisa). */
+ * arquivo = melhor trecho + 0.3 do segundo (medido com tools/findbench/bench.py). */
 static const char CT_FIND_DESC[] =
     "Find where something is in the code of the working folder without reading whole files. `query`: what you are "
     "looking for, in plain words and/or identifiers (e.g. \"where the session list is sent to the phone\" or "
@@ -34,8 +32,6 @@ typedef struct { int n, total, concept, created; uint32_t files; double ms, inde
 
 #ifndef _WIN32
 static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho);   /* search.c */
-static int index_due(const char *root, int cons);                       /* src/coder/indexctl.c: precisa varrer a arvore de novo? */
-static void index_validated(const char *root, int cons);
 static void ign_scope_enter(const char *dir, int allow_add);            /* src/coder/maint.c: pasta consultada; `path` dentro de pasta ignorada vira inclusao restrita */
 static void ign_scope_leave(void);
 static int ign_notfound_note(const char *proj, const char *pre, char *out, size_t cap);      /* maint.c: "N ignored folders could hold it: ..." */
@@ -43,8 +39,6 @@ static int idx_status_line(const char *root, const char *pre, char *out, size_t 
 static int idx_scope_partial(const char *root, const char *pre);                             /* symquery.c: 0 = escopo completo, 1 e 2 = ainda parcial */
 static int fresh_note_take(char *out, size_t cap);                                           /* src/coder/fresh.c */
 static void index_stats_line(char *o, size_t cap);
-#define FD_MAGIC 0x444e464bu       /* "KFND" */
-#define FD_VERSION 4u       /* 4: grafo de arquivos depois dos arquivos (findgraph.c) */
 #define FD_CHUNK 40
 #define FD_STRIDE 25
 #define FD_MAXBYTES 300000
@@ -70,7 +64,7 @@ static int sym_find_note(const char *root, const char *file, int a, int b, int t
 /* findgraph.c (incluido depois deste arquivo) */
 struct FdIndexS;
 typedef struct { int file, chunk; double score; } FdHit;
-/* findstore.c (incluido depois): o Find unificado, sobre o armazenamento do coder (fase 7). KATANA_FIND_INDEX=legacy volta ao indice proprio (cache find-*.idx). */
+/* findstore.c (incluido depois): o Find sobre o armazenamento do coder (fase 7): nao ha indice proprio do Find em disco. */
 struct FsCtx;
 typedef struct { char path[300]; int line; } FsDef;
 static struct FsCtx *fs_begin(const char *root, const char *pre, struct FdIndexS *X, double *ms_ensure, char *err, size_t ecap);
@@ -85,12 +79,7 @@ static int fs_defs(struct FsCtx *F, const char *name, int l, FsDef *out, int max
 static long fs_name_refs(struct FsCtx *F, const char *name, int l);
 static void fs_time_line(struct FsCtx *F, char *o, size_t cap);
 static void fd_store_reset(struct FdIndexS *X);
-static int fd_store_mode(void) { const char *e = getenv("KATANA_FIND_INDEX"); return !(e && !strcmp(e, "legacy")); }
-static void fg_free(void);
 static void fg_neighbor_note(const char *name, const char *js, const char *end, char *result, size_t cap);
-static int fg_save(FILE *f, struct FdIndexS *X);
-static void fg_load(const char *p, size_t len, struct FdIndexS *X);
-static int fg_act_on(void);
 static int fg_ensure(struct FdIndexS *X);
 static int fg_drop_request(struct FdIndexS *X, uint32_t *qid, double *qw, int n);
 static int fg_activate(struct FdIndexS *X, const FdHit *all, int na, const char *pre, int k, FdHit *hits, int *esrc);
@@ -446,10 +435,9 @@ static int fd_sym(const char *s, int n, int kind, const char **ns) {
 /* ---- indice ---- */
 typedef struct { char *rel; long long mt, size; uint32_t *blob; uint32_t nb; int kind; int node; } FdFile;
 typedef struct FdIndexS {
-    char root[4096], cache[4400];
+    char root[4096];
     FdTerms T;
     FdFile *f; int nf, capf;
-    int listed, truncated;
     /* invertido (refeito a cada mudanca) */
     int nc; int *cf, *ca, *cb; float *cl[3]; double avg[3];
     int *poff[3]; int *pch[3]; uint8_t *ptf[3];
@@ -458,7 +446,7 @@ typedef struct FdIndexS {
     int ready;
     /* modo store (fase 7): o indice e montado POR CONSULTA so com os arquivos candidatos, lidos do catalogo e do disco; a tabela de termos T e mantida entre
        consultas (os ids dos termos precisam ser estaveis para o estado do pedido). gdf/gnc = estimativas do corpus inteiro para o idf (findstore.c) */
-    int store; struct FsCtx *fs; double *gdf[3]; int gdfn; double gnc;
+    struct FsCtx *fs; double *gdf[3]; int gdfn; double gnc;
 } FdIndex;
 static FdIndex g_fd;
 
@@ -641,119 +629,6 @@ static void fd_invert(FdIndex *X) {
     X->ready = 1;
 }
 
-/* ---- disco ---- */
-static int fd_cache_path(FdIndex *X) {
-    char home[700], d1[4400], d2[4400], fn[64];
-    uint32_t h1 = fd_hash(X->root, (int)strlen(X->root)), h2 = fd_hash(X->root, (int)strlen(X->root) / 2 + 1);
-    snprintf(fn, sizeof fn, "find-%08x%08x.idx", h1, h2);
-    const char *over = getenv("KATANA_CACHE_DIR");
-    if (over && *over) { MKDIR(over); snprintf(X->cache, sizeof X->cache, "%s/%s", over, fn); return 1; }
-    agent_home(home, sizeof home);
-    char mr[4200];
-    if (strcmp(X->root, home) != 0 && strcmp(X->root, "/") != 0 && index_marker_root(X->root, mr, sizeof mr)) {      /* so dentro de uma raiz com init (roots.c); senao ~/.katana/cache */
-        snprintf(d1, sizeof d1, "%s/.katana", mr);
-        snprintf(d2, sizeof d2, "%s/.katana/cache", mr);
-        MKDIR(d1); MKDIR(d2);
-#ifndef _WIN32
-        chmod(d2, 0700);                      /* o cache tem trechos do texto dos arquivos: so o dono */
-#endif
-        char gi[4500]; struct stat st;
-        snprintf(gi, sizeof gi, "%s/.gitignore", d2);
-        if (stat(d2, &st) == 0 && stat(gi, &st) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); } }      /* o cache nao entra no git do projeto */
-        if (access(d2, W_OK) == 0) { snprintf(X->cache, sizeof X->cache, "%s/%s", d2, fn); return 1; }
-    }
-    snprintf(d1, sizeof d1, "%s/.katana", home); MKDIR(d1);
-    snprintf(d2, sizeof d2, "%s/.katana/cache", home); MKDIR(d2);
-#ifndef _WIN32
-    chmod(d2, 0700);
-#endif
-    snprintf(X->cache, sizeof X->cache, "%s/%s", d2, fn);
-    return 1;
-}
-static int fd_save(FdIndex *X) {
-    char tmp[4500];
-    snprintf(tmp, sizeof tmp, "%s.%ld.tmp", X->cache, (long)getpid());
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return 0;
-#ifndef _WIN32
-    fchmod(fileno(f), 0600);
-#endif
-    uint32_t h[4] = {FD_MAGIC, FD_VERSION, (uint32_t)strlen(X->root), (uint32_t)X->T.n};
-    int ok = fwrite(h, sizeof h, 1, f) == 1 && fwrite(X->root, 1, h[2], f) == h[2];
-    ok = ok && fwrite(X->T.len, sizeof(uint16_t), (size_t)X->T.n, f) == (size_t)X->T.n;
-    ok = ok && fwrite(&X->T.pn, sizeof(size_t), 1, f) == 1 && fwrite(X->T.pool, 1, X->T.pn, f) == X->T.pn;
-    uint32_t nf = (uint32_t)X->nf;
-    ok = ok && fwrite(&nf, 4, 1, f) == 1;
-    for (int i = 0; i < X->nf && ok; i++) {
-        const FdFile *F = &X->f[i];
-        const uint32_t rl = (uint32_t)strlen(F->rel);
-        long long m[2] = {F->mt, F->size};
-        ok = fwrite(&rl, 4, 1, f) == 1 && fwrite(F->rel, 1, rl, f) == rl && fwrite(m, sizeof m, 1, f) == 1 &&
-             fwrite(&F->nb, 4, 1, f) == 1 && fwrite(F->blob, 4, F->nb, f) == F->nb;
-    }
-    ok = ok && fg_save(f, X);
-    ok = fclose(f) == 0 && ok;
-    if (!ok || rename(tmp, X->cache) != 0) { remove(tmp); return 0; }
-    return 1;
-}
-static void fd_free_files(FdIndex *X) {
-    fg_free(); fd_bc_clear();
-    for (int i = 0; i < X->nf; i++) { free(X->f[i].rel); free(X->f[i].blob); }
-    free(X->f); X->f = NULL; X->nf = X->capf = 0;
-    free(X->T.pool); free(X->T.off); free(X->T.len); free(X->T.ht); memset(&X->T, 0, sizeof X->T);
-    X->ready = 0;
-}
-static int fd_load(FdIndex *X) {
-    size_t n = 0;
-    struct stat st;
-    if (stat(X->cache, &st) != 0 || st.st_size < 32) return 0;
-    char *b = fd_slurp(X->cache, &n, (size_t)st.st_size);
-    if (!b) return 0;
-    const char *p = b, *e = b + n;
-#define FD_GET(dst, sz) do { if ((size_t)(e - p) < (size_t)(sz)) goto bad; memcpy((dst), p, (sz)); p += (sz); } while (0)
-    uint32_t h[4];
-    FD_GET(h, sizeof h);
-    if (h[0] != FD_MAGIC || h[1] != FD_VERSION || h[2] != strlen(X->root) || (size_t)(e - p) < h[2] || memcmp(p, X->root, h[2]) != 0) goto bad;
-    p += h[2];
-    {
-        FdTerms *T = &X->T;
-        T->n = T->cap = (int)h[3];
-        T->len = (uint16_t *)malloc(sizeof(uint16_t) * (size_t)(T->cap + 1)); T->off = (uint32_t *)malloc(sizeof(uint32_t) * (size_t)(T->cap + 1));
-        FD_GET(T->len, sizeof(uint16_t) * (size_t)T->n);
-        FD_GET(&T->pn, sizeof(size_t));
-        T->pcap = T->pn + 1; T->pool = (char *)malloc(T->pcap);
-        FD_GET(T->pool, T->pn);
-        size_t o = 0;
-        for (int i = 0; i < T->n; i++) { T->off[i] = (uint32_t)o; o += T->len[i] + 1u; if (o > T->pn) goto bad; }
-        T->hcap = 0; T->ht = NULL;
-        { int hc = 1 << 16; while (hc < (T->n + 1) * 2) hc *= 2; T->hcap = hc / 2; fd_rehash(T); }
-        uint32_t nf;
-        FD_GET(&nf, 4);
-        X->capf = (int)nf + 16; X->f = (FdFile *)calloc((size_t)X->capf, sizeof(FdFile));
-        for (uint32_t i = 0; i < nf; i++) {
-            FdFile *F = &X->f[X->nf];
-            uint32_t rl; long long m[2];
-            FD_GET(&rl, 4);
-            if (rl > 4000 || (size_t)(e - p) < rl) goto bad;
-            F->rel = (char *)malloc(rl + 1); memcpy(F->rel, p, rl); F->rel[rl] = 0; p += rl;
-            X->nf++;
-            FD_GET(m, sizeof m); F->mt = m[0]; F->size = m[1];
-            FD_GET(&F->nb, 4);
-            if ((size_t)(e - p) / 4 < F->nb) goto bad;
-            F->blob = (uint32_t *)malloc(4 * (size_t)F->nb + 4); memcpy(F->blob, p, 4 * (size_t)F->nb); p += 4 * (size_t)F->nb;
-            F->kind = fd_kind(F->rel);
-        }
-    }
-    fg_load(p, (size_t)(e - p), X);
-#undef FD_GET
-    free(b);
-    return 1;
-bad:
-    free(b);
-    fd_free_files(X);
-    return 0;
-}
-
 /* ---- lista de arquivos ---- */
 static char g_fd_allow[1500];          /* a pasta que a chamada pediu em `path` (relativa a raiz do Find): os nomes de pasta pesada DENTRO dela nao a escondem (fase 6, inclusao restrita) */
 static int fd_skip_rel(const char *rel) {
@@ -770,105 +645,12 @@ static int fd_skip_rel(const char *rel) {
     }
     return 0;
 }
-/* o arquivo esta numa subpasta com init proprio ou numa copia de trabalho do git? o veredito da ultima pasta fica guardado (a lista vem agrupada por pasta) */
-static int fd_in_nested(const char *root, const char *rel) {
-    static char last[1500]; static int lastv; const char *sl = strrchr(rel, '/');
-    const size_t dl = sl ? (size_t)(sl - rel) : 0; if (!dl) return 0;
-    if (dl < sizeof last && !strncmp(last, rel, dl) && !last[dl] && last[0]) return lastv;
-    int v = 0; char p[4400];
-    for (const char *q = rel; q < rel + dl && !v; ) { const char *e = memchr(q, '/', (size_t)(rel + dl - q)); size_t n = e ? (size_t)(e - rel) : dl;
-        snprintf(p, sizeof p, "%s/%.*s", root, (int)n, rel); if (rt_skip_subdir(p)) v = 1; q = e ? e + 1 : rel + dl; }
-    if (dl < sizeof last) { memcpy(last, rel, dl); last[dl] = 0; lastv = v; }
-    return v;
-}
-typedef struct { char *rel; long long mt, size; int kind; } FdLs;
-static int fd_cmp_ls(const void *a, const void *b) { return strcmp(((const FdLs *)a)->rel, ((const FdLs *)b)->rel); }
-static int fd_cmp_rel(const void *a, const void *b) { return strcmp(((const FdFile *)a)->rel, ((const FdFile *)b)->rel); }
-static int fd_max_files(void) { const char *e = getenv("KATANA_FIND_MAX_FILES"); const int v = e ? atoi(e) : 0; return v > 0 ? v : 20000; }
+static int g_fd_verbose;       /* KATANA_FIND_TIME: tempos de cada fase no stderr */
 
-/* atualiza o indice da pasta root: le so o que mudou; devolve quantos arquivos foram (re)lidos */
-static int g_fd_verbose;
-static int fd_update(FdIndex *X, const char *root, char *err, size_t ecap) {
-    const double t0 = fd_ms();
-    if (strcmp(X->root, root) != 0) {
-        fd_free_files(X);
-        snprintf(X->root, sizeof X->root, "%s", root);
-        fd_cache_path(X);
-        fd_load(X);
-    } else if (!X->cache[0]) fd_cache_path(X);
-    const double t1 = fd_ms();
-    CtFiles fl; memset(&fl, 0, sizeof fl);
-    CtGrepFilter flt = {NULL, NULL};
-    ct_grep_collect(&fl, root, root, &flt);
-    FdLs *ls = (FdLs *)malloc(sizeof(FdLs) * (size_t)(fl.n + 1));
-    int nl = 0;
-    const size_t rl = strlen(root);
-    const int maxf = fd_max_files();
-    X->truncated = 0;
-    for (int i = 0; i < fl.n; i++) {
-        const char *abs = fl.v[i].path;
-        if (strncmp(abs, root, rl) != 0 || abs[rl] != '/') continue;
-        const char *rel = abs + rl + 1;
-        if (fd_skip_rel(rel)) continue;
-        if (fd_in_nested(root, rel)) continue;      /* init aninhado ou copia de trabalho do git: indice proprio, o pai nao o duplica (roots.c) */
-        const int k = fd_kind(rel);
-        if (k < 0) continue;
-        struct stat st;
-        if (stat(abs, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > FD_MAXBYTES) continue;
-        if (nl >= maxf) { X->truncated++; continue; }
-        ls[nl].rel = strdup(rel); ls[nl].mt = (long long)st.st_mtime; ls[nl].size = (long long)st.st_size; ls[nl].kind = k; nl++;
-    }
-    ct_files_free(&fl);
-    X->listed = nl;
-    qsort(ls, (size_t)nl, sizeof(FdLs), fd_cmp_ls);
-    qsort(X->f, (size_t)X->nf, sizeof(FdFile), fd_cmp_rel);
-    /* junta: arquivo igual fica; mudado ou novo e relido; sumido sai */
-    FdFile *nf = (FdFile *)calloc((size_t)nl + 1, sizeof(FdFile));
-    int i = 0, j = 0, changed = 0, removed = 0;
-    for (; j < nl; j++) {
-        while (i < X->nf && strcmp(X->f[i].rel, ls[j].rel) < 0) { free(X->f[i].rel); free(X->f[i].blob); i++; removed++; }
-        FdFile *F = &nf[j];
-        if (i < X->nf && strcmp(X->f[i].rel, ls[j].rel) == 0) {
-            *F = X->f[i]; i++;
-            free(ls[j].rel);
-            if (F->mt == ls[j].mt && F->size == ls[j].size && F->blob) continue;
-        } else { F->rel = ls[j].rel; F->blob = NULL; }
-        F->mt = ls[j].mt; F->size = ls[j].size; F->kind = ls[j].kind;
-        fd_build_file(X, F);
-        changed++;
-    }
-    for (; i < X->nf; i++) { free(X->f[i].rel); free(X->f[i].blob); removed++; }
-    free(X->f); free(ls);
-    X->f = nf; X->nf = nl; X->capf = nl + 1;
-    const double t2 = fd_ms();
-    if (changed || removed) fg_free();
-    if (changed || removed || !X->ready) fd_invert(X);
-    const double t3 = fd_ms();
-    if (changed || removed) fd_save(X);
-    if (g_fd_verbose) fprintf(stderr, "find: load %.0f ms, list %.0f ms (%d files, %d read again, %d gone), invert %.0f ms, save %.0f ms\n",
-                              t1 - t0, t2 - t1, nl, changed, removed, t3 - t2, fd_ms() - t3);
-    (void)err; (void)ecap;
-    return changed;
-}
-
-/* ---- parametros do ranking (KATANA_FIND_TUNE="wp=3,ws=2,..."; so para pesquisa) ---- */
+/* ---- parametros do ranking ---- */
 typedef struct { double wp, ws, wb, k1, b, cover, agg, idw, symb, docpen; } FdTune;
 static FdTune fd_tune(void) {
     FdTune t = {3, 1, 1, 1.2, 0.75, 0.1, 0.3, 1.0, 0.0, FD_W_DOC};      /* medido: ws=1 e cover=0.1 >= o bench em Python nos 3 repositorios */
-    const char *e = getenv("KATANA_FIND_TUNE");
-    while (e && *e) {
-        char k[16]; double v; int used = 0;
-        if (sscanf(e, "%15[a-z0-9]=%lf%n", k, &v, &used) == 2) {
-            if (!strcmp(k, "wp")) t.wp = v; else if (!strcmp(k, "ws")) t.ws = v; else if (!strcmp(k, "wb")) t.wb = v;
-            else if (!strcmp(k, "k1")) t.k1 = v; else if (!strcmp(k, "b")) t.b = v; else if (!strcmp(k, "cover")) t.cover = v;
-            else if (!strcmp(k, "agg")) t.agg = v; else if (!strcmp(k, "idw")) t.idw = v; else if (!strcmp(k, "symb")) t.symb = v;
-            else if (!strcmp(k, "docpen")) t.docpen = v;
-            e += used;
-        }
-        const char *c = strchr(e, ',');
-        if (!c) break;
-        e = c + 1;
-    }
     return t;
 }
 
@@ -1036,10 +818,10 @@ static int fd_query_terms(FdIndex *X, const char *query, int add, double idw, ui
 /* df de um termo num campo: o que os candidatos (ou o indice inteiro) tem, ou a estimativa do corpus do modo store, o que for maior */
 static int fd_df(const FdIndex *X, int f, int t) {
     int df = X->poff[f][t + 1] - X->poff[f][t];
-    if (X->store && X->gdf[f] && t < X->gdfn && X->gdf[f][t] > df) df = (int)(X->gdf[f][t] + 0.5);
+    if (X->gdf[f] && t < X->gdfn && X->gdf[f][t] > df) df = (int)(X->gdf[f][t] + 0.5);
     return df;
 }
-static double fd_ncount(const FdIndex *X) { return X->store && X->gnc > X->nc ? X->gnc : (double)X->nc; }
+static double fd_ncount(const FdIndex *X) { return X->gnc > X->nc ? X->gnc : (double)X->nc; }
 /* ranking: devolve ate k arquivos em hits (ordem decrescente) */
 static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, int k, uint32_t *qid, int *nq, int *esrc) {
     const FdTune tu = fd_tune();
@@ -1156,7 +938,7 @@ static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, 
     }
     int r;
     for (int i = 0; i < k; i++) esrc[i] = -1;
-    if (na && fg_act_on() && fg_ensure(X)) r = fg_activate(X, all, na, pre, k, hits, esrc);      /* ativacao esparsa sobre o grafo de arquivos */
+    if (na && fg_ensure(X)) r = fg_activate(X, all, na, pre, k, hits, esrc);      /* ativacao esparsa sobre o grafo de arquivos */
     else { r = na < k ? na : k; memcpy(hits, all, sizeof(FdHit) * (size_t)r); }
     free(all); free(best); free(second); free(bc); free(sc); free(cov); free(seen); free(mark); free(touched);
     return r;
@@ -1197,49 +979,7 @@ static void fd_also_store(FdIndex *X, int fi, int a, int b, const int *pref, int
     ct_sb_puts(sb, "\n");
 }
 static void fd_also(FdIndex *X, int fi, int a, int b, const int *pref, int npref, CtSb *sb) {
-    if (X->store) { fd_also_store(X, fi, a, b, pref, npref, sb); return; }
-    int files[64], cnt[64], nfl = 0;
-    if (X->f[fi].kind == FK_MD) return;
-    int onpref = 0;
-    for (int s = X->fs0[fi]; s < X->fs0[fi] + X->fsn[fi]; s++) for (int i = 0; i < npref; i++) if (pref[i] && pref[i] == X->sl[s]) onpref = 1;
-    for (int s = X->fs0[fi]; s < X->fs0[fi] + X->fsn[fi]; s++) {
-        if (X->sl[s] < a || X->sl[s] > b) continue;
-        int isp = 0; for (int i = 0; i < npref; i++) if (pref[i] == X->sl[s]) isp = 1;
-        if (onpref && !isp) continue;
-        const char *nm = fd_tstr(&X->T, X->sn[s]);
-        const int l = (int)strlen(nm);
-        if (l < 4) continue;
-        const int key = fd_key(X, nm, l);
-        if (key < 0) continue;
-        const int multi = strchr(fd_tstr(&X->T, key), '_') != NULL;
-        const int pa = X->poff[2][key], pb = X->poff[2][key + 1];
-        if (pb - pa > 2000) continue;                  /* nome comum demais para dizer algo */
-        int last = -1, checked = 0;
-        for (int i = pa; i < pb; i++) {
-            const int of = X->cf[X->pch[2][i]];
-            if (of == fi || of == last) continue;
-            last = of;
-            int at = -1; for (int q = 0; q < nfl; q++) if (files[q] == of) at = q;
-            if (at >= 0) { cnt[at]++; continue; }
-            if (nfl >= 64) break;
-            if (!multi) {                              /* nome de uma parte so: confere a palavra exata no texto */
-                if (++checked > 12) break;
-                FdText t; if (!fd_text(X, of, &t)) continue;
-                const int ok = fd_has_word(t.s, (int)t.n, nm, l, 0);
-                fd_text_free(&t);
-                if (!ok) continue;
-            }
-            files[nfl] = of; cnt[nfl] = 1 + 4 * !fd_is_doc(X->f[of].kind); nfl++;
-        }
-    }
-    if (!nfl) return;
-    /* mais simbolos citados primeiro; codigo antes de documentacao */
-    for (int i = 0; i < nfl; i++) for (int j = i + 1; j < nfl; j++) if (cnt[j] > cnt[i]) { int t = cnt[i]; cnt[i] = cnt[j]; cnt[j] = t; t = files[i]; files[i] = files[j]; files[j] = t; }
-    ct_sb_puts(sb, "   also referenced in: ");
-    const int show = nfl < 3 ? nfl : 3;
-    for (int i = 0; i < show; i++) { if (i) ct_sb_puts(sb, ", "); ct_sb_puts(sb, X->f[files[i]].rel); }
-    if (nfl > show) { char m[32]; snprintf(m, sizeof m, " (+%d more)", nfl - show); ct_sb_puts(sb, m); }
-    ct_sb_puts(sb, "\n");
+    fd_also_store(X, fi, a, b, pref, npref, sb);
 }
 
 /* nomes usados nas linhas do trecho que estao definidos em outro lugar do indice (a aresta de saida do grafo):
@@ -1289,46 +1029,7 @@ static void fd_calls_store(FdIndex *X, int fi, int a, int b, const FdText *t, co
     ct_sb_puts(sb, "\n");
 }
 static void fd_calls(FdIndex *X, int fi, int a, int b, const FdText *t, const int *pref, int npref, CtSb *sb) {
-    if (X->store) { fd_calls_store(X, fi, a, b, t, pref, npref, sb); return; }
-    int got[32], gs[32], ng = 0;
-    for (int ln = a; ln <= b; ln++) {
-        int dist = 1000; for (int i = 0; i < npref; i++) if (pref[i] && abs(pref[i] - ln) < dist) dist = abs(pref[i] - ln);
-        int ll = 0; const char *s = fd_line(t, ln, &ll);
-        { const char *z = fd_ws(s, s + ll); if (z < s + ll && (*z == '#' || *z == '*' || (z[0] == '/' && z + 1 < s + ll && (z[1] == '/' || z[1] == '*')) || (z[0] == '-' && z + 1 < s + ll && z[1] == '-'))) continue; }
-        for (int i = 0; i < ll; ) {
-            if (!(isalpha((unsigned char)s[i]) || s[i] == '_') || (i > 0 && fd_isid((unsigned char)s[i - 1]))) { i++; continue; }
-            const int l = fd_idlen(s + i, s + ll, FK_OTHER);
-            if (l < 5 || (l > 2 && s[i + l - 2] == '_' && s[i + l - 1] == 't')) { i += l ? l : 1; continue; }      /* curtos e tipos como uint64_t: ruido */
-            const int id = fd_term(&X->T, s + i, l, 0);
-            int multi = 0; for (int z = 1; z < l; z++) if (s[i + z] == '_' || (islower((unsigned char)s[i + z - 1]) && isupper((unsigned char)s[i + z]))) multi = 1;
-            const char nx = i + l < ll ? s[i + l] : 0;
-            i += l;
-            if ((!multi && nx != '(') || id < 0 || X->shead[id] < 0) continue;
-            int nd = 0, out = -1, self = 0;
-            for (int q = X->shead[id]; q >= 0; q = X->snext[q]) {
-                if (X->f[X->sf[q]].kind == FK_MD) continue;
-                nd++;
-                if (X->sf[q] == fi && X->sl[q] >= a && X->sl[q] <= b) self = 1;
-                if (out < 0 || (X->sf[out] == fi && X->sf[q] != fi)) out = q;
-            }
-            if (!nd || nd > 3 || self || out < 0) continue;
-            const int sc = (dist == 0 ? 100 : dist <= 3 ? 50 - dist : 20 - (dist > 20 ? 20 : dist)) + (X->sf[out] != fi ? 15 : 0) + (multi ? 10 : 0) + (nx == '(' ? 5 : 0);
-            int at = -1; for (int r = 0; r < ng; r++) if (X->sn[got[r]] == id) at = r;
-            if (at >= 0) { if (sc > gs[at]) gs[at] = sc; continue; }
-            if (ng < 32) { got[ng] = out; gs[ng] = sc; ng++; }
-        }
-    }
-    if (!ng) return;
-    for (int i = 0; i < ng; i++) for (int j = i + 1; j < ng; j++) if (gs[j] > gs[i]) { int x = gs[i]; gs[i] = gs[j]; gs[j] = x; x = got[i]; got[i] = got[j]; got[j] = x; }
-    ct_sb_puts(sb, "   calls: ");
-    for (int i = 0; i < ng && i < 4; i++) {
-        char m[600];
-        const int q = got[i];
-        if (X->sf[q] == fi) snprintf(m, sizeof m, "%s%s (line %d)", i ? ", " : "", fd_tstr(&X->T, X->sn[q]), X->sl[q]);
-        else snprintf(m, sizeof m, "%s%s (%s:%d)", i ? ", " : "", fd_tstr(&X->T, X->sn[q]), X->f[X->sf[q]].rel, X->sl[q]);
-        ct_sb_puts(sb, m);
-    }
-    ct_sb_puts(sb, "\n");
+    fd_calls_store(X, fi, a, b, t, pref, npref, sb);
 }
 
 /* ---- modo refs ---- */
@@ -1532,11 +1233,9 @@ static int fd_query_kind(const char *q) {
     }
     return codey ? FQ_IDENT : FQ_NATURAL;
 }
-/* o indice do coder nao le .gitignore: so entram os arquivos que o indice do Find tambem lista (mesmo conjunto de arquivos) */
+/* o indice do coder nao le .gitignore: so entram os arquivos que o Find tambem lista (mesmo conjunto de arquivos) */
 static int fd_listed(FdIndex *X, const char *rel) {
-    if (X->store) return fs_listed(X->fs, rel);
-    FdFile key; memset(&key, 0, sizeof key); key.rel = (char *)rel;
-    return bsearch(&key, X->f, (size_t)X->nf, sizeof(FdFile), fd_cmp_rel) != NULL;
+    return fs_listed(X->fs, rel);
 }
 static int fd_coder_ok(FdIndex *X, const CoderHit *h, const char *pre) {
     const size_t pl = strlen(pre);
@@ -1566,10 +1265,9 @@ static int fd_line_of(FdIndex *X, const char *rel, const char *needle, int *ln, 
     }
     free(b); return found;
 }
-/* fase 6 (J.3), o que acompanha um NOT FOUND do Find: "so far" quando o escopo do indice ainda esta sendo montado e as pastas ignoradas que poderiam ter o nome. So no modo store */
-static int fd_nf_part(const FdIndex *X, const char *pre) { return X->store ? idx_scope_partial(X->root, pre) : 0; }
+/* fase 6 (J.3), o que acompanha um NOT FOUND do Find: "so far" quando o escopo do indice ainda esta sendo montado e as pastas ignoradas que poderiam ter o nome. */
+static int fd_nf_part(const FdIndex *X, const char *pre) { return idx_scope_partial(X->root, pre); }
 static void fd_nf_tail(const FdIndex *X, const char *pre, int part, CtSb *sb) {
-    if (!X->store) return;
     if (part) ct_sb_puts(sb, "The index is still being built, so this is not proof that it does not exist; try Grep, or ask again shortly.\n");
     char ign[460]; if (ign_notfound_note(X->root, pre, ign, sizeof ign)) { ct_sb_puts(sb, ign); ct_sb_puts(sb, "\n"); }
 }
@@ -1628,7 +1326,7 @@ static int fd_coder_post(const CoderHits *C, const char *pre, FdIndex *X, const 
 }
 
 static int sym_find_refs(const char *root, const char *pre, const char *name, int limit, CtSb *sb);      /* coder/symtool.c */
-/* mode=refs pelo indice de simbolos, se a pasta ja o tem e ele conhece o nome exato; 0 = segue pelo caminho antigo (KATANA_FIND_REFS=text desliga) */
+/* mode=refs pelo indice de simbolos, se a pasta ja o tem e ele conhece o nome exato; 0 = nao tem (o chamador segue pelo texto dos arquivos) */
 static int fd_refs_sym(const char *query, const char *root, const char *pre, int limit, CtSb *sb) {
     {   /* nome de arquivo (script, modulo): quem o importa/le por source, require, include, import */
         const char *q = query; while (*q == ' ' || *q == '"' || *q == '\'') q++;
@@ -1641,7 +1339,6 @@ static int fd_refs_sym(const char *query, const char *root, const char *pre, int
             free(t.p);
         }
     }
-    const char *e = getenv("KATANA_FIND_REFS"); if (e && !strcmp(e, "text")) return 0;
     const char *p = query; while (*p && !(isalpha((unsigned char)*p) || *p == '_' || *p == '$')) p++;
     int l = fd_idlen(p, p + strlen(p), FK_PS); while (l > 0 && p[l - 1] == '-') l--;
     if (l <= 0 || l > 250) return 0;
@@ -1652,9 +1349,8 @@ static int fd_refs_sym(const char *query, const char *root, const char *pre, int
     free(t.p); return 1;
 }
 /* "next: arquivo:linhas (porque)": o que consultar depois, a partir do grafo de simbolos (chamados e chamadores dos simbolos que casam), em trechos que o modelo
- * ainda nao leu e que nao estao na lista de candidatos. KATANA_FIND_NEXT=0 desliga. h = candidatos mostrados; all = todos os do ranking (para nao repetir) */
+ * ainda nao leu e que nao estao na lista de candidatos. h = candidatos mostrados; all = todos os do ranking (para nao repetir) */
 static void fd_next_steps(FdIndex *X, const char *root, const char *pre, const FdHit *h, int nh, const FdHit *all, int nall, const uint32_t *qid, int nq, CtSb *sb) {
-    const char *e = getenv("KATANA_FIND_NEXT"); if (e && *e == '0') return;
     if (!nh) return;
     const char *terms[64]; if (nq > 64) nq = 64;
     for (int i = 0; i < nq; i++) terms[i] = fd_tstr(&X->T, (int)qid[i]);
@@ -1699,10 +1395,6 @@ static int fd_is_phrase(const char *q) {
 static void ct_findtool(const char *js, const char *end, char *out, size_t cap) {
     if (cap < 300) { if (cap) out[0] = 0; return; }
     g_fd_verbose = getenv("KATANA_FIND_TIME") != NULL;
-    {   /* pesquisa: KATANA_FIND_REPEAT=N chama a busca N vezes no mesmo processo (mede o que o cache de processo poupa); so a ultima resposta e devolvida */
-        static int in_rep; const char *rp = getenv("KATANA_FIND_REPEAT");
-        if (!in_rep && rp && atoi(rp) > 1) { in_rep = 1; for (int i = 1; i < atoi(rp); i++) { fprintf(stderr, "find: ---- repeat %d\n", i); ct_findtool(js, end, out, cap); } in_rep = 0; fprintf(stderr, "find: ---- last call\n"); }
-    }
     char *q = ct_str(js, end, "query"), *path = ct_str(js, end, "path"), *mode = ct_str(js, end, "mode");
     if (!q || !*q) { free(q); q = ct_str(js, end, "pattern"); }        /* nome parecido */
     long long lim = ct_int(js, end, "limit", 6);
@@ -1744,38 +1436,27 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             if (!sl) break; c = sl + 1; }
         char err[300] = "";
         snprintf(g_fd_allow, sizeof g_fd_allow, "%s", pre);
-        /* Find unificado (padrao, fase 7): o catalogo e o indice do coder dao a lista de arquivos e os candidatos; o indice de trechos e montado so com eles, a cada
-           consulta. KATANA_FIND_INDEX=legacy usa o indice proprio do Find (cache find-*.idx); sem indice do coder (nao foi possivel cria-lo) a chamada cai nele */
+        /* o catalogo e o indice do coder dao a lista de arquivos e os candidatos; o indice de trechos e montado so com eles, a cada consulta. Sem indice do coder
+           (nao foi possivel cria-lo) a resposta e um erro: o Find nao tem um segundo indice */
         struct FsCtx *FS = NULL; double ens_ms = 0;
         const double tb = fd_ms();
-        if (fd_store_mode() && !nbr) {
-            FS = fs_begin(root, pre, &g_fd, &ens_ms, err, sizeof err);
-            if (!FS && g_fd_verbose) fprintf(stderr, "find: the coder index is not available (%s); using the Find's own index\n", err);
-        }
-        const int nbr_store = nbr && fd_store_mode();      /* a nota de vizinhos le o grafo do armazenamento; nao precisa de indice de trechos */
-        if (!FS && !nbr_store) {
-            if (g_fd.store) { fd_store_reset(&g_fd); g_fd.store = 0; g_fd.root[0] = 0; }
-            /* a arvore so e varrida de novo se mudou (index_touch, Bash), se e outra raiz, ou passou o prazo (indexctl.c) */
-            if (!g_fd.ready || strcmp(g_fd.root, root) != 0 || index_due(root, 1 /* IDX_FIND */)) { fd_update(&g_fd, root, err, sizeof err); index_validated(root, 1); }
-            else if (g_fd_verbose) fprintf(stderr, "find: tree walk skipped (list, stat and git ls-files not repeated)\n");
-        }
         FdIndex *X = &g_fd;
         CtSb sb = {0};
-        const double t0 = fd_ms();
-        if (nbr_store) { /* segue */ }
-        else if (FS ? !fs_nfiles(FS) : (!X->nf || !X->nc)) {
-            snprintf(out, cap, "No indexable text files under %s (source and text files up to 300 KB; .git, node_modules, build, dist, vendor and gitignored files are skipped).", path && *path ? path : root);
-            if (FS) fs_end(FS);
-            goto done;
-        }
-        if (nbr) {
+        if (nbr) {                  /* a nota de vizinhos le o grafo do armazenamento; nao precisa de indice de trechos */
             char js[4400], res[2000] = "";
             snprintf(js, sizeof js, "{\"file_path\": \"%.4000s\"}", q);
-            if (nbr_store || fg_ensure(X)) fg_neighbor_note("Read", js, js + strlen(js), res, sizeof res);
+            fg_neighbor_note("Read", js, js + strlen(js), res, sizeof res);
             snprintf(out, cap, "%s", res[0] ? res + 1 : "(no note)");
             goto done;
         }
-        if (refs) { if (!fd_refs_sym(q, root, pre, (int)lim, &sb)) { if (FS) fs_prepare_refs(FS, X, q); fd_refs(X, q, pre, (int)lim, &sb); } }
+        FS = fs_begin(root, pre, &g_fd, &ens_ms, err, sizeof err);
+        if (!FS) { snprintf(out, cap, "error: the code index of %s is not available (%s).", root, err); goto done; }
+        if (!fs_nfiles(FS)) {
+            snprintf(out, cap, "No indexable text files under %s (source and text files up to 300 KB; .git, node_modules, build, dist, vendor and gitignored files are skipped).", path && *path ? path : root);
+            fs_end(FS);
+            goto done;
+        }
+        if (refs) { if (!fd_refs_sym(q, root, pre, (int)lim, &sb)) { fs_prepare_refs(FS, X, q); fd_refs(X, q, pre, (int)lim, &sb); } }
         else {
             FdHit hits[FD_HITS_MAX], sh[12], sk[12]; uint32_t qid[64]; int nq = 0, esrc[FD_HITS_MAX], ses[12];
             if (phrase) ct_sb_puts(&sb, "(mode=refs wants one name; searched by meaning instead)\n");
@@ -1788,7 +1469,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                 if (CH && coder_lookup(root, q, lvl >= 2, 12, CH) != 0) { free(CH); CH = NULL; }
                 if (CH && g_fd_verbose) fprintf(stderr, "find: coder %s%.1f ms (index update %.1f ms, search %.1f ms)\n", CH->created ? "index created, " : "", CH->index_ms + CH->ms, CH->index_ms, CH->ms);
             }
-            if (FS) fs_prepare(FS, X, q, CH);
+            fs_prepare(FS, X, q, CH);
             const int nh = fd_rank(X, q, pre, hits, want, qid, &nq, esrc);
             const int repeat = nq && fd_same_query(qid, nq, pre);
             snprintf(g_fd_lastq, sizeof g_fd_lastq, "%s", q);
@@ -1809,7 +1490,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                 char m[1300];
                 if (nsk) ct_sb_puts(&sb, "Every good match was already shown or read in this request (listed below). Use other words, Read another part, or follow the next steps.\n");
                 else if (!cpre || qk == FQ_QUOTED) {
-                    const int part = FS ? idx_scope_partial(root, pre) : 0; char ign[460] = ""; if (FS && !(CH && qk != FQ_NATURAL)) ign_notfound_note(root, pre, ign, sizeof ign);      /* a camada do coder ja disse onde nao olhou */      /* J.3: "so far" e onde o indice nao olhou */
+                    const int part = idx_scope_partial(root, pre); char ign[460] = ""; if (!(CH && qk != FQ_NATURAL)) ign_notfound_note(root, pre, ign, sizeof ign);      /* a camada do coder ja disse onde nao olhou */      /* J.3: "so far" e onde o indice nao olhou */
                     snprintf(m, sizeof m, "No match%s for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code. "
                              "If it is something you saved earlier (a fact, a preference), try recall(query).%s%s", part ? " so far" : "", q, *pre ? " in " : "", pre, ign[0] ? " " : "", ign);
                     ct_sb_puts(&sb, m);
@@ -1841,12 +1522,11 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                 rs_note(abs, X->ca[sh[i].chunk], X->cb[sh[i].chunk], 1);
             }
         }
-        if (!FS && X->truncated) { char m[200]; snprintf(m, sizeof m, "(index covers %d files; %d more skipped: KATANA_FIND_MAX_FILES)\n", X->listed, X->truncated); ct_sb_puts(&sb, m); }
         ct_sb_puts(&sb, refs ? "Next: Find mode=refs on a caller, or Read a part with offset and limit." : "Follow a symbol with Find mode=refs, or Read a part with offset and limit.");
-        if (g_fd_verbose) { if (FS) { char tl[400]; fs_time_line(FS, tl, sizeof tl); fprintf(stderr, "find: %s\n", tl); } fprintf(stderr, "find: query %.1f ms\n", fd_ms() - (FS ? tb : t0)); }
-        { char stl[500] = ""; if (FS) idx_status_line(root, pre, stl, sizeof stl); snprintf(out, cap, "%s%s", stl, sb.p ? sb.p : ""); }       /* no maximo uma linha de estado, so quando o escopo esta incompleto ou desatualizado */
+        if (g_fd_verbose) { char tl[400]; fs_time_line(FS, tl, sizeof tl); fprintf(stderr, "find: %s\n", tl); fprintf(stderr, "find: query %.1f ms\n", fd_ms() - tb); }
+        { char stl[500] = ""; idx_status_line(root, pre, stl, sizeof stl); snprintf(out, cap, "%s%s", stl, sb.p ? sb.p : ""); }       /* no maximo uma linha de estado, so quando o escopo esta incompleto ou desatualizado */
         free(sb.p);
-        if (FS) fs_end(FS);
+        fs_end(FS);
     }
 done:
     g_fd_allow[0] = 0;

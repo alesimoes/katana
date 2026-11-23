@@ -77,7 +77,6 @@
 #include "tools/find.c"                /* Find: navegacao por intencao, indice da pasta e referencias */
 #include "tools/findgraph.c"           /* Find: grafo de arquivos, ativacao esparsa, nota de vizinhos */
 #include "tools/symbols.c"             /* Symbols: consultas do indice de simbolos (def, refs, callers, ...), via coder/symtool.c */
-#include "tools/multiedit.c"           /* Rename, Replace, Patch: mudancas em varios lugares de uma vez */
 #include "tools/webfetch.c"
 #include "tools/websearch.c"
 #include "tools/tasks.c"               /* TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet */

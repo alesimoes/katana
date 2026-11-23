@@ -153,26 +153,9 @@ static int fl_verify(SyView *v, const KyOcc *o) {
     if (o->cls == CKC_ROUTE) { const char *sl = strrchr(k, '/'); if (sl && sl[1]) for (int l = (int)o->line; l <= (int)o->line + 1; l++) if (sy_line_text(v, l, t, sizeof t) && strstr(t, sl)) return 1; }
     return -1;
 }
-/* arquivos com cara de contrato (nome) analisados antes do extrator de contratos: o indice nao tem o lado do contrato deles */
-static int fl_old_contracts(const SyView *v) {
-    int n = 0;
-    for (int i = 0; i < v->L.n; i++) {
-        const StoreLiveDoc *e = &v->L.e[i]; if (e->dead) continue; const SyVSeg *c = &v->s[e->seg];
-        if (!c->ky.has || e->idx >= c->ky.docs.n) continue; uint32_t w = st_get_u32(store_table_at(&c->ky.docs, e->idx) + 4); if (!(w & SY_KF1) || (w & SY_KF2)) continue;
-        const char *p; uint32_t l; sy_doc_path(v, e->seg, e->idx, &p, &l, NULL);
-        const char *b = p; for (uint32_t k = 0; k < l; k++) if (p[k] == '/') b = p + k + 1; uint32_t bl = (uint32_t)(p + l - b); if (bl < 5 || bl > 80) continue;
-        char lo[84]; for (uint32_t k = 0; k < bl; k++) lo[k] = (char)tolower((unsigned char)b[k]); lo[bl] = 0;
-        int ext = (bl > 6 && !strcmp(lo + bl - 6, ".proto")) || (bl > 8 && !strcmp(lo + bl - 8, ".graphql")) || (bl > 4 && !strcmp(lo + bl - 4, ".gql")) || (bl > 9 && !strcmp(lo + bl - 9, ".graphqls"));
-        int yj = (bl > 5 && !strcmp(lo + bl - 5, ".yaml")) || (bl > 4 && !strcmp(lo + bl - 4, ".yml")) || (bl > 5 && !strcmp(lo + bl - 5, ".json"));
-        if (ext || (yj && (strstr(lo, "openapi") || strstr(lo, "swagger") || strstr(lo, "asyncapi") || strstr(lo, "schema") || strstr(lo, "api")))) n++;
-    }
-    return n;
-}
 static void fl_limits(const SyView *v, char *o, size_t cap) {
-    size_t n = (size_t)snprintf(o, cap, "Indexed set: %u files analysed for text keys. A link is the SAME literal text in two files (event/message names, routes, env variables, config keys, subcommands, contract names: OpenAPI, AsyncAPI, .proto, GraphQL, JSON Schema, typed enums); keys built at run time, "
+    snprintf(o, cap, "Indexed set: %u files analysed for text keys. A link is the SAME literal text in two files (event/message names, routes, env variables, config keys, subcommands, contract names: OpenAPI, AsyncAPI, .proto, GraphQL, JSON Schema, typed enums); keys built at run time, "
         "dispatch tables, reflection and other projects are not seen.", v->nkeyflag);
-    if (v->nkeyold && n < cap) { snprintf(o + n, cap - n, " %u indexed files were analysed before text keys existed and have none: delete %s and run `katana coder index` again.", v->nkeyold, v->dir); n = strlen(o); }
-    { int oc = fl_old_contracts(v); if (oc && n < cap) snprintf(o + n, cap - n, " %d contract-like file%s (OpenAPI, AsyncAPI, .proto, GraphQL, JSON Schema) %s analysed before contract keys existed, so the contract side of a link may be missing: delete %s and run `katana coder index` again.", oc, oc == 1 ? "" : "s", oc == 1 ? "was" : "were", v->dir); }
 }
 /* "in nome (l0-l1)" do simbolo que contem a linha */
 static void fl_where(const SyView *v, const KyOcc *o, char *out, size_t cap) {

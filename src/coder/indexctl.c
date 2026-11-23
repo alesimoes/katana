@@ -10,7 +10,7 @@
  *   - fase 4 (watch.c, fresh.c): numa sessao do agente, com indice existente, quem decide e o vigia: a primeira visita pede SWEEP ao rastreador, as
  *     mudancas lidas do inotify (ou dicas de index_touch) viram TOUCH/--changed, a consulta espera o rastreador drenar (300 ms; 2 s na primeira visita) e
  *     segue. Sem mudanca pendente a consulta nao varre nada. KATANA_INDEX_SWEEP_S so e reserva (padrao 600 s) enquanto o inotify cobre a raiz inteira.
- *   - index_due()/index_validated(): o mesmo controle para um segundo consumidor (o indice proprio do Find, ate a fase 7 o remover).
+ *   - index_due()/index_validated(): o controle de revalidacao de uma raiz (usado por index_ensure).
  *   - IdxCache: ate 4 visoes abertas (CsView, SyView) por processo, reaproveitadas enquanto o MANIFEST nao muda (um stat).
  *   - contadores (index_stats_line) para KATANA_FIND_TIME: quantas varreduras ocorreram e quantas foram dispensadas.
  * Decisoes do implementador (o documento deixava abertas):
@@ -20,12 +20,12 @@
  *     parametros level, prefix e budget_ms ja estao na assinatura para essa fase e por ora nao mudam nada.
  *   - o "pode ter mudado" do Bash e filtrado: comandos simples de leitura (ls, cat, grep, git status...) sem redirecionamento,
  *     pipe, ; ou && nao marcam a arvore; qualquer outro marca.
- *   - o estado fica por raiz (ate 8) e por consumidor (0 = coder, 1 = Find); a chave e o realpath. */
+ *   - o estado fica por raiz (ate 8) ; a chave e o realpath. */
 #ifndef _WIN32
 #include <pthread.h>
-enum { IDX_CODER = 0, IDX_FIND = 1, IDX_NCONS = 2, IDX_ROOTS = 8, IDX_SLOTS = 4 };
+enum { IDX_ROOTS = 8, IDX_SLOTS = 4 };
 typedef struct { unsigned seen; double t; int ok; } IdxCons;
-typedef struct { char root[4096]; unsigned epoch; IdxCons c[IDX_NCONS]; unsigned long tick; } IdxRoot;
+typedef struct { char root[4096]; unsigned epoch; IdxCons c; unsigned long tick; } IdxRoot;
 static IdxRoot g_idx_root[IDX_ROOTS];
 static unsigned g_idx_all_epoch;                      /* sobe quando o Bash pode ter mudado a arvore (vale para todas as raizes) */
 static unsigned long g_idx_tick;
@@ -64,20 +64,20 @@ static IdxRoot *idx_state(const char *root, int create) {       /* chamar com g_
     if (!create) return NULL;
     memset(old, 0, sizeof *old); snprintf(old->root, sizeof old->root, "%s", rp); old->tick = ++g_idx_tick; return old;
 }
-/* 1 se o consumidor precisa varrer a arvore antes da proxima consulta */
-static int index_due(const char *root, int cons) {
+/* 1 se a raiz precisa ser varrida antes da proxima consulta */
+static int index_due(const char *root) {
     watch_drain_quiet();                                      /* eventos novos viram epoch (index_note_changed) na entrega; aqui so se le a fila do kernel */
     char rp[4200]; if (!realpath(root, rp)) snprintf(rp, sizeof rp, "%s", root);
     const double ttl = watch_full(rp) ? watch_reserve() : idx_ttl();       /* com o vigia cobrindo a raiz, o prazo e so reserva */
     pthread_mutex_lock(&g_idx_mx);
-    IdxRoot *s = idx_state(root, 1); IdxCons *c = &s->c[cons];
+    IdxRoot *s = idx_state(root, 1); IdxCons *c = &s->c;
     const int due = !c->ok || c->seen != s->epoch + g_idx_all_epoch || ttl <= 0 || now_sec() - c->t > ttl;
     pthread_mutex_unlock(&g_idx_mx);
     return due;
 }
-static void index_validated(const char *root, int cons) {
+static void index_validated(const char *root) {
     pthread_mutex_lock(&g_idx_mx);
-    IdxRoot *s = idx_state(root, 1); s->c[cons].ok = 1; s->c[cons].seen = s->epoch + g_idx_all_epoch; s->c[cons].t = now_sec();
+    IdxRoot *s = idx_state(root, 1); s->c.ok = 1; s->c.seen = s->epoch + g_idx_all_epoch; s->c.t = now_sec();
     pthread_mutex_unlock(&g_idx_mx);
 }
 /* uma ferramenta do agente gravou, criou, apagou ou renomeou este caminho: as raizes que o contem precisam ser revalidadas */
@@ -129,13 +129,13 @@ static int index_ensure(const char *root, int level, const char *prefix, int bud
             res->waited_ms = (now_sec() - tw) * 1000; res->partial = !done; g_idx_n.skips++; return 0;
         }
     }
-    if (exists && !index_due(root, IDX_CODER)) { g_idx_n.skips++; return 0; }
+    if (exists && !index_due(root)) { g_idx_n.skips++; return 0; }
     store_locate(root, "coder", dir, sizeof dir, 1);
     StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);      /* busca e simbolos juntos: o indice nunca fica com arquivos sem simbolos */
     StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
     char si[400], yi[500]; coder_sym_hook_done(&o, yi, sizeof yi); coder_search_hook_done(&o, si, sizeof si);
     g_idx_n.walks++; res->walked = 1; res->ms = (now_sec() - t0) * 1000;
-    if (rc == 0) { index_validated(root, IDX_CODER); watch_adopt(root); if (loc.kind == IL_HOME) index_retire_below(root); }      /* raiz da home que absorve outras da home: elas saem */
+    if (rc == 0) { index_validated(root); watch_adopt(root); if (loc.kind == IL_HOME) index_retire_below(root); }      /* raiz da home que absorve outras da home: elas saem */
     else if (rc == 1) res->busy = 1;                       /* outro processo grava agora: le o que existe e tenta de novo na proxima */
     return (rc == 0 || rc == 1) ? 0 : -1;
 }
@@ -148,7 +148,7 @@ static int index_force_update(const char *root) {
     StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
     coder_sym_hook_done(&o, yi, sizeof yi); coder_search_hook_done(&o, si, sizeof si);
     g_idx_n.walks++;
-    if (rc == 0) index_validated(root, IDX_CODER);
+    if (rc == 0) index_validated(root);
     return rc;
 }
 static void index_stats_line(char *o, size_t cap) {
@@ -204,7 +204,7 @@ static void idx_cache_release(IdxCache *c, void *view) {
 static void index_touch(const char *path) { (void)path; }
 static void index_tree_changed(void) {}
 static int index_bash_may_change(const char *cmd) { (void)cmd; return 1; }
-static int index_due(const char *root, int cons) { (void)root; (void)cons; return 1; }
-static void index_validated(const char *root, int cons) { (void)root; (void)cons; }
+static int index_due(const char *root) { (void)root; return 1; }
+static void index_validated(const char *root) { (void)root; }
 static void index_stats_line(char *o, size_t cap) { snprintf(o, cap, "index: not available on this platform"); }
 #endif

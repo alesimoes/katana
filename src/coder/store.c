@@ -33,7 +33,7 @@
 #include <sys/file.h>
 #endif
 
-#define STORE_FORMAT 1
+#define STORE_FORMAT 2          /* um armazenamento de outro formato nao e lido: e apagado e reconstruido (maint.c) */
 #define STORE_SEG_MAGIC 0x4745534Bu
 #define STORE_MAN_MAGIC 0x4E414D4Bu
 #define STORE_HDR 64
@@ -80,22 +80,6 @@ static const uint8_t *st_get_varint(const uint8_t *p, const uint8_t *end, uint64
     while (p < end && sh < 64) { uint8_t c = *p++; v |= (uint64_t)(c & 0x7F) << sh; if (!(c & 0x80)) { *out = v; return p; } sh += 7; }
     return NULL;
 }
-/* lista ascendente de inteiros: varint(n) e n deltas varint (o primeiro e relativo a 0) */
-static void st_put_deltas(StoreBuf *b, const uint32_t *v, uint32_t n) {
-    sb_varint(b, n);
-    uint32_t prev = 0;
-    for (uint32_t i = 0; i < n; i++) { sb_varint(b, v[i] - prev); prev = v[i]; }
-}
-/* devolve quantos valores gravou em out (ate max) ou -1 se o dado esta truncado; *next recebe o ponteiro seguinte (pode ser NULL) */
-static int64_t st_get_deltas(const uint8_t *p, const uint8_t *end, uint32_t *out, uint32_t max, const uint8_t **next) {
-    uint64_t n, d;
-    p = st_get_varint(p, end, &n);
-    if (!p || n > max) return -1;
-    uint32_t prev = 0;
-    for (uint64_t i = 0; i < n; i++) { p = st_get_varint(p, end, &d); if (!p) return -1; prev += (uint32_t)d; out[i] = prev; }
-    if (next) *next = p;
-    return (int64_t)n;
-}
 /* hash/checksum de 64 bits, 8 bytes por vez (chave estavel de conteudo e checksum de secao) */
 static uint64_t store_hash64(const void *data, size_t n, uint64_t seed) {
     const uint8_t *s = (const uint8_t *)data;
@@ -125,17 +109,6 @@ static int store_table_open(const StoreSection *s, StoreTable *t) {
     return 1;
 }
 static const uint8_t *store_table_at(const StoreTable *t, uint32_t i) { return t->rec + (size_t)i * t->w; }
-/* primeiro indice cujo registro nao e menor que a chave (cmp(rec,key) < 0 = rec menor); t->n se nenhum */
-static uint32_t store_table_lower(const StoreTable *t, const void *key, int (*cmp)(const uint8_t *rec, const void *key)) {
-    uint32_t lo = 0, hi = t->n;
-    while (lo < hi) { uint32_t m = lo + (hi - lo) / 2; if (cmp(store_table_at(t, m), key) < 0) lo = m + 1; else hi = m; }
-    return lo;
-}
-/* indice do registro igual a chave, ou -1 */
-static int64_t store_table_find(const StoreTable *t, const void *key, int (*cmp)(const uint8_t *rec, const void *key)) {
-    uint32_t i = store_table_lower(t, key, cmp);
-    return i < t->n && cmp(store_table_at(t, i), key) == 0 ? (int64_t)i : -1;
-}
 static void store_table_begin(StoreBuf *b, uint32_t n, uint32_t w) { sb_u32(b, n); sb_u32(b, w); }
 static int store_strs_open(const StoreSection *s, StoreStrs *t) {
     memset(t, 0, sizeof *t);
@@ -268,7 +241,7 @@ static int store_man_parse(const uint8_t *p, size_t n, StoreManifest *m, char *e
     if (n < 40) { snprintf(err, ecap, "manifesto truncado"); return -1; }
     if (st_get_u32(p) != STORE_MAN_MAGIC) { snprintf(err, ecap, "manifesto: numero magico invalido"); return -1; }
     if (st_get_u32(p + 4) > STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u mais novo que este binario (%d)", st_get_u32(p + 4), STORE_FORMAT); return -1; }
-    if (st_get_u32(p + 4) < STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u mais antigo que este binario (%d); sera reconstruido", st_get_u32(p + 4), STORE_FORMAT); return -1; }
+    if (st_get_u32(p + 4) < STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u diferente do deste binario (%d); sera reconstruido", st_get_u32(p + 4), STORE_FORMAT); return -1; }
     if (store_hash64(p, n - 8, 0) != st_get_u64(p + n - 8)) { snprintf(err, ecap, "manifesto: checksum nao confere"); return -1; }
     m->gen = st_get_u64(p + 8); m->next_id = st_get_u64(p + 16); m->nseg = st_get_u32(p + 24);
     uint32_t rl = st_get_u32(p + 28); size_t at = 32;
@@ -347,12 +320,6 @@ static const StoreSection *store_seg_section(const StoreSeg *s, uint32_t type) {
 }
 /* iteracao de secoes de um tipo em todos os segmentos: *seg e *idx comecam em 0; devolve a secao (e o segmento em *segout) ou NULL no fim.
  * A ordem e do mais antigo ao mais novo. */
-static const StoreSection *store_next_section(const StoreReader *r, uint32_t type, int *seg, uint32_t *idx, const StoreSeg **segout) {
-    for (; *seg < r->nseg; (*seg)++, *idx = 0)
-        for (; *idx < r->seg[*seg].nsec; (*idx)++)
-            if (r->seg[*seg].sec[*idx].type == type) { if (segout) *segout = &r->seg[*seg]; return &r->seg[*seg].sec[(*idx)++]; }
-    return NULL;
-}
 static void store_man_stat(const char *dir, uint64_t *ino, uint64_t *mt, uint64_t *sz) {
     char p[4600]; struct stat st; snprintf(p, sizeof p, "%s/MANIFEST", dir);
     if (stat(p, &st) != 0) { *ino = *mt = *sz = 0; return; }

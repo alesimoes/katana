@@ -50,17 +50,6 @@ static int store_docs_get(const StoreDocs *d, uint32_t i, StoreDoc *o) {
     o->hash = st_get_u64(r + 24); o->kind = st_get_u32(r + 32); o->flags = st_get_u32(r + 36);
     return 1;
 }
-static int64_t store_docs_find(const StoreDocs *d, const char *path, size_t len) {
-    uint32_t lo = 0, hi = d->t.n;
-    while (lo < hi) {
-        uint32_t m = lo + (hi - lo) / 2; StoreDoc x;
-        if (!store_docs_get(d, m, &x)) return -1;
-        int c = st_cmp_bytes(x.path, x.plen, path, len);
-        if (c == 0) return m;
-        if (c < 0) lo = m + 1; else hi = m;
-    }
-    return -1;
-}
 
 /* ---- vista vigente: junta os segmentos do mais antigo ao mais novo (documentos sobrescrevem, tombstones removem) ---- */
 typedef struct { StoreDoc d; int seg; uint32_t idx; int dead, seen; } StoreLiveDoc;
@@ -431,7 +420,6 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
     if (pushed) { StoreRuleSet *R = &S->rs[--S->nrs]; for (int i = 0; i < R->n; i++) { free(R->r[i].pat); free(R->r[i].orig); } free(R->r); }
 }
 static int st_cmp_scan(const void *a, const void *b) { return strcmp(((const StoreScanEnt *)a)->path, ((const StoreScanEnt *)b)->path); }
-static int st_cmp_str(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
 
 /* le o arquivo inteiro para buf (capacidade >= size+1); devolve bytes lidos ou -1 */
 static int64_t st_slurp(const char *path, uint8_t *buf, size_t cap) {
@@ -470,7 +458,7 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
     S->scanned = sc.n; S->ignored = sc.ignored; S->ignored_heur = sc.ignored_heur; S->t_scan = now_sec() - t0;
     if (!maint_disk_ok(dir, (uint64_t)sc.n * 512, err, ecap)) { for (int i = 0; i < sc.n; i++) free(sc.e[i].path); free(sc.e); return -1; }      /* disco cheio: pausa, a camada anterior continua valendo */
     StoreWriter *w; int rc = store_writer_begin(dir, &w, err, ecap);
-    if (rc == -1) {            /* nao abre: formato antigo ou dano = reconstroi do zero (F.6, G); formato mais novo = deixa quieto e diz */
+    if (rc == -1) {            /* nao abre: formato diferente ou dano = reconstroi do zero (F.6, G); formato mais novo = deixa quieto e diz */
         const int before = g_maint_rebuilds; const int pr = maint_store_prepare(dir, err, ecap);
         if (pr != 0) rc = pr; else if (g_maint_rebuilds != before) rc = store_writer_begin(dir, &w, err, ecap);
     }
@@ -607,8 +595,7 @@ static int coder_cmd_status(int argc, char **argv) {
       if (loc.kind == IL_LOCAL) printf("origem do indice: local (init nesta pasta)\ninit: sim (marcador %s/.katana/coder/ROOT)\n", loc.root);
       else if (loc.kind == IL_ANCESTOR) printf("origem do indice: ancestral (init em %s); a consulta fica restrita ao prefixo %s\ninit: sim, na raiz ancestral\n", loc.root, loc.prefix);
       else if (loc.prefix[0]) printf("origem do indice: home (raiz da home %s absorve esta pasta; consulta restrita ao prefixo %s)\ninit: nao (nenhum ancestral tem init)\n", loc.root, loc.prefix);
-      else printf("origem do indice: home (pasta visitada, sem init; nada e criado dentro dela)\ninit: nao\n");
-      if (index_old_local_store(loc.root)) printf("aviso: ha um indice local antigo sem marcador em %s/.katana/coder/store (nao e lido; `katana init` na pasta o adota)\n", loc.root); }
+      else printf("origem do indice: home (pasta visitada, sem init; nada e criado dentro dela)\ninit: nao\n"); }
     StoreReader *r;
     if (store_open(dir, &r, err, sizeof err) != 0) { fprintf(stderr, "status: %s\n", err); return 1; }
     printf("armazenamento: %s\nformato %d, geracao %llu, raiz %s, %d segmento(s), %s em segmentos\n", dir, STORE_FORMAT, (unsigned long long)r->gen, r->man.root[0] ? r->man.root : "(vazio)", r->nseg, cstore_human(store_disk_bytes(r), h, sizeof h));

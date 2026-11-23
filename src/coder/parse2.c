@@ -331,8 +331,6 @@ static void c2_heritage(CP *c, int si, int kind, int lo, int hi) {
         m++;
     }
 }
-/* nome de simbolo a partir de tokens ja conhecidos */
-static int c2_symrange(CP *c, int kind, int parent, size_t b0, size_t b1, int nm, size_t sa, size_t sb) { return cp_sym(c, kind, parent, b0, b1, nm, sa, sb); }
 static int c2_enumcases(CP *c, int i, int b, int parent) {   /* case a, b(1), c = 2 */
     int j = i + 1;
     for (;;) {
@@ -610,8 +608,6 @@ static size_t c2_word(const char *s, size_t n, size_t p, const char *extra) {
     while (p < n && (c2_wc((unsigned char)s[p]) || (extra && s[p] && strchr(extra, s[p])))) p++;
     return p;
 }
-/* referencia de texto cru de [a,b) do texto sem comentarios (aparando espacos) */
-static void c2_refrange(CP *c, int from, int kind, size_t a, size_t b) { cp_ref_range(c, from, kind, a, b, 0); }
 /* corpo/ body0 e visibilidade padrao das linguagens por linha */
 static void c2_enrich(CP *c) {
     CoderFile *f = c->f;
@@ -2393,8 +2389,6 @@ static void c2_parse_line(CP *c) {
     default: break;
     }
 }
-/* nome do arquivo / extensao -> linguagem (so as novas; o resto fica com a tabela de parse.c) */
-static int c2_vlang_ok(const char *path_unused) { (void)path_unused; return 1; }
 static int c2_lang_of(const char *base, const char *ext) {
     static const struct { const char *e; int l; } T[] = {
         {"cs", CL_CS}, {"swift", CL_SWIFT}, {"php", CL_PHP}, {"phtml", CL_PHP}, {"rb", CL_RB}, {"rake", CL_RB}, {"gemspec", CL_RB}, {"ru", CL_RB}, {"lua", CL_LUA}, {"dart", CL_DART},

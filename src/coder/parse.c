@@ -266,7 +266,6 @@ static int cp_dirt(const CP *c, int i) { return c->tk[i].fl & (CF_DIR | CF_DEF);
 static size_t cp_end(const CP *c, int close) { return close >= 0 && close < c->nt ? c->tk[close].b : c->n; }   /* fim em bytes de um fecho (ou do arquivo) */
 static int cp_mt(const CP *c, int open) { int m = c->mt[open]; return m < 0 || m > c->nt ? c->nt : m; }
 static int cp_open(const CP *c, int i) { return c->tk[i].t == CT_P && cp_tl(c, i) == 1 && strchr("([{", c->c[c->tk[i].a]); }
-static int cp_closer(const CP *c, int i) { return c->tk[i].t == CT_P && cp_tl(c, i) == 1 && strchr(")]}", c->c[c->tk[i].a]); }
 static int cp_skipgrp(const CP *c, int i, int b) { int m = cp_mt(c, i); return m + 1 > b ? b : m + 1; }   /* indice depois do grupo que abre em i */
 static int cp_line(const CP *c, size_t off) { int lo = 0, hi = c->nln - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (c->ln[m] <= off) lo = m; else hi = m - 1; } return lo + 1; }
 static int cp_kwtok(const CP *c, int i, const char *const *L) { return cp_idt(c, i) && cp_inl(c->c + c->tk[i].a, cp_tl(c, i), L); }
@@ -737,18 +736,6 @@ static void cp_ref_range(CP *c, int from, int kind, size_t a, size_t b, int nosp
     if (o) cp_ref(c, from, kind, buf, o, a);
 }
 static void cp_import_str(CP *c, int from, int j) { if (cp_strpair(c, j)) cp_ref_range(c, from, CR_IMPORT, c->tk[j].b, c->tk[j + 1].a, 0); }
-/* lista de nomes de heranca em [lo,hi): separados por ',' (profundidade de '<>' zero); cada item vira a ref com o ultimo identificador */
-static void cp_heritage(CP *c, int lo, int hi, int sym, int kind) {
-    int last = -1, ang = 0;
-    for (int m = lo; m <= hi; m++) {
-        if (m < hi && cp_p(c, m, '<')) { ang++; continue; }
-        if (m < hi && cp_p(c, m, '>')) { if (ang > 0) ang--; continue; }
-        if (m < hi && (cp_p(c, m, '(') || cp_p(c, m, '['))) { m = cp_mt(c, m); continue; }
-        if (ang > 0) continue;
-        if (m == hi || cp_p(c, m, ',')) { if (last >= 0) cp_reft(c, sym, kind, last); last = -1; continue; }
-        if (cp_idt(c, m) && !cp_is(c, m, "public") && !cp_is(c, m, "private") && !cp_is(c, m, "protected") && !cp_is(c, m, "virtual")) last = m;
-    }
-}
 
 /* ---------- Python (por linha e indentacao) ---------- */
 static void cp_py(CP *c) {

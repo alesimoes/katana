@@ -408,10 +408,6 @@ static const char *coder_kb_default_dir(void) {
     }
     snprintf(buf, sizeof buf, "data/coder/kb"); return buf;
 }
-static int kb_open(CoderKb *kb) {
-    memset(kb, 0, sizeof *kb); kb->project = kb_isdir(".katana/coder") ? ".katana/coder" : NULL;
-    return coder_kb_load(coder_kb_default_dir(), kb);
-}
 
 static void kb_showterms(const CoderKb *kb, const KbConcept *c, int lang_not, int lang_only, int max) {
     int k = 0;

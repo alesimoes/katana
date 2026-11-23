@@ -15,8 +15,7 @@
  *   - a absorcao (raiz da home que passa a cobrir raizes da home descendentes, ou init que cobre as da home) apaga os stores descendentes assim que o
  *     store do ancestral foi gravado por inteiro (a varredura e sincrona; nao ha niveis ainda), nao "ao chegar em N1".
  *   - init move o store da home para dentro da pasta com rename; se o rename falha (outro disco), o store da home e apagado e o catalogo
- *     e refeito. Store local ANTIGO sem marcador (pasta de lancamento de versoes anteriores) nao e lido e nao e apagado: `coder status` o aponta;
- *     rodar init na pasta o adota (o catalogo revalida tudo por tamanho e mtime).
+ *     e refeito. Um store local sem marcador nao e um indice: nao e lido (o proximo init ou consulta cria o indice).
  *   - o marcador fica fora do git (.katana/coder/.gitignore com ROOT): quem clona nao ganha indice sem rodar init.
  *   - init na home ou em / e recusado sem --force; consultas na home e em / continuam sem criar indice (ja era a regra das ferramentas).
  *   - "mover o projeto" so e tratado para raizes com init (o store viaja com a pasta); a deteccao por (dispositivo, inode) das raizes da home e fase 8. */
@@ -184,8 +183,6 @@ static int index_remove_root(const char *dir) {
     char cd[4500]; snprintf(cd, sizeof cd, "%s/.katana/coder", dir); rmdir(cd); snprintf(cd, sizeof cd, "%s/.katana", dir); rmdir(cd);
     return had;
 }
-/* pasta de lancamento de versoes anteriores: store local sem marcador (nao e lido; init o adota) */
-static int index_old_local_store(const char *dir) { char m[4500]; snprintf(m, sizeof m, "%s/.katana/coder/store/MANIFEST", dir); return !rt_has_marker(dir) && rt_exists(m); }
 #else
 typedef struct { char root[4096]; char prefix[2048]; char store[4400]; int kind; int init; int registered; } IndexLoc;
 enum { IL_LOCAL = 0, IL_ANCESTOR = 1, IL_HOME = 2 };
@@ -195,5 +192,4 @@ static void index_resolve(const char *path, int mk, IndexLoc *L) { (void)mk; mem
 static int index_retire_below(const char *root) { (void)root; return 0; }
 static int index_init_root(const char *dir, int *info, char *err, size_t ecap) { (void)dir; if (info) *info = 0; (void)err; (void)ecap; return 0; }
 static int index_remove_root(const char *dir) { (void)dir; return 0; }
-static int index_old_local_store(const char *dir) { (void)dir; return 0; }
 #endif

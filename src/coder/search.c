@@ -410,23 +410,15 @@ static void coder_search_register(void) {
  *   literal     frase entre aspas, verificada relendo os arquivos candidatos
  *   concept     termos relacionados pela base de conhecimento (outro idioma/estilo, verbos de operacao, abreviacoes), com peso menor
  * Fusao: camadas (1 ancoras exatas e literais verificados; 2 par conceito + operacao no nome/caminho; 3 o resto); dentro de cada camada,
- * fusao de postos (RRF, constante KATANA_CODER_RRF); KATANA_CODER_RANK=sum usa a soma ponderada das pontuacoes normalizadas (modo alternativo).
- * Parametros: KATANA_CODER_BM25="k1,b,wpath,wname,wbody" (1.2,0.75,2.0,4.0,1.0), KATANA_CODER_RRF="k[,wexact,wsub,wbm25,wtri,wlit,wcon]"
- * (60,1,1,1,1,1,0.6), KATANA_CODER_CONCEPT=escala dos termos conceituais (0.35), KATANA_CODER_INDEX_KB (128). */
+ * fusao de postos (RRF, constante 60).
+ * Parametros fixos: BM25 k1=1.2, b=0.75, pesos caminho/nome/corpo 2.0/4.0/1.0; pesos dos canais 1,1,1,1,1,0.6; escala dos termos conceituais 0.35;
+ * KATANA_CODER_INDEX_KB (128). */
 enum { CH_EXACT, CH_SUB, CH_BM25, CH_TRI, CH_LIT, CH_CON, CH_N };
 static const char *const g_cs_chname[CH_N] = {"exact", "subword", "bm25", "trigram", "literal", "conceptual"};
 enum { QC_ORIG, QC_WHOLE, QC_ABBR, QC_FUZZY, QC_CONCEPT, QC_OP, QC_ABBRREV };
 static const char *const g_cs_clsname[] = {"original", "identifier", "abbreviation", "fuzzy", "concept", "operation", "abbreviated-as"};
 static double g_cs_k1 = 1.2, g_cs_b = 0.75, g_cs_wf[3] = {2.0, 4.0, 1.0};
 static double g_cs_rrfk = 60, g_cs_chw[CH_N] = {1, 1, 1, 1, 1, 0.6}, g_cs_cscale = 0.35;
-static int g_cs_sum;
-static void cs_params(void) {
-    const char *e;
-    if ((e = getenv("KATANA_CODER_BM25")) && *e) { double a[5]; if (sscanf(e, "%lf,%lf,%lf,%lf,%lf", &a[0], &a[1], &a[2], &a[3], &a[4]) == 5) { g_cs_k1 = a[0]; g_cs_b = a[1]; g_cs_wf[0] = a[2]; g_cs_wf[1] = a[3]; g_cs_wf[2] = a[4]; } else fprintf(stderr, "aviso: KATANA_CODER_BM25 deve ser k1,b,wpath,wname,wbody\n"); }
-    if ((e = getenv("KATANA_CODER_RRF")) && *e) { double a[7]; int n = sscanf(e, "%lf,%lf,%lf,%lf,%lf,%lf,%lf", &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6]); if (n >= 1) g_cs_rrfk = a[0]; for (int i = 1; i < n; i++) g_cs_chw[i - 1] = a[i]; }
-    if ((e = getenv("KATANA_CODER_CONCEPT")) && *e) g_cs_cscale = atof(e);
-    if ((e = getenv("KATANA_CODER_RANK")) && !strcmp(e, "sum")) g_cs_sum = 1;
-}
 
 /* ---- visao de leitura: segmentos, documentos vigentes (numeracao global), tamanhos ---- */
 typedef struct { const StoreSeg *seg; CsLex lex; const StoreSection *sp; StoreTable lens, tri; const uint8_t *tpool, *tend; StoreDocs docs; uint32_t ndocs; uint32_t *gmap; int has; } CsSeg;
@@ -800,7 +792,6 @@ static void cs_fields_str(const CsHit *h, char *o, size_t cap) {
     o[0] = 0; static const char *const fn[CF_N] = {"path", "name", "word", "identifier-part"};
     for (int f = 0; f < CF_N; f++) if (h->tf[f]) { size_t l = strlen(o); snprintf(o + l, cap - l, "%s%s x%u", l ? ", " : "", fn[f], h->tf[f]); }
 }
-static int cs_ti_cmp_w;
 typedef struct { int i; double w; } CsTW;
 static int cs_tw_cmp(const void *a, const void *b) { double x = ((const CsTW *)a)->w, y = ((const CsTW *)b)->w; return x < y ? 1 : x > y ? -1 : 0; }
 
@@ -900,7 +891,6 @@ static const CoderKb *cs_kb_get(const char *kbproj) {
     return kb.nfile > 0 ? &kb : NULL;
 }
 static int cs_search_core(const char *query, const char *proj, int limit, int json, int why, CoderHits *ho) {
-    cs_params();
     double t0 = now_sec(), t_open, t_kb, t_load, t_score;
     CsView v; char err[400];
     if (cs_view_open(proj, &v, err, sizeof err) != 0) { if (!ho) fprintf(stderr, "search: %s\n", err); return 1; }
@@ -997,7 +987,7 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
     for (uint32_t d = 0; d < N; d++) {
         int any = 0; double f = 0;
         for (int c = 0; c < CH_N; c++) { if (!rk[c][d]) continue; any = 1;
-            f += g_cs_sum ? g_cs_chw[c] * sc[c][d] / (mx[c] > 0 ? mx[c] : 1.0) : g_cs_chw[c] / (g_cs_rrfk + rk[c][d]); }
+            f += g_cs_chw[c] / (g_cs_rrfk + rk[c][d]); }
         if (!any) continue;
         int pair = cmask[d] && omask[d] && ((cmask[d] & (cmask[d] - 1)) || (omask[d] & (omask[d] - 1)) || cmask[d] != omask[d]);
         res[nres].doc = d; res[nres].fused = f; res[nres].tier = (sc[CH_EXACT][d] > 0 || litmask[d]) ? 1 : pair ? 2 : 3; nres++;
@@ -1119,7 +1109,7 @@ static int coder_find_name_main(int argc, char **argv) {
         else if (!name) name = argv[i]; else proj = argv[i];
     }
     if (!name || !*name) { fprintf(stderr, "uso: katana coder find-name <nome> [pasta] [--limit N] [--json]\n"); return 2; }
-    cs_params(); double t0 = now_sec(); CsView v; char err[400];
+    double t0 = now_sec(); CsView v; char err[400];
     if (cs_view_open(proj, &v, err, sizeof err) != 0) { fprintf(stderr, "find-name: %s\n", err); return 1; }
     CoderTok *tk = (CoderTok *)malloc(4096 * sizeof(CoderTok));
     int ntk = coder_tokens_ex(name, tk, 64, 0, CT_L_CODE);

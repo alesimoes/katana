@@ -154,9 +154,8 @@ plain words and/or identifiers, and gets a few precise candidates instead of who
 - `path`: a subfolder or one file of the working folder (filters the results); a folder outside the working folder
   gets its own index.
 
-**Unified index (default since phase 7 of `docs/code-index-lifecycle.md`; `KATANA_FIND_INDEX=store`).** `Find` no longer keeps an
-index of its own. It reads the coder store (`<root>/.katana/coder/store` or the home index, see `katana coder status`) and the files
-themselves; no `find-*.idx` is created, read or updated, and `Find` makes no walk of the tree (the only update is the shared
+**Index (the coder store; `docs/code-index-lifecycle.md`).** `Find` keeps no index of its own. It reads the coder store (`<root>/.katana/coder/store` or the home index, see `katana coder status`) and the files
+themselves; `Find` writes no cache file and makes no walk of the tree (the only update is the shared
 `index_ensure`, which creates the coder index on the first call in a folder and keeps it current, as `Symbols` and the coder layer
 already did). Per call (`src/coder/findstore.c`):
 1. *Candidates.* The query is tokenised as always; for each term the lexicon of the store gives the files that have it (normalised
@@ -191,24 +190,18 @@ Memory: nothing of the project stays in the heap except the term table, the 300 
 and shared with the crawler and other sessions). The output format (lines, budget, request state, dedupe, next page) is unchanged.
 Known difference from the old ranking: only the candidates enter the chunk-level ranking, so a file that does not reach the candidates is never scored
 (`KATANA_FIND_CAND` raises the number); the idf is an estimate; the graph has fewer text-only edges for languages without import resolution.
-`Rename`, `Replace` and `Patch` still use the old index of their own (`fd_update` in `src/tools/multiedit.c`), which creates `find-*.idx`.
+If the coder index cannot be created, `Find` answers with an error: there is no second index.
 
-**Old index (`KATANA_FIND_INDEX=legacy`, and the fallback).** Files: `git ls-files --cached --others --exclude-standard` inside a repository, otherwise a walk that
-applies `.gitignore` (the same listing as `Grep`); then skips `.git`, `node_modules`, `build`, `dist`, `vendor`,
+**Chunk index (built per query over the candidate files).** Files come from the store catalog (which applies `.gitignore` as `Grep` does); `Find` skips `.git`, `node_modules`, `build`, `dist`, `vendor`,
 `.katana`, `target`, `.venv` and similar folders, files above 300 KB, binary files (a NUL byte in the first 8 KB) and
 extensions that are not source or text (c h cpp hpp cc glsl comp js mjs ts tsx py kt java go rs sh md qml ps1 xml
-toml yml yaml cfg txt cmake gradle swift m, a few more). At most `KATANA_FIND_MAX_FILES` files (default 20000; the
-answer says when files were left out). Each file becomes 40-line chunks with stride 25, three fields per chunk: path,
+toml yml yaml cfg txt cmake gradle swift m, a few more). Each file becomes 40-line chunks with stride 25, three fields per chunk: path,
 names of the symbols defined there, body. Terms: accents folded, each identifier kept whole (`listSessions` ->
 `list_sessions`) and split (camelCase, snake_case), lower case, stop words removed, simple stemming. Symbols come from
 per-language line rules (functions, classes, structs, `#define`, typedefs, globals, JS `const x = () =>`, methods,
 Python/Go/Rust/Kotlin/Java definitions, shell functions, QML `id:`/`property`/`signal`, PowerShell functions,
 Markdown headings). The reference graph is the inverted index itself: the whole-identifier term leads to every chunk
 that names it; one-part names are confirmed word by word in the file text.
-Stored in `<working folder>/.katana/cache/find-<hash>.idx`, the same folder as the prefix cache, with a `.gitignore`
-containing `*` (in `~/.katana/cache` when the working folder is the home folder or not writable; `KATANA_CACHE_DIR`
-overrides). Every call lists the files again and re-reads only those whose mtime or size changed; files that
-disappeared leave the index; a damaged file is rebuilt. Inside one agent process the index stays in memory.
 
 **One entry point for search (decided by katana, not by the model).** The model has one rule: `Find` first, `Grep`
 only for an exact pattern, `Glob` only for file names by pattern. `Find` looks at the question and picks the channel:
@@ -429,7 +422,7 @@ list and a full declaration in every `ToolSearch` answer for no gain.
   the home folder and `path` is empty the tool refuses, as `Find` does.
 - `Find mode=refs` is now answered from the symbol index when the folder already has one and it knows the exact
   name as a definition (same output format as before: `Defined`, `Used N times in M files`, `line (in function): text`);
-  otherwise, or with `KATANA_FIND_REFS=text`, it uses the old text index. Differences: the symbol index lists calls and
+  otherwise it reads the text of the files that mention the name. Differences: the symbol index lists calls and
   other code references (not import lines or mentions in comments and documents), and names the exact enclosing
   function. `Find` (search) and `Symbols` both keep that index current: the coder update in `Find` now also builds the
   symbol sections, so a file changed after `katana coder index` is not left without symbols.

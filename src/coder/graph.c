@@ -12,7 +12,7 @@
  * segmento, por isso os nos sao chaveados pelo hash do caminho.
  * VALIDADE: a assinatura resume os documentos vigentes (hash de conteudo, tamanho do caminho, nivel); a compactacao nao a muda, uma edicao muda. Grafo
  * com assinatura velha ainda serve (no sem aresta e no que mudou so perdem vizinhos ate a proxima montagem). Fusor: fica o grafo do segmento mais novo.
- * KATANA_FIND_GRAPH=0 desliga a montagem pelo rastreador. */
+ */
 #ifndef _WIN32
 #define STS_GRAPH (STS_SYM_BASE + 11)
 #define FGS_MAGIC 0x4652474Bu       /* "KGRF" */
@@ -74,7 +74,6 @@ static int graph_merge(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
 static void graph_register(void) { store_register_merger(STS_GRAPH, 1, graph_merge); }
 
 static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32_t *nn);       /* coder/findstore.c */
-static int fgs_env_graph(void) { const char *e = getenv("KATANA_FIND_GRAPH"); return !(e && *e == '0'); }
 /* grava o grafo derivado como um segmento so dele; w e o escritor do chamador (que ja tem o lock). 0 = nada feito ou gravado, -1 = falhou */
 static int graph_write(StoreWriter *w, const char *root) {
     char err[300] = "";
@@ -86,7 +85,7 @@ static int graph_write(StoreWriter *w, const char *root) {
 }
 /* chamado por crawl.c no fim da rodada (filas vazias): se o grafo guardado nao vale para os documentos de agora, deriva e grava */
 static void graph_on_quiet(StoreReader *r, StoreWriter *w) {
-    if (!fgs_env_graph() || !r || !r->man.root[0]) return;
+    if (!r || !r->man.root[0]) return;
     FgsGraph g;
     if (graph_open(r, &g) && g.sig == graph_doc_sig(r)) return;
     graph_write(w, r->man.root);

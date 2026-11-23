@@ -1,6 +1,5 @@
 /* ---------- coder/text: tokenizador e normalizador morfologico proprio (pt + en), sem bibliotecas e sem alocar por token ----------
  * Usado para indexar codigo e para interpretar perguntas em portugues e ingles, inclusive misturadas.
- *   coder_split_ident  divide um identificador (CamelCase, snake_case, kebab-case, dotted.names, siglas e digitos)
  *   coder_norm_word    normaliza UMA palavra (minuscula, sem acento) por regras de sufixo + vocabulario controlado
  *   coder_tokens       texto -> tokens {normalizado, original, posicao de byte, campo, idioma, tipo, stop}
  * Idea: nao e um lematizador. A forma normalizada e uma RAIZ CANONICA (nem sempre uma palavra de dicionario) escolhida para que
@@ -199,18 +198,6 @@ static int ct_spans(const char *f, int fl, int *ps, int *pe, int cap) {
     }
     return np;
 }
-static int coder_split_ident(const char *id, char parts[][48], int cap) {
-    char f[260]; int src[262], ps[64], pe[64];
-    int n = (int)strlen(id); if (n > 255) n = 255;
-    const int fl = ct_fold(id, n, f, src, 256), np = ct_spans(f, fl, ps, pe, 64);
-    int k = 0;
-    for (int p = 0; p < np && k < cap; p++) {
-        int l = pe[p] - ps[p]; if (l > 47) l = 47;
-        for (int i = 0; i < l; i++) parts[k][i] = (char)tolower((unsigned char)f[ps[p] + i]);
-        parts[k][l] = 0; k++;
-    }
-    return k;
-}
 
 /* ---- normalizacao ---- */
 static int ct_ends(const char *w, int l, const char *suf) { const int s = (int)strlen(suf); return l >= s && memcmp(w + l - s, suf, (size_t)s) == 0; }
@@ -362,11 +349,6 @@ static int ct_detect(const char *w, int l, int accented) {
     if (l >= 6 && (ct_ends(w, l, "ado") || ct_ends(w, l, "ada") || ct_ends(w, l, "ido") || ct_ends(w, l, "ida"))) return CT_L_PT;
     if (l >= 6 && ct_ends(w, l, "ed")) return CT_L_EN;
     return CT_L_UNKNOWN;
-}
-static int coder_detect_lang(const char *w) {
-    char b[48]; int l = 0; ct_init();
-    while (w[l] && l < 47) { b[l] = (char)tolower((unsigned char)w[l]); l++; }
-    return ct_detect(b, l, 0);
 }
 
 /* ---- tokenizacao ---- */
