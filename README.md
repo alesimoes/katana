@@ -213,6 +213,7 @@ katana agent <model>             chat with tools
 katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools
 katana coder <sub>               code intelligence without a model: index, search, symbols, def, refs, callers, callees, uses, outline, at, deps, impact, kb, status, verify, compact (`katana coder` lists them)
+katana convert <hf-folder> <out.gguf> [type]   Hugging Face checkpoint (safetensors) -> GGUF, streaming; default q4_k_m (docs/convert.md; tested on tiny checkpoints only)
 katana info | bench | selftest | micro | tune | pack | verify | quantize | qtest | routing | sparsity
 katana tool <name> '<json>'      run one agent tool without a model (testing)
 ```

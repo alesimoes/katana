@@ -1362,7 +1362,7 @@ static char g_mcp_tmp[4400];
 static void lc_cleanup_tmp(void) { if (g_mcp_tmp[0]) remove(g_mcp_tmp); }
 static int lc_known_cmd(const char *a) {
     static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "code", "routing", "sparsity", "tune",
-        "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "knowledge", "import", "merge", "distill", "agentlog", "export",
+        "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "convert", "knowledge", "import", "merge", "distill", "agentlog", "export",
         "learn", "specialize", "gradcheck", "train", "selftest", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
         "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "calltest", "curriculum", "lbtest", "compare", "tiersim", "iobench", "compacttest", "codebench", "version", "update", "vision", NULL};      /* acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
@@ -1400,6 +1400,7 @@ static void main_usage(FILE *f) {
         "  katana selftest <modelo.gguf>\n"
         "  katana toktest <modelo.gguf> <casos.hex> [--chat]   ids do tokenizador (ou do formato de conversa) de cada caso\n"
         "  katana qtest                   confere a decodificacao e os produtos de cada tipo de quantizacao\n"
+        "  katana convert <pasta-hf> <saida.gguf> [tipo]   checkpoint do Hugging Face (safetensors) -> GGUF (tipo: q4_k_m padrao, q4_k, q5_k_m, q6_k, q8_0, f16, bf16, f32)\n"
         "  katana quantize <entrada.gguf> [saida.gguf] [tipo]   grava um GGUF requantizado (tipo: Q8_0, Q6_K, Q5_K_M, Q4_K_M, Q2_K)\n"
         "                                 sem tipo, escolhe o melhor para esta maquina; sem saida, gera o nome a partir da entrada\n"
         "  katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]\n"
