@@ -466,7 +466,8 @@ static void autoindex_dir(const char *cwd) {
     pid_t pid;
     if (posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ) == 0) { int st; waitpid(pid, &st, 0); fprintf(stderr, "[indexando %s em segundo plano para o Find e a Symbols]\n", cwd); }
 }
-static void autoindex_start(void) { char cwd[1500]; if (getcwd(cwd, sizeof cwd)) autoindex_dir(cwd); }
+static void watch_enable(void);                           /* src/coder/watch.c */
+static void autoindex_start(void) { watch_enable(); char cwd[1500]; if (getcwd(cwd, sizeof cwd)) autoindex_dir(cwd); }
 #else
 static void autoindex_dir(const char *d) { (void)d; }
 static void autoindex_start(void) {}

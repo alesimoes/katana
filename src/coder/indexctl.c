@@ -5,8 +5,11 @@
  *     segue direto. Revalida na primeira consulta de cada raiz no processo, quando uma ferramenta do agente gravou ou apagou algo
  *     debaixo da raiz (index_touch, chamado por Edit, Write, MultiEdit, NotebookEdit), quando o Bash pode ter mudado a arvore
  *     (index_tree_changed) e quando passou KATANA_INDEX_SWEEP_S segundos (padrao 10; 0 = a cada chamada, como antes) desde a ultima
- *     varredura: esse prazo e a rede de seguranca enquanto nao existe vigia de arquivos (fase 4); mudancas feitas por outros programas
- *     aparecem no maximo depois dele, e todo arquivo citado numa resposta continua sendo relido do disco para a evidencia.
+ *     varredura: esse prazo e a rede de seguranca de quem NAO tem vigia (comandos avulsos, KATANA_INDEX_WATCH=off, sistemas sem inotify);
+ *     todo arquivo citado numa resposta continua sendo relido do disco para a evidencia.
+ *   - fase 4 (watch.c, fresh.c): numa sessao do agente, com indice existente, quem decide e o vigia: a primeira visita pede SWEEP ao rastreador, as
+ *     mudancas lidas do inotify (ou dicas de index_touch) viram TOUCH/--changed, a consulta espera o rastreador drenar (300 ms; 2 s na primeira visita) e
+ *     segue. Sem mudanca pendente a consulta nao varre nada. KATANA_INDEX_SWEEP_S so e reserva (padrao 600 s) enquanto o inotify cobre a raiz inteira.
  *   - index_due()/index_validated(): o mesmo controle para um segundo consumidor (o indice proprio do Find, ate a fase 7 o remover).
  *   - IdxCache: ate 4 visoes abertas (CsView, SyView) por processo, reaproveitadas enquanto o MANIFEST nao muda (um stat).
  *   - contadores (index_stats_line) para KATANA_FIND_TIME: quantas varreduras ocorreram e quantas foram dispensadas.
@@ -30,6 +33,16 @@ static struct { int walks, skips, touches, view_open, view_hit, kb_load, kb_hit;
 static pthread_mutex_t g_idx_mx = PTHREAD_MUTEX_INITIALIZER;
 
 static double idx_ttl(void) { const char *e = getenv("KATANA_INDEX_SWEEP_S"); return e && *e ? atof(e) : 10.0; }
+static int idx_related(const char *a, const char *b) {         /* um caminho contem o outro */
+    const size_t la = strlen(a), lb = strlen(b), m = la < lb ? la : lb; const char *lo = la < lb ? b : a;
+    return la && lb && !strncmp(a, b, m) && (lo[m] == '/' || !lo[m] || m == 1);
+}
+/* o vigia viu mudancas sob a raiz: os consumidores (Find com indice proprio) precisam revalidar */
+static void index_note_changed(const char *root) {
+    pthread_mutex_lock(&g_idx_mx);
+    for (int i = 0; i < IDX_ROOTS; i++) if (g_idx_root[i].root[0] && idx_related(g_idx_root[i].root, root)) g_idx_root[i].epoch++;
+    pthread_mutex_unlock(&g_idx_mx);
+}
 /* caminho absoluto e sem links; arquivo que ainda nao existe (ou acabou de ser apagado) resolve pela pasta */
 static int idx_abs(const char *p, char *out, size_t cap) {
     char t[4200];
@@ -53,9 +66,11 @@ static IdxRoot *idx_state(const char *root, int create) {       /* chamar com g_
 }
 /* 1 se o consumidor precisa varrer a arvore antes da proxima consulta */
 static int index_due(const char *root, int cons) {
+    watch_drain_quiet();                                      /* eventos novos viram epoch (index_note_changed) na entrega; aqui so se le a fila do kernel */
+    char rp[4200]; if (!realpath(root, rp)) snprintf(rp, sizeof rp, "%s", root);
+    const double ttl = watch_full(rp) ? watch_reserve() : idx_ttl();       /* com o vigia cobrindo a raiz, o prazo e so reserva */
     pthread_mutex_lock(&g_idx_mx);
     IdxRoot *s = idx_state(root, 1); IdxCons *c = &s->c[cons];
-    const double ttl = idx_ttl();
     const int due = !c->ok || c->seen != s->epoch + g_idx_all_epoch || ttl <= 0 || now_sec() - c->t > ttl;
     pthread_mutex_unlock(&g_idx_mx);
     return due;
@@ -75,8 +90,9 @@ static void index_touch(const char *path) {
         if (rl && !strncmp(ap, g_idx_root[i].root, rl) && (ap[rl] == '/' || !ap[rl] || rl == 1)) { g_idx_root[i].epoch++; g_idx_n.touches++; }
     }
     pthread_mutex_unlock(&g_idx_mx);
+    watch_note_path(ap);                                        /* a sessao entrega a dica ao rastreador (sem esperar o evento do kernel) */
 }
-static void index_tree_changed(void) { pthread_mutex_lock(&g_idx_mx); g_idx_all_epoch++; g_idx_n.touches++; pthread_mutex_unlock(&g_idx_mx); }
+static void index_tree_changed(void) { pthread_mutex_lock(&g_idx_mx); g_idx_all_epoch++; g_idx_n.touches++; pthread_mutex_unlock(&g_idx_mx); watch_after_tool(); }
 /* o comando do Bash pode ter mudado arquivos? so comandos simples e conhecidos de leitura dizem que nao */
 static int index_bash_may_change(const char *cmd) {
     static const char *const ro[] = {"ls", "cat", "head", "tail", "grep", "egrep", "rg", "wc", "pwd", "echo", "which", "file", "stat", "du", "df", "diff", "sort", "uniq", "cut", "nl", "ps", "whoami", "date", "uname", "env", "printenv", "readlink", "realpath", "basename", "dirname", "tree", "type", "id", "hostname", "sleep", "true", "false", NULL};
@@ -95,9 +111,9 @@ static int index_bash_may_change(const char *cmd) {
 /* ---- index_ensure: o catalogo do coder da raiz esta pronto para consultar? ----
  * res: created = o indice nao existia; walked = esta chamada varreu e gravou; busy = outro processo grava agora (le o que existe);
  * ms = tempo gasto aqui. Devolve 0 (pode consultar) ou -1 (nao foi possivel criar nem ler). level/prefix/budget_ms: reservados (fase 3). */
-typedef struct { int created, walked, busy; double ms; } IndexRes;
+typedef struct { int created, walked, busy, partial; double ms, waited_ms; } IndexRes;
 static int index_ensure(const char *root, int level, const char *prefix, int budget_ms, IndexRes *res) {
-    (void)level; (void)prefix; (void)budget_ms; watch_poll();
+    (void)level; (void)prefix; (void)budget_ms;
     IndexRes z; if (!res) res = &z; memset(res, 0, sizeof *res);
     char dir[4400], man[4500], err[300] = ""; struct stat sv; const double t0 = now_sec();
     IndexLoc loc; index_resolve(root, 0, &loc); root = loc.root;      /* a raiz que cobre a pasta (init, ancestral ou home); a consulta restringe pelo prefixo */
@@ -105,13 +121,21 @@ static int index_ensure(const char *root, int level, const char *prefix, int bud
     snprintf(man, sizeof man, "%s/MANIFEST", dir);
     const int exists = stat(man, &sv) == 0;
     res->created = !exists;
+    if (exists) {                                          /* vigia da sessao (fase 4): decide sozinho quando ha como */
+        int wms = 0; char wpre[600]; const int w = watch_poll(root, 1, &wms, wpre, sizeof wpre);
+        if (w == WT_IDLE) { g_idx_n.skips++; return 0; }
+        if (w == WT_PENDING || w == WT_FIRST) {
+            const double tw = now_sec(); const int done = watch_wait(root, wms, w == WT_FIRST ? "" : wpre);
+            res->waited_ms = (now_sec() - tw) * 1000; res->partial = !done; g_idx_n.skips++; return 0;
+        }
+    }
     if (exists && !index_due(root, IDX_CODER)) { g_idx_n.skips++; return 0; }
     store_locate(root, "coder", dir, sizeof dir, 1);
     StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);      /* busca e simbolos juntos: o indice nunca fica com arquivos sem simbolos */
     StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
     char si[400], yi[500]; coder_search_hook_done(&o, si, sizeof si); coder_sym_hook_done(yi, sizeof yi);
     g_idx_n.walks++; res->walked = 1; res->ms = (now_sec() - t0) * 1000;
-    if (rc == 0) { index_validated(root, IDX_CODER); if (loc.kind == IL_HOME) index_retire_below(root); }      /* raiz da home que absorve outras da home: elas saem */
+    if (rc == 0) { index_validated(root, IDX_CODER); watch_adopt(root); if (loc.kind == IL_HOME) index_retire_below(root); }      /* raiz da home que absorve outras da home: elas saem */
     else if (rc == 1) res->busy = 1;                       /* outro processo grava agora: le o que existe e tenta de novo na proxima */
     return (rc == 0 || rc == 1) ? 0 : -1;
 }

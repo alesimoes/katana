@@ -246,7 +246,9 @@ static int ct_end_check(void) {
 }
 /* ha algo para entregar ao modelo sem o usuario digitar? (tarefa agendada vencida, mensagem de outra sessao).
    Enche line com o texto, ja marcado com a origem, e devolve 1 */
+static void watch_idle(void);                            /* src/coder/watch.c */
 static int ct_idle_line(char *line, size_t cap) {
+    watch_idle();                                     /* vigia de arquivos: le os eventos e entrega ao rastreador com a sessao ociosa no prompt */
     if (launch_first_line(line, cap)) return 1;      /* katana "mensagem": a primeira mensagem entra como se tivesse sido digitada */
     if (mcpch_take(line, cap)) return 1;              /* mensagem de um canal MCP autorizado */
     static char body[8000]; char label[300];

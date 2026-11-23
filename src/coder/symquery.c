@@ -154,7 +154,7 @@ static int sy_file_load(SyView *v, const char *path, uint32_t plen) {
     free(v->fbuf); free(v->fln); v->fbuf = NULL; v->fln = NULL; v->fn = 0; v->fnl = 0; v->fok = 0; v->fstale = 0;
     snprintf(v->fpath, sizeof v->fpath, "%s", key);
     char full[8400]; snprintf(full, sizeof full, "%s/%s", sy_root(v), key);
-    struct stat st; if (stat(full, &st) != 0 || st.st_size > (8 << 20)) { v->fbuf = (char *)calloc(1, 1); v->fstale = 1; return 0; }
+    struct stat st; if (stat(full, &st) != 0 || st.st_size > (8 << 20)) { v->fbuf = (char *)calloc(1, 1); v->fstale = 1; fresh_check(sy_root(v), key, 0, 0); return 0; }
     v->fbuf = (char *)malloc((size_t)st.st_size + 1); int64_t got = st_slurp(full, (uint8_t *)v->fbuf, (size_t)st.st_size);
     if (got < 0) { v->fbuf[0] = 0; v->fstale = 1; return 0; }
     v->fn = (size_t)got; v->fbuf[got] = 0;
@@ -165,7 +165,7 @@ static int sy_file_load(SyView *v, const char *path, uint32_t plen) {
 #else
     mt = (int64_t)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec;
 #endif
-    if (!e || e->d.size != (uint64_t)got || e->d.mtime != mt) v->fstale = 1;
+    if (!e || e->d.size != (uint64_t)got || e->d.mtime != mt) { v->fstale = 1; fresh_check(sy_root(v), key, e ? e->d.size : 0, e ? e->d.mtime : 0); }      /* conta, avisa o vigia e mostra a linha como "NOT verified" (fresh.c) */
     int nl = 1; for (size_t i = 0; i < v->fn; i++) if (v->fbuf[i] == '\n') nl++;
     v->fln = (size_t *)malloc(sizeof(size_t) * (size_t)nl); int q = 0; v->fln[q++] = 0;
     for (size_t i = 0; i < v->fn; i++) if (v->fbuf[i] == '\n') v->fln[q++] = i + 1;
