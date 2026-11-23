@@ -167,7 +167,7 @@
 <div class="grid">
   <div class="card"><h3>Console</h3><p><code>./katana agent model.gguf</code> in your project folder. The agent with all its tools, in the terminal.</p></div>
   <div class="card"><h3>Desktop</h3><p>A native window (Qt 6, no browser) that drives the same agent: conversations, tool cards, plan, context meter. Linux only for now.</p></div>
-  <div class="card"><h3>Web <em>(work in progress)</em></h3><p><code>katana serve model.gguf</code> serves a chat page and an OpenAI-compatible API on your machine; with <code>--agent</code> the page drives the full agent. The page is a work in progress and has only been checked against a mock server.</p></div>
+  <div class="card"><h3>Web <em>(work in progress)</em></h3><p><code>katana web</code> opens the same window as the desktop app in your browser, running locally: same layout, themes, conversations, tool cards and plan. It listens only on 127.0.0.1 and asks for a token that it prints in the address. The page matches the desktop in side-by-side screenshots, but it has only been run against stand-in engines, not yet with a real model; <code>katana serve model.gguf</code> still serves a plain chat page and an OpenAI-compatible API.</p></div>
 </div>
 
 <h2 id="desktop">Run the desktop app</h2>
