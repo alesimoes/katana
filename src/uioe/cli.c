@@ -128,10 +128,31 @@ static void uioe_one_request(UioeCtx *cx, const char *text, int trace, int expla
     uioe_bfree(&t);
     uioe_ctx_close(cx);
 }
+/* `ask --pack`: o que o laco injetaria para este pedido, sem modelo: o bloco exato em stdout (ou "no block" e a regra da porta), o resto em stderr */
+static void uioe_pack_cli(UioeCtx *cx, const char *text, int stats) {
+    char *block = (char *)malloc(16384); if (!block) return; UioePrep pp;
+    if (!getenv("KATANA_UIOE") || !*getenv("KATANA_UIOE")) { /* o padrao e pack */ }
+    uioe_pack_core(cx, text, block, 16384, &pp);
+    if (pp.injected) { fputs(block, stdout); fputc('\n', stdout); }
+    else {
+        printf("[no block] %s\n", pp.why);
+        UioeRequest *r = cx->s->cur;
+        if (pp.ran && r->rc.decision == UG_LIMITS && r->rc.g) { UioePackStats st; memset(&st, 0, sizeof st); char *lf = (char *)malloc(4096);
+            if (lf && ctxb_build(cx, r, &g_uioe_target_qwen, 1, lf, 4096, &st)) { printf("[the limits form, G5, that KATANA_UIOE_LIMITS=1 would inject]\n%s\n", lf); }
+            free(lf); }
+    }
+    if (stats) {
+        fprintf(stderr, "[pack] %s | %s | confidence %d after retrieval, rule G%d | total %.1f ms%s%s\n", uioe_mode() == UIOE_OFF ? "KATANA_UIOE=off: the agent would inject nothing" : "mode pack",
+                pp.injected ? "INJECTED" : "not injected", pp.conf, pp.rule, pp.ms, pp.inherited ? " | inherited the open investigation" : "", pp.overtime ? " | over the total time" : "");
+        if (pp.injected) fprintf(stderr, "[pack] %d bytes, about %d tokens (bytes/4; ceiling %d) | %s\n", pp.st.bytes, pp.st.tokens, cx->s->cur->route.token_ceiling, pp.st.log);
+    }
+    free(block); uioe_ctx_close(cx);
+}
 static int uioe_cmd_ask(int argc, char **argv, int run) {
-    const char *text = NULL, *cwd = NULL; int json = 0, trace = 1, verify = 1, index = 0, explain = 0, record = 0, refresh = 1;
+    const char *text = NULL, *cwd = NULL; int json = 0, trace = 1, verify = 1, index = 0, explain = 0, record = 0, refresh = 1, pack = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--json")) json = 1;
+        else if (!strcmp(argv[i], "--pack")) pack = 1;
         else if (!strcmp(argv[i], "--no-trace")) trace = 0;
         else if (!strcmp(argv[i], "--no-verify")) verify = 0;
         else if (!strcmp(argv[i], "--index")) index = 1;
@@ -142,24 +163,27 @@ static int uioe_cmd_ask(int argc, char **argv, int run) {
         else if (!text) text = argv[i];
         else { fprintf(stderr, "uioe ask: unexpected argument \"%s\"\n", argv[i]); return 2; }
     }
-    if (!text || !*text) { fprintf(stderr, "usage: katana uioe %s \"<request>\" [--cwd DIR] [--json] [--no-trace]%s\n", run ? "ask" : "plan", run ? " [--explain] [--no-verify] [--index] [--no-refresh] [--record]" : ""); return 2; }
+    if (!text || !*text) { fprintf(stderr, "usage: katana uioe %s \"<request>\" [--cwd DIR] [--json] [--no-trace]%s\n", run ? "ask" : "plan", run ? " [--explain] [--no-verify] [--index] [--no-refresh] [--record] [--pack]" : ""); return 2; }
     UioeSession *s = uioe_session_new(); if (!s) return 1;
     UioeCtx cx; uioe_ctx_init(&cx, s, cwd); cx.json = json; cx.run = run; cx.verify = verify; cx.build_index = index; cx.record = record; cx.refresh = refresh;
     if (explain) cx.det = 1;
+    cx.trace = trace;
+    if (pack && run) { uioe_pack_cli(&cx, text, 1); uioe_session_free(s); return 0; }
     uioe_one_request(&cx, text, trace, explain);
     uioe_session_free(s);
     return 0;
 }
 /* `katana uioe session`: varios pedidos na mesma sessao (disjuntores e estado do pedido valem entre eles); cada um marca o que mostrou */
 static int uioe_cmd_session(int argc, char **argv) {
-    const char *cwd = NULL; int json = 0, trace = 1;
-    for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--json")) json = 1; else if (!strcmp(argv[i], "--no-trace")) trace = 0; else if (!strcmp(argv[i], "--cwd") && i + 1 < argc) cwd = argv[++i]; else { fprintf(stderr, "usage: katana uioe session [--cwd DIR] [--json] [--no-trace]  (one request per line on stdin)\n"); return 2; } }
+    const char *cwd = NULL; int json = 0, trace = 1, pack = 0;
+    for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--json")) json = 1; else if (!strcmp(argv[i], "--pack")) pack = 1; else if (!strcmp(argv[i], "--no-trace")) trace = 0; else if (!strcmp(argv[i], "--cwd") && i + 1 < argc) cwd = argv[++i]; else { fprintf(stderr, "usage: katana uioe session [--cwd DIR] [--json] [--no-trace] [--pack]  (one request per line on stdin)\n"); return 2; } }
     UioeSession *s = uioe_session_new(); if (!s) return 1;
     char line[2200]; int n = 0;
     while (fgets(line, sizeof line, stdin)) {
         line[strcspn(line, "\r\n")] = 0; if (!line[0]) continue;
         UioeCtx cx; uioe_ctx_init(&cx, s, cwd); cx.json = json; cx.record = 1; cx.run = 1;
         printf("--- request %d: %.100s\n", ++n, line);
+        if (pack) { cx.trace = trace; cx.record = 0; uioe_pack_cli(&cx, line, 1); continue; }
         uioe_one_request(&cx, line, trace, 0);
     }
     uioe_session_free(s);
@@ -236,8 +260,9 @@ static int uioe_cmd_state(void) {
 }
 static int uioe_main(int argc, char **argv) {
     if (argc < 1 || !strcmp(argv[0], "help") || !strcmp(argv[0], "--help")) {
-        printf("katana uioe: the front door before the model (docs/uioe.md). U0, U1 and U3 are built; nothing here runs a model.\n"
-               "  ask \"<request>\" [--cwd DIR] [--json] [--no-trace] [--explain] [--no-verify] [--index] [--no-refresh] [--record]\n"
+        printf("katana uioe: the front door before the model (docs/uioe.md). U0, U1, U3 and U4 are built; nothing here runs a model.\n"
+               "  ask \"<request>\" [--cwd DIR] [--json] [--no-trace] [--explain] [--no-verify] [--index] [--no-refresh] [--record] [--pack]\n"
+               "                                                       --pack: print ONLY what the agent would inject before the model (the context block, or \"[no block]\" and the rule of the door)\n"
                "                                                       interpret, classify, route AND run the route: prints the understood request, the plan and the\n"
                "                                                       retrieved evidence (items with file:lines, confidence, verified or not, what was not found, the limits)\n"
                "  plan \"<request>\" [--cwd DIR] [--json]                only the understood request and the plan: nothing is executed\n"
@@ -245,7 +270,7 @@ static int uioe_main(int argc, char **argv) {
                "  session [--cwd DIR] [--json]                         one request per stdin line, in the same session (breakers, request state)\n"
                "  connectors [--cwd DIR]                               the registry: what each source answers and whether it is available here\n"
                "  state                                                the per-request state (inside the agent: /uioe)\n"
-               "KATANA_UIOE=off|pack|full (default off; the agent loop does not call UIOE yet)   trace: KATANA_UIOE_LOG (default ~/.katana/uioe.log, 0 = off)\n"
+               "KATANA_UIOE=off|pack|full (default pack: the agent calls the door before the model; off is the escape)   trace: KATANA_UIOE_LOG (default ~/.katana/uioe.log, 0 = off)\n"
                "KATANA_UIOE_MS (request deadline, 400)   KATANA_UIOE_GATE (G4 threshold, 70)   KATANA_UIOE_DET=1 (no time cuts)   KATANA_UIOE_FAULT=connector=timeout|error|partial,... (test hook)\n");
         return argc < 1 ? 2 : 0;
     }

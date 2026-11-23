@@ -60,8 +60,9 @@ LLM EXECUTION         receives the request and the prepared context
     never receives the user's text unless the route decided to send it.
 11. **Everything is traced** in `~/.katana/uioe.log`; `katana uioe explain` reproduces the decision of a request.
     No measurement campaign now: a small set of manual acceptance scenarios for the owner to run on the desktop.
-12. **Off by default**: `KATANA_UIOE=off|pack|full` (`pack`: the pre-LLM packet only; `full`: packet plus unified
-    facades), until the owner tries it on the desktop and turns it on.
+12. **Switch**: `KATANA_UIOE=off|pack|full` (`pack`: the pre-LLM packet only; `full`: packet plus unified
+    facades). Decision of the owner of 2026-11-23: `pack` is the default as soon as U4 exists (it exists: see the status of U4 in 6.1);
+    `off` is the escape. `full` (U5) is not built and behaves as `pack`.
 
 **Interpretation adopted.** The name and the diagram are the owner's; there is no written specification beyond
 them. This document reads the diagram literally: UIOE is the pre-LLM gateway, the sources are connectors behind one
@@ -1478,7 +1479,7 @@ again for what `Not found / limits` lists, and do what `Next` says before anythi
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KATANA_UIOE` | `off` | `off`: today's behaviour, byte for byte. `pack`: the pre-LLM block (the pre-hooks folded into it); tools unchanged. `full`: the block plus `Find`, `Read`, `Grep` and the loop notes as facades of the same engine |
+| `KATANA_UIOE` | `pack` (since U4; was `off` in the design) | `off`: the behaviour before U4, byte for byte. `pack`: the pre-LLM block (the pre-hooks folded into it); tools unchanged. `full`: the block plus `Find`, `Read`, `Grep` and the loop notes as facades of the same engine |
 | `KATANA_UIOE_GATE` | `70` | the route-confidence threshold of rule G4 |
 | `KATANA_UIOE_TOKENS` | `1500` | ceiling of the block (hard maximum 3000) |
 | `KATANA_UIOE_MS`, `KATANA_UIOE_TOOL_MS` | `400`, `1500` | deadlines: pre-LLM, and when a tool asked |
@@ -1487,8 +1488,9 @@ again for what `Not found / limits` lists, and do what `Next` says before anythi
 | `KATANA_UIOE_LOG` | `~/.katana/uioe.log` | the trace; `0` turns it off |
 | `KATANA_UIOE_DET` | `0` | deterministic mode for curriculum generation and replays |
 
-The default stays `off` until the owner has tried `pack` on the desktop and says to turn it on (the owner's rule:
-a risky, unmeasured feature is born switched off).
+The design said the default stays `off` until the owner tried `pack` on the desktop. The owner decided otherwise on 2026-11-23 (8.1b, item 1):
+`pack` is the default and the door of 3.5.3 is made more conservative to carry the accepted risk (an untrained model); added variables:
+`KATANA_UIOE_TOTAL_MS` (1500), `KATANA_UIOE_LIMITS` (0), `KATANA_UIOE_DUMP` (test hook).
 
 ### 4.9 What curriculum v8 must teach (D10)
 
@@ -1670,6 +1672,44 @@ the trace of the retrieval); `cli.c` gains `ask` (now executes the route), `plan
 - **Not built in U3:** the result cache (3.6.3), `session.facts`, `memory.recall`, `history.search`, `howto.recipes`, `skill.match` (U8), the web (U9), `docs.select`
   outside an agent session (it needs the model's tokenizer; the code path exists in `conn_file.c` and was never run), `code.rank`, `code.tree`, the commands/`cmd`
   step of how-to, the Context Builder and the hook in the loop (U4). Two test hooks exist: `KATANA_UIOE_FAULT="connector=timeout|error|partial,..."` and `KATANA_UIOE_SCORES=N`.
+
+**Status of U4 (built 2026-11-23, compiled; no model run, nothing measured; checked by hand with `katana uioe ask --pack` and the agent loop on a tiny random model, see below).**
+Files: `src/uioe/ctxb.c` (the Context Builder: `ctxb_build`, the block of 4.6), `src/uioe/api.c` (`uioe_prepare`, the door, the trace of the door, follow-up inheritance,
+`uioe_commit`), `src/uioe/cli.c` (`ask --pack`, `session --pack`), `src/uioe/types.c` (default `pack`; the open investigation in `UioeSession`), the hook in
+`src/agent/loop.c` (next to `intent_set_user`), `src/agent/locate.c` (`place_note` remembers its last answer for 10 s, because Interpret and the loop both call it and
+finding a cited folder walks the disk). What exists beyond the text above, or differs from it (decided by the implementer):
+
+- **The hook.** In `loop.c`, after `intent_set_user`: `uioe_prepare` gets the request as typed (before the working-folder, undo and todo notes). If it returns a
+  block, the old document note and cited-folder note are **not** appended and the block is appended after the user's text (`line` + blank line + block); otherwise
+  the old code runs unchanged. `KATANA_UIOE=off` skips the call: a comparison of the assembled user message against the previous binary (a dump hook,
+  `KATANA_UIOE_DUMP`) was byte-identical for the greymod question (place note), "bom dia", and two other requests. The ranges the block showed are recorded in the request
+  state **after** `rr_reset()` (which clears that state at every request), so `Find` and `Read` treat them as already shown. The system prompt does not change: the sentence of 4.7 was **not**
+  added (the task of U4 said the prefix must not change; the opening line of the block carries the instruction). Compaction (`context.c`) does not yet recognise old blocks.
+- **The door** (`up_gate`, `src/uioe/api.c`; every number is provisional and uncalibrated, the first condition that fails is the recorded reason): retrieval ran; domain code or files; U3's
+  decision is G4 **and** the confidence after retrieval is at least `UIOE_PACK_MIN_CONF` = 80 (above U3's 70, on purpose); verified support (a path of two re-read steps, or a re-read tier 1 or 2 item
+  with confidence >= 75); the request is not just an exact file path; the retrieval was not cut by the deadline and no connector timed out or failed; the whole of `uioe_prepare` took no more than
+  `KATANA_UIOE_TOTAL_MS` (1500; the retrieval deadline stays 400 ms); the builder made a block that fits and whose first step is verified. The limits form (G5) is built and shown by `ask --pack`,
+  but injected only with `KATANA_UIOE_LIMITS=1`. How-to and overview requests reach confidence 75 at most, so they get no block by default: the documents still arrive through the old note.
+- **The block.** Fixed English labels and phrases whatever the language of the request (the request's language appears only in quoted code lines and names). Flow requests: the answer path of U3
+  (send side, handler side, next hop), sibling key links between the same two files in `Links`, open ends as `-> nobody handles it ...`. Impact and usage requests have no chain in U3, so the builder
+  makes the path from the definition followed by its callers by depth. Locate, config, error, how-to: `Findings`. Quotes only on path steps and document lines, 110 columns; a caller's line is not
+  quoted (it is the definition's line, not the call). Evidence: at most 6 lines (3 for flow, and only lines that match two request terms); tests on one line; already-shown ranges on one line. The
+  `Next:` target is the last unread step of a chain, or the first finding when there is no chain, and ends with "Do not search again for what is listed above."; if the folder was located it also says to pass
+  `path=` to `Find`, `Glob` and `Grep`. The ceiling is the pipeline's (500 to 1500 tokens, 4 bytes per token) and trimming follows 4.6.3. Question terms are the request words that occur in the path (the
+  English form when the match was a concept), else the first ones.
+- **Escape.** Every text from a file, name, document or limits clause goes through one routine: `[katana` and `[end of context` get a space after the bracket, `<|`, `tool_call` and `tool_response`
+  are neutralized as `defang` does, secret shapes are masked with `kn_mask` (paths are not masked), line breaks become spaces. Checked with a generated project whose line carries `[katana: ...]`,
+  `[end of context]`, `<|im_start|>` and an API key.
+- **Follow-ups.** `UioeSession.inv` keeps the last request that got a block. A short request with a reference word ("isso", "o outro", "that", "it") and no entity of its own, within 4 requests,
+  is run on the previous request's text plus the follow-up, with a trace line (`inherit  inherited from request N`). It gets a block only if the path has a step not already shown, so on the greymod
+  question "e onde isso chega no celular?" gets nothing new (the retrieval is the same): the mechanism works, its usefulness is small until the retrieval can follow an open end. Memory as evidence (U8) is not in.
+- **Trace.** Every request (also the ones with no block) writes a record to `~/.katana/uioe.log`: the U3 record, an `inherit` line when it applies, a `door` line (injected or not, the failed
+  condition, the total time), and for an injected block the section sizes in tokens, what went in and what was left out, and the block itself (`block   | ...` lines).
+- **Cost.** `uioe_prepare` took 12 ms for a greeting, 20 to 90 ms for a request that names a symbol or a variable, 260 ms for "who calls rr_check" (the depth-2 closure) on the katana tree, and about 900 ms
+  for the greymod question, almost all of it finding the cited folder (`place_note` walks the disk; the legacy path paid that already, now it pays once). One run each, not a measurement.
+- **Not done in U4:** the system-prompt sentence (4.7), compaction of old blocks, `full`, memory and history as evidence, the web in the block, a desktop marker, the `Find` facade. `docs.select` as `Evidence`
+  is written but was **not exercised**: the tiny model's byte-level tokenizer selects no document line, so only the real model's tokenizer can show it. Not tested: a partial index (only none and complete),
+  Gemma 4, Windows. The model was never run on a block: whether it follows `Next` or over-trusts the path is unknown.
 
 ### 6.2 Stage 2: general interpretation and the complete Context Builder
 

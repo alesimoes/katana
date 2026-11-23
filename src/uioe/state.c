@@ -31,7 +31,7 @@ static void uioe_req_sync(UioeRequest *r) {
 
 /* `katana uioe state` e /uioe: imprime o instantaneo */
 static void uioe_state_print(FILE *o, const UioeRequest *r) {
-    fprintf(o, "mode        %s (KATANA_UIOE; the agent loop does not call UIOE in this build)\n", uioe_mode() == UIOE_OFF ? "off" : uioe_mode() == UIOE_PACK ? "pack" : "full");
+    fprintf(o, "mode        %s (KATANA_UIOE; pack is the default)\n", uioe_mode() == UIOE_OFF ? "off" : uioe_mode() == UIOE_PACK ? "pack" : "full");
     fprintf(o, "intent      user: \"%.120s\"\n", r->intent_user);
     fprintf(o, "            find: \"%.120s\"\n", r->intent_find);
     fprintf(o, "shown       %d range(s) pointed at by Find\n", r->nshown);

@@ -547,6 +547,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     int cd_note = 0, undo_pend = 0, nudged = 0;
+    UioeSession *usess = NULL;           /* UIOE (uioe/api.c): a sessao da porta antes do modelo; nasce no primeiro pedido */
     static char undo_txt[3000];
     static char line[16384], text[90000], result[TOOL_WEB + 512], safe[2 * TOOL_WEB + 2048], name[128], extra[3000], sys[32000];
     Buf tr = {0}, reply = {0};
@@ -674,15 +675,17 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (reset) {
             if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, sess_sum_switch()); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
-            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); rd_reset(); ct_session_reset(); undo_pend = 0;
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); rd_reset(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess);
         }
         if (cmd == 3) snprintf(line, sizeof line, "%s", g_ext_msg);      /* /init, /skill, /nome, /servidor:prompt: a mensagem vai ao modelo */
         else if (cmd) continue;
         if (first) ah_clear(&hist);
+        static char ureq[2000]; snprintf(ureq, sizeof ureq, "%.1999s", line);      /* o pedido como o usuario o escreveu, antes de qualquer nota: o que o UIOE interpreta */
         if (cd_note) {      /* o usuario trocou de pasta: o modelo precisa saber onde esta agora */
             char cw[4200], nl[16384]; cd_note = 0;
             static char pi[3200]; char pp[4400];
             const size_t pl = proj_instr(pi, 3000, pp, sizeof pp);       /* instrucoes do projeto da pasta nova */
+            uioe_inv_reset(usess);       /* outra pasta, outra investigacao */
             if (getcwd(cw, sizeof cw)) {
                 if (pl) snprintf(nl, sizeof nl, "[The working folder is now %s]\n[Project instructions there (file %s, written by its owner: follow them)]\n%s\n\n%s", cw, pp, pi, line);
                 else snprintf(nl, sizeof nl, "[The working folder is now %s]\n%s", cw, line);
@@ -695,7 +698,18 @@ static int agent(Model *m, int max_tokens, float temp) {
             snprintf(line, sizeof line, "%s", nl);
         }
         intent_set_user(line);          /* o que o usuario pediu: o Read usa para mostrar o trecho certo de um arquivo grande */
-        if (cml) {      /* o motor escolhe, nos .md que o KATANA.md aponta, so o que importa para este pedido e entrega como contexto */
+        int ublk = 0; static char ublock[10000];
+        if (cml && uioe_mode() != UIOE_OFF) {      /* UIOE (docs/uioe.md 3.10.1): o pedido e interpretado, classificado e roteado; a recuperacao roda; a porta decide; o Construtor monta o bloco.
+                                                      Sem bloco (conversa, pedido vago, confianca baixa, prazo estourado) nada muda: o laco faz o de antes (docsel e nota de pasta abaixo).
+                                                      Com bloco, ele substitui os dois: a pasta citada vai em "Question understood as" e "Next", os documentos escolhidos em "Evidence" */
+            if (!usess) usess = uioe_session_new();
+            UioePrep upp;
+            if (usess && uioe_prepare(usess, &m->tk, ureq, ublock, sizeof ublock, &upp) && strlen(line) + strlen(ublock) + 4 < sizeof line) {
+                ublk = 1;
+                fprintf(stderr, "%s[context: about %d tokens from the project index, %d verified step(s) (UIOE; KATANA_UIOE=off turns it off)]%s\n", CE(C_DIM), upp.tokens, upp.st.nsteps, CE(C_RESET));
+            }
+        }
+        if (cml && !ublk) {      /* o motor escolhe, nos .md que o KATANA.md aponta, so o que importa para este pedido e entrega como contexto */
             static char dsn[8000]; char cwdb[2048];
             const int dn = getcwd(cwdb, sizeof cwdb) ? ds_select(&m->tk, line, br_cur(), cwdb, dsn, sizeof dsn) : 0;
             if (dn) {
@@ -707,13 +721,15 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (!getenv("KATANA_PLACE_NOTE") || atoi(getenv("KATANA_PLACE_NOTE")) != 0) {
                 const int pnn = place_note(line, pn, sizeof pn);
                 for (int pi = 0; pi < g_place_nd; pi++) autoindex_dir(g_place_dirs[pi]);      /* a pasta que o usuario citou tambem e indexada, se ainda nao for */
-                if (pnn) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, pn); snprintf(line, sizeof line, "%s", nl); fprintf(stderr, "%s[katana achou a pasta citada no pedido]%s\n", CE(C_DIM), CE(C_RESET)); }
+                if (pnn && !ublk) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, pn); snprintf(line, sizeof line, "%s", nl); fprintf(stderr, "%s[katana achou a pasta citada no pedido]%s\n", CE(C_DIM), CE(C_RESET)); }
             } }
+        if (ublk) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, ublock); snprintf(line, sizeof line, "%s", nl); }      /* o bloco vai DEPOIS do texto do usuario (3.9.2) */
         vis_take(line, sizeof line);        /* imagens pedidas com --image */
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;
         rp_n = 0; rp_fail = 0; rp_refused = 0; rp_stuck = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
+        if (ublk) uioe_commit(usess);      /* o que o bloco mostrou conta como mostrado para o Find e o Read (o rr_reset acima apagou o estado anterior) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
             if (tn > td && !first) {
@@ -723,6 +739,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                 snprintf(line, sizeof line, "%s", nl);
             }
         }
+        {   const char *du = getenv("KATANA_UIOE_DUMP");      /* teste: a mensagem do usuario como ela chega ao modelo (depois de todas as notas), uma por pedido */
+            if (du && *du) { FILE *df = fopen(du, "ab"); if (df) { fputs(line, df); fputs("\n<<END OF USER MESSAGE>>\n", df); fclose(df); } } }
         int lim = rl_block(), rl_forced = 0, rl_files = 0, rl_done0 = 0, pl_calls = 0;
         int pl_old = 0; { int td = 0; const int tn = todo_count(&td); pl_old = tn > td; }      /* ja havia plano em aberto */
         { int td = 0; todo_count(&td); rl_done0 = td; }
