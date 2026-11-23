@@ -1,18 +1,18 @@
-/* ---------- agent/memory.c: memoria do agente (remember, recall, katana memory) ----------
- * Arquivo: ~/.katana/memoria.txt (KATANA_MEM muda o caminho), sempre 0600. O formato ANTIGO continua valido e e o formato dos fatos vivos:
- *     AAAA-MM-DD<TAB>fato                      fato vivo (uma linha por fato; e tudo o que o katana antigo entende)
- * Linhas novas, SEM tabulacao (o katana antigo as ignora, entao a migracao e silenciosa e reversivel: `katana memory export` devolve so os vivos):
+/* ---------- agent/memory.c: memoria do agente (katana memory; memory_query para o UIOE; mem_tail para o prompt) ----------
+ * Arquivo: ~/.katana/memoria.txt (KATANA_MEM muda o caminho), sempre 0600. Uma linha por registro; toda linha tem id e comeca com #:
+ *     #fact ID DATA fato                       fato vivo
  *     #sup ID DATA DATA_DA_TROCA ID_NOVO fato  fato substituido por outro sobre o mesmo assunto (historico, nao apagado)
  *     #del ID DATA DATA_DO_ESQUECIMENTO fato   fato esquecido (katana memory forget); fica no historico ate `forget --purge`
  *     #pin ID                                  fato fixo: entra no prompt de sistema mesmo fora dos mais recentes
- * ID (identidade estavel) = FNV-1a de 32 bits do texto do fato, 8 hex; nao e gravado nos fatos vivos (arquivo antigo funciona sem migrar).
+ * Linhas que nao seguem esse formato nao sao lidas (e somem na proxima gravacao).
+ * ID (identidade estavel) = FNV-1a de 32 bits do texto do fato, 8 hex.
  * Assunto: os termos de conteudo do fato (tokenizador de coder/text.c, sem palavras funcionais, pt e en); dois fatos vivos sao do mesmo
  * assunto quando dividem >= 2 termos e >= 60% dos termos do menor. remember de um fato do mesmo assunto SUBSTITUI o anterior (que vira #sup).
- * Prompt de sistema: mem_tail(max) devolve os `max` ultimos fatos vivos no formato "- data: fato" (identico ao de antes); fatos fixos
- * (#pin), se houver, entram no lugar dos mais antigos desse conjunto. Sem #pin a saida e a mesma de sempre.
- * memory_search(query, max, out, cap): BM25 simples (tokens pt/en) + recencia, fato substituido penalizado; usada por recall e pelo UIOE. */
+ * Prompt de sistema: mem_tail(max) devolve os `max` ultimos fatos vivos no formato "- data: fato"; fatos fixos (#pin), se houver, entram no
+ * lugar dos mais antigos desse conjunto.
+ * mem_rank(...): BM25 simples (tokens pt/en) + recencia, fato substituido penalizado; usada por memory_query (UIOE) e por katana memory search. */
 #define MEM_MAXFILE (16 * 1024 * 1024)
-typedef struct { int kind; char id[9]; char date[40]; char sdate[40]; char by[9]; char *fact; char *raw; int pinned; } MemE;   /* kind: 0 vivo, 1 #sup, 2 #del, 4 linha estranha, 5 descartada */
+typedef struct { int kind; char id[9]; char date[40]; char sdate[40]; char by[9]; char *fact; int pinned; } MemE;   /* kind: 0 vivo, 1 #sup, 2 #del, 5 descartada (marcador #pin ou linha que nao e do formato) */
 typedef struct { MemE *e; int n, cap; char *buf; int trunc; } MemDb;
 typedef struct { int idx; double score; } MemHit;
 
@@ -68,11 +68,14 @@ static int mem_load(MemDb *db) {
         char *e = strchr(l, '\n');
         if (e) *e = 0;
         MemE *x = mem_add(db);
-        char *tab = strchr(l, '\t');
-        if (tab) {
-            x->kind = 0; *tab = 0;
-            snprintf(x->date, sizeof x->date, "%s", l);
-            x->fact = tab + 1; mem_id(x->fact, x->id);
+        if (!strncmp(l, "#fact ", 6)) {
+            char *q = l + 6;
+            char *id = mem_word(&q), *d = mem_word(&q);
+            if (id && d && strlen(id) == 8) {
+                x->kind = 0; snprintf(x->id, sizeof x->id, "%s", id); snprintf(x->date, sizeof x->date, "%s", d);
+                while (*q == ' ') q++;
+                x->fact = q;
+            } else x->kind = 5;
         } else if (!strncmp(l, "#sup ", 5) || !strncmp(l, "#del ", 5)) {
             char *q = l + 5; const int sup = l[1] == 's';
             char *id = mem_word(&q), *d = mem_word(&q), *sd = mem_word(&q), *by = sup ? mem_word(&q) : (char *)"";
@@ -81,11 +84,11 @@ static int mem_load(MemDb *db) {
                 snprintf(x->sdate, sizeof x->sdate, "%s", sd); snprintf(x->by, sizeof x->by, "%.8s", by);
                 while (*q == ' ') q++;
                 x->fact = q;
-            } else { x->kind = 4; x->raw = l; }
+            } else x->kind = 5;
         } else if (!strncmp(l, "#pin ", 5)) {
             x->kind = 5; snprintf(x->id, sizeof x->id, "%.8s", l + 5);       /* marcador: aplicado abaixo e nao regravado como entrada */
-        } else { x->kind = 4; x->raw = l; }
-        if (!e) { if (!*l && x->kind == 4) db->n--; break; }
+        } else x->kind = 5;
+        if (!e) { if (!*l) db->n--; break; }
         l = e + 1;
     }
     for (int i = 0; i < db->n; i++) if (db->e[i].kind == 5 && db->e[i].id[0]) {
@@ -121,10 +124,9 @@ static int mem_save(const MemDb *db) {
     if (!f) return -1;
     for (int i = 0; i < db->n; i++) {
         const MemE *x = &db->e[i];
-        if (x->kind == 0) fprintf(f, "%s\t%s\n", x->date, x->fact);
+        if (x->kind == 0) fprintf(f, "#fact %s %s %s\n", x->id, x->date, x->fact);
         else if (x->kind == 1) fprintf(f, "#sup %s %s %s %s %s\n", x->id, x->date, x->sdate, x->by, x->fact);
         else if (x->kind == 2) fprintf(f, "#del %s %s %s %s\n", x->id, x->date, x->sdate, x->fact);
-        else if (x->kind == 4) fprintf(f, "%s\n", x->raw);
     }
     for (int i = 0; i < db->n; i++) if (db->e[i].kind == 0 && db->e[i].pinned) fprintf(f, "#pin %s\n", db->e[i].id);
     if (fclose(f) != 0) { remove(t); return -1; }
@@ -358,7 +360,7 @@ static void tool_remember(const char *fact, char *out, size_t cap) {
     if (r) { if (fseek(r, -1, SEEK_END) == 0) nl = fgetc(r) != '\n'; fclose(r); }
     FILE *fp = fopen(p, "ab");
     if (!fp) { snprintf(out, cap, "error: cannot write %s", p); return; }
-    fprintf(fp, "%s%s\t%s\n", nl ? "\n" : "", today, f);
+    { char fid[9]; mem_id(f, fid); fprintf(fp, "%s#fact %s %s %s\n", nl ? "\n" : "", fid, today, f); }
     fclose(fp);
     mem_chmod(p);
     snprintf(out, cap, "ok: saved to memory");
@@ -426,12 +428,12 @@ static int memory_cli(int argc, char **argv) {
         puts("katana memory <command>\n  list [--all]         the live facts (id, date); --all adds superseded and forgotten ones\n  show <id|text>       one fact with its history (versions it replaced, who replaced it)\n"
              "  search <query>       ranked search (relevance, recency; superseded facts penalized)\n  add <fact>           same as the remember tool (refuses secrets, updates a fact on the same subject)\n"
              "  forget <id|text> [--purge]  move a fact to the history as forgotten; --purge erases it and its old versions for good\n  pin <id|text> | unpin <id|text>  pinned facts stay in the system prompt\n"
-             "  export [--all]       live facts in the old format (date TAB fact); --all prints the whole file\nFile: ~/.katana/memoria.txt (KATANA_MEM overrides), mode 0600.");
+             "File: ~/.katana/memoria.txt (KATANA_MEM overrides), mode 0600.");
         return 0;
     }
     MemDb db;
     if (mem_load(&db) != 0) {
-        if (!strcmp(cmd, "list") || !strcmp(cmd, "export") || !strcmp(cmd, "search")) { if (strcmp(cmd, "export")) puts("memory is empty"); return 0; }
+        if (!strcmp(cmd, "list") || !strcmp(cmd, "search")) { puts("memory is empty"); return 0; }
         fprintf(stderr, "memory: no memory file yet\n"); return 1;
     }
     int rc = 0;
@@ -477,12 +479,6 @@ static int memory_cli(int argc, char **argv) {
         int idx;
         if (!kn || !mem_pick1(&db, key, 0x1, &idx)) rc = 1;
         else { db.e[idx].pinned = !strcmp(cmd, "pin"); if (mem_save(&db) != 0) { fprintf(stderr, "memory: cannot write\n"); rc = 1; } else printf("%s %s\n", db.e[idx].pinned ? "pinned" : "unpinned", db.e[idx].id); }
-    } else if (!strcmp(cmd, "export")) {
-        if (all) { for (int i = 0; i < db.n; i++) { const MemE *x = &db.e[i];
-            if (x->kind == 0) printf("%s\t%s\n", x->date, x->fact); else if (x->kind == 1) printf("#sup %s %s %s %s %s\n", x->id, x->date, x->sdate, x->by, x->fact);
-            else if (x->kind == 2) printf("#del %s %s %s %s\n", x->id, x->date, x->sdate, x->fact); else if (x->kind == 4) printf("%s\n", x->raw); }
-            for (int i = 0; i < db.n; i++) if (db.e[i].kind == 0 && db.e[i].pinned) printf("#pin %s\n", db.e[i].id); }
-        else for (int i = 0; i < db.n; i++) if (db.e[i].kind == 0) printf("%s\t%s\n", db.e[i].date, db.e[i].fact);
     } else { fprintf(stderr, "memory: unknown command '%s' (katana memory help)\n", cmd); rc = 2; }
     mem_free(&db);
     return rc;
