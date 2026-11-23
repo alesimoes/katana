@@ -160,7 +160,7 @@ static long wt_total_watches(void) { long n = 0; for (int i = 0; i < WT_ROOTS; i
 /* uma watch para a pasta `rel` da raiz; 1 = colocada */
 static int wt_add_dir(WtRoot *r, int ri, const char *rel, int *enospc) {
 #ifdef WT_HAVE_INOTIFY
-    if (g_wt.fd < 0 || wt_total_watches() >= g_wt.budget) return 0;
+    if (!g_wt.init_done || g_wt.fd < 0 || wt_total_watches() >= g_wt.budget) return 0;
     char a[4400]; snprintf(a, sizeof a, "%s%s%s", r->root, *rel ? "/" : "", rel);
     const int wd = inotify_add_watch(g_wt.fd, a, IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF | IN_ONLYDIR | IN_EXCL_UNLINK);
     if (wd < 0) { if (errno == ENOSPC && enospc) *enospc = 1; return 0; }
@@ -232,7 +232,7 @@ static void wt_q_clear(WtRoot *r) { for (int i = 0; i < r->nq; i++) free(r->q[i]
 /* ---------- leitura dos eventos (sem bloquear) ---------- */
 static void wt_drain(void) {
 #ifdef WT_HAVE_INOTIFY
-    if (g_wt.fd < 0) return;
+    if (!g_wt.init_done || g_wt.fd < 0) return;      /* antes do init o fd e 0 (stdin): ler dele rouba a linha do usuario e bloqueia */
     static char buf[1 << 16] __attribute__((aligned(8)));
     g_wt.drain_id++; g_wt.drains++;
     for (;;) {
