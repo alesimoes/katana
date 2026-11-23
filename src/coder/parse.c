@@ -52,6 +52,7 @@ typedef struct {
     CoderFile *f; int scap; int *snt; unsigned char *sfl; char **sx;
     size_t *ln; int nln;
     int *rh; int rhn; int nested; int rcap;
+    const char *path; int ux0, ux1;     /* usados pelas linguagens de parse2.c */
 } CP;
 
 /* linguagens acrescentadas depois: ver parse2.c (incluido logo depois deste arquivo) */
@@ -1794,7 +1795,7 @@ static int coder_parse(const char *path, const char *text, size_t n, CoderFile *
     if (L == CL_UNKNOWN || L == CL_CONFIG || n == 0 || n >= 0xFFFFFFF0u) return 0;
     if (L == CL_C) { size_t pl = strlen(path); if (pl > 2 && path[pl - 2] == '.' && (path[pl - 1] == 'h' || path[pl - 1] == 'H')) { size_t m = n < 65536 ? n : 65536; for (size_t k = 0; k + 8 < m; k++) if ((text[k] == 'c' && !strncmp(text + k, "class ", 6)) || !strncmp(text + k, "namespace ", 10) || !strncmp(text + k, "template<", 9) || !strncmp(text + k, "template <", 10)) { L = out->lang = CL_CPP; break; } } }
     CP c; memset(&c, 0, sizeof c);
-    c.lang = L; c.f = out; c.n = n;
+    c.lang = L; c.f = out; c.n = n; c.path = path;
     char *cl = (char *)malloc(n + 1), *nc = (char *)malloc(n + 1);
     if (L == CL_MD) { memcpy(cl, text, n); memcpy(nc, text, n); } else if (c2_isline(L) || c2_istok(L)) c2_mask(L, text, n, cl, nc); else cp_mask(L, text, n, cl, nc);
     cl[n] = nc[n] = 0; c.c = cl; c.t = nc;
