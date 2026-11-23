@@ -3,18 +3,17 @@
 // Verbos das ferramentas e formatacao de tempo, comuns ao grupo de acoes e ao plano
 var verbos = ({
     "Bash": "Executando comando", "Read": "Lendo arquivo", "Write": "Gravando arquivo", "Edit": "Editando arquivo",
-    "NotebookEdit": "Editando notebook", "Glob": "Buscando arquivos", "Grep": "Procurando nos arquivos",
+    "NotebookEdit": "Editando notebook", "Grep": "Procurando nos arquivos",
     "WebSearch": "Pesquisando na web", "WebFetch": "Abrindo página", "Agent": "Subagente trabalhando",
-    "TodoWrite": "Atualizando as tarefas", "TaskCreate": "Criando tarefa", "TaskUpdate": "Atualizando tarefa", "TaskList": "Listando tarefas", "TaskGet": "Lendo tarefa",
+    "TodoWrite": "Atualizando as tarefas",
     "TaskStop": "Parando tarefa", "Monitor": "Acompanhando comando", "AskUserQuestion": "Perguntando", "EnterPlanMode": "Entrando no modo plano", "ExitPlanMode": "Apresentando o plano",
     "LSP": "Consultando o código", "EnterWorktree": "Abrindo cópia de trabalho", "ExitWorktree": "Saindo da cópia de trabalho", "PowerShell": "Executando PowerShell",
     "CronCreate": "Agendando tarefa", "CronDelete": "Cancelando agendamento", "CronList": "Listando agendamentos", "ScheduleWakeup": "Marcando retomada",
     "PushNotification": "Enviando notificação", "SendUserFile": "Entregando arquivo", "EndConversation": "Encerrando a conversa",
     "ListMcpResourcesTool": "Listando recursos MCP", "ReadMcpResourceTool": "Lendo recurso MCP", "WaitForMcpServers": "Aguardando servidores MCP",
     "ToolSearch": "Carregando ferramenta", "Skill": "Carregando instruções", "ReportFindings": "Relatando achados",
-    // ferramentas do indice do codigo e de mudanca em varios lugares
-    "Find": "Procurando no projeto", "Symbols": "Consultando os símbolos", "Rename": "Renomeando símbolo",
-    "Replace": "Substituindo texto", "Patch": "Aplicando patch",
+    // ferramentas do indice do codigo
+    "Find": "Procurando no projeto", "Symbols": "Consultando os símbolos",
     "SendMessage": "Falando com outro agente", "ListAgents": "Listando agentes", "SubagentHandback": "Entregando relatório", "Workflow": "Rodando fluxo de agentes"
 });
 
@@ -41,7 +40,7 @@ function campos(a) {
     return m;
 }
 function corta(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
-// resumo de uma linha dos argumentos: Find = consulta (e modo), Symbols = acao + nome/arquivo, Rename = de -> para
+// resumo de uma linha dos argumentos: Find = consulta (e modo), Symbols = acao + nome/arquivo (def, callers, flow, tree...)
 function resumo(name, args) {
     var m = campos(args);
     if (name === "Find") {
@@ -55,8 +54,6 @@ function resumo(name, args) {
         else if (m.file && m.line) al = m.file + ":" + m.line;
         return m.action + (al ? " " + corta(al, 70) : "");
     }
-    if (name === "Rename" && m.symbol) return corta(m.symbol, 40) + " -> " + corta(m.to || "?", 40);
-    if (name === "Replace" && m.pattern) return corta(m.pattern, 40) + " -> " + corta(m.replacement || "", 40);
     return alvo(args);
 }
 // duracao curta: "<1 s", "35 s", "1 min 20 s", "4 min"

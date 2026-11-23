@@ -92,7 +92,8 @@ Item {
                                : d.kind === "notify" ? notifyC
                                : d.kind === "file" ? fileC
                                : d.kind === "finding" ? findingC
-                               : d.kind === "stopped" ? stoppedC : noticeC
+                               : d.kind === "stopped" ? stoppedC
+                               : d.kind === "error" ? errorC : noticeC
             }
             Component {
                 id: userC
@@ -324,6 +325,26 @@ Item {
                             Text { id: sbt; anchors.centerIn: parent; text: "pedir resumo"; font.family: Theme.sans; font.pixelSize: 12
                                 color: sma.containsMouse ? Theme.acfg : Theme.fg }
                             MouseArea { id: sma; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: backend.askSummary() }
+                        }
+                    }
+                }
+            }
+            Component {  // o agente nao iniciou, nao carregou o modelo ou morreu: o motivo fica na conversa (texto selecionavel)
+                id: errorC
+                Item {
+                    height: et.implicitHeight + 24
+                    Rectangle {
+                        x: 38; width: parent.width - 76; height: et.implicitHeight + 16; anchors.verticalCenter: parent.verticalCenter
+                        radius: 8; color: "transparent"; border.color: Theme.err; border.width: 1
+                        TextEdit { font.family: Theme.sans;
+                            id: et
+                            objectName: "errorText"
+                            x: 12; y: 8; width: parent.width - 24
+                            readOnly: true; selectByMouse: true
+                            wrapMode: TextEdit.Wrap
+                            text: d.text
+                            color: Theme.err
+                            font.pixelSize: 13
                         }
                     }
                 }

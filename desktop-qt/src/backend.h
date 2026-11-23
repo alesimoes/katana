@@ -327,7 +327,7 @@ private:
     void detach(QProcess *p);
     void onStdout();
     void onStderr();
-    void onFinished(QProcess *p);
+    void onFinished(QProcess *p, int code, QProcess::ExitStatus st);
     void handleMarker(const QByteArray &line);
     void emitText(const QByteArray &bytes);
     void flushText();
@@ -392,6 +392,7 @@ private:
     void setCtx(int used, int total);
 
     QByteArray m_outBuf, m_errBuf, m_utf8Tail;
+    QStringList m_errTail;      // ultimas linhas de stderr do agente: o motivo quando ele morre ou nao carrega o modelo
     bool m_atLineStart = true;
     TagFilter m_filter;
 

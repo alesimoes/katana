@@ -103,8 +103,9 @@ while IFS= read -r line; do
         printf '\001READY\n';;
     *"consulte o indice"*)
         # Find e Symbols com saidas reais do katana (tools/samples); a ultima chamada leva uma nota longa do motor; Symbols flow,
-        # Rename e TodoWrite so conferem o verbo generico
+        # Symbols flow e tree so conferem o verbo e a acao; o motor avisa em stderr que anexou o bloco [katana: context ...]
         echo 0 > "${HOME:-/tmp}/.standin-idx-count"
+        echo "[context: about 640 tokens from the project index, 2 verified step(s) (UIOE; KATANA_UIOE=off turns it off)]" >&2
         sleep 4
         printf '\001TOOL Find\t{"query":"ct_sb_puts"}\n'
         emit_out Find find.txt
@@ -116,10 +117,13 @@ while IFS= read -r line; do
         emit_out Symbols symbols-nf.txt '[katana: this exact call already gave this exact result (2 times now). Repeating it changes nothing. Do something different: read the message above, change the arguments, check the command'"'"'s help, use another tool, or tell the user what is blocking you.]'
         printf '\001TOOL Symbols\t{"action":"flow","name":"ct_glob"}\n'
         printf '\001TOOLOUT Symbols\tflow: ct_glob -> ct_gmatch\n'
-        printf '\001TOOL Rename\t{"symbol":"ct_glob","to":"ct_globber"}\n'
-        printf '\001TOOLOUT Rename\tdry run: 3 places in 2 files\n'
+        printf '\001TOOL Symbols\t{"action":"tree","path":"src"}\n'
+        printf '\001TOOLOUT Symbols\tsrc/ (12 files)\\n  engine/ (30 files)\n'
         printf 'Consultei o indice.\n'
         printf '\001READY\n';;
+    *"morra agora"*)
+        echo "erro: nao foi possivel mapear o modelo (teste do standin)" >&2
+        exit 3;;
     *mudo*)
         printf '\001TOOL Bash\t{"command":"ls"}\n'
         printf '\001READY\n';;
