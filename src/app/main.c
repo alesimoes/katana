@@ -986,11 +986,17 @@ static int run_main(int argc, char **argv) {
             argc -= 2;
         } else i++;
     }
+    if (argc >= 2 && strcmp(argv[1], "web") == 0) { argv[1] = (char *)"serve"; g_srv_agent = 1; }   /* katana web [modelo] [porta]: a pagina do agente (docs/web.md) */
     if (argc >= 3 && strcmp(argv[1], "serve") == 0)       /* --agent: o agente pela rede; o modelo fica so no agente filho */
         for (int i = 2; i < argc; i++) if (strcmp(argv[i], "--agent") == 0) { g_srv_agent = 1; for (int j = i; j < argc; j++) argv[j] = argv[j + 1]; argc--; break; }
+    if (g_srv_agent && strcmp(argv[1], "serve") == 0 && (argc == 2 || (argc == 3 && strspn(argv[2], "0123456789") == strlen(argv[2])))) {
+        const int port = argc == 3 ? atoi(argv[2]) : 8080;       /* sem modelo na linha de comando: a pagina escolhe (como o desktop) */
+        return serve(NULL, port);
+    }
     if ((argc == 3 || argc == 4) && strcmp(argv[1], "serve") == 0) {
         Model m; memset(&m, 0, sizeof m);
-        if (g_srv_agent) { if (!realpath(argv[2], g_srv_model_path)) die("katana serve --agent: modelo nao encontrado"); }
+        if (g_srv_agent) { if (!realpath(argv[2], g_srv_model_path)) die("katana serve --agent: modelo nao encontrado");
+            { const char *bn = strrchr(g_srv_model_path, '/'); snprintf(g_web_pre, sizeof g_web_pre, "%.500s", bn ? bn + 1 : g_srv_model_path); } }
         else { perfil_apply(argv[2], 0); load_model(&m, argv[2]); print_info(&m); vis_init(&m, argv[2]); }
         {   /* nome do modelo na API: o arquivo sem pasta e sem .gguf */
             const char *b = argv[2], *sl = strrchr(b, '/'), *bs = strrchr(b, '\\');

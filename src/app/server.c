@@ -29,6 +29,9 @@ static char g_srv_key[256];                 /* KATANA_API_KEY */
 static time_t g_srv_started;
 static int g_srv_agent;                     /* katana serve --agent: o agente pela rede (agentapi.c), sem o modelo neste processo */
 static char g_srv_model_path[4096];         /* caminho absoluto do modelo (o agente filho carrega) */
+static char g_web_token[40];                /* katana web: chave da pagina (impressa na URL de abertura), webui.c */
+static int g_web_port;                      /* porta deste servidor, conferida no Host das requisicoes da pagina */
+static char g_web_pre[512];                 /* modelo dado na linha de comando: o que a pagina escolhe ao abrir */
 
 /* fila do modelo: uma geracao por vez, na ordem de chegada (senha numerada) */
 #ifndef _WIN32
@@ -773,6 +776,8 @@ static void oa_models(sock_t s);
 static void oa_error(sock_t s, int code, const char *msg, const char *type);
 static char *srv_body(sock_t s, const char *head, size_t hn, size_t hend);
 static void ag_route(sock_t s, const char *method, const char *path, const char *head, size_t hn, size_t hend);
+static int web_handle(sock_t s, const char *method, const char *path, const char *query, const char *head, size_t hn, size_t hend, int peer_local);
+static void web_init(void);
 
 /* "Authorization: Bearer <chave>" confere com KATANA_API_KEY (comparacao em tempo constante) */
 static int srv_auth(const char *head) {
@@ -820,8 +825,9 @@ static void srv_conn(Model *m, sock_t s, int peer_local) {
     head[hend - 2] = 0;                                  /* termina a lista de cabecalhos */
     char method[16] = "", path[512] = "", val[512];
     if (sscanf(head, "%15s %511s", method, path) != 2) { http_error(s, 400, "requisicao invalida"); free(head); return; }
+    char query[1024] = "";
     char *q = strchr(path, '?');
-    if (q) *q = 0;
+    if (q) { snprintf(query, sizeof query, "%s", q + 1); *q = 0; }
     const int v1 = strncmp(path, "/v1/", 4) == 0;
     if (strcmp(path, "/health") == 0) {                  /* sem chave: so diz que esta de pe */
         http_reply(s, 200, "application/json; charset=utf-8", "{\"status\":\"ok\"}", 15);
@@ -840,6 +846,7 @@ static void srv_conn(Model *m, sock_t s, int peer_local) {
             if (!o || !host_local(o + 3)) { http_error(s, 403, "origem nao permitida"); free(head); return; }
         }
     }
+    if (g_srv_agent && web_handle(s, method, path, query, head, hn, hend, peer_local)) { free(head); return; }   /* a pagina do agente (webui.c) */
     if (strncmp(path, "/v1/agent/", 10) == 0 || strcmp(path, "/v1/agent") == 0) { ag_route(s, method, path, head, hn, hend); free(head); return; }
     if (g_srv_agent && (strcmp(path, "/v1/chat/completions") == 0 || strcmp(path, "/api/chat") == 0)) {   /* o modelo esta so no agente */
         oa_error(s, 503, "agent mode: this server runs katana's agent (/v1/agent/sessions) and does not hold the model for chat completions", "server_error");
@@ -915,9 +922,12 @@ static int serve(Model *m, int port) {
     setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof one);
     if (bind(ls, (struct sockaddr *)&a, sizeof a) != 0) die("nao consegui escutar nessa porta (em uso?)");
     if (listen(ls, 64) != 0) die("listen falhou");
+    g_web_port = port;
+    if (g_srv_agent) web_init();
     fprintf(stderr, "katana serve: http://%s:%d  modelo \"%s\"  API: %s%s%s; Ctrl+C encerra\n",
-            host, port, g_srv_name, g_srv_agent ? "/v1/agent/sessions (agente: executa comandos nesta maquina), /v1/models" : "/v1/chat/completions, /v1/models",
+            host, port, g_srv_model_path[0] || !g_srv_agent ? g_srv_name : "(escolhido na pagina)", g_srv_agent ? "/v1/agent/sessions (agente: executa comandos nesta maquina), /v1/models" : "/v1/chat/completions, /v1/models",
             net ? "; aberto para a rede, com chave" : "; so esta maquina", g_srv_key[0] && !net ? "; /v1 com chave" : "");
+    if (g_srv_agent) fprintf(stderr, "katana web: abra no navegador  http://127.0.0.1:%d/?token=%s\n", port, g_web_token);
     for (;;) {
         struct sockaddr_in pa; socklen_t pl = sizeof pa;
         memset(&pa, 0, sizeof pa);

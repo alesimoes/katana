@@ -271,7 +271,8 @@ static void ag_create(sock_t s, const char *body) {
     char cwd[4096] = "", sid[128] = "";
     const char *p = js_ws(body ? body : "");
     if (*p == '{') { oa_str(g4_js_get(p, "cwd"), cwd, sizeof cwd); oa_str(g4_js_get(p, "session_id"), sid, sizeof sid); }
-    if (sid[0] && !ag_id_ok(sid)) { oa_error(s, 400, "session_id: 1 to 64 letters, digits, _ or -", "invalid_request_error"); return; }
+    if (!g_srv_model_path[0]) { oa_error(s, 400, "this server was started without a model (katana serve --agent has no model path); use the web page or start it with a model", "invalid_request_error"); return; }
+        if (sid[0] && !ag_id_ok(sid)) { oa_error(s, 400, "session_id: 1 to 64 letters, digits, _ or -", "invalid_request_error"); return; }
     if (!cwd[0] && !getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, "/");
     char rc[4096];
     struct stat sb;

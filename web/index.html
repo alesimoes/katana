@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Katana</title>
+<link rel="icon" href="img/katana-64.png">
+<link rel="stylesheet" href="css/app.css">
+<script src="js/theme.js"></script>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div class="side-head">
+      <img class="side-logo" src="img/katana-64.png" width="44" height="44" alt="">
+      <img class="side-title" id="sideTitle" src="img/titulo-escuro.png" alt="Katana">
+      <span class="grow"></span>
+      <button class="ib" id="sideCollapse" title="Recolher a lateral" aria-label="Recolher a lateral"></button>
+    </div>
+    <button id="newChat"><span id="newChatIcon"></span><span>Nova conversa</span></button>
+    <div class="side-label">CONVERSAS</div>
+    <div id="sessList"></div>
+  </aside>
+  <div id="scrim"></div>
+
+  <main id="main">
+    <div id="top">
+      <button class="ib" id="menuBtn" title="Mostrar ou ocultar a lateral" aria-label="Mostrar ou ocultar a lateral"></button>
+      <span class="grow"></span>
+      <button class="ib" id="storeBtn" title="Modelos: baixar e trocar" aria-label="Modelos"></button>
+      <button class="ib" id="termBtn" title="Terminal (Ctrl+`)" aria-label="Terminal"></button>
+      <button class="ib" id="gearBtn" title="Configurações" aria-label="Configurações"></button>
+      <div id="apMenu" class="pop" hidden></div>
+    </div>
+
+    <div id="mv"><div id="col"></div><div id="dots" hidden></div><div id="foot"></div></div>
+    <div id="empty" hidden></div>
+    <div id="store" hidden></div>
+
+    <div id="fade"></div>
+    <div id="cards">
+      <div id="workCard" class="card14" hidden></div>
+      <div id="choiceCard" class="card14" hidden></div>
+    </div>
+    <div id="composer">
+      <div id="queue"></div>
+      <div id="box">
+        <textarea id="ta" rows="1" spellcheck="false" autocomplete="off" aria-label="Mensagem"></textarea>
+        <button id="send" aria-label="Enviar"></button>
+      </div>
+      <div id="meta">
+        <div id="picker"></div>
+        <span id="wsWarn" hidden>pasta sem confiança</span>
+        <button class="mbtn" id="planBtn">plano</button>
+        <button class="mbtn" id="tchBtn">professor</button>
+        <span id="statusLine" class="grow"></span>
+        <span id="indexStatus"></span>
+        <span id="speed"></span>
+        <span id="ctxMeter"></span>
+      </div>
+      <div id="sys"></div>
+    </div>
+    <div id="term" hidden></div>
+  </main>
+</div>
+<div id="dlgs"></div>
+<div id="tip" hidden></div>
+<script src="js/lib/Markdown.js"></script>
+<script src="js/lib/Highlight.js"></script>
+<script src="js/lib/Verbs.js"></script>
+<script src="js/util.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/model.js"></script>
+<script src="js/backend.js"></script>
+<script src="js/views.js"></script>
+<script src="js/composer.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/terminal.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
