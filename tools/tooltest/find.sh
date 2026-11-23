@@ -7,7 +7,7 @@ export KATANA_LOG=${KATANA_LOG:-$(mktemp)}
 [ -x "$K" ] || { echo "uso: $0 <binario katana>"; exit 2; }
 T=$(mktemp -d) || exit 2
 HOME=$T/home; export HOME; mkdir -p "$HOME"
-unset KATANA_CACHE_DIR KATANA_FIND_TUNE KATANA_FIND_CHARS KATANA_FIND_MAX_FILES
+unset KATANA_CACHE_DIR KATANA_FIND_CHARS
 trap 'rm -rf "$T"' EXIT
 N=0; BAD=0
 out=
@@ -76,8 +76,7 @@ has "search: dica de proximo passo" "Follow a symbol with Find mode=refs, or Rea
 hasnt "search: node_modules fica de fora" "node_modules"
 hasnt "search: build fica de fora" "build/out.js"
 hasnt "search: binario fica de fora" "blob.js"
-[ -f .katana/cache/.gitignore ] && [ "$(cat .katana/cache/.gitignore)" = "*" ] && ok "cache: .gitignore com * criado" || fail "cache: .gitignore com * criado"
-ls .katana/cache/find-*.idx >/dev/null 2>&1 && ok "cache: indice gravado em .katana/cache" || fail "cache: indice gravado em .katana/cache"
+ls .katana/cache/find-*.idx >/dev/null 2>&1 && fail "o Find nao grava indice proprio (find-*.idx)" || ok "o Find nao grava indice proprio (find-*.idx)"
 run Find '{"query":"qqhugeword17"}'
 has "arquivo acima de 300 KB nao entra" "No match"
 run Find '{"query":"where is the config file parsed"}'
@@ -133,18 +132,14 @@ run Find '{"query":"listSessions","path":"src/server.js"}'
 first "path: um arquivo" "src/server.js"
 run Find '{"query":"sessions","path":"nao-existe"}'
 has "path inexistente: erro" "error:"
-out=$(KATANA_FIND_MAX_FILES=2 "$K" tool Find '{"query":"sessions"}' 2>/dev/null)
-has "KATANA_FIND_MAX_FILES limita o indice" "index covers 2 files"
 
 # ---------------- incremental ----------------
 run Find '{"query":"zebracorn"}'
 has "antes: palavra nova nao existe" "No match"
 sleep 1
 printf 'export function zebracornHandler() { return 42; }\n' > src/later.js
-err=$(KATANA_FIND_TIME=1 "$K" tool Find '{"query":"zebracorn"}' 2>&1 >/dev/null)
 out=$("$K" tool Find '{"query":"zebracorn"}' 2>/dev/null)
 first "arquivo novo entra no indice" "src/later.js"
-case "$err" in *"1 read again"*) ok "so o arquivo novo foi lido";; *) out=$err; fail "so o arquivo novo foi lido (1 read again)";; esac
 printf 'export function giraffeHandler() { return 42; }\n' > src/later.js
 run Find '{"query":"zebracorn"}'
 has "arquivo alterado: termo antigo some" "No match"
@@ -154,11 +149,7 @@ rm src/later.js
 run Find '{"query":"giraffe"}'
 has "arquivo apagado sai do indice" "No match"
 err=$(KATANA_FIND_TIME=1 "$K" tool Find '{"query":"sessions"}' 2>&1 >/dev/null)
-case "$err" in *" 0 read again, 0 gone"*) ok "nada mudou: nada relido";; *) out=$err; fail "nada mudou: nada relido";; esac
-cp -r "$T/p/.katana" "$T/kat-save"
-printf 'garbage' > "$(ls .katana/cache/find-*.idx)"
-run Find '{"query":"list sessions"}'
-first "indice estragado e refeito" "src/sessions.js"
+case "$err" in *"find: query"*) ok "KATANA_FIND_TIME escreve os tempos";; *) out=$err; fail "KATANA_FIND_TIME escreve os tempos";; esac
 
 # ---------------- pasta vazia ----------------
 mkdir -p "$T/vazia"; cd "$T/vazia" || exit 2
