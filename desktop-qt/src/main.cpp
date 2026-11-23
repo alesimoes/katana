@@ -121,8 +121,9 @@ int main(int argc, char **argv)
     QDir().mkpath(home);
 
     Backend backend(katana, modelsDir, home);
-    QQmlApplicationEngine engine;
+    // o terminal nasce antes do engine: no fim o engine morre primeiro e as ligacoes QML nao leem um ponteiro nulo
     Terminal terminal(home);
+    QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("backend", &backend);
     engine.rootContext()->setContextProperty("terminal", &terminal);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app, [] { QCoreApplication::exit(2); },
