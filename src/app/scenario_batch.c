@@ -84,10 +84,10 @@ static void fam_x_batch(FILE *f, Scn *s) {
         }
     } else if (sit == XB_FINDGLOB) {
         x_user(cu_fmt(v == 0 ? L("where does the code work out %s, and which test file covers it?", "onde o codigo calcula %s, e qual arquivo de teste cobre isso?") : v == 1 ? L("find %s in the code and tell me which test file to run for it", "acha %s no codigo e me diz que arquivo de teste rodar pra isso") : L("%s: which file, and where are the tests?", "%s: qual arquivo, e onde ficam os testes?"), L(g_x6_c[ci].ask_en, g_x6_c[ci].ask_pt)));
-        const char *nm[2] = {"Find", "Glob"}, *ar[2] = {cu_fmt("{\"query\": %s}", cu_q(g_x6_c[ci].q)), "{\"pattern\": \"**/test_*\"}"}, *res[2];
+        const char *nm[2] = {"Find", "Bash"}, *ar[2] = {cu_fmt("{\"query\": %s}", cu_q(g_x6_c[ci].q)), cu_fmt("{\"command\": %s, \"description\": \"List the test files\"}", cu_q(x_findcmd("**/test_*")))}, *res[2];
         x_calls(L("The search and the list of test files do not depend on each other.", "A busca e a lista dos arquivos de teste nao dependem uma da outra."), 2, nm, ar, res);
         X6Cand cs[12]; const int n = x6_parse(res[0], cs, 12);
-        if (n < 1 || strcmp(cs[0].path, x_src(p, mi)) || !strstr(res[1], p->testrel)) cu_die("o Find ou o Glob nao trouxeram o esperado (%s)", g_x.cell);
+        if (n < 1 || strcmp(cs[0].path, x_src(p, mi)) || !strstr(res[1], p->testrel)) cu_die("o Find ou o find nao trouxeram o esperado (%s)", g_x.cell);
         const int ln = cs[0].nl ? cs[0].lines[0] : cs[0].a;
         const char *nm2[2] = {"Read", "Grep"}, *ar2[2] = {cu_fmt("{\"file_path\": %s, \"offset\": %d, \"limit\": 10}", cu_q(x_abs(s, x_src(p, mi))), ln > 2 ? ln - 2 : 1), cu_fmt("{\"pattern\": %s, \"path\": %s, \"output_mode\": \"content\"}", cu_q(fi->name), cu_q(p->testrel))};
         x_calls(L("Now the definition and its test cases, again in one turn.", "Agora a definicao e os casos de teste dela, de novo numa fala so."), 2, nm2, ar2, res);

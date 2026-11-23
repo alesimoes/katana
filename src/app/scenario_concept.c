@@ -158,7 +158,7 @@ static const XLq g_xc_lim[] = {
     {"limits", 0, 0, "how many lines does Read return by default?", "quantas linhas o Read devolve por padrao?", "Read", "2000 lines"},
     {"limits", 1, 0, "Bash kills a command after 30 seconds, doesn't it? my build takes about a minute", "o Bash mata o comando depois de 30 segundos, nao mata? meu build leva mais ou menos um minuto", "Bash", "120000"},
     {"limits", 0, 0, "how long does a Monitor run before it stops by itself?", "quanto tempo um Monitor roda antes de parar sozinho?", "Monitor", "300000"},
-    {"limits", 0, 0, "how many results does Glob return at most?", "quantos resultados o Glob devolve no maximo?", "Glob", "100"},
+    {"limits", 0, 0, "what is the default line limit of the Read tool?", "qual e o limite padrao de linhas da ferramenta Read?", "Read", "2000 lines"},
     {"limits", 0, 1, "how many options can one AskUserQuestion question have?", "quantas opcoes uma pergunta do AskUserQuestion pode ter?", "AskUserQuestion", "2 to 4"},
     {"limits", 0, 1, "how many searches can WebSearch run in one call?", "quantas buscas o WebSearch faz numa chamada?", "WebSearch", "queries"},
     {"plan", 0, 0, "when a step of your plan is finished, how do you mark it?", "quando um passo do seu plano termina, como voce marca?", "TodoWrite", "Without todos"},
@@ -217,18 +217,15 @@ static void xc_limit_hit(XC *c, int v) {
         if (!tb || !strstr(r, fi->name)) cu_die("a leitura da linha %d nao trouxe a entrada", ln);
         x_final(cu_fmt(L("Line %d is: \"%.*s\".", "A linha %d e: \"%.*s\"."), ln, (int)strcspn(tb + 1, "\n"), tb + 1));
     } else {
-        xc_open(c, 0, 0, "limits/glob-cap");
+        xc_open(c, 0, 0, "limits/count");
         const int k = 104 + cu_n(60);
         static const char *const dirs[] = {"data", "samples", "fixtures", "records"};
         const char *dir = CU_PK(dirs);
         for (int i = 1; i <= k; i++) x_put(s, cu_fmt("%s/r%03d.txt", dir, i), cu_fmt("%d\n", i), 0);
         x_user(cu_fmt(XV(L("how many .txt files are there in %s/?", "quantos arquivos .txt tem em %s/?"), L("count the txt files under %s for me", "conta pra mim os txt que estao em %s")), dir));
-        const char *r = cu_fmt("%s", x_glob(cu_fmt("%s/*.txt", dir)));
-        const char *nt = strstr(r, "(Results are truncated: showing ");
-        if (!nt) cu_die("o Glob nao cortou a lista");
-        const char *of = strstr(nt, " of "); if (!of || atoi(of + 4) != k) cu_die("o aviso do Glob nao traz o total");
-        x_final(cu_fmt(L("%d. The Glob result lists only %d of them: it says \"%.*s\", so the number comes from that note, not from counting the lines.",
-                         "%d. O resultado do Glob lista so %d deles: ele diz \"%.*s\", entao o numero vem desse aviso, nao da contagem das linhas."), k, atoi(nt + 32), (int)(strcspn(nt + 1, ".")), nt + 1));
+        const char *r = cu_fmt("%s", x_bash(NULL, cu_fmt("ls %s/*.txt | wc -l", dir), "Count the txt files", 0));
+        if (atoi(r) != k) cu_die("a contagem do ls nao bate: %s", r);
+        x_final(cu_fmt(L("There are %d .txt files in %s/.", "Ha %d arquivos .txt em %s/."), k, dir));
     }
 }
 

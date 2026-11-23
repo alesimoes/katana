@@ -125,30 +125,6 @@ static const XRare g_x_rare[] = {
     {"Write", NULL, "write me a PowerShell script tools/list.ps1 that lists the files here; do not run it", "escreve pra mim um script PowerShell tools/list.ps1 que lista os arquivos daqui; nao roda",
         {{"Write", "{\"file_path\": \"{cwd}/tools/list.ps1\", \"content\": \"# lists the files of the project folder\\nGet-ChildItem -Path (Split-Path -Parent $PSScriptRoot) | Select-Object Name, Length\\n\"}"}}, 1, 0, NULL, " I wrote the script and did not run it, as you asked.", " Escrevi o script e nao rodei, como voce pediu."},
     /* Task*: so quando o usuario pede tarefas numeradas com detalhes ou cita a ferramenta; o plano do proprio trabalho continua sendo TodoWrite */
-    {"TaskCreate", "TaskCreate", "create two numbered tasks with details for me: 1) Write the parser (tokens first) 2) Add the tests (one per rule)", "cria duas tarefas numeradas com detalhes pra mim: 1) Escrever o parser (tokens primeiro) 2) Acrescentar os testes (um por regra)",
-        {{"TaskCreate", "{\"subject\": \"Write the parser\", \"description\": \"tokens first\"}"}, {"TaskCreate", "{\"subject\": \"Add the tests\", \"description\": \"one per rule\"}"}}, 2, 0, NULL, " Both tasks are on the list, with their details.", " As duas tarefas estao na lista, com os detalhes."},
-    {"TaskCreate", "TaskCreate,TaskList", "use TaskCreate to add the task \"Update the docs\" with the detail \"list every function\", then show me the task list", "usa o TaskCreate pra criar a tarefa \"Update the docs\" com o detalhe \"list every function\", depois me mostra a lista de tarefas",
-        {{"TaskCreate", "{\"subject\": \"Update the docs\", \"description\": \"list every function\"}"}, {"TaskList", "{}"}}, 2, 0, NULL, "", ""},
-    {"TaskCreate", "TaskCreate", "add a task with TaskCreate, I will give you the title later", "cria uma tarefa com o TaskCreate, o titulo eu te passo depois",
-        {{"TaskCreate", "{\"subject\": \"\", \"description\": \"\"}"}}, 1, 1, NULL, " Give me the title and I will create it.", " Me passa o titulo que eu crio."},
-    {"TaskUpdate", "TaskCreate,TaskUpdate", "create the task \"Review the settings\" (detail: ports and timeouts) and mark it as in progress", "cria a tarefa \"Review the settings\" (detalhe: ports and timeouts) e marca como em andamento",
-        {{"TaskCreate", "{\"subject\": \"Review the settings\", \"description\": \"ports and timeouts\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"status\": \"in_progress\"}"}}, 2, 0, NULL, "", ""},
-    {"TaskUpdate", "TaskCreate,TaskUpdate", "create the task \"Tag the release\" (detail: after the tests pass) and then mark it completed, it is already done", "cria a tarefa \"Tag the release\" (detalhe: after the tests pass) e depois marca como concluida, ja esta feita",
-        {{"TaskCreate", "{\"subject\": \"Tag the release\", \"description\": \"after the tests pass\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"status\": \"completed\"}"}}, 2, 0, NULL, "", ""},
-    {"TaskUpdate", "TaskUpdate", "mark task 9 as completed", "marca a tarefa 9 como concluida",
-        {{"TaskUpdate", "{\"taskId\": \"9\", \"status\": \"completed\"}"}}, 1, 1, NULL, " Nothing was changed; TaskList shows the numbers that exist.", " Nada foi alterado; o TaskList mostra os numeros que existem."},
-    {"TaskGet", "TaskCreate,TaskGet", "create the task \"Clean tools/\" with the detail \"remove the old scripts\" and show me everything stored about it", "cria a tarefa \"Clean tools/\" com o detalhe \"remove the old scripts\" e me mostra tudo que ficou guardado dela",
-        {{"TaskCreate", "{\"subject\": \"Clean tools/\", \"description\": \"remove the old scripts\"}"}, {"TaskGet", "{\"taskId\": \"1\"}"}}, 2, 0, NULL, " The rest of its fields are in the result above.", " Os outros campos dela estao no resultado acima."},
-    {"TaskGet", "TaskGet", "show me the details of task 7", "me mostra os detalhes da tarefa 7",
-        {{"TaskGet", "{\"taskId\": \"7\"}"}}, 1, 1, NULL, " TaskList shows the tasks that exist.", " O TaskList mostra as tarefas que existem."},
-    {"TaskGet", "TaskCreate,TaskGet", "add the task \"Write the changelog\" (detail: one line per version) and read it back to me", "cria a tarefa \"Write the changelog\" (detalhe: one line per version) e le ela de volta pra mim",
-        {{"TaskCreate", "{\"subject\": \"Write the changelog\", \"description\": \"one line per version\"}"}, {"TaskGet", "{\"taskId\": \"1\"}"}}, 2, 0, NULL, " The rest of its fields are in the result above.", " Os outros campos dela estao no resultado acima."},
-    {"TaskList", "TaskList", "show me the task list", "me mostra a lista de tarefas",
-        {{"TaskList", "{}"}}, 1, 0, NULL, "", ""},
-    {"TaskList", "TaskCreate,TaskList", "add the task \"Check the ports\" (detail: compare with docs) and list the tasks", "cria a tarefa \"Check the ports\" (detalhe: compare with docs) e lista as tarefas",
-        {{"TaskCreate", "{\"subject\": \"Check the ports\", \"description\": \"compare with docs\"}"}, {"TaskList", "{}"}}, 2, 0, NULL, "", ""},
-    {"TaskList", "TaskList", "which numbered tasks are still open?", "que tarefas numeradas ainda estao abertas?",
-        {{"TaskList", "{}"}}, 1, 0, NULL, "", ""},
     /* ---- agendar x rodar agora em segundo plano x monitorar: o detalhe do pedido decide ---- */
     {"ScheduleWakeup", "ScheduleWakeup", "start tools/watch.sh in the background now, and wake yourself up in five minutes to look at its output", "sobe o tools/watch.sh em segundo plano agora, e se acorda daqui a cinco minutos pra olhar a saida dele",
         {{"Bash", "{\"command\": \"sh tools/watch.sh\", \"run_in_background\": true, \"description\": \"Start the watcher in the background\"}"}, {"ScheduleWakeup", "{\"delaySeconds\": 300, \"prompt\": \"Read the output of tools/watch.sh in {name}\", \"reason\": \"look at the watcher output\"}"}}, 2, 0, "KATANA_SCHED_NOW", "", "", .prep = P_BG,
@@ -205,7 +181,7 @@ static const XRare g_x_rare[] = {
         {{"Bash", "{\"command\": \"{testcmd}\", \"description\": \"Last test run\"}"}, {"EndConversation", "{\"reason\": \"the user asked to end after the last test run\"}"}}, 2, 0, NULL, "", "", .quote = " passed, ",
         .fen = "Last run: \"{q}\". The conversation is ended, as you asked.", .fpt = "Ultima rodada: \"{q}\". A conversa esta encerrada, como voce pediu."},
     {"EndConversation", "EndConversation", "tell me how many test files this project has and then close the session", "me diz quantos arquivos de teste este projeto tem e depois fecha a sessao",
-        {{"Glob", "{\"pattern\": \"**/test_*\"}"}, {"EndConversation", "{\"reason\": \"the user asked to close the session after the answer\"}"}}, 2, 0, NULL, "", "", .quote = "test_",
+        {{"Bash", "{\"command\": \"find . -name 'test_*' -type f | sort\", \"description\": \"List the test files\"}"}, {"EndConversation", "{\"reason\": \"the user asked to close the session after the answer\"}"}}, 2, 0, NULL, "", "", .quote = "test_",
         .fen = "One test file: {q}. The session is closed now.", .fpt = "Um arquivo de teste: {q}. A sessao esta fechada agora."},
     /* ---- recursos MCP de um servidor de verdade ---- */
     {"ListMcpResourcesTool", "ListMcpResourcesTool", "which resources do the MCP servers of this project offer?", "que recursos os servidores MCP deste projeto oferecem?",
@@ -259,7 +235,7 @@ static const XRare g_x_rare[] = {
         {{"Agent", "{\"description\": \"Count the source files\", \"prompt\": \"List the source files of the project (not the tests). Report how many there are and their paths. The project is at {cwd}.\"}"}, {"ListAgents", "{}"}}, 2, 0, NULL, "", "", .prep = P_AGENT, .sub1 = 4, .quote = "agent-1",
         .fen = "The sub-agent counted {n1} source files. The session now lists it as finished: \"{q}\".", .fpt = "O subagente contou {n1} arquivos de codigo. A sessao agora mostra ele como terminado: \"{q}\"."},
     {"SubagentHandback", "SubagentHandback", "when you finish counting the test files, hand the count back with the handback tool", "quando terminar de contar os arquivos de teste, devolve a contagem com a ferramenta de devolucao",
-        {{"Glob", "{\"pattern\": \"**/test_*\"}"}, {"SubagentHandback", "{\"message\": \"The project {name} has one test file: {testrel}.\"}"}}, 2, 1, NULL, " So here is the count directly: one test file, {testrel}.", " Entao a contagem vai direto: um arquivo de teste, {testrel}.", 1},
+        {{"Bash", "{\"command\": \"find . -name 'test_*' -type f | sort\", \"description\": \"List the test files\"}"}, {"SubagentHandback", "{\"message\": \"The project {name} has one test file: {testrel}.\"}"}}, 2, 1, NULL, " So here is the count directly: one test file, {testrel}.", " Entao a contagem vai direto: um arquivo de teste, {testrel}.", 1},
     {"SubagentHandback", "SubagentHandback", "you are a sub-agent, right? hand back what you know about this project", "voce e um subagente, certo? devolve o que voce sabe deste projeto",
         {{"SubagentHandback", "{\"message\": \"Project {name}: tests in {testrel}.\"}"}}, 1, 1, NULL, " So no: in this conversation I am the main agent and you are the one I answer to.", " Entao nao: nesta conversa eu sou o agente principal e e a voce que eu respondo.", 1},
     /* ---- workflow ---- */
@@ -272,17 +248,6 @@ static const XRare g_x_rare[] = {
     /* ---- sessoes de shell de verdade ---- */
                     /* ---- pacotes, logs, receitas ---- */
                             /* ---- tarefas numeradas ---- */
-    {"TaskUpdate", "TaskCreate,TaskUpdate,TaskList", "create the tasks \"Draft the notes\" (detail: one page) and \"Send the notes\" (detail: to the team), mark the first one completed and show me the list", "cria as tarefas \"Draft the notes\" (detalhe: one page) e \"Send the notes\" (detalhe: to the team), marca a primeira como concluida e me mostra a lista",
-        {{"TaskCreate", "{\"subject\": \"Draft the notes\", \"description\": \"one page\"}"}, {"TaskCreate", "{\"subject\": \"Send the notes\", \"description\": \"to the team\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"status\": \"completed\"}"}, {"TaskList", "{}"}}, 4, 0, NULL, "", "", .quote = "Send the notes",
-        .fen = "Task 1 is completed and task 2 is still open: \"{q}\".", .fpt = "A tarefa 1 esta concluida e a 2 continua aberta: \"{q}\"."},
-    {"TaskUpdate", "TaskCreate,TaskUpdate,TaskGet", "create the task \"Fix the port\" (detail: use 8080), then rename it to \"Fix the port number\" and show me what is stored", "cria a tarefa \"Fix the port\" (detalhe: use 8080), depois renomeia para \"Fix the port number\" e me mostra o que ficou guardado",
-        {{"TaskCreate", "{\"subject\": \"Fix the port\", \"description\": \"use 8080\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"subject\": \"Fix the port number\"}"}, {"TaskGet", "{\"taskId\": \"1\"}"}}, 3, 0, NULL, "", "", .need = "Fix the port number", .quote = "Fix the port number",
-        .fen = "Renamed. What is stored now: \"{q}\", with the detail unchanged.", .fpt = "Renomeada. O que ficou guardado: \"{q}\", com o detalhe igual."},
-    {"TaskGet", "TaskCreate,TaskGet", "create two tasks, \"Collect the logs\" (detail: last week) and \"Read the logs\" (detail: errors only), and show me the details of the second", "cria duas tarefas, \"Collect the logs\" (detalhe: last week) e \"Read the logs\" (detalhe: errors only), e me mostra os detalhes da segunda",
-        {{"TaskCreate", "{\"subject\": \"Collect the logs\", \"description\": \"last week\"}"}, {"TaskCreate", "{\"subject\": \"Read the logs\", \"description\": \"errors only\"}"}, {"TaskGet", "{\"taskId\": \"2\"}"}}, 3, 0, NULL, "", "", .need = "errors only", .quote = "Read the logs",
-        .fen = "The second task is \"{q}\", and its detail is \"errors only\".", .fpt = "A segunda tarefa e \"{q}\", e o detalhe dela e \"errors only\"."},
-    {"TaskList", "TaskCreate,TaskUpdate,TaskList", "add the task \"Old idea\" (detail: none) and delete it again; then list the tasks", "cria a tarefa \"Old idea\" (detalhe: none) e apaga ela de novo; depois lista as tarefas",
-        {{"TaskCreate", "{\"subject\": \"Old idea\", \"description\": \"none\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"status\": \"deleted\"}"}, {"TaskList", "{}"}}, 3, 0, NULL, " So the task is gone from the list.", " Entao a tarefa saiu da lista."},
     /* ---- git de verdade (repositorio com um commit) ---- */
                     /* ---- memoria ---- */
                         /* ---- baixar arquivos (servidor local de paginas) ---- */
@@ -369,18 +334,13 @@ static const XRare g_x_rare[] = {
     {"Workflow", "Workflow", "run a workflow with one phase called survey and two agents: one lists the test files, the other counts the source files", "roda um workflow com uma fase chamada survey e dois agentes: um lista os arquivos de teste, o outro conta os arquivos de codigo",
         {{"Workflow", "{\"script\": \"{\\\"phases\\\": [{\\\"title\\\": \\\"survey\\\", \\\"agents\\\": [{\\\"label\\\": \\\"tests\\\", \\\"prompt\\\": \\\"List the test files of the project.\\\"}, {\\\"label\\\": \\\"sources\\\", \\\"prompt\\\": \\\"Count the source files of the project.\\\"}]}]}\"}"}}, 1, 0, NULL, "", "", .prep = P_FLOW, .sub1 = 2, .sub2 = 4, .hold = 1, .need = "source file",
         .fen = "The workflow ran its two agents in sequence: \"{q}\". They found {n1} test file and {n2} source files.", .fpt = "O workflow rodou os dois agentes em sequencia: \"{q}\". Eles acharam {n1} arquivo de teste e {n2} arquivos de codigo."},
-            {"TaskList", "TaskCreate,TaskUpdate,TaskList", "create three numbered tasks: \"Read the spec\" (detail: chapter 2), \"Sketch the grammar\" (detail: on paper), \"List the open questions\" (detail: for the review); mark the second in progress and show the list", "cria tres tarefas numeradas: \"Read the spec\" (detalhe: chapter 2), \"Sketch the grammar\" (detalhe: on paper), \"List the open questions\" (detalhe: for the review); marca a segunda como em andamento e mostra a lista",
-        {{"TaskCreate", "{\"subject\": \"Read the spec\", \"description\": \"chapter 2\"}"}, {"TaskCreate", "{\"subject\": \"Sketch the grammar\", \"description\": \"on paper\"}"}, {"TaskCreate", "{\"subject\": \"List the open questions\", \"description\": \"for the review\"}"}, {"TaskUpdate", "{\"taskId\": \"2\", \"status\": \"in_progress\"}"}, {"TaskList", "{}"}}, 5, 0, NULL, "", "", .hold = 1, .quote = "Sketch the grammar",
-        .fen = "Three tasks are on the list and the second is in progress: \"{q}\".", .fpt = "As tres tarefas estao na lista e a segunda esta em andamento: \"{q}\"."},
-    {"TaskGet", "TaskCreate,TaskGet,TaskUpdate", "create the task \"Tag v2\" (detail: after review), show me what is stored, then mark it completed", "cria a tarefa \"Tag v2\" (detalhe: after review), me mostra o que ficou guardado e depois marca como concluida",
-        {{"TaskCreate", "{\"subject\": \"Tag v2\", \"description\": \"after review\"}"}, {"TaskGet", "{\"taskId\": \"1\"}"}, {"TaskUpdate", "{\"taskId\": \"1\", \"status\": \"completed\"}"}}, 3, 0, NULL, " Before that, TaskGet showed it with the detail \"after review\".", " Antes disso, o TaskGet mostrou ela com o detalhe \"after review\".", .hold = 1},
     {"PowerShell", "PowerShell", "print the PowerShell version of this machine", "imprime a versao do PowerShell desta maquina",
         {{"PowerShell", "{\"command\": \"$PSVersionTable.PSVersion\"}"}, {"Bash", "{\"command\": \"command -v pwsh powershell || echo none\", \"description\": \"Look for PowerShell\"}"}}, 2, 0, NULL, "", "", .hold = 1, .need = "none",
         .fen = "There is no version to print: PowerShell is not installed here. The tool said so, and the PATH check confirms it (\"{q}\").", .fpt = "Nao ha versao para imprimir: o PowerShell nao esta instalado aqui. A ferramenta disse isso, e a conferencia do PATH confirma (\"{q}\")."},
         {"NotebookEdit", "NotebookEdit", "add a code cell at the end of {nb}, after calc, that prints the total", "acrescenta uma celula de codigo no fim de {nb}, depois da calc, que imprime o total",
         {{"Read", "{\"file_path\": \"{cwd}/{nb}\"}"}, {"NotebookEdit", "{\"notebook_path\": \"{cwd}/{nb}\", \"cell_id\": \"calc\", \"new_source\": \"print(total)\", \"cell_type\": \"code\", \"edit_mode\": \"insert\"}"}}, 2, 0, NULL, " It is the third cell now, after setup and calc; nothing was run.", " Ela e a terceira celula agora, depois de setup e calc; nada foi rodado.", .prep = P_NB, .hold = 1},
     {"SendUserFile", "SendUserFile", "send me the settings file as an attachment", "me manda o arquivo de configuracoes como anexo",
-        {{"Glob", "{\"pattern\": \"settings*\"}"}, {"SendUserFile", "{\"files\": [\"{cwd}/settings.conf\"], \"display\": \"attachment\"}"}}, 2, 0, NULL, " The settings file of this project is settings.conf.", " O arquivo de configuracoes deste projeto e o settings.conf.", .prep = P_CONF, .hold = 1},
+        {{"Bash", "{\"command\": \"ls settings*\", \"description\": \"Find the settings file\"}"}, {"SendUserFile", "{\"files\": [\"{cwd}/settings.conf\"], \"display\": \"attachment\"}"}}, 2, 0, NULL, " The settings file of this project is settings.conf.", " O arquivo de configuracoes deste projeto e o settings.conf.", .prep = P_CONF, .hold = 1},
         {"LSP", "LSP", "list the functions of {src2} through the language server", "lista as funcoes de {src2} pelo servidor de linguagem",
         {{"LSP", "{\"operation\": \"documentSymbol\", \"filePath\": \"{cwd}/{src2}\"}"}}, 1, 0, NULL, "", "", .prep = P_LSP, .hold = 1, .need = "{fn2}", .quote = "{fn2}",
         .fen = "The language server lists two functions in {src2}; the first one is \"{q}\".", .fpt = "O servidor de linguagem lista duas funcoes em {src2}; a primeira e \"{q}\"."},
@@ -412,7 +372,7 @@ static const char *x_rsub(const char *t, const char *key, const char *val) {
 }
 /* as ferramentas que o prompt declara inteiras (as outras do motor pedem ToolSearch select:Nome antes) */
 static int x_rare_declared(const char *n) {
-    static const char *const d[] = {"Bash", "Read", "Edit", "Write", "Grep", "Glob", "TodoWrite", "AskUserQuestion", "ToolSearch", "WebSearch", "WebFetch", "Skill"};
+    static const char *const d[] = {"Bash", "Read", "Edit", "Write", "Grep", "TodoWrite", "AskUserQuestion", "ToolSearch", "WebSearch", "WebFetch", "Skill"};
     for (size_t i = 0; i < CU_N(d); i++) if (!strcmp(d[i], n)) return 1;
     return 0;
 }

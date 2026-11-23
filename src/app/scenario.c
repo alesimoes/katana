@@ -184,7 +184,16 @@ static const char *x_edits(const Scn *s, const char *rel, const char *const *old
 static const char *x_grep(const char *pat, const char *mode, const char *glob) {
     return x_call(NULL, "Grep", cu_fmt("{\"pattern\": %s%s%s}", cu_q(pat), mode ? cu_fmt(", \"output_mode\": %s", cu_q(mode)) : "", glob ? cu_fmt(", \"glob\": %s", cu_q(glob)) : ""), 0);
 }
-static const char *x_glob(const char *pat) { return x_call(NULL, "Glob", cu_fmt("{\"pattern\": %s}", cu_q(pat)), 0); }
+/* arquivo por nome: a lista enxuta nao tem Glob; a busca por nome e um `find` do Bash (caminhos absolutos, em ordem). pat: duas estrelas e barra no comeco (recursivo), "src/<estrela>.py", "tools/<estrela>", "settings<estrela>" */
+static const char *x_findcmd(const char *pat) {
+    int rec = 0; const char *q = pat;
+    if (!strncmp(q, "**/", 3)) { rec = 1; q += 3; }
+    const char *sl = strrchr(q, '/'); char dir[200] = ""; const char *base = q;
+    if (sl) { snprintf(dir, sizeof dir, "%.*s", (int)(sl - q), q); base = sl + 1; }
+    if (!*base) base = "*";
+    return cu_fmt("find \"$PWD%s%s\" %s-type f -name '%s' -not -path '*/.g" "it/*' | sort", dir[0] ? "/" : "", dir, rec ? "" : "-maxdepth 1 ", base);
+}
+static const char *x_glob(const char *pat) { return x_bash(NULL, x_findcmd(pat), "List the files by name", 0); }
 /* plano: escrito uma vez, em linhas; depois so done=N junto da proxima acao */
 static const char *g_x_pname;      /* nome do projeto desta conversa (NULL sem projeto) */
 static const char *g_x_plan0;      /* o primeiro passo do ultimo plano, como foi escrito (com o nome do projeto) */

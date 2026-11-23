@@ -666,7 +666,7 @@ static void fam_x_place(FILE *f, Scn *s) {
     } else if (sit == P7_GLOB) {
         x7_user(cu_fmt(v == 0 ? L("list the %s files of %s", "lista os arquivos %s de %s") : v == 1 ? L("which %s files does %s have?", "quais arquivos %s tem %s?") : L("show the %s sources in %s", "mostra os fontes %s em %s"), g_n7_lname[lang], where));
         x7_place_note(1);
-        const char *r = x7_call(NULL, "Glob", cu_fmt("{\"pattern\": %s, \"path\": %s}", cu_q(cu_fmt("**/*.%s", g_n7_ext[lang])), cu_q(Pabs)), 0);
+        const char *r = x7_call(NULL, "Bash", cu_fmt("{\"command\": %s, \"description\": \"List the files by name\"}", cu_q(cu_fmt("find %s -type f -name '%s' -not -path '*/.g" "it/*' | sort", Pabs, cu_fmt("*.%s", g_n7_ext[lang])))), 0);
         for (int m = 0; m < n->nm; m++) if (!strstr(r, x7n_file(n, m))) cu_die("o Glob nao listou %s (%s)", x7n_file(n, m), g_x.cell);
         Buf b = {0}; buf_str(&b, ""); for (int m = 0; m < n->nm; m++) buf_str(&b, cu_fmt("%s%s", m ? ", " : "", x7n_file(n, m)));
         x_final(cu_fmt(L("The %s sources of %s are: %s.", "Os fontes %s de %s sao: %s."), g_n7_lname[lang], name, b.p)); free(b.p);
@@ -701,14 +701,14 @@ static void fam_x_place(FILE *f, Scn *s) {
         x7_place_note(0);
         const char *r1 = x7_call(NULL, "Read", cu_fmt("{\"file_path\": %s}", cu_q(x_abs(s, cu_fmt("%s/lib/%s", name, base)))), XF_ERR);
         if (!strstr(r1, cu_fmt("The folder \"%s\" exists at %s, but lib/%s is not in it", name, Pabs, base))) cu_die("o Read nao disse que a pasta existe (%s): %.300s", g_x.cell, r1);
-        const char *g = x7_call(L("The folder exists but has no lib/: looking for the file inside it.", "A pasta existe mas nao tem lib/: procuro o arquivo dentro dela."), "Glob", cu_fmt("{\"pattern\": %s, \"path\": %s}", cu_q(cu_fmt("**/%s", base)), cu_q(Pabs)), 0);
+        const char *g = x7_call(L("The folder exists but has no lib/: looking for the file inside it.", "A pasta existe mas nao tem lib/: procuro o arquivo dentro dela."), "Bash", cu_fmt("{\"command\": %s, \"description\": \"List the files by name\"}", cu_q(cu_fmt("find %s -type f -name '%s' -not -path '*/.g" "it/*' | sort", Pabs, base))), 0);
         if (!strstr(g, mf)) cu_die("o Glob nao achou %s (%s): %.200s", mf, g_x.cell, g);
         const char *r = x7_call(NULL, "Read", cu_fmt("{\"file_path\": %s}", cu_q(cu_fmt("%s/%s", Pabs, mf))), 0);
         Buf b = {0}; buf_str(&b, "");
         for (int q = 0; q < n->m[mi].nf; q++) { if (!strstr(r, n->f[n->m[mi].f[q]].name)) cu_die("a leitura nao tem %s", n->f[n->m[mi].f[q]].name); buf_str(&b, cu_fmt("%s`%s`", q ? ", " : "", n->f[n->m[mi].f[q]].name)); }
         x_final(cu_fmt(L("There is no lib/ folder in %s; the file is %s. It defines %s.", "Nao existe pasta lib/ em %s; o arquivo e %s. Ele define %s."), name, mf, b.p)); free(b.p);
     } else {      /* home-refusal: a pasta de trabalho e a home; o primeiro Find sem path e recusado (a fala errada fica so como contexto) */
-        const int useglob = cu_pct(40);
+        const int useglob = 0;      /* sem Glob na lista enxuta: so o Find e recusado na home */
         x7_user(useglob ? cu_fmt(v == 0 ? L("list the %s files of the %s project", "lista os arquivos %s do projeto %s") : v == 1 ? L("which %s files does the %s project have?", "quais arquivos %s o projeto %s tem?") : L("show the %s sources of the %s project", "mostra os fontes %s do projeto %s"), g_n7_lname[lang], name)
                         : cu_fmt(v == 0 ? L("in the %s project, where is `%s` defined?", "no projeto %s, onde `%s` e definida?") : v == 1 ? L("find the function `%s` in the %s project", "acha a funcao `%s` no projeto %s") : L("which file of the %s project has `%s`?", "qual arquivo do projeto %s tem `%s`?"), v == 1 ? tn : name, v == 1 ? name : tn));
         x7_place_note(0);
