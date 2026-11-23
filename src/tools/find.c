@@ -27,11 +27,24 @@ static const char CT_FIND_REQ[] = "\"query\"";
 
 #ifndef _WIN32
 #define FD_MAGIC 0x444e464bu       /* "KFND" */
-#define FD_VERSION 3u
+#define FD_VERSION 4u       /* 4: grafo de arquivos depois dos arquivos (findgraph.c) */
 #define FD_CHUNK 40
 #define FD_STRIDE 25
 #define FD_MAXBYTES 300000
 #define FD_TERM_MAX (1 << 22)       /* ids de termo cabem em 22 bits (termo<<10 | campo<<8 | tf) */
+
+/* findgraph.c (incluido depois deste arquivo) */
+struct FdIndexS;
+typedef struct { int file, chunk; double score; } FdHit;
+static void fg_free(void);
+static void fg_neighbor_note(const char *name, const char *js, const char *end, char *result, size_t cap);
+static int fg_save(FILE *f, struct FdIndexS *X);
+static void fg_load(const char *p, size_t len, struct FdIndexS *X);
+static int fg_act_on(void);
+static int fg_ensure(struct FdIndexS *X);
+static int fg_drop_request(struct FdIndexS *X, uint32_t *qid, double *qw, int n);
+static int fg_activate(struct FdIndexS *X, const FdHit *all, int na, const char *pre, int k, FdHit *hits, int *esrc);
+static void fg_evidence(struct FdIndexS *X, int src, FdHit *h, char *why, size_t cap);
 
 static double fd_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
 
@@ -382,7 +395,7 @@ static int fd_sym(const char *s, int n, int kind, const char **ns) {
 
 /* ---- indice ---- */
 typedef struct { char *rel; long long mt, size; uint32_t *blob; uint32_t nb; int kind; } FdFile;
-typedef struct {
+typedef struct FdIndexS {
     char root[4096], cache[4400];
     FdTerms T;
     FdFile *f; int nf, capf;
@@ -593,11 +606,13 @@ static int fd_save(FdIndex *X) {
         ok = fwrite(&rl, 4, 1, f) == 1 && fwrite(F->rel, 1, rl, f) == rl && fwrite(m, sizeof m, 1, f) == 1 &&
              fwrite(&F->nb, 4, 1, f) == 1 && fwrite(F->blob, 4, F->nb, f) == F->nb;
     }
+    ok = ok && fg_save(f, X);
     ok = fclose(f) == 0 && ok;
     if (!ok || rename(tmp, X->cache) != 0) { remove(tmp); return 0; }
     return 1;
 }
 static void fd_free_files(FdIndex *X) {
+    fg_free();
     for (int i = 0; i < X->nf; i++) { free(X->f[i].rel); free(X->f[i].blob); }
     free(X->f); X->f = NULL; X->nf = X->capf = 0;
     free(X->T.pool); free(X->T.off); free(X->T.len); free(X->T.ht); memset(&X->T, 0, sizeof X->T);
@@ -644,6 +659,7 @@ static int fd_load(FdIndex *X) {
             F->kind = fd_kind(F->rel);
         }
     }
+    fg_load(p, (size_t)(e - p), X);
 #undef FD_GET
     free(b);
     return 1;
@@ -726,6 +742,7 @@ static int fd_update(FdIndex *X, const char *root, char *err, size_t ecap) {
     free(X->f); free(ls);
     X->f = nf; X->nf = nl; X->capf = nl + 1;
     const double t2 = fd_ms();
+    if (changed || removed) fg_free();
     if (changed || removed || !X->ready) fd_invert(X);
     const double t3 = fd_ms();
     if (changed || removed) fd_save(X);
@@ -814,13 +831,12 @@ static int fd_in_path(const char *rel, const char *pre) {
 static int fd_is_doc(int kind) { return kind == FK_MD || kind == FK_OTHER; }
 
 /* ---- busca ---- */
-typedef struct { int file, chunk; double score; } FdHit;
 static int fd_cmp_hit(const void *a, const void *b) {
     const double x = ((const FdHit *)a)->score, y = ((const FdHit *)b)->score;
     return x < y ? 1 : x > y ? -1 : ((const FdHit *)a)->file - ((const FdHit *)b)->file;
 }
 /* ranking: devolve ate k arquivos em hits (ordem decrescente) */
-static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, int k, uint32_t *qid, int *nq) {
+static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, int k, uint32_t *qid, int *nq, int *esrc) {
     const FdTune tu = fd_tune();
     FdIv v = {0}; FdTok tk = {&X->T, 0, &v};
     /* termos da pergunta, sem repetir; os de identificadores (snake_case, camelCase, com ponto ou barra) valem idw */
@@ -850,6 +866,7 @@ static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, 
         free(f);
     }
     free(v.v);
+    n = fg_drop_request(X, qid, qw, n);        /* palavras de pedido fora (so com a ativacao ligada) */
     *nq = n;
     if (!n || !X->nc) return 0;
     float *sc = (float *)calloc((size_t)X->nc, sizeof(float));
@@ -904,8 +921,10 @@ static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, 
         all[na].file = fi; all[na].chunk = bc[fi]; all[na].score = s; na++;
     }
     qsort(all, (size_t)na, sizeof(FdHit), fd_cmp_hit);
-    const int r = na < k ? na : k;
-    memcpy(hits, all, sizeof(FdHit) * (size_t)r);
+    int r;
+    for (int i = 0; i < k; i++) esrc[i] = -1;
+    if (na && fg_act_on() && fg_ensure(X)) r = fg_activate(X, all, na, pre, k, hits, esrc);      /* ativacao esparsa sobre o grafo de arquivos */
+    else { r = na < k ? na : k; memcpy(hits, all, sizeof(FdHit) * (size_t)r); }
     free(all); free(best); free(second); free(bc); free(sc); free(cov); free(seen); free(mark); free(touched);
     return r;
 }
@@ -1087,7 +1106,7 @@ static void fd_refs(FdIndex *X, const char *query, const char *pre, int limit, C
 }
 
 /* ---- modo search: saida ---- */
-static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, int nq, size_t budget, CtSb *sb) {
+static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, int nq, size_t budget, const char *why, CtSb *sb) {
     const int fi = h->file, a = X->ca[h->chunk], b = X->cb[h->chunk];
     char hd[600];
     snprintf(hd, sizeof hd, "%d. %s:%d-%d", rank, X->f[fi].rel, a, b);
@@ -1108,6 +1127,7 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
         if (ns > 4) { snprintf(hd, sizeof hd, " (+%d)", ns - 4); ct_sb_puts(sb, hd); }
     }
     ct_sb_puts(sb, "\n");
+    if (why && *why) { ct_sb_puts(sb, "   why: "); ct_sb_puts(sb, why); ct_sb_puts(sb, "\n"); }
     /* linhas com mais termos distintos da pergunta */
     FdText t;
     if (fd_text(X, fi, &t)) {
@@ -1150,7 +1170,8 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
     if (lim < 1) lim = 1;
     if (lim > 12) lim = 12;
     const int refs = mode && !strcmp(mode, "refs");
-    if (mode && *mode && !refs && strcmp(mode, "search") != 0) { snprintf(out, cap, "error: unknown mode \"%s\". Use \"search\" (default) or \"refs\".", mode); goto done; }
+    const int nbr = mode && !strcmp(mode, "neighbors");      /* pesquisa/teste, nao anunciado: a nota de vizinhos que o laco poria depois de um Read de `query` */
+    if (mode && *mode && !refs && !nbr && strcmp(mode, "search") != 0) { snprintf(out, cap, "error: unknown mode \"%s\". Use \"search\" (default) or \"refs\".", mode); goto done; }
     if (!q || !*q) { snprintf(out, cap, "error: missing `query`. Example: {\"query\": \"where the config file is parsed\"} or {\"query\": \"parseConfig\", \"mode\": \"refs\"}"); goto done; }
     {
         char cwd[4096], res[4200], root[4200], pre[4200];
@@ -1176,10 +1197,17 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             snprintf(out, cap, "No indexable text files under %s (source and text files up to 300 KB; .git, node_modules, build, dist, vendor and gitignored files are skipped).", path && *path ? path : root);
             goto done;
         }
+        if (nbr) {
+            char js[4400], res[2000] = "";
+            snprintf(js, sizeof js, "{\"file_path\": \"%.4000s\"}", q);
+            if (fg_ensure(X)) fg_neighbor_note("Read", js, js + strlen(js), res, sizeof res);
+            snprintf(out, cap, "%s", res[0] ? res + 1 : "(no note)");
+            goto done;
+        }
         if (refs) fd_refs(X, q, pre, (int)lim, &sb);
         else {
-            FdHit hits[12]; uint32_t qid[64]; int nq = 0;
-            const int nh = fd_rank(X, q, pre, hits, (int)lim, qid, &nq);
+            FdHit hits[12]; uint32_t qid[64]; int nq = 0, esrc[12];
+            const int nh = fd_rank(X, q, pre, hits, (int)lim, qid, &nq, esrc);
             if (!nh) {
                 char m[700];
                 snprintf(m, sizeof m, "No match for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code.", q, *pre ? " in " : "", pre);
@@ -1191,7 +1219,11 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                     const size_t left = sb.n < total ? total - sb.n : 0;
                     const size_t share = left / (size_t)(nh - i);
                     if (left < 60) { char m[64]; snprintf(m, sizeof m, "(+%d more candidates; raise limit or narrow path)\n", nh - i); ct_sb_puts(&sb, m); break; }
-                    fd_show(X, &hits[i], i + 1, qid, nq, share, &sb);
+                    char why[400]; why[0] = 0;
+                    if (esrc[i] >= 0) {        /* entrou por uma aresta do grafo: a evidencia diz de qual arquivo e por que */
+                        fg_evidence(X, esrc[i], &hits[i], why, sizeof why);
+                    }
+                    fd_show(X, &hits[i], i + 1, qid, nq, share, why, &sb);
                 }
             }
         }

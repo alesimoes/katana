@@ -73,6 +73,7 @@
 #include "tools/glob.c"
 #include "tools/grep.c"
 #include "tools/find.c"                /* Find: navegacao por intencao, indice da pasta e referencias */
+#include "tools/findgraph.c"           /* Find: grafo de arquivos, ativacao esparsa, nota de vizinhos */
 #include "tools/multiedit.c"           /* Rename, Replace, Patch: mudancas em varios lugares de uma vez */
 #include "tools/webfetch.c"
 #include "tools/websearch.c"

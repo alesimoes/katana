@@ -445,7 +445,7 @@ static void loop_plan_note(char *result, size_t cap, const char *name, int pl_ca
  * muda coisas (qualquer uma fora da lista de leitura) zera a tabela: depois dela a mesma leitura pode dar outro resultado, e ai
  * vale a leitura por diferenca (facts.c). KATANA_REPEAT_NOTE=0 desliga ---- */
 static uint64_t rr_sig[128]; static int rr_step[128], rr_reps[128], rr_n, rr_total;
-static void rr_reset(void) { rr_n = 0; rr_total = 0; }
+static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); }
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
     if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find")) return 1;
@@ -907,6 +907,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                         rp_fail = 0;
                     }
                 }
+                if (!trunc && !rp_refuse && !rr_hit && !rp_failed(result)) fg_neighbor_note(name, ap, end, result, sizeof result);      /* vizinhos ainda nao lidos (grafo do Find) */
                 if (!trunc && !rp_refuse) loop_plan_note(result, sizeof result, name, pl_calls, pl_old);     /* planejar antes de executar, e seguir o plano em ordem */
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);

@@ -21,7 +21,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
 | `glob.c`, `grep.c` | `Glob`, `Grep` | 161 |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
-| `find.c` | `Find` (navigation: index, search, references; added 2026-11-22) | 59 |
+| `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |
 | `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
 | `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
 | `agent.c`, `messages.c`, `workflow.c` | `Agent`, `SendMessage`, `ListAgents`, `SubagentHandback`, `Workflow` | 42 |
@@ -208,6 +208,57 @@ Not verified: whether Qwen3.6 actually calls `Find` and follows `calls:` / `mode
 (no run with the model yet). `Find` is in the short declarations (`g_ct_short`) but the system prompt still declares
 only the core list in `src/agent/prompt.c` with full schemas; the others, `Find` included, are listed by name and
 loaded with `ToolSearch`. Adding it to the core list is a prompt-size decision left open. Windows: not available yet.
+
+**File graph, sparse activation and the neighbour note** (`src/tools/findgraph.c`, ported from the research in
+`docs/investigation-engine.md`; no language model was run to build or check it).
+- *Graph.* Nodes are the indexed files. Four undirected edge types, stored as one CSR (int32 destination, float32
+  weight, 1 byte type mask) in the same cache file as the index (`FD_VERSION` 4: an older file is rebuilt without error;
+  the graph section follows the file records). It is built lazily, the first time a search or the neighbour note needs
+  it, and rebuilt whole (all files re-read once, plus one `git log`) whenever the index changed.
+  - `sym` (weight idf): an identifier used in file A and defined, by the index's symbol rules, in file B. Only code files
+    (not Markdown or config); names defined in more than 3 files or used in more than max(30, 2% of files) files are skipped,
+    so there are no hubs.
+  - `path`: file A names file B: a path-like string ending in a known extension (matched by file name, at most 3 files
+    with that name), a relative import (`'./x'`, `'../y/z'`, tried as stem, as given, and as `/index`), or a Python
+    `import`/`from ... import`.
+  - `rare` (weight idf / (df-1)): an identifier-like token (underscore or camelCase, 6+ letters) found in 2 to 4 files that
+    is not a defined symbol.
+  - `co`: files changed together. Once per rebuild, `git log --no-merges --relative --name-only -n 2000` through
+    `popen`; commits with more than 40 files are ignored; weight 1/(n-1) per pair, summed and capped at 3. No git, not
+    a repository, or `KATANA_FIND_CO=0`: skipped silently.
+  Each type is row-normalised, scaled by beta (sym 1, path 1, rare 1, co 0.5), then each row is normalised to 1.
+  Measured size on the katana tree: 1003 files, 3389 sym + 1614 path + 1395 rare + 6629 co edges (258 commits), 20646 CSR
+  entries, 0.2 MB, 177 ms to build. The specification predicted about 3 MB for the 4.7k-file repository (not rebuilt here).
+- *Ranking of `Find search`.* Per-field BM25 as before, then: request words are dropped from the query (a short built-in
+  Portuguese and English list: find, explain, why, where, project, code, file, descubra, onde, projeto, arquivo, nada...;
+  if every term would be dropped, none is); the best 40 files (normalised by the best, below 0.15 dropped) become the
+  active set; 2 rounds of spreading, the best 20 active files pushing `0.5 x activation x edge weight` to their neighbours,
+  keeping only the best 20 new nodes (lateral inhibition); the files with activation of at least 0.15 x the maximum, filtered
+  by `path`, are returned best first (default 6, max 12). No abstention and no automatic seed: the model always asks.
+  A candidate that entered through an edge (and not through a text match) gets a line `   why: via <file> (symbol X)`,
+  `cites the path of <file>`, `its path is cited by <file>`, `shares identifier X with <file>` or `changes together with
+  <file>`, and its chunk is the one holding the symbol when known. Output format and the 1500-character budget are unchanged
+  otherwise. `KATANA_FIND_ACT=0` restores the previous ranking (no request-word filter, no graph).
+- *Neighbour note.* After each successful `Read`, `Grep` or `Find` result in the agent loop (`loop.c`, just before the plan
+  note), `[katana: linked files you have not read yet: a (why), b (why), c (why)]` is appended: at most 3 graph neighbours
+  of the file read (Read) or of the first 3 files in the result (Grep, Find), excluding the files shown in the result, files
+  `Read` earlier in this request and files already named in an earlier note, only for neighbours whose summed edge weight
+  is at least 0.06. No note after a repeated call, an error, or a short re-read (limit <= 80) of a file already read; at
+  most one note per result and 8 per request (state reset with the repetition table at each new request).
+  The index must already exist: it is used if the process has it in memory (any earlier `Find`) or if the working folder
+  already has `.katana/cache` (then it is loaded once per process); the loop never creates cache files for a folder
+  that never used `Find`. `KATANA_NEIGHBORS=0` turns the note off. `Find` with `mode=neighbors` and a path in `query`
+  prints the note a `Read` of that file would get (research and test aid, not in the tool schema).
+- *Limits and pending.* Portuguese questions against English code remain the biggest failure: the graph cannot bridge a
+  seed that is wrong. Next experiment: a Portuguese-English term map taken from the folder itself (comments and
+  identifiers) used to expand the query before BM25. The co-change edge is noisy in repositories with large commits and
+  has beta 0.5. A file changed by the agent in this session is not in the graph until the next index update and rebuild.
+- *Not verified.* The research numbers (R@5 15.9% to 33.0% in Python on 46 questions) were not reproduced in C; no
+  comparison of the C ranking against the old ranking was run (no benchmark by the owner's decision); the neighbour note
+  was exercised only through `mode=neighbors`, never inside a real agent loop with the model; whether the model follows the
+  notes is unknown; Grep and Find result parsing was not run on real outputs of every output mode; Windows has no `Find`
+  (stubs only); the 4.7k-file size and build time were not measured; the persisted graph was reloaded and a bad/old
+  cache file was not injected by hand.
 
 ### Rename, Replace, Patch (changes in many places)
 `src/tools/multiedit.c`. The model pays for every token it writes and for every round trip, so a change that touches many
