@@ -15,6 +15,7 @@ static int ui_ceiling(UioeKind k, int change) {
     if (change && c) c = 1500;
     return c;
 }
+static int ui_step_ix(const UioeRoute *rt, const char *label) { for (int i = 0; i < rt->nstep; i++) if (!strcmp(rt->step[i].label, label)) return i; return -1; }
 static int uioe_find_conn(const UioeSession *s, const char *id) { for (int i = 0; i < s->nreg; i++) if (!strcmp(s->reg[i].id, id)) return i; return -1; }
 
 /* acrescenta um passo e escolhe o conector: o preferido se disponivel, senao o mais barato com a capacidade, senao a degradacao */
@@ -94,7 +95,6 @@ static void uioe_route(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, UioeRo
         ui_step(cx, rt, "literal", UQ_LITERAL, "code.search", lit ? lit->text : ts, 0);
         ui_step(cx, rt, "at", UQ_CALLERS, "code.callers", "enclosing symbol, its guard lines, callers depth 2", 1);
         ui_step(cx, rt, "facts", UQ_FACT, "session.facts", "last failing call and files changed in this session", 0);
-        ui_step(cx, rt, "memory", UQ_FACT, "memory.recall", "was it seen before", 0);
         ui_step(cx, rt, "history", UQ_HISTORY, "history.search", "what solved it in earlier sessions", 0);
         break; }
     case UI_HOWTO:
@@ -109,7 +109,6 @@ static void uioe_route(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, UioeRo
         ui_step(cx, rt, "history", UQ_HISTORY, "history.search", ts, 0);
         break;
     case UI_WEB:
-        ui_step(cx, rt, "memory", UQ_FACT, "memory.recall", ts, 0);
         ui_step(cx, rt, "docs", UQ_DOC, "docs.search", ts, 0);
         ui_step(cx, rt, "web", UQ_EXTERNAL, "web.search", ts, 0);
         break;
@@ -120,6 +119,10 @@ static void uioe_route(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, UioeRo
         break;
     default: break;
     }
+    /* U8: a memoria so entra com pista de historico, preferencia ou decisao anterior (o classificador marca k->memcue); pergunta so de codigo nunca a consulta.
+       No tipo history o passo ja existe acima; nos outros tipos e um passo a mais, com o motivo da rota na nota (aparece em `uioe ask --explain`). */
+    if (k->retrieve == 1 && k->memcue && ui_step_ix(rt, "memory") < 0) { UioeStep *ms = ui_step(cx, rt, "memory", UQ_FACT, "memory.recall", ts, 0); if (ms) snprintf(ms->note, sizeof ms->note, "routed: %.120s", k->why_memory); }
+    else if (k->retrieve == 1 && k->kind == UI_HISTORY) { const int mi = ui_step_ix(rt, "memory"); if (mi >= 0) snprintf(rt->step[mi].note, sizeof rt->step[mi].note, "routed: %.120s", k->why_memory); }
     if (rt->nstep && k->retrieve == 1 && (k->domain[0] == UD_CODE || k->domain[0] == UD_FILES) && k->kind != UI_HOWTO && k->kind != UI_HISTORY && k->kind != UI_WEB)
         ui_step(cx, rt, "verify", UQ_VERIFY, "file.windows", "reread every line that will be shown (40 ranges, 150 ms)", 0);
 gate:

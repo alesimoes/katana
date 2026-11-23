@@ -73,6 +73,8 @@ typedef struct {
     uint8_t change, complexity, retrieve, risk;
     uint16_t rule_domain, rule_kind, rule_retrieve;
     char why_kind[160], why_retrieve[160], why_domain[160];
+    uint8_t memcue;                     /* U8: o pedido pede historico, preferencia ou decisao anterior: a memoria entra como evidencia datada */
+    char why_memory[160];
 } UioeClass;
 
 typedef struct {
@@ -193,6 +195,7 @@ typedef struct {
     /* U4: a investigacao aberta (3.6.2): o ultimo pedido que recebeu bloco. Um pedido curto que so se refere a ele ("e onde isso chega?") herda o assunto.
        Zera com /new, /clear e ao trocar de assunto; some depois de UIOE_INHERIT_TURNS pedidos sem bloco novo. */
     struct { uint8_t open; char text[2000]; char root[1100]; uint64_t id; int turns; int nsh; struct { char path[400]; int a, b; } sh[48]; } inv;
+    int todo_open;                      /* Q3: passos em aberto da lista de um pedido anterior (o laco poe antes de uioe_prepare; 0 = nenhum): vira uma clausula em "Not found / limits" */
     int npend; struct { char path[1100]; int a, b; } pend[64];     /* faixas do bloco, a registrar no estado do pedido DEPOIS do rr_reset do laco */
 } UioeSession;
 struct UioeCtx {

@@ -56,7 +56,7 @@ static const char *uioe_fault_of(const UioeCtx *cx, const char *id) {
 /* o conector pode rodar neste escopo? 1 sim; 0 nao, com o motivo */
 static int uioe_runnable(UioeCtx *cx, int ix, char *why, size_t cap) {
     const UioeConnector *c = &cx->s->reg[ix];
-    if (!c->run) { snprintf(why, cap, "%s exists in the registry but is not built in this phase (memory, history and web arrive in U8 and U9)", c->id); return 0; }
+    if (!c->run) { snprintf(why, cap, "%s exists in the registry but is not built in this phase (earlier sessions and the web arrive in U8 and U9)", c->id); return 0; }
     if (cx->s->brk[ix].open) { snprintf(why, cap, "circuit breaker open: failed twice, skipped for %d more request(s)", cx->s->brk[ix].skip_left); return 0; }
     char w[200]; const int av = c->available(c, cx->root, w, sizeof w);
     if (!av && strcmp(c->id, "docs.select") != 0) { snprintf(why, cap, "%s", w); return 0; }

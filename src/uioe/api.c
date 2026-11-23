@@ -6,7 +6,7 @@
  * A PORTA (decisao do dono, 2026-11-23: o modelo ainda nao foi treinado para o bloco, entao um bloco ruim e pior que nenhum). Todas as condicoes
  * valem ao mesmo tempo, e a PRIMEIRA que falha e o motivo gravado:
  *   1. a recuperacao rodou (nada de conversa, "bom dia", pedido curto sem investigacao herdada, pedido ambiguo: a classificacao ja manda `retrieve 0`);
- *   2. dominio codigo ou arquivos (os outros dominios ainda nao tem conector);
+ *   2. dominio codigo ou arquivos, ou o tipo history (U8: servido pela memoria do dono, memory.recall); os outros dominios ainda nao tem conector;
  *   3. a decisao de U3 foi G4 (confianca depois de recuperar >= KATANA_UIOE_GATE, padrao 70) E a confianca e >= UIOE_PACK_MIN_CONF;
  *   4. ha apoio verificado: um caminho de dois passos relidos, ou um item de faixa 1 ou 2 relido com confianca >= 75;
  *   5. o pedido nao traz so o caminho exato de um arquivo (nada a procurar);
@@ -92,15 +92,17 @@ static int up_gate(const UioeCtx *cx, const UioeRequest *r, char *why, size_t ca
     const UioeRecall *rc = &r->rc; const UioeClass *k = &r->cls; const UioeGraph *g = rc->g; const UioeAsk *a = &r->ask;
 #define NO(...) do { snprintf(why, cap, __VA_ARGS__); return 0; } while (0)
     if (!rc->ran || !g) NO("door 1: no retrieval ran (%s)", rc->decision_note[0] ? rc->decision_note : r->route.decision_note);
-    if (k->domain[0] != UD_CODE && k->domain[0] != UD_FILES) NO("door 2: domain %s has no connector in this build; only code and files are served", g_uioe_domname[k->domain[0]]);
+    const int memreq = k->domain[0] == UD_MEMORY && k->kind == UI_HISTORY;      /* U8: o pedido de historico e servido pela memoria do dono (memory.recall) */
+    if (k->domain[0] != UD_CODE && k->domain[0] != UD_FILES && !memreq) NO("door 2: domain %s has no connector in this build; only code and files are served", g_uioe_domname[k->domain[0]]);
     if (a->ambiguous) NO("door 1: the request is ambiguous (%s)", a->amb);
     if (k->retrieve != 1) NO("door 1: retrieve = %d (a cited place only: the place note says it)", k->retrieve);
     if (rc->decision == UG_LIMITS) { const char *e = getenv("KATANA_UIOE_LIMITS"); snprintf(why, cap, "door 3: G5, the limits form (%s)%s", rc->decision_note, e && atoi(e) ? "" : "; not injected by default (KATANA_UIOE_LIMITS=1 injects it)"); return e && atoi(e) ? 2 : 0; }
     if (rc->decision != UG_PACKET) NO("door 3: not G4 (%s)", rc->decision_note);
-    if (rc->conf_after < UIOE_PACK_MIN_CONF) NO("door 3: confidence %d after retrieval is below the pack threshold %d (UIOE_PACK_MIN_CONF)", rc->conf_after, UIOE_PACK_MIN_CONF);
+    if (rc->conf_after < UIOE_PACK_MIN_CONF && !memreq) NO("door 3: confidence %d after retrieval is below the pack threshold %d (UIOE_PACK_MIN_CONF)", rc->conf_after, UIOE_PACK_MIN_CONF);
     int sup = 0;
     if (rc->npath >= 2) { const UioeNode *A = &g->n[rc->path[0]], *B = &g->n[rc->path[1]]; if (cxb_ok(A) && cxb_ok(B)) sup = 1; }
     for (int i = 0; i < rc->nitems && !sup; i++) { const UioeNode *n = &g->n[rc->items[i]]; if (cxb_ok(n) && n->tier <= 2 && n->conf >= 75 && n->kind != UN_FILE && n->kind != UN_FOLDER) sup = 1; }
+    if (memreq) for (int i = 0; i < rc->nitems && !sup; i++) if (g->n[rc->items[i]].kind == UN_FACT) sup = 1;      /* U8: a memoria nunca e "verificada": basta uma nota salva que casou (rotulada (guess) no bloco) */
     if (!sup) NO("door 4: no verified support (a reread path of two steps, or a reread tier-1/2 item with confidence >= 75)");
     int named = 0, other = 0; for (int i = 0; i < a->nent; i++) { const int e = a->ent[i].kind; if (e == UK_PATH && a->ent[i].resolved[0]) named++; else if (e == UK_SYMBOL || e == UK_KEY || e == UK_ENV || e == UK_LITERAL || e == UK_ERRTEXT) other++; }
     if (named && !other && (k->kind == UI_LOCATE || k->kind == UI_HOWTO || k->kind == UI_OVERVIEW || k->kind == UI_CONFIG)) NO("door 5: the request already names the exact file; there is nothing to look for");
@@ -152,7 +154,7 @@ static int uioe_pack_core(UioeCtx *cx, const char *text, char *block, size_t cap
     int gate = up_gate(cx, r, pp->why, sizeof pp->why);
     int bytes = 0;
     if (gate) {
-        if (gate == 1) { const int front = r->cls.kind == UI_HOWTO || r->cls.kind == UI_OVERVIEW || r->cls.kind == UI_CONFIG; if (up_add_docsel(cx, text, rc, front)) snprintf(pp->st.log, sizeof pp->st.log, "docs: the document lines the project documents selected were added"); }
+        if (gate == 1 && r->cls.kind != UI_HISTORY) { const int front = r->cls.kind == UI_HOWTO || r->cls.kind == UI_OVERVIEW || r->cls.kind == UI_CONFIG; if (up_add_docsel(cx, text, rc, front)) snprintf(pp->st.log, sizeof pp->st.log, "docs: the document lines the project documents selected were added"); }
         const size_t n = ctxb_build(cx, r, &g_uioe_target_qwen, gate == 2, block, cap, &pp->st);
         bytes = (int)n;
         if (!n) { snprintf(pp->why, sizeof pp->why, "door 8: the Context Builder made no block: %s", pp->st.why); gate = 0; block[0] = 0; }

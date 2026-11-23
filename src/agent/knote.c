@@ -15,7 +15,7 @@ typedef enum {
     KN_FAIL_AROUND, KN_FAIL_ROW,           /* R4, R5: falhas em volta da mesma coisa; falhas seguidas */
     KN_ROUNDS,                             /* R6: ultima rodada de ferramentas do pedido */
     KN_TODO_OPEN,                          /* T1: o modelo parou com passos em aberto (turno proprio) */
-    KN_TODO_PREV,                          /* Q3: pedido novo com lista antiga em aberto (a emissao fica em loop.c, entrada do pedido) */
+    KN_TODO_PREV,                          /* Q3: pedido novo com lista antiga em aberto (loop.c, entrada do pedido); so sai SEM bloco do UIOE: com bloco vira clausula de `Not found / limits` (ctxb.c) */
     KN_LINKS,                              /* R10: arquivos ligados ainda nao lidos (grafo do Find) */
     KN_READ_CURSOR,                        /* R12: Read continua de onde o anterior parou */
     KN_READ_MAP, KN_READ_MAP_HIT,          /* R11: mapa de arquivo grande (sem e com trechos que casam com o pedido) */
@@ -26,8 +26,8 @@ typedef enum {
     KN_COMPACT,                            /* T4: pedido de resumo (nao e nota; fora do orcamento) */
     KN_SUB_ROUNDS,                         /* T5: subagente sem rodadas */
     KN_CUT,                                /* R18: mensagem de canal cortada */
-    KN_PLACE,                              /* Q1: pasta citada no pedido que nao existe da pasta de trabalho */
-    KN_DOCS,                               /* Q2: cabecalho dos trechos de documentos escolhidos pelo motor */
+    KN_PLACE,                              /* Q1: pasta citada que nao existe da pasta de trabalho; so sai SEM bloco do UIOE (com bloco: `Question understood as` e `Next` dizem o caminho) */
+    KN_DOCS,                               /* Q2: cabecalho dos trechos de documentos escolhidos pelo motor; com bloco do UIOE o cabecalho nao vai (as linhas entram em `Evidence`) */
     KN_FINISH_EXAMPLE, KN_FINISH_TEST, KN_FINISH_DONE,   /* T2, T3: antes de encerrar */
     KN_COUNT
 } KnKind;

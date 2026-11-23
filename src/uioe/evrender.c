@@ -23,6 +23,7 @@ static const char *ur_ver_label(int v) { return v == UV_OK ? "ok" : v == UV_MOVE
 static const char *g_ur_kindname[] = {"file", "range", "symbol", "key", "docline", "fact", "folder"};
 static const char *g_ue_kindname[] = {"calls", "defines", "uses", "imports", "sends", "handles", "links", "contains", "mentions", "via"};
 static void er_loc(UioeBuf *b, const UioeNode *n) {
+    if (n->kind == UN_FACT) { uioe_bprintf(b, "memory %s id %s", n->sig, n->name); return; }
     if (n->kind == UN_FOLDER) { uioe_bprintf(b, "%s", n->path); return; }
     if (n->kind == UN_FILE) { uioe_bprintf(b, "%s", n->path); return; }
     if (n->line1 > n->line0) uioe_bprintf(b, "%s:%d-%d", n->path, n->line0, n->line1); else uioe_bprintf(b, "%s:%d", n->path, n->line0);
@@ -53,7 +54,7 @@ static void uioe_render_recall_text(UioeBuf *b, const UioeCtx *cx, const UioeReq
         const UioeStep *s = &rt->step[i];
         if (s->ran == 1) uioe_bprintf(b, "  %-2d %-9s %-14s ran via %s: %d call(s), %.1f ms, %d node(s), last status %s%s%.100s%s\n", s->n, s->label, s->conn, s->rconn, s->rcalls, s->rms, s->rnodes, g_ur_name[s->rstatus < 6 ? s->rstatus : 5], s->rnote[0] ? "  (" : "", s->rnote, s->rnote[0] ? ")" : "");
         else { const int ix = s->conn[0] ? uioe_find_conn(cx->s, s->conn) : -1; char dw[100] = ""; if (s->dep > 0 && s->dep <= rt->nstep) { const UioeStep *d = &rt->step[s->dep - 1]; if (d->ran != 1) snprintf(dw, sizeof dw, "nothing to start from: step %d did not run", s->dep); else if (!d->rnodes) snprintf(dw, sizeof dw, "nothing to start from: step %d returned nothing", s->dep); }
-            const char *why = s->status == 1 ? "no connector available" : s->status == 2 ? "not routed (policy)" : (ix >= 0 && !cx->s->reg[ix].run) ? "connector not built in this phase (U8 and U9)" : dw[0] ? dw : s->cap == 0 ? "done inside the pipeline (local, no connector)" : "the pipeline did not need it";
+            const char *why = s->status == 1 ? "no connector available" : s->status == 2 ? "not routed (policy)" : (ix >= 0 && !cx->s->reg[ix].run) ? "connector not built in this phase (U9)" : dw[0] ? dw : s->cap == 0 ? "done inside the pipeline (local, no connector)" : "the pipeline did not need it";
             uioe_bprintf(b, "  %-2d %-9s %-14s NOT RUN: %s%s%.100s%s\n", s->n, s->label, s->conn[0] ? s->conn : "(none)", why, s->note[0] ? " (" : "", s->note, s->note[0] ? ")" : ""); }
     }
     uioe_bprintf(b, "calls (%d)\n", rc->nex);

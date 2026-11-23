@@ -107,8 +107,9 @@ static void orch_gate(UioeOrch *o) {
     else if (rc->idx_mode == 0) GS("+0 no index for this scope (files were scanned)");
     if (o->req_missing) { const int d = o->req_missing > 2 ? 20 : o->req_missing * 10; conf -= d; GS("-%d %d connector(s) the pipeline needs were unavailable or timed out", d, o->req_missing); }
     /* depois de recuperar */
-    int strong = 0, any45 = 0, onlyword = 1, agree = 0;
+    int strong = 0, any45 = 0, onlyword = 1, agree = 0, nfact = 0;
     for (int i = 0; i < g->nn; i++) { const UioeNode *n = &g->n[i]; if (n->dropped || n->kind == UN_FILE) continue;
+        if (n->kind == UN_FACT) { nfact++; continue; }      /* U8: a memoria e lembranca nao verificada: nunca conta como achado de codigo, nem a favor nem contra */
         const int ok = n->ver == UV_OK || n->ver == UV_MOVED;
         if (n->conf >= 45 && n->ver != UV_STALE) any45 = 1;
         if (k->kind != UI_FLOW && n->tier <= 2 && ok && n->conf >= 75 && (n->anchor || n->tier == 1)) strong = 1;
@@ -119,13 +120,15 @@ static void orch_gate(UioeOrch *o) {
     for (int i = 0; i < g->nn; i++) if (g->n[i].kind == UN_DOCLINE && !g->n[i].dropped && g->n[i].relevance >= 20 && rc->npath >= 2) agree = 1;
     int docfinding = 0;       /* como instalar, visao geral: a resposta esta em documentos; uma linha de documento relida, com dois termos ou mais, e o achado (nao ha estrutura de codigo a seguir) */
     if ((k->kind == UI_HOWTO || k->kind == UI_OVERVIEW) && o->cx->verify) for (int i = 0; i < g->nn; i++) { const UioeNode *n = &g->n[i]; if (n->kind == UN_DOCLINE && !n->dropped && (n->ver == UV_OK || n->ver == UV_MOVED) && n->conf >= 55 && n->tier <= 3) docfinding = 1; }
+    const int memfinding = k->kind == UI_HISTORY && nfact > 0;      /* U8: o achado de um pedido de historico e uma nota salva, datada e de baixa confianca */
+    if (memfinding) { conf += 10; GS("+10 a saved note matched the request (the owner's memory: dated, low confidence, not verified against the code)"); }
     if (!o->cx->verify) strong = 0;
     if (strong && o->structural) { conf += 20; GS("+20 a verified structural finding with confidence >= 75 (reread in the files)"); }
     else if (docfinding) GS("+0 a document line matching two or more terms was reread in the file: the finding of a how-to request is a document, not a code structure");
     if (agree) { conf += 10; GS("+10 independent sources agree (a document names the files of the chain, or two connectors returned the same item)"); }
-    if ((!any45 || onlyword) && !docfinding) { conf -= 25; GS("-25 %s", !any45 ? "nothing above confidence 45 was found" : "only candidates ranked by words were found, none reached by structure"); }
+    if ((!any45 || onlyword) && !docfinding && !memfinding) { conf -= 25; GS("-25 %s", !any45 ? "nothing above confidence 45 was found" : "only candidates ranked by words were found, none reached by structure"); }
     const int gate = uioe_env_int("KATANA_UIOE_GATE", 70, 1, 100);
-    if (conf >= gate && !(strong && o->structural) && !o->entity_hit && !docfinding) { conf = gate - 1; GS("cap at %d: no verified structural finding with confidence >= 75 and no entity resolved by the index, so a packet would rest on word ranking alone (it never passes G4)", conf); }
+    if (conf >= gate && !(strong && o->structural) && !o->entity_hit && !docfinding && !memfinding) { conf = gate - 1; GS("cap at %d: no verified structural finding with confidence >= 75 and no entity resolved by the index, so a packet would rest on word ranking alone (it never passes G4)", conf); }
     if (conf < 0) conf = 0; if (conf > 100) conf = 100;
 #undef GS
     rc->conf_after = conf; rt->confidence = conf;
@@ -135,7 +138,8 @@ static void orch_gate(UioeOrch *o) {
     else if (o->entity_miss && rc->idx_mode == 2) { authoritative = 1; why = "a named thing does not exist in a complete scope"; }
     else if (rc->idx_mode < 2 && (k->domain[0] == UD_CODE || k->domain[0] == UD_FILES)) { authoritative = 1; why = "the index is partial or absent, and the model should know what to use meanwhile"; }
     else if (o->a->place_note) { authoritative = 1; why = "a cited place was located"; }
-    else if (k->kind == UI_HISTORY || k->kind == UI_WEB) { authoritative = 1; why = "the source this request needs is not installed in this build"; }
+    else if (k->kind == UI_HISTORY) { authoritative = 1; why = "nothing saved in memory matches the request"; }
+    else if (k->kind == UI_WEB) { authoritative = 1; why = "the source this request needs is not installed in this build"; }
     if (k->retrieve == 2) { rt->decision = UG_LIMITS; rt->rule = 5; snprintf(rt->decision_note, sizeof rt->decision_note, "G5: confidence %d; %s: only Question understood as, limits and Next would be told", conf, why); }
     else if (conf >= gate) { rt->decision = UG_PACKET; rt->rule = 4; snprintf(rt->decision_note, sizeof rt->decision_note, "G4: confidence %d >= %d after retrieval (%d node(s), path of %d step(s)): the full block", conf, gate, nres, rc->npath); }
     else if (conf >= 40 && authoritative) { rt->decision = UG_LIMITS; rt->rule = 5; snprintf(rt->decision_note, sizeof rt->decision_note, "G5: confidence %d (40 to %d) and there is something authoritative to say (%s): the limits form only", conf, gate - 1, why); }
@@ -152,6 +156,7 @@ static void orch_next(UioeOrch *o) {
     for (int i = 0; i < rc->nitems; i++) { const UioeNode *n = &g->n[rc->items[i]]; if (n->kind == UN_SYMBOL || n->kind == UN_RANGE || n->kind == UN_KEY || n->kind == UN_DOCLINE) {
         int a = n->line0, b = n->line1 > n->line0 ? n->line1 : n->line0 + 12; if (b - a > 60) b = a + 60;
         snprintf(rc->next, sizeof rc->next, "Read %.100s lines %d-%d, then answer. Do not search again for what is listed above.", n->path, a, b); return; } }
+    for (int i = 0; i < rc->nitems; i++) if (g->n[rc->items[i]].kind == UN_FACT) { snprintf(rc->next, sizeof rc->next, "Answer from the saved notes, saying they are old notes of the owner, not checked against the code."); return; }
     snprintf(rc->next, sizeof rc->next, "Answer without retrieved context, or ask the user for a name, a file or a folder to look at.");
 }
 /* ---- P6: o que nao se achou e o que nao se olhou ---- */
@@ -184,7 +189,9 @@ static void uioe_orchestrate(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, 
     o->cx = cx; o->rc = rc; o->g = keepg; o->a = a; o->k = k; o->rt = rt; o->st = "P1"; o->qflags = fd_qflags(a->text);
     uioe_breaker_begin(cx->s);
     /* P1 SCOPE */
-    orch_scope(cx, rc, a); cx->t0 = now_sec();
+    if (k->kind == UI_HISTORY) { cx->has_store = 0; cx->idx_mode = rc->idx_mode = 0; rc->ms_index = 0; snprintf(rc->scope, sizeof rc->scope, "the owner's saved memory only: no code index and no files were consulted"); }      /* U8: pergunta de historico nao toca o indice */
+    else orch_scope(cx, rc, a);
+    cx->t0 = now_sec();
     rc_state(rc, "P1 SCOPE        %s; index step %.1f ms (outside the request clock)", rc->scope, rc->ms_index);
     /* P2 RECALL */
     { UioeRequest *r = cx->s->cur; uioe_req_sync(r); rc_state(rc, "P2 RECALL       the request state shows %d range(s) pointed at by Find and %d read by Read", r->nshown, r->nread); }
