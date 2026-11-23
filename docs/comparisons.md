@@ -53,7 +53,7 @@ alternating measurement. The later one holds; the difference shows how misleadin
 
 ## 4. Qwen3-30B-A3B (mixture of experts, 18.6 GB on a 4 GB card)
 
-Real text, 200 tokens generated, three alternating rounds (`compare.sh`), katana on OpenCL:
+Real text, 200 tokens generated, three alternating rounds, katana on OpenCL:
 
 | | katana | reference with expert cache on the GPU | reference with experts on the CPU only |
 |---|---|---|---|

@@ -334,7 +334,7 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 - `vk/`: single-header Vulkan compute layer (`kvk.h`) and compiled shaders; `tools/`: kernel benches
   (`vkq4k`, `vkmv`, `vkatt`, `vkdelta`...), tokenizer reference tests, tool tests (`tools/testar_ferramentas.sh`).
 - `plugins/`: optional third-party plugins that run outside the binary (`plugins/teacher-anthropic/`: a model reached over the network answers in place of the local one; protocol in [`docs/teacher-protocol.md`](docs/teacher-protocol.md)).
-- `desktop-qt/`: the desktop app. `docs/`: project documentation (below). `compare.sh`: alternating A/B benchmark.
+- `desktop-qt/`: the desktop app. `docs/`: project documentation (below).
 - `models/` (models) and `ref/` stay out of git.
 
 ## Documentation

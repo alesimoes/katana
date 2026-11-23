@@ -1318,7 +1318,7 @@ cache: generation 12.5–14.9 against 13.2–14.4 tok/s (tie); short cold prompt
 - The runtime does one allocation per buffer; with thousands of experts use a few large buffers
   (slots inside one buffer per layer, as already in OpenCL).
 - Done when: `selftest` of OLMoE and Qwen3-30B passes through Vulkan and Qwen3-30B generation is
-  equal to or better than on OpenCL (12.5–14.9 tok/s), measured with `compare.sh`.
+  equal to or better than on OpenCL (12.5–14.9 tok/s), measured with alternating runs.
 
 **First stage done (token-by-token generation, worktree branch)**: `vk_forward_moe` runs the attention of each
 layer in the Vulkan graph (`vk_emit_attn`, live), returns the normalized feed-forward input, the CPU routes
@@ -1326,7 +1326,7 @@ layer in the Vulkan graph (`vk_emit_attn`, live), returns the normalized feed-fo
 branch). Hot: gate/up and down per expert, one dispatch each, slot by offset in words (`woff`/`ooff`
 new in `mv_*`), two buffers per layer (`vk_sg`, `vk_sd`); cold on the CPU, result goes up to `vkm.bt`;
 `moe_sum` sums into the residual. Prompt falls to token by token. `selftest` of OLMoE and Qwen3-30B passes through Vulkan and
-OpenCL. Missing: measuring with `compare.sh` (short indicative: Qwen3-30B 12.6 tok/s Vulkan against 21 OpenCL, cold),
+OpenCL. Missing: measuring with alternating runs (short indicative: Qwen3-30B 12.6 tok/s Vulkan against 21 OpenCL, cold),
 one launch per layer (several matrices per dispatch, `MOEPRE`), recorded graph per layer, reading the input
 without stopping the queue, MoE batch prompt with tensor cores, and MoE that does not fit the whole graph (today falls to "grafo na CPU").
 
