@@ -78,7 +78,7 @@
 #include "tools/symbols.c"             /* Symbols: consultas do indice de simbolos (def, refs, callers, ...), via coder/symtool.c */
 #include "tools/webfetch.c"
 #include "tools/websearch.c"
-#include "tools/tasks.c"               /* TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet */
+#include "tools/tasks.c"               /* TodoWrite */
 #include "tools/askuserquestion.c"
 #include "tools/planmode.c"            /* EnterPlanMode, ExitPlanMode */
 #include "tools/agent.c"

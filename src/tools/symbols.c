@@ -1,7 +1,6 @@
 /* ---------- ferramenta Symbols (ver docs/tools.md) ----------
  * As consultas estruturais do indice de simbolos (`katana coder def|refs|callers|callees|uses|outline|at|deps|impact|flow`) para o modelo,
- * numa so ferramenta com `action` (uma declaracao no lugar de dez). Nao esta em core[] do prompt: aparece na lista "por nome" e o
- * modelo a pega com ToolSearch. O trabalho esta em src/coder/symtool.c; aqui ficam o esquema e a leitura dos argumentos. */
+ * numa so ferramenta com `action` (uma declaracao no lugar de dez). Esta em core[] do prompt (lista central de 12, com declaracao curta em table.c). O trabalho esta em src/coder/symtool.c; aqui ficam o esquema e a leitura dos argumentos. */
 static const char CT_SYMBOLS_DESC[] =
     "Structural code queries from the symbol index of the working folder (functions, types, calls; built on first use, then kept up to date). "
     "Exact where Find is fuzzy: use it to follow code by name. `action`: "

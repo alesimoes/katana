@@ -1,4 +1,4 @@
-/* ---------- TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet ----------
+/* ---------- TodoWrite (TaskCreate/Update/List/Get foram removidas, ver docs/tools-review.md) ----------
  * Uma lista so, por baixo: a de agent/todo.c (g_todo, linhas "[ ] texto" e "[x] texto"), que o desktop desenha como
  * cartao pelo marcador de todo_ui(). Aqui a lista tem mais detalhe (id, estado de tres valores, descricao, forma
  * "em andamento") e a cada mudanca o texto de g_todo e refeito e todo_ui() emitido. Se o `todo` antigo (ou uma conversa
@@ -49,14 +49,7 @@ static void ct_task_sync(void) {
     snprintf(g_ct_rendered, sizeof g_ct_rendered, "%s", g_todo);
 }
 static int ct_st_parse(const char *s) { for (int i = 0; i < 3; i++) if (s && strcmp(s, CT_ST_NAME[i]) == 0) return i; return -1; }
-static int ct_task_idx(int id) { for (int i = 0; i < g_ct_ntasks; i++) if (g_ct_tasks[i].id == id) return i; return -1; }
 static void ct_cpy(char *dst, size_t cap, const char *s) { snprintf(dst, cap, "%s", s ? s : ""); for (char *p = dst; *p; p++) if (*p == '\n' || *p == '\r' || *p == '\t') *p = ' '; }
-static void ct_task_ids(char *buf, size_t cap) {
-    size_t o = 0;
-    buf[0] = 0;
-    for (int i = 0; i < g_ct_ntasks && o + 12 < cap; i++) o += (size_t)snprintf(buf + o, cap - o, "%s%d", i ? ", " : "", g_ct_tasks[i].id);
-    if (!g_ct_ntasks) snprintf(buf, cap, "none, the list is empty");
-}
 static int ct_task_count(int st) { int n = 0; for (int i = 0; i < g_ct_ntasks; i++) n += g_ct_tasks[i].st == st; return n; }
 
 static const char CT_TODOWRITE_DESC[] =
@@ -200,113 +193,3 @@ static void ct_todo_commit(CtTask *nt, int n, char *out, size_t cap) {
              ip > 1 ? " Warning: more than one task is in_progress; keep exactly one in progress at a time." : "", nx);
 }
 
-static const char CT_TASKCREATE_DESC[] =
-    "Create a task in the task list (status pending). Returns its id. Use TaskUpdate to start it (in_progress) and to finish it (completed).";
-static const char CT_TASKCREATE_PROPS[] =
-    "\"subject\": {\"type\": \"string\", \"description\": \"Short title in the imperative (Fix the login bug)\"}, "
-    "\"description\": {\"type\": \"string\", \"description\": \"What needs to be done\"}, "
-    "\"activeForm\": {\"type\": \"string\", \"description\": \"Text shown while the task runs (Fixing the login bug)\"}";
-static const char CT_TASKCREATE_REQ[] = "\"subject\", \"description\"";
-static void ct_taskcreate(const char *js, const char *end, char *out, size_t cap) {
-    char *s = ct_str(js, end, "subject"), *d = ct_str(js, end, "description"), *f = ct_str(js, end, "activeForm");
-    if (!s || !s[0]) { snprintf(out, cap, "error: subject is required (a short title for the task)"); goto done; }
-    ct_task_sync();
-    if (g_ct_ntasks == CT_TASK_MAX) { snprintf(out, cap, "error: the list is full (%d tasks); delete finished tasks with TaskUpdate status deleted", CT_TASK_MAX); goto done; }
-    CtTask *t = &g_ct_tasks[g_ct_ntasks++];
-    memset(t, 0, sizeof *t);
-    t->id = g_ct_nextid++;
-    ct_cpy(t->subject, sizeof t->subject, s);
-    ct_cpy(t->desc, sizeof t->desc, d);
-    ct_cpy(t->active, sizeof t->active, f && f[0] ? f : s);
-    t->rec = 1;
-    ct_task_render();
-    snprintf(out, cap, "Task #%d created: %s", t->id, t->subject);
-done:
-    free(s); free(d); free(f);
-}
-
-static const char CT_TASKUPDATE_DESC[] =
-    "Update a task: change its status (pending, in_progress, completed, or deleted to remove it) and/or its subject, description or activeForm. "
-    "Mark a task in_progress before working on it and completed as soon as it is done.";
-static const char CT_TASKUPDATE_PROPS[] =
-    "\"taskId\": {\"type\": \"string\", \"description\": \"Id of the task (from TaskCreate or TaskList)\"}, "
-    "\"status\": {\"type\": \"string\", \"enum\": [\"pending\", \"in_progress\", \"completed\", \"deleted\"]}, "
-    "\"subject\": {\"type\": \"string\", \"description\": \"New title\"}, "
-    "\"description\": {\"type\": \"string\", \"description\": \"New description\"}, "
-    "\"activeForm\": {\"type\": \"string\", \"description\": \"New text shown while the task runs\"}";
-static const char CT_TASKUPDATE_REQ[] = "\"taskId\"";
-/* id da tarefa: aceita "3", 3 ou "#3"; -1 se nao for numero */
-static int ct_task_id_arg(const char *js, const char *end, char *out, size_t cap, char **keep) {
-    char *id = ct_str(js, end, "taskId");
-    *keep = id;
-    if (!id || !id[0]) { snprintf(out, cap, "error: taskId is required (use TaskList to see the ids)"); return -1; }
-    const char *q = id + (id[0] == '#');
-    if (!isdigit((unsigned char)*q)) { char ids[200]; ct_task_sync(); ct_task_ids(ids, sizeof ids); snprintf(out, cap, "error: taskId \"%.40s\" is not a number. Valid ids: %s", id, ids); return -1; }
-    return atoi(q);
-}
-static void ct_taskupdate(const char *js, const char *end, char *out, size_t cap) {
-    char *idtxt, *st = ct_str(js, end, "status"), *s = ct_str(js, end, "subject"), *d = ct_str(js, end, "description"), *f = ct_str(js, end, "activeForm");
-    const int id = ct_task_id_arg(js, end, out, cap, &idtxt);
-    if (id < 0) goto done;
-    ct_task_sync();
-    const int i = ct_task_idx(id);
-    if (i < 0) { char ids[200]; ct_task_ids(ids, sizeof ids); snprintf(out, cap, "error: no task with id %d. Valid ids: %s", id, ids); goto done; }
-    int del = 0, ns = -1;
-    if (st && st[0]) {
-        if (strcmp(st, "deleted") == 0) del = 1;
-        else if ((ns = ct_st_parse(st)) < 0) { snprintf(out, cap, "error: status \"%.40s\" is invalid; use pending, in_progress, completed or deleted", st); goto done; }
-    }
-    if (s && !s[0]) { snprintf(out, cap, "error: subject cannot be empty"); goto done; }
-    if (del) {
-        memmove(&g_ct_tasks[i], &g_ct_tasks[i + 1], sizeof g_ct_tasks[0] * (size_t)(g_ct_ntasks - i - 1));
-        g_ct_ntasks--;
-        ct_task_render();
-        snprintf(out, cap, "Task #%d deleted. %d tasks left.", id, g_ct_ntasks);
-        goto done;
-    }
-    CtTask *t = &g_ct_tasks[i];
-    if (ns >= 0) { t->st = ns; if (ns) t->rec = 0; }
-    if (s) ct_cpy(t->subject, sizeof t->subject, s);
-    if (d) ct_cpy(t->desc, sizeof t->desc, d);
-    if (f) ct_cpy(t->active, sizeof t->active, f);
-    ct_task_render();
-    snprintf(out, cap, "Task #%d updated: %s [%s]%s", t->id, t->subject, CT_ST_NAME[t->st],
-             t->st == 1 && ct_task_count(1) > 1 ? ". Warning: more than one task is in_progress; keep exactly one in progress at a time." : "");
-done:
-    free(idtxt); free(st); free(s); free(d); free(f);
-}
-
-static const char CT_TASKLIST_DESC[] = "List all tasks, one line each: #id [status] subject.";
-static const char CT_TASKLIST_PROPS[] = "";
-static const char CT_TASKLIST_REQ[] = "";
-static void ct_tasklist(const char *js, const char *end, char *out, size_t cap) {
-    (void)js; (void)end;
-    ct_task_sync();
-    if (!g_ct_ntasks) { snprintf(out, cap, "No tasks."); return; }
-    size_t o = 0;
-    out[0] = 0;
-    for (int i = 0; i < g_ct_ntasks; i++) {
-        const CtTask *t = &g_ct_tasks[i];
-        o += (size_t)snprintf(out + o, cap - o, "#%d [%s] %s\n", t->id, CT_ST_NAME[t->st], t->subject);
-        if (o + 1 >= cap) { out[cap - 1] = 0; return; }
-    }
-    out[o - 1] = 0;
-}
-
-static const char CT_TASKGET_DESC[] = "Get all the fields of one task by its id: subject, status, description, activeForm.";
-static const char CT_TASKGET_PROPS[] = "\"taskId\": {\"type\": \"string\", \"description\": \"Id of the task\"}";
-static const char CT_TASKGET_REQ[] = "\"taskId\"";
-static void ct_taskget(const char *js, const char *end, char *out, size_t cap) {
-    char *idtxt;
-    const int id = ct_task_id_arg(js, end, out, cap, &idtxt);
-    if (id >= 0) {
-        ct_task_sync();
-        const int i = ct_task_idx(id);
-        if (i < 0) { char ids[200]; ct_task_ids(ids, sizeof ids); snprintf(out, cap, "error: no task with id %d. Valid ids: %s", id, ids); }
-        else {
-            const CtTask *t = &g_ct_tasks[i];
-            snprintf(out, cap, "id: %d\nsubject: %s\nstatus: %s\nactiveForm: %s\ndescription: %s", t->id, t->subject, CT_ST_NAME[t->st], t->active, t->desc);
-        }
-    }
-    free(idtxt);
-}

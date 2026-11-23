@@ -22,12 +22,12 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 |---|---|---|
 | `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
-| `glob.c`, `grep.c` | `Glob`, `Grep` | 161 |
+| `glob.c`, `grep.c` | `Grep` (`glob.c` keeps only the pattern matcher and the folder walker that `Grep` and the UIOE file connector use; the `Glob` tool was removed) | - |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
 | `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact, flow, tree over the symbol index; work in `src/coder/symtool.c`) | - |
 | `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |
 | `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
-| `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
+| `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
 | `agent.c`, `messages.c`, `workflow.c` | `Agent`, `SendMessage`, `ListAgents`, `SubagentHandback`, `Workflow` | 42 |
 | `mcpres.c`, `toolsearch.c`, `skill.c`, `reportfindings.c` | `ListMcpResourcesTool`, `ReadMcpResourceTool`, `WaitForMcpServers`, `ToolSearch`, `Skill`, `ReportFindings` | 71 |
 | `worktree.c`, `powershell.c`, `notify.c` | `EnterWorktree`, `ExitWorktree`, `PowerShell`, `PushNotification`, `SendUserFile`, `EndConversation` | 61 |
@@ -37,8 +37,12 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 Measured: the 1244 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
 and the mock teacher with this set (Write, Edit, Bash with the working-directory reset, Grep).
 
-The prompt declares `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `TodoWrite`,
-`AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch` with full schemas and lists the rest by name. The teacher
+The prompt declares 12 tools (the lean list of `docs/tools-review.md`): `Bash`, `Read`, `Edit`, `Write`, `Find`, `Symbols`,
+`Grep`, `TodoWrite`, `AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch`, and lists the rest by name
+(`Skill` and `SubagentHandback` are not listed: skills are named in the environment block, the hand-back exists only inside a
+sub-agent). Removed from the table, with no alias (2026-11-23): `Glob`, `Rename`, `Replace`, `Patch`, `TaskCreate`,
+`TaskUpdate`, `TaskList`, `TaskGet`; file names are found with `Find` or `Bash ls`, changes in many places are `Grep` plus
+`Edit` (`replace_all`) or a `Bash` script, and the plan is `TodoWrite`. The table has 37 tools. The teacher
 takes its tool list from the prompt, so it follows the switch.
 
 The declarations in the prompt are a short form kept in `src/tools/table.c` (`g_ct_short`): the system prompt is
@@ -116,8 +120,8 @@ the other tools are not covered; any call to one of them that is not a read clea
 give another result (the delta notes take over). Failed calls are not recorded (the failure-repetition rules handle them). A new
 user request starts over. `KATANA_REPEAT_NOTE=0` turns it off. Test: `tools/tooltest/loopnotes.sh` (`katana toolrun notes`).
 
-### Glob, Grep
-`Glob(pattern, path)`: `**`, `*`, `?`, `[...]`, `{a,b}`; absolute paths, newest first, at most 100.
+### Grep
+(The `Glob` tool was removed on 2026-11-23; its pattern matcher, `ct_gmatch`, stays for the `glob` argument of `Grep`.)
 `Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, literal, head_limit, offset)`: katana's
 own backtracking engine (`src/tools/regex.c`) over UTF-8. Syntax: `.` `^` `$` `\A` `\z` `\Z` `\b` `\B` `\<` `\>`;
 classes `[...]` with `[[:alpha:]]` and the other POSIX names; `\d` (0-9) `\w` `\s` `\h` `\v` and negations; `\p{L}`
@@ -355,9 +359,9 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
 ### Symbols (structural queries from the symbol index)
 `Symbols(action, name, file, line, limit, depth, path)` (`src/tools/symbols.c`, work in `src/coder/symtool.c`): the
 `katana coder def|refs|callers|callees|uses|outline|at|deps|impact` queries as one tool for the agent. Read-only (runs in
-plan mode). One declaration with an `action` instead of nine tools, so the prompt does not grow: `Symbols` is NOT in the
-core list of `src/agent/prompt.c` (the v6 model was trained without it); it is listed by name and the model gets its
-schema with `ToolSearch` (`select:Symbols`). Nine alias tools were not added: each would cost a name in the by-name
+plan mode). One declaration with an `action` instead of nine tools, so the prompt does not grow: `Symbols` is in the
+core list of `src/agent/prompt.c` (the lean list, 2026-11-23; it has a short form in `g_ct_short`), with one decision rule
+against `Find` and `Grep` in the rules text. Nine alias tools were not added: each would cost a name in the by-name
 list and a full declaration in every `ToolSearch` answer for no gain.
 - `def` (`name`): where it is defined, `file:lines`, the signature line. `refs` (`name`): every occurrence by kind, each
   with the function it is in. `callers` / `callees` / `uses` (`name`): who calls it / what it calls in call order /
@@ -434,67 +438,10 @@ list and a full declaration in every `ToolSearch` answer for no gain.
   with several tool calls in parallel threads (the tool redirects stdout to capture the query output); Windows (not built:
   the tool answers "not available on Windows yet", as `Find` does).
 
-### Rename, Replace, Patch (changes in many places)
-`src/tools/multiedit.c`. The model pays for every token it writes and for every round trip, so a change that touches many
-places should cost the model only the decision, not the text of each place. The three tools find, change and report;
-the model reads a short list. For one small change in one file `Edit` is still the right tool. None of the three is in
-the core list of the system prompt: they appear in "More tools" by name and are loaded with `ToolSearch`. They are not
-available on Windows yet, and they change files, so plan mode refuses them.
-
-- `Rename(symbol, to, path, dry_run, kinds, force)`: renames an identifier as a whole word (identifier boundaries include
-  `_`, `$`, digits and non-ASCII bytes) in the whole working folder or in `path`. The candidate files come from the
-  `Find` index (the inverted term of the identifier, plus the files that define it); every occurrence is then confirmed
-  by reading the text, so the index only narrows the search. `kinds=code` (default) works on code, script and config files
-  and skips comments and string literals (the comment syntax depends on the file type); Markdown and `.txt` files are
-  skipped; `kinds=all` also changes comments, strings, docs and text. It is textual, not language-aware: a field or
-  local with the same name is renamed too, which is why `dry_run` is true by default. `symbol` and `to` must be valid
-  identifiers. Refused when `to` is already defined as a symbol anywhere in the index (collision); `force=true` overrides
-  it for unrelated scopes (two static helpers in different files). Warnings (not refusals): `to` already appears as a
-  word in the touched files, no definition of `symbol` in the index (library symbol), several definitions.
-- `Replace(pattern, replacement, path, glob, type, literal, -i, multiline, dry_run, limit_files)`: the files are the
-  ones `Grep` would search (`ct_grep_collect`, same `glob` and `type`, `.gitignore` honoured), the matcher is the engine's
-  own regex (`src/tools/regex.c`, run over the whole text with `^` and `$` per line). `replacement` takes `\1` to `\9`,
-  `\\`, `\n`, `\t`; with `literal=true` it is used as written. A group the pattern lacks is an error, an invalid pattern
-  is an error (no silent fallback to plain text, because this tool writes), empty matches are skipped. More files than
-  `limit_files` (default 100) refuses with nothing changed. Files that are binary, not UTF-8 or larger than 4 MB are skipped.
-- `Patch(diff, dry_run)`: a unified diff (`diff -u`, `git diff`, several files). Block line numbers may be off by up to 30
-  lines (nearest position first) and trailing spaces and `\r` are ignored when matching; context lines keep the file's own
-  text. `--- /dev/null` creates a file, `+++ /dev/null` deletes one (its blocks must remove every line). `a/` and `b/`
-  prefixes are removed when the file exists without them. Renames and binary diffs are refused. All or nothing: every
-  file is built in memory first, and if any block does not match nothing is written; the reply names the file and the
-  block, says why (text exists at another line more than 30 lines away; some lines differ: how many match; nothing found)
-  and shows the closest text of the file with the first differing line. Result per file: `applied (N blocks)`,
-  `created (N lines)`, `deleted`, or the reason. `dry_run=true` only checks. The hunk counts in the `@@` line are used
-  only to know where a block ends when it is followed by more text; a block also ends at the next `@@` or file header.
-
-Output of `Rename` and `Replace`: a count line (`N occurrences in M files`), the per-file counts, then up to 40 lines
-`file:line  before  ->  after` (a window around the change, one line per source line), `(+K more lines)`, warnings, and
-`To apply it, call again with dry_run=false.`
-
-Decisions, the same for the three:
-- Permission: every file to be written goes through the `never:` and `ask:` rules of `KATANA.md` as a `Write` of that path
-  (`brief_guard_file`, which `brief_guard` itself uses; a refusal anywhere refuses the whole call, quoting the rule), then
-  one `agent_act` for the whole call (listing the files; `KATANA_CONFIRM=1` asks as for `Edit`).
-- Read before change: `Edit` and `Write` refuse files the model has not read. These tools replace that rule with the
-  preview (`Rename` and `Replace` default to `dry_run=true`) and, for `Patch`, with the diff itself: its context and
-  removed lines must match the file, so a wrong picture of the file makes the call fail instead of writing. A file the
-  model had read completely stays "read" after the change; one it had not read stays unread, so a later `Edit` still asks for a `Read`.
-- Undo: files are written with the same helper as `Edit` (`ct_f_save`, which calls `undo_note`), and deletions call
-  `undo_note` too, so `/undo` restores the whole request, including created and deleted files. If a write fails half way
-  the files already written are restored at once and the call reports it.
-- Verification note: after a real write of project code the three set `g_me_changed`, which `brief_track` turns into
-  the same state as `Edit` (the end-of-request note "run the test:" works; `KATANA.md`, `SKILL.md` and `.katana/` files do not count).
-  The facts notebook records each file as changed.
-- Limits of `Rename`: it relies on the `Find` index, so files over 300 KB, folders the index skips (`.git`, `node_modules`,
-  `build`, `dist`, `vendor`, gitignored files) and a file changed within the same second with the same size as when it
-  was indexed are not seen; the index file is written to `.katana/cache` as for `Find`.
-
-Verified by hand (2026-11-22, no model, scratch folder): Rename preview, apply, collision refusal, invalid identifier,
-no occurrence, `kinds=all`, `never:` refusal; Replace with groups, invalid pattern, group out of range, no match, apply;
-Patch with shifted lines, creation, deletion, a mismatching block (nothing written, closest text shown), `git diff`
-headers with trailing space differences, a CRLF file without final newline, `never:` refusal; the end-of-request note after a Replace; `ToolSearch select:`
-declarations. Not verified: `/undo` after these tools (the undo notes are the same calls `Edit` makes, not exercised
-through the console), `ask:` rules, plan mode, how the model uses them.
+### Rename, Replace, Patch (removed)
+Removed from the table on 2026-11-23 (`docs/tools-review.md`, open question 2: 0 curriculum examples, 0 real calls; the
+`x-rename` family teaches the manual way). The model changes many places with `Grep` plus `Edit` (`replace_all`) or a `Bash`
+script. The code in `src/tools/multiedit.c` is owned by the old-index removal front.
 
 ### WebFetch, WebSearch
 Web research is paid for in the local model's reading time (about 60 tokens/s) and in rounds, not in network time
@@ -533,8 +480,8 @@ search results; pages are then read only when `KATANA_WEB_ALLOW_LOCAL=1`), `KATA
 `http://127.0.0.1` URLs and do not upgrade http).
 
 ### Tasks, questions, plan mode
-`TodoWrite(todos)` replaces the list; `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` edit it item by item. One
-list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options
+`TodoWrite(todos, done)` writes the list and marks steps finished (`TaskCreate/Update/List/Get` were removed on
+2026-11-23: a second way to write a plan that the model never chose). One list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options
 each, asked one at a time through the existing question mechanism. `EnterPlanMode()` and `ExitPlanMode(plan)`: the
 model can enter the read-only mode and present a plan for approval.
 

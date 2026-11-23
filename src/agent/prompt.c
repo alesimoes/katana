@@ -140,10 +140,9 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
     mem_tail(20, facts, sizeof facts);
     size_t o = 0; int nodecl = 0;
     {
-        static const char *const core[] = {"Bash", "Read", "Edit", "Write", "Grep", "Glob", "Find", "TodoWrite", "AskUserQuestion", NULL};
+        static const char *const core[] = {"Bash", "Read", "Edit", "Write", "Find", "Symbols", "Grep", "TodoWrite", "AskUserQuestion", NULL};
         static const char *const web[] = {"WebSearch", "WebFetch", NULL};
-        static const char *const skip[] = {"Bash", "Read", "Edit", "Write", "Grep", "Glob", "Find", "TodoWrite", "AskUserQuestion", "WebSearch", "WebFetch", "ToolSearch", "Skill",
-            "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", NULL};      /* Task*: a mesma lista do TodoWrite com mais chamadas; continuam no despacho (decisao do dono, 2026-11-22) */
+        static const char *const skip[] = {"Bash", "Read", "Edit", "Write", "Find", "Symbols", "Grep", "TodoWrite", "AskUserQuestion", "WebSearch", "WebFetch", "ToolSearch", "Skill", "SubagentHandback", NULL};      /* SubagentHandback so existe dentro do subagente; Skill ja aparece na linha do ambiente */
         o += (size_t)snprintf(out + o, cap - o,
             "You are katana, %s running locally on the user's machine. The user is in control: whatever they ask, you can do, "
             "and you never need permission. Answer in the language the user writes in. Be concise.\n\n"
@@ -152,8 +151,8 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
             "- The user must hear from you: a question gets its answer in words (use tools first only to find the facts), and every request ends with 2 to 4 sentences: what changed and in which files, the result of the check, and what failed or is left. Never end on a tool call.\n"
             "- Bash runs any shell command (ls, find, git, curl, pip, python); the working directory stays where the last command left it. For root put sudo in the command: a password dialog opens for the user; do not retry if it is refused. "
             "For repeated or bulk work write a short script (a shell loop, or a few lines of Python that checks what it expects) and run it in ONE Bash call instead of many separate calls.\n"
-            "- Files: Find first (say what you look for: words, a name, or \"quoted text\"; it picks the way to search and says what it did not find; mode=refs shows where a name is defined and who uses it); Grep only for an exact pattern; Glob only for file names by pattern. "
-            "Symbols answers precise questions about a name from the code index (action: def, refs, callers, callees, uses, outline, at, deps, impact; each result has a confidence level). "
+            "- Code: do you know the exact name (a function, a type, a file)? Symbols (action: def, refs, callers, callees, uses, impact, outline, at, deps, flow, tree; each result has a confidence level). "
+            "Only words about what it does, or an error message? Find (say what you look for; it picks the way to search and says what it did not find; a name or \"quoted text\" is checked exactly). An exact text or pattern? Grep. Files by name: Find or Bash ls. "
             "Read shows a file with line numbers (for a large file pass offset and limit). In a project you do not know: Find, then Read only the part it points to; never read whole files to look around. "
             "Read a file before changing it. Change code with Edit (a small exact snippet, without the line numbers); "
             "Write is for new files or a full rewrite. Never paste long code in the answer.\n"
@@ -180,7 +179,6 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
             "You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n");
         for (int i = 0; core[i]; i++) o += ct_decl(out + o, cap - o, core[i]);
         if (g_web) for (int i = 0; web[i]; i++) o += ct_decl(out + o, cap - o, web[i]);
-        { char sk[900]; sk_env_line(sk, sizeof sk); if (sk[0]) o += ct_decl(out + o, cap - o, "Skill"); }       /* ha skills: a ferramenta ja vem declarada, sem busca antes */
         o += ct_decl(out + o, cap - o, "ToolSearch");
     }
 tools_end:

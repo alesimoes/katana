@@ -2,6 +2,16 @@
 
 > Note (2026-11-23): the first tool set reviewed in the sections below (`run_command`, `read_file`, ...) was removed from the code; the sections that discuss it are historical.
 
+**Status (2026-11-23, applied in code, not compiled):** the lean list was applied. Declared in the prompt (12): `Bash, Read,
+Edit, Write, Find, Symbols, Grep, TodoWrite, AskUserQuestion, WebSearch, WebFetch, ToolSearch` (`Symbols` has a short form in
+`g_ct_short`; the conditional `Skill` declaration is gone; `SubagentHandback` is no longer in the by-name list). Removed from
+the table with no alias: `Glob`, `Rename`, `Replace`, `Patch`, `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` (37 tools left).
+The owner did not answer section 10; the recommendations of this document were used: (1) Glob demoted, and since the owner asked
+for "no Glob" it is removed from the table (its matcher stays for `Grep`); (2) Rename/Replace/Patch removed; (3) Task* removed;
+(4) the eight old-set names stay for now (the old-set removal front owns them); (5) yes, the old mutating names go through the
+table guards (old-set front); (6) yes, `katana mcp serve` should offer `Find` and `Symbols` (not done here); (7) no new
+sessions were waited for. The sections below are the review as written, before the change.
+
 Scope: a review of the agent's tool set, from the data that exists (agent log, desktop sessions, curriculum v7) and from the
 code (`src/tools/`, `src/agent/prompt.c`, `src/agent/dispatch.c`). **No code was changed, nothing new was trained or
 measured** (owner's decision for this phase). Every number below was counted from an existing file or read from the code;
