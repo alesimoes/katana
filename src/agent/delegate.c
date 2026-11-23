@@ -113,7 +113,7 @@ static void tool_delegate(const char *js, const char *end, char *out, size_t cap
             closing = 1;
         } else if (round >= SUB_ROUNDS - 2 || pos + 3500 >= lim) {      /* perto do limite: pede a resposta */
             if (g4) { tl += (size_t)snprintf(text + tl, sizeof text - tl, "<turn|>\n<|turn>user\n"); uopen = 1; }
-            tl += (size_t)snprintf(text + tl, sizeof text - tl, "%s[katana: you are out of rounds. Do NOT call more tools: write your answer now with what you found.]", g4 ? "" : "\n");
+            tl += KNOTE(SUB_ROUNDS, text + tl, sizeof text - tl, g4 ? "" : "\n");
             closing = 1;
         }
         if (!g4) snprintf(text + tl, sizeof text - tl, "<|im_end|>\n<|im_start|>assistant\n%s", think_pre(c));
@@ -175,8 +175,7 @@ static void tool_digest_in(Model *m, int mpos, const char *name, const char *arg
     for (int i = 0; i < g_dg_n && !rd; i++)
         if (g_dg[i].key == key) {                       /* ja lido e nao mudou: entra compactado */
             fprintf(stderr, "%s[leitura repetida de %s: a nota guardada entra no lugar de %zu bytes]%s\n", CE(C_DIM), name, rl, CE(C_RESET));
-            snprintf(result, cap, "[katana: you already read this and it has not changed; this is the note kept from that reading (%zu bytes of raw text left out). "
-                     "For exact lines call read_file with offset and limit, or find.]\n%s", rl, g_dg[i].note);
+            KNOTE(STORED_SAME, result, cap, rl, g_dg[i].note);
             return;
         }
     int ngl, esz, backend;
@@ -235,13 +234,11 @@ static void tool_digest_in(Model *m, int mpos, const char *name, const char *arg
     if (rd) {                       /* a nota fica presa ao trecho do arquivo: volta sem custo enquanto ele nao mudar */
         RdFile *f = g_rd_last.f;
         for (int i = 0; i < f->nch; i++) if (f->ch[i].from == g_rd_last.from && !f->ch[i].note) { f->ch[i].note = strdup(np); f->ch[i].ep = g_rd_epoch; }
-        snprintf(result, cap, "[katana: condensed note of lines %d-%d of this file (%zu bytes read; the raw text was left out of the context and the note is kept). "
-                 "For exact lines call read_file with offset and limit.]\n%s%s%s", g_rd_last.from, g_rd_last.to, rl, np, tail[0] ? "\n" : "", tail);
+        KNOTE(CONDENSED_LINES, result, cap, g_rd_last.from, g_rd_last.to, rl, np, tail[0] ? "\n" : "", tail);
         free(note.p);
         return;
     }
-    snprintf(result, cap, "[katana: condensed note of this %s output (%zu bytes read; the raw text was left out of the context). "
-             "For exact lines call read_file with offset and limit, or find.]\n%s%s%s", name, rl, np, tail[0] ? "\n" : "", tail);
+    KNOTE(CONDENSED_OUT, result, cap, name, rl, np, tail[0] ? "\n" : "", tail);
     if (g_dg_n < DG_SLOTS) {        /* guarda a nota ja com o aviso final */
         const char *body = strchr(result, '\n');
         g_dg[g_dg_n].key = key; g_dg[g_dg_n].note = strdup(body ? body + 1 : np); g_dg_n++;
@@ -253,7 +250,7 @@ static void tool_digest(Model *m, int mpos, const char *name, const char *args, 
     tool_digest_in(m, mpos, name, args, aend, result, cap, request);
     if (strcmp(name, "read_file") != 0 || !g_rd_pre[0]) return;
     static char tmp[TOOL_WEB + 512];
-    snprintf(tmp, sizeof tmp, "[katana: notes kept from the lines you read before in this file]\n%s[now the next lines]\n%s", g_rd_pre, result);
+    KNOTE(STORED_PRE, tmp, sizeof tmp, g_rd_pre, result);
     snprintf(result, cap, "%s", tmp);
     g_rd_pre[0] = 0;
 }

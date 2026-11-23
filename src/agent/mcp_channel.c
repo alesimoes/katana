@@ -177,7 +177,7 @@ static void chn_push(McpSrv *s, const char *params) {
         free(mv); free(mc); nk++;
     }
     mcp_bputs(&b, ">\n"); mcp_bputs(&b, tx);
-    if (cut) { char t[80]; snprintf(t, sizeof t, "\n[katana: message cut at %d bytes]", CHN_TEXT); mcp_bputs(&b, t); }
+    if (cut) { char t[80]; KNOTE(CUT, t, sizeof t, CHN_TEXT); mcp_bputs(&b, t); }
     mcp_bputs(&b, "\n</channel>");
     g_chn_q[g_chn_n].s = s; g_chn_q[g_chn_n++].text = b.p;
     mcp_log(s->name, "channel", tx, 0, cut ? "queued (cut)" : "queued");

@@ -125,8 +125,8 @@ elif os.environ.get("MOCK_PLAN") in ("1", "2"):
         elif len(res) == 5:
             out = {"text": "", "tool_calls": [todo("completed", "in_progress")]}
         else:
-            good = "Now step 1 of 3: passo a" in res[0] and "[plan: step 1 of 3 in progress: passo a;" in res[4] and "Now step 2 of 3: passo b" in res[5] \
-                and not any("plan first" in r for r in res) and not any("[plan:" in r for r in res[1:4])
+            good = "Now step 1 of 3: passo a" in res[0] and "Now step 2 of 3: passo b" in res[5] \
+                and not any("plan first" in r for r in res) and not any("[plan:" in r for r in res)      # o lembrete "[plan: step ..." foi cortado
             out = {"text": "Plano seguido." if good else "FALHA: %s" % res, "tool_calls": []}
 elif os.environ.get("MOCK_GOLD") == "1":
     # conversa curta para conferir o texto renderizado contra o template do modelo: Write; Bash e Grep juntos; resposta

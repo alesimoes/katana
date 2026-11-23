@@ -379,7 +379,7 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
         {   RdCur *c = rc_on() ? rc_find(res, (long long)st.st_size, (long long)st.st_mtime) : NULL;
             if (c && c->cov_end >= 1 && c->cov_end < total && (!has_off || offset == c->last_off)) {      /* ja entregue ate cov_end: segue dali */
                 eoff = c->cov_end + 1;
-                snprintf(cnote, sizeof cnote, "[katana: lines 1-%lld of %s were already given to you in this request; here is the rest, from line %lld]\n", c->cov_end, res, eoff);
+                KNOTE(READ_CURSOR, cnote, sizeof cnote, c->cov_end, res, eoff);
             } }
         char oext[16];
         if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_on() && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
@@ -393,10 +393,9 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             if (pm) *pm = 0;
             size_t hl = strlen(hd);
             while (hl && hd[hl - 1] == '\n') hd[--hl] = 0;
-            if (nbw) snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first %d lines]\n%s\n%s[katana: file has %lld lines; this is its map, its start and the parts that match what you are looking for. "
-                     "Read another part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]", res, total, n, mp, head, hd, bw, total);
-            else snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n[katana: file has %lld lines; this is its map and its start. "
-                     "Read a part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]", res, total, n, mp, hd, total);
+            char mnote[400];      /* a nota (agent/knote.c) entra no fim do mapa */
+            if (nbw) { KNOTE(READ_MAP_HIT, mnote, sizeof mnote, total); snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first %d lines]\n%s\n%s%s", res, total, n, mp, head, hd, bw, mnote); }
+            else { KNOTE(READ_MAP, mnote, sizeof mnote, total); snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n%s", res, total, n, mp, hd, mnote); }
             ct_seen_mark(res, 1);
             rc_note(res, (long long)st.st_size, (long long)st.st_mtime, 1, head, total);
             break;

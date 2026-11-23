@@ -303,10 +303,7 @@ static int brief_example_note(const char *req, char *out, size_t cap) {
     const char *e = getenv("KATANA_EXAMPLE_NOTE");
     if ((e && !atoi(e)) || g_br_exnoted || !g_br_changed || !br_has_example(req)) return 0;
     g_br_exnoted = 1;
-    size_t n = strlen(req);
-    if (n > 1500) { n = 1500; while (n && ((unsigned char)req[n] & 0xC0) == 0x80) n--; }
-    snprintf(out, cap, "[katana: before you finish, compare the result with the request itself, not with your own tests. Run it on the request's own examples and check every detail it states: "
-             "exact text, line breaks, spaces, names, upper and lower case, exit codes. Fix what differs; if all matches, answer. The request:]\n%.*s%s", (int)n, req, req[n] ? " [...]" : "");
+    KNOTE(FINISH_EXAMPLE, out, cap);      /* sem o eco do pedido (cortado em 2026-11-23): ele ja esta na conversa */
     return 1;
 }
 /* nota (uma vez por pedido) para o fim do pedido: arquivos mudaram e a verificacao do projeto nao rodou. 0 = nada a dizer.
@@ -320,8 +317,8 @@ static int brief_end_note(char *out, size_t cap) {
     g_br_noted = 1;
     char dc[300];
     if (br_done_cmd(dn, dc, sizeof dc) && !(tc && strstr(tc, dc))) tc = dc;      /* o test: ja contem o comando de done: */
-    if (tc) snprintf(out, cap, "[katana: this request changed files, and the project file says to verify with `%.200s`, which has not run in this request. Run it before you finish, or say why you cannot.]", tc);
-    else snprintf(out, cap, "[katana: this request changed files, and the project file defines done as: %.250s. Check that before you finish, or say why you cannot.]", dn);
+    if (tc) KNOTE(FINISH_TEST, out, cap, tc);
+    else KNOTE(FINISH_DONE, out, cap, dn);
     return 1;
 }
 

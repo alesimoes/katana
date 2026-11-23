@@ -288,8 +288,12 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
         for (const char *q = in; q && (q = strstr(q + 1, "\n[fim do resultado")) && q < mg->s + R[i].e;) fim = q;
         const int old = R[i].whole && R[i].key[0] && !R[i].newest;       /* superada por leitura mais nova: nao ha o que trazer de volta */
         if (!old && in && fim && fim > in) cp_stash(in + 1, (size_t)(fim - in - 1), f, sizeof f); else f[0] = 0;
-        snprintf(t, sizeof t, "<tool_response>\n[katana: the result of %s%s%s was removed to save context (%zu bytes); %s%s%s]", R[i].name, R[i].key[0] ? " " : "", R[i].key, R[i].e - R[i].a,
-                 old ? "a newer reading of this file is below" : !strcmp(R[i].name, "Read") || !f[0] ? "call it again if you need it" : "to see it again, Read ", !old && strcmp(R[i].name, "Read") && f[0] ? f : "", "");
+        /* ferramenta web: o ponteiro "Read arquivo" foi cortado (seguido 0 de 14 vezes nas sessoes do dono: o modelo repetia a busca); o texto
+           diz o que ele faz de fato, sem prometer o conteudo */
+        const int web = !strcmp(R[i].name, "WebSearch") || !strcmp(R[i].name, "WebFetch") || !strcmp(R[i].name, "web_search") || !strcmp(R[i].name, "web_fetch");
+        if (web) f[0] = 0;
+        KNOTE(REMOVED, t, sizeof t, R[i].name, R[i].key[0] ? " " : "", R[i].key, R[i].e - R[i].a,
+              old ? "a newer reading of this file is below" : web ? "run it again, with a different query or page if you can, only if you need more of it" : !strcmp(R[i].name, "Read") || !f[0] ? "call it again if you need it" : "to see it again, Read ", !old && strcmp(R[i].name, "Read") && f[0] ? f : "", "");
         buf_str(&o, t);
         if (!strcmp(R[i].name, "Bash")) {                /* o fim da saida de um comando costuma ser o que importa (erro, codigo) */
             const char *b = mg->s + R[i].a, *e = mg->s + R[i].e, *f = NULL;
@@ -398,11 +402,7 @@ static char *ah_summary(Model *m, const AHist *h, int upto) {
  * turno do usuario, o pedido entra nele. Sem pendente (/compact): o pedido e um turno novo do usuario. O resumo sai
  * sem raciocinio (canal de pensamento vazio). KATANA_COMPACT_LIVE=0 desliga (volta ao resumo num prompt novo).
  * Devolve texto alocado ou NULL (sem espaco, modelo chamou ferramenta, resposta vazia). */
-#define CP_NOTE "[katana: context compaction] Pause the task for this one message and do NOT call any tool. Write a faithful summary of " \
-    "the conversation so far, in the language of the conversation, in at most 25 lines: 1) what the user asked, keeping exact requirements, " \
-    "names and numbers; 2) what is already done: every file created or changed, with its path and what it contains now, and the commands run " \
-    "with their important results; 3) the last error or failing test, quoted exactly; 4) what is left to do, in order. Do not invent anything. " \
-    "After this message the older messages are removed and you continue the task from your summary."
+#define CP_NOTE KNF_COMPACT      /* o texto mora em agent/knote.c (KN_COMPACT); e concatenado em literais abaixo, por isso a macro e nao a chamada */
 static int cp_live_on(void) { const char *e = getenv("KATANA_COMPACT_LIVE"); return !(e && atoi(e) == 0); }
 static char *ah_summary_live(Model *m, int pos, const char *pending) {
     const Config *c = &m->cfg;

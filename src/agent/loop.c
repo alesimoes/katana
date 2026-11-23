@@ -397,19 +397,6 @@ static int bk_count(const char *key) {
     snprintf(bk_key[bk_n], sizeof bk_key[0], "%s", key); bk_cnt[bk_n] = 1;
     return bk_cnt[bk_n++];
 }
-/* passo atual da lista (o primeiro sem [x]): numero, total e texto; 0 se nao ha passo em aberto */
-static int plan_cur(char *txt, size_t cap, int *k, int *n) {
-    int i = 0, got = 0; *k = 0; txt[0] = 0;
-    for (const char *p = g_todo; *p; ) {
-        const char *e = strchr(p, '\n'); if (!e) e = p + strlen(p);
-        i++;
-        if (!got && strncmp(p, "[x]", 3) != 0) { got = 1; *k = i; const char *t = p + (strncmp(p, "[ ]", 3) == 0 ? 4 : 0); snprintf(txt, cap, "%.*s", (int)(e - t < 200 ? e - t : 200), t); }
-        if (!*e) break;
-        p = e + 1;
-    }
-    *n = i;
-    return got;
-}
 /* ferramenta que so le ou pergunta: nao e trabalho que peca plano (uma pergunta respondida com leituras nao e um servico longo) */
 static int loop_plan_readonly(const char *name) {
     static const char *const ro[] = {"Read", "Grep", "Glob", "Find", "Symbols", "LSP", "ToolSearch", "WebSearch", "WebFetch", "TaskList", "TaskGet", "CronList", "ListAgents",
@@ -418,13 +405,12 @@ static int loop_plan_readonly(const char *name) {
     for (int i = 0; ro[i]; i++) if (!strcmp(name, ro[i])) return 1;
     return 0;
 }
-/* nota anexada ao resultado de uma ferramenta: pedir o plano (3a e 6a chamada sem plano que nao seja so leitura) ou lembrar o
-   passo atual (a cada 5 chamadas). pl_calls conta todas as chamadas do pedido; as que so leem sao descontadas aqui, e o
-   desconto recomeca quando pl_calls volta (pedido novo) */
+/* nota anexada ao resultado de uma ferramenta: pedir o plano (3a e 6a chamada sem plano que nao seja so leitura). pl_calls conta
+   todas as chamadas do pedido; as que so leem sao descontadas aqui, e o desconto recomeca quando pl_calls volta (pedido novo).
+   O lembrete "[plan: step K of N ...]" a cada 5 chamadas foi cortado em 2026-11-23: seguido em 3 de 18 vezes nas sessoes do dono
+   e ficava velho (docs/katana-notes.md); o estado do plano continua no resultado do TodoWrite e no lembrete do fim do pedido */
 static void loop_plan_note(char *result, size_t cap, const char *name, int pl_calls, int pl_old) {
     const size_t rl = strlen(result);
-    const int istodo = !strcmp(name, "TodoWrite") || !strcmp(name, "todo");
-    char st[220]; int k = 0, n = 0;
     static int ro_calls, last_calls;
     if (pl_calls <= last_calls || pl_calls <= 1) ro_calls = 0;
     last_calls = pl_calls;
@@ -432,13 +418,8 @@ static void loop_plan_note(char *result, size_t cap, const char *name, int pl_ca
     if (isro) ro_calls++;
     const int work = pl_calls - ro_calls;
     if (!g_todo_touched && !pl_old && !isro && (work == 3 || work == 6) && rl + 600 < cap)
-        snprintf(result + rl, cap - rl, work == 3
-            ? "\n[katana: plan first. This request already took %d tool calls without a plan. Now call %s with 3 to 8 concrete steps in the order you will do them, "
-              "the first one in progress, then continue with step 1.]"
-            : "\n[katana: still no plan after %d tool calls. Stop and write the plan now with %s (3 to 8 steps, the current one in progress); then work through it in order.]",
-            pl_calls, ct_set2() ? "TodoWrite" : "todo");
-    else if (!istodo && pl_calls % 5 == 0 && plan_cur(st, sizeof st, &k, &n) && rl + 400 < cap)
-        snprintf(result + rl, cap - rl, "\n[plan: step %d of %d in progress: %s; mark it completed with %s when done]", k, n, st, ct_set2() ? "TodoWrite" : "todo");
+        { if (work == 3) KNOTE(PLAN_FIRST, result + rl, cap - rl, pl_calls, ct_set2() ? "TodoWrite" : "todo");
+          else KNOTE(PLAN_STILL, result + rl, cap - rl, pl_calls, ct_set2() ? "TodoWrite" : "todo"); }
 }
 /* ---- chamada identica que ja deu certo neste pedido: o conteudo nao volta de novo, so uma nota. Cobre so o que le (Read, Grep, Glob,
  * ferramenta MCP marcada readOnlyHint de servidor do usuario); Bash, Write e Edit podem repetir de proposito. Uma ferramenta que
@@ -472,7 +453,7 @@ static void autoindex_start(void) { watch_enable(); char cwd[1500]; if (getcwd(c
 static void autoindex_dir(const char *d) { (void)d; }
 static void autoindex_start(void) {}
 #endif
-static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); }
+static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); kn_request_begin(); }
 static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
@@ -482,16 +463,14 @@ static int rr_covered(const char *name) {
 }
 /* antes de executar: 1 = a chamada e repeticao e out ja tem a nota (nao executar) */
 static int rr_check(const char *name, uint64_t csig, char *out, size_t cap) {
+    kn_result_begin();      /* chamada nova: o orcamento de notas deste resultado recomeca (toda chamada do laco, do toolrun notes e dos cenarios passa aqui antes) */
     if (!rr_on() || !rr_covered(name)) return 0;
     for (int i = 0; i < rr_n; i++) if (rr_sig[i] == csig) {
         const int reps = ++rr_reps[i];
         if (reps < 3)
-            snprintf(out, cap, "[katana: you already made this exact call at step %d of this request; the result is earlier in this conversation. Do not repeat it: pick a different place to look "
-                     "(the symbol that this code calls, who defines it, or another file), or answer with what you have.]", rr_step[i]);
+            KNOTE(REPEAT1, out, cap, rr_step[i]);
         else
-            snprintf(out, cap, "[katana: this is the %d%s time you make this exact call (first at step %d of this request) and it will not run again. Its result is earlier in this conversation. "
-                     "You can still: Read another part of the file with a different offset and limit, Grep (output_mode content, -n -C 2) for a name you saw there, Glob for the file that "
-                     "defines something it uses, or stop looking and answer with what you have, saying what is still unknown.]", reps + 1, reps + 1 == 3 ? "rd" : "th", rr_step[i]);
+            KNOTE(REPEATN, out, cap, reps + 1, reps + 1 == 3 ? "rd" : "th", rr_step[i]);
         return 1;
     }
     return 0;
@@ -511,9 +490,7 @@ static void rr_after(const char *name, uint64_t csig, int failed) {
 }
 /* lembrete (uma vez por pedido) quando o modelo encerra com passos em aberto na lista que gravou neste pedido */
 static void loop_todo_nudge(char *nm, size_t cap) {
-    snprintf(nm, cap, "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. "
-             "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now.",
-             g_todo, ct_set2() ? "TodoWrite" : "todo");
+    KNOTE(TODO_OPEN, nm, cap, g_todo, ct_set2() ? "TodoWrite" : "todo");
 }
 /* o lembrete cabe aqui? So quando a lista foi mexida neste pedido e ha passo em aberto que nao seja uma tarefa apenas
    anotada: TaskCreate a pedido do usuario grava a tarefa para depois, e responder sem faze-la esta certo */
@@ -936,6 +913,12 @@ static int agent(Model *m, int max_tokens, float temp) {
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
+                /* Corte da repeticao (rp_stuck), conferido lendo o codigo em 2026-11-23: a 2a, 3a e 4a chamada identica que o rr_check pega (rr_hit) e
+                   a chamada que da o mesmo resultado de antes (same >= 1) somam 1 cada; uma chamada com resultado novo zera. No 3o ponto, e se
+                   round < lim - 2, o pedido vai para a rodada de encerrar (round = lim - 2; a nota KN_ROUNDS vai neste resultado) e o modelo so
+                   pode responder. rr_covered inclui WebSearch e WebFetch, entao a mesma busca repetida cai no corte na 4a chamada. A sessao de
+                   22/11 que repetiu a busca 12 vezes rodou num binario sem este corte (ele entrou em 23/11 07:55, commit 9eb554a), o que explica
+                   por que a nota de rodadas nunca apareceu; nao foi reproduzido com modelo. Ponto cego que sobra: com round >= lim - 2 nada e forcado. */
                 if (rp_refuse) { if (++rp_refused >= 2 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
                 else if (rr_hit) { if (++rp_stuck >= 3 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* o modelo ignora a nota de repeticao: encerra e relata */
                 else if (!trunc) {
@@ -953,21 +936,16 @@ static int agent(Model *m, int max_tokens, float temp) {
                     if (failed) { bk_key_of(name, ap, end, result, bkey, sizeof bkey); bk = bk_count(bkey); }
                     const size_t rl = strlen(result);
                     if (same >= 1 && rl + 500 < sizeof result)
-                        snprintf(result + rl, sizeof result - rl, "\n[katana: this exact call already gave this exact result (%d times now). Repeating it changes nothing. Do something different: "
-                                 "read the message above, change the arguments, check the command's help, use another tool, or tell the user what is blocking you.]", same + 1);
+                        KNOTE(SAME_RESULT, result + rl, sizeof result - rl, same + 1);
                     else if ((bk == 3 || bk == 6) && rl + 900 < sizeof result) {
                         char le[130]; size_t k = 0;      /* inicio do erro, numa linha */
                         for (const char *q = result; *q && k < 120 && q < result + rl; q++) le[k++] = (*q == '\n' || *q == '\t' || *q == '"') ? ' ' : *q;
                         le[k] = 0;
-                        snprintf(result + rl, sizeof result - rl, "\n[katana: %d calls in this request failed around the same thing: %s (last error: \"%s\"). "
-                                 "If it is something you cannot produce yourself (a program or SDK the user must download, a login, a key, a file only they have), "
-                                 "%sstop probing it. Tell the user in one sentence exactly what they must provide, and go on now with the work that does not "
-                                 "depend on it: write the code and files anyway.]", bk, bkey, le, bk == 6 ? "you are still circling it: " : "");
+                        KNOTE(FAIL_AROUND, result + rl, sizeof result - rl, bk, bkey, le, bk == 6 ? "you are still circling it: " : "");
                         rp_fail = 0;
                     }
                     else if (rp_fail >= 4 && rl + 500 < sizeof result) {
-                        snprintf(result + rl, sizeof result - rl, "\n[katana: %d calls in a row failed. Stop guessing. What do the errors have in common? Check the help or the documentation "
-                                 "(WebSearch), or tell the user in words what is missing and ask how to proceed.]", rp_fail);
+                        KNOTE(FAIL_ROW, result + rl, sizeof result - rl, rp_fail);
                         rp_fail = 0;
                     }
                 }
@@ -976,8 +954,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);
                     if (rl + 400 < sizeof result)
-                        snprintf(result + rl, sizeof result - rl, "\n[katana: this request has used its tool rounds. Do not call a tool now. Tell the user in a few sentences what you did, "
-                                 "what is left and what you need from them; they can ask you to continue.]");
+                        KNOTE(ROUNDS, result + rl, sizeof result - rl);
                 }
                 if (cml && !trunc) tool_digest(m, pos, name, ap, end, result, sizeof result, line);     /* leitura grande: so a nota entra */
                 defang(result, safe, sizeof safe);

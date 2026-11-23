@@ -201,8 +201,7 @@ static int ds_select(const Tokenizer *tk, const char *req, const Brief *b, const
     if (nb) {
         for (int a = 0; a < nb; a++) for (int c = a + 1; c < nb; c++)      /* ordem do grafo: documento, depois posicao */
             if (blk[a].doc > blk[c].doc || (blk[a].doc == blk[c].doc && blk[a].a > blk[c].a)) { const Blk t = blk[a]; blk[a] = blk[c]; blk[c] = t; }
-        size_t o = (size_t)snprintf(out, cap, "[katana: the engine picked this from the project documents that KATANA.md points to, because it matches this request. "
-                                              "It is a selection: open the file if you need more.]");
+        size_t o = KNOTE(DOCS, out, cap);
         for (int a = 0; a < nb && o + 400 < cap; a++) {
             const Blk *B = &blk[a];
             o += (size_t)snprintf(out + o, cap - o, "\n== %s:%d-%d%s", g.d[B->doc].rel, g.l[B->a].no, g.l[B->b - 1].no, B->whole ? " (the whole document)" : "");
