@@ -1176,12 +1176,12 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
  *   descricao em linguagem natural -> o Find de sempre (BM25 + grafo); com full, o motor do coder entra como segunda camada
  * O grafo do Find nunca e substituido: a saida dele vem inteira, o coder acrescenta linhas curtas (evidencia, NOT FOUND). */
 enum { FQ_NATURAL, FQ_IDENT, FQ_QUOTED };
-static int fd_coder_level(void) {          /* 0 off, 1 exact (padrao), 2 full */
+static int fd_coder_level(void) {          /* 0 off, 1 names (so nome e texto literal), 2 full (padrao: tambem a descricao, com os conceitos) */
     const char *e = getenv("KATANA_CODER");
-    if (!e || !*e) return 1;
+    if (!e || !*e) return 2;
     if (!strcmp(e, "off") || !strcmp(e, "0")) return 0;
-    if (!strcmp(e, "full")) return 2;
-    return 1;
+    if (!strcmp(e, "exact") || !strcmp(e, "names")) return 1;
+    return 2;
 }
 static int fd_query_kind(const char *q) {
     const char *a = strchr(q, '"');
