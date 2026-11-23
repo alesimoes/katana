@@ -103,6 +103,7 @@
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
+#include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
