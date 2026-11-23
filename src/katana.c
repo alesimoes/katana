@@ -101,6 +101,7 @@
 #include "coder/types.c"             /* modulo de inteligencia de codigo (em cima do motor): tipos compartilhados */
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
 #include "coder/parse.c"              /* katana coder symbols: analisador estrutural exato por linguagem */
+#include "coder/parse2.c"             /* coder: linguagens e formatos acrescentados (C#, Swift, PHP, Dart, Scala, Lisp, SQL, configuracao...) */
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
