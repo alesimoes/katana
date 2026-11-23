@@ -170,6 +170,7 @@ static const char KATANA_CHANGES[] = "";
 #else
 static const char KATANA_CHANGES[] = "";
 #endif
+#include "app/webui.c"                 /* a pagina do agente no navegador (katana serve --agent, katana web; docs/web.md) */
 #include "app/codebench.c"             /* katana codebench: o juiz (tarefas com testes escondidos): run, verify, compare, list */
 #include "app/update.c"                /* katana update: compila, confere e troca o programa instalado */
 #include "app/specialize.c"            /* katana specialize: versoes especialistas (teacher, tools, code) de ponta a ponta */
