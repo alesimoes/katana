@@ -272,7 +272,7 @@ Greedy generation of 80 tokens identical. Stays off by default.
 ## 15. MoE experts on the CPU, one token (Linux, 2026-11-18, worktree agent-a5fc)
 
 Microbenchmark `tools/moebench` (no GPU): 8 experts drawn per layer, all MoE layers, as in a
-token with all experts cold. `KATANA_MOE_OLD=1` = previous path. Alternating OLD/NEW in the same hour,
+token with all experts cold. OLD = the previous path (its switch was removed). Alternating OLD/NEW in the same hour,
 with another katana process using 8 threads (load 11-18): **indicative**. Read bandwidth measured by the
 microbenchmark itself: 33-37 GB/s (8 threads), 30-40 GB/s (16).
 
@@ -332,7 +332,7 @@ relative error 5e-8, batch 0.0056 and token by token 0.0058 of logit difference,
 token by token 0.00043, batch 16 0.00035. Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`): batch 0.00044, token by token
 0.00046, batch 16 0.00049. Argmax equal in all.
 
-Gemma 4 26B-A4B, `bench 64 64`, old MoE (`KATANA_MOE_OLD=1`) against new (default):
+Gemma 4 26B-A4B, `bench 64 64`, the old MoE path (since removed) against the new one:
 
 | metric | old | new | ratio new/old |
 |---|---|---|---|

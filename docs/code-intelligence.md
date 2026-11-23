@@ -2131,7 +2131,7 @@ uncovered words; they go to the packet's `Not found` section ("no known concept 
 - *The relation weights of the owner's table (1.00 / 0.95 / 0.95 / 0.70 / 0.30) act as grades in this mode*
   (direct call: exact or derived; interface, event by string: probable; same module or domain: a prior, not an
   edge). They remain numeric parameters of the `sum` mode.
-- `mode=sum` in `rank.kb` or `KATANA_CODER_RANK` selects the owner's formula, with the corrections of the table
+- `mode=sum` in `rank.kb` selects the owner's formula, with the corrections of the table
   below. Both modes print the five components per candidate in the CLI and JSON; neither shows a number to the
   model.
 
@@ -2155,8 +2155,7 @@ are illustrative, as he said. What must be decided around them:
 
 **Configurable.** The weights, the field weights, the relation weights, the saturating constants and the mode live
 in `rank.kb` and `relations.kb` (12.1), with the same layering as the rest of the base, so a project can carry its
-own. `KATANA_CODER_RANK="mode=sum,L=0.2,C=0.25,B=0.2,G=0.25,S=0.1"` overrides for one run, in the style of
-`KATANA_FIND_TUNE`.
+own.
 
 **Calibratable.** `katana coder kb calibrate QUESTIONS.json` (questions with their answer files; the 76 questions of
 `tools/investigate/questions.json` have that shape) searches the weight simplex on a coarse grid, **leaving one

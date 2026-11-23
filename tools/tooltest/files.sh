@@ -109,11 +109,6 @@ run Read '{"file_path":"big.c","offset":1,"limit":5}'
 hasnt "Read mapa: com limit nada muda" "[map:"
 run Read '{"file_path":"big.c","offset":6}'
 hasnt "Read mapa: com offset nada muda" "this is its map"
-export KATANA_READ_OUTLINE=0
-run Read '{"file_path":"big.c"}'
-unset KATANA_READ_OUTLINE
-hasnt "Read mapa: KATANA_READ_OUTLINE=0 desliga" "[map:"
-has "Read mapa: desligado mostra o arquivo" "func_30"
 seq 1 250 | sed 's/^/## Titulo /' > big.md
 run Read '{"file_path":"big.md"}'
 has "Read mapa: markdown mostra titulos" "## Titulo 101"
@@ -246,28 +241,7 @@ if [ "$(id -u)" != 0 ]; then
   chmod 755 ro
 fi
 
-# ---------------- Read por diferenca ----------------
-python3 -c "
-for i in range(1,101): print('linha numero %d com algum texto' % i)" > d.txt
-export KATANA_READ_DELTA=1
-run Read '{"file_path":"d.txt"}' Read '{"file_path":"d.txt"}'
-has "Read delta: igual" "has not changed since you read it"
-run Read '{"file_path":"d.txt"}' Read '{"file_path":"d.txt"}' Read '{"file_path":"d.txt"}'
-if [ "$(printf '%s' "$out" | grep -c 'linha numero 50 ')" = 2 ]; then ok "Read delta: na terceira vez vai inteiro"; else fail "Read delta: terceira vez"; fi
-run Read '{"file_path":"d.txt"}' Edit '{"file_path":"d.txt","old_string":"linha numero 50 com","new_string":"NOVA\nlinha 50 com"}' Read '{"file_path":"d.txt"}'
-has "Read delta: so o trecho" "only the changed part is shown (lines 47-54 of 101)"
-has "Read delta: deslocamento" "1 line further down"
-has "Read delta: linha mudada com numero" "    50${TAB}NOVA"
-if [ "$(printf '%s' "$out" | grep -c 'linha numero 10 ')" = 1 ]; then ok "Read delta: o resto nao se repete"; else fail "Read delta: resto"; fi
-run Read '{"file_path":"d.txt"}' Bash '{"command":"python3 -c \"print(chr(10).join(str(i)*30 for i in range(100)))\" > d.txt"}' Read '{"file_path":"d.txt"}'
-has "Read delta: mudou muito, vai inteiro" "   100${TAB}9999"
-run Read '{"file_path":"d.txt","limit":5}' Read '{"file_path":"d.txt"}'
-hasnt "Read delta: depois de leitura parcial vai inteiro" "has not changed"
-run Read '{"file_path":"d.txt"}' Edit '{"file_path":"d.txt","old_string":"'$(printf '99%.0s' $(seq 30))'","new_string":""}' Read '{"file_path":"d.txt"}'
-has "Read delta: mudanca na ultima linha" "only the changed part is shown"
-unset KATANA_READ_DELTA
-run Read '{"file_path":"d.txt"}' Read '{"file_path":"d.txt"}'
-hasnt "Read delta: desligado fora do agente" "has not changed"
+# (a leitura por diferenca e testada em loopnotes.sh, que liga a regra como o laco do agente)
 
 # ---------------- Edit com varias trocas ----------------
 printf 'um\ndois\ntres\nquatro\ncinco\n' > m.txt

@@ -53,8 +53,8 @@ section). Ported: live compaction (summary from the KV cache: the model turn clo
 request goes in a user turn; also `/compact` in both formats, `KATANA_COMPACT_LIVE=0` off); reading notes and the
 sub-agent (native calls, results in the model turn, closing notes in a user turn, stop on `<|tool_response>`,
 `KATANA_G4_SIDE=0` off); large calls shrunk in compaction (`<|tool_call>`); results always in the native block
-(`KATANA_G4_PLAIN_RESULT=1` old); declarations fixed (`items.required`, key order, missing type) and checked byte for
-byte against the model's template with jinja2; the constraint knows the declared tools also with `KATANA_TOOLS=1` and
+; declarations fixed (`items.required`, key order, missing type) and checked byte for
+byte against the model's template with jinja2; the constraint knows the declared tools and
 stays off inside a thought channel opened by the prompt; the stand-in teacher no longer doubles the thought channel
 after results; the Internet line names the tools of the set in use. Prompt order left as the template requires
 (declarations last); `KATANA_G4_ENVLAST=1` stays a measurement switch. The "round limit only for `!g4`" gate named in
@@ -129,8 +129,7 @@ ported). **Not measured**: nothing of this ran on a real model; tested only on t
 44 tools in `src/tools/`, one file each (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, tasks, questions, plan
 mode, sub-agents, LSP, worktrees, scheduling and others), tested without a model by `tools/tooltest/*.sh` (765 checks)
 and `./katana tool <Name> '<json>'`. It is the default set since 2026-11-21 (owner's decision, before any measurement on
-Qwen3.6 and Gemma 4); `KATANA_TOOLS=1` declares the first set again. Description, status and what is not measured: `docs/tools.md`.
-Next: codebench first set against second set, alternating.
+Qwen3.6 and Gemma 4). The first set was removed. Description, status and what is not measured: `docs/tools.md`.
 
 Evening of 2026-11-21, review of the convention examples before any training (`katana curriculum`): the three formats
 were right, the way of working was expensive. Measured on 1,800 generated conversations: every plan was written as the
@@ -190,8 +189,7 @@ The per-request repeat state is now reset at the start of each request. (3) *rou
 (`KATANA_ROUNDS`), another block while the last one wrote a file or completed a step, hard cap 200. (4) *plan first*:
 3rd and 6th call of a request with no task list get a note to write one with TodoWrite; every 5th result carries the
 step in progress; TodoWrite's result names the next step. (5) `Bash` declares `description`; the desktop marker is now
-`\x01TOOL name\targs[\tdescription]`. (6) Prompt: one rule for missing external things (all modes) and one for
-`katana code` (write files, write the code even if the build tool is missing); second set prompt 9,034 -> 9,293
+`\x01TOOL name\targs[\tdescription]`. (6) Prompt: one rule for missing external things; second set prompt 9,034 -> 9,293
 characters. (7) `katana agentlog [file] [--days N]`. Scripted checks in `tools/traintest/run.sh` (stand-in teacher).
 **None of this was measured with a real model.**
 
@@ -490,8 +488,7 @@ models are out (they were downloaded and screened, see below).
 - *First start*: the system prompt preparation now reports progress (`PREP total done`, a percentage in the
   desktop). Measured in a fresh folder with the cache of other folders present: Qwen3.6 12 s (484 of 2050 tokens
   computed), then 2.6 s; Gemma 4 43 to 72 s (1280 to 1801 of 1801 tokens computed), then 3.5 s. Gemma recomputes
-  more because its tool declarations come after the per-folder block. `KATANA_G4_ENVLAST=1` moves the per-folder
-  block after the declarations (measurement switch; the default prompt is byte-identical to before).
+  more because its tool declarations come after the per-folder block.
 - *Shared graphics card* (2026-11-20): the engine used to assume the whole card (88% of total VRAM) and, with
   another program holding memory, its allocations failed and it fell back to the CPU for good. Now `kvk_vram_budget`
   (`VK_EXT_memory_budget`) tells how much this process may use; when other programs hold more than 20% of the card
@@ -598,8 +595,6 @@ and checked by comparing the stripped binary before and after (identical apart f
 - *Interaction layer.* `ask_user` asks one question with 2 to 5 options. Desktop: marker `CHOICE`, a card above the
   message box with one button per option (typing also answers; it is not a dialog, the sudo password stays the only
   one). Terminal: numbered options. Piped input: the model is told to decide by itself.
-- *`katana code <model>`.* The same agent with a short programming prompt and only the coding tools (no memory, logs,
-  documents, packages). Measured below.
 - *Lean system prompt.* 14.8 KB (about 3400 tokens) became 7.3 KB (1957 tokens): rules in 8 lines, short environment
   block, 11 tools with a full definition (`read_file`, `list_dir`, `find_file`, `search_files`, `write_file`,
   `edit_file`, `run_command`, `ask_user`, `web_search`, `web_fetch`, `remember`) and 8 more in one compact line (`git`,
@@ -671,10 +666,10 @@ work during the first run, so the times are not comparable):
 | run | solved | failed | mean time |
 |---|---|---|---|
 | default prompt order | 17/21 | calc (timeout), kvstore, ledger, todo | 304 s |
-| `KATANA_G4_ENVLAST=1` (per-folder block after the declarations) | 16/21 | calc (timeout), kvstore, ledger, mdhtml, todo | 193 s |
+| per-folder block after the declarations (switch since removed) | 16/21 | calc (timeout), kvstore, ledger, mdhtml, todo | 193 s |
 
 One task of difference in one run each is not a difference (`mdhtml` passed the default run at the 900 s limit).
-`KATANA_G4_ENVLAST` stays a switch, not the default. The second run also covered the 9 new tasks (below): 9/9.
+That order was not adopted and its switch was removed. The second run also covered the 9 new tasks (below): 9/9.
 
 **New task groups (30 tasks, then 39 with the news tasks, then 51 with the code-writing tasks below).** 5 terminal tasks (`term-*`: find the process behind a port, find the commit
 that broke a check, an interactive program, a build that fails three times, rotated gzip logs) and 4 web tasks
@@ -805,7 +800,7 @@ series, with gate/up Q4_K also in float. Microbenchmark (all 8 experts on the CP
 - `dot_q5k_v`: Q5_K with VNNI (same integer arithmetic as the 16-bit product: bit-for-bit identical result).
 - activation + quantization of the down input in parallel (one expert per pool item), before serial on the
   main thread (~1.2 ms/token on Qwen3.6).
-- `KATANA_MOE_OLD=1` returns to the previous path (for A/B); `selftest` now also checks integer Q8_0/Q5_1.
+- (the previous path and its `KATANA_MOE_OLD` switch were removed); `selftest` now also checks integer Q8_0/Q5_1.
 
 Measured (`tools/moebench` microbenchmark, no GPU, alternating OLD/NEW, machine busy with another agent, load 11-18:
 indicative). Details in `comparisons.md` section 15.
@@ -1091,18 +1086,16 @@ Done (agent, ChatML and Gemma 4 formats; gpt-oss not):
   cache text) **with the tokenized ids**, and the whole conversation (for those who want to reprocess everything).
   Saved at every reply and when switching sessions (`/resume`, `/session` to another file, `/new`) in the cheap version
   (without summarizing: cuts the old turns and keeps a summary that already existed); on exit (`/exit`, end of input), with a
-  summary made by the model (`ah_summary`) when the messages exceed `KATANA_RETOMAR_TOK` tokens (default 1500).
-  `KATANA_SESS_RESUMO=troca` also summarizes on switching (costs minutes on large models).
+  summary made by the model (`ah_summary`) when the messages exceed 1500 tokens. Switching sessions never summarizes (it costs minutes on large models).
 - Disk limit and expiry: in the session folder, `.ksess` files older than `KATANA_SESS_DIAS` (30) are deleted and,
   if the folder exceeds `KATANA_SESS_MB` (256), the oldest ones. The KV saved in `~/.katana/cache` follows PFX_KEEP (8).
 - **Resume**: `katana agent <model> --retomar <file>` (writes back to the same file) or `--sessao <file>`;
   while running, `/resume <file>` and `/session <file>` (the latter is silent: it does not send READY). The resume:
-  (1) refuses a session from another model (`KATANA_RETOMAR_OUTRO=1` forces); (2) `heat_apply`: replaces the heat with the session's
+  (1) refuses a session from another model (`/model` forces it through `KATANA_RESUME_OTHER`); (2) `heat_apply`: replaces the heat with the session's
   and requests only the S hottest of each layer (with the loader thread the load runs alongside the prompt; without it,
   `expert_load` right away); (3) renders the compact conversation with the current system prompt, checks it against the saved ids;
   (4) tries `pfx_load` of the KV for that prefix (key = ids+geometry); if there is none, it recomputes (reusing the system
-  prefix from disk) and saves the KV for the next time. `KATANA_RETOMAR=completo` reprocesses the whole
-  conversation, without heat (comparison).
+  prefix from disk) and saves the KV for the next time.
 - Marker `\x01RESUME <compact_msgs> <total_msgs> <tokens> <experts_requested> <seconds> <kv|calc>` followed by
   `\x01TOKENS`.
 - **DeltaNet / gemma4**: `pfx_geom` only covers the CPU cache when there is SSM state (qwen35moe) or ring (gemma4). With
@@ -1136,7 +1129,7 @@ The saved summary (Qwen3.6 and gemma4) kept vault, project/manager, date and por
 
 Not measured: the gain of expert **warm-up**. In all rounds with the session that had heat, the VRAM
 was taken and the expert cache did not turn on ("0 especialistas aquecidos"); `heat_apply` was only exercised
-on the compile/logic path, not with GPU. `KATANA_RETOMAR_FRIO=1` exists for the with/without heat comparison.
+on the compile/logic path, not with GPU.
 Estimate (not measured): warm-up only changes the speed of the first generated tokens (the batch prompt of
 qwen35moe already uses temporary slots for the cold ones).
 
@@ -1151,8 +1144,7 @@ VRAM was taken and the full graph checks were skipped ("grafo na CPU"). desktop-
 105 ok, 0 failures (the desktop test model is qwen2.5-1.5b, chosen by the test itself).
 
 Pending:
-- Measure the warm-up with the GPU free (session with heat: record a session on the full graph; `--retomar` with and without
-  `KATANA_RETOMAR_FRIO=1`, compare tok/s of the first 64 tokens and cache hits).
+- Measure the warm-up with the GPU free (session with heat: record a session on the full graph; `--retomar`, compare tok/s of the first 64 tokens and cache hits).
 - `katana calibrar` did not run with the expert cache on (same reason); run it on gemma4 with the GPU free.
 - KV of qwen35moe on the Vulkan graph (read/write vkg + DeltaNet state of the GPU) so the resume does not recompute.
 - Summary in the background / at the end of each long turn, so closing the app does not lose the summary; increase the
@@ -1298,27 +1290,11 @@ Note: the expert cache is only worthwhile for MoE; on dense models the equivalen
     to the CPU.
 - `chat` of a single question or interactive, `agent` with tools (writing and executing ask for confirmation).
 
-**Reference numbers, measured on 2026-11-16** (RTX 3050 Laptop 4 GB; benchmark 64+64; measured alternating the engines)
-
-| Model | | katana OpenCL | katana Vulkan | reference Vulkan | reference CUDA |
-|---|---|---|---|---|---|
-| SmolLM2 135M | prompt | 1,227 | 5,972–8,478 | 7,995–8,408 | 6,708 |
-| | generation | 119–139 | 385–409 | 198–223 | 402 |
-| Qwen2.5 1.5B | prompt | 212 | 1,349–1,364 | 2,362–2,374 | 2,776 |
-| | generation | 98 | 98–100 | 113–115 | 117 |
-| Llama 3.2 3B | prompt | 108 | 753–761 | 1,357–1,364 | 1,685 |
-| | generation | 57 | 56 | 63–64 | 69 |
-
-The CUDA values are from an earlier measurement on the same day, not alternated with the others.
-
 Qwen3-30B-A3B (MoE, 18.6 GB), real text, katana OpenCL against the reference with expert
 cache: generation 12.5–14.9 against 13.2–14.4 tok/s (tie); short cold prompt 9–11 against ~5.5.
 
 **Reading**
 
-- Dense model prompt: we went from 11–16x behind to ~1.7–1.8x behind (and a tie on the 135 M model).
-- Generation of dense model of 1 B or more: ~13–15% behind the reference's Vulkan, ~20% behind CUDA.
-- Generation of the 135 M model: ~2x ahead of the reference's Vulkan, tie with CUDA.
 - Large MoE: tie in generation, ahead on short cold prompt.
 
 ## 2. Next steps, in order (written 2026-11-16, for dense models; the current order is in `plan.md`)

@@ -1020,7 +1020,7 @@ static int run_main(int argc, char **argv) {
            linha "END": o modelo respondeu sem chamar ferramenta (imprime se o motor fecha o ultimo passo e se manda o lembrete) */
         static char res[TOOL_WEB + 512], ln[20000];
         int pl = 0, pl_old = 0;
-        g_web = 0;
+        g_web = 0; g_rd_delta_on = 1;      /* a leitura por diferenca liga como no laco */
         while (fgets(ln, sizeof ln, stdin)) {
             ln[strcspn(ln, "\r\n")] = 0;
             if (!strcmp(ln, "USER")) { rr_reset(); int td = 0; const int tn = todo_count(&td); pl_old = tn > td; pl = 0; g_todo_touched = 0; continue; }

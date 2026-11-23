@@ -23,7 +23,6 @@ int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: moebench <modelo.gguf> [tokens] [reps]\n"); return 1; }
     setenv("KATANA_CPU", "1", 1);
     pool_init(); vnni_init();
-    moe_q5k_old = getenv("KATANA_MOE_OLD") && atoi(getenv("KATANA_MOE_OLD")) != 0;
     const int T = argc > 2 ? atoi(argv[2]) : 32, R = argc > 3 ? atoi(argv[3]) : 3;
     if (!getenv("MOEB_NOBW")) {     /* banda: 1 GiB lido em blocos de 4 KiB por todas as threads */
         const size_t N = (size_t)1 << 30;

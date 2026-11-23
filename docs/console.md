@@ -68,7 +68,7 @@ The desktop app's sessions stay where they are (`~/.katana/desktop/sessoes`).
 | `--session-id ID` | use this id for the session file; if it exists, it is resumed (letters, digits, `-`, `_`) |
 | `--no-session` | do not save |
 
-A session written by another model is not resumed (the console says so and starts a new one) unless `KATANA_RETOMAR_OUTRO=1` is set;
+A session written by another model is not resumed (the console says so and starts a new one) unless it is resumed through `/model` (which reloads with the new model and keeps the session);
 `/model` sets it for its own reload, so the conversation survives a model switch.
 
 ### What the console shows (terminal only)

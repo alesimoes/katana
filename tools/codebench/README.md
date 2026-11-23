@@ -32,7 +32,6 @@ katana codebench list                        # the tasks
 `--tasks a,b` runs a subset (names or globs: `--tasks 'write-*,prereq-*'`), `--timeout` is per task (default 900 s), `--keep DIR` keeps each task's agent log and final
 files. Run one model at a time: the GPU and the memory are shared.
 
-`--mode code` runs `katana code` (the coding mode) instead of `katana agent`.
 
 Other options of `run`: `--repeat N`, `--label L`, `--katana BIN` (the agent binary; default is the running binary, and any
 program that takes `agent MODEL` works as a stand-in), `--env K=V` (repeatable; given to the agent and to the hidden tests),

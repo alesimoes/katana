@@ -106,8 +106,8 @@ The matchers are simple hand-written line patterns (`ct_outline` in `src/tools/r
 Any `offset` or `limit` gives the old behaviour; files below the threshold, other extensions, PDFs and notebooks are unchanged;
 `katana tool Read` uses the map too. The file counts as partly read: `Edit` needs a whole read, so for a large file read it
 with `offset=1` and a `limit` as large as its line count first (the `Edit` error says so). If the file was already read whole
-in the conversation, the unchanged/changed-part notes of the delta reading (`facts.c`) come first. Switches:
-`KATANA_READ_OUTLINE=0` off, `KATANA_READ_OUTLINE_LINES=N` changes the line threshold (the byte threshold becomes 40 x N).
+in the conversation, the unchanged/changed-part notes of the delta reading (`facts.c`) come first. Switch:
+`KATANA_READ_OUTLINE_LINES=N` changes the line threshold (the byte threshold becomes 40 x N).
 
 **Repeated identical calls.** In the agent loop (`rr_check` in `src/agent/loop.c`), when the model repeats, in the same request,
 a `Read`, `Grep`, `Glob`, `Find`, `Symbols`, `WebSearch`, `WebFetch` or MCP tool marked `readOnlyHint` (server of the user's own configuration) with the same arguments as a
@@ -118,7 +118,7 @@ third repetition on the note is firmer and lists what the model can still do (an
 `output_mode` content, `-n -C 2`, `Glob` for the defining file, or answer saying what is unknown). `Bash`, `Write`, `Edit` and
 the other tools are not covered; any call to one of them that is not a read clears the table, because the same read may then
 give another result (the delta notes take over). Failed calls are not recorded (the failure-repetition rules handle them). A new
-user request starts over. `KATANA_REPEAT_NOTE=0` turns it off. Test: `tools/tooltest/loopnotes.sh` (`katana toolrun notes`).
+user request starts over. Test: `tools/tooltest/loopnotes.sh` (`katana toolrun notes`).
 
 ### Grep
 (The `Glob` tool was removed on 2026-11-23; its pattern matcher, `ct_gmatch`, stays for the `glob` argument of `Grep`.)
@@ -178,12 +178,10 @@ already did). Per call (`src/coder/findstore.c`):
    the files: `sym` edges join the references and the definitions of the symbol index (and, for the same defined names, the files whose text
    has the name, from the lexicon, because comments, strings and properties are not references); `path` edges are the imports resolved to files
    (N3) plus files that name another file with its extension (lexicon again); `rare` edges join files that share a name that is referenced in 2 to 4
-   files and defined nowhere, or a text key (event, route, environment variable, config key) found in 2 to 4 files; `co` edges come from `git log`
-   as before (`KATANA_FIND_CO=0` skips them). The same weights, row normalisation, sparse activation and neighbour note as the old graph read it.
+   files and defined nowhere, or a text key (event, route, environment variable, config key) found in 2 to 4 files; `co` edges come from `git log`.
    The crawler writes it when its queues are empty (`graph_on_quiet`); a `Find` on a folder whose graph is missing or no longer matches
    the documents (one signature over content hashes, so compaction does not invalidate it and an edit does) derives it in the same call, up to
-   `KATANA_FIND_GRAPH_MAX` files (default 30000; above that an older graph is used as it is), and saves it. `KATANA_FIND_GRAPH=0` stops the
-   crawler and `Find` from deriving it. Neighbours that enter the answer through an edge (and the file they came from) are read and added to the
+   `KATANA_FIND_GRAPH_MAX` files (default 30000; above that an older graph is used as it is), and saves it. Neighbours that enter the answer through an edge (and the file they came from) are read and added to the
    mini-index for the chunk, the symbols and the `why:` line. The neighbour note in the agent loop reads the graph from the store and never
    creates an index or a graph.
 `calls:`, `called by:`, `links:` and `next:` still come from the symbol index; `also referenced in:` now lists files with real references to the
@@ -249,7 +247,7 @@ cursor) `Find` remembers the ranges it pointed to and the ranges `Read` delivere
 is left out and listed in one `(already shown, skipped)` line, and the next candidate takes its place; a second `Find` with
 (almost) the same words says so and returns the next page. The end of the answer has `next: file:lines (calls X)` /
 `(callee X)`: callers and callees (from the coder symbol index) of the symbols that match the question, in ranges not yet
-read (`KATANA_FIND_NEXT=0` turns it off); the "linked files you have not read yet" note skips files already named there.
+read ; the "linked files you have not read yet" note skips files already named there.
 For each of the first three results that is code (and when the folder has a coder index), the old `calls:` line of names is replaced by
 three short lines about the symbol that contains the best line: `called by: connect (grey-channel.mjs:55-78), main (...)` (callers, same
 file or not, by confidence, up to 3, `(+N)`; `nothing indexed (entry point or called by name from outside)` when none), `calls: toBridge
@@ -263,9 +261,8 @@ Output target is about 3000 characters (`FD_OUT_CHARS`, `KATANA_FIND_CHARS`).
 **Ranking.** BM25 per field (weights path 3, symbols 1, body 1; k1 1.2, b 0.75), a coverage bonus of 10% per distinct
 query term present in the chunk's symbols or body, file score = best chunk + 0.3 x second chunk. This is the best
 algorithm of the research bench (`tools/findbench/bench.py`: weights 3/2/1, bonus 5%) ported to C, with the symbol
-weight and the bonus retuned by measurement. `KATANA_FIND_TUNE="wp=3,ws=1,wb=1,k1=1.2,
-b=0.75,cover=0.1,agg=0.3,idw=1,symb=0,docpen=1"` changes the parameters for research (`idw`: weight of query terms
-written as identifiers; `symb`: bonus for a chunk defining a symbol named in the query; `docpen`: factor for
+weight and the bonus retuned by measurement. The parameters are fixed (`wp=3, ws=1, wb=1, k1=1.2, b=0.75, cover=0.1, agg=0.3, idw=1, symb=0, docpen=1`: `idw` is the weight of query terms
+written as identifiers; `symb` the bonus for a chunk defining a symbol named in the query; `docpen` the factor for
 documentation files when the query has identifiers). `KATANA_FIND_TIME=1` prints the times to stderr.
 
 **Measured (2026-11-22, this machine).** Questions are commit messages, the answer is the set of files of the
@@ -319,7 +316,7 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
     is not a defined symbol.
   - `co`: files changed together. Once per rebuild, `git log --no-merges --relative --name-only -n 2000` through
     `popen`; commits with more than 40 files are ignored; weight 1/(n-1) per pair, summed and capped at 3. No git, not
-    a repository, or `KATANA_FIND_CO=0`: skipped silently.
+    a repository: skipped silently.
   Each type is row-normalised, scaled by beta (sym 1, path 1, rare 1, co 0.5), then each row is normalised to 1.
   Measured size on the katana tree: 1003 files, 3389 sym + 1614 path + 1395 rare + 6629 co edges (258 commits), 20646 CSR
   entries, 0.2 MB, 177 ms to build. The specification predicted about 3 MB for the 4.7k-file repository (not rebuilt here).
@@ -332,7 +329,7 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
   A candidate that entered through an edge (and not through a text match) gets a line `   why: via <file> (symbol X)`,
   `cites the path of <file>`, `its path is cited by <file>`, `shares identifier X with <file>` or `changes together with
   <file>`, and its chunk is the one holding the symbol when known. Output format and the 1500-character budget are unchanged
-  otherwise. `KATANA_FIND_ACT=0` restores the previous ranking (no request-word filter, no graph).
+  otherwise.
 - *Neighbour note.* After each successful `Read`, `Grep` or `Find` result in the agent loop (`loop.c`, just before the plan
   note), `[katana: linked files you have not read yet: a (why), b (why), c (why)]` is appended: at most 3 graph neighbours
   of the file read (Read) or of the first 3 files in the result (Grep, Find), excluding the files shown in the result, files
@@ -343,7 +340,7 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
   folder when there is one (it never creates an index or a graph; a folder that was never indexed gets no note); in
   the old mode it is used if the process has the old index in memory (any earlier `Find`) or if the working folder
   already has `.katana/cache` (then it is loaded once per process); the loop never creates cache files for a folder
-  that never used `Find`. `KATANA_NEIGHBORS=0` turns the note off. `Find` with `mode=neighbors` and a path in `query`
+  that never used `Find`.  `Find` with `mode=neighbors` and a path in `query`
   prints the note a `Read` of that file would get (research and test aid, not in the tool schema).
 - *Limits and pending.* Portuguese questions against English code remain the biggest failure: the graph cannot bridge a
   seed that is wrong. Next experiment: a Portuguese-English term map taken from the folder itself (comments and

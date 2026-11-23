@@ -334,8 +334,8 @@ Chat template (read from the GGUF metadata, `tokenizer.chat_template`) and what 
   2026-11-21, default tool set, one MCP server, one skill: 2,227 tokens = 822 stable (rules + MCP cards) + 430 per
   folder (depends on the folder listing) + 977 declarations. Cheapest order the template allows: rules and MCP
   cards (stable, cached once for every folder) -> environment/project/memory -> declarations; that is the default.
-  `KATANA_G4_ENVLAST=1` moves the per-folder block after the declarations (only ~430 tokens recomputed per folder)
-  but puts text where the template never puts any; it stays off until a codebench pass shows it does not hurt.
+  Putting the per-folder block after the declarations would recompute only ~430 tokens per folder, but puts text where the template
+  never puts any; that order was not adopted.
 - **Declarations**: `g4_agent_sys` (`src/agent/fmt_gemma4.c`) converts the JSON `<tools>` block. Checked byte for byte
   against the template rendered with jinja2 (`tools/traintest/gemma4_golden.py sys`), both tool sets, thinking on and
   off, with an MCP server and a skill. Fixed on 2026-11-21: `items` lost its `required` list (AskUserQuestion), and
@@ -347,7 +347,6 @@ Chat template (read from the GGUF metadata, `tokenizer.chat_template`) and what 
   the model's own turn: `<|tool_response>response:NAME{value:<|"|>...<|"|>}<tool_response|>`, then the model continues
   (with thinking on the prompt reopens `<|channel>thought\n`, as the template's generation prompt does). Since
   2026-11-21 the result is always in this native block, also when the model used the generic `<tool_call>{json}`
-  (`KATANA_G4_PLAIN_RESULT=1` restores the old plain block).
 - **Engine notes**: the notes attached to a result (repeat, failure streak, blocked prerequisite, plan first at the
   3rd/6th call, step reminder every 5th result, round limit) are inside the result value, read as tool output. The
   notes that need a user turn (project verification at the end of a request, todo reminder, live compaction request,
@@ -369,9 +368,8 @@ Chat template (read from the GGUF metadata, `tokenizer.chat_template`) and what 
   tokens and their types, `make_tiny_gguf.py --arch gemma4 --template gemma4`, scripted stand-in teacher).
 
 Checks that remain for the owner's machine once the GPU is free (Gemma 4, real model):
-1. First start time in a new folder (default order) and in a folder already seen; the same with `KATANA_G4_ENVLAST=1`.
-2. Codebench pass on the `write-*`, `conv-*`, `prereq-*` and `extend-*` tasks, default switches; then with
-   `KATANA_G4_ENVLAST=1` to decide its default.
+1. First start time in a new folder and in a folder already seen.
+2. Codebench pass on the `write-*`, `conv-*`, `prereq-*` and `extend-*` tasks.
 3. Tool-call validity per 100 calls in `agente.log` with and without the constraint (`KATANA_CALL_GRAMMAR=0`), thinking
    off (desktop) and on.
 4. Compaction time on a long job (live summary against `KATANA_COMPACT_LIVE=0`) and the quality of the summary.

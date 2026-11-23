@@ -258,17 +258,6 @@ experts. The engine can already run Q2_K/IQ2 dot products; it has no quantizer t
 
 Reference engine: official binary b12418 with CUDA and with Vulkan.
 
-**Dense models, benchmark 64+64 (tok/s)**
-
-| Model | | katana (OpenCL) | reference CUDA | reference Vulkan |
-|---|---|---|---|---|
-| SmolLM2 135M | generation | 127 | 402 | 224 |
-| | prompt | 1,222 | 6,708 | 8,638 |
-| Qwen2.5 1.5B | generation | 96 | 117 | 90 |
-| | prompt | 212 | 2,776 | 2,343 |
-| Llama 3.2 3B | generation | 57 | 69 | 63 |
-| | prompt | 108 | 1,685 | 1,375 |
-
 **Qwen3-30B-A3B (18.6 GB in 4 GB of VRAM), real text**
 
 | | katana | reference with expert cache | reference, experts on CPU only |
@@ -284,7 +273,6 @@ Honest reading:
   wait for disk, preload by heat).
 - **We are far behind** on the prompt: 11 to 16 times on dense models. The cause is access to the tensor
   cores, which CUDA and Vulkan give and NVIDIA's OpenCL does not.
-- **We are behind** on a tiny model (3x from CUDA) because of the cost per launch.
 - The reference engine already has an expert cache on the GPU with the same idea as ours. The
   first comparison we made (1.6x in our favor) was against their configuration without a cache.
 

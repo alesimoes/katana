@@ -433,12 +433,11 @@ Default: **off**. Nothing below changes behaviour until the owner sets `KATANA_E
 | `KATANA_EMBED_GPU` | `0` | `1` runs the embedding model on the GPU. For measurement only (note 3) |
 | `KATANA_EMBED_THREADS` | all cores | threads for the embedding model |
 | `KATANA_EMBED_CACHE_MB` | `64` | cap of the vector cache per folder |
-| `KATANA_EMBED_TUNE` | unset | research string in the style of `KATANA_FIND_TUNE`: `gap=0.5,margin=0.3,k=60,wsem=1,keep=3,promo=3,add=2` |
+| `KATANA_EMBED_TUNE` | unset | research string: `gap=0.5,margin=0.3,k=60,wsem=1,keep=3,promo=3,add=2` |
 | `KATANA_EMBED_WHY` | `1` | `0` reorders without printing the evidence line. For A/B measurement only; not for use |
 
 How the owner turns it on today: the file is outside the models folder, so
 `KATANA_EMBED=1 KATANA_EMBED_MODEL=/mnt/dados/embed-models/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf katana ...`.
-`KATANA_FIND_ACT=0` (the old ranking) also disables the filter, since the pool comes from the activation.
 
 Open point: the catalog (`katana pull`) holds only the two large models by the owner's decision. Whether the
 embedding model becomes a catalog item is the owner's call; this design does not need it.
