@@ -140,6 +140,7 @@
 #include "uioe/evrender.c"             /* UIOE U3: saida em texto e JSON, traco da recuperacao */
 #include "uioe/ctxb.c"                /* UIOE U4: o Construtor de Contexto (o bloco `[katana: context ...]`) */
 #include "uioe/api.c"                 /* UIOE U4: uioe_prepare, a porta antes do modelo */
+#include "uioe/facade.c"              /* UIOE U5: Find e Symbols como fachadas do mesmo motor (KATANA_UIOE=full) */
 #include "uioe/cli.c"
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */

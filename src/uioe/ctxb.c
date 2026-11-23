@@ -277,10 +277,11 @@ static void cxb_next(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D, in
 
 /* B6: escreve o bloco a partir do documento e dos cortes pedidos; devolve os bytes */
 static size_t cxb_render(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D, int limits_form, int findings, int nev_max, int nlink_max, int quote_upto, const char *question, const char *next, char *out, size_t cap, UioePackStats *st) {
-    (void)cx; (void)r; size_t o = 0; int mark[7] = {0};
+    (void)r; size_t o = 0; int mark[7] = {0};
 #define W(...) do { if (o + 2 < cap) o += (size_t)snprintf(out + o, cap - o, __VA_ARGS__); } while (0)
-    W("[katana: context for this request. Gathered by the program before you started. Items marked with a number were checked in the files; (guess) means not checked.]\n");
-    W("Question understood as: %s\n", question); mark[0] = (int)o;
+    if (!cx->tool_form) W("[katana: context for this request. Gathered by the program before you started. Items marked with a number were checked in the files; (guess) means not checked.]\n");
+    if (!cx->tool_form || question[0]) W("Question understood as: %s\n", question);      /* facade: question vazia = a consulta e um identificador (4.6.6) */
+    mark[0] = (int)o;
     if (!limits_form) {
         if (D->nstep) { W("%s\n", findings ? "Findings:" : "Answer path:"); for (int i = 0; i < D->nstep; i++) W("%d. %s %s %s\n", i + 1, D->step[i].mark, D->step[i].loc, i >= quote_upto && D->step[i].hasq ? D->step[i].qless : D->step[i].txt); }
         mark[1] = (int)o;
@@ -296,7 +297,8 @@ static size_t cxb_render(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D
     if (D->nlim <= 3) { W("Not found / limits: "); for (int i = 0; i < D->nlim; i++) W("%s%s", i ? "; " : "", D->lim[i]); W("\n"); }
     else { W("Not found / limits:\n"); for (int i = 0; i < D->nlim; i++) W("- %s\n", D->lim[i]); }
     mark[4] = (int)o;
-    W("Next: %s\n", next); W("[end of context]"); mark[5] = (int)o;
+    if (cx->tool_form) W("Next: %s", next); else { W("Next: %s\n", next); W("[end of context]"); }
+    mark[5] = (int)o;
 #undef W
     if (st) { st->tok_head = (mark[0] * 10) / g_uioe_target_qwen.bpt10; st->tok_path = ((mark[1] - mark[0]) * 10) / g_uioe_target_qwen.bpt10; st->tok_evid = ((mark[2] - mark[1]) * 10) / g_uioe_target_qwen.bpt10; st->tok_links = ((mark[3] - mark[2]) * 10) / g_uioe_target_qwen.bpt10; st->tok_lim = ((mark[4] - mark[3]) * 10) / g_uioe_target_qwen.bpt10; st->tok_next = ((mark[5] - mark[4]) * 10) / g_uioe_target_qwen.bpt10; }
     return o;
@@ -313,7 +315,9 @@ static size_t ctxb_build(const UioeCtx *cx, const UioeRequest *r, const UioeTarg
     if (!limits_form) cxb_select(cx, r, t, D, st);
     if (!limits_form && !D->nstep && !D->nev) { snprintf(st->why, sizeof st->why, "nothing verified to say: no path, no finding, no evidence"); free(D); return 0; }
     if (!limits_form && D->nstep && !strncmp(D->step[0].mark, "(guess)", 7)) { snprintf(st->why, sizeof st->why, "the first step is a guess (never step 1)"); free(D); return 0; }
-    cxb_question(cx, r, question, sizeof question); cxb_limits(cx, r, t, D); cxb_next(cx, r, D, limits_form, next, sizeof next);
+    cxb_question(cx, r, question, sizeof question);
+    if (cx->tool_form && r->ask.nterms <= 1 && r->ask.nent == 1 && r->ask.ent[0].kind == UK_SYMBOL) question[0] = 0;      /* 4.6.6: identificador, sem a linha de entendimento */
+    cxb_limits(cx, r, t, D); cxb_next(cx, r, D, limits_form, next, sizeof next);
     if (limits_form && D->nlim > 3) D->nlim = 3;      /* escopo primeiro; o resto fica no traco */
     int nev = D->nev, nlink = D->nlink, quote_upto = 8, cut_ev = 0; char log[1800] = "";
     n = cxb_render(cx, r, D, limits_form, st->findings, nev, nlink, quote_upto, question, next, out, cap, st);
