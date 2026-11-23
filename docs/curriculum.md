@@ -744,3 +744,23 @@ katana codebench compare base.jsonl spec.jsonl
 - The holdout file exists, but no model has been evaluated on it.
 - The data names open-source developer tools (make, cargo, npm, shellcheck...). No product, vendor or inference engine
   is named.
+
+## Coder families on the lean tool list (2026-11-23)
+
+No version name: the curriculum is updated in place and regenerated from zero with `tools/curriculum/generate.sh <binary> <folder>`
+(pool, holdout, selection by coverage, `check` until stable, `variety`, family counts, SHA256SUMS) and trained with
+`tools/curriculum/train.sh <folder>`. Six families in `src/app/scenario_coder.c`, written on the multi-language projects of
+`scenario_v7.c`; every call goes through the real dispatcher, every result is the engine's own text, and each scenario works with and
+without the context block (the policy reads what the engine returned):
+
+| family | teaches | weight |
+|---|---|---|
+| `x-nav` | `Symbols` `refs`, `uses`, `tree`, `flow`, `at`; the rule "exact name: Symbols; only words: Find; exact text: Grep" as paired requests; `Find` then `Symbols` | 40 |
+| `x-ctx` | the `[katana: context for this request ...]` block placed after the user's text (made by `uioe_prepare` in deterministic mode, `KATANA_UIOE_DET=1`): follow `Next`, complete what the path does not list, the same request when no block appears, a memory line as a dated guess (`- (guess) memory 2026-05-20 ...`), never as a fact | 40 |
+| `x-ctxlimits` | `Not found / limits`: an existing name beside a missing one (do not search for the missing one again), an ignored folder (`NOT FOUND` plus "N ignored folders could hold it", then `path`) | 20 |
+| `x-notes` | the cited folder (engine note or block, `path` from the first call), reading a big file in parts, the repeat note | 15 |
+| `x-plan` | `TodoWrite`: `done` sent before any list (the engine's error, then the list), plan with `done=N` in the same turn as the next call | 15 |
+| `x-multi` | three requests in one conversation, in English and Portuguese: where is it, who calls it, change it and check the syntax | 25 |
+
+`Glob`, `Rename`, `Replace`, `Patch` and `Task*` are not taught (they are not in the table); a file by name is `Find`, a folder listing is
+`Symbols tree` or `Bash`.
