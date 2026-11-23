@@ -101,7 +101,7 @@ static void cxb_node_text(char *out, size_t cap, const UioeNode *n, int role, in
 /* ---- as linhas ---- */
 #define CB_MAXLINE 14
 typedef struct { char mark[12]; char loc[430]; char txt[900]; char qless[420]; int id; int hasq; } CbLine;       /* qless: o texto sem a citacao (corte de 4.6.3) */
-typedef struct { CbLine step[8]; int nstep; CbLine ev[CB_MAXLINE]; int nev; char link[8][400]; int nlink; char lim[14][320]; int nlim; char leftout[400]; char already[420]; char tests[420]; } CbDoc;
+typedef struct { CbLine step[8]; int nstep; CbLine ev[CB_MAXLINE]; int nev; char link[8][400]; int nlink; char lim[14][320]; int nlim; char leftout[400]; char already[420]; char tests[420]; CbLine mem[4]; int nmem; } CbDoc;      /* mem: lembrancas do dono (U8), sempre depois do resto de Evidence */
 
 static void cxb_line_from(CbLine *L, const UioeGraph *g, int id, int role, int quote, int cols) {
     const UioeNode *n = &g->n[id]; L->id = id;
@@ -178,6 +178,7 @@ static void cxb_select(const UioeCtx *cx, const UioeRequest *r, const UioeTarget
     int ntests = 0; D->tests[0] = 0; D->already[0] = 0; int nal = 0;
     for (int i = 0; i < rc->nitems; i++) {
         const int id = rc->items[i]; const UioeNode *n = &g->n[id];
+        if (n->kind == UN_FACT) continue;      /* U8: a memoria tem o seu bloco logo abaixo */
         if (cxb_in(used, nused, id) || n->dropped || n->kind == UN_FOLDER) continue;
         if (n->kind == UN_FILE && k->kind != UI_OVERVIEW) continue;
         if (n->ver == UV_STALE || n->ver == UV_GONE || n->ver == UV_UNREADABLE) continue;
@@ -190,6 +191,20 @@ static void cxb_select(const UioeCtx *cx, const UioeRequest *r, const UioeTarget
         if (D->nev < CB_MAXLINE && D->nev < (k->kind == UI_FLOW ? 3 : 6)) {      /* o que nao e passo nem ligacao: poucas linhas, so as que casam com o pedido */
              cxb_line_from(&D->ev[D->nev++], g, id, 0, n->kind == UN_DOCLINE || n->kind == UN_RANGE, t->quote_cols); used[nused++] = id; }
     }
+    /* U8 (decisao do dono, 2026-11-23): a memoria entra como evidencia DATADA e de BAIXA confianca, rotulada como lembranca do dono: `(guess) memory DATA (id X): "texto" (...)`.
+       Fica depois de todo o resto de Evidence, e e a primeira coisa cortada por espaco. Nunca ha valor de segredo: memory_query omite o fato, uioe_call e cxb_esc mascaram. */
+    { const long today = (long)(time(NULL) / 86400);
+      for (int i = 0; i < rc->nitems && D->nmem < 3; i++) {
+        const UioeNode *n = &g->n[rc->items[i]]; if (n->kind != UN_FACT || n->dropped || n->secret) continue;
+        CbLine *L = &D->mem[D->nmem++]; char dt[48], idn[24], q[320], note[96] = "";
+        L->id = rc->items[i]; L->hasq = 0; snprintf(L->mark, sizeof L->mark, "(guess)");
+        cxb_escp(dt, sizeof dt, n->sig); cxb_escp(idn, sizeof idn, n->name); cxb_esc(q, sizeof q, n->text, t->quote_cols);
+        snprintf(L->loc, sizeof L->loc, "memory %s (id %s):", dt, idn);
+        const long dd = mem_days(n->sig); const long age = dd >= 0 && today > dd ? today - dd : 0;
+        if (age >= 180) snprintf(note, sizeof note, "; saved %ld days ago, the code may have changed since", age);
+        snprintf(L->txt, sizeof L->txt, "\"%s\" (a saved note of the owner; not checked against the code%s)", q, note);
+        snprintf(L->qless, sizeof L->qless, "%s", L->txt);
+      } }
     for (int i = 0; i < D->nstep && st->nshown < 80; i++) st->shown[st->nshown++] = D->step[i].id;
     (void)cx;
 }
@@ -199,7 +214,8 @@ static void cxb_limits(const UioeCtx *cx, const UioeRequest *r, const UioeTarget
     const UioeRecall *rc = &r->rc; const UioeRoute *rt = &r->route; const UioeClass *k = &r->cls; char c[800];
 #define CL(...) do { if (D->nlim < 14) { snprintf(c, sizeof c, __VA_ARGS__); cxb_esc(D->lim[D->nlim], sizeof D->lim[0], c, 300); D->nlim++; } } while (0)
     char sc[260]; cxb_esc(sc, sizeof sc, rc->scope, 200);
-    if (rc->idx_mode == 2) CL("only the indexed set was searched (%s); another project, an ignored folder or a file outside it is not seen", sc);
+    if (k->kind == UI_HISTORY) CL("only the owner's saved memory was searched, not the code or the files; a note is the owner's own dated recollection");
+    else if (rc->idx_mode == 2) CL("only the indexed set was searched (%s); another project, an ignored folder or a file outside it is not seen", sc);
     else if (rc->idx_mode == 1) CL("the index is partial (%s): what is listed is what exists so far, and a match may be missing", sc);
     else CL("no index covers this folder (%s): files were scanned by text only", sc);
     for (int i = 0; i < rc->nhyp; i++) if (rc->hyp[i][0] == '"' && strstr(rc->hyp[i], "nobody")) { CL("no counterpart in the indexed set: %s", rc->hyp[i]); break; }
@@ -210,6 +226,7 @@ static void cxb_limits(const UioeCtx *cx, const UioeRequest *r, const UioeTarget
         if (!strncmp(l, "code.flow:", 10) || !strncmp(l, "code.symbols", 12) || !strncmp(l, "docs.search:", 12) || !strncmp(l, "scope:", 6) || !strncmp(l, "not consulted:", 14)) continue;
         CL("%s", l);
     }
+    if (cx->s && cx->s->todo_open > 0) CL("an earlier todo list still has %d unfinished step(s); this message is newer and comes first: if it changes the plan, follow it and rewrite or drop the old steps", cx->s->todo_open);
     if (rt->notrouted[0]) { char nr[300]; snprintf(nr, sizeof nr, "%s", rt->notrouted); for (char *p = nr; *p; p++) if (*p == ';') *p = ','; size_t L = strlen(nr); while (L && (nr[L - 1] == ' ' || nr[L - 1] == ',')) nr[--L] = 0; CL("not consulted: %s", nr); }
     if (rc->nnotreread) CL("%d item(s) are shown without a reread (verification budget)", rc->nnotreread);
     if (rc->nstale) CL("%d item(s) failed the reread because the file changed since it was indexed, and were left out", rc->nstale);
@@ -245,6 +262,7 @@ static void cxb_question(const UioeCtx *cx, const UioeRequest *r, char *out, siz
     case UI_ERROR: snprintf(what, sizeof what, "find where this error comes from%s%s", nt ? " (" : "", nt ? terms : ""); if (nt) { size_t l = strlen(what); snprintf(what + l, sizeof what - l, ")"); } break;
     case UI_HOWTO: snprintf(what, sizeof what, "find what the project documents say about %s", nt ? terms : "this"); break;
     case UI_OVERVIEW: snprintf(what, sizeof what, "describe the structure and purpose of the project"); break;
+    case UI_HISTORY: snprintf(what, sizeof what, "recall what the owner saved in memory about %s (earlier agreements, preferences or decisions)", nt ? terms : "this"); break;
     default: snprintf(what, sizeof what, "locate %s", sym[0] ? sym : nt ? terms : "what was asked"); break;
     }
     char root[300] = ""; if (a->root[0]) { char e[300]; cxb_escp(e, sizeof e, a->root); snprintf(root, sizeof root, " (project %s%s)", e, a->place_note ? "; the folder you named does not exist from the working folder" : ""); }
@@ -285,9 +303,10 @@ static size_t cxb_render(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D
         if (D->nstep) { W("%s\n", findings ? "Findings:" : "Answer path:"); for (int i = 0; i < D->nstep; i++) W("%d. %s %s %s\n", i + 1, D->step[i].mark, D->step[i].loc, i >= quote_upto && D->step[i].hasq ? D->step[i].qless : D->step[i].txt); }
         mark[1] = (int)o;
         const int ne = D->nev < nev_max ? D->nev : nev_max;
-        if (ne || D->tests[0] || D->already[0]) { W("Evidence:\n"); for (int i = 0; i < ne; i++) W("- %s %s %s\n", D->ev[i].mark, D->ev[i].loc, D->ev[i].txt);
+        if (ne || D->nmem || D->tests[0] || D->already[0]) { W("Evidence:\n"); for (int i = 0; i < ne; i++) W("- %s %s %s\n", D->ev[i].mark, D->ev[i].loc, D->ev[i].txt);
             if (D->tests[0]) { W("- tests that call it: %s\n", D->tests); }
-            if (D->already[0]) W("- already shown to you, not repeated: %s\n", D->already); }
+            if (D->already[0]) W("- already shown to you, not repeated: %s\n", D->already);
+            for (int i = 0; i < D->nmem; i++) W("- %s %s %s\n", D->mem[i].mark, D->mem[i].loc, D->mem[i].txt); }
         mark[2] = (int)o;
         const int nl = D->nlink < nlink_max ? D->nlink : nlink_max;
         if (nl) { if (nl == 1) W("Links: %s\n", D->link[0]); else { W("Links: %s", D->link[0]); for (int i = 1; i < nl; i++) W("; %s", D->link[i]); W("\n"); } }
@@ -311,15 +330,23 @@ static size_t ctxb_build(const UioeCtx *cx, const UioeRequest *r, const UioeTarg
     if (limits_form) ceiling = ceiling < 300 ? ceiling : 300;      /* o formulario de limites e curto (4.6.4: cerca de 120 tokens; aqui ate 300) */
     const size_t maxb = (size_t)ceiling * (size_t)t->bpt10 / 10;
     if (!limits_form) cxb_select(cx, r, t, D, st);
-    if (!limits_form && !D->nstep && !D->nev) { snprintf(st->why, sizeof st->why, "nothing verified to say: no path, no finding, no evidence"); free(D); return 0; }
+    if (!limits_form && !D->nstep && !D->nev && !D->nmem) { snprintf(st->why, sizeof st->why, "nothing verified to say: no path, no finding, no evidence"); free(D); return 0; }
     if (!limits_form && D->nstep && !strncmp(D->step[0].mark, "(guess)", 7)) { snprintf(st->why, sizeof st->why, "the first step is a guess (never step 1)"); free(D); return 0; }
     cxb_question(cx, r, question, sizeof question); cxb_limits(cx, r, t, D); cxb_next(cx, r, D, limits_form, next, sizeof next);
     if (limits_form && D->nlim > 3) D->nlim = 3;      /* escopo primeiro; o resto fica no traco */
+    /* U8: a memoria usa ate 10% do teto (no minimo um bom trecho) quando ha codigo; num pedido de historico ela e a resposta e nao tem esse limite */
+    const int memonly = !D->nstep && !D->nev;
+    if (!memonly) { size_t share = maxb / 10; if (share < 260) share = 260; size_t used = 0; int keep = 0;
+        for (int i = 0; i < D->nmem; i++) { used += strlen(D->mem[i].loc) + strlen(D->mem[i].txt) + 6; if (used > share) break; keep++; }
+        for (int i = keep; i < D->nmem; i++) { size_t l = strlen(D->leftout); if (l + strlen(D->mem[i].loc) + 4 < sizeof D->leftout) snprintf(D->leftout + l, sizeof D->leftout - l, "%s%.60s", l ? ", " : "", D->mem[i].loc); }
+        D->nmem = keep; }
+    if (!limits_form && D->leftout[0]) { D->nlim = 0; cxb_limits(cx, r, t, D); }
     int nev = D->nev, nlink = D->nlink, quote_upto = 8, cut_ev = 0; char log[1800] = "";
     n = cxb_render(cx, r, D, limits_form, st->findings, nev, nlink, quote_upto, question, next, out, cap, st);
     /* B5: corte na ordem de 4.6.3 (evidencia de baixo para cima, ligacoes alem das tres primeiras, citacoes dos passos 3 a 5); nunca um passo, uma clausula ou uma marca */
     while (n > maxb && !limits_form) {
-        if (nev > 0) { nev--; cut_ev++; const CbLine *L = &D->ev[nev]; size_t l = strlen(D->leftout); if (l + strlen(L->loc) + 4 < sizeof D->leftout) snprintf(D->leftout + l, sizeof D->leftout - l, "%s%s", l ? ", " : "", L->loc); }
+        if (D->nmem > (memonly ? 1 : 0)) { D->nmem--; const CbLine *M = &D->mem[D->nmem]; size_t l = strlen(D->leftout); if (l + strlen(M->loc) + 4 < sizeof D->leftout) snprintf(D->leftout + l, sizeof D->leftout - l, "%s%.60s", l ? ", " : "", M->loc); }
+        else if (nev > 0) { nev--; cut_ev++; const CbLine *L = &D->ev[nev]; size_t l = strlen(D->leftout); if (l + strlen(L->loc) + 4 < sizeof D->leftout) snprintf(D->leftout + l, sizeof D->leftout - l, "%s%s", l ? ", " : "", L->loc); }
         else if (D->tests[0]) D->tests[0] = 0;
         else if (D->already[0]) D->already[0] = 0;
         else if (nlink > 3) nlink--;
@@ -330,7 +357,7 @@ static size_t ctxb_build(const UioeCtx *cx, const UioeRequest *r, const UioeTarg
         n = cxb_render(cx, r, D, limits_form, st->findings, nev, nlink, quote_upto, question, next, out, cap, st);
     }
     if (n > maxb) { snprintf(st->why, sizeof st->why, "does not fit in %d tokens even after trimming (%d)", ceiling, (int)(n * 10 / (size_t)t->bpt10)); free(D); out[0] = 0; return 0; }
-    st->bytes = (int)n; st->tokens = (int)(n * 10 / (size_t)t->bpt10); st->nsteps = D->nstep; st->nevid = nev + (D->tests[0] ? 1 : 0); st->nlinks = nlink; st->nlimits = D->nlim; st->cut = cut_ev;
+    st->bytes = (int)n; st->tokens = (int)(n * 10 / (size_t)t->bpt10); st->nsteps = D->nstep; st->nevid = nev + D->nmem + (D->tests[0] ? 1 : 0); st->nlinks = nlink; st->nlimits = D->nlim; st->cut = cut_ev;
     for (int i = 0; i < nev && st->nshown < 80; i++) st->shown[st->nshown++] = D->ev[i].id;
     { size_t l = 0; l += (size_t)snprintf(log + l, sizeof log - l, "in: %d path/finding step(s), %d evidence line(s), %d link(s), %d limit clause(s)", D->nstep, nev, nlink, D->nlim);
       if (st->ded_req) l += (size_t)snprintf(log + l, sizeof log - l, "; out: %d item(s) the request already names", st->ded_req);

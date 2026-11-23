@@ -678,6 +678,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                                                       Sem bloco (conversa, pedido vago, confianca baixa, prazo estourado) nada muda: o laco faz o de antes (docsel e nota de pasta abaixo).
                                                       Com bloco, ele substitui os dois: a pasta citada vai em "Question understood as" e "Next", os documentos escolhidos em "Evidence" */
             if (!usess) usess = uioe_session_new();
+            if (usess) { int td0 = 0; const int tn0 = todo_count(&td0); usess->todo_open = (tn0 > td0 && !first) ? tn0 - td0 : 0; }      /* Q3 passa para o bloco (Not found / limits) em vez de nota solta */
             UioePrep upp;
             if (usess && uioe_prepare(usess, &m->tk, ureq, ublock, sizeof ublock, &upp) && strlen(line) + strlen(ublock) + 4 < sizeof line) {
                 ublk = 1;
@@ -707,10 +708,9 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (ublk) uioe_commit(usess);      /* o que o bloco mostrou conta como mostrado para o Find e o Read (o rr_reset acima apagou o estado anterior) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
-            if (tn > td && !first) {
+            if (tn > td && !first && !ublk) {      /* com bloco, a lista antiga ja esta em "Not found / limits" (ctxb.c): a nota nao se repete */
                 static char nl[16384];
-                snprintf(nl, sizeof nl, "%s\n[katana: your todo list from before still has %d unfinished steps. This message is newer and comes first: "
-                         "if it changes the plan, follow it and rewrite or drop the old steps.]", line, tn - td);
+                KNOTE(TODO_PREV, nl, sizeof nl, line, tn - td);
                 snprintf(line, sizeof line, "%s", nl);
             }
         }

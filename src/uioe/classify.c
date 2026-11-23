@@ -16,6 +16,9 @@ static const char *const g_ui_k_web[] = {"na internet", "na web", "on the web", 
     "current version", "latest", "news", "noticia*", "ultimas noticias", "previsao do tempo", "weather", "preco de", "price of", NULL};
 static const char *const g_ui_k_hist[] = {"o que...combin*", "o que...decid*", "o que a gente combinou", "da ultima vez", "na ultima sessao", "sessao anterior", "lembra*", "voce disse", "vc disse", "o que voce falou",
     "what did we", "you said", "remember", "last session", "last time", "we agreed", "we decided", "decidimos", "combinamos", "ontem...fal*", "ontem...fiz*", "ontem...conversamos", NULL};
+/* U8: pistas de preferencia e decisao anterior (a memoria tambem entra como apoio); as de historico (g_ui_k_hist) ja marcam o tipo history */
+static const char *const g_ui_k_pref[] = {"minha preferencia", "minhas preferencias", "prefiro", "prefere*", "preferimos", "nossa decisao", "decisao anterior", "decisoes anteriores", "como costumamos", "como a gente costuma",
+    "my preference", "my preferences", "i prefer", "we prefer", "our decision", "previous decision", "earlier decision", "as we usually", NULL};
 static const char *const g_ui_k_error[] = {"por que...nao", "porque...nao", "por que...falh*", "why...not", "why...fail*", "erro", "erros", "error", "errors", "falha", "falhas", "falhou", "crash*", "trava", "travou", "exception",
     "stack trace", "traceback", "nao aparece", "nao funciona", "nao funcionou", "parou de funcionar", "stopped working", "quebrou", "broken", "bug", "bugs", "doesnt work", "does not work", "not working", "failed", "failing",
     "segfault", "panic", "undefined reference", "nao compila", "nao carrega", NULL};
@@ -101,6 +104,10 @@ static void uioe_classify(UioeCtx *cx, const UioeAsk *a, UioeClass *k) {
         if (uw_any(W, g_ui_k_locate, &which) >= 0) ui_note(k->why_kind, sizeof k->why_kind, "default; locate cue \"%s\"", which); else snprintf(k->why_kind, sizeof k->why_kind, "default (an entity or two informative terms)"); }
     if (kind < 0) { kind = UI_NONE; sure = 0; rule = 10; snprintf(k->why_kind, sizeof k->why_kind, "one informative term at most and no entity"); }
     k->kind = (UioeKind)kind; k->sure = (uint8_t)sure; k->rule_kind = (uint16_t)rule;
+    /* U8: a memoria so e consultada com pista de historico (o tipo history) ou de preferencia/decisao anterior; pergunta so de codigo nunca a consulta */
+    k->memcue = 0; k->why_memory[0] = 0;
+    if (kind == UI_HISTORY) { k->memcue = 1; snprintf(k->why_memory, sizeof k->why_memory, "history cue: %.140s", k->why_kind); }
+    else if (kind != UI_NONE) { const char *pw = NULL; if (uw_any(W, g_ui_k_pref, &pw) >= 0) { k->memcue = 1; ui_note(k->why_memory, sizeof k->why_memory, "preference or earlier-decision cue \"%s\"", pw); } }
     /* mudanca: so se a pergunta nao e de explicacao */
     k->change = a->change && kind != UI_ERROR && kind != UI_HISTORY && kind != UI_HOWTO && kind != UI_NONE && kind != UI_IMPACT && kind != UI_FLOW && kind != UI_USAGE;
     /* ---- dominio ---- */

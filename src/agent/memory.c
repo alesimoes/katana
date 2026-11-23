@@ -280,6 +280,27 @@ static int mem_rank(const MemDb *db, const char *query, int incold, MemHit *hits
     return nh;
 }
 
+/* API estruturada para o UIOE (conn_memory.c): ate `max` fatos VIVOS (nunca substituidos nem esquecidos), do mais relevante ao menos, com id, data e texto.
+ * Fato que parece segredo (mem_secret) nunca sai daqui, mesmo que alguem o tenha gravado a mao no arquivo. Devolve quantos; *nsecret conta os omitidos. */
+typedef struct { char id[9]; char date[40]; char fact[420]; int pinned; } MemRec;
+static int memory_query(const char *query, int max, MemRec *out, int *nsecret) {
+    if (nsecret) *nsecret = 0;
+    MemDb db;
+    if (mem_load(&db) != 0) return 0;
+    MemHit h[32]; if (max > 16) max = 16;
+    const int n = mem_rank(&db, query, 0, h, 32);
+    int got = 0;
+    for (int i = 0; i < n && got < max; i++) {
+        const MemE *x = &db.e[h[i].idx];
+        if (mem_secret(x->fact)) { if (nsecret) (*nsecret)++; continue; }
+        MemRec *r = &out[got++];
+        snprintf(r->id, sizeof r->id, "%s", x->id[0] ? x->id : "");
+        if (!r->id[0]) mem_id(x->fact, r->id);
+        snprintf(r->date, sizeof r->date, "%s", x->date); snprintf(r->fact, sizeof r->fact, "%.419s", x->fact); r->pinned = x->pinned;
+    }
+    mem_free(&db);
+    return got;
+}
 /* API para o UIOE e para recall: ate `max` fatos no formato "- data: fato" (substituidos marcados), do mais relevante ao menos; devolve quantos */
 static int memory_search(const char *query, int max, char *out, size_t cap) {
     out[0] = 0;

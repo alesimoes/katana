@@ -1707,7 +1707,7 @@ finding a cited folder walks the disk). What exists beyond the text above, or di
   condition, the total time), and for an injected block the section sizes in tokens, what went in and what was left out, and the block itself (`block   | ...` lines).
 - **Cost.** `uioe_prepare` took 12 ms for a greeting, 20 to 90 ms for a request that names a symbol or a variable, 260 ms for "who calls rr_check" (the depth-2 closure) on the katana tree, and about 900 ms
   for the greymod question, almost all of it finding the cited folder (`place_note` walks the disk; the legacy path paid that already, now it pays once). One run each, not a measurement.
-- **Not done in U4:** the system-prompt sentence (4.7), compaction of old blocks, `full`, memory and history as evidence, the web in the block, a desktop marker, the `Find` facade. `docs.select` as `Evidence`
+- **Not done in U4:** the system-prompt sentence (4.7), compaction of old blocks, `full`, memory and history as evidence (memory: see 6.2b), the web in the block, a desktop marker, the `Find` facade. `docs.select` as `Evidence`
   is written but was **not exercised**: the tiny model's byte-level tokenizer selects no document line, so only the real model's tokenizer can show it. Not tested: a partial index (only none and complete),
   Gemma 4, Windows. The model was never run on a block: whether it follows `Next` or over-trusts the path is unknown.
 
@@ -1717,6 +1717,26 @@ finding a cited folder walks the disk). What exists beyond the text above, or di
 |---|---|---|---|---|
 | **U6. General Interpret and Classify** | dates and periods, amounts, proper names, constraints, ambiguity; all domains of 3.4 with their cue tables; complexity; the retrieve rules C1 to C7; risk bits; follow-ups that inherit an open investigation | `interpret.c`, `classify.c`, new `dates.c` | `katana uioe plan` on 20 non-code requests written by the owner shows the periods normalized and the domains named; requests for uninstalled domains produce the "no connector installed" limits line | 3 |
 | **U7. Context Builder, complete** | deduplication against the request text and the request state; budgets per source; the `Findings` skeleton; target profiles (Qwen now; the Gemma 4 profile as a table entry, untested by the owner's rule); the 25%-of-free-context rule; the desktop marker with the block's size | `ctxb.c`, new `target.c`, `desktop-qt/` (display only) | a request that already names a file gets a block that does not explain the file back; a second request in the same session does not quote ranges already shown | 2 to 3 |
+
+### 6.2b U8 status (2026-11-23): memory as dated, low-confidence evidence (written, not compiled, not run)
+
+Owner decision 8.1b item 6, implemented in `src/uioe/conn_memory.c` (new), `src/agent/memory.c` (`memory_query`), `route.c`, `pipes.c`, `orch.c`, `ctxb.c`, `api.c`.
+
+- **Connector `memory.recall`** (`cm_recall`): reads the owner's memory through `memory_query` (BM25 plus recency; live facts only, never the superseded or forgotten ones) and returns each fact as a `UN_FACT` node:
+  id (8 hex, the one `katana memory` shows), date, text. Confidence 60 for a fact of today, minus 1 point per 60 days, never below 30; tier 4 (the lowest), so in the final order a memory node never goes ahead of a reread code or
+  file item; never verified (`(guess)` in the block). A fact that looks like a secret (`mem_secret`) is never returned, and the generic line mask of `uioe_call` and `cxb_esc` run over the text as for every node.
+  The limits line says how many matching notes were left out as secrets, never what they said. There is no environment switch to turn it off.
+- **Routing.** The classifier sets `memcue` (`UioeClass`) when the kind is `history` (the cues of R30: "o que combinamos", "da ultima vez", "we agreed"...) or the request carries a preference or earlier-decision cue ("prefiro",
+  "nossa decisao", "i prefer", "our decision"...). Only then does the plan get a `memory` step (`memory.recall`), with the reason in the step note; a pure code question never gets it (the `memory` step that `error` and `web`
+  used to carry was removed). `katana uioe ask --explain` (and `plan`) shows the step, its connector, the reason (`routed: history cue ...` or `preference or earlier-decision cue ...`) and the call with its node count.
+- **Where it lands in the block.** Under `Evidence:`, after every other evidence line, in the form
+  `- (guess) memory 2026-05-20 (id 1a2b3c4d): "quote" (a saved note of the owner; not checked against the code)`, plus "; saved N days ago, the code may have changed since" from 180 days. At most 3 lines. With a code path or
+  findings present, memory takes at most 10% of the ceiling (never less than 260 bytes) and is the first thing cut for space (named in `left out for space`); in a `history` request it is the whole answer, one line is never cut.
+- **History requests (no code).** The pipeline runs `memory.recall` only; the index is not touched (`scope: the owner's saved memory only`); the gate gets +10 when a note matched (G4 then holds at the default gate), door 2 of
+  `api.c` accepts domain memory for kind `history`, door 3's pack threshold does not apply, door 4 accepts a matched note as support, and docsel lines are not added. `Question understood as` says what the owner saved about the
+  terms; `Not found / limits` says only the memory was searched and that a note is the owner's dated recollection; `Next` is "Answer from the evidence above...". Nothing saved matches: G5, the limits form (not injected by default).
+- **Not done:** `history.search` and `session.facts` (earlier-session notes and the conversation log), and the check that a note which names a file or symbol still exists in the index (3.6.1 row "A memory fact"). Not compiled,
+  not run, nothing measured; the 10% share and the 260-byte floor are guesses.
 
 ### 6.3 Stage 3: memory and the web in the packet
 

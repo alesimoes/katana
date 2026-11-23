@@ -499,8 +499,7 @@ Done (owner authorization to consolidate; sections 5 and 7.3 steps 1 to 3):
   and the R1/R2 wording above: R1, R2, R3, R4, R5, R6, R7, R8, T1 (`loop.c`), T2, T3 (`brief.c`), Q2 header (`docsel.c`), Q1 (`locate.c`),
   R10 both graph paths (`findgraph.c`), R11, R12 (`read.c`), R13 (`code.c`), R14, R15, R16, T5 (`delegate.c`), R17 (`context.c`), R18
   (`mcp_channel.c`). T4 (`CP_NOTE`) stays a macro (`KNF_COMPACT`) because it is concatenated into literals; its text now lives in `knote.c`.
-  Not converted: Q3 (`loop.c`, request-entry block, owned by the UIOE work; `KN_TODO_PREV` is in the table with the same text, ready to
-  swap in), Q4 and Q5 (no `[katana:` prefix), R19 hints and the `[web: ...]` footers (no prefix).
+  Not converted: Q4 and Q5 (no `[katana:` prefix), R19 hints and the `[web: ...]` footers (no prefix).
 * One escape: `kn_escape`/`kn_external` (`knote.c`) replace `notes_neutralize` (`dispatch.c`); same tools, same behavior.
 * Budget: `KN_RES_MAX` (1,500 bytes of notes per tool result) and `KN_REQ_INFO_MAX` (6,000 bytes of budgeted INFO per request), reset by
   `kn_result_begin` (first line of `rr_check`, which every call of the loop, `toolrun notes` and the scenarios passes) and `kn_request_begin`
@@ -513,6 +512,20 @@ Done (owner authorization to consolidate; sections 5 and 7.3 steps 1 to 3):
   showed. Not reproduced with a model. A comment at the code records this.
 
 Not done: the per-call log line of 7.1 rule 4; the allow-list inversion of the escape (rule 1); escaping the data arguments of a note (todo text,
-document lines); FUSE R11 to R16 (7.3 step 4); MOVE Q1 to Q3 and Q2 into the UIOE block (7.3 step 5, other owner). The v7 files in
+document lines); FUSE R11 to R16 (7.3 step 4). The v7 files in
 `data/curriculum/v7` are stale for the R1/R2 wording and the dropped `[plan: step` lines (`katana curriculum check` on them now reports
 the R1/R2 and removed-note mismatches); they are regenerated as v8, not edited.
+
+### 9.1 Q1, Q2, Q3 into the UIOE block (2026-11-23; written, not compiled, not run)
+
+The informational notes that depend only on what is known before the first call now live in the block, and each one is emitted in exactly one place, so nothing is said twice:
+
+* **Q1 (cited folder that does not exist from the working folder).** With a block, `Question understood as` carries "(project PATH; the folder you named does not exist from the working folder)" and `Next` says
+  "Pass path=PATH to Find, Glob and Grep"; `loop.c` does not append the `KN_PLACE` note (`pnn && !ublk`, it still runs `place_note` for the side effect of indexing the folder). Without a block (a request that passes no door) the
+  `KN_PLACE` note is emitted as before. So the note stays in `KN_TAB`, as the no-block form.
+* **Q2 (header of the documents the engine picked).** With a block the header sentence is not sent: `up_add_docsel` (`api.c`) parses the selected ranges out of `ds_select` and they enter `Evidence` as document lines.
+  Without a block the old path appends the whole `KN_DOCS` text. Same rule: the header only exists in the no-block form.
+* **Q3 (an earlier todo list has open steps).** The loop passes the count in `UioeSession.todo_open` before `uioe_prepare`; `cxb_limits` (`ctxb.c`) writes it as a `Not found / limits` clause ("an earlier todo list still has N
+  unfinished step(s); this message is newer and comes first: ..."). `loop.c` now emits the note through `KNOTE(TODO_PREV, ...)` (same bytes as the old literal) only when there is no block (`!ublk`).
+* Stay as `knote` where they break a loop (order, repetition, cut): R1 to R8, T1 to T5, R17, R18, and the no-block forms of Q1 to Q3. The loop edit is two lines in the U4 hook (the `todo_open` assignment) and the Q3 block below it.
+* Not verified: that the block of a real request actually reaches the model with the Q3 clause (the limits form that `KATANA_UIOE_LIMITS=1` injects is cut to three clauses, scope first, so the Q3 clause can be left out there).

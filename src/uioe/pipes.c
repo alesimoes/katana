@@ -591,6 +591,17 @@ static void pipe_overview(UioeOrch *o) {
       if (pi >= 0) { UioeStep *s = &o->rt->step[pi]; s->ran = 1; s->rcalls = 1; s->rnodes = nn; s->rstatus = nn ? UR_OK : UR_EMPTY; snprintf(s->rconn, sizeof s->rconn, "direct read"); snprintf(s->rnote, sizeof s->rnote, "the opening lines of README.md, KATANA.md, AGENTS.md and CLAUDE.md were read (docs.select needs the tokenizer)"); } }
     rc_limit(o->rc, "the most imported files per folder were not computed in this phase; use the folder listing and the document titles");
 }
+/* U8: a memoria do dono como evidencia datada e de baixa confianca (conn_memory.c). Roda no tipo history e, nos outros, so quando o roteador pos o passo "memory"
+   (pista de historico ou de preferencia). Os termos sao os normalizados do pedido, sem o nome da pasta ou do projeto. */
+static void pipe_memory(UioeOrch *o) {
+    if (po_step_find(o->rt, "memory") < 0) return;
+    o->st = "P3"; po_terms(o);
+    UioeCall q = {0}; snprintf(q.arg, sizeof q.arg, "%.419s", o->terms); q.limit = 4; q.tier = 4; UioeResult r; int map[256];
+    const int st = po_run(o, "memory", "memory.recall", &q, &r, map, 0);
+    { const int mi = po_step_find(o->rt, "memory"); if (mi >= 0) { UioeStep *ms = &o->rt->step[mi]; char old[160]; snprintf(old, sizeof old, "%.100s", ms->rnote); snprintf(ms->rnote, sizeof ms->rnote, "%s%s%.90s", old, old[0] ? "; " : "", o->k->why_memory); } }      /* o motivo da rota aparece em `uioe ask --explain` */
+    if (st == UR_EMPTY) rc_limit(o->rc, "memory: nothing saved matches the request");
+    ur_free(&r);
+}
 static void pipe_place(UioeOrch *o) {
     o->st = "P3"; UioeCall q = {0}; snprintf(q.arg, sizeof q.arg, "%s", o->a->nplaces ? o->a->places[0] : o->a->root); q.tier = 1; UioeResult r; int map[256];
     po_run(o, "place", "place.resolve", &q, &r, map, 1); ur_free(&r);
@@ -606,6 +617,8 @@ static void po_pipeline(UioeOrch *o) {
     case UI_ERROR: pipe_error(o); break;
     case UI_HOWTO: pipe_howto(o); break;
     case UI_OVERVIEW: pipe_overview(o); break;
-    default: rc_limit(o->rc, "this kind of request (%s) needs sources that are not built in this phase (memory, earlier sessions, the web: U8 and U9)", g_uioe_kindname[o->k->kind]); break;
+    case UI_HISTORY: pipe_memory(o); break;
+    default: rc_limit(o->rc, "this kind of request (%s) needs sources that are not built in this phase (earlier sessions, the web: U8 and U9)", g_uioe_kindname[o->k->kind]); break;
     }
+    if (o->k->kind != UI_HISTORY && o->k->kind != UI_NONE) pipe_memory(o);      /* so roda se o roteador pos o passo (pista de memoria) */
 }
