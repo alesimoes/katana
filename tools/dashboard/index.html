@@ -68,4 +68,5 @@ let cf='',ci=0;async function show(){const r=await(await fetch('/sample?f='+enco
 $('sm').innerHTML='<button class="bt" id="nx">próximo exemplo</button>'+r.msgs.map(m=>`<div class="msg ${m.train?'tr':''}" tabindex="0"><span class="sub">${N[m.role]||E(m.role)}${m.train?' · aprende':''}</span>${m.text?'\n'+E(m.text):''}${m.calls.map(c=>`<code>${E(c.n)} ${E(c.a)}</code>`).join('')}</div>`).join('');$('nx').onclick=()=>{ci++;show()}}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-f]');if(b){cf=b.dataset.f;ci=0;show();$('sm').scrollIntoView({behavior:'smooth',block:'nearest'})}});
 async function tick(){try{const d=await(await fetch('/api',{cache:'no-store'})).json();draw(d);$('live').className='live';$('lt').textContent='ao vivo, '+new Date().toLocaleTimeString('pt-BR')}catch(e){$('live').className='live off';$('lt').textContent='sem conexão com o painel'}setTimeout(tick,2000)}tick();
-</script></body></html>
+</script><script>/* esconde os quadros sem dado (ex.: simulacao e provas antigas) */setInterval(function(){['cx','map','ex'].forEach(function(id){var e=document.getElementById(id);if(!e)return;var s=e.closest('section');if(s)s.style.display=e.innerHTML.trim()?'':'none'})},1000)</script>
+</body></html>
