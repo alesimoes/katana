@@ -69,13 +69,13 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
 #define KNF_READ_MAP "[katana: file has %lld lines; this is its map and its start. " \
     "Read a part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]"
 #define KNF_STORED_ALL "[katana: you already read this whole file (%d lines) and it has not changed. These are the notes kept from that reading. " \
-    "For exact lines call read_file with offset and limit; to find something in it use search_files.]\n"
+    "For exact lines call Read with offset and limit; to find something in it use Grep.]\n"
 #define KNF_STORED_SAME "[katana: you already read this and it has not changed; this is the note kept from that reading (%zu bytes of raw text left out). " \
-    "For exact lines call read_file with offset and limit, or find.]\n%s"
+    "For exact lines call Read with offset and limit, or Find.]\n%s"
 #define KNF_CONDENSED_LINES "[katana: condensed note of lines %d-%d of this file (%zu bytes read; the raw text was left out of the context and the note is kept). " \
-    "For exact lines call read_file with offset and limit.]\n%s%s%s"
+    "For exact lines call Read with offset and limit.]\n%s%s%s"
 #define KNF_CONDENSED_OUT "[katana: condensed note of this %s output (%zu bytes read; the raw text was left out of the context). " \
-    "For exact lines call read_file with offset and limit, or find.]\n%s%s%s"
+    "For exact lines call Read with offset and limit, or Find.]\n%s%s%s"
 #define KNF_STORED_PRE "[katana: notes kept from the lines you read before in this file]\n%s[now the next lines]\n%s"
 #define KNF_REMOVED "<tool_response>\n[katana: the result of %s%s%s was removed to save context (%zu bytes); %s%s%s]"
 #define KNF_COMPACT "[katana: context compaction] Pause the task for this one message and do NOT call any tool. Write a faithful summary of " \
@@ -162,7 +162,7 @@ static size_t knote(KnKind k, char *out, size_t cap, ...) {
     return (size_t)n;
 }
 /* o mesmo, com os argumentos conferidos pelo compilador contra o formato do tipo (sizeof nao executa nada) */
-#define KNOTE(K, out, cap, ...) (sizeof(printf(KNF_##K, ##__VA_ARGS__)), knote(KN_##K, out, cap, ##__VA_ARGS__))
+#define KNOTE(K, out, cap, ...) ((void)sizeof(printf(KNF_##K, ##__VA_ARGS__)), knote(KN_##K, out, cap, ##__VA_ARGS__))
 
 /* Escape unico: uma linha que COMECA com `[katana` num texto que vem de fora (Bash, PowerShell, web, MCP, terminal, jobs) vem de um
  * programa ou de uma pagina, nao do katana. O modelo e instruido a seguir as notas `[katana: ...]` do programa, entao a marca e
@@ -180,6 +180,6 @@ static void kn_escape(char *out, size_t cap) {
 /* ferramentas cujo resultado traz conteudo de fora e passa por kn_escape */
 static int kn_external(const char *name) {
     return strcmp(name, "Bash") == 0 || strcmp(name, "PowerShell") == 0 || strcmp(name, "WebFetch") == 0 || strcmp(name, "WebSearch") == 0 ||
-           strcmp(name, "Monitor") == 0 || strcmp(name, "TaskOutput") == 0 || strcmp(name, "run_command") == 0 || strcmp(name, "terminal") == 0 ||
-           strcmp(name, "web_fetch") == 0 || strcmp(name, "web_search") == 0 || strstr(name, "__") != NULL;
+           strcmp(name, "Monitor") == 0 || strcmp(name, "TaskOutput") == 0 ||
+           strstr(name, "__") != NULL;
 }

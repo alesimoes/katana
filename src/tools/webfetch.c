@@ -2,7 +2,7 @@
  * url (obrigatorio) e prompt (o que extrair). O papel do modelo pequeno que responde o prompt fica com o digest do
  * agente (depois do despacho); aqui a ferramenta devolve o texto da pagina que cabe em cap, com um cabecalho de uma
  * linha, e quando a pagina nao cabe escolhe os trechos que citam as palavras do prompt.
- * Extras do katana, opcionais: offset, find, links, render (passam para o web_fetch antigo). */
+ * Extras do katana, opcionais: offset, find, links, render (passam para o motor de agent/webnav.c). */
 static const char CT_WEBFETCH_DESC[] =
     "Fetches a web page and returns its content as text (HTML converted, at most the first 100000 characters read). "
     "Give the url and a prompt saying what you want from the page; when the page is long, the passages that mention the "
@@ -350,7 +350,7 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
     }
     {
         const int extras = ct_has(js, end, "offset") || (find && *find) || ct_bool(js, end, "links") || ct_bool(js, end, "render");
-        if (extras) {                                             /* extras do katana: o web_fetch antigo faz */
+        if (extras) {                                             /* extras do katana: o motor de agent/webnav.c faz */
             char j[2600]; size_t n = (size_t)snprintf(j, sizeof j, "{\"url\":");
             n += ct_wf_jq(u2, j + n, sizeof j - n);
             if (find && *find) { n += (size_t)snprintf(j + n, sizeof j - n, ",\"find\":"); n += ct_wf_jq(find, j + n, sizeof j - n); }

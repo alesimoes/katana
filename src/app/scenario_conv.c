@@ -106,7 +106,7 @@ static const char *x_mc(const CuMs *m, const CuMt *t, const char *args, int flag
         for (int i = 0; i < g_x.n; i++) if (g_x.m[i].role == 'u' || g_x.m[i].role == 't') { buf_str(&seen, g_x.m[i].text); buf_str(&seen, "\n"); }
         const int ok = cu_args_grounded(args, seen.p, bad, sizeof bad); free(seen.p);
         if (!ok) cu_die("argumento sem origem no pedido nem em resultado anterior"); }
-    return x_call(NULL, cu_mfull(m, t), args, flags | XF_OLD);
+    return x_call(NULL, cu_mfull(m, t), args, flags | XF_MCP);
 }
 /* verificacao do projeto antes da resposta final, quando o motor a cobraria (arquivos mudaram e ha test: no KATANA.md) */
 static void x_verify(XProj *p) {

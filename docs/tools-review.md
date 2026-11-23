@@ -1,5 +1,7 @@
 # Tool set review (2026-11-23)
 
+> Note (2026-11-23): the first tool set reviewed in the sections below (`run_command`, `read_file`, ...) was removed from the code; the sections that discuss it are historical.
+
 Scope: a review of the agent's tool set, from the data that exists (agent log, desktop sessions, curriculum v7) and from the
 code (`src/tools/`, `src/agent/prompt.c`, `src/agent/dispatch.c`). **No code was changed, nothing new was trained or
 measured** (owner's decision for this phase). Every number below was counted from an existing file or read from the code;

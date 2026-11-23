@@ -1,4 +1,4 @@
-/* ---------- navegacao na web: web_fetch com memoria da pagina ----------
+/* ---------- navegacao na web: WebFetch com memoria da pagina ----------
  * Uma pagina buscada fica guardada (texto limpo e links, as 8 ultimas). Em cima disso o modelo navega sem baixar de
  * novo: offset continua uma pagina longa, find devolve so os trechos que citam um termo, links=true lista para onde a
  * pagina leva (URLs absolutas). O texto vem do conteudo principal (<main> ou <article>) quando a pagina marca um,
@@ -118,7 +118,7 @@ static WnPage *wn_get(const char *url) {
     for (int i = 0; i < WN_PAGES; i++) if (g_wn[i].txt && strcmp(g_wn[i].url, url) == 0) { g_wn[i].use = ++g_wn_clock; return &g_wn[i]; }
     return NULL;
 }
-static int g_wn_render;     /* 1: web_fetch pediu render=true (a pagina depois de o JavaScript rodar) */
+static int g_wn_render;     /* 1: WebFetch pediu render=true (a pagina depois de o JavaScript rodar) */
 /* a pagina como um navegador a ve: Chrome ou Chromium instalado, sem janela, perfil temporario, devolve o DOM depois
    de o JavaScript rodar. NULL sem navegador ou em falha. Nao faz login nem clica: so carrega e le. */
 static char *wn_render(const char *url, size_t max, long *n) {
@@ -151,13 +151,11 @@ static WnPage *wn_put(const char *url, char *txt, size_t tn, char *lk, size_t ln
     return &g_wn[v];
 }
 static WnPage *wn_ingest(const char *url, char *raw, long n, int rendered, int allow_render, char *err, size_t ecap);
-static int ct_set2(void);      /* agent/prompt.c: 1 = ferramentas atuais (Read, Bash...), 0 = conjunto antigo */
 /* baixa a pagina, converte e guarda; em erro escreve a mensagem em err e devolve NULL */
 static WnPage *wn_load(const char *url, char *err, size_t ecap) {
     const size_t RAW = 2500000;
     char *raw = (char *)malloc(RAW + 1);
     int rc;
-    const int two = ct_set2();      /* as mensagens citam as ferramentas do conjunto em uso */
     if (!raw) { snprintf(err, ecap, "error: out of memory"); return NULL; }
     long n = curl_get(url, raw, RAW, &rc);
     int rendered = 0;
@@ -166,7 +164,7 @@ static WnPage *wn_load(const char *url, char *err, size_t ecap) {
         snprintf(err, ecap, "error: HTTP %d (%s) from %.300s: %s. Nothing from this page can be used. %s", c, http_reason(c), url,
                  c == 404 || c == 410 ? "there is no page at this address" : c == 401 || c == 403 ? "the site refuses this request (login or permission needed)"
                  : c == 429 ? "the site is limiting requests" : c >= 500 ? "the site failed" : "the site rejected the request",
-                 c == 404 || c == 410 ? (two ? "Check the address, or find the right one with WebSearch" : "Check the address, or find the right one with web_search")
+                 c == 404 || c == 410 ? "Check the address, or find the right one with WebSearch"
                  : c >= 500 || c == 429 ? "Try again later or use another source" : "Try another source");
         free(raw); return NULL;
     }
@@ -177,7 +175,7 @@ static WnPage *wn_load(const char *url, char *err, size_t ecap) {
     if (n <= 0) {
         if (n == -2) snprintf(err, ecap, "error: invalid URL (only http and https; no control characters)");
         else if (n < 0) snprintf(err, ecap, "error: cannot run curl");
-        else snprintf(err, ecap, "error: no content received (curl exit code %d: network failure, timeout, blocked or file too large). Try another source from %s, or curl -sSL -D- <url> with %s to see the HTTP status", rc, two ? "WebSearch" : "web_search", two ? "Bash" : "run_command");
+        else snprintf(err, ecap, "error: no content received (curl exit code %d: network failure, timeout, blocked or file too large). Try another source from WebSearch, or curl -sSL -D- <url> with Bash to see the HTTP status", rc);
         free(raw); return NULL;
     }
     return wn_ingest(url, raw, n, rendered, 1, err, ecap);
@@ -189,7 +187,7 @@ static WnPage *wn_ingest(const char *url, char *raw, long n, int rendered, int a
     char *txt = (char *)malloc(RAW + 600), *lk = (char *)malloc(WN_LINKS_BYTES);
     if (!txt || !lk) { free(raw); free(txt); free(lk); snprintf(err, ecap, "error: out of memory"); return NULL; }
     if (n >= 4 && memcmp(raw, "%PDF", 4) == 0) {
-        snprintf(err, ecap, "error: this URL is a PDF, not a page. Save it with download_file and read it with %s", ct_set2() ? "Read" : "read_document");
+        snprintf(err, ecap, "error: this URL is a PDF, not a page. Save it with Bash (curl -o) and read it with Read");
         free(raw); free(txt); free(lk); return NULL;
     }
     size_t tn = 0, ln = 0;
@@ -261,7 +259,7 @@ static void tool_web_fetch(const char *js, const char *end, char *out, size_t ca
             p = b;
         }
         if (!hits) snprintf(out, cap, "no passage mentions \"%s\" in this page (%zu bytes of text). Try another word, read the page from the start (no find), or list its links (links=true)", find, pg->tn);
-        else snprintf(out + o, cap - o, "[%d passage%s with \"%s\"; to read around one, call web_fetch with offset=<that offset>]", hits, hits > 1 ? "s" : "", find);
+        else snprintf(out + o, cap - o, "[%d passage%s with \"%s\"; to read around one, call WebFetch with offset=<that offset>]", hits, hits > 1 ? "s" : "", find);
         return;
     }
     if (off < 0) off = 0;

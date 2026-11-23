@@ -121,7 +121,7 @@ while IFS= read -r line; do
         printf 'Consultei o indice.\n'
         printf '\001READY\n';;
     *mudo*)
-        printf '\001TOOL list_dir\t{"path":"."}\n'
+        printf '\001TOOL Bash\t{"command":"ls"}\n'
         printf '\001READY\n';;
     *"parou sem"*)
         printf 'Resumo: listei a pasta; falta conferir os resultados.\n'

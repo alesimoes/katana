@@ -1790,7 +1790,7 @@ void Backend::handleMarker(const QByteArray &line)
     } else if (name == "TEACHW") {  // TEACHW <bytes>: o professor esta escrevendo as acoes desta resposta (um arquivo longo leva minutos)
         const double kb = args.trimmed().toDouble() / 1024.0;
         setTexts("Professor escrevendo as ações: " + QLocale(QLocale::Portuguese).toString(kb, 'f', 1) + " KB recebidos", m_error);
-    } else if (name == "CHOICE") {  // CHOICE <pergunta>\t<opcao>...: pergunta do agente (ask_user); resposta em answerChoice
+    } else if (name == "CHOICE") {  // CHOICE <pergunta>\t<opcao>...: pergunta do agente (AskUserQuestion); resposta em answerChoice
         const QStringList a = args.split('\t');
         m_choiceQ = a.value(0);
         m_choiceOpts = a.mid(1);
@@ -1912,7 +1912,7 @@ void Backend::markReady()
 
 bool Backend::isPlanTool(const QString &name)
 {
-    return name == "TodoWrite" || name == "todo" || name == "TaskCreate" || name == "TaskUpdate" || name == "TaskList" || name == "TaskGet";
+    return name == "TodoWrite" || name == "TaskCreate" || name == "TaskUpdate" || name == "TaskList" || name == "TaskGet";
 }
 
 QString Backend::fmtDuration(qint64 ms)
@@ -2128,7 +2128,7 @@ void Backend::assistantText(const QString &t)
 QString Backend::cleanArgs(const QString &in)
 {
     const QString s = in.trimmed();
-    // valor texto, ou booleano/numero sem aspas (ex.: edit_file replace_all, que o Gemma 4 manda como true)
+    // valor texto, ou booleano/numero sem aspas (ex.: Edit replace_all, que o Gemma 4 manda como true)
     static const QRegularExpression kv(R"re("(\w+)"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(true|false|-?\d+)(?=\s*[,}]|$)))re");
     if (s.contains('{')) {
         QStringList parts;

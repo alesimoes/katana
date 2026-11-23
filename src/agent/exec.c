@@ -1,6 +1,6 @@
-/* ---------- terminal e logs: run_command robusto, terminal (pty), read_log, terminal_screen ----------
+/* ---------- execucao de comandos: stdin fechado, timeout, inicio+fim da saida, anel dos ultimos comandos ----------
  * O agente precisa VER erros: stderr junto da saida, stdin fechado (sudo/ssh nao travam), timeout, codigo de
- * saida, inicio+fim da saida, anel dos ultimos comandos (read_log commands) e sessao de shell persistente. */
+ * saida e inicio+fim da saida. */
 
 /* valor inteiro da chave (numero ou texto numerico); def se nao houver */
 static int json_int(const char *js, const char *end, const char *key, int def) {
@@ -12,12 +12,6 @@ static int json_int(const char *js, const char *end, const char *key, int def) {
     while (q < end && (*q == ' ' || *q == ':' || *q == '\n' || *q == '\t' || *q == '\r' || *q == '"')) q++;
     if (q >= end || !(isdigit((unsigned char)*q) || *q == '-')) return def;
     return atoi(q);
-}
-static int json_has(const char *js, const char *end, const char *key) {
-    char pat[64];
-    snprintf(pat, sizeof pat, "\"%s\"", key);
-    const char *q = strstr(js, pat);
-    return q && q < end;
 }
 
 /* anel dos ultimos comandos do agente nesta sessao */
@@ -36,11 +30,7 @@ static void cmdlog_add(const char *cmd, int rc, const char *out) {
     snprintf(g_cmdlog[i].sum, sizeof g_cmdlog[i].sum, "%s", s);
 }
 
-#ifdef _WIN32
-static void tool_terminal(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: terminal is not available on Windows yet"); }
-static void tool_terminal_screen(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: terminal_screen is not available on Windows yet"); }
-static void tool_read_log(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: read_log is not available on Windows yet"); }
-#else
+#ifndef _WIN32
 #include <regex.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -88,7 +78,7 @@ static void cmd_on_sigint(int s) { (void)s; g_cmd_int = 1; }
 /* roda `sh -c cmd` em novo grupo de processos (setsid), stdin /dev/null, stdout+stderr no mesmo cano.
  * tmo = segundos (0 = sem limite). Devolve 0, ou -1 se nao conseguiu iniciar. */
 static char g_sudo_pw[256], g_askpass_path[512];   /* senha do sudo desta sessao (so em memoria) */
-static int g_ui_live;   /* 1 so durante o run_command do agente: repassa a saida ao vivo para a interface (marcador TOOLLIVE) */
+static int g_ui_live;   /* 1 so durante o Bash do agente: repassa a saida ao vivo para a interface (marcador TOOLLIVE) */
 static size_t g_live_total;
 static void ui_live(const char *b, size_t n) {
     if (!n || !g_ui_live || !getenv("KATANA_UI")) return;

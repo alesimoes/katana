@@ -68,7 +68,6 @@ static const char *ex_guess_dir(const char *n) {
     for (int i = 0; G[i].k; i++) if (strcasecmp(G[i].k, n) == 0) return G[i].v;
     return NULL;
 }
-static void ex_trimcpy(char *dst, size_t cap, const char *s) { snprintf(dst, cap, "%s", s); br_trim(dst); }
 /* monta o KATANA.md de dir em out (texto novo) */
 static void ex_init_build(const char *dir, McpB *out) {
     char p[2400], *txt;

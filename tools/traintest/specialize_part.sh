@@ -76,15 +76,15 @@ mkdir -p "$D/sp_sess"
 [ -f "$D/tch.ksess" ] && cp "$D/tch.ksess" "$D/tch.ksess.teacher" "$D/sp_sess/" 2>/dev/null || true
 for kind in tools code teacher; do
   if [ $kind = teacher ]; then src="--sessions $D/sp_sess"; else src="--from $D/sel"; fi
-  KATANA_TOOLS=2 HOME="$D/home" $K specialize "$SM" $kind $src --out "$D/sp_$kind" --steps 3 --seq 256 --margin-mb 0 --replace 'hello=HELLO' > "$D/sp_$kind.out" 2>&1 || true
+  HOME="$D/home" $K specialize "$SM" $kind $src --out "$D/sp_$kind" --steps 3 --seq 256 --margin-mb 0 --replace 'hello=HELLO' > "$D/sp_$kind.out" 2>&1 || true
   if [ -s "$D/sp_$kind/$kind.kspec" ] && grep -q "KATANA_SPEC=$D/sp_$kind/$kind.kspec" "$D/sp_$kind/report.txt" && grep -q '"steps": 3' "$D/sp_$kind/train.log" \
      && [ -s "$D/sp_$kind/plan.log" ] && [ -s "$D/sp_$kind/steps.jsonl" ]; then echo "specialize $kind: ok"; else echo "specialize $kind: FALHOU"; tail -5 "$D/sp_$kind.out"; fail=1; fi
 done
 grep -q "TodoWrite" "$D/sp_code/data.jsonl" && grep -q "HELLO" "$D/sp_code/data.jsonl" && ! grep -q "<tools>" "$D/sp_tools/sys.txt" && grep -q "<tools>" "$D/sp_code/sys.txt" \
   && echo "specialize: plano nos dados de code, troca aplicada, prompt de tools sem declaracoes: ok" || { echo "specialize (dados): FALHOU"; fail=1; }
-KATANA_TOOLS=2 HOME="$D/home" $K specialize "$SM" code --from "$D/sel" --out "$D/sp_dry" --dry-run --margin-mb 0 > /dev/null 2>&1 || true
+HOME="$D/home" $K specialize "$SM" code --from "$D/sel" --out "$D/sp_dry" --dry-run --margin-mb 0 > /dev/null 2>&1 || true
 [ -s "$D/sp_dry/plan.log" ] && [ ! -e "$D/sp_dry/code.kspec" ] && echo "specialize --dry-run: ok" || { echo "specialize --dry-run: FALHOU"; fail=1; }
-KATANA_TOOLS=2 HOME="$D/home" $K specialize "$SM" code --from "$D/sel" --out "$D/sp_mem" --dry-run --margin-mb 99999999 > /dev/null 2>&1 && { echo "specialize sem memoria: FALHOU"; fail=1; } || echo "specialize recusa sem memoria: ok"
+HOME="$D/home" $K specialize "$SM" code --from "$D/sel" --out "$D/sp_mem" --dry-run --margin-mb 99999999 > /dev/null 2>&1 && { echo "specialize sem memoria: FALHOU"; fail=1; } || echo "specialize recusa sem memoria: ok"
 # conhecimento (corpus de perguntas e respostas), all com mistura, retomada entre noites, marca no .kspec e no GGUF
 python3 - "$D/corpus.jsonl" <<'PY'
 import json, sys
@@ -92,12 +92,12 @@ qa = [("what is katana?", "A local inference engine written in C."), ("where do 
       ("which models are the references?", "Qwen3.6-35B-A3B and Gemma 4 26B-A4B.")]
 open(sys.argv[1], "w").write("".join(json.dumps({"messages": [{"role": "user", "content": q}, {"role": "assistant", "content": a}]}) + "\n" for q, a in qa))
 PY
-KATANA_TOOLS=2 HOME="$D/home" $K specialize "$SM" knowledge --corpus "$D/corpus.jsonl" --out "$D/sp_know" --steps 3 --seq 256 --margin-mb 0 --no-check > "$D/sp_know.out" 2>&1 || true
+HOME="$D/home" $K specialize "$SM" knowledge --corpus "$D/corpus.jsonl" --out "$D/sp_know" --steps 3 --seq 256 --margin-mb 0 --no-check > "$D/sp_know.out" 2>&1 || true
 [ -s "$D/sp_know/knowledge.kspec" ] && grep -q '"source": "knowledge"' "$D/sp_know/data.jsonl" && echo "specialize knowledge: ok" || { echo "specialize knowledge: FALHOU"; tail -5 "$D/sp_know.out"; fail=1; }
 SPA="--from $D/sel --sessions $D/sp_sess --corpus $D/corpus.jsonl --steps 20 --seq 256 --lr 3e-3 --margin-mb 0 --no-check --mix tools=50,code=30,knowledge=20,teacher=0"
-KATANA_TOOLS=2 HOME="$D/home" $K specialize "$SM" $SPA --out "$D/sp_root/all-1" > "$D/sp_all1.out" 2>&1 || true
+HOME="$D/home" $K specialize "$SM" $SPA --out "$D/sp_root/all-1" > "$D/sp_all1.out" 2>&1 || true
 sleep 1
-KATANA_TOOLS=2 HOME="$D/home" $K specialize "$SM" $SPA --out "$D/sp_root/all-2" > "$D/sp_all2.out" 2>&1 || true
+HOME="$D/home" $K specialize "$SM" $SPA --out "$D/sp_root/all-2" > "$D/sp_all2.out" 2>&1 || true
 if python3 - "$D" <<'PY'
 import json, sys
 D = sys.argv[1]
@@ -116,9 +116,9 @@ then echo "specialize all: ok (mistura exata, segunda noite retoma da primeira, 
 # a marca tira a secao de ferramentas do prompt do agente: com KATANA_SPEC e no GGUF fundido (katana merge)
 $K merge "$SM" "$D/sp_root/all-2/katana.kspec" "$D/sp_merged.gguf" >/dev/null 2>&1 || true
 mkdir -p "$D/sp_ag"
-(cd "$D/sp_ag" && printf 'oi\n/exit\n' | env KATANA_TOOLS=2 HOME="$D/home" KATANA_MAXTOK=4 $K agent "$SM" --sessao "$D/sp_ag/base.ksess" >/dev/null 2>&1) || true
-(cd "$D/sp_ag" && printf 'oi\n/exit\n' | env KATANA_TOOLS=2 HOME="$D/home" KATANA_MAXTOK=4 KATANA_SPEC="$D/sp_root/all-2/katana.kspec" $K agent "$SM" --sessao "$D/sp_ag/spec.ksess" >/dev/null 2>&1) || true
-(cd "$D/sp_ag" && printf 'oi\n/exit\n' | env KATANA_TOOLS=2 HOME="$D/home" KATANA_MAXTOK=4 $K agent "$D/sp_merged.gguf" --sessao "$D/sp_ag/merged.ksess" >/dev/null 2>&1) || true
+(cd "$D/sp_ag" && printf 'oi\n/exit\n' | env HOME="$D/home" KATANA_MAXTOK=4 $K agent "$SM" --sessao "$D/sp_ag/base.ksess" >/dev/null 2>&1) || true
+(cd "$D/sp_ag" && printf 'oi\n/exit\n' | env HOME="$D/home" KATANA_MAXTOK=4 KATANA_SPEC="$D/sp_root/all-2/katana.kspec" $K agent "$SM" --sessao "$D/sp_ag/spec.ksess" >/dev/null 2>&1) || true
+(cd "$D/sp_ag" && printf 'oi\n/exit\n' | env HOME="$D/home" KATANA_MAXTOK=4 $K agent "$D/sp_merged.gguf" --sessao "$D/sp_ag/merged.ksess" >/dev/null 2>&1) || true
 if python3 - "$D/sp_ag" <<'PY'
 import sys
 r = lambda n: open(sys.argv[1] + "/" + n, "rb").read()

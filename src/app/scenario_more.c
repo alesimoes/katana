@@ -143,16 +143,16 @@ static const char *x_sentence(const char *out, const char *needle) {
 #include "app/scenario_concept.c"    /* x-concept: os conceitos do katana, tres situacoes cada, em rodizio */
 
 /* ======================= ferramentas listadas so pelo nome ======================= */
-enum { K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_AGENT, K_CRON, K_TERM, K_N };
-static const char *const g_x_kname[K_N] = {"background", "monitor", "notebook", "send-file", "plan-mode", "worktree", "git", "memory", "download", "lsp", "mcp-resources", "agent", "cron", "terminal"};
+enum { K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_LSP, K_MCPRES, K_AGENT, K_CRON, K_N };
+static const char *const g_x_kname[K_N] = {"background", "monitor", "notebook", "send-file", "plan-mode", "worktree", "lsp", "mcp-resources", "agent", "cron"};
 static char g_x_subans[2000];
 static void x_sub_oracle(const char *prompt, char *out, size_t cap) { (void)prompt; snprintf(out, cap, "%s", g_x_subans); }
 static const char *x_tsel(const char *names) { return x_call(NULL, "ToolSearch", cu_fmt("{\"query\": \"select:%s\"}", names), 0); }
 static void fam_x_tools(FILE *f, Scn *s) {
-    /* as ferramentas saem em rodizio (sem gastar sorteio; a escolha vai na linha gravada). Ficam de fora: Agent (so dentro do laco do agente, com modelo) e terminal (a saida do pty depende do tempo) */
-    static const int order[] = {K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_GIT, K_MEM, K_DL, K_LSP, K_MCPRES, K_CRON};
+    /* as ferramentas saem em rodizio (sem gastar sorteio; a escolha vai na linha gravada). Fica de fora o Agent (so dentro do laco do agente, com modelo) */
+    static const int order[] = {K_BG, K_MON, K_NB, K_SEND, K_PLANMODE, K_WT, K_LSP, K_MCPRES, K_CRON};
     /* na validacao so saem o segundo plano e o Monitor (com TaskStop): as outras ferramentas ja tem situacoes reservadas em x-rare */
-    const int kind = g_x_kforce >= 0 ? g_x_kforce : g_cu_hold ? order[(g_x_cycle + g_cu_att) % 2] : order[(g_x_cycle + g_cu_att) % CU_N(order)];      /* terminal fica de fora: a saida do pty depende do tempo */
+    const int kind = g_x_kforce >= 0 ? g_x_kforce : g_cu_hold ? order[(g_x_cycle + g_cu_att) % 2] : order[(g_x_cycle + g_cu_att) % CU_N(order)];
     XC c; memset(&c, 0, sizeof c); c.s = s;
     const int st = cu_n(X_NST);
     x_proj(&c.p, s, st == X_C ? X_SH : st, 2, 2); XProj *p = &c.p;
@@ -163,11 +163,8 @@ static void fam_x_tools(FILE *f, Scn *s) {
     if (kind == K_NB) x_extra(p, nb, cu_fmt("{\"cells\": [{\"cell_type\": \"code\", \"id\": \"setup\", \"metadata\": {}, \"outputs\": [], \"execution_count\": null, \"source\": [\"rate = %d\\n\"]}, "
                                             "{\"cell_type\": \"code\", \"id\": \"calc\", \"metadata\": {}, \"outputs\": [], \"execution_count\": null, \"source\": [\"total = rate * 12\\n\", \"total\\n\"]}], \"metadata\": {}, \"nbformat\": 4, \"nbformat_minor\": 5}\n", rate), 0);
     if (kind == K_PLANMODE) { p->conf = 1; for (int i = 0; i < CU_N(x_conf_keys); i++) x_conf_add(p, x_conf_keys[i][0], x_conf_keys[i][1], x_conf_keys[i][2]); }
-    g_x_realgit = kind == K_WT || kind == K_GIT;
-    if (kind == K_DL || kind == K_WT) p->brief = 0;
-    char site[80]; snprintf(site, sizeof site, "files-%04x", (unsigned)(g_x_rng0 & 0xffff));
-    const char *dlname = cu_fmt("%s-notes.txt", XV("release", "api", "upgrade"));
-    if (kind == K_DL) { if (!x_web_up()) cu_die("o servidor local de paginas nao subiu"); cu_put(cu_fmt("%s/www/%s/%s", g_cu_sbroot, site, dlname), cu_fmt("notes for %s\nline two\nline three\n", p->name), 0); }
+    g_x_realgit = kind == K_WT;
+    if (kind == K_WT) p->brief = 0;
     x_begin("x-tools", s, p, 0, 0);
     g_x_realgit = 0; g_x.k = kind;
     x_cell("tools/%s/%s/conv%d", g_x_kname[kind], g_x_stid[p->st], p->brief ? 2 : p->readme);
@@ -255,40 +252,6 @@ static void fam_x_tools(FILE *f, Scn *s) {
         if (asked) { x_final(cu_fmt(L("In the worktree `%s` the tests gave: %s. The run left uncommitted files there, so I asked before discarding them; the worktree and its branch are now removed and your checkout was not touched.",
                                       "No worktree `%s` os testes deram: %s. A rodada deixou arquivos sem commit la, entao perguntei antes de descartar; o worktree e a branch dele foram removidos e o seu checkout nao foi tocado."), w, tot)); x_end(f); return; }
         x_final(cu_fmt(L("In the worktree `%s` the tests gave: %s. The worktree and its branch are removed; your checkout was not touched.", "No worktree `%s` os testes deram: %s. O worktree e a branch dele foram removidos; o seu checkout nao foi tocado."), w, tot));
-    } else if (kind == K_GIT) {
-        XFi *fi = &p->mod[0].fn[0]; const char *rel = x_src(p, 0);
-        const char *cur = x_slurp(s, rel), *oldl = x_snip(p->st, fi->name, fi->f, fi->num), *newl = x_snip(p->st, fi->name, fi->f, fi->f->bad);
-        const char *q = strstr(cur, oldl); if (!q) cu_die("trecho nao achado");
-        cu_put(x_abs(s, rel), cu_fmt("%.*s%s%s", (int)(q - cur), cur, newl, q + strlen(oldl)), 0);
-        x_user(XV(L("what did I change since the last commit?", "o que eu mudei desde o ultimo commit?"), L("show me my uncommitted changes", "me mostra as minhas mudancas sem commit")));
-        const char *r = cu_fmt("%s", x_call(NULL, "git", "{\"args\": \"status --short\"}", XF_OLD));
-        if (!strstr(r, rel)) cu_die("git status sem o arquivo: %.200s", r);
-        r = cu_fmt("%s", x_call(NULL, "git", "{\"args\": \"diff\"}", XF_OLD));
-        const char *plus = strstr(r, "\n+ "), *minus = strstr(r, "\n- ");
-        if (!plus || !minus) cu_die("git diff sem as linhas: %.300s", r);
-        x_final(cu_fmt(L("One file changed: %s. In `%s` the line `%.*s` became `%.*s`. Nothing is staged.", "Um arquivo mudou: %s. Em `%s` a linha `%.*s` virou `%.*s`. Nada esta no stage."), rel, fi->name,
-                       (int)strcspn(minus + 2, "\n") - (int)strspn(minus + 2, " "), minus + 2 + strspn(minus + 2, " "), (int)strcspn(plus + 2, "\n") - (int)strspn(plus + 2, " "), plus + 2 + strspn(plus + 2, " ")));
-    } else if (kind == K_MEM) {
-        {   time_t tt = time(NULL); char td[16]; strftime(td, sizeof td, "%Y-%m-%d", localtime(&tt));      /* a ferramenta de memoria carimba a data de hoje: na linha gravada fica a do cenario */
-            if (g_x.nsub < 4 && strcmp(td, s->date)) { g_x.sfrom[g_x.nsub] = cu_fmt("%s", td); g_x.sto[g_x.nsub++] = s->date; } }
-        static const char *const facts[][4] = {{"I prefer tabs over spaces in shell scripts", "prefiro tabs a espacos em scripts de shell", "tabs", "indentation"}, {"my release day is Thursday", "meu dia de release e quinta-feira", "Thursday", "release"},
-            {"I review code in the morning, before ten", "eu reviso codigo de manha, antes das dez", "morning", "review"}};
-        const int fi = cu_n(3);
-        x_user(cu_fmt(L("remember this: %s", "guarda isso: %s"), L(facts[fi][0], facts[fi][1])));
-        const char *r = x_call(NULL, "remember", cu_fmt("{\"fact\": %s}", cu_q(cu_fmt("The user said: %s", facts[fi][0]))), XF_OLD);
-        if (x_err(r)) cu_die("remember: %.200s", r);
-        x_final(L("Saved. I will have it in later conversations too.", "Guardado. Vou ter isso nas proximas conversas tambem."));
-        x_user(cu_fmt(XV(L("what do you have saved about my %s?", "o que voce tem guardado sobre %s?")), g_cu_lang ? (fi == 0 ? "indentacao" : fi == 1 ? "o meu release" : "a minha revisao de codigo") : facts[fi][3]));
-        r = x_call(NULL, "recall", cu_fmt("{\"query\": %s}", cu_q(facts[fi][2])), XF_OLD);
-        if (!strstr(r, facts[fi][2])) cu_die("recall nao achou: %.200s", r);
-        x_final(cu_fmt(L("I have this saved: \"%s\".", "Tenho isto guardado: \"%s\"."), cu_fmt("The user said: %s", facts[fi][0])));
-    } else if (kind == K_DL) {
-        const char *url = cu_fmt("http://127.0.0.1:%d/%s/%s", g_x_port, site, dlname), *dst = cu_fmt("docs/%s", dlname);
-        x_user(cu_fmt(XV(L("download %s into docs/", "baixa %s para dentro de docs/"), L("save %s under docs/ of this project", "salva %s em docs/ deste projeto")), url));
-        const char *r = x_call(NULL, "download_file", cu_fmt("{\"url\": %s, \"path\": %s}", cu_q(url), cu_q(dst)), XF_OLD);
-        if (x_err(r) || access(x_abs(s, dst), F_OK) != 0) cu_die("download_file: %.200s", r);
-        r = x_bash(NULL, cu_fmt("wc -l %s", dst), L("Count the lines of the downloaded file", "Conta as linhas do arquivo baixado"), 0);
-        x_final(cu_fmt(L("Saved as %s (%d lines).", "Salvo como %s (%d linhas)."), dst, atoi(r)));
     } else if (kind == K_LSP) {
         XFi *fi = &p->mod[1].fn[0];
         x_user(cu_fmt(XV(L("use the language server to find where %s is defined", "usa o servidor de linguagem pra achar onde o %s e definido"), L("ask the language server for the definition of %s", "pede ao servidor de linguagem a definicao do %s")), fi->name));
@@ -339,16 +302,6 @@ static void fam_x_tools(FILE *f, Scn *s) {
         if (!ln) cu_die("CronList sem a tarefa: %.200s", r);
         ct_sched_reset();
         x_final(cu_fmt(L("Scheduled for this session only: `%s`. It ends when the session ends.", "Agendado so para esta sessao: `%s`. Acaba quando a sessao acabar."), ln));
-    } else {
-        const char *val = XV("staging", "canary", "nightly");
-        x_user(cu_fmt(XV(L("open a shell session called build, set STAGE=%s in it and show me that the value is kept", "abre uma sessao de shell chamada build, define STAGE=%s nela e me mostra que o valor fica guardado")), val));
-        const char *r = x_call(NULL, "terminal", "{\"action\": \"open\", \"name\": \"build\"}", XF_OLD);
-        if (x_err(r)) cu_die("terminal open: %.200s", r);
-        x_call(NULL, "terminal", cu_fmt("{\"action\": \"send\", \"name\": \"build\", \"text\": \"export STAGE=%s\"}", val), XF_OLD);
-        r = cu_fmt("%s", x_call(NULL, "terminal", "{\"action\": \"send\", \"name\": \"build\", \"text\": \"echo stage=$STAGE\"}", XF_OLD));
-        static char cl[2000]; agent_tool_run("terminal", "{\"action\": \"close\", \"name\": \"build\"}", "", cl, sizeof cl);
-        if (!strstr(r, cu_fmt("stage=%s", val))) cu_die("terminal sem o valor: %.300s", r);
-        cu_die("terminal: saida depende do tempo; fora do arquivo (%.60s)", r);
     }
     if (g_cu_hold) { c.fu = cu_pct(50) ? F_FIND : F_EXPLAIN; x_followup(&c); }      /* holdout: um pedido de outro mecanismo na mesma conversa */
     x_end(f);
@@ -428,7 +381,6 @@ static const struct { const char *name; void (*fn)(FILE *, Scn *); } g_x_fams[] 
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run}, {"x-config", fam_x_config}, {"x-clean", fam_x_clean},
     {"x-investigate", fam_x_investigate}, {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
     {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs}, {"x-find6", fam_x_find6}, {"x-batch", fam_x_batch}, {"x-script", fam_x_script}, {"x-symbols", fam_x_symbols}, {"x-find7", fam_x_find7}, {"x-place", fam_x_place}, {"x-cursor", fam_x_cursor}, {"x-katananotes", fam_x_katananotes}};
-static int cu_is_old_tool(const char *n) { return !strcmp(n, "git") || !strcmp(n, "terminal") || !strcmp(n, "recall") || !strcmp(n, "remember") || !strcmp(n, "download_file") || !strcmp(n, "install_package") || !strcmp(n, "read_log") || !strcmp(n, "howto"); }
 /* 1 = a linha foi refeita igual; 0 = diferente (why diz onde) */
 static int x_replay(const char *line, const char *fam, long nl, char *why, size_t cap) {
     const char *sc = cu_jget(line, "scn");

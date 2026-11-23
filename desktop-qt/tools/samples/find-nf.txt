@@ -1,2 +1,2 @@
 NOT FOUND (literal): the quoted text does not occur in any of the indexed files.
-No match for ""zzqqnotthere"". Try other words: names of functions, files or messages you expect in the code. If it is something you saved earlier (a fact, a preference), try recall(query).Follow a symbol with Find mode=refs, or Read a part with offset and limit.
+No match for ""zzqqnotthere"". Try other words: names of functions, files or messages you expect in the code.Follow a symbol with Find mode=refs, or Read a part with offset and limit.

@@ -1,4 +1,4 @@
-/* ---------- run_command, sessoes de terminal em pty e o shell root persistente ---------- */
+/* ---------- execucao de comandos do Bash e o shell root persistente (pty) ---------- */
 #ifndef _WIN32
 static void tool_run_command(const char *cmd, const char *js, const char *end, char *out, size_t cap) {
     int tmo = json_int(js, end, "timeout_s", -1);
@@ -49,12 +49,9 @@ static void tool_run_command(const char *cmd, const char *js, const char *end, c
     free(body);
 }
 
-/* ---- terminal: sessoes de shell persistentes em pty ---- */
-#define TERM_MAX 4
+/* ---- sessao de shell em pty (so a do root, para o sudo) ---- */
 #define TERM_BUF (256 * 1024)
 typedef struct { int used, fd, dead, status; pid_t pid; char name[24]; char *buf; unsigned long long tot, rd; } TermSess;
-static TermSess g_term[TERM_MAX];
-static int g_term_exit_set;
 
 static void term_kill(TermSess *s) {
     if (!s->used) return;
@@ -67,8 +64,9 @@ static void term_kill(TermSess *s) {
     } else if (s->fd >= 0) close(s->fd);
     free(s->buf); memset(s, 0, sizeof *s);
 }
-static TermSess g_rootS;     /* sessao root persistente do run_command (fora da lista do terminal) */
-static void term_all_kill(void) { for (int i = 0; i < TERM_MAX; i++) term_kill(&g_term[i]); term_kill(&g_rootS); }
+static TermSess g_rootS;     /* sessao root persistente do Bash com sudo */
+static int g_root_exit_set;
+static void term_all_kill(void) { term_kill(&g_rootS); }
 
 static void term_pump(TermSess *s) {
     char b[4096];
@@ -118,42 +116,7 @@ static size_t term_clean(const char *src, size_t n, char *dst) {
     dst[o] = 0;
     return o;
 }
-/* saida [from, tot) limpa; se lines>0, so as ultimas `lines` linhas; limite de bytes pelo fim */
-static void term_extract(TermSess *s, unsigned long long from, int lines, char *out, size_t cap) {
-    unsigned long long lost = 0;
-    if (s->tot > TERM_BUF && from < s->tot - TERM_BUF) { lost = s->tot - TERM_BUF - from; from = s->tot - TERM_BUF; }
-    const size_t n = (size_t)(s->tot - from);
-    char *raw = (char *)malloc(n + 1), *cl = (char *)malloc(n + 1);
-    if (!raw || !cl) { free(raw); free(cl); snprintf(out, cap, "error: out of memory"); return; }
-    for (size_t i = 0; i < n; i++) raw[i] = s->buf[(from + i) % TERM_BUF];
-    const size_t cn = term_clean(raw, n, cl);
-    const char *p = cl;
-    if (lines > 0) p = tail_lines(cl, cn, lines, cn);
-    size_t L = g_budget < 6000 ? g_budget : 6000;
-    if (L < 1500) L = 1500;
-    if (L + 300 > cap) L = cap > 600 ? cap - 300 : 300;
-    size_t pl = (size_t)(cl + cn - p);
-    size_t o = 0;
-    if (lost) o += (size_t)snprintf(out + o, cap - o, "[earlier output lost: %llu bytes]\n", lost);
-    if (pl > L) { p += pl - L; while (((unsigned char)*p & 0xC0) == 0x80) p++; o += (size_t)snprintf(out + o, cap - o, "[... earlier output omitted ...]\n"); pl = (size_t)(cl + cn - p); }
-    memcpy(out + o, p, pl); o += pl;
-    out[o] = 0;
-    free(raw); free(cl);
-}
 
-/* ---- shell root persistente: `sudo -A bash` num pty; cada comando vira um arquivo lido com `.` (mesmo shell: cwd e
- * variaveis persistem; erro de sintaxe nao trava) e um marcador com o codigo de saida marca o fim ---- */
-static const char *sudo_path(void) {              /* caminho do sudo pelo PATH (resolvido antes do vfork) */
-    static char sudop[1100];
-    sudop[0] = 0;
-    const char *pa = getenv("PATH"); char dir[1000]; if (!pa) pa = "/usr/bin:/bin";
-    for (const char *q = pa; *q && !sudop[0]; ) {
-        const size_t l = strcspn(q, ":");
-        if (l && l < sizeof dir) { memcpy(dir, q, l); dir[l] = 0; char t[1100]; snprintf(t, sizeof t, "%s/sudo", dir); if (access(t, X_OK) == 0) snprintf(sudop, sizeof sudop, "%s", t); }
-        q += l; if (*q == ':') q++;
-    }
-    return sudop[0] ? sudop : NULL;
-}
 static int root_open(void) {
     if (g_rootS.used && !g_rootS.dead) return 0;
     if (g_rootS.used) term_kill(&g_rootS);
@@ -200,7 +163,7 @@ static int root_open(void) {
     memset(&g_rootS, 0, sizeof g_rootS);
     g_rootS.used = 1; g_rootS.fd = m; g_rootS.pid = pid; snprintf(g_rootS.name, sizeof g_rootS.name, "root");
     g_rootS.buf = (char *)malloc(TERM_BUF);
-    if (!g_term_exit_set) { atexit(term_all_kill); g_term_exit_set = 1; }
+    if (!g_root_exit_set) { atexit(term_all_kill); g_root_exit_set = 1; }
     const char *init = "stty -echo; PS1=; PS2=; printf '__KRE%s\\n' ADY\n";
     for (size_t i = 0, n = strlen(init); i < n; ) { const ssize_t w = write(m, init + i, n - i); if (w > 0) i += (size_t)w; else if (errno == EAGAIN) usleep(2000); else if (errno != EINTR) break; }
     const double t0 = cm_now();
@@ -295,158 +258,6 @@ static int root_exec(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, i
     return ret;
 }
 
-static TermSess *term_find(const char *name, char *err, size_t ecap) {
-    int cnt = 0; TermSess *only = NULL;
-    for (int i = 0; i < TERM_MAX; i++) if (g_term[i].used) {
-        cnt++; only = &g_term[i];
-        if (name[0] && strcmp(g_term[i].name, name) == 0) return &g_term[i];
-    }
-    if (!name[0] && cnt == 1) return only;
-    if (cnt == 0) snprintf(err, ecap, "error: no terminal session is open; call terminal with action open first");
-    else if (!name[0]) snprintf(err, ecap, "error: several sessions are open; pass name (see action list)");
-    else snprintf(err, ecap, "error: no session named %s (see action list)", name);
-    return NULL;
-}
 
-static void tool_terminal(const char *js, const char *end, char *out, size_t cap) {
-    static char act[32], name[64], text[262144];
-    act[0] = name[0] = text[0] = 0;
-    json_str(js, end, "action", act, sizeof act);
-    json_str(js, end, "name", name, sizeof name);
-    for (char *q = name; *q; q++) if (!isalnum((unsigned char)*q) && *q != '_' && *q != '-') *q = '_';
-    if (strlen(name) > 20) name[20] = 0;
-    char err[200];
-    if (strcmp(act, "list") == 0) {
-        size_t o = 0; int c = 0;
-        for (int i = 0; i < TERM_MAX; i++) if (g_term[i].used) {
-            term_pump(&g_term[i]);
-            o += (size_t)snprintf(out + o, cap - o, "%s: pid %d, %s, %llu bytes of output, %llu unread\n", g_term[i].name, (int)g_term[i].pid,
-                g_term[i].dead ? "exited" : "running", g_term[i].tot, g_term[i].tot - g_term[i].rd);
-            c++;
-        }
-        if (!c) snprintf(out, cap, "(no sessions)");
-        return;
-    }
-    if (strcmp(act, "open") == 0) {
-        TermSess *s = NULL;
-        if (!name[0]) snprintf(name, sizeof name, "s%d", g_cmdlog_n % 100);
-        for (int i = 0; i < TERM_MAX; i++) if (g_term[i].used && strcmp(g_term[i].name, name) == 0) { snprintf(out, cap, "error: session %s already exists", name); return; }
-        for (int i = 0; i < TERM_MAX; i++) if (!g_term[i].used) { s = &g_term[i]; break; }
-        if (!s) { snprintf(out, cap, "error: at most %d sessions; close one first (action close)", TERM_MAX); return; }
-        if (!agent_act("abrir uma sessao de terminal", name)) { snprintf(out, cap, "error: the user denied this action"); return; }
-        const int m = posix_openpt(O_RDWR | O_NOCTTY);
-        if (m < 0 || grantpt(m) != 0 || unlockpt(m) != 0) { if (m >= 0) close(m); snprintf(out, cap, "error: cannot allocate a pty"); return; }
-        const char *sn = ptsname(m);
-        const int sl = sn ? open(sn, O_RDWR | O_NOCTTY) : -1;
-        if (sl < 0) { close(m); snprintf(out, cap, "error: cannot open the pty"); return; }
-        struct winsize ws = { 50, 200, 0, 0 };
-        ioctl(m, TIOCSWINSZ, &ws);
-        static char *envp[4096];
-        int ne = 0;
-        for (char **e = environ; e && *e && ne < 4080; e++)
-            if (strncmp(*e, "TERM=", 5) && strncmp(*e, "PS1=", 4) && strncmp(*e, "PAGER=", 6) && strncmp(*e, "GIT_PAGER=", 10) && strncmp(*e, "GIT_TERMINAL_PROMPT=", 20)) envp[ne++] = *e;
-        envp[ne++] = (char *)"TERM=dumb"; envp[ne++] = (char *)"PS1=$ "; envp[ne++] = (char *)"PAGER=cat"; envp[ne++] = (char *)"GIT_PAGER=cat"; envp[ne] = NULL;
-        const int bash = access("/bin/bash", X_OK) == 0;
-        /* root por padrao: a sessao e um `sudo -A bash` (a senha vem do modal uma vez); sudo dentro dela nao pede mais nada */
-        const char *sudop = bash && sudo_default() && sudo_prepare("", 1) ? sudo_path() : NULL;
-        static char pwenv[300], apenv[560], pfenv[560];
-        if (sudop && g_sudo_pw[0] && g_askpass_path[0] && ne < 4090) {
-            snprintf(pwenv, sizeof pwenv, "KATANA_PW=%s", g_sudo_pw); snprintf(apenv, sizeof apenv, "SUDO_ASKPASS=%s", g_askpass_path);
-            envp[ne++] = pwenv; envp[ne++] = apenv; envp[ne] = NULL;
-        } else if (!sudop && ne < 4090) {     /* usuario normal: sudo digitado na sessao usa o askpass, que le a senha do arquivo em tmpfs */
-            char h2[1024]; agent_home(h2, sizeof h2);
-            snprintf(apenv, sizeof apenv, "SUDO_ASKPASS=%s/.katana/askpass.sh", h2); snprintf(pfenv, sizeof pfenv, "KATANA_PWFILE=%s", pwfile_path());
-            envp[ne++] = apenv; envp[ne++] = pfenv; envp[ne] = NULL;
-        }
-        fflush(stdout); fflush(stderr);
-        const pid_t pid = vfork();
-        if (pid < 0) { close(m); close(sl); snprintf(out, cap, "error: cannot start the shell"); return; }
-        if (pid == 0) {
-            setsid();
-            ioctl(sl, TIOCSCTTY, 0);
-            dup2(sl, 0); dup2(sl, 1); dup2(sl, 2);
-            if (sl > 2) close(sl);
-            close(m);
-            if (sudop) execve(sudop, (char *const[]){ (char *)"sudo", (char *)"-A", (char *)"/bin/bash", (char *)"--norc", (char *)"--noprofile", (char *)"--noediting", (char *)"-i", NULL }, envp);
-            if (bash) execve("/bin/bash", (char *const[]){ (char *)"bash", (char *)"--norc", (char *)"--noprofile", (char *)"--noediting", (char *)"-i", NULL }, envp);
-            else execve("/bin/sh", (char *const[]){ (char *)"sh", (char *)"-i", NULL }, envp);
-            _exit(127);
-        }
-        reap_add(pid);
-        close(sl);
-        fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK);
-        fcntl(m, F_SETFD, FD_CLOEXEC);
-        memset(s, 0, sizeof *s);
-        s->used = 1; s->fd = m; s->pid = pid; snprintf(s->name, sizeof s->name, "%s", name);
-        s->buf = (char *)malloc(TERM_BUF);
-        if (!g_term_exit_set) { atexit(term_all_kill); g_term_exit_set = 1; }
-        if (!sudop && bash) {     /* sudo dentro da sessao usa o askpass (a senha ja vem do modal) */
-            const char *init = " sudo() { command sudo -A \"$@\"; }\n";
-            if (write(m, init, strlen(init)) < 0) {}
-        }
-        term_wait(s, 800);
-        if (!sudop && bash) s->rd = s->tot;
-        const size_t o = (size_t)snprintf(out, cap, "ok: session %s opened (%s%s)\n", name, bash ? "bash" : "sh", sudop ? ", running as root" : "");
-        term_extract(s, s->rd, 0, out + o, cap - o);
-        s->rd = s->tot;
-        return;
-    }
-    if (strcmp(act, "send") == 0) {                          /* send sem sessao aberta: abre uma (evita o modelo repetir o erro) */
-        int cnt = 0, hit = 0;
-        for (int i = 0; i < TERM_MAX; i++) if (g_term[i].used) { cnt++; if (name[0] && strcmp(g_term[i].name, name) == 0) hit = 1; }
-        if (cnt == 0 || (name[0] && !hit && cnt < TERM_MAX)) {
-            char oj[160], o2[3000];
-            snprintf(oj, sizeof oj, "{\"action\": \"open\", \"name\": \"%s\"}", name);
-            tool_terminal(oj, oj + strlen(oj), o2, sizeof o2);
-            if (strncmp(o2, "error", 5) == 0) { snprintf(out, cap, "%s", o2); return; }
-            act[0] = name[0] = text[0] = 0;                  /* a chamada recursiva reaproveitou os buffers estaticos */
-            json_str(js, end, "action", act, sizeof act);
-            json_str(js, end, "name", name, sizeof name);
-            for (char *q = name; *q; q++) if (!isalnum((unsigned char)*q) && *q != '_' && *q != '-') *q = '_';
-            if (strlen(name) > 20) name[20] = 0;
-        }
-    }
-    TermSess *s = term_find(name, err, sizeof err);
-    if (!s) { snprintf(out, cap, "%s", err); return; }
-    if (strcmp(act, "close") == 0) { snprintf(err, sizeof err, "%s", s->name); term_kill(s); snprintf(out, cap, "ok: session %s closed", err); return; }
-    term_pump(s);
-    int wms = json_int(js, end, "wait_ms", strcmp(act, "send") == 0 ? 1500 : 1000);
-    if (wms < 0) wms = 0;
-    if (wms > 30000) wms = 30000;
-    const int lines = json_int(js, end, "lines", 0);
-    if (strcmp(act, "send") == 0 || strcmp(act, "interrupt") == 0) {
-        if (s->dead) { snprintf(out, cap, "error: session %s has exited (code %d); open a new one", s->name, s->status); return; }
-        const int intr = strcmp(act, "interrupt") == 0;
-        if (intr) { text[0] = 3; text[1] = 0; }
-        else {
-            if (!json_str(js, end, "text", text, sizeof text)) { snprintf(out, cap, "error: missing text"); return; }
-            if (strlen(text) + 8 >= sizeof text) { snprintf(out, cap, "error: text too long (limit %d bytes); write big files with write_file instead of a heredoc", (int)sizeof text - 8); return; }
-            if (!agent_act("enviar ao terminal", text)) { snprintf(out, cap, "error: the user denied this action"); return; }
-            if (sudo_word(text)) sudo_prepare(text, 0);       /* o comando usa sudo: abre o modal de senha (se ainda nao ha) */
-        }
-        size_t tl = strlen(text);
-        if (!intr && (!json_has(js, end, "enter") || json_bool(js, end, "enter")) && tl + 2 < sizeof text) { text[tl++] = '\n'; text[tl] = 0; }
-        for (size_t i = 0; i < tl; ) { const ssize_t w = write(s->fd, text + i, tl - i); if (w > 0) i += (size_t)w; else if (errno == EAGAIN) usleep(2000); else if (errno != EINTR) break; }
-        term_wait(s, wms);
-    } else if (strcmp(act, "read") == 0) {
-        if (lines <= 0 && s->tot == s->rd) term_wait(s, wms);
-    } else { snprintf(out, cap, "error: action must be open, send, read, list, close or interrupt"); return; }
-    size_t o = 0;
-    char *tmp = (char *)malloc(cap);
-    if (!tmp) { snprintf(out, cap, "error: out of memory"); return; }
-    term_extract(s, lines > 0 && strcmp(act, "read") == 0 ? 0 : s->rd, strcmp(act, "read") == 0 && lines > 0 ? (lines > 500 ? 500 : lines) : 0, tmp, cap - 300);
-    if (!tmp[0]) o += (size_t)snprintf(out + o, cap - o, "(no new output)");
-    else o += (size_t)snprintf(out + o, cap - o, "%s", tmp);
-    if (s->dead) o += (size_t)snprintf(out + o, cap - o, "\n[session %s exited with code %d]", s->name, s->status);
-    s->rd = s->tot;
-    if (strcmp(act, "send") == 0) cmdlog_add(text, -1, tmp);
-    if (strcmp(act, "send") == 0) {                          /* shell preso em continuacao (heredoc/aspas abertas): prompt "> " */
-        size_t tl2 = strlen(tmp);
-        while (tl2 && (tmp[tl2 - 1] == ' ' || tmp[tl2 - 1] == '\n')) { if (tmp[tl2 - 1] == ' ') { tl2--; break; } tl2--; }
-        if (tl2 && tmp[tl2 - 1] == '>' && (tl2 == 1 || tmp[tl2 - 2] == '\n')) o += (size_t)snprintf(out + o, cap - o, "\n[hint: the shell is waiting for more input (unclosed heredoc or quote). Use action interrupt, then resend the command complete; for files use write_file]");
-    }
-    if (pw_detect(tmp) == 1) o += (size_t)snprintf(out + o, cap - o, "\n[hint: a password prompt is waiting. Do not guess it: ask the user to type it themselves or to run this in their own terminal; use action interrupt to cancel]");
-    free(tmp);
-}
 
 #endif

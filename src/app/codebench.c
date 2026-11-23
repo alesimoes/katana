@@ -1034,7 +1034,7 @@ static int codebench_main(int argc, char **argv) {
         else if (!strcmp(k, "--timeout")) o.timeout = atoi(v);
         else if (!strcmp(k, "--label")) o.label = v;
         else if (!strcmp(k, "--katana")) o.katana = v;
-        else if (!strcmp(k, "--mode")) { if (strcmp(v, "agent") && strcmp(v, "code")) { fprintf(stderr, "codebench: --mode e agent ou code\n"); return 1; } o.mode = v; }
+        else if (!strcmp(k, "--mode")) { if (strcmp(v, "agent")) { fprintf(stderr, "codebench: --mode e agent\n"); return 1; } o.mode = v; }
         else if (!strcmp(k, "--env")) { if (o.nenv < 64) o.envs[o.nenv++] = (char *)v; }
         else if (!strcmp(k, "--keep")) o.keep = v;
         else if (!strcmp(k, "--sessions")) o.sessions = v;

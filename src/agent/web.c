@@ -1,4 +1,4 @@
-/* ---------- web: URL segura, curl, HTML para texto, web_fetch, busca (SearXNG e meta-buscador embutido) ---------- */
+/* ---------- web: URL segura, curl, HTML para texto, WebFetch, busca (SearXNG e meta-buscador embutido) ---------- */
 /* ---- URL segura para a linha de comando: so http/https; tudo fora de um conjunto seguro vira %XX ---- */
 static int url_safe(const char *u, char *out, size_t cap) {
     size_t n = 0;
@@ -161,7 +161,7 @@ static void html_fold(char *out, size_t *o, size_t ls, size_t plain, int *run_n,
     if (ll > 0 && plain == 0 && ll <= 60) { if (!(*run_n)++) *run_s = ls; if (!last) return; ls = *o; }
     if (*run_n >= 10) {
         char note[64];
-        const size_t w = (size_t)snprintf(note, sizeof note, "[%d links omitted; web_fetch with links=true lists them]\n\n", *run_n);
+        const size_t w = (size_t)snprintf(note, sizeof note, "[%d links omitted; WebFetch with links=true lists them]\n\n", *run_n);
         if (ls - *run_s > w) {
             memmove(out + *run_s + w, out + ls, *o - ls);
             memcpy(out + *run_s, note, w);
@@ -559,7 +559,7 @@ static void tool_web_search_collect(const char *query, FILE *fp[MS_NSRC], char *
         }
     }
     free(raw);
-    if (fails[0]) agent_log("web_search", query, fails);        /* fontes que falharam */
+    if (fails[0]) agent_log("WebSearch", query, fails);        /* fontes que falharam */
     qsort(all, (size_t)n, sizeof all[0], hit_cmp);              /* estavel o bastante: empate mantem a ordem de insercao na pratica */
     size_t o = 0;
     out[0] = 0;

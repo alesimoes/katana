@@ -93,7 +93,7 @@ static void tool_delegate(const char *js, const char *end, char *out, size_t cap
             }
             { const long room = ((long)lim - pos - 900) * 3; g_budget = room < 1500 ? 1500 : room > 9000 ? 9000 : (size_t)room; }
             { const size_t sl = strcspn(ap, "\n"); sub_say("%s %.*s", name, (int)(sl < 110 ? sl : 110), ap); }
-            if (strcmp(name, "delegate") == 0 || strcmp(name, "Agent") == 0) snprintf(result, sizeof result, "error: a sub-agent cannot delegate");
+            if (strcmp(name, "Agent") == 0) snprintf(result, sizeof result, "error: a sub-agent cannot delegate");
             else agent_tool(name, ap, e, result, sizeof result);
             if (g_ct_handback_set) { final = strdup(g_ct_handback); calls++; break; }       /* SubagentHandback: o relatorio e a resposta final */
             defang(result, safe, sizeof safe);
@@ -145,7 +145,7 @@ static void tool_delegate(const char *js, const char *end, char *out, size_t cap
  * fica guardada pela identidade da leitura (ferramenta, argumentos, tamanho e data do arquivo): pedir a mesma
  * leitura de novo devolve a nota na hora. Leituras por trecho (offset, limit, find) passam inteiras: sao o jeito
  * de o modelo ver as linhas exatas. ChatML e Gemma 4. Ligado por padrao (decisao do dono, 2026-11-20); KATANA_DIGEST=0
- * desliga. Em read_file a nota fica presa ao trecho lido (code.c, leitura com posicao guardada). */
+ * desliga. */
 #define DG_MIN 3500         /* bytes: abaixo disso o resultado entra como veio */
 #define DG_GEN 420          /* teto de tokens da nota */
 #define DG_SLOTS 64
@@ -156,15 +156,13 @@ static int g_teacher;
 static void tool_digest_in(Model *m, int mpos, const char *name, const char *args, const char *aend, char *result, size_t cap, const char *request) {
     static char text[TOOL_WEB + 6000];
     const char *on = getenv("KATANA_DIGEST");
-    const int rd = strcmp(name, "read_file") == 0;
     if ((on && atoi(on) == 0) || !m || g_in_sub) return;
     if (g_teacher && !(on && atoi(on) == 2)) return;        /* com o professor o texto bruto entra (o contexto dele e grande); 2 forca a nota (testes) */
-    if (rd && (g_rd_last.notes || !g_rd_last.f || !g_rd_last.seq)) return;     /* ja sao notas, ou linhas exatas pedidas por offset/limit */
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     const int g4 = c->chat_fmt == 8;
     if (c->chat_fmt != 0 && !(g4 && g4_side_on())) return;
-    if (!rd && strcmp(name, "web_fetch") != 0 && strcmp(name, "WebFetch") != 0) return;
+    if (strcmp(name, "WebFetch") != 0) return;
     const size_t rl = strlen(result), al = (size_t)(aend - args);
     if (rl < DG_MIN || strncmp(result, "error", 5) == 0) return;
     { const char *ln = strrchr(result, '\n'); if (ln && strncmp(ln + 1, "[web:", 5) == 0) return; }      /* resultado web ja montado com orcamento: sem segunda leitura */
@@ -172,7 +170,7 @@ static void tool_digest_in(Model *m, int mpos, const char *name, const char *arg
         if (*k == '"' && (strncmp(k, "\"offset\"", 8) == 0 || strncmp(k, "\"limit\"", 7) == 0 || strncmp(k, "\"find\"", 6) == 0 || strncmp(k, "\"links\"", 7) == 0)) return;
     uint64_t key = pfx_hash(0xcbf29ce484222325ULL, name, strlen(name));
     key = pfx_hash(key, args, al);
-    for (int i = 0; i < g_dg_n && !rd; i++)
+    for (int i = 0; i < g_dg_n; i++)
         if (g_dg[i].key == key) {                       /* ja lido e nao mudou: entra compactado */
             fprintf(stderr, "%s[leitura repetida de %s: a nota guardada entra no lugar de %zu bytes]%s\n", CE(C_DIM), name, rl, CE(C_RESET));
             KNOTE(STORED_SAME, result, cap, rl, g_dg[i].note);
@@ -231,13 +229,6 @@ static void tool_digest_in(Model *m, int mpos, const char *name, const char *arg
        toma o primeiro trecho pelo arquivo todo */
     char tail[400] = "";
     { const char *nl = strrchr(result, '\n'); if (nl && nl[1] == '[' && strlen(nl + 1) < sizeof tail) snprintf(tail, sizeof tail, "%s", nl + 1); }
-    if (rd) {                       /* a nota fica presa ao trecho do arquivo: volta sem custo enquanto ele nao mudar */
-        RdFile *f = g_rd_last.f;
-        for (int i = 0; i < f->nch; i++) if (f->ch[i].from == g_rd_last.from && !f->ch[i].note) { f->ch[i].note = strdup(np); f->ch[i].ep = g_rd_epoch; }
-        KNOTE(CONDENSED_LINES, result, cap, g_rd_last.from, g_rd_last.to, rl, np, tail[0] ? "\n" : "", tail);
-        free(note.p);
-        return;
-    }
     KNOTE(CONDENSED_OUT, result, cap, name, rl, np, tail[0] ? "\n" : "", tail);
     if (g_dg_n < DG_SLOTS) {        /* guarda a nota ja com o aviso final */
         const char *body = strchr(result, '\n');
@@ -248,9 +239,4 @@ static void tool_digest_in(Model *m, int mpos, const char *name, const char *arg
 /* nota no lugar do texto bruto (quando cabe) e, na frente, as notas dos trechos anteriores que sairam do contexto */
 static void tool_digest(Model *m, int mpos, const char *name, const char *args, const char *aend, char *result, size_t cap, const char *request) {
     tool_digest_in(m, mpos, name, args, aend, result, cap, request);
-    if (strcmp(name, "read_file") != 0 || !g_rd_pre[0]) return;
-    static char tmp[TOOL_WEB + 512];
-    KNOTE(STORED_PRE, tmp, sizeof tmp, g_rd_pre, result);
-    snprintf(result, cap, "%s", tmp);
-    g_rd_pre[0] = 0;
 }

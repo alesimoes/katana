@@ -174,7 +174,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     fakeSession(dir, "20260101-100000-001", t1, modelo, 300,
                 {{"user", t1, {}},
                  {"assistant", "Recursao e quando uma funcao chama a si mesma. Exemplo:\n```c\nint fat(int n) {\n    return n <= 1 ? 1 : n * fat(n - 1);\n}\n```\nO caso base evita a chamada infinita, e `fat(5)` vale **120**.", {}},
-                 {"tool", "{\"path\":\"src\"}", "list_dir"}});
+                 {"tool", "{\"command\":\"ls src\"}", "Bash"}});
     fakeSession(dir, "20260101-090000-002", "Resumir o roteiro de otimizacoes", modelo, 3 * 3600,
                 {{"user", "Resuma docs/roteiro-otimizacoes.md", {}}, {"assistant", "O roteiro lista tecnicas ainda nao usadas.", {}}});
     fakeSession(dir, "20251231-100000-003", "Qual a diferenca entre Q4_K_M e Q8_0?", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 26 * 3600,
@@ -275,14 +275,14 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
         QVariantMap m = be.messages()->get(i);
         if (m["kind"] == "tool") {
             tool = true;
-            if (m["name"] == "list_dir") listDir = true;
+            if (m["name"] == "Bash") listDir = true;
             if (m["text"].toString().contains('<')) xml = true;
         }
         if (m["kind"] == "assistant") resp += m["text"].toString();
     }
     fprintf(stderr, "  resposta: %s\n", qPrintable(resp.left(300).replace('\n', ' ')));
     check(tool, "apareceu algum cartao de ferramenta");
-    check(listDir, "cartao de ferramenta list_dir");
+    check(listDir, "cartao de ferramenta Bash");
     check(!xml, "argumentos do cartao sem XML");
     check(!resp.contains("<tool_call") && !resp.contains("<|tool_call") && !resp.contains("<tool_response"),
           "texto final sem etiquetas de ferramenta");
@@ -461,7 +461,7 @@ int runSelfTest(Backend &be, QQuickWindow *win, const QString &capDir, const QSt
     check(Sessoes::carregar(dir, curId, &s), "sessao carregada do disco");
     check(s.titulo == pergunta && s.modelo == model, "titulo = primeira mensagem; modelo gravado");
     bool sTool = false;
-    for (const Msg &m : s.mensagens) if (m.papel == "tool" && m.nome == "list_dir") sTool = true;
+    for (const Msg &m : s.mensagens) if (m.papel == "tool" && m.nome == "Bash") sTool = true;
     check(s.mensagens.size() >= 3 && s.mensagens.first().papel == "user" && sTool, "mensagens (user, tool, assistant) gravadas");
     check(be.sessions().size() == 7 && be.sessions().first().toMap()["atual"].toBool(), "lista tem 7, a atual no topo e destacada");
     QTest::qWait(300);

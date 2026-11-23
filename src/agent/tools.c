@@ -59,11 +59,6 @@ static int json_str(const char *js, const char *end, const char *key, char *out,
     return 1;
 }
 
-/* so caminhos relativos dentro da pasta atual */
-static int path_ok(const char *p) {
-    if (!*p || p[0] == '/' || p[0] == '\\' || strchr(p, ':') || strstr(p, "..")) return 0;
-    return 1;
-}
 
 static int g_trust = 1;      /* a pasta de trabalho e confiavel (ver trust_init); 0 = toda acao pergunta antes */
 
@@ -110,9 +105,8 @@ static int agent_act(const char *what, const char *detail) {
  * Todo resultado e DADO (embrulhado com marcador no historico), nunca instrucao. */
 static size_t g_budget = 12000;           /* bytes que o contexto ainda comporta para um resultado de ferramenta */
 static int g_web = 1;
-static int g_code;                        /* katana code: agente em modo de programacao (prompt e ferramentas enxutos) */
 static int g_tool_glm;                    /* o modelo chama ferramentas no formato do GLM (<arg_key>/<arg_value>) */
-static int g_tool_xml;                    /* o modelo chama ferramentas em XML (<function=..><parameter=..>) */                     /* KATANA_WEB=0 desliga web_search e web_fetch */
+static int g_tool_xml;                    /* o modelo chama ferramentas em XML (<function=..><parameter=..>) */                     /* KATANA_WEB=0 desliga WebSearch e WebFetch */
 static char g_roots[32][1024];            /* pastas raiz fora da pasta atual ja liberadas pelo usuario */
 static int g_nroots;
 
@@ -399,7 +393,9 @@ static void trust_init(void) {
 }
 #else
 static int agent_write_path(const char *in, char *res, size_t cap, char *err, size_t ecap) {
-    if (!path_ok(in)) { snprintf(err, ecap, "error: invalid path (only relative paths inside the current directory)"); return 0; }
+    if (!*in || in[0] == '/' || in[0] == '\\' || strchr(in, ':') || strstr(in, "..")) {      /* so caminhos relativos dentro da pasta atual */
+        snprintf(err, ecap, "error: invalid path (only relative paths inside the current directory)"); return 0;
+    }
     snprintf(res, cap, "%s", in);
     return 1;
 }
@@ -407,21 +403,8 @@ static void mkdir_parents(const char *file) { (void)file; }
 static void trust_init(void) {}
 #endif
 
-/* ---- search_files ---- */
-#ifndef _WIN32
-#include <regex.h>
-#endif
-typedef struct { const char *pat; char *out; size_t cap, n; int hits, files; void *re; } SFState;      /* re: expressao regular compilada (regex=true) ou NULL */
+/* ---- busca de texto sem diferenciar maiusculas e nomes de pastas pulados ---- */
 static int ci_find(const char *h, size_t hl, const char *needle_lc, size_t nl);
-static int sf_match(SFState *s, char *ln, size_t l, size_t nl) {
-#ifndef _WIN32
-    if (s->re) { const char sv = ln[l]; ln[l] = 0; const int r = regexec((regex_t *)s->re, ln, 0, NULL, 0) == 0; ln[l] = sv; return r; }
-#endif
-    return ci_find(ln, l, s->pat, nl);
-}
-#define SF_MAXHITS 40
-#define SF_MAXFILES 30000
-#define SF_MAXSIZE 1500000
 
 static int ci_find(const char *h, size_t hl, const char *needle_lc, size_t nl) {
     if (nl == 0 || hl < nl) return 0;
@@ -433,39 +416,6 @@ static int ci_find(const char *h, size_t hl, const char *needle_lc, size_t nl) {
     return 0;
 }
 
-static void sf_file(SFState *s, const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
-    fseek(f, 0, SEEK_END);
-    const long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > SF_MAXSIZE) { fclose(f); return; }
-    char *b = (char *)malloc((size_t)sz + 1);
-    if (!b) { fclose(f); return; }
-    const size_t got = fread(b, 1, (size_t)sz, f);
-    fclose(f);
-    b[got] = 0;
-    s->files++;
-    if (memchr(b, 0, got < 1024 ? got : 1024)) { free(b); return; }        /* binario */
-    const size_t nl = strlen(s->pat);
-    int line = 1;
-    for (size_t i = 0; i < got && s->hits < SF_MAXHITS; ) {
-        size_t e = i;
-        while (e < got && b[e] != '\n') e++;
-        if (sf_match(s, b + i, e - i, nl)) {
-            size_t a = i, l = e - i;
-            while (l > 0 && (b[a] == ' ' || b[a] == '\t')) { a++; l--; }
-            while (l > 0 && (b[a + l - 1] == '\r' || b[a + l - 1] == ' ')) l--;
-            if (l > 160) { l = 160; while (l > 0 && ((unsigned char)b[a + l] & 0xC0) == 0x80) l--; }
-            if (s->n + l + strlen(path) + 32 < s->cap) {
-                s->n += (size_t)snprintf(s->out + s->n, s->cap - s->n, "%s:%d:%.*s\n", path, line, (int)l, b + a);
-                s->hits++;
-            } else s->hits = SF_MAXHITS;
-        }
-        i = e + 1; line++;
-    }
-    free(b);
-}
 
 static int sf_skip_dir(const char *n) {
     return strcmp(n, ".git") == 0 || strcmp(n, "node_modules") == 0 || strcmp(n, ".svn") == 0 ||
@@ -473,78 +423,7 @@ static int sf_skip_dir(const char *n) {
            strcmp(n, ".venv") == 0 || strcmp(n, "venv") == 0 || strcmp(n, "proc") == 0;
 }
 
-static void sf_walk(SFState *s, const char *dir, int depth) {
-    char full[4200];
-#ifdef _WIN32
-    WIN32_FIND_DATAA fd;
-    snprintf(full, sizeof full, "%s\\*", dir);
-    HANDLE h = FindFirstFileA(full, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (s->hits >= SF_MAXHITS || s->files >= SF_MAXFILES) break;
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
-        snprintf(full, sizeof full, "%s\\%s", dir, fd.cFileName);
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { if (depth < 12 && !sf_skip_dir(fd.cFileName)) sf_walk(s, full, depth + 1); }
-        else sf_file(s, full);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-#else
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (s->hits >= SF_MAXHITS || s->files >= SF_MAXFILES) break;
-        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-        struct stat st;
-        snprintf(full, sizeof full, "%s%s%s", dir, dir[strlen(dir) - 1] == '/' ? "" : "/", e->d_name);
-        if (lstat(full, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { if (depth < 12 && !sf_skip_dir(e->d_name)) sf_walk(s, full, depth + 1); }
-        else if (S_ISREG(st.st_mode)) sf_file(s, full);
-    }
-    closedir(d);
-#endif
-}
 
-static void tool_search_files(const char *pattern, const char *root, int regex, char *out, size_t cap) {
-    char lc[256], res[4200], err[1300];
-    size_t i = 0;
-    for (; pattern[i] && i < sizeof lc - 1; i++) lc[i] = (char)tolower((unsigned char)pattern[i]);
-    lc[i] = 0;
-    if (!lc[0]) { snprintf(out, cap, "error: empty pattern"); return; }
-    if (!agent_read_access(root, 1, res, sizeof res, err, sizeof err)) { snprintf(out, cap, "%s", err); return; }
-    SFState s = { lc, out, cap > 6000 ? 6000 : cap, 0, 0, 0, NULL };
-#ifndef _WIN32
-    regex_t re;
-    if (regex) {        /* expressao regular estendida, sem diferenciar maiusculas */
-        const int rc = regcomp(&re, pattern, REG_EXTENDED | REG_ICASE | REG_NOSUB);
-        if (rc) { char eb[200]; regerror(rc, &re, eb, sizeof eb); snprintf(out, cap, "error: invalid regular expression (%s). POSIX extended syntax: use [0-9] and [[:space:]] instead of \\d and \\s", eb); return; }
-        s.re = &re;
-    }
-#else
-    (void)regex;
-#endif
-    out[0] = 0;
-    struct stat st;
-    if (stat(res, &st) == 0 && !S_ISDIR(st.st_mode)) sf_file(&s, res);
-    else {
-        const int rel = root[0] != '/' && root[0] != '\\' && root[0] != '~' && !strchr(root, ':');
-        sf_walk(&s, rel ? root : res, 0);       /* dentro da pasta atual, mostra caminhos relativos */
-    }
-#ifndef _WIN32
-    if (s.hits == 0 && !regex && (strchr(pattern, '|') || strstr(pattern, ".*") || strchr(pattern, '\\'))) {     /* parece expressao regular: tenta como uma */
-        tool_search_files(pattern, root, 1, out, cap);
-        if (strncmp(out, "no matches", 10) != 0 && strncmp(out, "error:", 6) != 0) return;
-        snprintf(out, cap, "no matches in %d text files under %s (tried as plain text and as a regular expression)", s.files, res);
-        return;
-    }
-#endif
-    if (s.hits == 0) snprintf(out, cap, "no matches in %d text files under %s", s.files, res);
-    else if (s.hits >= SF_MAXHITS) snprintf(out + s.n, cap - s.n, "[result limit reached; refine the pattern or the path]\n");
-#ifndef _WIN32
-    if (s.re) regfree(&re);
-#endif
-}
 
 /* ---- memoria: implementada em agent/memory.c (incluido depois do tokenizador); aqui so as declaracoes ---- */
 static void tool_remember(const char *fact, char *out, size_t cap);

@@ -67,8 +67,6 @@ run Bash '{"command":"cd a"}' Bash '{"command":"pwd > where.txt","run_in_backgro
 rm -rf "$J"; run Monitor '{"command":"echo m1; sleep 10; echo m2","description":"watch","timeout_ms":1000}' Bash '{"command":"sleep 2.5; cat '"$J"'/*-1.log"}' TaskStop '{"task_id":"1"}'
 has "Monitor: id" "Monitor started with ID: 1 (stops after 1 s)"; has "Monitor: linha" "m1"; hasnt "Monitor: prazo" "m2"; has "Monitor: parou no prazo" "is not running"
 run Monitor '{"description":"x"}'; has "Monitor sem command" "error: missing command"
-# ferramentas antigas
-run run_command '{"command":"echo velho"}'; has "run_command continua" "velho"
 echo
 if [ $F -gt 0 ]; then echo "FAILED $F"; exit 1; fi
 echo "OK $N checks"

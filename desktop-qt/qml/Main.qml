@@ -553,7 +553,7 @@ ApplicationWindow {
                     }
                 }
             }
-            // pergunta do agente (ask_user): fica junto da caixa de mensagem, com as opcoes em botoes; digitar tambem responde
+            // pergunta do agente (AskUserQuestion): fica junto da caixa de mensagem, com as opcoes em botoes; digitar tambem responde
             Rectangle {
                 id: choiceCard
                 objectName: "choiceCard"

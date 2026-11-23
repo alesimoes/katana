@@ -358,8 +358,7 @@ Chat template (read from the GGUF metadata, `tokenizer.chat_template`) and what 
   prompt); with thinking on, earlier thoughts stay (the template drops them from history). Re-rendering history the
   template way would cost a recompute every turn.
 - **Call-format constraint**: `src/agent/callgrammar.c` reads the declared tools from the JSON block saved by the
-  conversion (before, with `KATANA_TOOLS=1` it saw no tools on Gemma 4), plus the table tools, the old tools named in
-  the prompt and the MCP tools. It does not switch on inside the thought channel, also when the prompt opened the
+  conversion plus the table tools and the MCP tools. It does not switch on inside the thought channel, also when the prompt opened the
   channel after tool results (`g_g4_thought_open`). A string value may no longer contain `<tool_call|>`,
   `<|tool_call>` or `<|tool_response>` (single tokens in Gemma 4: the random tiny model produced them inside a value
   once the tiny vocabulary had the real special tokens, and the call reader cut the call there).

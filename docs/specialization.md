@@ -589,7 +589,7 @@ format, with fewer wasted and invalid calls, without losing tasks on codebench. 
 
 | Step | What | Done when |
 |---|---|---|
-| 0 | Baseline: codebench with the first set (`KATANA_TOOLS=1`) and the second, alternating, both models, `--repeat 2` | solved tasks, time and invalid calls per run recorded; this is the number every later step is compared with |
+| 0 | Baseline: codebench with the current set, both models, `--repeat 2` | solved tasks, time and invalid calls per run recorded; this is the number every later step is compared with |
 | 1 | Speed of training on the card: `sh tools/traintest/run.sh`, then 4 steps of `katana train` with and without `KATANA_TRAIN_GPU=0`, alternating | seconds per step on the GPU known (CPU measured: 229 s per 512-token window) |
 | 2 | Data with the second set's names (below) and a fixed validation split by conversation | one JSONL per model, sizes in tokens and windows recorded |
 | 3 | First run, Qwen3.6: `--plan 1`, then attention adapters rank 8, `--seq 512`, `--final 0`, one night | validation loss below its starting value at the best step |

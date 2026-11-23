@@ -1,7 +1,7 @@
 /* ---------- ferramenta Skill ----------
  * Uma skill e uma pasta com SKILL.md (cabecalho opcional entre linhas "---" com name e description, depois as instrucoes).
  * Busca, em ordem: <pasta de trabalho>/.katana/skills, <pasta>/.config/katana/skills, ~/.katana/skills, ~/.config/katana/skills;
- * depois as receitas embutidas (howto), com o nome do assunto. */
+ * depois as receitas embutidas (tool_howto), com o nome do assunto. */
 
 static const char CT_SKILL_DESC[] =
     "Load a named set of instructions (a skill) and follow it. Skills live in .katana/skills/<name>/SKILL.md or "
@@ -12,7 +12,7 @@ static const char CT_SKILL_PROPS[] =
     "\"args\": {\"type\": \"string\", \"description\": \"Optional arguments for the skill, appended to its instructions\"}";
 static const char CT_SKILL_REQ[] = "\"skill\"";
 
-static const char *const SK_BUILTIN[] = { "web", "terminal", "linux", "script", "sudo", "files", "code", "packages", "logs" };
+static const char *const SK_BUILTIN[] = { "web", "bash", "linux", "script", "sudo", "files", "code", "packages", "logs" };
 #define SK_NBUILTIN ((int)(sizeof SK_BUILTIN / sizeof SK_BUILTIN[0]))
 
 static int sk_name_ok(const char *n) {
