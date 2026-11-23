@@ -5,6 +5,34 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
 
+## Current state (2026-11-23, the page to read first)
+
+What the code is today, in order of what the owner is working on. Everything below was compiled; **nothing in this list was measured**
+and none of it was run in a live agent session with Qwen3.6 (owner's rule for this phase: improve the engine, no tests or measurements).
+The numbers in sections 0a to 14 further down are measurements from the dates in their titles, taken at that time; do not read them as
+today's performance.
+
+1. **Working model: Qwen3.6-35B-A3B only.** Tests, measurements, training and proofs happen on it. Gemma 4 is not tested, not even for regression.
+2. **Legacy removal (T7 of `plan.md`, inventory in `legacy-removal.md`).** The project has no legacy and no compatibility: the old tool set, the
+   old `Find` index (`find-*.idx`, `Rename`/`Replace`/`Patch`), old store formats (store format 2; a different format is rebuilt without a notice),
+   aliases and escape switches that restored old behaviour are removed or being removed in waves. The curriculum data v6 and v7 were deleted.
+3. **Lean tool list.** The agent's table tool set (`src/tools/`) is being cut down to the tools the model really uses (`docs/tools-review.md`,
+   `docs/tools.md`); `Find`, `Symbols`, `Read` become facades of one engine.
+4. **Code index, nine phases built** (`docs/coder.md`, `docs/code-index-lifecycle.md`): root by `katana init`, crawler on demand in levels N0 to N3,
+   session watch and freshness check, `Symbols tree` and state lines, one index for `Find` (no second cache), transparent ignored content
+   (`katana coder ignored|include|exclude`), maintenance (`list`, `forget`, `gc`, damage and format handling). Open: measurement on real trees.
+5. **UIOE (`docs/uioe.md`).** U0 to U4 are built: the pre-LLM layer interprets, classifies and routes a request about code or files, retrieves,
+   and appends one `[katana: context ...]` block to the user message (`KATANA_UIOE=pack`, default; `off` is the escape; `katana uioe ask --pack`
+   prints the block with no model). U5 (facades) and U8 (memory, earlier sessions, recipes, skills as sources) are in progress. Not measured; the
+   model has not been trained on the block.
+6. **Curriculum and training.** The curriculum is regenerated from zero at the END of the UIOE construction (`plan.md` T5), with the final tool
+   formats and real tool outputs, then trained once from scratch. Training runs at night with `katana specialize` (`docs/specialization.md`).
+   Nothing is vigent in `data/curriculum/` until then.
+7. **Teacher mode** is an external plugin (below); the binary has no vendor code.
+8. **Git:** commits are local only; no push until the date in the owner's memory.
+
+To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for the next U phase, then `legacy-removal.md` for what is left to remove.
+
 **2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library; README maps the old `KATANA_TEACHER_*` settings; the old names keep working there). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
 
 **2026-11-22, expert tiers (GPU / RAM / SSD) for MoE larger than RAM.** `src/engine/expert_tier.c` (hooks: `moe_route`,
@@ -52,7 +80,7 @@ compiled. Also fixed: `ANS 0` counted as yes in `agent_ask_kind`.
 `docs/curriculum.md`, section "Composed scenarios"): real small projects in five stacks, a policy in C that decides each step
 from the real tool result, every call run through the agent's dispatcher, and `check` re-running each conversation and
 comparing byte for byte. New commands: `curriculum pick` (selection by coverage) and `curriculum windows` (training windows
-with the model's tokenizer, vocabulary only). The v3 files were in `/mnt/dados/cu-v3` (removed on 2026-11-22; v6 supersedes them, see `data/curriculum/v6/`) (`v3-raw.jsonl`, `v3-data.jsonl`,
+with the model's tokenizer, vocabulary only). The v3 files were in `/mnt/dados/cu-v3` (removed on 2026-11-22; the v6 data that superseded them was removed too on 2026-11-23, and the curriculum is regenerated from zero, see `plan.md` T5) (`v3-raw.jsonl`, `v3-data.jsonl`,
 `v3-holdout-raw.jsonl`, `v3-holdout-data.jsonl`); nothing was trained. Left to do: move the older MCP, skill and file-creation
 families to the composed generator (they still have one tool sequence each), reserve rare-tool situations for the validation
 file, five distinct situations per rare tool (there are three or four), more request shapes, and the tool situations that
@@ -1255,7 +1283,7 @@ Note: the expert cache is only worthwhile for MoE; on dense models the equivalen
 
 **Branch not merged:** `worktree-agent-ac5031c6105442724` has the MLA batch prompt (Moonlight/DeepSeek, prompt 2.4-4x faster), with the segmentation fault already fixed (commits up to ~ef87c0a); only the selftests were left to revalidate. Cancelled at request; resume from here if wanted.
 
-## 1. State on one page
+## 1. State on one page (as of 2026-11-16; superseded by "Current state" at the top, kept for its dated numbers)
 
 **What runs**
 
@@ -1270,7 +1298,7 @@ Note: the expert cache is only worthwhile for MoE; on dense models the equivalen
     to the CPU.
 - `chat` of a single question or interactive, `agent` with tools (writing and executing ask for confirmation).
 
-**Reference numbers** (RTX 3050 Laptop 4 GB; benchmark 64+64; measured alternating the engines)
+**Reference numbers, measured on 2026-11-16** (RTX 3050 Laptop 4 GB; benchmark 64+64; measured alternating the engines)
 
 | Model | | katana OpenCL | katana Vulkan | reference Vulkan | reference CUDA |
 |---|---|---|---|---|---|
@@ -1293,7 +1321,7 @@ cache: generation 12.5–14.9 against 13.2–14.4 tok/s (tie); short cold prompt
 - Generation of the 135 M model: ~2x ahead of the reference's Vulkan, tie with CUDA.
 - Large MoE: tie in generation, ahead on short cold prompt.
 
-## 2. Next steps, in order
+## 2. Next steps, in order (written 2026-11-16, for dense models; the current order is in `plan.md`)
 
 ### 2.1 Finish what is missing from Vulkan on dense models
 

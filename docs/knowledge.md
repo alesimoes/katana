@@ -5,6 +5,16 @@ Written on 2026-11-15. Everything marked **measured** was measured on this machi
 is estimate or code reading and is marked as such. Plans are in `plan.md`; the catalog of
 techniques not yet used is in `optimization-roadmap.md`.
 
+## 0. State in one paragraph (2026-11-23)
+
+The working model is Qwen3.6-35B-A3B only. The engine runs it on the CPU, Vulkan and OpenCL paths with the expert tiers (GPU, RAM, SSD); the agent
+sits on a lean tool set whose search and symbol tools read one code index (`docs/coder.md`: roots by `katana init`, a crawler that builds
+levels N0 to N3 on demand, a session watch for freshness, ignored content shown with its reason). A pre-LLM layer (UIOE, `docs/uioe.md`, U0 to U4
+built, U5 and U8 in progress) prepares a context block before the model runs. The legacy code and the old training data were removed; the
+curriculum is regenerated at the end of the UIOE work and trained at night. **The recent work (index, UIOE, tools) was compiled and not
+measured**; every measured number in this file carries its date and belongs to the engine as it was then (sections 3 to 10 describe the
+engine of 2026-11-15 to 2026-11-22, `katana.c` has since been split into `src/engine/`, `src/agent/`, `src/coder/`, `src/tools/`, `src/app/`).
+
 ## 1. Goal
 
 AI infrastructure built from scratch, in low-level C, able to serve very large models
@@ -34,7 +44,7 @@ Project rules:
   libraries are loaded at run time.
 - The machine usually has 60–75% of the CPU busy with other processes (WSL/Docker, antivirus).
 
-## 3. The engine today (`katana.c`, one file, ~5,000 lines)
+## 3. The engine (as of 2026-11-15; the unit `src/katana.c` now only includes the parts in `src/`)
 
 **Input.** GGUF through a mapped file. Architectures `llama`, `qwen2`, `qwen3`, `olmoe`,
 `qwen3moe`. Tensors F32, F16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K. BPE tokenizers (with
