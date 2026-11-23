@@ -925,7 +925,7 @@ static int serve(Model *m, int port) {
     g_web_port = port;
     if (g_srv_agent) web_init();
     fprintf(stderr, "katana serve: http://%s:%d  modelo \"%s\"  API: %s%s%s; Ctrl+C encerra\n",
-            host, port, g_srv_name, g_srv_agent ? "/v1/agent/sessions (agente: executa comandos nesta maquina), /v1/models" : "/v1/chat/completions, /v1/models",
+            host, port, g_srv_model_path[0] || !g_srv_agent ? g_srv_name : "(escolhido na pagina)", g_srv_agent ? "/v1/agent/sessions (agente: executa comandos nesta maquina), /v1/models" : "/v1/chat/completions, /v1/models",
             net ? "; aberto para a rede, com chave" : "; so esta maquina", g_srv_key[0] && !net ? "; /v1 com chave" : "");
     if (g_srv_agent) fprintf(stderr, "katana web: abra no navegador  http://127.0.0.1:%d/?token=%s\n", port, g_web_token);
     for (;;) {

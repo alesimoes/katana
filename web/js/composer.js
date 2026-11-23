@@ -97,7 +97,7 @@
     if (sb.dataset.g !== sigS) { sb.dataset.g = sigS; sb.textContent = ""; sb.appendChild(K.icon(sigS, 18, "var(--acfg)")); }
     sb.disabled = !(B.answering || (B.ready && has));
     sb.dataset.tip = B.answering ? (has ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar";
-    if (enabled && !ta.disabled && B.ready && !B._focused) { B._focused = true; ta.focus(); }
+    if (enabled && !ta.disabled && B.ready && !B._focused) { B._focused = true; var ae = document.activeElement; if (!ae || ae === document.body || ae === ta) ta.focus(); }
     if (!B.ready) B._focused = false;
 
     var wsWarn = $("wsWarn"); wsWarn.hidden = B.wsTrusted;

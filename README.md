@@ -53,7 +53,7 @@ one used and tested day to day.
 ./katana info  <model.gguf>        # architecture, tensors, context
 ./katana chat  <model.gguf>        # interactive chat
 ./katana agent <model.gguf>        # chat with tools (files, shell, web, memory, MCP)
-./katana serve <model.gguf> 8080 --agent   # web page that drives the full agent (work in progress)
+./katana web                              # the desktop interface in a browser tab (docs/web.md); prints the address to open
 ```
 
 The `katana` command (console in your project, headless mode; `docs/console.md`):
@@ -215,7 +215,8 @@ and a sudo password dialog. See [`desktop-qt/README.md`](desktop-qt/README.md).
 ```
 katana chat  <model> ["question"] [max_tokens] [temperature]   one question, or an interactive session
 katana run   <model> "text" [max_tokens] [temperature]         plain completion
-katana serve <model> [port]      web chat and an OpenAI-compatible API at http://127.0.0.1:8080 (chat only, no tools; the web page is a work in progress, and with --agent it drives the full agent)
+katana serve <model> [port]      web chat and an OpenAI-compatible API at http://127.0.0.1:8080 (chat only, no tools)
+katana web [model] [port]        katana-desktop in a browser tab: same layout, conversations and cards, driving the full agent (docs/web.md; same as serve --agent). Matches the desktop in screenshots against the stand-in engine; a run with the real model is still pending
 katana train <model> <data.jsonl> [--train PATTERNS] [--rank R] ...   katana's own training: writes a .kspec (docs/specialization.md)
 katana gradcheck <model> [T]     checks the training backward pass (training forward vs engine, gradients vs finite differences)
 katana export <out.jsonl> <sessions> [--bench results.jsonl]   agent sessions -> training data

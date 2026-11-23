@@ -124,7 +124,7 @@
           if (j.path !== j.parent) list.appendChild(h("button", { class: "fd-it", text: "..", onclick: function () { go(j.parent); } }));
           j.dirs.forEach(function (d) { list.appendChild(h("button", { class: "fd-it", text: d, onclick: function () { go((j.path === "/" ? "" : j.path) + "/" + d); } })); });
           if (!j.dirs.length) list.appendChild(h("div", { class: "fd-none", text: "(sem subpastas)" }));
-        }).catch(function (e) { err.textContent = e.message; err.hidden = false; });
+        }).catch(function (e) { err.textContent = e.message; err.hidden = false; if (p) go(""); });
       }
       path.addEventListener("keydown", function (e) { if (e.key === "Enter") go(path.value); });
       card.appendChild(h("div", { class: "dlg-t", text: "Escolha a pasta de trabalho do agente" }));
@@ -166,6 +166,7 @@
       m.appendChild(menuItem((K.fonte === f[0] ? "●  " : "○  ") + f[1], function () { setFont(f[0]); }));
     });
   }
+  K.setTheme = function (t) { setTheme(t); };
   function setTheme(t) { K.tema = t; try { localStorage.setItem("katana.tema", t); } catch (e) {} setUi("tema", t); K.applyTheme(); K.ui.rev++; K.redrawNow(); renderMenu(); }
   function setFont(f) { K.fonte = f; try { localStorage.setItem("katana.fonte", f); } catch (e) {} setUi("fonte", f); K.applyTheme(); K.redrawNow(); renderMenu(); K.layout(); }
 
@@ -239,6 +240,9 @@
       }
     });
     addEventListener("resize", function () { applySide(); K.redraw(); });
+    var stl = $("sideTitle");
+    function szTitle() { if (stl.naturalWidth) { stl.width = stl.naturalWidth * 2; stl.height = stl.naturalHeight * 2; } }
+    stl.addEventListener("load", szTitle); szTitle();
     var dots = $("dots");
     dots.appendChild(h("img", { src: "img/katana-64.png", width: 26, height: 26, alt: "" }));
     dots.appendChild(h("div", { class: "dt", text: "Pensando…" }));
@@ -276,8 +280,7 @@
   }
   /* reabre a conversa so para mostrar (o agente ja esta rodando com ela) */
   B.reopenDisplay = function (id) {
-    var busy = B.answering, ready = B.ready;
-    return B.openSession(id);
+    return B.openSession(id, true);
   };
   document.addEventListener("DOMContentLoaded", boot);
 })();

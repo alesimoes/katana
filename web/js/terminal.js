@@ -156,7 +156,7 @@
       T.es = new EventSource("web/term/events?from=0");
       var dec = function (e) { feed(JSON.parse(e.data).d); };
       T.es.addEventListener("d", dec);
-      T.es.addEventListener("x", function () { T.running = false; for (var i = 0; i < "\r\n[processo encerrado]".length; i++) { } feed("\r\n[processo encerrado]"); });
+      T.es.addEventListener("x", function () { T.running = false; feed("\r\n[processo encerrado]"); });
       T.es.addEventListener("reset", function () { });
     }).catch(function (e) { feed("Nao foi possivel abrir o terminal: " + e.message); });
   };

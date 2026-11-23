@@ -147,7 +147,7 @@ Response:
 
 ## Agent mode: `/v1/agent/sessions`
 
-> **Work in progress.** The web page that uses this mode (`katana serve ... --agent`) is marked WIP: it was checked only against a mock server, not with a real model.
+> The web page for this mode is now `katana web` (docs/web.md), which uses its own `/web/*` endpoints and the desktop protocol, not `/v1/agent/sessions`. It was checked against stand-in engines, not yet with a real model.
 
 > **Security warning.** This endpoint gives whoever can reach it, or holds the key, the power to run commands, read
 > and write files and use the network on the machine where the server runs, with the rights of the user who started

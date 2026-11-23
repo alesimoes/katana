@@ -63,7 +63,7 @@ static void web_reply(sock_t s, int code, const char *ctype, const char *extra, 
                      code == 403 ? "Forbidden" : code == 404 ? "Not Found" : code == 405 ? "Method Not Allowed" :
                      code == 409 ? "Conflict" : code == 413 ? "Payload Too Large" : code == 500 ? "Internal Server Error" : "Error";
     const int k = snprintf(h, sizeof h, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\n"
-                           "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n%s%s\r\nConnection: close\r\n\r\n",
+                           "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n%s%sConnection: close\r\n\r\n",
                            code, st, ctype, n,
                            csp ? "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                                  "script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n" : "",

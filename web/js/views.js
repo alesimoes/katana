@@ -156,7 +156,7 @@
       var box = h("div", { class: "fcard find" }, h("div", { class: "fc-l", text: "Achados (" + e.run.length + ")" }));
       e.run.forEach(function (f) {
         box.appendChild(h("div", { class: "fi", onclick: function () { var m = f.name.match(/^(.*):(\d+)$/); B.openPath(m ? m[1] : f.name); } },
-          h("div", { class: "fi-n", text: f.name + (f.out ? "  [" + f.out + "]" : "") }), h("div", { class: "fi-t", text: f.text })));
+          h("div", { class: "fi-n", text: f.name }), h("div", { class: "fi-t", text: f.text })));
       });
       row = h("div", { class: "r r-ind" }, box);
     } else if (e.type === "stopped") {

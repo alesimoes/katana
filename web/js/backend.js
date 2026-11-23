@@ -5,7 +5,7 @@
   var B = K.be = {
     ready: false, loading: false, answering: false, running: false, model: "", models: [], status: "", error: "",
     ctxUsed: 0, ctxTotal: 0, speed: "", queue: [], paused: false, planMode: false, teacher: false, teacherModel: "",
-    todo: [], choice: null, ws: "", wsTrusted: true, sessions: [], sess: null, dirty: false, bound: "", pendingCtx: "",
+    todo: [], choice: null, ws: "", wsTrusted: false, sessions: [], sess: null, dirty: false, bound: "", pendingCtx: "",
     resumeCtx: "", resumeWant: "", resuming: false, resumed: false, msgs: new K.Messages(), curPlan: 0, reqStart: 0, reqActions: 0,
     progress: "", stats: "", errTail: [], specsActive: [], specsSkipped: [], stopRequested: false, engineVersion: "", engineChanges: "",
     specsDir: "", sessDir: "", ui: {}, activityText: "", stalled: false, sysText: "", indexText: "", indexTip: "", ask: null, pw: null,
@@ -64,7 +64,7 @@
     B.teacherModel = B.ui.professorModelo || ""; B.hasTeacherKey = !!st.hasTeacherKey;
     if (B.ui.workspace) B.ws = B.ui.workspace;
     if (st.agent && st.agent.running) {          /* a pagina foi recarregada com o agente de pe */
-      B.running = true; B.model = st.agent.model; B.ws = st.agent.cwd || B.ws; B.wsTrusted = true;
+      B.running = true; B.model = st.agent.model; B.ws = st.agent.cwd || B.ws;
       B.setState(!st.agent.busy, false, !!st.agent.busy);
     }
   };
@@ -508,7 +508,7 @@
     B.refreshSessions();
     return true;
   };
-  B.openSession = function (id) {
+  B.openSession = function (id, displayOnly) {
     return K.get("web/sessions/" + id).then(function (s) {
       var agentReady = B.running && B.ready;
       if (B.running && !agentReady && !B.loading) { B.setTexts("", "Aguarde o agente terminar."); return false; }
@@ -533,6 +533,7 @@
       });
       B.msgs.setAll(items);
       B.speed = ""; B.ctxUsed = 0; B.ctxTotal = 0;
+      if (displayOnly) { B.pendingCtx = ""; B.resumeCtx = ""; B.bound = B.ksessPath(id); B.refreshSessions(); return true; }   /* a pagina recarregou: o agente ja tem esta conversa */
       var trocar = false;
       if (s.modelo && s.modelo !== B.model) trocar = B.models.some(function (m) { return m.file === s.modelo && m.usable; });
       if (trocar) B.start(s.modelo);
