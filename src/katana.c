@@ -113,6 +113,14 @@
 #include "coder/symtool.c"           /* coder: ferramenta Symbols e Find mode=refs em cima do indice de simbolos */
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
+#include "uioe/types.c"
+#include "uioe/trace.c"
+#include "uioe/state.c"
+#include "uioe/registry.c"
+#include "uioe/interpret.c"
+#include "uioe/classify.c"
+#include "uioe/route.c"
+#include "uioe/cli.c"
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */
 #include "agent/callgrammar.c"         /* chamadas de ferramenta validas por construcao (nome, chaves, valores tipados) */

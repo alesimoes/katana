@@ -1640,6 +1640,14 @@ Stage 1: about 20 to 24 agent-days (estimate). The first usable slice is U0 to U
 from the command line, no model, no agent change. The owner can read blocks for his own questions and correct the
 routing before anything reaches the model. That is the review point this design asks for.
 
+**Status of U0 and U1 (built 2026-11-23, compiled, nothing measured, not run in a live agent session).** Files: `src/uioe/types.c`,
+`trace.c`, `state.c`, `registry.c`, `interpret.c`, `classify.c`, `route.c`, `cli.c`; one `uioe_loop_state` function in `loop.c`, the `/uioe`
+slash command and the `uioe` entry in `main.c`. `katana uioe ask|plan|connectors|state` work with no model; the loop does not call UIOE
+(`KATANA_UIOE` defaults to `off`). Differences from the text above, decided by the implementer and recorded in each file header: the request
+state is read through one snapshot (`uioe_req_sync`) instead of being moved; entities are recognized by shape or on disk, not resolved
+through the index (so the "entity resolved" signal is weaker than 3.5.3 says); `gap` is not computed (it needs the index); the trace is
+not yet masked for secret shapes; only G1 to G3 are decided before retrieval.
+
 ### 6.2 Stage 2: general interpretation and the complete Context Builder
 
 | Phase | Content | Files | Done when | Days |

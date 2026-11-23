@@ -472,6 +472,7 @@ static void autoindex_dir(const char *d) { (void)d; }
 static void autoindex_start(void) {}
 #endif
 static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); }
+static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
     if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find") || !strcmp(name, "Symbols")) return 1;
@@ -663,6 +664,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (getenv("KATANA_UI")) { printf("\x01" "UNDO %d\t%s\n", k, undo_txt); fflush(stdout); }
             continue;
         }
+        if (!strncmp(line, "/uioe", 5) && (!line[5] || line[5] == ' ')) { uioe_slash(line + 5); continue; }      /* estado do pedido (uioe/state.c) */
         if (launch_cmd(line, m, pos, sys, &hist, &slog)) continue;      /* /status, /model */
         int reset = 0;
         const int cmd = console_cmd(line, &tr, extra, sizeof extra, &reset);   /* /sistema acrescenta instrucoes ao prompt do agente */
