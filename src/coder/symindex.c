@@ -381,4 +381,5 @@ static void coder_sym_register(void) {
     store_register_merger(SY_T_NAMES, 1, sy_merge_names); store_register_merger(SY_T_DOCS, 1, sy_merge_docs); store_register_merger(SY_T_SYMS, 1, sy_merge_syms);
     store_register_merger(SY_T_REFS, 1, sy_merge_refs); store_register_merger(SY_T_BYDEF, 1, sy_merge_bydef); store_register_merger(SY_T_BYREF, 1, sy_merge_byref);
     store_register_merger(SY_T_IVAL, 1, sy_merge_ival);
+    graph_register();                                   /* graph.c: fusor da secao STS_GRAPH (o grafo de arquivos derivado) */
 }
