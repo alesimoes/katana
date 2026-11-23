@@ -579,10 +579,21 @@ static void cs_jstr(const char *s, size_t n) {
 /* ---- evidencia: linhas (calculadas ao imprimir, relendo o arquivo) ---- */
 typedef struct { int line; char text[150]; uint32_t mask; } CsEvLine;
 #define CS_EVBITS 24
-static int cs_evidence(const CsView *v, uint32_t doc, const QSet *q, const int *ti, int nti, char phr[][256], uint32_t phrmask, CsEvLine *out, int maxout, CoderTok *tk) {
-    size_t len; char *buf = cs_read_doc(v, doc, &len); if (!buf) return 0;
+/* mascara de termos que casam em um trecho de texto (mesma regra por token das linhas de evidencia) */
+static uint32_t cs_text_mask(const char *text, const QSet *q, const int *ti, int nti, CoderTok *tk) {
+    uint32_t m = 0; int n = coder_tokens_ex(text, tk, 4096, 2, CT_AUTO);
+    for (int a = 0; a < n; a++) { char lo[64]; cs_lower(lo, tk[a].orig, sizeof lo);
+        for (int j2 = 0; j2 < nti; j2++) { if (m >> j2 & 1) continue; const QTerm *t = &q->t[ti[j2]]; int hit = 0; if (t->nm > 1) continue;     /* termos de varias partes (E) nao marcam linhas */
+            for (int mm = 0; mm < t->nm && !hit; mm++) for (int k = 0; k < t->m[mm].nk; k++) { const char *key = t->m[mm].k[k];
+                if ((key[0] == 'n' && !strcmp(tk[a].norm, key + 1)) || (key[0] == 'o' && !strcmp(lo, key + 1))) { hit = 1; break; } }
+            if (hit) m |= 1u << j2; } }
+    return m;
+}
+/* le o arquivo e devolve a mascara de termos por linha (1-based em lm[linha-1]); *buf/*len = texto lido (o chamador libera); first[b] = primeira linha do bit b */
+static uint32_t *cs_linemasks(const CsView *v, uint32_t doc, const QSet *q, const int *ti, int nti, char phr[][256], uint32_t phrmask, CoderTok *tk, char **bufout, size_t *lenout, int *nlines, int *first) {
+    size_t len; char *buf = cs_read_doc(v, doc, &len); *bufout = buf; *lenout = 0; *nlines = 0; if (!buf) return NULL;
     if (nti > CS_EVBITS) nti = CS_EVBITS;
-    uint32_t *lm = NULL; int cap = 0, lineno = 1; int first[32]; for (int i = 0; i < 32; i++) first[i] = 0;
+    uint32_t *lm = NULL; int cap = 0, lineno = 1; for (int i = 0; i < 32; i++) first[i] = 0;
     static char line[4100];
     for (size_t i = 0; i <= len;) {
         size_t j = i; while (j < len && buf[j] != '\n' && j - i < 4000) j++;
@@ -590,31 +601,28 @@ static int cs_evidence(const CsView *v, uint32_t doc, const QSet *q, const int *
         for (size_t z = 0; z < l; z++) if (line[z] == 0) line[z] = ' ';
         while (lineno > cap) { int oc = cap; cap = cap ? cap * 2 : 256; lm = (uint32_t *)realloc(lm, sizeof *lm * (size_t)cap); for (int z = oc; z < cap; z++) lm[z] = 0; }
         uint32_t m = 0;
-        if (l >= 2 && nti) {
-            int n = coder_tokens_ex(line, tk, 4096, 2, CT_AUTO);
-            for (int a = 0; a < n; a++) { char lo[64]; cs_lower(lo, tk[a].orig, sizeof lo);
-                for (int j2 = 0; j2 < nti; j2++) { if (m >> j2 & 1) continue; const QTerm *t = &q->t[ti[j2]]; int hit = 0; if (t->nm > 1) continue;     /* termos de varias partes (E) nao marcam linhas */
-                    for (int mm = 0; mm < t->nm && !hit; mm++) for (int k = 0; k < t->m[mm].nk; k++) { const char *key = t->m[mm].k[k];
-                        if ((key[0] == 'n' && !strcmp(tk[a].norm, key + 1)) || (key[0] == 'o' && !strcmp(lo, key + 1))) { hit = 1; break; } }
-                    if (hit) m |= 1u << j2; } }
-        }
+        if (l >= 2 && nti) m = cs_text_mask(line, q, ti, nti, tk);
         for (int p = 0; p < 8; p++) if ((phrmask >> p & 1) && cs_stristr(line, phr[p])) m |= 1u << (CS_EVBITS + p);
         lm[lineno - 1] |= m;
         for (int b = 0; b < 32; b++) if ((m >> b & 1) && !first[b]) first[b] = lineno;
         if (j < len && buf[j] == '\n') { lineno++; j++; } else if (j >= len) break;
         i = j;
     }
+    *lenout = len; *nlines = lineno; return lm;
+}
+static void cs_line_text(const char *buf, size_t len, int ln, char *out, size_t cap) {
+    size_t i = 0; int cur = 1; out[0] = 0; while (cur < ln && i < len) { if (buf[i] == '\n') cur++; i++; }
+    while (i < len && (buf[i] == ' ' || buf[i] == '\t')) i++;
+    size_t k2 = 0; while (i < len && buf[i] != '\n' && buf[i] != '\r' && k2 + 1 < cap) { out[k2++] = buf[i] == '\t' ? ' ' : buf[i]; i++; }
+    out[k2] = 0;
+}
+static int cs_evidence(const CsView *v, uint32_t doc, const QSet *q, const int *ti, int nti, char phr[][256], uint32_t phrmask, CsEvLine *out, int maxout, CoderTok *tk) {
+    char *buf; size_t len; int nl, first[32]; uint32_t *lm = cs_linemasks(v, doc, q, ti, nti, phr, phrmask, tk, &buf, &len, &nl, first); if (!buf) return 0;
     int chosen[40], nc = 0;
     for (int b = 0; b < 32 && nc < maxout; b++) { if (!first[b]) continue; int dup = 0; for (int k = 0; k < nc; k++) if (chosen[k] == first[b]) dup = 1; if (!dup) chosen[nc++] = first[b]; }
     for (int a = 1; a < nc; a++) { int x = chosen[a], b = a - 1; while (b >= 0 && chosen[b] > x) { chosen[b + 1] = chosen[b]; b--; } chosen[b + 1] = x; }
     int no = 0;
-    for (int k = 0; k < nc; k++) {
-        int ln = chosen[k]; CsEvLine *e = &out[no++]; e->line = ln; e->mask = lm[ln - 1]; e->text[0] = 0;
-        size_t i = 0; int cur = 1; while (cur < ln && i < len) { if (buf[i] == '\n') cur++; i++; }
-        while (i < len && (buf[i] == ' ' || buf[i] == '\t')) i++;
-        size_t k2 = 0; while (i < len && buf[i] != '\n' && buf[i] != '\r' && k2 + 1 < sizeof e->text) { e->text[k2++] = buf[i] == '\t' ? ' ' : buf[i]; i++; }
-        e->text[k2] = 0;
-    }
+    for (int k = 0; k < nc; k++) { int ln = chosen[k]; CsEvLine *e = &out[no++]; e->line = ln; e->mask = lm[ln - 1]; cs_line_text(buf, len, ln, e->text, sizeof e->text); }
     free(lm); free(buf); return no;
 }
 
@@ -756,6 +764,49 @@ static void cs_print_evidence_text(const CsView *v, uint32_t doc, const QSet *q,
         size_t l = strlen(lst); if (l > 420) break; snprintf(lst + l, sizeof lst - l, "%s%s [%s: %s]", l ? "; " : "", t->disp, g_cs_clsname[t->cls], fl); }
     printf("      terms: %s%s\n", lst, nm > 8 ? " ..." : "");
     (void)why; (void)chans; (void)nch;
+}
+/* ---- UNIDADE POR SIMBOLO: o resultado de um arquivo com simbolos indexados vira uma lista de simbolos (symindex.c) ----
+ * O termo casa no NOME do simbolo (peso 4), na ASSINATURA (2) ou no CORPO, pelo intervalo de linhas do simbolo (1 + log da contagem de linhas);
+ * cada linha com casamento e atribuida ao simbolo mais interno que a contem; linhas fora de qualquer simbolo ficam num resultado de nivel de arquivo.
+ * Arquivos sem simbolos (texto, docs, config) continuam como resultado de arquivo. A confianca vem da camada do arquivo (tier 1: 90, 2: 65, 3: 40),
+ * +6 se o termo esta no nome do simbolo, +3 na assinatura, -8 se so no corpo. */
+typedef struct { int sym, l0, l1, kind, nlines; uint32_t nmask, smask, bmask; double score; int ev[3]; char name[100], sig[160]; } CsUnit;
+static int cs_unit_cmp(const void *a, const void *b) { double x = ((const CsUnit *)a)->score, y = ((const CsUnit *)b)->score; return x < y ? 1 : x > y ? -1 : ((const CsUnit *)a)->l0 - ((const CsUnit *)b)->l0; }
+static int cs_tier_conf(int tier) { return tier == 1 ? 90 : tier == 2 ? 65 : 40; }
+/* devolve o numero de unidades (ate max) ou -1 se o arquivo nao tem simbolos indexados; *flines = linhas com casamento fora de simbolos (ate 3) */
+static int cs_symbol_units(SyView *sv, const char *path, uint32_t plen, const uint32_t *lm, int nlm, const char *buf, size_t blen, const QSet *q, const int *ti, int nti, CoderTok *tk, CsUnit *out, int max, int *flines, int *nflines) {
+    *nflines = 0; if (!sv->any) return -1;
+    StoreLiveDoc *e = store_live_find(&sv->L, path, plen); if (!e || e->dead) return -1;
+    const SySec *x = &sv->s[e->seg].x; if (!x->has || e->idx >= x->docs.n) return -1;
+    const uint8_t *dr = store_table_at(&x->docs, e->idx); uint32_t s0 = st_get_u32(dr), n = st_get_u32(dr + 4); if (!n) return -1;
+    CsUnit *u = (CsUnit *)calloc(n, sizeof *u);
+    uint32_t allow = 0; for (int b = 0; b < nti && b < CS_EVBITS; b++) { int cl = q->t[ti[b]].cls; if (cl == QC_ORIG || cl == QC_WHOLE || cl == QC_ABBR) allow |= 1u << b; }     /* so os termos do usuario (e abreviacoes), nao a expansao conceitual */
+    for (uint32_t k = 0; k < n; k++) {
+        SySym y; sy_sym_at(sv, e->seg, s0 + k, &y); CsUnit *c = &u[k]; c->sym = (int)k; c->l0 = (int)y.line0; c->l1 = (int)y.line1; c->kind = (int)y.kind;
+        sy_cpy(c->name, sizeof c->name, y.name, y.nl); sy_cpy(c->sig, sizeof c->sig, y.sig, y.sl);
+        c->nmask = cs_text_mask(c->name, q, ti, nti, tk); c->smask = c->sig[0] ? cs_text_mask(c->sig, q, ti, nti, tk) : 0; c->nmask &= allow; c->smask &= allow;
+    }
+    for (int ln = 1; ln <= nlm; ln++) {                         /* linha com casamento -> simbolo mais interno que a contem */
+        uint32_t m = lm[ln - 1] & allow; if (!m) continue;
+        int best = -1; for (uint32_t k = 0; k < n; k++) if (u[k].l0 <= ln && u[k].l1 >= ln && (best < 0 || u[k].l0 >= u[best].l0)) best = (int)k;
+        if (best < 0) { if (*nflines < 3) flines[(*nflines)++] = ln; continue; }
+        if (ln == u[best].l0) continue;                         /* a linha da declaracao ja vale como nome/assinatura */
+        u[best].bmask |= m; u[best].nlines++; if (u[best].ev[2] == 0) { int z = 0; while (z < 3 && u[best].ev[z]) z++; if (z < 3) u[best].ev[z] = ln; }
+    }
+    int nu = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        CsUnit *c = &u[k]; uint32_t all = c->nmask | c->smask | c->bmask; if (!all) continue;
+        double sc = 0; for (int b = 0; b < nti && b < CS_EVBITS; b++) { if (!(all >> b & 1)) continue; double w = q->t[ti[b]].w * q->t[ti[b]].idf; sc += w * ((c->nmask >> b & 1) * 4.0 + (c->smask >> b & 1) * 2.0 + ((c->bmask >> b & 1) ? 1.0 + log(1.0 + c->nlines) : 0)); }
+        c->score = sc; u[nu++] = *c;
+    }
+    qsort(u, (size_t)nu, sizeof *u, cs_unit_cmp);
+    if (nu > max) nu = max;
+    memcpy(out, u, sizeof *out * (size_t)nu); free(u); (void)buf; (void)blen; return nu;
+}
+static void cs_unit_conf(const CsUnit *c, int tier, int *conf, char *how, size_t cap) {
+    int cf = cs_tier_conf(tier); const char *w = (c->nmask ? "name" : c->smask ? "signature" : "body");
+    cf += c->nmask ? 6 : c->smask ? 3 : -8; *conf = cf < 1 ? 1 : cf > 99 ? 99 : cf;
+    snprintf(how, cap, "tier %d; term in the symbol %s%s%s%s", tier, w, c->nmask && c->bmask ? " and body" : "", c->nlines ? "" : "", "");
 }
 static void cs_json_terms(const QSet *q) {
     printf("\"terms\":[");
@@ -907,6 +958,7 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
         if (nnf) printf("NOT FOUND in the index (no occurrence): %s\n", nf);
         if (!nres) printf("(no results)\n");
     }
+    SyView sv; memset(&sv, 0, sizeof sv); int sv_tried = 0, sv_ok = 0, shown_units = 0;
     for (uint32_t r = 0; r < nres && (int)r < limit; r++) {
         uint32_t d = res[r].doc; int exactg = sc[CH_EXACT][d] > 0 || litmask[d];
         char chl[200]; chl[0] = 0;
@@ -923,9 +975,20 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
             for (int i = 0; i < ne && i < CODER_EV_MAX; i++) { H->line[i] = ev[i].line; snprintf(H->text[i], sizeof H->text[i], "%s", ev[i].text); H->nev++; }
             continue;
         }
+        CsUnit un[3]; int nu = -1, fl[3], nfl = 0; char *ubuf = NULL; size_t ulen = 0; uint32_t *ulm = NULL;
+        if (!sv_tried) { sv_tried = 1; char e2[200]; if (sy_view_open(proj, &sv, e2, sizeof e2) == 0) sv_ok = 1; }
+        if (sv_ok) {
+            CsTW tw2[256]; int nm2 = 0; for (int i = 0; i < q.n && nm2 < 256; i++) if (cs_qt_find(&q.t[i], d)) { tw2[nm2].i = i; tw2[nm2++].w = q.t[i].w * q.t[i].idf; }
+            qsort(tw2, (size_t)nm2, sizeof *tw2, cs_tw_cmp);
+            int ti2[CS_EVBITS]; int nti2 = nm2 < CS_EVBITS ? nm2 : CS_EVBITS; for (int i = 0; i < nti2; i++) ti2[i] = tw2[i].i;
+            int first2[32], nlm = 0; ulm = cs_linemasks(&v, d, &q, ti2, nti2, Q.phr, litmask[d], tk, &ubuf, &ulen, &nlm, first2);
+            if (ulm) nu = cs_symbol_units(&sv, v.path[d], v.plen[d], ulm, nlm, ubuf, ulen, &q, ti2, nti2, tk, un, 3, fl, &nfl);
+            if (nu <= 0) nu = -1;
+        }
+        shown_units += nu > 0 ? nu + (nfl ? 1 : 0) : 1;
         if (json) {
             printf("%s{\"path\":", r ? "," : ""); cs_jstr(v.path[d], v.plen[d]);
-            printf(",\"tier\":%d,\"certainty\":\"%s\",\"score\":%.5f,\"channels\":{", res[r].tier, exactg ? "exact" : "probable", res[r].fused);
+            { int fconf = cs_tier_conf(res[r].tier) + (exactg ? 2 : 0); printf(",\"tier\":%d,\"confidence\":%d,\"level\":\"%s\",\"how\":\"%s\",\"unit\":\"%s\",\"score\":%.5f,\"channels\":{", res[r].tier, fconf, sy_level(fconf), exactg ? "exact name or literal anchor in the query (tier 1 layer)" : "ranked match (lower layer)", nu > 0 ? "symbol" : "file", res[r].fused); }
             { int first = 1; for (int c = 0; c < CH_N; c++) if (rk[c][d]) { printf("%s\"%s\":%d", first ? "" : ",", g_cs_chname[c], rk[c][d]); first = 0; } }
             printf("},\"evidence\":[");
             CsTW tw[256]; int nm = 0; for (int i = 0; i < q.n && nm < 256; i++) if (cs_qt_find(&q.t[i], d)) { tw[nm].i = i; tw[nm++].w = q.t[i].w * q.t[i].idf; }
@@ -936,17 +999,38 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
                 int f2 = 1; for (int b = 0; b < CS_EVBITS + 8; b++) if (ev[i].mask >> b & 1) { printf("%s", f2 ? "" : ","); if (b < CS_EVBITS) cs_jstr(q.t[ti[b]].disp, 64); else cs_jstr(Q.phr[b - CS_EVBITS], 256); f2 = 0; } printf("]}"); }
             printf("],\"matched\":[");
             for (int k = 0; k < nm && k < 16; k++) { const QTerm *t = &q.t[tw[k].i]; const CsHit *h = cs_qt_find(t, d); char fl[160]; cs_fields_str(h, fl, sizeof fl); printf("%s{\"term\":", k ? "," : ""); cs_jstr(t->disp, 64); printf(",\"class\":\"%s\",\"fields\":", g_cs_clsname[t->cls]); cs_jstr(fl, 160); printf("}"); }
-            printf("]}");
+            printf("]");
+            if (nu > 0) { printf(",\"symbols\":[");
+                for (int k = 0; k < nu; k++) { int cf; char how[160]; cs_unit_conf(&un[k], res[r].tier, &cf, how, sizeof how);
+                    printf("%s{\"line0\":%d,\"line1\":%d,\"kind\":\"%s\",\"name\":", k ? "," : "", un[k].l0, un[k].l1, un[k].kind < CK_N ? CP_KINDN[un[k].kind] : "?"); cs_jstr(un[k].name, 100);
+                    printf(",\"sig\":"); cs_jstr(un[k].sig, 160); printf(",\"confidence\":%d,\"level\":\"%s\",\"how\":", cf, sy_level(cf)); cs_jstr(how, 160);
+                    printf(",\"matched\":[%s%s%s],\"lines\":[", un[k].nmask ? "\"name\"" : "", un[k].smask ? (un[k].nmask ? ",\"signature\"" : "\"signature\"") : "", un[k].bmask ? (un[k].nmask || un[k].smask ? ",\"body\"" : "\"body\"") : "");
+                    for (int z = 0; z < 3 && un[k].ev[z]; z++) { char lt[200]; cs_line_text(ubuf, ulen, un[k].ev[z], lt, sizeof lt); printf("%s{\"line\":%d,\"text\":", z ? "," : "", un[k].ev[z]); cs_jstr(lt, 150); printf("}"); }
+                    printf("]}"); }
+                printf("]"); }
+            printf("}"); free(ulm); free(ubuf);
         } else {
-            printf("%2u. %.*s   [%s] tier %d  score %.4f  (%s)\n", r + 1, (int)v.plen[d], v.path[d], exactg ? "exact" : "probable", res[r].tier, res[r].fused, chl);
-            if (anchor[d]) printf("      named in the query: \"%s\" matches the file name\n", Q.a[anchor[d] - 1].w);
-            if (why && res[r].tier == 2) printf("      tier 2: a concept term and an operation term from different query words both appear in the path/file name\n");
-            cs_print_evidence_text(&v, d, &q, &Q, litmask[d], tk, why, NULL, 0);
+            int fconf = cs_tier_conf(res[r].tier) + (exactg ? 2 : 0); if (nu > 0) {
+                printf("%2u. %.*s   [file confidence %d %s] tier %d  score %.4f  (%s)\n", r + 1, (int)v.plen[d], v.path[d], fconf, sy_level(fconf), res[r].tier, res[r].fused, chl);
+                if (anchor[d]) printf("      named in the query: \"%s\" matches the file name\n", Q.a[anchor[d] - 1].w);
+                if (why && res[r].tier == 2) printf("      tier 2: a concept term and an operation term from different query words both appear in the path/file name\n");
+                for (int k = 0; k < nu; k++) { int cf; char how[160]; cs_unit_conf(&un[k], res[r].tier, &cf, how, sizeof how);
+                    printf("      %.*s:%d-%d  %s %s   [confidence %d %s; %s]\n", (int)v.plen[d], v.path[d], un[k].l0, un[k].l1, un[k].kind < CK_N ? CP_KINDN[un[k].kind] : "?", un[k].name, cf, sy_level(cf), how);
+                    if (un[k].sig[0]) printf("          %s\n", un[k].sig);
+                    for (int z = 0; z < 3 && un[k].ev[z]; z++) { char lt[200]; cs_line_text(ubuf, ulen, un[k].ev[z], lt, sizeof lt); printf("          line %d: %.150s\n", un[k].ev[z], lt); } }
+            } else {
+                printf("%2u. %.*s   [confidence %d %s] tier %d  score %.4f  (%s)\n", r + 1, (int)v.plen[d], v.path[d], fconf, sy_level(fconf), res[r].tier, res[r].fused, chl);
+                if (anchor[d]) printf("      named in the query: \"%s\" matches the file name\n", Q.a[anchor[d] - 1].w);
+                if (why && res[r].tier == 2) printf("      tier 2: a concept term and an operation term from different query words both appear in the path/file name\n");
+                cs_print_evidence_text(&v, d, &q, &Q, litmask[d], tk, why, NULL, 0);
+            }
+            free(ulm); free(ubuf);
         }
     }
     if (ho) {}
     else if (json) printf("]}\n");
     else if (nres > (uint32_t)limit) printf("... %u more (use --limit)\n", nres - (uint32_t)limit);
+    if (sv_ok) sy_view_close(&sv);
     for (int c = 0; c < CH_N; c++) { free(sc[c]); free(rk[c]); }
     for (int i = 0; i < q.n; i++) free(q.t[i].hit);
     free(q.t); free(anchor); free(scop); free(litmask); free(cmask); free(omask); free(res); free(tk); cs_view_close(&v);
@@ -1002,9 +1086,9 @@ static int coder_find_name_main(int argc, char **argv) {
     CsQuery Q; memset(&Q, 0, sizeof Q);
     if (!nres && !json) printf("NOT FOUND: no file is named like \"%s\" and no indexed file contains it or a similar identifier\n", name);
     for (uint32_t r = 0; r < nres && (int)r < limit; r++) {
-        uint32_t d = res[r].doc; int k = res[r].kind; const char *cert = (k == 0 || k == 1) ? "exact" : "probable";
-        if (json) { printf("%s{\"path\":", r ? "," : ""); cs_jstr(v.path[d], v.plen[d]); printf(",\"kind\":\"%s\",\"certainty\":\"%s\"}", kn[k], cert); continue; }
-        printf("%2u. %.*s   [%s] %s\n", r + 1, (int)v.plen[d], v.path[d], cert, kn[k]);
+        uint32_t d = res[r].doc; int k = res[r].kind; static const int kc[] = {92, 85, 55, 40, 35}; int cf = kc[k]; const char *lv = cf >= 75 ? "high" : cf >= 45 ? "medium" : "low";
+        if (json) { printf("%s{\"path\":", r ? "," : ""); cs_jstr(v.path[d], v.plen[d]); printf(",\"kind\":\"%s\",\"confidence\":%d,\"level\":\"%s\"}", kn[k], cf, lv); continue; }
+        printf("%2u. %.*s   [confidence %d %s] %s\n", r + 1, (int)v.plen[d], v.path[d], cf, lv, kn[k]);
         if (k == 1 || k == 4) {
             CsTW tw[64]; int nm = 0; for (int i = 0; i < q.n && nm < 64; i++) if (cs_qt_find(&q.t[i], d)) { tw[nm].i = i; tw[nm++].w = q.t[i].w; }
             qsort(tw, (size_t)nm, sizeof *tw, cs_tw_cmp);

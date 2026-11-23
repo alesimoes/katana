@@ -114,7 +114,29 @@ It enters in three places:
 3. **In the loop** (exists, improved): the neighbour note and the repetition note keep working, now fed by
    symbol-level relations instead of file-level ones.
 
-### 1.2 The principle: three grades of certainty that never mix
+### 1.2 The principle: a search cascade and a confidence level (replaces the three grades below)
+
+> **Decision of the owner (2026-11-23): there is no "exact" in code understanding.** The three grades `exact`, `derived`,
+> `probable` of the original design (the table and the rest of this subsection, and decision 1 of section 13) are
+> **replaced** by what follows. They are no longer output labels and no new enum may use those words. Where other
+> sections still say "exact", "derived" or "probable", read it as the **step of the cascade** that found the fact.
+>
+> - **Cascade.** A query is a cascade of steps, not a category of result. Step 1 looks for the name exactly as given. If
+>   the indexed set has nothing for it, step 2 derives: the same name ignoring case and underscores, or the name as a part
+>   of a longer identifier. If there is still nothing, step 3 tries the probable: names within edit distance 2 (trigrams
+>   and concepts for the text search). Only after the whole cascade comes up empty does the answer say `NOT FOUND`, with the
+>   limits of the indexed set (skipped files, languages without extraction, dynamic calls).
+> - **Confidence.** Every result carries `confidence` (0 to 100; `high` >= 75, `medium` >= 45, `low` below) and `how`, a
+>   short text saying at which step and why it was found ("name match in same file", "same name, 3 definitions"). The
+>   number is computed from: the step that found it (92, 62, 32); ambiguity (each extra definition of the same name lowers
+>   it, up to 25); whether the fact was verified by rereading the file (+4; a line that no longer matches, or a file that
+>   changed since indexing, -25); and for a relation by name, whether the definition is in the same file or unique in the
+>   set (no penalty) or absent from the set (external, -25). A path through the graph (`impact`) has the confidence of its
+>   weakest edge.
+> - Implemented in `src/coder/symquery.c` (structural queries) and `src/coder/search.c` (search by symbol); the storage
+>   format is unchanged by this decision.
+
+#### Original text (kept for the reasoning; superseded as above): three grades of certainty that never mix
 
 Every fact handed to a consumer carries a **grade**. The grade is a property of how the fact was obtained, never of
 a score.
@@ -2155,7 +2177,7 @@ by the owner). The owner decides; the last column says what evidence would justi
 
 | # | Decision | Options | Default used in this document | What it costs if wrong | What would change it |
 |---|---|---|---|---|---|
-| 1 | **Grades of certainty** | (a) two: exact, probable. (b) three: exact, derived, probable | **(b) three** (1.2) | (b) wrong: one more word for the model to learn and for the curriculum to teach, with no behavioural difference. (a) wrong: either single-candidate name matches are called exact and a wrong one destroys trust in the word, or they are called probable and the useful edges drown among guesses | go back to two if the golden sets of phase A1 show that single-candidate resolution is right nearly always on the owner's code (then derived can be folded into exact), **or** if agent runs show the model treats `derived` and `probable` the same (then the distinction is noise for it, and it can stay in the CLI and JSON only) |
+| 1 | **Grades of certainty** (SUPERSEDED 2026-11-23 by the search cascade and confidence level, 1.2) | (a) two: exact, probable. (b) three: exact, derived, probable | **(b) three** (1.2) | (b) wrong: one more word for the model to learn and for the curriculum to teach, with no behavioural difference. (a) wrong: either single-candidate name matches are called exact and a wrong one destroys trust in the word, or they are called probable and the useful edges drown among guesses | go back to two if the golden sets of phase A1 show that single-candidate resolution is right nearly always on the owner's code (then derived can be folded into exact), **or** if agent runs show the model treats `derived` and `probable` the same (then the distinction is noise for it, and it can stay in the CLI and JSON only) |
 | 2 | **Language server: first, or late confirmation** | (a) asked first when switched on, the store as fallback. (b) the store answers; the server confirms the frontier edges afterwards, with a cache by content hash | **(b) late confirmation** (3.5); the switch itself stays off by default | (b) wrong: answers carry `derived` where `exact` was available, until confirmed. (a) wrong: every query waits on a process that may be cold, slow or absent | switch to (a), per language, if a server that is already running answers within the query budget on the owner's projects (a measure of its warm latency), or for a language where the own parser turns out too weak to answer first (C++ is the candidate, 3.5) |
 | 3 | **Default ranking mode** | (a) the owner's weighted sum `0.20 L + 0.25 C + 0.20 B + 0.25 G + 0.10 S`. (b) tiers, then reciprocal rank fusion; the sum as a configurable mode | **(b) fusion** (12.6); `mode=sum` selects the formula | (b) wrong: a signal that deserves more weight cannot be given it. (a) wrong: five uncalibrated numbers decide the order and look measured | one offline run of the existing bench per mode (no model). If the sum is better by clearly more than a few questions, and its weights agree across the leave-one-repository-out folds, make it the default |
 | 4 | **How much of the knowledge base precedes the investigation** | (a) the whole base, business concepts included, before the orchestrator. (b) only the small technical base (layers 1 to 6), then the investigation; project domain files in parallel; mining and business concepts after | **(b) sliced** (section 9, phases A5a to A5c; end of section 12) | (b) wrong: the first packets are built with a narrower concept channel. (a) wrong: the investigation waits on work that has no finish line, most of it irrelevant to the owner's three projects | do more of the base first if the measure of 12.7 shows the seed alone moves the hop slice a lot (then every extra layer is worth its days before anything else); do less if it shows no movement at all (then even A5a should wait behind the structural work) |
