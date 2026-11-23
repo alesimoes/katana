@@ -37,6 +37,10 @@
  *  - QML: so componentes com id (e a raiz), propriedades, signals, funcoes e handlers onX; Behavior/State aninhados sem id nao viram simbolo.
  *  - PowerShell: chamadas = cmdlets Verbo-Substantivo e funcoes do arquivo; param() entra na assinatura; sem pipeline de objetos.
  *  - Markdown: titulos ATX e setext fora de blocos de codigo; refs = links relativos (IMPORT); nao entende HTML embutido.
+ *  - Linguagens e formatos acrescentados depois (C#, Swift, PHP, Dart, Scala, Groovy/Gradle, Ruby, Lua, Elixir, Julia, Erlang, Haskell, OCaml/F#,
+ *    Clojure/Lisp/Scheme/Racket, R, Perl, Objective-C, Zig, Nim, V, Fortran, COBOL, Assembly, SQL, JSON de projeto, YAML, TOML, Dockerfile,
+ *    Makefile, CMake, HTML, XML, CSS/SCSS, Protobuf/Thrift, GraphQL, Terraform, Vue/Svelte, LaTeX, rst/AsciiDoc/Org, .properties/.env/.ini/.gitignore):
+ *    o que cada um nao resolve esta no cabecalho de parse2.c (incluido logo depois deste arquivo, usa a mesma CP e as mesmas funcoes cp_*).
  */
 #include <stdint.h>
 #include <dirent.h>
@@ -1823,6 +1827,8 @@ static const char *const CP_LANGN[] = {"?", "c", "c++", "js", "ts", "python", "k
     "clojure", "lisp", "elixir", "erlang", "haskell", "ocaml", "r", "julia", "perl", "groovy", "objc", "zig", "nim", "v", "fortran", "cobol", "asm",
     "proto", "graphql", "terraform", "vue", "latex", "markup-docs", "xml", "properties"};
 static const char *const CP_REFN[] = {"call", "use", "import", "extends", "implements", "type", "write", "literal"};
+_Static_assert(sizeof(CP_LANGN) / sizeof(CP_LANGN[0]) == CL_N, "CP_LANGN deve ter um nome por CoderLang");
+_Static_assert(sizeof(CP_KINDN) / sizeof(CP_KINDN[0]) == CK_N, "CP_KINDN deve ter um nome por CoderKind");
 typedef struct { int refs, json, nfiles, nsym, nref; } CpOut;
 static void cp_jstr(const char *s) {
     putchar('"');

@@ -919,6 +919,26 @@ plugin, it is C++. (c) Whether name-only method resolution in Kotlin and JS prod
 useful; the hub rule may hide too much or too little. All three are answered by the golden sets of phase A1, not by
 argument.
 
+### 3.6 Languages and formats added in `src/coder/parse2.c`
+
+`parse2.c` is included right after `parse.c` and reuses its `CP` state, symbol and reference writers (`cp_symx`, `cp_ref`), token
+matcher and sweep. It adds two families without touching the older analyzers:
+
+- **Token family** (`c2_gdecl`, one recognizer driven by a per-language keyword table): C#, Swift, PHP, Dart, Scala, Groovy/Gradle.
+  It reuses the tokenizer, the bracket table, `cp_scan` and `cp_sweep` (CALL/USE references).
+- **Line family** (own comment/string/heredoc mask `c2_mask`, then line, indentation, `end`-keyword, brace or paren-form engines):
+  Ruby, Lua, Elixir, Julia, Erlang, Haskell, OCaml/F#, R, Perl, Objective-C, Zig, Nim, V, Fortran, COBOL, Assembly,
+  Clojure/Lisp/Scheme/Racket (also `.edn`, `project.clj`), SQL, JSON (project files only: `package.json`, `composer.json`,
+  `tsconfig*.json`, ...), YAML, TOML, Dockerfile, Makefile, CMake, HTML, XML/XAML/csproj/pom, CSS/SCSS/Less, Protobuf/Thrift,
+  GraphQL, Terraform, Vue/Svelte (the script and style blocks are parsed by the JS/TS and CSS analyzers and merged with shifted
+  offsets), LaTeX, reStructuredText/AsciiDoc/Org, `.properties`/`.ini`/`.env`/`.gitignore`.
+
+New enum values were appended (never renumbered): the `CL_CS ... CL_PROPS` languages and `CK_SECTION` (kind `section`, used for
+YAML/TOML/JSON keys, Dockerfile-free config blocks, Terraform blocks, Vue sections). `coder_lang_of` also recognizes file names
+(`Dockerfile`, `Makefile`, `CMakeLists.txt`, `Rakefile`, `Gemfile`, `Jenkinsfile`, `.env`, `.gitignore`, ...).
+What each analyzer does not resolve is listed in the header comment of `parse2.c`. All of them are tolerant: loops always advance,
+recursion is bounded, symbol counts are capped, and an unterminated construct ends at the end of the text.
+
 ## 4. Exact structural queries
 
 Each query is a C function (2.3), a CLI command (`katana coder <query> ...`) and, for most, an agent tool. Output
