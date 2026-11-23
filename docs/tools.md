@@ -21,6 +21,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
 | `glob.c`, `grep.c` | `Glob`, `Grep` | 161 |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
+| `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact over the symbol index; work in `src/coder/symtool.c`) | - |
 | `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |
 | `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
 | `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
@@ -288,6 +289,42 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
   notes is unknown; Grep and Find result parsing was not run on real outputs of every output mode; Windows has no `Find`
   (stubs only); the 4.7k-file size and build time were not measured; the persisted graph was reloaded and a bad/old
   cache file was not injected by hand.
+
+### Symbols (structural queries from the symbol index)
+`Symbols(action, name, file, line, limit, depth, path)` (`src/tools/symbols.c`, work in `src/coder/symtool.c`): the
+`katana coder def|refs|callers|callees|uses|outline|at|deps|impact` queries as one tool for the agent. Read-only (runs in
+plan mode). One declaration with an `action` instead of nine tools, so the prompt does not grow: `Symbols` is NOT in the
+core list of `src/agent/prompt.c` (the v6 model was trained without it); it is listed by name and the model gets its
+schema with `ToolSearch` (`select:Symbols`). Nine alias tools were not added: each would cost a name in the by-name
+list and a full declaration in every `ToolSearch` answer for no gain.
+- `def` (`name`): where it is defined, `file:lines`, the signature line. `refs` (`name`): every occurrence by kind, each
+  with the function it is in. `callers` / `callees` / `uses` (`name`): who calls it / what it calls in call order /
+  occurrences that are not calls. `outline` (`file`): the symbols of a file, nested, with line ranges. `at` (`file`,
+  `line`): the symbol containing the line and its enclosing symbols. `deps` (`file`): imports out and imported-by.
+  `impact` (`name`, `depth` default 3, max 6): callers of callers (what a change can break).
+- Output: `file:lines  kind name  [confidence N level; how]`, one snippet line per use, a one-line hint of the next
+  query. There are no exact/derived/probable labels: the query is a cascade (exact name, then spelling variants, then
+  edit distance <= 2; the answer says which step produced what it shows) and every result carries `confidence` 0-100,
+  `level` (high >= 75, medium >= 45, low) and `how`. An empty result is `NOT FOUND: ...` with the limit of the indexed
+  set (files indexed, files without symbol extraction, what the analysis does not see). Default `limit` per action:
+  def 8, refs/callers/uses 15, callees 15, outline 100, at 8, deps 30, impact 25 (max 100); the text is cut at about
+  6500 characters. Measured on this repository: def 330 bytes, refs of a common helper 3.1 KB, callees 4.5 KB.
+- Index: the coder index of the working folder (`<folder>/.katana`, shared with `Find`'s coder layer and
+  `katana coder index`). It is created on the first call and updated incrementally on every call; the answer starts with
+  `[symbol index created in N s]` when it was created, or updated and took more than 0.7 s (this repository: 1.3 s
+  creation, 1413 files; a small project: 0.4 s). `path` points to another project folder. When the working folder is
+  the home folder and `path` is empty the tool refuses, as `Find` does.
+- `Find mode=refs` is now answered from the symbol index when the folder already has one and it knows the exact
+  name as a definition (same output format as before: `Defined`, `Used N times in M files`, `line (in function): text`);
+  otherwise, or with `KATANA_FIND_REFS=text`, it uses the old text index. Differences: the symbol index lists calls and
+  other code references (not import lines or mentions in comments and documents), and names the exact enclosing
+  function. `Find` (search) and `Symbols` both keep that index current: the coder update in `Find` now also builds the
+  symbol sections, so a file changed after `katana coder index` is not left without symbols.
+- Loop: `Symbols` counts as reading in `loop_plan_readonly` and `rr_covered` (identical repeated calls get the repeat
+  note; it does not ask for a plan).
+- Not verified: whether the model finds it through `ToolSearch` and uses it well (no run with the model); behaviour
+  with several tool calls in parallel threads (the tool redirects stdout to capture the query output); Windows (not built:
+  the tool answers "not available on Windows yet", as `Find` does).
 
 ### Rename, Replace, Patch (changes in many places)
 `src/tools/multiedit.c`. The model pays for every token it writes and for every round trip, so a change that touches many

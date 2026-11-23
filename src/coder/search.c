@@ -1111,10 +1111,10 @@ static int coder_lookup(const char *root, const char *query, int concept, int li
     char dir[4400], err[300], man[4500]; struct stat sv; double t0 = now_sec();
     store_locate(root, "coder", dir, sizeof dir, 1);
     snprintf(man, sizeof man, "%s/MANIFEST", dir); ho->created = stat(man, &sv) != 0;
-    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o);
+    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);      /* simbolos junto: o indice nunca fica com arquivos sem simbolos (Symbols, Find mode=refs) */
     StoreUpdStats S; err[0] = 0;
     int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
-    char si[400]; coder_search_hook_done(&o, si, sizeof si);
+    char si[400], yi[500]; coder_search_hook_done(&o, si, sizeof si); coder_sym_hook_done(yi, sizeof yi);
     ho->index_ms = (now_sec() - t0) * 1000;
     if (rc != 0 && rc != 1) return -1;               /* 1: outro processo grava o indice agora; le o que existe */
     if (limit < 1) limit = 1;

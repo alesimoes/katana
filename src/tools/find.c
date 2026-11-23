@@ -1284,6 +1284,19 @@ static int fd_coder_post(const CoderHits *C, const char *pre, FdIndex *X, const 
     return shown;
 }
 
+static int sym_find_refs(const char *root, const char *pre, const char *name, int limit, CtSb *sb);      /* coder/symtool.c */
+/* mode=refs pelo indice de simbolos, se a pasta ja o tem e ele conhece o nome exato; 0 = segue pelo caminho antigo (KATANA_FIND_REFS=text desliga) */
+static int fd_refs_sym(const char *query, const char *root, const char *pre, int limit, CtSb *sb) {
+    const char *e = getenv("KATANA_FIND_REFS"); if (e && !strcmp(e, "text")) return 0;
+    const char *p = query; while (*p && !(isalpha((unsigned char)*p) || *p == '_' || *p == '$')) p++;
+    int l = fd_idlen(p, p + strlen(p), FK_PS); while (l > 0 && p[l - 1] == '-') l--;
+    if (l <= 0 || l > 250) return 0;
+    char name[256]; memcpy(name, p, (size_t)l); name[l] = 0;
+    CtSb t = {0};
+    if (!sym_find_refs(root, pre, name, limit, &t)) { free(t.p); return 0; }
+    if (t.p) ct_sb_puts(sb, t.p);
+    free(t.p); return 1;
+}
 static void ct_findtool(const char *js, const char *end, char *out, size_t cap) {
     if (cap < 300) { if (cap) out[0] = 0; return; }
     g_fd_verbose = getenv("KATANA_FIND_TIME") != NULL;
@@ -1332,7 +1345,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             snprintf(out, cap, "%s", res[0] ? res + 1 : "(no note)");
             goto done;
         }
-        if (refs) fd_refs(X, q, pre, (int)lim, &sb);
+        if (refs) { if (!fd_refs_sym(q, root, pre, (int)lim, &sb)) fd_refs(X, q, pre, (int)lim, &sb); }
         else {
             FdHit hits[12]; uint32_t qid[64]; int nq = 0, esrc[12];
             const int nh = fd_rank(X, q, pre, hits, (int)lim, qid, &nq, esrc);

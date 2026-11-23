@@ -13,6 +13,7 @@ static const CtTool g_ct[] = {
     {"Glob", ct_glob, 1, CT_GLOB_DESC, CT_GLOB_PROPS, CT_GLOB_REQ},
     {"Grep", ct_grep, 1, CT_GREP_DESC, CT_GREP_PROPS, CT_GREP_REQ},
     {"Find", ct_findtool, 1, CT_FIND_DESC, CT_FIND_PROPS, CT_FIND_REQ},
+    {"Symbols", ct_symbols, 1, CT_SYMBOLS_DESC, CT_SYMBOLS_PROPS, CT_SYMBOLS_REQ},
     {"Rename", ct_rename, 0, CT_RENAME_DESC, CT_RENAME_PROPS, CT_RENAME_REQ},
     {"Replace", ct_replace, 0, CT_REPLACE_DESC, CT_REPLACE_PROPS, CT_REPLACE_REQ},
     {"Patch", ct_patch, 0, CT_PATCH_DESC, CT_PATCH_PROPS, CT_PATCH_REQ},

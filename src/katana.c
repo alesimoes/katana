@@ -74,6 +74,7 @@
 #include "tools/grep.c"
 #include "tools/find.c"                /* Find: navegacao por intencao, indice da pasta e referencias */
 #include "tools/findgraph.c"           /* Find: grafo de arquivos, ativacao esparsa, nota de vizinhos */
+#include "tools/symbols.c"             /* Symbols: consultas do indice de simbolos (def, refs, callers, ...), via coder/symtool.c */
 #include "tools/multiedit.c"           /* Rename, Replace, Patch: mudancas em varios lugares de uma vez */
 #include "tools/webfetch.c"
 #include "tools/websearch.c"
@@ -104,6 +105,7 @@
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
 #include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
+#include "coder/symtool.c"           /* coder: ferramenta Symbols e Find mode=refs em cima do indice de simbolos */
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
