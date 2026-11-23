@@ -665,6 +665,10 @@ static int agent(Model *m, int max_tokens, float temp) {
                 fprintf(stderr, "%s[docs: %d trecho(s) escolhido(s) pelo motor para este pedido]%s\n", CE(C_DIM), dn, CE(C_RESET));
             }
         }
+        {   static char pn[2400];       /* o usuario cita uma pasta que nao existe daqui: o motor acha onde ela esta e avisa o modelo */
+            if (!getenv("KATANA_PLACE_NOTE") || atoi(getenv("KATANA_PLACE_NOTE")) != 0) {
+                if (place_note(line, pn, sizeof pn)) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, pn); snprintf(line, sizeof line, "%s", nl); fprintf(stderr, "%s[katana achou a pasta citada no pedido]%s\n", CE(C_DIM), CE(C_RESET)); }
+            } }
         vis_take(line, sizeof line);        /* imagens pedidas com --image */
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;

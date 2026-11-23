@@ -185,6 +185,7 @@ static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
     char found[4][1100]; int nf = 0, mj = k, dirhint = 0, hj = 0; const double tstart = now_sec();
     int order[66], no = 0;                            /* pastas primeiro (da direita para a esquerda), o arquivo por ultimo */
     for (int j = n - 2; j >= k; j--) order[no++] = j;
+    if (k == n - 1) order[no++] = n - 1;              /* so o ultimo pedaco falta (um nome de pasta ou arquivo citado): procura esse nome */
     for (int oi = 0; oi < no && nf == 0; oi++) {
         const int j = order[oi];
         const char *nd = comp[j];
@@ -217,7 +218,7 @@ static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
                 if (s.h[i].rank != 0) continue;
                 char cand[2400]; size_t o = (size_t)snprintf(cand, sizeof cand, "%s", s.h[i].path);
                 for (int q = j + 1; q < n && o < sizeof cand - 300; q++) o += (size_t)snprintf(cand + o, sizeof cand - o, "/%s", comp[q]);
-                if (access(cand, F_OK) == 0 && strlen(cand) < sizeof tmp[0]) snprintf(tmp[ok++], sizeof tmp[0], "%s", cand);
+                if (access(cand, F_OK) == 0 && strlen(cand) < sizeof tmp[0]) { if (j < n - 1 || s.h[i].dir) snprintf(tmp[ok++], sizeof tmp[0], "%s", cand); }
                 else if (s.h[i].dir && !dirhint && j < n - 1) { dirhint = 1; hj = j; snprintf(found[3], sizeof found[0], "%s", s.h[i].path); }      /* a pasta existe, so falta o que vem depois */
             }
             free(s.h);
@@ -236,5 +237,60 @@ static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
     for (int i = 0; i < nf && o + 1200 < cap; i++) o += (size_t)snprintf(out + o, cap - o, "%s%s", i ? ", " : "", found[i]);
     snprintf(out + o, cap - o, "? (katana looked for a folder or file with the name \"%s\" on this machine and rebuilt the path)", comp[mj]);
     return 1;
+}
+
+/* ---- o usuario cita uma pasta ou projeto ("o projeto greymod em mnt/dados/greymod") que nao existe a partir da pasta de trabalho:
+ * o katana acha onde ela esta e avisa o modelo no inicio do pedido. Candidatos: pedacos com 2 ou mais barras (ou comecando por / ~/ ./)
+ * e a palavra depois de pasta/projeto/folder/project/repo. No maximo 2 buscas por pedido. Devolve 1 e a nota em out ---- */
+static int place_note(const char *msg, char *out, size_t cap) {
+    char cwd[1500]; if (!getcwd(cwd, sizeof cwd)) return 0;
+    char cands[4][700]; int nc = 0;
+    static const char *const trig[] = {"pasta", "folder", "diretorio", "projeto", "project", "repo", "repositorio", "repository", NULL};
+    static const char *const filler[] = {"chamado", "chamada", "named", "called", "o", "a", "de", "do", "da", "the", "um", "uma", "nome", NULL};
+    char w[700]; int wl = 0; const char *p = msg; int armed = 0, skipped = 0;
+    for (;; p++) {
+        const int c = (unsigned char)*p;
+        const int wc = c && !isspace(c) && c != ',' && c != ';' && c != ':' && c != '"' && c != '\'' && c != '(' && c != ')' && c != '`' && c != '?' && c != '!';
+        if (wc) { if (wl < (int)sizeof w - 1) w[wl++] = (char)c; if (c) continue; }
+        if (wl) {
+            w[wl] = 0; while (wl && (w[wl - 1] == '.')) w[--wl] = 0;
+            int slashes = 0; for (int i = 0; i < wl; i++) if (w[i] == '/') slashes++;
+            char lw[700]; for (int i = 0; i <= wl; i++) lw[i] = (char)tolower((unsigned char)w[i]);
+            const int pathlike = slashes >= 2 || (slashes >= 1 && (w[0] == '/' || w[0] == '~' || w[0] == '.')) ;
+            const char *lastc = strrchr(w, '/'); const int filelike = lastc && strchr(lastc + 1, '.');      /* arquivo citado, nao um lugar */
+            if (pathlike && !filelike && wl >= 6 && !strstr(w, "://") && strncmp(w, "http", 4) != 0 && nc < 4) {
+                char t[1500];
+                if (w[0] == '/') snprintf(t, sizeof t, "%s", w);
+                else if (w[0] == '~') { char h[1100]; agent_home(h, sizeof h); snprintf(t, sizeof t, "%s%s", h, w + 1); }
+                else snprintf(t, sizeof t, "%s/%s", cwd, w);
+                if (access(t, F_OK) != 0) snprintf(cands[nc++], sizeof cands[0], "%s", t);
+            } else if (armed) {
+                int isf = 0; for (int i = 0; filler[i]; i++) if (!strcmp(lw, filler[i])) isf = 1;
+                if (isf && skipped < 2) skipped++;
+                else {
+                    armed = 0; skipped = 0;
+                    int ok = wl >= 4 && wl < 60 && !slashes; for (int i = 0; ok && i < wl; i++) if (!isalnum((unsigned char)w[i]) && w[i] != '_' && w[i] != '-' && w[i] != '.') ok = 0;
+                    static const char *const stopw[] = {"que", "esta", "para", "this", "that", "com", "uma", "onde", "como", "your", "seu", "nosso", "atual", NULL};
+                    for (int i = 0; ok && stopw[i]; i++) if (!strcmp(lw, stopw[i])) ok = 0;
+                    if (ok && nc < 4) { char t[1500]; snprintf(t, sizeof t, "%s/%s", cwd, w); if (access(t, F_OK) != 0) snprintf(cands[nc++], sizeof cands[0], "%s", t); }
+                }
+            }
+            for (int i = 0; trig[i]; i++) if (!strcmp(lw, trig[i])) { armed = 1; skipped = 0; }
+            wl = 0;
+        }
+        if (!c) break;
+    }
+    size_t o = 0; int searched = 0; char seen[4][1100]; int ns = 0;
+    for (int i = 0; i < nc && searched < 2; i++) {
+        char sug[1500]; searched++;
+        if (!ff_resolve_missing(cands[i], sug, sizeof sug) || strncmp(sug, "Did you mean: ", 14) != 0) continue;
+        char *q = strchr(sug, '?'); if (q) *q = 0;
+        int dup = 0; for (int k = 0; k < ns; k++) if (!strcmp(seen[k], sug + 14)) dup = 1;
+        if (dup) continue;
+        if (ns < 4) snprintf(seen[ns++], sizeof seen[0], "%s", sug + 14);
+        const char *shown = cands[i] + (strncmp(cands[i], cwd, strlen(cwd)) == 0 && cands[i][strlen(cwd)] == '/' ? strlen(cwd) + 1 : 0);
+        if (o + 700 < cap) o += (size_t)snprintf(out + o, cap - o, "%s[katana: you mention \"%s\", which does not exist from the working folder (%s). It is at: %s. Work there: pass that folder as `path` to Find, Glob and Grep, or use absolute paths.]", o ? "\n" : "", shown, cwd, sug + 14);
+    }
+    return o > 0;
 }
 #endif
