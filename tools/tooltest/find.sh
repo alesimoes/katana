@@ -79,6 +79,10 @@ hasnt "search: binario fica de fora" "blob.js"
 ls .katana/cache/find-*.idx >/dev/null 2>&1 && fail "o Find nao grava indice proprio (find-*.idx)" || ok "o Find nao grava indice proprio (find-*.idx)"
 run Find '{"query":"qqhugeword17"}'
 has "arquivo acima de 300 KB nao entra" "No match"
+once(){ n=$(printf '%s\n' "$out" | grep -c "ignored folder"); [ "$n" -eq 1 ] && ok "$1" || fail "$1 (frase das pastas ignoradas $n vezes)"; }
+for qq in '{"query":"zzqxnotthere"}' '{"query":"\"zzq not there\""}' '{"query":"zzqx_not_there"}' '{"query":"where is zzq handled in the foo flow"}'; do
+  run Find "$qq"; once "NOT FOUND: a frase das pastas ignoradas sai exatamente uma vez ($qq)"
+done
 run Find '{"query":"where is the config file parsed"}'
 first "search: python" "src/config.py"
 has "search: def do python e simbolo" "parse_config"
