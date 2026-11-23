@@ -1,6 +1,6 @@
 /* ---------- EnterPlanMode, ExitPlanMode ----------
  * Mesmo estado do /plan e do /go (g_plan_mode, planmode.c): a trava de somente leitura fica no motor. As duas rodam no
- * modo plano (marcadas como so leitura na tabela); ExitPlanMode pede a aprovacao pelo mesmo caminho do ask_user. */
+ * modo plano (marcadas como so leitura na tabela); ExitPlanMode pede a aprovacao pelo mesmo caminho do AskUserQuestion. */
 static const char CT_ENTERPLANMODE_DESC[] =
     "Enter plan mode for a non-trivial task: you may only read and investigate (the engine refuses anything that changes files or the system). "
     "Investigate, then call ExitPlanMode with your plan so the user can approve it.";

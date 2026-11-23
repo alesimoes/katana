@@ -151,21 +151,17 @@ case $R in
      hasnt "AskUserQuestion: a forma do prompt (sem header, sem multiSelect) e aceita" "$R" "error:";;
 esac
 
-########## howto ##########
-R=$("$K" tool howto '{"topic":"all"}')
-for old in run_command write_file edit_file read_file search_files web_search web_fetch list_dir read_document find_file; do
-  hasnt "howto: nao cita $old" "$R" "$old"
+########## receitas embutidas (Skill) ##########
+R=""; for tp in web bash linux script sudo files code packages logs; do R="$R$("$K" tool Skill '{"skill":"'$tp'"}')"; done
+for old in run_command write_file edit_file read_file search_files web_search web_fetch list_dir read_document find_file download_file install_package read_log; do
+  hasnt "receitas: nao citam $old" "$R" "$old"
 done
-for cur in "Bash" "Write" "Edit" "Read" "Grep" "Glob" "WebSearch" "WebFetch" "TodoWrite" "run_in_background" "TaskStop"; do
-  has "howto: cita $cur" "$R" "$cur"
+for cur in "Bash" "Write" "Edit" "Read" "Grep" "WebSearch" "WebFetch" "TodoWrite" "run_in_background" "TaskStop"; do
+  has "receitas: citam $cur" "$R" "$cur"
 done
-R=$("$K" tool howto '{"topic":"files"}')
-has "howto: um assunto so" "$R" "FILES: find by name with Glob"
-hasnt "howto: um assunto so nao traz os outros" "$R" "SUDO:"
-R=$(KATANA_TOOLS=1 "$K" tool howto '{"topic":"files"}')
-has "howto: o conjunto antigo continua com os nomes dele" "$R" "read_file"
-R=$("$K" tool howto '{"topic":"nada"}')
-has "howto: assunto desconhecido" "$R" "unknown topic"
+R=$("$K" tool Skill '{"skill":"files"}')
+has "receita: um assunto so" "$R" "FILES: find by name with Glob"
+hasnt "receita: um assunto so nao traz os outros" "$R" "SUDO:"
 
 ########## Skill ##########
 mkdir -p "$T/work/.katana/skills/deploy" "$T/work/.config/katana/skills/deploy" "$T/work/.config/katana/skills/review" "$HOME/.katana/skills/hk" "$HOME/.config/katana/skills/hc" "$HOME/.config/katana/skills/review"

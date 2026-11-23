@@ -619,7 +619,7 @@ static void launch_spin_pause(void) {           /* uma pergunta vai aparecer: o 
 #endif
 }
 static int lc_quiet_tool(const char *n) {       /* ferramentas que perguntam ou escrevem na tela por conta propria: sem spinner */
-    static const char *const Q[] = {"AskUserQuestion", "ask_user", "delegate", "Agent", "terminal", "Workflow", "run_command", "sudo", NULL};
+    static const char *const Q[] = {"AskUserQuestion", "Agent", "Workflow", "sudo", NULL};
     for (int i = 0; Q[i]; i++) if (!strcmp(n, Q[i])) return 1;
     const char *c = getenv("KATANA_CONFIRM");
     return c && atoi(c);
@@ -699,7 +699,7 @@ static void launch_tool_result(const char *name, const char *res) {
         }
     }
     /* a lista de tarefas mudou */
-    const int plan_changed = (!strcmp(name, "TodoWrite") || !strcmp(name, "todo") || !strncmp(name, "Task", 4)) && strcmp(g_todo, g_hl ? g_hl_plan : g_con_plan) != 0;
+    const int plan_changed = (!strcmp(name, "TodoWrite") || !strncmp(name, "Task", 4)) && strcmp(g_todo, g_hl ? g_hl_plan : g_con_plan) != 0;
     if (g_hl) {
         if (plan_changed) {
             snprintf(g_hl_plan, sizeof g_hl_plan, "%s", g_todo);
@@ -1361,10 +1361,11 @@ typedef struct {
 static char g_mcp_tmp[4400];
 static void lc_cleanup_tmp(void) { if (g_mcp_tmp[0]) remove(g_mcp_tmp); }
 static int lc_known_cmd(const char *a) {
-    static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "code", "routing", "sparsity", "tune",
+    static const char *const K[] = {"serve", "mcp", "jsontest", "toolrun", "tool", "agentsys", "toolparse", "calibrar", "agent", "routing", "sparsity", "tune",
         "verify", "pack", "prepare", "micro", "vkmicro", "bench", "vkcheck", "qtest", "quantize", "convert", "knowledge", "import", "merge", "distill", "agentlog", "export",
         "learn", "specialize", "gradcheck", "train", "selftest", "attbench", "q4check", "q4bench", "q4gpu", "toktest", "tokenize", "hw", "catalog", "pull", "sha256", "models", "modelos", "info", "chat", "run",
-        "install", "uninstall", "adopt", "init", "skill", "skills", "brief", "memory", "calltest", "curriculum", "lbtest", "compare", "tiersim", "iobench", "compacttest", "codebench", "version", "update", "vision", NULL};      /* acrescente aqui os subcomandos novos */
+        "install", "uninstall", "adopt", "init", "skill", "brief", "memory", "calltest", "curriculum", "lbtest", "compare", "compacttest", "codebench", "coder", "docsel", "uioe",
+        "kerneltest", "lookuptest", "placenote", "version", "update", "vision", NULL};      /* a mesma lista do main.c: acrescente aqui os subcomandos novos */
     for (int i = 0; K[i]; i++) if (!strcmp(a, K[i])) return 1;
     return 0;
 }

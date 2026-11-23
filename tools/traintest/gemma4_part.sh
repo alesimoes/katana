@@ -19,7 +19,7 @@ python3 tools/tinymodel/make_tiny_gguf.py "$D/g4agent.gguf" --arch gemma4 --temp
 g4run() {     # g4run <pasta> <entrada> VAR=valor... : o agente no gemma4 minusculo com o professor de mentira
   _dir=$1; _in=$2; shift 2
   mkdir -p "$D/$_dir"
-  (cd "$D/$_dir" && printf "$_in" | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 \
+  (cd "$D/$_dir" && printf "$_in" | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 MOCK_TOOLS=2 \
      KATANA_TEACHER_CMD="python3 $MOCK" MOCK_TEACHER_LOG="$D/$_dir.jsonl" "$@" $K agent "$D/g4agent.gguf" >"$D/$_dir.out" 2>"$D/$_dir.err") || true
 }
 g4ok() { echo "gemma4: $1: ok"; }
@@ -60,20 +60,6 @@ else g4bad "subagente" "$D/g4wd.out"; grep -a "subagente" "$D/g4wd.err" | head -
 # KATANA_G4_SIDE=0: o subagente volta a ser recusado no Gemma 4
 g4run g4wd0 'procure\n/exit\n' MOCK_DELEGATE=1 KATANA_G4_SIDE=0
 if grep -q "delegate is not available for this model format" "$D/g4wd0.out"; then g4ok "KATANA_G4_SIDE=0 desliga o subagente"; else g4bad "KATANA_G4_SIDE=0" "$D/g4wd0.out"; fi
-# nota de leitura: read_file de um arquivo grande vira nota escrita num contexto limpo (primeiro conjunto de ferramentas)
-python3 -c "open('$D/g4big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
-python3 $R4/plugins/teacher-anthropic/test/mock_api.py 8203 "$D/g4rd.jsonl" "$D/g4big.txt" & G4RM=$!
-sleep 1
-mkdir -p "$D/g4w2"
-(cd "$D/g4w2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_TOOLS=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 KATANA_TEACHER_KEY=sk-mock-key KATANA_TEACHER_CMD=$R4/plugins/teacher-anthropic/run \
-   KATANA_CTX=24000 KATANA_SIDE_DUMP="$D/g4w2.side" KATANA_TEACHER_URL=http://127.0.0.1:8203 $K agent "$D/g4agent.gguf" >/dev/null 2>"$D/g4w2.err") || true
-kill $G4RM 2>/dev/null || true
-if [ "$(grep -c 'condensed note of lines' "$D/g4rd.jsonl")" -ge 1 ] && grep -q "^=====digest" "$D/g4w2.side" \
-   && grep -q "<turn|>
-<|turn>model
-<|channel>thought
-<channel|>" "$D/g4w2.side"; then g4ok "nota de leitura no lugar do texto bruto"
-else g4bad "nota de leitura"; grep -a "nota\|lendo" "$D/g4w2.err" | head -3; fi
 # compactacao ao vivo num pedido longo (contexto pequeno) e no /compact: o resumo sai do cache, sem reler a conversa
 g4run g4wc 'trabalhe longo\n/compact\n/exit\n' MOCK_LONG=1 KATANA_TEACHER_FEED=1 KATANA_CTX=16000 KATANA_COMPACT_DUMP="$D/g4wc.cdump" KATANA_CTX_DUMP="$D/g4wc.ctx"
 if grep -q "Longo pronto." "$D/g4wc.out" && grep -q "o modelo resume o trabalho feito ate aqui" "$D/g4wc.err" && grep -q "contexto compactado" "$D/g4wc.err" \
@@ -96,16 +82,14 @@ EOF
 then g4ok "raciocinio ligado: turnos bem formados com compactacao"; else g4bad "raciocinio ligado" "$D/g4wt.out"; tail -c 600 "$D/g4wt.ctx"; fi
 # conferencia do texto contra o template do modelo de verdade (so o cabecalho do GGUF)
 if [ -f "$GG" ] && python3 -c "import jinja2" 2>/dev/null; then
-  for T in 2 1; do
-    (cd "$D/g4w6" && HOME="$D/home" KATANA_TOOLS=$T $K agentsys json >"$D/g4js$T.txt" 2>/dev/null && HOME="$D/home" KATANA_TOOLS=$T $K agentsys gemma4 >"$D/g4s$T.txt" 2>/dev/null) || true
-    for th in 0 1; do
-      if R=$(python3 tools/traintest/gemma4_golden.py sys "$GG" "$D/g4js$T.txt" "$D/g4s$T.txt" $th); then g4ok "template: turno do sistema (conjunto $T, raciocinio $th): $R"
-      else echo "gemma4: template: turno do sistema (conjunto $T, raciocinio $th): FALHOU"; echo "$R"; fail=1; fi
-    done
+  (cd "$D/g4w6" && HOME="$D/home" $K agentsys json >"$D/g4js.txt" 2>/dev/null && HOME="$D/home" $K agentsys gemma4 >"$D/g4s.txt" 2>/dev/null) || true
+  for th in 0 1; do
+    if R=$(python3 tools/traintest/gemma4_golden.py sys "$GG" "$D/g4js.txt" "$D/g4s.txt" $th); then g4ok "template: turno do sistema (raciocinio $th): $R"
+    else echo "gemma4: template: turno do sistema (raciocinio $th): FALHOU"; echo "$R"; fail=1; fi
   done
   for th in 0 1; do
     g4run g4wg$th 'grave e confira g.txt\nobrigado\n/exit\n' MOCK_GOLD=1 KATANA_THINK=$th KATANA_CTX_DUMP="$D/g4wg$th.ctx"
-    (cd "$D/g4wg$th" && HOME="$D/home" KATANA_TOOLS=2 $K agentsys json >"$D/g4wgj.txt" 2>/dev/null) || true
+    (cd "$D/g4wg$th" && HOME="$D/home" $K agentsys json >"$D/g4wgj.txt" 2>/dev/null) || true
     python3 - "$D/g4wg$th.ctx" "$D/g4wg$th.sysx" <<'EOF'
 import sys
 t = open(sys.argv[1], errors="replace").read()
@@ -116,7 +100,7 @@ EOF
     if R=$(python3 tools/traintest/gemma4_golden.py conv "$GG" "$D/g4wgj.txt" "$D/g4wg$th.sysx" $th "$D/g4wg$th.ctx"); then g4ok "template: conversa (raciocinio $th): $R"
     else echo "gemma4: template: conversa (raciocinio $th): FALHOU"; echo "$R"; fail=1; fi
   done
-  (cd "$D/g4wc" && HOME="$D/home" KATANA_TOOLS=2 $K agentsys json >"$D/g4wcj.txt" 2>/dev/null) || true
+  (cd "$D/g4wc" && HOME="$D/home" $K agentsys json >"$D/g4wcj.txt" 2>/dev/null) || true
   if R=$(python3 tools/traintest/gemma4_golden.py compact "$GG" "$D/g4wcj.txt" "$D/g4wc.cdump"); then g4ok "template: pedido de compactacao ao vivo: $R"
   else echo "gemma4: template: pedido de compactacao ao vivo: FALHOU"; echo "$R"; fail=1; fi
 else

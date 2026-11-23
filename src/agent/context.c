@@ -65,7 +65,7 @@ static int ah_shrink_tool_g4(AMsg *mg) {
     free(mg->s); mg->s = o.p ? o.p : xalloc(1, 1);
     return 1;
 }
-/* encolhe o corpo de chamadas de ferramenta grandes (codigo de write_file) numa mensagem do assistente ja executada */
+/* encolhe o corpo de chamadas de ferramenta grandes (codigo de Write) numa mensagem do assistente ja executada */
 static int ah_shrink_call(AMsg *mg);
 /* quando compactar: a conta de quem aluga ou compra. Cada rodada com contexto grande custa um pouco mais (a leitura e a
    geracao ficam mais lentas por token de contexto); compactar custa reler o que fica (o DeltaNet nao volta atras). A divida
@@ -290,7 +290,7 @@ static int ah_mask(AHist *h, int from, size_t budget, int keep_from) {
         if (!old && in && fim && fim > in) cp_stash(in + 1, (size_t)(fim - in - 1), f, sizeof f); else f[0] = 0;
         /* ferramenta web: o ponteiro "Read arquivo" foi cortado (seguido 0 de 14 vezes nas sessoes do dono: o modelo repetia a busca); o texto
            diz o que ele faz de fato, sem prometer o conteudo */
-        const int web = !strcmp(R[i].name, "WebSearch") || !strcmp(R[i].name, "WebFetch") || !strcmp(R[i].name, "web_search") || !strcmp(R[i].name, "web_fetch");
+        const int web = !strcmp(R[i].name, "WebSearch") || !strcmp(R[i].name, "WebFetch");
         if (web) f[0] = 0;
         KNOTE(REMOVED, t, sizeof t, R[i].name, R[i].key[0] ? " " : "", R[i].key, R[i].e - R[i].a,
               old ? "a newer reading of this file is below" : web ? "run it again, with a different query or page if you can, only if you need more of it" : !strcmp(R[i].name, "Read") || !f[0] ? "call it again if you need it" : "to see it again, Read ", !old && strcmp(R[i].name, "Read") && f[0] ? f : "", "");

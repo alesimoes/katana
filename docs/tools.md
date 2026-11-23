@@ -1,10 +1,13 @@
-# The agent's second tool set (`src/tools/`)
+# The agent's tools (`src/tools/`)
 
-The katana agent has two tool sets. The first is the original one (`run_command`, `read_file`, `write_file`...,
-`src/agent/`). The second lives in `src/tools/`, one file per tool or small family, and is the default since
-2026-11-21 (owner's decision, taken before any measurement on the real models); `KATANA_TOOLS=1` goes back to the
-first set. Both are always accepted by the dispatcher, so old sessions keep opening; the switch only changes which
-set the system prompt declares to the model.
+The katana agent has one tool set. It lives in `src/tools/`, one file per tool or small family, and the table in
+`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers). The
+previous set (`run_command`, `read_file`, `write_file` and the others of `src/agent/`) was removed on 2026-11-23: no alias,
+no migration. What was lost: a stateful shell session (`terminal`), machine-wide search by part of a name (`find_file`),
+reading the katana logs by name (`read_log`), `sudo=true` and `append=true` of the file tools, the sorted directory
+listing, the structured `git`, `install_package`, `download_file`, `read_document`, `howto` as a tool (the recipes are
+read through `Skill`) and `job` (use `Bash` with `run_in_background`, `Monitor` and `TaskStop`); the model-facing
+`remember` and `recall` also went (the memory file and `katana memory` stay).
 
 Why a second set: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
 "read before you change" rule, search with output modes, a task list edited item by item, and the less common tools
@@ -43,8 +46,7 @@ The declarations in the prompt are a short form kept in `src/tools/table.c` (`g_
 `ToolSearch` returns the full description and schema of any tool.
 
 Not measured, not done:
-- No run with Qwen3.6 or Gemma 4 yet: the effect of this set on the local models is unknown. Next step: codebench
-  with `KATANA_TOOLS=1` and without it, alternating.
+- No run with Qwen3.6 or Gemma 4 yet: the effect of this set on the local models is unknown.
 - Written but not exercised: delivery of scheduled prompts and session mail by the loop, `EndConversation`,
   `SubagentHandback` inside a real sub-agent, `LSP` against a real language server, `PowerShell` with a real `pwsh`.
 - The desktop does not show the `NOTIFY`, `FILE` and `FINDING` markers yet.
@@ -217,7 +219,7 @@ lines; the coder lines are a few short lines, the file graph is never replaced. 
 that the `Find` index lists too (the coder index does not read `.gitignore`). `[confidence high]` means the text was found in
 the file (or the file has that name); `[confidence low]` means a similar spelling or a weaker channel. There are no fixed grades: a lookup tries the exact
 name first, then derived matches, then probable ones, and each result carries its confidence level. When `Find` finds
-nothing, the message ends with a suggestion to try `recall(query)`.
+nothing, the message says what was not found.
 
 `KATANA_CODER`: `off` = `Find` exactly as before (no coder index is created); `names` (alias `exact`) = the coder engine
 only for a quoted text or an identifier/file name, without the conceptual channel; `full` (default) = also for descriptions in
@@ -229,9 +231,8 @@ incrementally on every such query (files with a new mtime or size are read again
 `katana coder ...` keeps working unchanged (`katana coder search` and the `Find` layer run the same engine, `cs_search_core`
 in `src/coder/search.c`, which `coder_lookup` calls without printing).
 
-*Memory.* `Find` does not search saved facts: `recall` keeps its own tool (it answers about what the user or the
-model saved, not about files), and a `Find` with no result tells the model to try it, in one line. Mixing the two would
-return facts as if they were code locations.
+*Memory.* `Find` does not search saved facts: they are a separate source (the memory file, `katana memory`); mixing the two
+would return facts as if they were code locations.
 
 **Guiding an investigation (Find as a whole).** After the BM25 score, each file score is multiplied by adjustments whose weights
 are constants at the top of `src/tools/find.c` (`FD_W_*`): README and other `.md` x0.45 and config/text files x0.72 unless the
@@ -561,9 +562,6 @@ and `ask:` patterns of `KATANA.md`; the first `Read`, `Edit` or `Write` in a fol
 with the result. MCP calls accept `server__tool` and `mcp__server__tool`; results carry `structuredContent`, errors and a
 one-line description of images. Formats, commands and examples: `docs/extending.md`.
 
-katana's own tools without a counterpart in this set stay as they are: `terminal`, `terminal_screen`, `job`,
-`read_log`, `howto`, `remember`, `recall`, `install_package`, `download_file`, `find_file`, `list_dir`,
-`read_document`, `git`.
 
 ## Changes of 2026-11-22 that affect what the model sees
 
@@ -575,7 +573,7 @@ katana's own tools without a counterpart in this set stay as they are: `terminal
   engine does not close it at the end of the request.
 - **`ToolSearch select:Edit` and `select:AskUserQuestion`** return the same shape the prompt declares: `edits` is a string
   of blocks (an array is still accepted), and a question needs only `question` and `options`, an option only `label`.
-- **`howto`** recipes name the current tools (`Read`, `Edit`, `Bash`, `Grep`, `Glob`, `WebSearch`, ...).
+- The recipes (read through `Skill`: `web`, `bash`, `linux`, `script`, `sudo`, `files`, `code`, `packages`, `logs`) name the current tools (`Read`, `Edit`, `Bash`, `Grep`, `Glob`, `WebSearch`, ...).
 - Tests: `tools/tooltest/misc.sh`, `meta.sh`, `files.sh`, `web.sh`, `tasks.sh`, `loopnotes.sh` (`katana toolrun notes` replays a
   list of calls and prints which notes the loop would send), `helpword.sh`.
 

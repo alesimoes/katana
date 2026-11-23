@@ -8,7 +8,7 @@ static int pw_detect(const char *o) {
     return strstr(o, "Permission denied") ? 2 : 0;
 }
 
-/* run_command: stdin fechado, stderr+stdout, timeout, codigo de saida, inicio+fim da saida, dica de senha */
+/* Bash: stdin fechado, stderr+stdout, timeout, codigo de saida, inicio+fim da saida, dica de senha */
 /* sudo: se o comando usa sudo e ele pede senha, pergunta ao usuario uma vez (terminal ou, no desktop, marcador NEEDPASS) e
  * guarda so em memoria; os comandos seguintes usam sudo -A com um askpass que le a senha do ambiente do filho.
  * Devolve 1 se o comando deve rodar com o sudo -A. */
@@ -89,51 +89,7 @@ static int sudo_prepare(const char *cmd, int force) {
     return 1;
 }
 
-/* sudo utilizavel agora? (senha ja guardada, ou o sudo nao pede senha). Abre o modal de senha se for preciso. */
-static int sudo_ready(void) {
-    sudo_prepare("", 1);
-    if (g_sudo_pw[0]) return 1;
-    int rc = 1; char *o = run_collect("sudo -n true 2>&1", 5, 400, &rc); free(o);
-    return rc == 0;
-}
 
-static const char *sudo_prefix(void) { return g_sudo_pw[0] ? "sudo -A" : "sudo -n"; }
 
-/* gravar como root quando o sistema nega (permissao): dados num arquivo temporario do usuario e um script que o sudo executa */
-static int root_write_file(const char *dest, const char *data, size_t n, int append, char *err, size_t ecap) {
-    if (!sudo_ready()) { snprintf(err, ecap, "error: permission denied writing %s and sudo is not available (the password was not given)", dest); return 0; }
-    char tmpd[] = "/tmp/katana-wr-XXXXXX", fd_[300], fs_[300];
-    if (!mkdtemp(tmpd)) { snprintf(err, ecap, "error: cannot create a temporary folder"); return 0; }
-    snprintf(fd_, sizeof fd_, "%s/data", tmpd);
-    snprintf(fs_, sizeof fs_, "%s/run.sh", tmpd);
-    FILE *f = fopen(fd_, "wb");
-    if (!f || fwrite(data, 1, n, f) != n) { if (f) fclose(f); snprintf(err, ecap, "error: cannot write the temporary file"); return 0; }
-    fclose(f);
-    char qd[4700], qt[700];
-    if (!shq(dest, qd, sizeof qd) || !shq(fd_, qt, sizeof qt)) { snprintf(err, ecap, "error: path too long"); return 0; }
-    f = fopen(fs_, "wb");
-    if (!f) { snprintf(err, ecap, "error: cannot write the temporary script"); return 0; }
-    fprintf(f, "set -e\nD=%s\nT=%s\ndir=$(dirname \"$D\")\nmkdir -p \"$dir\"\nnew=0; [ -e \"$D\" ] || new=1\ncat \"$T\" %s \"$D\"\n"
-               "if [ $new = 1 ]; then chown --reference=\"$dir\" \"$D\" 2>/dev/null || true; fi\n", qd, qt, append ? ">>" : ">");
-    fclose(f);
-    char cmd[900];
-    snprintf(cmd, sizeof cmd, "%s sh %s 2>&1", g_sudo_pw[0] ? "sudo -A" : "sudo -n", fs_);
-    int rc = 1; char *o = run_collect(cmd, 30, 1500, &rc);
-    unlink(fd_); unlink(fs_); rmdir(tmpd);
-    if (rc != 0) { snprintf(err, ecap, "error: could not write %s as root: %.300s", dest, o ? o : ""); free(o); return 0; }
-    free(o);
-    return 1;
-}
 
-/* ler como root (arquivo sem permissao de leitura); malloc, NULL se falhar */
-static char *root_read_file(const char *path, size_t *n) {
-    if (!sudo_ready()) return NULL;
-    char q[4700], cmd[5000];
-    if (!shq(path, q, sizeof q)) return NULL;
-    snprintf(cmd, sizeof cmd, "%s cat -- %s 2>&1", g_sudo_pw[0] ? "sudo -A" : "sudo -n", q);
-    int rc = 1; char *o = run_collect(cmd, 30, 8000000, &rc);
-    if (!o || rc != 0) { free(o); return NULL; }
-    *n = strlen(o);
-    return o;
-}
 #endif

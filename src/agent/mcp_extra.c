@@ -218,7 +218,7 @@ static int mcpx_root_file(char *out, size_t cap) {
 }
 
 /* ----- f: elicitation (o servidor pede dados ao usuario no meio de uma chamada; modo "form" da revisao 2025-11-25) -----
- * Quem pergunta aparece na pergunta. A interface (KATANA_UI) recebe o marcador CHOICE de ask_user (resposta "\x01ANS texto");
+ * Quem pergunta aparece na pergunta. A interface (KATANA_UI) recebe o marcador CHOICE de AskUserQuestion (resposta "\x01ANS texto");
  * no terminal a pergunta sai no teclado; sem ninguem para responder (modo sem tela, pipe) a resposta e "decline".
  * Campos que parecem senha ou segredo so seguem se o usuario confirmar. Os valores digitados nunca vao para log. */
 typedef struct {

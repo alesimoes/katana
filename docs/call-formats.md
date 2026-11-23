@@ -163,7 +163,5 @@ values where the schema says integer; with the constraint off, no call). Both ru
   of the check per token (expected near zero, since the vocabulary scan only runs on a rejected token). The
   measurement that would show the benefit: rejected or malformed calls per 100 calls in `~/.katana/agente.log` on the
   same task set, before and after (`KATANA_CALL_GRAMMAR=0` against the default), alternating runs in the same hour.
-- Gemma 4 with `KATANA_TOOLS=1`: the first tool set is declared in Gemma's own syntax, which this module does not
-  read, so only the table tools would be known; with no tools found the constraint stays off.
 - Limits: at most 160 tools and 40 parameters per tool; a schema the JSON grammar does not understand (anyOf, oneOf)
   accepts any JSON value; GLM and the harmony format are not constrained.

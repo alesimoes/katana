@@ -10,4 +10,4 @@ fi
 V=$(git log -1 --format=%h 2>/dev/null); [ -n "$(git status --porcelain -uno 2>/dev/null)" ] && V="$V+"
 # ultimas mudancas (assuntos dos commits) embutidas no binario: katana version --changes; a tela de abertura do desktop mostra
 { git log -6 --format=%s 2>/dev/null | cut -c1-120 | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"- /; s/$/\\n"/'; echo '""'; } > src/app/changes.inc
-exec "$CC" -DKATANA_BUILD="\"${V:-?} $(date +%Y-%m-%d)\"" -O2 -mavx2 -mfma -mf16c -ffast-math -Wall -Wno-unused -I . -I src -I vk/include $EXTRA src/katana.c -o katana -lm -lpthread -ldl "$@"
+exec "$CC" -DKATANA_BUILD="\"${V:-?} $(date +%Y-%m-%d)\"" -O2 -mavx2 -mfma -mf16c -ffast-math -Wall -I . -I src -I vk/include $EXTRA src/katana.c -o katana -lm -lpthread -ldl "$@"

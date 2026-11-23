@@ -215,8 +215,6 @@ static int brief_guard(const char *name, const char *js, const char *end, char *
     free(subj);
     return r;
 }
-/* Rename, Replace e Patch alteram varios arquivos: cada um passa pelas mesmas regras never/ask de Write e Edit */
-static int brief_guard_file(const char *file, char *out, size_t cap) { return brief_guard_subject(0, file, out, cap); }
 static int brief_guard_subject(int bash, const char *subj, char *out, size_t cap) {
     const Brief *b = br_cur();
     if (!b->ni) return 0;
@@ -265,11 +263,6 @@ static void brief_track(const char *name, const char *js, const char *end, const
         const int conf = fp && (strstr(fp, "/.katana/") || !strncmp(fp, ".katana/", 8) || !strcmp(bn, "SKILL.md") || !strcmp(bn, "KATANA.md"));
         free(fp);
         if (!conf) { g_br_changed = 1; g_br_ran = 0; }       /* mudou depois de verificar: a verificacao nao vale mais */
-        return;
-    }
-    if (strcmp(name, "Rename") == 0 || strcmp(name, "Replace") == 0 || strcmp(name, "Patch") == 0) {      /* gancho dos tres: so quando de fato gravaram codigo do projeto */
-        if (g_me_changed) { g_br_changed = 1; g_br_ran = 0; }
-        g_me_changed = 0;
         return;
     }
     if (strcmp(name, "Bash") != 0) return;

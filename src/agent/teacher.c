@@ -86,21 +86,6 @@ static int tch_cmd(const char *line) {
     return 1;
 }
 
-/* ferramentas que o prompt do agente so cita numa linha (sem declaracao): o professor precisa da declaracao para
-   chamar. delegate fica de fora: e um subagente do modelo local, e o professor tem contexto de sobra. */
-static const char *const TCH_EXTRA[][2] = {
-    {"todo", "{\"name\": \"todo\", \"description\": \"Your own task list for a long job: one step per line; call again with [x] in front of each finished step\", \"parameters\": {\"type\": \"object\", \"properties\": {\"steps\": {\"type\": \"string\"}}, \"required\": [\"steps\"]}}"},
-    {"git", "{\"name\": \"git\", \"description\": \"Run git with these arguments (no shell)\", \"parameters\": {\"type\": \"object\", \"properties\": {\"args\": {\"type\": \"string\"}}, \"required\": [\"args\"]}}"},
-    {"terminal", "{\"name\": \"terminal\", \"description\": \"A shell session that keeps its state. action: open, send, read, list, close, interrupt\", \"parameters\": {\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"enter\": {\"type\": \"boolean\"}, \"lines\": {\"type\": \"integer\"}, \"wait_ms\": {\"type\": \"integer\"}}, \"required\": [\"action\"]}}"},
-    {"glob", "{\"name\": \"glob\", \"description\": \"List files matching a pattern under a folder\", \"parameters\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"root\": {\"type\": \"string\"}}, \"required\": [\"pattern\"]}}"},
-    {"recall", "{\"name\": \"recall\", \"description\": \"Search the facts saved about the user\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}"},
-    {"download_file", "{\"name\": \"download_file\", \"description\": \"Download a URL to a file\", \"parameters\": {\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}, \"path\": {\"type\": \"string\"}}, \"required\": [\"url\", \"path\"]}}"},
-    {"install_package", "{\"name\": \"install_package\", \"description\": \"Install a package. manager: pip, npm, apt or cargo\", \"parameters\": {\"type\": \"object\", \"properties\": {\"manager\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}}, \"required\": [\"manager\", \"name\"]}}"},
-    {"read_log", "{\"name\": \"read_log\", \"description\": \"Read a log. source: agent, commands, journal, dmesg, syslog or a file path\", \"parameters\": {\"type\": \"object\", \"properties\": {\"source\": {\"type\": \"string\"}, \"lines\": {\"type\": \"integer\"}, \"filter\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}, \"required\": [\"source\"]}}"},
-    {"job", "{\"name\": \"job\", \"description\": \"Background commands. action: read, list or stop\", \"parameters\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"integer\"}, \"action\": {\"type\": \"string\"}}}}"},
-    {"howto", "{\"name\": \"howto\", \"description\": \"Recipes for using the tools\", \"parameters\": {\"type\": \"object\", \"properties\": {\"topic\": {\"type\": \"string\"}}, \"required\": [\"topic\"]}}"},
-};
-
 /* prompt do agente no formato com as declaracoes em JSON (o do Gemma 4 declara de outro jeito: monta o generico) */
 static const char *tch_base(const char *sys, int g4) {
     if (!g4) return sys;
@@ -134,7 +119,7 @@ static void tch_tools(const char *sys, Buf *o) {
             }
         }
         const char *ne = nv ? gs_skipv(nv) : NULL, *de = dv ? gs_skipv(dv) : NULL, *pe = pv ? gs_skipv(pv) : NULL;
-        if (ne && *nv == '"' && strncmp(nv, "\"delegate\"", 10) != 0) {
+        if (ne && *nv == '"') {
             buf_str(o, n++ ? ", {\"name\": " : "{\"name\": "); buf_add(o, nv, (size_t)(ne - nv));
             if (de && *dv == '"') { buf_str(o, ", \"description\": "); buf_add(o, dv, (size_t)(de - dv)); }
             buf_str(o, ", \"parameters\": ");
@@ -142,12 +127,6 @@ static void tch_tools(const char *sys, Buf *o) {
             buf_str(o, "}");
         }
         p = e + 1;
-    }
-    for (size_t i = 0; i < sizeof TCH_EXTRA / sizeof TCH_EXTRA[0]; i++) {
-        char pat[160]; snprintf(pat, sizeof pat, "\"name\": \"%s\"", TCH_EXTRA[i][0]);
-        if (a && b && strstr(a, pat) && strstr(a, pat) < b) continue;          /* ja declarada no prompt */
-        if (!launch_tool_allowed(TCH_EXTRA[i][0])) continue;                   /* --allowed-tools: o professor tambem so ve as permitidas */
-        buf_str(o, n++ ? ", " : ""); buf_str(o, TCH_EXTRA[i][1]);
     }
     /* ferramentas dos servidores MCP ligados: o prompt as mostra em cartoes, fora do bloco <tools>, entao entram aqui */
     for (int i = 0; i < g_nmcp; i++) {

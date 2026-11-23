@@ -925,7 +925,7 @@ static int calibrar(Model *m, const char *file) {
         "User: Write a Python function that reads a CSV file and returns the average of the column 'price'.\nAssistant: ```python\n"
         "import csv\n\ndef average_price(path):\n    total, n = 0.0, 0\n    with open(path, newline='') as f:\n        for row in csv.DictReader(f):\n"
         "            total += float(row['price'])\n            n += 1\n    return total / n if n else 0.0\n```\nThis opens the file, sums the prices and divides by the count.",
-        "Usuario: liste os arquivos da pasta atual e me diga qual e o maior.\nAssistente: <tool_call>\n{\"name\": \"list_dir\", \"arguments\": {\"path\": \".\"}}\n</tool_call>\n"
+        "Usuario: liste os arquivos da pasta atual e me diga qual e o maior.\nAssistente: <tool_call>\n{\"name\": \"Bash\", \"arguments\": {\"command\": \"ls -la\"}}\n</tool_call>\n"
         "Resultado: README.md 4 KB, src/ (pasta), build.sh 1 KB, dados.csv 2,3 MB.\nAssistente: O maior arquivo e dados.csv, com 2,3 MB.",
         "Usuario: Qual a diferenca entre memoria RAM e armazenamento? Responda de forma curta.\nAssistente: A RAM e rapida e temporaria: guarda o que o "
         "computador esta usando agora e se apaga ao desligar. O armazenamento (SSD ou HD) e mais lento, porem permanente: guarda arquivos e programas.",
@@ -1065,10 +1065,9 @@ static int run_main(int argc, char **argv) {
         printf("%s\n", res);
         return 0;
     }
-    if (argc >= 2 && strcmp(argv[1], "agentsys") == 0) {      /* teste: imprime o prompt de sistema do agente; formato: qwen (XML, padrao), json ou gemma4; "code": o de katana code */
+    if (argc >= 2 && strcmp(argv[1], "agentsys") == 0) {      /* teste: imprime o prompt de sistema do agente; formato: qwen (XML, padrao), json, glm ou gemma4 */
         static char sys[32000];
-        const char *fmt = argc >= 3 && strcmp(argv[2], "code") ? argv[2] : "qwen";
-        g_code = (argc >= 3 && !strcmp(argv[2], "code")) || (argc >= 4 && !strcmp(argv[3], "code"));
+        const char *fmt = argc >= 3 ? argv[2] : "qwen";
         g_web = 1; g_tool_xml = strcmp(fmt, "json") != 0; g_tool_glm = strcmp(fmt, "glm") == 0;
         agent_build_sys(sys, sizeof sys, "");
         mcp_init(0); mcp_sys(sys, sizeof sys);       /* como o laco do agente: os cartoes dos servidores MCP configurados */
@@ -1096,8 +1095,7 @@ static int run_main(int argc, char **argv) {
         load_model(&m, argv[2]);
         return calibrar(&m, argc > 3 ? argv[3] : NULL);
     }
-    if (argc == 3 && (strcmp(argv[1], "agent") == 0 || strcmp(argv[1], "code") == 0)) {
-        g_code = strcmp(argv[1], "code") == 0;      /* modo de programacao: prompt e ferramentas enxutos */
+    if (argc == 3 && strcmp(argv[1], "agent") == 0) {
         perfil_apply(argv[2], 1);
         /* resultados de ferramentas ocupam muito contexto: 131072. Qwen3.6 (10 camadas de atencao) e gemma4 (anel de
            janela nas 25 locais, contexto so nas 5 globais) ficam em ~2,7-2,9 GB de KV fp16 a 128k */

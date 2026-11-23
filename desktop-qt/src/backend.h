@@ -237,7 +237,7 @@ public:
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
     Q_INVOKABLE void stop();
-    Q_INVOKABLE void answerChoice(const QString &text);   // resposta a pergunta do agente (ask_user); vazia = cancelar
+    Q_INVOKABLE void answerChoice(const QString &text);   // resposta a pergunta do agente (AskUserQuestion); vazia = cancelar
     QString choiceQuestion() const { return m_choiceQ; }
     QStringList choiceOptions() const { return m_choiceOpts; }
     bool choicePending() const { return m_choicePending; }
@@ -412,7 +412,7 @@ private:
     bool m_paused = false;
     QString m_wsReal;          // pasta confirmada pelo agente (marcador CWD)
     bool m_wsTrusted = false;
-    QString m_choiceQ;            // pergunta pendente do agente (ask_user)
+    QString m_choiceQ;            // pergunta pendente do agente (AskUserQuestion)
     QStringList m_choiceOpts;
     bool m_choicePending = false;
     QStringList m_todo;           // passos da lista de tarefas do agente

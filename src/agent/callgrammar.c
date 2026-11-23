@@ -106,7 +106,6 @@ static void cg_add_parameters(const char *name, const char *params) {
         }
     cg_add(name, props, req);
 }
-static int ct_set2(void);
 int ct_tool_info(int i, const char **name, const char **desc, const char **props, const char **req);
 
 /* lista das ferramentas: as declaradas no bloco <tools> do prompt e, no segundo conjunto, as da tabela de src/tools */
@@ -121,7 +120,7 @@ static void cg_setup(const char *sys) {
         gr_tools_scan(sys, pv, names, &nt);
         for (int i = 0; i < nt; i++) cg_add_parameters(names[i], pv[i]);
     }
-    if (g_cg_only_sys < 0 || (!g_cg_only_sys && ct_set2())) {
+    if (g_cg_only_sys <= 0) {
         const char *nm, *ds, *pr, *rq;
         for (int i = 0; ct_tool_info(i, &nm, &ds, &pr, &rq); i++) {
             if (strstr(ds, "(not implemented yet)")) continue;
@@ -133,20 +132,6 @@ static void cg_setup(const char *sys) {
         }
     }
     if (g_cg_only_sys <= 0) {
-        /* ferramentas do primeiro conjunto que o prompt do segundo ainda cita pelo nome (o despacho continua a aceita-las) */
-        if (ct_set2()) {
-            static const char *const old[][3] = {
-                {"git", "{\"args\": {\"type\": \"string\"}}", "[\"args\"]"},
-                {"terminal", "{\"action\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"enter\": {\"type\": \"boolean\"}, \"lines\": {\"type\": \"integer\"}, \"wait_ms\": {\"type\": \"integer\"}}", "[\"action\"]"},
-                {"recall", "{\"query\": {\"type\": \"string\"}}", "[]"},
-                {"remember", "{\"fact\": {\"type\": \"string\"}}", "[\"fact\"]"},
-                {"download_file", "{\"url\": {\"type\": \"string\"}, \"path\": {\"type\": \"string\"}}", "[\"url\"]"},
-                {"install_package", "{\"manager\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}}", "[\"name\"]"},
-                {"read_log", "{\"source\": {\"type\": \"string\"}, \"lines\": {\"type\": \"integer\"}, \"filter\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}", "[\"source\"]"},
-                {"howto", "{\"topic\": {\"type\": \"string\"}}", "[]"},
-            };
-            for (size_t i = 0; i < sizeof old / sizeof old[0]; i++) cg_add(old[i][0], old[i][1], old[i][2]);
-        }
         /* ferramentas dos servidores MCP ligados: o modelo as ve em cartoes, fora do bloco <tools>; sem isto a restricao
            nao deixaria o nome sair. Valem as duas grafias: servidor__ferramenta e mcp__servidor__ferramenta */
         for (int i = 0; i < g_nmcp; i++) for (int j = 0; j < g_mcp[i].ntools; j++) {
@@ -648,7 +633,7 @@ static int calltest(void) {
         cg_prepare(CGF_G4, sys);
         CT_EXPECT(cg_text("<|tool_call>call:Read{", 1) == 1, "g4: before opener");
     }
-    g_cg_only_sys = -1;                     /* a tabela, mesmo com KATANA_TOOLS=1 */
+    g_cg_only_sys = -1;                     /* a tabela */
     {   /* segundo conjunto: as ferramentas da tabela de src/tools */
         cg_prepare(CGF_XML, "");
         CT_EXPECT(g_cg.nt > 30, "second set: tools of the table");

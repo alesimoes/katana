@@ -34,27 +34,26 @@
 #include "vision/resize.c"             /* tamanho pela regra de referencia, bicubico, recortes */
 #include "vision/vit.c"                /* projetor (GGUF) e codificador de imagem */
 #include "vision/image.c"              /* marcas, ids, vetores, posicoes, projetor ao lado do modelo */
-#include "agent/todo.c"                /* lista de tarefas do proprio modelo (todo) */
+#include "agent/todo.c"                /* lista de tarefas do proprio modelo (TodoWrite) */
 #include "agent/project.c"             /* instrucoes do projeto (KATANA.md, AGENTS.md) */
 #include "agent/undo.c"                /* versao anterior dos arquivos alterados; /undo */
-#include "agent/web.c"                 /* web: curl, HTML para texto, web_fetch, busca */
+#include "agent/web.c"                 /* web: curl, HTML para texto, WebFetch, busca */
 #include "agent/webnav.c"              /* navegacao: paginas guardadas, offset, find, links, conteudo principal */
 #include "agent/prompt.c"              /* agente: ambiente e prompt de sistema */
 #include "agent/mcp.c"                 /* cliente MCP */
 #include "agent/mcp_channel.c"         /* canal MCP: mensagens e confirmacoes empurradas por um servidor */
 #include "agent/mcp_extra.c"           /* MCP alem do basico: variaveis na configuracao, roots, anotacoes, elicitation */
-#include "agent/devtools.c"            /* ferramentas de programacao: edit_file, glob, download, pacotes, git */
+#include "agent/devtools.c"            /* utilitarios de execucao: aspas de shell, captura de saida, hash */
 #include "agent/code.c"               /* leitura por trechos e verificacao de sintaxe depois de gravar */
 #include "agent/reaper.c"              /* vigia: encerra os comandos do agente quando ele morre (SIGKILL incluido) */
 #include "agent/exec.c"                /* execucao de comandos: stdin fechado, timeout, inicio+fim da saida, anel dos ultimos comandos */
 #include "agent/sudo.c"                /* sudo: pedido de senha (terminal ou modal), arquivos como root */
-#include "agent/jobs.c"                /* comandos em segundo plano (run_command background, job) */
+#include "agent/jobs.c"                /* comandos em segundo plano (Bash em segundo plano) */
 #include "agent/diagnose.c"            /* dica de proximo passo quando um comando falha */
-#include "agent/howto.c"               /* receitas de uso das ferramentas (howto) */
-#include "agent/terminal.c"            /* run_command, sessoes de terminal (pty), shell root persistente */
-#include "agent/logs.c"                /* read_log e terminal_screen */
-#include "agent/locate.c"              /* navegacao no computador: list_dir com detalhes, find_file */
-#include "agent/ask.c"                 /* interacao com o usuario: pergunta com opcoes (ask_user) */
+#include "agent/howto.c"               /* receitas de uso das ferramentas (Skill) */
+#include "agent/terminal.c"            /* execucao do Bash e shell root persistente (pty) */
+#include "agent/locate.c"              /* navegacao no computador: caminho citado que nao existe, nota de lugar */
+#include "agent/ask.c"                 /* interacao com o usuario: pergunta com opcoes (AskUserQuestion) */
 #include "agent/planmode.c"            /* modo plano: so leitura ate o usuario aprovar (/plan, /go) */
 #include "agent/dispatch.c"            /* despacho das ferramentas e leitura das chamadas em XML */
 #include "agent/fmt_glm.c"             /* chamada de ferramenta no formato do GLM */
@@ -113,7 +112,7 @@
 #include "coder/keys.c"              /* coder: chaves de texto (ligacoes por texto igual: eventos, rotas, ambiente, mensagens) */
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
-#include "agent/memory.c"            /* memoria: remember, recall, memory_search, katana memory (usa o tokenizador) */
+#include "agent/memory.c"            /* memoria: memory_search, katana memory (usa o tokenizador) */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
 #include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
 #include "coder/flow.c"              /* coder: ligacoes por chave de texto (katana coder flow) */

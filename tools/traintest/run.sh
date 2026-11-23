@@ -18,8 +18,7 @@
 #     tem que ser aceita e a 2 nao
 # 10. modo professor do agente (/teacher) com uma API de mensagens de mentira: pedidos aceitos, sessao retomada com o
 #     professor ligado no meio, katana export --teacher
-# 11. professor por um programa externo (de mentira); read_file so com o caminho continua de onde parou, cada
-#     trecho vira nota e o arquivo ja lido devolve as notas
+# 11. professor por um programa externo (de mentira)
 # 12. katana import com selecao (--train-tools, --verified, --plan-first...) e katana specialize nos tres tipos
 # 13. a noite em um comando (katana.cfg), gravacao que falha em voz alta (disco cheio simulado e /dev/full), conferencia dos dados,
 #     --wait-idle, --status e katana knowledge quiz
@@ -28,7 +27,6 @@
 #     pasta, adopt, lista de ferramentas, katana -p em text/json/stream-json, MCP por --mcp-config, console num terminal de mentira)
 # Uso: sh tools/traintest/run.sh   (a partir da raiz do repositorio, com ./katana compilado)
 set -e
-export KATANA_TOOLS=1      # os passos antigos usam o primeiro conjunto de ferramentas; o passo do segundo conjunto pede 2 (o padrao)
 K=$(pwd)/katana
 D=$(mktemp -d)
 trap 'rm -rf "$D"; kill $SRV 2>/dev/null || true' EXIT
@@ -200,7 +198,7 @@ mkdir -p "$D/tw2"
 # insistencia no erro: o professor repete a mesma chamada que falha; a 2a leva um aviso, a 3a e a 4a nao rodam, e a 4a
 # ja leva a ordem de encerrar e relatar ao usuario
 mkdir -p "$D/tw5"
-(cd "$D/tw5" && printf 'leia o arquivo\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_INSIST=1 MOCK_TOOLS=2 \
+(cd "$D/tw5" && printf 'leia o arquivo\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 MOCK_INSIST=1 MOCK_TOOLS=2 \
    KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli5.jsonl" $K agent "$D/agent.gguf" >"$D/cli5_out.txt" 2>/dev/null) || true
 if grep -q "Insistencia contida." "$D/cli5_out.txt" 2>/dev/null && [ "$(grep -c '"ok": true' "$D/cli5.jsonl" 2>/dev/null)" = 5 ]; then
   echo "insistencia no erro: ok (aviso na 2a, recusa na 3a e na 4a, encerra e relata)"
@@ -208,7 +206,7 @@ else echo "insistencia no erro: FALHOU"; tail -3 "$D/cli5_out.txt" 2>/dev/null |
 # pre-requisito de fora: tres falhas em volta do mesmo programa levam a nota que o nomeia e manda seguir com o codigo
 mkdir -p "$D/tw6"
 printf '#!/bin/sh\n[ "$1" = --help ] && { echo "usage: fakesdk build|install|auth"; exit 0; }\necho "Error: Operation unsupported: the SDK is not installed (requires login)"; exit 1\n' >"$D/tw6/fakesdk"; chmod +x "$D/tw6/fakesdk"
-(cd "$D/tw6" && printf 'faca o app\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_BLOCKED=1 MOCK_TOOLS=2 \
+(cd "$D/tw6" && printf 'faca o app\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 MOCK_BLOCKED=1 MOCK_TOOLS=2 \
    KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli6.jsonl" $K agent "$D/agent.gguf" >"$D/cli6_out.txt" 2>/dev/null) || true
 if grep -q "Bloqueio relatado e codigo escrito." "$D/cli6_out.txt" 2>/dev/null && [ -f "$D/tw6/app.txt" ]; then
   echo "pre-requisito de fora: ok (nota na 3a falha em volta de fakesdk, o codigo e escrito depois)"
@@ -216,7 +214,7 @@ else echo "pre-requisito de fora: FALHOU"; grep -a "FALHA" "$D/cli6_out.txt" 2>/
 # limite de rodadas por blocos (KATANA_ROUNDS=4): com progresso passa do bloco; sem progresso para no fim do primeiro
 for R in 1 2; do
   mkdir -p "$D/tw7$R"
-  (cd "$D/tw7$R" && printf 'trabalhe\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 KATANA_ROUNDS=4 MOCK_ROUNDS=$R MOCK_TOOLS=2 \
+  (cd "$D/tw7$R" && printf 'trabalhe\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_ROUNDS=4 MOCK_ROUNDS=$R MOCK_TOOLS=2 \
      KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli7$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli7${R}_out.txt" 2>/dev/null) || true
 done
 if grep -q "Dez arquivos gravados sem parar." "$D/cli71_out.txt" 2>/dev/null && [ "$(ls "$D/tw71" | wc -l)" = 10 ] && grep -q "Limite relatado." "$D/cli72_out.txt" 2>/dev/null; then
@@ -224,7 +222,7 @@ if grep -q "Dez arquivos gravados sem parar." "$D/cli71_out.txt" 2>/dev/null && 
 else echo "limite de rodadas: FALHOU"; grep -a "FALHA" "$D/cli71_out.txt" "$D/cli72_out.txt" 2>/dev/null | cut -c1-300 | head -3; fail=1; fi
 # o usuario muda o plano: o lembrete da lista e a mensagem nova dizem que a mensagem mais nova vem primeiro
 mkdir -p "$D/tw8"
-(cd "$D/tw8" && printf 'faca a lista\nesqueca a lista, faca outra coisa\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_REDIRECT=1 MOCK_TOOLS=2 \
+(cd "$D/tw8" && printf 'faca a lista\nesqueca a lista, faca outra coisa\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 MOCK_REDIRECT=1 MOCK_TOOLS=2 \
    KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli8.jsonl" $K agent "$D/agent.gguf" >"$D/cli8_out.txt" 2>/dev/null) || true
 if grep -q "Lembrete ok." "$D/cli8_out.txt" 2>/dev/null && grep -q "Plano novo." "$D/cli8_out.txt" && ! grep -q "FALHA" "$D/cli8_out.txt"; then
   echo "mensagem nova muda o plano: ok (lembrete da lista e pedido novo dizem que a mensagem nova vem primeiro)"
@@ -232,7 +230,7 @@ else echo "mensagem nova muda o plano: FALHOU"; grep -a "FALHA" "$D/cli8_out.txt
 # planejar antes de executar: sem lista a 3a e a 6a chamada levam a nota; com lista o passo atual aparece e o proximo e nomeado
 for R in 1 2; do
   mkdir -p "$D/tw9$R"
-  (cd "$D/tw9$R" && printf 'trabalhe\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_UI=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_PLAN=$R MOCK_TOOLS=2 \
+  (cd "$D/tw9$R" && printf 'trabalhe\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_UI=1 KATANA_TEACHER=1 MOCK_PLAN=$R MOCK_TOOLS=2 \
      KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli9$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli9${R}_out.txt" 2>/dev/null) || true
 done
 if grep -q "Plano cobrado." "$D/cli91_out.txt" 2>/dev/null && grep -q "Plano seguido." "$D/cli92_out.txt" 2>/dev/null \
@@ -240,48 +238,28 @@ if grep -q "Plano cobrado." "$D/cli91_out.txt" 2>/dev/null && grep -q "Plano seg
   echo "plano antes de executar: ok (nota na 3a e na 6a chamada sem lista; passo atual na 5a; proximo passo no TodoWrite; descricao no marcador TOOL)"
 else echo "plano antes de executar: FALHOU"; grep -a "FALHA" "$D/cli91_out.txt" "$D/cli92_out.txt" 2>/dev/null | cut -c1-600 | head -3; fail=1; fi
 # katana agentlog: registro com os dois conjuntos, tabulacao e quebra de linha dentro do resultado
-printf '2026-11-21 10:00:00\tBash\t"arguments": {"command": "x"}\tError: a Exit code 1\n2026-11-21 10:00:01\tBash\t"arguments": {"command": "x"}\tError: a\twith tab Exit code 1\nsecond line\n2026-11-21 10:00:02\tread_file\t{"path": "a"}\tok\n2026-11-21 10:00:03\tread_file\t{"path": "a"}\terror: b\n2026-11-21 10:00:04\tread_file\t{"path": "b"}\terror: b\n2026-11-21 10:00:05\tRead\t{"file_path": "c"}\terror: c\n' >"$D/al.log"
+printf '2026-11-21 10:00:00\tBash\t"arguments": {"command": "x"}\tError: a Exit code 1\n2026-11-21 10:00:01\tBash\t"arguments": {"command": "x"}\tError: a\twith tab Exit code 1\nsecond line\n2026-11-21 10:00:02\tFind\t{"path": "a"}\tok\n2026-11-21 10:00:03\tFind\t{"path": "a"}\terror: b\n2026-11-21 10:00:04\tFind\t{"path": "b"}\terror: b\n2026-11-21 10:00:05\tRead\t{"file_path": "c"}\terror: c\n' >"$D/al.log"
 AL=$($K agentlog "$D/al.log" 2>&1)
-if echo "$AL" | grep -q "^agent log .*: 6 calls .* 5 failed (83%), 2 identical repeats" && echo "$AL" | grep -q "^read_file  *3  *2  *67%  *1" \
-   && echo "$AL" | grep -q "^ *2  read_file  *error: b$" && echo "$AL" | grep -q "^ *3  2026-11-21 10:00:03 to 10:00:05  read_file, Read$" \
+if echo "$AL" | grep -q "^agent log .*: 6 calls .* 5 failed (83%), 2 identical repeats" && echo "$AL" | grep -q "^Find  *3  *2  *67%  *1" \
+   && echo "$AL" | grep -q "^ *2  Find  *error: b$" && echo "$AL" | grep -q "^ *3  2026-11-21 10:00:03 to 10:00:05  Find, Read$" \
    && echo "$AL" | grep -q "Error: a with tab Exit code 1 second line"; then echo "katana agentlog: ok (chamadas, falhas, repeticoes, erros, sequencias)"
 else echo "katana agentlog: FALHOU"; echo "$AL" | head -20; fail=1; fi
 # o texto do professor chega em pedacos e tem que aparecer inteiro e uma vez so na saida (acento, aspas, quebra de linha, emoji)
 if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linha 1" "$D/tw2/nota.txt" 2>/dev/null \
    && [ "$(grep -c 'Vou gravar o arquivo: ação "um"' "$D/cli_out.txt")" = 1 ] && [ "$(grep -c '^e 😀 dois\.' "$D/cli_out.txt")" = 1 ] \
    && [ "$(grep -c 'Pronto: nota.txt gravado e conferido\.' "$D/cli_out.txt")" = 1 ]; then echo "professor por programa externo (texto aos poucos): ok"; else echo "professor por programa externo: FALHOU"; fail=1; fi
-# o segundo conjunto de ferramentas (KATANA_TOOLS=2): Write, Edit, Bash e Grep pelo laco inteiro
+# as ferramentas da tabela: Write, Edit, Bash e Grep pelo laco inteiro
 mkdir -p "$D/tw3"
-(cd "$D/tw3" && printf 'grave e confira nota2.txt\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 \
+(cd "$D/tw3" && printf 'grave e confira nota2.txt\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 MOCK_TOOLS=2 \
    KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli3.jsonl" $K agent "$D/agent.gguf" >"$D/cli3_out.txt" 2>/dev/null) || true
 if [ "$(grep -c '"ok": true' "$D/cli3.jsonl" 2>/dev/null)" = 4 ] && grep -q "linha dois" "$D/tw3/nota2.txt" 2>/dev/null \
-   && grep -q 'Pronto: ferramentas novas conferidas' "$D/cli3_out.txt"; then echo "segundo conjunto de ferramentas (Write, Edit, Bash, Grep) pelo laco: ok"
-else echo "segundo conjunto de ferramentas: FALHOU"; grep -a "FALHA\|ok\": false" "$D/cli3_out.txt" "$D/cli3.jsonl" | head -5; fail=1; fi
-python3 -c "open('$D/big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
-python3 plugins/teacher-anthropic/test/mock_api.py 8201 "$D/rd_req.jsonl" "$D/big.txt" & RMOCK=$!
-sleep 1
-(cd "$D/tw2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 KATANA_TEACHER_KEY=sk-mock-key KATANA_TEACHER_CMD=$PWD/plugins/teacher-anthropic/run \
-   KATANA_TEACHER_URL=http://127.0.0.1:8201 $K agent "$D/agent.gguf" >/dev/null 2>&1) || true
-kill $RMOCK 2>/dev/null || true
-python3 - "$D/rd_req.jsonl" <<'EOF' || fail=1
-import json, sys
-try:
-    rs = [json.loads(l) for l in open(sys.argv[1])]
-    res = [x["content"] for m in rs[-1]["request"]["messages"] for x in m["content"] if x["type"] == "tool_result"]
-    ok = len(res) == 5 and all(r["status"] == 200 for r in rs)
-    for i, (a, b) in enumerate([(1, 84), (85, 167), (168, 250), (251, 300)]):
-        ok = ok and ("condensed note of lines %d-%d" % (a, b)) in res[i]
-    ok = ok and "already read this whole file (300 lines)" in res[4] and "[lines 168-250]" in res[4] and max(len(r) for r in res) < 3000
-except Exception as e:
-    ok = False; res = e
-print("leitura com posicao e notas: %s" % ("ok (4 trechos em sequencia, 5a leitura devolve as notas)" if ok else "FALHOU %s" % (res,)))
-sys.exit(0 if ok else 1)
-EOF
+   && grep -q 'Pronto: ferramentas novas conferidas' "$D/cli3_out.txt"; then echo "ferramentas da tabela (Write, Edit, Bash, Grep) pelo laco: ok"
+else echo "ferramentas da tabela: FALHOU"; grep -a "FALHA\|ok\": false" "$D/cli3_out.txt" "$D/cli3.jsonl" | head -5; fail=1; fi
 # katana import: conversa no formato de mensagens (com chamada de ferramenta) e ShareGPT -> dados de treino -> treino
 printf '%s\n' \
- '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"recall","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
+ '{"messages":[{"role":"system","content":"You are katana."},{"role":"user","content":"what is katana?"},{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"Grep","arguments":"{\"query\": \"katana\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"a local engine"},{"role":"assistant","content":"katana is a local engine."}]}' \
  '{"conversations":[{"from":"system","value":"You are katana."},{"from":"human","value":"say hi"},{"from":"gpt","value":"hi there!"}]}' > "$D/chats.jsonl"
-if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" --keep-tool-names 2>/dev/null | grep -q "^import: 2 de 2"; then echo "import: ok"; else echo "import: FALHOU"; fail=1; fi
+if $K import "$D/llama.gguf" "$D/chats.jsonl" "$D/imp.jsonl" 2>/dev/null | grep -q "^import: 2 de 2"; then echo "import: ok"; else echo "import: FALHOU"; fail=1; fi
 $K train "$D/llama.gguf" "$D/imp.jsonl" --steps 150 --lr 3e-3 --seq 256 --out "$D/imp.kspec" 2>/dev/null | grep "perda media final"
 gcc -O1 -mavx2 -mfma -mf16c -w -I . -I src -I vk/include tools/traintest/import_calls.c -o "$D/import_calls" -lm -lpthread -ldl
 if "$D/import_calls" >/dev/null; then echo "chamadas importadas lidas pelo agente nos 4 formatos: ok"; else echo "chamadas importadas: FALHOU"; fail=1; fi
@@ -428,47 +406,6 @@ sys.exit(0 if ok else 1)
 EOF2
 then echo "knowledge corpus: ok (pares fieis as notas, sem segredo, teto, holdout com outra formulacao)"; else echo "knowledge corpus: FALHOU"; cat "$D/kc.out" "$D/kc2.out"; fail=1; fi
 if grep -q "projetos: 2\|beta: .* pares" "$D/kc_st.out" && grep -q "total: .* pares" "$D/kc_st.out" && grep -q "janelas de 512 tokens (estimativa" "$D/kc_st.out"; then echo "knowledge stats do corpus: ok"; else echo "knowledge stats do corpus: FALHOU"; cat "$D/kc_st.out"; fail=1; fi
-# chamadas do primeiro conjunto de ferramentas viram as do segundo (nome e argumentos); sem equivalente: a fala nao treina
-python3 - "$D/old.jsonl" <<'EOF'
-import json, sys
-def conv(calls):
-    m = [{"role": "user", "content": "do it"}]
-    for i, (n, a) in enumerate(calls):
-        m.append({"role": "assistant", "content": "", "tool_calls": [{"id": "c%d" % i, "type": "function", "function": {"name": n, "arguments": json.dumps(a)}}]})
-        m.append({"role": "tool", "tool_call_id": "c%d" % i, "content": "ok"})
-    m.append({"role": "assistant", "content": "done"})
-    return json.dumps({"messages": m}) + "\n"
-open(sys.argv[1], "w").write(
-    conv([("read_file", {"path": "a.c", "offset": 3}), ("run_command", {"command": "make", "timeout_s": 30, "background": True}),
-          ("edit_file", {"path": "a.c", "old": "x", "new": "y"}), ("search_files", {"pattern": "foo(", "path": "src"}),
-          ("list_dir", {"path": "my dir"}), ("todo", {"steps": "[x] read\n[ ] fix it"}), ("ask_user", {"question": "which?", "options": "one | two"}),
-          ("delegate", {"task": "find where the parser lives and report"}), ("find_file", {"name": "notes"}), ("write_file", {"path": "b.c", "content": "int x;"})])
-    + conv([("remember", {"fact": "x"})]) + conv([("write_file", {"path": "b", "content": "c", "append": True})]))
-EOF
-$K import "$D/llama.gguf" "$D/old.jsonl" "$D/old_train.jsonl" --system none > "$D/old.out" 2>&1 || true
-if python3 - "$D/old_train.jsonl" "$D/old.out" <<'EOF'
-import json, sys
-R = [json.loads(l) for l in open(sys.argv[1])]
-T = [r["text"] for r in R]
-log = open(sys.argv[2]).read()
-ok = len(T) == 3 and "import: 3 de 3" in log and "convertidas" in log and "1 falas com chamada sem equivalente" in log
-ok = ok and [len(r["train_spans"]) for r in R] == [11, 1, 2] and "cat >> 'b' <<'KATANA_EOF'" in T[2]
-t = T[0] if T else ""
-want = ['"name": "Read", "arguments": {"file_path": "a.c", "offset": 3}', '"name": "Bash", "arguments": {"command": "make", "timeout": 30000, "run_in_background": true}',
-        '"name": "Edit", "arguments": {"file_path": "a.c", "old_string": "x", "new_string": "y"}',
-        '"name": "Grep", "arguments": {"pattern": "foo(", "path": "src", "output_mode": "content", "literal": true}',
-        '"name": "Bash", "arguments": {"command": "ls -la \'my dir\'"}',
-        '"name": "TodoWrite", "arguments": {"todos": [{"content": "read", "status": "completed"}, {"content": "fix it", "status": "pending"}]}',
-        '"name": "AskUserQuestion", "arguments": {"questions": [{"question": "which?", "options": [{"label": "one"}, {"label": "two"}]}]}',
-        '"name": "Agent", "arguments": {"description": "find where the parser lives", "prompt": "find where the parser lives and report"}',
-        '"name": "Glob", "arguments": {"pattern": "**/*notes*"}', '"name": "Write", "arguments": {"file_path": "b.c", "content": "int x;"}',
-        "[resultado da ferramenta Read,"]
-miss = [w for w in want if w not in t]
-ok = ok and not miss and "read_file" not in t and "run_command" not in t
-if not ok: print(miss, log)
-sys.exit(0 if ok else 1)
-EOF
-then echo "ferramentas do primeiro conjunto -> segundo: ok (11 chamadas convertidas; a fala sem equivalente fica fora do treino)"; else echo "ferramentas do primeiro conjunto -> segundo: FALHOU"; fail=1; fi
 # katana merge: o GGUF fundido responde igual ao modelo base com o .kspec (adaptadores sobre Q8_0; MoE; qwen35moe)
 $K merge "$D/q8.gguf" "$D/adapt.kspec" "$D/q8_merged.gguf" >/dev/null 2>&1 && check_spec "$D/q8_merged.gguf" "" 8195 || { echo "merge q8: FALHOU"; fail=1; }
 $K merge "$D/moe.gguf" "$D/moe.kspec" "$D/moe_merged.gguf" >/dev/null 2>&1 && check_spec "$D/moe_merged.gguf" "" 8196 || { echo "merge moe: FALHOU"; fail=1; }
@@ -492,7 +429,7 @@ if $K import "$D/llama.gguf" "$D/teacher.jsonl" "$D/teacher_train.jsonl" 2>/dev/
 . tools/traintest/gemma4_part.sh
 # chamadas de ferramenta validas por construcao (src/agent/callgrammar.c): automato sem modelo e modelo aleatorio
 if $K calltest > "$D/ct.txt"; then echo "calltest: ok ($(tail -1 "$D/ct.txt"))"; else echo "calltest: FALHOU"; grep FAILED "$D/ct.txt"; fail=1; fi
-if KATANA_TOOLS=2 sh tools/traintest/callgrammar_e2e.sh "$K" > "$D/cg_e2e.txt" 2>&1; then echo "chamadas validas com modelo aleatorio: ok ($(tail -1 "$D/cg_e2e.txt"))"; else echo "chamadas validas com modelo aleatorio: FALHOU"; grep -a FAIL "$D/cg_e2e.txt"; fail=1; fi
+if sh tools/traintest/callgrammar_e2e.sh "$K" > "$D/cg_e2e.txt" 2>&1; then echo "chamadas validas com modelo aleatorio: ok ($(tail -1 "$D/cg_e2e.txt"))"; else echo "chamadas validas com modelo aleatorio: FALHOU"; grep -a FAIL "$D/cg_e2e.txt"; fail=1; fi
 . tools/traintest/specialize_oneshot.sh
 # 13. katana curriculum: 200 conversas das convencoes (KATANA.md, skills, MCP), check, import nos tres formatos
 $K curriculum "$D/cur.jsonl" --n 200 --seed 3 --holdout "$D/cur_hold.jsonl" >/dev/null 2>&1 || { echo "curriculum: FALHOU (gerador)"; fail=1; }

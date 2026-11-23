@@ -27,14 +27,14 @@ if any("parameters" not in t for t in req["tools"]):
     fail("tool without parameters")
 if os.environ.get("MOCK_DUMP_SYSTEM"):
     open(os.environ["MOCK_DUMP_SYSTEM"], "w").write(system)
-CL = os.environ.get("MOCK_TOOLS") == "2"       # o agente declara o segundo conjunto de ferramentas (KATANA_TOOLS=2)
+CL = os.environ.get("MOCK_TOOLS") == "2"       # fluxo Write, Edit, Bash e Grep (nota2.txt); sem a variavel: Write e Bash (nota.txt)
 MCP = os.environ.get("MOCK_MCP") == "1"           # katana -p --mcp-config ... --allowed-tools 'fake__ping,Read': so estas ferramentas aparecem
 if MCP:
     if "fake__ping" not in names or "Write" in names or "Bash" in names or "ToolSearch" in names:
         fail("tools: allowed tools not filtered (fake__ping %s, Write %s, Bash %s, ToolSearch %s)" % tuple(n in names for n in ("fake__ping", "Write", "Bash", "ToolSearch")))
-elif "<tool_call>" in system or ("Write" if CL else "write_file") not in names:
+elif "<tool_call>" in system or "Write" not in names:
     fail("system prompt or tools")
-if CL and not MCP and ("write_file" in names or "file_path" not in json.dumps(req["tools"]) or "Bash" not in names or "ToolSearch" not in names):
+if not MCP and ("write_file" in names or "file_path" not in json.dumps(req["tools"]) or "Bash" not in names or "ToolSearch" not in names):
     fail("tools: old tool names or missing new ones")
 ms = req["messages"]
 if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user" or any(i and m["role"] == ms[i - 1]["role"] for i, m in enumerate(ms)):
@@ -182,9 +182,9 @@ elif CL:
         good = len(res) == 4 and "linha dois" in res[2] and "Shell cwd was reset" in res[2] and "linha dois" in res[3] and "updated" in res[1]
         out = {"text": "Pronto: ferramentas novas conferidas." if good else "FALHA nos resultados: %s" % res, "tool_calls": []}
 elif step == 0:
-    out = {"text": "Vou gravar o arquivo: ação \"um\"\ne 😀 dois.", "tool_calls": [{"name": "write_file", "arguments": {"path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]}
+    out = {"text": "Vou gravar o arquivo: ação \"um\"\ne 😀 dois.", "tool_calls": [{"name": "Write", "arguments": {"file_path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]}
 elif step == 1:
-    out = {"text": "", "tool_calls": [{"name": "run_command", "arguments": {"command": "cat nota.txt", "timeout_s": 20}}]}
+    out = {"text": "", "tool_calls": [{"name": "Bash", "arguments": {"command": "cat nota.txt", "timeout": 20000}}]}
 else:
     out = {"text": "Pronto: nota.txt gravado e conferido.", "tool_calls": []}
 if log:

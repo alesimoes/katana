@@ -67,12 +67,12 @@ bg) sleep 4713 & echo $! > "$CBFX_BGPID"; touch done.txt ;;
 metrics)
   printf '2026-11-21 10:00:0%s\tbash\t{"cmd": "ls"}\t[exit code 0]\n' 1 >> "$KATANA_LOG"
   printf '2026-11-21 10:00:0%s\tbash\t{"cmd": "ls"}\t[exit code 0]\n' 2 >> "$KATANA_LOG"
-  printf '2026-11-21 10:00:0%s\tread_file\t{"path": "x"}\terror: no such file\n' 3 >> "$KATANA_LOG"
+  printf '2026-11-21 10:00:0%s\tRead\t{"path": "x"}\terror: no such file\n' 3 >> "$KATANA_LOG"
   {
     echo "[entrada: 100 tokens, 1.0 tok/s | resposta: 10 tokens, 1.0 tok/s | contexto 110 de 4096 (2%)]"
     echo "[ferramenta bash {\"cmd\": \"ls\"}]"; echo "[ferramenta bash: 20 bytes de resultado]"
     echo "[ferramenta bash {\"cmd\": \"ls\"}]"; echo "[ferramenta bash: 20 bytes de resultado]"
-    echo "[ferramenta read_file {\"path\": \"x\"}]"; echo "[ferramenta read_file: 30 bytes de resultado]"
+    echo "[ferramenta Read {\"path\": \"x\"}]"; echo "[ferramenta Read: 30 bytes de resultado]"
     echo "[ferramenta bash {\"cmd\": \"ls\"}]"; echo "[ferramenta bash: 200 bytes de resultado]"
     echo "[entrada: 50 tokens, 1.0 tok/s | resposta: 7 tokens, 1.0 tok/s | contexto 170 de 4096 (4%)]"
   } >&2
