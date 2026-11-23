@@ -597,7 +597,7 @@ static int coder_cmd_status(int argc, char **argv) {
       else if (loc.prefix[0]) printf("origem do indice: home (raiz da home %s absorve esta pasta; consulta restrita ao prefixo %s)\ninit: nao (nenhum ancestral tem init)\n", loc.root, loc.prefix);
       else printf("origem do indice: home (pasta visitada, sem init; nada e criado dentro dela)\ninit: nao\n"); }
     StoreReader *r;
-    if (store_open(dir, &r, err, sizeof err) != 0) { fprintf(stderr, "status: %s\n", err); return 1; }
+    if (store_open(dir, &r, err, sizeof err) != 0) { if (strstr(err, "formato") && strstr(err, "diferente")) { printf("status: sem indice (o armazenamento e de outro formato; a primeira consulta o refaz)\n"); return 0; } fprintf(stderr, "status: %s\n", err); return 1; }
     printf("armazenamento: %s\nformato %d, geracao %llu, raiz %s, %d segmento(s), %s em segmentos\n", dir, STORE_FORMAT, (unsigned long long)r->gen, r->man.root[0] ? r->man.root : "(vazio)", r->nseg, cstore_human(store_disk_bytes(r), h, sizeof h));
     for (int i = 0; i < r->nseg; i++) {
         uint32_t nd = 0, nt = 0;
@@ -640,7 +640,7 @@ static int coder_cmd_verify(int argc, char **argv) {
     cstore_args(argc, argv, proj, sizeof proj, &maxsz, &fa);
     store_locate(proj, "coder", dir, sizeof dir, 0);
     StoreReader *r;
-    if (store_open(dir, &r, err, sizeof err) != 0) { printf("verify: FALHA: %s\n", err); return 1; }
+    if (store_open(dir, &r, err, sizeof err) != 0) { if (strstr(err, "formato") && strstr(err, "diferente")) { printf("verify: sem indice (o armazenamento e de outro formato; a primeira consulta o refaz)\n"); return 0; } printf("verify: FALHA: %s\n", err); return 1; }
     int secs = 0;
     for (int i = 0; i < r->nseg; i++) {
         char e2[300]; e2[0] = 0;

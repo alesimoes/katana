@@ -72,7 +72,7 @@ static const char *mt_fs_note(const char *path) {
 }
 
 /* ---------- versao do formato, dano e disco (F.6, G) ---------- */
-/* 0 = ok ou vazio, 1 = formato diferente do deste binario e menor (apaga e reconstroi, sem aviso), 2 = mais novo que este binario (nao mexe), 3 = danificado (quarentena e reconstroi) */
+/* 0 = ok ou vazio, 1 = formato diferente do deste binario, maior ou menor (apaga e reconstroi, sem aviso), 3 = danificado (quarentena e reconstroi) */
 static int mt_store_class(const char *dir, char *err, size_t ecap) {
     char mp[4600]; snprintf(mp, sizeof mp, "%s/MANIFEST", dir); struct stat sv;
     if (stat(mp, &sv) != 0) return 0;
@@ -80,11 +80,10 @@ static int mt_store_class(const char *dir, char *err, size_t ecap) {
     if (st_read_file(mp, &mb, &ml) != 0) { snprintf(err, ecap, "MANIFEST unreadable"); return 3; }
     if (ml < 8 || st_get_u32(mb) != STORE_MAN_MAGIC) { free(mb); snprintf(err, ecap, "MANIFEST: bad magic number"); return 3; }
     const uint32_t v = st_get_u32(mb + 4); free(mb);
-    if (v > STORE_FORMAT) { snprintf(err, ecap, "format %u is newer than this binary (%d)", v, STORE_FORMAT); return 2; }
-    if (v < STORE_FORMAT) { snprintf(err, ecap, "format %u is not %d", v, STORE_FORMAT); return 1; }
+    if (v != STORE_FORMAT) { snprintf(err, ecap, "format %u is not %d", v, STORE_FORMAT); return 1; }
     for (int a = 0; a < 3; a++) {                      /* uma compactacao concorrente pode estar trocando segmentos: tenta de novo antes de condenar */
         StoreReader *r; if (store_open(dir, &r, err, ecap) == 0) { store_close(r); return 0; }
-        if (strstr(err, "mais novo")) return 2;
+        if (strstr(err, "formato diferente")) return 1;
         usleep(100000);
     }
     return 3;
@@ -94,7 +93,6 @@ static int mt_store_class(const char *dir, char *err, size_t ecap) {
 static int mt_prepare(const char *dir, char *err, size_t ecap, int force) {
     char e2[300] = ""; int c = force ? force : mt_store_class(dir, e2, sizeof e2);
     if (c == 0) return 0;
-    if (c == 2) { snprintf(err, ecap, "the index in %s was written by a newer katana (%s); it was left untouched", dir, e2); return -1; }
     char lp[4700]; snprintf(lp, sizeof lp, "%s/LOCK", dir);
     int fd = open(lp, O_RDWR | O_CREAT, 0600); if (fd < 0) { snprintf(err, ecap, "LOCK: %s", strerror(errno)); return -1; }
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) { close(fd); snprintf(err, ecap, "another process is writing the index"); return 1; }

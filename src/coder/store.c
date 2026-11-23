@@ -242,8 +242,7 @@ static int store_man_parse(const uint8_t *p, size_t n, StoreManifest *m, char *e
     memset(m, 0, sizeof *m);
     if (n < 40) { snprintf(err, ecap, "manifesto truncado"); return -1; }
     if (st_get_u32(p) != STORE_MAN_MAGIC) { snprintf(err, ecap, "manifesto: numero magico invalido"); return -1; }
-    if (st_get_u32(p + 4) > STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u mais novo que este binario (%d)", st_get_u32(p + 4), STORE_FORMAT); return -1; }
-    if (st_get_u32(p + 4) < STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u diferente do deste binario (%d); sera reconstruido", st_get_u32(p + 4), STORE_FORMAT); return -1; }
+    if (st_get_u32(p + 4) != STORE_FORMAT) { snprintf(err, ecap, "manifesto: formato %u diferente do deste binario (%d)", st_get_u32(p + 4), STORE_FORMAT); return -1; }
     if (store_hash64(p, n - 8, 0) != st_get_u64(p + n - 8)) { snprintf(err, ecap, "manifesto: checksum nao confere"); return -1; }
     m->gen = st_get_u64(p + 8); m->next_id = st_get_u64(p + 16); m->nseg = st_get_u32(p + 24);
     uint32_t rl = st_get_u32(p + 28); size_t at = 32;
@@ -288,7 +287,7 @@ static int store_seg_map(const char *dir, const StoreManEnt *e, StoreSeg *s, cha
     s->base = base; s->size = len;
     #define SEGFAIL(...) do { snprintf(err, ecap, __VA_ARGS__); store_seg_unmap(s); return -1; } while (0)
     if (len < STORE_HDR || st_get_u32(base) != STORE_SEG_MAGIC) SEGFAIL("segmento %llu: numero magico invalido", (unsigned long long)e->id);
-    if (st_get_u32(base + 4) > STORE_FORMAT) SEGFAIL("segmento %llu: formato mais novo que este binario", (unsigned long long)e->id);
+    if (st_get_u32(base + 4) != STORE_FORMAT) SEGFAIL("segmento %llu: formato diferente do deste binario", (unsigned long long)e->id);
     if (store_hash64(base, 56, 0) != st_get_u64(base + 56)) SEGFAIL("segmento %llu: checksum do cabecalho nao confere", (unsigned long long)e->id);
     s->id = st_get_u64(base + 8); s->nsec = st_get_u32(base + 16); s->tabsum = st_get_u64(base + 32);
     if (s->id != e->id || st_get_u64(base + 24) != len || len != e->size) SEGFAIL("segmento %llu: id ou tamanho diferem do manifesto", (unsigned long long)e->id);

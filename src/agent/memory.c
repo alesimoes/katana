@@ -346,7 +346,8 @@ static void tool_remember(const char *fact, char *out, size_t cap) {
         MemE *x = mem_add(&db);                         /* mem_add pode mover o vetor: o ponteiro `o` nao e mais usado */
         x->kind = 0; snprintf(x->date, sizeof x->date, "%s", today); x->fact = strdup(f); snprintf(x->id, sizeof x->id, "%s", nid); x->pinned = pin;
         const int r = mem_save(&db);
-        mem_free(&db);                                  /* (a copia e o texto novo ficam alocados: processo curto, vazamento pequeno e deliberado) */
+        free(db.e[sim].fact); free(db.e[db.n - 1].fact);      /* as duas copias (strdup) */
+        mem_free(&db);
         if (r != 0) { snprintf(out, cap, "error: cannot write memory"); return; }
         snprintf(out, cap, "ok: updated memory (replaced the earlier fact on the same subject, kept as superseded [%s]: %s)", oldid, oldtxt);
         return;
@@ -374,7 +375,7 @@ static size_t mem_tail(int max, char *out, size_t cap) {
     int *live = (int *)malloc((size_t)(db.n + 1) * sizeof(int)), nl = 0;
     char *pick = (char *)calloc((size_t)db.n + 1, 1);
     if (!live || !pick) { free(live); free(pick); mem_free(&db); return 0; }
-    for (int i = 0; i < db.n; i++) if (db.e[i].kind == 0) live[nl++] = i;
+    for (int i = 0; i < db.n; i++) if (db.e[i].kind == 0 && !mem_secret(db.e[i].fact)) live[nl++] = i;
     int left = max;
     for (int k = nl - 1; k >= 0 && left > max - max / 2; k--) if (db.e[live[k]].pinned) { pick[k] = 1; left--; }       /* fixos: ate metade do conjunto */
     for (int k = nl - 1; k >= 0 && left > 0; k--) if (!pick[k]) { pick[k] = 1; left--; }
