@@ -100,6 +100,7 @@ static int index_ensure(const char *root, int level, const char *prefix, int bud
     (void)level; (void)prefix; (void)budget_ms;
     IndexRes z; if (!res) res = &z; memset(res, 0, sizeof *res);
     char dir[4400], man[4500], err[300] = ""; struct stat sv; const double t0 = now_sec();
+    IndexLoc loc; index_resolve(root, 0, &loc); root = loc.root;      /* a raiz que cobre a pasta (init, ancestral ou home); a consulta restringe pelo prefixo */
     store_locate(root, "coder", dir, sizeof dir, 0);
     snprintf(man, sizeof man, "%s/MANIFEST", dir);
     const int exists = stat(man, &sv) == 0;
@@ -110,7 +111,7 @@ static int index_ensure(const char *root, int level, const char *prefix, int bud
     StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
     char si[400], yi[500]; coder_search_hook_done(&o, si, sizeof si); coder_sym_hook_done(yi, sizeof yi);
     g_idx_n.walks++; res->walked = 1; res->ms = (now_sec() - t0) * 1000;
-    if (rc == 0) index_validated(root, IDX_CODER);
+    if (rc == 0) { index_validated(root, IDX_CODER); if (loc.kind == IL_HOME) index_retire_below(root); }      /* raiz da home que absorve outras da home: elas saem */
     else if (rc == 1) res->busy = 1;                       /* outro processo grava agora: le o que existe e tenta de novo na proxima */
     return (rc == 0 || rc == 1) ? 0 : -1;
 }
@@ -124,6 +125,11 @@ static void index_stats_line(char *o, size_t cap) {
  * (refs). Uma visao velha com consulta em andamento so e fechada na ultima devolucao. Sem vaga (todas em uso), a visao fica com quem abriu. */
 typedef struct { char dir[4400]; void *view; StoreReader *rd; int refs, dead; unsigned long tick; } IdxSlot;
 typedef struct { IdxSlot s[IDX_SLOTS]; void (*destroy)(void *view); } IdxCache;
+/* chave de uma visao no cache: store + prefixo da consulta (a visao de uma subpasta absorvida difere da da raiz) */
+static void idx_view_key(const char *proj, char *key, size_t cap) {
+    IndexLoc L; index_resolve(proj, 0, &L);
+    if (L.prefix[0]) snprintf(key, cap, "%.3900s|%.400s", L.store, L.prefix); else snprintf(key, cap, "%s", L.store);
+}
 static void idx_slot_free(IdxCache *c, IdxSlot *s) { if (s->view) c->destroy(s->view); memset(s, 0, sizeof *s); }
 static void *idx_cache_get(IdxCache *c, const char *dir) {
     void *r = NULL;
