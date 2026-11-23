@@ -1293,8 +1293,11 @@ static int sy_tree(const char *proj, const char *folder, int depth, int limit, i
             for (int i = 0; i < M.nhere && cnt < 6; i++, cnt++) sy_sbf(sb, "%s%.60s", cnt ? ", " : "", M.here[i]);
             if (M.nhere > cnt) sy_sbf(sb, " (+%d)", M.nhere - cnt);
             sy_sbf(sb, "\n"); }
+        int cutf = 0;                      /* pastas que o teto de tamanho da saida deixou de fora (a saida do Symbols e cortada em ~6500 caracteres; as linhas finais precisam caber) */
         for (int k = 0; k < ne; k++) {
             TrNode *t = &N[emit[k]]; char pp[4400]; snprintf(pp, sizeof pp, "%s%s%s", base, bl ? "/" : "", t->path); const int ind = 2 * t->depth;
+            if (t->kind == 0 && sb->n > 4800) { cutf++; continue; }
+            if (t->kind != 0 && sb->n > 5900) continue;
             if (t->kind == 0) {
                 const SmDir *d = t->di >= 0 ? &M.d[t->di] : NULL; const char *nt = "", *lv = d ? sy_tree_level(d, v.any, v.anykeys, &nt) : "names only"; char fn[40], lg[200] = "";
                 mt_commas((long long)t->files, fn, sizeof fn); if (d) sy_tree_langs(d, lg, sizeof lg);
@@ -1315,7 +1318,7 @@ static int sy_tree(const char *proj, const char *folder, int depth, int limit, i
                     sy_sbf(sb, "%*s%s/  (ignored: %s, %s)\n", ind, "", pp, t->rule, fn); }
             }
         }
-        if (nrealtotal > nreal) sy_sbf(sb, "(%d more folders not shown; raise `limit` or call tree on a subfolder)\n", nrealtotal - nreal);
+        if (nrealtotal - nreal + cutf > 0) sy_sbf(sb, "(%d more folders not shown; raise `limit` or call tree on a subfolder)\n", nrealtotal - nreal + cutf);
         if (ign_dirs > nigsel) sy_sbf(sb, "(%d more ignored folder%s not listed here; `katana coder ignored` lists them all)\n", ign_dirs - nigsel, ign_dirs - nigsel == 1 ? "" : "s");
         if (ign_dirs) { char fn[40]; mt_commas((long long)ign_files, fn, sizeof fn); sy_sbf(sb, "ignored: %d folder%s, %s%s files not in the index%s. To search inside one, set `path` to it.\n", ign_dirs, ign_dirs == 1 ? "" : "s", ign_uncounted ? "at least " : "", fn, ign_uncounted ? " (some not counted yet)" : ""); }
     }
