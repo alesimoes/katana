@@ -1241,8 +1241,8 @@ static int fd_coder_pre(FdIndex *X, const CoderHits *C, int qk, const char *q, c
         for (int i = 0; i < C->n && shown < 3; i++) {
             if (!C->r[i].literal || !fd_coder_ok(X, &C->r[i], pre)) continue;
             if (!shown) ct_sb_puts(sb, "Literal text found (checked in the files, not guessed):\n");
-            if (fd_line_of(X, C->r[i].path, needle, &ln, txt, sizeof txt)) snprintf(m, sizeof m, "  [exact] %s:%d: %s\n", C->r[i].path, ln, txt);
-            else snprintf(m, sizeof m, "  [exact] %s\n", C->r[i].path);
+            if (fd_line_of(X, C->r[i].path, needle, &ln, txt, sizeof txt)) snprintf(m, sizeof m, "  [confidence high] %s:%d: %s\n", C->r[i].path, ln, txt);
+            else snprintf(m, sizeof m, "  [confidence high] %s\n", C->r[i].path);
             ct_sb_puts(sb, m); shown++;
         }
         if (!shown) { snprintf(m, sizeof m, "NOT FOUND (literal): the quoted text does not occur in any of the indexed files%s%s.\n", *pre ? " under " : "", pre); ct_sb_puts(sb, m); }
@@ -1254,16 +1254,16 @@ static int fd_coder_pre(FdIndex *X, const CoderHits *C, int qk, const char *q, c
         if (!fd_coder_ok(X, &C->r[i], pre)) continue;
         const int has = fd_line_of(X, C->r[i].path, needle, &ln, txt, sizeof txt);
         if (!has && !C->r[i].anchor) continue;
-        if (!ex) ct_sb_puts(sb, "Exact match (checked in the files):\n");
-        if (has) snprintf(m, sizeof m, "  [exact] %s:%d: %s\n", C->r[i].path, ln, txt); else snprintf(m, sizeof m, "  [exact] %s (the file is named like this)\n", C->r[i].path);
+        if (!ex) ct_sb_puts(sb, "Found by name or text (checked in the files):\n");
+        if (has) snprintf(m, sizeof m, "  [confidence high] %s:%d: %s\n", C->r[i].path, ln, txt); else snprintf(m, sizeof m, "  [confidence high] %s (the file is named like this)\n", C->r[i].path);
         ct_sb_puts(sb, m); ex++;
     }
     shown = ex;
     if (!ex) {
         for (int i = 0; i < C->n && pr < 2; i++) {
             if (!fd_coder_ok(X, &C->r[i], pre)) continue;
-            if (!pr) { snprintf(m, sizeof m, "NOT FOUND: nothing is named \"%.80s\". Similar names or spellings (probable, not certain):\n", needle); ct_sb_puts(sb, m); }
-            fd_hit_line(sb, &C->r[i], "probable"); pr++;
+            if (!pr) { snprintf(m, sizeof m, "NOT FOUND: nothing is named \"%.80s\". Similar names or spellings (confidence low):\n", needle); ct_sb_puts(sb, m); }
+            fd_hit_line(sb, &C->r[i], "confidence low"); pr++;
         }
         shown = pr;
         if (!pr) { snprintf(m, sizeof m, "NOT FOUND: no file name or identifier like \"%.80s\" in the indexed files.\n", needle); ct_sb_puts(sb, m); }
@@ -1278,7 +1278,7 @@ static int fd_coder_post(const CoderHits *C, const char *pre, FdIndex *X, const 
         int dup = 0; for (int k = 0; k < nh; k++) if (!strcmp(X->f[hits[k].file].rel, C->r[i].path)) dup = 1;
         if (dup) continue;
         if (!shown) ct_sb_puts(sb, "Also from the text search (other channels):\n");
-        fd_hit_line(sb, &C->r[i], C->r[i].exact ? "exact" : "probable"); shown++;
+        fd_hit_line(sb, &C->r[i], C->r[i].exact ? "confidence high" : "confidence low"); shown++;
     }
     if (C->notfound[0]) { char m[300]; snprintf(m, sizeof m, "NOT FOUND in the index: %.200s\n", C->notfound); ct_sb_puts(sb, m); shown++; }
     return shown;

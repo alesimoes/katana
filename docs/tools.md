@@ -170,19 +170,20 @@ only for an exact pattern, `Glob` only for file names by pattern. `Find` looks a
 
 | Question | Channel | What is added to the usual answer |
 |---|---|---|
-| text in double quotes (3+ characters) | literal check by the coder engine, files are re-read | `Literal text found:` with `[exact] file:line: text`, or `NOT FOUND (literal): ...` |
-| one identifier or file name (has `_`, `.`, `/` or camelCase) | exact lookup by the coder engine | `Exact match (checked in the files):` with the first line that has the text, or the file named like that; with none, `NOT FOUND: nothing is named "x"` and up to 2 `[probable]` similar names or spellings |
+| text in double quotes (3+ characters) | literal check by the coder engine, files are re-read | `Literal text found:` with `[confidence high] file:line: text`, or `NOT FOUND (literal): ...` |
+| one identifier or file name (has `_`, `.`, `/` or camelCase) | exact lookup by the coder engine | `Found by name or text (checked in the files):` with the first line that has the text, or the file named like that; with none, `NOT FOUND: nothing is named "x"` and up to 2 `[probable]` similar names or spellings |
 | a description in words | the usual `Find` (BM25 + file graph); with `KATANA_CODER=full` the coder engine (exact, sub-word, BM25, trigram, literal and conceptual channels) is a second layer | with `full`: `Also from the text search:` up to 3 files the graph did not show (only `[exact]`, or `[probable]` with a concept+operation pair in the path) and `NOT FOUND in the index: ...` |
 
 The usual candidates (file:range, `defines:`, `calls:`, `also referenced in:`) always come out whole after the added
 lines; the coder lines are a few short lines, the file graph is never replaced. Coder results are kept only for files
-that the `Find` index lists too (the coder index does not read `.gitignore`). `[exact]` means the text was found in
-the file (or the file has that name); `[probable]` means a similar spelling or a weaker channel. When `Find` finds
+that the `Find` index lists too (the coder index does not read `.gitignore`). `[confidence high]` means the text was found in
+the file (or the file has that name); `[confidence low]` means a similar spelling or a weaker channel. There are no fixed grades: a lookup tries the exact
+name first, then derived matches, then probable ones, and each result carries its confidence level. When `Find` finds
 nothing, the message ends with a suggestion to try `recall(query)`.
 
-`KATANA_CODER`: `off` = `Find` exactly as before (no coder index is created); `exact` (default) = the coder engine
-only for a quoted text or an identifier/file name, without the conceptual channel; `full` = also for descriptions in
-words, with the conceptual channel (knowledge base). The default is not `full` because it was not measured.
+`KATANA_CODER`: `off` = `Find` exactly as before (no coder index is created); `names` (alias `exact`) = the coder engine
+only for a quoted text or an identifier/file name, without the conceptual channel; `full` (default) = also for descriptions in
+words, with the conceptual channel (knowledge base).
 
 The coder index lives in `<working folder>/.katana/coder/store` (ignored by git; `~/.katana/coder/...` when the folder
 is not writable), the same store as `katana coder index`. It is created by the first query that needs it and updated
