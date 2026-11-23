@@ -97,6 +97,7 @@
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
 #include "coder/types.c"             /* modulo de inteligencia de codigo (em cima do motor): tipos compartilhados */
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
+#include "coder/parse.c"              /* katana coder symbols: analisador estrutural exato por linguagem */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */
