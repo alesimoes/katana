@@ -7,7 +7,7 @@ Engine) should take, adapt or reject.
 
 Evidence labels used everywhere in this document:
 
-- **VERIFIED (V)**: I read it at the cited source in this session (URL in section 12, accessed 2026-11-23).
+- **VERIFIED (V)**: I read it at the cited source in this session (URL in section 19, accessed 2026-11-23).
   Where a figure appears, it is the figure the source states; I did not reproduce any experiment.
 - **REMEMBERED (R)**: from my own prior knowledge, not re-checked against a source. Treat as a lead, not a fact.
 
