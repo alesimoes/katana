@@ -1,6 +1,7 @@
 /* ---------- coder/symtool.c: o indice de simbolos como ferramenta do agente (Symbols) e como fonte do Find mode=refs ----------
- * Fica depois de symquery.c: reutiliza os `katana coder def|refs|callers|callees|uses|outline|at|deps|impact` (mesmo codigo, mesma
- * cascata e mesmo nivel de confianca), capturando o que eles imprimem, e o indice do coder da pasta (o mesmo que o Find atualiza).
+ * Fica depois de symquery.c e flow.c: chama as consultas estruturadas `sy_q_*` e `fl_q_*` (mesmo codigo, mesma cascata e mesmo nivel de confianca de
+ * `katana coder def|refs|callers|callees|uses|outline|at|deps|impact|flow`) e as renderiza em texto num buffer (sym_query_text): nao captura stdout nem
+ * stderr, entao pode rodar com a interface usando stdout como protocolo, e usa o indice do coder da pasta (o mesmo que o Find atualiza).
  * Chamado de src/tools/symbols.c (ferramenta) e de src/tools/find.c (mode=refs), que so declaram as duas funcoes abaixo. */
 #ifndef _WIN32
 /* atualiza (cria na primeira vez) o indice do coder da pasta, com busca e simbolos encadeados, como `katana coder index`, mas so quando
@@ -11,37 +12,54 @@ static int sym_ensure_index(const char *root, double *ms, int *created) {
     *created = ir.created; *ms = ir.ms;         /* ms = 0 quando a consulta seguiu sem varrer: o aviso "[symbol index ...]" so aparece quando houve trabalho */
     return rc;
 }
-/* roda uma consulta do coder capturando stdout e stderr (as consultas imprimem direto) */
-static int sym_capture(int (*fn)(int, char **), int argc, char **argv, char **out, char **err) {
-    fflush(stdout); fflush(stderr);
-    FILE *fo = tmpfile(), *fe = tmpfile(); *out = *err = NULL;
-    if (!fo || !fe) { if (fo) fclose(fo); if (fe) fclose(fe); return -1; }
-    const int so = dup(1), se = dup(2);
-    dup2(fileno(fo), 1); dup2(fileno(fe), 2);
-    const int rc = fn(argc, argv);
-    fflush(stdout); fflush(stderr);
-    dup2(so, 1); dup2(se, 2); close(so); close(se);
-    FILE *fs[2] = {fo, fe}; char **dst[2] = {out, err};
-    for (int i = 0; i < 2; i++) {
-        long n = ftell(fs[i]); if (n < 0) n = 0;
-        char *b = (char *)malloc((size_t)n + 1); rewind(fs[i]); size_t g = fread(b, 1, (size_t)n, fs[i]); b[g] = 0; *dst[i] = b; fclose(fs[i]);
+/* a consulta `action` do coder sobre `root`, pela API estruturada (sy_q_* / fl_q_*), renderizada em texto: sem capturar stdout nem stderr e sem estado global.
+   Devolve em *so o texto que `katana coder <action> ...` imprimiria, ou, se nao ha como consultar (visao nao abre, indice sem as secoes, uso errado), o texto de erro
+   (com a quebra de linha final) em *se e *so vazio. A visao vem do cache de indexctl.c e e fechada aqui; `limit` ja vem dentro dos limites; `depth` so vale em impact. */
+static void sym_query_text(const char *action, const char *target, const char *root, int limit, int depth, char **so, char **se) {
+    const int isflow = !strcmp(action, "flow");
+    char em[900]; SyView v; char err[300] = ""; SyItems items = {0}; CtSb sb = {0}; *so = *se = NULL;
+    if (sy_view_open(root, &v, err, sizeof err) != 0) { snprintf(em, sizeof em, "%s: %s\n", action, err); goto fail; }
+    if (isflow && !v.anykeys) { snprintf(em, sizeof em, "flow: the index has no text-key sections (it was built before they existed); delete %s and run `katana coder index` again\n", v.dir); sy_view_close(&v); goto fail; }
+    if (!isflow && !v.any) { snprintf(em, sizeof em, "%s: the index has no symbol sections (built before they existed); delete %s and run `katana coder index` again\n", action, v.dir); sy_view_close(&v); goto fail; }
+    if (isflow) {
+        FlQ q;
+        if (!strcmp(target, "--links")) fl_q_links(&v, limit, &items, &q); else fl_q_arg(&v, target, limit, &items, &q);
+        q.brief = 1; fl_render_text(&sb, &q, &items);
+    } else {
+        SyQ q;
+        if (!strcmp(action, "def")) sy_q_def(&v, target, limit, 1, &items, &q);
+        else if (!strcmp(action, "refs")) sy_q_refs(&v, target, ~0u, limit, &items, &q);
+        else if (!strcmp(action, "callers")) sy_q_callers(&v, target, limit, &items, &q);
+        else if (!strcmp(action, "uses")) sy_q_uses(&v, target, limit, &items, &q);
+        else if (!strcmp(action, "callees")) sy_q_callees(&v, target, limit, &items, &q);
+        else if (!strcmp(action, "outline")) sy_q_outline(&v, target, limit, &items, &q);
+        else if (!strcmp(action, "deps")) sy_q_deps(&v, target, limit, &items, &q);
+        else if (!strcmp(action, "impact")) sy_q_impact(&v, target, depth, limit, limit, &items, &q);
+        else {                                               /* at */
+            char spec[4400]; int line;
+            if (!sy_split_at(target, spec, sizeof spec, &line)) { snprintf(em, sizeof em, "uso: katana coder at <arquivo>:<linha> [pasta]\n"); sy_view_close(&v); goto fail; }
+            sy_q_at(&v, spec, line, &items, &q); q.arg = target;
+        }
+        sy_render_text(&sb, &q, &items);
     }
-    return rc;
+    sy_items_free(&items); sy_view_close(&v);
+    *so = sb.p ? sb.p : strdup(""); *se = strdup(""); return;
+fail:
+    *so = strdup(""); *se = strdup(em);
 }
-/* action -> funcao e limite padrao. Devolve 0 se a acao nao existe */
-static int sym_action(const char *a, int (**fn)(int, char **), int *deflim) {
-    static const struct { const char *n; int (*f)(int, char **); int lim; } T[] = {
-        {"def", coder_def_main, 8}, {"refs", coder_refs_main, 15}, {"callers", coder_callers_main, 15}, {"callees", coder_callees_main, 15},
-        {"uses", coder_uses_main, 15}, {"outline", coder_outline_main, 100}, {"at", coder_at_main, 8}, {"deps", coder_deps_main, 30}, {"impact", coder_impact_main, 25}};
-    for (size_t i = 0; i < sizeof T / sizeof T[0]; i++) if (!strcmp(T[i].n, a)) { *fn = T[i].f; *deflim = T[i].lim; return 1; }
+/* action -> limite padrao. Devolve 0 se a acao nao existe */
+static int sym_action(const char *a, int *deflim) {
+    static const struct { const char *n; int lim; } T[] = {
+        {"def", 8}, {"refs", 15}, {"callers", 15}, {"callees", 15}, {"uses", 15}, {"outline", 100}, {"at", 8}, {"deps", 30}, {"impact", 25}};
+    for (size_t i = 0; i < sizeof T / sizeof T[0]; i++) if (!strcmp(T[i].n, a)) { *deflim = T[i].lim; return 1; }
     return 0;
 }
 /* Symbols: devolve 0 e o texto em out, ou -1 com a mensagem de erro em out. */
 static int sym_tool_run(const char *action, const char *name, const char *file, long long line, long long limit, long long depth, const char *root, char *out, size_t cap) {
-    int (*fn)(int, char **) = NULL; int lim = 0;
+    int lim = 0;
     const int isflow = action && !strcmp(action, "flow");
-    if (isflow) { fn = coder_flow_main; lim = 5; }
-    else if (!action || !sym_action(action, &fn, &lim)) { snprintf(out, cap, "error: unknown action \"%s\". Use def, refs, callers, callees, uses, outline, at, deps, impact or flow.", action ? action : ""); return -1; }
+    if (isflow) lim = 5;
+    else if (!action || !sym_action(action, &lim)) { snprintf(out, cap, "error: unknown action \"%s\". Use def, refs, callers, callees, uses, outline, at, deps, impact or flow.", action ? action : ""); return -1; }
     const int isfile = !strcmp(action, "outline") || !strcmp(action, "deps") || !strcmp(action, "at");
     char target[4400];
     const char *t = isflow ? (name && *name ? name : (file && *file ? file : NULL)) : isfile ? (file && *file ? file : name) : (name && *name ? name : NULL);
@@ -58,16 +76,8 @@ static int sym_tool_run(const char *action, const char *name, const char *file, 
     if (limit > 100) limit = 100;
     double ms = 0; int created = 0;
     if (sym_ensure_index(root, &ms, &created) != 0) { snprintf(out, cap, "error: cannot create or read the symbol index of %s (is the folder writable?)", root); return -1; }
-    char lb[16], db[16], nb[16]; snprintf(lb, sizeof lb, "%lld", limit);
-    char *av[16]; int ac = 0; if (isflow && !strcmp(target, "--links")) { av[ac++] = (char *)"--links"; } else av[ac++] = target; av[ac++] = (char *)root; av[ac++] = (char *)"--limit"; av[ac++] = lb;
-    if (!strcmp(action, "def")) { av[ac++] = (char *)"--lines"; av[ac++] = (char *)"1"; }
-    if (isflow) av[ac++] = (char *)"--brief";
-    if (!strcmp(action, "impact")) {
-        if (depth > 0) { snprintf(db, sizeof db, "%lld", depth > 6 ? 6 : depth); av[ac++] = (char *)"--depth"; av[ac++] = db; }
-        snprintf(nb, sizeof nb, "%lld", limit); av[ac++] = (char *)"--nodes"; av[ac++] = nb;
-    }
-    char *so, *se; const int rc = sym_capture(fn, ac, av, &so, &se);
-    size_t o = 0; out[0] = 0; (void)rc;
+    char *so, *se; sym_query_text(action, target, root, (int)limit, depth > 0 ? (int)(depth > 6 ? 6 : depth) : 0, &so, &se);
+    size_t o = 0; out[0] = 0;
     if (created || ms > 700) o += (size_t)snprintf(out + o, cap - o, "[symbol index %s in %.1f s]\n", created ? "created" : "updated", ms / 1000);
     if (!*so && *se) snprintf(out + o, cap - o, "error: %s", se);
     else {

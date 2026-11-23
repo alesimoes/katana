@@ -1005,6 +1005,40 @@ Existing tools that improve without changing their contract:
 - Neighbour note: neighbours chosen by call and import relations of the symbols actually read (the `Read` range),
   not by file-level weights.
 
+### 4.1 The structured API of the queries (UIOE phase U2)
+
+The structural queries used to print to stdout (`coder_*_main`), and the `Symbols` tool read them back by redirecting file
+descriptors 1 and 2, which is process-wide. They are now functions that return their results; printing is a separate step.
+
+| Layer | Where | What it does |
+|---|---|---|
+| Query | `sy_q_def`, `sy_q_refs` (and `sy_q_callers`, `sy_q_uses`), `sy_q_callees`, `sy_q_outline`, `sy_q_at`, `sy_q_deps`, `sy_q_impact` in `src/coder/symquery.c`; `fl_q_key`, `fl_q_file`, `fl_q_links`, `fl_q_arg` in `src/coder/flow.c` | takes an open `SyView`, fills a `SyItems` array and a descriptor (`SyQ` or `FlQ`), returns the total number of results (it may exceed the items kept by `limit`). Never writes to stdout or stderr and uses no global state |
+| Renderer | `sy_render_text`, `sy_render_json`, `fl_render_text`, `fl_render_json` | write the text of `katana coder <query>` (byte for byte) or its `--json` into a `CtSb` buffer; they need only the descriptor and the items, not the view |
+| Wrapper | `coder_*_main`, `coder_flow_main` | argument parsing, `sy_start`/`fl_start` (open the view), one query, one renderer, print the buffer to stdout |
+| Tool | `sym_query_text` and `sym_tool_run` in `src/coder/symtool.c` | the same query and the text renderer into a buffer; no `dup2`, so the interface that uses stdout as a protocol is untouched |
+
+What a caller gets:
+
+- **Items** (`SyItem`): `path`, `line0`..`line1`, `col`, `kind`, `name`, `encl` (the enclosing symbol or the target of a call), `sig`, `vis`, `snip` (the
+  re-read line or lines), `conf` 0 to 100 (`sy_level(conf)` gives high/medium/low), `how` (why this confidence), `ver` (the line was re-read from the file and
+  matched: 1, or -1), `depth` (outline and impact nesting). Items of a text-key link also carry the other side: `peer_path`, `peer_line`, `peer_where`
+  (`path`/`line0` are the producer side, `peer_*` the consumer side; with `flow <file>` the best peer in another file).
+- **Descriptor** (`SyQ`, `FlQ`): `total`; the cascade as `step` (0 not needed, 1 exact, 2 derived, 3 probable), `resolved`, `cascade` and the whole chain
+  `cand[0..ncand)` (name, step, reason); `external` (called names without definition in the indexed set, imports without a file); `hint` (the "Next:" line);
+  and what a NOT FOUND needs: `notfound` (what was not found), `limits` (the limit of the indexed set: how many files, how many have symbols, what is not
+  analysed, what is never seen) and the counts `nlive`, `nwith` (`nkeys` for flow). The caller may replace `arg` (the text the output repeats) and, for flow,
+  set `brief = 1` after the query to shorten the explanations, as `Symbols` does.
+- **The view**: `SyView` comes from the view cache of `src/coder/indexctl.c` (`sy_view_open` takes it from the cache and `sy_view_close` returns it; the
+  cache is not duplicated). A caller opens it once, runs any number of queries on it, and closes it. State derived from a view (the module map that `deps`
+  builds on first use) belongs to the view and is freed with it; the former global is gone. The per-file text buffer is also per view, so two views never
+  share anything but the immutable index.
+- **Calling pattern**: `SyView v; sy_view_open(root, &v, err, sizeof err); SyItems it = {0}; SyQ q; sy_q_callers(&v, "name", 15, &it, &q);` then read
+  `q.total` and `it.v[0..it.n)`, or `CtSb sb = {0}; sy_render_text(&sb, &q, &it);`; free with `sy_items_free(&it)` and `sy_view_close(&v)`.
+
+One intended difference from before: with `Symbols`, a `name` that begins with `--` used to be read by the argument parser as an option; it is now taken
+literally. Everything else printed by `katana coder def|refs|callers|callees|uses|outline|at|deps|impact|flow` (text and `--json`) and by `Symbols` is unchanged;
+`Find` (`mode=refs`, the `called by / calls / links` note) uses the view and the helpers of `symtool.c` as before.
+
 ## 5. Question interpreter
 
 ### 5.1 The structured request
