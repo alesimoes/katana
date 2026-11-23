@@ -908,15 +908,15 @@ static int agent(Model *m, int max_tokens, float temp) {
                    round < lim - 2, o pedido vai para a rodada de encerrar (round = lim - 2; a nota KN_ROUNDS vai neste resultado) e o modelo so
                    pode responder. rr_covered inclui WebSearch e WebFetch, entao a mesma busca repetida cai no corte na 4a chamada. A sessao de
                    22/11 que repetiu a busca 12 vezes rodou num binario sem este corte (ele entrou em 23/11 07:55, commit 9eb554a), o que explica
-                   por que a nota de rodadas nunca apareceu; nao foi reproduzido com modelo. Ponto cego que sobra: com round >= lim - 2 nada e forcado. */
-                if (rp_refuse) { if (++rp_refused >= 2 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
-                else if (rr_hit) { if (++rp_stuck >= 3 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* o modelo ignora a nota de repeticao: encerra e relata */
+                   por que a nota de rodadas nunca apareceu; nao foi reproduzido com modelo. Com round >= lim - 2 o corte so marca rl_forced (a nota de rodadas ja vai; fecha a prorrogacao do bloco). */
+                if (rp_refuse) { if (++rp_refused >= 2) { if (round < lim - 2) round = lim - 2; rl_forced = 1; } }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
+                else if (rr_hit) { if (++rp_stuck >= 3) { if (round < lim - 2) round = lim - 2; rl_forced = 1; } }     /* o modelo ignora a nota de repeticao: encerra e relata */
                 else if (!trunc) {
                     const int failed = rp_failed(result);
                     const uint64_t rs = rp_hash(result, strlen(result), 1469598103934665603ULL);
                     int same = 0;
                     for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_res[i] == rs) same++;
-                    if (same >= 1) { if (++rp_stuck >= 3 && round < lim - 2) { round = lim - 2; rl_forced = 1; } } else rp_stuck = 0;
+                    if (same >= 1) { if (++rp_stuck >= 3) { if (round < lim - 2) round = lim - 2; rl_forced = 1; } } else rp_stuck = 0;
                     rr_after(name, csig, failed);
                     if (rp_n < 128) { rp_sig[rp_n] = csig; rp_res[rp_n] = rs; rp_err[rp_n] = (char)failed; rp_n++; }
                     rp_fail = failed ? rp_fail + 1 : 0;
@@ -939,6 +939,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                         rp_fail = 0;
                     }
                 }
+                if (g_rd_toomany && !strcmp(name, "Read") && !trunc) { g_rd_toomany = 0; if (round < lim - 2) round = lim - 2; rl_forced = 1; }      /* muitas fatias do mesmo arquivo: encerra e relata */
                 if (!trunc && !rp_refuse && !rr_hit && !rp_failed(result)) fg_neighbor_note(name, ap, end, result, sizeof result);      /* vizinhos ainda nao lidos (grafo do Find) */
                 if (!trunc && !rp_refuse) loop_plan_note(result, sizeof result, name, pl_calls, pl_old);     /* planejar antes de executar, e seguir o plano em ordem */
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
