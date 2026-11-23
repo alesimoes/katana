@@ -98,6 +98,7 @@
 #include "agent/brief.c"               /* formato brief do KATANA.md: lint, never/ask impostos, nota de fim de pedido */
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
 #include "coder/store.c"             /* armazenamento generico: segmentos imutaveis, manifesto, escritor unico (sem tipos de codigo) */
+#include "coder/ignore.c"           /* coder: o que o indice deixa de fora e por que (lista interna unica, segredos, overrides) */
 #include "coder/storedocs.c"         /* catalogo generico de documentos, atualizacao incremental, index/status/verify/compact */
 #include "coder/watch.c"             /* coder: vigia de arquivos da sessao (STUB, fase 4) */
 #include "coder/fresh.c"             /* coder: confere arquivo citado contra o catalogo (STUB, fase 4) */

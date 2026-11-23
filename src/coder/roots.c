@@ -80,6 +80,25 @@ static void rt_register(const char *root) {
     if (rename(t, f) != 0) unlink(t);
 }
 static void rt_unregister(const char *root) { char f[1000]; rt_reg_file(root, f, sizeof f); unlink(f); }
+/* uso: a data de modificacao do registro e o "ultimo uso" que o gc le; renovada no maximo uma vez por hora (um stat por consulta) */
+static int rt_reg_hit(const char *f) {
+    struct stat st; if (stat(f, &st) != 0) return 0;
+    if (time(NULL) - st.st_mtime > 3600) utimes(f, NULL);
+    return 1;
+}
+/* raizes com init tambem tem registro (fase 8, `katana coder list`): ~/.katana/coder/inits/<chave>.root; o marcador continua sendo a autoridade.
+ * Fica fora de roots/ para nao ser tomado por raiz da home na absorcao */
+static void rt_inits_dir(char *out, size_t cap) { char h[800]; rt_home(h, sizeof h); snprintf(out, cap, "%s/.katana/coder/inits", h); }
+static void rt_init_file(const char *root, char *out, size_t cap) { char d[900], k[40]; rt_inits_dir(d, sizeof d); rt_key(root, k, sizeof k); snprintf(out, cap, "%s/%s.root", d, k); }
+static void rt_note_init(const char *root, int mk) {
+    char f[1000]; rt_init_file(root, f, sizeof f);
+    if (rt_reg_hit(f) || !mk) return;
+    char d[900], t[1100]; rt_inits_dir(d, sizeof d); st_mkdirs(d);
+    snprintf(t, sizeof t, "%s.%ld.tmp", f, (long)getpid());
+    FILE *o = fopen(t, "w"); if (!o) return;
+    fprintf(o, "%s\nkind init\ncreated %lld\n", root, (long long)time(NULL)); fclose(o); chmod(t, 0600);
+    if (rename(t, f) != 0) unlink(t);
+}
 
 /* sobe de `path` ate achar o marcador; devolve 1 e a raiz com init (ancestral mais proximo, o proprio caminho incluido) */
 static int index_marker_root(const char *path, char *root, size_t cap) {
@@ -98,7 +117,7 @@ static void index_resolve(const char *path, int mk, IndexLoc *L) {
     for (;;) {
         if (rt_has_marker(cur)) {
             snprintf(L->root, sizeof L->root, "%s", cur); L->init = 1; L->kind = !strcmp(cur, rp) ? IL_LOCAL : IL_ANCESTOR;
-            snprintf(L->store, sizeof L->store, "%s/.katana/coder/store", strcmp(cur, "/") ? cur : ""); break;
+            snprintf(L->store, sizeof L->store, "%s/.katana/coder/store", strcmp(cur, "/") ? cur : ""); rt_note_init(cur, mk); break;
         }
         if (rt_is_worktree(cur)) { snprintf(bnd, sizeof bnd, "%s", cur); break; }
         if (!rt_parent(cur)) break;
@@ -107,7 +126,7 @@ static void index_resolve(const char *path, int mk, IndexLoc *L) {
         char a[4200]; snprintf(a, sizeof a, "%s", rp); L->kind = IL_HOME;
         for (;;) {                                           /* a raiz registrada mais alta dentro do limite absorve */
             char f[1000]; rt_reg_file(a, f, sizeof f);
-            if (rt_exists(f)) { snprintf(L->root, sizeof L->root, "%s", a); L->registered = 1; }
+            if (rt_reg_hit(f)) { snprintf(L->root, sizeof L->root, "%s", a); L->registered = 1; }
             if (!strcmp(a, bnd) || !rt_parent(a)) break;
         }
         if (!L->root[0]) snprintf(L->root, sizeof L->root, "%s", rp);
@@ -144,7 +163,7 @@ static int index_init_root(const char *dir, int *info, char *err, size_t ecap) {
     { time_t t = time(NULL); char ts[40]; strftime(ts, sizeof ts, "%Y-%m-%d", localtime(&t)); fprintf(f, "katana root 1\n%s\n", ts); }
     fclose(f); chmod(mk, 0600);
     snprintf(gi, sizeof gi, "%s/.gitignore", cd);
-    if (!rt_exists(gi)) { FILE *g = fopen(gi, "w"); if (g) { fputs("ROOT\n", g); fclose(g); chmod(gi, 0600); } }
+    if (!rt_exists(gi)) { FILE *g = fopen(gi, "w"); if (g) { fputs("ROOT\noverrides\nignored\nscrub.stamp\n", g); fclose(g); chmod(gi, 0600); } }
     char hs[4500], ls[4500]; rt_home_store(dir, hs, sizeof hs); snprintf(ls, sizeof ls, "%s/store", cd);
     if (rt_isdir(hs)) {
         if (!rt_exists(ls) && rename(hs, ls) == 0) { if (info) *info |= 2; }
@@ -153,12 +172,14 @@ static int index_init_root(const char *dir, int *info, char *err, size_t ecap) {
     }
     rt_unregister(dir);
     index_retire_below(dir);
+    rt_note_init(dir, 1);
     return 0;
 }
 /* katana init --remove: tira o marcador e o store local; a pasta volta a seguir as regras sem init */
 static int index_remove_root(const char *dir) {
     char mk[4500], st[4500]; rt_marker_path(dir, mk, sizeof mk); snprintf(st, sizeof st, "%s/.katana/coder/store", dir);
     const int had = rt_exists(mk); unlink(mk); rt_rmtree(st);
+    { char f[1000]; rt_init_file(dir, f, sizeof f); unlink(f); }
     char gi[4500]; snprintf(gi, sizeof gi, "%s/.katana/coder/.gitignore", dir); unlink(gi);
     char cd[4500]; snprintf(cd, sizeof cd, "%s/.katana/coder", dir); rmdir(cd); snprintf(cd, sizeof cd, "%s/.katana", dir); rmdir(cd);
     return had;
