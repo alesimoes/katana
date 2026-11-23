@@ -153,7 +153,7 @@ static int ct_loadkb(const char *path) {
 static int coder_abbr_load(const char *path) { if (!g_ct_inited) return -1; return ct_loadkb(path); }
 static void ct_init(void) {
     if (__atomic_load_n(&g_ct_inited, __ATOMIC_ACQUIRE) == 2) return;
-    { int zero = 0; if (!__atomic_compare_exchange_n(&g_ct_inited, &zero, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { while (__atomic_load_n(&g_ct_inited, __ATOMIC_ACQUIRE) != 2) usleep(100); return; } }
+    { int zero = 0; if (!__atomic_compare_exchange_n(&g_ct_inited, &zero, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { while (__atomic_load_n(&g_ct_inited, __ATOMIC_ACQUIRE) != 2) { } return; } }
     ctm_init(&g_ct_words, 2048); ctm_init(&g_ct_pv, 1024); ctm_init(&g_ct_enk, 512); ctm_init(&g_ct_ptk, 512);
     ctm_init(&g_ct_enirr, 512); ctm_init(&g_ct_ptirr, 256); ctm_init(&g_ct_abbr, 4096);
     ctm_words(&g_ct_words, g_ct_pt_stop, CW_PTSTOP); ctm_words(&g_ct_words, g_ct_en_stop, CW_ENSTOP);
