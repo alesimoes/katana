@@ -185,7 +185,7 @@ static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
     char found[4][1100]; int nf = 0, mj = k, dirhint = 0, hj = 0; const double tstart = now_sec();
     int order[66], no = 0;                            /* pastas primeiro (da direita para a esquerda), o arquivo por ultimo */
     for (int j = n - 2; j >= k; j--) order[no++] = j;
-    if (k == n - 1) order[no++] = n - 1;              /* so o ultimo pedaco falta (um nome de pasta ou arquivo citado): procura esse nome */
+    order[no++] = n - 1;                              /* por ultimo o proprio ultimo pedaco (um nome de pasta citado); so aceita pastas */
     for (int oi = 0; oi < no && nf == 0; oi++) {
         const int j = order[oi];
         const char *nd = comp[j];
