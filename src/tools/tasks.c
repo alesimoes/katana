@@ -1,8 +1,8 @@
 /* ---------- TodoWrite (TaskCreate/Update/List/Get foram removidas, ver docs/tools-review.md) ----------
  * Uma lista so, por baixo: a de agent/todo.c (g_todo, linhas "[ ] texto" e "[x] texto"), que o desktop desenha como
  * cartao pelo marcador de todo_ui(). Aqui a lista tem mais detalhe (id, estado de tres valores, descricao, forma
- * "em andamento") e a cada mudanca o texto de g_todo e refeito e todo_ui() emitido. Se o `todo` antigo (ou uma conversa
- * nova) mexer em g_todo, a diferenca e percebida e a lista estruturada e refeita a partir dele. */
+ * "em andamento") e a cada mudanca o texto de g_todo e refeito e todo_ui() emitido. Se algo de fora (uma conversa
+ * nova, a interface) mexer em g_todo, a diferenca e percebida e a lista estruturada e refeita a partir dele. */
 #define CT_TASK_MAX 64
 typedef struct { int id; int st; char subject[300]; char desc[1000]; char active[300]; int rec; } CtTask;     /* st: 0 pendente, 1 andando, 2 feita; rec: so anotada (TaskCreate), ninguem comecou */
 static CtTask g_ct_tasks[CT_TASK_MAX];

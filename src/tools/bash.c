@@ -347,7 +347,6 @@ static const char CT_TASKSTOP_PROPS[] = "\"task_id\": {\"type\": \"string\", \"d
 static const char CT_TASKSTOP_REQ[] = "\"task_id\"";
 static void ct_taskstop(const char *js, const char *end, char *out, size_t cap) {
     char *id = ct_str(js, end, "task_id");
-    if (!id) id = ct_str(js, end, "shell_id");               /* nome antigo do argumento */
     const char *d = id; while (d && *d && !isdigit((unsigned char)*d)) d++;
     const int n = d && *d ? atoi(d) : 0;
     free(id);

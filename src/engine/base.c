@@ -7,7 +7,7 @@
  *          arquivo mapeado em memoria, sem conversao), tokenizador BPE lido do GGUF.
  *
  * Uso:
- *   katana models [pasta]         lista os GGUF numa tabela (alias antigo: modelos; padrao: models/, ou modelos/) (data, tamanho, algoritmo, como roda)
+ *   katana models [pasta]         lista os GGUF numa tabela (padrao: models/) (data, tamanho, algoritmo, como roda)
   katana info <modelo.gguf>
  *   katana selftest <modelo.gguf>                                    confere a matematica quantizada
  *   katana bench <modelo.gguf> [tokens_prompt] [tokens_geracao]      mede a velocidade (ja aquecido)

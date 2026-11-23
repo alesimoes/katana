@@ -140,7 +140,7 @@ static void agent_home(char *out, size_t cap) {
 
 /* registro de acoes: ~/.katana/agente.log (KATANA_LOG muda o caminho); uma linha: data, ferramenta, argumentos, resultado.
  * Argumentos ate 2000 e resultado ate 1000 caracteres; o que passa disso e cortado e termina em "...[+N]" (N = o que faltou).
- * Os leitores antigos (katana agentlog, learn, export, dashboard, desktop) continuam lendo o mesmo formato de linha.
+ * Os leitores (katana agentlog, learn, export, dashboard, desktop) leem esse formato de linha.
  * Segunda saida opcional (KATANA_LOG_JSON=1): ~/.katana/agente.jsonl (ao lado do KATANA_LOG, se este existir), uma linha JSON por
  * chamada, com os argumentos e o resultado ate 16 KB, duracao, codigo de saida/erro e o pedido/sessao; modo 0600; passa para
  * agente.jsonl.1 ao chegar a 64 MB. */

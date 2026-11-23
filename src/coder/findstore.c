@@ -444,7 +444,7 @@ static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32
         if (defc[g] < 4) defc[g]++;
     }
     /* uso por texto (nivel N1, o lexico): o nome definido aparece no texto de outro arquivo (comentario, texto entre aspas, propriedade, tudo o que a analise de
-       referencias nao ve e o grafo antigo via por ler o arquivo inteiro). Entram como usos a mais; a uniao (arquivo, nome) refaz as listas ids/fo */
+       referencias nao ve). Entram como usos a mais; a uniao (arquivo, nome) refaz as listas ids/fo */
     long nlex = 0;
     {
         CsView cv; char e3[300] = "";
@@ -639,7 +639,7 @@ static int fs_graph_derive(const char *root, uint64_t sig, StoreBuf *out, uint32
             free(ln); pclose(gp);
         }
     }
-    /* junta arestas iguais; normaliza por linha (como o grafo antigo) */
+    /* junta arestas iguais; normaliza por linha */
     qsort(E.v, E.n, sizeof(FgE), fg_cmp_e);
     size_t nm = 0;
     for (size_t k = 0; k < E.n; k++) {

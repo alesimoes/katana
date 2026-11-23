@@ -79,10 +79,9 @@ static void console_init(void) {
     launch_console_init();
 }
 
-/* nomes dos comandos em ingles; os nomes antigos em portugues continuam aceitos como apelidos (reescreve a linha no lugar) */
+/* sinonimos dos comandos (/quit = /exit, /clear = /new); reescreve a linha no lugar */
 static void cmd_norm(char *line, size_t cap) {
-    static const char *const M[][2] = { {"novo", "new"}, {"sistema", "system"}, {"salvar", "save"}, {"ajuda", "help"}, {"sair", "exit"},
-        {"quit", "exit"}, {"clear", "new"}, {"compactar", "compact"}, {"sessao", "session"}, {"retomar", "resume"}, {"professor", "teacher"} };
+    static const char *const M[][2] = { {"quit", "exit"}, {"clear", "new"} };
     if (line[0] != '/') return;
     const size_t w = strcspn(line + 1, " \t");
     for (size_t i = 0; i < sizeof M / sizeof M[0]; i++) {

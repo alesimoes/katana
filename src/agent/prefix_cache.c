@@ -96,7 +96,7 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
 
 /* onde fica o prefixo: na raiz com init que contem a pasta em que o katana roda (<raiz>/.katana/cache, com um .gitignore que ignora tudo), ou em
    ~/.katana/cache quando nao ha init (pasta sem init nunca ganha .katana), a pasta e a home ou nao aceita escrita. Leitura: a pasta do projeto primeiro, depois a home (os
-   prefixos antigos continuam valendo). KATANA_CACHE_DIR manda em tudo. */
+   prefixos gravados na home continuam valendo). KATANA_CACHE_DIR manda em tudo. */
 static int pfx_path(char *out, size_t cap, uint64_t key, int mk) {
     char home[700], hd1[800], hd2[900], d1[1500], d2[1600], cw[1100], fn[64];
     snprintf(fn, sizeof fn, "pfx-%016llx.kv", (unsigned long long)key);

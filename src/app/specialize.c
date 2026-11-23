@@ -363,7 +363,7 @@ static int sp_newest(const char *root, const char *kind, const char *file, const
 }
 
 /* ---------- esperar a maquina ficar livre (--wait-idle) ----------
- * Como o script antigo decidia: com um `katana agent` rodando, a maquina esta ocupada se uma chamada ao professor esta em
+ * Como a espera decide: com um `katana agent` rodando, a maquina esta ocupada se uma chamada ao professor esta em
  * andamento ou se a sessao mais nova do agente foi gravada ha menos de 10 minutos; precisa estar livre em 3 consultas
  * seguidas (de 30 s). Sem nenhum agente rodando, segue na hora. Passou do limite: desiste sem treinar (codigo 2).
  * KATANA_IDLE_SECS e KATANA_IDLE_POLL (segundos) mudam os 600 s e os 30 s, para teste. */

@@ -6,7 +6,7 @@
  *   - o mapa e agregado POR CONSULTA, numa passada sobre os documentos vigentes da visao (a visao ja e guardada por geracao em indexctl.c); nao ha um
  *     segundo cache. O ponto de chamada statemap_get (fim de cs_view_open_raw) continua existindo e nao faz nada.
  *   - so as pastas ate `maxdepth` abaixo da base entram na tabela (a consulta pede ate 4 niveis); a base (profundidade 0) sempre entra.
- *   - o nivel de um arquivo vem dos bits 8..11 de StoreDoc.flags (0 = completo/legado, 1 = N0, 2 = N1, 4 = N2+N3); arquivo binario, grande, segredo ou
+ *   - o nivel de um arquivo vem dos bits 8..11 de StoreDoc.flags (0 = completo, 1 = N0, 2 = N1, 4 = N2+N3); arquivo binario, grande, segredo ou
  *     gerado nao tem nivel a esperar (conta em `skipped`).
  *   - STS_DIRS tem o formato de crawl.c (largura 72); a leitura abaixo repete o layout porque crawl.c vem depois deste arquivo na unidade de compilacao. */
 #ifndef _WIN32

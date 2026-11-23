@@ -1196,7 +1196,7 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
             fd_put_line(sb, s, ll, 110); ct_sb_puts(sb, "\n");
         }
         if (budget >= 200 && X->f[fi].kind != FK_MD && X->f[fi].kind != FK_OTHER) {
-            char note[1800]; note[0] = 0;       /* com o indice do coder: quem chama, o que chama e as ligacoes por chave (no lugar do `calls:` de nomes); sem indice, o formato antigo */
+            char note[1800]; note[0] = 0;       /* com o indice do coder: quem chama, o que chama e as ligacoes por chave (no lugar do `calls:` de nomes); sem a nota, o `calls:` de nomes */
             if (!(rank <= 3 && budget >= 300 && sym_find_note(X->root, X->f[fi].rel, a, b, top, note, sizeof note) && note[0])) fd_calls(X, fi, a, b, &t, best, want, sb);
             else ct_sb_puts(sb, note);
         }

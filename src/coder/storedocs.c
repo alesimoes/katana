@@ -14,7 +14,7 @@
 #define SDF_SKIP_UNREADABLE 4u
 #define SDF_SKIP_SECRET 32u     /* arquivo de segredo (coder/ignore.c): catalogado so pelo nome, conteudo nunca lido */
 #define SDF_GENERATED 16u       /* gerado/minificado: so caminho e nome entram na busca, sem simbolos (coder/crawl.c, KATANA_INDEX_GENERATED=1) */
-/* bits 8..11 de flags = nivel de informacao que o rastreador (crawl.c) ja deu ao documento: 0 = completo (caminho sincrono e indices antigos: busca e simbolos
+/* bits 8..11 de flags = nivel de informacao que o rastreador (crawl.c) ja deu ao documento: 0 = completo (caminho sincrono: busca e simbolos
  * de uma vez), 1 = N0 (so catalogo: nome, tamanho, data), 2 = N1 (texto), 4 = N2 e N3 (simbolos, referencias e chaves, saem da mesma analise) */
 #define SDF_LVMASK 0xF00u
 #define SDF_SKIPMASK (SDF_SKIP_BINARY | SDF_SKIP_BIG | SDF_SKIP_UNREADABLE | SDF_SKIP_SECRET)

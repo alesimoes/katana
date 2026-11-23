@@ -4,7 +4,7 @@
  * ambiente da tarefa) e solution/solve.sh opcional. As tarefas sao material de teste na linguagem que quiserem; o
  * juiz e este arquivo, em C: copia repo/ para uma pasta temporaria nova, roda o preparo, inicia o agente (este mesmo
  * binario) como processo filho com o pedido, mata o grupo de processos no fim do prazo, roda os testes escondidos
- * e grava uma linha JSON por execucao (os mesmos campos do antigo run.py, mais as medidas lidas do registro do
+ * e grava uma linha JSON por execucao (os campos do run.py de comparacao, mais as medidas lidas do registro do
  * proprio agente: chamadas, falhas, recusadas, repetidas, rodadas, ultimo turno em texto, tokens lidos e escritos).
  *
  *   katana codebench run --model M.gguf --out r.jsonl [--tasks 'a,b-*'] [--repeat N] [--timeout S] [--label L]

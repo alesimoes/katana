@@ -499,7 +499,7 @@ static int cg_fmt_of(const Config *c) {
     if (c->chat_fmt == 0) return CGF_JSON;
     return CGF_OFF;
 }
-/* inicio de uma geracao do agente; 1 se o formato e restringido aqui (o caminho antigo de forward.c fica de fora) */
+/* inicio de uma geracao do agente; 1 se o formato e restringido aqui (senao a geracao segue livre em forward.c) */
 static int cg_turn_begin(const Config *c, const Tokenizer *tk, int V) {
     g_cg.on = 0;
     if (!g_agent_sys) return g_cg.ready = 0;

@@ -6,7 +6,7 @@ typedef enum { CL_UNKNOWN, CL_C, CL_CPP, CL_JS, CL_TS, CL_PY, CL_KT, CL_JAVA, CL
                CL_CS, CL_SWIFT, CL_PHP, CL_RB, CL_LUA, CL_DART, CL_SCALA, CL_SQL, CL_JSON, CL_YAML, CL_TOML, CL_DOCKER, CL_MAKE, CL_CMAKE, CL_HTML, CL_CSS,
                CL_CLJ, CL_LISP, CL_EX, CL_ERL, CL_HS, CL_ML, CL_R, CL_JL, CL_PERL, CL_GROOVY, CL_OBJC, CL_ZIG, CL_NIM, CL_VLANG, CL_FORTRAN, CL_COBOL, CL_ASM,
                CL_PROTO, CL_GQL, CL_TF, CL_VUE, CL_TEX, CL_DOC, CL_XML, CL_PROPS, CL_N } CoderLang;
-/* tipos de simbolo: os novos entram sempre antes de CK_N, para os valores antigos nao mudarem */
+/* tipos de simbolo: os novos entram sempre antes de CK_N */
 typedef enum { CK_FILE, CK_FUNC, CK_METHOD, CK_CLASS, CK_STRUCT, CK_ENUM, CK_IFACE, CK_VAR, CK_CONST, CK_MACRO, CK_TYPEDEF, CK_NAMESPACE, CK_HEADING,
                CK_CTOR, CK_UNION, CK_ENUMERATOR, CK_FIELD, CK_PROPERTY, CK_SIGNAL, CK_SECTION, CK_N } CoderKind;
 /* tipos de referencia: CR_TYPE uso como tipo (inclui new T), CR_WRITE atribuicao a um global ou campo, CR_LITERAL texto entre aspas usado como chave */

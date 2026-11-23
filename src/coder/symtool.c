@@ -133,8 +133,8 @@ static int sym_find_file_users(SyView *v, const char *name, size_t nl, const cha
     }
     free(imp); return 1;
 }
-/* Find mode=refs servido pelo indice de simbolos, no mesmo formato do caminho antigo. 1 = respondeu; 0 = sem indice, sem
-   definicao do nome exato ou erro: o Find segue pelo caminho antigo. O indice so e atualizado se ja existe (o Find nao o cria). */
+/* Find mode=refs servido pelo indice de simbolos, no mesmo formato do texto. 1 = respondeu; 0 = sem indice, sem
+   definicao do nome exato ou erro: o Find segue pelo texto. O indice so e atualizado se ja existe (o Find nao o cria). */
 static int sym_find_refs(const char *root, const char *pre, const char *name, int limit, CtSb *sb) {
     char dir[4400], man[4500]; struct stat sv; double ms; int created;
     store_locate(root, "coder", dir, sizeof dir, 0); snprintf(man, sizeof man, "%s/MANIFEST", dir);
@@ -276,7 +276,7 @@ static const char *sy_rchr(const char *s, int c, size_t n) { while (n--) if (s[n
 /* ---- o que esta na frente e o que esta atras de um resultado do Find ----
  * Para o simbolo que contem a melhor linha do trecho: `called by:` (quem chama, mesmo arquivo ou outro), `calls:` (o que chama) e `links:` (ligacoes por
  * chave de texto: quem envia/trata a mesma chave em outro arquivo), cada linha com ate ~150 caracteres, ate 3 itens em ordem de confianca, (+N) se houver mais.
- * Liga-se a sym_ensure_index: so existe quando o indice da pasta existe (o Find nao o cria). Devolve 1 se escreveu algo; 0 = o Find usa o `calls:` antigo. */
+ * Liga-se a sym_ensure_index: so existe quando o indice da pasta existe (o Find nao o cria). Devolve 1 se escreveu algo; 0 = o Find usa o `calls:` de nomes. */
 typedef struct { char name[64]; char path[300]; uint32_t l0, l1; int conf, ord; } SyFn;
 static int sy_fn_cmp(const void *a, const void *b) { const SyFn *x = (const SyFn *)a, *y = (const SyFn *)b; return x->conf != y->conf ? y->conf - x->conf : x->ord - y->ord; }
 static int sy_is_testpath(const char *p, uint32_t l) { for (uint32_t i = 0; i + 4 <= l; i++) if (!strncasecmp(p + i, "test", 4)) return 1; return 0; }

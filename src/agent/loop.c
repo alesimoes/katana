@@ -173,7 +173,7 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
 /* bloco extra no fim do .ksess (versao 1), para gerar dados de treino a partir das sessoes (tools/dataset):
    arquitetura, formato de chat, prompt de sistema, se o cache viu a conversa inteira (exact), o texto exato da
    conversa inteira no formato do modelo e, por mensagem, papel e trecho [ini, fim) do conteudo nesse texto.
-   Quem le a sessao para retomar para antes deste bloco, entao arquivos antigos e novos continuam valendo. */
+   Quem le a sessao para retomar para antes deste bloco. */
 #define SESS_EXT_MAGIC 0x3158534bU      /* "KSX1" */
 static void sess_wext(FILE *f, const Model *m, const char *sys, const AHist *hist, const AHist *full) {
     const Config *c = &m->cfg;
