@@ -1648,6 +1648,29 @@ state is read through one snapshot (`uioe_req_sync`) instead of being moved; ent
 through the index (so the "entity resolved" signal is weaker than 3.5.3 says); `gap` is not computed (it needs the index); the trace is
 not yet masked for secret shapes; only G1 to G3 are decided before retrieval.
 
+**Status of U3 (built 2026-11-23, compiled, nothing measured beyond single manual runs, not run in a live agent session).** Files: `src/uioe/evgraph.c`
+(graph, fusion, order), `verify.c`, `conn_file.c` (`file.grep`, `file.glob`, `place.resolve`, `docs.search`, `docs.select`), `conn_code.c` (`code.search`, `code.def`,
+`code.callers`, `code.refs`, `code.callees`, `code.outline`, `code.deps`, `code.impact`, `code.flow`, all over one `SyView` per request), `budget.c` (deadlines,
+breaker, the one function that runs a connector), `pipes.c` (the pipelines), `orch.c` (the state machine and the gate G4 to G6), `evrender.c` (text and JSON output,
+the trace of the retrieval); `cli.c` gains `ask` (now executes the route), `plan` (U1 only), `explain`, `session`. `KATANA_UIOE=off` is untouched: nothing in
+`src/agent/` or `src/tools/` changed. What exists beyond the text above, or differs from it (decided by the implementer):
+
+- **Chain by best total.** The flow answer path is built from the best link of each of up to 6 file pairs, each followed up to 4 hops (key link, importer with a
+  symbol that matches the terms, callee); the chain with the highest sum wins and the other next steps are listed as branches. Anchors are the union of two
+  searches (the request's words, and their English equivalents from the knowledge base) and **all** their files are expanded (up to 16, not 5): word rank is right at
+  rank 1 so rarely that a narrow anchor set loses the answer, and an expansion costs about 0.1 ms.
+- **The gate is recomputed from scratch after retrieval**, and a packet never rests on word ranking alone: without a verified structural finding with confidence
+  >= 75 on the path (flow) or on a named entity (other kinds) the confidence is capped at 69. How-to and overview requests are the exception: a reread document line
+  that matches two or more terms is their finding. `gap` is still not computed (the coder does not expose the document frequency of a term).
+- **Soft deadlines.** In-process connectors cannot be interrupted: a call over 4x its `default_ms` (index class) is `UR_TIMEOUT` with its data kept, no retry,
+  and counts in the breaker; the request deadline is checked before every call. `code.impact` has `default_ms` 250 and runs last, at depth 3 only when more than
+  600 ms is left, else depth 2 (depth 3 took 0.5 s on the katana tree).
+- **No index = no index built.** The UIOE never builds an index on its own; with no store it scans files (degradation 5: K = 3, literal search of the 3 most specific
+  terms). `--index` builds first, `--no-refresh` reads the store as it is. With a store, `index_ensure` runs first, outside the request clock.
+- **Not built in U3:** the result cache (3.6.3), `session.facts`, `memory.recall`, `history.search`, `howto.recipes`, `skill.match` (U8), the web (U9), `docs.select`
+  outside an agent session (it needs the model's tokenizer; the code path exists in `conn_file.c` and was never run), `code.rank`, `code.tree`, the commands/`cmd`
+  step of how-to, the Context Builder and the hook in the loop (U4). Two test hooks exist: `KATANA_UIOE_FAULT="connector=timeout|error|partial,..."` and `KATANA_UIOE_SCORES=N`.
+
 ### 6.2 Stage 2: general interpretation and the complete Context Builder
 
 | Phase | Content | Files | Done when | Days |

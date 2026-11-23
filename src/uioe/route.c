@@ -155,7 +155,7 @@ gate:
     else if (conf < 35) { rt->decision = UG_NONE; rt->rule = 2; snprintf(rt->decision_note, sizeof rt->decision_note, "G2: confidence %d < 35: no retrieval, no packet", conf); }
     else if (a->ambiguous) { rt->decision = UG_NONE; rt->rule = 3; snprintf(rt->decision_note, sizeof rt->decision_note, "G3: ambiguous request: no packet (the model may ask: %.80s)", a->amb); }
     else if (k->retrieve == 2) { rt->decision = UG_LIMITS; rt->rule = 5; snprintf(rt->decision_note, sizeof rt->decision_note, "G5: only the cited place is told (Question understood as, limits, Next); no search"); }
-    else { rt->decision = UG_NONE; rt->rule = 0; snprintf(rt->decision_note, sizeof rt->decision_note, "passes G1 to G3; G4 (>= %d after retrieval), G5 and G6 are decided after retrieval (U3, not built)", uioe_env_int("KATANA_UIOE_GATE", 70, 1, 100)); }
+    else { rt->decision = UG_NONE; rt->rule = 0; snprintf(rt->decision_note, sizeof rt->decision_note, "passes G1 to G3; G4 (>= %d after retrieval), G5 and G6 are decided after retrieval (run `katana uioe ask`; `plan` does not execute the route)", uioe_env_int("KATANA_UIOE_GATE", 70, 1, 100)); }
     /* ---- o que sairia da maquina ---- */
     rt->sends_out[0] = 0;
     for (int i = 0; i < rt->nstep; i++) if (rt->step[i].conn[0] && !rt->step[i].status) { const int ix = uioe_find_conn(cx->s, rt->step[i].conn); if (ix >= 0 && (cx->s->reg[ix].flags & UCF_LEAVES_MACHINE)) snprintf(rt->sends_out, sizeof rt->sends_out, "terms to %s: %.60s", rt->step[i].conn, rt->step[i].input); }

@@ -76,5 +76,5 @@ static void uioe_fmt_trace(UioeBuf *b, const UioeCtx *c, const UioeRequest *r) {
     }
     for (int i = 0; i < rt->nsig; i++) uioe_bprintf(b, "signal  %s\n", rt->signals[i]);
     if (rt->rule) uioe_bprintf(b, "gate    %s\n", rt->decision_note); else uioe_bprintf(b, "gate    pending: %s\n", rt->decision_note);
-    uioe_bprintf(b, "        sent out: %s\n\n", rt->sends_out[0] ? rt->sends_out : "nothing");
+    uioe_bprintf(b, "        sent out: %s\n", rt->sends_out[0] ? rt->sends_out : "nothing");
 }

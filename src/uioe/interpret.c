@@ -212,6 +212,14 @@ static void ui_add_drop(UioeAsk *a, const char *w) {
     if (a->ndropped < 24) snprintf(a->dropped[a->ndropped++], sizeof a->dropped[0], "%s", w);
 }
 
+/* U3: uma palavra em ingles/codigo de um conceito do termo k (para casar com o codigo), sem repetir */
+static void ui_xadd(UioeAsk *a, int k, const char *w) {
+    char lw[24]; size_t l = strlen(w); if (a->nxw >= 64 || l < 3 || l > 23) return;
+    for (size_t i = 0; i < l; i++) { lw[i] = (char)tolower((unsigned char)w[i]); if (!isalnum((unsigned char)lw[i]) && lw[i] != '_') return; }
+    lw[l] = 0;
+    for (int i = 0; i < a->nxw; i++) if (!strcmp(a->xw[i], lw)) return;
+    snprintf(a->xw[a->nxw], sizeof a->xw[0], "%s", lw); a->xw_of[a->nxw++] = k;
+}
 /* termos informativos e conceitos, a partir do texto sem as entidades */
 static void ui_terms(UioeAsk *a, const char *work, const CoderKb *kb) {
     CoderTok *tk = (CoderTok *)malloc(sizeof(CoderTok) * 160); if (!tk) return;
@@ -233,9 +241,20 @@ static void ui_terms(UioeAsk *a, const char *work, const CoderKb *kb) {
         snprintf(a->terms[k], sizeof a->terms[0], "%s", lw); snprintf(a->norm[k], sizeof a->norm[0], "%s", t->norm); a->concept[k][0] = 0;
         if (kb && kb->nterm) {
             int ix[4]; int nc = coder_kb_term_concepts(kb, lw, ix, 4); if (!nc) nc = coder_kb_term_concepts(kb, t->norm, ix, 4);
-            if (nc) snprintf(a->concept[k], sizeof a->concept[0], "%s", kb->con[kb->term[ix[0]].con].id);
-            else { int vx[4]; int nv = coder_kb_verb_ops(kb, t->norm, vx, 4); if (!nv) nv = coder_kb_verb_ops(kb, lw, vx, 4);
-                   if (nv) snprintf(a->concept[k], sizeof a->concept[0], "op:%s", kb->op[kb->verb[vx[0]].op].name); }
+            if (nc) {
+                snprintf(a->concept[k], sizeof a->concept[0], "%s", kb->con[kb->term[ix[0]].con].id);
+                const KbConcept *cc = &kb->con[kb->term[ix[0]].con];
+                for (int pass = 0; pass < 4; pass++) {       /* as palavras nao portuguesas de maior peso do conceito, uma por passo */
+                    int bq = -1; float bw = -1;
+                    for (int q = cc->t0; q < cc->t0 + cc->nt && q < kb->nterm; q++) { if (kb->term[q].lang == 0 || kb->term[q].w <= bw) continue;
+                        int dup = 0; for (int z = 0; z < a->nxw; z++) if (!strcasecmp(a->xw[z], kb->term[q].term)) dup = 1; if (dup || strlen(kb->term[q].term) < 3 || strlen(kb->term[q].term) > 23 || strchr(kb->term[q].term, ' ')) continue;
+                        bq = q; bw = kb->term[q].w; }
+                    if (bq < 0) break; ui_xadd(a, k, kb->term[bq].term);
+                }
+            } else { int vx[4]; int nv = coder_kb_verb_ops(kb, t->norm, vx, 4); if (!nv) nv = coder_kb_verb_ops(kb, lw, vx, 4);
+                   if (nv) { snprintf(a->concept[k], sizeof a->concept[0], "op:%s", kb->op[kb->verb[vx[0]].op].name);
+                             const KbOp *oo = &kb->op[kb->verb[vx[0]].op]; int added = 0;
+                             for (int q = oo->v0; q < oo->v0 + oo->nv && q < kb->nverb && added < 6; q++) if (kb->verb[q].lang != 0) { const int before = a->nxw; ui_xadd(a, k, kb->verb[q].w); if (a->nxw > before) added++; } } }
         }
     }
     snprintf(a->lang, sizeof a->lang, "%s", pt > en ? "pt" : en > pt ? "en" : "?");

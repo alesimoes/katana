@@ -73,7 +73,7 @@ static void uioe_registry_init(UioeSession *s) {
         C("code.callees", UQ_CALLEES,                                  UC_INDEX,   62, 2, UCF_READONLY, 50,  "code",   uioe_av_index),
         C("code.outline", UQ_STRUCTURE,                                UC_INDEX,   92, 2, UCF_READONLY, 50,  "code",   uioe_av_index),
         C("code.deps",    UQ_IMPORTS,                                  UC_INDEX,   75, 2, UCF_READONLY, 50,  "code",   uioe_av_index),
-        C("code.impact",  UQ_IMPACT,                                   UC_INDEX,   55, 2, UCF_READONLY, 50,  "code",   uioe_av_index),
+        C("code.impact",  UQ_IMPACT,                                   UC_INDEX,   55, 2, UCF_READONLY, 250, "code",   uioe_av_index),      /* o fecho de chamadores leva 0,2 a 0,5 s na arvore do katana: o prazo de 50 ms do documento e do indice simples */
         C("code.flow",    UQ_LINKS | UQ_CONFIG,                        UC_INDEX,   80, 3, UCF_READONLY, 50,  "code",   uioe_av_index),
         C("docs.select",  UQ_DOC,                                      UC_FILES,   70, -1, UCF_READONLY, 300, "files", uioe_av_docs),
         C("docs.search",  UQ_DOC,                                      UC_INDEX,   55, 1, UCF_READONLY, 50,  "files",  uioe_av_index),
