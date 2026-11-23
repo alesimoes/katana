@@ -13,14 +13,14 @@ if [ -z "$K" ]; then
   fail=0; G4_ALONE=1
 fi
 R4=$(pwd)
-MOCK="$R4/tools/traintest/mock_claude.py"
+MOCK="$R4/tools/traintest/mock_teacher_prog.py"
 GG=${G4_GGUF:-"$R4/models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"}
 python3 tools/tinymodel/make_tiny_gguf.py "$D/g4agent.gguf" --arch gemma4 --template gemma4 --no-eos >/dev/null
 g4run() {     # g4run <pasta> <entrada> VAR=valor... : o agente no gemma4 minusculo com o professor de mentira
   _dir=$1; _in=$2; shift 2
   mkdir -p "$D/$_dir"
-  (cd "$D/$_dir" && printf "$_in" | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 \
-     KATANA_TEACHER_CLI="$MOCK" MOCK_CLAUDE_LOG="$D/$_dir.jsonl" "$@" $K agent "$D/g4agent.gguf" >"$D/$_dir.out" 2>"$D/$_dir.err") || true
+  (cd "$D/$_dir" && printf "$_in" | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 \
+     KATANA_TEACHER_CMD="python3 $MOCK" MOCK_TEACHER_LOG="$D/$_dir.jsonl" "$@" $K agent "$D/g4agent.gguf" >"$D/$_dir.out" 2>"$D/$_dir.err") || true
 }
 g4ok() { echo "gemma4: $1: ok"; }
 g4bad() { echo "gemma4: $1: FALHOU"; shift; for f in "$@"; do grep -a "FALHA\|ok\": false" "$f" 2>/dev/null | cut -c1-500 | head -3; done; fail=1; }
@@ -62,10 +62,10 @@ g4run g4wd0 'procure\n/exit\n' MOCK_DELEGATE=1 KATANA_G4_SIDE=0
 if grep -q "delegate is not available for this model format" "$D/g4wd0.out"; then g4ok "KATANA_G4_SIDE=0 desliga o subagente"; else g4bad "KATANA_G4_SIDE=0" "$D/g4wd0.out"; fi
 # nota de leitura: read_file de um arquivo grande vira nota escrita num contexto limpo (primeiro conjunto de ferramentas)
 python3 -c "open('$D/g4big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
-python3 tools/traintest/mock_anthropic.py 8203 "$D/g4rd.jsonl" "$D/g4big.txt" & G4RM=$!
+python3 $R4/plugins/teacher-anthropic/test/mock_api.py 8203 "$D/g4rd.jsonl" "$D/g4big.txt" & G4RM=$!
 sleep 1
 mkdir -p "$D/g4w2"
-(cd "$D/g4w2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_TOOLS=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 ANTHROPIC_API_KEY=sk-mock-key \
+(cd "$D/g4w2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_TOOLS=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 KATANA_TEACHER_KEY=sk-mock-key KATANA_TEACHER_CMD=$R4/plugins/teacher-anthropic/run \
    KATANA_CTX=24000 KATANA_SIDE_DUMP="$D/g4w2.side" KATANA_TEACHER_URL=http://127.0.0.1:8203 $K agent "$D/g4agent.gguf" >/dev/null 2>"$D/g4w2.err") || true
 kill $G4RM 2>/dev/null || true
 if [ "$(grep -c 'condensed note of lines' "$D/g4rd.jsonl")" -ge 1 ] && grep -q "^=====digest" "$D/g4w2.side" \

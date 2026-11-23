@@ -108,7 +108,7 @@ about katana itself without putting the whole help in the context (the console c
 | `/undo` | put back the files changed by the last request that changed any |
 | `/cd <folder>` | change the working folder |
 | `/session <file>`, `/resume <file>` | save to / load a session file |
-| `/teacher [on\|off\|status\|cli\|api\|<model>]` | let a larger model answer in place of the local one |
+| `/teacher [on\|off\|status\|<model>]` | let a larger model answer in place of the local one, through the teacher plugin (`docs/teacher-protocol.md`) |
 | `/model [name]` | list the installed models; with a name, save the session and reload the engine with that model (same process, same terminal; on Windows it asks for a restart) |
 | `/status` | model, context use, session file, MCP servers, skills, instruction files |
 | `/help` | list them |
@@ -203,7 +203,7 @@ For a project that already has an agent setup made for another tool; every path 
 
 ## 5. Not tried with a real model
 
-All the headless and console tests use a 0.1M-parameter random model driven by a scripted stand-in teacher (`tools/traintest/mock_claude.py`), on the CPU. The
+All the headless and console tests use a 0.1M-parameter random model driven by a scripted stand-in teacher (`tools/traintest/mock_teacher_prog.py`), on the CPU. The
 following were **not** tried with Qwen3.6 or Gemma 4: answers rendered by the Markdown filter with real text, `/model` switching between two real models
 (the reload path is the one `agent_regrow` uses, tried only with the tiny models), `-p` with a real model deciding on its own to use an `--allowed-tools` list,
 the line editor on terminals other than the pseudo-terminal of the test, and Windows (the Windows branches are written but were not compiled).

@@ -238,7 +238,7 @@ public:
     bool teacher() const { return m_teacher; }
     QString teacherModel() const;
     Q_INVOKABLE void toggleTeacher();                      // liga ou desliga o professor (/teacher); sem chave, pede a chave
-    Q_INVOKABLE bool hasTeacherKey() const;                // ANTHROPIC_API_KEY ou ~/.katana/teacher.key
+    Q_INVOKABLE bool hasTeacherKey() const;                // KATANA_TEACHER_KEY ou ~/.katana/teacher.key
     Q_INVOKABLE void setTeacher(const QString &key, const QString &model);   // grava a chave (vazia = mantem a atual) e o modelo, e liga
     Q_INVOKABLE void clearTeacherKey();
     Q_INVOKABLE void togglePlan();    // liga ou desliga o modo plano (/plan)

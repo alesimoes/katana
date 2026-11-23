@@ -1052,7 +1052,8 @@ void Backend::launch(const QString &modelFile)
             "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
             "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
             "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST",
-            "KATANA_SPEC", "KATANA_TOOL_DECL", "KATANA_TEACHER", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK"};
+            "KATANA_SPEC", "KATANA_TOOL_DECL", "KATANA_TEACHER", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK",
+            "KATANA_TEACHER_CMD", "KATANA_TEACHER_KEY", "KATANA_TEACHER_VIA", "KATANA_TEACHER_CLI", "KATANA_TEACHER_MAX_TOKENS"};
         for (const QString &k : env.keys())
             if (k.startsWith("KATANA_") && !k.startsWith("KATANA_MCP_") && !manter.contains(k))
                 env.remove(k);
@@ -1219,10 +1220,10 @@ void Backend::undo()
 
 // ---- modo professor: a chave fica em ~/.katana/teacher.key (so do dono), nunca no ui.ini ----
 static QString teacherKeyPath() { return QDir::home().filePath(".katana/teacher.key"); }
-QString Backend::teacherModel() const { return m_ui->value("professorModelo", "claude-opus-5-5").toString(); }
+QString Backend::teacherModel() const { return m_ui->value("professorModelo", "").toString(); }
 bool Backend::hasTeacherKey() const
 {
-    if (!qEnvironmentVariableIsEmpty("ANTHROPIC_API_KEY"))
+    if (!qEnvironmentVariableIsEmpty("KATANA_TEACHER_KEY"))
         return true;
     QFile f(teacherKeyPath());
     return f.open(QIODevice::ReadOnly) && !f.readAll().trimmed().isEmpty();
@@ -1250,14 +1251,14 @@ void Backend::setTeacher(const QString &key, const QString &model)
         m_ui->setValue("professorModelo", m);
     emit teacherChanged();
     if (m_proc && m_ready)
-        writeLine("/teacher " + teacherModel());        // liga com este modelo (sem chave: pelo Claude Code desta maquina)
+        writeLine("/teacher " + (teacherModel().isEmpty() ? QString("on") : teacherModel()));        // liga com este modelo (vazio: o padrao do plugin)
 }
 void Backend::toggleTeacher()
 {
     if (!m_proc || !m_ready)
         return;
     if (m_teacher) { writeLine("/teacher off"); return; }
-    writeLine("/teacher " + teacherModel());            // sem chave gravada o motor usa o Claude Code logado nesta maquina
+    writeLine("/teacher " + (teacherModel().isEmpty() ? QString("on") : teacherModel()));
 }
 
 void Backend::togglePlan()

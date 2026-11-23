@@ -321,6 +321,7 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 - `src/app/`: console, HTTP server, subcommands and `main`.
 - `vk/`: single-header Vulkan compute layer (`kvk.h`) and compiled shaders; `tools/`: kernel benches
   (`vkq4k`, `vkmv`, `vkatt`, `vkdelta`...), tokenizer reference tests, tool tests (`tools/testar_ferramentas.sh`).
+- `plugins/`: optional third-party plugins that run outside the binary (`plugins/teacher-anthropic/`: a model reached over the network answers in place of the local one; protocol in [`docs/teacher-protocol.md`](docs/teacher-protocol.md)).
 - `desktop-qt/`: the desktop app. `docs/`: project documentation (below). `compare.sh`: alternating A/B benchmark.
 - `models/` (models) and `ref/` stay out of git.
 
@@ -335,6 +336,7 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 | [`docs/code-intelligence.md`](docs/code-intelligence.md) | the code intelligence module (`katana coder`): design, parsers, search, structural queries |
 | [`docs/tools.md`](docs/tools.md) | the agent's tools and how `Find` and `Symbols` decide and answer |
 | [`docs/plan.md`](docs/plan.md) | priorities and done-criteria |
+| [`docs/teacher-protocol.md`](docs/teacher-protocol.md) | teacher mode: the program protocol (stdin/stdout JSON) that teacher plugins speak |
 | [`docs/optimization-roadmap.md`](docs/optimization-roadmap.md) | optimization techniques not yet used, expected gain and effort |
 | [`docs/new-models.md`](docs/new-models.md) | DeepSeek / Kimi-family models: metadata and status |
 

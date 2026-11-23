@@ -318,11 +318,10 @@ printf 'print(1)\n' > main.py
 "$K" mcp add main -- "$PY3" "$HERE/extend_server.py" main >/dev/null 2>&1
 mkdir -p .katana/skills/greet; printf -- '---\nname: greet\nwhen: Greet someone by name\nargs: who\n---\nsteps:\n1. Say hello to $who => the greeting is printed\ndone: greeted\n' > .katana/skills/greet/SKILL.md
 export MOCK_LOG="$T/mock.jsonl"
-KV=$(printf 'ANTHRO%s' PIC)   # the teacher must use the program stand-in, not a message API: its key variable is unset
-run_agent() { printf '%s\n/exit\n' "$1" | env -u "${KV}_API_KEY" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_MAXTOK=24 KATANA_TEACHER_CLI="$HERE/mock_cli.py" "$K" agent "$G" 2>&1 >/dev/null; }
+run_agent() { printf '%s\n/exit\n' "$1" | KATANA_CPU=1 KATANA_TEACHER=1 KATANA_MAXTOK=24 KATANA_TEACHER_CMD="python3 $HERE/mock_cli.py" "$K" agent "$G" 2>&1 >/dev/null; }
 mkdir -p "$T/ss"; rm -f "$T/sid.out"
 "$K" mcp add sidsrv -- sh "$T/sidsrv.sh" >/dev/null 2>&1
-printf '/exit\n' | env -u "${KV}_API_KEY" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_MAXTOK=24 KATANA_TEACHER_CLI="$HERE/mock_cli.py" "$K" agent "$G" --sessao "$T/ss/2026-11-22-7.ksess" >/dev/null 2>&1
+printf '/exit\n' | KATANA_CPU=1 KATANA_TEACHER=1 KATANA_MAXTOK=24 KATANA_TEACHER_CMD="python3 $HERE/mock_cli.py" "$K" agent "$G" --sessao "$T/ss/2026-11-22-7.ksess" >/dev/null 2>&1
 eq "KATANA_SESSION_ID com --sessao: nome do .ksess sem extensao" "$(cat "$T/sid.out" 2>/dev/null)" "2026-11-22-7"
 "$K" mcp remove sidsrv >/dev/null 2>&1
 R=$(run_agent '/init')

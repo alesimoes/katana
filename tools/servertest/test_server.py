@@ -10,7 +10,7 @@ Tudo (sobe e derruba os servidores sozinho: basicos, ferramentas em cada formato
   python3 tools/servertest/test_server.py --all ./katana
 
 Um modelo aleatorio nao chama ferramentas: os testes de ferramentas usam KATANA_TEST_RAW_OUTPUT (o texto cru que o
-"modelo" escreve; o prompt e montado igual). O agente pela rede usa o professor de mentira (tools/traintest/mock_claude.py).
+"modelo" escreve; o prompt e montado igual). O agente pela rede usa o professor de mentira (tools/traintest/mock_teacher_prog.py).
 """
 import json, os, urllib.request, threading, time, socket, subprocess, sys, tempfile, shutil
 
@@ -172,7 +172,7 @@ def agent(K, D, port):
     home = os.path.join(D, "home"); work = os.path.join(D, "work"); os.makedirs(home, exist_ok=True); os.makedirs(work, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("KATANA_") and not k.endswith("_API_KEY")}   # professor so pelo programa de mentira
     env.update(HOME=home, KATANA_CPU="1", KATANA_TEACHER="1", KATANA_TOOLS="2", MOCK_TOOLS="2",
-               KATANA_TEACHER_CLI=os.path.join(root, "tools/traintest/mock_claude.py"))
+               KATANA_TEACHER_CMD="python3 " + os.path.join(root, "tools/traintest/mock_teacher_prog.py"))
     # fora do loopback sem chave: recusa subir
     r = subprocess.run([K, "serve", model, str(port), "--agent"], env=dict(env, KATANA_HOST="0.0.0.0"), capture_output=True, timeout=30)
     check(r.returncode != 0 and b"KATANA_API_KEY" in r.stderr, "agent mode on the network without a key must refuse: %r" % r.stderr[-300:])

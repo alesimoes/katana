@@ -1,0 +1,3 @@
+#!/bin/sh
+# Entry point for ~/.katana/plugins/teacher/run: link or copy this folder there (see README.md).
+exec python3 "$(dirname "$(readlink -f "$0")")/teacher.py"

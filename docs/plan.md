@@ -9,6 +9,8 @@ Set by the owner on 2026-11-21; it replaces the order of the priorities below, w
 about dense models. Only Qwen3.6-35B-A3B (and its AgentWorld variant) and Gemma 4 26B-A4B count. Each line is done
 when its criterion is measured; "not measured" items stay open even when the code exists.
 
+*2026-11-23: the teacher mode is vendor-free in the binary: an external program speaks `docs/teacher-protocol.md`; the Messages API / CLI code lives in `plugins/teacher-anthropic/`. Open: run the plugin once against the real service, and re-run the teacher steps of `tools/traintest/run.sh` and `tools/tooltest/launch.sh` on Qwen3.6.*
+
 **A. The agent does not get stuck (first, because it is what the owner hits every day)**
 
 | # | What | Done when |

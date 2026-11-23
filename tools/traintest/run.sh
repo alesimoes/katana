@@ -18,7 +18,7 @@
 #     tem que ser aceita e a 2 nao
 # 10. modo professor do agente (/teacher) com uma API de mensagens de mentira: pedidos aceitos, sessao retomada com o
 #     professor ligado no meio, katana export --teacher
-# 11. professor pelo programa claude (de mentira) sem chave; read_file so com o caminho continua de onde parou, cada
+# 11. professor por um programa externo (de mentira); read_file so com o caminho continua de onde parou, cada
 #     trecho vira nota e o arquivo ja lido devolve as notas
 # 12. katana import com selecao (--train-tools, --verified, --plan-first...) e katana specialize nos tres tipos
 # 13. a noite em um comando (katana.cfg), gravacao que falha em voz alta (disco cheio simulado e /dev/full), conferencia dos dados,
@@ -169,13 +169,13 @@ ok = len(r) == 3 and r[1]["accepted"] and not r[2]["accepted"] and r[1]["data"] 
 print("learn: %s" % ("ok (rodada 1 aceita, rodada 2 recusada, dados acumulados 6 -> 12)" if ok else "FALHOU %s" % r))
 sys.exit(0 if ok else 1)
 EOF
-# modo professor do agente: a API de mensagens de mentira (tools/traintest/mock_anthropic.py) recusa pedido fora das
+# modo professor do agente: a API de mensagens de mentira (plugins/teacher-anthropic/test/mock_api.py) recusa pedido fora das
 # regras; o professor grava um arquivo, confere e responde; depois a sessao e retomada com o professor ligado no
 # meio da conversa (historico refeito a partir da sessao) e o export --teacher marca so as falas dele
-python3 tools/traintest/mock_anthropic.py 8199 "$D/tch_req.jsonl" & TMOCK=$!
+python3 plugins/teacher-anthropic/test/mock_api.py 8199 "$D/tch_req.jsonl" & TMOCK=$!
 sleep 1
 mkdir -p "$D/tw"
-TENV="HOME=$D/home KATANA_CPU=1 KATANA_MAXTOK=24 ANTHROPIC_API_KEY=sk-mock-key KATANA_TEACHER_URL=http://127.0.0.1:8199"
+TENV="HOME=$D/home KATANA_CPU=1 KATANA_MAXTOK=24 KATANA_TEACHER_KEY=sk-mock-key KATANA_TEACHER_CMD=$PWD/plugins/teacher-anthropic/run KATANA_TEACHER_URL=http://127.0.0.1:8199"
 (cd "$D/tw" && printf 'grave uma nota em nota.txt\n/exit\n' | env $TENV KATANA_TEACHER=1 $K agent "$D/agent.gguf" --sessao "$D/tch.ksess" >/dev/null 2>&1) || true
 (cd "$D/tw" && printf 'diga oi\n/teacher on\ngrave a nota de novo\n/exit\n' | env $TENV $K agent "$D/agent.gguf" --retomar "$D/tch.ksess" >/dev/null 2>&1) || true
 kill $TMOCK 2>/dev/null || true
@@ -192,48 +192,48 @@ except Exception as e:
 print("professor: %s" % ("ok (6 pedidos aceitos, arquivo gravado, 6 falas do professor nos dados)" if ok else "FALHOU %s" % (why,)))
 sys.exit(0 if ok else 1)
 EOF
-# professor pelo Claude Code da maquina (programa de mentira no lugar do claude) e leitura com posicao guardada:
+# professor por um programa externo (de mentira, protocolo docs/teacher-protocol.md) e leitura com posicao guardada:
 # o professor le 5 vezes o mesmo arquivo so com o caminho; 4 trechos em sequencia, cada um vira nota, a 5a devolve as notas
 mkdir -p "$D/tw2"
-(cd "$D/tw2" && printf 'grave uma nota em nota.txt\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 \
-   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli.jsonl" $K agent "$D/agent.gguf" >"$D/cli_out.txt" 2>/dev/null) || true
+(cd "$D/tw2" && printf 'grave uma nota em nota.txt\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 \
+   KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli.jsonl" $K agent "$D/agent.gguf" >"$D/cli_out.txt" 2>/dev/null) || true
 # insistencia no erro: o professor repete a mesma chamada que falha; a 2a leva um aviso, a 3a e a 4a nao rodam, e a 4a
 # ja leva a ordem de encerrar e relatar ao usuario
 mkdir -p "$D/tw5"
-(cd "$D/tw5" && printf 'leia o arquivo\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_INSIST=1 MOCK_TOOLS=2 \
-   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli5.jsonl" $K agent "$D/agent.gguf" >"$D/cli5_out.txt" 2>/dev/null) || true
+(cd "$D/tw5" && printf 'leia o arquivo\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_INSIST=1 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli5.jsonl" $K agent "$D/agent.gguf" >"$D/cli5_out.txt" 2>/dev/null) || true
 if grep -q "Insistencia contida." "$D/cli5_out.txt" 2>/dev/null && [ "$(grep -c '"ok": true' "$D/cli5.jsonl" 2>/dev/null)" = 5 ]; then
   echo "insistencia no erro: ok (aviso na 2a, recusa na 3a e na 4a, encerra e relata)"
 else echo "insistencia no erro: FALHOU"; tail -3 "$D/cli5_out.txt" 2>/dev/null | cut -c1-600; fail=1; fi
 # pre-requisito de fora: tres falhas em volta do mesmo programa levam a nota que o nomeia e manda seguir com o codigo
 mkdir -p "$D/tw6"
 printf '#!/bin/sh\n[ "$1" = --help ] && { echo "usage: fakesdk build|install|auth"; exit 0; }\necho "Error: Operation unsupported: the SDK is not installed (requires login)"; exit 1\n' >"$D/tw6/fakesdk"; chmod +x "$D/tw6/fakesdk"
-(cd "$D/tw6" && printf 'faca o app\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_BLOCKED=1 MOCK_TOOLS=2 \
-   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli6.jsonl" $K agent "$D/agent.gguf" >"$D/cli6_out.txt" 2>/dev/null) || true
+(cd "$D/tw6" && printf 'faca o app\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_BLOCKED=1 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli6.jsonl" $K agent "$D/agent.gguf" >"$D/cli6_out.txt" 2>/dev/null) || true
 if grep -q "Bloqueio relatado e codigo escrito." "$D/cli6_out.txt" 2>/dev/null && [ -f "$D/tw6/app.txt" ]; then
   echo "pre-requisito de fora: ok (nota na 3a falha em volta de fakesdk, o codigo e escrito depois)"
 else echo "pre-requisito de fora: FALHOU"; grep -a "FALHA" "$D/cli6_out.txt" 2>/dev/null | cut -c1-600 | head -3; fail=1; fi
 # limite de rodadas por blocos (KATANA_ROUNDS=4): com progresso passa do bloco; sem progresso para no fim do primeiro
 for R in 1 2; do
   mkdir -p "$D/tw7$R"
-  (cd "$D/tw7$R" && printf 'trabalhe\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 KATANA_ROUNDS=4 MOCK_ROUNDS=$R MOCK_TOOLS=2 \
-     KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli7$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli7${R}_out.txt" 2>/dev/null) || true
+  (cd "$D/tw7$R" && printf 'trabalhe\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 KATANA_ROUNDS=4 MOCK_ROUNDS=$R MOCK_TOOLS=2 \
+     KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli7$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli7${R}_out.txt" 2>/dev/null) || true
 done
 if grep -q "Dez arquivos gravados sem parar." "$D/cli71_out.txt" 2>/dev/null && [ "$(ls "$D/tw71" | wc -l)" = 10 ] && grep -q "Limite relatado." "$D/cli72_out.txt" 2>/dev/null; then
   echo "limite de rodadas: ok (10 rodadas com progresso num bloco de 4; sem progresso, nota na 3a rodada)"
 else echo "limite de rodadas: FALHOU"; grep -a "FALHA" "$D/cli71_out.txt" "$D/cli72_out.txt" 2>/dev/null | cut -c1-300 | head -3; fail=1; fi
 # o usuario muda o plano: o lembrete da lista e a mensagem nova dizem que a mensagem mais nova vem primeiro
 mkdir -p "$D/tw8"
-(cd "$D/tw8" && printf 'faca a lista\nesqueca a lista, faca outra coisa\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_REDIRECT=1 MOCK_TOOLS=2 \
-   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli8.jsonl" $K agent "$D/agent.gguf" >"$D/cli8_out.txt" 2>/dev/null) || true
+(cd "$D/tw8" && printf 'faca a lista\nesqueca a lista, faca outra coisa\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_REDIRECT=1 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli8.jsonl" $K agent "$D/agent.gguf" >"$D/cli8_out.txt" 2>/dev/null) || true
 if grep -q "Lembrete ok." "$D/cli8_out.txt" 2>/dev/null && grep -q "Plano novo." "$D/cli8_out.txt" && ! grep -q "FALHA" "$D/cli8_out.txt"; then
   echo "mensagem nova muda o plano: ok (lembrete da lista e pedido novo dizem que a mensagem nova vem primeiro)"
 else echo "mensagem nova muda o plano: FALHOU"; grep -a "FALHA" "$D/cli8_out.txt" 2>/dev/null | cut -c1-600 | head -3; fail=1; fi
 # planejar antes de executar: sem lista a 3a e a 6a chamada levam a nota; com lista o passo atual aparece e o proximo e nomeado
 for R in 1 2; do
   mkdir -p "$D/tw9$R"
-  (cd "$D/tw9$R" && printf 'trabalhe\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_UI=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_PLAN=$R MOCK_TOOLS=2 \
-     KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli9$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli9${R}_out.txt" 2>/dev/null) || true
+  (cd "$D/tw9$R" && printf 'trabalhe\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_UI=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_PLAN=$R MOCK_TOOLS=2 \
+     KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli9$R.jsonl" $K agent "$D/agent.gguf" >"$D/cli9${R}_out.txt" 2>/dev/null) || true
 done
 if grep -q "Plano cobrado." "$D/cli91_out.txt" 2>/dev/null && grep -q "Plano seguido." "$D/cli92_out.txt" 2>/dev/null \
    && grep -aq "TOOL Bash	.*echo 1.*	Mostra um numero$" "$D/cli92_out.txt"; then
@@ -249,18 +249,18 @@ else echo "katana agentlog: FALHOU"; echo "$AL" | head -20; fail=1; fi
 # o texto do professor chega em pedacos e tem que aparecer inteiro e uma vez so na saida (acento, aspas, quebra de linha, emoji)
 if [ "$(grep -c '"ok": true' "$D/cli.jsonl" 2>/dev/null)" = 3 ] && grep -q "linha 1" "$D/tw2/nota.txt" 2>/dev/null \
    && [ "$(grep -c 'Vou gravar o arquivo: ação "um"' "$D/cli_out.txt")" = 1 ] && [ "$(grep -c '^e 😀 dois\.' "$D/cli_out.txt")" = 1 ] \
-   && [ "$(grep -c 'Pronto: nota.txt gravado e conferido\.' "$D/cli_out.txt")" = 1 ]; then echo "professor pelo claude -p (texto aos poucos): ok"; else echo "professor pelo claude -p: FALHOU"; fail=1; fi
+   && [ "$(grep -c 'Pronto: nota.txt gravado e conferido\.' "$D/cli_out.txt")" = 1 ]; then echo "professor por programa externo (texto aos poucos): ok"; else echo "professor por programa externo: FALHOU"; fail=1; fi
 # o segundo conjunto de ferramentas (KATANA_TOOLS=2): Write, Edit, Bash e Grep pelo laco inteiro
 mkdir -p "$D/tw3"
-(cd "$D/tw3" && printf 'grave e confira nota2.txt\n/exit\n' | env -u ANTHROPIC_API_KEY HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 \
-   KATANA_TEACHER_CLI="$OLDPWD/tools/traintest/mock_claude.py" MOCK_CLAUDE_LOG="$D/cli3.jsonl" $K agent "$D/agent.gguf" >"$D/cli3_out.txt" 2>/dev/null) || true
+(cd "$D/tw3" && printf 'grave e confira nota2.txt\n/exit\n' | HOME="$D/home" KATANA_CPU=1 KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 \
+   KATANA_TEACHER_CMD="python3 $OLDPWD/tools/traintest/mock_teacher_prog.py" MOCK_TEACHER_LOG="$D/cli3.jsonl" $K agent "$D/agent.gguf" >"$D/cli3_out.txt" 2>/dev/null) || true
 if [ "$(grep -c '"ok": true' "$D/cli3.jsonl" 2>/dev/null)" = 4 ] && grep -q "linha dois" "$D/tw3/nota2.txt" 2>/dev/null \
    && grep -q 'Pronto: ferramentas novas conferidas' "$D/cli3_out.txt"; then echo "segundo conjunto de ferramentas (Write, Edit, Bash, Grep) pelo laco: ok"
 else echo "segundo conjunto de ferramentas: FALHOU"; grep -a "FALHA\|ok\": false" "$D/cli3_out.txt" "$D/cli3.jsonl" | head -5; fail=1; fi
 python3 -c "open('$D/big.txt','w').write(''.join('linha %d: %s\n' % (i, 'x'*60) for i in range(1,301)))"
-python3 tools/traintest/mock_anthropic.py 8201 "$D/rd_req.jsonl" "$D/big.txt" & RMOCK=$!
+python3 plugins/teacher-anthropic/test/mock_api.py 8201 "$D/rd_req.jsonl" "$D/big.txt" & RMOCK=$!
 sleep 1
-(cd "$D/tw2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 ANTHROPIC_API_KEY=sk-mock-key \
+(cd "$D/tw2" && printf 'leia o arquivo\n/exit\n' | env HOME="$D/home" KATANA_CPU=1 KATANA_DIGEST=2 KATANA_TEACHER_FEED=1 KATANA_TEACHER=1 KATANA_TEACHER_KEY=sk-mock-key KATANA_TEACHER_CMD=$PWD/plugins/teacher-anthropic/run \
    KATANA_TEACHER_URL=http://127.0.0.1:8201 $K agent "$D/agent.gguf" >/dev/null 2>&1) || true
 kill $RMOCK 2>/dev/null || true
 python3 - "$D/rd_req.jsonl" <<'EOF' || fail=1

@@ -5,6 +5,8 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 `comparisons.md` (all comparison tables) and `plan.md` (priorities).
 
 
+**2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library; README maps the old `KATANA_TEACHER_*` settings; the old names keep working there). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
+
 **2026-11-22, expert tiers (GPU / RAM / SSD) for MoE larger than RAM.** `src/engine/expert_tier.c` (hooks: `moe_route`,
 `moe_cpu_multi`, `qn_layer`, `load_model`, one line each; the file is `#ifdef __linux__`). `KATANA_EXPERT_RAM=<GB>` (max
 25) makes the CPU expert path read experts into an arena of RAM slots with 16 parallel O_DIRECT reads, evict by decayed
@@ -207,6 +209,8 @@ before and after, on Qwen3.6 and Gemma 4, is the measurement to do next.
 
 ## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
+*Since 2026-11-23 the vendor-specific parts below (Messages API, `claude -p`, key, defaults) live in the plugin `plugins/teacher-anthropic/`; the binary speaks `docs/teacher-protocol.md`. The text that follows is the history of what was built.*
+
 Owner request: when the local model cannot finish a task, a larger model does it inside the same agent, and its
 answers become training data for the local model.
 
@@ -227,7 +231,7 @@ answers become training data for the local model.
   (`claude -p`, the session the owner is already logged in to, no key), one call per turn with no tools of its own,
   no MCP, no settings and no saved session: it gets the agent prompt, the katana tool declarations and the
   conversation as a JSON array, and returns the next turn through `--json-schema` (text and tool calls).
-  `KATANA_TEACHER_CLI` names another program (the tests use `tools/traintest/mock_claude.py`). Measured with the
+  `KATANA_TEACHER_CLI` names another program (the tests use `tools/traintest/mock_teacher_prog.py`). Measured with the
   real program, one run, tiny local model: 3 turns of 3 to 6 s, the file was written, read back and checked. No
   thinking text comes back this way, so the reasoning block of those answers is empty.
 - *Text as it arrives* (owner request: every answer appears little by little, in the same message): local
@@ -246,7 +250,7 @@ answers become training data for the local model.
   them (compacted sessions included: the teacher saw the whole conversation). Then `katana train`.
 - *Desktop*: "professor" button beside "plano" (marker `TEACHER 0|1 model`, error marker `TEACHERR`), key and model
   dialog (also in the settings popup); the state is remembered between runs.
-- *Measured*: only against a stand-in API (`tools/traintest/mock_anthropic.py`, which rejects requests the real API
+- *Measured*: only against a stand-in API (`plugins/teacher-anthropic/test/mock_api.py`, which rejects requests the real API
   would reject: roles, tool_use/tool_result pairing, changed thinking blocks, sampling parameters). Tiny model: 6
   requests accepted over a session, a resume and a mid-conversation switch; step 10 of `tools/traintest/run.sh`.
   Qwen-AgentWorld on the GPU, one run: 3 teacher turns, then the local model answered a follow-up from the same
