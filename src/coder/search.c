@@ -440,6 +440,7 @@ static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap)
     StoreLive L; const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)r->nseg);
     for (int i = 0; i < r->nseg; i++) segs[i] = &r->seg[i];
     store_live_build(&L, segs, r->nseg); free(segs);
+    ign_hide_for_view(&loc, &L);                  /* pastas de inclusao restrita que esta consulta nao pediu (maint.c) */
     /* a raiz usada para ler arquivos e a localizada agora (nao a gravada no manifesto: a pasta pode ter sido movida); com prefixo, a consulta
        fica restrita a ele e os caminhos saem relativos a ele */
     if (loc.prefix[0]) { store_live_rebase(&L, loc.prefix, strlen(loc.prefix)); v->strip = (uint32_t)strlen(loc.prefix) + 1; snprintf(r->man.root, sizeof r->man.root, "%s/%s", loc.root, loc.prefix); }

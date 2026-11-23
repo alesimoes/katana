@@ -139,6 +139,18 @@ static int index_ensure(const char *root, int level, const char *prefix, int bud
     else if (rc == 1) res->busy = 1;                       /* outro processo grava agora: le o que existe e tenta de novo na proxima */
     return (rc == 0 || rc == 1) ? 0 : -1;
 }
+/* atualiza o catalogo da raiz agora, sem perguntar ao vigia nem ao prazo (a inclusao restrita por `path` mudou o arquivo overrides, que ninguem vigia).
+ * 0 = atualizado, 1 = outro processo grava (o rastreador le o overrides sozinho), -1 = erro */
+static int index_force_update(const char *root) {
+    char dir[4400], err[300] = "", si[400], yi[500];
+    store_locate(root, "coder", dir, sizeof dir, 1);
+    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);
+    StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
+    coder_sym_hook_done(&o, yi, sizeof yi); coder_search_hook_done(&o, si, sizeof si);
+    g_idx_n.walks++;
+    if (rc == 0) index_validated(root, IDX_CODER);
+    return rc;
+}
 static void index_stats_line(char *o, size_t cap) {
     snprintf(o, cap, "index: tree walks %d, skipped %d, tool changes %d; views opened %d, reused %d; knowledge base loads %d, reused %d",
              g_idx_n.walks, g_idx_n.skips, g_idx_n.touches, g_idx_n.view_open, g_idx_n.view_hit, g_idx_n.kb_load, g_idx_n.kb_hit);
@@ -152,7 +164,8 @@ typedef struct { IdxSlot s[IDX_SLOTS]; void (*destroy)(void *view); } IdxCache;
 /* chave de uma visao no cache: store + prefixo da consulta (a visao de uma subpasta absorvida difere da da raiz) */
 static void idx_view_key(const char *proj, char *key, size_t cap) {
     IndexLoc L; index_resolve(proj, 0, &L);
-    if (L.prefix[0]) snprintf(key, cap, "%.3900s|%.400s", L.store, L.prefix); else snprintf(key, cap, "%s", L.store);
+    char vis[220]; ign_vis_key(&L, vis, sizeof vis);                 /* qual pasta de inclusao restrita esta consulta enxerga (maint.c) */
+    if (L.prefix[0]) snprintf(key, cap, "%.3600s|%.400s|%s", L.store, L.prefix, vis); else snprintf(key, cap, "%.3900s||%s", L.store, vis);
 }
 static void idx_slot_free(IdxCache *c, IdxSlot *s) { if (s->view) c->destroy(s->view); memset(s, 0, sizeof *s); }
 static void *idx_cache_get(IdxCache *c, const char *dir) {

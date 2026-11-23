@@ -21,7 +21,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
 | `glob.c`, `grep.c` | `Glob`, `Grep` | 161 |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
-| `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact, flow over the symbol index; work in `src/coder/symtool.c`) | - |
+| `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact, flow, tree over the symbol index; work in `src/coder/symtool.c`) | - |
 | `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |
 | `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
 | `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
@@ -377,6 +377,43 @@ list and a full declaration in every `ToolSearch` answer for no gain.
   offset=.. limit=..` for the consumer side, and says `Nobody handles it` / `Nobody sends it` (with the limit of the indexed
   set) when one side is missing. Default `limit` 5 per side (max 100); text mode is brief (the confidence explanation is
   cut to its first clauses). Details and heuristics: `docs/code-intelligence.md`, section "Links by text key".
+- `tree` (`file` = the folder to show, default the project folder; `depth` default 2, max 4; `limit` default 40 folder lines, max 100;
+  `path` = project folder as for the other actions): the folders of the project, breadth first (larger first inside a level),
+  answered ONLY from the index of the tree (directories, counts, the `STS_DIRS` records and the live documents): no file is
+  read and it never waits for a deeper level. It does not build an index: with none it says how to build one. One line per
+  folder: `path/  N files (kotlin 166, js 48, other 12)  [symbols and links]  doc: <first line of its README or KATANA.md>`,
+  and under it `main: a, b, c` (up to 4 definitions that other folders reference most, only when the folder is fully at
+  symbols; names of 1-2 characters and `main` are left out). The bracket is how deep the index of that folder is: `[names
+  only]`, `[text]` (`symbols not ready` follows), `[symbols]`, `[symbols and links]`. Ignored folders are always listed
+  with the reason and the count (`node_modules/  (ignored: built-in heavy folder "node_modules", 12,340 files)`; `not
+  counted yet` before the counting pass; `(has its own index; use path=...)` for a nested init), do not use `limit` (at most
+  15 are listed, the rest is counted) and end with `ignored: N folders, M files not in the index. To search inside one, set
+  `path` to it.` The text is cut at about 6500 characters, so the folder lines stop at about 4800 and the closing lines are
+  kept (`(N more folders not shown; raise `limit` or call tree on a subfolder)`). Also `katana coder tree [folder] [--depth N]
+  [--limit N] [--json]`. The `doc:` lines exist only for an index built by the crawler (`STS_DIRS`); an index built in
+  process by `Find`/`Symbols`/`katana coder index` has no directory records, so those lines are absent there. Output size
+  measured once on three trees (chars / about 4 chars per token): this repository 3.8 KB (960 tokens) at depth 2, limit 40;
+  a 373-file project 2.2 KB (550); a 20-thousand-file synthetic one 2.2 KB (540); depth 4 and limit 100 is cut at 4.9 KB.
+- Status lines (J.2 of `docs/code-index-lifecycle.md`), at most ONE, first line of the answer of `Find` and `Symbols`, only when the
+  queried scope is not complete or not fresh; with a complete index on a small project the output is byte-identical to the
+  previous one (checked on 8 queries in two projects). In order of importance: `[index was damaged and has been rebuilt]`;
+  the one-time note of a restricted include (below); `[index: src/foo/ is still at level names only; text and symbols are not ready
+  yet]` or `... is still being built: text ready for A of N files, symbols for B; results are partial]` or `[index: src/foo/ is
+  still at level text; symbols not ready yet]` (the scope is the queried folder, or `the project`); and `[index: N files changed
+  since indexed; shown from the files]` (now also in `Find`). The partial lines need the crawler to have a crawl record that is not
+  complete (`STS_CRAWL`), so they appear in a session (watcher on), not after a synchronous build. `NOT FOUND` with a partial
+  scope says `NOT FOUND so far` and `The index ... is still being built ...: this is not proof that it does not exist; try Grep, or
+  ask again shortly.` (Find: `No match so far`, `NOT FOUND so far (literal)`, ...). `NOT FOUND` with ignored folders under the scope
+  adds one line, `3 ignored folders could hold it: node_modules/, build/, ref/. To search one, set `path` to it.` (up to 3, the
+  largest; `and others` when there are more; the ignored registry is counted by the pass that follows `katana coder index` and the
+  crawler, and by a tool call that needs it and finds none; nothing inside the folders is read).
+- Restricted include: `path` of `Find`, `Symbols` or `tree` that points INSIDE an ignored folder (`path=node_modules/express`) indexes
+  just that folder (`scoped <folder>` in the `overrides` file next to the store, then one in-process update) and the answer starts with
+  `[index: node_modules/express/ was ignored (built-in heavy folder "node_modules"); it is now indexed for queries whose path is inside
+  it]`. Queries whose `path` is not inside it (the whole project) do not see its files. Refused, with a line saying so, when the folder has
+  more than `KATANA_INDEX_INCLUDE_MAX_FILES` (default 50000) files; never for secret folders, nested indexes, `katana coder exclude`d
+  folders or folders without an ignored-registry record. `Find` stops hiding the built-in heavy names (`node_modules`, `build`, `vendor`...)
+  for paths below the folder asked in `path`.
 - Output: `file:lines  kind name  [confidence N level; how]`, one snippet line per use, a one-line hint of the next
   query. There are no exact/derived/probable labels: the query is a cascade (exact name, then spelling variants, then
   edit distance <= 2; the answer says which step produced what it shows) and every result carries `confidence` 0-100,
@@ -397,7 +434,8 @@ list and a full declaration in every `ToolSearch` answer for no gain.
   symbol sections, so a file changed after `katana coder index` is not left without symbols.
 - Loop: `Symbols` counts as reading in `loop_plan_readonly` and `rr_covered` (identical repeated calls get the repeat
   note; it does not ask for a plan).
-- Not verified: whether the model finds it through `ToolSearch` and uses it well (no run with the model); behaviour
+- Not verified: the model has never seen `tree` or the new lines (the v7 curriculum predates them; the v8 requirement is in section 5.1 of
+  `docs/code-index-lifecycle.md`, phase 9); whether the model finds it through `ToolSearch` and uses it well (no run with the model); behaviour
   with several tool calls in parallel threads (the tool redirects stdout to capture the query output); Windows (not built:
   the tool answers "not available on Windows yet", as `Find` does).
 

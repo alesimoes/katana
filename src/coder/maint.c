@@ -542,6 +542,114 @@ static void maint_on_crawl_end(void) {
         if (bad > 0) { fprintf(stderr, "[index: the checksum scrub found damage in %s; it will be rebuilt]\n", dir); maint_force_rebuild(dir); }
     }
 }
+
+/* ---------- fase 6: o que o modelo ve sobre as pastas ignoradas (J.3, J.5) e a inclusao restrita por `path` (D.10) ----------
+ * g_q_dir: a pasta consultada pela ferramenta em andamento (a `path` ja resolvida; vazio = nenhuma). As visoes de leitura (search.c, symquery.c) a usam para
+ * decidir quais pastas de inclusao restrita enxergam (store_live_hide_scoped): a consulta ve uma delas so se g_q_dir cai dentro dela. */
+static char g_q_dir[4200];
+static char g_scope_note[500];
+static int index_force_update(const char *root);                 /* indexctl.c */
+/* caminho como o modelo o usa em `path`: relativo a pasta de trabalho quando esta debaixo dela, senao absoluto */
+static void ign_disp(const char *abs, char *out, size_t cap) {
+    char cwd[4096]; size_t cl;
+    if (getcwd(cwd, sizeof cwd) && (cl = strlen(cwd)) > 1) {
+        if (!strcmp(abs, cwd)) { snprintf(out, cap, "."); return; }
+        if (!strncmp(abs, cwd, cl) && abs[cl] == '/') { snprintf(out, cap, "%s", abs + cl + 1); return; }
+    }
+    snprintf(out, cap, "%s", abs);
+}
+/* prefixo da consulta relativo a raiz do indice: a pasta consultada (g_q_dir) quando esta debaixo da raiz, senao o prefixo que a resolucao deu */
+static void ign_qprefix(const IndexLoc *loc, char *out, size_t cap) {
+    const size_t rl = strlen(loc->root);
+    if (g_q_dir[0] && !strncmp(g_q_dir, loc->root, rl) && (rl == 1 || g_q_dir[rl] == '/' || !g_q_dir[rl])) {
+        const char *r = g_q_dir + rl; if (*r == '/') r++;
+        snprintf(out, cap, "%s", r); return;
+    }
+    snprintf(out, cap, "%s", loc->prefix);
+}
+/* esconde da visao as pastas de inclusao restrita que esta consulta nao pediu; chamar ANTES de store_live_rebase. Devolve quantos documentos escondeu */
+static int ign_hide_for_view(const IndexLoc *loc, StoreLive *L) {
+    IgnOvr O; ign_ovr_load(&O, loc->store); int n = 0;
+    if (O.n) { char qp[2100]; ign_qprefix(loc, qp, sizeof qp); n = store_live_hide_scoped(L, &O, qp); }
+    ign_ovr_free(&O); return n;
+}
+/* parte da chave de cache de uma visao: a pasta de inclusao restrita que contem a consulta ("" = nenhuma); o resto da visao e igual */
+static void ign_vis_key(const IndexLoc *loc, char *out, size_t cap) {
+    out[0] = 0; IgnOvr O; ign_ovr_load(&O, loc->store);
+    if (O.n) {
+        char qp[2100]; ign_qprefix(loc, qp, sizeof qp); const size_t ql = strlen(qp);
+        for (int k = 0; k < O.n; k++) { const IgnOvrEnt *x = &O.e[k]; if (x->scoped && ql >= x->pl && !memcmp(qp, x->p, x->pl) && (ql == x->pl || qp[x->pl] == '/')) { snprintf(out, cap, "%.200s", x->p); break; } }
+    }
+    ign_ovr_free(&O);
+}
+static void ign_scope_leave(void) { g_q_dir[0] = 0; }
+/* o registro de ignorados da raiz: o que o ultimo `index`/rastreador gravou; se ainda nao existe (indice criado por uma ferramenta, que nao faz a passada de contagem),
+ * faz a passada agora (so readdir e lstat; grava ao lado do store quando da) e usa o resultado. 0 = nao ha como saber */
+static int ign_reg_get(const IndexLoc *loc, IgnReg *R) {
+    if (ign_reg_load(loc->store, R)) return 1;
+    char par[4500]; mt_dirname(loc->store, par, sizeof par);
+    struct stat sm; char man[4500]; snprintf(man, sizeof man, "%s/MANIFEST", loc->store); if (stat(man, &sm) != 0) return 0;       /* sem indice nao se conta nada */
+    if (ign_scan(loc->root, loc->store, R, rt_isdir(par)) != 0) { ign_reg_free(R); return 0; }
+    return R->has;
+}
+/* a ferramenta vai consultar `dir`: guarda-a como pasta consultada e, se ela esta DENTRO de uma pasta ignorada (registro de ignorados), faz a inclusao
+ * restrita dela (grava `scoped <pasta>` no arquivo overrides e atualiza o indice agora), para que consultas com esse path a vejam sem poluir a busca do projeto.
+ * Nao inclui o que o usuario excluiu, pastas de segredo, raizes aninhadas nem pastas com mais de KATANA_INDEX_INCLUDE_MAX_FILES arquivos. g_scope_note guarda a
+ * frase do que aconteceu (uma linha), tomada por ign_scope_note_take. allow_add = 0 so registra a pasta consultada (comandos de linha de comando). */
+static void ign_scope_enter(const char *dir, int allow_add) {
+    g_scope_note[0] = 0; g_q_dir[0] = 0;
+    char rp[4200]; if (!dir || !*dir || !realpath(dir, rp)) return;
+    snprintf(g_q_dir, sizeof g_q_dir, "%s", rp);
+    if (!allow_add) return;
+    IndexLoc loc; index_resolve(rp, 0, &loc);
+    if (!loc.prefix[0]) return;
+    { IgnOvr O; ign_ovr_load(&O, loc.store); const int ost = ign_ovr_state(&O, loc.prefix, 1); ign_ovr_free(&O);
+      if (ost == IGO_INCLUDE || ost == IGO_EXCLUDE) return; }
+    IgnReg R; if (!ign_reg_get(&loc, &R)) return;          /* sem o registro nao ha como saber que e ignorada (nomes de pasta pesada podem ter sido reincluidos) */
+    const IgnRec *rec = NULL; char sub[2100]; const char *p = loc.prefix;
+    for (size_t pos = 0; ; ) {
+        const char *sl = strchr(p + pos, '/'); const size_t end = sl ? (size_t)(sl - p) : strlen(p); if (!end || end >= sizeof sub) break;
+        memcpy(sub, p, end); sub[end] = 0;
+        const int ix = ign_reg_find_dir(&R, sub);
+        if (ix >= 0) { rec = &R.r[ix]; break; }
+        if (!sl) break;
+        pos = end + 1;
+    }
+    if (!rec || rec->reason == IGR_SECRET || rec->reason == IGR_NESTED || rec->reason == IGR_CHECKOUT || rec->reason == IGR_EXCLUDED) { ign_reg_free(&R); return; }
+    char why[160]; snprintf(why, sizeof why, "%.150s", rec->rule); char shown[4300]; ign_disp(rp, shown, sizeof shown);
+    ign_reg_free(&R);
+    long long cap = 50000; { const char *e = getenv("KATANA_INDEX_INCLUDE_MAX_FILES"); if (e && *e && atoll(e) > 0) cap = atoll(e); }
+    size_t n = 0; uint64_t f = 0, b = 0; int capped = 0; mt_count(rp, now_sec(), 2.0, (size_t)cap * 2 + 1000, &n, &f, &b, &capped);      /* readdir e lstat so: quantos arquivos a pasta tem */
+    if (capped || (long long)f > cap) { snprintf(g_scope_note, sizeof g_scope_note, "[index: %s/ is in an ignored folder and has more than %lld files, so it was not included; set path to a smaller folder inside it]", shown, cap); return; }
+    if (ign_scoped_add(rp, loc.prefix) != 0) return;
+    index_force_update(loc.root);
+    snprintf(g_scope_note, sizeof g_scope_note, "[index: %s/ was ignored (%s); it is now indexed for queries whose path is inside it]", shown, why);
+}
+static int ign_scope_note_take(char *out, size_t cap) {
+    if (!g_scope_note[0]) { if (cap) out[0] = 0; return 0; }
+    snprintf(out, cap, "%s\n", g_scope_note); g_scope_note[0] = 0; return 1;
+}
+/* a frase do NOT FOUND sobre onde o indice nao olhou: as (ate 3) maiores pastas ignoradas debaixo da consulta (`proj` + `pre`); nada dentro delas e lido.
+ * Devolve 1 e escreve "N ignored folders could hold it: a/, b/, c/. To search one, set `path` to it."; 0 se nao ha pasta ignorada na consulta */
+static int ign_notfound_note(const char *proj, const char *pre, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    IndexLoc loc; index_resolve(proj, 0, &loc); IgnReg R; if (!ign_reg_get(&loc, &R)) return 0;
+    char scope[4300]; size_t sl = 0; scope[0] = 0;
+    if (loc.prefix[0]) sl = (size_t)snprintf(scope, sizeof scope, "%s", loc.prefix);
+    if (pre && *pre) { const char *q = pre; while (q[0] == '.' && q[1] == '/') q += 2; sl += (size_t)snprintf(scope + sl, sizeof scope - sl, "%s%s", sl ? "/" : "", q); }
+    while (sl > 0 && scope[sl - 1] == '/') scope[--sl] = 0;
+    int idx[3]; const int got = ign_reg_largest(&R, scope, 3, idx);
+    if (!got) { ign_reg_free(&R); return 0; }
+    int total = 0; const size_t pl = strlen(scope);
+    for (int i = 0; i < R.n; i++) { const IgnRec *x = &R.r[i]; if (!x->isdir || x->reason == IGR_SECRET) continue; if (pl && (strncmp(x->rel, scope, pl) != 0 || (x->rel[pl] != '/' && x->rel[pl]))) continue; total++; }
+    char names[600] = "";
+    for (int i = 0; i < got; i++) {
+        char ab[4400], sh[4400]; snprintf(ab, sizeof ab, "%s/%s", strcmp(loc.root, "/") ? loc.root : "", R.r[idx[i]].rel); ign_disp(ab, sh, sizeof sh);
+        size_t l = strlen(names); snprintf(names + l, sizeof names - l, "%s%.150s/", i ? ", " : "", sh);
+    }
+    snprintf(out, cap, "%d ignored folder%s could hold it: %s%s. To search one, set `path` to it.", total, total == 1 ? "" : "s", names, total > got ? " and others" : "");
+    ign_reg_free(&R); return 1;
+}
 #else
 static int maint_store_prepare(const char *dir, char *err, size_t ecap) { (void)dir; (void)err; (void)ecap; return 0; }
 static int maint_disk_ok(const char *dir, uint64_t need, char *err, size_t ecap) { (void)dir; (void)need; (void)err; (void)ecap; return 1; }
@@ -555,4 +663,10 @@ static int coder_cmd_gc(int argc, char **argv) { (void)argc; (void)argv; fprintf
 static int coder_cmd_ignored(int argc, char **argv) { (void)argc; (void)argv; fprintf(stderr, "ignored: not available on this platform\n"); return 2; }
 static int coder_cmd_include(int argc, char **argv) { (void)argc; (void)argv; fprintf(stderr, "include: not available on this platform\n"); return 2; }
 static int coder_cmd_exclude(int argc, char **argv) { (void)argc; (void)argv; fprintf(stderr, "exclude: not available on this platform\n"); return 2; }
+static char g_q_dir[4200];
+static void ign_scope_enter(const char *dir, int allow_add) { (void)dir; (void)allow_add; }
+static int ign_hide_for_view(const IndexLoc *loc, StoreLive *L) { (void)loc; (void)L; return 0; }
+static void ign_scope_leave(void) {}
+static int ign_scope_note_take(char *out, size_t cap) { if (cap) out[0] = 0; return 0; }
+static int ign_notfound_note(const char *proj, const char *pre, char *out, size_t cap) { (void)proj; (void)pre; if (cap) out[0] = 0; return 0; }
 #endif

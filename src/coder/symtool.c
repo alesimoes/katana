@@ -21,6 +21,7 @@ static void sym_query_text(const char *action, const char *target, const char *r
     char em[900]; SyView v; char err[300] = ""; SyItems items = {0}; CtSb sb = {0}; *so = *se = NULL;
     if (sy_view_open(root, &v, err, sizeof err) != 0) { snprintf(em, sizeof em, "%s: %s\n", action, err); goto fail; }
     if (isflow && !v.anykeys) { snprintf(em, sizeof em, "flow: the index has no text-key sections (it was built before they existed); delete %s and run `katana coder index` again\n", v.dir); sy_view_close(&v); goto fail; }
+    if (!isflow && !v.any) { int cmp = 1; if (sm_crawl_state(v.r, &cmp, NULL, NULL, NULL) && !cmp) { snprintf(em, sizeof em, "%s: the symbol index is still being built (no symbols are ready yet); ask again shortly, or use Find or Grep meanwhile\n", action); sy_view_close(&v); goto fail; } }
     if (!isflow && !v.any) { snprintf(em, sizeof em, "%s: the index has no symbol sections (built before they existed); delete %s and run `katana coder index` again\n", action, v.dir); sy_view_close(&v); goto fail; }
     if (isflow) {
         FlQ q;
@@ -41,10 +42,10 @@ static void sym_query_text(const char *action, const char *target, const char *r
             if (!sy_split_at(target, spec, sizeof spec, &line)) { snprintf(em, sizeof em, "uso: katana coder at <arquivo>:<linha> [pasta]\n"); sy_view_close(&v); goto fail; }
             sy_q_at(&v, spec, line, &items, &q); q.arg = target;
         }
+        if (!q.total) sy_nf_notes(root, &q);               /* NOT FOUND: "so far" com indice parcial, e as pastas ignoradas que poderiam ter o nome (J.3) */
         sy_render_text(&sb, &q, &items);
     }
     sy_items_free(&items); sy_view_close(&v);
-    { char note[200]; if (fresh_note_take(note, sizeof note)) { const size_t nl = strlen(note), bl = sb.p ? strlen(sb.p) : 0; char *m = (char *)malloc(nl + bl + 1); memcpy(m, note, nl); if (bl) memcpy(m + nl, sb.p, bl); m[nl + bl] = 0; free(sb.p); sb.p = m; } }       /* [index: N files changed since indexed; shown from the files] */
     *so = sb.p ? sb.p : strdup(""); *se = strdup(""); return;
 fail:
     *so = strdup(""); *se = strdup(em);
@@ -57,11 +58,31 @@ static int sym_action(const char *a, int *deflim) {
     return 0;
 }
 /* Symbols: devolve 0 e o texto em out, ou -1 com a mensagem de erro em out. */
+static int sym_tool_run2(const char *action, const char *name, const char *file, long long line, long long limit, long long depth, const char *root, char *out, size_t cap);
+/* Symbols: a pasta consultada fica registrada durante a chamada (inclusao restrita de `path` dentro de pasta ignorada e visibilidade, maint.c) */
 static int sym_tool_run(const char *action, const char *name, const char *file, long long line, long long limit, long long depth, const char *root, char *out, size_t cap) {
+    ign_scope_enter(root, 1);
+    const int rc = sym_tool_run2(action, name, file, line, limit, depth, root, out, cap);
+    ign_scope_leave(); return rc;
+}
+/* a saida cortada no teto de caracteres das acoes do Symbols, numa quebra de linha */
+static void sym_put_capped(char *out, size_t o, size_t cap, const char *so) {
+    const size_t lc = cap < 7000 ? cap - o - 100 : 6500; size_t n = strlen(so);
+    if (n > lc) { n = lc; while (n > 0 && so[n] != '\n') n--; snprintf(out + o, cap - o, "%.*s\n(output cut; lower `limit` or be more specific)", (int)n, so); }
+    else snprintf(out + o, cap - o, "%s", so);
+}
+static int sym_tool_run2(const char *action, const char *name, const char *file, long long line, long long limit, long long depth, const char *root, char *out, size_t cap) {
     int lim = 0;
+    if (action && !strcmp(action, "tree")) {          /* so le o indice que ja existe (N0): nao cria, nao espera nivel mais fundo */
+        CtSb sb = {0}; const int rc = sy_tree(root, file && *file ? file : "", (int)depth, (int)limit, 0, &sb);
+        size_t o = 0; out[0] = 0; char stl[500]; if (rc >= 0 && idx_status_line(root, "", stl, sizeof stl)) o += (size_t)snprintf(out + o, cap - o, "%s", stl);
+        sym_put_capped(out, o, cap, sb.p ? sb.p : ""); free(sb.p);
+        size_t l = strlen(out); while (l > 0 && (out[l - 1] == '\n' || out[l - 1] == ' ')) out[--l] = 0;
+        return rc < 0 ? -1 : 0;
+    }
     const int isflow = action && !strcmp(action, "flow");
     if (isflow) lim = 5;
-    else if (!action || !sym_action(action, &lim)) { snprintf(out, cap, "error: unknown action \"%s\". Use def, refs, callers, callees, uses, outline, at, deps, impact or flow.", action ? action : ""); return -1; }
+    else if (!action || !sym_action(action, &lim)) { snprintf(out, cap, "error: unknown action \"%s\". Use def, refs, callers, callees, uses, outline, at, deps, impact, flow or tree.", action ? action : ""); return -1; }
     const int isfile = !strcmp(action, "outline") || !strcmp(action, "deps") || !strcmp(action, "at");
     char target[4400];
     const char *t = isflow ? (name && *name ? name : (file && *file ? file : NULL)) : isfile ? (file && *file ? file : name) : (name && *name ? name : NULL);
@@ -81,12 +102,9 @@ static int sym_tool_run(const char *action, const char *name, const char *file, 
     char *so, *se; sym_query_text(action, target, root, (int)limit, depth > 0 ? (int)(depth > 6 ? 6 : depth) : 0, &so, &se);
     size_t o = 0; out[0] = 0;
     if (created || ms > 700) o += (size_t)snprintf(out + o, cap - o, "[symbol index %s in %.1f s]\n", created ? "created" : "updated", ms / 1000);
+    { char stl[500]; if (idx_status_line(root, "", stl, sizeof stl)) o += (size_t)snprintf(out + o, cap - o, "%s", stl); }       /* no maximo uma linha de estado (J.1) */
     if (!*so && *se) snprintf(out + o, cap - o, "error: %s", se);
-    else {
-        const size_t lc = cap < 7000 ? cap - o - 100 : 6500; size_t n = strlen(so);
-        if (n > lc) { n = lc; while (n > 0 && so[n] != '\n') n--; snprintf(out + o, cap - o, "%.*s\n(output cut; lower `limit` or be more specific)", (int)n, so); }
-        else snprintf(out + o, cap - o, "%s", so);
-    }
+    else sym_put_capped(out, o, cap, so);
     free(so); free(se);
     size_t l = strlen(out); while (l > 0 && (out[l - 1] == '\n' || out[l - 1] == ' ')) out[--l] = 0;
     return 0;
