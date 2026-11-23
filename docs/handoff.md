@@ -7,31 +7,32 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 ## Current state (2026-11-23, the page to read first)
 
-What the code is today, in order of what the owner is working on. Everything below was compiled; **nothing in this list was measured**
-and none of it was run in a live agent session with Qwen3.6 (owner's rule for this phase: improve the engine, no tests or measurements).
-The numbers in sections 0a to 14 further down are measurements from the dates in their titles, taken at that time; do not read them as
-today's performance.
+`main` is at commit `44748e1` and is already pushed. Everything below compiles; **nothing in this list was measured** and none of it was run in a
+live agent session with Qwen3.6 (owner's rule for this phase: improve the engine, no tests or measurements). The numbers in the dated sections
+further down are measurements from the dates in their titles; do not read them as today's performance. Sections marked "historical" describe the
+old tool set and are kept only where they explain a decision.
 
 1. **Working model: Qwen3.6-35B-A3B only.** Tests, measurements, training and proofs happen on it. Gemma 4 is not tested, not even for regression.
-2. **Legacy removal (T7 of `plan.md`, inventory in `legacy-removal.md`).** The project has no legacy and no compatibility: the old tool set, the
-   old `Find` index (`find-*.idx`, `Rename`/`Replace`/`Patch`), old store formats (store format 2; a different format is rebuilt without a notice),
-   aliases and escape switches that restored old behaviour are removed or being removed in waves. The curriculum data v6 and v7 were deleted.
-3. **Lean tool list.** The agent's table tool set (`src/tools/`) is being cut down to the tools the model really uses (`docs/tools-review.md`,
-   `docs/tools.md`); `Find`, `Symbols`, `Read` become facades of one engine.
-4. **Code index, nine phases built** (`docs/coder.md`, `docs/code-index-lifecycle.md`): root by `katana init`, crawler on demand in levels N0 to N3,
-   session watch and freshness check, `Symbols tree` and state lines, one index for `Find` (no second cache), transparent ignored content
-   (`katana coder ignored|include|exclude`), maintenance (`list`, `forget`, `gc`, damage and format handling). Open: measurement on real trees.
-5. **UIOE (`docs/uioe.md`).** U0 to U4 are built: the pre-LLM layer interprets, classifies and routes a request about code or files, retrieves,
-   and appends one `[katana: context ...]` block to the user message (`KATANA_UIOE=pack`, default; `off` is the escape; `katana uioe ask --pack`
-   prints the block with no model). U5 (facades) and U8 (memory, earlier sessions, recipes, skills as sources) are in progress. Not measured; the
-   model has not been trained on the block.
-6. **Curriculum and training.** The curriculum is regenerated from zero at the END of the UIOE construction (`plan.md` T5), with the final tool
-   formats and real tool outputs, then trained once from scratch. Training runs at night with `katana specialize` (`docs/specialization.md`).
-   Nothing is vigent in `data/curriculum/` until then.
-7. **Teacher mode** is an external plugin (below); the binary has no vendor code.
-8. **Git:** commits are local only; no push until the date in the owner's memory.
+2. **Legacy removed (T7 of `plan.md`, `legacy-removal.md`).** No legacy and no compatibility: the old tool set and its dispatcher branches, `katana code`,
+   the old `Find` index (`find-*.idx`, `Rename`/`Replace`/`Patch`), the old memory format, old store formats (format 2 only; another format is rebuilt without a notice),
+   aliases and escape switches are gone. The curriculum data v6 and v7 were deleted.
+3. **Lean tool list of 12:** `Bash, Read, Edit, Write, Find, Symbols, Grep, TodoWrite, AskUserQuestion, WebSearch, WebFetch, ToolSearch` (`docs/tools.md`,
+   `docs/tools-review.md`). `Glob` and `Task*` are removed; file names are found with `Find` or `Bash ls`. `Find` and `Symbols` run on one engine (the U5 facade).
+4. **Code index (coder), nine phases built** (`docs/coder.md`, `docs/code-index-lifecycle.md`): root by `katana init`, crawler on demand in levels N0 to N3,
+   session watch and freshness check, `Symbols tree` and state lines, one index for `Find`, transparent ignored content, maintenance (`list`, `forget`, `gc`).
+   Open: measurement on real trees.
+5. **UIOE (`docs/uioe.md`): U0 to U5 and U8 built.** The pre-LLM layer interprets, classifies, routes, retrieves and appends one `[katana: context ...]`
+   block to the user message (`KATANA_UIOE=pack` is the default; `off` is the escape; `katana uioe ask --pack` prints the block with no model). U8 brings
+   memory as dated, low-confidence evidence. Not started: U9 and later (web, external connectors, curriculum families). Not measured.
+6. **Curriculum and training.** The curriculum generator (`tools/curriculum`, `docs/curriculum.md`) was regenerated for the lean list and the context block;
+   training runs only at night (`katana specialize`, `docs/specialization.md`). No training result and no codebench pass on the new data exist yet.
+7. **Recent fixes:** the file watch read fd 0 (stdin) before init and stalled the agent at the prompt, swallowing the desktop's first message (fixed in `966ba85`);
+   the cited-folder note looks only at the user's request, not at attached docs text (`e9b5d69`); sanitizers on memory facts. The desktop's terminal panel no longer
+   prints a null `terminal` TypeError at shutdown (the terminal object now outlives the QML engine).
+8. **Teacher mode** is an external plugin (below); the binary has no vendor code.
+9. **Git:** see the owner's memory for the push rule in force.
 
-To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for the next U phase, then `legacy-removal.md` for what is left to remove.
+To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
 
 **2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library; README maps the old `KATANA_TEACHER_*` settings; the old names keep working there). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
 
@@ -44,7 +45,10 @@ file's alignment inside the page). Stats at exit. `katana tiersim run|sim` and `
 Numbers: knowledge.md 5c, comparisons.md 18. Measured only on Qwen3.6 on the CPU path; the GPU upload path of the VRAM
 expert cache and Gemma 4 do not use the arena yet.
 
-## 0t. Second tool set of the agent: `src/tools/` (2026-11-21)
+## 0t. Second tool set of the agent: `src/tools/` (2026-11-21) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 **2026-11-21, the judge is part of the binary: `katana codebench` (`src/app/codebench.c`).** Owner's rule: the engine must be C and whatever it uses must be C; tools humans run by hand may be Python. `katana learn` started `python3 tools/codebench/run.py` as its judge, which broke it, so the runner was rewritten in C and `tools/codebench/run.py` was deleted. The tasks (repo, hidden tests, reference solutions, `setup.py` helpers) stay as they were: they are test material in the language they are about. Commands: `katana codebench run --model M.gguf --out r.jsonl [--tasks 'glob,glob'] [--repeat N] [--timeout S] [--label L] [--katana BIN] [--env K=V]... [--sessions DIR] [--keep DIR] [--teacher URL --teacher-model M --distill-out F]`, `katana codebench verify [--tasks ...]`, `katana codebench compare A.jsonl B.jsonl`, `katana codebench list`. Same task folders, same defaults, same result fields in the same order (`label task passed seconds tool_calls gen_tokens timed_out [attempt] [session instruction]`, plus `skipped` when setup fails). New fields at the end, read from each run's own `KATANA_LOG` file and from the agent's stderr: `calls`, `failed_calls`, `refused_calls` (calls started minus calls logged: the engine's refusals do not reach the log), `repeated_calls` (same tool and arguments among the 20 previous calls, the `katana agentlog` rule), `rounds`, `last_text`, `tokens_read`, `tokens_written`; `compare` prints them after the solved counts. Differences from the script: each task's agent runs in its own process group and the whole group is killed at the time limit (and again when the agent exits, so background servers it started die); hidden tests also receive the `--env` variables (the stand-in tasks of `tools/traintest` use `KATANA_SPEC`); `setup.py` runs in a small Python host (`cb_shim`, embedded in the C file) that calls `setup()`, reports `vars` and `agent_env`, and calls `stop()` when the judge closes the pipe; `--dir` (default `tools/codebench`, or next to the binary) and `--python` (default `python3`, used for setup and for the hidden tests) are new; `tool_calls` still counts each call twice (the call line and the result line), as the script did, so old and new files compare. `katana learn` now starts `katana codebench run` (same binary, `--dir` from its `--bench`). POSIX only; on Windows the command says so. Checked: `katana codebench verify` prints the same 63 lines as `run.py --verify` did (63 tasks, 0 broken, news tasks included because this machine had internet; a news task whose setup fails is shown as skipped), `compare` prints the same first eight lines as the script on two hand-written files, the stand-in tasks of `tools/traintest/run.sh` (`mock_bench/test_hidden.py`) drive `katana learn` as before, and `tools/traintest/codebench_part.sh` covers the time limit, the cleanup of a task that leaves a background server, the log metrics, a failing setup and `compare` with a known answer. Not tested: `run` with a real model, the new log metrics on real agent output (checked against a stand-in agent that prints the same line formats), Windows.
 **2026-11-21, Gemma 4 parity in the agent (Gemma 4 26B-A4B is the working model from today).** Without the real model
@@ -233,7 +237,10 @@ both in `tools/traintest/run.sh`; 4 new checks in `tools/tooltest/tasks.sh`, and
 JSON is now a one-step plan, not an error). **Not measured with a model**: rejected calls per 100 in `agente.log`
 before and after, on Qwen3.6 and Gemma 4, is the measurement to do next.
 
-## 0s. Teacher mode in the agent and the desktop (2026-11-20)
+## 0s. Teacher mode in the agent and the desktop (2026-11-20) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 *Since 2026-11-23 the vendor-specific parts below (Messages API, `claude -p`, key, defaults) live in the plugin `plugins/teacher-anthropic/`; the binary speaks `docs/teacher-protocol.md`. The text that follows is the history of what was built.*
 
@@ -459,7 +466,10 @@ model (`tools/tinymodel/make_tiny_gguf.py`, 0.5 MB, llama architecture, ChatML),
   rendered text, message spans); `run.py --sessions DIR --repeat N`; `tools/dataset/ksess2jsonl.py`. The owner decided
   the specialization must be katana's own training engine (no external LoRA tooling); design still to be written.
 
-## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19)
+## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 Goal set by the owner: a local AI tool a person downloads and runs. Decision of the owner on the same day: the
 minimum requirement is 24 GB of RAM and the catalog holds only the two mixture-of-experts models; small dense
@@ -535,7 +545,10 @@ models are out (they were downloaded and screened, see below).
 - *Tool tests*: `tools/testar_ferramentas.sh` passes again (98 of 98); the 5 failures were expectations from
   before the owner's decisions (tools work in any folder, sudo only on request).
 
-## 0n. Source split and the agent layers above the model (2026-11-19)
+## 0n. Source split and the agent layers above the model (2026-11-19) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 **Source layout.** `src/katana.c` is still the single compilation unit, but it now only includes the parts:
 `src/engine/` (inference: GGUF, tokenizers, CPU kernels, Vulkan, architectures, forward, sampling), `src/agent/`
@@ -692,7 +705,10 @@ POSIX only by design).
 **Next, in the order agreed with the owner:** find which tools fail in real use on the desktop (owner report, not
 yet specified); retest Gemma 4 with the lean prompt; harder terminal and web tasks (the nine new ones are solved by both models); the runtime LoRA adapter for Qwen3.8 is on hold (dense model, the owner decided not to spend time on dense models).
 
-## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18)
+## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 Owner decision (2026-11-18): the tools run as the normal user and **root only when sudo is requested**; the **only** dialog is the sudo password (no trust or write-permission prompts). Terminal sessions are normal-user shells with `sudo()` bound to `sudo -A`; the askpass reads the password from a 0600 tmpfs file (`KATANA_PWFILE`, removed at exit), written after the dialog.
 
@@ -711,7 +727,10 @@ password. katana-desktop: working-folder button + folder dialog (`/cd`), `askDlg
 Tested: relative/absolute/append/edit/parent folders/`..`, 42 KB write, 70 KB error, `git -C`, the `NEEDPASS`/`retry`/cancel flow with a wrong password, and
 the root script with a fake `sudo` (create, append, edit through root). **Not tested**: a real correct sudo password through the dialog; the dialogs on screen.
 
-## 0l. Terminal and logs for the agent: robust run_command, terminal, read_log, terminal_screen (2026-11-18)
+## 0l. Terminal and logs for the agent: robust run_command, terminal, read_log, terminal_screen (2026-11-18) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 Problem: `run_command` used popen (stderr on the user's terminal, shared stdin, no timeout), so the model did not see
 errors and `sudo`/`ssh` hung the agent. Code in `src/katana.c`, "terminal e logs" block before `agent_tool_run`.
@@ -934,7 +953,10 @@ for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katan
 Next: compact Q8_0 on the GPU (+1 slot in each model, estimated +1.2 to +2.5 p.p.); upload of the slots outside the
 blocking path (own transfer queue) so the margin can be lowered without paying the blocking.
 
-## 0g. Programming tools in the agent (2026-11-18, branch worktree-agent-a1a49838b82625b7e)
+## 0g. Programming tools in the agent (2026-11-18, branch worktree-agent-a1a49838b82625b7e) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 New tools in `src/katana.c` (block before `agent_tool_run`): `edit_file`, `glob`, `read_document`,
 `git`, and, with the internet on (`KATANA_WEB` different from 0), `download_file` and `install_package`. Arguments and
@@ -1159,7 +1181,10 @@ katana-desktop is no longer Go + an HTML page in Chrome: it is now a Qt6/QML app
 `desktop-qt/README.md`; build with `desktop-qt/build.sh`; test `--selftest`). The Go code and `desktop/` were
 removed. To swap the binary in use: `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
 
-## 0b. Packed context and tokenized conversations (2026-11-17, branch worktree-agent-a79e57555acd5ead4)
+## 0b. Packed context and tokenized conversations (2026-11-17, branch worktree-agent-a79e57555acd5ead4) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 Done (commit eff16d8):
 - **Agent context compaction** (ChatML format only; Gemma 4 and gpt-oss keep the "contexto cheio" warning).
@@ -1395,7 +1420,10 @@ reference engine in `ref/llama-src`). What the architecture has:
 - Context 131072 in the agent: SOLVED (section 12; KV fp16 2.90 GB, ring in the local ones).
 - Agent with `web_search` validated end-to-end on the CPU (slow); confirm on Vulkan when the GPU frees up.
 
-### 2.2c gpt-oss architecture (`gpt-oss`, done 2026-11-16)
+### 2.2c gpt-oss architecture (`gpt-oss`, done 2026-11-16) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 Test model: `models/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, native MXFP4; 24 layers, dim 2880,
 64 heads, kv 8, head 64, 32 experts, 4 active, expert ffn 2880). Confirmed by the public
@@ -1600,7 +1628,10 @@ Only code change: `_putenv` mapped to `putenv` outside Windows.
   (another hour, another system: not directly comparable). The Vulkan drop on Linux is a point to
   investigate (driver, clocks or submission path).
 
-### 5.1 Step 2.1a done on Linux (Vulkan, Qwen2.5 1.5B)
+### 5.1 Step 2.1a done on Linux (Vulkan, Qwen2.5 1.5B) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 - `run`, single-question `chat` and interactive `chat` (two turns, remembers the name): ok, recorded
   graph on Vulkan, generation 83–97 tok/s.
@@ -1859,7 +1890,10 @@ VRAM (8 slots of 128), the rest runs on the CPU; each `chat` starts with the hea
 3. Token-by-token precision: hot experts in fp32 on the one-token path (as the Qwen3-30B batch became
    fp32 in section 8) would remove the 1.78 from the selftest; today it does not affect greedy generation.
 
-## 12. gemma4 with 131072 context in the agent (2026-11-17, worktree agent-aeade)
+## 12. gemma4 with 131072 context in the agent (2026-11-17, worktree agent-aeade) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 
 The warning `cache KV da CPU: 30 camadas, fp32, 128.85 GB` at 131072 was **only the warning's arithmetic** (`print_info` used
 30 layers x ctx x kv 8 x head 512): the allocation was already per layer (`kv_off`/`kv_cap`), with a ring of
@@ -2077,14 +2111,26 @@ Also compare the generation (9 slots and Q5_1 in 6 words instead of 9: less read
 binary. If the batch MoE in the slots does not win, return the default to the CPU (it stays exact).
 
 
-## 0m. sudo in the agent (2026-11-18)
+## 0m. sudo in the agent (2026-11-18) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 `run_command` with `sudo`: if `sudo -n true` fails, the engine asks for the password once (terminal without echo; on the desktop, `NEEDPASS` marker and `\x01PASS password` reply on the input), validates with `sudo -A -k -v` and keeps it only in memory (`g_sudo_pw`). Commands run with `sudo() { command sudo -A "$@"; }` and `SUDO_ASKPASS=~/.katana/askpass.sh` reading `KATANA_PW` from the child's environment. Test with a fake sudo in `tools/testar_ferramentas.sh` (96/96). It does not cover the `terminal` tool (pty): there the model sees the password prompt. Not tested with real sudo nor with the dialog in the window.
 
-## 0n. root by default and the howto tool (2026-11-18; SUPERSEDED by 0m: since 2026-11-18 evening the default is the normal user and root only when sudo is requested; `KATANA_SUDO=1` restores root by default)
+## 0n. root by default and the howto tool (2026-11-18; SUPERSEDED by 0m: since 2026-11-18 evening the default is the normal user and root only when sudo is requested; `KATANA_SUDO=1` restores root by default) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 In the interactive agent, `run_command` runs everything as root: `exec sudo -A sh -c '<cmd>'` (escaped quotes), with the password asked once (0m). `KATANA_SUDO=0` turns it off. Outside the agent (`katana tool`, `toolrun`) it is not the default (only with `KATANA_SUDO_FORCE=1`, used in the test with the fake sudo). If the password does not come (cancelled, no tty), the command runs without sudo. Cautions: files created by commands belong to root (write_file/edit_file still run as the user); SIGKILL on timeout kills the sudo but does not report to the root child. New tool `howto(topic)` with recipes (web, terminal, sudo, files, code, packages, logs, all) and 2 new lines in the prompt about web and terminal. Not measured: a model calling `howto`; the prompt cost (+~0.6 KB) in the prefix cache.
 
-## 0o. persistent root shell (2026-11-18)
+## 0o. persistent root shell (2026-11-18) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 With root by default (0n), `run_command` does not open a `sudo sh -c` per command: it uses a `sudo -A bash` session in a pty (`root_open`/`root_exec`, `g_rootS`, outside the `terminal` list). The password is asked once (modal on the desktop); after that cwd and variables persist between commands and there is no new password. Each command becomes a file read with `. file </dev/null` (a syntax error does not hang; stdin closed) and a `__KEND_<id>_<rc>__` marker marks the end and carries the code. Timeout/Ctrl+C send ^C to the pty and a second marker (rc 130); the shell and the state survive. With no marker within 3 s after the ^C, the session is discarded and reopened on the next command. If the session does not open (password refused, no sudo), it falls back to `sudo -A sh -c` per command. Tested with a fake sudo (98/98); not tested with real sudo, long commands with lots of output (>32 MB) nor programs that ask for a tty.
 
-## 0p. terminal also as root + automatic opening (2026-11-18)
+## 0p. terminal also as root + automatic opening (2026-11-18) (historical)
+
+> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+
 The model (Gemma) used the `terminal` tool to run `sudo` and got stuck in a loop with "no terminal session is open" (it sent `send` without `open`); the `sudo` there fell on the pty's password prompt and the modal did not appear, because only `run_command` went through the password flow. Now: `terminal send` without a session opens one by itself; `terminal` sessions open as `sudo -A bash` (root by default, password through the modal once), so `sudo` inside them does not ask for a password. Test: 98/98 (fake sudo); not tested with real sudo nor the modal in the window.

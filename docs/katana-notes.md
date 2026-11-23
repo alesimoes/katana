@@ -1,5 +1,7 @@
 # The `[katana: ...]` notes: inventory, real use, effect and consolidation proposal
 
+
+> Rows and examples that name `read_file`, `run_command`, `terminal`, `Glob` or `recall` come from sessions and code of the old tool set (removed 2026-11-23) and are historical; the notes' texts now say `Find` or `Bash ls` instead of `Glob`.
 Status: analysis written 2026-11-23 (no code changed, no model run, nothing measured for the analysis itself). Implementation status,
 same day, is in section 9; sections 1 to 8 are the analysis as written and still describe the tree before that work.
 Everything marked "observed" was read from the owner's saved sessions (`~/.katana/desktop/sessoes/*.ksess`, 8 files,
@@ -72,8 +74,8 @@ Env switches are the ones in the code.
 
 | id | text | where, function | trigger | size | variable data | class | v7 train/val |
 |---|---|---|---|---|---|---|---|
-| R1 | "you already made this exact call at step N of this request; the result is earlier in this conversation. Do not repeat it: pick a different place to look ..., or answer with what you have" | `loop.c:487`, `rr_check` | Read, Grep, Glob, Find, Symbols or a read-only MCP tool repeats a call that succeeded in this request (2nd time). The tool does not run: the note IS the result. | T 215, O 260 | step number | ORDER | 25 / 6 |
-| R2 | "this is the Nth time you make this exact call (first at step M) and it will not run again ... You can still: Read another part ..., Grep ..., Glob ..., or stop looking and answer" | `loop.c:490`, `rr_check` | same call, 3rd time or more. Also `rp_stuck >= 3` forces the closing round (`loop.c:920,926`) | T 430 | N, M | ORDER | 2 / 0 |
+| R1 | "you already made this exact call at step N of this request; the result is earlier in this conversation. Do not repeat it: pick a different place to look ..., or answer with what you have" | `loop.c:487`, `rr_check` | Read, Grep, Find, Symbols or a read-only MCP tool repeats a call that succeeded in this request (2nd time). The tool does not run: the note IS the result. | T 215, O 260 | step number | ORDER | 25 / 6 |
+| R2 | "this is the Nth time you make this exact call (first at step M) and it will not run again ... You can still: Read another part ..., Grep ..., Find ..., or stop looking and answer" | `loop.c:490`, `rr_check` | same call, 3rd time or more. Also `rp_stuck >= 3` forces the closing round (`loop.c:920,926`) | T 430 | N, M | ORDER | 2 / 0 |
 | R3 | "this exact call already gave this exact result (N times now). Repeating it changes nothing. Do something different: ..." | `loop.c:936` | same call and same result hash seen before, for any tool the `rr` table does not cover (Bash, Web*, TodoWrite, ToolSearch, MCP not read-only); appended after the real result | T 245, O 254 | count | ORDER | 0 / 0 |
 | R4 | "N calls in this request failed around the same thing: KEY (last error: "...") ... stop probing it. Tell the user in one sentence ..." | `loop.c:942`, `bk_count` | the 3rd and 6th failure with the same key (`bk_key_of`) | T 420, up to 700 | count, key (96), error (120) | ORDER | 0 / 0 |
 | R5 | "N calls in a row failed. Stop guessing. What do the errors have in common? Check the help or the documentation (WebSearch), or tell the user ..." | `loop.c:949` | `rp_fail >= 4` consecutive failures | T 215 | count | ORDER | 0 / 0 |
@@ -97,7 +99,7 @@ Env switches are the ones in the code.
 
 | id | text | where, function | trigger | size | variable data | class | v7 train/val |
 |---|---|---|---|---|---|---|---|
-| Q1 | "you mention "X", which does not exist from the working folder (CWD). It is at: PATH. Work there: pass that folder as `path` to Find, Glob and Grep, or use absolute paths." | `locate.c:300`, `place_note`, attached at `loop.c:708` | request names a folder or project (`pasta`, `projeto`, `repo`, a path with 2+ slashes) that does not exist from the cwd and `ff_resolve_missing` finds it; at most 2 searches, 4 candidates. Side effect: indexes the folder (`autoindex_dir`) | T 250, O 515 to 613 per request | name, cwd, path | ORDER | 42 / 5 |
+| Q1 | "you mention "X", which does not exist from the working folder (CWD). It is at: PATH. Work there: pass that folder as `path` to Find and Grep, or use absolute paths." | `locate.c:300`, `place_note`, attached at `loop.c:708` | request names a folder or project (`pasta`, `projeto`, `repo`, a path with 2+ slashes) that does not exist from the cwd and `ff_resolve_missing` finds it; at most 2 searches, 4 candidates. Side effect: indexes the folder (`autoindex_dir`) | T 250, O 515 to 613 per request | name, cwd, path | ORDER | 42 / 5 |
 | Q2 | "the engine picked this from the project documents that KATANA.md points to, because it matches this request. It is a selection: open the file if you need more." + `== file:a-b` blocks | `docsel.c:204`, `ds_select`, attached at `loop.c:698` | project has `KATANA.md`; up to 3 rounds of blocks, at most 6 blocks, 8,000-byte buffer; only for ChatML/Gemma (`cml`) | T 150 + data up to 8,000 | document lines | INFO | 19 / 11 |
 | Q3 | "your todo list from before still has N unfinished steps. This message is newer and comes first: if it changes the plan, follow it and rewrite or drop the old steps." | `loop.c:719` | new request while the previous list has open steps, not the first request | T 210 | N | ORDER | 0 / 0 |
 | Q4 | "The user undid your file changes of an earlier request; these files are back as they were before it: LIST" (no `katana` prefix) | `loop.c:690` | user ran undo | 110 + list | files | INFO | 0 / 0 |
@@ -181,7 +183,7 @@ question; `round < lim - 2` is required, so a request already past round 38 neve
 
 Two defects visible in this session (observed in the code and in the text):
 
-* `rr_covered` (`loop.c:477`) lists Read, Grep, Glob, Find, Symbols and read-only MCP tools. `WebSearch` and
+* `rr_covered` (`loop.c:477`) lists Read, Grep, Find, Symbols and read-only MCP tools. `WebSearch` and
   `WebFetch` are not covered, so a repeated web call is executed again (the tool returned
   "(cached) ... 3775 bytes returned" each time) and only R3 is appended, never the R2 "will not run again". Opinion:
   covering the two web tools gives them the same hard cut as Read, at no new code.
@@ -322,7 +324,7 @@ Evidence:
 - [C] KATANA.md:12-18 <picked project document lines>                                                               <- Q2
 Links: <open ends of the evidence graph: files not yet read, each with why>                                         <- R10
 Not found / limits: an earlier list has 2 open steps (this message is newer and comes first); <index state>        <- Q3
-Next: <imperative with a stop criterion>. Use path=/mnt/dados/source/greymod in Find, Glob and Grep.                <- Q1
+Next: <imperative with a stop criterion>. Use path=/mnt/dados/source/greymod in Find and Grep.                <- Q1
 [end of context]
 ```
 
@@ -521,7 +523,7 @@ the R1/R2 and removed-note mismatches); they are regenerated as v8, not edited.
 The informational notes that depend only on what is known before the first call now live in the block, and each one is emitted in exactly one place, so nothing is said twice:
 
 * **Q1 (cited folder that does not exist from the working folder).** With a block, `Question understood as` carries "(project PATH; the folder you named does not exist from the working folder)" and `Next` says
-  "Pass path=PATH to Find, Glob and Grep"; `loop.c` does not append the `KN_PLACE` note (`pnn && !ublk`, it still runs `place_note` for the side effect of indexing the folder). Without a block (a request that passes no door) the
+  "Pass path=PATH to Find and Grep"; `loop.c` does not append the `KN_PLACE` note (`pnn && !ublk`, it still runs `place_note` for the side effect of indexing the folder). Without a block (a request that passes no door) the
   `KN_PLACE` note is emitted as before. So the note stays in `KN_TAB`, as the no-block form.
 * **Q2 (header of the documents the engine picked).** With a block the header sentence is not sent: `up_add_docsel` (`api.c`) parses the selected ranges out of `ds_select` and they enter `Evidence` as document lines.
   Without a block the old path appends the whole `KN_DOCS` text. Same rule: the header only exists in the no-block form.
