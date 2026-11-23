@@ -1,0 +1,325 @@
+# morphology.pt.rules: regras de lematizacao leve para portugues (sem acentos; o texto e dobrado antes de casar).
+# suffix <sufixo> <substituicao|-> <tamanho minimo da raiz> <ordem>
+#   Casa se a palavra termina em <sufixo> e sobram >= <raiz minima> letras. Regras em ordem crescente de <ordem>
+#   (empate: sufixo mais longo primeiro); vale a PRIMEIRA que casa. '-' = substituicao vazia.
+#   A substituicao pode ser uma lista separada por virgula (er,ir): candidatos; o consumidor usa o primeiro que existir no vocabulario.
+# irregular <forma> <canonica>   (consultado antes das regras; forma ja sem acento)
+# O resultado e uma forma de busca (infinitivo/singular), nao um lema linguisticamente perfeito.
+
+# substantivos de acao e derivados -> infinitivo
+suffix amentos ar 3 10
+suffix amento ar 3 11
+suffix imentos er,ir 3 12
+suffix imento er,ir 3 13
+suffix izacoes izar 3 14
+suffix izacao izar 3 15
+suffix acoes ar 3 20
+suffix acao ar 3 21
+suffix ucoes uir 3 22
+suffix ucao uir 3 23
+suffix icoes ir,er 3 24
+suffix icao ir,er 3 25
+suffix soes dir 3 26
+suffix sao dir 3 27
+suffix ssoes tir 3 28
+suffix ssao tir 3 29
+suffix adores ar 3 30
+suffix adoras ar 3 31
+suffix adora ar 3 32
+suffix ador ar 3 33
+suffix edores er 3 34
+suffix edor er 3 35
+suffix idores ir 3 36
+suffix idor ir 3 37
+suffix tores tor 2 38
+suffix dades dade 3 40
+suffix mente - 4 41
+suffix ismos ismo 3 42
+suffix istas ista 3 43
+suffix avel ar 3 44
+suffix aveis ar 3 45
+suffix ivel er,ir 3 46
+suffix iveis er,ir 3 47
+suffix osos oso 3 48
+suffix osas osa 3 49
+
+# gerundio, participio, formas conjugadas frequentes -> infinitivo
+suffix ando ar 3 60
+suffix endo er 3 61
+suffix indo ir 3 62
+suffix ados ar 3 63
+suffix adas ar 3 64
+suffix ado ar 3 65
+suffix ada ar 3 66
+suffix idos er,ir 3 67
+suffix idas er,ir 3 68
+suffix ido er,ir 3 69
+suffix ida er,ir 3 70
+suffix aram ar 3 71
+suffix eram er 3 72
+suffix iram ir 3 73
+suffix arao ar 3 74
+suffix erao er 3 75
+suffix irao ir 3 76
+suffix ou ar 3 77
+suffix aria ar 3 78
+suffix asse ar 3 79
+suffix amos ar 3 80
+suffix emos ar,er 3 81
+suffix imos ir 3 82
+suffix ava ar 3 83
+suffix avam ar 3 84
+suffix ar ar 3 85
+
+# plurais
+suffix coes cao 3 100
+suffix paes pao 2 101
+suffix maes mae 2 102
+suffix ais al 2 103
+suffix eis el 2 104
+suffix ois ol 2 105
+suffix uis ul 2 106
+suffix ns m 2 107
+suffix res r 3 108
+suffix zes z 3 109
+suffix oes ao 2 110
+suffix aes ao 2 111
+suffix as a 3 112
+suffix os o 3 113
+suffix es e 3 114
+suffix s - 3 115
+
+# feminino / diminutivo / aumentativo
+suffix zinhos zinho 3 130
+suffix zinho - 3 131
+suffix inhos o 3 132
+suffix inhas a 3 133
+suffix inho o 3 134
+suffix inha a 3 135
+suffix oes ao 3 136
+
+# formas verbais irregulares e substantivos de operacao frequentes em codigo
+irregular fez fazer
+irregular feito fazer
+irregular feita fazer
+irregular feitos fazer
+irregular fazendo fazer
+irregular faz fazer
+irregular fiz fazer
+irregular faco fazer
+irregular fazem fazer
+irregular fazemos fazer
+irregular foi ser
+irregular fui ser
+irregular sao ser
+irregular era ser
+irregular eram ser
+irregular sera ser
+irregular seja ser
+irregular sendo ser
+irregular sido ser
+irregular somos ser
+irregular esta estar
+irregular estao estar
+irregular estava estar
+irregular estive estar
+irregular estando estar
+irregular estado estado
+irregular tem ter
+irregular tinha ter
+irregular tenho ter
+irregular tendo ter
+irregular tido ter
+irregular tiver ter
+irregular teve ter
+irregular vai ir
+irregular vao ir
+irregular foram ir
+irregular indo ir
+irregular vou ir
+irregular vem vir
+irregular vindo vir
+irregular veio vir
+irregular vieram vir
+irregular vinha vir
+irregular pode poder
+irregular podem poder
+irregular posso poder
+irregular podia poder
+irregular podendo poder
+irregular pude poder
+irregular quer querer
+irregular quis querer
+irregular quero querer
+irregular querendo querer
+irregular diz dizer
+irregular disse dizer
+irregular dito dizer
+irregular dizendo dizer
+irregular digo dizer
+irregular poe por
+irregular pos por
+irregular posto por
+irregular posta por
+irregular posso poder
+irregular pondo por
+irregular ponha por
+irregular ponho por
+irregular ve ver
+irregular viu ver
+irregular visto ver
+irregular vendo ver
+irregular vejo ver
+irregular veem ver
+irregular da dar
+irregular deu dar
+irregular dado dar
+irregular dados dado
+irregular dando dar
+irregular dou dar
+irregular der dar
+irregular sabe saber
+irregular soube saber
+irregular sabido saber
+irregular sabendo saber
+irregular traz trazer
+irregular trouxe trazer
+irregular trazido trazer
+irregular trazendo trazer
+irregular leva levar
+irregular lido ler
+irregular lida ler
+irregular lendo ler
+irregular le ler
+irregular leem ler
+irregular aberto abrir
+irregular aberta abrir
+irregular abertos abrir
+irregular aberturas abertura
+irregular escrito escrever
+irregular escrita escrever
+irregular escritos escrever
+irregular escrevendo escrever
+irregular coberto cobrir
+irregular coberta cobrir
+irregular descoberto descobrir
+irregular ganho ganhar
+irregular gasto gastar
+irregular pago pagar
+irregular paga pagar
+irregular pagos pagar
+irregular pagando pagar
+irregular aceito aceitar
+irregular aceita aceitar
+irregular salvo salvar
+irregular salva salvar
+irregular entregue entregar
+irregular entregues entregar
+irregular eleito eleger
+irregular expresso expressar
+irregular preso prender
+irregular presa prender
+irregular suspenso suspender
+irregular morto morrer
+irregular morta morrer
+irregular impresso imprimir
+irregular impressa imprimir
+irregular extinto extinguir
+irregular junto juntar
+irregular aceso acender
+irregular benquisto benquerer
+irregular visao ver
+irregular vista ver
+irregular opcoes opcao
+irregular razoes razao
+irregular paises pais
+irregular mais mais
+irregular menos menos
+irregular lapis lapis
+irregular onibus onibus
+irregular status status
+irregular campus campus
+irregular atlas atlas
+irregular analise analise
+irregular analises analise
+irregular tese tese
+irregular crise crise
+irregular base base
+irregular bases base
+irregular nomes nome
+irregular tipos tipo
+irregular itens item
+irregular imagens imagem
+irregular viagens viagem
+irregular origens origem
+irregular margens margem
+irregular ordens ordem
+irregular jovens jovem
+irregular homens homem
+irregular usuarios usuario
+irregular papeis papel
+irregular niveis nivel
+irregular hoteis hotel
+irregular carateres caractere
+irregular caracteres caractere
+irregular textos texto
+irregular funcoes funcao
+irregular conexoes conexao
+irregular versoes versao
+irregular sessoes sessao
+irregular transacoes transacao
+irregular permissoes permissao
+irregular excecoes excecao
+irregular decisoes decisao
+irregular divisoes divisao
+irregular comissoes comissao
+irregular emissoes emissao
+irregular admissoes admissao
+irregular colecoes colecao
+irregular operacoes operacao
+irregular aprovacoes aprovacao
+irregular cancelamentos cancelamento
+irregular reembolsos reembolso
+irregular estornos estorno
+irregular pedidos pedido
+irregular clientes cliente
+irregular produtos produto
+irregular notas nota
+irregular contas conta
+irregular filas fila
+irregular listas lista
+irregular tabelas tabela
+irregular colunas coluna
+irregular linhas linha
+irregular registros registro
+irregular arquivos arquivo
+irregular pastas pasta
+irregular caminhos caminho
+irregular erros erro
+irregular avisos aviso
+irregular mensagens mensagem
+irregular tarefas tarefa
+irregular eventos evento
+irregular servicos servico
+irregular requisicoes requisicao
+irregular respostas resposta
+irregular chaves chave
+irregular valores valor
+irregular campos campo
+irregular parametros parametro
+irregular argumentos argumento
+irregular opcoes opcao
+irregular entradas entrada
+irregular saidas saida
+irregular ligacoes ligacao
+irregular referencias referencia
+irregular dependencias dependencia
+irregular configuracoes configuracao
+irregular notificacoes notificacao
+irregular validacoes validacao
+irregular autenticacoes autenticacao
+irregular conversoes conversao
+irregular sincronizacoes sincronizacao
+irregular importacoes importacao
+irregular exportacoes exportacao
+irregular inicializacoes inicializacao
