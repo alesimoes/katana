@@ -657,6 +657,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             snprintf(nl, sizeof nl, "[The user undid your file changes of an earlier request; these files are back as they were before it: %s]\n%s", undo_txt, line);
             snprintf(line, sizeof line, "%s", nl);
         }
+        intent_set_user(line);          /* o que o usuario pediu: o Read usa para mostrar o trecho certo de um arquivo grande */
         if (cml) {      /* o motor escolhe, nos .md que o KATANA.md aponta, so o que importa para este pedido e entrega como contexto */
             static char dsn[8000]; char cwdb[2048];
             const int dn = getcwd(cwdb, sizeof cwdb) ? ds_select(&m->tk, line, br_cur(), cwdb, dsn, sizeof dsn) : 0;

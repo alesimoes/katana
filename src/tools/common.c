@@ -120,6 +120,13 @@ static int ct_cwd_is_home(void) {
     agent_home(h, sizeof h);
     return !strcmp(cwd, "/") || !strcmp(cwd, h);
 }
+/* o que o modelo procura neste pedido: a ultima consulta do Find (ou o texto do usuario) serve para o Read mostrar a parte do arquivo que importa */
+static char g_intent_user[800], g_intent_find[400];
+static void intent_set_user(const char *line) {
+    while (line[0] == '[') { const char *nl = strchr(line, '\n'); if (!nl) break; line = nl + 1; }       /* pula as notas do katana no comeco */
+    snprintf(g_intent_user, sizeof g_intent_user, "%s", line); g_intent_find[0] = 0;
+}
+static const char *intent_get(void) { if (g_intent_find[0]) return g_intent_find; if (g_intent_user[0]) return g_intent_user; const char *e = getenv("KATANA_INTENT"); return e ? e : ""; }
 /* ---- arquivos vistos nesta conversa ----
  * Read marca (inteiro ou so uma parte); Edit e Write consultam. Guarda tamanho e data para saber se o arquivo mudou
  * no disco depois da leitura. ct_seen_reset() a cada conversa nova. */

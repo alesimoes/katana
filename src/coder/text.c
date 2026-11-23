@@ -463,6 +463,77 @@ static void ct_print(const char *text, const CoderTok *t, int n, int json) {
     printf("%-24s %-22s %-8s %4s  %-6s %s\n", "orig", "norm", "lang", "pos", "kind", "flag");
     for (int i = 0; i < n; i++) printf("%-24s %-22s %-8s %4d  %-6s %s\n", t[i].orig, t[i].norm, g_ct_langname[t[i].lang], t[i].pos, kn[t[i].kind], sn[t[i].stop]);
 }
+
+/* ---- trechos de um arquivo que casam com o que o modelo procura (Read de arquivo grande sem faixa) ----
+ * Tokeniza a intencao (consulta do Find ou pedido do usuario) e cada linha do arquivo com o mesmo tokenizador (identificadores
+ * partidos, plural/verbo reduzidos); janelas de 14 linhas com passo 7 pontuam os termos DISTINTOS que contem, pesando mais os raros no
+ * arquivo; devolve ate 2 janelas sem sobreposicao, com numero de linha. Devolve quantas janelas escreveu (0 = nada que valha) ---- */
+static int rd_best_windows(const char *b, size_t n, const char *intent, long skip_lines, char *out, size_t cap) {
+    if (!intent || !*intent || n == 0 || cap < 600) return 0;
+    CoderTok tk[96]; char term[24][48]; int nt = 0;
+    const int ni = coder_tokens(intent, tk, 96);
+    for (int i = 0; i < ni && nt < 24; i++) {
+        if (tk[i].stop || tk[i].kind == 2 || strlen(tk[i].norm) < 3) continue;
+        int dup = 0; for (int k = 0; k < nt; k++) if (!strcmp(term[k], tk[i].norm)) dup = 1;
+        if (!dup) snprintf(term[nt++], sizeof term[0], "%s", tk[i].norm);
+    }
+    if (nt == 0) return 0;
+    size_t nl = 0; for (size_t i = 0; i < n; i++) if (b[i] == '\n') nl++;
+    nl++;
+    if (nl > 40000) return 0;
+    uint32_t *mask = (uint32_t *)calloc(nl, sizeof *mask); size_t *off = (size_t *)malloc(sizeof *off * (nl + 1));
+    if (!mask || !off) { free(mask); free(off); return 0; }
+    int df[24] = {0};
+    size_t li = 0; off[0] = 0;
+    for (size_t s = 0; s < n && li < nl;) {
+        const char *nlp = (const char *)memchr(b + s, '\n', n - s);
+        size_t e = nlp ? (size_t)(nlp - b) : n;
+        char ln[420]; size_t l = e - s < sizeof ln - 1 ? e - s : sizeof ln - 1;
+        memcpy(ln, b + s, l); ln[l] = 0;
+        const char *c0 = ln; while (*c0 == ' ' || *c0 == '\t') c0++;
+        const int is_comment = (c0[0] == '/' && (c0[1] == '/' || c0[1] == '*')) || c0[0] == '*' || c0[0] == '#' || (c0[0] == '-' && c0[1] == '-');      /* comentario puro: o codigo vale mais */
+        CoderTok lt[160]; const int nk = is_comment ? 0 : coder_tokens(ln, lt, 160);
+        for (int i = 0; i < nk; i++) for (int k = 0; k < nt; k++) if (!strcmp(lt[i].norm, term[k])) mask[li] |= 1u << k;
+        for (int k = 0; k < nt; k++) if (mask[li] & (1u << k)) df[k]++;
+        li++; off[li] = nlp ? e + 1 : n; s = nlp ? e + 1 : n + 1;
+    }
+    const size_t N = li; double w[24];
+    for (int k = 0; k < nt; k++) w[k] = df[k] ? 1.0 / (1.0 + log((double)df[k])) : 0;
+    const int WIN = 14, STEP = 7;
+    double bs[2] = {0, 0}; long bw[2] = {-1, -1};
+    for (size_t a = (size_t)(skip_lines > 0 ? skip_lines : 0); a < N; a += STEP) {      /* depois das linhas que o Read ja mostra no comeco */
+        uint32_t u = 0; int lines = 0;
+        for (size_t i = a; i < a + WIN && i < N; i++) { u |= mask[i]; if (mask[i]) lines++; }
+        int nd = 0; double sc = 0;
+        for (int k = 0; k < nt; k++) if (u & (1u << k)) { nd++; sc += w[k]; }
+        if (nd < (nt >= 2 ? 2 : 1)) continue;
+        sc += 0.3 * lines;
+        for (int r = 0; r < 2; r++) {
+            if (bw[r] >= 0 && (long)a < bw[r] + WIN && (long)a + WIN > bw[r]) { if (sc > bs[r]) { bs[r] = sc; bw[r] = (long)a; } break; }      /* mesma regiao: fica a melhor */
+            if (bw[r] < 0 || sc > bs[r]) {
+                if (r == 0 && bw[0] >= 0) { bs[1] = bs[0]; bw[1] = bw[0]; }
+                bs[r] = sc; bw[r] = (long)a; break;
+            }
+        }
+    }
+    if (bw[0] >= 0 && bw[1] >= 0 && bw[1] < bw[0] + WIN && bw[0] < bw[1] + WIN) bw[1] = -1;
+    int wrote = 0; size_t o = 0;
+    for (int r = 0; r < 2; r++) {
+        if (bw[r] < 0) continue;
+        size_t a = (size_t)bw[r], z = a + WIN < N ? a + WIN : N;
+        if (o + 200 > cap) break;
+        o += (size_t)snprintf(out + o, cap - o, "%s[lines %zu-%zu match what you look for]\n", wrote ? "" : "", a + 1, z);
+        for (size_t i = a; i < z; i++) {
+            size_t l = off[i + 1] > off[i] ? off[i + 1] - off[i] : 0; if (l && b[off[i] + l - 1] == '\n') l--;
+            if (l > 200) l = 200;
+            if (o + l + 12 > cap) break;
+            o += (size_t)snprintf(out + o, cap - o, "%6zu\t%.*s\n", i + 1, (int)l, b + off[i]);
+        }
+        wrote++;
+    }
+    free(mask); free(off);
+    return wrote;
+}
 static int coder_tokens_main(int argc, char **argv) {
     const char *text = NULL, *file = NULL, *kb = NULL; int lang = CT_AUTO, json = 0, bench = 0;
     for (int i = 0; i < argc; i++) {

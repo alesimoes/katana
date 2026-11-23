@@ -492,6 +492,8 @@ static void ct_grep(const char *js, const char *end, char *out, size_t cap) {
         ct_regex_test(js, end, pat, out, cap);
         goto done;
     }
+    const int wants_lines = (!mode || !*mode) && (ct_has(js, end, "-C") || ct_has(js, end, "-A") || ct_has(js, end, "-B") || ct_has(js, end, "context") || (ct_has(js, end, "-n") && ct_bool(js, end, "-n")));
+    if (wants_lines) { free(mode); mode = strdup("content"); }      /* pediu linhas com numero ou contexto: so a lista de arquivos nao responde */
     if (!mode || !*mode || !strcmp(mode, "files_with_matches") || !strcmp(mode, "files") || !strcmp(mode, "file") ||
         !strcmp(mode, "filenames") || !strcmp(mode, "paths") || !strcmp(mode, "files_only")) g.mode = 0;
     else if (!strcmp(mode, "content") || !strcmp(mode, "lines") || !strcmp(mode, "matches") || !strcmp(mode, "match") || !strcmp(mode, "text")) g.mode = 1;

@@ -63,6 +63,7 @@ static int ct_ext_is(const char *path, const char *ext) {
 /* ---- as linhas [offset, offset+limit) de b, com numero e tab, no maximo o que cabe em cap ---- */
 #define CT_LINE_MAX 2000
 static long long g_rdl_first, g_rdl_last;      /* faixa entregue pela ultima chamada de ct_rd_lines */
+static int rd_best_windows(const char *b, size_t n, const char *intent, long skip_lines, char *out, size_t cap);      /* em coder/text.c */
 static void ct_rd_lines(const char *b, size_t n, long long offset, long long limit, int numbered, char *out, size_t cap, int *partial) {
     const long long total = ct_count_lines(b, n);
     size_t room = cap > 700 ? cap - 600 : 0;
@@ -384,15 +385,20 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
         if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_on() && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
             static char mp[16000], hd[12000];
             ct_outline(oext, b, n, mp, sizeof mp);
-            ct_rd_lines(b, n, 1, 40, 1, hd, sizeof hd, &partial);
+            static char bw[7000]; bw[0] = 0;
+            const int nbw = rd_best_windows(b, n, intent_get(), 12, bw, sizeof bw);      /* os trechos do arquivo que casam com o que o modelo procura */
+            const int head = nbw ? 12 : 40;
+            ct_rd_lines(b, n, 1, head, 1, hd, sizeof hd, &partial);
             char *pm = strstr(hd, "[PARTIAL view");
             if (pm) *pm = 0;
             size_t hl = strlen(hd);
             while (hl && hd[hl - 1] == '\n') hd[--hl] = 0;
-            snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n[katana: file has %lld lines; this is its map and its start. "
+            if (nbw) snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first %d lines]\n%s\n%s[katana: file has %lld lines; this is its map, its start and the parts that match what you are looking for. "
+                     "Read another part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]", res, total, n, mp, head, hd, bw, total);
+            else snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n[katana: file has %lld lines; this is its map and its start. "
                      "Read a part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]", res, total, n, mp, hd, total);
             ct_seen_mark(res, 1);
-            rc_note(res, (long long)st.st_size, (long long)st.st_mtime, 1, 40, total);
+            rc_note(res, (long long)st.st_size, (long long)st.st_mtime, 1, head, total);
             break;
         }
         if (!cnote[0] && !has_off && !has_lim && ct_seen(res) >= 2 && rd_delta(res, b, n, out, cap)) { ct_seen_mark(res, 0); break; }      /* ja lido inteiro nesta conversa */

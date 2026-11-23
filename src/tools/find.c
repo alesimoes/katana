@@ -1308,6 +1308,7 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
     const int refs = mode && !strcmp(mode, "refs");
     const int nbr = mode && !strcmp(mode, "neighbors");      /* pesquisa/teste, nao anunciado: a nota de vizinhos que o laco poria depois de um Read de `query` */
     if (mode && *mode && !refs && !nbr && strcmp(mode, "search") != 0) { snprintf(out, cap, "error: unknown mode \"%s\". Use \"search\" (default) or \"refs\".", mode); goto done; }
+    if (q && *q && !refs && !nbr) snprintf(g_intent_find, sizeof g_intent_find, "%s", q);      /* o Read seguinte mostra o trecho que casa com isto */
     if (!q || !*q) { snprintf(out, cap, "error: missing `query`. Example: {\"query\": \"where the config file is parsed\"} or {\"query\": \"parseConfig\", \"mode\": \"refs\"}"); goto done; }
     if ((!path || !*path) && ct_cwd_is_home()) {
         snprintf(out, cap, "error: the working folder is your home folder, not a project, so Find has nothing to search here but files of other programs. "
