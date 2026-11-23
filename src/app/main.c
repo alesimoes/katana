@@ -1006,7 +1006,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "init") == 0) return init_cli(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "brief") == 0) return brief_cli(argc - 2, argv + 2);
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
-    if (argc == 3 && strcmp(argv[1], "placenote") == 0) { static char pn[2400]; printf("%s\n", place_note(argv[2], pn, sizeof pn) ? pn : "(nenhuma pasta citada fora do lugar)"); return 0; }
+    if (argc == 3 && strcmp(argv[1], "placenote") == 0) { static char pn[2400]; printf("%s\n", place_note(argv[2], pn, sizeof pn) ? pn : "(nenhuma pasta citada fora do lugar)"); for (int i = 0; i < g_place_nd; i++) printf("indexaria: %s\n", g_place_dirs[i]); return 0; }
     if (argc >= 2 && strcmp(argv[1], "update") == 0) return update_main(argc - 2, argv + 2);
     if (argc == 3 && strcmp(argv[1], "version") == 0 && strcmp(argv[2], "--changes") == 0) { fputs(KATANA_CHANGES, stdout); return 0; }
     if (argc == 2 && (strcmp(argv[1], "version") == 0 || strcmp(argv[1], "--version") == 0)) { printf("katana %s\n", KATANA_BUILD); return 0; }

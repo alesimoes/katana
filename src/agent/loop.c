@@ -450,18 +450,19 @@ static uint64_t rr_sig[128]; static int rr_step[128], rr_reps[128], rr_n, rr_tot
 #ifndef _WIN32
 #include <spawn.h>
 extern char **environ;
-static void autoindex_start(void) {
+static void autoindex_dir(const char *cwd) {
     const char *e = getenv("KATANA_AUTOINDEX"); if (e && atoi(e) == 0) return;
-    char cwd[1500], h[1100], exe[1100];
-    if (!getcwd(cwd, sizeof cwd)) return;
+    char h[1100], exe[1100];
     agent_home(h, sizeof h);
     if (!strcmp(cwd, "/") || !strcmp(cwd, h)) return;
     const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1); if (n <= 0) return; exe[n] = 0;
-    char *argv[] = {"sh", "-c", "\"$0\" coder index \"$1\" >/dev/null 2>&1 &", exe, cwd, NULL};      /* o sh sai logo; o indexador fica solto em segundo plano */
+    char *argv[] = {"sh", "-c", "\"$0\" coder index \"$1\" >/dev/null 2>&1 &", exe, (char *)cwd, NULL};      /* o sh sai logo; o indexador fica solto em segundo plano */
     pid_t pid;
-    if (posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ) == 0) { int st; waitpid(pid, &st, 0); fprintf(stderr, "[indexando a pasta em segundo plano para o Find e a Symbols]\n"); }
+    if (posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ) == 0) { int st; waitpid(pid, &st, 0); fprintf(stderr, "[indexando %s em segundo plano para o Find e a Symbols]\n", cwd); }
 }
+static void autoindex_start(void) { char cwd[1500]; if (getcwd(cwd, sizeof cwd)) autoindex_dir(cwd); }
 #else
+static void autoindex_dir(const char *d) { (void)d; }
 static void autoindex_start(void) {}
 #endif
 static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); }
@@ -688,7 +689,9 @@ static int agent(Model *m, int max_tokens, float temp) {
         }
         {   static char pn[2400];       /* o usuario cita uma pasta que nao existe daqui: o motor acha onde ela esta e avisa o modelo */
             if (!getenv("KATANA_PLACE_NOTE") || atoi(getenv("KATANA_PLACE_NOTE")) != 0) {
-                if (place_note(line, pn, sizeof pn)) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, pn); snprintf(line, sizeof line, "%s", nl); fprintf(stderr, "%s[katana achou a pasta citada no pedido]%s\n", CE(C_DIM), CE(C_RESET)); }
+                const int pnn = place_note(line, pn, sizeof pn);
+                for (int pi = 0; pi < g_place_nd; pi++) autoindex_dir(g_place_dirs[pi]);      /* a pasta que o usuario citou tambem e indexada, se ainda nao for */
+                if (pnn) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, pn); snprintf(line, sizeof line, "%s", nl); fprintf(stderr, "%s[katana achou a pasta citada no pedido]%s\n", CE(C_DIM), CE(C_RESET)); }
             } }
         vis_take(line, sizeof line);        /* imagens pedidas com --image */
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }

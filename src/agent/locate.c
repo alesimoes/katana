@@ -242,7 +242,14 @@ static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
 /* ---- o usuario cita uma pasta ou projeto ("o projeto greymod em mnt/dados/greymod") que nao existe a partir da pasta de trabalho:
  * o katana acha onde ela esta e avisa o modelo no inicio do pedido. Candidatos: pedacos com 2 ou mais barras (ou comecando por / ~/ ./)
  * e a palavra depois de pasta/projeto/folder/project/repo. No maximo 2 buscas por pedido. Devolve 1 e a nota em out ---- */
+static char g_place_dirs[4][1100]; static int g_place_nd;      /* pastas citadas no pedido e achadas (existentes ou resolvidas): o laco as indexa */
+static void place_add(const char *p) {
+    struct stat st; if (g_place_nd >= 4 || stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+    for (int i = 0; i < g_place_nd; i++) if (!strcmp(g_place_dirs[i], p)) return;
+    snprintf(g_place_dirs[g_place_nd++], sizeof g_place_dirs[0], "%s", p);
+}
 static int place_note(const char *msg, char *out, size_t cap) {
+    g_place_nd = 0;
     char cwd[1500]; if (!getcwd(cwd, sizeof cwd)) return 0;
     char cands[4][700]; int nc = 0;
     static const char *const trig[] = {"pasta", "folder", "diretorio", "projeto", "project", "repo", "repositorio", "repository", NULL};
@@ -263,7 +270,7 @@ static int place_note(const char *msg, char *out, size_t cap) {
                 if (w[0] == '/') snprintf(t, sizeof t, "%s", w);
                 else if (w[0] == '~') { char h[1100]; agent_home(h, sizeof h); snprintf(t, sizeof t, "%s%s", h, w + 1); }
                 else snprintf(t, sizeof t, "%s/%s", cwd, w);
-                if (access(t, F_OK) != 0) snprintf(cands[nc++], sizeof cands[0], "%s", t);
+                if (access(t, F_OK) != 0) snprintf(cands[nc++], sizeof cands[0], "%s", t); else place_add(t);
             } else if (armed) {
                 int isf = 0; for (int i = 0; filler[i]; i++) if (!strcmp(lw, filler[i])) isf = 1;
                 if (isf && skipped < 2) skipped++;
@@ -285,6 +292,7 @@ static int place_note(const char *msg, char *out, size_t cap) {
         char sug[1500]; searched++;
         if (!ff_resolve_missing(cands[i], sug, sizeof sug) || strncmp(sug, "Did you mean: ", 14) != 0) continue;
         char *q = strchr(sug, '?'); if (q) *q = 0;
+        { char first[1100]; snprintf(first, sizeof first, "%s", sug + 14); char *cm = strstr(first, ", "); if (cm) *cm = 0; place_add(first); }      /* a primeira pasta achada tambem e indexada */
         int dup = 0; for (int k = 0; k < ns; k++) if (!strcmp(seen[k], sug + 14)) dup = 1;
         if (dup) continue;
         if (ns < 4) snprintf(seen[ns++], sizeof seen[0], "%s", sug + 14);
