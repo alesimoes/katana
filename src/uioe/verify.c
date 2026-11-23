@@ -61,7 +61,8 @@ static int uv_hit(const char *line, const char *key) {
 }
 static int uv_find(const UioeCtx *cx, const char *key, int from, int to, int near) {
     char t[700]; int best = -1, bd = 1 << 30;
-    if (from < 1) from = 1; if (to > cx->vnl) to = cx->vnl;
+    if (from < 1) from = 1;
+    if (to > cx->vnl) to = cx->vnl;
     for (int l = from; l <= to; l++) if (uv_line(cx, l, t, sizeof t) && uv_hit(t, key)) { const int d = abs(l - near); if (d < bd) { bd = d; best = l; } }
     return best;
 }

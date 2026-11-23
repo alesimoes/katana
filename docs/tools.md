@@ -22,7 +22,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 |---|---|---|
 | `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
-| `glob.c`, `grep.c` | `Grep` (`glob.c` keeps only the pattern matcher and the folder walker that `Grep` and the UIOE file connector use; the `Glob` tool was removed) | - |
+| `filewalk.c`, `grep.c` | `Grep` (`filewalk.c` keeps only the pattern matcher, the file list and the growing text buffer that `Grep` and the UIOE file connector use; the `Glob` tool was removed) | - |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
 | `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact, flow, tree over the symbol index; work in `src/coder/symtool.c`) | - |
 | `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |

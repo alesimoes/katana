@@ -47,7 +47,8 @@ static int cc_where(const char *s, char *name, size_t cap, int *a, int *b) {
 static void cc_snip_text(const SyItem *it, char *o, size_t cap) {
     o[0] = 0; if (!it->snip) return;
     const char *p = it->snip; while (isdigit((unsigned char)*p)) p++;
-    if (*p == ':') p++; while (*p == ' ') p++;
+    if (*p == ':') p++;
+    while (*p == ' ') p++;
     snprintf(o, cap, "%.*s", (int)(strcspn(p, "\n") < cap - 1 ? strcspn(p, "\n") : cap - 1), p);
 }
 /* o item do coder preenche um no base (caminho, faixa, nome, confianca, verificacao propria, como) */

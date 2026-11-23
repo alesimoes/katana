@@ -50,7 +50,8 @@ static int uf_text_ext(const char *name) {
     const char *dot = strrchr(name, '.'); if (!dot || !dot[1]) return 1;
     static const char *const bin[] = {"png", "jpg", "jpeg", "gif", "ico", "webp", "pdf", "zip", "gz", "tar", "xz", "bz2", "7z", "rar", "exe", "dll", "so", "dylib", "o", "a", "class", "jar", "gguf", "bin", "pyc", "woff", "woff2", "ttf", "otf", "mp3", "mp4", "wav", "ogg", "mov", "avi", "svg", "lock", "apk", "obj", "pdb", "ilk", "lib", "exp", "res", "db", "sqlite", NULL};
     char e[12]; size_t l = strlen(dot + 1); if (l >= sizeof e) return 1;
-    for (size_t i = 0; i < l; i++) e[i] = (char)tolower((unsigned char)dot[1 + i]); e[l] = 0;
+    for (size_t i = 0; i < l; i++) e[i] = (char)tolower((unsigned char)dot[1 + i]);
+    e[l] = 0;
     for (int i = 0; bin[i]; i++) if (!strcmp(e, bin[i])) return 0;
     return 1;
 }
@@ -171,7 +172,8 @@ static int cf_docs(UioeCtx *cx, const UioeCall *q, UioeResult *r) {
     char qt[420]; snprintf(qt, sizeof qt, "%s", q->arg);
     char qw[40][28]; int nq = 0;                                         /* termos da consulta, em minusculas */
     for (char *p = qt; *p && nq < 40; ) {
-        while (*p && !isalnum((unsigned char)*p)) p++; if (!*p) break;
+        while (*p && !isalnum((unsigned char)*p)) p++;
+        if (!*p) break;
         char *s = p; while (*p && (isalnum((unsigned char)*p) || *p == '_')) { *p = (char)tolower((unsigned char)*p); p++; }
         const size_t l = (size_t)(p - s); if (l >= 3 && l < 28) { int dup = 0; for (int i = 0; i < nq; i++) dup |= !strncmp(qw[i], s, l) && !qw[i][l]; if (!dup) { memcpy(qw[nq], s, l); qw[nq][l] = 0; nq++; } }
     }
@@ -201,7 +203,8 @@ static int cf_docs(UioeCtx *cx, const UioeCall *q, UioeResult *r) {
     for (int i = 0; i < tot; i++) {
         char lw[500]; size_t o = 0; for (const char *p = D[i].text; *p && o < sizeof lw - 1; p++) lw[o++] = (char)tolower((unsigned char)*p); lw[o] = 0;
         for (char *p = lw; *p; ) {
-            while (*p && !isalnum((unsigned char)*p)) p++; if (!*p) break;
+            while (*p && !isalnum((unsigned char)*p)) p++;
+            if (!*p) break;
             char *s = p; while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
             const char sv = *p; *p = 0;
             for (int k = 0; k < nq; k++) if (!(mask[i] >> k & 1) && cf_prefix_match(qw[k], s)) { mask[i] |= 1u << k; df[k]++; }

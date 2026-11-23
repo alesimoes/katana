@@ -1,5 +1,5 @@
 #!/bin/sh
-# Testa as ferramentas Glob e Grep (src/tools/glob.c, grep.c). Uso: sh tools/tooltest/search.sh ./katana
+# Testa as ferramentas Glob e Grep (src/tools/filewalk.c, grep.c). Uso: sh tools/tooltest/search.sh ./katana
 # Nao compila nada; cria uma pasta temporaria e remove no fim. O Grep usa sempre o motor proprio (src/tools/regex.c;
 # a sintaxe em detalhe fica em regex.sh), entao cada verificacao roda uma vez por modo de listagem (git e sem git).
 # Tambem cobre as tolerancias do Grep, o .gitignore fora de repositorio git e o tempo de uma busca simples em src/.

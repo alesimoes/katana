@@ -1434,7 +1434,8 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
         for (char *c = pre; *c; ) { char *sl = strchr(c, '/'); size_t n = sl ? (size_t)(sl - pre) : strlen(pre); char cand[4400];
             snprintf(cand, sizeof cand, "%s/%.*s", strcmp(root, "/") ? root : "", (int)n, pre);
             if (rt_skip_subdir(cand)) { snprintf(root, sizeof root, "%s", cand); const char *rest = sl ? sl + 1 : ""; memmove(pre, rest, strlen(rest) + 1); c = pre; continue; }
-            if (!sl) break; c = sl + 1; }
+            if (!sl) break;
+            c = sl + 1; }
         char err[300] = "";
         snprintf(g_fd_allow, sizeof g_fd_allow, "%s", pre);
         if (!refs && !nbr && !phrase && uioe_facade_find(q, root, pre, (int)lim, out, cap)) goto done;   /* U5: o mesmo motor do bloco pre-LLM; so sob KATANA_UIOE=full e com apoio verificado */

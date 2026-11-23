@@ -14,7 +14,7 @@ static int pw_detect(const char *o) {
  * Devolve 1 se o comando deve rodar com o sudo -A. */
 static int sudo_word(const char *cmd) {
     for (const char *q = cmd; (q = strstr(q, "sudo")); q += 4)
-        if ((q == cmd || !isalnum((unsigned char)q[-1]) && q[-1] != '_' && q[-1] != '-') && (q[4] == 0 || q[4] == ' ' || q[4] == '\t')) return 1;
+        if ((q == cmd || (!isalnum((unsigned char)q[-1]) && q[-1] != '_' && q[-1] != '-')) && (q[4] == 0 || q[4] == ' ' || q[4] == '\t')) return 1;
     return 0;
 }
 /* senha para as sessoes de terminal: arquivo 0600 em tmpfs (XDG_RUNTIME_DIR), lido pelo askpass; apagado ao sair */

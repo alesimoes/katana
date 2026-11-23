@@ -249,7 +249,8 @@ static void ui_terms(UioeAsk *a, const char *work, const CoderKb *kb) {
                     for (int q = cc->t0; q < cc->t0 + cc->nt && q < kb->nterm; q++) { if (kb->term[q].lang == 0 || kb->term[q].w <= bw) continue;
                         int dup = 0; for (int z = 0; z < a->nxw; z++) if (!strcasecmp(a->xw[z], kb->term[q].term)) dup = 1; if (dup || strlen(kb->term[q].term) < 3 || strlen(kb->term[q].term) > 23 || strchr(kb->term[q].term, ' ')) continue;
                         bq = q; bw = kb->term[q].w; }
-                    if (bq < 0) break; ui_xadd(a, k, kb->term[bq].term);
+                    if (bq < 0) break;
+                    ui_xadd(a, k, kb->term[bq].term);
                 }
             } else { int vx[4]; int nv = coder_kb_verb_ops(kb, t->norm, vx, 4); if (!nv) nv = coder_kb_verb_ops(kb, lw, vx, 4);
                    if (nv) { snprintf(a->concept[k], sizeof a->concept[0], "op:%s", kb->op[kb->verb[vx[0]].op].name);

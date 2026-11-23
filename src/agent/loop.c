@@ -893,7 +893,8 @@ static int agent(Model *m, int max_tokens, float temp) {
                 }
                 {
                     size_t sl = strcspn(ap, "\n");
-                    if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); ui_tool_mark(name, ap, end);
+                    if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET));
+                    ui_tool_mark(name, ap, end);
                 }
                 /* insistencia no erro: a mesma chamada que ja falhou duas vezes neste pedido nao roda de novo */
                 const uint64_t csig = rp_hash(ap, (size_t)(end - ap), rp_hash(name, strlen(name), 1469598103934665603ULL));

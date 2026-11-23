@@ -45,7 +45,8 @@ static int po_is_doc(const char *path) {
 static int po_is_test(const UioeOrch *o, const char *path) { return !(o->qflags & 2) && fd_is_test(path); }
 static int po_bad_edge(const UioeOrch *o, int e) { for (int i = 0; i < o->nbad; i++) if (o->bad[i] == e) return 1; return 0; }
 static void po_anchor(UioeOrch *o, int id) {
-    if (id < 0) return; for (int i = 0; i < o->nanch; i++) if (o->anch[i] == id) return;
+    if (id < 0) return;
+    for (int i = 0; i < o->nanch; i++) if (o->anch[i] == id) return;
     if (o->nanch < 24) { o->anch[o->nanch++] = id; o->g->n[id].anchor = 1; }
 }
 static int po_step_find(UioeRoute *rt, const char *label) { for (int i = 0; i < rt->nstep; i++) if (!strcmp(rt->step[i].label, label)) return i; return -1; }
@@ -228,7 +229,8 @@ static int po_link_rel(const UioeOrch *o, const UioeEdge *e, char *why, size_t w
 static int po_file_links(UioeOrch *o, const char *label, const char *path, int line, int tier, int *e0, int *e1) {
     UioeCall q = {0}; q.depth = line > 0 ? 0 : 1; snprintf(q.arg, sizeof q.arg, "%s", path); snprintf(q.arg2, sizeof q.arg2, "file"); q.line = line; q.limit = 30; q.tier = tier; UioeResult r; int map[256];
     const int before = o->g->ne; const int st = po_run(o, label, "code.flow", &q, &r, map, 1);
-    if (e0) *e0 = before; if (e1) *e1 = o->g->ne;
+    if (e0) *e0 = before;
+    if (e1) *e1 = o->g->ne;
     if (po_usable(st) && r.nnode > 0 && r.nedge == 0) { /* ligacoes ja existentes (fundidas) nao criam aresta nova */ }
     ur_free(&r); return st;
 }
@@ -323,7 +325,8 @@ static void po_chain(UioeOrch *o) {
     /* as 5 ligacoes mais bem pontuadas, com a conta, para o traco */
     { int used[24]; for (int z = 0; z < 24; z++) used[z] = -1; rc->nscore = 0; const int maxsc = uioe_env_int("KATANA_UIOE_SCORES", 5, 1, 24);
       for (int r = 0; r < maxsc; r++) { int bi = -1, bs = -1; for (int i = 0; i < g->ne; i++) { const UioeEdge *e = &g->e[i]; if (e->kind != UE_LINKS || !strcmp(g->n[e->from].path, g->n[e->to].path)) continue; int u = 0; for (int z = 0; z < r; z++) u |= used[z] == i; if (u) continue; const int sc = o->erel[i] * 1000 + e->conf; if (sc > bs) { bs = sc; bi = i; } }
-          if (bi < 0) break; used[r] = bi; const UioeEdge *e = &g->e[bi]; char why[160]; po_link_rel(o, e, why, sizeof why);
+          if (bi < 0) break;
+          used[r] = bi; const UioeEdge *e = &g->e[bi]; char why[160]; po_link_rel(o, e, why, sizeof why);
           snprintf(rc->score[rc->nscore++], sizeof rc->score[0], "L%d %s:%d -> %s:%d \"%.40s\" conf=%d rel=%d (%s)", r + 1, g->n[e->from].path, g->n[e->from].line0, g->n[e->to].path, g->n[e->to].line0, e->key, e->conf, o->erel[bi], why); } }
     /* as ligacoes iniciais: a melhor de cada par (arquivo produtor, arquivo consumidor), as 6 maiores */
     int starts[6], nst = 0;
@@ -332,9 +335,11 @@ static void po_chain(UioeOrch *o) {
         for (int i = 0; i < g->ne; i++) {
             const UioeEdge *e = &g->e[i]; if (e->kind != UE_LINKS || po_bad_edge(o, i) || o->erel[i] < 20 || !strcmp(g->n[e->from].path, g->n[e->to].path)) continue;
             int u = 0; for (int z = 0; z < nst && !u; z++) { const UioeEdge *s = &g->e[starts[z]]; u = !strcmp(g->n[s->from].path, g->n[e->from].path) && !strcmp(g->n[s->to].path, g->n[e->to].path); }
-            if (u) continue; const int sc = o->erel[i] * 1000 + e->conf; if (sc > bs) { bs = sc; bi = i; }
+            if (u) continue;
+            const int sc = o->erel[i] * 1000 + e->conf; if (sc > bs) { bs = sc; bi = i; }
         }
-        if (bi < 0) break; starts[nst++] = bi;
+        if (bi < 0) break;
+        starts[nst++] = bi;
     }
     if (!nst) return;
     PoChain best, cur; int have = 0;
@@ -431,7 +436,8 @@ static void pipe_flow(UioeOrch *o) {
     for (int i = 0; i < o->naf && nsym < 3 && !uioe_over(o->cx) && o->cx->have_sym; i++) {
         const UioeNode *f = &o->g->n[o->afile[i]]; int line = 0;
         for (int j = 0; j < o->g->ne; j++) { const UioeEdge *e = &o->g->e[j]; if (e->kind == UE_CONTAINS && e->from == o->afile[i]) { line = o->g->n[e->to].line0; break; } }
-        if (!line) continue; const int s = po_at(o, f->path, line, "callees"); if (s < 0) continue; nsym++;
+        if (!line) continue;
+        const int s = po_at(o, f->path, line, "callees"); if (s < 0) continue; nsym++;
         po_anchor(o, s);
         UioeCall q = {0}; snprintf(q.arg, sizeof q.arg, "%s", o->g->n[s].name); q.limit = 8; q.tier = 2; UioeResult r; int map[256];
         po_run(o, "callees", "code.callees", &q, &r, map, 0); ur_free(&r);

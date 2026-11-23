@@ -174,7 +174,8 @@ static int kvk__mkbuf(size_t size, VkBufferUsageFlags usage, int host, VkBuffer 
     else if (host == 1) { mt = kvk__memtype(mr.memoryTypeBits, HV | HC, DL); if (mt < 0) mt = kvk__memtype(mr.memoryTypeBits, HV | HC, 0); }
     else {
         mt = kvk__memtype(mr.memoryTypeBits, HV | CA, DL); if (mt < 0) mt = kvk__memtype(mr.memoryTypeBits, HV | CA, 0);
-        if (mt < 0) mt = kvk__memtype(mr.memoryTypeBits, HV | HC, DL); if (mt < 0) mt = kvk__memtype(mr.memoryTypeBits, HV | HC, 0);
+        if (mt < 0) mt = kvk__memtype(mr.memoryTypeBits, HV | HC, DL);
+        if (mt < 0) mt = kvk__memtype(mr.memoryTypeBits, HV | HC, 0);
     }
     if (mt < 0) { F(DestroyBuffer)(G.dev, *b, NULL); *b = 0; kvk__seterr("sem tipo de memoria adequado"); return 0; }
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO }; mai.allocationSize = mr.size; mai.memoryTypeIndex = (uint32_t)mt;
@@ -390,7 +391,9 @@ void kvk_buf_destroy(KvkBuf *b) {
 
 static int kvk__grow_up(size_t need) {   /* GPU ociosa e up_off==0 */
     size_t cap = G.up_cap ? G.up_cap * 2 : KVK_STAGE_MIN;
-    if (cap < need) cap = need; if (cap > KVK_STAGE_MAX) cap = KVK_STAGE_MAX; if (cap < need) cap = need;
+    if (cap < need) cap = need;
+    if (cap > KVK_STAGE_MAX) cap = KVK_STAGE_MAX;
+    if (cap < need) cap = need;
     VkBuffer nb = 0; VkDeviceMemory nm = 0; void *map = NULL; size_t real;
     if (!kvk__mkbuf(cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 1, &nb, &nm, &map, NULL, &real)) return 0;
     void *om = G.up_p; kvk__rmbuf(&G.up_b, &G.up_m, &om);

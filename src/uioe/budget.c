@@ -33,7 +33,8 @@ static void rc_degrade(UioeRecall *rc, const char *fmt, ...) {
     if (rc->ndeg < 8) snprintf(rc->degrade[rc->ndeg++], 170, "%s", t);
 }
 static void rc_state(UioeRecall *rc, const char *fmt, ...) {
-    if (rc->nstates >= 16) return; va_list ap; va_start(ap, fmt); vsnprintf(rc->states[rc->nstates++], 120, fmt, ap); va_end(ap);
+    if (rc->nstates >= 16) return;
+    va_list ap; va_start(ap, fmt); vsnprintf(rc->states[rc->nstates++], 120, fmt, ap); va_end(ap);
 }
 
 /* novo pedido na sessao: os disjuntores abertos contam um pedido a menos; o que chega a zero fica meio-aberto */

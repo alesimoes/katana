@@ -752,7 +752,8 @@ static void cs_expand_word(const CoderKb *kb, QSet *q, int oi, const CoderTok *t
     for (int i = 0; i < nv; i++) {                                        /* operacoes que tem a palavra como verbo: os outros verbos delas */
         const KbVerb *vb = &kb->verb[vid[i]]; const KbOp *op = &kb->op[vb->op]; if (op->dead) continue; int added = 0;
         for (int pass = 0; pass < 2; pass++) for (int k = 0; k < op->nv && added < 5; k++) { const KbVerb *v2 = &kb->verb[op->v0 + k]; char a[128]; coder_kb_norm(v2->w, a, sizeof a);
-            if (!strcmp(a, w) || !strcmp(a, used) || strchr(a, ' ')) continue; if ((v2->lang == KB_PT) != (pass == 1)) continue;
+            if (!strcmp(a, w) || !strcmp(a, used) || strchr(a, ' ')) continue;
+            if ((v2->lang == KB_PT) != (pass == 1)) continue;
             char why[220]; snprintf(why, sizeof why, "word \"%s\" -> operation %s (verb %s) -> %s verb \"%s\"", tk->orig, op->name, g_kb_langname[vb->lang], g_kb_langname[v2->lang], v2->w);
             cs_add_kbterm(q, v2->w, v2->lang, QC_OP, 2, src, g_cs_cscale * 0.3, why); added++; }
     }
@@ -908,7 +909,8 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
         QTerm x; memset(&x, 0, sizeof x); x.w = 1.0; x.nm = 1; char lo[64]; cs_lower(lo, t->orig, sizeof lo);
         if (t->kind == 1) { x.cls = QC_WHOLE; x.src = -1; cs_qmem(&x.m[0], t->norm, lo); snprintf(x.disp, sizeof x.disp, "%s", t->norm); cs_qt_add(&q, &x); continue; }
         x.cls = QC_ORIG; x.src = nsrc < 31 ? nsrc : 31; cs_qmem(&x.m[0], t->norm, lo);
-        if (t->lang == CT_L_UNKNOWN) for (int lg = CT_L_PT; lg <= CT_L_EN; lg++) { char alt[64]; coder_norm_word(lo, lg, alt, sizeof alt); if (strcmp(alt, t->norm)) cs_qmem_alt(&x.m[0], alt); }   /* idioma incerto: tenta tambem a raiz no outro idioma */ snprintf(x.disp, sizeof x.disp, "%s", lo);
+        if (t->lang == CT_L_UNKNOWN) for (int lg = CT_L_PT; lg <= CT_L_EN; lg++) { char alt[64]; coder_norm_word(lo, lg, alt, sizeof alt); if (strcmp(alt, t->norm)) cs_qmem_alt(&x.m[0], alt); }   /* idioma incerto: tenta tambem a raiz no outro idioma */
+        snprintf(x.disp, sizeof x.disp, "%s", lo);
         int part = cs_is_part(rest, t->pos, (int)strlen(t->orig), rest_len);
         int before = q.n; QTerm *p = cs_qt_add(&q, &x);
         if (!p) continue;

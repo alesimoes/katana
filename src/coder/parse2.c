@@ -556,7 +556,7 @@ static int c2_gdecl(CP *c, int i, int b, int parent, int mode, int dp) {
             if (cp_idt(c, pn_) && pn_ > kw && !cp_kwtok(c, pn_, C2_NOFN) && (inclass || L == CL_DART || L == CL_GROOVY || L == CL_CS)) {
                 size_t eb; int nx = c2_stmt_end(c, k, b, nl && how != 2 && how != 6 ? 1 : (L == CL_GROOVY ? 1 : 0), &eb);
                 if (how == 8) { nx = k; eb = c->tk[k - 1].b; }
-                int ncst = hasconst; for (int m = i; m < kw; m++) if (cp_is(c, m, "const") || cp_is(c, m, "readonly") && 0) ncst = 1;
+                int ncst = hasconst; for (int m = i; m < kw; m++) if (cp_is(c, m, "const")) ncst = 1;
                 cp_sym(c, ncst ? CK_CONST : inclass ? CK_FIELD : CK_VAR, parent, b0, eb, pn_, b0, eb); return nx > i ? nx : i + 1;
             }
         }
@@ -723,7 +723,8 @@ static void c2_lisp_form(CP *c, size_t p, size_t fe, int parent, int dp) {
     const char *hh = hb; { const char *sl = strrchr(hb, '/'); if (sl && sl[1]) hh = sl + 1; }
     int L = c->lang;
     if (!strcmp(hh, "do") || !strcmp(hh, "let") || !strcmp(hh, "when") || !strcmp(hh, "when-not") || !strcmp(hh, "binding") || !strcmp(hh, "with-redefs") || !strcmp(hh, "locking") || !strcmp(hh, "begin") || !strcmp(hh, "eval-when") || !strcmp(hh, "progn")) {
-        if (dp < 4) c2_lisp_region(c, he, fe - 1 > he ? fe - 1 : he, parent, dp + 1); return;
+        if (dp < 4) c2_lisp_region(c, he, fe - 1 > he ? fe - 1 : he, parent, dp + 1);
+        return;
     }
     if (c2_inl_(hb, C2_LIMP) && dp < 4 && !(L == CL_CLJ && (!strcmp(hb, "refer-clojure") && 0))) { c2_limports(c, he, fe > 0 ? fe - 1 : fe, -1); return; }
     const C2LH *r = NULL;
@@ -1198,7 +1199,8 @@ static void c2_cmake(CP *c) {
         size_t q = c2_skipws(s, n, ne); while (q < n && s[q] == '\n') q = c2_skipws(s, n, q + 1);
         if (q >= n || s[q] != '(' || (p > 0 && !(s[p - 1] == '\n' || s[p - 1] == ' ' || s[p - 1] == '\t' || s[p - 1] == '\r' || s[p - 1] == '(' || s[p - 1] == ')'))) { p = ne; continue; }
         size_t ce = c2_pm(s, n, q); char cmd[40]; size_t cl = ne - p; if (cl >= sizeof cmd) { p = ce; continue; }
-        for (size_t k = 0; k < cl; k++) cmd[k] = (char)tolower((unsigned char)s[p + k]); cmd[cl] = 0;
+        for (size_t k = 0; k < cl; k++) cmd[k] = (char)tolower((unsigned char)s[p + k]);
+        cmd[cl] = 0;
         size_t a1 = c2_lskipws(s, n, q + 1), a1e = a1; while (a1e < ce && !isspace((unsigned char)s[a1e]) && s[a1e] != ')' && s[a1e] != '"') a1e++;
         if (nc >= cap) { cap = cap * 2 + 64; cmds = (C2Cmd *)realloc(cmds, (size_t)cap * sizeof(C2Cmd)); } cmds[nc].a = p; cmds[nc].e = ne; nc++;
         int kind = -1;
@@ -1209,15 +1211,16 @@ static void c2_cmake(CP *c) {
             if (a1e > a1 && a1e - a1 < 100) { int si = c2_add(c, !strcmp(cmd, "function") ? CK_FUNC : CK_MACRO, -1, p, ce, t + a1, a1e - a1, p, ce); if (si >= 0 && nd < 32) open_def[nd++] = si; cnt++; }
         } else if (!strcmp(cmd, "endfunction") || !strcmp(cmd, "endmacro")) { if (nd > 0) { int si = open_def[--nd]; cp_setend(c, si, ce); } }
         else if (kind >= 0 && a1e > a1 && a1e - a1 < 100 && s[a1] != '$') { if (!(kind == CK_VAR && strncmp(s + a1, "CMAKE_", 6) == 0 && 0)) { c2_add(c, kind, nd > 0 ? open_def[nd - 1] : -1, p, ce, t + a1, a1e - a1, p, ce); cnt++; } }
-        else if (!strcmp(cmd, "add_subdirectory") || !strcmp(cmd, "include") || !strcmp(cmd, "find_package") || !strcmp(cmd, "find_library") * 0 || !strcmp(cmd, "fetchcontent_declare") || !strcmp(cmd, "find_dependency") || !strcmp(cmd, "include_guard") * 0) {
+        else if (!strcmp(cmd, "add_subdirectory") || !strcmp(cmd, "include") || !strcmp(cmd, "find_package") || !strcmp(cmd, "fetchcontent_declare") || !strcmp(cmd, "find_dependency")) {
             if (a1e > a1 && s[a1] != '$') cp_ref(c, nd > 0 ? open_def[nd - 1] : -1, CR_IMPORT, t + a1, a1e - a1, a1);
             else if (a1e > a1) cp_ref(c, nd > 0 ? open_def[nd - 1] : -1, CR_IMPORT, t + a1, a1e - a1, a1);
-        } else if (!strcmp(cmd, "target_link_libraries") || !strcmp(cmd, "add_dependencies") || !strcmp(cmd, "target_include_directories") * 0) {
+        } else if (!strcmp(cmd, "target_link_libraries") || !strcmp(cmd, "add_dependencies")) {
             int from = -1; for (int k = 0; k < f->nsym; k++) if (f->sym[k].kind == CK_CLASS && strlen(f->sym[k].name) == a1e - a1 && !memcmp(f->sym[k].name, t + a1, a1e - a1)) { from = k; break; }
             size_t x = a1e;
             while (x < ce - 1) { x = c2_lskipws(s, n, x); size_t xe = x; while (xe < ce - 1 && !isspace((unsigned char)s[xe]) && s[xe] != ')' && s[xe] != '"') xe++; if (xe == x) { x++; continue; }
                 char kw[16]; size_t kl2 = xe - x; int isk = 0; if (kl2 < sizeof kw) { memcpy(kw, s + x, kl2); kw[kl2] = 0; isk = !strcmp(kw, "PUBLIC") || !strcmp(kw, "PRIVATE") || !strcmp(kw, "INTERFACE") || !strcmp(kw, "debug") || !strcmp(kw, "optimized") || !strcmp(kw, "general") || !strcmp(kw, "LINK_PUBLIC") || !strcmp(kw, "LINK_PRIVATE"); }
-                if (!isk && s[x] != '$' && s[x] != '-' && s[x] != '<' && xe - x < 100) cp_ref(c, from, CR_USE, t + x, xe - x, x); x = xe; }
+                if (!isk && s[x] != '$' && s[x] != '-' && s[x] != '<' && xe - x < 100) cp_ref(c, from, CR_USE, t + x, xe - x, x);
+                x = xe; }
         }
         p = ce > p ? ce : p + 1;
     }
@@ -1562,7 +1565,7 @@ static void c2_markup(CP *c, int mode) {   /* mode 0 = HTML, 1 = XML, 2 = Vue/Sv
         }
         if (mode == 1 && (!strcmp(nm, "dependency") || !strcmp(nm, "plugin") || !strcmp(nm, "parent"))) grp[0] = 0;
         /* conteudo bruto de script/style/textarea/title */
-        if (!selfc && mode != 1 && (!strcmp(nm, "script") || !strcmp(nm, "style") || !strcmp(nm, "textarea") || !strcmp(nm, "title") || !strcmp(nm, "pre") * 0)) {
+        if (!selfc && mode != 1 && (!strcmp(nm, "script") || !strcmp(nm, "style") || !strcmp(nm, "textarea") || !strcmp(nm, "title"))) {
             size_t z = tagend; while (z + 2 < n && !(s[z] == '<' && s[z + 1] == '/' && c2_tagnc(s, n, z + 2, nm))) z++;
             if (z + 2 >= n) z = n;
             if (!strcmp(nm, "script") || !strcmp(nm, "style")) {
@@ -1802,7 +1805,7 @@ static int c2_brule(CP *c, size_t ls, size_t le, size_t fs, int parent, C2B *r, 
         return 0;
     }
     if (L == CL_OBJC) {
-        if (c2_wordeq(s, le, fs + 1, "interface") * 0 || (s[fs] == '@' && (c2_at(s, le, fs, "@interface") || c2_at(s, le, fs, "@implementation") || c2_at(s, le, fs, "@protocol")))) {
+        if ((s[fs] == '@' && (c2_at(s, le, fs, "@interface") || c2_at(s, le, fs, "@implementation") || c2_at(s, le, fs, "@protocol")))) {
             int proto = c2_at(s, le, fs, "@protocol"); size_t q = c2_skipws(s, le, c2_word(s, le, fs + 1, NULL)), nb = c2_word(s, le, q, NULL); if (nb <= q) return 0;
             size_t z = c2_skipws(s, le, nb); if (proto) { size_t y = z; while (y < le && s[y] != '<') { if (s[y] == ';') return 0; y++; } if (z < le && s[z] == ';') return 0; if (z < le && s[z] == ',') return 0; }
             r->kind = proto ? CK_IFACE : CK_CLASS; r->na = q; r->nb = nb; r->mode = 1; r->flag = 1; r->sa = fs; r->scan0 = nb;
@@ -1826,7 +1829,7 @@ static int c2_brule(CP *c, size_t ls, size_t le, size_t fs, int parent, C2B *r, 
         }
         if (parent < 0 && ls == fs && (isalpha((unsigned char)s[fs]) || s[fs] == '_') && !c2_wordeq(s, le, fs, "typedef") && !c2_wordeq(s, le, fs, "struct") && !c2_wordeq(s, le, fs, "enum") && !c2_wordeq(s, le, fs, "extern") && !c2_wordeq(s, le, fs, "return") && !c2_wordeq(s, le, fs, "if")) {
             size_t q = fs; while (q < le && s[q] != '(' && s[q] != ';' && s[q] != '=') q++;
-            if (q < le && s[q] == '(') { size_t ia, ib; if (c2_idbefore(s, fs, q, &ia, &ib) && ib == q || (c2_idbefore(s, fs, q, &ia, &ib) && ib + 1 >= q)) { size_t ce = c2_pm(s, c->n, q), z = ce; while (z < c->n && isspace((unsigned char)s[z])) z++; if (z < c->n && s[z] == '{') { r->kind = CK_FUNC; r->na = ia; r->nb = ib; r->scan0 = ce; r->sa = fs; r->mode = 0; return 1; } } }
+            if (q < le && s[q] == '(') { size_t ia, ib; if ((c2_idbefore(s, fs, q, &ia, &ib) && ib == q) || (c2_idbefore(s, fs, q, &ia, &ib) && ib + 1 >= q)) { size_t ce = c2_pm(s, c->n, q), z = ce; while (z < c->n && isspace((unsigned char)s[z])) z++; if (z < c->n && s[z] == '{') { r->kind = CK_FUNC; r->na = ia; r->nb = ib; r->scan0 = ce; r->sa = fs; r->mode = 0; return 1; } } }
         }
         return 0;
     }
@@ -1914,7 +1917,8 @@ static int c2_brule(CP *c, size_t ls, size_t le, size_t fs, int parent, C2B *r, 
 }
 static void c2_bregion(CP *c, size_t a, size_t e, int parent, int dp) {
     const char *s = c->c, *t = c->t; size_t n = c->n, p = a; const int L = c->lang; CoderFile *f = c->f;
-    if (e > n) e = n; if (dp > 12) return;
+    if (e > n) e = n;
+    if (dp > 12) return;
     while (p < e && f->nsym < 30000) {
         size_t ls = p, le = c2_eol(s, e, p); if (le > e) le = e; size_t le2 = le; while (le2 > ls && s[le2 - 1] == '\r') le2--;
         size_t fs = c2_skipws(s, le2, ls);
@@ -2285,7 +2289,7 @@ static void c2_sweep_calls(CP *c, int sp_ok) {
             const char *nm = nb; const char *sl = strrchr(nb, '/'); if (sl && sl[1] && sl != nb) { nm = sl + 1; nl = strlen(nm); }
             if (nm[0] == '.' && nl > 1) { nm++; nl--; }
             if (nl < 2 && !strchr("_", nm[0])) { if (!isalpha((unsigned char)nm[0])) continue; }
-            if (c2_inl_(nm, C2_LSPECIAL) || !strncmp(nm, "def", 3) && nl > 3 && 0) continue;
+            if (c2_inl_(nm, C2_LSPECIAL)) continue;
             while (sp > 0 && i >= f->sym[stk[sp - 1]].byte1) sp--;
             while (ni < nsym && f->sym[ni].byte0 <= i) { if (i < f->sym[ni].byte1) stk[sp++] = ni; ni++; }
             int cur = sp > 0 ? stk[sp - 1] : -1;
@@ -2328,7 +2332,7 @@ static void c2_sweep_tf(CP *c) {
     CoderFile *f = c->f; const char *t = c->t; size_t n = c->n; int nsym = f->nsym; int *stk = (int *)malloc(sizeof(int) * (size_t)(nsym + 2)); int sp = 0, ni = 0;
     for (size_t i = 0; i < n; i++) {
         if (!(islower((unsigned char)t[i]))) continue;
-        if (i > 0 && (c2_wc((unsigned char)t[i - 1]) || t[i - 1] == '.' || t[i - 1] == '"' && 0)) { while (i < n && (c2_wc((unsigned char)t[i]) || t[i] == '-')) i++; continue; }
+        if (i > 0 && (c2_wc((unsigned char)t[i - 1]) || t[i - 1] == '.')) { while (i < n && (c2_wc((unsigned char)t[i]) || t[i] == '-')) i++; continue; }
         size_t e = i; while (e < n && (c2_wc((unsigned char)t[e]) || t[e] == '-')) e++;
         if (e >= n || t[e] != '.' || e + 1 >= n || !c2_wc((unsigned char)t[e + 1])) { i = e; continue; }
         size_t e2 = e + 1; while (e2 < n && (c2_wc((unsigned char)t[e2]) || t[e2] == '-')) e2++;

@@ -72,7 +72,8 @@ static void g4_prop(Buf *o, const char *key, const char *v, int depth) {
         Buf it = {0}, idd = {0};
         g4_js_text(g4_js_get(iv, "type"), &it); g4_upper(&it);
         const char *ip = g4_js_get(iv, "properties"), *ir = g4_js_get(iv, "required"), *ie = g4_js_get(iv, "enum"), *id = g4_js_get(iv, "description");
-        if (comma) buf_str(o, ","); buf_str(o, "items:{"); comma = 1;
+        if (comma) buf_str(o, ",");
+        buf_str(o, "items:{"); comma = 1;
         int c2 = 0;
         if (id && *id == '"') { g4_js_text(id, &idd); buf_str(o, "description:" G4Q); buf_str(o, idd.p ? idd.p : ""); buf_str(o, G4Q); c2 = 1; }
         if (ie && *ie == '[') { if (c2) buf_str(o, ","); buf_str(o, "enum:"); g4_str_list(o, ie); c2 = 1; }

@@ -57,7 +57,8 @@ static int uioe_facade_find(const char *query, const char *root, const char *pre
     if (cx.trace) {
         UioeBuf t = {0}; uioe_fmt_trace(&t, &cx, r); uioe_fmt_recall_trace(&t, &cx, r);
         uioe_bprintf(&t, "facade  Find %s: %s | %d bytes, about %d tokens | %.1f ms\n\n", ok ? "ANSWERED by the engine" : "left to the Find of today", ok ? "same engine as the block" : why, ok ? st.bytes : 0, ok ? st.tokens : 0, (now_sec() - T0) * 1000.0);
-        if (t.p) uioe_trace_write(t.p); uioe_bfree(&t);
+        if (t.p) uioe_trace_write(t.p);
+        uioe_bfree(&t);
     }
     free(block); uioe_ctx_close(&cx);
     return ok;
@@ -68,5 +69,6 @@ static void uioe_facade_symbols_trace(const char *action, const char *name, cons
     if (uioe_mode() != UIOE_FULL || !result) return;
     UioeBuf t = {0};
     uioe_bprintf(&t, "facade  Symbols action=%s name=\"%.80s\" file=\"%.120s\" -> %d bytes%s\n\n", action ? action : "", name ? name : "", file ? file : "", (int)strlen(result), strstr(result, "NOT FOUND") ? " (NOT FOUND)" : "");
-    if (t.p) uioe_trace_write(t.p); uioe_bfree(&t);
+    if (t.p) uioe_trace_write(t.p);
+    uioe_bfree(&t);
 }

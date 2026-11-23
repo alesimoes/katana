@@ -1,6 +1,5 @@
-/* ---------- apoio de arquivos (a ferramenta Glob foi removida, ver docs/tools-review.md) ----------
- * Guarda o que o Grep e o UIOE usam: casamento de padroes (* ** ? [..] {a,b}), lista de arquivos com data,
- * caminhada de pastas e texto crescente (CtSb). */
+/* ---------- tools/filewalk.c: apoio de arquivos ----------
+ * Guarda o que o Grep e o UIOE usam: casamento de padroes (* ** ? [..] {a,b}), lista de arquivos com data e texto crescente (CtSb). */
 /* ---- texto crescente ---- */
 typedef struct { char *p; size_t n, cap; } CtSb;
 static void ct_sb_add(CtSb *b, const char *s, size_t l) {

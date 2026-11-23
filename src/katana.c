@@ -71,7 +71,7 @@
 #include "tools/edit.c"
 #include "tools/notebookedit.c"
 #include "tools/regex.c"               /* motor de expressoes regulares do Grep */
-#include "tools/glob.c"
+#include "tools/filewalk.c"
 #include "tools/grep.c"
 #include "tools/find.c"                /* Find: navegacao por intencao, indice da pasta e referencias */
 #include "tools/findgraph.c"           /* Find: grafo de arquivos, ativacao esparsa, nota de vizinhos */

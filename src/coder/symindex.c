@@ -291,7 +291,8 @@ static int coder_sym_verify_seg(const StoreSeg *s, char *err, size_t ecap) {
         for (uint32_t k = 0; k < ns; k++) {
             const uint8_t *y = store_table_at(&x.syms, s0 + k); uint32_t l0 = st_get_u32(y + 12), l1 = st_get_u32(y + 16), par = st_get_u32(y + 8), so = st_get_u32(y + 32), sl = st_get_u32(y + 36);
             if (st_get_u32(y) >= x.names.n || l1 < l0 || (k && l0 < pl0) || (par != SY_NONE && par >= ns) || (uint64_t)so + sl > x.sigsz || st_get_u32(y + 44) != i) { snprintf(err, ecap, "simbolos: registro %u do documento %u invalido", k, i); return -1; }
-            if (l1 > mx) mx = l1; pl0 = l0;
+            if (l1 > mx) mx = l1;
+            pl0 = l0;
             if (st_get_u32(store_table_at(&x.ival, s0 + k)) != mx) { snprintf(err, ecap, "simbolos: indice de intervalos errado no simbolo %u do documento %u", k, i); return -1; }
         }
         for (uint32_t k = 0; k < nr; k++) {

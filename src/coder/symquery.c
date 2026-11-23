@@ -392,7 +392,8 @@ static int sy_args(int argc, char **argv, SyArgs *a, int deflim) {
         else if (!strcmp(argv[i], "--depth") && i + 1 < argc) a->depth = atoi(argv[++i]); else if (!strcmp(argv[i], "--nodes") && i + 1 < argc) a->nodes = atoi(argv[++i]);
         else if (a->npos < 3) a->pos[a->npos++] = argv[i];
     }
-    if (a->limit < 1) a->limit = 1; if (a->lines < 1) a->lines = 1;
+    if (a->limit < 1) a->limit = 1;
+    if (a->lines < 1) a->lines = 1;
     return a->npos >= 1 ? 0 : -1;
 }
 static int sy_start(const char *cmd, const char *use, int argc, char **argv, SyArgs *a, SyView *v, int deflim) {
@@ -481,7 +482,8 @@ static void sy_go_mods(const SyView *v) {
 }
 static void sy_mods_build(const SyView *v) {
     SyMods *M = sy_mods(v);
-    if (M->built) return; M->built = 1; sy_go_mods(v);
+    if (M->built) return;
+    M->built = 1; sy_go_mods(v);
     for (int s = 0; s < v->ns; s++) {
         const SySec *x = &v->s[s].x; if (!x->has) continue;
         for (uint32_t r = 0; r < x->syms.n; r++) {
@@ -515,7 +517,9 @@ static const char *sy_stem(const StoreLiveDoc *d, char *o, size_t cap) {
 }
 static int sy_ext_is(const StoreLiveDoc *d, const char *ext) { size_t el = strlen(ext); return d->d.plen >= el && !memcmp(d->d.path + d->d.plen - el, ext, el); }
 static int sy_dir_is(const StoreLiveDoc *d, const char *dir, size_t dl) {      /* dir sem '/' final; arquivo diretamente nele */
-    if (d->d.plen <= dl + 1) return 0; if (dl && (memcmp(d->d.path, dir, dl) || d->d.path[dl] != '/')) return 0; return memchr(d->d.path + dl + (dl ? 1 : 0), '/', d->d.plen - dl - (dl ? 1 : 0)) == NULL;
+    if (d->d.plen <= dl + 1) return 0;
+    if (dl && (memcmp(d->d.path, dir, dl) || d->d.path[dl] != '/')) return 0;
+    return memchr(d->d.path + dl + (dl ? 1 : 0), '/', d->d.plen - dl - (dl ? 1 : 0)) == NULL;
 }
 /* sufixo de caminho em fronteira de '/': candidatos "<sufixo><ext>" para uma lista de extensoes; so arquivos da familia */
 static int sy_suffix_find(const SyView *v, const char *suf, const char *const *exts, uint32_t fam, StoreLiveDoc **out, int cap) {
@@ -523,7 +527,8 @@ static int sy_suffix_find(const SyView *v, const char *suf, const char *const *e
     for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead) continue;
         for (int e = 0; exts[e]; e++) { size_t el = strlen(exts[e]), pl = d->d.plen; if (pl < sl + el) continue; if (memcmp(d->d.path + pl - el, exts[e], el)) continue;
             const char *s = d->d.path + pl - el - sl; if (memcmp(s, suf, sl)) continue; if (s != d->d.path && s[-1] != '/') continue;
-            if (fam && sy_dlang(v, d) && (uint32_t)sy_lfam(sy_dlang(v, d)) != fam) continue; out[n++] = d; break; } }
+            if (fam && sy_dlang(v, d) && (uint32_t)sy_lfam(sy_dlang(v, d)) != fam) continue;
+            out[n++] = d; break; } }
     return n;
 }
 static int sy_set_how(char *why, size_t cap, const char *fmt, int n) { snprintf(why, cap, fmt, n, n == 1 ? "" : "s"); return 1; }
@@ -555,7 +560,9 @@ static StoreLiveDoc *sy_rs_modfile(const SyView *v, const char *d) {     /* arqu
     StoreLiveDoc *x; char b[1500];
     if ((x = sy_try(v, d, "/", "mod.rs"))) return x;
     snprintf(b, sizeof b, "%s.rs", d); if ((x = sy_lookup(v, b, strlen(b)))) return x;
-    if ((x = sy_try(v, d, "/", "lib.rs"))) return x; if ((x = sy_try(v, d, "/", "main.rs"))) return x; return NULL;
+    if ((x = sy_try(v, d, "/", "lib.rs"))) return x;
+    if ((x = sy_try(v, d, "/", "main.rs"))) return x;
+    return NULL;
 }
 static int sy_res_rs(const SyView *v, const char *from, size_t fl, const char *text, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
     char t[700]; snprintf(t, sizeof t, "%s", text); char *brace = strchr(t, '{'); char inner[500] = ""; if (brace) { snprintf(inner, sizeof inner, "%s", brace + 1); *brace = 0; char *cb = strchr(inner, '}'); if (cb) *cb = 0; }
@@ -694,7 +701,8 @@ static int sy_res_lang(const SyView *v, const char *from, size_t fl, uint32_t la
     case CL_SH: {
         if (t[0] != '$' && t[0] != '~') return 0;
         const char *r = t; if (r[0] == '~') r++; else if (r[1] == '{') { r = strchr(r, '}'); if (!r) return 0; r++; } else if (r[1] == '(') return 0; else { r++; while (isalnum((unsigned char)*r) || *r == '_') r++; }
-        if (*r != '/') return 0; r++; while (r[0] == '.' && r[1] == '/') r += 2; if (!*r) return 0;
+        if (*r != '/') return 0;
+        r++; while (r[0] == '.' && r[1] == '/') r += 2; if (!*r) return 0;
         if ((d = sy_try(v, dir, r, ""))) { out[0] = d; *conf = 80; snprintf(why, wc, "script path with a variable prefix; resolved relative to the calling script's folder"); return 1; }
         if ((d = sy_try(v, "", r, ""))) { out[0] = d; *conf = 76; snprintf(why, wc, "script path with a variable prefix; resolved from the project root"); return 1; }
         static const char *const sx[] = {"", NULL}; int n = sy_suffix_find(v, r, sx, 0, out, cap); if (n) { *conf = n == 1 ? 58 : 36; sy_set_how(why, wc, "script path with a variable prefix; path suffix match; %d file%s match", n); }
@@ -784,7 +792,8 @@ static int sy_importers(SyView *v, const StoreLiveDoc *tg, SyImp **res) {
 static int sy_link_build(SyView *v, const SySyms *d, SyImp **lk) {
     int n = 0; *lk = NULL; const StoreLiveDoc *seen[4]; int ns = 0;
     for (int i = 0; i < d->n && ns < 4; i++) {
-        if ((d->s[i].pack >> 16) & CSF_DECL) continue; StoreLiveDoc *t = sy_lookup(v, d->s[i].path, d->s[i].plen); if (!t) continue;
+        if ((d->s[i].pack >> 16) & CSF_DECL) continue;
+        StoreLiveDoc *t = sy_lookup(v, d->s[i].path, d->s[i].plen); if (!t) continue;
         int dup = 0; for (int k = 0; k < ns; k++) if (seen[k] == t) dup = 1; if (dup) continue; seen[ns++] = t;
         SyImp *im = NULL; int m = sy_importers(v, t, &im); if (!m) { free(im); continue; }
         *lk = (SyImp *)realloc(*lk, sizeof(SyImp) * (size_t)(n + m)); memcpy(*lk + n, im, sizeof(SyImp) * (size_t)m); n += m; free(im);
@@ -978,7 +987,8 @@ static int sy_q_impact(SyView *v, const char *name, int depth, int nodes, int li
         for (int i = 0; i < r.n; i++) {
             const SyRef *f = &r.r[i]; if (f->from == SY_NONE) continue;
             uint32_t row = st_get_u32(store_table_at(&v->s[f->seg].x.docs, f->doc)) + f->from; int dup = 0;
-            for (int k = 0; k < nn; k++) if (nd[k].seg == f->seg && nd[k].row == row) { dup = 1; break; } if (dup) continue;
+            for (int k = 0; k < nn; k++) if (nd[k].seg == f->seg && nd[k].row == row) { dup = 1; break; }
+            if (dup) continue;
             if (nn >= maxn) { truncated = 1; break; }
             SySym s; sy_sym_at(v, f->seg, row, &s); SyNode *N = &nd[nn]; N->seg = f->seg; N->row = row; sy_cpy(N->path, sizeof N->path, s.path, s.plen); sy_cpy(N->name, sizeof N->name, s.name, s.nl);
             N->l0 = s.line0; N->l1 = s.line1; N->depth = cur.depth + 1; N->parent = cur.node; N->cline = f->line; snprintf(N->calls, sizeof N->calls, "%s", cur.name);

@@ -45,7 +45,8 @@ static void orch_relevance(UioeOrch *o) {
     for (int i = 0; i < o->g->nn; i++) {
         UioeNode *n = &o->g->n[i]; char hay[700]; snprintf(hay, sizeof hay, "%s %s %s %s", n->name, n->sig, n->text, po_base(n->path));
         int rel = n->relevance + 10 * ug_terms_in(o->a, hay); if (n->anchor) rel += 10;
-        if (po_is_test(o, n->path)) rel -= 15; if (po_is_doc(n->path) && !(o->qflags & 1) && o->k->kind != UI_HOWTO && o->k->kind != UI_CONFIG) rel -= 8;
+        if (po_is_test(o, n->path)) rel -= 15;
+        if (po_is_doc(n->path) && !(o->qflags & 1) && o->k->kind != UI_HOWTO && o->k->kind != UI_CONFIG) rel -= 8;
         n->relevance = rel < 0 ? 0 : rel > 100 ? 100 : rel;
     }
 }
@@ -129,7 +130,8 @@ static void orch_gate(UioeOrch *o) {
     if ((!any45 || onlyword) && !docfinding && !memfinding) { conf -= 25; GS("-25 %s", !any45 ? "nothing above confidence 45 was found" : "only candidates ranked by words were found, none reached by structure"); }
     const int gate = uioe_env_int("KATANA_UIOE_GATE", 70, 1, 100);
     if (conf >= gate && !(strong && o->structural) && !o->entity_hit && !docfinding && !memfinding) { conf = gate - 1; GS("cap at %d: no verified structural finding with confidence >= 75 and no entity resolved by the index, so a packet would rest on word ranking alone (it never passes G4)", conf); }
-    if (conf < 0) conf = 0; if (conf > 100) conf = 100;
+    if (conf < 0) conf = 0;
+    if (conf > 100) conf = 100;
 #undef GS
     rc->conf_after = conf; rt->confidence = conf;
     int nres = 0; for (int i = 0; i < g->nn; i++) if (!g->n[i].dropped) nres++;
@@ -215,7 +217,8 @@ static void uioe_orchestrate(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, 
         for (int i = 0; i < rc->nbranch; i++) ids[nids++] = keepg->e[rc->branch[i]].to;                 /* os ramos e as ligacoes irmas tambem sao citados: relidos tambem */
         if (rc->npath >= 2) { const UioeNode *P = &keepg->n[rc->path[0]], *C = &keepg->n[rc->path[1]]; int sib = 0;
             for (int i = 0; i < keepg->ne && sib < 3; i++) { const UioeEdge *e = &keepg->e[i]; if (e->kind != UE_LINKS || i == rc->pathedge[0]) continue;
-                if (strcmp(keepg->n[e->from].path, P->path) || strcmp(keepg->n[e->to].path, C->path)) continue; ids[nids++] = e->from; ids[nids++] = e->to; sib++; } }
+                if (strcmp(keepg->n[e->from].path, P->path) || strcmp(keepg->n[e->to].path, C->path)) continue;
+                ids[nids++] = e->from; ids[nids++] = e->to; sib++; } }
         int items[200]; const int ni = orch_select_items(o, items, 24); for (int i = 0; i < ni && nids < 150; i++) ids[nids++] = items[i];
         if (cx->verify) { const double tv = now_sec(); uioe_verify_list(cx, keepg, ids, nids, rc); rc->ms_verify += (now_sec() - tv) * 1000.0; }
         else for (int i = 0; i < nids; i++) rc->nnotreread++;

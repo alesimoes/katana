@@ -221,7 +221,8 @@ static int fs_prepare(struct FsCtx *F, struct FdIndexS *X, const char *query, co
     qsort(tc, (size_t)ntc, sizeof(FsCand), fs_cmp_cand_sc);
     for (int i = 0; i < ntc && i < K; i++) fs_cand_add(&cand, &nc, &ccap, tc[i].rel, tc[i].g, tc[i].sc);
     if (getenv("KATANA_FIND_DEBUG")) { fprintf(stderr, "find-debug: candidates: %u files have a query term, %d eligible, %d taken; terms:", nt, ntc, nc < K ? nc : K);
-        for (int q = 0; q < F->nq; q++) fprintf(stderr, " %s(%.0f files)", fd_tstr(&X->T, (int)F->qid[q]), F->dfbody[q]); fprintf(stderr, "\n");
+        for (int q = 0; q < F->nq; q++) fprintf(stderr, " %s(%.0f files)", fd_tstr(&X->T, (int)F->qid[q]), F->dfbody[q]);
+        fprintf(stderr, "\n");
         for (int i = 0; i < ntc && i < K + 5; i++) fprintf(stderr, "find-debug: cand %d %-60.60s %.2f%s\n", i + 1, tc[i].rel, tc[i].sc, i >= K ? " (cut)" : ""); }
     free(tc); free(sc); free(cov); free(tl); free(seen);
     /* 2) o que o motor de nomes e texto do coder sugeriu */

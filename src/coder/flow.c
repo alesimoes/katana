@@ -239,7 +239,8 @@ static void fl_render_text(CtSb *b, const FlQ *o, const SyItems *a) {
         for (int pass = 0; pass < 3; pass++) {
             const char *pk = pass == 0 ? "produce" : pass == 1 ? "consume" : "define";
             int cnt = 0; for (int i = 0; i < a->n; i++) if (!strcmp(a->v[i].kind, pk)) cnt++;
-            if (!cnt) continue; sy_sbf(b, "%s\n", pass == 1 ? "RECEIVES (reads / handles)" : pass == 0 ? "SENDS (produces / writes / calls)" : "DEFINES (this contract specifies)");
+            if (!cnt) continue;
+            sy_sbf(b, "%s\n", pass == 1 ? "RECEIVES (reads / handles)" : pass == 0 ? "SENDS (produces / writes / calls)" : "DEFINES (this contract specifies)");
             for (int i = 0; i < a->n; i++) { const SyItem *it = &a->v[i]; if (strcmp(it->kind, pk)) continue;
                 int cls = 0; for (int k = 0; k < CKC_N; k++) if (!strncmp(it->vis, FL_CLS[k], strlen(FL_CLS[k]))) cls = k;
                 if (it->flags & SYI_NOCONF) sy_sbf(b, "  %d  %s [%s]  -- %s", it->line0, it->name, it->vis, it->sig);
@@ -366,7 +367,8 @@ static int fl_q_key(SyView *v, const char *q, int limit, SyItems *out, FlQ *o) {
         for (int role = CKR_PRODUCE; role <= CKR_DEFINE; role++) {
             int shown = 0;
             for (int i = 0; i < oc.n; i++) { const KyOcc *x = &oc.o[i]; if ((int)x->role != role) continue;
-                if (shown >= limit) break; shown++;
+                if (shown >= limit) break;
+                shown++;
                 SyItem *it = sy_item_new(out); sy_set_path(it, x->path, x->plen); it->line0 = it->line1 = (int)x->line;
                 snprintf(it->kind, sizeof it->kind, "%s", KINDN[role]); fl_item_name(x, it->name, sizeof it->name); fl_where(v, x, it->encl, sizeof it->encl);
                 fl_vis(x, it->vis, sizeof it->vis);
