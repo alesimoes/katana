@@ -1,6 +1,8 @@
 # Code index lifecycle (design)
 
-Status: design only, 2026-11-23. No code was changed and nothing was measured for this document. Every number
+Status: design only, 2026-11-23, revised the same day with the owner's answers (index roots are defined by
+`katana init`; the crawler runs on demand and exits when done; all nine phases are to be built, in waves; the
+unified Find becomes the default). No code was changed and nothing was measured for this document. Every number
 marked "observed" comes from single runs reported by earlier agents; every number marked "target" is a design
 goal, not a result. The design covers when, where, how and by whom the coder index is built, kept fresh,
 queried and discarded, and what the model is told about it.
@@ -10,32 +12,37 @@ Related documents: `docs/code-intelligence.md` (2.4 storage, 2.6 incremental upd
 
 ## 0. The decision in ten lines
 
-1. **The index is built by a crawler.** One crawler process per index root (`katana coder crawl <root>`), elected
-   by a file lock, started by whichever session touches the root first and shared by all of them. It walks the
-   tree breadth first, level by level, and never runs inside the agent process.
+1. **The index is built by a crawler, on demand.** One crawler process per index root (`katana coder crawl
+   <root>`), elected by a file lock, started by the session or query that needs it. It walks the tree breadth
+   first, level by level, never runs inside the agent process, and **exits as soon as every requested folder
+   has reached the last level**. It is not a daemon.
 2. **Everything is indexed, at several depths of information.** N0 tree (directories, file names, size, date,
    language, a summary per directory), N1 text search, N2 symbols and references, N3 links, N4 derived summaries
    (optional). Each level is published and queryable as soon as a batch of it is ready.
 3. **Breadth before depth.** The whole tree reaches N0, then every file reaches N1, then N2, then N3. The one
    exception is the hot band (files the user or the model is touching, and files that just changed): those go
    through all levels at once.
-4. **One index, one walk.** The Find cache (`find-<hash>.idx`) disappears; Find reads the coder store. The file
-   graph and sparse activation are derived from N2/N3 sections instead of a second read of every file.
-5. **Index root = project root, not the folder named.** A subfolder of a repository uses the index of the
-   repository root with a path prefix; nested repositories, git worktrees and submodules are their own roots and
-   are not descended from the parent.
-6. **Queries never walk the tree.** Freshness comes from the crawler's file watcher (inotify, polling fallback),
-   a bounded wait before the query (300 ms for changes, 2 s for a cold index) and a check of each file cited in
-   the output. A query costs one `stat` of the manifest plus one `stat` per file it prints.
-7. **Storage rule kept:** only the launch folder has `.katana/` inside; every other root lives in
-   `~/.katana/coder/<key>/store`, with a registry that maps roots to stores and follows a moved folder by inode.
+4. **One index, one walk.** The Find cache (`find-<hash>.idx`) disappears; Find reads the coder store, by
+   default once phase 7 is built (`KATANA_FIND_INDEX=legacy` is the escape). The file graph and sparse activation
+   are derived from N2/N3 sections instead of a second read of every file.
+5. **An index root is a folder where the user ran `katana init`,** not a folder with `.git`. An initialized
+   folder owns `<folder>/.katana/coder/` and covers its subtree, except subfolders that were initialized
+   themselves (nested, independent indexes). A folder without init is absorbed by its nearest initialized
+   ancestor, as a prefix.
+6. **Folders with no initialized ancestor go to the home index** (`~/.katana/coder/`): one store per visited
+   folder plus a registry. Only what the user visits is indexed (working folder, cited folder, `path` of Find or
+   Symbols), never the whole home. A folder without init never gets a `.katana/` inside.
+7. **Queries never walk the tree.** Each session watches the folders it uses (inotify, polling fallback) and the
+   tools report their own writes; a pending change or an incomplete scope starts the crawler again. A query
+   waits at most 300 ms for changes or 2 s for a cold index and checks each file it prints.
 8. **The store stays what it is:** immutable segments, atomic manifest, one writer, lock-free readers. Levels are
    sections; crawl progress is published in two new section types in the same atomic swap. Corruption or a
    format change means rebuild, never migrate.
 9. **The model sees at most one status line,** only when the queried scope is not complete or not fresh. For a
-   small project the output is byte-identical to today, including `[symbol index created in N s]`.
-10. **Nine phases, about 23.5 agent-days,** each compiling and useful alone; the risky parts (unified Find,
-    threads) enter behind switches that default to the current behavior.
+   small project the output is byte-identical to today, including `[symbol index created in N s]`. A directory
+   summary is asked with Symbols `outline` on a folder.
+10. **All nine phases are to be built, in five waves** (about 23.5 agent-days of work, about 17 with the
+    parallel waves), with a file list per wave so that agents do not collide.
 
 ## 1. Current state and where the time goes
 
@@ -51,6 +58,7 @@ Related documents: `docs/code-intelligence.md` (2.4 storage, 2.6 incremental upd
 | Tool entry, Symbols | `src/coder/symtool.c` `sym_ensure_index`, `sym_tool_run` | Same full update on every call. Prints `[symbol index created\|updated in N s]` when the index was created or the update took more than 700 ms. `sym_capture` redirects the process's stdout and stderr with `dup2` while the query runs. |
 | Find's own index | `src/tools/find.c` `fd_update`, `fd_cache_path`, `fd_save`; `src/tools/findgraph.c` `fg_build`, `fg_ensure` | A second index: file list from `git ls-files` (one child process, `ct_grep_collect` in `src/tools/grep.c`) plus a `stat` of every file on every call, 40-line chunks, its own tokenizer and stemmer, all loaded into the heap, saved whole to `find-<hash>.idx`. The file graph is rebuilt entirely (every file read again, plus `git log`) whenever anything changed. |
 | Where | `store.c` `store_locate`, `src/tools/common.c` `proj_is_launch` | Launch folder: `<folder>/.katana/coder/store`. Others: `~/.katana/coder/<hash of realpath>/store`. |
+| Init | `src/agent/extend.c` `init_cli` (`katana init`), `ext_slash` (`/init`) | `katana init [folder]` writes `KATANA.md` and then runs `coder_cmd_index`; it refuses when `KATANA.md` already exists unless `--force`. The slash command `/init` writes `KATANA.md` only and does not index. Neither leaves a marker that the folder was initialized. |
 | When | `src/agent/loop.c` `autoindex_dir`, `autoindex_start`; `src/agent/locate.c` `place_note` | A detached `katana coder index <folder>` on open, on `/cd`, and for each folder a request cites (spawned again on every request that cites it). Not in the home folder or `/`. `KATANA_AUTOINDEX=0` turns it off. |
 
 ### 1.2 Observed numbers (single runs, reported by other agents)
@@ -90,6 +98,11 @@ Related documents: `docs/code-intelligence.md` (2.4 storage, 2.6 incremental upd
 11. **Ignore handling differs between the two indexes**: Find trusts `git ls-files`, the coder store its own
     rules; the 15 agent worktrees under `.claude/` inflated the index before `.claude` entered `st_ignored_dir`.
     A nested repository with any other name still inflates it.
+12. **Init is not a recognizable event.** `katana init` and `/init` do different things (table above), the
+    first refuses to run where `KATANA.md` exists, and a folder that merely was a launch folder has the same
+    `.katana/coder/store` as one that was initialized. Several other pieces also create `.katana/` in the
+    working folder without any init (`fd_cache_path` in `find.c`, the prefix cache in
+    `src/agent/prefix_cache.c`).
 
 ## 2. Principles
 
@@ -139,131 +152,194 @@ detail; do not build on the detail without checking.
 | FSEvents, ReadDirectoryChangesW | Recursive watch per path/handle, coalesced events, overflow means rescan | Sure in outline | The same watcher interface for macOS and Windows later | — |
 | mmap of indexes | Zero-copy readers, resident memory proportional to what is touched, shared between processes through the page cache | Sure | Already used (`store_seg_map`, with read fallback) | `mmap` of structs: the store decodes field by field, keep that |
 
-### A. Project root
+### A. Index root
 
-**Decision.** Every path the agent names is resolved to an **index root** plus a **prefix** inside it. A new
-function `index_resolve(path, &root, &prefix)` (new file `src/coder/roots.c`) applies, in order:
+**Decision (owner, 2026-11-23).** A root is defined by **init**, not by `.git` or `KATANA.md`: the user declares
+"this folder is in the index" by running `katana init` (or `/init`) there. `.git` cannot be trusted as the
+boundary of a project.
+
+**A.1 The marker.** Init creates `<folder>/.katana/coder/ROOT` (a small text file: format version, date). The
+store is `<folder>/.katana/coder/store`. The marker, not the presence of `.katana/` or of a store, is what makes
+a folder a root: launch folders of earlier versions already contain `.katana/coder/store` without ever having
+been initialized (1.3 item 12).
+
+Changes to init that this requires (problems found in the code, see 1.1):
+
+- `katana init` and `/init` do the same thing: write `KATANA.md` when it does not exist, create the marker,
+  start the crawler.
+- When `KATANA.md` already exists, init no longer stops: it keeps the file (unless `--force`), and still creates
+  the marker and the index. Otherwise a folder that has a `KATANA.md` could never be initialized.
+- If the folder has an older local store without marker, init adopts it (the crawler re-validates it). If the
+  folder has a store in the home index, init moves it into the folder when both are on the same filesystem
+  (`rename`), otherwise the folder is crawled again and the home store is removed.
+- `katana init --remove` (new) deletes the marker and the local store; the folder falls back to the rules below.
+
+**A.2 Resolution.** `index_resolve(path, &root, &prefix, &store)` (new file `src/coder/roots.c`):
 
 1. `realpath` the path; a file resolves through its directory.
-2. Walk up from the path. The first ancestor (the path itself included) that satisfies one of these is the root:
-   a. it is registered as a root in the registry (F.2) — an index already exists above;
-   b. it contains `.git` (directory or file), `.hg` or `.svn`;
-   c. it contains `KATANA.md` or `.katana/coder/store/MANIFEST`.
-3. The walk stops, without accepting them, at the home folder, at `/` and at a filesystem boundary (`st_dev`
-   changes). If nothing was accepted, the root is the path itself (a folder without git is its own root).
-4. The home folder and `/` are never roots for automatic indexing (already the rule in `autoindex_dir`,
-   `ct_findtool`, `ct_symbols`). `katana coder index ~` is refused without `--force`.
+2. Walk up from the path, the path itself included. The first ancestor with a marker is the root; the query is
+   restricted to the prefix of the path inside it. The walk does not stop at filesystem boundaries or at `.git`;
+   it ends at `/`.
+3. No initialized ancestor: the folder belongs to the **home index**. In the registry (F.2), the nearest
+   registered home root that is the path or an ancestor of it absorbs the path (prefix). If there is none, the
+   visited folder itself becomes a new home root, with its store in `~/.katana/coder/<key>/store`.
+4. The home folder and `/` are never crawled as roots (already the rule in `autoindex_dir`, `ct_findtool`,
+   `ct_symbols`): the home index is the collection of the folders visited, not an index of the home tree. A
+   session whose working folder is the home (the desktop) indexes nothing until a folder is visited.
+   `katana init` in the home folder is refused without `--force`.
 
-So `greymod/bridge` uses the index of `greymod` with prefix `bridge/`. This is what `ct_findtool` already does
-for subfolders of the working folder (`root` plus `pre`); the rule becomes general and Symbols gets the same.
+"Visited" means exactly: the working folder at open and after `/cd`, a folder cited in a request (`place_note`),
+and the `path` of a Find or Symbols call. Nothing else starts a crawl.
 
-Special cases:
+So, in the owner's examples: opening the desktop in `~` and asking about `greymod/bridge` creates the home root
+`~/source/greymod/bridge` (only that subtree is crawled); doing `cd greymod` and `katana init` puts the index in
+`greymod/.katana/coder/` and from then on `greymod/bridge` is a prefix of it; a second init in
+`greymod/bridge` gives that subfolder its own `.katana/` and its own index.
+
+**A.3 What a root covers.**
 
 | Case | Rule | Why |
 |---|---|---|
-| Monorepo with several projects | One root at the repository; projects are prefixes; the per-directory summaries (D.2) give each project its own top-down view | Cross-project links are the point of the index (owner's decision 6). Splitting at `package.json`/`Cargo.toml` (the TypeScript-server way) would cut them. |
-| Git worktree (`.git` is a file) | Its own root: different checkout, different content | A worktree shares history, not files. |
-| Nested repository, worktree or submodule INSIDE a root | The crawler records the directory at N0 with state `nested-root` and does not descend. It becomes its own root when something names it | This is the general fix for the `.claude/worktrees` inflation, for any directory name. A submodule's code is still reachable: one line tells the model it is a separate index. |
-| Symbolic links | Never followed. A link to a directory is recorded at N0 as `link` with its target; the root itself is always a real path | Cycles and double indexing. Same as the current `lstat` walk. |
-| Mount point inside a root | Recorded at N0 as `other-filesystem`, not descended | A mounted disk or network share inside a project is not project code; avoids crawling a NAS. |
-| Folder without markers | Root is the folder itself | Nothing better is knowable. |
-| Folder named is above existing roots (for example `~/source`) | It becomes a root if explicitly asked; the roots below are `nested-root` when they have their own VCS marker | Keeps one owner per file. |
+| Initialized subfolder inside a root | The parent records the directory at N0 as `nested-root` and does not descend; the two indexes are independent and nothing is duplicated. When a subfolder is initialized later, the parent's next crawl pass tombstones that prefix | Owner's rule: a second init is a second index |
+| Home root visited above existing home roots (the user visits `greymod/bridge`, later `greymod`) | The ancestor becomes a home root and covers the whole subtree; the descendant home stores are retired (registry entries removed, stores deleted) once the ancestor has reached N1 for their prefix | One owner per file; without this the home index would hold the same files twice |
+| Home root with an initialized folder inside | `nested-root`, not descended | Same rule as for initialized parents |
+| Monorepo with several projects | One init at the top covers all of them (links across projects are kept); an init per project separates them. The user decides by where init is run | Replaces every marker heuristic |
+| Subdirectory with its own `.git` (nested clone, submodule, git worktree) inside a root | Descended like any directory, since `.git` is not a boundary; `.claude` stays in the heavy-directory list (D.8). Git worktrees are the open decision in section 7 | Consequence of not trusting `.git`; worktrees are whole copies of the code and bring the inflation problem back under any name other than `.claude` |
+| Symbolic links | Never followed. A link to a directory is recorded at N0 as `link` with its target; a root is always a real path | Cycles and double indexing. Same as the current `lstat` walk |
+| Mount point inside a root | Recorded at N0 as `other-filesystem`, not descended | A mounted disk or network share inside a project is not project code |
 
-**Alternatives rejected.** (1) Always index exactly the folder named: produces overlapping indexes
-(`greymod` and `greymod/bridge`), double work and links that stop at the folder edge. (2) Always the launch
-folder: wrong when the request cites another project (decision 1 demands indexing it). (3) Build-file markers:
-see monorepo row.
+**A.4 Consequences the owner should know.**
+
+- Without init, the index ends at the edge of the visited folder: asking about `greymod/bridge` from the desktop
+  finds nothing in `greymod/common`. Connections across the project need an init at the project's top (or a
+  visit to the top folder).
+- The desktop's home index grows with every folder visited. It is bounded by `katana coder gc` (F.5), which
+  applies only to the home index.
+- `proj_is_launch` and `g_launch_dir` (`src/tools/common.c`) are removed: where a store lives no longer depends
+  on where the process was launched, so two sessions always agree (defect 7 of 1.3 disappears).
+- The same rule has to be applied to the other creators of `<folder>/.katana/` (the prefix cache in
+  `prefix_cache.c` and, until it is deleted, `fd_cache_path`): inside the folder only when it is initialized,
+  otherwise under `~/.katana/cache`. Project skills (`.katana/skills`, created by an explicit command) are not
+  touched by this design.
+
+**Alternatives rejected.** Root by `.git`/`KATANA.md` markers (the first version of this design): rejected by
+the owner; a stray `.git` high in the tree, or a project without one, gives the wrong root. Always the folder
+named, with its own store: overlapping indexes for a folder and its subfolder. One index of the whole home:
+unbounded, and most of it is never asked about.
 
 ### B. Who indexes
 
-**Decision.** One **crawler process per index root**: `katana coder crawl <root>` (alias `katana coder index
---watch <root>` in the foreground). It is the only process that walks, reads, parses, watches and writes for
-that root. Sessions (console, desktop, `katana serve`, subagents) are clients: they read the store in process
-and talk to the crawler through a small local socket.
+**Decision.** One **crawler process per index root**, **on demand**: `katana coder crawl <root>` (alias
+`katana coder index --watch <root>` keeps it in the foreground). It is the only process that walks, reads,
+parses and writes for that root. Sessions (console, desktop, `katana serve`, subagents) read the store in
+process, watch the folders they use, and start the crawler when something has to be done.
+
+Owner's rule for its life (2026-11-23): the crawler starts crawling when it is needed, stops when it reaches the
+last level, and when it has covered every level of every requested folder it exits and closes. It does not wait
+idle and it is not a daemon.
 
 Lifecycle:
 
-- **Start.** Any session calls `index_ensure(root)` (new `src/coder/indexctl.c`) when it opens in a folder, on
-  `/cd`, when a request cites a folder (`place_note`), and when Find or Symbols is asked for a root with no live
-  crawler. `index_ensure` tries to connect to the crawler's socket; if nobody answers it spawns the crawler
-  detached (`posix_spawn`, new session with `setsid`, stdio to a log file) exactly as `autoindex_dir` spawns
-  `coder index` today. Spawning twice is harmless.
+- **Start.** A session calls `index_ensure(root, ...)` (new `src/coder/indexctl.c`) when it opens in a folder,
+  on `/cd`, when a request cites a folder (`place_note`), on init, and before a Find or Symbols query. If there
+  is work (no index, a level missing for the scope, changes reported by the session's watcher or by a tool) and
+  no crawler answers on the socket, it spawns one detached (`posix_spawn`, new session with `setsid`, stdio to a
+  log file), as `autoindex_dir` spawns `coder index` today. The work is passed on the command line (`--prio
+  <prefix>`, `--changed <path>...`, `--sweep`) or, when a crawler is already running, over its socket.
 - **Election.** The crawler takes `flock(LOCK_EX|LOCK_NB)` on `CRAWL.LOCK` in the store directory and holds it
-  for its whole life. A second crawler fails the lock and exits 0 silently. The kernel releases the lock when the
-  process dies, however it dies.
+  while it lives. A second crawler for the same root fails the lock, forwards its work to the first over the
+  socket and exits 0. The kernel releases the lock when the process dies, however it dies.
 - **Writing.** The store's `LOCK` is taken per commit only (`store_writer_begin` ... `store_writer_end`), so a
   manual `katana coder compact` or `verify` can interleave between batches. `store_writer_begin` gains a blocking
   mode with timeout for the crawler.
-- **Leases.** Each session keeps its socket connection open while it uses the root. With zero connections and an
-  empty queue for `KATANA_INDEX_IDLE_EXIT_S` (default 600) the crawler exits. Its next start resumes from the
-  store (D.6).
-- **Priority.** The crawler runs at `nice 10` with idle I/O priority and a small thread pool (I.3): the session
-  beside it is running a model.
-- **If it dies.** Readers are unaffected (immutable segments, published manifest). The next `index_ensure` finds
-  the socket dead, removes it and spawns a new crawler, which cleans `tmp/` and orphan segments (already done by
-  `store_writer_begin`) and rebuilds its queue from the store. At most one unpublished batch is lost.
+- **End.** The crawler exits when the change queue, the frontier and every level queue are empty, the derived
+  sections (graph) are written and compaction is done, and no request arrived during a short settle time
+  (`KATANA_INDEX_SETTLE_MS`, default 2000: the same quiet period the graph rebuild waits for, so that a burst of
+  edits or a checkout is one run and not hundreds). It finishes its crawl even if the session that started it
+  has closed; a large repository does not have to be kept open to be indexed.
+- **Restart.** Whoever needs it next: a session whose watcher saw changes, a tool that wrote a file, a query
+  whose scope is incomplete, a new visit. With an explicit list of changed paths the crawler processes only
+  those; on the first start of a session for a root, or when events may have been missed (overflow, polling
+  mode, no session was watching), it starts with one stat sweep of the catalog (D.6).
+- **Priority.** `nice 10`, idle I/O priority, a small thread pool (I.3): the session beside it is running a
+  model.
+- **If it dies.** Readers are unaffected (immutable segments, published manifest). The next start cleans `tmp/`
+  and orphan segments (already done by `store_writer_begin`) and rebuilds its queues from the store. At most one
+  unpublished batch is lost.
 - **If it cannot start** (spawn fails, no writable home): the tools fall back to the current in-process
   `store_catalog_update`, capped by the wait budget and by `KATANA_INDEX_INLINE_MAX_FILES` (default 5000); above
   the cap they answer from Grep-style scanning and say that no index is available.
+- **Limit.** One session starts at most 4 crawlers at a time; further roots wait in the session's own queue.
 
-Socket protocol (one line request, one line reply, `SOCK_STREAM`, path `~/.katana/run/coder-<key>.sock`; the run
-directory is on the home filesystem because socket files cannot be assumed to work on ntfs3 or network mounts):
+Socket protocol while a crawler is alive (one line request, one line reply, `SOCK_STREAM`, path
+`~/.katana/run/coder-<key>.sock`; the run directory is on the home filesystem because socket files cannot be
+assumed to work on ntfs3 or network mounts):
 
 | Request | Reply | Use |
 |---|---|---|
-| `PING` | `OK <pid> <generation> <state>` | Liveness, lease |
+| `PING` | `OK <pid> <generation> <state>` | Is a crawler running, and how far is it |
 | `PRIO <relative path>` | `OK` | Move a file or directory to the hot band (the model reads, edits or asks about it) |
-| `TOUCH <relative path>` | `OK` | A session wrote this file; enqueue it now, do not wait for the watcher |
+| `TOUCH <relative path>` | `OK` | This file changed (a tool wrote it, or a session's watcher saw it) |
+| `SWEEP` | `OK` | Re-validate the whole catalog by stat (events may have been missed) |
 | `SYNC <level> <prefix> <timeout ms>` | `OK <generation> complete\|partial <done> <total>` | Block until the change queue is empty and `<prefix>` reached `<level>`, or the timeout |
 | `STATUS` | one line of counters (same content as the state file, H.1) | Status command, console line, desktop |
-| `STOP` | `OK` | `katana coder forget`, tests |
+| `STOP` | `OK` | `katana coder forget`, `init --remove` |
 
 **Alternatives and their cost.**
 
 | Option | For | Against | Verdict |
 |---|---|---|---|
-| Detached `coder index` per event (today) | Simple, no lifecycle | No watcher, so every query must sweep; unbounded cold build; spawned again and again | Replaced |
-| Thread inside the agent | No IPC; shares memory | Global state and `dup2` in the query path (1.3 item 6); dies with the session, so a 100-thousand-file crawl restarts with every short session; N sessions still need an election; competes with inference inside the same process and address space | Rejected |
-| One daemon per user (`katana indexd`) holding all roots and SERVING queries | One process, one inotify instance, hot roots in memory | Queries through IPC lose the main property of the store (mapped, in-process, lock-free reads shared by the page cache); a single failure point for every session; it must manage many roots' lifecycles; language servers need this shape because their index is live heap state, ours is immutable files | Rejected now |
-| One crawler per root, readers in process | Election is one `flock`; failure is isolated per root; nothing to serve; idle roots cost nothing | One process and one inotify instance per active root | **Chosen** |
+| Detached `coder index` per event (today) | Simple, no lifecycle | Every query must sweep because nothing knows what changed; unbounded cold build; no levels, no priority | Replaced |
+| Thread inside the agent | No IPC; shares memory | Global state and `dup2` in the query path (1.3 item 6); dies with the session, so a 100-thousand-file crawl restarts with every short session; N sessions still need an election; competes with inference inside the same process | Rejected |
+| One daemon per user (`katana indexd`) holding all roots and serving queries | One process, one inotify instance, hot roots in memory | Queries through IPC lose the main property of the store (mapped, in-process, lock-free reads shared by the page cache); a single failure point; a permanent process, which the owner does not want | Rejected |
+| A crawler per root that stays alive to watch (first version of this design: idle exit after 10 minutes) | Changes are indexed even when no session asks | A background process outliving its work | Rejected by the owner |
+| A crawler per root that runs to completion; the watcher lives in the sessions | No process without work; election is one `flock`; failure isolated per root | Changes made while no session is open are found only at the next visit (by the sweep); each session spends its own inotify watches | **Chosen** |
 
-The socket protocol is the same one a per-user daemon would speak, so merging crawlers into one process later is
-a packaging change, not a redesign.
-
-What the examples say: git's fsmonitor and clangd's background indexer are exactly "a long-lived helper that
-watches and writes, while the readers use files"; LMDB and SQLite show that readers need no coordination when the
-writer publishes snapshots.
+What the examples say: git has no daemon either: every command revalidates what it needs, and the optional
+fsmonitor only answers "what changed since". Here the session's watcher is that fsmonitor, and the crawler is
+the command that runs and ends. LMDB and SQLite show that readers need no coordination when the writer publishes
+snapshots.
 
 ### C. Freshness
 
 **Decision.** Three mechanisms, none of which walks the tree in the query path.
 
-**C.1 The crawler watches (push).** After listing a directory the crawler adds an inotify watch on it
-(`IN_CREATE|IN_DELETE|IN_MOVED_FROM|IN_MOVED_TO|IN_CLOSE_WRITE|IN_ATTRIB|IN_DELETE_SELF|IN_MOVE_SELF`). Events
-enter a coalescing change queue keyed by path, debounced 50 ms. A changed file goes through all its levels at
-once in one small segment (the observed cost of one file is 0.013 s). A new directory is crawled as a branch
-(D.7). `IN_Q_OVERFLOW`, or more than 2000 events under one directory in a second, collapses to "re-list this
-branch".
+**C.1 The session watches (push).** The crawler exits when its work is done (B), so the watcher lives in each
+session, inside `index_ensure`'s module, with no thread: one inotify descriptor per session, read without
+blocking at three moments (before a Find or Symbols query, after each tool call, when the session is idle at the
+prompt). For each root it uses, the session adds a watch per listed directory, taken from `STS_DIRS`
+(`IN_CREATE|IN_DELETE|IN_MOVED_FROM|IN_MOVED_TO|IN_CLOSE_WRITE|IN_ATTRIB|IN_DELETE_SELF|IN_MOVE_SELF`), and adds
+the watches of new directories when a new generation lists them.
 
-Watch budget: at most half of `fs.inotify.max_user_watches` (read from `/proc`), in priority order (hot band
-first, shallow first). Directories beyond the budget, and every directory when the filesystem is network or FUSE
-(detected with `statfs`), are covered by **polling**: a background stat sweep of the catalog every
-`max(2 s, 20 × the cost of the previous sweep)`. Directory mtime is used only to skip `readdir` of unchanged
-directories (git's untracked-cache idea); file content changes are found by the file `stat`, because a directory
-mtime does not change when a file is rewritten in place. In polling mode a change of `.git/HEAD` or `.git/index`
-mtime (two `stat` calls) triggers an immediate sweep: a branch switch changes many files at once.
+Events are coalesced by path in the session and handed to the crawler: `TOUCH` over the socket when one is
+running, otherwise a spawn with `--changed`. A changed file goes through all its levels at once in one small
+segment (the observed cost of one file is 0.013 s). A new directory is crawled as a branch (D.7).
+`IN_Q_OVERFLOW`, or more than 2000 events under one directory between two reads, collapses to `SWEEP`.
+
+Watch budget: at most a quarter of `fs.inotify.max_user_watches` per session (read from `/proc`; several
+sessions each hold their own watches), in priority order (hot band first, shallow first). Directories beyond the
+budget, and every directory when the filesystem is network or FUSE (detected with `statfs`), are covered by
+**polling**: when the session reads its watcher and the last sweep of the root is older than
+`max(2 s, 20 × the cost of the previous sweep)`, it asks for a `SWEEP`. Inside a sweep, directory mtime is used
+only to skip `readdir` of unchanged directories (git's untracked-cache idea); file content changes are found by
+the file `stat`, because a directory mtime does not change when a file is rewritten in place. A change of
+`.git/HEAD` or `.git/index` mtime (two `stat` calls, when the root has a `.git`) asks for a sweep at once: a
+branch switch changes many files together. This uses git only as a hint, never as the boundary of anything.
+
+Changes made while no session was open are not watched by anyone: the first `index_ensure` of a session for a
+root always asks for a sweep.
 
 **C.2 The session tells (hint).** Edit, Write, MultiEdit and NotebookEdit call `index_touch(path)` after writing:
-the path enters an in-process dirty set and a `TOUCH` goes to the crawler. Bash sets a "tree may have changed"
+the path enters an in-process dirty set and goes to the crawler (`TOUCH`, or a spawn with `--changed`). Bash sets a "tree may have changed"
 flag (the watcher sees the actual changes).
 
 **C.3 The query waits, briefly (pull).** Before a Find or Symbols query, `index_ensure(root, level, prefix)`:
 
 | Situation | Action | Budget (env) |
 |---|---|---|
-| Dirty set empty, flag clear, crawler queue empty (from the last `PING`) | Nothing: one `stat` of the manifest (`store_stale`) | 0 |
-| Dirty set non-empty or flag set | `SYNC` until the change queue drains | 300 ms (`KATANA_INDEX_FRESH_MS`) |
-| Scope not yet at the needed level (cold or still crawling) | `PRIO <prefix>` then `SYNC <level> <prefix>` | 2000 ms (`KATANA_INDEX_WAIT_MS`) |
+| Dirty set empty, flag clear, no watcher events, scope complete (from the cached state map) | Nothing: one non-blocking read of the watcher and one `stat` of the manifest (`store_stale`) | 0 |
+| Dirty set non-empty, flag set or watcher events | Start or reach the crawler; `SYNC` until the change queue drains | 300 ms (`KATANA_INDEX_FRESH_MS`) |
+| Scope not yet at the needed level (cold or still crawling) | Start or reach the crawler; `PRIO <prefix>` then `SYNC <level> <prefix>` | 2000 ms (`KATANA_INDEX_WAIT_MS`) |
 | Budget expires | Query what is published; one status line (J) | — |
 
 With the observed numbers, a project of up to about 2 thousand files completes all levels inside the 2 s budget,
@@ -293,7 +369,8 @@ which are bounded by the polling period and always caught for the files actually
 **Alternatives rejected.** Stat everything per call (today): linear cost on every call. A validity window of N
 ms without events ("trust the index for 2 s"): returns stale data right after the agent's own edit, the most
 common sequence there is. `git status` as the change detector: needs git, a child process per query, and does
-nothing for folders without git. Trusting inotify alone: silently wrong on network mounts and after overflow.
+nothing for folders without git. Trusting inotify alone: silently wrong on network mounts and after overflow. A crawler kept alive only to
+watch: rejected by the owner (B).
 
 ### D. The crawler: order, levels and limits
 
@@ -317,7 +394,7 @@ exactness and connection.
 | Field | Meaning |
 |---|---|
 | path, depth | Relative to the root |
-| state | `discovered` (seen in the parent's listing, not listed yet), `listed`, `ignored`, `nested-root`, `link`, `other-filesystem`, `too-deep`, `too-many-entries`, `unreadable` |
+| state | `discovered` (seen in the parent's listing, not listed yet), `listed`, `ignored`, `nested-root` (has its own init), `link`, `other-filesystem`, `too-deep`, `too-many-entries`, `unreadable` |
 | reason | For `ignored`: `gitignore`, `katanaignore`, `heavy-dir`, `vcs` |
 | mtime | Directory mtime when listed |
 | nfiles, ndirs, nignored | Direct children |
@@ -344,7 +421,7 @@ store (D.6).
 
 | Queue | Items | Order |
 |---|---|---|
-| Change queue | Paths from the watcher, `TOUCH` and polling | First in, first out, coalesced by path, 50 ms debounce |
+| Change queue | Paths from the sessions' watchers and tools (`TOUCH`, `--changed`) and from sweeps | First in, first out, coalesced by path, 50 ms debounce |
 | Frontier | Directories in state `discovered` | Heap by (band, depth, sequence): breadth first, hot branches first |
 | Level queues Q1, Q2, Q3 (Q4) | Files that are at level k-1 and eligible for level k | Heap by (band, newest mtime first) |
 
@@ -357,7 +434,7 @@ Service order of the main loop, re-evaluated after every batch:
 3. Frontier until empty: the whole tree reaches N0. (Target: seconds even for 100 thousand files.)
 4. Q1 until empty: every eligible file reaches N1, band by band.
 5. Q2 until empty, then Q3, then Q4 if enabled.
-6. The file graph (`STS_GRAPH`), compaction, verification scrub, garbage collection.
+6. The file graph (`STS_GRAPH`), compaction, verification scrub, garbage collection. Then the crawler exits (B).
 
 Bands:
 
@@ -403,8 +480,8 @@ There is no queue file. On start the crawler opens the store and rebuilds:
 
 - frontier = directories whose newest record is `discovered`;
 - Qk = live documents at level k-1 that are eligible for level k;
-- change queue = one stat sweep of the catalog (the same sweep polling uses), because events were missed while
-  no crawler was alive.
+- change queue = the paths it was started with (`--changed`), or one stat sweep of the catalog (`--sweep`, the
+  same sweep polling uses) when the session cannot vouch that it saw every change.
 
 If the store is empty, the frontier is the root. Killing the crawler at any point loses at most the batch in
 flight. `STS_CRAWL.epoch` increases at each full restart from zero.
@@ -421,7 +498,7 @@ to `.gitignore` or `.katanaignore` re-lists the subtree under the file that chan
 | Thing | Policy | State the model can be told |
 |---|---|---|
 | Heavy directories by name (`.git`, `.hg`, `.svn`, `.katana`, `.claude`, `node_modules`, `vendor`, `build`, `dist`, `target`, `__pycache__`, `.venv`, `venv`, `.cache`, `.gradle`, `.idea`; union of the lists in `st_ignored_dir`, `st_scan_walk` and `fd_skip_rel`) | Directory recorded at N0 as `ignored: heavy-dir`; not descended. `.katanaignore` can re-include with `!` | "`node_modules/` exists and is not indexed" |
-| Ignored by `.gitignore`, `.katanaignore`, and `.git/info/exclude` (to be added) | Ignored directory: record only. Ignored file: not cataloged, counted in the parent's `nignored` | "12 ignored entries in `out/`" |
+| Ignored by `.gitignore`, `.katanaignore`, and `.git/info/exclude` (to be added) | Ignored directory: record only. Ignored file: not cataloged, counted in the parent's `nignored` (decided: the owner did not object to the recommendation) | "12 ignored entries in `out/`" |
 | Depth | Beyond `KATANA_INDEX_MAX_DEPTH` (default 32): `too-deep`, not descended | yes |
 | Fan-out | A directory with more than 20 thousand direct entries: `too-many-entries`; its files are cataloged at N0 and stay in band 4 | yes |
 | Total | `KATANA_INDEX_MAX_FILES` (default 500 thousand at N0) and `KATANA_INDEX_MAX_TEXT_FILES` (default 200 thousand at N1 and above); when reached, lower bands stay at the level they have; `STS_CRAWL` records the limit | "index limited to 200000 files; `data/` is at catalog level" |
@@ -458,10 +535,12 @@ What stays in Find: the query classification, the ranking adjustments (`FD_W_*`)
 the decision layer over `CoderHits`. What it stops owning: storage, listing, tokenizing at index time, the graph
 build.
 
-**Migration.** None. The unified path enters behind `KATANA_FIND_INDEX=store` with `legacy` as the default; when
-the owner flips the default, `fd_save`, `fd_load`, `fd_cache_path`, `fd_build_file`, `fd_invert`, `fg_build`,
-`fg_save` and `fg_load` are deleted and `katana coder gc` removes old `find-*.idx` files. The two formats are
-caches; nothing is converted.
+**Migration.** None; the two formats are caches and nothing is converted. Owner's decision (2026-11-23): the
+unified path is the **default as soon as phase 7 is built** (`KATANA_FIND_INDEX=store`). `KATANA_FIND_INDEX=legacy`
+stays as an escape, which means `fd_save`, `fd_load`, `fd_cache_path`, `fd_build_file`, `fd_invert`, `fg_build`,
+`fg_save` and `fg_load` stay in the binary for now; in legacy mode `fd_cache_path` follows the init rule (cache
+inside the folder only when it is initialized). Removing the legacy code and letting `katana coder gc` delete the
+old `find-*.idx` files is a later cleanup, on the owner's word.
 
 **Memory in the agent process.** Today: the whole Find index in the heap (terms, per-file blobs, inverted lists,
 graph) plus per-query views. Unified: mapped segments (resident only where touched, shared with the crawler and
@@ -471,30 +550,52 @@ files and well under 1 MB for katana (estimates from the struct sizes, not measu
 open per process (least recently used closes).
 
 **Risk.** Ranking changes for Find (different tokenizer and candidate source), with no measurement campaign
-allowed now. That is why the switch defaults to legacy. See section 6.
+allowed now. The owner accepted this by making the unified path the default; the legacy switch is the way back.
+See section 6.
 
 ### F. Storage and place
 
-**F.1 The rule.** Unchanged: only the launch folder has `.katana/` inside. Stated precisely with roots:
+**F.1 The rule** (owner, 2026-11-23; replaces "only the launch folder has `.katana/` inside").
 
-- If the launch folder IS an index root, its store is `<root>/.katana/coder/store`.
-- Every other root (cited folders, `path` arguments, and the repository root when katana was launched in a
-  subfolder of it) is in `~/.katana/coder/<key>/store`.
-- **One store per root, whoever asks.** If a root already has a local store, every process uses it, launched
-  there or not; a central store is never created beside it. This removes defect 7 of section 1.3 and needs the
-  registry, because the choice can no longer be made per process.
-- If the root is on a network or FUSE filesystem, or is not writable, the store is central even for the launch
-  folder (locks and mapping are only trusted on local filesystems).
+- An **initialized** folder keeps its index inside itself: `<folder>/.katana/coder/store`, with the marker
+  `<folder>/.katana/coder/ROOT` (A.1) and the existing `.gitignore` containing `*`.
+- Everything else is in the **home index**: `~/.katana/coder/<key>/store`, one store per home root (a visited
+  folder with no initialized ancestor, A.2).
+- A folder without init **never** gets a `.katana/` created inside it by the index.
+- One store per root, whoever asks and from wherever the process was launched.
+- If an initialized folder is on a network or FUSE filesystem, or is not writable, its marker stays in the folder
+  but the store is placed in the home index (locks and mapping are only trusted on local filesystems);
+  `katana coder status` says so.
+
+**One store per home root, not one multi-root store.** Considered: a single store under `~/.katana/coder/`
+holding every visited folder, with paths relative to the home. Rejected:
+
+| Aspect | One store per visited root (chosen) | One multi-root store |
+|---|---|---|
+| Writer | One crawler per root; two folders are crawled at the same time by two processes | A single writer lock for everything the user visits: a large crawl blocks the index of every other folder |
+| Compaction | Proportional to the root | Rewrites data of unrelated folders; the big folder's segments are merged with the small one's |
+| Forgetting a folder, `gc` | Delete a directory | Tombstone a prefix and wait for compaction to reclaim the space |
+| Corruption | Costs one folder | Costs the index of everything |
+| Search view per query | Sized by the root | Sized by everything ever visited, filtered by prefix on every query |
+| Ranking statistics (document frequencies, average lengths) | Per project | Mixed across unrelated projects |
+| Cost | A registry (F.2) and the absorption rule of A.3 | None of those |
+
+The home index is therefore a directory of stores with a registry; "the index of everything" that the desktop
+uses is the sum of them.
 
 **F.2 Registry.** `~/.katana/coder/roots/<key>.root`, one small text file per root, written by tmp and rename:
-real path, device and inode of the root directory, store directory, format version, created, bytes on disk. Its
+real path, kind (`init` or `home`), device and inode of the root directory, store directory, format version,
+created, bytes on disk. Initialized roots are registered too (so `katana coder list` shows them and absorption
+can be decided without walking the disk), but for them the marker in the folder is the authority and the
+registry entry is only a cache of it. Its
 mtime is the last-use time (touched at most once per hour per process). `<key>` is the existing
 `store_hash64(realpath)` in hex.
 
-- Lookup by path: one `stat` of `<key>.root`.
+- Lookup by path: the walk up of A.2 does one `stat` per ancestor for the marker; the home-root lookup is one
+  `stat` of `<key>.root` per ancestor (a few dozen `stat` calls in total, cached per session and per path).
 - **Moved folder**: when a path has no registry entry, the registry is scanned for an entry whose (device, inode)
-  equals the folder's and whose recorded path no longer exists; if found, the central store directory is renamed
-  to the new key and the entry rewritten. A local store travels with its folder.
+  equals the folder's and whose recorded path no longer exists; if found, the home store directory is renamed
+  to the new key and the entry rewritten. An initialized folder's store travels with the folder.
 - **Root recorded in the manifest differs from the located root** (moved local store): the reader uses the
   located root for all file paths, never the recorded one, and the crawler rewrites it
   (`store_writer_set_root`) and re-validates the catalog. Fixes defect 8.
@@ -503,8 +604,8 @@ mtime is the last-use time (touched at most once per hour per process). `<key>` 
 
 **F.3 Permissions.** Store directories `0700`, every file `0600` (segments, manifest, locks, state, socket,
 registry). On filesystems that ignore modes (the owner's `/mnt/dados` is ntfs3 mounted with fixed uid and gid)
-this is not enforceable; `katana coder status` says so, and `KATANA_INDEX_LOCAL=0` forces the central store even
-for the launch folder.
+this is not enforceable; `katana coder status` says so. An index stays out of such a disk simply by not running
+init there: without init the store is in the home.
 
 **F.4 Secrets.** The index holds text of the files (lexicon terms, signatures, the README line). Three layers:
 
@@ -527,8 +628,8 @@ These are heuristics; section 6 says what they miss.
 | Command or event | Effect |
 |---|---|
 | `katana coder list` | Roots in the registry: path, store, size, levels, last use, crawler alive or not |
-| `katana coder forget <dir>` | `STOP` to the crawler, delete the store and the registry entry (local or central) |
-| `katana coder gc [--dry-run]` | Remove central stores whose root has not existed for 30 days; remove least recently used central stores while the total is above `KATANA_INDEX_MAX_MB` (default 2048) and the store was unused for 14 days; remove orphan directories without a registry entry; remove `find-*.idx` once the legacy Find is gone. Never removes a local store |
+| `katana coder forget <dir>` | `STOP` to the crawler, delete the store and the registry entry of a home root. For an initialized folder it points to `katana init --remove` |
+| `katana coder gc [--dry-run]` | Home index only: remove stores whose root has not existed for 30 days; remove home roots absorbed by an ancestor or by an init (A.3); remove least recently used stores while the total is above `KATANA_INDEX_MAX_MB` (default 2048) and the store was unused for 14 days; remove orphan directories without a registry entry. Lists, without deleting, local stores that have no marker (launch folders of earlier versions). Never removes the store of an initialized folder |
 | Automatic | A crawler runs `gc` at start when the stamp `~/.katana/coder/gc.stamp` is older than a day |
 
 A root that vanished may be an unmounted disk, hence the 30-day grace.
@@ -545,36 +646,39 @@ key).
 
 | Situation | Behavior |
 |---|---|
-| Several sessions on one root | One crawler (`CRAWL.LOCK`); all sessions read; each holds a lease on the socket |
-| Two crawlers spawned at once | One wins the lock; the other exits 0 |
+| Several sessions on one root | At most one crawler at a time (`CRAWL.LOCK`); all sessions read; each session has its own watcher and may be the one that starts the next crawler |
+| Two crawlers spawned at once | One wins the lock; the other forwards its work over the socket and exits 0 |
 | Readers during a commit | They hold the previous generation's segments mapped; `store_stale` (one `stat`) tells them to reopen on their next query. Dropped segments are unlinked and stay readable while mapped (POSIX). When mapping fails the reader copies the file into memory (`store_seg_map` fallback), which is also safe |
 | A segment vanishes between reading the manifest and mapping | `store_open` already retries up to 6 times |
 | Crawler killed mid-batch | `tmp/` files and orphan segments are removed by the next `store_writer_begin`; the batch is redone |
-| Session killed | Its socket closes; the lease ends |
+| Session killed | Nothing to clean: its watcher dies with it; a running crawler finishes and exits |
+| A request arrives exactly as the crawler exits | The client's connect fails or the socket is gone: `index_ensure` spawns a new crawler. The exiting crawler removes its socket before releasing `CRAWL.LOCK`, and a new crawler waits up to 200 ms for the lock |
 | Disk full | `st_write_file` fails, the commit returns -1 and the previous generation stays. The crawler checks `statvfs` before a batch (needs twice the estimated segment size plus 64 MiB free), enters state `paused: disk full`, retries every 60 s, and reports it in the state file |
 | Manual `index`, `compact`, `verify` while crawling | They take the store `LOCK` between batches (the crawler holds it only per commit) or become clients |
-| Network or FUSE filesystem under the root | Store central; polling instead of events; `status` says "polling every N s" |
+| Network or FUSE filesystem under the root | Store in the home index; sweeps instead of events; `status` says so |
 | ntfs3 (`/mnt/dados`) | Treated as local: it is an in-kernel filesystem, so `flock`, inotify and `rename` are expected to work; `mmap` has the read fallback. Not verified in this design (section 6) |
-| Read-only project | Central store (the access check exists in `store_locate`) |
+| Read-only project | Init fails with a clear message (it cannot create the marker); without init the store is in the home anyway |
 | Read-only or missing home | No crawler; inline fallback is impossible too; tools answer through scanning and say `index unavailable` |
-| Corrupt store | Any reader error other than "no manifest" is sent to the crawler as a rebuild request. The crawler runs the full checksum pass (`store_seg_verify` plus the section verifiers); if it fails the store directory is renamed `store.bad-<time>` (one kept) and rebuilt. The tool output carries one line: `[index was damaged and is being rebuilt]`. A scrub of all checksums also runs when the crawler is idle and the last scrub is older than 7 days |
+| Corrupt store | Any reader error other than "no manifest" is sent to the crawler as a rebuild request. The crawler runs the full checksum pass (`store_seg_verify` plus the section verifiers); if it fails the store directory is renamed `store.bad-<time>` (one kept) and rebuilt. The tool output carries one line: `[index was damaged and is being rebuilt]`. A scrub of all checksums also runs at the end of a crawler run when the last scrub is older than 7 days |
 | Clock jumps, files with future mtime | Flagged `SDF_RACY`, re-hashed instead of trusted |
-| inotify limit reached | Remaining directories polled; state file says how many are watched |
+| inotify limit reached | Remaining directories covered by sweeps; `katana coder status` run inside a session says how many are watched |
 
 ### H. Observability and control
 
 **H.1 State file.** `~/.katana/run/coder-<key>.state`, rewritten by tmp and rename at most twice a second while
 something changes: pid, root, store, generation, crawl epoch, per-level counts (done / eligible / total), frontier
-size, change-queue size, current activity, watch mode and watch count, limits hit, last error, time of the last
-complete pass per level. Any process can show progress without connecting.
+size, change-queue size, current activity, limits hit, last error, time of the last complete pass per level, and
+`finished` with the end time once the crawler has exited (the file stays). Any process can show progress without
+connecting.
 
 **H.2 Commands.**
 
 | Command | Output |
 |---|---|
-| `katana coder status [dir] [--json]` | Root and how it was resolved, store path and size, format, generation, a table of levels (files done, eligible, total, percent, age of last complete pass), directories by state, skipped files by reason, crawler (pid, activity, queue, watch mode) or "not running", last error |
-| `katana coder crawl <dir>` | The crawler (detached use) |
-| `katana coder index <dir> --watch` | The crawler in the foreground with a progress line |
+| `katana init [dir] [--force] [--remove]` | A.1: marker, `KATANA.md` when missing, start of the crawl; `--remove` undoes the marker and the local store |
+| `katana coder status [dir] [--json]` | Root and how it was resolved (`init at <folder>` or `home index, visited <folder>`), store path and size, format, generation, a table of levels (files done, eligible, total, percent, age of last complete pass), directories by state, skipped files by reason, crawler (pid, activity, queue, watch mode) or "not running", last error |
+| `katana coder crawl <dir> [--prio p] [--changed f...] [--sweep]` | The crawler (detached use); exits when done |
+| `katana coder index <dir> --watch` | The crawler in the foreground with a progress line, plus its own watcher: it does not exit, for users who want an index kept current without a session |
 | `katana coder index <dir>` | One synchronous pass, or a client of the live crawler (D.9) |
 | `katana coder list`, `forget`, `gc` | F.5 |
 | `katana coder verify`, `compact` | Existing |
@@ -597,18 +701,17 @@ desktop's own protocol was not read for this design; phase 6 must check `desktop
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KATANA_AUTOINDEX` | 1 | 0: no crawler is started automatically; Find and Symbols use the inline fallback on first use (existing name, same intent) |
+| `KATANA_AUTOINDEX` | 1 | 0: nothing is indexed on open, `/cd` or mention; Find and Symbols still start the crawler on first use (existing name, same intent) |
 | `KATANA_INDEX_WAIT_MS` | 2000 | Budget per tool call for a cold or incomplete scope |
 | `KATANA_INDEX_FRESH_MS` | 300 | Budget per tool call for pending changes |
 | `KATANA_INDEX_THREADS` | min(4, cores/4), at least 1 | Analysis threads in the crawler |
 | `KATANA_INDEX_WATCH` | auto | `inotify`, `poll`, `off` |
-| `KATANA_INDEX_IDLE_EXIT_S` | 600 | Crawler exits after this long without leases or work |
+| `KATANA_INDEX_SETTLE_MS` | 2000 | Quiet time with empty queues before the crawler writes the graph and exits |
 | `KATANA_INDEX_MAX_FILES`, `KATANA_INDEX_MAX_TEXT_FILES`, `KATANA_INDEX_MAX_DEPTH` | 500000, 200000, 32 | D.8 |
-| `KATANA_INDEX_MAX_MB` | 2048 | Total size of central stores before `gc` removes old ones |
-| `KATANA_INDEX_LOCAL` | 1 | 0: never create a store inside a project |
+| `KATANA_INDEX_MAX_MB` | 2048 | Total size of the home index before `gc` removes old stores |
 | `KATANA_INDEX_INLINE_MAX_FILES` | 5000 | Cap of the inline fallback |
 | `KATANA_INDEX_LEVELS` | 3 | Deepest level built (4 enables summaries) |
-| `KATANA_FIND_INDEX` | legacy | `store`: unified Find (E) |
+| `KATANA_FIND_INDEX` | store (from phase 7 on) | `legacy`: Find's own cache, kept as an escape (E) |
 | `KATANA_CODER_INDEX_KB`, `KATANA_CACHE_DIR`, `KATANA_STORE_STALL` | existing | Unchanged |
 
 ### I. Performance
@@ -667,7 +770,8 @@ first call (not measured).
 **I.5 Memory.** Agent process: section E (mapped segments plus about 100 bytes per file of cached views,
 estimate). Crawler: one batch in flight (bounded by 64 MiB of source and its derived sections), the queues
 (about 24 bytes per pending file plus paths taken from the mapped catalog), the watch table (path hash to
-directory, about 40 bytes per watched directory); it exits when idle.
+directory, about 40 bytes per watched directory, held by each session, not by the crawler); the crawler exits
+when its work is done.
 
 ### J. What the model sees
 
@@ -687,7 +791,8 @@ prompt do not change (the Symbols description already says "built on first use, 
 | The queried prefix is behind | `[index: src/foo/ is at catalog level (names only); text and symbols are not ready]` |
 | Files changed and were handled at print time | `[index: 2 files changed since indexed; shown from the files]` |
 | Limits | `[index limited to 200000 files; data/ is at catalog level]` |
-| Nested root inside the queried prefix | `[index: third_party/lib/ is a separate project; search it with path=third_party/lib]` |
+| A folder with its own init inside the queried prefix | `[index: third_party/lib/ has its own index; search it with path=third_party/lib]` |
+| A `path` outside the root of the working folder, first visit | no extra line: it is resolved to its own root (A.2) and the lines above apply to that root |
 | Damaged, unavailable | `[index was damaged and is being rebuilt]` / `[index unavailable: cannot write to ~/.katana; searched by scanning files]` |
 
 Only the most important applicable line is printed (order of the table from the third row down: damaged, limits,
@@ -707,7 +812,8 @@ verified on the file. What a partial index limits is completeness: "all callers"
 `NOT FOUND`. Those outputs say "so far" when the scope is partial: `3 callers so far (index partial)`.
 
 **J.5 Top-down navigation.** The directory summary is exposed through the existing Symbols `outline` action
-when `file` is a directory (open decision 1 in section 7):
+when `file` is a directory (decided: the owner did not object to the recommendation; no new tool and no schema
+change, the description gains a few words):
 
 ```
 bridge/  (14 files, 3 folders; C 9, shell 3, markdown 2; indexed: symbols)
@@ -719,6 +825,11 @@ bridge/  (14 files, 3 folders; C 9, shell 3, markdown 2; indexed: symbols)
 
 "main symbols" appears only when the directory is at N2; before that the line reads `indexed: names only`.
 
+Init changes nothing in what the model reads: a root is described by the folder path the model already uses, and
+the status lines never mention init, the home index or where a store is. The one visible effect is scope:
+without an init above it, a query on `greymod/bridge` covers only that folder, and `NOT FOUND` there keeps the
+existing "what was indexed" sentence, which now names the folder searched.
+
 **J.6 Training data (v7).** `data/curriculum/v7` contains 175 occurrences of `symbol index created in N s`,
 normalized to `0.0 s` (`docs/curriculum.md`, line 471), produced by the real engine on small generated projects.
 Under this design those scenarios produce the same bytes: the project is small, the first Symbols call waits
@@ -728,56 +839,74 @@ The new lines (J.2 rows 3 to 9) and the directory `outline` do not exist in v7; 
 They follow the bracket convention it knows, and they appear only on large or changing trees. The next
 curriculum version should add a family for them (a partial index, a `NOT FOUND ... so far`, a directory
 outline); until then this is a risk listed in section 6. The generator must set `KATANA_AUTOINDEX=0` or wait for
-the crawler so that scenario outputs stay deterministic.
+the crawler so that scenario outputs stay deterministic. Two more things for the generator: its scenario
+projects are not initialized, so their indexes go to the home index of the generating user (it should point
+`HOME` or `KATANA_CACHE_DIR`-style overrides at a scratch folder and clean it); and with the unified Find as the
+default, new Find outputs will differ in ranking from the v7 ones, so v7-style families regenerated after phase 7
+are not comparable line by line with the stored v7 data.
 
 ## 4. Timelines
 
 Times are targets from I.1, not measurements.
 
-### 4.1 Opening in a project folder (greymod, 373 files)
+### 4.1 Working directly in a project: `cd greymod`, `katana init` (373 files)
 
 ```
-t=0        user runs katana in ~/source/greymod
-           loop.c: index_ensure(cwd) -> index_resolve: root = greymod (has .git), prefix ""
-           registry: no entry -> store = greymod/.katana/coder/store (launch folder is the root)
-           socket dead -> spawn `katana coder crawl greymod` (detached, nice 10)
-t=5 ms     crawler takes CRAWL.LOCK, opens empty store, frontier = [root]
+t=0        user runs `katana init` in ~/source/greymod (or /init inside a session there)
+           init: KATANA.md written if missing; marker greymod/.katana/coder/ROOT created
+           a home store of greymod or of folders under it, if any, is adopted or retired (A.1, A.3)
+           spawn `katana coder crawl greymod` (detached, nice 10)
+t=5 ms     crawler takes CRAWL.LOCK, opens the store, frontier = [root]
 t=30 ms    N0 published (gen 1): 373 files, 21 directories       stderr: [index greymod: 373 files found]
 t=0.25 s   N1 published (gen 2)                                   stderr: [index greymod: text ready]
 t=0.45 s   N2+N3 published by augmentation (gen 3, 4)             stderr: [index greymod: symbols and links ready (0.4 s)]
-t=0.5 s    graph section written; crawler idle, watching 21 directories
-t=8 s      user's first request; model calls Find
-           index_ensure: dirty set empty, queue empty -> 1 stat of MANIFEST; view built once and cached
-           output: no status line
+t=0.5 s    queues empty; settle 2 s
+t=2.5 s    graph section written; crawler EXITS
+
+later      user opens katana in greymod: index_ensure -> marker found -> root greymod, store inside the folder
+           session adds 21 inotify watches; first visit of the session -> spawn crawler --sweep
+           sweep finds nothing changed (ms) -> crawler exits after the settle time
+           model calls Find: no events, scope complete -> 1 read of the watcher, 1 stat of MANIFEST; no status line
 ```
 
-If the user's request arrives at t=0.1 s, the Find call sends `PRIO`/`SYNC`, waits about 0.35 s inside its 2 s
-budget, and answers from a complete index; a Symbols call in that position prints `[symbol index created in
+If a request arrives while the first crawl is still running, the Find call sends `PRIO`/`SYNC`, waits inside its
+2 s budget and answers from a complete index; a Symbols call in that position prints `[symbol index created in
 0.4 s]`.
 
-### 4.2 Opening in the home folder and citing another folder
+### 4.2 The desktop in the home folder, citing a folder that was never initialized
 
 ```
-t=0        user runs katana in ~            index_ensure(~): home is never a root -> nothing started
+t=0        desktop session, working folder ~         index_ensure(~): home is never a root -> nothing started
 t=20 s     user: "in greymod/bridge, why does the session list arrive empty?"
            locate.c place_note resolves ~/source/greymod/bridge
-           index_ensure(that path): walk up -> ~/source/greymod has .git -> root = greymod, prefix = bridge/
-           registry lookup: greymod has a local store (from 4.1)? yes -> use it. no -> ~/.katana/coder/<key>/store
-           crawler spawned; PRIO bridge/ puts that branch in band 0
-t=20.03 s  N0 of the whole tree; bridge/ files go N1..N3 first (hot band)
-t=20.1 s   model calls Find path=greymod/bridge -> root greymod, prefix bridge/
-           SYNC N1 bridge/ returns complete in ms; the rest of the root is still at N0/N1
-           output: results for bridge/, no status line (the queried prefix is complete)
-t=20.5 s   whole root at N3
+           index_resolve: no marker in bridge, greymod, source, ~ ; registry: no home root at or above it
+             -> new home root ~/source/greymod/bridge, store ~/.katana/coder/<key>/store, registry entry written
+           spawn crawler for that root; nothing is created inside greymod
+t=20.03 s  N0 of bridge/ only (the rest of greymod is not visited, not crawled)
+t=20.1 s   model calls Find path=greymod/bridge -> same root, prefix ""
+           SYNC N1 returns complete in ms; output: results, no status line
+t=20.4 s   bridge at N3; settle; crawler exits at t=22.4 s
+
+t=5 min    user: "and who calls it from greymod/common?"
+           index_resolve(greymod/common): no marker; no home root at or above it -> a second home root
+           (the two home roots do not see each other: links between bridge/ and common/ are not in any index)
+
+t=9 min    user cites ~/source/greymod itself
+           index_resolve: no marker; new home root greymod, ancestor of the two existing ones
+           crawler for greymod covers the whole subtree; when it reaches N1 for bridge/ and common/ their home
+           stores are retired (A.3); from now on both are prefixes of greymod
+
+another day  user does `cd greymod && katana init`
+           the home store of greymod is moved into greymod/.katana/coder/store (same filesystem) or rebuilt;
+           the home index no longer holds greymod
 ```
 
-No `.katana/` is created in greymod by this session unless one already existed.
-
-### 4.3 A repository of 100 thousand files
+### 4.3 A folder of 100 thousand files
 
 ```
-t=0        open; crawler starts; frontier breadth first, 4 workers listing directories
-t=3 s      N0 complete: 116000 files, 9000 directories; 9000 inotify watches (limit 65536, budget 32768)
+t=0        visit (open in it, or init); crawler starts; frontier breadth first, 4 workers listing directories
+t=3 s      N0 complete: 116000 files, 9000 directories
+           the session adds 9000 inotify watches (limit 65536, its budget 16384)
            stderr: [index kernel: 116000 files found, indexing in the background]
 t=3..60 s  Q1 by band: recently modified source first; a batch (4096 files) is published about every second
 t=10 s     model: Find "where the scheduler picks the next task"
@@ -788,73 +917,110 @@ t=12 s     model: Symbols outline kernel/sched/   -> PRIO kernel/sched/ : that d
            reach N2 in well under the 2 s budget; output is complete for that prefix, no status line
 t=60 s     N1 complete      stderr: [index kernel: text ready]
 t=60..180 s Q2 then Q3 (augmentation of each batch segment), then the graph, then compaction to 8 segments
-t=180 s    stderr: [index kernel: symbols and links ready]
-           user closes katana at any point: the crawler finishes the crawl, then exits after 10 idle minutes
-           crawler killed at t=40 s: next session rebuilds the queues from the store and continues at ~text 80000
+t=180 s    stderr: [index kernel: symbols and links ready]      t=182 s: crawler EXITS
+           user closes katana at t=40 s: the crawler keeps going to the last level, then exits
+           crawler killed at t=40 s: the next visit starts a crawler that rebuilds its queues from the store
+           and continues at about text 80000, not at zero
 ```
 
 ### 4.4 Two sessions at once on the same root
 
 ```
-session A (console, launched in katana/)          session B (desktop, launched in ~, cites katana/)
-index_ensure -> spawns crawler C                  index_ensure -> resolves the same root -> registry -> same store
-C holds CRAWL.LOCK                                connect to C's socket (a spawn race would lose the lock and exit)
+session A (console, opened in katana/)            session B (desktop, in ~, cites katana/)
+index_resolve -> marker in katana/ -> same root   index_resolve -> the same marker -> same root, same store
+first visit: spawn crawler C1 --sweep             first visit: spawn C2 -> lock held by C1 -> forwards, exits
+C1: nothing changed -> settle -> exits            .
+A watches 60 directories                          B watches the same 60 directories (its own watches)
 A: Find -> reads gen 12 in process                B: Symbols -> reads gen 12 in process (same mapped pages)
-A: Edit src/tools/find.c -> TOUCH                 .
-C: batch for find.c -> gen 13 (LOCK held ~10 ms)  .
-A: Find -> SYNC returns at gen 13 -> fresh        B: next query: store_stale sees gen 13 -> view rebuilt once
-A exits (lease closed)                            B still holds a lease -> C keeps running
+A: Edit src/tools/find.c -> dirty set; no crawler running -> spawn C3 --changed src/tools/find.c
+C3: find.c N0..N3 in one small segment -> gen 13  B's watcher also saw the write
+A: Find -> SYNC returns at gen 13 -> fresh        B: next query reads its watcher -> sends TOUCH find.c to C3
+                                                     (already done: hash unchanged, nothing written)
+C3: queues empty, settle 2 s, graph rows, EXITS   B: store_stale sees gen 13 -> view rebuilt once
 ```
 
 ### 4.5 The folder changes while the model works
 
 ```
-t=0      index complete at gen 40; model has just received Find results
-t=1 s    model: Edit session.c (adds a function)         tool calls index_touch -> dirty set {session.c}; TOUCH
-t=1.02 s crawler: change queue -> session.c N0..N3 in one small segment -> gen 41
-t=1.5 s  model: Bash "git checkout other-branch"         flag "tree may have changed"; inotify: 300 events
-t=1.55 s crawler: debounce; 300 paths in the change queue; batches publish gen 42, 43
+t=0      index complete at gen 40, no crawler running; model has just received Find results
+t=1 s    model: Edit session.c (adds a function)         index_touch -> dirty set {session.c}
+                                                          spawn crawler --changed session.c
+t=1.03 s crawler: session.c N0..N3 in one small segment -> gen 41; settle timer starts
+t=1.5 s  model: Bash "git checkout other-branch"         flag "tree may have changed"
+                                                          after the tool call the session reads its watcher:
+                                                          300 events -> TOUCH x300 to the running crawler
+t=1.55 s crawler: batches publish gen 42, 43
 t=1.6 s  model: Symbols callers session_list
          index_ensure: flag set -> SYNC with 300 ms budget
            drained in time  -> query on gen 43, no status line
            not drained      -> query on what is published; every printed file is checked (C.4):
                                changed files are re-parsed in process, vanished ones dropped;
                                line 1: [index: 4 files changed since indexed; shown from the files]
-t=1.9 s  crawler quiet for 2 s later -> graph rows of the changed files rebuilt
+t=3.6 s  2 s without requests: graph rows of the changed files rebuilt; crawler EXITS
+t=40 s   the user saves a file in an editor; nothing runs
+t=55 s   next tool call or query: the session reads its watcher, finds the event, spawns crawler --changed
 ```
 
-On a network mount the same sequence has no events at steps 1.02 and 1.55: `TOUCH` still covers the agent's own
-edit, the checkout is caught by the `.git/HEAD` check on the next polling tick, and C.4 protects the printed
-lines meanwhile.
+On a network mount the same sequence has no events: the tools' own writes are still reported (`index_touch`),
+the checkout is caught by the `.git/HEAD` check or by the next sweep, and C.4 protects the printed lines
+meanwhile.
 
-## 5. Implementation phases
+## 5. Implementation: nine phases in five waves
 
-Agent-days are estimates for a Sonnet agent with this document. Every phase must compile with `build.bat`
-(Linux build equivalent) and, per the owner's rule for this period, is reported as "done, compiled, nothing
-measured". "Done when" lists observable behavior, checked by running the commands once, not by a test campaign.
-Source edits follow the project rule (Python replacement scripts with count asserts).
+The owner ordered all nine phases. They are grouped in waves; inside a wave the agents run in parallel, each in
+its own worktree, and **an agent edits only the files listed for it**. Agent-days are estimates for a Sonnet
+agent with this document. Every phase must compile with the project's build and, per the owner's rule for this
+period, is reported as "done, compiled, nothing measured". "Done when" lists observable behavior, checked by
+running the commands once, not by a test campaign. Source edits follow the project rule (Python replacement
+scripts with count asserts). Each wave is merged into `main` before the next starts.
 
-| Phase | Content | Files | Done when | Days | Depends on |
-|---|---|---|---|---|---|
-| 1. Cheap queries | Knowledge base loaded once per process; `CsView` and `SyView` cached per root and generation (max 4); new `src/coder/indexctl.c` with `index_ensure(root, level, prefix, budget)` whose first version spawns the existing `katana coder index` when no manifest exists or the dirty flag is set and waits up to the budget; `coder_lookup` and `sym_ensure_index` call it instead of `store_catalog_update`; `index_touch` from Edit, Write, MultiEdit, NotebookEdit; "may have changed" flag from Bash | `search.c`, `symquery.c`, `symtool.c`, `kb.c`, new `indexctl.c`, `katana.c` (include), `src/tools/edit.c`, `write.c`, `multiedit.c`, `notebookedit.c`, `bash.c` | With `KATANA_FIND_TIME` set, a second Find on an unchanged indexed folder reports no walk and no knowledge-base load; an Edit followed by Symbols shows the new function; Symbols on a small unindexed folder still prints `[symbol index created in N s]` | 2 | — |
-| 2. Roots, registry, place | `index_resolve`; registry files; `store_locate` takes the resolved root and the registry (one store per root); located root overrides the manifest's root in readers; moved-folder detection by (device, inode); `0700`/`0600`; nested-root, link and mount detection in `st_scan_walk`; secret file table and `SDF_SKIP_SECRET`; `.git/info/exclude`; Symbols and Find resolve `path` through `index_resolve` | new `src/coder/roots.c`, `store.c`, `storedocs.c`, `search.c` (`cs_read_doc`), `symquery.c`, `src/tools/find.c` (`ct_findtool` root and prefix), `symbols.c`, `common.c`, `src/agent/loop.c` | `katana coder status greymod/bridge` reports root `greymod`; a `.env` file appears in the catalog as skipped and none of its words are found by `katana coder search`; a nested clone inside a root is listed as `nested-root` and its files are absent from the parent's catalog; `mv` of a centrally stored folder keeps its index | 2.5 | 1 |
-| 3. The crawler | `katana coder crawl`; `CRAWL.LOCK`; frontier, level queues, bands; `STS_DIRS`, `STS_CRAWL`; level bits in `StoreDoc.flags`; batches; N0 by append, N1 by supersession, N2 by augmentation; same-level compaction with the 24/8 thresholds; reconstruction of queues from the store; state file; socket with `PING`, `PRIO`, `TOUCH`, `SYNC`, `STATUS`, `STOP`; blocking writer lock; `index_ensure` switches from "spawn index" to "spawn or reach the crawler"; `autoindex_dir` calls it; idle exit; limits of D.8; generated/minified detection | new `src/coder/crawl.c`, `store.c`, `storedocs.c`, `search.c` and `symindex.c` (hooks take a context; mergers for the new sections), `indexctl.c`, `coder.c` (subcommands), `src/agent/loop.c` | On a large folder `katana coder status` shows N0 complete within seconds while text is still rising; `kill -9` of the crawler followed by a restart continues from the reported counts instead of zero; two crawlers started together leave one process; a small folder ends with the same sections as `katana coder index` produces today (`katana coder verify` ok) | 5 | 1, 2 |
-| 4. Watching and freshness | inotify watcher with budget and overflow handling; polling sweep and its period; `.git/HEAD` check; change queue with debounce; branch re-entry (D.7); `SDF_RACY`; print-time check with single-file re-parse and the "changed since indexed" count; network/FUSE detection by `statfs` | `crawl.c`, new `src/coder/watch.c`, `search.c`, `symquery.c`, `symtool.c`, `src/tools/find.c` | Editing a file in another terminal changes `katana coder status` generation within a second with no query issued; `KATANA_INDEX_WATCH=poll` gives the same result within the polling period; deleting a file and querying it immediately yields no line for it | 3 | 3 |
-| 5. Threads | Worker pool; context-passed indexing state; audit and removal of static state in `text.c`, `parse.c`, `parse2.c`, `search.c`, `symindex.c`; `KATANA_INDEX_THREADS` (1 = today's single-thread path, kept as the default until the owner allows a comparison) | `crawl.c`, `search.c`, `symindex.c`, `text.c`, `parse.c`, `parse2.c` | With 4 threads the store of a folder passes `verify` and `katana coder status` shows the same file, term, symbol and reference counts as with 1 thread | 2.5 | 3 |
-| 6. What the model and the user see | Status lines of J.2 and the `NOT FOUND ... so far` form; "so far" on completeness outputs; state map in the cached view; directory summary and `outline` on a directory (after open decision 1); console lines of H.3; desktop status item; `katana coder status` full output and `--json` | `symquery.c` (`sy_limits`, `sy_emit`), `symtool.c`, `src/tools/find.c`, `symbols.c`, `src/agent/loop.c`, `storedocs.c` (`coder_cmd_status`), `desktop-qt/` | On a folder still crawling, Find's first line is the "still being built" line and disappears when the crawl ends; on a complete small folder the Find and Symbols outputs are byte-identical to the previous build's | 2 | 3 |
-| 7. Unified Find (switch, default legacy) | `KATANA_FIND_INDEX=store`: file list from the view, candidates from `cs_search_core`, chunk ranking at query time over the candidate files, symbols from N2, `STS_GRAPH` built by the crawler (sym, path, rare, optional co), activation and neighbor notes reading it, request state keyed by path hash | `src/tools/find.c`, `findgraph.c`, `crawl.c`, new `src/coder/graph.c`, `search.c` | With the switch on, Find answers in a folder that has no `find-*.idx` and creates none; with the switch off nothing changes. Flipping the default and deleting the legacy code is a separate step taken by the owner | 4 | 3, 6 |
-| 8. Housekeeping and failure paths | `list`, `forget`, `gc` and the daily automatic `gc`; version mismatch → rebuild, newer store → leave and report; corruption → quarantine and rebuild; scrub when idle; disk-full pause; inline fallback caps; read-only home path | `storedocs.c`, `roots.c`, `crawl.c`, `indexctl.c`, `coder.c` | Truncating a segment file by hand leads, on the next query, to the "damaged" line and a complete index shortly after; `katana coder forget` leaves no file for the root; `gc --dry-run` lists what it would remove | 1.5 | 3 |
-| 9. Documents and training note | Update `docs/tools.md`, `docs/code-intelligence.md` (2.4, 2.6, 8.6), `docs/handoff.md`, `docs/plan.md`, README environment table; add the new output lines to the curriculum backlog in `docs/curriculum.md`; N4 summaries left as a described, switched-off option | `docs/` | Documents describe the behavior that exists | 1 | all |
+### 5.1 The phases
 
-Total: about 23.5 agent-days; phases 1 and 2 alone remove the per-call sweeps and the duplicate stores and can
-ship first. Phases 4, 5, 6 and 8 are independent of each other after phase 3 and can be done in parallel by
-separate agents (they touch `crawl.c` in different functions; phase 5 must merge last). Phase 7 conflicts with
-any other work in `find.c` and `findgraph.c`.
+| Phase | Content | Done when | Days |
+|---|---|---|---|
+| 1. Cheap queries | Knowledge base loaded once per process; `CsView` and `SyView` cached per root and generation (max 4 roots); `indexctl.c` with `index_ensure(root, level, prefix, budget)`, whose first version spawns the existing `katana coder index` when no manifest exists or the dirty flag is set and waits up to the budget; `coder_lookup` and `sym_ensure_index` call it instead of `store_catalog_update`; `index_touch` from Edit, Write, MultiEdit, NotebookEdit; "may have changed" flag from Bash | With `KATANA_FIND_TIME` set, a second Find on an unchanged indexed folder reports no walk and no knowledge-base load; an Edit followed by Symbols shows the new function; Symbols on a small unindexed folder still prints `[symbol index created in N s]` | 2 |
+| 2. Roots by init, registry, place | Marker `.katana/coder/ROOT`; `katana init` and `/init` unified (marker, `KATANA.md` only when missing, crawl; `--remove`); `index_resolve` (walk up to the marker, else home root through the registry, absorption of A.3); `store_locate` takes the resolved root and store; `proj_is_launch` and `g_launch_dir` removed; the prefix cache and `fd_cache_path` follow the init rule; located root overrides the manifest's root in readers; moved-folder detection by (device, inode); `0700`/`0600`; nested-init, link and mount detection in `st_scan_walk`; secret file table and `SDF_SKIP_SECRET`; `.git/info/exclude`; Find and Symbols resolve `path` through `index_resolve` | After `katana init` in a folder, `katana coder status sub/dir` reports `init at <folder>` and the store inside it; in a folder with no init anywhere above, no `.katana/` appears inside it and `katana coder list` shows a home root; a subfolder initialized inside an initialized folder is listed as `nested-root` by the parent and its files are absent from the parent's catalog; a `.env` file is cataloged as skipped and none of its words are found by `katana coder search` | 3 |
+| 3. The crawler | `katana coder crawl` with `--prio`, `--changed`, `--sweep`; `CRAWL.LOCK`; frontier, level queues, bands; `STS_DIRS`, `STS_CRAWL`; level bits in `StoreDoc.flags`; batches; N0 by append, N1 by supersession, N2 by augmentation; same-level compaction with the 24/8 thresholds; reconstruction of queues from the store; state file; socket (`PING`, `PRIO`, `TOUCH`, `SWEEP`, `SYNC`, `STATUS`, `STOP`); blocking writer lock; exit when all levels are covered and the settle time passed; `index_ensure` switches from "spawn index" to "spawn or reach the crawler"; `autoindex_dir` and init call it; limits of D.8; generated/minified detection. **Also creates, as compiling stubs with their includes in `katana.c` and their call sites already placed, every new file of the later phases** (see 5.3) | On a large folder `katana coder status` shows N0 complete within seconds while text is still rising; the crawler process is gone a few seconds after the last level completes; `kill -9` of the crawler followed by a new visit continues from the reported counts instead of zero; two crawlers started together leave one process; a small folder ends with the same sections as `katana coder index` produces today (`katana coder verify` ok) | 5 |
+| 4. Watching and freshness | Session watcher (inotify descriptor read without blocking at the three moments of C.1, watch budget, overflow → sweep); polling period and the `.git/HEAD` hint; coalescing and hand-over to the crawler (`TOUCH` or spawn `--changed`); branch re-entry (D.7); `SDF_RACY`; print-time check with single-file re-parse and the "changed since indexed" count; network/FUSE detection by `statfs` | With a session open, saving a file in another terminal and then issuing any tool call changes the generation shown by `katana coder status`; `KATANA_INDEX_WATCH=poll` gives the same result after the polling period; deleting a file and querying it immediately yields no line for it | 3 |
+| 5. Threads | Worker pool in the crawler; indexing state passed as a context; audit and removal of static state in `text.c`, `parse.c`, `parse2.c`, `search.c`, `symindex.c`; `KATANA_INDEX_THREADS` (1 = the single-thread path, kept as the default until the owner allows a comparison) | With 4 threads the store of a folder passes `verify` and `katana coder status` shows the same file, term, symbol and reference counts as with 1 thread | 2.5 |
+| 6. What the model and the user see | Status lines of J.2 and the `NOT FOUND ... so far` form; "so far" on completeness outputs; state map (files per level per directory) in `statemap.c`; directory summary and Symbols `outline` on a directory; console lines of H.3; desktop status item; `katana coder status` full output and `--json` | On a folder still crawling, Find's first line is the "still being built" line and disappears when the crawl ends; on a complete small folder the Symbols outputs are byte-identical to the previous build's; `Symbols outline` with a folder prints the summary of J.5 | 2 |
+| 7. Unified Find, as the default | File list from the view, candidates from `cs_search_core`, chunk ranking at query time over the candidate files, symbols from N2, `STS_GRAPH` built by the crawler through the `graph_on_quiet` hook (sym, path, rare, optional co), activation and neighbor notes reading it, request state keyed by path hash; `KATANA_FIND_INDEX` defaults to `store`, `legacy` keeps today's path working | Find answers in a folder that has no `find-*.idx` and creates none; with `KATANA_FIND_INDEX=legacy` the old path still answers | 4 |
+| 8. Housekeeping and failure paths | `list`, `forget`, `gc` (home index only) and the daily automatic `gc`; retiring absorbed home roots; version mismatch → rebuild, newer store → leave and report; corruption → quarantine and rebuild; scrub at the end of a run; disk-full pause; inline fallback caps; read-only home path | Truncating a segment file by hand leads, on the next query, to the "damaged" line and a complete index shortly after; `katana coder forget` leaves no file for a home root; `gc --dry-run` lists what it would remove and never names an initialized folder's store | 1.5 |
+| 9. Documents and training note | Update `docs/tools.md`, `docs/code-intelligence.md` (2.4, 2.6, 8.6), `docs/extending.md` (init), `docs/handoff.md`, `docs/plan.md`, README (init, environment table); add the new output lines and the directory outline to the curriculum backlog in `docs/curriculum.md`; N4 summaries left as a described, switched-off option | Documents describe the behavior that exists | 1 |
 
-Coordination with work in progress: the link sections (text keys) being written by another agent must expose a
-per-document hook with a context argument, like the search and symbol hooks after phase 5, and reserve their
-section numbers in the `STS_SYM_BASE` range; `STS_GRAPH` and `STS_SUMMARY` take the next free numbers there, and
-`STS_DIRS`/`STS_CRAWL` take 3 and 4 in the catalog range.
+### 5.2 The waves
+
+| Wave | Agents (in parallel) | Files each agent may edit | Days of the wave |
+|---|---|---|---|
+| 1 | **1a** = phase 1, then **1b** = phase 2. Serial, one agent after the other: both change `search.c` and `symquery.c` | 1a: `src/coder/search.c`, `symquery.c`, `symtool.c`, `kb.c`, new `src/coder/indexctl.c`, `src/katana.c`, `src/tools/edit.c`, `write.c`, `multiedit.c`, `notebookedit.c`, `bash.c`. 1b: new `src/coder/roots.c`, `src/coder/store.c`, `storedocs.c`, `search.c` (`cs_read_doc`, `cs_junk` only), `symquery.c` (root of file paths only), `src/tools/find.c` (`ct_findtool` root and prefix, `fd_cache_path`), `symbols.c`, `common.c`, `src/agent/extend.c` (`init_cli`, `ext_slash`), `loop.c`, `prefix_cache.c`, `src/katana.c` | 5 |
+| 2 | **2a** = phase 3, alone. Nobody else edits `src/` during this wave | new `src/coder/crawl.c`; stubs: new `src/coder/watch.c`, `fresh.c`, `statemap.c`, `graph.c`, `maint.c`; `src/coder/store.c`, `storedocs.c`, `search.c` and `symindex.c` (hooks, mergers for the new sections), `indexctl.c`, `coder.c`, `src/agent/loop.c`, `extend.c` (init starts the crawler), `src/katana.c` | 5 |
+| 3 | **3a** = phase 4, **3b** = phase 7, **3c** = phase 8 | 3a: `src/coder/watch.c`, `fresh.c`, `indexctl.c`, `crawl.c` (change queue and branch re-entry functions), `symtool.c`. 3b: `src/tools/find.c`, `findgraph.c`, `src/coder/graph.c`. 3c: `src/coder/maint.c`, `roots.c`, `coder.c`, `storedocs.c` (subcommands only) | 4 |
+| 4 | **4a** = phase 5, **4b** = phase 6 | 4a: `src/coder/crawl.c`, `search.c`, `symindex.c`, `text.c`, `parse.c`, `parse2.c`. 4b: `src/coder/statemap.c`, `symquery.c` (`sy_limits`, `sy_emit`, outline), `symtool.c`, `src/tools/find.c` (output only), `symbols.c`, `src/agent/loop.c`, `storedocs.c` (`coder_cmd_status`), `desktop-qt/` | 2.5 |
+| 5 | **5a** = phase 9 | `docs/`, `README.md`, `desktop-qt/README.md` | 1 |
+
+About 23.5 agent-days of work in about 17.5 days of waves.
+
+### 5.3 What makes the parallel waves safe
+
+- **Stubs placed in wave 2.** Phase 3 creates `watch.c`, `fresh.c`, `statemap.c`, `graph.c` and `maint.c` with
+  empty functions, includes them in `src/katana.c` in their final order, and puts the calls where they belong:
+  `watch_poll()` at the three moments of C.1 (in `indexctl.c` and `loop.c`), `fresh_check(root, path, ...)` in
+  the three places that re-read a file for evidence (`cs_read_doc` in `search.c`, `sy_file_load` in
+  `symquery.c`, `fd_text` in `find.c`), `graph_on_quiet(reader, writer)` and `maint_on_crawl_start()` /
+  `maint_on_crawl_end()` in `crawl.c`, `statemap_get(view, prefix)` after the view is built. Later agents fill
+  the bodies in their own file and do not need to touch the call sites or `katana.c`.
+- **Wave 3.** 3a is the only one in `crawl.c`, `indexctl.c` and `symtool.c`; 3b the only one in the Find files
+  (its work in the crawler goes through the `graph_on_quiet` hook in its own `graph.c`); 3c the only one in
+  `maint.c`, `roots.c`, `coder.c` and the subcommand functions at the end of `storedocs.c`.
+- **Wave 4.** 4a owns the indexing side (`crawl.c`, `search.c`, `symindex.c`, parsers); 4b owns the output side
+  and must not edit `search.c`: the state map it needs lives in `statemap.c`. 4b edits `find.c` after 3b is
+  merged (wave order guarantees it) and touches only the functions that print.
+- **The links work in progress** (text keys, another agent) must be merged before wave 2 starts or wait for wave
+  4: it changes `symindex.c` and the hook chain that phase 3 reworks. Its sections need a per-document hook with
+  a context argument and reserved numbers in the `STS_SYM_BASE` range; `STS_GRAPH` and `STS_SUMMARY` take the
+  next free numbers there, and `STS_DIRS`/`STS_CRAWL` take 3 and 4 in the catalog range.
+- **Any other work on `find.c`, `findgraph.c`, `search.c`, `symquery.c`, `store.c` or `storedocs.c`** has to be
+  scheduled between waves, not during one.
 
 ## 6. Risks and honest uncertainties
 
@@ -863,8 +1029,9 @@ section numbers in the `STS_SYM_BASE` range; `STS_GRAPH` and `STS_SUMMARY` take 
    points (0.29 s of about 1.1 s; 35.7 s at 116 thousand files with no total given).
 2. **ntfs3 behavior is assumed, not verified**: `flock`, inotify events, `mmap`, reading an unlinked mapped
    segment, and `fsync` cost on `/mnt/dados`. The store already falls back from `mmap` to reading. If `flock` or
-   events misbehave there, `KATANA_INDEX_LOCAL=0` and `KATANA_INDEX_WATCH=poll` are the escape; phase 3 should
-   check these four things by hand on that mount before relying on them.
+   events misbehave there, the escape is `KATANA_INDEX_WATCH=poll` and not initializing folders on that disk (the
+   store is then in the home); phase 3 should check these four things by hand on that mount before relying on
+   them. Note that the katana repository itself is on that disk and will be initialized there.
 3. **Augmentation (N1 → N2) rewrites each batch segment once per level.** Total write volume for a cold crawl is
    roughly the final index size times the number of levels. It is bounded per batch, but on a slow disk it may
    cost more than writing all levels per batch at once. If it does, the fallback is to make N1+N2+N3 a single
@@ -875,42 +1042,63 @@ section numbers in the `STS_SYM_BASE` range; `STS_GRAPH` and `STS_SUMMARY` take 
    static state in this design. Phase 5 may be larger than estimated; it defaults to one thread for that reason.
 6. **Unified Find changes ranking.** The candidate set comes from a different tokenizer and field model than
    Find's chunk index, and the v7 training outputs were produced with the legacy ranking. Without a measurement
-   campaign there is no evidence either way, so the switch stays off until the owner allows a comparison.
+   campaign there is no evidence either way. The owner decided to make it the default anyway; if answers get
+   worse, `KATANA_FIND_INDEX=legacy` restores the old path.
 7. **The model has never seen the new status lines** or a directory outline. The lines are short and in the
    bracket form it knows, but a local model may ignore "results are partial" and treat a partial `NOT FOUND` as
    final. The wording in J.3 is the mitigation; the real fix is a curriculum family.
 8. **Secret detection is heuristic.** A password in a file named `config.yaml`, or a short token, enters the
-   lexicon. The store permissions and the central location are the real protection; on ntfs3 the permissions do
+   lexicon. The store permissions and keeping the store in the home are the real protection; on ntfs3 the permissions do
    not exist.
-9. **Root resolution can surprise.** A stray `.git` or `KATANA.md` high in the tree makes a large root; a project
-   kept inside another repository without its own marker is indexed as part of the outer one. `katana coder
-   status` shows how the root was chosen, and `.katanaignore` plus a `KATANA.md` in the inner folder fix both.
-10. **inotify limits.** 65536 watches for the user, shared with editors and other tools; the crawler takes at
-    most half and polls the rest, but another program may already have used the budget.
-11. **Process count.** Several active roots mean several crawlers, each with threads. They are idle-exiting and
-    low priority, but a session that cites many folders can start many at once; `index_ensure` should refuse to
-    have more than 4 crawlers started by one session and queue the rest.
-12. **What I remember versus what I know about the examples** is marked in 3.0. The design does not depend on
+9. **Without init the index is as narrow as the visit.** A user who never runs init and always names
+   subfolders gets many small home roots with no links between them, and may read that as "the index does not
+   connect files". The absorption rule (visiting the parent merges them) and a hint in `katana coder status`
+   ("3 folders under greymod are indexed separately; run `katana init` in greymod to join them") are the
+   mitigation. The reverse also exists: an init high in the tree (for example in `~/source`) makes one very
+   large root.
+10. **inotify limits.** 65536 watches for the user, shared with editors and other tools. Because the crawler
+    exits, every session holds its own watches: a quarter of the limit each, sweeps for the rest. Four sessions
+    on large trees exhaust it.
+11. **Starting a process per change.** With no resident crawler, an edit outside a burst costs one process
+    start of the katana binary plus the settle time before it exits. The cost of starting the binary was not
+    measured; if it is high, the settle time is the knob (a longer settle means fewer starts and a process that
+    lingers longer, which is the trade the owner decided against by default).
+12. **Changes made while no session is open** are found only by the sweep at the next visit. For a root of 100
+    thousand files that sweep is the walk-and-stat cost again (about 0.3 s by the observed rate), once per
+    session and root, in the background.
+13. **Existing local stores without a marker.** Every folder katana was launched in before this change has a
+    `.katana/coder/store` that no longer counts. Those folders are re-indexed into the home index on the next
+    visit; the old stores are listed by `gc` and adopted if the user runs init there.
+14. **What I remember versus what I know about the examples** is marked in 3.0. The design does not depend on
     any detail marked "recollection".
-13. **The desktop integration was not read.** H.3 assumes the desktop can show a status item fed by the agent
+15. **The desktop integration was not read.** H.3 assumes the desktop can show a status item fed by the agent
     process.
 
-## 7. Open decisions for the owner
+## 7. Decisions
 
-1. **How the model asks for a directory summary.** Recommendation: the existing Symbols action `outline` with a
-   directory in `file` (no new tool, no schema change, the description gains a few words). Alternative: a new
-   action `tree`. Either one is new to the trained model and needs curriculum examples.
-2. **katana launched in a subfolder of a repository.** With the rule "index root = repository root" the launch
-   folder is not the root, so by the storage rule the store is central and no `.katana/coder/` appears in the
-   launch folder. Recommendation: keep it that way (one store per root). Alternative: put the root's store in
-   the launch subfolder, which breaks "one store per root" when two sessions start in different subfolders.
-3. **Ignored files at N0.** Recommendation: ignored directories are recorded (so the model can be told they
-   exist) and ignored files are only counted. Alternative: catalog ignored files by name as well, which makes
-   "index everything" literal at the cost of large catalogs where build outputs live outside the heavy-folder
-   list.
-4. **When to flip Find to the unified index.** Recommendation: after phase 7 compiles, the owner uses it with
-   `KATANA_FIND_INDEX=store` for a while; the default changes and the legacy code is deleted only on the
-   owner's word, since no comparison is allowed in this phase.
-5. **Crawler lifetime after the last session closes.** Recommendation: finish the crawl in progress, then exit
-   after 10 idle minutes. Alternative: exit immediately with the last session (less background activity; a large
-   repository then advances only while katana is open).
+### 7.1 Taken by the owner on 2026-11-23
+
+| Question | Decision | Where |
+|---|---|---|
+| What defines an index root | `katana init`. Not `.git`, not `KATANA.md`. Nested inits are independent indexes; a folder without init is absorbed by the nearest initialized ancestor, else by the home index; no `.katana/` in a folder without init | A, F.1 |
+| What the home index is | Everything visited that has no init, indexed only as visited; the desktop relies on it | A.2, F.1 (one store per visited root, justified there) |
+| Phases | All nine, in waves | 5 |
+| Life of the crawler | On demand; exits when every level of every requested folder is covered; no idle wait, no daemon | B, C.1 |
+| Unified Find | Default as soon as phase 7 is built; `legacy` is the escape | E |
+| Directory summary for the model | Symbols `outline` with a folder in `file` (recommendation, not contested) | J.5 |
+| Ignored files at N0 | Ignored directories are recorded, ignored files only counted (recommendation, not contested) | D.8 |
+
+### 7.2 Still open
+
+1. **Git worktrees and other whole copies of the code inside a root.** With `.git` no longer a boundary, a
+   worktree of the project placed inside the project (the agents' worktrees are the known case) is indexed as
+   ordinary files, doubling or multiplying every symbol. `.claude` stays in the built-in heavy list, which covers
+   the case that happened; any other location is not covered. Recommendation: do not descend into a subdirectory
+   whose `.git` is a FILE pointing into a `worktrees/` directory (that is exactly a linked worktree; record it
+   as `separate-checkout`), and keep descending into submodules and nested clones, which are distinct code. This
+   uses `.git` only to recognize a duplicate, not to define a root. Alternative: nothing automatic; the user
+   lists such folders in `.katanaignore`.
+2. **Settle time before the crawler exits** (2 s by default). It is what turns a burst of 300 changed files into
+   one crawler run instead of many, and it means the process is visible for about 2 s after its last write.
+   Recommendation: keep 2 s. Alternative: 0 (exit at once; every isolated change starts and ends a process, and
+   the graph is rewritten on each).
