@@ -212,6 +212,7 @@ static void ex_init_build(const char *dir, McpB *out) {
     mcp_bputs(out, "# add rules:, never:, ask:, style: (see docs/extending.md in the katana repository)\n");
 }
 /* katana init [pasta] [--force] */
+static int coder_cmd_index(int argc, char **argv);      /* src/coder/storedocs.c: katana coder index [pasta] */
 static int init_cli(int argc, char **argv) {
     const char *dir = "."; int force = 0;
     for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--force")) force = 1; else dir = argv[i]; }
@@ -224,6 +225,12 @@ static int init_cli(int argc, char **argv) {
     if (!ex_write(f, b.p, 0)) { fprintf(stderr, "init: cannot write %s\n", f); free(b.p); return 1; }
     printf("wrote %s (%zu characters):\n%s", f, b.n, b.p);
     free(b.p);
+    {   /* o indice do coder da pasta (Find e Symbols usam): criado aqui, senao a primeira consulta o cria */
+        char *ia[2] = {rd, NULL};
+        printf("\nindexing the folder for Find and Symbols (katana coder index):\n");
+        fflush(stdout);
+        coder_cmd_index(1, ia);
+    }
     return 0;
 }
 
