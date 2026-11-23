@@ -95,6 +95,8 @@
 #include "tools/table.c"               /* tabela, despacho e katana tool */
 #include "agent/brief.c"               /* formato brief do KATANA.md: lint, never/ask impostos, nota de fim de pedido */
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
+#include "coder/store.c"             /* armazenamento generico: segmentos imutaveis, manifesto, escritor unico (sem tipos de codigo) */
+#include "coder/storedocs.c"         /* catalogo generico de documentos, atualizacao incremental, index/status/verify/compact */
 #include "coder/types.c"             /* modulo de inteligencia de codigo (em cima do motor): tipos compartilhados */
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */
