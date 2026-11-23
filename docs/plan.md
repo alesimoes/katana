@@ -110,6 +110,12 @@ sessions at once.
 | G4 | Keep the base current: rebuild incrementally, regenerate the corpus, retrain on the new part (**built**: it is the first half of the nightly `katana specialize <model>`) | the owner ran it once on the real acervo |
 
 
+## Backlog (2026-11-23)
+
+| # | What | Done when |
+|---|---|---|
+| T1 | `katana convert`: read a Hugging Face checkpoint (`.safetensors` plus `config.json`, for example `Qwen/Qwen3.6-35B-A3B`, over 60 GB in 16 bits) and write a GGUF, so the engine no longer depends on third-party GGUF files. Today katana only loads GGUF (`katana quantize` takes a GGUF as input; the model catalog downloads Unsloth's `UD-Q4_K_M`). The hard part is the tensor mapping of the `qwen35moe` architecture (experts, Gated DeltaNet, attention, norms) to the GGUF names the engine reads, and the tokenizer and metadata. Then `katana quantize` (or a dynamic mix that keeps sensitive layers in more bits) takes it to 4 bits | converting `Qwen/Qwen3.6-35B-A3B` gives a GGUF that loads and whose first tokens match the downloaded `UD-Q4_K_M` file within quantization noise. **Not started** |
+
 ## Priority 1: Vulkan backend (closes the 11–16x gap on the prompt)
 
 | Step | What | Done when |
