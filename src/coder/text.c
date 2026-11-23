@@ -121,7 +121,7 @@ static const char g_ct_abbr_def[] = "cfg=config,configuration msg=message ctx=co
     "max=maximum min=minimum obj=object opt=option opts=options orig=original pkg=package prev=previous ref=reference repo=repository seq=sequence srv=server sys=system tok=token "
     "ts=timestamp usr=user util=utility utils=utilities vec=vector ver=version wnd=window ws=workspace mgr=manager svc=service sz=size idx=index fd=descriptor";
 static char *g_ct_kbbuf;
-static int g_ct_inited;
+static int g_ct_inited;       /* 0 = nao feito, 1 = em andamento (uma thread), 2 = pronto: depois disso as tabelas so sao lidas (varias threads do indexador) */
 
 static int ct_loadkb(const char *path) {
     FILE *f = fopen(path, "rb"); if (!f) return -1;
@@ -152,7 +152,8 @@ static int ct_loadkb(const char *path) {
 }
 static int coder_abbr_load(const char *path) { if (!g_ct_inited) return -1; return ct_loadkb(path); }
 static void ct_init(void) {
-    if (g_ct_inited) return;
+    if (__atomic_load_n(&g_ct_inited, __ATOMIC_ACQUIRE) == 2) return;
+    { int zero = 0; if (!__atomic_compare_exchange_n(&g_ct_inited, &zero, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { while (__atomic_load_n(&g_ct_inited, __ATOMIC_ACQUIRE) != 2) { } return; } }
     ctm_init(&g_ct_words, 2048); ctm_init(&g_ct_pv, 1024); ctm_init(&g_ct_enk, 512); ctm_init(&g_ct_ptk, 512);
     ctm_init(&g_ct_enirr, 512); ctm_init(&g_ct_ptirr, 256); ctm_init(&g_ct_abbr, 4096);
     ctm_words(&g_ct_words, g_ct_pt_stop, CW_PTSTOP); ctm_words(&g_ct_words, g_ct_en_stop, CW_ENSTOP);
@@ -162,9 +163,9 @@ static void ct_init(void) {
     ctm_words(&g_ct_enk, g_ct_en_nos, CK_NOS); ctm_words(&g_ct_enk, g_ct_en_noly, CK_NOLY);
     ctm_words(&g_ct_enk, g_ct_en_noer, CK_NOER); ctm_words(&g_ct_enk, g_ct_en_noat, CK_NOAT);
     ctm_pairs(&g_ct_enirr, g_ct_en_irr); ctm_pairs(&g_ct_ptirr, g_ct_pt_irr); ctm_pairs(&g_ct_abbr, g_ct_abbr_def);
-    g_ct_inited = 1;
     const char *kb = getenv("KATANA_CODER_KB");
     if (!(kb && *kb && ct_loadkb(kb) >= 0)) ct_loadkb("data/coder/kb/abbreviations.kb");
+    __atomic_store_n(&g_ct_inited, 2, __ATOMIC_RELEASE);
 }
 
 /* ---- divisao de identificadores ---- */

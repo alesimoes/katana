@@ -58,6 +58,7 @@ typedef struct {
     int *rh; int rhn; int nested; int rcap;
     const char *path; int ux0, ux1;     /* usados pelas linguagens de parse2.c */
     const char *raw;                    /* texto original (com comentarios); so keys.c o usa, para o cabecalho de arquivo gerado */
+    char sel[160];                      /* seletor Objective-C em montagem (era static: a analise e reentrante, uma por thread) */
 } CP;
 
 /* linguagens acrescentadas depois: ver parse2.c (incluido logo depois deste arquivo) */
@@ -1730,12 +1731,12 @@ static void cp_sweep(CP *c) {
 }
 
 /* ---------- pos-processamento: prototipos repetidos, receptor Go, ordenacao ---------- */
-static CoderSym *g_cp_sortsym;
+typedef struct { int i; size_t b0, b1; } CpOrd;      /* chave de ordenacao junto do indice: o comparador nao precisa de variavel global */
 static int cp_cmp(const void *x, const void *y) {
-    int a = *(const int *)x, b = *(const int *)y; const CoderSym *s = g_cp_sortsym;
-    if (s[a].byte0 != s[b].byte0) return s[a].byte0 < s[b].byte0 ? -1 : 1;
-    if (s[a].byte1 != s[b].byte1) return s[a].byte1 > s[b].byte1 ? -1 : 1;
-    return a - b;
+    const CpOrd *a = (const CpOrd *)x, *b = (const CpOrd *)y;
+    if (a->b0 != b->b0) return a->b0 < b->b0 ? -1 : 1;
+    if (a->b1 != b->b1) return a->b1 > b->b1 ? -1 : 1;
+    return a->i - b->i;
 }
 static void cp_post(CP *c) {
     CoderFile *f = c->f; int n = f->nsym; if (n == 0) return;
@@ -1757,10 +1758,10 @@ static void cp_post(CP *c) {
     if (c->lang == CL_GO) for (int s = 0; s < n; s++) if (c->sx[s]) for (int d = 0; d < n; d++) { int k = f->sym[d].kind; if ((k == CK_STRUCT || k == CK_IFACE || k == CK_TYPEDEF) && !strcmp(f->sym[d].name, c->sx[s])) { f->sym[s].parent = d; break; } }
     int sorted = 1; for (int s = 1; s < n; s++) if (f->sym[s].byte0 < f->sym[s - 1].byte0) { sorted = 0; break; }
     if (!sorted) {
-        int *ord = (int *)malloc(sizeof(int) * (size_t)n); for (int s = 0; s < n; s++) ord[s] = s;
-        g_cp_sortsym = f->sym; qsort(ord, (size_t)n, sizeof(int), cp_cmp);
+        CpOrd *ord = (CpOrd *)malloc(sizeof(CpOrd) * (size_t)n); for (int s = 0; s < n; s++) { ord[s].i = s; ord[s].b0 = f->sym[s].byte0; ord[s].b1 = f->sym[s].byte1; }
+        qsort(ord, (size_t)n, sizeof(CpOrd), cp_cmp);
         CoderSym *ns = (CoderSym *)malloc(sizeof(CoderSym) * (size_t)n); char **nx = (char **)malloc(sizeof(char *) * (size_t)n); unsigned char *nf = (unsigned char *)malloc((size_t)n);
-        for (int k = 0; k < n; k++) { map[ord[k]] = k; ns[k] = f->sym[ord[k]]; nx[k] = c->sx[ord[k]]; nf[k] = c->sfl[ord[k]]; }
+        for (int k = 0; k < n; k++) { map[ord[k].i] = k; ns[k] = f->sym[ord[k].i]; nx[k] = c->sx[ord[k].i]; nf[k] = c->sfl[ord[k].i]; }
         for (int k = 0; k < n; k++) if (ns[k].parent >= 0) ns[k].parent = map[ns[k].parent];
         for (int r = 0; r < f->nref; r++) if (f->ref[r].from >= 0) f->ref[r].from = map[f->ref[r].from];
         memcpy(f->sym, ns, sizeof(CoderSym) * (size_t)n); memcpy(c->sx, nx, sizeof(char *) * (size_t)n); memcpy(c->sfl, nf, (size_t)n);

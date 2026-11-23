@@ -102,14 +102,28 @@ static void cs_tri_build(StoreBuf *out, const CsLex *x, uint32_t *nrec) {
 }
 
 /* ---- construcao do indice de um segmento (durante o `index`) ---- */
-typedef struct { char *key; uint32_t klen, df, curdoc, lastdoc; uint64_t ctf; uint16_t tf[CF_N]; StoreBuf post; } CsT;
+typedef struct { char *key; uint32_t klen, df, lastdoc; uint64_t ctf; StoreBuf post; } CsT;
+/* Analise de UM documento (N1), separada da fusao no indice do segmento para poder rodar em varias threads (fase 5): CsAn e o contexto de uma
+ * thread (buffer de tokens e tabela local), CsDocRes o resultado de um documento (termos distintos com a contagem por campo, tamanhos, tokens).
+ * A analise nao toca em nada compartilhado; a fusao (cs_ix_merge) e feita por UMA thread, na ordem dos documentos, e por isso o indice e igual
+ * ao do caminho de uma thread so, byte a byte. */
+typedef struct { uint32_t off, klen; uint16_t tf[CF_N]; } CsDT;
+typedef struct { CsDT *t; uint32_t n, cap; char *pool; size_t pn, pcap; uint32_t len[3]; uint64_t ntok; int has_text; } CsDocRes;
+typedef struct { CoderTok *tk; uint32_t kb_limit; uint32_t *tab; uint32_t tabn, tabcap; CsDocRes *r; } CsAn;
 typedef struct {
-    CsT **tab; uint32_t cap, n; CsT **touch; uint32_t nt, tcap;
+    CsT **tab; uint32_t cap, n;
     uint32_t *lens; uint32_t nlens;                       /* 3 por documento do segmento */
-    CoderTok *tk; uint32_t kb_limit; int ndoc_text; uint64_t ntok;
+    CsAn *an; CsDocRes scratch; int ndoc_text; uint64_t ntok;      /* caminho de uma thread: analisa e funde no mesmo gancho */
     uint32_t nterms; uint64_t posts_bytes; uint32_t terms_total; uint64_t sec_bytes[4];
 } CsIx;
-static CsIx g_csix;
+static void cs_res_free(CsDocRes *r) { free(r->t); free(r->pool); memset(r, 0, sizeof *r); }
+static CsAn *cs_an_new(uint32_t kb_limit) {
+    CsAn *a = (CsAn *)calloc(1, sizeof *a); a->kb_limit = kb_limit ? kb_limit : 128;
+    a->tk = (CoderTok *)malloc(4096 * sizeof(CoderTok)); ct_init();         /* ct_init antes de qualquer thread (tambem e seguro depois: ver text.c) */
+    return a;
+}
+static void cs_an_free(CsAn *a) { if (!a) return; free(a->tk); free(a->tab); free(a); }
+static uint32_t cs_kb_limit(void) { const char *e = getenv("KATANA_CODER_INDEX_KB"); return e && atoi(e) > 0 ? (uint32_t)atoi(e) : 128; }
 
 static CsT *cs_ix_term(CsIx *ix, const char *key, uint32_t kl) {
     if (ix->n * 2 >= ix->cap) {
@@ -123,24 +137,27 @@ static CsT *cs_ix_term(CsIx *ix, const char *key, uint32_t kl) {
     ix->tab[h] = t; ix->n++;
     return t;
 }
-static void cs_ix_add(CsIx *ix, uint32_t doc, char kind, const char *s, uint32_t l, int field) {
+/* conta um termo no resultado do documento (tabela de enderecamento aberto local; nada compartilhado) */
+static void cs_an_add(CsAn *a, char kind, const char *sv, uint32_t l, int field) {
     char key[200]; if (l > 190) return;
-    key[0] = kind; memcpy(key + 1, s, l);
-    CsT *t = cs_ix_term(ix, key, l + 1);
-    if (t->curdoc != doc + 1) {
-        t->curdoc = doc + 1; memset(t->tf, 0, sizeof t->tf);
-        if (ix->nt == ix->tcap) { ix->tcap = ix->tcap ? ix->tcap * 2 : 1024; ix->touch = (CsT **)realloc(ix->touch, ix->tcap * sizeof *ix->touch); }
-        ix->touch[ix->nt++] = t;
+    key[0] = kind; memcpy(key + 1, sv, l); const uint32_t kl = l + 1;
+    CsDocRes *r = a->r;
+    if ((r->n + 1) * 2 > a->tabn) {
+        uint32_t nn = a->tabn * 2;
+        if (nn > a->tabcap) { a->tab = (uint32_t *)realloc(a->tab, sizeof(uint32_t) * nn); a->tabcap = nn; }
+        a->tabn = nn; memset(a->tab, 0, sizeof(uint32_t) * nn);
+        for (uint32_t i = 0; i < r->n; i++) { uint32_t h = (uint32_t)store_hash64(r->pool + r->t[i].off, r->t[i].klen, 3) & (nn - 1); while (a->tab[h]) h = (h + 1) & (nn - 1); a->tab[h] = i + 1; }
+    }
+    uint32_t h = (uint32_t)store_hash64(key, kl, 3) & (a->tabn - 1);
+    CsDT *t = NULL;
+    while (a->tab[h]) { CsDT *x = &r->t[a->tab[h] - 1]; if (x->klen == kl && !memcmp(r->pool + x->off, key, kl)) { t = x; break; } h = (h + 1) & (a->tabn - 1); }
+    if (!t) {
+        if (r->n == r->cap) { r->cap = r->cap ? r->cap * 2 : 256; r->t = (CsDT *)realloc(r->t, sizeof(CsDT) * r->cap); }
+        if (r->pn + kl > r->pcap) { r->pcap = (r->pcap + kl) * 2; r->pool = (char *)realloc(r->pool, r->pcap); }
+        t = &r->t[r->n]; memset(t, 0, sizeof *t); t->off = (uint32_t)r->pn; t->klen = kl; memcpy(r->pool + r->pn, key, kl); r->pn += kl;
+        a->tab[h] = ++r->n;
     }
     if (t->tf[field] < 65535) t->tf[field]++;
-}
-static void cs_ix_flush(CsIx *ix, uint32_t doc) {
-    for (uint32_t i = 0; i < ix->nt; i++) {
-        CsT *t = ix->touch[i]; CsHit h; h.doc = doc; memcpy(h.tf, t->tf, sizeof h.tf);
-        cs_post_put(&t->post, &t->lastdoc, &h); t->df++;
-        for (int k = 0; k < CF_N; k++) t->ctf += t->tf[k];
-    }
-    ix->nt = 0;
 }
 /* termo sem valor de busca: hash, numero longo, muito comprido */
 static int cs_junk(const char *s, int l) {
@@ -161,45 +178,62 @@ static int cs_is_part(const char *line, int pos, int len, int linelen) {
         if ((c == '.' || c == '-') && pos + len + 1 < linelen && isalnum((unsigned char)line[pos + len + 1])) return 1; }
     return 0;
 }
-/* indexa os tokens de um trecho NUL-terminado no campo informado; body=1 aplica as regras do conteudo (sem stop, kind 2 fora, campos 2/3) */
-static void cs_ix_text(CsIx *ix, uint32_t doc, const char *text, int field, int body, uint32_t *len) {
-    int n = coder_tokens_ex(text, ix->tk, 4096, field, body ? CT_AUTO : CT_L_CODE);
+/* tokeniza um trecho NUL-terminado no campo informado; body=1 aplica as regras do conteudo (sem stop, kind 2 fora, campos 2/3) */
+static void cs_an_text(CsAn *a, const char *text, int field, int body, uint32_t *len) {
+    int n = coder_tokens_ex(text, a->tk, 4096, field, body ? CT_AUTO : CT_L_CODE);
     int tl = (int)strlen(text);
     for (int i = 0; i < n; i++) {
-        const CoderTok *t = &ix->tk[i];
+        const CoderTok *t = &a->tk[i];
         if (t->kind == 2) continue;
         if (body && t->stop) continue;
         int nl = (int)strlen(t->norm); if (nl < 2 && !isdigit((unsigned char)t->norm[0])) continue;
         if (cs_junk(t->norm, nl)) continue;
         int f = field;
         if (body) f = (t->kind == 0 && cs_is_part(text, t->pos, (int)strlen(t->orig), tl)) ? CF_PART : CF_WORD;
-        cs_ix_add(ix, doc, 'n', t->norm, (uint32_t)nl, f);
+        cs_an_add(a, 'n', t->norm, (uint32_t)nl, f);
         char lo[64]; cs_lower(lo, t->orig, sizeof lo);
-        if (strcmp(lo, t->norm) && !cs_junk(lo, (int)strlen(lo))) cs_ix_add(ix, doc, 'o', lo, (uint32_t)strlen(lo), f);
-        if (t->kind == 0) { (*len)++; ix->ntok++; }
+        if (strcmp(lo, t->norm) && !cs_junk(lo, (int)strlen(lo))) cs_an_add(a, 'o', lo, (uint32_t)strlen(lo), f);
+        if (t->kind == 0) { (*len)++; a->r->ntok++; }
     }
 }
-static void cs_hook_doc(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_t *data, size_t n) {
-    CsIx *ix = (CsIx *)ctx;
-    if ((idx + 1) * 3 > ix->nlens) { uint32_t nl = (idx + 1) * 3 + 3000; ix->lens = (uint32_t *)realloc(ix->lens, nl * sizeof *ix->lens); memset(ix->lens + ix->nlens, 0, (nl - ix->nlens) * sizeof *ix->lens); ix->nlens = nl; }
-    uint32_t *L = ix->lens + (size_t)idx * 3;
+/* analisa um documento (reentrante: so mexe em `a` e em `r`); data = conteudo (NULL se binario, grande ou ilegivel) */
+static void cs_an_doc(CsAn *a, const StoreDoc *d, const uint8_t *data, size_t n, CsDocRes *r) {
+    a->r = r; r->n = 0; r->pn = 0; r->len[0] = r->len[1] = r->len[2] = 0; r->ntok = 0; r->has_text = 0;
+    a->tabn = 128; if (a->tabcap < a->tabn) { a->tab = (uint32_t *)realloc(a->tab, sizeof(uint32_t) * a->tabn); a->tabcap = a->tabn; }
+    memset(a->tab, 0, sizeof(uint32_t) * a->tabn);
     char p[4200]; uint32_t pl = d->plen < 4000 ? d->plen : 4000; memcpy(p, d->path, pl); p[pl] = 0;
     char *sl = strrchr(p, '/');
-    if (sl) { *sl = 0; cs_ix_text(ix, idx, p, CF_PATH, 0, &L[0]); cs_ix_text(ix, idx, sl + 1, CF_NAME, 0, &L[1]); }
-    else cs_ix_text(ix, idx, p, CF_NAME, 0, &L[1]);
+    if (sl) { *sl = 0; cs_an_text(a, p, CF_PATH, 0, &r->len[0]); cs_an_text(a, sl + 1, CF_NAME, 0, &r->len[1]); }
+    else cs_an_text(a, p, CF_NAME, 0, &r->len[1]);
     if (data) {
-        size_t lim = (size_t)ix->kb_limit * 1024; if (n > lim) n = lim;
-        static char line[4100];
-        size_t i = 0; ix->ndoc_text++;
+        size_t lim = (size_t)a->kb_limit * 1024; if (n > lim) n = lim;
+        char line[4100];
+        size_t i = 0; r->has_text = 1;
         while (i < n) {
             size_t j = i; while (j < n && data[j] != '\n' && j - i < 4000) j++;
             size_t l = j - i; memcpy(line, data + i, l); line[l] = 0;
             for (size_t q = 0; q < l; q++) if (line[q] == 0) line[q] = ' ';
-            if (l >= 2) cs_ix_text(ix, idx, line, CF_WORD, 1, &L[2]);
+            if (l >= 2) cs_an_text(a, line, CF_WORD, 1, &r->len[2]);
             i = j < n && data[j] == '\n' ? j + 1 : j;
         }
     }
-    cs_ix_flush(ix, idx);
+}
+/* funde o resultado de um documento no indice do segmento: UMA thread, documentos na ordem do segmento (idx crescente) */
+static void cs_ix_merge(CsIx *ix, uint32_t idx, const CsDocRes *r) {
+    if ((idx + 1) * 3 > ix->nlens) { uint32_t nl = (idx + 1) * 3 + 3000; ix->lens = (uint32_t *)realloc(ix->lens, nl * sizeof *ix->lens); memset(ix->lens + ix->nlens, 0, (nl - ix->nlens) * sizeof *ix->lens); ix->nlens = nl; }
+    memcpy(ix->lens + (size_t)idx * 3, r->len, sizeof r->len);
+    ix->ntok += r->ntok; ix->ndoc_text += r->has_text;
+    for (uint32_t i = 0; i < r->n; i++) {
+        const CsDT *d = &r->t[i]; CsT *t = cs_ix_term(ix, r->pool + d->off, d->klen);
+        CsHit h; h.doc = idx; memcpy(h.tf, d->tf, sizeof h.tf);
+        cs_post_put(&t->post, &t->lastdoc, &h); t->df++;
+        for (int k = 0; k < CF_N; k++) t->ctf += d->tf[k];
+    }
+}
+static void cs_hook_doc(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_t *data, size_t n) {
+    CsIx *ix = (CsIx *)ctx;
+    cs_an_doc(ix->an, d, data, n, &ix->scratch);
+    cs_ix_merge(ix, idx, &ix->scratch);
 }
 static int cs_cmp_t(const void *a, const void *b) { const CsT *x = *(CsT *const *)a, *y = *(CsT *const *)b; return st_cmp_bytes(x->key, x->klen, y->key, y->klen); }
 static void cs_hook_commit(void *ctx, StoreWriter *w, uint32_t ndocs) {
@@ -231,17 +265,18 @@ static void cs_hook_commit(void *ctx, StoreWriter *w, uint32_t ndocs) {
     free(v); free(ix->tab); ix->tab = NULL; ix->cap = ix->n = 0;
 }
 static void coder_search_hook(StoreScanOpts *o) {
-    CsIx *ix = &g_csix; memset(ix, 0, sizeof *ix);
-    ix->tk = (CoderTok *)malloc(4096 * sizeof(CoderTok));
-    const char *e = getenv("KATANA_CODER_INDEX_KB"); ix->kb_limit = e && atoi(e) > 0 ? (uint32_t)atoi(e) : 128;
+    CsIx *ix = (CsIx *)calloc(1, sizeof *ix);          /* contexto proprio de cada indexacao: nada global */
+    ix->an = cs_an_new(cs_kb_limit());
     o->hook_ctx = ix; o->doc_fn = cs_hook_doc; o->commit_fn = cs_hook_commit;
 }
 static void coder_search_hook_done(StoreScanOpts *o, char *out, size_t cap) {
     CsIx *ix = (CsIx *)o->hook_ctx; out[0] = 0;
+    if (!ix) return;
     if (ix->nterms) snprintf(out, cap, "%u termos, %d arquivos de texto lidos, %llu tokens; secoes novas: lexico %llu B, postings %llu B, tamanhos %llu B, trigramas %llu B",
         ix->nterms, ix->ndoc_text, (unsigned long long)ix->ntok, (unsigned long long)ix->sec_bytes[0], (unsigned long long)ix->sec_bytes[1], (unsigned long long)ix->sec_bytes[2], (unsigned long long)ix->sec_bytes[3]);
     else if (ix->ndoc_text == 0) snprintf(out, cap, "nada novo para indexar");
-    free(ix->tk); ix->tk = NULL; free(ix->lens); ix->lens = NULL; free(ix->touch); ix->touch = NULL;
+    cs_an_free(ix->an); cs_res_free(&ix->scratch); free(ix->lens); free(ix->tab); free(ix);
+    o->hook_ctx = NULL; o->doc_fn = NULL; o->commit_fn = NULL;
 }
 static void coder_search_seg_info(const StoreSeg *s, char *out, size_t cap) {
     out[0] = 0;

@@ -1822,12 +1822,12 @@ static int c2_brule(CP *c, size_t ls, size_t le, size_t fs, int parent, C2B *r, 
         if (c2_at(s, le, fs, "@property")) { size_t e2 = le; while (e2 > fs && (s[e2 - 1] == ';' || s[e2 - 1] == ' ')) e2--; size_t ia, ib; if (c2_idbefore(s, fs, e2, &ia, &ib)) { r->kind = CK_PROPERTY; r->na = ia; r->nb = ib; r->mode = 2; r->sa = fs; return 1; } return 0; }
         if ((s[fs] == '-' || s[fs] == '+') && fs + 1 < le && (s[fs + 1] == '(' || s[fs + 1] == ' ')) {
             size_t q = c2_skipws(s, le, fs + 1); if (q >= le || s[q] != '(') return 0; q = c2_skipws(s, le, c2_pm(s, le, q));
-            static char sel[160]; size_t so = 0; sel[0] = 0;
+            char *const sel = c->sel; size_t so = 0; sel[0] = 0;
             for (int g = 0; g < 12 && q < le + 400 && q < c->n; g++) {
                 size_t nb = c2_word(s, c->n, q, NULL); if (nb <= q) break;
-                size_t part = nb - q; if (so + part + 2 < sizeof sel) { memcpy(sel + so, t + q, part); so += part; }
+                size_t part = nb - q; if (so + part + 2 < sizeof c->sel) { memcpy(sel + so, t + q, part); so += part; }
                 size_t z = c2_skipws(s, c->n, nb);
-                if (z < c->n && s[z] == ':') { if (so + 1 < sizeof sel) sel[so++] = ':'; z = c2_skipws(s, c->n, z + 1); if (z < c->n && s[z] == '(') z = c2_pm(s, c->n, z); z = c2_skipws(s, c->n, z); size_t ae = c2_word(s, c->n, z, NULL); q = c2_skipws(s, c->n, ae); if (q < c->n && (s[q] == '{' || s[q] == ';')) break; } else { q = z; break; }
+                if (z < c->n && s[z] == ':') { if (so + 1 < sizeof c->sel) sel[so++] = ':'; z = c2_skipws(s, c->n, z + 1); if (z < c->n && s[z] == '(') z = c2_pm(s, c->n, z); z = c2_skipws(s, c->n, z); size_t ae = c2_word(s, c->n, z, NULL); q = c2_skipws(s, c->n, ae); if (q < c->n && (s[q] == '{' || s[q] == ';')) break; } else { q = z; break; }
             }
             sel[so] = 0; if (!so) return 0;
             r->kind = CK_METHOD; r->mode = 0; r->scan0 = q; r->sa = fs; r->nm = sel; r->na = 0; r->nb = so; return 1;
