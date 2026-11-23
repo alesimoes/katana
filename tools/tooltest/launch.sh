@@ -21,7 +21,7 @@ field(){ printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
 
 export KATANA_CPU=1                     # nunca a placa de video: so o modelo minusculo
 export KATANA_LOG="$T/agente.log" KATANA_MCP_LOG="$T/mcp.log"
-unset KATANA_TOOLS KATANA_MODEL KATANA_MODELS KATANA_TEACHER_CMD KATANA_ALLOWED_TOOLS KATANA_DISALLOWED_TOOLS
+unset KATANA_MODEL KATANA_MODELS KATANA_TEACHER_CMD KATANA_ALLOWED_TOOLS KATANA_DISALLOWED_TOOLS
 export HOME="$T/home"; mkdir -p "$HOME" "$T/work" "$T/other"
 export KATANA_LAUNCH_DRYRUN=1          # so decide e imprime (mode=, model=, why=...), sem carregar o modelo
 dry() { ( cd "${DIR:-$T/work}" && "$K" "$@" 2>&1 ); }
@@ -179,7 +179,7 @@ if ! command -v python3 >/dev/null 2>&1; then echo "sem python3: testes headless
 python3 "$R/tools/tinymodel/make_tiny_gguf.py" "$T/agent.gguf" --template chatml-xml >/dev/null || { echo "nao gerei o modelo minusculo"; exit 2; }
 mkdir -p "$T/hm"; cp "$T/agent.gguf" "$T/hm/agent.gguf"
 export KATANA_MODELS="$T/hm"
-TENV="KATANA_TEACHER=1 KATANA_TOOLS=2 MOCK_TOOLS=2 KATANA_TEACHER_CMD='python3 $R/tools/traintest/mock_teacher_prog.py'"
+TENV="KATANA_TEACHER=1 KATANA_TEACHER_CMD='python3 $R/tools/traintest/mock_teacher_prog.py'"
 hl() { # pasta de trabalho, depois os argumentos do katana
   _d=$1; shift; mkdir -p "$_d"; ( cd "$_d" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" "$@" 2>"$T/err.txt" ); }
 jq_() { python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(eval(sys.argv[1]))" "$1"; }

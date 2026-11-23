@@ -26,8 +26,8 @@ and put a useful agent on top.**
   resumes without recomputing its prompt.
 - **A small, readable engine.** One C file you can read, change and audit, with a `selftest` command that checks the GPU and CPU
   matrix products and the whole CPU path against exact float math.
-- **An agent that is part of the product, not an afterthought.** Tool calling (files, shell, terminal, git, web
-  search, web fetch, persistent memory, MCP), guaranteed-valid JSON through a grammar-constrained sampler,
+- **An agent that is part of the product, not an afterthought.** Tool calling (files, shell, web
+  search, web fetch, MCP), guaranteed-valid JSON through a grammar-constrained sampler,
   context compaction, and a persistent prefix cache so the (long) system prompt is processed once.
 
 ### Measured on a laptop (RTX 3050 4 GB, i7-11800H, 64 GB RAM, Linux, Vulkan; measurements of 2026-11-15 to 2026-11-22)
@@ -53,7 +53,6 @@ one used and tested day to day.
 ./katana info  <model.gguf>        # architecture, tensors, context
 ./katana chat  <model.gguf>        # interactive chat
 ./katana agent <model.gguf>        # chat with tools (files, shell, web, memory, MCP)
-./katana code  <model.gguf>        # the agent in coding mode (older: short coding prompt and only the coding tools)
 ./katana serve <model.gguf> 8080 --agent   # web page that drives the full agent (work in progress)
 ```
 
@@ -145,7 +144,6 @@ tools reach outside.
 | `WebSearch`, `WebFetch` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG) and the main text of a page |
 | `Agent`, `SendMessage`, `Workflow` | sub-agents with a clean context and orchestration of several of them |
 | `ToolSearch`, `Skill` | the less common tools are announced by name only and loaded on demand; skills are named sets of instructions |
-| `git`, `terminal`, `recall`, `remember`, `howto`, `install_package`, `download_file`, `read_log` | still available by name; `terminal` is a persistent shell session in a pty, `recall` and `remember` a persistent memory in `~/.katana/memoria.txt` |
 | MCP tools | any [Model Context Protocol](https://modelcontextprotocol.io) server (stdio or streamable HTTP), listed as `server__tool` |
 
 **Finding things in code.** The default tool set (the one the model is trained on, `docs/tools.md`) has one search entry point,
@@ -158,10 +156,9 @@ and no remote service; new, and not measured yet.
 
 Where the tools work: anywhere on the machine. Paths can be relative to the working folder or absolute, missing folders are created, and
 `git -C <folder> ...` works in another repository. The user's request is the authorization, so there are no per-folder prompts. When the
-system denies a write (for example under `/opt`) the tool says so, and the model retries with `sudo=true` (`write_file`, `edit_file`) or `sudo` in the command
-(`run_command`, `terminal`), and **the password dialog opens whenever sudo is requested** (a wrong password asks again, up to three times). Nothing runs as
-root otherwise (`KATANA_SUDO=1` runs every command as root). The password stays only in memory (and, for terminal sessions, in a 0600 file in the user's
-runtime tmpfs, removed on exit). Long files are written in parts (`append`), and a tool call cut off by the token limit is reported instead of being run half-written;
+system denies a write (for example under `/opt`) the tool says so, and the model retries with `sudo` in the `Bash` command, and **the password dialog opens whenever sudo is requested** (a wrong password asks again, up to three times). Nothing runs as
+root otherwise (`KATANA_SUDO=1` runs every command as root). The password stays only in memory (and, for the root shell, in a 0600 file in the user's
+runtime tmpfs, removed on exit). A tool call cut off by the token limit is reported instead of being run half-written;
 the answer limit is 32768 tokens (`KATANA_MAXTOK`). `/cd <folder>` (or the folder button in the desktop app) changes the working folder.
 
 Safety model: every tool call is shown in the terminal and appended to `~/.katana/agente.log`; tool results enter the
@@ -225,7 +222,6 @@ katana export <out.jsonl> <sessions> [--bench results.jsonl]   agent sessions ->
                                        --teacher: only the answers a teacher gave in the agent (/teacher on)
 katana learn <model> [--rounds N] [--repeat K] [-- train options]   learns from its own use: solve, keep what passed, train, prove
 katana agent <model>             chat with tools
-katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools
 katana coder <sub>               code intelligence without a model: index, search, symbols, def, refs, callers, callees, uses, outline, at, deps, impact, kb, status, verify, compact (`katana coder` lists them)
 katana convert <hf-folder> <out.gguf> [type]   Hugging Face checkpoint (safetensors) -> GGUF, streaming; default q4_k_m (docs/convert.md; tested on tiny checkpoints only)
@@ -315,8 +311,8 @@ to the real tools and the arguments to the tool's schema. `katana jsontest` runs
 | `KATANA_NOHEAT=1` | MoE: do not save or read heat between sessions |
 | `KATANA_SPEC=0` | disable repetition speculation |
 | `KATANA_DEBUG=1` | per-kernel GPU profile and per-type CPU product profile |
-| `KATANA_WEB=0` | agent: disable `web_search` and `web_fetch` |
-| `KATANA_SEARX=<url>` | agent: use an existing SearXNG for `web_search` |
+| `KATANA_WEB=0` | agent: disable `WebSearch` and `WebFetch` |
+| `KATANA_SEARX=<url>` | agent: use an existing SearXNG for `WebSearch` |
 | `KATANA_SUDO=1` | agent: run every command as root (default: normal user, root only when sudo is requested) |
 | `KATANA_CONFIRM=1` | agent: ask before writing, running or calling MCP tools (`KATANA_TRUST=0` does the same) |
 | `KATANA_MAXTOK=N` | agent/chat: maximum tokens per answer (agent default 32768, chat 8192) |

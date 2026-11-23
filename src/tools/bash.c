@@ -188,7 +188,7 @@ static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap
     ctb_logpath(log, sizeof log);
     snprintf(cwdf, sizeof cwdf, "%s.cwd", log);
     remove(cwdf);
-    const int sudo = sudo_word(cmd) && sudo_prepare(cmd, 0);      /* modal/pergunta de senha, como no run_command */
+    const int sudo = sudo_word(cmd) && sudo_prepare(cmd, 0);      /* modal/pergunta de senha, como no Bash */
     char *script = ctb_script(cmd, dir, cwdf, sudo);
     if (!script) { snprintf(out, cap, "error: out of memory"); return; }
     cmd_term_hook();
@@ -393,7 +393,7 @@ static void ct_monitor(const char *js, const char *end, char *out, size_t cap) {
 static const char CT_BASH_DESC[] = "Run a shell command (not available on Windows yet)";
 static const char CT_BASH_PROPS[] = "\"command\": {\"type\": \"string\"}, \"timeout\": {\"type\": \"number\"}, \"description\": {\"type\": \"string\"}, \"run_in_background\": {\"type\": \"boolean\"}";
 static const char CT_BASH_REQ[] = "\"command\"";
-static void ct_bash(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: Bash is not available on Windows yet; use run_command"); }
+static void ct_bash(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: Bash is not available on Windows yet"); }
 static const char CT_TASKSTOP_DESC[] = "Stop a background task (not available on Windows yet)";
 static const char CT_TASKSTOP_PROPS[] = "\"task_id\": {\"type\": \"string\"}";
 static const char CT_TASKSTOP_REQ[] = "\"task_id\"";

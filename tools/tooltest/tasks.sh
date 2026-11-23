@@ -167,9 +167,6 @@ has "uma ferramenta pelo despacho normal" "Task #1 created: Solo" "$(t TaskCreat
 has "TodoWrite com a lista em texto" "Todos updated: 2 tasks (0 completed, 1 in progress, 1 pending)" "$(t TodoWrite '{"todos": "[{\"content\": \"ler\", \"status\": \"pending\"}, {\"content\": \"corrigir\", \"status\": \"in_progress\"}]"}')"
 has "AskUserQuestion com a lista em texto" "Qual? -> A" "$(u "${SOH}ANS A" AskUserQuestion '{"questions": "[{\"question\": \"Qual?\", \"options\": [{\"label\": \"A\"}, {\"label\": \"B\"}]}]"}' | grep -v "$SOH")"
 has "texto que nao e JSON e um plano de um passo" "Todos updated: 1 tasks" "$(t TodoWrite '{"todos": "ler e corrigir"}')"
-# as ferramentas antigas continuam
-has "todo antigo continua" "list saved: 0 of 2 done. Next: a" "$("$K" tool todo '{"steps":"a\nb"}' 2>/dev/null </dev/null)"
-has "ask_user antigo continua" "the user answered: ok" "$(printf '%s\n' "${SOH}ANS ok" | KATANA_UI=1 "$K" tool ask_user '{"question":"q?","options":"ok|no"}' 2>/dev/null | grep -v "$SOH")"
 
 if [ "$F" -eq 0 ]; then echo "OK $N checks"; exit 0; fi
 echo "FAILED $F of $N"; exit 1

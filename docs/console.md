@@ -121,7 +121,7 @@ katana -p "summarize the failing tests" --output-format json --mcp-config server
 echo "what changed?" | katana -p            # the request from stdin
 ```
 
-The request runs to the end with nobody to ask: a tool that needs the user (`AskUserQuestion`, `ask_user`) answers as it does for piped input,
+The request runs to the end with nobody to ask: a tool that needs the user (`AskUserQuestion`) answers as it does for piped input,
 "nobody can answer; decide by yourself". Exit code **0** with the final answer on stdout, **1** with the reason on stderr (and, with
 `json` or `stream-json`, the result object still goes to stdout with `is_error: true`), **2** for bad options, an unknown model, an unreadable
 `--mcp-config`. The request is limited to 16000 bytes. Everything the engine says while it works (loading, tool lines, MCP start) goes to

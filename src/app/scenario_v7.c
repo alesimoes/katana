@@ -6,7 +6,7 @@
  *                  linguagens; chamadas independentes na mesma fala; Read so da faixa que a saida indicou; NOT FOUND e nome parecido
  *                  tratados sem inventar.
  *   x-find7        o Find de agora: identificador (Found by name or text), texto entre aspas (Literal text found), nome com erro de
- *                  digitacao, descricao em palavras, NOT FOUND e "No match ... recall", mode=refs pelo indice de simbolos.
+ *                  digitacao, descricao em palavras, NOT FOUND e "No match", mode=refs pelo indice de simbolos.
  *   x-place        o usuario cita um projeto que esta em outro lugar: a nota [katana: you mention ...] do motor, path desde a primeira
  *                  chamada, Read com "Did you mean", recusa de Find/Glob na pasta home.
  *   x-cursor       arquivo grande lido em partes: o cursor do Read ("lines 1-N ... already given") e a nota de repeticao.
@@ -587,7 +587,7 @@ static void fam_x_find7(FILE *f, Scn *s) {
         x_user(x6_ask(ci, v));
         const char *askn = L(g_x6_c[ci].ask_en, g_x6_c[ci].ask_pt);
         const char *r = cu_fmt("%s", x6_find(NULL, x6_foreign(p, askn), NULL, 0));
-        if (strncmp(r, "No match for", 12) || !strstr(r, "recall(query)")) cu_die("o Find nao deu No match com a dica (%s)", g_x.cell);
+        if (strncmp(r, "No match for", 12)) cu_die("o Find nao deu No match com a dica (%s)", g_x.cell);
         const char *gr = x_call(L("Nothing for those words; the code term instead.", "Nada para essas palavras; o termo do codigo no lugar."), "Grep", cu_fmt("{\"pattern\": %s, \"-i\": true, \"output_mode\": \"content\"}", cu_q(g_x6_c[ci].g)), 0);
         const char *pre = cu_fmt("%s:", x_src(p, mi)), *lit = x_deflit(p, fi->name); int dl = 0;
         for (const char *l = gr; *l && !dl; ) { const size_t k = strcspn(l, "\n"); if (!strncmp(l, pre, strlen(pre)) && memmem(l, k, lit, strlen(lit))) dl = atoi(l + strlen(pre)); l += k; if (*l) l++; }

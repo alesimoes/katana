@@ -11,7 +11,7 @@
  *   - um servidor de linguagem minimo (pylsp de mentira na pasta bin do cenario: acha `def nome` nos .py do projeto);
  *   - arquivos: log, caderno, script que fica rodando, roteiro de workflow, configuracoes. */
 
-enum { P_NONE, P_LOG, P_MCP, P_MCPDOWN, P_MAIL, P_BG, P_NB, P_GIT, P_GITMOD, P_CONF, P_WWW, P_FLOW, P_AGENT, P_LSP, P_PKG };
+enum { P_NONE, P_MCP, P_MCPDOWN, P_MAIL, P_BG, P_NB, P_GIT, P_GITMOD, P_CONF, P_WWW, P_FLOW, P_AGENT, P_LSP };
 
 /* ---- servidor MCP de verdade ---- */
 static const char *g_r2_srvname;       /* nome do servidor desta conversa */

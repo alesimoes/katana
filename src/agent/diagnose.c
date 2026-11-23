@@ -26,16 +26,16 @@ static void cmd_hint(int rc, int timedout, const char *body, const char *cmd, ch
     const int has_sudo = sudo_word(cmd);
     const int pw = pw_detect(body);
     if (pw == 1 && has_sudo) { snprintf(out, cap, "\n[hint: sudo did not get a password (the dialog was cancelled or is not available). Do not retry; tell the user what needs root and why]"); return; }
-    if (pw == 1) { snprintf(out, cap, "\n[hint: this program asks for a password or passphrase on a terminal and the command tool has no keyboard. Open a terminal session (terminal action=open), send the command there and read the prompt; if only the user knows the secret, ask the user]"); return; }
+    if (pw == 1) { snprintf(out, cap, "\n[hint: this program asks for a password or passphrase on a terminal and Bash has no keyboard. If the command can take the secret from a pipe or a file, use that; if only the user knows the secret, ask the user]"); return; }
     if ((p = strstr(body, "ModuleNotFoundError: No module named"))) {
         diag_quoted(p, w, sizeof w);
         char *dot = strchr(w, '.'); if (dot) *dot = 0;
-        snprintf(out, cap, "\n[hint: the Python module %s is missing. If it is a file of this project, check the folder you ran from and the import path; if it is a library, install it with install_package (manager=pip, name=%s)]", w, w);
+        snprintf(out, cap, "\n[hint: the Python module %s is missing. If it is a file of this project, check the folder you ran from and the import path; if it is a library, install it with Bash: pip install %s]", w, w);
         return;
     }
     if ((p = strstr(body, "Cannot find module"))) {
         diag_quoted(p, w, sizeof w);
-        snprintf(out, cap, "\n[hint: Node cannot find the module %s. For a library run npm install in the project folder (or install_package manager=npm); for a local file check the relative path]", w);
+        snprintf(out, cap, "\n[hint: Node cannot find the module %s. For a library run npm install in the project folder (or npm install NAME); for a local file check the relative path]", w);
         return;
     }
     if (strstr(body, "externally-managed-environment")) {
@@ -44,7 +44,7 @@ static void cmd_hint(int rc, int timedout, const char *body, const char *cmd, ch
     }
     if ((p = strstr(body, ": command not found")) || (rc == 127 && (p = strstr(body, ": not found")))) {
         diag_word_before(body, p, w, sizeof w);
-        snprintf(out, cap, "\n[hint: the program %s is not installed or not in PATH. Check with: command -v %s. Install it (install_package, manager apt/pip/npm/cargo) or use another tool that exists; do not repeat the same command]", w[0] ? w : "you called", w[0] ? w : "<name>");
+        snprintf(out, cap, "\n[hint: the program %s is not installed or not in PATH. Check with: command -v %s. Install it with Bash (apt, pip, npm or cargo) or use another tool that exists; do not repeat the same command]", w[0] ? w : "you called", w[0] ? w : "<name>");
         return;
     }
     if (strstr(body, "Address already in use") || strstr(body, "EADDRINUSE")) {
@@ -67,7 +67,7 @@ static void cmd_hint(int rc, int timedout, const char *body, const char *cmd, ch
     }
     if (strstr(body, "No such file or directory")) {
         if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
-        snprintf(out, cap, "\n[hint: a path in this command does not exist. The command ran in %s; check the names with list_dir or glob before trying again]", cwd[0] ? cwd : "the working folder");
+        snprintf(out, cap, "\n[hint: a path in this command does not exist. The command ran in %s; check the names with Glob or Bash ls before trying again]", cwd[0] ? cwd : "the working folder");
         return;
     }
     if (rc == 137) { snprintf(out, cap, "\n[hint: the process was killed (signal 9), usually out of memory. Use smaller input or less parallelism]"); return; }

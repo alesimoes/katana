@@ -35,7 +35,6 @@ static void g4_js_text(const char *v, Buf *out) {
     if (!out->p) buf_add(out, "", 0);
 }
 static void g4_upper(Buf *b) { for (size_t i = 0; i < b->n; i++) if (b->p[i] >= 'a' && b->p[i] <= 'z') b->p[i] -= 32; }
-static int g4_cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 /* lista de strings JSON -> [<|"|>a<|"|>,...] */
 static void g4_str_list(Buf *o, const char *v) {
     buf_str(o, "[");

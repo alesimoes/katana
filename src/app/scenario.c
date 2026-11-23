@@ -8,7 +8,7 @@
 
 #define XF_NOTRAIN 1            /* a fala fica so como contexto */
 #define XF_ERR 2                /* o resultado pode ser um erro do motor (o passo seguinte reage a ele) */
-#define XF_OLD 4                /* ferramenta do primeiro conjunto (git, terminal, recall...): agent_tool_run */
+#define XF_MCP 4                /* ferramenta de servidor MCP (fora da tabela): sem esquema da tabela nem controle de repeticao */
 
 typedef struct { const char *name, *args; int id; } XCall;
 typedef struct { char role; const char *text; XCall c[4]; int nc, train; } XMsg;      /* role: s u e(nota do motor) a t; ate 4 chamadas na mesma fala (v6: leituras independentes juntas) */
@@ -83,11 +83,11 @@ static const char *x_run(const char *name, const char *args, int flags) {
     /* v7: a chamada passa pelo mesmo controle de repeticao do laco do motor (rr_check / rr_after): uma leitura identica a uma que ja deu certo neste
        pedido nao roda de novo e devolve a nota do motor; uma chamada que muda arquivos zera a tabela */
     const uint64_t csig = rp_hash(args, strlen(args), rp_hash(name, strlen(name), 1469598103934665603ULL));
-    if (!(flags & XF_OLD) && rr_check(name, csig, g_x_res, 60000)) return g_x_res;
+    if (!(flags & XF_MCP) && rr_check(name, csig, g_x_res, 60000)) return g_x_res;
     fflush(stdout); fflush(stderr);
     const int so = dup(1), se = dup(2), dn = open("/dev/null", O_WRONLY);
     dup2(dn, 1); if (!getenv("KATANA_CU_DEBUG")) dup2(dn, 2);
-    const int known = (flags & XF_OLD) || ct_lookup(name) != NULL;
+    const int known = (flags & XF_MCP) || ct_lookup(name) != NULL;
     if (known) agent_tool_run(name, args, args + strlen(args), g_x_res, 60000);      /* o despacho do laco: inclui a trava do modo plano */
     fflush(stdout); fflush(stderr);
     dup2(so, 1); dup2(se, 2); close(so); close(se); close(dn);
@@ -106,7 +106,7 @@ static void x_seq(const char *name) {
 static const char *x_call(const char *say, const char *name, const char *args, int flags) {
     const int train = !(flags & XF_NOTRAIN);
     if (say && (strlen(say) > 140 || strchr(say, '\n'))) cu_die("texto antes da chamada longo demais: %s", say);
-    if (!(flags & XF_OLD)) {
+    if (!(flags & XF_MCP)) {
         char err[400]; const char *schema = cu_ct_schema(name);
         if (!schema) cu_die("ferramenta desconhecida: %s", name);
         if (!cu_ct_ok(name, args, err, sizeof err)) cu_die("%s (%s): %s\nargumentos: %s", name, g_x.cell, err, args);
@@ -781,7 +781,7 @@ static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     g_x.mode = mode; g_x.decl = decl;
     static char sys[60000];
     setenv("KATANA_TOOL_DECL", decl ? "1" : "0", 1);
-    g_tool_xml = 1; g_tool_glm = 0; g_web = 1; g_code = 0;
+    g_tool_xml = 1; g_tool_glm = 0; g_web = 1;
     agent_build_sys(sys, sizeof sys, "");
     mcp_sys(sys, sizeof sys);
     char *dt = strstr(sys, "- Today's date: ");

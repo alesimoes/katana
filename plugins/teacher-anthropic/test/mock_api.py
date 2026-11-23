@@ -10,7 +10,6 @@ import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT, LOG = int(sys.argv[1]), sys.argv[2]
-READ = sys.argv[3] if len(sys.argv) > 3 else None      # roteiro alternativo: ler este arquivo 5 vezes so com o caminho
 SIG = "sig-mock-0001"
 
 
@@ -29,7 +28,7 @@ def check(h, b):
     if not isinstance(b.get("system"), str) or "<tool_call>" in b["system"]:
         return 400, "system prompt still teaches the student's call syntax"
     names = [t.get("name") for t in b.get("tools", [])]
-    if "write_file" not in names or "run_command" not in names or "todo" not in names or any("input_schema" not in t for t in b["tools"]):
+    if "Write" not in names or "Bash" not in names or "TodoWrite" not in names or any("input_schema" not in t for t in b["tools"]):
         return 400, "tools: %s" % names
     ms = b.get("messages", [])
     if not ms or ms[0]["role"] != "user" or ms[-1]["role"] != "user":
@@ -64,22 +63,16 @@ def answer(b):
     # so as chamadas feitas depois do ultimo pedido do usuario contam (a conversa pode ter turnos anteriores)
     last_user_text = max(i for i, m in enumerate(ms) if m["role"] == "user" and any(x["type"] == "text" for x in m["content"]))
     step = sum(1 for m in ms[last_user_text + 1:] if m["role"] == "assistant")
-    if READ and step < 5:
-        content = [{"type": "tool_use", "id": "toolu_rd%d" % done, "name": "read_file", "input": {"path": READ}}]
-        stop = "tool_use"
-    elif READ:
-        content = [{"type": "text", "text": "Li o arquivo."}]
-        stop = "end_turn"
-    elif step == 0:
+    if step == 0:
         content = [{"type": "thinking", "thinking": "The user wants a file. I will write it and read it back.", "signature": SIG},
                    {"type": "text", "text": "Vou gravar o arquivo."},
-                   {"type": "tool_use", "id": "toolu_w%d" % done, "name": "write_file",
-                    "input": {"path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]
+                   {"type": "tool_use", "id": "toolu_w%d" % done, "name": "Write",
+                    "input": {"file_path": "nota.txt", "content": "linha 1\nação \"citada\" <ok>\n"}}]
         stop = "tool_use"
     elif step == 1:
         content = [{"type": "thinking", "thinking": "", "signature": SIG},
-                   {"type": "tool_use", "id": "toolu_r%d" % done, "name": "run_command", "input": {"command": "cat nota.txt", "timeout_s": 20}},
-                   {"type": "tool_use", "id": "toolu_l%d" % done, "name": "list_dir", "input": {"path": "."}}]
+                   {"type": "tool_use", "id": "toolu_r%d" % done, "name": "Bash", "input": {"command": "cat nota.txt", "timeout": 20000}},
+                   {"type": "tool_use", "id": "toolu_l%d" % done, "name": "Bash", "input": {"command": "ls"}}]
         stop = "tool_use"
     else:
         content = [{"type": "text", "text": "Pronto: nota.txt gravado e conferido."}]

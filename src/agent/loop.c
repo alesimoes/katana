@@ -380,7 +380,7 @@ static void bk_key_of(const char *name, const char *ap, const char *end, const c
         if (nf > b && (size_t)(nf - b) < 80) { snprintf(key, cap, "the program %.*s", (int)(nf - b), b); return; }
     }
     char v[2048], pr[80];
-    if (!strcmp(name, "Bash") || !strcmp(name, "run_command") || !strcmp(name, "PowerShell")) {
+    if (!strcmp(name, "Bash") || !strcmp(name, "PowerShell")) {
         if (json_str(ap, end, "command", v, sizeof v) && bk_prog(v, pr, sizeof pr)) snprintf(key, cap, "the program %s", pr);
         return;
     }
@@ -400,8 +400,7 @@ static int bk_count(const char *key) {
 /* ferramenta que so le ou pergunta: nao e trabalho que peca plano (uma pergunta respondida com leituras nao e um servico longo) */
 static int loop_plan_readonly(const char *name) {
     static const char *const ro[] = {"Read", "Grep", "Glob", "Find", "Symbols", "LSP", "ToolSearch", "WebSearch", "WebFetch", "TaskList", "TaskGet", "CronList", "ListAgents",
-        "ListMcpResourcesTool", "ReadMcpResourceTool", "WaitForMcpServers", "AskUserQuestion", "recall", "howto", "read_log",
-        "read_file", "list_dir", "find_file", "search_files", "glob", "web_search", "web_fetch", "read_document", "ask_user", NULL};
+        "ListMcpResourcesTool", "ReadMcpResourceTool", "WaitForMcpServers", "AskUserQuestion", NULL};
     for (int i = 0; ro[i]; i++) if (!strcmp(name, ro[i])) return 1;
     return 0;
 }
@@ -418,8 +417,8 @@ static void loop_plan_note(char *result, size_t cap, const char *name, int pl_ca
     if (isro) ro_calls++;
     const int work = pl_calls - ro_calls;
     if (!g_todo_touched && !pl_old && !isro && (work == 3 || work == 6) && rl + 600 < cap)
-        { if (work == 3) KNOTE(PLAN_FIRST, result + rl, cap - rl, pl_calls, ct_set2() ? "TodoWrite" : "todo");
-          else KNOTE(PLAN_STILL, result + rl, cap - rl, pl_calls, ct_set2() ? "TodoWrite" : "todo"); }
+        { if (work == 3) KNOTE(PLAN_FIRST, result + rl, cap - rl, pl_calls, "TodoWrite");
+          else KNOTE(PLAN_STILL, result + rl, cap - rl, pl_calls, "TodoWrite"); }
 }
 /* ---- chamada identica que ja deu certo neste pedido: o conteudo nao volta de novo, so uma nota. Cobre so o que le (Read, Grep, Glob,
  * ferramenta MCP marcada readOnlyHint de servidor do usuario); Bash, Write e Edit podem repetir de proposito. Uma ferramenta que
@@ -477,7 +476,7 @@ static int rr_check(const char *name, uint64_t csig, char *out, size_t cap) {
 }
 /* ferramentas que so mexem na lista de tarefas do modelo: nao alteram arquivos nem o estado do projeto */
 static int rr_is_plan(const char *name) {
-    static const char *const pl[] = {"TodoWrite", "TaskCreate", "TaskUpdate", "todo", "EnterPlanMode", "ExitPlanMode", NULL};
+    static const char *const pl[] = {"TodoWrite", "TaskCreate", "TaskUpdate", "EnterPlanMode", "ExitPlanMode", NULL};
     for (int i = 0; pl[i]; i++) if (!strcmp(name, pl[i])) return 1;
     return 0;
 }
@@ -490,7 +489,7 @@ static void rr_after(const char *name, uint64_t csig, int failed) {
 }
 /* lembrete (uma vez por pedido) quando o modelo encerra com passos em aberto na lista que gravou neste pedido */
 static void loop_todo_nudge(char *nm, size_t cap) {
-    KNOTE(TODO_OPEN, nm, cap, g_todo, ct_set2() ? "TodoWrite" : "todo");
+    KNOTE(TODO_OPEN, nm, cap, g_todo, "TodoWrite");
 }
 /* o lembrete cabe aqui? So quando a lista foi mexida neste pedido e ha passo em aberto que nao seja uma tarefa apenas
    anotada: TaskCreate a pedido do usuario grava a tarefa para depois, e responder sem faze-la esta certo */
@@ -515,7 +514,7 @@ static void ui_tool_mark(const char *name, const char *ap, const char *end) {
 #define RL_CAP 200
 static int rl_block(void) { if (g_max_turns > 0) return g_max_turns; const char *e = getenv("KATANA_ROUNDS"); const int v = e ? atoi(e) : 0; return v >= 3 ? (v > RL_CAP ? RL_CAP : v) : 40; }
 static int rl_writes(const char *name) {
-    return !strcmp(name, "Write") || !strcmp(name, "Edit") || !strcmp(name, "NotebookEdit") || !strcmp(name, "write_file") || !strcmp(name, "edit_file");
+    return !strcmp(name, "Write") || !strcmp(name, "Edit") || !strcmp(name, "NotebookEdit");
 }
 
 static int ct_todo_autofinish(void);       /* src/tools/tasks.c */
@@ -550,7 +549,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     g_web = !(getenv("KATANA_WEB") && strcmp(getenv("KATANA_WEB"), "0") == 0);
     if (!g_con_rich && !g_hl) fprintf(stderr, "%sAgent started in the current folder. /help lists the commands; Ctrl+C interrupts the answer.%s\n"
                     "%s\n"
-                    "Internet (web_search, web_fetch): %s. Memory: remember and recall tools.\n",
+                    "Internet (WebSearch, WebFetch): %s.\n",
             CE(C_DIM), CE(C_RESET),
             getenv("KATANA_CONFIRM") && atoi(getenv("KATANA_CONFIRM")) ? "Writing, running commands and reading outside the current folder ask for your confirmation (KATANA_CONFIRM=1)."
                 : "Writing, running commands and reading outside the current folder need no confirmation; each action is shown here and logged to ~/.katana/agente.log (KATANA_CONFIRM=1 asks).",
@@ -596,7 +595,6 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_stop = 0; g_busy = 1;
             if (!first && hist.n && (res || strcmp(pa, g_sess_path) != 0)) sess_save(m, sys, &hist, &slog, sess_sum_switch());   /* fecha a sessao atual */
             ct_session_reset();
-            rd_reset();         /* outra conversa: nada do que foi lido esta no contexto dela */
             if (res) {
                 AGENT_SYS();
                 const int np2 = sess_resume(m, pa, sys, &hist, &slog);
@@ -652,7 +650,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (reset) {
             if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, sess_sum_switch()); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
-            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); rd_reset(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess);
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess);
         }
         if (cmd == 3) snprintf(line, sizeof line, "%s", g_ext_msg);      /* /init, /skill, /nome, /servidor:prompt: a mensagem vai ao modelo */
         else if (cmd) continue;
@@ -850,8 +848,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     { const long room = ((long)c->ctx - pos - 900) * 3; g_budget = room < 1500 ? 1500 : room > TOOL_WEB ? TOOL_WEB : (size_t)room; }
                     { size_t sl = strcspn(ap, "\n"); if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s %.*s]%s\n", CE(C_DIM), name, (int)(sl < 120 ? sl : 120), ap, CE(C_RESET)); ui_tool_mark(name, ap, end); }
                     if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
-                        ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
-                                  : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
+                        "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter.");
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                     if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
@@ -905,8 +902,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 const int rp_refuse = !trunc && rp_same_fail >= 2;
                 const int rr_hit = !trunc && !rp_refuse && rr_check(name, csig, result, sizeof result);      /* repeticao de leitura que deu certo */
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
-                        ct_set2() ? "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter."
-                                  : "For a long file call write_file with about 150 lines, then more calls with append=true; or make the script shorter.");
+                        "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter.");
                     else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "
                                                  "Do not send it a fourth time. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
                     else if (rr_hit) { }
@@ -984,7 +980,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                         continue;
                     }
                 }
-                if (ct_set2() && tn - td == 1 && ct_todo_autofinish()) break;      /* so faltava o ultimo passo e o modelo ja respondeu */
+                if (tn - td == 1 && ct_todo_autofinish()) break;      /* so faltava o ultimo passo e o modelo ja respondeu */
                 if (!cml || nudged || tn == td || cut || !loop_todo_should_nudge()) break;
                 /* o modelo encerrou com passos em aberto na lista que ele mesmo gravou neste pedido: lembra uma vez */
                 static char nm[3600];

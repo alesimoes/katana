@@ -23,7 +23,7 @@ def check(what, cond, detail=""):
             print("---- saida:\n" + detail[-1800:] + "\n----")
 
 
-env = dict(os.environ, HOME=home, TERM="xterm", KATANA_CPU="1", KATANA_TEACHER="1", KATANA_TOOLS="2", MOCK_TOOLS="2",
+env = dict(os.environ, HOME=home, TERM="xterm", KATANA_CPU="1", KATANA_TEACHER="1", 
            KATANA_TEACHER_CMD="python3 " + mock, KATANA_LOG=os.path.join(home, "agente.log"))
 env.pop("NO_COLOR", None); env.pop("KATANA_UI", None)
 os.makedirs(work, exist_ok=True)

@@ -1,6 +1,6 @@
 #include <errno.h>
 /* ---------- desfazer as alteracoes de arquivo do agente ----------
- * Antes de write_file e edit_file gravarem, o motor guarda a versao anterior do arquivo em ~/.katana/undo. /undo
+ * Antes de Write e Edit gravarem, o motor guarda a versao anterior do arquivo em ~/.katana/undo. /undo
  * devolve os arquivos ao estado de antes do ultimo pedido do usuario que alterou algo (de novo: o pedido anterior).
  * Nao cobre o que um comando do shell altera, nem arquivos lidos so como root ou maiores que 8 MB. */
 #define UNDO_N 400

@@ -872,7 +872,7 @@ static const char *cu_sys(const Scn *s) {
     if (g_cu_mixw[0] + g_cu_mixw[1] + g_cu_mixw[2] > 0) { int r = cu_n(g_cu_mixw[0] + g_cu_mixw[1] + g_cu_mixw[2]); mode = r < g_cu_mixw[0] ? 0 : r < g_cu_mixw[0] + g_cu_mixw[1] ? 1 : 2; }
     const int decl = mode == 2 || (mode == 0 && cu_pct(g_cu_decl));
     setenv("KATANA_TOOL_DECL", decl ? "1" : "0", 1);
-    g_tool_xml = 1; g_tool_glm = 0; g_web = 1; g_code = 0;
+    g_tool_xml = 1; g_tool_glm = 0; g_web = 1;
     agent_build_sys(sys, sizeof sys, "");
     mcp_sys(sys, sizeof sys);
     char *dt = strstr(sys, "- Today's date: ");      /* a data e a do cenario (o resto da linha e do motor) */
@@ -2099,7 +2099,7 @@ static int g_cu_covmin;                /* check --min N: minimo por ferramenta f
 static const struct { const char *name; char tier; } g_cu_cov[] = {
     {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Glob", 'A'}, {"Find", 'A'}, {"Symbols", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
     {"ToolSearch", 'A'}, {"WebSearch", 'A'}, {"WebFetch", 'A'}, {"Skill", 'A'},
-    {"git", 'B'}, {"recall", 'B'}, {"remember", 'B'}, {"download_file", 'B'}, {"terminal", 'B'}, {"install_package", 'C'}, {"read_log", 'C'}, {"howto", 'C'}, {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
+    {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
     {"SendUserFile", 'B'}, {"TaskCreate", 'C'}, {"TaskUpdate", 'C'}, {"TaskList", 'C'}, {"TaskGet", 'C'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
     {"EnterWorktree", 'B'}, {"ExitWorktree", 'B'},
     {"CronCreate", 'C'}, {"CronDelete", 'C'}, {"CronList", 'C'}, {"ScheduleWakeup", 'C'}, {"PushNotification", 'C'}, {"EndConversation", 'C'}, {"ReportFindings", 'C'},
@@ -2361,7 +2361,7 @@ static int curriculum_check(const char *path, int stats_only) {
                     if (pa) schema = pa + 14;
                 }
                 char err[400];
-                if (!strstr(name, "__") && (cu_is_old_tool(name) || cu_ct_ok(name, args, err, sizeof err))) {}
+                if (!strstr(name, "__") && cu_ct_ok(name, args, err, sizeof err)) {}
                 else if (!schema) CU_BAD("ferramenta %s fora do prompt%s", name, strstr(name, "__") ? " (cartao MCP)" : "");
                 else if (strstr(name, "__") && schema[0] != '{') CU_BAD("esquema de %s ilegivel", name);
                 else if (!cu_valid(schema, args, name, err, sizeof err)) CU_BAD("%s", err);
@@ -2456,7 +2456,7 @@ static int curriculum_check(const char *path, int stats_only) {
         long low = 0;
         printf("cobertura das ferramentas do motor (conversas com chamada treinada; minimo por faixa):\n");
         for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {
-            if (!ct_lookup(g_cu_cov[ci].name) && !cu_is_old_tool(g_cu_cov[ci].name)) { printf("  %c %-22s fora da tabela deste binario\n", g_cu_cov[ci].tier, g_cu_cov[ci].name); continue; }
+            if (!ct_lookup(g_cu_cov[ci].name)) { printf("  %c %-22s fora da tabela deste binario\n", g_cu_cov[ci].tier, g_cu_cov[ci].name); continue; }
             const long min = g_cu_cov[ci].tier == 'A' ? (nl >= 500 ? 25 : nl / 50 > 5 ? nl / 50 : 5) : 5;      /* toda ferramenta citada no prompt: pelo menos 5 conversas (decisao do dono, 2026-11-22); com --min N, N (arquivo de validacao) */
             if (g_cu_covmin > 0) { if (g_cu_covn[ci] < g_cu_covmin) { low++; printf("  %c %-22s %6ld  (minimo %d)  ABAIXO\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], g_cu_covmin); } else printf("  %c %-22s %6ld  (minimo %d)\n", g_cu_cov[ci].tier, g_cu_cov[ci].name, g_cu_covn[ci], g_cu_covmin); continue; }
             const int lw = g_cu_covn[ci] < min; low += lw;
@@ -2528,7 +2528,6 @@ static int curriculum_main(int argc, char **argv) {
     if (argc >= 2 && (!strcmp(argv[0], "stats") || !strcmp(argv[0], "check"))) {
         char full[4400];
         if (!realpath(argv[1], full)) { fprintf(stderr, "curriculum: nao abri %s\n", argv[1]); return 1; }
-        putenv_dup("KATANA_TOOLS=2");
         snprintf(g_cu_path0, sizeof g_cu_path0, "%s", getenv("PATH") ? getenv("PATH") : "/usr/bin:/bin");
         { const char *tp = getenv("TMPDIR"); snprintf(g_cu_sbroot, sizeof g_cu_sbroot, "%s/katana_cu_XXXXXX", tp && *tp ? tp : "/tmp"); }
         if (!mkdtemp(g_cu_sbroot)) { fprintf(stderr, "curriculum: nao criei a pasta de trabalho em %s\n", g_cu_sbroot); return 1; }
@@ -2590,7 +2589,6 @@ static int curriculum_main(int argc, char **argv) {
     if (strstr(langs, "en")) lg[nlg++] = 0;
     if (strstr(langs, "pt")) lg[nlg++] = 1;
     if (!nlg) { fprintf(stderr, "curriculum: --lang pt,en\n"); return 1; }
-    putenv_dup("KATANA_TOOLS=2");
     snprintf(g_cu_path0, sizeof g_cu_path0, "%s", getenv("PATH") ? getenv("PATH") : "/usr/bin:/bin");
     { const char *tp = getenv("TMPDIR"); snprintf(g_cu_sbroot, sizeof g_cu_sbroot, "%s/katana_cu_XXXXXX", tp && *tp ? tp : "/tmp"); }
     if (!mkdtemp(g_cu_sbroot)) { fprintf(stderr, "curriculum: nao criei a pasta de trabalho em %s\n", g_cu_sbroot); return 1; }

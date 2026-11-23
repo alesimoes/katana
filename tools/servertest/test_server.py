@@ -171,7 +171,7 @@ def agent(K, D, port):
     subprocess.check_call([sys.executable, os.path.join(root, "tools/tinymodel/make_tiny_gguf.py"), model, "--template", "chatml-xml"], stdout=subprocess.DEVNULL)
     home = os.path.join(D, "home"); work = os.path.join(D, "work"); os.makedirs(home, exist_ok=True); os.makedirs(work, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("KATANA_") and not k.endswith("_API_KEY")}   # professor so pelo programa de mentira
-    env.update(HOME=home, KATANA_CPU="1", KATANA_TEACHER="1", KATANA_TOOLS="2", MOCK_TOOLS="2",
+    env.update(HOME=home, KATANA_CPU="1", KATANA_TEACHER="1", 
                KATANA_TEACHER_CMD="python3 " + os.path.join(root, "tools/traintest/mock_teacher_prog.py"))
     # fora do loopback sem chave: recusa subir
     r = subprocess.run([K, "serve", model, str(port), "--agent"], env=dict(env, KATANA_HOST="0.0.0.0"), capture_output=True, timeout=30)

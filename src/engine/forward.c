@@ -1179,24 +1179,24 @@ static int jsontest(void) {
         SREJ("{\"nome\":\"a\",\"idade\":3,\"ok\":\"sim\"}");
     }
     {
-        const char *sys = "x\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"web_search\", \"description\": \"d\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}}\n"
-                          "{\"type\": \"function\", \"function\": {\"name\": \"list_dir\", \"description\": \"d\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}}\n</tools>";
+        const char *sys = "x\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"WebSearch\", \"description\": \"d\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}}\n"
+                          "{\"type\": \"function\", \"function\": {\"name\": \"Read\", \"description\": \"d\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}}\n</tools>";
         int cm;
         EXPECT(gr_tools(sys, 0), "gramatica de ferramentas");
         gr_start(); cm = 0;
-        EXPECT(gr_text("\n{\"name\": \"web_search\", \"arguments\": {\"query\": \"x\"}}", &cm) && cm, "chamada valida");
+        EXPECT(gr_text("\n{\"name\": \"WebSearch\", \"arguments\": {\"query\": \"x\"}}", &cm) && cm, "chamada valida");
         gr_tools(sys, 0); gr_start(); cm = 0;
-        EXPECT(!(gr_text("{\"name\": \"web_search\", \"arguments\": {\"path\": \"x\"}}", &cm) && cm), "argumento de outra ferramenta");
+        EXPECT(!(gr_text("{\"name\": \"WebSearch\", \"arguments\": {\"path\": \"x\"}}", &cm) && cm), "argumento de outra ferramenta");
         gr_tools(sys, 0); gr_start(); cm = 0;
-        EXPECT(gr_text("{\"name\": \"list_dir\", \"arguments\": {\"path\": \".\"}}", &cm) && cm, "segunda ferramenta");
+        EXPECT(gr_text("{\"name\": \"Read\", \"arguments\": {\"path\": \".\"}}", &cm) && cm, "segunda ferramenta");
         gr_tools(sys, 0); gr_start();
         EXPECT(!gr_text("{\"name\": \"nope\"", NULL), "ferramenta inexistente");
         gr_tools(sys, 0); gr_start();
-        EXPECT(!gr_text("{\"name\": \"web_search\", \"arguments\": {}}", &cm) || !cm, "falta argumento obrigatorio");
+        EXPECT(!gr_text("{\"name\": \"WebSearch\", \"arguments\": {}}", &cm) || !cm, "falta argumento obrigatorio");
         gr_tools(sys, 1); gr_start(); cm = 0;
-        EXPECT(gr_text("list_dir>", &cm) && cm, "xml nome valido");
+        EXPECT(gr_text("Read>", &cm) && cm, "xml nome valido");
         gr_tools(sys, 1); gr_start();
-        EXPECT(!gr_text("lis_dir", NULL), "xml nome invalido");
+        EXPECT(!gr_text("Reed", NULL), "xml nome invalido");
     }
     printf("jsontest: %d testes, %d falhas\n", n, fail);
     return fail != 0;

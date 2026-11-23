@@ -1,4 +1,4 @@
-/* ---------- interacao com o usuario: ask_user ----------
+/* ---------- interacao com o usuario: AskUserQuestion ----------
  * O modelo faz UMA pergunta e espera a resposta, com opcoes curtas quando houver. Na interface (KATANA_UI) sai o
  * marcador "CHOICE pergunta<TAB>opcao1<TAB>opcao2..." e a resposta chega na linha "\x01ANS texto" (o desktop mostra as
  * opcoes como botoes junto da caixa de mensagem; texto digitado tambem vale). No terminal: opcoes numeradas e uma linha

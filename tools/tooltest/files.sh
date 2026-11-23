@@ -401,14 +401,6 @@ fileis "Edit: caminho relativo com ./" r.txt "REL"
 run Read '{"file_path":"dir/../r.txt"}' Edit '{"file_path":"'$P'/r.txt","old_string":"REL","new_string":"rel2"}'
 fileis "Edit: mesmo arquivo por caminhos diferentes" r.txt "rel2"
 
-# ---------------- ferramentas antigas continuam ----------------
-run write_file '{"path":"old.txt","content":"velho"}'
-has "antigo: write_file continua" "ok: wrote"
-run read_file '{"path":"old.txt"}'
-has "antigo: read_file continua sem numeros" "velho"
-run edit_file '{"path":"old.txt","old":"velho","new":"novo"}'
-has "antigo: edit_file continua" "ok: edited"
-
 # ---------------- NotebookEdit ----------------
 cp nb.orig nb.ipynb
 run NotebookEdit '{"notebook_path":"nb.ipynb","cell_id":"bbb222","new_source":"print(\"oi\")\nx = 2"}'

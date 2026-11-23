@@ -222,7 +222,6 @@ if [ -d "$R/src" ]; then
     done
 fi
 
-D=$T/n; chk "Grep ferramenta antiga continua" "1" "$(run search_files '{"pattern":"TODO one"}' | grep -c 'a.c:4:')"
 
 echo
 if [ $F -eq 0 ]; then echo "OK $N checks"; else echo "FAILED $F"; exit 1; fi

@@ -10,7 +10,7 @@
  * Rede: o pedido sai pelo curl do sistema (como as ferramentas web do agente); a chave vem da variavel de ambiente
  * indicada (--key-env, padrao TEACHER_API_KEY) e vai num arquivo de cabecalho com permissao so do dono, nunca na
  * linha de comando. A memoria salva do usuario nao entra no prompt (HOME vazio enquanto o prompt e montado), e as
- * ferramentas que falam com o usuario ou gravam memoria (ask_user, remember) nao sao oferecidas ao professor. */
+ * ferramentas que falam com o usuario ou gravam memoria (AskUserQuestion) nao e oferecida ao professor. */
 
 /* extrai do prompt do agente (formato json) as declaracoes de ferramenta e a versao do prompt para o professor */
 static void ds_split_sys(const char *sys, Buf *tools, Buf *tsys) {
@@ -23,7 +23,7 @@ static void ds_split_sys(const char *sys, Buf *tools, Buf *tsys) {
         char line[4096];
         const size_t n = (size_t)(e - p) < sizeof line - 1 ? (size_t)(e - p) : sizeof line - 1;
         memcpy(line, p, n); line[n] = 0;
-        const int skip = !n || strstr(line, "\"name\": \"ask_user\"") || strstr(line, "\"name\": \"remember\"");
+        const int skip = !n || strstr(line, "\"name\": \"AskUserQuestion\"");
         if (!skip) { if (!first) buf_str(tools, ","); buf_add(tools, p, (size_t)(e - p)); first = 0; }
         p = e + 1;
     }
@@ -171,7 +171,7 @@ static int distill_main(int argc, char **argv) {
                 }
             }
             if (!args.p) buf_str(&args, "{}");
-            if (!strcmp(name, "ask_user") || !strcmp(name, "remember") || !name[0])
+            if (!strcmp(name, "AskUserQuestion") || !name[0])
                 snprintf(res, sizeof res, "error: tool %s is not available here", name[0] ? name : "(sem nome)");
             else agent_tool(name, args.p, args.p + args.n, res, sizeof res);
             fprintf(stderr, "[professor: %s -> %zu bytes]\n", name, strlen(res));

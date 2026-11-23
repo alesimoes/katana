@@ -9,7 +9,7 @@ int main(void) {
     for (int f = 0; f < 4; f++) {
         Config c; memset(&c, 0, sizeof c);
         c.chat_fmt = f == 2 ? 8 : f == 3 ? 10 : 0; c.tool_xml = f == 1; c.glm_args = f == 3;
-        Buf b = {0}; im_call(&c, &b, "write_file", args);
+        Buf b = {0}; im_call(&c, &b, "Write", args);
         char name[128] = ""; static char js[8192]; int ok;
         const char *tc = b.p, *end = b.p + b.n;
         if (f == 2) ok = g4_call_parse(tc, end, name, sizeof name, js, sizeof js);
@@ -19,7 +19,7 @@ int main(void) {
         char path[64] = "", text[64] = "";
         json_str(js, js + strlen(js), "path", path, sizeof path);
         json_str(js, js + strlen(js), "text", text, sizeof text);
-        const int good = ok && !strcmp(name, "write_file") && !strcmp(path, "a b.py") && !strcmp(text, "linha 1\nlinha \"2\"");
+        const int good = ok && !strcmp(name, "Write") && !strcmp(path, "a b.py") && !strcmp(text, "linha 1\nlinha \"2\"");
         printf("formato %d: %s  name=%s path=%s text=%s\n", f, good ? "ok" : "FALHOU", name, path, text);
         if (!good) { printf("   %s\n   js=%s\n", b.p, js); fails++; }
         free(b.p);

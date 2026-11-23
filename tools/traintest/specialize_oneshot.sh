@@ -8,9 +8,9 @@ cp "$D"/sp_sess/* "$H1/.katana/desktop/sessoes/" 2>/dev/null || true
 printf '# comentario\ntranscripts=%s\ntraining-dir=%s/trn\nreplace=hello=HELLO\nreplace=gcc=GCC\ncut-matching=zzzzqqqq\n' "$D/sel" "$OS" > "$H1/.katana/katana.cfg"
 # --- 1. um comando so: nada alem do modelo (e passos curtos, para o teste) ---
 mkdir -p "$OS/tmpcheck"
-TMPDIR="$OS/tmpcheck" KATANA_TOOLS=2 HOME="$H1" $K specialize "$SM" --steps 12 --seq 256 --lr 3e-3 --margin-mb 0 --no-check > "$OS/one1.out" 2>&1 || true
+TMPDIR="$OS/tmpcheck" HOME="$H1" $K specialize "$SM" --steps 12 --seq 256 --lr 3e-3 --margin-mb 0 --no-check > "$OS/one1.out" 2>&1 || true
 sleep 1
-TMPDIR="$OS/tmpcheck" KATANA_TOOLS=2 HOME="$H1" $K specialize "$SM" --steps 12 --seq 256 --lr 3e-3 --margin-mb 0 --no-check > "$OS/one2.out" 2>&1 || true
+TMPDIR="$OS/tmpcheck" HOME="$H1" $K specialize "$SM" --steps 12 --seq 256 --lr 3e-3 --margin-mb 0 --no-check > "$OS/one2.out" 2>&1 || true
 if python3 - "$OS" "$H1" "$D" <<'PY'
 import json, sys, glob, os
 O, H, DD = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -48,7 +48,7 @@ PY
 # --- 2. gravacao que falha: disco cheio simulado (KATANA_FAIL_WRITE_AFTER) e real (/dev/full) ---
 mkdir -p "$OS/ff"
 for lim in 200 40000; do
-  KATANA_FAIL_WRITE_AFTER=$lim KATANA_TOOLS=2 HOME="$H1" $K specialize "$SM" --out "$OS/ff/all-$lim" --no-refresh --dry-run --margin-mb 0 > "$OS/ff$lim.out" 2>&1; rc=$?
+  KATANA_FAIL_WRITE_AFTER=$lim HOME="$H1" $K specialize "$SM" --out "$OS/ff/all-$lim" --no-refresh --dry-run --margin-mb 0 > "$OS/ff$lim.out" 2>&1; rc=$?
   if [ $rc -ne 0 ] && grep -q "PAROU\|ERRO" "$OS/ff$lim.out" && ! grep -q "dry-run: parei" "$OS/ff$lim.out" && grep -qi "No space left\|disco cheio" "$OS/ff$lim.out" "$OS/ff/all-$lim"/*.log 2>/dev/null; then echo "specialize com disco cheio (limite $lim bytes): falhou em voz alta, codigo $rc: ok"; else echo "specialize com disco cheio ($lim): FALHOU (codigo $rc)"; tail -5 "$OS/ff$lim.out"; fail=1; fi
 done
 $K import "$SM" "$D/sel" /dev/full --system none > "$OS/full.out" 2>&1; rc=$?
@@ -74,14 +74,14 @@ H3="$OS/home3"; mkdir -p "$H3/.katana/desktop/sessoes"
 touch "$H3/.katana/desktop/sessoes/x.ksess"
 bash -c 'exec -a "katana agent" sleep 90' & FAKE=$!
 sleep 1
-KATANA_IDLE_POLL=1 KATANA_TOOLS=2 HOME="$H3" $K specialize "$SM" --from "$D/sel" --out "$OS/w1/all-1" --no-refresh --dry-run --margin-mb 0 --wait-idle 0.0012 > "$OS/w1.out" 2>&1; rc=$?
+KATANA_IDLE_POLL=1 HOME="$H3" $K specialize "$SM" --from "$D/sel" --out "$OS/w1/all-1" --no-refresh --dry-run --margin-mb 0 --wait-idle 0.0012 > "$OS/w1.out" 2>&1; rc=$?
 if [ $rc -eq 2 ] && grep -q "DESISTI" "$OS/w1.out" && [ ! -e "$OS/w1/all-1/data.jsonl" -o ! -s "$OS/w1/all-1/data.jsonl" ]; then echo "--wait-idle com o agente trabalhando: desistiu no limite sem treinar (codigo 2): ok"; else echo "--wait-idle ocupado: FALHOU (codigo $rc)"; tail -3 "$OS/w1.out"; fail=1; fi
 touch -d '2 hours ago' "$H3/.katana/desktop/sessoes/x.ksess"
-KATANA_IDLE_POLL=1 KATANA_TOOLS=2 HOME="$H3" $K specialize "$SM" --from "$D/sel" --out "$OS/w2/all-1" --no-refresh --dry-run --margin-mb 0 --wait-idle 0.05 > "$OS/w2.out" 2>&1; rc=$?
+KATANA_IDLE_POLL=1 HOME="$H3" $K specialize "$SM" --from "$D/sel" --out "$OS/w2/all-1" --no-refresh --dry-run --margin-mb 0 --wait-idle 0.05 > "$OS/w2.out" 2>&1; rc=$?
 if [ $rc -eq 0 ] && grep -q "agente parado ha mais de" "$OS/w2.out" && grep -q "dry-run: parei" "$OS/w2.out"; then echo "--wait-idle com a sessao parada ha 2 h: seguiu depois de 3 consultas: ok"; else echo "--wait-idle parado: FALHOU (codigo $rc)"; tail -3 "$OS/w2.out"; fail=1; fi
 kill $FAKE 2>/dev/null; wait $FAKE 2>/dev/null
 if pgrep -f "katana agent " >/dev/null 2>&1; then echo "--wait-idle sem agente rodando: PULADO (ha um katana agent de verdade rodando nesta maquina)"; else
-KATANA_TOOLS=2 HOME="$H3" $K specialize "$SM" --from "$D/sel" --out "$OS/w3/all-1" --no-refresh --dry-run --margin-mb 0 --wait-idle > "$OS/w3.out" 2>&1; rc=$?
+HOME="$H3" $K specialize "$SM" --from "$D/sel" --out "$OS/w3/all-1" --no-refresh --dry-run --margin-mb 0 --wait-idle > "$OS/w3.out" 2>&1; rc=$?
 if [ $rc -eq 0 ] && grep -q "nenhum agente rodando: sigo" "$OS/w3.out"; then echo "--wait-idle sem agente rodando: seguiu na hora: ok"; else echo "--wait-idle sem agente: FALHOU (codigo $rc)"; fail=1; fi; fi
 # --- 4. katana knowledge quiz ---
 python3 - "$OS" <<'PY'
@@ -119,7 +119,7 @@ for q, a in [("what do I run before a commit?", "Run `make check` first, as the 
     rows.append({"messages": [{"role": "system", "content": sysm}, {"role": "user", "content": q}, {"role": "assistant", "content": a}], "source": "curriculum", "family": "t"})
 open(sys.argv[1], "w").write("".join(json.dumps(r) + "\n" for r in rows))
 PY
-KATANA_TOOLS=2 HOME="$H1" $K specialize "$SM" --out "$OS/cv/all-1" --from "$D/sel" --curriculum "$OS/curr.jsonl" --no-refresh --dry-run --margin-mb 0 > "$OS/cv.out" 2>&1 || true
+HOME="$H1" $K specialize "$SM" --out "$OS/cv/all-1" --from "$D/sel" --curriculum "$OS/curr.jsonl" --no-refresh --dry-run --margin-mb 0 > "$OS/cv.out" 2>&1 || true
 if python3 - "$OS/cv/all-1/data.jsonl" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
@@ -131,8 +131,8 @@ sys.exit(0 if ok else 1)
 PY
 then echo "conventions: 3 conversas com o prompt de sistema proprio mantido, as outras fontes com o do agente: ok"; else echo "conventions: FALHOU"; tail -5 "$OS/cv.out"; fail=1; fi
 if $K curriculum --help >/dev/null 2>&1; then echo "katana curriculum existe: geracao automatica na noite (nao testada aqui)"; else
-  KATANA_TOOLS=2 HOME="$H1" $K specialize "$SM" --out "$OS/cv/all-2" --from "$D/sel" --no-refresh --dry-run --margin-mb 0 > "$OS/cv2.out" 2>&1 || true
+  HOME="$H1" $K specialize "$SM" --out "$OS/cv/all-2" --from "$D/sel" --no-refresh --dry-run --margin-mb 0 > "$OS/cv2.out" 2>&1 || true
   grep -q "ainda nao tem o subcomando katana curriculum" "$OS/cv2.out" && echo "sem katana curriculum: a fonte fica de fora com uma linha dizendo: ok" || { echo "conventions sem subcomando: FALHOU"; fail=1; }; fi
-KATANA_TOOLS=2 HOME="$H1" $K specialize "$SM" conventions --out "$OS/trn/conventions-1" --curriculum "$OS/curr.jsonl" --steps 4 --seq 256 --lr 3e-3 --margin-mb 0 --no-check > "$OS/cv3.out" 2>&1 || true
+HOME="$H1" $K specialize "$SM" conventions --out "$OS/trn/conventions-1" --curriculum "$OS/curr.jsonl" --steps 4 --seq 256 --lr 3e-3 --margin-mb 0 --no-check > "$OS/cv3.out" 2>&1 || true
 [ -s "$OS/trn/conventions-1/conventions.kspec" ] && grep -q "conventions" "$OS/trn/history.jsonl" && echo "specialize conventions (so a fonte, 4 passos): ok" || { echo "specialize conventions: FALHOU"; tail -4 "$OS/cv3.out"; fail=1; }
 set -e
