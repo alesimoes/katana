@@ -475,7 +475,8 @@ static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); }
 static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
-    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find") || !strcmp(name, "Symbols")) return 1;
+    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find") || !strcmp(name, "Symbols") ||
+        !strcmp(name, "WebSearch") || !strcmp(name, "WebFetch")) return 1;      /* a mesma busca na web foi repetida 12 vezes numa sessao: agora tambem recebe a nota e o corte */
     return strstr(name, "__") ? mcpx_plan_ok(name) : 0;
 }
 /* antes de executar: 1 = a chamada e repeticao e out ja tem a nota (nao executar) */
