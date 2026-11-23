@@ -305,7 +305,8 @@ to the real tools and the arguments to the tool's schema. `katana jsontest` runs
 | `KATANA_SUDO=1` | agent: run every command as root (default: normal user, root only when sudo is requested) |
 | `KATANA_CONFIRM=1` | agent: ask before writing, running or calling MCP tools (`KATANA_TRUST=0` does the same) |
 | `KATANA_MAXTOK=N` | agent/chat: maximum tokens per answer (agent default 32768, chat 8192) |
-| `KATANA_MEM=<file>`, `KATANA_LOG=<file>` | agent: memory file and action log paths |
+| `KATANA_MEM=<file>`, `KATANA_LOG=<file>` | agent: memory file and action log paths (log lines keep 2000 characters of arguments and 1000 of result, cut marked `...[+N]`) |
+| `KATANA_LOG_JSON=1` | agent: also write `~/.katana/agente.jsonl` (mode 0600, rotated at 64 MB to `.jsonl.1`): one JSON line per call with tool, arguments and result (up to 16 KB each), `ms`, `error`, `exit_code`, `request`, `session` |
 | `KATANA_PFX=0`, `KATANA_CACHE_DIR=<dir>` | agent: disable or move the on-disk prefix cache |
 | `KATANA_JSON=1` | `run`/`chat`: guaranteed JSON output |
 

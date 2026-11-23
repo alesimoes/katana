@@ -12,11 +12,12 @@
 #define SDF_SKIP_BINARY 1u      /* flags do documento: catalogado mas nao lido (binario) */
 #define SDF_SKIP_BIG 2u         /* maior que o limite configuravel */
 #define SDF_SKIP_UNREADABLE 4u
+#define SDF_SKIP_SECRET 32u     /* arquivo de segredo (coder/ignore.c): catalogado so pelo nome, conteudo nunca lido */
 #define SDF_GENERATED 16u       /* gerado/minificado: so caminho e nome entram na busca, sem simbolos (coder/crawl.c, KATANA_INDEX_GENERATED=1) */
 /* bits 8..11 de flags = nivel de informacao que o rastreador (crawl.c) ja deu ao documento: 0 = completo (caminho sincrono e indices antigos: busca e simbolos
  * de uma vez), 1 = N0 (so catalogo: nome, tamanho, data), 2 = N1 (texto), 4 = N2 e N3 (simbolos, referencias e chaves, saem da mesma analise) */
 #define SDF_LVMASK 0xF00u
-#define SDF_SKIPMASK (SDF_SKIP_BINARY | SDF_SKIP_BIG | SDF_SKIP_UNREADABLE)
+#define SDF_SKIPMASK (SDF_SKIP_BINARY | SDF_SKIP_BIG | SDF_SKIP_UNREADABLE | SDF_SKIP_SECRET)
 static uint32_t sdf_lv(uint32_t f) { return (f & SDF_LVMASK) >> 8; }
 static int sdf_partial(uint32_t f) { return sdf_lv(f) != 0 && sdf_lv(f) < 4; }       /* ainda falta nivel (ate o nome de binario e grande entra na busca no N1): a atualizacao sincrona refaz o documento */
 #define STORE_DOC_W 40
@@ -125,6 +126,20 @@ static void store_live_rebase(StoreLive *L, const char *pfx, size_t pl) {
         L->tab[h] = i;
     }
 }
+/* inclusao restrita por `path` (D.10): os documentos debaixo de uma linha `scoped <pasta>` do arquivo overrides so aparecem para consultas cujo prefixo cai
+ * dentro dela; as demais (busca normal do projeto) nao os veem. Chamar ANTES de store_live_rebase, com os caminhos ainda relativos a raiz.
+ * qprefix = prefixo da consulta relativo a raiz ("" = projeto inteiro). Devolve quantos documentos escondeu. Quem monta a visao (fase 6) liga isto. */
+static int store_live_hide_scoped(StoreLive *L, const IgnOvr *O, const char *qprefix) {
+    int hidden = 0; const size_t ql = strlen(qprefix);
+    if (!O) return 0;
+    for (int k = 0; k < O->n; k++) {
+        const IgnOvrEnt *x = &O->e[k]; if (!x->scoped) continue;
+        if (ql >= x->pl && !memcmp(qprefix, x->p, x->pl) && (ql == x->pl || qprefix[x->pl] == '/')) continue;       /* a consulta esta dentro da pasta: ve tudo */
+        for (int i = 0; i < L->n; i++) { StoreLiveDoc *e = &L->e[i];
+            if (!e->dead && e->d.plen > x->pl && !memcmp(e->d.path, x->p, x->pl) && e->d.path[x->pl] == '/') { e->dead = 1; hidden++; } }
+    }
+    return hidden;
+}
 static int st_cmp_live(const void *a, const void *b) {
     const StoreLiveDoc *x = *(const StoreLiveDoc *const *)a, *y = *(const StoreLiveDoc *const *)b;
     return st_cmp_bytes(x->d.path, x->d.plen, y->d.path, y->d.plen);
@@ -186,10 +201,16 @@ typedef struct { char *path; uint32_t plen; uint64_t size; int64_t mtime; } Stor
  * no meio (ancorado ao diretorio do arquivo de regras), * ? ** [abc] [a-z] [!abc], \ de escape, .gitignore em subpastas (o mais fundo vence;
  * dentro de um arquivo a ultima regra vence). NAO suportado: .git/info/exclude, ~/.config/git/ignore, core.excludesFile, classes [[:alpha:]],
  * re-incluir arquivo dentro de pasta ja ignorada (igual ao git), espacos finais protegidos por barra, casamento insensivel a maiusculas. */
-typedef struct { char *pat; int neg, dironly, anchored; } StoreRule;
+typedef struct { char *pat; int neg, dironly, anchored; int src, line; char *orig; } StoreRule;      /* src: 1 = .gitignore, 2 = .katanaignore, 0 = lista interna; orig = linha original (para dizer arquivo:linha) */
 typedef struct { StoreRule *r; int n, cap; size_t base; } StoreRuleSet;
 #define ST_MAXRS 64
-typedef struct { StoreScanEnt *e; int n, cap; StoreRuleSet rs[ST_MAXRS]; int nrs; int ignored, ignored_heur, has_gitignore; } StoreScan;
+/* destino opcional dos registros de ignorados (passada de contagem, maint.c): chamado para cada pasta/arquivo deixado de fora, com o motivo */
+typedef struct { void *ctx; void (*fn)(void *ctx, const char *rel, int isdir, int reason, const char *rule, uint64_t size, const char *abs); uint64_t maxsz; } IgnSink;
+typedef struct {
+    StoreScanEnt *e; int n, cap; StoreRuleSet rs[ST_MAXRS]; int nrs; int ignored, ignored_heur, has_gitignore;
+    const IgnOvr *ovr; IgnSink *sink; int nolist;           /* overrides; destino dos ignorados; nolist = nao listar os arquivos (so contar o que fica de fora) */
+    int mode, pass_reason; char pass_why[300];               /* mode: 0 normal, 1 passagem (pasta ignorada com um include dentro), 2 forcado (dentro de um include) */
+} StoreScan;
 typedef struct {
     uint64_t max_size;                                          /* arquivos maiores sao catalogados sem leitura (SDF_SKIP_BIG); 0 = 2 MiB */
     uint32_t (*kind_fn)(const char *path, size_t len);          /* tipo/idioma opaco por caminho; NULL = 0 */
@@ -201,18 +222,19 @@ typedef struct {
     void (*doc_fn)(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_t *data, size_t n);
     void (*commit_fn)(void *ctx, StoreWriter *w, uint32_t ndocs);
 } StoreScanOpts;
-typedef struct { int scanned, unchanged, added, changed, touched, removed, skip_bin, skip_big, skip_unread, live, compacted, ignored, ignored_heur; int64_t gen; double t_scan, t_total; } StoreUpdStats;
+typedef struct { int scanned, unchanged, added, changed, touched, removed, skip_bin, skip_big, skip_unread, skip_secret, live, compacted, ignored, ignored_heur; int64_t gen; double t_scan, t_total; } StoreUpdStats;
 static void st_rules_add(StoreRuleSet *R, const char *line, size_t len) {
     while (len && (line[len - 1] == '\r' || line[len - 1] == '\n' || line[len - 1] == ' ' || line[len - 1] == '\t')) len--;
     if (!len || line[0] == '#') return;
     StoreRule x; memset(&x, 0, sizeof x);
+    x.orig = (char *)malloc(len + 1); memcpy(x.orig, line, len); x.orig[len] = 0;
     if (line[0] == '!') { x.neg = 1; line++; len--; }
     else if (line[0] == '\\' && len > 1 && (line[1] == '#' || line[1] == '!')) { line++; len--; }
     if (len && line[len - 1] == '/') { x.dironly = 1; len--; }
-    if (!len) return;
+    if (!len) { free(x.orig); return; }
     size_t k = 0; for (size_t i = 0; i < len; i++) if (line[i] == '/') k++;
     x.anchored = k > 0;
-    if (line[0] == '/') { line++; len--; if (!len) return; }
+    if (line[0] == '/') { line++; len--; if (!len) { free(x.orig); return; } }
     x.pat = (char *)malloc(len + 1); memcpy(x.pat, line, len); x.pat[len] = 0;
     if (R->n == R->cap) { R->cap = R->cap ? R->cap * 2 : 16; R->r = (StoreRule *)realloc(R->r, sizeof *R->r * (size_t)R->cap); }
     R->r[R->n++] = x;
@@ -220,8 +242,8 @@ static void st_rules_add(StoreRuleSet *R, const char *line, size_t len) {
 static void st_rules_load(StoreRuleSet *R, const char *file) {
     FILE *f = fopen(file, "rb");
     if (!f) return;
-    char ln[2048];
-    while (fgets(ln, sizeof ln, f)) st_rules_add(R, ln, strlen(ln));
+    char ln[2048]; int lineno = 0; const int src = strstr(file, ".katanaignore") ? 2 : 1;
+    while (fgets(ln, sizeof ln, f)) { const int before = R->n; lineno++; st_rules_add(R, ln, strlen(ln)); if (R->n > before) { R->r[R->n - 1].src = src; R->r[R->n - 1].line = lineno; } }
     fclose(f);
 }
 static int st_glob(const char *p, const char *s) {
@@ -285,18 +307,70 @@ static int st_count_files_capped(char *path, size_t plen, int cap) {            
     }
     closedir(d); return n;
 }
-static int st_ignored_dir(const char *n) {
-    static const char *const ig[] = {".git", "node_modules", "build", "dist", "vendor", ".katana", ".claude", ".hg", ".svn", NULL};
-    for (int i = 0; ig[i]; i++) if (!strcmp(n, ig[i])) return 1;
-    return 0;
-}
-static int st_binary_ext(const char *n) {
+/* a lista interna unica de pastas pesadas esta em ignore.c; aqui so a consulta por nome (usada tambem pelo rastreador) */
+static int st_ignored_dir(const char *n) { return ign_heavy(n) != NULL; }
+static int st_binary_ext(const char *n) {       /* binario por extensao; arquivo de segredo conta como "nao ler" (o motivo "secret" vem de ign_secret_name) */
     static const char *const ex[] = {"png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "pdf", "zip", "gz", "tgz", "xz", "bz2", "7z", "rar", "o", "a", "so", "dll", "exe", "obj", "lib", "class", "jar", "bin", "gguf", "safetensors", "pt", "mp3", "mp4", "wav", "ogg", "mov", "avi", "ttf", "otf", "woff", "woff2", "pyc", "dylib", "dat", "sqlite", "db", NULL};
+    if (ign_secret_name(n)) return 1;
     const char *dot = strrchr(n, '.'), *sl = strrchr(n, '/');
     if (!dot || (sl && dot < sl)) return 0;
     for (int i = 0; ex[i]; i++) if (!strcasecmp(dot + 1, ex[i])) return 1;
     return 0;
 }
+/* 1 = ignorada por regra de arquivo, 0 = reincluida por "!", -1 = nenhuma regra casou; devolve a regra e o conjunto que decidiram */
+static int st_scan_rule(const StoreScan *S, const char *path, const char *nm, int isdir, const StoreRule **rr, const StoreRuleSet **rs) {
+    for (int i = S->nrs - 1; i >= 0; i--) {
+        const StoreRuleSet *R = &S->rs[i]; const char *rel = path + R->base + 1;
+        for (int k = R->n - 1; k >= 0; k--) {
+            const StoreRule *x = &R->r[k];
+            if (x->dironly && !isdir) continue;
+            if (st_glob(x->pat, x->anchored ? rel : nm)) { *rr = x; *rs = R; return x->neg ? 0 : 1; }
+        }
+    }
+    return -1;
+}
+/* "sub/.gitignore:4 \"build/\"": arquivo (relativo a raiz), linha e a linha original da regra */
+static void st_rule_text(const StoreRule *x, const StoreRuleSet *R, const char *path, size_t rel0, char *out, size_t cap) {
+    if (!x->src) { snprintf(out, cap, "built-in rule \"%s\"", x->orig ? x->orig : x->pat); return; }
+    char d[300] = "";
+    if (R->base > rel0) { size_t n = R->base - rel0; if (n >= sizeof d) n = sizeof d - 1; memcpy(d, path + rel0, n); d[n] = 0; }
+    snprintf(out, cap, "%s%s%s:%d \"%s\"", d, d[0] ? "/" : "", x->src == 2 ? ".katanaignore" : ".gitignore", x->line, x->orig ? x->orig : x->pat);
+}
+static void st_sink(StoreScan *S, const char *path, size_t rel0, int isd, int reason, const char *rule, uint64_t size) {
+    if (S->sink && S->sink->fn) S->sink->fn(S->sink->ctx, path + rel0, isd, reason, rule, size, path);
+}
+/* A decisao por entrada, UMA so para a varredura sincrona (st_scan_walk) e para o rastreador (crawl.c): precedencia de ignore.c, overrides > .katanaignore >
+ * .gitignore > lista interna. path = caminho absoluto da entrada, rel0 = onde comeca a parte relativa a raiz. S->mode, S->pass_reason e S->pass_why descrevem a pasta
+ * que contem a entrada (0 normal, 1 passagem: pasta ignorada com um include dentro, 2 forcado: dentro de um include) e S->rs a pilha de regras dela.
+ * Devolve 0 = entra, 1 = fica de fora (reason = IGR_*, rule = texto para mostrar), 2 = fica de fora sem sequer ser contada (controle de versao).
+ * *nmode = o modo da pasta, quando a entrada e uma pasta que entra; ao passar para o modo 1 aqui, S->pass_reason/pass_why recebem o motivo dela. */
+static int st_scan_decide(StoreScan *S, const char *path, size_t rel0, const char *nm, int isd, int *nmode, int *reason, char *rule, size_t rcap) {
+    const IgnHeavy *hv = isd ? ign_heavy(nm) : NULL;
+    *nmode = S->mode; *reason = 0; rule[0] = 0;
+    if (hv && hv->group == IGG_VCS) return 2;              /* .git e afins nunca entram nem sao contados */
+    const char *rel = path + rel0;
+    const int ov = S->ovr ? ign_ovr_state(S->ovr, rel, isd) : IGO_NONE;
+    int ign = 0;
+    if (hv && !ign_group_includable(hv->group)) { ign = 1; *reason = IGR_SECRET; snprintf(rule, rcap, "secret folder \"%s\"", nm); }
+    else if (S->mode == 1) {                 /* dentro de pasta ignorada que tem um include: so entra o que leva ate ele */
+        if (ov == IGO_INCLUDE) *nmode = 2; else if (ov == IGO_PASS) *nmode = 1;
+        else { ign = 1; *reason = S->pass_reason; snprintf(rule, rcap, "%s", S->pass_why); }
+    } else if (S->mode == 0) {
+        if (ov == IGO_EXCLUDE) { ign = 1; *reason = IGR_EXCLUDED; snprintf(rule, rcap, "excluded with katana coder exclude"); }
+        else if (ov == IGO_INCLUDE) *nmode = 2;
+        else {
+            const StoreRule *mr = NULL; const StoreRuleSet *ms = NULL;
+            const int m = S->nrs ? st_scan_rule(S, path, nm, isd, &mr, &ms) : -1;
+            if (m == 1) { ign = 1; *reason = mr->src == 2 ? IGR_KATANAIGNORE : IGR_GITIGNORE; st_rule_text(mr, ms, path, rel0, rule, rcap); }
+            else if (m < 0 && hv) { ign = 1; *reason = IGR_HEAVY; snprintf(rule, rcap, "built-in heavy folder \"%s\"", nm); }
+            if (!ign && isd && rt_skip_subdir(path)) {       /* init aninhado (indice proprio) ou copia de trabalho do git (roots.c) */
+                ign = 1; if (rt_has_marker(path)) { *reason = IGR_NESTED; snprintf(rule, rcap, "has its own index (katana init)"); } else { *reason = IGR_CHECKOUT; snprintf(rule, rcap, "linked git worktree"); } }
+            else if (ign && isd && ov == IGO_PASS) { ign = 0; *nmode = 1; S->pass_reason = *reason; snprintf(S->pass_why, sizeof S->pass_why, "%s", rule); }
+        }
+    } else if (S->mode == 2 && ov == IGO_EXCLUDE) { ign = 1; *reason = IGR_EXCLUDED; snprintf(rule, rcap, "excluded with katana coder exclude"); }
+    return ign;
+}
+/* varredura da raiz. Cada coisa deixada de fora e dita ao S->sink com o motivo */
 static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
     DIR *d = opendir(path);
     if (!d) return;
@@ -306,13 +380,7 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
         char f[4200];
         snprintf(f, sizeof f, "%s/.gitignore", path);
         st_rules_load(R, f);
-        if (isroot) {
-            S->has_gitignore = R->n > 0;
-            if (!S->has_gitignore) {                 /* sem .gitignore na raiz: pastas pesadas conhecidas (baixa prioridade; .katanaignore pode negar) */
-                static const char *const hv[] = {"ref", "models", "modelos", ".claude", "node_modules", "build", "dist", "target", "__pycache__", ".venv", "venv", ".cache", NULL};
-                for (int i = 0; hv[i]; i++) { char l[64]; snprintf(l, sizeof l, "/%s/", hv[i]); st_rules_add(R, l, strlen(l)); }
-            }
-        }
+        if (isroot) S->has_gitignore = R->n > 0;
         snprintf(f, sizeof f, "%s/.katanaignore", path); st_rules_load(R, f);
         if (R->n) { S->nrs++; pushed = 1; } else free(R->r);
     }
@@ -327,15 +395,25 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
         memcpy(path + at, nm, nl + 1);
         struct stat st;
         if (lstat(path, &st) == 0) {
-            int isd = S_ISDIR(st.st_mode);
-            if ((isd && st_ignored_dir(nm)) || (!isd && !S_ISREG(st.st_mode))) { path[plen] = 0; continue; }
-            if (S->nrs && st_scan_ignored(S, path, nm, isd)) { S->ignored++; path[plen] = 0; continue; }
-            if (isd && isroot && S->has_gitignore && (!strcmp(nm, "ref") || !strcmp(nm, "models")) && st_count_files_capped(path, at + nl, 5000) > 5000) {
-                S->ignored++; S->ignored_heur++; path[plen] = 0; continue;      /* heuristica de seguranca: pasta enorme que o .gitignore nao cobre */
-            }
-            if (isd && rt_skip_subdir(path)) { S->ignored++; path[plen] = 0; continue; }      /* init aninhado (indice proprio) ou copia de trabalho do git (roots.c) */
-            if (isd) st_scan_walk(S, path, at + nl, rel0);
-            else {
+            const int isd = S_ISDIR(st.st_mode);
+            if (!isd && !S_ISREG(st.st_mode)) { path[plen] = 0; continue; }      /* links, soquetes */
+            int ign, reason = 0, nmode = S->mode; char rule[420];
+            ign = st_scan_decide(S, path, rel0, nm, isd, &nmode, &reason, rule, sizeof rule);
+            if (ign == 2) { path[plen] = 0; continue; }
+            if (ign) { S->ignored++; st_sink(S, path, rel0, isd, reason, rule, isd ? 0 : (uint64_t)st.st_size); path[plen] = 0; continue; }
+            if (isd) {
+                const int smode = S->mode, sreason = S->pass_reason; char swhy[300]; if (smode == 1 || nmode == 1) memcpy(swhy, S->pass_why, sizeof swhy);
+                S->mode = nmode;
+                st_scan_walk(S, path, at + nl, rel0);
+                S->mode = smode; S->pass_reason = sreason; if (smode == 1 || nmode == 1) memcpy(S->pass_why, swhy, sizeof swhy);
+            } else {
+                if (S->sink) {                       /* arquivo que fica no catalogo mas sem leitura: so a passada de contagem os registra */
+                    const char *sr = ign_secret_name(path + rel0);
+                    if (sr) { snprintf(rule, sizeof rule, "secret file rule \"%s\"", sr); st_sink(S, path, rel0, 0, IGR_SECRET, rule, (uint64_t)st.st_size); }
+                    else if (st_binary_ext(nm)) { const char *dot = strrchr(nm, '.'); snprintf(rule, sizeof rule, "binary (%s)", dot ? dot : "?"); st_sink(S, path, rel0, 0, IGR_BINARY, rule, (uint64_t)st.st_size); }
+                    else if (S->sink->maxsz && (uint64_t)st.st_size > S->sink->maxsz) { snprintf(rule, sizeof rule, "larger than %llu MiB", (unsigned long long)(S->sink->maxsz >> 20)); st_sink(S, path, rel0, 0, IGR_TOOBIG, rule, (uint64_t)st.st_size); }
+                }
+                if (S->nolist) { path[plen] = 0; continue; }
                 if (S->n == S->cap) { S->cap = S->cap ? S->cap * 2 : 1024; S->e = (StoreScanEnt *)realloc(S->e, sizeof *S->e * (size_t)S->cap); }
                 StoreScanEnt *e = &S->e[S->n++];
                 e->plen = (uint32_t)(at + nl - rel0); e->path = (char *)malloc(e->plen + 1); memcpy(e->path, path + rel0, e->plen + 1);
@@ -350,7 +428,7 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
         path[plen] = 0;
     }
     closedir(d);
-    if (pushed) { StoreRuleSet *R = &S->rs[--S->nrs]; for (int i = 0; i < R->n; i++) free(R->r[i].pat); free(R->r); }
+    if (pushed) { StoreRuleSet *R = &S->rs[--S->nrs]; for (int i = 0; i < R->n; i++) { free(R->r[i].pat); free(R->r[i].orig); } free(R->r); }
 }
 static int st_cmp_scan(const void *a, const void *b) { return strcmp(((const StoreScanEnt *)a)->path, ((const StoreScanEnt *)b)->path); }
 static int st_cmp_str(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
@@ -369,6 +447,9 @@ static int64_t st_slurp(const char *path, uint8_t *buf, size_t cap) {
 #endif
 }
 
+static int maint_store_prepare(const char *dir, char *err, size_t ecap);       /* maint.c */
+static int g_maint_rebuilt, g_maint_rebuilds;
+static int maint_disk_ok(const char *dir, uint64_t need, char *err, size_t ecap);
 /* atualizacao incremental: varre `root`, compara com o catalogo por (tamanho, mtime) e, se mtime mudou, por hash; escreve UM segmento novo
  * com os documentos novos/alterados e um tombstone por removido; compacta se passou de max_segs. Devolve 0, 1 (outro escritor) ou -1 (err). */
 static int store_catalog_update(const char *dir, const char *root, const StoreScanOpts *o, StoreUpdStats *S, char *err, size_t ecap) {
@@ -380,12 +461,19 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
     char path[4096], rr[4096];
     StoreScan sc = {0};
     if (!realpath(root, rr)) { snprintf(err, ecap, "pasta invalida: %s", root); return -1; }
+    IgnOvr ovr; ign_ovr_load(&ovr, dir); sc.ovr = &ovr;
     snprintf(path, sizeof path, "%s", rr);
     size_t rl = strlen(rr);
     st_scan_walk(&sc, path, rl, rl + (rl > 1 ? 1 : 0));
+    ign_ovr_free(&ovr);
     qsort(sc.e, (size_t)sc.n, sizeof *sc.e, st_cmp_scan);
     S->scanned = sc.n; S->ignored = sc.ignored; S->ignored_heur = sc.ignored_heur; S->t_scan = now_sec() - t0;
+    if (!maint_disk_ok(dir, (uint64_t)sc.n * 512, err, ecap)) { for (int i = 0; i < sc.n; i++) free(sc.e[i].path); free(sc.e); return -1; }      /* disco cheio: pausa, a camada anterior continua valendo */
     StoreWriter *w; int rc = store_writer_begin(dir, &w, err, ecap);
+    if (rc == -1) {            /* nao abre: formato antigo ou dano = reconstroi do zero (F.6, G); formato mais novo = deixa quieto e diz */
+        const int before = g_maint_rebuilds; const int pr = maint_store_prepare(dir, err, ecap);
+        if (pr != 0) rc = pr; else if (g_maint_rebuilds != before) rc = store_writer_begin(dir, &w, err, ecap);
+    }
     if (rc != 0) { for (int i = 0; i < sc.n; i++) free(sc.e[i].path); free(sc.e); return rc; }
     store_writer_set_root(w, rr);
     StoreLive L; const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)(w->base->nseg + 1));
@@ -403,7 +491,8 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
         const uint8_t *body = NULL; size_t blen = 0;
         d.path = e->path; d.plen = e->plen; d.size = e->size; d.mtime = e->mtime;
         d.kind = o && o->kind_fn ? o->kind_fn(e->path, e->plen) : 0;
-        if (st_binary_ext(e->path)) d.flags = SDF_SKIP_BINARY;
+        if (ign_secret_name(e->path)) d.flags = SDF_SKIP_SECRET;           /* segredo: so o nome entra no indice */
+        else if (st_binary_ext(e->path)) d.flags = SDF_SKIP_BINARY;
         else if (e->size > maxsz) d.flags = SDF_SKIP_BIG;
         else {
             char full[8300]; snprintf(full, sizeof full, "%s/%s", rr, e->path);
@@ -411,7 +500,8 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
             if (got < 0) d.flags = SDF_SKIP_UNREADABLE;
             else {
                 size_t chk = (size_t)got < 8000 ? (size_t)got : 8000;
-                if (memchr(buf, 0, chk)) d.flags = SDF_SKIP_BINARY;
+                if (ign_secret_sniff(buf, (size_t)got)) d.flags = SDF_SKIP_SECRET;      /* chave privada reconhecida pelo conteudo (camada 2) */
+                else if (memchr(buf, 0, chk)) d.flags = SDF_SKIP_BINARY;
                 else { d.hash = store_hash64(buf, (size_t)got, 1); d.size = (uint64_t)got; body = buf; blen = (size_t)got; }
             }
         }
@@ -428,7 +518,7 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
       for (int i = 0; i < nv; i++) { if (!v[i]->seen) { tomb[nt] = v[i]->d.path; tl[nt++] = v[i]->d.plen; } else nlive++; }
       free(v); }
     S->removed = nt;
-    for (int i = 0; i < nn; i++) { if (nd[i].flags & SDF_SKIP_BINARY) S->skip_bin++; else if (nd[i].flags & SDF_SKIP_BIG) S->skip_big++; else if (nd[i].flags & SDF_SKIP_UNREADABLE) S->skip_unread++; }
+    for (int i = 0; i < nn; i++) { if (nd[i].flags & SDF_SKIP_SECRET) S->skip_secret++; else if (nd[i].flags & SDF_SKIP_BINARY) S->skip_bin++; else if (nd[i].flags & SDF_SKIP_BIG) S->skip_big++; else if (nd[i].flags & SDF_SKIP_UNREADABLE) S->skip_unread++; }
     int64_t gen = 0;
     if (nn || nt) {
         StoreBuf db = {0}; store_docs_build(&db, nd, (uint32_t)nn);
@@ -452,11 +542,6 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
     for (int i = 0; i < sc.n; i++) free(sc.e[i].path);
     free(sc.e);
     S->t_total = now_sec() - t0;
-    if (rc == 0) {          /* contagem para o status (arquivo texto ao lado do armazenamento; nao altera o formato) */
-        char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir);
-        FILE *f = fopen(fp, "wb");
-        if (f) { fprintf(f, "%d %d %d\n", S->ignored, S->ignored_heur, 1); fclose(f); chmod(fp, 0600); }
-    }
     return rc;
 }
 
@@ -476,7 +561,7 @@ static const char *cstore_human(uint64_t b, char *o, size_t cap) {
 static void coder_search_hook(StoreScanOpts *o);                       /* search.c: liga o indice de busca ao `index` */
 static void coder_search_hook_done(StoreScanOpts *o, char *out, size_t cap);
 static void coder_sym_hook(StoreScanOpts *o, const char *proj);        /* symindex.c: indice de simbolos e referencias, encadeado ao da busca */
-static void coder_sym_hook_done(char *out, size_t cap);
+static void coder_sym_hook_done(StoreScanOpts *o, char *out, size_t cap);      /* antes do done da busca: desfaz o encadeamento */
 static int coder_sym_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static int coder_key_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_sym_seg_info(const StoreSeg *s, char *out, size_t cap);
@@ -484,6 +569,9 @@ static int coder_search_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_search_seg_info(const StoreSeg *s, char *out, size_t cap);
 static int coder_crawl_verify_seg(const StoreSeg *s, char *err, size_t ecap);       /* crawl.c */
 static void crawl_status_print(StoreReader *r, const IndexLoc *loc, const char *dir);       /* crawl.c */
+static void ign_status_print(const char *storedir);                                         /* maint.c */
+static void maint_after_index(const char *root, const char *dir);
+static char g_maint_quarantine[4600];
 static int coder_cmd_index(int argc, char **argv) {
     char proj[4096], dir[4400], err[300], h[40]; uint64_t maxsz = 0; int fa = 0;
     cstore_args(argc, argv, proj, sizeof proj, &maxsz, &fa);
@@ -496,14 +584,15 @@ static int coder_cmd_index(int argc, char **argv) {
     coder_sym_hook(&o, proj);
     StoreUpdStats S; err[0] = 0;
     int rc = store_catalog_update(dir, proj, &o, &S, err, sizeof err);
-    char sinfo[400], yinfo[500]; coder_search_hook_done(&o, sinfo, sizeof sinfo); coder_sym_hook_done(yinfo, sizeof yinfo);
+    char sinfo[400], yinfo[500]; coder_sym_hook_done(&o, yinfo, sizeof yinfo); coder_search_hook_done(&o, sinfo, sizeof sinfo);
     if (rc == 1) { fprintf(stderr, "index: %s; use a leitura (status)\n", err); return 3; }
     if (rc != 0) { fprintf(stderr, "index: erro: %s\n", err); return 1; }
     if (loc.kind == IL_HOME) index_retire_below(proj);
+    maint_after_index(proj, dir);                    /* passada de contagem dos ignorados (prioridade mais baixa: depois do indice) */
     StoreReader *r; uint64_t disk = 0; int nseg = 0;
     if (store_open(dir, &r, err, sizeof err) == 0) { disk = store_disk_bytes(r); nseg = r->nseg; store_close(r); }
-    printf("index %s: %d arquivos (%d novos, %d alterados, %d so mtime, %d removidos, %d iguais); ignorados por tipo: %d binarios, %d grandes, %d ilegiveis; ignorados por regra (.gitignore/.katanaignore/pastas pesadas): %d entradas (%d pela heuristica de pasta enorme)\n",
-           proj, S.scanned, S.added, S.changed, S.touched, S.removed, S.unchanged, S.skip_bin, S.skip_big, S.skip_unread, S.ignored, S.ignored_heur);
+    printf("index %s: %d arquivos (%d novos, %d alterados, %d so mtime, %d removidos, %d iguais); ignorados por tipo: %d binarios, %d grandes, %d ilegiveis, %d segredos; ignorados por regra (.gitignore/.katanaignore/lista interna/overrides): %d entradas (detalhe: katana coder ignored)\n",
+           proj, S.scanned, S.added, S.changed, S.touched, S.removed, S.unchanged, S.skip_bin, S.skip_big, S.skip_unread, S.skip_secret, S.ignored);
     printf("  geracao %lld, %d segmento(s)%s, %s em disco, varredura %.3f s, total %.3f s\n  armazenamento: %s\n", (long long)S.gen, nseg, S.compacted ? " (compactado)" : "", cstore_human(disk, h, sizeof h), S.t_scan, S.t_total, dir);
     if (sinfo[0]) printf("  busca: %s\n", sinfo);
     if (yinfo[0]) printf("  simbolos: %s\n", yinfo);
@@ -540,10 +629,11 @@ static int coder_cmd_status(int argc, char **argv) {
     if (loc.prefix[0]) { const size_t pl = strlen(loc.prefix); int np = 0;
         for (int i = 0; i < L.n; i++) if (!L.e[i].dead && L.e[i].d.plen > pl && !memcmp(L.e[i].d.path, loc.prefix, pl) && L.e[i].d.path[pl] == '/') np++;
         printf("arquivos sob o prefixo %s: %d\n", loc.prefix, np); }
-    { char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir); FILE *f = fopen(fp, "rb"); int a = 0, b = 0, c = 0;
-      if (f) { if (fscanf(f, "%d %d %d", &a, &b, &c) == 3) printf("ignorados por regra na ultima varredura: %d entradas (arquivos ou pastas; %d pela heuristica de pasta enorme)\n", a, b); fclose(f); } }
+    { int sec = 0; for (int i = 0; i < L.n; i++) if (!L.e[i].dead && (L.e[i].d.flags & SDF_SKIP_SECRET)) sec++;
+      if (sec) printf("arquivos de segredo catalogados so pelo nome (conteudo nunca lido): %d\n", sec); }
     store_live_free(&L);
     crawl_status_print(r, &loc, dir);
+    ign_status_print(dir);
     store_close(r);
     return 0;
 }

@@ -17,7 +17,10 @@
  *   SY_T_KNAMES (0x207) tabela de strings ordenada por bytes: as chaves do segmento; id = posicao (busca binaria)
  *   SY_T_KDOCS  (0x208) tabela largura 8, um registro por documento: u32 occ0, u32 nocc | 0x80000000 (bit alto = o documento foi analisado pelo
  *                       extrator de chaves; sem o bit = indexado antes de existirem chaves, ou nao analisavel). As ocorrencias de um documento sao contiguas.
- *   SY_T_KOCC   (0x209) tabela largura 16: u32 chave, role | cls<<8 | meth<<16, line, documento. Em ordem de linha dentro do documento.
+ *   SY_T_KOCC   (0x209) tabela largura 16: u32 chave, role | cls<<8 | meth<<16 | sub<<24, line, documento. Em ordem de linha dentro do documento.
+ *                       role 1 PRODUCE, 2 CONSUME, 3 DEFINE (contrato); cls 7 = contract e sub = CKS_* (subtipo do contrato). Armazenamentos antigos so tem roles 1 e 2 e sub 0;
+ *                       o leitor ignora role/cls desconhecidos (flow.c) e o verify so recusa role 0 e cls > 0x3F, entao nada precisou de nova versao de secao.
+ *                       KDOCS: o bit 0x40000000 de nocc marca o documento como analisado tambem pelo extrator de contratos (sem ele, um contrato antigo nao tem as chaves novas).
  *   SY_T_KBYKEY (0x20A) pares (id da chave, linha de KOCC) ordenados: "todas as ocorrencias desta chave" e uma busca binaria
  * Fusores: reconstroem tudo (um por tipo de secao, o primeiro reconstroi e entrega os demais) remapeando documentos pelo docmap; documentos
  * mortos ou substituidos somem; os nomes sao unidos e reordenados.
@@ -34,7 +37,9 @@
 #define SY_T_KOCC (STS_SYM_BASE + 9)
 #define SY_T_KBYKEY (STS_SYM_BASE + 10)
 #define SY_KOCCW 16
-#define SY_KFLAG 0x80000000u
+#define SY_KF1 0x80000000u            /* documento analisado pelo extrator de chaves */
+#define SY_KF2 0x40000000u            /* ... e pelo extrator de CONTRATOS (papel DEFINE, classe contract); so os documentos de depois dele tem este bit */
+#define SY_KFLAG (SY_KF1 | SY_KF2)    /* mascara dos dois bits: `& ~SY_KFLAG` tira o numero de ocorrencias; `& SY_KFLAG` != 0 = analisado */
 #define SY_NONE 0xFFFFFFFFu
 #define SY_DOCW 24
 #define SY_SYMW 48
@@ -44,7 +49,7 @@
 typedef struct { const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent; } SySIn;
 typedef struct { const char *name; uint32_t nl, kind, line, col, flags, from; } SyRIn;
 typedef struct { const char *name; uint32_t nl, pack, line; } SyKIn;
-typedef struct { SySIn *s; uint32_t ns; SyRIn *r; uint32_t nr; uint32_t lang; CoderFile cf; SyKIn *k; uint32_t nk; int kflag; } SyDIn;
+typedef struct { SySIn *s; uint32_t ns; SyRIn *r; uint32_t nr; uint32_t lang; CoderFile cf; SyKIn *k; uint32_t nk; int kflag, kflag2; double secs; } SyDIn;
 typedef struct { StoreBuf names, docs, occ, bykey; uint32_t nnames, nocc; } KyOut;
 typedef struct { StoreBuf names, docs, syms, refs, bydef, byref, ival; uint32_t nnames, nsyms, nrefs; } SyOut;
 typedef struct { const char *p; uint32_t l; } SyNm;
@@ -113,7 +118,7 @@ static void ky_build(const SyDIn *d, uint32_t nd, KyOut *o) {
     uint64_t *pk = (uint64_t *)malloc(sizeof *pk * (size_t)(no + 1)); uint32_t row = 0;
     for (uint32_t i = 0; i < nd; i++) {
         const SyDIn *x = &d[i];
-        sb_u32(&o->docs, x->nk ? row : 0); sb_u32(&o->docs, x->nk | (x->kflag ? SY_KFLAG : 0));
+        sb_u32(&o->docs, x->nk ? row : 0); sb_u32(&o->docs, x->nk | (x->kflag ? SY_KF1 : 0) | (x->kflag2 ? SY_KF2 : 0));
         for (uint32_t q = 0; q < x->nk; q++) {
             const SyKIn *y = &x->k[q]; uint32_t id = sy_nm_id(all, (uint32_t)u, y->name, y->nl);
             sb_u32(&o->occ, id); sb_u32(&o->occ, y->pack); sb_u32(&o->occ, y->line); sb_u32(&o->occ, i);
@@ -127,29 +132,30 @@ static void ky_build(const SyDIn *d, uint32_t nd, KyOut *o) {
 static void ky_out_free(KyOut *o) { sb_free(&o->names); sb_free(&o->docs); sb_free(&o->occ); sb_free(&o->bykey); }
 static void sy_out_free(SyOut *o) { sb_free(&o->names); sb_free(&o->docs); sb_free(&o->syms); sb_free(&o->refs); sb_free(&o->bydef); sb_free(&o->byref); sb_free(&o->ival); }
 
-/* ---- gancho do `index`: encadeia com o da busca (mesmo ctx, que continua sendo o da busca) ---- */
-static struct {
+/* ---- gancho do `index`: encadeia com o da busca ----
+ * Estado de UMA indexacao num SyHook proprio (alocado por coder_sym_hook, solto por coder_sym_hook_done), sem globais. O gancho se poe na frente do
+ * anterior: hook_ctx passa a ser o SyHook e o ctx anterior fica em prev_ctx; coder_sym_hook_done devolve tudo como estava (chame-o ANTES do done da busca).
+ * sy_analyze e reentrante (so escreve no SyDIn recebido): o rastreador a roda em varias threads e entrega os resultados a sy_ingest, uma thread so, na
+ * ordem dos documentos. */
+typedef struct {
     void (*prev_doc)(void *, uint32_t, const StoreDoc *, const uint8_t *, size_t);
     void (*prev_commit)(void *, StoreWriter *, uint32_t);
+    void *prev_ctx;
     SyDIn *d; uint32_t nd, cap; char root[4096]; uint32_t nfiles, nsyms, nrefs, nparsed, nkeys; double secs; uint64_t bytes[7];
-} g_sy;
-static void sy_doc_hook(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_t *data, size_t n) {
-    if (g_sy.prev_doc) g_sy.prev_doc(ctx, idx, d, data, n);
-    if (idx >= g_sy.cap) { uint32_t nc = idx + 256; g_sy.d = (SyDIn *)realloc(g_sy.d, sizeof(SyDIn) * nc); memset(g_sy.d + g_sy.cap, 0, sizeof(SyDIn) * (nc - g_sy.cap)); g_sy.cap = nc; }
-    if (idx >= g_sy.nd) g_sy.nd = idx + 1;
-    if (!data || !n) return;
+} SyHook;
+/* analisa um documento: x deve estar zerado; reentrante */
+static void sy_analyze(const char *root, const StoreDoc *d, const uint8_t *data, size_t n, SyDIn *x) {
     char rel[4100]; uint32_t pl = d->plen < 4000 ? d->plen : 4000; memcpy(rel, d->path, pl); rel[pl] = 0;
-    char full[8300]; snprintf(full, sizeof full, "%s/%s", g_sy.root, rel);
+    char full[8300]; snprintf(full, sizeof full, "%s/%s", root, rel);
     double t0 = now_sec();
     char *txt = (char *)malloc(n + 1); memcpy(txt, data, n); txt[n] = 0;
-    SyDIn *x = &g_sy.d[idx];
     coder_parse(full, txt, n, &x->cf); free(txt);
     CoderFile *f = &x->cf; x->lang = (uint32_t)f->lang;
     if (f->lang != CL_UNKNOWN) {          /* chaves de texto: o documento foi analisado (mesmo sem nenhuma chave) */
-        x->kflag = 1; g_sy.nparsed++;
+        x->kflag = x->kflag2 = 1;
         if (f->nkey) { x->k = (SyKIn *)calloc((size_t)f->nkey, sizeof(SyKIn)); x->nk = (uint32_t)f->nkey;
-            for (int i = 0; i < f->nkey; i++) { const CoderKey *y = &f->key[i]; SyKIn *z = &x->k[i]; z->name = y->key; z->nl = (uint32_t)strlen(y->key); z->line = (uint32_t)y->line; z->pack = (uint32_t)y->role | (uint32_t)y->cls << 8 | (uint32_t)y->meth << 16; }
-            g_sy.nkeys += x->nk; }
+            for (int i = 0; i < f->nkey; i++) { const CoderKey *y = &f->key[i]; SyKIn *z = &x->k[i]; z->name = y->key; z->nl = (uint32_t)strlen(y->key); z->line = (uint32_t)y->line; z->pack = (uint32_t)y->role | (uint32_t)y->cls << 8 | (uint32_t)y->meth << 16 | (uint32_t)(y->sub & 0xFF) << 24; }
+        }
     }
     if (f->nsym || f->nref) {
         x->s = (SySIn *)calloc((size_t)f->nsym + 1, sizeof(SySIn)); x->r = (SyRIn *)calloc((size_t)f->nref + 1, sizeof(SyRIn)); x->ns = (uint32_t)f->nsym; x->nr = (uint32_t)f->nref;
@@ -159,37 +165,59 @@ static void sy_doc_hook(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_
             z->pack = (uint32_t)(y->vis & 0xFF) | (uint32_t)(y->conf & 0xFF) << 8 | (uint32_t)(y->flags & 0xFFFF) << 16; z->parent = y->parent >= 0 ? (uint32_t)y->parent : SY_NONE; }
         for (int i = 0; i < f->nref; i++) { const CoderRef *y = &f->ref[i]; SyRIn *z = &x->r[i];
             z->name = y->name; z->nl = (uint32_t)strlen(y->name); z->kind = (uint32_t)y->kind; z->line = (uint32_t)y->line; z->col = (uint32_t)y->col; z->flags = (uint32_t)y->flags; z->from = y->from >= 0 ? (uint32_t)y->from : SY_NONE; }
-        g_sy.nfiles++; g_sy.nsyms += x->ns; g_sy.nrefs += x->nr;
     }
-    g_sy.secs += now_sec() - t0;
+    x->secs = now_sec() - t0;
+}
+/* guarda o resultado do documento idx (x = NULL: documento sem analise) e soma os contadores; uma thread so, idx crescente */
+static void sy_ingest(SyHook *h, uint32_t idx, SyDIn *x) {
+    if (idx >= h->cap) { uint32_t nc = idx + 256; h->d = (SyDIn *)realloc(h->d, sizeof(SyDIn) * nc); memset(h->d + h->cap, 0, sizeof(SyDIn) * (nc - h->cap)); h->cap = nc; }
+    if (idx >= h->nd) h->nd = idx + 1;
+    if (!x) return;
+    h->d[idx] = *x;
+    if (x->kflag) h->nparsed++;
+    h->nkeys += x->nk;
+    if (x->ns || x->nr) { h->nfiles++; h->nsyms += x->ns; h->nrefs += x->nr; }
+    h->secs += x->secs;
+}
+static void sy_doc_hook(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_t *data, size_t n) {
+    SyHook *h = (SyHook *)ctx;
+    if (h->prev_doc) h->prev_doc(h->prev_ctx, idx, d, data, n);
+    if (!data || !n) { sy_ingest(h, idx, NULL); return; }
+    SyDIn x; memset(&x, 0, sizeof x);
+    sy_analyze(h->root, d, data, n, &x);
+    sy_ingest(h, idx, &x);
 }
 static void sy_commit_hook(void *ctx, StoreWriter *w, uint32_t ndocs) {
-    if (g_sy.prev_commit) g_sy.prev_commit(ctx, w, ndocs);
-    if (!g_sy.nfiles && !g_sy.nparsed) return;
+    SyHook *h = (SyHook *)ctx;
+    if (h->prev_commit) h->prev_commit(h->prev_ctx, w, ndocs);
+    if (!h->nfiles && !h->nparsed) return;
     SyDIn *all = (SyDIn *)calloc(ndocs + 1, sizeof *all);
-    for (uint32_t i = 0; i < ndocs && i < g_sy.nd; i++) all[i] = g_sy.d[i];
+    for (uint32_t i = 0; i < ndocs && i < h->nd; i++) all[i] = h->d[i];
     { KyOut ko; ky_build(all, ndocs, &ko);
       store_writer_add_section_buf(w, SY_T_KNAMES, 1, ko.nnames, &ko.names); store_writer_add_section_buf(w, SY_T_KDOCS, 1, ndocs, &ko.docs);
       store_writer_add_section_buf(w, SY_T_KOCC, 1, ko.nocc, &ko.occ); store_writer_add_section_buf(w, SY_T_KBYKEY, 1, ko.nocc, &ko.bykey); }
-    if (!g_sy.nfiles) { free(all); return; }
+    if (!h->nfiles) { free(all); return; }
     SyOut o; sy_build(all, ndocs, &o); free(all);
-    g_sy.bytes[0] = o.names.n; g_sy.bytes[1] = o.docs.n; g_sy.bytes[2] = o.syms.n; g_sy.bytes[3] = o.refs.n; g_sy.bytes[4] = o.bydef.n; g_sy.bytes[5] = o.byref.n; g_sy.bytes[6] = o.ival.n;
+    h->bytes[0] = o.names.n; h->bytes[1] = o.docs.n; h->bytes[2] = o.syms.n; h->bytes[3] = o.refs.n; h->bytes[4] = o.bydef.n; h->bytes[5] = o.byref.n; h->bytes[6] = o.ival.n;
     store_writer_add_section_buf(w, SY_T_NAMES, 1, o.nnames, &o.names); store_writer_add_section_buf(w, SY_T_DOCS, 1, ndocs, &o.docs);
     store_writer_add_section_buf(w, SY_T_SYMS, 1, o.nsyms, &o.syms); store_writer_add_section_buf(w, SY_T_REFS, 1, o.nrefs, &o.refs);
     store_writer_add_section_buf(w, SY_T_BYDEF, 1, o.nsyms, &o.bydef); store_writer_add_section_buf(w, SY_T_BYREF, 1, o.nrefs, &o.byref);
     store_writer_add_section_buf(w, SY_T_IVAL, 1, o.nsyms, &o.ival);
 }
 static void coder_sym_hook(StoreScanOpts *o, const char *proj) {
-    memset(&g_sy, 0, sizeof g_sy);
-    if (!realpath(proj, g_sy.root)) snprintf(g_sy.root, sizeof g_sy.root, "%s", proj);
-    g_sy.prev_doc = o->doc_fn; g_sy.prev_commit = o->commit_fn; o->doc_fn = sy_doc_hook; o->commit_fn = sy_commit_hook;
+    SyHook *h = (SyHook *)calloc(1, sizeof *h);
+    if (!realpath(proj, h->root)) snprintf(h->root, sizeof h->root, "%s", proj);
+    h->prev_doc = o->doc_fn; h->prev_commit = o->commit_fn; h->prev_ctx = o->hook_ctx;
+    o->hook_ctx = h; o->doc_fn = sy_doc_hook; o->commit_fn = sy_commit_hook;
 }
-static void coder_sym_hook_done(char *out, size_t cap) {
-    out[0] = 0;
-    if (g_sy.nfiles) snprintf(out, cap, "%u arquivos com simbolos, %u simbolos, %u referencias, analise %.3f s; secoes novas: nomes %llu B, documentos %llu B, simbolos %llu B, referencias %llu B, def %llu B, ref %llu B, intervalos %llu B",
-        g_sy.nfiles, g_sy.nsyms, g_sy.nrefs, g_sy.secs, (unsigned long long)g_sy.bytes[0], (unsigned long long)g_sy.bytes[1], (unsigned long long)g_sy.bytes[2], (unsigned long long)g_sy.bytes[3], (unsigned long long)g_sy.bytes[4], (unsigned long long)g_sy.bytes[5], (unsigned long long)g_sy.bytes[6]);
-    for (uint32_t i = 0; i < g_sy.cap; i++) { coder_file_free(&g_sy.d[i].cf); free(g_sy.d[i].s); free(g_sy.d[i].r); free(g_sy.d[i].k); }
-    free(g_sy.d); g_sy.d = NULL; g_sy.cap = g_sy.nd = 0;
+static void coder_sym_hook_done(StoreScanOpts *o, char *out, size_t cap) {
+    SyHook *h = (SyHook *)o->hook_ctx; out[0] = 0;
+    if (!h) return;
+    if (h->nfiles) snprintf(out, cap, "%u arquivos com simbolos, %u simbolos, %u referencias, analise %.3f s; secoes novas: nomes %llu B, documentos %llu B, simbolos %llu B, referencias %llu B, def %llu B, ref %llu B, intervalos %llu B",
+        h->nfiles, h->nsyms, h->nrefs, h->secs, (unsigned long long)h->bytes[0], (unsigned long long)h->bytes[1], (unsigned long long)h->bytes[2], (unsigned long long)h->bytes[3], (unsigned long long)h->bytes[4], (unsigned long long)h->bytes[5], (unsigned long long)h->bytes[6]);
+    for (uint32_t i = 0; i < h->cap; i++) { coder_file_free(&h->d[i].cf); free(h->d[i].s); free(h->d[i].r); free(h->d[i].k); }
+    free(h->d);
+    o->hook_ctx = h->prev_ctx; o->doc_fn = h->prev_doc; o->commit_fn = h->prev_commit; free(h);
 }
 
 /* ---- visao de uma secao de simbolos de um segmento ---- */
@@ -233,7 +261,7 @@ static int coder_key_verify_seg(const StoreSeg *s, char *err, size_t ecap) {
         if (no) { if (o0 != eo) { snprintf(err, ecap, "chaves: documento %u fora da sequencia", i); return -1; } }
         if ((uint64_t)o0 + no > x.occ.n) { snprintf(err, ecap, "chaves: documento %u fora dos limites", i); return -1; }
         for (uint32_t k = 0; k < no; k++) { const uint8_t *y = store_table_at(&x.occ, o0 + k); uint32_t pk = st_get_u32(y + 4);
-            if (st_get_u32(y) >= x.names.n || st_get_u32(y + 12) != i || (pk & 0xFF) < 1 || (pk & 0xFF) > 2 || ((pk >> 8) & 0xFF) >= CKC_N) { snprintf(err, ecap, "chaves: ocorrencia %u do documento %u invalida", k, i); return -1; } }
+            if (st_get_u32(y) >= x.names.n || st_get_u32(y + 12) != i || (pk & 0xFF) < 1 || ((pk >> 8) & 0xFF) > 0x3F) { snprintf(err, ecap, "chaves: ocorrencia %u do documento %u invalida", k, i); return -1; } }
         eo += no;
     }
     if (eo != x.occ.n) { snprintf(err, ecap, "chaves: ocorrencias sobrando"); return -1; }
@@ -333,7 +361,7 @@ static int ky_merge_names(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
         for (uint32_t i = 0; i < x.docs.n; i++) {
             uint32_t g = c->docmap[s][i]; if (g == UINT32_MAX) continue;
             const uint8_t *r = store_table_at(&x.docs, i); uint32_t o0 = st_get_u32(r), w1 = st_get_u32(r + 4), no = w1 & ~SY_KFLAG;
-            SyDIn *y = &nd[g]; y->kflag = (w1 & SY_KFLAG) != 0;
+            SyDIn *y = &nd[g]; y->kflag = (w1 & SY_KF1) != 0; y->kflag2 = (w1 & SY_KF2) != 0;
             if (!no) continue;
             y->k = (SyKIn *)calloc((size_t)no, sizeof(SyKIn)); y->nk = no;
             for (uint32_t k = 0; k < no; k++) { const uint8_t *q = store_table_at(&x.occ, o0 + k); SyKIn *z = &y->k[k]; z->name = store_strs_get(&x.names, st_get_u32(q), &z->nl); z->pack = st_get_u32(q + 4); z->line = st_get_u32(q + 8); }

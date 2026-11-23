@@ -57,6 +57,8 @@ typedef struct {
     size_t *ln; int nln;
     int *rh; int rhn; int nested; int rcap;
     const char *path; int ux0, ux1;     /* usados pelas linguagens de parse2.c */
+    const char *raw;                    /* texto original (com comentarios); so keys.c o usa, para o cabecalho de arquivo gerado */
+    char sel[160];                      /* seletor Objective-C em montagem (era static: a analise e reentrante, uma por thread) */
 } CP;
 
 /* linguagens acrescentadas depois: ver parse2.c (incluido logo depois deste arquivo) */
@@ -68,6 +70,7 @@ static void c2_parse_line(CP *c);
 static void c2_sweep_line(CP *c);
 static int c2_lang_of(const char *base, const char *ext);
 static void c2_enrich(CP *c);
+static int ck_json_is_contract(const char *t, size_t n);   /* keys.c: o texto de um .json e um contrato (OpenAPI, AsyncAPI, JSON Schema)? */
 static void ck_extract(CP *c);          /* keys.c: chaves de texto (incluido depois de parse2.c) */
 static void cp_blank(char *p, size_t a, size_t b) { if (b > a) for (size_t k = a; k < b; k++) if (p[k] != '\n' && p[k] != '\r') p[k] = ' '; }
 static int cp_idc(int c) { return isalnum(c) || c == '_' || c == '$' || (c & 0x80); }
@@ -1728,12 +1731,12 @@ static void cp_sweep(CP *c) {
 }
 
 /* ---------- pos-processamento: prototipos repetidos, receptor Go, ordenacao ---------- */
-static CoderSym *g_cp_sortsym;
+typedef struct { int i; size_t b0, b1; } CpOrd;      /* chave de ordenacao junto do indice: o comparador nao precisa de variavel global */
 static int cp_cmp(const void *x, const void *y) {
-    int a = *(const int *)x, b = *(const int *)y; const CoderSym *s = g_cp_sortsym;
-    if (s[a].byte0 != s[b].byte0) return s[a].byte0 < s[b].byte0 ? -1 : 1;
-    if (s[a].byte1 != s[b].byte1) return s[a].byte1 > s[b].byte1 ? -1 : 1;
-    return a - b;
+    const CpOrd *a = (const CpOrd *)x, *b = (const CpOrd *)y;
+    if (a->b0 != b->b0) return a->b0 < b->b0 ? -1 : 1;
+    if (a->b1 != b->b1) return a->b1 > b->b1 ? -1 : 1;
+    return a->i - b->i;
 }
 static void cp_post(CP *c) {
     CoderFile *f = c->f; int n = f->nsym; if (n == 0) return;
@@ -1755,10 +1758,10 @@ static void cp_post(CP *c) {
     if (c->lang == CL_GO) for (int s = 0; s < n; s++) if (c->sx[s]) for (int d = 0; d < n; d++) { int k = f->sym[d].kind; if ((k == CK_STRUCT || k == CK_IFACE || k == CK_TYPEDEF) && !strcmp(f->sym[d].name, c->sx[s])) { f->sym[s].parent = d; break; } }
     int sorted = 1; for (int s = 1; s < n; s++) if (f->sym[s].byte0 < f->sym[s - 1].byte0) { sorted = 0; break; }
     if (!sorted) {
-        int *ord = (int *)malloc(sizeof(int) * (size_t)n); for (int s = 0; s < n; s++) ord[s] = s;
-        g_cp_sortsym = f->sym; qsort(ord, (size_t)n, sizeof(int), cp_cmp);
+        CpOrd *ord = (CpOrd *)malloc(sizeof(CpOrd) * (size_t)n); for (int s = 0; s < n; s++) { ord[s].i = s; ord[s].b0 = f->sym[s].byte0; ord[s].b1 = f->sym[s].byte1; }
+        qsort(ord, (size_t)n, sizeof(CpOrd), cp_cmp);
         CoderSym *ns = (CoderSym *)malloc(sizeof(CoderSym) * (size_t)n); char **nx = (char **)malloc(sizeof(char *) * (size_t)n); unsigned char *nf = (unsigned char *)malloc((size_t)n);
-        for (int k = 0; k < n; k++) { map[ord[k]] = k; ns[k] = f->sym[ord[k]]; nx[k] = c->sx[ord[k]]; nf[k] = c->sfl[ord[k]]; }
+        for (int k = 0; k < n; k++) { map[ord[k].i] = k; ns[k] = f->sym[ord[k].i]; nx[k] = c->sx[ord[k].i]; nf[k] = c->sfl[ord[k].i]; }
         for (int k = 0; k < n; k++) if (ns[k].parent >= 0) ns[k].parent = map[ns[k].parent];
         for (int r = 0; r < f->nref; r++) if (f->ref[r].from >= 0) f->ref[r].from = map[f->ref[r].from];
         memcpy(f->sym, ns, sizeof(CoderSym) * (size_t)n); memcpy(c->sx, nx, sizeof(char *) * (size_t)n); memcpy(c->sfl, nf, (size_t)n);
@@ -1862,10 +1865,11 @@ static int coder_parse(const char *path, const char *text, size_t n, CoderFile *
     int L = coder_lang_of(path);
     if (L == CL_UNKNOWN) L = coder_lang_sniff(text, n);
     out->lang = L;
+    if (L == CL_CONFIG && n > 8 && n < 0xFFFFFFF0u && ck_json_is_contract(text, n)) L = out->lang = CL_JSON;      /* .json que e contrato: analisado como JSON (so as chaves de contrato) */
     if (L == CL_UNKNOWN || L == CL_CONFIG || n == 0 || n >= 0xFFFFFFF0u) return 0;
     if (L == CL_C) { size_t pl = strlen(path); if (pl > 2 && path[pl - 2] == '.' && (path[pl - 1] == 'h' || path[pl - 1] == 'H')) { size_t m = n < 65536 ? n : 65536; for (size_t k = 0; k + 8 < m; k++) if ((text[k] == 'c' && !strncmp(text + k, "class ", 6)) || !strncmp(text + k, "namespace ", 10) || !strncmp(text + k, "template<", 9) || !strncmp(text + k, "template <", 10)) { L = out->lang = CL_CPP; break; } } }
     CP c; memset(&c, 0, sizeof c);
-    c.lang = L; c.f = out; c.n = n; c.path = path;
+    c.lang = L; c.f = out; c.n = n; c.path = path; c.raw = text;
     char *cl = (char *)malloc(n + 1), *nc = (char *)malloc(n + 1);
     if (L == CL_MD) { memcpy(cl, text, n); memcpy(nc, text, n); } else if (c2_isline(L) || c2_istok(L)) c2_mask(L, text, n, cl, nc); else cp_mask(L, text, n, cl, nc);
     cl[n] = nc[n] = 0; c.c = cl; c.t = nc;
@@ -1897,8 +1901,9 @@ static const char *const CP_REFN[] = {"call", "use", "import", "extends", "imple
 _Static_assert(sizeof(CP_LANGN) / sizeof(CP_LANGN[0]) == CL_N, "CP_LANGN deve ter um nome por CoderLang");
 _Static_assert(sizeof(CP_KINDN) / sizeof(CP_KINDN[0]) == CK_N, "CP_KINDN deve ter um nome por CoderKind");
 typedef struct { int refs, json, nfiles, nsym, nref, keys; } CpOut;
-static const char *const CK_ROLEN[] = {"?", "produce", "consume"};
-static const char *const CK_CLSN[] = {"other", "msg", "event", "route", "env", "config", "cmd"};
+static const char *const CK_ROLEN[] = {"?", "produce", "consume", "define"};
+static const char *const CK_CLSN[] = {"other", "msg", "event", "route", "env", "config", "cmd", "contract"};
+static const char *const CK_SUBN[] = {"", "route", "rpc", "operation", "message", "schema", "enum", "file", "graphql"};
 static const char *const CK_METHN[] = {"", "GET", "POST", "PUT", "DELETE", "PATCH", "other"};
 static void cp_jstr(const char *s) {
     putchar('"');
@@ -1913,11 +1918,11 @@ static void cp_print(const char *path, const CoderFile *f, CpOut *o) {
         printf("],\"refs\":[");
         for (int i = 0; i < f->nref; i++) { const CoderRef *r = &f->ref[i]; printf("%s{\"from\":%d,\"kind\":\"%s\",\"name\":", i ? "," : "", r->from, CP_REFN[r->kind]); cp_jstr(r->name); printf(",\"line\":%d}", r->line); }
         printf("]");
-        if (o->keys) { printf(",\"keys\":["); for (int i = 0; i < f->nkey; i++) { const CoderKey *k = &f->key[i]; printf("%s{\"key\":", i ? "," : ""); cp_jstr(k->key); printf(",\"role\":\"%s\",\"class\":\"%s\",\"method\":\"%s\",\"line\":%d}", CK_ROLEN[k->role], CK_CLSN[k->cls], CK_METHN[k->meth], k->line); } printf("]"); }
+        if (o->keys) { printf(",\"keys\":["); for (int i = 0; i < f->nkey; i++) { const CoderKey *k = &f->key[i]; printf("%s{\"key\":", i ? "," : ""); cp_jstr(k->key); printf(",\"role\":\"%s\",\"class\":\"%s\",\"method\":\"%s\",\"line\":%d", CK_ROLEN[k->role], CK_CLSN[k->cls], CK_METHN[k->meth], k->line); if (k->sub) printf(",\"kind\":\"%s\"", CK_SUBN[k->sub]); printf("}"); } printf("]"); }
         printf("}\n"); return;
     }
     printf("%s  [%s]  %d symbols\n", path, CP_LANGN[f->lang], f->nsym);
-    if (o->keys) for (int i = 0; i < f->nkey; i++) { const CoderKey *k = &f->key[i]; printf("  key %-8s %-6s %s%s%s  line %d\n", CK_ROLEN[k->role], CK_CLSN[k->cls], k->key, k->meth ? " " : "", CK_METHN[k->meth], k->line); }
+    if (o->keys) for (int i = 0; i < f->nkey; i++) { const CoderKey *k = &f->key[i]; printf("  key %-8s %-6s %s%s%s  line %d%s%s\n", CK_ROLEN[k->role], CK_CLSN[k->cls], k->key, k->meth ? " " : "", CK_METHN[k->meth], k->line, k->sub ? "  kind " : "", CK_SUBN[k->sub]); }
     int *cnt = NULL, *idx = NULL;
     if (o->refs) {
         cnt = (int *)calloc((size_t)f->nsym + 2, sizeof(int)); idx = (int *)malloc(sizeof(int) * (size_t)(f->nref + 1));

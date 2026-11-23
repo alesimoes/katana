@@ -781,7 +781,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
                 QQuickItem *nt = nullptr;
                 for (QQuickItem *k : rows[0]->childItems()) if (k->objectName() == "actionNote") nt = k;
                 QQuickItem *oo = findItem(rows[0], "actionOutput");
-                check(nt && nt->isVisible() && nt->property("text").toString().contains("[katana:"), "notas do motor so no detalhe, esmaecidas");
+                check(nt && nt->isVisible() && nt->property("text").toString().contains("3 calls in a row failed") && !nt->property("text").toString().contains("[katana:"), "notas do motor so no detalhe, como legenda sem os colchetes");
                 check(oo && !oo->property("text").toString().contains("[katana:") && oo->property("text").toString().startsWith("error: cc"), "a saida da ferramenta nao traz as notas");
             }
             c.grab("32-plano-passo-aberto-escuro.png");
@@ -833,6 +833,81 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
             c.grab("35-plano-restaurado-claro.png");
             c.click(rsteps[1]);
         }
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
+    }
+
+    // ---- Find e Symbols: verbos, resumo dos argumentos, resultado destacado, notas do motor, estado do indice ----
+    fprintf(stderr, "-- Find, Symbols e estado do indice\n");
+    {
+        be.newChat();
+        QTest::qWait(300);
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
+        be.setIndexForTest(QString(), QString());
+        c.typeAndEnter("consulte o indice do projeto");
+        // o pedido dura mais de 3 s: a consulta ao `coder status` do motor de mentira acontece durante o trabalho (1a resposta: indexando 40%)
+        check(waitFor([&] { return be.indexText() == QStringLiteral("índice: indexando 40%"); }, 20000), "barra: indice indexando 40% enquanto o agente trabalha: " + be.indexText());
+        QQuickItem *ix = c.item("indexStatus");
+        check(ix && ix->isVisible() && ix->property("text").toString() == be.indexText(), "linha de estado do indice visivel na barra de baixo");
+        check(be.indexTip().contains("Arquivos: 31") && be.indexTip().contains("símbolos 40%") && be.indexTip().contains("Rastreador em execução")
+              && be.indexTip().contains("Ignorados por regra: 0"), "resumo do indice (arquivos, niveis, ignorados): " + be.indexTip().replace('\n', '|'));
+        check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["text"].toString().startsWith("Consultei o indice"); }, 60000), "pedido do indice terminou");
+        check(waitFor([&] { return be.indexText() == QStringLiteral("índice: pronto"); }, 15000), "ao terminar, uma ultima consulta: indice pronto: " + be.indexText());
+        QTest::qWait(300);
+
+        QList<QQuickItem *> rows;
+        findAll(c.root(), "actionRow", rows);
+        QStringList titles;
+        QQuickItem *rFind = nullptr, *rFindNf = nullptr, *rSym = nullptr, *rSymNf = nullptr;
+        for (QQuickItem *r : rows) {
+            const QString t = r->property("title").toString();
+            titles << t;
+            if (t == "Procurando no projeto: ct_sb_puts") rFind = r;
+            else if (t.startsWith("Procurando no projeto: \"zzqqnotthere\"")) rFindNf = r;
+            else if (t == "Consultando os símbolos: callers ct_sb_puts") rSym = r;
+            else if (t == "Consultando os símbolos: def nonexistent_fn em tools/glob.c") rSymNf = r;
+        }
+        check(rFind && rFindNf && rSym && rSymNf, "verbos e resumos de Find e Symbols: " + titles.join(" | "));
+        check(titles.contains("Procurando no projeto: \"zzqqnotthere\" (refs)"), "Find mostra a consulta e o modo");
+        check(titles.contains("Consultando os símbolos: flow ct_glob"), "Symbols flow: verbo e acao + nome");
+        check(titles.contains("Renomeando símbolo: ct_glob -> ct_globber"), "Rename: verbo e resumo de -> para");
+        QQuickItem *grp = findItem(c.root(), "activityGroup");
+        check(grp != nullptr, "grupo de acoes na conversa");
+        if (grp) { grp->setProperty("userSet", true); grp->setProperty("userVal", true); }
+        for (QQuickItem *r : {rFind, rFindNf, rSym, rSymNf}) if (r) { r->setProperty("userSet", true); r->setProperty("userVal", true); }
+        QTest::qWait(500);
+        auto outHtml = [&](QQuickItem *r) { QQuickItem *o = r ? findItem(r, "actionOutput") : nullptr; return o ? o->property("text").toString() : QString(); };
+        auto outPlain = [&](QQuickItem *r) { return r ? r->property("outText").toString() : QString(); };
+        check(outPlain(rFind).startsWith("Found by name or text") && outPlain(rFind).contains("[confidence high]") && outPlain(rFind).contains("called by: ct_glob")
+              && outPlain(rFind).contains("links:"), "Find: resultado inteiro no cartao (confidence, called by, calls, links)");
+        const QString hFind = outHtml(rFind), hSym = outHtml(rSym), hNf = outHtml(rFindNf), hSymNf = outHtml(rSymNf);
+        check(hFind.contains("<html", Qt::CaseInsensitive) && hFind.contains("[confidence high]") && hFind.contains("called by:") && hFind.contains("font-weight"),
+              "Find: texto em formato rico com destaques");
+        check(hFind.count("color:#") > hSym.count("color:#") - 100 && hFind.count("color:#") >= 5, QString("Find: trechos coloridos (%1)").arg(hFind.count("color:#")));
+        check(hSym.contains("[confidence 96 high; same name, 1 definition; line verified]"), "Symbols: [confidence N level; como foi achado] destacado inteiro");
+        check(hNf.contains("NOT FOUND") && hNf.count("color:#") >= 1 && hSymNf.contains("NOT FOUND") && hSymNf.count("color:#") >= 1, "NOT FOUND colorido (Find e Symbols)");
+        // o vermelho do tema (Theme.err) aparece no NOT FOUND; o verde-agua do tema (Theme.ty) no confidence high
+        check(hNf.contains("#f2928b") && hFind.contains("#6fd1c2"), "cores do tema escuro: erro e confidence high");
+        check(!outPlain(rSymNf).contains("[katana:") && outPlain(rSymNf).startsWith("NOT FOUND"), "nota do motor fora da saida de Symbols");
+        QQuickItem *nt = findItem(rSymNf, "actionNote");
+        check(nt && nt->isVisible() && nt->property("text").toString().startsWith("nota do motor") && nt->property("maximumLineCount").toInt() == 1,
+              "nota longa: legenda discreta recolhida em uma linha");
+        c.grab("40-find-symbols-escuro.png");
+        if (nt) {
+            c.click(nt);
+            QTest::qWait(200);
+            check(nt->property("maximumLineCount").toInt() > 1, "clicar na nota longa mostra tudo");
+            c.grab("41-nota-do-motor-aberta-escuro.png");
+            c.click(nt);
+            check(nt->property("maximumLineCount").toInt() == 1, "clicar de novo recolhe");
+        }
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("claro"))));
+        QTest::qWait(400);
+        check(outHtml(rFindNf).contains("#b3261e") && outHtml(rFind).contains("#00796b"), "cores do tema claro: erro e confidence high");
+        c.grab("42-find-symbols-claro.png");
+        QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("ide"))));
+        QTest::qWait(400);
+        check(outHtml(rFindNf).contains("#f48771") && outHtml(rFind).contains("#4ec9b0"), "cores do tema IDE: erro e confidence high");
+        c.grab("43-find-symbols-ide.png");
         QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
     }
 

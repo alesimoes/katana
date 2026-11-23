@@ -2234,7 +2234,8 @@ keys as entities" idea of sections 2 and 12, built as a separate, additive layer
 `keys`: a text, a role, a class, an HTTP method (routes only) and a line. Roles: PRODUCE (sends, emits, publishes, writes, defines, calls the
 route) and CONSUME (handles, receives, reads, registers the route). Classes: `msg` (value of a discriminator field: `type`, `kind`, `event`,
 `action`, `cmd`, `op`, `method`, `topic`...), `event` (`emit/on/subscribe/publish/addEventListener`, Kafka/Rabbit listeners), `route`, `env`,
-`config`, `cmd` (subcommands), `other` (a comparison or `case` with no known field).
+`config`, `cmd` (subcommands), `other` (a comparison or `case` with no known field) and `contract` (see "Contracts as a third side" below). A third role, DEFINE,
+belongs to contract files: the contract defines the key and the code produces or consumes it.
 
 | Class | PRODUCE | CONSUME |
 |---|---|---|
@@ -2250,9 +2251,43 @@ HTTP verb or JSON-schema word (`string`, `object`...), and generic words (`type`
 field. Routes are normalized: scheme, host and port are dropped (`ws://127.0.0.1:${PORT}/channel` -> `/channel`), query strings are cut,
 parameters (`:id`, `{id}`, `${x}`) end the path (`/users/:id` -> `/users`), and system paths (`/usr`, `/etc`...) are rejected. At most 600 keys per file.
 
+**Contracts as a third side (role DEFINE, class `contract`).** Contract files are a source of keys too, so a link is no longer only "same literal in two files": the contract
+that defines the key is shown as the third side (`contract: openapi.yaml:42 POST /v1/orders`). The extractor (`src/coder/keys.c`, block "CONTRATOS") only fires for files it
+recognises as contracts, by extension or by content (`openapi:`/`swagger:`/`asyncapi:`, `$schema`/`$id`, `syntax = "proto`, a `type Query`-style block); it keeps going past
+malformed input (truncated files, unterminated strings, junk bytes), reads at most 6 MB per file, 40000 structure events and 5000 keys per file, and aborts a string over 4000 bytes.
+Each contract key has a sub-kind (stored with the key, shown before the key text):
+
+| Source | Keys it defines (DEFINE) | Code that links to it |
+|---|---|---|
+| OpenAPI 3 / Swagger 2 (yaml, json) | route per method (`POST /v1/orders`, the same normalised key as `app.post('/v1/orders')`; `servers[0].url` and `basePath` give a second key with the prefix), `operationId` (plus camelCase and snake_case variants), `components.schemas` and `definitions` names, `discriminator.mapping` values | PRODUCE/CONSUME of the same route (method must agree), generated client functions named like the operationId (CONSUME), calls by that name |
+| AsyncAPI 2 / 3 | channel names and `address`, `operationId` / `operations` ids, message names (`components.messages`, `message.name`, `messageId`) | `emit/publish/subscribe/on` of the same literal |
+| Protocol Buffers | `service`/`rpc` as the gRPC path `/pkg.Service/Method` (and `Service/Method`), `option (google.api.http)` routes with their method, rpc names (and lowerCamel/snake variants), `message` names (and `pkg.Name`), `import` of another `.proto` | the gRPC path literal in Go/Python/JS/Kotlin clients (`Invoke(ctx, "/pkg.Svc/Method")`, grpc-web), generated stubs (functions named like the rpc), `stub.createOrder(...)` calls |
+| GraphQL (`.graphql`, `.gql`, `.graphqls`) | every field of `Query`, `Mutation`, `Subscription` (and `extend type`, and the names given in `schema { query: ... }`) as `Query.orders` | client operations: the root fields of `query`/`mutation`/`subscription` documents in `.graphql` files and in strings or `gql`/`graphql` templates of any language, as CONSUME `Query.orders` |
+| JSON Schema | `$id` (and its file name), `definitions`/`$defs` names, the top-level `title` when it is one word | `$ref` to another file (CONSUME of the file name) |
+| Typed declarations | the string values of a named enum or literal union: TypeScript `enum`, `type X = "a" \| "b"`, `{ type: "a" }` object unions and `interface { type: "a" }`; Python `class X(str, Enum)` and `Literal[...]`; Go `const X EventType = "a"`. Only when the type name says "discriminator" (`Type`, `Kind`, `Event`, `Action`, `Message`, `Command`, `Topic`...) or the value looks composite (`order.created`) | the same text as a `msg` key (`m.type === "order.created"`, `{ type: "order.created" }`) |
+| Contract file name | every contract defines its own file name (`orders.proto`, `plan.schema.json`) | a string literal naming it (`loadSync('orders.proto')`, `load_schema("plan.schema.json")`) is a CONSUME of it |
+
+A file is "generated" (path under `generated/`, `gen/`, `__generated__/`; `.pb.go`, `_pb2.py`, `_grpc.pb.go`, `_pb.js`...; or a header saying `Code generated`, `@generated`,
+`openapi-generator`, `DO NOT EDIT`) and then every function and method name in it becomes a CONSUME of the same operation name. Calls by name from hand-written code
+(`stub.createOrder(...)`) and functions or methods with the operation name (the Go server `func (s *srv) CreateOrder`) are found at query time in the call and symbol indexes and shown as
+`operation (call by name)` and `operation (function by name)`, at lower confidence. A contract file never counts as a file that
+uses the key (it is not a producer or consumer), and the old rule that a `/path:` line in YAML is a consumed route is switched off for files recognised as contracts.
+
+**Confidence of a contract link** (`fl_pair_contract` in `flow.c`): base 56; route: +16 when the code key is a route (parameters `{id}` and `:id` end the path on both sides), +12 when
+the HTTP method is the same and -25 when it differs, -6 when the code uses the text as a plain key; operation name: +10 for a generated client function, -16 more for a call by
+name; message, enum value and channel name: +14 for a `msg`/`event` key; schema name: -4 and -6 more for plain text; file name and GraphQL field: +26 for the matching kind; any
+other class mismatch is -12 to -30; rare key (<= 2 files) +8, <= 4 +4, common key -1 per file above 8; short plain key -8. When a contract backs a producer -> consumer link
+(compatible method), that link gets +6 and shows `contract: file:line label`.
+
 **Storage.** Four sections in the 0x200 band, written for every parsed document next to the symbol sections and rebuilt by their own compaction mergers:
 `0x207` key names (sorted strings, binary search), `0x208` per-document table (`occ0`, `nocc | 0x80000000`: the high bit means "analysed for keys", so a store
-built before keys existed is detected per file), `0x209` occurrences (width 16: key id, `role | class<<8 | method<<16`, line, document) and `0x20A` key-to-occurrence pairs sorted by key id.
+built before keys existed is detected per file), `0x209` occurrences (width 16: key id, `role | class<<8 | method<<16 | sub<<24`, line, document) and `0x20A` key-to-occurrence pairs sorted by key id.
+Role 3 is DEFINE, class 7 is `contract`, `sub` is the contract sub-kind (1 route, 2 rpc, 3 operation, 4 message, 5 schema, 6 enum value, 7 file, 8 graphql field). The
+layout did not change, so the section version stays 1: a store built before contracts opens normally (the new fields read as zero), the reader ignores a role or class it does not
+know instead of failing, and `verify` only refuses role 0 or a class above 0x3F. The high bit of `nocc` in `0x208` still means "analysed for keys"; bit 30 now also means
+"analysed by the contract extractor", so a contract indexed before it existed is detected per file: the `flow` limits line says how many contract-like files predate it and to
+delete the store folder and run `katana coder index` again (a file that is merely changed gets the new keys by itself, and compaction keeps both bits). A store written by this
+version is not readable by an older build (the older `verify` reports the occurrence count of those documents as out of bounds).
 `katana coder verify` checks order, bounds and cross-references. A store without the sections opens normally; `flow` answers
 "the index has no text-key sections ... delete <dir> and run `katana coder index` again", and a store where only some files predate keys prints how many.
 
@@ -2263,13 +2298,23 @@ A link has `confidence` 0-100, `level` and `how`: 60 for the same literal in dif
 for a common one, class bonus (env +14, msg/event/route +8, config +4, other -8), route method match +10 or mismatch -25, short plain keys -6, composite keys (`_ . /`) +4,
 many sender x handler files -3 each (max -12), consumer file that also defines the key itself -10 (env/config -30), same file -20, rereading both lines +4 (a changed file -25).
 With no consumer the answer is "Nobody handles it in the indexed set", with no producer "Nobody sends it", always with the number of files analysed and the limits below.
+With contracts, `flow <key>` adds the sections `CONTRACT (defines the key)` and `CONTRACT LINKS contract -> code`, items have kind `define` and `clink` in the JSON, and the item name
+starts with the sub-kind (`route: POST /v1/orders`, `operation: createOrder`, `graphql field: Query.orders`, `enum value: order.created`); `flow <contract file>` lists what the file `DEFINES`
+and who uses each key (a name that is both a file and a key is read as the file when the key exists only as a contract file name); `flow --links` adds contract -> code edges.
 `Symbols action=flow` exposes it to the agent (brief text, `Next: Read <consumer range>`). `Find` prints, for each of its first three code results and the symbol that
 contains the best line, `called by:`, `calls:` (callers and callees from the symbol index, same file or not, by confidence, up to 3, `(+N)`) and `links:` (the
 key links of that symbol); without an index it keeps the old `calls:` line.
 
 **Limits (what it does not see).** A key built at run time (concatenation, a template with a variable in the middle, a name read from configuration), dispatch
-maps (`{ register: fn }`), destructured env (`const { A } = process.env`), reflection, protocol buffers and generated code, strings in languages with no scanner (Clojure, Haskell, Fortran...),
-and anything in another repository. Two unrelated systems that happen to use the same word are linked (the confidence falls with the number of files using the key but never reaches zero);
+maps (`{ register: fn }`), destructured env (`const { A } = process.env`), reflection, strings in languages with no scanner (Clojure, Haskell, Fortran...),
+and anything in another repository. Contract-specific limits: a route with a parameter collapses onto its prefix (`/orders/{id}` and `/orders` are the same key with the same method, on both sides, so `GET /orders/{id}` is
+matched with a handler of `GET /orders`); a server prefix that is not in the contract (a gateway) or a `servers` entry after the first is not applied; OpenAPI `$ref` between files
+links only the file name, not the schema inside it; schema and message names are common words and score low; `oneOf` discriminators are only read through `discriminator.mapping`;
+GraphQL fragments and variables are skipped, a client document assembled at run time is not seen, and a `schema { query: X }` block after the types is not applied; proto
+`extend`, `oneof` and nested service options other than `google.api.http` are ignored, and Thrift (`.thrift`) is not treated as a contract; typed enums are read for TypeScript,
+Python and Go only (not Kotlin, Java, Rust or C#); a call by name needs the operation name to be 5 letters or more and finds only 12 files; a name used by a generated client in another
+language convention (Python `snake_case`, Java `camelCase`) is covered by the case variants only.
+Two unrelated systems that happen to use the same word are linked (the confidence falls with the number of files using the key but never reaches zero);
 shell variables defined in sourced files are matched by name only. Comparisons with no known field (`class other`) are the noisiest class and score lowest.
 
 ## 13. Open decisions

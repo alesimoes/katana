@@ -16,8 +16,13 @@
  * Retomada sem arquivo de fila: no inicio as pastas (STS_DIRS) e os documentos vigentes dizem o que falta; matar o processo perde no maximo o lote.
  *
  * Decisoes do implementador (o documento deixava abertas; a mais simples que cumpre o criterio de pronto):
- *   - uma thread so (fase 5 acrescenta o pool); lote = ate 4096 arquivos, 16 MiB lidos ou 1 s de leitura; o lock de escrita do store fica tomado
- *     durante o lote inteiro (nao so no commit) e solto entre lotes; `compact` e `verify` entram entre lotes (compact recebe "busy").
+ *   - lote = ate 4096 arquivos e 16 MiB de fonte (KATANA_INDEX_BATCH_MB), escolhidos pelo tamanho do catalogo (sem relogio: a composicao do lote nao depende
+ *     da velocidade); o lock de escrita do store fica tomado durante o lote inteiro (nao so no commit) e solto entre lotes; `compact` e `verify` entram
+ *     entre lotes (compact recebe "busy").
+ *   - FASE 5, analise em paralelo: KATANA_INDEX_THREADS (padrao min(4, cpus-1), 1 com uma cpu so) threads leem e analisam os arquivos de um lote (texto do N1;
+ *     simbolos, referencias e chaves do N2/N3), cada uma com o seu contexto (CsAn, buffer de leitura; o analisador nao tem estado global). UMA thread, a do
+ *     rastreador, funde os resultados na ordem dos documentos e e a unica que toca o escritor do store; o conteudo do indice e o mesmo do caminho de uma
+ *     thread (com 1 nao nasce thread nenhuma). Prioridade baixa (nice + ioprio ocioso) vale tambem para as threads: nascem depois e herdam.
  *   - nivel do documento na faixa 0..4; N2 e N3 gravam o mesmo valor (4). "Completo" = 4 ou 0 (registros do caminho sincrono).
  *   - fronteira, filas e ordem por banda sao recalculadas do store a cada lote (vivos + STS_DIRS); nada em disco alem do proprio store.
  *   - bandas: 0 quente; 1 codigo recente (30 dias), da raiz ou sob src/lib/app/cmd/pkg/include/internal, README e KATANA.md; 2 outro codigo; 3 doc e
@@ -27,10 +32,13 @@
  *     (KATANA_INDEX_MAX_FILES, 500000) e de arquivos com texto (KATANA_INDEX_MAX_TEXT_FILES, 200000), binario, grande e ilegivel. Deteccao de gerado
  *     e minificado existe mas fica DESLIGADA (KATANA_INDEX_GENERATED=1 liga): muda o que a busca acha em relacao ao caminho sincrono.
  *   - pastas ignoradas sao registradas em STS_DIRS com o motivo e a regra (arquivo da regra misturado: .gitignore e .katanaignore aparecem como
- *     "regra de ignorar"), nao contadas; arquivos ignorados so entram na contagem da pasta. Nao feitos: passada de contagem, `overrides`,
- *     inclusao com escopo, tabela de segredos, STS_RULES, deteccao de ponto de montagem (a varredura sincrona tambem nao tem), N4.
- *   - mesma varredura do caminho sincrono (st_scan_walk): mesmas listas de pastas pesadas, regras, heuristica de ref/models e raizes aninhadas; o
- *     conjunto de arquivos catalogado e o mesmo. Link simbolico para pasta vira `link` no N0 (nao e seguido).
+ *     "regra de ignorar"), nao contadas; arquivos ignorados so entram na contagem da pasta. Nao feitos: STS_RULES, deteccao de ponto de montagem (a varredura
+ *     sincrona tambem nao tem), N4.
+ *   - a decisao de ignorar e a da varredura sincrona, a MESMA funcao (st_scan_decide, storedocs.c): overrides (`katana coder include/exclude`), .katanaignore,
+ *     .gitignore, lista interna unica de ignore.c, segredos por nome (SDF_SKIP_SECRET) e por conteudo (ign_secret_sniff), include sob pasta interna (modo
+ *     passagem), raizes aninhadas. O rastreador so guarda a pilha de regras por pasta e o modo de cada pasta; ao comecar (e quando o arquivo `overrides` ou
+ *     um .gitignore muda) confere de novo as pastas ja conhecidas (cw_revalidate) e a pasta que passou a ser ignorada perde os arquivos catalogados.
+ *     Link simbolico para pasta vira `link` no N0 (nao e seguido).
  *   - socket: PING, PRIO, TOUCH, SWEEP, SYNC, STATUS, STOP (uma linha, uma resposta). O arquivo de estado e ~/.katana/run/coder-<chave>.state. */
 #ifndef _WIN32
 #include <poll.h>
@@ -40,8 +48,8 @@
 
 enum { CW_DISC = 0, CW_LISTED, CW_IGNORED, CW_NESTED, CW_LINK, CW_TOODEEP, CW_TOOMANY, CW_UNREAD, CW_GONE, CW_CHECKOUT, CW_NSTATE };
 static const char *const g_cw_state[CW_NSTATE] = {"discovered", "listed", "ignored", "nested-root", "link", "too-deep", "too-many-entries", "unreadable", "gone", "separate-checkout"};
-enum { CWR_NONE = 0, CWR_RULE, CWR_HEAVY, CWR_HEAVY_DEFAULT, CWR_NESTED, CWR_CHECKOUT, CWR_BIGDIR, CWR_LINK, CWR_DEPTH, CWR_FANOUT, CWR_UNREAD, CWR_NREASON };
-static const char *const g_cw_reason[CWR_NREASON] = {"-", "ignore rule", "built-in heavy folder", "default heavy folder (no .gitignore)", "has its own index", "separate git checkout", "huge folder not covered by .gitignore", "symbolic link", "deeper than the depth limit", "more than 20000 entries", "unreadable"};
+enum { CWR_NONE = 0, CWR_RULE, CWR_HEAVY, CWR_HEAVY_DEFAULT, CWR_NESTED, CWR_CHECKOUT, CWR_BIGDIR, CWR_LINK, CWR_DEPTH, CWR_FANOUT, CWR_UNREAD, CWR_GITIGNORE, CWR_KATANAIGNORE, CWR_EXCLUDED, CWR_SECRET, CWR_NREASON };
+static const char *const g_cw_reason[CWR_NREASON] = {"-", "ignore rule", "built-in heavy folder", "default heavy folder (no .gitignore)", "has its own index", "separate git checkout", "huge folder not covered by .gitignore", "symbolic link", "deeper than the depth limit", "more than 20000 entries", "unreadable", "gitignore", "katanaignore", "excluded with katana coder exclude", "secret folder"};
 #define CW_N0 1u            /* valores do campo de nivel (SDF_LVMASK >> 8) */
 #define CW_N1 2u
 #define CW_FULL 4u
@@ -49,15 +57,20 @@ static const char *const g_cw_reason[CWR_NREASON] = {"-", "ignore rule", "built-
 #define CW_BATCH_FILES 4096
 #define CW_BATCH_BYTES (16u << 20)
 #define CW_FANOUT 20000
+#define CW_MAXTHR 16
 
 typedef struct {
     char *path, *rule, *doc, *langs; uint32_t plen, depth, state, reason, nfiles, ndirs, nignored, band; int64_t mtime;
     int parent, rs_ok, dirty, prev_listed; unsigned seen; StoreRuleSet rs;
+    int mode, pass_reason, mode_ok; char *pass_why;       /* modo da pasta para a decisao de ignorar (0 normal, 1 passagem, 2 forcado): ver st_scan_decide */
 } CwDir;
-typedef struct { StoreDoc d; uint8_t *body; size_t n; int skipped_hook; } CwItem;
+/* um arquivo de um lote: o registro, e o que as threads de analise produzem (so a thread dona do indice liga isso ao escritor) */
+typedef struct { StoreDoc d; int nodata; int ok; CsDocRes cs; SyDIn sy; int has_sy; } CwItem;
+typedef struct { CsAn *an; uint8_t *buf; } CwWorker;
 typedef struct {
     char root[4096], dir[4400], key[40], statepath[1200], sockpath[1200]; size_t rlen; uint32_t maxsz;
-    CwDir *d; int nd, cap; int *tab; uint32_t tabn; int has_gitignore, nheavy;
+    CwDir *d; int nd, cap; int *tab; uint32_t tabn; IgnOvr ovr; int ovr_ok; int64_t ovr_mt, ovr_sz;
+    int threads; uint64_t batch_bytes; CwWorker wk[CW_MAXTHR];
     char **hot; int nhot, caphot; char **chg; int nchg, capchg; int sweep, stop, quiet, cmp_needed, bootstrap;
     unsigned listing; uint64_t epoch; double t0, t_state; int lockfd, sockfd;
     uint32_t maxdepth; uint64_t maxfiles, maxtext; int generated; char limit[120];
@@ -154,43 +167,62 @@ static uint32_t cw_band(const char *path, uint32_t pl, uint64_t size, int64_t mt
     return 3;
 }
 
-/* ---------- regras de ignorar por pasta (as mesmas de st_scan_walk, em cache por pasta) ---------- */
+/* ---------- regras de ignorar por pasta: a pilha de .gitignore/.katanaignore em cache por pasta e a decisao de storedocs.c (st_scan_decide) ---------- */
+static void cw_rules_drop(CwDir *D) {
+    if (!D->rs_ok) return;
+    for (int i = 0; i < D->rs.n; i++) { free(D->rs.r[i].pat); free(D->rs.r[i].orig); }
+    free(D->rs.r); memset(&D->rs, 0, sizeof D->rs); D->rs_ok = 0;
+}
 static StoreRuleSet *cw_rules(int di) {
     CwDir *D = &g_cw.d[di];
     if (!D->rs_ok) {
         D->rs_ok = 1; memset(&D->rs, 0, sizeof D->rs);
         char a[4300], f[4400]; cw_abs(D, a, sizeof a); D->rs.base = strlen(a);
         snprintf(f, sizeof f, "%s/.gitignore", a); st_rules_load(&D->rs, f);
-        if (di == 0) {
-            g_cw.has_gitignore = D->rs.n > 0;
-            if (!g_cw.has_gitignore) {
-                static const char *const hv[] = {"ref", "models", "modelos", ".claude", "node_modules", "build", "dist", "target", "__pycache__", ".venv", "venv", ".cache", NULL};
-                for (int i = 0; hv[i]; i++) { char l[64]; snprintf(l, sizeof l, "/%s/", hv[i]); st_rules_add(&D->rs, l, strlen(l)); }
-                g_cw.nheavy = D->rs.n;
-            }
-        }
         snprintf(f, sizeof f, "%s/.katanaignore", a); st_rules_load(&D->rs, f);
     }
     return D->rs.n ? &D->rs : NULL;
 }
+static void cw_stack(int di, StoreScan *S);
+/* modo da pasta (0 normal, 1 passagem, 2 forcado): a listagem do pai o grava; depois de retomar do store recalcula pela decisao do pai */
+static void cw_mode_of(int di) {
+    CwDir *D = &g_cw.d[di]; if (D->mode_ok) return;
+    D->mode_ok = 1; D->mode = 0; D->pass_reason = 0; free(D->pass_why); D->pass_why = NULL;
+    if (di == 0 || D->parent < 0) return;
+    const int pi = D->parent; cw_mode_of(pi);
+    StoreScan S; cw_stack(pi, &S);
+    char full[4400]; cw_abs(&g_cw.d[di], full, sizeof full);
+    const char *nm = strrchr(g_cw.d[di].path, '/'); nm = nm ? nm + 1 : g_cw.d[di].path;
+    int nmode = 0, reason = 0; char rule[420];
+    st_scan_decide(&S, full, g_cw.rlen + 1, nm, 1, &nmode, &reason, rule, sizeof rule);
+    D = &g_cw.d[di]; D->mode = nmode;
+    if (nmode == 1) { D->pass_reason = S.pass_reason; D->pass_why = strdup(S.pass_why); }
+}
 static void cw_stack(int di, StoreScan *S) {
     int chain[80]; int n = 0;
+    cw_mode_of(di);
     for (int x = di; x >= 0 && n < 80; x = g_cw.d[x].parent) chain[n++] = x;
     memset(S, 0, sizeof *S);
     for (int i = n - 1; i >= 0; i--) { StoreRuleSet *R = cw_rules(chain[i]); if (R && S->nrs < ST_MAXRS) S->rs[S->nrs++] = *R; }
-    S->has_gitignore = g_cw.has_gitignore;
+    const CwDir *D = &g_cw.d[di];
+    S->ovr = g_cw.ovr_ok ? &g_cw.ovr : NULL; S->mode = D->mode; S->pass_reason = D->pass_reason;
+    if (D->pass_why) snprintf(S->pass_why, sizeof S->pass_why, "%s", D->pass_why);
 }
-/* 1 = ignorado (com o padrao em *pat e se e da lista padrao em *heavy), 0 = reincluido ou sem regra */
-static int cw_ignored(const StoreScan *S, const char *path, const char *nm, int isdir, const char **pat, int *heavy) {
-    for (int i = S->nrs - 1; i >= 0; i--) {
-        const StoreRuleSet *R = &S->rs[i]; const char *rel = path + R->base + 1;
-        for (int k = R->n - 1; k >= 0; k--) {
-            const StoreRule *x = &R->r[k];
-            if (x->dironly && !isdir) continue;
-            if (st_glob(x->pat, x->anchored ? rel : nm)) { if (x->neg) return 0; *pat = x->pat; *heavy = (i == 0 && !g_cw.has_gitignore && k < g_cw.nheavy); return 1; }
-        }
-    }
-    return 0;
+/* esquece regras e modos em cache (um .gitignore/.katanaignore ou o arquivo overrides mudou) */
+static void cw_rules_reset(void) { for (int i = 0; i < g_cw.nd; i++) { cw_rules_drop(&g_cw.d[i]); g_cw.d[i].mode_ok = 0; } }
+static uint32_t cw_reason_of(int igr) {
+    switch (igr) { case IGR_GITIGNORE: return CWR_GITIGNORE; case IGR_KATANAIGNORE: return CWR_KATANAIGNORE; case IGR_HEAVY: return CWR_HEAVY; case IGR_EXCLUDED: return CWR_EXCLUDED;
+        case IGR_SECRET: return CWR_SECRET; case IGR_NESTED: return CWR_NESTED; case IGR_CHECKOUT: return CWR_CHECKOUT; default: return CWR_RULE; }
+}
+static int cw_blocked(uint32_t st) { return st == CW_IGNORED || st == CW_NESTED || st == CW_CHECKOUT || st == CW_TOODEEP || st == CW_GONE; }
+/* le o arquivo de overrides (ao lado do store); devolve 1 se mudou desde a ultima leitura */
+static int cw_ovr_check(int force) {
+    char f[4600]; ign_ovr_path(g_cw.dir, f, sizeof f); struct stat st; int64_t mt = 0, sz = -1;
+    if (stat(f, &st) == 0) { mt = (int64_t)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec; sz = (int64_t)st.st_size; }
+    if (!force && g_cw.ovr_ok && mt == g_cw.ovr_mt && sz == g_cw.ovr_sz) return 0;
+    if (g_cw.ovr_ok) ign_ovr_free(&g_cw.ovr);
+    ign_ovr_load(&g_cw.ovr, g_cw.dir); g_cw.ovr_ok = 1; g_cw.ovr_mt = mt; g_cw.ovr_sz = sz;
+    cw_rules_reset(); return 1;
 }
 
 /* ---------- listagem de uma pasta ---------- */
@@ -207,6 +239,7 @@ static int cw_cmp_doc(const void *a, const void *b) { const StoreDoc *x = (const
 static int cw_cmp_strp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
 static void cw_out_free(CwOut *O) { for (int i = 0; i < O->n; i++) free((void *)O->d[i].path); free(O->d); for (int i = 0; i < O->nt; i++) free(O->tomb[i]); free(O->tomb); memset(O, 0, sizeof *O); }
 static void cw_mark_gone(int di, CwOut *O, StoreLiveDoc **lv, int nlv);
+static void cw_drop_below(int di, CwOut *O, StoreLiveDoc **lv, int nlv);
 /* primeira linha util de README/KATANA.md/index.md, ate 160 bytes */
 static char *cw_doc_line(const char *abs) {
     FILE *f = fopen(abs, "rb"); if (!f) return NULL;
@@ -255,24 +288,27 @@ static void cw_list_dir(int di, CwOut *O, StoreLive *L, StoreLiveDoc **lv, int n
             continue;
         }
         if (!isd && !S_ISREG(st.st_mode)) continue;
-        if (isd) {
-            uint32_t state = CW_DISC, reason = CWR_NONE; const char *rule = NULL; char rb[200];
-            const char *pat = NULL; int heavy = 0;
-            if (st_ignored_dir(nm)) { state = CW_IGNORED; reason = CWR_HEAVY; snprintf(rb, sizeof rb, "built-in heavy folder \"%s\"", nm); rule = rb; }
-            else if (S.nrs && cw_ignored(&S, full, nm, 1, &pat, &heavy)) { state = CW_IGNORED; reason = heavy ? CWR_HEAVY_DEFAULT : CWR_RULE; snprintf(rb, sizeof rb, "\"%.150s\"", pat); rule = rb; }
-            else if (di == 0 && g_cw.has_gitignore && (!strcmp(nm, "ref") || !strcmp(nm, "models")) && ({ char tmp[4400]; snprintf(tmp, sizeof tmp, "%s", full); st_count_files_capped(tmp, strlen(tmp), 5000) > 5000; })) { state = CW_IGNORED; reason = CWR_BIGDIR; rule = "more than 5000 files"; }
-            else if (rt_skip_subdir(full)) { if (rt_has_marker(full)) { state = CW_NESTED; reason = CWR_NESTED; rule = "katana init in this folder"; } else { state = CW_CHECKOUT; reason = CWR_CHECKOUT; rule = "linked git worktree"; } }
+        {   /* a decisao de ignorar e a da varredura sincrona (st_scan_decide): overrides, .katanaignore, .gitignore, lista interna, segredos, raiz aninhada */
+            int nmode = 0, ir = 0; char rr[420];
+            const int ign = st_scan_decide(&S, full, g_cw.rlen + 1, nm, isd, &nmode, &ir, rr, sizeof rr);
+            if (ign == 2) continue;                         /* .git e afins: nem entram nem contam */
+            if (!isd) { if (ign) { nign++; continue; } goto file_entry; }
+            uint32_t state = CW_DISC, reason = CWR_NONE; const char *rule = NULL;
+            if (ign) { state = ir == IGR_NESTED ? CW_NESTED : ir == IGR_CHECKOUT ? CW_CHECKOUT : CW_IGNORED; reason = cw_reason_of(ir); rule = rr; }
             else if (D->depth + 1 > g_cw.maxdepth) { state = CW_TOODEEP; reason = CWR_DEPTH; }
             int c = cw_dir_find(rel, rl); const int isnew = c < 0;
             if (isnew) { c = cw_dir_add(rel, rl, di, state); D = &g_cw.d[di]; }
             CwDir *C = &g_cw.d[c]; C->seen = lid; C->parent = di;
-            const int blocked = C->state == CW_IGNORED || C->state == CW_NESTED || C->state == CW_CHECKOUT || C->state == CW_TOODEEP || C->state == CW_GONE;
-            if (isnew || (state != CW_DISC && C->state != state) || (state == CW_DISC && blocked)) {
+            if (!ign) { C->mode = nmode; C->mode_ok = 1; free(C->pass_why); C->pass_why = nmode == 1 ? strdup(S.pass_why) : NULL; C->pass_reason = nmode == 1 ? S.pass_reason : 0; }
+            const int was_blocked = cw_blocked(C->state);
+            if (isnew || (state != CW_DISC && C->state != state) || (state == CW_DISC && was_blocked)) {
+                const int now_blocked = state == CW_IGNORED || state == CW_NESTED || state == CW_CHECKOUT;
+                if (!isnew && now_blocked && !was_blocked) cw_drop_below(c, O, lv, nlv);         /* passou a ser ignorada: o que ja estava catalogado dentro dela sai */
                 C->state = state; C->reason = reason; free(C->rule); C->rule = rule ? strdup(rule) : NULL; C->dirty = 1; }
             if (state == CW_DISC) ndirs++;
             continue;
         }
-        { const char *pat = NULL; int heavy = 0; if (S.nrs && cw_ignored(&S, full, nm, 0, &pat, &heavy)) { nign++; continue; } }
+        file_entry:;
         nfiles++;
         if (nn == capn) { capn = capn ? capn * 2 : 64; names = (char **)realloc(names, sizeof(char *) * (size_t)capn); }
         names[nn++] = cw_dup(rel, rl);
@@ -285,7 +321,7 @@ static void cw_list_dir(int di, CwOut *O, StoreLive *L, StoreLiveDoc **lv, int n
         if (g_cw.total + (uint64_t)O->n >= g_cw.maxfiles) { if (!g_cw.limit[0]) snprintf(g_cw.limit, sizeof g_cw.limit, "index limited to %llu files", (unsigned long long)g_cw.maxfiles); continue; }
         StoreDoc d; memset(&d, 0, sizeof d); d.plen = (uint32_t)rl; d.size = (uint64_t)st.st_size; d.mtime = mt;
         d.flags = CW_N0 << 8;
-        if (st_binary_ext(nm)) d.flags |= SDF_SKIP_BINARY; else if (d.size > g_cw.maxsz) d.flags |= SDF_SKIP_BIG;
+        if (ign_secret_name(rel)) d.flags |= SDF_SKIP_SECRET; else if (st_binary_ext(nm)) d.flags |= SDF_SKIP_BINARY; else if (d.size > g_cw.maxsz) d.flags |= SDF_SKIP_BIG;
         else if (g_cw.generated && cw_generated_name(nm)) d.flags |= SDF_GENERATED;       /* sem leitura; o N1 ainda indexa o caminho e o nome, como no caminho sincrono */
         cw_out_doc(O, &d, rel);
         if (relist && l && !l->dead) cw_hot_add(rel);              /* mudou depois de catalogado: faixa quente */
@@ -317,6 +353,14 @@ static void cw_list_dir(int di, CwOut *O, StoreLive *L, StoreLiveDoc **lv, int n
 static void cw_mark_gone(int di, CwOut *O, StoreLiveDoc **lv, int nlv) {
     const size_t pl = g_cw.d[di].plen; char *pre = cw_dup(g_cw.d[di].path, pl);
     for (int i = 0; i < g_cw.nd; i++) { CwDir *C = &g_cw.d[i]; if (C->state != CW_GONE && cw_under(C->path, C->plen, pre, pl)) { C->state = CW_GONE; C->dirty = 1; } }
+    if (nlv) { char p2[4200]; snprintf(p2, sizeof p2, "%s/", pre); size_t p2l = strlen(p2);
+        for (int i = cw_lower_bound(lv, nlv, p2, p2l); i < nlv; i++) { const StoreDoc *x = &lv[i]->d; if (x->plen < p2l || memcmp(x->path, p2, p2l) != 0) break; cw_out_tomb(O, x->path, x->plen); } }
+    free(pre);
+}
+/* a pasta passou a ser ignorada (override, regra): ela fica com o novo estado, o que esta dentro some (pastas `gone`, arquivos com tombstone) */
+static void cw_drop_below(int di, CwOut *O, StoreLiveDoc **lv, int nlv) {
+    const size_t pl = g_cw.d[di].plen; char *pre = cw_dup(g_cw.d[di].path, pl);
+    for (int i = 0; i < g_cw.nd; i++) { CwDir *C = &g_cw.d[i]; if (i != di && C->state != CW_GONE && C->plen > pl && cw_under(C->path, C->plen, pre, pl)) { C->state = CW_GONE; C->dirty = 1; } }
     if (nlv) { char p2[4200]; snprintf(p2, sizeof p2, "%s/", pre); size_t p2l = strlen(p2);
         for (int i = cw_lower_bound(lv, nlv, p2, p2l); i < nlv; i++) { const StoreDoc *x = &lv[i]->d; if (x->plen < p2l || memcmp(x->path, p2, p2l) != 0) break; cw_out_tomb(O, x->path, x->plen); } }
     free(pre);
@@ -508,47 +552,98 @@ static int cw_generated_body(const uint8_t *b, size_t n) {
     size_t lines = 1, mx = 0, cur = 0; for (size_t i = 0; i < n; i++) { if (b[i] == '\n') { lines++; if (cur > mx) mx = cur; cur = 0; } else cur++; } if (cur > mx) mx = cur;
     return mx > 20000 || (n > 4000 && n / lines > 500);
 }
-/* le os arquivos escolhidos (ate o lote encher), na ordem de prioridade; devolve os itens ordenados por caminho */
-static CwItem *cw_read_items(const CwCand *c, int nc, int maxfiles, uint8_t *buf, int *nout, int use_hash) {
-    CwItem *it = (CwItem *)calloc((size_t)(nc < maxfiles ? nc : maxfiles) + 1, sizeof *it); int n = 0; uint64_t bytes = 0; const double t0 = now_sec();
-    for (int i = 0; i < nc && n < maxfiles; i++) {
-        const StoreDoc *o = &c[i].e->d; CwItem *x = &it[n]; x->d = *o; x->d.path = cw_dup(o->path, o->plen);
-        if (o->flags & (SDF_SKIPMASK | SDF_GENERATED)) { x->d.flags = (o->flags & ~SDF_LVMASK) | (CW_FULL << 8); n++; continue; }       /* sem leitura: so caminho e nome vao para a busca */
-        char full[8400]; snprintf(full, sizeof full, "%s/%s", g_cw.root, x->d.path);
-        int64_t got = st_slurp(full, buf, g_cw.maxsz);
-        uint32_t flags = o->flags & ~SDF_LVMASK & ~SDF_GENERATED;
-        if (got < 0) flags |= SDF_SKIP_UNREADABLE | (CW_FULL << 8);
-        else { size_t chk = (size_t)got < 8000 ? (size_t)got : 8000;
-            if (memchr(buf, 0, chk)) flags |= SDF_SKIP_BINARY | (CW_FULL << 8);
-            else { x->d.hash = store_hash64(buf, (size_t)got, 1); x->d.size = (uint64_t)got; x->body = (uint8_t *)malloc((size_t)got + 1); memcpy(x->body, buf, (size_t)got); x->body[got] = 0; x->n = (size_t)got;
-                flags |= (use_hash ? CW_FULL : CW_N1) << 8;
-                if (g_cw.generated && cw_generated_body(buf, (size_t)got)) { flags |= SDF_GENERATED; flags = (flags & ~SDF_LVMASK) | (CW_FULL << 8); x->skipped_hook = 1; } } }
-        x->d.flags = flags; n++; bytes += o->size;
-        if (bytes >= CW_BATCH_BYTES || now_sec() - t0 > 1.0) break;
-    }
-    qsort(it, (size_t)n, sizeof *it, cw_cmp_doc);       /* StoreDoc e o primeiro campo de CwItem */
-    *nout = n; return it;
+/* ---------- pool de analise (fase 5) ---------- */
+typedef struct { void (*fn)(void *ctx, int i, CwWorker *wk); void *ctx; int n; int next; } CwJob;
+typedef struct { CwJob *j; CwWorker *wk; } CwWArg;
+static void *cw_worker_main(void *p) {
+    CwWArg *a = (CwWArg *)p;
+    for (;;) { const int i = __atomic_fetch_add(&a->j->next, 1, __ATOMIC_RELAXED); if (i >= a->j->n) break; a->j->fn(a->j->ctx, i, a->wk); }
+    return NULL;
 }
-static void cw_items_free(CwItem *it, int n) { for (int i = 0; i < n; i++) { free((void *)it[i].d.path); free(it[i].body); } free(it); }
+static void cw_worker_init(CwWorker *wk) {
+    if (!wk->an) wk->an = cs_an_new(cs_kb_limit());
+    if (!wk->buf) wk->buf = (uint8_t *)malloc((size_t)g_cw.maxsz + 1);
+}
+/* roda fn(ctx, i, worker) para i = 0..n-1 em g_cw.threads threads (a do rastreador entre elas); com 1 thread nao nasce nenhuma. Quem junta os resultados
+ * e a thread do rastreador, depois, na ordem de i: a ordem em que as threads terminam nao muda o indice. */
+static void cw_parallel(int n, void (*fn)(void *, int, CwWorker *), void *ctx) {
+    int t = g_cw.threads; if (t > n) t = n; if (t < 1) t = 1; if (t > CW_MAXTHR) t = CW_MAXTHR;
+    ct_init();                                    /* tabelas do tokenizador prontas antes de qualquer thread */
+    for (int w = 0; w < t; w++) cw_worker_init(&g_cw.wk[w]);
+    CwJob j = {fn, ctx, n, 0};
+    CwWArg a[CW_MAXTHR]; pthread_t th[CW_MAXTHR]; int started[CW_MAXTHR] = {0};
+    pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, (size_t)16 << 20);
+    for (int w = 1; w < t; w++) { a[w].j = &j; a[w].wk = &g_cw.wk[w]; if (pthread_create(&th[w], &at, cw_worker_main, &a[w]) == 0) started[w] = 1; }
+    a[0].j = &j; a[0].wk = &g_cw.wk[0]; cw_worker_main(&a[0]);       /* se alguma thread nao nasceu, as outras (e esta) dao conta: o contador e compartilhado */
+    for (int w = 1; w < t; w++) if (started[w]) pthread_join(th[w], NULL);
+    pthread_attr_destroy(&at);
+}
+static int cw_generated_body(const uint8_t *b, size_t n);
+typedef struct { CwItem *it; int full; } CwTextJob;
+/* uma thread: le o arquivo, decide o nivel (segredo, binario, ilegivel), calcula o hash e analisa (texto do N1; com `full` tambem simbolos e chaves) */
+static void cw_work_text(void *ctx, int i, CwWorker *wk) {
+    CwTextJob *J = (CwTextJob *)ctx; CwItem *x = &J->it[i]; const StoreDoc *o = &x->d; const uint8_t *data = NULL; size_t dn = 0;
+    uint32_t flags = o->flags & ~SDF_LVMASK & ~SDF_GENERATED; x->nodata = 1;
+    if (o->flags & (SDF_SKIPMASK | SDF_GENERATED)) { x->d.flags = (o->flags & ~SDF_LVMASK) | (CW_FULL << 8); }       /* sem leitura: so caminho e nome vao para a busca */
+    else {
+        char full[8400]; snprintf(full, sizeof full, "%s/%.*s", g_cw.root, (int)o->plen, o->path);
+        const int64_t got = st_slurp(full, wk->buf, g_cw.maxsz);
+        if (got < 0) flags |= SDF_SKIP_UNREADABLE | (CW_FULL << 8);
+        else if (ign_secret_sniff(wk->buf, (size_t)got)) flags |= SDF_SKIP_SECRET | (CW_FULL << 8);          /* chave privada reconhecida pelo conteudo: nunca indexada */
+        else { const size_t chk = (size_t)got < 8000 ? (size_t)got : 8000;
+            if (memchr(wk->buf, 0, chk)) flags |= SDF_SKIP_BINARY | (CW_FULL << 8);
+            else { x->d.hash = store_hash64(wk->buf, (size_t)got, 1); x->d.size = (uint64_t)got; data = wk->buf; dn = (size_t)got;
+                flags |= (J->full ? CW_FULL : CW_N1) << 8;
+                if (g_cw.generated && cw_generated_body(wk->buf, (size_t)got)) { flags |= SDF_GENERATED; flags = (flags & ~SDF_LVMASK) | (CW_FULL << 8); data = NULL; dn = 0; } } }
+        x->d.flags = flags;
+    }
+    x->nodata = data == NULL;
+    cs_an_doc(wk->an, &x->d, data, dn, &x->cs);
+    if (J->full && data && dn) { sy_analyze(g_cw.root, &x->d, data, dn, &x->sy); x->has_sy = 1; }
+}
 /* N1 (so texto) ou refazer por inteiro (texto + simbolos + chaves: faixa quente e restos) */
 static int cw_batch_text(StoreWriter *w, StoreLive *L, uint32_t from_lv, int hot_only, int full) {
     int nc; CwCand *c = cw_select(L, from_lv, hot_only, &nc);
     if (!nc) { free(c); return 0; }
     if (!hot_only && g_cw.maxtext && g_cw.n1 >= g_cw.maxtext) { if (!g_cw.limit[0]) snprintf(g_cw.limit, sizeof g_cw.limit, "text index limited to %llu files", (unsigned long long)g_cw.maxtext); free(c); return 0; }
-    uint8_t *buf = (uint8_t *)malloc((size_t)g_cw.maxsz + 1); int n;
-    CwItem *it = cw_read_items(c, nc, hot_only ? 512 : CW_BATCH_FILES, buf, &n, full); free(buf); free(c);
-    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); if (full) coder_sym_hook(&o, g_cw.root);
+    /* o lote: os primeiros da fila de prioridade ate os limites (arquivos, bytes do catalogo); depois por caminho, que e a ordem dos documentos do segmento */
+    const int maxfiles = hot_only ? 512 : CW_BATCH_FILES;
+    CwItem *it = (CwItem *)calloc((size_t)(nc < maxfiles ? nc : maxfiles) + 1, sizeof *it); int n = 0; uint64_t bytes = 0;
+    for (int i = 0; i < nc && n < maxfiles; i++) {
+        const StoreDoc *o = &c[i].e->d; it[n].d = *o; it[n].d.path = cw_dup(o->path, o->plen); n++;
+        if (!(o->flags & (SDF_SKIPMASK | SDF_GENERATED))) bytes += o->size;       /* so o que sera lido conta para o limite do lote */
+        if (bytes >= g_cw.batch_bytes) break;
+    }
+    free(c);
+    qsort(it, (size_t)n, sizeof *it, cw_cmp_doc);       /* StoreDoc e o primeiro campo de CwItem */
+    CwTextJob J = {it, full}; cw_parallel(n, cw_work_text, &J);
+    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); void *cs_ctx = o.hook_ctx; void *sy_ctx = NULL;
+    if (full) { coder_sym_hook(&o, g_cw.root); sy_ctx = o.hook_ctx; }
     StoreDoc *nd = (StoreDoc *)malloc(sizeof *nd * (size_t)n);
-    for (int i = 0; i < n; i++) { nd[i] = it[i].d; o.doc_fn(o.hook_ctx, (uint32_t)i, &it[i].d, it[i].skipped_hook ? NULL : it[i].body, it[i].skipped_hook ? 0 : it[i].n); }
+    for (int i = 0; i < n; i++) {         /* a fusao, uma thread, na ordem dos documentos */
+        nd[i] = it[i].d;
+        cs_ix_merge((CsIx *)cs_ctx, (uint32_t)i, &it[i].cs); cs_res_free(&it[i].cs);
+        if (full) sy_ingest((SyHook *)sy_ctx, (uint32_t)i, it[i].has_sy ? &it[i].sy : NULL);
+    }
     StoreBuf db = {0}; store_docs_build(&db, nd, (uint32_t)n); store_writer_add_section_buf(w, STS_DOCS, 1, (uint32_t)n, &db);
     o.commit_fn(o.hook_ctx, w, (uint32_t)n);
     for (int i = 0; i < n; i++) { if (!(it[i].d.flags & SDF_SKIPMASK) && !(it[i].d.flags & SDF_GENERATED)) { g_cw.n1++; if (full || sdf_lv(it[i].d.flags) == CW_FULL) g_cw.n2++; } }
     cw_commit_extras(w, NULL, 0, 0);
     char err[300] = "", si[400], yi[500]; int64_t gen = store_writer_commit(w, (uint32_t)n, err, sizeof err);
-    coder_search_hook_done(&o, si, sizeof si); if (full) coder_sym_hook_done(yi, sizeof yi);
-    free(nd); cw_items_free(it, n);
+    if (full) coder_sym_hook_done(&o, yi, sizeof yi);
+    coder_search_hook_done(&o, si, sizeof si);
+    free(nd); for (int i = 0; i < n; i++) free((void *)it[i].d.path); free(it);
     if (gen < 0) { fprintf(stderr, "crawl: %s\n", err); return -1; }
     return 1;
+}
+typedef struct { const StoreDoc *nd; CwItem *it; } CwAugJob;
+/* uma thread: relê o arquivo; se o hash ainda e o do N1, analisa simbolos e chaves; se mudou, o documento continua no N1 (a faixa dos restos o refaz) */
+static void cw_work_aug(void *ctx, int i, CwWorker *wk) {
+    CwAugJob *J = (CwAugJob *)ctx; const StoreDoc *d = &J->nd[i]; CwItem *x = &J->it[i];
+    if (d->flags & SDF_SKIPMASK) return;
+    char full[8400]; snprintf(full, sizeof full, "%s/%.*s", g_cw.root, (int)d->plen, d->path);
+    const int64_t got = st_slurp(full, wk->buf, g_cw.maxsz);
+    if (got >= 0 && store_hash64(wk->buf, (size_t)got, 1) == d->hash) { x->ok = 1; if (got > 0) { sy_analyze(g_cw.root, d, wk->buf, (size_t)got, &x->sy); x->has_sy = 1; } }
 }
 /* N2 e N3 por aumento de um segmento N1 limpo: busca copiada byte a byte + simbolos e chaves novos; o segmento antigo sai na mesma troca */
 static int cw_batch_aug(StoreWriter *w, StoreLive *L) {
@@ -569,29 +664,28 @@ static int cw_batch_aug(StoreWriter *w, StoreLive *L) {
     if (pick < 0) return 0;
     const StoreSeg *sg = &b->seg[pick]; StoreDocs dc; store_docs_open(store_seg_section(sg, STS_DOCS), &dc);
     const uint32_t n = dc.t.n; StoreDoc *nd = (StoreDoc *)malloc(sizeof *nd * (size_t)n);
+    for (uint32_t i = 0; i < n; i++) store_docs_get(&dc, i, &nd[i]);
+    CwItem *it = (CwItem *)calloc((size_t)n + 1, sizeof *it);
+    CwAugJob J = {nd, it}; cw_parallel((int)n, cw_work_aug, &J);
     StoreScanOpts o; memset(&o, 0, sizeof o); coder_sym_hook(&o, g_cw.root);
-    uint8_t *buf = (uint8_t *)malloc((size_t)g_cw.maxsz + 1); uint32_t stale = 0;
     for (uint32_t i = 0; i < n; i++) {
-        store_docs_get(&dc, i, &nd[i]); const StoreDoc *d = &nd[i];
-        if (d->flags & SDF_SKIPMASK) { o.doc_fn(NULL, i, d, NULL, 0); continue; }
-        char full[8400]; snprintf(full, sizeof full, "%s/%.*s", g_cw.root, (int)d->plen, d->path);
-        int64_t got = st_slurp(full, buf, g_cw.maxsz);
-        if (got >= 0 && store_hash64(buf, (size_t)got, 1) == d->hash) { o.doc_fn(NULL, i, d, buf, (size_t)got); nd[i].flags = (d->flags & ~SDF_LVMASK) | (CW_FULL << 8); g_cw.n2++; }
-        else { o.doc_fn(NULL, i, d, NULL, 0); stale++; }       /* mudou depois do N1: continua no N1 e a faixa dos restos o refaz */
+        sy_ingest((SyHook *)o.hook_ctx, i, it[i].has_sy ? &it[i].sy : NULL);
+        if (it[i].ok) { nd[i].flags = (nd[i].flags & ~SDF_LVMASK) | (CW_FULL << 8); g_cw.n2++; }
     }
-    free(buf);
+    free(it);
     StoreBuf db = {0}; store_docs_build(&db, nd, n); store_writer_add_section_buf(w, STS_DOCS, 1, n, &db);
     for (uint32_t i = 0; i < sg->nsec; i++) { const StoreSection *x = &sg->sec[i]; if (x->type == STS_DOCS || x->type == STS_CRAWL) continue; store_writer_add_section(w, x->type, x->version, x->nrec, x->data, (size_t)x->size); }
-    o.commit_fn(NULL, w, n);
+    o.commit_fn(o.hook_ctx, w, n);
     cw_commit_extras(w, NULL, 0, 0);
     store_writer_drop(w, sg->id);
     char err[300] = "", yi[500]; int64_t gen = store_writer_commit(w, n, err, sizeof err);
-    coder_sym_hook_done(yi, sizeof yi); free(nd);
+    coder_sym_hook_done(&o, yi, sizeof yi); free(nd);
     if (gen < 0) { fprintf(stderr, "crawl: %s\n", err); return -1; }
     return 1;
 }
 /* compacta a cauda quando passou de `limit` segmentos (mesma regra por camadas do coder index) */
 static void cw_compact(StoreWriter *w, int limit) {
+    if (getenv("KATANA_INDEX_TRACE")) fprintf(stderr, "crawl: compactacao: %d segmentos, limite %d\n", w->base->nseg, limit);
     if (w->base->nseg <= limit) return;
     int from = w->base->nseg - 1; uint64_t sum = w->base->seg[from].size;
     while (from > 0 && (sum * 2 >= w->base->seg[from - 1].size || w->base->nseg - from < 2)) { from--; sum += w->base->seg[from].size; }
@@ -599,22 +693,50 @@ static void cw_compact(StoreWriter *w, int limit) {
 }
 
 /* ---------- pedidos de mudanca (--changed, TOUCH, SWEEP) ---------- */
+static const char *sl_base(const char *p) { const char *s2 = strrchr(p, '/'); return s2 ? s2 + 1 : p; }
 static void cw_relist_subtree(int di) {
     const size_t pl = g_cw.d[di].plen; char *pre = cw_dup(g_cw.d[di].path, pl);
     for (int i = 0; i < g_cw.nd; i++) { CwDir *C = &g_cw.d[i]; if (C->state != CW_GONE && (di == 0 || cw_under(C->path, C->plen, pre, pl)) && (C->state == CW_LISTED || C->state == CW_TOOMANY || C->state == CW_UNREAD || C->state == CW_DISC)) { C->state = CW_DISC; C->prev_listed = 1; } }
     free(pre);
 }
+static void cw_revalidate(void);
 static void cw_apply_changes(void) {
-    if (g_cw.sweep) { g_cw.sweep = 0; cw_relist_subtree(0); g_cw.cmp_needed = 1; }
+    if (g_cw.sweep) { g_cw.sweep = 0; cw_rules_reset(); cw_ovr_check(1); cw_relist_subtree(0); g_cw.cmp_needed = 1; }
+    else if (cw_ovr_check(0)) { cw_revalidate(); g_cw.cmp_needed = 1; }          /* `katana coder include/exclude` mexeu no arquivo overrides */
     for (int k = 0; k < g_cw.nchg; k++) {
         const char *rel = g_cw.chg[k]; size_t rl = strlen(rel); char a[4400]; snprintf(a, sizeof a, "%s%s%s", g_cw.root, rl ? "/" : "", rel);
         struct stat st; const int isdir = stat(a, &st) == 0 && S_ISDIR(st.st_mode);
         if (isdir) { int di = cw_dir_find(rel, rl); if (di >= 0) { cw_relist_subtree(di); } else { const char *sl = (const char *)cw_memrchr(rel, '/', rl); int pi = cw_dir_find(rel, sl ? (size_t)(sl - rel) : 0); if (pi >= 0 && g_cw.d[pi].state == CW_LISTED) { g_cw.d[pi].state = CW_DISC; g_cw.d[pi].prev_listed = 1; } } }
         else { const char *sl = (const char *)cw_memrchr(rel, '/', rl); int pi = cw_dir_find(rel, sl ? (size_t)(sl - rel) : 0); if (pi >= 0 && (g_cw.d[pi].state == CW_LISTED || g_cw.d[pi].state == CW_TOOMANY)) { g_cw.d[pi].state = CW_DISC; g_cw.d[pi].prev_listed = 1; } }
+        { const char *bn = sl_base(rel); if (!strcmp(bn, ".gitignore") || !strcmp(bn, ".katanaignore")) {       /* as regras valem para baixo: relista a pasta do arquivo e tudo abaixo */
+            const char *sl2 = (const char *)cw_memrchr(rel, '/', rl); const size_t dl = sl2 ? (size_t)(sl2 - rel) : 0; int pi2 = cw_dir_find(rel, dl); cw_rules_reset();
+            if (pi2 >= 0) { cw_relist_subtree(pi2); if (g_cw.d[pi2].state == CW_LISTED) { g_cw.d[pi2].state = CW_DISC; g_cw.d[pi2].prev_listed = 1; } cw_revalidate(); } } }
         cw_hot_add(rel); free(g_cw.chg[k]);
     }
     if (g_cw.nchg) g_cw.cmp_needed = 1;
     g_cw.nchg = 0;
+}
+
+/* Confere as pastas ja conhecidas contra a decisao de hoje (overrides, .gitignore, .katanaignore mudaram, ou o rastreador acabou de retomar do store): a pasta
+ * cujo estado nao bate (listada e agora ignorada, ou ignorada e agora reincluida) faz a pasta PAI ser listada de novo; e a listagem do pai que aplica a mudanca
+ * (cw_list_dir: novo estado, pastas de dentro `gone`, tombstones). So decide, nao le diretorio. */
+static int cw_cmp_depth(const void *a, const void *b) { const CwDir *x = &g_cw.d[*(const int *)a], *y = &g_cw.d[*(const int *)b]; return x->depth != y->depth ? (x->depth < y->depth ? -1 : 1) : *(const int *)a - *(const int *)b; }
+static void cw_revalidate(void) {
+    int *ord = (int *)malloc(sizeof(int) * (size_t)(g_cw.nd + 1)); int n = 0;
+    for (int i = 1; i < g_cw.nd; i++) ord[n++] = i;
+    qsort(ord, (size_t)n, sizeof *ord, cw_cmp_depth);
+    for (int k = 0; k < n; k++) {
+        const int di = ord[k]; CwDir *D = &g_cw.d[di]; const int pi = D->parent;
+        if (pi < 0 || D->plen == 0 || D->state == CW_GONE || D->state == CW_LINK || D->state == CW_TOODEEP) continue;
+        const CwDir *P = &g_cw.d[pi]; if (cw_blocked(P->state)) continue;
+        StoreScan S; cw_stack(pi, &S);
+        char full[4400]; cw_abs(D, full, sizeof full); const char *nm = sl_base(D->path);
+        int nmode = 0, ir = 0; char rr[420];
+        const int ign = st_scan_decide(&S, full, g_cw.rlen + 1, nm, 1, &nmode, &ir, rr, sizeof rr);
+        const int want_blocked = ign != 0, is_blocked = D->state == CW_IGNORED || D->state == CW_NESTED || D->state == CW_CHECKOUT;
+        if (want_blocked != is_blocked) { CwDir *Q = &g_cw.d[pi]; if (Q->state == CW_LISTED || Q->state == CW_TOOMANY || Q->state == CW_UNREAD) { Q->state = CW_DISC; Q->prev_listed = 1; } g_cw.cmp_needed = 1; }
+    }
+    free(ord);
 }
 
 /* ---------- socket ---------- */
@@ -761,7 +883,10 @@ static int coder_crawl_main(int argc, char **argv) {
       g_cw.maxsz = 2u << 20; g_cw.maxdepth = (uint32_t)cw_env_int("KATANA_INDEX_MAX_DEPTH", 32);
       g_cw.maxfiles = (e = getenv("KATANA_INDEX_MAX_FILES")) && *e ? strtoull(e, NULL, 10) : 500000ull;
       g_cw.maxtext = (e = getenv("KATANA_INDEX_MAX_TEXT_FILES")) && *e ? strtoull(e, NULL, 10) : 200000ull;
-      g_cw.generated = cw_env_int("KATANA_INDEX_GENERATED", 0); }
+      g_cw.generated = cw_env_int("KATANA_INDEX_GENERATED", 0);
+      { const long nc = sysconf(_SC_NPROCESSORS_ONLN); int dflt = nc > 1 ? (int)(nc - 1) : 1; if (dflt > 4) dflt = 4;
+        g_cw.threads = cw_env_int("KATANA_INDEX_THREADS", dflt); if (g_cw.threads < 1) g_cw.threads = 1; if (g_cw.threads > CW_MAXTHR) g_cw.threads = CW_MAXTHR; }
+      { const int mb = cw_env_int("KATANA_INDEX_BATCH_MB", 16); g_cw.batch_bytes = (uint64_t)(mb > 0 ? mb : 16) << 20; } }
     const int settle = cw_env_int("KATANA_INDEX_SETTLE_MS", 2000);
     store_catalog_init(); maint_on_crawl_start();
     snprintf(g_cw.activity, sizeof g_cw.activity, "starting");
@@ -771,6 +896,8 @@ static int coder_crawl_main(int argc, char **argv) {
     g_cw.epoch++;
     if (g_cw.nd == 0 || g_cw.d[0].plen != 0) { int z = cw_dir_find("", 0); if (z < 0) { cw_dir_add("", 0, -1, CW_DISC); } }
     g_cw.cmp_needed = g_cw.bootstrap;
+    cw_ovr_check(1);
+    if (g_cw.bootstrap) cw_revalidate();         /* uma regra pode ter mudado desde a ultima rodada */
     cw_say("[index %s: crawling]\n", g_cw.root);
     int rc = 0, compacted_n0 = 0;
     for (;;) {
@@ -793,6 +920,7 @@ static int coder_crawl_main(int argc, char **argv) {
             if (!did) { snprintf(g_cw.activity, sizeof g_cw.activity, "N2 symbols and N3 links"); did = cw_batch_aug(w, &L); }
             if (!did) { snprintf(g_cw.activity, sizeof g_cw.activity, "N2 symbols and N3 links (rebuild)"); did = cw_batch_text(w, &L, 0, 0, 1); }
         }
+        if (getenv("KATANA_INDEX_TRACE")) fprintf(stderr, "crawl: %s did=%d frontier=%u gen=%llu nseg=%d\n", g_cw.activity, did, g_cw.frontier, (unsigned long long)g_cw.gen, w->base->nseg);
         if (did < 0) { store_live_free(&L); store_writer_end(w); rc = 1; break; }
         if (did) {
             store_live_free(&L); g_cw.nseg = w->base->nseg; g_cw.gen = w->base->gen;
@@ -875,6 +1003,7 @@ static void crawl_status_print(StoreReader *r, const IndexLoc *loc, const char *
         if (np > 14) printf("    (+%d partes)\n", np - 14);
     }
     if (have) printf("  ultimo lote do rastreador: epoca %llu, %s%s%s\n", (unsigned long long)ep, (fl & 1) ? "todos os niveis completos" : "em andamento", lim[0] ? "; limite: " : "", lim);
+    watch_status_print(loc->root);
     long pid = 0; const int run = cw_is_running(dir, &pid);
     printf("rastreador: %s\n", run ? "em execucao (CRAWL.LOCK tomado)" : "nao esta rodando");
     { char h[1000]; agent_home(h, sizeof h); char sp[1300]; snprintf(sp, sizeof sp, "%s/.katana/run/coder-%016llx.state", h, (unsigned long long)store_hash64(loc->root, strlen(loc->root), 0));

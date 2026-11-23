@@ -98,6 +98,7 @@
 #include "agent/brief.c"               /* formato brief do KATANA.md: lint, never/ask impostos, nota de fim de pedido */
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
 #include "coder/store.c"             /* armazenamento generico: segmentos imutaveis, manifesto, escritor unico (sem tipos de codigo) */
+#include "coder/ignore.c"           /* coder: o que o indice deixa de fora e por que (lista interna unica, segredos, overrides) */
 #include "coder/storedocs.c"         /* catalogo generico de documentos, atualizacao incremental, index/status/verify/compact */
 #include "coder/watch.c"             /* coder: vigia de arquivos da sessao (STUB, fase 4) */
 #include "coder/fresh.c"             /* coder: confere arquivo citado contra o catalogo (STUB, fase 4) */
@@ -112,6 +113,7 @@
 #include "coder/keys.c"              /* coder: chaves de texto (ligacoes por texto igual: eventos, rotas, ambiente, mensagens) */
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
+#include "agent/memory.c"            /* memoria: remember, recall, memory_search, katana memory (usa o tokenizador) */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
 #include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
 #include "coder/flow.c"              /* coder: ligacoes por chave de texto (katana coder flow) */

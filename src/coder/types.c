@@ -28,9 +28,12 @@ typedef struct { const char *path; int line, col; } CoderLoc;
 /* campos novos: guard/nguard; errors = quantas vezes o analisador perdeu o nivel e se recuperou (0 = arquivo analisado inteiro) */
 /* chave de texto (keys.c): literal que liga arquivos por TEXTO IGUAL. role: PRODUCE envia/emite/escreve/define/chama; CONSUME recebe/trata/le/registra.
    cls: tipo da chave; meth: metodo HTTP (so para rotas; 0 = qualquer ou nao se aplica) */
-enum { CKR_PRODUCE = 1, CKR_CONSUME = 2 };
-enum { CKC_OTHER = 0, CKC_MSG, CKC_EVENT, CKC_ROUTE, CKC_ENV, CKC_CONFIG, CKC_CMD, CKC_N };
+/* CKR_DEFINE: o CONTRATO define a chave (OpenAPI, AsyncAPI, .proto, GraphQL, JSON Schema, enum/union tipado); CKC_CONTRACT: classe das chaves de contrato (o papel DEFINE e o consumo de
+   nome de operacao/arquivo de contrato por cliente gerado); sub = CKS_* (subtipo da chave de contrato, so para CKC_CONTRACT; zero nas demais classes) */
+enum { CKR_PRODUCE = 1, CKR_CONSUME = 2, CKR_DEFINE = 3 };
+enum { CKC_OTHER = 0, CKC_MSG, CKC_EVENT, CKC_ROUTE, CKC_ENV, CKC_CONFIG, CKC_CMD, CKC_CONTRACT, CKC_N };
+enum { CKS_NONE = 0, CKS_ROUTE, CKS_RPC, CKS_OP, CKS_MSG, CKS_SCHEMA, CKS_ENUM, CKS_FILE, CKS_GQL, CKS_N };
 enum { CKM_NONE = 0, CKM_GET, CKM_POST, CKM_PUT, CKM_DELETE, CKM_PATCH, CKM_OTHER, CKM_N };
-typedef struct { char *key; int line, role, cls, meth, col; } CoderKey;
+typedef struct { char *key; int line, role, cls, meth, col, sub; } CoderKey;
 /* campos novos: guard/nguard; errors = quantas vezes o analisador perdeu o nivel e se recuperou (0 = arquivo analisado inteiro); key/nkey = chaves de texto (keys.c) */
 typedef struct { int lang; CoderSym *sym; int nsym; CoderRef *ref; int nref; CoderGuard *guard; int nguard; int errors; CoderKey *key; int nkey; } CoderFile;

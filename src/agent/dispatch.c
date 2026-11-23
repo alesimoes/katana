@@ -15,6 +15,7 @@ static void ui_toolout(const char *name, const char *res) {
     }
     putchar('\n'); fflush(stdout);
 }
+static char g_sess_path[1024];          /* definido em loop.c (definicao provisoria: o mesmo objeto) */
 static void tool_delegate(const char *js, const char *end, char *out, size_t cap);
 static int ct_dispatch(const char *name, const char *js, const char *end, char *out, size_t cap);      /* src/tools/table.c */
 static int ct_readonly(const char *name);
@@ -25,6 +26,34 @@ static void ct_mail_register(void);
 static void ct_mail_unregister(void);
 static char g_ct_handback[4000];        /* src/tools/messages.c: relatorio entregue por SubagentHandback */
 static int g_ct_handback_set;
+static int brief_guard_subject(int bash, const char *subj, char *out, size_t cap);
+/* Conjunto antigo (run_command, write_file, edit_file...): passa pelas mesmas regras never/ask do KATANA.md que Bash, Write e Edit.
+ * O mapeamento serve so para a guarda (o modelo ve os mesmos nomes e o mesmo resultado de antes): run_command e terminal(send)
+ * valem como Bash; write_file, edit_file e download_file como Write/Edit (o caminho gravado); git e install_package como Bash.
+ * 1 = recusado (out recebe o motivo). */
+static int old_guard(const char *name, const char *js, const char *end, char *out, size_t cap) {
+    static char subj[8300], extra[600];
+    int bash = 0;
+    subj[0] = 0;
+    if (strcmp(name, "run_command") == 0) { bash = 1; json_str(js, end, "command", subj, sizeof subj); }
+    else if (strcmp(name, "write_file") == 0 || strcmp(name, "edit_file") == 0) json_str(js, end, "path", subj, sizeof subj);
+    else if (strcmp(name, "download_file") == 0) json_str(js, end, "path", subj, sizeof subj);
+    else if (strcmp(name, "terminal") == 0) {
+        char act[32] = "";
+        json_str(js, end, "action", act, sizeof act);
+        if (strcmp(act, "send") != 0 && strcmp(act, "write") != 0 && strcmp(act, "input") != 0 && !json_has(js, end, "text")) return 0;
+        bash = 1; json_str(js, end, "text", subj, sizeof subj);
+    } else if (strcmp(name, "git") == 0) {
+        bash = 1; json_str(js, end, "args", extra, sizeof extra);
+        snprintf(subj, sizeof subj, "git %s", extra);
+    } else if (strcmp(name, "install_package") == 0) {
+        char mg[64] = "";
+        bash = 1; json_str(js, end, "manager", mg, sizeof mg); json_str(js, end, "name", extra, sizeof extra);
+        snprintf(subj, sizeof subj, "%s install %s", mg, extra);
+    } else return 0;
+    if (!subj[0]) return 0;
+    return brief_guard_subject(bash, subj, out, cap);
+}
 static void agent_tool_run(const char *name, const char *js, const char *end, char *out, size_t cap) {
     static char arg[8192], content[65536];
     out[0] = 0;
@@ -34,6 +63,7 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
         return;
     }
     if (g_plan_mode && !plan_allows(name, js, end)) { snprintf(out, cap, "%s", PLAN_DENY); return; }
+    if (old_guard(name, js, end, out, cap)) return;      /* never/ask do KATANA.md tambem pelo nome antigo */
     if (strcmp(name, "read_file") == 0) {
         tool_read_file(js, end, out, cap);
     } else if (strcmp(name, "list_dir") == 0) {
@@ -198,6 +228,8 @@ static void agent_tool(const char *name, const char *js, const char *end, char *
     if (!launch_tool_allowed(name)) { snprintf(out, cap, "error: the tool %s is not allowed in this run (--allowed-tools / --disallowed-tools). Use one of the tools you were given, or tell the user what you could not do.", name); return; }
     snprintf(g_chn_tool, sizeof g_chn_tool, "%s", name);
     g_vis.npend = 0;
+    g_alog_t0 = alog_now(); g_alog_req = g_undo_req;
+    { const char *sb = strrchr(g_sess_path, '/'); snprintf(g_alog_sess, sizeof g_alog_sess, "%s", g_sess_path[0] ? (sb ? sb + 1 : g_sess_path) : ""); }
     agent_tool_run(name, js, end, out, cap);
     notes_neutralize(name, out, cap);      /* o que vem de fora (shell, web, MCP) nao pode imitar uma nota do katana */
     char a[8192];

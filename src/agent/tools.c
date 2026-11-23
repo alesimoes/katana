@@ -144,9 +144,94 @@ static void agent_home(char *out, size_t cap) {
     snprintf(out, cap, "%s", h && *h ? h : ".");
 }
 
-/* registro de acoes: ~/.katana/agente.log (KATANA_LOG muda o caminho); uma linha: data, ferramenta, argumentos, resultado */
+/* registro de acoes: ~/.katana/agente.log (KATANA_LOG muda o caminho); uma linha: data, ferramenta, argumentos, resultado.
+ * Argumentos ate 2000 e resultado ate 1000 caracteres; o que passa disso e cortado e termina em "...[+N]" (N = o que faltou).
+ * Os leitores antigos (katana agentlog, learn, export, dashboard, desktop) continuam lendo o mesmo formato de linha.
+ * Segunda saida opcional (KATANA_LOG_JSON=1): ~/.katana/agente.jsonl (ao lado do KATANA_LOG, se este existir), uma linha JSON por
+ * chamada, com os argumentos e o resultado ate 16 KB, duracao, codigo de saida/erro e o pedido/sessao; modo 0600; passa para
+ * agente.jsonl.1 ao chegar a 64 MB. */
+#define ALOG_ARGS 2000
+#define ALOG_RES 1000
+#define ALOG_JMAX 16384
+#define ALOG_JROT (64LL * 1024 * 1024)
+static double g_alog_t0;                  /* inicio da chamada (monotonico, segundos); 0 = sem medida (posto por dispatch.c) */
+static int g_alog_req = -1;               /* numero do pedido (g_undo_req) */
+static char g_alog_sess[256];             /* nome da sessao gravada, se houver */
+static double alog_now(void) {
+#ifdef _WIN32
+    return (double)GetTickCount64() / 1000.0;
+#else
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+#endif
+}
+/* copia ate cap-1 bytes de src trocando quebras e tabulacoes por espaco; devolve quantos bytes de src ficaram de fora */
+static size_t alog_flat(const char *src, size_t srclen, char *dst, size_t cap) {
+    size_t n = 0, i = 0;
+    for (; i < srclen && n < cap - 1; i++) { const char c = src[i]; dst[n++] = (c == '\n' || c == '\r' || c == '\t') ? ' ' : c; }
+    dst[n] = 0;
+    return srclen - i;
+}
+static void alog_mark(char *dst, size_t cap, size_t cut) {       /* corte visivel */
+    if (!cut) return;
+    char m[40]; const int ml = snprintf(m, sizeof m, "...[+%zu]", cut);
+    size_t n = strlen(dst);
+    if (n + (size_t)ml >= cap) n = cap - 1 - (size_t)ml;
+    memcpy(dst + n, m, (size_t)ml + 1);
+}
+/* JSON: escapa ate max bytes de s; cut recebe quantos ficaram de fora */
+static void alog_jesc(FILE *f, const char *s, size_t max, size_t *cut) {
+    const size_t L = strlen(s);
+    size_t end = L < max ? L : max;
+    while (end < L && end > 0 && ((unsigned char)s[end] & 0xC0) == 0x80) end--;       /* nao corta no meio de um caractere UTF-8 */
+    fputc('"', f);
+    for (size_t i = 0; i < end; i++) {
+        const unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') { fputc('\\', f); fputc(c, f); }
+        else if (c == '\n') fputs("\\n", f);
+        else if (c == '\r') fputs("\\r", f);
+        else if (c == '\t') fputs("\\t", f);
+        else if (c < 0x20) fprintf(f, "\\u%04x", c);
+        else fputc(c, f);
+    }
+    fputc('"', f);
+    *cut = L - end;
+}
+static void alog_json(const char *dir, const char *name, const char *args, const char *res, double ms) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("KATANA_LOG_JSON"); on = e && atoi(e) != 0; }
+    if (!on) return;
+    char jp[1300];
+    { const char *e = getenv("KATANA_LOG"); if (e && *e && dir[0]) snprintf(jp, sizeof jp, "%s/agente.jsonl", dir); else { char h[1024]; agent_home(h, sizeof h); snprintf(jp, sizeof jp, "%s/.katana/agente.jsonl", h); } }
+#ifndef _WIN32
+    { struct stat st; if (stat(jp, &st) == 0 && (long long)st.st_size >= ALOG_JROT) { char o[1320]; snprintf(o, sizeof o, "%s.1", jp); if (rename(jp, o) != 0) remove(jp); } }
+    const int fd = open(jp, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd < 0) return;
+    FILE *f = fdopen(fd, "ab");
+#else
+    FILE *f = fopen(jp, "ab");
+#endif
+    if (!f) return;
+    int fail = 0, code = -1;
+    { const char *r = res; while (*r == ' ') r++; fail = !strncasecmp(r, "error", 5);
+      const char *ec = strstr(res, "[exit code "); if (ec) { code = atoi(ec + 11); if (code) fail = 1; } }
+    char ts[32]; const time_t t = time(NULL);
+    strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%S%z", localtime(&t));
+    size_t ca = 0, cr = 0, cx;
+    fprintf(f, "{\"ts\":\"%s\",\"tool\":", ts);
+    alog_jesc(f, name, 128, &cx);
+    fputs(",\"args\":", f); alog_jesc(f, args, ALOG_JMAX, &ca);
+    fputs(",\"result\":", f); alog_jesc(f, res, ALOG_JMAX, &cr);
+    fprintf(f, ",\"args_cut\":%zu,\"result_cut\":%zu,\"ms\":%.0f,\"error\":%s,\"exit_code\":", ca, cr, ms, fail ? "true" : "false");
+    if (code >= 0) fprintf(f, "%d", code); else fputs("null", f);
+    fprintf(f, ",\"request\":%d,\"session\":", g_alog_req);
+    if (g_alog_sess[0]) alog_jesc(f, g_alog_sess, 255, &cx); else fputs("null", f);
+    fprintf(f, ",\"pid\":%d}\n", (int)getpid());
+    fclose(f);
+}
 static void agent_log(const char *name, const char *args, const char *res) {
-    char p[1200], dir[1200], a[400], r[200];
+    char p[1200], dir[1200], a[ALOG_ARGS + 40], r[ALOG_RES + 40];
+    const double ms = g_alog_t0 > 0 ? (alog_now() - g_alog_t0) * 1000.0 : 0;
+    g_alog_t0 = 0;
     const char *e = getenv("KATANA_LOG");
     if (e && *e) snprintf(p, sizeof p, "%s", e);
     else {
@@ -168,16 +253,17 @@ static void agent_log(const char *name, const char *args, const char *res) {
 #else
         mkdir(dir, 0700);
 #endif
-    }
-    size_t n = 0;
-    for (const char *q = args; *q && n < sizeof a - 1; q++) a[n++] = (*q == '\n' || *q == '\r' || *q == '\t') ? ' ' : *q;
-    a[n] = 0;
-    n = 0;
+    } else dir[0] = 0;
+    alog_json(dir, name, args, res, ms);
+    size_t cut = alog_flat(args, strlen(args), a, ALOG_ARGS + 1);
+    alog_mark(a, sizeof a, cut);
     const char *ec = strstr(res, "[exit code ");
-    if (ec) res = ec;
-    for (const char *q = res; *q && n < sizeof r - 1 && !(ec && *q == ']'); q++) r[n++] = (*q == '\n' || *q == '\r' || *q == '\t') ? ' ' : *q;
-    if (ec && n < sizeof r - 1) r[n++] = ']';
-    r[n] = 0;
+    const char *rs = ec ? ec : res;
+    size_t rl = strlen(rs);
+    if (ec) { const char *cl = strchr(rs, ']'); if (cl) rl = (size_t)(cl - rs); }
+    cut = alog_flat(rs, rl, r, ALOG_RES + 1);
+    if (ec && !cut) { size_t n = strlen(r); r[n] = ']'; r[n + 1] = 0; }
+    alog_mark(r, sizeof r, cut);
     FILE *f = fopen(p, "ab");
     if (!f) return;
     char ts[32];
@@ -460,146 +546,8 @@ static void tool_search_files(const char *pattern, const char *root, int regex, 
 #endif
 }
 
-/* ---- memoria: ~/.katana/memoria.txt, uma linha por fato: AAAA-MM-DD<TAB>fato ---- */
-static void mem_path(char *out, size_t cap) {
-    const char *e = getenv("KATANA_MEM");
-    if (e && *e) { snprintf(out, cap, "%s", e); return; }
-    char h[1024];
-    agent_home(h, sizeof h);
-#ifdef _WIN32
-    snprintf(out, cap, "%s\\.katana\\memoria.txt", h);
-#else
-    snprintf(out, cap, "%s/.katana/memoria.txt", h);
-#endif
-}
-
-static char *mem_read(size_t *n) {         /* arquivo inteiro (ate 1 MB, o fim) ou NULL */
-    char p[1200];
-    mem_path(p, sizeof p);
-    FILE *f = fopen(p, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    const long sz = ftell(f);
-    const long skip = sz > 1000000 ? sz - 1000000 : 0;
-    fseek(f, skip, SEEK_SET);
-    char *b = (char *)malloc((size_t)(sz - skip) + 1);
-    if (!b) { fclose(f); return NULL; }
-    *n = fread(b, 1, (size_t)(sz - skip), f);
-    b[*n] = 0;
-    fclose(f);
-    return b;
-}
-
-static void tool_remember(const char *fact, char *out, size_t cap) {
-    char f[520];
-    size_t n = 0;
-    for (const char *s = fact; *s && n < 500; s++) {
-        const char c = (*s == '\n' || *s == '\r' || *s == '\t') ? ' ' : *s;
-        if (c == ' ' && (n == 0 || f[n - 1] == ' ')) continue;
-        f[n++] = c;
-    }
-    while (n > 0 && f[n - 1] == ' ') n--;
-    f[n] = 0;
-    if (n < 3) { snprintf(out, cap, "error: fact too short"); return; }
-    size_t bn = 0;
-    char *b = mem_read(&bn);
-    if (b) {
-        for (char *l = b; *l; ) {
-            char *e = strchr(l, '\n');
-            if (e) *e = 0;
-            char *t = strchr(l, '\t');
-            if (t && strcmp(t + 1, f) == 0) { free(b); snprintf(out, cap, "ok: already in memory"); return; }
-            if (!e) break;
-            l = e + 1;
-        }
-        free(b);
-    }
-    char p[1200], dir[1200];
-    mem_path(p, sizeof p);
-    snprintf(dir, sizeof dir, "%s", p);
-    char *sl = strrchr(dir, '/'); char *bs = strrchr(dir, '\\');
-    if (bs && (!sl || bs > sl)) sl = bs;
-    if (sl) {
-        *sl = 0;
-#ifdef _WIN32
-        CreateDirectoryA(dir, NULL);
-#else
-        mkdir(dir, 0700);
-#endif
-    }
-    FILE *fp = fopen(p, "ab");
-    if (!fp) { snprintf(out, cap, "error: cannot write %s", p); return; }
-    char day[16];
-    const time_t t = time(NULL);
-    strftime(day, sizeof day, "%Y-%m-%d", localtime(&t));
-    fprintf(fp, "%s\t%s\n", day, f);
-    fclose(fp);
-    snprintf(out, cap, "ok: saved to memory");
-}
-
-/* ultimos `max` fatos, do mais antigo ao mais novo, no formato "- data: fato" */
-static size_t mem_tail(int max, char *out, size_t cap) {
-    size_t bn = 0, o = 0;
-    char *b = mem_read(&bn);
-    out[0] = 0;
-    if (!b) return 0;
-    static char *ln[4096];
-    int nl = 0;
-    for (char *l = b; *l && nl < 4096; ) {
-        char *e = strchr(l, '\n');
-        if (e) *e = 0;
-        if (strchr(l, '\t')) ln[nl++] = l;
-        if (!e) break;
-        l = e + 1;
-    }
-    for (int i = nl > max ? nl - max : 0; i < nl; i++) {
-        char *t = strchr(ln[i], '\t');
-        *t = 0;
-        if (o + 700 >= cap) break;
-        o += (size_t)snprintf(out + o, cap - o, "- %s: %.400s\n", ln[i], t + 1);
-    }
-    free(b);
-    return o;
-}
-
-static void tool_recall(const char *query, char *out, size_t cap) {
-    size_t bn = 0, o = 0;
-    char *b = mem_read(&bn);
-    if (!b) { snprintf(out, cap, "memory is empty"); return; }
-    char words[16][40]; int nw = 0;
-    for (const char *s = query; *s && nw < 16; ) {         /* palavras da consulta (2+ letras), minusculas */
-        while (*s && !isalnum((unsigned char)*s) && (unsigned char)*s < 0x80) s++;
-        size_t l = 0; char w[40];
-        while (*s && (isalnum((unsigned char)*s) || (unsigned char)*s >= 0x80) && l < 39) w[l++] = (char)tolower((unsigned char)*s++);
-        while (*s && (isalnum((unsigned char)*s) || (unsigned char)*s >= 0x80)) s++;
-        w[l] = 0;
-        if (l >= 2) { memcpy(words[nw], w, l + 1); nw++; }
-    }
-    static char *ln[4096]; static int sc[4096];
-    int nl = 0;
-    for (char *l = b; *l && nl < 4096; ) {
-        char *e = strchr(l, '\n');
-        if (e) *e = 0;
-        if (strchr(l, '\t')) {
-            int s = 0;
-            const size_t L = strlen(l);
-            for (int w = 0; w < nw; w++) if (ci_find(l, L, words[w], strlen(words[w]))) s++;
-            ln[nl] = l; sc[nl] = s; nl++;
-        }
-        if (!e) break;
-        l = e + 1;
-    }
-    out[0] = 0;
-    for (int pick = 0; pick < 8; pick++) {                 /* maior pontuacao, empate pelo mais recente */
-        int best = -1;
-        for (int i = 0; i < nl; i++) if (sc[i] > 0 && (best < 0 || sc[i] >= sc[best])) best = i;
-        if (best < 0) break;
-        char *t = strchr(ln[best], '\t');
-        *t = 0;
-        if (o + 700 < cap) o += (size_t)snprintf(out + o, cap - o, "- %s: %.400s\n", ln[best], t + 1);
-        sc[best] = 0;
-    }
-    if (!out[0]) snprintf(out, cap, "no matching facts in memory");
-    free(b);
-}
+/* ---- memoria: implementada em agent/memory.c (incluido depois do tokenizador); aqui so as declaracoes ---- */
+static void tool_remember(const char *fact, char *out, size_t cap);
+static size_t mem_tail(int max, char *out, size_t cap);
+static void tool_recall(const char *query, char *out, size_t cap);
 

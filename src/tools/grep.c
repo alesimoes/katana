@@ -129,6 +129,27 @@ static int ct_gi_ignored(const CtGiSet *s, const char *abs, int isdir) {
     }
     return ign;
 }
+/* Pastas aninhadas que a busca nao entra (mesma decisao do indice, roots.c): subpasta com `katana init` proprio (marcador
+ * .katana/coder/ROOT) ou copia de trabalho ligada do git (.git que e arquivo gitdir: .../worktrees/...). So vale para as subpastas
+ * de baixo da pasta buscada: quem busca DENTRO da pasta aninhada (path apontando para ela) a encontra como a raiz da busca e
+ * nunca e pulada. */
+static int ct_grep_nested(const char *base, const char *rel) {
+    static char last[4400], lastb[4400]; static int lastv = -1; static time_t lastt;      /* a ultima pasta decidida (a lista do git vem agrupada por pasta); vale por um segundo */
+    const char *sl = strrchr(rel, '/');
+    const size_t dl = sl ? (size_t)(sl - rel) : 0;
+    if (!dl) return 0;
+    const time_t now = time(NULL);
+    if (lastv >= 0 && now == lastt && strlen(last) == dl && memcmp(last, rel, dl) == 0 && strcmp(lastb, base) == 0) return lastv;
+    int v = 0;
+    char p[4500];
+    for (size_t i = 0; i <= dl && !v; i++) {
+        if (i != dl && rel[i] != '/') continue;
+        if ((size_t)snprintf(p, sizeof p, "%s/%.*s", base, (int)i, rel) >= sizeof p) break;
+        if (rt_skip_subdir(p)) v = 1;
+    }
+    if (dl < sizeof last) { memcpy(last, rel, dl); last[dl] = 0; snprintf(lastb, sizeof lastb, "%s", base); lastv = v; lastt = now; }
+    return v;
+}
 /* caminhada com .gitignore; base e a pasta buscada (para o caminho relativo do glob) */
 static void ct_gwalk(CtFiles *f, const char *base, const char *dir, int depth, CtGiSet *gs, const CtGrepFilter *flt) {
     const int n0 = gs->n;
@@ -148,6 +169,7 @@ static void ct_gwalk(CtFiles *f, const char *base, const char *dir, int depth, C
             if (S_ISDIR(st.st_mode)) {
                 if (strcmp(e->d_name, ".git") == 0 || sf_skip_dir(e->d_name) || depth >= 40) continue;
                 if (ct_gi_ignored(gs, full, 1)) continue;
+                if (rt_skip_subdir(full)) continue;      /* init aninhado ou worktree do git: fora da busca da raiz de cima */
                 ct_gwalk(f, base, full, depth + 1, gs, flt);
             } else if (S_ISREG(st.st_mode)) {
                 if (ct_gi_ignored(gs, full, 0)) continue;
@@ -184,6 +206,7 @@ static void ct_grep_collect(CtFiles *f, const char *base, const char *cwd, const
         for (char *line = strtok(o, "\n"); line; line = strtok(NULL, "\n")) {
             const char *name = strrchr(line, '/'); name = name ? name + 1 : line;
             if (!ct_grep_keep(flt, line, name)) continue;
+            if (ct_grep_nested(base, line)) continue;
             char full[8500]; struct stat st;
             snprintf(full, sizeof full, "%s/%s", base, line);
             if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) continue;
