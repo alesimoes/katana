@@ -2598,7 +2598,7 @@ static int curriculum_main(int argc, char **argv) {
     if (!mkdtemp(g_cu_sbroot)) { fprintf(stderr, "curriculum: nao criei a pasta de trabalho em %s\n", g_cu_sbroot); return 1; }
     FILE *f = fopen(outp, "wb");
     if (!f) { fprintf(stderr, "curriculum: nao gravei %s\n", outp); return 1; }
-    static char outabs[1400]; if (!realpath(outp, outabs)) snprintf(outabs, sizeof outabs, "%s", outp);      /* o gerador troca de pasta: o caminho tem de ser absoluto */
+    static char outabs[4200]; if (!realpath(outp, outabs)) snprintf(outabs, sizeof outabs, "%s", outp);      /* realpath exige PATH_MAX; o gerador troca de pasta: o caminho tem de ser absoluto */
     g_cu_out = outabs; cu_gen(f, n, seed, w, wsum, lg, nlg, 0); g_cu_out = NULL;
     fclose(f);
     printf("curriculum: %ld conversas em %s (semente %llu)\n", n, outp, (unsigned long long)seed);
