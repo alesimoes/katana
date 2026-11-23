@@ -141,9 +141,10 @@ R=$("$K" mcp list 2>&1 </dev/null)
 has "e: confianca lembrada por caminho e conteudo" "$R" "pa [stdio] ok"
 R=$("$K" tool shared__argv '{}' 2>&1 </dev/null)
 has "e: .mcp.json vence o arquivo do usuario" "$R" "[root]"
-printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","katana"]}}}\n' "$FAKE" > "$PE/.katana/mcp.json" 2>/dev/null || { mkdir -p "$PE/.katana"; printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","katana"]}}}\n' "$FAKE" > "$PE/.katana/mcp.json"; }
+printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","local"]}}}\n' "$FAKE" > "$PE/.katana/mcp.json" 2>/dev/null || { mkdir -p "$PE/.katana"; printf '{"mcpServers":{"shared":{"command":"%s","args":["argv","local"]}}}\n' "$FAKE" > "$PE/.katana/mcp.json"; }
 R=$(KATANA_MCP_TRUST=1 "$K" tool shared__argv '{}' 2>&1 </dev/null)
-has "e: .katana/mcp.json vence o .mcp.json" "$R" "[katana]"
+# (a palavra do argumento nao pode ser "katana": o knote escapa "[katana" vindo de MCP, entao "[katana]" sairia como "[ katana]")
+has "e: .katana/mcp.json vence o .mcp.json" "$R" "[local]"
 R=$(KATANA_MCP_TRUST=1 "$K" mcp list 2>&1 </dev/null)
 has "e: os dois arquivos de projeto somam servidores" "$R" "pa [stdio] ok"
 R=$(cd "$PE/src/deep" && "$K" tool pa__argv '{}' 2>&1 </dev/null)
@@ -272,8 +273,8 @@ R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","
 has "h: .. nao escapa" "$R" 'outside the folders'
 R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Read","arguments":{"file_path":"link/s.txt"}}}')
 has "h: link simbolico para fora nao escapa" "$R" 'outside the folders'
-R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Glob","arguments":{"pattern":"/etc/*"}}}')
-has "h: Glob absoluto fora e recusado" "$R" 'outside the folders'
+R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Grep","arguments":{"pattern":"root","path":"/etc"}}}')
+has "h: Grep em pasta absoluta fora e recusado" "$R" 'outside the folders'
 R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Bash","arguments":{"command":"echo hi"}}}')
 has "h: Bash sem --allow-shell: ferramenta desconhecida" "$R" '"error"'
 R=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"Bash","arguments":{"command":"echo hi-from-shell"}}}' --allow-shell)

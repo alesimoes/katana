@@ -129,7 +129,7 @@ case $R in
   "No matching tools") echo "SKIPPED toolsearch da tabela (table.c ainda sem ct_tool_info)";;
   *) has "toolsearch: select Read" "$R" '{"type": "function", "function": {"name": "Read", "description": '
      has "toolsearch: esquema do Read" "$R" '"parameters": {"type": "object", "properties": {'
-     R=$("$K" tool ToolSearch '{"query":"select:read,GLOB"}')
+     R=$("$K" tool ToolSearch '{"query":"select:read,GREP"}')
      eq "toolsearch: select ignora maiusculas, 2 ferramentas" "$(printf '%s\n' "$R" | wc -l | tr -d ' ')" "2"
      R=$("$K" tool ToolSearch '{"query":"+notebook"}')
      has "toolsearch: +notebook" "$R" '"name": "NotebookEdit"'
@@ -160,7 +160,7 @@ for cur in "Bash" "Write" "Edit" "Read" "Grep" "WebSearch" "WebFetch" "TodoWrite
   has "receitas: citam $cur" "$R" "$cur"
 done
 R=$("$K" tool Skill '{"skill":"files"}')
-has "receita: um assunto so" "$R" "FILES: find by name with Glob"
+has "receita: um assunto so" "$R" "FILES: find by name with Find"
 hasnt "receita: um assunto so nao traz os outros" "$R" "SUDO:"
 
 ########## Skill ##########

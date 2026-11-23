@@ -121,7 +121,7 @@ OUT=$("$K" tool Bash '{"arguments":{"command":"echo oi-do-bash"}}' 2>&1); has "s
 OUT=$(KATANA_ALLOWED_TOOLS=Read "$K" tool Bash '{"arguments":{"command":"echo oi-do-bash"}}' 2>&1)
 has "fora da lista de permitidas: recusada" "$OUT" "not allowed"
 hasnt "fora da lista: nao rodou" "$OUT" "oi-do-bash"
-OUT=$(KATANA_ALLOWED_TOOLS='Re*,Grep' "$K" tool Glob '{"arguments":{"pattern":"*"}}' 2>&1); has "glob na lista: Glob fora" "$OUT" "not allowed"
+OUT=$(KATANA_ALLOWED_TOOLS='Re*,Grep' "$K" tool Find '{"arguments":{"query":"x"}}' 2>&1); has "Find fora da lista" "$OUT" "not allowed"
 OUT=$(KATANA_ALLOWED_TOOLS='Bash(echo:*),Grep' "$K" tool Bash '{"arguments":{"command":"echo permitido"}}' 2>&1); has "padrao com argumentos vale pelo nome" "$OUT" "permitido"
 OUT=$(KATANA_DISALLOWED_TOOLS=Bash "$K" tool Bash '{"arguments":{"command":"echo oi-do-bash"}}' 2>&1); has "disallowed recusa" "$OUT" "not allowed"
 OUT=$(KATANA_ALLOWED_TOOLS='Bash' KATANA_DISALLOWED_TOOLS='Ba*' "$K" tool Bash '{"arguments":{"command":"echo x"}}' 2>&1); has "disallowed vence allowed" "$OUT" "not allowed"
@@ -179,7 +179,9 @@ if ! command -v python3 >/dev/null 2>&1; then echo "sem python3: testes headless
 python3 "$R/tools/tinymodel/make_tiny_gguf.py" "$T/agent.gguf" --template chatml-xml >/dev/null || { echo "nao gerei o modelo minusculo"; exit 2; }
 mkdir -p "$T/hm"; cp "$T/agent.gguf" "$T/hm/agent.gguf"
 export KATANA_MODELS="$T/hm"
-TENV="KATANA_TEACHER=1 KATANA_TEACHER_CMD='python3 $R/tools/traintest/mock_teacher_prog.py'"
+# o professor de mentira vai num script proprio: "env $TENV" divide em palavras e as aspas dentro do valor ficariam literais
+printf '#!/bin/sh\nexec python3 "%s/tools/traintest/mock_teacher_prog.py" "$@"\n' "$R" > "$T/mockteacher"; chmod +x "$T/mockteacher"
+TENV="KATANA_TEACHER=1 KATANA_TEACHER_CMD=$T/mockteacher"
 hl() { # pasta de trabalho, depois os argumentos do katana
   _d=$1; shift; mkdir -p "$_d"; ( cd "$_d" && env $TENV MOCK_TEACHER_LOG="$T/cli.jsonl" "$K" "$@" 2>"$T/err.txt" ); }
 jq_() { python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(eval(sys.argv[1]))" "$1"; }

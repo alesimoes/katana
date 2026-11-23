@@ -146,7 +146,7 @@ has "init: cabecalho com o README" "$R" "# i1: Demo is a tiny tool that counts w
 has "init: build do Makefile" "$R" "build: make build"; has "init: test do Makefile" "$R" "test: make test"; has "init: run do Makefile" "$R" "run: make run"
 has "init: layout com palpite" "$R" "src/  source code"; has "init: layout tests" "$R" "tests/  tests"
 has "init: docs apontados" "$R" "docs/guide.md"; has "init: done a partir do test" "$R" "done: \`make test\` passes"
-"$K" init >/dev/null 2>&1; rc=$?; eq "init: nao sobrescreve sem --force" "$rc" "1"
+R=$("$K" init 2>&1); rc=$?; eq "init: sem --force mantem o KATANA.md e sai com 0" "$rc" "0"; has "init: avisa que manteve" "$R" "already exists; kept (use --force to overwrite it)"
 "$K" init --force >/dev/null 2>&1; rc=$?; eq "init: --force sobrescreve" "$rc" "0"
 R=$("$K" brief check KATANA.md 2>&1); rc=$?; eq "init: o que escreve passa no lint" "$rc" "0"
 mkdir -p "$T/i2/modules"; cd "$T/i2"
@@ -191,7 +191,7 @@ report: the version, the tag and the notes file
 fail: stop and say which check failed
 EOF
 printf 'echo hi\n' > .katana/skills/rel/scripts/run.sh
-R=$("$K" tool Skill '{"skill":"rel","args":"version=1.2"}' TaskList '{}' 2>&1)
+R=$("$K" tool Skill '{"skill":"rel","args":"version=1.2"}' TodoWrite '{"todos":[]}' 2>&1)
 has "skill: needs ausente vai no topo" "$R" "MISSING: nosuchprogram-zz"
 hasnt "skill: o que existe nao e reportado" "$R" "MISSING: ls"
 has "skill: \$arg nos passos" "$R" "Tag the release as v1.2"

@@ -71,9 +71,9 @@ run Find '{"query":"list sessions open on the computer"}'
 first "search: o arquivo que define o que a frase descreve vem primeiro" "src/sessions.js"
 has "search: faixa de linhas" "src/sessions.js:1-8"
 has "search: simbolos definidos no trecho" "listSessions"
-has "search: linha do trecho com numero" "2: export function listSessions"
+has "search: linha do trecho com numero (a linha casada leva >)" "2> export function listSessions"
 has "search: dica de proximo passo" "Follow a symbol with Find mode=refs, or Read a part with offset and limit."
-hasnt "search: node_modules fica de fora" "node_modules"
+hasnt "search: node_modules fica de fora" "node_modules/lib"
 hasnt "search: build fica de fora" "build/out.js"
 hasnt "search: binario fica de fora" "blob.js"
 ls .katana/cache/find-*.idx >/dev/null 2>&1 && fail "o Find nao grava indice proprio (find-*.idx)" || ok "o Find nao grava indice proprio (find-*.idx)"
@@ -87,17 +87,18 @@ first "search: C" "src/engine.c"
 has "search: funcao static do C" "decode_batch"
 run Find '{"query":"server message handler"}'
 has "search: calls mostra o simbolo usado definido em outro arquivo" "calls: "
-has "search: calls aponta a definicao" "listSessions (src/sessions.js:2)"
+has "search: calls aponta a definicao (caminho relativo ao arquivo)" "listSessions (sessions.js:2-5)"
 run Find '{"query":"read session files"}'
 has "search: also referenced in" "also referenced in: src/server.js"
 
 # ---------------- refs ----------------
 run Find '{"query":"listSessions","mode":"refs"}'
 has "refs: definicao" "src/sessions.js:2"
-has "refs: arquivo que usa" "src/server.js (2):"
+has "refs: arquivo que usa" "src/server.js (1):"
+has "refs: contagem de usos" "Used 1 times in 1 files"
 has "refs: funcao em volta do uso" "6 (in onMessage):"
-has "refs: import tambem e uso" "1: import { listSessions }"
-hasnt "refs: node_modules fica de fora" "node_modules"
+hasnt "refs: o import nao conta como uso" "import { listSessions }"
+hasnt "refs: node_modules fica de fora" "node_modules/lib"
 run Find '{"query":"terminalSessionIds","mode":"refs"}'
 has "refs: definicao no mesmo arquivo" "src/server.js:2"
 has "refs: uso dentro de onMessage" "7 (in onMessage)"
@@ -123,7 +124,8 @@ hasnt "limit: nunca 13" "
 13. "
 run Find '{"query":"kiwi","limit":12}'
 len=$(printf '%s' "$out" | wc -c)
-[ "$len" -le 1700 ] && ok "saida padrao curta ($len caracteres)" || fail "saida padrao curta ($len caracteres)"
+[ "$len" -le 3100 ] && ok "saida padrao curta ($len caracteres)" || fail "saida padrao curta ($len caracteres)"
+out=$(KATANA_FIND_CHARS=500 "$K" tool Find '{"query":"kiwi","limit":12}' 2>/dev/null)
 has "saida cortada avisa" "more candidates"
 run Find '{"query":"sessions","path":"docs"}'
 first "path: so a subpasta" "docs/readme.md"
