@@ -1155,13 +1155,25 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
             for (int k = 0; k < want; k++) if (m > bs[k]) { for (int z = want - 1; z > k; z--) { bs[z] = bs[z - 1]; best[z] = best[z - 1]; } bs[k] = m; best[k] = ln; break; }
         }
         free(fold); free(v.v);
+        const int top = best[0];       /* a linha que mais casa: nos dois primeiros resultados vira um trecho de codigo, para o modelo nao precisar de um Read */
         /* em ordem de linha */
         for (int i = 0; i < want; i++) for (int j = i + 1; j < want; j++) if (best[j] && (!best[i] || best[j] < best[i])) { int x = best[i]; best[i] = best[j]; best[j] = x; }
+        int w0 = 0, w1 = 0;       /* trecho em torno da melhor linha (so os 2 primeiros resultados, de codigo) */
+        if (top && rank <= 2 && budget >= 200 && X->f[fi].kind != FK_MD && X->f[fi].kind != FK_OTHER) {
+            w0 = top - 3 < a ? a : top - 3; w1 = top + 8 > b ? b : top + 8;
+            if (w1 > t.ls.n) w1 = t.ls.n;
+            if (w1 - w0 < 2) w0 = w1 = 0;
+        }
         for (int i = 0; i < want; i++) {
-            if (!best[i]) continue;
+            if (!best[i] || (w0 && best[i] >= w0 && best[i] <= w1)) continue;      /* ja esta no trecho */
             int ll = 0; const char *s = fd_line(&t, best[i], &ll);
             snprintf(hd, sizeof hd, "   %d: ", best[i]); ct_sb_puts(sb, hd);
             fd_put_line(sb, s, ll, 100); ct_sb_puts(sb, "\n");
+        }
+        if (w0) for (int ln = w0; ln <= w1; ln++) {
+            int ll = 0; const char *s = fd_line(&t, ln, &ll);
+            snprintf(hd, sizeof hd, "   %d%s ", ln, ln == top ? ">" : ":"); ct_sb_puts(sb, hd);
+            fd_put_line(sb, s, ll, 110); ct_sb_puts(sb, "\n");
         }
         if (budget >= 200 && X->f[fi].kind != FK_MD && X->f[fi].kind != FK_OTHER) fd_calls(X, fi, a, b, &t, best, want, sb);
         if (budget >= 200) fd_also(X, fi, a, b, best, want, sb);
