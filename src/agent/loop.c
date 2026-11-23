@@ -695,7 +695,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         }
         {   static char pn[2400];       /* o usuario cita uma pasta que nao existe daqui: o motor acha onde ela esta e avisa o modelo */
             if (!getenv("KATANA_PLACE_NOTE") || atoi(getenv("KATANA_PLACE_NOTE")) != 0) {
-                const int pnn = place_note(line, pn, sizeof pn);
+                const int pnn = place_note(ureq, pn, sizeof pn);      /* so o pedido do usuario: o trecho de docs anexado acima cita pastas que ele nao pediu */
                 for (int pi = 0; pi < g_place_nd; pi++) autoindex_dir(g_place_dirs[pi]);      /* a pasta que o usuario citou tambem e indexada, se ainda nao for */
                 if (pnn && !ublk) { static char nl[16384]; snprintf(nl, sizeof nl, "%s\n\n%s", line, pn); snprintf(line, sizeof line, "%s", nl); fprintf(stderr, "%s[katana achou a pasta citada no pedido]%s\n", CE(C_DIM), CE(C_RESET)); }
             } }
