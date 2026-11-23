@@ -122,6 +122,17 @@
 #ifndef KATANA_BUILD
 #define KATANA_BUILD "?"
 #endif
+#if defined(__has_include)
+#if __has_include("app/changes.inc")
+static const char KATANA_CHANGES[] =
+#include "app/changes.inc"
+;
+#else
+static const char KATANA_CHANGES[] = "";
+#endif
+#else
+static const char KATANA_CHANGES[] = "";
+#endif
 #include "app/codebench.c"             /* katana codebench: o juiz (tarefas com testes escondidos): run, verify, compare, list */
 #include "app/update.c"                /* katana update: compila, confere e troca o programa instalado */
 #include "app/specialize.c"            /* katana specialize: versoes especialistas (teacher, tools, code) de ponta a ponta */

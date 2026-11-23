@@ -469,6 +469,18 @@ Item {
                 font.pixelSize: 11
                 text: backend.engineVersion + (backend.specsActive.length ? " · " + backend.specsActive.join(", ") : "")
             }
+            Text { font.family: Theme.sans;
+                objectName: "engineChanges"
+                visible: text.length > 0
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                color: Theme.mut
+                opacity: 0.6
+                font.pixelSize: 11
+                topPadding: 4
+                text: backend.engineChanges
+            }
             Item { width: 1; height: 18 }
             GridLayout {
                 width: parent.width

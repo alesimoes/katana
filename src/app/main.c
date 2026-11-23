@@ -1007,6 +1007,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "brief") == 0) return brief_cli(argc - 2, argv + 2);
     if (argc == 2 && strcmp(argv[1], "jsontest") == 0) return jsontest();
     if (argc >= 2 && strcmp(argv[1], "update") == 0) return update_main(argc - 2, argv + 2);
+    if (argc == 3 && strcmp(argv[1], "version") == 0 && strcmp(argv[2], "--changes") == 0) { fputs(KATANA_CHANGES, stdout); return 0; }
     if (argc == 2 && (strcmp(argv[1], "version") == 0 || strcmp(argv[1], "--version") == 0)) { printf("katana %s\n", KATANA_BUILD); return 0; }
     if (argc >= 2 && strcmp(argv[1], "vision") == 0) return vision_main(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();

@@ -19,3 +19,4 @@ katana-desktop
 desktop-qt/build/
 site/.firebase/
 __pycache__/
+src/app/changes.inc
