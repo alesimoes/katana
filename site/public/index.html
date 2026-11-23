@@ -8,34 +8,29 @@
 <meta property="og:title" content="katana: local LLM inference in C">
 <meta property="og:description" content="Large Mixture-of-Experts models on small hardware, privately, with an agent on top.">
 <meta property="og:image" content="og.png">
-<meta name="theme-color" content="#0c0912" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#221f26" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#faf9fc" media="(prefers-color-scheme: light)">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="icon.png">
 <style>
   :root {
-    --bg: #0c0912; --fg: #ece6f5; --mut: #9a8fae; --card: #15101d; --bd: #2a2038;
-    --ac: #b66cf2; --ac2: #820ad1; --code: #100b17; --ok: #7ee2a8;
-    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --bg: #221f26; --side: #1b1920; --fg: #ece9f0; --mut: #a39fab; --card: #2b2831; --bd: #38343f;
+    --ac: #b66cf2; --ac2: #820ad1; --acfg: #1a1022; --code: #1a181e; --codeh: #26232b; --us: #332f3a; --hov: #2b2831;
+    --ok: #6fd1c2; --err: #f2928b; --shadow: rgba(0,0,0,.45);
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #faf9f5; --fg: #1f1d1a; --mut: #6b645a; --card: #ffffff; --bd: #e6e1d6;
-      --ac: #820ad1; --ac2: #5d078f; --code: #f1eee5; --ok: #1b7f4b;
-      --serif: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      --bg: #faf9fc; --side: #f3f0f7; --fg: #1f1c24; --mut: #6b6773; --card: #ffffff; --bd: #e2dde9;
+      --ac: #820ad1; --ac2: #820ad1; --acfg: #ffffff; --code: #f5f2f8; --codeh: #ece7f3; --us: #ece7f3; --hov: #ebe6f1;
+      --ok: #00796b; --err: #b3261e; --shadow: rgba(30,16,40,.14);
     }
-    body { background-image: none; }
-    h2, .tag { font-family: var(--serif); font-weight: 600; letter-spacing: -.02em; }
-    .term { box-shadow: 0 10px 30px rgba(31,29,26,.06); }
-    .term .bar i { background: #d9d3c5; }
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
-    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    background-image: radial-gradient(900px 420px at 50% -80px, rgba(130,10,209,.28), transparent 70%);
-    background-repeat: no-repeat;
+    font: 15px/1.7 var(--mono);
   }
   .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
   a { color: var(--ac); }
@@ -59,23 +54,44 @@
   .btns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
   .btn { display: inline-block; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--bd); background: var(--card); color: var(--fg); text-decoration: none; font: 600 .92rem var(--mono); }
   .btn.pri { background: var(--ac2); border-color: var(--ac2); color: #fff; }
+  .btn { border-radius: 12px; }
   .btn:hover { border-color: var(--ac); }
   .lead { font-size: 1.25rem; color: var(--mut); margin: 22px 0 0; max-width: 36em; }
   .lead strong { color: var(--fg); font-weight: 600; }
-  .term {
-    margin: 30px 0 0; background: var(--code); border: 1px solid var(--bd); border-radius: 14px; overflow: hidden;
-    box-shadow: 0 20px 60px rgba(130,10,209,.12);
-  }
-  .term .bar { display: flex; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--bd); }
-  .term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a2d4d; display: block; }
-  .term pre { margin: 0; padding: 16px 18px; overflow-x: auto; font: .92rem/1.6 var(--mono); }
+  /* terminal de comandos: o painel de terminal do katana desktop (fundo de codigo, barra com >_) */
+  .term { margin: 26px 0 0; background: var(--code); border: 1px solid var(--bd); border-radius: 12px; overflow: hidden; box-shadow: 0 12px 32px var(--shadow); }
+  .term .bar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--codeh); border-bottom: 1px solid var(--bd); color: var(--mut); font: 600 .78rem var(--mono); letter-spacing: .04em; }
+  .term .bar::before { content: ">_"; color: var(--ac); font-weight: 800; }
+  .term pre { margin: 0; padding: 14px 16px; overflow-x: auto; font: .88rem/1.65 var(--mono); }
+  /* janela do katana desktop (ilustracao em HTML e CSS): barra lateral estreita, conversa, caixa de mensagem */
+  .win { margin: 28px 0 0; display: grid; grid-template-columns: 148px 1fr; background: var(--bg); border: 1px solid var(--bd); border-radius: 14px; overflow: hidden; box-shadow: 0 18px 50px var(--shadow); font: 13px/1.55 var(--mono); }
+  .win .side { background: var(--side); border-right: 1px solid var(--bd); padding: 12px 10px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .win .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .12em; color: var(--ac); }
+  .win .brand img { width: 24px; height: 24px; border-radius: 7px; }
+  .win .new { border: 1px solid var(--bd); border-radius: 10px; padding: 7px 9px; color: var(--fg); background: var(--bg); }
+  .win .lbl { font-size: 10px; letter-spacing: .1em; color: var(--mut); margin-top: 4px; }
+  .win .conv { background: var(--hov); border-radius: 9px; padding: 7px 9px; overflow: hidden; }
+  .win .conv small { display: block; color: var(--mut); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win .conv span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win .main { display: flex; flex-direction: column; min-width: 0; padding: 14px 16px 12px; gap: 12px; }
+  .win .u { align-self: flex-end; max-width: 82%; background: var(--us); border-radius: 16px; padding: 8px 14px; }
+  .win time { display: block; font-size: 10px; color: var(--mut); text-align: right; margin-top: 2px; }
+  .win .act { border: 1px solid var(--bd); background: var(--card); border-radius: 10px; padding: 8px 12px; color: var(--mut); display: flex; justify-content: space-between; gap: 10px; }
+  .win .act b { color: var(--ok); font-weight: 600; margin-right: 8px; }
+  .win .bot { display: flex; gap: 10px; align-items: flex-start; }
+  .win .bot img { width: 22px; height: 22px; border-radius: 6px; flex: none; margin-top: 1px; }
+  .win .bot p { margin: 0; max-width: none; }
+  .win .compose { margin-top: 4px; border: 1px solid var(--bd); border-radius: 14px; padding: 12px 14px 22px; color: var(--mut); background: var(--bg); box-shadow: 0 6px 18px var(--shadow); position: relative; }
+  .win .compose::after { content: "\2191"; position: absolute; right: 10px; bottom: 8px; width: 24px; height: 24px; border-radius: 50%; background: var(--ac2); color: #fff; text-align: center; line-height: 24px; font-size: 13px; opacity: .6; }
+  .win .meta { display: flex; justify-content: space-between; gap: 8px; color: var(--mut); font-size: 11px; padding: 0 4px; }
+  @media (max-width: 640px) { .win { grid-template-columns: 1fr; } .win .side { display: none; } }
   .p { color: var(--ok); user-select: none; }
   .c { color: var(--mut); }
   h2 { margin: 64px 0 6px; font: 700 1.5rem/1.2 var(--mono); letter-spacing: -.02em; }
   h2::before { content: "# "; color: var(--ac); }
   p { margin: 12px 0; max-width: 46em; }
   .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); margin-top: 18px; }
-  .card { background: var(--card); border: 1px solid var(--bd); border-radius: 14px; padding: 18px; }
+  .card { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 18px; }
   .card h3 { margin: 0 0 6px; font: 600 1rem var(--mono); color: var(--ac); }
   .card p { margin: 0; color: var(--mut); font-size: .96rem; }
   .tablewrap { overflow-x: auto; margin: 16px 0 8px; }
@@ -113,8 +129,23 @@
   <p class="tag">Big models. <em>Small hardware.</em> All local.</p>
   <p class="lead">katana is an inference engine written <strong>from scratch in C</strong>. It runs large Mixture-of-Experts models on a laptop GPU, with a tool-using agent and a native desktop app on top. No framework. No external service.</p>
   <div class="btns"><a class="btn pri" href="https://github.com/alesimoes/katana">Source on GitHub</a><a class="btn" href="#project">How it works</a></div>
+  <div class="win" role="img" aria-label="Illustration of the katana desktop app: a conversation where the agent lists the .md files of a folder">
+    <div class="side">
+      <div class="brand"><img src="icon.png" alt="" width="24" height="24">KATANA</div>
+      <div class="new">+ New conversation</div>
+      <div class="lbl">CONVERSATIONS</div>
+      <div class="conv"><span>How many .md files…</span><small>now &middot; Qwen3.6-35B-A3B</small></div>
+    </div>
+    <div class="main">
+      <div class="u">How many .md files are in the docs folder? Use the tools to list them.<time>10:19</time></div>
+      <div class="act"><span><b>&#10003;</b>1 action executed</span><span>Glob</span></div>
+      <div class="bot"><img src="icon.png" alt="" width="22" height="22"><p>The docs folder has 7 .md files.</p></div>
+      <div class="compose">Write a message...</div>
+      <div class="meta"><span>Qwen3.6-35B-A3B &middot; folder: katana</span><span>local &middot; no cloud</span></div>
+    </div>
+  </div>
   <div class="term" aria-label="Example commands">
-    <div class="bar"><i></i><i></i><i></i></div>
+    <div class="bar">terminal</div>
 <pre><span class="p">$</span> ./build.sh                       <span class="c"># one C file, gcc, nothing to install</span>
 <span class="p">$</span> ./katana info  model.gguf        <span class="c"># architecture, experts, context</span>
 <span class="p">$</span> ./katana agent model.gguf        <span class="c"># chat with tools: files, shell, web, MCP</span></pre>
@@ -150,6 +181,7 @@
 
 <h2>The agent</h2>
 <p>The agent gives the model tools: shell commands and persistent terminal sessions, reading, searching and editing files, git, a built-in web meta-search (no API key) and page fetching, package installs, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results reach the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
+<p><strong>Finding things in code.</strong> The agent has one entry point for search, <code>Find</code>: it looks at the question and chooses the way to search (a name, quoted text, or a description in words), reads the files again to check what it reports, and says what it did not find. A <code>Symbols</code> tool answers precise questions (where a name is defined, who calls it, what it calls, what a change would reach) from an index of the code that supports more than 60 languages and file formats, and every answer carries a confidence level. Read shows the part of a large file that matches what the model is looking for, and the program tells the model where a project it mentioned really is. None of this uses embeddings or a remote service. It is new and has not been measured yet.</p>
 <div class="callout"><strong>Heads up:</strong> by default the agent acts on your machine without asking. Set <code>KATANA_CONFIRM=1</code> to have it ask first.</div>
 
 <h2>Measured</h2>
@@ -170,7 +202,7 @@
 <figure class="shot"><img src="desktop.png" width="1000" height="695" alt="katana-desktop: conversation list on the left, a chat where the agent listed the .md files in a folder, and the message box with the model selector and token counter" loading="lazy"><figcaption>katana-desktop: conversations on the left, the agent's actions folded into one step, and the model, working folder and context counter under the message box.</figcaption></figure>
 <p>The desktop app is a native window (Qt 6, no browser) that starts the agent for you. It needs the engine built first, a model file, and Qt 6.5 or newer with CMake 3.21 or newer. On Ubuntu or Debian the Qt packages used here are <code>qt6-base-dev</code>, <code>qt6-declarative-dev</code> and <code>qml6-module-qtquick-controls</code>.</p>
 <div class="term" aria-label="Desktop app commands">
-  <div class="bar"><i></i><i></i><i></i></div>
+  <div class="bar">terminal</div>
 <pre><span class="p">$</span> ./build.sh                          <span class="c"># 1. the engine -> ./katana</span>
 <span class="p">$</span> desktop-qt/build.sh                 <span class="c"># 2. the app    -> desktop-qt/build/katana-desktop-qt</span>
 <span class="p">$</span> mkdir -p models &amp;&amp; cp model.gguf models/   <span class="c"># 3. put a GGUF model in models/</span>
