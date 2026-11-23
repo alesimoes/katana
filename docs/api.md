@@ -147,6 +147,8 @@ Response:
 
 ## Agent mode: `/v1/agent/sessions`
 
+> **Work in progress.** The web page that uses this mode (`katana serve ... --agent`) is marked WIP: it was checked only against a mock server, not with a real model.
+
 > **Security warning.** This endpoint gives whoever can reach it, or holds the key, the power to run commands, read
 > and write files and use the network on the machine where the server runs, with the rights of the user who started
 > `katana serve`. The agent does not ask for confirmation (the owner's decision for katana's agent; `KATANA_CONFIRM=1`
