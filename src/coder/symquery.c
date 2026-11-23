@@ -286,9 +286,9 @@ static void sy_cpy(char *d, size_t cap, const char *s, size_t l) { if (l + 1 > c
 static void sy_set_path(SyItem *it, const char *p, uint32_t l) { sy_cpy(it->path, sizeof it->path, p, l); }
 static void sy_set_snip(SyView *v, SyItem *it, const char *path, uint32_t plen, int l0, int l1, int maxl) {
     if (!sy_file_load(v, path, plen)) return;
-    size_t cap = (size_t)maxl * 260 + 8; char *b = (char *)malloc(cap); size_t o = 0; char t[240];
-    for (int l = l0; l <= l1 && l < l0 + maxl; l++) { if (!sy_line_text(v, l, t, sizeof t)) break; o += (size_t)snprintf(b + o, cap - o, "%s%d: %s", o ? "\n" : "", l, t); }
-    if (l1 >= l0 + maxl) o += (size_t)snprintf(b + o, cap - o, "\n... (+%d lines; Read the file with offset=%d)", l1 - (l0 + maxl) + 1, l0 + maxl);
+    size_t cap = (size_t)maxl * 260 + 104; char *b = (char *)malloc(cap); size_t o = 0; char t[240];
+    for (int l = l0; l <= l1 && l < l0 + maxl; l++) { if (!sy_line_text(v, l, t, sizeof t)) break; o += (size_t)snprintf(b + o, cap - o, "%s%d: %s", o ? "\n" : "", l, t); if (o >= cap) o = cap - 1; }      /* snprintf devolve o tamanho que caberia: sem o limite o fica alem do buffer */
+    if (l1 >= l0 + maxl) { o += (size_t)snprintf(b + o, cap - o, "\n... (+%d lines; Read the file with offset=%d)", l1 - (l0 + maxl) + 1, l0 + maxl); if (o >= cap) o = cap - 1; }
     b[o] = 0; it->snip = b;
 }
 /* ---- API estruturada das consultas (fase U2 do UIOE) ----

@@ -45,7 +45,7 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "Do not repeat it: pick a different place to look (the symbol that this code calls, who defines it, or another file), or answer with what you have, saying what is still unknown.]"
 #define KNF_REPEATN "[katana: this is the %d%s time you make this exact call (first at step %d of this request) and it will not run again. " \
     "Its result is above in this conversation, or listed there as removed to save context. " \
-    "You can still: Read another part of the file with a different offset and limit, Grep (output_mode content, -n -C 2) for a name you saw there, Glob for the file that " \
+    "You can still: Read another part of the file with a different offset and limit, Grep (output_mode content, -n -C 2) for a name you saw there, Find for the file that " \
     "defines something it uses, or stop looking and answer with what you have, saying what is still unknown.]"
 #define KNF_SAME_RESULT "\n[katana: this exact call already gave this exact result (%d times now). Repeating it changes nothing. Do something different: " \
     "read the message above, change the arguments, check the command's help, use another tool, or tell the user what is blocking you.]"
@@ -85,7 +85,7 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "After this message the older messages are removed and you continue the task from your summary."
 #define KNF_SUB_ROUNDS "%s[katana: you are out of rounds. Do NOT call more tools: write your answer now with what you found.]"
 #define KNF_CUT "\n[katana: message cut at %d bytes]"
-#define KNF_PLACE "%s[katana: you mention \"%s\", which does not exist from the working folder (%s). It is at: %s. Work there: pass that folder as `path` to Find, Glob and Grep, or use absolute paths.]"
+#define KNF_PLACE "%s[katana: you mention \"%s\", which does not exist from the working folder (%s). It is at: %s. Work there: pass that folder as `path` to Find, Symbols and Grep, or use absolute paths.]"
 #define KNF_DOCS "[katana: the engine picked this from the project documents that KATANA.md points to, because it matches this request. " \
     "It is a selection: open the file if you need more.]"
 /* T2 sem o eco do pedido (ele ja esta na conversa; cortado em 2026-11-23, ver docs/katana-notes.md) */
