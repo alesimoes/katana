@@ -168,7 +168,7 @@ typedef struct {
 } StoreScanOpts;
 typedef struct { int scanned, unchanged, added, changed, touched, removed, skip_bin, skip_big, skip_unread, live, compacted; int64_t gen; double t_scan, t_total; } StoreUpdStats;
 static int st_ignored_dir(const char *n) {
-    static const char *const ig[] = {".git", "node_modules", "build", "dist", "vendor", ".katana", ".hg", ".svn", NULL};
+    static const char *const ig[] = {".git", "node_modules", "build", "dist", "vendor", ".katana", ".claude", ".hg", ".svn", NULL};
     for (int i = 0; ig[i]; i++) if (!strcmp(n, ig[i])) return 1;
     return 0;
 }
