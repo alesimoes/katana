@@ -412,7 +412,7 @@ static int plan_cur(char *txt, size_t cap, int *k, int *n) {
 }
 /* ferramenta que so le ou pergunta: nao e trabalho que peca plano (uma pergunta respondida com leituras nao e um servico longo) */
 static int loop_plan_readonly(const char *name) {
-    static const char *const ro[] = {"Read", "Grep", "Glob", "LSP", "ToolSearch", "WebSearch", "WebFetch", "TaskList", "TaskGet", "CronList", "ListAgents",
+    static const char *const ro[] = {"Read", "Grep", "Glob", "Find", "LSP", "ToolSearch", "WebSearch", "WebFetch", "TaskList", "TaskGet", "CronList", "ListAgents",
         "ListMcpResourcesTool", "ReadMcpResourceTool", "WaitForMcpServers", "AskUserQuestion", "recall", "howto", "read_log",
         "read_file", "list_dir", "find_file", "search_files", "glob", "web_search", "web_fetch", "read_document", "ask_user", NULL};
     for (int i = 0; ro[i]; i++) if (!strcmp(name, ro[i])) return 1;
@@ -448,7 +448,7 @@ static uint64_t rr_sig[128]; static int rr_step[128], rr_reps[128], rr_n, rr_tot
 static void rr_reset(void) { rr_n = 0; rr_total = 0; }
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
-    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob")) return 1;
+    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find")) return 1;
     return strstr(name, "__") ? mcpx_plan_ok(name) : 0;
 }
 /* antes de executar: 1 = a chamada e repeticao e out ja tem a nota (nao executar) */
