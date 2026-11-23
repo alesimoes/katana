@@ -170,4 +170,71 @@ static void tool_find_file(const char *js, const char *end, char *out, size_t ca
     else snprintf(out + o, cap - o, "[%d of %d match%s shown, best name match and shortest path first%s]", shown, s.total, s.total == 1 ? "" : "es", s.stop ? "; the search stopped at the time limit, narrow it with `under`" : "");
     free(s.h);
 }
+
+/* ---- caminho que nao existe: acha onde ele estaria de verdade. O modelo costuma escrever o caminho como o usuario falou ("mnt/dados/greymod")
+ * e o katana o resolve contra a pasta de trabalho. Aqui procura, pelo nome de cada pedaco que falta (da direita para a esquerda, sem
+ * os nomes comuns), uma pasta ou arquivo com esse nome exato no disco, e refaz o caminho com o resto. Devolve 1 e a sugestao em out ---- */
+static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
+    static const char *const generic[] = {"src", "lib", "bin", "docs", "doc", "home", "mnt", "usr", "var", "opt", "tmp", "etc", "data", "dados", "source", "test", "tests", "build", "include", NULL};
+    char buf[4200], *comp[64], *sv = NULL; int n = 0;
+    snprintf(buf, sizeof buf, "%s", abs);
+    for (char *p = strtok_r(buf, "/", &sv); p && n < 64; p = strtok_r(NULL, "/", &sv)) comp[n++] = p;
+    char pre[4200] = ""; int k = 0;
+    for (; k < n; k++) { char t[4300]; snprintf(t, sizeof t, "%s/%s", pre, comp[k]); if (access(t, F_OK) != 0) break; snprintf(pre, sizeof pre, "%s", t); }
+    if (k >= n) return 0;
+    char found[4][1100]; int nf = 0, mj = k, dirhint = 0, hj = 0; const double tstart = now_sec();
+    int order[66], no = 0;                            /* pastas primeiro (da direita para a esquerda), o arquivo por ultimo */
+    for (int j = n - 2; j >= k; j--) order[no++] = j;
+    for (int oi = 0; oi < no && nf == 0; oi++) {
+        const int j = order[oi];
+        const char *nd = comp[j];
+        if (strlen(nd) < 3) continue;
+        int gen = 0; for (int g = 0; generic[g]; g++) if (!strcasecmp(nd, generic[g])) gen = 1;
+        if (gen) continue;
+        char roots[10][1100]; int nr = 0;               /* discos de dados primeiro, a home por ultimo; cada raiz com o seu tempo (1,5 s) */
+        char home[1100]; agent_home(home, sizeof home);
+        FILE *mf = fopen("/proc/mounts", "r"); char ln[2048], dev[512], mp[1024], fs[64];
+        while (mf && fgets(ln, sizeof ln, mf) && nr < 8) {
+            if (sscanf(ln, "%511s %1023s %63s", dev, mp, fs) != 3) continue;
+            if (!strstr("ext4 ext3 ext2 btrfs xfs f2fs ntfs ntfs3 vfat exfat fuseblk zfs", fs)) continue;
+            if (strcmp(mp, "/") == 0 || strncmp(mp, "/boot", 5) == 0 || strncmp(mp, "/snap", 5) == 0 || strncmp(mp, "/var", 4) == 0) continue;
+            if (strncmp(mp, home, strlen(home)) == 0 || strncmp(home, mp, strlen(mp)) == 0) continue;
+            if (strncmp(mp, "/run/media", 10) == 0 || strncmp(mp, "/media", 6) == 0) continue;      /* removiveis: podem travar a leitura */
+            snprintf(roots[nr++], sizeof roots[0], "%s", mp);
+        }
+        if (mf) fclose(mf);
+        snprintf(roots[nr++], sizeof roots[0], "%s", home);
+        for (int ri = 0; ri < nr && nf == 0 && now_sec() - tstart < 4.0; ri++) {
+            FfSt s; memset(&s, 0, sizeof s);
+            s.needle = nd; s.kind = 0; s.h = (FfHit *)malloc(sizeof(FfHit) * FF_MAX);
+            if (!s.h) return 0;
+            s.t0 = now_sec() - 3.5;
+            ff_push(&s, roots[ri], 0);
+            ff_run(&s);
+            qsort(s.h, (size_t)s.n, sizeof *s.h, ff_cmp);
+            int ok = 0; char tmp[4][1100];
+            for (int i = 0; i < s.n && ok < 4; i++) {
+                if (s.h[i].rank != 0) continue;
+                char cand[2400]; size_t o = (size_t)snprintf(cand, sizeof cand, "%s", s.h[i].path);
+                for (int q = j + 1; q < n && o < sizeof cand - 300; q++) o += (size_t)snprintf(cand + o, sizeof cand - o, "/%s", comp[q]);
+                if (access(cand, F_OK) == 0 && strlen(cand) < sizeof tmp[0]) snprintf(tmp[ok++], sizeof tmp[0], "%s", cand);
+                else if (s.h[i].dir && !dirhint && j < n - 1) { dirhint = 1; hj = j; snprintf(found[3], sizeof found[0], "%s", s.h[i].path); }      /* a pasta existe, so falta o que vem depois */
+            }
+            free(s.h);
+            for (int i = 0; i < ok && nf < 4; i++) snprintf(found[nf++], sizeof found[0], "%s", tmp[i]);
+            if (nf) mj = j;
+        }
+    }
+    if (!nf && dirhint) {
+        char rest[600] = ""; size_t ro = 0;
+        for (int q = hj + 1; q < n && ro < 500; q++) ro += (size_t)snprintf(rest + ro, sizeof rest - ro, "%s%s", q > hj + 1 ? "/" : "", comp[q]);
+        snprintf(out, cap, "The folder \"%s\" exists at %s, but %s is not in it. List it with Bash (ls) or Glob (path=that folder) to see what it has.", comp[hj], found[3], rest);
+        return 1;
+    }
+    if (!nf) return 0;
+    size_t o = (size_t)snprintf(out, cap, "Did you mean: ");
+    for (int i = 0; i < nf && o + 1200 < cap; i++) o += (size_t)snprintf(out + o, cap - o, "%s%s", i ? ", " : "", found[i]);
+    snprintf(out + o, cap - o, "? (katana looked for a folder or file with the name \"%s\" on this machine and rebuilt the path)", comp[mj]);
+    return 1;
+}
 #endif

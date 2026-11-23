@@ -175,6 +175,11 @@ static void ct_glob(const char *js, const char *end, char *out, size_t cap) {
     char res[4200];
     struct stat st;
     if (!pat || !*pat) { snprintf(out, cap, "error: missing `pattern`. Example: {\"pattern\": \"**/*.c\"}"); goto done; }
+    if ((!path || !*path) && ct_cwd_is_home() && strncmp(pat, "**/", 3) == 0) {
+        snprintf(out, cap, "error: the working folder is your home folder, not a project, so a search of everything in it would only return files of other programs. "
+                 "Set `path` to the folder of the project the user means (the user may have named it: find where it is with Bash, for example find / -maxdepth 4 -type d -name NAME 2>/dev/null), or use a narrower pattern.");
+        goto done;
+    }
     if (!ct_dir_arg(path, 1, res, sizeof res, &st, out, cap)) goto done;
     {
         const char *p = pat;

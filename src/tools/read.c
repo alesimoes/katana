@@ -321,7 +321,8 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
         struct stat st;
         if (stat(abs, &st) != 0) {
             char cwd[1200]; if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
-            snprintf(out, cap, "error: %s does not exist (working folder: %s). Check the name with Glob or Bash ls.", abs, cwd);
+            char sug[1500] = ""; { char *ac = strdup(abs); if (ac) { if (!ff_resolve_missing(ac, sug, sizeof sug)) sug[0] = 0; free(ac); } }
+            snprintf(out, cap, "error: %s does not exist (working folder: %s). %s", abs, cwd, sug[0] ? sug : "Check the name with Glob or Bash ls.");
             break;
         }
         if (S_ISDIR(st.st_mode)) { snprintf(out, cap, "error: %s is a directory, not a file. List it with Bash (ls -la %s).", abs, abs); break; }

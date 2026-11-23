@@ -114,6 +114,12 @@ static int ct_bool(const char *js, const char *end, const char *key) {
     return (b - a >= 4 && memcmp(a, "true", 4) == 0) || *a == '1';
 }
 
+/* a pasta de trabalho e a home (ou /): nao e um projeto; buscar "tudo" nela devolve lixo de outros programas */
+static int ct_cwd_is_home(void) {
+    char cwd[1100], h[1100]; if (!getcwd(cwd, sizeof cwd)) return 0;
+    agent_home(h, sizeof h);
+    return !strcmp(cwd, "/") || !strcmp(cwd, h);
+}
 /* ---- arquivos vistos nesta conversa ----
  * Read marca (inteiro ou so uma parte); Edit e Write consultam. Guarda tamanho e data para saber se o arquivo mudou
  * no disco depois da leitura. ct_seen_reset() a cada conversa nova. */
