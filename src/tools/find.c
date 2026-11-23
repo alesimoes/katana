@@ -602,9 +602,10 @@ static int fd_cache_path(FdIndex *X) {
     const char *over = getenv("KATANA_CACHE_DIR");
     if (over && *over) { MKDIR(over); snprintf(X->cache, sizeof X->cache, "%s/%s", over, fn); return 1; }
     agent_home(home, sizeof home);
-    if (strcmp(X->root, home) != 0 && strcmp(X->root, "/") != 0 && proj_is_launch(X->root)) {      /* so a pasta em que o katana foi chamado */
-        snprintf(d1, sizeof d1, "%s/.katana", X->root);
-        snprintf(d2, sizeof d2, "%s/.katana/cache", X->root);
+    char mr[4200];
+    if (strcmp(X->root, home) != 0 && strcmp(X->root, "/") != 0 && index_marker_root(X->root, mr, sizeof mr)) {      /* so dentro de uma raiz com init (roots.c); senao ~/.katana/cache */
+        snprintf(d1, sizeof d1, "%s/.katana", mr);
+        snprintf(d2, sizeof d2, "%s/.katana/cache", mr);
         MKDIR(d1); MKDIR(d2);
 #ifndef _WIN32
         chmod(d2, 0700);                      /* o cache tem trechos do texto dos arquivos: so o dono */
@@ -720,6 +721,17 @@ static int fd_skip_rel(const char *rel) {
     }
     return 0;
 }
+/* o arquivo esta numa subpasta com init proprio ou numa copia de trabalho do git? o veredito da ultima pasta fica guardado (a lista vem agrupada por pasta) */
+static int fd_in_nested(const char *root, const char *rel) {
+    static char last[1500]; static int lastv; const char *sl = strrchr(rel, '/');
+    const size_t dl = sl ? (size_t)(sl - rel) : 0; if (!dl) return 0;
+    if (dl < sizeof last && !strncmp(last, rel, dl) && !last[dl] && last[0]) return lastv;
+    int v = 0; char p[4400];
+    for (const char *q = rel; q < rel + dl && !v; ) { const char *e = memchr(q, '/', (size_t)(rel + dl - q)); size_t n = e ? (size_t)(e - rel) : dl;
+        snprintf(p, sizeof p, "%s/%.*s", root, (int)n, rel); if (rt_skip_subdir(p)) v = 1; q = e ? e + 1 : rel + dl; }
+    if (dl < sizeof last) { memcpy(last, rel, dl); last[dl] = 0; lastv = v; }
+    return v;
+}
 typedef struct { char *rel; long long mt, size; int kind; } FdLs;
 static int fd_cmp_ls(const void *a, const void *b) { return strcmp(((const FdLs *)a)->rel, ((const FdLs *)b)->rel); }
 static int fd_cmp_rel(const void *a, const void *b) { return strcmp(((const FdFile *)a)->rel, ((const FdFile *)b)->rel); }
@@ -749,6 +761,7 @@ static int fd_update(FdIndex *X, const char *root, char *err, size_t ecap) {
         if (strncmp(abs, root, rl) != 0 || abs[rl] != '/') continue;
         const char *rel = abs + rl + 1;
         if (fd_skip_rel(rel)) continue;
+        if (fd_in_nested(root, rel)) continue;      /* init aninhado ou copia de trabalho do git: indice proprio, o pai nao o duplica (roots.c) */
         const int k = fd_kind(rel);
         if (k < 0) continue;
         struct stat st;
@@ -1553,6 +1566,11 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
             char *sl = strrchr(root, '/');
             if (sl && sl != root) { *sl = 0; snprintf(pre, sizeof pre, "%s", sl + 1); } else { snprintf(root, sizeof root, "/"); snprintf(pre, sizeof pre, "%s", res + 1); }
         }
+        /* path que entra numa subpasta com init proprio (ou copia de trabalho do git): a raiz passa a ser ela, o indice do pai nao a tem (roots.c) */
+        for (char *c = pre; *c; ) { char *sl = strchr(c, '/'); size_t n = sl ? (size_t)(sl - pre) : strlen(pre); char cand[4400];
+            snprintf(cand, sizeof cand, "%s/%.*s", strcmp(root, "/") ? root : "", (int)n, pre);
+            if (rt_skip_subdir(cand)) { snprintf(root, sizeof root, "%s", cand); const char *rest = sl ? sl + 1 : ""; memmove(pre, rest, strlen(rest) + 1); c = pre; continue; }
+            if (!sl) break; c = sl + 1; }
         char err[300] = "";
         /* a arvore so e varrida de novo se mudou (index_touch, Bash), se e outra raiz, ou passou o prazo (indexctl.c) */
         if (!g_fd.ready || strcmp(g_fd.root, root) != 0 || index_due(root, 1 /* IDX_FIND */)) { fd_update(&g_fd, root, err, sizeof err); index_validated(root, 1); }

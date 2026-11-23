@@ -16,6 +16,7 @@ typedef struct {
     StoreReader *r; SyVSeg *s; int ns; StoreLive L; char dir[4400]; int any;
     uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed, nkeyflag, nkeyold; int anykeys;
     char fpath[400]; char *fbuf; size_t fn; size_t *fln; int fnl, fok, fstale;
+    uint32_t strip;                     /* consulta restrita a um prefixo da raiz: bytes do prefixo (e da barra) tirados dos caminhos */
     int borrowed; void *slot;           /* visao reaproveitada de indexctl.c: copia rasa do cache; fbuf, fln e os contadores fN sao desta consulta */
 } SyView;
 typedef struct { const char *path; uint32_t plen; const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent, doc, lang; int seg; uint32_t row, rel; } SySym;
@@ -24,13 +25,15 @@ typedef struct { const char *path; uint32_t plen; const char *name; uint32_t nl,
 static void sy_mods_free(void);
 static int sy_view_open_raw(const char *proj, SyView *v, char *err, size_t ecap) {
     memset(v, 0, sizeof *v);
-    store_locate(proj, "coder", v->dir, sizeof v->dir, 0);
+    IndexLoc loc; index_resolve(proj, 0, &loc); snprintf(v->dir, sizeof v->dir, "%s", loc.store);
     if (store_open(v->dir, &v->r, err, ecap) != 0) return -1;
     StoreReader *r = v->r;
     if (r->nseg == 0) { snprintf(err, ecap, "no index in %s (run: katana coder index %s)", v->dir, proj); store_close(r); v->r = NULL; return -1; }
     const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)r->nseg);
     for (int i = 0; i < r->nseg; i++) segs[i] = &r->seg[i];
     store_live_build(&v->L, segs, r->nseg); free(segs);
+    if (loc.prefix[0]) { store_live_rebase(&v->L, loc.prefix, strlen(loc.prefix)); v->strip = (uint32_t)strlen(loc.prefix) + 1; snprintf(r->man.root, sizeof r->man.root, "%s/%s", loc.root, loc.prefix); }      /* ver search.c cs_view_open_raw */
+    else snprintf(r->man.root, sizeof r->man.root, "%s", loc.root);
     v->ns = r->nseg; v->s = (SyVSeg *)calloc((size_t)v->ns, sizeof(SyVSeg));
     for (int s = 0; s < v->ns; s++) {
         SyVSeg *c = &v->s[s]; c->seg = &r->seg[s]; store_docs_open(store_seg_section(c->seg, STS_DOCS), &c->sd);
@@ -61,7 +64,7 @@ static void sy_view_close(SyView *v) {
     sy_view_free_real(v);
 }
 static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
-    char dir[4400]; store_locate(proj, "coder", dir, sizeof dir, 0);
+    char dir[4400]; idx_view_key(proj, dir, sizeof dir);
     void *h = idx_cache_get(&g_sy_cache, dir);
     if (h) { *v = *(SyView *)h; v->fpath[0] = 0; v->fbuf = NULL; v->fn = 0; v->fln = NULL; v->fnl = v->fok = v->fstale = 0; v->borrowed = 1; v->slot = h; return 0; }
     SyView t; if (sy_view_open_raw(proj, &t, err, ecap) != 0) return -1;
@@ -78,7 +81,7 @@ static void sy_limits(const SyView *v, char *o, size_t cap) {
 /* ---- acesso a registros ---- */
 static void sy_doc_path(const SyView *v, int seg, uint32_t doc, const char **p, uint32_t *l, uint32_t *lang) {
     StoreDoc d; *p = ""; *l = 0; if (lang) *lang = 0;
-    if (store_docs_get(&v->s[seg].sd, doc, &d)) { *p = d.path; *l = d.plen; }
+    if (store_docs_get(&v->s[seg].sd, doc, &d)) { *p = d.path; *l = d.plen; if (v->strip && d.plen > v->strip) { *p += v->strip; *l -= v->strip; } }
     if (lang && v->s[seg].x.has && doc < v->s[seg].x.docs.n) *lang = st_get_u32(store_table_at(&v->s[seg].x.docs, doc) + 16);
 }
 static void sy_sym_at(const SyView *v, int seg, uint32_t row, SySym *o) {
@@ -431,7 +434,7 @@ static void sy_mods_build(const SyView *v) {
             uint32_t lang = doc < x->docs.n ? st_get_u32(store_table_at(&x->docs, doc) + 16) : 0;
             int ok = (kind == CK_NAMESPACE && lang != CL_RS && st_get_u32(q + 8) == SY_NONE) || (lang == CL_EX && kind == CK_CLASS);
             if (!ok) continue;
-            StoreDoc sd; if (!store_docs_get(&v->s[s].sd, doc, &sd)) continue; StoreLiveDoc *ld = sy_lookup(v, sd.path, sd.plen); if (!ld) continue;
+            StoreDoc sd; if (!store_docs_get(&v->s[s].sd, doc, &sd)) continue; if (v->strip && sd.plen > v->strip) { sd.path += v->strip; sd.plen -= v->strip; } StoreLiveDoc *ld = sy_lookup(v, sd.path, sd.plen); if (!ld) continue;
             uint32_t nl; const char *nm = store_strs_get(&x->names, st_get_u32(q), &nl); sy_ns_add(nm, nl, ld);
         }
     }

@@ -228,35 +228,17 @@ static int st_write_file(const char *path, const void *data, size_t n) {
 }
 
 /* ---------- onde fica o armazenamento ----------
- * <projeto>/.katana/<modulo>/store/ com .gitignore "*" so dentro de store/ (kb/ ao lado pode ir ao git); se a pasta nao for gravavel:
- * ~/.katana/<modulo>/<hash do caminho>/store/. Leitura (mk=0): usa a que ja tem MANIFEST; sem nenhuma, a do projeto. */
+ * A raiz e decidida por roots.c (index_resolve): pasta com init (marcador ROOT) tem o store dentro dela, <raiz>/.katana/coder/store, e cobre a
+ * subarvore; o resto vai para ~/.katana/coder/<hash do caminho>/store. Pasta sem init nunca ganha .katana. Leitura (mk=0) so calcula o caminho;
+ * mk=1 cria a pasta (0700) e, na home, registra a raiz. O store tem um .gitignore "*" so dentro de store/. */
 static void store_locate(const char *project, const char *module, char *out, size_t cap, int mk) {
-    char root[4096], home[700], a[4300], b[4300], man[4400];
-    if (!realpath(project, root)) snprintf(root, sizeof root, "%s", project);
-    agent_home(home, sizeof home);
-    snprintf(a, sizeof a, "%s/.katana/%s/store", root, module);
-    snprintf(b, sizeof b, "%s/.katana/%s/%016llx/store", home, module, (unsigned long long)store_hash64(root, strlen(root), 0));
-    struct stat sv;
-    const int local = proj_is_launch(root);      /* so a pasta em que o katana foi chamado tem o .katana dentro; as outras vao para ~/.katana */
-    if (!mk) {
-        if (!local) {
-            snprintf(man, sizeof man, "%s/MANIFEST", b);
-            if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", b); return; }
-            snprintf(man, sizeof man, "%s/MANIFEST", a);      /* um indice local antigo ainda serve para leitura */
-            if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", a); return; }
-            snprintf(out, cap, "%s", b); return;
-        }
-        snprintf(man, sizeof man, "%s/MANIFEST", a);
-        if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", a); return; }
-        snprintf(man, sizeof man, "%s/MANIFEST", b);
-        if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", b); return; }
-        snprintf(out, cap, "%s", a); return;
+    (void)module; IndexLoc L; index_resolve(project, mk, &L);
+    if (mk) {
+        if (st_mkdirs(L.store) != 0 && L.init) { rt_home_store(L.root, L.store, sizeof L.store); st_mkdirs(L.store); }      /* pasta com init que nao aceita escrita: o store vai para a home */
+        struct stat sv; char gi[4500]; snprintf(gi, sizeof gi, "%s/.gitignore", L.store);
+        if (stat(gi, &sv) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); chmod(gi, 0600); } }
     }
-    const char *use = a;
-    if (!local || st_mkdirs(a) != 0 || access(a, W_OK) != 0) { use = b; st_mkdirs(b); }
-    char gi[4400]; snprintf(gi, sizeof gi, "%s/.gitignore", use);
-    if (stat(gi, &sv) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); chmod(gi, 0600); } }
-    snprintf(out, cap, "%s", use);
+    snprintf(out, cap, "%s", L.store);
 }
 
 /* ---------- leitor ---------- */

@@ -395,16 +395,20 @@ static void cs_params(void) {
 
 /* ---- visao de leitura: segmentos, documentos vigentes (numeracao global), tamanhos ---- */
 typedef struct { const StoreSeg *seg; CsLex lex; const StoreSection *sp; StoreTable lens, tri; const uint8_t *tpool, *tend; StoreDocs docs; uint32_t ndocs; uint32_t *gmap; int has; } CsSeg;
-typedef struct { StoreReader *r; CsSeg *s; int ns; uint32_t N; const char **path; uint32_t *plen; uint32_t *lens; double avg[3]; char dir[4400]; int noindex; int borrowed; void *slot; } CsView;
+typedef struct { StoreReader *r; CsSeg *s; int ns; uint32_t N; const char **path; uint32_t *plen; uint32_t *lens; double avg[3]; char dir[4400]; int noindex; int borrowed; void *slot; uint32_t strip; } CsView;
 static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap) {
     memset(v, 0, sizeof *v);
-    store_locate(proj, "coder", v->dir, sizeof v->dir, 0);
+    IndexLoc loc; index_resolve(proj, 0, &loc); snprintf(v->dir, sizeof v->dir, "%s", loc.store);
     if (store_open(v->dir, &v->r, err, ecap) != 0) return -1;
     StoreReader *r = v->r;
     if (r->nseg == 0) { snprintf(err, ecap, "sem indice em %s (rode: katana coder index %s)", v->dir, proj); return -1; }
     StoreLive L; const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)r->nseg);
     for (int i = 0; i < r->nseg; i++) segs[i] = &r->seg[i];
     store_live_build(&L, segs, r->nseg); free(segs);
+    /* a raiz usada para ler arquivos e a localizada agora (nao a gravada no manifesto: a pasta pode ter sido movida); com prefixo, a consulta
+       fica restrita a ele e os caminhos saem relativos a ele */
+    if (loc.prefix[0]) { store_live_rebase(&L, loc.prefix, strlen(loc.prefix)); v->strip = (uint32_t)strlen(loc.prefix) + 1; snprintf(r->man.root, sizeof r->man.root, "%s/%s", loc.root, loc.prefix); }
+    else snprintf(r->man.root, sizeof r->man.root, "%s", loc.root);
     v->ns = r->nseg; v->s = (CsSeg *)calloc((size_t)v->ns, sizeof(CsSeg));
     for (int s = 0; s < v->ns; s++) {
         CsSeg *c = &v->s[s]; c->seg = &r->seg[s];
@@ -424,7 +428,7 @@ static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap)
     double sum[3] = {0, 0, 0};
     for (int s = 0; s < v->ns; s++) { CsSeg *c = &v->s[s];
         for (uint32_t i = 0; i < c->ndocs; i++) { uint32_t g = c->gmap[i]; if (g == UINT32_MAX) continue;
-            StoreDoc d; store_docs_get(&c->docs, i, &d); v->path[g] = d.path; v->plen[g] = d.plen;
+            StoreDoc d; store_docs_get(&c->docs, i, &d); v->path[g] = d.path + v->strip; v->plen[g] = d.plen - v->strip;
             if (c->has && i < c->lens.n) for (int f = 0; f < 3; f++) { uint32_t x = st_get_u32(store_table_at(&c->lens, i) + 4 * f); v->lens[(size_t)g * 3 + f] = x; sum[f] += x; } } }
     for (int f = 0; f < 3; f++) { v->avg[f] = N ? sum[f] / N : 1; if (v->avg[f] < 1) v->avg[f] = 1; }
     store_live_free(&L);
@@ -442,7 +446,7 @@ static void cs_view_close(CsView *v) {
     cs_view_free_real(v);
 }
 static int cs_view_open(const char *proj, CsView *v, char *err, size_t ecap) {
-    char dir[4400]; store_locate(proj, "coder", dir, sizeof dir, 0);
+    char dir[4400]; idx_view_key(proj, dir, sizeof dir);
     void *h = idx_cache_get(&g_cs_cache, dir);
     if (h) { *v = *(CsView *)h; v->borrowed = 1; v->slot = h; return 0; }
     CsView t; if (cs_view_open_raw(proj, &t, err, ecap) != 0) return -1;
@@ -863,7 +867,8 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
     CsView v; char err[400];
     if (cs_view_open(proj, &v, err, sizeof err) != 0) { if (!ho) fprintf(stderr, "search: %s\n", err); return 1; }
     t_open = now_sec() - t0;
-    char kbproj[4300]; snprintf(kbproj, sizeof kbproj, "%s/.katana/coder", v.r->man.root[0] ? v.r->man.root : proj);
+    IndexLoc kloc; index_resolve(proj, 0, &kloc);
+    char kbproj[4300]; snprintf(kbproj, sizeof kbproj, "%s/.katana/coder", kloc.root);
     const CoderKb *kbc = cs_kb_get(kb_isdir(kbproj) ? kbproj : NULL); int kbok = kbc != NULL;
     t_kb = now_sec() - t0 - t_open;
     CsQuery Q; char rest[1100]; cs_parse_raw(query, &Q, rest, sizeof rest);

@@ -101,6 +101,23 @@ static void store_live_build(StoreLive *L, const StoreSeg *const *seg, int nseg)
     }
 }
 static void store_live_free(StoreLive *L) { free(L->e); free(L->tab); memset(L, 0, sizeof *L); }
+/* consulta restrita ao prefixo `pfx` (sem barra final) de uma raiz que o absorve: fica so o que esta debaixo dele, com o caminho relativo ao prefixo
+ * (as saidas mostram o mesmo que quando a pasta era a propria raiz); a tabela de busca e refeita para os caminhos novos */
+static void store_live_rebase(StoreLive *L, const char *pfx, size_t pl) {
+    int n = 0;
+    for (int i = 0; i < L->n; i++) {
+        StoreLiveDoc *e = &L->e[i];
+        if (e->dead || e->d.plen <= pl + 1 || memcmp(e->d.path, pfx, pl) != 0 || e->d.path[pl] != '/') continue;
+        L->e[n] = *e; L->e[n].d.path += pl + 1; L->e[n].d.plen -= (uint32_t)(pl + 1); n++;
+    }
+    L->n = n;
+    for (uint32_t i = 0; i < L->tabn; i++) L->tab[i] = -1;
+    for (int i = 0; i < n; i++) {
+        uint32_t h = (uint32_t)store_hash64(L->e[i].d.path, L->e[i].d.plen, 7) & (L->tabn - 1);
+        while (L->tab[h] >= 0) h = (h + 1) & (L->tabn - 1);
+        L->tab[h] = i;
+    }
+}
 static int st_cmp_live(const void *a, const void *b) {
     const StoreLiveDoc *x = *(const StoreLiveDoc *const *)a, *y = *(const StoreLiveDoc *const *)b;
     return st_cmp_bytes(x->d.path, x->d.plen, y->d.path, y->d.plen);
@@ -307,6 +324,7 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
             if (isd && isroot && S->has_gitignore && (!strcmp(nm, "ref") || !strcmp(nm, "models")) && st_count_files_capped(path, at + nl, 5000) > 5000) {
                 S->ignored++; S->ignored_heur++; path[plen] = 0; continue;      /* heuristica de seguranca: pasta enorme que o .gitignore nao cobre */
             }
+            if (isd && rt_skip_subdir(path)) { S->ignored++; path[plen] = 0; continue; }      /* init aninhado (indice proprio) ou copia de trabalho do git (roots.c) */
             if (isd) st_scan_walk(S, path, at + nl, rel0);
             else {
                 if (S->n == S->cap) { S->cap = S->cap ? S->cap * 2 : 1024; S->e = (StoreScanEnt *)realloc(S->e, sizeof *S->e * (size_t)S->cap); }
@@ -459,6 +477,8 @@ static int coder_cmd_index(int argc, char **argv) {
     char proj[4096], dir[4400], err[300], h[40]; uint64_t maxsz = 0; int fa = 0;
     cstore_args(argc, argv, proj, sizeof proj, &maxsz, &fa);
     struct stat st; if (stat(proj, &st) != 0 || !S_ISDIR(st.st_mode)) { fprintf(stderr, "index: %s nao e uma pasta\n", proj); return 2; }
+    IndexLoc loc; index_resolve(proj, 1, &loc);      /* a raiz que cobre a pasta (init, ancestral ou home); o indice e da raiz inteira */
+    snprintf(proj, sizeof proj, "%s", loc.root);
     store_locate(proj, "coder", dir, sizeof dir, 1);
     StoreScanOpts o; memset(&o, 0, sizeof o); o.max_size = maxsz;
     coder_search_hook(&o);
@@ -468,6 +488,7 @@ static int coder_cmd_index(int argc, char **argv) {
     char sinfo[400], yinfo[500]; coder_search_hook_done(&o, sinfo, sizeof sinfo); coder_sym_hook_done(yinfo, sizeof yinfo);
     if (rc == 1) { fprintf(stderr, "index: %s; use a leitura (status)\n", err); return 3; }
     if (rc != 0) { fprintf(stderr, "index: erro: %s\n", err); return 1; }
+    if (loc.kind == IL_HOME) index_retire_below(proj);
     StoreReader *r; uint64_t disk = 0; int nseg = 0;
     if (store_open(dir, &r, err, sizeof err) == 0) { disk = store_disk_bytes(r); nseg = r->nseg; store_close(r); }
     printf("index %s: %d arquivos (%d novos, %d alterados, %d so mtime, %d removidos, %d iguais); ignorados por tipo: %d binarios, %d grandes, %d ilegiveis; ignorados por regra (.gitignore/.katanaignore/pastas pesadas): %d entradas (%d pela heuristica de pasta enorme)\n",
@@ -480,7 +501,14 @@ static int coder_cmd_index(int argc, char **argv) {
 static int coder_cmd_status(int argc, char **argv) {
     char proj[4096], dir[4400], err[300], h[40]; uint64_t maxsz = 0; int fa = 0;
     cstore_args(argc, argv, proj, sizeof proj, &maxsz, &fa);
-    store_locate(proj, "coder", dir, sizeof dir, 0);
+    IndexLoc loc; index_resolve(proj, 0, &loc); snprintf(dir, sizeof dir, "%s", loc.store);
+    { char vis[4200]; rt_real(proj, vis, sizeof vis);
+      printf("pasta consultada: %s\nraiz resolvida: %s\n", vis, loc.root);
+      if (loc.kind == IL_LOCAL) printf("origem do indice: local (init nesta pasta)\ninit: sim (marcador %s/.katana/coder/ROOT)\n", loc.root);
+      else if (loc.kind == IL_ANCESTOR) printf("origem do indice: ancestral (init em %s); a consulta fica restrita ao prefixo %s\ninit: sim, na raiz ancestral\n", loc.root, loc.prefix);
+      else if (loc.prefix[0]) printf("origem do indice: home (raiz da home %s absorve esta pasta; consulta restrita ao prefixo %s)\ninit: nao (nenhum ancestral tem init)\n", loc.root, loc.prefix);
+      else printf("origem do indice: home (pasta visitada, sem init; nada e criado dentro dela)\ninit: nao\n");
+      if (index_old_local_store(loc.root)) printf("aviso: ha um indice local antigo sem marcador em %s/.katana/coder/store (nao e lido; `katana init` na pasta o adota)\n", loc.root); }
     StoreReader *r;
     if (store_open(dir, &r, err, sizeof err) != 0) { fprintf(stderr, "status: %s\n", err); return 1; }
     printf("armazenamento: %s\nformato %d, geracao %llu, raiz %s, %d segmento(s), %s em segmentos\n", dir, STORE_FORMAT, (unsigned long long)r->gen, r->man.root[0] ? r->man.root : "(vazio)", r->nseg, cstore_human(store_disk_bytes(r), h, sizeof h));
@@ -498,6 +526,9 @@ static int coder_cmd_status(int argc, char **argv) {
     int live = 0, bin = 0, big = 0, unr = 0; uint64_t bytes = 0;
     for (int i = 0; i < L.n; i++) if (!L.e[i].dead) { live++; bytes += L.e[i].d.size; if (L.e[i].d.flags & SDF_SKIP_BINARY) bin++; else if (L.e[i].d.flags & SDF_SKIP_BIG) big++; else if (L.e[i].d.flags & SDF_SKIP_UNREADABLE) unr++; }
     printf("arquivos vigentes: %d (%s de conteudo; %d binarios, %d grandes, %d ilegiveis sem leitura)\n", live, cstore_human(bytes, h, sizeof h), bin, big, unr);
+    if (loc.prefix[0]) { const size_t pl = strlen(loc.prefix); int np = 0;
+        for (int i = 0; i < L.n; i++) if (!L.e[i].dead && L.e[i].d.plen > pl && !memcmp(L.e[i].d.path, loc.prefix, pl) && L.e[i].d.path[pl] == '/') np++;
+        printf("arquivos sob o prefixo %s: %d\n", loc.prefix, np); }
     { char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir); FILE *f = fopen(fp, "rb"); int a = 0, b = 0, c = 0;
       if (f) { if (fscanf(f, "%d %d %d", &a, &b, &c) == 3) printf("ignorados por regra na ultima varredura: %d entradas (arquivos ou pastas; %d pela heuristica de pasta enorme)\n", a, b); fclose(f); } }
     store_live_free(&L); store_close(r);

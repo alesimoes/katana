@@ -211,27 +211,55 @@ static void ex_init_build(const char *dir, McpB *out) {
     }
     mcp_bputs(out, "# add rules:, never:, ask:, style: (see docs/extending.md in the katana repository)\n");
 }
-/* katana init [pasta] [--force] */
+/* katana init [pasta] [--force] [--remove] e /init: UM so caminho (ex_init_run). Escreve o KATANA.md se nao existir (se existir, mantem o arquivo sem
+ * erro; --force sobrescreve), cria o marcador <pasta>/.katana/coder/ROOT (a pasta vira raiz de indice, coder/roots.c) e o indice local.
+ * Devolve o texto do KATANA.md gerado em *gen (malloc; NULL se o arquivo foi mantido) para o /init mandar ao modelo melhorar. */
 static int coder_cmd_index(int argc, char **argv);      /* src/coder/storedocs.c: katana coder index [pasta] */
-static int init_cli(int argc, char **argv) {
-    const char *dir = "."; int force = 0;
-    for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--force")) force = 1; else dir = argv[i]; }
-    char rd[4400];
-    if (!realpath(dir, rd) || !ex_isdir(rd)) { fprintf(stderr, "init: %s is not a folder\n", dir); return 2; }
+static int ex_init_run(const char *rd, int force, int verbose, char **gen) {
+    if (gen) *gen = NULL;
+    char h[1100]; agent_home(h, sizeof h);
+    if ((!strcmp(rd, h) || !strcmp(rd, "/")) && !force) { fprintf(stderr, "init: %s is the home folder (or /); an index root there would cover everything (use --force to do it anyway)\n", rd); return 1; }
     char f[4500]; snprintf(f, sizeof f, "%s/KATANA.md", rd);
-    if (access(f, F_OK) == 0 && !force) { fprintf(stderr, "init: %s already exists (use --force to overwrite it)\n", f); return 1; }
-    McpB b = {0};
-    ex_init_build(rd, &b);
-    if (!ex_write(f, b.p, 0)) { fprintf(stderr, "init: cannot write %s\n", f); free(b.p); return 1; }
-    printf("wrote %s (%zu characters):\n%s", f, b.n, b.p);
-    free(b.p);
-    {   /* o indice do coder da pasta (Find e Symbols usam): criado aqui, senao a primeira consulta o cria */
-        char *ia[2] = {rd, NULL};
-        printf("\nindexing the folder for Find and Symbols (katana coder index):\n");
-        fflush(stdout);
+    char err[300] = ""; int info = 0;
+    if (index_init_root(rd, &info, err, sizeof err) != 0) { fprintf(stderr, "init: %s\n", err); return 1; }
+    const int had = access(f, F_OK) == 0;
+    if (!had || force) {
+        McpB b = {0}; ex_init_build(rd, &b);
+        if (!ex_write(f, b.p, 0)) { fprintf(stderr, "init: cannot write %s\n", f); free(b.p); return 1; }
+        if (verbose) printf("wrote %s (%zu characters):\n%s", f, b.n, b.p);
+        else fprintf(stderr, "%s[init: wrote %s (%zu characters)]%s\n", CE(C_DIM), f, b.n, CE(C_RESET));
+        if (gen) *gen = b.p; else free(b.p);
+    } else {
+        const char *m = verbose ? "init: %s already exists; kept (use --force to overwrite it)\n" : "[init: %s already exists; kept (/init --force overwrites it)]\n";
+        if (verbose) printf(m, f); else fprintf(stderr, m, f);
+    }
+    if (info & 1) { if (verbose) printf("%s was already an index root\n", rd); }
+    else if (info & 2) { if (verbose) printf("moved the index of %s from ~/.katana into the folder\n", rd); }
+    {   /* o indice da pasta (Find e Symbols usam): criado aqui; a primeira consulta de outro processo o acha */
+        char *ia[2] = {(char *)rd, NULL};
+        if (verbose) { printf("\nindexing the folder for Find and Symbols (katana coder index):\n"); fflush(stdout); }
+        else fprintf(stderr, "%s[init: index root created in %s/.katana/coder; indexing...]%s\n", CE(C_DIM), rd, CE(C_RESET));
         coder_cmd_index(1, ia);
     }
+    {   /* o indice que cobria esta pasta (ancestral com init ou raiz da home) deixa de incluir os arquivos dela: revalida agora */
+        char par[4400]; snprintf(par, sizeof par, "%s", rd); char *sl = strrchr(par, '/');
+        if (sl && sl != par) { *sl = 0; IndexLoc pl; index_resolve(par, 0, &pl); char man[4500]; struct stat sv;
+            snprintf(man, sizeof man, "%s/MANIFEST", pl.store);
+            if (strcmp(pl.root, h) != 0 && strcmp(pl.root, "/") != 0 && stat(man, &sv) == 0) index_ensure(pl.root, 2, "", 0, NULL); }
+    }
     return 0;
+}
+static int init_cli(int argc, char **argv) {
+    const char *dir = "."; int force = 0, rm = 0;
+    for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--force")) force = 1; else if (!strcmp(argv[i], "--remove")) rm = 1; else dir = argv[i]; }
+    char rd[4400];
+    if (!realpath(dir, rd) || !ex_isdir(rd)) { fprintf(stderr, "init: %s is not a folder\n", dir); return 2; }
+    if (rm) {
+        if (index_remove_root(rd)) printf("init removed from %s (marker and local index deleted; KATANA.md kept)\n", rd);
+        else printf("init: %s is not an index root\n", rd);
+        return 0;
+    }
+    return ex_init_run(rd, force, 1, NULL);
 }
 
 /* ======== skills ======== */
@@ -574,12 +602,11 @@ static int ext_slash(const char *line) {
     const char *rest = line + 1 + wl; while (*rest == ' ') rest++;
     if (!strcmp(w, "init")) {
         char cwd[4200]; if (!getcwd(cwd, sizeof cwd)) return 1;
-        char f[4300]; snprintf(f, sizeof f, "%s/KATANA.md", cwd);
+        char rcwd[4400]; if (!realpath(cwd, rcwd)) snprintf(rcwd, sizeof rcwd, "%s", cwd);
         const int force = strstr(rest, "--force") != NULL;
-        if (access(f, F_OK) == 0 && !force) { fprintf(stderr, "[/init: %s already exists; /init --force overwrites it]\n", f); return 1; }
-        McpB b = {0}; ex_init_build(cwd, &b);
-        if (!ex_write(f, b.p, 0)) { fprintf(stderr, "[/init: cannot write %s]\n", f); free(b.p); return 1; }
-        fprintf(stderr, "%s[/init: wrote %s (%zu characters); the model will now improve it]%s\n", CE(C_DIM), f, b.n, CE(C_RESET));
+        char *gen = NULL;
+        if (ex_init_run(rcwd, force, 0, &gen) != 0 || !gen) { free(gen); return 1; }      /* KATANA.md ja existia: mantido, marcador e indice criados, nada vai ao modelo */
+        McpB b = {0}; b.p = gen; b.n = strlen(gen);
         snprintf(g_ext_msg, sizeof g_ext_msg,
             "I just generated a first KATANA.md in this folder from what could be detected. Improve it by reading the project (README, build files, a few source files). "
             "Keep the brief format exactly: a first line '# name: what it is, 12 words at most', then keys at the start of a line: build:, test:, run:, lint:, done: (one value each), "

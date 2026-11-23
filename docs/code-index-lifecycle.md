@@ -1164,6 +1164,21 @@ from disk. (3) The Find cache (`find-*.idx`) skips its own list-and-stat walk un
 too. (6) `autoindex_dir` spawns `katana coder index` once per folder per process. Not done in this phase: `agent/devtools.c` and `agent/tools.c`
 (older tool set) do not call `index_touch`.
 
+**Phase 2 status (2026-11-23): the part about roots, place and init is built and compiled; nothing measured.** New `src/coder/roots.c` (`index_resolve`,
+`index_init_root`, `index_remove_root`, `index_retire_below`, `index_marker_root`, `rt_skip_subdir`); `store_locate` now asks it, so every reader and writer
+follows one rule. `katana init` and `/init` are one path (`ex_init_run` in `src/agent/extend.c`): `KATANA.md` is written only when missing (or `--force`),
+the marker `.katana/coder/ROOT` and the index are always created, `katana init --remove` undoes the marker and the local store. `proj_is_launch` and
+`g_launch_dir` are gone; `fd_cache_path` and the prefix cache write inside a folder only under an initialized root. Queries resolve `path` through the
+resolver: a prefix of an absorbing root restricts the view (`store_live_rebase`, paths stay relative to the visited folder), views are cached per store and
+prefix, and the located root replaces the manifest's recorded root (a moved folder reads its own files). `katana coder status` prints the resolved root, where the
+index comes from (local, ancestor, home), whether there is an init, and the file count under the prefix. Implementer decisions (also at the head of
+`roots.c`): the home registry holds only home roots; absorption retires descendant home stores right after the absorbing store is written, not "at N1";
+init moves a home store with `rename` (otherwise deletes it and rebuilds); an old local store without marker is neither read nor deleted, `status` warns and `init`
+adopts it; the marker is git-ignored; init in the home folder or `/` needs `--force`; the walk (and the legacy Find list) does not descend into a subfolder with its own
+marker or into a linked git worktree (`.git` file pointing into `worktrees/`), while submodules and nested clones are still descended. Not done in this phase:
+the secret file table, `.git/info/exclude`, link and mount detection, moved-folder detection of home roots by (device, inode), `katana coder list/forget/gc`
+(phase 8), and Grep, which has no index, still lists nested folders.
+
 ### 5.2 The waves
 
 | Wave | Agents (in parallel) | Files each agent may edit | Days of the wave |
