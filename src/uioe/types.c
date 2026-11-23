@@ -64,6 +64,7 @@ typedef struct {
     uint8_t inherits;
     uint8_t index_ready;                /* ha armazenamento do indice para a raiz (so olha o disco, nao abre) */
     char index_note[160];
+    char xw[64][24]; int xw_of[64]; int nxw;   /* U3: palavras em ingles/codigo dos conceitos de cada termo (base de conhecimento), para casar com o codigo */
 } UioeAsk;
 
 typedef struct {
@@ -83,6 +84,7 @@ typedef struct {
     int dep;                            /* depende do passo N (0 = nao) */
     uint8_t status;                     /* 0 pronto, 1 indisponivel, 2 nao roteado (politica) */
     char note[140];
+    uint8_t ran; int rstatus, rnodes, rcalls; double rms; char rnote[160], rconn[64];     /* U3: o que aconteceu quando o passo rodou (ran: 0 nao, 1 rodou, 2 nao rodou com motivo) */
 } UioeStep;
 
 typedef struct {
@@ -97,6 +99,58 @@ typedef struct {
     char notrouted[300];                /* fontes que nao entram e por que */
     char sends_out[120];
 } UioeRoute;
+
+/* ---- U3: grafo de evidencias, resultado de conector, recuperacao (docs/uioe.md 3.6, 3.7, 4.5) ---- */
+#define UG_MAXNODE 400
+#define UG_MAXEDGE 800
+typedef struct UioeCtx UioeCtx;
+typedef enum { UN_FILE, UN_RANGE, UN_SYMBOL, UN_KEY, UN_DOCLINE, UN_FACT, UN_FOLDER } UioeNodeKind;
+typedef enum { UE_CALLS, UE_DEFINES, UE_USES, UE_IMPORTS, UE_SENDS, UE_HANDLES, UE_LINKS, UE_CONTAINS, UE_MENTIONS, UE_VIA } UioeEdgeKind;
+enum { UV_NONE = 0, UV_OK, UV_MOVED, UV_STALE, UV_GONE, UV_UNREADABLE, UV_SKIPPED };     /* verificacao de um no (3.6.1) */
+enum { UR_OK = 0, UR_PARTIAL, UR_EMPTY, UR_UNAVAILABLE, UR_TIMEOUT, UR_ERROR };           /* resultado de um conector (4.5) */
+typedef struct {
+    uint32_t id; uint8_t kind;
+    char path[400]; int line0, line1;           /* onde (relativo a raiz); vazio para um fato sem lugar */
+    char name[100], sig[160], cls[12];          /* simbolo/chave/titulo, assinatura ou "in simbolo (a-b)", classe da chave ou tipo do simbolo */
+    char text[200];                              /* a linha citada (lida de volta na verificacao) */
+    char vkey[100];                              /* o que deve ocorrer na linha para a verificacao */
+    int conf, step, tier, relevance;             /* confianca 0-100, passo da cascata (1 exato, 2 derivado, 3 provavel), faixa 1-4, relevancia (so ordena) */
+    uint8_t ver; int vline; char vnote[100];     /* UV_*; linha corrigida; nota ("file changed since indexed") */
+    int8_t cver;                                 /* o proprio conector ja reconferiu a linha: 1 sim, -1 falhou, 0 nao */
+    int nsrc, conn; double rrf;                  /* conectores independentes que trouxeram o no, o primeiro, soma RRF */
+    char how[170];                               /* proveniencia */
+    uint8_t shown, read, dropped, onpath, anchor, secret;
+} UioeNode;
+typedef struct { int32_t from, to; uint8_t kind; int line, conf; uint8_t ver; int conn; char how[170]; char key[70]; } UioeEdge;
+typedef struct { UioeNode n[UG_MAXNODE]; int nn; UioeEdge e[UG_MAXEDGE]; int ne; int lost_n, lost_e; } UioeGraph;
+/* o que se pede a um conector e o que ele devolve (4.5); nunca imprime */
+typedef struct { uint32_t cap; char arg[420], arg2[220]; int limit, depth, line, tier, anchor, deadline_ms; } UioeCall;
+typedef struct {
+    int status;
+    UioeNode *node; int nnode, capn; UioeEdge *edge; int nedge, cape;      /* arestas: from/to = indice local do no; -1 = o no `anchor` da chamada */
+    char source[64]; char limits[400]; char notfound[300]; char sent[200]; char note[200];
+    double ms; int total, step, from_cache;
+} UioeResult;
+typedef struct { int n; char state[4]; char label[16]; char conn[24]; char input[170]; int status; double ms; int nnode, nedge, retried; char note[200]; } UioeExec;
+typedef struct {
+    UioeGraph *g;
+    UioeExec ex[80]; int nex;
+    int path[8], pathedge[8], npath;             /* o caminho de resposta: nos em ordem; aresta que liga o passo i ao i+1 (-1 = sem) */
+    int items[96], nitems, nitems_all;           /* nos para mostrar (ate 24, os que serao relidos), em ordem de fusao; nitems_all = quantos qualificavam */
+    int branch[4], nbranch;                      /* caminhos nao seguidos (so fluxo) */
+    char limits[20][230]; int nlim;              /* "Not found / limits": o que nao se achou ou nao se olhou, e por que */
+    char hyp[8][200]; int nhyp;                  /* hipoteses abertas */
+    char scope[260]; int idx_mode;               /* 0 sem indice, 1 parcial, 2 completo */
+    char degrade[8][170]; int ndeg;              /* degraus da escada usados */
+    char states[16][120]; int nstates;           /* o percurso da maquina de estados */
+    int conf_after; char sig[10][130]; int nsig;
+    int decision, rule; char decision_note[260];
+    double ms, ms_index, ms_verify; int cut; char cut_note[160];
+    int nverified, nstale, nmoved, nnotreread, nrange_total;
+    char next[220];
+    char score[24][230]; int nscore;               /* as ligacoes mais bem pontuadas para a pergunta, com a conta (traco: `score`) */
+    int ran;                                     /* a recuperacao rodou */
+} UioeRecall;
 
 /* ---- estado por pedido (3.6.2): instantaneo das globais do laco e das ferramentas ---- */
 typedef struct { char path[1024]; int a, b, how; } UioeRange;
@@ -113,6 +167,7 @@ typedef struct {
     char last_query[400]; int nlast;    /* paginacao do Find */
     UioeLoopState loop;
     int packet_tokens, model_steps;
+    UioeRecall rc;                      /* U3: o que a recuperacao achou (grafo, caminho, lacunas, hipoteses) */
 } UioeRequest;
 typedef struct { uint8_t open; int fails, skip_left; } UioeBreaker;
 typedef struct UioeConnector {
@@ -126,8 +181,8 @@ typedef struct UioeConnector {
     const char *domain;                 /* "code", "files", "memory"... so para exibir */
     /* available: 1 pronto, 0 nao, 2 parcial; why recebe o motivo. root = pasta de busca. Nao imprime. */
     int (*available)(const struct UioeConnector *self, const char *root, char *why, size_t cap);
-    /* run: so em U3 (nulo aqui) */
-    int (*run)(void *ctx, const void *call, void *result);
+    /* run: U3. Preenche o resultado, nunca imprime; NULL = o conector existe no registro mas nao foi construido nesta fase */
+    int (*run)(UioeCtx *cx, const UioeCall *call, UioeResult *res);
 } UioeConnector;
 typedef struct {
     UioeRequest *cur;                   /* o pedido corrente (heap) */
@@ -136,13 +191,21 @@ typedef struct {
     char roots[4][1100]; int nroots;
     uint64_t seq;                       /* contador de pedidos */
 } UioeSession;
-typedef struct {
+struct UioeCtx {
     UioeSession *s;
     char cwd[1100], root[1100];
     int deadline_ms, token_ceiling, json, trace;
     UioeMode mode;
     time_t now;
-} UioeCtx;
+    /* U3 */
+    double t0;                          /* inicio da recuperacao (depois do indice) */
+    int det, verify, record, explain, build_index, run, refresh;      /* KATANA_UIOE_DET; --no-verify; marcar o que mostrou; --explain; --index; 0 = so planejar */
+    SyView view; int view_state; char view_note[240];        /* UMA visao do indice por pedido: 0 fechada, 1 aberta, -1 falhou */
+    int has_store, have_sym, have_keys, idx_mode;
+    const Tokenizer *tk;                /* so o agente passa (docs.select precisa dele); a CLI nao tem modelo */
+    char fault[160];                    /* KATANA_UIOE_FAULT=conector=timeout|error,...: gancho de teste da escada de degradacao */
+    char vpath[420]; char *vbuf; size_t vn; size_t *vln; int vnl, vok; uint64_t vsize; int64_t vmtime;   /* arquivo lido pela verificacao */
+};
 
 static const char *const g_uioe_domname[] = {"code", "files", "data", "legal", "finance", "research", "memory", "system", "chat"};
 static const char *const g_uioe_kindname[] = {"none", "web", "history", "error", "impact", "config", "flow", "usage", "howto", "overview", "locate", "findings"};

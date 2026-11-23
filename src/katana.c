@@ -126,6 +126,14 @@
 #include "uioe/interpret.c"
 #include "uioe/classify.c"
 #include "uioe/route.c"
+#include "uioe/evgraph.c"              /* UIOE U3: grafo de evidencias, fusao e ordem */
+#include "uioe/verify.c"               /* UIOE U3: reler as linhas citadas */
+#include "uioe/conn_file.c"            /* UIOE U3: conectores de arquivos e documentos */
+#include "uioe/conn_code.c"            /* UIOE U3: conectores de codigo (API estruturada do coder) */
+#include "uioe/budget.c"               /* UIOE U3: prazos, disjuntor, uma chamada de conector */
+#include "uioe/pipes.c"                /* UIOE U3: pipelines por tipo de tarefa */
+#include "uioe/orch.c"                 /* UIOE U3: maquina de estados, porta G4 a G6 */
+#include "uioe/evrender.c"             /* UIOE U3: saida em texto e JSON, traco da recuperacao */
 #include "uioe/cli.c"
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */
