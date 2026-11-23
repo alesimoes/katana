@@ -9,7 +9,6 @@ typedef enum { CK_FILE, CK_FUNC, CK_METHOD, CK_CLASS, CK_STRUCT, CK_ENUM, CK_IFA
 typedef enum { CR_CALL, CR_USE, CR_IMPORT, CR_EXTENDS, CR_IMPLEMENTS, CR_TYPE, CR_WRITE, CR_LITERAL, CR_N } CoderRefKind;
 typedef enum { CV_UNKNOWN, CV_PUBLIC, CV_EXPORTED, CV_FILE, CV_PRIVATE, CV_PROTECTED } CoderVis;       /* CV_FILE: static, nao exportado, _nome por convencao */
 typedef enum { CC_EXACT, CC_HEUR, CC_LINE } CoderConf;       /* confianca do intervalo: exato, heuristico (macro, recuperacao), so a linha inicial */
-typedef enum { CG_FOUND, CG_DERIVED, CG_PROBABLE } CoderGrade;       /* grau de certeza de um fato entregue; found = fato textual verificado relendo o arquivo (o antigo "exact") */
 typedef enum { CGK_RETURN, CGK_CONTINUE, CGK_BREAK, CGK_THROW, CGK_EXIT, CGK_FILTER, CGK_N } CoderGuardKind;
 enum { CSF_DECL = 1, CSF_ASYNC = 2, CSF_TEST = 4, CSF_ENTRY = 8, CSF_GENERATED = 16, CSF_STATIC = 32 };       /* CoderSym.flags; CSF_DECL = so declaracao (prototipo) */
 enum { CRF_MACRO = 1, CRF_GUARD = 2, CRF_DOC = 4, CRF_PRODUCE = 8, CRF_CONSUME = 16, CRF_DEFINE = 32 };       /* CoderRef.flags; os tres ultimos: lado de uma chave (CR_LITERAL) */

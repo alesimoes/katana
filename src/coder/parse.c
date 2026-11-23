@@ -1730,7 +1730,28 @@ static int cp_sig_has(const char *sig, const char *w) {
     }
     return 0;
 }
+/* C/C++: #include "x.h" e #include <x.h> viram referencias de import no nivel do arquivo (so o texto entre aspas ou colchetes) */
+static void cp_c_includes(CP *c) {
+    const char *t = c->t; size_t n = c->n;
+    for (size_t i = 0; i < n; ) {
+        size_t e = i; while (e < n && t[e] != '\n') e++;
+        size_t k = i; while (k < e && (t[k] == ' ' || t[k] == '\t')) k++;
+        if (k < e && t[k] == '#') {
+            k++; while (k < e && (t[k] == ' ' || t[k] == '\t')) k++;
+            if (e - k > 7 && !strncmp(t + k, "include", 7)) {
+                k += 7; while (k < e && (t[k] == ' ' || t[k] == '\t')) k++;
+                if (k < e && (t[k] == '"' || t[k] == '<')) {
+                    char close = t[k] == '"' ? '"' : '>'; size_t a = ++k;
+                    while (k < e && t[k] != close) k++;
+                    if (k < e && k > a) cp_ref(c, -1, CR_IMPORT, t + a, k - a, a);
+                }
+            }
+        }
+        i = e + 1;
+    }
+}
 static void cp_enrich(CP *c) {
+    if (c->lang == CL_C || c->lang == CL_CPP) cp_c_includes(c);
     CoderFile *f = c->f; int L = c->lang;
     for (int s = 0; s < f->nsym; s++) {
         CoderSym *y = &f->sym[s]; const char *sg = y->sig ? y->sig : "";

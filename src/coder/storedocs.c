@@ -146,10 +146,12 @@ static int store_merge_tombs(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
     return 0;
 }
 static void coder_search_register(void);       /* search.c: fusores das secoes de busca */
+static void coder_sym_register(void);          /* symindex.c: fusores das secoes de simbolos */
 static void store_catalog_init(void) {
     store_register_merger(STS_DOCS, 1, store_merge_docs);
     store_register_merger(STS_TOMBS, 1, store_merge_tombs);
     coder_search_register();
+    coder_sym_register();
 }
 
 /* ---- varredura da pasta ---- */
@@ -328,6 +330,10 @@ static const char *cstore_human(uint64_t b, char *o, size_t cap) {
 }
 static void coder_search_hook(StoreScanOpts *o);                       /* search.c: liga o indice de busca ao `index` */
 static void coder_search_hook_done(StoreScanOpts *o, char *out, size_t cap);
+static void coder_sym_hook(StoreScanOpts *o, const char *proj);        /* symindex.c: indice de simbolos e referencias, encadeado ao da busca */
+static void coder_sym_hook_done(char *out, size_t cap);
+static int coder_sym_verify_seg(const StoreSeg *s, char *err, size_t ecap);
+static void coder_sym_seg_info(const StoreSeg *s, char *out, size_t cap);
 static int coder_search_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_search_seg_info(const StoreSeg *s, char *out, size_t cap);
 static int coder_cmd_index(int argc, char **argv) {
@@ -337,9 +343,10 @@ static int coder_cmd_index(int argc, char **argv) {
     store_locate(proj, "coder", dir, sizeof dir, 1);
     StoreScanOpts o; memset(&o, 0, sizeof o); o.max_size = maxsz;
     coder_search_hook(&o);
+    coder_sym_hook(&o, proj);
     StoreUpdStats S; err[0] = 0;
     int rc = store_catalog_update(dir, proj, &o, &S, err, sizeof err);
-    char sinfo[400]; coder_search_hook_done(&o, sinfo, sizeof sinfo);
+    char sinfo[400], yinfo[500]; coder_search_hook_done(&o, sinfo, sizeof sinfo); coder_sym_hook_done(yinfo, sizeof yinfo);
     if (rc == 1) { fprintf(stderr, "index: %s; use a leitura (status)\n", err); return 3; }
     if (rc != 0) { fprintf(stderr, "index: erro: %s\n", err); return 1; }
     StoreReader *r; uint64_t disk = 0; int nseg = 0;
@@ -348,6 +355,7 @@ static int coder_cmd_index(int argc, char **argv) {
            proj, S.scanned, S.added, S.changed, S.touched, S.removed, S.unchanged, S.skip_bin, S.skip_big, S.skip_unread);
     printf("  geracao %lld, %d segmento(s)%s, %s em disco, varredura %.3f s, total %.3f s\n  armazenamento: %s\n", (long long)S.gen, nseg, S.compacted ? " (compactado)" : "", cstore_human(disk, h, sizeof h), S.t_scan, S.t_total, dir);
     if (sinfo[0]) printf("  busca: %s\n", sinfo);
+    if (yinfo[0]) printf("  simbolos: %s\n", yinfo);
     return 0;
 }
 static int coder_cmd_status(int argc, char **argv) {
@@ -362,8 +370,8 @@ static int coder_cmd_status(int argc, char **argv) {
         const StoreSection *sd = store_seg_section(&r->seg[i], STS_DOCS), *stt = store_seg_section(&r->seg[i], STS_TOMBS);
         if (sd) nd = sd->nrec;
         if (stt) nt = stt->nrec;
-        char si[200]; coder_search_seg_info(&r->seg[i], si, sizeof si);
-        printf("  seg %06llu  %10s  %u secoes  %u documentos  %u tombstones%s%s\n", (unsigned long long)r->seg[i].id, cstore_human(r->seg[i].size, h, sizeof h), r->seg[i].nsec, nd, nt, si[0] ? "  | busca: " : "", si);
+        char si[200], yi[200]; coder_search_seg_info(&r->seg[i], si, sizeof si); coder_sym_seg_info(&r->seg[i], yi, sizeof yi);
+        printf("  seg %06llu  %10s  %u secoes  %u documentos  %u tombstones%s%s%s%s\n", (unsigned long long)r->seg[i].id, cstore_human(r->seg[i].size, h, sizeof h), r->seg[i].nsec, nd, nt, si[0] ? "  | busca: " : "", si, yi[0] ? "  | simbolos: " : "", yi);
     }
     StoreLive L; const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)(r->nseg + 1));
     for (int i = 0; i < r->nseg; i++) segs[i] = &r->seg[i];
@@ -399,6 +407,7 @@ static int coder_cmd_verify(int argc, char **argv) {
         const StoreSection *sd = store_seg_section(&r->seg[i], STS_DOCS);
         if (sd && !b && cstore_check_docs(sd, e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         if (!b && coder_search_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
+        if (!b && coder_sym_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         secs += (int)r->seg[i].nsec;
     }
     /* arquivos em seg/ e tmp/ que o manifesto nao cita: apenas informativo (a proxima escrita limpa) */
