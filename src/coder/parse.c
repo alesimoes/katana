@@ -225,7 +225,7 @@ static const char *const CP_NOCALL[] = {"if", "else", "while", "for", "switch", 
     "finally", "with", "elif", "except", "assert", "not", "and", "or", "in", "is", "lambda", "function", "func", "fun", "fn", "super", "this", "static_cast", "dynamic_cast",
     "reinterpret_cast", "const_cast", "static_assert", "_Static_assert", "alignas", "_Alignas", "noexcept", "throw", "throws", "synchronized", "using", "lock", "fixed", "foreach",
     "unless", "until", "select", "typedef", "extern", "__attribute__", "__attribute", "__declspec", "import", "require", "export", "elseif", "param", "trap", "when", "match",
-    "await", "yield", "instanceof", "delete", "void", "new", "defer", "go", "raise", "print_", "_Generic", "operator", "constructor", "sizeof...", "async", "typeid", "co_await", "co_return", NULL};
+    "await", "yield", "instanceof", "delete", "void", "new", "raise", "print_", "_Generic", "operator", "constructor", "sizeof...", "async", "typeid", "co_await", "co_return", NULL};
 static const char *const CP_PRE[] = {"return", "new", "else", "case", "throw", "await", "yield", "typeof", "in", "of", "delete", "do", "not", "and", "or", "is", "print", "defer", "go",
     "if", "elif", "while", "for", "until", "unless", "with", "from", "assert", "raise", "match", "switch", "select", "when", "then", "lazy", "instanceof", "co_await", "co_return", NULL};
 static int cp_inl(const char *s, size_t l, const char *const *L) {
@@ -1659,7 +1659,7 @@ static void cp_post(CP *c) {
     int *map = (int *)malloc(sizeof(int) * (size_t)n);
     /* prototipos que tem definicao no mesmo arquivo somem */
     unsigned char *drop = (unsigned char *)calloc((size_t)n, 1); int any = 0;
-    for (int s = 0; s < n; s++) if ((c->sfl[s] & 1) && (f->sym[s].kind == CK_FUNC || f->sym[s].kind == CK_METHOD)) {
+    if (c->lang == CL_C || c->lang == CL_CPP) for (int s = 0; s < n; s++) if ((c->sfl[s] & 1) && (f->sym[s].kind == CK_FUNC || f->sym[s].kind == CK_METHOD)) {
         for (int d = 0; d < n; d++) if (!(c->sfl[d] & 1) && f->sym[d].kind == f->sym[s].kind && !strcmp(f->sym[d].name, f->sym[s].name)) { drop[s] = 1; any = 1; break; }
         if (n > 4000) break;      /* arquivo enorme: nao paga O(n^2) */
     }
