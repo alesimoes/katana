@@ -8,6 +8,8 @@ static const struct { const char *name, *help; CoderCmd fn; } g_coder_cmds[] = {
     {"status", "status [pasta]: segmentos, arquivos, tamanho em disco, versao", coder_cmd_status},
     {"verify", "verify [pasta]: confere checksums de todas as secoes e o manifesto", coder_cmd_verify},
     {"compact", "compact [pasta]: funde todos os segmentos em um", coder_cmd_compact},
+    {"search", "search \"pergunta\" [pasta] [--limit N] [--json] [--why]: busca por nome e texto (canais: exato, subpalavra, bm25, trigrama, literal, conceitual)", coder_search_main},
+    {"find-name", "find-name <nome> [pasta] [--limit N] [--json]: arquivos com esse nome (exato, parcial, parecido) e quem cita o identificador", coder_find_name_main},
     {"tokens", "tokens \"texto\" [--lang pt|en|auto] [--json] | --file ARQ", coder_tokens_main},
     {NULL, NULL, NULL}
 };

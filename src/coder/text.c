@@ -100,7 +100,8 @@ static const char g_ct_pt_irr[] = "feito=fazer feita=fazer fez=fazer dito=dizer 
     "sao=ser foi=ser era=ser eram=ser fui=ser estao=estar estava=estar tem=ter tinha=ter fazer=fazer fazendo=fazer faz=fazer";
 static const char g_ct_pt_keep[] = "universidade universal universo caminho vizinho linha minha sozinho carinho espinho padrinho farinha rainha galinha cozinha "
     "marinha vinho ninho pais mais menos jamais atras apos agora sempre nunca entao assim ainda tambem apenas aquele aquela outro outra todo toda estado estados dado dados "
-    "arquivo casa mesa pasta tarefa tela rota base classe funcao versao sessao conexao extensao expressao impressao";
+    "arquivo casa mesa pasta tarefa tela rota base classe funcao versao sessao conexao extensao expressao impressao "
+    "pedido partido sentido cumprimento comprimento medida ruido tecido individuo atendimento sentimento";   /* substantivos em -ido/-imento/-ida: nao sao participio (pedido != peder) */
 static const char g_ct_en_irr[] = "children=child indices=index vertices=vertex matrices=matrix axes=axis analyses=analysis criteria=criterion data=data datum=data men=man women=woman people=person "
     "feet=foot teeth=tooth mice=mouse geese=goose leaves=leaf knives=knife wolves=wolf halves=half shelves=shelf selves=self was=be were=be been=be being=be is=be are=be am=be ran=run "
     "built=build written=write wrote=write took=take taken=take gave=give given=give made=make found=find sent=send kept=keep held=hold got=get gotten=get went=go gone=go did=do done=do "
