@@ -50,7 +50,7 @@ compiled. Also fixed: `ANS 0` counted as yes in `agent_ask_kind`.
 `docs/curriculum.md`, section "Composed scenarios"): real small projects in five stacks, a policy in C that decides each step
 from the real tool result, every call run through the agent's dispatcher, and `check` re-running each conversation and
 comparing byte for byte. New commands: `curriculum pick` (selection by coverage) and `curriculum windows` (training windows
-with the model's tokenizer, vocabulary only). The v3 files are in `/mnt/dados/cu-v3` (`v3-raw.jsonl`, `v3-data.jsonl`,
+with the model's tokenizer, vocabulary only). The v3 files were in `/mnt/dados/cu-v3` (removed on 2026-11-22; v6 supersedes them, see `data/curriculum/v6/`) (`v3-raw.jsonl`, `v3-data.jsonl`,
 `v3-holdout-raw.jsonl`, `v3-holdout-data.jsonl`); nothing was trained. Left to do: move the older MCP, skill and file-creation
 families to the composed generator (they still have one tool sequence each), reserve rare-tool situations for the validation
 file, five distinct situations per rare tool (there are three or four), more request shapes, and the tool situations that

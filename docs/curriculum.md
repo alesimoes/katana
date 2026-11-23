@@ -352,7 +352,7 @@ not seen yet, shortest first; unseen cells; the rest.
 
 ## Version 5 (2026-11-22): MCP cards and the end-of-request note
 
-Files in `/mnt/dados/cu-v5` (`run.sh` is the recipe: pool of 1,500 with `--system mix:blocks=88,real=12`, `pick --n 440`, 170
+Files that were in `/mnt/dados/cu-v5` (removed on 2026-11-22; the v6 generator and files supersede them, see `data/curriculum/v6/`; `run.sh` was the recipe: pool of 1,500 with `--system mix:blocks=88,real=12`, `pick --n 440`, 170
 validation conversations). Everything is replayed by `check`: 456 training conversations (440 picked plus 16 card
 conversations added from the pool, because the picker ranks by tool sequence and an answer without calls is a common one) and 170 validation conversations, 0 problems.
 
