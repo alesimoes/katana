@@ -31,3 +31,25 @@ made in `real` prompt mode carry the old wording; the `blocks` mode (88%) does n
 
 **Not verified.** Nothing shows yet that a model trained on this data uses `Find`, groups calls or writes scripts. The
 training run (`train.sh`) was the first of the real Qwen3.6 and had not finished when this file was written.
+
+## Training result (2026-11-22 22:09 to 2026-11-23 05:48)
+
+First training of the real Qwen3.6-35B-A3B in this project. 5 chunks of 60 steps, batch 4 (1,200 windows, about 0.7 epoch),
+rank-8 adapters on the attention matrices (5.74 M trainable weights), constant learning rate 1e-4, no validation.
+About 90 s per step (about 1h30 per chunk, 7h39 in total). The final file is `v6.kspec` (23 MB, marked
+`--no-tool-decl`: the agent leaves the tools section out of the prompt when it is applied). `train.log` is the full log.
+The per-chunk files and the optimizer state (`.kopt`) are in the backup `~/.katana/curriculum-backup/`, not in git.
+
+| chunk | mean training loss over its 60 steps |
+|---|---|
+| 1 | 1.4936 |
+| 2 | 0.9902 |
+| 3 | 0.9320 |
+| 4 | 0.7693 |
+| 5 | 0.9654 |
+
+The loss fell from the first chunk to the fourth and rose again in the fifth; single-step values are very noisy
+(0.25 to 1.5 inside one chunk) because each step draws different windows. There was no validation, so how the model
+behaves on conversations it has not seen is unknown, and **it was not tested whether it uses `Find`, groups calls or writes
+scripts.** Use: `KATANA_SPEC=<path>/v6.kspec katana agent <model.gguf>`; `katana merge <model.gguf> v6.kspec <out.gguf>`
+writes a GGUF with it inside.
