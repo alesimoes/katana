@@ -1277,8 +1277,7 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
     if (g_cs_semantic) g_cs_semantic(query, &v, sc[CH_SEM]);          /* canal opcional, ver o ponto de extensao acima */
     else cs_sem_pool(query, &v, (double *const *)sc, N);              /* o embedding reordena o que os outros canais acharam */
     for (int c = 0; c < CH_N; c++) cs_rank(sc[c], N, rk[c], 500);
-    /* fusao: camada, depois RRF (ou soma ponderada) */
-    double mx[CH_N]; for (int c = 0; c < CH_N; c++) { mx[c] = 0; for (uint32_t i = 0; i < N; i++) if (sc[c][i] > mx[c]) mx[c] = sc[c][i]; }
+    /* fusao: camada, depois RRF */
     CsRes *res = (CsRes *)malloc(sizeof *res * ((size_t)N + 1)); uint32_t nres = 0;
     for (uint32_t d = 0; d < N; d++) {
         int any = 0; double f = 0;

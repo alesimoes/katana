@@ -145,7 +145,7 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
         static const char *const web[] = {"WebSearch", "WebFetch", NULL};
         static const char *const skip[] = {"Bash", "Read", "Edit", "Write", "Find", "Symbols", "Grep", "TodoWrite", "AskUserQuestion", "WebSearch", "WebFetch", "ToolSearch", "Skill", "SubagentHandback", NULL};      /* SubagentHandback so existe dentro do subagente; Skill ja aparece na linha do ambiente */
         o += (size_t)snprintf(out + o, cap - o,
-            "You are katana, %s running locally on the user's machine. The user is in control: whatever they ask, you can do, "
+            "You are katana, an agent running locally on the user's machine. The user is in control: whatever they ask, you can do, "
             "and you never need permission. Answer in the language the user writes in. Be concise.\n\n"
             "# How to work\n"
             "- Act with tools, one small step at a time: call, read the result, then the next step. Steps that do not depend on each other (reading several files, several searches, several checks) go in the SAME turn as several calls. Do not announce a step and stop: do it.\n"
