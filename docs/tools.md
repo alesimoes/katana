@@ -205,9 +205,8 @@ with `calls: listSessions (bridge/sessions.mjs:132), terminalSessionIds (line 11
 a detached worktree in `GREY_BEFORE` (default `/tmp/katana-grey-before`; the test skips this part when it is missing).
 
 Not verified: whether Qwen3.6 actually calls `Find` and follows `calls:` / `mode=refs` instead of reading whole files
-(no run with the model yet). `Find` is in the short declarations (`g_ct_short`) but the system prompt still declares
-only the core list in `src/agent/prompt.c` with full schemas; the others, `Find` included, are listed by name and
-loaded with `ToolSearch`. Adding it to the core list is a prompt-size decision left open. Windows: not available yet.
+(no run with the model yet). `Find` is in the core list of the system prompt (`src/agent/prompt.c`, declared with its full schema, with a short guide
+to which file tool to use when); the prompt grew by about 850 bytes. Windows: not available yet.
 
 **File graph, sparse activation and the neighbour note** (`src/tools/findgraph.c`, ported from the research in
 `docs/investigation-engine.md`; no language model was run to build or check it).

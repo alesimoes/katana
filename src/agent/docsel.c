@@ -4,7 +4,7 @@
  * saltos), tokeniza cada linha e o pedido com o tokenizador do proprio modelo, pesa os tokens pela raridade no grafo (idf) e entrega
  * ao agente so as linhas que casam, com arquivo e numero da linha. Uma linha que aponta para outro documento e casa com o pedido
  * da relevancia ao documento apontado. Nada aqui usa o modelo para escolher: sao milissegundos de CPU.
- * KATANA_DOCSEL=0 desliga; KATANA_DOCSEL_TOKENS muda o orcamento (padrao 350 tokens de linhas). */
+ * KATANA_DOCSEL=0 desliga; KATANA_DOCSEL_TOKENS muda o orcamento (padrao 600 tokens, contados como 4 bytes cada). */
 
 #define DS_MAXDOC 12
 #define DS_MAXLN 2400
