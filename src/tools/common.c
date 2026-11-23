@@ -146,7 +146,7 @@ static int g_ct_seen_n;
  * ultima leitura. Read sem offset, ou repetindo a ultima chamada, continua de onde parou em vez de entregar o mesmo trecho.
  * Zera a cada pedido (rc_reset em rr_reset) e a cada conversa. ---- */
 #define RC_MAX 64
-typedef struct { char path[1024]; long long size, mt, cov_end, last_off, last_end, last_n, total; int nreads; } RdCur;      /* nreads: leituras deste arquivo neste pedido */
+typedef struct { char path[1024]; long long size, mt, cov_end, last_off, last_end, last_n, total; int nreads, mapped; } RdCur;      /* mapped: a primeira entrega foi o mapa do arquivo */      /* nreads: leituras deste arquivo neste pedido */
 static int g_rd_toomany;      /* a ultima leitura foi a RD_FORCE_READS-esima do mesmo arquivo: o laco encerra o pedido (zera em rc_reset) */
 static RdCur g_rc[RC_MAX]; static int g_rc_n;
 /* ---- faixas de linhas ja entregues ao modelo neste pedido (lidas pelo Read ou apontadas pelo Find): o Find nao repete o mesmo trecho e
@@ -176,7 +176,7 @@ static int rs_cover(const char *abs, int a, int b, int *how) {
  * o Find e o UIOE so olham o pedido atual. rc_reset (pedido novo) absorve o que o pedido leu; rd_forget_* esquecem. ---- */
 #define RP_MAX 192
 typedef struct { char path[1024]; int a, b; long long size, mt; } RpRange;
-typedef struct { char path[1024]; long long size, mt, last_off, last_end, last_n, total; } RpCur;
+typedef struct { char path[1024]; long long size, mt, last_off, last_end, last_n, total; int mapped; } RpCur;
 static RpRange g_rp[RP_MAX]; static int g_rp_n;
 static RpCur g_rpc[RC_MAX]; static int g_rpc_n;
 static void rp_drop_path(const char *abs) {
@@ -201,7 +201,7 @@ static void rp_absorb(void) {
         int k = -1; for (int j = 0; j < g_rpc_n; j++) if (!strcmp(g_rpc[j].path, c->path)) k = j;
         if (k < 0) { if (g_rpc_n == RC_MAX) { memmove(g_rpc, g_rpc + 1, sizeof(RpCur) * (RC_MAX - 1)); g_rpc_n--; } k = g_rpc_n++; }
         RpCur *p = &g_rpc[k]; snprintf(p->path, sizeof p->path, "%.1023s", c->path);
-        p->size = c->size; p->mt = c->mt; p->last_off = c->last_off; p->last_end = c->last_end; p->last_n = c->last_n; p->total = c->total;
+        p->size = c->size; p->mt = c->mt; p->last_off = c->last_off; p->last_end = c->last_end; p->last_n = c->last_n; p->total = c->total; p->mapped = c->mapped;
     }
 }
 static void rc_clear(void) { g_rc_n = 0; g_rs_n = 0; g_rd_toomany = 0; }
@@ -244,6 +244,12 @@ static int rd_cover(const char *abs, long long size, long long mt, int a, int b,
     }
     return n;
 }
+/* a entrega do comeco deste arquivo foi o mapa (neste pedido ou em anterior) */
+static int rd_mapped(const RdCur *c, const char *abs, long long size, long long mt) {
+    if (c) return c->mapped;
+    for (int i = 0; i < g_rpc_n; i++) if (!strcmp(g_rpc[i].path, abs) && g_rpc[i].size == size && g_rpc[i].mt == mt) return g_rpc[i].mapped;
+    return 0;
+}
 /* ultima leitura do arquivo (neste pedido ou, se nao houve, em pedido anterior): onde comecou, onde terminou, quantas linhas entregou */
 static int rd_last(const RdCur *c, const char *abs, long long size, long long mt, long long *off, long long *end, long long *nl) {
     if (c) { *off = c->last_off; *end = c->last_end; *nl = c->last_n; return 1; }
@@ -271,7 +277,7 @@ static void rc_note(const char *abs, long long size, long long mt, long long fir
     rs_note(abs, first, last, 2);
     if (!c) {
         if (g_rc_n == RC_MAX) memmove(g_rc, g_rc + 1, sizeof(RdCur) * (RC_MAX - 1)), g_rc_n--;
-        c = &g_rc[g_rc_n++]; snprintf(c->path, sizeof c->path, "%s", abs); c->size = size; c->mt = mt; c->cov_end = 0; c->nreads = 1;
+        c = &g_rc[g_rc_n++]; snprintf(c->path, sizeof c->path, "%s", abs); c->size = size; c->mt = mt; c->cov_end = 0; c->nreads = 1; c->mapped = 0;
     }
     if (first <= c->cov_end + 1 && last > c->cov_end) c->cov_end = last;
     c->last_off = first; c->last_end = last; c->last_n = last - first + 1; c->total = total;

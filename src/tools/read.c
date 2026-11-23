@@ -387,7 +387,7 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             const int any = rd_cover(res, fsz, fmt, 1, bb, &fn1, &pr1);      /* o que o Read ja entregou deste arquivo (neste pedido e em anteriores) */
             const long long cov_end = any && fn1 > 1 ? fn1 - 1 : 0;           /* contiguo desde a linha 1 */
             char oxt[16];
-            if (any && cov_end >= 1 && cov_end <= 40 && (!has_off || offset <= 1) && (!has_lim || limit >= 60) && ol_ext(res, oxt, sizeof oxt) && ol_big(total, n)) { remap = 1; snprintf(scope, sizeof scope, "%s", pr1 ? "this conversation" : "this request"); }      /* so o mapa e o comeco foram entregues: nao despeja o resto */
+            if (any && cov_end >= 1 && cov_end <= 40 && rd_mapped(c, res, fsz, fmt) && (!has_off || offset <= 1) && (!has_lim || limit >= 60) && ol_ext(res, oxt, sizeof oxt) && ol_big(total, n)) { remap = 1; snprintf(scope, sizeof scope, "%s", pr1 ? "this conversation" : "this request"); }      /* so o mapa e o comeco foram entregues: nao despeja o resto */
             else if (cov_end >= 1 && cov_end < total && have_last && (!has_off || offset == l_off)) {      /* ja entregue ate cov_end: segue dali */
                 eoff = cov_end + 1;
                 KNOTE(READ_CURSOR, cnote, sizeof cnote, cov_end, res, pr1 ? "this conversation" : "this request", eoff);
@@ -439,6 +439,7 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             else { KNOTE(READ_MAP, mnote, sizeof mnote, total); snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n%s", res, total, n, mp, hd, mnote); }
             ct_seen_mark(res, 1);
             rc_note(res, (long long)st.st_size, (long long)st.st_mtime, 1, head, total);
+            { RdCur *mc = rc_find(res, (long long)st.st_size, (long long)st.st_mtime); if (mc) mc->mapped = 1; }
             break;
         }
         if (!cnote[0] && !has_off && !has_lim && ct_seen(res) >= 2 && rd_delta(res, b, n, out, cap)) { ct_seen_mark(res, 0); break; }      /* ja lido inteiro nesta conversa */

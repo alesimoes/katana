@@ -728,9 +728,9 @@ static void fam_x_place(FILE *f, Scn *s) {
 /* FIM x-place */
 
 /* ======================= x-cursor ======================= */
-enum { C7_REST, C7_CHUNKS, C7_SAMEOFF, C7_SWITCH, C7_ANSWER, C7_STUCK, C7_MAP, C7_N };
-static const char *const g_c7_names[C7_N] = {"rest", "chunks", "same-offset", "repeat-switch", "repeat-answer", "stuck", "map"};
-static const int g_c7_w[C7_N] = {3, 2, 2, 2, 1, 1, 3};
+enum { C7_REST, C7_CHUNKS, C7_SAMEOFF, C7_SWITCH, C7_ANSWER, C7_STUCK, C7_MAP, C7_AGAIN, C7_N };
+static const char *const g_c7_names[C7_N] = {"rest", "chunks", "same-offset", "repeat-switch", "repeat-answer", "stuck", "map", "again"};
+static const int g_c7_w[C7_N] = {3, 2, 2, 2, 1, 1, 3, 2};
 static const char *x7_fnlist(const X7N *n) {      /* todas as funcoes do arquivo com a linha da definicao */
     Buf b = {0}; buf_str(&b, ""); const X7M *m = &n->m[0];
     for (int q = 0; q < m->nf; q++) buf_str(&b, cu_fmt("%s`%s` (%d)", q ? ", " : "", n->f[m->f[q]].name, x7n_defline(n, m->f[q])));
@@ -755,17 +755,19 @@ static void fam_x_cursor(FILE *f, Scn *s) {
     const int ti = cu_n(n->nf); const char *tn = n->f[ti].name; const int dl = x7n_defline(n, ti);
     if (sit == C7_REST || sit == C7_CHUNKS || sit == C7_SAMEOFF) {
         x7_user(cu_fmt(v == 0 ? L("list every function of %s with its line number", "lista todas as funcoes de %s com o numero da linha") : v == 1 ? L("which functions does %s define, and where?", "quais funcoes %s define, e onde?") : L("I need the line of each function in %s", "preciso da linha de cada funcao em %s"), file));
-        const int first = sit == C7_SAMEOFF ? 40 : sit == C7_CHUNKS ? 70 : 60;
+        const int first = sit == C7_SAMEOFF ? 40 : sit == C7_CHUNKS ? 55 : 50;      /* abaixo de 60: com 60 ou mais, offset 1 de arquivo grande vira mapa (Read cego) */
         const char *r1 = x7_call(L("A big file: the first part.", "Um arquivo grande: a primeira parte."), "Read", cu_fmt("{\"file_path\": %s, \"offset\": 1, \"limit\": %d}", cu_q(x_abs(s, file)), first), 0);
         if (!strstr(r1, cu_fmt("[PARTIAL view: returned lines 1-%d of %d total", first, total))) cu_die("o Read parcial nao disse o total (%s): %.200s", g_x.cell, strstr(r1, "[PARTIAL") ? strstr(r1, "[PARTIAL") : "(sem aviso)");
         const char *rest = NULL;
         if (sit == C7_CHUNKS) {
-            Buf all = {0}; buf_str(&all, r1); int off = first + 1;
-            while (off <= total) {
-                const char *r = x7_call(NULL, "Read", cu_fmt("{\"file_path\": %s, \"offset\": %d, \"limit\": %d}", cu_q(x_abs(s, file)), off, first), 0);
-                if (strstr(r, "[katana: lines")) cu_die("o cursor apareceu num Read com offset novo");
-                buf_str(&all, r); off += first;
-            }
+            Buf all = {0}; buf_str(&all, r1);
+            const char *r = x7_call(NULL, "Read", cu_fmt("{\"file_path\": %s, \"offset\": %d, \"limit\": %d}", cu_q(x_abs(s, file)), first + 1, first), 0);
+            if (strstr(r, "[katana: lines")) cu_die("o cursor apareceu num Read com offset novo");
+            if (!strstr(r, "in slices, in order. Go to the exact spot")) cu_die("sem a nota de fatias em ordem (%s): %.200s", g_x.cell, r);
+            buf_str(&all, r);
+            /* a nota manda ir ao ponto exato: o mapa do arquivo lista todas as funcoes de uma vez, sem ler as fatias seguintes */
+            const char *o = x7_sym(L("The note says to stop reading in slices: the outline of the file lists all the functions at once.", "A nota diz para parar de ler em fatias: o mapa do arquivo lista todas as funcoes de uma vez."), cu_fmt("{\"action\": \"outline\", \"file\": %s}", cu_q(file)));
+            buf_str(&all, o);
             rest = all.p;
         } else {
             const char *r2 = sit == C7_REST ? x7_call(L("The rest of the file, without a range.", "O resto do arquivo, sem faixa."), "Read", cu_fmt("{\"file_path\": %s}", cu_q(x_abs(s, file))), 0)
@@ -800,6 +802,16 @@ static void fam_x_cursor(FILE *f, Scn *s) {
             if (strstr(r1, n->f[lastf].name)) cu_die("a ultima funcao ja estava na primeira parte");
             x_final(cu_fmt(L("I could not tell: I only read lines 1-%d of %s, which has %d lines, and the last function (`%s`, line %d) is further down. Ask me again and I will read that part with a new offset.", "Nao consegui dizer: so li as linhas 1-%d de %s, que tem %d linhas, e a ultima funcao (`%s`, linha %d) fica mais adiante. Pergunte de novo e eu leio essa parte com outro offset."), lim, file, total, n->f[lastf].name, x7n_defline(n, lastf)));
         }
+    } else if (sit == C7_AGAIN) {      /* o que foi entregue num pedido anterior da conversa continua valendo: a releitura recebe a nota, nao o texto repetido */
+        x7_user(cu_fmt(L("what are the first lines of %s?", "quais sao as primeiras linhas de %s?"), file));
+        const char *args = cu_fmt("{\"file_path\": %s, \"offset\": 1, \"limit\": 30}", cu_q(x_abs(s, file)));
+        const char *r1 = x7_call(NULL, "Read", args, 0);
+        if (!strstr(r1, "[PARTIAL view: returned lines 1-30 of ")) cu_die("o Read parcial nao avisou (%s)", g_x.cell);
+        x_final(cu_fmt(L("The first 30 lines of %s are above; the file has %d lines in all.", "As primeiras 30 linhas de %s estao acima; o arquivo tem %d linhas ao todo."), file, total));
+        x_dep(); x7_user(L("show me those first lines again", "me mostra de novo essas primeiras linhas"));
+        const char *r2 = x7_call(L("Reading the same lines again.", "Leio as mesmas linhas de novo."), "Read", args, 0);
+        if (!strstr(r2, "were already given to you in this conversation")) cu_die("sem a nota de conversa (%s): %.200s", g_x.cell, r2);
+        x_final(cu_fmt(L("Those lines were already given to you above, lines 1-30 of %s. The note says nothing in them is new, so I am not repeating them; ask for a function by name if you want a specific part.", "Essas linhas ja foram entregues acima, linhas 1-30 de %s. A nota diz que nada nelas e novo, entao nao as repito; peca uma funcao pelo nome se quiser uma parte especifica."), file));
     } else {      /* map: Read sem faixa de arquivo grande devolve o mapa e o comeco; depois so a faixa da funcao */
         x7_user(cu_fmt(v == 0 ? L("show me `%s` in %s", "me mostra a `%s` em %s") : v == 1 ? L("what does `%s` return? it is in %s", "o que `%s` devolve? ela esta em %s") : L("open `%s` of %s", "abre a `%s` de %s"), tn, file));
         const char *r1 = x7_call(NULL, "Read", cu_fmt("{\"file_path\": %s}", cu_q(x_abs(s, file))), 0);

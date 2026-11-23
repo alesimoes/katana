@@ -360,7 +360,7 @@ static void fam_x_notes(FILE *f, Scn *s) {
         x_cell("notes/part/v%d/%s", v, g_n7_ext[lang]);
         const int ti = n->m[0].f[n->m[0].nf - 1]; const char *tn = n->f[ti].name;
         x7_user(cu_fmt(v == 0 ? L("what does `%s` return? it is somewhere in %s", "o que `%s` devolve? ela esta em algum ponto de %s") : v == 1 ? L("read `%s` in %s for me", "le a `%s` em %s pra mim") : L("show me the last function of %s, `%s`", "me mostra a ultima funcao de %s, `%s`"), v == 2 ? file : tn, v == 2 ? tn : file));
-        const char *r1 = x7_call(L("A big file: the first part.", "Um arquivo grande: a primeira parte."), "Read", cu_fmt("{\"file_path\": %s, \"offset\": 1, \"limit\": 60}", cu_q(x_abs(s, file))), 0);
+        const char *r1 = x7_call(L("A big file: the first part.", "Um arquivo grande: a primeira parte."), "Read", cu_fmt("{\"file_path\": %s, \"offset\": 1, \"limit\": 50}", cu_q(x_abs(s, file))), 0);
         if (!strstr(r1, "[PARTIAL view")) cu_die("o Read parcial nao avisou (%s)", g_x.cell);
         if (strstr(r1, tn)) cu_die("a funcao ja estava na primeira parte");
         int a, b; x7c_fn_range(n, ti, &a, &b);
@@ -369,7 +369,7 @@ static void fam_x_notes(FILE *f, Scn *s) {
         const char *r3 = x7_read(s, file, a, b - a + 1, 0);
         const char *ex = x7n_expr(n, ti);
         if (!strstr(r3, ex)) cu_die("a faixa de %s nao tem o retorno", tn);
-        x_final(cu_fmt(L("`%s` is at %s, lines %d-%d, and returns `%s`. The first read only covered lines 1-60 of %d, so I read just its range.", "`%s` esta em %s, linhas %d-%d, e devolve `%s`. A primeira leitura so cobriu as linhas 1-60 de %d, entao li so a faixa dela."), tn, file, a, b, ex, total));
+        x_final(cu_fmt(L("`%s` is at %s, lines %d-%d, and returns `%s`. The first read only covered lines 1-50 of %d, so I read just its range.", "`%s` esta em %s, linhas %d-%d, e devolve `%s`. A primeira leitura so cobriu as linhas 1-50 de %d, entao li so a faixa dela."), tn, file, a, b, ex, total));
     } else {
         x7n_gen(n, s, lang, 3 + cu_n(2), 4 + cu_n(2), 3 + cu_n(2), 2, 0, 0);
         g_x_prehook = x7_prehook;
