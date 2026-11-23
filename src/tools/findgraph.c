@@ -10,6 +10,20 @@
  * (decaimento 0.5, k vencedores); cada candidato que veio por aresta leva a evidencia. Nota de vizinhos no laco: fg_neighbor_note.
  * KATANA_FIND_ACT=0 volta ao ranking antigo; KATANA_NEIGHBORS=0 desliga a nota; KATANA_FIND_CO=0 nao le o git. */
 #ifndef _WIN32
+/* MODO STORE (padrao desde a fase 7): o grafo nao e construido aqui. Vem da secao STS_GRAPH do armazenamento do coder (coder/graph.c e coder/findstore.c),
+ * derivada dos niveis N2 e N3, com nos chaveados pelo hash do caminho; este arquivo so o consulta (ativacao esparsa, evidencia, nota de vizinhos). O
+ * caminho antigo (fg_build, fg_save, fg_load, no cache find-*.idx) continua abaixo para KATANA_FIND_INDEX=legacy. */
+typedef struct { uint32_t nn, nnz, nfiles; uint64_t sig; const uint64_t *hash; const uint32_t *rp, *dst, *poff; const float *w; const uint8_t *ty; const char *pool; uint64_t poolsz; void *mem; } FgsGraph;
+static FgsGraph *fs_graph(struct FsCtx *F);                                         /* findstore.c: o grafo do contexto (abre, ou deriva se faltar) */
+static uint64_t fs_hash_rel(struct FsCtx *F, const char *rel);
+static const char *fs_strip(struct FsCtx *F, const char *full);                    /* caminho do armazenamento -> relativo a pasta do Find, NULL se fora */
+static struct FsCtx *fs_loop(void);                                                 /* contexto leve do laco do agente: so le o que existe, nunca cria nem deriva */
+static FgsGraph *g_fgs;                                                             /* grafo da consulta em curso (fg_mask, fg_evidence) */
+static int fgs_find(const FgsGraph *G, uint64_t h) {
+    int lo = 0, hi = (int)G->nn - 1;
+    while (lo <= hi) { const int mid = (lo + hi) / 2; if (G->hash[mid] == h) return mid; if (G->hash[mid] < h) lo = mid + 1; else hi = mid - 1; }
+    return -1;
+}
 #define FG_MAGIC 0x46524752u        /* "RGRF" */
 #define FG_GITLOG 2000
 #define FG_GITMAX 40
@@ -371,6 +385,7 @@ static int fg_build(FdIndex *X) {
 }
 /* o grafo existe e vale para o indice atual? senao reconstroi e regrava o cache */
 static int fg_ensure(FdIndex *X) {
+    if (X->store) return fs_graph(X->fs) != NULL;
     if (g_fg.ready && g_fg.n == X->nf) return 1;
     if (!X->ready || X->nf < 2) return 0;
     if (!fg_build(X)) return 0;
@@ -429,7 +444,13 @@ static int fg_drop_request(FdIndex *X, uint32_t *qid, double *qw, int n) {
 
 /* ---- evidencia: por que o arquivo dst esta ligado ao arquivo src ---- */
 typedef struct { int kind; char name[100]; int line; } FgWhy;    /* 1 simbolo, 2 dst cita o caminho de src, 3 src cita o caminho de dst, 4 identificador comum, 5 co-mudanca */
-static uint8_t fg_mask(int src, int dst) {
+static uint8_t fg_mask(const FdIndex *X, int src, int dst) {
+    if (X->store) {
+        const FgsGraph *G = g_fgs; const int a = X->f[src].node, b = X->f[dst].node;
+        if (!G || a < 0 || b < 0) return 0;
+        for (uint32_t e = G->rp[a]; e < G->rp[a + 1]; e++) if ((int)G->dst[e] == b) return G->ty[e];
+        return 0;
+    }
     if (!g_fg.ready || src < 0 || src >= g_fg.n) return 0;
     for (int e = g_fg.rp[src]; e < g_fg.rp[src + 1]; e++) if (g_fg.dst[e] == dst) return g_fg.ty[e];
     return 0;
@@ -444,8 +465,9 @@ static int fg_sym_between(FdIndex *X, int def, const FdText *tu, char *name, siz
     for (int s = X->fs0[def]; s < X->fs0[def] + X->fsn[def] && s < X->fs0[def] + 400; s++) {
         const char *nm = fd_tstr(&X->T, X->sn[s]); const int l = (int)strlen(nm);
         if (l < 4 || fg_kw(nm, l) || !fd_has_word(tu->s, (int)tu->n, nm, l, 0)) continue;
-        const int key = fd_key(X, nm, l);
-        const long df = key >= 0 ? X->poff[2][key + 1] - X->poff[2][key] : 1L << 20;
+        long df;
+        if (X->store) df = fs_name_refs(X->fs, nm, l);        /* modo store: quantas referencias o indice de simbolos tem; so os candidatos nao dizem se o nome e raro */
+        else { const int key = fd_key(X, nm, l); df = key >= 0 ? X->poff[2][key + 1] - X->poff[2][key] : 1L << 20; }
         if (df < bdf) { bdf = df; best = s; }
     }
     if (best < 0) return 0;
@@ -454,7 +476,7 @@ static int fg_sym_between(FdIndex *X, int def, const FdText *tu, char *name, siz
 }
 static void fg_why(FdIndex *X, int src, int dst, FgWhy *w) {
     memset(w, 0, sizeof *w); w->kind = 5;
-    const uint8_t m = fg_mask(src, dst);
+    const uint8_t m = fg_mask(X, src, dst);
     FdText ts = {0}, td = {0};
     const int hs = (m & (1 << FG_SYM | 1 << FG_PATH | 1 << FG_RARE)) ? fd_text(X, src, &ts) : 0;
     const int hd = hs ? fd_text(X, dst, &td) : 0;
@@ -501,7 +523,111 @@ static void fg_why_str(const FgWhy *w, const char *src, char *o, size_t cap) {
 /* ---- ativacao esparsa: de all[] (BM25 por arquivo, decrescente) para hits[]; esrc[i] = arquivo de origem se veio por aresta, senao -1 ---- */
 typedef struct { int i; double v; } FgV;
 static int fg_cmp_v(const void *a, const void *b) { const double x = ((const FgV *)a)->v, y = ((const FgV *)b)->v; return x < y ? 1 : x > y ? -1 : ((const FgV *)a)->i - ((const FgV *)b)->i; }
+/* ---- ativacao no grafo do armazenamento (modo store). Os nos sao do grafo inteiro; os arquivos do indice de trechos (X) sao so os candidatos.
+ * Os vizinhos que entram na saida (e os arquivos de onde vieram) sao lidos e acrescentados a X, para ter trecho, simbolos e evidencia ---- */
+typedef struct { int node, file; double v; int srcnode; } FgsOut;
+static int fgs_cmp_out(const void *a, const void *b) {
+    const FgsOut *x = (const FgsOut *)a, *y = (const FgsOut *)b;
+    if (x->v != y->v) return x->v < y->v ? 1 : -1;
+    const int fx = x->file >= 0 ? x->file : 1 << 30, fy = y->file >= 0 ? y->file : 1 << 30;
+    return fx != fy ? fx - fy : x->node - y->node;
+}
+static void fgs_bind(FdIndex *X, FgsGraph *G) {
+    for (int i = 0; i < X->nf; i++) X->f[i].node = fgs_find(G, fs_hash_rel(X->fs, X->f[i].rel));
+}
+static int fgs_file_of(const FdIndex *X, const char *rel) { for (int i = 0; i < X->nf; i++) if (!strcmp(X->f[i].rel, rel)) return i; return -1; }
+static int fgs_activate(FdIndex *X, const FdHit *all, int na, const char *pre, int k, FdHit *hits, int *esrc) {
+    FgsGraph *G = fs_graph(X->fs);
+    if (!G) { const int r = na < k ? na : k; memcpy(hits, all, sizeof(FdHit) * (size_t)r); return r; }
+    g_fgs = G; fgs_bind(X, G);
+    const int nf = X->nf; const uint32_t nn = G->nn;
+    double *act = (double *)calloc((size_t)nn + 1, sizeof(double)), *nx = (double *)calloc((size_t)nn + 1, sizeof(double)), *nb = (double *)calloc((size_t)nn + 1, sizeof(double));
+    int *src = (int *)malloc(sizeof(int) * ((size_t)nn + 1)), *nsrc = (int *)malloc(sizeof(int) * ((size_t)nn + 1)), *n2f = (int *)malloc(sizeof(int) * ((size_t)nn + 1));
+    int *touched = (int *)malloc(sizeof(int) * ((size_t)nn + 1)), *alist = (int *)malloc(sizeof(int) * ((size_t)nn + 1)); int nal = 0;
+    for (uint32_t i = 0; i < nn; i++) { src[i] = -1; n2f[i] = -1; }
+    for (int i = 0; i < nf; i++) if (X->f[i].node >= 0) n2f[X->f[i].node] = i;
+    double *xact = (double *)calloc((size_t)nf + 1, sizeof(double)); int *chunk = (int *)malloc(sizeof(int) * ((size_t)nf + 1));
+    for (int i = 0; i < nf; i++) chunk[i] = -1;
+    FgV *cur = (FgV *)malloc(sizeof(FgV) * (size_t)(FG_K_FILE + 1)); int ncur = 0;
+    const int top = na < FG_K_FILE ? na : FG_K_FILE;
+    const double mx = na ? all[0].score : 1;
+    for (int i = 0; i < top; i++) {
+        const double x = all[i].score / mx;
+        if (x < FG_THETA) continue;
+        const int fi = all[i].file, nd = X->f[fi].node;
+        chunk[fi] = all[i].chunk;
+        if (nd >= 0) { act[nd] = x; alist[nal++] = nd; cur[ncur].i = nd; cur[ncur].v = x; ncur++; } else xact[fi] = x;
+    }
+    for (int r = 0; r < FG_ROUNDS && ncur; r++) {
+        qsort(cur, (size_t)ncur, sizeof(FgV), fg_cmp_v);
+        const int use = ncur < FG_K_GRAPH ? ncur : FG_K_GRAPH; int nt = 0;
+        for (int c = 0; c < use; c++) {
+            const int i = cur[c].i;
+            for (uint32_t e = G->rp[i]; e < G->rp[i + 1]; e++) {
+                const int j = (int)G->dst[e]; const double y = FG_DECAY * cur[c].v * G->w[e];
+                if (nx[j] == 0 && nb[j] == 0) touched[nt++] = j;
+                if (y > nb[j]) { nb[j] = y; nsrc[j] = i; }
+                nx[j] += y;
+            }
+        }
+        FgV *tv = (FgV *)malloc(sizeof(FgV) * (size_t)(nt + 1));
+        for (int c = 0; c < nt; c++) { tv[c].i = touched[c]; tv[c].v = nx[touched[c]]; }
+        qsort(tv, (size_t)nt, sizeof(FgV), fg_cmp_v);
+        ncur = 0;
+        for (int c = 0; c < nt && c < FG_K_GRAPH; c++) {
+            const int j = tv[c].i; const double y = tv[c].v;
+            if (act[j] == 0) { cur[ncur].i = j; cur[ncur].v = y; ncur++; src[j] = nsrc[j]; alist[nal++] = j; }
+            act[j] += y;
+        }
+        for (int c = 0; c < nt; c++) { nx[touched[c]] = 0; nb[touched[c]] = 0; }
+        free(tv);
+    }
+    double amax = 0;
+    for (int c = 0; c < nal; c++) if (act[alist[c]] > amax) amax = act[alist[c]];
+    for (int i = 0; i < nf; i++) if (xact[i] > amax) amax = xact[i];
+    FgsOut *out = (FgsOut *)malloc(sizeof(FgsOut) * ((size_t)nal + (size_t)nf + 1)); int nout = 0;
+    if (amax > 0) {
+        for (int c = 0; c < nal; c++) {
+            const int j = alist[c]; if (act[j] < FG_THETA * amax) continue;
+            const char *rel = fs_strip(X->fs, G->pool + G->poff[j]);
+            if (!rel || !fd_in_path(rel, pre)) continue;
+            out[nout].node = j; out[nout].file = n2f[j]; out[nout].v = act[j]; out[nout].srcnode = n2f[j] >= 0 && chunk[n2f[j]] >= 0 ? -1 : src[j]; nout++;
+        }
+        for (int i = 0; i < nf; i++) if (xact[i] >= FG_THETA * amax && fd_in_path(X->f[i].rel, pre)) { out[nout].node = -1; out[nout].file = i; out[nout].v = xact[i]; out[nout].srcnode = -1; nout++; }
+    }
+    qsort(out, (size_t)nout, sizeof(FgsOut), fgs_cmp_out);
+    if (getenv("KATANA_FIND_DEBUG")) for (int c = 0; c < nout && c < 10; c++) { const char *rel = out[c].file >= 0 ? X->f[out[c].file].rel : fs_strip(X->fs, G->pool + G->poff[out[c].node]); fprintf(stderr, "find-debug: activation %d %-50.50s %.3f%s\n", c + 1, rel ? rel : "?", out[c].v, out[c].srcnode >= 0 ? " (by edge)" : ""); }
+    const int want = nout < k ? nout : k;
+    /* arquivos que ainda nao estao em X: os vizinhos escolhidos e as origens deles */
+    static char add[2 * FD_HITS_MAX + 4][300]; int nadd = 0;
+    for (int c = 0; c < want; c++) {
+        const int cand[2] = {out[c].file < 0 ? out[c].node : -1, out[c].srcnode};
+        for (int z = 0; z < 2; z++) {
+            const int nd = cand[z]; if (nd < 0 || n2f[nd] >= 0 || nadd >= (int)(sizeof add / sizeof add[0])) continue;
+            const char *rel = fs_strip(X->fs, G->pool + G->poff[nd]); if (!rel) continue;
+            int dup = 0; for (int q = 0; q < nadd; q++) if (!strcmp(add[q], rel)) dup = 1;
+            if (!dup) snprintf(add[nadd++], sizeof add[0], "%s", rel);
+        }
+    }
+    if (nadd) { fs_add_files(X->fs, X, add, nadd); fgs_bind(X, G); }
+    int r = 0;
+    for (int c = 0; c < want; c++) {
+        int fi = out[c].file;
+        if (fi < 0) { const char *rel = fs_strip(X->fs, G->pool + G->poff[out[c].node]); fi = rel ? fgs_file_of(X, rel) : -1; }
+        if (fi < 0) continue;                                   /* sumiu do disco ou ilegivel */
+        int es = -1;
+        if (out[c].srcnode >= 0 && out[c].file < 0) { const char *rel = fs_strip(X->fs, G->pool + G->poff[out[c].srcnode]); es = rel ? fgs_file_of(X, rel) : -1; }
+        else if (out[c].srcnode >= 0 && out[c].file >= 0 && chunk[out[c].file] < 0) { const char *rel = fs_strip(X->fs, G->pool + G->poff[out[c].srcnode]); es = rel ? fgs_file_of(X, rel) : -1; }
+        hits[r].file = fi; hits[r].score = out[c].v;
+        hits[r].chunk = fi < nf && chunk[fi] >= 0 ? chunk[fi] : X->fc0[fi];
+        esrc[r] = fi < nf && chunk[fi] >= 0 ? -1 : es;
+        r++;
+    }
+    free(act); free(nx); free(nb); free(src); free(nsrc); free(n2f); free(touched); free(alist); free(xact); free(chunk); free(cur); free(out);
+    return r;
+}
 static int fg_activate(FdIndex *X, const FdHit *all, int na, const char *pre, int k, FdHit *hits, int *esrc) {
+    if (X->store) return fgs_activate(X, all, na, pre, k, hits, esrc);
     const int nf = X->nf;
     double *act = (double *)calloc((size_t)nf, sizeof(double)), *nx = (double *)calloc((size_t)nf, sizeof(double)), *nb = (double *)calloc((size_t)nf, sizeof(double));
     int *chunk = (int *)malloc(sizeof(int) * (size_t)nf), *src = (int *)malloc(sizeof(int) * (size_t)nf), *nsrc = (int *)malloc(sizeof(int) * (size_t)nf);
@@ -545,6 +671,7 @@ static int fg_activate(FdIndex *X, const FdHit *all, int na, const char *pre, in
     int nout = 0; FgV *out = (FgV *)malloc(sizeof(FgV) * (size_t)(nf + 1));
     if (amax > 0) for (int i = 0; i < nf; i++) if (act[i] >= FG_THETA * amax && fd_in_path(X->f[i].rel, pre)) { out[nout].i = i; out[nout].v = act[i]; nout++; }
     qsort(out, (size_t)nout, sizeof(FgV), fg_cmp_v);
+    if (getenv("KATANA_FIND_DEBUG")) for (int c = 0; c < nout && c < 10; c++) fprintf(stderr, "find-debug: activation %d %-50.50s %.3f%s\n", c + 1, X->f[out[c].i].rel, out[c].v, chunk[out[c].i] < 0 ? " (by edge)" : "");
     int r = nout < k ? nout : k;
     for (int c = 0; c < r; c++) {
         const int fi = out[c].i;
@@ -571,7 +698,8 @@ static void fg_evidence(FdIndex *X, int src, FdHit *h, char *why, size_t cap) {
 /* ---- nota de vizinhos ainda nao lidos (laco do agente) ---- */
 static uint8_t *g_fg_read, *g_fg_cited; static int g_fg_setn, g_fg_notes;
 static void fd_state_reset(void);
-static void fg_reset(void) { fd_state_reset(); if (g_fg_read) memset(g_fg_read, 0, (size_t)g_fg_setn); if (g_fg_cited) memset(g_fg_cited, 0, (size_t)g_fg_setn); g_fg_notes = 0; }
+static uint64_t g_fgs_read[1024], g_fgs_cited[1024]; static int g_fgs_nread, g_fgs_ncited;       /* modo store: arquivos lidos e ja citados no pedido, por hash do caminho */
+static void fg_reset(void) { fd_state_reset(); if (g_fg_read) memset(g_fg_read, 0, (size_t)g_fg_setn); if (g_fg_cited) memset(g_fg_cited, 0, (size_t)g_fg_setn); g_fg_notes = 0; g_fgs_nread = g_fgs_ncited = 0; }
 static void fg_sets(int n) {
     if (n == g_fg_setn && g_fg_read) return;
     free(g_fg_read); free(g_fg_cited);
@@ -600,8 +728,109 @@ static int fg_lookup_path(FdIndex *X, const char *p, size_t l) {
     while (r[0] == '.' && r[1] == '/') r += 2;
     return fg_find_rel(X, r);
 }
+/* ---- nota de vizinhos no modo store: le o grafo do armazenamento (nunca cria nem deriva); o porque de cada ligacao vem dos dois arquivos, lidos agora ---- */
+static int fgs_in(const uint64_t *a, int n, uint64_t h) { for (int i = 0; i < n; i++) if (a[i] == h) return 1; return 0; }
+static void fgs_put(uint64_t *a, int *n, int cap, uint64_t h) { if (!fgs_in(a, *n, h) && *n < cap) a[(*n)++] = h; }
+static void fgs_why_pair(struct FsCtx *F, FgsGraph *G, const char *root, int n0, int n1, FgWhy *w) {
+    memset(w, 0, sizeof *w); w->kind = 5;
+    const char *rel[2] = {fs_strip(F, G->pool + G->poff[n0]), fs_strip(F, G->pool + G->poff[n1])};
+    if (!rel[0] || !rel[1]) return;
+    FdIndex P; memset(&P, 0, sizeof P); P.store = 1; P.fs = F; snprintf(P.root, sizeof P.root, "%s", root);
+    P.f = (FdFile *)calloc(2, sizeof(FdFile)); P.capf = 2;
+    int ok = 1;
+    for (int z = 0; z < 2 && ok; z++) {
+        char abs[8400]; struct stat st; snprintf(abs, sizeof abs, "%s/%s", root, rel[z]);
+        if (stat(abs, &st) != 0 || !S_ISREG(st.st_mode)) { ok = 0; break; }
+        FdFile *f = &P.f[z]; f->rel = strdup(rel[z]); f->mt = (long long)st.st_mtime; f->size = (long long)st.st_size; f->kind = fd_kind(rel[z]); f->node = z ? n1 : n0;
+        P.nf = z + 1; fd_build_file(&P, f);
+    }
+    if (ok) { fd_invert(&P); g_fgs = G; fg_why(&P, 0, 1, w); }
+    fd_store_reset(&P);
+    free(P.T.pool); free(P.T.off); free(P.T.len); free(P.T.ht);
+}
+typedef struct { int node; double sc, bw; int from; } FgsCand;
+static void fgs_neighbor_note(const char *name, const char *js, const char *end, char *result, size_t cap) {
+    const int isread = !strcmp(name, "Read"), isgrep = !strcmp(name, "Grep"), isfind = !strcmp(name, "Find");
+    if (!isread && !isgrep && !isfind) return;
+    struct FsCtx *F = fs_loop(); if (!F) return;
+    FgsGraph *G = fs_graph(F); if (!G || !G->nn) return;
+    char cwd[4096]; if (!getcwd(cwd, sizeof cwd)) return;
+    const size_t cl = strlen(cwd);
+    int srcs[4], ns = 0; uint64_t shown[16]; int nshown = 0;
+    if (isread) {
+        char *fp = ct_str(js, end, "file_path");
+        const long long lim = ct_int(js, end, "limit", 0);
+        const char *r = fp ? fp : "";
+        if (r[0] == '/') { if (strncmp(r, cwd, cl) != 0 || r[cl] != '/') { free(fp); return; } r += cl + 1; }
+        while (r[0] == '.' && r[1] == '/') r += 2;
+        const uint64_t h = *r ? fs_hash_rel(F, r) : 0; const int nd = *r ? fgs_find(G, h) : -1;
+        free(fp);
+        if (!*r) return;
+        const int seen = fgs_in(g_fgs_read, g_fgs_nread, h);
+        fgs_put(g_fgs_read, &g_fgs_nread, 1024, h);
+        if (nd < 0 || (seen && lim > 0 && lim <= 80)) return;
+        srcs[ns++] = nd; fgs_put(shown, &nshown, 16, h);
+    } else {
+        int nl = 0;
+        for (const char *p = result; *p && nl < 300; nl++) {
+            const char *e = strchr(p, '\n'); if (!e) e = p + strlen(p);
+            const char *s0 = p;
+            while (s0 < e && isdigit((unsigned char)*s0)) s0++;
+            if (s0 > p && s0 + 1 < e && s0[0] == '.' && s0[1] == ' ') s0 += 2; else s0 = p;
+            const char *t = s0; while (t < e && *t != ':' && *t != ' ' && *t != '\t') t++;
+            if (t > s0 && (size_t)(t - s0) < 4000) {
+                char b[4100]; memcpy(b, s0, (size_t)(t - s0)); b[t - s0] = 0;
+                const char *r = b;
+                if (r[0] == '/') { if (strncmp(r, cwd, cl) == 0 && r[cl] == '/') r += cl + 1; else r = NULL; }
+                if (r) {
+                    while (r[0] == '.' && r[1] == '/') r += 2;
+                    const uint64_t h = fs_hash_rel(F, r); const int nd = fgs_find(G, h);
+                    if (nd >= 0 || strchr(r, '.')) fgs_put(shown, &nshown, 16, h);
+                    if (nd >= 0) { int dup = 0; for (int q = 0; q < ns; q++) if (srcs[q] == nd) dup = 1; if (!dup && ns < 3) srcs[ns++] = nd; }
+                }
+            }
+            p = *e ? e + 1 : e;
+        }
+    }
+    if (!ns) return;
+    FgsCand cand[256]; int nc = 0;
+    for (int q = 0; q < ns; q++) {
+        const int i = srcs[q];
+        for (uint32_t e = G->rp[i]; e < G->rp[i + 1]; e++) {
+            const int j = (int)G->dst[e];
+            if (fgs_in(shown, nshown, G->hash[j]) || fgs_in(g_fgs_read, g_fgs_nread, G->hash[j]) || fgs_in(g_fgs_cited, g_fgs_ncited, G->hash[j])) continue;
+            const char *rel = fs_strip(F, G->pool + G->poff[j]); if (!rel) continue;
+            if (isfind && strstr(result, rel)) continue;
+            int at = -1; for (int c = 0; c < nc; c++) if (cand[c].node == j) at = c;
+            if (at < 0) { if (nc >= 256) continue; at = nc++; cand[at].node = j; cand[at].sc = 0; cand[at].bw = 0; cand[at].from = i; }
+            if (G->w[e] > cand[at].bw) { cand[at].bw = G->w[e]; cand[at].from = i; }
+            cand[at].sc += G->w[e];
+        }
+    }
+    FgV pick[256]; int np = 0;
+    for (int c = 0; c < nc; c++) if (cand[c].sc >= FG_NEIGH_MIN) { pick[np].i = c; pick[np].v = cand[c].sc; np++; }
+    qsort(pick, (size_t)np, sizeof(FgV), fg_cmp_v);
+    char note[1100]; size_t nl = (size_t)snprintf(note, sizeof note, "\n[katana: linked files you have not read yet: ");
+    int put = 0;
+    for (int c = 0; c < np && put < 3; c++) {
+        const FgsCand *K = &cand[pick[c].i]; const int j = K->node, s0 = K->from;
+        FgWhy w; fgs_why_pair(F, G, cwd, s0, j, &w);
+        const char *rs = fs_strip(F, G->pool + G->poff[s0]), *rj = fs_strip(F, G->pool + G->poff[j]);
+        const char *bs = strrchr(rs, '/'); bs = bs ? bs + 1 : rs;
+        char ph[300]; fg_why_str(&w, bs, ph, sizeof ph);
+        const int add = snprintf(note + nl, sizeof note - nl - 3, "%s%s (%s)", put ? ", " : "", rj, ph);
+        if (add <= 0 || nl + (size_t)add + 3 >= sizeof note) break;
+        nl += (size_t)add; put++; fgs_put(g_fgs_cited, &g_fgs_ncited, 1024, G->hash[j]);
+    }
+    if (put) {
+        note[nl++] = ']'; note[nl] = 0;
+        const size_t rl = strlen(result);
+        if (rl + nl + 1 < cap) { memcpy(result + rl, note, nl + 1); g_fg_notes++; }
+    }
+}
 static void fg_neighbor_note(const char *name, const char *js, const char *end, char *result, size_t cap) {
     if (!fg_env_on("KATANA_NEIGHBORS") || g_fg_notes >= FG_NOTES_MAX) return;
+    if (fd_store_mode()) { fgs_neighbor_note(name, js, end, result, cap); return; }
     const int isread = !strcmp(name, "Read"), isgrep = !strcmp(name, "Grep"), isfind = !strcmp(name, "Find");
     if (!isread && !isgrep && !isfind) return;
     FdIndex *X = fg_index_for_loop();
