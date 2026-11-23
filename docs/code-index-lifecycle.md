@@ -1,7 +1,7 @@
 # Code index lifecycle (design)
 
 Status: design only, 2026-11-23, revised the same day with the owner's answers (index roots are defined by
-`katana init`; the crawler runs on demand and exits when done; all nine phases are to be built, in waves; the
+`katana init`; a new Symbols action `tree`; ignored content made visible and controllable; the crawler runs on demand and exits when done; all nine phases are to be built, in waves; the
 unified Find becomes the default). No code was changed and nothing was measured for this document. Every number
 marked "observed" comes from single runs reported by earlier agents; every number marked "target" is a design
 goal, not a result. The design covers when, where, how and by whom the coder index is built, kept fresh,
@@ -39,8 +39,9 @@ Related documents: `docs/code-intelligence.md` (2.4 storage, 2.6 incremental upd
    sections; crawl progress is published in two new section types in the same atomic swap. Corruption or a
    format change means rebuild, never migrate.
 9. **The model sees at most one status line,** only when the queried scope is not complete or not fresh. For a
-   small project the output is byte-identical to today, including `[symbol index created in N s]`. A directory
-   summary is asked with Symbols `outline` on a folder.
+   small project the output is byte-identical to today, including `[symbol index created in N s]`. The tree
+   and its per-directory summaries are asked with a new Symbols action, `tree`. What is ignored is always
+   recorded with its reason and its size, shown by `katana coder ignored`, and can be included.
 10. **All nine phases are to be built, in five waves** (about 23.5 agent-days of work, about 17 with the
     parallel waves), with a file list per wave so that agents do not collide.
 
@@ -395,7 +396,8 @@ exactness and connection.
 |---|---|
 | path, depth | Relative to the root |
 | state | `discovered` (seen in the parent's listing, not listed yet), `listed`, `ignored`, `nested-root` (has its own init), `link`, `other-filesystem`, `too-deep`, `too-many-entries`, `unreadable` |
-| reason | For `ignored`: `gitignore`, `katanaignore`, `heavy-dir`, `vcs` |
+| reason, rule | For `ignored`: the reason class and the rule that decided (D.10) |
+| skipped files, skipped bytes, counted | For `ignored`: how much was left out of the index, and whether the count is complete (D.10) |
 | mtime | Directory mtime when listed |
 | nfiles, ndirs, nignored | Direct children |
 | lang[3] | Top three languages by file count (from the extension table `kind_fn`) |
@@ -497,8 +499,8 @@ to `.gitignore` or `.katanaignore` re-lists the subtree under the file that chan
 
 | Thing | Policy | State the model can be told |
 |---|---|---|
-| Heavy directories by name (`.git`, `.hg`, `.svn`, `.katana`, `.claude`, `node_modules`, `vendor`, `build`, `dist`, `target`, `__pycache__`, `.venv`, `venv`, `.cache`, `.gradle`, `.idea`; union of the lists in `st_ignored_dir`, `st_scan_walk` and `fd_skip_rel`) | Directory recorded at N0 as `ignored: heavy-dir`; not descended. `.katanaignore` can re-include with `!` | "`node_modules/` exists and is not indexed" |
-| Ignored by `.gitignore`, `.katanaignore`, and `.git/info/exclude` (to be added) | Ignored directory: record only. Ignored file: not cataloged, counted in the parent's `nignored` (decided: the owner did not object to the recommendation) | "12 ignored entries in `out/`" |
+| Built-in heavy folders (the list and the justification of each entry are in D.10) | Directory recorded at N0 as `ignored`, with the rule name and the count of what is inside; not descended | "`node_modules/` (ignored: built-in heavy folder, 12,340 files)" |
+| Ignored by `.gitignore`, `.katanaignore`, `.git/info/exclude` (to be added) | Ignored directory: recorded with the rule (`file:line` and pattern) and counted, not descended. Ignored file inside an indexed directory: cataloged at N0 by name with the rule, never read | "`out/` (ignored: .gitignore:4 `out/`, 512 files)" |
 | Depth | Beyond `KATANA_INDEX_MAX_DEPTH` (default 32): `too-deep`, not descended | yes |
 | Fan-out | A directory with more than 20 thousand direct entries: `too-many-entries`; its files are cataloged at N0 and stay in band 4 | yes |
 | Total | `KATANA_INDEX_MAX_FILES` (default 500 thousand at N0) and `KATANA_INDEX_MAX_TEXT_FILES` (default 200 thousand at N1 and above); when reached, lower bands stay at the level they have; `STS_CRAWL` records the limit | "index limited to 200000 files; `data/` is at catalog level" |
@@ -516,6 +518,107 @@ spent where it is useful.
 `store_catalog_update` stays as the engine of the manual `katana coder index <dir>` (no `--watch`), of `katana
 init`, and of the inline fallback (B). When a crawler is alive for the root, `katana coder index` becomes a
 client: it sends `SYNC` for all levels and prints progress.
+
+#### D.10 Ignored content: visible, explained, controllable
+
+Owner's requirement (2026-11-23): folders such as `node_modules` do pollute and must be left out, but the user
+and the model must be able to see what is being left out, why, and change it.
+
+**Every ignored thing is recorded at N0 with its reason.** Nothing is dropped silently by the walk
+(`st_scan_walk` today only increments a counter).
+
+| Reason class | Recorded detail | Example of how it is shown |
+|---|---|---|
+| `gitignore` | File and line of the rule, and the pattern | `.gitignore:4 "build/"` |
+| `katanaignore` | File and line, pattern | `.katanaignore:2 "fixtures/big/"` |
+| `git-exclude` | `.git/info/exclude` line, pattern | `.git/info/exclude:7 "*.log"` |
+| `heavy-folder` | Name of the built-in rule | `built-in heavy folder "node_modules"` |
+| `excluded` | The entry of the per-root overrides file (below) | `excluded with katana coder exclude` |
+| `binary` | Extension, or "NUL byte in the first 8000 bytes" | `binary (.png)` |
+| `too-big` | Size and the limit | `larger than 2 MiB` |
+| `secret` | Name of the secret rule; the content is never read | `secret file rule ".env*"` |
+| `generated` | What matched (lock file, minified, marker) | `generated (line longer than 20000 bytes)` |
+| `too-deep`, `too-many-entries`, `total-limit` | The limit that was hit | `more than 20000 entries` |
+| `nested-root`, `link`, `other-filesystem`, `unreadable` | Target or error | `has its own index` |
+
+Storage: for directories, the reason class, a rule reference and the pattern text in the `STS_DIRS` record. For
+files, bits 12 to 15 of `StoreDoc.flags` hold the reason class and bits 16 to 31 an index into a small new
+section `STS_RULES` of the segment (rule source file, line, pattern). The classes `binary`, `too-big`, `secret`,
+`generated` and `unreadable` are the existing `SDF_SKIP_*` flags extended.
+
+**What is counted.** An ignored directory is not descended by the crawl, so its size is not known for free. A
+separate **counting pass** runs at the lowest priority (after N3, before the crawler exits): it walks each
+ignored directory with `readdir` and `lstat` only, reads nothing, and stores the number of files and bytes that
+were left out. It is capped per directory (200 thousand entries or 1 s; beyond that the record says "more than
+200,000 files") and is redone only when the directory's mtime changed. Until it ran, outputs say "not counted
+yet". `.git`, `.hg`, `.svn` and `.katana` are never counted (they are not project content).
+
+**The built-in heavy list**, each entry with its reason for being there. This replaces the three different
+lists of today (`st_ignored_dir` and the no-`.gitignore` list in `st_scan_walk`, `fd_skip_rel`). A built-in
+rule applies only to a directory with exactly that name; `.katanaignore` or `katana coder include` overrides
+any of them except the first group.
+
+| Group | Names | Why ignored | Can be included |
+|---|---|---|---|
+| Version control and katana's own data | `.git`, `.hg`, `.svn`, `.katana` | Not project content; object stores and indexes; `.katana` holds the index itself | No |
+| Agent work areas | `.claude` | Worktrees: whole copies of the project, every symbol duplicated (the inflation that already happened) | Yes |
+| Installed dependencies | `node_modules`, `.venv`, `venv`, `site-packages`, `bower_components`, `.gradle`, `.m2`, `.cargo` | Third-party code fetched by a tool, typically 10 to 1000 times the size of the project; it floods search results and the rare-identifier edges | Yes (per package, see below) |
+| Build outputs | `build`, `dist`, `out`, `target`, `obj`, `.next`, `.nuxt`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.tox`, `coverage` | Derived from the sources that are already indexed; duplicates and minified text | Yes |
+| Tool caches and editor state | `.cache`, `.idea`, `.vs`, `.parcel-cache`, `.terraform` | Machine-generated state, no code | Yes |
+
+Changes against today's lists, all deliberate:
+
+- `vendor` **leaves** the built-in list. In Go, PHP and many C projects `vendor/` is committed code that the
+  project calls and that the model must be able to follow. It is indexed, in band 4 (last to deepen). A user who
+  does not want it writes `vendor/` in `.katanaignore`.
+- `ref`, `models`, `modelos` and the "more than 5000 files" heuristic tied to those names leave the code: they
+  are katana's own layout, not general rules. The katana repository gets them through its `.gitignore` (which
+  already lists them) or a `.katanaignore`. The general protection against a huge unlisted folder is the fan-out
+  and total limits of D.8, which lower the depth (N0 only) instead of hiding the folder.
+- `bin` and `lib` are **not** in the list: too often they hold sources.
+
+**Never ignored by default**, whatever their size (they can only be left out by an explicit rule of the user):
+`docs`, `doc`, `test`, `tests`, `spec`, `examples`, `samples`, `scripts`, `tools`, `src`, `lib`, `include`,
+`config`, `.github`, `.gitlab`, `migrations`; and the files `README*`, `KATANA.md`, `CHANGELOG*`, `LICENSE*`,
+`Makefile`, `CMakeLists.txt`, `Dockerfile`, build manifests (`package.json`, `Cargo.toml`, `pyproject.toml`,
+`go.mod`, `*.csproj`). A `.gitignore` rule that hides one of these directories is still obeyed, but the
+directory is then listed first by `katana coder ignored` with the note "usually worth indexing".
+
+**Control.**
+
+| Who | How | Effect |
+|---|---|---|
+| User, in the project | `.katanaignore`: a pattern ignores, `!pattern` includes what a `.gitignore` or a built-in rule ignores | Versionable with the project; highest precedence among rule files |
+| User, without touching the project | `katana coder include <path>` and `katana coder exclude <path>` | Written to the per-root overrides file `overrides` next to the store (`<root>/.katana/coder/overrides` for an initialized folder, `~/.katana/coder/<key>/overrides` for a home root), so a folder without init gets no file inside it. Overrides win over every rule file. `include` starts the crawler for that branch |
+| Model | The `path` argument of Find, Symbols or `tree` pointing INTO an ignored folder (`path=node_modules/express`) | A **scoped include** of exactly that folder: it is crawled like any visited folder (hot band), recorded in the overrides file as `scoped`, and searched **only** by queries whose `path` is inside it. Default searches of the project do not see it, so nothing is polluted. No new argument and no schema change |
+| Anyone | Read, Grep, Glob | Unaffected by all of this: they read and scan the files directly. Ignoring limits the index and the ranked search, never access |
+
+Limits of a scoped include: `KATANA_INDEX_INCLUDE_MAX_FILES` (default 50000) per request; secret files stay
+unread; the first group of the list cannot be included.
+
+**Commands.**
+
+`katana coder ignored [folder] [--files] [--json]`:
+
+```
+ignored under /home/u/source/app (root: init at /home/u/source/app)
+  12,340 files  310 MiB  node_modules/        built-in heavy folder "node_modules"
+     512 files   48 MiB  build/               .gitignore:4 "build/"
+      37 files  1.2 MiB  docs/api/generated/  .gitignore:9 "generated/"     usually worth indexing: under docs/
+      14 files  9.1 MiB  (files)              binary (.png 9, .ico 3, .woff2 2)
+       2 files    1 KiB  (files)              secret file rule ".env*"
+       1 file   3.4 MiB  data/cities.json     larger than 2 MiB
+total: 12,906 files, 372 MiB not in the index; 1,420 files indexed
+to index something that is ignored:   katana coder include node_modules/express
+                                      or a line  !docs/api/generated/  in .katanaignore
+to ignore something that is indexed:  katana coder exclude <path>   or a line in .katanaignore
+```
+
+Sorted by file count; `--files` lists the individual ignored files with their rule. `katana coder status` gains
+one block with the totals per reason class (files and bytes), and the hint to run `katana coder ignored`.
+
+**In the answers to the model.** `tree` marks ignored folders with their reason (J.5). A search that finds
+nothing says where it did not look (J.3).
 
 ### E. One index: unifying Find with the coder store
 
@@ -676,11 +779,12 @@ connecting.
 | Command | Output |
 |---|---|
 | `katana init [dir] [--force] [--remove]` | A.1: marker, `KATANA.md` when missing, start of the crawl; `--remove` undoes the marker and the local store |
-| `katana coder status [dir] [--json]` | Root and how it was resolved (`init at <folder>` or `home index, visited <folder>`), store path and size, format, generation, a table of levels (files done, eligible, total, percent, age of last complete pass), directories by state, skipped files by reason, crawler (pid, activity, queue, watch mode) or "not running", last error |
+| `katana coder status [dir] [--json]` | Root and how it was resolved (`init at <folder>` or `home index, visited <folder>`), store path and size, format, generation, a table of levels (files done, eligible, total, percent, age of last complete pass), directories by state, skipped and ignored totals by reason class (files and bytes, D.10), crawler (pid, activity, queue, watch mode) or "not running", last error |
 | `katana coder crawl <dir> [--prio p] [--changed f...] [--sweep]` | The crawler (detached use); exits when done |
 | `katana coder index <dir> --watch` | The crawler in the foreground with a progress line, plus its own watcher: it does not exit, for users who want an index kept current without a session |
 | `katana coder index <dir>` | One synchronous pass, or a client of the live crawler (D.9) |
 | `katana coder list`, `forget`, `gc` | F.5 |
+| `katana coder ignored [dir] [--files] [--json]`, `include <path>`, `exclude <path>` | D.10: what is left out of the index, why, how much, and how to change it |
 | `katana coder verify`, `compact` | Existing |
 
 **H.3 Progress for the user.** Console: one line on stderr when indexing starts, and one when each level
@@ -708,6 +812,7 @@ desktop's own protocol was not read for this design; phase 6 must check `desktop
 | `KATANA_INDEX_WATCH` | auto | `inotify`, `poll`, `off` |
 | `KATANA_INDEX_SETTLE_MS` | 2000 | Quiet time with empty queues before the crawler writes the graph and exits |
 | `KATANA_INDEX_MAX_FILES`, `KATANA_INDEX_MAX_TEXT_FILES`, `KATANA_INDEX_MAX_DEPTH` | 500000, 200000, 32 | D.8 |
+| `KATANA_INDEX_INCLUDE_MAX_FILES` | 50000 | Cap of one scoped include requested through `path` (D.10) |
 | `KATANA_INDEX_MAX_MB` | 2048 | Total size of the home index before `gc` removes old stores |
 | `KATANA_INDEX_INLINE_MAX_FILES` | 5000 | Cap of the inline fallback |
 | `KATANA_INDEX_LEVELS` | 3 | Deepest level built (4 enables summaries) |
@@ -806,24 +911,81 @@ carries the limit:
 NOT FOUND in the part indexed so far (symbols: 3100 of 98000 files). This is not proof that it does not exist; try Grep, or ask again shortly.
 ```
 
+When the index is complete but folders under the queried scope are ignored, the absence is exact only for the
+indexed set, and the answer names where it did not look (the up to three largest ignored folders under the
+scope; version-control folders are never named):
+
+```
+NOT FOUND in the indexed set; 3 ignored folders could hold it: node_modules/, build/, ref/. To search one, set `path` to it.
+```
+
+"Could hold it" is a statement about where the index did not look, not a guess that the name is there: nothing
+in an ignored folder is read to produce the line. Following the hint (`path=node_modules/express`) is the
+scoped include of D.10.
+
 **J.4 Certainty vocabulary.** Unchanged: the cascade (exact, derived, probable) with confidence 0 to 100
 describes how a result was found, and a partial index does not lower the confidence of a hit that was found and
 verified on the file. What a partial index limits is completeness: "all callers", `impact`, `refs` counts and
 `NOT FOUND`. Those outputs say "so far" when the scope is partial: `3 callers so far (index partial)`.
 
-**J.5 Top-down navigation.** The directory summary is exposed through the existing Symbols `outline` action
-when `file` is a directory (decided: the owner did not object to the recommendation; no new tool and no schema
-change, the description gains a few words):
+**J.5 Top-down navigation: the new Symbols action `tree`** (owner's decision, 2026-11-23: a new action, not
+`outline` on a folder).
+
+Arguments (all existing parameters of Symbols; only the `action` enum gains a value and the descriptions of
+`file` and `depth` gain a few words):
+
+| Argument | Meaning for `tree` | Default, limits |
+|---|---|---|
+| `action` | `"tree"` | — |
+| `file` | The folder to show, relative to the project (`file_path` accepted as today) | The project folder |
+| `path` | The project folder, as for every Symbols action; a `path` inside an ignored folder is a scoped include (D.10) | The working folder |
+| `depth` | Levels of subfolders listed under the folder | 2, maximum 4 |
+| `limit` | Maximum number of folder lines | 40, maximum 100 |
+
+It needs only N0 and is answered from the cached state map and the `STS_DIRS` records: no file is read at query
+time. One line per folder, breadth first, larger folders first inside a level; each line carries what the folder
+holds, how deep its index is, and its main symbols when they exist:
 
 ```
-bridge/  (14 files, 3 folders; C 9, shell 3, markdown 2; indexed: symbols)
-  doc: Bridge between the phone app and the desktop session.
-  folders: proto/ (6 files, C)  tests/ (11 files, shell)  vendor/ (not indexed: heavy folder)
-  files: bridge.c (1204 lines)  session.c (611)  wire.h (140)  ...
-  main symbols: bridge_open, bridge_send, session_list, wire_decode
+greymod/  373 files (C 210, shell 40, markdown 23)  [indexed: symbols and links]
+  doc: Game modding toolkit: bridge to the phone, packer, desktop session.
+  files here: KATANA.md, Makefile, README.md (+4)
+  bridge/         14 files (C 9, shell 3)   [symbols]     doc: Bridge between the phone app and the desktop session.
+                  main: bridge_open, bridge_send, session_list, wire_decode
+  bridge/proto/    6 files (C)              [symbols]     main: proto_encode, proto_decode
+  bridge/tests/   11 files (shell)          [text]        symbols not ready
+  packer/         88 files (C 80)           [symbols]     main: pack_open, pack_entry_add, pack_write
+  docs/           23 files (markdown)       [text]        doc: User manual and file formats.
+  data/        9,200 files (json)           [names only]  limit: more than 20000 entries below
+  node_modules/   (ignored: built-in heavy folder, 12,340 files)
+  build/          (ignored: .gitignore:4 "build/", 512 files)
+  third_party/zlib/  (has its own index; use path=third_party/zlib)
+(6 more folders not shown; raise `limit` or call tree on a subfolder)
+ignored: 2 folders, 12,852 files not in the index. To search inside one, set `path` to it.
 ```
 
-"main symbols" appears only when the directory is at N2; before that the line reads `indexed: names only`.
+Rules of the output:
+
+- The index depth of a folder is the lowest level reached by all eligible files under it, in words the model can
+  act on: `[names only]` (N0), `[text]` (N1), `[symbols]` (N2), `[symbols and links]` (N3). When a branch is
+  behind, the reason or the consequence follows on the same line (`symbols not ready`, `limit: ...`).
+- `main:` lists up to 4 symbols: the definitions under the folder most referenced from outside it (from N2;
+  absent below N2). `doc:` is the README or `KATANA.md` line stored at N0, when the folder has one.
+- Ignored folders are always listed (they do not count against `limit`), each with its reason and count in one
+  line; without the counting pass yet, `(ignored: ..., not counted yet)`.
+- Files are not listed, except a short `files here:` for the folder asked; the file list of a folder is what
+  Glob is for, and the symbols of a file are `outline`.
+- The whole output respects the same size cap as the other Symbols actions (about 6500 characters).
+- The status line of J.2, when one applies, is still the first line.
+
+`tree` on a folder that reached only N0 is complete as a tree; it never waits for deeper levels (its
+`index_ensure` asks for N0 of the prefix only).
+
+**Training.** `tree` does not exist in v7: the model has never called it and has never read its output. Until
+the next curriculum (v8) teaches it, the only prompt for it is the tool description. v8 needs a family for it
+(phase 9 records the requirement): asking what a project contains, descending two levels with `tree` before any
+Read, reacting to `[names only]` and to an ignored folder (setting `path` to it when the answer must be there),
+and not calling `tree` when the request already names a file or symbol.
 
 Init changes nothing in what the model reads: a root is described by the folder path the model already uses, and
 the status lines never mention init, the home index or where a store is. The one visible effect is scope:
@@ -835,10 +997,10 @@ normalized to `0.0 s` (`docs/curriculum.md`, line 471), produced by the real eng
 Under this design those scenarios produce the same bytes: the project is small, the first Symbols call waits
 inside the budget, the index completes, and the same line is printed under the same condition. When the crawler
 was already started at session open the line is absent, which is also what happens today with `autoindex`.
-The new lines (J.2 rows 3 to 9) and the directory `outline` do not exist in v7; the model has never seen them.
+The new lines (J.2 rows 3 to 9), the ignored-folder sentence of J.3 and the `tree` action do not exist in v7; the model has never seen them.
 They follow the bracket convention it knows, and they appear only on large or changing trees. The next
-curriculum version should add a family for them (a partial index, a `NOT FOUND ... so far`, a directory
-outline); until then this is a risk listed in section 6. The generator must set `KATANA_AUTOINDEX=0` or wait for
+curriculum version (v8) should add a family for them (a partial index, a `NOT FOUND ... so far`, a `NOT FOUND
+in the indexed set; ... ignored folders`, the `tree` action); until then this is a risk listed in section 6. The generator must set `KATANA_AUTOINDEX=0` or wait for
 the crawler so that scenario outputs stay deterministic. Two more things for the generator: its scenario
 projects are not initialized, so their indexes go to the home index of the generating user (it should point
 `HOME` or `KATANA_CACHE_DIR`-style overrides at a scratch folder and clean it); and with the unified Find as the
@@ -913,8 +1075,10 @@ t=10 s     model: Find "where the scheduler picks the next task"
            index_ensure: PRIO "" ; SYNC N1 waits 2 s; text 31000 of 116000
            output line 1: [index is still being built: text 31000 of 116000 files; results are partial]
            results come from band 1 and 2 files, which are the likeliest places anyway
-t=12 s     model: Symbols outline kernel/sched/   -> PRIO kernel/sched/ : that directory's files jump to band 0,
-           reach N2 in well under the 2 s budget; output is complete for that prefix, no status line
+t=11 s     model: Symbols tree (depth 1)          -> answered from N0 at once: the top folders, their sizes,
+           `[names only]` or `[text]` per branch, the ignored folders with reason and "not counted yet"
+t=12 s     model: Symbols callers pick_next_task, path unchanged -> PRIO: the files that mention it jump to
+           band 0; Symbols tree kernel/sched/ a moment later shows that branch at `[symbols]`
 t=60 s     N1 complete      stderr: [index kernel: text ready]
 t=60..180 s Q2 then Q3 (augmentation of each batch segment), then the graph, then compaction to 8 segments
 t=180 s    stderr: [index kernel: symbols and links ready]      t=182 s: crawler EXITS
@@ -980,13 +1144,13 @@ scripts with count asserts). Each wave is merged into `main` before the next sta
 |---|---|---|---|
 | 1. Cheap queries | Knowledge base loaded once per process; `CsView` and `SyView` cached per root and generation (max 4 roots); `indexctl.c` with `index_ensure(root, level, prefix, budget)`, whose first version spawns the existing `katana coder index` when no manifest exists or the dirty flag is set and waits up to the budget; `coder_lookup` and `sym_ensure_index` call it instead of `store_catalog_update`; `index_touch` from Edit, Write, MultiEdit, NotebookEdit; "may have changed" flag from Bash | With `KATANA_FIND_TIME` set, a second Find on an unchanged indexed folder reports no walk and no knowledge-base load; an Edit followed by Symbols shows the new function; Symbols on a small unindexed folder still prints `[symbol index created in N s]` | 2 |
 | 2. Roots by init, registry, place | Marker `.katana/coder/ROOT`; `katana init` and `/init` unified (marker, `KATANA.md` only when missing, crawl; `--remove`); `index_resolve` (walk up to the marker, else home root through the registry, absorption of A.3); `store_locate` takes the resolved root and store; `proj_is_launch` and `g_launch_dir` removed; the prefix cache and `fd_cache_path` follow the init rule; located root overrides the manifest's root in readers; moved-folder detection by (device, inode); `0700`/`0600`; nested-init, link and mount detection in `st_scan_walk`; secret file table and `SDF_SKIP_SECRET`; `.git/info/exclude`; Find and Symbols resolve `path` through `index_resolve` | After `katana init` in a folder, `katana coder status sub/dir` reports `init at <folder>` and the store inside it; in a folder with no init anywhere above, no `.katana/` appears inside it and `katana coder list` shows a home root; a subfolder initialized inside an initialized folder is listed as `nested-root` by the parent and its files are absent from the parent's catalog; a `.env` file is cataloged as skipped and none of its words are found by `katana coder search` | 3 |
-| 3. The crawler | `katana coder crawl` with `--prio`, `--changed`, `--sweep`; `CRAWL.LOCK`; frontier, level queues, bands; `STS_DIRS`, `STS_CRAWL`; level bits in `StoreDoc.flags`; batches; N0 by append, N1 by supersession, N2 by augmentation; same-level compaction with the 24/8 thresholds; reconstruction of queues from the store; state file; socket (`PING`, `PRIO`, `TOUCH`, `SWEEP`, `SYNC`, `STATUS`, `STOP`); blocking writer lock; exit when all levels are covered and the settle time passed; `index_ensure` switches from "spawn index" to "spawn or reach the crawler"; `autoindex_dir` and init call it; limits of D.8; generated/minified detection. **Also creates, as compiling stubs with their includes in `katana.c` and their call sites already placed, every new file of the later phases** (see 5.3) | On a large folder `katana coder status` shows N0 complete within seconds while text is still rising; the crawler process is gone a few seconds after the last level completes; `kill -9` of the crawler followed by a new visit continues from the reported counts instead of zero; two crawlers started together leave one process; a small folder ends with the same sections as `katana coder index` produces today (`katana coder verify` ok) | 5 |
+| 3. The crawler | `katana coder crawl` with `--prio`, `--changed`, `--sweep`; `CRAWL.LOCK`; frontier, level queues, bands; `STS_DIRS`, `STS_CRAWL`; level bits in `StoreDoc.flags`; batches; N0 by append, N1 by supersession, N2 by augmentation; same-level compaction with the 24/8 thresholds; reconstruction of queues from the store; state file; socket (`PING`, `PRIO`, `TOUCH`, `SWEEP`, `SYNC`, `STATUS`, `STOP`); blocking writer lock; exit when all levels are covered and the settle time passed; `index_ensure` switches from "spawn index" to "spawn or reach the crawler"; `autoindex_dir` and init call it; limits of D.8; generated/minified detection; every ignored directory and file recorded with reason class and rule (`STS_DIRS` fields, `STS_RULES`, flag bits), the single built-in heavy list of D.10 replacing the three lists of today, the per-root `overrides` file read by the walk, the counting pass, scoped includes. **Also creates, as compiling stubs with their includes in `katana.c` and their call sites already placed, every new file of the later phases** (see 5.3) | On a large folder `katana coder status` shows N0 complete within seconds while text is still rising; the crawler process is gone a few seconds after the last level completes; `kill -9` of the crawler followed by a new visit continues from the reported counts instead of zero; two crawlers started together leave one process; a small folder ends with the same sections as `katana coder index` produces today (`katana coder verify` ok) | 5 |
 | 4. Watching and freshness | Session watcher (inotify descriptor read without blocking at the three moments of C.1, watch budget, overflow → sweep); polling period and the `.git/HEAD` hint; coalescing and hand-over to the crawler (`TOUCH` or spawn `--changed`); branch re-entry (D.7); `SDF_RACY`; print-time check with single-file re-parse and the "changed since indexed" count; network/FUSE detection by `statfs` | With a session open, saving a file in another terminal and then issuing any tool call changes the generation shown by `katana coder status`; `KATANA_INDEX_WATCH=poll` gives the same result after the polling period; deleting a file and querying it immediately yields no line for it | 3 |
 | 5. Threads | Worker pool in the crawler; indexing state passed as a context; audit and removal of static state in `text.c`, `parse.c`, `parse2.c`, `search.c`, `symindex.c`; `KATANA_INDEX_THREADS` (1 = the single-thread path, kept as the default until the owner allows a comparison) | With 4 threads the store of a folder passes `verify` and `katana coder status` shows the same file, term, symbol and reference counts as with 1 thread | 2.5 |
-| 6. What the model and the user see | Status lines of J.2 and the `NOT FOUND ... so far` form; "so far" on completeness outputs; state map (files per level per directory) in `statemap.c`; directory summary and Symbols `outline` on a directory; console lines of H.3; desktop status item; `katana coder status` full output and `--json` | On a folder still crawling, Find's first line is the "still being built" line and disappears when the crawl ends; on a complete small folder the Symbols outputs are byte-identical to the previous build's; `Symbols outline` with a folder prints the summary of J.5 | 2 |
+| 6. What the model and the user see | Status lines of J.2 and the `NOT FOUND ... so far` form; "so far" on completeness outputs; state map (files per level per directory) in `statemap.c`; the new Symbols action `tree` (J.5: schema in `symbols.c`, output from `STS_DIRS` and the state map); the ignored-folder sentence on `NOT FOUND`; a `path` inside an ignored folder becomes a scoped include; console lines of H.3; desktop status item; `katana coder status` full output and `--json` | On a folder still crawling, Find's first line is the "still being built" line and disappears when the crawl ends; on a complete small folder the Symbols outputs are byte-identical to the previous build's; `Symbols` with `action=tree` prints the folders with their index depth and the ignored ones with reason and count; Find with `path=node_modules/<package>` answers from that package and a later Find without `path` does not return files from it | 2 |
 | 7. Unified Find, as the default | File list from the view, candidates from `cs_search_core`, chunk ranking at query time over the candidate files, symbols from N2, `STS_GRAPH` built by the crawler through the `graph_on_quiet` hook (sym, path, rare, optional co), activation and neighbor notes reading it, request state keyed by path hash; `KATANA_FIND_INDEX` defaults to `store`, `legacy` keeps today's path working | Find answers in a folder that has no `find-*.idx` and creates none; with `KATANA_FIND_INDEX=legacy` the old path still answers | 4 |
-| 8. Housekeeping and failure paths | `list`, `forget`, `gc` (home index only) and the daily automatic `gc`; retiring absorbed home roots; version mismatch → rebuild, newer store → leave and report; corruption → quarantine and rebuild; scrub at the end of a run; disk-full pause; inline fallback caps; read-only home path | Truncating a segment file by hand leads, on the next query, to the "damaged" line and a complete index shortly after; `katana coder forget` leaves no file for a home root; `gc --dry-run` lists what it would remove and never names an initialized folder's store | 1.5 |
-| 9. Documents and training note | Update `docs/tools.md`, `docs/code-intelligence.md` (2.4, 2.6, 8.6), `docs/extending.md` (init), `docs/handoff.md`, `docs/plan.md`, README (init, environment table); add the new output lines and the directory outline to the curriculum backlog in `docs/curriculum.md`; N4 summaries left as a described, switched-off option | Documents describe the behavior that exists | 1 |
+| 8. Housekeeping and failure paths | `katana coder ignored`, `include`, `exclude` and the ignored block of `status` (D.10); `list`, `forget`, `gc` (home index only) and the daily automatic `gc`; retiring absorbed home roots; version mismatch → rebuild, newer store → leave and report; corruption → quarantine and rebuild; scrub at the end of a run; disk-full pause; inline fallback caps; read-only home path | Truncating a segment file by hand leads, on the next query, to the "damaged" line and a complete index shortly after; `katana coder forget` leaves no file for a home root; `gc --dry-run` lists what it would remove and never names an initialized folder's store; `katana coder ignored` in a project with `node_modules` lists it with rule, file count and bytes, and after `katana coder include node_modules/x` that folder is searchable | 1.5 |
+| 9. Documents and training note | Update `docs/tools.md`, `docs/code-intelligence.md` (2.4, 2.6, 8.6), `docs/extending.md` (init), `docs/handoff.md`, `docs/plan.md`, README (init, environment table); record in `docs/curriculum.md` the requirements for the v8 curriculum: a family for the `tree` action (J.5), the status lines (J.2), the two `NOT FOUND` forms (J.3) and the scoped include through `path`; `docs/tools.md` gets `tree` and the ignore rules; N4 summaries left as a described, switched-off option | Documents describe the behavior that exists | 1 |
 
 ### 5.2 The waves
 
@@ -995,7 +1159,7 @@ scripts with count asserts). Each wave is merged into `main` before the next sta
 | 1 | **1a** = phase 1, then **1b** = phase 2. Serial, one agent after the other: both change `search.c` and `symquery.c` | 1a: `src/coder/search.c`, `symquery.c`, `symtool.c`, `kb.c`, new `src/coder/indexctl.c`, `src/katana.c`, `src/tools/edit.c`, `write.c`, `multiedit.c`, `notebookedit.c`, `bash.c`. 1b: new `src/coder/roots.c`, `src/coder/store.c`, `storedocs.c`, `search.c` (`cs_read_doc`, `cs_junk` only), `symquery.c` (root of file paths only), `src/tools/find.c` (`ct_findtool` root and prefix, `fd_cache_path`), `symbols.c`, `common.c`, `src/agent/extend.c` (`init_cli`, `ext_slash`), `loop.c`, `prefix_cache.c`, `src/katana.c` | 5 |
 | 2 | **2a** = phase 3, alone. Nobody else edits `src/` during this wave | new `src/coder/crawl.c`; stubs: new `src/coder/watch.c`, `fresh.c`, `statemap.c`, `graph.c`, `maint.c`; `src/coder/store.c`, `storedocs.c`, `search.c` and `symindex.c` (hooks, mergers for the new sections), `indexctl.c`, `coder.c`, `src/agent/loop.c`, `extend.c` (init starts the crawler), `src/katana.c` | 5 |
 | 3 | **3a** = phase 4, **3b** = phase 7, **3c** = phase 8 | 3a: `src/coder/watch.c`, `fresh.c`, `indexctl.c`, `crawl.c` (change queue and branch re-entry functions), `symtool.c`. 3b: `src/tools/find.c`, `findgraph.c`, `src/coder/graph.c`. 3c: `src/coder/maint.c`, `roots.c`, `coder.c`, `storedocs.c` (subcommands only) | 4 |
-| 4 | **4a** = phase 5, **4b** = phase 6 | 4a: `src/coder/crawl.c`, `search.c`, `symindex.c`, `text.c`, `parse.c`, `parse2.c`. 4b: `src/coder/statemap.c`, `symquery.c` (`sy_limits`, `sy_emit`, outline), `symtool.c`, `src/tools/find.c` (output only), `symbols.c`, `src/agent/loop.c`, `storedocs.c` (`coder_cmd_status`), `desktop-qt/` | 2.5 |
+| 4 | **4a** = phase 5, **4b** = phase 6 | 4a: `src/coder/crawl.c`, `search.c`, `symindex.c`, `text.c`, `parse.c`, `parse2.c`. 4b: `src/coder/statemap.c`, `symquery.c` (`sy_limits`, `sy_emit`, the new `coder_tree_main`), `symtool.c`, `src/tools/find.c` (output only), `symbols.c`, `src/agent/loop.c`, `storedocs.c` (`coder_cmd_status`), `desktop-qt/` | 2.5 |
 | 5 | **5a** = phase 9 | `docs/`, `README.md`, `desktop-qt/README.md` | 1 |
 
 About 23.5 agent-days of work in about 17.5 days of waves.
@@ -1044,9 +1208,9 @@ About 23.5 agent-days of work in about 17.5 days of waves.
    Find's chunk index, and the v7 training outputs were produced with the legacy ranking. Without a measurement
    campaign there is no evidence either way. The owner decided to make it the default anyway; if answers get
    worse, `KATANA_FIND_INDEX=legacy` restores the old path.
-7. **The model has never seen the new status lines** or a directory outline. The lines are short and in the
+7. **The model has never seen the new status lines** or the output of `tree`. The lines are short and in the
    bracket form it knows, but a local model may ignore "results are partial" and treat a partial `NOT FOUND` as
-   final. The wording in J.3 is the mitigation; the real fix is a curriculum family.
+   final. The `tree` action is in the same position, more so: it is a new call the model must choose to make. The wording in J.3 is the mitigation; the real fix is a curriculum family.
 8. **Secret detection is heuristic.** A password in a file named `config.yaml`, or a short token, enters the
    lexicon. The store permissions and keeping the store in the home are the real protection; on ntfs3 the permissions do
    not exist.
@@ -1069,9 +1233,15 @@ About 23.5 agent-days of work in about 17.5 days of waves.
 13. **Existing local stores without a marker.** Every folder katana was launched in before this change has a
     `.katana/coder/store` that no longer counts. Those folders are re-indexed into the home index on the next
     visit; the old stores are listed by `gc` and adopted if the user runs init there.
-14. **What I remember versus what I know about the examples** is marked in 3.0. The design does not depend on
+14. **The counting pass walks what the crawl avoids.** Counting `node_modules` is a `readdir`/`lstat` walk of
+    tens of thousands of entries, capped and at the lowest priority, but it delays the crawler's exit. If it
+    proves too slow it can be made lazy (only when `tree` or `katana coder ignored` asks).
+15. **`vendor` is indexed by default now.** Correct for Go and PHP projects that commit their dependencies, noisy
+    for projects that use the name for downloaded code. It deepens last (band 4) and one line in
+    `.katanaignore` removes it, but the default may be wrong for a given project.
+16. **What I remember versus what I know about the examples** is marked in 3.0. The design does not depend on
     any detail marked "recollection".
-15. **The desktop integration was not read.** H.3 assumes the desktop can show a status item fed by the agent
+17. **The desktop integration was not read.** H.3 assumes the desktop can show a status item fed by the agent
     process.
 
 ## 7. Decisions
@@ -1085,8 +1255,8 @@ About 23.5 agent-days of work in about 17.5 days of waves.
 | Phases | All nine, in waves | 5 |
 | Life of the crawler | On demand; exits when every level of every requested folder is covered; no idle wait, no daemon | B, C.1 |
 | Unified Find | Default as soon as phase 7 is built; `legacy` is the escape | E |
-| Directory summary for the model | Symbols `outline` with a folder in `file` (recommendation, not contested) | J.5 |
-| Ignored files at N0 | Ignored directories are recorded, ignored files only counted (recommendation, not contested) | D.8 |
+| Directory summary for the model | A new Symbols action `tree` (not `outline` on a folder); examples required in the v8 curriculum | J.5, phase 6, phase 9 |
+| Ignored content | Still ignored, but transparent and controllable: every ignored folder and file recorded with its reason and size, `katana coder ignored`, `include`/`exclude`, ignored folders shown by `tree`, searches say when ignored folders were not looked at, the model can reach into one with `path` | D.10, J.3 |
 
 ### 7.2 Still open
 
@@ -1102,3 +1272,7 @@ About 23.5 agent-days of work in about 17.5 days of waves.
    one crawler run instead of many, and it means the process is visible for about 2 s after its last write.
    Recommendation: keep 2 s. Alternative: 0 (exit at once; every isolated change starts and ends a process, and
    the graph is rewritten on each).
+3. **`vendor` out of the built-in heavy list** (D.10). The owner named `vendor/` as a folder the model may need to
+   read, so this design indexes it by default, last in priority. Recommendation: keep it indexed. Alternative:
+   keep it in the built-in list and rely on `katana coder include vendor` or on the scoped include through
+   `path`; then project searches do not see vendored code unless asked.
