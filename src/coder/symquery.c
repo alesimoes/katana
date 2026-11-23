@@ -12,17 +12,21 @@
  *   - relacao por nome: mesmo arquivo da definicao ou definicao unica no conjunto nao penalizam; nome sem definicao no conjunto (externo) -25.
  * Caminhos no grafo (impact) tem a confianca da aresta mais fraca. Nada aqui resolve nomes de verdade: parse.c so da o nome final de uma chamada. */
 typedef struct { const StoreSeg *seg; SySec x; KySec ky; StoreDocs sd; uint8_t *live; } SyVSeg;
+/* mapa modulo->arquivo e modulos go.mod montados sob demanda por sy_mods_build; pertencem a visao (nao ha estado global): liberados em sy_view_close */
+typedef struct { char *k; StoreLiveDoc *d; } SyNsE;
+typedef struct { SyNsE *e; int n, cap; int built; char **gomod; char **godir; int ngo; } SyMods;
 typedef struct {
     StoreReader *r; SyVSeg *s; int ns; StoreLive L; char dir[4400]; int any;
     uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed, nkeyflag, nkeyold; int anykeys;
     char fpath[400]; char *fbuf; size_t fn; size_t *fln; int fnl, fok, fstale;
     uint32_t strip;                     /* consulta restrita a um prefixo da raiz: bytes do prefixo (e da barra) tirados dos caminhos */
+    SyMods *mods;                       /* sob demanda (deps, imports); da visao, nao do processo */
     int borrowed; void *slot;           /* visao reaproveitada de indexctl.c: copia rasa do cache; fbuf, fln e os contadores fN sao desta consulta */
 } SyView;
 typedef struct { const char *path; uint32_t plen; const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent, doc, lang; int seg; uint32_t row, rel; } SySym;
 typedef struct { const char *path; uint32_t plen; const char *name; uint32_t nl, kind, line, col, flags, from, doc, lang; int seg; uint32_t row; } SyRef;
 
-static void sy_mods_free(void);
+static void sy_mods_free(SyView *v);
 static int sy_view_open_raw(const char *proj, SyView *v, char *err, size_t ecap) {
     memset(v, 0, sizeof *v);
     IndexLoc loc; index_resolve(proj, 0, &loc); snprintf(v->dir, sizeof v->dir, "%s", loc.store);
@@ -59,14 +63,14 @@ static void sy_view_free_real(SyView *v) {
 static void sy_cache_destroy(void *p) { sy_view_free_real((SyView *)p); free(p); }
 static IdxCache g_sy_cache = {.destroy = sy_cache_destroy};
 static void sy_view_close(SyView *v) {
-    sy_mods_free();
+    sy_mods_free(v);
     if (v->borrowed) { void *h = v->slot; free(v->fbuf); free(v->fln); memset(v, 0, sizeof *v); idx_cache_release(&g_sy_cache, h); return; }
     sy_view_free_real(v);
 }
 static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
     char dir[4400]; idx_view_key(proj, dir, sizeof dir);
     void *h = idx_cache_get(&g_sy_cache, dir);
-    if (h) { *v = *(SyView *)h; v->fpath[0] = 0; v->fbuf = NULL; v->fn = 0; v->fln = NULL; v->fnl = v->fok = v->fstale = 0; v->borrowed = 1; v->slot = h; return 0; }
+    if (h) { *v = *(SyView *)h; v->fpath[0] = 0; v->fbuf = NULL; v->fn = 0; v->fln = NULL; v->fnl = v->fok = v->fstale = 0; v->mods = NULL; v->borrowed = 1; v->slot = h; return 0; }
     SyView t; if (sy_view_open_raw(proj, &t, err, ecap) != 0) return -1;
     SyView *hp = (SyView *)malloc(sizeof *hp);
     if (hp) { *hp = t; if (idx_cache_put(&g_sy_cache, dir, hp, t.r)) { *v = *hp; v->borrowed = 1; v->slot = hp; return 0; } free(hp); }
@@ -268,7 +272,8 @@ static int sy_cascade(const SyView *v, const char *q, int want, SyCand *out, int
 
 /* ---- itens de resultado e saida (texto ou JSON) ---- */
 enum { SYI_BRIEF = 1, SYI_NOCONF = 2 };
-typedef struct { char path[400]; int line0, line1, col, conf, ver, depth, flags; char kind[16], name[100], encl[220], sig[200], vis[12], how[170]; char *snip; } SyItem;
+typedef struct { char path[400]; int line0, line1, col, conf, ver, depth, flags; char kind[16], name[100], encl[220], sig[200], vis[12], how[170]; char *snip;
+    char peer_path[400]; int peer_line; char peer_where[160]; } SyItem;      /* peer_*: o outro lado de uma ligacao por chave (flow): arquivo, linha e "in simbolo (l0-l1)"; vazio nas demais consultas */
 typedef struct { SyItem *v; int n, cap; } SyItems;
 static SyItem *sy_item_new(SyItems *a) {
     if (a->n == a->cap) { a->cap = a->cap ? a->cap * 2 : 32; a->v = (SyItem *)realloc(a->v, sizeof(SyItem) * (size_t)a->cap); }
@@ -285,47 +290,91 @@ static void sy_set_snip(SyView *v, SyItem *it, const char *path, uint32_t plen, 
     if (l1 >= l0 + maxl) o += (size_t)snprintf(b + o, cap - o, "\n... (+%d lines; Read the file with offset=%d)", l1 - (l0 + maxl) + 1, l0 + maxl);
     b[o] = 0; it->snip = b;
 }
-typedef struct { const char *query, *arg; int json, limit; char resolved[200], cascade[160]; int step; char external[1500]; int next_depth; char hint[240]; } SyQ;
-static void sy_json_item(const SyItem *it) {
-    printf("{\"path\":"); cp_jstr(it->path); printf(",\"line0\":%d,\"line1\":%d", it->line0, it->line1); if (it->col) printf(",\"col\":%d", it->col);
-    printf(",\"kind\":"); cp_jstr(it->kind); printf(",\"name\":"); cp_jstr(it->name);
-    if (it->encl[0]) { printf(",\"scope\":"); cp_jstr(it->encl); } if (it->sig[0]) { printf(",\"sig\":"); cp_jstr(it->sig); } if (it->vis[0]) { printf(",\"visibility\":"); cp_jstr(it->vis); }
-    if (!(it->flags & SYI_NOCONF)) { printf(",\"confidence\":%d,\"level\":\"%s\",\"verified\":%s,\"how\":", it->conf, sy_level(it->conf), it->ver > 0 ? "true" : "false"); cp_jstr(it->how); }
-    if (it->depth) printf(",\"depth\":%d", it->depth);
-    if (it->snip) { printf(",\"snippet\":"); cp_jstr(it->snip); }
-    printf("}");
+/* ---- API estruturada das consultas (fase U2 do UIOE) ----
+ * Cada consulta e `sy_q_*` (aqui) ou `fl_q_*` (flow.c): recebe uma SyView ABERTA (sy_view_open; o chamador a fecha e pode reaproveitar a mesma visao em
+ * varias consultas: ela vem do cache de indexctl.c e o estado derivado, como o mapa de modulos de `deps`, e dela), preenche `SyItems *out` (zerado
+ * pelo chamador; liberar com sy_items_free) e o descritor `SyQ *meta`, e devolve o total de resultados (pode ser maior que out->n: o limite so corta
+ * os itens). NAO imprime nada, nao toca stdout/stderr, nao usa estado global: pode ser chamada de qualquer funcao, em qualquer thread que tenha a
+ * sua propria visao. `meta` e quem carrega tudo que a saida precisa (cascata, NOT FOUND, limites do conjunto indexado, dica, cabecalho), de modo
+ * que os renderizadores nao precisam da visao:
+ *   sy_render_text(sb, meta, out)  o texto de `katana coder <consulta>` (byte a byte), sy_render_json(sb, meta, out)  o de --json.
+ * Itens: arquivo (path), linhas (line0..line1, col), kind, name, scope (encl), assinatura (sig), visibilidade, trecho (snip), confidence 0-100 (conf),
+ * level (sy_level(conf)), how (por que), ver (linha reconferida no arquivo), depth. Os itens de flow que ligam dois lados trazem tambem o outro lado
+ * (peer_path, peer_line, peer_where). A cadeia da cascata esta em meta->cand[0..ncand) (nome, passo 1 exato, 2 derivado, 3 provavel, e o motivo).
+ * Consultas (vistas de fora so pelos wrappers coder_*_main e pela ferramenta Symbols em symtool.c):
+ *   sy_q_def(v, nome, limit, lines, out, meta)          sy_q_refs / sy_q_callers / sy_q_uses(v, nome, limit, out, meta)    sy_q_callees(v, nome, limit, ...)
+ *   sy_q_outline(v, arquivo, limit, ...)                sy_q_at(v, arquivo, linha, ...)                                    sy_q_deps(v, arquivo, limit, ...)
+ *   sy_q_impact(v, nome, depth, nodes, limit, ...)      fl_q_key(v, chave, limit, ...)  fl_q_file(v, arquivo, linha, limit, ...)  fl_q_links(v, limit, ...)  fl_q_arg(v, arg, limit, ...) */
+typedef struct {
+    const char *query, *arg;          /* nome da consulta (literal) e o argumento como o chamador o deu (o texto/JSON o repete); sy_q_at e fl_q_*: argbuf, o chamador pode trocar */
+    int total, step;                  /* total de resultados; passo da cascata que achou (0 = nao precisou, 1 exato, 2 derivado, 3 provavel) */
+    char resolved[200], cascade[160]; /* nomes resolvidos pela cascata (ate 4) e o motivo */
+    SyCand cand[8]; int ncand;        /* a cadeia da cascata: cada nome candidato com o passo e o motivo */
+    char external[1500];              /* nomes chamados que nao tem definicao no conjunto (callees) ou imports sem arquivo (deps) */
+    char hint[240];                   /* "Next: ..." da saida de texto */
+    char head[4700];                  /* linha de cabecalho da saida de texto (outline, at), so quando ha resultado */
+    char notfound[704];               /* o que nao foi achado ("no definition of 'x' in the indexed set"), para o NOT FOUND */
+    char limits[700];                 /* o limite do conjunto indexado (quantos arquivos, o que nao e visto) */
+    uint32_t nlive, nwith;            /* arquivos do conjunto e arquivos com simbolos */
+    char argbuf[4500];
+} SyQ;
+static void sy_q_begin(SyQ *o, const char *query, const char *arg) { memset(o, 0, sizeof *o); o->query = query; o->arg = arg; }
+static int sy_q_end(const SyView *v, SyQ *o, int total, const char *notfound) {
+    o->total = total; snprintf(o->notfound, sizeof o->notfound, "%s", notfound); sy_limits(v, o->limits, sizeof o->limits); o->nlive = v->nlive; o->nwith = v->nwith; return total;
 }
-static void sy_emit(const SyView *v, SyQ *o, SyItems *a, int total, const char *notfound_what) {
-    char lim[700]; sy_limits(v, lim, sizeof lim); int shown = a->n;
-    if (o->json) {
-        printf("{\"query\":"); cp_jstr(o->query); printf(",\"arg\":"); cp_jstr(o->arg);
-        if (o->resolved[0]) { printf(",\"resolved\":"); cp_jstr(o->resolved); }
-        if (o->step) { printf(",\"cascade_step\":%d,\"cascade\":", o->step); cp_jstr(o->cascade); }
-        printf(",\"count\":%d,\"shown\":%d,\"items\":[", total, shown);
-        for (int i = 0; i < a->n; i++) { if (i) printf(","); sy_json_item(&a->v[i]); }
-        printf("]");
-        if (o->external[0]) { printf(",\"external\":"); cp_jstr(o->external); }
-        if (!total) { char nf[900]; snprintf(nf, sizeof nf, "NOT FOUND: %s. Cascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2. %s", notfound_what, lim); printf(",\"not_found\":"); cp_jstr(nf); }
-        printf(",\"index\":{\"files\":%u,\"with_symbols\":%u}}\n", v->nlive, v->nwith); return;
-    }
-    if (!total) { printf("NOT FOUND: %s.\nCascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2.\n%s\n", notfound_what, lim); return; }
-    if (o->step > 1) printf("No exact match for '%s'; %s\n", o->arg, o->cascade);
+/* ---- escrita em CtSb (nenhuma saida vai para stdout daqui) ---- */
+static void sy_sbf(CtSb *b, const char *fmt, ...) {
+    char t[2048]; va_list ap; va_start(ap, fmt); int n = vsnprintf(t, sizeof t, fmt, ap); va_end(ap); if (n < 0) return;
+    if ((size_t)n < sizeof t) { ct_sb_add(b, t, (size_t)n); return; }
+    char *h = (char *)malloc((size_t)n + 1); va_start(ap, fmt); vsnprintf(h, (size_t)n + 1, fmt, ap); va_end(ap); ct_sb_add(b, h, (size_t)n); free(h);
+}
+static void sy_sb_jstr(CtSb *b, const char *s) {
+    ct_sb_add(b, "\"", 1);
+    for (; *s; s++) { unsigned char ch = (unsigned char)*s; if (ch == '"' || ch == '\\') { char t[2] = {'\\', (char)ch}; ct_sb_add(b, t, 2); } else if (ch < 0x20) sy_sbf(b, "\\u%04x", ch); else ct_sb_add(b, (const char *)&ch, 1); }
+    ct_sb_add(b, "\"", 1);
+}
+static void sy_json_item(CtSb *b, const SyItem *it) {
+    sy_sbf(b, "{\"path\":"); sy_sb_jstr(b, it->path); sy_sbf(b, ",\"line0\":%d,\"line1\":%d", it->line0, it->line1); if (it->col) sy_sbf(b, ",\"col\":%d", it->col);
+    sy_sbf(b, ",\"kind\":"); sy_sb_jstr(b, it->kind); sy_sbf(b, ",\"name\":"); sy_sb_jstr(b, it->name);
+    if (it->encl[0]) { sy_sbf(b, ",\"scope\":"); sy_sb_jstr(b, it->encl); } if (it->sig[0]) { sy_sbf(b, ",\"sig\":"); sy_sb_jstr(b, it->sig); } if (it->vis[0]) { sy_sbf(b, ",\"visibility\":"); sy_sb_jstr(b, it->vis); }
+    if (!(it->flags & SYI_NOCONF)) { sy_sbf(b, ",\"confidence\":%d,\"level\":\"%s\",\"verified\":%s,\"how\":", it->conf, sy_level(it->conf), it->ver > 0 ? "true" : "false"); sy_sb_jstr(b, it->how); }
+    if (it->depth) sy_sbf(b, ",\"depth\":%d", it->depth);
+    if (it->snip) { sy_sbf(b, ",\"snippet\":"); sy_sb_jstr(b, it->snip); }
+    sy_sbf(b, "}");
+}
+static void sy_render_json(CtSb *b, const SyQ *o, const SyItems *a) {
+    sy_sbf(b, "{\"query\":"); sy_sb_jstr(b, o->query); sy_sbf(b, ",\"arg\":"); sy_sb_jstr(b, o->arg);
+    if (o->resolved[0]) { sy_sbf(b, ",\"resolved\":"); sy_sb_jstr(b, o->resolved); }
+    if (o->step) { sy_sbf(b, ",\"cascade_step\":%d,\"cascade\":", o->step); sy_sb_jstr(b, o->cascade); }
+    sy_sbf(b, ",\"count\":%d,\"shown\":%d,\"items\":[", o->total, a->n);
+    for (int i = 0; i < a->n; i++) { if (i) sy_sbf(b, ","); sy_json_item(b, &a->v[i]); }
+    sy_sbf(b, "]");
+    if (o->external[0]) { sy_sbf(b, ",\"external\":"); sy_sb_jstr(b, o->external); }
+    if (!o->total) { char nf[900]; snprintf(nf, sizeof nf, "NOT FOUND: %s. Cascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2. %s", o->notfound, o->limits); sy_sbf(b, ",\"not_found\":"); sy_sb_jstr(b, nf); }
+    sy_sbf(b, ",\"index\":{\"files\":%u,\"with_symbols\":%u}}\n", o->nlive, o->nwith);
+}
+static void sy_render_text(CtSb *b, const SyQ *o, const SyItems *a) {
+    if (!o->total) { sy_sbf(b, "NOT FOUND: %s.\nCascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2.\n%s\n", o->notfound, o->limits); return; }
+    if (o->head[0]) sy_sbf(b, "%s\n", o->head);
+    if (o->step > 1) sy_sbf(b, "No exact match for '%s'; %s\n", o->arg, o->cascade);
     for (int i = 0; i < a->n; i++) {
         const SyItem *it = &a->v[i]; int ind = it->depth * 2;
         if (it->flags & SYI_BRIEF) {
-            printf("%*s%d-%d %s %s", ind + 2, "", it->line0, it->line1, it->kind, it->name); if (it->sig[0]) printf("  %s", it->sig); printf("\n"); continue;
+            sy_sbf(b, "%*s%d-%d %s %s", ind + 2, "", it->line0, it->line1, it->kind, it->name); if (it->sig[0]) sy_sbf(b, "  %s", it->sig); sy_sbf(b, "\n"); continue;
         }
-        printf("%*s%s:%d", ind, "", it->path, it->line0); if (it->line1 > it->line0) printf("-%d", it->line1); if (it->col) printf(":%d", it->col);
-        printf("  %s %s", it->kind, it->name); if (it->vis[0]) printf(" [%s]", it->vis); if (it->encl[0]) printf("  %s", it->encl);
-        if (!(it->flags & SYI_NOCONF)) printf("   [confidence %d %s%s%s]", it->conf, sy_level(it->conf), it->how[0] ? "; " : "", it->how);
-        printf("\n");
-        if (it->sig[0] && it->snip == NULL) printf("%*s    %s\n", ind, "", it->sig);
-        if (it->snip) { for (const char *p = it->snip; *p; ) { const char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p); printf("%*s    %.*s\n", ind, "", (int)l, p); if (!e) break; p = e + 1; } }
+        sy_sbf(b, "%*s%s:%d", ind, "", it->path, it->line0); if (it->line1 > it->line0) sy_sbf(b, "-%d", it->line1); if (it->col) sy_sbf(b, ":%d", it->col);
+        sy_sbf(b, "  %s %s", it->kind, it->name); if (it->vis[0]) sy_sbf(b, " [%s]", it->vis); if (it->encl[0]) sy_sbf(b, "  %s", it->encl);
+        if (!(it->flags & SYI_NOCONF)) sy_sbf(b, "   [confidence %d %s%s%s]", it->conf, sy_level(it->conf), it->how[0] ? "; " : "", it->how);
+        sy_sbf(b, "\n");
+        if (it->sig[0] && it->snip == NULL) sy_sbf(b, "%*s    %s\n", ind, "", it->sig);
+        if (it->snip) { for (const char *p = it->snip; *p; ) { const char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p); sy_sbf(b, "%*s    %.*s\n", ind, "", (int)l, p); if (!e) break; p = e + 1; } }
     }
-    if (o->external[0]) printf("+ external (no definition in the indexed set): %s\n", o->external);
-    if (total > shown) printf("(%d more not shown; raise --limit)\n", total - shown);
-    if (o->hint[0]) printf("%s\n", o->hint);
+    if (o->external[0]) sy_sbf(b, "+ external (no definition in the indexed set): %s\n", o->external);
+    if (o->total > a->n) sy_sbf(b, "(%d more not shown; raise --limit)\n", o->total - a->n);
+    if (o->hint[0]) sy_sbf(b, "%s\n", o->hint);
 }
+/* escreve o texto no stdout (wrappers `katana coder ...`) e libera o buffer */
+static void sy_put(CtSb *b) { if (b->n) fwrite(b->p, 1, b->n, stdout); free(b->p); memset(b, 0, sizeof *b); }
 
 /* ---- argumentos ---- */
 typedef struct { const char *pos[3]; int npos, json, limit, lines, depth, nodes; } SyArgs;
@@ -347,7 +396,7 @@ static int sy_start(const char *cmd, const char *use, int argc, char **argv, SyA
     return 0;
 }
 static void sy_cascade_note(SyQ *o, const SyCand *c, int nc, int step) {
-    o->step = step; o->resolved[0] = 0;
+    o->step = step; o->resolved[0] = 0; o->ncand = nc < 8 ? nc : 8; memcpy(o->cand, c, sizeof(SyCand) * (size_t)o->ncand);
     for (int i = 0; i < nc && i < 4; i++) { size_t l = strlen(o->resolved); snprintf(o->resolved + l, sizeof o->resolved - l, "%s%s", i ? ", " : "", c[i].name); }
     snprintf(o->cascade, sizeof o->cascade, "showing %s (%s)", o->resolved, c[0].how);
 }
@@ -359,26 +408,26 @@ static void sy_fill_def(SyView *v, SyItem *it, const SySym *s, int lines) {
 }
 
 /* ---- def ---- */
-static int coder_def_main(int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start("def", "def <name> [pasta] [--json] [--lines N|--body] [--limit N]", argc, argv, &a, &v, 50); if (rc) return rc;
-    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 1, cand, 8, &step); SyItems items = {0}; SyQ o; memset(&o, 0, sizeof o); o.query = "def"; o.arg = a.pos[0]; o.json = a.json; int total = 0;
-    if (nc) sy_cascade_note(&o, cand, nc, step);
+static int sy_q_def(SyView *v, const char *name, int limit, int lines, SyItems *out, SyQ *o) {
+    sy_q_begin(o, "def", name);
+    SyCand cand[8]; int step, nc = sy_cascade(v, name, 1, cand, 8, &step); int total = 0;
+    if (nc) sy_cascade_note(o, cand, nc, step);
     for (int c = 0; c < nc; c++) {
-        SySyms d = {0}; sy_defs_of(&v, cand[c].name, strlen(cand[c].name), &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        SySyms d = {0}; sy_defs_of(v, cand[c].name, strlen(cand[c].name), &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
         for (int i = 0; i < d.n; i++) {
-            const SySym *s = &d.s[i]; total++; if (items.n >= a.limit) continue;
-            SyItem *it = sy_item_new(&items); sy_fill_def(&v, it, s, a.lines);
+            const SySym *s = &d.s[i]; total++; if (out->n >= limit) continue;
+            SyItem *it = sy_item_new(out); sy_fill_def(v, it, s, lines);
             int decl = (s->pack >> 16) & CSF_DECL; if (decl) snprintf(it->kind + strlen(it->kind), sizeof it->kind - strlen(it->kind), " (decl)");
-            it->ver = sy_verify(&v, s->path, s->plen, (int)s->line0, 3, s->name, s->nl);
+            it->ver = sy_verify(v, s->path, s->plen, (int)s->line0, 3, s->name, s->nl);
             int nd = ndef ? ndef : d.n; it->conf = sy_conf(cand[c].step, nd, it->ver, decl ? -5 : 0);
             if (cand[c].step == 1) snprintf(it->how, sizeof it->how, "%s; %d definition%s%s", decl ? "declaration only (prototype)" : "name match", nd, nd == 1 ? "" : "s", it->ver > 0 ? "; line verified" : "; line NOT verified (file changed or unreadable)");
             else snprintf(it->how, sizeof it->how, "%s; %d definition%s", cand[c].how, nd, nd == 1 ? "" : "s");
         }
         free(d.s);
     }
-    if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d definition%s. Next: refs/callers/callees %s, or Read the file range above.", total, total == 1 ? "" : "s", cand[0].name);
-    char nf[300]; snprintf(nf, sizeof nf, "no definition of '%s' in the indexed set", a.pos[0]);
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+    if (total) snprintf(o->hint, sizeof o->hint, "%d definition%s. Next: refs/callers/callees %s, or Read the file range above.", total, total == 1 ? "" : "s", cand[0].name);
+    char nf[300]; snprintf(nf, sizeof nf, "no definition of '%s' in the indexed set", name);
+    return sy_q_end(v, o, total, nf);
 }
 
 /* ---- deps ---- */
@@ -387,10 +436,8 @@ static const char *const SY_EXT[] = {"", ".h", ".c", ".js", ".mjs", ".cjs", ".ts
  * Cada regra devolve os arquivos do conjunto indexado e a confianca; o mapa modulo->arquivo (namespaces/pacotes declarados pelos simbolos) e
  * montado aqui, na consulta, a partir das secoes do indice (o formato do armazenamento nao muda). Sem regra que sirva, cai no casamento por
  * caminho (sy_resolve_path). */
-typedef struct { char *k; StoreLiveDoc *d; } SyNsE;
-typedef struct { SyNsE *e; int n, cap; int built; char **gomod; char **godir; int ngo; } SyMods;
-static SyMods g_symods;     /* uma consulta por processo; zerado por sy_mods_free */
-static void sy_mods_free(void) { for (int i = 0; i < g_symods.n; i++) free(g_symods.e[i].k); free(g_symods.e); for (int i = 0; i < g_symods.ngo; i++) { free(g_symods.gomod[i]); free(g_symods.godir[i]); } free(g_symods.gomod); free(g_symods.godir); memset(&g_symods, 0, sizeof g_symods); }
+static void sy_mods_free(SyView *v) { SyMods *m = v->mods; if (!m) return; for (int i = 0; i < m->n; i++) free(m->e[i].k); free(m->e); for (int i = 0; i < m->ngo; i++) { free(m->gomod[i]); free(m->godir[i]); } free(m->gomod); free(m->godir); free(m); v->mods = NULL; }
+static SyMods *sy_mods(const SyView *v) { SyView *w = (SyView *)v; if (!w->mods) w->mods = (SyMods *)calloc(1, sizeof(SyMods)); return w->mods; }
 static uint32_t sy_dlang(const SyView *v, const StoreLiveDoc *d) { const SySec *x = &v->s[d->seg].x; return x->has && d->idx < x->docs.n ? st_get_u32(store_table_at(&x->docs, d->idx) + 16) : 0; }
 static StoreLiveDoc *sy_lookup(const SyView *v, const char *p, size_t l) { if (!l || l > 1500) return NULL; StoreLiveDoc *d = store_live_find(&v->L, p, l); return d && !d->dead ? d : NULL; }
 /* familia de linguagem: imports so resolvem para arquivos da mesma familia */
@@ -405,15 +452,16 @@ static StoreLiveDoc *sy_try(const SyView *v, const char *dir, const char *rel, c
     char b[1500], n[1500]; snprintf(b, sizeof b, "%s%s%s", dir, rel, suf); sy_pnorm(b, n, sizeof n); return sy_lookup(v, n, strlen(n));
 }
 static int sy_ns_cmp(const void *a, const void *b) { return strcmp(((const SyNsE *)a)->k, ((const SyNsE *)b)->k); }
-static void sy_ns_add(const char *nm, uint32_t nl, StoreLiveDoc *d) {
+static void sy_ns_add(SyMods *M, const char *nm, uint32_t nl, StoreLiveDoc *d) {
     if (!nl || nl > 300) return;
-    if (g_symods.n == g_symods.cap) { g_symods.cap = g_symods.cap ? g_symods.cap * 2 : 256; g_symods.e = (SyNsE *)realloc(g_symods.e, sizeof(SyNsE) * (size_t)g_symods.cap); }
+    if (M->n == M->cap) { M->cap = M->cap ? M->cap * 2 : 256; M->e = (SyNsE *)realloc(M->e, sizeof(SyNsE) * (size_t)M->cap); }
     char *k = (char *)malloc(nl + 1); size_t w = 0;
     for (uint32_t i = 0; i < nl; i++) { char c = nm[i]; if (c == '\\' || c == '/') c = '.'; else if (c == ':' && i + 1 < nl && nm[i + 1] == ':') { c = '.'; i++; } k[w++] = c; }
-    k[w] = 0; g_symods.e[g_symods.n].k = k; g_symods.e[g_symods.n].d = d; g_symods.n++;
+    k[w] = 0; M->e[M->n].k = k; M->e[M->n].d = d; M->n++;
 }
 /* le "module x" de um go.mod do projeto */
 static void sy_go_mods(const SyView *v) {
+    SyMods *M = sy_mods(v);
     for (int i = 0; i < v->L.n; i++) {
         const StoreLiveDoc *d = &v->L.e[i]; if (d->dead || d->d.plen < 6) continue;
         const char *p = d->d.path; uint32_t pl = d->d.plen; if (!(pl == 6 || p[pl - 7] == '/') || memcmp(p + pl - 6, "go.mod", 6)) continue;
@@ -421,12 +469,13 @@ static void sy_go_mods(const SyView *v) {
         char ln[600]; char mod[400] = "";
         while (fgets(ln, sizeof ln, f)) { char *q = ln; while (*q == ' ' || *q == '\t') q++; if (!strncmp(q, "module", 6) && (q[6] == ' ' || q[6] == '\t')) { q += 6; while (*q == ' ' || *q == '\t' || *q == '"') q++; size_t l = strcspn(q, " \t\r\n\""); if (l && l < sizeof mod) { memcpy(mod, q, l); mod[l] = 0; } break; } }
         fclose(f); if (!mod[0]) continue;
-        g_symods.gomod = (char **)realloc(g_symods.gomod, sizeof(char *) * (size_t)(g_symods.ngo + 1)); g_symods.godir = (char **)realloc(g_symods.godir, sizeof(char *) * (size_t)(g_symods.ngo + 1));
-        g_symods.gomod[g_symods.ngo] = strdup(mod); char dd[1500]; snprintf(dd, sizeof dd, "%.*s", pl > 6 ? (int)pl - 6 : 0, p); g_symods.godir[g_symods.ngo] = strdup(dd); g_symods.ngo++;
+        M->gomod = (char **)realloc(M->gomod, sizeof(char *) * (size_t)(M->ngo + 1)); M->godir = (char **)realloc(M->godir, sizeof(char *) * (size_t)(M->ngo + 1));
+        M->gomod[M->ngo] = strdup(mod); char dd[1500]; snprintf(dd, sizeof dd, "%.*s", pl > 6 ? (int)pl - 6 : 0, p); M->godir[M->ngo] = strdup(dd); M->ngo++;
     }
 }
 static void sy_mods_build(const SyView *v) {
-    if (g_symods.built) return; g_symods.built = 1; sy_go_mods(v);
+    SyMods *M = sy_mods(v);
+    if (M->built) return; M->built = 1; sy_go_mods(v);
     for (int s = 0; s < v->ns; s++) {
         const SySec *x = &v->s[s].x; if (!x->has) continue;
         for (uint32_t r = 0; r < x->syms.n; r++) {
@@ -435,15 +484,16 @@ static void sy_mods_build(const SyView *v) {
             int ok = (kind == CK_NAMESPACE && lang != CL_RS && st_get_u32(q + 8) == SY_NONE) || (lang == CL_EX && kind == CK_CLASS);
             if (!ok) continue;
             StoreDoc sd; if (!store_docs_get(&v->s[s].sd, doc, &sd)) continue; if (v->strip && sd.plen > v->strip) { sd.path += v->strip; sd.plen -= v->strip; } StoreLiveDoc *ld = sy_lookup(v, sd.path, sd.plen); if (!ld) continue;
-            uint32_t nl; const char *nm = store_strs_get(&x->names, st_get_u32(q), &nl); sy_ns_add(nm, nl, ld);
+            uint32_t nl; const char *nm = store_strs_get(&x->names, st_get_u32(q), &nl); sy_ns_add(M, nm, nl, ld);
         }
     }
-    if (g_symods.n) qsort(g_symods.e, (size_t)g_symods.n, sizeof(SyNsE), sy_ns_cmp);
+    if (M->n) qsort(M->e, (size_t)M->n, sizeof(SyNsE), sy_ns_cmp);
 }
 /* documentos com o namespace exato; devolve quantos (ate cap) */
-static int sy_ns_find(const char *key, StoreLiveDoc **out, int cap, uint32_t fam) {
-    int lo = 0, hi = g_symods.n; while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(g_symods.e[m].k, key) < 0) lo = m + 1; else hi = m; }
-    int n = 0; for (int i = lo; i < g_symods.n && !strcmp(g_symods.e[i].k, key) && n < cap; i++) { int dup = 0; for (int j = 0; j < n; j++) if (out[j] == g_symods.e[i].d) dup = 1; if (!dup) out[n++] = g_symods.e[i].d; }
+static int sy_ns_find(const SyView *v, const char *key, StoreLiveDoc **out, int cap, uint32_t fam) {
+    SyMods *M = sy_mods(v);
+    int lo = 0, hi = M->n; while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(M->e[m].k, key) < 0) lo = m + 1; else hi = m; }
+    int n = 0; for (int i = lo; i < M->n && !strcmp(M->e[i].k, key) && n < cap; i++) { int dup = 0; for (int j = 0; j < n; j++) if (out[j] == M->e[i].d) dup = 1; if (!dup) out[n++] = M->e[i].d; }
     (void)fam; return n;
 }
 static int sy_doc_has_sym(const SyView *v, const StoreLiveDoc *d, const char *nm, size_t nl) {
@@ -548,9 +598,10 @@ static int sy_res_rs(const SyView *v, const char *from, size_t fl, const char *t
 
 /* Go: "modulo/pkg": pasta do pacote dentro do projeto (go.mod) */
 static int sy_res_go(const SyView *v, const char *t, StoreLiveDoc **out, int cap, int *conf, char *why, size_t wc) {
+    SyMods *M = sy_mods(v);
     char dir[1500]; int have = 0, bymod = 0;
-    for (int i = 0; i < g_symods.ngo && !have; i++) { size_t ml = strlen(g_symods.gomod[i]);
-        if (!strncmp(t, g_symods.gomod[i], ml) && (t[ml] == 0 || t[ml] == '/')) { const char *gd = g_symods.godir[i]; size_t gl = strlen(gd); if (gl && gd[gl - 1] == '/') gl--; snprintf(dir, sizeof dir, "%.*s%s%s", (int)gl, gd, gl && t[ml] ? "/" : "", t[ml] ? t + ml + 1 : ""); have = 1; bymod = 1; } }
+    for (int i = 0; i < M->ngo && !have; i++) { size_t ml = strlen(M->gomod[i]);
+        if (!strncmp(t, M->gomod[i], ml) && (t[ml] == 0 || t[ml] == '/')) { const char *gd = M->godir[i]; size_t gl = strlen(gd); if (gl && gd[gl - 1] == '/') gl--; snprintf(dir, sizeof dir, "%.*s%s%s", (int)gl, gd, gl && t[ml] ? "/" : "", t[ml] ? t + ml + 1 : ""); have = 1; bymod = 1; } }
     int n = 0, nt = 0;
     if (have) {
         size_t dl = strlen(dir); for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead || !sy_ext_is(d, ".go") || !sy_dir_is(d, dir, dl)) continue; if (sy_ext_is(d, "_test.go")) { nt++; continue; } out[n++] = d; }
@@ -581,12 +632,12 @@ static int sy_res_dotted(const SyView *v, uint32_t lang, const char *text, Store
     sy_mods_build(v);
     int n = 0;
     /* 1. o texto inteiro e um namespace/modulo declarado (using A.B; alias My.Foo; (ns my.util); use App\Svc) */
-    if ((n = sy_ns_find(t, out, cap, fam))) { int ok = 0; for (int i = 0; i < n; i++) if ((uint32_t)sy_lfam(sy_dlang(v, out[i])) == fam) out[ok++] = out[i]; n = ok; if (n) { *conf = n == 1 ? 82 : 62; snprintf(why, wc, "name matches a namespace/module declared by %d indexed file%s", n, n == 1 ? "" : "s"); return n; } }
+    if ((n = sy_ns_find(v, t, out, cap, fam))) { int ok = 0; for (int i = 0; i < n; i++) if ((uint32_t)sy_lfam(sy_dlang(v, out[i])) == fam) out[ok++] = out[i]; n = ok; if (n) { *conf = n == 1 ? 82 : 62; snprintf(why, wc, "name matches a namespace/module declared by %d indexed file%s", n, n == 1 ? "" : "s"); return n; } }
     /* 2. prefixo e namespace e o ultimo trecho e um simbolo ou o nome do arquivo (import x.y.S; use App\Svc\Foo) */
     char *dot = strrchr(t, '.');
     if (dot) {
         char pre[600]; snprintf(pre, sizeof pre, "%.*s", (int)(dot - t), t); const char *last = dot + 1;
-        StoreLiveDoc *cd[24]; int nc = sy_ns_find(pre, cd, 24, fam), best = 0; StoreLiveDoc *pick[24];
+        StoreLiveDoc *cd[24]; int nc = sy_ns_find(v, pre, cd, 24, fam), best = 0; StoreLiveDoc *pick[24];
         for (int i = 0; i < nc; i++) { if ((uint32_t)sy_lfam(sy_dlang(v, cd[i])) != fam) continue; char st[300]; if (sy_doc_has_sym(v, cd[i], last, strlen(last)) || !strcmp(sy_stem(cd[i], st, sizeof st), last)) pick[best++] = cd[i]; }
         if (best) { n = best < cap ? best : cap; for (int i = 0; i < n; i++) out[i] = pick[i]; *conf = n == 1 ? 84 : 58; snprintf(why, wc, "namespace '%s' is declared by an indexed file that defines '%s'", pre, last); return n; }
     }
@@ -702,8 +753,8 @@ static int sy_importers(SyView *v, const StoreLiveDoc *tg, SyImp **res) {
     char keys[12][200]; int nk = 0; char stem[200];
     sy_stem(tg, stem, sizeof stem); sy_key_norm(stem, strlen(stem), keys[nk++], sizeof keys[0]);
     if (!strcmp(stem, "lib") || !strcmp(stem, "main") || !strcmp(stem, "mod") || !strcmp(stem, "__init__") || !strcmp(stem, "index") || sy_dlang(v, tg) == CL_GO || sy_dlang(v, tg) == CL_SWIFT) { const char *bs = rel + rl; while (bs > rel && bs[-1] != '/') bs--; if (bs > rel + 1) { const char *de = bs - 1, *ds = de; while (ds > rel && ds[-1] != '/') ds--; if (de > ds) sy_key_norm(ds, (size_t)(de - ds), keys[nk++], sizeof keys[0]); } }
-    sy_mods_build(v);
-    for (int i = 0; i < g_symods.n && nk < 12; i++) if (g_symods.e[i].d == tg) sy_key_norm(g_symods.e[i].k, strlen(g_symods.e[i].k), keys[nk++], sizeof keys[0]);
+    sy_mods_build(v); SyMods *M = sy_mods(v);
+    for (int i = 0; i < M->n && nk < 12; i++) if (M->e[i].d == tg) sy_key_norm(M->e[i].k, strlen(M->e[i].k), keys[nk++], sizeof keys[0]);
     int rootmod = !strcmp(stem, "lib") || !strcmp(stem, "main") || !strcmp(stem, "mod") || !strcmp(stem, "__init__") || !strcmp(stem, "index");
     for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
         for (uint32_t r = 0; r < c->x.refs.n; r++) {
@@ -736,21 +787,21 @@ static int sy_link_build(SyView *v, const SySyms *d, SyImp **lk) {
 }
 static int sy_linked(const SyImp *lk, int n, const char *path, uint32_t pl) { for (int i = 0; i < n; i++) if (lk[i].f.plen == pl && !memcmp(lk[i].f.path, path, pl)) return 1; return 0; }
 /* ---- refs, callers, uses ---- */
-static int sy_refs_cmd(const char *cmd, const char *use, uint32_t mask, int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start(cmd, use, argc, argv, &a, &v, 100); if (rc) return rc;
-    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 2, cand, 8, &step); SyItems items = {0}; SyQ o; memset(&o, 0, sizeof o); o.query = cmd; o.arg = a.pos[0]; o.json = a.json; int total = 0;
-    if (nc) sy_cascade_note(&o, cand, nc, step);
+static int sy_q_refs_as(SyView *v, const char *cmd, uint32_t mask, const char *name, int limit, SyItems *out, SyQ *o) {
+    sy_q_begin(o, cmd, name);
+    SyCand cand[8]; int step, nc = sy_cascade(v, name, 2, cand, 8, &step); int total = 0;
+    if (nc) sy_cascade_note(o, cand, nc, step);
     for (int c = 0; c < nc; c++) {
-        size_t cl = strlen(cand[c].name); SySyms d = {0}; sy_defs_of(&v, cand[c].name, cl, &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
-        SyRefs r = {0}; sy_refs_of(&v, cand[c].name, cl, mask, &r); SyImp *lk = NULL; int nlk = r.n ? sy_link_build(&v, &d, &lk) : 0;
+        size_t cl = strlen(cand[c].name); SySyms d = {0}; sy_defs_of(v, cand[c].name, cl, &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        SyRefs r = {0}; sy_refs_of(v, cand[c].name, cl, mask, &r); SyImp *lk = NULL; int nlk = r.n ? sy_link_build(v, &d, &lk) : 0;
         for (int i = 0; i < r.n; i++) {
-            const SyRef *f = &r.r[i]; total++; if (items.n >= a.limit) continue;
-            SyItem *it = sy_item_new(&items); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col;
+            const SyRef *f = &r.r[i]; total++; if (out->n >= limit) continue;
+            SyItem *it = sy_item_new(out); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col;
             snprintf(it->kind, sizeof it->kind, "%s", f->kind < CR_N ? CP_REFN[f->kind] : "?"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
-            if (f->from != SY_NONE) { SySym e; sy_sym_at(&v, f->seg, st_get_u32(store_table_at(&v.s[f->seg].x.docs, f->doc)) + f->from, &e); snprintf(it->encl, sizeof it->encl, "in %.*s (%u-%u)", (int)(e.nl < 80 ? e.nl : 80), e.name, e.line0, e.line1); }
+            if (f->from != SY_NONE) { SySym e; sy_sym_at(v, f->seg, st_get_u32(store_table_at(&v->s[f->seg].x.docs, f->doc)) + f->from, &e); snprintf(it->encl, sizeof it->encl, "in %.*s (%u-%u)", (int)(e.nl < 80 ? e.nl : 80), e.name, e.line0, e.line1); }
             else snprintf(it->encl, sizeof it->encl, "at file level");
             int same = 0; for (int k = 0; k < d.n; k++) if (d.s[k].plen == f->plen && !memcmp(d.s[k].path, f->path, f->plen)) same = 1;
-            it->ver = sy_verify(&v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
+            it->ver = sy_verify(v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
             if (f->kind == CR_IMPORT) { it->ver = 0; it->conf = 70; snprintf(it->how, sizeof it->how, "import statement text"); }
             else {
                 int linked = !same && ndef > 1 && sy_linked(lk, nlk, f->path, f->plen);      /* o arquivo do chamador importa o arquivo da definicao */
@@ -763,58 +814,54 @@ static int sy_refs_cmd(const char *cmd, const char *use, uint32_t mask, int argc
                 else snprintf(it->how, sizeof it->how, "same name, %d definition%s; %s", ndef, ndef == 1 ? "" : "s", ver);
                 if (cand[c].step > 1) { size_t l = strlen(it->how); snprintf(it->how + l, sizeof it->how - l, "; step %d", cand[c].step); }
             }
-            char t[240]; if (sy_file_load(&v, f->path, f->plen) && sy_line_text(&v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
+            char t[240]; if (sy_file_load(v, f->path, f->plen) && sy_line_text(v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
         }
         free(r.r); free(d.s); free(lk);
     }
-    if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d occurrence%s. Next: def %s for the definition, impact %s for the closure of callers.", total, total == 1 ? "" : "s", cand[0].name, cand[0].name);
-    char nf[300]; snprintf(nf, sizeof nf, "no %s of '%s' in the indexed set", mask == (1u << CR_CALL) ? "caller" : "reference", a.pos[0]);
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+    if (total) snprintf(o->hint, sizeof o->hint, "%d occurrence%s. Next: def %s for the definition, impact %s for the closure of callers.", total, total == 1 ? "" : "s", cand[0].name, cand[0].name);
+    char nf[300]; snprintf(nf, sizeof nf, "no %s of '%s' in the indexed set", mask == (1u << CR_CALL) ? "caller" : "reference", name);
+    return sy_q_end(v, o, total, nf);
 }
-static int coder_refs_main(int argc, char **argv) { return sy_refs_cmd("refs", "refs <name> [pasta] [--json] [--limit N]", ~0u, argc, argv); }
-static int coder_callers_main(int argc, char **argv) { return sy_refs_cmd("callers", "callers <name> [pasta] [--json] [--limit N]", 1u << CR_CALL, argc, argv); }
-static int coder_uses_main(int argc, char **argv) { return sy_refs_cmd("uses", "uses <name> [pasta] [--json] [--limit N]  (every occurrence that is not a call)", ~0u & ~(1u << CR_CALL), argc, argv); }
 
 /* ---- callees ---- */
-static int coder_callees_main(int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start("callees", "callees <name> [pasta] [--json] [--limit N]", argc, argv, &a, &v, 100); if (rc) return rc;
-    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 1, cand, 8, &step); SyItems items = {0}; SyQ o; memset(&o, 0, sizeof o); o.query = "callees"; o.arg = a.pos[0]; o.json = a.json; int total = 0;
-    if (nc) sy_cascade_note(&o, cand, nc, step);
+static int sy_q_callees(SyView *v, const char *name, int limit, SyItems *out, SyQ *o) {
+    sy_q_begin(o, "callees", name);
+    SyCand cand[8]; int step, nc = sy_cascade(v, name, 1, cand, 8, &step); int total = 0;
+    if (nc) sy_cascade_note(o, cand, nc, step);
     for (int c = 0; c < nc; c++) {
-        SySyms d = {0}; sy_defs_of(&v, cand[c].name, strlen(cand[c].name), &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        SySyms d = {0}; sy_defs_of(v, cand[c].name, strlen(cand[c].name), &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
         for (int di = 0; di < d.n; di++) {
             const SySym *D = &d.s[di]; if ((D->pack >> 16) & CSF_DECL) continue;
-            const SySec *x = &v.s[D->seg].x; const uint8_t *dr = store_table_at(&x->docs, D->doc); uint32_t s0 = st_get_u32(dr), r0 = st_get_u32(dr + 8), nr = st_get_u32(dr + 12);
+            const SySec *x = &v->s[D->seg].x; const uint8_t *dr = store_table_at(&x->docs, D->doc); uint32_t s0 = st_get_u32(dr), r0 = st_get_u32(dr + 8), nr = st_get_u32(dr + 12);
             char seen[400][64]; int nseen = 0;
             for (uint32_t k = 0; k < nr; k++) {
-                const SyRef *f; SyRef fr; sy_ref_at(&v, D->seg, r0 + k, &fr); f = &fr;
+                const SyRef *f; SyRef fr; sy_ref_at(v, D->seg, r0 + k, &fr); f = &fr;
                 if (f->kind != CR_CALL || f->from == SY_NONE) continue;
                 int inside = 0; for (uint32_t p = f->from; p != SY_NONE && !inside; ) { if (p == D->rel) inside = 1; else p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8); }
                 if (!inside) continue;
                 int dup = 0; for (int q = 0; q < nseen; q++) if (!strncmp(seen[q], f->name, 63) && strlen(f->name) == f->nl && f->nl < 64) dup = 1; if (dup) continue;
                 if (nseen < 400 && f->nl < 64) { memcpy(seen[nseen], f->name, f->nl); seen[nseen++][f->nl] = 0; }
-                SySyms td = {0}; sy_defs_of(&v, f->name, f->nl, &td); int tn = 0, pick = -1;
+                SySyms td = {0}; sy_defs_of(v, f->name, f->nl, &td); int tn = 0, pick = -1;
                 for (int q = 0; q < td.n; q++) if (!((td.s[q].pack >> 16) & CSF_DECL)) { tn++; if (pick < 0 || (td.s[q].plen == D->plen && !memcmp(td.s[q].path, D->path, D->plen))) pick = q; }
                 total++;
-                if (tn == 0) { size_t l = strlen(o.external); if (l < 1300) snprintf(o.external + l, sizeof o.external - l, "%s%.*s", l ? ", " : "", (int)f->nl, f->name); free(td.s); total--; continue; }
-                if (items.n < a.limit) {
-                    SyItem *it = sy_item_new(&items); sy_set_path(it, D->path, D->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col; snprintf(it->kind, sizeof it->kind, "call"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
+                if (tn == 0) { size_t l = strlen(o->external); if (l < 1300) snprintf(o->external + l, sizeof o->external - l, "%s%.*s", l ? ", " : "", (int)f->nl, f->name); free(td.s); total--; continue; }
+                if (out->n < limit) {
+                    SyItem *it = sy_item_new(out); sy_set_path(it, D->path, D->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col; snprintf(it->kind, sizeof it->kind, "call"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
                     int same = td.s[pick].plen == D->plen && !memcmp(td.s[pick].path, D->path, D->plen);
                     snprintf(it->encl, sizeof it->encl, "-> %.*s:%u-%u (%s)", (int)td.s[pick].plen, td.s[pick].path, td.s[pick].line0, td.s[pick].line1, CP_KINDN[td.s[pick].kind < CK_N ? td.s[pick].kind : 0]);
-                    it->ver = sy_verify(&v, D->path, D->plen, (int)f->line, 0, f->name, f->nl); it->conf = sy_conf(cand[c].step, same ? 1 : tn, it->ver, 0);
+                    it->ver = sy_verify(v, D->path, D->plen, (int)f->line, 0, f->name, f->nl); it->conf = sy_conf(cand[c].step, same ? 1 : tn, it->ver, 0);
                     if (same) snprintf(it->how, sizeof it->how, "name match in same file; called from %.*s (%u-%u); %s", (int)D->nl, D->name, D->line0, D->line1, it->ver > 0 ? "line verified" : "line NOT verified");
                     else snprintf(it->how, sizeof it->how, "same name, %d definition%s; called from %.*s (%u-%u); %s", tn, tn == 1 ? "" : "s", (int)D->nl, D->name, D->line0, D->line1, it->ver > 0 ? "line verified" : "line NOT verified");
-                    char t[240]; if (sy_file_load(&v, D->path, D->plen) && sy_line_text(&v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
+                    char t[240]; if (sy_file_load(v, D->path, D->plen) && sy_line_text(v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
                 }
                 free(td.s);
             }
         }
         (void)ndef; free(d.s);
     }
-    if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d callee%s in the indexed set (calls in source order within each definition). Next: def <callee>, or impact %s.", total, total == 1 ? "" : "s", cand[0].name);
-    if (!total && o.external[0] && !a.json) { total = 0; }
-    char nf[300]; snprintf(nf, sizeof nf, "'%s' has no definition with calls to indexed definitions in the indexed set%s", a.pos[0], o.external[0] ? " (it only calls external names, listed in the JSON field external)" : "");
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+    if (total) snprintf(o->hint, sizeof o->hint, "%d callee%s in the indexed set (calls in source order within each definition). Next: def <callee>, or impact %s.", total, total == 1 ? "" : "s", cand[0].name);
+    char nf[300]; snprintf(nf, sizeof nf, "'%s' has no definition with calls to indexed definitions in the indexed set%s", name, o->external[0] ? " (it only calls external names, listed in the JSON field external)" : "");
+    return sy_q_end(v, o, total, nf);
 }
 
 /* ---- arquivo do indice ---- */
@@ -833,33 +880,30 @@ static int sy_find_doc(const SyView *v, const char *arg, char *rel, size_t cap, 
 static const char *sy_langname(uint32_t l) { return l < CL_N ? CP_LANGN[l] : "?"; }
 
 /* ---- outline ---- */
-static int coder_outline_main(int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start("outline", "outline <arquivo> [pasta] [--json]", argc, argv, &a, &v, 100000); if (rc) return rc;
-    char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "outline"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; int total = 0, okc = 0;
+static int sy_q_outline(SyView *v, const char *file, int limit, SyItems *out, SyQ *o) {
+    sy_q_begin(o, "outline", file);
+    char rel[4400]; int seg, ns; uint32_t idx; int total = 0, okc = 0;
     char nf[600];
-    if (!sy_find_doc(&v, a.pos[0], rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set (not indexed, deleted, or outside the project folder)", a.pos[0]); sy_emit(&v, &o, &items, 0, nf); sy_view_close(&v); return 1; }
-    const SySec *x = &v.s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t s0 = dr ? st_get_u32(dr) : 0, n = dr ? st_get_u32(dr + 4) : 0, lang = dr ? st_get_u32(dr + 16) : 0;
+    if (!sy_find_doc(v, file, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set (not indexed, deleted, or outside the project folder)", file); return sy_q_end(v, o, 0, nf); }
+    const SySec *x = &v->s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t s0 = dr ? st_get_u32(dr) : 0, n = dr ? st_get_u32(dr + 4) : 0, lang = dr ? st_get_u32(dr + 16) : 0;
     for (uint32_t k = 0; k < n; k++) {
-        SySym s; sy_sym_at(&v, seg, s0 + k, &s); total++; if (items.n >= a.limit) continue;
-        SyItem *it = sy_item_new(&items); sy_fill_def(&v, it, &s, 0); it->flags = a.json ? 0 : SYI_BRIEF;
+        SySym s; sy_sym_at(v, seg, s0 + k, &s); total++; if (out->n >= limit) continue;
+        SyItem *it = sy_item_new(out); sy_fill_def(v, it, &s, 0); it->flags = SYI_BRIEF;
         int d = 0; for (uint32_t p = s.parent; p != SY_NONE && d < 40; p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8)) d++;
-        it->depth = d; it->ver = sy_verify(&v, s.path, s.plen, (int)s.line0, 3, s.name, s.nl); it->conf = sy_conf(1, 1, it->ver, 0); if (it->ver > 0) okc++;
+        it->depth = d; it->ver = sy_verify(v, s.path, s.plen, (int)s.line0, 3, s.name, s.nl); it->conf = sy_conf(1, 1, it->ver, 0); if (it->ver > 0) okc++;
         snprintf(it->how, sizeof it->how, "indexed symbol; line %s", it->ver > 0 ? "verified" : "NOT verified");
     }
-    if (!a.json && total) { printf("%s  [%s]  %d symbols; %d of %d declaration lines verified by rereading the file (confidence %d %s)\n", rel, sy_langname(lang), total, okc, items.n, sy_conf(1, 1, okc * 10 >= items.n * 9 ? 1 : -1, 0), sy_level(sy_conf(1, 1, okc * 10 >= items.n * 9 ? 1 : -1, 0))); }
+    if (total) { snprintf(o->head, sizeof o->head, "%s  [%s]  %d symbols; %d of %d declaration lines verified by rereading the file (confidence %d %s)", rel, sy_langname(lang), total, okc, out->n, sy_conf(1, 1, okc * 10 >= out->n * 9 ? 1 : -1, 0), sy_level(sy_conf(1, 1, okc * 10 >= out->n * 9 ? 1 : -1, 0))); }
     snprintf(nf, sizeof nf, "'%s' is in the indexed set but has no symbols (%s: text, configuration, unknown language, or nothing declared)", rel, sy_langname(lang));
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+    return sy_q_end(v, o, total, nf);
 }
 
 /* ---- at <arquivo>:<linha> ---- */
-static int coder_at_main(int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start("at", "at <arquivo>:<linha> [pasta] [--json]", argc, argv, &a, &v, 100); if (rc) return rc;
-    char spec[4400]; snprintf(spec, sizeof spec, "%s", a.pos[0]); char *colon = strrchr(spec, ':'); int line = 0;
-    if (colon && colon[1] && strspn(colon + 1, "0123456789") == strlen(colon + 1)) { line = atoi(colon + 1); *colon = 0; }
-    if (line < 1) { fprintf(stderr, "uso: katana coder at <arquivo>:<linha> [pasta]\n"); sy_view_close(&v); return 2; }
-    char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "at"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; char nf[700];
-    if (!sy_find_doc(&v, spec, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", spec); sy_emit(&v, &o, &items, 0, nf); sy_view_close(&v); return 1; }
-    const SySec *x = &v.s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t s0 = dr ? st_get_u32(dr) : 0, n = dr ? st_get_u32(dr + 4) : 0;
+static int sy_q_at(SyView *v, const char *spec, int line, SyItems *out, SyQ *o) {
+    sy_q_begin(o, "at", NULL); snprintf(o->argbuf, sizeof o->argbuf, "%s:%d", spec, line); o->arg = o->argbuf;
+    char rel[4400]; int seg, ns; uint32_t idx; char nf[700];
+    if (!sy_find_doc(v, spec, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", spec); return sy_q_end(v, o, 0, nf); }
+    const SySec *x = &v->s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t s0 = dr ? st_get_u32(dr) : 0, n = dr ? st_get_u32(dr + 4) : 0;
     int64_t k = -1;     /* ultimo simbolo com line0 <= linha (busca binaria), depois volta enquanto o maximo acumulado de line1 alcanca a linha */
     { uint32_t lo = 0, hi = n; while (lo < hi) { uint32_t m = lo + (hi - lo) / 2; if ((int)st_get_u32(store_table_at(&x->syms, s0 + m) + 12) <= line) lo = m + 1; else hi = m; } k = (int64_t)lo - 1; }
     int64_t hit = -1; while (k >= 0 && (int)st_get_u32(store_table_at(&x->ival, s0 + (uint32_t)k)) >= line) { if ((int)st_get_u32(store_table_at(&x->syms, s0 + (uint32_t)k) + 16) >= line) { hit = k; break; } k--; }
@@ -867,73 +911,73 @@ static int coder_at_main(int argc, char **argv) {
     if (hit >= 0) {
         uint32_t chain[64]; int nc = 0; for (uint32_t p = (uint32_t)hit; p != SY_NONE && nc < 64; p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8)) chain[nc++] = p;
         for (int c = nc - 1; c >= 0; c--) {
-            SySym s; sy_sym_at(&v, seg, s0 + chain[c], &s); SyItem *it = sy_item_new(&items); sy_fill_def(&v, it, &s, 0); it->depth = nc - 1 - c; total++;
-            it->ver = sy_verify(&v, s.path, s.plen, (int)s.line0, 3, s.name, s.nl); it->conf = sy_conf(1, 1, it->ver, 0);
+            SySym s; sy_sym_at(v, seg, s0 + chain[c], &s); SyItem *it = sy_item_new(out); sy_fill_def(v, it, &s, 0); it->depth = nc - 1 - c; total++;
+            it->ver = sy_verify(v, s.path, s.plen, (int)s.line0, 3, s.name, s.nl); it->conf = sy_conf(1, 1, it->ver, 0);
             snprintf(it->how, sizeof it->how, "%s; line range from the index, declaration line %s", c == 0 ? "innermost symbol containing the line" : "enclosing symbol", it->ver > 0 ? "verified" : "NOT verified");
         }
-        char t[240]; if (sy_file_load(&v, rel, (uint32_t)strlen(rel)) && sy_line_text(&v, line, t, sizeof t) && !a.json) printf("%s:%d  %s\n", rel, line, t);
+        char t[240]; if (sy_file_load(v, rel, (uint32_t)strlen(rel)) && sy_line_text(v, line, t, sizeof t)) snprintf(o->head, sizeof o->head, "%s:%d  %s", rel, line, t);
     }
     snprintf(nf, sizeof nf, "line %d of '%s' is not inside any indexed symbol (file level code, or the file has no symbols)", line, rel);
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+    return sy_q_end(v, o, total, nf);
 }
 
-static int coder_deps_main(int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start("deps", "deps <arquivo> [pasta] [--json]", argc, argv, &a, &v, 200); if (rc) return rc;
-    char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "deps"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; char nf[700]; int total = 0;
-    if (!sy_find_doc(&v, a.pos[0], rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", a.pos[0]); sy_emit(&v, &o, &items, 0, nf); sy_view_close(&v); return 1; }
-    const SySec *x = &v.s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t r0 = dr ? st_get_u32(dr + 8) : 0, nr = dr ? st_get_u32(dr + 12) : 0, lang = dr ? st_get_u32(dr + 16) : 0;
+static int sy_q_deps(SyView *v, const char *file, int limit, SyItems *out, SyQ *o) {
+    sy_q_begin(o, "deps", file);
+    char rel[4400]; int seg, ns; uint32_t idx; char nf[700]; int total = 0;
+    if (!sy_find_doc(v, file, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", file); return sy_q_end(v, o, 0, nf); }
+    const SySec *x = &v->s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t r0 = dr ? st_get_u32(dr + 8) : 0, nr = dr ? st_get_u32(dr + 12) : 0, lang = dr ? st_get_u32(dr + 16) : 0;
     size_t rl = strlen(rel);
     for (uint32_t k = 0; k < nr; k++) {
-        SyRef f; sy_ref_at(&v, seg, r0 + k, &f); if (f.kind != CR_IMPORT) continue;
+        SyRef f; sy_ref_at(v, seg, r0 + k, &f); if (f.kind != CR_IMPORT) continue;
         /* o texto do import pode ter varios nomes separados por espaco (import { a, b } from): tenta o texto inteiro, depois cada pedaco */
         StoreLiveDoc *m[SY_IMPCAP]; int how = 0, conf = 0; char why[100];
-        int nm = sy_resolve_imp_text(&v, rel, (uint32_t)rl, lang, f.name, f.nl, m, SY_IMPCAP, &how, &conf, why, sizeof why);
-        if (!nm) { size_t l = strlen(o.external); if (l < 1300) snprintf(o.external + l, sizeof o.external - l, "%s%.*s", l ? ", " : "", (int)(f.nl < 80 ? f.nl : 80), f.name); continue; }
+        int nm = sy_resolve_imp_text(v, rel, (uint32_t)rl, lang, f.name, f.nl, m, SY_IMPCAP, &how, &conf, why, sizeof why);
+        if (!nm) { size_t l = strlen(o->external); if (l < 1300) snprintf(o->external + l, sizeof o->external - l, "%s%.*s", l ? ", " : "", (int)(f.nl < 80 ? f.nl : 80), f.name); continue; }
         for (int q = 0; q < nm; q++) {
-            total++; if (items.n >= a.limit) continue; SyItem *it = sy_item_new(&items); sy_set_path(it, rel, (uint32_t)rl); it->line0 = it->line1 = (int)f.line; snprintf(it->kind, sizeof it->kind, "imports"); sy_cpy(it->name, sizeof it->name, f.name, f.nl);
+            total++; if (out->n >= limit) continue; SyItem *it = sy_item_new(out); sy_set_path(it, rel, (uint32_t)rl); it->line0 = it->line1 = (int)f.line; snprintf(it->kind, sizeof it->kind, "imports"); sy_cpy(it->name, sizeof it->name, f.name, f.nl);
             snprintf(it->encl, sizeof it->encl, "-> %.*s", (int)m[q]->d.plen, m[q]->d.path);
             it->conf = conf; if (nm > 1 && how != 3 && how == 1) it->conf = 60; if (nm > 1 && how == 3 && it->conf > 60) it->conf = 60;
             snprintf(it->how, sizeof it->how, "%s", why);
         }
     }
     /* quem importa este arquivo */
-    StoreLiveDoc *self = sy_lookup(&v, rel, rl); SyImp *imp = NULL; int nimp = self ? sy_importers(&v, self, &imp) : 0;
+    StoreLiveDoc *self = sy_lookup(v, rel, rl); SyImp *imp = NULL; int nimp = self ? sy_importers(v, self, &imp) : 0;
     for (int i = 0; i < nimp; i++) {
-        const SyRef *f = &imp[i].f; total++; if (items.n >= a.limit) continue;
-        SyItem *it = sy_item_new(&items); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; snprintf(it->kind, sizeof it->kind, "imported-by"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
+        const SyRef *f = &imp[i].f; total++; if (out->n >= limit) continue;
+        SyItem *it = sy_item_new(out); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; snprintf(it->kind, sizeof it->kind, "imported-by"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
         snprintf(it->encl, sizeof it->encl, "<- %.*s", (int)f->plen, f->path); it->conf = imp[i].conf; snprintf(it->how, sizeof it->how, "%s", imp[i].why);
     }
     free(imp);
-    if (!a.json && total) snprintf(o.hint, sizeof o.hint, "%d relation%s (imports out and imported-by). Import texts are resolved to files by language rules (packages, modules, namespaces, go.mod) or by path.", total, total == 1 ? "" : "s");
+    if (total) snprintf(o->hint, sizeof o->hint, "%d relation%s (imports out and imported-by). Import texts are resolved to files by language rules (packages, modules, namespaces, go.mod) or by path.", total, total == 1 ? "" : "s");
     snprintf(nf, sizeof nf, "'%s' has no import relation to another file of the indexed set (it imports nothing indexed and no indexed file imports it)", rel);
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+    return sy_q_end(v, o, total, nf);
 }
 
 /* ---- impact: fecho de chamadores ate a profundidade N, com limite de nos ---- */
 typedef struct { int seg; uint32_t row; char path[400]; char name[100]; uint32_t l0, l1; int depth, conf, parent; uint32_t cline; char calls[100]; } SyNode;
-static int coder_impact_main(int argc, char **argv) {
-    SyArgs a; SyView v; int rc = sy_start("impact", "impact <name> [pasta] [--depth N] [--nodes N] [--json]", argc, argv, &a, &v, 1000); if (rc) return rc;
-    int maxd = a.depth > 0 ? a.depth : 3, maxn = a.nodes > 0 ? a.nodes : 100;
-    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 2, cand, 8, &step); SyQ o; memset(&o, 0, sizeof o); o.query = "impact"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0};
+static int sy_q_impact(SyView *v, const char *name, int depth, int nodes, int limit, SyItems *out, SyQ *o) {
+    sy_q_begin(o, "impact", name);
+    int maxd = depth > 0 ? depth : 3, maxn = nodes > 0 ? nodes : 100;
+    SyCand cand[8]; int step, nc = sy_cascade(v, name, 2, cand, 8, &step); 
     SyNode *nd = (SyNode *)calloc((size_t)maxn + 1, sizeof *nd); int nn = 0, head = 0, truncated = 0, total = 0;
-    if (nc) sy_cascade_note(&o, cand, nc, step);
+    if (nc) sy_cascade_note(o, cand, nc, step);
     /* raizes: a(s) definicao(oes) do nome; os chamadores buscam-se pelo nome */
     typedef struct { char name[128]; int depth, conf; int node; } Q; Q *q = (Q *)calloc((size_t)maxn + 8, sizeof(Q)); int qh = 0, qt = 0;
     if (nc) { snprintf(q[qt].name, sizeof q[qt].name, "%s", cand[0].name); q[qt].depth = 0; q[qt].conf = sy_conf(cand[0].step, 1, 0, 0) + 4; q[qt].node = -1; qt++; }
     while (qh < qt) {
         Q cur = q[qh++]; if (cur.depth >= maxd) continue;
-        size_t cl = strlen(cur.name); SyRefs r = {0}; sy_refs_of(&v, cur.name, cl, 1u << CR_CALL, &r); SySyms d = {0}; sy_defs_of(&v, cur.name, cl, &d);
+        size_t cl = strlen(cur.name); SyRefs r = {0}; sy_refs_of(v, cur.name, cl, 1u << CR_CALL, &r); SySyms d = {0}; sy_defs_of(v, cur.name, cl, &d);
         int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
-        SyImp *lk = NULL; int nlk = r.n && ndef > 1 ? sy_link_build(&v, &d, &lk) : 0;
+        SyImp *lk = NULL; int nlk = r.n && ndef > 1 ? sy_link_build(v, &d, &lk) : 0;
         for (int i = 0; i < r.n; i++) {
             const SyRef *f = &r.r[i]; if (f->from == SY_NONE) continue;
-            uint32_t row = st_get_u32(store_table_at(&v.s[f->seg].x.docs, f->doc)) + f->from; int dup = 0;
+            uint32_t row = st_get_u32(store_table_at(&v->s[f->seg].x.docs, f->doc)) + f->from; int dup = 0;
             for (int k = 0; k < nn; k++) if (nd[k].seg == f->seg && nd[k].row == row) { dup = 1; break; } if (dup) continue;
             if (nn >= maxn) { truncated = 1; break; }
-            SySym s; sy_sym_at(&v, f->seg, row, &s); SyNode *N = &nd[nn]; N->seg = f->seg; N->row = row; sy_cpy(N->path, sizeof N->path, s.path, s.plen); sy_cpy(N->name, sizeof N->name, s.name, s.nl);
+            SySym s; sy_sym_at(v, f->seg, row, &s); SyNode *N = &nd[nn]; N->seg = f->seg; N->row = row; sy_cpy(N->path, sizeof N->path, s.path, s.plen); sy_cpy(N->name, sizeof N->name, s.name, s.nl);
             N->l0 = s.line0; N->l1 = s.line1; N->depth = cur.depth + 1; N->parent = cur.node; N->cline = f->line; snprintf(N->calls, sizeof N->calls, "%s", cur.name);
             int same = 0; for (int k = 0; k < d.n; k++) if (d.s[k].plen == f->plen && !memcmp(d.s[k].path, f->path, f->plen)) same = 1;
-            int ver = sy_verify(&v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
+            int ver = sy_verify(v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
             int linked = !same && sy_linked(lk, nlk, f->path, f->plen); int edge = sy_conf(cand[0].step, same || linked ? 1 : ndef, ver, ndef == 0 ? -25 : 0); N->conf = edge < cur.conf ? edge : cur.conf;
             if (qt < maxn + 7) { snprintf(q[qt].name, sizeof q[qt].name, "%s", N->name); q[qt].depth = N->depth; q[qt].conf = N->conf; q[qt].node = nn; qt++; }
             nn++;
@@ -946,12 +990,57 @@ static int coder_impact_main(int argc, char **argv) {
     for (int i = nn - 1; i >= 0; i--) if (nd[i].parent < 0) stack[sp++] = i;
     while (sp) { int i = stack[--sp]; order[no++] = i; for (int k = nn - 1; k >= 0; k--) if (nd[k].parent == i) stack[sp++] = k; }
     for (int oi = 0; oi < no; oi++) {
-        const SyNode *N = &nd[order[oi]]; total++; if (items.n >= a.limit) continue;
-        SyItem *it = sy_item_new(&items); sy_cpy(it->path, sizeof it->path, N->path, strlen(N->path)); it->line0 = (int)N->l0; it->line1 = (int)N->l1; it->depth = N->depth - 1;
+        const SyNode *N = &nd[order[oi]]; total++; if (out->n >= limit) continue;
+        SyItem *it = sy_item_new(out); sy_cpy(it->path, sizeof it->path, N->path, strlen(N->path)); it->line0 = (int)N->l0; it->line1 = (int)N->l1; it->depth = N->depth - 1;
         snprintf(it->kind, sizeof it->kind, "caller"); snprintf(it->name, sizeof it->name, "%s", N->name); snprintf(it->encl, sizeof it->encl, "calls %s at line %u", N->calls, N->cline);
         it->conf = N->conf; it->ver = 0; snprintf(it->how, sizeof it->how, "caller at depth %d; confidence is that of the weakest edge on the path (call sites matched by name)", N->depth);
     }
-    if (!a.json && total) snprintf(o.hint, sizeof o.hint, "%d node%s at depth <= %d%s. Callers are matched by name only; a path has the confidence of its weakest edge.", total, total == 1 ? "" : "s", maxd, truncated ? " (node limit reached; raise --nodes)" : "");
-    char nf[300]; snprintf(nf, sizeof nf, "no caller of '%s' in the indexed set", a.pos[0]);
-    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); free(nd); free(q); free(order); free(stack); sy_view_close(&v); return total ? 0 : 1;
+    if (total) snprintf(o->hint, sizeof o->hint, "%d node%s at depth <= %d%s. Callers are matched by name only; a path has the confidence of its weakest edge.", total, total == 1 ? "" : "s", maxd, truncated ? " (node limit reached; raise --nodes)" : "");
+    char nf[300]; snprintf(nf, sizeof nf, "no caller of '%s' in the indexed set", name);
+    free(nd); free(q); free(order); free(stack);
+    return sy_q_end(v, o, total, nf);
 }
+
+/* ---- as consultas por tipo de referencia: refs (todas), callers (so chamadas), uses (tudo que nao e chamada) ---- */
+static int sy_q_refs(SyView *v, const char *name, uint32_t kindmask, int limit, SyItems *out, SyQ *o) {
+    return sy_q_refs_as(v, kindmask == (1u << CR_CALL) ? "callers" : kindmask == (~0u & ~(1u << CR_CALL)) ? "uses" : "refs", kindmask, name, limit, out, o);
+}
+static int sy_q_callers(SyView *v, const char *name, int limit, SyItems *out, SyQ *o) { return sy_q_refs(v, name, 1u << CR_CALL, limit, out, o); }
+static int sy_q_uses(SyView *v, const char *name, int limit, SyItems *out, SyQ *o) { return sy_q_refs(v, name, ~0u & ~(1u << CR_CALL), limit, out, o); }
+
+/* "arquivo:linha" -> arquivo e linha; 0 se nao ha linha */
+static int sy_split_at(const char *in, char *spec, size_t cap, int *line) {
+    snprintf(spec, cap, "%s", in); *line = 0; char *colon = strrchr(spec, ':');
+    if (colon && colon[1] && strspn(colon + 1, "0123456789") == strlen(colon + 1)) { *line = atoi(colon + 1); *colon = 0; }
+    return *line >= 1;
+}
+
+/* ---- wrappers `katana coder def|refs|callers|callees|uses|outline|at|deps|impact`: argumentos + sy_q_* + renderizador (texto ou --json) ---- */
+enum { SYK_DEF, SYK_REFS, SYK_CALLEES, SYK_OUTLINE, SYK_AT, SYK_DEPS, SYK_IMPACT };
+static int sy_cli(int kind, const char *cmd, const char *use, uint32_t mask, int deflim, int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start(cmd, use, argc, argv, &a, &v, deflim); if (rc) return rc;
+    SyItems items = {0}; SyQ q; CtSb sb = {0};
+    switch (kind) {
+    case SYK_DEF: sy_q_def(&v, a.pos[0], a.limit, a.lines, &items, &q); break;
+    case SYK_REFS: sy_q_refs_as(&v, cmd, mask, a.pos[0], a.limit, &items, &q); break;
+    case SYK_CALLEES: sy_q_callees(&v, a.pos[0], a.limit, &items, &q); break;
+    case SYK_OUTLINE: sy_q_outline(&v, a.pos[0], a.limit, &items, &q); break;
+    case SYK_AT: {
+        char spec[4400]; int line;
+        if (!sy_split_at(a.pos[0], spec, sizeof spec, &line)) { fprintf(stderr, "uso: katana coder at <arquivo>:<linha> [pasta]\n"); sy_view_close(&v); return 2; }
+        sy_q_at(&v, spec, line, &items, &q); q.arg = a.pos[0]; break; }
+    case SYK_DEPS: sy_q_deps(&v, a.pos[0], a.limit, &items, &q); break;
+    default: sy_q_impact(&v, a.pos[0], a.depth, a.nodes, a.limit, &items, &q); break;
+    }
+    if (a.json) sy_render_json(&sb, &q, &items); else sy_render_text(&sb, &q, &items);
+    sy_put(&sb); sy_items_free(&items); sy_view_close(&v); return q.total ? 0 : 1;
+}
+static int coder_def_main(int argc, char **argv) { return sy_cli(SYK_DEF, "def", "def <name> [pasta] [--json] [--lines N|--body] [--limit N]", 0, 50, argc, argv); }
+static int coder_refs_main(int argc, char **argv) { return sy_cli(SYK_REFS, "refs", "refs <name> [pasta] [--json] [--limit N]", ~0u, 100, argc, argv); }
+static int coder_callers_main(int argc, char **argv) { return sy_cli(SYK_REFS, "callers", "callers <name> [pasta] [--json] [--limit N]", 1u << CR_CALL, 100, argc, argv); }
+static int coder_uses_main(int argc, char **argv) { return sy_cli(SYK_REFS, "uses", "uses <name> [pasta] [--json] [--limit N]  (every occurrence that is not a call)", ~0u & ~(1u << CR_CALL), 100, argc, argv); }
+static int coder_callees_main(int argc, char **argv) { return sy_cli(SYK_CALLEES, "callees", "callees <name> [pasta] [--json] [--limit N]", 0, 100, argc, argv); }
+static int coder_outline_main(int argc, char **argv) { return sy_cli(SYK_OUTLINE, "outline", "outline <arquivo> [pasta] [--json]", 0, 100000, argc, argv); }
+static int coder_at_main(int argc, char **argv) { return sy_cli(SYK_AT, "at", "at <arquivo>:<linha> [pasta] [--json]", 0, 100, argc, argv); }
+static int coder_deps_main(int argc, char **argv) { return sy_cli(SYK_DEPS, "deps", "deps <arquivo> [pasta] [--json]", 0, 200, argc, argv); }
+static int coder_impact_main(int argc, char **argv) { return sy_cli(SYK_IMPACT, "impact", "impact <name> [pasta] [--depth N] [--nodes N] [--json]", 0, 1000, argc, argv); }

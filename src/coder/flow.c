@@ -1,4 +1,8 @@
 /* ---------- coder/flow.c: ligacoes por CHAVE DE TEXTO (katana coder flow) ----------
+ * API estruturada (fase U2 do UIOE; ver o bloco "API estruturada" de symquery.c): fl_q_key(v, chave, limit, out, meta), fl_q_file(v, arquivo, linha, limit, out, meta),
+ * fl_q_links(v, limit, out, meta) e fl_q_arg(v, arg, limit, out, meta) (decide se arg e arquivo[:linha] ou chave, como `katana coder flow`). Preenchem SyItems e FlQ e devolvem
+ * o total; nao imprimem e nao usam estado global. fl_render_text / fl_render_json produzem a saida de `katana coder flow` (a ligacao produtor -> consumidor traz os dois
+ * lados: path/line do produtor e peer_path/peer_line/peer_where do consumidor); `meta->brief = 1` (depois da consulta) encurta a explicacao da confianca, como a ferramenta Symbols.
  * katana coder flow <chave> [pasta] [--json] [--limit N]          quem produz (envia, emite, escreve, chama a rota) e quem consome (trata, le) a chave
  * katana coder flow <arquivo>[:<linha>] [pasta] [--json]           as chaves que o arquivo (ou o simbolo que contem a linha) produz/consome e para onde vao
  * katana coder flow --links [pasta] [--json] [--limit N]           o grafo de ligacoes por chave do projeto: arquivo -> arquivo, com as chaves
@@ -109,14 +113,14 @@ static void fl_key_label(const KyOcc *o, char *out, size_t cap) {
 }
 
 /* ---- argumentos e abertura ---- */
-static int g_fl_brief;       /* --brief: texto enxuto para o modelo (explicacao da confianca encurtada) */
-static void fl_brief_how(const char *how, char *o, size_t cap) {
-    snprintf(o, cap, "%s", how); if (!g_fl_brief) return;
+/* brief: texto enxuto para o modelo (explicacao da confianca encurtada) */
+static void fl_brief_how(const char *how, char *o, size_t cap, int brief) {
+    snprintf(o, cap, "%s", how); if (!brief) return;
     int semi = 0; for (char *p = o; *p; p++) if (*p == ';' && ++semi == 3) { *p = 0; break; }
 }
-static int fl_start(const char *use, int argc, char **argv, SyArgs *a, SyView *v, int *links) {
-    char *av[64]; int ac = 0; *links = 0; g_fl_brief = 0;
-    for (int i = 0; i < argc && ac < 62; i++) { if (!strcmp(argv[i], "--links")) *links = 1; else if (!strcmp(argv[i], "--brief")) g_fl_brief = 1; else av[ac++] = argv[i]; }
+static int fl_start(const char *use, int argc, char **argv, SyArgs *a, SyView *v, int *links, int *brief) {
+    char *av[64]; int ac = 0; *links = 0; *brief = 0;
+    for (int i = 0; i < argc && ac < 62; i++) { if (!strcmp(argv[i], "--links")) *links = 1; else if (!strcmp(argv[i], "--brief")) *brief = 1; else av[ac++] = argv[i]; }
     SyArgs probe; sy_args(ac, av, &probe, 12);
     if (probe.npos < 1 && *links) av[ac++] = (char *)".";
     if (sy_args(ac, av, a, 12) != 0) { fprintf(stderr, "uso: katana coder %s\n", use); return 2; }
@@ -125,26 +129,71 @@ static int fl_start(const char *use, int argc, char **argv, SyArgs *a, SyView *v
     if (!v->anykeys) { fprintf(stderr, "flow: the index has no text-key sections (it was built before they existed); delete %s and run `katana coder index` again\n", v->dir); sy_view_close(v); return 1; }
     return 0;
 }
-typedef struct { const char *query, *arg; int json; char resolved[200], cascade[160], hint[900]; int step; } FlQ;
-static void fl_emit(const SyView *v, FlQ *o, SyItems *a, int total, const char *notfound) {
-    char lim[900]; fl_limits(v, lim, sizeof lim);
-    if (o->json) {
-        printf("{\"query\":"); cp_jstr(o->query); printf(",\"arg\":"); cp_jstr(o->arg);
-        if (o->resolved[0]) { printf(",\"resolved\":"); cp_jstr(o->resolved); }
-        if (o->step) { printf(",\"cascade_step\":%d,\"cascade\":", o->step); cp_jstr(o->cascade); }
-        printf(",\"count\":%d,\"shown\":%d,\"items\":[", total, a->n);
-        for (int i = 0; i < a->n; i++) { if (i) printf(","); sy_json_item(&a->v[i]); if (a->v[i].sig[0] && !strcmp(a->v[i].kind, "link")) { /* o par ja vai em sig */ } }
-        printf("]"); if (o->hint[0]) { printf(",\"note\":"); cp_jstr(o->hint); }
-        if (!total) { char nf[1400]; snprintf(nf, sizeof nf, "NOT FOUND: %s. Cascade tried: exact key, same key ignoring case or as a part, edit distance <= 2. %s", notfound, lim); printf(",\"not_found\":"); cp_jstr(nf); }
-        printf(",\"index\":{\"files\":%u,\"with_keys\":%u}}\n", v->nlive, v->nkeyflag); return;
-    }
-    if (!total) { printf("NOT FOUND: %s.\nCascade tried: exact key, same key ignoring case or as a part, edit distance <= 2.\n%s\n", notfound, lim); return; }
-    if (o->step > 1) printf("No exact key '%s'; %s\n", o->arg, o->cascade);
+typedef struct {
+    const char *query, *arg;          /* "flow" e o argumento como o chamador o deu */
+    int mode, brief, total, step;     /* mode: 0 chave, 1 arquivo[:linha], 2 --links; brief: o chamador liga depois da consulta; total de resultados; passo da cascata */
+    char resolved[200], cascade[160]; SyCand cand[8]; int ncand;      /* cascata: nomes resolvidos, motivo e a cadeia completa */
+    char hint[900], next[400];        /* nota (vai no JSON como "note") e o "Next: Read ..." do texto (modo chave) */
+    char head[4700];                  /* cabecalho do texto (modo arquivo), so com resultado */
+    char notfound[704], limits[900];  /* NOT FOUND e o limite do conjunto analisado */
+    uint32_t nlive, nkeys;            /* arquivos do conjunto e arquivos analisados para chaves */
+    char argbuf[4500];
+} FlQ;
+static void fl_q_begin(FlQ *o, const char *arg, int mode) { memset(o, 0, sizeof *o); o->query = "flow"; o->arg = arg; o->mode = mode; }
+static int fl_q_end(const SyView *v, FlQ *o, int total, const char *notfound) {
+    o->total = total; snprintf(o->notfound, sizeof o->notfound, "%s", notfound); fl_limits(v, o->limits, sizeof o->limits); o->nlive = v->nlive; o->nkeys = v->nkeyflag; return total;
 }
-static void fl_print_item(const SyItem *it) {
-    if (!strcmp(it->kind, "link")) { char hb[200]; fl_brief_how(it->how, hb, sizeof hb); printf("  %s:%d  %s  [confidence %d %s; %s]\n", it->path, it->line0, it->name, it->conf, sy_level(it->conf), hb); return; }
-    printf("  %s:%d  %s  %s  [%s; confidence %d %s]\n", it->path, it->line0, it->name, it->encl, it->vis, it->conf, sy_level(it->conf));
-    if (it->snip) printf("      %s\n", it->snip);
+static void fl_render_json(CtSb *b, const FlQ *o, const SyItems *a) {
+    sy_sbf(b, "{\"query\":"); sy_sb_jstr(b, o->query); sy_sbf(b, ",\"arg\":"); sy_sb_jstr(b, o->arg);
+    if (o->resolved[0]) { sy_sbf(b, ",\"resolved\":"); sy_sb_jstr(b, o->resolved); }
+    if (o->step) { sy_sbf(b, ",\"cascade_step\":%d,\"cascade\":", o->step); sy_sb_jstr(b, o->cascade); }
+    sy_sbf(b, ",\"count\":%d,\"shown\":%d,\"items\":[", o->total, a->n);
+    for (int i = 0; i < a->n; i++) { if (i) sy_sbf(b, ","); sy_json_item(b, &a->v[i]); }
+    sy_sbf(b, "]"); if (o->hint[0]) { sy_sbf(b, ",\"note\":"); sy_sb_jstr(b, o->hint); }
+    if (!o->total) { char nf[1400]; snprintf(nf, sizeof nf, "NOT FOUND: %s. Cascade tried: exact key, same key ignoring case or as a part, edit distance <= 2. %s", o->notfound, o->limits); sy_sbf(b, ",\"not_found\":"); sy_sb_jstr(b, nf); }
+    sy_sbf(b, ",\"index\":{\"files\":%u,\"with_keys\":%u}}\n", o->nlive, o->nkeys);
+}
+static void fl_print_item(CtSb *b, const SyItem *it, int brief) {
+    if (!strcmp(it->kind, "link")) { char hb[200]; fl_brief_how(it->how, hb, sizeof hb, brief); sy_sbf(b, "  %s:%d  %s  [confidence %d %s; %s]\n", it->path, it->line0, it->name, it->conf, sy_level(it->conf), hb); return; }
+    sy_sbf(b, "  %s:%d  %s  %s  [%s; confidence %d %s]\n", it->path, it->line0, it->name, it->encl, it->vis, it->conf, sy_level(it->conf));
+    if (it->snip) sy_sbf(b, "      %s\n", it->snip);
+}
+static void fl_render_text(CtSb *b, const FlQ *o, const SyItems *a) {
+    if (!o->total) { sy_sbf(b, "NOT FOUND: %s.\nCascade tried: exact key, same key ignoring case or as a part, edit distance <= 2.\n%s\n", o->notfound, o->limits); return; }
+    if (o->step > 1) sy_sbf(b, "No exact key '%s'; %s\n", o->arg, o->cascade);
+    const int brief = o->brief;
+    if (o->mode == 0) {
+        for (int pass = 0; pass < 3; pass++) {
+            const char *kind = pass == 0 ? "produce" : pass == 1 ? "consume" : "link"; int cnt = 0; for (int i = 0; i < a->n; i++) if (!strcmp(a->v[i].kind, kind)) cnt++;
+            if (!cnt) continue;
+            sy_sbf(b, "%s (%d):\n", pass == 0 ? "PRODUCE (sends / emits / writes / calls)" : pass == 1 ? "CONSUME (handles / reads / serves)" : "LINKS producer -> consumer", cnt);
+            for (int i = 0; i < a->n; i++) if (!strcmp(a->v[i].kind, kind)) {
+                const SyItem *it = &a->v[i];
+                if (pass == 2) { char hb[200]; fl_brief_how(it->how, hb, sizeof hb, brief); sy_sbf(b, "  %s:%d %s %s  [confidence %d %s; %s]\n", it->path, it->line0, it->name, it->sig, it->conf, sy_level(it->conf), hb); if (!brief) sy_sbf(b, "      %s\n", it->encl); }
+                else fl_print_item(b, it, brief);
+            }
+        }
+        char h[900]; snprintf(h, sizeof h, "%s", o->hint);
+        if (o->next[0]) { size_t l = strlen(h); snprintf(h + l, sizeof h - l, "%s%s", l ? "\n" : "", o->next); }
+        if (h[0]) sy_sbf(b, "%s\n", h);
+    } else if (o->mode == 1) {
+        sy_sbf(b, "%s\n", o->head);
+        for (int pass = 0; pass < 2; pass++) {
+            int cnt = 0; for (int i = 0; i < a->n; i++) if (!strcmp(a->v[i].kind, pass ? "consume" : "produce")) cnt++;
+            if (!cnt) continue; sy_sbf(b, "%s\n", pass ? "RECEIVES (reads / handles)" : "SENDS (produces / writes / calls)");
+            for (int i = 0; i < a->n; i++) { const SyItem *it = &a->v[i]; if (strcmp(it->kind, pass ? "consume" : "produce")) continue;
+                int cls = 0; for (int k = 0; k < CKC_N; k++) if (!strcmp(it->vis, FL_CLS[k])) cls = k;
+                if (it->flags & SYI_NOCONF) sy_sbf(b, "  %d  %s [%s]  -- %s", it->line0, it->name, it->vis, it->sig);
+                else sy_sbf(b, "  %d  %s [%s]  %s %s   [confidence %d %s]", it->line0, it->name, it->vis, pass ? FL_CL[cls] : FL_PL[cls], it->sig, it->conf, sy_level(it->conf));
+                sy_sbf(b, "\n"); }
+        }
+        sy_sbf(b, "%s\n", o->hint);
+        for (int i = 0; i < a->n; i++) if (!(a->v[i].flags & SYI_NOCONF) && !strcmp(a->v[i].kind, "produce")) { sy_sbf(b, "Next: flow %s for the full list of a key; Read the peer range above.\n", a->v[i].name); break; }
+    } else {
+        for (int i = 0; i < a->n; i++) { const SyItem *it = &a->v[i]; sy_sbf(b, "%s -> %s   %s   [confidence %d %s]\n", it->path, it->sig, it->name, it->conf, sy_level(it->conf)); }
+        if (o->total > a->n) sy_sbf(b, "(%d more not shown; raise --limit)\n", o->total - a->n);
+        sy_sbf(b, "%s\n", o->hint);
+    }
 }
 
 /* ---- cascata de nomes de chave ---- */
@@ -200,9 +249,10 @@ static int fl_is_file(const SyView *v, const char *arg, char *spec, size_t cap, 
 /* ---- flow <chave> ---- */
 typedef struct { int p, c; FlLink L; } FlPair;
 static int fl_pair_cmp(const void *a, const void *b) { const FlPair *x = (const FlPair *)a, *y = (const FlPair *)b; return y->L.conf - x->L.conf; }
-static int fl_key_main(SyView *v, SyArgs *a, const char *q) {
-    SyCand cand[8]; int step, nc = fl_cascade(v, q, cand, 8, &step); SyItems items = {0}; FlQ o; memset(&o, 0, sizeof o); o.query = "flow"; o.arg = q; o.json = a->json; int total = 0;
-    if (nc) { o.step = step; for (int i = 0; i < nc && i < 4; i++) { size_t l = strlen(o.resolved); snprintf(o.resolved + l, sizeof o.resolved - l, "%s%s", i ? ", " : "", cand[i].name); } snprintf(o.cascade, sizeof o.cascade, "showing %s (%s)", o.resolved, cand[0].how); }
+static int fl_q_key(SyView *v, const char *q, int limit, SyItems *out, FlQ *o) {
+    fl_q_begin(o, q, 0);
+    SyCand cand[8]; int step, nc = fl_cascade(v, q, cand, 8, &step); int total = 0;
+    if (nc) { o->ncand = nc < 8 ? nc : 8; memcpy(o->cand, cand, sizeof(SyCand) * (size_t)o->ncand); o->step = step; for (int i = 0; i < nc && i < 4; i++) { size_t l = strlen(o->resolved); snprintf(o->resolved + l, sizeof o->resolved - l, "%s%s", i ? ", " : "", cand[i].name); } snprintf(o->cascade, sizeof o->cascade, "showing %s (%s)", o->resolved, cand[0].how); }
     char nextbuf[400] = ""; int nlink = 0;
     for (int ci = 0; ci < nc; ci++) {
         KyOccs oc = {0}; ky_occs_of(v, cand[ci].name, strlen(cand[ci].name), &oc);
@@ -213,8 +263,8 @@ static int fl_key_main(SyView *v, SyArgs *a, const char *q) {
         for (int role = CKR_PRODUCE; role <= CKR_CONSUME; role++) {
             int shown = 0;
             for (int i = 0; i < oc.n; i++) { const KyOcc *x = &oc.o[i]; if ((int)x->role != role) continue;
-                if (shown >= a->limit) break; shown++;
-                SyItem *it = sy_item_new(&items); sy_set_path(it, x->path, x->plen); it->line0 = it->line1 = (int)x->line;
+                if (shown >= limit) break; shown++;
+                SyItem *it = sy_item_new(out); sy_set_path(it, x->path, x->plen); it->line0 = it->line1 = (int)x->line;
                 snprintf(it->kind, sizeof it->kind, "%s", role == CKR_PRODUCE ? "produce" : "consume"); fl_key_label(x, it->name, sizeof it->name); fl_where(v, x, it->encl, sizeof it->encl);
                 snprintf(it->vis, sizeof it->vis, "%s", FL_CLS[x->cls]);
                 it->ver = fl_verify(v, x); it->conf = sy_conf(cand[ci].step, 1, it->ver, x->cls == CKC_OTHER ? -10 : 0);
@@ -235,10 +285,10 @@ static int fl_key_main(SyView *v, SyArgs *a, const char *q) {
             /* so um par por arquivo de cada lado (o primeiro) */
             int dup = 0; for (int z = 0; z < k && !dup; z++) { const KyOcc *p2 = &oc.o[pr[z].p], *c2 = &oc.o[pr[z].c]; if (ky_same_file(p, p2) && ky_same_file(c, c2)) dup = 1; }
             if (dup) continue;
-            SyItem *it = sy_item_new(&items); sy_set_path(it, p->path, p->plen); it->line0 = it->line1 = (int)p->line; snprintf(it->kind, sizeof it->kind, "link");
+            SyItem *it = sy_item_new(out); sy_set_path(it, p->path, p->plen); it->line0 = it->line1 = (int)p->line; snprintf(it->kind, sizeof it->kind, "link");
             char pw[160], cw[160], cwl[100], lbl[100]; fl_where(v, p, pw, sizeof pw); fl_where(v, c, cw, sizeof cw); (void)cwl; fl_key_label(p, lbl, sizeof lbl);
             snprintf(it->name, sizeof it->name, "%s %s -> %s", FL_PV[p->cls], lbl, FL_PL[c->cls]);
-            snprintf(it->sig, sizeof it->sig, "%.*s:%u", (int)c->plen, c->path, c->line);
+            snprintf(it->sig, sizeof it->sig, "%.*s:%u", (int)c->plen, c->path, c->line); sy_cpy(it->peer_path, sizeof it->peer_path, c->path, c->plen); it->peer_line = (int)c->line; snprintf(it->peer_where, sizeof it->peer_where, "%s", cw);
             snprintf(it->encl, sizeof it->encl, "producer %.*s%s%s; consumer %s", (int)p->plen, p->path, pw[0] ? " " : "", pw, cw[0] ? cw : "(file level)");
             it->ver = fl_verify(v, p) > 0 && fl_verify(v, c) > 0 ? 1 : -1;
             it->conf = pr[k].L.conf + (it->ver > 0 ? 4 : -25); if (it->conf < 1) it->conf = 1; if (it->conf > 99) it->conf = 99;
@@ -248,37 +298,24 @@ static int fl_key_main(SyView *v, SyArgs *a, const char *q) {
             nlink++; lshown++;
         }
         free(pr);
-        if (np && !ncn) { size_t l = strlen(o.hint); snprintf(o.hint + l, sizeof o.hint - l, "%sNobody handles '%s' in the indexed set (%u files analysed for text keys): %d place%s send%s it, none consumes it. A handler built at run time, in another project or reached by other means is not seen.", l ? " " : "", cand[ci].name, v->nkeyflag, np, np == 1 ? "" : "s", np == 1 ? "s" : ""); }
-        else if (ncn && !np) { size_t l = strlen(o.hint); snprintf(o.hint + l, sizeof o.hint - l, "%sNobody sends '%s' in the indexed set (%u files analysed for text keys): %d place%s read%s it, none produces it. The sender may build the text at run time, live in another project or be external (user input, a protocol).", l ? " " : "", cand[ci].name, v->nkeyflag, ncn, ncn == 1 ? "" : "s", ncn == 1 ? "s" : ""); }
+        if (np && !ncn) { size_t l = strlen(o->hint); snprintf(o->hint + l, sizeof o->hint - l, "%sNobody handles '%s' in the indexed set (%u files analysed for text keys): %d place%s send%s it, none consumes it. A handler built at run time, in another project or reached by other means is not seen.", l ? " " : "", cand[ci].name, v->nkeyflag, np, np == 1 ? "" : "s", np == 1 ? "s" : ""); }
+        else if (ncn && !np) { size_t l = strlen(o->hint); snprintf(o->hint + l, sizeof o->hint - l, "%sNobody sends '%s' in the indexed set (%u files analysed for text keys): %d place%s read%s it, none produces it. The sender may build the text at run time, live in another project or be external (user input, a protocol).", l ? " " : "", cand[ci].name, v->nkeyflag, ncn, ncn == 1 ? "" : "s", ncn == 1 ? "s" : ""); }
         free(oc.o);
     }
-    if (nextbuf[0] && !o.json) { size_t l = strlen(o.hint); snprintf(o.hint + l, sizeof o.hint - l, "%s%s", l ? "\n" : "", nextbuf); }
+    if (nextbuf[0]) snprintf(o->next, sizeof o->next, "%s", nextbuf);      /* so o texto mostra; o JSON leva a nota sem ele */
     char nf[300]; snprintf(nf, sizeof nf, "no text key '%s' in the indexed set (nobody sends, emits, writes, handles or reads it)", q);
-    fl_emit(v, &o, &items, total, nf);
-    if (!o.json && total) {
-        for (int pass = 0; pass < 3; pass++) {
-            const char *kind = pass == 0 ? "produce" : pass == 1 ? "consume" : "link"; int cnt = 0; for (int i = 0; i < items.n; i++) if (!strcmp(items.v[i].kind, kind)) cnt++;
-            if (!cnt) continue;
-            printf("%s (%d):\n", pass == 0 ? "PRODUCE (sends / emits / writes / calls)" : pass == 1 ? "CONSUME (handles / reads / serves)" : "LINKS producer -> consumer", cnt);
-            for (int i = 0; i < items.n; i++) if (!strcmp(items.v[i].kind, kind)) {
-                const SyItem *it = &items.v[i];
-                if (pass == 2) { char hb[200]; fl_brief_how(it->how, hb, sizeof hb); printf("  %s:%d %s %s  [confidence %d %s; %s]\n", it->path, it->line0, it->name, it->sig, it->conf, sy_level(it->conf), hb); if (!g_fl_brief) printf("      %s\n", it->encl); }
-                else fl_print_item(it);
-            }
-        }
-        if (o.hint[0]) printf("%s\n", o.hint);
-    }
-    sy_items_free(&items); return total ? 0 : 1;
+    return fl_q_end(v, o, total, nf);
 }
 
 /* ---- flow <arquivo>[:<linha>] ---- */
-typedef struct { KyOcc o; int n; int conf; char peer[200], how[170]; char encl[100]; } FlRow;
+typedef struct { KyOcc o; int n; int conf; char peer[200], how[170]; char encl[100]; char ppath[400]; int pline; char pwhere[160]; } FlRow;
 static int fl_row_cmp(const void *a, const void *b) { const FlRow *x = (const FlRow *)a, *y = (const FlRow *)b; if (x->o.role != y->o.role) return (int)x->o.role - (int)y->o.role; if ((x->conf > 0) != (y->conf > 0)) return y->conf > 0 ? 1 : -1; if (x->conf != y->conf) return y->conf - x->conf; return (int)x->o.line - (int)y->o.line; }
-static int fl_file_main(SyView *v, SyArgs *a, const char *spec, int line) {
-    char rel[4400]; int seg, ns; uint32_t idx; FlQ o; memset(&o, 0, sizeof o); o.query = "flow"; o.arg = a->pos[0]; o.json = a->json; SyItems items = {0}; char nf[700];
-    if (!sy_find_doc(v, spec, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", spec); fl_emit(v, &o, &items, 0, nf); return 1; }
+static int fl_q_file(SyView *v, const char *spec, int line, int limit, SyItems *out, FlQ *o) {
+    char rel[4400]; int seg, ns; uint32_t idx; char nf[700];
+    fl_q_begin(o, NULL, 1); if (line > 0) snprintf(o->argbuf, sizeof o->argbuf, "%s:%d", spec, line); else snprintf(o->argbuf, sizeof o->argbuf, "%s", spec); o->arg = o->argbuf;
+    if (!sy_find_doc(v, spec, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", spec); return fl_q_end(v, o, 0, nf); }
     const KySec *ky = &v->s[seg].ky;
-    if (!ky->has || idx >= ky->docs.n) { snprintf(nf, sizeof nf, "'%s' has no text-key data (indexed before keys existed: delete %s and run `katana coder index` again)", rel, v->dir); fl_emit(v, &o, &items, 0, nf); return 1; }
+    if (!ky->has || idx >= ky->docs.n) { snprintf(nf, sizeof nf, "'%s' has no text-key data (indexed before keys existed: delete %s and run `katana coder index` again)", rel, v->dir); return fl_q_end(v, o, 0, nf); }
     const uint8_t *dr = store_table_at(&ky->docs, idx); uint32_t o0 = st_get_u32(dr), no = st_get_u32(dr + 4) & ~SY_KFLAG;
     uint32_t lo = 0, hi = 0xFFFFFFFFu; char rng[200] = "";
     if (line > 0) {
@@ -301,7 +338,7 @@ static int fl_file_main(SyView *v, SyArgs *a, const char *spec, int line) {
         for (int i = 0; i < oc.n; i++) { const KyOcc *z = &oc.o[i]; if (z->role == R->o.role || ky_same_file(z, &R->o)) continue; peers++;
             FlLink L; if (R->o.role == CKR_PRODUCE) fl_pair(&R->o, z, nfiles, npf, ncf, ky_file_has(oc.o, oc.n, CKR_PRODUCE, z), &L); else fl_pair(z, &R->o, nfiles, npf, ncf, ky_file_has(oc.o, oc.n, CKR_PRODUCE, &R->o), &L);
             if (L.conf > bc) { bc = L.conf; bi = i; bl = L; } }
-        if (bi >= 0) { const KyOcc *z = &oc.o[bi]; char w[140]; fl_where(v, z, w, sizeof w); snprintf(R->peer, sizeof R->peer, "%.*s:%u%s%s", (int)z->plen, z->path, z->line, w[0] ? " " : "", w);
+        if (bi >= 0) { const KyOcc *z = &oc.o[bi]; char w[140]; fl_where(v, z, w, sizeof w); snprintf(R->peer, sizeof R->peer, "%.*s:%u%s%s", (int)z->plen, z->path, z->line, w[0] ? " " : "", w); sy_cpy(R->ppath, sizeof R->ppath, z->path, z->plen); R->pline = (int)z->line; snprintf(R->pwhere, sizeof R->pwhere, "%s", w);
             R->conf = bc; snprintf(R->how, sizeof R->how, "%s; %d peer%s elsewhere", bl.how, peers, peers == 1 ? "" : "s"); linked++; }
         else { R->conf = 0; /* nenhum par em outro arquivo */ int same = 0; for (int i = 0; i < oc.n; i++) if (oc.o[i].role != R->o.role && ky_same_file(&oc.o[i], &R->o)) same = 1;
             snprintf(R->peer, sizeof R->peer, "%s", same ? "only in this same file" : R->o.role == CKR_PRODUCE ? "nobody handles it in the indexed set" : "nobody sends it in the indexed set"); R->how[0] = 0; }
@@ -309,33 +346,20 @@ static int fl_file_main(SyView *v, SyArgs *a, const char *spec, int line) {
     }
     qsort(rows, (size_t)nr, sizeof *rows, fl_row_cmp);
     int total = nr;
-    for (int r = 0; r < nr && items.n < a->limit; r++) { const FlRow *R = &rows[r];
-        SyItem *it = sy_item_new(&items); sy_set_path(it, R->o.path, R->o.plen); it->line0 = it->line1 = (int)R->o.line;
+    for (int r = 0; r < nr && out->n < limit; r++) { const FlRow *R = &rows[r];
+        SyItem *it = sy_item_new(out); sy_set_path(it, R->o.path, R->o.plen); it->line0 = it->line1 = (int)R->o.line;
         snprintf(it->kind, sizeof it->kind, "%s", R->o.role == CKR_PRODUCE ? "produce" : "consume"); fl_key_label(&R->o, it->name, sizeof it->name); snprintf(it->vis, sizeof it->vis, "%s", FL_CLS[R->o.cls]);
-        snprintf(it->sig, sizeof it->sig, "%s", R->peer); it->conf = R->conf ? R->conf : 1; if (!R->conf) it->flags |= SYI_NOCONF;
+        snprintf(it->sig, sizeof it->sig, "%s", R->peer); snprintf(it->peer_path, sizeof it->peer_path, "%s", R->ppath); it->peer_line = R->pline; snprintf(it->peer_where, sizeof it->peer_where, "%s", R->pwhere); it->conf = R->conf ? R->conf : 1; if (!R->conf) it->flags |= SYI_NOCONF;
         snprintf(it->how, sizeof it->how, "%s", R->how[0] ? R->how : "no peer in other files");
         if (R->n > 1) snprintf(it->encl, sizeof it->encl, "%d occurrences", R->n);
         else fl_where(v, &R->o, it->encl, sizeof it->encl);
     }
-    snprintf(o.hint, sizeof o.hint, "%s: %d key%s sent, %d received; %d with a peer in another file.", rel, npro, npro == 1 ? "" : "s", ncon, linked);
-    if (total > items.n) { size_t l = strlen(o.hint); snprintf(o.hint + l, sizeof o.hint - l, " (%d more not shown; raise --limit)", total - items.n); }
+    snprintf(o->hint, sizeof o->hint, "%s: %d key%s sent, %d received; %d with a peer in another file.", rel, npro, npro == 1 ? "" : "s", ncon, linked);
+    if (total > out->n) { size_t l = strlen(o->hint); snprintf(o->hint + l, sizeof o->hint - l, " (%d more not shown; raise --limit)", total - out->n); }
     snprintf(nf, sizeof nf, "'%s'%s has no text keys (nothing it sends, emits, writes, handles or reads by literal name)", rel, rng);
-    fl_emit(v, &o, &items, total, nf);
-    if (!o.json && total) {
-        printf("%s%s  [%s]\n", rel, rng, sy_langname(rows[0].o.lang));
-        for (int pass = 0; pass < 2; pass++) {
-            int cnt = 0; for (int i = 0; i < items.n; i++) if (!strcmp(items.v[i].kind, pass ? "consume" : "produce")) cnt++;
-            if (!cnt) continue; printf("%s\n", pass ? "RECEIVES (reads / handles)" : "SENDS (produces / writes / calls)");
-            for (int i = 0; i < items.n; i++) { const SyItem *it = &items.v[i]; if (strcmp(it->kind, pass ? "consume" : "produce")) continue;
-                int cls = 0; for (int k = 0; k < CKC_N; k++) if (!strcmp(it->vis, FL_CLS[k])) cls = k;
-                if (it->flags & SYI_NOCONF) printf("  %d  %s [%s]  -- %s", it->line0, it->name, it->vis, it->sig);
-                else printf("  %d  %s [%s]  %s %s   [confidence %d %s]", it->line0, it->name, it->vis, pass ? FL_CL[cls] : FL_PL[cls], it->sig, it->conf, sy_level(it->conf));
-                printf("\n"); }
-        }
-        printf("%s\n", o.hint);
-        for (int i = 0; i < items.n; i++) if (!(items.v[i].flags & SYI_NOCONF) && !strcmp(items.v[i].kind, "produce")) { printf("Next: flow %s for the full list of a key; Read the peer range above.\n", items.v[i].name); break; }
-    }
-    sy_items_free(&items); free(rows); return total ? 0 : 1;
+    if (total) snprintf(o->head, sizeof o->head, "%s%s  [%s]", rel, rng, sy_langname(rows[0].o.lang));
+    free(rows);
+    return fl_q_end(v, o, total, nf);
 }
 
 /* ---- flow --links ---- */
@@ -344,7 +368,8 @@ static int fl_edge_cmp(const void *a, const void *b) { const FlEdge *x = (const 
 static int fl_key_run_cmp(const void *a, const void *b) { const KyOcc *x = (const KyOcc *)a, *y = (const KyOcc *)b; int c = st_cmp_bytes(x->key, x->kl, y->key, y->kl); if (c) return c; if (x->cls != y->cls) return (int)x->cls - (int)y->cls; return sy_cmp_path_line(x->path, x->plen, (int)x->line, y->path, y->plen, (int)y->line); }
 typedef struct { const char *pp, *cp; uint32_t pl, cl; int nk, best, first; char keys[4][70]; int cls; } FlGroup;
 static int fl_group_cmp(const void *a, const void *b) { const FlGroup *x = (const FlGroup *)a, *y = (const FlGroup *)b; if (x->nk != y->nk) return y->nk - x->nk; return y->best - x->best; }
-static int fl_links_main(SyView *v, SyArgs *a) {
+static int fl_q_links(SyView *v, int limit, SyItems *out, FlQ *o) {
+    fl_q_begin(o, "--links", 2);
     KyOccs all = {0}; ky_all(v, &all); qsort(all.o, (size_t)all.n, sizeof(KyOcc), fl_key_run_cmp);
     FlEdge *ed = NULL; int ne = 0, ec = 0, nkeys = 0, nlinked = 0;
     for (int i = 0; i < all.n; ) {
@@ -371,26 +396,27 @@ static int fl_links_main(SyView *v, SyArgs *a) {
         if (ed[i].conf > G->best) { G->best = ed[i].conf; G->cls = ed[i].cls; }
     }
     qsort(gr, (size_t)ng, sizeof *gr, fl_group_cmp);
-    FlQ o; memset(&o, 0, sizeof o); o.query = "flow"; o.arg = "--links"; o.json = a->json; SyItems items = {0};
-    for (int i = 0; i < ng && items.n < a->limit; i++) { const FlGroup *G = &gr[i];
-        SyItem *it = sy_item_new(&items); sy_set_path(it, G->pp, G->pl); it->line0 = it->line1 = 1; snprintf(it->kind, sizeof it->kind, "link");
+    for (int i = 0; i < ng && out->n < limit; i++) { const FlGroup *G = &gr[i];
+        SyItem *it = sy_item_new(out); sy_set_path(it, G->pp, G->pl); it->line0 = it->line1 = 1; snprintf(it->kind, sizeof it->kind, "link");
         char ks[260] = ""; for (int k = 0; k < G->nk && k < 4; k++) { size_t l = strlen(ks); snprintf(ks + l, sizeof ks - l, "%s%s", k ? ", " : "", G->keys[k]); } if (G->nk > 4) { size_t l = strlen(ks); snprintf(ks + l, sizeof ks - l, " (+%d)", G->nk - 4); }
-        snprintf(it->name, sizeof it->name, "%.*s", (int)(sizeof it->name - 1), ks); snprintf(it->sig, sizeof it->sig, "%.*s", (int)G->cl, G->cp);
+        snprintf(it->name, sizeof it->name, "%.*s", (int)(sizeof it->name - 1), ks); snprintf(it->sig, sizeof it->sig, "%.*s", (int)G->cl, G->cp); sy_cpy(it->peer_path, sizeof it->peer_path, G->cp, G->cl);
         it->conf = G->best; snprintf(it->how, sizeof it->how, "%d key%s link%s them (best: %s key; line text not reread in this summary)", G->nk, G->nk == 1 ? "" : "s", G->nk == 1 ? "s" : "", FL_CLS[G->cls]); }
-    snprintf(o.hint, sizeof o.hint, "%d file pair%s linked by %d shared text key%s (of %d distinct keys with occurrences); only links at confidence >= 45 are counted. Next: flow <key> for the lines, flow <file> for one file.", ng, ng == 1 ? "" : "s", nlinked, nlinked == 1 ? "" : "s", nkeys);
-    fl_emit(v, &o, &items, ng, "no text-key links between files in the indexed set (no key is produced in one file and consumed in another)");
-    if (!o.json && ng) {
-        for (int i = 0; i < items.n; i++) { const SyItem *it = &items.v[i]; printf("%s -> %s   %s   [confidence %d %s]\n", it->path, it->sig, it->name, it->conf, sy_level(it->conf)); }
-        if (ng > items.n) printf("(%d more not shown; raise --limit)\n", ng - items.n);
-        printf("%s\n", o.hint);
-    }
-    sy_items_free(&items); free(gr); free(ed); free(all.o); return ng ? 0 : 1;
+    snprintf(o->hint, sizeof o->hint, "%d file pair%s linked by %d shared text key%s (of %d distinct keys with occurrences); only links at confidence >= 45 are counted. Next: flow <key> for the lines, flow <file> for one file.", ng, ng == 1 ? "" : "s", nlinked, nlinked == 1 ? "" : "s", nkeys);
+    free(gr); free(ed); free(all.o);
+    return fl_q_end(v, o, ng, "no text-key links between files in the indexed set (no key is produced in one file and consumed in another)");
 }
 
+/* arg e arquivo[:linha] do indice ou chave de texto? */
+static int fl_q_arg(SyView *v, const char *arg, int limit, SyItems *out, FlQ *o) {
+    char spec[4400]; int line;
+    if (fl_is_file(v, arg, spec, sizeof spec, &line)) { fl_q_file(v, spec, line, limit, out, o); o->arg = arg; return o->total; }
+    return fl_q_key(v, arg, limit, out, o);
+}
 static int coder_flow_main(int argc, char **argv) {
-    SyArgs a; SyView v; int links = 0; int rc = fl_start("flow <chave|arquivo[:linha]> [pasta] [--json] [--limit N]  |  flow --links [pasta]", argc, argv, &a, &v, &links); if (rc) return rc;
-    int ret;
-    if (links) ret = fl_links_main(&v, &a);
-    else { char spec[4400]; int line; if (fl_is_file(&v, a.pos[0], spec, sizeof spec, &line)) ret = fl_file_main(&v, &a, spec, line); else ret = fl_key_main(&v, &a, a.pos[0]); }
-    sy_view_close(&v); return ret;
+    SyArgs a; SyView v; int links = 0, brief = 0; int rc = fl_start("flow <chave|arquivo[:linha]> [pasta] [--json] [--limit N]  |  flow --links [pasta]", argc, argv, &a, &v, &links, &brief); if (rc) return rc;
+    SyItems items = {0}; FlQ q; CtSb sb = {0};
+    if (links) fl_q_links(&v, a.limit, &items, &q); else fl_q_arg(&v, a.pos[0], a.limit, &items, &q);
+    q.brief = brief;
+    if (a.json) fl_render_json(&sb, &q, &items); else fl_render_text(&sb, &q, &items);
+    sy_put(&sb); sy_items_free(&items); sy_view_close(&v); return q.total ? 0 : 1;
 }
