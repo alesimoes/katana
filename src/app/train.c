@@ -1488,13 +1488,13 @@ static void t_g4_rope(const float *fr, float *v, int nh, int hd, int pos, int in
 static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
     const Config *c = &m->cfg;
     const Layer *Ly = &m->layers[l];
-    const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd, group = nh / nkv;
+    const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd;
     const size_t lq = (size_t)l * T * A->qdm, lk = (size_t)l * T * A->kvdm, ld = (size_t)l * T * d, l1 = (size_t)l * T;
     const float *fr = Ly->swa ? m->rope_freq_swa : m->rope_freq;
     const int win = Ly->swa ? c->swa_win : T, H = (int)tt->p[tt->gt[l]].rows;
     float *xl = A->x + ld, *xn1 = A->xn1 + ld, *qr = A->qr + lq, *q = A->q + lq, *kr = A->kr + lk, *k = A->k + lk;
     float *vr = A->gvr + lk, *v = A->v + lk, *ao = A->ao + lq, *yo = A->gyo + ld, *xm = A->xm + ld, *xn2 = A->xn2 + ld;
-    float *yd = A->gyd + ld, *sb = A->gs + ld, *P = A->P;
+    float *yd = A->gyd + ld, *sb = A->gs + ld;
     float *tmp = xalloc((size_t)T * d, 4);
     t_rms(&tt->p[tt->an[l]], xl, xn1, A->inv1 + l1, T, d, c->eps);
     tp_mv(&tt->p[tt->q[l]], qr, xn1, T);
@@ -1532,14 +1532,13 @@ static void t_g4_fwd(Model *m, TTab *tt, TAct *A, int l, float *xnext) {
 static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx, int need_in, int skip_attn) {
     const Config *c = &m->cfg;
     const Layer *Ly = &m->layers[l];
-    const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd, group = nh / nkv;
+    const int T = A->T, d = c->dim, nh = c->n_heads, hd = Ly->hd_l, nkv = Ly->nkv_l, qd = nh * hd, kvd = nkv * hd;
     const size_t lq = (size_t)l * T * A->qdm, lk = (size_t)l * T * A->kvdm, ld = (size_t)l * T * d, l1 = (size_t)l * T, Td = (size_t)T * d;
     const float *fr = Ly->swa ? m->rope_freq_swa : m->rope_freq;
     const int win = Ly->swa ? c->swa_win : T, H = (int)tt->p[tt->gt[l]].rows;
     const float *xl = A->x + ld, *xn1 = A->xn1 + ld, *qr = A->qr + lq, *q = A->q + lq, *kr = A->kr + lk, *k = A->k + lk;
     const float *vr = A->gvr + lk, *v = A->v + lk, *ao = A->ao + lq, *yo = A->gyo + ld, *xm = A->xm + ld, *xn2 = A->xn2 + ld;
     const float *yd = A->gyd + ld, *sb = A->gs + ld;
-    float *P = A->P;
     const float os = Ly->out_scale;
     float *dx1 = xalloc(Td, 4), *dt = xalloc(Td, 4), *ds = xalloc(Td, 4), *dyd = xalloc(Td, 4), *dxf = xalloc(Td, 4);
     for (size_t i = 0; i < Td; i++) { dx1[i] = dx[i] * os; dt[i] = dx[i] * os; }
@@ -1589,7 +1588,6 @@ static void t_g4_back(Model *m, TTab *tt, TAct *A, int l, float *dx, int need_in
 static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
     const Config *c = &m->cfg;
     const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H;
-    const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd) * (c->attn_gated ? c->kq_mul : 1.0f);
     float *x = A->x;                                     /* entrada da camada 0 */
     float *tmp = xalloc((size_t)T * (qd > d ? qd : d), 4);
@@ -1604,7 +1602,7 @@ static void t_forward(Model *m, TTab *tt, const int *toks, TAct *A) {
         if (c->g4) { t_g4_fwd(m, tt, A, l, l + 1 < c->n_layers ? A->x + (size_t)(l + 1) * T * d : A->xf); continue; }
         const Layer *Ly = &m->layers[l];
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
-        float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P;
+        float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd;
         float *qr = A->qr + (size_t)l * T * qd, *kr = A->kr + (size_t)l * T * kvd;
         float *ao = A->ao + (size_t)l * T * qd, *xm = A->xm + (size_t)l * T * d, *xn2 = A->xn2 + (size_t)l * T * d;
         t_rms(&tt->p[tt->an[l]], xl, xn1, A->inv1 + (size_t)l * T, T, d, c->eps);
@@ -1712,7 +1710,6 @@ static float t_gscale = 1.0f;      /* peso desta janela no passo (1/lote quando 
 static double t_step_(Model *m, TTab *tt, const int *toks, const uint8_t *mask, TAct *A, int back, int *ncount, int N, int last) {
     const Config *c = &m->cfg;
     const int T = A->T, d = c->dim, hd = c->hd, nh = c->n_heads, nkv = c->n_kv, qd = nh * hd, kvd = nkv * hd, H = A->H, V = c->vocab;
-    const int group = nh / nkv;
     const float scale = 1.0f / sqrtf((float)hd) * (c->attn_gated ? c->kq_mul : 1.0f);
     (void)ncount;
     /* perda moldada (train_methods.c): com a ancora KL as linhas da saida incluem tambem as posicoes de contexto (sem alvo,
@@ -1777,7 +1774,7 @@ static double t_step_(Model *m, TTab *tt, const int *toks, const uint8_t *mask, 
         const int skip_attn = !need_in && !t_attn_trains(tt, l);
         if (c->g4) { t_g4_back(m, tt, A, l, dx, need_in, skip_attn); continue; }
         float *xl = A->x + (size_t)l * T * d, *xn1 = A->xn1 + (size_t)l * T * d, *q = A->q + (size_t)l * T * qd;
-        float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd, *P = A->P;
+        float *k = A->k + (size_t)l * T * kvd, *v = A->v + (size_t)l * T * kvd;
         float *qr = A->qr + (size_t)l * T * qd, *kr = A->kr + (size_t)l * T * kvd;
         float *ao = A->ao + (size_t)l * T * qd, *xm = A->xm + (size_t)l * T * d, *xn2 = A->xn2 + (size_t)l * T * d;
         /* feed-forward: x_out = xm + ffn(norma(xm)) */

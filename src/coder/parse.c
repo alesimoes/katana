@@ -607,7 +607,7 @@ static int cp_c_decl(CP *c, int i, int b, int parent, int mode, int dp) {
         cp_sym(c, CK_TYPEDEF, parent, c->tk[i].a, j < b ? c->tk[j].b : c->tk[b - 1].b, k + 1, c->tk[i].a, c->tk[k + 2].a);
         return j + 1;
     }
-    int eq = -1, kw = -1, term = 0, e = b, ctor = 0, pure = 0, oplo = -1, ophi = -1, np = 0, po[8], pc[8];
+    int eq = -1, kw = -1, term = 0, e = b, ctor = 0, oplo = -1, ophi = -1, np = 0, po[8], pc[8];
     for (int j = k; j < b;) {
         if (cp_dirt(c, j)) { j++; continue; }
         if (cp_p(c, j, ';')) { term = ';'; e = j; break; }
@@ -628,8 +628,7 @@ static int cp_c_decl(CP *c, int i, int b, int parent, int mode, int dp) {
             j++; continue;
         }
         if (cp_p(c, j, '=')) {
-            if (np > 0 && eq < 0 && (cp_p(c, j - 1, ')') || cp_is(c, j - 1, "const") || cp_is(c, j - 1, "noexcept") || cp_is(c, j - 1, "override") || cp_is(c, j - 1, "final"))) pure = 1;
-            else if (eq < 0) eq = j;
+            if (eq < 0 && !(np > 0 && (cp_p(c, j - 1, ')') || cp_is(c, j - 1, "const") || cp_is(c, j - 1, "noexcept") || cp_is(c, j - 1, "override") || cp_is(c, j - 1, "final")))) eq = j;
             j++; continue;
         }
         if (cp_p(c, j, ':') && np > 0 && kw < 0 && !ctor && (cp_p(c, j - 1, ')') || cp_idt(c, j - 1))) ctor = 1;

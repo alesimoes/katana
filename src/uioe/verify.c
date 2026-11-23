@@ -103,13 +103,6 @@ static int uioe_verify_node(UioeCtx *cx, UioeNode *n) {
     if (uv_line(cx, found, t, sizeof t)) { snprintf(n->text, sizeof n->text, "%.190s", t); uioe_mask_line(n->text); if (n->secret) n->text[0] = 0; }
     return n->ver;
 }
-/* a faixa de linhas lida de volta para citar (trecho completo de um no de simbolo, ate maxl linhas), ja na verificacao */
-static int uioe_range_text(UioeCtx *cx, const char *rel, int l0, int l1, int maxl, char *out, size_t cap) {
-    out[0] = 0; if (uv_load(cx, rel) != 1) return 0;
-    size_t o = 0; char t[400];
-    for (int l = l0; l <= l1 && l < l0 + maxl; l++) { if (!uv_line(cx, l, t, sizeof t)) break; o += (size_t)snprintf(out + o, cap - o, "%s%d: %s", o ? "\n" : "", l, t); if (o + 420 > cap) break; }
-    return 1;
-}
 /* verifica os nos ids[0..n) na ordem de prioridade dada, dentro do orcamento; agrupa por arquivo para nao reler. Devolve quantos foram relidos. */
 static int uioe_verify_list(UioeCtx *cx, UioeGraph *g, const int *ids, int n, UioeRecall *rc) {
     const double t0 = now_sec(); int done = 0, take = 0, order[UV_MAXRANGES];

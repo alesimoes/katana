@@ -97,34 +97,6 @@ static int ct_cmp_path(const void *a, const void *b) { return strcmp(((const CtF
 #define CT_KEEP_MAX 200000      /* arquivos guardados, no maximo */
 /* anda pela pasta base (absoluta). keep(ctx, rel, name) decide se o arquivo entra; skip_noise=1 pula tambem node_modules etc.
    Nao segue links para pastas. */
-static void ct_walk(CtFiles *f, const char *base, const char *rel, int depth, int skip_noise,
-                    int (*keep)(void *, const char *, const char *), void *ctx) {
-    char dir[4200];
-    snprintf(dir, sizeof dir, "%s%s%s", base, *rel ? "/" : "", rel);
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (f->full) break;
-        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-        if (++f->visited > CT_SCAN_MAX) { f->full = 1; break; }
-        char r2[4200], full[8500];
-        snprintf(r2, sizeof r2, "%s%s%s", rel, *rel ? "/" : "", e->d_name);
-        snprintf(full, sizeof full, "%s/%s", base, r2);
-        struct stat st;
-        if (lstat(full, &st) != 0) continue;
-        if (S_ISLNK(st.st_mode) && (stat(full, &st) != 0 || S_ISDIR(st.st_mode))) continue;
-        if (S_ISDIR(st.st_mode)) {
-            if (strcmp(e->d_name, ".git") == 0 || (skip_noise && sf_skip_dir(e->d_name)) || depth >= 40) continue;
-            ct_walk(f, base, r2, depth + 1, skip_noise, keep, ctx);
-        } else if (S_ISREG(st.st_mode)) {
-            if (keep && !keep(ctx, r2, e->d_name)) continue;
-            if (f->n >= CT_KEEP_MAX) { f->full = 1; break; }
-            ct_files_add(f, full, (long long)st.st_mtime);
-        }
-    }
-    closedir(d);
-}
 
 /* caminho para mostrar: relativo a pasta atual se estiver dentro dela, senao o absoluto */
 static const char *ct_display(const char *abs, const char *cwd) {

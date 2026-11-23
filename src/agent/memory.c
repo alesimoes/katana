@@ -301,23 +301,6 @@ static int memory_query(const char *query, int max, MemRec *out, int *nsecret) {
     mem_free(&db);
     return got;
 }
-/* API para o UIOE e para recall: ate `max` fatos no formato "- data: fato" (substituidos marcados), do mais relevante ao menos; devolve quantos */
-static int memory_search(const char *query, int max, char *out, size_t cap) {
-    out[0] = 0;
-    MemDb db;
-    if (mem_load(&db) != 0) return 0;
-    MemHit h[32]; if (max > 32) max = 32;
-    const int n = mem_rank(&db, query, 1, h, max);
-    size_t o = 0; int shown = 0;
-    for (int i = 0; i < n; i++) {
-        const MemE *x = &db.e[h[i].idx];
-        if (o + 700 >= cap) break;
-        o += (size_t)snprintf(out + o, cap - o, "- %s: %.400s%s\n", x->date, x->fact, x->kind == 1 ? " [superseded]" : "");
-        shown++;
-    }
-    mem_free(&db);
-    return shown;
-}
 
 /* ---- ferramentas ---- */
 static void tool_remember(const char *fact, char *out, size_t cap) {
@@ -401,21 +384,6 @@ static size_t mem_tail(int max, char *out, size_t cap) {
     }
     free(live); free(pick); mem_free(&db);
     return o;
-}
-
-static void tool_recall(const char *query, char *out, size_t cap) {
-    MemDb db;
-    if (mem_load(&db) != 0) { snprintf(out, cap, "memory is empty"); return; }
-    MemHit h[8];
-    const int n = mem_rank(&db, query, 0, h, 8);
-    size_t o = 0;
-    out[0] = 0;
-    for (int i = 0; i < n; i++) {
-        const MemE *x = &db.e[h[i].idx];
-        if (o + 700 < cap) o += (size_t)snprintf(out + o, cap - o, "- %s: %.400s\n", x->date, x->fact);
-    }
-    if (!out[0]) snprintf(out, cap, "no matching facts in memory");
-    mem_free(&db);
 }
 
 /* ---- katana memory ---- */

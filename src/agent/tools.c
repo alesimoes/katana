@@ -428,5 +428,4 @@ static int sf_skip_dir(const char *n) {
 /* ---- memoria: implementada em agent/memory.c (incluido depois do tokenizador); aqui so as declaracoes ---- */
 static void tool_remember(const char *fact, char *out, size_t cap);
 static size_t mem_tail(int max, char *out, size_t cap);
-static void tool_recall(const char *query, char *out, size_t cap);
 

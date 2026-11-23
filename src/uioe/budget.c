@@ -88,7 +88,6 @@ static int uioe_call(UioeCtx *cx, UioeRecall *rc, const char *state, const char 
     if (cx->s->brk[ix].fails == 1) q.deadline_ms /= 2;      /* meio-aberto: uma tentativa com metade do prazo */
     const char *fault = uioe_fault_of(cx, id);
     const double t0 = now_sec(); int attempt = 0, soft = 0;
-retry:
     if (fault && !attempt && (!strcmp(fault, "timeout") || !strcmp(fault, "error"))) { res->status = !strcmp(fault, "error") ? UR_ERROR : UR_TIMEOUT; snprintf(res->note, sizeof res->note, "injected fault (KATANA_UIOE_FAULT): %s", fault); }
     else {
         c->run(cx, &q, res);

@@ -613,7 +613,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
         else if ((!strcmp(o, "--verified") || !strcmp(o, "--plan-updates")) && x.nextra < 15) x.extra[x.nextra++] = o;
         else { fprintf(stderr, "specialize: opcao desconhecida %s\n", o); return 1; }
     }
-    char trbuf[2400], kbuf[2400], sessdef[2400], outbuf[2400], root[2400], self[2400];
+    char trbuf[2400], sessdef[2400], outbuf[2400], root[2400], self[2400];
     if (!trdir && sp_cfg_get(&cfg, "training-dir")) { char *t = sp_cfg_path(sp_cfg_get(&cfg, "training-dir"), home); snprintf(trbuf, sizeof trbuf, "%s", t); free(t); trdir = trbuf; }
     if (!trdir) { snprintf(trbuf, sizeof trbuf, "%s/.katana/training", home); trdir = trbuf; }
     if (status) {

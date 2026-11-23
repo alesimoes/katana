@@ -336,11 +336,6 @@ static __m256i mul32_u8_s16(__m256i v, const int16_t *x) {
                             _mm256_madd_epi16(c, _mm256_loadu_si256((const __m256i *)(x + 16))));
 }
 
-static float hsum128(__m128 v) {
-    v = _mm_hadd_ps(v, v); v = _mm_hadd_ps(v, v);
-    return _mm_cvtss_f32(v);
-}
-
 /* Q4_K inteiro. Por bloco de 256 pesos: as 8 escalas e os 8 minimos de 6 bits saem de 12
    bytes com meia duzia de operacoes de 32 bits (sem desvios). Cada peso vale
    d*sc*q - dmin*m: o termo dos minimos usa as somas de x por sub-bloco (bs32). */

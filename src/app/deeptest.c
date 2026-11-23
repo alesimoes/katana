@@ -303,7 +303,7 @@ static int selftest_deep(Model *m, int argc, char **argv) {
             if (!f || fread(h, 4, 2, f) != 2 || h[0] != V || h[1] < N || fread(ref, 4, (size_t)N * V, f) != (size_t)N * V) { printf("referencia %s nao serve\n", lref); return 2; }
             fclose(f);
         } else {
-            uint16_t *kh = m->kh, *vh = m->vh; uint8_t *kq = m->kq8, *vq = m->vq8; float *kf = m->kcache, *vf = m->vcache;
+            uint16_t *kh = m->kh, *vh = m->vh; uint8_t *kq = m->kq8, *vq = m->vq8; float *kf = m->kcache;
             const size_t nk = dt_kv_floats(m);
             float *k2 = NULL, *v2 = NULL;
             if (!kf) { k2 = xalloc(nk, 4); v2 = xalloc(nk, 4); m->kcache = k2; m->vcache = v2; m->kh = m->vh = NULL; m->kq8 = m->vq8 = NULL; }

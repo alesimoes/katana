@@ -863,9 +863,6 @@ static int gr_json_schema(const char *schema) {
 
 /* gramatica de chamada de ferramenta a partir da lista <tools> do prompt de sistema.
  * xml=0: {"name": <ferramenta>, "arguments": <objeto conforme parameters>}; xml=1: so o nome + '>' */
-static char *g_tool_names[GN_MAXE]; static int g_tool_params[GN_MAXE]; static int g_ntool_names;
-static const char *g_tool_sys;
-
 static void gr_tools_scan(const char *sys, const char *pv[], char names[][64], int *nt) {
     const char *t0 = strstr(sys, "<tools>"), *t1 = strstr(sys, "</tools>");
     *nt = 0;

@@ -11,7 +11,6 @@
  * conceituais e de historico so existe quando U8 trouxer essas fontes). */
 #define UG_RRFK 60.0
 
-static int ug_same_file(const UioeNode *a, const UioeNode *b) { return a->path[0] && !strcmp(a->path, b->path); }
 static int ug_find(const UioeGraph *g, int kind, const char *path, int line0, const char *name) {
     for (int i = 0; i < g->nn; i++) { const UioeNode *n = &g->n[i]; if (n->kind == kind && n->line0 == line0 && !strcmp(n->path, path) && !strcmp(n->name, name)) return i; }
     return -1;
@@ -49,15 +48,6 @@ static int ug_edge(UioeGraph *g, int from, int to, int kind, int line, int conf,
     e->from = from; e->to = to; e->kind = (uint8_t)kind; e->line = line; e->conf = conf; e->ver = (uint8_t)ver; e->conn = conn;
     snprintf(e->how, sizeof e->how, "%s", how ? how : ""); snprintf(e->key, sizeof e->key, "%s", key ? key : "");
     return g->ne++;
-}
-/* a faixa de um no alcancado por uma aresta estrutural de um no de faixa t: t+1 (no maximo 2 quando a origem e de faixa 1 ou 2) */
-static void ug_reach_tier(UioeGraph *g, int to, int from_tier) {
-    if (to < 0 || from_tier > 2) return;
-    UioeNode *n = &g->n[to]; if (n->tier > 2) n->tier = 2;
-}
-static int ug_edge_between(const UioeGraph *g, int a, int b, int kind) {
-    for (int i = 0; i < g->ne; i++) { const UioeEdge *e = &g->e[i]; if ((e->kind == kind || kind < 0) && ((e->from == a && e->to == b) || (e->from == b && e->to == a))) return i; }
-    return -1;
 }
 
 /* ---- resultado de conector: acrescenta nos e arestas ---- */

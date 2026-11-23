@@ -655,7 +655,6 @@ static void gx_run(const Layer *L, int l, int R, clh xin) {
    so sao reescritos depois da proxima leitura bloqueante, quando a fila ja esvaziou. */
 static void gpu_moe_ffn(Model *m, const KSet *ks, const Layer *L, int l) {
     const Config *c = &m->cfg;
-    const KSet *k1 = &gpu.set[gpu.n_sets - 1];      /* os especialistas usam os kernels de um token */
     const int d = c->dim, H = c->hidden, K = c->n_used, E = c->n_expert, B = ks->nb;
     static int cpu_e[MOE_NMAX], cpu_x[MOE_NMAX], cpu_row[MOE_NMAX];
     float *heat = gx.heat + (size_t)l * E;

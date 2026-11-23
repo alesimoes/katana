@@ -406,7 +406,7 @@ static void qn_attend(Model *m, const Layer *L, int pos0, int B, const float *Q,
 
 static void qn_core(Model *m, const Layer *L, int l, int pos, const float *qg, float *k, const float *v, float *out) {
     const Config *c = &m->cfg;
-    const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd, ctx = c->ctx;
+    const int nh = c->n_heads, hd = c->hd, kvd = c->n_kv * hd;
     const int nr = c->rope_dim > 0 && c->rope_dim < hd ? c->rope_dim : hd, half = nr / 2;
     float *q = m->q;
     const int32_t *rp = vis_rp ? vis_rp + 3 * (size_t)pos : NULL;      /* houve imagem: tres eixos (frequencia i usa o eixo i mod 3) */
@@ -1422,8 +1422,8 @@ static void matmat(float *out, const Mat *W, const float *X, XQ *xqs, int *prepa
    lote; os pares (token, especialista) da camada saem num despacho so. X: B x dim, atualizado no lugar. */
 static void g4_layers_n(Model *m, int pos0, int B, float *X) {
     const Config *c = &m->cfg;
-    const int d = c->dim, nh = c->n_heads, K = c->n_used, E = c->n_expert, Hd = c->hidden_dense;
-    static float *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *OUTS, *LG;
+    const int d = c->dim, nh = c->n_heads, K = c->n_used, Hd = c->hidden_dense;
+    static float *Xb, *X2, *Q, *KK, *VV, *O, *HB, *HB2, *YA, *YB, *OUTS;
     static XQ xqs[G4_NB];
     static int ex[G4_NB * MOE_KMAX], xi[G4_NB * MOE_KMAX]; static float ew[G4_NB * MOE_KMAX];
     if (B > G4_NB) die("g4_layers_n: lote grande demais");
@@ -1432,7 +1432,7 @@ static void g4_layers_n(Model *m, int pos0, int B, float *X) {
         Xb = xalloc((size_t)G4_NB * d, 4); X2 = xalloc((size_t)G4_NB * d, 4); YA = xalloc((size_t)G4_NB * d, 4); YB = xalloc((size_t)G4_NB * d, 4);
         Q = xalloc(G4_NB * qd, 4); O = xalloc(G4_NB * qd, 4); KK = xalloc(G4_NB * kvd, 4); VV = xalloc(G4_NB * kvd, 4);
         HB = xalloc((size_t)G4_NB * Hd, 4); HB2 = xalloc((size_t)G4_NB * Hd, 4);
-        OUTS = xalloc((size_t)G4_NB * K * d, 4); LG = xalloc((size_t)(E > 1 ? E : 1), 4);
+        OUTS = xalloc((size_t)G4_NB * K * d, 4);
     }
     for (int l = 0; l < c->n_layers; l++) {
         const Layer *L = &m->layers[l];

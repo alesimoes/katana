@@ -129,9 +129,6 @@ static int lc_cfg_set(const char *key, const char *val) {
     return ok;
 }
 
-/* pasta do executavel, pelo caminho real (links simbolicos resolvidos); 0 se nao der (Windows: pasta do .exe) */
-static int lc_exe_path(char *out, size_t cap) { return exe_path(out, cap); }
-
 /* ============================ modelos ============================ */
 typedef struct { char name[300]; long long bytes; } LcModelFile;
 static int lc_models_scan(const char *dir, LcModelFile *v, int max) {

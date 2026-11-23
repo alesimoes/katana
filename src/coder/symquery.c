@@ -965,7 +965,7 @@ static int sy_q_impact(SyView *v, const char *name, int depth, int nodes, int li
     sy_q_begin(o, "impact", name);
     int maxd = depth > 0 ? depth : 3, maxn = nodes > 0 ? nodes : 100;
     SyCand cand[8]; int step, nc = sy_cascade(v, name, 2, cand, 8, &step); 
-    SyNode *nd = (SyNode *)calloc((size_t)maxn + 1, sizeof *nd); int nn = 0, head = 0, truncated = 0, total = 0;
+    SyNode *nd = (SyNode *)calloc((size_t)maxn + 1, sizeof *nd); int nn = 0, truncated = 0, total = 0;
     if (nc) sy_cascade_note(o, cand, nc, step);
     /* raizes: a(s) definicao(oes) do nome; os chamadores buscam-se pelo nome */
     typedef struct { char name[128]; int depth, conf; int node; } Q; Q *q = (Q *)calloc((size_t)maxn + 8, sizeof(Q)); int qh = 0, qt = 0;

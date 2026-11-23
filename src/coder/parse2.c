@@ -108,7 +108,7 @@ static int c2_at(const char *t, size_t n, size_t i, const char *a) { size_t l = 
 static void c2_mask(int L, const char *t, size_t n, char *cl, char *nc) {
     memcpy(cl, t, n); memcpy(nc, t, n);
     C2M m = c2_mcfg(L);
-    size_t i = 0; int php_html = L == CL_PHP; char hd[4][64]; int hdash[4], hn = 0; char last = 0; char lw[16] = ""; int lwl = 0;
+    size_t i = 0; int php_html = L == CL_PHP; char hd[4][64]; int hdash[4], hn = 0; char last = 0;
     if (L == CL_PHP) { size_t k = 0; int any = 0; while (k + 1 < n) { if (t[k] == '<' && t[k + 1] == '?') { any = 1; break; } k++; } if (!any) php_html = 0; }
     while (i < n) {
         char c = t[i];
@@ -231,10 +231,6 @@ static void c2_mask(int L, const char *t, size_t n, char *cl, char *nc) {
                 size_t e = q + 1; for (; e < n; e++) if (t[e] == ']') { size_t z = e + 1; int ok = 1; for (int w = 0; w < lv; w++) { if (z >= n || t[z] != '=') { ok = 0; break; } z++; } if (ok && z < n && t[z] == ']') break; }
                 size_t end = e < n ? e + lv + 2 : n; if (end > n) end = n; cp_blank(cl, i, end); i = end; last = 'a'; continue;
             }
-        }
-        if (isalnum((unsigned char)c) || c == '_') {
-            if (i > 0 && (isalnum((unsigned char)t[i - 1]) || t[i - 1] == '_')) { if (lwl < 15) lw[lwl++] = c; } else { lwl = 0; lw[lwl++] = c; }
-            lw[lwl] = 0;
         }
         (void)last; last = c; i++;
     }
@@ -1025,7 +1021,7 @@ static int c2_ykey(const char *s, size_t a, size_t e, size_t *ka, size_t *kb, si
     *ka = k0; *kb = kk; *vs = p + 1; return 1;
 }
 static void c2_yaml(CP *c) {
-    const char *s = c->t; size_t n = c->n; int cur = -1, curchild = -1; int curind = -1, childind = -1; int cnt = 0, blk = -1;
+    const char *s = c->t; int cur = -1, curchild = -1; int curind = -1, childind = -1; int cnt = 0, blk = -1;
     int sec = -1; (void)sec;
     for (int ln = 1; ln <= c->nln && cnt < 1500; ln++) {
         size_t ls = c2_lb(c, ln), le = c2_le(c, ln); int ind = c2_indent(s, ls, le);

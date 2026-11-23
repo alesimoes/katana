@@ -48,7 +48,6 @@ static uint64_t tm_mix(uint64_t x) {
 }
 static float tm_unif(uint64_t k) { return (float)((tm_mix(k) >> 40) * (1.0 / 16777216.0)); }       /* [0, 1) */
 static int tm_finite(double x) { union { double d; uint64_t u; } v; v.d = x; return ((v.u >> 52) & 0x7ff) != 0x7ff; }   /* a prova de -ffast-math */
-static int tm_finitef(float x) { union { float f; uint32_t u; } v; v.f = x; return ((v.u >> 23) & 0xff) != 0xff; }
 static void tm_set_key(unsigned seed, long step, int bi) { tm.key = tm_mix((uint64_t)seed * 0x100000001b3ull + (uint64_t)step * 1315423911u + (uint64_t)bi + 1); }
 
 /* ---- ruido nos embeddings (NEFTune): x += alfa / sqrt(L d) * U(-1, 1) ---- */
@@ -666,7 +665,7 @@ static int tm_setup(TTab *tt) {
 }
 
 /* ---- guardas contra divergencia ---- */
-static double g_loss_hist[20]; static int g_nloss, g_skips, g_consec, g_skip_total;
+static double g_loss_hist[20]; static int g_nloss, g_skips, g_consec;
 static int tm_cmpd(const void *a, const void *b) { const double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
 /* 1 = pular o passo (perda ou gradiente nao finitos, ou perda acima de spike vezes a mediana dos ultimos 20 aceitos e
    pelo menos 2 nats acima dela: perda muito baixa oscila em proporcao sem estar divergindo) */
