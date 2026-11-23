@@ -112,6 +112,7 @@
 #include "coder/keys.c"              /* coder: chaves de texto (ligacoes por texto igual: eventos, rotas, ambiente, mensagens) */
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
+#include "agent/memory.c"            /* memoria: remember, recall, memory_search, katana memory (usa o tokenizador) */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
 #include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
 #include "coder/flow.c"              /* coder: ligacoes por chave de texto (katana coder flow) */
