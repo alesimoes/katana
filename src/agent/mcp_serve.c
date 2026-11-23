@@ -1,6 +1,7 @@
 /* ---------- katana mcp serve: o katana como servidor MCP (stdio) ----------
- * Expoe as ferramentas de arquivos e busca do proprio katana (Read, Write, Edit, Glob, Grep, NotebookEdit) e, so com
- * --allow-shell, Bash. Quem chama e o cliente MCP de outro programa; o katana nao pergunta nada a ninguem aqui:
+ * Expoe as ferramentas de arquivos e busca do proprio katana (Read, Write, Edit, Glob, Grep, Find, Symbols, NotebookEdit)
+ * e, so com --allow-shell, Bash. Find e Symbols (leitura, esquemas e descricoes das ferramentas internas) consultam o indice
+ * da pasta; LSP nao entra (sobe servidores de linguagem externos, fora do que o serve promete). Quem chama e o cliente MCP de outro programa; o katana nao pergunta nada a ninguem aqui:
  *  - as regras never e ask do KATANA.md da pasta valem (never recusa; ask recusa, porque nao ha a quem perguntar);
  *  - os caminhos ficam presos a pasta de trabalho (cwd, --cwd, --root) ou as roots que o cliente declarar (roots/list);
  *  - Bash nao e preso a pasta (um shell faz qualquer coisa): por isso so liga com --allow-shell.
@@ -14,6 +15,8 @@ static const McpsTool g_mcps_tools[] = {
     {"Read", "Read a file", 1, 0, 1, 0, 0},
     {"Glob", "Find files by name", 1, 0, 1, 0, 0},
     {"Grep", "Search file contents", 1, 0, 1, 0, 0},
+    {"Find", "Find where something is in the code", 1, 0, 1, 0, 0},
+    {"Symbols", "Query the symbol index (definitions, references, callers, outline)", 1, 0, 1, 0, 0},
     {"Write", "Write a file", 0, 1, 1, 0, 0},
     {"Edit", "Edit a file", 0, 0, 0, 0, 0},
     {"NotebookEdit", "Edit a notebook cell", 0, 0, 0, 0, 0},
@@ -109,7 +112,7 @@ static void mcps_roots_from(const char *res) {
 }
 /* confere os caminhos dos argumentos; 1 = ok, senao out recebe o motivo */
 static int mcps_args_ok(const char *js, const char *end, char *out, size_t cap) {
-    static const char *const keys[] = {"file_path", "path", "notebook_path", "pattern", "glob", NULL};
+    static const char *const keys[] = {"file_path", "path", "file", "notebook_path", "pattern", "glob", NULL};
     for (int i = 0; keys[i]; i++) {
         char *v = ct_str(js, end, keys[i]);
         if (!v) continue;

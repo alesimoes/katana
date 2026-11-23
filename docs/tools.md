@@ -132,6 +132,10 @@ as plain text, ignoring case and without `glob`/`type`, and says what it found; 
 `ignore_case`, `context`, `regex: false`, `fixed_strings`, `literal` are accepted; a missing `path` names the only
 file or folder with that name, if there is one. `KATANA_REGEX_TEST=1` with `subject` and no `path` matches the pattern
 against `subject` and prints the spans (used by `tools/tooltest/regex.sh`).
+Nested roots: searching from a folder does not descend into a subfolder that has its own `katana init` (marker
+`.katana/coder/ROOT`) or is a linked git worktree (`.git` is a file pointing into `worktrees/`), the same decision the index
+makes (`rt_skip_subdir`, `src/coder/roots.c`); this holds in both file lists (git and `.gitignore` walk). Searching with
+`path` set to that nested folder (or from inside it) works normally, since it is then the root of the search.
 
 ### Find (navigation)
 `Find(query, path, limit, mode)` (`src/tools/find.c`): the navigation tool. The model says what it is looking for, in
