@@ -546,3 +546,26 @@ katana's own tools without a counterpart in this set stay as they are: `terminal
 - **`howto`** recipes name the current tools (`Read`, `Edit`, `Bash`, `Grep`, `Glob`, `WebSearch`, ...).
 - Tests: `tools/tooltest/misc.sh`, `meta.sh`, `files.sh`, `web.sh`, `tasks.sh`, `loopnotes.sh` (`katana toolrun notes` replays a
   list of calls and prints which notes the loop would send), `helpword.sh`.
+
+## Changes of 2026-11-23 that affect what the model sees: the UIOE context block (phase U4)
+
+Not measured, no run with the real model. Design and the normative format: `docs/uioe.md` (3.9 the Context Builder, 4.6 the block).
+
+- **A user message can end with a context block.** Before the model runs, `uioe_prepare` (`src/uioe/api.c`) interprets the request, retrieves
+  with the engines the tools use (`Find`, `Symbols`, `Read` are unchanged) and, behind a conservative door, appends
+  `[katana: context for this request. ...]` ... `[end of context]` after the user's text. The labels are fixed and in English whatever the
+  language of the request: `Question understood as`, `Answer path` (or `Findings`), `Evidence`, `Links`, `Not found / limits` (always present, each
+  clause says why), `Next` (imperative, with a stop criterion). `[C]` is the confidence of a line that was re-read in the file; `(guess)` is an
+  unchecked line. At most 1500 tokens (4 bytes per token), the most relevant first. Text that comes from files is escaped (`[katana` and
+  `[end of context` get a space after the bracket, the chat-format markers are neutralized, secret shapes are masked).
+- **The door.** Nothing is injected for a greeting, a vague or ambiguous request, a request that already names the exact file, a retrieval below
+  confidence 80 (`UIOE_PACK_MIN_CONF`, `src/uioe/api.c`), one with no re-read support, a connector that timed out, or a step that took longer than
+  `KATANA_UIOE_TOTAL_MS` (1500). Only code and file requests are served. A follow-up that only refers back ("and where does that go?") inherits the
+  last investigation (a trace line says so) and gets a block only if the path holds something not already shown.
+- **What it replaces.** With a block, the cited-folder note (`place_note`) and the project documents note (`ds_select`) are not appended: the
+  folder is in `Question understood as` and `Next`, and the document lines the selector picks are `Evidence`. Without a block the old notes are
+  appended exactly as before. The system prompt is not touched.
+- **Switches.** `KATANA_UIOE=pack` (default) or `off` (the old behaviour, byte for byte). `KATANA_UIOE_LIMITS=1` also injects the short form
+  (`Question understood as`, `Not found / limits`, `Next`) when retrieval is incomplete. `katana uioe ask --pack "<request>"` prints the block
+  the agent would receive; `~/.katana/uioe.log` keeps the decision of the door and the block of every request; `KATANA_UIOE_DUMP=<file>` (tests)
+  appends the user message exactly as it reaches the model.

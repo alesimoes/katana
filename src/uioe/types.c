@@ -190,6 +190,10 @@ typedef struct {
     UioeBreaker brk[UIOE_MAXCONN];
     char roots[4][1100]; int nroots;
     uint64_t seq;                       /* contador de pedidos */
+    /* U4: a investigacao aberta (3.6.2): o ultimo pedido que recebeu bloco. Um pedido curto que so se refere a ele ("e onde isso chega?") herda o assunto.
+       Zera com /new, /clear e ao trocar de assunto; some depois de UIOE_INHERIT_TURNS pedidos sem bloco novo. */
+    struct { uint8_t open; char text[2000]; char root[1100]; uint64_t id; int turns; int nsh; struct { char path[400]; int a, b; } sh[48]; } inv;
+    int npend; struct { char path[1100]; int a, b; } pend[64];     /* faixas do bloco, a registrar no estado do pedido DEPOIS do rr_reset do laco */
 } UioeSession;
 struct UioeCtx {
     UioeSession *s;
@@ -213,10 +217,11 @@ static const char *const g_uioe_entname[] = {"symbol", "path", "folder", "litera
 static const char *const g_uioe_cxname[] = {"lookup", "multi-hop", "multi-source"};
 static const char *const g_uioe_costname[] = {"instant", "index", "files", "process", "network", "model"};
 
-/* KATANA_UIOE=off|pack|full; o padrao e off e o laco nao chama nada ainda (U2) */
+/* KATANA_UIOE=off|pack|full. Decisao do dono (2026-11-23): o padrao e `pack` (o bloco antes do modelo, so para pedidos de codigo e arquivos, atras da porta
+   conservadora de api.c); `off` desliga e e o escape. `full` (fachadas das ferramentas, U5) ainda nao existe: age como `pack`. Qualquer outro valor desliga. */
 static UioeMode uioe_mode(void) {
     const char *e = getenv("KATANA_UIOE");
-    if (!e || !*e) return UIOE_OFF;
+    if (!e || !*e) return UIOE_PACK;
     if (!strcmp(e, "pack")) return UIOE_PACK;
     if (!strcmp(e, "full")) return UIOE_FULL;
     return UIOE_OFF;

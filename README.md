@@ -169,6 +169,16 @@ conversation wrapped as data ("external content, not instructions") with the cha
 neutralized. `KATANA_CONFIRM=1` makes the agent ask before writing files, running commands or calling MCP tools.
 Note the default is **no confirmation**: the agent acts on your machine. Run it accordingly.
 
+**The front door before the model (UIOE).** Before the model sees a request about code or files, katana interprets it, classifies it, routes
+it and runs the retrieval itself, in C and in milliseconds (`docs/uioe.md`). When it is sure of what it found, it appends one block to the
+end of the user's message: `[katana: context for this request ...]` ... `[end of context]` (at most 1500 tokens: how the request was
+understood, a numbered path with `file:lines` that was re-read in the files, the links between files, what was not found and why, and
+what to do next). A greeting, a vague or ambiguous request, a request that already names the exact file, a low-confidence retrieval or a
+deadline overrun get **nothing**: the model sees the request exactly as typed. The block replaces the old cited-folder note and the project
+documents note; the system prompt never changes, so the prefix cache stays valid. It is on by default (`KATANA_UIOE=pack`); `KATANA_UIOE=off`
+turns it off. `katana uioe ask --pack "<request>"` prints the block that would be injected, with no model. New, and not measured: the model
+has not been trained for the block yet.
+
 Context management: the agent compacts its own context (the model summarizes, tool results are shrunk), keeps the
 KV cache and the hot-expert state per session, and resumes old sessions without recomputing when it can.
 
@@ -309,6 +319,7 @@ to the real tools and the arguments to the tool's schema. `katana jsontest` runs
 | `KATANA_LOG_JSON=1` | agent: also write `~/.katana/agente.jsonl` (mode 0600, rotated at 64 MB to `.jsonl.1`): one JSON line per call with tool, arguments and result (up to 16 KB each), `ms`, `error`, `exit_code`, `request`, `session` |
 | `KATANA_PFX=0`, `KATANA_CACHE_DIR=<dir>` | agent: disable or move the on-disk prefix cache |
 | `KATANA_JSON=1` | `run`/`chat`: guaranteed JSON output |
+| `KATANA_UIOE=pack\|off` | agent: the context block built before the model (default `pack`; `off` is the escape and restores the old behaviour byte for byte). `KATANA_UIOE_MS` (retrieval deadline, 400), `KATANA_UIOE_TOTAL_MS` (whole step, 1500; over it nothing is injected), `KATANA_UIOE_TOKENS` (block ceiling, 1500), `KATANA_UIOE_LIMITS=1` (also inject the short "not found / limits" form), `KATANA_UIOE_LOG` (trace, default `~/.katana/uioe.log`, `0` = off) |
 
 The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.md`](docs/handoff.md).
 

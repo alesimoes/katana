@@ -137,6 +137,8 @@
 #include "uioe/pipes.c"                /* UIOE U3: pipelines por tipo de tarefa */
 #include "uioe/orch.c"                 /* UIOE U3: maquina de estados, porta G4 a G6 */
 #include "uioe/evrender.c"             /* UIOE U3: saida em texto e JSON, traco da recuperacao */
+#include "uioe/ctxb.c"                /* UIOE U4: o Construtor de Contexto (o bloco `[katana: context ...]`) */
+#include "uioe/api.c"                 /* UIOE U4: uioe_prepare, a porta antes do modelo */
 #include "uioe/cli.c"
 #include "agent/extend.c"              /* katana init, skill, mcp; /init /skill /mcp e prompts do MCP */
 #include "agent/mcp_serve.c"           /* katana mcp serve: o katana como servidor MCP (stdio) */

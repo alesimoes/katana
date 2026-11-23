@@ -248,7 +248,7 @@ static void place_add(const char *p) {
     for (int i = 0; i < g_place_nd; i++) if (!strcmp(g_place_dirs[i], p)) return;
     snprintf(g_place_dirs[g_place_nd++], sizeof g_place_dirs[0], "%s", p);
 }
-static int place_note(const char *msg, char *out, size_t cap) {
+static int place_note_raw(const char *msg, char *out, size_t cap) {
     g_place_nd = 0;
     char cwd[1500]; if (!getcwd(cwd, sizeof cwd)) return 0;
     char cands[4][700]; int nc = 0;
@@ -300,5 +300,22 @@ static int place_note(const char *msg, char *out, size_t cap) {
         if (o + 700 < cap) o += (size_t)snprintf(out + o, cap - o, "%s[katana: you mention \"%s\", which does not exist from the working folder (%s). It is at: %s. Work there: pass that folder as `path` to Find, Glob and Grep, or use absolute paths.]", o ? "\n" : "", shown, cwd, sug + 14);
     }
     return o > 0;
+}
+/* o mesmo pedido na mesma pasta em poucos segundos da o mesmo resultado: o UIOE (interpretar) e o laco (nota legada) chamam as duas, e achar a pasta
+   citada varre o disco (centenas de ms); a segunda chamada reaproveita a primeira (o texto da nota e as pastas achadas) */
+static int place_note(const char *msg, char *out, size_t cap) {
+    static char k_msg[4096], k_cwd[1500], k_out[4096], k_dirs[4][1100]; static int k_ret, k_nd; static time_t k_t;
+    char cwd[1500]; const time_t now = time(NULL); const int cwd_ok = getcwd(cwd, sizeof cwd) != NULL;
+    if (cwd_ok && out && k_t && now - k_t <= 10 && strlen(k_out) + 700 < cap && !strcmp(k_cwd, cwd) && strlen(msg) < sizeof k_msg && !strcmp(k_msg, msg)) {
+        g_place_nd = k_nd; for (int i = 0; i < k_nd; i++) snprintf(g_place_dirs[i], sizeof g_place_dirs[0], "%s", k_dirs[i]);
+        snprintf(out, cap, "%s", k_out);
+        return k_ret;
+    }
+    const int r = place_note_raw(msg, out, cap);
+    if (cwd_ok && out && strlen(msg) < sizeof k_msg && strlen(out) < sizeof k_out && strlen(out) + 700 < cap) {
+        snprintf(k_msg, sizeof k_msg, "%s", msg); snprintf(k_cwd, sizeof k_cwd, "%s", cwd); snprintf(k_out, sizeof k_out, "%s", out);
+        k_ret = r; k_nd = g_place_nd; for (int i = 0; i < k_nd && i < 4; i++) snprintf(k_dirs[i], sizeof k_dirs[0], "%s", g_place_dirs[i]); k_t = now;
+    }
+    return r;
 }
 #endif
