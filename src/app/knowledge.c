@@ -216,7 +216,7 @@ static void kn_emit(void *ud, const char *line) {
                         }
                     }
                 }
-                c.kind = !strcmp(nm, "Bash") || !strcmp(nm, "PowerShell") ? 1 : (!strcmp(nm, "Write") || !strcmp(nm, "Edit") || !strcmp(nm, "MultiEdit") || !strcmp(nm, "NotebookEdit")) ? 2 : 0;
+                c.kind = !strcmp(nm, "Bash") || !strcmp(nm, "PowerShell") ? 1 : (!strcmp(nm, "Write") || !strcmp(nm, "Edit") || !strcmp(nm, "NotebookEdit")) ? 2 : 0;
                 if (!c.kind) { free(c.cmd); free(c.desc); free(c.path); continue; }
                 C = realloc(C, (size_t)(nc + 1) * sizeof(KnCall)); C[nc++] = c;
             }

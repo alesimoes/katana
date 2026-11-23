@@ -1169,17 +1169,22 @@ void Backend::launch(const QString &modelFile)
     emit specsChanged();
     m_outBuf.clear();
     m_errBuf.clear();
+    m_errTail.clear();
     m_utf8Tail.clear();
     m_filter.reset();
     m_atLineStart = true;
     connect(p, &QProcess::readyReadStandardOutput, this, &Backend::onStdout);
     connect(p, &QProcess::readyReadStandardError, this, &Backend::onStderr);
-    connect(p, &QProcess::finished, this, [this, p] { onFinished(p); });
+    connect(p, &QProcess::finished, this, [this, p](int code, QProcess::ExitStatus st) { onFinished(p, code, st); });
     connect(p, &QProcess::errorOccurred, this, [this, p](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart && p == m_proc) {
             m_proc = nullptr;
+            m_queue.clear(); m_paused = false;
+            emit queueChanged();
             setState(false, false, false);
-            setTexts({}, "Nao foi possivel iniciar o katana: " + p->errorString());
+            const QString msg = "Nao foi possivel iniciar o katana (" + m_katana + "): " + p->errorString();
+            setTexts({}, msg);
+            m_msgs.append("error", msg);
             emit stateChanged();
         }
     });
@@ -1187,15 +1192,31 @@ void Backend::launch(const QString &modelFile)
     p->start();
 }
 
-void Backend::onFinished(QProcess *p)
+void Backend::onFinished(QProcess *p, int code, QProcess::ExitStatus st)
 {
     p->deleteLater();
     if (p != m_proc)
         return;
     m_proc = nullptr;
+    // o que sobrou no buffer de stderr (ultima linha sem quebra) tambem conta como motivo
+    if (!m_errBuf.trimmed().isEmpty())
+        m_errTail << QString::fromUtf8(m_errBuf).trimmed();
+    m_errBuf.clear();
+    const bool wasLoading = m_loading, wasAnswering = m_answering;
     m_queue.clear(); m_paused = false;
     emit queueChanged();
+    m_msgs.finishRunning(QDateTime::currentMSecsSinceEpoch(), true);
     setState(false, false, false);
+    // o fim do processo aparece na conversa (nao so numa linha pequena): carregando o modelo ou no meio de um pedido, e erro
+    QString msg = st == QProcess::CrashExit ? "O agente travou e foi encerrado pelo sistema" : "O agente terminou (codigo " + QString::number(code) + ")";
+    if (wasLoading) msg = "O agente nao conseguiu carregar o modelo. " + msg;
+    else if (wasAnswering) msg += " no meio do pedido";
+    msg += ".";
+    if (!m_errTail.isEmpty())
+        msg += "\nUltimas mensagens do motor:\n" + m_errTail.join("\n");
+    m_msgs.append("error", msg);
+    if (m_dirty)
+        saveSession();
     setTexts({}, "O agente terminou. Escolha um modelo para iniciar de novo.");
 }
 
@@ -1912,7 +1933,7 @@ void Backend::markReady()
 
 bool Backend::isPlanTool(const QString &name)
 {
-    return name == "TodoWrite" || name == "TaskCreate" || name == "TaskUpdate" || name == "TaskList" || name == "TaskGet";
+    return name == "TodoWrite";
 }
 
 QString Backend::fmtDuration(qint64 ms)
@@ -2169,6 +2190,16 @@ void Backend::onStderr()
         const QString l = QString::fromUtf8(m_errBuf.left(nl)).trimmed();
         m_errBuf.remove(0, nl + 1);
         fprintf(stderr, "[katana] %s\n", qPrintable(l));
+        if (!l.isEmpty()) {
+            m_errTail << l;
+            while (m_errTail.size() > 8) m_errTail.removeFirst();
+        }
+        {   // o bloco [katana: context ...] anexado ao pedido (UIOE): o usuario nao o ve como mensagem; aqui so um aviso discreto
+            static const QRegularExpression ctxb(R"re(^\[context: about (\d+) tokens from the project index, (\d+) verified step)re");
+            const auto cm = ctxb.match(l);
+            if (cm.hasMatch() && m_answering)
+                m_msgs.append("notice", "Contexto do katana: ~" + cm.captured(1) + " tokens do índice do projeto, " + cm.captured(2) + " passo(s) verificado(s)");
+        }
         {   // banner de carga ("arquitetura=... ctx=131072"): mostra a capacidade do contexto desde o inicio
             static const QRegularExpression banner(R"re(arquitetura=\S+.*\bctx=(\d+))re");
             const auto bm = banner.match(l);

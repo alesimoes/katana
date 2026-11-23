@@ -19,6 +19,8 @@ static void x7c_lang(void) { g_cu_lang = cu_pct(35) ? 1 : 0; }
 /* ---- o bloco: a mesma chamada do laco (loop.c), depois do texto do usuario; sem bloco, a nota de pasta citada ---- */
 static UioeSession *g_x7c_sess;
 static const char *g_x7c_blk = "";          /* o bloco do pedido atual; "" = nao houve */
+/* o indice ja existe quando o usuario pergunta: o agente real o monta em segundo plano ao entrar na pasta (autoindex_dir); aqui espera terminar */
+static void x7c_index(const char *dir) { if (system(cu_fmt("cd '%s' && KATANA_INDEX_SETTLE_MS=20 katana coder crawl . --quiet >/dev/null 2>&1", dir)) != 0) cu_die("o indice da pasta nao foi montado"); }
 static void x7c_begin(void) { if (g_x7c_sess) { uioe_session_free(g_x7c_sess); g_x7c_sess = NULL; } g_x7c_blk = ""; }
 static int x7c_request(const char *t) {
     x7_user(t);
@@ -91,6 +93,7 @@ static void fam_x_nav(FILE *f, Scn *s) {
     else { x7n_gen(n, s, lang, 3 + cu_n(2), 4 + cu_n(2), 3 + cu_n(2), 2, sit == N7C_TEXT ? 1 + cu_n(2) : 0, 0); g_x_prehook = x7_prehook; }
     x_begin("x-nav", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
     g_x_prehook = NULL; rr_reset();
+    x7c_index(s->cwd);
     x_cell("nav/%s/v%d/%s", g_n7c_names[sit], v, g_n7_ext[lang]);
     int cs[16];
     if (sit == N7C_REFS || sit == N7C_USES) {
@@ -98,6 +101,7 @@ static void fam_x_nav(FILE *f, Scn *s) {
         x7_user(cu_fmt(sit == N7C_REFS ? (v == 0 ? L("where is `%s` used?", "onde `%s` e usada?") : v == 1 ? L("every place `%s` shows up", "todo lugar onde `%s` aparece") : L("what mentions `%s`?", "o que cita `%s`?"))
                                       : (v == 0 ? L("which code uses `%s`?", "qual codigo usa `%s`?") : v == 1 ? L("who uses `%s`?", "quem usa `%s`?") : L("list the uses of `%s`", "lista os usos de `%s`")), tn));
         const char *r = x7_sym(x7_say(), cu_fmt("{\"action\": \"%s\", \"name\": %s}", act, cu_q(tn)));
+        if (sit == N7C_USES && !strncmp(r, "NOT FOUND", 9)) { act = "refs"; r = x7_sym(L("No separate uses: the refs list every place the name appears.", "Sem usos separados: o refs lista todo lugar onde o nome aparece."), cu_fmt("{\"action\": \"refs\", \"name\": %s}", cu_q(tn))); }
         X7Hit h[24]; const int nh = x7_hits(r, h, 24);
         if (nh < 1 || !strstr(r, tn) || !strncmp(r, "NOT FOUND", 9)) cu_die("%s de %s nao trouxe lugares (%s): %.200s", act, tn, g_x.cell, r);
         const char *paths[16]; int np = 0;
@@ -194,6 +198,7 @@ static void fam_x_ctx(FILE *f, Scn *s) {
     g_x_prehook = x7c_mem_prehook;
     x_begin("x-ctx", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
     g_x_prehook = NULL; rr_reset();
+    x7c_index(s->cwd);
     const char *tn = n->f[ti].name; int cs[16]; const int ne = x7n_callers(n, ti, cs);
     int a, b; const char *rel = x7c_fn_range(n, ti, &a, &b);
     const char *pre = NULL; int inj;
@@ -252,7 +257,7 @@ enum { L7C_TWO, L7C_IGN, L7C_N };
 static const char *const g_l7c_names[L7C_N] = {"existing-and-missing", "ignored-folder"};
 static const int g_l7c_w[L7C_N] = {4, 4};
 static const char *g_x7c_vrel, *g_x7c_vtext;
-static void x7c_vendor_prehook(const Scn *s) { x7n_write(&g_x7n, s); x_put(s, g_x7c_vrel, g_x7c_vtext, 0); }
+static void x7c_vendor_prehook(const Scn *s) { x7n_write(&g_x7n, s); x_put(s, ".gitignore", "vendor/\n", 0); x_put(s, g_x7c_vrel, g_x7c_vtext, 0); }
 static void fam_x_ctxlimits(FILE *f, Scn *s) {
     x7c_lang(); x7c_begin();
     int sit, v, lang;
@@ -273,6 +278,7 @@ static void fam_x_ctxlimits(FILE *f, Scn *s) {
     } else g_x_prehook = x7_prehook;
     x_begin("x-ctxlimits", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
     g_x_prehook = NULL; rr_reset();
+    x7c_index(s->cwd);
     int cs[16];
     if (sit == L7C_TWO) {
         const int ti = x7c_pick(n, 1, 0); const char *tn = n->f[ti].name; int a, b; const char *rel = x7c_fn_range(n, ti, &a, &b);
@@ -304,7 +310,7 @@ static void fam_x_ctxlimits(FILE *f, Scn *s) {
             if (!strstr(r2, "NOT FOUND") || !strstr(r2, "ignored folder")) cu_die("o Find nao falou da pasta ignorada (%s): %.300s", g_x.cell, r2);
         }
         const char *r3 = x7_find(told ? L("The context says the name may be in an ignored folder: searching it with path.", "O contexto diz que o nome pode estar numa pasta ignorada: procuro nela com path.") : L("One ignored folder could hold it: searching it with path.", "Uma pasta ignorada pode ter o nome: procuro nela com path."), cu_fmt("{\"query\": %s, \"path\": %s}", cu_q(vname), cu_q(dir)));
-        if (strncmp(r3, "Found by name or text", 21) || !strstr(r3, "core.")) cu_die("o Find com path nao achou %s (%s): %.300s", vname, g_x.cell, r3);
+        if (!strstr(r3, "Found by name or text") || !strstr(r3, "core.")) cu_die("o Find com path nao achou %s (%s): %.300s", vname, g_x.cell, r3);
         x_final(cu_fmt(L("`%s` is in %s, line 1. It is in `vendor/%s`, a folder the index ignores, so the first search did not look there; I searched it with `path`.", "`%s` esta em %s, linha 1. Fica em `vendor/%s`, uma pasta que o indice ignora, entao a primeira busca nao olhou ali; procurei nela com `path`."), vname, g_x7c_vrel, vlib));
     }
     x_end(f);
@@ -333,8 +339,9 @@ static void fam_x_notes(FILE *f, Scn *s) {
         g_x_prehook = x7_prehook2;
         x_begin("x-notes", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
         g_x_prehook = NULL; rr_reset();
+        x7c_index(P);
         const int ti = x7c_pick(n, 1, 0); const char *tn = n->f[ti].name;
-        const int inj = x7c_request(cu_fmt(v == 0 ? L("in the project %s, who calls `%s`?", "no projeto %s, quem chama `%s`?") : v == 1 ? L("%s: which functions call `%s`?", "%s: quais funcoes chamam `%s`?") : L("in %s, where is `%s` called from?", "em %s, de onde `%s` e chamada?"), name, tn));
+        const int inj = x7c_request(cu_fmt(v == 0 ? L("in the project %s, who calls `%s`?", "no projeto %s, quem chama `%s`?") : v == 1 ? L("the project %s: which functions call `%s`?", "o projeto %s: quais funcoes chamam `%s`?") : L("in the project %s, where is `%s` called from?", "no projeto %s, de onde `%s` e chamada?"), name, tn));
         x_cell("notes/place/v%d/%s/blk%d", v, g_n7_ext[lang], inj);
         /* com bloco ou com a nota do motor, a pasta esta no texto: path desde a primeira chamada */
         if (!inj && !strstr(g_x.m[g_x.n - 1].text, "[katana: you mention")) cu_die("o motor nao deu a nota de pasta (%s)", g_x.cell);
@@ -347,6 +354,7 @@ static void fam_x_notes(FILE *f, Scn *s) {
         g_x_prehook = x7_prehook;
         x_begin("x-notes", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
         g_x_prehook = NULL; rr_reset();
+        x7c_index(s->cwd);
         const char *file = x7n_file(n, 0); const int total = x7n_nlines(n->m[0].text);
         if (total <= 200) cu_die("arquivo pequeno demais (%d linhas)", total);
         x_cell("notes/part/v%d/%s", v, g_n7_ext[lang]);
@@ -367,6 +375,7 @@ static void fam_x_notes(FILE *f, Scn *s) {
         g_x_prehook = x7_prehook;
         x_begin("x-notes", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
         g_x_prehook = NULL; rr_reset();
+        x7c_index(s->cwd);
         x_cell("notes/repeat/v%d/%s", v, g_n7_ext[lang]);
         const int ti = x7c_pick(n, 1, 0); const char *tn = n->f[ti].name; int a, b; const char *rel = x7c_fn_range(n, ti, &a, &b);
         x7_user(cu_fmt(L("where is `%s` used? I want to see one of the uses", "onde `%s` e usada? quero ver um dos usos"), tn));
@@ -402,6 +411,7 @@ static void fam_x_plan(FILE *f, Scn *s) {
     g_x_prehook = x7_prehook;
     x_begin("x-plan", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
     g_x_prehook = NULL; rr_reset();
+    x7c_index(s->cwd);
     x_cell("plan/%s/v%d/%s", g_q7c_names[sit], v, g_n7_ext[lang]);
     int cs[16];
     if (sit == P7C_DONEFIRST || sit == P7C_AUDIT) {
@@ -461,6 +471,7 @@ static void fam_x_multi(FILE *f, Scn *s) {
     g_x_prehook = x7_prehook;
     x_begin("x-multi", s, NULL, cu_pct(12) ? 2 : 0, cu_pct(10) ? 1 : 0);
     g_x_prehook = NULL; rr_reset();
+    x7c_index(s->cwd);
     x_cell("multi/v%d/%s", v, g_n7_ext[lang]);
     const int ti = x7c_pick(n, 1, 0); const char *tn = n->f[ti].name; int a, b; const char *rel = x7c_fn_range(n, ti, &a, &b);
     int cs[16]; const int ne = x7n_callers(n, ti, cs);
@@ -481,6 +492,7 @@ static void fam_x_multi(FILE *f, Scn *s) {
     if (cnt != 1 || (lang != N7_PY && lang != N7_JS && lang != N7_C)) { x_end(f); return; }
     x_dep(); x7_user(cu_fmt(XV(L("add 1 to what `%s` returns, and check the syntax", "soma 1 no que `%s` devolve, e confere a sintaxe"), L("make `%s` return one more, then check it still parses", "faz `%s` devolver um a mais, e confere se ainda compila")), tn));
     const char *nw = lang == N7_PY ? cu_fmt("%s + 1", ex) : cu_fmt("%s + 1", ex);
+    x_read(s, rel, 0);
     x_edit(s, rel, ex, nw, 0, 0);
     const char *sc = x_bash(NULL, x7_syntax_cmd(lang, n), L("Syntax check of the changed files", "Checagem de sintaxe dos arquivos mudados"), 0);
     if (strstr(sc, "rror")) cu_die("a checagem de sintaxe falhou: %.300s", sc);

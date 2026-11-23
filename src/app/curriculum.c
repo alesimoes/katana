@@ -2099,10 +2099,10 @@ static int g_cu_covmin;                /* check --min N: minimo por ferramenta f
 /* faixas: A declaradas no prompt; B so pelo nome (ToolSearch select:Nome antes); C raras (basta o padrao de descoberta).
    Minimo em conversas: A 2% do arquivo (pelo menos 5), B 3, C 1. PowerShell fica de fora fora do Windows. */
 static const struct { const char *name; char tier; } g_cu_cov[] = {
-    {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Glob", 'A'}, {"Find", 'A'}, {"Symbols", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
+    {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Find", 'A'}, {"Symbols", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
     {"ToolSearch", 'A'}, {"WebSearch", 'A'}, {"WebFetch", 'A'}, {"Skill", 'A'},
     {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
-    {"SendUserFile", 'B'}, {"TaskCreate", 'C'}, {"TaskUpdate", 'C'}, {"TaskList", 'C'}, {"TaskGet", 'C'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
+    {"SendUserFile", 'B'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
     {"EnterWorktree", 'B'}, {"ExitWorktree", 'B'},
     {"CronCreate", 'C'}, {"CronDelete", 'C'}, {"CronList", 'C'}, {"ScheduleWakeup", 'C'}, {"PushNotification", 'C'}, {"EndConversation", 'C'}, {"ReportFindings", 'C'},
     {"SendMessage", 'C'}, {"ListAgents", 'C'}, {"SubagentHandback", 'C'}, {"Workflow", 'C'}, {"WaitForMcpServers", 'C'}};

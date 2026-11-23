@@ -393,7 +393,7 @@ static int bk_count(const char *key) {
 }
 /* ferramenta que so le ou pergunta: nao e trabalho que peca plano (uma pergunta respondida com leituras nao e um servico longo) */
 static int loop_plan_readonly(const char *name) {
-    static const char *const ro[] = {"Read", "Grep", "Glob", "Find", "Symbols", "LSP", "ToolSearch", "WebSearch", "WebFetch", "TaskList", "TaskGet", "CronList", "ListAgents",
+    static const char *const ro[] = {"Read", "Grep", "Find", "Symbols", "LSP", "ToolSearch", "WebSearch", "WebFetch", "CronList", "ListAgents",
         "ListMcpResourcesTool", "ReadMcpResourceTool", "WaitForMcpServers", "AskUserQuestion", NULL};
     for (int i = 0; ro[i]; i++) if (!strcmp(name, ro[i])) return 1;
     return 0;
@@ -449,7 +449,7 @@ static void autoindex_start(void) {}
 static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); kn_request_begin(); }
 static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_covered(const char *name) {
-    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find") || !strcmp(name, "Symbols") ||
+    if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Find") || !strcmp(name, "Symbols") ||
         !strcmp(name, "WebSearch") || !strcmp(name, "WebFetch")) return 1;      /* a mesma busca na web foi repetida 12 vezes numa sessao: agora tambem recebe a nota e o corte */
     return strstr(name, "__") ? mcpx_plan_ok(name) : 0;
 }
@@ -469,7 +469,7 @@ static int rr_check(const char *name, uint64_t csig, char *out, size_t cap) {
 }
 /* ferramentas que so mexem na lista de tarefas do modelo: nao alteram arquivos nem o estado do projeto */
 static int rr_is_plan(const char *name) {
-    static const char *const pl[] = {"TodoWrite", "TaskCreate", "TaskUpdate", "EnterPlanMode", "ExitPlanMode", NULL};
+    static const char *const pl[] = {"TodoWrite", "EnterPlanMode", "ExitPlanMode", NULL};
     for (int i = 0; pl[i]; i++) if (!strcmp(name, pl[i])) return 1;
     return 0;
 }

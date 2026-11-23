@@ -58,6 +58,7 @@ static int sy_view_open_raw(const char *proj, SyView *v, char *err, size_t ecap)
     return 0;
 }
 static void sy_view_free_real(SyView *v) {
+    sy_mods_free(v);                     /* o mapa de modulos nasce na consulta de imports; quem fecha direto (grafo do Find) tambem o libera */
     for (int s = 0; s < v->ns; s++) free(v->s[s].live);
     free(v->s); store_live_free(&v->L); free(v->fbuf); free(v->fln); if (v->r) store_close(v->r); memset(v, 0, sizeof *v);
 }
@@ -130,7 +131,7 @@ static void sy_defs_of(const SyView *v, const char *name, size_t nl, SySyms *o) 
         for (uint32_t i = lo; i < hi; i++) { uint32_t row = st_get_u32(store_table_at(&c->x.bydef, i) + 4); if (!c->live[st_get_u32(store_table_at(&c->x.syms, row) + 44)]) continue;
             if (o->n == o->cap) { o->cap = o->cap ? o->cap * 2 : 16; o->s = (SySym *)realloc(o->s, sizeof(SySym) * (size_t)o->cap); }
             sy_sym_at(v, s, row, &o->s[o->n++]); } }
-    qsort(o->s, (size_t)o->n, sizeof(SySym), sy_cmp_sym);
+    if (o->n > 1) qsort(o->s, (size_t)o->n, sizeof(SySym), sy_cmp_sym);
 }
 static void sy_refs_of(const SyView *v, const char *name, size_t nl, uint32_t kindmask, SyRefs *o) {
     for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
@@ -139,7 +140,7 @@ static void sy_refs_of(const SyView *v, const char *name, size_t nl, uint32_t ki
             if (!c->live[st_get_u32(q + 24)] || !((kindmask >> st_get_u32(q + 4)) & 1)) continue;
             if (o->n == o->cap) { o->cap = o->cap ? o->cap * 2 : 64; o->r = (SyRef *)realloc(o->r, sizeof(SyRef) * (size_t)o->cap); }
             sy_ref_at(v, s, row, &o->r[o->n++]); } }
-    qsort(o->r, (size_t)o->n, sizeof(SyRef), sy_cmp_ref);
+    if (o->n > 1) qsort(o->r, (size_t)o->n, sizeof(SyRef), sy_cmp_ref);
 }
 static int sy_ndefs(const SyView *v, const char *name, size_t nl, int *ndecl) {
     SySyms d = {0}; sy_defs_of(v, name, nl, &d); int n = 0; if (ndecl) *ndecl = 0;
@@ -258,7 +259,7 @@ static int sy_cascade(const SyView *v, const char *q, int want, SyCand *out, int
                 if (nh == hc) { hc = hc ? hc * 2 : 64; hits = (SyNameHit *)realloc(hits, sizeof *hits * (size_t)hc); }
                 memcpy(hits[nh].name, p, l); hits[nh].name[l] = 0; hits[nh++].score = score;
             } }
-        qsort(hits, (size_t)nh, sizeof *hits, sy_hit_cmp);
+        if (nh > 1) qsort(hits, (size_t)nh, sizeof *hits, sy_hit_cmp);
         for (int k = 0; k < nh && n < max && n < 8; k++) {
             size_t l = strlen(hits[k].name); int d = sy_ndefs(v, hits[k].name, l, NULL), r = want == 2 ? sy_nrefs(v, hits[k].name, l) : 0; if (d <= 0 && r <= 0) continue;
             snprintf(out[n].name, sizeof out[n].name, "%s", hits[k].name); out[n].step = step;
@@ -286,9 +287,9 @@ static void sy_cpy(char *d, size_t cap, const char *s, size_t l) { if (l + 1 > c
 static void sy_set_path(SyItem *it, const char *p, uint32_t l) { sy_cpy(it->path, sizeof it->path, p, l); }
 static void sy_set_snip(SyView *v, SyItem *it, const char *path, uint32_t plen, int l0, int l1, int maxl) {
     if (!sy_file_load(v, path, plen)) return;
-    size_t cap = (size_t)maxl * 260 + 8; char *b = (char *)malloc(cap); size_t o = 0; char t[240];
-    for (int l = l0; l <= l1 && l < l0 + maxl; l++) { if (!sy_line_text(v, l, t, sizeof t)) break; o += (size_t)snprintf(b + o, cap - o, "%s%d: %s", o ? "\n" : "", l, t); }
-    if (l1 >= l0 + maxl) o += (size_t)snprintf(b + o, cap - o, "\n... (+%d lines; Read the file with offset=%d)", l1 - (l0 + maxl) + 1, l0 + maxl);
+    size_t cap = (size_t)maxl * 260 + 104; char *b = (char *)malloc(cap); size_t o = 0; char t[240];
+    for (int l = l0; l <= l1 && l < l0 + maxl; l++) { if (!sy_line_text(v, l, t, sizeof t)) break; o += (size_t)snprintf(b + o, cap - o, "%s%d: %s", o ? "\n" : "", l, t); if (o >= cap) o = cap - 1; }      /* snprintf devolve o tamanho que caberia: sem o limite o fica alem do buffer */
+    if (l1 >= l0 + maxl) { o += (size_t)snprintf(b + o, cap - o, "\n... (+%d lines; Read the file with offset=%d)", l1 - (l0 + maxl) + 1, l0 + maxl); if (o >= cap) o = cap - 1; }
     b[o] = 0; it->snip = b;
 }
 /* ---- API estruturada das consultas (fase U2 do UIOE) ----

@@ -869,7 +869,18 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(rFind && rFindNf && rSym && rSymNf, "verbos e resumos de Find e Symbols: " + titles.join(" | "));
         check(titles.contains("Procurando no projeto: \"zzqqnotthere\" (refs)"), "Find mostra a consulta e o modo");
         check(titles.contains("Consultando os símbolos: flow ct_glob"), "Symbols flow: verbo e acao + nome");
-        check(titles.contains("Renomeando símbolo: ct_glob -> ct_globber"), "Rename: verbo e resumo de -> para");
+        check(titles.contains("Consultando os símbolos: tree src"), "Symbols tree: verbo e acao + pasta");
+        {   // o bloco [katana: context ...] do motor nao vira mensagem do usuario; so um aviso discreto
+            bool blocoComoUsuario = false, aviso = false;
+            for (int i = 0; i < be.messages()->count(); i++) {
+                const QVariantMap mm = be.messages()->get(i);
+                if (mm["kind"] == "user" && mm["text"].toString().contains("[katana:")) blocoComoUsuario = true;
+                if (mm["kind"] == "notice" && mm["text"].toString().startsWith("Contexto do katana: ~640 tokens")) aviso = true;
+            }
+            check(!blocoComoUsuario, "bloco [katana: context ...] nao aparece como mensagem do usuario");
+            check(aviso, "aviso discreto 'Contexto do katana' quando o bloco foi anexado");
+        }
+        for (const QString &t : titles) check(!(t.startsWith("Renomeando") || t.startsWith("Substituindo") || t.startsWith("Aplicando patch") || t.startsWith("Buscando arquivos")), "sem verbo de ferramenta removida: " + t);
         QQuickItem *grp = findItem(c.root(), "activityGroup");
         check(grp != nullptr, "grupo de acoes na conversa");
         if (grp) { grp->setProperty("userSet", true); grp->setProperty("userVal", true); }
@@ -909,6 +920,20 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(outHtml(rFindNf).contains("#f48771") && outHtml(rFind).contains("#4ec9b0"), "cores do tema IDE: erro e confidence high");
         c.grab("43-find-symbols-ide.png");
         QMetaObject::invokeMethod(win, "applyTheme", Q_ARG(QVariant, QVariant(QStringLiteral("escuro"))));
+    }
+
+    // o agente morre ao receber um pedido (como a falha de carga do modelo): o motivo aparece na conversa, o app nao fica parado
+    fprintf(stderr, "-- agente morre\n");
+    c.typeAndEnter("morra agora");
+    check(waitFor([&] { return !be.ready() && !be.answering() && be.messages()->get(be.messages()->count() - 1)["kind"] == "error"; }, 30000),
+          "fim abrupto do agente: mensagem de erro na conversa");
+    {
+        const QString et = be.messages()->get(be.messages()->count() - 1)["text"].toString();
+        check(et.contains("codigo 3") && et.contains("mapear o modelo"), "erro mostra o codigo de saida e as ultimas linhas do motor: " + et);
+        QTest::qWait(300);
+        QQuickItem *ei = c.item("errorText");
+        check(ei && ei->isVisible() && ei->property("text").toString() == et, "cartao de erro visivel na conversa");
+        c.grab("50-agente-morreu.png");
     }
 
     fprintf(stderr, "== %d verificacoes ok, %d falhas\n", g_ok, g_fail);

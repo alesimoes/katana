@@ -150,7 +150,7 @@ static void fs_cand_add(FsCand **v, int *n, int *cap, const char *rel, int g, do
 }
 /* monta X com os arquivos de cand (em ordem de caminho: o desempate do ranking e o de sempre); os ilegiveis ou grandes demais ficam de fora */
 static void fs_build_files(struct FsCtx *F, struct FdIndexS *X, FsCand *c, int n) {
-    qsort(c, (size_t)n, sizeof(FsCand), fs_cmp_cand_rel);
+    if (n > 1) qsort(c, (size_t)n, sizeof(FsCand), fs_cmp_cand_rel);
     X->f = (FdFile *)calloc((size_t)n + 1, sizeof(FdFile)); X->capf = n + 1; X->nf = 0; F->ncand = 0;
     for (int i = 0; i < n; i++) {
         char abs[8400]; struct stat st; snprintf(abs, sizeof abs, "%s/%s", X->root, c[i].rel);

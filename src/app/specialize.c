@@ -552,7 +552,7 @@ static int specialize_main(const char *argv0, int argc, char **argv) {
                         "         [--mix tools=30,code=30,conventions=40,teacher=15,knowledge=15] [--out PASTA] [--fresh] [--hours H] [--steps N] [--rank R]\n"
                         "         [--seq T] [--lr X] [--margin-mb MB] [--replace REGEX=TEXTO]... [--cut-matching REGEX] [--verified]\n"
                         "         [--plan-updates] [--dry-run] [--no-check]\n"
-                        "         [--val F] [--val-max N] [--allow-worse]     validacao separada por conversa (padrao 10%, no maximo ~10% do custo do treino); sem ela nada vale\n"
+                        "         [--val F] [--val-max N] [--allow-worse]     validacao separada por conversa (padrao 10%%, no maximo ~10%% do custo do treino); sem ela nada vale\n"
                         "     katana specialize --status [--training-dir PASTA]\n"
                         "     katana specialize --verify-data data.jsonl      confere um arquivo de dados (cada linha JSON inteira)\n"
                         "     katana.cfg: transcripts=PASTA, training-dir=PASTA, replace=REGEX=TEXTO (repetivel), cut-matching=REGEX\n");

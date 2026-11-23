@@ -42,7 +42,7 @@ static void ky_occs_of(const SyView *v, const char *key, size_t kl, KyOccs *out)
         int64_t id = store_strs_find(&c->ky.names, key, kl); uint32_t lo, hi; if (id < 0 || !sy_pair_range(&c->ky.bykey, (uint32_t)id, &lo, &hi)) continue;
         for (uint32_t i = lo; i < hi; i++) { uint32_t row = st_get_u32(store_table_at(&c->ky.bykey, i) + 4); if (!c->live[st_get_u32(store_table_at(&c->ky.occ, row) + 12)]) continue;
             KyOcc o; ky_occ_at(v, s, row, &o); ky_push(out, &o); } }
-    qsort(out->o, (size_t)out->n, sizeof(KyOcc), ky_cmp);
+    if (out->n > 1) qsort(out->o, (size_t)out->n, sizeof(KyOcc), ky_cmp);
 }
 static void ky_all(const SyView *v, KyOccs *out) {
     for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->ky.has) continue;
@@ -284,7 +284,7 @@ static int fl_cascade(const SyView *v, const char *q, SyCand *out, int max, int 
                 if (nh == hc) { hc = hc ? hc * 2 : 64; hits = (SyNameHit *)realloc(hits, sizeof *hits * (size_t)hc); }
                 memcpy(hits[nh].name, p, l); hits[nh].name[l] = 0; hits[nh++].score = score;
             } }
-        qsort(hits, (size_t)nh, sizeof *hits, sy_hit_cmp);
+        if (nh > 1) qsort(hits, (size_t)nh, sizeof *hits, sy_hit_cmp);
         for (int k = 0; k < nh && n < max && n < 6; k++) {
             if (fl_nocc(v, hits[k].name, strlen(hits[k].name)) <= 0) continue;
             snprintf(out[n].name, sizeof out[n].name, "%s", hits[k].name); out[n].step = step;

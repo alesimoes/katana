@@ -3,7 +3,7 @@
  * duas vezes: git ls-files + stat, depois lstat do catalogo do coder) e remontava a visao de leitura. Agora:
  *   - index_ensure(): o unico ponto que decide se o catalogo do coder e revalidado (varredura + escrita incremental) ou se a consulta
  *     segue direto. Revalida na primeira consulta de cada raiz no processo, quando uma ferramenta do agente gravou ou apagou algo
- *     debaixo da raiz (index_touch, chamado por Edit, Write, MultiEdit, NotebookEdit), quando o Bash pode ter mudado a arvore
+ *     debaixo da raiz (index_touch, chamado por Edit, Write, NotebookEdit), quando o Bash pode ter mudado a arvore
  *     (index_tree_changed) e quando passou KATANA_INDEX_SWEEP_S segundos (padrao 10; 0 = a cada chamada, como antes) desde a ultima
  *     varredura: esse prazo e a rede de seguranca de quem NAO tem vigia (comandos avulsos, KATANA_INDEX_WATCH=off, sistemas sem inotify);
  *     todo arquivo citado numa resposta continua sendo relido do disco para a evidencia.

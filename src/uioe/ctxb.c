@@ -275,9 +275,9 @@ static void cxb_next(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D, in
     char root[300]; cxb_escp(root, sizeof root, a->root);
     const int foreign = a->root[0] && strcmp(a->root, cx->cwd) != 0;
     if (limits_form) {
-        if (a->place_note || strstr(rc->decision_note, "cited place")) snprintf(act, sizeof act, "Pass path=%s to Find, Glob and Grep, then answer.", root);
+        if (a->place_note || strstr(rc->decision_note, "cited place")) snprintf(act, sizeof act, "Pass path=%s to Find, Symbols and Grep, then answer.", root);
         else if (strstr(rc->decision_note, "does not exist")) snprintf(act, sizeof act, "Tell the user the name does not exist in this project, or ask for the exact name.");
-        else snprintf(act, sizeof act, "Use Grep and Glob%s%s%s; the index does not cover everything yet.", foreign ? " with path=" : "", foreign ? root : "", "");
+        else snprintf(act, sizeof act, "Use Grep and Bash ls%s%s%s; the index does not cover everything yet.", foreign ? " with path=" : "", foreign ? root : "", "");
         snprintf(out, cap, "%s", act); return;
     }
     /* o ultimo passo ainda nao lido; se todos foram lidos, responder */
@@ -289,7 +289,7 @@ static void cxb_next(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D, in
         char p[420]; cxb_escp(p, sizeof p, n->path); snprintf(act, sizeof act, "Read %s lines %d-%d, then answer.", p, x, y);
     } else if (D->nstep > 0) snprintf(act, sizeof act, "Answer from the path above.");
     else snprintf(act, sizeof act, "Answer from the evidence above.");
-    if (foreign && (a->place_note)) { size_t l = strlen(act); snprintf(act + l, sizeof act - l, " If you must search, pass path=%s to Find, Glob and Grep.", root); }
+    if (foreign && (a->place_note)) { size_t l = strlen(act); snprintf(act + l, sizeof act - l, " If you must search, pass path=%s to Find, Symbols and Grep.", root); }
     snprintf(out, cap, "%s Do not search again for what is listed above.", act);
 }
 

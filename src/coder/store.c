@@ -121,7 +121,9 @@ static int store_strs_open(const StoreSection *s, StoreStrs *t) {
     return 1;
 }
 static const char *store_strs_get(const StoreStrs *t, uint32_t i, uint32_t *len) {
+    if (i >= t->n) { *len = 0; return ""; }                 /* indice de um segmento danificado: texto vazio em vez de ler fora da secao */
     uint32_t a = st_get_u32(t->off + 4 * (size_t)i), b = st_get_u32(t->off + 4 * ((size_t)i + 1));
+    if (b < a || b > t->poolsize) { *len = 0; return ""; }
     *len = b - a; return (const char *)t->pool + a;
 }
 static int st_cmp_bytes(const char *a, size_t al, const char *b, size_t bl) {
