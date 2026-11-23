@@ -1,5 +1,5 @@
 /* ---------- katana mcp serve: o katana como servidor MCP (stdio) ----------
- * Expoe as ferramentas de arquivos e busca do proprio katana (Read, Write, Edit, Glob, Grep, Find, Symbols, NotebookEdit)
+ * Expoe as ferramentas de arquivos e busca do proprio katana (Read, Write, Edit, Grep, Find, Symbols, NotebookEdit)
  * e, so com --allow-shell, Bash. Find e Symbols (leitura, esquemas e descricoes das ferramentas internas) consultam o indice
  * da pasta; LSP nao entra (sobe servidores de linguagem externos, fora do que o serve promete). Quem chama e o cliente MCP de outro programa; o katana nao pergunta nada a ninguem aqui:
  *  - as regras never e ask do KATANA.md da pasta valem (never recusa; ask recusa, porque nao ha a quem perguntar);
@@ -13,7 +13,6 @@
 typedef struct { const char *name, *title; int ro, destr, idem, open, shell; } McpsTool;
 static const McpsTool g_mcps_tools[] = {
     {"Read", "Read a file", 1, 0, 1, 0, 0},
-    {"Glob", "Find files by name", 1, 0, 1, 0, 0},
     {"Grep", "Search file contents", 1, 0, 1, 0, 0},
     {"Find", "Find where something is in the code", 1, 0, 1, 0, 0},
     {"Symbols", "Query the symbol index (definitions, references, callers, outline)", 1, 0, 1, 0, 0},

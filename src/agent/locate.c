@@ -118,7 +118,7 @@ static int ff_resolve_missing(const char *abs, char *out, size_t cap) {
     if (!nf && dirhint) {
         char rest[600] = ""; size_t ro = 0;
         for (int q = hj + 1; q < n && ro < 500; q++) ro += (size_t)snprintf(rest + ro, sizeof rest - ro, "%s%s", q > hj + 1 ? "/" : "", comp[q]);
-        snprintf(out, cap, "The folder \"%s\" exists at %s, but %s is not in it. List it with Bash (ls) or Glob (path=that folder) to see what it has.", comp[hj], found[3], rest);
+        snprintf(out, cap, "The folder \"%s\" exists at %s, but %s is not in it. List it with Bash (ls) or Find (path=that folder) to see what it has.", comp[hj], found[3], rest);
         return 1;
     }
     if (!nf) return 0;

@@ -67,7 +67,7 @@ static void cmd_hint(int rc, int timedout, const char *body, const char *cmd, ch
     }
     if (strstr(body, "No such file or directory")) {
         if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
-        snprintf(out, cap, "\n[hint: a path in this command does not exist. The command ran in %s; check the names with Glob or Bash ls before trying again]", cwd[0] ? cwd : "the working folder");
+        snprintf(out, cap, "\n[hint: a path in this command does not exist. The command ran in %s; check the names with Bash ls or Find before trying again]", cwd[0] ? cwd : "the working folder");
         return;
     }
     if (rc == 137) { snprintf(out, cap, "\n[hint: the process was killed (signal 9), usually out of memory. Use smaller input or less parallelism]"); return; }
