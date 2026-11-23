@@ -1,0 +1,80 @@
+family                   conv    turns  chars_learn   windows* conv/window*
+x-fix                      14      109        12976        7.7          1.8
+x-add                      10       95        11055        6.5          1.5
+x-rename                   16      176        17077       10.1          1.6
+x-find                     10       34         2296        1.4          7.4
+x-explain                  14       62         4757        2.8          5.0
+x-run                       8       29         2125        1.3          6.4
+x-config                   30      241        26862       15.9          1.9
+x-clean                    16       70         9103        5.4          3.0
+x-investigate              14      115        12582        7.4          1.9
+x-web                      34      101        10288        6.1          5.6
+x-concept                  54      195        20162       11.9          4.5
+x-tools                    12       56         4285        2.5          4.7
+x-skill                     9       53         4729        2.8          3.2
+x-rare                    152      584        49532       29.3          5.2
+x-ps1                      19       83        15676        9.3          2.0
+x-mcp                      33      121        10634        6.3          5.2
+x-ability                  19       86         9981        5.9          3.2
+x-make                     13       73        10509        6.2          2.1
+x-docs                      1        3          282        0.2          6.0
+x-find6                    21       82         7438        4.4          4.8
+x-batch                    11       39         5064        3.0          3.7
+x-script                   10       54         8923        5.3          1.9
+total                     520     2461       256336      151.7          3.4
+* estimativa: caracteres / 3.3 / 512 (janelas de 512 tokens so com o texto que conta para a perda); contexto fora da perda (sistema, pedidos, resultados): 1578736 caracteres
+cobertura das ferramentas do motor (conversas com chamada treinada; minimo por faixa):
+  A Bash                      229  (minimo 25)
+  A Read                      196  (minimo 25)
+  A Edit                       91  (minimo 25)
+  A Write                      25  (minimo 25)
+  A Grep                      111  (minimo 25)
+  A Glob                       66  (minimo 25)
+  A Find                       25  (minimo 25)
+  A TodoWrite                 188  (minimo 25)
+  A AskUserQuestion            23  (minimo 25)  ABAIXO
+  A ToolSearch                140  (minimo 25)
+  A WebSearch                  25  (minimo 25)
+  A WebFetch                   25  (minimo 25)
+  A Skill                      25  (minimo 25)
+  B git                         7  (minimo 5)
+  B recall                      5  (minimo 5)
+  B remember                    6  (minimo 5)
+  B download_file               6  (minimo 5)
+  B terminal                    6  (minimo 5)
+  C install_package             5  (minimo 5)
+  C read_log                    5  (minimo 5)
+  C howto                       5  (minimo 5)
+  B Agent                       5  (minimo 5)
+  B LSP                         6  (minimo 5)
+  B Monitor                     7  (minimo 5)
+  B TaskStop                    8  (minimo 5)
+  B EnterPlanMode               5  (minimo 5)
+  B ExitPlanMode                5  (minimo 5)
+  B NotebookEdit                5  (minimo 5)
+  B SendUserFile                5  (minimo 5)
+  C TaskCreate                 11  (minimo 5)
+  C TaskUpdate                  5  (minimo 5)
+  C TaskList                    5  (minimo 5)
+  C TaskGet                     5  (minimo 5)
+  B ListMcpResourcesTool        5  (minimo 5)
+  B ReadMcpResourceTool         5  (minimo 5)
+  B EnterWorktree               5  (minimo 5)
+  B ExitWorktree                5  (minimo 5)
+  C CronCreate                  6  (minimo 5)
+  C CronDelete                  5  (minimo 5)
+  C CronList                    5  (minimo 5)
+  C ScheduleWakeup              5  (minimo 5)
+  C PushNotification            5  (minimo 5)
+  C EndConversation             5  (minimo 5)
+  C ReportFindings              5  (minimo 5)
+  C SendMessage                 6  (minimo 5)
+  C ListAgents                  5  (minimo 5)
+  C SubagentHandback            5  (minimo 5)
+  C Workflow                    5  (minimo 5)
+  C WaitForMcpServers           5  (minimo 5)
+  - ferramentas MCP            31
+  - scripts .ps1 (x-ps1)       19  (minimo 15)
+cobertura: 1 ferramentas abaixo do minimo (check --coverage faz disso um erro)
+refeitas inteiras pelo motor de cenarios: 520 conversas
+check: 520 conversas, 2119 chamadas, 0 com problema, 0 contradicoes (mesma situacao, acao diferente), 0 situacoes repetidas
