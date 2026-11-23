@@ -598,7 +598,7 @@ static int fd_cache_path(FdIndex *X) {
     const char *over = getenv("KATANA_CACHE_DIR");
     if (over && *over) { MKDIR(over); snprintf(X->cache, sizeof X->cache, "%s/%s", over, fn); return 1; }
     agent_home(home, sizeof home);
-    if (strcmp(X->root, home) != 0 && strcmp(X->root, "/") != 0) {
+    if (strcmp(X->root, home) != 0 && strcmp(X->root, "/") != 0 && proj_is_launch(X->root)) {      /* so a pasta em que o katana foi chamado */
         snprintf(d1, sizeof d1, "%s/.katana", X->root);
         snprintf(d2, sizeof d2, "%s/.katana/cache", X->root);
         MKDIR(d1); MKDIR(d2);

@@ -114,6 +114,11 @@ static int ct_bool(const char *js, const char *end, const char *key) {
     return (b - a >= 4 && memcmp(a, "true", 4) == 0) || *a == '1';
 }
 
+/* ---- a pasta em que o katana foi chamado (terminal ou desktop): so ela ganha um .katana dentro. Os indices e caches das outras pastas
+ * (citadas no pedido, `path` de Find/Symbols, subpastas) ficam em ~/.katana, com o caminho como chave ---- */
+static char g_launch_dir[4096];
+static void launch_dir_init(void) { char c[4096]; if (getcwd(c, sizeof c) && !realpath(c, g_launch_dir)) snprintf(g_launch_dir, sizeof g_launch_dir, "%s", c); }
+static int proj_is_launch(const char *root) { return !g_launch_dir[0] || strcmp(root, g_launch_dir) == 0; }
 /* a pasta de trabalho e a home (ou /): nao e um projeto; buscar "tudo" nela devolve lixo de outros programas */
 static int ct_cwd_is_home(void) {
     char cwd[1100], h[1100]; if (!getcwd(cwd, sizeof cwd)) return 0;

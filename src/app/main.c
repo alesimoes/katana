@@ -1321,6 +1321,7 @@ static int run_main(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    launch_dir_init();      /* a pasta em que o katana foi chamado: so ela ganha .katana dentro */
 #ifdef _WIN32
     /* argumentos e saida em UTF-8 no Windows */
     int wargc;

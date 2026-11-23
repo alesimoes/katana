@@ -231,7 +231,15 @@ static void store_locate(const char *project, const char *module, char *out, siz
     snprintf(a, sizeof a, "%s/.katana/%s/store", root, module);
     snprintf(b, sizeof b, "%s/.katana/%s/%016llx/store", home, module, (unsigned long long)store_hash64(root, strlen(root), 0));
     struct stat sv;
+    const int local = proj_is_launch(root);      /* so a pasta em que o katana foi chamado tem o .katana dentro; as outras vao para ~/.katana */
     if (!mk) {
+        if (!local) {
+            snprintf(man, sizeof man, "%s/MANIFEST", b);
+            if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", b); return; }
+            snprintf(man, sizeof man, "%s/MANIFEST", a);      /* um indice local antigo ainda serve para leitura */
+            if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", a); return; }
+            snprintf(out, cap, "%s", b); return;
+        }
         snprintf(man, sizeof man, "%s/MANIFEST", a);
         if (stat(man, &sv) == 0) { snprintf(out, cap, "%s", a); return; }
         snprintf(man, sizeof man, "%s/MANIFEST", b);
@@ -239,7 +247,7 @@ static void store_locate(const char *project, const char *module, char *out, siz
         snprintf(out, cap, "%s", a); return;
     }
     const char *use = a;
-    if (st_mkdirs(a) != 0 || access(a, W_OK) != 0) { use = b; st_mkdirs(b); }
+    if (!local || st_mkdirs(a) != 0 || access(a, W_OK) != 0) { use = b; st_mkdirs(b); }
     char gi[4400]; snprintf(gi, sizeof gi, "%s/.gitignore", use);
     if (stat(gi, &sv) != 0) { FILE *f = fopen(gi, "w"); if (f) { fputs("*\n", f); fclose(f); } }
     snprintf(out, cap, "%s", use);
