@@ -594,7 +594,8 @@ static void vkq_moen_build(Model *m, size_t P) {
     vkbm.scat = kvk_pipe_create(moe_scat_spv, sizeof moe_scat_spv, 3, 16, NULL, NULL, 0);
     if (!vkbm.rms32.p || !vkbm.gath32.p || !vkbm.scat.p) fail = 1;
     /* roteador na GPU (float32, grupos de 32 linhas) */
-    if (!fail && !vkm.rw && !(getenv("KATANA_VK_ROUTER") && atoi(getenv("KATANA_VK_ROUTER")) == 0)) {
+    /* E % 32: os pesos vao em grupos de 32 linhas (como em vk_moe.c); com outro E o ultimo grupo passaria do buffer de E*d floats (estouro de heap no modelo minusculo de 8 especialistas); o roteador fica na CPU */
+    if (!fail && !vkm.rw && E % 32 == 0 && !(getenv("KATANA_VK_ROUTER") && atoi(getenv("KATANA_VK_ROUTER")) == 0)) {
         float *wr = xalloc(E * d, sizeof(float)), *row = xalloc(d, sizeof(float));
         vkm.rw = xalloc(NL, sizeof(KvkBuf));
         for (size_t l = 0; l < NL && !fail; l++) {
