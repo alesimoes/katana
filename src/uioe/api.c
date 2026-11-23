@@ -173,10 +173,12 @@ static int uioe_pack_core(UioeCtx *cx, const char *text, char *block, size_t cap
     return pp->injected;
 }
 
+static UioeSession *g_uioe_tool_sess;      /* U5: a sessao da porta, vista pelas fachadas das ferramentas (facade.c): o estado do pedido e um so */
 /* a entrada do laco (3.2): o pedido ORIGINAL, antes de qualquer nota. 0 = nada a injetar. Nunca falha: erro vira 0. tk: o tokenizador do modelo (so o docsel precisa) */
 static int uioe_prepare(UioeSession *s, const Tokenizer *tk, const char *request, char *block, size_t cap, UioePrep *pp) {
     if (uioe_mode() == UIOE_OFF || !s || !request || !*request) { if (pp) memset(pp, 0, sizeof *pp); if (block && cap) block[0] = 0; return 0; }
     UioePrep local; if (!pp) pp = &local;
+    g_uioe_tool_sess = s;
     UioeCtx cx; uioe_ctx_init(&cx, s, NULL); cx.tk = tk; cx.record = 0;
     char text[2000]; snprintf(text, sizeof text, "%.1999s", request);
     const int ok = uioe_pack_core(&cx, text, block, cap, pp);

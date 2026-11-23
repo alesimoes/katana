@@ -210,6 +210,7 @@ struct UioeCtx {
     SyView view; int view_state; char view_note[240];        /* UMA visao do indice por pedido: 0 fechada, 1 aberta, -1 falhou */
     int has_store, have_sym, have_keys, idx_mode;
     const Tokenizer *tk;                /* so o agente passa (docs.select precisa dele); a CLI nao tem modelo */
+    int tool_form;                      /* U5: o bloco sai como resultado de ferramenta (facade.c): sem a linha de abertura, sem o fecho, sem a pergunta quando a consulta e um identificador */
     char fault[160];                    /* KATANA_UIOE_FAULT=conector=timeout|error,...: gancho de teste da escada de degradacao */
     char vpath[420]; char *vbuf; size_t vn; size_t *vln; int vnl, vok; uint64_t vsize; int64_t vmtime;   /* arquivo lido pela verificacao */
 };
@@ -221,7 +222,7 @@ static const char *const g_uioe_cxname[] = {"lookup", "multi-hop", "multi-source
 static const char *const g_uioe_costname[] = {"instant", "index", "files", "process", "network", "model"};
 
 /* KATANA_UIOE=off|pack|full. Decisao do dono (2026-11-23): o padrao e `pack` (o bloco antes do modelo, so para pedidos de codigo e arquivos, atras da porta
-   conservadora de api.c); `off` desliga e e o escape. `full` (fachadas das ferramentas, U5) ainda nao existe: age como `pack`. Qualquer outro valor desliga. */
+   conservadora de api.c); `off` desliga e e o escape. `full` (U5, facade.c): alem do bloco, o Find padrao responde pelo mesmo motor. Qualquer outro valor desliga. */
 static UioeMode uioe_mode(void) {
     const char *e = getenv("KATANA_UIOE");
     if (!e || !*e) return UIOE_PACK;

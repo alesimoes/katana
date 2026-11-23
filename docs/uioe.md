@@ -62,7 +62,7 @@ LLM EXECUTION         receives the request and the prepared context
     No measurement campaign now: a small set of manual acceptance scenarios for the owner to run on the desktop.
 12. **Switch**: `KATANA_UIOE=off|pack|full` (`pack`: the pre-LLM packet only; `full`: packet plus unified
     facades). Decision of the owner of 2026-11-23: `pack` is the default as soon as U4 exists (it exists: see the status of U4 in 6.1);
-    `off` is the escape. `full` (U5) is not built and behaves as `pack`.
+    `off` is the escape. `full` (U5) is written but not compiled or wired yet: see the status of U5 in 6.1.
 
 **Interpretation adopted.** The name and the diagram are the owner's; there is no written specification beyond
 them. This document reads the diagram literally: UIOE is the pre-LLM gateway, the sources are connectors behind one
@@ -1708,6 +1708,19 @@ finding a cited folder walks the disk). What exists beyond the text above, or di
 - **Cost.** `uioe_prepare` took 12 ms for a greeting, 20 to 90 ms for a request that names a symbol or a variable, 260 ms for "who calls rr_check" (the depth-2 closure) on the katana tree, and about 900 ms
   for the greymod question, almost all of it finding the cited folder (`place_note` walks the disk; the legacy path paid that already, now it pays once). One run each, not a measurement.
 - **Not done in U4:** the system-prompt sentence (4.7), compaction of old blocks, `full`, memory and history as evidence (memory: see 6.2b), the web in the block, a desktop marker, the `Find` facade. `docs.select` as `Evidence`
+
+- **U5 status (written, nothing compiled, not wired into `find.c` yet).** `src/uioe/facade.c` holds `uioe_facade_find(query, root, pre, lim, out, cap)` and
+  `uioe_facade_symbols_trace(...)`. With `KATANA_UIOE=full`, `Find` default mode runs the same pipeline as `uioe_prepare` (interpret, classify, route, orchestrate, Context Builder)
+  with a `KATANA_UIOE_TOOL_MS` deadline (default 1500), no confidence door (the model asked), and prints the block in tool form (`UioeCtx.tool_form`: no opening line, no
+  `[end of context]`, no `Question understood as` for a lone identifier). Same marks, paths, links and `Not found / limits` as the block. What it shows goes to `rs_note`, so the
+  next `Find` and `Read` do not repeat it; what the block showed is already skipped by the Builder. It returns 0, and the `Find` of today answers unchanged, when the mode is not
+  `full`, `path` narrows to a subfolder, the domain is not code/files, retrieval did not run, the decision is not G4, or nothing verified can be said. `Symbols` keeps its output
+  byte for byte and only writes a `facade  Symbols` trace line. The session is shared through `g_uioe_tool_sess` (set by `uioe_prepare`; created lazily otherwise).
+  **Still to wire (two lines, after the unified-`Find` rewrite of `find.c`):** in `ct_findtool`, after `root` and `pre` are resolved and before the index step,
+  `if (!refs && !nbr && uioe_facade_find(q, root, pre, (int)lim, out, cap)) goto done;`; in `ct_symbols`, after `sym_tool_run`, `uioe_facade_symbols_trace(action, name, file, out);`.
+  Not built in U5: `Read` terms, the `Grep` phrase note, the neighbour note from the evidence graph, the plan nudge, `Find mode=refs` with a sentence through the engine (all remain in the
+  table of 6.1 as open). Not verified: compilation, the six known `Find` queries under `full` (default modes are untouched, so `off` and `pack` print what they print today).
+- **Not done in U4:** the system-prompt sentence (4.7), compaction of old blocks, `full`, memory and history as evidence, the web in the block, a desktop marker, the `Find` facade. `docs.select` as `Evidence`
   is written but was **not exercised**: the tiny model's byte-level tokenizer selects no document line, so only the real model's tokenizer can show it. Not tested: a partial index (only none and complete),
   Gemma 4, Windows. The model was never run on a block: whether it follows `Next` or over-trusts the path is unknown.
 
