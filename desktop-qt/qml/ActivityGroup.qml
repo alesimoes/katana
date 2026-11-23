@@ -6,6 +6,7 @@ import "Verbs.js" as V
 // Grupo de acoes do agente: uma linha de resumo (com o que esta fazendo agora) e, ao abrir, a lista de passos
 Rectangle {
     id: g
+    objectName: "activityGroup"
     property var steps: []          // [{idx, name, args, desc, state, t0, dur, hasOut, note}]
     property real now: Date.now()
     property bool active: false     // o agente ainda esta trabalhando nesta sequencia

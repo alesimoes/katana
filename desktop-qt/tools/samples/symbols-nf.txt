@@ -1,0 +1,3 @@
+NOT FOUND: no definition of 'nonexistent_fn' in the indexed set.
+Cascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2.
+Indexed set: 31 files (31 with symbols); not analysed: 0 binary, 0 over the size cap, 0 unreadable; 0 text/config/unknown-language files have no symbol extraction. Macro-generated names, dynamic calls and calls through pointers or reflection are not seen; a call is recorded by its final name only.

@@ -1,0 +1,17 @@
+Found by name or text (checked in the files):
+  [confidence high] tools/find.c:859: if (l > max) { int c = max; while (c > 0 && ((unsigned char)s[c] & 0xC0) == 0x80) c--; ct_sb_add(sb, s, (size_
+  [confidence high] tools/multiedit.c:137: if (a > 0) ct_sb_puts(sb, "...");
+  [confidence high] tools/glob.c:26: static void ct_sb_puts(CtSb *b, const char *s) { ct_sb_add(b, s, strlen(s)); }
+1. tools/glob.c:26-65  defines: ct_sb_puts, ct_gmatch
+   38: if ((!slash || t == s0 || t[-1] == '/') && ct_gmatch(r, t, s0)) return 1;
+   26> static void ct_sb_puts(CtSb *b, const char *s) { ct_sb_add(b, s, strlen(s)); }
+   27: 
+   28: /* ---- casamento de padroes ----
+   29: * * nao cruza /, ** cruza (e "**" + "/" casa zero ou mais pastas), ? um caractere, [..] classe (com ! ou ^), {...
+   30: * \x caractere literal. s0 e o inicio do texto (para saber se um ** comeca num limite de pasta). */
+   31: static int ct_gmatch(const char *p, const char *s, const char *s0) {
+   32: while (*p) {
+   called by: ct_glob (glob.c:169-220), fd_put_line (find.c:857-861), fd_also (find.c:1090-1133) (+18)
+   calls: ct_sb_add (glob.c:18-25)
+   also referenced in: tools/find.c, tools/multiedit.c, tools/grep.c
+   links: "KATANA_AGENT_FAKE" in tools/agent.c and tools/askuserquestion.c
