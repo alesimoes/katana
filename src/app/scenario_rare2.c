@@ -119,8 +119,8 @@ static int x_r2_lines(const char *t) { int n = 0; for (const char *l = t; *l; l+
 /* kind: 1 linhas que citam a funcao; 2 arquivos de teste; 3 marcas TODO; 4 arquivos de codigo. Devolve tambem o numero que a resposta final cita */
 static int x_r2_subans(int kind, const char *fn, const char *srcglob, char *dst, size_t cap) {
     static char r[6000];
-    const char *a = kind == 1 ? cu_fmt("{\"pattern\": %s, \"output_mode\": \"content\"}", cu_q(fn)) : kind == 3 ? "{\"pattern\": \"TODO\", \"output_mode\": \"content\"}" : kind == 2 ? "{\"pattern\": \"**/test_*\"}" : cu_fmt("{\"pattern\": %s}", cu_q(srcglob));
-    ct_dispatch(kind == 1 || kind == 3 ? "Grep" : "Glob", a, a + strlen(a), r, sizeof r);
+    const char *a = kind == 1 ? cu_fmt("{\"pattern\": %s, \"output_mode\": \"content\"}", cu_q(fn)) : kind == 3 ? "{\"pattern\": \"TODO\", \"output_mode\": \"content\"}" : cu_fmt("{\"command\": %s}", cu_q(x_findcmd(kind == 2 ? "**/test_*" : srcglob)));
+    ct_dispatch(kind == 1 || kind == 3 ? "Grep" : "Bash", a, a + strlen(a), r, sizeof r);
     const int none = !strncmp(r, "No ", 3) || !*r;
     const int n = none ? 0 : x_r2_lines(r);
     if (kind == 1) snprintf(dst, cap, "%s is mentioned on %d lines:\n%.1800s", fn, n, r);
