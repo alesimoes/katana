@@ -2,6 +2,7 @@
 typedef int (*CoderCmd)(int argc, char **argv);
 static const struct { const char *name, *help; CoderCmd fn; } g_coder_cmds[] = {
     /* cada submodulo acrescenta UMA linha aqui: {"nome", "uso em uma linha", funcao}, e o seu #include em katana.c antes deste arquivo */
+    {"tokens", "tokens \"texto\" [--lang pt|en|auto] [--json] | --file ARQ", coder_tokens_main},
     {NULL, NULL, NULL}
 };
 static int coder_main(int argc, char **argv) {
