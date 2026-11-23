@@ -1,0 +1,16 @@
+# relations.kb: tipos de aresta do grafo de codigo e o peso inicial de cada um.
+# Formato: edge <tipo> <peso 0..1> [descricao]
+# ATENCAO: sao PARAMETROS INICIAIS ILUSTRATIVOS a calibrar com medidas; nao sao probabilidades nem foram ajustados com dados.
+# Servem so para ordenar a propagacao de relevancia (uma aresta forte transmite mais que uma fraca).
+edge call 1.00 funcao A chama funcao B (dependencia direta de execucao)
+edge implements 0.95 tipo implementa interface ou contrato
+edge event 0.95 emissor e assinante do mesmo evento (acoplamento por mensagem)
+edge extends 0.90 heranca de classe ou struct embutido
+edge test_of 0.80 teste cobre o simbolo (nome ou chamada)
+edge module 0.70 mesmo modulo, pacote ou diretorio
+edge import 0.70 arquivo importa ou inclui outro
+edge use 0.60 referencia a tipo, constante ou variavel global
+edge git_cochange 0.50 mudam juntos no historico do git (comutacao)
+edge doc_mentions 0.40 documentacao ou comentario cita o simbolo
+edge same_domain 0.30 mesmo conceito de dominio na base de conhecimento (sem ligacao de codigo)
+edge name_similar 0.20 nomes com tokens em comum (fraco; so desempate)
