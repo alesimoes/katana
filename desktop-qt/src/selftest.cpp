@@ -720,7 +720,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         QList<QQuickItem *> rows;
         waitFor([&] { rows.clear(); findAll(c.item("planView"), "actionRow", rows); return !rows.isEmpty(); }, 3000);
         QQuickItem *ws = c.item("workStats");
-        check(ws && ws->property("text").toString().contains("ações") && ws->property("text").toString().contains(" · "), "cartao das tarefas mostra tempo e acoes enquanto roda: " + (ws ? ws->property("text").toString() : QString()));
+        check(!ws && !c.item("todoHeader") && !c.item("workCard")->isVisible(), "a lista de tarefas nao aparece acima da caixa (so na conversa)");
         bool runningDesc = false;
         for (QQuickItem *r : rows)
             if (r->property("running").toBool() && r->property("title").toString() == "Rodar a suite de testes") runningDesc = true;
@@ -759,7 +759,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(steps[0].toMap()["actions"].toList().value(0).toMap()["desc"].toString() == "Listar os arquivos da pasta", "descricao da chamada guardada");
         check(be.progressText().startsWith("3 de 3 passos, 7 ações, "), "resumo do pedido: " + be.progressText());
         check(sline->property("text").toString() == be.progressText(), "resumo na linha de estado");
-        check(c.item("workStats")->property("text").toString() == be.progressText(), "resumo tambem no cartao das tarefas");
+        check(!c.item("workCard")->isVisible(), "depois do pedido continua sem cartao de tarefas acima da caixa");
         // o plano na tela: passos feitos recolhidos, nenhuma acao aberta
         rows.clear(); findAll(c.item("planView"), "actionRow", rows);
         check(rows.isEmpty(), "passos feitos recolhidos em uma linha");
