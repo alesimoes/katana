@@ -3,7 +3,8 @@
 Status: design only (2026-11-23). Nothing in `src/` implements this, no model was run to write it and nothing here
 was measured for this document. Numbers quoted from other documents carry their source. Every other number is marked
 as a target or as an estimate. Section 11 lists what only a measurement would decide; none of those measurements was
-run.
+run. Section 12 was added after the first eleven: it specifies the module's own semantic search (five searches over
+a knowledge base, no model) and changes what "semantic search" means everywhere else in the document.
 
 Read with: `docs/investigation-engine.md` (the research: what worked and what did not), `docs/embedding-usage.md`
 (the optional embedding filter), `docs/investigate.md` (the 76-question bench), the `Find` section of `docs/tools.md`.
@@ -12,10 +13,18 @@ Read with: `docs/investigation-engine.md` (the research: what worked and what di
 
 The owner's decision: the local model investigates code badly because it receives raw tools (`Read`, `Grep`, `Glob`,
 `Find`) and has to decide everything alone. It reads whole files, forms no hypothesis, loops, and concludes from the
-words of the request. So the engine gets its own **code intelligence layer**, larger than `Find`, that **conducts the
+words of the request. So katana gets a **code intelligence module**, larger than `Find`, that **conducts the
 investigation before the agent sees the request** and hands the model an **evidence packet**. The model works as the
 analyst: it reads the evidence, checks it, diagnoses. What to search, how to correlate and how to investigate is
 decided by C code.
+
+Framing (owner's correction): this module is **not part of the inference engine**. The inference engine
+(`src/engine/`) loads a model and generates tokens. The code intelligence module is a product of its own, the
+codebase investigator, that runs **on top of** the engine and talks to the user through its own interface. Its core
+(indexer, store, exact queries, CLI) works with no model at all. Section 1.3 gives the layers and the dependency
+rule. Where this document says "the engine found" or "the engine's guess" inside text shown to the model, that is
+the wording of the existing `[katana: ...]` notes, kept for the model's sake; the code that produces it is the
+module.
 
 What exists today, checked in the code:
 
@@ -69,7 +78,7 @@ design is built around that number, not around the hope that it improves.
 user request
     |
     v
-+---------------------------- code intelligence layer (C, src/intel/) -----------------------------+
++---------------------------- code intelligence module (C, src/intel/) ----------------------------+
 |  interpreter -> orchestrator -> { text search | structural queries | (semantic, optional) }      |
 |                      |                     \__ code database (files, symbols, relations) __/     |
 |                      v                                                                           |
@@ -121,25 +130,98 @@ The mapping from the request to an entry point is always PROBABLE, with one exce
 identifier, a file path or a quoted message that exists in the tree. Finding that name is a lookup, so it is EXACT
 (rules R7 to R9 of the research, section 5 there).
 
+### 1.3 Layers and the dependency rule
+
+```
+(2) code intelligence module     src/intel/     scanner, parsers, store, search, queries, interpreter, orchestrator,
+                                                packet, own CLI and interactive interface. Core works with no model
+        |  uses, through IxAi only (optional)            ^ used by, through thin adapters only
+        v                                                |
+(0) inference engine  src/engine/               (1) agent runtime  src/agent/, src/tools/
+    load model, forward, sampling, GPU              loop, tools, prompt, sessions
+```
+
+| Rule | Consequence |
+|---|---|
+| The module does not include, call or know `src/agent/` (the loop, the prompt, the tool table, sessions) | the packet is a text the module returns; where it is put is the adapter's business |
+| The module does not know the model types of `src/engine/` (`Model`, tokenizer, caches) | it sees the engine as the `IxAi` interface below, and works when that pointer is NULL |
+| The engine does not depend on the module | nothing in `src/engine/` changes for it |
+| The agent runtime depends on the module only through adapter files | `src/agent/intel_agent.c` (tools and packet hook), `src/tools/find.c` as a facade; removing them removes the dependency |
+| The module may use the base utilities (thread pool, string map: the non-model part of `src/engine/base.c`) and the regex engine (`src/tools/regex.c`) | both are self-contained; if the separate build below is wanted they are the only shared parts |
+| The store (2.4) is read and written only by the module | no other code parses a `.cbi` file |
+
+The narrow interface to the inference engine:
+
+```c
+typedef struct {
+    const char *system, *user;     /* textos; o adaptador aplica o formato de conversa do modelo */
+    int   max_tokens;              /* limite duro de tokens gerados */
+    float temperature;             /* 0 = deterministico */
+    const char *json_shape;        /* opcional: descricao da forma JSON aceita; a saida e valida por construcao */
+    int   budget_ms;               /* prazo de relogio; estourou, devolve o que ja saiu */
+    int   isolate;                 /* 1 = nao pode alterar o estado de nenhuma conversa em andamento */
+} IxGenReq;
+typedef struct { int prompt_tokens, gen_tokens; double prefill_s, gen_s; int cut; } IxGenStats;
+typedef struct IxAi {
+    void *ctx;
+    int  (*count_tokens)(void *ctx, const char *text, size_t n);                      /* NULL: o modulo usa 4 bytes por token */
+    int  (*tokenize)(void *ctx, const char *text, size_t n, int *ids, int cap);        /* opcional */
+    int  (*generate)(void *ctx, const IxGenReq *rq, char *out, size_t cap, IxGenStats *st,
+                     void (*on_text)(void *u, const char *s, size_t n), void *u);     /* on_text opcional: saida aos poucos */
+    int  (*busy)(void *ctx);                                                          /* o modelo esta calculando agora */
+    const char *(*fingerprint)(void *ctx);                                            /* identifica o modelo (chave de cache) */
+    int  context_tokens;                                                              /* tamanho do contexto disponivel */
+} IxAi;
+```
+
+Five functions. "Run a query expansion" and "run the final analysis over the packet" are deliberately **not**
+entries of this interface: they are module functions (`ixn_expand`, `ixa_analyze`) written on top of `generate`,
+so their prompts, JSON shapes and validation live with the module and the engine side stays generic. Any model
+katana can run, or any future engine, serves the module by implementing these five.
+
+Implementations of `IxAi` (all outside the module):
+
+| Implementation | Where | Used when |
+|---|---|---|
+| none (`NULL`) | - | the core: index, queries, search, `katana intel ask` (packet without analysis). No model is loaded |
+| in-process, own model | `src/app/intel_ai.c` | `katana intel investigate` and the interactive mode run alone: the command loads the model like `katana -p` does |
+| in-process, the session's model | inside `src/agent/intel_agent.c` | the agent is running: expansion is a side generation on the already loaded model (5.3) |
+| client of a running `katana serve` | `src/app/intel_ai_http.c` (later) | a server already holds the model (the desktop app, another terminal): the CLI asks it instead of loading a second copy |
+
+**In process or through a server: recommendation.** In process, compiled into the same translation unit as the
+rest of katana, is the default and the first to build. It keeps the single-unit rule, costs no second model load
+inside an agent session, and adds no network hop to a call that is already the slowest step of the pipeline. A
+server-only design would make every `katana intel investigate` depend on a running service and, when none runs, on
+starting one and loading the model (tens of seconds; `docs/handoff.md` records about 40 s for a reload), and it
+would make the agent talk to itself over HTTP. The server client is still worth having as the fourth row, because
+its one use case is real: the model is already loaded elsewhere and loading it twice does not fit the GPU. Whether
+the existing HTTP API (`src/app/openai.c`) can carry the JSON-shape constraint was not checked for this document;
+without it the client validates the JSON after the fact and retries once.
+
+How the rule is enforced rather than promised: `src/katana.c` includes `intel/*.c` before any agent file (so a
+reference to the agent does not compile), and the module's files never name `Model`. A second, tiny translation
+unit `src/cbi.c` (base utilities, regex, `intel/*.c`, a `main`) builds the module alone; if it compiles, the
+dependency rule holds. Section 8.0 discusses whether that build is also shipped.
+
 ## 2. Components and modules, mapped to C
 
 ### 2.1 The owner's 13 components
 
 | # | Component | File (proposed) | Reuses | Rewrites / new |
 |---|---|---|---|---|
-| 1 | Directory scanner | `src/intel/scan.c` | file listing of `fd_update` (`git ls-files --cached --others --exclude-standard`, or the walk with `.gitignore` shared with `Grep`: `ct_grep_collect`), `fd_skip_rel`, the binary test | cap of 20000 files removed; listing in a thread; change detection without a full `stat` sweep (2.6) |
+| 1 | Directory scanner | `src/intel/scan.c` | file listing of `fd_update` (`git ls-files --cached --others --exclude-standard`, or the walk with `.gitignore`: the code of `ct_grep_collect` moves into the module and `Grep` calls it there), `fd_skip_rel`, the binary test | cap of 20000 files removed; listing in a thread; change detection without a full `stat` sweep (2.6) |
 | 2 | Language identification | `src/intel/lang.c` | the extension table of `fd_kind` | one enum per language instead of per family (C and C++ apart, JS and TS apart, Kotlin and Java apart); shebang line for extensionless scripts; `.h` decided C or C++ by content |
-| 3 | File indexer | `src/intel/index.c` | `fd_build_file` (chunks, three fields, term table `FdTerms`, `fd_tokens`, `fd_fold`, `fd_stem`) | per-file segments on disk instead of one blob array rewritten whole; parse and tokenize in the thread pool of `src/engine/base.c` |
+| 3 | File indexer | `src/intel/index.c` | `fd_build_file` (chunks, three fields, term table `FdTerms`, `fd_tokens`, `fd_fold`, `fd_stem`) | immutable segments on disk (2.4) instead of one blob array rewritten whole; parse and tokenize in the thread pool of the base utilities (`src/engine/base.c`, which holds no model code) |
 | 4 | Function and class extractor | `src/intel/parse.c`, `parse_brace.c`, `parse_indent.c`, `parse_shell.c`, `parse_md.c` | the keyword knowledge inside `fd_sym` (modifier and definition lists) and `ct_outline` | new: lexers and range-aware parsers (section 3). `fd_sym` and `ct_outline` are retired once the new parser passes the same tests |
-| 5 | Symbol database | `src/intel/db.c` | hash and string pool of `FdTerms` | new tables: symbols with ranges, occurrences, relations (2.4) |
+| 5 | Symbol database | `src/intel/db.c`, `store.c` | hash and string pool of `FdTerms` (in memory, while building a segment) | the `.cbi` store: segments with symbols, occurrences and postings; manifest; explicit serialization (2.4) |
 | 6 | Dependency graph | `src/intel/graph.c` | `fg_build`'s `path` edges (path strings, relative imports, Python imports), `co` edges (`git log`), CSR code | new: directed symbol-level edges (calls, uses, inherits, implements, tests) and module-level import edges; the file graph becomes a projection of them plus `rare` and `co` |
 | 7 | Text search engine | `src/intel/search.c` | all of `fd_rank` (per-field BM25), `fg_drop_request`, `fg_activate`, `fg_evidence`; the regex engine `src/tools/regex.c` for literal and pattern search | chunk boundaries follow symbol ranges when a function fits (a function is one retrieval unit; long functions keep 40-line windows) |
-| 8 | Semantic search engine | `src/intel/semantic.c` (optional, last phase) | the whole design of `docs/embedding-usage.md` (cache, budget, rank fusion, evidence line) | only the unit changes: one vector per symbol body instead of per 40-line chunk |
+| 8 | Semantic search engine | `src/intel/search.c`, `kb.c`, `morph.c` (the module's own semantic search, CSSE: section 12). `semantic.c` for embeddings stays optional and last | `fd_tokens`, `fd_stem`, the request-word and stop-word lists, `fg_activate` as the relational search | new: knowledge base, morphology, operation classes, conceptual and behavioural search, the five-component ranker. No model in it |
 | 9 | Question interpreter | `src/intel/question.c` | request-word list of `fg_is_request`, stop words `fd_stopw`, the vocabulary-gap test `G` of `docs/embedding-usage.md` section 2 | new: request type, entities, relation terms, optional expansion by the large model (section 5) |
 | 10 | Investigation orchestrator | `src/intel/investigate.c` | the policy specification of research 7.4 | new: state machine and per-type plans (section 6) |
 | 11 | Context selection for the model | `src/intel/packet.c` | the budget and block logic of `ds_select`; the 1500-character discipline of `fd_show` | new: evidence packet (section 7) |
 | 12 | Diagnosis engine | `src/intel/diagnose.c` | - | new, and deliberately small: it does not conclude. It computes guards on a call path, asymmetries between a working and a failing sibling, and the list of gaps (6.4). The conclusion is the model's |
-| 13 | Investigation interface | `src/intel/tools.c` (agent tools), `src/intel/cli.c` (`katana intel ...`), and the hook in `src/agent/loop.c` | tool table `src/tools/table.c`, `katana tool` | new tools and commands (sections 4 and 8) |
+| 13 | Investigation interface | `src/intel/cli.c` (`katana intel ...`: the module's own user interface, 8.0). Outside the module, as adapters: `src/agent/intel_agent.c` (agent tools and the packet hook) | - | new commands; new tools through the adapter (sections 4 and 8) |
 
 ### 2.2 The owner's 8 modules
 
@@ -148,16 +230,17 @@ identifier, a file path or a quoted message that exists in the tree. Finding tha
 | Codebase Scanner | 1, 2 | `scan.c`, `lang.c` | `ixs_` |
 | Code Parser | 4 | `parse*.c` | `ixp_` |
 | Code Intelligence Database | 3, 5 | `index.c`, `db.c` | `ixd_` |
-| Search Engine | 7, 8 | `search.c`, `semantic.c` | `ixt_`, `ixv_` |
+| Search Engine | 7, 8 | `search.c`, `kb.c`, `morph.c` (CSSE, section 12); `semantic.c` optional | `ixt_`, `ixk_`, `ixv_` |
 | Dependency Engine | 6 and the structural queries | `graph.c`, `query.c` | `ixg_`, `ixq_` |
 | Investigation Engine | 9, 10, 11, 12 | `question.c`, `investigate.c`, `packet.c`, `diagnose.c` | `ixn_`, `ixo_`, `ixe_`, `ixx_` |
-| Local AI Engine | the large model, unchanged; one new entry: a short constrained side generation (5.3) | `src/engine/`, `src/agent/callgrammar.c` | - |
-| Investigation Interface | 13 | `tools.c`, `cli.c`, hook in `loop.c` | `ct_` (tools), `ixc_` |
+| Local AI Engine | the part of the module that **calls** the inference engine to interpret and to reason over evidence: query expansion (5.3) and the final analysis of a packet when the module is used from its own interface (8.0). It reaches the engine only through the `IxAi` interface of 1.3 | `ai.c` (uses `IxAi`); the implementation of `IxAi` is an adapter outside the module | `ixa_` |
+| Investigation Interface | 13 | `cli.c` (commands, text and JSON output, interactive mode: 8.0). The agent's tools and the packet hook are **not** in the module: they are the adapter `src/agent/intel_agent.c` (8.1) | `ixc_` |
 
 The prefix `ix_` is unused in `src/` today (checked by search). All files are parts of the single translation unit:
-`src/katana.c` includes them after `tools/grep.c` (the listing helper) and before `tools/find.c`, which becomes a thin
-tool over `search.c`. `find.c` and `findgraph.c` shrink to the tool's argument handling and output format; their
-current output format does not change (the curriculum's `x-find6` family replays it byte for byte).
+`src/katana.c` includes `intel/*.c` right after the base utilities and before anything of the agent, so the compiler
+itself refuses a reference from the module to the agent or to the model code (1.3). `tools/find.c` becomes a facade:
+argument handling and output format over `ixt_search`. Its current output format does not change (the curriculum's
+`x-find6` family replays it byte for byte).
 
 ### 2.3 Interfaces between modules (summarized C signatures)
 
@@ -230,10 +313,11 @@ static int ixq_body(IxDb *db, int sym, int maxlines, struct CtSb *sb);          
 
 /* ---- question.c, investigate.c, packet.c ---- */
 static int  ixn_interpret(IxDb *db, const char *request, struct IxQuestion *q);              /* regras; microssegundos */
-static int  ixn_expand(struct Model *m, IxDb *db, struct IxQuestion *q, int budget_ms);      /* opcional: uma geracao curta */
+static int  ixn_expand(const struct IxAi *ai, IxDb *db, struct IxQuestion *q, int budget_ms); /* opcional: uma geracao curta; ai NULL = nao faz */
 static int  ixo_investigate(IxDb *db, const struct IxQuestion *q, const struct IxBudget *b, struct IxCase *out);
 static int  ixe_packet(const IxDb *db, const struct IxCase *c, int max_tokens, char *out, size_t cap);   /* devolve trechos emitidos */
-static int  ix_prepare(struct Model *m, const char *request, char *out, size_t cap);         /* o que o laco chama */
+static int  ixa_analyze(const struct IxAi *ai, const char *request, const char *packet, char *out, size_t cap);  /* analise final (interface propria, 8.0) */
+static int  ix_prepare(const struct IxAi *ai, const char *root, const char *request, char *out, size_t cap);   /* pacote pronto; o adaptador do agente chama */
 ```
 
 Rules of the interfaces:
@@ -246,90 +330,145 @@ Rules of the interfaces:
   path order, then line), and the true total, so the caller can print "(+N more)".
 - `ixt_*` functions always rank and never return a fact.
 
-### 2.4 Database on disk
+### 2.4 Storage: the `.cbi` store
 
-Location: `<working folder>/.katana/cache/intel-<hash>/`, next to `find-<hash>.idx`, with the same fallback
-(`~/.katana/cache`, `KATANA_CACHE_DIR`) and the same `.gitignore` containing `*`. A folder, not one file, so that an
-update rewrites only what changed:
+The store belongs to the module. Nothing else reads or writes it; `Find` and the agent reach it only through the
+module's functions.
+
+The owner received a proposal for a native store ("CBI"): C, no external database, no SQL, no background services,
+own binary storage, incremental indexing, more than 100 thousand files, a CLI; files `manifest`, `catalog`,
+`symbols`, `references`, `graph`, `search`, a folder of numbered segments, a journal/WAL, `temp`; 64-bit ids, record
+offsets, variable-size binary records, hash indexes, B+ trees, an inverted index, adjacency lists, own versioned
+serialization that never writes a struct. The goals are right and are adopted whole. The mechanisms are heavier
+than this data needs, for one reason that decides most of the table in 2.9:
+
+**The store is a derived cache. The source of truth is the working tree.** Any part of it can be rebuilt from the
+files. So it needs to be *never wrong and never half-written*, but it does not need to be *durable to the last
+update*. A database that holds the only copy of its data needs a WAL; a cache needs an atomic switch between two
+complete states.
+
+**Recommended architecture: immutable segments, mapped read-only, published by an atomic manifest swap.**
 
 ```
-intel-<hash>/
-  head.kix        header: magic "KIXH", format version, root path, parser versions, counts, state (complete | partial)
-  names.kix       string pool + hash: identifiers, signatures, paths (append-only between compactions)
-  files.kix       fixed records, one per file
-  seg-NNNN.kix    segments: per-file payloads (symbols, occurrences, guards, imports, chunks with their terms)
-  rel.kix         derived: resolved relations, CSR by source and by target (rebuilt from segments; can be deleted)
-  post.kix        derived: inverted index for text search (rebuilt from segments; can be deleted)
-  lock            advisory lock: one writer, many readers
+<working folder>/.katana/cache/cbi-<hash>/          (fallback ~/.katana/cache, KATANA_CACHE_DIR; .gitignore with "*")
+  MANIFEST            the only mutable file; replaced whole by write-to-temp + fsync + rename
+  seg/000041.cbs      immutable segments; a segment holds everything about a batch of files
+  seg/000042.cbs
+  graph-000042.cbg    derived file graph for activation, tagged with the manifest generation; deletable
+  tmp/                files being written; anything here is garbage after a crash
+  LOCK                advisory lock for the single writer; readers never take it
+  terms.tsv           learned term map (5.3): the one thing that is not derivable; plain text, append-only
 ```
 
-Records (little endian, fixed size, read by `mmap`):
+*Segment.* One file, written once, never modified. It contains, for the batch of source files it covers, every kind
+of data in sections (a section table at the start gives kind, version, offset, length, checksum):
+
+| Section | Content | Layout |
+|---|---|---|
+| names | identifiers, signatures, paths of this segment | strings sorted by bytes, one offset array; lookup by binary search; prefix queries are a range of the same array. An optional hash section (open addressing, u32 slots) is added only if lookups measure slow |
+| catalog | one record per source file: path, language, flags, parser version, mtime, size, content hash, ranges into the other sections | fixed width, sorted by path |
+| symbols | the symbol records (`IxSym` fields) | fixed width, grouped by file, in file order |
+| by-name | (name id, symbol index) pairs | fixed width, sorted by name id: "all definitions of this name" is a binary search |
+| occurrences | (name id, file, line, kind, enclosing symbol) | grouped by name id, then file; lines delta-encoded as varints. "Who mentions this name" is one contiguous run |
+| guards, imports | per file | variable size, reached by offset from the catalog record |
+| terms | text-search dictionary of this segment | sorted strings + per-term document frequency + offset of the postings |
+| postings | per term and field: (chunk id delta, tf) | delta + varint; the three fields (path, symbols, body) as today |
+| chunks | chunk table: file, line range, field lengths | fixed width |
+
+*Manifest.* A small file: format version, generation number, the list of live segments (name, size, checksum,
+counts), and per segment the set of its files that a newer segment supersedes or that were deleted (a bitmap over
+the segment's catalog). A file's current data is in the newest segment that lists it; everything older is masked.
+
+*Writing (incremental indexing without rebuilding).*
 
 ```
-file record (48 bytes)
-  path u32 (names) | lang u8 | flags u8 | parser_version u16 | mtime i64 | size u32 | content_hash u64
-  segment u16 | offset u32 | length u32 | nsym u32 | nocc u32 | errors u16
-  flags: test, doc, config, generated, vendored, too large (indexed for text only), parse failed (text only)
-
-symbol record (48 bytes)                              -- IxSym above
-  name u32 | scope u32 | sig u32 | line0 u32 | line1 u32 | byte0 u32 | byte1 u32 | body0 u32 | shape u64
-  kind u8 | vis u8 | flags u8 | conf u8
-  kind: function, method, constructor, class, struct, union, enum, enum member, interface/trait, namespace/module,
-        typedef/alias, macro, global variable, constant, field, property, signal, heading, section
-  vis:  public, exported, file-local (static, unexported, underscore-prefixed by convention), private, protected, unknown
-  flags: declaration only (prototype), definition, async, test, entry point (main, exported handler, CLI command), generated
-
-occurrence record (12 bytes)                          -- IxOcc above, packed
-  name u32 | line u24 + kind u4 + flags u4 | in_sym u32 (file-local symbol index; column kept only for calls, in a side array)
-
-relation record (16 bytes, derived)
-  from_sym u32 | to_sym u32 | line u24 + type u8 | class u4 + flags u4 + pad
-  type: calls, uses, defines (scope -> member), imports (file -> file or file -> external module),
-        inherits, implements, tests, overrides, instantiates
-  class: unique, scoped, ambiguous, external, textual (section 1.2)
+take LOCK (if another process holds it: read-only use, no update)
+parse the changed and new files -> write one new segment into tmp/ -> fsync -> rename into seg/
+write MANIFEST.tmp = old manifest + new segment + masks for superseded and removed files -> fsync -> rename over MANIFEST
+release LOCK
 ```
 
-Why two levels (occurrences in segments, relations derived): an occurrence depends only on its own file, so it
-survives edits to other files. A relation depends on name resolution across files, so it is rebuilt from the
-occurrences. Resolution is a hash join by name with the scoping rules of section 3.3, which is cheap, so `rel.kix` is
-rebuilt incrementally for the changed names and whole only when the format changes. This is the same split `find.c`
-already uses between the per-file blobs and `fd_invert`.
+A crash at any point leaves the previous manifest intact and complete. The worst outcome is an orphan file in
+`tmp/` or `seg/` that no manifest names; the next writer deletes it. There is no recovery procedure and no journal
+to replay, because there is never a state in between.
+
+*Reading.* Open `MANIFEST`, map the segments it names, answer. A reader holds no lock. At the start of each query
+it compares the manifest's generation (one `stat`) and remaps if it changed. A segment deleted by compaction stays
+readable for processes that have it mapped (POSIX semantics); on Windows deletion is deferred until no reader has it
+open. Several processes (the agent, the console, the server, the CLI) read at the same time; one of them at a time
+writes.
+
+*Queries across segments.* Every lookup runs on each live segment and merges, skipping masked files. With a small
+number of segments this costs a few binary searches. Text search sums document frequencies across segments; masked
+documents still count in those frequencies until compaction, which shifts BM25 weights slightly (the standard
+trade-off of segmented indexes; accepted).
+
+*Compaction.* When there are more than 8 segments, or more than a third of the records are masked, the writer
+merges the small segments into one (a streaming merge of sorted sections) and publishes it with the same manifest
+swap. It runs at the end of an update that crossed the threshold, or by `katana intel compact`. It is never a
+service: there is no daemon and no process that outlives the command or session that started it.
+
+*Cross-file relations are not stored.* "Who calls `f`" is: the occurrence run of the name `f` with kind CALL in
+each segment, then the resolution rules of 3.3 against the definitions of `f` (the by-name section). That is a
+handful of binary searches, so resolving at query time is cheap, and it removes the one structure that would have
+needed in-place updates when a file changes (a stored caller edge becomes stale when the *callee's* file changes).
+The process keeps a small in-memory cache of resolved relations. Only the file graph used by sparse activation is
+materialized (`graph-<generation>.cbg`, CSR, rebuilt when the generation moves, as `fg_build` does today).
+
+*Ids.* On disk, everything is a **32-bit index local to its segment**. A segment is capped at 1 GB, so 32-bit
+offsets also suffice. At 100 thousand files the estimated totals (2.7) are about 1.5 million symbols and 15 million
+occurrences: far below 2^32. 64 bits are used where they are actually needed: content hashes; and the **stable
+symbol key** the API and the JSON output expose (a 64-bit hash of path, scope chain, name and kind), which survives
+re-indexing and compaction, unlike a segment-local index. A runtime handle is the pair (segment, local index).
+64-bit ids on disk would roughly double the occurrence and postings sections for no query that needs them; they
+would become necessary only for a store shared by many projects with billions of occurrences, which is not this
+design (one store per working folder).
+
+*Serialization.* The owner's rule is kept and tightened. No struct is ever written or mapped. Every field is read
+and written by explicit accessors (`cbi_rd_u32(p + OFF_SYM_LINE0)`, `cbi_wr_u32`, `cbi_rd_varint`) with documented
+byte offsets, little-endian, no padding. "Fixed width" above means a record whose fields sit at fixed byte offsets,
+not a C struct. On this machine the accessor compiles to a plain load. Each section has its own version number and
+a checksum; the segment header has a magic number, the format version and the versions of the parsers that
+produced it.
 
 ### 2.5 Versioning
 
-- `head.kix` holds a format version. Another version: the folder is ignored and rebuilt, without an error (the rule
-  `fd_load` already follows for `FD_VERSION`).
-- Each file record holds the version of the parser that produced it. A parser fix bumps that parser's version, and
-  only the files of that language are re-parsed, in the background.
-- The derived files hold the count and a hash of the file table they were built from. A mismatch: rebuild them.
-- A torn write is detected by the state field and the lock; segments are written to a temporary name and renamed.
-- The database never stores source text. Bodies are read from the working tree at query time, after checking that
-  the file's mtime and size still match the record; a mismatch triggers a re-parse of that one file before the
-  answer. So an answer never quotes a stale line number.
+- A manifest of another format version: the folder is ignored and rebuilt, without an error (the rule `fd_load`
+  already follows for `FD_VERSION`).
+- A section whose version the reader does not know: that section is ignored and the queries that need it say the
+  data is being rebuilt; other sections still serve. A newer text-search format does not invalidate the symbols.
+- Each catalog record holds the version of the parser that produced it. A parser fix bumps that parser's version
+  and only the files of that language are re-parsed, into a new segment.
+- A checksum mismatch on a section: the segment is dropped from the manifest and its files are re-indexed.
+- The store never holds source text. Bodies are read from the working tree at query time, after checking that the
+  file's mtime and size still match the catalog record; a mismatch re-parses that one file before the answer. So an
+  answer never quotes a stale line number.
 
 ### 2.6 Incremental update
 
 ```
 ixd_update(db, budget_ms):
-  1. listing: git ls-files (or the walk); compare (path, mtime, size) with files.kix        -> changed, new, removed
-  2. for changed/new, in the thread pool: read, hash; if content_hash is unchanged, only refresh mtime
-  3. parse + tokenize; write the payload to the current segment; mark the old payload dead
-  4. names whose definitions or occurrences changed -> re-resolve the relations that mention them
-  5. postings: remove and re-add the changed files' chunks
-  6. past budget_ms: stop, state = partial, return the number of files left (queries say so; section 8.6)
-  compaction: a segment with more than half of its bytes dead is rewritten, in the background
+  1. listing: git ls-files (or the walk); compare (path, mtime, size) with the merged catalog   -> changed, new, removed
+  2. for changed/new, in the thread pool: read, hash; if content_hash is unchanged, only the mtime changes
+  3. parse + tokenize in memory
+  4. publish: one new segment + the manifest swap of 2.4
+  5. past budget_ms: publish what is done, state = partial, return the number of files left (queries say so; 8.6)
+  6. thresholds crossed: compaction
 ```
 
-Edits made by the agent itself (`Edit`, `Write`, `Rename`, `Replace`, `Patch`) call `ixd_touch(path)` so the next
-query re-parses that file without waiting for a listing. Today a file changed by the agent "is not in the graph until
-the next index update and rebuild" (`docs/tools.md`); this closes that.
+A single edited file gives a one-file segment. That is fine: it is small, it is published in one rename, and
+compaction folds it in later. Inside a long-lived process (an agent session), very recent edits are kept as an
+**in-memory segment** with the same read interface and are flushed to disk at the end of the request, so a burst of
+`Edit` calls does not produce a burst of files. Edits made by the agent itself (`Edit`, `Write`, `Rename`,
+`Replace`, `Patch`) reach the module through the adapter as `ixd_touch(path)`. Today a file changed by the agent "is
+not in the graph until the next index update and rebuild" (`docs/tools.md`); this closes that.
 
 Step 1 is the cost floor of every call: `docs/tools.md` measured 102 ms for "file listing and stat" on the 5349-file
 repository. Linear extrapolation gives about 2 s for 100 thousand files (an estimate, not measured), which is too slow
-to pay on every tool call. Three measures, in order of effort: (a) inside one agent process, list at most once per
-user request and once after any `Bash` call; (b) in a git repository, ask git only for what differs from the last
-listing (`git status --porcelain` uses git's own stat cache; its cost on a large tree is unmeasured here); (c) a file
-watcher thread (inotify on Linux), later. (a) is enough to start.
+to pay on every call. Measures, in order of effort: (a) inside one process, list at most once per user request and
+once after any command that may change files; (b) in a git repository, ask git only for what differs from the last
+listing (`git status --porcelain` uses git's own stat cache; its cost on a large tree is unmeasured here). A file
+watcher is deliberately left out: it is the kind of background service the owner's proposal excludes.
 
 ### 2.7 Size, memory and time for 100 thousand files
 
@@ -340,28 +479,107 @@ Everything below is an **estimate** by linear extrapolation plus stated assumpti
 
 | Item | Assumption | Estimate at 100k files |
 |---|---|---|
-| Text postings and chunks (today's content) | linear from 18.5 MB / 5349 files | about 350 MB |
-| File records | 48 bytes each | 4.8 MB |
+| Text postings, terms and chunks (today's content, today's encoding of one u32 per posting) | linear from 18.5 MB / 5349 files | about 350 MB; delta + varint should shrink it, by an unmeasured factor |
+| Catalog | about 48 bytes per file | 5 MB |
 | Symbols | 15 per file on average (assumption) x 48 bytes | 72 MB |
-| Occurrences | 150 classified identifier occurrences per file (assumption; locals excluded) x 12 bytes | 180 MB |
-| Relations | about half of the occurrences resolve to a project symbol (assumption) x 16 bytes x 2 directions | 240 MB |
+| Occurrences | 150 classified identifier occurrences per file (assumption; locals excluded) x about 8 bytes after delta coding (assumption) | 120 MB |
+| Relations | not stored (2.4) | 0 |
 | Names | 2 million distinct strings x 24 bytes average (assumption) | 50 MB |
-| **Total on disk** | | **about 0.9 GB** |
+| **Total on disk** | | **about 0.6 GB** |
 
 Ceilings (targets, to be enforced by the code, not predictions):
 
 - **Disk:** 2 GB per project (`KATANA_INTEL_DISK_MB`, default 2048). Past it, the least recently queried
   directories fall back to text-only records.
-- **Private memory:** 512 MB (`KATANA_INTEL_MEM_MB`). Everything large is `mmap`ed read-only, so it is page cache
-  the system can reclaim, and the large model's memory is not competed for. This matters on the minimum machine
-  (24 GB, `docs/handoff.md`) more than on this one.
-- **Cold structural index of 100k files:** target under 60 s using all cores while the model is idle. The measured
-  1.15 s for 5349 files is single-threaded lexical indexing; linear extrapolation is about 22 s single-threaded for
-  the lexical part. Parsing adds work per byte and the thread pool removes most of it; the net is unknown until
-  measured.
-- **Warm start** (database present, nothing changed): target under 300 ms plus the listing cost of 2.6.
+- **Private memory:** 512 MB (`KATANA_INTEL_MEM_MB`). Segments are mapped read-only, so they are page cache the
+  system can reclaim, and the large model's memory is not competed for. This matters on the minimum machine (24 GB,
+  `docs/handoff.md`) more than on this one.
+- **Cold structural index of 100k files:** target under 60 s using all cores. The measured 1.15 s for 5349 files is
+  single-threaded lexical indexing; linear extrapolation is about 22 s single-threaded for the lexical part. Parsing
+  adds work per byte and the thread pool removes most of it; the net is unknown until measured.
+- **Warm start** (store present, nothing changed): target under 300 ms plus the listing cost of 2.6.
 - **Update after editing one file:** target under 50 ms.
 - **One structural query:** target under 5 ms. The current `Find` query is 1 to 7 ms (`docs/tools.md`).
+
+### 2.8 Text search: the module's own inverted index, or SQLite FTS5
+
+The suggestion: embed SQLite (public domain, distributed as a single-file amalgamation) with its FTS5 full-text
+module and a custom C tokenizer for identifiers, instead of the inverted index `Find` already has.
+
+| Aspect | Own inverted index (what `find.c` has, moved into segments) | Embedded SQLite + FTS5 |
+|---|---|---|
+| Licence | ours | public domain: no legal obstacle at all |
+| "No third party in the engine", "single translation unit" | fits | a third-party library inside the binary. The amalgamation is built to be compiled as one file, so it can technically be `#include`d, but it is a very large file (hundreds of thousands of lines from memory; not measured here) with its own static names and compile options. Either it enters the unit (every build of katana pays for it and name clashes must be checked) or it is a second object file (the rule is broken) |
+| Build time and binary size | none added | adds its compile time to every build and on the order of a megabyte to the binary (from memory; not measured here) |
+| The owner's "no SQL" and "no external database" | fits | contradicts both, by definition: every read and write becomes an SQL statement |
+| Tokenizer | `fd_tokens`: accents folded, identifier kept whole and split (camelCase, snake_case), stop words, stemming | the default tokenizers do none of that for code, so **the same `fd_tokens` logic must be wrapped as a custom FTS5 tokenizer**. The part that is specific to code stays ours either way |
+| Ranking | per-field BM25 (weights 3/1/1), 10% coverage bonus per distinct term, file = best chunk + 0.3 x second, request-word filter, per-term weights for expanded terms, then sparse activation over the file graph. Retuned by measurement (`docs/tools.md`) | a ready `bm25()` with per-column weights. The coverage bonus, the file aggregation, the per-term weights and the activation are not in it; they would be C code on top of rows returned by SQL, or auxiliary functions written against its extension interface |
+| What it really adds for code | - | phrase queries, `NEAR`, prefix queries, column filters, snippets. Phrase and proximity: literal text is already served exactly by `Grep` (own regex engine) and the packet's literal search; ranking by proximity would need positions in our postings, which is a contained addition if ever wanted. Prefix: a range in the sorted term table of 2.4 |
+| Access the activation needs | direct: per-term postings, document frequencies, chunk-to-file map in memory | indirect: the activation needs raw postings and frequencies, which FTS5 exposes through a vocabulary table and queries, not as arrays |
+| Symbols, occurrences, call relations, file graph | same store, same segments, published together | **not covered by FTS5.** Either they go into SQL tables (then the whole store is SQL and "no SQL" is gone everywhere), or they stay in the own format and there are **two stores to keep coherent**: two commit points, a crash between them, two versioning schemes, two invalidation paths for one edited file |
+| Transactions and crash recovery | atomic manifest swap between complete states (2.4); enough because the store is a derived cache | real transactions with a journal: stronger than needed here, and its genuine advantage when data is not re-derivable |
+| Concurrency | lock-free readers on immutable segments, one writer | readers plus one writer across processes in its journal mode: equivalent |
+| Performance and memory | measured: query 1 to 7 ms, 18.5 MB index and 55 MB peak for 5349 files, cold build 1.15 s | not measured here. No reason to expect it to be slow; no evidence it would be faster on this workload. Its page cache is its own memory rather than reclaimable mapped pages unless configured otherwise |
+| Maintenance | ours; about 1900 lines exist and are tested by the `Find` tests | theirs, and very well tested; ours is the tokenizer, the ranking on top, the schema and the glue |
+
+**Recommendation: do not adopt FTS5 as the base.** The reasons, in order of weight:
+
+1. It replaces the one part that already exists, is measured and is specific to code (the tokenizer and the ranking
+   stay ours anyway), and it does not cover the parts that are missing (symbols, occurrences, relations).
+2. It forces a choice between two coherent-by-hand stores and an all-SQL store, and the owner ruled out SQL.
+3. Its real strengths, durable transactions and ad hoc queries, answer needs this store does not have: the data is
+   re-derivable and the queries are a fixed, small set.
+4. It conflicts with the single-unit and no-third-party rules for a gain nobody measured.
+
+**What would change this recommendation:**
+
+- the segment store turns out to cost more to make robust than expected (corruption or concurrency bugs that keep
+  returning after the tests of phase A3), in which case a proven storage engine is worth more than the rules it bends;
+- the owner wants to query the index by hand in ways the CLI does not offer. Then the answer is still not to build
+  on it, but an **export**: `katana intel export` writes the tables as JSON lines, and a plugin outside the binary
+  can load them into any database;
+- a measured need for phrase or proximity **ranking** (not just matching) that positions in the own postings fail
+  to deliver;
+- data that is not re-derivable starts living in the store (today only `terms.tsv`, which is a text file on purpose).
+
+### 2.9 Owner's storage proposal against the recommendation, and migration
+
+| Owner's proposal (CBI) | Recommendation | Why |
+|---|---|---|
+| C, no external database, no SQL, own binary storage | **same** | - |
+| Incremental indexing, more than 100 thousand files, CLI | **same** | - |
+| No background services | **same, stricter**: no daemon, no watcher; compaction and indexing run inside the command or session that asked | a service is state the owner did not start |
+| `manifest` | **kept, and promoted**: it is the single commit point | the atomic rename of one small file is the whole consistency mechanism |
+| `catalog`, `symbols`, `references`, `search` as separate global files | **sections inside each segment** | a global file must be modified in place when one source file changes; a segment is written once. One file per batch also means the four kinds of data can never disagree with each other |
+| `graph` (relationships) | **call and use relations not stored**, resolved at query time from occurrences; only the file graph for activation is a derived, deletable file | stored cross-file edges go stale when the *other* file changes; resolving is a few binary searches |
+| Folder of numbered segments | **kept**; it becomes the only place data lives | - |
+| Journal / WAL for crash recovery | **dropped** | immutable segments + manifest swap never expose a half state; the store is a cache, so losing the last unpublished batch costs a re-parse, not data |
+| `temp` | **kept** (`tmp/`) | - |
+| 64-bit ids | **32-bit indexes local to a segment on disk; 64-bit stable symbol keys in the API and JSON; 64-bit content hashes** | the counts at 100k files are 3 orders of magnitude below 2^32; 64-bit ids would double the largest sections |
+| Record offsets | **kept**, 32-bit within a segment capped at 1 GB | - |
+| Variable-size binary records | **variable size for payloads** (signatures, postings, guards); **fixed-width records for every table that is searched** | fixed width gives binary search and random access with no offset index |
+| Hash indexes by identifier | **sorted name table + binary search first; a hash section only if measured necessary** | about 21 comparisons for 2 million names; one less structure to write, version and verify |
+| B+ trees for ordered queries | **sorted arrays + binary search** | a B+ tree earns its complexity when ordered data is updated in place; immutable segments are never updated. Prefix and range queries are ranges of the sorted array |
+| Inverted index for text | **kept** (it exists: `find.c`), postings with delta + varint | - |
+| Adjacency lists for the graph | **kept** as CSR (the same idea, contiguous) | - |
+| Own versioned serialization, never `fwrite` of a struct | **kept and tightened**: explicit little-endian accessors, per-section version and checksum, no struct mapped either | - |
+
+When the heavier mechanisms of the proposal would become right: a WAL, if the store ever holds data that cannot be
+re-derived or if many small writes per second must each be durable; B+ trees, if a single ordered table grows past
+what periodic merging can rewrite; 64-bit ids, for one store spanning many projects. None applies to one store per
+working folder at 100 thousand files.
+
+**Migration of the current index (`.katana/cache/find-<hash>.idx`).**
+
+1. The old file is not converted. It is a cache: the module builds the `.cbi` store from the working tree the first
+   time it runs in a folder (the measured cold build of today's content is 1.15 s for 5349 files).
+2. During the transition (build phases A0 to B1), `Find` keeps reading its own file until the module's text search
+   reproduces its output byte for byte on the `Find` tests and the curriculum replay; then `find.c` becomes a facade
+   over `ixt_search` and stops writing `find-*.idx`.
+3. After the switch, the first update in a folder deletes that folder's `find-*.idx` (same cache directory, so the
+   module owns the cleanup). `KATANA_INTEL=0` during the transition keeps the old path alive; once the facade is the
+   only implementation, that switch only disables the packet and the new tools.
+4. `FD_VERSION` is not bumped again; the old format ends at 4.
 
 ## 3. Parsers
 
@@ -512,7 +730,7 @@ resolved base. `tests`: section 4.
 ### 3.4 Expected precision and how each parser fails
 
 No precision number exists yet. The table states expectations and the known failure classes; the first deliverable
-of the build order (section 9, phase 1) is the measurement that replaces the expectations.
+of the build order (section 9, phases A1a to A1c) is the measurement that replaces the expectations.
 
 | Language | Definitions with correct range | Call edges | Known failures |
 |---|---|---|---|
@@ -579,7 +797,7 @@ Why this choice:
 `#ifndef _WIN32` groups, macro tables, one unit of included `.c` files) is a hard test and must be the first one.
 (b) Whether C++ in the Qt application is tractable without a real parser; if any language ends up needing the
 plugin, it is C++. (c) Whether name-only method resolution in Kotlin and JS produces call trees too ambiguous to be
-useful; the hub rule may hide too much or too little. All three are answered by the phase 1 measurement, not by
+useful; the hub rule may hide too much or too little. All three are answered by the golden sets of phase A1, not by
 argument.
 
 ## 4. Exact structural queries
@@ -711,8 +929,10 @@ no word of any project.
 
 The largest measured failure is vocabulary: a Portuguese description over English code, 21% of gold files with no
 informative term of the question, and no word-based or static-embedding method reaching them (research 3.4, 4).
-The large model is bilingual and knows how code is usually named. So the engine asks it **one** short question
-before searching:
+The first answer to that gap is now the knowledge base of section 12: a dictionary that maps the request's words
+to concepts and to the terms code uses, with no model. The expansion described here is the **optional layer above
+it**, for the concepts the base does not cover. The large model is bilingual and knows how code is usually named.
+So, for those uncovered concepts only, the module asks it **one** short question before searching:
 
 ```
 system:  You translate a request about a codebase into the words its source code probably uses.
@@ -733,10 +953,11 @@ answer:  {"terms": {"<concept>": ["...", "..."], ...}}
   (`docs/embedding-usage.md` section 0) is about 2 to 5 s. The prompt is about 120 to 200 tokens of new text; its
   prefill cost depends on the path (35 to 5000 tokens/s, same source) and is the unknown part. The fixed part of
   this prompt must sit behind a cached prefix so that only the request is new.
-- **Where it runs.** As a side generation that must not disturb the conversation's cache: start from the cached
-  system prefix (or a dedicated small prefix), generate, discard the positions. `src/agent/delegate.c` (sub-agent
-  with a clean context) and `agent_compact` in `src/agent/context.c` are the existing precedents for a generation
-  outside the main turn. How cheaply the state can be forked and dropped on the qwen35moe path (it has recurrent
+- **Where it runs.** Through `IxAi.generate` with `isolate = 1` (1.3): the module does not know how the engine
+  does it. Inside an agent session the adapter must implement it as a side generation that does not disturb the
+  conversation's cache: start from the cached system prefix (or a dedicated small prefix), generate, discard the
+  positions. `src/agent/delegate.c` (sub-agent with a clean context) and `agent_compact` in `src/agent/context.c`
+  are the existing precedents for a generation outside the main turn. How cheaply the state can be forked and dropped on the qwen35moe path (it has recurrent
   state besides the attention cache) **was not examined for this document** and is the main implementation risk of
   this step.
 - **Hallucination control: a term is worth nothing until the index confirms it.**
@@ -750,7 +971,7 @@ answer:  {"terms": {"<concept>": ["...", "..."], ...}}
   6. The model's expansion can add candidates and reorder them; it can never remove one and never produces a fact.
   If no term survives, the expansion is recorded as "none of the guessed code terms exist in this project", which
   is itself a line of the packet's gap section.
-- **Cache.** Two levels, both in `.katana/cache/intel-<hash>/`:
+- **Cache.** Two levels, both in the store folder (`.katana/cache/cbi-<hash>/`):
   - request level: `expand.tsv`, key = hash of (model fingerprint, prompt version, sorted concept list), value = the
     surviving terms. A repeated or rephrased request with the same concepts costs nothing.
   - concept level: `terms.tsv`, the **project's own bilingual term map**: concept -> confirmed code terms, with a
@@ -784,7 +1005,7 @@ S1 ENSURE      database ready? (8.6)                                  -> ready |
      absent and cannot be built inside the budget -> stop, no packet (the tools still work)
 S2 ENTITIES    for each exact entity: definitions, literal hits, path matches               (EXACT)
 S3 EXPAND      conditions of 5.3 -> ixn_expand                        -> expanded terms     (optional, the only model call)
-S4 SEARCH      ixt_search(question incl. expanded terms) -> top K_HYP candidate chunks      (PROBABLE)
+S4 SEARCH      ixt_search = CSSE (section 12): five searches + ranker -> top K_HYP candidates  (PROBABLE)
                map each chunk to its innermost symbol (ixd_sym_at)   -> candidate entry symbols
                merge candidates that are the same symbol or caller/callee of each other into one hypothesis
 S5 STRUCTURE   per hypothesis, per plan of the type (6.2): callers, callees, path, guards, similar, tests   (EXACT)
@@ -858,9 +1079,9 @@ That is the bet, and it is unmeasured.
 
 Parallelism: S2, S4 and the per-hypothesis parts of S5 are read-only over `mmap`ed tables and run on the thread pool
 (`src/engine/base.c`), one task per hypothesis. S3 uses the model and therefore runs alone, with the pool idle; S2
-runs before it, so the exact part of the packet is ready even if S3 times out. Background indexing (8.6) must stop
-while the model computes: with most expert work on the CPU, a second CPU load slows every token
-(`docs/embedding-usage.md` 3.5).
+runs before it, so the exact part of the packet is ready even if S3 times out. Any indexing still running in the
+process (8.6) must pause while the model computes (`IxAi.busy`): with most expert work on the CPU, a second CPU load
+slows every token (`docs/embedding-usage.md` 3.5).
 
 ### 6.4 High uncertainty
 
@@ -1018,20 +1239,112 @@ the tools when a gap matters; say what it could not verify.
 
 ## 8. Integration
 
-### 8.1 Where in the loop
+The module has two consumers: the user, through the module's own interface (8.0), and the katana agent, through a
+thin adapter (8.1 onward). The first does not need the second.
 
-`src/agent/loop.c`, in the block that prepares the user message, right after the `ds_select` call and before
-`vis_take` and the plan-mode note:
+### 8.0 The module's own user interface
 
-```c
-if (cml && ix_on()) {       /* camada de inteligencia de codigo: investiga antes do modelo e entrega o pacote de evidencias */
-    static char ixp[12000];
-    const int n = ix_prepare(m, line, ixp, sizeof ixp);        /* 0 = nada a entregar */
-    if (n) { /* line = line + "\n\n" + ixp, como o docsel faz */ }
-}
+**One binary or two.** Recommendation: the commands live in the main binary as `katana intel <command>`, and the
+same sources also build as a small standalone `cbi` (the unit `src/cbi.c` of 1.3).
+
+- `katana intel` is what the owner uses: one program to install and update (`katana update`), the model is at hand
+  for `investigate`, and it follows the rule that functionality goes into the binary.
+- `cbi` costs one extra build line and proves the dependency rule on every build. It contains no inference code, so
+  it is small and runs on a machine with no model and no GPU (a server, CI). It has every command except those that
+  need a model, unless it is pointed at a running `katana serve`.
+- Shipping `cbi` as a product of its own is the owner's call; building it is recommended regardless.
+
+**Commands.**
+
+| Command | Needs a model | What it does |
+|---|---|---|
+| `index [path] [--full]` | no | build or update the store, with progress; interruptible |
+| `status` | no | files indexed and pending, per language; segments, sizes, parser versions, files with parse errors; last update |
+| `symbols [pattern] [--kind K] [--path P]` | no | list symbols by name prefix or pattern, with range and signature |
+| `def NAME`, `callers NAME [--depth N]`, `callees NAME [--depth N]`, `refs NAME`, `importers FILE`, `deps PATH [--reverse]`, `similar NAME`, `tests NAME`, `outline PATH`, `path FROM TO`, `guards NAME` | no | the exact queries of section 4 |
+| `search "words"` | no | ranked text search (PROBABLE), with the evidence of each candidate |
+| `ask "question"` | no | interpreter + orchestrator + packet: prints the evidence packet and stops. No analysis |
+| `investigate "question"` | yes | `ask`, then query expansion when it applies, then the model's analysis of the packet |
+| `shell` | optional | interactive investigation (below) |
+| `compact`, `verify`, `export` | no | merge segments; check every checksum and cross-reference; write the tables as JSON lines |
+
+Common options: `--cwd DIR`, `--json`, `--limit N`, `--no-ai` (forces `investigate` to behave as `ask`), `--model
+FILE` or `--server URL` (which `IxAi` to use), `--tokens N` (packet ceiling), `--time` (stage times on stderr).
+
+**Readable output.** The formats of section 4 and 7.1: one fact per line, `file:line` first, the relation and its
+resolution class in brackets, totals and "(+N more)" when cut. `file:line` is printed in the form terminals and
+editors make clickable.
+
+**JSON output** (`--json`): one JSON object per line, stable field names, every object typed:
+
+```
+{"type":"symbol","key":"9f3a51c2e07b4d10","name":"listSessions","kind":"function","vis":"exported","file":"bridge/sessions.mjs","line0":132,"line1":158,"sig":"export function listSessions(state, opts)","range":"exact"}
+{"type":"relation","id":"E3","rel":"calls","class":"unique","from":{"key":"...","name":"onMessage","file":"bridge/server.mjs","line0":301,"line1":365},"to":{"key":"9f3a51c2e07b4d10","name":"listSessions"},"line":331,"text":"const list = listSessions(state, { terminals: true });"}
+{"type":"hypothesis","id":"H1","mark":"probable","title":"...","why":[{"how":"expanded","term":"session","from":"sessao"}],"entry":"...","evidence":["E3","E4","E7"]}
+{"type":"gap","id":"G1","text":"No call path from linux/install.sh to bridge/sessions.mjs"}
+{"type":"claim","id":"C2","text":"...","cites":["E4","E7"],"supported":true}
+{"type":"done","total":12,"shown":12,"partial":false,"ms":38}
 ```
 
-`ix_prepare` receives the **original** request (before the `docsel` text, the folder-change note or the undo note
+`key` is the 64-bit stable symbol key of 2.4, in hexadecimal. The desktop application and any script consume this
+form; the readable form is rendered from the same records, so the two cannot disagree.
+
+**How the owner sees the evidence behind each statement.**
+
+- Every fact, in every output, has an evidence id (`E1`, `E2`, ...) and its `file:line`.
+- A hypothesis lists the ids it rests on and how it entered (`why`).
+- In `investigate`, the model is told to end each statement with the ids it relies on. After the generation the
+  module checks, deterministically, that every cited id exists in the packet and that each sentence that names a
+  file or a function cites at least one id. A statement that fails is printed with the mark `unsupported` instead
+  of being hidden. This does not prove the statement true; it proves where it claims to come from.
+- `why E3` (in the shell) or `--explain` prints the fact in full: both ends with their ranges, the source line, the
+  relation, the resolution class, and for a multi-step fact the path through the graph
+  (`onMessage -> listSessions -> terminalSessionIds`, one `file:line` per step).
+
+**Interactive mode** (`katana intel shell`): a prompt for investigating step by step with the evidence in view.
+
+```
+> ask por que o gkatana nao aparece no celular?
+  request read as: debug; named: gkatana (command, 2 files), gclaude (command, 10 files)
+  H1 (probable) the terminal session list sent to the phone        7 facts
+  H2 (probable) the install script that registers the commands     3 facts
+  H3 (probable) ...
+  not found: 2 items (type: gaps)
+> open H1            the hypothesis block of the packet: flow, guards, excerpts
+> why E4             one fact in full
+> callers listSessions      any exact query, added to the evidence of this investigation as E12..
+> path install_gkatana listSessions
+> drop H3 / pin H2   the owner steers: dropped hypotheses leave the packet, pinned ones get more budget
+> expand             run the query expansion now (needs a model); shows the terms and which survived
+> analyze            the model's analysis of the current packet, with cited ids
+> packet             print the packet exactly as a model would receive it
+> save case.json     the whole investigation as JSON lines
+```
+
+Without a model, `expand` and `analyze` say that no model is attached and everything else works. The shell keeps
+one investigation (an `IxCase`) in memory; each exact query the owner runs adds facts to it, so the owner can build
+by hand the same packet the orchestrator builds automatically, and see what each step contributes.
+
+### 8.1 The agent adapter
+
+Everything the agent runtime knows about the module is in one file, `src/agent/intel_agent.c`, plus the `Find`
+facade. The module knows nothing of them.
+
+| Path | What the adapter does |
+|---|---|
+| Tools | registers `Def`, `Callers`, `Callees`, `Refs` (`Uses`), `Outline` (the module map), `Investigate` and the others of section 4 in the tool table (`src/tools/table.c`); each is argument parsing plus one `ixq_*` call plus the text renderer. `Investigate(question)` returns the packet of `ix_prepare` as a tool result, for when the model wants a fresh investigation in the middle of a request |
+| `Find` facade | `src/tools/find.c` keeps its schema and output and calls `ixt_search` / `ixq_*` |
+| Packet before the request | `agent_intel_packet(...)`, called from `src/agent/loop.c` in the block that prepares the user message, right after the `ds_select` call and before `vis_take` and the plan-mode note. One line in the loop |
+| `IxAi` | implements it over the session's loaded model (side generation) |
+| File changes | calls `ixd_touch(path)` after `Edit`, `Write`, `Rename`, `Replace`, `Patch` |
+| Notes | `fg_neighbor_note` asks the module for neighbours and tells it which files the packet already showed |
+
+```c
+/* src/agent/loop.c: a unica linha nova no laco */
+if (cml) agent_intel_packet(m, line, sizeof line);      /* adaptador: monta o pacote de evidencias e anexa ao pedido, como o docsel */
+```
+
+`agent_intel_packet` passes `ix_prepare` the **original** request (before the `docsel` text, the folder-change note or the undo note
 are added), so those notes are not interpreted as part of the question. Because the packet is part of `line`, it
 goes where the user turn goes: `pend`, the history, the session file.
 
@@ -1045,12 +1358,12 @@ it can help. A request typed `IXT_NONE` costs the tokenization and nothing else.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KATANA_INTEL` | to be decided by the owner (see below) | `0` turns the whole layer off: no packet, structural tools answer from the old index or say unavailable, `Find` is today's `Find` |
+| `KATANA_INTEL` | to be decided by the owner (see below) | `0` turns the agent adapter off: no packet, no structural tools, `Find` is today's `Find` while the old path exists (2.9). The `katana intel` commands are not affected: they are the module's own interface |
 | `KATANA_INTEL_PACKET` | `full` | `off`: tools only; `exact`: only named entities and their structure; `full`: with hypotheses |
 | `KATANA_INTEL_EXPAND` | `1` when the packet is `full` | `0`: no model expansion |
 | `KATANA_INTEL_TOKENS` | `1500` | global packet ceiling |
 | `KATANA_INTEL_MS`, `KATANA_INTEL_EXPAND_MS` | `8000`, `6000` | time caps |
-| `KATANA_INTEL_BG` | `1` | background indexing while waiting for the user |
+| `KATANA_INTEL_BG` | `0` | `1`: inside a running session, keep indexing in a thread while the agent waits for the user. Off by default: the owner's proposal excludes background services; this one dies with the session, but it is still work nobody asked for |
 | `KATANA_INTEL_MAX_FILES` | `200000` | above it, only the folders touched are indexed (8.6) |
 | `KATANA_INTEL_MEM_MB`, `KATANA_INTEL_DISK_MB` | `512`, `2048` | ceilings of 2.7 |
 | `KATANA_INTEL_LSP` | `0` | `1`: ask an installed language server first for resolved relations (3.5) |
@@ -1058,7 +1371,7 @@ it can help. A request typed `IXT_NONE` costs the tokenization and nothing else.
 | `KATANA_INTEL_DET` | `0` | `1`: deterministic mode for tests and curriculum generation (no time cuts, no model expansion unless a fixed table is given) |
 
 Proposed default for `KATANA_INTEL`, for the owner to decide: **on for the database and the structural tools as
-soon as phase 2 passes its criteria** (they are exact and replace heuristics already in use), and **the packet on
+soon as phase B1 passes its criteria** (they are exact and replace heuristics already in use), and **the packet on
 in `exact` mode first**, moving to `full` after the two minimal measures of section 11. The reason is the research:
 the exact part has no measured downside, the probable part has a measured top-1 near 4%.
 
@@ -1094,11 +1407,12 @@ codebench`) can separate engine time from model time.
   2. *On demand*: a request triggers indexing of the folders its entities and path terms point to, inside the
      request's time cap. Text search works over what is indexed; the packet header says "the engine has indexed
      N of M files so far; results are partial" and `Not found` says what was not searched.
-  3. *In the background* (`KATANA_INTEL_BG`): while the agent waits for the user's next message, a low-priority
-     thread indexes the rest, most recently modified files first; it stops at the next file boundary when a message
-     arrives and whenever the model computes.
-  4. `katana intel index [path]` builds everything explicitly, with progress, for the owner who wants it done.
-  Past `KATANA_INTEL_MAX_FILES`, step 3 is off and only steps 1, 2 and 4 apply.
+  3. *By command*: `katana intel index [path]` builds everything explicitly, with progress, and can be
+     interrupted (what was published stays valid). This is the normal way to index a huge tree.
+  4. *Inside a session, only if `KATANA_INTEL_BG=1`*: while the agent waits for the user's next message, a
+     low-priority thread indexes the rest, most recently modified files first; it stops at the next file boundary
+     when a message arrives and whenever the model computes. It is a thread of the session, never a service.
+  Past `KATANA_INTEL_MAX_FILES`, step 4 is off whatever the switch says.
 - **Generated and vendored code** (`node_modules`, `build`, `dist`, `vendor`, minified files, files over 300 KB):
   skipped as today (`fd_skip_rel`, `FD_MAXBYTES`), with one change: a large source file is indexed for symbols with
   streaming (the 300 KB cap was chosen for the in-memory blob), and the file record says what was skipped and why.
@@ -1106,11 +1420,12 @@ codebench`) can separate engine time from model time.
   folder has a project marker (a git root, a build file, `KATANA.md`) or was indexed before. This keeps the rule
   the neighbour note already follows: "the loop never creates cache files for a folder that never used `Find`"
   (`docs/tools.md`). With no marker, the structural tools index on explicit request only.
-- **Not writable.** The database goes to `~/.katana/cache`, as the `Find` index does.
-- **Two katana processes in one folder.** One writer by advisory lock; the others read the last complete state.
+- **Not writable.** The store goes to `~/.katana/cache`, as the `Find` index does.
+- **Several processes in one folder** (agent, console, server, CLI). One writer by advisory lock; the others read
+  the last published manifest (2.4).
 - **Windows.** Later. `find.c`, `findgraph.c` and `multiedit.c` are compiled out there today (`#ifndef _WIN32`
-  stubs). The layer needs: the file listing without `popen`, `mmap` through the file-mapping API, the lock, and a
-  watcher. The parsers and queries are portable C. Until then the tools answer "not available on Windows yet" as
+  stubs). The module needs: the file listing without `popen`, mapping through the file-mapping API, the lock, and
+  deferred deletion of segments that are still mapped. The parsers and queries are portable C. Until then the tools answer "not available on Windows yet" as
   the existing three do.
 
 ## 9. Build order
@@ -1118,27 +1433,50 @@ codebench`) can separate engine time from model time.
 Effort is in working days of one agent and is an **estimate**. Each phase ends with something usable and a
 criterion that can be checked without a measurement campaign.
 
+**Part A: the module without any AI.** Everything here builds, runs and is tested with no model loaded and no
+inference code linked (the `cbi` build of 1.3 is the proof).
+
 | Phase | Deliverable | Done when | Effort | Depends on |
 |---|---|---|---|---|
-| 0. Extraction | `src/intel/` exists; scanner, term table, per-file indexing and the file graph moved out of `find.c` / `findgraph.c` with no behaviour change | `tools/tooltest/find.sh` and the curriculum `check` of the `x-find6` family pass byte for byte | 1 to 2 | - |
-| 1a. Structural indexer, core | lexer layer; `IxParser` interface; database format of 2.4 with segments and `mmap`; incremental update; `katana intel index`, `stats`, `dump FILE` | a hand-checked golden set (about 30 files: katana's own hardest C files, the Qt app, the bridge, Python tools) where every function's `line0-line1` is listed; the parser matches it or the mismatch is a documented failure class of 3.4; re-index after touching one file re-parses one file | 4 to 5 | 0 |
-| 1b. Parsers, tier 1 | C, C++, JS/TS, Python: definitions with ranges, calls, imports, inheritance, guards | golden set per language; on the katana tree, zero functions with `conf = 0` outside files listed as known hard cases | 4 to 6 (one language family per agent, in parallel after 1a's first two days) | 1a interface |
-| 1c. Parsers, tiers 2 and 3 | Kotlin/Java, Go, Rust; shell, QML, PowerShell, Markdown | golden set per language (smaller) | 3 to 4 (parallel, one per agent) | 1a interface |
-| 2. Structural queries as tools | `ixq_*`; tools `Def`, `Callers`, `Callees`, `Outline` in the core list; `Uses`, `Importers`, `Dependents`, `Similar`, `Tests`, `Path`, `Guards` under "More tools"; `Read` map, `Find` `calls:`, `fd_enclosing` and the neighbour note moved onto the database; `katana tool <Name>` for each | the five questions of the owner answered by command on the katana tree and on one large tree: which functions and classes exist, who calls a function, which files reference a symbol, which modules depend on which, where similar implementations are; each answer checked by hand on 10 symbols per language; `tools/tooltest` script for every tool | 3 to 4 | 1b |
-| 3. Scale | 100k files: segments, memory ceiling, background and on-demand indexing, listing shortcut, lock | a synthetic or real tree of 100k files indexes inside the ceilings of 2.7, or the ceilings are rewritten with the measured values; kill during indexing leaves a usable database | 3 to 5 | 1a (parallel with 2) |
-| 4. Interpreter, orchestrator, packet (no model) | `question.c`, `investigate.c`, `packet.c`, `diagnose.c`; hook in `loop.c`; `katana intel ask "<request>"` prints the packet without a model; `KATANA_INTEL_PACKET=exact` and `full`; log line with the full case | the request types of 5.2 classified correctly on the 76 questions plus 30 hand-written non-investigation requests (a table, checked by hand); packets for the 76 questions generated offline and inspected for format, budget and provenance; deterministic under `KATANA_INTEL_DET=1` | 5 to 7 | 2 |
-| 5. Query expansion by the model | side generation with the JSON grammar; validation against the index; `expand.tsv`, `terms.tsv` | on 10 Portuguese requests the surviving terms are printed with their origin; a request repeated costs no generation; the conversation's cache is intact after the side generation (the next turn reads no extra tokens) | 2 to 4 (the cache question of 5.3 decides which end) | 4 |
-| 6. Curriculum | families of section 10, generated by the engine with real packets and real tool outputs | `check` replays them byte for byte | 3 to 4 | formats of 2 and 4 frozen (parallel with 5) |
-| 7. Semantic search (optional) | `semantic.c` over symbol bodies, following `docs/embedding-usage.md` | only started if the offline measure of section 11 moves the hop slice | 3 to 5 | `katana embed`, 4 |
-| 8. Windows | listing, mapping, lock | the tool tests pass there | 2 to 3 | 3 |
+| A0. Skeleton and extraction | `src/intel/` exists and is included before the agent; the `cbi` unit builds; scanner, tokenizer, per-file indexing and the file graph moved out of `find.c` / `findgraph.c` with no behaviour change (`Find` still writes its old file) | `tools/tooltest/find.sh` and the curriculum `check` of the `x-find6` family pass byte for byte; `cbi` compiles without `src/engine` model code and without `src/agent` | 2 to 3 | - |
+| A1a. Store and structural indexer, core | lexer layer; `IxParser` interface; the `.cbi` store of 2.4 (segments, manifest swap, explicit serialization, checksums); incremental update; `katana intel index`, `status`, `verify`, `outline FILE` | a hand-checked golden set (about 30 files: katana's own hardest C files, the Qt app, the bridge, Python tools) where every function's `line0-line1` is listed; the parser matches it or the mismatch is a documented failure class of 3.4; touching one file re-parses one file; killing the process at random points during an update always leaves a store that `verify` accepts | 5 to 6 | A0 |
+| A1b. Parsers, tier 1 | C, C++, JS/TS, Python: definitions with ranges, calls, imports, inheritance, guards | golden set per language; on the katana tree, zero functions with `conf = 0` outside files listed as known hard cases | 4 to 6 (one language family per agent, in parallel after A1a's first two days) | A1a interface |
+| A1c. Parsers, tiers 2 and 3 | Kotlin/Java, Go, Rust; shell, QML, PowerShell, Markdown | golden set per language (smaller) | 3 to 4 (parallel, one per agent) | A1a interface |
+| A2. Exact queries and the CLI | `ixq_*`; commands `symbols`, `def`, `callers`, `callees`, `refs`, `importers`, `deps`, `similar`, `tests`, `outline`, `path`, `guards`, `search`; readable and `--json` output with evidence ids | the owner's five questions answered by command on the katana tree and on one large tree: which functions and classes exist, who calls a function, which files reference a symbol, which modules depend on which, where similar implementations are; each answer checked by hand on 10 symbols per language; a test script per command | 3 to 4 | A1b |
+| A3. Scale and robustness | 100k files inside the ceilings; compaction; several processes reading while one writes; on-demand indexing; `compact`, `export` | a synthetic or real tree of 100k files indexes inside the ceilings of 2.7, or the ceilings are rewritten with the measured values; two processes (one updating in a loop, one querying in a loop) run for minutes with no wrong answer and no `verify` failure | 3 to 5 | A1a (parallel with A2) |
+| A4. Investigation without AI | `question.c` (rules), `investigate.c`, `packet.c`, `diagnose.c`; `katana intel ask`; `katana intel shell` without `expand` / `analyze`; the full case as JSON | the request types of 5.2 classified correctly on the 76 questions plus 30 hand-written non-investigation requests (a table, checked by hand); packets for the 76 questions generated and inspected for format, budget and provenance; deterministic under `KATANA_INTEL_DET=1` | 5 to 7 | A2 |
 
-Critical path: 0 -> 1a -> 1b -> 2 -> 4 -> 5, about 19 to 28 days of one agent (estimate). In parallel: the
-tier 1 parsers among themselves; 1c with 2; 3 with 2 and 4; 6 with 5. With three agents the calendar time is
-roughly half (estimate).
+Phase **A5 (CSSE and the knowledge base)** belongs to this part as well; it is specified at the end of section
+12 (5 to 8 days, after A2 and before A4, partly in parallel with the parsers).
 
-The order follows the owner's suggestion: phases 0 to 3 contain no model at all and already give the agent better
-tools than it has; phase 4 is the investigation intelligence without the model; the model enters only in phase 5,
-for one constrained question; semantic search is last and conditional.
+**Part B: the agent adapter.** Thin; no AI of its own.
+
+| Phase | Deliverable | Done when | Effort | Depends on |
+|---|---|---|---|---|
+| B1. Tools and the `Find` facade | `src/agent/intel_agent.c`: `Def`, `Callers`, `Callees`, `Outline` in the core list, the rest under "More tools"; `Find`, the `Read` map, `fd_enclosing`, `Rename` candidates and the neighbour note answered by the module; `find-*.idx` retired (2.9) | `katana tool <Name>` for each; the `Find` tests and the `x-find6` replay still pass byte for byte | 2 to 3 | A2 |
+| B2. Packet before the request | `agent_intel_packet` and its one line in `loop.c`; `KATANA_INTEL_PACKET=exact` and `full`; the case in the action log; compaction recognises old packets | a request in `-p` mode shows the packet in the session file; with `KATANA_INTEL=0` the session is byte-identical to today's | 1 to 2 | A4, B1 |
+
+**Part C: AI on top, optional.** Only here does the inference engine enter.
+
+| Phase | Deliverable | Done when | Effort | Depends on |
+|---|---|---|---|---|
+| C1. `IxAi` and query expansion | the interface of 1.3; the in-process implementation and the in-session one; `ixn_expand` with the JSON shape; validation against the index; `terms.tsv` | on 10 Portuguese requests the surviving terms are printed with their origin; a repeated request costs no generation; after the side generation the conversation's next turn reads no extra tokens | 2 to 4 (the cache question of 5.3 decides which end) | A4 |
+| C2. Final analysis in the module's interface | `ixa_analyze`; `katana intel investigate`; `analyze` and `expand` in the shell; the citation check of 8.0 | an investigation run from the CLI prints an analysis in which every statement carries evidence ids or the mark `unsupported` | 2 to 3 | C1 |
+| C3. Curriculum | the families of section 10, generated with real packets and real tool outputs | `check` replays them byte for byte | 3 to 4 | formats of B1 and B2 frozen (parallel with C1) |
+| C4. Semantic search (optional) | `semantic.c` over symbol bodies, following `docs/embedding-usage.md` | only started if the offline measure of section 11 moves the hop slice | 3 to 5 | an embedding command in the engine, A4 |
+| C5. Server client for `IxAi` | `src/app/intel_ai_http.c` | `katana intel investigate --server URL` works against a running `katana serve` | 1 to 2 | C2 |
+| Windows | listing, mapping, lock, deferred deletion | the command tests pass there | 2 to 3 | A3 |
+
+Critical path to the owner's first goal (an indexer that answers the five structural questions from the command
+line, no AI): A0 -> A1a -> A1b -> A2, about 14 to 19 days of one agent (estimate). To the agent receiving packets:
+add A5, A4 and B1 + B2, about 27 to 39 days in all. To the full design with expansion and analysis: add C1 and C2,
+about 31 to 46 days (estimates throughout). In parallel: the tier 1 parsers among themselves; A1c with A2; A3 with
+A2 and A4; B1 with A4; C3 with C1. With three agents the calendar time is roughly half (estimate).
+
+The order follows the owner's suggestion and the "no AI in the core" rule of his storage proposal: all of part A
+and part B run without a model; the model enters in C1 for one constrained question and in C2 for the analysis;
+semantic search is last and conditional. If part C were never built, parts A and B would still be a complete
+product: an indexer, a query tool and better agent tools.
 
 ## 10. Training
 
@@ -1191,9 +1529,13 @@ Rules that keep the training independent of internals:
 | **The model stops investigating** | a packet that looks complete invites answering from it | the header instruction; `Not found` always present; training rules; unknown until agent runs |
 | **Wrong request type** | cue words are crude; a debug request typed as locate gets a thin packet, a chat message typed as debug gets noise | default `NONE`; a wrong type costs budget, not correctness |
 | **Conflict with the earlier design** | `docs/embedding-usage.md` D26 and research section 6 forbid an unrequested seed | this document narrows that to "no unrequested answer"; if the measure of 11.3 says even hypotheses hurt, `exact` mode restores the old rule |
-| **Three sources of truth during the transition** | `fd_sym`, `ct_outline` and the new parser can disagree while both exist | phase 0 and 2 retire the old ones; the curriculum `check` detects format drift |
-| **Disk and memory on big trees** | the 0.9 GB figure is an extrapolation with assumed densities | ceilings enforced by code; text-only fallback per directory |
+| **Three sources of truth during the transition** | `fd_sym`, `ct_outline` and the new parser can disagree while both exist | phases A0 and B1 retire the old ones; the curriculum `check` detects format drift |
+| **Disk and memory on big trees** | the 0.6 GB figure is an extrapolation with assumed densities | ceilings enforced by code; text-only fallback per directory |
+| **The own store is new code that must never corrupt** | segments, manifest, compaction and multi-process readers are easy to get subtly wrong | the design has one mutable file and one commit point; kill-during-write and two-process tests are a criterion of phase 3; checksums drop a bad segment instead of trusting it; 2.8 says when to reconsider |
 | **Maintenance** | ten languages of heuristics | one lexer layer; the plugin and the language-server path as escape hatches; tier 3 languages may stay line-based with ranges |
+
+The risks specific to the knowledge base and the five-component ranking (dictionary coverage, maintenance,
+ambiguity, mixed language, false positives, weights that look measured) are in 12.7.
 
 ### 11.2 What the research measured and what it did not
 
@@ -1214,6 +1556,7 @@ Not measured, by anyone, anywhere in the repository:
 - whether symbol-level exact structure around a wrong entry point helps the model recover or sends it further away;
 - the precision of any parser described here;
 - query expansion by the large model;
+- the knowledge-base search of section 12 (conceptual and behavioural matching, the five-component score, mining);
 - the retrieval embedding model's effect on recall (its experiment is incomplete; only its speed in the first
   implementation is known, 112 tokens/s by the owner's brief, too slow for interactive use without cache and
   batching);
@@ -1226,7 +1569,7 @@ is built to respect, and unmeasured expectations for its two new ideas: exact st
 
 | Question | Smallest measure | Needs the large model |
 |---|---|---|
-| Are the parsers good enough to call their output exact? | the golden sets of phase 1 (hand-listed ranges and callers for about 30 files); count mismatches by failure class | no |
+| Are the parsers good enough to call their output exact? | the golden sets of phase A1 (hand-listed ranges and callers for about 30 files); count mismatches by failure class | no |
 | Does symbol-level structure reach the gold files that file-level activation misses? | offline, on the existing 46-question sample: for each question, are the gold files within the union of (top-5 candidates, their callers, their callees to depth 2)? Compare with top-5 alone (41.3% has-gold today) | no |
 | Does expansion close the language gap? | the same sample: recall at 5 and at 10 on the 27 hop files with and without expanded terms | yes: about 46 generations of 80 tokens, a few minutes |
 | Does the asymmetry step find the cause when a sibling works? | run it on the questions that name a working and a failing thing (the mandatory question is one); count gold files in its output | no |
@@ -1235,7 +1578,7 @@ is built to respect, and unmeasured expectations for its two new ideas: exact st
 | What does the packet cost in time? | `KATANA_INTEL_TIME=1` on those runs: stage times and the prefill time of the packet | from the same runs |
 | Are the size and time estimates of 2.7 right? | one cold index of the largest tree available, `KATANA_INTEL_TIME=1` | no |
 
-The first, second, fourth and last need no model and come for free with phases 1 to 4. The third costs minutes.
+The first, second, fourth and last need no model and come for free with part A of the build order. The third costs minutes.
 Only the fifth is a real evaluation run, and it is the one that should gate turning `full` on by default.
 
 ### 11.4 Main uncertainties, in order of weight
@@ -1245,7 +1588,7 @@ Only the fifth is a real evaluation run, and it is the one that should gate turn
    observed.
 2. **Whether the entry point can be found often enough.** Exact structure is only as useful as the place it starts
    from. If expansion does not move the hop slice, the packet's hypotheses stay near the measured 41% has-gold in
-   five, and the layer's value shifts almost entirely to the structural tools (phases 1 and 2), which stand on their
+   five, and the layer's value shifts almost entirely to the structural queries and tools (part A and phase B1), which stand on their
    own.
 3. **Whether lightweight parsers are precise enough on the owner's code**, C with macros and one translation unit
    first, C++/Qt second.
@@ -1254,3 +1597,335 @@ Only the fifth is a real evaluation run, and it is the one that should gate turn
    the densities assumed.
 6. **Effort.** The estimates of section 9 assume the heuristics work on the first or second try per language; the
    hard cases of 3.4 are where days disappear.
+
+## 12. Semantic search without AI in the core (CSSE) and its knowledge base
+
+The owner's proposal for the module's own semantic search, the "CBI Semantic Search Engine". It replaces the idea
+of depending on embeddings in the core. Five complementary searches, no model:
+
+```
+question in natural language
+   -> Semantic Query Analyzer: concepts and intentions                       (the interpreter of section 5, extended)
+   -> (1) LEXICAL      words and identifiers
+      (2) CONCEPTUAL   synonyms and concepts
+      (3) STRUCTURAL   functions and classes
+      (4) BEHAVIOURAL  actions and effects
+      (5) RELATIONAL   calls and dependencies
+   -> Search Ranker: combines and scores, with the evidence of every component
+```
+
+The owner's conclusion: **all the patterns must be registered** in a knowledge base that the code follows. Another
+agent is assembling the initial base in `data/intel/kb/` (concepts, operation taxonomy, Portuguese and English
+morphology rules, abbreviations, naming patterns, relation table). That folder did not exist in the tree when this
+section was written, so the format below is a specification to be reconciled with what that agent produces, not a
+description of it.
+
+Why this is the right place to invest, in the terms of the research: the largest measured failure is vocabulary
+(21% of gold files share no informative term with the question; Portuguese over English code), and nothing
+word-based or embedding-based that was tried reached those files. A dictionary that maps `estoque` to `inventory`,
+`stock` and `available_quantity` attacks exactly that gap, deterministically and with a reason that can be shown.
+It is unmeasured, like everything new here. One caution from the same research: token-to-token association learned
+from co-occurrence added nothing measurable (`docs/investigation-engine.md` 3.3), which bears on the *mined* part of
+the base (12.4), not on the curated part.
+
+### 12.1 The knowledge base on disk
+
+**Principles.** Text, line oriented, one record per line, tab separated, UTF-8, `#` starts a comment line. Easy to
+parse in C with one loop and a `switch` on the first field; easy for the owner to read, edit and diff. Every row
+says where it came from.
+
+**Files** (seed in the repository, `data/intel/kb/`; names proposed):
+
+| File | Content |
+|---|---|
+| `concepts.kb` | concepts, their terms per language, their associated actions |
+| `operations.kb` | the operation taxonomy: classes and their verbs, per language |
+| `morph-pt.kb`, `morph-en.kb` | suffix rules and the controlled vocabulary of irregular forms |
+| `abbrev.kb` | abbreviations and acronyms (`qty` -> quantity, `auth` -> authentication / authorization, `cfg`, `msg`, `req`, `ctx`) |
+| `naming.kb` | naming patterns of roles (`*Handler`, `*Controller`, `*Service`, `*Repository`, `on*`, `handle*`, `*Listener`, `*_test`, `test_*`) and of event wiring (publish-shaped and subscribe-shaped calls) |
+| `relations.kb` | the relation table: edge kinds and their initial weights |
+| `rank.kb` | the ranker's weights and thresholds |
+
+**Header and records.**
+
+```
+!kb	1	concepts	2026-11-23            first line of every file: marker, format version, kind, date
+# id, category, canonical form, provenance
+C	INVENTORY	BUSINESS_ENTITY	inventory	seed
+# concept id, language (pt | en | code), term, weight 0..1, provenance, [note or source]
+T	INVENTORY	pt	estoque	1.00	seed
+T	INVENTORY	pt	inventario	0.90	seed
+T	INVENTORY	pt	quantidade disponivel	0.95	seed
+T	INVENTORY	en	inventory	1.00	seed
+T	INVENTORY	en	stock	1.00	seed
+T	INVENTORY	code	available_quantity	0.95	seed
+# concept id, operations it usually takes (ids of operations.kb)
+A	INVENTORY	UPDATE,DECREASE,INCREASE,RESERVE,RELEASE
+# a compound concept is an intention: entity + operation, with its own extra terms
+I	INVENTORY_UPDATE	BUSINESS_OPERATION	INVENTORY	UPDATE	seed
+T	INVENTORY_UPDATE	pt	baixa de estoque	0.95	seed
+# a term that must NOT map to a concept in a context (disambiguation)
+N	INVENTORY	en	stock	finance	seed	stock as a share, not as goods
+# removal of an inherited row by a more specific layer
+X	T	INVENTORY	en	stock
+
+!kb	1	operations	2026-11-23
+O	UPDATE	en	update,modify,change,set,edit,patch	seed
+O	UPDATE	pt	atualizar,modificar,alterar,mudar,editar	seed
+O	CANCELLATION	en	cancel,revoke,rollback,abort,void	seed
+O	CANCELLATION	pt	cancelar,revogar,estornar,desfazer	seed
+
+!kb	1	morph	2026-11-23
+# language, suffix, replacement, minimum stem length, provenance      (first matching rule wins; longest suffix first)
+S	pt	acoes	acao	3	seed
+S	pt	amento	ar	3	seed
+S	pt	ando	ar	3	seed
+S	pt	ados	ar	3	seed
+# irregular or protected forms: language, form, normal form
+V	pt	estorno	estornar	seed
+V	en	paid	pay	seed
+
+!kb	1	relations	2026-11-23
+R	call_direct	1.00	seed
+R	implements	0.95	seed
+R	event_proven	0.95	seed
+R	module_dependency	0.70	seed
+R	same_domain	0.30	seed
+
+!kb	1	rank	2026-11-23
+W	L	0.20	seed
+W	C	0.25	seed
+W	B	0.20	seed
+W	G	0.25	seed
+W	S	0.10	seed
+```
+
+On the owner's example: his concept `INVENTORY_UPDATE` bundles an entity (estoque, inventory, stock,
+available_quantity) with actions (update, decrease, increase, reserve, release). The format keeps that concept
+(record `I`) and also names its two parts, the entity `INVENTORY` and the operation `UPDATE`. The reason is
+coverage: with entities and operations registered separately, `INVENTORY` + `RESERVE` works without anyone having
+written an `INVENTORY_RESERVE` row, and the compound rows are needed only where an intention has vocabulary of its
+own ("baixa de estoque").
+
+**Provenance** (the last fixed field of every row): `seed` (shipped with katana), `domain` (a domain file of the
+project, written by people), `user` (the owner's personal file), `mined` (derived from the project's code by 12.4;
+the optional note says how: `ident`, `cooc`, `comment`, `model`). A row without a valid provenance is rejected at
+load, with the file and line in the message.
+
+**Layers and merging.** Loaded in this order, later layers overriding earlier ones by key (record type, id,
+language, term):
+
+| Order | Layer | Where | Provenance allowed |
+|---|---|---|---|
+| 1 | seed | compiled into the binary from `data/intel/kb/` at build time (a generated table, like the existing `src/qtabs.h` and `src/unitab.h`), so the module works with no file beside it | `seed` |
+| 2 | mined | `<store>/mined.kb`, written by the module | `mined` |
+| 3 | domain | `<project>/.katana/intel/*.kb`, versioned with the project if the owner wants | `domain` |
+| 4 | user | `~/.katana/intel/*.kb` | `user` |
+
+Mined rows sit **below** domain and user rows, so nothing mined can override what a person wrote; and a mined row
+never replaces a seed row with the same key (it is dropped). An `X` row removes an inherited row. `katana intel kb
+check` validates every file (unknown ids, weights outside 0 to 1, duplicate keys, a term mapped to two concepts with
+no `N` row to separate them); `katana intel kb show CONCEPT` prints the merged view with the layer of each row;
+`katana intel kb why "estoque"` shows how a word is normalized and which concepts it reaches.
+
+**Versioning.** The `!kb` line has the format version; a file of an unknown version is skipped with a warning. The
+store records a hash of the merged base it was indexed with, because the behavioural index of 12.2 depends on the
+operation table: a changed base re-derives the operation masks (cheap: names only, no re-parse).
+
+**Memory.** Loaded into two hash tables (normalized term -> list of (concept, weight, layer); verb -> operation)
+and the rule arrays. For a base of a few thousand concepts with about ten terms each, the estimate is a few
+megabytes; it is an estimate, since the base does not exist yet. Load time should be milliseconds; the merged form
+can be cached in the store if it is not.
+
+### 12.2 Normalization and the indexes the five searches need
+
+**Tokenizer and morphology** (own C; extends `fd_tokens`, `fd_fold`, `fd_stem`, which already fold accents, split
+camelCase and snake_case, and stem crudely):
+
+- splitting: camelCase, PascalCase, snake_case, kebab-case, digits, acronym runs (`HTTPServer` -> http, server;
+  `parseURLPath` -> parse, url, path);
+- normalization by the suffix rules and the controlled vocabulary of `morph-*.kb`, to a **normal form** rather than
+  a bare stem: atualizando / atualizado / atualizacoes -> atualizar / atualizacao; cancelamento -> cancelar;
+  aprovados -> aprovar. No full lemmatizer at the start, as the owner specified;
+- the language of a token is not detected. Both rule sets are tried and a result is accepted only if the normal
+  form exists in the base or in the project's term table. That handles mixed text ("atualiza o stock") without a
+  detector, at the price of occasional cross-language collisions (12.7);
+- abbreviations expanded through `abbrev.kb` as *additional* terms with lower weight, never as replacements;
+- multi-word terms ("quantidade disponivel", "baixa de estoque") are matched as sequences in the request and, on
+  the code side, against the split parts of one identifier (`available_quantity`, `availableQuantity`).
+
+**What the indexer stores per symbol** (added to the segment sections of 2.4; all derived from names and bodies, no
+model):
+
+| Data | From | Used by |
+|---|---|---|
+| name tokens with **position and role**: first token, last token, tokens of the scope (class, module, file) | the parser's symbol record | lexical, behavioural (a verb is recognised by position, 12.7) |
+| field of every posting: symbol name, scope name, signature, string literal, comment, body identifier, path; with a field weight (a function name weighs more than a comment) | the lexer's byte classes | lexical: per-field BM25, as today with three fields, now with seven |
+| **operation mask from the name**: the operation class of the name's verb | `operations.kb` | behavioural |
+| **operation mask from the body**: operation classes of the functions it calls and of its writes (calls `save` or `commit` -> PERSISTENCE; calls `publish`, `emit`, `dispatch` -> NOTIFICATION; assigns to a field or global -> UPDATE; `delete`, `free`, `remove` -> DELETE) | the parser's call and write occurrences | behavioural: this is the "effects" half. A function named `process` that calls `save` and `notify` is found by what it does |
+| **entity concepts**: concepts whose `code` or `en` terms match the name or scope tokens | `concepts.kb` | conceptual, behavioural |
+| role from naming patterns (handler, controller, repository, listener, test, entry point) | `naming.kb` | structural |
+
+### 12.3 The five searches and the evidence each one carries
+
+The analyzer (section 5.2, extended) turns the request into: informative terms, entities named exactly, **concepts**
+(each with the request word that triggered it, the matching row and its layer), **operations** (same), **pairs**
+(entity concept + operation, when a verb and a noun of the request belong together), and structural hints (the
+request says "function", "class", "handler", "test", "where is X configured").
+
+Retrieval unit: the symbol; for files with no symbols (config, text) the 40-line chunk, as today.
+
+| Search | Score component | How it is computed | Evidence line (what the user and the model see) |
+|---|---|---|---|
+| (1) Lexical | L | per-field BM25 over the request's terms and normal forms (the existing `fd_rank`, with the fields of 12.2) | `words: "session" in the function name, "terminal" in a comment` |
+| (2) Conceptual | C | for each concept of the request: the best match between any of the concept's terms and the symbol's name, scope, signature or literals; value = weight of the request-side row x weight of the code-side row x field weight; summed over concepts, squashed to 0..1 | `concept INVENTORY: your word "estoque" (seed) -> code term "available_quantity" (seed) in the function name` |
+| (3) Structural | S | agreement between the structural hints of the request and the symbol: kind, role, visibility, entry point, test or not; plus small query-independent priors (a definition over a prototype, code over generated code) | `is a function, role handler (name pattern *Handler)` |
+| (4) Behavioural | B | agreement between the request's operations and the symbol's operation masks; full value when the **pair** matches (entity concept on the symbol or its scope, and the operation in the name); a lower value when the operation comes only from the body, lower still when entity and operation are in different symbols of one file | `does UPDATE on INVENTORY: verb "adjust" in the name (seed: UPDATE), entity from the class name; its body also calls save (PERSISTENCE)` |
+| (5) Relational | G | proximity in the relation graph to the symbols that scored on (1) to (4): the best product of edge weights of `relations.kb` along a path of at most 3 edges, times the seed's own score | `2 steps from OrderApprovalHandler (matched APPROVAL on ORDER): -> calls publishOrderEvent [direct call] -> event "order.approved" consumed here [event, proven]` |
+
+Rules of the evidence:
+
+- every non-zero component has a line, and the line names the knowledge-base row (id and layer) or the relation
+  that produced it. A component without a showable reason is a bug;
+- a match through a `mined` row always says `mined`; through a model-proposed term (5.3) always says so;
+- the relational line prints the whole path, each edge with its kind and its resolution class (1.2);
+- everything CSSE returns is PROBABLE in the sense of section 1.2. The paths inside a relational line are EXACT
+  relations; that they lead somewhere relevant is the guess.
+
+**The relational search and the owner's weights.** The chain in the owner's example (OrderApprovalHandler ->
+OrderEventPublisher -> EventDispatcher -> InventoryConsumer -> QuantityAdjustment) crosses an event. A parser sees
+no call there. The module links the two sides when the **same string literal** appears as an argument of a
+publish-shaped call and of a subscribe-shaped call (shapes listed in `naming.kb`: `publish`, `emit`, `dispatch`,
+`send` against `subscribe`, `on`, `consume`, `handle`, `listen`, and annotation forms). That is what "event
+publication and subscription, proven" can mean without running the code. An event name built at run time is not
+linked, and the gap is reported.
+
+The initial weights map onto what the store knows, and they are parameters, not probabilities:
+
+| Owner's row | Initial weight | In the module |
+|---|---|---|
+| direct call | 1.00 | `calls`, class `unique` or `scoped`. Class `ambiguous(n)` is divided by n; `textual` gets the `same_domain` weight |
+| interface implementation | 0.95 | `implements`, `inherits`, `overrides` |
+| event publish / subscribe, proven | 0.95 | the literal link above |
+| dependency between modules | 0.70 | `imports` between files or folders |
+| same domain, no direct connection | 0.30 | both symbols carry the same entity concept, or share a rare identifier (`rare` edge of today's graph) |
+
+The measured sparse activation (`fg_activate`: 2 rounds, decay 0.5, k winners) is a relational search already, at
+file level, and it is the only component here with a measured gain (R@5 15.9% -> 33.0%). It stays as the
+implementation of G until a symbol-level version measures better.
+
+### 12.4 How the base grows from the code
+
+Run by `katana intel kb mine` and, incrementally, at the end of an index update. Output goes only to
+`<store>/mined.kb`.
+
+| Method | What it finds | Example | Support required |
+|---|---|---|---|
+| `ident` | frequent head nouns of class, type, file and module names -> candidate **entities** of this project; verbs in first position not in `operations.kb` -> **unknown verbs**, listed for the owner, not guessed | `Shipment`, `Voucher`; verb `reconcile` unknown | the noun in at least 3 symbols of 2 files |
+| `cooc` | verb + noun pairs inside one name (`cancelOrder`, `order_cancel`, `Order.cancel`) -> which entity-operation **pairs exist** in the project | (ORDER, CANCELLATION) exists; (ORDER, APPROVAL) does not | 1 occurrence (it is a fact about the project, used for ranking and for the "not found" section) |
+| `comment` | a word of one language in the comment directly attached to a symbol, and a name token of the other language, that co-occur across several symbols -> candidate **translation pair** | Portuguese comment "atualiza o estoque" above `updateInventory` and `adjustStock` | the pair in at least 3 symbols of 2 files, and the comment word in no more than 5% of the comments |
+| `model` | the confirmed terms of the optional query expansion (5.3) | `sessao` -> `session` | the term exists in the index and led to a candidate the user's session then read |
+
+Safeguards:
+
+- **nothing enters with a high weight without an origin written by a person.** Mined term rows are capped at 0.50
+  and start at 0.30; only `seed`, `domain` and `user` rows may exceed the cap;
+- mined rows never override and never delete other rows (12.1);
+- a mined row attaches a term to an **existing** concept or creates a project-local entity named after the code
+  (`P_SHIPMENT`); it never invents a category or an operation class;
+- every use of a mined row is visible in the evidence;
+- `katana intel kb review` lists the mined rows with their support (the symbols behind each); the owner promotes a
+  row (it moves to the project's domain file with a weight he chooses) or rejects it (an `X` row, so it is not
+  mined again). Promotion is the only path from "mined" to "trusted";
+- the mined file can be deleted at any time; it is rebuilt.
+
+katana itself is the natural first test of the `comment` method: Portuguese comments over English identifiers.
+
+### 12.5 How CSSE fits the rest of the design
+
+| Piece of this document | With CSSE |
+|---|---|
+| Search Engine module (2.2), component 7 (text) and 8 (semantic) | CSSE **is** this module. `search.c` holds the five searches and the ranker; `kb.c` loads the base; `morph.c` the normalization. Component 8 no longer means embeddings |
+| Parsers and store (2.4, 3) | CSSE needs them: positions and roles of name tokens, operation masks from bodies and symbol-level relations all come from the parser. Before the parsers exist, CSSE can run only (1), (2) and the file-level form of (5) over 40-line chunks |
+| Interpreter (5.2) | becomes the Semantic Query Analyzer: the rules stay, concepts and operations are added from the base |
+| Query expansion by the large model (5.3) | an **optional layer above** CSSE, for what the base does not cover: only request concepts that reach no row of the base and no term of the index are sent to the model, and what the index confirms is written back as `mined` / `model` rows. As the base grows, the model is asked less. With no model the search is complete, just narrower |
+| Orchestrator (6.1) | state S4 calls CSSE instead of the plain text search. S3 (model expansion) runs only if the analyzer reports uncovered concepts |
+| Evidence packet (7) | the `why:` lines of hypotheses are CSSE's evidence lines. For the model they are words, not numbers (below) |
+| Embeddings (`docs/embedding-usage.md`, phase C4) | outside the core, as before: an optional reorder of CSSE's pool, built only if a measurement asks for it |
+
+**Graceful degradation.** A word of the request that reaches no concept is not an error: it stays a lexical term.
+If no concept and no operation is recognised, C and B are absent for the whole query, the ranker renormalizes over
+the components that exist (12.6), and the result is today's lexical search plus the graph. The analyzer reports the
+uncovered words; they go to the packet's `Not found` section ("no known concept for 'conciliacao'") and to the list
+`katana intel kb gaps`, which is the owner's to-do list for the base.
+
+### 12.6 The ranking formula, assessed
+
+The owner's formula: `Score = 0.20 L + 0.25 C + 0.20 B + 0.25 G + 0.10 S`, each component in 0 to 1. The weights
+are illustrative, as he said. What must be decided around them:
+
+| Issue | Why it matters | Proposal |
+|---|---|---|
+| **Absent components** | when the request has no recognised concept, C is 0 for every candidate and a quarter of the scale is dead; the same for B | renormalize: divide by the sum of the weights of the components that are *defined for this query*. Report which were absent |
+| **Normalization to 0..1** | dividing each component by the query's maximum makes the best candidate 1.0 whether it is a perfect match or a faint one, so scores are not comparable between queries and no threshold transfers. The research found exactly that for confidence (3.6) and for a weighted sum of normalized scores (mu 0.25 tied, 0.5 and 1.0 hurt; section 4 there) | C, B and S have natural absolute scales (products of base weights; a full pair match is 1) and are **not** divided by the maximum. L (BM25) has no natural scale: it is mapped through a fixed saturating function of the per-term score, not by the query maximum. G is a product of edge weights times a seed score, already in 0..1 |
+| **G is not independent** | G is computed from the candidates that L, C and B selected. It rewards being near other candidates, which is useful, but it also amplifies a wrong seed, and "agreement" between G and the rest carries no information (research 3.6: the graph's top 1 is the lexical top 1 because it was seeded from it) | G never counts its own seed; a candidate supported **only** by G is flagged as such in the evidence (as the `why: via ...` line is today); G's weight is the first thing to check in calibration |
+| **A linear sum hides the combination the owner wants** | the point of the behavioural search is "entity AND operation". A sum lets a strong L alone outrank a full pair match | the pair match is inside B (12.3). If calibration shows it drowned, add an explicit bonus term rather than raising B's weight |
+| **S is weak by nature** | a query-independent prior plus a kind match | keep its weight small, as proposed |
+| **An alternative: rank fusion** | reciprocal rank fusion needs no scale at all and is what `docs/embedding-usage.md` chose for mixing rankings | implement both behind `mode` in `rank.kb` (`sum` is the owner's formula and the default; `rrf` the alternative) and let the calibration run choose |
+
+**Configurable.** The weights, the field weights, the relation weights, the saturating constants and the mode live
+in `rank.kb` and `relations.kb` (12.1), with the same layering as the rest of the base, so a project can carry its
+own. `KATANA_INTEL_RANK="L=0.2,C=0.25,B=0.2,G=0.25,S=0.1,mode=sum"` overrides for one run, in the style of
+`KATANA_FIND_TUNE`.
+
+**Calibratable.** `katana intel kb calibrate QUESTIONS.json` (questions with their answer files; the 76 questions of
+`tools/investigate/questions.json` have that shape) searches the weight simplex on a coarse grid, **leaving one
+repository out** each time, and prints recall at 5 and 10 per setting, the chosen weights and how much they differ
+between folds. If the folds disagree, the honest output is "these weights do not transfer", and the defaults stay.
+The research's warning applies in full: its learned ranker, trained on two repositories and tested on the third,
+was neutral on commits and modest on questions. Calibrating on 76 questions is calibrating on very little. This
+command is a tool the owner may run; this document does not run it.
+
+**Reported.** Every candidate carries its five components, in every output:
+
+```
+bridge/sessions.mjs:114-130  terminalSessionIds   score 0.58
+  L 0.31  words: "terminal" in the function name
+  C 0.90  concept SESSION: your word "sessao" (seed) -> "session" (seed) in the function name
+  B 0.50  does READ (verb "list" in the caller's name; this body only filters): operation from context, not from the name
+  G 0.72  1 step from listSessions (matched READ on SESSION): called by it at bridge/sessions.mjs:140 [direct call]
+  S 0.50  is a function, exported
+  weights L 0.20 C 0.25 B 0.20 G 0.25 S 0.10 (rank.kb, seed); all five components defined
+```
+
+(Illustrative values.) In `--json` the same fields are numbers and structured reasons. **In the evidence packet for
+the model the numbers are left out**: the model sees the reasons in words and the order, in line with the rule of
+6.4 that nothing in the packet may read as a probability. The numbers are for the owner, the log and calibration.
+
+### 12.7 Risks specific to CSSE
+
+| Risk | Detail | Mitigation, and what remains |
+|---|---|---|
+| **Coverage of the dictionary** | a general base knows approval, cancellation, payment, refund, notification, authentication, authorization, persistence, synchronization, asynchronous processing. The owner's own projects are an inference engine, a phone launcher, a bridge, an audio application: their vocabulary (expert cache, prefill, shader, session channel, plugin host) is in no business dictionary | the seed must include a software-engineering layer (cache, queue, session, token, buffer, render, parse, config, install) besides the business layer; domain files per project; mining; the `gaps` list; lexical fallback. What remains: a new project starts with low coverage, and its first searches are mostly lexical |
+| **Maintenance** | "register all the patterns" is open-ended work: each language community names things differently, and a stale base silently loses recall | the base is text with provenance and a checker; `kb gaps` and `kb review` turn use into a work list. What remains: someone has to do that work; it is a permanent cost, unlike a trained model |
+| **Ambiguity** | `stock` as goods or as a share; `stock` as a verb; `order` as a purchase or as a sort order; `set` as a verb or a collection; `check` as verify or as a payment; `post` as HTTP or as publish; `auth` as authentication or authorization; `record` noun or verb | part of speech by **position** in the identifier (first token of a function name is read as a verb, tokens of type names as nouns); `N` rows for known contexts; when a word reaches two concepts with no way to choose, both are kept and the evidence says "ambiguous: INVENTORY or SECURITIES". What remains: position rules are conventions, and code that breaks them is misread |
+| **Mixed language** | requests in Portuguese with English technical words, Portuguese identifiers in some projects, comments in one language and names in another; trying both rule sets creates collisions (`data`: date in Portuguese, data in English; `nota`, `time`, `pasta`, `fora`) | a normal form is accepted only if it exists in the base or the project; known collisions are `N` rows in the seed. What remains: collisions nobody listed |
+| **False positives** | a function named `updateInventoryLabel` matches INVENTORY + UPDATE perfectly and has nothing to do with stock levels; a generic pair such as (USER, READ) matches hundreds of symbols | idf-like damping by how many symbols carry the same pair in this project; the body-derived mask as a second opinion; the plural-hypothesis rule of 6.4. What remains: a strong, explainable, wrong match is more persuasive than a weak one. The evidence line makes the error inspectable; it does not prevent it |
+| **Weights presented as knowledge** | 0.95 for an interface implementation looks measured and is not | every weight is a row with provenance; the documentation and the output call them parameters; calibration reports whether they transfer |
+| **Mined noise** | co-occurrence between comments and names will propose wrong pairs; the research measured no gain from learned token association | caps, support thresholds, the `mined` mark, the review step, and never overriding curated rows. If mined rows do not help in the measure below, mining stays off by default |
+| **Cost** | five searches instead of one | the conceptual and behavioural searches are postings lookups and mask tests; the relational one is the existing activation. Target: the whole of CSSE inside the 20 ms search budget of 6.3 (a target, unmeasured) |
+| **False sense of having solved semantics** | the base encodes names and verbs. Code whose names say nothing (`process`, `handle`, `run`, `doIt`) is reachable only through the body mask and the graph | reported honestly per candidate (which components were absent). This is the part where an embedding model or the large model's expansion may still be needed |
+
+**The minimal measure for CSSE** (listed, not run; no model needed): on the existing question sample, recall of
+answer files at 5 and at 10, and the same on the hop files only, for (a) today's search, (b) CSSE with the seed base
+alone, (c) with the domain files written for those three repositories, (d) with mining on. If (b) and (c) do not
+move the hop slice, the dictionary is not the answer to the vocabulary gap and the effort should go elsewhere.
+
+**Build.** One phase added to part A of section 9 (no AI): *A5. CSSE and the knowledge base*: `kb.c` (loader,
+layers, checker, `kb show / why / check / gaps`), `morph.c`, the per-symbol data of 12.2 in the segments, the five
+searches and the ranker with component reporting, then mining and `kb review / calibrate`. Done when: the seed base
+loads and passes `kb check`; `katana intel search` prints the five components with a reason for each; with the base
+removed the output equals the lexical search; the examples of the owner's proposal (estoque -> inventory; an
+entity + operation query; an event chain across a string literal) work on a small hand-made fixture tree. Effort:
+5 to 8 days (estimate), after A2; the lexical and conceptual parts can start after A1a, in parallel with the
+parsers. It precedes A4, whose orchestrator then calls it.
