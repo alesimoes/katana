@@ -380,7 +380,8 @@ static char *cu_jstr(const char *v);
 static const struct { const char *name; void (*fn)(FILE *, Scn *); } g_x_fams[] = {
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run}, {"x-config", fam_x_config}, {"x-clean", fam_x_clean},
     {"x-investigate", fam_x_investigate}, {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
-    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs}, {"x-find6", fam_x_find6}, {"x-batch", fam_x_batch}, {"x-script", fam_x_script}, {"x-symbols", fam_x_symbols}, {"x-find7", fam_x_find7}, {"x-place", fam_x_place}, {"x-cursor", fam_x_cursor}, {"x-katananotes", fam_x_katananotes}};
+    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs}, {"x-find6", fam_x_find6}, {"x-batch", fam_x_batch}, {"x-script", fam_x_script}, {"x-symbols", fam_x_symbols}, {"x-find7", fam_x_find7}, {"x-place", fam_x_place}, {"x-cursor", fam_x_cursor}, {"x-katananotes", fam_x_katananotes},
+    {"x-nav", fam_x_nav}, {"x-ctx", fam_x_ctx}, {"x-ctxlimits", fam_x_ctxlimits}, {"x-notes", fam_x_notes}, {"x-plan", fam_x_plan}, {"x-multi", fam_x_multi}};
 /* 1 = a linha foi refeita igual; 0 = diferente (why diz onde) */
 static int x_replay(const char *line, const char *fam, long nl, char *why, size_t cap) {
     const char *sc = cu_jget(line, "scn");

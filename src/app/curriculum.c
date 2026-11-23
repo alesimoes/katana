@@ -2015,6 +2015,7 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 #include "app/scenario_batch.c"      /* v6: leituras independentes como varias chamadas na mesma fala */
 #include "app/scenario_script.c"     /* v6: trabalho repetitivo num Bash so (laco de shell ou Python que confere a contagem) */
 #include "app/scenario_v7.c"         /* v7: Symbols, Find novo, lugar citado, cursor de leitura, linhas [katana: ...] */
+#include "app/scenario_coder.c"      /* o agente de codigo com a lista enxuta: Symbols e Find, o bloco de contexto, limites, notas, plano, varios pedidos */
 #include "app/scenario_ps1.c"        /* scripts PowerShell: escritos e conferidos, nunca dados como executados */
 #include "app/scenario_rare2.c"      /* preparos de verdade das raras: servidor MCP, outra sessao, subagente, servidor de linguagem */
 #include "app/scenario_rare.c"       /* as ferramentas raras: tres situacoes para cada uma */
@@ -2031,7 +2032,8 @@ static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
     {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs},
     {"x-find6", fam_x_find6}, {"x-batch", fam_x_batch}, {"x-script", fam_x_script},
-    {"x-symbols", fam_x_symbols}, {"x-find7", fam_x_find7}, {"x-place", fam_x_place}, {"x-cursor", fam_x_cursor}, {"x-katananotes", fam_x_katananotes}};
+    {"x-symbols", fam_x_symbols}, {"x-find7", fam_x_find7}, {"x-place", fam_x_place}, {"x-cursor", fam_x_cursor}, {"x-katananotes", fam_x_katananotes},
+    {"x-nav", fam_x_nav}, {"x-ctx", fam_x_ctx}, {"x-ctxlimits", fam_x_ctxlimits}, {"x-notes", fam_x_notes}, {"x-plan", fam_x_plan}, {"x-multi", fam_x_multi}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2567,7 +2569,8 @@ static int curriculum_main(int argc, char **argv) {
        mcp-*, mixed) continuam no binario e saem quando sao pedidas pelo nome em --families: as nove que tinham uma sequencia so ou
        uma primeira ferramenta so foram passadas para x-mcp, x-ability e x-make */
     static const struct { const char *nm; int w; } defw[] = {{"x-fix", 24}, {"x-add", 16}, {"x-rename", 14}, {"x-find", 10}, {"x-explain", 10}, {"x-run", 8}, {"x-config", 24}, {"x-clean", 18}, {"x-investigate", 12},
-        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}, {"x-docs", 30}, {"x-find6", 30}, {"x-batch", 20}, {"x-script", 20}, {"x-symbols", 40}, {"x-find7", 25}, {"x-place", 20}, {"x-cursor", 15}, {"x-katananotes", 15}};
+        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}, {"x-docs", 30}, {"x-find6", 30}, {"x-batch", 20}, {"x-script", 20}, {"x-symbols", 40}, {"x-find7", 25}, {"x-place", 20}, {"x-cursor", 15}, {"x-katananotes", 15},
+        {"x-nav", 40}, {"x-ctx", 40}, {"x-ctxlimits", 20}, {"x-notes", 15}, {"x-plan", 15}, {"x-multi", 25}};
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
         w[i] = 0;
