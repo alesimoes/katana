@@ -54,6 +54,15 @@ typedef struct {
     int *rh; int rhn; int nested; int rcap;
 } CP;
 
+/* linguagens acrescentadas depois: ver parse2.c (incluido logo depois deste arquivo) */
+static void c2_mask(int L, const char *t, size_t n, char *cl, char *nc);
+static int c2_gdecl(CP *c, int i, int b, int parent, int mode, int dp);
+static int c2_istok(int L);
+static int c2_isline(int L);
+static void c2_parse_line(CP *c);
+static void c2_sweep_line(CP *c);
+static int c2_lang_of(const char *base, const char *ext);
+static void c2_enrich(CP *c);
 static void cp_blank(char *p, size_t a, size_t b) { if (b > a) for (size_t k = a; k < b; k++) if (p[k] != '\n' && p[k] != '\r') p[k] = ' '; }
 static int cp_idc(int c) { return isalnum(c) || c == '_' || c == '$' || (c & 0x80); }
 /* fim de string simples a partir de i (1o char depois da abertura): indice do fechamento, ou onde parou (quebra de linha/fim) */
@@ -421,7 +430,7 @@ static int cp_endsexpr(CP *c, int p) {
 /* ponto-e-virgula automatico: a quebra de linha antes do token j termina a instrucao? */
 static int cp_asi(CP *c, int j) {
     int L = c->lang;
-    if (!(L == CL_JS || L == CL_TS || L == CL_QML || L == CL_KT || L == CL_GO || L == CL_PS1 || L == CL_SH) || j <= 0 || !(c->tk[j].fl & CF_NL)) return 0;
+    if (!(L == CL_JS || L == CL_TS || L == CL_QML || L == CL_KT || L == CL_GO || L == CL_PS1 || L == CL_SH || L == CL_SWIFT || L == CL_SCALA || L == CL_GROOVY) || j <= 0 || !(c->tk[j].fl & CF_NL)) return 0;
     if (cp_dirt(c, j) || cp_dirt(c, j - 1) || cp_strpair(c, j - 1)) return 0;
     if (L == CL_SH) { const CpTok *x = &c->tk[j - 1]; if (x->t == CT_P && (strchr("|&(,{!", c->c[x->a]) || cp_is(c, j - 1, "&&") || cp_is(c, j - 1, "||"))) return 0; return 1; }
     if (!cp_endsexpr(c, j - 1)) return 0;
@@ -1573,6 +1582,7 @@ static int cp_decl(CP *c, int i, int b, int parent, int mode, int dp) {
     case CL_SH: return cp_sh_decl(c, i, b, parent, mode, dp);
     case CL_PS1: return cp_ps_decl(c, i, b, parent, mode, dp);
     case CL_QML: return mode == CM_BODY ? cp_js_decl(c, i, b, parent, mode, dp) : cp_qml_decl(c, i, b, parent, mode, dp);
+    case CL_CS: case CL_SWIFT: case CL_PHP: case CL_DART: case CL_SCALA: case CL_GROOVY: return c2_gdecl(c, i, b, parent, mode, dp);
     }
     return 0;
 }
@@ -1597,8 +1607,8 @@ static void cp_sweep(CP *c) {
         ht[p] = s + 1; if (f->sym[s].kind == CK_FUNC) isf[s] = 1;
     }
     int *stk = (int *)malloc(sizeof(int) * (size_t)(nsym + 2)); int sp = 0, ni = 0;
-    const int shps = L == CL_SH || L == CL_PS1, gen = L == CL_TS || L == CL_KT || L == CL_JAVA || L == CL_RS || L == CL_CPP || L == CL_GO || L == CL_JS;
-    const int nlfresh = !(L == CL_C || L == CL_CPP || L == CL_JAVA || L == CL_RS);
+    const int shps = L == CL_SH || L == CL_PS1, gen = L == CL_TS || L == CL_KT || L == CL_JAVA || L == CL_RS || L == CL_CPP || L == CL_GO || L == CL_JS || L == CL_CS || L == CL_DART || L == CL_SWIFT || L == CL_SCALA;
+    const int nlfresh = !(L == CL_C || L == CL_CPP || L == CL_JAVA || L == CL_RS || L == CL_CS || L == CL_DART || L == CL_PHP);
     for (int i = 0; i < c->nt; i++) {
         const CpTok *t = &c->tk[i]; size_t off = t->a;
         while (sp > 0 && off >= f->sym[stk[sp - 1]].byte1) sp--;
@@ -1701,13 +1711,14 @@ static int coder_lang_sniff(const char *t, size_t n) {
 static int coder_lang_of(const char *path) {
     const char *base = path, *dot = NULL;
     for (const char *p = path; *p; p++) { if (*p == '/' || *p == '\\') { base = p + 1; dot = NULL; } else if (*p == '.') dot = p; }
+    { int x = c2_lang_of(base, dot && dot > base ? dot + 1 : NULL); if (x != CL_UNKNOWN) return x; }
     if (dot && dot > base) {
         char e[12]; size_t l = strlen(dot + 1); if (l > 8) return CL_UNKNOWN;
         for (size_t k = 0; k <= l; k++) e[k] = (char)tolower((unsigned char)dot[1 + k]);
         static const struct { const char *e; int l; } T[] = {{"c", CL_C}, {"h", CL_C}, {"cpp", CL_CPP}, {"cc", CL_CPP}, {"cxx", CL_CPP}, {"hpp", CL_CPP}, {"hh", CL_CPP}, {"hxx", CL_CPP}, {"inl", CL_CPP}, {"ipp", CL_CPP}, {"tpp", CL_CPP},
             {"js", CL_JS}, {"mjs", CL_JS}, {"cjs", CL_JS}, {"jsx", CL_JS}, {"ts", CL_TS}, {"tsx", CL_TS}, {"mts", CL_TS}, {"cts", CL_TS}, {"py", CL_PY}, {"pyw", CL_PY}, {"kt", CL_KT}, {"kts", CL_KT},
             {"java", CL_JAVA}, {"go", CL_GO}, {"rs", CL_RS}, {"sh", CL_SH}, {"bash", CL_SH}, {"zsh", CL_SH}, {"ksh", CL_SH}, {"qml", CL_QML}, {"ps1", CL_PS1}, {"psm1", CL_PS1}, {"psd1", CL_PS1},
-            {"md", CL_MD}, {"markdown", CL_MD}, {"mdx", CL_MD}, {"json", CL_CONFIG}, {"yaml", CL_CONFIG}, {"yml", CL_CONFIG}, {"toml", CL_CONFIG}, {"ini", CL_CONFIG}, {"cfg", CL_CONFIG}, {NULL, 0}};
+            {"md", CL_MD}, {"markdown", CL_MD}, {"mdx", CL_MD}, {"json", CL_CONFIG}, {NULL, 0}};
         for (int k = 0; T[k].e; k++) if (!strcmp(T[k].e, e)) return T[k].l;
         return CL_UNKNOWN;
     }
@@ -1751,6 +1762,7 @@ static void cp_c_includes(CP *c) {
     }
 }
 static void cp_enrich(CP *c) {
+    if (c2_isline(c->lang)) { c2_enrich(c); return; }
     if (c->lang == CL_C || c->lang == CL_CPP) cp_c_includes(c);
     CoderFile *f = c->f; int L = c->lang;
     for (int s = 0; s < f->nsym; s++) {
@@ -1769,7 +1781,7 @@ static void cp_enrich(CP *c) {
         else if (L == CL_PY) { if (y->name[0] == '_' && y->name[1] != '_') y->vis = CV_FILE; else if (y->parent < 0) y->vis = CV_PUBLIC; }
         else if (L == CL_GO) y->vis = isupper((unsigned char)y->name[0]) ? CV_EXPORTED : CV_FILE;
         else if (L == CL_RS) y->vis = cp_sig_has(sg, "pub") ? CV_EXPORTED : CV_FILE;
-        if (L == CL_JAVA || L == CL_KT || L == CL_CPP || L == CL_TS) {
+        if (L == CL_JAVA || L == CL_KT || L == CL_CPP || L == CL_TS || c2_istok(L)) {
             if (cp_sig_has(sg, "private")) y->vis = CV_PRIVATE; else if (cp_sig_has(sg, "protected")) y->vis = CV_PROTECTED; else if (cp_sig_has(sg, "public")) y->vis = CV_PUBLIC;
         }
     }
@@ -1784,28 +1796,31 @@ static int coder_parse(const char *path, const char *text, size_t n, CoderFile *
     CP c; memset(&c, 0, sizeof c);
     c.lang = L; c.f = out; c.n = n;
     char *cl = (char *)malloc(n + 1), *nc = (char *)malloc(n + 1);
-    if (L == CL_MD) { memcpy(cl, text, n); memcpy(nc, text, n); } else cp_mask(L, text, n, cl, nc);
+    if (L == CL_MD) { memcpy(cl, text, n); memcpy(nc, text, n); } else if (c2_isline(L) || c2_istok(L)) c2_mask(L, text, n, cl, nc); else cp_mask(L, text, n, cl, nc);
     cl[n] = nc[n] = 0; c.c = cl; c.t = nc;
     c.nln = 1; for (size_t k = 0; k < n; k++) if (text[k] == '\n') c.nln++;
     c.ln = (size_t *)malloc(sizeof(size_t) * (size_t)c.nln); { int q = 0; c.ln[q++] = 0; for (size_t k = 0; k < n; k++) if (text[k] == '\n') c.ln[q++] = k + 1; }
     c.nested = L == CL_JS || L == CL_TS || L == CL_QML || L == CL_KT || L == CL_RS || L == CL_PS1;
-    if (L != CL_MD) {
+    if (L != CL_MD && !c2_isline(L)) {
         cp_tokenize(&c); cp_match(&c);
         c.isn = (unsigned char *)calloc((size_t)c.nt + 1, 1);
         for (int s = 0; s < out->nsym; s++) if (c.snt[s] >= 0 && c.snt[s] < c.nt) c.isn[c.snt[s]] = 1;
     } else { c.isn = (unsigned char *)calloc(1, 1); c.mt = (int *)malloc(sizeof(int)); }
-    if (L == CL_PY) cp_py(&c); else if (L == CL_MD) cp_md(&c); else cp_scan(&c, 0, c.nt, -1, CM_TOP, 0);
+    if (L == CL_PY) cp_py(&c); else if (L == CL_MD) cp_md(&c); else if (c2_isline(L)) c2_parse_line(&c); else cp_scan(&c, 0, c.nt, -1, CM_TOP, 0);
     cp_post(&c);
     cp_enrich(&c);
-    if (L != CL_MD) { cp_rehash(&c); cp_sweep(&c); }
+    if (c2_isline(L)) c2_sweep_line(&c); else if (L != CL_MD) { cp_rehash(&c); cp_sweep(&c); }
     if (c.sx) { for (int s = 0; s < out->nsym; s++) free(c.sx[s]); }
     free(c.sx); free(c.snt); free(c.sfl); free(c.rh); free(c.tk); free(c.mt); free(c.isn); free(c.ln); free(cl); free(nc);
     return 0;
 }
 
 /* ---------- katana coder symbols <arquivo|pasta> [--refs] [--json] ---------- */
-static const char *const CP_KINDN[] = {"file", "func", "method", "class", "struct", "enum", "iface", "var", "const", "macro", "typedef", "namespace", "heading", "ctor", "union", "enumerator", "field", "property", "signal"};
-static const char *const CP_LANGN[] = {"?", "c", "c++", "js", "ts", "python", "kotlin", "java", "go", "rust", "shell", "qml", "powershell", "markdown", "config"};
+static const char *const CP_KINDN[] = {"file", "func", "method", "class", "struct", "enum", "iface", "var", "const", "macro", "typedef", "namespace", "heading", "ctor", "union", "enumerator", "field", "property", "signal", "section"};
+static const char *const CP_LANGN[] = {"?", "c", "c++", "js", "ts", "python", "kotlin", "java", "go", "rust", "shell", "qml", "powershell", "markdown", "config",
+    "c#", "swift", "php", "ruby", "lua", "dart", "scala", "sql", "json", "yaml", "toml", "dockerfile", "makefile", "cmake", "html", "css",
+    "clojure", "lisp", "elixir", "erlang", "haskell", "ocaml", "r", "julia", "perl", "groovy", "objc", "zig", "nim", "v", "fortran", "cobol", "asm",
+    "proto", "graphql", "terraform", "vue", "latex", "markup-docs", "xml", "properties"};
 static const char *const CP_REFN[] = {"call", "use", "import", "extends", "implements", "type", "write", "literal"};
 typedef struct { int refs, json, nfiles, nsym, nref; } CpOut;
 static void cp_jstr(const char *s) {
