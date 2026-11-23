@@ -313,7 +313,7 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
 }
 
 /* ---- insistencia no erro: chamadas deste pedido (assinatura da chamada, do resultado, se falhou) ---- */
-static uint64_t rp_sig[128], rp_res[128]; static char rp_err[128]; static int rp_n, rp_fail, rp_refused;
+static uint64_t rp_sig[128], rp_res[128]; static char rp_err[128]; static int rp_n, rp_fail, rp_refused, rp_stuck;     /* rp_stuck: chamadas repetidas seguidas (resultado igual ou nota de repeticao) */
 static uint64_t rp_hash(const char *s, size_t n, uint64_t h) { for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 1099511628211ULL; } return h; }
 /* o resultado e de uma chamada que falhou? erro da ferramenta, ou comando com codigo de saida diferente de zero */
 static int rp_failed(const char *r) {
@@ -669,7 +669,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (g_plan_mode) { static char nl[16384]; snprintf(nl, sizeof nl, PLAN_NOTE "%s", line); snprintf(line, sizeof line, "%s", nl); }
         (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;
-        rp_n = 0; rp_fail = 0; rp_refused = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
+        rp_n = 0; rp_fail = 0; rp_refused = 0; rp_stuck = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
             if (tn > td && !first) {
@@ -875,11 +875,13 @@ static int agent(Model *m, int max_tokens, float temp) {
                     ui_toolout(name, result);
                 if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
                 if (rp_refuse) { if (++rp_refused >= 2 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* insistiu de novo: estes resultados ja levam o aviso de encerrar e relatar */
-                else if (!trunc && !rr_hit) {
+                else if (rr_hit) { if (++rp_stuck >= 3 && round < lim - 2) { round = lim - 2; rl_forced = 1; } }     /* o modelo ignora a nota de repeticao: encerra e relata */
+                else if (!trunc) {
                     const int failed = rp_failed(result);
                     const uint64_t rs = rp_hash(result, strlen(result), 1469598103934665603ULL);
                     int same = 0;
                     for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_res[i] == rs) same++;
+                    if (same >= 1) { if (++rp_stuck >= 3 && round < lim - 2) { round = lim - 2; rl_forced = 1; } } else rp_stuck = 0;
                     rr_after(name, csig, failed);
                     if (rp_n < 128) { rp_sig[rp_n] = csig; rp_res[rp_n] = rs; rp_err[rp_n] = (char)failed; rp_n++; }
                     rp_fail = failed ? rp_fail + 1 : 0;
