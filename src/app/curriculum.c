@@ -28,12 +28,14 @@ static int cu_ix(int n) { if (n < 4) return cu_n(n); const int cut = n - n / 4; 
 #define L(en, pt) (g_cu_lang ? (pt) : (en))
 
 #include <setjmp.h>
+static const char *g_cu_out;      /* arquivo de saida em gravacao: o erro fatal o apaga (nao fica um arquivo cortado no meio de uma linha) */
 static jmp_buf g_cu_jmp; static int g_cu_injmp; static char g_cu_why[600];
 /* dentro de uma conversa: a conversa e descartada (o motivo fica contado) e outra e sorteada; fora: erro fatal */
 static void cu_die(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     if (g_cu_injmp) { vsnprintf(g_cu_why, sizeof g_cu_why, fmt, ap); va_end(ap); longjmp(g_cu_jmp, 1); }
     fprintf(stderr, "curriculum: ERRO DE GRAMATICA: "); vfprintf(stderr, fmt, ap); va_end(ap); fprintf(stderr, "\n");
+    if (g_cu_out) remove(g_cu_out);
     exit(2);
 }
 static char **g_cu_ar; static int g_cu_arn, g_cu_arc;
@@ -944,12 +946,14 @@ static void cu_rmrf(const char *p) {
     } else remove(p);
 }
 static void cu_mkdirs(const char *path) { char t[1400]; snprintf(t, sizeof t, "%s", path); for (char *p = t + 1; *p; p++) if (*p == '/') { *p = 0; mkdir(t, 0755); *p = '/'; } mkdir(t, 0755); }
+static int g_x_mt;      /* horario de modificacao dos arquivos: crescente e fixo, para a ordem do Glob e do Grep nao depender da hora */
 static void cu_put(const char *path, const char *content, int mode) {
     char t[1400]; snprintf(t, sizeof t, "%s", path);
     char *sl = strrchr(t, '/'); if (sl) { *sl = 0; cu_mkdirs(t); }
     FILE *f = fopen(path, "wb"); if (!f) cu_die("nao gravei %s", path);
     fwrite(content, 1, strlen(content), f); fclose(f);
     if (mode) chmod(path, (mode_t)mode);
+    { struct timespec ts[2] = {{1700000000 + g_x_mt, 0}, {1700000000 + g_x_mt, 0}}; g_x_mt += 60; utimensat(AT_FDCWD, path, ts, 0); }      /* todo arquivo do cenario: um horario so dele */
 }
 static int cu_onpath(const char *prog) {
     char d[1200];
@@ -1433,9 +1437,6 @@ static void fam_brief_done(FILE *f, Scn *s) {
     if (!s->done) s->done = cu_cmd(s, "test");
     const char *rel = cu_fmt("%s%s.%s", s->place, cu_get(&d, "fn"), s->st->ext);
     const char *code = cu_t(&d, s->st->code), *stub = cu_t(&d, s->st->stub), *bad = cu_t(&d, s->st->bad), *good = cu_t(&d, s->st->good);
-    const char *code_bad = cu_t(&d, cu_fmt("%s", s->st->code)); /* depois da primeira troca */
-    { const char *p = strstr(code, stub); Buf b = {0}; buf_add(&b, code, (size_t)(p - code)); buf_str(&b, bad); buf_str(&b, p + strlen(stub)); code_bad = cu_keep(b.p); }
-    const char *code_good; { const char *p = strstr(code_bad, bad); Buf b = {0}; buf_add(&b, code_bad, (size_t)(p - code_bad)); buf_str(&b, good); buf_str(&b, p + strlen(bad)); code_good = cu_keep(b.p); }
     const int dlint = cu_cmd(s, "lint") && !strcmp(s->done, cu_cmd(s, "lint"));
     const char *dout = dlint ? cu_out(s, &d, "lint", 0) : cu_t(&d, s->st->otest);
     const int fails = !dlint && cu_pct(45), reminder = !fails && cu_pct(35);
@@ -2570,7 +2571,7 @@ static int curriculum_main(int argc, char **argv) {
        uma primeira ferramenta so foram passadas para x-mcp, x-ability e x-make */
     static const struct { const char *nm; int w; } defw[] = {{"x-fix", 24}, {"x-add", 16}, {"x-rename", 14}, {"x-find", 10}, {"x-explain", 10}, {"x-run", 8}, {"x-config", 24}, {"x-clean", 18}, {"x-investigate", 12},
         {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}, {"x-docs", 30}, {"x-find6", 30}, {"x-batch", 20}, {"x-script", 20}, {"x-symbols", 40}, {"x-find7", 25}, {"x-place", 20}, {"x-cursor", 15}, {"x-katananotes", 15},
-        {"x-nav", 40}, {"x-ctx", 40}, {"x-ctxlimits", 20}, {"x-notes", 15}, {"x-plan", 15}, {"x-multi", 25}};
+        {"x-nav", 40}, {"x-ctx", 100}, {"x-ctxlimits", 20}, {"x-notes", 15}, {"x-plan", 15}, {"x-multi", 25}};
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
         w[i] = 0;
@@ -2597,14 +2598,16 @@ static int curriculum_main(int argc, char **argv) {
     if (!mkdtemp(g_cu_sbroot)) { fprintf(stderr, "curriculum: nao criei a pasta de trabalho em %s\n", g_cu_sbroot); return 1; }
     FILE *f = fopen(outp, "wb");
     if (!f) { fprintf(stderr, "curriculum: nao gravei %s\n", outp); return 1; }
-    cu_gen(f, n, seed, w, wsum, lg, nlg, 0);
+    static char outabs[1400]; if (!realpath(outp, outabs)) snprintf(outabs, sizeof outabs, "%s", outp);      /* o gerador troca de pasta: o caminho tem de ser absoluto */
+    g_cu_out = outabs; cu_gen(f, n, seed, w, wsum, lg, nlg, 0); g_cu_out = NULL;
     fclose(f);
     printf("curriculum: %ld conversas em %s (semente %llu)\n", n, outp, (unsigned long long)seed);
     if (hold) {
         FILE *h = fopen(hold, "wb");
         if (!h) { fprintf(stderr, "curriculum: nao gravei %s\n", hold); return 1; }
         const long nh = n / 10 > 50 ? n / 10 : 50;
-        cu_gen(h, nh, seed, w, wsum, lg, nlg, 1);
+        if (!realpath(hold, outabs)) snprintf(outabs, sizeof outabs, "%s", hold);
+        g_cu_out = outabs; cu_gen(h, nh, seed, w, wsum, lg, nlg, 1); g_cu_out = NULL;
         fclose(h);
         printf("curriculum: %ld conversas de holdout em %s (valores que o arquivo de treino nao tem)\n", nh, hold);
     }

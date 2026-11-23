@@ -7,7 +7,6 @@
  * "done"; "|" separa pedidos e "." e uma fala sem chamada. Pedido = mensagem do usuario que nao e nota do motor ("[katana: "). */
 
 typedef struct { char *seq; char first[64], fam[40], shape[128], cell[240]; uint64_t *turn; char *tkind; char **ttext; int nturn; uint64_t *req; int nreq; int ask, real, dep, lang, mode; } CuRv;
-static void cu_rv_free(CuRv *v) { free(v->seq); free(v->turn); free(v->tkind); free(v->req); memset(v, 0, sizeof *v); }
 /* pedido mascarado: trechos entre crases, caminhos, nomes de arquivo e numeros viram marcas; caixa e espacos nao contam */
 static uint64_t cu_rv_mask(const char *t) {
     static const char *const ext[] = {"py", "js", "sh", "c", "h", "pl", "md", "conf", "json", "txt", "ps1", "log", "csv", "ipynb"};

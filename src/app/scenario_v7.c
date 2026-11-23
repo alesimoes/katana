@@ -216,7 +216,6 @@ static void x7n_write(const X7N *n, const Scn *s) {
             buf_str(&h, "\n#endif\n"); x_put(s, x7n_hdr(n, m), h.p, 0); free(h.p); }
     }
 }
-static const Scn *g_x7_scn;
 static void x7_prehook(const Scn *s) { x7n_write(&g_x7n, s); }
 /* linha (1..) em que a funcao e definida no texto do modulo */
 static int x7n_defline(const X7N *n, int i) {
@@ -399,7 +398,7 @@ static void fam_x_symbols(FILE *f, Scn *s) {
         x7_user(ask);
         const char *r = x7_sym(x7_say(), cu_fmt("{\"action\": \"at\", \"file\": %s, \"line\": %d}", cu_q(rel), ln));
         X7Hit h[8]; const int nh = x7_hits(r, h, 8); int ok = 0, a = 0, b = 0;
-        for (int i = 0; i < nh; i++) if (strstr(h[i].rest, cu_fmt(" %s ", tn)) && strstr(h[i].rest, "func") ) { ok = 1; a = h[i].a; b = h[i].b; }
+        for (int i = 0; i < nh; i++) if (strstr(h[i].rest, cu_fmt(" %s ", tn)) && (strstr(h[i].rest, "func") || strstr(h[i].rest, "method")))      /* o indice diz "method" em Java */ { ok = 1; a = h[i].a; b = h[i].b; }
         if (!ok) cu_die("at nao deu %s (%s)", tn, g_x.cell);
         x_final(cu_fmt(L("Line %d of %s is inside `%s`, which spans lines %d-%d.", "A linha %d de %s fica dentro de `%s`, que vai das linhas %d a %d."), ln, rel, tn, a, b));
     } else if (sit == S7_DEPS) {
@@ -603,7 +602,6 @@ enum { P7_SYM, P7_FIND, P7_GLOB, P7_GREP, P7_ABS, P7_DYM, P7_FOLDER, P7_HOME, P7
 static const char *const g_p7_names[P7_N] = {"symbols", "find", "glob", "grep", "abs-read", "did-you-mean", "folder-exists", "home-refusal"};
 static const int g_p7_w[P7_N] = {3, 3, 2, 2, 2, 2, 2, 2};
 static Scn g_x7_other;      /* a "pasta" do projeto citado: a copia do cenario com o cwd dele */
-static const char *g_x7_note;
 static void x7_prehook2(const Scn *s) {
     x7n_write(&g_x7n, &g_x7_other);
     if (strcmp(s->cwd, s->home)) x_put(s, "notes.md", "# scratch notes\n\n- call the vendor about the invoice export\n- renew the staging certificate\n", 0);

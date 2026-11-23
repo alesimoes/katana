@@ -664,12 +664,9 @@ static const char *x_conf_check(const XProj *p) {
     buf_str(&b, "if [ \"$bad\" -eq 0 ]; then echo \"settings ok\"; else echo \"settings invalid\"; exit 1; fi\n");
     return cu_keep(b.p);
 }
-static int g_x_mt;      /* horario de modificacao dos arquivos: crescente e fixo, para a ordem do Glob nao depender da hora */
 static void x_put(const Scn *s, const char *rel, const char *text, int mode) {
     const char *path = x_abs(s, rel);
     cu_put(path, text, mode);
-    struct timespec ts[2] = {{1700000000 + g_x_mt, 0}, {1700000000 + g_x_mt, 0}}; g_x_mt += 60;
-    utimensat(AT_FDCWD, path, ts, 0);
 }
 static const char *x_slurp(const Scn *s, const char *rel) {
     FILE *f = fopen(x_abs(s, rel), "rb"); if (!f) return NULL;

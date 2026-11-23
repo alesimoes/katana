@@ -25,7 +25,7 @@ cp holdout.jsonl validation.jsonl
 : > dropped.txt
 settle() {
   f=$1
-  for pass in 1 2 3; do
+  for pass in 1 2 3 4 5 6; do
     $B curriculum check "$f" > "$f.chk" 2>&1
     bad=$(grep -o '^linha [0-9]*' "$f.chk" | awk '{print $2}')
     [ -z "$bad" ] && break

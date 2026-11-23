@@ -3,7 +3,7 @@
    Ordem: (1) cada ferramenta da tabela de cobertura ate o seu minimo, 15 conversas de .ps1, 25 com ferramentas MCP e 8 de cada familia; (2) uma conversa de cada sequencia de ferramentas
    (familia + chamadas na ordem, com os pedidos), das menores para as maiores; (3) celulas ainda nao vistas; (4) o resto, na
    ordem do arquivo. AskUserQuestion fica entre 4,5% e 5% das escolhidas. A saida mantem a ordem da reserva. */
-typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1, mcp, fam, dep, real; uint64_t ffirst; size_t len; } CuPk;
+typedef struct { char *line; uint64_t sig, cell; unsigned long long tools; int ask, taken, ps1, mcp, fam, dep, real, blk; uint64_t ffirst; size_t len; } CuPk;
 static int cu_pk_cmp(const void *a, const void *b) { const CuPk *x = *(CuPk *const *)a, *y = *(CuPk *const *)b; return x->len < y->len ? -1 : x->len > y->len ? 1 : x < y ? -1 : 1; }
 static int cu_pick_main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: katana curriculum pick <reserva.jsonl> <saida.jsonl> [--n N]\n"); return 1; }
@@ -34,7 +34,7 @@ static int cu_pick_main(int argc, char **argv) {
             q = a + l;
         }
         if (fam && !strcmp(fam, "x-ps1")) k->ps1 = 1;
-        k->fam = fam ? cu_fam_ix(fam) : -1; k->mcp = strstr(line, "__") && strstr(line, "[external content from MCP tool ") != NULL;
+        k->fam = fam ? cu_fam_ix(fam) : -1; k->blk = cell && strstr(cell, "/blk1") != NULL; k->mcp = strstr(line, "__") && strstr(line, "[external content from MCP tool ") != NULL;
         k->sig = h; k->cell = cell && *cell ? cu_fnv(cell, strlen(cell), 99) : 0;
         {   const char *a1 = strstr(line, "\"function\": {\"name\": \""); const size_t l1 = a1 ? strcspn(a1 + 22, "\"") : 0;      /* familia + primeira ferramenta */
             k->ffirst = cu_fnv(a1 ? a1 + 22 : "(answer)", a1 ? l1 : 8, cu_fnv(fam ? fam : "", fam ? strlen(fam) : 0, 7)); }
@@ -102,6 +102,16 @@ static int cu_pick_main(int argc, char **argv) {
     for (int fi = 0; fi < CU_NFAM; fi++) {
         long nf = 0; for (long i = 0; i < nv; i++) nf += v[i].taken && v[i].fam == fi;
         for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv && nf < 8; i++) { CuPk *k = bylen[i]; if (k->fam == fi && PK_OK(k) && (pass || PK_NEW(k))) { PK_TAKE(k); nf++; } }
+    }
+    {   /* (d2) cota da familia x-ctx: 5% do arquivo, dois tercos com o bloco de contexto e um terco sem (a conversa sem bloco continua valida).
+           Sem esta cota o teto por sequencia (poucas sequencias de ferramentas na familia) cortava a familia em ~1% */
+        const int cf = cu_fam_ix("x-ctx"); const long need = n * 5 / 100, needb = need * 2 / 3;
+        long nc = 0, nb = 0; for (long i = 0; i < nv; i++) if (v[i].taken && v[i].fam == cf) { nc++; nb += v[i].blk; }
+        for (int st = 0; st < 3; st++) for (int pass = 0; pass < 2; pass++) for (long i = 0; i < nv; i++) {      /* 0: com bloco ate dois tercos; 1: sem bloco ate a cota; 2: o que faltar */
+            CuPk *k = bylen[i]; if (k->fam != cf || k->taken || (st == 0 && (!k->blk || nb >= needb)) || (st == 1 && k->blk) || nc >= need) continue;
+            if (!(pass ? PK_OK2(k) : PK_OK(k) && PK_NEW(k))) continue;
+            PK_TAKE(k); nc++; nb += k->blk;
+        }
     }
     for (int ci = 0; ci < CU_N(g_cu_cov); ci++) {      /* (i) */
         if (g_cu_cov[ci].tier != 'A') continue;

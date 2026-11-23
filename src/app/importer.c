@@ -226,7 +226,6 @@ static int im_arg(const char *args, const char *key, Buf *out) {
     }
     return 0;
 }
-static const char *im_bs(const Buf *b) { return b->p ? b->p : ""; }
 
 /* ---------- selecao do que se aprende (o assunto de uma especializacao) ----------
  * --train-tools A,B: so as falas do modelo que chamam uma dessas ferramentas contam para a perda (as outras ficam

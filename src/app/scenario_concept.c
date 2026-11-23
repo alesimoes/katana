@@ -596,7 +596,6 @@ static const XCon g_xc_tab[] = {
 };
 #define XC_NTAB CU_N(g_xc_tab)
 static int xc_tab_hold(const XCon *e) { return e->hold >= 0 ? e->hold : e->fn == xc_helpq ? g_xc_help[e->v].hold : g_xc_lim[e->v].hold; }
-static const char *xc_tab_con(const XCon *e) { return e->con ? e->con : e->fn == xc_helpq ? g_xc_help[e->v].con : g_xc_lim[e->v].con; }
 static void fam_x_concept(FILE *f, Scn *s) {
     int ei = g_x_kforce;
     if (ei < 0) {      /* rodizio: a proxima situacao do arquivo certo (treino ou validacao); uma tentativa falha passa para a seguinte */
