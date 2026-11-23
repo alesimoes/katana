@@ -392,6 +392,11 @@ static void trust_init(void) {
     else fprintf(stderr, "[working folder: %s]\n", rc);
 }
 #else
+/* so caminhos relativos dentro da pasta atual */
+static int path_ok(const char *p) {
+    if (!*p || p[0] == '/' || p[0] == '\\' || strchr(p, ':') || strstr(p, "..")) return 0;
+    return 1;
+}
 static int agent_write_path(const char *in, char *res, size_t cap, char *err, size_t ecap) {
     if (!*in || in[0] == '/' || in[0] == '\\' || strchr(in, ':') || strstr(in, "..")) {      /* so caminhos relativos dentro da pasta atual */
         snprintf(err, ecap, "error: invalid path (only relative paths inside the current directory)"); return 0;

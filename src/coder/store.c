@@ -319,8 +319,6 @@ static const StoreSection *store_seg_section(const StoreSeg *s, uint32_t type) {
     for (uint32_t i = 0; i < s->nsec; i++) if (s->sec[i].type == type) return &s->sec[i];
     return NULL;
 }
-/* iteracao de secoes de um tipo em todos os segmentos: *seg e *idx comecam em 0; devolve a secao (e o segmento em *segout) ou NULL no fim.
- * A ordem e do mais antigo ao mais novo. */
 static void store_man_stat(const char *dir, uint64_t *ino, uint64_t *mt, uint64_t *sz) {
     char p[4600]; struct stat st; snprintf(p, sizeof p, "%s/MANIFEST", dir);
     if (stat(p, &st) != 0) { *ino = *mt = *sz = 0; return; }
