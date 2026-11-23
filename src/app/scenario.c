@@ -11,7 +11,7 @@
 #define XF_OLD 4                /* ferramenta do primeiro conjunto (git, terminal, recall...): agent_tool_run */
 
 typedef struct { const char *name, *args; int id; } XCall;
-typedef struct { char role; const char *text; XCall c[2]; int nc, train; } XMsg;      /* role: s u e(nota do motor) a t */
+typedef struct { char role; const char *text; XCall c[4]; int nc, train; } XMsg;      /* role: s u e(nota do motor) a t; ate 4 chamadas na mesma fala (v6: leituras independentes juntas) */
 #define X_MAXM 240
 static struct {
     XMsg m[X_MAXM]; int n, nid;
@@ -121,6 +121,37 @@ static const char *x_call(const char *say, const char *name, const char *args, i
     XMsg *t = x_push('t', r, 1); t->c[0] = c1; t->nc = 1;
     if (train) x_seq(name);
     return t->text;
+}
+/* v6: varias chamadas independentes na MESMA fala do modelo (ate 4 contando o progresso do plano). Cada uma passa pelo despacho do
+   motor, na ordem, e tem o seu resultado (uma mensagem de ferramenta por chamada, com o id da chamada). A sequencia da conversa
+   junta os nomes com "+" (Read+Read). res[i] recebe o resultado da chamada i. */
+static void x_calls(const char *say, int n, const char *const *names, const char *const *args, const char **res) {
+    if (n < 2) cu_die("x_calls pede duas chamadas ou mais");
+    if (say && (strlen(say) > 140 || strchr(say, '\n'))) cu_die("texto antes da chamada longo demais: %s", say);
+    for (int i = 0; i < n; i++) {
+        char err[400]; if (!cu_ct_schema(names[i])) cu_die("ferramenta desconhecida: %s", names[i]);
+        if (!cu_ct_ok(names[i], args[i], err, sizeof err)) cu_die("%s (%s): %s\nargumentos: %s", names[i], g_x.cell, err, args[i]);
+    }
+    XMsg *a = x_push('a', say, 1);
+    int first = 0;
+    if (g_x.pdone) { if (n + 1 > 4) cu_die("chamadas demais na fala"); a->c[0].name = "TodoWrite"; a->c[0].args = cu_fmt("{\"done\": %d}", g_x.pdone); a->c[0].id = ++g_x.nid; a->nc = 1; first = 1; }
+    else if (n > 4) cu_die("chamadas demais na fala");
+    g_x.pdone = 0;
+    for (int i = 0; i < n; i++) { a->c[a->nc].name = cu_fmt("%s", names[i]); a->c[a->nc].args = cu_fmt("%s", args[i]); a->c[a->nc++].id = ++g_x.nid; }
+    const int nc = a->nc;
+    XCall cs[4]; for (int i = 0; i < nc; i++) cs[i] = a->c[i];
+    for (int i = 0; i < nc; i++) {
+        const int tw = first && i == 0;
+        const char *r = x_run(cs[i].name, cs[i].args, 0);
+        if (!strncmp(r, "error:", 6)) cu_die("%s falhou no motor (%s): %.300s", cs[i].name, g_x.cell, r);
+        if (strstr(r, "[syntax check FAILED")) cu_die("%s: a checagem de sintaxe do motor falhou (%s)", cs[i].name, g_x.cell);
+        XMsg *t = x_push('t', r, 1); t->c[0] = cs[i]; t->nc = 1;
+        if (!tw) { if (res) res[i - first] = t->text; }
+    }
+    for (int i = 0; i < n; i++) {
+        const size_t l = strlen(g_x.seq);
+        snprintf(g_x.seq + l, sizeof g_x.seq - l, "%s%s", i ? "+" : (l ? ">" : ""), strstr(names[i], "__") ? "mcp" : names[i]);
+    }
 }
 static int x_err(const char *r) { return !strncmp(r, "error:", 6); }
 static const char *x_abs(const Scn *s, const char *rel) { return rel[0] == '/' ? rel : cu_fmt("%s/%s", s->cwd, rel); }
@@ -378,6 +409,8 @@ typedef struct {
     int nread; const char *readf[24];      /* arquivos ja lidos inteiros nesta conversa */
     const char *xrel[8], *xtxt[8]; int xmode[8], nx;      /* arquivos a mais da tarefa */
     const char *ck[8], *cv[8], *cr[8]; int nck;           /* settings.conf: chave, valor, faixa */
+    int cmt;                     /* v6: cada funcao leva um comentario de uma linha acima (o que ela faz, em palavras comuns) */
+    int wrap, wm, wfm; const XFi *wf;      /* v6: com wrap, o modulo wm tem uma funcao report_<f> que chama f (wf) do modulo wfm */
 } XProj;
 
 static int x_nargs(const XFn *f) { return cu_count(f->args, ','); }
@@ -469,13 +502,43 @@ static const char *x_case(const XProj *p, const char *mod, const char *name, con
     default:   return cu_fmt("check(\"%s\", [%s], %ld);\n", name, x_vals(a, n, ", "), want);
     }
 }
+/* v6: comentario de uma linha acima de cada funcao, e a funcao report_<f> que chama uma funcao de outro modulo */
+static const char *x_cmt_line(int st, const char *what) {
+    return st == X_C ? cu_fmt("/* %s */\n", what) : st == X_JS ? cu_fmt("// %s\n", what) : cu_fmt("# %s\n", what);
+}
+static const char *x_wrap_head(const XProj *p) {
+    const char *fm = p->mod[p->wfm].name;
+    switch (p->st) {
+    case X_PY: return cu_fmt("from . import %s\n\n\n", fm);
+    case X_JS: return cu_fmt("const %s = require('./%s.js');\n\n", fm, fm);
+    case X_SH: return cu_fmt(". lib/%s.sh\n\n", fm);
+    case X_C:  return cu_fmt("#include \"%s.h\"\n\n", fm);
+    default:   return cu_fmt("require \"./lib/%s.pl\";\n\n", fm);
+    }
+}
+static const char *x_wrap_body(const XProj *p) {
+    const XFn *f = p->wf->f; const char *fm = p->mod[p->wfm].name;
+    const char *what = cu_fmt("what the report shows: %s", f->en), *nm = cu_fmt("report_%s", p->wf->name);
+    Buf b = {0}; buf_str(&b, x_cmt_line(p->st, what));
+    switch (p->st) {
+    case X_PY: buf_str(&b, cu_fmt("def %s(%s):\n    return %s.%s(%s)\n", nm, x_arglist(f, "", ", "), fm, f->name, x_arglist(f, "", ", "))); break;
+    case X_JS: buf_str(&b, cu_fmt("function %s(%s) {\n  return %s.%s(%s);\n}\n", nm, x_arglist(f, "", ", "), fm, f->name, x_arglist(f, "", ", "))); break;
+    case X_SH: { Buf q = {0}; buf_str(&q, ""); for (int i = 0, k = x_nargs(f); i < k; i++) buf_str(&q, cu_fmt("%s\"$%d\"", i ? " " : "", i + 1)); buf_str(&b, cu_fmt("%s() {\n    %s %s\n}\n", nm, f->name, q.p)); free(q.p); } break;
+    case X_C:  buf_str(&b, cu_fmt("int %s(%s) {\n    return %s(%s);\n}\n", nm, x_arglist(f, "int ", ", "), f->name, x_arglist(f, "", ", "))); break;
+    default:   buf_str(&b, cu_fmt("sub %s {\n    my (%s) = @_;\n    return %s(%s);\n}\n", nm, x_arglist(f, "$", ", "), f->name, x_arglist(f, "$", ", "))); break;
+    }
+    return cu_keep(b.p);
+}
 static const char *x_mod_text(const XProj *p, int mi) {
     const XMod *m = &p->mod[mi];
     Buf b = {0};
     buf_str(&b, p->st == X_PY ? cu_fmt("\"\"\"%s helpers of %s.\"\"\"\n\n\n", m->name, p->name) : p->st == X_JS ? "'use strict';\n\n" : p->st == X_SH ? cu_fmt("# %s helpers of %s\n\n", m->name, p->name)
                 : p->st == X_C ? cu_fmt("#include \"%s.h\"\n\n", m->name) : "use strict;\nuse warnings;\n\n");
-    for (int i = 0; i < m->nfn; i++) { if (i) buf_str(&b, p->st == X_PY ? "\n\n" : "\n"); buf_str(&b, x_block(p->st, m->fn[i].name, m->fn[i].f, m->fn[i].num)); }
-    if (p->st == X_JS) { buf_str(&b, "\nmodule.exports = { "); for (int i = 0; i < m->nfn; i++) buf_str(&b, cu_fmt("%s%s", i ? ", " : "", m->fn[i].name)); buf_str(&b, " };\n"); }
+    const int wr = p->wrap && p->wm == mi;
+    if (wr) buf_str(&b, x_wrap_head(p));
+    for (int i = 0; i < m->nfn; i++) { if (i) buf_str(&b, p->st == X_PY ? "\n\n" : "\n"); if (p->cmt) buf_str(&b, x_cmt_line(p->st, m->fn[i].f->en)); buf_str(&b, x_block(p->st, m->fn[i].name, m->fn[i].f, m->fn[i].num)); }
+    if (wr) { buf_str(&b, p->st == X_PY ? "\n\n" : "\n"); buf_str(&b, x_wrap_body(p)); }
+    if (p->st == X_JS) { buf_str(&b, "\nmodule.exports = { "); for (int i = 0; i < m->nfn; i++) buf_str(&b, cu_fmt("%s%s", i ? ", " : "", m->fn[i].name)); if (wr) buf_str(&b, cu_fmt(", report_%s", p->wf->name)); buf_str(&b, " };\n"); }
     if (p->st == X_PL) buf_str(&b, "\n1;\n");
     return cu_keep(b.p);
 }
