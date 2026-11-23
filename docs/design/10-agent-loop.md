@@ -14,7 +14,7 @@ parse every call of the turn, run each through `agent_tool`, append results, rep
 | round limit | `rl_block`, `lim` | blocks of 40 rounds, another block if a file was written or a step completed, cap 200 |
 | repeat handling | `rp_sig`, `rp_res`, `rp_err` | note on an identical call with an identical result; refusal of a call that failed twice; forced end after two refusals; note after four failures in a row |
 | blocked prerequisite | `bk_key_of`, `bk_count` | 3rd and 6th failure around one program or folder get a note |
-| plan first | `pl_calls`, `plan_cur` | notes at the 3rd and 6th call without a task list; current step every 5th result |
+| plan first | `pl_calls` | notes at the 3rd and 6th call without a task list (the "step K of N" reminder every 5th result was cut on 2026-11-23) |
 | open steps reminder | `nudged` | one reminder when the model stops with unfinished steps |
 | closing | penultimate-round note | tells the model to stop calling tools and report |
 | sub-agent | `tool_delegate`, `src/agent/delegate.c` | saves the KV state to disk, runs a read-only sub-task from position 0, reloads |

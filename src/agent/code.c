@@ -93,8 +93,7 @@ static void tool_read_file(const char *js, const char *end, char *out, size_t ca
     if (seq && rf && rf->next > 1) {
         if (rf->next > total) {             /* arquivo inteiro ja lido e sem mudanca */
             if (rd_all_notes(rf, total)) {
-                const size_t h = (size_t)snprintf(out, cap, "[katana: you already read this whole file (%d lines) and it has not changed. These are the notes kept from that reading. "
-                                                  "For exact lines call read_file with offset and limit; to find something in it use search_files.]\n", total);
+                const size_t h = KNOTE(STORED_ALL, out, cap, total);
                 rd_notes(rf, rf->nch, 0, out + h, cap > h ? cap - h : 0);
                 g_rd_last.notes = 1;
                 free(b);

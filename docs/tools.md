@@ -104,9 +104,10 @@ in the conversation, the unchanged/changed-part notes of the delta reading (`fac
 `KATANA_READ_OUTLINE=0` off, `KATANA_READ_OUTLINE_LINES=N` changes the line threshold (the byte threshold becomes 40 x N).
 
 **Repeated identical calls.** In the agent loop (`rr_check` in `src/agent/loop.c`), when the model repeats, in the same request,
-a `Read`, `Grep`, `Glob` or MCP tool marked `readOnlyHint` (server of the user's own configuration) with the same arguments as a
+a `Read`, `Grep`, `Glob`, `Find`, `Symbols`, `WebSearch`, `WebFetch` or MCP tool marked `readOnlyHint` (server of the user's own configuration) with the same arguments as a
 call that already succeeded, the call is not run again: the result is the note `[katana: you already made this exact call at step N
-of this request; the result is earlier in this conversation. Do not repeat it: pick a different place to look ...]`. From the
+of this request; its result is above in this conversation, or listed there as removed to save context. Do not repeat it: pick a
+different place to look ...]`. From the
 third repetition on the note is firmer and lists what the model can still do (another part with offset and limit, `Grep` with
 `output_mode` content, `-n -C 2`, `Glob` for the defining file, or answer saying what is unknown). `Bash`, `Write`, `Edit` and
 the other tools are not covered; any call to one of them that is not a read clears the table, because the same read may then

@@ -1,6 +1,7 @@
 # The `[katana: ...]` notes: inventory, real use, effect and consolidation proposal
 
-Status: analysis only, 2026-11-23. No code was changed, no model was run and nothing was measured for this document.
+Status: analysis written 2026-11-23 (no code changed, no model run, nothing measured for the analysis itself). Implementation status,
+same day, is in section 9; sections 1 to 8 are the analysis as written and still describe the tree before that work.
 Everything marked "observed" was read from the owner's saved sessions (`~/.katana/desktop/sessoes/*.ksess`, 8 files,
 2026-11-20 to 2026-11-23, read with a script over the raw text) or from the code and the curriculum files as they are in
 this tree. Everything marked "opinion" or "estimate" is judgment or arithmetic, not a result. Token figures use the
@@ -476,3 +477,42 @@ Consumers (change in the same commit as the matching emitter):
   R7 says "8 tool calls" when it fires at the 3rd non-read-only one (observed 2026-11-23 10:19).
 * T2 comes from three failures in the proof of 2026-11-21. Should it stay without a training example, or be removed
   with the other notes that have 0 conversations (R3 to R6, R8, R10, R14, Q3, T2, T4)?
+
+## 9. Implementation status (2026-11-23, local commits, nothing pushed, no model run, nothing measured)
+
+Done (owner authorization to consolidate; sections 5 and 7.3 steps 1 to 3):
+
+* CUT R9: `loop_plan_note` (`src/agent/loop.c`) no longer appends `[plan: step K of N ...]`; `plan_cur` was removed. R7/R8 keep their text.
+  `src/app/curriculum.c` still strips a `\n[plan: step ` from a result when it replays a conversation and `lc_is_note` (`launch.c`) still
+  accepts `[plan:` lines: both are for conversations and sessions written before the cut (the v7 files carry the old line).
+* CUT the T2 echo: `KN_FINISH_EXAMPLE` is the same two sentences without `The request:` and the request text (`brief_example_note`).
+* CUT the R17 pointer for the web tools only (`WebSearch`, `WebFetch`, `web_search`, `web_fetch`): the removed note now ends with "run it
+  again, with a different query or page if you can, only if you need more of it". The pointer stays for every other tool: the curriculum
+  teaches it (`scenario_tasks.c`, `scenario_concept.c`: `to see it again, Read ...` after a removed `Bash` result), and the 0 of 14 figure
+  comes from web results only. Cutting it everywhere would also change what the curriculum teaches.
+* R1/R2 wording: "the result is earlier in this conversation" became "its result is above in this conversation, or listed there as removed
+  to save context", and R1 now ends "... or answer with what you have, saying what is still unknown". The prefix that tests and scenarios match
+  (`you already made this exact call at step`) is unchanged. `rr_covered` already included `WebSearch` and `WebFetch` (added before this work).
+* `knote` (`src/agent/knote.c`, included from `src/katana.c` before `agent/tools.c`): a kind table `KN_TAB` (class, site, budget flag, cap,
+  printf template as the `KNF_*` macros) and `KNOTE(kind, out, cap, args...)`, which checks the arguments against the template at compile
+  time. Every `[katana: ...]` emission point listed in 7.2 now goes through it, with the text and format unchanged except for the cuts
+  and the R1/R2 wording above: R1, R2, R3, R4, R5, R6, R7, R8, T1 (`loop.c`), T2, T3 (`brief.c`), Q2 header (`docsel.c`), Q1 (`locate.c`),
+  R10 both graph paths (`findgraph.c`), R11, R12 (`read.c`), R13 (`code.c`), R14, R15, R16, T5 (`delegate.c`), R17 (`context.c`), R18
+  (`mcp_channel.c`). T4 (`CP_NOTE`) stays a macro (`KNF_COMPACT`) because it is concatenated into literals; its text now lives in `knote.c`.
+  Not converted: Q3 (`loop.c`, request-entry block, owned by the UIOE work; `KN_TODO_PREV` is in the table with the same text, ready to
+  swap in), Q4 and Q5 (no `[katana:` prefix), R19 hints and the `[web: ...]` footers (no prefix).
+* One escape: `kn_escape`/`kn_external` (`knote.c`) replace `notes_neutralize` (`dispatch.c`); same tools, same behavior.
+* Budget: `KN_RES_MAX` (1,500 bytes of notes per tool result) and `KN_REQ_INFO_MAX` (6,000 bytes of budgeted INFO per request), reset by
+  `kn_result_begin` (first line of `rr_check`, which every call of the loop, `toolrun notes` and the scenarios passes) and `kn_request_begin`
+  (`rr_reset`). Only the R10 links note carries the budget flag today; ORDER notes are never refused. The values are looser than the
+  proposal in 7.1 (1,200 bytes per request) on purpose: the proposal would drop R10 notes the engine emits today, and this step must not
+  change text. They are not measured.
+* `rp_stuck` (open question 1): read in `loop.c`. The forced stop counts the 2nd, 3rd and 4th identical call caught by `rr_check` and each
+  call that returns the same result as before, and sends the request to the closing round at the third count. The 12-time `WebSearch`
+  session of 2026-11-22 ran on a binary older than that stop (commit `9eb554a`, 2026-11-23 07:55), which is the likely reason R6 never
+  showed. Not reproduced with a model. A comment at the code records this.
+
+Not done: the per-call log line of 7.1 rule 4; the allow-list inversion of the escape (rule 1); escaping the data arguments of a note (todo text,
+document lines); FUSE R11 to R16 (7.3 step 4); MOVE Q1 to Q3 and Q2 into the UIOE block (7.3 step 5, other owner). The v7 files in
+`data/curriculum/v7` are stale for the R1/R2 wording and the dropped `[plan: step` lines (`katana curriculum check` on them now reports
+the R1/R2 and removed-note mismatches); they are regenerated as v8, not edited.

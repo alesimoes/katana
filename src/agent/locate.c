@@ -297,7 +297,7 @@ static int place_note(const char *msg, char *out, size_t cap) {
         if (dup) continue;
         if (ns < 4) snprintf(seen[ns++], sizeof seen[0], "%s", sug + 14);
         const char *shown = cands[i] + (strncmp(cands[i], cwd, strlen(cwd)) == 0 && cands[i][strlen(cwd)] == '/' ? strlen(cwd) + 1 : 0);
-        if (o + 700 < cap) o += (size_t)snprintf(out + o, cap - o, "%s[katana: you mention \"%s\", which does not exist from the working folder (%s). It is at: %s. Work there: pass that folder as `path` to Find, Glob and Grep, or use absolute paths.]", o ? "\n" : "", shown, cwd, sug + 14);
+        if (o + 700 < cap) o += KNOTE(PLACE, out + o, cap - o, o ? "\n" : "", shown, cwd, sug + 14);
     }
     return o > 0;
 }

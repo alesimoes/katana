@@ -810,7 +810,7 @@ static void fgs_neighbor_note(const char *name, const char *js, const char *end,
     FgV pick[256]; int np = 0;
     for (int c = 0; c < nc; c++) if (cand[c].sc >= FG_NEIGH_MIN) { pick[np].i = c; pick[np].v = cand[c].sc; np++; }
     qsort(pick, (size_t)np, sizeof(FgV), fg_cmp_v);
-    char note[1100]; size_t nl = (size_t)snprintf(note, sizeof note, "\n[katana: linked files you have not read yet: ");
+    char li[1100 - sizeof KN_LINKS_HEAD + 1]; size_t nl = 0;      /* so a lista; o cabecalho e o ] saem da tabela (agent/knote.c) com o mesmo tamanho total de antes */
     int put = 0;
     for (int c = 0; c < np && put < 3; c++) {
         const FgsCand *K = &cand[pick[c].i]; const int j = K->node, s0 = K->from;
@@ -818,14 +818,15 @@ static void fgs_neighbor_note(const char *name, const char *js, const char *end,
         const char *rs = fs_strip(F, G->pool + G->poff[s0]), *rj = fs_strip(F, G->pool + G->poff[j]);
         const char *bs = strrchr(rs, '/'); bs = bs ? bs + 1 : rs;
         char ph[300]; fg_why_str(&w, bs, ph, sizeof ph);
-        const int add = snprintf(note + nl, sizeof note - nl - 3, "%s%s (%s)", put ? ", " : "", rj, ph);
-        if (add <= 0 || nl + (size_t)add + 3 >= sizeof note) break;
+        const int add = snprintf(li + nl, sizeof li - nl - 3, "%s%s (%s)", put ? ", " : "", rj, ph);
+        if (add <= 0 || nl + (size_t)add + 3 >= sizeof li) break;
         nl += (size_t)add; put++; fgs_put(g_fgs_cited, &g_fgs_ncited, 1024, G->hash[j]);
     }
     if (put) {
-        note[nl++] = ']'; note[nl] = 0;
+        char note[1100]; li[nl] = 0;
+        nl = KNOTE(LINKS, note, sizeof note, li);      /* 0 = recusada pelo orcamento (agent/knote.c) */
         const size_t rl = strlen(result);
-        if (rl + nl + 1 < cap) { memcpy(result + rl, note, nl + 1); g_fg_notes++; }
+        if (nl && rl + nl + 1 < cap) { memcpy(result + rl, note, nl + 1); g_fg_notes++; }
     }
 }
 static void fg_neighbor_note(const char *name, const char *js, const char *end, char *result, size_t cap) {
@@ -878,21 +879,22 @@ static void fg_neighbor_note(const char *name, const char *js, const char *end, 
     FgV pick[64]; int np = 0;
     for (int c = 0; c < nc; c++) if (sc[cand[c]] >= FG_NEIGH_MIN) { pick[np].i = cand[c]; pick[np].v = sc[cand[c]]; np++; }
     qsort(pick, (size_t)np, sizeof(FgV), fg_cmp_v);
-    char note[1100]; size_t nl = (size_t)snprintf(note, sizeof note, "\n[katana: linked files you have not read yet: ");
+    char li[1100 - sizeof KN_LINKS_HEAD + 1]; size_t nl = 0;      /* so a lista; o cabecalho e o ] saem da tabela (agent/knote.c) com o mesmo tamanho total de antes */
     int put = 0;
     for (int c = 0; c < np && put < 3; c++) {
         const int j = pick[c].i, s0 = from[j];
         FgWhy w; fg_why(X, s0, j, &w);
         const char *bs = strrchr(X->f[s0].rel, '/'); bs = bs ? bs + 1 : X->f[s0].rel;
         char ph[300]; fg_why_str(&w, bs, ph, sizeof ph);
-        const int add = snprintf(note + nl, sizeof note - nl - 3, "%s%s (%s)", put ? ", " : "", X->f[j].rel, ph);
-        if (add <= 0 || nl + (size_t)add + 3 >= sizeof note) break;
+        const int add = snprintf(li + nl, sizeof li - nl - 3, "%s%s (%s)", put ? ", " : "", X->f[j].rel, ph);
+        if (add <= 0 || nl + (size_t)add + 3 >= sizeof li) break;
         nl += (size_t)add; put++; g_fg_cited[j] = 1;
     }
     if (put) {
-        note[nl++] = ']'; note[nl] = 0;
+        char note[1100]; li[nl] = 0;
+        nl = KNOTE(LINKS, note, sizeof note, li);      /* 0 = recusada pelo orcamento (agent/knote.c) */
         const size_t rl = strlen(result);
-        if (rl + nl + 1 < cap) { memcpy(result + rl, note, nl + 1); g_fg_notes++; }
+        if (nl && rl + nl + 1 < cap) { memcpy(result + rl, note, nl + 1); g_fg_notes++; }
     }
     free(shown); free(sc); free(from); free(bw);
 }

@@ -24,6 +24,7 @@
 #include "engine/expert_tier.c"          /* camadas de memoria dos especialistas: RAM com leitura paralela do SSD, previsao, medidas */
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
 #include "app/console.c"               /* console (cores, Ctrl+C, comandos de barra) e conversa simples */
+#include "agent/knote.c"               /* notas [katana: ...] do motor: tabela de tipos, orcamento e escape unico */
 #include "agent/tools.c"               /* agente: ferramentas basicas (arquivos, web, memoria, sudo, caminhos) */
 #include "coder/roots.c"               /* coder: raiz do indice por init (marcador ROOT), indice da home, absorcao */
 /* visao: imagens na conversa (docs/vision.md) */
