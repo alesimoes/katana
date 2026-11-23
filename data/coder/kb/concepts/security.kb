@@ -1,0 +1,1058 @@
+# Security concepts (source seed unless noted). Format: see README.md
+
+concept AUTHENTICATION
+  category SECURITY
+  canonical authentication
+  term pt autenticacao 1.0
+  term pt autenticar 0.95
+  term pt autenticado 0.9
+  term pt verificar identidade 0.85
+  term pt validar credenciais 0.8
+  term pt credenciais 0.75
+  term pt nao autenticado 0.7
+  term en authentication 1.0
+  term en authenticate 0.95
+  term en authenticated 0.9
+  term en verify identity 0.85
+  term en validate credentials 0.8
+  term code auth 0.95
+  term code authenticate 0.91
+  term code Authenticator 0.87
+  term code AuthService 0.83
+  term code is_authenticated 0.79
+  term code verify_credentials 0.75
+  term code credentials 0.71
+  term code authn 0.67
+  action authenticate
+  action verify
+  action validate
+  action challenge
+  related LOGIN 0.8
+  related AUTHORIZATION 0.6
+  related AUTH_TOKEN 0.6
+  related PASSWORD 0.6
+  related SESSION_AUTH 0.6
+  source seed
+end
+
+concept LOGIN
+  category SECURITY
+  canonical login
+  term pt login 1.0
+  term pt entrar 0.95
+  term pt acessar conta 0.9
+  term pt fazer login 0.85
+  term pt tela de login 0.8
+  term pt entrada no sistema 0.75
+  term pt logar 0.7
+  term en login 1.0
+  term en sign in 0.95
+  term en logon 0.9
+  term en sign-in page 0.85
+  term en user login 0.8
+  term code login 0.95
+  term code sign_in 0.91
+  term code do_login 0.87
+  term code handle_login 0.83
+  term code LoginController 0.79
+  term code login_required 0.75
+  term code logon 0.71
+  action login
+  action logout
+  action authenticate
+  related LOGOUT 0.7
+  related AUTHENTICATION 0.8
+  related PASSWORD 0.6
+  related SESSION_AUTH 0.6
+  related TWO_FACTOR 0.4
+  source seed
+end
+
+concept LOGOUT
+  category SECURITY
+  canonical logout
+  term pt logout 1.0
+  term pt sair 0.95
+  term pt sair da conta 0.9
+  term pt encerrar sessao 0.85
+  term pt deslogar 0.8
+  term pt desconectar usuario 0.75
+  term en logout 1.0
+  term en sign out 0.95
+  term en end session 0.9
+  term en disconnect user 0.85
+  term code logout 0.95
+  term code sign_out 0.91
+  term code do_logout 0.87
+  term code end_session 0.83
+  term code invalidate_session 0.79
+  term code revoke_session 0.75
+  action logout
+  action invalidate
+  action revoke
+  related LOGIN 0.7
+  related SESSION_AUTH 0.6
+  source seed
+end
+
+concept AUTHORIZATION
+  category SECURITY
+  canonical authorization
+  term pt autorizacao 1.0
+  term pt autorizar 0.95
+  term pt permitir acesso 0.9
+  term pt controle de acesso 0.85
+  term pt acesso negado 0.8
+  term pt proibido 0.75
+  term pt nao autorizado 0.7
+  term en authorization 1.0
+  term en authorize 0.95
+  term en access control 0.9
+  term en access denied 0.85
+  term en forbidden 0.8
+  term code authorize 0.95
+  term code Authorizer 0.91
+  term code authz 0.87
+  term code access_control 0.83
+  term code is_authorized 0.79
+  term code can_access 0.75
+  term code acl 0.71
+  term code forbidden 0.67
+  action authorize
+  action allow
+  action deny
+  action check
+  action grant
+  related PERMISSION 0.8
+  related ROLE 0.7
+  related AUTHENTICATION 0.6
+  related POLICY_ACCESS 0.6
+  source seed
+  note 'autorizacao' tambem aparece em pagamentos (PAYMENT authorize)
+end
+
+concept PERMISSION
+  category SECURITY
+  canonical permission
+  term pt permissao 1.0
+  term pt permissoes 0.95
+  term pt permitir 0.9
+  term pt negar 0.85
+  term pt conceder permissao 0.8
+  term pt revogar permissao 0.75
+  term pt direitos de acesso 0.7
+  term en permission 1.0
+  term en permissions 0.95
+  term en grant 0.9
+  term en deny 0.85
+  term en revoke 0.8
+  term code permission 0.95
+  term code permissions 0.91
+  term code has_permission 0.87
+  term code grant_permission 0.83
+  term code revoke 0.79
+  term code perms 0.75
+  term code allow 0.71
+  term code deny 0.67
+  action grant
+  action revoke
+  action check
+  action deny
+  related AUTHORIZATION 0.8
+  related ROLE 0.7
+  related FILE_PERMISSION 0.3
+  related MOBILE_PERMISSION 0.3
+  source seed
+  note permissao de arquivo: FILE_PERMISSION; de Android: MOBILE_PERMISSION
+end
+
+concept ROLE
+  category SECURITY
+  canonical role
+  term pt papel 1.0
+  term pt papeis 0.95
+  term pt perfil de acesso 0.9
+  term pt administrador 0.85
+  term pt admin 0.8
+  term pt grupo de usuarios 0.75
+  term pt funcao do usuario 0.7
+  term en role 1.0
+  term en roles 0.95
+  term en admin 0.9
+  term en administrator 0.85
+  term en user group 0.8
+  term code role 0.95
+  term code roles 0.91
+  term code user_role 0.87
+  term code is_admin 0.83
+  term code admin 0.79
+  term code superuser 0.75
+  term code group 0.71
+  term code RBAC 0.67
+  action assign
+  action grant
+  action revoke
+  action check
+  related PERMISSION 0.7
+  related AUTHORIZATION 0.7
+  source seed
+end
+
+concept POLICY_ACCESS
+  category SECURITY
+  canonical policy_access
+  term pt politica 1.0
+  term pt politica de acesso 0.95
+  term pt regra de acesso 0.9
+  term pt politica de seguranca 0.85
+  term pt regras 0.8
+  term pt restricao 0.75
+  term pt escopo 0.7
+  term en policy 1.0
+  term en access policy 0.95
+  term en security policy 0.9
+  term en rule 0.85
+  term en restriction 0.8
+  term code policy 0.95
+  term code access_policy 0.91
+  term code security_policy 0.87
+  term code rule 0.83
+  term code rules 0.79
+  term code allowlist 0.75
+  term code denylist 0.71
+  term code whitelist 0.67
+  action enforce
+  action evaluate
+  action apply
+  action deny
+  related AUTHORIZATION 0.7
+  related PERMISSION 0.5
+  source seed
+end
+
+concept SESSION_AUTH
+  category SECURITY
+  canonical session_auth
+  term pt sessao 1.0
+  term pt sessao de usuario 0.95
+  term pt sessao expirada 0.9
+  term pt expirar sessao 0.85
+  term pt manter conectado 0.8
+  term pt cookie de sessao 0.75
+  term pt sessao ativa 0.7
+  term en session 1.0
+  term en user session 0.95
+  term en session expired 0.9
+  term en session timeout 0.85
+  term en keep me logged in 0.8
+  term code session 0.95
+  term code session_id 0.91
+  term code session_token 0.87
+  term code session_expired 0.83
+  term code session_timeout 0.79
+  term code SessionManager 0.75
+  term code cookie 0.71
+  term code remember_me 0.67
+  action create
+  action destroy
+  action refresh
+  action expire
+  action validate
+  related AUTH_TOKEN 0.6
+  related LOGIN 0.6
+  related LOGOUT 0.5
+  related SESSION_WORK 0.3
+  source seed
+  note 'sessao' tambem e sessao de trabalho do agente (SESSION_WORK) ou de audio (AUDIO_SESSION)
+end
+
+concept AUTH_TOKEN
+  category SECURITY
+  canonical auth_token
+  term pt token de acesso 1.0
+  term pt token 0.95
+  term pt jwt 0.9
+  term pt bearer 0.85
+  term pt token de autenticacao 0.8
+  term pt token expirado 0.75
+  term pt renovar token 0.7
+  term en access token 1.0
+  term en token 0.95
+  term en jwt 0.9
+  term en bearer token 0.85
+  term en auth token 0.8
+  term code token 0.95
+  term code access_token 0.91
+  term code refresh_token 0.87
+  term code jwt 0.83
+  term code bearer 0.79
+  term code Authorization 0.75
+  term code id_token 0.71
+  term code auth_token 0.67
+  action issue
+  action verify
+  action refresh
+  action revoke
+  action expire
+  related LM_TOKEN 0.1
+  related AUTHENTICATION 0.6
+  related OAUTH 0.7
+  related SESSION_AUTH 0.6
+  related API_KEY 0.5
+  source seed
+  note desambigua de LM_TOKEN (token de linguagem)
+end
+
+concept API_KEY
+  category SECURITY
+  canonical api_key
+  term pt chave de api 1.0
+  term pt api key 0.95
+  term pt segredo 0.9
+  term pt chave secreta 0.85
+  term pt credencial de servico 0.8
+  term pt chave de acesso 0.75
+  term pt chave privada de api 0.7
+  term en api key 1.0
+  term en secret key 0.95
+  term en secret 0.9
+  term en service credential 0.85
+  term en access key 0.8
+  term code api_key 0.95
+  term code secret 0.91
+  term code secret_key 0.87
+  term code client_secret 0.83
+  term code access_key 0.79
+  term code service_account 0.75
+  term code credential 0.71
+  term code x-api-key 0.67
+  action issue
+  action rotate
+  action revoke
+  action validate
+  related AUTH_TOKEN 0.5
+  related SECRETS_MANAGEMENT 0.7
+  source seed
+end
+
+concept SECRETS_MANAGEMENT
+  category SECURITY
+  canonical secrets_management
+  term pt segredos 1.0
+  term pt cofre de segredos 0.95
+  term pt gerenciar segredos 0.9
+  term pt variavel secreta 0.85
+  term pt senha no codigo 0.8
+  term pt vazamento de segredo 0.75
+  term pt rotacao de chave 0.7
+  term en secrets 1.0
+  term en secret management 0.95
+  term en vault 0.9
+  term en secret store 0.85
+  term en hardcoded password 0.8
+  term code secrets 0.95
+  term code secret 0.91
+  term code vault 0.87
+  term code keyring 0.83
+  term code secret_store 0.79
+  term code rotate_key 0.75
+  term code hardcoded 0.71
+  term code dotenv 0.67
+  action store
+  action rotate
+  action encrypt
+  action fetch
+  related API_KEY 0.6
+  related ENCRYPTION 0.5
+  related ENV_VARIABLE 0.5
+  source seed
+end
+
+concept PASSWORD
+  category SECURITY
+  canonical password
+  term pt senha 1.0
+  term pt senhas 0.95
+  term pt palavra-passe 0.9
+  term pt redefinir senha 0.85
+  term pt esqueci a senha 0.8
+  term pt trocar senha 0.75
+  term pt forca da senha 0.7
+  term en password 1.0
+  term en passwords 0.95
+  term en passphrase 0.9
+  term en reset password 0.85
+  term en forgot password 0.8
+  term code password 0.95
+  term code passwd 0.91
+  term code pwd 0.87
+  term code pass 0.83
+  term code change_password 0.79
+  term code reset_password 0.75
+  term code forgot_password 0.71
+  term code password_hash 0.67
+  action reset
+  action change
+  action verify
+  action hash
+  action validate
+  related HASHING_PASSWORD 0.8
+  related LOGIN 0.6
+  related AUTHENTICATION 0.6
+  related TWO_FACTOR 0.4
+  source seed
+end
+
+concept HASHING_PASSWORD
+  category SECURITY
+  canonical hashing_password
+  term pt hash de senha 1.0
+  term pt hash 0.95
+  term pt hasheamento 0.9
+  term pt sal 0.85
+  term pt salt 0.8
+  term pt bcrypt 0.75
+  term pt argon2 0.7
+  term en password hash 1.0
+  term en hash 0.95
+  term en hashing 0.9
+  term en salt 0.85
+  term en pepper 0.8
+  term code hash 0.95
+  term code hash_password 0.91
+  term code password_hash 0.87
+  term code salt 0.83
+  term code bcrypt 0.79
+  term code argon2 0.75
+  term code scrypt 0.71
+  term code pbkdf2 0.67
+  action hash
+  action verify
+  action derive
+  action digest
+  related PASSWORD 0.8
+  related ENCRYPTION 0.4
+  related HASH_FUNCTION 0.5
+  source seed
+  note hash de estrutura de dados: HASH_FUNCTION
+end
+
+concept ENCRYPTION
+  category SECURITY
+  canonical encryption
+  term pt criptografia 1.0
+  term pt criptografar 0.95
+  term pt descriptografar 0.9
+  term pt cifrar 0.85
+  term pt decifrar 0.8
+  term pt cifra 0.75
+  term pt chave simetrica 0.7
+  term en encryption 1.0
+  term en encrypt 0.95
+  term en decrypt 0.9
+  term en cipher 0.85
+  term en ciphertext 0.8
+  term code encrypt 0.95
+  term code decrypt 0.91
+  term code cipher 0.87
+  term code aes 0.83
+  term code aes_gcm 0.79
+  term code ciphertext 0.75
+  term code plaintext 0.71
+  term code nonce 0.67
+  action encrypt
+  action decrypt
+  action seal
+  action derive
+  related KEY_MANAGEMENT 0.7
+  related DIGITAL_SIGNATURE 0.4
+  related TLS_CERT 0.4
+  related HASHING_PASSWORD 0.4
+  source seed
+end
+
+concept KEY_MANAGEMENT
+  category SECURITY
+  canonical key_management
+  term pt chave 1.0
+  term pt chaves 0.95
+  term pt par de chaves 0.9
+  term pt chave publica 0.85
+  term pt chave privada 0.8
+  term pt gerar chave 0.75
+  term pt chaveiro 0.7
+  term en key 1.0
+  term en keys 0.95
+  term en key pair 0.9
+  term en public key 0.85
+  term en private key 0.8
+  term code key 0.95
+  term code keypair 0.91
+  term code public_key 0.87
+  term code private_key 0.83
+  term code generate_key 0.79
+  term code keygen 0.75
+  term code ssh_key 0.71
+  term code id_rsa 0.67
+  action generate
+  action rotate
+  action import
+  action export
+  related ENCRYPTION 0.6
+  related DIGITAL_SIGNATURE 0.6
+  related TLS_CERT 0.5
+  source seed
+  note chave em dicionario/mapa e MAP_KEY_VALUE
+end
+
+concept DIGITAL_SIGNATURE
+  category SECURITY
+  canonical digital_signature
+  term pt assinatura digital 1.0
+  term pt assinar 0.95
+  term pt verificar assinatura 0.9
+  term pt assinatura de arquivo 0.85
+  term pt integridade 0.8
+  term pt checksum 0.75
+  term pt autenticidade 0.7
+  term en digital signature 1.0
+  term en sign 0.95
+  term en verify signature 0.9
+  term en signed 0.85
+  term en integrity 0.8
+  term code signature 0.95
+  term code sign 0.91
+  term code verify 0.87
+  term code signed 0.83
+  term code verify_signature 0.79
+  term code hmac 0.75
+  term code sig 0.71
+  term code signing_key 0.67
+  action sign
+  action verify
+  action validate
+  related KEY_MANAGEMENT 0.6
+  related TLS_CERT 0.5
+  related HASHING_PASSWORD 0.3
+  source seed
+  note assinatura de funcao e FUNCTION_SIGNATURE; de contrato: CONTRACT
+end
+
+concept TLS_CERT
+  category SECURITY
+  canonical tls_cert
+  term pt certificado 1.0
+  term pt certificado digital 0.95
+  term pt ssl 0.9
+  term pt tls 0.85
+  term pt https seguro 0.8
+  term pt autoridade certificadora 0.75
+  term pt certificado expirado 0.7
+  term en certificate 1.0
+  term en ssl 0.95
+  term en tls 0.9
+  term en https certificate 0.85
+  term en certificate authority 0.8
+  term code cert 0.95
+  term code certificate 0.91
+  term code tls 0.87
+  term code ssl 0.83
+  term code x509 0.79
+  term code ca_bundle 0.75
+  term code cacert 0.71
+  term code verify_cert 0.67
+  action verify
+  action install
+  action renew
+  action pin
+  related KEY_MANAGEMENT 0.5
+  related HTTP_REQUEST 0.4
+  related ENCRYPTION 0.4
+  source seed
+end
+
+concept TWO_FACTOR
+  category SECURITY
+  canonical two_factor
+  term pt autenticacao em dois fatores 1.0
+  term pt 2fa 0.95
+  term pt mfa 0.9
+  term pt codigo de verificacao 0.85
+  term pt codigo por sms 0.8
+  term pt otp 0.75
+  term pt token de uma vez 0.7
+  term en two-factor 1.0
+  term en 2fa 0.95
+  term en mfa 0.9
+  term en multi-factor 0.85
+  term en verification code 0.8
+  term code two_factor 0.95
+  term code 2fa 0.91
+  term code mfa 0.87
+  term code totp 0.83
+  term code otp 0.79
+  term code verification_code 0.75
+  term code verify_otp 0.71
+  term code sms_code 0.67
+  action verify
+  action send
+  action challenge
+  action enroll
+  related AUTHENTICATION 0.7
+  related PASSWORD 0.4
+  related LOGIN 0.5
+  source seed
+end
+
+concept OAUTH
+  category SECURITY
+  canonical oauth
+  term pt oauth 1.0
+  term pt login social 0.95
+  term pt login com google 0.9
+  term pt entrar com 0.85
+  term pt provedor de identidade 0.8
+  term pt sso 0.75
+  term pt login unico 0.7
+  term en oauth 1.0
+  term en oauth2 0.95
+  term en social login 0.9
+  term en sign in with google 0.85
+  term en identity provider 0.8
+  term code oauth 0.95
+  term code oauth2 0.91
+  term code oidc 0.87
+  term code sso 0.83
+  term code saml 0.79
+  term code idp 0.75
+  term code authorize_url 0.71
+  term code redirect_uri 0.67
+  action authorize
+  action redirect
+  action exchange
+  related AUTH_TOKEN 0.7
+  related AUTHENTICATION 0.6
+  source seed
+end
+
+concept AUDIT_LOG
+  category SECURITY
+  canonical audit_log
+  term pt auditoria 1.0
+  term pt trilha de auditoria 0.95
+  term pt log de auditoria 0.9
+  term pt quem fez o que 0.85
+  term pt registro de acoes 0.8
+  term pt rastreabilidade 0.75
+  term pt historico de alteracoes 0.7
+  term en audit 1.0
+  term en audit trail 0.95
+  term en audit log 0.9
+  term en who did what 0.85
+  term en action log 0.8
+  term code audit 0.95
+  term code audit_log 0.91
+  term code AuditTrail 0.87
+  term code audit_event 0.83
+  term code log_action 0.79
+  term code changelog 0.75
+  term code history 0.71
+  term code who 0.67
+  action record
+  action log
+  action trace
+  action review
+  related LOG_RECORD 0.5
+  related AUTHORIZATION 0.4
+  related SECURITY_EVENT 0.5
+  source seed
+end
+
+concept SECURITY_EVENT
+  category SECURITY
+  canonical security_event
+  term pt evento de seguranca 1.0
+  term pt tentativa de invasao 0.95
+  term pt acesso suspeito 0.9
+  term pt alerta de seguranca 0.85
+  term pt intrusao 0.8
+  term pt deteccao de ameaca 0.75
+  term pt ataque 0.7
+  term en security event 1.0
+  term en intrusion 0.95
+  term en suspicious access 0.9
+  term en security alert 0.85
+  term en threat detection 0.8
+  term code security_event 0.95
+  term code intrusion 0.91
+  term code suspicious 0.87
+  term code alert 0.83
+  term code threat 0.79
+  term code attack 0.75
+  term code incident 0.71
+  term code breach 0.67
+  action detect
+  action alert
+  action block
+  action report
+  related AUDIT_LOG 0.5
+  related ACCOUNT_LOCK 0.5
+  related RATE_LIMIT 0.4
+  source seed
+end
+
+concept ACCOUNT_LOCK
+  category SECURITY
+  canonical account_lock
+  term pt bloqueio de conta 1.0
+  term pt conta bloqueada 0.95
+  term pt bloquear usuario 0.9
+  term pt desbloquear 0.85
+  term pt tentativas de login 0.8
+  term pt suspender conta 0.75
+  term pt banir 0.7
+  term en account lockout 1.0
+  term en locked account 0.95
+  term en block user 0.9
+  term en unblock 0.85
+  term en failed login attempts 0.8
+  term code lockout 0.95
+  term code account_locked 0.91
+  term code is_locked 0.87
+  term code block_user 0.83
+  term code unblock 0.79
+  term code failed_attempts 0.75
+  term code login_attempts 0.71
+  term code suspend 0.67
+  action lock
+  action unlock
+  action block
+  action suspend
+  action ban
+  related LOGIN 0.5
+  related SECURITY_EVENT 0.5
+  related RATE_LIMIT 0.4
+  related PASSWORD 0.3
+  source seed
+  note bloqueio de recurso concorrente e MUTEX_LOCK
+end
+
+concept RATE_LIMIT
+  category SECURITY
+  canonical rate_limit
+  term pt limite de requisicoes 1.0
+  term pt limitar taxa 0.95
+  term pt throttle 0.9
+  term pt limite de uso 0.85
+  term pt cota 0.8
+  term pt muitas requisicoes 0.75
+  term pt 429 0.7
+  term en rate limit 1.0
+  term en rate limiting 0.95
+  term en throttle 0.9
+  term en throttling 0.85
+  term en quota 0.8
+  term code rate_limit 0.95
+  term code RateLimiter 0.91
+  term code throttle 0.87
+  term code quota 0.83
+  term code too_many_requests 0.79
+  term code 429 0.75
+  term code token_bucket 0.71
+  term code leaky_bucket 0.67
+  action limit
+  action throttle
+  action block
+  action reset
+  related SECURITY_EVENT 0.4
+  related HTTP_REQUEST 0.4
+  related RETRY 0.3
+  source seed
+end
+
+concept INPUT_SANITIZATION
+  category SECURITY
+  canonical input_sanitization
+  term pt sanitizar 1.0
+  term pt sanitizacao 0.95
+  term pt higienizar entrada 0.9
+  term pt injecao de sql 0.85
+  term pt xss 0.8
+  term pt escapar 0.75
+  term pt validar entrada 0.7
+  term en sanitize 1.0
+  term en sanitization 0.95
+  term en input sanitization 0.9
+  term en sql injection 0.85
+  term en xss 0.8
+  term code sanitize 0.95
+  term code escape 0.91
+  term code escape_html 0.87
+  term code sql_injection 0.83
+  term code xss 0.79
+  term code csrf 0.75
+  term code injection 0.71
+  term code parameterized 0.67
+  action sanitize
+  action escape
+  action strip
+  action validate
+  related VALIDATION 0.6
+  related SQL_QUERY 0.3
+  source seed
+end
+
+concept VULNERABILITY
+  category SECURITY
+  canonical vulnerability
+  term pt vulnerabilidade 1.0
+  term pt falha de seguranca 0.95
+  term pt cve 0.9
+  term pt exploit 0.85
+  term pt buffer overflow 0.8
+  term pt estouro de buffer 0.75
+  term pt patch de seguranca 0.7
+  term en vulnerability 1.0
+  term en security flaw 0.95
+  term en cve 0.9
+  term en exploit 0.85
+  term en buffer overflow 0.8
+  term code vulnerability 0.95
+  term code cve 0.91
+  term code exploit 0.87
+  term code overflow 0.83
+  term code bounds_check 0.79
+  term code hardening 0.75
+  term code security_patch 0.71
+  term code pentest 0.67
+  action patch
+  action fix
+  action audit
+  action scan
+  related INPUT_SANITIZATION 0.5
+  related MEMORY_SAFETY 0.5
+  source seed
+end
+
+concept SANDBOX
+  category SECURITY
+  canonical sandbox
+  term pt sandbox 1.0
+  term pt isolamento 0.95
+  term pt ambiente isolado 0.9
+  term pt restringir execucao 0.85
+  term pt confinamento 0.8
+  term pt chroot 0.75
+  term pt jaula 0.7
+  term en sandbox 1.0
+  term en isolation 0.95
+  term en isolated environment 0.9
+  term en confinement 0.85
+  term en chroot 0.8
+  term code sandbox 0.95
+  term code isolate 0.91
+  term code chroot 0.87
+  term code jail 0.83
+  term code seccomp 0.79
+  term code confine 0.75
+  term code within_root 0.71
+  term code path_inside 0.67
+  action isolate
+  action confine
+  action restrict
+  related PERMISSION 0.5
+  related PROCESS 0.4
+  related PATH_FILE 0.5
+  source seed
+end
+
+concept PRIVACY_PII
+  category SECURITY
+  canonical privacy_pii
+  term pt privacidade 1.0
+  term pt dados pessoais 0.95
+  term pt lgpd 0.9
+  term pt gdpr 0.85
+  term pt anonimizar 0.8
+  term pt mascarar 0.75
+  term pt dado sensivel 0.7
+  term en privacy 1.0
+  term en personal data 0.95
+  term en gdpr 0.9
+  term en lgpd 0.85
+  term en anonymize 0.8
+  term code pii 0.95
+  term code privacy 0.91
+  term code anonymize 0.87
+  term code mask 0.83
+  term code redact 0.79
+  term code sensitive 0.75
+  term code consent 0.71
+  term code gdpr 0.67
+  action anonymize
+  action mask
+  action redact
+  action consent
+  related ENCRYPTION 0.4
+  related AUDIT_LOG 0.3
+  source seed
+end
+
+concept CAPTCHA_BOT
+  category SECURITY
+  canonical captcha_bot
+  term pt captcha 1.0
+  term pt robo 0.95
+  term pt bot 0.9
+  term pt anti-bot 0.85
+  term pt verificar humano 0.8
+  term pt spam 0.75
+  term pt fraude 0.7
+  term en captcha 1.0
+  term en bot 0.95
+  term en anti-bot 0.9
+  term en verify human 0.85
+  term en spam 0.8
+  term code captcha 0.95
+  term code recaptcha 0.91
+  term code bot 0.87
+  term code anti_bot 0.83
+  term code spam 0.79
+  term code fraud 0.75
+  term code fraud_score 0.71
+  term code is_human 0.67
+  action verify
+  action detect
+  action block
+  related RATE_LIMIT 0.4
+  related SECURITY_EVENT 0.4
+  source seed
+end
+
+concept CORS_CSP
+  category SECURITY
+  canonical cors_csp
+  term pt cors 1.0
+  term pt cabecalhos de seguranca 0.95
+  term pt origem permitida 0.9
+  term pt csp 0.85
+  term pt cookies seguros 0.8
+  term pt httponly 0.75
+  term pt same-site 0.7
+  term en cors 1.0
+  term en cross-origin 0.95
+  term en security headers 0.9
+  term en allowed origin 0.85
+  term en csp 0.8
+  term code cors 0.95
+  term code Access-Control-Allow-Origin 0.91
+  term code csp 0.87
+  term code Content-Security-Policy 0.83
+  term code httponly 0.79
+  term code samesite 0.75
+  term code secure_cookie 0.71
+  term code hsts 0.67
+  action allow
+  action restrict
+  action set
+  related HTTP_REQUEST 0.5
+  related POLICY_ACCESS 0.4
+  source seed
+end
+
+concept PAIRING_TRUST
+  category SECURITY
+  canonical pairing_trust
+  term pt pareamento 1.0
+  term pt parear 0.95
+  term pt confianca 0.9
+  term pt dispositivo confiavel 0.85
+  term pt aprovar dispositivo 0.8
+  term pt codigo de pareamento 0.75
+  term pt vincular dispositivo 0.7
+  term en pairing 1.0
+  term en pair 0.95
+  term en trust 0.9
+  term en trusted device 0.85
+  term en approve device 0.8
+  term code pair 0.95
+  term code pairing 0.91
+  term code pairing_code 0.87
+  term code trusted_device 0.83
+  term code trust 0.79
+  term code bind_device 0.75
+  term code link_device 0.71
+  term code handshake 0.67
+  action pair
+  action link
+  action trust
+  action revoke
+  related AUTHENTICATION 0.5
+  related QR_CODE 0.5
+  related TLS_CERT 0.3
+  source seed
+end
+
+concept RANDOMNESS
+  category SECURITY
+  canonical randomness
+  term pt aleatorio 1.0
+  term pt numero aleatorio 0.95
+  term pt aleatoriedade 0.9
+  term pt semente 0.85
+  term pt gerar id unico 0.8
+  term pt uuid 0.75
+  term pt nonce 0.7
+  term en random 1.0
+  term en randomness 0.95
+  term en random number 0.9
+  term en seed 0.85
+  term en entropy 0.8
+  term code random 0.95
+  term code rand 0.91
+  term code srand 0.87
+  term code rng 0.83
+  term code seed 0.79
+  term code entropy 0.75
+  term code uuid 0.71
+  term code uuid4 0.67
+  action generate
+  action seed
+  action shuffle
+  related KEY_MANAGEMENT 0.4
+  related SAMPLING_LM 0.3
+  source seed
+  note amostragem de modelo: SAMPLING_LM
+end
+
+concept CHECKSUM_INTEGRITY
+  category SECURITY
+  canonical checksum_integrity
+  term pt verificacao de integridade 1.0
+  term pt soma de verificacao 0.95
+  term pt crc 0.9
+  term pt sha 0.85
+  term pt hash do arquivo 0.8
+  term pt arquivo corrompido 0.75
+  term pt bate com o hash 0.7
+  term en integrity check 1.0
+  term en checksum 0.95
+  term en crc 0.9
+  term en sha 0.85
+  term en file hash 0.8
+  term code checksum 0.95
+  term code crc32 0.91
+  term code crc 0.87
+  term code sha256 0.83
+  term code sha1 0.79
+  term code md5 0.75
+  term code verify_hash 0.71
+  term code integrity 0.67
+  action verify
+  action compute
+  action compare
+  related HASH_FUNCTION 0.5
+  related DIGITAL_SIGNATURE 0.5
+  related FILE_IO 0.3
+  source seed
+end

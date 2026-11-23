@@ -1,0 +1,1403 @@
+# Audio, video and media concepts (source seed unless noted). Format: see README.md
+
+concept AUDIO_SAMPLE
+  category MEDIA
+  canonical audio_sample
+  term pt audio 1.0
+  term pt som 0.95
+  term pt amostra 0.9
+  term pt amostras 0.85
+  term pt sample 0.8
+  term pt samples 0.75
+  term pt frames de audio 0.7
+  term en audio 1.0
+  term en sound 0.95
+  term en sample 0.9
+  term en samples 0.85
+  term en audio frames 0.8
+  term code audio 0.95
+  term code sample 0.91
+  term code samples 0.87
+  term code pcm 0.83
+  term code frames 0.79
+  term code nframes 0.75
+  term code channels 0.71
+  term code num_channels 0.67
+  action read
+  action write
+  action convert
+  action resample
+  related AUDIO_BUFFER 0.7
+  related SAMPLE_RATE 0.7
+  related AUDIO_FILE 0.5
+  source seed
+  note 'sample' tambem e amostra estatistica ou amostragem de modelo
+end
+
+concept AUDIO_BUFFER
+  category MEDIA
+  canonical audio_buffer
+  term pt buffer de audio 1.0
+  term pt bloco de audio 0.95
+  term pt tamanho do buffer 0.9
+  term pt buffer circular de audio 0.85
+  term pt estouro de buffer de audio 0.8
+  term pt underrun 0.75
+  term pt overrun 0.7
+  term en audio buffer 1.0
+  term en audio block 0.95
+  term en buffer size 0.9
+  term en audio ring buffer 0.85
+  term en buffer underrun 0.8
+  term code buffer 0.95
+  term code audio_buffer 0.91
+  term code block 0.87
+  term code block_size 0.83
+  term code buffer_size 0.79
+  term code frames_per_buffer 0.75
+  term code underrun 0.71
+  term code overrun 0.67
+  action fill
+  action drain
+  action process
+  action swap
+  related AUDIO_SAMPLE 0.6
+  related AUDIO_LATENCY 0.7
+  related REALTIME_THREAD 0.5
+  source seed
+end
+
+concept SAMPLE_RATE
+  category MEDIA
+  canonical sample_rate
+  term pt taxa de amostragem 1.0
+  term pt frequencia de amostragem 0.95
+  term pt 44100 0.9
+  term pt 48000 0.85
+  term pt hertz 0.8
+  term pt khz 0.75
+  term pt reamostrar 0.7
+  term en sample rate 1.0
+  term en sampling rate 0.95
+  term en sampling frequency 0.9
+  term en 44100 0.85
+  term en 48000 0.8
+  term code sample_rate 0.95
+  term code sr 0.91
+  term code fs 0.87
+  term code 44100 0.83
+  term code 48000 0.79
+  term code hz 0.75
+  term code khz 0.71
+  term code resample 0.67
+  action resample
+  action convert
+  action set
+  related AUDIO_SAMPLE 0.7
+  related AUDIO_LATENCY 0.5
+  source seed
+end
+
+concept AUDIO_LATENCY
+  category MEDIA
+  canonical audio_latency
+  term pt latencia de audio 1.0
+  term pt atraso do audio 0.95
+  term pt latencia de entrada 0.9
+  term pt compensacao de latencia 0.85
+  term pt tempo de resposta do audio 0.8
+  term pt buffer pequeno 0.75
+  term pt round trip 0.7
+  term en audio latency 1.0
+  term en audio delay 0.95
+  term en input latency 0.9
+  term en latency compensation 0.85
+  term en audio response time 0.8
+  term code latency 0.95
+  term code audio_latency 0.91
+  term code input_latency 0.87
+  term code output_latency 0.83
+  term code round_trip 0.79
+  term code delay 0.75
+  term code plugin_delay 0.71
+  term code pdc 0.67
+  action measure
+  action compensate
+  action reduce
+  related AUDIO_BUFFER 0.7
+  related SAMPLE_RATE 0.5
+  related BANDWIDTH_LATENCY 0.2
+  source seed
+end
+
+concept AUDIO_DEVICE
+  category MEDIA
+  canonical audio_device
+  term pt dispositivo de audio 1.0
+  term pt placa de som 0.95
+  term pt entrada de audio 0.9
+  term pt saida de audio 0.85
+  term pt microfone 0.8
+  term pt alto-falante 0.75
+  term pt fone 0.7
+  term en audio device 1.0
+  term en sound card 0.95
+  term en audio input 0.9
+  term en audio output 0.85
+  term en microphone 0.8
+  term code audio_device 0.95
+  term code device 0.91
+  term code input_device 0.87
+  term code output_device 0.83
+  term code mic 0.79
+  term code microphone 0.75
+  term code speaker 0.71
+  term code headphones 0.67
+  action open
+  action list
+  action select
+  action start
+  action stop
+  related AUDIO_BUFFER 0.5
+  related DEVICE_DRIVER 0.4
+  related AUDIO_BACKEND 0.6
+  source seed
+end
+
+concept AUDIO_BACKEND
+  category MEDIA
+  canonical audio_backend
+  term pt backend de audio 1.0
+  term pt motor de audio 0.95
+  term pt camada de audio 0.9
+  term pt interface de audio 0.85
+  term pt api de audio 0.8
+  term pt backend 0.75
+  term pt selecao de backend 0.7
+  term en audio backend 1.0
+  term en audio engine 0.95
+  term en audio layer 0.9
+  term en audio interface 0.85
+  term en audio api 0.8
+  term code backend 0.95
+  term code audio_backend 0.91
+  term code audio_engine 0.87
+  term code engine 0.83
+  term code host_api 0.79
+  term code backend_name 0.75
+  term code null_backend 0.71
+  term code driver 0.67
+  action select
+  action open
+  action close
+  action switch
+  related AUDIO_DEVICE 0.6
+  related AUDIO_ENGINE 0.5
+  source seed
+end
+
+concept AUDIO_ENGINE
+  category MEDIA
+  canonical audio_engine
+  term pt motor de audio 1.0
+  term pt engine 0.95
+  term pt processamento de audio 0.9
+  term pt grafo de audio 0.85
+  term pt cadeia de processamento 0.8
+  term pt callback de audio 0.75
+  term pt render de audio 0.7
+  term en audio engine 1.0
+  term en audio processing 0.95
+  term en audio graph 0.9
+  term en processing chain 0.85
+  term en audio callback 0.8
+  term code engine 0.95
+  term code audio_engine 0.91
+  term code process 0.87
+  term code processBlock 0.83
+  term code audio_callback 0.79
+  term code render_block 0.75
+  term code graph 0.71
+  term code audio_graph 0.67
+  action process
+  action render
+  action start
+  action stop
+  related AUDIO_BUFFER 0.5
+  related MIXER 0.5
+  related PLUGIN_HOST 0.4
+  related TRANSPORT 0.4
+  source seed
+end
+
+concept MIXER
+  category MEDIA
+  canonical mixer
+  term pt mixer 1.0
+  term pt mixagem 0.95
+  term pt misturar 0.9
+  term pt mesa de som 0.85
+  term pt canal do mixer 0.8
+  term pt volume 0.75
+  term pt pan 0.7
+  term en mixer 1.0
+  term en mixing 0.95
+  term en mix 0.9
+  term en mixing console 0.85
+  term en mixer channel 0.8
+  term code mixer 0.95
+  term code mix 0.91
+  term code mixdown 0.87
+  term code mix_bus 0.83
+  term code channel_strip 0.79
+  term code volume 0.75
+  term code gain 0.71
+  term code pan 0.67
+  action mix
+  action pan
+  action mute
+  action solo
+  action route
+  related TRACK 0.6
+  related EFFECT_DSP 0.4
+  related AUDIO_METER 0.4
+  source seed
+end
+
+concept EFFECT_DSP
+  category MEDIA
+  canonical effect_dsp
+  term pt efeito 1.0
+  term pt efeitos 0.95
+  term pt efeito de audio 0.9
+  term pt reverb 0.85
+  term pt eco 0.8
+  term pt delay 0.75
+  term pt compressor 0.7
+  term en effect 1.0
+  term en effects 0.95
+  term en audio effect 0.9
+  term en reverb 0.85
+  term en echo 0.8
+  term code effect 0.95
+  term code fx 0.91
+  term code reverb 0.87
+  term code delay 0.83
+  term code echo 0.79
+  term code compressor 0.75
+  term code equalizer 0.71
+  term code eq 0.67
+  action process
+  action apply
+  action bypass
+  related MIXER 0.4
+  related PLUGIN_HOST 0.5
+  related AUDIO_ENGINE 0.4
+  source seed
+end
+
+concept RECORDING
+  category MEDIA
+  canonical recording
+  term pt gravacao 1.0
+  term pt gravar 0.95
+  term pt gravar audio 0.9
+  term pt armed 0.85
+  term pt armar faixa 0.8
+  term pt punch in 0.75
+  term pt tomada 0.7
+  term en recording 1.0
+  term en record 0.95
+  term en record audio 0.9
+  term en armed 0.85
+  term en arm track 0.8
+  term code record 0.95
+  term code recording 0.91
+  term code Recorder 0.87
+  term code armed 0.83
+  term code arm 0.79
+  term code punch_in 0.75
+  term code punch_out 0.71
+  term code take 0.67
+  action record
+  action arm
+  action capture
+  action overdub
+  related PLAYBACK 0.6
+  related TRACK 0.5
+  related AUDIO_DEVICE 0.4
+  related TRANSPORT 0.4
+  source seed
+end
+
+concept PLAYBACK
+  category MEDIA
+  canonical playback
+  term pt reproducao 1.0
+  term pt reproduzir 0.95
+  term pt tocar 0.9
+  term pt pausar 0.85
+  term pt parar 0.8
+  term pt retomar 0.75
+  term pt play 0.7
+  term en playback 1.0
+  term en play 0.95
+  term en pause 0.9
+  term en stop 0.85
+  term en resume 0.8
+  term code play 0.95
+  term code playback 0.91
+  term code pause 0.87
+  term code stop 0.83
+  term code resume 0.79
+  term code player 0.75
+  term code play_audio 0.71
+  term code position 0.67
+  action play
+  action pause
+  action stop
+  action seek
+  action resume
+  related TRANSPORT 0.7
+  related RECORDING 0.5
+  related AUDIO_FILE 0.4
+  source seed
+end
+
+concept TRANSPORT
+  category MEDIA
+  canonical transport
+  term pt transporte 1.0
+  term pt controles de transporte 0.95
+  term pt cabeca de reproducao 0.9
+  term pt avancar 0.85
+  term pt voltar 0.8
+  term pt posicao 0.75
+  term pt ir para o inicio 0.7
+  term en transport 1.0
+  term en transport controls 0.95
+  term en playhead 0.9
+  term en fast forward 0.85
+  term en rewind 0.8
+  term code transport 0.95
+  term code playhead 0.91
+  term code position 0.87
+  term code seek 0.83
+  term code rewind 0.79
+  term code locate 0.75
+  term code metronome 0.71
+  term code click 0.67
+  action play
+  action stop
+  action seek
+  action locate
+  related PLAYBACK 0.7
+  related TIMELINE 0.6
+  related TEMPO_BPM 0.5
+  related RECORDING 0.4
+  source seed
+end
+
+concept TEMPO_BPM
+  category MEDIA
+  canonical tempo_bpm
+  term pt tempo musical 1.0
+  term pt bpm 0.95
+  term pt batidas por minuto 0.9
+  term pt andamento 0.85
+  term pt compasso 0.8
+  term pt assinatura de compasso 0.75
+  term pt subdivisao 0.7
+  term en tempo 1.0
+  term en bpm 0.95
+  term en beats per minute 0.9
+  term en time signature 0.85
+  term en meter 0.8
+  term code tempo 0.95
+  term code bpm 0.91
+  term code beat 0.87
+  term code beats 0.83
+  term code bar 0.79
+  term code bars 0.75
+  term code time_signature 0.71
+  term code timeSig 0.67
+  action set
+  action quantize
+  action detect
+  action sync
+  related TIMELINE 0.6
+  related MIDI_EVENT 0.4
+  related TIME_STRETCH 0.4
+  source seed
+  note 'tempo' tambem e tempo/duracao em geral: CLOCK_TIME
+end
+
+concept TIMELINE
+  category MEDIA
+  canonical timeline
+  term pt linha do tempo 1.0
+  term pt timeline 0.95
+  term pt arranjo 0.9
+  term pt posicao no tempo 0.85
+  term pt regua de tempo 0.8
+  term pt marcador 0.75
+  term pt regiao 0.7
+  term en timeline 1.0
+  term en arrangement 0.95
+  term en time position 0.9
+  term en time ruler 0.85
+  term en marker 0.8
+  term code timeline 0.95
+  term code arrangement 0.91
+  term code arranger 0.87
+  term code ruler 0.83
+  term code marker 0.79
+  term code region 0.75
+  term code range 0.71
+  term code start 0.67
+  action place
+  action move
+  action split
+  action trim
+  related TRACK 0.6
+  related CLIP 0.7
+  related TRANSPORT 0.5
+  source seed
+end
+
+concept TRACK
+  category MEDIA
+  canonical track
+  term pt faixa 1.0
+  term pt faixas 0.95
+  term pt pista 0.9
+  term pt trilha 0.85
+  term pt faixa de audio 0.8
+  term pt faixa midi 0.75
+  term pt faixa de instrumento 0.7
+  term en track 1.0
+  term en tracks 0.95
+  term en audio track 0.9
+  term en midi track 0.85
+  term en instrument track 0.8
+  term code track 0.95
+  term code tracks 0.91
+  term code track_id 0.87
+  term code audio_track 0.83
+  term code midi_track 0.79
+  term code instrument_track 0.75
+  term code lane 0.71
+  term code channel_strip 0.67
+  action add
+  action remove
+  action arm
+  action mute
+  action solo
+  related CLIP 0.7
+  related MIXER 0.6
+  related TIMELINE 0.6
+  related RECORDING 0.4
+  source seed
+end
+
+concept CLIP
+  category MEDIA
+  canonical clip
+  term pt clipe 1.0
+  term pt clipes 0.95
+  term pt trecho de audio 0.9
+  term pt regiao 0.85
+  term pt bloco 0.8
+  term pt cortar clipe 0.75
+  term pt dividir clipe 0.7
+  term en clip 1.0
+  term en clips 0.95
+  term en audio clip 0.9
+  term en region 0.85
+  term en block 0.8
+  term code clip 0.95
+  term code clips 0.91
+  term code clip_id 0.87
+  term code audio_clip 0.83
+  term code midi_clip 0.79
+  term code region 0.75
+  term code split 0.71
+  term code duplicate 0.67
+  action split
+  action trim
+  action duplicate
+  action move
+  action fade
+  related TRACK 0.7
+  related TIMELINE 0.7
+  related WAVEFORM 0.5
+  source seed
+  note 'clip' de interface grafica (clipping de pixels) tambem existe
+end
+
+concept AUDIO_FILE
+  category MEDIA
+  canonical audio_file
+  term pt arquivo de audio 1.0
+  term pt importar audio 0.95
+  term pt exportar audio 0.9
+  term pt wav 0.85
+  term pt mp3 0.8
+  term pt flac 0.75
+  term pt ogg 0.7
+  term en audio file 1.0
+  term en import audio 0.95
+  term en export audio 0.9
+  term en wav 0.85
+  term en mp3 0.8
+  term code wav 0.95
+  term code mp3 0.91
+  term code flac 0.87
+  term code ogg 0.83
+  term code aac 0.79
+  term code m4a 0.75
+  term code audio_file 0.71
+  term code load_audio 0.67
+  action load
+  action save
+  action decode
+  action encode
+  action import
+  action export
+  related MEDIA_CODEC 0.6
+  related AUDIO_SAMPLE 0.5
+  related FILE_IO 0.3
+  source seed
+end
+
+concept WAVEFORM
+  category MEDIA
+  canonical waveform
+  term pt forma de onda 1.0
+  term pt onda 0.95
+  term pt pico 0.9
+  term pt picos 0.85
+  term pt amplitude 0.8
+  term pt miniatura da forma de onda 0.75
+  term pt overview 0.7
+  term en waveform 1.0
+  term en wave 0.95
+  term en peak 0.9
+  term en peaks 0.85
+  term en amplitude 0.8
+  term code waveform 0.95
+  term code wave 0.91
+  term code peak 0.87
+  term code peaks 0.83
+  term code amplitude 0.79
+  term code envelope 0.75
+  term code overview 0.71
+  term code thumbnail 0.67
+  action compute
+  action draw
+  action normalize
+  action detect
+  related AUDIO_METER 0.5
+  related CLIP 0.4
+  source seed
+end
+
+concept AUDIO_METER
+  category MEDIA
+  canonical audio_meter
+  term pt medidor 1.0
+  term pt nivel 0.95
+  term pt vu 0.9
+  term pt medidor de pico 0.85
+  term pt rms 0.8
+  term pt loudness 0.75
+  term pt lufs 0.7
+  term en meter 1.0
+  term en level 0.95
+  term en vu meter 0.9
+  term en peak meter 0.85
+  term en rms 0.8
+  term code meter 0.95
+  term code level 0.91
+  term code vu 0.87
+  term code peak 0.83
+  term code rms 0.79
+  term code loudness 0.75
+  term code lufs 0.71
+  term code true_peak 0.67
+  action measure
+  action display
+  action analyze
+  related WAVEFORM 0.5
+  related MIXER 0.4
+  source seed
+end
+
+concept MIDI_EVENT
+  category MEDIA
+  canonical midi_event
+  term pt midi 1.0
+  term pt nota 0.95
+  term pt notas 0.9
+  term pt evento midi 0.85
+  term pt nota on 0.8
+  term pt nota off 0.75
+  term pt velocidade 0.7
+  term en midi 1.0
+  term en note 0.95
+  term en notes 0.9
+  term en midi event 0.85
+  term en note on 0.8
+  term code midi 0.95
+  term code note 0.91
+  term code note_on 0.87
+  term code note_off 0.83
+  term code velocity 0.79
+  term code channel 0.75
+  term code cc 0.71
+  term code controller 0.67
+  action play
+  action record
+  action quantize
+  action transpose
+  related TRACK 0.4
+  related TEMPO_BPM 0.4
+  related PLUGIN_HOST 0.4
+  related AUDIO_SYNTH 0.5
+  source seed
+end
+
+concept AUDIO_SYNTH
+  category MEDIA
+  canonical audio_synth
+  term pt sintetizador 1.0
+  term pt sintese 0.95
+  term pt oscilador 0.9
+  term pt onda senoidal 0.85
+  term pt onda quadrada 0.8
+  term pt envelope adsr 0.75
+  term pt lfo 0.7
+  term en synthesizer 1.0
+  term en synthesis 0.95
+  term en oscillator 0.9
+  term en sine wave 0.85
+  term en square wave 0.8
+  term code synth 0.95
+  term code synthesizer 0.91
+  term code oscillator 0.87
+  term code osc 0.83
+  term code sine 0.79
+  term code square 0.75
+  term code saw 0.71
+  term code triangle 0.67
+  action synthesize
+  action play
+  action detune
+  related MIDI_EVENT 0.5
+  related EFFECT_DSP 0.4
+  source seed
+end
+
+concept PLUGIN_HOST
+  category MEDIA
+  canonical plugin_host
+  term pt plugin 1.0
+  term pt plugins 0.95
+  term pt host de plugins 0.9
+  term pt vst 0.85
+  term pt vst3 0.8
+  term pt au 0.75
+  term pt lv2 0.7
+  term en plugin 1.0
+  term en plugins 0.95
+  term en plugin host 0.9
+  term en vst 0.85
+  term en vst3 0.8
+  term code plugin 0.95
+  term code plugins 0.91
+  term code plugin_host 0.87
+  term code vst 0.83
+  term code vst3 0.79
+  term code au 0.75
+  term code lv2 0.71
+  term code clap 0.67
+  action load
+  action scan
+  action instantiate
+  action bypass
+  related EFFECT_DSP 0.5
+  related AUDIO_ENGINE 0.4
+  related MIDI_EVENT 0.4
+  related EXTENSION_PLUGIN 0.3
+  source seed
+  note plugin de software em geral: EXTENSION_PLUGIN
+end
+
+concept AUTOMATION
+  category MEDIA
+  canonical automation
+  term pt automacao 1.0
+  term pt automacao de parametro 0.95
+  term pt curva de automacao 0.9
+  term pt envelope de volume 0.85
+  term pt pontos de automacao 0.8
+  term pt gravar automacao 0.75
+  term pt modulacao 0.7
+  term en automation 1.0
+  term en parameter automation 0.95
+  term en automation curve 0.9
+  term en volume envelope 0.85
+  term en automation points 0.8
+  term code automation 0.95
+  term code automation_lane 0.91
+  term code curve 0.87
+  term code envelope 0.83
+  term code breakpoints 0.79
+  term code points 0.75
+  term code ramp 0.71
+  term code modulation 0.67
+  action record
+  action draw
+  action edit
+  action write
+  related TRACK 0.4
+  related PLUGIN_HOST 0.4
+  related TIMELINE 0.4
+  source seed
+end
+
+concept TIME_STRETCH
+  category MEDIA
+  canonical time_stretch
+  term pt esticar tempo 1.0
+  term pt time stretch 0.95
+  term pt alterar andamento sem mudar tom 0.9
+  term pt mudar tom 0.85
+  term pt pitch shift 0.8
+  term pt afinacao 0.75
+  term pt transposicao 0.7
+  term en time stretch 1.0
+  term en stretch 0.95
+  term en change tempo without pitch 0.9
+  term en pitch change 0.85
+  term en pitch shift 0.8
+  term code stretch 0.95
+  term code time_stretch 0.91
+  term code pitch 0.87
+  term code pitch_shift 0.83
+  term code transpose 0.79
+  term code warp 0.75
+  term code rubberband 0.71
+  term code soundtouch 0.67
+  action stretch
+  action shift
+  action warp
+  action transpose
+  related TEMPO_BPM 0.4
+  related EFFECT_DSP 0.3
+  related CLIP 0.3
+  source seed
+end
+
+concept RENDER_EXPORT
+  category MEDIA
+  canonical render_export
+  term pt exportar projeto 1.0
+  term pt renderizar 0.95
+  term pt render 0.9
+  term pt bounce 0.85
+  term pt mixdown final 0.8
+  term pt exportar faixa 0.75
+  term pt exportar stems 0.7
+  term en export project 1.0
+  term en render 0.95
+  term en bounce 0.9
+  term en final mixdown 0.85
+  term en export track 0.8
+  term code render 0.95
+  term code bounce 0.91
+  term code export 0.87
+  term code mixdown 0.83
+  term code stems 0.79
+  term code offline_render 0.75
+  term code render_offline 0.71
+  term code export_audio 0.67
+  action render
+  action bounce
+  action export
+  action freeze
+  related AUDIO_FILE 0.5
+  related MIXER 0.4
+  related TIMELINE 0.3
+  source seed
+  note renderizacao de tela: RENDER_UI
+end
+
+concept MEDIA_CODEC
+  category MEDIA
+  canonical media_codec
+  term pt codec 1.0
+  term pt codificador 0.95
+  term pt decodificador 0.9
+  term pt formato de midia 0.85
+  term pt h264 0.8
+  term pt h265 0.75
+  term pt vp9 0.7
+  term en codec 1.0
+  term en encoder 0.95
+  term en decoder 0.9
+  term en media format 0.85
+  term en h264 0.8
+  term code codec 0.95
+  term code encoder 0.91
+  term code decoder 0.87
+  term code h264 0.83
+  term code h265 0.79
+  term code hevc 0.75
+  term code vp9 0.71
+  term code av1 0.67
+  action encode
+  action decode
+  action transcode
+  action mux
+  related COMPRESSION 0.3
+  related VIDEO_FRAME 0.5
+  related AUDIO_FILE 0.5
+  source seed
+end
+
+concept VIDEO_FRAME
+  category MEDIA
+  canonical video_frame
+  term pt video 1.0
+  term pt quadro de video 0.95
+  term pt frame 0.9
+  term pt fps 0.85
+  term pt taxa de quadros 0.8
+  term pt resolucao 0.75
+  term pt 1080p 0.7
+  term en video 1.0
+  term en video frame 0.95
+  term en frame 0.9
+  term en fps 0.85
+  term en frame rate 0.8
+  term code video 0.95
+  term code frame 0.91
+  term code fps 0.87
+  term code frame_rate 0.83
+  term code resolution 0.79
+  term code width 0.75
+  term code height 0.71
+  term code 1080p 0.67
+  action decode
+  action encode
+  action seek
+  action capture
+  related MEDIA_CODEC 0.5
+  related IMAGE_PROCESSING 0.4
+  source seed
+end
+
+concept IMAGE_PROCESSING
+  category MEDIA
+  canonical image_processing
+  term pt imagem 1.0
+  term pt imagens 0.95
+  term pt processamento de imagem 0.9
+  term pt pixel 0.85
+  term pt redimensionar 0.8
+  term pt recortar 0.75
+  term pt filtro de imagem 0.7
+  term en image 1.0
+  term en images 0.95
+  term en image processing 0.9
+  term en pixel 0.85
+  term en resize 0.8
+  term code image 0.95
+  term code img 0.91
+  term code pixel 0.87
+  term code resize 0.83
+  term code crop 0.79
+  term code rotate 0.75
+  term code png 0.71
+  term code jpg 0.67
+  action load
+  action resize
+  action crop
+  action encode
+  action decode
+  related VIDEO_FRAME 0.4
+  related IMAGE_ICON 0.3
+  related AI_VISION 0.5
+  source seed
+end
+
+concept SCREENSHOT_CAPTURE
+  category MEDIA
+  canonical screenshot_capture
+  term pt captura de tela 1.0
+  term pt print de tela 0.95
+  term pt screenshot 0.9
+  term pt gravar a tela 0.85
+  term pt capturar janela 0.8
+  term pt tirar foto da tela 0.75
+  term en screenshot 1.0
+  term en screen capture 0.95
+  term en screen grab 0.9
+  term en record screen 0.85
+  term en capture window 0.8
+  term code screenshot 0.95
+  term code screen_capture 0.91
+  term code capture_screen 0.87
+  term code grab 0.83
+  term code screengrab 0.79
+  term code screencast 0.75
+  term code print_screen 0.71
+  term code snapshot 0.67
+  action capture
+  action save
+  related IMAGE_PROCESSING 0.4
+  source seed
+end
+
+concept SPEECH_VOICE
+  category MEDIA
+  canonical speech_voice
+  term pt fala 1.0
+  term pt voz 0.95
+  term pt reconhecimento de voz 0.9
+  term pt sintese de voz 0.85
+  term pt texto para fala 0.8
+  term pt transcricao 0.75
+  term pt ditado 0.7
+  term en speech 1.0
+  term en voice 0.95
+  term en speech recognition 0.9
+  term en speech synthesis 0.85
+  term en text to speech 0.8
+  term code speech 0.95
+  term code voice 0.91
+  term code stt 0.87
+  term code tts 0.83
+  term code whisper 0.79
+  term code transcribe 0.75
+  term code transcription 0.71
+  term code dictation 0.67
+  action transcribe
+  action speak
+  action recognize
+  related AI_VISION 0.1
+  related AUDIO_SAMPLE 0.4
+  related LM_INFERENCE 0.3
+  source seed
+end
+
+concept MUSIC_THEORY
+  category MEDIA
+  canonical music_theory
+  term pt acorde 1.0
+  term pt escala 0.95
+  term pt nota musical 0.9
+  term pt tom 0.85
+  term pt tonalidade 0.8
+  term pt intervalo 0.75
+  term pt harmonia 0.7
+  term en chord 1.0
+  term en scale 0.95
+  term en musical note 0.9
+  term en key 0.85
+  term en tonality 0.8
+  term code chord 0.95
+  term code scale 0.91
+  term code key 0.87
+  term code tonality 0.83
+  term code interval 0.79
+  term code harmony 0.75
+  term code tuning 0.71
+  term code a440 0.67
+  action detect
+  action transpose
+  action tune
+  related MIDI_EVENT 0.5
+  related TIME_STRETCH 0.4
+  source seed
+end
+
+concept LOOP_SAMPLER
+  category MEDIA
+  canonical loop_sampler
+  term pt loop de audio 1.0
+  term pt sampler 0.95
+  term pt amostrador 0.9
+  term pt bateria eletronica 0.85
+  term pt pad 0.8
+  term pt sequenciador 0.75
+  term pt padrao ritmico 0.7
+  term en audio loop 1.0
+  term en sampler 0.95
+  term en drum machine 0.9
+  term en pad 0.85
+  term en sequencer 0.8
+  term code loop 0.95
+  term code sampler 0.91
+  term code drum_machine 0.87
+  term code pad 0.83
+  term code sequencer 0.79
+  term code step_sequencer 0.75
+  term code pattern 0.71
+  term code one_shot 0.67
+  action loop
+  action trigger
+  action slice
+  action sequence
+  related CLIP 0.4
+  related TEMPO_BPM 0.4
+  related AUDIO_SYNTH 0.3
+  source seed
+end
+
+concept AUDIO_SESSION
+  category MEDIA
+  canonical audio_session
+  term pt sessao de audio 1.0
+  term pt projeto de audio 0.95
+  term pt arquivo de projeto 0.9
+  term pt abrir projeto 0.85
+  term pt salvar projeto 0.8
+  term pt estado do projeto 0.75
+  term pt sessao musical 0.7
+  term en audio session 1.0
+  term en audio project 0.95
+  term en project file 0.9
+  term en open project 0.85
+  term en save project 0.8
+  term code session 0.95
+  term code project 0.91
+  term code project_file 0.87
+  term code song 0.83
+  term code open_project 0.79
+  term code save_project 0.75
+  term code session_state 0.71
+  term code snapshot 0.67
+  action open
+  action save
+  action load
+  action create
+  related TRACK 0.5
+  related TIMELINE 0.4
+  related PERSISTENCE 0.4
+  related SESSION_WORK 0.2
+  source seed
+  note sessao de login: SESSION_AUTH
+end
+
+concept DSP_FILTER
+  category MEDIA
+  canonical dsp_filter
+  term pt filtro digital 1.0
+  term pt filtro passa baixa 0.95
+  term pt filtro passa alta 0.9
+  term pt passa banda 0.85
+  term pt biquad 0.8
+  term pt frequencia de corte 0.75
+  term pt ressonancia 0.7
+  term en digital filter 1.0
+  term en low pass filter 0.95
+  term en high pass filter 0.9
+  term en band pass 0.85
+  term en biquad 0.8
+  term code filter 0.95
+  term code lowpass 0.91
+  term code highpass 0.87
+  term code bandpass 0.83
+  term code biquad 0.79
+  term code cutoff 0.75
+  term code resonance 0.71
+  term code q 0.67
+  action filter
+  action convolve
+  action transform
+  related EFFECT_DSP 0.6
+  related AUDIO_SAMPLE 0.4
+  source seed
+end
+
+concept AUDIO_TONE_MATCH
+  category MEDIA
+  canonical audio_tone_match
+  term pt tom 1.0
+  term pt timbre 0.95
+  term pt equalizacao automatica 0.9
+  term pt casar tom 0.85
+  term pt tonematch 0.8
+  term pt referencia de som 0.75
+  term pt ruido 0.7
+  term en tone 1.0
+  term en timbre 0.95
+  term en automatic eq 0.9
+  term en tone match 0.85
+  term en sound reference 0.8
+  term code tone 0.95
+  term code tonematch 0.91
+  term code timbre 0.87
+  term code noise 0.83
+  term code silence 0.79
+  term code threshold 0.75
+  term code spectrum 0.71
+  term code decay 0.67
+  action match
+  action measure
+  action analyze
+  related EFFECT_DSP 0.5
+  related AUDIO_METER 0.5
+  related DSP_FILTER 0.4
+  source mined
+end
+
+concept INSTRUMENT_DRUMS
+  category MEDIA
+  canonical instrument_drums
+  term pt bateria 1.0
+  term pt bumbo 0.95
+  term pt caixa 0.9
+  term pt kick 0.85
+  term pt snare 0.8
+  term pt baixo 0.75
+  term pt guitarra 0.7
+  term en drums 1.0
+  term en kick 0.95
+  term en snare 0.9
+  term en bass 0.85
+  term en guitar 0.8
+  term code kick 0.95
+  term code snare 0.91
+  term code bass 0.87
+  term code guitar 0.83
+  term code vox 0.79
+  term code vocal 0.75
+  term code drums 0.71
+  term code hat 0.67
+  action play
+  action record
+  action mix
+  related LOOP_SAMPLER 0.5
+  related TRACK 0.4
+  related AUDIO_SYNTH 0.3
+  source mined
+end
+
+concept MASTERING_BUS
+  category MEDIA
+  canonical mastering_bus
+  term pt masterizacao 1.0
+  term pt master 0.95
+  term pt bus master 0.9
+  term pt limitador final 0.85
+  term pt loudness final 0.8
+  term pt mono e estereo 0.75
+  term pt centro 0.7
+  term en mastering 1.0
+  term en master 0.95
+  term en master bus 0.9
+  term en final limiter 0.85
+  term en final loudness 0.8
+  term code master 0.95
+  term code mastering 0.91
+  term code master_bus 0.87
+  term code aux 0.83
+  term code fader 0.79
+  term code vca 0.75
+  term code send 0.71
+  term code return 0.67
+  action master
+  action limit
+  action route
+  related MIXER 0.7
+  related AUDIO_METER 0.4
+  source mined
+end
+
+concept PLAYLIST_REGION
+  category MEDIA
+  canonical playlist_region
+  term pt playlist 1.0
+  term pt lista de reproducao 0.95
+  term pt faixa de lista 0.9
+  term pt regiao 0.85
+  term pt selecao 0.8
+  term pt crossfade 0.75
+  term pt fade cruzado 0.7
+  term en playlist 1.0
+  term en playlists 0.95
+  term en region 0.9
+  term en selection 0.85
+  term en crossfade 0.8
+  term code playlist 0.95
+  term code playlists 0.91
+  term code region 0.87
+  term code selection 0.83
+  term code crossfade 0.79
+  term code crossfades 0.75
+  term code cut 0.71
+  term code snap 0.67
+  action edit
+  action cut
+  action crossfade
+  related CLIP 0.6
+  related TIMELINE 0.5
+  source mined
+end
+
+concept AUTOSAVE_REVISION
+  category MEDIA
+  canonical autosave_revision
+  term pt salvamento automatico 1.0
+  term pt autosave 0.95
+  term pt revisao 0.9
+  term pt versao do projeto 0.85
+  term pt recuperar projeto 0.8
+  term pt historico de revisoes 0.75
+  term pt rascunho 0.7
+  term en autosave 1.0
+  term en revision 0.95
+  term en project version 0.9
+  term en recover project 0.85
+  term en revision history 0.8
+  term code autosave 0.95
+  term code revision 0.91
+  term code revisions 0.87
+  term code recover 0.83
+  term code recovery 0.79
+  term code draft 0.75
+  term code project_version 0.71
+  term code backup 0.67
+  action save
+  action recover
+  related AUDIO_SESSION 0.5
+  related BACKUP 0.5
+  source mined
+end
+
+concept AUDIO_SYNC_TIMECODE
+  category MEDIA
+  canonical audio_sync_timecode
+  term pt timecode 1.0
+  term pt ltc 0.95
+  term pt sincronizacao de video e audio 0.9
+  term pt sincronizar relogios 0.85
+  term pt mtc 0.8
+  term pt quadros por segundo 0.75
+  term pt offset de sincronia 0.7
+  term en timecode 1.0
+  term en ltc 0.95
+  term en audio video sync 0.9
+  term en clock sync 0.85
+  term en mtc 0.8
+  term code ltc 0.95
+  term code mtc 0.91
+  term code timecode 0.87
+  term code smpte 0.83
+  term code fps 0.79
+  term code chase 0.75
+  term code sync_offset 0.71
+  term code genlock 0.67
+  action sync
+  action chase
+  action offset
+  related TRANSPORT 0.5
+  related VIDEO_FRAME 0.3
+  source mined
+end
+
+concept NEURAL_AUDIO
+  category MEDIA
+  canonical neural_audio
+  term pt modelo neural de audio 1.0
+  term pt simulacao neural 0.95
+  term pt amp neural 0.9
+  term pt lstm 0.85
+  term pt rede neural 0.8
+  term pt captura de amplificador 0.75
+  term pt inferencia de audio 0.7
+  term en neural audio model 1.0
+  term en neural simulation 0.95
+  term en neural amp 0.9
+  term en lstm 0.85
+  term en neural network 0.8
+  term code neural 0.95
+  term code nam 0.91
+  term code lstm 0.87
+  term code wavenet 0.83
+  term code onnx 0.79
+  term code rtneural 0.75
+  term code amp_model 0.71
+  term code capture 0.67
+  action infer
+  action process
+  action load
+  related RIG_CHAIN 0.5
+  related EFFECT_DSP 0.5
+  related LANGUAGE_MODEL 0.2
+  source mined
+end
+
+concept SPICE_CIRCUIT
+  category MEDIA
+  canonical spice_circuit
+  term pt circuito 1.0
+  term pt simulacao de circuito 0.95
+  term pt analogico 0.9
+  term pt spice 0.85
+  term pt resistor 0.8
+  term pt capacitor 0.75
+  term pt valvula 0.7
+  term en circuit 1.0
+  term en circuit simulation 0.95
+  term en analog 0.9
+  term en spice 0.85
+  term en resistor 0.8
+  term code spice 0.95
+  term code circuit 0.91
+  term code analog 0.87
+  term code resistor 0.83
+  term code capacitor 0.79
+  term code tube 0.75
+  term code transistor 0.71
+  term code netlist 0.67
+  action simulate
+  action solve
+  related EFFECT_DSP 0.4
+  related GEOMETRY_MATH 0.2
+  source mined
+end
+
+concept WAV_SOUND_LIBRARY
+  category MEDIA
+  canonical wav_sound_library
+  term pt biblioteca de sons 1.0
+  term pt banco de amostras 0.95
+  term pt preset de fabrica 0.9
+  term pt presets 0.85
+  term pt pacote de sons 0.8
+  term pt loops de fabrica 0.75
+  term pt navegador de sons 0.7
+  term en sound library 1.0
+  term en sample bank 0.95
+  term en factory preset 0.9
+  term en presets 0.85
+  term en sound pack 0.8
+  term code preset 0.95
+  term code presets 0.91
+  term code factory 0.87
+  term code library 0.83
+  term code libraries 0.79
+  term code bank 0.75
+  term code pack 0.71
+  term code browser 0.67
+  action browse
+  action load
+  action tag
+  related LOOP_SAMPLER 0.5
+  related PLUGIN_HOST 0.4
+  source mined
+end

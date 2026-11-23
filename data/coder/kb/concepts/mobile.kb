@@ -1,0 +1,755 @@
+# Mobile concepts (source seed unless noted). Format: see README.md
+
+concept MOBILE_APP
+  category MOBILE
+  canonical mobile_app
+  term pt aplicativo 1.0
+  term pt app 0.95
+  term pt aplicativo movel 0.9
+  term pt celular 0.85
+  term pt smartphone 0.8
+  term pt telefone 0.75
+  term pt tela do celular 0.7
+  term en application 1.0
+  term en app 0.95
+  term en mobile app 0.9
+  term en mobile 0.85
+  term en cell phone 0.8
+  term code app 0.95
+  term code application 0.91
+  term code mobile 0.87
+  term code android 0.83
+  term code ios 0.79
+  term code apk 0.75
+  term code aab 0.71
+  term code play_store 0.67
+  action install
+  action launch
+  action update
+  related MOBILE_ACTIVITY 0.6
+  related MOBILE_PERMISSION 0.5
+  related INSTALLER 0.3
+  source seed
+end
+
+concept MOBILE_ACTIVITY
+  category MOBILE
+  canonical mobile_activity
+  term pt atividade 1.0
+  term pt activity 0.95
+  term pt ciclo de vida da atividade 0.9
+  term pt onCreate 0.85
+  term pt fragmento 0.8
+  term pt intent 0.75
+  term pt intencao 0.7
+  term en activity 1.0
+  term en activity lifecycle 0.95
+  term en onCreate 0.9
+  term en fragment 0.85
+  term en intent 0.8
+  term code Activity 0.95
+  term code onCreate 0.91
+  term code onResume 0.87
+  term code onPause 0.83
+  term code onDestroy 0.79
+  term code Intent 0.75
+  term code startActivity 0.71
+  term code Fragment 0.67
+  action start
+  action finish
+  action resume
+  action pause
+  related MOBILE_APP 0.6
+  related SCREEN_VIEW 0.5
+  source seed
+end
+
+concept MOBILE_SERVICE
+  category MOBILE
+  canonical mobile_service
+  term pt servico do android 1.0
+  term pt servico em primeiro plano 0.95
+  term pt foreground service 0.9
+  term pt servico persistente 0.85
+  term pt receptor de broadcast 0.8
+  term pt boot completo 0.75
+  term pt servico de acessibilidade 0.7
+  term en android service 1.0
+  term en foreground service 0.95
+  term en persistent service 0.9
+  term en broadcast receiver 0.85
+  term en boot completed 0.8
+  term code Service 0.95
+  term code ForegroundService 0.91
+  term code startForeground 0.87
+  term code BroadcastReceiver 0.83
+  term code onReceive 0.79
+  term code BOOT_COMPLETED 0.75
+  term code AccessibilityService 0.71
+  term code JobService 0.67
+  action start
+  action stop
+  action bind
+  action receive
+  related DAEMON_SERVICE 0.4
+  related BACKGROUND_SERVICE 0.5
+  related MOBILE_NOTIFICATION 0.4
+  source seed
+end
+
+concept MOBILE_PERMISSION
+  category MOBILE
+  canonical mobile_permission
+  term pt permissao do aplicativo 1.0
+  term pt pedir permissao 0.95
+  term pt permissao de camera 0.9
+  term pt permissao de microfone 0.85
+  term pt permissao de localizacao 0.8
+  term pt permissao de notificacao 0.75
+  term pt negar permissao 0.7
+  term en app permission 1.0
+  term en request permission 0.95
+  term en camera permission 0.9
+  term en microphone permission 0.85
+  term en location permission 0.8
+  term code permission 0.95
+  term code requestPermissions 0.91
+  term code checkSelfPermission 0.87
+  term code READ_CONTACTS 0.83
+  term code CAMERA 0.79
+  term code RECORD_AUDIO 0.75
+  term code ACCESS_FINE_LOCATION 0.71
+  term code POST_NOTIFICATIONS 0.67
+  action request
+  action grant
+  action deny
+  action check
+  related PERMISSION 0.4
+  related MOBILE_APP 0.5
+  source seed
+end
+
+concept MOBILE_NOTIFICATION
+  category MOBILE
+  canonical mobile_notification
+  term pt notificacao do celular 1.0
+  term pt notificacao push 0.95
+  term pt canal de notificacao 0.9
+  term pt tocar alerta 0.85
+  term pt barra de notificacoes 0.8
+  term pt ler notificacoes 0.75
+  term pt responder notificacao 0.7
+  term en phone notification 1.0
+  term en push notification 0.95
+  term en notification channel 0.9
+  term en play alert 0.85
+  term en notification bar 0.8
+  term code NotificationManager 0.95
+  term code NotificationChannel 0.91
+  term code NotificationCompat 0.87
+  term code notify 0.83
+  term code NotificationListenerService 0.79
+  term code onNotificationPosted 0.75
+  term code fcm 0.71
+  term code FirebaseMessaging 0.67
+  action post
+  action cancel
+  action listen
+  action reply
+  related NOTIFICATION 0.6
+  related MOBILE_SERVICE 0.4
+  source seed
+end
+
+concept MOBILE_LOCKSCREEN
+  category MOBILE
+  canonical mobile_lockscreen
+  term pt tela de bloqueio 1.0
+  term pt bloqueio de tela 0.95
+  term pt desbloquear 0.9
+  term pt keyguard 0.85
+  term pt tela apagada 0.8
+  term pt acordar a tela 0.75
+  term pt mostrar sobre a tela de bloqueio 0.7
+  term en lock screen 1.0
+  term en screen lock 0.95
+  term en unlock 0.9
+  term en keyguard 0.85
+  term en screen off 0.8
+  term code lockscreen 0.95
+  term code keyguard 0.91
+  term code KeyguardManager 0.87
+  term code isDeviceLocked 0.83
+  term code unlock 0.79
+  term code screen_off 0.75
+  term code wake_lock 0.71
+  term code FLAG_SHOW_WHEN_LOCKED 0.67
+  action lock
+  action unlock
+  action wake
+  related MOBILE_APP 0.3
+  related POWER_BATTERY 0.3
+  related TWO_FACTOR 0.2
+  source seed
+end
+
+concept MOBILE_WIDGET
+  category MOBILE
+  canonical mobile_widget
+  term pt widget do celular 1.0
+  term pt widget da tela inicial 0.95
+  term pt atalho da tela inicial 0.9
+  term pt glance 0.85
+  term pt tile 0.8
+  term pt atualizar widget 0.75
+  term pt widget de resumo 0.7
+  term en home screen widget 1.0
+  term en phone widget 0.95
+  term en home shortcut 0.9
+  term en glance 0.85
+  term en tile 0.8
+  term code AppWidgetProvider 0.95
+  term code AppWidget 0.91
+  term code widget 0.87
+  term code RemoteViews 0.83
+  term code glance 0.79
+  term code GlanceAppWidget 0.75
+  term code TileService 0.71
+  term code shortcut 0.67
+  action update
+  action add
+  action remove
+  related WIDGET_COMPONENT 0.4
+  related MOBILE_APP 0.4
+  source seed
+end
+
+concept MOBILE_SENSOR
+  category MOBILE
+  canonical mobile_sensor
+  term pt sensor 1.0
+  term pt sensores 0.95
+  term pt acelerometro 0.9
+  term pt giroscopio 0.85
+  term pt gps 0.8
+  term pt localizacao 0.75
+  term pt bussola 0.7
+  term en sensor 1.0
+  term en sensors 0.95
+  term en accelerometer 0.9
+  term en gyroscope 0.85
+  term en gps 0.8
+  term code SensorManager 0.95
+  term code Sensor 0.91
+  term code accelerometer 0.87
+  term code gyroscope 0.83
+  term code LocationManager 0.79
+  term code FusedLocation 0.75
+  term code gps 0.71
+  term code latitude 0.67
+  action read
+  action listen
+  action register
+  related MOBILE_PERMISSION 0.4
+  related MOBILE_BATTERY 0.3
+  source seed
+end
+
+concept MOBILE_BATTERY
+  category MOBILE
+  canonical mobile_battery
+  term pt bateria do celular 1.0
+  term pt economia de bateria 0.95
+  term pt otimizacao de bateria 0.9
+  term pt doze 0.85
+  term pt ignorar otimizacao 0.8
+  term pt consumo do app 0.75
+  term pt nivel de bateria do aparelho 0.7
+  term en phone battery 1.0
+  term en battery saver 0.95
+  term en battery optimization 0.9
+  term en doze 0.85
+  term en ignore optimization 0.8
+  term code BatteryManager 0.95
+  term code battery 0.91
+  term code doze 0.87
+  term code PowerManager 0.83
+  term code isIgnoringBatteryOptimizations 0.79
+  term code REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 0.75
+  term code standby_bucket 0.71
+  term code battery_level 0.67
+  action check
+  action ignore
+  action save
+  related POWER_BATTERY 0.6
+  related MOBILE_SERVICE 0.3
+  source seed
+end
+
+concept MOBILE_SYNC
+  category MOBILE
+  canonical mobile_sync
+  term pt sincronizacao do celular 1.0
+  term pt sincronizar com o pc 0.95
+  term pt enviar para o computador 0.9
+  term pt dados do celular 0.85
+  term pt backup do celular 0.8
+  term pt sincronizar contatos 0.75
+  term pt nuvem 0.7
+  term en phone sync 1.0
+  term en sync with pc 0.95
+  term en send to computer 0.9
+  term en phone data 0.85
+  term en phone backup 0.8
+  term code sync 0.95
+  term code SyncAdapter 0.91
+  term code WorkManager 0.87
+  term code upload_to_pc 0.83
+  term code phone_link 0.79
+  term code ContactsContract 0.75
+  term code contacts 0.71
+  term code backup 0.67
+  action sync
+  action upload
+  action backup
+  related SYNC_DATA 0.6
+  related MOBILE_APP 0.3
+  source seed
+end
+
+concept MOBILE_PAIRING
+  category MOBILE
+  canonical mobile_pairing
+  term pt parear celular 1.0
+  term pt parear com o pc 0.95
+  term pt codigo de pareamento do celular 0.9
+  term pt vincular aparelho 0.85
+  term pt adicionar aparelho 0.8
+  term pt aprovar aparelho no celular 0.75
+  term pt token do aparelho 0.7
+  term en pair phone 1.0
+  term en pair with pc 0.95
+  term en phone pairing code 0.9
+  term en link device 0.85
+  term en add device 0.8
+  term code pair 0.95
+  term code pairing 0.91
+  term code pair_code 0.87
+  term code pair_device 0.83
+  term code device_token 0.79
+  term code device_id 0.75
+  term code phone_link 0.71
+  term code link_phone 0.67
+  action pair
+  action link
+  action approve
+  related PAIRING_TRUST 0.7
+  related QR_CODE 0.5
+  source seed
+end
+
+concept QR_CODE
+  category MOBILE
+  canonical qr_code
+  term pt qr code 1.0
+  term pt codigo qr 0.95
+  term pt ler qr 0.9
+  term pt escanear 0.85
+  term pt camera para ler codigo 0.8
+  term pt codigo de barras 0.75
+  term pt gerar qr 0.7
+  term en qr code 1.0
+  term en scan 0.95
+  term en scan qr 0.9
+  term en camera to read code 0.85
+  term en barcode 0.8
+  term code qr 0.95
+  term code qrcode 0.91
+  term code scan 0.87
+  term code scanner 0.83
+  term code barcode 0.79
+  term code zxing 0.75
+  term code mlkit 0.71
+  term code generate_qr 0.67
+  action scan
+  action generate
+  action decode
+  related MOBILE_PAIRING 0.5
+  related PAIRING_TRUST 0.4
+  source seed
+end
+
+concept MOBILE_CALLS_SMS
+  category MOBILE
+  canonical mobile_calls_sms
+  term pt ligacao 1.0
+  term pt chamada telefonica 0.95
+  term pt sms 0.9
+  term pt mensagem de texto 0.85
+  term pt contatos 0.8
+  term pt historico de chamadas 0.75
+  term pt whatsapp 0.7
+  term en phone call 1.0
+  term en call 0.95
+  term en sms 0.9
+  term en text message 0.85
+  term en contacts 0.8
+  term code call 0.95
+  term code dial 0.91
+  term code TelephonyManager 0.87
+  term code SmsManager 0.83
+  term code sendTextMessage 0.79
+  term code sms 0.75
+  term code contacts 0.71
+  term code ContactsContract 0.67
+  action call
+  action dial
+  action send
+  action block
+  related CHAT_MESSAGE 0.4
+  related MOBILE_PERMISSION 0.3
+  source seed
+end
+
+concept MOBILE_ACCESSIBILITY
+  category MOBILE
+  canonical mobile_accessibility
+  term pt acessibilidade do android 1.0
+  term pt ler a tela de outro app 0.95
+  term pt tocar na tela 0.9
+  term pt digitar em outro app 0.85
+  term pt automatizar apps 0.8
+  term pt servico de acessibilidade 0.75
+  term pt arvore de nos 0.7
+  term en android accessibility 1.0
+  term en read another app's screen 0.95
+  term en tap the screen 0.9
+  term en type in another app 0.85
+  term en app automation 0.8
+  term code AccessibilityService 0.95
+  term code AccessibilityNodeInfo 0.91
+  term code performAction 0.87
+  term code ACTION_CLICK 0.83
+  term code dispatchGesture 0.79
+  term code rootInActiveWindow 0.75
+  term code accessibility_node 0.71
+  term code findAccessibilityNodeInfosByText 0.67
+  action read
+  action tap
+  action type
+  action scroll
+  related ACCESSIBILITY 0.4
+  related MOBILE_SERVICE 0.4
+  source seed
+end
+
+concept MOBILE_STORAGE
+  category MOBILE
+  canonical mobile_storage
+  term pt armazenamento do celular 1.0
+  term pt galeria 0.95
+  term pt fotos do celular 0.9
+  term pt arquivos do celular 0.85
+  term pt pasta de downloads 0.8
+  term pt mediastore 0.75
+  term pt escopo de armazenamento 0.7
+  term en phone storage 1.0
+  term en gallery 0.95
+  term en phone photos 0.9
+  term en phone files 0.85
+  term en downloads folder 0.8
+  term code MediaStore 0.95
+  term code getExternalFilesDir 0.91
+  term code Environment 0.87
+  term code DIRECTORY_DOWNLOADS 0.83
+  term code ContentResolver 0.79
+  term code content_uri 0.75
+  term code Uri 0.71
+  term code scoped_storage 0.67
+  action query
+  action save
+  action share
+  related FILE_IO 0.3
+  related MOBILE_PERMISSION 0.3
+  source seed
+end
+
+concept MOBILE_UI_COMPOSE
+  category MOBILE
+  canonical mobile_ui_compose
+  term pt compose 1.0
+  term pt tela em compose 0.95
+  term pt composable 0.9
+  term pt estado remember 0.85
+  term pt modificador 0.8
+  term pt material 0.75
+  term pt tema do app 0.7
+  term en compose 1.0
+  term en compose screen 0.95
+  term en composable 0.9
+  term en remember state 0.85
+  term en modifier 0.8
+  term code Composable 0.95
+  term code @Composable 0.91
+  term code remember 0.87
+  term code mutableStateOf 0.83
+  term code Modifier 0.79
+  term code MaterialTheme 0.75
+  term code LazyColumn 0.71
+  term code Scaffold 0.67
+  action compose
+  action recompose
+  action render
+  related UI_STATE 0.4
+  related WIDGET_COMPONENT 0.5
+  related THEME_STYLE 0.3
+  source seed
+end
+
+concept MOBILE_ALARM_CALENDAR
+  category MOBILE
+  canonical mobile_alarm_calendar
+  term pt alarme 1.0
+  term pt despertador 0.95
+  term pt agenda 0.9
+  term pt calendario 0.85
+  term pt evento do calendario 0.8
+  term pt lembrete 0.75
+  term pt briefing 0.7
+  term en alarm 1.0
+  term en alarm clock 0.95
+  term en agenda 0.9
+  term en calendar 0.85
+  term en calendar event 0.8
+  term code AlarmManager 0.95
+  term code alarm 0.91
+  term code setExact 0.87
+  term code calendar 0.83
+  term code CalendarContract 0.79
+  term code event 0.75
+  term code reminder 0.71
+  term code briefing 0.67
+  action set
+  action cancel
+  action remind
+  related SCHEDULER 0.4
+  related MOBILE_NOTIFICATION 0.3
+  source seed
+end
+
+concept MOBILE_MEDIA_PLAYER
+  category MOBILE
+  canonical mobile_media_player
+  term pt tocar musica no celular 1.0
+  term pt controle de midia 0.95
+  term pt volume do celular 0.9
+  term pt brilho 0.85
+  term pt lanterna 0.8
+  term pt controlar aparelho 0.75
+  term pt modo silencioso 0.7
+  term en play music on phone 1.0
+  term en media control 0.95
+  term en phone volume 0.9
+  term en brightness 0.85
+  term en flashlight 0.8
+  term code AudioManager 0.95
+  term code setStreamVolume 0.91
+  term code MediaSession 0.87
+  term code MediaController 0.83
+  term code brightness 0.79
+  term code flashlight 0.75
+  term code torch 0.71
+  term code CameraManager 0.67
+  action set
+  action toggle
+  action control
+  related PLAYBACK 0.3
+  source seed
+end
+
+concept MOBILE_SMART_HOME
+  category MOBILE
+  canonical mobile_smart_home
+  term pt casa inteligente 1.0
+  term pt tomada inteligente 0.95
+  term pt ligar luz 0.9
+  term pt camera de seguranca 0.85
+  term pt automacao residencial 0.8
+  term pt sonoff 0.75
+  term pt dispositivo iot 0.7
+  term en smart home 1.0
+  term en smart plug 0.95
+  term en turn on light 0.9
+  term en security camera 0.85
+  term en home automation 0.8
+  term code smart_home 0.95
+  term code iot 0.91
+  term code sonoff 0.87
+  term code plug 0.83
+  term code relay 0.79
+  term code switch 0.75
+  term code camera 0.71
+  term code cameras 0.67
+  action toggle
+  action switch
+  action watch
+  action alert
+  related MOBILE_SENSOR 0.3
+  related NETWORK_REQUEST 0.2
+  source seed
+end
+
+concept SAMSUNG_ANDROID_ROM
+  category MOBILE
+  canonical samsung_android_rom
+  term pt samsung 1.0
+  term pt galaxy 0.95
+  term pt one ui 0.9
+  term pt odin 0.85
+  term pt rom 0.8
+  term pt firmware da samsung 0.75
+  term pt debloat 0.7
+  term en samsung 1.0
+  term en galaxy 0.95
+  term en one ui 0.9
+  term en odin 0.85
+  term en rom 0.8
+  term code samsung 0.95
+  term code galaxy 0.91
+  term code odin 0.87
+  term code rom 0.83
+  term code debloat 0.79
+  term code pkg 0.75
+  term code package 0.71
+  term code pm 0.67
+  action debloat
+  action disable
+  action flash
+  related FIRMWARE_FLASH 0.6
+  related MOBILE_APP 0.3
+  source mined
+end
+
+concept PERSON_CONTACT_PEOPLE
+  category MOBILE
+  canonical person_contact_people
+  term pt pessoa 1.0
+  term pt pessoas 0.95
+  term pt pessoas recentes 0.9
+  term pt contato 0.85
+  term pt aniversario 0.8
+  term pt ligacoes recentes 0.75
+  term pt mms 0.7
+  term en person 1.0
+  term en people 0.95
+  term en recent people 0.9
+  term en contact 0.85
+  term en birthday 0.8
+  term code person 0.95
+  term code people 0.91
+  term code contact 0.87
+  term code contacts 0.83
+  term code recents 0.79
+  term code birthday 0.75
+  term code mms 0.71
+  term code gmail 0.67
+  action list
+  action search
+  action call
+  related MOBILE_CALLS_SMS 0.6
+  related CUSTOMER 0.2
+  source mined
+end
+
+concept ANDROID_MANIFEST_PACKAGE
+  category MOBILE
+  canonical android_manifest_package
+  term pt manifesto 1.0
+  term pt pacote android 0.95
+  term pt identificador do app 0.9
+  term pt assinatura do apk 0.85
+  term pt versao do app 0.8
+  term pt launcher 0.75
+  term pt intent filter 0.7
+  term en manifest 1.0
+  term en android package 0.95
+  term en app id 0.9
+  term en apk signing 0.85
+  term en app version 0.8
+  term code manifest 0.95
+  term code AndroidManifest 0.91
+  term code pkg 0.87
+  term code package 0.83
+  term code applicationId 0.79
+  term code versionCode 0.75
+  term code versionName 0.71
+  term code launcher 0.67
+  action declare
+  action sign
+  action install
+  related MOBILE_APP 0.6
+  related RELEASE 0.3
+  source mined
+end
+
+concept MOBILE_HAPTIC_RINGER
+  category MOBILE
+  canonical mobile_haptic_ringer
+  term pt vibracao 1.0
+  term pt haptico 0.95
+  term pt toque 0.9
+  term pt campainha 0.85
+  term pt modo silencioso 0.8
+  term pt som de notificacao 0.75
+  term pt volume do toque 0.7
+  term en vibration 1.0
+  term en haptic 0.95
+  term en ringtone 0.9
+  term en ringer 0.85
+  term en silent mode 0.8
+  term code haptic 0.95
+  term code vibrate 0.91
+  term code Vibrator 0.87
+  term code ringtone 0.83
+  term code ringer 0.79
+  term code RingtoneManager 0.75
+  term code silent 0.71
+  term code muted 0.67
+  action vibrate
+  action ring
+  action mute
+  related MOBILE_MEDIA_PLAYER 0.5
+  related MOBILE_NOTIFICATION 0.4
+  source mined
+end
+
+concept MOBILE_BITMAP_GRAPHICS
+  category MOBILE
+  canonical mobile_bitmap_graphics
+  term pt bitmap 1.0
+  term pt imagem do android 0.95
+  term pt canvas do android 0.9
+  term pt desenhar bitmap 0.85
+  term pt drawable 0.8
+  term pt cor argb 0.75
+  term pt retangulo 0.7
+  term en bitmap 1.0
+  term en android image 0.95
+  term en android canvas 0.9
+  term en draw bitmap 0.85
+  term en drawable 0.8
+  term code bitmap 0.95
+  term code Canvas 0.91
+  term code drawable 0.87
+  term code argb 0.83
+  term code Rect 0.79
+  term code orientation 0.75
+  term code density 0.71
+  term code dp 0.67
+  action draw
+  action decode
+  action scale
+  related IMAGE_PROCESSING 0.4
+  related COLOR_GRAPHICS 0.4
+  source mined
+end
