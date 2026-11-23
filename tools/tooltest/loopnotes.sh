@@ -93,5 +93,34 @@ for i in range(1,101): print('linha numero %d com algum texto' % i)" > d.txt
 o=$(printf '%s\n' USER 'Read {"file_path":"d.txt"}' 'Edit {"file_path":"d.txt","old_string":"linha numero 100 com algum texto","new_string":"ultima mudou"}' 'Read {"file_path":"d.txt"}' | r)
 has "Read delta: mudanca na ultima linha" "only the changed part is shown" "$o"
 
+
+# ---------- cursor do Read: faixa deslocada de 1 linha e limite por arquivo ----------
+awk 'BEGIN{for(i=1;i<=400;i++) print "linha numero " i}' > s.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' 'Read {"file_path":"s.txt","offset":101,"limit":80}' | r)
+has "offset deslocado: nota com o intervalo ja visto" "lines 101-179 of" "$o"
+has "offset deslocado: continua do primeiro trecho novo" "from line 180]" "$o"
+has "offset deslocado: entrega a linha nova" "   180${TAB}linha numero 180" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' 'Read {"file_path":"s.txt","offset":120,"limit":40}' | r)
+has "faixa toda lida: segue do primeiro trecho novo" "lines 120-179 of" "$o"
+has "faixa toda lida: o trecho novo vem" "   180${TAB}linha numero 180" "$o"
+awk 'BEGIN{for(i=1;i<=50;i++) print "curto " i}' > t.txt
+o=$(printf '%s\n' USER 'Read {"file_path":"t.txt","offset":1,"limit":50}' 'Read {"file_path":"t.txt","offset":10,"limit":10}' | r)
+has "nada novo no arquivo: nota already seen" "already seen lines 10-19 of" "$o"
+has "nada novo no arquivo: manda usar Grep ou Symbols" "use Grep (-n -C 2) or Symbols" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' 'Read {"file_path":"s.txt","offset":300,"limit":50}' | r)
+no "faixa nova: sem nota de ja visto" "already" "$o"
+# arquivo mudado: o que foi lido antes deixa de valer
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":100,"limit":80}' 'Bash {"command":"echo extra >> s.txt"}' 'Read {"file_path":"s.txt","offset":101,"limit":80}' | r)
+no "arquivo mudou: rele a faixa" "already" "$o"
+awk 'BEGIN{for(i=1;i<=400;i++) print "linha numero " i}' > s.txt
+# limite por arquivo: a 6a leitura do mesmo arquivo leva a nota
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":1,"limit":10}' 'Read {"file_path":"s.txt","offset":50,"limit":10}' 'Read {"file_path":"s.txt","offset":100,"limit":10}' 'Read {"file_path":"s.txt","offset":150,"limit":10}' 'Read {"file_path":"s.txt","offset":200,"limit":10}' | r)
+no "5 leituras do mesmo arquivo: sem nota" "read number" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":1,"limit":10}' 'Read {"file_path":"s.txt","offset":50,"limit":10}' 'Read {"file_path":"s.txt","offset":100,"limit":10}' 'Read {"file_path":"s.txt","offset":150,"limit":10}' 'Read {"file_path":"s.txt","offset":200,"limit":10}' 'Read {"file_path":"s.txt","offset":250,"limit":10}' | r)
+has "6a leitura do mesmo arquivo: nota" "read number 6 of" "$o"
+has "6a leitura: aponta Grep e Symbols" "Use Grep (-n -C 2) or Symbols for the exact spot" "$o"
+o=$(printf '%s\n' USER 'Read {"file_path":"s.txt","offset":1,"limit":10}' 'Read {"file_path":"s.txt","offset":50,"limit":10}' 'Read {"file_path":"s.txt","offset":100,"limit":10}' 'Read {"file_path":"s.txt","offset":150,"limit":10}' 'Read {"file_path":"s.txt","offset":200,"limit":10}' USER 'Read {"file_path":"s.txt","offset":250,"limit":10}' | r)
+no "pedido novo zera a conta de leituras" "read number" "$o"
+
 if [ "$F" -eq 0 ]; then echo "OK $N checks"; exit 0; fi
 echo "FAILED $F of $N"; exit 1

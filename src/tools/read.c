@@ -62,6 +62,8 @@ static int ct_ext_is(const char *path, const char *ext) {
 
 /* ---- as linhas [offset, offset+limit) de b, com numero e tab, no maximo o que cabe em cap ---- */
 #define CT_LINE_MAX 2000
+#define RD_NOTE_READS 6       /* a partir da 6a leitura do mesmo arquivo no pedido: nota para usar Grep/Symbols ou responder */
+#define RD_FORCE_READS 9      /* a partir da 9a: o laco encerra o pedido (g_rd_toomany) */
 static long long g_rdl_first, g_rdl_last;      /* faixa entregue pela ultima chamada de ct_rd_lines */
 static int rd_best_windows(const char *b, size_t n, const char *intent, long skip_lines, char *out, size_t cap);      /* em coder/text.c */
 static void ct_rd_lines(const char *b, size_t n, long long offset, long long limit, int numbered, char *out, size_t cap, int *partial) {
@@ -374,12 +376,28 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             ct_seen_mark(res, 1);
             break;
         }
-        char cnote[260] = ""; long long eoff = offset;
+        char cnote[260] = "", mnynote[400] = ""; long long eoff = offset; int seen_all = 0;
         {   RdCur *c = rc_find(res, (long long)st.st_size, (long long)st.st_mtime);
             if (c && c->cov_end >= 1 && c->cov_end < total && (!has_off || offset == c->last_off)) {      /* ja entregue ate cov_end: segue dali */
                 eoff = c->cov_end + 1;
                 KNOTE(READ_CURSOR, cnote, sizeof cnote, c->cov_end, res, eoff);
-            } }
+            } else if (c && has_off) {      /* faixa pedida quase toda ja lida (offset deslocado de 1 ou 2 linhas): so o que e novo */
+                const long long b = offset + limit - 1 > total ? total : offset + limit - 1;
+                int fn = 0; const int cov = rs_read_cover(res, (int)offset, (int)b, &fn);
+                if (cov * 10 >= (int)(b - offset + 1) * 8) {
+                    if (fn <= b) { eoff = fn; }
+                    else { int fn2 = 0; rs_read_cover(res, (int)b + 1, (int)total, &fn2); eoff = fn2; }      /* depois do fim da faixa: o primeiro trecho nao lido */
+                    if (eoff > total) seen_all = 1;
+                    else if (eoff > offset) KNOTE(READ_SEEN, cnote, sizeof cnote, offset, eoff - 1, res, eoff);
+                }
+            }
+            if (c) { c->nreads++; if (c->nreads >= RD_NOTE_READS) KNOTE(READ_MANY, mnynote, sizeof mnynote, c->nreads, res); if (c->nreads >= RD_FORCE_READS) g_rd_toomany = 1; } }
+        if (seen_all) {      /* tudo o que foi pedido (e o que vem depois) ja foi entregue neste pedido */
+            KNOTE(READ_SEEN_ALL, out, cap, offset, offset + limit - 1 > total ? total : offset + limit - 1, res);
+            const size_t ol = strlen(out); if (ol + strlen(mnynote) + 1 < cap) strcat(out, mnynote);
+            ct_seen_mark(res, 1);
+            break;
+        }
         char oext[16];
         if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
             static char mp[16000], hd[12000];
@@ -403,7 +421,9 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
         ct_rd_lines(b, n, eoff, limit, 1, out, cap, &partial);
         if (strncmp(out, "error:", 6) != 0) {
             if (g_rdl_last >= g_rdl_first) rc_note(res, (long long)st.st_size, (long long)st.st_mtime, g_rdl_first, g_rdl_last, total);
-            if (cnote[0]) { const size_t ol = strlen(out), cl = strlen(cnote); if (ol + cl + 1 < cap) { memmove(out + cl, out, ol + 1); memcpy(out, cnote, cl); } } ct_seen_mark(res, partial); if (!partial) rd_delta_put(res, b, n); }
+            if (cnote[0]) { const size_t ol = strlen(out), cl = strlen(cnote); if (ol + cl + 1 < cap) { memmove(out + cl, out, ol + 1); memcpy(out, cnote, cl); } }
+            if (mnynote[0]) { const size_t ol = strlen(out), ml = strlen(mnynote); if (ol + ml + 1 < cap) memcpy(out + ol, mnynote, ml + 1); }
+            ct_seen_mark(res, partial); if (!partial) rd_delta_put(res, b, n); }
     } while (0);
     free(b); free(fp); free(pages);
 }
