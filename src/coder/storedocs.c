@@ -154,7 +154,14 @@ static void store_catalog_init(void) {
 
 /* ---- varredura da pasta ---- */
 typedef struct { char *path; uint32_t plen; uint64_t size; int64_t mtime; } StoreScanEnt;
-typedef struct { StoreScanEnt *e; int n, cap; } StoreScan;
+/* regras de ignorar (.gitignore e .katanaignore). Suportado: linhas em branco e # ignoradas, ! de negacao, / final (so pastas), / inicial ou
+ * no meio (ancorado ao diretorio do arquivo de regras), * ? ** [abc] [a-z] [!abc], \ de escape, .gitignore em subpastas (o mais fundo vence;
+ * dentro de um arquivo a ultima regra vence). NAO suportado: .git/info/exclude, ~/.config/git/ignore, core.excludesFile, classes [[:alpha:]],
+ * re-incluir arquivo dentro de pasta ja ignorada (igual ao git), espacos finais protegidos por barra, casamento insensivel a maiusculas. */
+typedef struct { char *pat; int neg, dironly, anchored; } StoreRule;
+typedef struct { StoreRule *r; int n, cap; size_t base; } StoreRuleSet;
+#define ST_MAXRS 64
+typedef struct { StoreScanEnt *e; int n, cap; StoreRuleSet rs[ST_MAXRS]; int nrs; int ignored, ignored_heur, has_gitignore; } StoreScan;
 typedef struct {
     uint64_t max_size;                                          /* arquivos maiores sao catalogados sem leitura (SDF_SKIP_BIG); 0 = 2 MiB */
     uint32_t (*kind_fn)(const char *path, size_t len);          /* tipo/idioma opaco por caminho; NULL = 0 */
@@ -166,7 +173,90 @@ typedef struct {
     void (*doc_fn)(void *ctx, uint32_t idx, const StoreDoc *d, const uint8_t *data, size_t n);
     void (*commit_fn)(void *ctx, StoreWriter *w, uint32_t ndocs);
 } StoreScanOpts;
-typedef struct { int scanned, unchanged, added, changed, touched, removed, skip_bin, skip_big, skip_unread, live, compacted; int64_t gen; double t_scan, t_total; } StoreUpdStats;
+typedef struct { int scanned, unchanged, added, changed, touched, removed, skip_bin, skip_big, skip_unread, live, compacted, ignored, ignored_heur; int64_t gen; double t_scan, t_total; } StoreUpdStats;
+static void st_rules_add(StoreRuleSet *R, const char *line, size_t len) {
+    while (len && (line[len - 1] == '\r' || line[len - 1] == '\n' || line[len - 1] == ' ' || line[len - 1] == '\t')) len--;
+    if (!len || line[0] == '#') return;
+    StoreRule x; memset(&x, 0, sizeof x);
+    if (line[0] == '!') { x.neg = 1; line++; len--; }
+    else if (line[0] == '\\' && len > 1 && (line[1] == '#' || line[1] == '!')) { line++; len--; }
+    if (len && line[len - 1] == '/') { x.dironly = 1; len--; }
+    if (!len) return;
+    size_t k = 0; for (size_t i = 0; i < len; i++) if (line[i] == '/') k++;
+    x.anchored = k > 0;
+    if (line[0] == '/') { line++; len--; if (!len) return; }
+    x.pat = (char *)malloc(len + 1); memcpy(x.pat, line, len); x.pat[len] = 0;
+    if (R->n == R->cap) { R->cap = R->cap ? R->cap * 2 : 16; R->r = (StoreRule *)realloc(R->r, sizeof *R->r * (size_t)R->cap); }
+    R->r[R->n++] = x;
+}
+static void st_rules_load(StoreRuleSet *R, const char *file) {
+    FILE *f = fopen(file, "rb");
+    if (!f) return;
+    char ln[2048];
+    while (fgets(ln, sizeof ln, f)) st_rules_add(R, ln, strlen(ln));
+    fclose(f);
+}
+static int st_glob(const char *p, const char *s) {
+    while (*p) {
+        if (*p == '*') {
+            int dbl = p[1] == '*';
+            while (*p == '*') p++;
+            if (dbl) {
+                if (*p == '/' && st_glob(p + 1, s)) return 1;               /* "**" + "/" casa zero pastas */
+                for (const char *t = s; ; t++) { if (st_glob(p, t)) return 1; if (!*t) return 0; }
+            }
+            if (!*p) return strchr(s, '/') == NULL;
+            for (const char *t = s; ; t++) { if (st_glob(p, t)) return 1; if (!*t || *t == '/') return 0; }
+        }
+        if (!*s) return 0;
+        if (*p == '?') { if (*s == '/') return 0; p++; s++; continue; }
+        if (*p == '[') {
+            const char *q = p + 1; int neg = 0, ok = 0;
+            if (*q == '!' || *q == '^') { neg = 1; q++; }
+            const char *first = q;
+            while (*q && (*q != ']' || q == first)) {
+                if (q[1] == '-' && q[2] && q[2] != ']') { if ((unsigned char)*s >= (unsigned char)q[0] && (unsigned char)*s <= (unsigned char)q[2]) ok = 1; q += 3; }
+                else { if (*q == *s) ok = 1; q++; }
+            }
+            if (*q != ']') { if (*s != '[') return 0; p++; s++; continue; }       /* colchete sem fim: literal */
+            if (*s == '/' || ok == neg) return 0;
+            p = q + 1; s++; continue;
+        }
+        if (*p == '\\' && p[1]) p++;
+        if (*p != *s) return 0;
+        p++; s++;
+    }
+    return *s == 0;
+}
+/* 1 = ignorado, 0 = reincluido (!), -1 = nenhuma regra casou; rel = caminho relativo ao diretorio das regras, nm = ultimo componente */
+static int st_rules_match(const StoreRuleSet *R, const char *rel, const char *nm, int isdir) {
+    for (int i = R->n - 1; i >= 0; i--) {
+        const StoreRule *x = &R->r[i];
+        if (x->dironly && !isdir) continue;
+        if (st_glob(x->pat, x->anchored ? rel : nm)) return x->neg ? 0 : 1;
+    }
+    return -1;
+}
+static int st_scan_ignored(const StoreScan *S, const char *path, const char *nm, int isdir) {
+    for (int i = S->nrs - 1; i >= 0; i--) {
+        int m = st_rules_match(&S->rs[i], path + S->rs[i].base + 1, nm, isdir);
+        if (m >= 0) return m;
+    }
+    return 0;
+}
+static int st_count_files_capped(char *path, size_t plen, int cap) {                 /* conta arquivos (sem .git) ate passar de cap */
+    DIR *d = opendir(path); if (!d) return 0;
+    struct dirent *de; int n = 0;
+    while (n <= cap && (de = readdir(d))) {
+        const char *nm = de->d_name; if (!strcmp(nm, ".") || !strcmp(nm, "..") || !strcmp(nm, ".git")) continue;
+        size_t nl = strlen(nm); if (plen + nl + 2 >= 4000) continue;
+        path[plen] = '/'; memcpy(path + plen + 1, nm, nl + 1);
+        struct stat st;
+        if (lstat(path, &st) == 0) { if (S_ISDIR(st.st_mode)) n += st_count_files_capped(path, plen + 1 + nl, cap - n); else n++; }
+        path[plen] = 0;
+    }
+    closedir(d); return n;
+}
 static int st_ignored_dir(const char *n) {
     static const char *const ig[] = {".git", "node_modules", "build", "dist", "vendor", ".katana", ".claude", ".hg", ".svn", NULL};
     for (int i = 0; ig[i]; i++) if (!strcmp(n, ig[i])) return 1;
@@ -182,6 +272,22 @@ static int st_binary_ext(const char *n) {
 static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
     DIR *d = opendir(path);
     if (!d) return;
+    int pushed = 0, isroot = (S->nrs == 0);
+    if (S->nrs < ST_MAXRS) {
+        StoreRuleSet *R = &S->rs[S->nrs]; memset(R, 0, sizeof *R); R->base = plen;
+        char f[4200];
+        snprintf(f, sizeof f, "%s/.gitignore", path);
+        st_rules_load(R, f);
+        if (isroot) {
+            S->has_gitignore = R->n > 0;
+            if (!S->has_gitignore) {                 /* sem .gitignore na raiz: pastas pesadas conhecidas (baixa prioridade; .katanaignore pode negar) */
+                static const char *const hv[] = {"ref", "models", "modelos", ".claude", "node_modules", "build", "dist", "target", "__pycache__", ".venv", "venv", ".cache", NULL};
+                for (int i = 0; hv[i]; i++) { char l[64]; snprintf(l, sizeof l, "/%s/", hv[i]); st_rules_add(R, l, strlen(l)); }
+            }
+        }
+        snprintf(f, sizeof f, "%s/.katanaignore", path); st_rules_load(R, f);
+        if (R->n) { S->nrs++; pushed = 1; } else free(R->r);
+    }
     struct dirent *de;
     while ((de = readdir(d))) {
         const char *nm = de->d_name;
@@ -193,8 +299,14 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
         memcpy(path + at, nm, nl + 1);
         struct stat st;
         if (lstat(path, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) { if (!st_ignored_dir(nm)) st_scan_walk(S, path, at + nl, rel0); }
-            else if (S_ISREG(st.st_mode)) {
+            int isd = S_ISDIR(st.st_mode);
+            if ((isd && st_ignored_dir(nm)) || (!isd && !S_ISREG(st.st_mode))) { path[plen] = 0; continue; }
+            if (S->nrs && st_scan_ignored(S, path, nm, isd)) { S->ignored++; path[plen] = 0; continue; }
+            if (isd && isroot && S->has_gitignore && (!strcmp(nm, "ref") || !strcmp(nm, "models")) && st_count_files_capped(path, at + nl, 5000) > 5000) {
+                S->ignored++; S->ignored_heur++; path[plen] = 0; continue;      /* heuristica de seguranca: pasta enorme que o .gitignore nao cobre */
+            }
+            if (isd) st_scan_walk(S, path, at + nl, rel0);
+            else {
                 if (S->n == S->cap) { S->cap = S->cap ? S->cap * 2 : 1024; S->e = (StoreScanEnt *)realloc(S->e, sizeof *S->e * (size_t)S->cap); }
                 StoreScanEnt *e = &S->e[S->n++];
                 e->plen = (uint32_t)(at + nl - rel0); e->path = (char *)malloc(e->plen + 1); memcpy(e->path, path + rel0, e->plen + 1);
@@ -209,6 +321,7 @@ static void st_scan_walk(StoreScan *S, char *path, size_t plen, size_t rel0) {
         path[plen] = 0;
     }
     closedir(d);
+    if (pushed) { StoreRuleSet *R = &S->rs[--S->nrs]; for (int i = 0; i < R->n; i++) free(R->r[i].pat); free(R->r); }
 }
 static int st_cmp_scan(const void *a, const void *b) { return strcmp(((const StoreScanEnt *)a)->path, ((const StoreScanEnt *)b)->path); }
 static int st_cmp_str(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
@@ -242,7 +355,7 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
     size_t rl = strlen(rr);
     st_scan_walk(&sc, path, rl, rl + (rl > 1 ? 1 : 0));
     qsort(sc.e, (size_t)sc.n, sizeof *sc.e, st_cmp_scan);
-    S->scanned = sc.n; S->t_scan = now_sec() - t0;
+    S->scanned = sc.n; S->ignored = sc.ignored; S->ignored_heur = sc.ignored_heur; S->t_scan = now_sec() - t0;
     StoreWriter *w; int rc = store_writer_begin(dir, &w, err, ecap);
     if (rc != 0) { for (int i = 0; i < sc.n; i++) free(sc.e[i].path); free(sc.e); return rc; }
     store_writer_set_root(w, rr);
@@ -310,6 +423,11 @@ static int store_catalog_update(const char *dir, const char *root, const StoreSc
     for (int i = 0; i < sc.n; i++) free(sc.e[i].path);
     free(sc.e);
     S->t_total = now_sec() - t0;
+    if (rc == 0) {          /* contagem para o status (arquivo texto ao lado do armazenamento; nao altera o formato) */
+        char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir);
+        FILE *f = fopen(fp, "wb");
+        if (f) { fprintf(f, "%d %d %d\n", S->ignored, S->ignored_heur, 1); fclose(f); }
+    }
     return rc;
 }
 
@@ -344,8 +462,8 @@ static int coder_cmd_index(int argc, char **argv) {
     if (rc != 0) { fprintf(stderr, "index: erro: %s\n", err); return 1; }
     StoreReader *r; uint64_t disk = 0; int nseg = 0;
     if (store_open(dir, &r, err, sizeof err) == 0) { disk = store_disk_bytes(r); nseg = r->nseg; store_close(r); }
-    printf("index %s: %d arquivos (%d novos, %d alterados, %d so mtime, %d removidos, %d iguais); ignorados por tipo: %d binarios, %d grandes, %d ilegiveis\n",
-           proj, S.scanned, S.added, S.changed, S.touched, S.removed, S.unchanged, S.skip_bin, S.skip_big, S.skip_unread);
+    printf("index %s: %d arquivos (%d novos, %d alterados, %d so mtime, %d removidos, %d iguais); ignorados por tipo: %d binarios, %d grandes, %d ilegiveis; ignorados por regra (.gitignore/.katanaignore/pastas pesadas): %d entradas (%d pela heuristica de pasta enorme)\n",
+           proj, S.scanned, S.added, S.changed, S.touched, S.removed, S.unchanged, S.skip_bin, S.skip_big, S.skip_unread, S.ignored, S.ignored_heur);
     printf("  geracao %lld, %d segmento(s)%s, %s em disco, varredura %.3f s, total %.3f s\n  armazenamento: %s\n", (long long)S.gen, nseg, S.compacted ? " (compactado)" : "", cstore_human(disk, h, sizeof h), S.t_scan, S.t_total, dir);
     if (sinfo[0]) printf("  busca: %s\n", sinfo);
     return 0;
@@ -371,6 +489,8 @@ static int coder_cmd_status(int argc, char **argv) {
     int live = 0, bin = 0, big = 0, unr = 0; uint64_t bytes = 0;
     for (int i = 0; i < L.n; i++) if (!L.e[i].dead) { live++; bytes += L.e[i].d.size; if (L.e[i].d.flags & SDF_SKIP_BINARY) bin++; else if (L.e[i].d.flags & SDF_SKIP_BIG) big++; else if (L.e[i].d.flags & SDF_SKIP_UNREADABLE) unr++; }
     printf("arquivos vigentes: %d (%s de conteudo; %d binarios, %d grandes, %d ilegiveis sem leitura)\n", live, cstore_human(bytes, h, sizeof h), bin, big, unr);
+    { char fp[4500]; snprintf(fp, sizeof fp, "%s/ignored.txt", dir); FILE *f = fopen(fp, "rb"); int a = 0, b = 0, c = 0;
+      if (f) { if (fscanf(f, "%d %d %d", &a, &b, &c) == 3) printf("ignorados por regra na ultima varredura: %d entradas (arquivos ou pastas; %d pela heuristica de pasta enorme)\n", a, b); fclose(f); } }
     store_live_free(&L); store_close(r);
     return 0;
 }
