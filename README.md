@@ -53,7 +53,8 @@ one used and tested day to day.
 ./katana info  <model.gguf>        # architecture, tensors, context
 ./katana chat  <model.gguf>        # interactive chat
 ./katana agent <model.gguf>        # chat with tools (files, shell, web, memory, MCP)
-./katana code  <model.gguf>        # the agent in coding mode (lean prompt: read, edit, run, verify)
+./katana code  <model.gguf>        # the agent in coding mode (older: short coding prompt and only the coding tools)
+./katana serve <model.gguf> 8080 --agent   # web page that drives the full agent (work in progress)
 ```
 
 The `katana` command (console in your project, headless mode; `docs/console.md`):
@@ -149,6 +150,14 @@ tools reach outside.
 | `howto` | short recipes (web, terminal, linux, script, sudo, files, code, packages, logs) the model can consult on demand |
 | MCP tools | any [Model Context Protocol](https://modelcontextprotocol.io) server (stdio or streamable HTTP), listed as `server__tool` |
 
+**Finding things in code.** The default tool set (the one the model is trained on, `docs/tools.md`) has one search entry point,
+`Find`: it looks at the question and picks the way to search (a name, a quoted text, or a description in words), checks what it
+reports by reading the files again, and says what it did not find. `Symbols` answers precise questions (`def`, `refs`, `callers`,
+`callees`, `uses`, `outline`, `at`, `deps`, `impact`) from an index of the code, with a confidence level on every answer. `Read`
+shows the part of a large file that matches what the model is looking for, and continues from where it stopped when the same file
+is read again. The same engine is available without a model as `katana coder ...` (`docs/code-intelligence.md`). No embeddings
+and no remote service; new, and not measured yet.
+
 Where the tools work: anywhere on the machine. Paths can be relative to the working folder or absolute, missing folders are created, and
 `git -C <folder> ...` works in another repository. The user's request is the authorization, so there are no per-folder prompts. When the
 system denies a write (for example under `/opt`) the tool says so, and the model retries with `sudo=true` (`write_file`, `edit_file`) or `sudo` in the command
@@ -205,6 +214,7 @@ katana learn <model> [--rounds N] [--repeat K] [-- train options]   learns from 
 katana agent <model>             chat with tools
 katana code  <model>             coding mode: the same agent with a short programming prompt and only the coding tools
 katana mcp                       start the configured MCP servers and list their tools
+katana coder <sub>               code intelligence without a model: index, search, symbols, def, refs, callers, callees, uses, outline, at, deps, impact, kb, status, verify, compact (`katana coder` lists them)
 katana info | bench | selftest | micro | tune | pack | verify | quantize | qtest | routing | sparsity
 katana tool <name> '<json>'      run one agent tool without a model (testing)
 ```
@@ -307,6 +317,8 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 - `src/katana.c`: the single compilation unit; it only includes the parts below.
 - `src/engine/`: inference (GGUF, tokenizers, CPU kernels, Vulkan, OpenCL, MoE cache, DeltaNet, sampling).
 - `src/agent/`: the layers on top of the model (tools, system prompt, terminal, MCP client, context compaction, sessions).
+- `src/coder/`: code intelligence on top of the engine: segment store, search, parsers for 60+ languages and formats, symbol index and queries, knowledge base (`data/coder/kb/`).
+- `src/tools/`: the agent's tools (`Find`, `Symbols`, `Read`, `Grep`, `Edit`, ...).
 - `src/app/`: console, HTTP server, subcommands and `main`.
 - `vk/`: single-header Vulkan compute layer (`kvk.h`) and compiled shaders; `tools/`: kernel benches
   (`vkq4k`, `vkmv`, `vkatt`, `vkdelta`...), tokenizer reference tests, tool tests (`tools/testar_ferramentas.sh`).
@@ -321,6 +333,8 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 | [`docs/comparisons.md`](docs/comparisons.md) | every comparison table (against the reference engine and between katana versions) |
 | [`docs/handoff.md`](docs/handoff.md) | current state, next steps, open items, how to resume work |
 | [`docs/console.md`](docs/console.md) | the `katana` command: install, console in a project, model choice, sessions, slash commands, headless mode (JSON contract), `adopt` |
+| [`docs/code-intelligence.md`](docs/code-intelligence.md) | the code intelligence module (`katana coder`): design, parsers, search, structural queries |
+| [`docs/tools.md`](docs/tools.md) | the agent's tools and how `Find` and `Symbols` decide and answer |
 | [`docs/plan.md`](docs/plan.md) | priorities and done-criteria |
 | [`docs/optimization-roadmap.md`](docs/optimization-roadmap.md) | optimization techniques not yet used, expected gain and effort |
 | [`docs/new-models.md`](docs/new-models.md) | DeepSeek / Kimi-family models: metadata and status |
