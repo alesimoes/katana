@@ -1881,7 +1881,7 @@ static void cp_walk(const char *dir, CpOut *o) {
     char **names = NULL; int nn = 0, cap = 0; struct dirent *e;
     while ((e = readdir(d))) { if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue; if (nn >= cap) { cap = cap * 2 + 16; names = (char **)realloc(names, (size_t)cap * sizeof(char *)); } names[nn++] = cp_dup(e->d_name, strlen(e->d_name)); }
     closedir(d);
-    qsort(names, (size_t)nn, sizeof(char *), cp_namecmp);
+    if (nn > 1) qsort(names, (size_t)nn, sizeof(char *), cp_namecmp);
     static const char *const SKIP[] = {".git", "node_modules", "build", "dist", "vendor", ".katana", ".gradle", "__pycache__", ".idea", NULL};
     for (int i = 0; i < nn; i++) {
         char *p = (char *)malloc(strlen(dir) + strlen(names[i]) + 2); sprintf(p, "%s/%s", dir, names[i]);
