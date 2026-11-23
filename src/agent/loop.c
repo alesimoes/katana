@@ -493,10 +493,16 @@ static int rr_check(const char *name, uint64_t csig, char *out, size_t cap) {
     }
     return 0;
 }
+/* ferramentas que so mexem na lista de tarefas do modelo: nao alteram arquivos nem o estado do projeto */
+static int rr_is_plan(const char *name) {
+    static const char *const pl[] = {"TodoWrite", "TaskCreate", "TaskUpdate", "todo", "EnterPlanMode", "ExitPlanMode", NULL};
+    for (int i = 0; pl[i]; i++) if (!strcmp(name, pl[i])) return 1;
+    return 0;
+}
 /* depois de executar: guarda a chamada que deu certo; ferramenta que muda coisas zera a tabela */
 static void rr_after(const char *name, uint64_t csig, int failed) {
     rr_total++;
-    if (!rr_covered(name)) { if (!loop_plan_readonly(name)) rr_n = 0; return; }
+    if (!rr_covered(name)) { if (!loop_plan_readonly(name) && !rr_is_plan(name)) rr_n = 0; return; }      /* atualizar o plano nao muda arquivos: nao apaga o que ja foi lido */
     if (failed || rr_n >= 128) return;
     rr_sig[rr_n] = csig; rr_step[rr_n] = rr_total; rr_reps[rr_n] = 0; rr_n++;
 }
