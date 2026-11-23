@@ -445,7 +445,7 @@ static void loop_plan_note(char *result, size_t cap, const char *name, int pl_ca
  * muda coisas (qualquer uma fora da lista de leitura) zera a tabela: depois dela a mesma leitura pode dar outro resultado, e ai
  * vale a leitura por diferenca (facts.c). KATANA_REPEAT_NOTE=0 desliga ---- */
 static uint64_t rr_sig[128]; static int rr_step[128], rr_reps[128], rr_n, rr_total;
-static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); }
+static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); }
 static int rr_on(void) { const char *e = getenv("KATANA_REPEAT_NOTE"); return !(e && atoi(e) == 0); }
 static int rr_covered(const char *name) {
     if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Glob") || !strcmp(name, "Find")) return 1;

@@ -121,7 +121,33 @@ static int ct_bool(const char *js, const char *end, const char *key) {
 typedef struct { char *path; long long size, mt; int partial; } CtSeen;
 static CtSeen g_ct_seen[CT_SEEN_MAX];
 static int g_ct_seen_n;
-static void ct_seen_reset(void) { for (int i = 0; i < g_ct_seen_n; i++) free(g_ct_seen[i].path); g_ct_seen_n = 0; }
+/* ---- cursor de leitura por arquivo, neste pedido: ate que linha o modelo ja recebeu (contigua desde a 1) e onde comecou a
+ * ultima leitura. Read sem offset, ou repetindo a ultima chamada, continua de onde parou em vez de entregar o mesmo trecho.
+ * Zera a cada pedido (rc_reset em rr_reset) e a cada conversa. KATANA_READ_CURSOR=0 desliga ---- */
+#define RC_MAX 64
+typedef struct { char path[1024]; long long size, mt, cov_end, last_off, total; } RdCur;
+static RdCur g_rc[RC_MAX]; static int g_rc_n;
+static void rc_reset(void) { g_rc_n = 0; }
+static int rc_on(void) { const char *e = getenv("KATANA_READ_CURSOR"); return !(e && atoi(e) == 0); }
+static RdCur *rc_find(const char *abs, long long size, long long mt) {
+    for (int i = 0; i < g_rc_n; i++) if (!strcmp(g_rc[i].path, abs)) {
+        if (g_rc[i].size != size || g_rc[i].mt != mt) { g_rc[i] = g_rc[--g_rc_n]; return NULL; }      /* arquivo mudou: recomeca */
+        return &g_rc[i];
+    }
+    return NULL;
+}
+/* registra que as linhas [first, last] de um arquivo de total linhas foram entregues */
+static void rc_note(const char *abs, long long size, long long mt, long long first, long long last, long long total) {
+    if (strlen(abs) >= sizeof g_rc[0].path) return;
+    RdCur *c = rc_find(abs, size, mt);
+    if (!c) {
+        if (g_rc_n == RC_MAX) memmove(g_rc, g_rc + 1, sizeof(RdCur) * (RC_MAX - 1)), g_rc_n--;
+        c = &g_rc[g_rc_n++]; snprintf(c->path, sizeof c->path, "%s", abs); c->size = size; c->mt = mt; c->cov_end = 0;
+    }
+    if (first <= c->cov_end + 1 && last > c->cov_end) c->cov_end = last;
+    c->last_off = first; c->total = total;
+}
+static void ct_seen_reset(void) { for (int i = 0; i < g_ct_seen_n; i++) free(g_ct_seen[i].path); g_ct_seen_n = 0; rc_reset(); }
 static void ct_seen_mark(const char *abs, int partial) {
     struct stat st; long long sz = -1, mt = 0;
     if (stat(abs, &st) == 0) { sz = (long long)st.st_size; mt = (long long)st.st_mtime; }

@@ -62,6 +62,7 @@ static int ct_ext_is(const char *path, const char *ext) {
 
 /* ---- as linhas [offset, offset+limit) de b, com numero e tab, no maximo o que cabe em cap ---- */
 #define CT_LINE_MAX 2000
+static long long g_rdl_first, g_rdl_last;      /* faixa entregue pela ultima chamada de ct_rd_lines */
 static void ct_rd_lines(const char *b, size_t n, long long offset, long long limit, int numbered, char *out, size_t cap, int *partial) {
     const long long total = ct_count_lines(b, n);
     size_t room = cap > 700 ? cap - 600 : 0;
@@ -91,6 +92,7 @@ static void ct_rd_lines(const char *b, size_t n, long long offset, long long lim
         s = nx; shown++; last = offset + shown - 1;
     }
     out[o] = 0;
+    g_rdl_first = first; g_rdl_last = last;
     const int more = s < n;
     *partial = !(first == 1 && !more);
     if (more) {
@@ -371,8 +373,14 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             ct_seen_mark(res, 1);
             break;
         }
+        char cnote[260] = ""; long long eoff = offset;
+        {   RdCur *c = rc_on() ? rc_find(res, (long long)st.st_size, (long long)st.st_mtime) : NULL;
+            if (c && c->cov_end >= 1 && c->cov_end < total && (!has_off || offset == c->last_off)) {      /* ja entregue ate cov_end: segue dali */
+                eoff = c->cov_end + 1;
+                snprintf(cnote, sizeof cnote, "[katana: lines 1-%lld of %s were already given to you in this request; here is the rest, from line %lld]\n", c->cov_end, res, eoff);
+            } }
         char oext[16];
-        if (!has_off && !has_lim && ct_seen(res) < 2 && ol_on() && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
+        if (!cnote[0] && !has_off && !has_lim && ct_seen(res) < 2 && ol_on() && ol_ext(res, oext, sizeof oext) && ol_big(total, n)) {      /* arquivo grande sem faixa: mapa + comeco */
             static char mp[16000], hd[12000];
             ct_outline(oext, b, n, mp, sizeof mp);
             ct_rd_lines(b, n, 1, 40, 1, hd, sizeof hd, &partial);
@@ -383,11 +391,14 @@ static void ct_read(const char *js, const char *end, char *out, size_t cap) {
             snprintf(out, cap, "[%s: %lld lines, %zu bytes]\n%s[first 40 lines]\n%s\n[katana: file has %lld lines; this is its map and its start. "
                      "Read a part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2).]", res, total, n, mp, hd, total);
             ct_seen_mark(res, 1);
+            rc_note(res, (long long)st.st_size, (long long)st.st_mtime, 1, 40, total);
             break;
         }
-        if (!has_off && !has_lim && ct_seen(res) >= 2 && rd_delta(res, b, n, out, cap)) { ct_seen_mark(res, 0); break; }      /* ja lido inteiro nesta conversa */
-        ct_rd_lines(b, n, offset, limit, 1, out, cap, &partial);
-        if (strncmp(out, "error:", 6) != 0) { ct_seen_mark(res, partial); if (!partial) rd_delta_put(res, b, n); }
+        if (!cnote[0] && !has_off && !has_lim && ct_seen(res) >= 2 && rd_delta(res, b, n, out, cap)) { ct_seen_mark(res, 0); break; }      /* ja lido inteiro nesta conversa */
+        ct_rd_lines(b, n, eoff, limit, 1, out, cap, &partial);
+        if (strncmp(out, "error:", 6) != 0) {
+            if (g_rdl_last >= g_rdl_first) rc_note(res, (long long)st.st_size, (long long)st.st_mtime, g_rdl_first, g_rdl_last, total);
+            if (cnote[0]) { const size_t ol = strlen(out), cl = strlen(cnote); if (ol + cl + 1 < cap) { memmove(out + cl, out, ol + 1); memcpy(out, cnote, cl); } } ct_seen_mark(res, partial); if (!partial) rd_delta_put(res, b, n); }
     } while (0);
     free(b); free(fp); free(pages);
 }
