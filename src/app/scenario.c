@@ -41,6 +41,7 @@ static long g_x_cycle2;          /* x-rare: as situacoes saem em rodizio */
 static long g_x_cycle3;          /* x-ps1: idem */
 static long g_x_cycle;           /* x-tools: as ferramentas saem em rodizio, para nenhuma ficar abaixo do minimo */
 static char g_x_res[70000];
+static int g_x_planok;            /* v7: a conversa mostra de proposito a nota "plan first" do motor (x-katananotes) */
 static int g_x_port;             /* servidor local de paginas (0 = nao subiu) */
 static int g_x_realgit;          /* a conversa precisa de um repositorio git de verdade */
 static pid_t g_x_srv;
@@ -79,6 +80,10 @@ static void x_unfeed(void) { unsetenv("KATANA_UI"); if (!freopen("/dev/null", "r
 /* roda a ferramenta do motor, com a saida de console do motor escondida, e anexa as notas do laco */
 static const char *x_run(const char *name, const char *args, int flags) {
     g_x_res[0] = 0;
+    /* v7: a chamada passa pelo mesmo controle de repeticao do laco do motor (rr_check / rr_after): uma leitura identica a uma que ja deu certo neste
+       pedido nao roda de novo e devolve a nota do motor; uma chamada que muda arquivos zera a tabela */
+    const uint64_t csig = rp_hash(args, strlen(args), rp_hash(name, strlen(name), 1469598103934665603ULL));
+    if (!(flags & XF_OLD) && rr_check(name, csig, g_x_res, 60000)) return g_x_res;
     fflush(stdout); fflush(stderr);
     const int so = dup(1), se = dup(2), dn = open("/dev/null", O_WRONLY);
     dup2(dn, 1); if (!getenv("KATANA_CU_DEBUG")) dup2(dn, 2);
@@ -87,9 +92,10 @@ static const char *x_run(const char *name, const char *args, int flags) {
     fflush(stdout); fflush(stderr);
     dup2(so, 1); dup2(se, 2); close(so); close(se); close(dn);
     if (!known) cu_die("ferramenta fora da tabela do motor: %s", name);
+    rr_after(name, csig, rp_failed(g_x_res));
     g_cu_pl++;
     loop_plan_note(g_x_res, 60000, name, g_cu_pl, g_cu_plold);
-    if (strstr(g_x_res, "[katana: plan first") || strstr(g_x_res, "[katana: still no plan")) cu_die("o motor cobraria o plano aqui (%d chamadas sem TodoWrite, %s)", g_cu_pl, g_x.cell);
+    if (!g_x_planok && (strstr(g_x_res, "[katana: plan first") || strstr(g_x_res, "[katana: still no plan"))) cu_die("o motor cobraria o plano aqui (%d chamadas sem TodoWrite, %s)", g_cu_pl, g_x.cell);
     return g_x_res;
 }
 static void x_seq(const char *name) {
@@ -199,6 +205,7 @@ static void x_user(const char *t) {
         g_x.merge = 4; x_shape_tag("two");
         return;
     }
+    rr_reset();      /* o laco zera o controle de repeticao e o cursor de leitura a cada pedido */
     if (g_x.n > 1) {
         int td = 0; const int tn = todo_count(&td);
         if (tn > td && !g_x.mid) cu_die("pedido novo com plano em aberto (%s)", g_x.cell);
@@ -702,6 +709,8 @@ static void x_proj_write(const XProj *p) {
 /* ---- a pasta e o estado do motor para uma conversa nova ---- */
 static void x_begin(const char *fam, Scn *s, XProj *p, int nskills, int nmcp) {
     free(g_x.ask.p);
+    g_x_planok = 0;
+    rr_reset();
     memset(&g_x, 0, sizeof g_x); g_x.fam = fam; buf_str(&g_x.ask, ""); g_x.ask.n = 0; g_x.k = -1;
     g_x_pname = p ? p->name : NULL;
     g_x.srng = g_x_rng0 * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull;

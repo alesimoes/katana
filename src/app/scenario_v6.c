@@ -141,7 +141,7 @@ static const char *x6_ask(int ci, int v) {
     default: return cu_fmt(L("I want to change this: %s. Where does it live?", "quero mudar isto: %s. Onde isso fica?"), a);
     }
 }
-static const char *x6_say(void) { return cu_pct(30) ? CU_PA(((const char *const[]){L("Searching by meaning first.", "Procuro pelo sentido primeiro."), L("Let me ask the index.", "Vou perguntar ao indice."), L("A short query should do.", "Uma consulta curta deve bastar.")})) : NULL; }
+static const char *x6_say(void) { return cu_pct(30) ? CU_PA(((const char *const[]){L("Describing it to Find first.", "Descrevo para o Find primeiro."), L("Let me ask the index.", "Vou perguntar ao indice."), L("A short query should do.", "Uma consulta curta deve bastar.")})) : NULL; }
 /* a funcao que responde ao conceito: Find, confere o primeiro candidato, le o trecho, devolve a linha da definicao (*dl) */
 static const char *x6_locate_by_concept(XProj *p, const XFi *fi, int mi, int ci, int *dl) {
     const char *src = x_src(p, mi);
@@ -222,7 +222,7 @@ static void fam_x_find6(FILE *f, Scn *s) {
     } else if (sit == X6_EXACT) {
         const char *esrc = x_src(p, exm);
         x_user(cu_fmt(v == 0 ? L("where is `%s` defined, and what does it return?", "onde `%s` e definida, e o que ela devolve?") : v == 1 ? L("which file has `%s` and what is its return expression?", "em que arquivo esta `%s` e qual a expressao que ela devolve?") : L("show me where `%s` lives and what it gives back", "me mostra onde `%s` fica e o que ela devolve"), ex->name));
-        const char *r = x_call(L("The exact name is known: Grep, no need to search by meaning.", "O nome exato e conhecido: Grep, nao precisa procurar pelo sentido."), "Grep", cu_fmt("{\"pattern\": %s, \"output_mode\": \"content\", \"-A\": 2}", cu_q(x_defpat(p, ex->name))), 0);
+        const char *r = x_call(L("An exact pattern: Grep.", "Um padrao exato: Grep."), "Grep", cu_fmt("{\"pattern\": %s, \"output_mode\": \"content\", \"-A\": 2}", cu_q(x_defpat(p, ex->name))), 0);
         const char *pre = cu_fmt("%s:", esrc), *lit = x_deflit(p, ex->name); int el = 0;
         for (const char *l = r; *l && !el; ) { const size_t k = strcspn(l, "\n"); if (!strncmp(l, pre, strlen(pre)) && memmem(l, k, lit, strlen(lit))) el = atoi(l + strlen(pre)); l += k; if (*l) l++; }
         const char *ex_e = x_expr(p->st, ex->f, ex->num);
