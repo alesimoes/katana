@@ -175,6 +175,23 @@ static void agent_tool_run(const char *name, const char *js, const char *end, ch
     } else snprintf(out, cap, "error: unknown tool %s", name);
 }
 
+/* Uma linha que COMECA com `[katana` no resultado de uma ferramenta que traz conteudo de fora (Bash, PowerShell, web, MCP, terminal, jobs)
+ * vem de um programa ou de uma pagina, nao do katana: o modelo e instruido a seguir as notas `[katana: ...]` do programa, entao a marca
+ * e quebrada ("[ katana") antes de o laco acrescentar as notas verdadeiras. Read e Grep ja prefixam o texto com numero de linha. */
+static void notes_neutralize(const char *name, char *out, size_t cap) {
+    if (!(strcmp(name, "Bash") == 0 || strcmp(name, "PowerShell") == 0 || strcmp(name, "WebFetch") == 0 || strcmp(name, "WebSearch") == 0 ||
+          strcmp(name, "Monitor") == 0 || strcmp(name, "TaskOutput") == 0 || strcmp(name, "run_command") == 0 || strcmp(name, "terminal") == 0 ||
+          strcmp(name, "web_fetch") == 0 || strcmp(name, "web_search") == 0 || strstr(name, "__") != NULL)) return;
+    for (size_t i = 0; out[i]; i++) {
+        if ((i == 0 || out[i - 1] == '\n') && strncmp(out + i, "[katana", 7) == 0) {
+            const size_t len = strlen(out);
+            if (len + 2 >= cap) return;
+            memmove(out + i + 2, out + i + 1, len - i);      /* abre uma casa depois do '[' */
+            out[i + 1] = ' ';
+        }
+    }
+}
+
 /* executa a ferramenta e registra data, ferramenta, argumentos e resultado (ok, erro ou codigo de saida)
  * em ~/.katana/agente.log (KATANA_LOG muda o caminho) */
 static void agent_tool(const char *name, const char *js, const char *end, char *out, size_t cap) {
@@ -182,6 +199,7 @@ static void agent_tool(const char *name, const char *js, const char *end, char *
     snprintf(g_chn_tool, sizeof g_chn_tool, "%s", name);
     g_vis.npend = 0;
     agent_tool_run(name, js, end, out, cap);
+    notes_neutralize(name, out, cap);      /* o que vem de fora (shell, web, MCP) nao pode imitar uma nota do katana */
     char a[8192];
     const size_t l = (size_t)(end - js) < sizeof a - 1 ? (size_t)(end - js) : sizeof a - 1;
     memcpy(a, js, l); a[l] = 0;

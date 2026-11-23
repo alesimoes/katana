@@ -1776,6 +1776,19 @@ the answer, and the request's record in `~/.katana/uioe.log` (or `katana uioe ex
 | D9 | No campaigns; the trace, `katana uioe explain`, and manual acceptance scenarios | 3.11.1, 6.7 |
 | D10 | Curriculum v8 teaches the block and continuing from `Next` | 4.9 |
 
+### 8.1b Decided by the owner on 2026-11-23 (answers to the open questions of 8.2)
+
+| # | Decision | Owner's answer | Consequence |
+|---|---|---|---|
+| 1 | When to turn `pack` on | **as soon as U4 is ready** (not after S1 to S9 and not after v8) | `KATANA_UIOE=pack` becomes the default for code and file requests when U4 lands; `off` stays as the escape. S1 to S9 are still run, but after the switch, to find what to fix; the risk (a model not yet trained for the block may ignore it) is accepted |
+| 2 | `Symbols` in the core tool list | **yes, in v8** | v8 declares `Symbols` to the model and teaches `flow` and `tree` |
+| 3 | Repeat table and plan updates | changed (done: `TodoWrite`, `TaskCreate`, `TaskUpdate`, `EnterPlanMode`, `ExitPlanMode` no longer clear it; commit `0e0b9b6`) | - |
+| 4 | Follow-ups inherit the open investigation | **yes, with a trace line** | 3.6.2 on |
+| 5 | Escape `[katana` in every tool result | **yes** | done for the tools that bring outside content (Bash, PowerShell, web, MCP, terminal): a line that starts with `[katana` becomes `[ katana`; `Read` and `Grep` already prefix lines with the line number |
+| 6 | Project memory and earlier sessions as evidence | **yes: dated, low confidence, marked as memory** | `memory.recall` and `history.search` enter the block with their date, never as a fact checked in the code; the owner's refusal of 2026-11-21 is read as "not as the way the model knows his projects", not as "never as evidence" |
+| 7 | First external connector | **none for now** | stage 4 (U10 to U12) is postponed; only the connector interface (U10) stays designed |
+| 8 | Teacher mode (`src/agent/teacher.c` names a product, a model and a URL) | **move to an optional external plugin** | the binary keeps a generic "teacher model" interface with no product name; the product-specific code goes to a separate process |
+
 ### 8.2 Still open, for the owner
 
 | # | Decision | Options | Recommendation |
