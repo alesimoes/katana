@@ -233,6 +233,22 @@ Item {
                   : ""
             Accessible.role: Accessible.StaticText
         }
+        // estado do indice de codigo da pasta (so aparece enquanto o agente trabalha e o motor sabe dizer)
+        Text { font.family: Theme.sans;
+            objectName: "indexStatus"
+            Layout.rightMargin: 8
+            font.pixelSize: 12
+            color: Theme.mut
+            opacity: 0.85
+            visible: text.length > 0
+            text: backend.indexText
+            HoverHandler { id: idxHover }
+            ToolTip.visible: idxHover.hovered && backend.indexTip.length > 0
+            ToolTip.delay: 400
+            ToolTip.text: backend.indexTip
+            Accessible.role: Accessible.StaticText
+            Accessible.name: backend.indexText
+        }
         Text { font.family: Theme.sans;
             Layout.rightMargin: 4
             font.pixelSize: 12

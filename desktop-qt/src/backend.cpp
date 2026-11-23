@@ -155,22 +155,32 @@ void MessageModel::setToolStep(int idx, int step)
     bump();
 }
 
-// notas do motor no fim do resultado ("[katana: ...]", "[plan: ...]"): sao para o modelo, nao para o usuario
+// notas do motor dentro do resultado ("[katana: ...]", "[plan: ...]"): sao para o modelo, nao para o usuario. Podem estar no inicio,
+// no meio ou no fim; uma nota comeca numa linha que abre com o marcador e vai ate a linha que fecha com "]" (ate 12 linhas)
 void MessageModel::splitNotes(const QString &raw, QString *clean, QString *note)
 {
     *clean = raw;
     note->clear();
-    if (!raw.trimmed().endsWith(']'))
+    if (!raw.contains(QLatin1String("[katana:")) && !raw.contains(QLatin1String("[plan:")))
         return;
-    int cut = -1;
-    for (const QString &m : {QStringLiteral("\n[katana:"), QStringLiteral("\n[plan:")}) {
-        const int i = raw.indexOf(m);
-        if (i >= 0 && (cut < 0 || i < cut)) cut = i;
+    const QStringList ln = raw.split('\n');
+    QStringList keep, notes;
+    for (int i = 0; i < ln.size(); i++) {
+        const QString t = ln[i].trimmed();
+        if (!t.startsWith(QLatin1String("[katana:")) && !t.startsWith(QLatin1String("[plan:"))) { keep << ln[i]; continue; }
+        int end = -1;
+        for (int j = i; j < ln.size() && j < i + 12; j++)
+            if (ln[j].trimmed().endsWith(']')) { end = j; break; }
+        if (end < 0) end = i;
+        QStringList part;
+        for (int j = i; j <= end; j++) part << ln[j].trimmed();
+        notes << part.join('\n');
+        i = end;
     }
-    if (cut < 0)
+    if (notes.isEmpty())
         return;
-    *clean = raw.left(cut);
-    *note = raw.mid(cut).trimmed();
+    *clean = keep.join('\n').trimmed();
+    *note = notes.join('\n');
 }
 
 // mesma regra do motor (rp_failed): erro da ferramenta, ou comando com codigo de saida diferente de zero
@@ -188,7 +198,7 @@ void MessageModel::finishTool(int idx, const QString &result, qint64 nowMs)
     Item &it = m_items[idx];
     QString clean, note;
     splitNotes(result, &clean, &note);
-    it.out = clean.isEmpty() ? QStringLiteral("(sem saida)") : clean;
+    it.out = clean.isEmpty() && note.isEmpty() ? QStringLiteral("(sem saida)") : clean;
     it.note = note;
     it.state = resultFailed(clean) ? 3 : 2;
     it.dur = qMax<qint64>(0, nowMs - it.t0);
@@ -514,6 +524,12 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
         auto *t = new QTimer(this);
         connect(t, &QTimer::timeout, this, &Backend::actTick);
         t->start(1000);
+    }
+    {   // estado do indice de codigo: so enquanto o agente trabalha (e uma vez ao terminar)
+        auto *t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, &Backend::indexPoll);
+        t->start(3000);
+        connect(this, &Backend::workspaceChanged, this, [this] { m_idxText.clear(); m_idxTip.clear(); emit indexChanged(); });
     }
     {   // uso da maquina na barra de baixo
         auto *t = new QTimer(this);
@@ -912,6 +928,75 @@ void Backend::clearError()
 {
     if (!m_error.isEmpty())
         setTexts(m_status, {});
+}
+
+// `katana coder status <pasta>`: le "arquivos vigentes", os niveis N0..N3, "ignorados por regra" e "rastreador"; nao depende de nenhum
+// campo alem desses (o que faltar so some do resumo). Sem "arquivos vigentes" a saida nao e de um indice: retorna false.
+bool Backend::parseIndexStatus(const QString &out, QString *text, QString *tip)
+{
+    static const QRegularExpression reFiles(R"re(arquivos vigentes: (\d+))re");
+    static const QRegularExpression reN0(R"re(N0 arvore\s+(\d+) arquivos catalogados \((\d+) sem leitura)re");
+    static const QRegularExpression reN1(R"re(N1 texto\s+(\d+) de (\d+) elegiveis \((\d+)%\))re");
+    static const QRegularExpression reN2(R"re(N2 simbolos\s+(\d+) de (\d+) elegiveis \((\d+)%\))re");
+    static const QRegularExpression reN3(R"re(N3 ligacoes\s+(\d+) de (\d+) elegiveis \((\d+)%\))re");
+    static const QRegularExpression reIgn(R"re(ignorados por regra[^:\n]*: (\d+) entradas)re");
+    static const QRegularExpression reDisc(R"re((\d+) discovered)re");
+    const auto mf = reFiles.match(out);
+    if (!mf.hasMatch())
+        return false;
+    const auto m0 = reN0.match(out), m1 = reN1.match(out), m2 = reN2.match(out), m3 = reN3.match(out), mi = reIgn.match(out);
+    const bool running = out.contains(QLatin1String("rastreador: em execucao"));
+    const auto md = reDisc.match(out);
+    const bool pendingDirs = md.hasMatch() && md.captured(1).toInt() > 0;
+    int pct = 100;
+    if (m1.hasMatch()) pct = qMin(pct, m1.captured(3).toInt());
+    if (m2.hasMatch()) pct = qMin(pct, m2.captured(3).toInt());
+    const bool busy = running || pendingDirs || pct < 100;
+    *text = busy ? QStringLiteral("índice: indexando %1%").arg(qMin(pct, 99)) : QStringLiteral("índice: pronto");
+    QStringList t;
+    t << (busy ? QStringLiteral("Índice do código: indexando") : QStringLiteral("Índice do código: pronto"));
+    QString files = QStringLiteral("Arquivos: %1").arg(mf.captured(1));
+    if (m0.hasMatch() && m0.captured(2).toInt() > 0) files += QStringLiteral(" (%1 sem leitura: binários, grandes, ilegíveis)").arg(m0.captured(2));
+    t << files;
+    QStringList lv;
+    if (m1.hasMatch()) lv << QStringLiteral("texto %1%").arg(m1.captured(3));
+    if (m2.hasMatch()) lv << QStringLiteral("símbolos %1%").arg(m2.captured(3));
+    if (m3.hasMatch()) lv << QStringLiteral("ligações %1%").arg(m3.captured(3));
+    if (!lv.isEmpty()) t << QStringLiteral("Níveis: ") + lv.join(QStringLiteral(", "));
+    if (mi.hasMatch()) t << QStringLiteral("Ignorados por regra: %1").arg(mi.captured(1));
+    t << (running ? QStringLiteral("Rastreador em execução") : QStringLiteral("Rastreador parado"));
+    *tip = t.join('\n');
+    return true;
+}
+
+// a cada 3 s, so enquanto o agente trabalha (e uma vez ao terminar): pergunta ao motor, sem bloquear a interface; se o comando nao
+// existe ou a pasta nao tem indice, o texto some
+void Backend::indexPoll()
+{
+    const bool working = m_answering && m_proc;
+    if (!working && !m_idxWasWorking) return;
+    m_idxWasWorking = working;
+    if (m_katana.isEmpty() || (m_idxProc && m_idxProc->state() != QProcess::NotRunning)) return;
+    const QString ws = workspace();
+    if (ws.isEmpty()) return;
+    auto *p = new QProcess(this);
+    m_idxProc = p;
+    connect(p, &QProcess::errorOccurred, p, [this, p](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart) return;
+        if (m_idxProc == p) m_idxProc = nullptr;
+        if (!m_idxText.isEmpty()) { m_idxText.clear(); m_idxTip.clear(); emit indexChanged(); }
+        p->deleteLater();
+    });
+    connect(p, &QProcess::finished, p, [this, p, ws](int, QProcess::ExitStatus) {
+        if (m_idxProc == p) m_idxProc = nullptr;
+        QString text, tip;
+        if (ws != workspace() || !parseIndexStatus(QString::fromUtf8(p->readAllStandardOutput()), &text, &tip)) { text.clear(); tip.clear(); }
+        if (text != m_idxText || tip != m_idxTip) { m_idxText = text; m_idxTip = tip; emit indexChanged(); }
+        p->deleteLater();
+    });
+    p->setProcessChannelMode(QProcess::SeparateChannels);
+    p->start(m_katana, {QStringLiteral("coder"), QStringLiteral("status"), ws});
+    QTimer::singleShot(10000, p, [p] { if (p->state() != QProcess::NotRunning) p->kill(); });
 }
 
 void Backend::setState(bool ready, bool loading, bool answering)

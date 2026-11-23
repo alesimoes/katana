@@ -110,7 +110,9 @@ Column {
                 id: outTe
                 objectName: "actionOutput"
                 width: outFl.width - 10
-                text: r.outText
+                readonly property bool rich: V.realcavel(r.action.name)
+                textFormat: rich ? TextEdit.RichText : TextEdit.PlainText
+                text: rich ? V.realce(r.outText, ({ok: String(Theme.ty), mid: String(Theme.fn), low: String(Theme.str), err: String(Theme.err), lbl: String(Theme.kw)})) : r.outText
                 readOnly: true; selectByMouse: true
                 wrapMode: TextEdit.WrapAnywhere
                 color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12
@@ -120,14 +122,27 @@ Column {
             }
         }
     }
-    // notas do motor para o modelo (lembretes do plano, "pare e relate"): nao fazem parte do que a ferramenta imprimiu
+    // notas do motor para o modelo (lembretes do plano, "pare e relate"): nao fazem parte do que a ferramenta imprimiu; legenda
+    // discreta, em uma linha quando longa (clique para ver tudo)
     Text {
+        id: noteTx
+        property bool open: false
+        readonly property string clean: (r.action.note || "").replace(/^\[(katana|plan): ?/mg, "").replace(/\]\s*$/mg, "")
+        readonly property bool isLong: clean.length > 130 || clean.indexOf("\n") >= 0
         visible: r.expanded && !!r.action.note
         x: 22; width: r.width - 22
         objectName: "actionNote"
         font.family: Theme.sans; font.pixelSize: 11; font.italic: true
         wrapMode: Text.Wrap
+        maximumLineCount: isLong && !open ? 1 : 1000
+        elide: Text.ElideRight
         color: Theme.mut; opacity: 0.8
-        text: "nota do motor para o modelo: " + r.action.note
+        text: "nota do motor (para o modelo): " + clean
+        MouseArea {
+            anchors.fill: parent
+            enabled: noteTx.isLong
+            cursorShape: Qt.PointingHandCursor
+            onClicked: noteTx.open = !noteTx.open
+        }
     }
 }

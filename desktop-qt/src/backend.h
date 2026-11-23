@@ -144,6 +144,10 @@ class Backend : public QObject
     // uso da maquina (processador, memoria, placa de video), atualizado a cada 2 s
     Q_PROPERTY(QString sysText READ sysText NOTIFY sysChanged)
     QString sysText() const { return m_sysText; }
+    // estado do indice de codigo da pasta de trabalho ("indice: pronto" / "indice: indexando 40%"), lido de `katana coder status <pasta>`
+    // enquanto o agente trabalha; vazio quando o comando nao existe ou a pasta nao tem indice
+    Q_PROPERTY(QString indexText READ indexText NOTIFY indexChanged)
+    Q_PROPERTY(QString indexTip READ indexTip NOTIFY indexChanged)
     // o que o agente esta fazendo enquanto nao responde: tempo do turno, se o processador trabalha, se parece travado
     Q_PROPERTY(QString progressText READ progressText NOTIFY progressChanged)   // "passo 2 de 6: ..." enquanto roda; resumo do pedido ao terminar
     Q_PROPERTY(QString progressStats READ progressStats NOTIFY progressChanged)   // "1 min · 7 ações" (ou o resumo do pedido, ao terminar)
@@ -181,6 +185,11 @@ public:
     QVariantList models() const { return m_models; }
     QVariantList catalog() const { return m_catalog; }
     QString katanaPath() const { return m_katana; }
+    QString indexText() const { return m_idxText; }
+    QString indexTip() const { return m_idxTip; }
+    void setIndexForTest(const QString &t, const QString &tip) { m_idxText = t; m_idxTip = tip; emit indexChanged(); }
+    // separa a saida de `katana coder status` em texto curto e resumo; retorna false se a saida nao tem o formato conhecido
+    static bool parseIndexStatus(const QString &out, QString *text, QString *tip);
     QString modelsDir() const { return m_modelsDir; }
     // so para o teste automatico: troca o motor e a pasta de modelos (motor de mentira que fala o mesmo protocolo)
     void testRedirect(const QString &katana, const QString &modelsDir) { m_katana = katana; m_modelsDir = modelsDir; loadModels(); refreshCatalog(); }
@@ -290,6 +299,7 @@ signals:
     void pullChanged();
     void shortcutChanged();
     void sysChanged();
+    void indexChanged();
     void activityChanged();
     void progressChanged();
     void currentModelChanged();
@@ -347,6 +357,7 @@ private:
     QProcess *m_pull = nullptr;
     QString m_scApp, m_scData, m_scDesk;
     void sysTick();
+    void indexPoll();
     void actTick();
     QElapsedTimer m_turnClock, m_lastOut;
     QString m_actText;
@@ -360,6 +371,9 @@ private:
     qint64 m_procTicks = -1;
     int m_idleSecs = 0;
     QString m_sysText, m_sysGpu;
+    QString m_idxText, m_idxTip;
+    QProcess *m_idxProc = nullptr;
+    bool m_idxWasWorking = false;
     qint64 m_cpuTot = 0, m_cpuIdle = 0;
     int m_gpuState = 0;         // 0 nao tentou, 1 nvidia-smi funciona, -1 sem placa/ferramenta
     QProcess *m_gpuProc = nullptr;

@@ -1,0 +1,8 @@
+tools/find.c:859:121  call ct_sb_puts  in fd_put_line (857-861)   [confidence 96 high; same name, 1 definition; line verified]
+    859: if (l > max) { int c = max; while (c > 0 && ((unsigned char)s[c] & 0xC0) == 0x80) c--; ct_sb_add(sb, s, (size_t)c); ct_sb_puts(sb, "..."); }
+tools/find.c:1128:5  call ct_sb_puts  in fd_also (1090-1133)   [confidence 96 high; same name, 1 definition; line verified]
+    1128: ct_sb_puts(sb, "   also referenced in: ");
+tools/find.c:1169:5  call ct_sb_puts  in fd_calls (1138-1178)   [confidence 96 high; same name, 1 definition; line verified]
+    1169: ct_sb_puts(sb, "   calls: ");
+tools/find.c:1185:15  call ct_sb_puts  in fd_refs (1181-1278)   [confidence 96 high; same name, 1 definition; line verified]
+    1185: if (!l) { ct_sb_puts(sb, "error: mode=refs needs a symbol name in `query`, e.g. {\"query\": \"listSessions\", \"mode\": \"refs\"}"); return; }

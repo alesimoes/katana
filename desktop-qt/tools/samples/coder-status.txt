@@ -1,0 +1,18 @@
+pasta consultada: /tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/dkproj
+raiz resolvida: /tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/dkproj
+origem do indice: home (pasta visitada, sem init; nada e criado dentro dela)
+init: nao
+armazenamento: /tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/dkhome/.katana/coder/330adf85b509be63/store
+formato 1, geracao 1, raiz /tmp/claude-1000/-mnt-dados-source-katana/90ade5fd-708b-4245-85d1-74b3f26b6369/scratchpad/dkproj, 1 segmento(s), 701.9 KiB em segmentos
+  seg 000001   701.9 KiB  16 secoes  31 documentos  0 tombstones  | busca: 7989 termos, lexico 254267 B, postings 59565 B, trigramas 116098 B  | simbolos: 1280 simbolos, 3664 referencias, 1354 nomes, 182 chaves de texto (245 ocorrencias)
+arquivos vigentes: 31 (643.0 KiB de conteudo; 0 binarios, 0 grandes, 0 ilegiveis sem leitura)
+ignorados por regra na ultima varredura: 0 entradas (arquivos ou pastas; 0 pela heuristica de pasta enorme)
+niveis do indice (raiz inteira):
+  N0 arvore    31 arquivos catalogados (0 sem leitura: binarios, grandes, ilegiveis)
+  N1 texto     31 de 31 elegiveis (100%)
+  N2 simbolos  31 de 31 elegiveis (100%)
+  N3 ligacoes  31 de 31 elegiveis (100%)   (saem da mesma analise dos simbolos)
+  pastas: (sem registro de pastas: indice feito pelo `coder index`)
+  por parte da arvore (maiores primeiro):
+    tools                            31 arquivos   N1 100%   N2/N3 100%
+rastreador: nao esta rodando

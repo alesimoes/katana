@@ -4,8 +4,32 @@
 case "$1" in
 hw) printf 'ram_gb\t64\ngpu\t-\nvram_gb\t0\ndisk_gb\t100\n'; exit 0;;
 catalog|pull) exit 0;;
+coder)
+    # `katana coder status <pasta>`: saida real (tools/samples/coder-status.txt); a primeira consulta de cada execucao responde com o
+    # rastreador em andamento (N2 em 40%), as seguintes com o indice pronto
+    if [ "$2" = status ]; then
+        D=$(dirname "$0")/samples
+        C="${HOME:-/tmp}/.standin-idx-count"      # o pedido "consulte o indice" cria o arquivo; sem ele o indice esta pronto
+        n=-1; [ -f "$C" ] && n=$(cat "$C")
+        [ "$n" -ge 0 ] && echo $((n+1)) > "$C"
+        if [ "$n" -eq 0 ]; then
+            sed -e 's/N2 simbolos  \([0-9]*\) de \([0-9]*\) elegiveis (100%)/N2 simbolos  12 de \2 elegiveis (40%)/' \
+                -e 's/rastreador: nao esta rodando/rastreador: em execucao (CRAWL.LOCK tomado)/' "$D/coder-status.txt"
+        else
+            cat "$D/coder-status.txt"
+        fi
+    fi
+    exit 0;;
 esac
 [ "$1" = agent ] || exit 0
+
+# saida de uma ferramenta copiada de um arquivo real (tools/samples), com \n escapado como o motor faz; $2 = nota opcional no fim
+emit_out() {
+    printf '\001TOOLOUT %s\t' "$1"
+    awk 'NR>1{printf "\\n"} {printf "%s",$0}' "$(dirname "$0")/samples/$2"
+    [ -n "$3" ] && printf '\\n%s' "$3"
+    printf '\n'
+}
 
 # especializacoes: a pasta de KATANA_SPEC e a fonte da verdade; "outro-*" simula um .kspec de outro modelo base
 if [ -n "$KATANA_SPEC" ] && [ -d "$KATANA_SPEC" ]; then
@@ -76,6 +100,25 @@ while IFS= read -r line; do
         printf '\001TODO [x] Ler o projeto\\n[x] Corrigir o erro de leitura\\n[x] Rodar os testes\n'
         printf '\001TOOLOUT TodoWrite\tlist saved: all 3 steps done\n'
         printf 'Pronto: li o projeto, corrigi o erro e os testes passam.\n'
+        printf '\001READY\n';;
+    *"consulte o indice"*)
+        # Find e Symbols com saidas reais do katana (tools/samples); a ultima chamada leva uma nota longa do motor; Symbols flow,
+        # Rename e TodoWrite so conferem o verbo generico
+        echo 0 > "${HOME:-/tmp}/.standin-idx-count"
+        sleep 4
+        printf '\001TOOL Find\t{"query":"ct_sb_puts"}\n'
+        emit_out Find find.txt
+        printf '\001TOOL Find\t{"query":"\\"zzqqnotthere\\"","mode":"refs"}\n'
+        emit_out Find find-nf.txt
+        printf '\001TOOL Symbols\t{"action":"callers","name":"ct_sb_puts"}\n'
+        emit_out Symbols symbols.txt
+        printf '\001TOOL Symbols\t{"action":"def","name":"nonexistent_fn","file":"tools/glob.c"}\n'
+        emit_out Symbols symbols-nf.txt '[katana: this exact call already gave this exact result (2 times now). Repeating it changes nothing. Do something different: read the message above, change the arguments, check the command'"'"'s help, use another tool, or tell the user what is blocking you.]'
+        printf '\001TOOL Symbols\t{"action":"flow","name":"ct_glob"}\n'
+        printf '\001TOOLOUT Symbols\tflow: ct_glob -> ct_gmatch\n'
+        printf '\001TOOL Rename\t{"symbol":"ct_glob","to":"ct_globber"}\n'
+        printf '\001TOOLOUT Rename\tdry run: 3 places in 2 files\n'
+        printf 'Consultei o indice.\n'
         printf '\001READY\n';;
     *mudo*)
         printf '\001TOOL list_dir\t{"path":"."}\n'
