@@ -10,6 +10,15 @@ static const struct { const char *name, *help; CoderCmd fn; } g_coder_cmds[] = {
     {"compact", "compact [pasta]: funde todos os segmentos em um", coder_cmd_compact},
     {"search", "search \"pergunta\" [pasta] [--limit N] [--json] [--why]: busca por nome e texto (canais: exato, subpalavra, bm25, trigrama, literal, conceitual)", coder_search_main},
     {"find-name", "find-name <nome> [pasta] [--limit N] [--json]: arquivos com esse nome (exato, parcial, parecido) e quem cita o identificador", coder_find_name_main},
+    {"def", "def <nome> [pasta] [--json] [--lines N|--body]: onde e definido (cascata de nomes, confianca por resultado)", coder_def_main},
+    {"refs", "refs <nome> [pasta] [--json] [--limit N]: todas as referencias, por tipo", coder_refs_main},
+    {"callers", "callers <nome> [pasta] [--json] [--limit N]: quem chama", coder_callers_main},
+    {"callees", "callees <nome> [pasta] [--json] [--limit N]: o que o simbolo chama, em ordem de chamada", coder_callees_main},
+    {"uses", "uses <nome> [pasta] [--json] [--limit N]: ocorrencias que nao sao chamadas", coder_uses_main},
+    {"outline", "outline <arquivo> [pasta] [--json]: simbolos do arquivo, aninhados", coder_outline_main},
+    {"at", "at <arquivo>:<linha> [pasta] [--json]: qual simbolo contem a linha e a hierarquia", coder_at_main},
+    {"deps", "deps <arquivo> [pasta] [--json]: o que o arquivo importa e quem o importa", coder_deps_main},
+    {"impact", "impact <nome> [pasta] [--depth N] [--nodes N] [--json]: fecho de chamadores", coder_impact_main},
     {"tokens", "tokens \"texto\" [--lang pt|en|auto] [--json] | --file ARQ", coder_tokens_main},
     {NULL, NULL, NULL}
 };

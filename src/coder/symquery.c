@@ -1,0 +1,617 @@
+/* ---------- coder/symquery.c: consultas estruturais sobre o indice de simbolos (symindex.c) ----------
+ * katana coder def|refs|callers|callees|uses|outline|at|deps|impact <alvo> [pasta] [--json] [--limit N] [--lines N] [--depth N] [--nodes N] [--body]
+ *
+ * CASCATA E NIVEL DE CONFIANCA (substitui os tres graus do desenho original; nao ha rotulo "exato"): a consulta tenta primeiro o NOME EXATO
+ * (passo 1); se o conjunto indexado nao tem o que foi pedido, tenta por DERIVACAO (passo 2: mesmo nome ignorando maiusculas e sublinhados, ou o
+ * nome como parte de um identificador maior); se ainda nao achou, tenta o PROVAVEL (passo 3: nomes a distancia de edicao <= 2). So depois de
+ * percorrer a cascata inteira o resultado vazio vira "NOT FOUND" com o limite do conjunto indexado. Cada resultado traz `confidence` (0 a 100),
+ * o nivel (high >= 75, medium >= 45, low) e `how` (em que passo e por que foi achado). A confianca vem de:
+ *   - o passo da cascata que achou (92, 62, 32);
+ *   - ambiguidade: varias definicoes do mesmo nome baixam (5 por definicao a mais, ate 25);
+ *   - verificacao: o texto do nome foi reencontrado relendo a linha do arquivo (+4); a linha nao confere ou o arquivo mudou desde o `index` (-25);
+ *   - relacao por nome: mesmo arquivo da definicao ou definicao unica no conjunto nao penalizam; nome sem definicao no conjunto (externo) -25.
+ * Caminhos no grafo (impact) tem a confianca da aresta mais fraca. Nada aqui resolve nomes de verdade: parse.c so da o nome final de uma chamada. */
+typedef struct { const StoreSeg *seg; SySec x; StoreDocs sd; uint8_t *live; } SyVSeg;
+typedef struct {
+    StoreReader *r; SyVSeg *s; int ns; StoreLive L; char dir[4400]; int any;
+    uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed;
+    char fpath[400]; char *fbuf; size_t fn; size_t *fln; int fnl, fok, fstale;
+} SyView;
+typedef struct { const char *path; uint32_t plen; const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent, doc, lang; int seg; uint32_t row, rel; } SySym;
+typedef struct { const char *path; uint32_t plen; const char *name; uint32_t nl, kind, line, col, flags, from, doc, lang; int seg; uint32_t row; } SyRef;
+
+static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
+    memset(v, 0, sizeof *v);
+    store_locate(proj, "coder", v->dir, sizeof v->dir, 0);
+    if (store_open(v->dir, &v->r, err, ecap) != 0) return -1;
+    StoreReader *r = v->r;
+    if (r->nseg == 0) { snprintf(err, ecap, "no index in %s (run: katana coder index %s)", v->dir, proj); store_close(r); v->r = NULL; return -1; }
+    const StoreSeg **segs = (const StoreSeg **)malloc(sizeof *segs * (size_t)r->nseg);
+    for (int i = 0; i < r->nseg; i++) segs[i] = &r->seg[i];
+    store_live_build(&v->L, segs, r->nseg); free(segs);
+    v->ns = r->nseg; v->s = (SyVSeg *)calloc((size_t)v->ns, sizeof(SyVSeg));
+    for (int s = 0; s < v->ns; s++) {
+        SyVSeg *c = &v->s[s]; c->seg = &r->seg[s]; store_docs_open(store_seg_section(c->seg, STS_DOCS), &c->sd);
+        c->live = (uint8_t *)calloc((size_t)c->sd.t.n + 1, 1);
+        if (sy_sec_open(c->seg, &c->x)) v->any = 1;
+    }
+    for (int i = 0; i < v->L.n; i++) {
+        StoreLiveDoc *e = &v->L.e[i]; if (e->dead) continue;
+        v->s[e->seg].live[e->idx] = 1; v->nlive++;
+        if (e->d.flags & SDF_SKIP_BINARY) v->nbin++; else if (e->d.flags & SDF_SKIP_BIG) v->nbig++; else if (e->d.flags & SDF_SKIP_UNREADABLE) v->nunread++;
+        else { const SyVSeg *c = &v->s[e->seg]; int w = 0;
+            if (c->x.has && e->idx < c->x.docs.n) { const uint8_t *q = store_table_at(&c->x.docs, e->idx); w = st_get_u32(q + 4) || st_get_u32(q + 12); }
+            if (w) v->nwith++; else v->nunparsed++; }
+    }
+    return 0;
+}
+static void sy_view_close(SyView *v) {
+    for (int s = 0; s < v->ns; s++) free(v->s[s].live);
+    free(v->s); store_live_free(&v->L); free(v->fbuf); free(v->fln); if (v->r) store_close(v->r); memset(v, 0, sizeof *v);
+}
+static const char *sy_root(const SyView *v) { return v->r->man.root; }
+static void sy_limits(const SyView *v, char *o, size_t cap) {
+    snprintf(o, cap, "Indexed set: %u files (%u with symbols); not analysed: %u binary, %u over the size cap, %u unreadable; %u text/config/unknown-language files have no symbol extraction. "
+             "Macro-generated names, dynamic calls and calls through pointers or reflection are not seen; a call is recorded by its final name only.", v->nlive, v->nwith, v->nbin, v->nbig, v->nunread, v->nunparsed);
+}
+
+/* ---- acesso a registros ---- */
+static void sy_doc_path(const SyView *v, int seg, uint32_t doc, const char **p, uint32_t *l, uint32_t *lang) {
+    StoreDoc d; *p = ""; *l = 0; if (lang) *lang = 0;
+    if (store_docs_get(&v->s[seg].sd, doc, &d)) { *p = d.path; *l = d.plen; }
+    if (lang && v->s[seg].x.has && doc < v->s[seg].x.docs.n) *lang = st_get_u32(store_table_at(&v->s[seg].x.docs, doc) + 16);
+}
+static void sy_sym_at(const SyView *v, int seg, uint32_t row, SySym *o) {
+    const SySec *x = &v->s[seg].x; const uint8_t *q = store_table_at(&x->syms, row);
+    o->seg = seg; o->row = row; o->name = store_strs_get(&x->names, st_get_u32(q), &o->nl); o->kind = st_get_u32(q + 4); o->parent = st_get_u32(q + 8);
+    o->line0 = st_get_u32(q + 12); o->line1 = st_get_u32(q + 16); o->byte0 = st_get_u32(q + 20); o->byte1 = st_get_u32(q + 24); o->body0 = st_get_u32(q + 28);
+    o->sig = (const char *)x->sigpool + st_get_u32(q + 32); o->sl = st_get_u32(q + 36); o->pack = st_get_u32(q + 40); o->doc = st_get_u32(q + 44);
+    sy_doc_path(v, seg, o->doc, &o->path, &o->plen, &o->lang);
+    o->rel = row - st_get_u32(store_table_at(&x->docs, o->doc));
+}
+static void sy_ref_at(const SyView *v, int seg, uint32_t row, SyRef *o) {
+    const SySec *x = &v->s[seg].x; const uint8_t *q = store_table_at(&x->refs, row);
+    o->seg = seg; o->row = row; o->name = store_strs_get(&x->names, st_get_u32(q), &o->nl); o->kind = st_get_u32(q + 4); o->from = st_get_u32(q + 8);
+    o->line = st_get_u32(q + 12); o->col = st_get_u32(q + 16); o->flags = st_get_u32(q + 20); o->doc = st_get_u32(q + 24);
+    sy_doc_path(v, seg, o->doc, &o->path, &o->plen, &o->lang);
+}
+static int sy_pair_range(const StoreTable *t, uint32_t id, uint32_t *lo, uint32_t *hi) {
+    uint32_t a = 0, b = t->n;
+    while (a < b) { uint32_t m = a + (b - a) / 2; if (st_get_u32(store_table_at(t, m)) < id) a = m + 1; else b = m; }
+    *lo = a; b = t->n;
+    uint32_t c = a; while (c < b) { uint32_t m = c + (b - c) / 2; if (st_get_u32(store_table_at(t, m)) <= id) c = m + 1; else b = m; }
+    *hi = c; return c > a;
+}
+static int sy_cmp_path_line(const char *p1, uint32_t l1, int ln1, const char *p2, uint32_t l2, int ln2) {
+    int c = st_cmp_bytes(p1, l1, p2, l2); if (c) return c; return ln1 < ln2 ? -1 : ln1 > ln2;
+}
+static int sy_cmp_sym(const void *a, const void *b) {
+    const SySym *x = (const SySym *)a, *y = (const SySym *)b;
+    int dx = (x->pack >> 16) & CSF_DECL, dy = (y->pack >> 16) & CSF_DECL; if (dx != dy) return dx - dy;
+    return sy_cmp_path_line(x->path, x->plen, (int)x->line0, y->path, y->plen, (int)y->line0);
+}
+static int sy_cmp_ref(const void *a, const void *b) {
+    const SyRef *x = (const SyRef *)a, *y = (const SyRef *)b; if (x->kind != y->kind) return x->kind < y->kind ? -1 : 1;
+    int c = sy_cmp_path_line(x->path, x->plen, (int)x->line, y->path, y->plen, (int)y->line); return c ? c : x->col < y->col ? -1 : x->col > y->col;
+}
+typedef struct { SySym *s; int n, cap; } SySyms;
+typedef struct { SyRef *r; int n, cap; } SyRefs;
+static void sy_defs_of(const SyView *v, const char *name, size_t nl, SySyms *o) {
+    for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
+        int64_t id = store_strs_find(&c->x.names, name, nl); uint32_t lo, hi; if (id < 0 || !sy_pair_range(&c->x.bydef, (uint32_t)id, &lo, &hi)) continue;
+        for (uint32_t i = lo; i < hi; i++) { uint32_t row = st_get_u32(store_table_at(&c->x.bydef, i) + 4); if (!c->live[st_get_u32(store_table_at(&c->x.syms, row) + 44)]) continue;
+            if (o->n == o->cap) { o->cap = o->cap ? o->cap * 2 : 16; o->s = (SySym *)realloc(o->s, sizeof(SySym) * (size_t)o->cap); }
+            sy_sym_at(v, s, row, &o->s[o->n++]); } }
+    qsort(o->s, (size_t)o->n, sizeof(SySym), sy_cmp_sym);
+}
+static void sy_refs_of(const SyView *v, const char *name, size_t nl, uint32_t kindmask, SyRefs *o) {
+    for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
+        int64_t id = store_strs_find(&c->x.names, name, nl); uint32_t lo, hi; if (id < 0 || !sy_pair_range(&c->x.byref, (uint32_t)id, &lo, &hi)) continue;
+        for (uint32_t i = lo; i < hi; i++) { uint32_t row = st_get_u32(store_table_at(&c->x.byref, i) + 4); const uint8_t *q = store_table_at(&c->x.refs, row);
+            if (!c->live[st_get_u32(q + 24)] || !((kindmask >> st_get_u32(q + 4)) & 1)) continue;
+            if (o->n == o->cap) { o->cap = o->cap ? o->cap * 2 : 64; o->r = (SyRef *)realloc(o->r, sizeof(SyRef) * (size_t)o->cap); }
+            sy_ref_at(v, s, row, &o->r[o->n++]); } }
+    qsort(o->r, (size_t)o->n, sizeof(SyRef), sy_cmp_ref);
+}
+static int sy_ndefs(const SyView *v, const char *name, size_t nl, int *ndecl) {
+    SySyms d = {0}; sy_defs_of(v, name, nl, &d); int n = 0; if (ndecl) *ndecl = 0;
+    for (int i = 0; i < d.n; i++) { if ((d.s[i].pack >> 16) & CSF_DECL) { if (ndecl) (*ndecl)++; } else n++; }
+    free(d.s); return n;
+}
+static int sy_nrefs(const SyView *v, const char *name, size_t nl) { SyRefs r = {0}; sy_refs_of(v, name, nl, ~0u, &r); int n = r.n; free(r.r); return n; }
+
+/* ---- arquivo lido de volta (verificacao e trechos) ---- */
+static int sy_file_load(SyView *v, const char *path, uint32_t plen) {
+    char key[400]; snprintf(key, sizeof key, "%.*s", plen < 399 ? (int)plen : 399, path);
+    if (v->fbuf && !strcmp(key, v->fpath)) return v->fok;
+    free(v->fbuf); free(v->fln); v->fbuf = NULL; v->fln = NULL; v->fn = 0; v->fnl = 0; v->fok = 0; v->fstale = 0;
+    snprintf(v->fpath, sizeof v->fpath, "%s", key);
+    char full[8400]; snprintf(full, sizeof full, "%s/%s", sy_root(v), key);
+    struct stat st; if (stat(full, &st) != 0 || st.st_size > (8 << 20)) { v->fbuf = (char *)calloc(1, 1); v->fstale = 1; return 0; }
+    v->fbuf = (char *)malloc((size_t)st.st_size + 1); int64_t got = st_slurp(full, (uint8_t *)v->fbuf, (size_t)st.st_size);
+    if (got < 0) { v->fbuf[0] = 0; v->fstale = 1; return 0; }
+    v->fn = (size_t)got; v->fbuf[got] = 0;
+    StoreLiveDoc *e = store_live_find(&v->L, path, plen);
+    int64_t mt;
+#ifdef _WIN32
+    mt = (int64_t)st.st_mtime * 1000000000ll;
+#else
+    mt = (int64_t)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec;
+#endif
+    if (!e || e->d.size != (uint64_t)got || e->d.mtime != mt) v->fstale = 1;
+    int nl = 1; for (size_t i = 0; i < v->fn; i++) if (v->fbuf[i] == '\n') nl++;
+    v->fln = (size_t *)malloc(sizeof(size_t) * (size_t)nl); int q = 0; v->fln[q++] = 0;
+    for (size_t i = 0; i < v->fn; i++) if (v->fbuf[i] == '\n') v->fln[q++] = i + 1;
+    v->fnl = nl; v->fok = 1; return 1;
+}
+/* texto da linha (1-based) sem espacos nas pontas, truncado */
+static int sy_line_text(const SyView *v, int line, char *o, size_t cap) {
+    o[0] = 0; if (!v->fok || line < 1 || line > v->fnl) return 0;
+    size_t a = v->fln[line - 1], b = a; while (b < v->fn && v->fbuf[b] != '\n' && v->fbuf[b] != '\r') b++;
+    while (a < b && (v->fbuf[a] == ' ' || v->fbuf[a] == '\t')) a++;
+    while (b > a && (v->fbuf[b - 1] == ' ' || v->fbuf[b - 1] == '\t')) b--;
+    size_t l = b - a; if (l + 1 > cap) { l = cap - 1; while (l > 0 && ((unsigned char)v->fbuf[a + l] & 0xC0) == 0x80) l--; }
+    memcpy(o, v->fbuf + a, l); o[l] = 0; return 1;
+}
+static int sy_has_word(const char *t, const char *w, size_t wl) {
+    for (const char *p = t; (p = strstr(p, w)); p += 1) {
+        int pre = p == t || !(isalnum((unsigned char)p[-1]) || p[-1] == '_' || ((unsigned char)p[-1] & 0x80)), post = !(isalnum((unsigned char)p[wl]) || p[wl] == '_' || ((unsigned char)p[wl] & 0x80));
+        if (pre && post) return 1;
+    }
+    return 0;
+}
+/* verifica relendo o arquivo: o nome ocorre nas linhas [l0, l0+span]. Devolve 1 confere, -1 nao confere ou arquivo mudou/ilegivel */
+static int sy_verify(SyView *v, const char *path, uint32_t plen, int l0, int span, const char *name, size_t nl) {
+    if (!sy_file_load(v, path, plen) || v->fstale) return -1;
+    char t[600], nm[200]; snprintf(nm, sizeof nm, "%.*s", nl < 199 ? (int)nl : 199, name);
+    for (int l = l0; l <= l0 + span; l++) { if (sy_line_text(v, l, t, sizeof t) && sy_has_word(t, nm, strlen(nm))) return 1; }
+    return -1;
+}
+
+/* ---- confianca ---- */
+static int sy_conf(int step, int ndefs, int ver, int adj) {
+    static const int base[4] = {0, 92, 62, 32}; int c = base[step < 1 ? 1 : step > 3 ? 3 : step];
+    if (ndefs > 1) { int p = 5 * (ndefs - 1); c -= p > 25 ? 25 : p; }
+    c += ver > 0 ? 4 : ver < 0 ? -25 : 0; c += adj;
+    return c < 1 ? 1 : c > 99 ? 99 : c;
+}
+static const char *sy_level(int c) { return c >= 75 ? "high" : c >= 45 ? "medium" : "low"; }
+
+/* ---- cascata de nomes ---- */
+typedef struct { char name[128]; int step; char how[110]; } SyCand;
+static int sy_tokens(const char *s, size_t l, char t[][32], int max) {
+    int n = 0, k = 0;
+    for (size_t i = 0; i < l; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (!isalnum(c)) { if (k) { t[n++][k] = 0; k = 0; if (n >= max) return n; } continue; }
+        int cut = 0;
+        if (k && isupper(c) && islower((unsigned char)s[i - 1])) cut = 1;
+        if (k && isupper(c) && isupper((unsigned char)s[i - 1]) && i + 1 < l && islower((unsigned char)s[i + 1])) cut = 1;
+        if (cut) { t[n++][k] = 0; k = 0; if (n >= max) return n; }
+        if (k < 31) t[n][k++] = (char)tolower(c);
+    }
+    if (k && n < max) t[n++][k] = 0;
+    return n;
+}
+static void sy_fold(const char *s, size_t l, char *o, size_t cap) { size_t k = 0; for (size_t i = 0; i < l && k + 1 < cap; i++) if (isalnum((unsigned char)s[i]) || ((unsigned char)s[i] & 0x80)) o[k++] = (char)tolower((unsigned char)s[i]); o[k] = 0; }
+static int sy_lev(const char *a, int al, const char *b, int bl) {
+    int d[2][130]; if (al > 128 || bl > 128) return 99;
+    for (int j = 0; j <= bl; j++) d[0][j] = j;
+    for (int i = 1; i <= al; i++) { d[i & 1][0] = i; for (int j = 1; j <= bl; j++) { int c = d[(i - 1) & 1][j - 1] + (a[i - 1] != b[j - 1]), x = d[(i - 1) & 1][j] + 1, y = d[i & 1][j - 1] + 1; if (x < c) c = x; if (y < c) c = y; d[i & 1][j] = c; } }
+    return d[al & 1][bl];
+}
+typedef struct { char name[128]; int score; } SyNameHit;
+static int sy_hit_cmp(const void *a, const void *b) { const SyNameHit *x = (const SyNameHit *)a, *y = (const SyNameHit *)b; if (x->score != y->score) return x->score - y->score; return (int)strlen(x->name) - (int)strlen(y->name); }
+/* want 1: precisa de definicao; 2: basta definicao ou referencia. Devolve o numero de candidatos; *stepused = passo que achou (0 = nenhum) */
+static int sy_cascade(const SyView *v, const char *q, int want, SyCand *out, int max, int *stepused) {
+    size_t ql = strlen(q); int n = 0; *stepused = 0;
+    int nd = sy_ndefs(v, q, ql, NULL), nr = want == 2 ? sy_nrefs(v, q, ql) : 0;
+    if (nd > 0 || nr > 0) { snprintf(out[0].name, sizeof out[0].name, "%s", q); out[0].step = 1; snprintf(out[0].how, sizeof out[0].how, "exact name match"); *stepused = 1; return 1; }
+    char qf[128]; sy_fold(q, ql, qf, sizeof qf); char qt[16][32]; int qn = sy_tokens(q, ql, qt, 16);
+    SyNameHit *hits = NULL; int nh = 0, hc = 0;
+    for (int step = 2; step <= 3 && !n; step++) {
+        nh = 0;
+        for (int s = 0; s < v->ns; s++) { const SyVSeg *c = &v->s[s]; if (!c->x.has) continue;
+            for (uint32_t i = 0; i < c->x.names.n; i++) {
+                uint32_t l; const char *p = store_strs_get(&c->x.names, i, &l); if (l == 0 || l > 120 || (l == ql && !memcmp(p, q, l))) continue;
+                int score = -1;
+                if (step == 2) {
+                    char nf[128]; sy_fold(p, l, nf, sizeof nf);
+                    if (!strcmp(nf, qf) && qf[0]) score = 0;
+                    else if (qn) { char nt[16][32]; int nn = sy_tokens(p, l, nt, 16);
+                        for (int a = 0; a + qn <= nn && score < 0; a++) { int ok = 1; for (int b = 0; b < qn; b++) if (strcmp(nt[a + b], qt[b])) { ok = 0; break; } if (ok) score = 1 + (nn - qn); } }
+                } else if (ql >= 4 && (int)l >= (int)ql - 2 && (int)l <= (int)ql + 2) {
+                    char lo[128], lq[128]; for (uint32_t k = 0; k < l; k++) lo[k] = (char)tolower((unsigned char)p[k]); for (size_t k = 0; k < ql; k++) lq[k] = (char)tolower((unsigned char)q[k]);
+                    int d = sy_lev(lo, (int)l, lq, (int)ql); if (d <= 2) score = d;
+                }
+                if (score < 0) continue;
+                int dup = 0; for (int k = 0; k < nh; k++) if (!strncmp(hits[k].name, p, l) && hits[k].name[l] == 0) { dup = 1; break; }
+                if (dup) continue;
+                if (nh == hc) { hc = hc ? hc * 2 : 64; hits = (SyNameHit *)realloc(hits, sizeof *hits * (size_t)hc); }
+                memcpy(hits[nh].name, p, l); hits[nh].name[l] = 0; hits[nh++].score = score;
+            } }
+        qsort(hits, (size_t)nh, sizeof *hits, sy_hit_cmp);
+        for (int k = 0; k < nh && n < max && n < 8; k++) {
+            size_t l = strlen(hits[k].name); int d = sy_ndefs(v, hits[k].name, l, NULL), r = want == 2 ? sy_nrefs(v, hits[k].name, l) : 0; if (d <= 0 && r <= 0) continue;
+            snprintf(out[n].name, sizeof out[n].name, "%s", hits[k].name); out[n].step = step;
+            if (step == 2) snprintf(out[n].how, sizeof out[n].how, hits[k].score == 0 ? "no exact match; same name ignoring case and underscores" : "no exact match; '%s' is part of the identifier", q);
+            else snprintf(out[n].how, sizeof out[n].how, "no exact or derived match; name within edit distance %d", hits[k].score);
+            n++;
+        }
+        if (n) *stepused = step;
+    }
+    free(hits); return n;
+}
+
+/* ---- itens de resultado e saida (texto ou JSON) ---- */
+enum { SYI_BRIEF = 1, SYI_NOCONF = 2 };
+typedef struct { char path[400]; int line0, line1, col, conf, ver, depth, flags; char kind[16], name[100], encl[220], sig[200], vis[12], how[170]; char *snip; } SyItem;
+typedef struct { SyItem *v; int n, cap; } SyItems;
+static SyItem *sy_item_new(SyItems *a) {
+    if (a->n == a->cap) { a->cap = a->cap ? a->cap * 2 : 32; a->v = (SyItem *)realloc(a->v, sizeof(SyItem) * (size_t)a->cap); }
+    SyItem *it = &a->v[a->n++]; memset(it, 0, sizeof *it); return it;
+}
+static void sy_items_free(SyItems *a) { for (int i = 0; i < a->n; i++) free(a->v[i].snip); free(a->v); memset(a, 0, sizeof *a); }
+static const char *const SY_VIS[] = {"", "public", "exported", "file", "private", "protected"};
+static void sy_cpy(char *d, size_t cap, const char *s, size_t l) { if (l + 1 > cap) l = cap - 1; memcpy(d, s, l); d[l] = 0; }
+static void sy_set_path(SyItem *it, const char *p, uint32_t l) { sy_cpy(it->path, sizeof it->path, p, l); }
+static void sy_set_snip(SyView *v, SyItem *it, const char *path, uint32_t plen, int l0, int l1, int maxl) {
+    if (!sy_file_load(v, path, plen)) return;
+    size_t cap = (size_t)maxl * 260 + 8; char *b = (char *)malloc(cap); size_t o = 0; char t[240];
+    for (int l = l0; l <= l1 && l < l0 + maxl; l++) { if (!sy_line_text(v, l, t, sizeof t)) break; o += (size_t)snprintf(b + o, cap - o, "%s%d: %s", o ? "\n" : "", l, t); }
+    if (l1 >= l0 + maxl) o += (size_t)snprintf(b + o, cap - o, "\n... (+%d lines; Read the file with offset=%d)", l1 - (l0 + maxl) + 1, l0 + maxl);
+    b[o] = 0; it->snip = b;
+}
+typedef struct { const char *query, *arg; int json, limit; char resolved[200], cascade[160]; int step; char external[1500]; int next_depth; char hint[240]; } SyQ;
+static void sy_json_item(const SyItem *it) {
+    printf("{\"path\":"); cp_jstr(it->path); printf(",\"line0\":%d,\"line1\":%d", it->line0, it->line1); if (it->col) printf(",\"col\":%d", it->col);
+    printf(",\"kind\":"); cp_jstr(it->kind); printf(",\"name\":"); cp_jstr(it->name);
+    if (it->encl[0]) { printf(",\"scope\":"); cp_jstr(it->encl); } if (it->sig[0]) { printf(",\"sig\":"); cp_jstr(it->sig); } if (it->vis[0]) { printf(",\"visibility\":"); cp_jstr(it->vis); }
+    if (!(it->flags & SYI_NOCONF)) { printf(",\"confidence\":%d,\"level\":\"%s\",\"verified\":%s,\"how\":", it->conf, sy_level(it->conf), it->ver > 0 ? "true" : "false"); cp_jstr(it->how); }
+    if (it->depth) printf(",\"depth\":%d", it->depth);
+    if (it->snip) { printf(",\"snippet\":"); cp_jstr(it->snip); }
+    printf("}");
+}
+static void sy_emit(const SyView *v, SyQ *o, SyItems *a, int total, const char *notfound_what) {
+    char lim[700]; sy_limits(v, lim, sizeof lim); int shown = a->n;
+    if (o->json) {
+        printf("{\"query\":"); cp_jstr(o->query); printf(",\"arg\":"); cp_jstr(o->arg);
+        if (o->resolved[0]) { printf(",\"resolved\":"); cp_jstr(o->resolved); }
+        if (o->step) { printf(",\"cascade_step\":%d,\"cascade\":", o->step); cp_jstr(o->cascade); }
+        printf(",\"count\":%d,\"shown\":%d,\"items\":[", total, shown);
+        for (int i = 0; i < a->n; i++) { if (i) printf(","); sy_json_item(&a->v[i]); }
+        printf("]");
+        if (o->external[0]) { printf(",\"external\":"); cp_jstr(o->external); }
+        if (!total) { char nf[900]; snprintf(nf, sizeof nf, "NOT FOUND: %s. Cascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2. %s", notfound_what, lim); printf(",\"not_found\":"); cp_jstr(nf); }
+        printf(",\"index\":{\"files\":%u,\"with_symbols\":%u}}\n", v->nlive, v->nwith); return;
+    }
+    if (!total) { printf("NOT FOUND: %s.\nCascade tried: exact name, same name ignoring case or as an identifier part, edit distance <= 2.\n%s\n", notfound_what, lim); return; }
+    if (o->step > 1) printf("No exact match for '%s'; %s\n", o->arg, o->cascade);
+    for (int i = 0; i < a->n; i++) {
+        const SyItem *it = &a->v[i]; int ind = it->depth * 2;
+        if (it->flags & SYI_BRIEF) {
+            printf("%*s%d-%d %s %s", ind + 2, "", it->line0, it->line1, it->kind, it->name); if (it->sig[0]) printf("  %s", it->sig); printf("\n"); continue;
+        }
+        printf("%*s%s:%d", ind, "", it->path, it->line0); if (it->line1 > it->line0) printf("-%d", it->line1); if (it->col) printf(":%d", it->col);
+        printf("  %s %s", it->kind, it->name); if (it->vis[0]) printf(" [%s]", it->vis); if (it->encl[0]) printf("  %s", it->encl);
+        if (!(it->flags & SYI_NOCONF)) printf("   [confidence %d %s%s%s]", it->conf, sy_level(it->conf), it->how[0] ? "; " : "", it->how);
+        printf("\n");
+        if (it->sig[0] && it->snip == NULL) printf("%*s    %s\n", ind, "", it->sig);
+        if (it->snip) { for (const char *p = it->snip; *p; ) { const char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p); printf("%*s    %.*s\n", ind, "", (int)l, p); if (!e) break; p = e + 1; } }
+    }
+    if (o->external[0]) printf("+ external (no definition in the indexed set): %s\n", o->external);
+    if (total > shown) printf("(%d more not shown; raise --limit)\n", total - shown);
+    if (o->hint[0]) printf("%s\n", o->hint);
+}
+
+/* ---- argumentos ---- */
+typedef struct { const char *pos[3]; int npos, json, limit, lines, depth, nodes; } SyArgs;
+static int sy_args(int argc, char **argv, SyArgs *a, int deflim) {
+    memset(a, 0, sizeof *a); a->limit = deflim; a->lines = 3; a->depth = 0; a->nodes = 100;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--json")) a->json = 1; else if (!strcmp(argv[i], "--body")) a->lines = 200;
+        else if (!strcmp(argv[i], "--limit") && i + 1 < argc) a->limit = atoi(argv[++i]); else if (!strcmp(argv[i], "--lines") && i + 1 < argc) a->lines = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--depth") && i + 1 < argc) a->depth = atoi(argv[++i]); else if (!strcmp(argv[i], "--nodes") && i + 1 < argc) a->nodes = atoi(argv[++i]);
+        else if (a->npos < 3) a->pos[a->npos++] = argv[i];
+    }
+    if (a->limit < 1) a->limit = 1; if (a->lines < 1) a->lines = 1;
+    return a->npos >= 1 ? 0 : -1;
+}
+static int sy_start(const char *cmd, const char *use, int argc, char **argv, SyArgs *a, SyView *v, int deflim) {
+    if (sy_args(argc, argv, a, deflim) != 0) { fprintf(stderr, "uso: katana coder %s\n", use); return 2; }
+    char err[300] = ""; if (sy_view_open(a->npos >= 2 ? a->pos[1] : ".", v, err, sizeof err) != 0) { fprintf(stderr, "%s: %s\n", cmd, err); return 1; }
+    if (!v->any) { fprintf(stderr, "%s: the index has no symbol sections (built before they existed); delete %s and run `katana coder index` again\n", cmd, v->dir); sy_view_close(v); return 1; }
+    return 0;
+}
+static void sy_cascade_note(SyQ *o, const SyCand *c, int nc, int step) {
+    o->step = step; o->resolved[0] = 0;
+    for (int i = 0; i < nc && i < 4; i++) { size_t l = strlen(o->resolved); snprintf(o->resolved + l, sizeof o->resolved - l, "%s%s", i ? ", " : "", c[i].name); }
+    snprintf(o->cascade, sizeof o->cascade, "showing %s (%s)", o->resolved, c[0].how);
+}
+static void sy_fill_def(SyView *v, SyItem *it, const SySym *s, int lines) {
+    sy_set_path(it, s->path, s->plen); it->line0 = (int)s->line0; it->line1 = (int)s->line1;
+    snprintf(it->kind, sizeof it->kind, "%s", s->kind < CK_N ? CP_KINDN[s->kind] : "?"); sy_cpy(it->name, sizeof it->name, s->name, s->nl); sy_cpy(it->sig, sizeof it->sig, s->sig, s->sl);
+    snprintf(it->vis, sizeof it->vis, "%s", SY_VIS[(s->pack & 0xFF) < 6 ? (s->pack & 0xFF) : 0]);
+    if (lines > 0) sy_set_snip(v, it, s->path, s->plen, (int)s->line0, (int)s->line1, lines);
+}
+
+/* ---- def ---- */
+static int coder_def_main(int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start("def", "def <name> [pasta] [--json] [--lines N|--body] [--limit N]", argc, argv, &a, &v, 50); if (rc) return rc;
+    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 1, cand, 8, &step); SyItems items = {0}; SyQ o; memset(&o, 0, sizeof o); o.query = "def"; o.arg = a.pos[0]; o.json = a.json; int total = 0;
+    if (nc) sy_cascade_note(&o, cand, nc, step);
+    for (int c = 0; c < nc; c++) {
+        SySyms d = {0}; sy_defs_of(&v, cand[c].name, strlen(cand[c].name), &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        for (int i = 0; i < d.n; i++) {
+            const SySym *s = &d.s[i]; total++; if (items.n >= a.limit) continue;
+            SyItem *it = sy_item_new(&items); sy_fill_def(&v, it, s, a.lines);
+            int decl = (s->pack >> 16) & CSF_DECL; if (decl) snprintf(it->kind + strlen(it->kind), sizeof it->kind - strlen(it->kind), " (decl)");
+            it->ver = sy_verify(&v, s->path, s->plen, (int)s->line0, 3, s->name, s->nl);
+            int nd = ndef ? ndef : d.n; it->conf = sy_conf(cand[c].step, nd, it->ver, decl ? -5 : 0);
+            if (cand[c].step == 1) snprintf(it->how, sizeof it->how, "%s; %d definition%s%s", decl ? "declaration only (prototype)" : "name match", nd, nd == 1 ? "" : "s", it->ver > 0 ? "; line verified" : "; line NOT verified (file changed or unreadable)");
+            else snprintf(it->how, sizeof it->how, "%s; %d definition%s", cand[c].how, nd, nd == 1 ? "" : "s");
+        }
+        free(d.s);
+    }
+    if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d definition%s. Next: refs/callers/callees %s, or Read the file range above.", total, total == 1 ? "" : "s", cand[0].name);
+    char nf[300]; snprintf(nf, sizeof nf, "no definition of '%s' in the indexed set", a.pos[0]);
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+}
+
+/* ---- refs, callers, uses ---- */
+static int sy_refs_cmd(const char *cmd, const char *use, uint32_t mask, int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start(cmd, use, argc, argv, &a, &v, 100); if (rc) return rc;
+    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 2, cand, 8, &step); SyItems items = {0}; SyQ o; memset(&o, 0, sizeof o); o.query = cmd; o.arg = a.pos[0]; o.json = a.json; int total = 0;
+    if (nc) sy_cascade_note(&o, cand, nc, step);
+    for (int c = 0; c < nc; c++) {
+        size_t cl = strlen(cand[c].name); SySyms d = {0}; sy_defs_of(&v, cand[c].name, cl, &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        SyRefs r = {0}; sy_refs_of(&v, cand[c].name, cl, mask, &r);
+        for (int i = 0; i < r.n; i++) {
+            const SyRef *f = &r.r[i]; total++; if (items.n >= a.limit) continue;
+            SyItem *it = sy_item_new(&items); sy_set_path(it, f->path, f->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col;
+            snprintf(it->kind, sizeof it->kind, "%s", f->kind < CR_N ? CP_REFN[f->kind] : "?"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
+            if (f->from != SY_NONE) { SySym e; sy_sym_at(&v, f->seg, st_get_u32(store_table_at(&v.s[f->seg].x.docs, f->doc)) + f->from, &e); snprintf(it->encl, sizeof it->encl, "in %.*s (%u-%u)", (int)(e.nl < 80 ? e.nl : 80), e.name, e.line0, e.line1); }
+            else snprintf(it->encl, sizeof it->encl, "at file level");
+            int same = 0; for (int k = 0; k < d.n; k++) if (d.s[k].plen == f->plen && !memcmp(d.s[k].path, f->path, f->plen)) same = 1;
+            it->ver = sy_verify(&v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
+            if (f->kind == CR_IMPORT) { it->ver = 0; it->conf = 70; snprintf(it->how, sizeof it->how, "import statement text"); }
+            else {
+                int adj = ndef == 0 ? -25 : 0, nd = same ? 1 : ndef;
+                it->conf = sy_conf(cand[c].step, nd, it->ver, adj);
+                const char *ver = it->ver > 0 ? "line verified" : "line NOT verified";
+                if (ndef == 0) snprintf(it->how, sizeof it->how, "name only; no definition in the indexed set; %s", ver);
+                else if (same) snprintf(it->how, sizeof it->how, "name match in same file as a definition; %s", ver);
+                else snprintf(it->how, sizeof it->how, "same name, %d definition%s; %s", ndef, ndef == 1 ? "" : "s", ver);
+                if (cand[c].step > 1) { size_t l = strlen(it->how); snprintf(it->how + l, sizeof it->how - l, "; step %d", cand[c].step); }
+            }
+            char t[240]; if (sy_file_load(&v, f->path, f->plen) && sy_line_text(&v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
+        }
+        free(r.r); free(d.s);
+    }
+    if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d occurrence%s. Next: def %s for the definition, impact %s for the closure of callers.", total, total == 1 ? "" : "s", cand[0].name, cand[0].name);
+    char nf[300]; snprintf(nf, sizeof nf, "no %s of '%s' in the indexed set", mask == (1u << CR_CALL) ? "caller" : "reference", a.pos[0]);
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+}
+static int coder_refs_main(int argc, char **argv) { return sy_refs_cmd("refs", "refs <name> [pasta] [--json] [--limit N]", ~0u, argc, argv); }
+static int coder_callers_main(int argc, char **argv) { return sy_refs_cmd("callers", "callers <name> [pasta] [--json] [--limit N]", 1u << CR_CALL, argc, argv); }
+static int coder_uses_main(int argc, char **argv) { return sy_refs_cmd("uses", "uses <name> [pasta] [--json] [--limit N]  (every occurrence that is not a call)", ~0u & ~(1u << CR_CALL), argc, argv); }
+
+/* ---- callees ---- */
+static int coder_callees_main(int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start("callees", "callees <name> [pasta] [--json] [--limit N]", argc, argv, &a, &v, 100); if (rc) return rc;
+    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 1, cand, 8, &step); SyItems items = {0}; SyQ o; memset(&o, 0, sizeof o); o.query = "callees"; o.arg = a.pos[0]; o.json = a.json; int total = 0;
+    if (nc) sy_cascade_note(&o, cand, nc, step);
+    for (int c = 0; c < nc; c++) {
+        SySyms d = {0}; sy_defs_of(&v, cand[c].name, strlen(cand[c].name), &d); int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        for (int di = 0; di < d.n; di++) {
+            const SySym *D = &d.s[di]; if ((D->pack >> 16) & CSF_DECL) continue;
+            const SySec *x = &v.s[D->seg].x; const uint8_t *dr = store_table_at(&x->docs, D->doc); uint32_t s0 = st_get_u32(dr), r0 = st_get_u32(dr + 8), nr = st_get_u32(dr + 12);
+            char seen[400][64]; int nseen = 0;
+            for (uint32_t k = 0; k < nr; k++) {
+                const SyRef *f; SyRef fr; sy_ref_at(&v, D->seg, r0 + k, &fr); f = &fr;
+                if (f->kind != CR_CALL || f->from == SY_NONE) continue;
+                int inside = 0; for (uint32_t p = f->from; p != SY_NONE && !inside; ) { if (p == D->rel) inside = 1; else p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8); }
+                if (!inside) continue;
+                int dup = 0; for (int q = 0; q < nseen; q++) if (!strncmp(seen[q], f->name, 63) && strlen(f->name) == f->nl && f->nl < 64) dup = 1; if (dup) continue;
+                if (nseen < 400 && f->nl < 64) { memcpy(seen[nseen], f->name, f->nl); seen[nseen++][f->nl] = 0; }
+                SySyms td = {0}; sy_defs_of(&v, f->name, f->nl, &td); int tn = 0, pick = -1;
+                for (int q = 0; q < td.n; q++) if (!((td.s[q].pack >> 16) & CSF_DECL)) { tn++; if (pick < 0 || (td.s[q].plen == D->plen && !memcmp(td.s[q].path, D->path, D->plen))) pick = q; }
+                total++;
+                if (tn == 0) { size_t l = strlen(o.external); if (l < 1300) snprintf(o.external + l, sizeof o.external - l, "%s%.*s", l ? ", " : "", (int)f->nl, f->name); free(td.s); total--; continue; }
+                if (items.n < a.limit) {
+                    SyItem *it = sy_item_new(&items); sy_set_path(it, D->path, D->plen); it->line0 = it->line1 = (int)f->line; it->col = (int)f->col; snprintf(it->kind, sizeof it->kind, "call"); sy_cpy(it->name, sizeof it->name, f->name, f->nl);
+                    int same = td.s[pick].plen == D->plen && !memcmp(td.s[pick].path, D->path, D->plen);
+                    snprintf(it->encl, sizeof it->encl, "-> %.*s:%u-%u (%s)", (int)td.s[pick].plen, td.s[pick].path, td.s[pick].line0, td.s[pick].line1, CP_KINDN[td.s[pick].kind < CK_N ? td.s[pick].kind : 0]);
+                    it->ver = sy_verify(&v, D->path, D->plen, (int)f->line, 0, f->name, f->nl); it->conf = sy_conf(cand[c].step, same ? 1 : tn, it->ver, 0);
+                    if (same) snprintf(it->how, sizeof it->how, "name match in same file; called from %.*s (%u-%u); %s", (int)D->nl, D->name, D->line0, D->line1, it->ver > 0 ? "line verified" : "line NOT verified");
+                    else snprintf(it->how, sizeof it->how, "same name, %d definition%s; called from %.*s (%u-%u); %s", tn, tn == 1 ? "" : "s", (int)D->nl, D->name, D->line0, D->line1, it->ver > 0 ? "line verified" : "line NOT verified");
+                    char t[240]; if (sy_file_load(&v, D->path, D->plen) && sy_line_text(&v, (int)f->line, t, sizeof t)) { it->snip = (char *)malloc(strlen(t) + 16); sprintf(it->snip, "%u: %s", f->line, t); }
+                }
+                free(td.s);
+            }
+        }
+        (void)ndef; free(d.s);
+    }
+    if (total && !a.json) snprintf(o.hint, sizeof o.hint, "%d callee%s in the indexed set (calls in source order within each definition). Next: def <callee>, or impact %s.", total, total == 1 ? "" : "s", cand[0].name);
+    if (!total && o.external[0] && !a.json) { total = 0; }
+    char nf[300]; snprintf(nf, sizeof nf, "'%s' has no definition with calls to indexed definitions in the indexed set%s", a.pos[0], o.external[0] ? " (it only calls external names, listed in the JSON field external)" : "");
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+}
+
+/* ---- arquivo do indice ---- */
+static int sy_find_doc(const SyView *v, const char *arg, char *rel, size_t cap, int *seg, uint32_t *idx, int *nsuffix) {
+    char rp[4400]; const char *p = arg; *nsuffix = 0;
+    if (realpath(arg, rp)) { const char *root = sy_root(v); size_t rl = strlen(root); if (!strncmp(rp, root, rl) && rp[rl] == '/') p = rp + rl + 1; }
+    while (p[0] == '.' && p[1] == '/') p += 2;
+    snprintf(rel, cap, "%s", p);
+    StoreLiveDoc *e = store_live_find(&v->L, rel, strlen(rel));
+    if (e && !e->dead) { *seg = e->seg; *idx = e->idx; return 1; }
+    size_t pl = strlen(rel); StoreLiveDoc *best = NULL; int n = 0;
+    for (int i = 0; i < v->L.n; i++) { StoreLiveDoc *q = &v->L.e[i]; if (q->dead || q->d.plen <= pl || memcmp(q->d.path + q->d.plen - pl, rel, pl) || q->d.path[q->d.plen - pl - 1] != '/') continue; n++; if (!best) best = q; }
+    if (best) { snprintf(rel, cap, "%.*s", (int)best->d.plen, best->d.path); *seg = best->seg; *idx = best->idx; *nsuffix = n; return 1; }
+    return 0;
+}
+static const char *sy_langname(uint32_t l) { return l < CL_N ? CP_LANGN[l] : "?"; }
+
+/* ---- outline ---- */
+static int coder_outline_main(int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start("outline", "outline <arquivo> [pasta] [--json]", argc, argv, &a, &v, 100000); if (rc) return rc;
+    char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "outline"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; int total = 0, okc = 0;
+    char nf[600];
+    if (!sy_find_doc(&v, a.pos[0], rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set (not indexed, deleted, or outside the project folder)", a.pos[0]); sy_emit(&v, &o, &items, 0, nf); sy_view_close(&v); return 1; }
+    const SySec *x = &v.s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t s0 = dr ? st_get_u32(dr) : 0, n = dr ? st_get_u32(dr + 4) : 0, lang = dr ? st_get_u32(dr + 16) : 0;
+    for (uint32_t k = 0; k < n; k++) {
+        SySym s; sy_sym_at(&v, seg, s0 + k, &s); total++; if (items.n >= a.limit) continue;
+        SyItem *it = sy_item_new(&items); sy_fill_def(&v, it, &s, 0); it->flags = a.json ? 0 : SYI_BRIEF;
+        int d = 0; for (uint32_t p = s.parent; p != SY_NONE && d < 40; p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8)) d++;
+        it->depth = d; it->ver = sy_verify(&v, s.path, s.plen, (int)s.line0, 3, s.name, s.nl); it->conf = sy_conf(1, 1, it->ver, 0); if (it->ver > 0) okc++;
+        snprintf(it->how, sizeof it->how, "indexed symbol; line %s", it->ver > 0 ? "verified" : "NOT verified");
+    }
+    if (!a.json && total) { printf("%s  [%s]  %d symbols; %d of %d declaration lines verified by rereading the file (confidence %d %s)\n", rel, sy_langname(lang), total, okc, items.n, sy_conf(1, 1, okc * 10 >= items.n * 9 ? 1 : -1, 0), sy_level(sy_conf(1, 1, okc * 10 >= items.n * 9 ? 1 : -1, 0))); }
+    snprintf(nf, sizeof nf, "'%s' is in the indexed set but has no symbols (%s: text, configuration, unknown language, or nothing declared)", rel, sy_langname(lang));
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+}
+
+/* ---- at <arquivo>:<linha> ---- */
+static int coder_at_main(int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start("at", "at <arquivo>:<linha> [pasta] [--json]", argc, argv, &a, &v, 100); if (rc) return rc;
+    char spec[4400]; snprintf(spec, sizeof spec, "%s", a.pos[0]); char *colon = strrchr(spec, ':'); int line = 0;
+    if (colon && colon[1] && strspn(colon + 1, "0123456789") == strlen(colon + 1)) { line = atoi(colon + 1); *colon = 0; }
+    if (line < 1) { fprintf(stderr, "uso: katana coder at <arquivo>:<linha> [pasta]\n"); sy_view_close(&v); return 2; }
+    char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "at"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; char nf[700];
+    if (!sy_find_doc(&v, spec, rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", spec); sy_emit(&v, &o, &items, 0, nf); sy_view_close(&v); return 1; }
+    const SySec *x = &v.s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t s0 = dr ? st_get_u32(dr) : 0, n = dr ? st_get_u32(dr + 4) : 0;
+    int64_t k = -1;     /* ultimo simbolo com line0 <= linha (busca binaria), depois volta enquanto o maximo acumulado de line1 alcanca a linha */
+    { uint32_t lo = 0, hi = n; while (lo < hi) { uint32_t m = lo + (hi - lo) / 2; if ((int)st_get_u32(store_table_at(&x->syms, s0 + m) + 12) <= line) lo = m + 1; else hi = m; } k = (int64_t)lo - 1; }
+    int64_t hit = -1; while (k >= 0 && (int)st_get_u32(store_table_at(&x->ival, s0 + (uint32_t)k)) >= line) { if ((int)st_get_u32(store_table_at(&x->syms, s0 + (uint32_t)k) + 16) >= line) { hit = k; break; } k--; }
+    int total = 0;
+    if (hit >= 0) {
+        uint32_t chain[64]; int nc = 0; for (uint32_t p = (uint32_t)hit; p != SY_NONE && nc < 64; p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8)) chain[nc++] = p;
+        for (int c = nc - 1; c >= 0; c--) {
+            SySym s; sy_sym_at(&v, seg, s0 + chain[c], &s); SyItem *it = sy_item_new(&items); sy_fill_def(&v, it, &s, 0); it->depth = nc - 1 - c; total++;
+            it->ver = sy_verify(&v, s.path, s.plen, (int)s.line0, 3, s.name, s.nl); it->conf = sy_conf(1, 1, it->ver, 0);
+            snprintf(it->how, sizeof it->how, "%s; line range from the index, declaration line %s", c == 0 ? "innermost symbol containing the line" : "enclosing symbol", it->ver > 0 ? "verified" : "NOT verified");
+        }
+        char t[240]; if (sy_file_load(&v, rel, (uint32_t)strlen(rel)) && sy_line_text(&v, line, t, sizeof t) && !a.json) printf("%s:%d  %s\n", rel, line, t);
+    }
+    snprintf(nf, sizeof nf, "line %d of '%s' is not inside any indexed symbol (file level code, or the file has no symbols)", line, rel);
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+}
+
+/* ---- deps ---- */
+static const char *const SY_EXT[] = {"", ".h", ".c", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".kt", ".java", ".go", ".rs", ".qml", ".sh", ".md", "/index.js", "/index.ts", "/__init__.py", "/mod.rs", NULL};
+/* resolve o texto de um import para arquivos do conjunto indexado; devolve quantos (ate cap) e em *how: 1 relativo ao arquivo, 2 sufixo de caminho */
+static int sy_resolve_import(const SyView *v, const char *from, uint32_t flen, uint32_t lang, const char *text, uint32_t tl, StoreLiveDoc **out, int cap, int *how) {
+    char t[600]; if (tl > 500) return 0; memcpy(t, text, tl); t[tl] = 0; *how = 0;
+    if (lang == CL_PY && t[0] != '.' && !strchr(t, '/')) for (char *p = t; *p; p++) if (*p == '.') *p = '/';
+    int relative = t[0] == '.' || lang == CL_C || lang == CL_CPP;
+    if (!strchr(t, '/') && !strchr(t, '.') && lang != CL_PY && lang != CL_GO && lang != CL_JAVA && lang != CL_KT) return 0;
+    char dir[600]; uint32_t dl = flen; while (dl && from[dl - 1] != '/') dl--;
+    snprintf(dir, sizeof dir, "%.*s", dl > 500 ? 500 : (int)dl, from);
+    char base[1200], norm[1200]; int n = 0;
+    for (int pass = 0; pass < 2 && !n; pass++) {
+        if (pass == 0) { if (!relative) continue; snprintf(base, sizeof base, "%s%s", dir, t); } else snprintf(base, sizeof base, "%s", t);
+        /* normaliza ./ e ../ */
+        char *seg[80]; int ns = 0; char tmp[1200]; snprintf(tmp, sizeof tmp, "%s", base);
+        for (char *p = strtok(tmp, "/"); p && ns < 80; p = strtok(NULL, "/")) { if (!strcmp(p, ".")) continue; if (!strcmp(p, "..")) { if (ns) ns--; continue; } seg[ns++] = p; }
+        norm[0] = 0; for (int i = 0; i < ns; i++) { size_t l = strlen(norm); snprintf(norm + l, sizeof norm - l, "%s%s", i ? "/" : "", seg[i]); }
+        for (int e = 0; SY_EXT[e] && !n; e++) { char cand[1300]; snprintf(cand, sizeof cand, "%s%s", norm, SY_EXT[e]); StoreLiveDoc *d = store_live_find(&v->L, cand, strlen(cand)); if (d && !d->dead) { out[n++] = d; *how = 1; } }
+    }
+    if (n) return n;
+    const char *suffix = norm[0] ? norm : t; size_t sl = strlen(suffix); if (!sl) return 0;
+    for (int i = 0; i < v->L.n && n < cap; i++) { StoreLiveDoc *d = &v->L.e[i]; if (d->dead) continue;
+        for (int e = 0; SY_EXT[e]; e++) { size_t el = strlen(SY_EXT[e]), pl = d->d.plen; if (pl < sl + el) continue; if (el && memcmp(d->d.path + pl - el, SY_EXT[e], el)) continue; if (!el && 0) continue;
+            const char *s = d->d.path + pl - el - sl; if (memcmp(s, suffix, sl)) continue; if (s != d->d.path && s[-1] != '/') continue; out[n++] = d; *how = 2; break; } }
+    return n;
+}
+static int coder_deps_main(int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start("deps", "deps <arquivo> [pasta] [--json]", argc, argv, &a, &v, 200); if (rc) return rc;
+    char rel[4400]; int seg, ns; uint32_t idx; SyQ o; memset(&o, 0, sizeof o); o.query = "deps"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0}; char nf[700]; int total = 0;
+    if (!sy_find_doc(&v, a.pos[0], rel, sizeof rel, &seg, &idx, &ns)) { snprintf(nf, sizeof nf, "'%s' is not in the indexed set", a.pos[0]); sy_emit(&v, &o, &items, 0, nf); sy_view_close(&v); return 1; }
+    const SySec *x = &v.s[seg].x; const uint8_t *dr = x->has ? store_table_at(&x->docs, idx) : NULL; uint32_t r0 = dr ? st_get_u32(dr + 8) : 0, nr = dr ? st_get_u32(dr + 12) : 0, lang = dr ? st_get_u32(dr + 16) : 0;
+    size_t rl = strlen(rel);
+    for (uint32_t k = 0; k < nr; k++) {
+        SyRef f; sy_ref_at(&v, seg, r0 + k, &f); if (f.kind != CR_IMPORT) continue;
+        /* o texto do import pode ter varios nomes separados por espaco (import { a, b } from): tenta o texto inteiro, depois cada pedaco */
+        char buf[600]; snprintf(buf, sizeof buf, "%.*s", f.nl < 590 ? (int)f.nl : 590, f.name); StoreLiveDoc *m[8]; int how = 0, nm = sy_resolve_import(&v, rel, (uint32_t)rl, lang, buf, (uint32_t)strlen(buf), m, 8, &how);
+        if (!nm) { for (char *p = strtok(buf, " "); p && !nm; p = strtok(NULL, " ")) nm = sy_resolve_import(&v, rel, (uint32_t)rl, lang, p, (uint32_t)strlen(p), m, 8, &how); }
+        if (!nm) { size_t l = strlen(o.external); if (l < 1300) snprintf(o.external + l, sizeof o.external - l, "%s%.*s", l ? ", " : "", (int)(f.nl < 80 ? f.nl : 80), f.name); continue; }
+        for (int q = 0; q < nm; q++) {
+            total++; if (items.n >= a.limit) continue; SyItem *it = sy_item_new(&items); sy_set_path(it, rel, (uint32_t)rl); it->line0 = it->line1 = (int)f.line; snprintf(it->kind, sizeof it->kind, "imports"); sy_cpy(it->name, sizeof it->name, f.name, f.nl);
+            snprintf(it->encl, sizeof it->encl, "-> %.*s", (int)m[q]->d.plen, m[q]->d.path);
+            it->conf = how == 1 ? 85 : nm == 1 ? 60 : 30; if (nm > 1 && how == 1) it->conf = 60;
+            if (how == 1) snprintf(it->how, sizeof it->how, "import text resolved relative to the importing file%s", nm > 1 ? " (several extensions)" : "");
+            else snprintf(it->how, sizeof it->how, "path suffix match; %d file%s match", nm, nm == 1 ? "" : "s");
+        }
+    }
+    /* quem importa este arquivo: varre as referencias de import de todos os documentos vigentes */
+    const char *bs = rel + rl; while (bs > rel && bs[-1] != '/') bs--; char stem[200]; snprintf(stem, sizeof stem, "%s", bs); { char *dot = strrchr(stem, '.'); if (dot && dot != stem) *dot = 0; }
+    char sidx[200]; { const char *p = rel + rl; (void)p; }
+    size_t stl = strlen(stem); int nimp = 0;
+    for (int s = 0; s < v.ns; s++) { const SyVSeg *c = &v.s[s]; if (!c->x.has) continue;
+        for (uint32_t r = 0; r < c->x.refs.n; r++) {
+            const uint8_t *q = store_table_at(&c->x.refs, r); if (st_get_u32(q + 4) != CR_IMPORT || !c->live[st_get_u32(q + 24)]) continue;
+            uint32_t tl; const char *tx = store_strs_get(&c->x.names, st_get_u32(q), &tl);
+            int hit = 0; for (uint32_t i = 0; i + stl <= tl && !hit; i++) if (!memcmp(tx + i, stem, stl)) hit = 1; if (!hit) continue;
+            SyRef f; sy_ref_at(&v, s, r, &f); if (f.plen == rl && !memcmp(f.path, rel, rl)) continue;
+            char buf[600]; snprintf(buf, sizeof buf, "%.*s", tl < 590 ? (int)tl : 590, tx); StoreLiveDoc *m[8]; int how = 0;
+            int nm = sy_resolve_import(&v, f.path, f.plen, f.lang, buf, (uint32_t)strlen(buf), m, 8, &how);
+            if (!nm) { for (char *p = strtok(buf, " "); p && !nm; p = strtok(NULL, " ")) nm = sy_resolve_import(&v, f.path, f.plen, f.lang, p, (uint32_t)strlen(p), m, 8, &how); }
+            int ok = 0; for (int i = 0; i < nm; i++) if (m[i]->d.plen == rl && !memcmp(m[i]->d.path, rel, rl)) ok = 1; if (!ok) continue;
+            total++; nimp++; if (items.n >= a.limit) continue;
+            SyItem *it = sy_item_new(&items); sy_set_path(it, f.path, f.plen); it->line0 = it->line1 = (int)f.line; snprintf(it->kind, sizeof it->kind, "imported-by"); sy_cpy(it->name, sizeof it->name, f.name, f.nl);
+            snprintf(it->encl, sizeof it->encl, "<- %.*s", (int)f.plen, f.path); it->conf = how == 1 ? (nm == 1 ? 85 : 60) : nm == 1 ? 60 : 30;
+            snprintf(it->how, sizeof it->how, how == 1 ? "import text resolved relative to the importing file" : "path suffix match; %d file%s match", nm, nm == 1 ? "" : "s");
+        }
+    }
+    (void)sidx;
+    if (!a.json && total) snprintf(o.hint, sizeof o.hint, "%d relation%s (imports out and imported-by). Include and import texts are matched to files by path only.", total, total == 1 ? "" : "s");
+    snprintf(nf, sizeof nf, "'%s' has no import relation to another file of the indexed set (it imports nothing indexed and no indexed file imports it)", rel);
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); sy_view_close(&v); return total ? 0 : 1;
+}
+
+/* ---- impact: fecho de chamadores ate a profundidade N, com limite de nos ---- */
+typedef struct { int seg; uint32_t row; char path[400]; char name[100]; uint32_t l0, l1; int depth, conf, parent; uint32_t cline; char calls[100]; } SyNode;
+static int coder_impact_main(int argc, char **argv) {
+    SyArgs a; SyView v; int rc = sy_start("impact", "impact <name> [pasta] [--depth N] [--nodes N] [--json]", argc, argv, &a, &v, 1000); if (rc) return rc;
+    int maxd = a.depth > 0 ? a.depth : 3, maxn = a.nodes > 0 ? a.nodes : 100;
+    SyCand cand[8]; int step, nc = sy_cascade(&v, a.pos[0], 2, cand, 8, &step); SyQ o; memset(&o, 0, sizeof o); o.query = "impact"; o.arg = a.pos[0]; o.json = a.json; SyItems items = {0};
+    SyNode *nd = (SyNode *)calloc((size_t)maxn + 1, sizeof *nd); int nn = 0, head = 0, truncated = 0, total = 0;
+    if (nc) sy_cascade_note(&o, cand, nc, step);
+    /* raizes: a(s) definicao(oes) do nome; os chamadores buscam-se pelo nome */
+    typedef struct { char name[128]; int depth, conf; int node; } Q; Q *q = (Q *)calloc((size_t)maxn + 8, sizeof(Q)); int qh = 0, qt = 0;
+    if (nc) { snprintf(q[qt].name, sizeof q[qt].name, "%s", cand[0].name); q[qt].depth = 0; q[qt].conf = sy_conf(cand[0].step, 1, 0, 0) + 4; q[qt].node = -1; qt++; }
+    while (qh < qt) {
+        Q cur = q[qh++]; if (cur.depth >= maxd) continue;
+        size_t cl = strlen(cur.name); SyRefs r = {0}; sy_refs_of(&v, cur.name, cl, 1u << CR_CALL, &r); SySyms d = {0}; sy_defs_of(&v, cur.name, cl, &d);
+        int ndef = 0; for (int i = 0; i < d.n; i++) if (!((d.s[i].pack >> 16) & CSF_DECL)) ndef++;
+        for (int i = 0; i < r.n; i++) {
+            const SyRef *f = &r.r[i]; if (f->from == SY_NONE) continue;
+            uint32_t row = st_get_u32(store_table_at(&v.s[f->seg].x.docs, f->doc)) + f->from; int dup = 0;
+            for (int k = 0; k < nn; k++) if (nd[k].seg == f->seg && nd[k].row == row) { dup = 1; break; } if (dup) continue;
+            if (nn >= maxn) { truncated = 1; break; }
+            SySym s; sy_sym_at(&v, f->seg, row, &s); SyNode *N = &nd[nn]; N->seg = f->seg; N->row = row; sy_cpy(N->path, sizeof N->path, s.path, s.plen); sy_cpy(N->name, sizeof N->name, s.name, s.nl);
+            N->l0 = s.line0; N->l1 = s.line1; N->depth = cur.depth + 1; N->parent = cur.node; N->cline = f->line; snprintf(N->calls, sizeof N->calls, "%s", cur.name);
+            int same = 0; for (int k = 0; k < d.n; k++) if (d.s[k].plen == f->plen && !memcmp(d.s[k].path, f->path, f->plen)) same = 1;
+            int ver = sy_verify(&v, f->path, f->plen, (int)f->line, 0, f->name, f->nl);
+            int edge = sy_conf(cand[0].step, same ? 1 : ndef, ver, ndef == 0 ? -25 : 0); N->conf = edge < cur.conf ? edge : cur.conf;
+            if (qt < maxn + 7) { snprintf(q[qt].name, sizeof q[qt].name, "%s", N->name); q[qt].depth = N->depth; q[qt].conf = N->conf; q[qt].node = nn; qt++; }
+            nn++;
+        }
+        free(r.r); free(d.s);
+        if (truncated) break;
+    }
+    /* ordem de saida: arvore (em profundidade) a partir dos filhos da raiz */
+    int *order = (int *)malloc(sizeof(int) * (size_t)(nn + 1)), no = 0; int *stack = (int *)malloc(sizeof(int) * (size_t)(nn + 2)); int sp = 0;
+    for (int i = nn - 1; i >= 0; i--) if (nd[i].parent < 0) stack[sp++] = i;
+    while (sp) { int i = stack[--sp]; order[no++] = i; for (int k = nn - 1; k >= 0; k--) if (nd[k].parent == i) stack[sp++] = k; }
+    for (int oi = 0; oi < no; oi++) {
+        const SyNode *N = &nd[order[oi]]; total++; if (items.n >= a.limit) continue;
+        SyItem *it = sy_item_new(&items); sy_cpy(it->path, sizeof it->path, N->path, strlen(N->path)); it->line0 = (int)N->l0; it->line1 = (int)N->l1; it->depth = N->depth - 1;
+        snprintf(it->kind, sizeof it->kind, "caller"); snprintf(it->name, sizeof it->name, "%s", N->name); snprintf(it->encl, sizeof it->encl, "calls %s at line %u", N->calls, N->cline);
+        it->conf = N->conf; it->ver = 0; snprintf(it->how, sizeof it->how, "caller at depth %d; confidence is that of the weakest edge on the path (call sites matched by name)", N->depth);
+    }
+    if (!a.json && total) snprintf(o.hint, sizeof o.hint, "%d node%s at depth <= %d%s. Callers are matched by name only; a path has the confidence of its weakest edge.", total, total == 1 ? "" : "s", maxd, truncated ? " (node limit reached; raise --nodes)" : "");
+    char nf[300]; snprintf(nf, sizeof nf, "no caller of '%s' in the indexed set", a.pos[0]);
+    sy_emit(&v, &o, &items, total, nf); sy_items_free(&items); free(nd); free(q); free(order); free(stack); sy_view_close(&v); return total ? 0 : 1;
+}
