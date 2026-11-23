@@ -370,6 +370,81 @@ conversations added from the pool, because the picker ranks by tool sequence and
 - **Not done**: the example note (`brief_example_note`: the request has examples and files changed) is not generated; the
   situations that need a real model (`Agent`, `SubagentHandback` inside a sub-agent); `/server:prompt` and `list_changed` for cards.
 
+## Version 6 (2026-11-22): Find, several calls in one turn, one script in one call
+
+Three composed families that teach the model what the engine gained last: the `Find` tool (`src/tools/find.c`, now in the
+main tool list of the prompt, see `katana agentsys`), several independent calls in the same assistant turn, and one `Bash`
+script for repetitive work. Everything is produced by the same machinery as the other `x-` families: the project is real, every
+call goes through the engine's dispatcher, no result is written by hand, and `check` runs each conversation again and compares
+it byte for byte. No model was run for any of this.
+
+**Project changes** (`scenario.c`). `XProj.cmt` puts a one-line English comment above every function (what it does, in the
+words of the function table), so the index has something to match. `XProj.wrap` adds `report_<f>` to one module: a function that
+calls `f` of another module (a real import in Python, JavaScript, shell and C), which is what gives `Find` a `calls:` line and
+`mode=refs` a caller to show. Both are off for the older families, so their stored conversations do not change. `XMsg` now holds up
+to four calls per turn (`c[4]`), and `x_calls` writes one assistant turn with two to four calls (a plan progress call counts as
+one), runs each through the dispatcher in order and stores one tool message per call; the sequence in the line reads `Read+Read`.
+`check`, the importer and the three conversation formats already handled several calls in one turn (ids, one result per call).
+
+**`x-find6`** (`src/app/scenario_v6.c`; stacks Python, JavaScript, shell and C: the `Find` index does not read `.pl` files, so there is
+no Perl cell). 28 functions have a description in other words than the code's (`g_x6_c`: how the user says it in each language, the
+short query the model sends to `Find`, the code term it tries in `Grep`). Five situations; the final answers are short and cite
+`file:line`, and the line number is read from the real `Read` result.
+
+| situation | what the conversation does |
+|---|---|
+| `concept` | the request describes the concept ("the price a customer pays once a percentage is taken off"); `Find` with a short query (sometimes with `path`); the first candidate must be the right file; `Read` with `offset`/`limit` around the best line; answer with `file:line`. A second request may ask who uses it (`Find mode=refs`, answer from the real "Used N times in M files") or what it returns exactly (answered from the part already read, no call) |
+| `refs` | the report function `report_<f>` calls `f`; the request asks which function feeds the report and where the real calculation lives; `Find` shows the report function (the `calls:` line names `f`, or the definition lists the report file under "also referenced in" when the language has no `calls:`); `Find mode=refs` on the name; `Read` of the use or of the definition; the answer names both with `file:line`, and the tests when the refs output shows them |
+| `no-match` | the user's words (up to four, taken from the request, none of them anywhere in the project) give the engine's real `No match for ...`; the model does not insist and does not guess: `Grep -i` with the code term, then (half the cases) a `Read` that confirms the definition, then the answer says why `Find` had nothing |
+| `exact` | the exact name is known: `Grep` straight to `def name(` with `-A 2` (no `Find`), answer with `file:line` and the return expression from the output; in 30% a second request describes a concept and goes to `Find`, so one conversation holds both choices |
+| `confuse` | two functions with common words in their comments, in different modules (ten pairs: `discount`/`with_tip`, `area`/`perimeter`, `dozens`/`tens`, `half`/`quarter`...); the query uses only the common words; the model reads the first candidate before affirming: if it is the right one it says it checked, if it is the other one (the ranking decides, the policy follows the real output) it says so and reads the second candidate, then answers with `file:line` of the right one |
+
+**`x-batch`** (`src/app/scenario_batch.c`; all five stacks, but the two cells that use `Find` skip Perl). The independent calls come in
+one turn and the next step uses the results together:
+
+| situation | turn 1 | turn 2 |
+|---|---|---|
+| `reads2` | `Read` + `Read` of two modules named in the request | answer lists what each defines; a dependent follow-up asks which has more functions (no call) |
+| `reads3` | `Glob` of the source folder (one call) | `Read` + `Read` + `Read` of all the modules; answer is one line per module; a follow-up asks for the biggest |
+| `grep2` | `Grep` in the source folder + `Grep` in the tests folder (`path`) | answer counts the lines in each; a follow-up asks for the test lines (one `Grep`) |
+| `find-glob` | `Find` + `Glob` of `**/test_*` | `Read` around the definition + `Grep` of the name in the test file, again in one turn; answer gives the definition and its test file; a follow-up runs the tests |
+| `find2` | two `Find` (two questions in one request) | two `Read`, one per candidate, in one turn; the answer gives both locations |
+
+Reads that depend on a result stay in separate turns (the `confuse` situation of `x-find6` reads the second candidate only after
+seeing the first).
+
+**`x-script`** (`src/app/scenario_script.c`; all five stacks). One `Bash` instead of one call per file, function or test; the script
+is written for the stack of the project and really runs there, and the generator checks the output line by line against what the
+project has.
+
+| situation | the call |
+|---|---|
+| `count` | a shell loop over the source files with `grep -c`, piped to `awk` for a total; answer is the table; a follow-up runs the tests |
+| `per-function` | one test run into a variable, then a loop over the function names (a `sed` pattern per language) that prints `name: ok` or `name: FAIL`; zero, one or two functions are broken on purpose; a follow-up asks for the first failing case (the project's own `FAIL` line) |
+| `replace` | `Grep -c` with `\bname\b` gives the files and the count; ONE Python script replaces the name in those files, prints one line per file and `assert`s the total against the count; then the tests run; a follow-up undoes it with the same script the other way round and the same assert |
+| `syntax` | a loop with the language's own check (`python3 -c 'import ast...'`, `node --check`, `sh -n`, `gcc -fsyntax-only`, `perl -c`) printing `ok file` or `BAD file`; in 40% one module is really broken |
+
+**Where they sit in the engine.** `curriculum.c`: the three files are included after `scenario_docs.c`, the names are in
+`g_cu_fams` with the other `x-` families, `Find` is a tier A tool of the coverage table (`g_cu_cov`), and the default weights are
+`x-find6` 30, `x-batch` 20, `x-script` 20. `scenario_more.c`: the names are in `g_x_fams`, which is what `check` uses to replay a line.
+The holdout reserves cells with `x_held` (offsets 180, 190, 200) and, through `cu_ix`, the last quarter of the function table.
+`pick` needed no change: it reads the tool names of the conversation, and `Find` is now one of them.
+
+**Generated for this step** (not a training file: a pool only to make `check` pass; seed 6, `--system mix:blocks=88,real=12`):
+300 conversations, 134 `x-find6`, 76 `x-batch`, 90 `x-script`; 129 call `Find` and 120 of them start with it; 76 have two or more calls in
+one turn; 30 distinct tool sequences; `check`: 771 calls, 0 problems, 0 contradictions, 0 repeated situations, all 300 replayed by the
+engine. A holdout of 50 (`--holdout`) also checks clean. The generator dropped about 1% of the draws (a function that landed in the
+module where it must not be, a case set the pool could not build).
+
+**Not verified.** No model was run, no training and no measurement was done, so nothing here shows that a model trained on these
+conversations uses `Find`, batches its calls or writes scripts. The query words and the "other words" descriptions are written by
+hand (28 functions); the model's own query would differ, and the generator keeps only the cases where the real index agrees with the
+policy, so the examples show `Find` working and never `Find` ranking the right file low except in `confuse`. The `report_<f>`
+function in Perl exists in the code but is never generated (no Perl cell uses `Find`). The projects are tiny (two to four functions
+per module, one 40-line chunk per file), so the examples do not show `Find` choosing among many chunks of one file or a large index.
+The plan rule in `loop.c` counts `Find` as a call that is not a read, so a request with three non-read calls would be asked for a plan;
+these families stay under that, but a real session that chains `Find`s would not (see the handoff).
+
 ## Commands
 
 ```
@@ -506,7 +581,8 @@ teaches those three behaviours.
 
 Without `--families` only the composed families are generated, in the proportion of the v4 file: `x-rare` 95, `x-mcp` 60,
 `x-concept` 58, `x-make` 40, `x-tools` 36, `x-ability` 30, `x-web` 26, `x-fix` 24, `x-config` 24, `x-ps1` 22, `x-clean` 18,
-`x-add` 16, `x-rename` 14, `x-investigate` 12, `x-find` 10, `x-explain` 10, `x-skill` 10, `x-run` 8. The mould families
+`x-add` 16, `x-rename` 14, `x-investigate` 12, `x-find` 10, `x-explain` 10, `x-skill` 10, `x-run` 8, and since v6 `x-find6` 30, `x-batch` 20,
+`x-script` 20 (`x-docs` 30 from v5). The mould families
 (`brief-*`, `skill-*`, `mcp-*`, `mixed`) stay in the binary and come out when named in `--families`.
 
 ## Measured on a file generated before the 2026-11-22 change (seed 7, 2,000 conversations)

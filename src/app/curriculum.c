@@ -2011,6 +2011,9 @@ static void fam_mcp_add(FILE *f, Scn *s) {
 #include "app/scenario_tasks.c"      /* as tarefas (corrigir, acrescentar, renomear, achar, explicar, rodar, configurar, limpar, investigar) */
 #include "app/scenario_conv.c"       /* as convencoes no motor de cenarios: servidor MCP de verdade, skills, criar e mudar KATANA.md/SKILL.md/ligacao */
 #include "app/scenario_docs.c"       /* x-docs: o KATANA.md aponta para um indice de documentos; o motor entrega o trecho certo e o modelo sabe achar sozinho */
+#include "app/scenario_v6.c"         /* v6: Find (navegar por significado), varias chamadas na mesma fala, um script em uma chamada */
+#include "app/scenario_batch.c"      /* v6: leituras independentes como varias chamadas na mesma fala */
+#include "app/scenario_script.c"     /* v6: trabalho repetitivo num Bash so (laco de shell ou Python que confere a contagem) */
 #include "app/scenario_ps1.c"        /* scripts PowerShell: escritos e conferidos, nunca dados como executados */
 #include "app/scenario_rare2.c"      /* preparos de verdade das raras: servidor MCP, outra sessao, subagente, servidor de linguagem */
 #include "app/scenario_rare.c"       /* as ferramentas raras: tres situacoes para cada uma */
@@ -2025,7 +2028,8 @@ static const struct { const char *name; CuFam fn; } g_cu_fams[] = {
     {"x-fix", fam_x_fix}, {"x-add", fam_x_add}, {"x-rename", fam_x_rename}, {"x-find", fam_x_find}, {"x-explain", fam_x_explain}, {"x-run", fam_x_run},
     {"x-config", fam_x_config}, {"x-clean", fam_x_clean}, {"x-investigate", fam_x_investigate},
     {"x-web", fam_x_web}, {"x-concept", fam_x_concept}, {"x-tools", fam_x_tools}, {"x-skill", fam_x_skill}, {"x-rare", fam_x_rare}, {"x-ps1", fam_x_ps1},
-    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs}};
+    {"x-mcp", fam_x_mcp}, {"x-ability", fam_x_ability}, {"x-make", fam_x_make}, {"x-docs", fam_x_docs},
+    {"x-find6", fam_x_find6}, {"x-batch", fam_x_batch}, {"x-script", fam_x_script}};
 #define CU_NFAM CU_N(g_cu_fams)
 
 /* ======================= stats e check ======================= */
@@ -2091,7 +2095,7 @@ static int g_cu_covmin;                /* check --min N: minimo por ferramenta f
 /* faixas: A declaradas no prompt; B so pelo nome (ToolSearch select:Nome antes); C raras (basta o padrao de descoberta).
    Minimo em conversas: A 2% do arquivo (pelo menos 5), B 3, C 1. PowerShell fica de fora fora do Windows. */
 static const struct { const char *name; char tier; } g_cu_cov[] = {
-    {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Glob", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
+    {"Bash", 'A'}, {"Read", 'A'}, {"Edit", 'A'}, {"Write", 'A'}, {"Grep", 'A'}, {"Glob", 'A'}, {"Find", 'A'}, {"TodoWrite", 'A'}, {"AskUserQuestion", 'A'},
     {"ToolSearch", 'A'}, {"WebSearch", 'A'}, {"WebFetch", 'A'}, {"Skill", 'A'},
     {"git", 'B'}, {"recall", 'B'}, {"remember", 'B'}, {"download_file", 'B'}, {"terminal", 'B'}, {"install_package", 'C'}, {"read_log", 'C'}, {"howto", 'C'}, {"Agent", 'B'}, {"LSP", 'B'}, {"Monitor", 'B'}, {"TaskStop", 'B'}, {"EnterPlanMode", 'B'}, {"ExitPlanMode", 'B'}, {"NotebookEdit", 'B'},
     {"SendUserFile", 'B'}, {"TaskCreate", 'C'}, {"TaskUpdate", 'C'}, {"TaskList", 'C'}, {"TaskGet", 'C'}, {"ListMcpResourcesTool", 'B'}, {"ReadMcpResourceTool", 'B'},
@@ -2562,7 +2566,7 @@ static int curriculum_main(int argc, char **argv) {
        mcp-*, mixed) continuam no binario e saem quando sao pedidas pelo nome em --families: as nove que tinham uma sequencia so ou
        uma primeira ferramenta so foram passadas para x-mcp, x-ability e x-make */
     static const struct { const char *nm; int w; } defw[] = {{"x-fix", 24}, {"x-add", 16}, {"x-rename", 14}, {"x-find", 10}, {"x-explain", 10}, {"x-run", 8}, {"x-config", 24}, {"x-clean", 18}, {"x-investigate", 12},
-        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}, {"x-docs", 30}};
+        {"x-web", 26}, {"x-concept", 58}, {"x-tools", 36}, {"x-skill", 10}, {"x-rare", 95}, {"x-ps1", 22}, {"x-mcp", 60}, {"x-ability", 30}, {"x-make", 40}, {"x-docs", 30}, {"x-find6", 30}, {"x-batch", 20}, {"x-script", 20}};
     for (int i = 0; i < CU_NFAM; i++) {
         const char *nm = g_cu_fams[i].name;
         w[i] = 0;
