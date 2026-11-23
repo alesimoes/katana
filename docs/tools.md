@@ -110,18 +110,18 @@ in the conversation, the unchanged/changed-part notes of the delta reading (`fac
 `KATANA_READ_OUTLINE_LINES=N` changes the line threshold (the byte threshold becomes 40 x N).
 
 **Repeated identical calls.** In the agent loop (`rr_check` in `src/agent/loop.c`), when the model repeats, in the same request,
-a `Read`, `Grep`, `Glob`, `Find`, `Symbols`, `WebSearch`, `WebFetch` or MCP tool marked `readOnlyHint` (server of the user's own configuration) with the same arguments as a
+a `Read`, `Grep`, `Find`, `Symbols`, `WebSearch`, `WebFetch` or MCP tool marked `readOnlyHint` (server of the user's own configuration) with the same arguments as a
 call that already succeeded, the call is not run again: the result is the note `[katana: you already made this exact call at step N
 of this request; its result is above in this conversation, or listed there as removed to save context. Do not repeat it: pick a
 different place to look ...]`. From the
 third repetition on the note is firmer and lists what the model can still do (another part with offset and limit, `Grep` with
-`output_mode` content, `-n -C 2`, `Glob` for the defining file, or answer saying what is unknown). `Bash`, `Write`, `Edit` and
+`output_mode` content, `-n -C 2`, `Find` or `Bash ls` for the defining file, or answer saying what is unknown). `Bash`, `Write`, `Edit` and
 the other tools are not covered; any call to one of them that is not a read clears the table, because the same read may then
 give another result (the delta notes take over). Failed calls are not recorded (the failure-repetition rules handle them). A new
 user request starts over. Test: `tools/tooltest/loopnotes.sh` (`katana toolrun notes`).
 
 ### Grep
-(The `Glob` tool was removed on 2026-11-23; its pattern matcher, `ct_gmatch`, stays for the `glob` argument of `Grep`.)
+(The old file-name pattern tool was removed on 2026-11-23; its pattern matcher, `ct_gmatch`, stays for the `glob` argument of `Grep`.)
 `Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, literal, head_limit, offset)`: katana's
 own backtracking engine (`src/tools/regex.c`) over UTF-8. Syntax: `.` `^` `$` `\A` `\z` `\Z` `\b` `\B` `\<` `\>`;
 classes `[...]` with `[[:alpha:]]` and the other POSIX names; `\d` (0-9) `\w` `\s` `\h` `\v` and negations; `\p{L}`
@@ -208,7 +208,7 @@ Markdown headings). The reference graph is the inverted index itself: the whole-
 that names it; one-part names are confirmed word by word in the file text.
 
 **One entry point for search (decided by katana, not by the model).** The model has one rule: `Find` first, `Grep`
-only for an exact pattern, `Glob` only for file names by pattern. `Find` looks at the question and picks the channel:
+only for an exact pattern, `Find` or `Bash ls` for file names. `Find` looks at the question and picks the channel:
 
 | Question | Channel | What is added to the usual answer |
 |---|---|---|
@@ -477,7 +477,7 @@ search results; pages are then read only when `KATANA_WEB_ALLOW_LOCAL=1`), `KATA
 `http://127.0.0.1` URLs and do not upgrade http).
 
 ### Tasks, questions, plan mode
-`TodoWrite(todos, done)` writes the list and marks steps finished (`TaskCreate/Update/List/Get` were removed on
+`TodoWrite(todos, done)` writes the list and marks steps finished (the old `Task*` tools were removed on
 2026-11-23: a second way to write a plan that the model never chose). One list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options
 each, asked one at a time through the existing question mechanism. `EnterPlanMode()` and `ExitPlanMode(plan)`: the
 model can enter the read-only mode and present a plan for approval.
@@ -509,15 +509,15 @@ one-line description of images. Formats, commands and examples: `docs/extending.
 
 ## Changes of 2026-11-22 that affect what the model sees
 
-- **Plan-first note.** `loop_plan_note` counts only calls that do something: `Read`, `Grep`, `Glob`, `LSP`, `ToolSearch`,
+- **Plan-first note.** `loop_plan_note` counts only calls that do something: `Read`, `Grep`, `LSP`, `ToolSearch`,
   `WebSearch`, `WebFetch`, the list and get tools and `AskUserQuestion` are not counted. The note fires on the third and on
   the sixth counted call of a request without a plan. A question answered with reads only never gets it.
-- **Unfinished-steps reminder.** `loop_todo_should_nudge` decides. A task made with `TaskCreate` and never moved to
+- **Unfinished-steps reminder.** `loop_todo_should_nudge` decides. A task noted with the old `TaskCreate` (removed 2026-11-23; the rule stays in the loop for a task the user asked to save for later) and never moved to
   in progress or completed is a recorded task, not a step of the model's plan: it does not trigger the reminder and the
   engine does not close it at the end of the request.
 - **`ToolSearch select:Edit` and `select:AskUserQuestion`** return the same shape the prompt declares: `edits` is a string
   of blocks (an array is still accepted), and a question needs only `question` and `options`, an option only `label`.
-- The recipes (read through `Skill`: `web`, `bash`, `linux`, `script`, `sudo`, `files`, `code`, `packages`, `logs`) name the current tools (`Read`, `Edit`, `Bash`, `Grep`, `Glob`, `WebSearch`, ...).
+- The recipes (read through `Skill`: `web`, `bash`, `linux`, `script`, `sudo`, `files`, `code`, `packages`, `logs`) name the current tools (`Read`, `Edit`, `Bash`, `Grep`, `WebSearch`, ...; a recipe text may still name `Glob`, which no longer exists: read it as `Find` or `Bash ls`).
 - Tests: `tools/tooltest/misc.sh`, `meta.sh`, `files.sh`, `web.sh`, `tasks.sh`, `loopnotes.sh` (`katana toolrun notes` replays a
   list of calls and prints which notes the loop would send), `helpword.sh`.
 

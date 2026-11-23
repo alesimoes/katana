@@ -1,5 +1,7 @@
 # UIOE code audit: what katana really has, against the three research lists
 
+> **Historical (2026-11-23, morning).** This audit describes the code before the legacy removal: the second tool set, the old names (`read_file`, `run_command`, `list_dir`, `find_file`, `terminal`, `terminal_screen`, `remember`/`recall`, `Glob`) and the partial U5/U8 are no longer current. Today the tool list is the 12 of `docs/tools.md`, the old set is gone, and UIOE U0 to U5 and U8 are built (`main` at `44748e1`). Kept for the gaps it found, not as a state description.
+
 Status: audit of the code, read-only, 2026-11-23. Nothing was compiled, run or measured. Every claim below was checked by
 reading `src/` (engine, agent, tools, coder, app), `desktop-qt/` and `tools/` in this worktree after `git merge main`.
 Line numbers are from this tree and will drift; function names are the stable handle. Docs such as `docs/handoff.md`,

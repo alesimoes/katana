@@ -9,9 +9,9 @@ techniques not yet used is in `optimization-roadmap.md`.
 
 The working model is Qwen3.6-35B-A3B only. The engine runs it on the CPU, Vulkan and OpenCL paths with the expert tiers (GPU, RAM, SSD); the agent
 sits on a lean tool set whose search and symbol tools read one code index (`docs/coder.md`: roots by `katana init`, a crawler that builds
-levels N0 to N3 on demand, a session watch for freshness, ignored content shown with its reason). A pre-LLM layer (UIOE, `docs/uioe.md`, U0 to U4
-built, U5 and U8 in progress) prepares a context block before the model runs. The legacy code and the old training data were removed; the
-curriculum is regenerated at the end of the UIOE work and trained at night. **The recent work (index, UIOE, tools) was compiled and not
+levels N0 to N3 on demand, a session watch for freshness, ignored content shown with its reason). A pre-LLM layer (UIOE, `docs/uioe.md`, U0 to U5
+and U8 built) prepares a context block before the model runs. The legacy code and the old training data were removed (the tool list is 12 tools); the
+curriculum generator was regenerated for it and training runs only at night. As of commit `44748e1` (main). **The recent work (index, UIOE, tools) was compiled and not
 measured**; every measured number in this file carries its date and belongs to the engine as it was then (sections 3 to 10 describe the
 engine of 2026-11-15 to 2026-11-22, `katana.c` has since been split into `src/engine/`, `src/agent/`, `src/coder/`, `src/tools/`, `src/app/`).
 
