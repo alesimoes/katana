@@ -130,7 +130,8 @@ KV state is stored in `~/.katana/cache`; the next session loads it instead of re
 ## The agent
 
 `katana agent <model>` (and the desktop app, which drives it) gives the model tools. The engine stays local; only the
-tools reach outside.
+tools reach outside. The prompt declares 12 tools (`Bash`, `Read`, `Edit`, `Write`, `Find`, `Symbols`, `Grep`, `TodoWrite`,
+`AskUserQuestion`, `WebSearch`, `WebFetch`, `ToolSearch`) and lists the rest by name; `ToolSearch` loads their arguments on demand.
 
 | Tool | What it does |
 |---|---|
@@ -138,9 +139,8 @@ tools reach outside.
 | `Read`, `Write`, `Edit`, `NotebookEdit` | `Read` shows a file with line numbers (PDF and HTML as text; a large file comes back as a map plus the parts that match what the model is looking for, and continues from where it stopped); `Write` and `Edit` need the file read first, `Edit` is an exact snippet that fails if it is missing or ambiguous; the syntax of the file is checked after each write |
 | `Find` | one entry point for search: it looks at the question and picks the way (a name, a quoted text, or a description in words), checks what it reports by re-reading the files, and says what it did not find |
 | `Symbols` | precise questions from the code index: `def`, `refs`, `callers`, `callees`, `uses`, `outline`, `at`, `deps`, `impact`, each answer with a confidence level (60+ languages and formats) |
-| `Grep`, `Glob` | exact patterns inside files (its own regex engine; output modes) and file names by pattern |
-| `Rename`, `Replace`, `Patch` | changes in many places at once, with a dry run and `/undo` |
-| `TodoWrite`, `TaskCreate`... | the model's own task list for long jobs, kept across context compaction; `AskUserQuestion` is a question to the user with options (buttons in the desktop app); `EnterPlanMode` and `ExitPlanMode` |
+| `Grep` | exact patterns inside files (its own regex engine; output modes); file names are found with `Find` or `Bash ls` |
+| `TodoWrite`, `AskUserQuestion` | the model's own task list for long jobs, kept across context compaction; a question to the user with options (buttons in the desktop app); `EnterPlanMode` and `ExitPlanMode` are announced by name |
 | `WebSearch`, `WebFetch` | built-in meta-search (DuckDuckGo, Bing, Mojeek, Wikipedia; no API key, optional SearXNG) and the main text of a page |
 | `Agent`, `SendMessage`, `Workflow` | sub-agents with a clean context and orchestration of several of them |
 | `ToolSearch`, `Skill` | the less common tools are announced by name only and loaded on demand; skills are named sets of instructions |
