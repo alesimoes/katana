@@ -31,12 +31,11 @@ static void orch_scope(UioeCtx *cx, UioeRecall *rc, const UioeAsk *a) {
     if (!cx->has_store) { rc->idx_mode = 0; snprintf(rc->scope, sizeof rc->scope, "no index store for %s: the request is answered by scanning files (degradation 5)", cx->root); rc_degrade(rc, "no index store: scanning files with K = 3 (degradation 5); nothing was indexed by this request"); return; }
     if (!uioe_open_view(cx)) { rc->idx_mode = 0; snprintf(rc->scope, sizeof rc->scope, "the index of %s cannot be read (%.150s): scanning files (degradation 5)", cx->root, cx->view_note); rc_degrade(rc, "the index could not be read: scanning files (degradation 5)"); return; }
     const SyView *v = &cx->view;
-    if (cx->have_sym && cx->have_keys && v->nkeyold == 0) { rc->idx_mode = cx->idx_mode = 2; snprintf(rc->scope, sizeof rc->scope, "index complete: %u files (%u with symbols, %u analysed for text keys)", v->nlive, v->nwith, v->nkeyflag); }
+    if (cx->have_sym && cx->have_keys) { rc->idx_mode = cx->idx_mode = 2; snprintf(rc->scope, sizeof rc->scope, "index complete: %u files (%u with symbols, %u analysed for text keys)", v->nlive, v->nwith, v->nkeyflag); }
     else {
         rc->idx_mode = cx->idx_mode = 1; size_t n = (size_t)snprintf(rc->scope, sizeof rc->scope, "index partial: %u files", v->nlive);
         if (!cx->have_sym) { n += (size_t)snprintf(rc->scope + n, sizeof rc->scope - n, "; no symbol sections"); rc_degrade(rc, "partial index: no symbols, so definitions and callers fall back to the search channel and file scans (degradation 4)"); }
         if (!cx->have_keys) { n += (size_t)snprintf(rc->scope + n, sizeof rc->scope - n, "; no text-key sections"); rc_degrade(rc, "partial index: no text keys, so connections through strings are skipped (degradation 3)"); }
-        if (v->nkeyold) { n += (size_t)snprintf(rc->scope + n, sizeof rc->scope - n, "; %u files were indexed before text keys existed", v->nkeyold); rc_limit(rc, "%u indexed files have no text-key data (indexed before keys existed): links through strings may be missing", v->nkeyold); }
     }
     (void)a;
 }

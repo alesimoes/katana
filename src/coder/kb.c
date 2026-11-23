@@ -323,7 +323,7 @@ static int coder_kb_load(const char *dir, CoderKb *kb) {
         for (int i = 0; i < n; i++) { kb_load_file(kb, v[i], pass); free(v[i]); }
         free(v);
     }
-    if (!kb->nfile) { fprintf(stderr, "kb: nenhum arquivo .kb/.rules em %s\n", dir ? dir : "(nulo)"); return -1; }
+    if (!kb->nfile) { if (!kb->quiet) fprintf(stderr, "kb: nenhum arquivo .kb/.rules em %s\n", dir ? dir : "(nulo)"); return -1; }
     kb_resolve(kb);
     return kb->nerr ? -1 : 0;
 }

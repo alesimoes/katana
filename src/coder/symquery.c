@@ -17,7 +17,7 @@ typedef struct { char *k; StoreLiveDoc *d; } SyNsE;
 typedef struct { SyNsE *e; int n, cap; int built; char **gomod; char **godir; int ngo; } SyMods;
 typedef struct {
     StoreReader *r; SyVSeg *s; int ns; StoreLive L; char dir[4400]; int any;
-    uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed, nkeyflag, nkeyold; int anykeys;
+    uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed, nkeyflag; int anykeys;
     char fpath[400]; char *fbuf; size_t fn; size_t *fln; int fnl, fok, fstale;
     uint32_t strip;                     /* consulta restrita a um prefixo da raiz: bytes do prefixo (e da barra) tirados dos caminhos */
     SyMods *mods;                       /* sob demanda (deps, imports); da visao, nao do processo */
@@ -53,7 +53,7 @@ static int sy_view_open_raw(const char *proj, SyView *v, char *err, size_t ecap)
         else { const SyVSeg *c = &v->s[e->seg]; int w = 0;
             if (c->x.has && e->idx < c->x.docs.n) { const uint8_t *q = store_table_at(&c->x.docs, e->idx); w = st_get_u32(q + 4) || st_get_u32(q + 12); }
             if (w) v->nwith++; else v->nunparsed++;
-            if (c->ky.has && e->idx < c->ky.docs.n && (st_get_u32(store_table_at(&c->ky.docs, e->idx) + 4) & SY_KFLAG)) v->nkeyflag++; else if (w) v->nkeyold++; }
+            if (c->ky.has && e->idx < c->ky.docs.n && (st_get_u32(store_table_at(&c->ky.docs, e->idx) + 4) & SY_KFLAG)) v->nkeyflag++; }
     }
     return 0;
 }
