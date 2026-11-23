@@ -600,7 +600,7 @@ static int cs_fuzzy(const CsView *v, const char *q, int ql, CsCand *out, int max
         }
         free(cnt); free(touched);
     }
-    qsort(all, (size_t)na, sizeof *all, cs_cand_cmp);
+    if (na > 1) qsort(all, (size_t)na, sizeof *all, cs_cand_cmp);
     int n = na < max ? na : max; if (n) memcpy(out, all, sizeof *out * (size_t)n);
     free(all); return n;
 }
