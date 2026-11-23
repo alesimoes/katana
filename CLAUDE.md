@@ -16,6 +16,7 @@ Motor de inferência de modelos de linguagem escrito do zero em C. `src/katana.c
   buscar conhecimento fora do modelo (internet, arquivos da máquina, memória própria), como o dono quer.
 - Repositório privado (github.com/alesimoes/katana): commit e push a cada passo concluído; não
   tornar público sem pedido.
+- Projeto novo, sem legado e sem compatibilidade (decisão do dono, 2026-11-23): não manter formatos antigos, aliases de nomes antigos, chaves de ambiente que só voltam ao comportamento antigo, nem código de migração. Quando um formato muda, o dado antigo é reconstruído ou descartado.
 - O dono do projeto quer trabalho contínuo, sem perguntas desnecessárias. Perguntar só antes de
   ações difíceis de desfazer ou que saiam da máquina.
 - O agente do katana grava arquivos, executa comandos e chama ferramentas MCP sem pedir confirmação
