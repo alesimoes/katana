@@ -1,0 +1,1441 @@
+# abbreviations.kb: abreviacoes reais de codigo -> expansoes (ingles e portugues, separadas por virgula; a primeira e a mais provavel).
+# Formato: abbr <abreviacao> <expansao>[,<expansao2>...]   (minusculas, sem acentos; expansoes podem ter espacos)
+# Uso: o tokenizador expande cada token do identificador (cfg -> config, configuration) e a busca ganha as formas longas.
+
+# ---- generico de programacao ----
+abbr cfg config,configuration,configuracao
+abbr conf config,configuration,conferencia
+abbr config configuration,configuracao
+abbr msg message,mensagem
+abbr ctx context,contexto
+abbr idx index,indice
+abbr tmp temporary,temporario
+abbr temp temporary,temperature,temporario
+abbr req request,requisicao,require
+abbr resp response,resposta
+abbr res result,response,resource,resolution
+abbr rsp response
+abbr impl implementation,implementacao
+abbr buf buffer
+abbr buff buffer
+abbr ptr pointer,ponteiro
+abbr len length,tamanho,comprimento
+abbr cnt count,contador,contagem
+abbr count counter,contador
+abbr num number,numero
+abbr nr number,numero
+abbr no number,numero
+abbr str string,texto
+abbr fn function,funcao
+abbr func function,funcao
+abbr cb callback
+abbr err error,erro
+abbr ret return,retorno
+abbr val value,valor
+abbr var variable,variavel
+abbr sz size,tamanho
+abbr size size,tamanho
+abbr dst destination,destino
+abbr dest destination,destino
+abbr src source,origem,fonte
+abbr arg argument,argumento
+abbr args arguments,argumentos
+abbr argc argument count
+abbr argv argument vector
+abbr param parameter,parametro
+abbr params parameters,parametros
+abbr prm parameter,parametro
+abbr attr attribute,atributo
+abbr prop property,propriedade
+abbr props properties,propriedades
+abbr opt option,opcao
+abbr opts options,opcoes
+abbr def default,definition,definicao
+abbr dflt default,padrao
+abbr init initialize,initialization,inicializar
+abbr fini finalize
+abbr deinit deinitialize
+abbr alloc allocate,allocation,alocar
+abbr dealloc deallocate
+abbr malloc memory allocate
+abbr calloc clear allocate
+abbr realloc reallocate
+abbr mem memory,memoria
+abbr addr address,endereco
+abbr ref reference,referencia
+abbr refs references,referencias
+abbr obj object,objeto
+abbr inst instance,instancia
+abbr elem element,elemento
+abbr el element
+abbr item item
+abbr itr iterator,iterador
+abbr iter iterator,iteration,iteracao
+abbr it iterator
+abbr cur current,cursor,atual
+abbr curr current,atual
+abbr prev previous,anterior
+abbr nxt next
+abbr nxt next,proximo
+abbr next next,proximo
+abbr tok token
+abbr tkn token
+abbr lex lexer,lexical
+abbr stmt statement,instrucao
+abbr expr expression,expressao
+abbr decl declaration,declaracao
+abbr def definition
+abbr defn definition
+abbr typ type,tipo
+abbr ty type
+abbr tp type
+abbr cls class,classe
+abbr klass class
+abbr mod module,modifier,modulo
+abbr pkg package,pacote
+abbr lib library,biblioteca
+abbr dep dependency,dependencia
+abbr deps dependencies,dependencias
+abbr env environment,ambiente
+abbr dir directory,diretorio
+abbr dirs directories
+abbr fs filesystem,file system
+abbr fd file descriptor
+abbr fp file pointer
+abbr fh file handle
+abbr hdl handle
+abbr hnd handle
+abbr hdr header,cabecalho
+abbr ftr footer,rodape
+abbr hdrs headers
+abbr pth path,caminho
+abbr fname filename,file name
+abbr fn filename,function
+abbr ext extension,extensao,external
+abbr doc document,documentation,documento
+abbr docs documents,documentation,documentos
+abbr img image,imagem
+abbr pic picture,imagem
+abbr vid video
+abbr aud audio
+abbr txt text,texto
+abbr tpl template,modelo
+abbr tmpl template,modelo
+abbr fmt format,formato
+abbr sep separator,separador
+abbr delim delimiter,delimitador
+abbr col column,coluna
+abbr cols columns
+abbr row row,linha
+abbr ln line,linha
+abbr cmd command,comando
+abbr cmds commands
+abbr exec execute,execution,executar
+abbr proc process,procedure,processo
+abbr prog program,programa
+abbr pid process id
+abbr tid thread id
+abbr thr thread
+abbr thd thread
+abbr mtx mutex
+abbr sem semaphore
+abbr cv condition variable
+abbr atom atomic
+abbr sync synchronize,synchronous
+abbr async asynchronous
+abbr seq sequence,sequential,sequencia
+abbr par parallel,parameter
+abbr conc concurrent,concurrency
+abbr gc garbage collector
+abbr rc reference count,return code
+abbr ok success
+abbr fail failure,falha
+abbr succ success,sucesso
+abbr stat status,statistics,estado
+abbr sts status
+abbr st state,status
+abbr stats statistics,estatisticas
+abbr cond condition,condicao
+abbr cmp compare,comparison,comparar
+abbr eq equal,equals,igual
+abbr neq not equal
+abbr ne not equal
+abbr lt less than
+abbr gt greater than
+abbr le less or equal
+abbr ge greater or equal
+abbr min minimum,minimo
+abbr max maximum,maximo
+abbr avg average,media
+abbr sum summation,total,soma
+abbr tot total
+abbr acc accumulator,accumulate,account
+abbr diff difference,diferenca
+abbr delta difference
+abbr pct percent,percentage,porcentagem
+abbr perc percent,percentage
+abbr ratio ratio,razao
+abbr rnd random,round
+abbr rand random,aleatorio
+abbr abs absolute,absoluto
+abbr rel relative,relation,relativo
+abbr inc increment,include,incremento
+abbr dec decrement,decimal,declare
+abbr incr increment
+abbr decr decrement
+abbr add addition,adicionar
+abbr sub subtract,subroutine,subscribe
+abbr mul multiply
+abbr div divide,division,divisao
+abbr mod modulo,module,modify
+abbr pow power
+abbr sqrt square root
+abbr exp exponent,expression,export
+abbr log logarithm,logging,log
+abbr sin sine
+abbr cos cosine
+abbr tan tangent
+abbr rot rotation,rotate
+abbr xform transform
+abbr mat matrix,matriz
+abbr vec vector,vetor
+abbr quat quaternion
+abbr pos position,posicao
+abbr loc location,local
+abbr coord coordinate,coordenada
+abbr dim dimension,dimensao
+abbr dims dimensions
+abbr w width,largura
+abbr h height,altura
+abbr wd width
+abbr ht height
+abbr lbl label,rotulo
+abbr btn button,botao
+abbr chk checkbox,check
+abbr sel select,selection,selecionar
+abbr tgl toggle
+abbr ctrl control,controller,controle
+abbr ctl control
+abbr ctrlr controller
+abbr ui user interface,interface
+abbr gui graphical user interface
+abbr ux user experience
+abbr win window,janela
+abbr wnd window
+abbr dlg dialog,dialogo
+abbr mnu menu
+abbr tb toolbar
+abbr sb statusbar,scrollbar
+abbr bg background,fundo
+abbr fg foreground
+abbr clr color,colour,cor
+abbr col color,column
+abbr rgb red green blue
+abbr rgba red green blue alpha
+abbr bmp bitmap
+abbr tex texture,textura
+abbr gfx graphics,graficos
+abbr gl opengl
+abbr px pixel
+abbr pt point,ponto
+abbr pts points
+abbr evt event,evento
+abbr ev event
+abbr hnd handler
+abbr hndlr handler,tratador
+abbr lsnr listener
+abbr obs observer
+abbr sub subscriber,subscription
+abbr pub publisher,publish
+abbr disp dispatch,display
+abbr dsp dispatch,display
+abbr trig trigger
+abbr sig signal,signature,sinal
+abbr irq interrupt request
+abbr isr interrupt service routine
+abbr tmr timer,temporizador
+abbr tm time,timer
+abbr ts timestamp
+abbr dt date time,delta time,data
+abbr dtm datetime
+abbr ms milliseconds
+abbr us microseconds
+abbr ns nanoseconds
+abbr sec seconds,second,segundos
+abbr secs seconds
+abbr min minutes,minimum
+abbr hr hour,hora
+abbr hrs hours
+abbr yr year,ano
+abbr mo month
+abbr mth month,mes
+abbr wk week,semana
+abbr dow day of week
+abbr tz timezone,time zone,fuso horario
+abbr utc coordinated universal time
+abbr dur duration,duracao
+abbr ttl time to live
+abbr exp expiry,expiration,expiracao
+abbr cron schedule
+abbr sched schedule,scheduler,agendar
+abbr freq frequency,frequencia
+abbr intv interval,intervalo
+abbr hz hertz
+abbr lat latitude,latency,latencia
+abbr lon longitude
+abbr lng longitude,language
+abbr geo geographic
+abbr tz timezone
+
+# ---- dados, banco e armazenamento ----
+abbr db database,banco de dados
+abbr dbs databases
+abbr sql structured query language
+abbr tbl table,tabela
+abbr tab table,tabela
+abbr rec record,registro
+abbr recs records,registros
+abbr reg register,registry,registro
+abbr regs registers
+abbr fld field,campo
+abbr flds fields
+abbr cur cursor
+abbr stmt statement
+abbr qry query,consulta
+abbr q query,queue
+abbr txn transaction,transacao
+abbr tx transaction,transmit
+abbr trx transaction
+abbr trans transaction,translation,transacao
+abbr tran transaction
+abbr pk primary key,chave primaria
+abbr fk foreign key,chave estrangeira
+abbr uk unique key
+abbr id identifier,identificador
+abbr ids identifiers
+abbr uid user id,unique id
+abbr gid group id
+abbr guid globally unique identifier
+abbr uuid universally unique identifier
+abbr oid object id
+abbr ref reference
+abbr seq sequence
+abbr ver version,versao
+abbr rev revision,revisao
+abbr vsn version
+abbr repo repository,repositorio
+abbr dao data access object
+abbr orm object relational mapping
+abbr ent entity,entidade
+abbr dto data transfer object
+abbr vo value object
+abbr mdl model,modelo
+abbr dm data model
+abbr schema schema,esquema
+abbr mig migration,migracao
+abbr idx index
+abbr ix index
+abbr pkey primary key
+abbr ds dataset,data source
+abbr dset dataset
+abbr src data source
+abbr snap snapshot
+abbr bkp backup
+abbr bak backup
+abbr arch archive,architecture,arquivo
+abbr chk checkpoint,checksum,check
+abbr ckpt checkpoint
+abbr hist history,historico
+abbr journal journal
+abbr wal write ahead log
+abbr lsn log sequence number
+abbr blk block,bloco
+abbr blks blocks
+abbr pg page,pagina
+abbr seg segment,segmento
+abbr chunk chunk
+abbr shard shard
+abbr repl replica,replication,replicacao
+abbr mstr master
+abbr slv slave
+abbr pri primary,primario
+abbr sec secondary,secundario
+abbr kv key value
+abbr k key,chave
+abbr v value,valor
+abbr ks keys
+abbr vs values
+abbr hm hash map
+abbr ht hash table
+abbr ll linked list
+abbr arr array,vetor
+abbr lst list,lista
+abbr ls list
+abbr stk stack,stock,estoque,pilha
+abbr que queue,fila
+abbr qu queue
+abbr dq deque,dequeue
+abbr enq enqueue
+abbr deq dequeue
+abbr pq priority queue
+abbr rb ring buffer
+abbr rbuf ring buffer
+abbr bst binary search tree
+abbr bt binary tree,backtrace
+abbr trie prefix tree
+abbr grp group,grupo
+abbr grps groups
+abbr cat category,categoria,concatenate
+abbr ctg category
+abbr cls class
+abbr kind kind,tipo
+abbr tag tag,etiqueta
+abbr lbl label
+abbr meta metadata,metadados
+abbr md metadata,markdown
+abbr desc description,descending,descricao
+abbr descr description,descricao
+abbr dscr description
+abbr info information,informacao
+abbr inf information,infinity
+abbr nfo information
+abbr summ summary,resumo
+abbr sumry summary
+abbr rpt report,relatorio
+abbr rep report,repeat,replace
+abbr ref reference
+abbr note note,nota
+abbr cmt comment,comentario
+abbr comm communication,comment,commit
+abbr cmnt comment
+abbr ann annotation,anotacao
+abbr anno annotation
+abbr dsc description
+abbr nm name,nome
+abbr nme name
+abbr ttl title,total,titulo
+abbr subj subject,assunto
+abbr sbj subject
+abbr cnt content,count,contato
+abbr cont content,continue,container
+abbr ctnr container
+abbr body body,corpo
+abbr pld payload
+abbr msg message
+abbr pkt packet,pacote
+abbr pkts packets
+abbr frm frame,from,form
+abbr frame frame,quadro
+abbr datagram datagram
+abbr seg segment
+abbr stm stream
+abbr strm stream,fluxo
+abbr sock socket
+abbr conn connection,connect,conexao
+abbr cxn connection
+abbr cnx connection
+abbr clnt client,cliente
+abbr cli client,command line interface
+abbr srv server,servidor
+abbr svr server
+abbr svc service,servico
+abbr srvc service
+abbr api application programming interface
+abbr rpc remote procedure call
+abbr ep endpoint
+abbr url uniform resource locator,endereco web
+abbr uri uniform resource identifier
+abbr http hypertext transfer protocol
+abbr https secure http
+abbr ws websocket
+abbr tcp transmission control protocol
+abbr udp user datagram protocol
+abbr ip internet protocol
+abbr dns domain name system
+abbr tls transport layer security
+abbr ssl secure sockets layer
+abbr ssh secure shell
+abbr ftp file transfer protocol
+abbr smtp mail transfer protocol
+abbr mx mail exchange
+abbr net network,rede
+abbr nw network
+abbr nic network interface card
+abbr mac media access control,mac address
+abbr lan local area network
+abbr proxy proxy
+abbr gw gateway
+abbr lb load balancer
+abbr cdn content delivery network
+abbr rt route,router,runtime,rota
+abbr rte route
+abbr rtr router
+abbr mw middleware
+abbr hdr header
+abbr cookie cookie
+abbr sess session,sessao
+abbr ssn session
+abbr jwt json web token
+abbr tok token
+abbr oauth open authorization
+abbr auth authentication,authorization,autenticacao,autorizacao
+abbr authn authentication
+abbr authz authorization
+abbr cred credential,credencial
+abbr creds credentials
+abbr pwd password,senha,present working directory
+abbr pass password,pass
+abbr passwd password
+abbr usr user,usuario
+abbr usrs users
+abbr acct account,conta
+abbr acc account
+abbr prof profile,perfil
+abbr perm permission,permissao
+abbr perms permissions
+abbr priv privilege,private,privilegio
+abbr pub public,publish
+abbr prv private
+abbr rbac role based access control
+abbr acl access control list
+abbr adm admin,administrator,administrador
+abbr admin administrator
+abbr mgr manager,gerente
+abbr mgmt management,gerenciamento
+abbr svc service
+abbr sec security,seguranca,second
+abbr enc encrypt,encoding,encrypted
+abbr encr encrypt
+abbr dec decrypt,decode
+abbr decr decrypt
+abbr crypt cryptography
+abbr cipher cipher
+abbr sig signature
+abbr sign sign,signature
+abbr hmac hash message authentication code
+abbr sha secure hash algorithm
+abbr md5 message digest
+abbr crc cyclic redundancy check
+abbr csum checksum
+abbr hash hash
+abbr salt salt
+abbr nonce nonce
+abbr otp one time password
+abbr mfa multi factor authentication
+abbr sso single sign on
+
+# ---- negocio e dominio (pt e en) ----
+abbr qty quantity,quantidade
+abbr qtd quantidade,quantity
+abbr qtde quantidade,quantity
+abbr amt amount,valor,montante
+abbr vlr valor,value
+abbr val value
+abbr bal balance,saldo
+abbr tot total
+abbr sub subtotal
+abbr pct percent
+abbr disc discount,desconto
+abbr dsc discount,desconto
+abbr tax tax,imposto
+abbr vat value added tax
+abbr fee fee,taxa
+abbr cur currency,moeda
+abbr ccy currency
+abbr curr currency,moeda
+abbr usd us dollar
+abbr brl brazilian real
+abbr eur euro
+abbr pmt payment,pagamento
+abbr pay payment,pagamento
+abbr pgto pagamento,payment
+abbr pag pagamento,page
+abbr chg charge,change,cobranca
+abbr cobr cobranca,charge
+abbr bill billing,bill
+abbr inv invoice,inventory,fatura,inventario
+abbr invc invoice,fatura
+abbr nf nota fiscal,invoice
+abbr nfe nota fiscal eletronica,electronic invoice
+abbr nfce nota fiscal consumidor
+abbr cte conhecimento de transporte
+abbr cfop codigo fiscal de operacoes
+abbr ncm nomenclatura comum do mercosul
+abbr icms imposto sobre circulacao de mercadorias
+abbr ipi imposto sobre produtos industrializados
+abbr pis programa de integracao social
+abbr cofins contribuicao financiamento seguridade
+abbr iss imposto sobre servicos
+abbr cnpj cadastro nacional pessoa juridica,company tax id
+abbr cpf cadastro pessoa fisica,personal tax id
+abbr rg registro geral,identity document
+abbr cep codigo de enderecamento postal,postal code
+abbr uf unidade federativa,state
+abbr zip zip code,postal code
+abbr tel telephone,telefone
+abbr fone telefone,phone
+abbr cel celular,mobile phone
+abbr mob mobile
+abbr eml email
+abbr mail email
+abbr addr address,endereco
+abbr end endereco,end
+abbr endr endereco
+abbr cid cidade,city
+abbr city city,cidade
+abbr ctry country,pais
+abbr cntry country
+abbr st street,state
+abbr bairro neighborhood
+abbr ord order,pedido,ordem
+abbr pedi pedido,order
+abbr ped pedido,order
+abbr po purchase order
+abbr so sales order
+abbr cart shopping cart,carrinho
+abbr crt cart
+abbr chkout checkout
+abbr prod product,produto
+abbr prd product,produto
+abbr prods products
+abbr sku stock keeping unit
+abbr cli cliente,client
+abbr cust customer,cliente
+abbr cstmr customer
+abbr cus customer
+abbr forn fornecedor,supplier
+abbr supp supplier,fornecedor
+abbr vend vendor,vendedor,seller
+abbr vdr vendor
+abbr emp employee,funcionario,empresa
+abbr func funcionario,function
+abbr empl employee
+abbr dept department,departamento
+abbr depto departamento
+abbr org organization,organizacao
+abbr orgz organization
+abbr co company,empresa
+abbr corp corporation
+abbr cia company,companhia
+abbr tenant tenant,inquilino
+abbr loja store,loja
+abbr str store
+abbr wh warehouse,armazem
+abbr whs warehouse
+abbr dep deposito,deposit
+abbr dpt depot,deposit
+abbr stk stock,estoque
+abbr est estoque,estimate,established
+abbr inv inventario,inventory
+abbr invt inventory
+abbr rsv reserve,reserva
+abbr resv reservation,reserva
+abbr res reserva,reservation
+abbr alloc allocation
+abbr ship shipment,envio
+abbr shp shipping,shipment
+abbr dlv delivery,entrega
+abbr deliv delivery,entrega
+abbr entr entrega,entry
+abbr trk tracking,track
+abbr trck tracking
+abbr frt freight,frete
+abbr cur courier,carrier
+abbr carr carrier,transportadora
+abbr transp transportadora,transport
+abbr rcv receive,receipt
+abbr recv receive,received
+abbr rcpt receipt,recibo
+abbr rec receipt,recibo
+abbr ret return,devolucao
+abbr rtn return,devolucao
+abbr dev devolucao,device,development
+abbr rfnd refund,estorno
+abbr est estorno
+abbr cncl cancel,cancelar
+abbr canc cancelar,cancel
+abbr cxl cancel
+abbr aprov aprovar,approve,approval
+abbr appr approve,approval
+abbr apv approve
+abbr rej reject,rejeitar
+abbr rjt reject
+abbr pend pending,pendente
+abbr pnd pending
+abbr proc processing,processado
+abbr stat status
+abbr sit situacao,situation
+abbr sts situacao,status
+abbr ativ ativo,active
+abbr act active,action,ativo
+abbr inat inativo,inactive
+abbr inact inactive
+abbr dis disabled,discount
+abbr enb enabled
+abbr en enabled,english
+abbr pt portuguese,portugues
+abbr ptbr brazilian portuguese
+abbr lang language,idioma
+abbr loc locale,location
+abbr i18n internationalization
+abbr l10n localization
+abbr a11y accessibility
+abbr tz timezone
+abbr nfy notify,notification
+abbr notif notification,notificacao
+abbr ntf notification
+abbr alrt alert,alerta
+abbr wrn warning,aviso
+abbr warn warning,aviso
+abbr dbg debug,depuracao
+abbr trc trace
+abbr vrb verbose
+abbr inf info
+abbr crit critical,critico
+abbr sev severity,severidade
+abbr lvl level,nivel
+abbr lv level
+abbr prio priority,prioridade
+abbr pri priority
+abbr cod codigo,code
+abbr cd codigo,code,compact disc
+abbr cdg codigo
+abbr descr descricao
+abbr dsc descricao
+abbr obs observacao,observation,observer
+abbr obsv observacao
+abbr sit situacao
+abbr tp tipo,type
+abbr tip tipo,type
+abbr sg sigla,signal
+abbr dt data,date
+abbr dtn data nascimento,birth date
+abbr dob date of birth
+abbr hr hora,hour
+abbr vl valor
+abbr vlr valor
+abbr nr numero
+abbr nro numero
+abbr seq sequencial,sequence
+abbr ord ordem,order
+abbr ind indice,indicator,independent
+abbr flg flag,indicador
+abbr flag flag,indicador
+abbr bool boolean
+abbr tbl tabela
+abbr cad cadastro,register
+abbr cadast cadastro
+abbr relat relatorio,report
+abbr rel relatorio,release,relative
+abbr conf confirmacao,confirmation,config
+abbr cfm confirm,confirmation
+abbr ack acknowledge,acknowledgement
+abbr nack negative acknowledge
+abbr aut autorizacao,authorization
+abbr autz autorizacao
+abbr lib liberacao,liberar,library
+abbr bloq bloqueio,bloquear,block
+abbr blk block,blocked
+abbr ger gerencia,gerar,generate
+abbr gen generate,generic,general
+abbr gerar gerar,generate
+abbr calc calculate,calculation,calcular
+abbr cacl calculate
+abbr comp compare,compute,component,complete
+abbr cmpt compute
+abbr eval evaluate,evaluation,avaliar
+abbr proc procedure,process
+abbr fnc function
+abbr fun function
+abbr meth method,metodo
+abbr mth method,month
+abbr mthd method
+abbr sig signature
+abbr sch schema,schedule
+abbr cnv convert,conversion
+abbr conv convert,conversion,conversao
+abbr xlat translate
+abbr tr translate,transaction
+abbr i18 internationalization
+abbr enc encode
+abbr dcd decode
+abbr ser serialize,serial
+abbr deser deserialize
+abbr marsh marshal
+abbr json javascript object notation
+abbr yml yaml
+abbr xml extensible markup language
+abbr csv comma separated values
+abbr pdf portable document format
+abbr html hypertext markup language
+abbr css cascading style sheets
+abbr js javascript
+abbr ts typescript,timestamp
+abbr py python
+abbr rb ruby
+abbr rs rust
+abbr cpp c plus plus
+abbr cs c sharp
+abbr kt kotlin
+abbr sh shell
+abbr ps powershell
+abbr re regular expression,regex
+abbr rx regular expression,receive
+abbr regex regular expression
+abbr glob glob pattern
+abbr pat pattern,padrao
+abbr ptn pattern
+abbr fmt format
+abbr tmpl template
+abbr ast abstract syntax tree
+abbr ir intermediate representation
+abbr cfg control flow graph,config
+abbr dfg data flow graph
+abbr vm virtual machine
+abbr jit just in time
+abbr aot ahead of time
+abbr rt runtime
+abbr sdk software development kit
+abbr ide integrated development environment
+abbr cli command line
+abbr repl read eval print loop
+abbr vcs version control system
+abbr ci continuous integration
+abbr cd continuous delivery,continuous deployment
+abbr pr pull request
+abbr mr merge request
+abbr br branch
+abbr brn branch
+abbr cmt commit
+abbr tg tag
+abbr stg staging
+abbr prd production,produto
+abbr prod production,product
+abbr dev development,developer,device
+abbr qa quality assurance
+abbr uat user acceptance test
+abbr tst test,teste
+abbr tc test case
+abbr ut unit test
+abbr e2e end to end
+abbr mock mock
+abbr stub stub
+abbr fx fixture,effect
+abbr fix fixture,fix
+abbr bench benchmark
+abbr perf performance,desempenho
+abbr opt optimize,optimization,optional
+abbr optim optimize
+abbr eff efficient,efficiency
+abbr lat latency
+abbr thr throughput,threshold,thread
+abbr tput throughput
+abbr cap capacity,capability,capacidade
+abbr lim limit,limite
+abbr thresh threshold
+abbr tol tolerance,tolerancia
+abbr eps epsilon
+abbr inf infinity
+abbr nan not a number
+abbr ovf overflow
+abbr unf underflow
+abbr oob out of bounds
+abbr npe null pointer exception
+abbr nil null
+abbr nul null
+abbr null null,nulo
+abbr nullptr null pointer
+abbr bnd bound,bounds
+abbr rng range,intervalo
+abbr lo low,lower
+abbr hi high,higher
+abbr mid middle
+abbr beg begin,beginning
+abbr st start
+abbr strt start
+abbr fin finish,final,finalize
+abbr end end,fim
+abbr stp stop,step
+abbr cpy copy
+abbr mv move,mover
+abbr rm remove,delete
+abbr del delete,deletar,excluir
+abbr rem remove,remainder
+abbr clr clear
+abbr rst reset
+abbr ins insert,inserir
+abbr upd update,atualizar
+abbr updt update
+abbr upsert update or insert
+abbr sel select
+abbr get get
+abbr put put
+abbr crt create,criar
+abbr cre create
+abbr gen generate
+abbr mk make
+abbr bld build
+abbr cmpl compile
+abbr lnk link
+abbr ld load,loader,carregar
+abbr ldr loader
+abbr sv save,salvar
+abbr wr write
+abbr rd read
+abbr rw read write
+abbr ro read only
+abbr io input output
+abbr in input
+abbr out output
+abbr inp input,entrada
+abbr outp output,saida
+abbr stdin standard input
+abbr stdout standard output
+abbr stderr standard error
+abbr eof end of file
+abbr eol end of line
+abbr nl newline
+abbr cr carriage return
+abbr lf line feed
+abbr ws whitespace
+abbr tmp tmp
+abbr scr script,screen,screenshot
+abbr ver verify,version
+abbr vld validate,validation
+abbr valid validate,validation
+abbr chk check
+abbr san sanitize
+abbr norm normalize,normalization
+abbr nrm normalize
+abbr canon canonical
+abbr uniq unique
+abbr dup duplicate
+abbr dupl duplicate,duplicado
+abbr merge merge
+abbr mrg merge
+abbr agg aggregate,aggregation
+abbr aggr aggregate
+abbr grp group
+abbr cnt count
+abbr filt filter
+abbr flt filter,float
+abbr fltr filter
+abbr srt sort
+abbr ord order
+abbr asc ascending
+abbr rnk rank
+abbr pag pagination,page
+abbr pagn pagination
+abbr ofs offset
+abbr off offset,off
+abbr lmt limit
+abbr cache cache
+abbr cch cache
+abbr memo memoize
+abbr mmz memoize
+abbr pre prefetch,prefix
+abbr pref prefix,preference,prefetch
+abbr sfx suffix
+abbr suf suffix
+abbr pfx prefix
+abbr sz size
+abbr cap capacity
+abbr rsrc resource,recurso
+abbr res resource
+abbr rscs resources
+abbr pool pool
+abbr cfg configuration
+abbr set settings,set,setting
+abbr stg settings,storage,staging
+abbr sett settings
+abbr pref preferences,preferencias
+abbr prefs preferences
+abbr kb knowledge base,kilobyte
+abbr mb megabyte
+abbr gb gigabyte
+abbr tb terabyte
+abbr kib kibibyte
+abbr cpu central processing unit
+abbr gpu graphics processing unit
+abbr ram random access memory
+abbr rom read only memory
+abbr os operating system
+abbr bios basic input output system
+abbr hw hardware
+abbr sw software
+abbr dev device
+abbr drv driver
+abbr dvc device
+abbr sys system,sistema
+abbr sysmon system monitor
+abbr svc service
+abbr dmn daemon
+abbr jobs jobs
+abbr tsk task,tarefa
+abbr wrk worker
+abbr wkr worker
+abbr wkrs workers
+abbr exe executable
+abbr bin binary,binario
+abbr lib library
+abbr so shared object
+abbr dll dynamic link library
+abbr obj object
+abbr asm assembly
+abbr isa instruction set architecture
+abbr abi application binary interface
+abbr elf executable linkable format
+abbr src source
+abbr hdr header
+abbr inc include
+abbr inl inline
+abbr ifc interface
+abbr intf interface
+abbr iface interface
+abbr abs abstract,absolute
+abbr virt virtual
+abbr stat static
+abbr const constant,constante
+abbr cst constant
+abbr ctor constructor,construtor
+abbr dtor destructor,destrutor
+abbr cons constructor,constant
+abbr ovr override
+abbr ovrd override
+abbr ext extends,extension
+abbr impl implements
+abbr ptr pointer
+abbr uptr unique pointer
+abbr sptr shared pointer
+abbr wptr weak pointer
+abbr deref dereference
+abbr cast cast
+abbr sz sizeof
+abbr ofs offset
+abbr cb callback
+abbr clbk callback
+abbr hook hook
+abbr lam lambda
+abbr gen generator,generic
+abbr gnr generator
+abbr cor coroutine
+abbr co coroutine,company
+abbr fut future
+abbr prom promise
+abbr awt await
+abbr tsk task
+abbr chan channel
+abbr ch channel,character,chapter
+abbr chr character
+abbr char character
+abbr ch character
+abbr wchar wide character
+abbr utf unicode transformation format
+abbr asc ascii
+abbr uni unicode
+abbr enc encoding
+abbr bom byte order mark
+abbr le little endian
+abbr be big endian
+abbr hex hexadecimal
+abbr oct octal
+abbr bin binary
+abbr dec decimal
+abbr int integer,inteiro
+abbr uint unsigned integer
+abbr bool boolean
+abbr dbl double
+abbr flt float
+abbr dbl double precision
+abbr bytes bytes
+abbr byt byte
+abbr bit bit
+abbr u8 unsigned 8 bit
+abbr u16 unsigned 16 bit
+abbr u32 unsigned 32 bit
+abbr u64 unsigned 64 bit
+abbr i32 signed 32 bit
+abbr i64 signed 64 bit
+abbr f32 float 32 bit
+abbr f16 half precision float
+abbr bf16 brain float 16
+abbr q4 4 bit quantization
+abbr q8 8 bit quantization
+abbr quant quantize,quantization,quantizacao
+abbr qt quantity,qt framework
+abbr emb embedding
+abbr embd embedding
+abbr attn attention
+abbr ffn feed forward network
+abbr mlp multi layer perceptron
+abbr moe mixture of experts
+abbr kv key value cache
+abbr kvc key value cache
+abbr llm large language model
+abbr lm language model
+abbr nn neural network
+abbr ml machine learning
+abbr ai artificial intelligence
+abbr gen generation
+abbr inf inference,inferencia
+abbr infer inference
+abbr trn train,training,treino
+abbr train training
+abbr ep epoch
+abbr lr learning rate
+abbr opt optimizer
+abbr loss loss
+abbr grad gradient
+abbr bwd backward
+abbr fwd forward
+abbr tok tokens,tokenizer
+abbr tokz tokenizer
+abbr vocab vocabulary,vocabulario
+abbr voc vocabulary
+abbr ctx context window
+abbr seq sequence length
+abbr bs batch size
+abbr bsz batch size
+abbr nl number of layers
+abbr hd head dimension
+abbr tp tensor parallel
+abbr sm streaming multiprocessor
+abbr vk vulkan
+abbr cuda compute unified device architecture
+abbr simd single instruction multiple data
+abbr avx advanced vector extensions
+abbr sse streaming simd extensions
+abbr ssbo shader storage buffer object
+abbr ubo uniform buffer object
+abbr spv spirv
+abbr glsl opengl shading language
+abbr mcp model context protocol
+abbr rag retrieval augmented generation
+abbr ocr optical character recognition
+abbr asr automatic speech recognition
+abbr tts text to speech
+abbr nlp natural language processing
+abbr ner named entity recognition
+abbr pos part of speech,position
+abbr cbi code based inference
+abbr kb knowledge base
+abbr ontology ontology
+abbr onto ontology
+abbr conc concept,concurrency,conceito
+abbr cpt concept,conceito
+abbr rel relation,relationship,relacao
+abbr rels relations,relationships
+abbr assoc association,associate
+abbr corr correlation
+abbr cooc co occurrence
+abbr nbr neighbor,neighbour,vizinho
+abbr nbrs neighbors
+abbr adj adjacent,adjacency
+abbr edge edge,aresta
+abbr vtx vertex
+abbr gr graph,grafo
+abbr grph graph
+abbr dag directed acyclic graph
+abbr sc score,pontuacao
+abbr scr score
+abbr wt weight,peso
+abbr wgt weight
+abbr wts weights
+abbr bias bias
+abbr conf confidence,confianca
+abbr prob probability,probabilidade
+abbr p probability,pointer
+abbr thr threshold
+abbr cand candidate,candidato
+abbr cands candidates
+abbr hit hit,acerto
+abbr miss miss,falha
+abbr rnk ranking
+abbr top top
+abbr tk top k
+abbr k top k
+abbr n count
+abbr ntok number of tokens
+abbr nbyte number of bytes
+abbr idx2 second index
+abbr i index,iterator
+abbr j inner index
+abbr n length
+abbr m length
+abbr x x axis,input
+abbr y y axis,output
+abbr z z axis
+abbr e error,element,event,exception
+abbr ex exception,example,external
+abbr exc exception
+abbr excp exception,excecao
+abbr ctx2 context
+abbr cx context
+abbr ec error code
+abbr errno error number
+abbr rc return code
+abbr retcode return code
+abbr sts status
+abbr sc status code
+abbr hc health check
+abbr hlth health
+abbr diag diagnostic,diagnose
+abbr dx diagnostics
+abbr dump dump
+abbr trc trace
+abbr prof profile,profiler
+abbr cov coverage,cobertura
+abbr lint lint
+abbr fmt formatter
+abbr doc documentation
+abbr readme readme
+abbr changelog changelog
+abbr lic license,licenca
+abbr copyright copyright
+abbr ver release version
+abbr rel release
+abbr bump increment version
+abbr dist distribution,distribuicao
+abbr pkg package
+abbr inst install,instance
+abbr instl install
+abbr uninst uninstall
+abbr upg upgrade,atualizar
+abbr dwn down,download
+abbr dl download
+abbr ul upload
+abbr up up,upload
+abbr dn down
+abbr tx transmit
+abbr rx receive
+abbr snd send,enviar
+abbr send send,enviar
+abbr rcvr receiver
+abbr sndr sender,remetente
+abbr rcp recipient,destinatario
+abbr recip recipient
+abbr dstn destination
+abbr orig origin,original,origem
+abbr ori origin
+abbr tgt target,alvo
+abbr trg target
+abbr obj objective,object
+abbr goal goal,objetivo
+abbr reqd required,obrigatorio
+abbr opt optional,opcional
+abbr mand mandatory,obrigatorio
+abbr nec necessary
+abbr avail available,disponivel
+abbr avl available
+abbr unavail unavailable
+abbr ready ready,pronto
+abbr rdy ready
+abbr busy busy,ocupado
+abbr idle idle,ocioso
+abbr wait waiting,aguardando
+abbr wt waiting
+abbr pnd pending
+abbr run running,executando
+abbr runn running
+abbr done done,concluido
+abbr cmpl complete,completed,concluido
+abbr compl complete
+abbr fin finished
+abbr err2 error
+abbr tmout timeout
+abbr to timeout,to
+abbr tmo timeout
+abbr dl deadline
+abbr exp expire
+abbr rtry retry
+abbr bkoff backoff
+abbr cb circuit breaker,callback
+abbr fb fallback
+abbr fo failover
+abbr rec recover,recovery
+abbr rcvr recover
+abbr rb rollback
+abbr rbk rollback
+abbr cmt commit
+abbr ab abort
+abbr rst restart,reset
+abbr rsm resume
+abbr pse pause
+abbr hlt halt
+abbr kill kill
+abbr trm terminate
+abbr term terminate,terminal,terminology,termo
+abbr exit exit
+abbr qt quit
+abbr shut shutdown
+abbr clean cleanup
+abbr cln cleanup,clean
+abbr gcol garbage collect
+abbr vac vacuum
+abbr cmpct compact
+abbr cmpr compress,compression,compare
+abbr zip compress
+abbr unzip decompress
+abbr arc archive
+abbr tar tape archive
+abbr pk pack
+abbr upk unpack
+abbr ser serialization
+abbr pers persist,persistence,persistencia
+abbr pst persist
+abbr stor storage,store
+abbr strg storage
+abbr str store
+abbr ld load
+abbr rd restore,read
+abbr rstr restore
+abbr imp import,importar
+abbr exp export,exportar
+abbr impt import
+abbr expt export
+abbr mig migrate
+abbr sync synchronization,sincronizacao
+abbr syn synchronize
+abbr rpl replicate
+abbr mrr mirror
+abbr mnt mount,maintenance,manutencao
+abbr mntn maintenance
+abbr unmnt unmount
+abbr att attach,attribute,attachment
+abbr attch attachment,anexo
+abbr det detach,detail,detalhe
+abbr dtl detail,detalhe
+abbr dtls details
+abbr ovw overview,overwrite
+abbr ovrw overwrite
+abbr sum summary
+abbr hdl handle,handler
+abbr hndl handle,handler
+abbr mgr manager
+abbr ctlr controller
+abbr cntlr controller
+abbr fct factory
+abbr fac factory
+abbr bldr builder
+abbr bld builder
+abbr gen generator
+abbr prov provider,provision
+abbr prvdr provider
+abbr adpt adapter
+abbr adp adapter
+abbr wrp wrapper
+abbr wrap wrapper
+abbr dec decorator
+abbr deco decorator
+abbr prx proxy
+abbr fcd facade
+abbr strat strategy,estrategia
+abbr cmd2 command
+abbr obsr observer
+abbr vis visitor,visible,visibility
+abbr vstr visitor
+abbr tmpl template method
+abbr sing singleton
+abbr svc2 service
+abbr uc use case,caso de uso
+abbr ucs use cases
+abbr rep repository
+abbr usecase use case
+abbr mvc model view controller
+abbr mvvm model view view model
+abbr vm view model,virtual machine
+abbr ctl controller
+abbr tmpl template
+abbr cmpnt component,componente
+abbr comp component
+abbr wdg widget
+abbr wgt widget
+abbr ctl control
+abbr lyt layout
+abbr lay layout
+abbr nav navigation,navegacao
+abbr navg navigation
+abbr brd board,border
+abbr bdr border
+abbr mrg margin
+abbr pad padding
+abbr pd padding
+abbr fnt font,fonte
+abbr sty style,estilo
+abbr stl style
+abbr thm theme,tema
+abbr anim animation,animacao
+abbr trans transition,transform
+abbr tween interpolation
+abbr lerp linear interpolation
+abbr easing easing
+abbr scrl scroll
+abbr scr scroll
+abbr zm zoom
+abbr pan pan
+abbr rsz resize
+abbr drg drag
+abbr drp drop
+abbr clk click
+abbr dbl double
+abbr hov hover
+abbr foc focus
+abbr blr blur
+abbr kbd keyboard,teclado
+abbr key key,tecla
+abbr mse mouse
+abbr ptr pointer,cursor
+abbr tch touch,toque
+abbr ges gesture
+abbr rec record,recording,rectangle
+abbr rect rectangle,retangulo
+abbr circ circle
+abbr ell ellipse
+abbr poly polygon
+abbr ln line
+abbr arc arc
+abbr crv curve
+abbr bez bezier
+abbr pth path
+abbr shp shape
+abbr geom geometry,geometria
+abbr mesh mesh
+abbr vtx vertex
+abbr tri triangle
+abbr nrm normal
+abbr uv texture coordinates
+abbr lum luminance
+abbr alp alpha
+abbr hsv hue saturation value
+abbr hsl hue saturation lightness
+abbr cam camera
+abbr scn scene,cena
+abbr lgt light
+abbr shd shader,shadow
+abbr mat material
+abbr tex texture
+abbr fbo framebuffer object
+abbr vbo vertex buffer object
+abbr vao vertex array object
+abbr rtt render to texture
+abbr fps frames per second
+abbr dpi dots per inch
+abbr hdpi high dpi
+abbr res resolution,resolucao
+abbr aspect aspect ratio
+abbr scl scale,escala
+abbr xlt translate
+abbr rot rotate
+abbr mtx matrix
+abbr ident identity,identidade
+abbr inv inverse,invert
+abbr tr transpose,trace
+abbr dot dot product
+abbr crs cross product
+abbr len2 squared length
+abbr dist distance,distancia
+abbr dst distance,destination
+abbr ang angle,angulo
+abbr rad radians,radius,raio
+abbr deg degrees,graus
+abbr tau two pi

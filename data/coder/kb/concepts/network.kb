@@ -1,0 +1,1181 @@
+# Networking concepts (source seed unless noted). Format: see README.md
+
+concept NETWORK_REQUEST
+  category NETWORK
+  canonical network_request
+  term pt rede 1.0
+  term pt requisicao de rede 0.95
+  term pt chamada remota 0.9
+  term pt acesso a rede 0.85
+  term pt comunicacao 0.8
+  term pt enviar requisicao 0.75
+  term pt conexao de rede 0.7
+  term en network 1.0
+  term en network request 0.95
+  term en remote call 0.9
+  term en network access 0.85
+  term en communication 0.8
+  term code network 0.95
+  term code net 0.91
+  term code request 0.87
+  term code fetch 0.83
+  term code remote_call 0.79
+  term code net_request 0.75
+  term code NetworkClient 0.71
+  term code send_request 0.67
+  action send
+  action receive
+  action request
+  action fetch
+  action connect
+  related HTTP_REQUEST 0.7
+  related SOCKET 0.6
+  related TIMEOUT 0.4
+  source seed
+end
+
+concept HTTP_REQUEST
+  category NETWORK
+  canonical http_request
+  term pt http 1.0
+  term pt https 0.95
+  term pt requisicao http 0.9
+  term pt get 0.85
+  term pt post 0.8
+  term pt put 0.75
+  term pt delete 0.7
+  term en http 1.0
+  term en https 0.95
+  term en http request 0.9
+  term en http response 0.85
+  term en get 0.8
+  term code http 0.95
+  term code https 0.91
+  term code HttpClient 0.87
+  term code http_get 0.83
+  term code http_post 0.79
+  term code httpRequest 0.75
+  term code HttpURLConnection 0.71
+  term code requests.get 0.67
+  action get
+  action post
+  action put
+  action delete
+  action send
+  action fetch
+  action download
+  related HTTP_RESPONSE_STATUS 0.6
+  related REST_API 0.7
+  related SOCKET 0.4
+  related TLS_CERT 0.3
+  related URL_PARSE 0.5
+  source seed
+end
+
+concept HTTP_RESPONSE_STATUS
+  category NETWORK
+  canonical http_response_status
+  term pt codigo de status 1.0
+  term pt status http 0.95
+  term pt 200 0.9
+  term pt 404 0.85
+  term pt 500 0.8
+  term pt nao encontrado 0.75
+  term pt erro do servidor 0.7
+  term en status code 1.0
+  term en http status 0.95
+  term en 200 ok 0.9
+  term en 404 not found 0.85
+  term en 500 internal error 0.8
+  term code status_code 0.95
+  term code status 0.91
+  term code 200 0.87
+  term code 201 0.83
+  term code 204 0.79
+  term code 301 0.75
+  term code 302 0.71
+  term code 400 0.67
+  action check
+  action handle
+  action return
+  related HTTP_REQUEST 0.7
+  related ERROR_HANDLING_GENERIC 0.4
+  source seed
+end
+
+concept REST_API
+  category NETWORK
+  canonical rest_api
+  term pt api 1.0
+  term pt api rest 0.95
+  term pt endpoint 0.9
+  term pt rota 0.85
+  term pt rotas 0.8
+  term pt recurso 0.75
+  term pt controlador 0.7
+  term en api 1.0
+  term en rest api 0.95
+  term en endpoint 0.9
+  term en route 0.85
+  term en routes 0.8
+  term code api 0.95
+  term code rest 0.91
+  term code endpoint 0.87
+  term code route 0.83
+  term code router 0.79
+  term code @app.route 0.75
+  term code controller 0.71
+  term code handler 0.67
+  action expose
+  action call
+  action register
+  action route
+  related HTTP_REQUEST 0.7
+  related SERVER 0.6
+  related API_CONTRACT 0.5
+  related JSON_FORMAT 0.4
+  source seed
+end
+
+concept API_CONTRACT
+  category NETWORK
+  canonical api_contract
+  term pt contrato da api 1.0
+  term pt especificacao da api 0.95
+  term pt interface publica 0.9
+  term pt compatibilidade da api 0.85
+  term pt esquema de requisicao 0.8
+  term pt formato de mensagem 0.75
+  term pt protocolo de mensagens 0.7
+  term en api contract 1.0
+  term en api specification 0.95
+  term en public interface 0.9
+  term en api compatibility 0.85
+  term en request schema 0.8
+  term code contract 0.95
+  term code api_contract 0.91
+  term code spec 0.87
+  term code schema 0.83
+  term code interface 0.79
+  term code protocol 0.75
+  term code message_format 0.71
+  term code wire_format 0.67
+  action define
+  action version
+  action validate
+  related REST_API 0.5
+  related PROTOCOL 0.5
+  related DATA_VALIDATION_SCHEMA 0.4
+  source seed
+  note contrato comercial: CONTRACT
+end
+
+concept GRAPHQL_RPC
+  category NETWORK
+  canonical graphql_rpc
+  term pt graphql 1.0
+  term pt rpc 0.95
+  term pt grpc 0.9
+  term pt chamada de procedimento remoto 0.85
+  term pt json-rpc 0.8
+  term pt consulta graphql 0.75
+  term pt mutacao 0.7
+  term en graphql 1.0
+  term en rpc 0.95
+  term en grpc 0.9
+  term en remote procedure call 0.85
+  term en json-rpc 0.8
+  term code graphql 0.95
+  term code rpc 0.91
+  term code grpc 0.87
+  term code jsonrpc 0.83
+  term code mutation 0.79
+  term code resolver 0.75
+  term code stub 0.71
+  term code protobuf 0.67
+  action call
+  action invoke
+  action resolve
+  related REST_API 0.5
+  related PROTOCOL 0.5
+  related MCP_PROTOCOL 0.4
+  source seed
+end
+
+concept SOCKET
+  category NETWORK
+  canonical socket
+  term pt socket 1.0
+  term pt soquete 0.95
+  term pt tcp 0.9
+  term pt udp 0.85
+  term pt conectar 0.8
+  term pt escutar 0.75
+  term pt aceitar conexao 0.7
+  term en socket 1.0
+  term en sockets 0.95
+  term en tcp 0.9
+  term en udp 0.85
+  term en connect 0.8
+  term code socket 0.95
+  term code sock 0.91
+  term code sockfd 0.87
+  term code tcp 0.83
+  term code udp 0.79
+  term code connect 0.75
+  term code listen 0.71
+  term code accept 0.67
+  action connect
+  action listen
+  action accept
+  action bind
+  action send
+  action recv
+  action close
+  related TCP_UDP 0.6
+  related IP_ADDRESS 0.5
+  related PORT 0.5
+  related SERVER 0.5
+  source seed
+end
+
+concept TCP_UDP
+  category NETWORK
+  canonical tcp_udp
+  term pt tcp 1.0
+  term pt udp 0.95
+  term pt datagrama 0.9
+  term pt fluxo confiavel 0.85
+  term pt pacote 0.8
+  term pt segmento 0.75
+  term pt mtu 0.7
+  term en tcp 1.0
+  term en udp 0.95
+  term en datagram 0.9
+  term en reliable stream 0.85
+  term en packet 0.8
+  term code tcp 0.95
+  term code udp 0.91
+  term code datagram 0.87
+  term code packet 0.83
+  term code segment 0.79
+  term code mtu 0.75
+  term code quic 0.71
+  term code SOCK_DGRAM 0.67
+  action send
+  action receive
+  action fragment
+  related SOCKET 0.6
+  related PROTOCOL 0.4
+  source seed
+end
+
+concept IP_ADDRESS
+  category NETWORK
+  canonical ip_address
+  term pt endereco ip 1.0
+  term pt ip 0.95
+  term pt ipv4 0.9
+  term pt ipv6 0.85
+  term pt ip local 0.8
+  term pt ip publico 0.75
+  term pt endereco de rede 0.7
+  term en ip address 1.0
+  term en ip 0.95
+  term en ipv4 0.9
+  term en ipv6 0.85
+  term en local ip 0.8
+  term code ip 0.95
+  term code ip_addr 0.91
+  term code ip_address 0.87
+  term code ipv4 0.83
+  term code ipv6 0.79
+  term code inet_addr 0.75
+  term code inet_pton 0.71
+  term code sockaddr 0.67
+  action resolve
+  action parse
+  action bind
+  related PORT 0.6
+  related DNS 0.6
+  related SOCKET 0.4
+  related LAN 0.5
+  source seed
+  note endereco postal: ADDRESS_POSTAL
+end
+
+concept PORT
+  category NETWORK
+  canonical port
+  term pt porta 1.0
+  term pt numero da porta 0.95
+  term pt porta aberta 0.9
+  term pt porta ocupada 0.85
+  term pt liberar porta 0.8
+  term pt porta padrao 0.75
+  term pt escutar na porta 0.7
+  term en port 1.0
+  term en port number 0.95
+  term en open port 0.9
+  term en port in use 0.85
+  term en port forwarding 0.8
+  term code port 0.95
+  term code port_number 0.91
+  term code listen_port 0.87
+  term code default_port 0.83
+  term code EADDRINUSE 0.79
+  term code port_forward 0.75
+  term code firewall 0.71
+  term code iptables 0.67
+  action listen
+  action forward
+  action open
+  action close
+  related IP_ADDRESS 0.6
+  related SOCKET 0.5
+  related SERVER 0.5
+  source seed
+  note porta serial/hardware e outra coisa; porta de codigo (portar) e PORTING
+end
+
+concept DNS
+  category NETWORK
+  canonical dns
+  term pt dns 1.0
+  term pt dominio 0.95
+  term pt nome de host 0.9
+  term pt hostname 0.85
+  term pt resolver nome 0.8
+  term pt subdominio 0.75
+  term pt registro dns 0.7
+  term en dns 1.0
+  term en domain 0.95
+  term en hostname 0.9
+  term en resolve name 0.85
+  term en subdomain 0.8
+  term code dns 0.95
+  term code domain 0.91
+  term code hostname 0.87
+  term code host 0.83
+  term code gethostbyname 0.79
+  term code getaddrinfo 0.75
+  term code resolve 0.71
+  term code resolver 0.67
+  action resolve
+  action lookup
+  related IP_ADDRESS 0.6
+  related URL_PARSE 0.5
+  source seed
+end
+
+concept URL_PARSE
+  category NETWORK
+  canonical url_parse
+  term pt url 1.0
+  term pt uri 0.95
+  term pt link 0.9
+  term pt endereco web 0.85
+  term pt query string 0.8
+  term pt parametros da url 0.75
+  term pt caminho da url 0.7
+  term en url 1.0
+  term en uri 0.95
+  term en link 0.9
+  term en web address 0.85
+  term en query string 0.8
+  term code url 0.95
+  term code uri 0.91
+  term code parse_url 0.87
+  term code urlparse 0.83
+  term code urlencode 0.79
+  term code query_string 0.75
+  term code scheme 0.71
+  term code host 0.67
+  action parse
+  action build
+  action encode
+  action decode
+  related HTTP_REQUEST 0.5
+  related DNS 0.4
+  related PARSER 0.3
+  source seed
+end
+
+concept WEBSOCKET
+  category NETWORK
+  canonical websocket
+  term pt websocket 1.0
+  term pt tempo real 0.95
+  term pt conexao persistente 0.9
+  term pt push do servidor 0.85
+  term pt mensagem em tempo real 0.8
+  term pt chat 0.75
+  term pt sse 0.7
+  term en websocket 1.0
+  term en real-time 0.95
+  term en persistent connection 0.9
+  term en server push 0.85
+  term en realtime messaging 0.8
+  term code websocket 0.95
+  term code ws 0.91
+  term code wss 0.87
+  term code socket_io 0.83
+  term code on_message 0.79
+  term code ping 0.75
+  term code pong 0.71
+  term code frame 0.67
+  action connect
+  action send
+  action receive
+  action close
+  action ping
+  related SOCKET 0.5
+  related HTTP_REQUEST 0.4
+  related PUBSUB 0.3
+  source seed
+end
+
+concept SERVER
+  category NETWORK
+  canonical server
+  term pt servidor 1.0
+  term pt servidor web 0.95
+  term pt subir servidor 0.9
+  term pt escutar requisicoes 0.85
+  term pt atender requisicoes 0.8
+  term pt backend 0.75
+  term pt api local 0.7
+  term en server 1.0
+  term en web server 0.95
+  term en start server 0.9
+  term en listen for requests 0.85
+  term en serve 0.8
+  term code server 0.95
+  term code serve 0.91
+  term code listen 0.87
+  term code start_server 0.83
+  term code http_server 0.79
+  term code backend 0.75
+  term code handler 0.71
+  term code accept_loop 0.67
+  action start
+  action stop
+  action listen
+  action serve
+  action handle
+  related CLIENT 0.7
+  related SOCKET 0.5
+  related REST_API 0.6
+  related PORT 0.5
+  source seed
+end
+
+concept CLIENT
+  category NETWORK
+  canonical client
+  term pt cliente de rede 1.0
+  term pt cliente http 0.95
+  term pt lado do cliente 0.9
+  term pt conectar ao servidor 0.85
+  term pt sdk cliente 0.8
+  term pt consumidor da api 0.75
+  term pt frontend 0.7
+  term en client 1.0
+  term en network client 0.95
+  term en http client 0.9
+  term en client side 0.85
+  term en connect to server 0.8
+  term code client 0.95
+  term code http_client 0.91
+  term code api_client 0.87
+  term code sdk 0.83
+  term code connect_to 0.79
+  term code frontend 0.75
+  term code consumer 0.71
+  action connect
+  action request
+  action call
+  related SERVER 0.7
+  related HTTP_REQUEST 0.5
+  source seed
+  note cliente de negocio: CUSTOMER
+end
+
+concept PROXY
+  category NETWORK
+  canonical proxy
+  term pt proxy 1.0
+  term pt proxy reverso 0.95
+  term pt intermediario 0.9
+  term pt gateway 0.85
+  term pt balanceador de carga 0.8
+  term pt load balancer 0.75
+  term pt repassar requisicao 0.7
+  term en proxy 1.0
+  term en reverse proxy 0.95
+  term en intermediary 0.9
+  term en gateway 0.85
+  term en load balancer 0.8
+  term code proxy 0.95
+  term code reverse_proxy 0.91
+  term code gateway 0.87
+  term code load_balancer 0.83
+  term code relay 0.79
+  term code forward 0.75
+  term code forwarding 0.71
+  term code nginx 0.67
+  action proxy
+  action forward
+  action relay
+  action balance
+  related SERVER 0.5
+  related TUNNEL_VPN 0.4
+  related BRIDGE 0.4
+  source seed
+end
+
+concept TUNNEL_VPN
+  category NETWORK
+  canonical tunnel_vpn
+  term pt vpn 1.0
+  term pt tunel 0.95
+  term pt tunelamento 0.9
+  term pt rede privada virtual 0.85
+  term pt wireguard 0.8
+  term pt tailscale 0.75
+  term pt openvpn 0.7
+  term en vpn 1.0
+  term en tunnel 0.95
+  term en tunneling 0.9
+  term en virtual private network 0.85
+  term en wireguard 0.8
+  term code vpn 0.95
+  term code tunnel 0.91
+  term code tun 0.87
+  term code tap 0.83
+  term code wireguard 0.79
+  term code wg 0.75
+  term code tailscale 0.71
+  term code openvpn 0.67
+  action connect
+  action tunnel
+  action route
+  action establish
+  related LAN 0.4
+  related PROXY 0.4
+  related SSH_REMOTE 0.4
+  related MOBILE_SERVICE 0.4
+  source seed
+end
+
+concept LAN
+  category NETWORK
+  canonical lan
+  term pt rede local 1.0
+  term pt lan 0.95
+  term pt wifi 0.9
+  term pt rede domestica 0.85
+  term pt mesma rede 0.8
+  term pt descobrir dispositivos 0.75
+  term pt broadcast 0.7
+  term en local network 1.0
+  term en lan 0.95
+  term en wifi 0.9
+  term en home network 0.85
+  term en same network 0.8
+  term code lan 0.95
+  term code wifi 0.91
+  term code wlan 0.87
+  term code local_network 0.83
+  term code broadcast 0.79
+  term code multicast 0.75
+  term code discovery 0.71
+  term code mdns 0.67
+  action discover
+  action broadcast
+  action scan
+  related IP_ADDRESS 0.5
+  related TUNNEL_VPN 0.4
+  source seed
+end
+
+concept SSH_REMOTE
+  category NETWORK
+  canonical ssh_remote
+  term pt ssh 1.0
+  term pt acesso remoto 0.95
+  term pt terminal remoto 0.9
+  term pt shell remoto 0.85
+  term pt scp 0.8
+  term pt sftp 0.75
+  term pt conectar por ssh 0.7
+  term en ssh 1.0
+  term en remote access 0.95
+  term en remote terminal 0.9
+  term en remote shell 0.85
+  term en scp 0.8
+  term code ssh 0.95
+  term code sshd 0.91
+  term code scp 0.87
+  term code sftp 0.83
+  term code rsync 0.79
+  term code remote_shell 0.75
+  term code adb 0.71
+  term code ssh_key 0.67
+  action connect
+  action login
+  action copy
+  related TUNNEL_VPN 0.4
+  related SHELL_COMMAND 0.4
+  related KEY_MANAGEMENT 0.3
+  source seed
+end
+
+concept TIMEOUT
+  category NETWORK
+  canonical timeout
+  term pt tempo limite 1.0
+  term pt timeout 0.95
+  term pt expirou 0.9
+  term pt tempo esgotado 0.85
+  term pt sem resposta 0.8
+  term pt demora 0.75
+  term pt limite de tempo 0.7
+  term en timeout 1.0
+  term en timed out 0.95
+  term en deadline 0.9
+  term en no response 0.85
+  term en time limit 0.8
+  term code timeout 0.95
+  term code timed_out 0.91
+  term code ETIMEDOUT 0.87
+  term code deadline 0.83
+  term code set_timeout 0.79
+  term code timeout_ms 0.75
+  term code read_timeout 0.71
+  term code connect_timeout 0.67
+  action set
+  action expire
+  action abort
+  action wait
+  related RETRY 0.6
+  related NETWORK_REQUEST 0.5
+  related ERROR_HANDLING_GENERIC 0.3
+  source seed
+end
+
+concept RECONNECT
+  category NETWORK
+  canonical reconnect
+  term pt reconexao 1.0
+  term pt reconectar 0.95
+  term pt conexao perdida 0.9
+  term pt queda de conexao 0.85
+  term pt reconectar automaticamente 0.8
+  term pt conexao caiu 0.75
+  term pt heartbeat 0.7
+  term en reconnect 1.0
+  term en reconnection 0.95
+  term en connection lost 0.9
+  term en dropped connection 0.85
+  term en auto reconnect 0.8
+  term code reconnect 0.95
+  term code reconnection 0.91
+  term code connection_lost 0.87
+  term code disconnected 0.83
+  term code on_disconnect 0.79
+  term code heartbeat 0.75
+  term code keepalive 0.71
+  term code ping_interval 0.67
+  action reconnect
+  action resume
+  action ping
+  action retry
+  related RETRY 0.7
+  related TIMEOUT 0.5
+  related SOCKET 0.4
+  related BACKOFF 0.5
+  source seed
+end
+
+concept PROTOCOL
+  category NETWORK
+  canonical protocol
+  term pt protocolo 1.0
+  term pt protocolo de comunicacao 0.95
+  term pt formato de mensagens 0.9
+  term pt handshake 0.85
+  term pt enquadramento 0.8
+  term pt versao do protocolo 0.75
+  term pt framing 0.7
+  term en protocol 1.0
+  term en communication protocol 0.95
+  term en message format 0.9
+  term en handshake 0.85
+  term en framing 0.8
+  term code protocol 0.95
+  term code proto 0.91
+  term code wire_protocol 0.87
+  term code handshake 0.83
+  term code frame 0.79
+  term code framing 0.75
+  term code packet 0.71
+  term code opcode 0.67
+  action negotiate
+  action frame
+  action encode
+  action decode
+  related SOCKET 0.4
+  related API_CONTRACT 0.5
+  related SERIALIZATION 0.4
+  source seed
+end
+
+concept BRIDGE
+  category NETWORK
+  canonical bridge
+  term pt ponte 1.0
+  term pt ponte de comunicacao 0.95
+  term pt bridge 0.9
+  term pt intermediar entre 0.85
+  term pt adaptador de rede 0.8
+  term pt ligar dois sistemas 0.75
+  term pt gateway local 0.7
+  term en bridge 1.0
+  term en communication bridge 0.95
+  term en link between 0.9
+  term en adapter 0.85
+  term en connect two systems 0.8
+  term code bridge 0.95
+  term code bridge_server 0.91
+  term code bridge_client 0.87
+  term code adapter 0.83
+  term code relay 0.79
+  term code glue 0.75
+  term code interop 0.71
+  term code ffi 0.67
+  action bridge
+  action relay
+  action forward
+  action connect
+  related CHANNEL 0.6
+  related PROXY 0.5
+  related SERVER 0.4
+  source seed
+end
+
+concept CHANNEL
+  category NETWORK
+  canonical channel
+  term pt canal 1.0
+  term pt canais 0.95
+  term pt canal de comunicacao 0.9
+  term pt canal de mensagens 0.85
+  term pt canal de entrada 0.8
+  term pt fila de canal 0.75
+  term pt notificacao por canal 0.7
+  term en channel 1.0
+  term en channels 0.95
+  term en communication channel 0.9
+  term en message channel 0.85
+  term en inbound channel 0.8
+  term code channel 0.95
+  term code channels 0.91
+  term code chan 0.87
+  term code channel_id 0.83
+  term code send_channel 0.79
+  term code recv_channel 0.75
+  term code inbound 0.71
+  term code outbound 0.67
+  action send
+  action receive
+  action subscribe
+  action open
+  action close
+  related BRIDGE 0.5
+  related MESSAGE_QUEUE 0.4
+  related CHAT_MESSAGE 0.4
+  source seed
+  note canal de audio e AUDIO_CHANNEL
+end
+
+concept CHAT_MESSAGE
+  category NETWORK
+  canonical chat_message
+  term pt mensagem 1.0
+  term pt mensagens 0.95
+  term pt conversa 0.9
+  term pt chat 0.85
+  term pt enviar mensagem 0.8
+  term pt historico de conversa 0.75
+  term pt resposta 0.7
+  term en message 1.0
+  term en messages 0.95
+  term en conversation 0.9
+  term en chat 0.85
+  term en send message 0.8
+  term code message 0.95
+  term code msg 0.91
+  term code messages 0.87
+  term code conversation 0.83
+  term code chat 0.79
+  term code send_message 0.75
+  term code reply 0.71
+  term code sender 0.67
+  action send
+  action reply
+  action receive
+  action read
+  related CHANNEL 0.4
+  related LM_CHAT_TEMPLATE 0.3
+  related NOTIFICATION 0.3
+  source seed
+end
+
+concept EMAIL_SMTP
+  category NETWORK
+  canonical email_smtp
+  term pt email 1.0
+  term pt enviar email 0.95
+  term pt smtp 0.9
+  term pt imap 0.85
+  term pt caixa de correio 0.8
+  term pt anexo 0.75
+  term pt assunto 0.7
+  term en email 1.0
+  term en send email 0.95
+  term en smtp 0.9
+  term en imap 0.85
+  term en mailbox 0.8
+  term code email 0.95
+  term code mail 0.91
+  term code smtp 0.87
+  term code imap 0.83
+  term code pop3 0.79
+  term code mailbox 0.75
+  term code attachment 0.71
+  term code subject 0.67
+  action send
+  action receive
+  action attach
+  related CHAT_MESSAGE 0.4
+  related NOTIFICATION_BUSINESS 0.3
+  source seed
+end
+
+concept BANDWIDTH_LATENCY
+  category NETWORK
+  canonical bandwidth_latency
+  term pt latencia de rede 1.0
+  term pt largura de banda 0.95
+  term pt velocidade de internet 0.9
+  term pt ping 0.85
+  term pt atraso 0.8
+  term pt perda de pacotes 0.75
+  term pt throughput 0.7
+  term en network latency 1.0
+  term en bandwidth 0.95
+  term en internet speed 0.9
+  term en ping 0.85
+  term en delay 0.8
+  term code latency 0.95
+  term code bandwidth 0.91
+  term code throughput 0.87
+  term code ping 0.83
+  term code rtt 0.79
+  term code jitter 0.75
+  term code packet_loss 0.71
+  term code mbps 0.67
+  action measure
+  action limit
+  related TIMEOUT 0.3
+  related AUDIO_LATENCY 0.2
+  source seed
+  note latencia de audio: AUDIO_LATENCY
+end
+
+concept NETWORK_STREAM
+  category NETWORK
+  canonical network_stream
+  term pt transmissao de rede 1.0
+  term pt upload 0.95
+  term pt download 0.9
+  term pt baixar arquivo 0.85
+  term pt enviar arquivo 0.8
+  term pt progresso do download 0.75
+  term pt retomar download 0.7
+  term en network stream 1.0
+  term en upload 0.95
+  term en download 0.9
+  term en download file 0.85
+  term en upload file 0.8
+  term code download 0.95
+  term code upload 0.91
+  term code download_file 0.87
+  term code upload_file 0.83
+  term code progress 0.79
+  term code on_progress 0.75
+  term code resume 0.71
+  term code range 0.67
+  action download
+  action upload
+  action resume
+  related HTTP_REQUEST 0.5
+  related STREAMING_DATA 0.4
+  source seed
+end
+
+concept WEB_SCRAPING
+  category NETWORK
+  canonical web_scraping
+  term pt raspagem 1.0
+  term pt scraping 0.95
+  term pt extrair de pagina 0.9
+  term pt buscar na internet 0.85
+  term pt pesquisa na web 0.8
+  term pt navegar 0.75
+  term pt baixar html 0.7
+  term en scraping 1.0
+  term en web scraping 0.95
+  term en extract from page 0.9
+  term en search the web 0.85
+  term en web search 0.8
+  term code scrape 0.95
+  term code scraper 0.91
+  term code crawl 0.87
+  term code crawler 0.83
+  term code spider 0.79
+  term code web_search 0.75
+  term code search_web 0.71
+  term code fetch_url 0.67
+  action scrape
+  action crawl
+  action fetch
+  action search
+  related HTTP_REQUEST 0.5
+  related PARSER 0.4
+  related AGENT_TOOL 0.4
+  source seed
+end
+
+concept CDN_STATIC
+  category NETWORK
+  canonical cdn_static
+  term pt cdn 1.0
+  term pt arquivos estaticos 0.95
+  term pt hospedagem 0.9
+  term pt deploy do site 0.85
+  term pt site estatico 0.8
+  term pt firebase 0.75
+  term pt publicar site 0.7
+  term en cdn 1.0
+  term en static files 0.95
+  term en hosting 0.9
+  term en site deploy 0.85
+  term en static site 0.8
+  term code cdn 0.95
+  term code static 0.91
+  term code assets 0.87
+  term code hosting 0.83
+  term code firebase 0.79
+  term code deploy_site 0.75
+  term code public_dir 0.71
+  term code static_files 0.67
+  action deploy
+  action publish
+  action host
+  related RELEASE 0.3
+  related HTTP_REQUEST 0.3
+  source seed
+end
+
+concept NETWORK_ERROR
+  category NETWORK
+  canonical network_error
+  term pt erro de rede 1.0
+  term pt sem conexao 0.95
+  term pt conexao recusada 0.9
+  term pt host inalcancavel 0.85
+  term pt offline 0.8
+  term pt sem internet 0.75
+  term pt falha de conexao 0.7
+  term en network error 1.0
+  term en no connection 0.95
+  term en connection refused 0.9
+  term en host unreachable 0.85
+  term en offline 0.8
+  term code ECONNREFUSED 0.95
+  term code ENETUNREACH 0.91
+  term code EHOSTUNREACH 0.87
+  term code offline 0.83
+  term code is_online 0.79
+  term code connection_refused 0.75
+  term code connection_error 0.71
+  term code network_error 0.67
+  action fail
+  action retry
+  action report
+  related RECONNECT 0.6
+  related TIMEOUT 0.5
+  related ERROR_HANDLING_GENERIC 0.5
+  source seed
+end
+
+concept BLUETOOTH_RADIO
+  category NETWORK
+  canonical bluetooth_radio
+  term pt bluetooth 1.0
+  term pt ble 0.95
+  term pt pareamento bluetooth 0.9
+  term pt fone bluetooth 0.85
+  term pt rssi 0.8
+  term pt ssid 0.75
+  term pt wifi 0.7
+  term en bluetooth 1.0
+  term en ble 0.95
+  term en bluetooth pairing 0.9
+  term en bluetooth headset 0.85
+  term en rssi 0.8
+  term code bluetooth 0.95
+  term code ble 0.91
+  term code bluetoothadapter 0.87
+  term code rssi 0.83
+  term code ssid 0.79
+  term code wifi 0.75
+  term code nfc 0.71
+  term code uplink 0.67
+  action scan
+  action pair
+  action connect
+  related LAN 0.4
+  related MOBILE_SENSOR 0.4
+  related DEVICE_DRIVER 0.3
+  source mined
+end
+
+concept NAT_STUN_DDNS
+  category NETWORK
+  canonical nat_stun_ddns
+  term pt nat 1.0
+  term pt cgnat 0.95
+  term pt stun 0.9
+  term pt ddns 0.85
+  term pt dns dinamico 0.8
+  term pt ip dinamico 0.75
+  term pt traversal 0.7
+  term en nat 1.0
+  term en cgnat 0.95
+  term en stun 0.9
+  term en ddns 0.85
+  term en dynamic dns 0.8
+  term code nat 0.95
+  term code cgnat 0.91
+  term code stun 0.87
+  term code ddns 0.83
+  term code hole_punch 0.79
+  term code traversal 0.75
+  term code upnp 0.71
+  term code turn 0.67
+  action traverse
+  action resolve
+  action punch
+  related TUNNEL_VPN 0.6
+  related IP_ADDRESS 0.5
+  related PORT 0.4
+  source mined
+end
+
+concept RTSP_IOT_CAMERA
+  category NETWORK
+  canonical rtsp_iot_camera
+  term pt camera ip 1.0
+  term pt rtsp 0.95
+  term pt onvif 0.9
+  term pt tuya 0.85
+  term pt dispositivo iot 0.8
+  term pt camera de seguranca 0.75
+  term pt stream de video da camera 0.7
+  term en ip camera 1.0
+  term en rtsp 0.95
+  term en onvif 0.9
+  term en tuya 0.85
+  term en iot device 0.8
+  term code rtsp 0.95
+  term code onvif 0.91
+  term code tuya 0.87
+  term code iot 0.83
+  term code cam 0.79
+  term code cameras 0.75
+  term code camera 0.71
+  term code sonoff 0.67
+  action watch
+  action stream
+  action toggle
+  related MOBILE_SMART_HOME 0.6
+  related VIDEO_FRAME 0.4
+  source mined
+end
+
+concept MIME_CONTENT_TYPE
+  category NETWORK
+  canonical mime_content_type
+  term pt tipo de conteudo 1.0
+  term pt mime 0.95
+  term pt cabecalho de conteudo 0.9
+  term pt tipo de arquivo 0.85
+  term pt extensao do arquivo 0.8
+  term pt content type 0.75
+  term pt anexo 0.7
+  term en content type 1.0
+  term en mime 0.95
+  term en content header 0.9
+  term en file type 0.85
+  term en file extension 0.8
+  term code mime 0.95
+  term code Content-Type 0.91
+  term code mime_type 0.87
+  term code application/json 0.83
+  term code text/plain 0.79
+  term code extension 0.75
+  term code ext 0.71
+  term code mms 0.67
+  action detect
+  action set
+  action guess
+  related HTTP_REQUEST 0.5
+  related FILE_IO 0.3
+  source mined
+end
+
+concept ABBR_REQUEST_SERVICE
+  category NETWORK
+  canonical abbr_request_service
+  term pt requisicao 0.45
+  term pt resposta 0.43
+  term pt servidor 0.41
+  term pt servico 0.38
+  term pt conexao 0.36
+  term pt sessao 0.34
+  term pt gerente 0.32
+  term en request 0.45
+  term en response 0.43
+  term en server 0.41
+  term en service 0.38
+  term en connection 0.36
+  term code req 0.43
+  term code resp 0.41
+  term code res 0.39
+  term code srv 0.37
+  term code svc 0.36
+  term code conn 0.34
+  term code sess 0.32
+  term code mgr 0.3
+  action request
+  action respond
+  action connect
+  related HTTP_REQUEST 0.5
+  related SERVER 0.5
+  related CLIENT 0.3
+  source mined
+  note abreviacoes comuns
+end

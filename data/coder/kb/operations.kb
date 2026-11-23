@@ -1,0 +1,551 @@
+# operations.kb: taxonomia de operacoes (o que um trecho de codigo FAZ), com verbos pt/en e padroes de nomes.
+# Formato: op <ID> / category / verb <pt|en|code> a|b|c / pattern <lang> <glob em snake_case> / antonym <ID> / end
+# Os verbos incluem formas nominais comuns (aprovacao, creation) para a busca casar o substantivo tambem.
+# Verbos com espaco sao frases (dar baixa, roll back). Escrito sem acentos: o carregador dobra acentos.
+
+op CREATE
+  category DATA_OPERATION
+  verb en create|creation|insert|add|register|new|make|build|generate|spawn|instantiate|construct|append|put|provision|initialize record
+  verb pt criar|criacao|inserir|insercao|adicionar|incluir|inclusao|cadastrar|cadastro|registrar|gerar|geracao|montar|construir|instanciar|novo|nova
+  pattern en create_*
+  pattern en new_*
+  pattern en add_*
+  pattern en insert_*
+  pattern en register_*
+  antonym DELETE
+end
+op READ
+  category DATA_OPERATION
+  verb en read|get|fetch|retrieve|load|find|lookup|look up|query|select|obtain|show|view|list|peek|resolve|pull
+  verb pt ler|leitura|obter|buscar|consultar|carregar|recuperar|pegar|achar|encontrar|listar|exibir|mostrar|visualizar|selecionar|resolver
+  pattern en get_*
+  pattern en fetch_*
+  pattern en find_*
+  pattern en read_*
+  pattern en load_*
+  pattern en list_*
+  pattern en query_*
+  antonym WRITE
+end
+op UPDATE
+  category DATA_OPERATION
+  verb en update|modify|change|edit|alter|patch|set|replace|amend|revise|refresh|upsert|rename|overwrite|adjust value|mutate|apply
+  verb pt atualizar|atualizacao|alterar|alteracao|modificar|editar|edicao|trocar|substituir|corrigir|renomear|sobrescrever|definir|setar|aplicar
+  pattern en update_*
+  pattern en set_*
+  pattern en modify_*
+  pattern en edit_*
+  pattern en patch_*
+  pattern en rename_*
+  antonym READ
+end
+op DELETE
+  category DATA_OPERATION
+  verb en delete|remove|destroy|drop|erase|purge|clear|discard|unregister|wipe|truncate|prune|evict|dispose|unlink|clean
+  verb pt apagar|excluir|exclusao|remover|remocao|deletar|eliminar|descartar|limpar|limpeza|destruir|expurgar|podar|desregistrar|zerar|descadastrar
+  pattern en delete_*
+  pattern en remove_*
+  pattern en drop_*
+  pattern en clear_*
+  pattern en purge_*
+  pattern en destroy_*
+  antonym CREATE
+end
+op WRITE
+  category IO_OPERATION
+  verb en write|save|store|persist|dump|flush|commit|serialize to|record|output|export|publish data|append to|sync to disk
+  verb pt escrever|escrita|gravar|gravacao|salvar|armazenar|persistir|despejar|exportar|exportacao|publicar|confirmar gravacao
+  pattern en write_*
+  pattern en save_*
+  pattern en store_*
+  pattern en persist_*
+  pattern en dump_*
+  pattern en flush_*
+  pattern en export_*
+  antonym READ
+end
+op APPROVE
+  category BUSINESS_OPERATION
+  verb en approve|approval|accept|authorize|authorise|confirm|confirmation|grant|allow|sign off|ratify|endorse|clear|release approval
+  verb pt aprovar|aprovacao|aceitar|aceite|autorizar|autorizacao|confirmar|confirmacao|conceder|permitir|liberar|liberacao|homologar|validar pedido|deferir|chancelar
+  pattern en approve_*
+  pattern en accept_*
+  pattern en authorize_*
+  pattern en confirm_*
+  pattern en grant_*
+  antonym REJECT
+end
+op REJECT
+  category BUSINESS_OPERATION
+  verb en reject|rejection|deny|refuse|decline|disapprove|revoke|veto|block|forbid|disallow|ban|blacklist|turn down
+  verb pt rejeitar|rejeicao|negar|recusar|reprovar|reprovacao|indeferir|revogar|vetar|bloquear|proibir|barrar|desaprovar|impedir|denegar
+  pattern en reject_*
+  pattern en deny_*
+  pattern en decline_*
+  pattern en revoke_*
+  pattern en block_*
+  antonym APPROVE
+end
+op CANCEL
+  category BUSINESS_OPERATION
+  verb en cancel|cancellation|abort|void|annul|terminate|withdraw|call off|invalidate|abandon|interrupt|kill|stop request|rescind|retract|dismiss
+  verb pt cancelar|cancelamento|abortar|anular|anulacao|encerrar|desistir|desistencia|invalidar|interromper|retirar|rescindir|descontinuar|abandonar|matar
+  pattern en cancel_*
+  pattern en abort_*
+  pattern en void_*
+  pattern en terminate_*
+  pattern en annul_*
+  antonym CREATE
+end
+op REFUND
+  category BUSINESS_OPERATION
+  verb en refund|reimburse|reverse|chargeback|rollback payment|credit back|revert payment|reversal|return money|compensate|undo charge|write off|storno|rebate|payback
+  verb pt estornar|estorno|reembolsar|reembolso|devolver|devolucao|ressarcir|ressarcimento|compensar|compensacao|reverter|reversao|abater|abatimento|desfazer cobranca|cancelar pagamento
+  pattern en refund_*
+  pattern en reverse_*
+  pattern en reimburse_*
+  pattern en chargeback_*
+  pattern en compensate_*
+  antonym PAY
+end
+op PAY
+  category BUSINESS_OPERATION
+  verb en pay|payment|charge|bill|invoice|settle|checkout|purchase|buy|debit|credit|transfer funds|remit|collect|capture|disburse
+  verb pt pagar|pagamento|cobrar|cobranca|faturar|faturamento|quitar|liquidar|comprar|compra|debitar|creditar|transferir|remeter|arrecadar|recolher|desembolsar
+  pattern en pay_*
+  pattern en charge_*
+  pattern en bill_*
+  pattern en invoice_*
+  pattern en settle_*
+  pattern en checkout_*
+  antonym REFUND
+end
+op STOCK_MOVE
+  category BUSINESS_OPERATION
+  verb en stock|restock|replenish|reserve|allocate|deallocate|deduct|hold|release stock|reduce stock|decrement|ship|receive goods|backorder|reorder
+  verb pt estocar|estoque|repor|reposicao|reabastecer|reservar|reserva|alocar|desalocar|baixar|baixa|dar baixa|expedir|expedicao|receber mercadoria|recebimento|separar|inventariar|inventario
+  pattern en reserve_*
+  pattern en allocate_*
+  pattern en restock_*
+  pattern en replenish_*
+  pattern en deduct_*
+  pattern en ship_*
+end
+op NOTIFY
+  category COMMUNICATION
+  verb en notify|notification|alert|send|email|mail|message|push|announce|inform|broadcast|signal|warn user|remind|ping|sms|publish event|post message
+  verb pt notificar|notificacao|alertar|avisar|aviso|enviar|envio|mandar|emailar|comunicar|informar|anunciar|difundir|sinalizar|lembrar|lembrete|postar
+  pattern en notify_*
+  pattern en send_*
+  pattern en alert_*
+  pattern en push_*
+  pattern en broadcast_*
+  pattern en announce_*
+end
+op VALIDATE
+  category CONTROL
+  verb en validate|validation|verify|check|assert|ensure|sanitize|lint|inspect|audit|require|guard|certify|screen|enforce
+  verb pt validar|validacao|verificar|verificacao|checar|conferir|conferencia|garantir|sanitizar|higienizar|inspecionar|auditar|auditoria|exigir|restringir|certificar
+  pattern en validate_*
+  pattern en verify_*
+  pattern en check_*
+  pattern en assert_*
+  pattern en ensure_*
+  pattern en require_*
+  pattern en sanitize_*
+  pattern en is_valid*
+end
+op AUTHENTICATE
+  category SECURITY
+  verb en authenticate|authentication|login|logon|signin|sign in|logout|logoff|signout|sign out|authorize user|identify|session|token|credential|password|oauth|impersonate|encrypt|decrypt|hash|sign|verify signature
+  verb pt autenticar|autenticacao|entrar|login|sair|logout|identificar|identificacao|sessao|credencial|senha|criptografar|criptografia|descriptografar|assinar|assinatura|cifrar|decifrar|hashear
+  pattern en login*
+  pattern en logout*
+  pattern en auth_*
+  pattern en authenticate_*
+  pattern en sign_*
+  pattern en encrypt_*
+  pattern en decrypt_*
+  pattern en hash_*
+end
+op CONVERT
+  category TRANSFORM
+  verb en convert|conversion|transform|translate|map|cast|coerce|adapt|normalize|format|encode|decode|serialize|deserialize|marshal|unmarshal|stringify|to string|transcode|project
+  verb pt converter|conversao|transformar|transformacao|traduzir|mapear|mapeamento|adaptar|normalizar|formatar|codificar|decodificar|serializar|desserializar|transcodificar|projetar
+  pattern en convert_*
+  pattern en to_*
+  pattern en from_*
+  pattern en as_*
+  pattern en map_*
+  pattern en transform_*
+  pattern en normalize_*
+  pattern en format_*
+  pattern en encode_*
+  pattern en decode_*
+  pattern en serialize_*
+  pattern en deserialize_*
+end
+op SORT
+  category TRANSFORM
+  verb en sort|order|rank|arrange|reorder|sorted|comparator|compare|priority|prioritize|topological|shuffle|sort by|order by
+  verb pt ordenar|ordenacao|classificar|classificacao|ranquear|organizar|reordenar|comparar|comparacao|priorizar|prioridade|embaralhar|ordem
+  pattern en sort_*
+  pattern en order_*
+  pattern en rank_*
+  pattern en compare_*
+  pattern en *_comparator
+  pattern en *_sorted
+end
+op FILTER
+  category TRANSFORM
+  verb en filter|where|match|search|grep|exclude|include|restrict|narrow|predicate|keep|skip|find all|scan|seek
+  verb pt filtrar|filtro|pesquisar|pesquisa|procurar|casar|restringir|refinar|peneirar|pular|ignorar|varrer|varredura|predicado|busca
+  pattern en filter_*
+  pattern en search_*
+  pattern en match_*
+  pattern en *_filter
+  pattern en *_predicate
+  pattern en skip_*
+end
+op AGGREGATE
+  category TRANSFORM
+  verb en aggregate|aggregation|sum|total|count|average|avg|mean|reduce|group|group by|accumulate|tally|summarize|rollup|statistics|min|max|median|histogram
+  verb pt agregar|agregacao|somar|soma|totalizar|total|contar|contagem|media|reduzir|agrupar|agrupamento|acumular|resumir|consolidar|consolidacao|estatistica|minimo|maximo|mediana|histograma
+  pattern en sum_*
+  pattern en count_*
+  pattern en total_*
+  pattern en aggregate_*
+  pattern en group_*
+  pattern en reduce_*
+  pattern en avg_*
+  pattern en compute_*
+  pattern en calc*
+end
+op SYNC
+  category DATA_OPERATION
+  verb en sync|synchronize|synchronise|replicate|mirror|reconcile|merge|diff|propagate|import|ingest|migrate|backfill|upload|download|transfer|copy
+  verb pt sincronizar|sincronizacao|replicar|replicacao|espelhar|conciliar|conciliacao|reconciliar|mesclar|mesclagem|propagar|importar|importacao|ingerir|migrar|migracao|baixar arquivo|copiar|transferir dados
+  pattern en sync_*
+  pattern en replicate_*
+  pattern en reconcile_*
+  pattern en merge_*
+  pattern en import_*
+  pattern en migrate_*
+  pattern en upload_*
+  pattern en download_*
+  pattern en copy_*
+  pattern en *_sync
+end
+op CACHE
+  category PERFORMANCE
+  verb en cache|memoize|prefetch|preload|warm|warmup|expire|ttl|buffer|pool|reuse|lazy load|precompute|stash|invalidate cache
+  verb pt cachear|memoizar|memoizacao|pre carregar|aquecer|expirar|expiracao|invalidar cache|reaproveitar|reutilizar|pre computar|bufferizar|armazenar em cache
+  pattern en cache_*
+  pattern en memoize_*
+  pattern en prefetch_*
+  pattern en preload_*
+  pattern en warm_*
+  pattern en *_cache
+  pattern en *_pool
+  pattern en lazy_*
+end
+op RETRY
+  category RESILIENCE
+  verb en retry|reattempt|redo|backoff|resend|rerun|replay|recover|restore|failover|fallback|circuit breaker|timeout|reconnect|restart|resume|roll back
+  verb pt retentar|tentar novamente|repetir|refazer|reenviar|reexecutar|reprocessar|recuperar|restaurar|reconectar|reiniciar|retomar|retomada|contingencia|tempo limite|reprocessamento
+  pattern en retry_*
+  pattern en redo_*
+  pattern en recover_*
+  pattern en restore_*
+  pattern en reconnect_*
+  pattern en restart_*
+  pattern en resume_*
+  pattern en rollback_*
+  pattern en *_with_retry
+  pattern en *_fallback
+end
+op SCHEDULE
+  category CONTROL
+  verb en schedule|cron|timer|delay|defer|queue|enqueue|dequeue|poll|tick|trigger|plan|calendar|throttle|debounce|interval|deadline|wait|sleep|postpone|batch
+  verb pt agendar|agendamento|programar|temporizar|atrasar|adiar|enfileirar|desenfileirar|disparar|planejar|calendario|limitar taxa|intervalo|prazo|esperar|aguardar|dormir|lote
+  pattern en schedule_*
+  pattern en enqueue_*
+  pattern en dequeue_*
+  pattern en defer_*
+  pattern en delay_*
+  pattern en poll_*
+  pattern en tick*
+  pattern en throttle_*
+  pattern en debounce_*
+  pattern en *_scheduler
+  pattern en *_queue
+  pattern en *_job
+end
+op PARSE
+  category TRANSFORM
+  verb en parse|parser|tokenize|lex|interpret|extract|split|unpack|strip|trim|regex|analyze syntax|pattern match
+  verb pt analisar|analise|parsear|tokenizar|interpretar|extrair|extracao|dividir|desempacotar|ler texto|analise sintatica|expressao regular|aparar|cortar
+  pattern en parse_*
+  pattern en tokenize_*
+  pattern en lex_*
+  pattern en extract_*
+  pattern en split_*
+  pattern en unpack_*
+  pattern en *_parser
+  pattern en *_lexer
+  pattern en *_tokenizer
+end
+op RENDER
+  category PRESENTATION
+  verb en render|draw|paint|display|print|layout|compose|template|present|plot|visualize|animate|blit|redraw|mount|style|theme
+  verb pt renderizar|renderizacao|desenhar|pintar|exibir tela|imprimir|diagramar|compor|modelo de pagina|apresentar|plotar|animar|redesenhar|atualizar tela|montar tela|estilizar|tema
+  pattern en render_*
+  pattern en draw_*
+  pattern en paint_*
+  pattern en display_*
+  pattern en print_*
+  pattern en layout_*
+  pattern en mount_*
+  pattern en show_*
+  pattern en *_view
+  pattern en *_component
+  pattern en *_template
+end
+op LOG
+  category OBSERVABILITY
+  verb en log|logging|trace|debug|info|warn|warning|audit log|record event|metric|metrics|telemetry|monitor|track|observe|report|profile|stat|span
+  verb pt logar|registrar log|rastrear|rastreamento|depurar|depuracao|auditar evento|metrica|telemetria|monitorar|monitoramento|acompanhar|observar|relatar|relatorio|perfilar|diagnosticar
+  pattern en log_*
+  pattern en trace_*
+  pattern en debug_*
+  pattern en warn_*
+  pattern en track_*
+  pattern en monitor_*
+  pattern en report_*
+  pattern en profile_*
+  pattern en *_logger
+  pattern en *_metrics
+end
+op ERROR
+  category RESILIENCE
+  verb en error|exception|throw|raise|fail|failure|panic|fatal|catch|handle error|crash|bail|die|try|except|rescue|propagate error|wrap error|unwrap
+  verb pt erro|excecao|lancar|levantar|falhar|falha|panico|capturar|tratar erro|travar|resgatar|propagar erro|envolver erro|desembrulhar|excecao nao tratada
+  pattern en throw_*
+  pattern en raise_*
+  pattern en fail_*
+  pattern en panic*
+  pattern en handle_error*
+  pattern en on_error*
+  pattern en *_error
+  pattern en *_exception
+  pattern en die_*
+end
+op INIT
+  category LIFECYCLE
+  verb en init|initialize|initialise|setup|configure|bootstrap|boot|prepare|open|connect|attach|bind|install|launch|load config|wire|inject
+  verb pt inicializar|inicializacao|iniciar|configurar|configuracao|preparar|abrir|conectar|vincular|ligar|instalar|carregar configuracao|injetar|subir
+  pattern en init_*
+  pattern en setup_*
+  pattern en configure_*
+  pattern en bootstrap_*
+  pattern en open_*
+  pattern en connect_*
+  pattern en attach_*
+  pattern en bind_*
+  pattern en install_*
+  pattern en *_init
+  pattern en *_setup
+  antonym SHUTDOWN
+end
+op SHUTDOWN
+  category LIFECYCLE
+  verb en shutdown|teardown|tear down|cleanup|close|disconnect|detach|unbind|uninstall|finalize|finalise|release|free|dispose|stop|quit|exit|halt|unmount|deinit
+  verb pt desligar|finalizar|fechar|desconectar|desvincular|desinstalar|liberar recurso|limpar recursos|parar|sair|interromper servico|desmontar|encerramento
+  pattern en shutdown_*
+  pattern en teardown_*
+  pattern en cleanup_*
+  pattern en close_*
+  pattern en disconnect_*
+  pattern en detach_*
+  pattern en finalize_*
+  pattern en release_*
+  pattern en free_*
+  pattern en deinit_*
+  pattern en *_cleanup
+  pattern en *_destroy
+  antonym INIT
+end
+op EXECUTE
+  category LIFECYCLE
+  verb en run|execute|exec|start|invoke|call|perform|process|handle|dispatch|operate|drive|evaluate|eval|step|play|fire|submit
+  verb pt executar|execucao|rodar|invocar|chamar|realizar|processar|processamento|tratar|despachar|operar|avaliar|avaliacao|passo|submeter|submissao
+  pattern en run_*
+  pattern en exec_*
+  pattern en execute_*
+  pattern en start_*
+  pattern en invoke_*
+  pattern en call_*
+  pattern en perform_*
+  pattern en process_*
+  pattern en handle_*
+  pattern en dispatch_*
+  pattern en do_*
+  pattern en eval_*
+  pattern en step_*
+  pattern en submit_*
+end
+op EVENT
+  category COMMUNICATION
+  verb en event|emit|listen|subscribe|unsubscribe|once|off|hook|callback|observer|watch|publish|dispatch event|bus|react|webhook|trigger event|bubble|handler
+  verb pt evento|emitir|escutar|ouvir|assinar evento|cancelar assinatura|gancho|retorno de chamada|observador|observar mudanca|vigiar|publicar evento|reagir|barramento|manipulador|tratador
+  pattern en on_*
+  pattern en handle_*
+  pattern en emit_*
+  pattern en fire_*
+  pattern en listen_*
+  pattern en subscribe_*
+  pattern en unsubscribe_*
+  pattern en watch_*
+  pattern en hook_*
+  pattern en *_handler
+  pattern en *_listener
+  pattern en *_callback
+  pattern en *_observer
+  pattern en *_subscriber
+end
+op LOCK
+  category CONCURRENCY
+  verb en lock|unlock|acquire|release lock|mutex|semaphore|synchronized|atomic|barrier|wait for|notify all|join|spawn thread|yield|await|async|parallel|thread|critical section|latch
+  verb pt travar|destravar|bloquear recurso|adquirir|liberar trava|exclusao mutua|semaforo|atomico|barreira|aguardar sinal|juntar|criar thread|ceder|paralelo|secao critica|trava
+  pattern en lock_*
+  pattern en unlock_*
+  pattern en acquire_*
+  pattern en wait_*
+  pattern en join_*
+  pattern en spawn_*
+  pattern en *_lock
+  pattern en *_mutex
+  pattern en *_async
+  pattern en *_thread
+end
+op CHECK_STATE
+  category CONTROL
+  verb en is|has|can|should|will|exists|contains|equals|supports|check state|enabled|disabled|empty|full|ready|done|active|available|predicate check
+  verb pt eh|tem|pode|deve|existe|contem|igual|suporta|estado|habilitado|desabilitado|vazio|cheio|pronto|concluido|ativo|disponivel|possui
+  pattern en is_*
+  pattern en has_*
+  pattern en can_*
+  pattern en should_*
+  pattern en will_*
+  pattern en does_*
+  pattern en contains_*
+  pattern en exists*
+  pattern en supports_*
+  pattern en *_enabled
+  pattern en *_exists
+end
+op TEST
+  category QUALITY
+  verb en test|spec|expect|mock|stub|fake|fixture|benchmark|bench|scenario|given|when|then|describe|suite|case|coverage|regression|smoke|e2e|unit
+  verb pt teste|testar|especificacao|esperar|simular|duble|massa de teste|cenario|dado|quando|entao|descrever|suite de testes|caso de teste|cobertura|regressao|fumaca|integracao
+  pattern en test_*
+  pattern en it_*
+  pattern en spec_*
+  pattern en mock_*
+  pattern en stub_*
+  pattern en fake_*
+  pattern en bench_*
+  pattern en *_test
+  pattern en *_spec
+  pattern en *_fixture
+end
+op QUERY_DB
+  category DATA_OPERATION
+  verb en sql|select from|join tables|transaction|begin|commit tx|rollback tx|migrate schema|index|table|row|record set|cursor|prepared|orm|repository|dao|crud|bulk|batch insert|upsert row|schema
+  verb pt consulta sql|juntar tabelas|transacao|iniciar transacao|confirmar transacao|desfazer transacao|migracao de esquema|indice|tabela|linha|registro|cursor de banco|preparado|repositorio|em lote|insercao em lote|esquema|banco de dados
+  pattern en *_repository
+  pattern en *_dao
+  pattern en *_table
+  pattern en *_model
+  pattern en *_entity
+  pattern en find_by_*
+  pattern en get_by_*
+  pattern en delete_by_*
+  pattern en select_*
+  pattern en begin_*
+  pattern en commit*
+end
+op NETWORK
+  category IO_OPERATION
+  verb en request|response|http|post|api|endpoint|route|socket|listen port|accept|serve|proxy|redirect|rest|rpc|grpc|websocket|stream|client|server|fetch url
+  verb pt requisicao|resposta|rota|servir|servidor|cliente|porta|aceitar conexao|redirecionar|transmitir|transmissao|soquete|chamada remota|baixar url
+  pattern en request_*
+  pattern en respond_*
+  pattern en serve_*
+  pattern en route_*
+  pattern en proxy_*
+  pattern en redirect_*
+  pattern en http_*
+  pattern en api_*
+  pattern en *_client
+  pattern en *_server
+  pattern en *_endpoint
+  pattern en *_route
+end
+op BUILD
+  category LIFECYCLE
+  verb en build|compile|link|bundle|package|assemble|deploy|release version|publish package|generate code|transpile|minify|pack|install deps|ci|pipeline|tag release|version|bump|rollout
+  verb pt compilar|compilacao|ligar objetos|empacotar|montar pacote|implantar|implantacao|publicar versao|gerar codigo|transpilar|minificar|instalar dependencias|esteira|versionar|versao|lancamento|distribuir
+  pattern en build_*
+  pattern en compile_*
+  pattern en bundle_*
+  pattern en package_*
+  pattern en deploy_*
+  pattern en generate_*
+  pattern en bump_*
+  pattern en *_builder
+  pattern en *_factory
+end
+op CLONE
+  category DATA_OPERATION
+  verb en clone|duplicate|copy object|fork|snapshot|backup|archive|checkpoint|restore backup|deep copy|shallow copy|dup|memcpy|move|rename file
+  verb pt clonar|duplicar|copiar objeto|bifurcar|instantaneo|backup|arquivar|ponto de controle|restaurar backup|copia profunda|copia rasa|mover|renomear arquivo|replica|copia
+  pattern en clone_*
+  pattern en duplicate_*
+  pattern en copy_*
+  pattern en fork_*
+  pattern en snapshot_*
+  pattern en backup_*
+  pattern en archive_*
+  pattern en move_*
+  pattern en dup_*
+end
+op COLLECTION
+  category DATA_STRUCTURE
+  verb en push|pop|peek top|offer|insert at|remove at|prepend|shift|unshift|swap|reverse|rotate|clear list|slice|splice|concat|extend|resize|grow|shrink
+  verb pt empilhar|desempilhar|topo|inserir em|remover em|anexar|prefixar|deslocar|trocar itens|inverter|rotacionar|fatiar|concatenar|estender|redimensionar|crescer|encolher
+  pattern en push_*
+  pattern en pop_*
+  pattern en append_*
+  pattern en prepend_*
+  pattern en swap_*
+  pattern en reverse_*
+  pattern en resize_*
+  pattern en grow_*
+  pattern en *_list
+  pattern en *_stack
+  pattern en *_array
+end
+op ADJUST
+  category BUSINESS_OPERATION
+  verb en adjust|adjustment|correct|correction|recalculate|recompute|rebalance|round|apply discount|discount|surcharge|tax|fee|markup|credit note|debit note|amortize|accrue|prorate
+  verb pt ajustar|ajuste|corrigir valor|correcao|recalcular|rebalancear|arredondar|aplicar desconto|desconto|acrescimo|imposto|taxa|tarifa|margem|nota de credito|nota de debito|amortizar|provisionar|ratear|rateio
+  pattern en adjust_*
+  pattern en recalc*
+  pattern en recompute_*
+  pattern en rebalance_*
+  pattern en round_*
+  pattern en apply_discount*
+  pattern en prorate_*
+  pattern en accrue_*
+end

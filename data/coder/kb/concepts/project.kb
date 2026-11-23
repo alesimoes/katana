@@ -1,0 +1,900 @@
+# Owner projects domain concepts (source seed unless noted). Format: see README.md
+
+concept SESSION_WORK
+  category SYSTEM
+  canonical session_work
+  term pt sessao 1.0
+  term pt sessao do agente 0.95
+  term pt sessao de trabalho 0.9
+  term pt retomar sessao 0.85
+  term pt historico da sessao 0.8
+  term pt salvar sessao 0.75
+  term pt listar sessoes 0.7
+  term en session 1.0
+  term en agent session 0.95
+  term en work session 0.9
+  term en resume session 0.85
+  term en session history 0.8
+  term code session 0.95
+  term code sessions 0.91
+  term code session_id 0.87
+  term code session_file 0.83
+  term code resume 0.79
+  term code save_session 0.75
+  term code load_session 0.71
+  term code list_sessions 0.67
+  action save
+  action resume
+  action list
+  action delete
+  related LM_CONTEXT 0.5
+  related AGENT_LOOP 0.5
+  related PERSISTENCE 0.4
+  related SESSION_AUTH 0.1
+  source seed
+  note sessao de login: SESSION_AUTH; de audio: AUDIO_SESSION
+end
+
+concept EXTENSION_PLUGIN
+  category SYSTEM
+  canonical extension_plugin
+  term pt plugin opcional 1.0
+  term pt extensao 0.95
+  term pt complemento 0.9
+  term pt programa externo como plugin 0.85
+  term pt modulo opcional 0.8
+  term pt ativar plugin 0.75
+  term pt carregar extensao 0.7
+  term en optional plugin 1.0
+  term en extension 0.95
+  term en add-on 0.9
+  term en external program as plugin 0.85
+  term en optional module 0.8
+  term code plugin 0.95
+  term code plugins 0.91
+  term code extension 0.87
+  term code extensions 0.83
+  term code addon 0.79
+  term code module 0.75
+  term code load_plugin 0.71
+  term code plugin_dir 0.67
+  action load
+  action enable
+  action register
+  related PLUGIN_HOST 0.3
+  related AGENT_TOOL 0.3
+  source seed
+  note plugin de audio: PLUGIN_HOST
+end
+
+concept TERMINAL_SESSION
+  category SYSTEM
+  canonical terminal_session
+  term pt terminal remoto 1.0
+  term pt terminal do pc no celular 0.95
+  term pt abrir terminal 0.9
+  term pt sessao de terminal 0.85
+  term pt ver saida do terminal 0.8
+  term pt digitar no terminal 0.75
+  term pt terminais 0.7
+  term en remote terminal 1.0
+  term en pc terminal on phone 0.95
+  term en open terminal 0.9
+  term en terminal session 0.85
+  term en see terminal output 0.8
+  term code terminals 0.95
+  term code terminal 0.91
+  term code pty 0.87
+  term code terminal_id 0.83
+  term code spawn_terminal 0.79
+  term code terminals.mjs 0.75
+  term code write_stdin 0.71
+  term code resize 0.67
+  action open
+  action write
+  action read
+  action resize
+  action close
+  related TERMINAL_UI 0.5
+  related PHONE_BRIDGE 0.5
+  related SHELL_COMMAND 0.4
+  source seed
+end
+
+concept PHONE_BRIDGE
+  category SYSTEM
+  canonical phone_bridge
+  term pt ponte do celular 1.0
+  term pt ponte 0.95
+  term pt ponte entre celular e pc 0.9
+  term pt servidor da ponte 0.85
+  term pt cliente da ponte 0.8
+  term pt relay da ponte 0.75
+  term pt ligacao celular pc 0.7
+  term en phone bridge 1.0
+  term en bridge 0.95
+  term en phone to pc bridge 0.9
+  term en bridge server 0.85
+  term en bridge client 0.8
+  term code bridge 0.95
+  term code server.mjs 0.91
+  term code lan_bridge 0.87
+  term code phone_link 0.83
+  term code bridge_url 0.79
+  term code relay 0.75
+  term code grey_channel 0.71
+  term code mcp_phone 0.67
+  action start
+  action pair
+  action relay
+  action forward
+  related BRIDGE 0.6
+  related MOBILE_PAIRING 0.5
+  related TUNNEL_VPN 0.4
+  related AGENT_APPROVAL 0.4
+  related TERMINAL_SESSION 0.4
+  source seed
+end
+
+concept VPN_LINK
+  category SYSTEM
+  canonical vpn_link
+  term pt vpn do grey 1.0
+  term pt perfil do aparelho 0.95
+  term pt cliente wireguard 0.9
+  term pt raspberry 0.85
+  term pt mini pc 0.8
+  term pt peer 0.75
+  term pt endereco na vpn 0.7
+  term en grey vpn 1.0
+  term en device profile 0.95
+  term en wireguard client 0.9
+  term en raspberry 0.85
+  term en mini pc 0.8
+  term code vpn 0.95
+  term code vpn_link 0.91
+  term code wg 0.87
+  term code wg0 0.83
+  term code wireguard 0.79
+  term code peer 0.75
+  term code PrivateKey 0.71
+  term code AllowedIPs 0.67
+  action install
+  action connect
+  action profile
+  related TUNNEL_VPN 0.7
+  related KEY_MANAGEMENT 0.3
+  related PHONE_BRIDGE 0.4
+  source seed
+end
+
+concept APPROVAL_RULES_GATE
+  category SYSTEM
+  canonical approval_rules_gate
+  term pt gate de aprovacao 1.0
+  term pt regra de aprovacao 0.95
+  term pt permitir parecidos 0.9
+  term pt perigoso 0.85
+  term pt lista de perigo 0.8
+  term pt modo autonomo 0.75
+  term pt aprovar no celular 0.7
+  term en approval gate 1.0
+  term en approval rule 0.95
+  term en allow similar 0.9
+  term en dangerous 0.85
+  term en danger list 0.8
+  term code approval_rules 0.95
+  term code autoAllowed 0.91
+  term code DANGER 0.87
+  term code allow_similar 0.83
+  term code gate 0.79
+  term code Guard 0.75
+  term code Tier 0.71
+  term code Tiers 0.67
+  action allow
+  action deny
+  action confirm
+  action block
+  related AGENT_APPROVAL 0.7
+  related APPROVAL_REQUEST 0.6
+  related AUDIT_LOG 0.4
+  source seed
+end
+
+concept EVENT_LOG_PROJECT
+  category SYSTEM
+  canonical event_log_project
+  term pt log de eventos 1.0
+  term pt evento registrado 0.95
+  term pt historico de eventos 0.9
+  term pt visualizar logs 0.85
+  term pt log web 0.8
+  term pt trilha de eventos 0.75
+  term pt eventlog 0.7
+  term en event log 1.0
+  term en logged event 0.95
+  term en event history 0.9
+  term en view logs 0.85
+  term en web log 0.8
+  term code eventlog 0.95
+  term code logview 0.91
+  term code logweb 0.87
+  term code log_event 0.83
+  term code usage 0.79
+  term code uso 0.75
+  term code usage_stats 0.71
+  term code alerts 0.67
+  action log
+  action view
+  action append
+  related LOG_RECORD 0.6
+  related AUDIT_LOG 0.4
+  source seed
+end
+
+concept BRIEFING_ALERTS
+  category SYSTEM
+  canonical briefing_alerts
+  term pt briefing 1.0
+  term pt resumo diario 0.95
+  term pt alerta 0.9
+  term pt alertas 0.85
+  term pt aviso por canal 0.8
+  term pt avisar quando terminar 0.75
+  term pt progresso da tarefa 0.7
+  term en briefing 1.0
+  term en daily summary 0.95
+  term en alert 0.9
+  term en alerts 0.85
+  term en notify via channel 0.8
+  term code briefing 0.95
+  term code alerts 0.91
+  term code alert 0.87
+  term code progress 0.83
+  term code notify_owner 0.79
+  term code summary 0.75
+  term code digest 0.71
+  term code tick 0.67
+  action send
+  action summarize
+  action alert
+  related NOTIFICATION 0.5
+  related MOBILE_ALARM_CALENDAR 0.4
+  source seed
+end
+
+concept IMAGE_GENERATION
+  category SYSTEM
+  canonical image_generation
+  term pt geracao de imagem 1.0
+  term pt gerar imagem 0.95
+  term pt imagegen 0.9
+  term pt desenhar com ia 0.85
+  term pt difusao 0.8
+  term pt modelo de imagem 0.75
+  term pt prompt de imagem 0.7
+  term en image generation 1.0
+  term en generate image 0.95
+  term en imagegen 0.9
+  term en draw with ai 0.85
+  term en diffusion 0.8
+  term code imagegen 0.95
+  term code generate_image 0.91
+  term code diffusion 0.87
+  term code txt2img 0.83
+  term code img2img 0.79
+  term code stable 0.75
+  term code sampler 0.71
+  term code steps 0.67
+  action generate
+  action render
+  related AI_VISION 0.3
+  related IMAGE_PROCESSING 0.3
+  source seed
+end
+
+concept CODE_INTELLIGENCE
+  category SYSTEM
+  canonical code_intelligence
+  term pt inteligencia de codigo 1.0
+  term pt entender codigo 0.95
+  term pt indexar repositorio 0.9
+  term pt mapa do codigo 0.85
+  term pt simbolos do projeto 0.8
+  term pt perguntar sobre o codigo 0.75
+  term pt busca semantica propria 0.7
+  term en code intelligence 1.0
+  term en understand code 0.95
+  term en index repository 0.9
+  term en code map 0.85
+  term en project symbols 0.8
+  term code code_intelligence 0.95
+  term code codeintel 0.91
+  term code coder 0.87
+  term code cbi 0.83
+  term code intel 0.79
+  term code symbol_index 0.75
+  term code repo_map 0.71
+  term code concept_search 0.67
+  action index
+  action search
+  action expand
+  action rank
+  action explain
+  related CODE_SEARCH 0.8
+  related KNOWLEDGE_BASE 0.7
+  related SEARCH_INDEX 0.6
+  related RANKING_SCORE 0.5
+  source seed
+end
+
+concept INVESTIGATION
+  category SYSTEM
+  canonical investigation
+  term pt investigar 1.0
+  term pt investigacao 0.95
+  term pt investigar causa 0.9
+  term pt achar a causa 0.85
+  term pt rastrear problema 0.8
+  term pt hipotese 0.75
+  term pt evidencia 0.7
+  term en investigate 1.0
+  term en investigation 0.95
+  term en investigate cause 0.9
+  term en find the cause 0.85
+  term en trace problem 0.8
+  term code investigate 0.95
+  term code Investigation 0.91
+  term code hypothesis 0.87
+  term code evidence 0.83
+  term code root_cause 0.79
+  term code cause 0.75
+  term code trace 0.71
+  term code why 0.67
+  action investigate
+  action trace
+  action hypothesize
+  action verify
+  related DEBUGGING 0.6
+  related CODE_INTELLIGENCE 0.6
+  related AGENT_LOOP 0.4
+  related USER_FEEDBACK_ERROR 0.5
+  source seed
+end
+
+concept SPECIALIZATION
+  category SYSTEM
+  canonical specialization
+  term pt especializacao 1.0
+  term pt especialista de dominio 0.95
+  term pt adaptador por dominio 0.9
+  term pt treino por dominio 0.85
+  term pt curriculo 0.8
+  term pt base ia 0.75
+  term pt base de ia 0.7
+  term en specialization 1.0
+  term en domain specialist 0.95
+  term en domain adapter 0.9
+  term en domain training 0.85
+  term en curriculum 0.8
+  term code specialization 0.95
+  term code specialist 0.91
+  term code curriculum 0.87
+  term code base_ia 0.83
+  term code domain 0.79
+  term code domains 0.75
+  term code pack 0.71
+  term code specialize 0.67
+  action specialize
+  action train
+  action select
+  related LM_ADAPTER 0.7
+  related LM_TRAINING 0.5
+  related DATASET_TRAIN 0.5
+  source seed
+end
+
+concept CALL_FORMATS
+  category SYSTEM
+  canonical call_formats
+  term pt formato de chamada 1.0
+  term pt formato de chamada de ferramenta 0.95
+  term pt tool call em xml 0.9
+  term pt tool call em json 0.85
+  term pt formato do modelo 0.8
+  term pt parser de chamadas 0.75
+  term pt chamadas de ferramenta do modelo 0.7
+  term en call format 1.0
+  term en tool call format 0.95
+  term en xml tool call 0.9
+  term en json tool call 0.85
+  term en model format 0.8
+  term code call_format 0.95
+  term code call_formats 0.91
+  term code tool_call 0.87
+  term code xml_tool 0.83
+  term code json_tool 0.79
+  term code hermes 0.75
+  term code parse_tool_call 0.71
+  term code format 0.67
+  action parse
+  action format
+  action emit
+  related AGENT_TOOL 0.6
+  related PARSER 0.5
+  related LM_CHAT_TEMPLATE 0.5
+  source seed
+end
+
+concept KATANA_CONSOLE
+  category SYSTEM
+  canonical katana_console
+  term pt console do katana 1.0
+  term pt console 0.95
+  term pt interface de texto 0.9
+  term pt comandos do console 0.85
+  term pt barra de comando 0.8
+  term pt slash command 0.75
+  term pt comando com barra 0.7
+  term en katana console 1.0
+  term en console 0.95
+  term en text interface 0.9
+  term en console commands 0.85
+  term en command bar 0.8
+  term code console 0.95
+  term code repl 0.91
+  term code slash 0.87
+  term code slash_command 0.83
+  term code /help 0.79
+  term code /model 0.75
+  term code /resume 0.71
+  term code interactive 0.67
+  action run
+  action complete
+  action history
+  related TERMINAL_UI 0.5
+  related CLI_ARGS 0.4
+  related AGENT_LOOP 0.3
+  source seed
+end
+
+concept DESKTOP_APP
+  category SYSTEM
+  canonical desktop_app
+  term pt aplicativo desktop 1.0
+  term pt katana desktop 0.95
+  term pt app nativo 0.9
+  term pt qt 0.85
+  term pt qml 0.8
+  term pt janela do agente 0.75
+  term pt interface nativa 0.7
+  term en desktop app 1.0
+  term en katana desktop 0.95
+  term en native app 0.9
+  term en qt 0.85
+  term en qml 0.8
+  term code desktop 0.95
+  term code desktop-qt 0.91
+  term code Qt 0.87
+  term code qt6 0.83
+  term code QML 0.79
+  term code QQuickView 0.75
+  term code QObject 0.71
+  term code signal 0.67
+  action show
+  action connect
+  action render
+  related WINDOW 0.4
+  related AGENT_LOOP 0.3
+  source seed
+end
+
+concept PROVIDERS
+  category SYSTEM
+  canonical providers
+  term pt provedor 1.0
+  term pt provedores 0.95
+  term pt fornecedor de modelo 0.9
+  term pt trocar de modelo 0.85
+  term pt modelo remoto ou local 0.8
+  term pt api externa 0.75
+  term pt escolher modelo 0.7
+  term en provider 1.0
+  term en providers 0.95
+  term en model provider 0.9
+  term en switch model 0.85
+  term en remote or local model 0.8
+  term code provider 0.95
+  term code providers 0.91
+  term code catalog 0.87
+  term code model_catalog 0.83
+  term code backend 0.79
+  term code remote 0.75
+  term code local 0.71
+  term code select_model 0.67
+  action select
+  action switch
+  action list
+  related LANGUAGE_MODEL 0.4
+  related LM_SERVER_API 0.4
+  source seed
+end
+
+concept PC_TASKS
+  category SYSTEM
+  canonical pc_tasks
+  term pt tarefa do pc 1.0
+  term pt tarefas do pc 0.95
+  term pt rodar tarefa no computador 0.9
+  term pt agente no pc 0.85
+  term pt fila de tarefas do pc 0.8
+  term pt resposta do agente 0.75
+  term pt aprovacao da tarefa 0.7
+  term en pc task 1.0
+  term en pc tasks 0.95
+  term en run task on computer 0.9
+  term en agent on pc 0.85
+  term en pc task queue 0.8
+  term code tasks 0.95
+  term code tasks.mjs 0.91
+  term code task 0.87
+  term code run_task 0.83
+  term code task_id 0.79
+  term code answer 0.75
+  term code reply 0.71
+  term code respond 0.67
+  action create
+  action run
+  action answer
+  action cancel
+  related TASK_AGENT 0.6
+  related PHONE_BRIDGE 0.5
+  related AGENT_APPROVAL 0.4
+  source seed
+end
+
+concept SONORA_PROJECT
+  category MEDIA
+  canonical sonora_project
+  term pt sonora 1.0
+  term pt estacao de audio 0.95
+  term pt daw 0.9
+  term pt estudio 0.85
+  term pt producao musical 0.8
+  term pt projeto de musica 0.75
+  term pt contrato 0.7
+  term en sonora 1.0
+  term en audio workstation 0.95
+  term en daw 0.9
+  term en studio 0.85
+  term en music production 0.8
+  term code sonora 0.95
+  term code daw 0.91
+  term code studio 0.87
+  term code adr 0.83
+  term code contracts 0.79
+  term code interchange 0.75
+  term code planning 0.71
+  term code brain 0.67
+  action plan
+  action decide
+  action record
+  related AUDIO_SESSION 0.5
+  related AUDIO_ENGINE 0.4
+  source seed
+end
+
+concept COMPING_TAKES
+  category MEDIA
+  canonical comping_takes
+  term pt comping 1.0
+  term pt tomadas 0.95
+  term pt escolher o melhor trecho 0.9
+  term pt juntar tomadas 0.85
+  term pt take 0.8
+  term pt takes 0.75
+  term pt vocal 0.7
+  term en comping 1.0
+  term en takes 0.95
+  term en pick the best segment 0.9
+  term en combine takes 0.85
+  term en take 0.8
+  term code comp 0.95
+  term code comping 0.91
+  term code comp_lane 0.87
+  term code take 0.83
+  term code takes 0.79
+  term code take_lane 0.75
+  term code vocal 0.71
+  term code swipe 0.67
+  action comp
+  action select
+  action swipe
+  related CLIP 0.5
+  related RECORDING 0.5
+  related TRACK 0.4
+  source seed
+end
+
+concept RIG_CHAIN
+  category MEDIA
+  canonical rig_chain
+  term pt rig 1.0
+  term pt cadeia de efeitos 0.95
+  term pt cadeia de plugins 0.9
+  term pt amplificador 0.85
+  term pt pedaleira 0.8
+  term pt guitarra 0.75
+  term pt cadeia de sinal 0.7
+  term en rig 1.0
+  term en effects chain 0.95
+  term en plugin chain 0.9
+  term en amplifier 0.85
+  term en pedalboard 0.8
+  term code rig 0.95
+  term code chain 0.91
+  term code signal_chain 0.87
+  term code plugin_chain 0.83
+  term code amp 0.79
+  term code amp_sim 0.75
+  term code pedalboard 0.71
+  term code pedal 0.67
+  action load
+  action swap
+  action bypass
+  related EFFECT_DSP 0.5
+  related PLUGIN_HOST 0.5
+  related MIXER 0.4
+  source seed
+end
+
+concept DRIVER_KEYMAP
+  category MEDIA
+  canonical driver_keymap
+  term pt keymap 1.0
+  term pt mapa de teclas 0.95
+  term pt mapeamento de teclado 0.9
+  term pt driver de hardware de audio 0.85
+  term pt drivers 0.8
+  term pt superficie de controle 0.75
+  term pt controlador midi 0.7
+  term en keymap 1.0
+  term en keyboard mapping 0.95
+  term en audio hardware driver 0.9
+  term en drivers 0.85
+  term en control surface 0.8
+  term code keymaps 0.95
+  term code keymap 0.91
+  term code driver 0.87
+  term code drivers 0.83
+  term code control_surface 0.79
+  term code controller 0.75
+  term code mapping 0.71
+  term code binding 0.67
+  action map
+  action bind
+  action load
+  related SHORTCUT 0.5
+  related DEVICE_DRIVER 0.4
+  related MIDI_EVENT 0.3
+  source seed
+end
+
+concept REFUSAL_CONTRACT
+  category SYSTEM
+  canonical refusal_contract
+  term pt recusa 1.0
+  term pt recusado 0.95
+  term pt recusar operacao 0.9
+  term pt contrato de recusa 0.85
+  term pt motivo da recusa 0.8
+  term pt operacao nao permitida 0.75
+  term pt razao 0.7
+  term en refusal 1.0
+  term en refused 0.95
+  term en refuse operation 0.9
+  term en refusal contract 0.85
+  term en refusal reason 0.8
+  term code refused 0.95
+  term code refusal 0.91
+  term code refuse 0.87
+  term code reason 0.83
+  term code refusal_reason 0.79
+  term code reject 0.75
+  term code RefusalError 0.71
+  term code denied_reason 0.67
+  action refuse
+  action reject
+  action explain
+  related PERMISSION_DENIED 0.5
+  related ERROR_MESSAGE 0.4
+  related VALIDATION 0.3
+  source seed
+end
+
+concept SNAPSHOT_STATE
+  category SYSTEM
+  canonical snapshot_state
+  term pt snapshot 1.0
+  term pt instantanea 0.95
+  term pt foto do estado 0.9
+  term pt estado salvo 0.85
+  term pt comparar estados 0.8
+  term pt golden 0.75
+  term pt arquivo de referencia 0.7
+  term en snapshot 1.0
+  term en state snapshot 0.95
+  term en saved state 0.9
+  term en compare states 0.85
+  term en golden file 0.8
+  term code snapshot 0.95
+  term code golden 0.91
+  term code expected 0.87
+  term code actual 0.83
+  term code snapshot_test 0.79
+  term code state_snapshot 0.75
+  term code fixture 0.71
+  term code baseline 0.67
+  action capture
+  action compare
+  action update
+  related TEST_AUTOMATED 0.5
+  related BACKUP 0.3
+  source seed
+end
+
+concept COMPUTE_BUDGET
+  category SYSTEM
+  canonical compute_budget
+  term pt orcamento 1.0
+  term pt orcamento de tokens 0.95
+  term pt orcamento de tempo 0.9
+  term pt limite de custo 0.85
+  term pt custo 0.8
+  term pt uso de recursos 0.75
+  term pt gasto 0.7
+  term en budget 1.0
+  term en token budget 0.95
+  term en time budget 0.9
+  term en cost limit 0.85
+  term en cost 0.8
+  term code budget 0.95
+  term code cost 0.91
+  term code usage 0.87
+  term code usage_stats 0.83
+  term code spend 0.79
+  term code quota 0.75
+  term code token_budget 0.71
+  term code max_cost 0.67
+  action track
+  action limit
+  action report
+  related RESOURCE_LIMITS 0.4
+  related LM_TOKEN 0.3
+  related RATE_LIMIT 0.3
+  source seed
+end
+
+concept NOTES_SNIPPETS
+  category SYSTEM
+  canonical notes_snippets
+  term pt nota 1.0
+  term pt notas 0.95
+  term pt anotacao 0.9
+  term pt trecho 0.85
+  term pt trechos 0.8
+  term pt trecho de codigo 0.75
+  term pt snippet 0.7
+  term en note 1.0
+  term en notes 0.95
+  term en annotation 0.9
+  term en snippet 0.85
+  term en snippets 0.8
+  term code note 0.95
+  term code notes 0.91
+  term code snippet 0.87
+  term code snippets 0.83
+  term code annotation 0.79
+  term code annotate 0.75
+  term code chunk 0.71
+  term code passage 0.67
+  action add
+  action search
+  action list
+  related AGENT_MEMORY 0.5
+  related SEARCH_INDEX 0.4
+  source seed
+end
+
+concept SESSION_ARCHITECT_DECISION
+  category SYSTEM
+  canonical session_architect_decision
+  term pt arquiteto 1.0
+  term pt decisao 0.95
+  term pt logica 0.9
+  term pt projeto de arquitetura 0.85
+  term pt cenario 0.8
+  term pt motivo 0.75
+  term pt alternativas consideradas 0.7
+  term en architect 1.0
+  term en decision 0.95
+  term en logic 0.9
+  term en architecture design 0.85
+  term en scenario 0.8
+  term code architect 0.95
+  term code architecture 0.91
+  term code decision 0.87
+  term code adr 0.83
+  term code design 0.79
+  term code rationale 0.75
+  term code scenario 0.71
+  term code alternatives 0.67
+  action decide
+  action record
+  action review
+  related SONORA_PROJECT 0.4
+  related DOCUMENTATION 0.4
+  source mined
+end
+
+concept ENGINEER_ASSISTANT_BRAIN
+  category SYSTEM
+  canonical engineer_assistant_brain
+  term pt engenheiro 1.0
+  term pt assistente 0.95
+  term pt cerebro 0.9
+  term pt assistente de estudio 0.85
+  term pt sugestao automatica 0.8
+  term pt mixagem assistida 0.75
+  term pt engenheiro de som virtual 0.7
+  term en engineer 1.0
+  term en assistant 0.95
+  term en brain 0.9
+  term en studio assistant 0.85
+  term en automatic suggestion 0.8
+  term code engineer 0.95
+  term code assistant 0.91
+  term code brain 0.87
+  term code analysis 0.83
+  term code suggest 0.79
+  term code suggestion 0.75
+  term code advisor 0.71
+  term code analyzer 0.67
+  action suggest
+  action analyze
+  action assist
+  related SONORA_PROJECT 0.4
+  related AGENT_LOOP 0.3
+  source mined
+end
+
+concept GREY_PHONE_ASSISTANT
+  category MOBILE
+  canonical grey_phone_assistant
+  term pt assistente do celular 1.0
+  term pt grey 0.95
+  term pt minerva 0.9
+  term pt voz do assistente 0.85
+  term pt modo proativo 0.8
+  term pt triagem 0.75
+  term pt resposta automatica 0.7
+  term en phone assistant 1.0
+  term en grey 0.95
+  term en minerva 0.9
+  term en assistant voice 0.85
+  term en proactive mode 0.8
+  term code grey 0.95
+  term code minerva 0.91
+  term code assistant 0.87
+  term code proactive 0.83
+  term code triage 0.79
+  term code routines 0.75
+  term code birthday 0.71
+  term code favorites 0.67
+  action assist
+  action triage
+  action reply
+  related MOBILE_APP 0.4
+  related AGENT_LOOP 0.4
+  source mined
+end

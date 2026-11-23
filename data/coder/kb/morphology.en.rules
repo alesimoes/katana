@@ -1,0 +1,463 @@
+# morphology.en.rules: light stemming rules for English (lowercase ASCII). Same format as morphology.pt.rules:
+# suffix <suffix> <replacement|-> <minimum stem length> <order>    first matching rule in ascending order wins
+# irregular <form> <canonical>                                     checked before the rules
+# The replacement may be a comma list of candidates (e,-); the consumer uses the first one found in its vocabulary.
+
+suffix ications ify 3 10
+suffix ication ify 3 11
+suffix izations ize 3 12
+suffix ization ize 3 13
+suffix isations ise 3 14
+suffix isation ise 3 15
+suffix ations ate,e 3 20
+suffix ation ate,e 3 21
+suffix itions it 3 22
+suffix ition it 3 23
+suffix utions ute 3 24
+suffix ution ute 3 25
+suffix isions ide 3 26
+suffix ision ide 3 27
+suffix essions ess 3 28
+suffix ession ess 3 29
+suffix ments - 3 30
+suffix ment - 3 31
+suffix nesses - 3 32
+suffix ness - 3 33
+suffix ities ity 3 34
+suffix ity - 4 35
+suffix ables - 3 36
+suffix able e,- 3 37
+suffix ibles - 3 38
+suffix ible e,- 3 39
+suffix ously ous 3 40
+suffix fully ful 3 41
+suffix ally al 3 42
+suffix ily y 3 43
+suffix ly - 3 44
+suffix ers - 3 50
+suffix ors or 3 51
+suffix er e,- 3 52
+suffix or e,- 3 53
+suffix ings - 3 60
+suffix ing e,- 3 61
+suffix ied y 2 70
+suffix ies y 2 71
+suffix ier y 2 72
+suffix iest y 2 73
+suffix ed e,- 3 74
+suffix es e,- 3 75
+suffix ses s 2 76
+suffix xes x 2 77
+suffix zes z 2 78
+suffix ches ch 2 79
+suffix shes sh 2 80
+suffix ves f,fe 2 81
+suffix s - 3 90
+suffix ize - 3 100
+suffix ise - 3 101
+suffix ify - 3 102
+suffix ful - 4 103
+suffix less - 4 104
+suffix ish - 4 105
+suffix ous - 4 106
+suffix ive - 4 107
+suffix al - 4 108
+suffix ic - 4 109
+suffix est - 4 110
+suffix en - 4 111
+
+# irregular verbs (form -> base)
+irregular was be
+irregular were be
+irregular been be
+irregular being be
+irregular is be
+irregular are be
+irregular am be
+irregular had have
+irregular has have
+irregular having have
+irregular did do
+irregular done do
+irregular does do
+irregular doing do
+irregular went go
+irregular gone go
+irregular goes go
+irregular going go
+irregular made make
+irregular makes make
+irregular making make
+irregular took take
+irregular taken take
+irregular takes take
+irregular taking take
+irregular got get
+irregular gotten get
+irregular gets get
+irregular getting get
+irregular gave give
+irregular given give
+irregular gives give
+irregular giving give
+irregular saw see
+irregular seen see
+irregular sees see
+irregular seeing see
+irregular came come
+irregular comes come
+irregular coming come
+irregular ran run
+irregular runs run
+irregular running run
+irregular wrote write
+irregular written write
+irregular writes write
+irregular writing write
+irregular read read
+irregular reads read
+irregular reading read
+irregular began begin
+irregular begun begin
+irregular begins begin
+irregular beginning begin
+irregular broke break
+irregular broken break
+irregular breaks break
+irregular breaking break
+irregular built build
+irregular builds build
+irregular building build
+irregular bought buy
+irregular buys buy
+irregular brought bring
+irregular brings bring
+irregular caught catch
+irregular catches catch
+irregular chose choose
+irregular chosen choose
+irregular chooses choose
+irregular drew draw
+irregular drawn draw
+irregular draws draw
+irregular drove drive
+irregular driven drive
+irregular drives drive
+irregular fell fall
+irregular fallen fall
+irregular falls fall
+irregular felt feel
+irregular feels feel
+irregular found find
+irregular finds find
+irregular finding find
+irregular forgot forget
+irregular forgotten forget
+irregular forgets forget
+irregular grew grow
+irregular grown grow
+irregular grows grow
+irregular held hold
+irregular holds hold
+irregular holding hold
+irregular kept keep
+irregular keeps keep
+irregular keeping keep
+irregular knew know
+irregular known know
+irregular knows know
+irregular laid lay
+irregular lay lie
+irregular led lead
+irregular leads lead
+irregular leading lead
+irregular left leave
+irregular leaves leave
+irregular leaving leave
+irregular lent lend
+irregular lends lend
+irregular lost lose
+irregular loses lose
+irregular losing lose
+irregular meant mean
+irregular means mean
+irregular met meet
+irregular meets meet
+irregular paid pay
+irregular pays pay
+irregular paying pay
+irregular put put
+irregular puts put
+irregular putting put
+irregular rose rise
+irregular risen rise
+irregular rises rise
+irregular said say
+irregular says say
+irregular sold sell
+irregular sells sell
+irregular sent send
+irregular sends send
+irregular sending send
+irregular set set
+irregular sets set
+irregular setting set
+irregular shut shut
+irregular shuts shut
+irregular sat sit
+irregular sits sit
+irregular slept sleep
+irregular sleeps sleep
+irregular spoke speak
+irregular spoken speak
+irregular spent spend
+irregular spends spend
+irregular split split
+irregular splits split
+irregular splitting split
+irregular stood stand
+irregular stands stand
+irregular stole steal
+irregular stolen steal
+irregular struck strike
+irregular swept sweep
+irregular swore swear
+irregular taught teach
+irregular teaches teach
+irregular told tell
+irregular tells tell
+irregular thought think
+irregular thinks think
+irregular threw throw
+irregular thrown throw
+irregular throws throw
+irregular understood understand
+irregular understands understand
+irregular woke wake
+irregular woken wake
+irregular wore wear
+irregular worn wear
+irregular wins win
+irregular won win
+irregular withdrew withdraw
+irregular withdrawn withdraw
+irregular overwrote overwrite
+irregular overwritten overwrite
+irregular rebuilt rebuild
+irregular redone redo
+irregular reran rerun
+irregular resent resend
+irregular reset reset
+irregular resets reset
+irregular undid undo
+irregular undone undo
+irregular upheld uphold
+irregular bound bind
+irregular binds bind
+irregular binding bind
+irregular cut cut
+irregular cuts cut
+irregular cutting cut
+irregular hit hit
+irregular hits hit
+irregular hurt hurt
+irregular let let
+irregular lets let
+irregular quit quit
+irregular quits quit
+irregular spread spread
+irregular spreads spread
+irregular shed shed
+irregular slid slide
+irregular stuck stick
+irregular sticks stick
+irregular hung hang
+irregular hangs hang
+irregular dug dig
+irregular digs dig
+irregular fed feed
+irregular feeds feed
+irregular fought fight
+irregular fights fight
+irregular flew fly
+irregular flown fly
+irregular flies fly
+irregular froze freeze
+irregular frozen freeze
+irregular freezes freeze
+irregular hid hide
+irregular hidden hide
+irregular hides hide
+irregular lit light
+irregular rode ride
+irregular ridden ride
+irregular rang ring
+irregular rung ring
+irregular rings ring
+irregular sang sing
+irregular sung sing
+irregular shook shake
+irregular shaken shake
+irregular shot shoot
+irregular shoots shoot
+irregular shrank shrink
+irregular shrunk shrink
+irregular shrinks shrink
+irregular swam swim
+irregular swum swim
+irregular tore tear
+irregular torn tear
+irregular tears tear
+irregular wound wind
+irregular wove weave
+irregular woven weave
+irregular beat beat
+irregular beaten beat
+irregular beats beat
+irregular bent bend
+irregular bends bend
+irregular bit bite
+irregular bitten bite
+irregular blew blow
+irregular blown blow
+irregular blows blow
+irregular bred breed
+irregular burnt burn
+irregular burned burn
+irregular burns burn
+irregular dealt deal
+irregular deals deal
+irregular dreamt dream
+irregular dwelt dwell
+irregular ate eat
+irregular eaten eat
+irregular eats eat
+# plural irregulars and nouns whose plural is not regular (form -> singular)
+irregular children child
+irregular people person
+irregular men man
+irregular women woman
+irregular feet foot
+irregular teeth tooth
+irregular mice mouse
+irregular geese goose
+irregular indices index
+irregular matrices matrix
+irregular vertices vertex
+irregular axes axis
+irregular analyses analysis
+irregular bases basis
+irregular crises crisis
+irregular theses thesis
+irregular hypotheses hypothesis
+irregular parentheses parenthesis
+irregular criteria criterion
+irregular phenomena phenomenon
+irregular data datum
+irregular media medium
+irregular schemata schema
+irregular schemas schema
+irregular series series
+irregular species species
+irregular status status
+irregular statuses status
+irregular aliases alias
+irregular addresses address
+irregular processes process
+irregular classes class
+irregular buses bus
+irregular statistics statistic
+irregular leaves leaf
+irregular lives life
+irregular knives knife
+irregular halves half
+irregular wolves wolf
+irregular shelves shelf
+irregular selves self
+irregular loaves loaf
+irregular copies copy
+irregular entries entry
+irregular queries query
+irregular policies policy
+irregular categories category
+irregular dependencies dependency
+irregular directories directory
+irregular repositories repository
+irregular summaries summary
+irregular histories history
+irregular properties property
+irregular strategies strategy
+irregular libraries library
+irregular factories factory
+irregular proxies proxy
+irregular delegates delegate
+irregular caches cache
+irregular patches patch
+irregular batches batch
+irregular matches match
+irregular searches search
+irregular branches branch
+irregular hashes hash
+irregular indexes index
+irregular suffixes suffix
+irregular prefixes prefix
+irregular boxes box
+irregular fixes fix
+irregular mixes mix
+irregular taxes tax
+irregular quizzes quiz
+irregular witnesses witness
+irregular businesses business
+irregular responses response
+irregular licenses license
+irregular databases database
+irregular releases release
+irregular types type
+irregular names name
+irregular values value
+irregular nodes node
+irregular files file
+irregular lines line
+irregular modes mode
+irregular states state
+irregular rules rule
+irregular scopes scope
+irregular sources source
+irregular services service
+irregular messages message
+irregular images image
+irregular pages page
+irregular codes code
+irregular tables table
+irregular handles handle
+irregular objects object
+irregular events event
+irregular items item
+irregular users user
+irregular orders order
+irregular customers customer
+irregular payments payment
+irregular invoices invoice
+irregular refunds refund
+irregular approvals approval
+irregular cancellations cancellation
+irregular notifications notification
+irregular validations validation
+irregular authentications authentication
+irregular conversions conversion
+irregular transactions transaction
+irregular permissions permission
+irregular sessions session
+irregular exceptions exception
+irregular connections connection
+irregular versions version
+irregular functions function
+irregular operations operation
+irregular configurations configuration
+irregular implementations implementation
+irregular initializations initialization
+irregular sizes size
+irregular ids id
+irregular uris uri
+irregular urls url
+irregular apis api

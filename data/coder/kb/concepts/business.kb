@@ -1,0 +1,1688 @@
+# Business and management systems concepts (source seed unless noted). Format: see README.md
+
+concept ORDER
+  category BUSINESS_ENTITY
+  canonical order
+  term pt pedido 1.0
+  term pt pedidos 0.95
+  term pt ordem de compra 0.9
+  term pt encomenda 0.85
+  term pt compra 0.8
+  term pt venda 0.75
+  term pt ordem de venda 0.7
+  term en order 1.0
+  term en orders 0.95
+  term en purchase order 0.9
+  term en sales order 0.85
+  term en checkout order 0.8
+  term code order 0.95
+  term code orders 0.91
+  term code order_id 0.87
+  term code OrderService 0.83
+  term code order_item 0.79
+  term code line_item 0.75
+  term code purchase_order 0.71
+  term code sales_order 0.67
+  action create
+  action place
+  action submit
+  action confirm
+  action cancel
+  action approve
+  action fulfill
+  related ORDER_APPROVAL 0.8
+  related INVENTORY_UPDATE 0.6
+  related PAYMENT 0.6
+  related SHIPPING 0.5
+  related CART 0.6
+  related INVOICE 0.5
+  source seed
+  note pedido de venda ou de compra; 'ordem' tambem e ordenacao (ver SORTING)
+end
+
+concept ORDER_APPROVAL
+  category BUSINESS_OPERATION
+  canonical order_approval
+  term pt aprovacao de pedido 1.0
+  term pt aprovar pedido 0.95
+  term pt pedido aprovado 0.9
+  term pt aprovacao 0.85
+  term pt aprovar 0.8
+  term pt aprovado 0.75
+  term pt liberar pedido 0.7
+  term en order approval 1.0
+  term en approve order 0.95
+  term en approved 0.9
+  term en order confirmation 0.85
+  term en confirm order 0.8
+  term code OrderApproval 0.95
+  term code approve_order 0.91
+  term code order_approved 0.87
+  term code process_order_confirmation 0.83
+  term code confirm_order 0.79
+  term code order_status_approved 0.75
+  term code is_approved 0.71
+  term code approval_status 0.67
+  action approve
+  action confirm
+  action release
+  action finalize
+  action reject
+  related ORDER 0.8
+  related INVENTORY_UPDATE 0.7
+  related PAYMENT 0.6
+  related APPROVAL_REQUEST 0.7
+  related STOCK_RESERVATION 0.6
+  source seed
+  note liga a pergunta 'por que o estoque nao atualiza quando o pedido e aprovado'
+end
+
+concept INVENTORY_UPDATE
+  category BUSINESS_OPERATION
+  canonical inventory_update
+  term pt estoque 1.0
+  term pt atualizar estoque 0.95
+  term pt baixa de estoque 0.9
+  term pt baixa no estoque 0.85
+  term pt dar baixa 0.8
+  term pt quantidade disponivel 0.75
+  term pt inventario 0.7
+  term en inventory 1.0
+  term en stock 0.95
+  term en update stock 0.9
+  term en stock update 0.85
+  term en decrease stock 0.8
+  term code inventory 0.95
+  term code stock 0.91
+  term code stock_level 0.87
+  term code available_quantity 0.83
+  term code quantity_on_hand 0.79
+  term code qty_on_hand 0.75
+  term code decrease_stock 0.71
+  term code decrement_stock 0.67
+  action update
+  action decrease
+  action increase
+  action reserve
+  action adjust
+  action restock
+  action deduct
+  related ORDER_APPROVAL 0.7
+  related STOCK_RESERVATION 0.8
+  related PRODUCT 0.6
+  related WAREHOUSE 0.6
+  related ORDER 0.6
+  source seed
+  note 'stock' tambem pode ser estoque de acoes (ver STOCK_MARKET_SHARE)
+end
+
+concept STOCK_MARKET_SHARE
+  category BUSINESS_OPERATION
+  canonical stock_market_share
+  term pt acao 1.0
+  term pt acoes 0.95
+  term pt bolsa 0.9
+  term pt bolsa de valores 0.85
+  term pt papel 0.8
+  term pt ticker 0.75
+  term pt cotacao 0.7
+  term en stock 1.0
+  term en stocks 0.95
+  term en share 0.9
+  term en shares 0.85
+  term en equity 0.8
+  term code stock 0.95
+  term code ticker 0.91
+  term code symbol 0.87
+  term code share_price 0.83
+  term code quote 0.79
+  term code equity 0.75
+  term code StockQuote 0.71
+  term code market_cap 0.67
+  action buy
+  action sell
+  action quote
+  action trade
+  related PAYMENT 0.3
+  source seed
+  note desambigua 'stock' no sentido financeiro
+end
+
+concept STOCK_RESERVATION
+  category BUSINESS_OPERATION
+  canonical stock_reservation
+  term pt reserva de estoque 1.0
+  term pt reservar estoque 0.95
+  term pt reservar item 0.9
+  term pt separar mercadoria 0.85
+  term pt estoque reservado 0.8
+  term pt bloquear estoque 0.75
+  term pt reserva 0.7
+  term en stock reservation 1.0
+  term en reserve stock 0.95
+  term en reserved stock 0.9
+  term en hold inventory 0.85
+  term en allocate stock 0.8
+  term code reserve_stock 0.95
+  term code reservation 0.91
+  term code reserved_qty 0.87
+  term code allocate_inventory 0.83
+  term code allocated 0.79
+  term code hold_stock 0.75
+  term code release_reservation 0.71
+  term code stock_hold 0.67
+  action reserve
+  action release
+  action allocate
+  action hold
+  action expire
+  related INVENTORY_UPDATE 0.8
+  related ORDER 0.6
+  related CART 0.5
+  source seed
+  note reserva de recurso generico esta em RESOURCE_RESERVATION
+end
+
+concept WAREHOUSE
+  category BUSINESS_ENTITY
+  canonical warehouse
+  term pt armazem 1.0
+  term pt deposito 0.95
+  term pt centro de distribuicao 0.9
+  term pt almoxarifado 0.85
+  term pt galpao 0.8
+  term pt localizacao de estoque 0.75
+  term pt prateleira 0.7
+  term en warehouse 1.0
+  term en depot 0.95
+  term en distribution center 0.9
+  term en storage location 0.85
+  term en bin location 0.8
+  term code warehouse 0.95
+  term code warehouse_id 0.91
+  term code wms 0.87
+  term code bin 0.83
+  term code bin_location 0.79
+  term code stock_location 0.75
+  term code depot 0.71
+  term code dc_id 0.67
+  action pick
+  action pack
+  action store
+  action transfer
+  related INVENTORY_UPDATE 0.6
+  related SHIPPING 0.5
+  source seed
+end
+
+concept PRODUCT
+  category BUSINESS_ENTITY
+  canonical product
+  term pt produto 1.0
+  term pt produtos 0.95
+  term pt mercadoria 0.9
+  term pt item 0.85
+  term pt artigo 0.8
+  term pt sku 0.75
+  term pt catalogo 0.7
+  term en product 1.0
+  term en products 0.95
+  term en item 0.9
+  term en goods 0.85
+  term en merchandise 0.8
+  term code product 0.95
+  term code product_id 0.91
+  term code sku 0.87
+  term code item_code 0.83
+  term code catalog_item 0.79
+  term code ProductService 0.75
+  term code ean 0.71
+  term code upc 0.67
+  action create
+  action list
+  action update
+  action delete
+  action search
+  related INVENTORY_UPDATE 0.6
+  related PRICE 0.7
+  related CART 0.5
+  related CATEGORY_TAXONOMY 0.5
+  source seed
+end
+
+concept PRICE
+  category BUSINESS_ENTITY
+  canonical price
+  term pt preco 1.0
+  term pt precos 0.95
+  term pt valor 0.9
+  term pt tarifa 0.85
+  term pt tabela de precos 0.8
+  term pt preco unitario 0.75
+  term pt custo 0.7
+  term en price 1.0
+  term en pricing 0.95
+  term en unit price 0.9
+  term en cost 0.85
+  term en rate 0.8
+  term code price 0.95
+  term code unit_price 0.91
+  term code price_list 0.87
+  term code pricing 0.83
+  term code cost 0.79
+  term code cost_price 0.75
+  term code markup 0.71
+  term code margin 0.67
+  action calculate
+  action set
+  action update
+  action apply
+  related PRODUCT 0.7
+  related DISCOUNT 0.6
+  related TAX 0.5
+  related CURRENCY 0.5
+  source seed
+end
+
+concept CURRENCY
+  category BUSINESS_ENTITY
+  canonical currency
+  term pt moeda 1.0
+  term pt cambio 0.95
+  term pt taxa de cambio 0.9
+  term pt conversao de moeda 0.85
+  term pt real 0.8
+  term pt dolar 0.75
+  term pt euro 0.7
+  term en currency 1.0
+  term en exchange rate 0.95
+  term en fx 0.9
+  term en currency conversion 0.85
+  term en money 0.8
+  term code currency 0.95
+  term code exchange_rate 0.91
+  term code fx_rate 0.87
+  term code convert_currency 0.83
+  term code currency_code 0.79
+  term code money 0.75
+  term code iso4217 0.71
+  term code minor_units 0.67
+  action convert
+  action round
+  action format
+  related PRICE 0.5
+  related PAYMENT 0.4
+  source seed
+end
+
+concept CART
+  category BUSINESS_ENTITY
+  canonical cart
+  term pt carrinho 1.0
+  term pt carrinho de compras 0.95
+  term pt sacola 0.9
+  term pt cesta 0.85
+  term pt adicionar ao carrinho 0.8
+  term pt remover do carrinho 0.75
+  term pt finalizar compra 0.7
+  term en cart 1.0
+  term en shopping cart 0.95
+  term en basket 0.9
+  term en bag 0.85
+  term en add to cart 0.8
+  term code cart 0.95
+  term code shopping_cart 0.91
+  term code cart_id 0.87
+  term code cart_item 0.83
+  term code add_to_cart 0.79
+  term code basket 0.75
+  term code CartService 0.71
+  term code checkout 0.67
+  action add
+  action remove
+  action clear
+  action checkout
+  action update
+  related ORDER 0.7
+  related PRODUCT 0.5
+  related DISCOUNT 0.4
+  related STOCK_RESERVATION 0.4
+  source seed
+end
+
+concept CHECKOUT
+  category BUSINESS_OPERATION
+  canonical checkout
+  term pt finalizar compra 1.0
+  term pt fechamento do pedido 0.95
+  term pt checkout 0.9
+  term pt pagina de pagamento 0.85
+  term pt concluir compra 0.8
+  term pt fechar pedido 0.75
+  term en checkout 1.0
+  term en complete purchase 0.95
+  term en place order 0.9
+  term en payment page 0.85
+  term en checkout flow 0.8
+  term code checkout 0.95
+  term code begin_checkout 0.91
+  term code checkout_session 0.87
+  term code place_order 0.83
+  term code complete_purchase 0.79
+  term code checkout_flow 0.75
+  term code finalize_transaction 0.71
+  term code CheckoutService 0.67
+  action start
+  action complete
+  action finalize
+  action submit
+  related CART 0.8
+  related PAYMENT 0.7
+  related ORDER 0.7
+  source seed
+end
+
+concept PAYMENT
+  category BUSINESS_OPERATION
+  canonical payment
+  term pt pagamento 1.0
+  term pt pagamentos 0.95
+  term pt pagar 0.9
+  term pt quitar 0.85
+  term pt quitacao 0.8
+  term pt pagamento confirmado 0.75
+  term pt pago 0.7
+  term en payment 1.0
+  term en payments 0.95
+  term en pay 0.9
+  term en paid 0.85
+  term en settle 0.8
+  term code payment 0.95
+  term code pay 0.91
+  term code payment_id 0.87
+  term code PaymentService 0.83
+  term code process_payment 0.79
+  term code payment_status 0.75
+  term code is_paid 0.71
+  term code paid_at 0.67
+  action pay
+  action charge
+  action capture
+  action authorize
+  action settle
+  action confirm
+  related REFUND 0.6
+  related BILLING 0.6
+  related INVOICE 0.6
+  related ORDER_APPROVAL 0.5
+  related PAYMENT_METHOD 0.7
+  related TRANSACTION 0.6
+  source seed
+end
+
+concept PAYMENT_METHOD
+  category BUSINESS_ENTITY
+  canonical payment_method
+  term pt forma de pagamento 1.0
+  term pt meio de pagamento 0.95
+  term pt cartao de credito 0.9
+  term pt cartao de debito 0.85
+  term pt boleto 0.8
+  term pt pix 0.75
+  term pt transferencia bancaria 0.7
+  term en payment method 1.0
+  term en credit card 0.95
+  term en debit card 0.9
+  term en bank transfer 0.85
+  term en wallet 0.8
+  term code payment_method 0.95
+  term code card 0.91
+  term code credit_card 0.87
+  term code card_number 0.83
+  term code cvv 0.79
+  term code pix 0.75
+  term code boleto 0.71
+  term code wallet 0.67
+  action add
+  action remove
+  action tokenize
+  action validate
+  related PAYMENT 0.7
+  source seed
+end
+
+concept REFUND
+  category BUSINESS_OPERATION
+  canonical refund
+  term pt estorno 1.0
+  term pt estornar 0.95
+  term pt reembolso 0.9
+  term pt reembolsar 0.85
+  term pt devolucao 0.8
+  term pt devolver dinheiro 0.75
+  term pt ressarcimento 0.7
+  term en refund 1.0
+  term en refunds 0.95
+  term en refund payment 0.9
+  term en reimburse 0.85
+  term en reimbursement 0.8
+  term code refund 0.95
+  term code refund_payment 0.91
+  term code process_refund 0.87
+  term code reversal 0.83
+  term code reverse_payment 0.79
+  term code chargeback 0.75
+  term code refund_amount 0.71
+  term code issue_refund 0.67
+  action refund
+  action reverse
+  action reimburse
+  action void
+  related PAYMENT 0.7
+  related ORDER_CANCELLATION 0.6
+  related RETURN_MERCHANDISE 0.6
+  related CREDIT_NOTE 0.5
+  source seed
+end
+
+concept RETURN_MERCHANDISE
+  category BUSINESS_OPERATION
+  canonical return_merchandise
+  term pt devolucao de mercadoria 1.0
+  term pt troca 0.95
+  term pt devolver produto 0.9
+  term pt logistica reversa 0.85
+  term pt rma 0.8
+  term pt arrependimento 0.75
+  term en return 1.0
+  term en product return 0.95
+  term en exchange 0.9
+  term en reverse logistics 0.85
+  term en rma 0.8
+  term code return_order 0.95
+  term code rma 0.91
+  term code rma_id 0.87
+  term code return_request 0.83
+  term code exchange_order 0.79
+  term code reverse_logistics 0.75
+  term code return_item 0.71
+  term code return_reason 0.67
+  action return
+  action exchange
+  action inspect
+  action restock
+  related REFUND 0.6
+  related INVENTORY_UPDATE 0.5
+  related ORDER 0.5
+  source seed
+  note 'return' como retorno de funcao e outro sentido (FUNCTION_RETURN)
+end
+
+concept ORDER_CANCELLATION
+  category BUSINESS_OPERATION
+  canonical order_cancellation
+  term pt cancelamento 1.0
+  term pt cancelar pedido 0.95
+  term pt pedido cancelado 0.9
+  term pt desistencia 0.85
+  term pt cancelar compra 0.8
+  term pt anular pedido 0.75
+  term en cancel order 1.0
+  term en order cancellation 0.95
+  term en cancelled 0.9
+  term en canceled 0.85
+  term en abort order 0.8
+  term code cancel_order 0.95
+  term code order_cancelled 0.91
+  term code is_cancelled 0.87
+  term code canceled_at 0.83
+  term code void_order 0.79
+  term code cancellation_reason 0.75
+  action cancel
+  action void
+  action abort
+  action revert
+  related ORDER 0.8
+  related REFUND 0.6
+  related STOCK_RESERVATION 0.6
+  related INVENTORY_UPDATE 0.5
+  source seed
+  note cancelamento de tarefa em codigo esta em TASK_CANCELLATION
+end
+
+concept BILLING
+  category BUSINESS_OPERATION
+  canonical billing
+  term pt cobranca 1.0
+  term pt faturamento 0.95
+  term pt cobrar 0.9
+  term pt ciclo de cobranca 0.85
+  term pt cobranca recorrente 0.8
+  term pt faturar 0.75
+  term pt emitir cobranca 0.7
+  term en billing 1.0
+  term en bill 0.95
+  term en charge 0.9
+  term en invoicing 0.85
+  term en recurring billing 0.8
+  term code billing 0.95
+  term code bill 0.91
+  term code charge_customer 0.87
+  term code billing_cycle 0.83
+  term code BillingService 0.79
+  term code billing_address 0.75
+  term code recurring_charge 0.71
+  term code usage_billing 0.67
+  action bill
+  action charge
+  action invoice
+  action collect
+  related INVOICE 0.8
+  related PAYMENT 0.7
+  related SUBSCRIPTION 0.6
+  related CUSTOMER 0.4
+  source seed
+end
+
+concept INVOICE
+  category BUSINESS_ENTITY
+  canonical invoice
+  term pt fatura 1.0
+  term pt nota fiscal 0.95
+  term pt nf 0.9
+  term pt nfe 0.85
+  term pt nota 0.8
+  term pt fatura em aberto 0.75
+  term pt emissao de nota 0.7
+  term en invoice 1.0
+  term en invoices 0.95
+  term en tax invoice 0.9
+  term en bill 0.85
+  term en receipt 0.8
+  term code invoice 0.95
+  term code invoice_id 0.91
+  term code invoice_number 0.87
+  term code nfe 0.83
+  term code receipt 0.79
+  term code InvoiceService 0.75
+  term code issue_invoice 0.71
+  term code generate_invoice 0.67
+  action issue
+  action generate
+  action send
+  action void
+  action pay
+  related BILLING 0.7
+  related PAYMENT 0.6
+  related TAX 0.6
+  related CUSTOMER 0.4
+  source seed
+end
+
+concept CREDIT_NOTE
+  category BUSINESS_ENTITY
+  canonical credit_note
+  term pt nota de credito 1.0
+  term pt nota de debito 0.95
+  term pt credito 0.9
+  term pt credito ao cliente 0.85
+  term pt abatimento 0.8
+  term pt vale 0.75
+  term en credit note 1.0
+  term en credit memo 0.95
+  term en debit note 0.9
+  term en store credit 0.85
+  term en voucher 0.8
+  term code credit_note 0.95
+  term code credit_memo 0.91
+  term code debit_note 0.87
+  term code store_credit 0.83
+  term code voucher 0.79
+  term code credit_balance 0.75
+  term code apply_credit 0.71
+  action issue
+  action apply
+  action redeem
+  related REFUND 0.5
+  related INVOICE 0.6
+  source seed
+end
+
+concept CUSTOMER
+  category BUSINESS_ENTITY
+  canonical customer
+  term pt cliente 1.0
+  term pt clientes 0.95
+  term pt comprador 0.9
+  term pt consumidor 0.85
+  term pt usuario final 0.8
+  term pt cadastro de cliente 0.75
+  term pt contato 0.7
+  term en customer 1.0
+  term en customers 0.95
+  term en client 0.9
+  term en buyer 0.85
+  term en consumer 0.8
+  term code customer 0.95
+  term code customer_id 0.91
+  term code client 0.87
+  term code buyer 0.83
+  term code CustomerService 0.79
+  term code crm 0.75
+  term code contact 0.71
+  term code lead 0.67
+  action create
+  action update
+  action search
+  action merge
+  related ORDER 0.5
+  related ACCOUNT_USER 0.4
+  related REGISTRATION 0.6
+  source seed
+end
+
+concept SUPPLIER
+  category BUSINESS_ENTITY
+  canonical supplier
+  term pt fornecedor 1.0
+  term pt fornecedores 0.95
+  term pt fabricante 0.9
+  term pt distribuidor 0.85
+  term pt vendedor 0.8
+  term pt compra de fornecedor 0.75
+  term pt parceiro comercial 0.7
+  term en supplier 1.0
+  term en vendor 0.95
+  term en manufacturer 0.9
+  term en distributor 0.85
+  term en provider 0.8
+  term code supplier 0.95
+  term code vendor 0.91
+  term code vendor_id 0.87
+  term code supplier_id 0.83
+  term code manufacturer 0.79
+  term code distributor 0.75
+  term code VendorService 0.71
+  term code procurement 0.67
+  action order
+  action pay
+  action evaluate
+  related ORDER 0.5
+  related PRODUCT 0.4
+  related CONTRACT 0.4
+  source seed
+end
+
+concept EMPLOYEE
+  category BUSINESS_ENTITY
+  canonical employee
+  term pt funcionario 1.0
+  term pt empregado 0.95
+  term pt colaborador 0.9
+  term pt rh 0.85
+  term pt folha de pagamento 0.8
+  term pt ponto 0.75
+  term pt ferias 0.7
+  term en employee 1.0
+  term en staff 0.95
+  term en worker 0.9
+  term en hr 0.85
+  term en payroll 0.8
+  term code employee 0.95
+  term code employee_id 0.91
+  term code staff 0.87
+  term code payroll 0.83
+  term code timesheet 0.79
+  term code salary 0.75
+  term code hr 0.71
+  term code leave_request 0.67
+  action hire
+  action pay
+  action approve
+  action schedule
+  related PAYMENT 0.3
+  source seed
+end
+
+concept DISCOUNT
+  category BUSINESS_OPERATION
+  canonical discount
+  term pt desconto 1.0
+  term pt cupom 0.95
+  term pt cupom de desconto 0.9
+  term pt promocao 0.85
+  term pt oferta 0.8
+  term pt voucher 0.75
+  term pt abatimento 0.7
+  term en discount 1.0
+  term en coupon 0.95
+  term en promo 0.9
+  term en promotion 0.85
+  term en promo code 0.8
+  term code discount 0.95
+  term code coupon 0.91
+  term code coupon_code 0.87
+  term code promo_code 0.83
+  term code promotion 0.79
+  term code apply_discount 0.75
+  term code discount_rate 0.71
+  term code percent_off 0.67
+  action apply
+  action calculate
+  action redeem
+  action expire
+  action validate
+  related PRICE 0.7
+  related CART 0.5
+  related ORDER 0.4
+  related TAX 0.3
+  source seed
+end
+
+concept TAX
+  category BUSINESS_OPERATION
+  canonical tax
+  term pt imposto 1.0
+  term pt impostos 0.95
+  term pt tributo 0.9
+  term pt icms 0.85
+  term pt iss 0.8
+  term pt ipi 0.75
+  term pt iva 0.7
+  term en tax 1.0
+  term en taxes 0.95
+  term en vat 0.9
+  term en sales tax 0.85
+  term en gst 0.8
+  term code tax 0.95
+  term code vat 0.91
+  term code tax_rate 0.87
+  term code calculate_tax 0.83
+  term code tax_amount 0.79
+  term code withholding 0.75
+  term code icms 0.71
+  term code iss 0.67
+  action calculate
+  action apply
+  action withhold
+  action report
+  related INVOICE 0.6
+  related PRICE 0.5
+  source seed
+end
+
+concept SUBSCRIPTION
+  category BUSINESS_OPERATION
+  canonical subscription
+  term pt assinatura 1.0
+  term pt assinante 0.95
+  term pt plano 0.9
+  term pt plano mensal 0.85
+  term pt renovacao 0.8
+  term pt renovar 0.75
+  term pt mensalidade 0.7
+  term en subscription 1.0
+  term en subscriber 0.95
+  term en plan 0.9
+  term en monthly plan 0.85
+  term en renewal 0.8
+  term code subscription 0.95
+  term code subscriber 0.91
+  term code plan_id 0.87
+  term code renew 0.83
+  term code renewal 0.79
+  term code recurring 0.75
+  term code trial_end 0.71
+  term code trial_period 0.67
+  action subscribe
+  action renew
+  action cancel
+  action upgrade
+  action downgrade
+  action pause
+  related BILLING 0.7
+  related PAYMENT 0.5
+  related SUBSCRIPTION_CANCEL 0.6
+  source seed
+end
+
+concept SUBSCRIPTION_CANCEL
+  category BUSINESS_OPERATION
+  canonical subscription_cancel
+  term pt cancelar assinatura 1.0
+  term pt cancelamento de assinatura 0.95
+  term pt encerrar plano 0.9
+  term pt desassinar 0.85
+  term pt cancelar plano 0.8
+  term pt desativar assinatura 0.75
+  term en cancel subscription 1.0
+  term en unsubscribe 0.95
+  term en end plan 0.9
+  term en terminate subscription 0.85
+  term en deactivate subscription 0.8
+  term code cancel_subscription 0.95
+  term code unsubscribe 0.91
+  term code subscription_cancelled 0.87
+  term code cancel_at_period_end 0.83
+  term code terminate_plan 0.79
+  term code deactivate 0.75
+  action cancel
+  action unsubscribe
+  action terminate
+  related SUBSCRIPTION 0.8
+  related ORDER_CANCELLATION 0.4
+  related REFUND 0.4
+  source seed
+end
+
+concept RESOURCE_RESERVATION
+  category BUSINESS_OPERATION
+  canonical resource_reservation
+  term pt reserva 1.0
+  term pt reservar 0.95
+  term pt agendamento 0.9
+  term pt agendar horario 0.85
+  term pt reserva de sala 0.8
+  term pt reserva de mesa 0.75
+  term pt hospedagem 0.7
+  term en reservation 1.0
+  term en reserve 0.95
+  term en booking 0.9
+  term en book 0.85
+  term en appointment 0.8
+  term code reservation 0.95
+  term code booking 0.91
+  term code book 0.87
+  term code appointment 0.83
+  term code availability 0.79
+  term code available_slots 0.75
+  term code time_slot 0.71
+  term code reserve_resource 0.67
+  action book
+  action reserve
+  action cancel
+  action reschedule
+  action confirm
+  related STOCK_RESERVATION 0.4
+  related SCHEDULER 0.3
+  source seed
+  note reserva de estoque esta em STOCK_RESERVATION
+end
+
+concept BALANCE
+  category BUSINESS_ENTITY
+  canonical balance
+  term pt saldo 1.0
+  term pt saldo atual 0.95
+  term pt saldo disponivel 0.9
+  term pt saldo devedor 0.85
+  term pt credito disponivel 0.8
+  term pt limite 0.75
+  term en balance 1.0
+  term en account balance 0.95
+  term en available balance 0.9
+  term en current balance 0.85
+  term en outstanding balance 0.8
+  term code balance 0.95
+  term code account_balance 0.91
+  term code available_balance 0.87
+  term code current_balance 0.83
+  term code get_balance 0.79
+  term code balanceOf 0.75
+  term code running_balance 0.71
+  term code credit_limit 0.67
+  action get
+  action compute
+  action reconcile
+  action update
+  related ACCOUNT_FINANCIAL 0.7
+  related STATEMENT 0.6
+  related TRANSACTION 0.5
+  source seed
+end
+
+concept ACCOUNT_FINANCIAL
+  category BUSINESS_ENTITY
+  canonical account_financial
+  term pt conta 1.0
+  term pt conta corrente 0.95
+  term pt conta bancaria 0.9
+  term pt conta poupanca 0.85
+  term pt conta contabil 0.8
+  term pt plano de contas 0.75
+  term pt titular 0.7
+  term en account 1.0
+  term en bank account 0.95
+  term en checking account 0.9
+  term en savings account 0.85
+  term en ledger account 0.8
+  term code account 0.95
+  term code account_id 0.91
+  term code bank_account 0.87
+  term code account_number 0.83
+  term code iban 0.79
+  term code ledger_account 0.75
+  term code chart_of_accounts 0.71
+  term code AccountService 0.67
+  action open
+  action close
+  action freeze
+  action credit
+  action debit
+  related BALANCE 0.7
+  related TRANSACTION 0.7
+  related STATEMENT 0.5
+  related ACCOUNT_USER 0.3
+  source seed
+  note 'conta' tambem e conta de usuario (ver ACCOUNT_USER)
+end
+
+concept ACCOUNT_USER
+  category BUSINESS_ENTITY
+  canonical account_user
+  term pt conta de usuario 1.0
+  term pt perfil 0.95
+  term pt meu perfil 0.9
+  term pt cadastro de usuario 0.85
+  term pt criar conta 0.8
+  term pt excluir conta 0.75
+  term pt conta do usuario 0.7
+  term en user account 1.0
+  term en profile 0.95
+  term en my account 0.9
+  term en sign up account 0.85
+  term en delete account 0.8
+  term code user_account 0.95
+  term code profile 0.91
+  term code user_profile 0.87
+  term code account_settings 0.83
+  term code create_account 0.79
+  term code delete_account 0.75
+  term code user_id 0.71
+  term code User 0.67
+  action create
+  action delete
+  action update
+  action deactivate
+  related LOGIN 0.5
+  related REGISTRATION 0.7
+  related CUSTOMER 0.4
+  source seed
+end
+
+concept STATEMENT
+  category BUSINESS_ENTITY
+  canonical statement
+  term pt extrato 1.0
+  term pt extrato bancario 0.95
+  term pt extrato da conta 0.9
+  term pt demonstrativo 0.85
+  term pt historico de movimentacoes 0.8
+  term pt lancamentos 0.75
+  term en statement 1.0
+  term en bank statement 0.95
+  term en account statement 0.9
+  term en transaction history 0.85
+  term en ledger entries 0.8
+  term code statement 0.95
+  term code account_statement 0.91
+  term code bank_statement 0.87
+  term code transaction_history 0.83
+  term code ledger_entry 0.79
+  term code entries 0.75
+  term code get_statement 0.71
+  term code export_statement 0.67
+  action list
+  action export
+  action generate
+  action download
+  related TRANSACTION 0.7
+  related BALANCE 0.6
+  source seed
+end
+
+concept TRANSACTION
+  category BUSINESS_OPERATION
+  canonical transaction
+  term pt transacao 1.0
+  term pt transacoes 0.95
+  term pt movimentacao 0.9
+  term pt lancamento 0.85
+  term pt operacao financeira 0.8
+  term pt transacao financeira 0.75
+  term pt debito 0.7
+  term en transaction 1.0
+  term en transactions 0.95
+  term en financial transaction 0.9
+  term en transfer 0.85
+  term en debit 0.8
+  term code transaction 0.95
+  term code transaction_id 0.91
+  term code txn 0.87
+  term code tx_id 0.83
+  term code finalize_transaction 0.79
+  term code process_transaction 0.75
+  term code ledger_entry 0.71
+  term code debit 0.67
+  action create
+  action commit
+  action finalize
+  action post
+  action reverse
+  related PAYMENT 0.7
+  related BALANCE 0.6
+  related RECONCILIATION 0.5
+  related DB_TRANSACTION 0.3
+  source seed
+  note transacao de banco de dados e outro conceito: DB_TRANSACTION
+end
+
+concept TRANSFER
+  category BUSINESS_OPERATION
+  canonical transfer
+  term pt transferencia 1.0
+  term pt transferir 0.95
+  term pt ted 0.9
+  term pt doc 0.85
+  term pt enviar dinheiro 0.8
+  term pt pix enviado 0.75
+  term pt remessa 0.7
+  term en transfer 1.0
+  term en wire 0.95
+  term en send money 0.9
+  term en remit 0.85
+  term en bank transfer 0.8
+  term code transfer 0.95
+  term code transfer_funds 0.91
+  term code payout 0.87
+  term code remittance 0.83
+  term code wire 0.79
+  term code send_money 0.75
+  term code from_account 0.71
+  term code to_account 0.67
+  action transfer
+  action send
+  action receive
+  action schedule
+  related TRANSACTION 0.7
+  related ACCOUNT_FINANCIAL 0.6
+  related PAYMENT 0.5
+  source seed
+end
+
+concept RECONCILIATION
+  category BUSINESS_OPERATION
+  canonical reconciliation
+  term pt conciliacao 1.0
+  term pt conciliar 0.95
+  term pt conciliacao bancaria 0.9
+  term pt batimento 0.85
+  term pt divergencia 0.8
+  term pt fechamento contabil 0.75
+  term pt auditoria contabil 0.7
+  term en reconciliation 1.0
+  term en reconcile 0.95
+  term en bank reconciliation 0.9
+  term en matching 0.85
+  term en discrepancy 0.8
+  term code reconcile 0.95
+  term code reconciliation 0.91
+  term code match_transactions 0.87
+  term code discrepancy 0.83
+  term code ledger_close 0.79
+  term code settlement_report 0.75
+  term code unmatched 0.71
+  term code matched_entries 0.67
+  action reconcile
+  action match
+  action compare
+  action close
+  related TRANSACTION 0.6
+  related STATEMENT 0.5
+  related BALANCE 0.5
+  source seed
+end
+
+concept CONTRACT
+  category BUSINESS_ENTITY
+  canonical contract
+  term pt contrato 1.0
+  term pt contratos 0.95
+  term pt acordo 0.9
+  term pt termo de uso 0.85
+  term pt clausula 0.8
+  term pt vigencia 0.75
+  term pt aditivo 0.7
+  term en contract 1.0
+  term en contracts 0.95
+  term en agreement 0.9
+  term en terms 0.85
+  term en clause 0.8
+  term code contract 0.95
+  term code contract_id 0.91
+  term code agreement 0.87
+  term code terms 0.83
+  term code clause 0.79
+  term code effective_date 0.75
+  term code expiry_date 0.71
+  term code addendum 0.67
+  action sign
+  action renew
+  action terminate
+  action amend
+  related CUSTOMER 0.4
+  related SUPPLIER 0.4
+  related SUBSCRIPTION 0.3
+  source seed
+  note contrato de API/dados esta em API_CONTRACT
+end
+
+concept REGISTRATION
+  category BUSINESS_OPERATION
+  canonical registration
+  term pt cadastro 1.0
+  term pt cadastrar 0.95
+  term pt registrar 0.9
+  term pt registro 0.85
+  term pt inscricao 0.8
+  term pt inscrever 0.75
+  term pt criar cadastro 0.7
+  term en registration 1.0
+  term en register 0.95
+  term en sign up 0.9
+  term en enroll 0.85
+  term en enrollment 0.8
+  term code register 0.95
+  term code registration 0.91
+  term code signup 0.87
+  term code enroll 0.83
+  term code onboarding 0.79
+  term code create_user 0.75
+  term code RegistrationService 0.71
+  term code register_user 0.67
+  action register
+  action create
+  action enroll
+  action validate
+  related ACCOUNT_USER 0.7
+  related CUSTOMER 0.6
+  related LOGIN 0.4
+  source seed
+  note 'registro' tambem e registro de log ou de banco (ver LOG_RECORD)
+end
+
+concept SHIPPING
+  category BUSINESS_OPERATION
+  canonical shipping
+  term pt entrega 1.0
+  term pt envio 0.95
+  term pt frete 0.9
+  term pt transportadora 0.85
+  term pt rastreamento 0.8
+  term pt despacho 0.75
+  term pt expedicao 0.7
+  term en shipping 1.0
+  term en shipment 0.95
+  term en delivery 0.9
+  term en freight 0.85
+  term en carrier 0.8
+  term code shipping 0.95
+  term code shipment 0.91
+  term code delivery 0.87
+  term code carrier 0.83
+  term code tracking_number 0.79
+  term code trackingCode 0.75
+  term code freight 0.71
+  term code dispatch 0.67
+  action ship
+  action dispatch
+  action deliver
+  action track
+  action calculate
+  related ORDER 0.6
+  related WAREHOUSE 0.5
+  related ADDRESS_POSTAL 0.6
+  source seed
+end
+
+concept ADDRESS_POSTAL
+  category BUSINESS_ENTITY
+  canonical address_postal
+  term pt endereco 1.0
+  term pt endereco de entrega 0.95
+  term pt cep 0.9
+  term pt rua 0.85
+  term pt cidade 0.8
+  term pt estado 0.75
+  term pt pais 0.7
+  term en address 1.0
+  term en postal address 0.95
+  term en zip code 0.9
+  term en postcode 0.85
+  term en street 0.8
+  term code address 0.95
+  term code zip 0.91
+  term code zip_code 0.87
+  term code postal_code 0.83
+  term code cep 0.79
+  term code street 0.75
+  term code city 0.71
+  term code state 0.67
+  action validate
+  action geocode
+  action lookup
+  related SHIPPING 0.6
+  related CUSTOMER 0.5
+  source seed
+  note endereco de rede e IP_ADDRESS; endereco de memoria e MEMORY_ADDRESS
+end
+
+concept APPROVAL_REQUEST
+  category BUSINESS_OPERATION
+  canonical approval_request
+  term pt pedido de aprovacao 1.0
+  term pt solicitar aprovacao 0.95
+  term pt aguardando aprovacao 0.9
+  term pt pendente de aprovacao 0.85
+  term pt aprovador 0.8
+  term pt fluxo de aprovacao 0.75
+  term pt autorizar acao 0.7
+  term en approval request 1.0
+  term en request approval 0.95
+  term en pending approval 0.9
+  term en approver 0.85
+  term en approval flow 0.8
+  term code approval 0.95
+  term code ApprovalRequest 0.91
+  term code request_approval 0.87
+  term code pending_approval 0.83
+  term code approver 0.79
+  term code approve 0.75
+  term code deny 0.71
+  term code allow_once 0.67
+  action request
+  action approve
+  action deny
+  action allow
+  action reject
+  related ORDER_APPROVAL 0.6
+  related PERMISSION 0.5
+  related AGENT_APPROVAL 0.7
+  source seed
+  note forma generica; no negocio de pedidos ver ORDER_APPROVAL
+end
+
+concept WORKFLOW_STATE
+  category BUSINESS_OPERATION
+  canonical workflow_state
+  term pt fluxo 1.0
+  term pt fluxo de trabalho 0.95
+  term pt etapa 0.9
+  term pt status 0.85
+  term pt situacao 0.8
+  term pt estado do pedido 0.75
+  term pt maquina de estados 0.7
+  term en workflow 1.0
+  term en state machine 0.95
+  term en status 0.9
+  term en stage 0.85
+  term en step 0.8
+  term code workflow 0.95
+  term code state_machine 0.91
+  term code status 0.87
+  term code transition 0.83
+  term code next_state 0.79
+  term code stage 0.75
+  term code step 0.71
+  term code lifecycle 0.67
+  action transition
+  action advance
+  action update
+  action complete
+  related ORDER 0.5
+  related APPROVAL_REQUEST 0.4
+  source seed
+end
+
+concept PURCHASE_REQUISITION
+  category BUSINESS_OPERATION
+  canonical purchase_requisition
+  term pt requisicao de compra 1.0
+  term pt cotacao de precos 0.95
+  term pt pedido de cotacao 0.9
+  term pt licitacao 0.85
+  term pt aquisicao 0.8
+  term pt compras 0.75
+  term en purchase requisition 1.0
+  term en request for quotation 0.95
+  term en rfq 0.9
+  term en procurement 0.85
+  term en tender 0.8
+  term code requisition 0.95
+  term code purchase_requisition 0.91
+  term code rfq 0.87
+  term code quote_request 0.83
+  term code tender 0.79
+  term code bid 0.75
+  term code procurement 0.71
+  term code purchasing 0.67
+  action request
+  action quote
+  action approve
+  action compare
+  related SUPPLIER 0.6
+  related ORDER 0.5
+  source seed
+end
+
+concept QUOTE
+  category BUSINESS_ENTITY
+  canonical quote
+  term pt orcamento 1.0
+  term pt proposta comercial 0.95
+  term pt cotacao 0.9
+  term pt orcar 0.85
+  term pt estimativa 0.8
+  term pt orcamento aprovado 0.75
+  term en quote 1.0
+  term en quotation 0.95
+  term en estimate 0.9
+  term en proposal 0.85
+  term en price quote 0.8
+  term code quote 0.95
+  term code quotation 0.91
+  term code estimate 0.87
+  term code quote_id 0.83
+  term code proposal 0.79
+  term code create_quote 0.75
+  term code quote_to_order 0.71
+  action create
+  action send
+  action accept
+  action convert
+  action expire
+  related ORDER 0.6
+  related PRICE 0.6
+  related CUSTOMER 0.4
+  source seed
+end
+
+concept SALES_REPORT
+  category BUSINESS_OPERATION
+  canonical sales_report
+  term pt relatorio de vendas 1.0
+  term pt vendas por periodo 0.95
+  term pt faturamento mensal 0.9
+  term pt indicadores 0.85
+  term pt kpi 0.8
+  term pt dashboard 0.75
+  term pt receita 0.7
+  term en sales report 1.0
+  term en sales by period 0.95
+  term en revenue 0.9
+  term en profit 0.85
+  term en kpi 0.8
+  term code sales_report 0.95
+  term code revenue 0.91
+  term code profit 0.87
+  term code kpi 0.83
+  term code dashboard 0.79
+  term code report 0.75
+  term code metrics 0.71
+  term code monthly_sales 0.67
+  action report
+  action aggregate
+  action summarize
+  action export
+  related ORDER 0.4
+  related AGGREGATION 0.5
+  source seed
+end
+
+concept LOYALTY
+  category BUSINESS_OPERATION
+  canonical loyalty
+  term pt fidelidade 1.0
+  term pt pontos 0.95
+  term pt programa de fidelidade 0.9
+  term pt resgate de pontos 0.85
+  term pt milhas 0.8
+  term pt recompensa 0.75
+  term pt indicacao 0.7
+  term en loyalty 1.0
+  term en points 0.95
+  term en rewards 0.9
+  term en loyalty program 0.85
+  term en redeem points 0.8
+  term code loyalty 0.95
+  term code loyalty_points 0.91
+  term code rewards 0.87
+  term code redeem_points 0.83
+  term code referral 0.79
+  term code reward_points 0.75
+  term code tier 0.71
+  term code LoyaltyProgram 0.67
+  action earn
+  action redeem
+  action expire
+  related DISCOUNT 0.5
+  related CUSTOMER 0.5
+  source seed
+end
+
+concept INVENTORY_COUNT
+  category BUSINESS_OPERATION
+  canonical inventory_count
+  term pt contagem de estoque 1.0
+  term pt inventario fisico 0.95
+  term pt ajuste de inventario 0.9
+  term pt divergencia de estoque 0.85
+  term pt perda 0.8
+  term pt quebra 0.75
+  term pt validade 0.7
+  term en stock count 1.0
+  term en physical inventory 0.95
+  term en cycle count 0.9
+  term en stock adjustment 0.85
+  term en shrinkage 0.8
+  term code stock_count 0.95
+  term code stocktake 0.91
+  term code cycle_count 0.87
+  term code adjust_inventory 0.83
+  term code shrinkage 0.79
+  term code expiry_date 0.75
+  term code lot_number 0.71
+  term code batch_number 0.67
+  action count
+  action adjust
+  action reconcile
+  related INVENTORY_UPDATE 0.7
+  related WAREHOUSE 0.5
+  source seed
+end
+
+concept PRODUCT_CATEGORY
+  category BUSINESS_ENTITY
+  canonical product_category
+  term pt categoria 1.0
+  term pt categorias 0.95
+  term pt departamento 0.9
+  term pt familia de produto 0.85
+  term pt subcategoria 0.8
+  term pt marca 0.75
+  term pt etiqueta 0.7
+  term en category 1.0
+  term en categories 0.95
+  term en department 0.9
+  term en product family 0.85
+  term en subcategory 0.8
+  term code category 0.95
+  term code category_id 0.91
+  term code subcategory 0.87
+  term code department 0.83
+  term code brand 0.79
+  term code taxonomy 0.75
+  term code product_family 0.71
+  term code tags 0.67
+  action classify
+  action tag
+  action group
+  related PRODUCT 0.6
+  related CATEGORY_TAXONOMY 0.4
+  source seed
+end
+
+concept CATEGORY_TAXONOMY
+  category BUSINESS_ENTITY
+  canonical category_taxonomy
+  term pt taxonomia 1.0
+  term pt hierarquia 0.95
+  term pt arvore de categorias 0.9
+  term pt classificacao 0.85
+  term pt rotulo 0.8
+  term pt marcador 0.75
+  term en taxonomy 1.0
+  term en hierarchy 0.95
+  term en category tree 0.9
+  term en classification 0.85
+  term en label 0.8
+  term code taxonomy 0.95
+  term code category_tree 0.91
+  term code hierarchy 0.87
+  term code parent_id 0.83
+  term code classification 0.79
+  term code label 0.75
+  term code tag 0.71
+  term code tags 0.67
+  action classify
+  action tag
+  action organize
+  related PRODUCT_CATEGORY 0.5
+  related TREE 0.3
+  source seed
+end
+
+concept RATING_REVIEW
+  category BUSINESS_ENTITY
+  canonical rating_review
+  term pt avaliacao 1.0
+  term pt avaliar 0.95
+  term pt comentario de cliente 0.9
+  term pt nota do produto 0.85
+  term pt estrelas 0.8
+  term pt feedback 0.75
+  term pt review 0.7
+  term en rating 1.0
+  term en review 0.95
+  term en reviews 0.9
+  term en feedback 0.85
+  term en stars 0.8
+  term code rating 0.95
+  term code Review 0.91
+  term code stars 0.87
+  term code feedback 0.83
+  term code score 0.79
+  term code comment 0.75
+  term code nps 0.71
+  term code satisfaction 0.67
+  action rate
+  action review
+  action comment
+  action moderate
+  related PRODUCT 0.4
+  related CUSTOMER 0.4
+  source seed
+end
+
+concept NOTIFICATION_BUSINESS
+  category BUSINESS_OPERATION
+  canonical notification_business
+  term pt aviso ao cliente 1.0
+  term pt email transacional 0.95
+  term pt confirmacao por email 0.9
+  term pt lembrete de pagamento 0.85
+  term pt aviso de entrega 0.8
+  term pt sms de confirmacao 0.75
+  term en customer notification 1.0
+  term en transactional email 0.95
+  term en order confirmation email 0.9
+  term en payment reminder 0.85
+  term en delivery notice 0.8
+  term code send_confirmation 0.95
+  term code order_email 0.91
+  term code receipt_email 0.87
+  term code reminder 0.83
+  term code payment_reminder 0.79
+  term code delivery_notice 0.75
+  term code notify_customer 0.71
+  term code mail_template 0.67
+  action send
+  action notify
+  action remind
+  related ORDER 0.4
+  related NOTIFICATION 0.5
+  source seed
+end
+
+concept MARKETPLACE
+  category BUSINESS_OPERATION
+  canonical marketplace
+  term pt marketplace 1.0
+  term pt loja virtual 0.95
+  term pt comercio eletronico 0.9
+  term pt e-commerce 0.85
+  term pt loja online 0.8
+  term pt vendedor parceiro 0.75
+  term pt integracao com loja 0.7
+  term en marketplace 1.0
+  term en online store 0.95
+  term en e-commerce 0.9
+  term en storefront 0.85
+  term en seller 0.8
+  term code marketplace 0.95
+  term code ecommerce 0.91
+  term code storefront 0.87
+  term code shop 0.83
+  term code shopify 0.79
+  term code store_id 0.75
+  term code seller_id 0.71
+  term code merchant 0.67
+  action sell
+  action list
+  action sync
+  related PRODUCT 0.5
+  related ORDER 0.5
+  source seed
+end
+
+concept POINT_OF_SALE
+  category BUSINESS_OPERATION
+  canonical point_of_sale
+  term pt ponto de venda 1.0
+  term pt caixa 0.95
+  term pt pdv 0.9
+  term pt frente de caixa 0.85
+  term pt operador de caixa 0.8
+  term pt abertura de caixa 0.75
+  term pt fechamento de caixa 0.7
+  term en point of sale 1.0
+  term en pos 0.95
+  term en cashier 0.9
+  term en register 0.85
+  term en till 0.8
+  term code pos 0.95
+  term code cashier 0.91
+  term code till 0.87
+  term code cash_register 0.83
+  term code cash_drawer 0.79
+  term code open_register 0.75
+  term code close_register 0.71
+  term code receipt_printer 0.67
+  action open
+  action close
+  action sell
+  action print
+  related ORDER 0.5
+  related PAYMENT 0.5
+  source seed
+end

@@ -5,6 +5,12 @@ exist later (documents, data). Directory `src/coder/`, command `katana coder <su
 base in `data/coder/kb/`), per-project storage in `<project>/.katana/coder/`, types `Coder*`. "CBI" and "CSSE" below
 are the names of the owner's storage and search proposals, kept where those proposals are discussed.
 
+**This is the single build reference for the module.** `docs/code-intelligence-architecture.md` is the record of
+why (requirements, state of the art, alternatives considered); where the two differed, the amendments of its
+section 8.3 that the coordinator accepted as defaults are applied here, in place. Section 13 lists the five points
+left to the owner, each with the default adopted and what would change it. Section 14 is the ready-to-apply change
+to `src/coder/types.c`.
+
 Status: design only (2026-11-23). Nothing in `src/` implements this, no model was run to write it and nothing here
 was measured for this document. Numbers quoted from other documents carry their source. Every other number is marked
 as a target or as an estimate. Section 11 lists what only a measurement would decide; none of those measurements was
@@ -108,32 +114,53 @@ It enters in three places:
 3. **In the loop** (exists, improved): the neighbour note and the repetition note keep working, now fed by
    symbol-level relations instead of file-level ones.
 
-### 1.2 The principle: EXACT and PROBABLE are different things and never mix
+### 1.2 The principle: three grades of certainty that never mix
 
-| | EXACT | PROBABLE |
+Every fact handed to a consumer carries a **grade**. The grade is a property of how the fact was obtained, never of
+a score.
+
+| Grade | Mark | Meaning | Examples |
+|---|---|---|---|
+| `exact` | `exact` | true by construction of the syntax, or confirmed by a compiler-grade source | "function `f` is defined at a.c:10-42"; "a.c includes b.h, which is this file"; "the name `gkatana` occurs in exactly these 2 files of the indexed set"; a call edge confirmed by a language server (3.5) |
+| `derived` | `derived` | produced by the deterministic resolution rules of 3.3 with **one** candidate left | a call to `f` where exactly one visible definition named `f` exists |
+| `probable` | `probable` | several candidates, a heuristic, or a ranking | a call to `open` with 14 definitions; a method call through an untyped receiver; a link by equal string key between an emitter and a handler; co-change; any search result; anything that came from the knowledge base or from the model's expansion |
+
+Why three and not two: a call resolved by name with a single visible candidate is neither compiler-grade nor a
+guess. Calling it exact overstates it; calling it probable buries the most useful edges among the guesses. A
+confirmation by a language server is what promotes `derived` to `exact`.
+
+| | EXACT and DERIVED (structure) | PROBABLE (mapping the request to the code, and ambiguous structure) |
 |---|---|---|
 | Question it answers | "given this symbol, what is its body, who calls it, what does it call, who imports this module" | "which symbol or file is the user talking about" |
-| Produced by | parsing and table lookups | ranking: lexical search, activation, query expansion, optional embeddings |
-| Property | deterministic: same tree, same answer; no score, no ranking error | a score with no calibration (research 3.6) |
+| Produced by | parsing, table lookups, resolution rules | ranking: lexical search, the knowledge base, activation, query expansion, optional embeddings |
+| Property | deterministic: same tree, same answer; no score | a score with no calibration (research 3.6) |
 | Failure mode | known, enumerable classes (macros, dynamic names, same name in two scopes); each fact says how it was resolved | unknown: a wrong candidate looks exactly like a right one |
-| Delivered as | fact, with `file:line` and the relation that produced it | hypothesis, with its evidence and the word `probable`; always more than one when more than one exists |
+| Delivered as | fact, with `file:line`, the relation and its grade | hypothesis, with its evidence and the word `probable`; always more than one when more than one exists |
 | May be cut for budget | yes (ordered, counted, never silently) | yes (same) |
-| May be asserted to the model as true | yes, within its resolution class | never |
 
-"Exact" does not mean compiler-exact. It means **deterministic and structural**. Every exact relation carries a
-resolution class so that a name-only match is never passed off as a resolved one:
+How the resolution classes of 3.3 map to grades:
 
-| Class | Meaning | Shown as |
+| Class | Meaning | Grade |
 |---|---|---|
-| `unique` | the name has one definition in the project | `exact` |
-| `scoped` | several definitions; this one was chosen by a deterministic rule (same file, same class, imported module) | `exact` |
-| `ambiguous(n)` | several definitions and no rule chooses; all n are listed | `exact, 1 of n definitions with this name` |
-| `external` | no definition in the project (library, generated code) | `exact, defined outside the project` |
-| `textual` | the relation comes from a name occurrence the parser could not classify (inside a macro body, a string that looks like a name) | `by name only` |
+| `unique` | the name has one definition in the project | `derived`; `exact` once confirmed |
+| `scoped` | several definitions; one chosen by a deterministic rule (same file, same class, imported module) | `derived`; `exact` once confirmed |
+| `ambiguous(n)` | several definitions and no rule chooses; all n are listed | `probable`, shown as `1 of n definitions with this name` |
+| `external` | no definition in the project (library, generated code) | `exact` as an absence, relative to the indexed set |
+| `textual` | a name occurrence the parser could not classify (inside a macro body) | `probable`, shown as `by name only` |
+| `key` | two sides joined by an equal string key (event, route, command name, configuration key) | `probable`, shown as `linked by the string "..."` |
 
-The mapping from the request to an entry point is always PROBABLE, with one exception: the request **names** an
-identifier, a file path or a quoted message that exists in the tree. Finding that name is a lookup, so it is EXACT
-(rules R7 to R9 of the research, section 5 there).
+Three rules protect the meaning of `exact`:
+
+1. An **absence** ("no reference to X anywhere") is exact only relative to the indexed set, and the output states
+   the set's limits (skipped folders, files over the size cap, languages without call extraction, dynamic calls).
+2. A path through the graph has the grade of its **weakest** edge.
+3. The mapping from the request to an entry point is always `probable`, with one exception: the request **names**
+   an identifier, a file path or a quoted message that exists in the tree. Finding that name is a lookup, so it is
+   `exact` (rules R7 to R9 of the research, section 5 there).
+
+Reading note for the rest of this document: where a section written before this amendment calls a call or use
+relation "EXACT", read "exact or derived, by the table above". Definitions, ranges, imports resolved to a file,
+guards and literal occurrences are exact; resolved calls are derived until confirmed.
 
 ### 1.3 Layers and the dependency rule
 
@@ -221,7 +248,7 @@ What is generic and what is not:
 | text normalization: folding, suffix rules, controlled vocabulary, abbreviations (12.2) | camelCase and snake_case splitting; reading a verb by its position in an identifier |
 | the knowledge base **format and loader**: layers, provenance, checker, review (12.1) | the base's **content**: operation verbs of code, naming patterns, event-wiring shapes |
 | the ranker: named components, renormalization, weights in a file, calibration, component report (12.6) | which components exist (behavioural and structural are code notions) |
-| the evidence packet: ids, exact / probable marks, provenance, budgets, the "not found" section, the citation check (7, 8.0) | the block types inside it (flow, guards, callers) |
+| the evidence packet: ids, the three grade marks, provenance, budgets, the "not found" section, the citation check (7, 8.0) | the block types inside it (flow, guards, callers) |
 | the `CoderAi` interface to the inference engine (1.3) | the prompts written on top of it |
 | the CLI pattern: dispatch table, text and JSON-lines renderers, interactive shell frame (8.0) | the commands themselves |
 | - | parsers, the call graph and name resolution, the exact structural queries, request types and investigation plans, guards and asymmetry, the agent tools |
@@ -260,7 +287,7 @@ content that has no call graph; that is exactly what should not be guessed now.
 | 4 | Function and class extractor | `src/coder/parse.c`, `parse_brace.c`, `parse_indent.c`, `parse_shell.c`, `parse_md.c` | the keyword knowledge inside `fd_sym` (modifier and definition lists) and `ct_outline` | new: lexers and range-aware parsers (section 3). `fd_sym` and `ct_outline` are retired once the new parser passes the same tests |
 | 5 | Symbol database | `src/coder/db.c`, `store.c` | hash and string pool of `FdTerms` (in memory, while building a segment) | the coder store: segments with symbols, occurrences and postings; manifest; explicit serialization (2.4) |
 | 6 | Dependency graph | `src/coder/graph.c` | `fg_build`'s `path` edges (path strings, relative imports, Python imports), `co` edges (`git log`), CSR code | new: directed symbol-level edges (calls, uses, inherits, implements, tests) and module-level import edges; the file graph becomes a projection of them plus `rare` and `co` |
-| 7 | Text search engine | `src/coder/search.c` | all of `fd_rank` (per-field BM25), `fg_drop_request`, `fg_activate`, `fg_evidence`; the regex engine `src/tools/regex.c` for literal and pattern search | chunk boundaries follow symbol ranges when a function fits (a function is one retrieval unit; long functions keep 40-line windows) |
+| 7 | Text search engine | `src/coder/search.c` | all of `fd_rank` (per-field BM25), `fg_drop_request`, `fg_activate`, `fg_evidence`; the regex engine `src/tools/regex.c` for literal and pattern search | **the unit of search is the symbol, not the 40-line window**: one "symbol card" per function, type or section (fields: name, path, scope and signature, attached comment, string keys, body names); a file with no symbols is cut at blank-line blocks; a very long body keeps windows inside its card. A result is then directly a definition with a range, which every later step needs |
 | 8 | Semantic search engine | `src/coder/search.c`, `kb.c`, `morph.c` (the module's own semantic search, CSSE: section 12). `semantic.c` for embeddings stays optional and last | `fd_tokens`, `fd_stem`, the request-word and stop-word lists, `fg_activate` as the relational search | new: knowledge base, morphology, operation classes, conceptual and behavioural search, the five-component ranker. No model in it |
 | 9 | Question interpreter | `src/coder/question.c` | request-word list of `fg_is_request`, stop words `fd_stopw`, the vocabulary-gap test `G` of `docs/embedding-usage.md` section 2 | new: request type, entities, relation terms, optional expansion by the large model (section 5) |
 | 10 | Investigation orchestrator | `src/coder/investigate.c` | the policy specification of research 7.4 | new: state machine and per-type plans (section 6) |
@@ -283,9 +310,9 @@ content that has no call graph; that is exactly what should not be guessed now.
 
 The skeleton is already on the main branch (commit 2b7a6fb): `src/coder/types.c` (`CoderLang`, `CoderKind`,
 `CoderRefKind`, `CoderSym`, `CoderRef`, `CoderFile`) and `src/coder/coder.c` (the `katana coder <sub>` dispatch table,
-one line per submodule). The signatures below use those names and extend them: `CoderSym` gains scope, body start,
-visibility, flags, shape and range confidence; `CoderRefKind` gains type use, write and literal; the in-memory
-structs of the skeleton hold `char *` names, while the store holds name ids. All files are parts of the single
+one line per submodule). The signatures below use those names. The fields and enum values the design adds to
+them are listed, as a block ready to apply, in section 14; the in-memory structs hold `char *` names, while the
+store holds name ids. All files are parts of the single
 translation unit:
 `src/katana.c` includes `coder/*.c` right after the base utilities and before anything of the agent, so the compiler
 itself refuses a reference from the module to the agent or to the model code (1.3). `tools/find.c` becomes a facade:
@@ -307,26 +334,16 @@ typedef struct { CoderEntry *v; int n; int truncated; } CoderListing;
 static int  coder_scan_list(const char *root, CoderListing *out, char *err, size_t ecap);      /* git ou caminhada */
 static int  coder_scan_changed(const struct CoderDb *db, const CoderListing *now, int **changed, int **removed, int *nc, int *nr);
 
-/* ---- parse.c: a interface estavel; tudo depois dela nao sabe qual analisador produziu os registros ---- */
-typedef struct {
-    uint32_t name, scope;          /* id na tabela de nomes; scope = indice do simbolo pai no arquivo, ou CODER_NONE */
-    uint32_t sig;                  /* id do texto da assinatura (uma linha, normalizada) */
-    uint32_t line0, line1;         /* intervalo de linhas, inclusivo */
-    uint32_t byte0, byte1, body0;  /* intervalo de bytes; body0 = primeiro byte do corpo (0 = sem corpo) */
-    uint64_t shape;                /* impressao digital da forma do corpo (secao 4, Similar) */
-    uint8_t  kind, vis, flags, conf;   /* CK_*, CODER_V_*, CODER_F_*, confianca do intervalo: 2 exato, 1 heuristico, 0 so a linha */
-} CoderSym;
-typedef struct {
-    uint32_t name;                 /* identificador citado */
-    uint32_t line; uint16_t col;
-    uint32_t in_sym;               /* simbolo do arquivo que contem a ocorrencia, ou CODER_NONE (nivel do arquivo) */
-    uint8_t  kind, flags;          /* CR_CALL, CR_USE, CR_TYPE, CR_IMPORT, CR_INHERIT, CR_IMPLEMENT, CR_WRITE; flags: em macro, em guarda */
-} CoderRef;
-typedef struct { uint32_t line, target_sym_hint; uint8_t kind; } CoderGuard;   /* saida antecipada dentro de um corpo (6.4) */
-typedef struct { CoderSym *sym; int nsym; CoderRef *occ; int nocc; CoderGuard *gd; int ngd; char *imports; int nimp; int errors; } CoderFile;
+/* ---- types.c e parse.c: a interface estavel; tudo depois dela nao sabe qual analisador produziu os registros ----
+   CoderSym, CoderRef, CoderGuard, CoderLoc e CoderFile sao os de src/coder/types.c com os campos da secao 14:
+     CoderSym   { name, sig, kind, parent (= escopo), line0, line1, byte0, byte1, body0, vis, flags, conf, shape }
+     CoderRef   { from (simbolo que contem o uso, ou -1), kind (CR_*), line, name, col, flags (CRF_*) }
+     CoderGuard { sym, line, kind (CGK_*) }
+     CoderFile  { lang, sym, nsym, ref, nref, guard, nguard, errors }      import = CoderRef com CR_IMPORT e from = -1
+   nomes sao char * na memoria; ids de nome (uint32) existem so nos registros do armazenamento (2.4) */
 typedef struct CoderParser {
     const char *name; uint32_t version;       /* a versao entra no registro do arquivo: mudou, o arquivo e reanalisado */
-    int (*parse)(const char *text, size_t n, CoderLang lang, struct CoderNames *names, CoderFile *out);
+    int (*parse)(const char *text, size_t n, CoderLang lang, CoderFile *out);
 } CoderParser;
 static const CoderParser *coder_parse_for(CoderLang lang);                 /* analisador proprio; um plugin pode registrar outro */
 
@@ -422,6 +439,7 @@ of data in sections (a section table at the start gives kind, version, offset, l
 | symbols | the symbol records (`CoderSym` fields) | fixed width, grouped by file, in file order |
 | by-name | (name id, symbol index) pairs | fixed width, sorted by name id: "all definitions of this name" is a binary search |
 | occurrences | (name id, file, line, kind, enclosing symbol) | grouped by name id, then file; lines delta-encoded as varints. "Who mentions this name" is one contiguous run |
+| keys | string literals used as links (event names, routes, command names, configuration keys, environment variables, message types): (key name id, enclosing symbol, line, side: produce / consume / define / unknown, class) | grouped by key; "who emits and who handles this string" is one contiguous run |
 | guards, imports | per file | variable size, reached by offset from the catalog record |
 | terms | text-search dictionary of this segment | sorted strings + per-term document frequency + offset of the postings |
 | postings | per term and field: (chunk id delta, tf) | delta + varint; the three fields (path, symbols, body) as today |
@@ -626,7 +644,10 @@ working folder at 100 thousand files.
 1. The old file is not converted. It is a cache: the module builds the coder store from the working tree the first
    time it runs in a folder (the measured cold build of today's content is 1.15 s for 5349 files).
 2. During the transition (build phases A0 to B1), `Find` keeps reading its own file until the module's text search
-   reproduces its output byte for byte on the `Find` tests and the curriculum replay; then `find.c` becomes a facade
+   reproduces its output byte for byte on the `Find` tests and the curriculum replay **with the 40-line unit**
+   (phase A0 changes where the code lives, not what it prints). The switch of the unit to the symbol (2.1) changes
+   which ranges `Find` prints, though not its format; it happens at phase B1 and requires regenerating the `x-find6`
+   curriculum data, whose `check` replays outputs byte for byte. Then `find.c` becomes a facade
    over `coder_search` and stops writing `find-*.idx`.
 3. After the switch, the first update in a folder deletes that folder's `find-*.idx` (same cache directory, so the
    module owns the cleanup). `KATANA_CODER=0` during the transition keeps the old path alive; once the facade is the
@@ -711,10 +732,10 @@ Function header rules:
   condition shown.
 - *Function-like macros that open or close braces, or that generate functions* (`DEFINE_HANDLER(name) {`): the
   header rule sees `NAME ( args ) {` at depth 0 with a single word before `(`. That shape is recorded as a function
-  whose name is the first macro argument when there is one, with `conf = 1` (heuristic) and the macro name in the
+  whose name is the first macro argument when there is one, with range confidence `CC_HEUR` (heuristic) and the macro name in the
   signature. `TOOLDEF("find_file", ...)` style tables are not functions; they are occurrences.
 - *Depth recovery.* If depth goes negative or a function body would exceed 5000 lines, the parser resynchronizes
-  at the next line that starts at column 0 with a header shape, marks the damaged symbols `conf = 0` (line only) and
+  at the next line that starts at column 0 with a header shape, marks the damaged symbols `CC_LINE` (line only) and
   counts one error in the file record. A file with errors still serves text search and the symbols before the damage.
 - *The single translation unit.* katana is one unit made of `#include "engine/x.c"` lines. Each part is parsed as
   its own file; `static` functions are **not** resolved as file-local when the file is included by another `.c`
@@ -800,13 +821,18 @@ of the build order (section 9, phases A1a to A1c) is the measurement that replac
 
 Failures common to all: **names in strings** (a command registered as `"find_file"`, a route, an event name, a key
 in a dispatch table). These are not calls for any parser, including a full one. They are what makes a flow
-"disappear" for a reader, and they are frequent in the owner's projects (tool tables, channel messages, session
-names). The layer handles them outside the parsers: string literals that look like identifiers or command names are
-indexed as occurrences of kind LITERAL, and an identifier-like literal shared by a few files is exactly the `rare`
-edge that the research measured as useful (`P2 expansion without rare`: 34.2% -> 32.9%, section 3.5). Such a link is
-shown as `by name only`, never as a call.
+"disappear" for a reader, and they are how the owner's bridge code is wired (tool tables, channel messages, session
+names); this is where "why does X not appear" questions break. So they are **first-class entities, not a known
+gap**: a string literal that looks like an identifier, a route, a dotted or dashed name or an environment variable
+is recorded as a **key**, with the symbol that uses it and a **side** taken from the shape of the call it is an
+argument of (the wiring patterns of the knowledge base: `emit` / `publish` / `send` / `post` / `set` / `register`
+produce; `on` / `subscribe` / `handle` / `get` / `lookup` / `case` label consume; a table entry or constant
+defines). Two symbols that use the same key on opposite sides are linked, grade `probable`, shown as `linked by the
+string "..."`. A key hop can appear inside a call path and gives the path its grade. A key built at run time is not
+linked, and that is reported as a gap. The research measured the file-level version of this link (the `rare` edge:
+`P2 expansion without rare`, 34.2% -> 32.9%, section 3.5 there).
 
-How a failure shows: a symbol with `conf < 2` prints `(range approximate)`; a file with parse errors prints
+How a failure shows: a symbol whose range confidence is not `CC_EXACT` prints `(range approximate)`; a file with parse errors prints
 `(this file was only partly parsed)` in any answer that uses it; a query over an `ambiguous` name lists all
 definitions. A failure is never silent and never turns into a wrong `exact`.
 
@@ -827,11 +853,30 @@ definitions. A failure is never silent and never turns into a wrong `exact`.
 **Recommendation.** Own lightweight parsers, behind the stable `CoderParser` interface of 2.3, with two optional
 sources of precision that stay outside the binary:
 
-1. **Language servers, through the existing `LSP` tool** (`src/tools/lsp.c`). When a server for the language is
-   installed and `KATANA_CODER_LSP=1`, the structural queries `Def`, `Callers`, `Callees` and `Uses` ask the server
-   first (operations `goToDefinition`, `findReferences`, `incomingCalls`, `outgoingCalls` already exist there) and
-   fall back to the database on timeout or absence. This is the one path that gives **resolved** calls, which no
-   parser gives. It costs a server start (seconds to minutes on a large project, unmeasured) and is never required.
+1. **Language servers, as late confirmation of the frontier** (an adapter over the transport of
+   `src/tools/lsp.c`). The server is **never asked first**: every query is answered from the store in
+   milliseconds, with `derived` and `probable` edges. Then, if a server for the language is available and
+   `KATANA_CODER_LSP=1`, only the edges **on the frontier of the query or investigation** (the top N, N around 20,
+   that the answer actually shows) are sent for confirmation, under a total deadline (provisional 3 s when a server
+   is already running; no server is started just for one query unless the user or the debug plan asks). A
+   confirmed edge becomes `exact`, a refuted one is dropped and the fact is logged, a missing one is added. Answers
+   are cached in the store folder (`confirm.cache`), **keyed by the stable symbol key and the content hashes of the
+   files involved**, so the second investigation over unchanged code pays nothing and an edit invalidates exactly
+   the answers that touched the edited file. Asking first would put a slow, possibly cold process on the path of
+   every query; confirming after keeps the fast answer and still ends with exact edges where they matter. With no
+   server the same queries return, with weaker grades and one line under "Not found". The cost of a server start
+   on a large project (seconds to minutes) is unmeasured.
+
+   ```c
+   typedef struct CoderPrecise {           /* fonte opcional de confirmacao; fora do modulo, registrada pelo adaptador */
+       const char *name;
+       int (*available)(const char *root, int lang);                           /* barato; nao inicia nada */
+       int (*definition)(CoderLoc use, CoderLoc *out, int cap, int deadline_ms);
+       int (*references)(CoderLoc def, CoderLoc *out, int cap, int deadline_ms);
+       int (*callers)(CoderLoc def, CoderLoc *out, int cap, int deadline_ms);
+       int (*callees)(CoderLoc def, CoderLoc *out, int cap, int deadline_ms);
+   } CoderPrecise;
+   ```
 2. **A parser plugin**: an external program that reads a file and prints the `CoderFile` records in a line format;
    registered per language in the user configuration; versioned like a parser. This is where a third-party parsing
    library can live, if a language turns out to need it. Not planned for the first phases.
@@ -878,12 +923,23 @@ Output example (the format is the contract; the content is illustrative):
 ```
 Callers of listSessions: 1 definition (bridge/sessions.mjs:132-158, exported function)
 bridge/server.mjs
-  onMessage (301-365)            calls at 331:   const list = listSessions(state, { terminals: true });   [exact]
-  handleStatus (402-420)         calls at 409:   res.json(listSessions(state));                           [exact]
+  onMessage (301-365)            calls at 331:   const list = listSessions(state, { terminals: true });   [derived]
+  handleStatus (402-420)         calls at 409:   res.json(listSessions(state));                           [derived]
 bridge/grey-channel.mjs
   (file level)                   uses at 12:     import { listSessions } from './sessions.mjs';           [import]
 2 callers in 1 file, 1 importer. Follow up with Callers on a caller, Def for a body, or Path between two names.
 ```
+
+Queries added by the architecture review (`docs/code-intelligence-architecture.md` 4.4.2). They are the primitives
+the debug plan uses, exposed so the user can run each by hand:
+
+| Query (tool or command) | Signature | Returns |
+|---|---|---|
+| Who writes, who reads (`Writers`, `Readers`) | `Writers(name)`, `Readers(name)` for a field, global, collection or key | the symbols that assign to it (or produce the key) and the symbols that read it (or consume the key), each with `file:line` and grade. With an operation filter from the knowledge base ("who updates X") it also uses the body-derived operation mask of 12.2 |
+| String key (`Key`) | `Key(string)` | producers, consumers and definitions of that key, by side, with the enclosing symbol; `probable` links between sides |
+| Asymmetry (`Asymmetry`) | `Asymmetry(works, fails)` or `Asymmetry(name)` against its siblings | places where the first name occurs and the second does not, grouped by symbol and ordered by role: collection literal, `case` label, registration call, configuration key, guard condition first. Exact relative to the indexed set. It was a step of the orchestrator (6.2); it is now also a query |
+| Slice (`Slice`) | `Slice(file:line)` | one screen of "what must be true for this line to run": the enclosing symbol, the guards above the line, the names the line reads and their writers |
+| Absence (`Absent`, `Unused`) | `Absent(name)` | "referenced and never defined" or "defined and never referenced" within the indexed set, with the set's limits stated |
 
 Shape fingerprint (for `Similar by=shape`): computed by the parser per function body as a 64-bit similarity hash
 over (a) the set of callee names, (b) the sequence of statement kinds (if, loop, return, call, assign) in 4-grams,
@@ -1055,13 +1111,14 @@ S0 INTERPRET   coder_question_interpret(request)                                
      type OVERVIEW -> S7 with the project card
 S1 ENSURE      database ready? (8.6)                                  -> ready | partial | absent
      absent and cannot be built inside the budget -> stop, no packet (the tools still work)
-S2 ENTITIES    for each exact entity: definitions, literal hits, path matches               (EXACT)
+S2 ENTITIES    for each exact entity: definitions, literal hits, string keys, path matches  (EXACT)
 S3 EXPAND      conditions of 5.3 -> coder_question_expand                        -> expanded terms     (optional, the only model call)
 S4 SEARCH      coder_search = CSSE (section 12): five searches + ranker -> top K_HYP candidates  (PROBABLE)
                map each chunk to its innermost symbol (coder_db_sym_at)   -> candidate entry symbols
                merge candidates that are the same symbol or caller/callee of each other into one hypothesis
-S5 STRUCTURE   per hypothesis, per plan of the type (6.2): callers, callees, path, guards, similar, tests   (EXACT)
-S6 DIAGNOSE    DEBUG only: guards on the paths, asymmetry of the works/fails pair, missing links            (EXACT)
+S5 STRUCTURE   per hypothesis, per plan of the type (6.2): callers, callees, path, guards, similar, tests   (EXACT / DERIVED)
+S6 DIAGNOSE    DEBUG only: guards on the paths, asymmetry of the works/fails pair, missing links, key hops  (graded per fact)
+S6b CONFIRM    optional: the frontier edges actually going into the packet are confirmed by a language server (3.5)
 S7 SELECT      order hypotheses; give each a share of the token budget; choose excerpts; compute the gaps
 S8 EMIT        coder_packet_build -> text appended to the user turn; one dim line on stderr; the whole case in the log
 ```
@@ -1085,7 +1142,7 @@ found in the bodies of the first round's hypotheses, is the natural extension an
 | LOCATE | yes, K_HYP = 5 | for each candidate: signature and range only; for an exact entity: its definition and the count of callers | candidates with `file:line0-line1`, signature, the matched lines; no bodies | 600 |
 | EXPLAIN | yes, K_HYP = 3 | entry symbol of each hypothesis; `Callees` depth 2 in call order; `Callers` depth 1 (who starts the flow); literal links (string names that connect a registration to its use) | hypotheses; for the first one the **ordered flow**: entry -> step 1 -> step 2, each `file:line` with its signature; the body of the entry symbol when it fits | 1200 |
 | CHANGE | yes, K_HYP = 3 | full body of the top candidates (the model must read a definition before editing it); `Callers` depth 1 with counts (the impact); `Tests`; `Similar by=name` (sibling implementations that may need the same change) | hypotheses with bodies; "impact: N call sites in M files" listed; related tests; siblings | 1500 |
-| DEBUG | yes, K_HYP = 5 | entry points for each side of the story (where the thing is produced, where it should appear); `Path` between them; `Guards` on every body of the path; `Similar` and the **asymmetry** when the request names a working and a failing sibling; relations that end in `external`, `textual` or nowhere | several hypotheses, never one; the path with its guards; the asymmetry table; the gaps | 2000 |
+| DEBUG | yes, K_HYP = 5 | entry points for each side of the story (where the thing is produced, where it should appear); `Path` between them; `Guards` on every body of the path; `Similar` and the **asymmetry** when the request names a working and a failing sibling; relations that end in `external`, `textual` or nowhere | several hypotheses, never one; the path with its guards; the asymmetry table; the gaps | 1500 |
 
 What "asymmetry" is (S6): when the request says A works and B does not, and both are names found in the tree, the
 engine lists the places that mention A and have no counterpart for B: files, functions, table entries, string
@@ -1190,8 +1247,8 @@ Plain text, appended to the user turn after the request and after the `docsel` n
 
 ```
 [katana: evidence gathered by the engine before you saw this request. Lines marked exact come from the structure of
-the code (definitions, calls, imports) and can be relied on. Lines marked probable are the engine's guesses about
-what the request refers to; they may be wrong. Before you state something about a file, read the lines given here.
+the code and can be relied on. Lines marked derived were resolved by name with a single candidate: usually right,
+confirm when it matters. Lines marked probable are the engine's guesses; they may be wrong. Before you state something about a file, read the lines given here.
 If what you need is under "Not found", look for it yourself with Find, Grep, Def, Callers or Read.]
 Request read as: debug ("why does X not happen"). Named in the request: gkatana (command, exact: 2 files), gclaude (command, exact: 10 files).
 The engine could not identify the entry point with certainty: 3 hypotheses follow, best first.
@@ -1199,13 +1256,13 @@ The engine could not identify the entry point with certainty: 3 hypotheses follo
 == Hypothesis 1 (probable): the terminal session list sent to the phone
   why: words "session", "terminal" (the engine's guess for your words "sessao", "terminal"); via bridge/server.mjs (symbol listSessions)
   entry: onMessage  bridge/server.mjs:301-365  function onMessage(ws, raw)
-  flow (exact):
-    1. onMessage            bridge/server.mjs:301      calls at 331 -> listSessions
-    2. listSessions         bridge/sessions.mjs:132    calls at 140 -> terminalSessionIds
-    3. terminalSessionIds   bridge/sessions.mjs:114
+  flow (derived):
+    E1  1. onMessage            bridge/server.mjs:301      calls at 331 -> listSessions
+    E2  2. listSessions         bridge/sessions.mjs:132    calls at 140 -> terminalSessionIds
+    E3  3. terminalSessionIds   bridge/sessions.mjs:114
   can stop here (exact):
-    bridge/sessions.mjs:118   if (!KNOWN_COMMANDS.includes(s.command)) continue;
-    bridge/server.mjs:327     if (!client.approved) return;
+    E4  bridge/sessions.mjs:118   if (!KNOWN_COMMANDS.includes(s.command)) continue;
+    E5  bridge/server.mjs:327     if (!client.approved) return;
   excerpt bridge/sessions.mjs:114-122 (exact, body of terminalSessionIds)
     114  export function terminalSessionIds(state) {
     ...
@@ -1214,12 +1271,13 @@ The engine could not identify the entry point with certainty: 3 hypotheses follo
   why: literal "gkatana" at linux/install.sh:41
   ...
 
-== Compared (exact): gclaude is handled in places where gkatana is not
-  bridge/sessions.mjs:12    const KNOWN_COMMANDS = ['gclaude'];        no "gkatana" in this file
+== Compared (exact, within the indexed files): gclaude is handled in places where gkatana is not
+  E9  bridge/sessions.mjs:12    const KNOWN_COMMANDS = ['gclaude'];        no "gkatana" in this file
   ...
 
 == Not found
-  - No call path from linux/install.sh to bridge/sessions.mjs (they may be linked by a name in a string, which the engine does not follow).
+  - No call path from linux/install.sh to bridge/sessions.mjs, and no string key used by both.
+  - Not indexed: android/build/ (ignored), 3 files over the size limit. An absence above holds only for the indexed files.
   - "celular": no code term found for it (tried: phone, mobile, device; only "phone" exists, in 14 files, too common to use).
   - 2 more candidates were left out for space: android/.../ShadeActivity.kt:88-131, bridge/README.md:40-71.
 [katana: end of evidence. 1380 tokens. It is a selection, nothing is hidden: every tool still sees the whole project.]
@@ -1228,7 +1286,12 @@ The engine could not identify the entry point with certainty: 3 hypotheses follo
 (The example is illustrative. Its file names come from the research's case study; its line contents are invented
 to show the format and are not claims about that repository.)
 
-Per-excerpt rule: every excerpt line has `file:line0-line1`, the mark `exact` or `probable`, and its relation to
+Every fact line carries a stable evidence id (`E1`, `E2`, ...), the same id the JSON form and the module's own
+interface use (8.0), so the model's answer and the owner's inspection can point at the same line. `Not found` has
+mandatory content: what was searched and returned nothing, what was cut for space, and the limits of the indexed
+set (ignored folders, files over the size cap, languages without call extraction, a database still partial).
+
+Per-excerpt rule: every excerpt line has `file:line0-line1`, the mark `exact`, `derived` or `probable`, and its relation to
 the entry point (`body of`, `caller of`, `called by step 2`, `sibling of`, `test of`, `matched text`). An excerpt
 that is only a ranked text match is `probable`; an excerpt reached from a hypothesis by a relation is `exact` **as a
 relation** and inherits the hypothesis's doubt as to relevance. The header line of each hypothesis block carries
@@ -1244,9 +1307,10 @@ that doubt, so the model reads "probable hypothesis, exact structure inside it".
 | compared / asymmetry | up to 15% (DEBUG only) |
 | not found | always at least 60 tokens reserved |
 
-Ceilings per type as in 6.2 (400 / 600 / 1200 / 1500 / 2000 tokens; default global cap 1500, hard maximum 3000).
+**The packet ceiling is 1500 tokens.** Per type, as in 6.2: 400 / 600 / 1200 / 1500 / 1500. `KATANA_CODER_TOKENS`
+can raise it for experiments (hard maximum 3000); nothing in the defaults goes above 1500.
 They are provisional. The buffer that carries the user turn in `loop.c` (`nl[16384]`) and `docsel`'s 8000-byte note
-bound the sum today; a 2000-token packet is about 8000 bytes, so the buffers must be reviewed when the hook is
+bound the sum today; a 1500-token packet is about 6000 bytes, so the buffers must be reviewed when the hook is
 written.
 
 Trimming order when over budget: excerpt bodies shrink to signature plus the lines with matches, then guards beyond
@@ -1418,7 +1482,7 @@ it can help. A request typed `CODER_T_NONE` costs the tokenization and nothing e
 | `KATANA_CODER_BG` | `0` | `1`: inside a running session, keep indexing in a thread while the agent waits for the user. Off by default: the owner's proposal excludes background services; this one dies with the session, but it is still work nobody asked for |
 | `KATANA_CODER_MAX_FILES` | `200000` | above it, only the folders touched are indexed (8.6) |
 | `KATANA_CODER_MEM_MB`, `KATANA_CODER_DISK_MB` | `512`, `2048` | ceilings of 2.7 |
-| `KATANA_CODER_LSP` | `0` | `1`: ask an installed language server first for resolved relations (3.5) |
+| `KATANA_CODER_LSP` | `0` | `1`: confirm the frontier edges of an answer with an installed language server, after answering, with a cache keyed by content hashes (3.5). Never asked first |
 | `KATANA_CODER_TIME` | `0` | `1`: stage times on stderr, like `KATANA_FIND_TIME` |
 | `KATANA_CODER_DET` | `0` | `1`: deterministic mode for tests and curriculum generation (no time cuts, no model expansion unless a fixed table is given) |
 
@@ -1492,14 +1556,23 @@ inference code linked (the `katana-coder` build of 1.3 is the proof).
 |---|---|---|---|---|
 | A0. Skeleton and extraction | `src/coder/` exists and is included before the agent; the `katana-coder` unit builds; scanner, tokenizer, per-file indexing and the file graph moved out of `find.c` / `findgraph.c` with no behaviour change (`Find` still writes its old file) | `tools/tooltest/find.sh` and the curriculum `check` of the `x-find6` family pass byte for byte; `katana-coder` compiles without `src/engine` model code and without `src/agent` | 2 to 3 | - |
 | A1a. Store and structural indexer, core | lexer layer; `CoderParser` interface; the coder store of 2.4 (segments, manifest swap, explicit serialization, checksums); incremental update; `katana coder index`, `status`, `verify`, `outline FILE` | a hand-checked golden set (about 30 files: katana's own hardest C files, the Qt app, the bridge, Python tools) where every function's `line0-line1` is listed; the parser matches it or the mismatch is a documented failure class of 3.4; touching one file re-parses one file; killing the process at random points during an update always leaves a store that `verify` accepts | 5 to 6 | A0 |
-| A1b. Parsers, tier 1 | C, C++, JS/TS, Python: definitions with ranges, calls, imports, inheritance, guards | golden set per language; on the katana tree, zero functions with `conf = 0` outside files listed as known hard cases | 4 to 6 (one language family per agent, in parallel after A1a's first two days) | A1a interface |
+| A1b. Parsers, tier 1 | C, C++, JS/TS, Python: definitions with ranges, calls, imports, inheritance, guards | golden set per language; on the katana tree, zero functions with `CC_LINE` outside files listed as known hard cases | 4 to 6 (one language family per agent, in parallel after A1a's first two days) | A1a interface |
 | A1c. Parsers, tiers 2 and 3 | Kotlin/Java, Go, Rust; shell, QML, PowerShell, Markdown | golden set per language (smaller) | 3 to 4 (parallel, one per agent) | A1a interface |
 | A2. Exact queries and the CLI | `coder_q_*`; commands `symbols`, `def`, `callers`, `callees`, `refs`, `importers`, `deps`, `similar`, `tests`, `outline`, `path`, `guards`, `search`; readable and `--json` output with evidence ids | the owner's five questions answered by command on the katana tree and on one large tree: which functions and classes exist, who calls a function, which files reference a symbol, which modules depend on which, where similar implementations are; each answer checked by hand on 10 symbols per language; a test script per command | 3 to 4 | A1b |
 | A3. Scale and robustness | 100k files inside the ceilings; compaction; several processes reading while one writes; on-demand indexing; `compact`, `export` | a synthetic or real tree of 100k files indexes inside the ceilings of 2.7, or the ceilings are rewritten with the measured values; two processes (one updating in a loop, one querying in a loop) run for minutes with no wrong answer and no `verify` failure | 3 to 5 | A1a (parallel with A2) |
 | A4. Investigation without AI | `question.c` (rules), `investigate.c`, `packet.c`, `diagnose.c`; `katana coder ask`; `katana coder shell` without `expand` / `analyze`; the full case as JSON | the request types of 5.2 classified correctly on the 76 questions plus 30 hand-written non-investigation requests (a table, checked by hand); packets for the 76 questions generated and inspected for format, budget and provenance; deterministic under `KATANA_CODER_DET=1` | 5 to 7 | A2 |
 
-Phase **A5 (CSSE and the knowledge base)** belongs to this part as well; it is specified at the end of section
-12 (5 to 8 days, after A2 and before A4, partly in parallel with the parsers).
+The knowledge-base search (CSSE, section 12) belongs to this part as well, **sliced so that it never blocks the
+investigation** (details at the end of section 12):
+
+| Phase | Deliverable | Effort | Depends on |
+|---|---|---|---|
+| A5a. Small technical base and the concept channel | `kb.c`, `morph.c`; seed layers 1 to 6 only (normalization, operation verbs, about 150 Portuguese request words, software-engineering concepts, naming and wiring patterns, abbreviations); conceptual and behavioural search; rank fusion with tiers; `kb check / show / why / gaps` | 3 to 4 | A2; can start after A1a |
+| A5b. Domain files of the owner's projects | one file per project in `.katana/coder/kb/` (inference, bridge and phone, audio and interface) | 1 to 2, in parallel with anything | A5a |
+| A5c. Mining, review, the weighted-sum mode, business concepts | `kb mine / review / calibrate`; the business layer of the seed | 2 to 3, after the investigation works | A4 |
+
+A4 needs A5a only. If A5a is late, A4 runs on lexical search plus the graph (the graceful degradation of 12.5) and
+gains the concept channel when it arrives.
 
 **Part B: the agent adapter.** Thin; no AI of its own.
 
@@ -1521,8 +1594,9 @@ Phase **A5 (CSSE and the knowledge base)** belongs to this part as well; it is s
 
 Critical path to the owner's first goal (an indexer that answers the five structural questions from the command
 line, no AI): A0 -> A1a -> A1b -> A2, about 14 to 19 days of one agent (estimate). To the agent receiving packets:
-add A5, A4 and B1 + B2, about 27 to 39 days in all. To the full design with expansion and analysis: add C1 and C2,
-about 31 to 46 days (estimates throughout). In parallel: the tier 1 parsers among themselves; A1c with A2; A3 with
+add A5a, A4 and B1 + B2, about 25 to 35 days in all. To the full design with expansion and analysis: add C1 and C2,
+about 29 to 42 days; A5b, A5c, the extra queries and the confirmation plugin are outside that path (estimates
+throughout; the architecture document's own total, with plugins and the interactive interface, is 45 to 60). In parallel: the tier 1 parsers among themselves; A1c with A2; A3 with
 A2 and A4; B1 with A4; C3 with C1. With three agents the calendar time is roughly half (estimate).
 
 The order follows the owner's suggestion and the "no AI in the core" rule of his storage proposal: all of part A
@@ -1550,12 +1624,13 @@ situations, as families of composed scenarios next to `x-find6`:
 | `pk-absent` | the thing asked about does not exist; hypotheses are near misses; the model reads, checks with `Grep`, says the project has no such thing |
 | `pk-stale` | a resumed conversation with an old packet whose lines moved; the model re-reads before citing |
 | `st-def`, `st-callers`, `st-callees`, `st-outline`, `st-path` | the structural tools used for what they are for: `Callers` before changing a signature; `Callees depth=2` to explain a flow; `Outline` of a folder to answer "how is this module organised"; `Def` instead of reading a whole file; an ambiguous name (`1 of 3 definitions`) resolved by asking with `path` |
-| `st-approx` | a result flagged `(range approximate)` or `by name only`; the model confirms by reading before relying on it |
+| `st-approx` | a result flagged `(range approximate)`, `derived` or `by name only`; the model confirms by reading before relying on it when the answer depends on it, and does not re-check every `derived` line |
+| `st-key` | a flow that crosses a string key (an event or command name); the model follows it with `Key`, and says the link is by string, not by call |
 | unchanged | `exact`: a known literal still goes to `Grep` |
 
 Rules that keep the training independent of internals:
 
-- The model learns **the contract, not the machinery**: the marks `exact` and `probable`, the `Not found` section,
+- The model learns **the contract, not the machinery**: the marks `exact`, `derived` and `probable`, the `Not found` section,
   the tools' names and outputs. No conversation mentions modules, the database, activation, expansion, parsers, or
   how a hypothesis was ranked. If the ranking is replaced, no training text changes.
 - The final answer never says "the engine found" or quotes the packet as its source. It cites what the model read,
@@ -1577,7 +1652,7 @@ Rules that keep the training independent of internals:
 | **A wrong packet with an air of certainty** | measured: top-1 about 4%, top-5-has-gold 41%, and no confidence that separates them (research 3.3, 3.6). A model that anchors on the first hypothesis will be wrong more confidently than today | plural hypotheses, the `probable` mark, the forced "could not identify the entry point" header, even budget split, `pk-wrong-first` as the majority training case, `exact` mode as the fallback. None of these is proven to stop anchoring |
 | **Tokens spent without help** | 1500 tokens is about 25 s of reading at 60 tokens/s (arithmetic) on every qualifying request, including those the model would have solved in two calls | type `CODER_T_NONE` as the default; small ceilings for LOCATE; `exact` mode costs little; per-type ceilings |
 | **Latency before the first token** | expansion adds an estimated 2 to 5 s of generation plus an unknown prefill; the first index of a large tree adds more | time caps; the term map removes most expansions over time; background indexing |
-| **Exact facts that are not** | heuristic parsers on macros, templates, dynamic names; name-only method resolution | resolution classes, `conf` flags, "partly parsed" notes; the golden sets of phase 1; never printing `exact` for `textual` or `ambiguous` |
+| **Exact facts that are not** | heuristic parsers on macros, templates, dynamic names; name-only method resolution | grades, resolution classes, range-confidence flags, "partly parsed" notes; the golden sets of phase 1; never printing `exact` for `textual` or `ambiguous` |
 | **The model stops investigating** | a packet that looks complete invites answering from it | the header instruction; `Not found` always present; training rules; unknown until agent runs |
 | **Wrong request type** | cue words are crude; a debug request typed as locate gets a thin packet, a chat message typed as debug gets noise | default `NONE`; a wrong type costs budget, not correctness |
 | **Conflict with the earlier design** | `docs/embedding-usage.md` D26 and research section 6 forbid an unrequested seed | this document narrows that to "no unrequested answer"; if the measure of 11.3 says even hypotheses hurt, `exact` mode restores the old rule |
@@ -1745,6 +1820,8 @@ R	module_dependency	0.70	seed
 R	same_domain	0.30	seed
 
 !kb	1	rank	2026-11-23
+M	mode	rrf	seed
+# used only when mode is "sum" (the owner's formula, kept for experiments)
 W	L	0.20	seed
 W	C	0.25	seed
 W	B	0.20	seed
@@ -1913,6 +1990,26 @@ uncovered words; they go to the packet's `Not found` section ("no known concept 
 
 ### 12.6 The ranking formula, assessed
 
+**Default adopted: tiers, then reciprocal rank fusion. The weighted sum stays as a configurable mode.**
+
+- *Tier 1:* exact anchors (a name, a path, a quoted string or key that exists). *Tier 2:* a complete concept +
+  operation pair on a symbol's own name. *Tier 3:* everything else. A lower tier never outranks a higher one.
+- *Inside a tier:* reciprocal rank fusion of the searches that produced candidates for this query. There is no
+  scale to normalize, and a search with nothing to say simply does not vote.
+- *G only reorders and annotates.* A candidate that the graph alone brought in is always marked (`via ...`).
+- *The relation weights of the owner's table (1.00 / 0.95 / 0.95 / 0.70 / 0.30) act as grades in this mode*
+  (direct call: exact or derived; interface, event by string: probable; same module or domain: a prior, not an
+  edge). They remain numeric parameters of the `sum` mode.
+- `mode=sum` in `rank.kb` or `KATANA_CODER_RANK` selects the owner's formula, with the corrections of the table
+  below. Both modes print the five components per candidate in the CLI and JSON; neither shows a number to the
+  model.
+
+The reasons are in the table that follows (it was written to assess the sum; its last row is now the default):
+five weights cannot be calibrated on 76 questions over 3 repositories, and the research already measured a
+normalized weighted sum losing. How to choose between the modes without a campaign: one offline run of the existing
+bench per mode, no model; if they differ by less than a few questions, fusion stays because it has no parameters
+to maintain.
+
 The owner's formula: `Score = 0.20 L + 0.25 C + 0.20 B + 0.25 G + 0.10 S`, each component in 0 to 1. The weights
 are illustrative, as he said. What must be decided around them:
 
@@ -1923,11 +2020,11 @@ are illustrative, as he said. What must be decided around them:
 | **G is not independent** | G is computed from the candidates that L, C and B selected. It rewards being near other candidates, which is useful, but it also amplifies a wrong seed, and "agreement" between G and the rest carries no information (research 3.6: the graph's top 1 is the lexical top 1 because it was seeded from it) | G never counts its own seed; a candidate supported **only** by G is flagged as such in the evidence (as the `why: via ...` line is today); G's weight is the first thing to check in calibration |
 | **A linear sum hides the combination the owner wants** | the point of the behavioural search is "entity AND operation". A sum lets a strong L alone outrank a full pair match | the pair match is inside B (12.3). If calibration shows it drowned, add an explicit bonus term rather than raising B's weight |
 | **S is weak by nature** | a query-independent prior plus a kind match | keep its weight small, as proposed |
-| **An alternative: rank fusion** | reciprocal rank fusion needs no scale at all and is what `docs/embedding-usage.md` chose for mixing rankings | implement both behind `mode` in `rank.kb` (`sum` is the owner's formula and the default; `rrf` the alternative) and let the calibration run choose |
+| **Rank fusion** | reciprocal rank fusion needs no scale at all and is what `docs/embedding-usage.md` chose for mixing rankings | **the default** (`mode rrf` in `rank.kb`), with the tiers above; `sum` is the owner's formula, available for experiments |
 
 **Configurable.** The weights, the field weights, the relation weights, the saturating constants and the mode live
 in `rank.kb` and `relations.kb` (12.1), with the same layering as the rest of the base, so a project can carry its
-own. `KATANA_CODER_RANK="L=0.2,C=0.25,B=0.2,G=0.25,S=0.1,mode=sum"` overrides for one run, in the style of
+own. `KATANA_CODER_RANK="mode=sum,L=0.2,C=0.25,B=0.2,G=0.25,S=0.1"` overrides for one run, in the style of
 `KATANA_FIND_TUNE`.
 
 **Calibratable.** `katana coder kb calibrate QUESTIONS.json` (questions with their answer files; the 76 questions of
@@ -1973,11 +2070,103 @@ answer files at 5 and at 10, and the same on the hop files only, for (a) today's
 alone, (c) with the domain files written for those three repositories, (d) with mining on. If (b) and (c) do not
 move the hop slice, the dictionary is not the answer to the vocabulary gap and the effort should go elsewhere.
 
-**Build.** One phase added to part A of section 9 (no AI): *A5. CSSE and the knowledge base*: `kb.c` (loader,
-layers, checker, `kb show / why / check / gaps`), `morph.c`, the per-symbol data of 12.2 in the segments, the five
-searches and the ranker with component reporting, then mining and `kb review / calibrate`. Done when: the seed base
-loads and passes `kb check`; `katana coder search` prints the five components with a reason for each; with the base
-removed the output equals the lexical search; the examples of the owner's proposal (estoque -> inventory; an
-entity + operation query; an event chain across a string literal) work on a small hand-made fixture tree. Effort:
-5 to 8 days (estimate), after A2; the lexical and conceptual parts can start after A1a, in parallel with the
-parsers. It precedes A4, whose orchestrator then calls it.
+**Build, sliced.** "Register all the patterns" has no finish line, so it must not be a precondition. The base
+starts **small and technical**, in this order (sizes are proposals):
+
+| Order | Layer | Content | Where |
+|---|---|---|---|
+| 1 | Normalization rules | accent folding; camel, Pascal, snake, kebab; Portuguese and English suffix rules; protected forms for the known collisions | seed |
+| 2 | Operation verbs | about 15 technical classes with Portuguese and English verbs: create, read, update, delete, send, receive, list, register, start, stop, load, save, parse, render, connect, wait, retry, validate, fail | seed |
+| 3 | Request-language core | about 150 Portuguese words that users type and code names in English: arquivo, pasta, lista, tela, botao, janela, mensagem, erro, fila, sessao, usuario, senha, conexao, rede, configuracao, memoria, tempo, tamanho, ... | seed |
+| 4 | Software-engineering concepts | cache, buffer, queue, thread, lock, token, stream, socket, session, channel, event, callback, plugin, config, log, test, build, install | seed |
+| 5 | Naming and wiring patterns | handler, listener, callback, `on*`, emit / on, publish / subscribe, route registration, signal and slot, command tables | seed; also feeds the string keys of 3.4 |
+| 6 | Abbreviations | cfg, ctx, msg, req, res, buf, len, idx, tmp, fn, cb, kv, tok | seed |
+| 7 to 9 | The owner's domains | inference (model, weights, tensor, layer, expert, quantization, sampling, prefill, shader, tokenizer); bridge and phone (session, pairing, device, notification, permission, launcher, intent); audio and interface (track, clip, mixer, bus, sample rate, plugin host, latency, transport, QML item, signal) | **files per project**, in each repository's `.katana/coder/kb/`, not in katana's seed |
+| last | Business concepts | approval, cancellation, payment, refund, inventory, order, invoice | seed, when a project needs them |
+
+Layers 1 to 3 are the minimum that can move the measured number (Portuguese requests over English code). The
+phases are A5a, A5b and A5c of section 9. A5a is done when: the seed loads and passes `kb check`; `katana coder
+search` prints the five components with a reason for each; with the base removed the output equals the lexical
+search; on a small hand-made fixture tree a Portuguese request word reaches an English identifier, an entity +
+operation query ranks the pair match first, and an event chain is followed across a string key. Mining (12.4)
+and the business layer wait for A5c; the reliable source of growth meanwhile is the `gaps` list, fed by real
+requests.
+
+## 13. Open decisions
+
+Five points on which this specification and the architecture review differed, or on which no measurement exists.
+For each, the document already uses a default (accepted by the coordinator as a working default, **not** decided
+by the owner). The owner decides; the last column says what evidence would justify changing the default.
+
+| # | Decision | Options | Default used in this document | What it costs if wrong | What would change it |
+|---|---|---|---|---|---|
+| 1 | **Grades of certainty** | (a) two: exact, probable. (b) three: exact, derived, probable | **(b) three** (1.2) | (b) wrong: one more word for the model to learn and for the curriculum to teach, with no behavioural difference. (a) wrong: either single-candidate name matches are called exact and a wrong one destroys trust in the word, or they are called probable and the useful edges drown among guesses | go back to two if the golden sets of phase A1 show that single-candidate resolution is right nearly always on the owner's code (then derived can be folded into exact), **or** if agent runs show the model treats `derived` and `probable` the same (then the distinction is noise for it, and it can stay in the CLI and JSON only) |
+| 2 | **Language server: first, or late confirmation** | (a) asked first when switched on, the store as fallback. (b) the store answers; the server confirms the frontier edges afterwards, with a cache by content hash | **(b) late confirmation** (3.5); the switch itself stays off by default | (b) wrong: answers carry `derived` where `exact` was available, until confirmed. (a) wrong: every query waits on a process that may be cold, slow or absent | switch to (a), per language, if a server that is already running answers within the query budget on the owner's projects (a measure of its warm latency), or for a language where the own parser turns out too weak to answer first (C++ is the candidate, 3.5) |
+| 3 | **Default ranking mode** | (a) the owner's weighted sum `0.20 L + 0.25 C + 0.20 B + 0.25 G + 0.10 S`. (b) tiers, then reciprocal rank fusion; the sum as a configurable mode | **(b) fusion** (12.6); `mode=sum` selects the formula | (b) wrong: a signal that deserves more weight cannot be given it. (a) wrong: five uncalibrated numbers decide the order and look measured | one offline run of the existing bench per mode (no model). If the sum is better by clearly more than a few questions, and its weights agree across the leave-one-repository-out folds, make it the default |
+| 4 | **How much of the knowledge base precedes the investigation** | (a) the whole base, business concepts included, before the orchestrator. (b) only the small technical base (layers 1 to 6), then the investigation; project domain files in parallel; mining and business concepts after | **(b) sliced** (section 9, phases A5a to A5c; end of section 12) | (b) wrong: the first packets are built with a narrower concept channel. (a) wrong: the investigation waits on work that has no finish line, most of it irrelevant to the owner's three projects | do more of the base first if the measure of 12.7 shows the seed alone moves the hop slice a lot (then every extra layer is worth its days before anything else); do less if it shows no movement at all (then even A5a should wait behind the structural work) |
+| 5 | **Turning on the packet before the request in the agent** | (a) off: the agent only gets the new tools. (b) on, `exact` mode: only what the request names, with its structure. (c) on, `full`: with probable hypotheses | **(b)** as soon as phase B2 passes; (c) only after the agent run of 11.3 | (c) wrong: a wrong hypothesis with an air of authority (measured top-1 near 4%) on every qualifying request, plus the reading time of up to 1500 tokens. (a) wrong: the module's investigation is never used by the agent unless the model thinks of asking | move to (c) if the three-arm run of 11.3 (none, exact, full; validation questions, alternated in the same hour) shows more correct answers with `full` and no anchoring on the first hypothesis. Stay at (a) if even `exact` costs more reading time than the rounds it saves |
+
+Smaller points raised by the review, **not** adopted here and not blocking; recorded so they are not lost:
+
+- *Positions.* The review proposes storing, per symbol, the set of names it references with role bits and
+  recomputing lines when printing, instead of one occurrence record per use (2.4). Smaller index and no stale line;
+  more work per answer. To be settled by the size measurement of phase A3.
+- *A second model call.* The review allows at most one closed-set choice by the model when the candidates do not
+  fit the packet. Left out of the first build; reconsider when the cost of one side generation is measured (C1).
+- *One tool or several.* The review suggests one structural tool with an operation enum (or `Find` extended)
+  instead of `Def`, `Callers`, `Callees` and `Outline` as separate core tools, because a small model chooses badly
+  among similar tools. To be decided with the curriculum (phase C3), since either form must be trained.
+
+## 14. Changes to `src/coder/types.c` (ready to apply)
+
+The skeleton on the main branch declares `CoderLang`, `CoderKind`, `CoderRefKind`, `CoderSym`, `CoderRef` and
+`CoderFile`. The design needs more; this is the exact change, to be applied **after the parsers agent finishes**,
+so that its work is not broken underneath it. Rules followed so the change is safe for code already written
+against the skeleton:
+
+- enum values are only **appended** (before the `_N` terminator), so existing values keep their numbers;
+- struct fields are only **appended**, so positional initializers and existing assignments still compile;
+- every new field means "unknown / nothing special" when zero, so a parser that never sets it stays correct. That
+  is why range confidence is `CC_EXACT = 0` (a parser must mark doubt, not certainty);
+- **scope needs no new field**: the skeleton's `parent` (index of the containing symbol, or -1) is the scope;
+- **imports need no new array**: an import is a `CoderRef` with `kind = CR_IMPORT` and `from = -1`;
+- **name ids stay out of these structs.** They exist only in the store's serialized records (2.4). In memory a
+  name is a `char *`; when the store hands back a symbol, the pointer points into the mapped names section.
+
+Replace the three enum lines and the three struct definitions of `src/coder/types.c` by:
+
+```c
+typedef enum { CL_UNKNOWN, CL_C, CL_CPP, CL_JS, CL_TS, CL_PY, CL_KT, CL_JAVA, CL_GO, CL_RS, CL_SH, CL_QML, CL_PS1, CL_MD, CL_CONFIG, CL_N } CoderLang;      /* sem mudanca */
+/* tipos de simbolo: os novos entram sempre antes de CK_N, para os valores antigos nao mudarem */
+typedef enum { CK_FILE, CK_FUNC, CK_METHOD, CK_CLASS, CK_STRUCT, CK_ENUM, CK_IFACE, CK_VAR, CK_CONST, CK_MACRO, CK_TYPEDEF, CK_NAMESPACE, CK_HEADING,
+               CK_CTOR, CK_UNION, CK_ENUMERATOR, CK_FIELD, CK_PROPERTY, CK_SIGNAL, CK_N } CoderKind;
+/* tipos de referencia: CR_TYPE uso como tipo (inclui new T), CR_WRITE atribuicao a um global ou campo, CR_LITERAL texto entre aspas usado como chave */
+typedef enum { CR_CALL, CR_USE, CR_IMPORT, CR_EXTENDS, CR_IMPLEMENTS, CR_TYPE, CR_WRITE, CR_LITERAL, CR_N } CoderRefKind;
+typedef enum { CV_UNKNOWN, CV_PUBLIC, CV_EXPORTED, CV_FILE, CV_PRIVATE, CV_PROTECTED } CoderVis;       /* CV_FILE: static, nao exportado, _nome por convencao */
+typedef enum { CC_EXACT, CC_HEUR, CC_LINE } CoderConf;       /* confianca do intervalo: exato, heuristico (macro, recuperacao), so a linha inicial */
+typedef enum { CG_EXACT, CG_DERIVED, CG_PROBABLE } CoderGrade;       /* grau de certeza de um fato entregue (consultas e pacote) */
+typedef enum { CGK_RETURN, CGK_CONTINUE, CGK_BREAK, CGK_THROW, CGK_EXIT, CGK_FILTER, CGK_N } CoderGuardKind;
+enum { CSF_DECL = 1, CSF_ASYNC = 2, CSF_TEST = 4, CSF_ENTRY = 8, CSF_GENERATED = 16, CSF_STATIC = 32 };       /* CoderSym.flags; CSF_DECL = so declaracao (prototipo) */
+enum { CRF_MACRO = 1, CRF_GUARD = 2, CRF_DOC = 4, CRF_PRODUCE = 8, CRF_CONSUME = 16, CRF_DEFINE = 32 };       /* CoderRef.flags; os tres ultimos: lado de uma chave (CR_LITERAL) */
+/* simbolo definido em um arquivo; parent = indice do simbolo que o contem (ou -1): e o escopo; linhas e bytes inclusivos/exclusivos: [line0, line1], [byte0, byte1).
+   Campos novos (zero = desconhecido): body0 = primeiro byte do corpo (0 = sem corpo); vis = CoderVis; flags = CSF_*; conf = CoderConf; shape = impressao da forma do corpo */
+typedef struct { char *name, *sig; int kind, parent, line0, line1; size_t byte0, byte1; size_t body0; int vis, flags, conf; uint64_t shape; } CoderSym;
+/* referencia feita no corpo de um simbolo (from = indice do simbolo, ou -1 no nivel do arquivo). Campos novos: col = coluna em bytes, a partir de 1 (0 = nao sabe); flags = CRF_* */
+typedef struct { int from, kind, line; char *name; int col, flags; } CoderRef;
+/* saida antecipada dentro de um corpo: sym = indice do simbolo, kind = CoderGuardKind */
+typedef struct { int sym, line, kind; } CoderGuard;
+/* um lugar no codigo, para as consultas e para a confirmacao por servidor de linguagem */
+typedef struct { const char *path; int line, col; } CoderLoc;
+/* campos novos: guard/nguard; errors = quantas vezes o analisador perdeu o nivel e se recuperou (0 = arquivo analisado inteiro) */
+typedef struct { int lang; CoderSym *sym; int nsym; CoderRef *ref; int nref; CoderGuard *guard; int nguard; int errors; } CoderFile;
+```
+
+What the parsers agent's code must do after the change, and nothing more: free `guard` where it frees `sym` and
+`ref`; start `CoderFile` zeroed (it already must). Everything else keeps working with the new fields at zero, and
+each parser then fills `body0`, `vis`, `flags`, `conf`, `col` and the guards as it gains them. `uint64_t` needs
+`<stdint.h>`, which the base utilities already include for the whole unit.
+
+Differences from the signatures first drafted in 2.3, resolved in favour of the skeleton: the record of one use is
+`CoderRef` (not a separate occurrence type); the result of parsing one file is `CoderFile`; names are `char *` in
+memory; the request-side types (`CoderQuestion`, `CoderTerm`, `CoderHit`, `CoderFact`, `CoderCase`) are not part of
+`types.c` and live with the submodules that own them.
