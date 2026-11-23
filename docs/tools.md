@@ -165,6 +165,35 @@ containing `*` (in `~/.katana/cache` when the working folder is the home folder 
 overrides). Every call lists the files again and re-reads only those whose mtime or size changed; files that
 disappeared leave the index; a damaged file is rebuilt. Inside one agent process the index stays in memory.
 
+**One entry point for search (decided by katana, not by the model).** The model has one rule: `Find` first, `Grep`
+only for an exact pattern, `Glob` only for file names by pattern. `Find` looks at the question and picks the channel:
+
+| Question | Channel | What is added to the usual answer |
+|---|---|---|
+| text in double quotes (3+ characters) | literal check by the coder engine, files are re-read | `Literal text found:` with `[exact] file:line: text`, or `NOT FOUND (literal): ...` |
+| one identifier or file name (has `_`, `.`, `/` or camelCase) | exact lookup by the coder engine | `Exact match (checked in the files):` with the first line that has the text, or the file named like that; with none, `NOT FOUND: nothing is named "x"` and up to 2 `[probable]` similar names or spellings |
+| a description in words | the usual `Find` (BM25 + file graph); with `KATANA_CODER=full` the coder engine (exact, sub-word, BM25, trigram, literal and conceptual channels) is a second layer | with `full`: `Also from the text search:` up to 3 files the graph did not show (only `[exact]`, or `[probable]` with a concept+operation pair in the path) and `NOT FOUND in the index: ...` |
+
+The usual candidates (file:range, `defines:`, `calls:`, `also referenced in:`) always come out whole after the added
+lines; the coder lines are a few short lines, the file graph is never replaced. Coder results are kept only for files
+that the `Find` index lists too (the coder index does not read `.gitignore`). `[exact]` means the text was found in
+the file (or the file has that name); `[probable]` means a similar spelling or a weaker channel. When `Find` finds
+nothing, the message ends with a suggestion to try `recall(query)`.
+
+`KATANA_CODER`: `off` = `Find` exactly as before (no coder index is created); `exact` (default) = the coder engine
+only for a quoted text or an identifier/file name, without the conceptual channel; `full` = also for descriptions in
+words, with the conceptual channel (knowledge base). The default is not `full` because it was not measured.
+
+The coder index lives in `<working folder>/.katana/coder/store` (ignored by git; `~/.katana/coder/...` when the folder
+is not writable), the same store as `katana coder index`. It is created by the first query that needs it and updated
+incrementally on every such query (files with a new mtime or size are read again). `KATANA_FIND_TIME=1` prints the time.
+`katana coder ...` keeps working unchanged (`katana coder search` and the `Find` layer run the same engine, `cs_search_core`
+in `src/coder/search.c`, which `coder_lookup` calls without printing).
+
+*Memory.* `Find` does not search saved facts: `recall` keeps its own tool (it answers about what the user or the
+model saved, not about files), and a `Find` with no result tells the model to try it, in one line. Mixing the two would
+return facts as if they were code locations.
+
 **Ranking.** BM25 per field (weights path 3, symbols 1, body 1; k1 1.2, b 0.75), a coverage bonus of 10% per distinct
 query term present in the chunk's symbols or body, file score = best chunk + 0.3 x second chunk. This is the best
 algorithm of the research bench (`tools/findbench/bench.py`: weights 3/2/1, bonus 5%) ported to C, with the symbol

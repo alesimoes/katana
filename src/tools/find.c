@@ -17,6 +17,7 @@ static const char CT_FIND_DESC[] =
     "best matching lines and other files that reference those symbols. mode=\"refs\" with a symbol name in `query`: "
     "where it is defined and the lines that use it, grouped by file, each with the function it is in; use it to follow "
     "a call chain. `path` limits the search to a subfolder; `limit` is the number of candidates (default 6, max 12). "
+    "A name or \"quoted text\" is checked exactly in the files (NOT FOUND when it does not exist). "
     "Then Read only the part you need (offset and limit).";
 static const char CT_FIND_PROPS[] =
     "\"query\": {\"type\": \"string\", \"description\": \"What you are looking for: a phrase and/or identifiers; with mode=refs, one symbol name\"}, "
@@ -25,7 +26,14 @@ static const char CT_FIND_PROPS[] =
     "\"mode\": {\"type\": \"string\", \"enum\": [\"search\", \"refs\"], \"description\": \"search (default) or refs: definition and uses of a symbol\"}";
 static const char CT_FIND_REQ[] = "\"query\"";
 
+/* resultado estruturado da busca do coder (preenchido por coder_lookup em src/coder/search.c; a camada de decisao do Find esta mais abaixo) */
+#define CODER_HITS_MAX 12
+#define CODER_EV_MAX 3
+typedef struct { char path[512]; int exact, tier, literal, anchor, nev, line[CODER_EV_MAX]; char text[CODER_EV_MAX][150]; char channels[200]; } CoderHit;
+typedef struct { int n, total, concept, created; uint32_t files; double ms, index_ms; char notfound[600]; CoderHit r[CODER_HITS_MAX]; } CoderHits;
+
 #ifndef _WIN32
+static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho);   /* search.c */
 #define FD_MAGIC 0x444e464bu       /* "KFND" */
 #define FD_VERSION 4u       /* 4: grafo de arquivos depois dos arquivos (findgraph.c) */
 #define FD_CHUNK 40
@@ -1161,6 +1169,121 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
     }
 }
 
+/* ---- camada de decisao do Find (KATANA_CODER=off|exact|full) ----
+ * O katana decide o canal pela pergunta; o modelo nao escolhe:
+ *   texto entre aspas            -> verificacao literal pelo motor do coder (acha ou diz NOT FOUND)
+ *   identificador / nome de arquivo (uma palavra com _ . / ou camelCase) -> busca exata pelo motor do coder
+ *   descricao em linguagem natural -> o Find de sempre (BM25 + grafo); com full, o motor do coder entra como segunda camada
+ * O grafo do Find nunca e substituido: a saida dele vem inteira, o coder acrescenta linhas curtas (evidencia, NOT FOUND). */
+enum { FQ_NATURAL, FQ_IDENT, FQ_QUOTED };
+static int fd_coder_level(void) {          /* 0 off, 1 exact (padrao), 2 full */
+    const char *e = getenv("KATANA_CODER");
+    if (!e || !*e) return 1;
+    if (!strcmp(e, "off") || !strcmp(e, "0")) return 0;
+    if (!strcmp(e, "full")) return 2;
+    return 1;
+}
+static int fd_query_kind(const char *q) {
+    const char *a = strchr(q, '"');
+    if (a) { const char *b = strchr(a + 1, '"'); if (b && b - a - 1 >= 3) return FQ_QUOTED; }
+    while (*q == ' ' || *q == '\t') q++;
+    size_t n = strlen(q); while (n && (q[n - 1] == ' ' || q[n - 1] == '\t' || q[n - 1] == '\n')) n--;
+    if (n < 3 || n > 120) return FQ_NATURAL;
+    int codey = 0;
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)q[i];
+        if (!(isalnum(c) || c == '_' || c == '.' || c == '/' || c == '-' || c == '$' || c == ':')) return FQ_NATURAL;
+        if (c == '_' || c == '.' || c == '/') codey = 1;
+        if (i && islower((unsigned char)q[i - 1]) && isupper(c)) codey = 1;
+    }
+    return codey ? FQ_IDENT : FQ_NATURAL;
+}
+/* o indice do coder nao le .gitignore: so entram os arquivos que o indice do Find tambem lista (mesmo conjunto de arquivos) */
+static int fd_listed(FdIndex *X, const char *rel) {
+    FdFile key; memset(&key, 0, sizeof key); key.rel = (char *)rel;
+    return bsearch(&key, X->f, (size_t)X->nf, sizeof(FdFile), fd_cmp_rel) != NULL;
+}
+static int fd_coder_ok(FdIndex *X, const CoderHit *h, const char *pre) {
+    const size_t pl = strlen(pre);
+    return (!pl || strncmp(h->path, pre, pl) == 0) && fd_listed(X, h->path);
+}
+static void fd_hit_line(CtSb *sb, const CoderHit *h, const char *tag) {
+    char m[760];
+    if (h->nev) {
+        const char *t = h->text[0]; while (*t == ' ' || *t == '\t') t++;
+        snprintf(m, sizeof m, "  [%s] %s:%d: %.110s\n", tag, h->path, h->line[0], t);
+    } else snprintf(m, sizeof m, "  [%s] %s\n", tag, h->path);
+    ct_sb_puts(sb, m);
+}
+/* primeira linha do arquivo que contem o texto (sem diferenciar maiusculas): a evidencia que o motor devolve pode ser uma linha que casa so uma parte */
+static int fd_line_of(FdIndex *X, const char *rel, const char *needle, int *ln, char *out, size_t cap) {
+    char abs[8400]; snprintf(abs, sizeof abs, "%s/%s", X->root, rel);
+    size_t n = 0; char *b = fd_slurp(abs, &n, FD_MAXBYTES); if (!b) return 0;
+    const size_t nl = strlen(needle); int found = 0, line = 1;
+    for (size_t i = 0; i < n && nl; ) {
+        size_t e = i; while (e < n && b[e] != '\n') e++;
+        if (e - i >= nl) for (size_t k = i; k + nl <= e; k++) if (strncasecmp(b + k, needle, nl) == 0) { found = 1; break; }
+        if (found) {
+            const char *t = b + i; size_t l = e - i; while (l && (*t == ' ' || *t == '\t')) { t++; l--; }
+            snprintf(out, cap, "%.*s", (int)(l < 110 ? l : 110), t); *ln = line; break;
+        }
+        i = e + 1; line++;
+    }
+    free(b); return found;
+}
+/* camada antes dos candidatos: aspas -> literal; identificador -> exato. O arquivo e relido para mostrar a linha que tem o texto de fato.
+ * Devolve quantas linhas uteis escreveu (0: nada achado) */
+static int fd_coder_pre(FdIndex *X, const CoderHits *C, int qk, const char *q, const char *pre, CtSb *sb) {
+    char m[760], needle[200], txt[160]; int shown = 0, ln = 0;
+    if (qk == FQ_QUOTED) { const char *a = strchr(q, '"') + 1, *b = strchr(a, '"'); snprintf(needle, sizeof needle, "%.*s", (int)(b - a < 199 ? b - a : 199), a); }
+    else { while (*q == ' ' || *q == '\t') q++; snprintf(needle, sizeof needle, "%s", q); size_t l = strlen(needle); while (l && (needle[l - 1] == ' ' || needle[l - 1] == '\t' || needle[l - 1] == '\n')) needle[--l] = 0; }
+    if (qk == FQ_QUOTED) {
+        for (int i = 0; i < C->n && shown < 3; i++) {
+            if (!C->r[i].literal || !fd_coder_ok(X, &C->r[i], pre)) continue;
+            if (!shown) ct_sb_puts(sb, "Literal text found (checked in the files, not guessed):\n");
+            if (fd_line_of(X, C->r[i].path, needle, &ln, txt, sizeof txt)) snprintf(m, sizeof m, "  [exact] %s:%d: %s\n", C->r[i].path, ln, txt);
+            else snprintf(m, sizeof m, "  [exact] %s\n", C->r[i].path);
+            ct_sb_puts(sb, m); shown++;
+        }
+        if (!shown) { snprintf(m, sizeof m, "NOT FOUND (literal): the quoted text does not occur in any of the indexed files%s%s.\n", *pre ? " under " : "", pre); ct_sb_puts(sb, m); }
+        return shown;
+    }
+    /* identificador: exato = o arquivo se chama assim ou o texto existe nele (linha mostrada); o resto e parecido */
+    int ex = 0, pr = 0;
+    for (int i = 0; i < C->n && ex < 3; i++) {
+        if (!fd_coder_ok(X, &C->r[i], pre)) continue;
+        const int has = fd_line_of(X, C->r[i].path, needle, &ln, txt, sizeof txt);
+        if (!has && !C->r[i].anchor) continue;
+        if (!ex) ct_sb_puts(sb, "Exact match (checked in the files):\n");
+        if (has) snprintf(m, sizeof m, "  [exact] %s:%d: %s\n", C->r[i].path, ln, txt); else snprintf(m, sizeof m, "  [exact] %s (the file is named like this)\n", C->r[i].path);
+        ct_sb_puts(sb, m); ex++;
+    }
+    shown = ex;
+    if (!ex) {
+        for (int i = 0; i < C->n && pr < 2; i++) {
+            if (!fd_coder_ok(X, &C->r[i], pre)) continue;
+            if (!pr) { snprintf(m, sizeof m, "NOT FOUND: nothing is named \"%.80s\". Similar names or spellings (probable, not certain):\n", needle); ct_sb_puts(sb, m); }
+            fd_hit_line(sb, &C->r[i], "probable"); pr++;
+        }
+        shown = pr;
+        if (!pr) { snprintf(m, sizeof m, "NOT FOUND: no file name or identifier like \"%.80s\" in the indexed files.\n", needle); ct_sb_puts(sb, m); }
+    }
+    return shown;
+}
+/* camada depois dos candidatos (full, pergunta em linguagem natural): ate 3 arquivos que o Find nao mostrou, com grau de certeza e evidencia, e o que nao foi achado */
+static int fd_coder_post(const CoderHits *C, const char *pre, FdIndex *X, const FdHit *hits, int nh, CtSb *sb) {
+    int shown = 0;
+    for (int i = 0; i < C->n && shown < 3; i++) {
+        if (!fd_coder_ok(X, &C->r[i], pre) || (!C->r[i].exact && C->r[i].tier > 2)) continue;       /* so o que tem nome/literal ou par conceito+operacao no caminho; o resto e ruido */
+        int dup = 0; for (int k = 0; k < nh; k++) if (!strcmp(X->f[hits[k].file].rel, C->r[i].path)) dup = 1;
+        if (dup) continue;
+        if (!shown) ct_sb_puts(sb, "Also from the text search (other channels):\n");
+        fd_hit_line(sb, &C->r[i], C->r[i].exact ? "exact" : "probable"); shown++;
+    }
+    if (C->notfound[0]) { char m[300]; snprintf(m, sizeof m, "NOT FOUND in the index: %.200s\n", C->notfound); ct_sb_puts(sb, m); shown++; }
+    return shown;
+}
+
 static void ct_findtool(const char *js, const char *end, char *out, size_t cap) {
     if (cap < 300) { if (cap) out[0] = 0; return; }
     g_fd_verbose = getenv("KATANA_FIND_TIME") != NULL;
@@ -1213,13 +1336,25 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
         else {
             FdHit hits[12]; uint32_t qid[64]; int nq = 0, esrc[12];
             const int nh = fd_rank(X, q, pre, hits, (int)lim, qid, &nq, esrc);
+            const int lvl = fd_coder_level(), qk = lvl ? fd_query_kind(q) : FQ_NATURAL;
+            CoderHits *CH = NULL; int cpre = 0;
+            if (lvl && (qk != FQ_NATURAL || lvl >= 2)) {      /* o motor do coder: indice atualizado a cada chamada, criado na primeira */
+                CH = (CoderHits *)malloc(sizeof *CH);
+                if (CH && coder_lookup(root, q, lvl >= 2, 12, CH) != 0) { free(CH); CH = NULL; }
+                if (CH && g_fd_verbose) fprintf(stderr, "find: coder %s%.1f ms (index update %.1f ms, search %.1f ms)\n", CH->created ? "index created, " : "", CH->index_ms + CH->ms, CH->index_ms, CH->ms);
+            }
+            if (CH && qk != FQ_NATURAL) cpre = fd_coder_pre(X, CH, qk, q, pre, &sb);
+            const size_t base = sb.n;
             if (!nh) {
                 char m[700];
-                snprintf(m, sizeof m, "No match for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code.", q, *pre ? " in " : "", pre);
-                ct_sb_puts(&sb, m);
+                if (!cpre || qk == FQ_QUOTED) {
+                    snprintf(m, sizeof m, "No match for \"%.200s\"%s%s. Try other words: names of functions, files or messages you expect in the code. "
+                             "If it is something you saved earlier (a fact, a preference), try recall(query).", q, *pre ? " in " : "", pre);
+                    ct_sb_puts(&sb, m);
+                }
             } else {
                 const char *e = getenv("KATANA_FIND_CHARS");
-                const size_t total = e && atoi(e) > 200 ? (size_t)atoi(e) : 1500;
+                const size_t total = base + (e && atoi(e) > 200 ? (size_t)atoi(e) : 1500);
                 for (int i = 0; i < nh; i++) {
                     const size_t left = sb.n < total ? total - sb.n : 0;
                     const size_t share = left / (size_t)(nh - i);
@@ -1231,6 +1366,8 @@ static void ct_findtool(const char *js, const char *end, char *out, size_t cap) 
                     fd_show(X, &hits[i], i + 1, qid, nq, share, why, &sb);
                 }
             }
+            if (CH && qk == FQ_NATURAL) fd_coder_post(CH, pre, X, hits, nh, &sb);
+            free(CH);
         }
         if (X->truncated) { char m[200]; snprintf(m, sizeof m, "(index covers %d files; %d more skipped: KATANA_FIND_MAX_FILES)\n", X->listed, X->truncated); ct_sb_puts(&sb, m); }
         ct_sb_puts(&sb, refs ? "Next: Find mode=refs on a caller, or Read a part with offset and limit." : "Follow a symbol with Find mode=refs, or Read a part with offset and limit.");

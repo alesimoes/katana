@@ -763,6 +763,7 @@ static void cs_json_terms(const QSet *q) {
     printf("]");
 }
 
+static int cs_search_core(const char *query, const char *proj, int limit, int json, int why, CoderHits *ho);
 static int coder_search_main(int argc, char **argv) {
     const char *query = NULL, *proj = "."; int limit = 10, json = 0, why = 0;
     for (int i = 0; i < argc; i++) {
@@ -773,10 +774,15 @@ static int coder_search_main(int argc, char **argv) {
     }
     if (!query || !*query) { fprintf(stderr, "uso: katana coder search \"pergunta\" [pasta] [--limit N] [--json] [--why]\n"); return 2; }
     if (limit < 1) limit = 10;
+    return cs_search_core(query, proj, limit, json, why, NULL);
+}
+/* nucleo da busca. ho == NULL: imprime (katana coder search). ho != NULL: nao imprime, preenche os resultados estruturados (usado pelo Find);
+ * ho->concept == 0 desliga a expansao pela base de conhecimento (canal conceitual) */
+static int cs_search_core(const char *query, const char *proj, int limit, int json, int why, CoderHits *ho) {
     cs_params();
     double t0 = now_sec(), t_open, t_kb, t_load, t_score;
     CsView v; char err[400];
-    if (cs_view_open(proj, &v, err, sizeof err) != 0) { fprintf(stderr, "search: %s\n", err); return 1; }
+    if (cs_view_open(proj, &v, err, sizeof err) != 0) { if (!ho) fprintf(stderr, "search: %s\n", err); return 1; }
     t_open = now_sec() - t0;
     CoderKb kb; memset(&kb, 0, sizeof kb); kb.quiet = 1; char kbproj[4300]; snprintf(kbproj, sizeof kbproj, "%s/.katana/coder", v.r->man.root[0] ? v.r->man.root : proj);
     kb.project = kb_isdir(kbproj) ? kbproj : NULL; coder_kb_load(coder_kb_default_dir(), &kb); int kbok = kb.nfile > 0;
@@ -795,7 +801,7 @@ static int coder_search_main(int argc, char **argv) {
         int before = q.n; QTerm *p = cs_qt_add(&q, &x);
         if (!p) continue;
         norig++; nsrc++;
-        if (kbok && !part) cs_expand_word(&kb, &q, before, t, x.src);
+        if (kbok && !part && (!ho || ho->concept)) cs_expand_word(&kb, &q, before, t, x.src);
     }
     int nuser = 0; for (int i = 0; i < q.n; i++) if (q.t[i].cls == QC_ORIG || q.t[i].cls == QC_WHOLE) nuser++;
     for (int i = 0; i < q.n; i++) cs_qt_load(&v, &q.t[i]);
@@ -881,7 +887,9 @@ static int coder_search_main(int argc, char **argv) {
     char nf[600]; nf[0] = 0; int nnf = 0;
     for (int i = 0; i < q.n; i++) { const QTerm *t = &q.t[i]; if ((t->cls == QC_ORIG || t->cls == QC_WHOLE) && t->nhit == 0) { size_t l = strlen(nf); if (l < 500) snprintf(nf + l, sizeof nf - l, "%s%s", nnf ? ", " : "", t->disp); nnf++; } }
     for (int p = 0; p < Q.nphr; p++) if (!phr_ok[p]) { size_t l = strlen(nf); if (l < 500) snprintf(nf + l, sizeof nf - l, "%s\"%s\" (literal phrase%s)", nnf ? ", " : "", Q.phr[p], phr_idx_ok[p] ? "" : ", no indexable words"); nnf++; }
-    if (json) {
+    if (ho) {
+        snprintf(ho->notfound, sizeof ho->notfound, "%s", nf); ho->files = N; ho->ms = t_total * 1000; ho->total = (int)nres;
+    } else if (json) {
         printf("{\"query\":"); cs_jstr(query, 1024); printf(",\"files_indexed\":%u,\"results_total\":%u,\"ms\":%.2f,", N, nres, t_total * 1000);
         cs_json_terms(&q); printf(",\"not_found\":[");
         { int first = 1; for (int i = 0; i < q.n; i++) { const QTerm *t = &q.t[i]; if ((t->cls == QC_ORIG || t->cls == QC_WHOLE) && t->nhit == 0) { printf("%s", first ? "" : ","); cs_jstr(t->disp, 64); first = 0; } }
@@ -903,6 +911,18 @@ static int coder_search_main(int argc, char **argv) {
         uint32_t d = res[r].doc; int exactg = sc[CH_EXACT][d] > 0 || litmask[d];
         char chl[200]; chl[0] = 0;
         for (int c = 0; c < CH_N; c++) if (rk[c][d]) { size_t l = strlen(chl); snprintf(chl + l, sizeof chl - l, "%s%s#%d", l ? " " : "", g_cs_chname[c], rk[c][d]); }
+        if (ho) {
+            if (ho->n >= CODER_HITS_MAX) continue;
+            CoderHit *H = &ho->r[ho->n++]; memset(H, 0, sizeof *H);
+            snprintf(H->path, sizeof H->path, "%.*s", (int)v.plen[d], v.path[d]); H->exact = exactg; H->tier = res[r].tier; H->literal = litmask[d] != 0; H->anchor = anchor[d] != 0;
+            snprintf(H->channels, sizeof H->channels, "%s", chl);
+            CsTW tw[256]; int nm = 0; for (int i = 0; i < q.n && nm < 256; i++) if (cs_qt_find(&q.t[i], d)) { tw[nm].i = i; tw[nm++].w = q.t[i].w * q.t[i].idf; }
+            qsort(tw, (size_t)nm, sizeof *tw, cs_tw_cmp);
+            int ti[CS_EVBITS]; int nti = nm < CS_EVBITS ? nm : CS_EVBITS; for (int i = 0; i < nti; i++) ti[i] = tw[i].i;
+            CsEvLine ev[40]; int ne = cs_evidence(&v, d, &q, ti, nti, Q.phr, litmask[d], ev, CODER_EV_MAX, tk);
+            for (int i = 0; i < ne && i < CODER_EV_MAX; i++) { H->line[i] = ev[i].line; snprintf(H->text[i], sizeof H->text[i], "%s", ev[i].text); H->nev++; }
+            continue;
+        }
         if (json) {
             printf("%s{\"path\":", r ? "," : ""); cs_jstr(v.path[d], v.plen[d]);
             printf(",\"tier\":%d,\"certainty\":\"%s\",\"score\":%.5f,\"channels\":{", res[r].tier, exactg ? "exact" : "probable", res[r].fused);
@@ -924,7 +944,8 @@ static int coder_search_main(int argc, char **argv) {
             cs_print_evidence_text(&v, d, &q, &Q, litmask[d], tk, why, NULL, 0);
         }
     }
-    if (json) printf("]}\n");
+    if (ho) {}
+    else if (json) printf("]}\n");
     else if (nres > (uint32_t)limit) printf("... %u more (use --limit)\n", nres - (uint32_t)limit);
     for (int c = 0; c < CH_N; c++) { free(sc[c]); free(rk[c]); }
     for (int i = 0; i < q.n; i++) free(q.t[i].hit);
@@ -996,4 +1017,23 @@ static int coder_find_name_main(int argc, char **argv) {
     for (int i = 0; i < q.n; i++) free(q.t[i].hit);
     free(q.t); free(res); free(kind); free(sc); free(tk); cs_view_close(&v);
     return 0;
+}
+
+/* ---- porta da biblioteca: consulta estruturada, sem imprimir (usada pelo Find, src/tools/find.c) ----
+ * Atualiza o indice do coder da pasta de forma incremental (cria na primeira consulta) e roda o mesmo nucleo do `katana coder search`.
+ * concept=0: sem o canal conceitual (base de conhecimento). Devolve 0, ou -1 se o indice nao pode ser criado ou lido. */
+static int coder_lookup(const char *root, const char *query, int concept, int limit, CoderHits *ho) {
+    memset(ho, 0, sizeof *ho); ho->concept = concept;
+    char dir[4400], err[300], man[4500]; struct stat sv; double t0 = now_sec();
+    store_locate(root, "coder", dir, sizeof dir, 1);
+    snprintf(man, sizeof man, "%s/MANIFEST", dir); ho->created = stat(man, &sv) != 0;
+    StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o);
+    StoreUpdStats S; err[0] = 0;
+    int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
+    char si[400]; coder_search_hook_done(&o, si, sizeof si);
+    ho->index_ms = (now_sec() - t0) * 1000;
+    if (rc != 0 && rc != 1) return -1;               /* 1: outro processo grava o indice agora; le o que existe */
+    if (limit < 1) limit = 1;
+    if (limit > CODER_HITS_MAX) limit = CODER_HITS_MAX;
+    return cs_search_core(query, root, limit, 0, 0, ho) == 0 ? 0 : -1;
 }
