@@ -317,8 +317,8 @@ static int fl_is_file(const SyView *v, const char *arg, char *spec, size_t cap, 
     snprintf(spec, cap, "%s", arg); *line = 0;
     char *colon = strrchr(spec, ':'); int hasline = 0;
     if (colon && colon[1] && strspn(colon + 1, "0123456789") == strlen(colon + 1)) { *line = atoi(colon + 1); *colon = 0; hasline = 1; }
-    if (!hasline && fl_nocc(v, arg, strlen(arg)) > 0) {          /* e uma chave... a menos que so exista porque um contrato com este nome de arquivo esta no indice (o proprio arquivo e uma chave de contrato) */
-        KyOccs o = {0}; ky_occs_of(v, arg, strlen(arg), &o); int onlyfile = o.n > 0; for (int i = 0; i < o.n; i++) if (!(o.o[i].cls == CKC_CONTRACT && o.o[i].sub == CKS_FILE && o.o[i].role == CKR_DEFINE)) onlyfile = 0; free(o.o);
+    if (!hasline && fl_nocc(v, arg, strlen(arg)) > 0) {          /* e uma chave... a menos que so exista porque um contrato com este nome de arquivo esta no indice (o proprio arquivo e uma chave de contrato, e o codigo que o cita tambem) */
+        KyOccs o = {0}; ky_occs_of(v, arg, strlen(arg), &o); int onlyfile = o.n > 0; for (int i = 0; i < o.n; i++) if (!(o.o[i].cls == CKC_CONTRACT && o.o[i].sub == CKS_FILE)) onlyfile = 0; free(o.o);
         if (!onlyfile) return 0;
     }
     if (!hasline && !strchr(spec, '/') && !strchr(spec, '.')) return 0;
