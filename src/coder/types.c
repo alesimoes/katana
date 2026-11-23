@@ -26,4 +26,11 @@ typedef struct { int sym, line, kind; } CoderGuard;
 /* um lugar no codigo, para as consultas e para a confirmacao por servidor de linguagem */
 typedef struct { const char *path; int line, col; } CoderLoc;
 /* campos novos: guard/nguard; errors = quantas vezes o analisador perdeu o nivel e se recuperou (0 = arquivo analisado inteiro) */
-typedef struct { int lang; CoderSym *sym; int nsym; CoderRef *ref; int nref; CoderGuard *guard; int nguard; int errors; } CoderFile;
+/* chave de texto (keys.c): literal que liga arquivos por TEXTO IGUAL. role: PRODUCE envia/emite/escreve/define/chama; CONSUME recebe/trata/le/registra.
+   cls: tipo da chave; meth: metodo HTTP (so para rotas; 0 = qualquer ou nao se aplica) */
+enum { CKR_PRODUCE = 1, CKR_CONSUME = 2 };
+enum { CKC_OTHER = 0, CKC_MSG, CKC_EVENT, CKC_ROUTE, CKC_ENV, CKC_CONFIG, CKC_CMD, CKC_N };
+enum { CKM_NONE = 0, CKM_GET, CKM_POST, CKM_PUT, CKM_DELETE, CKM_PATCH, CKM_OTHER, CKM_N };
+typedef struct { char *key; int line, role, cls, meth, col; } CoderKey;
+/* campos novos: guard/nguard; errors = quantas vezes o analisador perdeu o nivel e se recuperou (0 = arquivo analisado inteiro); key/nkey = chaves de texto (keys.c) */
+typedef struct { int lang; CoderSym *sym; int nsym; CoderRef *ref; int nref; CoderGuard *guard; int nguard; int errors; CoderKey *key; int nkey; } CoderFile;

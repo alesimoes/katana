@@ -21,7 +21,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
 | `glob.c`, `grep.c` | `Glob`, `Grep` | 161 |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
-| `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact over the symbol index; work in `src/coder/symtool.c`) | - |
+| `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact, flow over the symbol index; work in `src/coder/symtool.c`) | - |
 | `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |
 | `webfetch.c`, `websearch.c` | `WebFetch`, `WebSearch` | 45 |
 | `tasks.c`, `askuserquestion.c`, `planmode.c` | `TodoWrite`, `TaskCreate/Update/List/Get`, `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` | 80 |
@@ -208,6 +208,12 @@ is left out and listed in one `(already shown, skipped)` line, and the next cand
 (almost) the same words says so and returns the next page. The end of the answer has `next: file:lines (calls X)` /
 `(callee X)`: callers and callees (from the coder symbol index) of the symbols that match the question, in ranges not yet
 read (`KATANA_FIND_NEXT=0` turns it off); the "linked files you have not read yet" note skips files already named there.
+For each of the first three results that is code (and when the folder has a coder index), the old `calls:` line of names is replaced by
+three short lines about the symbol that contains the best line: `called by: connect (grey-channel.mjs:55-78), main (...)` (callers, same
+file or not, by confidence, up to 3, `(+N)`; `nothing indexed (entry point or called by name from outside)` when none), `calls: toBridge
+(grey-channel.mjs:53), ...` and `links: sends "register" -> handled in channels.mjs:33` / `handles "x" <- sent from a.mjs:61` (text-key links,
+see `docs/code-intelligence.md` 12.8; at most two lines, closest to the best line first). Callers/callees of a file-private symbol in
+another file or of another language family are demoted, and low-confidence ones are left out when better exist. Without an index the old `calls:` line stays.
 `mode=refs` with a phrase (two or more words) runs a normal search with a one-line explanation; a single name with no
 definition suggests similar names from the symbol index (case and underscores, part of an identifier, edit distance).
 Output target is about 3000 characters (`FD_OUT_CHARS`, `KATANA_FIND_CHARS`).
@@ -317,13 +323,21 @@ list and a full declaration in every `ToolSearch` answer for no gain.
   with the function it is in. `callers` / `callees` / `uses` (`name`): who calls it / what it calls in call order /
   occurrences that are not calls. `outline` (`file`): the symbols of a file, nested, with line ranges. `at` (`file`,
   `line`): the symbol containing the line and its enclosing symbols. `deps` (`file`): imports out and imported-by.
-  `impact` (`name`, `depth` default 3, max 6): callers of callers (what a change can break).
+  `impact` (`name`, `depth` default 3, max 6): callers of callers (what a change can break). `flow` (`name` = a text key, or
+  `file` [+ `line`], or nothing): links that go through TEXT, not through a call or import: who sends/emits/writes/calls a key
+  and who handles/reads it (message `type` values, event names, HTTP routes, environment variables, config keys, subcommands).
+  `flow name=register` lists PRODUCE and CONSUME sites (`file:line`, the enclosing function, the line) and the producer ->
+  consumer LINKS with a confidence; `flow file=bridge/grey-channel.mjs` lists what that file sends and receives and where
+  each key goes; `flow` with no target summarizes file -> file links by key. The answer ends with `Next: Read <file>
+  offset=.. limit=..` for the consumer side, and says `Nobody handles it` / `Nobody sends it` (with the limit of the indexed
+  set) when one side is missing. Default `limit` 5 per side (max 100); text mode is brief (the confidence explanation is
+  cut to its first clauses). Details and heuristics: `docs/code-intelligence.md`, section "Links by text key".
 - Output: `file:lines  kind name  [confidence N level; how]`, one snippet line per use, a one-line hint of the next
   query. There are no exact/derived/probable labels: the query is a cascade (exact name, then spelling variants, then
   edit distance <= 2; the answer says which step produced what it shows) and every result carries `confidence` 0-100,
   `level` (high >= 75, medium >= 45, low) and `how`. An empty result is `NOT FOUND: ...` with the limit of the indexed
   set (files indexed, files without symbol extraction, what the analysis does not see). Default `limit` per action:
-  def 8, refs/callers/uses 15, callees 15, outline 100, at 8, deps 30, impact 25 (max 100); the text is cut at about
+  def 8, refs/callers/uses 15, callees 15, outline 100, at 8, deps 30, impact 25, flow 5 (max 100); the text is cut at about
   6500 characters. Measured on this repository: def 330 bytes, refs of a common helper 3.1 KB, callees 4.5 KB.
 - Index: the coder index of the working folder (`<folder>/.katana`, shared with `Find`'s coder layer and
   `katana coder index`). It is created on the first call and updated incrementally on every call; the answer starts with

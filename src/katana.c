@@ -102,10 +102,12 @@
 /* coder: os submodulos entram aqui, um #include por linha, antes de coder.c */
 #include "coder/parse.c"              /* katana coder symbols: analisador estrutural exato por linguagem */
 #include "coder/parse2.c"             /* coder: linguagens e formatos acrescentados (C#, Swift, PHP, Dart, Scala, Lisp, SQL, configuracao...) */
+#include "coder/keys.c"              /* coder: chaves de texto (ligacoes por texto igual: eventos, rotas, ambiente, mensagens) */
 #include "coder/kb.c"                /* base de conhecimento de padroes (katana coder kb) */
 #include "coder/text.c"              /* coder: tokenizador e normalizador morfologico pt/en */
 #include "coder/symindex.c"          /* coder: indice de simbolos e referencias (secoes 0x200) */
 #include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
+#include "coder/flow.c"              /* coder: ligacoes por chave de texto (katana coder flow) */
 #include "coder/symtool.c"           /* coder: ferramenta Symbols e Find mode=refs em cima do indice de simbolos */
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/coder.c"              /* despacho de `katana coder <sub>` */

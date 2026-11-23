@@ -68,6 +68,7 @@ static void c2_parse_line(CP *c);
 static void c2_sweep_line(CP *c);
 static int c2_lang_of(const char *base, const char *ext);
 static void c2_enrich(CP *c);
+static void ck_extract(CP *c);          /* keys.c: chaves de texto (incluido depois de parse2.c) */
 static void cp_blank(char *p, size_t a, size_t b) { if (b > a) for (size_t k = a; k < b; k++) if (p[k] != '\n' && p[k] != '\r') p[k] = ' '; }
 static int cp_idc(int c) { return isalnum(c) || c == '_' || c == '$' || (c & 0x80); }
 /* fim de string simples a partir de i (1o char depois da abertura): indice do fechamento, ou onde parou (quebra de linha/fim) */
@@ -1799,7 +1800,8 @@ static void coder_file_free(CoderFile *f) {
     if (!f) return;
     for (int i = 0; i < f->nsym; i++) { free(f->sym[i].name); free(f->sym[i].sig); }
     for (int i = 0; i < f->nref; i++) free(f->ref[i].name);
-    free(f->sym); free(f->ref); free(f->guard); memset(f, 0, sizeof *f);
+    for (int i = 0; i < f->nkey; i++) free(f->key[i].key);
+    free(f->sym); free(f->ref); free(f->guard); free(f->key); memset(f, 0, sizeof *f);
 }
 /* preenche os campos novos que a analise sintatica ja permite: corpo, visibilidade, flags e confianca do intervalo. O que nao da para saber fica em zero (desconhecido). */
 static int cp_sig_has(const char *sig, const char *w) {
@@ -1879,6 +1881,7 @@ static int coder_parse(const char *path, const char *text, size_t n, CoderFile *
     cp_post(&c);
     cp_enrich(&c);
     if (c2_isline(L)) c2_sweep_line(&c); else if (L != CL_MD) { cp_rehash(&c); cp_sweep(&c); }
+    if (L != CL_MD) ck_extract(&c);
     if (c.sx) { for (int s = 0; s < out->nsym; s++) free(c.sx[s]); }
     free(c.sx); free(c.snt); free(c.sfl); free(c.rh); free(c.tk); free(c.mt); free(c.isn); free(c.ln); free(cl); free(nc);
     return 0;
@@ -1893,7 +1896,10 @@ static const char *const CP_LANGN[] = {"?", "c", "c++", "js", "ts", "python", "k
 static const char *const CP_REFN[] = {"call", "use", "import", "extends", "implements", "type", "write", "literal"};
 _Static_assert(sizeof(CP_LANGN) / sizeof(CP_LANGN[0]) == CL_N, "CP_LANGN deve ter um nome por CoderLang");
 _Static_assert(sizeof(CP_KINDN) / sizeof(CP_KINDN[0]) == CK_N, "CP_KINDN deve ter um nome por CoderKind");
-typedef struct { int refs, json, nfiles, nsym, nref; } CpOut;
+typedef struct { int refs, json, nfiles, nsym, nref, keys; } CpOut;
+static const char *const CK_ROLEN[] = {"?", "produce", "consume"};
+static const char *const CK_CLSN[] = {"other", "msg", "event", "route", "env", "config", "cmd"};
+static const char *const CK_METHN[] = {"", "GET", "POST", "PUT", "DELETE", "PATCH", "other"};
 static void cp_jstr(const char *s) {
     putchar('"');
     for (; *s; s++) { unsigned char ch = (unsigned char)*s; if (ch == '"' || ch == '\\') { putchar('\\'); putchar(ch); } else if (ch < 0x20) printf("\\u%04x", ch); else putchar(ch); }
@@ -1906,9 +1912,12 @@ static void cp_print(const char *path, const CoderFile *f, CpOut *o) {
         for (int i = 0; i < f->nsym; i++) { const CoderSym *s = &f->sym[i]; printf("%s{\"i\":%d,\"name\":", i ? "," : "", i); cp_jstr(s->name); printf(",\"kind\":\"%s\",\"sig\":", CP_KINDN[s->kind]); cp_jstr(s->sig); printf(",\"parent\":%d,\"line0\":%d,\"line1\":%d,\"byte0\":%zu,\"byte1\":%zu}", s->parent, s->line0, s->line1, s->byte0, s->byte1); }
         printf("],\"refs\":[");
         for (int i = 0; i < f->nref; i++) { const CoderRef *r = &f->ref[i]; printf("%s{\"from\":%d,\"kind\":\"%s\",\"name\":", i ? "," : "", r->from, CP_REFN[r->kind]); cp_jstr(r->name); printf(",\"line\":%d}", r->line); }
-        printf("]}\n"); return;
+        printf("]");
+        if (o->keys) { printf(",\"keys\":["); for (int i = 0; i < f->nkey; i++) { const CoderKey *k = &f->key[i]; printf("%s{\"key\":", i ? "," : ""); cp_jstr(k->key); printf(",\"role\":\"%s\",\"class\":\"%s\",\"method\":\"%s\",\"line\":%d}", CK_ROLEN[k->role], CK_CLSN[k->cls], CK_METHN[k->meth], k->line); } printf("]"); }
+        printf("}\n"); return;
     }
     printf("%s  [%s]  %d symbols\n", path, CP_LANGN[f->lang], f->nsym);
+    if (o->keys) for (int i = 0; i < f->nkey; i++) { const CoderKey *k = &f->key[i]; printf("  key %-8s %-6s %s%s%s  line %d\n", CK_ROLEN[k->role], CK_CLSN[k->cls], k->key, k->meth ? " " : "", CK_METHN[k->meth], k->line); }
     int *cnt = NULL, *idx = NULL;
     if (o->refs) {
         cnt = (int *)calloc((size_t)f->nsym + 2, sizeof(int)); idx = (int *)malloc(sizeof(int) * (size_t)(f->nref + 1));
@@ -1969,7 +1978,7 @@ static void cp_walk(const char *dir, CpOut *o) {
 }
 static int coder_symbols_main(int argc, char **argv) {
     CpOut o; memset(&o, 0, sizeof o); const char *path = NULL;
-    for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--refs")) o.refs = 1; else if (!strcmp(argv[i], "--json")) o.json = 1; else path = argv[i]; }
+    for (int i = 0; i < argc; i++) { if (!strcmp(argv[i], "--refs")) o.refs = 1; else if (!strcmp(argv[i], "--keys")) o.keys = 1; else if (!strcmp(argv[i], "--json")) o.json = 1; else path = argv[i]; }
     if (!path) { fprintf(stderr, "uso: katana coder symbols <arquivo|pasta> [--refs] [--json]\n"); return 2; }
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
     struct stat st;

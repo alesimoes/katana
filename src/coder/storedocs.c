@@ -451,6 +451,7 @@ static void coder_search_hook_done(StoreScanOpts *o, char *out, size_t cap);
 static void coder_sym_hook(StoreScanOpts *o, const char *proj);        /* symindex.c: indice de simbolos e referencias, encadeado ao da busca */
 static void coder_sym_hook_done(char *out, size_t cap);
 static int coder_sym_verify_seg(const StoreSeg *s, char *err, size_t ecap);
+static int coder_key_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_sym_seg_info(const StoreSeg *s, char *out, size_t cap);
 static int coder_search_verify_seg(const StoreSeg *s, char *err, size_t ecap);
 static void coder_search_seg_info(const StoreSeg *s, char *out, size_t cap);
@@ -528,6 +529,7 @@ static int coder_cmd_verify(int argc, char **argv) {
         if (sd && !b && cstore_check_docs(sd, e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         if (!b && coder_search_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         if (!b && coder_sym_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
+        if (!b && coder_key_verify_seg(&r->seg[i], e2, sizeof e2) != 0) { printf("FALHA: segmento %llu: %s\n", (unsigned long long)r->seg[i].id, e2); bad++; }
         secs += (int)r->seg[i].nsec;
     }
     /* arquivos em seg/ e tmp/ que o manifesto nao cita: apenas informativo (a proxima escrita limpa) */
