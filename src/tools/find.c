@@ -56,7 +56,8 @@ static int coder_lookup(const char *root, const char *query, int concept, int li
 
 typedef struct { char path[300]; int l0, l1; char name[64]; int callee; } SyNext;
 static int sym_next_steps(const char *root, const char *file, int a, int b, const char *const *terms, int nt, SyNext *out, int max);      /* coder/symtool.c */
-static int sym_similar(const char *root, const char *name, char out[][100], int max);                                                   /* coder/symtool.c */
+static int sym_similar(const char *root, const char *name, char out[][100], int max);
+static int sym_find_note(const char *root, const char *file, int a, int b, int top, char *out, size_t cap);                                    /* coder/symtool.c: called by / calls / links */                                                   /* coder/symtool.c */
 /* findgraph.c (incluido depois deste arquivo) */
 struct FdIndexS;
 typedef struct { int file, chunk; double score; } FdHit;
@@ -1311,7 +1312,11 @@ static void fd_show(FdIndex *X, const FdHit *h, int rank, const uint32_t *qid, i
             snprintf(hd, sizeof hd, "   %d%s ", ln, ln == top ? ">" : ":"); ct_sb_puts(sb, hd);
             fd_put_line(sb, s, ll, 110); ct_sb_puts(sb, "\n");
         }
-        if (budget >= 200 && X->f[fi].kind != FK_MD && X->f[fi].kind != FK_OTHER) fd_calls(X, fi, a, b, &t, best, want, sb);
+        if (budget >= 200 && X->f[fi].kind != FK_MD && X->f[fi].kind != FK_OTHER) {
+            char note[1800]; note[0] = 0;       /* com o indice do coder: quem chama, o que chama e as ligacoes por chave (no lugar do `calls:` de nomes); sem indice, o formato antigo */
+            if (!(rank <= 3 && budget >= 300 && sym_find_note(X->root, X->f[fi].rel, a, b, top, note, sizeof note) && note[0])) fd_calls(X, fi, a, b, &t, best, want, sb);
+            else ct_sb_puts(sb, note);
+        }
         if (budget >= 200) fd_also(X, fi, a, b, best, want, sb);
         fd_text_free(&t);
     }

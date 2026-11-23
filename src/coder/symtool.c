@@ -43,24 +43,29 @@ static int sym_action(const char *a, int (**fn)(int, char **), int *deflim) {
 /* Symbols: devolve 0 e o texto em out, ou -1 com a mensagem de erro em out. */
 static int sym_tool_run(const char *action, const char *name, const char *file, long long line, long long limit, long long depth, const char *root, char *out, size_t cap) {
     int (*fn)(int, char **) = NULL; int lim = 0;
-    if (!action || !sym_action(action, &fn, &lim)) { snprintf(out, cap, "error: unknown action \"%s\". Use def, refs, callers, callees, uses, outline, at, deps or impact.", action ? action : ""); return -1; }
+    const int isflow = action && !strcmp(action, "flow");
+    if (isflow) { fn = coder_flow_main; lim = 5; }
+    else if (!action || !sym_action(action, &fn, &lim)) { snprintf(out, cap, "error: unknown action \"%s\". Use def, refs, callers, callees, uses, outline, at, deps, impact or flow.", action ? action : ""); return -1; }
     const int isfile = !strcmp(action, "outline") || !strcmp(action, "deps") || !strcmp(action, "at");
     char target[4400];
-    const char *t = isfile ? (file && *file ? file : name) : (name && *name ? name : NULL);
+    const char *t = isflow ? (name && *name ? name : (file && *file ? file : NULL)) : isfile ? (file && *file ? file : name) : (name && *name ? name : NULL);
+    if (isflow && (!t || !*t)) t = "--links";          /* flow sem alvo: o resumo das ligacoes por chave do projeto */
     if (!t || !*t) { snprintf(out, cap, "error: action=%s needs `%s`. Example: %s", action, isfile ? "file" : "name",
         isfile ? (!strcmp(action, "at") ? "{\"action\": \"at\", \"file\": \"src/main.c\", \"line\": 120}" : "{\"action\": \"outline\", \"file\": \"src/main.c\"}") : "{\"action\": \"def\", \"name\": \"parseConfig\"}"); return -1; }
-    if (isfile && t[0] == '/' && !strncmp(t, root, strlen(root)) && t[strlen(root)] == '/') t += strlen(root) + 1;
+    if ((isfile || (isflow && file && *file && t == file)) && t[0] == '/' && !strncmp(t, root, strlen(root)) && t[strlen(root)] == '/') t += strlen(root) + 1;
+    if (isflow && file && *file && t == file && line >= 1 && !strrchr(t, ':')) { snprintf(target, sizeof target, "%s:%lld", t, line); t = target; }
     if (!strcmp(action, "at")) {
         if (line < 1 && !strrchr(t, ':')) { snprintf(out, cap, "error: action=at needs `line`. Example: {\"action\": \"at\", \"file\": \"src/main.c\", \"line\": 120}"); return -1; }
         if (line >= 1) snprintf(target, sizeof target, "%s:%lld", t, line); else snprintf(target, sizeof target, "%s", t);
-    } else snprintf(target, sizeof target, "%s", t);
+    } else if (t != target) snprintf(target, sizeof target, "%s", t);
     if (limit < 1) limit = lim;
     if (limit > 100) limit = 100;
     double ms = 0; int created = 0;
     if (sym_ensure_index(root, &ms, &created) != 0) { snprintf(out, cap, "error: cannot create or read the symbol index of %s (is the folder writable?)", root); return -1; }
     char lb[16], db[16], nb[16]; snprintf(lb, sizeof lb, "%lld", limit);
-    char *av[16]; int ac = 0; av[ac++] = target; av[ac++] = (char *)root; av[ac++] = (char *)"--limit"; av[ac++] = lb;
+    char *av[16]; int ac = 0; if (isflow && !strcmp(target, "--links")) { av[ac++] = (char *)"--links"; } else av[ac++] = target; av[ac++] = (char *)root; av[ac++] = (char *)"--limit"; av[ac++] = lb;
     if (!strcmp(action, "def")) { av[ac++] = (char *)"--lines"; av[ac++] = (char *)"1"; }
+    if (isflow) av[ac++] = (char *)"--brief";
     if (!strcmp(action, "impact")) {
         if (depth > 0) { snprintf(db, sizeof db, "%lld", depth > 6 ? 6 : depth); av[ac++] = (char *)"--depth"; av[ac++] = db; }
         snprintf(nb, sizeof nb, "%lld", limit); av[ac++] = (char *)"--nodes"; av[ac++] = nb;
@@ -240,6 +245,116 @@ static int sym_next_steps(const char *root, const char *file, int a, int b, cons
     }
     sy_view_close(&v);
     return n;
+}
+static const char *sy_rchr(const char *s, int c, size_t n) { while (n--) if (s[n] == c) return s + n; return NULL; }
+/* ---- o que esta na frente e o que esta atras de um resultado do Find ----
+ * Para o simbolo que contem a melhor linha do trecho: `called by:` (quem chama, mesmo arquivo ou outro), `calls:` (o que chama) e `links:` (ligacoes por
+ * chave de texto: quem envia/trata a mesma chave em outro arquivo), cada linha com ate ~150 caracteres, ate 3 itens em ordem de confianca, (+N) se houver mais.
+ * Liga-se a sym_ensure_index: so existe quando o indice da pasta existe (o Find nao o cria). Devolve 1 se escreveu algo; 0 = o Find usa o `calls:` antigo. */
+typedef struct { char name[64]; char path[300]; uint32_t l0, l1; int conf, ord; } SyFn;
+static int sy_fn_cmp(const void *a, const void *b) { const SyFn *x = (const SyFn *)a, *y = (const SyFn *)b; return x->conf != y->conf ? y->conf - x->conf : x->ord - y->ord; }
+static int sy_is_testpath(const char *p, uint32_t l) { for (uint32_t i = 0; i + 4 <= l; i++) if (!strncasecmp(p + i, "test", 4)) return 1; return 0; }
+static void sy_fn_ref(char *o, size_t cap, const char *cur, size_t cl, const SyFn *f) {
+    const char *p = f->path; size_t pl = strlen(p);
+    const char *cs = cl ? sy_rchr(cur, '/', cl) : NULL; size_t cd = cs ? (size_t)(cs - cur) + 1 : 0;      /* mesma pasta: so o nome do arquivo */
+    const char *shown = p; if (cd && pl > cd && !memcmp(p, cur, cd) && !memchr(p + cd, '/', pl - cd)) shown = p + cd; else if (!cd && !strchr(p, '/')) shown = p;
+    if (f->l1 > f->l0) snprintf(o, cap, "%s (%s:%u-%u)", f->name, shown, f->l0, f->l1); else snprintf(o, cap, "%s (%s:%u)", f->name, shown, f->l0);
+}
+static void sy_fn_line(char *out, size_t cap, const char *label, const char *cur, size_t cl, SyFn *f, int n) {
+    if (!n) return;
+    qsort(f, (size_t)n, sizeof *f, sy_fn_cmp);
+    int top = f[0].conf, m = 0; while (m < n && !(f[m].conf < 45 && top >= 45)) m++;
+    size_t o = strlen(out); const size_t o0 = o; o += (size_t)snprintf(out + o, cap - o, "   %s: ", label);
+    int shown = 0;
+    for (int i = 0; i < m && shown < 3; i++) { char t[420]; sy_fn_ref(t, sizeof t, cur, cl, &f[i]); if (o - o0 + strlen(t) + 12 > 150 && shown) break; o += (size_t)snprintf(out + o, cap - o, "%s%s", shown ? ", " : "", t); shown++; }
+    if (m > shown) o += (size_t)snprintf(out + o, cap - o, " (+%d)", m - shown);
+    snprintf(out + o, cap - o, "\n");
+}
+static int sym_find_note(const char *root, const char *file, int a, int b, int top, char *out, size_t cap) {
+    char dir[4400], man[4500]; struct stat sv; double ms; int created; out[0] = 0;
+    store_locate(root, "coder", dir, sizeof dir, 0); snprintf(man, sizeof man, "%s/MANIFEST", dir);
+    if (cap < 400 || stat(man, &sv) != 0 || sym_ensure_index(root, &ms, &created) != 0) return 0;
+    SyView v; char err[300] = "";
+    if (sy_view_open(root, &v, err, sizeof err) != 0) return 0;
+    int wrote = 0; const size_t fl = strlen(file);
+    StoreLiveDoc *ld = v.any ? sy_lookup(&v, file, fl) : NULL;
+    if (ld && v.s[ld->seg].x.has && ld->idx < v.s[ld->seg].x.docs.n) {
+        const int seg = ld->seg; const SySec *x = &v.s[seg].x; const uint8_t *dr = store_table_at(&x->docs, ld->idx);
+        const uint32_t s0 = st_get_u32(dr), ns = st_get_u32(dr + 4), r0 = st_get_u32(dr + 8), nr = st_get_u32(dr + 12);
+        int64_t k = -1; char nm[100]; uint32_t d0 = 0, d1 = 0;
+        if (top > 0) k = fl_encl_k(&v, seg, ld->idx, (uint32_t)top, nm, sizeof nm, &d0, &d1);
+        if (k < 0) for (uint32_t i = 0; i < ns && k < 0; i++) {            /* sem simbolo na melhor linha: o primeiro funcao/metodo do trecho */
+            const uint8_t *y = store_table_at(&x->syms, s0 + i); uint32_t kind = st_get_u32(y + 4), l0 = st_get_u32(y + 12), l1 = st_get_u32(y + 16);
+            if (((st_get_u32(y + 40) >> 16) & CSF_DECL) || (kind != CK_FUNC && kind != CK_METHOD && kind != CK_CTOR) || (int)l1 < a || (int)l0 > b) continue;
+            uint32_t nl; const char *p = store_strs_get(&x->names, st_get_u32(y), &nl); sy_cpy(nm, sizeof nm, p, nl); d0 = l0; d1 = l1; k = i; }
+        SySym D; int haveD = 0; if (k >= 0) { sy_sym_at(&v, seg, s0 + (uint32_t)k, &D); haveD = 1; }
+        SyFn *fr = (SyFn *)calloc(64, sizeof *fr); int nfr = 0, totfr = 0;
+        if (haveD && D.nl >= 2 && D.nl < 60 && (D.kind == CK_FUNC || D.kind == CK_METHOD || D.kind == CK_CTOR || D.kind == CK_MACRO || D.kind == CK_VAR || D.kind == CK_CONST || D.kind == CK_PROPERTY)) {
+            /* quem chama */
+            const int nd = sy_ndefs(&v, D.name, D.nl, NULL); SyRefs r = {0}; sy_refs_of(&v, D.name, D.nl, 1u << CR_CALL, &r);
+            for (int i = 0; i < r.n; i++) {
+                const SyRef *f = &r.r[i]; SyFn e; memset(&e, 0, sizeof e); const SySec *fx = &v.s[f->seg].x; uint32_t fs0 = st_get_u32(store_table_at(&fx->docs, f->doc));
+                if (f->from != SY_NONE) { SySym es; sy_sym_at(&v, f->seg, fs0 + f->from, &es); if (es.plen == D.plen && !memcmp(es.path, D.path, D.plen) && es.line0 == D.line0) continue;
+                    snprintf(e.name, sizeof e.name, "%.*s", (int)(es.nl < 60 ? es.nl : 60), es.name); e.l0 = es.line0; e.l1 = es.line1; }
+                else { snprintf(e.name, sizeof e.name, "(file level)"); e.l0 = f->line; e.l1 = f->line; }
+                snprintf(e.path, sizeof e.path, "%.*s", (int)(f->plen < 299 ? f->plen : 299), f->path);
+                int dup = 0; for (int q = 0; q < nfr && !dup; q++) if (!strcmp(fr[q].path, e.path) && fr[q].l0 == e.l0) dup = 1; if (dup) continue;
+                totfr++; { const int samef = f->plen == D.plen && !memcmp(f->path, D.path, D.plen); e.conf = sy_conf(1, nd, 0, (samef ? 4 : 0) - (D.nl <= 3 ? 20 : 0) - (sy_is_testpath(f->path, f->plen) ? 12 : 0) - (!samef && (D.pack & 0xFF) == CV_FILE ? 35 : 0) - (sy_lfam(f->lang) != sy_lfam(D.lang) ? 35 : 0)); } e.ord = i;
+                if (nfr < 64) fr[nfr++] = e; }
+            free(r.r);
+            char cl[1200] = ""; if (nfr) sy_fn_line(cl, sizeof cl, "called by", file, fl, fr, nfr);
+            else if (D.kind == CK_FUNC || D.kind == CK_METHOD || D.kind == CK_CTOR) snprintf(cl, sizeof cl, "   called by: nothing indexed (entry point or called by name from outside)\n");
+            if (cl[0]) { snprintf(out + strlen(out), cap - strlen(out), "%s", cl); wrote = 1; }
+            /* o que chama */
+            nfr = 0; char seen[200][48]; int nseen = 0;
+            for (uint32_t q = 0; q < nr && nfr < 64; q++) {
+                SyRef f; sy_ref_at(&v, seg, r0 + q, &f); if (f.kind != CR_CALL || f.from == SY_NONE || f.nl < 3 || f.nl > 46) continue;
+                int inside = 0; for (uint32_t p = f.from; p != SY_NONE && !inside; ) { if (p == (uint32_t)k) inside = 1; else p = st_get_u32(store_table_at(&x->syms, s0 + p) + 8); }
+                if (!inside) continue;
+                int dup = 0; for (int z = 0; z < nseen && !dup; z++) if (!strncmp(seen[z], f.name, f.nl) && seen[z][f.nl] == 0) dup = 1; if (dup) continue;
+                if (nseen < 200) { memcpy(seen[nseen], f.name, f.nl); seen[nseen++][f.nl] = 0; }
+                SySyms td = {0}; sy_defs_of(&v, f.name, f.nl, &td); int tn = 0, pick = -1;
+                for (int z = 0; z < td.n; z++) if (!((td.s[z].pack >> 16) & CSF_DECL)) { tn++; if (pick < 0 || (td.s[z].plen == fl && !memcmp(td.s[z].path, file, fl))) pick = z; }
+                if (tn && !(td.s[pick].plen == D.plen && !memcmp(td.s[pick].path, D.path, D.plen) && td.s[pick].line0 == D.line0)) {
+                    SyFn e; memset(&e, 0, sizeof e); const SySym *T = &td.s[pick]; snprintf(e.name, sizeof e.name, "%.*s", (int)f.nl, f.name); snprintf(e.path, sizeof e.path, "%.*s", (int)(T->plen < 299 ? T->plen : 299), T->path);
+                    { const int samef = T->plen == fl && !memcmp(T->path, file, fl); e.l0 = T->line0; e.l1 = T->line1; e.conf = sy_conf(1, tn, 0, (samef ? 4 : 0) - (f.nl <= 4 ? 15 : 0) - (!samef && (T->pack & 0xFF) == CV_FILE ? 35 : 0) - (sy_lfam(T->lang) != sy_lfam(D.lang) ? 35 : 0)); } e.ord = (int)q; fr[nfr++] = e; }
+                free(td.s); }
+            if (nfr) { sy_fn_line(out, cap, "calls", file, fl, fr, nfr); }
+        }
+        free(fr);
+        /* ligacoes por chave de texto das linhas do simbolo (ou do trecho) */
+        const KySec *ky = &v.s[seg].ky;
+        if (v.anykeys && ky->has && ld->idx < ky->docs.n) {
+            const uint8_t *kd = store_table_at(&ky->docs, ld->idx); uint32_t o0 = st_get_u32(kd), no = st_get_u32(kd + 4) & ~SY_KFLAG;
+            uint32_t lo = haveD ? d0 : (uint32_t)a, hi = haveD ? d1 : (uint32_t)b;
+            typedef struct { char txt[200]; int conf, sc; } Lk; Lk lk[6]; int nlk = 0;
+            for (uint32_t q = 0; q < no && nlk < 6; q++) {
+                KyOcc x0; ky_occ_at(&v, seg, o0 + q, &x0); if (x0.line < lo || x0.line > hi) continue;
+                int dupk = 0; for (int z = 0; z < nlk; z++) { size_t tl = strlen(lk[z].txt); (void)tl; }
+                KyOccs oc = {0}; ky_occs_of(&v, x0.key, x0.kl, &oc);
+                const int nfiles = ky_count_files(oc.o, oc.n, 0), npf = ky_count_files(oc.o, oc.n, CKR_PRODUCE), ncf = ky_count_files(oc.o, oc.n, CKR_CONSUME);
+                int bi = -1, bc = 0;
+                for (int z = 0; z < oc.n; z++) { const KyOcc *p = &oc.o[z]; if (p->role == x0.role || ky_same_file(p, &x0)) continue; FlLink L; if (x0.role == CKR_PRODUCE) fl_pair(&x0, p, nfiles, npf, ncf, ky_file_has(oc.o, oc.n, CKR_PRODUCE, p), &L); else fl_pair(p, &x0, nfiles, npf, ncf, ky_file_has(oc.o, oc.n, CKR_PRODUCE, &x0), &L); if (L.conf > bc) { bc = L.conf; bi = z; } }
+                if (bi >= 0 && bc >= 45) {
+                    const KyOcc *p = &oc.o[bi]; char lbl[100], pr[300]; fl_key_label(&x0, lbl, sizeof lbl);
+                    const char *cs = sy_rchr(file, '/', fl); size_t cd = cs ? (size_t)(cs - file) + 1 : 0; const char *pp = p->path; uint32_t pplen = p->plen;
+                    if (cd && pplen > cd && !memcmp(p->path, file, cd) && !memchr(p->path + cd, '/', pplen - cd)) { pp += cd; pplen -= (uint32_t)cd; }
+                    snprintf(pr, sizeof pr, "%.*s:%u", (int)(pplen < 200 ? pplen : 200), pp, p->line);
+                    const int q2 = x0.cls != CKC_ROUTE && x0.cls != CKC_ENV;
+                    for (int z = 0; z < nlk; z++) if (strstr(lk[z].txt, lbl) && strstr(lk[z].txt, pr)) dupk = 1;
+                    if (!dupk) { if (x0.role == CKR_PRODUCE) snprintf(lk[nlk].txt, sizeof lk[0].txt, "%s %s%s%s -> %s %s", FL_PV[x0.cls], q2 ? "\"" : "", lbl, q2 ? "\"" : "", FL_PL[p->cls], pr);
+                        else snprintf(lk[nlk].txt, sizeof lk[0].txt, "%s %s%s%s <- %s %s", FL_CV[x0.cls], q2 ? "\"" : "", lbl, q2 ? "\"" : "", FL_CL[p->cls], pr);
+                        lk[nlk].conf = bc; { int dd = top > 0 ? ((int)x0.line > top ? (int)x0.line - top : top - (int)x0.line) : 0; lk[nlk].sc = bc - (dd * 3 > 30 ? 30 : dd * 3); } nlk++; }
+                }
+                free(oc.o);
+            }
+            for (int i = 0; i < nlk; i++) for (int j = i + 1; j < nlk; j++) if (lk[j].sc > lk[i].sc) { Lk t = lk[i]; lk[i] = lk[j]; lk[j] = t; }
+            for (int i = 0; i < nlk && i < 2; i++) { size_t l = strlen(out); if (l + 170 >= cap) break; snprintf(out + l, cap - l, "   links: %.140s\n", lk[i].txt); wrote = 1; }
+            if (nlk > 2) { size_t l = strlen(out); if (l > 0 && out[l - 1] == '\n') { out[l - 1] = 0; l--; } snprintf(out + l, cap - l, " (+%d more: Symbols flow)\n", nlk - 2); }
+        }
+    }
+    sy_view_close(&v);
+    return wrote;
 }
 /* nomes parecidos com name no indice de simbolos (cascata: caixa e sublinhados, parte de um identificador, distancia de edicao); devolve quantos */
 static int sym_similar(const char *root, const char *name, char out[][100], int max) {

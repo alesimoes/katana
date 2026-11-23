@@ -19,6 +19,7 @@ static const struct { const char *name, *help; CoderCmd fn; } g_coder_cmds[] = {
     {"at", "at <arquivo>:<linha> [pasta] [--json]: qual simbolo contem a linha e a hierarquia", coder_at_main},
     {"deps", "deps <arquivo> [pasta] [--json]: o que o arquivo importa e quem o importa", coder_deps_main},
     {"impact", "impact <nome> [pasta] [--depth N] [--nodes N] [--json]: fecho de chamadores", coder_impact_main},
+    {"flow", "flow <chave|arquivo[:linha]> [pasta] [--json] | flow --links [pasta]: ligacoes por chave de texto (quem envia/emite/escreve e quem trata/le a mesma chave)", coder_flow_main},
     {"tokens", "tokens \"texto\" [--lang pt|en|auto] [--json] | --file ARQ", coder_tokens_main},
     {NULL, NULL, NULL}
 };

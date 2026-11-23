@@ -2189,6 +2189,55 @@ operation query ranks the pair match first, and an event chain is followed acros
 and the business layer wait for A5c; the reliable source of growth meanwhile is the `gaps` list, fed by real
 requests.
 
+### 12.8 Links by text key (`katana coder flow`)
+
+Two files can talk to each other with no import, call or shared symbol: a WebSocket client sends `{ type: "register" }` to `/channel`
+and the server handles `m.type === "register"`; a C file calls `setenv("KATANA_SESSION_ID", ...)` and a script reads
+`process.env.KATANA_SESSION_ID`; a dispatcher compares `argv[1]` with `"coder"`. The only thing joining them is a string. This is the "text
+keys as entities" idea of sections 2 and 12, built as a separate, additive layer: it does not touch symbols or references.
+
+**Extraction** (`src/coder/keys.c`, run by `coder_parse` after the symbol pass; `katana coder symbols --keys [--json]` prints it). Each file gets
+`keys`: a text, a role, a class, an HTTP method (routes only) and a line. Roles: PRODUCE (sends, emits, publishes, writes, defines, calls the
+route) and CONSUME (handles, receives, reads, registers the route). Classes: `msg` (value of a discriminator field: `type`, `kind`, `event`,
+`action`, `cmd`, `op`, `method`, `topic`...), `event` (`emit/on/subscribe/publish/addEventListener`, Kafka/Rabbit listeners), `route`, `env`,
+`config`, `cmd` (subcommands), `other` (a comparison or `case` with no known field).
+
+| Class | PRODUCE | CONSUME |
+|---|---|---|
+| msg | `{ type: "x" }`, `"type": "x"`, `m.type = "x"`, `Type: "x"`, kwarg `type="x"` | `m.type === "x"`, `m["type"] == "x"`, `.get("type") == "x"`, `"x".equals(m.type)`, `case "x":` under `switch (m.type)`, Rust `"x" =>` |
+| event | `emit/send/publish/dispatch/trigger/broadcast("x")`, `ws.write("x")` | `on/once/subscribe/addEventListener/handle/listen("x")`, `@KafkaListener(topics="x")`; DOM and stream noise (`data`, `close`, `click`...) is dropped |
+| route | `fetch/axios/requests/http.Get/new WebSocket(url)`, URL literals to localhost or `ws://`, `curl` in shell, `path:`/`url:` fields | `app.get/router.post/mux.Handle/HandleFunc`, `@app.route`, `@GetMapping`, `#[get("/x")]`, `pathname === "/x"`, YAML `paths:` |
+| env | `setenv/putenv/os.environ[k]=/process.env.X =/set_var`, `export X=`, `X=v cmd`, Dockerfile `ENV/ARG`, YAML `env:`/`environment:`, `.env`, `"X=v"` literals | `getenv/os.getenv/os.Getenv/System.getenv/env::var/process.env.X/$X/${X}/ENV[...]/$env:X` |
+| config | `.properties`/TOML keys, `setProperty`, `config.set` | `getProperty/getString/config.get/@Value("${a.b}")` |
+| cmd | `system("tool sub ...")`, `spawn("tool", ["sub"])`, shell `tool sub` | `strcmp(argv[1], "sub")`, `{"sub", ...}` tables in C, shell `case ... start)` |
+
+A key is kept only if it looks like one: 2 to 60 characters (routes up to 90), no spaces or human text, not a number, not a URL with a foreign host, not an
+HTTP verb or JSON-schema word (`string`, `object`...), and generic words (`type`, `id`, `name`, `data`, `error`, `ok`, `text`...) only as the VALUE of a discriminator
+field. Routes are normalized: scheme, host and port are dropped (`ws://127.0.0.1:${PORT}/channel` -> `/channel`), query strings are cut,
+parameters (`:id`, `{id}`, `${x}`) end the path (`/users/:id` -> `/users`), and system paths (`/usr`, `/etc`...) are rejected. At most 600 keys per file.
+
+**Storage.** Four sections in the 0x200 band, written for every parsed document next to the symbol sections and rebuilt by their own compaction mergers:
+`0x207` key names (sorted strings, binary search), `0x208` per-document table (`occ0`, `nocc | 0x80000000`: the high bit means "analysed for keys", so a store
+built before keys existed is detected per file), `0x209` occurrences (width 16: key id, `role | class<<8 | method<<16`, line, document) and `0x20A` key-to-occurrence pairs sorted by key id.
+`katana coder verify` checks order, bounds and cross-references. A store without the sections opens normally; `flow` answers
+"the index has no text-key sections ... delete <dir> and run `katana coder index` again", and a store where only some files predate keys prints how many.
+
+**Query.** `katana coder flow <key>` lists PRODUCE and CONSUME sites (file:line, enclosing symbol with its range, the line), then the producer -> consumer LINKS.
+`flow <file>[:<line>]` lists what that file (or the symbol containing the line) sends and receives and where each key goes. `flow --links [folder]` summarizes
+file -> file links with the keys. The cascade is the same as the other queries (exact key, same text ignoring case and punctuation or as a part, edit distance <= 2).
+A link has `confidence` 0-100, `level` and `how`: 60 for the same literal in different files, +4 same language, +10/+6 for a rare key (<= 2 / <= 4 files) and -1 per file above 8
+for a common one, class bonus (env +14, msg/event/route +8, config +4, other -8), route method match +10 or mismatch -25, short plain keys -6, composite keys (`_ . /`) +4,
+many sender x handler files -3 each (max -12), consumer file that also defines the key itself -10 (env/config -30), same file -20, rereading both lines +4 (a changed file -25).
+With no consumer the answer is "Nobody handles it in the indexed set", with no producer "Nobody sends it", always with the number of files analysed and the limits below.
+`Symbols action=flow` exposes it to the agent (brief text, `Next: Read <consumer range>`). `Find` prints, for each of its first three code results and the symbol that
+contains the best line, `called by:`, `calls:` (callers and callees from the symbol index, same file or not, by confidence, up to 3, `(+N)`) and `links:` (the
+key links of that symbol); without an index it keeps the old `calls:` line.
+
+**Limits (what it does not see).** A key built at run time (concatenation, a template with a variable in the middle, a name read from configuration), dispatch
+maps (`{ register: fn }`), destructured env (`const { A } = process.env`), reflection, protocol buffers and generated code, strings in languages with no scanner (Clojure, Haskell, Fortran...),
+and anything in another repository. Two unrelated systems that happen to use the same word are linked (the confidence falls with the number of files using the key but never reaches zero);
+shell variables defined in sourced files are matched by name only. Comparisons with no known field (`class other`) are the noisiest class and score lowest.
+
 ## 13. Open decisions
 
 Five points on which this specification and the architecture review differed, or on which no measurement exists.

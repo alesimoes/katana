@@ -11,10 +11,10 @@
  *   - verificacao: o texto do nome foi reencontrado relendo a linha do arquivo (+4); a linha nao confere ou o arquivo mudou desde o `index` (-25);
  *   - relacao por nome: mesmo arquivo da definicao ou definicao unica no conjunto nao penalizam; nome sem definicao no conjunto (externo) -25.
  * Caminhos no grafo (impact) tem a confianca da aresta mais fraca. Nada aqui resolve nomes de verdade: parse.c so da o nome final de uma chamada. */
-typedef struct { const StoreSeg *seg; SySec x; StoreDocs sd; uint8_t *live; } SyVSeg;
+typedef struct { const StoreSeg *seg; SySec x; KySec ky; StoreDocs sd; uint8_t *live; } SyVSeg;
 typedef struct {
     StoreReader *r; SyVSeg *s; int ns; StoreLive L; char dir[4400]; int any;
-    uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed;
+    uint32_t nlive, nwith, nbin, nbig, nunread, nunparsed, nkeyflag, nkeyold; int anykeys;
     char fpath[400]; char *fbuf; size_t fn; size_t *fln; int fnl, fok, fstale;
 } SyView;
 typedef struct { const char *path; uint32_t plen; const char *name, *sig; uint32_t nl, sl, kind, line0, line1, byte0, byte1, body0, pack, parent, doc, lang; int seg; uint32_t row, rel; } SySym;
@@ -35,6 +35,7 @@ static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
         SyVSeg *c = &v->s[s]; c->seg = &r->seg[s]; store_docs_open(store_seg_section(c->seg, STS_DOCS), &c->sd);
         c->live = (uint8_t *)calloc((size_t)c->sd.t.n + 1, 1);
         if (sy_sec_open(c->seg, &c->x)) v->any = 1;
+        if (ky_sec_open(c->seg, &c->ky)) v->anykeys = 1;
     }
     for (int i = 0; i < v->L.n; i++) {
         StoreLiveDoc *e = &v->L.e[i]; if (e->dead) continue;
@@ -42,7 +43,8 @@ static int sy_view_open(const char *proj, SyView *v, char *err, size_t ecap) {
         if (e->d.flags & SDF_SKIP_BINARY) v->nbin++; else if (e->d.flags & SDF_SKIP_BIG) v->nbig++; else if (e->d.flags & SDF_SKIP_UNREADABLE) v->nunread++;
         else { const SyVSeg *c = &v->s[e->seg]; int w = 0;
             if (c->x.has && e->idx < c->x.docs.n) { const uint8_t *q = store_table_at(&c->x.docs, e->idx); w = st_get_u32(q + 4) || st_get_u32(q + 12); }
-            if (w) v->nwith++; else v->nunparsed++; }
+            if (w) v->nwith++; else v->nunparsed++;
+            if (c->ky.has && e->idx < c->ky.docs.n && (st_get_u32(store_table_at(&c->ky.docs, e->idx) + 4) & SY_KFLAG)) v->nkeyflag++; else if (w) v->nkeyold++; }
     }
     return 0;
 }
