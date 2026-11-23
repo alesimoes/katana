@@ -1789,6 +1789,8 @@ the answer, and the request's record in `~/.katana/uioe.log` (or `katana uioe ex
 | 7 | First external connector | **none for now** | stage 4 (U10 to U12) is postponed; only the connector interface (U10) stays designed |
 | 8 | Teacher mode (`src/agent/teacher.c` names a product, a model and a URL) | **move to an optional external plugin** | the binary keeps a generic "teacher model" interface with no product name; the product-specific code goes to a separate process |
 
+Note of 2026-11-23 (owner): wherever this document says "v8", read "the curriculum updated in place (v7), regenerated at the end of the UIOE construction" (`docs/plan.md` T5). There is no separate v8.
+
 ### 8.2 Still open, for the owner
 
 | # | Decision | Options | Recommendation |
