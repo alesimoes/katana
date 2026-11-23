@@ -133,7 +133,7 @@ static int index_ensure(const char *root, int level, const char *prefix, int bud
     store_locate(root, "coder", dir, sizeof dir, 1);
     StoreScanOpts o; memset(&o, 0, sizeof o); coder_search_hook(&o); coder_sym_hook(&o, root);      /* busca e simbolos juntos: o indice nunca fica com arquivos sem simbolos */
     StoreUpdStats S; const int rc = store_catalog_update(dir, root, &o, &S, err, sizeof err);
-    char si[400], yi[500]; coder_search_hook_done(&o, si, sizeof si); coder_sym_hook_done(yi, sizeof yi);
+    char si[400], yi[500]; coder_sym_hook_done(&o, yi, sizeof yi); coder_search_hook_done(&o, si, sizeof si);
     g_idx_n.walks++; res->walked = 1; res->ms = (now_sec() - t0) * 1000;
     if (rc == 0) { index_validated(root, IDX_CODER); watch_adopt(root); if (loc.kind == IL_HOME) index_retire_below(root); }      /* raiz da home que absorve outras da home: elas saem */
     else if (rc == 1) res->busy = 1;                       /* outro processo grava agora: le o que existe e tenta de novo na proxima */
