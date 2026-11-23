@@ -20,6 +20,21 @@ Rules this plan follows (from the owner's last two messages):
 5. Environment keys that only restore old behaviour go; keys of real operation (limits, switching a feature off for diagnosis,
    folders) stay (section 3.3).
 
+## Status after the final stage (2026-11-23)
+
+Done in the final stage, on top of fronts A (old tool set) and B (legacy Find index, store format 2, research keys): dead code reported by
+`-Wall` removed everywhere except `scenario*`, `curriculum.c` and `importer.c` (still listed in section 3.7: `cu_rv_free`, `xc_tab_con`,
+`g_x7_note`, `g_x7_scn`, `im_bs`, `code_good`); `glob.c` renamed `filewalk.c`; `-Wmisleading-indentation`, `-Wparentheses` and
+`-Wint-in-bool-context` warnings fixed without changing behaviour; the escape keys `REPEAT_NOTE`, `READ_CURSOR`, `READ_DELTA`, `PLACE_NOTE`,
+`READ_OUTLINE` (the off switch), `G4_PLAIN_RESULT`, `G4_ENVLAST`, `MOE_OLD`, `SESS_RESUMO` and `RETOMAR*` removed (the `/model` reload keeps its
+session through the internal key `KATANA_RESUME_OTHER`); the memory file has one format (`#fact ID DATE fact`) and `katana memory export` is gone;
+`nkeyold`, the `recall` hint in `Find` and the `kb:` message outside `katana coder kb check` are gone; Portuguese command aliases (`/novo`,
+`/sistema`...), the `modelos` alias and the `shell_id` argument alias are gone. What stays on the `grep -i 'legado|legacy|compat|antigo'`
+list is the MCP old SSE transport (`mcp.c`, `mcp_extra.c`, `mcpx_legacy_*`), `PRE_LEGACY`/`encode_legacy` (tokenizer family), the
+`Mozilla/5.0 (compatible; ...)` user agent, the word list in `text.c`, the K&R remark in `parse.c`, the `.kspec` layout notes in `train.c` and
+`train_methods.c` (files that older readers stop reading, by design), `train_vk.c` (the fp32 kernel path behind `KATANA_TRAIN_COOPMAT_MOE=0`),
+`convert.c` (the external HF expert layout) and the many "mais antigo" meaning oldest.
+
 ## 0. Summary in numbers
 
 | what | number | where |
