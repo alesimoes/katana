@@ -149,10 +149,16 @@ tools reach outside. The prompt declares 12 tools (`Bash`, `Read`, `Edit`, `Writ
 **Finding things in code.** The default tool set (the one the model is trained on, `docs/tools.md`) has one search entry point,
 `Find`: it looks at the question and picks the way to search (a name, a quoted text, or a description in words), checks what it
 reports by reading the files again, and says what it did not find. `Symbols` answers precise questions (`def`, `refs`, `callers`,
-`callees`, `uses`, `outline`, `at`, `deps`, `impact`) from an index of the code, with a confidence level on every answer. `Read`
-shows the part of a large file that matches what the model is looking for, and continues from where it stopped when the same file
-is read again. The same engine is available without a model as `katana coder ...` (`docs/code-intelligence.md`). No embeddings
-and no remote service; new, and not measured yet.
+`callees`, `uses`, `outline`, `at`, `deps`, `impact`) from an index of the code, with a confidence level on every answer. Search
+indexes more than the text of a file: each file also carries its header comment, its imports and the names it defines, and the
+best matching symbols (function, class) are ranked as units of their own. The first 30 results are then reranked with fixed,
+deterministic weights (definitions count more than uses, a name that matches the query more than a body line). `Read` shows the
+part of a large file that matches what the model is looking for, and continues from where it stopped when the same file is read
+again; it also remembers what it already handed to the model earlier in the conversation (until the file changes or the context is
+compacted), so a repeated read does not resend the same lines. The same engine is available without a model as
+`katana coder ...` (`docs/code-intelligence.md`). Search uses no embeddings and no remote service: the embedding model
+(`katana embed`) exists but is not connected to it yet. New, and not measured as a whole: the last search change was checked by hand
+on 15 queries (neutral to better), not by a campaign.
 
 Where the tools work: anywhere on the machine. Paths can be relative to the working folder or absolute, missing folders are created, and
 `git -C <folder> ...` works in another repository. The user's request is the authorization, so there are no per-folder prompts. When the
@@ -226,6 +232,7 @@ katana agent <model>             chat with tools
 katana mcp                       start the configured MCP servers and list their tools
 katana coder <sub>               code intelligence without a model: index, search, symbols, def, refs, callers, callees, uses, outline, at, deps, impact, kb, status, verify, compact (`katana coder` lists them)
 katana convert <hf-folder> <out.gguf> [type]   Hugging Face checkpoint (safetensors) -> GGUF, streaming; default q4_k_m (docs/convert.md; tested on tiny checkpoints only)
+katana embed <model.gguf> [--task code|search|document|raw] [--dim 128|256|512|768] "text"...   text embeddings with EmbeddingGemma 2 (text tower, CPU, float32); the GGUF comes from `katana convert` (docs/embed.md)
 katana info | bench | selftest | micro | tune | pack | verify | quantize | qtest | routing | sparsity
 katana tool <name> '<json>'      run one agent tool without a model (testing)
 ```
@@ -352,6 +359,7 @@ The full list (kernel tuning knobs, MoE policy, debugging) is in [`docs/handoff.
 | [`docs/uioe.md`](docs/uioe.md) | the layer before the model: interpret, classify, route, retrieve, build the context block |
 | [`docs/code-intelligence.md`](docs/code-intelligence.md) | the code intelligence module (`katana coder`): design, parsers, search, structural queries |
 | [`docs/tools.md`](docs/tools.md) | the agent's tools and how `Find` and `Symbols` decide and answer |
+| [`docs/embed.md`](docs/embed.md) | `katana embed`: the EmbeddingGemma 2 encoder, its architecture, the C function `embed_text()` and how it was checked |
 | [`docs/plan.md`](docs/plan.md) | priorities and done-criteria |
 | [`docs/teacher-protocol.md`](docs/teacher-protocol.md) | teacher mode: the program protocol (stdin/stdout JSON) that teacher plugins speak |
 | [`docs/optimization-roadmap.md`](docs/optimization-roadmap.md) | optimization techniques not yet used, expected gain and effort |
