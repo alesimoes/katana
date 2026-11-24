@@ -1046,6 +1046,17 @@ void Backend::setImageSteps(int n) {
     m_ui->sync();
     emit imageChanged();
 }
+int Backend::stableSteps() const {
+    const int n = m_ui->value("imagemPassosStable", 20).toInt();
+    return (n == 4 || n == 8 || n == 20 || n == 40) ? n : 20;
+}
+void Backend::setStableSteps(int n) {
+    if (n != 4 && n != 8 && n != 20 && n != 40) return;
+    if (n == stableSteps()) return;
+    m_ui->setValue("imagemPassosStable", n);
+    m_ui->sync();
+    emit imageChanged();
+}
 QString Backend::imageBackend() const {
     const QString b = m_ui->value("imagemBackend", "auto").toString();
     return (b == "cuda" || b == "vulkan" || b == "cpu") ? b : QStringLiteral("auto");
@@ -1623,7 +1634,12 @@ bool Backend::sendImage(const QString &text)
     } else {
         args << "--nl" << prompt;
     }
-    if (engine == "stable") args << "--lcm" << "--control" << img << "--control-scale" << "1.0";   // as bordas da vista seguram arcos e curvas (ControlNet canny)
+    if (engine == "stable") {                                          // as bordas da vista seguram arcos e curvas (ControlNet canny)
+        const int ss = stableSteps();
+        args << "--control" << img << "--control-scale" << "1.0" << "--steps" << QString::number(ss);
+        if (ss <= 8) args << "--lcm";                                  // 4/8: LCM, rapido
+        else args << "--strength" << "0.6";                            // 25/40: Euler com guia; mais liberdade para ficar realista (o ControlNet segura a forma)
+    }
     if (engine == "flux") args << "--steps" << QString::number(imageSteps());
     if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");
 

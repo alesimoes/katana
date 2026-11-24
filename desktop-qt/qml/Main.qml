@@ -296,6 +296,23 @@ ApplicationWindow {
                                             text: (backend.imageSteps === sb.modelData[0] ? "●  " : "○  ") + sb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
                                     }
                                 }
+                                Text { font.family: Theme.sans; text: "PASSOS DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                Repeater {
+                                    model: [[4, "4 (rápido, LCM)"], [8, "8 (LCM)"], [20, "20 (realista)"], [40, "40 (mais realista, lento)"]]
+                                    AbstractButton {
+                                        id: sst
+                                        required property var modelData
+                                        objectName: "ssteps_" + modelData[0]
+                                        width: apMenu.width - 16; height: 32
+                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                        Accessible.name: "Passos do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                        onClicked: backend.stableSteps = modelData[0]
+                                        background: Rectangle { radius: 8; color: sst.hovered ? Theme.hov : "transparent"
+                                            border.width: sst.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                            text: (backend.stableSteps === sst.modelData[0] ? "●  " : "○  ") + sst.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    }
+                                }
                                 Text { font.family: Theme.sans; text: "ESPECIALIZAÇÕES"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Text { objectName: "specsActive"; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
                                     color: backend.specsActive.length ? Theme.fg : Theme.mut

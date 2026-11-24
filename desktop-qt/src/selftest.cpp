@@ -1110,6 +1110,10 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(be.imageSteps() == 4, "passos do FLUX: 4 e o padrao");
         be.setImageSteps(7); check(be.imageSteps() == 4, "passos invalidos sao recusados");
         be.setImageSteps(8); check(be.imageSteps() == 8, "escolher 8 passos");
+        check(be.stableSteps() == 20, "passos do Stable: 20 e o padrao");
+        be.setStableSteps(7); check(be.stableSteps() == 20, "passos invalidos do Stable sao recusados");
+        be.setStableSteps(40); check(be.stableSteps() == 40, "escolher 40 passos do Stable");
+        be.setStableSteps(20);
         be.setImageEngine("flux");
         be.attachImage(img);
         const int antesC = be.messages()->count();

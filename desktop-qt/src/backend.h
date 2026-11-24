@@ -131,6 +131,7 @@ class Backend : public QObject
     Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // look (so olhar, conversar), stable ou flux
     Q_PROPERTY(int imageSize READ imageSize WRITE setImageSize NOTIFY imageChanged)   // largura da imagem gerada em 16:9: 1024 (a menor), 1280, 1600 ou 1920
     Q_PROPERTY(int imageSteps READ imageSteps WRITE setImageSteps NOTIFY imageChanged)   // passos do FLUX: 4 (padrao do modelo), 8, 12 ou 20
+    Q_PROPERTY(int stableSteps READ stableSteps WRITE setStableSteps NOTIFY imageChanged)   // passos do Stable: 4 ou 8 (LCM, rapido), 20 ou 40 (qualidade: Euler com guia)
     Q_PROPERTY(QString imageBackend READ imageBackend WRITE setImageBackend NOTIFY imageChanged)   // processamento do FLUX: auto, cuda, vulkan ou cpu (KATANA_BACKEND)
     Q_PROPERTY(bool imageBusy READ imageBusy NOTIFY imageChanged)
     Q_PROPERTY(bool hasUsableModel READ hasUsableModel NOTIFY modelsChanged)
@@ -247,6 +248,8 @@ public:
     int imageSize() const;
     void setImageSize(int w);
     int imageSteps() const;
+    int stableSteps() const;
+    void setStableSteps(int n);
     void setImageSteps(int n);
     QString imageBackend() const;
     void setImageBackend(const QString &b);
