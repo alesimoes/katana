@@ -159,19 +159,42 @@ its "stone veining" style phrase was removed). `AK_PISO CONCRETO 0x` typed concr
 the one typed porcelain, whose name says concrete, is `concrete-look porcelain floor tiles, pattern 100x100 cm`. Names without a known type (`ANGRA_21_PRATA`,
 `HIBISCO`) stay neutral surfaces: a colour word inside a name is not used.
 
-The text encoder has 512 positions. The recepcao briefing with every material came to 654 positions (measured with `katana render flux-text`), so the last
-positions (style, closing) would have been cut. The prose now drops the smallest materials until it is at most 1740 characters (about 500 positions; the final
-prompt of the recepcao briefing measured 474 positions with 4 of the 13 materials left out, and says so on stderr). Prompt printed for
-`/mnt/dados/render-ref/briefs/recepcao_v1.md` (client briefing, not committed):
+The text encoder has 512 positions and Stable reads 75 CLIP tokens per chunk (`--chunks`, default 4), so a real briefing does not fit whole. Cutting at the
+end (the old rule) dropped whatever came last; since 2026-11-24 (branch feat-brief-select) a relevance selector chooses, without any LLM (`src/render/sdsel.c`,
+used by `sdb_flux_prose` and `sdb_build` in `src/render/sdbrief.c`).
 
-> Photorealistic architectural interior photograph of a reception, made from the reference view (a 3D model export). Keep the exact camera position, lens, framing, perspective and proportions. Every wall, opening, ceiling, floor, piece of furniture and object keeps its position, size and shape: nothing is added, removed, moved or resized, no extra decoration, plants, people, lamps, artwork or written text. Every edge of the line drawing stays in place. Each material sits exactly on its surfaces in the view, with its real colour and pattern scale (share of the frame in %): slate blue-grey painted wall (RGB 99,112,123), 25%; burgundy painted wall (RGB 119,79,81), 23%; concrete floor tiles, pattern 90x90 cm, 11%; off-white painted wall (RGB 228,222,204), 10%; surface material "Arenito", pattern 275x184 cm, 7%; fabric "H10248", pattern 40x40 cm, 4%; surface material "ANGRA_21_PRATA", pattern 187x281 cm, 4%; surface material "HIBISCO", pattern 10x10 cm, 4%; concrete-look porcelain floor tiles, pattern 100x100 cm, 3%. Main objects: reception counter, chair. Lighting: bright daylight from a high sun (solar elevation 66.5 degrees) matching the shadows of the view; warm artificial light at 3000 K from recessed spotlights, linear LED strip, round ceiling lamp, organic pendant lamp, mirror light, sphere lamp, support light; unlisted luminaires stay off. Style: natural realistic interior photography, full-frame camera, no computer graphics look, soft light with real falloff, deep contact shadows, soft light gradients on the walls, visible wood grain and fabric weave, faithful colours, never oversaturated, neutral to slightly warm white balance, clean, elegant, authentic. 16:9, no borders, no watermark.
+**Selector.** The briefing becomes *units*: one rule, one material (same phrase adds its share), one light (sun, colour temperature, one per light type),
+one object, one style request. Each unit gets `score = category weight x (0.6 + bm25) + area + signals`: BM25 (k1 1.2, b 0.75) of the unit's own source
+text against a weighted search vocabulary (colour, RGB, K, wall, floor, wood, fabric, lit, never/oversaturated...), with the idf taken from the units of the
+same briefing (a word in almost every unit, like "piso" in five floors, counts less; a rare one counts more); category weights rule 10, material 3, light 2,
+object 1.5, style 1; materials add share of frame / 10 (at most 3), +1.5 with an RGB colour, +0.4 with a pattern scale, -1.2 when vague (no colour and no known
+type); styles carry a fixed prior (colour fidelity 1.2 ... elegance 0.2). Rules, the sun, the colour temperature and the user's `--nl` request are mandatory and
+always in. The rest enter by score, each only if the assembled text (measured with the engine's own tokenizer) stays within budget; one that does not fit is
+skipped and a smaller one after it can still enter. Noise never enters: materials under 1% of the frame ("~0%"), lamp materials (light, not surface), paint with
+no colour, units with no text for that engine. Final order, stable: rules > materials by area > light > objects > style > user request.
+
+Budgets: FLUX 504 of 512 positions, counted with the Qwen3 tokenizer of `qwen3-4b-text.gguf` including the chat template (`fxt_count` in `fxtext.c`; only the
+tokenizer is loaded; without that file it estimates 0.30 token per character, with margin, and says so). Stable `--chunks x 75 - 4` CLIP tokens counted by
+`sdc_ids_w` (weights included), the negative prompt separately with the same limit and in priority order (text, logo, watermark, people, what the briefing
+forbids, then the generic ones). Stable gets English tags with `(term:1.2)` on a frame share of 20% or more, `1.1` from 8% and on the colour temperature; FLUX gets
+prose. `--nl` still works: with FLUX it is the mandatory "Additional request from the user"; with Stable and `--brief` it is ignored, as before.
+
+`--explain-brief` (on `render generate`, `render spec --brief` and `render brief`) prints on stderr every unit with ENTROU or CORTE, category, score, bm25, share
+of frame, tokens it added (or overshot) and the reason of a cut ("nao coube no orcamento", "abaixo de 1% do quadro"...), plus the totals.
+
+Result for `/mnt/dados/render-ref/briefs/recepcao_v1.md` (client briefing, not committed). Before: 4 of the 13 materials left out (cut by character count) and, in
+Stable, a 0% "foliage" and a "black lacquer" in the prompt of a briefing that forbids plants. After (FLUX, 503 of 504 positions, nothing of signal cut: all 11
+materials that say anything are in, the style list loses only "full-frame camera"; cut as noise are the ~0% items, the LED2 lamp and the paint with no colour):
+
+> Photorealistic architectural interior photograph of a reception, made from the reference view (a 3D model export). Keep the exact camera position, lens, framing, perspective and proportions. Every wall, opening, ceiling, floor, piece of furniture and object keeps its position, size and shape: nothing is added, removed, moved or resized, no extra decoration, plants, people, lamps, artwork or written text. Every edge of the line drawing stays in place. Luminaires that are not listed as on stay off. Each material sits exactly on its surfaces in the view, with its real colour and pattern scale (share of the frame in %): slate blue-grey painted wall (RGB 99,112,123), 25%; burgundy painted wall (RGB 119,79,81), 23%; concrete floor tiles, pattern 90x90 cm, 11%; off-white painted wall (RGB 228,222,204), 10%; surface material "Arenito", pattern 275x184 cm, 7%; fabric "H10248", pattern 40x40 cm, 4%; surface material "ANGRA_21_PRATA", pattern 187x281 cm, 4%; surface material "HIBISCO", pattern 10x10 cm, 4%; concrete-look porcelain floor tiles, pattern 100x100 cm, 3%; natural wood "demolição", pattern 121x181 cm, 2%; dark grey metal, 1%. Lighting: bright daylight from a high sun (solar elevation 66.5 degrees) matching the shadows of the view; warm artificial light at 3000 K from recessed spotlights, linear LED strip, round ceiling lamp, organic pendant lamp, mirror light, sphere lamp, support light. Main objects: reception counter, chair. Style: faithful colours, never oversaturated, visible wood grain and fabric weave, neutral to slightly warm white balance, deep contact shadows, natural realistic interior photography, no computer graphics look, soft light with real falloff, soft light gradients on the walls, clean, elegant, authentic. 16:9, no borders, no watermark.
+
 
 Limits, stated plainly: the quoted name `"Arenito"` is still in the prompt as a label, and a text encoder that reads Portuguese may still link it to the
 stone (not tested: nothing was generated); FLUX cannot match an RGB number, only a colour word, so how close the colours come is unknown; the date and
 place of the "Luz do dia" line are not used; the main-object list only knows the words of `sdb_build` (counter, chair, armchair, sofa, table, mirror, bed); `--image3`
-(material samples) is still not used. `katana render brief selftest [briefing.md]` checks the rules (15 checks, on an embedded text with the same material
+(material samples) is still not used. `katana render brief selftest [briefing.md]` checks the rules (about 30 checks including a synthetic briefing with 40 materials, on an embedded text with the same material
 lines and, when a path is given, on the real file): no `stone`/`sandstone`/`pedra`, floor says concrete with the pattern size, wall colours present,
-neutral names kept, 0% items left out, fidelity rules, lights, objects and the length limit.
+neutral names kept, 0% items left out, fidelity rules, lights, objects, the token budget, mandatory items kept and low-signal ones cut, order, Stable weights.
 
 **Logo compositing (`src/render/sdlogo.c`).** No image model writes a brand; the real logo goes in afterwards, on the CPU.
 `katana render logo --image render.png --logo logo.png --box x,y,w,h [--perspective x1,y1,x2,y2,x3,y3,x4,y4] [--blend] [--out out.png]`.

@@ -499,6 +499,7 @@ static int sds_main(int argc, char **argv) {
         else if (!strcmp(a, "--brief") && more) brief = argv[++i];
         else if (!strcmp(a, "--engine") && more) fengine = argv[++i];
         else if (!strcmp(a, "--lines")) has_lines = 1;
+        else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (a[0] != '-' && !text) text = a;
         else { fprintf(stderr, "render spec: opcao desconhecida: %s\n", a); return 1; }
     }
