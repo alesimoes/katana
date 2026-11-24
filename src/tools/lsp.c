@@ -36,6 +36,7 @@ typedef struct {
     char err[300];
 } LspSrv;
 static LspSrv g_lsp[LSP_MAXSRV];
+static double g_lsp_init_cap;       /* >0: prazo (s) do initialize, so durante a validacao do Edit por simbolo (symedit.c); 0 = o padrao da ferramenta LSP */
 static int g_nlsp, g_lsp_atexit;
 
 /* ----- texto: URI, colunas UTF-16 ----- */
@@ -401,7 +402,7 @@ static LspSrv *lsp_get(const char *cmd, const char *root, char *err, size_t ecap
         "\"documentSymbol\":{\"hierarchicalDocumentSymbolSupport\":true},\"callHierarchy\":{},"
         "\"publishDiagnostics\":{\"relatedInformation\":false}}}}");
     free(u.p);
-    char *r = lsp_request(s, "initialize", p.p, lsp_secs("KATANA_LSP_FIRST_TIMEOUT", 60));
+    char *r = lsp_request(s, "initialize", p.p, g_lsp_init_cap > 0 ? g_lsp_init_cap : lsp_secs("KATANA_LSP_FIRST_TIMEOUT", 60));
     free(p.p);
     if (!r) { snprintf(err, ecap, "error: language server '%s' failed to start: %s", s->name, s->err); lsp_kill(s); return NULL; }
     const int bad = mcp_get(r, "error") != NULL;
@@ -542,6 +543,52 @@ static void lsp_item(LspOut *w, const char *root, const char *it, const char *pr
 }
 static int lsp_diag_cmp(const void *a, const void *b) { const long *x = a, *y = b; return x[0] != y[0] ? (x[0] < y[0] ? -1 : 1) : (x[1] < y[1] ? -1 : x[1] > y[1]); }
 
+/* raiz do projeto de um arquivo: o pai mais proximo com um marcador de projeto (senao a pasta de trabalho) */
+static void lsp_root_of(const char *abs, char *root, size_t cap) {
+    static const char *mk[] = { ".git", "compile_commands.json", "pyproject.toml", "package.json", "Cargo.toml", "go.mod" };
+    char d[1024]; snprintf(d, sizeof d, "%.1023s", abs);
+    root[0] = 0;
+    for (char *sl; !root[0] && (sl = strrchr(d, '/')) != NULL; ) {
+        *sl = 0;
+        const char *dir = d[0] ? d : "/";
+        for (int i = 0; i < 6 && !root[0]; i++) { char t[1100]; struct stat s2; snprintf(t, sizeof t, "%s/%s", dir, mk[i]); if (stat(t, &s2) == 0) snprintf(root, cap, "%s", dir); }
+        if (!d[0]) break;
+    }
+    if (!root[0] && !getcwd(root, cap)) snprintf(root, cap, "/");
+}
+/* diagnosticos que o servidor de linguagem da extensao de abs publica para o arquivo, com PRAZO CURTO (secs, tambem para iniciar o servidor):
+   usado pela validacao do Edit por simbolo (coder/symedit.c), que nunca espera mais que isso. resync: reenvia o texto do disco mesmo que
+   data e tamanho nao tenham mudado. Devolve 1 com o array JSON dos diagnosticos em *diag (memoria nova) e o nome do servidor em srv;
+   0 com o motivo curto em why (sem servidor instalado, nao iniciou, nao respondeu no prazo). */
+static int lsp_diag_get(const char *abs, double secs, int resync, char **diag, char *srv, size_t scap, char *why, size_t wcap) {
+    char ext[32] = "", cmd[1200], err[600], root[1024];
+    *diag = NULL; srv[0] = 0;
+    const char *base = strrchr(abs, '/'); base = base ? base + 1 : abs;
+    const char *dot = strrchr(base, '.');
+    if (dot && dot != base) for (size_t i = 0; dot[1 + i] && i + 1 < sizeof ext; i++) { ext[i] = (char)tolower((unsigned char)dot[1 + i]); ext[i + 1] = 0; }
+    if (!ext[0] || !lsp_pick(ext, cmd, sizeof cmd, err, sizeof err)) { snprintf(why, wcap, "no server"); return 0; }
+    lsp_root_of(abs, root, sizeof root);
+    g_lsp_init_cap = secs;
+    LspSrv *s = lsp_get(cmd, root, err, sizeof err);
+    g_lsp_init_cap = 0;
+    if (!s) { snprintf(why, wcap, "server did not start"); return 0; }
+    snprintf(srv, scap, "%s", s->name);
+    McpB u = {0}; lsp_uri(&u, abs);
+    if (resync) lsp_doc(s, u.p)->mt = -1;
+    if (!lsp_sync(s, abs, ext, err, sizeof err)) { free(u.p); snprintf(why, wcap, "server refused the file"); return 0; }
+    const double dl = now_sec() + secs;
+    LspDoc *d = lsp_doc(s, u.p);
+    while (!d->diag_fresh && s->alive) {
+        char *m = lsp_recv(s, dl);
+        if (!m) break;
+        lsp_handle(s, m); free(m);
+        d = lsp_doc(s, u.p);
+    }
+    free(u.p);
+    if (!d->diag_fresh || !d->diag) { snprintf(why, wcap, "no answer in %.1f s", secs); return 0; }
+    *diag = strdup(d->diag);
+    return 1;
+}
 static void ct_lsp(const char *js, const char *end, char *out, size_t cap) {
     char *op = ct_str(js, end, "operation"), *fp = ct_str(js, end, "filePath"), *query = ct_str(js, end, "query");
     const long line = (long)ct_int(js, end, "line", 0), chr = (long)ct_int(js, end, "character", 0);
@@ -565,19 +612,7 @@ static void ct_lsp(const char *js, const char *end, char *out, size_t cap) {
     if (dot && dot != base) for (size_t i = 0; dot[1 + i] && i + 1 < sizeof ext; i++) { ext[i] = (char)tolower((unsigned char)dot[1 + i]); ext[i + 1] = 0; }
     if (!ext[0]) { snprintf(out, cap, "error: %s has no extension, so no language server can be chosen", fp); goto fim; }
     if (!lsp_pick(ext, cmd, sizeof cmd, err, sizeof err)) { snprintf(out, cap, "%s", err); goto fim; }
-    /* raiz: o pai mais proximo com um marcador de projeto */
-    {
-        static const char *mk[] = { ".git", "compile_commands.json", "pyproject.toml", "package.json", "Cargo.toml", "go.mod" };
-        char d[1024]; snprintf(d, sizeof d, "%.1023s", abs);
-        root[0] = 0;
-        for (char *sl; !root[0] && (sl = strrchr(d, '/')) != NULL; ) {
-            *sl = 0;
-            const char *dir = d[0] ? d : "/";
-            for (int i = 0; i < 6 && !root[0]; i++) { char t[1100]; struct stat s2; snprintf(t, sizeof t, "%s/%s", dir, mk[i]); if (stat(t, &s2) == 0) snprintf(root, sizeof root, "%s", dir); }
-            if (!d[0]) break;
-        }
-        if (!root[0] && !getcwd(root, sizeof root)) snprintf(root, sizeof root, "/");
-    }
+    lsp_root_of(abs, root, sizeof root);
     s = lsp_get(cmd, root, err, sizeof err);
     if (!s) { snprintf(out, cap, "%s", err); goto fim; }
     if (!lsp_sync(s, abs, ext, err, sizeof err)) { snprintf(out, cap, "%s", err); goto fim; }
