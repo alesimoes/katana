@@ -91,6 +91,7 @@ Item {
                                : d.kind === "tool" ? toolC
                                : d.kind === "notify" ? notifyC
                                : d.kind === "file" ? fileC
+                               : d.kind === "image" ? imageC
                                : d.kind === "finding" ? findingC
                                : d.kind === "stopped" ? stoppedC
                                : d.kind === "error" ? errorC : noticeC
@@ -213,6 +214,59 @@ Item {
                             spacing: 2
                             Text { font.family: Theme.sans; color: Theme.ac; font.pixelSize: 12; font.bold: true; width: parent.width; elide: Text.ElideRight; text: "Aviso do agente · " + d.name }
                             Text { font.family: Theme.sans; color: Theme.fg; font.pixelSize: 14; width: parent.width; wrapMode: Text.Wrap; text: d.text }
+                        }
+                    }
+                }
+            }
+            // imagem gerada (kind image): miniatura grande e botoes Abrir e Abrir pasta; sem caminho = aviso do motor WIP, sem vermelho
+            Component {
+                id: imageC
+                Item {
+                    height: ic.height + 14
+                    Rectangle {
+                        id: ic
+                        objectName: "imageCard"
+                        x: 38; width: Math.min(parent.width - 38, 620)
+                        height: icCol.implicitHeight + 24
+                        radius: 14
+                        color: Theme.card
+                        border.color: Theme.bd
+                        Column {
+                            id: icCol
+                            x: 14; y: 12
+                            width: parent.width - 28
+                            spacing: 8
+                            Text { objectName: "imageTitle"; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12
+                                text: "Imagem gerada · " + (d.name === "flux" ? "FLUX" : d.name === "krea" ? "Krea" : "Stable") + (d.text.length ? "" : " · WIP") }
+                            Image {
+                                objectName: "imagePic"
+                                visible: d.text.length > 0
+                                width: parent.width
+                                height: status === Image.Ready ? width * implicitHeight / implicitWidth : 0
+                                fillMode: Image.PreserveAspectFit
+                                asynchronous: true
+                                source: d.text.length ? "file://" + d.text : ""
+                            }
+                            Text { objectName: "imageNote"; visible: d.out.length > 0; font.family: Theme.sans; color: Theme.fg; font.pixelSize: 14; width: parent.width; wrapMode: Text.Wrap; text: d.out }
+                            Text { visible: d.text.length > 0; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 11; width: parent.width; elide: Text.ElideMiddle; text: d.text }
+                            Row {
+                                visible: d.text.length > 0
+                                spacing: 8
+                                Repeater {
+                                    model: [["imageOpen", "Abrir"], ["imageFolder", "Abrir pasta"]]
+                                    Rectangle {
+                                        required property var modelData
+                                        objectName: modelData[0]
+                                        height: 34; width: ibt.implicitWidth + 28; radius: 9
+                                        color: ima.containsMouse ? Theme.ac : Theme.hov
+                                        border.color: ima.containsMouse ? Theme.ac : Theme.bd
+                                        Text { id: ibt; anchors.centerIn: parent; text: modelData[1]; font.family: Theme.sans; font.pixelSize: 14
+                                            color: ima.containsMouse ? Theme.acfg : Theme.fg }
+                                        MouseArea { id: ima; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: modelData[0] === "imageOpen" ? backend.openPath(d.text) : backend.openFolderOf(d.text) }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

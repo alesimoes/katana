@@ -18,6 +18,10 @@ Item {
     function setText(t) { ta.text = t; ta.cursorPosition = t.length; }
     function submit() {
         var t = ta.text.trim();
+        if (backend.attachedImage) {                  // imagem anexada: vai para o gerador, nao para o agente
+            if (!backend.imageBusy && backend.sendImage(t)) ta.clear();
+            return;
+        }
         if (backend.choicePending) {                  // o agente fez uma pergunta: o texto digitado e a resposta
             if (t) { backend.answerChoice(t); ta.clear(); }
             return;
@@ -36,6 +40,18 @@ Item {
     }
 
     readonly property real cw: Math.min(Theme.colWidth, width - 32)
+
+    // arrastar uma imagem para a caixa a anexa
+    DropArea {
+        anchors.fill: parent
+        onDropped: (d) => { if (d.hasUrls && d.urls.length > 0) backend.attachImage(d.urls[0].toString()); }
+    }
+    FileDialog {
+        id: imgDialog
+        title: "Anexar imagem"
+        nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp)"]
+        onAccepted: backend.attachImage(selectedFile.toString())
+    }
 
     // sombra suave: camadas translucidas
     Repeater {
@@ -109,7 +125,7 @@ Item {
             TextArea.flickable: TextArea { font.family: Theme.sans;
                 id: ta
                 objectName: "composerInput"
-                enabled: backend.ready || (backend.answering && !backend.loading)
+                enabled: backend.ready || (backend.answering && !backend.loading) || backend.attachedImage.length > 0
                 wrapMode: TextArea.Wrap
                 padding: 0
                 topPadding: 6
@@ -139,6 +155,48 @@ Item {
             }
         }
 
+        // anexar imagem (clipe) e miniatura da imagem anexada, com botao de remover
+        IconButton {
+            id: attachBtn
+            objectName: "attachButton"
+            anchors.left: parent.left
+            anchors.leftMargin: 8
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 8
+            implicitWidth: 34
+            implicitHeight: 34
+            glyph: "image"
+            iconSize: 18
+            tip: "Anexar uma imagem (gera uma imagem a partir dela)"
+            onClicked: imgDialog.open()
+        }
+        Rectangle {
+            id: thumb
+            objectName: "attachThumb"
+            visible: backend.attachedImage.length > 0
+            anchors.left: attachBtn.right
+            anchors.leftMargin: 6
+            anchors.verticalCenter: attachBtn.verticalCenter
+            width: 56; height: 32; radius: 6
+            color: Theme.hov
+            border.color: Theme.bd
+            clip: true
+            Image {
+                anchors.fill: parent
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                source: backend.attachedImage ? "file://" + backend.attachedImage : ""
+                sourceSize.width: 112
+            }
+            Rectangle {
+                objectName: "attachRemove"
+                anchors.right: parent.right; anchors.top: parent.top
+                width: 16; height: 16; radius: 8
+                color: Theme.card; opacity: 0.9
+                Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 9; color: Theme.fg }
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearImage() }
+            }
+        }
         IconButton {
             id: sendBtn
             objectName: "sendButton"
@@ -149,13 +207,13 @@ Item {
             implicitWidth: 38
             implicitHeight: 38
             circle: true
-            glyph: backend.answering && ta.text.trim().length === 0 ? "stop" : "up"
+            glyph: backend.answering && ta.text.trim().length === 0 && !backend.attachedImage ? "stop" : "up"
             iconSize: backend.answering ? 18 : 18
             iconColor: Theme.acfg
             hoverIconColor: Theme.acfg
             fillColor: Theme.ac
             hoverFill: Qt.lighter(Theme.ac, 1.1)
-            enabled: backend.answering || (backend.ready && ta.text.trim().length > 0)
+            enabled: backend.attachedImage.length > 0 ? !backend.imageBusy : (backend.answering || (backend.ready && ta.text.trim().length > 0))
             opacity: enabled ? 1 : 0.35
             tip: backend.answering ? (ta.text.trim().length ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar"
             onClicked: comp.submit()
@@ -175,6 +233,39 @@ Item {
             implicitHeight: 22
             maxWidth: Math.max(120, box.width * 0.45)
             compact: true
+        }
+        // modo imagem e motor de geracao: Stable (padrao), FLUX e Krea; os dois ultimos e o modo ainda sao WIP
+        AbstractButton {
+            id: imgModeBtn
+            objectName: "imageModeButton"
+            implicitHeight: 22
+            implicitWidth: imgModeTxt.implicitWidth + 14
+            hoverEnabled: true
+            background: Rectangle { radius: 6; color: backend.imageMode ? Theme.hov : imgModeBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: imgModeTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
+                color: backend.imageMode ? Theme.fg : Theme.mut; text: "imagem · WIP" }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: "Modo imagem (em desenvolvimento): anexe uma imagem (modelo 3D) e escolha o motor que gera a versão realista."
+            Accessible.name: "Modo imagem"
+            onClicked: backend.imageMode = !backend.imageMode
+        }
+        Repeater {
+            model: [["stable", "Stable", ""], ["flux", "FLUX", " WIP"], ["krea", "Krea", " WIP"]]
+            AbstractButton {
+                required property var modelData
+                objectName: "engine_" + modelData[0]
+                visible: backend.imageMode || backend.attachedImage.length > 0
+                implicitHeight: 22
+                implicitWidth: engTxt.implicitWidth + 14
+                hoverEnabled: true
+                readonly property bool sel: backend.imageEngine === modelData[0]
+                background: Rectangle { radius: 6; color: sel ? Theme.hov : parent.hovered ? Theme.hov : "transparent"; border.width: sel ? 1 : 0; border.color: Theme.bd }
+                contentItem: Text { id: engTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
+                    color: sel ? Theme.fg : Theme.mut; text: modelData[1] + modelData[2] }
+                Accessible.name: "Motor de imagem " + modelData[1]
+                onClicked: backend.imageEngine = modelData[0]
+            }
         }
         // pasta sem confianca: aviso aqui (a escolha da pasta fica nas configuracoes)
         Text {
@@ -224,7 +315,8 @@ Item {
             font.pixelSize: 12
             objectName: "statusLine"
             color: backend.errorText || backend.stalled ? Theme.err : Theme.mut
-            text: backend.errorText ? backend.errorText
+            text: backend.imageBusy ? "Gerando a imagem (" + backend.imageEngine + ")..."
+                  : backend.errorText ? backend.errorText
                   : backend.stalled ? backend.activityText
                   : backend.statusText && !/^(Preparando|Retomando|Carregando)/.test(backend.statusText) ? backend.statusText
                   : backend.progressText ? backend.progressText

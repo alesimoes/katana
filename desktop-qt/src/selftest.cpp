@@ -936,6 +936,80 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         c.grab("50-agente-morreu.png");
     }
 
+    // ---- geracao de imagem: anexar, escolher o motor, gerar (stable), WIP (flux e krea) e falha ----
+    fprintf(stderr, "-- imagem: anexar, motor, gerar\n");
+    {
+        const QString img = QFileInfo(be.katanaPath()).absolutePath() + "/samples/render-entrada.png";   // imagem de teste, ao lado do motor de mentira
+        check(QFileInfo(img).isFile(), "imagem de teste encontrada: " + img);
+        check(!be.attachImage("/tmp/katana-standin/relatorio final.txt"), "anexar um arquivo que nao e imagem e recusado");
+        check(be.attachedImage().isEmpty() && !c.item("attachThumb")->isVisible(), "sem anexo: sem miniatura");
+        check(c.item("attachButton") && c.item("attachButton")->isVisible(), "botao de anexar visivel");
+        check(be.attachImage("file://" + img) && be.attachedImage() == img, "anexar pela URL file://");
+        QTest::qWait(400);
+        check(c.item("attachThumb")->isVisible() && c.item("engine_stable")->isVisible() && c.item("engine_flux")->isVisible() && c.item("engine_krea")->isVisible(),
+              "com anexo: miniatura e os tres motores aparecem");
+        check(be.imageEngine() == "stable", "Stable e o padrao");
+        c.grab("60-imagem-anexada.png");
+        c.click(c.item("engine_flux"));
+        check(be.imageEngine() == "flux", "escolher FLUX");
+        c.click(c.item("attachRemove"));
+        check(be.attachedImage().isEmpty(), "remover o anexo");
+        QTest::qWait(300);
+        check(!c.item("engine_flux")->isVisible(), "sem anexo e fora do modo imagem: motores escondidos");
+        c.click(c.item("imageModeButton"));
+        QTest::qWait(300);
+        check(be.imageMode() && c.item("engine_krea")->isVisible(), "modo imagem mostra os motores sem anexo");
+        c.click(c.item("engine_stable"));
+        check(be.imageEngine() == "stable", "escolher Stable de novo");
+
+        // gerar com o stable: nao passa pelo agente
+        QStringList sentToAgent;
+        QObject::connect(&be, &Backend::sentToAgent, [&](const QString &l) { sentToAgent << l; });
+        be.attachImage(img);
+        const int n0 = be.messages()->count();
+        c.typeAndEnter("gere a recepcao realista");
+        check(waitFor([&] { return be.messages()->count() > n0 + 1 && be.messages()->get(be.messages()->count() - 1)["kind"] == "image" && !be.imageBusy(); }, 30000),
+              "stable: cartao de imagem na conversa");
+        QTest::qWait(500);
+        const QString saida = be.messages()->get(be.messages()->count() - 1)["text"].toString();
+        check(saida.startsWith(be.imageDir()) && QFileInfo(saida).isFile() && QImage(saida).width() == 320, "imagem gravada em ~/.katana/desktop/imagens: " + saida);
+        check(be.messages()->get(be.messages()->count() - 2)["kind"] == "user" && sentToAgent.isEmpty(), "o texto aparece como mensagem do usuario e nao vai ao agente");
+        check(be.attachedImage().isEmpty(), "o anexo e consumido no envio");
+        QQuickItem *ic = c.item("imageCard");
+        check(ic && ic->isVisible() && c.item("imagePic") && c.item("imagePic")->isVisible(), "cartao de imagem visivel");
+        c.grab("61-imagem-gerada.png");
+        c.click(c.item("imageOpen"));
+        check(be.lastOpened() == saida, "Abrir: imagem pelo programa padrao: " + be.lastOpened());
+        c.click(c.item("imageFolder"));
+        check(be.lastOpened() == be.imageDir(), "Abrir pasta: " + be.lastOpened());
+        bool gravada = false;   // a sessao guarda o caminho da imagem, nao um texto longo
+        Session ss;
+        if (Sessoes::carregar(be.sessionsDir(), be.currentSessionId(), &ss)) for (const Msg &m : ss.mensagens) gravada |= m.papel == "image" && m.texto == saida;
+        check(gravada, "sessao grava o caminho da imagem");
+
+        // flux e krea: aviso amigavel (WIP), sem cartao de erro
+        for (const QString &e : {QStringLiteral("flux"), QStringLiteral("krea")}) {
+            be.setImageEngine(e);
+            be.attachImage(img);
+            const int antes = be.messages()->count();
+            c.typeAndEnter("gere com " + e);
+            check(waitFor([&] { return be.messages()->count() > antes + 1 && !be.imageBusy(); }, 30000), e + ": terminou");
+            QTest::qWait(400);
+            const QVariantMap w = be.messages()->get(be.messages()->count() - 1);
+            check(w["kind"] == "image" && w["text"].toString().isEmpty() && w["out"].toString().contains("WIP") && w["name"] == e, e + ": aviso de motor em desenvolvimento (WIP), sem erro");
+            if (e == "flux") { QList<QQuickItem *> notes; findAll(c.root(), "imageNote", notes); check(!notes.isEmpty() && notes.last()->isVisible(), "aviso WIP visivel"); c.grab("62-motor-wip.png"); }
+        }
+        // falha do stable: cartao de erro
+        be.setImageEngine("stable");
+        be.attachImage(img);
+        c.typeAndEnter("falhe agora");
+        check(waitFor([&] { return !be.imageBusy() && be.messages()->get(be.messages()->count() - 1)["kind"] == "error"; }, 30000), "falha do stable: cartao de erro");
+        check(be.messages()->get(be.messages()->count() - 1)["text"].toString().contains("codigo 2"), "erro traz o codigo de saida");
+        c.grab("63-imagem-erro.png");
+        c.click(c.item("imageModeButton"));
+        check(!be.imageMode(), "desligar o modo imagem");
+    }
+
     fprintf(stderr, "== %d verificacoes ok, %d falhas\n", g_ok, g_fail);
     fprintf(stderr, "%s\n", g_fail == 0 ? "PASSOU" : "FALHOU");
     printf("%s\n", g_fail == 0 ? "PASSOU" : "FALHOU");

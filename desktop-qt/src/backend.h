@@ -127,6 +127,10 @@ class Backend : public QObject
     Q_PROPERTY(bool planMode READ planMode NOTIFY planModeChanged)        // modo plano: o agente so le ate o plano ser aprovado
     Q_PROPERTY(QVariantList catalog READ catalog NOTIFY catalogChanged)   // modelos que o aplicativo sabe baixar (katana catalog)
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY catalogChanged)    // memoria, placa, disco livre (katana hw)
+    Q_PROPERTY(QString attachedImage READ attachedImage NOTIFY imageChanged)      // imagem anexada ao proximo envio ("" = nenhuma)
+    Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // stable, flux ou krea
+    Q_PROPERTY(bool imageMode READ imageMode WRITE setImageMode NOTIFY imageChanged)            // modo Imagem: envia para o gerador, nao para o agente
+    Q_PROPERTY(bool imageBusy READ imageBusy NOTIFY imageChanged)
     Q_PROPERTY(bool hasUsableModel READ hasUsableModel NOTIFY modelsChanged)
     Q_PROPERTY(QString pullId READ pullId NOTIFY pullChanged)             // modelo sendo baixado ("" = nenhum)
     Q_PROPERTY(double pullFraction READ pullFraction NOTIFY pullChanged)
@@ -184,13 +188,13 @@ public:
 
     QVariantList models() const { return m_models; }
     QVariantList catalog() const { return m_catalog; }
-    QString katanaPath() const { return m_katana; }
     QString indexText() const { return m_idxText; }
     QString indexTip() const { return m_idxTip; }
     void setIndexForTest(const QString &t, const QString &tip) { m_idxText = t; m_idxTip = tip; emit indexChanged(); }
     // separa a saida de `katana coder status` em texto curto e resumo; retorna false se a saida nao tem o formato conhecido
     static bool parseIndexStatus(const QString &out, QString *text, QString *tip);
     QString modelsDir() const { return m_modelsDir; }
+    QString katanaPath() const { return m_katana; }
     // so para o teste automatico: troca o motor e a pasta de modelos (motor de mentira que fala o mesmo protocolo)
     void testRedirect(const QString &katana, const QString &modelsDir) { m_katana = katana; m_modelsDir = modelsDir; loadModels(); refreshCatalog(); }
     QVariantMap machine() const { return m_machine; }
@@ -236,6 +240,16 @@ public:
 
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
+    QString attachedImage() const { return m_attach; }
+    QString imageEngine() const { return m_imgEngine; }
+    void setImageEngine(const QString &e) { if ((e == "stable" || e == "flux" || e == "krea") && e != m_imgEngine) { m_imgEngine = e; emit imageChanged(); } }
+    bool imageMode() const { return m_imgMode; }
+    void setImageMode(bool on) { if (on != m_imgMode) { m_imgMode = on; emit imageChanged(); } }
+    bool imageBusy() const { return m_imgProc != nullptr; }
+    Q_INVOKABLE bool attachImage(const QString &pathOrUrl);   // anexa uma imagem (caminho ou file://); false se nao for imagem legivel
+    Q_INVOKABLE void clearImage();
+    Q_INVOKABLE bool sendImage(const QString &text);          // gera a imagem com `katana render generate` (nao passa pelo agente)
+    Q_INVOKABLE QString imageDir() const;                     // pasta das imagens geradas
     Q_INVOKABLE void stop();
     Q_INVOKABLE void answerChoice(const QString &text);   // resposta a pergunta do agente (AskUserQuestion); vazia = cancelar
     QString choiceQuestion() const { return m_choiceQ; }
@@ -318,6 +332,7 @@ signals:
     void teacherChanged();
     void teacherKeyNeeded();
     void specsChanged();
+    void imageChanged();
     void sentToAgent(const QString &line);  // linha enviada ao agente (para testes)
 
 private:
@@ -349,6 +364,9 @@ private:
     static QString cleanArgs(const QString &s);
 
     QString m_katana, m_modelsDir, m_home, m_sessDir;
+    QString m_attach, m_imgEngine = QStringLiteral("stable");
+    bool m_imgMode = false;
+    QProcess *m_imgProc = nullptr;
     QSettings *m_ui = nullptr;
     QVariantList m_models;
     QProcess *m_proc = nullptr;

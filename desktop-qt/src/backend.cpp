@@ -17,6 +17,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
+#include <QImageReader>
+#include <QTemporaryFile>
+#include <cmath>
 #include <QHash>
 #include <QLocale>
 #include <algorithm>
@@ -1482,6 +1486,97 @@ bool Backend::send(const QString &text)
     return true;
 }
 
+// ---- geracao de imagem: a imagem anexada vai para `katana render generate`, sem passar pelo agente ----
+QString Backend::imageDir() const { return QDir(m_home).filePath("imagens"); }
+
+bool Backend::attachImage(const QString &pathOrUrl)
+{
+    QString p = pathOrUrl.startsWith("file:") ? QUrl(pathOrUrl).toLocalFile() : pathOrUrl;
+    QImageReader r(p);
+    if (!QFileInfo(p).isFile() || !r.canRead())
+        return false;
+    m_attach = QFileInfo(p).absoluteFilePath();
+    emit imageChanged();
+    return true;
+}
+
+void Backend::clearImage()
+{
+    if (m_attach.isEmpty()) return;
+    m_attach.clear();
+    emit imageChanged();
+}
+
+bool Backend::sendImage(const QString &text)
+{
+    if (m_attach.isEmpty() || m_imgProc || m_katana.isEmpty())
+        return false;
+    const QString engine = m_imgEngine;
+    const QString nome = engine == "flux" ? "FLUX" : engine == "krea" ? "Krea" : "Stable";
+    const QString img = m_attach;
+    QString prompt = text.trimmed();
+    if (prompt.isEmpty())
+        prompt = QStringLiteral("Fotografia arquitetonica de interiores, fotorrealista, mesma camera, mesma composicao e mesmos materiais da imagem de referencia.");
+    // tamanho: multiplos de 64, area parecida com 576x320, lados entre 64 e 640, proporcao da imagem
+    const QSize sz = QImageReader(img).size();
+    int W = 576, H = 320;
+    if (sz.width() > 0 && sz.height() > 0) {
+        const double s = std::sqrt(576.0 * 320.0 / (double(sz.width()) * sz.height()));
+        W = qBound(64, int(std::lround(sz.width() * s / 64.0)) * 64, 640);
+        H = qBound(64, int(std::lround(sz.height() * s / 64.0)) * 64, 640);
+    }
+    QDir().mkpath(imageDir());
+    const QString out = QDir(imageDir()).filePath(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + "-" + engine + ".png");
+    auto *pf = new QTemporaryFile(QDir::temp().filePath("katana-render-XXXXXX.txt"), this);
+    if (!pf->open()) { delete pf; return false; }
+    pf->write(prompt.toUtf8());
+    pf->flush();
+    QStringList args{"render", "generate", "--engine", engine, "--prompt-file", pf->fileName(), "--init", img, "--strength", "0.35",
+                     "--size", QString("%1x%2").arg(W).arg(H), "--out", out};
+    if (engine == "stable") args << "--lcm";
+    if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");
+
+    if (!m_sess.valida())
+        m_sess = Sessoes::nova(m_model);
+    m_msgs.append("user", prompt);
+    m_sess.mensagens.append({"user", prompt, {}, QDateTime::currentDateTime().toString(Qt::ISODate)});
+    if (m_sess.titulo.isEmpty())
+        m_sess.titulo = Sessoes::truncar(Sessoes::umaLinha(prompt), 80);
+    saveSession();
+    refreshSessions();
+    m_attach.clear();
+
+    auto *p = new QProcess(this);
+    m_imgProc = p;
+    p->setProcessChannelMode(QProcess::MergedChannels);
+    connect(p, &QProcess::finished, this, [this, p, pf, out, engine, nome](int code, QProcess::ExitStatus st) {
+        const QString log = QString::fromUtf8(p->readAll()).trimmed();
+        m_imgProc = nullptr;
+        pf->deleteLater();
+        p->deleteLater();
+        if (st == QProcess::NormalExit && code == 0 && QFileInfo::exists(out)) {
+            m_msgs.append("image", out, engine);
+            m_sess.mensagens.append({"image", out, engine, QDateTime::currentDateTime().toString(Qt::ISODate)});
+            saveSession();
+        } else if (st == QProcess::NormalExit && code == 3) {   // motor ainda nao existe: aviso amigavel, nao e erro
+            m_msgs.append("image", {}, engine, {}, QString("O motor %1 esta em desenvolvimento (WIP) e ainda nao esta disponivel. Use o Stable por enquanto.").arg(nome));
+        } else {
+            m_msgs.append("error", QString("A geracao da imagem (%1) falhou (codigo %2):\n%3").arg(nome).arg(code).arg(log.right(600)));
+        }
+        emit imageChanged();
+    });
+    connect(p, &QProcess::errorOccurred, this, [this, p, nome](QProcess::ProcessError e) {
+        if (e != QProcess::FailedToStart) return;
+        m_imgProc = nullptr;
+        m_msgs.append("error", QString("Nao foi possivel iniciar o katana para gerar a imagem (%1): %2").arg(nome, p->errorString()));
+        p->deleteLater();
+        emit imageChanged();
+    });
+    p->start(m_katana, args);
+    emit imageChanged();
+    return true;
+}
+
 bool Backend::newChat()
 {
     if (!m_proc) {  // sem agente: so limpa a tela
@@ -1918,7 +2013,7 @@ void Backend::markReady()
         QString last;
         for (int i = m_msgs.count() - 1; i >= 0; i--) {
             const QString k = m_msgs.get(i)["kind"].toString();
-            if (k == "notice" || k == "notify" || k == "file" || k == "finding" || k == "plan") continue;
+            if (k == "notice" || k == "notify" || k == "image" || k == "file" || k == "finding" || k == "plan") continue;
             last = k;
             break;
         }

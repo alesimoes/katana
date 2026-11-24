@@ -13,6 +13,7 @@ Canvas {
 
     readonly property var paths: ({
         "plus": "M12 5v14M5 12h14",
+        "image": "M4 5h16v14H4V5M4 16l5-5 4 4 3-3 4 4M9 9h1",
         "menu": "M4 7h16M4 12h16M4 17h16",
         "left": "M15 6l-6 6 6 6",
         "down": "M6 9l6 6 6-6",
