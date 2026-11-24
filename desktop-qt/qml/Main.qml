@@ -262,6 +262,23 @@ ApplicationWindow {
                                             text: (backend.imageBackend === ib.modelData[0] ? "●  " : "○  ") + ib.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
                                     }
                                 }
+                                Text { font.family: Theme.sans; text: "TAMANHO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                Repeater {
+                                    model: [[576, "Normal · 576×320"], [768, "Grande · 768×448"], [1024, "Muito grande · 1024×576 (mais lento)"]]
+                                    AbstractButton {
+                                        id: zb
+                                        required property var modelData
+                                        objectName: "size_" + modelData[0]
+                                        width: apMenu.width - 16; height: 32
+                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                        Accessible.name: "Tamanho da imagem: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                        onClicked: backend.imageSize = modelData[0]
+                                        background: Rectangle { radius: 8; color: zb.hovered ? Theme.hov : "transparent"
+                                            border.width: zb.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                            text: (backend.imageSize === zb.modelData[0] ? "●  " : "○  ") + zb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    }
+                                }
                                 Text { font.family: Theme.sans; text: "PASSOS DO FLUX"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Repeater {
                                     model: [[4, "4 (padrão do modelo)"], [8, "8"], [12, "12"], [20, "20"]]

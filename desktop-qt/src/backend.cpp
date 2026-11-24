@@ -1023,6 +1023,17 @@ void Backend::setState(bool ready, bool loading, bool answering)
     updateInhibit();
 }
 
+int Backend::imageSize() const {
+    const int n = m_ui->value("imagemTamanho", 768).toInt();
+    return (n == 576 || n == 768 || n == 1024) ? n : 768;
+}
+void Backend::setImageSize(int w) {
+    if (w != 576 && w != 768 && w != 1024) return;
+    if (w == imageSize()) return;
+    m_ui->setValue("imagemTamanho", w);
+    m_ui->sync();
+    emit imageChanged();
+}
 int Backend::imageSteps() const {
     const int n = m_ui->value("imagemPassos", 4).toInt();
     return (n == 4 || n == 8 || n == 12 || n == 20) ? n : 4;
@@ -1559,13 +1570,14 @@ bool Backend::sendImage(const QString &text)
     const bool asBrief = !prompt.isEmpty() && looksLikeBrief(prompt);
     if (prompt.isEmpty())
         prompt = QStringLiteral("Fotografia arquitetonica de interiores, fotorrealista, mesma camera, mesma composicao e mesmos materiais da imagem de referencia.");
-    // tamanho: multiplos de 64, area parecida com 576x320, lados entre 64 e 640, proporcao da imagem
+    // tamanho: multiplos de 64, area do tamanho escolhido no menu (576x320, 768x448 ou 1024x576), proporcao da imagem, lados ate 64 acima do nominal
+    const int bw = imageSize(), bh = bw == 576 ? 320 : bw == 768 ? 448 : 576;
     const QSize sz = QImageReader(img).size();
-    int W = 576, H = 320;
+    int W = bw, H = bh;
     if (sz.width() > 0 && sz.height() > 0) {
-        const double s = std::sqrt(576.0 * 320.0 / (double(sz.width()) * sz.height()));
-        W = qBound(64, int(std::lround(sz.width() * s / 64.0)) * 64, 640);
-        H = qBound(64, int(std::lround(sz.height() * s / 64.0)) * 64, 640);
+        const double s = std::sqrt(double(bw) * bh / (double(sz.width()) * sz.height()));
+        W = qBound(64, int(std::lround(sz.width() * s / 64.0)) * 64, bw + 64);
+        H = qBound(64, int(std::lround(sz.height() * s / 64.0)) * 64, bh + 64);
     }
     QDir().mkpath(imageDir());
     const QString out = QDir(imageDir()).filePath(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + "-" + engine + ".png");
