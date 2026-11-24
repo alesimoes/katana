@@ -946,7 +946,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         for (const char *n : {"briefButton", "briefRemove", "logoButton", "logoBoxField", "logoRemove", "teacherButton", "teacherConfig", "teacherDialog", "imageModeButton", "engine_krea", "engine_flux", "engine_stable"})
             check(!c.item(n), QString("interface sem o objeto ") + n);
         be.setImageEngine("krea");
-        check(be.imageEngine() == "stable", "Krea nao e aceito como motor");
+        check(be.imageEngine() == "look", "Krea nao e aceito como acao (continua Só olhar)");
         check(!be.attachImage("/tmp/katana-standin/relatorio final.txt"), "anexar um arquivo que nao e imagem e recusado");
         check(be.attachedImage().isEmpty() && !c.item("attachThumb")->isVisible(), "sem anexo: sem miniatura");
         check(!c.item("imageEngineBox")->isVisible(), "sem anexo: sem seletor de motor");
@@ -955,9 +955,9 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         QTest::qWait(400);
         QQuickItem *eb = c.item("imageEngineBox");
         check(c.item("attachThumb")->isVisible() && eb->isVisible(), "com anexo: miniatura e seletor de motor aparecem");
-        check(eb->property("count").toInt() == 2, "o seletor tem exatamente 2 opcoes");
-        check(eb->property("currentText").toString() == "Stable (rápido)", "Stable (rapido) e o padrao: " + eb->property("currentText").toString());
-        check(be.imageEngine() == "stable", "motor padrao: Stable");
+        check(eb->property("count").toInt() == 3, "o seletor tem 3 opcoes: Só olhar, Stable, FLUX");
+        check(eb->property("currentText").toString() == "Só olhar (conversar)", "Só olhar (conversar) e o padrao: " + eb->property("currentText").toString());
+        check(be.imageEngine() == "look", "acao padrao: so olhar");
         c.grab("60-imagem-anexada.png");
         { const QSize sz0 = win->size(); win->resize(715, sz0.height()); QTest::qWait(500);
           c.item("composerInput")->setProperty("text", "deixe o piso de madeira clara e a luz mais quente");
@@ -966,12 +966,55 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
           win->resize(sz0); QTest::qWait(500); }
         be.setImageEngine("flux");
         QTest::qWait(200);
-        check(eb->property("currentText").toString() == "FLUX (qualidade)", "FLUX (qualidade) e a segunda opcao");
+        check(eb->property("currentText").toString() == "FLUX (qualidade)", "FLUX (qualidade) e a terceira opcao");
         be.setImageEngine("stable");
         c.click(c.item("attachRemove"));
         check(be.attachedImage().isEmpty(), "remover o anexo");
         QTest::qWait(300);
         check(!c.item("attachThumb")->isVisible() && !eb->isVisible(), "sem anexo: miniatura e seletor somem");
+
+        // so olhar (padrao): a mensagem vai ao agente com a imagem (@image) e NAO a `render generate`
+        {
+            const QString argsF = QDir::homePath() + "/.standin-render-args", lookF = QDir::homePath() + "/.standin-image-lines";
+            QFile::remove(argsF); QFile::remove(lookF);
+            QStringList toAgent;
+            QMetaObject::Connection cn = QObject::connect(&be, &Backend::sentToAgent, [&](const QString &l) { toAgent << l; });
+            be.setImageEngine("look");
+            check(be.attachImage(img), "anexar para so olhar");
+            // sem agente carregado: avisa para escolher um modelo e o anexo fica
+            check(!be.ready() && !be.sendImage("o que e isto?") && be.attachedImage() == img && be.errorText().contains("Escolha um modelo") && toAgent.isEmpty(),
+                  "sem agente: 'Escolha um modelo', anexo mantido, nada enviado: " + be.errorText());
+            be.start(be.currentModel());
+            check(waitFor([&] { return be.ready(); }, 240000), "agente iniciado para o teste de so olhar");
+            QTest::qWait(300);
+            const int nl0 = be.messages()->count();
+            c.typeAndEnter("o que tem na imagem?");
+            check(waitFor([&] { return toAgent.size() == 1 && be.ready(); }, 30000), "so olhar: a mensagem foi ao agente");
+            check(!toAgent.isEmpty() && toAgent[0] == "@image(" + img + ") o que tem na imagem?", "linha com a marca @image e o texto: " + (toAgent.isEmpty() ? QString() : toAgent[0]));
+            check(!QFileInfo::exists(argsF), "so olhar: nao chamou render generate");
+            check(be.attachedImage().isEmpty(), "so olhar: o anexo e consumido");
+            const QVariantMap um = be.messages()->get(nl0);
+            check(um["kind"] == "user" && um["text"] == "o que tem na imagem?" && um["name"] == img, "balao do usuario guarda texto e caminho da imagem");
+            QTest::qWait(400);
+            { QList<QQuickItem *> ims; findAll(c.root(), "userImage", ims); check(!ims.isEmpty() && ims.last()->isVisible(), "miniatura da imagem no balao do usuario"); c.grab("68-imagem-no-balao.png"); }
+            check(waitFor([&] { QFile f(lookF); return f.open(QIODevice::ReadOnly) && f.readAll().contains("@image("); }, 5000), "motor de mentira recebeu a marca @image");
+            check(be.messages()->get(be.messages()->count() - 1)["text"].toString().contains("Vi a imagem render-entrada.png"), "resposta do agente sobre a imagem");
+            bool noPath = false; Session s2;
+            if (Sessoes::carregar(be.sessionsDir(), be.currentSessionId(), &s2)) for (const Msg &m : s2.mensagens) noPath |= m.papel == "user" && m.nome == img && m.texto == "o que tem na imagem?";
+            check(noPath, "sessao guarda so o caminho da imagem na mensagem do usuario");
+            // texto vazio: pedido padrao
+            toAgent.clear(); be.attachImage(img);
+            check(be.sendImage("") && waitFor([&] { return toAgent.size() == 1 && be.ready(); }, 30000) && toAgent[0] == "@image(" + img + ") Descreva a imagem.", "so olhar sem texto: pede para descrever");
+            // a escolha e lembrada entre anexos e em ui.ini; Stable/FLUX continuam indo ao gerador
+            be.setImageEngine("flux"); be.clearImage(); be.attachImage(img);
+            check(be.imageEngine() == "flux", "a escolha persiste entre anexos");
+            { QSettings ui(QDir::cleanPath(be.imageDir() + "/../ui.ini"), QSettings::IniFormat); ui.sync(); check(ui.value("imagemAcao").toString() == "flux", "ui.ini guarda imagemAcao=flux"); }
+            be.clearImage(); be.setImageEngine("stable");      // Stable e FLUX seguem para render generate: conferido nos testes abaixo (argumentos e nada ao agente)
+            QObject::disconnect(cn);
+            check(waitFor([&] { return be.ready(); }, 5000), "agente pronto depois do bloco so olhar");
+            be.send("morra agora");      // volta ao estado de antes do bloco (sem agente), como os testes de geracao abaixo esperam
+            check(waitFor([&] { return !be.ready() && !be.answering(); }, 30000), "agente encerrado de novo");
+        }
 
         // gerar com o stable: nao passa pelo agente; texto curto vai como --nl
         const QString argsFile = QDir::homePath() + "/.standin-render-args";

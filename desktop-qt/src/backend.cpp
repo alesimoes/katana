@@ -516,6 +516,7 @@ Backend::Backend(const QString &katana, const QString &modelsDir, const QString 
         m_engineVersion += " · " + QFileInfo(m_katana).absoluteFilePath(); }
     QDir().mkpath(m_sessDir);
     m_ui = new QSettings(QDir(home).filePath("ui.ini"), QSettings::IniFormat, this);
+    { const QString ia = m_ui->value("imagemAcao", "look").toString(); m_imgEngine = (ia == "stable" || ia == "flux") ? ia : QStringLiteral("look"); }
     setFonte(fonte());
     connect(&m_msgs, &MessageModel::rowsInserted, this, &Backend::thinkingChanged);
     connect(&m_msgs, &MessageModel::modelReset, this, &Backend::thinkingChanged);
@@ -1482,7 +1483,9 @@ void Backend::writeLine(const QString &line)
 
 // ---- envio e conversa ----
 
-bool Backend::send(const QString &text)
+bool Backend::send(const QString &text) { return sendMsg(text, {}); }
+
+bool Backend::sendMsg(const QString &text, const QString &image)
 {
     if (!m_proc || !m_ready || text.trimmed().isEmpty())
         return false;
@@ -1495,7 +1498,9 @@ bool Backend::send(const QString &text)
         msg = m_pendingCtx + "Nova mensagem: " + text;
         m_pendingCtx.clear();
     }
-    const QString line = Sessoes::umaLinha(msg);  // o agente le uma linha por turno
+    QString line = Sessoes::umaLinha(msg);  // o agente le uma linha por turno
+    if (!image.isEmpty())
+        line = "@image(" + image + ") " + line;   // o agente resolve a marca (docs/vision.md): a imagem entra nesta mensagem
     if (!m_sess.valida())
         m_sess = Sessoes::nova(m_model);
     const QString kp = ksessPath(m_sess.id);
@@ -1506,8 +1511,8 @@ bool Backend::send(const QString &text)
     setTexts({}, {});
     m_speed.clear();
     m_stopRequested = false;
-    m_msgs.append("user", text);
-    m_sess.mensagens.append({"user", text, {}, QDateTime::currentDateTime().toString(Qt::ISODate)});
+    m_msgs.append("user", text, image);      // nome = caminho da imagem (a sessao guarda so o caminho)
+    m_sess.mensagens.append({"user", text, image, QDateTime::currentDateTime().toString(Qt::ISODate)});
     if (m_sess.titulo.isEmpty())
         m_sess.titulo = Sessoes::truncar(Sessoes::umaLinha(text), 80);
     saveSession();
@@ -1559,8 +1564,29 @@ bool Backend::looksLikeBrief(const QString &text)
     return false;
 }
 
+void Backend::setImageEngine(const QString &e)
+{
+    if ((e != "look" && e != "stable" && e != "flux") || e == m_imgEngine) return;
+    m_imgEngine = e;
+    m_ui->setValue("imagemAcao", e);
+    m_ui->sync();
+    emit imageChanged();
+}
+
 bool Backend::sendImage(const QString &text)
 {
+    if (m_imgEngine == "look") {                       // so olhar: a imagem vai ao agente junto com a mensagem
+        if (m_attach.isEmpty()) return false;
+        if (!m_proc) { setTexts({}, QStringLiteral("Escolha um modelo para iniciar o agente.")); return false; }
+        if (!m_ready) { setTexts({}, QStringLiteral("Aguarde o agente terminar.")); return false; }
+        if (m_attach.contains(')') || m_attach.contains('\n')) { setTexts({}, QStringLiteral("O nome do arquivo tem um parenteses: renomeie a imagem.")); return false; }
+        const QString t = text.trimmed().isEmpty() ? QStringLiteral("Descreva a imagem.") : text.trimmed();
+        const QString img = m_attach;
+        if (!sendMsg(t, img)) return false;
+        m_attach.clear();
+        emit imageChanged();
+        return true;
+    }
     if (m_attach.isEmpty() || m_imgProc || m_katana.isEmpty())
         return false;
     const QString engine = m_imgEngine;

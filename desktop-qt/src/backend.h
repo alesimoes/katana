@@ -128,7 +128,7 @@ class Backend : public QObject
     Q_PROPERTY(QVariantList catalog READ catalog NOTIFY catalogChanged)   // modelos que o aplicativo sabe baixar (katana catalog)
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY catalogChanged)    // memoria, placa, disco livre (katana hw)
     Q_PROPERTY(QString attachedImage READ attachedImage NOTIFY imageChanged)      // imagem anexada ao proximo envio ("" = nenhuma)
-    Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // stable ou flux
+    Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // look (so olhar, conversar), stable ou flux
     Q_PROPERTY(int imageSize READ imageSize WRITE setImageSize NOTIFY imageChanged)   // largura da imagem gerada em 16:9: 1024 (a menor), 1280, 1600 ou 1920
     Q_PROPERTY(int imageSteps READ imageSteps WRITE setImageSteps NOTIFY imageChanged)   // passos do FLUX: 4 (padrao do modelo), 8, 12 ou 20
     Q_PROPERTY(QString imageBackend READ imageBackend WRITE setImageBackend NOTIFY imageChanged)   // processamento do FLUX: auto, cuda, vulkan ou cpu (KATANA_BACKEND)
@@ -242,6 +242,7 @@ public:
 
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
+    bool sendMsg(const QString &text, const QString &image);   // send com uma imagem para o agente olhar (@image no protocolo)
     QString attachedImage() const { return m_attach; }
     int imageSize() const;
     void setImageSize(int w);
@@ -250,14 +251,14 @@ public:
     QString imageBackend() const;
     void setImageBackend(const QString &b);
     QString imageEngine() const { return m_imgEngine; }
-    void setImageEngine(const QString &e) { if ((e == "stable" || e == "flux") && e != m_imgEngine) { m_imgEngine = e; emit imageChanged(); } }
+    void setImageEngine(const QString &e);   // look (so olhar, padrao), stable ou flux; lembrado em ui.ini (imagemAcao)
     bool imageBusy() const { return m_imgProc != nullptr; }
     Q_INVOKABLE bool attachImage(const QString &pathOrUrl);   // anexa uma imagem (caminho ou file://); false se nao for imagem legivel
     Q_INVOKABLE void clearImage();
     Q_INVOKABLE bool pasteClipboardImage();                   // anexa a imagem da area de transferencia (se houver); false se nao houver
     Q_INVOKABLE static bool looksLikeBrief(const QString &text);   // texto longo ou com cara de briefing: vai como --brief em vez de --nl
     void reopenAgentAfterImage();                             // volta a abrir o agente fechado para liberar a placa
-    Q_INVOKABLE bool sendImage(const QString &text);          // gera a imagem com `katana render generate` (nao passa pelo agente)
+    Q_INVOKABLE bool sendImage(const QString &text);          // gera a imagem com `katana render generate`; com a acao "look" manda ao agente com a imagem anexada
     Q_INVOKABLE QString imageDir() const;                     // pasta das imagens geradas
     Q_INVOKABLE void stop();
     Q_INVOKABLE void answerChoice(const QString &text);   // resposta a pergunta do agente (AskUserQuestion); vazia = cancelar
@@ -374,7 +375,7 @@ private:
 
     QString m_katana, m_modelsDir, m_home, m_sessDir;
     QString m_reloadModel;      // modelo do agente fechado para liberar a placa durante a imagem; volta a abrir quando a imagem termina
-    QString m_attach, m_imgEngine = QStringLiteral("stable");
+    QString m_attach, m_imgEngine = QStringLiteral("look");
     QProcess *m_imgProc = nullptr;
     QSettings *m_ui = nullptr;
     QVariantList m_models;

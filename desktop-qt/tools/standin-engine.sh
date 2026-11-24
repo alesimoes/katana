@@ -72,6 +72,13 @@ while IFS= read -r line; do
     /exit) exit 0;;
     /session*|/cd*) ;;                                   # comandos silenciosos: sem READY
     /*) printf '\001READY\n';;
+    *"@image("*)
+        # mensagem com imagem (docs/vision.md): confirma o caminho e a mensagem que o agente recebeu, como o motor resolve a marca
+        P=${line#*@image(}; P=${P%%)*}
+        echo "$line" >> "${HOME:-/tmp}/.standin-image-lines"
+        echo "[image $P: 64x64, 4 tokens]" >&2
+        printf 'Vi a imagem %s.\n' "$(basename "$P")"
+        printf '\001READY\n';;
     *arquivos*)
         printf '\001TOOL notify\t{"message":"pronto"}\n'
         printf '\001NOTIFY Tarefa concluida\tO relatorio ficou pronto\n'

@@ -104,10 +104,21 @@ Item {
                     Rectangle {
                         id: bubble
                         anchors.right: parent.right
-                        width: Math.min(parent.width * 0.82, tm.advanceWidth + 34)
-                        height: ut.implicitHeight + 20
+                        width: Math.min(parent.width * 0.82, Math.max(tm.advanceWidth + 34, thumb.visible ? thumb.width + 24 : 0))
+                        height: ut.implicitHeight + 20 + (thumb.visible ? thumb.height + 8 : 0)
                         radius: 20
                         color: Theme.us
+                        Image {      // imagem que o agente olhou nesta mensagem (a sessao guarda so o caminho)
+                            id: thumb
+                            objectName: "userImage"
+                            visible: d.name.length > 0 && status === Image.Ready
+                            x: 12; y: 10
+                            source: d.name.length > 0 ? "file://" + d.name : ""
+                            sourceSize: Qt.size(480, 240)
+                            fillMode: Image.PreserveAspectFit
+                            width: Math.min(240, implicitWidth); height: implicitHeight > 0 ? width * implicitHeight / implicitWidth : 0
+                            asynchronous: true
+                        }
                         Rectangle {  // canto inferior direito menos arredondado
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
@@ -116,7 +127,7 @@ Item {
                         }
                         TextEdit { font.family: Theme.sans;
                             id: ut
-                            x: 16; y: 10
+                            x: 16; y: 10 + (thumb.visible ? thumb.height + 8 : 0)
                             width: parent.width - 32
                             text: d.text
                             readOnly: true

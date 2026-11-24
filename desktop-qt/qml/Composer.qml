@@ -18,7 +18,7 @@ Item {
     function setText(t) { ta.text = t; ta.cursorPosition = t.length; }
     function submit() {
         var t = ta.text.trim();
-        if (backend.attachedImage) {                  // imagem anexada: vai para o gerador, nao para o agente
+        if (backend.attachedImage) {                  // imagem anexada: "Só olhar" vai ao agente com a imagem; Stable/FLUX vão para o gerador
             if (!backend.imageBusy && backend.sendImage(t)) ta.clear();
             return;
         }
@@ -208,9 +208,9 @@ Item {
             anchors.rightMargin: 8
             anchors.verticalCenter: sendBtn.verticalCenter
             width: 168; height: 30
-            model: [{ id: "stable", label: "Stable (rápido)" }, { id: "flux", label: "FLUX (qualidade)" }]
+            model: [{ id: "look", label: "Só olhar (conversar)" }, { id: "stable", label: "Stable (rápido)" }, { id: "flux", label: "FLUX (qualidade)" }]
             textRole: "label"
-            currentIndex: backend.imageEngine === "flux" ? 1 : 0
+            currentIndex: backend.imageEngine === "flux" ? 2 : backend.imageEngine === "stable" ? 1 : 0
             onActivated: (i) => backend.imageEngine = model[i].id
             Accessible.name: "Motor da imagem"
             font.family: Theme.sans; font.pixelSize: 12
@@ -256,7 +256,7 @@ Item {
             hoverFill: Qt.lighter(Theme.ac, 1.1)
             enabled: backend.attachedImage.length > 0 ? !backend.imageBusy : (backend.answering || (backend.ready && ta.text.trim().length > 0))
             opacity: enabled ? 1 : 0.35
-            tip: backend.attachedImage.length > 0 ? "Gerar a imagem" : backend.answering ? (ta.text.trim().length ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar"
+            tip: backend.attachedImage.length > 0 ? (backend.imageEngine === "look" ? "Enviar a imagem ao agente" : "Gerar a imagem") : backend.answering ? (ta.text.trim().length ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar"
             onClicked: comp.submit()
         }
     }
