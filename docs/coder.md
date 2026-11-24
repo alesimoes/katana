@@ -10,7 +10,7 @@ it is, the `katana coder ...` commands, where the data lives, and which document
 | `docs/code-index-lifecycle.md` | How the index is built, kept fresh, bounded and shown to the model: roots, crawler, levels, ignore rules, transparency, storage format |
 | `docs/code-intelligence.md` | The query side: parsers, search channels, symbol queries, links by text key, knowledge base |
 | `docs/code-intelligence-architecture.md` | Why: requirements, alternatives considered |
-| `docs/tools.md` | The agent tools that sit on top (`Find`, `Symbols`) |
+| `docs/tools.md` | The agent tools that sit on top (`Find`, `Symbols`, `Edit` by symbol) |
 
 ## What it does
 
@@ -81,4 +81,4 @@ folder). Freshness: `KATANA_INDEX_WATCH` (`off`, `poll`), `KATANA_INDEX_WATCH_MA
 watch), `fresh.c` (cited-file check), `indexctl.c` (when a query revalidates; cached views), `maint.c` (`list`,
 `forget`, `gc`, `ignored`, `include`, `exclude`, store health), `statemap.c` (per-folder level map for the status
 line and `tree`), `findstore.c` and `graph.c` (`Find` over the store; the file graph), `text.c`, `search.c`, `keys.c`,
-`parse.c`/`parse2.c`, `symindex.c`, `symquery.c`, `symtool.c`, `flow.c`, `kb.c`; `coder.c` dispatches `katana coder`.
+`parse.c`/`parse2.c`, `symindex.c`, `symquery.c`, `symtool.c`, `symedit.c` (validated `Edit` by symbol, see `docs/tools.md`), `flow.c`, `kb.c`; `coder.c` dispatches `katana coder`.

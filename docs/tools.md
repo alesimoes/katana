@@ -354,6 +354,29 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
   (stubs only); the 4.7k-file size and build time were not measured; the persisted graph was reloaded and a bad/old
   cache file was not injected by hand.
 
+### Edit by symbol (validated edit loop)
+`Edit(file_path, symbol, where, new_string)` (`src/tools/edit.c` hands over to `src/coder/symedit.c`): the same tool, so the prompt still declares 12 tools
+(the short declaration of `Edit` grew by about 330 characters, about 80 tokens). `symbol` is a name, `Class.name` (also `Class::name`, `Class#name`) or
+`name:LINE`; it is resolved by a fresh parse of the file with the family scanner of `src/coder/` (the disk wins, no stale index) and an ambiguous name is an
+error that lists the candidates. No `Read` is needed. `where`: `replace` (default: the whole definition, header and decorators included; a leading comment in
+`new_string` replaces the attached one), `body` (what is inside the braces, or the indented block in Python), `before`, `after` (insert next to it, after the
+attached comments), `delete`. `new_string` is written without the symbol's own indentation; the engine indents it.
+
+Validation runs BEFORE writing, so a refused edit leaves the file untouched (it is the automatic undo; the `~/.katana/undo` copy is made only when it writes):
+1. brackets of the new region and of the whole file (mask without comments and string contents; a file that was already unbalanced is not blamed);
+2. the family scanner on the new file: the symbol still exists and has the same kind (function, method and constructor count as one);
+3. the language syntax tool on a temporary copy (python ast, `node --check`, `bash -n`, `php -l`, `ruby -c`, json), refusing only what the file did not already fail;
+4. then the report. Every finding carries its grade, never "exact": `[structural]` (scanner facts about this file: signature changed with parameter count,
+   decorators dropped, symbols that appeared or disappeared), `[derived]` (callers by equal name: same file from the new parse, other files from the symbol index; says
+   when the name has several definitions), `[lsp NAME]` (only the errors the edit INTRODUCED, from a diagnostics comparison before and after, with a short deadline:
+   `KATANA_EDIT_LSP_MS` 2500, `KATANA_EDIT_LSP=0` off; no server or no answer never blocks and prints nothing). `KATANA_EDIT_TIME=1` adds the milliseconds.
+
+Languages: every family the scanner covers has symbols (replace, before, after, delete). `body` needs a brace family or Python. Brackets are checked for the brace
+languages, Python, shell, PowerShell, JSON and CSS; keyword-end languages (Ruby, Lua) and markup rely on the scanner and the syntax tool only. Tested in depth on C
+and Python, structurally on JS, Go, shell, Java, Rust and Markdown. Limits: a legitimate region with `#if` branches that open braces is only compared on the whole
+file; a scanner limit (macros that hide braces) can refuse a good edit, then use `old_string`/`new_string`; callers by name are not name resolution; no type
+inference. Tests: `tools/tooltest/symedit.sh` (with `tools/tooltest/fake_lsp.py`). Measurement against the traditional edit: `tools/editbench/bench.py`.
+
 ### Symbols (structural queries from the symbol index)
 `Symbols(action, name, file, line, limit, depth, path)` (`src/tools/symbols.c`, work in `src/coder/symtool.c`): the
 `katana coder def|refs|callers|callees|uses|outline|at|deps|impact` queries as one tool for the agent. Read-only (runs in

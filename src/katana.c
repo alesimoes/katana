@@ -121,6 +121,7 @@
 #include "coder/symquery.c"          /* coder: consultas estruturais (def, refs, callers, callees, uses, outline, at, deps, impact) */
 #include "coder/flow.c"              /* coder: ligacoes por chave de texto (katana coder flow) */
 #include "coder/symtool.c"           /* coder: ferramenta Symbols e Find mode=refs em cima do indice de simbolos */
+#include "coder/symedit.c"           /* coder: Edit por simbolo com validacao (scanner da familia, chamadores, LSP opcional) */
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/findstore.c"        /* coder: o Find unificado: candidatos do indice, indice de trechos por consulta, grafo derivado de N2/N3 (fase 7) */
 #include "coder/crawl.c"              /* coder: o rastreador do indice (katana coder crawl): niveis N0..N3, retomavel, sob demanda */

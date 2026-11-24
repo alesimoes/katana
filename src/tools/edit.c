@@ -7,17 +7,24 @@ static const char CT_EDIT_DESC[] =
     "new_string must differ from old_string. For several changes in the same file send edits instead of old_string and new_string: they are applied in order, all or none, "
     "each to the text left by the previous one. edits is plain text with one block per change (nothing is escaped): "
     "a line <<<<<<< , the old text, a line ======= , the new text, a line >>>>>>> ; an array of {old_string, new_string, replace_all} is accepted too. To create a new file with Edit, give an empty old_string for a path that does not exist (Write is better for that). "
-    "Files that are not valid UTF-8 are refused. After the edit a few lines around the change are shown, and a syntax check runs for common languages.";
+    "Files that are not valid UTF-8 are refused. After the edit a few lines around the change are shown, and a syntax check runs for common languages. "
+    "To change ONE function, class, method or variable without sending the file or the old text (no Read needed), give symbol instead of old_string: its name, Class.name, or name:LINE when the name is ambiguous (the error lists the candidates), "
+    "and new_string written WITHOUT the symbol's own indentation (it is indented for you). where: replace (default: the whole definition, header and decorators included), body (only what is inside the braces, or the indented block in Python), "
+    "before or after (insert new_string next to the symbol), delete (no new_string). The result is checked BEFORE it is written: unbalanced brackets, a symbol that disappears or changes kind, or a syntax error refuse the edit and leave the file untouched, with the line and what was expected. "
+    "A report follows, each finding marked structural (the language scanner), derived (callers found by name, listed when the signature changed or a name disappeared) or lsp (new errors from a language server, when one is installed).";
 static const char CT_EDIT_PROPS[] =
     "\"file_path\": {\"type\": \"string\", \"description\": \"The absolute path of the file to modify\"}, "
     "\"old_string\": {\"type\": \"string\", \"description\": \"The text to replace, exactly as it is in the file\"}, "
     "\"new_string\": {\"type\": \"string\", \"description\": \"The text to replace it with (must be different from old_string)\"}, "
     "\"replace_all\": {\"type\": \"boolean\", \"description\": \"Replace every occurrence of old_string (default false)\"}, "
     "\"edits\": {\"type\": \"string\", \"description\": \"Several changes to this file, instead of old_string and new_string: one block per change, "
-    "each block being a line <<<<<<<, the old text, a line =======, the new text, a line >>>>>>>\"}";
+    "each block being a line <<<<<<<, the old text, a line =======, the new text, a line >>>>>>>\"}, "
+    "\"symbol\": {\"type\": \"string\", \"description\": \"Edit one symbol instead of old_string: name, Class.name or name:LINE\"}, "
+    "\"where\": {\"type\": \"string\", \"enum\": [\"replace\", \"body\", \"before\", \"after\", \"delete\"], \"description\": \"With symbol: what new_string replaces or where it goes (default replace)\"}";
 static const char CT_EDIT_REQ[] = "\"file_path\"";
 
 static void index_touch(const char *path);                   /* src/coder/indexctl.c */
+static void ct_edit_symbol(const char *js, const char *end, char *out, size_t cap);   /* src/coder/symedit.c */
 /* grava o arquivo (cria ou sobrescreve); 1 se foi, senao a mensagem em out */
 static int ct_f_save(const char *abs, const char *data, size_t n, char *out, size_t cap) {
     mkdir_parents(abs);
@@ -136,6 +143,7 @@ static void ct_edit(const char *js, const char *end, char *out, size_t cap) {
     size_t pos[CT_ED_MAX];              /* onde ficou a primeira troca de cada item, no texto final */
     char *fp = ct_str(js, end, "file_path"), *b = NULL, *det = NULL;
     int ne = 0;
+    { char *sym = ct_str(js, end, "symbol"); const int bysym = sym && *sym; free(sym); if (bysym) { free(fp); ct_edit_symbol(js, end, out, cap); return; } }
     do {
         if (!fp) { snprintf(out, cap, "error: missing file_path"); break; }
         ne = ct_ed_parse(js, end, ed, out, cap);
