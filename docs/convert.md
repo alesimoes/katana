@@ -25,7 +25,8 @@ final name.
 
 Architectures: `Qwen3_5MoeForConditionalGeneration` / `Qwen3_5MoeForCausalLM` -> `qwen35moe` (Qwen3.6-35B-A3B: gated
 attention + Gated DeltaNet hybrid, MoE with 256 experts, 8 active, and a gated shared expert), and
-`Qwen3_5ForConditionalGeneration` / `Qwen3_5ForCausalLM` -> `qwen35` (dense FFN variant). Anything else stops with a
+`Qwen3_5ForConditionalGeneration` / `Qwen3_5ForCausalLM` -> `qwen35` (dense FFN variant). `EmbeddingGemma2Model` (google/embeddinggemma-2) -> `embeddinggemma2`, text tower only (the vision and audio towers are
+skipped; see `docs/embed.md`; norms are written as they are, default type `q8_0`). Anything else stops with a
 message. Vision (`visual.*`) and multi-token-prediction (`mtp.*`) tensors are skipped and counted; the vision projector
 the engine uses comes from a separate GGUF, as with the downloaded model.
 

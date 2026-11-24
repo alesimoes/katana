@@ -1,9 +1,15 @@
 # When the engine calls the embedding model (usage model)
 
-Status: design only (2026-11-22). Nothing in `src/` implements this, no model was run to write it, and **no cost of
-the embedding model has been measured on this machine yet** (`katana embed` is being written and measured
-separately). Every cost number below is a named parameter with a provisional value; section 7 lists the one
-measurement that would fix each. Numbers quoted from other documents carry their source.
+Status (2026-11-23): the design below is still not implemented in `Find`. What exists now: **`katana embed` and the C
+function `embed_text()` (`src/app/embed.c`) run google/embeddinggemma-2 (text tower, 0.27 G parameters, 768 dimensions
+with Matryoshka 128/256/512/768) on the CPU in float32**, with `katana convert` producing the GGUF; see `docs/embed.md`.
+It matches the reference implementation (cosine 0.99999999 in F32, 0.9999 in Q8_0) and found the right function for 10 of
+10 code queries among 10 snippets. This is a different model from the Qwen3-Embedding-0.6B named in section 0 (the owner
+chose embeddinggemma-2 for the filter on 2026-11-23); wherever this document says "Qwen3-Embedding", "last token" or
+"1024 dimensions", read the facts of `docs/embed.md` instead: bidirectional attention, **mean pooling**, a task prefix on
+queries *and* a `title: ... | text: ...` prefix on documents, truncate-and-renormalise Matryoshka. Costs were observed
+only under load (about 10 to 25 ms per token on two busy threads; `docs/embed.md`, "Cost"), so the cost parameters below
+are still provisional and section 7 still lists what to measure. Numbers quoted from other documents carry their source.
 
 The design is the owner's:
 

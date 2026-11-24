@@ -198,6 +198,7 @@ static int emb_load(EmbModel *m, const char *path) {
         EmbLayer *L = &m->L[l];
         const int hd = m->hd[l], nkv = m->nkv[l];
         if (hd <= 0 || hd % 2 || nkv <= 0 || m->heads % nkv) { fprintf(stderr, "embed: camada %d com cabecas invalidas\n", l); return -1; }
+        for (int q = 0; q < l; q++) if (m->local[q] == m->local[l] && m->hd[q] != hd) { fprintf(stderr, "embed: largura de cabeca diferente entre camadas do mesmo tipo\n"); return -1; }
         const size_t QO = (size_t)m->heads * hd, KO = (size_t)nkv * hd;
 #define EV(field, suffix, n) do { snprintf(nm, sizeof nm, "blk.%d." suffix, l); L->field = get_tensor(&ts, nm, (n), 1, NULL); } while (0)
         EV(attn_norm, "attn_norm.weight", D); EV(post_attn_norm, "post_attention_norm.weight", D);
@@ -255,20 +256,31 @@ static int emb_forward(EmbModel *m, const int *ids, int T, float *pooled) {
     float *O = xalloc((size_t)T * H * maxhd, sizeof(float));
     float *g = xalloc((size_t)T * F, sizeof(float)), *u = xalloc((size_t)T * F, sizeof(float));
     float *pg = xalloc((size_t)T * P, sizeof(float)), *pt = xalloc((size_t)T * D, sizeof(float));
+    /* tabelas de cos/sin do RoPE por tipo de camada (0 = global, 1 = local): [posicao][hd/2] */
+    float *rc[2] = { NULL, NULL }, *rs[2] = { NULL, NULL };
+    for (int l = 0; l < NL; l++) {
+        const int ty = m->local[l] ? 1 : 0, hd = m->hd[l];
+        if (rc[ty]) continue;
+        const float base = ty ? m->base_loc : m->base_glob;
+        rc[ty] = xalloc((size_t)T * (hd / 2), sizeof(float)); rs[ty] = xalloc((size_t)T * (hd / 2), sizeof(float));
+        for (int i = 0; i < hd / 2; i++) {
+            const float fr = 1.0f / powf(base, (float)(2 * i) / (float)hd);
+            for (int t = 0; t < T; t++) { const float an = (float)t * fr; rc[ty][(size_t)t * (hd / 2) + i] = cosf(an); rs[ty][(size_t)t * (hd / 2) + i] = sinf(an); }
+        }
+    }
     for (int l = 0; l < NL; l++) {
         const EmbLayer *L = &m->L[l];
         const int hd = m->hd[l], nkv = m->nkv[l];
         for (int t = 0; t < T; t++) emb_rms(x + (size_t)t * D, h + (size_t)t * D, L->attn_norm, D, m->eps);
         emb_mm(Q, L->wq, x, T, D, H * hd); emb_mm(K, L->wk, x, T, D, nkv * hd); emb_mm(V, L->wv, x, T, D, nkv * hd);
-        const float base = m->local[l] ? m->base_loc : m->base_glob;
+        const float *cs = rc[m->local[l] ? 1 : 0], *sn = rs[m->local[l] ? 1 : 0];
         for (int t = 0; t < T; t++) {
             for (int hh = 0; hh < H + 2 * nkv; hh++) {
                 float *v = hh < H ? Q + ((size_t)t * H + hh) * hd : hh < H + nkv ? K + ((size_t)t * nkv + (hh - H)) * hd : V + ((size_t)t * nkv + (hh - H - nkv)) * hd;
                 emb_rms(v, v, hh < H ? L->q_norm : hh < H + nkv ? L->k_norm : NULL, hd, m->eps);      /* v: norma sem peso */
                 if (hh >= H + nkv) continue;
                 for (int i = 0; i < hd / 2; i++) {      /* RoPE rotate_half sobre a cabeca inteira */
-                    const float fr = 1.0f / powf(base, (float)(2 * i) / (float)hd), an = (float)t * fr;
-                    const float c = cosf(an), s = sinf(an), a = v[i], b = v[i + hd / 2];
+                    const float c = cs[(size_t)t * (hd / 2) + i], s = sn[(size_t)t * (hd / 2) + i], a = v[i], b = v[i + hd / 2];
                     v[i] = a * c - b * s; v[i + hd / 2] = b * c + a * s;
                 }
             }
@@ -305,6 +317,7 @@ static int emb_forward(EmbModel *m, const int *ids, int T, float *pooled) {
     }
     for (int i = 0; i < D; i++) mean[i] /= (float)T;
     for (int o = 0; o < m->out_dim; o++) pooled[o] = dot(m->proj + (size_t)o * D, mean, D);
+    for (int i = 0; i < 2; i++) { free(rc[i]); free(rs[i]); }
     free(mean); free(h); free(x); free(tmp); free(pli); free(Q); free(K); free(V); free(O); free(g); free(u); free(pg); free(pt);
     return 0;
 }
