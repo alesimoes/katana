@@ -43,13 +43,88 @@ extern char **environ;
 static double cm_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9; }
 
 /* guarda o INICIO (H bytes) e o FIM (T bytes, anel) de um fluxo de tamanho qualquer */
-typedef struct { char *head, *tail; size_t H, T, hn, tn; } HT;
-static void ht_init(HT *h, size_t H, size_t T) { h->H = H; h->T = T ? T : 1; h->hn = h->tn = 0; h->head = (char *)malloc(H + 1); h->tail = (char *)malloc(h->T + 1); }
-static void ht_free(HT *h) { free(h->head); free(h->tail); }
+#define HT_ALL_MAX ((size_t)1 << 20)      /* a saida inteira fica guardada ate 1 MB: o meio omitido pode ser consultado por sentido */
+typedef struct { char *head, *tail; size_t H, T, hn, tn; char *all; size_t an, acap; int aover; } HT;
+static void ht_init(HT *h, size_t H, size_t T) { h->H = H; h->T = T ? T : 1; h->hn = h->tn = 0; h->all = NULL; h->an = h->acap = 0; h->aover = 0; h->head = (char *)malloc(H + 1); h->tail = (char *)malloc(h->T + 1); }
+static void ht_free(HT *h) { free(h->head); free(h->tail); free(h->all); h->all = NULL; }
 static void ht_add(HT *h, const char *p, size_t n) {
     size_t i = 0;
+    if (!h->aover) {
+        if (h->an + n > HT_ALL_MAX) { h->aover = 1; free(h->all); h->all = NULL; h->an = h->acap = 0; }
+        else {
+            if (h->an + n > h->acap) { size_t nc = h->acap ? h->acap * 2 : 8192; while (nc < h->an + n) nc *= 2; h->all = (char *)realloc(h->all, nc); h->acap = nc; }
+            memcpy(h->all + h->an, p, n); h->an += n;
+        }
+    }
     if (h->hn < h->H) { size_t k = h->H - h->hn < n ? h->H - h->hn : n; memcpy(h->head + h->hn, p, k); h->hn += k; i = k; }
     for (; i < n; i++) h->tail[h->tn++ % h->T] = p[i];
+}
+/* Do trecho omitido (mid, mn bytes) escolhe ate 2 janelas de 6 linhas, as mais proximas em sentido do que o modelo procura (servico de
+ * embeddings, app/embsvc.c). Candidatas: janelas com palavras de falha (error, fail, fatal, warning, exception, panic, undefined,
+ * denied, cannot, not found, traceback, assert), ate 16, e janelas espalhadas ate completar 24; os vetores so sao calculados dentro de
+ * KATANA_EMBED_BASH_MS (padrao 1500 ms). Nota = cosseno + 0,1 se tem palavra de falha; entra com cosseno >= 0,60 ou palavra de falha
+ * (limiar por analogia com a memoria, onde o texto sem relacao ficou em 0,5 a 0,68). Escreve em buf o texto das janelas com numero relativo de linha e devolve quantos bytes
+ * de conteudo copiou do omitido em *content (0 = nada escolhido). */
+static const char *intent_get(void);
+static size_t ht_sem_mid(const char *mid, size_t mn, char *buf, size_t bcap, size_t *content) {
+    *content = 0; buf[0] = 0;
+    const char *intent = intent_get();
+    if (!*intent || mn < 600 || !es_available()) return 0;
+    enum { WL = 6, MAXW = 24 };
+    size_t ls[4096]; size_t nl = 0;
+    for (size_t i = 0; i < mn && nl < 4095; ) { ls[nl++] = i; const char *e = (const char *)memchr(mid + i, '\n', mn - i); i = e ? (size_t)(e - mid) + 1 : mn; }
+    ls[nl] = mn;
+    if (nl < (size_t)(2 * WL)) return 0;
+    static const char *const bad[] = { "error", "fail", "fatal", "warning", "exception", "panic", "undefined", "denied", "cannot", "not found", "traceback", "assert", NULL };
+    size_t wa[MAXW]; int prior[MAXW], nw = 0;
+    for (size_t a = 0; a + WL <= nl + 0 && nw < 16; a += WL) {
+        int hit = 0;
+        for (size_t i = a; i < a + WL && !hit; i++) {
+            const size_t l = ls[i + 1] - ls[i];
+            for (int k = 0; bad[k] && !hit; k++) { const size_t bl = strlen(bad[k]); for (size_t j = 0; j + bl <= l && !hit; j++) if (strncasecmp(mid + ls[i] + j, bad[k], bl) == 0) hit = 1; }
+        }
+        if (hit) { wa[nw] = a; prior[nw] = 1; nw++; }
+    }
+    const size_t nwin = nl / WL, step = nwin > 8 ? nwin / 8 : 1;
+    for (size_t w = 0; w < nwin && nw < MAXW; w += step) {
+        int dup = 0; for (int k = 0; k < nw; k++) if (wa[k] == w * WL) dup = 1;
+        if (!dup) { wa[nw] = w * WL; prior[nw] = 0; nw++; }
+    }
+    char *wt[MAXW]; const char *tp[MAXW]; float cs[MAXW];
+    for (int k = 0; k < nw; k++) {
+        const size_t a = wa[k], z = a + WL < nl ? a + WL : nl;
+        wt[k] = (char *)malloc(WL * 200 + 8); size_t tl = 0;
+        for (size_t i = a; i < z; i++) { size_t l = ls[i + 1] - ls[i]; if (l && mid[ls[i] + l - 1] == '\n') l--; if (l > 200) l = 200; memcpy(wt[k] + tl, mid + ls[i], l); tl += l; wt[k][tl++] = '\n'; }
+        wt[k][tl] = 0; tp[k] = wt[k];
+    }
+    const char *bm = getenv("KATANA_EMBED_BASH_MS");
+    const int got = es_rank(intent, EMB_SEARCH, tp, NULL, nw, bm && atoi(bm) > 0 ? atof(bm) : 1500.0, cs);
+    size_t o = 0; int pick[2] = {-1, -1};
+    if (got > 0) {
+        double bs[2] = {-9, -9};
+        for (int k = 0; k < nw; k++) {
+            if (cs[k] < -1.5f) continue;
+            if (cs[k] < 0.60f && !prior[k]) continue;
+            const double f = cs[k] + (prior[k] ? 0.1 : 0.0);
+            if (pick[0] >= 0 && wa[k] < wa[pick[0]] + WL && wa[pick[0]] < wa[k] + WL) { if (f > bs[0]) { bs[0] = f; pick[0] = k; } continue; }
+            if (pick[0] < 0 || f > bs[0]) { pick[1] = pick[0]; bs[1] = bs[0]; pick[0] = k; bs[0] = f; }
+            else if (pick[1] < 0 || f > bs[1]) { if (!(wa[k] < wa[pick[0]] + WL && wa[pick[0]] < wa[k] + WL)) { pick[1] = k; bs[1] = f; } }
+        }
+        for (int r = 0; r < 2; r++) {
+            if (pick[r] < 0) continue;
+            const size_t a = wa[pick[r]], z = a + WL < nl ? a + WL : nl;
+            if (o + 400 > bcap) break;
+            o += (size_t)snprintf(buf + o, bcap - o, "[part of the omitted output, closest in meaning to what you are looking for (omitted lines %zu-%zu)]\n", a + 1, z);
+            for (size_t i = a; i < z; i++) {
+                size_t l = ls[i + 1] - ls[i]; if (l && mid[ls[i] + l - 1] == '\n') l--; if (l > 200) l = 200;
+                if (o + l + 2 > bcap) break;
+                memcpy(buf + o, mid + ls[i], l); o += l; buf[o++] = '\n'; *content += l + 1;
+            }
+        }
+        buf[o] = 0;
+    }
+    for (int k = 0; k < nw; k++) free(wt[k]);
+    return o;
 }
 /* texto final: tudo se coube; senao inicio + aviso + fim; devolve bytes escritos */
 static size_t ht_emit(const HT *h, char *out, size_t cap) {
@@ -64,10 +139,22 @@ static size_t ht_emit(const HT *h, char *out, size_t cap) {
     const size_t from = h->tn - h->T;
     size_t skip = 0;                                         /* o fim comeca numa linha inteira, se houver perto */
     for (size_t i = 0; i < h->T && i < 400; i++) if (h->tail[(from + i) % h->T] == '\n') { skip = i + 1; break; }
-    const size_t omitted = h->tn - h->T + (hn - cut) + skip;
+    size_t omitted = h->tn - h->T + (hn - cut) + skip;
     if (cut >= cap) cut = cap - 1;
     memcpy(out, h->head, cut); o = cut;
+    /* o meio omitido, escolhido por sentido: o fim da saida nao perde nada, so comeca mais tarde (o espaco vem do inicio do fim) */
+    char sem[2600]; size_t semn = 0, semc = 0;
+    if (!h->aover && h->all && h->an == hn + h->tn && hn + from + skip > cut) {
+        semn = ht_sem_mid(h->all + cut, hn + from + skip - cut, sem, sizeof sem, &semc);
+        if (semn) {
+            size_t skip2 = skip + semn;
+            for (size_t i = skip2; i < h->T && i < skip2 + 400; i++) if (h->tail[(from + i) % h->T] == '\n') { skip2 = i + 1; break; }
+            if (skip2 + 200 < h->T && o + semn + 80 < cap) { omitted = omitted + (skip2 - skip) - semc; skip = skip2; }
+            else semn = 0;
+        }
+    }
     o += (size_t)snprintf(out + o, cap - o, "\n[... %zu bytes omitted ...]\n", omitted);
+    if (semn) { memcpy(out + o, sem, semn); o += semn; o += (size_t)snprintf(out + o, cap - o, "[... end of the selected parts; the end of the output follows ...]\n"); }
     for (size_t i = skip; i < h->T && o + 1 < cap; i++) out[o++] = h->tail[(from + i) % h->T];
     out[o] = 0; return o;
 }

@@ -249,6 +249,12 @@ static int ct_wf_words(const char *prompt, char w[][32], int max) {
     return n;
 }
 
+/* O que o modelo pergunta a esta pagina (o prompt do WebFetch ou a busca do WebSearch) e quanto tempo se pode gastar calculando vetores
+ * dos blocos; vazio = so as palavras, como antes. g_ct_wf_semhit: a ultima escolha usou a nota por sentido. */
+static const char *g_ct_wf_query;
+static double g_ct_wf_budget_ms = 2500.0;
+static int g_ct_wf_semhit;
+
 /* escolhe, dentro de [txt, txt+n), os blocos (separados por linha em branco) que mais citam as palavras e os copia em
    ordem original para out (ate lim bytes). Devolve os bytes escritos; *used recebe quantos bytes do texto entraram */
 static size_t ct_wf_pick(const char *txt, size_t n, char w[][32], int nw, char *out, size_t lim, size_t *used) {
@@ -266,6 +272,36 @@ static size_t ct_wf_pick(const char *txt, size_t n, char w[][32], int nw, char *
     for (int b = 0; b < nb; b++) {
         sc[b] = 0; sel[b] = 0;
         for (int k = 0; k < nw; k++) if (wn_cifind(txt + bs[b], be[b] - bs[b], w[k])) sc[b]++;
+        sc[b] *= 4;
+    }
+    g_ct_wf_semhit = 0;
+    /* Sentido (servico de embeddings, app/embsvc.c): a pergunta contra os blocos candidatos (os 12 com mais palavras e, se houver menos
+     * de 4, blocos espalhados pela pagina: a pergunta que nao usa as palavras do texto). A nota por palavras (x4) soma com o cosseno
+     * x 20; um bloco sem nenhuma palavra so entra com cosseno >= 0,60 (por analogia com a memoria: texto sem relacao fica em 0,5 a 0,68). So reordena e escolhe: sem modelo,
+     * sem tempo ou KATANA_EMBED=0 vale so o que havia. */
+    if (nb > 0 && g_ct_wf_query && *g_ct_wf_query && es_available()) {
+        enum { NC = 12 };
+        int cb[NC], nc = 0;
+        for (int pass = 0; pass < NC; pass++) {
+            int bi = -1;
+            for (int b = 0; b < nb; b++) { int in = 0; for (int k = 0; k < nc; k++) if (cb[k] == b) in = 1; if (!in && sc[b] > 0 && (bi < 0 || sc[b] > sc[bi])) bi = b; }
+            if (bi < 0) break;
+            cb[nc++] = bi;
+        }
+        if (nc < 4) for (int b = 0, st = nb > NC ? nb / NC : 1; b < nb && nc < NC; b += st) { int in = 0; for (int k = 0; k < nc; k++) if (cb[k] == b) in = 1; if (!in) cb[nc++] = b; }
+        if (nc > 0) {
+            char *tx[NC]; const char *tp[NC]; float cs[NC];
+            for (int k = 0; k < nc; k++) { const size_t l = be[cb[k]] - bs[cb[k]]; tx[k] = (char *)malloc(l + 1); memcpy(tx[k], txt + bs[cb[k]], l); tx[k][l] = 0; tp[k] = tx[k]; }
+            if (es_rank(g_ct_wf_query, EMB_SEARCH, tp, NULL, nc, g_ct_wf_budget_ms, cs) > 0)
+                for (int k = 0; k < nc; k++) {
+                    if (cs[k] < -1.5f) continue;
+                    if (sc[cb[k]] <= 0 && cs[k] < 0.60f) continue;
+                    sc[cb[k]] += cs[k] >= 0.3f ? (int)(cs[k] * 20.0f) : 0;
+                    if (sc[cb[k]] <= 0) sc[cb[k]] = 1;
+                    g_ct_wf_semhit = 1;
+                }
+            for (int k = 0; k < nc; k++) free(tx[k]);
+        }
     }
     size_t o = 0;
     if (nb > 0 && txt[0] == '#' && be[0] - bs[0] < 300 && be[0] - bs[0] + 2 < lim) { sel[0] = 1; o += be[0] - bs[0] + 2; }       /* titulo */
@@ -411,8 +447,10 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
         if (!sel) { snprintf(out, cap, "error: out of memory"); goto done; }
         size_t sl = 0;
         const char *what = "the words of the prompt";
-        if (nw > 0) sl = ct_wf_pick(pg->txt, avail, w, nw, sel, lim, &used);
-        if (sl == 0 || ct_wf_score(sel, w, nw) == 0) {       /* nenhum trecho cita o prompt (so o titulo entrou) */                               /* sem prompt util: palavras do titulo da pagina e da ultima busca */
+        g_ct_wf_query = prompt; g_ct_wf_budget_ms = 2500.0;
+        if (nw > 0 || (prompt && *prompt && es_available())) sl = ct_wf_pick(pg->txt, avail, w, nw, sel, lim, &used);
+        if (sl > 0 && g_ct_wf_semhit) what = "what is closest in meaning to the prompt";
+        if (sl == 0 || (ct_wf_score(sel, w, nw) == 0 && !g_ct_wf_semhit)) {       /* nenhum trecho cita o prompt (so o titulo entrou) */                               /* sem prompt util: palavras do titulo da pagina e da ultima busca */
             char hint[800] = "";
             if (pg->txt[0] == '#') { size_t tl = strcspn(pg->txt, "\n"); if (tl > 300) tl = 300; snprintf(hint, sizeof hint, "%.*s ", (int)tl, pg->txt); }
             { const size_t hl = strlen(hint); snprintf(hint + hl, sizeof hint - hl, "%s", g_ct_lastq); }

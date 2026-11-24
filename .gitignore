@@ -21,3 +21,6 @@ site/.firebase/
 __pycache__/
 src/app/changes.inc
 src/app/web.inc
+katana-dev
+katana-dev2
+katana-dev3

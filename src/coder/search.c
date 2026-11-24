@@ -1122,6 +1122,40 @@ static void cs_json_terms(const QSet *q) {
 }
 
 static int cs_search_core(const char *query, const char *proj, int limit, int json, int why, CoderHits *ho);
+/* Canal semantico do Find (servico de embeddings, app/embsvc.c). O embedding so reordena: os candidatos sao o que os outros canais ja
+ * acharam (os melhores de cada canal, em rodizio, ate 40 arquivos); cada um vira "caminho + primeiros 700 bytes" e a nota e o cosseno
+ * com a pergunta, que entra na fusao como um canal a mais (RRF, peso g_cs_chw[CH_SEM]). Vetores novos so dentro de
+ * KATANA_EMBED_FIND_MS (padrao 2000 ms); o que ja esta no cache e de graca, e o cache cresce a cada busca. Arquivo fora do conjunto
+ * nao entra por aqui: isso pede os vetores do projeto inteiro (docs/embedding-usage.md, D13). Sem modelo nada muda. */
+static void cs_sem_pool(const char *query, const CsView *v, double *const *sc, uint32_t N) {
+    if (!es_available() || N == 0 || !query || !*query) return;
+    enum { PER = 10, MAXP = 40 };
+    uint32_t pool[MAXP]; int np = 0;
+    for (int r = 0; r < PER && np < MAXP; r++)
+        for (int c = 0; c < CH_SEM && np < MAXP; c++) {
+            uint32_t bd = 0; double bs = 0;
+            for (uint32_t d = 0; d < N; d++) {
+                if (sc[c][d] <= bs) continue;
+                int in = 0; for (int k = 0; k < np; k++) if (pool[k] == d) { in = 1; break; }
+                if (!in) { bs = sc[c][d]; bd = d; }
+            }
+            if (bs > 0) pool[np++] = bd;
+        }
+    if (np == 0) return;
+    char *tx[MAXP]; char *ti[MAXP]; const char *tp[MAXP], *tt[MAXP]; float cs[MAXP];
+    for (int k = 0; k < np; k++) {
+        size_t len = 0; char *b = cs_read_doc(v, pool[k], &len);
+        size_t n = b ? (len < 700 ? len : 700) : 0;
+        while (n > 0 && n < len && ((uint8_t)b[n] & 0xC0) == 0x80) n--;
+        tx[k] = (char *)malloc(n + 1); if (n) memcpy(tx[k], b, n); tx[k][n] = 0; free(b);
+        ti[k] = (char *)malloc((size_t)v->plen[pool[k]] + 1); memcpy(ti[k], v->path[pool[k]], v->plen[pool[k]]); ti[k][v->plen[pool[k]]] = 0;
+        tp[k] = tx[k]; tt[k] = ti[k];
+    }
+    const char *bm = getenv("KATANA_EMBED_FIND_MS");
+    const int got = es_rank(query, EMB_CODE, tp, tt, np, bm && atoi(bm) > 0 ? atof(bm) : 2000.0, cs);
+    if (got > 0) for (int k = 0; k < np; k++) if (cs[k] > 0.0f) sc[CH_SEM][pool[k]] = cs[k];
+    for (int k = 0; k < np; k++) { free(tx[k]); free(ti[k]); }
+}
 static int coder_search_main(int argc, char **argv) {
     const char *query = NULL, *proj = "."; int limit = 10, json = 0, why = 0;
     for (int i = 0; i < argc; i++) {
@@ -1241,6 +1275,7 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
         free(cand); free(cs); free(acc);
     }
     if (g_cs_semantic) g_cs_semantic(query, &v, sc[CH_SEM]);          /* canal opcional, ver o ponto de extensao acima */
+    else cs_sem_pool(query, &v, (double *const *)sc, N);              /* o embedding reordena o que os outros canais acharam */
     for (int c = 0; c < CH_N; c++) cs_rank(sc[c], N, rk[c], 500);
     /* fusao: camada, depois RRF (ou soma ponderada) */
     double mx[CH_N]; for (int c = 0; c < CH_N; c++) { mx[c] = 0; for (uint32_t i = 0; i < N; i++) if (sc[c][i] > mx[c]) mx[c] = sc[c][i]; }

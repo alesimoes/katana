@@ -176,6 +176,7 @@ typedef struct { char *name; int shard; int dt; int nd; uint64_t shape[8]; uint6
 typedef struct { char *path; const uint8_t *base; int64_t size; uint64_t data0; } CvShard;
 
 static size_t cv_esz(int dt) { return dt == ST_F32 ? 4 : 2; }
+static int g_cv_skip_int;      /* 1 = tensores de inteiros (I64, I32: position_ids) sao pulados em vez de recusados; liga o katana render convert */
 
 static int cv_st_cmp(const void *a, const void *b) { return strcmp(((const CvSt *)a)->name, ((const CvSt *)b)->name); }
 static int cv_str_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -205,6 +206,7 @@ static void cv_open_shard(CvSrcSet *S, const char *path) {
         if (!dt || dt->t != J_STR || !sh || sh->t != J_ARR || !off || off->t != J_ARR || off->n != 2 || sh->n > 8) {
             fprintf(stderr, "convert: entrada invalida '%s' em %s\n", h.k[i], path); exit(1);
         }
+        if (g_cv_skip_int && (!strcmp(dt->s, "I64") || !strcmp(dt->s, "I32"))) continue;
         CvSt t; memset(&t, 0, sizeof t);
         t.name = strdup(h.k[i]); t.shard = si;
         if (!strcmp(dt->s, "F32")) t.dt = ST_F32; else if (!strcmp(dt->s, "F16")) t.dt = ST_F16; else if (!strcmp(dt->s, "BF16")) t.dt = ST_BF16;

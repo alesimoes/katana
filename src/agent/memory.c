@@ -272,6 +272,25 @@ static int mem_rank(const MemDb *db, const char *query, int incold, MemHit *hits
         if (x->kind == 1) s *= 0.4;                           /* substituido: ainda aparece, bem abaixo */
         sc[d] = s;
     }
+    /* Sentido (servico de embeddings, app/embsvc.c): a consulta contra cada fato (os 200 mais recentes; fatos sao curtos e o cache os guarda).
+     * Soma cosseno x 3 na nota por palavras quando o cosseno e >= 0,70, e so com esse cosseno um fato sem palavra em comum entra (o caso da
+     * pergunta que nao usa as palavras do fato). Calibrado em 15 pares pergunta/fato (portugues e ingles): o fato certo deu 0,74 a 0,85 e os
+     * outros 0,51 a 0,68; poucos dados, uma colecao pequena. So reordena e traz: nada some. */
+    if (sc && nd > 0 && query && *query && es_available()) {
+        const int nc = nd < 200 ? nd : 200;
+        const char **tp = (const char **)malloc(sizeof *tp * (size_t)nc); int *map = (int *)malloc(sizeof *map * (size_t)nc); float *cs = (float *)malloc(sizeof *cs * (size_t)nc);
+        for (int k = 0; k < nc; k++) { map[k] = nd - 1 - k; tp[k] = db->e[docs[nd - 1 - k]].fact; }
+        const char *bm = getenv("KATANA_EMBED_MEM_MS");
+        if (es_rank(query, EMB_SEARCH, tp, NULL, nc, bm && atoi(bm) > 0 ? atof(bm) : 1500.0, cs) > 0)
+            for (int k = 0; k < nc; k++) {
+                if (cs[k] < -1.5f) continue;
+                const int d = map[k];
+                if (sc[d] <= 0 && cs[k] < 0.70f) continue;
+                if (cs[k] >= 0.70f) sc[d] += (double)cs[k] * 3.0 * (db->e[docs[d]].kind == 1 ? 0.4 : 1.0);
+                if (sc[d] <= 0) sc[d] = 0.01;
+            }
+        free(tp); free(map); free(cs);
+    }
     for (int pick = 0; pick < maxhits && sc; pick++) {
         int best = -1;
         for (int d = 0; d < nd; d++) if (sc[d] > 0 && (best < 0 || sc[d] >= sc[best])) best = d;       /* empate: o mais recente (indice maior) */

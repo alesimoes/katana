@@ -111,6 +111,18 @@ static void ct_toolsearch(const char *js, const char *end, char *out, size_t cap
             else if (*t != '+' && no < 16) opt[no++] = t;
         }
         TsrCand *rank = (TsrCand *)malloc(sizeof(TsrCand) * (size_t)(n ? n : 1)); int nrk = 0;
+        float *cs = NULL;
+        if (no > 0 && n > 0 && es_available()) {
+            char qq[1024]; size_t ql = 0; qq[0] = 0;      /* a consulta sem os marcadores +; o strtok ja cortou o texto, entao junta as palavras */
+            for (int k = 0; k < nr && ql + 40 < sizeof qq; k++) ql += (size_t)snprintf(qq + ql, sizeof qq - ql, "%.100s ", req[k]);
+            for (int k = 0; k < no && ql + 40 < sizeof qq; k++) ql += (size_t)snprintf(qq + ql, sizeof qq - ql, "%.100s ", opt[k]);
+            const char **tp = (const char **)malloc(sizeof *tp * (size_t)n), **tt = (const char **)malloc(sizeof *tt * (size_t)n);
+            for (int i = 0; i < n; i++) { tp[i] = v[i].desc; tt[i] = v[i].name; }
+            cs = (float *)malloc(sizeof *cs * (size_t)n);
+            const char *bm = getenv("KATANA_EMBED_TOOLS_MS");
+            if (es_rank(qq, EMB_SEARCH, tp, tt, n, bm && atoi(bm) > 0 ? atof(bm) : 1500.0, cs) <= 0) { free(cs); cs = NULL; }
+            free(tp); free(tt);
+        }
         for (int i = 0; i < n; i++) {
             int ok = 1, sc = 0;
             for (int k = 0; k < nr; k++) if (!tsr_ci_has(v[i].name, req[k])) ok = 0; else sc += 4;
@@ -119,9 +131,15 @@ static void ct_toolsearch(const char *js, const char *end, char *out, size_t cap
                 if (tsr_ci_has(v[i].name, opt[k])) sc += 4;
                 if (tsr_ci_has(v[i].desc, opt[k])) sc += 1;
             }
-            if (sc <= 0) continue;
-            rank[nrk] = v[i]; rank[nrk].score = sc; rank[nrk].order = i; nrk++;
+            /* sentido (servico de embeddings): a consulta inteira contra a descricao da ferramenta; soma na nota por palavras, e uma
+             * ferramenta sem palavra em comum entra se o cosseno for >= 0,65 (calibrado por analogia com a memoria: cosseno de textos sem relacao fica
+             * em 0,5 a 0,68). So reordena e sugere: nada sai da lista. */
+            int sem = 0;
+            if (cs && cs[i] >= 0.3f) sem = (int)(cs[i] * 20.0f);
+            if (sc <= 0 && !(cs && cs[i] >= 0.65f)) continue;
+            rank[nrk] = v[i]; rank[nrk].score = sc * 2 + sem; rank[nrk].order = i; nrk++;
         }
+        free(cs);
         qsort(rank, (size_t)nrk, sizeof(TsrCand), tsr_cmp);
         for (int k = 0; k < nrk; k++) pick[np++] = rank[k].order;
         free(rank);
@@ -136,4 +154,13 @@ static void ct_toolsearch(const char *js, const char *end, char *out, size_t cap
     if (!np) snprintf(out, cap, "No matching tools");
     else if (!shown) snprintf(out, cap, "error: the matching definition is too large for the result buffer; ask for fewer tools");
     free(pick); tsr_free(v, n); free(q);
+}
+
+/* Prepara os vetores das ferramentas da tabela (descricao, titulo = nome) no cache de embeddings, para a primeira busca ja achar tudo
+ * pronto. Roda na linha de pre-carga (embsvc.c); so as ferramentas da tabela: as do MCP sobem sob demanda e nao se mexe nelas aqui. */
+static void tsr_warm(void) {
+    if (!TSR_HAVE_TABLE) return;
+    const char *nm, *ds, *pr, *rq;
+    float tmp[ES_DIM];
+    for (int i = 0; ct_tool_info(i, &nm, &ds, &pr, &rq); i++) es_vec(ds, EMB_DOCUMENT, nm, tmp);
 }

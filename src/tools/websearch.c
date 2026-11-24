@@ -302,7 +302,8 @@ static void ct_websearch(const char *js, const char *end, char *out, size_t cap)
         }
         const size_t RESERVE = 220;                              /* rodape e cabecalho */
         const long P = (long)B - (long)o - (long)RESERVE;
-        if (nread > 0 && nw > 0 && P >= 400) {
+        g_ct_wf_query = qs[0]; g_ct_wf_budget_ms = 1000.0;      /* varias paginas: tempo curto por pagina; o cache cresce */
+        if (nread > 0 && (nw > 0 || es_available()) && P >= 400) {
             char *first[5] = {0}; int score[5] = {0}, order[5], no = 0;
             for (int k = 0; k < ns; k++) if (pgs[k]) {
                 const size_t avail = pgs[k]->tn < CT_WF_READ ? pgs[k]->tn : CT_WF_READ;

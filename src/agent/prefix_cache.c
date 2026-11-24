@@ -324,6 +324,7 @@ static int pfx_prepare(Model *m, const Ids *full, const char *sys) {
  * (milissegundos) ou calcula e grava. A parte estavel (regras e ferramentas) vale para qualquer pasta; so o bloco
  * de ambiente (pasta, data, memoria) e recalculado quando muda */
 static void pfx_warm(Model *m, const char *sys) {
+    es_preload_async();      /* o modelo de embeddings sobe numa linha propria enquanto o prompt e carregado (app/embsvc.c) */
     const Config *c = &m->cfg;
     const char *e = getenv("KATANA_PFX");
     if (e && atoi(e) == 0) return;

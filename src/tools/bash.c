@@ -284,8 +284,20 @@ static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap
         const size_t half = lim / 2;
         size_t n = ctb_read(log, 0, body, half);
         n = ctb_utf8(body, n); body[n] = 0;
-        o += (size_t)snprintf(out + o, cap - o, "%s\n[... %ld bytes omitted; full output saved to: %s ...]\n", body, sz - (long)(2 * half), log);
-        n = ctb_read(log, sz - (long)half, body, half);
+        /* o meio omitido, por sentido (servico de embeddings): ate 2 janelas do meio, as mais proximas do que o modelo procura, entre o
+         * inicio e o fim; o fim encolhe o que for preciso para o total nao crescer. Sem modelo, sem pedido ou saida acima de 1 MB: como antes. */
+        char sem[2600]; size_t semn = 0, semc = 0;
+#ifndef _WIN32
+        if (sz <= (long)HT_ALL_MAX && sz > (long)(2 * half) + 600 && es_available() && *intent_get()) {
+            char *all = (char *)malloc((size_t)sz + 1);
+            if (all) { const size_t an = ctb_read(log, 0, all, (size_t)sz); if (an == (size_t)sz) semn = ht_sem_mid(all + half, (size_t)sz - 2 * half, sem, sizeof sem, &semc); free(all); }
+        }
+#endif
+        size_t tailn = half;
+        if (semn && half > semn + 400) tailn = half - semn; else semn = 0;
+        o += (size_t)snprintf(out + o, cap - o, "%s\n[... %ld bytes omitted; full output saved to: %s ...]\n", body, sz - (long)half - (long)tailn - (long)(semn ? semc : 0), log);
+        if (semn && o + semn + 80 < cap) { memcpy(out + o, sem, semn); o += semn; o += (size_t)snprintf(out + o, cap - o, "[... end of the selected parts; the end of the output follows ...]\n"); }
+        n = ctb_read(log, sz - (long)tailn, body, tailn);
         size_t s = 0; while (s < n && ((unsigned char)body[s] & 0xC0) == 0x80) s++;
         while (n && (body[n - 1] == '\n' || body[n - 1] == '\r')) body[--n] = 0;
         if (o < cap) o += (size_t)snprintf(out + o, cap - o, "%s", body + s);

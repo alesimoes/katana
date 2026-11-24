@@ -24,6 +24,8 @@
 #include "engine/expert_tier.c"          /* camadas de memoria dos especialistas: RAM com leitura paralela do SSD, previsao, medidas */
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
 #include "app/console.c"               /* console (cores, Ctrl+C, comandos de barra) e conversa simples */
+#include "app/embed.c"                 /* katana embed: embeddings de texto (embeddinggemma2) na CPU, embed_text() */
+#include "app/embsvc.c"                /* servico de embeddings para as ferramentas: carga unica, cache em disco, es_rank() */
 #include "agent/knote.c"               /* notas [katana: ...] do motor: tabela de tipos, orcamento e escape unico */
 #include "agent/tools.c"               /* agente: ferramentas basicas (arquivos, web, memoria, sudo, caminhos) */
 #include "coder/roots.c"               /* coder: raiz do indice por init (marcador ROOT), indice da home, absorcao */
@@ -182,4 +184,12 @@ static const char KATANA_CHANGES[] = "";
 #include "app/visiontest.c"            /* katana vision: cabecalho, custo, etapas para o oraculo, fuzz dos decodificadores */
 #include "app/main.c"                  /* toktest, subcomandos e main */
 #include "app/convert.c"               /* katana convert: checkpoint do Hugging Face (safetensors) -> GGUF */
-#include "app/embed.c"                 /* katana embed: embeddings de texto (embeddinggemma2) na CPU, embed_text() */
+#include "render/sdconvert.c"           /* katana render convert: pesos do Stable Diffusion 1.5 -> GGUF (docs/render.md) */
+#include "render/sdgguf.c"              /* render: leitor de GGUF (tensores por nome, sem copiar) */
+#include "render/sdops.c"               /* render: convolucao, norma por grupos, SiLU, ampliacao (CPU, NHWC) */
+#include "render/sdclip.c"              /* render: tokenizador e codificador de texto CLIP */
+#include "render/sdunet.c"              /* render: UNet e ControlNet (CPU) */
+#include "render/sdvae.c"               /* render: VAE, codificador e decodificador (CPU) */
+#include "render/sdgen.c"               /* render: amostrador, PNG, bordas e o comando katana render generate */
+#include "render/sdbrief.c"             /* render: briefing de renderizacao -> prompt condensado (katana render brief) */
+#include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */

@@ -460,7 +460,7 @@ static int rd_best_windows(const char *b, size_t n, const char *intent, long ski
         int dup = 0; for (int k = 0; k < nt; k++) if (!strcmp(term[k], tk[i].norm)) dup = 1;
         if (!dup) snprintf(term[nt++], sizeof term[0], "%s", tk[i].norm);
     }
-    if (nt == 0) return 0;
+    if (nt == 0 && !es_available()) return 0;
     size_t nl = 0; for (size_t i = 0; i < n; i++) if (b[i] == '\n') nl++;
     nl++;
     if (nl > 40000) return 0;
@@ -475,12 +475,13 @@ static int rd_best_windows(const char *b, size_t n, const char *intent, long ski
         memcpy(ln, b + s, l); ln[l] = 0;
         const char *c0 = ln; while (*c0 == ' ' || *c0 == '\t') c0++;
         const int is_comment = (c0[0] == '/' && (c0[1] == '/' || c0[1] == '*')) || c0[0] == '*' || c0[0] == '#' || (c0[0] == '-' && c0[1] == '-');      /* comentario puro: o codigo vale mais */
-        CoderTok lt[160]; const int nk = is_comment ? 0 : coder_tokens(ln, lt, 160);
+        CoderTok lt[160]; const int nk = is_comment || nt == 0 ? 0 : coder_tokens(ln, lt, 160);
         for (int i = 0; i < nk; i++) for (int k = 0; k < nt; k++) if (!strcmp(lt[i].norm, term[k])) mask[li] |= 1u << k;
         for (int k = 0; k < nt; k++) if (mask[li] & (1u << k)) df[k]++;
         li++; off[li] = nlp ? e + 1 : n; s = nlp ? e + 1 : n + 1;
     }
     const size_t N = li; double w[24];
+    struct { size_t a; double lex; } cand[96]; int nc = 0;      /* janelas com termos da consulta: entrada do reordenamento por sentido */
     for (int k = 0; k < nt; k++) w[k] = df[k] ? 1.0 / (1.0 + log((double)df[k])) : 0;
     const int WIN = 14, STEP = 7;
     double bs[2] = {0, 0}; long bw[2] = {-1, -1};
@@ -491,6 +492,7 @@ static int rd_best_windows(const char *b, size_t n, const char *intent, long ski
         for (int k = 0; k < nt; k++) if (u & (1u << k)) { nd++; sc += w[k]; }
         if (nd < (nt >= 2 ? 2 : 1)) continue;
         sc += 0.3 * lines;
+        if (nc < 96) { cand[nc].a = a; cand[nc].lex = sc; nc++; }
         for (int r = 0; r < 2; r++) {
             if (bw[r] >= 0 && (long)a < bw[r] + WIN && (long)a + WIN > bw[r]) { if (sc > bs[r]) { bs[r] = sc; bw[r] = (long)a; } break; }      /* mesma regiao: fica a melhor */
             if (bw[r] < 0 || sc > bs[r]) {
@@ -500,6 +502,66 @@ static int rd_best_windows(const char *b, size_t n, const char *intent, long ski
         }
     }
     if (bw[0] >= 0 && bw[1] >= 0 && bw[1] < bw[0] + WIN && bw[0] < bw[1] + WIN) bw[1] = -1;
+    /* Reordenamento por sentido (servico de embeddings, app/embsvc.c). Candidatas: as melhores janelas por palavras (ate 6, sem
+     * sobreposicao) e, quando as palavras acharam pouco (menos de 3), janelas espalhadas pelo arquivo: e o caso da pergunta que nao
+     * usa as palavras do codigo. A nota final e o cosseno mais 0,15 da nota por palavras (relativa a melhor). So calcula vetores
+     * dentro de KATANA_EMBED_READ_MS (padrao 2500 ms); o que ja esta no cache e de graca, e o cache cresce a cada leitura do mesmo
+     * arquivo. Janela sem nenhuma palavra da consulta so entra com cosseno >= 0,5 (provisorio, sem calibragem). Sem modelo, sem
+     * tempo ou com KATANA_EMBED=0 nada muda: valem as duas janelas por palavras de antes. */
+    if (es_available() && N > 0) {
+        size_t ca[16]; double cl[16]; int ncs = 0;
+        double maxlex = 0; for (int i = 0; i < nc; i++) if (cand[i].lex > maxlex) maxlex = cand[i].lex;
+        char used[96] = {0};
+        for (int pass = 0; pass < 6; pass++) {
+            int bi = -1;
+            for (int i = 0; i < nc; i++) {
+                if (used[i]) continue;
+                int clash = 0; for (int k = 0; k < ncs; k++) if (cand[i].a < ca[k] + (size_t)WIN && ca[k] < cand[i].a + (size_t)WIN) clash = 1;
+                if (clash) { used[i] = 1; continue; }
+                if (bi < 0 || cand[i].lex > cand[bi].lex) bi = i;
+            }
+            if (bi < 0) break;
+            used[bi] = 1; ca[ncs] = cand[bi].a; cl[ncs] = cand[bi].lex; ncs++;
+        }
+        if (ncs < 3) {
+            for (size_t a = (size_t)(skip_lines > 0 ? skip_lines : 0); a < N && ncs < 14; a += (size_t)(2 * WIN)) {
+                int clash = 0; for (int k = 0; k < ncs; k++) if (a < ca[k] + (size_t)WIN && ca[k] < a + (size_t)WIN) clash = 1;
+                if (!clash) { ca[ncs] = a; cl[ncs] = 0; ncs++; }
+            }
+        }
+        if (ncs > 0) {
+            char *wt[16]; const char *tp[16]; float cs[16];
+            for (int k = 0; k < ncs; k++) {
+                const size_t a = ca[k], z = a + WIN < N ? a + WIN : N;
+                size_t tl = 0; wt[k] = (char *)malloc(WIN * 200 + 8);
+                for (size_t i = a; i < z; i++) {
+                    size_t l = off[i + 1] > off[i] ? off[i + 1] - off[i] : 0; if (l && b[off[i] + l - 1] == '\n') l--;
+                    if (l > 200) l = 200;
+                    memcpy(wt[k] + tl, b + off[i], l); tl += l; wt[k][tl++] = '\n';
+                }
+                wt[k][tl] = 0; tp[k] = wt[k];
+            }
+            const char *bm = getenv("KATANA_EMBED_READ_MS");
+            const int got = es_rank(intent, EMB_CODE, tp, NULL, ncs, bm && atoi(bm) > 0 ? atof(bm) : 2500.0, cs);
+            if (got > 0) {
+                double fin[16]; int ord[16], no = 0;
+                for (int k = 0; k < ncs; k++) {
+                    if (cs[k] < -1.5f) { fin[k] = -1.0 + (maxlex > 0 ? 0.15 * cl[k] / maxlex : 0); }      /* sem vetor: so as palavras */
+                    else if (cl[k] <= 0 && cs[k] < 0.5f) continue;                                          /* sem palavras e longe no sentido: fora */
+                    else fin[k] = cs[k] + (maxlex > 0 ? 0.15 * cl[k] / maxlex : 0);
+                    ord[no++] = k;
+                }
+                for (int i = 1; i < no; i++) { const int v = ord[i]; int j = i - 1; while (j >= 0 && fin[ord[j]] < fin[v]) { ord[j + 1] = ord[j]; j--; } ord[j + 1] = v; }
+                bw[0] = bw[1] = -1;
+                for (int i = 0, r = 0; i < no && r < 2; i++) {
+                    const int k = ord[i];
+                    if (r == 1 && ca[k] < (size_t)bw[0] + WIN && (size_t)bw[0] < ca[k] + WIN) continue;
+                    bw[r] = (long)ca[k]; r++;
+                }
+            }
+            for (int k = 0; k < ncs; k++) free(wt[k]);
+        }
+    }
     int wrote = 0; size_t o = 0;
     for (int r = 0; r < 2; r++) {
         if (bw[r] < 0) continue;
@@ -508,7 +570,8 @@ static int rd_best_windows(const char *b, size_t n, const char *intent, long ski
         uint32_t um = 0; for (size_t i = a; i < z; i++) um |= mask[i];
         char mt[160]; size_t mn = 0; mt[0] = 0;
         for (int k = 0; k < nt && mn + 24 < sizeof mt; k++) if (um & (1u << k)) mn += (size_t)snprintf(mt + mn, sizeof mt - mn, "%s%s", mn ? ", " : "", term[k]);
-        o += (size_t)snprintf(out + o, cap - o, "[lines %zu-%zu match: %s]\n", a + 1, z, mt);
+        if (mt[0]) o += (size_t)snprintf(out + o, cap - o, "[lines %zu-%zu match: %s]\n", a + 1, z, mt);
+        else o += (size_t)snprintf(out + o, cap - o, "[lines %zu-%zu: closest in meaning to what you are looking for]\n", a + 1, z);
         for (size_t i = a; i < z; i++) {
             size_t l = off[i + 1] > off[i] ? off[i + 1] - off[i] : 0; if (l && b[off[i] + l - 1] == '\n') l--;
             if (l > 200) l = 200;

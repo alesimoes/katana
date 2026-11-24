@@ -569,6 +569,7 @@ static uint32_t tensor_target(const TInfo *t, uint32_t base, size_t n) {
 
 static int convert_main(int argc, char **argv);   /* app/convert.c */
 static int embed_main(int argc, char **argv);     /* app/embed.c */
+static int render_main(int argc, char **argv);    /* render/sdconvert.c */
 static int quantize_cmd(const char *in, const char *out_arg, const char *type_arg) {
     int64_t fsz = 0;
     const uint8_t *buf = map_file(in, &fsz);
@@ -1183,6 +1184,7 @@ static int run_main(int argc, char **argv) {
     }
     if (argc >= 2 && strcmp(argv[1], "qtest") == 0) return qtest();
     if (argc >= 2 && strcmp(argv[1], "lbtest") == 0) return lowbit_test(argc - 2, argv + 2);
+    if (strcmp(argv[1], "render") == 0) return render_main(argc - 2, argv + 2);       /* imagens: pesos do Stable Diffusion (render/) */
     if (strcmp(argv[1], "embed") == 0) return embed_main(argc - 2, argv + 2);       /* embeddings de texto na CPU (app/embed.c) */
     if (strcmp(argv[1], "convert") == 0) return convert_main(argc - 2, argv + 2);   /* checkpoint do Hugging Face -> GGUF (app/convert.c) */
     if (strcmp(argv[1], "quantize") == 0) {

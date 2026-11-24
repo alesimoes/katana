@@ -252,10 +252,30 @@ typedef struct {
     int slow; char slowat[4400];
     int track; char ext[16][16]; int extn[16], next;    /* extensoes dos arquivos com resultado (para a dica de filtro) */
     CtSb sb;
+    /* ordem por sentido (so modos 0 e 1): as entradas sao guardadas com o arquivo de cada uma e emitidas depois, na ordem nova */
+    int collect, cap_hit; char cur_abs[4400], cur_disp[4400];
+    struct CtGEnt { char *text; size_t tl; int file; } *ents; long nents, capents;
+    struct CtGFile { char abs[4400], disp[4400]; char sample[700]; long count; float score; } *gfiles; int ngfiles;
+    char cur_sample[700];      /* as primeiras linhas que casaram no arquivo atual: o que representa o arquivo na ordem por sentido */
 } CtGrep;
 
+#define CT_GSEM_MAX 2000      /* entradas guardadas para reordenar; alem disso a busca para (como o limite de antes) */
 static void ct_gemit(CtGrep *g, const char *text, size_t tl) {
     if (g->stop) return;
+    if (g->collect) {
+        if (g->nents >= CT_GSEM_MAX) { g->cap_hit = 1; if (g->mode == 1) g->stop = 1; return; }
+        if (g->nents == g->capents) { g->capents = g->capents ? g->capents * 2 : 256; g->ents = (struct CtGEnt *)realloc(g->ents, sizeof *g->ents * (size_t)g->capents); }
+        if (g->ngfiles == 0 || strcmp(g->gfiles[g->ngfiles - 1].abs, g->cur_abs) != 0) {
+            g->gfiles = (struct CtGFile *)realloc(g->gfiles, sizeof *g->gfiles * (size_t)(g->ngfiles + 1));
+            struct CtGFile *f = &g->gfiles[g->ngfiles++];
+            snprintf(f->abs, sizeof f->abs, "%s", g->cur_abs); snprintf(f->disp, sizeof f->disp, "%s", g->cur_disp); snprintf(f->sample, sizeof f->sample, "%s", g->cur_sample); f->count = 0; f->score = -2.0f;
+        }
+        g->gfiles[g->ngfiles - 1].count++;
+        char *t = (char *)malloc(tl + 1); memcpy(t, text, tl); t[tl] = 0;
+        g->ents[g->nents++] = (struct CtGEnt){ t, tl, g->ngfiles - 1 };
+        g->any_out = 1;
+        return;
+    }
     if (g->ent++ < g->offset) return;
     if (g->limit && g->emitted >= g->limit) { g->more = 1; if (g->mode == 1) g->stop = 1; return; }
     ct_sb_add(&g->sb, text, tl); ct_sb_add(&g->sb, "\n", 1);
@@ -318,6 +338,7 @@ static void ct_grep_file(CtGrep *g, const char *abs, const char *cwd) {
     unsigned char *show = (unsigned char *)calloc((size_t)nl + 1, 1);     /* 1 casamento, 2 contexto */
     long nmatch = 0;
     const char *disp = ct_display(abs, cwd);
+    if (g->collect) { snprintf(g->cur_abs, sizeof g->cur_abs, "%s", abs); snprintf(g->cur_disp, sizeof g->cur_disp, "%s", disp); g->cur_sample[0] = 0; }
     if (!g->multi) {
         size_t hit = 0; int havehit = 0;
         for (long i = 0; i < nl; i++) {
@@ -333,7 +354,7 @@ static void ct_grep_file(CtGrep *g, const char *abs, const char *cwd) {
             if (len && buf[ls[i] + len - 1] == '\r') len--;
             const int r = rx_search(g->re, buf + ls[i], (long)len, 0, NULL);
             if (r < 0) { g->slow = 1; g->stop = 1; snprintf(g->slowat, sizeof g->slowat, "%s:%ld", disp, i + 1); break; }
-            if (r) { show[i] = 1; nmatch++; if (g->mode == 0) break; }
+            if (r) { show[i] = 1; nmatch++; if (g->mode == 0 && (!g->collect || nmatch >= 3)) break; }
         }
     } else {
         size_t p = 0;
@@ -352,6 +373,14 @@ static void ct_grep_file(CtGrep *g, const char *abs, const char *cwd) {
             if (g->mode == 0) break;
             p = eo > so ? eo : so + 1;
         }
+    }
+    if (g->collect && nmatch > 0) {      /* ate 3 linhas que casaram, cada uma cortada em 200 bytes */
+        size_t o = 0; int k = 0;
+        for (long i = 0; i < nl && k < 3 && o + 210 < sizeof g->cur_sample; i++) if (show[i] == 1) {
+            size_t l = le[i]; if (l > 200) l = 200;
+            memcpy(g->cur_sample + o, buf + ls[i], l); o += l; g->cur_sample[o++] = '\n'; k++;
+        }
+        g->cur_sample[o] = 0;
     }
     if (nmatch > 0 && !g->slow) {
         g->files_matched++;
@@ -383,6 +412,54 @@ static void ct_grep_file(CtGrep *g, const char *abs, const char *cwd) {
         }
     }
     free(show); free(ls); free(le); free(buf);
+}
+
+/* Termina a busca em modo de coleta: ordena os ARQUIVOS pela proximidade, em sentido, com o que o modelo pede (servico de embeddings,
+ * app/embsvc.c) e emite as entradas na ordem nova, respeitando offset e head_limit como antes. Dentro de um arquivo a ordem das linhas
+ * nao muda. Cada arquivo e representado pelas linhas que casaram (ate 3) e pelo caminho; os candidatos sao os 32 arquivos com mais resultados, e vetores novos so
+ * dentro de KATANA_EMBED_GREP_MS (padrao 2000 ms; o cache cresce a cada busca). Arquivo com cosseno >= 0,60 vai na frente, do mais
+ * proximo ao menos; o resto (sem vetor ou longe) segue na ordem original, depois deles: nada sai do resultado. Devolve 1 se a ordem mudou. */
+static int ct_grep_sem_flush(CtGrep *g) {
+    g->collect = 0;
+    int changed = 0;
+    int *order = (int *)malloc(sizeof(int) * (size_t)(g->ngfiles + 1));
+    for (int i = 0; i < g->ngfiles; i++) order[i] = i;
+    const char *intent = intent_get();
+    if (*intent && g->ngfiles > 1) {
+        enum { NC = 32 };
+        int cand[NC], nc = 0;
+        for (int pass = 0; pass < NC; pass++) {
+            int bi = -1;
+            for (int i = 0; i < g->ngfiles; i++) { int in = 0; for (int k = 0; k < nc; k++) if (cand[k] == i) in = 1; if (!in && (bi < 0 || g->gfiles[i].count > g->gfiles[bi].count)) bi = i; }
+            if (bi < 0) break;
+            cand[nc++] = bi;
+        }
+        char *tx[NC]; const char *tp[NC], *tt[NC]; float cs[NC];
+        for (int k = 0; k < nc; k++) {
+            tx[k] = (char *)malloc(strlen(g->gfiles[cand[k]].sample) + 1); strcpy(tx[k], g->gfiles[cand[k]].sample);
+            tp[k] = tx[k]; tt[k] = g->gfiles[cand[k]].disp;
+        }
+        const char *bm = getenv("KATANA_EMBED_GREP_MS");
+        if (nc > 1 && es_rank(intent, EMB_CODE, tp, tt, nc, bm && atoi(bm) > 0 ? atof(bm) : 2000.0, cs) > 0)
+            for (int k = 0; k < nc; k++) g->gfiles[cand[k]].score = cs[k];
+        for (int k = 0; k < nc; k++) free(tx[k]);
+        /* estavel: os de cosseno >= 0,60 por cosseno decrescente, depois os demais na ordem original */
+        int n = 0;
+        int *tmp = (int *)malloc(sizeof(int) * (size_t)g->ngfiles);
+        for (int i = 0; i < g->ngfiles; i++) if (g->gfiles[i].score >= 0.60f) tmp[n++] = i;
+        for (int i = 1; i < n; i++) { const int v = tmp[i]; int j = i - 1; while (j >= 0 && g->gfiles[tmp[j]].score < g->gfiles[v].score) { tmp[j + 1] = tmp[j]; j--; } tmp[j + 1] = v; }
+        int m = n;
+        for (int i = 0; i < g->ngfiles; i++) if (g->gfiles[i].score < 0.60f) tmp[m++] = i;
+        for (int i = 0; i < g->ngfiles; i++) { if (order[i] != tmp[i]) changed = 1; order[i] = tmp[i]; }
+        free(tmp);
+    }
+    g->ent = 0; g->emitted = 0; g->more = 0; g->stop = 0; g->any_out = 0;
+    for (int oi = 0; oi < g->ngfiles; oi++)
+        for (long e = 0; e < g->nents; e++) if (g->ents[e].file == order[oi]) ct_gemit(g, g->ents[e].text, g->ents[e].tl);
+    if (g->cap_hit) g->more = 1;
+    for (long e = 0; e < g->nents; e++) free(g->ents[e].text);
+    free(g->ents); g->ents = NULL; g->nents = g->capents = 0; free(g->gfiles); g->gfiles = NULL; g->ngfiles = 0; free(order);
+    return changed;
 }
 
 static void ct_grep_all(CtGrep *g, const CtFiles *files, const char *cwd) {
@@ -590,7 +667,15 @@ static void ct_grep(const char *js, const char *end, char *out, size_t cap) {
         goto done;
     }
     g.re = re;
+    /* Ordem por sentido: guarda as entradas e emite depois. DESLIGADA por padrao (KATANA_EMBED_GREP=1 liga): no primeiro teste, com o
+     * primeiro trecho de cada arquivo como representante, a ordem ficou pior que a original (memory.c caiu de 1o para 7o). Agora cada
+     * arquivo e representado pelas linhas que casaram; ainda por testar antes de ligar por padrao. */
+    { const char *eg = getenv("KATANA_EMBED_GREP"); if (g.mode != 2 && eg && !strcmp(eg, "1") && es_available() && *intent_get()) g.collect = 1; }
     ct_grep_all(&g, &files, cwd);
+    if (g.collect && ct_grep_sem_flush(&g)) {
+        const size_t nl = strlen(note);
+        snprintf(note + nl, sizeof note - nl, "%s[results ordered by closeness in meaning to your request, most relevant files first; the rest follow in the usual order]", nl ? "\n" : "");
+    }
     if (g.slow) { snprintf(out, cap, "error: pattern too slow on this input; simplify it (it needed more than %ld steps at %s). Avoid nested quantifiers such as (a+)+ and long .* chains.", RX_STEPS, g.slowat); goto done; }
     if (g.files_matched == 0) {
         /* 1: o padrao tem metacaracteres e, como texto simples, acha algo */
