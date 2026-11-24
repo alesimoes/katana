@@ -8,6 +8,7 @@
  *                       scheduler/scheduler_config.json
  *   vae-ft-mse/         o VAE recomendado (formato diffusers), diffusion_pytorch_model.safetensors e config.json
  *   controlnet-canny/   o ControlNet (formato diffusers), um *.safetensors e config.json
+ * (Outro checkpoint SD 1.5 no layout diffusers: --diffusers <pasta>, veja g_sd_dif abaixo.)
  * Saidas: base.gguf (arquitetura "sd15": UNet, CLIP, VAE e tokenizador) e controle.gguf (arquitetura "sd15controlnet").
  *
  * Nomes: todos no formato do diffusers, com um prefixo por parte: unet., clip., vae., ctrl.. A UNet vem no formato original
@@ -130,21 +131,51 @@ static int sd_find_st(const char *dir, char *out, size_t cap) {
 
 typedef struct { CvSrcSet ck, vae, cn; SdSet base, ctrl; } SdCtx;
 
+/* Layout diffusers (--diffusers <pasta>): a UNet (unet/), o CLIP (text_encoder/) e o VAE (vae/) vem em arquivos separados, ja com os
+ * nomes do diffusers (nada a renomear), mais tokenizer/, scheduler/ e os config.json; o VAE do proprio modelo e usado (nao o vae-ft-mse).
+ * Sem a opcao, vale o layout original (realistic-vision/ + vae-ft-mse/). g_sd_dif aponta a pasta; g_sd_name e o general.name. */
+static const char *g_sd_dif, *g_sd_name = "Realistic Vision V6.0 B1 + sd-vae-ft-mse";
+/* pasta dos config.json/tokenizer/scheduler: a do layout escolhido */
+static void sd_cfgdir(const char *dir, char *out, size_t cap) { if (g_sd_dif) snprintf(out, cap, "%s", g_sd_dif); else snprintf(out, cap, "%s/realistic-vision", dir); }
+
+/* unet/ e vae/ do layout diffusers: *.safetensors da subpasta; 0 = ok */
+static int sd_open_dif(CvSrcSet *s, const char *sub) {
+    char p[1100], q[1100];
+    snprintf(p, sizeof p, "%s/%s", g_sd_dif, sub);
+    if (!sd_find_st(p, q, sizeof q)) { fprintf(stderr, "render: nao achei um *.safetensors em %s\n", p); return 1; }
+    cv_open_shard(s, q);
+    return 0;
+}
+
 /* le as tres fontes e monta as duas listas de tensores (ordenadas por nome); 0 = ok */
 static int sd_plan(const char *dir, SdCtx *c) {
     char p[1100], q[1100];
     memset(c, 0, sizeof *c);
-    snprintf(p, sizeof p, "%s/realistic-vision", dir);
-    if (!sd_find_st(p, q, sizeof q)) { fprintf(stderr, "render: nao achei um *.safetensors em %s\n", p); return 1; }
-    cv_open_shard(&c->ck, q);
-    snprintf(p, sizeof p, "%s/vae-ft-mse", dir);
-    if (!sd_find_st(p, q, sizeof q)) { fprintf(stderr, "render: nao achei um *.safetensors em %s\n", p); return 1; }
-    cv_open_shard(&c->vae, q);
+    CvSrcSet unet = {0}, clip = {0};
+    if (g_sd_dif) {
+        if (sd_open_dif(&unet, "unet") || sd_open_dif(&clip, "text_encoder") || sd_open_dif(&c->vae, "vae")) return 1;
+    } else {
+        snprintf(p, sizeof p, "%s/realistic-vision", dir);
+        if (!sd_find_st(p, q, sizeof q)) { fprintf(stderr, "render: nao achei um *.safetensors em %s\n", p); return 1; }
+        cv_open_shard(&c->ck, q);
+        snprintf(p, sizeof p, "%s/vae-ft-mse", dir);
+        if (!sd_find_st(p, q, sizeof q)) { fprintf(stderr, "render: nao achei um *.safetensors em %s\n", p); return 1; }
+        cv_open_shard(&c->vae, q);
+    }
     snprintf(p, sizeof p, "%s/controlnet-canny", dir);
     if (!sd_find_st(p, q, sizeof q)) { fprintf(stderr, "render: nao achei um *.safetensors em %s\n", p); return 1; }
     cv_open_shard(&c->cn, q);
     int skipped = 0;
     char nm[220];
+    if (g_sd_dif) {
+        for (size_t i = 0; i < unet.nst; i++) sd_add(&c->base, "unet.", unet.st[i].name, &unet, &unet.st[i], 0);
+        for (size_t i = 0; i < clip.nst; i++) {
+            const char *r = clip.st[i].name;
+            if (strstr(r, "position_ids")) { skipped++; continue; }
+            if (strncmp(r, "text_model.", 11) != 0) { fprintf(stderr, "render: tensor do text_encoder sem regra: %s\n", r); return 1; }
+            sd_add(&c->base, "clip.", r + 11, &clip, &clip.st[i], 0);      /* sem o "text_model.": igual ao layout original */
+        }
+    }
     for (size_t i = 0; i < c->ck.nst; i++) {
         const CvSt *t = &c->ck.st[i];
         const char *r;
@@ -161,7 +192,7 @@ static int sd_plan(const char *dir, SdCtx *c) {
     qsort(c->ctrl.t, (size_t)c->ctrl.n, sizeof(SdT), sd_t_cmp);
     for (int i = 1; i < c->base.n; i++) if (!strcmp(c->base.t[i].name, c->base.t[i - 1].name)) { fprintf(stderr, "render: nome repetido: %s\n", c->base.t[i].name); return 1; }
     for (int i = 1; i < c->ctrl.n; i++) if (!strcmp(c->ctrl.t[i].name, c->ctrl.t[i - 1].name)) { fprintf(stderr, "render: nome repetido: %s\n", c->ctrl.t[i].name); return 1; }
-    printf("  checkpoint: %d tensores usados (UNet + CLIP), %d ignorados (VAE embutido e position_ids)\n", c->base.n, skipped);
+    printf("  checkpoint: %d tensores usados (UNet + CLIP), %d ignorados (VAE embutido e position_ids)\n", c->base.n - (int)c->vae.nst, skipped);
     return 0;
 }
 
@@ -189,7 +220,7 @@ static void sd_kv_unet(const char *dir, const char *prefix, GBuf *kv, uint64_t *
 /* vocab.json (token -> id) e merges.txt do CLIP para dentro do GGUF; os ids especiais vem de tokenizer_config.json */
 static void sd_kv_tokenizer(const char *dir, GBuf *kv, uint64_t *nkv) {
     char p[1100]; JV vj;
-    snprintf(p, sizeof p, "%s/realistic-vision/tokenizer/vocab.json", dir);
+    sd_cfgdir(dir, p, sizeof p); strcat(p, "/tokenizer/vocab.json");
     if (!cv_json_file(p, &vj) || vj.t != J_OBJ) { fprintf(stderr, "render: nao consegui ler %s\n", p); exit(1); }
     int64_t maxid = -1;
     for (size_t i = 0; i < vj.n; i++) if (vj.v[i].i > maxid) maxid = vj.v[i].i;
@@ -201,7 +232,7 @@ static void sd_kv_tokenizer(const char *dir, GBuf *kv, uint64_t *nkv) {
     gbuf_gstr(kv, "tokenizer.clip.tokens", strlen("tokenizer.clip.tokens")); gbuf_u32(kv, 9); gbuf_u32(kv, 8); gbuf_u64(kv, (uint64_t)V);
     for (int i = 0; i < V; i++) gbuf_gstr(kv, toks[i], strlen(toks[i]));
     (*nkv)++;
-    snprintf(p, sizeof p, "%s/realistic-vision/tokenizer/merges.txt", dir);
+    sd_cfgdir(dir, p, sizeof p); strcat(p, "/tokenizer/merges.txt");
     char *mt = cv_read_text(p);
     if (!mt) { fprintf(stderr, "render: nao consegui ler %s\n", p); exit(1); }
     /* so a primeira linha ("#version: 0.2") e cabecalho: seis regras de fusao de verdade comecam com '#' (por exemplo "# #</w>") */
@@ -335,11 +366,11 @@ static int sd_convert(const char *dir, const char *out_base, const char *out_ctr
     GBuf kv = {0}; uint64_t nkv = 0;
     gkv_str(&kv, "general.architecture", "sd15"); nkv++;
     gkv_str(&kv, "general.type", "model"); nkv++;
-    gkv_str(&kv, "general.name", "Realistic Vision V6.0 B1 + sd-vae-ft-mse"); nkv++;
+    gkv_str(&kv, "general.name", g_sd_name); nkv++;
     gkv_str(&kv, "general.quantized_by", "katana"); nkv++;
-    snprintf(p, sizeof p, "%s/realistic-vision/unet/config.json", dir);
+    sd_cfgdir(dir, p, sizeof p); strcat(p, "/unet/config.json");
     sd_kv_unet(p, "sd15.unet", &kv, &nkv);
-    snprintf(p, sizeof p, "%s/realistic-vision/text_encoder/config.json", dir);
+    sd_cfgdir(dir, p, sizeof p); strcat(p, "/text_encoder/config.json");
     if (!cv_json_file(p, &j)) { fprintf(stderr, "render: nao consegui ler %s\n", p); return 1; }
 #define KU(name, def) do { snprintf(key, sizeof key, "sd15.clip.%s", name); gkv_u32(&kv, key, (uint32_t)jnum(&j, name, def)); nkv++; } while (0)
     KU("hidden_size", 768); KU("intermediate_size", 3072); KU("num_attention_heads", 12); KU("num_hidden_layers", 12);
@@ -347,14 +378,14 @@ static int sd_convert(const char *dir, const char *out_base, const char *out_ctr
 #undef KU
     cv_kv_f32(&kv, "sd15.clip.layer_norm_eps", (float)jnum(&j, "layer_norm_eps", 1e-5)); nkv++;
     gkv_str(&kv, "sd15.clip.hidden_act", jstr(&j, "hidden_act") ? jstr(&j, "hidden_act") : "quick_gelu"); nkv++;
-    snprintf(p, sizeof p, "%s/vae-ft-mse/config.json", dir);
+    if (g_sd_dif) snprintf(p, sizeof p, "%s/vae/config.json", g_sd_dif); else snprintf(p, sizeof p, "%s/vae-ft-mse/config.json", dir);
     if (!cv_json_file(p, &j)) { fprintf(stderr, "render: nao consegui ler %s\n", p); return 1; }
 #define KU(name, def) do { snprintf(key, sizeof key, "sd15.vae.%s", name); gkv_u32(&kv, key, (uint32_t)jnum(&j, name, def)); nkv++; } while (0)
     KU("in_channels", 3); KU("out_channels", 3); KU("latent_channels", 4); KU("layers_per_block", 2); KU("norm_num_groups", 32);
 #undef KU
     if ((n = sd_ints(&j, "block_out_channels", v, 8)) > 0) { cv_kv_arr_i32(&kv, "sd15.vae.block_out_channels", v, n); nkv++; }
     cv_kv_f32(&kv, "sd15.vae.scaling_factor", (float)jnum(&j, "scaling_factor", 0.18215)); nkv++;
-    snprintf(p, sizeof p, "%s/realistic-vision/scheduler/scheduler_config.json", dir);
+    sd_cfgdir(dir, p, sizeof p); strcat(p, "/scheduler/scheduler_config.json");
     if (!cv_json_file(p, &j)) { fprintf(stderr, "render: nao consegui ler %s\n", p); return 1; }
     gkv_u32(&kv, "sd15.sched.num_train_timesteps", (uint32_t)jnum(&j, "num_train_timesteps", 1000)); nkv++;
     cv_kv_f32(&kv, "sd15.sched.beta_start", (float)jnum(&j, "beta_start", 0.00085)); nkv++;
@@ -428,12 +459,14 @@ static int render_main(int argc, char **argv) {
     if (argc >= 4 && !strcmp(argv[0], "convert")) {
         for (int i = 4; i < argc; i++) {
             if (!strcmp(argv[i], "--lora") && i + 1 < argc) { cv_open_shard(&g_sd_lora, argv[++i]); qsort(g_sd_lora.st, g_sd_lora.nst, sizeof(CvSt), cv_st_cmp); g_sd_lora_on = 1; }
+            else if (!strcmp(argv[i], "--diffusers") && i + 1 < argc) g_sd_dif = argv[++i];
+            else if (!strcmp(argv[i], "--name") && i + 1 < argc) g_sd_name = argv[++i];
             else if (!strcmp(argv[i], "--lora-scale") && i + 1 < argc) g_sd_lora_scale = atof(argv[++i]);
             else { fprintf(stderr, "render convert: opcao desconhecida: %s\n", argv[i]); return 1; }
         }
         return sd_convert(argv[1], argv[2], argv[3]);
     }
-    fprintf(stderr, "uso: katana render convert <pasta> <base.gguf> <controle.gguf>\n"
+    fprintf(stderr, "uso: katana render convert <pasta> <base.gguf> <controle.gguf|-> [--diffusers <pasta do modelo>] [--name \"nome\"] [--lora ARQ [--lora-scale S]]\n"
                     "     katana render names   <pasta>\n"
                     "     katana render selftest <referencia> <pasta>\n"
                     "     katana render stable-gpu-test <pasta>   (GPU contra CPU: UNet, ControlNet, VAE; pula sem GPU)\n"
