@@ -69,3 +69,19 @@ checkpoint layout, and later Vulkan kernels for convolution and attention.
 - The development GPU is shared with the training job; stages 1 to 8 run on the CPU, so they do not disturb it.
 - Open questions: speed on the laptop GPU (not measured), quality against the final service (not measured), licence reading for client
   work, and what SketchUp can export (clay view, edges, a depth pass) to feed the control image.
+
+## Engines FLUX and Krea in C (WIP, planned 2026-11-24)
+
+The desktop has three engine selectors (stable, flux, krea); `katana render generate --engine flux|krea` exits with code 3 ("WIP, not available") until each engine exists in C. Same discipline as Stable: every stage is compared with float32 reference tensors from the diffusers pipeline (`/mnt/dados/render-ref/`) before the next one starts.
+
+FLUX.2 klein 4B (distilled, 4 steps, guidance 1.0, Apache-2.0):
+
+| Stage | What | Status |
+|---|---|---|
+| F1 | GGUF reader for the Q4_K_M transformer, tensor names, converter for the VAE and the rest | not started |
+| F2 | text: Qwen3-4B hidden states of layers 9/18/27 concatenated (7680), through the existing Qwen3 code | not started |
+| F3 | transformer: 5 double + 20 single blocks, 24 heads x 128, RoPE on 4 axes (32 each), modulation, compared with the reference | not started |
+| F4 | VAE (32 latent channels, 2x2 patchify, batch-norm statistics), encoder for the reference image(s) | not started |
+| F5 | flow-match Euler sampler (distilled, 2 to 4 steps), image reference as extra tokens, PNG out | not started |
+
+Krea 2 Turbo (12.8B DiT, Qwen3-VL text encoder, Q4_K_S 6.84 GB, community licence): starts after FLUX, reusing the DiT pieces; image-to-image by SDEdit (latents + sigmas). Not started.
