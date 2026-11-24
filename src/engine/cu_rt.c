@@ -68,14 +68,18 @@ static int cu_chk(CUresult_ r, const char *what) {
     return 0;
 }
 
-#define CU_SYM(field, name) do { *(void **)&cuapi.field = dlsym(cuapi.h, name); if (!cuapi.field) { if (opt) { cuapi.field = NULL; } else { fprintf(stderr, "cuda: simbolo %s ausente\n", name); return 0; } } } while (0)
+#ifdef _WIN32
+static void *cu_dlsym(void *h, const char *n) { return (void *)GetProcAddress((HMODULE)h, n); }
+#else
+static void *cu_dlsym(void *h, const char *n) { return dlsym(h, n); }
+#endif
+#define CU_SYM(field, name) do { *(void **)&cuapi.field = cu_dlsym(cuapi.h, name); if (!cuapi.field) { if (opt) { cuapi.field = NULL; } else { fprintf(stderr, "cuda: simbolo %s ausente\n", name); return 0; } } } while (0)
 
 static int cu_load(void) {
 #ifdef _WIN32
     HMODULE h = LoadLibraryA("nvcuda.dll");
     if (!h) return 0;
     cuapi.h = (void *)h;
-#define dlsym(h_, n_) ((void *)GetProcAddress((HMODULE)(h_), (n_)))
 #else
     cuapi.h = dlopen("libcuda.so.1", RTLD_NOW);
     if (!cuapi.h) cuapi.h = dlopen("libcuda.so", RTLD_NOW);
@@ -121,7 +125,7 @@ static int cu_init(void) {
     cuapi.DeviceGetAttribute(&d->cc_major, CUA_MAJOR, dev); cuapi.DeviceGetAttribute(&d->cc_minor, CUA_MINOR, dev);
     if (d->cc_major * 10 + d->cc_minor < 75) { fprintf(stderr, "cuda: %s tem cc %d.%d (< 7.5), sem mma f16 nem cp.async\n", d->name, d->cc_major, d->cc_minor); return 0; }
     if (!cu_chk(cuapi.PrimaryRetain(&d->ctx, dev), "cuDevicePrimaryCtxRetain") || !cu_chk(cuapi.CtxSetCurrent(d->ctx), "cuCtxSetCurrent")) return 0;
-    if (!cu_chk(cuapi.StreamCreate(&d->stream, 1), "cuStreamCreate")) return 0;
+    if (!cu_chk(cuapi.StreamCreate(&d->stream, 0), "cuStreamCreate")) return 0;
     cuapi.MemGetInfo(&d->vram_free, &d->vram_total);
     /* f16 com acumulo f32: GA10x consumer = 256 FMA/clock/SM (a metade do acumulo f16); banda = 2 * clock da memoria * barramento / 8 */
     d->peak_tflops_f16 = (double)d->sm_count * 256.0 * 2.0 * (double)d->clock_khz * 1e3 / 1e12;
@@ -146,7 +150,7 @@ static void *cu_module(const char *ptx) {
     void *ov[3] = { elog, (void *)(size_t)sizeof elog, NULL };
     void *m = NULL;
     CUresult_ r = cuapi.ModuleLoadDataEx(&m, ptx, 2, opts, ov);
-    if (r != 0) { fprintf(stderr, "cuda: JIT do PTX falhou (%d)\n%s\n", r, elog); return NULL; }
+    if (r != 0) { fprintf(stderr, "cuda: o driver recusou o PTX (erro %d, driver antigo demais ou placa sem suporte?)\n%s\n", r, elog); return NULL; }
     return m;
 }
 static void *cu_fn(void *mod, const char *name) {
