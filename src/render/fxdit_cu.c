@@ -31,7 +31,7 @@ static int fxc_init(void) {
     char *ptx = malloc(8 << 20), *p = ptx;
     p += sprintf(p, ".version 7.0\n.target sm_80\n.address_size 64\n.extern .shared .align 16 .b8 sm[];\n");
     cpx_b = p;
-    if (g_fc.prec) { cpx_gemmx(GQ_BF16, S, 3, "gemm_bf16"); cpx_gemmx(GQ_Q4K, S, 3, "gemm_q4k"); cpx_gemmx(GQ_Q5K, S, 3, "gemm_q5k"); g_fc.smem[0] = S * 8192 * 3; g_fc.smem[1] = g_fc.smem[2] = S * 8192 * 4; }
+    if (g_fc.prec) { cpx_gemmx(GQ_BF16, S, 7, "gemm_bf16"); cpx_gemmx(GQ_Q4K, S, 7, "gemm_q4k"); cpx_gemmx(GQ_Q5K, S, 7, "gemm_q5k"); g_fc.smem[0] = S * 8192 * 3; g_fc.smem[1] = g_fc.smem[2] = S * 8192 * 4; }
     else { cpx_gemm(GQ_BF16, S, "gemm_bf16"); cpx_gemm(GQ_Q4K, S, "gemm_q4k"); cpx_gemm(GQ_Q5K, S, "gemm_q5k"); g_fc.smem[0] = g_fc.smem[1] = g_fc.smem[2] = S * 32768; }
     g_fc.mg = cu_module(ptx); free(ptx);
     g_fc.mk = cu_kmod();

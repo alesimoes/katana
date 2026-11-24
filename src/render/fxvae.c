@@ -209,7 +209,21 @@ static int fxv_selftest(const char *refdir, const char *gguf) {
     return bad ? 1 : 0;
 }
 
+/* bench [th tw]: decodifica fichas aleatorias (padrao 20 x 36 = imagem 320 x 576), duas vezes (a primeira monta pesos e modulos) */
+static int fxv_bench(const char *gguf, int th, int tw) {
+    FxVae v; if (!fxv_load(&v, gguf)) return 1;
+    float *tok = xalloc((size_t)th * tw * 128, 4); uint64_t r = 7;
+    for (size_t i = 0; i < (size_t)th * tw * 128; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; tok[i] = ((int)(r >> 40) % 2000 - 1000) / 700.0f; }
+    int Ho, Wo; double t0 = sdt_now();
+    float *a = fxv_decode(&v, tok, th, tw, &Ho, &Wo); const double t1 = sdt_now() - t0; if (!a) return 1;
+    t0 = sdt_now(); float *b = fxv_decode(&v, tok, th, tw, &Ho, &Wo); const double t2 = sdt_now() - t0; if (!b) return 1;
+    double h = 0; for (size_t i = 0; i < (size_t)Ho * Wo * 3; i++) h += (double)b[i] * (double)((i % 89) + 1);
+    printf("flux-vae bench %dx%d: 1o %.3f s  2o %.3f s  | soma %.6e\n", Wo, Ho, t1, t2, h);
+    return 0;
+}
+
 static int fxv_main(int argc, char **argv) {
+    if (argc >= 2 && !strcmp(argv[0], "bench")) return fxv_bench(argv[1], argc > 2 ? atoi(argv[2]) : 20, argc > 3 ? atoi(argv[3]) : 36);
     if (argc >= 3 && !strcmp(argv[0], "convert")) return fxv_convert(argv[1], argv[2]);
     if (argc >= 3 && !strcmp(argv[0], "selftest")) return fxv_selftest(argv[1], argv[2]);
     fprintf(stderr, "uso: katana render flux-vae convert <pasta-do-vae> <saida.gguf>\n     katana render flux-vae selftest <pasta-de-referencia> <vae.gguf>\n");

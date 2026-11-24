@@ -384,7 +384,7 @@ static void cpx_store_bx(int qt, const int soffh[2], const int soffl[2], int wl,
 static void cpx_gemmx(int qt, int S, int fl, const char *name) {
     char *body = malloc(1 << 20), *save = cpx_b; cpx_b = body;
     cpx_r = 0; cpx_f = 0; cpx_d = 0; cpx_p = 0;
-    const int xl = fl & 1, wl = (fl & 2) && qt != GQ_BF16;
+    const int xl = fl & 1, wl = (fl & 2) && qt != GQ_BF16, fl2 = (fl & 4) != 0;      /* fl2: acumulador parcial por ladrilho somado em F32 (o mma acumula com menos precisao que a soma IEEE) */
     const int SA = 8192, OAL = SA, OBH = SA * (1 + xl), OBL = OBH + SA, ST = SA * (2 + xl + wl);
     const int tid = cpx_R(), lane = cpx_R(), warp = cpx_R(), wm = cpx_R(), wn = cpx_R(), m0 = cpx_R(), n0 = cpx_R(), smb = cpx_R();
     const int dX = cpx_D(), dXL = cpx_D(), dW = cpx_D(), dY = cpx_D(), dG = cpx_D(), pn = cpx_R(), prow = cpx_R(), pK = cpx_R(), pmode = cpx_R();
@@ -458,6 +458,8 @@ static void cpx_gemmx(int qt, int S, int fl, const char *name) {
     { const int a1 = cpx_R(), a2 = cpx_R();
       PP("shr.u32 %%r%d,%%r%d,3;\nand.b32 %%r%d,%%r%d,1;\nshl.b32 %%r%d,%%r%d,3;\nadd.u32 %%r%d,%%r%d,%%r%d;\nshl.b32 %%r%d,%%r%d,6;\nadd.u32 %%r%d,%%r%d,%%r%d;\nshl.b32 %%r%d,%%r%d,6;\n", a1, lane, a1, a1, a1, a1, rowA, lA, a1, a2, wm, rowA, rowA, a2, rowA, rowA);
       PP("shr.u32 %%r%d,%%r%d,4;\nshl.b32 %%r%d,%%r%d,3;\nadd.u32 %%r%d,%%r%d,%%r%d;\nshl.b32 %%r%d,%%r%d,5;\nadd.u32 %%r%d,%%r%d,%%r%d;\nshl.b32 %%r%d,%%r%d,6;\n", a1, lane, a1, a1, rowB, lA, a1, a2, wn, rowB, rowB, a2, rowB, rowB); }
+    int tmpacc[16][4];
+    if (fl2) for (int i = 0; i < 16; i++) for (int c = 0; c < 4; c++) { tmpacc[i][c] = cpx_F(); PP("mov.f32 %%f%d,0f00000000;\n", tmpacc[i][c]); }
     for (int kk = 0; kk < 2; kk++) {
         int af[4][4], al[4][4], bh[2][4], bl[2][4];
         const int ca = cpx_R(), cb = cpx_R(), bA = cpx_R(), bB = cpx_R(), u = cpx_R(), v = cpx_R();
@@ -478,7 +480,7 @@ static void cpx_gemmx(int qt, int S, int fl, const char *name) {
                 PP("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%%r%d,%%r%d,%%r%d,%%r%d},[%%r%d+%d];\n", bl[nj][0], bl[nj][1], bl[nj][2], bl[nj][3], bB, OBL + nj * 1024); }
         }
         for (int mi = 0; mi < 4; mi++) for (int ni = 0; ni < 4; ni++) {
-            const int *a = acc[mi * 4 + ni], nj = ni >> 1, h = (ni & 1) * 2;
+            const int *a = fl2 ? tmpacc[mi * 4 + ni] : acc[mi * 4 + ni], nj = ni >> 1, h = (ni & 1) * 2;
 #define MMAX(A_, B_) PP("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%%f%d,%%f%d,%%f%d,%%f%d},{%%r%d,%%r%d,%%r%d,%%r%d},{%%r%d,%%r%d},{%%f%d,%%f%d,%%f%d,%%f%d};\n", \
                a[0], a[1], a[2], a[3], A_[mi][0], A_[mi][1], A_[mi][2], A_[mi][3], B_[nj][h], B_[nj][h + 1], a[0], a[1], a[2], a[3])
             MMAX(af, bh);
@@ -487,6 +489,7 @@ static void cpx_gemmx(int qt, int S, int fl, const char *name) {
 #undef MMAX
         }
     }
+    if (fl2) for (int i = 0; i < 16; i++) for (int c = 0; c < 4; c++) PP("add.f32 %%f%d,%%f%d,%%f%d;\nmov.f32 %%f%d,0f00000000;\n", acc[i][c], acc[i][c], tmpacc[i][c], tmpacc[i][c]);
     { int sh[2], sl[2]; for (int i = 0; i < 2; i++) { sh[i] = cpx_R(); sl[i] = cpx_R(); PP("add.u32 %%r%d,%%r%d,%%r%d;\nadd.u32 %%r%d,%%r%d,%%r%d;\n", sh[i], soffH[i], sWr, sl[i], soffL[i], sWr); }
       cpx_store_bx(qt, sh, sl, wl, &L); }
     PP("add.u32 %%r%d,%%r%d,%d;\nsetp.eq.u32 %%p%d,%%r%d,%d;\n@%%p%d mov.u32 %%r%d,0;\n", sRd, sRd, ST, ploop, sRd, S * ST, ploop, sRd);
