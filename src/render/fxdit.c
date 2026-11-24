@@ -196,7 +196,7 @@ static void fxd_gj_job(void *cx, int j0, int j1) {
 }
 
 /* Y[n][rows] = X[n][cols] * W^T (sem vies). O GGUF guarda [ne0 = entrada, ne1 = saida]. */
-static void fxd_lin(const FxDit *F, float *Y, const float *X, int n, const SdgInfo *t) {
+static void fxd_lin0(const FxDit *F, float *Y, const float *X, int n, const SdgInfo *t) {
     const int cols = (int)t->dim[0], rows = (int)t->dim[1], NR = vt_nr(), np = (rows + NR - 1) / NR;
     if (fxd_wmode()) {
         double t0 = FXD_TIC();
@@ -221,6 +221,14 @@ static void fxd_lin(const FxDit *F, float *Y, const float *X, int n, const SdgIn
     pool_for(vt_lin_job, &j, (n + VT_ROWS - 1) / VT_ROWS, 1);
     vt_free(B);
     FXD_TOC(FT_GEMM, t0);
+}
+
+/* adaptador de baixo posto (fxlora.c): Y += escala * (X A^T) B^T quando ha um .fxlora ativo e ele cobre este peso; sem adaptador, so um teste de inteiro */
+static int g_fxl_on;
+static void fxl_apply(float *Y, const float *X, int n, const SdgInfo *t);       /* fxlora.c */
+static void fxd_lin(const FxDit *F, float *Y, const float *X, int n, const SdgInfo *t) {
+    fxd_lin0(F, Y, X, n, t);
+    if (g_fxl_on) fxl_apply(Y, X, n, t);
 }
 
 /* um vetor (n = 1): y[rows] = W x, sem empacotar */
