@@ -41,6 +41,7 @@ static const CtTool g_ct[] = {
     {"ListAgents", ct_listagents, 1, CT_LISTAGENTS_DESC, CT_LISTAGENTS_PROPS, CT_LISTAGENTS_REQ},
     {"SubagentHandback", ct_subagenthandback, 1, CT_SUBAGENTHANDBACK_DESC, CT_SUBAGENTHANDBACK_PROPS, CT_SUBAGENTHANDBACK_REQ},
     {"Workflow", ct_workflow, 0, CT_WORKFLOW_DESC, CT_WORKFLOW_PROPS, CT_WORKFLOW_REQ},
+    {"Render", ct_render, 0, CT_RENDER_DESC, CT_RENDER_PROPS, CT_RENDER_REQ},
 };
 #define CT_N ((int)(sizeof g_ct / sizeof g_ct[0]))
 

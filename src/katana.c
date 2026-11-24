@@ -96,6 +96,7 @@
 #include "tools/reportfindings.c"        /* ReportFindings */
 #include "tools/messages.c"              /* SendMessage, ListAgents, SubagentHandback */
 #include "tools/workflow.c"              /* Workflow */
+#include "tools/render.c"                /* Render: katana render generate como ferramenta do agente */
 #include "tools/table.c"               /* tabela, despacho e katana tool */
 #include "agent/brief.c"               /* formato brief do KATANA.md: lint, never/ask impostos, nota de fim de pedido */
 #include "agent/docsel.c"              /* o motor escolhe, nos .md do projeto, os trechos que importam para o pedido */
