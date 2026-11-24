@@ -489,9 +489,12 @@ static int fxd_single(const FxDit *F, int b, float *x, int N, const float *ms, c
     return 1;
 }
 
+#include "render/fxdit_cu.c"        /* o mesmo transformador na GPU (CUDA) */
+
 static void fxd_probe_copy(float *dst, const float *src, size_t n) { if (dst) memcpy(dst, src, n * 4); }
 
 static int fxd_forward(const FxDit *F, const float *img, const float *ids_img, int Ni, const float *txt, const float *ids_txt, int Nt, float t, float *out, const FxdProbe *pr) {
+    if (fxc_enabled() && fxc_forward(F, img, ids_img, Ni, txt, ids_txt, Nt, t, out, pr)) return 1;
     const int D = FXD_DIM, N = Nt + Ni;
     /* 1. embedding do passo: senoidal de 256 (cos, sin), depois linear, SiLU, linear */
     float temb[FXD_DIM], te[256], hbuf[FXD_DIM];
