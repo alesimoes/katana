@@ -1656,7 +1656,7 @@ bool Backend::sendImage(const QString &text)
     auto *p = new QProcess(this);
     m_imgProc = p;
     p->setProcessChannelMode(QProcess::MergedChannels);
-    if (engine == "flux" && imageBackend() != "auto") {           // escolha do menu: CUDA, Vulkan ou CPU; "auto" deixa o katana escolher (CUDA, depois Vulkan, depois CPU)
+    if ((engine == "flux" || engine == "stable") && imageBackend() != "auto") {           // escolha do menu: CUDA, Vulkan ou CPU; "auto" deixa o katana escolher (CUDA, depois Vulkan, depois CPU)
         auto env = QProcessEnvironment::systemEnvironment();
         env.insert("KATANA_BACKEND", imageBackend());
         p->setProcessEnvironment(env);
@@ -1669,11 +1669,11 @@ bool Backend::sendImage(const QString &text)
         if (st == QProcess::NormalExit && code == 0 && QFileInfo::exists(out)) {
             // o motor diz quem processou de fato ("[flux] usado: dit=cuda vae=vulkan"); o cartao mostra CUDA, Vulkan ou CPU
             QString nome2 = engine;
-            const auto mt = QRegularExpression(QStringLiteral("\\[flux\\] usado: dit=(\\w+) vae=(\\w+)")).match(log);
+            const auto mt = QRegularExpression(QStringLiteral("\\[(?:flux|stable)\\] usado: (?:dit|unet)=(\\w+) vae=(\\w+)")).match(log);
             if (mt.hasMatch()) {
                 auto rot = [](const QString &s) { return s == "cuda" ? QStringLiteral("CUDA") : s == "vulkan" ? QStringLiteral("Vulkan") : QStringLiteral("CPU"); };
                 const QString a = rot(mt.captured(1)), b = rot(mt.captured(2));
-                nome2 += "|" + (a == b ? a : QStringLiteral("transformador %1, VAE %2").arg(a, b));
+                nome2 += "|" + (a == b ? a : QStringLiteral("%1 %2, VAE %3").arg(nome2.startsWith("stable") ? QStringLiteral("UNet") : QStringLiteral("transformador"), a, b));
             }
             m_msgs.append("image", out, nome2);
             m_sess.mensagens.append({"image", out, nome2, QDateTime::currentDateTime().toString(Qt::ISODate)});
@@ -2031,7 +2031,7 @@ void Backend::handleMarker(const QByteArray &line)
                     if (mt.hasMatch()) {
                         auto rot = [](const QString &x) { return x == "cuda" ? QStringLiteral("CUDA") : x == "vulkan" ? QStringLiteral("Vulkan") : QStringLiteral("CPU"); };
                         const QString a = rot(mt.captured(1)), b = rot(mt.captured(2));
-                        nome2 += "|" + (a == b ? a : QStringLiteral("transformador %1, VAE %2").arg(a, b));
+                        nome2 += "|" + (a == b ? a : QStringLiteral("%1 %2, VAE %3").arg(nome2.startsWith("stable") ? QStringLiteral("UNet") : QStringLiteral("transformador"), a, b));
                     }
                     m_msgs.append("image", mp.captured(2), nome2);
                     m_sess.mensagens.append({"image", mp.captured(2), nome2, QDateTime::currentDateTime().toString(Qt::ISODate)});

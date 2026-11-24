@@ -1,0 +1,20 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// Coeficientes da norma por grupos (32 grupos): y = silu(ca[c] * x + cb[c]); um grupo de trabalho por grupo de canais; media em duas passadas (F32)
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint X, gamma, beta, ca, cb; int n, C; float eps; } pc;
+void main() {
+    const uint l = gl_LocalInvocationID.x, g = gl_WorkGroupID.x;
+    const uint cpg = uint(pc.C) / 32u, tot = uint(pc.n) * cpg;
+    float s = 0.0;
+    for (uint i = l; i < tot; i += 256u) { const uint p = i / cpg, c = i - p * cpg; s += ldf(pc.X + (p * uint(pc.C) + g * cpg + c) * 4u); }
+    const float mean = sd_total(s) / float(tot);
+    float v = 0.0;
+    for (uint i = l; i < tot; i += 256u) { const uint p = i / cpg, c = i - p * cpg; const float d = ldf(pc.X + (p * uint(pc.C) + g * cpg + c) * 4u) - mean; v += d * d; }
+    const float inv = 1.0 / sqrt(sd_total(v) / float(tot) + pc.eps);
+    if (l < cpg) {
+        const uint ch = g * cpg + l; const float ga = ldf(pc.gamma + ch * 4u), be = ldf(pc.beta + ch * 4u);
+        stf(pc.ca + ch * 4u, ga * inv); stf(pc.cb + ch * 4u, be - mean * ga * inv);
+    }
+}

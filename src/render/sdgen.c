@@ -13,6 +13,14 @@
  * Tamanho: lados multiplos de 64 (a UNet reduz o latente tres vezes). Ruido: gerador proprio (splitmix64 + Box-Muller), nao e o do torch:
  * a mesma semente da outra imagem diferente, mas e repetivel aqui. */
 
+/* GPU (render/sdcu.c, incluido depois): cada uma devolve 0/NULL se nao deu e a CPU faz o mesmo trabalho */
+static int g_sd_be_unet, g_sd_be_vae;
+static int scu_plan(const SdgFile *base, const SdgFile *ctrl, int h8, int w8, int nctx);
+static int scu_eps(const SdgFile *base, const SdgFile *ctrl, const float *lat, int h8, int w8, float t, const float *ctx, int nctx, float scale, float *eps);
+static int scu_cond(const SdgFile *ctrl, const float *img, int H, int W, int nctx);
+static float *scu_vae_decode(const SdgFile *g, const float *lat, int h, int w, int *Ho, int *Wo);
+static float *scu_vae_encode(const SdgFile *g, const float *img, int H0, int W0, int *ho, int *wo);
+
 static double sdp_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9; }
 
 typedef struct { int n; double sigma[1025]; double t[1024]; double init_sigma; } SdpEuler;
@@ -165,6 +173,24 @@ static int sdp_peek_size(const char *path, int *w, int *h) {
 }
 static int sdp_round64(double v) { int r = (int)(v / 64.0 + 0.5) * 64; return r < 64 ? 64 : r > 1024 ? 1024 : r; }
 
+/* uma passada do modelo (ControlNet + UNet) para um ramo: GPU se ha, senao (ou se a GPU falha) CPU */
+typedef struct { const SdgFile *base, *ctrl; float *ctrl_img, *cond; int gpu, W, H, h8, w8, nctx; double scale; } SdpPass;
+static int sdp_eps(SdpPass *Q, const float *lat, float t, const float *ctx, float *eps) {
+    if (Q->gpu) {
+        if (scu_eps(Q->base, Q->ctrl, lat, Q->h8, Q->w8, t, ctx, Q->nctx, (float)Q->scale, eps)) return 1;
+        Q->gpu = 0;
+    }
+    if (Q->ctrl && !Q->cond) {
+        int hc, wc; Q->cond = sdn_cond_embed(Q->ctrl, Q->ctrl_img, Q->H, Q->W, &hc, &wc);
+        if (!Q->cond || hc != Q->h8 || wc != Q->w8) { fprintf(stderr, "render: falhou o embedding da imagem de controle\n"); return 0; }
+    }
+    SdSkips res; float *mres = NULL; int hm, wm;
+    if (Q->ctrl && !sdn_control(Q->ctrl, lat, Q->h8, Q->w8, t, ctx, Q->nctx, Q->cond, (float)Q->scale, &res, &mres, &hm, &wm)) { fprintf(stderr, "render: ControlNet falhou\n"); return 0; }
+    if (!sdn_unet(Q->base, lat, Q->h8, Q->w8, t, ctx, Q->nctx, Q->ctrl ? &res : NULL, mres, eps)) { fprintf(stderr, "render: UNet falhou\n"); return 0; }
+    if (Q->ctrl) { sdn_skips_free(&res); free(mres); }
+    return 1;
+}
+
 static int sdp_generate(const SdpParams *P) {
     int W = P->w, H = P->h; char path[1100];
     if ((!W || !H) && (P->control || P->init)) {                         /* tamanho pela proporcao da imagem, lado maior 512 */
@@ -199,7 +225,8 @@ static int sdp_generate(const SdpParams *P) {
     SdpLcm lc; if (P->lcm) sdp_lcm_setup(&lc, P->steps, sdg_kv_f32(&base, "sd15.sched.beta_start", 0.00085f), sdg_kv_f32(&base, "sd15.sched.beta_end", 0.012f));
     const float vscale = sdg_kv_f32(&base, "sd15.vae.scaling_factor", 0.18215f);
     /* imagem de controle (bordas) */
-    float *cond = NULL;
+    float *cond = NULL, *ctrl_img = NULL;
+    int gpu = scu_plan(&base, use_ctrl ? &ctrl : NULL, h8, w8, nctx), cond_gpu = 0;
     if (use_ctrl) {
         uint8_t *rgb = sdp_load_image(P->control, W, H);
         if (!rgb) return 1;
@@ -213,9 +240,8 @@ static int sdp_generate(const SdpParams *P) {
         float *img = sdn_alloc((size_t)W * H * 3); size_t on = 0;
         for (size_t i = 0; i < (size_t)W * H; i++) { const float v = ed[i] ? 1.0f : 0.0f; img[3 * i] = img[3 * i + 1] = img[3 * i + 2] = v; on += ed[i]; }
         fprintf(stderr, "[render] bordas: %.1f%% dos pixels\n", 100.0 * (double)on / ((double)W * H));
-        int hc, wc; cond = sdn_cond_embed(&ctrl, img, H, W, &hc, &wc);
-        if (!cond || hc != h8 || wc != w8) { fprintf(stderr, "render: falhou o embedding da imagem de controle\n"); return 1; }
-        free(img); free(ed); free(rgb);
+        ctrl_img = img;
+        free(ed); free(rgb);
     }
     /* latente inicial */
     SdpRng rng = { P->seed * 0x9E3779B97F4A7C15ull + 12345, 0, 0 };
@@ -226,23 +252,27 @@ static int sdp_generate(const SdpParams *P) {
         if (!rgb) return 1;
         float *im = sdn_alloc((size_t)W * H * 3);
         for (size_t i = 0; i < (size_t)W * H * 3; i++) im[i] = rgb[i] / 127.5f - 1.0f;
-        int hh, ww; float *m = sdv_encode(&base, im, H, W, &hh, &ww);
+        int hh, ww; float *m = gpu ? scu_vae_encode(&base, im, H, W, &hh, &ww) : NULL;
+        if (!m) m = sdv_encode(&base, im, H, W, &hh, &ww);
         if (!m) return 1;
         start = P->steps - (int)(P->steps * P->strength); if (start < 0) start = 0; if (start > P->steps - 1) start = P->steps - 1;
         if (P->lcm) { const double a = lc.ac[lc.t[start]]; for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) x[i] = (float)(sqrt(a) * m[i] * vscale + sqrt(1.0 - a) * x[i]); }
         else for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) x[i] = m[i] * vscale + x[i] * (float)eu.sigma[start];
         free(m); free(im); free(rgb);
     } else if (!P->lcm) for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) x[i] *= (float)eu.init_sigma;
+    SdpPass Q = { &base, use_ctrl ? &ctrl : NULL, ctrl_img, cond, gpu, W, H, h8, w8, nctx, P->control_scale };
+    if (use_ctrl && gpu && scu_cond(&ctrl, ctrl_img, H, W, nctx)) cond_gpu = 1;
+    if (use_ctrl && !cond_gpu) {
+        int hc, wc; Q.cond = sdn_cond_embed(&ctrl, ctrl_img, H, W, &hc, &wc);
+        if (!Q.cond || hc != h8 || wc != w8) { fprintf(stderr, "render: falhou o embedding da imagem de controle\n"); return 1; }
+    }
     fprintf(stderr, "[render] %dx%d, %d passos (comecando no %d), guia %.1f, semente %llu%s%s\n", W, H, P->steps, start, P->guidance, (unsigned long long)P->seed, use_ctrl ? ", ControlNet" : "", P->init ? ", imagem a imagem" : "");
     float *xin = sdn_alloc((size_t)h8 * w8 * 4), *e_c = sdn_alloc((size_t)h8 * w8 * 4), *e_u = sdn_alloc((size_t)h8 * w8 * 4);
     if (P->lcm) {
         float *den = sdn_alloc((size_t)h8 * w8 * 4);
         for (int s = start; s < P->steps; s++) {
             const double ts = sdp_now(); const int t = lc.t[s], last = s == P->steps - 1;
-            SdSkips res; float *mres = NULL; int hm, wm;
-            if (use_ctrl && !sdn_control(&ctrl, x, h8, w8, (float)t, cc, nctx, cond, (float)P->control_scale, &res, &mres, &hm, &wm)) { fprintf(stderr, "render: ControlNet falhou\n"); return 1; }
-            if (!sdn_unet(&base, x, h8, w8, (float)t, cc, nctx, use_ctrl ? &res : NULL, mres, e_c)) { fprintf(stderr, "render: UNet falhou\n"); return 1; }
-            if (use_ctrl) { sdn_skips_free(&res); free(mres); }
+            if (!sdp_eps(&Q, x, (float)t, cc, e_c)) return 1;
             double cs, co; sdp_lcm_scalings(t, &cs, &co);
             const double at = lc.ac[t], sat = sqrt(at), sbt = sqrt(1.0 - at), ap = lc.ac[last ? t : lc.t[s + 1]];
             for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) {
@@ -258,21 +288,20 @@ static int sdp_generate(const SdpParams *P) {
         for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) xin[i] = x[i] * inv;
         for (int branch = 0; branch < 2; branch++) {                    /* 0 = com o prompt, 1 = sem (negativo) */
             const float *ctx = branch ? cu : cc; float *e = branch ? e_u : e_c;
-            SdSkips res; float *mres = NULL; int hm, wm;
-            if (use_ctrl && !sdn_control(&ctrl, xin, h8, w8, t, ctx, nctx, cond, (float)P->control_scale, &res, &mres, &hm, &wm)) { fprintf(stderr, "render: ControlNet falhou\n"); return 1; }
-            if (!sdn_unet(&base, xin, h8, w8, t, ctx, nctx, use_ctrl ? &res : NULL, mres, e)) { fprintf(stderr, "render: UNet falhou\n"); return 1; }
-            if (use_ctrl) { sdn_skips_free(&res); free(mres); }
+            if (!sdp_eps(&Q, xin, t, ctx, e)) return 1;
         }
         const float dt = (float)(eu.sigma[s + 1] - eu.sigma[s]);
         for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) { const float eps = e_u[i] + (float)P->guidance * (e_c[i] - e_u[i]); x[i] += eps * dt; }
         fprintf(stderr, "[render] passo %d/%d  (sigma %.3f)  %.1f s\n", s + 1, P->steps, sg, sdp_now() - ts);
     }
     for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) x[i] /= vscale;
-    int Ho, Wo; float *img = sdv_decode(&base, x, h8, w8, &Ho, &Wo);
+    int Ho, Wo; float *img = gpu ? scu_vae_decode(&base, x, h8, w8, &Ho, &Wo) : NULL;
+    if (!img) img = sdv_decode(&base, x, h8, w8, &Ho, &Wo);
     if (!img) { fprintf(stderr, "render: VAE falhou\n"); return 1; }
     uint8_t *px = xalloc((size_t)Wo * Ho * 3, 1);
     for (size_t i = 0; i < (size_t)Wo * Ho * 3; i++) { float v = (img[i] * 0.5f + 0.5f) * 255.0f; v = v < 0 ? 0 : v > 255 ? 255 : v; px[i] = (uint8_t)(v + 0.5f); }
     if (!sdp_png_write(P->out, px, Wo, Ho)) { fprintf(stderr, "render: nao consegui gravar %s\n", P->out); return 1; }
+    { static const char *nmb[3] = { "cpu", "cuda", "vulkan" }; fprintf(stderr, "[stable] usado: unet=%s vae=%s\n", nmb[g_sd_be_unet], nmb[g_sd_be_vae]); }
     fprintf(stderr, "[render] pronto: %s (%dx%d) em %.0f s\n", P->out, Wo, Ho, sdp_now() - t0);
     return 0;
 }

@@ -1,0 +1,80 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// Convolucao (ou produto de matrizes, ks = 1) como GEMM implicito, NHWC, pesos F16 [cout][Kp] (k*k*entrada reordenado em ky, kx, entrada).
+// Y[pix][cout] = (bias + sum_k A[pix][k] W[cout][k]) * oscale + res; A vem de X F32 (ampliado 2x se up) com y = silu(ca*x + cb) opcional.
+// Ladrilho 64 x 64 x 16, 256 fios, cada um com 4 x 4 saidas, tudo em F32 (contas na precisao do F32; os pesos ja sao F16).
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint X, W, bias, res, Y, ca, cb; int silu, H, Wd, Cin, Cout, ks, up, Kp, stride, pt, pl, LH, LW, out16; float oscale; } pc;
+shared float As[16][65];
+shared float Bs[16][65];
+void main() {
+    const uint tid = gl_LocalInvocationID.x, tx = tid & 15u, ty = tid >> 4;
+    const int p0 = int(gl_WorkGroupID.y) * 64, c0 = int(gl_WorkGroupID.x) * 64;
+    const int npix = pc.H * pc.Wd, K = pc.ks * pc.ks * pc.Cin, nkt = (K + 15) / 16, Win = pc.up != 0 ? (pc.LW >> 1) : pc.LW, Cin = pc.Cin;
+    const int m = int(tid >> 2), kq = int(tid & 3u) * 4;
+    const int p = p0 + m, co = c0 + m;
+    const bool pv = p < npix, cv = co < pc.Cout, tf = pc.ca != 0u || pc.silu != 0;
+    const int oy = p / pc.Wd, ox = p - oy * pc.Wd;
+    float acc[4][4];
+    for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) acc[i][j] = 0.0;
+    for (int kt = 0; kt < nkt; kt++) {
+        const int k0 = kt * 16 + kq;
+        float a[4] = float[4](0.0, 0.0, 0.0, 0.0);
+        if (pv && k0 < K) {
+            if ((Cin & 3) == 0) {                       // os 4 canais estao na mesma celula do filtro
+                const int cell = k0 / Cin, ci = k0 - cell * Cin, ky = cell / pc.ks, kx = cell - ky * pc.ks;
+                int iy = oy * pc.stride + ky - pc.pt, ix = ox * pc.stride + kx - pc.pl;
+                if (!(iy < 0 || iy >= pc.LH || ix < 0 || ix >= pc.LW)) {
+                    if (pc.up != 0) { iy >>= 1; ix >>= 1; }
+                    const uint base = pc.X + uint(((iy * Win + ix) * Cin + ci) * 4);
+                    for (int e = 0; e < 4; e++) {
+                        float v = ldf(base + uint(e * 4));
+                        if (tf) { if (pc.ca != 0u) v = ldf(pc.ca + uint((ci + e) * 4)) * v + ldf(pc.cb + uint((ci + e) * 4)); if (pc.silu != 0) v = v / (1.0 + exp(-v)); }
+                        a[e] = v;
+                    }
+                }
+            } else {
+                for (int e = 0; e < 4; e++) {
+                    const int kk = k0 + e;
+                    if (kk >= K) break;
+                    const int cell = kk / Cin, ci = kk - cell * Cin, ky = cell / pc.ks, kx = cell - ky * pc.ks;
+                    int iy = oy * pc.stride + ky - pc.pt, ix = ox * pc.stride + kx - pc.pl;
+                    if (!(iy < 0 || iy >= pc.LH || ix < 0 || ix >= pc.LW)) {
+                        if (pc.up != 0) { iy >>= 1; ix >>= 1; }
+                        float v = ldf(pc.X + uint(((iy * Win + ix) * Cin + ci) * 4));
+                        if (tf) { if (pc.ca != 0u) v = ldf(pc.ca + uint(ci * 4)) * v + ldf(pc.cb + uint(ci * 4)); if (pc.silu != 0) v = v / (1.0 + exp(-v)); }
+                        a[e] = v;
+                    }
+                }
+            }
+        }
+        for (int e = 0; e < 4; e++) As[kq + e][m] = a[e];
+        if (cv) {
+            const uint wb = pc.W + uint((co * pc.Kp + kt * 16 + kq) * 2);
+            const vec2 w0 = unpackHalf2x16(D[wb >> 2]), w1 = unpackHalf2x16(D[(wb >> 2) + 1u]);
+            Bs[kq][m] = w0.x; Bs[kq + 1][m] = w0.y; Bs[kq + 2][m] = w1.x; Bs[kq + 3][m] = w1.y;
+        } else { for (int e = 0; e < 4; e++) Bs[kq + e][m] = 0.0; }
+        barrier();
+        for (int k = 0; k < 16; k++) {
+            float av[4], bv[4];
+            for (int i = 0; i < 4; i++) { av[i] = As[k][ty * 4u + uint(i)]; bv[i] = Bs[k][tx * 4u + uint(i)]; }
+            for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) acc[i][j] += av[i] * bv[j];
+        }
+        barrier();
+    }
+    for (int i = 0; i < 4; i++) {
+        const int r = p0 + int(ty) * 4 + i;
+        if (r >= npix) continue;
+        for (int jj = 0; jj < 2; jj++) {
+            const int c = c0 + int(tx) * 4 + jj * 2;
+            if (c >= pc.Cout) continue;
+            float v0 = acc[i][jj * 2], v1 = acc[i][jj * 2 + 1];
+            if (pc.bias != 0u) { v0 += ldf(pc.bias + uint(c * 4)); if (c + 1 < pc.Cout) v1 += ldf(pc.bias + uint((c + 1) * 4)); }
+            v0 *= pc.oscale; v1 *= pc.oscale;
+            const uint o = uint(r) * uint(pc.Cout) + uint(c);
+            if (pc.res != 0u) { v0 += ldf(pc.res + o * 4u); if (c + 1 < pc.Cout) v1 += ldf(pc.res + o * 4u + 4u); }
+            if (pc.out16 != 0) sth2(pc.Y + o * 2u, v0, v1); else { stf(pc.Y + o * 4u, v0); if (c + 1 < pc.Cout) stf(pc.Y + o * 4u + 4u, v1); }      // Cout impar (3 canais da imagem): so f32
+        }
+    }
+}

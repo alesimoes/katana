@@ -1,0 +1,16 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// softmax por linha no lugar: S[nr][nc] *= scale antes; um grupo por linha
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint S; int nc; float scale; } pc;
+void main() {
+    const uint l = gl_LocalInvocationID.x, nc = uint(pc.nc), b = pc.S + gl_WorkGroupID.x * nc * 4u;
+    float m = -1e30;
+    for (uint i = l; i < nc; i += 256u) m = max(m, ldf(b + i * 4u) * pc.scale);
+    m = sd_maxall(m);
+    float s = 0.0;
+    for (uint i = l; i < nc; i += 256u) { const float e = exp(ldf(b + i * 4u) * pc.scale - m); stf(b + i * 4u, e); s += e; }
+    const float inv = 1.0 / sd_total(s);
+    for (uint i = l; i < nc; i += 256u) stf(b + i * 4u, ldf(b + i * 4u) * inv);
+}

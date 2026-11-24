@@ -1,0 +1,20 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// y[o] = silu?(sum_k W[o][k] x[k] + b1[o] + b2[o]); W F16 [nout][Kp]; 8 saidas por grupo (32 fios cada)
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint W, x, b1, b2, y; int Kp, nout, K, silu; } pc;
+void main() {
+    const uint l = gl_LocalInvocationID.x, lane = l & 31u, o = gl_WorkGroupID.x * 8u + (l >> 5);
+    float s = 0.0;
+    if (o < uint(pc.nout)) for (uint k = lane * 2u; k < uint(pc.K); k += 64u) { const vec2 w = unpackHalf2x16(D[(pc.W + (o * uint(pc.Kp) + k) * 2u) >> 2]); s += w.x * ldf(pc.x + k * 4u) + w.y * ldf(pc.x + (k + 1u) * 4u); }
+    barrier(); sd_red[l] = s; barrier();
+    for (uint st = 16u; st > 0u; st >>= 1) { if (lane < st) sd_red[l] += sd_red[l + st]; barrier(); }
+    if (lane == 0u && o < uint(pc.nout)) {
+        float v = sd_red[l];
+        if (pc.b1 != 0u) v += ldf(pc.b1 + o * 4u);
+        if (pc.b2 != 0u) v += ldf(pc.b2 + o * 4u);
+        if (pc.silu != 0) v = v / (1.0 + exp(-v));
+        stf(pc.y + o * 4u, v);
+    }
+}

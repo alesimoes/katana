@@ -1,0 +1,30 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// MODE 0: GEGLU Y[r][j] = P[r][j] * gelu(P[r][F+j]) (a = P, y = Y, n1 = F); um grupo por linha.
+// MODE 1: concatenacao Y[p] = [A[p], B[p] + Bres[p]] (a = A, b = B, c = Bres ou 0, n1 = Ca, n2 = Cb); um grupo por pixel.
+// MODE 2: Y += X em n1 valores (a = Y, b = X), laco com passo.
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint a, b, c, y; uint n1, n2; } pc;
+float erf_(float x) {       // Abramowitz-Stegun 7.1.26 (erro absoluto < 1.5e-7)
+    const float s = sign(x), t = 1.0 / (1.0 + 0.3275911 * abs(x));
+    const float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-x * x);
+    return s * y;
+}
+void main() {
+    const uint l = gl_LocalInvocationID.x, r = gl_WorkGroupID.x;
+#if MODE == 0
+    const uint F = pc.n1, pa = pc.a + r * 2u * F * 4u, py = pc.y + r * F * 4u;
+    for (uint j = l; j < F; j += 256u) { const float g = ldf(pa + (F + j) * 4u); stf(py + j * 4u, ldf(pa + j * 4u) * (0.5 * g * (1.0 + erf_(g * 0.70710678118654752)))); }
+#elif MODE == 1
+    const uint Ca = pc.n1, Cb = pc.n2, C = Ca + Cb;
+    for (uint c = l; c < C; c += 256u) {
+        float v;
+        if (c < Ca) v = ldf(pc.a + (r * Ca + c) * 4u);
+        else { v = ldf(pc.b + (r * Cb + c - Ca) * 4u); if (pc.c != 0u) v += ldf(pc.c + (r * Cb + c - Ca) * 4u); }
+        stf(pc.y + (r * C + c) * 4u, v);
+    }
+#else
+    for (uint i = r * 256u + l; i < pc.n1; i += 4096u * 256u) stf(pc.a + i * 4u, ldf(pc.a + i * 4u) + ldf(pc.b + i * 4u));
+#endif
+}

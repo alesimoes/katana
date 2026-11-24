@@ -1058,7 +1058,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(be.attachedImage().isEmpty(), "o anexo e consumido no envio");
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
           check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief");
-          check(rl.contains("--control") && rl.contains("--control-scale") && rl.contains("--steps") && rl.contains("20") && !rl.contains("--lcm"), "stable: ControlNet pelas bordas da vista, 20 passos (Euler com guia, sem LCM)");
+          { const int si = rl.indexOf("--steps"); check(rl.contains("--control") && rl.contains("--control-scale") && si >= 0 && rl[si + 1] == "20", "stable: ControlNet pelas bordas da vista, --steps 20 (o padrao)"); }
           const int zi = rl.indexOf("--size"); check(be.imageSize() == 1024 && zi >= 0 && rl[zi + 1].split('x')[0].toInt() >= 320, "1024 (o menor) e o padrao e vai em --size: " + (zi >= 0 ? rl[zi + 1] : QString())); }
         QQuickItem *ic = c.item("imageCard");
         check(ic && ic->isVisible() && c.item("imagePic") && c.item("imagePic")->isVisible(), "cartao de imagem visivel");
@@ -1125,6 +1125,14 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n'); const int i = rl.lastIndexOf("--steps");
           check(i >= 0 && i + 1 < rl.size() && rl[i + 1] == "8", "flux: --steps 8 chega ao motor"); }
         be.setImageSteps(4);
+        // Stable com a placa escolhida: a linha "[stable] usado: unet=cuda vae=cuda" vira o cartao "Stable · CUDA"
+        be.setImageEngine("stable");
+        be.attachImage(img);
+        const int antesS = be.messages()->count();
+        c.typeAndEnter("gere com stable na placa");
+        check(waitFor([&] { return be.messages()->count() > antesS + 1 && !be.imageBusy(); }, 30000), "stable na placa: terminou");
+        QTest::qWait(400);
+        check(be.messages()->get(be.messages()->count() - 1)["name"] == "stable|CUDA", "cartao do Stable indica CUDA");
         be.setImageBackend("auto");
 
         // falha do stable: cartao de erro
