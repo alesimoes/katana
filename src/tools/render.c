@@ -91,12 +91,10 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
         else if (stat(target, &st) != 0 || st.st_size <= 0) snprintf(out, cap, "error: the render finished but %.300s was not written: %.600s", target, tail);
         else {
             char ap[1300]; if (target[0] != '/' && getcwd(ap, 900)) snprintf(ap + strlen(ap), sizeof ap - strlen(ap), "/%s", target); else snprintf(ap, sizeof ap, "%s", target);
-            char used[240] = "[stable] usado: unet=cpu vae=cpu";      /* Stable Diffusion roda so na CPU */
-            if (!strcmp(eng, "flux")) {
-                used[0] = 0; const char *u = strstr(res, "[flux] usado:");
-                if (u) { size_t k = 0; while (u[k] && u[k] != '\n' && k < sizeof used - 1) { used[k] = u[k]; k++; } used[k] = 0; }
-                else snprintf(used, sizeof used, "[flux] usado: unknown");
-            }
+            char used[240]; const char *tag = !strcmp(eng, "flux") ? "[flux] usado:" : "[stable] usado:";
+            used[0] = 0; const char *u = strstr(res, tag);           /* o motor diz quem processou de fato (cpu, cuda ou vulkan) */
+            if (u) { size_t k = 0; while (u[k] && u[k] != '\n' && k < sizeof used - 1) { used[k] = u[k]; k++; } used[k] = 0; }
+            else snprintf(used, sizeof used, "%s unknown", tag);
             snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s\n%s", eng, ap, (long long)st.st_size, brf && brf[0] ? "; prompt from the brief" : "", used);
         }
     }
