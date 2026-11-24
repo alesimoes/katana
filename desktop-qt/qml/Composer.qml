@@ -264,7 +264,7 @@ Item {
             onClicked: backend.imageMode = !backend.imageMode
         }
         Repeater {
-            model: [["stable", "Stable", ""], ["flux", "FLUX", " WIP"], ["krea", "Krea", " WIP"]]
+            model: [["stable", "Stable", ""], ["flux", "FLUX", ""], ["krea", "Krea", " WIP"]]
             AbstractButton {
                 required property var modelData
                 objectName: "engine_" + modelData[0]
@@ -278,6 +278,28 @@ Item {
                     color: sel ? Theme.fg : Theme.mut; text: modelData[1] + modelData[2] }
                 Accessible.name: "Motor de imagem " + modelData[1]
                 onClicked: backend.imageEngine = modelData[0]
+            }
+        }
+        // processamento do FLUX: Auto (o katana escolhe o mais rapido verificado: CUDA, Vulkan, CPU), CUDA, Vulkan ou CPU
+        Repeater {
+            model: [["auto", "Auto", "O katana escolhe: CUDA se houver placa NVIDIA, senão Vulkan, senão CPU."], ["cuda", "CUDA", "Força o CUDA (só placa NVIDIA)."],
+                    ["vulkan", "Vulkan", "Força o Vulkan (NVIDIA, AMD ou Intel)."], ["cpu", "CPU", "Força a CPU: mais lento, não usa a placa."]]
+            AbstractButton {
+                required property var modelData
+                objectName: "backend_" + modelData[0]
+                visible: (backend.imageMode || backend.attachedImage.length > 0) && backend.imageEngine === "flux"
+                implicitHeight: 22
+                implicitWidth: beTxt.implicitWidth + 14
+                hoverEnabled: true
+                readonly property bool sel: backend.imageBackend === modelData[0]
+                background: Rectangle { radius: 6; color: sel ? Theme.hov : parent.hovered ? Theme.hov : "transparent"; border.width: sel ? 1 : 0; border.color: Theme.bd }
+                contentItem: Text { id: beTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
+                    color: sel ? Theme.fg : Theme.mut; text: modelData[1] }
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: modelData[2]
+                Accessible.name: "Processamento " + modelData[1]
+                onClicked: backend.imageBackend = modelData[0]
             }
         }
         // briefing (.md/.txt) e logo opcionais do modo imagem: o briefing vira o prompt (materiais, cores, luz, regras de fidelidade);

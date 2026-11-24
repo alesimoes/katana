@@ -950,8 +950,16 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
               "com anexo: miniatura e os tres motores aparecem");
         check(be.imageEngine() == "stable", "Stable e o padrao");
         c.grab("60-imagem-anexada.png");
+        check(!c.item("backend_cuda")->isVisible(), "Stable: a escolha CUDA/Vulkan/CPU fica escondida");
         c.click(c.item("engine_flux"));
         check(be.imageEngine() == "flux", "escolher FLUX");
+        QTest::qWait(200);
+        check(c.item("backend_auto")->isVisible() && c.item("backend_cuda")->isVisible() && c.item("backend_vulkan")->isVisible() && c.item("backend_cpu")->isVisible(), "FLUX: aparecem Auto, CUDA, Vulkan e CPU");
+        check(be.imageBackend() == "auto", "Auto e o padrao");
+        c.click(c.item("backend_vulkan"));
+        check(be.imageBackend() == "vulkan", "escolher Vulkan");
+        c.click(c.item("backend_auto"));
+        check(be.imageBackend() == "auto", "voltar para Auto");
         c.click(c.item("attachRemove"));
         check(be.attachedImage().isEmpty(), "remover o anexo");
         QTest::qWait(300);

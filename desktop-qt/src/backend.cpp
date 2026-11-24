@@ -1022,6 +1022,18 @@ void Backend::setState(bool ready, bool loading, bool answering)
     updateInhibit();
 }
 
+QString Backend::imageBackend() const {
+    const QString b = m_ui->value("imagemBackend", "auto").toString();
+    return (b == "cuda" || b == "vulkan" || b == "cpu") ? b : QStringLiteral("auto");
+}
+void Backend::setImageBackend(const QString &b) {
+    if (b != "auto" && b != "cuda" && b != "vulkan" && b != "cpu") return;
+    if (b == imageBackend()) return;
+    m_ui->setValue("imagemBackend", b);
+    m_ui->sync();
+    emit imageChanged();
+}
+
 bool Backend::keepAwake() const { return m_ui->value("manterAcordado", true).toBool(); }
 void Backend::setKeepAwake(bool on)
 {
@@ -1613,6 +1625,11 @@ bool Backend::sendImage(const QString &text)
     auto *p = new QProcess(this);
     m_imgProc = p;
     p->setProcessChannelMode(QProcess::MergedChannels);
+    if (engine == "flux" && imageBackend() != "auto") {           // escolha do menu: CUDA, Vulkan ou CPU; "auto" deixa o katana escolher (CUDA, depois Vulkan, depois CPU)
+        auto env = QProcessEnvironment::systemEnvironment();
+        env.insert("KATANA_BACKEND", imageBackend());
+        p->setProcessEnvironment(env);
+    }
     connect(p, &QProcess::finished, this, [this, p, out, engine, nome](int code, QProcess::ExitStatus st) {
         const QString log = QString::fromUtf8(p->readAll()).trimmed();
         m_imgProc = nullptr;
