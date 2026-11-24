@@ -697,6 +697,7 @@ static void embed_row(const Model *m, float *out, int tok);
 static int32_t *vis_rp;      /* posicoes do RoPE (tres eixos) por posicao do cache */
 static void vis_row(const Model *m, float *out, int id);
 static void vis_seq(Model *m, const int *toks, int n, int pos0);
+static int vis_user_images(char *line, size_t cap);      /* @image(CAMINHO) na mensagem do usuario */
 static void vis_take(char *line, size_t cap);      /* imagens pendentes na frente da mensagem do usuario */
 static int g_gelu;      /* feed-forward com GELU (tanh) em vez de SiLU (gemma4) */
 #define G4_NB 16        /* gemma4: tokens por lote no prompt (CPU; = GPU_BMAX, limite do moe_cpu_multi) */

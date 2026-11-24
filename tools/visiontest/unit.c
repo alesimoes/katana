@@ -123,6 +123,37 @@ int main(int argc, char **argv) {
         vis_rp = keep;
         CHECK(d2 == 0, "text after image conversations is bit identical: %.2e", d2);
     }
+    /* @image(CAMINHO) na mensagem do usuario */
+    { static char ln[16384]; char dir[600], base[300], err2[300];
+      snprintf(dir, sizeof dir, "%s", argv[3]); char *sl = strrchr(dir, '/'); snprintf(base, sizeof base, "%s", sl ? sl + 1 : dir); if (sl) *sl = 0;
+      snprintf(ln, sizeof ln, "look at @image(%s) and @image( \"%s\" ) please", argv[3], argv[4]);
+      CHECK(vis_user_images(ln, sizeof ln) == 2, "two absolute images: %s", ln);
+      CHECK(strstr(ln, "[image ") && strstr(ln, VIS_TAG) && strstr(strstr(ln, VIS_TAG) + 1, VIS_TAG) && strstr(ln, "look at ") && strstr(ln, " please") && !strstr(ln, "@image("), "text kept, two marks: %s", ln);
+      const char *c = strstr(ln, VIS_TAG); CHECK(c && vis_parse(c, strlen(c)) && vis_by_mark(c) >= 0, "mark resolves");
+      Ids ti = {0}; encode(&m.tk, ln, &ti);
+      CHECK(ti.n > 128, "both images become tokens: %d", ti.n);
+      if (chdir(dir) == 0) {
+          snprintf(ln, sizeof ln, "@image(%s)", base);
+          CHECK(vis_user_images(ln, sizeof ln) == 1 && strstr(ln, dir), "relative path resolved to absolute: %s", ln);
+          snprintf(ln, sizeof ln, "@image(./%s)", base);
+          CHECK(vis_user_images(ln, sizeof ln) == 1, "dot-relative path: %s", ln);
+      }
+      snprintf(ln, sizeof ln, "x @image(/nonexistent/none.png) y @image(%s)", argv[3]);
+      CHECK(vis_user_images(ln, sizeof ln) == 1 && strstr(ln, "[image /nonexistent/none.png not attached: cannot ") && strstr(ln, " y ") && strstr(ln, VIS_TAG), "missing file: error note, the other image still goes: %s", ln);
+      char junk[600]; snprintf(junk, sizeof junk, "%s/junk.txt", argv[5]); FILE *jf = fopen(junk, "wb"); fputs("this is not an image at all, just text", jf); fclose(jf);
+      snprintf(ln, sizeof ln, "@image(%s)", junk);
+      CHECK(vis_user_images(ln, sizeof ln) == 0 && strstr(ln, "not attached") && !strstr(ln, VIS_TAG), "unsupported file: note, no crash: %s", ln);
+      snprintf(ln, sizeof ln, "@image() and @image(unclosed"); const int z = vis_user_images(ln, sizeof ln);
+      CHECK(z == 0 && !strcmp(ln, "@image() and @image(unclosed"), "empty and unclosed stay text: %s", ln);
+      snprintf(ln, sizeof ln, "no image here"); CHECK(vis_user_images(ln, sizeof ln) == 0 && !strcmp(ln, "no image here"), "plain text untouched");
+      snprintf(ln, sizeof ln, "a%smissing", "");
+      /* imagem que sumiu do armazenamento (sessao retomada): a marca some sem quebrar */
+      const char *ghost = "<|katana_image:00000000000000000000000000000000|> after"; Ids gi = {0}; encode(&m.tk, ghost, &gi); CHECK(gi.n > 0, "unknown mark does not crash");
+      /* sem projetor */
+      const int on = g_vis.on; g_vis.on = 0;
+      snprintf(ln, sizeof ln, "@image(%s)", argv[3]);
+      CHECK(vis_user_images(ln, sizeof ln) == 0 && strstr(ln, "no vision loaded"), "no projector says so: %s", ln);
+      g_vis.on = on; (void)err2; }
     CHECK(g_vis.nemb > 0, "images encoded");
     printf("vision unit: %d checks, %d failures\n", checks, fails);
     return fails != 0;

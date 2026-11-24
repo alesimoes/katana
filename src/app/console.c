@@ -393,6 +393,7 @@ static int session(Model *m, const char *sys0, int max_tokens, float temp) {
         if (cmd == 2) break;
         if (reset) { pos = 0; first = 1; }
         if (cmd) continue;
+        vis_user_images(line, sizeof line);
         vis_take(line, sizeof line);
 
         Ids ids = {0};

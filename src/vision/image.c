@@ -206,7 +206,7 @@ static int vis_by_mark(const char *s) {
 static int vis_encode_mark(const char *s, int n, Ids *out) {
     if (!vis_parse(s, (size_t)n)) return 0;
     const int k = vis_by_mark(s);
-    if (k < 0) return 0;                     /* imagem desconhecida: fica o texto da marca */
+    if (k < 0) return VIS_MARK_N;            /* imagem que nao existe mais (sessao retomada): a marca some, a linha "[image CAMINHO ...]" antes dela fica como aviso */
     ids_push(out, g_vis.start);
     for (int i = 0; i < g_vis.v[k].nt; i++) ids_push(out, VIS_BASE | k << 16 | i);
     ids_push(out, g_vis.end);
@@ -402,6 +402,53 @@ static int vis_cli_images(void) {
     free(sv);
     unsetenv("KATANA_IMAGE");
     return ok;
+}
+/* @image(CAMINHO) em qualquer mensagem do usuario: troca cada uso por "[image CAMINHO: LxA pixels, N tokens]" e a marca da imagem
+   (o caminho fica no texto, a sessao guarda o caminho e o hash; os pixels ficam no armazenamento de imagens). Erro (arquivo ausente,
+   formato nao suportado, sem projetor) vira uma linha "[image CAMINHO not attached: motivo]" no texto e na saida de erro; nunca aborta.
+   Caminho absoluto, relativo a pasta de trabalho ou com ~/. Devolve quantas imagens entraram. */
+static int vis_user_images(char *line, size_t cap) {
+    static const char T[] = "@image(";
+    if (!strstr(line, T)) return 0;
+    char *o = malloc(cap + 1);
+    if (!o) return 0;
+    size_t w = 0; int n = 0;
+    for (const char *p = line; *p; ) {
+        const char *q = strncmp(p, T, 7) == 0 ? strchr(p + 7, ')') : NULL;
+        if (!q) { if (w + 1 >= cap) break; o[w++] = *p++; continue; }
+        char path[1100], err[700] = "", note[1500];
+        const char *a = p + 7, *e = q;
+        while (a < e && (*a == ' ' || *a == '\t')) a++;
+        while (e > a && (e[-1] == ' ' || e[-1] == '\t')) e--;
+        if (e - a >= 2 && (*a == '"' || *a == '\'') && e[-1] == *a) { a++; e--; }
+        if (a == e) { if (w + 1 >= cap) break; o[w++] = *p++; continue; }      /* @image() vazio: fica como texto */
+        const char *hm = getenv("HOME");
+        if (*a == '~' && (a + 1 == e || a[1] == '/') && hm) snprintf(path, sizeof path, "%s%.*s", hm, (int)(e - a - 1), a + 1);
+        else snprintf(path, sizeof path, "%.*s", (int)(e - a), a);
+        int k = -1;
+        if (!g_vis.on) snprintf(err, sizeof err, "this model has no vision loaded (no projector file next to it)");
+        else k = vis_add_file(path, err, sizeof err);
+        if (k < 0) {
+            snprintf(note, sizeof note, "[image %.600s not attached: %.300s]", path, err);
+            fprintf(stderr, "[image %s not attached: %s]\n", path, err);
+        } else {
+            char ab[4200];
+            vis_note(k, path, note, sizeof note);
+#ifndef _WIN32
+            if (realpath(path, ab)) vis_note(k, ab, note, sizeof note);
+#endif
+            fprintf(stderr, "[image %s: %dx%d, %d tokens]\n", path, g_vis.v[k].ow, g_vis.v[k].oh, g_vis.v[k].nt);
+            n++;
+        }
+        const size_t nl = strlen(note);
+        if (w + nl + 1 >= cap) break;
+        memcpy(o + w, note, nl); w += nl;
+        p = q + 1;
+    }
+    o[w] = 0;
+    snprintf(line, cap, "%s", o);
+    free(o);
+    return n;
 }
 /* poe as marcas pendentes na frente da mensagem do usuario */
 static void vis_take(char *line, size_t cap) {

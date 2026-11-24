@@ -651,6 +651,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         else if (cmd) continue;
         if (first) ah_clear(&hist);
         static char ureq[2000]; snprintf(ureq, sizeof ureq, "%.1999s", line);      /* o pedido como o usuario o escreveu, antes de qualquer nota: o que o UIOE interpreta */
+        vis_user_images(line, sizeof line);      /* @image(CAMINHO): as imagens da mensagem (uma ou mais) viram marcas */
         if (cd_note) {      /* o usuario trocou de pasta: o modelo precisa saber onde esta agora */
             char cw[4200], nl[16384]; cd_note = 0;
             static char pi[3200]; char pp[4400];
