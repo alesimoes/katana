@@ -690,6 +690,7 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
 }
 
 static void gpu_setup(Model *m);
+static void gpu_pristine_save(void);      /* gpu_suspend.c: estado de GPU antes da carga, para gpu_suspend/gpu_resume */
 static void mat_row(float *out, const Mat *W, int row, int cols);
 static void embed_row(const Model *m, float *out, int tok);
 /* visao (src/vision/image.c): ids de imagem ficam acima do vocabulario; vis_rp e nulo enquanto nao ha imagem */
@@ -1397,6 +1398,6 @@ static void load_model(Model *m, const char *path) {
     spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
     if (!c->q4e) et_init(m, path, buf);  /* nivel de SSD: ainda nao cobre modelo em partes */
     if (c->q4e) q4g_setup(m);
-    else if (!getenv("KATANA_CPU")) gpu_setup(m);
+    else if (!getenv("KATANA_CPU")) { gpu_pristine_save(); gpu_setup(m); }
 }
 

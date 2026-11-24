@@ -1510,11 +1510,13 @@ static DWORD WINAPI loader_thread(LPVOID a) {
     }
 }
 #else
+static volatile int loader_quit;     /* gpu_suspend: a carregadora sai quando a fila esvazia */
+static pthread_t loader_tid;
 static void *loader_thread(void *a) {
     long tail = 0;
     (void)a;
     for (;;) {
-        while (tail == gx.head) usleep(200);
+        while (tail == gx.head) { if (loader_quit) return NULL; usleep(200); }
         LoadReq *r = &gx.rq[tail % LQ];
         loader_do(r);
         __atomic_store_n(&r->done, 1, __ATOMIC_RELEASE);
@@ -1531,7 +1533,7 @@ static void loader_start(Model *m, size_t maxper) {
     if (h) { CloseHandle(h); gx.loader = 1; }
 #else
     pthread_t t;
-    if (pthread_create(&t, NULL, loader_thread, NULL) == 0) gx.loader = 1;
+    if (pthread_create(&t, NULL, loader_thread, NULL) == 0) { gx.loader = 1; loader_tid = t; }
 #endif
 }
 

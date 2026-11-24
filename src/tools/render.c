@@ -31,6 +31,43 @@ static int render_have(int flux) {
     return stat(p, &st) == 0;
 }
 
+/* A VRAM do agente para o subprocesso de imagem: o agente grava o contexto (KV + estado do DeltaNet, pfx_save como o delegate),
+ * solta a placa (gpu_suspend), e depois do subprocesso a recompoe e le o contexto de volta. Qualquer falha antes de soltar: segue
+ * como antes (a imagem na CPU, com aviso). Se o contexto nao voltar, g_ctx_lost manda o laco recalcular a conversa. */
+typedef struct { int on, saved, pos, ngl, esz, backend; uint64_t key; double t_susp; } RenderGpu;
+static void render_gpu_release(RenderGpu *r) {
+    memset(r, 0, sizeof *r);
+    Model *m = g_agent_m;
+    const char *k = getenv("KATANA_RENDER_KEEP_GPU");
+    if (!m || g_in_sub || (k && atoi(k))) return;
+    if (!gpu_suspendable(m)) { if (gpu.vk) fprintf(stderr, "[render: a GPU do agente nao pode ser solta neste modo; a imagem pode cair na CPU]\n"); return; }
+    const double t0 = now_sec();
+    r->pos = g_agent_pos;
+    if (r->pos > 0 && pfx_geom(m, &r->ngl, &r->esz, &r->backend)) {
+        r->key = 0x5245444552000000ULL ^ ((uint64_t)getpid() << 20) ^ (uint64_t)r->pos;
+        r->saved = pfx_save(m, r->key, r->pos, r->ngl, r->esz, r->backend);
+    }
+    snap_hold();
+    if (!gpu_suspend(m)) { snap_release(1, r->pos); if (r->saved) { char p[1000]; pfx_path(p, sizeof p, r->key, 0); remove(p); } r->saved = 0; fprintf(stderr, "[render: nao consegui soltar a GPU do agente; a imagem pode cair na CPU]\n"); return; }
+    r->on = 1; r->t_susp = now_sec() - t0;
+    fprintf(stderr, "[render: GPU do agente liberada em %.1f s (contexto de %d tokens %s)]\n", r->t_susp, r->pos, r->saved ? "guardado" : "sera recalculado");
+}
+static void render_gpu_restore(RenderGpu *r) {
+    if (!r->on) return;
+    Model *m = g_agent_m;
+    const double t0 = now_sec();
+    const int gok = gpu_resume(m);
+    int back = 0;
+    if (r->saved) {
+        int ngl, esz, backend;
+        if (pfx_geom(m, &ngl, &esz, &backend) && ngl == r->ngl && esz == r->esz && backend == r->backend) back = pfx_load(m, r->key, r->pos, ngl, esz, backend);
+        char p[1000]; pfx_path(p, sizeof p, r->key, 0); remove(p);
+    }
+    snap_release(back, r->pos);
+    if (!back) g_ctx_lost = 1;
+    fprintf(stderr, "[render: GPU do agente %s em %.1f s; contexto %s]\n", gok ? "recomposta" : "NAO voltou ao grafo completo (modo hibrido)", now_sec() - t0, back ? "carregado de volta" : "sera recalculado");
+}
+
 static void ct_render(const char *js, const char *end, char *out, size_t cap) {
     char *req = ct_str(js, end, "request"), *img = ct_str(js, end, "image"), *eng = ct_str(js, end, "engine"), *dst = ct_str(js, end, "out"), *brf = ct_str(js, end, "brief"), *siz = ct_str(js, end, "size");
     char *res = NULL, tmpb[64] = ""; const long long stp = ct_int(js, end, "steps", 0);
@@ -79,7 +116,9 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
         }
         snprintf(cmd + n, sizeof cmd - (size_t)n, " --out %s 2>&1 </dev/null", qo);
         int rc; size_t rn;
+        RenderGpu rg; render_gpu_release(&rg);
         res = run_capture(cmd, 200000, &rc, &rn);
+        render_gpu_restore(&rg);
         if (!res) { snprintf(out, cap, "error: could not start the render"); goto done; }
         const char *tail = tail_lines(res, rn, 6, 900);
         struct stat st;
