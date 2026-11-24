@@ -61,6 +61,7 @@ static FxcvConv *fxcv_conv(const SdgFile *g, const char *base) {
     g_fcv_n++;
     return c;
 }
+static void fxc_release_all(void);                                /* fxdit_cu.c: pesos do transformador */
 static void fxcv_release(void) { for (int i = 0; i < g_fcv_n; i++) { cu_free(g_fcv_c[i].wh); cu_free(g_fcv_c[i].wl); cu_free(g_fcv_c[i].bias); } g_fcv_n = 0; }
 
 static int fxcv_run(CUdptr_ wh, CUdptr_ wl, CUdptr_ bias, int Kp, int cin, int cout, int k, CUdptr_ X, CUdptr_ Y, CUdptr_ res, CUdptr_ ca, CUdptr_ cb, int silu, int H, int W, int up) {
@@ -107,10 +108,10 @@ static int fxcv_resnet(const SdgFile *g, const char *pfx, CUdptr_ x, CUdptr_ out
     return 1;
 }
 
-/* atencao do meio (uma cabeca de C sobre todos os pixels): x += out(softmax(q k^T / sqrt(C)) v); x no lugar. tmp: 4 buffers n*C */
-static int fxcv_attn(const SdgFile *g, const char *pfx, CUdptr_ x, int H, int W, int C, CUdptr_ q, CUdptr_ k, CUdptr_ v, CUdptr_ o, FxcvMem *M) {
-    const int n = H * W; char b[220];
-    if ((double)n * n * 4.0 > 6e8) return 0;                               /* S nao cabe: a CPU faz */
+/* atencao do meio (uma cabeca de C sobre todos os pixels): x += out(softmax(q k^T / sqrt(C)) v); x no lugar. S = Q K^T e calculada em blocos de R linhas
+ * (R n floats, no maximo 256 MB), entao nao existe a matriz n x n inteira (a 1920x1080 seriam 4 GB); o resultado e o mesmo. O resultado (x + saida) fica em q. */
+static int fxcv_attn(const SdgFile *g, const char *pfx, CUdptr_ x, int H, int W, int C, CUdptr_ q, CUdptr_ k, CUdptr_ v, CUdptr_ o_unused, FxcvMem *M) {
+    const int n = H * W; char b[220]; (void)o_unused;
     snprintf(b, sizeof b, "%s.group_norm", pfx); if (!fxcv_gn(g, b, x, n, C, M->ca, M->cb, M->tv)) return 0;
     snprintf(b, sizeof b, "%s.to_q", pfx); FxcvConv *cq = fxcv_conv(g, b);
     snprintf(b, sizeof b, "%s.to_k", pfx); FxcvConv *ck = fxcv_conv(g, b);
@@ -119,31 +120,35 @@ static int fxcv_attn(const SdgFile *g, const char *pfx, CUdptr_ x, int H, int W,
     if (!cq || !ck || !cv || !co) return 0;
     if (!fxcv_conv_run(cq, x, q, 0, M->ca, M->cb, 0, n, 1, 0) || !fxcv_conv_run(ck, x, k, 0, M->ca, M->cb, 0, n, 1, 0) || !fxcv_conv_run(cv, x, v, 0, M->ca, M->cb, 0, n, 1, 0)) return 0;
     const int Kp2 = (n + 31) / 32 * 32;
-    CUdptr_ S = cu_alloc((size_t)n * n * 4), kh = cu_alloc((size_t)n * C * 2), kl = cu_alloc((size_t)n * C * 2), vh = cu_alloc((size_t)C * Kp2 * 2), vl = cu_alloc((size_t)C * Kp2 * 2);
-    int ok = S && kh && kl && vh && vl;
+    long R = (long)(((size_t)256 << 20) / ((size_t)n * 4)); if (R > n) R = n; if (R < 32) R = 32;
+    CUdptr_ S = cu_alloc((size_t)R * n * 4), o = cu_alloc((size_t)n * C * 4), kh = cu_alloc((size_t)n * C * 2), kl = cu_alloc((size_t)n * C * 2), vh = cu_alloc((size_t)C * Kp2 * 2), vl = cu_alloc((size_t)C * Kp2 * 2);
+    int ok = S && o && kh && kl && vh && vl;
     if (ok) ok = fxcv_wsplit(k, n, C, 0, C, kh, kl) && fxcv_wsplit(v, n, C, 1, Kp2, vh, vl);
-    if (ok) ok = fxcv_run(kh, kl, 0, C, C, n, 1, q, S, 0, 0, 0, 0, n, 1, 0);                  /* S[i][j] = sum_d q[i][d] k[j][d] */
-    if (ok) { float sc = 1.0f / sqrtf((float)C); void *a[] = { &S, (void *)&n, &sc }; ok = cu_launch(g_fcv.f_sm, n, 1, 1, 256, 0, a); }
-    if (ok) ok = fxcv_run(vh, vl, 0, Kp2, n, C, 1, S, o, 0, 0, 0, 0, n, 1, 0);                 /* O[i][d] = sum_j S[i][j] v[j][d] */
+    for (long r0 = 0; ok && r0 < n; r0 += R) {
+        const int m = (int)(n - r0 < R ? n - r0 : R);
+        ok = fxcv_run(kh, kl, 0, C, C, n, 1, q + (CUdptr_)r0 * C * 4, S, 0, 0, 0, 0, m, 1, 0);            /* S[i][j] = sum_d q[i][d] k[j][d] */
+        if (ok) { float sc = 1.0f / sqrtf((float)C); int nn = n; void *a[] = { &S, &nn, &sc }; ok = cu_launch(g_fcv.f_sm, m, 1, 1, 256, 0, a); }
+        if (ok) ok = fxcv_run(vh, vl, 0, Kp2, n, C, 1, S, o + (CUdptr_)r0 * C * 4, 0, 0, 0, 0, m, 1, 0);   /* O[i][d] = sum_j S[i][j] v[j][d] */
+    }
     if (ok) ok = cu_sync();
     cu_free(S); cu_free(kh); cu_free(kl); cu_free(vh); cu_free(vl);
-    if (!ok) return 0;
-    return fxcv_conv_run(co, o, q, x, 0, 0, 0, n, 1, 0);          /* o resultado (x + saida) fica em q */
+    if (ok) ok = fxcv_conv_run(co, o, q, x, 0, 0, 0, n, 1, 0);
+    if (ok) ok = cu_sync();
+    cu_free(o);
+    return ok;
 }
 
 /* fichas normalizadas -> imagem [8*2th * 8*2tw][3] (memoria nova) ou NULL se nao deu (o chamador usa a CPU) */
-static float *fxcv_decode(const FxVae *v, const float *tok, int th, int tw, int *Ho, int *Wo) {
+static float *fxcv_decode_one(const FxVae *v, const float *tok, int th, int tw, int *Ho, int *Wo) {
     if (!fxcv_init()) return NULL;
     const SdgFile *g = &v->g; char b[220];
     int H = 2 * th, W = 2 * tw, C = 512, ok = 1;
     size_t mx = (size_t)H * W * 512, hh = H, ww = W; int cc = 512;
     for (int blk = 0; blk < 4; blk++) { const int ch[4] = { 512, 512, 256, 128 }; cc = ch[blk]; size_t s = hh * ww * (size_t)cc; if (s > mx) mx = s; if (blk < 3) { hh *= 2; ww *= 2; s = hh * ww * (size_t)cc; if (s > mx) mx = s; } }
-    CUdptr_ buf[6] = { 0 }, ca = cu_alloc(512 * 4), cb = cu_alloc(512 * 4), tv = cu_alloc(1024 * 4), zd = 0;
+    CUdptr_ buf[4] = { 0 }, ca = cu_alloc(512 * 4), cb = cu_alloc(512 * 4), tv = cu_alloc(1024 * 4), zd = 0;
     const size_t sz = mx * 4;
-    size_t fr = 0, tot = 0; cuapi.MemGetInfo(&fr, &tot);
     float *img = NULL, *z = fxv_unpatch(v, tok, th, tw);
-    (void)fr; (void)tot;
-    int nb = 0; for (; nb < 6; nb++) { buf[nb] = cu_alloc(sz); if (!buf[nb]) break; }
+    int nb = 0; for (; nb < 4; nb++) { buf[nb] = cu_alloc(sz); if (!buf[nb]) break; }
     const int need = 4;
     FxcvMem M = { {0}, ca, cb, tv, {0}, 0 };
     if (nb < need || !ca || !cb || !tv) { ok = 0; goto done; }
@@ -159,8 +164,7 @@ static float *fxcv_decode(const FxVae *v, const float *tok, int th, int tw, int 
         snprintf(b, sizeof b, "vae.decoder.mid_block.resnets.0");
         if (!fxcv_resnet(g, b, x, y, t1, t2, H, W, &M, &Co)) { ok = 0; goto done; }
         CUdptr_ tmp = x; x = y; y = tmp;                                      /* x = saida do resnet */
-        if (nb < 5) { ok = 0; goto done; }
-        if (!fxcv_attn(g, "vae.decoder.mid_block.attentions.0", x, H, W, C, t1, t2, y, buf[4], &M)) { ok = 0; goto done; }
+        if (!fxcv_attn(g, "vae.decoder.mid_block.attentions.0", x, H, W, C, t1, t2, y, 0, &M)) { ok = 0; goto done; }
         tmp = x; x = t1; t1 = tmp;                                            /* o resultado da atencao esta em t1 */
         snprintf(b, sizeof b, "vae.decoder.mid_block.resnets.1");
         if (!fxcv_resnet(g, b, x, y, t1, t2, H, W, &M, &Co)) { ok = 0; goto done; }
@@ -187,10 +191,74 @@ static float *fxcv_decode(const FxVae *v, const float *tok, int th, int tw, int 
     }
 done:
     cu_sync();
-    for (int i = 0; i < 6; i++) cu_free(buf[i]);
+    for (int i = 0; i < 4; i++) cu_free(buf[i]);
     cu_free(ca); cu_free(cb); cu_free(tv); cu_free(zd); free(z);
     if (!ok || !img) { if (img) free(img); fprintf(stderr, "flux-vae: a GPU (CUDA) nao conseguiu; usando a CPU\n"); return NULL; }
     *Ho = H; *Wo = W;
     g_fx_be_vae = 1;
     return img;
+}
+
+/* VRAM que a decodificacao inteira de th x tw fichas pede: 4 buffers F32 do maior nivel, pesos F16 em duas metades (~0,25 GB), atencao do meio */
+static size_t fxcv_need(int th, int tw) {
+    const size_t H = 2 * (size_t)th, W = 2 * (size_t)tw;
+    size_t mx = H * W * 512; size_t hh = H, ww = W;
+    for (int blk = 0; blk < 4; blk++) { const int ch[4] = { 512, 512, 256, 128 }; size_t s = hh * ww * ch[blk]; if (s > mx) mx = s; if (blk < 3) { hh *= 2; ww *= 2; s = hh * ww * ch[blk]; if (s > mx) mx = s; } }
+    const size_t n = H * W;
+    return 4 * mx * 4 + ((size_t)256 << 20) + (size_t)3 * n * 512 * 4 + ((size_t)320 << 20);
+}
+
+/* Decodifica th x tw fichas. Se a imagem inteira cabe na VRAM livre (depois de devolver os pesos do transformador), e exatamente o mesmo calculo de
+ * antes. Se nao, em ladrilhos de fichas com sobreposicao e mistura linear (como o VAE em ladrilhos do diffusers): cada ladrilho tem as proprias
+ * estatisticas de GroupNorm e a propria atencao do meio, entao a imagem difere um pouco da decodificacao inteira (medido em docs/render.md). */
+static float *fxcv_decode(const FxVae *v, const float *tok, int th, int tw, int *Ho, int *Wo) {
+    if (!fxcv_init()) return NULL;
+    size_t fr = 0, tot = 0; cuapi.MemGetInfo(&fr, &tot);
+    if (fxcv_need(th, tw) > fr) { fxc_release_all(); cuapi.MemGetInfo(&fr, &tot); }
+    const size_t avail = fr > ((size_t)64 << 20) ? fr - ((size_t)64 << 20) : 0;
+    { const char *e = getenv("KATANA_CUDA_VAE_TILE"); (void)e; }
+    int ty = th, tx = tw;
+    { const char *e = getenv("KATANA_CUDA_VAE_TILE"); if (e && atoi(e) > 0) { ty = th < atoi(e) ? th : atoi(e); tx = tw < atoi(e) ? tw : atoi(e); } }
+    while ((ty > 8 || tx > 8) && fxcv_need(ty, tx) > avail) { if (ty >= tx) ty = ty * 3 / 4; else tx = tx * 3 / 4; }
+    if (cu_dev.debug) fprintf(stderr, "cuda: VAE %dx%d fichas, VRAM livre %.0f MB, pede %.0f MB; %s\n", tw, th, fr / 1048576.0, fxcv_need(th, tw) / 1048576.0,
+                              (ty == th && tx == tw) ? "imagem inteira" : "em ladrilhos");
+    if (ty == th && tx == tw) return fxcv_decode_one(v, tok, th, tw, Ho, Wo);
+    if (fxcv_need(ty, tx) > avail) return NULL;
+    /* ladrilhos de ty x tx fichas, sobreposicao de ov fichas (16 pixels por ficha na saida) */
+    const int ov = 6;
+    int sy = ty - ov, sx = tx - ov; if (sy < 1) sy = 1; if (sx < 1) sx = 1;
+    const int OH = 16 * th, OW = 16 * tw;
+    float *acc = xalloc((size_t)OH * OW * 3, 4), *wsum = xalloc((size_t)OH * OW, 4);
+    float *sub = xalloc((size_t)ty * tx * 128, 4);
+    int ok = 1, ntile = 0;
+    for (int y0 = 0; ok; y0 += sy) {
+        if (y0 + ty > th) y0 = th - ty;
+        for (int x0 = 0; ok; x0 += sx) {
+            if (x0 + tx > tw) x0 = tw - tx;
+            for (int r = 0; r < ty; r++) memcpy(sub + (size_t)r * tx * 128, tok + ((size_t)(y0 + r) * tw + x0) * 128, (size_t)tx * 128 * 4);
+            int ho, wo; float *im = fxcv_decode_one(v, sub, ty, tx, &ho, &wo);
+            if (!im) { ok = 0; break; }
+            ntile++;
+            for (int r = 0; r < ho; r++) {
+                const int gy = 16 * y0 + r;
+                float wy = 1.0f; { const int e = 16 * ov / 2; if (y0 > 0 && r < 2 * e) wy = (float)(r + 1) / (2 * e + 1); if (y0 + ty < th && ho - 1 - r < 2 * e) { const float w2 = (float)(ho - r) / (2 * e + 1); if (w2 < wy) wy = w2; } }
+                for (int c = 0; c < wo; c++) {
+                    const int gx = 16 * x0 + c;
+                    float wx = 1.0f; { const int e = 16 * ov / 2; if (x0 > 0 && c < 2 * e) wx = (float)(c + 1) / (2 * e + 1); if (x0 + tx < tw && wo - 1 - c < 2 * e) { const float w2 = (float)(wo - c) / (2 * e + 1); if (w2 < wx) wx = w2; } }
+                    const float w = wy * wx; float *a = acc + ((size_t)gy * OW + gx) * 3; const float *p = im + ((size_t)r * wo + c) * 3;
+                    a[0] += w * p[0]; a[1] += w * p[1]; a[2] += w * p[2]; wsum[(size_t)gy * OW + gx] += w;
+                }
+            }
+            free(im);
+            if (x0 + tx >= tw) break;
+        }
+        if (y0 + ty >= th) break;
+    }
+    free(sub);
+    if (!ok) { free(acc); free(wsum); return NULL; }
+    for (size_t i = 0; i < (size_t)OH * OW; i++) { const float iw = 1.0f / wsum[i]; acc[i * 3] *= iw; acc[i * 3 + 1] *= iw; acc[i * 3 + 2] *= iw; }
+    free(wsum);
+    if (cu_dev.debug) fprintf(stderr, "cuda: VAE em %d ladrilhos de %dx%d fichas\n", ntile, tx, ty);
+    *Ho = OH; *Wo = OW;
+    return acc;
 }
