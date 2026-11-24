@@ -778,3 +778,7 @@ would gain after training.
    `tmm`, MoE experts in one grouped dispatch, adapters on the GPU.
 6. Serving: adapters applied unmerged in the products and selected per request (`model` field), hot-swapped.
 7. Optional: merge a specialization into a new GGUF and requantize it (`katana quantize` already writes GGUF).
+
+## Image model adapters (FLUX.2 klein LoRA)
+
+The same adapter conventions (A random, B zero, scale alpha/rank, AdamW with bias correction and global-norm clipping, `.kopt` optimizer state, file bound to the base by size and hash) are reused for the image model: `katana flux-train` trains rank-16 adapters on the FLUX.2 klein transformer and writes a `.fxlora`, see "LoRA training of the FLUX.2 klein DiT" in `docs/render.md`. It is independent of the language-model curriculum and of `.kspec` files.
