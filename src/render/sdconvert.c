@@ -402,12 +402,14 @@ static int sdt_main(const char *refdir, const char *mdir);      /* render/sdtest
 static int sdp_main(int argc, char **argv);                      /* render/sdgen.c */
 static int sdb_main(int argc, char **argv);                      /* render/sdbrief.c */
 static int sds_main(int argc, char **argv);                      /* render/sdspec.c */
+static int fxd_main(int argc, char **argv);                      /* render/fxdit.c */
 static int render_main(int argc, char **argv) {
     g_cv_skip_int = 1;      /* position_ids do CLIP e outros tensores de inteiros: nao entram */
     if (argc >= 2 && !strcmp(argv[0], "names")) return sd_names(argv[1]);
     if (argc >= 3 && !strcmp(argv[0], "selftest")) return sdt_main(argv[1], argv[2]);
     if (argc >= 1 && !strcmp(argv[0], "generate")) return sdp_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "brief")) return sdb_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "flux-dit")) return fxd_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "spec")) return sds_main(argc - 1, argv + 1);
     if (argc >= 4 && !strcmp(argv[0], "convert")) {
         for (int i = 4; i < argc; i++) {

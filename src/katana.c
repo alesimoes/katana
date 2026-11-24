@@ -194,3 +194,4 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdbrief.c"             /* render: briefing de renderizacao -> prompt condensado (katana render brief) */
 #include "render/sdspec.c"              /* render: pedido -> especificacao de imagem -> prompt do Stable Diffusion (katana render spec) */
 #include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */
+#include "render/fxdit.c"              /* render: transformador do FLUX.2 klein (katana render flux-dit) */
