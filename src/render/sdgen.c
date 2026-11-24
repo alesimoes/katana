@@ -309,10 +309,12 @@ static int sdp_generate(const SdpParams *P) {
 static int sds_fill(SdpParams *P, const char *nl);
 static void sds_nl_prose(const char *nl, int has_image, char *out, size_t cap);   /* render/sdspec.c */
 static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, int w, int h, int steps, uint64_t seed, const char *out, const char *lora, float lora_scale);   /* render/fxgen.c */
-static void sdb_flux_prose(const char *text, int has_lines, const char *extra, char *out, size_t cap);   /* render/sdbrief.c */
+struct SdsRep;                                                                              /* render/sdsel.c */
+static char *sdb_flux_prompt(const char *text, const char *extra, struct SdsRep *rep);          /* render/sdbrief.c */
+static void sds_report(const struct SdsRep *r, const char *engine, FILE *f);
 static char *sdb_read_text(const char *path);
-static int sdb_fill(SdpParams *P, const char *path);
-static int sdb_explain_on;                                                    /* --explain-brief: o que entrou, o que foi cortado e a pontuacao (render/sdbrief.c) */
+static int sdb_fill(SdpParams *P, const char *path, const char *extra);
+static int sdb_explain_on;                                                    /* --explain-brief: o que entrou e o que foi cortado, por unidade (render/sdbrief.c) */
 static int sdl_run(const char *image, const char *logo_path, const char *box, const char *persp, int blend, const char *out);   /* render/sdlogo.c */
 
 /* depois de gerar: o logo de verdade por cima. O render sem logo fica ao lado, com "-nologo" antes da extensao (a caixa errada se refaz sem gerar de novo) */
@@ -372,10 +374,11 @@ static int sdp_main(int argc, char **argv) {
     if ((logo_box || logo_persp) && !logo) { fprintf(stderr, "render: --logo-box/--logo-perspective exigem --logo arquivo.png\n"); return 1; }
     if (engine && !strcmp(engine, "flux")) {                                 /* FLUX.2 klein: prosa, sem negativo, referencias como fichas (fxgen.c) */
         char prose[6000]; const char *pr = P.prompt;
-        if (brief) {                                                         /* o briefing inteiro vira a prosa, sem resumo a mao (render/sdbrief.c); --nl entra como pedido adicional */
+        if (brief) {                                                         /* o briefing E o prompt, com as palavras do autor; so se passa do orcamento o excesso e cortado (render/sdbrief.c) */
             char *bt = sdb_read_text(brief); if (!bt) return 1;
-            sdb_flux_prose(bt, init2 != NULL, nl, prose, sizeof prose); pr = prose;
-            fprintf(stderr, "[brief] prompt do FLUX: %s\n", prose);
+            struct SdsRep rep; pr = sdb_flux_prompt(bt, nl, &rep);
+            fprintf(stderr, "[brief] prompt do FLUX: %s\n", pr);
+            sds_report(&rep, "flux", stderr);
         } else if (nl) { sds_nl_prose(nl, P.init != NULL, prose, sizeof prose); pr = prose; }
         if (!pr || !P.out) { fprintf(stderr, "uso: katana render generate --engine flux (--brief briefing.md [--nl \"pedido adicional\"] | --nl \"pedido\" | --prompt \"...\" | --prompt-file arq) --out saida.png [--init ref.png [--init2 ref2.png]] [--size WxH (multiplos de 16)] [--steps 4] [--seed 0] [--lora arq.fxlora [--lora-scale 1.0]]\n       [--logo logo.png --logo-box x,y,w,h [--logo-perspective x1,y1,..,x4,y4] [--logo-blend]]\n"); return 1; }
         if (init2 && !P.init) { fprintf(stderr, "render: --init2 exige --init\n"); return 1; }
@@ -383,7 +386,7 @@ static int sdp_main(int argc, char **argv) {
         if (!fxg_generate(pr, P.init, init2, P.w, P.h, steps_set ? P.steps : 4, P.seed, P.out, lora, (float)lora_scale)) return 2;
         return logo ? sdp_post_logo(P.out, logo, logo_box, logo_persp, logo_blend) : 0;
     }
-    if (brief && P.out) { if (!sdb_fill(&P, brief)) return 1; }
+    if (brief && P.out) { if (!sdb_fill(&P, brief, nl)) return 1; }
     else if (nl && P.out && !sds_fill(&P, nl)) return 1;
     if (!P.prompt || !P.out) { fprintf(stderr, "uso: katana render generate --prompt \"...\" (ou --prompt-file arq) --out saida.png [--chunks 4] [--lcm: LCM, 4 passos, 1 passe] [--negative \"...\"] [--steps 20] [--guidance 7.5] [--seed 0]\n"
                                               "       [--size WxH (multiplos de 64)] [--control img [--control-lines] [--control-scale 1.0] [--canny BAIXO ALTO]] [--init img [--strength 0.75]] [--models pasta]\n"); return 1; }

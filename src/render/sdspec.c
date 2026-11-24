@@ -485,7 +485,7 @@ static void sds_prose(const SdSpec *s, char *out, size_t cap) {
 }
 
 static int sds_main(int argc, char **argv) {
-    const char *text = NULL, *image = NULL; int chunks = 4, lcm = 0, json = 0, norag = 0, final_mode = 0; const char *fengine = "flux"; double longside = 512; const char *brief = NULL; int has_lines = 0;
+    const char *text = NULL, *image = NULL; int chunks = 4, lcm = 0, json = 0, norag = 0, final_mode = 0; const char *fengine = "flux"; double longside = 512; const char *brief = NULL;
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i]; const int more = i + 1 < argc;
         if (!strcmp(a, "--ref") && more) image = argv[++i];
@@ -498,22 +498,23 @@ static int sds_main(int argc, char **argv) {
         else if (!strcmp(a, "--final-engine") && more) fengine = argv[++i];
         else if (!strcmp(a, "--brief") && more) brief = argv[++i];
         else if (!strcmp(a, "--engine") && more) fengine = argv[++i];
-        else if (!strcmp(a, "--lines")) has_lines = 1;
         else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (a[0] != '-' && !text) text = a;
         else { fprintf(stderr, "render spec: opcao desconhecida: %s\n", a); return 1; }
     }
-    if (brief) {                                                              /* o briefing de renderizacao inteiro -> o prompt do motor, sem gerar nada (render/sdbrief.c) */
-        char *bt = sdb_read_text(brief); if (!bt) return 1;
+    if (brief) {                                                              /* o briefing e o prompt: mostra o que o motor mandaria (tokens/orcamento e o corte), sem gerar nada (render/sdbrief.c) */
+        char *bt = sdb_read_text(brief); if (!bt) return 1; SdsRep rep;
         if (!strcmp(fengine, "flux")) {
-            static char prose[6000]; sdb_flux_prose(bt, has_lines, text, prose, sizeof prose);
-            printf("--- FLUX (prosa; referencia: a vista do SketchUp%s) ---\nprompt: %s\n", has_lines ? " e o desenho linear" : "", prose);
+            char *pr = sdb_flux_prompt(bt, text, &rep);
+            printf("--- FLUX (o briefing, sem reescrita) ---\nprompt: %s\n", pr);
+            sds_report(&rep, "flux", stdout);
         } else if (!strcmp(fengine, "stable")) {
             SdgFile base; SdClip clip; const SdClip *cp = NULL; char mp[1100];
             snprintf(mp, sizeof mp, "%s/render/sd15-realistic-vision.gguf", models_dir());
             if (sdg_open(&base, mp) && sdc_load(&clip, &base)) cp = &clip;
-            static SdbOut o; sdb_build(bt, cp, chunks < 1 ? 1 : chunks > 16 ? 16 : chunks, &o);
-            printf("--- Stable Diffusion ---\nprompt (%d bloco(s) de 75): %s\nnegative: %s\n", o.chunks_used, o.prompt, o.negative);
+            char *pr = sdb_stable_prompt(bt, text, cp, chunks < 1 ? 1 : chunks > 16 ? 16 : chunks, &rep);
+            printf("--- Stable Diffusion (o briefing, sem reescrita) ---\nprompt: %s\nnegative: %s\n", pr, SDB_NEG_DEFAULT);
+            sds_report(&rep, "stable", stdout);
         } else { fprintf(stderr, "render spec: --engine flux ou stable\n"); return 1; }
         return 0;
     }
