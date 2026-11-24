@@ -279,10 +279,11 @@ static int sdp_generate(const SdpParams *P) {
 
 static int sds_fill(SdpParams *P, const char *nl);
 static void sds_nl_prose(const char *nl, int has_image, char *out, size_t cap);   /* render/sdspec.c */
-static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, int w, int h, int steps, uint64_t seed, const char *out);   /* render/fxgen.c */          /* render/sdspec.c */
+static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, int w, int h, int steps, uint64_t seed, const char *out, const char *lora, float lora_scale);   /* render/fxgen.c */          /* render/sdspec.c */
+static int fxr_exists(const char *p);                                                  /* render/fxtrain.c */
 
 static int sdp_main(int argc, char **argv) {
-    SdpParams P; memset(&P, 0, sizeof P); int steps_set = 0; const char *engine = NULL, *nl = NULL, *init2 = NULL;
+    SdpParams P; memset(&P, 0, sizeof P); int steps_set = 0; const char *engine = NULL, *nl = NULL, *init2 = NULL, *lora = NULL; double lora_scale = 1.0;
     P.steps = 20; P.guidance = 7.5; P.strength = 0.75; P.control_scale = 1.0; P.canny_lo = 100; P.canny_hi = 200; P.negative = ""; P.max_chunks = 4;
     static char models[1100]; snprintf(models, sizeof models, "%s/render", models_dir()); P.models = models;
     for (int i = 0; i < argc; i++) {
@@ -310,6 +311,8 @@ static int sdp_main(int argc, char **argv) {
         else if (!strcmp(a, "--nl") && more) nl = argv[++i];
         else if (!strcmp(a, "--init") && more) P.init = argv[++i];
         else if (!strcmp(a, "--init2") && more) init2 = argv[++i];
+        else if (!strcmp(a, "--lora") && more) lora = argv[++i];
+        else if (!strcmp(a, "--lora-scale") && more) lora_scale = atof(argv[++i]);
         else if (!strcmp(a, "--strength") && more) P.strength = atof(argv[++i]);
         else if (!strcmp(a, "--models") && more) P.models = argv[++i];
         else if (!strcmp(a, "--out") && more) P.out = argv[++i];
@@ -318,9 +321,10 @@ static int sdp_main(int argc, char **argv) {
     if (engine && !strcmp(engine, "flux")) {                                 /* FLUX.2 klein: prosa, sem negativo, referencias como fichas (fxgen.c) */
         char prose[3000]; const char *pr = P.prompt;
         if (nl) { sds_nl_prose(nl, P.init != NULL, prose, sizeof prose); pr = prose; }
-        if (!pr || !P.out) { fprintf(stderr, "uso: katana render generate --engine flux (--nl \"pedido\" | --prompt \"...\" | --prompt-file arq) --out saida.png [--init ref.png [--init2 ref2.png]] [--size WxH (multiplos de 16)] [--steps 4] [--seed 0]\n"); return 1; }
+        if (!pr || !P.out) { fprintf(stderr, "uso: katana render generate --engine flux (--nl \"pedido\" | --prompt \"...\" | --prompt-file arq) --out saida.png [--init ref.png [--init2 ref2.png]] [--size WxH (multiplos de 16)] [--steps 4] [--seed 0] [--lora arq.fxlora [--lora-scale 1.0]]\n"); return 1; }
         if (init2 && !P.init) { fprintf(stderr, "render: --init2 exige --init\n"); return 1; }
-        return fxg_generate(pr, P.init, init2, P.w, P.h, steps_set ? P.steps : 4, P.seed, P.out) ? 0 : 2;
+        if (lora && !fxr_exists(lora)) { fprintf(stderr, "render: --lora: nao achei %s\n", lora); return 1; }
+        return fxg_generate(pr, P.init, init2, P.w, P.h, steps_set ? P.steps : 4, P.seed, P.out, lora, (float)lora_scale) ? 0 : 2;
     }
     if (nl && P.out && !sds_fill(&P, nl)) return 1;
     if (!P.prompt || !P.out) { fprintf(stderr, "uso: katana render generate --prompt \"...\" (ou --prompt-file arq) --out saida.png [--chunks 4] [--lcm: LCM, 4 passos, 1 passe] [--negative \"...\"] [--steps 20] [--guidance 7.5] [--seed 0]\n"

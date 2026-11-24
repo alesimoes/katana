@@ -273,3 +273,28 @@ static int fxr_selftest_grad(void) {
     printf("RESULTADO: %s\n", ok ? "todos passaram" : "FALHOU");
     return ok ? 0 : 1;
 }
+
+/* selftest-dump <pasta>: grava entradas sorteadas, o adaptador, a perda, a previsao e os gradientes dos 80 modulos para o ref_lora_grad.py
+ * (autograd do PyTorch sobre o mesmo modelo em float32) comparar */
+static void fxr_dump_f(const char *dir, const char *name, const void *x, size_t bytes) { char p[1300]; snprintf(p, sizeof p, "%s/%s", dir, name); FILE *f = fopen(p, "wb"); if (f) { fwrite(x, 1, bytes, f); fclose(f); } }
+static int fxr_selftest_dump(const char *dir) {
+    char gp[1100]; snprintf(gp, sizeof gp, "%s/flux2klein/gguf/flux-2-klein-4b-Q4_K_M.gguf", models_dir());
+    static FxDit F; if (!fxd_open(&F, gp)) return 1;
+    SdpRng rng = { 515151, 0, 0 };
+    const int Ni = 6, Ntg = 4, Nt = 5;
+    float *img = xalloc((size_t)Ni * 128, 4), *ids_i = xalloc((size_t)Ni * 4, 4), *txt = xalloc((size_t)Nt * FXD_TXTCH, 4), *ids_t = xalloc((size_t)Nt * 4, 4), *tgt = xalloc((size_t)Ntg * 128, 4), *pred = xalloc((size_t)Ntg * 128, 4);
+    fxr_randn(img, (size_t)Ni * 128, 1.0, &rng); fxr_randn(txt, (size_t)Nt * FXD_TXTCH, 2.5, &rng); fxr_randn(tgt, (size_t)Ntg * 128, 1.0, &rng);
+    fxr_ids_small(ids_i, Ni, ids_t, Nt);
+    fxr_lora_test_init(&F, &rng); g_fxr_train = 1; fxr_zero_grads();
+    const float t = 0.6f; double loss;
+    if (!fxr_step(&F, img, ids_i, Ni, Ntg, txt, ids_t, Nt, t, tgt, 1, &loss, pred)) return 1;
+    char p[1300];
+    fxr_dump_f(dir, "in_img.bin", img, (size_t)Ni * 128 * 4); fxr_dump_f(dir, "ids_img.bin", ids_i, (size_t)Ni * 16); fxr_dump_f(dir, "in_txt.bin", txt, (size_t)Nt * FXD_TXTCH * 4);
+    fxr_dump_f(dir, "ids_txt.bin", ids_t, (size_t)Nt * 16); fxr_dump_f(dir, "target.bin", tgt, (size_t)Ntg * 128 * 4); fxr_dump_f(dir, "pred.bin", pred, (size_t)Ntg * 128 * 4);
+    const float lf = (float)loss; fxr_dump_f(dir, "loss.bin", &lf, 4); fxr_dump_f(dir, "t.bin", &t, 4);
+    snprintf(p, sizeof p, "%s/lora.fxlora", dir); fxl_save(p);
+    for (int i = 0; i < g_fxl_store.n; i++) { FxlMod *m = &g_fxl_store.m[i]; float *a = m->A, *b = m->B; m->A = m->gA; m->B = m->gB; m->gA = a; m->gB = b; }
+    snprintf(p, sizeof p, "%s/grads.fxlora", dir); fxl_save(p);
+    printf("gravado em %s: Ni=%d Ntg=%d Nt=%d t=%.2f perda %.8f\n", dir, Ni, Ntg, Nt, t, loss);
+    return 0;
+}

@@ -46,7 +46,7 @@ static void fxg_dump(const char *dir, const char *name, const float *x, size_t n
 
 /* o laco inteiro. maxlen: posicoes de texto (512 no uso normal). noise_in (opcional): ruido pronto [fichas][128] (teste).
  * dumpdir (opcional): grava o latente depois de cada passo. Devolve [H*W][3] em [-1,1] (malloc) ou NULL */
-static float *fxg_run(const char *prompt, const char *const *ref, int nref, int W, int H, int steps, uint64_t seed, int maxlen, const float *noise_in, const char *dumpdir) {
+static float *fxg_run(const char *prompt, const char *const *ref, int nref, int W, int H, int steps, uint64_t seed, int maxlen, const float *noise_in, const char *dumpdir, const char *lora, float lora_scale) {
     char dir[1100], p[1200];
     snprintf(dir, sizeof dir, "%s/flux2klein/gguf", models_dir());
     if (W % 16 || H % 16 || W < 16 || H < 16) { fprintf(stderr, "render: o tamanho do FLUX deve ter lados multiplos de 16 (%dx%d)\n", W, H); return NULL; }
@@ -55,6 +55,7 @@ static float *fxg_run(const char *prompt, const char *const *ref, int nref, int 
     snprintf(p, sizeof p, "%s/qwen3-4b-text.gguf", dir); if (!fxt_load(&T, p)) { fprintf(stderr, "render: falta %s (katana render flux-convert-text)\n", p); return NULL; }
     snprintf(p, sizeof p, "%s/flux2-vae.gguf", dir); if (!fxv_load(&V, p)) { fprintf(stderr, "render: falta %s (katana render flux-vae convert)\n", p); return NULL; }
     snprintf(p, sizeof p, "%s/flux-2-klein-4b-Q4_K_M.gguf", dir); if (!fxd_open(&D, p)) { fprintf(stderr, "render: falta %s\n", p); return NULL; }
+    if (lora) { if (!fxl_load(&D, lora, lora_scale)) return NULL; fprintf(stderr, "[flux] LoRA %s: %d modulos, escala %.2f\n", lora, g_fxl_store.n, lora_scale); }
     const int th = H / 16, tw = W / 16, Nt = th * tw;
     /* 1. texto */
     int nreal = 0;
@@ -104,7 +105,7 @@ static float *fxg_run(const char *prompt, const char *const *ref, int nref, int 
 }
 
 /* gera e grava o PNG. w/h = 0: proporcao da primeira referencia com o lado maior em 576 (sem referencia: 512x512) */
-static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, int w, int h, int steps, uint64_t seed, const char *out) {
+static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, int w, int h, int steps, uint64_t seed, const char *out, const char *lora, float lora_scale) {
     const char *ref[FXG_MAXREF]; int nref = 0;
     if (ref1) ref[nref++] = ref1;
     if (ref2) ref[nref++] = ref2;
@@ -117,7 +118,7 @@ static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, 
     }
     if (!w || !h) { w = 512; h = 512; }
     if (steps <= 0) steps = 4;
-    float *rgb = fxg_run(prompt, ref, nref, w, h, steps, seed, 512, NULL, NULL);
+    float *rgb = fxg_run(prompt, ref, nref, w, h, steps, seed, 512, NULL, NULL, lora, lora_scale);
     if (!rgb) return 0;
     uint8_t *px = xalloc((size_t)w * h * 3, 1);
     for (size_t i = 0; i < (size_t)w * h * 3; i++) { float v = (rgb[i] * 0.5f + 0.5f) * 255.0f; px[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : (int)(v + 0.5f)); }
@@ -159,7 +160,7 @@ static int fxg_selftest(const char *dir) {
     char *prompt = xalloc((size_t)sz + 1, 1); memcpy(prompt, pb, (size_t)sz);
     char refp[1200]; snprintf(refp, sizeof refp, "%s/ref.png", dir);
     const char *ref[1] = { refp };
-    float *rgb = fxg_run(prompt, ref, 1, W, H, steps, 0, maxlen, noise, cd);
+    float *rgb = fxg_run(prompt, ref, 1, W, H, steps, 0, maxlen, noise, cd, NULL, 1.0f);
     if (!rgb) return 1;
     float *r = fxg_read(dir, "c_text.bin", &n); float *m = fxg_read(cd, "c_text.bin", &n);
     if (r && m) bad += fxg_cmp("texto [maxlen][7680]", m, r, n, 1e-3); free(r); free(m);

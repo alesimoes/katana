@@ -1184,6 +1184,7 @@ static int run_main(int argc, char **argv) {
     }
     if (argc >= 2 && strcmp(argv[1], "qtest") == 0) return qtest();
     if (argc >= 2 && strcmp(argv[1], "lbtest") == 0) return lowbit_test(argc - 2, argv + 2);
+    if (strcmp(argv[1], "flux-train") == 0) return render_main(argc - 1, argv + 1);        /* treino de LoRA do FLUX.2 klein (render/fxtrain.c) */
     if (strcmp(argv[1], "render") == 0) return render_main(argc - 2, argv + 2);       /* imagens: pesos do Stable Diffusion (render/) */
     if (strcmp(argv[1], "embed") == 0) return embed_main(argc - 2, argv + 2);       /* embeddings de texto na CPU (app/embed.c) */
     if (strcmp(argv[1], "convert") == 0) return convert_main(argc - 2, argv + 2);   /* checkpoint do Hugging Face -> GGUF (app/convert.c) */
