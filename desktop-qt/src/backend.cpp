@@ -1724,6 +1724,9 @@ void Backend::reopenAgentAfterImage()
     if (m_reloadModel.isEmpty()) return;
     const QString mdl = m_reloadModel;
     m_reloadModel.clear();
+    // a conversa continua: sem arquivo de sessao do motor (o agente foi fechado para liberar a GPU), o resumo textual segue com a proxima mensagem
+    if (m_sess.valida() && !QFileInfo::exists(ksessPath(m_sess.id)))
+        m_pendingCtx = Sessoes::montarContexto(m_sess.mensagens);
     if (!m_proc) start(mdl);
 }
 

@@ -1052,9 +1052,11 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         QFile::remove(argsFile); QFile::remove(briefCopy);
         be.attachImage(img);
         const int n0 = be.messages()->count();
+        const QString sid0 = be.currentSessionId();
         c.typeAndEnter("gere a recepcao realista");
         check(waitFor([&] { return be.messages()->count() > n0 + 1 && be.messages()->get(be.messages()->count() - 1)["kind"] == "image" && !be.imageBusy(); }, 30000),
               "stable: cartao de imagem na conversa");
+        check(be.currentSessionId() == sid0 && be.messages()->count() >= n0 + 2, "a conversa continua na mesma sessao depois da imagem");
         QTest::qWait(500);
         const QString saida = be.messages()->get(be.messages()->count() - 1)["text"].toString();
         check(saida.startsWith(be.imageDir()) && QFileInfo(saida).isFile() && QImage(saida).width() == 320, "imagem gravada em ~/.katana/desktop/imagens: " + saida);
