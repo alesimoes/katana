@@ -23,7 +23,7 @@
 
 #define SDB_MAXM 64
 
-typedef struct { char phrase[96]; double area; } SdbPhrase;
+static int fxt_count(const char *prompt);                  /* render/fxtext.c: tokens do prompt como o FLUX os conta (-1 = sem o tokenizador) */
 
 /* nome de cor em ingles a partir de RGB (HSV): neutros pelo brilho, o resto pelo matiz */
 static const char *sdb_color(int r, int g, int b) {
@@ -104,9 +104,9 @@ static int sdb_material(const char *name, const char *desc, char *out, size_t ca
 
 /* quantos ids do CLIP tem o texto (sem inicio e fim; um bloco de 75 ids por 75 tokens); sem modelo, estima por palavras */
 static int sdb_tokens(const SdClip *c, const char *text) {
-    if (!c) { int w = 0, in = 0; for (const char *p = text; *p; p++) { if (isalnum((unsigned char)*p)) { if (!in) { w++; in = 1; } } else in = 0; } return w + w / 2; }
-    static int tmp[4096];
-    return sdc_ids(c, text, tmp, 4096);
+    if (!c) { int w = 0, in = 0, pw = 0; for (const char *p = text; *p; p++) { if (*p == '(') pw++; if (isalnum((unsigned char)*p)) { if (!in) { w++; in = 1; } } else in = 0; } return w + w / 2 + 4 * pw; }
+    static int tmp[4096]; static float wt[4096];
+    return sdc_ids_w(c, text, tmp, wt, 4096);
 }
 
 typedef struct { char prompt[2400], negative[600]; double elev; int temp, lights_on, chunks_used, kinds, nobj; char objs[8][40]; } SdbOut;
@@ -132,22 +132,53 @@ static int sdb_light_kind(const char *t) {
 static const struct { int bit; const char *name; } SDB_LIGHTS[] = { { SL_SPOT, "recessed spotlights" }, { SL_LINEAR, "linear LED strip" }, { SL_ROUND, "round ceiling lamp" }, { SL_PENDANT, "organic pendant lamp" },
     { SL_MIRROR, "mirror light" }, { SL_COUNTER, "counter spotlights" }, { SL_WALL, "wall washer lights" }, { SL_ARCH, "arch accent lighting" }, { SL_SPHERE, "sphere lamp" }, { SL_SUPPORT, "support light" } };
 
-/* acrescenta ", frase" ao prompt se o total de ids continuar dentro de budget; 1 = coube */
-static int sdb_add(const SdClip *clip, char *pr, size_t cap, const char *phrase, int budget) {
-    char trial[2400]; snprintf(trial, sizeof trial, "%s, %s", pr, phrase);
-    if (sdb_tokens(clip, trial) > budget) return 0;
-    snprintf(pr, cap, "%s", trial);
-    return 1;
+/* ---------- as unidades do briefing (sdsel.c): uma leitura serve aos dois motores ---------- */
+
+static int sdb_pattern(const char *s, int *a, int *b);
+static int sdb_fx_material(const char *name, const char *desc, char *out, size_t cap, double *area);
+
+typedef struct { const char *pt, *flux, *sd; double prior; } SdbStyle;
+static const SdbStyle SDB_STYLES[] = {
+    { "nunca supersaturadas", "faithful colours, never oversaturated", "faithful natural colors, never oversaturated", 1.2 },
+    { "texturas", "visible wood grain and fabric weave", "visible material textures, wood grain, fabric weave", 1.0 },
+    { "balan", "neutral to slightly warm white balance", "neutral to slightly warm white balance", 0.8 },
+    { "contato", "deep contact shadows", "deep contact shadows under the furniture", 0.7 },
+    { "natural e realista", "natural realistic interior photography", "natural realistic interior photography", 0.6 },
+    { "sem apar", "no computer graphics look", "not a computer graphics look", 0.5 },
+    { "atenua", "soft light with real falloff", "physically plausible soft light with real falloff", 0.5 },
+    { "full-frame", "full-frame camera", "shot with a full-frame camera", 0.4 },
+    { "gradientes", "soft light gradients on the walls", "soft light gradients on the walls", 0.4 },
+    { "quentes", "", "warm artificial lights", 0.3 },
+    { "elegante", "clean, elegant, authentic", "clean elegant authentic", 0.2 } };
+
+typedef struct { SdsUnit u[SDS_MAXU]; int n; double elev; int temp, lights_on, kinds, nobj, nmat; char room[16], objs[8][40]; int ban, plants_listed; const SdClip *clip; } SdbRead;
+
+static void sdb_app(char *out, size_t cap, const char *fmt, ...) {
+    const size_t l = strlen(out); if (l + 1 >= cap) return;
+    va_list ap; va_start(ap, fmt); vsnprintf(out + l, cap - l, fmt, ap); va_end(ap);
 }
 
-static int sdb_build(const char *text, const SdClip *clip, int chunks, SdbOut *o) {
-    SdbPhrase ph[SDB_MAXM]; int np = 0;
-    int sec = 0, plants_listed = 0, kinds = 0; int temps[256]; int ntemps = 0;
-    char objs[8][40]; int nobj = 0;
-    o->elev = -1; o->temp = 0; o->lights_on = 0; o->kinds = 0; o->nobj = 0;
-    const int budget = chunks * 75 - 4;
-    const char *p = text;
-    while (*p) {
+static SdsUnit *sdb_new(SdbRead *r, int cat, int sub) {
+    if (r->n >= SDS_MAXU) return NULL;
+    SdsUnit *u = &r->u[r->n++]; memset(u, 0, sizeof *u); u->cat = cat; u->sub = sub; u->weight = 1.0; u->elev = -1;
+    return u;
+}
+static void sdb_rule(SdbRead *r, const char *src, const char *flux) { SdsUnit *u = sdb_new(r, SDS_RULE, 0); if (!u) return; u->must = 1; snprintf(u->src, sizeof u->src, "%s", src); snprintf(u->flux, sizeof u->flux, "%s", flux); }
+
+/* o briefing -> unidades (regras, materiais por area, luz, objetos, estilo, pedido do usuario); r e preenchido */
+static void sdb_read(const char *text, int has_lines, const char *extra, SdbRead *r) {
+    memset(r, 0, sizeof *r); r->elev = -1;
+    int sec = 0, ntemps = 0, temps[256], kcount[10] = {0}; char ksrc[10][400]; memset(ksrc, 0, sizeof ksrc);
+    char sunsrc[300] = "";
+    SdbRead *tmp = r;
+    r->ban = sdb_has(text, "sem decora") || sdb_has(text, "n\xc3\xa3o adicione") || sdb_has(text, "nao adicione");
+    snprintf(r->room, sizeof r->room, "%s", sdb_has(text, "recep") ? "a reception" : "an interior");
+    /* regras absolutas: sempre entram */
+    sdb_rule(r, "mantenha posicao camera lente enquadramento perspectiva proporcao", "Keep the exact camera position, lens, framing, perspective and proportions.");
+    { char g[400]; snprintf(g, sizeof g, "Every wall, opening, ceiling, floor, piece of furniture and object keeps its position, size and shape: nothing is added, removed, moved or resized%s.", r->ban ? ", no extra decoration, plants, people, lamps, artwork or written text" : "");
+      sdb_rule(r, "mantenha paredes aberturas tetos pisos moveis objetos mesma posicao nao adicione remova mova", g); }
+    if (has_lines) sdb_rule(r, "desenho linear cada aresta deve permanecer", "Every edge of the line drawing stays in place.");
+    for (const char *p = text; *p; ) {
         const char *e = strchr(p, '\n'); if (!e) e = p + strlen(p);
         char line[1200]; size_t l = (size_t)(e - p); if (l >= sizeof line) l = sizeof line - 1;
         memcpy(line, p, l); line[l] = 0;
@@ -165,61 +196,176 @@ static int sdb_build(const char *text, const SdClip *clip, int chunks, SdbOut *o
             char name[160]; size_t nl = (size_t)(q2 - q1 - 1); if (nl >= sizeof name) nl = sizeof name - 1;
             memcpy(name, q1 + 1, nl); name[nl] = 0;
             const char *desc = q2 + 1;
-            if (sdb_has(name, "folha") || sdb_has(desc, "planta")) plants_listed = 1;
-            char phr[96]; double area;
-            if (!sdb_material(name, desc, phr, sizeof phr, &area)) continue;
-            int found = -1; for (int i = 0; i < np; i++) if (!strcmp(ph[i].phrase, phr)) found = i;
-            if (found >= 0) ph[found].area += area;
-            else if (np < SDB_MAXM) { snprintf(ph[np].phrase, sizeof ph[np].phrase, "%s", phr); ph[np].area = area; np++; }
+            if (sdb_has(name, "folha") || sdb_has(desc, "planta")) r->plants_listed = 1;
+            char fx[240], sd[96] = ""; double area = 0, a2 = 0; int rr, gg, bb, pa, pb;
+            if (!sdb_fx_material(name, desc, fx, sizeof fx, &area)) continue;
+            if (!sdb_material(name, desc, sd, sizeof sd, &a2)) sd[0] = 0;
+            int found = -1; for (int i = 0; i < r->n; i++) if (r->u[i].cat == SDS_MAT && !strcmp(r->u[i].flux, fx)) found = i;
+            if (found >= 0) { r->u[found].area += area; r->u[found].count++; if (!r->u[found].sd[0]) snprintf(r->u[found].sd, sizeof r->u[found].sd, "%s", sd); continue; }
+            SdsUnit *u = sdb_new(r, SDS_MAT, 0); if (!u) continue;
+            u->area = area; u->count = 1; snprintf(u->flux, sizeof u->flux, "%s", fx); snprintf(u->sd, sizeof u->sd, "%s", sd);
+            snprintf(u->src, sizeof u->src, "%s%s", name, desc);
+            if (sdb_rgb(desc, &rr, &gg, &bb)) u->sig |= SDS_SIG_RGB;
+            if (sdb_pattern(desc, &pa, &pb)) u->sig |= SDS_SIG_PAT;
+            if (strchr(desc, '%')) u->sig |= SDS_SIG_PCT;                                  /* o briefing disse a parte do quadro */
+            if (sdb_has(name, "led") || sdb_has(name, "lamp")) u->skip = "material de lampada (luz, nao superficie)";
         } else if (sec == 2 && *t == '-') {
             static const char *const key[][2] = { { "bal", "reception counter" }, { "cadeira", "chair" }, { "poltrona", "armchair" }, { "sof", "sofa" }, { "mesa", "table" }, { "espelho", "mirror" }, { "cama", "bed" }, { "maca", "treatment bed" } };
             for (int k = 0; k < 8; k++) {
                 if (!sdb_has(t, key[k][0])) continue;
                 if (k == 0 && !sdb_has(t, "atendimento") && !sdb_has(t, "balc")) continue;
-                int dup = 0; for (int i = 0; i < nobj; i++) if (!strcmp(objs[i], key[k][1])) dup = 1;
-                if (!dup && nobj < 8) snprintf(objs[nobj++], sizeof objs[0], "%s", key[k][1]);
+                int dup = 0; for (int i = 0; i < r->n; i++) if (r->u[i].cat == SDS_OBJ && !strcmp(r->u[i].flux, key[k][1])) dup = 1;
+                SdsUnit *u = dup ? NULL : sdb_new(r, SDS_OBJ, 0); if (!u) continue;
+                snprintf(u->flux, sizeof u->flux, "%s", key[k][1]); snprintf(u->sd, sizeof u->sd, "%s", key[k][1]); snprintf(u->src, sizeof u->src, "%s", t);
+                if (r->nobj < 8) snprintf(r->objs[r->nobj++], sizeof r->objs[0], "%s", key[k][1]);
             }
         } else if (sec == 3 || sdb_has(t, "luz do dia")) {
-            if (sdb_has(t, "eleva")) { const char *ev = strstr(t, "eleva"); const char *d = ev; while (*d && !isdigit((unsigned char)*d)) d++; if (*d) { char num[16]; size_t k = 0; while ((isdigit((unsigned char)*d) || *d == ',' || *d == '.') && k < 15) { num[k++] = *d == ',' ? '.' : *d; d++; } num[k] = 0; o->elev = atof(num); } }
+            if (sdb_has(t, "eleva")) { const char *ev = strstr(t, "eleva"); const char *d = ev; while (*d && !isdigit((unsigned char)*d)) d++; if (*d) { char num[16]; size_t k = 0; while ((isdigit((unsigned char)*d) || *d == ',' || *d == '.') && k < 15) { num[k++] = *d == ',' ? '.' : *d; d++; } num[k] = 0; r->elev = atof(num); snprintf(sunsrc, sizeof sunsrc, "luz do dia elevacao solar sol"); } }
             if ((strstr(t, "LIGAD") || strstr(t, "ON")) && sdb_has(t, " k")) {
-                const char *k = strstr(t, ", ");                          /* "...: LIGADA, 3000 K, ~500 lm": a temperatura e o numero antes de " K" depois dos dois pontos */
                 const char *colon = strstr(t, "\": "); if (!colon) colon = strchr(t, ':');
                 if (colon) { const char *kk = strstr(colon, " K"); if (kk) { const char *d = kk; while (d > colon && isdigit((unsigned char)d[-1])) d--; const int tv = atoi(d); if (tv >= 1500 && tv <= 8000 && ntemps < 256) temps[ntemps++] = tv; } }
-                (void)k;
-                o->lights_on++;
-                kinds |= sdb_light_kind(t);
+                r->lights_on++;
+                const int k = sdb_light_kind(t); r->kinds |= k;
+                for (int i = 0; i < 10; i++) if (k & SDB_LIGHTS[i].bit) { kcount[i]++; if (strlen(ksrc[i]) + strlen(t) + 2 < sizeof ksrc[i]) { strcat(ksrc[i], t); strcat(ksrc[i], " "); } }
             }
         }
     }
-    if (ntemps) { int best = 0, bc = 0; for (int i = 0; i < ntemps; i++) { int c = 0; for (int j = 0; j < ntemps; j++) if (temps[j] == temps[i]) c++; if (c > bc) { bc = c; best = temps[i]; } } o->temp = best; }
-    o->kinds = kinds; o->nobj = nobj; memcpy(o->objs, objs, sizeof objs);
-    for (int i = 1; i < np; i++) { SdbPhrase v = ph[i]; int j = i - 1; while (j >= 0 && ph[j].area < v.area) { ph[j + 1] = ph[j]; j--; } ph[j + 1] = v; }      /* maior area primeiro */
-    char pr[2400]; snprintf(pr, sizeof pr, "photorealistic architectural interior photograph of a reception");
-    for (int i = 0; i < nobj; i++) sdb_add(clip, pr, sizeof pr, objs[i], budget);
-    for (int i = 0; i < np; i++) if (!sdb_add(clip, pr, sizeof pr, ph[i].phrase, budget)) break;
-    const char *day = o->elev >= 60 ? "bright daylight from a high sun" : o->elev >= 30 ? "soft daylight" : o->elev >= 0 ? "low warm sunlight" : NULL;
-    if (day) sdb_add(clip, pr, sizeof pr, day, budget);
-    if (o->temp) { char w[80]; snprintf(w, sizeof w, "%s artificial lighting %dK", o->temp <= 3200 ? "warm" : o->temp >= 4500 ? "cool white" : "neutral", o->temp); sdb_add(clip, pr, sizeof pr, w, budget); }
-    if (kinds) {
-        char lp[400] = "lit by"; int first = 1;
-        for (int i = 0; i < 10; i++) if (kinds & SDB_LIGHTS[i].bit) { strncat(lp, first ? " " : ", ", sizeof lp - strlen(lp) - 1); strncat(lp, SDB_LIGHTS[i].name, sizeof lp - strlen(lp) - 1); first = 0; }
-        sdb_add(clip, pr, sizeof pr, lp, budget);
+    (void)tmp;
+    /* luz: sol, temperatura (a mais comum das ligadas) e um tipo por unidade */
+    if (ntemps) { int best = 0, bc = 0; for (int i = 0; i < ntemps; i++) { int c = 0; for (int j = 0; j < ntemps; j++) if (temps[j] == temps[i]) c++; if (c > bc) { bc = c; best = temps[i]; } } r->temp = best; }
+    if (r->elev >= 0) {
+        const char *day = r->elev >= 60 ? "bright daylight from a high sun" : r->elev >= 30 ? "soft daylight" : "low warm sunlight";
+        SdsUnit *u = sdb_new(r, SDS_LIGHT, SDS_SUN);
+        if (u) { u->must = 1; u->elev = r->elev; snprintf(u->src, sizeof u->src, "%s", sunsrc); snprintf(u->sd, sizeof u->sd, "%s", day);
+                 snprintf(u->flux, sizeof u->flux, "%s (solar elevation %.1f degrees) matching the shadows of the view", day, r->elev); }
     }
-    /* estilo: cada pedido do texto vira uma frase fixa */
-    static const struct { const char *pt; const char *en; } S[] = {
-        { "natural e realista", "natural realistic interior photography" }, { "full-frame", "shot with a full-frame camera" }, { "sem apar", "not a computer graphics look" },
-        { "atenua", "physically plausible soft light with real falloff" }, { "contato", "deep contact shadows under the furniture" }, { "gradientes", "soft light gradients on the walls" },
-        { "texturas", "visible material textures, wood grain, fabric weave" }, { "quentes", "warm artificial lights" }, { "nunca supersaturadas", "faithful natural colors, never oversaturated" },
-        { "balan", "neutral to slightly warm white balance" }, { "elegante", "clean elegant authentic" } };
-    for (int i = 0; i < (int)(sizeof S / sizeof S[0]); i++) if (sdb_has(text, S[i].pt)) sdb_add(clip, pr, sizeof pr, S[i].en, budget);
-    sdb_add(clip, pr, sizeof pr, "high quality", budget);
-    snprintf(o->prompt, sizeof o->prompt, "%s", pr);
-    o->chunks_used = (sdb_tokens(clip, pr) + 74) / 75;
-    char neg[600] = "text, logo, watermark, people, cartoon, sketch, drawing, outline, lines, oversaturated, lowres, blurry, deformed";
-    if (sdb_has(text, "n\xc3\xa3o adicione") || sdb_has(text, "sem decora") || sdb_has(text, "nao adicione")) strncat(neg, ", extra decoration, extra objects", sizeof neg - strlen(neg) - 1);
-    if (!plants_listed) strncat(neg, ", plants", sizeof neg - strlen(neg) - 1);
+    if (r->temp) {
+        const char *w = r->temp <= 3200 ? "warm" : r->temp >= 4500 ? "cool white" : "neutral";
+        SdsUnit *u = sdb_new(r, SDS_LIGHT, SDS_TEMP);
+        if (u) { u->must = 1; u->temp = r->temp; u->sig |= SDS_SIG_K; u->weight = 1.1; snprintf(u->src, sizeof u->src, "luzes ligadas %d K cor temperatura", r->temp);
+                 snprintf(u->flux, sizeof u->flux, "%s artificial light at %d K", w, r->temp); snprintf(u->sd, sizeof u->sd, "%s artificial lighting %dK", w, r->temp); }
+    }
+    for (int i = 0; i < 10; i++) if (kcount[i]) {
+        SdsUnit *u = sdb_new(r, SDS_LIGHT, SDS_KIND); if (!u) break;
+        u->kind = SDB_LIGHTS[i].bit; u->count = kcount[i]; snprintf(u->src, sizeof u->src, "%s", ksrc[i]);
+        snprintf(u->flux, sizeof u->flux, "%s", SDB_LIGHTS[i].name); snprintf(u->sd, sizeof u->sd, "%s", SDB_LIGHTS[i].name);
+    }
+    if (r->lights_on) sdb_rule(r, "luminarias que nao estejam listadas como ligadas permanecem desligadas", "Luminaires that are not listed as on stay off.");
+    /* estilo */
+    for (int i = 0; i < (int)(sizeof SDB_STYLES / sizeof SDB_STYLES[0]); i++) if (sdb_has(text, SDB_STYLES[i].pt)) {
+        SdsUnit *u = sdb_new(r, SDS_STYLE, 0); if (!u) break;
+        u->prior = SDB_STYLES[i].prior; snprintf(u->src, sizeof u->src, "%s", SDB_STYLES[i].pt); snprintf(u->flux, sizeof u->flux, "%s", SDB_STYLES[i].flux); snprintf(u->sd, sizeof u->sd, "%s", SDB_STYLES[i].sd);
+    }
+    { SdsUnit *u = sdb_new(r, SDS_STYLE, 1); if (u) { u->prior = 0.1; snprintf(u->src, sizeof u->src, "high quality"); snprintf(u->sd, sizeof u->sd, "high quality"); } }
+    if (extra && extra[0]) { SdsUnit *u = sdb_new(r, SDS_USER, 0); if (u) { u->must = 1; snprintf(u->src, sizeof u->src, "%.900s", extra); snprintf(u->flux, sizeof u->flux, "%.900s", extra); } }
+    /* materiais: abaixo de 1% do quadro e ruido (os "~0%"); peso do Stable pela area; ordem estavel: categoria, depois maior area */
+    for (int i = 0; i < r->n; i++) if (r->u[i].cat == SDS_MAT) {
+        SdsUnit *u = &r->u[i]; r->nmat++;
+        if (u->skip) {}
+        else if ((u->sig & SDS_SIG_PCT) && u->area < 1.0) u->skip = "abaixo de 1% do quadro";
+        else if (!strncmp(u->flux, "painted wall surface, colour not stated", 39)) u->skip = "tinta sem cor: nao diz nada ao modelo";
+        if (!strncmp(u->flux, "surface material", 16) && !(u->sig & SDS_SIG_RGB) && !strstr(u->flux, "colour ")) u->sig |= SDS_SIG_VAGUE;
+        u->weight = u->area >= 20 ? 1.2 : u->area >= 8 ? 1.1 : 1.0;
+    }
+    for (int i = 1; i < r->n; i++) {
+        SdsUnit v = r->u[i]; int j = i - 1;
+        while (j >= 0 && (r->u[j].cat > v.cat || (r->u[j].cat == v.cat && v.cat == SDS_MAT && r->u[j].area < v.area) || (r->u[j].cat == v.cat && v.cat == SDS_LIGHT && r->u[j].sub > v.sub))) { r->u[j + 1] = r->u[j]; j--; }
+        r->u[j + 1] = v;
+    }
+}
+
+/* ---------- FLUX: prosa ---------- */
+static void sdb_render_flux(const SdsUnit *u, int n, char *out, size_t cap, void *ctx) {
+    const SdbRead *r = ctx; out[0] = 0;
+    sdb_app(out, cap, "Photorealistic architectural interior photograph of %s, made from the reference view (a 3D model export). ", r->room);
+    for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_RULE) sdb_app(out, cap, "%s ", u[i].flux);
+    int first = 1;
+    for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_MAT) {
+        if (first) sdb_app(out, cap, "Each material sits exactly on its surfaces in the view, with its real colour and pattern scale (share of the frame in %%): ");
+        if (u[i].area > 0) sdb_app(out, cap, "%s%s, %.0f%%", first ? "" : "; ", u[i].flux, u[i].area); else sdb_app(out, cap, "%s%s", first ? "" : "; ", u[i].flux);
+        first = 0;
+    }
+    if (!first) sdb_app(out, cap, ". ");
+    const SdsUnit *sun = NULL, *tp = NULL; int nk = 0;
+    for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_LIGHT) { if (u[i].sub == SDS_SUN) sun = &u[i]; else if (u[i].sub == SDS_TEMP) tp = &u[i]; else nk++; }
+    if (sun || tp || nk) {
+        sdb_app(out, cap, "Lighting: ");
+        if (sun) sdb_app(out, cap, "%s%s", sun->flux, tp || nk ? "; " : "");
+        if (tp) sdb_app(out, cap, "%s", tp->flux);
+        if (nk) {
+            sdb_app(out, cap, "%s", tp ? " from" : "artificial light from");
+            int f = 1; for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_LIGHT && u[i].sub == SDS_KIND) { sdb_app(out, cap, "%s %s", f ? "" : ",", u[i].flux); f = 0; }
+        }
+        sdb_app(out, cap, ". ");
+    }
+    first = 1;
+    for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_OBJ) { sdb_app(out, cap, "%s%s", first ? "Main objects: " : ", ", u[i].flux); first = 0; }
+    if (!first) sdb_app(out, cap, ". ");
+    first = 1;
+    for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_STYLE && u[i].flux[0]) { sdb_app(out, cap, "%s%s", first ? "Style: " : ", ", u[i].flux); first = 0; }
+    if (!first) sdb_app(out, cap, ". ");
+    for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_USER) sdb_app(out, cap, "Additional request from the user: %s. ", u[i].flux);
+    sdb_app(out, cap, "16:9, no borders, no watermark.");
+}
+
+/* ---------- Stable: tags em ingles, (termo:peso) nas prioridades ---------- */
+static void sdb_tag(char *out, size_t cap, const SdsUnit *u) { if (u->weight > 1.0) sdb_app(out, cap, ", (%s:%.1f)", u->sd, u->weight); else sdb_app(out, cap, ", %s", u->sd); }
+
+static void sdb_render_sd(const SdsUnit *u, int n, char *out, size_t cap, void *ctx) {
+    const SdbRead *r = ctx; out[0] = 0;
+    sdb_app(out, cap, "photorealistic architectural interior photograph of %s", r->room);
+    static const int order[] = { SDS_MAT, SDS_LIGHT, SDS_OBJ, SDS_STYLE };
+    for (int c = 0; c < 4; c++) {
+        int nk = 0;
+        for (int i = 0; i < n; i++) {
+            if (!u[i].chosen || u[i].cat != order[c] || !u[i].sd[0]) continue;
+            int dup = 0; for (int j = 0; j < i; j++) if (u[j].chosen && u[j].cat == u[i].cat && !strcmp(u[j].sd, u[i].sd)) dup = 1;
+            if (dup) continue;
+            if (u[i].cat == SDS_LIGHT && u[i].sub == SDS_KIND) { nk++; continue; }
+            sdb_tag(out, cap, &u[i]);
+        }
+        if (nk) { int f = 1; for (int i = 0; i < n; i++) if (u[i].chosen && u[i].cat == SDS_LIGHT && u[i].sub == SDS_KIND) { sdb_app(out, cap, "%s%s", f ? ", lit by " : ", ", u[i].sd); f = 0; } }
+    }
+}
+
+/* contadores de tokens */
+static int sdb_count_sd(const char *text, void *ctx) { return sdb_tokens(((const SdbRead *)ctx)->clip, text); }
+static int sdb_count_flux(const char *text, void *ctx) {
+    (void)ctx;
+    const int t = fxt_count(text);
+    if (t >= 0) return t;
+    static int warned; if (!warned) { warned = 1; fprintf(stderr, "[brief] sem o tokenizador do FLUX (qwen3-4b-text.gguf): contagem estimada por caracteres, com folga\n"); }
+    return (int)(strlen(text) * 0.30) + 16;
+}
+#define SDB_FLUX_BUDGET 504                    /* 512 posicoes de texto menos 8 de margem (o modelo de conversa gasta cerca de 12, ja contados) */
+
+static void sdb_neg_add(const SdClip *clip, char *neg, size_t cap, const char *item, int budget, int *cut) {
+    char trial[600]; snprintf(trial, sizeof trial, "%s%s%s", neg, neg[0] ? ", " : "", item);
+    if (sdb_tokens(clip, trial) > budget) { (*cut)++; if (sdb_explain_on) fprintf(stderr, "[explain-brief] negativo CORTE %s\n", item); return; }
+    snprintf(neg, cap, "%s", trial);
+}
+
+/* o briefing -> prompt do Stable (tags com pesos) e negativo; devolve quantos materiais entraram */
+static int sdb_build(const char *text, const SdClip *clip, int chunks, SdbOut *o) {
+    SdbRead *r = xalloc(sizeof *r, 1); sdb_read(text, 0, NULL, r); r->clip = clip;
+    const int budget = chunks * 75 - 4;
+    for (int i = 0; i < r->n; i++) if (!r->u[i].must && !r->u[i].sd[0] && !r->u[i].skip) r->u[i].skip = "sem texto para o Stable (as regras vao no negativo)";
+    const int used = sds_select(r->u, r->n, budget, sdb_render_sd, sdb_count_sd, r);
+    sdb_render_sd(r->u, r->n, o->prompt, sizeof o->prompt, r);
+    if (sdb_explain_on) sds_explain(r->u, r->n, "stable", used, budget, stderr);
+    o->elev = r->elev; o->temp = r->temp; o->lights_on = r->lights_on; o->kinds = r->kinds; o->nobj = r->nobj; memcpy(o->objs, r->objs, sizeof o->objs);
+    o->chunks_used = (sdb_tokens(clip, o->prompt) + 74) / 75;
+    /* negativo (separado, mesmo limite de blocos): o que o briefing proibe primeiro */
+    static const char *const base[] = { "text", "logo", "watermark", "people" }, *const rest[] = { "cartoon", "sketch", "drawing", "outline", "lines", "oversaturated", "lowres", "blurry", "deformed" };
+    char neg[600] = ""; int cut = 0;
+    for (int i = 0; i < 4; i++) sdb_neg_add(clip, neg, sizeof neg, base[i], budget, &cut);
+    if (r->ban) { sdb_neg_add(clip, neg, sizeof neg, "extra decoration", budget, &cut); sdb_neg_add(clip, neg, sizeof neg, "extra objects", budget, &cut); }
+    if (!r->plants_listed) sdb_neg_add(clip, neg, sizeof neg, "plants", budget, &cut);
+    for (int i = 0; i < 9; i++) sdb_neg_add(clip, neg, sizeof neg, rest[i], budget, &cut);
     snprintf(o->negative, sizeof o->negative, "%s", neg);
-    return np;
+    int nm = 0; for (int i = 0; i < r->n; i++) if (r->u[i].cat == SDS_MAT && r->u[i].chosen) nm++;
+    free(r);
+    return nm;
 }
 
 /* ---------- prompt em prosa para o FLUX (render generate --engine flux --brief; render spec --brief) ----------
@@ -229,8 +375,6 @@ static int sdb_build(const char *text, const SdClip *clip, int chunks, SdbOut *o
  *     pedra); "AK_PISO CONCRETO" e piso de concreto, com o tamanho de padrao dito; nome desconhecido fica como superficie neutra;
  *   - materiais abaixo de 1% do quadro (os "~0%") nao entram; luzes, objetos, sol e estilo vem das mesmas leituras do prompt do Stable;
  *   - as regras de fidelidade (camera, geometria, nada acrescentado) entram sempre. */
-
-typedef struct { char phrase[240]; double area; } SdbFx;
 
 /* "275x184" ou "275\xc3\x97""184" (cm) no texto; 1 = achou */
 static int sdb_pattern(const char *s, int *a, int *b) {
@@ -248,9 +392,8 @@ static int sdb_pattern(const char *s, int *a, int *b) {
 /* uma linha de material -> frase do FLUX (0 = pular: abaixo de 1% do quadro) */
 static int sdb_fx_material(const char *name, const char *desc, char *out, size_t cap, double *area) {
     int r = 0, g = 0, b = 0, pa = 0, pb = 0;
-    const int has_rgb = sdb_rgb(desc, &r, &g, &b), has_pat = sdb_pattern(desc, &pa, &pb), has_pct = strchr(desc, '%') != NULL;
+    const int has_rgb = sdb_rgb(desc, &r, &g, &b), has_pat = sdb_pattern(desc, &pa, &pb);
     *area = sdb_pct(desc);
-    if (has_pct && *area < 1.0) return 0;
     char type[120] = ""; {
         const char *t = desc; while (*t == ':' || *t == ' ') t++;
         size_t n = 0;
@@ -277,90 +420,23 @@ static int sdb_fx_material(const char *name, const char *desc, char *out, size_t
     return 1;
 }
 
-static int sdb_fx_materials(const char *text, char *out, size_t cap, int maxn) {
-    SdbFx ph[SDB_MAXM]; int np = 0, sec = 0;
-    out[0] = 0;
-    for (const char *p = text; *p; ) {
-        const char *e = strchr(p, '\n'); if (!e) e = p + strlen(p);
-        char line[1200]; size_t l = (size_t)(e - p); if (l >= sizeof line) l = sizeof line - 1;
-        memcpy(line, p, l); line[l] = 0;
-        p = *e ? e + 1 : e;
-        const char *t = line; while (*t == ' ' || *t == '\t') t++;
-        if (!strncmp(t, "MATERIAIS", 9)) { sec = 1; continue; }
-        if (!strncmp(t, "PRINCIPAIS", 10) || !strncmp(t, "ILUMINA", 7) || !strncmp(t, "ESTILO", 6) || !strncmp(t, "REGRAS", 6)) { sec = 0; continue; }
-        if (sec != 1 || *t != '-') continue;
-        const char *q1 = strchr(t, '"'); const char *q2 = q1 ? strchr(q1 + 1, '"') : NULL;
-        if (!q1 || !q2) continue;
-        char name[160]; size_t nl = (size_t)(q2 - q1 - 1); if (nl >= sizeof name) nl = sizeof name - 1;
-        memcpy(name, q1 + 1, nl); name[nl] = 0;
-        char phr[240]; double area;
-        if (!sdb_fx_material(name, q2 + 1, phr, sizeof phr, &area)) continue;
-        int found = -1; for (int i = 0; i < np; i++) if (!strcmp(ph[i].phrase, phr)) found = i;
-        if (found >= 0) ph[found].area += area;
-        else if (np < SDB_MAXM) { snprintf(ph[np].phrase, sizeof ph[np].phrase, "%s", phr); ph[np].area = area; np++; }
+/* o briefing inteiro -> prosa em ingles para o FLUX; extra = pedido adicional do usuario (--nl), opcional; has_lines = ha desenho linear (--init2).
+ * all = 1 escolhe tudo o que nao e ruido (sem orcamento; so para o teste); senao o selecionador (sdsel.c) enche as 512 posicoes de texto do FLUX. */
+static void sdb_flux_prose_x(const char *text, int has_lines, const char *extra, char *out, size_t cap, int all) {
+    SdbRead *r = xalloc(sizeof *r, 1); sdb_read(text, has_lines, extra, r);
+    int used;
+    if (all) { for (int i = 0; i < r->n; i++) r->u[i].chosen = !r->u[i].skip && (r->u[i].flux[0] != 0); sdb_render_flux(r->u, r->n, out, cap, r); used = sdb_count_flux(out, r); }
+    else {
+        for (int i = 0; i < r->n; i++) if (!r->u[i].flux[0] && !r->u[i].skip) r->u[i].skip = "sem texto para o FLUX";
+        used = sds_select(r->u, r->n, SDB_FLUX_BUDGET, sdb_render_flux, sdb_count_flux, r);
+        sdb_render_flux(r->u, r->n, out, cap, r);
+        int cutm = 0, allm = 0; for (int i = 0; i < r->n; i++) if (r->u[i].cat == SDS_MAT && !r->u[i].skip && r->u[i].flux[0]) { allm++; if (!r->u[i].chosen) cutm++; }
+        if (cutm) fprintf(stderr, "[brief] %d de %d material(is) de menor sinal ficaram de fora do prompt do FLUX (limite de 512 posicoes de texto)\n", cutm, allm);
+        if (sdb_explain_on) sds_explain(r->u, r->n, "flux", used, SDB_FLUX_BUDGET, stderr);
     }
-    for (int i = 1; i < np; i++) { SdbFx v = ph[i]; int j = i - 1; while (j >= 0 && ph[j].area < v.area) { ph[j + 1] = ph[j]; j--; } ph[j + 1] = v; }
-    if (np > maxn) np = maxn;
-    for (int i = 0; i < np; i++) {
-        char item[300];
-        if (ph[i].area > 0) snprintf(item, sizeof item, "%s%s, %.0f%%", i ? "; " : "", ph[i].phrase, ph[i].area);
-        else snprintf(item, sizeof item, "%s%s", i ? "; " : "", ph[i].phrase);
-        if (strlen(out) + strlen(item) + 1 < cap) strcat(out, item);
-    }
-    return np;
+    free(r);
 }
-
-/* o briefing inteiro -> prosa em ingles para o FLUX; extra = pedido adicional do usuario (--nl), opcional; has_lines = ha desenho linear (--init2) */
-static void sdb_flux_prose_n(const char *text, int has_lines, const char *extra, char *out, size_t cap, int maxn, int *nmat) {
-    SdbOut *o = xalloc(sizeof *o, 1);
-    sdb_build(text, NULL, 16, o);
-    char mats[2400]; *nmat = sdb_fx_materials(text, mats, sizeof mats, maxn);
-    const int ban = sdb_has(text, "sem decora") || sdb_has(text, "n\xc3\xa3o adicione") || sdb_has(text, "nao adicione");
-    const char *room = sdb_has(text, "recep") ? "a reception" : "an interior";
-    int n = snprintf(out, cap, "Photorealistic architectural interior photograph of %s, made from the reference view (a 3D model export). "
-        "Keep the exact camera position, lens, framing, perspective and proportions. "
-        "Every wall, opening, ceiling, floor, piece of furniture and object keeps its position, size and shape: nothing is added, removed, moved or resized%s. ",
-        room, ban ? ", no extra decoration, plants, people, lamps, artwork or written text" : "");
-    if (has_lines) n += snprintf(out + n, cap - (size_t)n, "Every edge of the line drawing stays in place. ");
-    if (mats[0]) n += snprintf(out + n, cap - (size_t)n, "Each material sits exactly on its surfaces in the view, with its real colour and pattern scale (share of the frame in %%): %s. ", mats);
-    if (o->nobj) {
-        n += snprintf(out + n, cap - (size_t)n, "Main objects:");
-        for (int i = 0; i < o->nobj; i++) n += snprintf(out + n, cap - (size_t)n, "%s %s", i ? "," : "", o->objs[i]);
-        n += snprintf(out + n, cap - (size_t)n, ". ");
-    }
-    const char *day = o->elev >= 60 ? "bright daylight from a high sun" : o->elev >= 30 ? "soft daylight" : o->elev >= 0 ? "low warm sunlight" : NULL;
-    if (day || o->temp || o->kinds) {
-        n += snprintf(out + n, cap - (size_t)n, "Lighting: ");
-        if (day) n += snprintf(out + n, cap - (size_t)n, "%s (solar elevation %.1f degrees) matching the shadows of the view; ", day, o->elev);
-        if (o->temp) n += snprintf(out + n, cap - (size_t)n, "%s artificial light at %d K", o->temp <= 3200 ? "warm" : o->temp >= 4500 ? "cool white" : "neutral", o->temp);
-        if (o->kinds) {
-            n += snprintf(out + n, cap - (size_t)n, " from");
-            int first = 1;
-            for (int i = 0; i < 10; i++) if (o->kinds & SDB_LIGHTS[i].bit) { n += snprintf(out + n, cap - (size_t)n, "%s %s", first ? "" : ",", SDB_LIGHTS[i].name); first = 0; }
-        }
-        n += snprintf(out + n, cap - (size_t)n, "; unlisted luminaires stay off. ");
-    }
-    static const struct { const char *pt, *en; } S[] = {
-        { "natural e realista", "natural realistic interior photography" }, { "full-frame", "full-frame camera" }, { "sem apar", "no computer graphics look" },
-        { "atenua", "soft light with real falloff" }, { "contato", "deep contact shadows" }, { "gradientes", "soft light gradients on the walls" },
-        { "texturas", "visible wood grain and fabric weave" }, { "nunca supersaturadas", "faithful colours, never oversaturated" },
-        { "balan", "neutral to slightly warm white balance" }, { "elegante", "clean, elegant, authentic" } };
-    int first = 1;
-    for (int i = 0; i < (int)(sizeof S / sizeof S[0]); i++) if (sdb_has(text, S[i].pt)) { n += snprintf(out + n, cap - (size_t)n, "%s%s", first ? "Style: " : ", ", S[i].en); first = 0; }
-    if (!first) n += snprintf(out + n, cap - (size_t)n, ". ");
-    if (extra && extra[0]) n += snprintf(out + n, cap - (size_t)n, "Additional request from the user: %s. ", extra);
-    snprintf(out + n, cap - (size_t)n, "16:9, no borders, no watermark.");
-    free(o);
-}
-
-/* o texto do FLUX tem 512 posicoes (cerca de 0.285 ficha por caractere deste texto; 1740 caracteres sao cerca de 500): se o briefing tem materiais demais, os de menor area ficam de fora */
-static void sdb_flux_prose(const char *text, int has_lines, const char *extra, char *out, size_t cap) {
-    int nmat = 0;
-    sdb_flux_prose_n(text, has_lines, extra, out, cap, 99, &nmat);
-    const int all = nmat;
-    for (int k = nmat; k > 0 && strlen(out) > 1740; k--) sdb_flux_prose_n(text, has_lines, extra, out, cap, k - 1, &nmat);
-    if (nmat < all) fprintf(stderr, "[brief] %d material(is) de menor area ficaram de fora do prompt do FLUX (limite de 512 posicoes de texto)\n", all - nmat);
-}
+static void sdb_flux_prose(const char *text, int has_lines, const char *extra, char *out, size_t cap) { sdb_flux_prose_x(text, has_lines, extra, out, cap, 0); }
 
 /* arquivo -> texto (malloc) ou NULL */
 static char *sdb_read_text(const char *path) {
@@ -410,12 +486,38 @@ static const char SDB_TEST_BRIEF[] =
 
 static int sdb_tck(const char *what, int ok) { printf("  %-70s %s\n", what, ok ? "OK" : "FALHOU"); return ok ? 0 : 1; }
 
+/* briefing sintetico grande: o do teste mais materiais e luzes de pouco sinal; o que tem muito sinal tem de ficar e o resto, de fora, sem passar do orcamento */
+static int sdb_selftest_select(void) {
+    int bad = 0;
+    static char big[16000]; snprintf(big, sizeof big, "%s", SDB_TEST_BRIEF);
+    char *mp = strstr(big, "- \"Iron_Blurry_5cm\"");
+    static char tail[8000]; snprintf(tail, sizeof tail, "%s", mp ? mp : "");
+    if (mp) *mp = 0;
+    for (int i = 0; i < 24; i++) { char l[200]; snprintf(l, sizeof l, "- \"MAT_BAIXO_%02d\": material, repeti\xc3\xa7\xc3\xa3o do padr\xc3\xa3o %dx%d cm (aproximadamente 1%% da moldura)\n", i, 10 + i, 20 + i); strncat(big, l, sizeof big - strlen(big) - 1); }
+    strncat(big, "- \"Metal Dourado\": metal \xe2\x80\x94 RGB 190,150,60 (~6% do quadro)\n", sizeof big - strlen(big) - 1);
+    strncat(big, tail, sizeof big - strlen(big) - 1);
+    printf("briefing sintetico grande (%zu caracteres, 24 materiais de ~1%% e um metal dourado de 6%%)\n", strlen(big));
+    static char fit[6000]; sdb_flux_prose(big, 1, "add a vase of tulips", fit, sizeof fit);
+    const int tk = sdb_count_flux(fit, NULL);
+    bad += sdb_tck("FLUX: cabe no orcamento mesmo com 40 materiais", tk <= SDB_FLUX_BUDGET);
+    bad += sdb_tck("FLUX: tintas, concreto e o metal dourado (RGB) ficam; os de 1% sem sinal saem", strstr(fit, "burgundy painted wall (RGB 119,79,81)") && strstr(fit, "concrete floor tiles") && strstr(fit, "metal") && !strstr(fit, "MAT_BAIXO_2"));
+    bad += sdb_tck("FLUX: regras, sol, 3000 K e o pedido do usuario (--nl) entram sempre", strstr(fit, "Keep the exact camera") && strstr(fit, "solar elevation 66.5") && strstr(fit, "3000 K") && strstr(fit, "Additional request from the user: add a vase of tulips"));
+    bad += sdb_tck("FLUX: ordem regras > materiais > luz > objetos > estilo", strstr(fit, "Style:") && strstr(fit, "Keep the exact") < strstr(fit, "Each material") && strstr(fit, "Each material") < strstr(fit, "Lighting:") && strstr(fit, "Lighting:") < strstr(fit, "Main objects:") && strstr(fit, "Main objects:") < strstr(fit, "Style:"));
+    static SdbOut o; sdb_build(big, NULL, 2, &o);
+    const int ts = sdb_tokens(NULL, o.prompt);
+    printf("  Stable com 2 blocos: %d tokens estimados: %s\n", ts, o.prompt);
+    bad += sdb_tck("Stable: cabe em 2 blocos de 75 (estimativa)", ts <= 146);
+    bad += sdb_tck("Stable: tintas com peso (x:1.2) e cor nomeada; 3000K; sol", strstr(o.prompt, "(slate blue-grey painted wall:1.2)") && strstr(o.prompt, "3000K") && strstr(o.prompt, "bright daylight"));
+    bad += sdb_tck("Stable: negativo separado, sem plantas listadas no briefing (so FOLHA, 0%) nao some", strstr(o.negative, "text") && strstr(o.negative, "extra decoration"));
+    return bad;
+}
+
 static int sdb_selftest(const char *file) {
     int bad = 0; char *real = file ? sdb_read_text(file) : NULL;
     printf("katana render brief selftest (prompt do FLUX a partir do briefing)\n");
     for (int pass = 0; pass < (real ? 2 : 1); pass++) {
         const char *text = pass ? real : SDB_TEST_BRIEF;
-        static char pr[6000], fit[6000]; int nm = 0; sdb_flux_prose_n(text, 1, NULL, pr, sizeof pr, 99, &nm); sdb_flux_prose(text, 1, NULL, fit, sizeof fit);
+        static char pr[6000], fit[6000]; sdb_flux_prose_x(text, 1, NULL, pr, sizeof pr, 1); sdb_flux_prose(text, 1, NULL, fit, sizeof fit);
         static SdbOut o; sdb_build(text, NULL, 4, &o);
         printf("%s\n  prompt do FLUX (%zu caracteres): %s\n", pass ? "briefing do arquivo:" : "texto embutido (mesmas linhas de material):", strlen(pr), pr);
         char low[6000]; size_t n = strlen(pr); for (size_t i = 0; i <= n; i++) low[i] = (char)tolower((unsigned char)pr[i]);
@@ -433,15 +535,18 @@ static int sdb_selftest(const char *file) {
         bad += sdb_tck("desenho linear mencionado quando ha a imagem 2", strstr(pr, "line drawing") != NULL);
         bad += sdb_tck("luz: elevacao solar e 3000 K, spots/perfil de LED lidos", strstr(pr, "solar elevation 66.5") && strstr(pr, "3000 K"));
         bad += sdb_tck("objetos: reception counter, chair", strstr(pr, "Main objects: reception counter, chair") != NULL);
-        bad += sdb_tck("prosa final cabe nas 512 posicoes do texto do FLUX (ate 1740 caracteres, cerca de 0.285 ficha cada)", strlen(fit) <= 1740 || strstr(fit, "Materials") == NULL);
+        bad += sdb_tck("prosa final cabe nas 512 posicoes do texto do FLUX (orcamento do selecionador)", sdb_count_flux(fit, NULL) <= SDB_FLUX_BUDGET);
+        bad += sdb_tck("prosa final tem as regras, o sol e os 3000 K", strstr(fit, "Keep the exact camera") && strstr(fit, "nothing is added") && strstr(fit, "solar elevation 66.5") && strstr(fit, "3000 K"));
+        bad += sdb_tck("as tres tintas com RGB sobrevivem ao corte", strstr(fit, "slate blue-grey painted wall (RGB 99,112,123)") && strstr(fit, "burgundy painted wall (RGB 119,79,81)") && strstr(fit, "off-white painted wall (RGB 228,222,204)"));
     }
+    bad += sdb_selftest_select();
     printf("RESULTADO: %s\n", bad ? "FALHOU" : "todos passaram");
     return bad ? 1 : 0;
 }
 
 static int sdb_main(int argc, char **argv) {
     if (argc >= 1 && !strcmp(argv[0], "selftest")) return sdb_selftest(argc > 1 ? argv[1] : NULL);
-    if (argc < 1) { fprintf(stderr, "uso: katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--image3 amostras.png] [--show]\n"
+    if (argc < 1) { fprintf(stderr, "uso: katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--image3 amostras.png] [--show] [--explain-brief]\n"
                                     "       [--size WxH] [--steps 20] [--seed 1] [--strength 0.55] [--guidance 7.0] [--control-scale 1.0] [--chunks 4] [--lcm] [--long 576] [--models pasta]\n"); return 1; }
     const char *brief = argv[0], *img1 = NULL, *img2 = NULL, *img3 = NULL, *out = NULL; int show = 0, steps_set = 0; double longside = 576.0;
     SdpParams P; memset(&P, 0, sizeof P);
@@ -454,6 +559,7 @@ static int sdb_main(int argc, char **argv) {
         else if (!strcmp(a, "--image3") && more) img3 = argv[++i];
         else if (!strcmp(a, "--out") && more) out = argv[++i];
         else if (!strcmp(a, "--show")) show = 1;
+        else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (!strcmp(a, "--size") && more) { if (sscanf(argv[++i], "%dx%d", &P.w, &P.h) != 2) { fprintf(stderr, "render: --size espera LARGURAxALTURA\n"); return 1; } }
         else if (!strcmp(a, "--lcm")) P.lcm = 1;
         else if (!strcmp(a, "--long") && more) longside = atof(argv[++i]);

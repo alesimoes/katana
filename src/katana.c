@@ -194,6 +194,7 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdunet.c"              /* render: UNet e ControlNet (CPU) */
 #include "render/sdvae.c"               /* render: VAE, codificador e decodificador (CPU) */
 #include "render/sdgen.c"               /* render: amostrador, PNG, bordas e o comando katana render generate */
+#include "render/sdsel.c"               /* render: selecionador de relevancia do briefing (BM25 sobre unidades, orcamento por motor) */
 #include "render/sdbrief.c"             /* render: briefing de renderizacao -> prompt condensado (katana render brief) */
 #include "render/sdlogo.c"               /* render: logo (PNG com alfa) composto no render gerado (katana render logo) */
 #include "render/fxconvert_text.c"      /* render: conversor do codificador de texto do FLUX.2 klein (katana render flux-convert-text) */

@@ -116,6 +116,24 @@ static int fxt_tokenize(const FxText *t, const char *prompt, int maxlen, int32_t
     return n;
 }
 
+/* quantos ids o prompt ocupa nas 512 posicoes de texto do FLUX (com o modelo de conversa); so o tokenizador do GGUF e carregado, nao os pesos.
+ * -1 se o arquivo nao existe (quem chama estima por caracteres). */
+static int fxt_count(const char *prompt) {
+    static FxText T; static int state;
+    if (!state) {
+        char p[1200]; snprintf(p, sizeof p, "%s/flux2klein/gguf/qwen3-4b-text.gguf", models_dir());
+        state = 2; memset(&T, 0, sizeof T);
+        if (sdg_open(&T.g, p) && fxt_load_tokenizer(&T)) state = 1;
+    }
+    if (state != 1) return -1;
+    const char *pre = "<|im_start|>user\n", *post = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
+    char *text = xalloc(strlen(pre) + strlen(prompt) + strlen(post) + 1, 1);
+    strcpy(text, pre); strcat(text, prompt); strcat(text, post);
+    Ids o = {0}; encode(&T.tk, text, &o); free(text);
+    const int n = o.n; free(o.ids);
+    return n;
+}
+
 /* ---------- forward ---------- */
 
 static void fxt_rms(float *y, const float *x, const float *w, int n, float eps) {

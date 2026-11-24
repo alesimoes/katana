@@ -283,6 +283,7 @@ static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, 
 static void sdb_flux_prose(const char *text, int has_lines, const char *extra, char *out, size_t cap);   /* render/sdbrief.c */
 static char *sdb_read_text(const char *path);
 static int sdb_fill(SdpParams *P, const char *path);
+static int sdb_explain_on;                                                    /* --explain-brief: o que entrou, o que foi cortado e a pontuacao (render/sdbrief.c) */
 static int sdl_run(const char *image, const char *logo_path, const char *box, const char *persp, int blend, const char *out);   /* render/sdlogo.c */
 
 /* depois de gerar: o logo de verdade por cima. O render sem logo fica ao lado, com "-nologo" antes da extensao (a caixa errada se refaz sem gerar de novo) */
@@ -326,6 +327,7 @@ static int sdp_main(int argc, char **argv) {
         else if (!strcmp(a, "--init") && more) P.init = argv[++i];
         else if (!strcmp(a, "--init2") && more) init2 = argv[++i];
         else if (!strcmp(a, "--brief") && more) brief = argv[++i];
+        else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (!strcmp(a, "--logo") && more) logo = argv[++i];
         else if (!strcmp(a, "--logo-box") && more) logo_box = argv[++i];
         else if (!strcmp(a, "--logo-perspective") && more) logo_persp = argv[++i];
