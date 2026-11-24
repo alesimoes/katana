@@ -184,3 +184,22 @@ define value (was this result referenced by a later call?). Confidence: low; lis
   [63].
 - Prompt compression by a second model: needs a second model in memory, and the evidence on tool-using agents is
   negative or missing [53].
+
+## RAM snapshots of the recurrent state (written and compiled, nothing measured)
+
+`src/agent/snapshots.c` keeps copies of the recurrent (linear-attention) state in RAM at round boundaries, so that a
+compaction, a server request or a sub-agent turn can resume from the deepest copy that still matches the start of the
+new text instead of re-reading the whole context. The compaction cut is chosen by the cost of the re-read: results after
+a copy are cheaper to drop, because everything before the first changed byte stays byte for byte as it is in the KV
+cache. Every writer of the KV cache reports to a small tracker in `engine/forward.c` (`kvt`), which invalidates the
+copies that a write would make stale.
+
+- `KATANA_SNAPSHOTS=N`: number of copies kept. On by default (8); `0` turns the feature off.
+- `KATANA_SNAP_DBG=1`: prints each copy taken and each return to a copy, with size and time.
+- `katana snaptest <model> [--engine]`: checks that continuing from a copy matches computing from scratch (KL and
+  largest difference), including compaction scenarios. `katana snapreplay <model> <sessions.ksess...>`: replays
+  recorded sessions without running the model and counts the tokens re-read per compaction, with and without copies.
+
+Status: written and compiled; nothing has been run or measured (no `snaptest`, no `snapreplay`, no speed numbers).
+The qwen35moe attention rewrite (commit ba42c57 of the original work) is not part of this change and is kept on its own
+branch.
