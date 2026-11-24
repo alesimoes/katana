@@ -4,26 +4,21 @@
  * KATANA_RENDER_BIN troca o executavel chamado (teste sem modelo: tools/tooltest/render.sh). */
 
 static const char CT_RENDER_DESC[] =
-    "Make a realistic image from a view of a 3D model (for example a SketchUp export) and a request, on this machine. "
-    "engine stable (default): Stable Diffusion with edge guidance (LCM), keeps the geometry of the view; a fast preview. "
-    "engine flux: FLUX.2, final quality, the view is the reference; uses the GPU when it is free, else the CPU (slower). "
-    "Write the briefing yourself in `brief` (text, several lines, Portuguese section names) and pass the user's view image in `image`. Format:\n"
-    "REGRAS ABSOLUTAS (fidelidade ao projeto):\n- Mantenha camera, enquadramento e todos os objetos da IMAGEM 1. Sem decoracao extra, pessoas ou textos.\n"
-    "MATERIAIS (nome: tipo — acabamento, cor real):\n- \"Tinta azul acinzentado\": parede pintada — RGB 99,112,123 (~25% do quadro)\n"
-    "- \"Concreto\": concreto/cimento, repeticao do padrao 90x90 cm (~15% do quadro)\n"
-    "PRINCIPAIS OBJETOS A VISTA:\n- balcao de atendimento\n- cadeira\n"
-    "ILUMINACAO:\nLuz do dia, elevacao solar 60 graus.\n- luz \"spots embutidos\": LIGADA, 3000 K\n"
-    "ESTILO FOTOGRAFICO:\nFotografia arquitetonica de interiores natural e realista, texturas visiveis.\n"
-    "Each material line: name, type (parede pintada, concreto/cimento, madeira natural, tecido, metal...), then RGB r,g,b or pattern size in cm, then the share of the frame. "
-    "`brief` may also be the path of an existing briefing file. It takes minutes (stable about 25 s to a few minutes, flux longer): tell the user before calling. "
-    "Returns the path of the image written and which backend ran; then tell the user the path. "
-    "Preview with stable first and flux for the final, unless the user asks otherwise.";
+    "Generate an image on this machine with a local image model. Any picture: illustration, character, scene, architecture; a reference image is optional. "
+    "`brief` is the FINAL prompt, written by you in the engine's language and style; the engine does not rewrite, translate or add anything. "
+    "stable (default, fast preview): short English tags or phrases separated by commas, subject and style first, up to ~290 tokens (~200 words). "
+    "flux (high definition): English prose, subject and style first, up to ~500 tokens (~350 words). "
+    "Beyond the limit, whole lines or phrases are cut by relevance (colours, numbers, rules, rare words kept); the result says `brief: N/budget tokens` and `cut: ...` so you can resend it shorter. "
+    "`image` (PNG or JPEG) is optional: a view, sketch or photo the picture should follow; leave it out to draw from the text alone. `brief` may also be the path of a text file with the prompt. "
+    "Flow: preview with stable first, show the result and ASK the user whether it is approved; call flux only after the user approves (more steps and a larger size for the final), "
+    "never stable then flux in the same answer. If the user asks directly for the final or high definition, go straight to flux. "
+    "It takes minutes (stable about 25 s to a few minutes, flux longer): tell the user before calling. Returns the path of the image written and which backend ran; tell the user the path.";
 static const char CT_RENDER_PROPS[] =
-    "\"request\": {\"type\": \"string\", \"description\": \"Short extra request in the user's words (optional when brief is given).\"}, "
-    "\"image\": {\"type\": \"string\", \"description\": \"Path of the view image (PNG or JPEG) the user gave; the geometry to follow.\"}, "
+    "\"request\": {\"type\": \"string\", \"description\": \"Optional short text in the user's words; with brief it is appended to the prompt as written, alone it is the whole request.\"}, "
+    "\"image\": {\"type\": \"string\", \"description\": \"Optional path of a reference image (PNG or JPEG) the picture follows.\"}, "
     "\"engine\": {\"type\": \"string\", \"description\": \"stable (fast preview, default) or flux (final quality).\"}, "
     "\"out\": {\"type\": \"string\", \"description\": \"Path of the PNG to write (default: next to the image, with -render-<engine> in the name).\"}, "
-    "\"brief\": {\"type\": \"string\", \"description\": \"The briefing text you wrote (format in the tool description), or the path of a briefing file.\"}, "
+    "\"brief\": {\"type\": \"string\", \"description\": \"The final prompt you wrote, in the engine's style and within its limit (see the tool description), or the path of a file with it.\"}, "
     "\"size\": {\"type\": \"string\", \"description\": \"Optional WIDTHxHEIGHT, multiples of 64, for example 1024x576. Default: the proportion of the image, 576 on the long side.\"}, "
     "\"steps\": {\"type\": \"integer\", \"description\": \"Optional number of steps (flux 1 to 8, default 4; stable with LCM default 4).\"}";
 static const char CT_RENDER_REQ[] = "";
@@ -95,7 +90,17 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
             used[0] = 0; const char *u = strstr(res, tag);           /* o motor diz quem processou de fato (cpu, cuda ou vulkan) */
             if (u) { size_t k = 0; while (u[k] && u[k] != '\n' && k < sizeof used - 1) { used[k] = u[k]; k++; } used[k] = 0; }
             else snprintf(used, sizeof used, "%s unknown", tag);
-            snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s\n%s", eng, ap, (long long)st.st_size, brf && brf[0] ? "; prompt from the brief" : "", used);
+            /* o motor diz quantos tokens o prompt usou e o que cortou ("[brief] <motor> tokens N/B" e "[brief] cut N: ..."): o modelo reenvia mais curto */
+            char bl[240] = "", cl[1300] = "";
+            { const char *q = strstr(res, "[brief] "); 
+              while (q) {
+                  const char *eol = strchr(q, '\n'); size_t k = eol ? (size_t)(eol - q) : strlen(q);
+                  const char *t = strstr(q, " tokens "); const int isTok = t && t < q + k && !strncmp(q + 8, eng, strlen(eng));
+                  if (isTok) { int u2 = 0, b2 = 0; if (sscanf(t + 8, "%d/%d", &u2, &b2) == 2) snprintf(bl, sizeof bl, "\nbrief: %d/%d tokens", u2, b2); }
+                  else if (!strncmp(q + 8, "cut ", 4)) { const char *c = strchr(q + 12, ':'); if (c && c < q + k) snprintf(cl, sizeof cl, "\ncut: %.*s", (int)(k - (size_t)(c + 2 - q) < 1200 ? k - (size_t)(c + 2 - q) : 1200), c + 2); }
+                  q = eol ? strstr(eol, "[brief] ") : NULL;
+              } }
+            snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s%s\n%s", eng, ap, (long long)st.st_size, bl, cl, used);
         }
     }
 done:
