@@ -16,14 +16,17 @@ cat > fake.sh <<'EOS'
 printf '%s\n' "$@" > "$PWD/args.txt"
 prev=""; for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done
 [ -z "$FAKE_NOOUT" ] && [ -n "$out" ] && printf 'PNGDATA' > "$out"
+[ -n "$FAKE_USED" ] && echo "$FAKE_USED"
+for a in "$@"; do [ -f "$a" ] && case "$a" in /tmp/katana-brief-*) cp "$a" "$PWD/brief-seen.txt";; esac; done
 echo "[render] progress line"; echo "[render] done"
 exit ${FAKE_RC:-0}
 EOS
 chmod +x fake.sh
 export KATANA_RENDER_BIN="$T/fake.sh"
+mkdir -p "$T/mod/render"; : > "$T/mod/render/sd15-realistic-vision-lcm.gguf"; export KATANA_MODELS="$T/mod"
 printf 'x' > view.png; printf 'MATERIAIS\n' > brief.md
 
-o=$(run Render '{}'); has "needs request or brief" "$o" "error: give a request"
+o=$(run Render '{}'); has "needs request or brief" "$o" "error: give a brief"
 o=$(run Render '{"request":"a room","engine":"dalle"}'); has "bad engine" "$o" "error: engine must be stable or flux"
 o=$(run Render '{"request":"a room","image":"nope.png"}'); has "missing image" "$o" "error: cannot read the image nope.png"
 o=$(run Render '{"brief":"nope.md"}'); has "missing brief" "$o" "error: cannot read the brief file nope.md"
@@ -34,7 +37,7 @@ has "default engine stable, default output next to the image" "$o" "view-render-
 has "result says rendered" "$o" "rendered with stable:"
 has "output file exists" "$(ls)" "view-render-stable.png"
 has "args: render generate" "$a" "generate"
-has "args: engine stable" "$(printf '%s' "$a" | tr '\n' ' ')" "--engine stable --init view.png --nl a bright reception --out"
+has "args: engine stable" "$(printf '%s' "$a" | tr '\n' ' ')" "--engine stable --init view.png --nl a bright reception --lcm --out"
 
 o=$(run Render '{"request":"it'"'"'s a \"quote\" $(touch pwned) `id`","image":"view.png","engine":"flux","out":"final.png"}'); a=$(cat args.txt)
 has "flux with out" "$o" "final.png"
@@ -44,7 +47,7 @@ hasnt "no shell injection" "$(ls)" "pwned"
 o=$(run Render '{"brief":"brief.md","image":"view.png","engine":"flux","request":"extra: warmer light"}'); a=$(cat args.txt | tr '\n' ' ')
 has "brief passed" "$a" "--brief brief.md"
 has "extra request kept" "$a" "--nl extra: warmer light"
-has "result mentions brief" "$o" "prompt from the brief file"
+has "result mentions brief" "$o" "prompt from the brief"
 
 o=$(run Render '{"request":"no image","engine":"flux"}'); a=$(cat args.txt | tr '\n' ' ')
 hasnt "no image: no --init" "$a" "--init"
@@ -54,6 +57,19 @@ o=$(FAKE_RC=3 run Render '{"request":"x","image":"view.png"}'); has "failed rend
 rm -f view-render-stable.png
 o=$(FAKE_NOOUT=1 run Render '{"request":"x","image":"view.png"}'); has "no file written is an error" "$o" "was not written"
 o=$(run ToolSearch '{"query":"select:Render"}'); has "the tool is in the registry (ToolSearch finds it)" "$o" "Render"
+
+# brief como texto (varias linhas): vira arquivo temporario com o texto exato, apagado depois; size e steps passam
+o=$(FAKE_USED="[flux] usado: dit=vulkan vae=vulkan" run Render '{"brief":"MATERIAIS:\n- \"Concreto\": concreto/cimento (~10% do quadro)\n","image":"view.png","engine":"flux","size":"1024x576","steps":2}'); a=$(cat args.txt | tr '\n' ' ')
+has "brief text goes to a temp file" "$a" "--brief /tmp/katana-brief-"
+has "temp brief has the exact text" "$(cat brief-seen.txt)" "- \"Concreto\": concreto/cimento (~10% do quadro)"
+has "temp brief is removed" "$(ls /tmp | grep -c '^katana-brief-' )" "0"
+has "size passes" "$a" "--size 1024x576"
+has "steps pass" "$a" "--steps 2"
+has "flux result carries the backend line" "$o" "[flux] usado: dit=vulkan vae=vulkan"
+o=$(run Render '{"request":"x","image":"view.png"}'); has "stable result says the backend" "$o" "[stable] usado: unet=cpu"
+o=$(run Render '{"request":"x","size":"1000x500"}'); has "size must be a multiple of 64" "$o" "error: size must be WIDTHxHEIGHT"
+o=$(run Render '{"request":"x","engine":"flux","steps":20}'); has "flux steps limit" "$o" "error: steps must be 1 to 8"
+o=$(unset KATANA_RENDER_BIN; KATANA_MODELS="$T/empty" run Render '{"request":"x","engine":"flux"}'); has "no models: clear error" "$o" "models are not installed"
 
 echo "$N checks, $F failed"
 [ "$F" = 0 ]
