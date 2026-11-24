@@ -1024,11 +1024,11 @@ void Backend::setState(bool ready, bool loading, bool answering)
 }
 
 int Backend::imageSize() const {
-    const int n = m_ui->value("imagemTamanho", 768).toInt();
-    return (n == 576 || n == 768 || n == 1024) ? n : 768;
+    const int n = m_ui->value("imagemTamanho", 1024).toInt();
+    return (n == 1024 || n == 1280 || n == 1600 || n == 1920) ? n : 1024;
 }
 void Backend::setImageSize(int w) {
-    if (w != 576 && w != 768 && w != 1024) return;
+    if (w != 1024 && w != 1280 && w != 1600 && w != 1920) return;
     if (w == imageSize()) return;
     m_ui->setValue("imagemTamanho", w);
     m_ui->sync();
@@ -1570,8 +1570,8 @@ bool Backend::sendImage(const QString &text)
     const bool asBrief = !prompt.isEmpty() && looksLikeBrief(prompt);
     if (prompt.isEmpty())
         prompt = QStringLiteral("Fotografia arquitetonica de interiores, fotorrealista, mesma camera, mesma composicao e mesmos materiais da imagem de referencia.");
-    // tamanho: multiplos de 64, area do tamanho escolhido no menu (576x320, 768x448 ou 1024x576), proporcao da imagem, lados ate 64 acima do nominal
-    const int bw = imageSize(), bh = bw == 576 ? 320 : bw == 768 ? 448 : 576;
+    // tamanho: multiplos de 64, area do tamanho escolhido no menu (1024x576 a 1920x1080), proporcao da imagem, lados ate 64 acima do nominal
+    const int bw = imageSize(), bh = bw * 9 / 16;
     const QSize sz = QImageReader(img).size();
     int W = bw, H = bh;
     if (sz.width() > 0 && sz.height() > 0) {

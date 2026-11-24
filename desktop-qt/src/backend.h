@@ -129,7 +129,7 @@ class Backend : public QObject
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY catalogChanged)    // memoria, placa, disco livre (katana hw)
     Q_PROPERTY(QString attachedImage READ attachedImage NOTIFY imageChanged)      // imagem anexada ao proximo envio ("" = nenhuma)
     Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // stable ou flux
-    Q_PROPERTY(int imageSize READ imageSize WRITE setImageSize NOTIFY imageChanged)   // largura da imagem gerada em 16:9: 576, 768 ou 1024
+    Q_PROPERTY(int imageSize READ imageSize WRITE setImageSize NOTIFY imageChanged)   // largura da imagem gerada em 16:9: 1024 (a menor), 1280, 1600 ou 1920
     Q_PROPERTY(int imageSteps READ imageSteps WRITE setImageSteps NOTIFY imageChanged)   // passos do FLUX: 4 (padrao do modelo), 8, 12 ou 20
     Q_PROPERTY(QString imageBackend READ imageBackend WRITE setImageBackend NOTIFY imageChanged)   // processamento do FLUX: auto, cuda, vulkan ou cpu (KATANA_BACKEND)
     Q_PROPERTY(bool imageBusy READ imageBusy NOTIFY imageChanged)

@@ -992,7 +992,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
           check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief");
           check(rl.contains("--control") && rl.contains("--control-scale") && !rl.contains("--steps"), "stable: ControlNet pelas bordas da vista, sem --steps");
-          const int zi = rl.indexOf("--size"); check(be.imageSize() == 768 && zi >= 0 && rl[zi + 1].split('x')[0].toInt() >= 320, "tamanho Grande (768) e o padrao e vai em --size: " + (zi >= 0 ? rl[zi + 1] : QString())); }
+          const int zi = rl.indexOf("--size"); check(be.imageSize() == 1024 && zi >= 0 && rl[zi + 1].split('x')[0].toInt() >= 320, "1024 (o menor) e o padrao e vai em --size: " + (zi >= 0 ? rl[zi + 1] : QString())); }
         QQuickItem *ic = c.item("imageCard");
         check(ic && ic->isVisible() && c.item("imagePic") && c.item("imagePic")->isVisible(), "cartao de imagem visivel");
         c.grab("61-imagem-gerada.png");
@@ -1038,6 +1038,8 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
 
         // FLUX com a placa escolhida: o cartao diz quem processou (CUDA)
         be.setImageBackend("cuda");
+        be.setImageSize(768); check(be.imageSize() == 1024, "576/768 nao existem mais: o menor e 1024");
+        be.setImageSize(1600); check(be.imageSize() == 1600, "escolher 1600"); be.setImageSize(1024);
         check(be.imageSteps() == 4, "passos do FLUX: 4 e o padrao");
         be.setImageSteps(7); check(be.imageSteps() == 4, "passos invalidos sao recusados");
         be.setImageSteps(8); check(be.imageSteps() == 8, "escolher 8 passos");

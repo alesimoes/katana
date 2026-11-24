@@ -264,7 +264,7 @@ ApplicationWindow {
                                 }
                                 Text { font.family: Theme.sans; text: "TAMANHO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Repeater {
-                                    model: [[576, "Normal · 576×320"], [768, "Grande · 768×448"], [1024, "Muito grande · 1024×576 (mais lento)"]]
+                                    model: [[1024, "1024 × 576 (menor)"], [1280, "1280 × 720"], [1600, "1600 × 900"], [1920, "1920 × 1080 (muito lento)"]]
                                     AbstractButton {
                                         id: zb
                                         required property var modelData
