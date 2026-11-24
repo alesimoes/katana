@@ -135,6 +135,7 @@ static void agent_env(char *out, size_t cap) {
  * o ambiente, a memoria e as instrucoes extras do usuario (/sistema) */
 static size_t ct_decl(char *out, size_t cap, const char *name);                 /* src/tools/table.c */
 static size_t ct_names(char *out, size_t cap, const char *const *skip);
+static int render_have(int flux);                                               /* src/tools/render.c */
 static void agent_build_sys(char *out, size_t cap, const char *extra) {
     static char facts[12000];
     mem_tail(20, facts, sizeof facts);
@@ -170,6 +171,13 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
             if (ct_names(more, sizeof more, skip)) o += (size_t)snprintf(out + o, cap - o,
                 "- More tools exist, listed here by name only: %s. To use one, first call ToolSearch with query \"select:Name\" to get its arguments, then call it.\n", more);
         }
+        /* nota de capacidade: so com os modelos de imagem na maquina; fica mesmo sem o bloco de declaracoes (o modelo treinado nao conhece a Render) */
+        {   const int st = render_have(0), fx = render_have(1);
+            if (st || fx) o += (size_t)snprintf(out + o, cap - o,
+                "- This machine can generate images: Render tool (load it with ToolSearch select:Render). Engines: %s%s%s. "
+                "Write the brief yourself in the brief argument (Portuguese sections REGRAS ABSOLUTAS, MATERIAIS with name, type, RGB or pattern size in cm and %% of frame, ILUMINACAO) and pass the user's reference image path in image. "
+                "Preview with stable first, then flux for the final, unless the user asks otherwise; afterwards tell the user the output path.\n",
+                st ? "stable = fast preview (about 25 s for 768x448 on the CPU)" : "", st && fx ? "; " : "", fx ? "flux = final quality (GPU if free)" : ""); }
         /* sem o bloco de declaracoes nem a instrucao de formato quando o modelo foi treinado nas ferramentas: uma
            especializacao chamada tools.kspec esta aplicada (feita com este mesmo prompt). O modelo base nao sabe os
            nomes nem os argumentos, entao sem ela o bloco fica. KATANA_TOOL_DECL=0 tira sempre, =1 poe sempre */
