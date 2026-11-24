@@ -1059,10 +1059,10 @@ void Backend::setStableSteps(int n) {
 }
 QString Backend::stableModel() const {
     const QString m = m_ui->value("imagemModeloStable", "realistic-vision").toString();
-    return m == "interior" ? m : QStringLiteral("realistic-vision");
+    return (m == "interior" || m == "xsachi") ? m : QStringLiteral("realistic-vision");
 }
 void Backend::setStableModel(const QString &m) {
-    if (m != "realistic-vision" && m != "interior") return;
+    if (m != "realistic-vision" && m != "interior" && m != "xsachi") return;
     if (m == stableModel()) return;
     m_ui->setValue("imagemModeloStable", m);
     m_ui->sync();

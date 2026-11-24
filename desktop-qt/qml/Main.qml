@@ -305,7 +305,7 @@ ApplicationWindow {
                                     }
                                     Text { font.family: Theme.sans; text: "MODELO DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                     Repeater {
-                                        model: [["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"]]
+                                        model: [["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"], ["xsachi", "XSAchi (interiores, uso não comercial)"]]
                                         AbstractButton {
                                             id: smd
                                             required property var modelData
