@@ -31,6 +31,8 @@ known**: it is the first thing to check with real scenes (five scenes, preview a
 
 - Checkpoint: Realistic Vision V6.0 B1 (a Stable Diffusion 1.5 fine-tune; licence on its official page: creativeml-openrail-m; read the full
   text before client use).
+- Other checkpoints of the same family can be offered next to it (`--sd-model`, see "Stable checkpoints" below); Realistic Vision stays the default
+  until the owner decides.
 - Control: ControlNet v1.1 for SD 1.5. First `canny` (the edge filter is classical code, no extra model); `depth` and `mlsd` need a
   preprocessing model or a depth pass exported from SketchUp, so they come later.
 - Why this one: it is the only candidate that can run on the development laptop (RTX 3050 4 GB, 64 GB RAM). Larger and newer
@@ -308,3 +310,22 @@ Tolerance adopted: PSNR above 45 dB against the CPU image for 20 steps (the few 
 | `--lcm` first step includes the weight upload | | + 2 to 3 s the first time | |
 
 On the CPU about 320 s of the 718 s are the control embedding and the VAE encoder (both now on the GPU: 2 s). CUDA with streaming (`KATANA_STABLE_VRAM_MB=2400`): 2.0 s per step. Not optimised yet: the CUDA conv kernel is one 128x128x32 tile with a single stage (no `cp.async` pipeline), the Vulkan kernels use no cooperative matrices (a coopmat conv/attention would close part of the 5x gap), GroupNorm statistics use only 32 blocks, CLIP is on the CPU. Limits: needs sides that are multiples of 64 (already required); a 4 GB card needs the agent/desktop (about 3.5 GB) closed for the GPU path, otherwise the engine says why and runs on the CPU; Windows is not tested (as with the FLUX CUDA path).
+
+## Stable checkpoints (2026-11-24, branch feat-stable-interior)
+
+Realistic Vision is a general photo model (mostly people). To try a checkpoint aimed at interiors, `katana render convert` now reads a Stable Diffusion 1.5 model in the diffusers layout and `katana render generate` can pick the checkpoint.
+
+**Selection.** `--sd-model <name>` (or `KATANA_SD_MODEL=<name>`; the flag wins) loads `models/render/sd15-<name>.gguf`, or `sd15-<name>-lcm.gguf` with `--lcm`. Default: `realistic-vision`. The name is a file name (letters, digits, `-`, `_`), never a path; an unknown name lists the checkpoints that exist. ControlNet, canny, samplers and the GPU paths are the same for every checkpoint (same tensor names, shapes and types). The engine writes no domain text into the prompt, so a checkpoint is judged only by what the prompt and the view give it. Not changed: `sdbrief.c`, `sdspec.c`, the `Render` tool (they still look for the Realistic Vision file to decide whether Stable exists).
+
+**Converting a diffusers checkpoint.**
+
+```
+katana render convert models/render models/render/sd15-interior.gguf - \
+    --diffusers <folder with unet/ text_encoder/ vae/ tokenizer/ scheduler/> --name "<general.name>"
+katana render convert models/render models/render/sd15-interior-lcm.gguf - --diffusers <folder> --name "..." \
+    --lora models/render/lcm-lora-sdv1-5/pytorch_lora_weights.safetensors
+```
+
+`-` skips the ControlNet file (it is shared). The UNet, CLIP and VAE already have diffusers names, so nothing is renamed (CLIP loses the `text_model.` prefix, as in the original layout); the checkpoint's own VAE is used (the original layout uses `sd-vae-ft-mse`). Weights with 2+ dimensions go to F16 (VAE: F32), vectors to F32: the same scheme as `sd15-realistic-vision.gguf`. The LCM variant is made by the same route as `sd15-realistic-vision-lcm.gguf`: the LCM-LoRA is merged into the UNet weights while converting (278 layers). Checked: the interior GGUFs have the same 1130 tensor names, shapes and types and the same metadata keys as the Realistic Vision one, the tokenizer is identical, and converting Realistic Vision again by the old path still gives a byte-identical file (`cmp`); `katana render selftest` passes. About 4 s (plain) and 12 s (with the LCM-LoRA) on this machine.
+
+**Candidate tested: `imagepipeline/InteriorDesign-Checkpoint`** (Hugging Face, fp32 diffusers, Dec 2023, "for modern house interiors"). Files downloaded to `/mnt/dados/render-ref/models-src/interiordesign/` (outside the repo), sha256 equal to the Hub's: unet 1,719,125,304 bytes `5e6aedda...`, text_encoder 246,144,152 `822b8a1b...`, vae 167,335,342 `a6dd4d90...`. Licence: `creativeml-openrail-m` in the model card (OpenRAIL-M: commercial use of the outputs allowed, use restrictions apply, the licence text must travel with redistributed weights). Limits of that statement: the card is a generic marketplace template (the example prompt is a cyberpunk portrait; no trigger words, no recommended negative, no training data, no author credit, "if you are the original author ... add credits"), so the origin is a re-upload of unknown lineage, probably a merge of SD 1.5 derivatives, and the licence tag is the uploader's own claim. It had 4 downloads when checked. Treat it as usable for a preview, and re-check the licence before depending on it for client work.
