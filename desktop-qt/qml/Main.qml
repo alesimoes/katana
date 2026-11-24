@@ -296,6 +296,23 @@ ApplicationWindow {
                                             text: (backend.imageSteps === sb.modelData[0] ? "●  " : "○  ") + sb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
                                     }
                                 }
+                                Text { font.family: Theme.sans; text: "MODELO DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                Repeater {
+                                    model: [["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"]]
+                                    AbstractButton {
+                                        id: smd
+                                        required property var modelData
+                                        objectName: "smodel_" + modelData[0]
+                                        width: apMenu.width - 16; height: 32
+                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                        Accessible.name: "Modelo do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                        onClicked: backend.stableModel = modelData[0]
+                                        background: Rectangle { radius: 8; color: smd.hovered ? Theme.hov : "transparent"
+                                            border.width: smd.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                            text: (backend.stableModel === smd.modelData[0] ? "●  " : "○  ") + smd.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    }
+                                }
                                 Text { font.family: Theme.sans; text: "PASSOS DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Repeater {
                                     model: [[4, "4 (rápido, LCM)"], [8, "8 (LCM)"], [20, "20 (realista)"], [40, "40 (mais realista, lento)"]]
