@@ -1058,7 +1058,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(be.attachedImage().isEmpty(), "o anexo e consumido no envio");
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
           check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief");
-          check(rl.contains("--control") && rl.contains("--control-scale") && !rl.contains("--steps"), "stable: ControlNet pelas bordas da vista, sem --steps");
+          check(rl.contains("--control") && rl.contains("--control-scale") && rl.contains("--steps") && rl.contains("20") && !rl.contains("--lcm"), "stable: ControlNet pelas bordas da vista, 20 passos (Euler com guia, sem LCM)");
           const int zi = rl.indexOf("--size"); check(be.imageSize() == 1024 && zi >= 0 && rl[zi + 1].split('x')[0].toInt() >= 320, "1024 (o menor) e o padrao e vai em --size: " + (zi >= 0 ? rl[zi + 1] : QString())); }
         QQuickItem *ic = c.item("imageCard");
         check(ic && ic->isVisible() && c.item("imagePic") && c.item("imagePic")->isVisible(), "cartao de imagem visivel");
