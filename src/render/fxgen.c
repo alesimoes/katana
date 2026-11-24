@@ -88,7 +88,17 @@ static float *fxg_run(const char *prompt, const char *const *ref, int nref, int 
     fprintf(stderr, "[flux] %dx%d, %d fichas de alvo + %d de referencia, %d passos, sigmas:", W, H, Nt, Nt * nref, steps);
     for (int i = 0; i <= steps; i++) fprintf(stderr, " %.4f", sg[i]);
     fprintf(stderr, "\n");
-    for (int s = 0; s < steps; s++) {
+    /* KATANA_FLUX_STRENGTH=f (0..1, so com referencia): parte da referencia com ruido em vez de ruido puro (como o SDEdit): x = (1-s) ref + s ruido no
+     * primeiro sigma <= f, e os passos anteriores nao rodam. Menos invencao de objetos, menos passos; 1 (padrao) e o comportamento de sempre. */
+    int s0 = 0;
+    { const char *e = getenv("KATANA_FLUX_STRENGTH"); const double f = e ? atof(e) : 1.0;
+      if (nref && f > 0 && f < 1) {
+          while (s0 < steps - 1 && sg[s0] > f) s0++;
+          const float sv = (float)sg[s0];
+          for (size_t i = 0; i < (size_t)Nt * 128; i++) x[i] = (1.0f - sv) * in[(size_t)Nt * 128 + i] + sv * x[i];
+          fprintf(stderr, "[flux] partindo da referencia: sigma inicial %.4f (passos %d a %d)\n", sv, s0 + 1, steps);
+      } }
+    for (int s = s0; s < steps; s++) {
         memcpy(in, x, (size_t)Nt * 128 * 4);
         if (!fxd_forward(&D, in, ids, Ni, emb, ids_txt, maxlen, (float)sg[s], vel, NULL)) return NULL;
         const float dt = (float)(sg[s + 1] - sg[s]);

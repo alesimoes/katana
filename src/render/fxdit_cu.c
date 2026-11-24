@@ -75,8 +75,9 @@ static CUdptr_ fxc_weight(const FxDit *F, const SdgInfo *t, int slot) {
         g_fc.stg[slot] = cu_alloc(cap); if (!g_fc.stg[slot]) return 0;
         g_fc.stgcap[slot] = cap;
     }
+    if (!cu_sync()) return 0;                              /* espera os kernels que ainda leem este buffer */
     const double t0 = sdt_now();
-    if (!cu_sync() || !cu_up(g_fc.stg[slot], sdg_data(&F->g, t), bytes)) return 0;
+    if (!cu_up(g_fc.stg[slot], sdg_data(&F->g, t), bytes)) return 0;
     g_fc.streamed += bytes; g_fc.stream_s += sdt_now() - t0;
     return g_fc.stg[slot];
 }
@@ -215,6 +216,7 @@ static int fxc_forward(const FxDit *F, const float *img, const float *ids_img, i
     FxcMem mem = { {0}, 0 };
     int ok = 0;
     float *mod = NULL, *cs = NULL, *sn = NULL;
+    if (g_fcv_n) fxcv_release();                    /* pesos do VAE: voltam na decodificacao */
     const double tstart = sdt_now(); g_fc.streamed = 0; g_fc.stream_s = 0;
     /* 1. embedding do passo e modulacoes (vetores, na CPU) */
     float temb[FXD_DIM], te[256], hbuf[FXD_DIM], st[FXD_DIM];
