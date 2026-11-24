@@ -33,7 +33,7 @@
 #include <sys/file.h>
 #endif
 
-#define STORE_FORMAT 2          /* um armazenamento de outro formato nao e lido: e apagado e reconstruido (maint.c) */
+#define STORE_FORMAT 3          /* um armazenamento de outro formato nao e lido: e apagado e reconstruido (maint.c) */
 #define STORE_SEG_MAGIC 0x4745534Bu
 #define STORE_MAN_MAGIC 0x4E414D4Bu
 #define STORE_HDR 64

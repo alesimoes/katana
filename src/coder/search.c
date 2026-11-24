@@ -1,4 +1,4 @@
-/* ---------- coder/search.c: busca por nome e texto sobre o armazenamento (nivel de ARQUIVO; a unidade passara a ser o simbolo) ----------
+/* ---------- coder/search.c: busca por nome e texto sobre o armazenamento (documento = ARQUIVO; na consulta o simbolo tambem e unidade, ver cs_units) ----------
  * Indice de busca em secoes do armazenamento (faixa 0x100, store.c), escrito por segmento junto com o catalogo (gancho do `index` em storedocs.c):
  *   CS_T_TERMS (0x100)  lexico: tabela de registros de 24 bytes ordenada pelos bytes da chave + pool de chaves.
  *                       registro: u32 off, u32 len (chave), u32 df, u32 ctf (soma das frequencias), u32 poff, u32 plen (no pool de postings)
@@ -6,10 +6,11 @@
  *                       'o' forma original em minusculas (so quando difere da normalizada)
  *   CS_T_POSTS (0x101)  postings: por termo, df entradas ordenadas por documento: varint delta do documento, u8 mascara de campos, e um varint
  *                       de frequencia por campo presente. Documento = indice LOCAL ao segmento (posicao na secao STS_DOCS).
- *   CS_T_LENS  (0x102)  tabela de n documentos x 12 bytes: u32 tokens de caminho, de nome de arquivo e de conteudo (para BM25 por campos)
+ *   CS_T_LENS  (0x102)  tabela de n documentos x 16 bytes: u32 tokens de caminho, de nome de arquivo, de conteudo e de contexto estrutural (para BM25 por campos)
  *   CS_T_TRI   (0x103)  trigramas DO LEXICO (nao do texto): tabela de 12 bytes {u32 trigrama (3 bytes), u32 off, u32 n} + pool de listas de
  *                       indices de termos (delta varint). Derivada do lexico: a compactacao a reconstroi do lexico fundido.
- * Campos: 0 caminho (diretorios), 1 nome do arquivo, 2 conteudo/palavra (inclui o identificador inteiro), 3 conteudo/subpalavra (parte de identificador).
+ * Campos: 0 caminho (diretorios), 1 nome do arquivo, 2 conteudo/palavra (inclui o identificador inteiro), 3 conteudo/subpalavra (parte de identificador),
+ *   4 contexto estrutural (cabecalho, importacoes, nomes definidos; ver cs_ctx_scan). Formato do armazenamento: STORE_FORMAT 3.
  * Fusores (compactacao): remapeiam documentos pelo docmap (documentos mortos/substituidos somem) e fundem os lexicos por fusao k-vias.
  * Limites: so os primeiros KATANA_CODER_INDEX_KB (128) KB de cada arquivo de texto entram no conteudo; hashes, numeros longos e termos de
  * uma letra ficam fora; palavras de funcao/pedido (flag stop) nao entram no conteudo.
@@ -19,9 +20,9 @@
 #define CS_T_LENS (STS_LEX_BASE + 2)
 #define CS_T_TRI (STS_LEX_BASE + 3)
 #define CS_LEXW 24
-#define CS_LENW 12
+#define CS_LENW 16
 #define CS_TRIW 12
-enum { CF_PATH, CF_NAME, CF_WORD, CF_PART, CF_N };
+enum { CF_PATH, CF_NAME, CF_WORD, CF_PART, CF_CTX, CF_N };
 
 typedef struct { uint32_t doc; uint16_t tf[CF_N]; } CsHit;
 
@@ -57,7 +58,7 @@ static int64_t cs_decode_post(const uint8_t *p, const uint8_t *end, uint32_t df,
     for (uint32_t i = 0; i < df; i++) {
         uint64_t d, f; p = st_get_varint(p, end, &d); if (!p || p >= end) return -1;
         doc += (uint32_t)d; uint8_t mask = *p++;
-        if (mask == 0 || mask > 15) return -1;
+        if (mask == 0 || mask > 31) return -1;
         out[i].doc = doc; memset(out[i].tf, 0, sizeof out[i].tf);
         for (int k = 0; k < CF_N; k++) if (mask >> k & 1) { p = st_get_varint(p, end, &f); if (!p) return -1; out[i].tf[k] = f > 65535 ? 65535 : (uint16_t)f; }
     }
@@ -108,11 +109,11 @@ typedef struct { char *key; uint32_t klen, df, lastdoc; uint64_t ctf; StoreBuf p
  * A analise nao toca em nada compartilhado; a fusao (cs_ix_merge) e feita por UMA thread, na ordem dos documentos, e por isso o indice e igual
  * ao do caminho de uma thread so, byte a byte. */
 typedef struct { uint32_t off, klen; uint16_t tf[CF_N]; } CsDT;
-typedef struct { CsDT *t; uint32_t n, cap; char *pool; size_t pn, pcap; uint32_t len[3]; uint64_t ntok; int has_text; } CsDocRes;
+typedef struct { CsDT *t; uint32_t n, cap; char *pool; size_t pn, pcap; uint32_t len[4]; uint64_t ntok; int has_text; } CsDocRes;
 typedef struct { CoderTok *tk; uint32_t kb_limit; uint32_t *tab; uint32_t tabn, tabcap; CsDocRes *r; } CsAn;
 typedef struct {
     CsT **tab; uint32_t cap, n;
-    uint32_t *lens; uint32_t nlens;                       /* 3 por documento do segmento */
+    uint32_t *lens; uint32_t nlens;                       /* 4 por documento do segmento (caminho, nome, conteudo, contexto) */
     CsAn *an; CsDocRes scratch; int ndoc_text; uint64_t ntok;      /* caminho de uma thread: analisa e funde no mesmo gancho */
     uint32_t nterms; uint64_t posts_bytes; uint32_t terms_total; uint64_t sec_bytes[4];
 } CsIx;
@@ -178,7 +179,8 @@ static int cs_is_part(const char *line, int pos, int len, int linelen) {
         if ((c == '.' || c == '-') && pos + len + 1 < linelen && isalnum((unsigned char)line[pos + len + 1])) return 1; }
     return 0;
 }
-/* tokeniza um trecho NUL-terminado no campo informado; body=1 aplica as regras do conteudo (sem stop, kind 2 fora, campos 2/3) */
+/* tokeniza um trecho NUL-terminado no campo informado; body=1 aplica as regras do conteudo (sem stop, kind 2 fora, campos 2/3); body=2: regras do conteudo mas sempre no campo
+ * informado (o contexto estrutural, CF_CTX) */
 static void cs_an_text(CsAn *a, const char *text, int field, int body, uint32_t *len) {
     int n = coder_tokens_ex(text, a->tk, 4096, field, body ? CT_AUTO : CT_L_CODE);
     int tl = (int)strlen(text);
@@ -189,16 +191,169 @@ static void cs_an_text(CsAn *a, const char *text, int field, int body, uint32_t 
         int nl = (int)strlen(t->norm); if (nl < 2 && !isdigit((unsigned char)t->norm[0])) continue;
         if (cs_junk(t->norm, nl)) continue;
         int f = field;
-        if (body) f = (t->kind == 0 && cs_is_part(text, t->pos, (int)strlen(t->orig), tl)) ? CF_PART : CF_WORD;
+        if (body == 1) f = (t->kind == 0 && cs_is_part(text, t->pos, (int)strlen(t->orig), tl)) ? CF_PART : CF_WORD;
         cs_an_add(a, 'n', t->norm, (uint32_t)nl, f);
         char lo[64]; cs_lower(lo, t->orig, sizeof lo);
         if (strcmp(lo, t->norm) && !cs_junk(lo, (int)strlen(lo))) cs_an_add(a, 'o', lo, (uint32_t)strlen(lo), f);
         if (t->kind == 0) { (*len)++; a->r->ntok++; }
     }
 }
+/* ---- CONTEXTO ESTRUTURAL DO ARQUIVO (campo CF_CTX do BM25F, peso g_cs_wf[3] = CS_CTX_W) ----
+ * Um trecho indexado sozinho perde de onde vem. Para cada arquivo se monta, SEM modelo e sem o analisador de simbolos (o indice de texto do N1 nao o tem),
+ * um texto de contexto de tres partes, indexado no campo proprio CF_CTX: (1) o comentario de cabecalho (primeiro bloco de comentario ou docstring que nao
+ * seja licenca), (2) as linhas de importacao/inclusao/exportacao (nomes importados e modulos), (3) os nomes definidos no nivel do arquivo ou da classe
+ * (palavra-chave de definicao, funcao no estilo C, const = () =>), reconhecidos por regra de linha. Os componentes do caminho nao entram aqui: ja tem o campo
+ * de caminho. Os mesmos termos tambem estao no corpo; o campo so lhes da mais peso (definicao e cabecalho valem mais que uso). A versao por SIMBOLO
+ * (cadeia de simbolos que contem o trecho, vizinhos, importacoes exatas da tabela de referencias) e montada na consulta (cs_units, mais abaixo). */
+typedef struct { char hdr[900]; char imp[2000]; char def[3000]; } CsCtx;
+static int cs_cx_id(int c) { return isalnum(c) || c == '_' || c == '$'; }
+static int cs_cx_word(const char *p, const char *w) { size_t l = strlen(w); return !strncmp(p, w, l) && !cs_cx_id((unsigned char)p[l]); }
+static void cs_cx_put(char *dst, size_t cap, const char *s, size_t l) {
+    size_t d = strlen(dst); if (l > 240) l = 240; if (d + l + 2 > cap) return;
+    memcpy(dst + d, s, l); dst[d + l] = '\n'; dst[d + l + 1] = 0;
+}
+static int cs_cx_has(const char *s, const char *w) {
+    const size_t wl = strlen(w);
+    for (; *s; s++) { size_t i = 0; while (i < wl && s[i] && tolower((unsigned char)s[i]) == w[i]) i++; if (i == wl) return 1; }
+    return 0;
+}
+static int cs_cx_license(const char *s) {
+    static const char *const w[] = {"copyright", "license", "spdx", "permission is hereby", "all rights reserved", "warranty"};
+    for (size_t i = 0; i < sizeof w / sizeof *w; i++) if (cs_cx_has(s, w[i])) return 1;
+    return 0;
+}
+static const char *const g_cs_cx_def[] = {"def", "class", "function", "func", "fn", "fun", "struct", "enum", "interface", "trait", "type", "impl", "object", "namespace", "module", "record", "protocol", "macro", "union", "typedef", "message", "service", "proc", "sub", "defun", "defn", "extension", "actor", "mod"};
+static const char *const g_cs_cx_mod[] = {"export", "default", "async", "public", "private", "protected", "static", "final", "abstract", "override", "suspend", "inline", "internal", "open", "data", "sealed", "pub", "extern", "unsafe", "virtual", "readonly", "declare", "partial", "external", "tailrec", "operator", "infix"};
+static const char *const g_cs_cx_ctl[] = {"if", "for", "while", "switch", "return", "else", "do", "case", "goto", "catch", "sizeof", "using", "new", "throw", "await", "yield", "elif", "when", "match", "typeof", "delete", "assert"};
+/* identificador (com . ou :: internos, escritos como espaco) a partir de q; devolve o tamanho */
+static int cs_cx_ident(const char *q, char *out, size_t cap) {
+    size_t k = 0;
+    while (*q && k + 1 < cap) {
+        if (cs_cx_id((unsigned char)*q)) out[k++] = *q++;
+        else if (*q == '.' && k && cs_cx_id((unsigned char)q[1])) { out[k++] = ' '; q++; }
+        else if (*q == ':' && q[1] == ':' && k && cs_cx_id((unsigned char)q[2])) { out[k++] = ' '; q += 2; }
+        else break;
+    }
+    out[k] = 0; return (int)k;
+}
+/* reconhece uma definicao em uma linha (ja sem a indentacao) e poe o nome em out; 1 se achou */
+static int cs_cx_defline(const char *t, int indent, char *out, size_t cap) {
+    const char *p = t; int nmod = 0;
+    if (!strncmp(p, "#define", 7) && (p[7] == ' ' || p[7] == '\t')) { p += 7; while (*p == ' ' || *p == '\t') p++; return cs_cx_ident(p, out, cap) > 0; }
+    if (*p == '#' || *p == '@' || *p == '}' || *p == '/' || *p == '*') return 0;
+    for (int g = 0; g < 6; g++) {
+        int hit = 0;
+        for (size_t i = 0; i < sizeof g_cs_cx_mod / sizeof *g_cs_cx_mod; i++) if (cs_cx_word(p, g_cs_cx_mod[i])) { p += strlen(g_cs_cx_mod[i]); while (*p == ' ' || *p == '\t') p++; hit = 1; nmod++; break; }
+        if (!hit) break;
+    }
+    for (size_t i = 0; i < sizeof g_cs_cx_def / sizeof *g_cs_cx_def; i++) if (cs_cx_word(p, g_cs_cx_def[i])) {
+        const char *q = p + strlen(g_cs_cx_def[i]); while (*q == ' ' || *q == '\t') q++;
+        if (*q == '(') { while (*q && *q != ')') q++; if (*q) q++; while (*q == ' ' || *q == '\t') q++; }      /* receptor de metodo (Go) */
+        while (*q == '*' || *q == '&') q++;
+        return cs_cx_ident(q, out, cap) > 0;
+    }
+    if (cs_cx_word(p, "const") || cs_cx_word(p, "let") || cs_cx_word(p, "var") || cs_cx_word(p, "val")) {
+        const char *q = p + (cs_cx_word(p, "const") ? 5 : 3); while (*q == ' ' || *q == '\t') q++;
+        if (cs_cx_ident(q, out, cap) <= 0) return 0;
+        return strstr(q, "=>") != NULL || strstr(q, "function") != NULL;
+    }
+    for (size_t i = 0; i < sizeof g_cs_cx_ctl / sizeof *g_cs_cx_ctl; i++) if (cs_cx_word(p, g_cs_cx_ctl[i])) return 0;
+    const char *lp = strchr(p, '('); if (!lp || lp == p) return 0;
+    for (const char *z = p; z < lp; z++) if (*z == '=' || *z == ';' || *z == '"' || *z == '\'') return 0;
+    size_t tl = strlen(t); while (tl && (t[tl - 1] == ' ' || t[tl - 1] == '\t')) tl--;
+    if (!tl || t[tl - 1] == ';' || t[tl - 1] == ',') return 0;                                                      /* prototipo ou chamada */
+    const char *e = lp; while (e > p && e[-1] == ' ') e--;
+    const char *b = e; while (b > p && (cs_cx_id((unsigned char)b[-1]) || b[-1] == '~' || (b[-1] == ':' && b > p + 1 && b[-2] == ':'))) b--;
+    if (b == e) return 0;
+    const int has_type = b > p, ends_brace = t[tl - 1] == '{';
+    if (!(has_type || ends_brace)) return 0;                                                                         /* `nome(...)` solto no inicio de linha e chamada */
+    if (indent > 0 && !nmod && !ends_brace) return 0;
+    char nm[96]; size_t nl = (size_t)(e - b); if (nl >= sizeof nm) return 0; memcpy(nm, b, nl); nm[nl] = 0;
+    for (size_t i = 0; i < sizeof g_cs_cx_ctl / sizeof *g_cs_cx_ctl; i++) if (!strcmp(nm, g_cs_cx_ctl[i])) return 0;
+    return cs_cx_ident(nm, out, cap) > 0;
+}
+/* a linha e comentario? *st: 0 fora, 1 dentro de bloco, 2 dentro de docstring; *txt = texto sem o marcador; *closed = 1 se o bloco acabou nesta linha;
+ * *single = 1 se e comentario de uma linha so (// # -- ;;). Escreve NUL no fim do texto (t e modificado). */
+static int cs_cx_comment(char *t, int *st, const char **txt, int *closed, int *single) {
+    *closed = 0; *single = 0; *txt = t;
+    if (*st == 1) { while (*t == '*') t++; *txt = t; char *e = strstr(t, "*/"); if (e) { *e = 0; *st = 0; *closed = 1; } return 1; }
+    if (*st == 2) { char *e = strstr(t, "\"\"\""); if (!e) e = strstr(t, "'''"); if (e) { *e = 0; *st = 0; *closed = 1; } return 1; }
+    if (!strncmp(t, "/*", 2)) { t += 2; while (*t == '*') t++; *txt = t; char *e = strstr(t, "*/"); if (e) { *e = 0; *closed = 1; } else *st = 1; return 1; }
+    if (!strncmp(t, "\"\"\"", 3) || !strncmp(t, "'''", 3)) { t += 3; *txt = t; char *e = strstr(t, "\"\"\""); if (!e) e = strstr(t, "'''"); if (e) { *e = 0; *closed = 1; } else *st = 2; return 1; }
+    if (!strncmp(t, "//", 2) || !strncmp(t, "--", 2) || !strncmp(t, ";;", 2)) { t += 2; while (*t == '/' || *t == '-' || *t == '!') t++; *txt = t; *single = 1; return 1; }
+    if (*t == '#' && strncmp(t, "#!", 2) && strncmp(t, "#include", 8) && strncmp(t, "#define", 7) && strncmp(t, "#if", 3) && strncmp(t, "#pragma", 7) && strncmp(t, "#endif", 6)
+        && strncmp(t, "#else", 5) && strncmp(t, "#import", 7) && strncmp(t, "#undef", 6)) { t++; while (*t == '#') t++; *txt = t; *single = 1; return 1; }
+    return 0;
+}
+static int cs_cx_preamble(const char *t) {         /* linhas que podem vir antes do comentario de cabecalho sem encerrar a procura */
+    return !strncmp(t, "#!", 2) || !strncmp(t, "#", 1) || cs_cx_word(t, "import") || cs_cx_word(t, "use") || cs_cx_word(t, "from") || cs_cx_word(t, "package") || !strncmp(t, "<?", 2)
+        || !strncmp(t, "'use", 4) || !strncmp(t, "\"use", 4) || cs_cx_word(t, "module") || cs_cx_word(t, "namespace");
+}
+static void cs_cx_finish(CsCtx *c, const char *blk, size_t *bl, int *hdone) {
+    if (*bl > 12 && !cs_cx_license(blk)) { cs_cx_put(c->hdr, sizeof c->hdr, blk, *bl); *hdone = 1; }
+    *bl = 0;
+}
+static void cs_ctx_scan(const char *data, size_t n, CsCtx *c) {
+    memset(c, 0, sizeof *c);
+    char blk[900]; size_t bl = 0; int st = 0, hdone = 0, nimp = 0, imp_go = 0, nline = 0, ndef = 0;
+    size_t i = 0;
+    while (i < n && nline < 600) {
+        size_t j = i; while (j < n && data[j] != '\n') j++;
+        char line[320]; size_t l = j - i; if (l > 300) l = 300; memcpy(line, data + i, l); line[l] = 0; nline++;
+        i = j < n ? j + 1 : j;
+        for (size_t z = 0; z < l; z++) if (line[z] == 0 || line[z] == '\r') line[z] = ' ';
+        int indent = 0; char *t = line; while (*t == ' ' || *t == '\t') { indent += *t == '\t' ? 4 : 1; t++; }
+        /* (1) cabecalho: blocos de comentario do inicio do arquivo; licenca e descartada */
+        if (!hdone && nline <= 120) {
+            const char *txt; int closed, single;
+            char cp[320]; memcpy(cp, t, strlen(t) + 1);
+            if (cs_cx_comment(cp, &st, &txt, &closed, &single)) {
+                size_t tl = strlen(txt); if (bl + tl + 2 < sizeof blk) { memcpy(blk + bl, txt, tl); bl += tl; blk[bl++] = ' '; blk[bl] = 0; }
+                if (closed) cs_cx_finish(c, blk, &bl, &hdone);
+                continue;
+            }
+            if (bl) cs_cx_finish(c, blk, &bl, &hdone);
+            if (*t && !hdone && st == 0 && nline > 3 && !cs_cx_preamble(t)) hdone = 1;
+        }
+        if (!*t) continue;
+        /* (2) importacao / inclusao / exportacao com origem */
+        if (nimp < 60 && nline <= 400) {
+            int imp = 0;
+            if (imp_go) { if (*t == ')') imp_go = 0; else imp = 1; }
+            else if (cs_cx_word(t, "import") || cs_cx_word(t, "from") || cs_cx_word(t, "using") || cs_cx_word(t, "use") || cs_cx_word(t, "require") || cs_cx_word(t, "include") || cs_cx_word(t, "source")
+                || !strncmp(t, "#include", 8) || !strncmp(t, "#import", 7) || !strncmp(t, "@import", 7) || !strncmp(t, "extern crate", 12) || !strncmp(t, "package ", 8) || !strncmp(t, "mod ", 4)) {
+                if (!strncmp(t, "import (", 8)) imp_go = 1; else imp = 1;
+            } else if (cs_cx_word(t, "export") && strstr(t, " from ")) imp = 1;
+            else if (strstr(t, "require(") || strstr(t, "require \"")) imp = 1;
+            if (imp) { cs_cx_put(c->imp, sizeof c->imp, t, strlen(t)); nimp++; }
+        }
+        /* (3) nomes definidos (nivel de arquivo ou de classe: indentacao ate 8) */
+        if (indent <= 8 && ndef < 400) {
+            char nm[100]; if (cs_cx_defline(t, indent, nm, sizeof nm)) { cs_cx_put(c->def, sizeof c->def, nm, strlen(nm)); ndef++; }
+        }
+    }
+    if (bl && !hdone) cs_cx_finish(c, blk, &bl, &hdone);
+}
+/* indexa o texto de contexto no campo CF_CTX: uma chamada por linha (cabecalho, importacoes e definicoes) */
+static void cs_an_ctx(CsAn *a, const char *data, size_t n, uint32_t *len) {
+    CsCtx *c = (CsCtx *)malloc(sizeof *c); if (!c) return;
+    cs_ctx_scan(data, n, c);
+    const char *parts[3] = {c->hdr, c->imp, c->def};
+    for (int k = 0; k < 3; k++) {
+        const char *s = parts[k];
+        while (*s) {
+            const char *e = strchr(s, '\n'); size_t l = e ? (size_t)(e - s) : strlen(s);
+            char ln[300]; if (l > 299) l = 299; memcpy(ln, s, l); ln[l] = 0;
+            if (l >= 2) cs_an_text(a, ln, CF_CTX, 2, len);
+            s += l + (e ? 1 : 0);
+            if (!e) break;
+        }
+    }
+    free(c);
+}
 /* analisa um documento (reentrante: so mexe em `a` e em `r`); data = conteudo (NULL se binario, grande ou ilegivel) */
 static void cs_an_doc(CsAn *a, const StoreDoc *d, const uint8_t *data, size_t n, CsDocRes *r) {
-    a->r = r; r->n = 0; r->pn = 0; r->len[0] = r->len[1] = r->len[2] = 0; r->ntok = 0; r->has_text = 0;
+    a->r = r; r->n = 0; r->pn = 0; r->len[0] = r->len[1] = r->len[2] = r->len[3] = 0; r->ntok = 0; r->has_text = 0;
     a->tabn = 128; if (a->tabcap < a->tabn) { a->tab = (uint32_t *)realloc(a->tab, sizeof(uint32_t) * a->tabn); a->tabcap = a->tabn; }
     memset(a->tab, 0, sizeof(uint32_t) * a->tabn);
     char p[4200]; uint32_t pl = d->plen < 4000 ? d->plen : 4000; memcpy(p, d->path, pl); p[pl] = 0;
@@ -216,12 +371,13 @@ static void cs_an_doc(CsAn *a, const StoreDoc *d, const uint8_t *data, size_t n,
             if (l >= 2) cs_an_text(a, line, CF_WORD, 1, &r->len[2]);
             i = j < n && data[j] == '\n' ? j + 1 : j;
         }
+        cs_an_ctx(a, (const char *)data, n, &r->len[3]);
     }
 }
 /* funde o resultado de um documento no indice do segmento: UMA thread, documentos na ordem do segmento (idx crescente) */
 static void cs_ix_merge(CsIx *ix, uint32_t idx, const CsDocRes *r) {
-    if ((idx + 1) * 3 > ix->nlens) { uint32_t nl = (idx + 1) * 3 + 3000; ix->lens = (uint32_t *)realloc(ix->lens, nl * sizeof *ix->lens); memset(ix->lens + ix->nlens, 0, (nl - ix->nlens) * sizeof *ix->lens); ix->nlens = nl; }
-    memcpy(ix->lens + (size_t)idx * 3, r->len, sizeof r->len);
+    if ((idx + 1) * 4 > ix->nlens) { uint32_t nl = (idx + 1) * 4 + 4000; ix->lens = (uint32_t *)realloc(ix->lens, nl * sizeof *ix->lens); memset(ix->lens + ix->nlens, 0, (nl - ix->nlens) * sizeof *ix->lens); ix->nlens = nl; }
+    memcpy(ix->lens + (size_t)idx * 4, r->len, sizeof r->len);
     ix->ntok += r->ntok; ix->ndoc_text += r->has_text;
     for (uint32_t i = 0; i < r->n; i++) {
         const CsDT *d = &r->t[i]; CsT *t = cs_ix_term(ix, r->pool + d->off, d->klen);
@@ -251,7 +407,7 @@ static void cs_hook_commit(void *ctx, StoreWriter *w, uint32_t ndocs) {
     StoreBuf lex = {0}; store_table_begin(&lex, k, CS_LEXW); sb_bytes(&lex, rec.p, rec.n); sb_bytes(&lex, pool.p, pool.n);
     sb_free(&rec); sb_free(&pool);
     StoreBuf lens = {0}; store_table_begin(&lens, ndocs, CS_LENW);
-    for (uint32_t i = 0; i < ndocs; i++) for (int f = 0; f < 3; f++) sb_u32(&lens, (size_t)i * 3 + f < ix->nlens ? ix->lens[(size_t)i * 3 + f] : 0);
+    for (uint32_t i = 0; i < ndocs; i++) for (int f = 0; f < 4; f++) sb_u32(&lens, (size_t)i * 4 + f < ix->nlens ? ix->lens[(size_t)i * 4 + f] : 0);
     StoreBuf tri = {0}; uint32_t ntri = 0;
     if (k) { CsLex lx; StoreSection s; memset(&s, 0, sizeof s); s.data = lex.p; s.size = lex.n; cs_lex_open(&s, &lx); cs_tri_build(&tri, &lx, &ntri); }
     ix->sec_bytes[0] = lex.n; ix->sec_bytes[1] = posts.n; ix->sec_bytes[2] = lens.n; ix->sec_bytes[3] = tri.n; ix->nterms = k;
@@ -379,14 +535,14 @@ static int cs_merge_lens(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
     for (int s = 0; s < c->nseg; s++) { const StoreSection *sd = store_seg_section(c->seg[s], STS_DOCS); uint32_t cnt = sd ? sd->nrec : 0;
         for (uint32_t i = 0; i < cnt; i++) if (c->docmap[s] && c->docmap[s][i] != UINT32_MAX) n++; }
     *nrec = 0; if (!g_cs_mn || !n) return 0;
-    uint32_t *v = (uint32_t *)calloc((size_t)n * 3, sizeof *v);
+    uint32_t *v = (uint32_t *)calloc((size_t)n * 4, sizeof *v);
     for (int s = 0; s < c->nseg; s++) {
         const StoreSection *sd = store_seg_section(c->seg[s], STS_DOCS), *sn = store_seg_section(c->seg[s], CS_T_LENS); StoreTable lt;
         if (!sd || !sn || !store_table_open(sn, &lt) || lt.w != CS_LENW) continue;
         for (uint32_t i = 0; i < sd->nrec && i < lt.n; i++) { uint32_t nd = c->docmap[s][i]; if (nd == UINT32_MAX || nd >= n) continue;
-            for (int f = 0; f < 3; f++) v[(size_t)nd * 3 + f] = st_get_u32(store_table_at(&lt, i) + 4 * f); }
+            for (int f = 0; f < 4; f++) v[(size_t)nd * 4 + f] = st_get_u32(store_table_at(&lt, i) + 4 * f); }
     }
-    store_table_begin(out, n, CS_LENW); for (size_t i = 0; i < (size_t)n * 3; i++) sb_u32(out, v[i]);
+    store_table_begin(out, n, CS_LENW); for (size_t i = 0; i < (size_t)n * 4; i++) sb_u32(out, v[i]);
     free(v); *nrec = n; return 0;
 }
 static int cs_merge_tri(StoreMergeCtx *c, StoreBuf *out, uint32_t *nrec) {
@@ -409,20 +565,30 @@ static void coder_search_register(void) {
  *   trigram     termos do lexico parecidos com termo da pergunta que nao existe no indice (typos, nomes parciais), via trigramas do lexico
  *   literal     frase entre aspas, verificada relendo os arquivos candidatos
  *   concept     termos relacionados pela base de conhecimento (outro idioma/estilo, verbos de operacao, abreviacoes), com peso menor
+ *   semantic    OPCIONAL, hoje ausente (g_cs_semantic, ponto de extensao para o embedder)
  * Fusao: camadas (1 ancoras exatas e literais verificados; 2 par conceito + operacao no nome/caminho; 3 o resto); dentro de cada camada,
  * fusao de postos (RRF, constante 60).
- * Parametros fixos: BM25 k1=1.2, b=0.75, pesos caminho/nome/corpo 2.0/4.0/1.0; pesos dos canais 1,1,1,1,1,0.6; escala dos termos conceituais 0.35;
+ * Depois da fusao: unidade por simbolo e rerank deterministico dos 30 primeiros (bloco UNIDADE POR SIMBOLO + RERANK).
+ * Parametros fixos: BM25 k1=1.2, b=0.75, pesos caminho/nome/corpo/contexto 2.0/4.0/1.0/1.5; pesos dos canais 1,1,1,1,1,0.6; escala dos termos conceituais 0.35;
  * KATANA_CODER_INDEX_KB (128). */
-enum { CH_EXACT, CH_SUB, CH_BM25, CH_TRI, CH_LIT, CH_CON, CH_N };
-static const char *const g_cs_chname[CH_N] = {"exact", "subword", "bm25", "trigram", "literal", "conceptual"};
+enum { CH_EXACT, CH_SUB, CH_BM25, CH_TRI, CH_LIT, CH_CON, CH_SEM, CH_N };
+static const char *const g_cs_chname[CH_N] = {"exact", "subword", "bm25", "trigram", "literal", "conceptual", "semantic"};
 enum { QC_ORIG, QC_WHOLE, QC_ABBR, QC_FUZZY, QC_CONCEPT, QC_OP, QC_ABBRREV };
 static const char *const g_cs_clsname[] = {"original", "identifier", "abbreviation", "fuzzy", "concept", "operation", "abbreviated-as"};
-static double g_cs_k1 = 1.2, g_cs_b = 0.75, g_cs_wf[3] = {2.0, 4.0, 1.0};
-static double g_cs_rrfk = 60, g_cs_chw[CH_N] = {1, 1, 1, 1, 1, 0.6}, g_cs_cscale = 0.35;
+#ifndef CS_CTX_W
+#define CS_CTX_W 1.5            /* peso do campo de contexto estrutural (parametro fixo; 0 desliga o efeito nas notas, o campo continua no indice) */
+#endif
+static double g_cs_k1 = 1.2, g_cs_b = 0.75, g_cs_wf[4] = {2.0, 4.0, 1.0, CS_CTX_W};
+static double g_cs_rrfk = 60, g_cs_chw[CH_N] = {1, 1, 1, 1, 1, 0.6, 1}, g_cs_cscale = 0.35;
 
 /* ---- visao de leitura: segmentos, documentos vigentes (numeracao global), tamanhos ---- */
 typedef struct { const StoreSeg *seg; CsLex lex; const StoreSection *sp; StoreTable lens, tri; const uint8_t *tpool, *tend; StoreDocs docs; uint32_t ndocs; uint32_t *gmap; int has; } CsSeg;
-typedef struct { StoreReader *r; CsSeg *s; int ns; uint32_t N; const char **path; uint32_t *plen; uint32_t *lens; double avg[3]; char dir[4400]; int noindex; int borrowed; void *slot; uint32_t strip; } CsView;
+typedef struct { StoreReader *r; CsSeg *s; int ns; uint32_t N; const char **path; uint32_t *plen; uint32_t *lens; uint32_t *clen; double avg[3], avgc; char dir[4400]; int noindex; int borrowed; void *slot; uint32_t strip; } CsView;
+/* PONTO DE EXTENSAO: canal `semantic` (por significado, com vetores). Hoje ausente: g_cs_semantic e NULL e o canal nao tem nenhum documento (nao entra na fusao nem
+ * aparece nos canais). Quem o implementar (embedder em src/app/embed.c) atribui aqui uma funcao que, dada a pergunta e a visao, escreve em score[0..N) a
+ * similaridade de cada documento (numeracao global da visao, 0 = sem relacao) e devolve 1; o resto (posto, fusao RRF com g_cs_chw[CH_SEM], camada, rerank,
+ * impressao do canal) ja esta ligado. Para unidades por simbolo, o mesmo ponto: somar a similaridade do simbolo na nota de cs_units (hoje so lexical). */
+static int (*g_cs_semantic)(const char *query, const CsView *v, double *score) = NULL;
 static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap) {
     memset(v, 0, sizeof *v);
     IndexLoc loc; index_resolve(proj, 0, &loc); snprintf(v->dir, sizeof v->dir, "%s", loc.store);
@@ -452,20 +618,22 @@ static int cs_view_open_raw(const char *proj, CsView *v, char *err, size_t ecap)
     uint32_t N = 0;
     for (int s = 0; s < v->ns; s++) for (uint32_t i = 0; i < v->s[s].ndocs; i++) if (v->s[s].gmap[i] == UINT32_MAX - 1) v->s[s].gmap[i] = N++;
     v->N = N;
-    v->path = (const char **)malloc(sizeof(char *) * (N + 1)); v->plen = (uint32_t *)malloc(sizeof(uint32_t) * (N + 1)); v->lens = (uint32_t *)calloc((size_t)N * 3 + 3, sizeof(uint32_t));
-    double sum[3] = {0, 0, 0};
+    v->path = (const char **)malloc(sizeof(char *) * (N + 1)); v->plen = (uint32_t *)malloc(sizeof(uint32_t) * (N + 1)); v->lens = (uint32_t *)calloc((size_t)N * 3 + 3, sizeof(uint32_t)); v->clen = (uint32_t *)calloc((size_t)N + 1, sizeof(uint32_t));
+    double sum[3] = {0, 0, 0}, sumc = 0;
     for (int s = 0; s < v->ns; s++) { CsSeg *c = &v->s[s];
         for (uint32_t i = 0; i < c->ndocs; i++) { uint32_t g = c->gmap[i]; if (g == UINT32_MAX) continue;
             StoreDoc d; store_docs_get(&c->docs, i, &d); v->path[g] = d.path + v->strip; v->plen[g] = d.plen - v->strip;
-            if (c->has && i < c->lens.n) for (int f = 0; f < 3; f++) { uint32_t x = st_get_u32(store_table_at(&c->lens, i) + 4 * f); v->lens[(size_t)g * 3 + f] = x; sum[f] += x; } } }
+            if (c->has && i < c->lens.n) for (int f = 0; f < 3; f++) { uint32_t x = st_get_u32(store_table_at(&c->lens, i) + 4 * f); v->lens[(size_t)g * 3 + f] = x; sum[f] += x; }
+            if (c->has && i < c->lens.n) { uint32_t x = st_get_u32(store_table_at(&c->lens, i) + 12); v->clen[g] = x; sumc += x; } } }
     for (int f = 0; f < 3; f++) { v->avg[f] = N ? sum[f] / N : 1; if (v->avg[f] < 1) v->avg[f] = 1; }
+    v->avgc = N ? sumc / N : 1; if (v->avgc < 1) v->avgc = 1;
     store_live_free(&L);
     statemap_get(v, loc.prefix);
     return 0;
 }
 static void cs_view_free_real(CsView *v) {
     for (int s = 0; s < v->ns; s++) free(v->s[s].gmap);
-    free(v->s); free(v->path); free(v->plen); free(v->lens); if (v->r) store_close(v->r); memset(v, 0, sizeof *v);
+    free(v->s); free(v->path); free(v->plen); free(v->lens); free(v->clen); if (v->r) store_close(v->r); memset(v, 0, sizeof *v);
 }
 /* visao reaproveitada (indexctl.c): o cache guarda a visao inteira e entrega copias rasas `borrowed`; vale ate o MANIFEST mudar */
 static void cs_cache_destroy(void *p) { cs_view_free_real((CsView *)p); free(p); }
@@ -639,10 +807,30 @@ static uint32_t cs_text_mask(const char *text, const QSet *q, const int *ti, int
             if (hit) m |= 1u << j2; } }
     return m;
 }
+/* pre-filtro barato por linha (so para a passada dos simbolos): a linha so e tokenizada se contem, sem diferenciar maiusculas e sem _ e -, o comeco (a raiz
+ * menos ate 2 letras) de algum termo; evita tokenizar as linhas que nao podem casar */
+typedef struct { char n[72][24]; int ln[72]; int nn; } CsPf;
+static void cs_pf_build(CsPf *p, const QSet *q, const int *ti, int nti) {
+    p->nn = 0;
+    for (int b = 0; b < nti && b < CS_EVBITS; b++) { const QTerm *t = &q->t[ti[b]]; if (t->nm > 1) continue;
+        for (int a = 0; a < t->m[0].nk && p->nn < 72; a++) {
+            const char *k = t->m[0].k[a] + 1; char c[24]; int l = 0;
+            for (; *k && l < 22; k++) if (*k != '_' && *k != '-') c[l++] = (char)tolower((unsigned char)*k);
+            if (l < 2) { p->nn = -1; return; }
+            int keep = l - 2 > 3 ? l - 2 : (l < 3 ? l : 3); memcpy(p->n[p->nn], c, (size_t)keep); p->n[p->nn][keep] = 0; p->ln[p->nn] = keep; p->nn++;
+        } }
+}
+static int cs_pf_hit(const CsPf *p, const char *line, size_t l) {
+    if (p->nn < 0) return 1;
+    char lc[4100]; size_t k = 0; for (size_t i = 0; i < l && k < sizeof lc - 1; i++) { char c = line[i]; if (c == '_' || c == '-') continue; lc[k++] = (char)tolower((unsigned char)c); } lc[k] = 0;
+    for (int i = 0; i < p->nn; i++) if (strstr(lc, p->n[i])) return 1;
+    return 0;
+}
 /* le o arquivo e devolve a mascara de termos por linha (1-based em lm[linha-1]); *buf/*len = texto lido (o chamador libera); first[b] = primeira linha do bit b */
-static uint32_t *cs_linemasks(const CsView *v, uint32_t doc, const QSet *q, const int *ti, int nti, char phr[][256], uint32_t phrmask, CoderTok *tk, char **bufout, size_t *lenout, int *nlines, int *first) {
+static uint32_t *cs_linemasks(const CsView *v, uint32_t doc, const QSet *q, const int *ti, int nti, char phr[][256], uint32_t phrmask, CoderTok *tk, int pf, char **bufout, size_t *lenout, int *nlines, int *first) {
     size_t len; char *buf = cs_read_doc(v, doc, &len); *bufout = buf; *lenout = 0; *nlines = 0; if (!buf) return NULL;
     if (nti > CS_EVBITS) nti = CS_EVBITS;
+    CsPf pf1; const int pfs = pf; if (pf) cs_pf_build(&pf1, q, ti, nti);
     uint32_t *lm = NULL; int cap = 0, lineno = 1; for (int i = 0; i < 32; i++) first[i] = 0;
     static char line[4100];
     for (size_t i = 0; i <= len;) {
@@ -651,7 +839,7 @@ static uint32_t *cs_linemasks(const CsView *v, uint32_t doc, const QSet *q, cons
         for (size_t z = 0; z < l; z++) if (line[z] == 0) line[z] = ' ';
         while (lineno > cap) { int oc = cap; cap = cap ? cap * 2 : 256; lm = (uint32_t *)realloc(lm, sizeof *lm * (size_t)cap); for (int z = oc; z < cap; z++) lm[z] = 0; }
         uint32_t m = 0;
-        if (l >= 2 && nti) m = cs_text_mask(line, q, ti, nti, tk);
+        if (l >= 2 && nti && (!pfs || cs_pf_hit(&pf1, line, l))) m = cs_text_mask(line, q, ti, nti, tk);
         for (int p = 0; p < 8; p++) if ((phrmask >> p & 1) && cs_stristr(line, phr[p])) m |= 1u << (CS_EVBITS + p);
         lm[lineno - 1] |= m;
         for (int b = 0; b < 32; b++) if ((m >> b & 1) && !first[b]) first[b] = lineno;
@@ -667,7 +855,7 @@ static void cs_line_text(const char *buf, size_t len, int ln, char *out, size_t 
     out[k2] = 0;
 }
 static int cs_evidence(const CsView *v, uint32_t doc, const QSet *q, const int *ti, int nti, char phr[][256], uint32_t phrmask, CsEvLine *out, int maxout, CoderTok *tk) {
-    char *buf; size_t len; int nl, first[32]; uint32_t *lm = cs_linemasks(v, doc, q, ti, nti, phr, phrmask, tk, &buf, &len, &nl, first); if (!buf) return 0;
+    char *buf; size_t len; int nl, first[32]; uint32_t *lm = cs_linemasks(v, doc, q, ti, nti, phr, phrmask, tk, 0, &buf, &len, &nl, first); if (!buf) return 0;
     int chosen[40], nc = 0;
     for (int b = 0; b < 32 && nc < maxout; b++) { if (!first[b]) continue; int dup = 0; for (int k = 0; k < nc; k++) if (chosen[k] == first[b]) dup = 1; if (!dup) chosen[nc++] = first[b]; }
     for (int a = 1; a < nc; a++) { int x = chosen[a], b = a - 1; while (b >= 0 && chosen[b] > x) { chosen[b + 1] = chosen[b]; b--; } chosen[b + 1] = x; }
@@ -765,9 +953,10 @@ static void cs_expand_word(const CoderKb *kb, QSet *q, int oi, const CoderTok *t
 
 /* ---- pontuacao por campos (BM25F): cada campo normaliza o seu tf pelo tamanho do campo no documento ---- */
 static double cs_bm25(const CsView *v, const QTerm *t, const CsHit *h) {
-    double nr[3]; const uint32_t *L = v->lens + (size_t)h->doc * 3;
+    double nr[4]; const uint32_t *L = v->lens + (size_t)h->doc * 3;
     for (int f = 0; f < 3; f++) nr[f] = 1.0 - g_cs_b + g_cs_b * L[f] / v->avg[f];
-    double tfw = g_cs_wf[0] * h->tf[CF_PATH] / nr[0] + g_cs_wf[1] * h->tf[CF_NAME] / nr[1] + g_cs_wf[2] * (h->tf[CF_WORD] + h->tf[CF_PART]) / nr[2];
+    nr[3] = 1.0 - g_cs_b + g_cs_b * v->clen[h->doc] / v->avgc;
+    double tfw = g_cs_wf[0] * h->tf[CF_PATH] / nr[0] + g_cs_wf[1] * h->tf[CF_NAME] / nr[1] + g_cs_wf[2] * (h->tf[CF_WORD] + h->tf[CF_PART]) / nr[2] + g_cs_wf[3] * h->tf[CF_CTX] / nr[3];
     return t->w * t->idf * tfw * (g_cs_k1 + 1.0) / (g_cs_k1 + tfw);
 }
 static const double *g_cs_sortsc;
@@ -790,7 +979,7 @@ static int cs_cmp_res(const void *a, const void *b) {
 }
 static const char *cs_basename(const char *p, uint32_t l, uint32_t *bl) { uint32_t i = l; while (i && p[i - 1] != '/') i--; *bl = l - i; return p + i; }
 static void cs_fields_str(const CsHit *h, char *o, size_t cap) {
-    o[0] = 0; static const char *const fn[CF_N] = {"path", "name", "word", "identifier-part"};
+    o[0] = 0; static const char *const fn[CF_N] = {"path", "name", "word", "identifier-part", "context"};
     for (int f = 0; f < CF_N; f++) if (h->tf[f]) { size_t l = strlen(o); snprintf(o + l, cap - l, "%s%s x%u", l ? ", " : "", fn[f], h->tf[f]); }
 }
 typedef struct { int i; double w; } CsTW;
@@ -815,48 +1004,116 @@ static void cs_print_evidence_text(const CsView *v, uint32_t doc, const QSet *q,
     printf("      terms: %s%s\n", lst, nm > 8 ? " ..." : "");
     (void)why; (void)chans; (void)nch;
 }
-/* ---- UNIDADE POR SIMBOLO: o resultado de um arquivo com simbolos indexados vira uma lista de simbolos (symindex.c) ----
- * O termo casa no NOME do simbolo (peso 4), na ASSINATURA (2) ou no CORPO, pelo intervalo de linhas do simbolo (1 + log da contagem de linhas);
- * cada linha com casamento e atribuida ao simbolo mais interno que a contem; linhas fora de qualquer simbolo ficam num resultado de nivel de arquivo.
- * Arquivos sem simbolos (texto, docs, config) continuam como resultado de arquivo. A confianca vem da camada do arquivo (tier 1: 90, 2: 65, 3: 40),
- * +6 se o termo esta no nome do simbolo, +3 na assinatura, -8 se so no corpo. */
-typedef struct { int sym, l0, l1, kind, nlines; uint32_t nmask, smask, bmask; double score; int ev[3]; char name[100], sig[160]; } CsUnit;
+/* ---- UNIDADE POR SIMBOLO + RERANK DETERMINISTICO (consulta) ----
+ * O arquivo continua sendo o documento do indice; sobre os CS_RR_TOP primeiros candidatos da fusao, o simbolo (funcao, metodo, classe, ...) vira unidade de
+ * recuperacao: "a funcao X do arquivo Y, linhas a-b". Cada simbolo recebe uma nota BM25F propria (idf global dos termos da pergunta), em campos:
+ *   nome 4,0 | assinatura 2,0 | contexto estrutural CS_CTX_W | corpo 1,0 (linhas proprias do simbolo, as dos simbolos internos nao contam)
+ * O contexto estrutural do simbolo e montado agora, da tabela de simbolos: componentes do caminho, cadeia de simbolos que o contem, nomes dos simbolos
+ * vizinhos (mesmo pai, ate 3 de cada lado), comentario de cabecalho do arquivo e nomes importados (tabela de referencias). Um simbolo so entra na lista se
+ * casa direto (nome, assinatura ou corpo); o contexto so soma. Arquivos sem simbolos indexados (texto, docs, config) seguem como resultado de arquivo.
+ * O rerank reordena, dentro de cada camada, os candidatos com sinais que o indice ja tem (sem modelo): posicao da fusao, melhor simbolo, cobertura dos
+ * termos NOS NOMES dos simbolos (definicao contra uso), casamento no caminho, identificador citado inteiro e DEFINIDO no arquivo, e a verificacao por
+ * releitura (quantos termos do usuario existem de fato nas linhas do arquivo; arquivo que mudou e nao tem nenhum perde). A confianca vem da camada
+ * do arquivo (tier 1: 90, 2: 65, 3: 40), +6 se o termo esta no nome do simbolo, +3 na assinatura, -8 se so no corpo. */
+#define CS_RR_TOP 30
+#ifndef CS_UCTX_W
+#define CS_UCTX_W 1.5            /* peso do contexto estrutural na nota do simbolo (parametro fixo) */
+#endif
+#define CS_NU 4
+typedef struct { int sym, l0, l1, kind, nlines; uint32_t nmask, smask, bmask, cmask; double score; int ev[3]; char evt[3][150]; char name[100], sig[160]; } CsUnit;
+typedef struct { int nu, nfl, fl[3], ok, withsyms; CsUnit u[CS_NU]; double best, cover, namecov, pathcov; int wholedef; } CsFU;
 static int cs_unit_cmp(const void *a, const void *b) { double x = ((const CsUnit *)a)->score, y = ((const CsUnit *)b)->score; return x < y ? 1 : x > y ? -1 : ((const CsUnit *)a)->l0 - ((const CsUnit *)b)->l0; }
 static int cs_tier_conf(int tier) { return tier == 1 ? 90 : tier == 2 ? 65 : 40; }
-/* devolve o numero de unidades (ate max) ou -1 se o arquivo nao tem simbolos indexados; *flines = linhas com casamento fora de simbolos (ate 3) */
-static int cs_symbol_units(SyView *sv, const char *path, uint32_t plen, const uint32_t *lm, int nlm, const char *buf, size_t blen, const QSet *q, const int *ti, int nti, CoderTok *tk, CsUnit *out, int max, int *flines, int *nflines) {
-    *nflines = 0; if (!sv->any) return -1;
+static int cs_kind_ok(int k) {
+    return k == CK_FUNC || k == CK_METHOD || k == CK_CLASS || k == CK_STRUCT || k == CK_ENUM || k == CK_IFACE || k == CK_CTOR || k == CK_UNION || k == CK_MACRO
+        || k == CK_TYPEDEF || k == CK_NAMESPACE || k == CK_HEADING || k == CK_VAR || k == CK_CONST;
+}
+static double cs_kind_w(int k) { return (k == CK_VAR || k == CK_CONST) ? 0.6 : (k == CK_MACRO || k == CK_TYPEDEF || k == CK_HEADING) ? 0.8 : 1.0; }
+static int cs_pop(uint32_t x) { int n = 0; while (x) { n += (int)(x & 1); x >>= 1; } return n; }
+/* termos que valem para unidades: os do usuario, abreviacoes, conceitos e correcoes de grafia (nao os verbos de operacao) */
+static uint32_t cs_unit_allow(const QSet *q, const int *ti, int nti) {
+    uint32_t allow = 0;
+    for (int b = 0; b < nti && b < CS_EVBITS; b++) { int cl = q->t[ti[b]].cls; if (cl != QC_OP) allow |= 1u << b; }
+    return allow;
+}
+/* simbolos do arquivo -> unidades (ate max), com a nota; devolve o numero de unidades ou -1 se o arquivo nao tem simbolos indexados.
+ * fu->wholedef = um termo-identificador inteiro da pergunta e o nome de um simbolo definido aqui; fu->namecov = fracao dos termos do usuario que
+ * aparecem em nomes de simbolos do arquivo */
+static int cs_units(SyView *sv, const char *path, uint32_t plen, const uint32_t *lm, int nlm, const char *buf, size_t blen, const QSet *q, const int *ti, int nti, uint32_t usermask, int nuserT, CoderTok *tk, CsFU *fu) {
+    fu->nfl = 0; fu->nu = 0; fu->wholedef = 0; fu->namecov = 0; if (!sv->any) return -1;
     StoreLiveDoc *e = store_live_find(&sv->L, path, plen); if (!e || e->dead) return -1;
     const SySec *x = &sv->s[e->seg].x; if (!x->has || e->idx >= x->docs.n) return -1;
-    const uint8_t *dr = store_table_at(&x->docs, e->idx); uint32_t s0 = st_get_u32(dr), n = st_get_u32(dr + 4); if (!n) return -1;
-    CsUnit *u = (CsUnit *)calloc(n, sizeof *u);
-    uint32_t allow = 0; for (int b = 0; b < nti && b < CS_EVBITS; b++) { int cl = q->t[ti[b]].cls; if (cl == QC_ORIG || cl == QC_WHOLE || cl == QC_ABBR) allow |= 1u << b; }     /* so os termos do usuario (e abreviacoes), nao a expansao conceitual */
+    const uint8_t *dr = store_table_at(&x->docs, e->idx); uint32_t s0 = st_get_u32(dr), n = st_get_u32(dr + 4), r0 = st_get_u32(dr + 8), nr = st_get_u32(dr + 12); if (!n) return -1;
+    if (n > 4000) n = 4000;
+    CsUnit *u = (CsUnit *)calloc(n, sizeof *u); int *par = (int *)malloc(sizeof(int) * n); uint32_t *anc = (uint32_t *)calloc(n, sizeof *anc), *sib = (uint32_t *)calloc(n, sizeof *sib);
+    uint8_t *bt = (uint8_t *)calloc((size_t)n * 24, 1); int *wlen = (int *)malloc(sizeof(int) * n);
+    const uint32_t allow = cs_unit_allow(q, ti, nti); uint32_t defmask = 0; CsPf pf; cs_pf_build(&pf, q, ti, nti);
     for (uint32_t k = 0; k < n; k++) {
         SySym y; sy_sym_at(sv, e->seg, s0 + k, &y); CsUnit *c = &u[k]; c->sym = (int)k; c->l0 = (int)y.line0; c->l1 = (int)y.line1; c->kind = (int)y.kind;
+        par[k] = y.parent == SY_NONE || y.parent >= n ? -1 : (int)y.parent;
         sy_cpy(c->name, sizeof c->name, y.name, y.nl); sy_cpy(c->sig, sizeof c->sig, y.sig, y.sl);
-        c->nmask = cs_text_mask(c->name, q, ti, nti, tk); c->smask = c->sig[0] ? cs_text_mask(c->sig, q, ti, nti, tk) : 0; c->nmask &= allow; c->smask &= allow;
+        c->nmask = cs_pf_hit(&pf, c->name, strlen(c->name)) ? cs_text_mask(c->name, q, ti, nti, tk) & allow : 0;
+        c->smask = c->sig[0] && cs_pf_hit(&pf, c->sig, strlen(c->sig)) ? cs_text_mask(c->sig, q, ti, nti, tk) & allow : 0;
+        wlen[k] = c->l1 - c->l0 + 1;
+        if (cs_kind_ok(c->kind)) defmask |= c->nmask;
     }
+    for (uint32_t k = 0; k < n; k++) {                          /* cadeia de simbolos que contem: nomes dos pais */
+        int p = par[k], d = 0; while (p >= 0 && d < 6) { anc[k] |= u[p].nmask; p = par[p]; d++; }
+        int found = 0;                                          /* vizinhos: ate 3 de cada lado com o mesmo pai */
+        for (int j = (int)k - 1; j >= 0 && j >= (int)k - 14 && found < 3; j--) if (par[j] == par[k] && cs_kind_ok(u[j].kind)) { sib[k] |= u[j].nmask; found++; }
+        found = 0;
+        for (uint32_t j = k + 1; j < n && j <= k + 14 && found < 3; j++) if (par[j] == par[k] && cs_kind_ok(u[j].kind)) { sib[k] |= u[j].nmask; found++; }
+    }
+    /* contexto do arquivo: caminho, comentario de cabecalho, importacoes (texto e tabela de referencias) */
+    uint32_t fmask = 0;
+    { char pth[600]; snprintf(pth, sizeof pth, "%.*s", (int)(plen < 599 ? plen : 599), path); fmask |= cs_text_mask(pth, q, ti, nti, tk) & allow; }
+    if (buf && blen) { CsCtx *cx = (CsCtx *)malloc(sizeof *cx); if (cx) { cs_ctx_scan(buf, blen, cx); fmask |= cs_text_mask(cx->hdr, q, ti, nti, tk) | cs_text_mask(cx->imp, q, ti, nti, tk); free(cx); } }
+    { char imp[1500]; size_t il = 0; imp[0] = 0;
+      for (uint32_t k = 0; k < nr && il + 80 < sizeof imp; k++) { SyRef f; sy_ref_at(sv, e->seg, r0 + k, &f); if (f.kind != CR_IMPORT) continue; il += (size_t)snprintf(imp + il, sizeof imp - il, "%.*s ", (int)(f.nl < 70 ? f.nl : 70), f.name); }
+      if (il) fmask |= cs_text_mask(imp, q, ti, nti, tk); }
+    fmask &= allow;
     for (int ln = 1; ln <= nlm; ln++) {                         /* linha com casamento -> simbolo mais interno que a contem */
         uint32_t m = lm[ln - 1] & allow; if (!m) continue;
         int best = -1; for (uint32_t k = 0; k < n; k++) if (u[k].l0 <= ln && u[k].l1 >= ln && (best < 0 || u[k].l0 >= u[best].l0)) best = (int)k;
-        if (best < 0) { if (*nflines < 3) flines[(*nflines)++] = ln; continue; }
+        if (best < 0) { if (fu->nfl < 3) fu->fl[fu->nfl++] = ln; continue; }
         if (ln == u[best].l0) continue;                         /* a linha da declaracao ja vale como nome/assinatura */
-        u[best].bmask |= m; u[best].nlines++; if (u[best].ev[2] == 0) { int z = 0; while (z < 3 && u[best].ev[z]) z++; if (z < 3) u[best].ev[z] = ln; }
+        u[best].bmask |= m; u[best].nlines++;
+        for (int b = 0; b < nti && b < 24; b++) if (m >> b & 1 && bt[(size_t)best * 24 + b] < 255) bt[(size_t)best * 24 + b]++;
+        int z = 0; while (z < 3 && u[best].ev[z]) z++; if (z < 3) { u[best].ev[z] = ln; cs_line_text(buf, blen, ln, u[best].evt[z], sizeof u[best].evt[z]); }
     }
     int nu = 0;
     for (uint32_t k = 0; k < n; k++) {
-        CsUnit *c = &u[k]; uint32_t all = c->nmask | c->smask | c->bmask; if (!all) continue;
-        double sc = 0; for (int b = 0; b < nti && b < CS_EVBITS; b++) { if (!(all >> b & 1)) continue; double w = q->t[ti[b]].w * q->t[ti[b]].idf; sc += w * ((c->nmask >> b & 1) * 4.0 + (c->smask >> b & 1) * 2.0 + ((c->bmask >> b & 1) ? 1.0 + log(1.0 + c->nlines) : 0)); }
-        c->score = sc; u[nu++] = *c;
+        CsUnit *c = &u[k]; if (!cs_kind_ok(c->kind)) continue;
+        const uint32_t direct = c->nmask | c->smask | c->bmask; if (!direct) continue;
+        c->cmask = (anc[k] | sib[k] | fmask) & allow;
+        double sc = 0;
+        for (int b = 0; b < nti && b < CS_EVBITS; b++) {
+            if (!(allow >> b & 1)) continue;
+            const int nb = c->nmask >> b & 1, sb = c->smask >> b & 1, tfb = b < 24 ? bt[(size_t)k * 24 + b] : 0;
+            const int cc = (int)(anc[k] >> b & 1) + (int)(sib[k] >> b & 1) + (int)(fmask >> b & 1);
+            if (!(nb | sb | tfb | cc)) continue;
+            const double tfn = tfb / (0.25 + 0.75 * (double)(wlen[k] > 0 ? wlen[k] : 1) / 20.0);
+            const double tfw = 4.0 * nb + 2.0 * sb + CS_UCTX_W * cc + 1.0 * tfn;
+            if (tfw <= 0) continue;
+            const double w = q->t[ti[b]].w * q->t[ti[b]].idf;
+            sc += w * tfw * (g_cs_k1 + 1.0) / (g_cs_k1 + tfw);
+        }
+        c->score = sc * cs_kind_w(c->kind); nu++;
     }
+    /* sinais de arquivo: definicao contra uso, cobertura relida */
+    fu->wholedef = 0; for (int b = 0; b < nti && b < CS_EVBITS; b++) if ((defmask >> b & 1) && q->t[ti[b]].cls == QC_WHOLE) fu->wholedef = 1;
+    fu->namecov = nuserT > 0 ? (double)cs_pop(defmask & usermask) / (double)nuserT : 0;
+    { int m = 0; for (uint32_t k = 0; k < n; k++) if (u[k].score > 0) { if (m != (int)k) u[m] = u[k]; m++; } nu = m; }
     qsort(u, (size_t)nu, sizeof *u, cs_unit_cmp);
-    if (nu > max) nu = max;
-    memcpy(out, u, sizeof *out * (size_t)nu); free(u); (void)buf; (void)blen; return nu;
+    if (nu > CS_NU) nu = CS_NU;
+    memcpy(fu->u, u, sizeof *u * (size_t)nu); fu->nu = nu; fu->best = nu ? u[0].score : 0;
+    free(u); free(par); free(anc); free(sib); free(bt); free(wlen);
+    return nu;
 }
 static void cs_unit_conf(const CsUnit *c, int tier, int *conf, char *how, size_t cap) {
     int cf = cs_tier_conf(tier); const char *w = (c->nmask ? "name" : c->smask ? "signature" : "body");
     cf += c->nmask ? 6 : c->smask ? 3 : -8; *conf = cf < 1 ? 1 : cf > 99 ? 99 : cf;
-    snprintf(how, cap, "tier %d; term in the symbol %s%s%s%s", tier, w, c->nmask && c->bmask ? " and body" : "", c->nlines ? "" : "", "");
+    snprintf(how, cap, "tier %d; term in the symbol %s%s%s", tier, w, c->nmask && c->bmask ? " and body" : "", c->cmask && !(c->nmask | c->smask | c->bmask) ? "" : (c->cmask ? "; context also matches" : ""));
 }
 static void cs_json_terms(const QSet *q) {
     printf("\"terms\":[");
@@ -983,6 +1240,7 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
         }
         free(cand); free(cs); free(acc);
     }
+    if (g_cs_semantic) g_cs_semantic(query, &v, sc[CH_SEM]);          /* canal opcional, ver o ponto de extensao acima */
     for (int c = 0; c < CH_N; c++) cs_rank(sc[c], N, rk[c], 500);
     /* fusao: camada, depois RRF (ou soma ponderada) */
     double mx[CH_N]; for (int c = 0; c < CH_N; c++) { mx[c] = 0; for (uint32_t i = 0; i < N; i++) if (sc[c][i] > mx[c]) mx[c] = sc[c][i]; }
@@ -1022,7 +1280,52 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
         if (nnf) printf("NOT FOUND in the index (no occurrence): %s\n", nf);
         if (!nres) printf("(no results)\n");
     }
-    SyView sv; memset(&sv, 0, sizeof sv); int sv_tried = 0, sv_ok = 0, shown_units = 0;
+    /* unidade por simbolo e rerank dos primeiros candidatos (bloco "UNIDADE POR SIMBOLO + RERANK" acima) */
+    SyView sv; memset(&sv, 0, sizeof sv); int sv_ok = 0;
+    { char e2[200]; if (sy_view_open(proj, &sv, e2, sizeof e2) == 0) sv_ok = 1; }
+    const int R = (int)nres < CS_RR_TOP ? (int)nres : CS_RR_TOP;
+    CsFU *fu = (CsFU *)calloc((size_t)R + 1, sizeof *fu);
+    int nuserT = 0; for (int i = 0; i < q.n; i++) if (q.t[i].cls == QC_ORIG || q.t[i].cls == QC_WHOLE) nuserT++;
+    for (int r = 0; r < R; r++) {
+        const uint32_t d = res[r].doc; CsFU *F = &fu[r];
+        CsTW tw2[256]; int nm2 = 0; for (int i = 0; i < q.n && nm2 < 256; i++) if (cs_qt_find(&q.t[i], d)) { tw2[nm2].i = i; tw2[nm2++].w = q.t[i].w * q.t[i].idf; }
+        qsort(tw2, (size_t)nm2, sizeof *tw2, cs_tw_cmp);
+        int ti2[CS_EVBITS]; int nti2 = nm2 < CS_EVBITS ? nm2 : CS_EVBITS; for (int i = 0; i < nti2; i++) ti2[i] = tw2[i].i;
+        uint32_t um = 0; for (int b = 0; b < nti2; b++) if (q.t[ti2[b]].cls == QC_ORIG || q.t[ti2[b]].cls == QC_WHOLE) um |= 1u << b;
+        { int pc = 0; for (int i = 0; i < q.n; i++) { const QTerm *t = &q.t[i]; if (t->cls != QC_ORIG && t->cls != QC_WHOLE) continue; const CsHit *h = cs_qt_find(t, d); if (h && (h->tf[CF_PATH] || h->tf[CF_NAME])) pc++; }
+          F->pathcov = nuserT ? (double)pc / nuserT : 0; }
+        char *ubuf = NULL; size_t ulen = 0; int first2[32], nlm = 0;
+        uint32_t *ulm = ho ? NULL : cs_linemasks(&v, d, &q, ti2, nti2, Q.phr, litmask[d], tk, 1, &ubuf, &ulen, &nlm, first2);
+        F->ok = ho ? 1 : ulm != NULL;               /* no Find (ho) os arquivos nao sao relidos aqui: so os sinais da tabela de simbolos */
+        if (ulm || ho) {
+            if (ulm) { uint32_t cov = 0; for (int ln = 1; ln <= nlm; ln++) cov |= ulm[ln - 1] & um; F->cover = nuserT ? (double)cs_pop(cov) / nuserT : 0; }
+            if (sv_ok) { const int nu = cs_units(&sv, v.path[d], v.plen[d], ulm, nlm, ubuf, ulen, &q, ti2, nti2, um, nuserT, tk, F); F->withsyms = nu >= 0; }
+        }
+        free(ulm); free(ubuf);
+    }
+#ifndef CS_NO_RERANK
+    /* RERANK: dentro de cada camada, nota = posicao da fusao + melhor simbolo + definicao contra uso (termos nos NOMES dos simbolos, identificador citado
+     * inteiro e definido no arquivo) + caminho + cobertura relida; arquivo que nao pode ser relido perde. Pesos fixos. */
+    if (R > 1) {
+        double maxb = 0; for (int r = 0; r < R; r++) if (fu[r].best > maxb) maxb = fu[r].best;
+        double *rs = (double *)malloc(sizeof(double) * (size_t)R); int *ord = (int *)malloc(sizeof(int) * (size_t)R);
+        for (int r = 0; r < R; r++) {
+            rs[r] = (1.0 - (double)r / (R + 1)) + 0.6 * (maxb > 0 ? fu[r].best / maxb : 0) + 0.3 * fu[r].namecov + 0.2 * fu[r].pathcov + 0.3 * fu[r].cover
+                  + (fu[r].wholedef ? 0.4 : 0.0) - (fu[r].ok ? 0.0 : 0.5);
+            ord[r] = r;
+        }
+        for (int a = 1; a < R; a++) {                     /* insercao estavel: camada crescente, nota decrescente */
+            int x = ord[a], b = a - 1;
+            while (b >= 0 && (res[ord[b]].tier > res[x].tier || (res[ord[b]].tier == res[x].tier && rs[ord[b]] < rs[x]))) { ord[b + 1] = ord[b]; b--; }
+            ord[b + 1] = x;
+        }
+        CsRes *r2 = (CsRes *)malloc(sizeof *r2 * (size_t)R); CsFU *f2 = (CsFU *)malloc(sizeof *f2 * (size_t)R);
+        for (int r = 0; r < R; r++) { r2[r] = res[ord[r]]; f2[r] = fu[ord[r]]; }
+        memcpy(res, r2, sizeof *r2 * (size_t)R); memcpy(fu, f2, sizeof *f2 * (size_t)R);
+        free(r2); free(f2); free(rs); free(ord);
+    }
+#endif
+    int shown_units = 0;
     for (uint32_t r = 0; r < nres && (int)r < limit; r++) {
         uint32_t d = res[r].doc; int exactg = sc[CH_EXACT][d] > 0 || litmask[d];
         char chl[200]; chl[0] = 0;
@@ -1039,17 +1342,8 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
             for (int i = 0; i < ne && i < CODER_EV_MAX; i++) { H->line[i] = ev[i].line; snprintf(H->text[i], sizeof H->text[i], "%s", ev[i].text); H->nev++; }
             continue;
         }
-        CsUnit un[3]; int nu = -1, fl[3], nfl = 0; char *ubuf = NULL; size_t ulen = 0; uint32_t *ulm = NULL;
-        if (!sv_tried) { sv_tried = 1; char e2[200]; if (sy_view_open(proj, &sv, e2, sizeof e2) == 0) sv_ok = 1; }
-        if (sv_ok) {
-            CsTW tw2[256]; int nm2 = 0; for (int i = 0; i < q.n && nm2 < 256; i++) if (cs_qt_find(&q.t[i], d)) { tw2[nm2].i = i; tw2[nm2++].w = q.t[i].w * q.t[i].idf; }
-            qsort(tw2, (size_t)nm2, sizeof *tw2, cs_tw_cmp);
-            int ti2[CS_EVBITS]; int nti2 = nm2 < CS_EVBITS ? nm2 : CS_EVBITS; for (int i = 0; i < nti2; i++) ti2[i] = tw2[i].i;
-            int first2[32], nlm = 0; ulm = cs_linemasks(&v, d, &q, ti2, nti2, Q.phr, litmask[d], tk, &ubuf, &ulen, &nlm, first2);
-            if (ulm) nu = cs_symbol_units(&sv, v.path[d], v.plen[d], ulm, nlm, ubuf, ulen, &q, ti2, nti2, tk, un, 3, fl, &nfl);
-            if (nu <= 0) nu = -1;
-        }
-        shown_units += nu > 0 ? nu + (nfl ? 1 : 0) : 1;
+        const CsFU *F = (int)r < R ? &fu[r] : NULL; const int nu = F && F->nu > 0 ? F->nu : -1; const CsUnit *un = F ? F->u : NULL;
+        shown_units += nu > 0 ? (nu < 3 ? nu : 3) + (F->nfl ? 1 : 0) : 1;
         if (json) {
             printf("%s{\"path\":", r ? "," : ""); cs_jstr(v.path[d], v.plen[d]);
             { int fconf = cs_tier_conf(res[r].tier) + (exactg ? 2 : 0); printf(",\"tier\":%d,\"confidence\":%d,\"level\":\"%s\",\"how\":\"%s\",\"unit\":\"%s\",\"score\":%.5f,\"channels\":{", res[r].tier, fconf, sy_level(fconf), exactg ? "exact name or literal anchor in the query (tier 1 layer)" : "ranked match (lower layer)", nu > 0 ? "symbol" : "file", res[r].fused); }
@@ -1065,32 +1359,50 @@ static int cs_search_core(const char *query, const char *proj, int limit, int js
             for (int k = 0; k < nm && k < 16; k++) { const QTerm *t = &q.t[tw[k].i]; const CsHit *h = cs_qt_find(t, d); char fl[160]; cs_fields_str(h, fl, sizeof fl); printf("%s{\"term\":", k ? "," : ""); cs_jstr(t->disp, 64); printf(",\"class\":\"%s\",\"fields\":", g_cs_clsname[t->cls]); cs_jstr(fl, 160); printf("}"); }
             printf("]");
             if (nu > 0) { printf(",\"symbols\":[");
-                for (int k = 0; k < nu; k++) { int cf; char how[160]; cs_unit_conf(&un[k], res[r].tier, &cf, how, sizeof how);
+                for (int k = 0; k < nu && k < 3; k++) { int cf; char how[160]; cs_unit_conf(&un[k], res[r].tier, &cf, how, sizeof how);
                     printf("%s{\"line0\":%d,\"line1\":%d,\"kind\":\"%s\",\"name\":", k ? "," : "", un[k].l0, un[k].l1, un[k].kind < CK_N ? CP_KINDN[un[k].kind] : "?"); cs_jstr(un[k].name, 100);
-                    printf(",\"sig\":"); cs_jstr(un[k].sig, 160); printf(",\"confidence\":%d,\"level\":\"%s\",\"how\":", cf, sy_level(cf)); cs_jstr(how, 160);
+                    printf(",\"sig\":"); cs_jstr(un[k].sig, 160); printf(",\"score\":%.3f,\"confidence\":%d,\"level\":\"%s\",\"how\":", un[k].score, cf, sy_level(cf)); cs_jstr(how, 160);
                     printf(",\"matched\":[%s%s%s],\"lines\":[", un[k].nmask ? "\"name\"" : "", un[k].smask ? (un[k].nmask ? ",\"signature\"" : "\"signature\"") : "", un[k].bmask ? (un[k].nmask || un[k].smask ? ",\"body\"" : "\"body\"") : "");
-                    for (int z = 0; z < 3 && un[k].ev[z]; z++) { char lt[200]; cs_line_text(ubuf, ulen, un[k].ev[z], lt, sizeof lt); printf("%s{\"line\":%d,\"text\":", z ? "," : "", un[k].ev[z]); cs_jstr(lt, 150); printf("}"); }
+                    for (int z = 0; z < 3 && un[k].ev[z]; z++) { printf("%s{\"line\":%d,\"text\":", z ? "," : "", un[k].ev[z]); cs_jstr(un[k].evt[z], 150); printf("}"); }
                     printf("]}"); }
                 printf("]"); }
-            printf("}"); free(ulm); free(ubuf);
+            printf("}");
         } else {
             int fconf = cs_tier_conf(res[r].tier) + (exactg ? 2 : 0); if (nu > 0) {
                 printf("%2u. %.*s   [file confidence %d %s] tier %d  score %.4f  (%s)\n", r + 1, (int)v.plen[d], v.path[d], fconf, sy_level(fconf), res[r].tier, res[r].fused, chl);
                 if (anchor[d]) printf("      named in the query: \"%s\" matches the file name\n", Q.a[anchor[d] - 1].w);
                 if (why && res[r].tier == 2) printf("      tier 2: a concept term and an operation term from different query words both appear in the path/file name\n");
-                for (int k = 0; k < nu; k++) { int cf; char how[160]; cs_unit_conf(&un[k], res[r].tier, &cf, how, sizeof how);
+                for (int k = 0; k < nu && k < 3; k++) { int cf; char how[160]; cs_unit_conf(&un[k], res[r].tier, &cf, how, sizeof how);
                     printf("      %.*s:%d-%d  %s %s   [confidence %d %s; %s]\n", (int)v.plen[d], v.path[d], un[k].l0, un[k].l1, un[k].kind < CK_N ? CP_KINDN[un[k].kind] : "?", un[k].name, cf, sy_level(cf), how);
                     if (un[k].sig[0]) printf("          %s\n", un[k].sig);
-                    for (int z = 0; z < 3 && un[k].ev[z]; z++) { char lt[200]; cs_line_text(ubuf, ulen, un[k].ev[z], lt, sizeof lt); printf("          line %d: %.150s\n", un[k].ev[z], lt); } }
+                    for (int z = 0; z < 3 && un[k].ev[z]; z++) printf("          line %d: %.150s\n", un[k].ev[z], un[k].evt[z]); }
             } else {
                 printf("%2u. %.*s   [confidence %d %s] tier %d  score %.4f  (%s)\n", r + 1, (int)v.plen[d], v.path[d], fconf, sy_level(fconf), res[r].tier, res[r].fused, chl);
                 if (anchor[d]) printf("      named in the query: \"%s\" matches the file name\n", Q.a[anchor[d] - 1].w);
                 if (why && res[r].tier == 2) printf("      tier 2: a concept term and an operation term from different query words both appear in the path/file name\n");
                 cs_print_evidence_text(&v, d, &q, &Q, litmask[d], tk, why, NULL, 0);
             }
-            free(ulm); free(ubuf);
         }
     }
+    /* SIMBOLOS como resultado: as melhores unidades entre os candidatos (nota do simbolo, levemente ponderada pela posicao do arquivo no rerank) */
+    if (!ho && R > 0) {
+        typedef struct { int r, k; double s; } Ux; Ux *ux = (Ux *)malloc(sizeof *ux * (size_t)R * CS_NU); int nux = 0;
+        for (int r = 0; r < R; r++) for (int k = 0; k < fu[r].nu; k++) { ux[nux].r = r; ux[nux].k = k; ux[nux].s = fu[r].u[k].score * (1.0 - 0.3 * (double)r / (R + 1)); nux++; }
+        for (int a = 1; a < nux; a++) { Ux x = ux[a]; int b = a - 1; while (b >= 0 && ux[b].s < x.s) { ux[b + 1] = ux[b]; b--; } ux[b + 1] = x; }
+        const int top = nux < 8 ? nux : 8;
+        if (json) {
+            printf("],\"symbol_results\":[");
+            for (int i = 0; i < top; i++) { const CsUnit *c = &fu[ux[i].r].u[ux[i].k]; const uint32_t d = res[ux[i].r].doc;
+                printf("%s{\"path\":", i ? "," : ""); cs_jstr(v.path[d], v.plen[d]); printf(",\"line0\":%d,\"line1\":%d,\"kind\":\"%s\",\"name\":", c->l0, c->l1, c->kind < CK_N ? CP_KINDN[c->kind] : "?"); cs_jstr(c->name, 100); printf(",\"score\":%.3f}", ux[i].s); }
+        } else if (top) {
+            printf("symbols (best units among the top %d files):\n", R);
+            for (int i = 0; i < top; i++) { const CsUnit *c = &fu[ux[i].r].u[ux[i].k]; const uint32_t d = res[ux[i].r].doc;
+                printf("  %d. %.*s:%d-%d  %s %s   [score %.2f; file #%d]\n", i + 1, (int)v.plen[d], v.path[d], c->l0, c->l1, c->kind < CK_N ? CP_KINDN[c->kind] : "?", c->name, ux[i].s, ux[i].r + 1); }
+        }
+        free(ux);
+    }
+    (void)shown_units;
+    free(fu);
     if (ho) {}
     else if (json) printf("]}\n");
     else if (nres > (uint32_t)limit) printf("... %u more (use --limit)\n", nres - (uint32_t)limit);
