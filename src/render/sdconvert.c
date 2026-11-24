@@ -401,6 +401,8 @@ static int sd_names(const char *dir) {
 static int sdt_main(const char *refdir, const char *mdir);      /* render/sdtest.c */
 static int sdp_main(int argc, char **argv);                      /* render/sdgen.c */
 static int sdb_main(int argc, char **argv);                      /* render/sdbrief.c */
+static int fxt_convert(const char *dir, const char *out_path);       /* render/fxconvert_text.c */
+static int fxt_main(int argc, char **argv);                          /* render/fxtext.c */
 static int sds_main(int argc, char **argv);                      /* render/sdspec.c */
 static int render_main(int argc, char **argv) {
     g_cv_skip_int = 1;      /* position_ids do CLIP e outros tensores de inteiros: nao entram */
@@ -408,6 +410,8 @@ static int render_main(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[0], "selftest")) return sdt_main(argv[1], argv[2]);
     if (argc >= 1 && !strcmp(argv[0], "generate")) return sdp_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "brief")) return sdb_main(argc - 1, argv + 1);
+    if (argc >= 3 && !strcmp(argv[0], "flux-convert-text")) return fxt_convert(argv[1], argv[2]);
+    if (argc >= 1 && !strcmp(argv[0], "flux-text")) return fxt_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "spec")) return sds_main(argc - 1, argv + 1);
     if (argc >= 4 && !strcmp(argv[0], "convert")) {
         for (int i = 4; i < argc; i++) {

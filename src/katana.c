@@ -192,5 +192,7 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdvae.c"               /* render: VAE, codificador e decodificador (CPU) */
 #include "render/sdgen.c"               /* render: amostrador, PNG, bordas e o comando katana render generate */
 #include "render/sdbrief.c"             /* render: briefing de renderizacao -> prompt condensado (katana render brief) */
+#include "render/fxconvert_text.c"      /* render: conversor do codificador de texto do FLUX.2 klein (katana render flux-convert-text) */
+#include "render/fxtext.c"              /* render: texto do FLUX.2 klein, Qwen3-4B camadas 9/18/27 (katana render flux-text) */
 #include "render/sdspec.c"              /* render: pedido -> especificacao de imagem -> prompt do Stable Diffusion (katana render spec) */
 #include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */
