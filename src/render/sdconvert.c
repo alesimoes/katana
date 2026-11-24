@@ -408,6 +408,7 @@ static int fxv_main(int argc, char **argv);                      /* render/fxvae
 static int fxd_main(int argc, char **argv);                      /* render/fxdit.c */
 static int fxg_main(int argc, char **argv);                      /* render/fxgen.c */
 static int sdl_main(int argc, char **argv);                      /* render/sdlogo.c */
+static int fxr_main(int argc, char **argv);                      /* render/fxtrain.c */
 static int render_main(int argc, char **argv) {
     g_cv_skip_int = 1;      /* position_ids do CLIP e outros tensores de inteiros: nao entram */
     if (argc >= 2 && !strcmp(argv[0], "names")) return sd_names(argv[1]);
@@ -418,6 +419,7 @@ static int render_main(int argc, char **argv) {
     if (argc >= 1 && !strcmp(argv[0], "flux-text")) return fxt_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "flux-dit")) return fxd_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "flux-gen")) return fxg_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "flux-train")) return fxr_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "spec")) return sds_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "logo")) return sdl_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "flux-vae")) return fxv_main(argc - 1, argv + 1);

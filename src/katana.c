@@ -203,4 +203,9 @@ static const char KATANA_CHANGES[] = "";
 #include "render/fxconvert_vae.c"        /* render: VAE do FLUX.2 klein, conversor (katana render flux-vae convert) */
 #include "render/fxvae.c"                /* render: VAE do FLUX.2 klein na CPU (katana render flux-vae selftest) */
 #include "render/fxdit.c"              /* render: transformador do FLUX.2 klein (katana render flux-dit) */
+#include "render/fxlora.c"             /* render: adaptadores LoRA do transformador do FLUX.2 klein (.fxlora) */
+#include "render/fxback.c"             /* render: volta (gradientes) das pecas do transformador, para o treino de LoRA */
+#include "render/fxblocks.c"           /* render: ida guardada e volta dos blocos do FLUX.2 klein, passo de treino */
 #include "render/fxgen.c"              /* render: FLUX.2 klein completo, amostrador e referencias (katana render generate --engine flux) */
+#include "render/fxgrad.c"             /* render: testes de gradiente do treino (katana render flux-train selftest-grad) */
+#include "render/fxtrain.c"            /* render: treino de LoRA do FLUX.2 klein (katana flux-train) */
