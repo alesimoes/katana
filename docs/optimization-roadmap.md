@@ -173,7 +173,7 @@ prediction also for Gemma 4, prefetch 2 layers ahead with a smaller N.
 | Exact pre-tokenizer | state machine by type declared in the GGUF (`tokenizer.ggml.pre`): digit grouping (1 or 1–3), last space before the word, line breaks, contractions, Unicode letter and number classes; split the special tokens beforehand | medium |
 | Chat format by detection in the template | we already do it by template fragments; Gemma, Phi, Mistral, DeepSeek, Kimi are missing | small |
 
-### 7.1 Prompt lookup decoding (`src/engine/lookup.c`, written 2026-11-22, speed NOT measured)
+### 7.1 Prompt lookup decoding (`src/engine/lookup.c`, written 2026-11-22, measured 2026-11-24: no gain on the CPU, off by default)
 
 Speculative decoding with a free draft taken from the context, aimed at code (an Edit repeats the old text,
 unchanged lines, identifiers). Off by default.
@@ -220,7 +220,32 @@ unchanged lines, identifiers). Off by default.
   prompt with a deviation every 11 tokens) on the tiny random qwen35moe of `tools/tinymodel`, CPU path: 69 drafted,
   38 accepted, 8 mismatches, same greedy choice at every position, max logit difference 2.9e-6, and after
   `lk_finish` the logits of an extra token match the plain run within 1.4e-6.
-- **NOT checked:** any speed (no measurement at all); the Vulkan graph path (the tiny `--gpu` model falls to the
+- **Measured 2026-11-24 (Qwen3.6-35B-A3B Q4_K_M, CPU batch path, `KATANA_CPU=1 KATANA_THINK=0`, temperature 0, GPU busy with
+  an image job so the GPU graph was not tried; the machine was also loaded by other jobs, load average 10 to 22, so tokens/s
+  below are noisy and only the alternated pairs and the counters mean anything).** Prompt: a 112-line C file (a ring buffer)
+  plus an instruction; `tools/spectest.sh` compares the outputs.
+  - Equivalence: 4 tasks (rewrite one function, rewrite three functions with a new enum, reproduce the whole file with an
+    added function, write two new functions), adaptive on, plus one run with `KATANA_LOOKUP_ADAPT=0 KATANA_LOOKUP_K=4`:
+    output byte-identical to the run without drafting in all 5 (300 to 500 generated tokens each).
+  - Acceptance: adaptive, whole-file task 54 of 88 drafts accepted (61%); 3-function rewrite 21 of 60 (35%); new code 6 of 26.
+    Forced k=4 on the whole-file task: 201 of 380 drafts (53%) in 95 verification passes.
+  - Speed: no gain. Adaptive runs ended at 0.7x to 0.8x of the plain run on the copy-heavy tasks (the first few outputs were
+    even noisier: 7.2 vs 11.7 tok/s on a 91-token answer, an artifact of the load changing between the two runs); forced k=4
+    on the whole-file task: 8.5 vs 10.5 tok/s (0.81x) in the quieter pair. The adaptation behaves as designed: it stays
+    without draft for most tokens (423 of 500 on the whole-file task) because a verification pass costs more per served token
+    than a plain token. Cause: on the CPU a block of B tokens activates the union of the experts of its tokens, and the block
+    path is only about 1.6x faster per token than the one-token path (prompt 19.8 tok/s against 12 tok/s generation at the
+    first, quiet measurement), so a pass of 5 positions costs about 3 plain tokens and needs more than 3 accepted tokens to
+    pay, while 35 to 60% acceptance gives about 2. Every mismatch also restores the 66 MB recurrent state and redoes the
+    accepted tokens.
+  - Draft search cost: the backward scan over 100,000 tokens takes at most 38 microseconds (measured in isolation) against
+    80 to 250 ms per token, so a hash index was not added; it would only matter at contexts far beyond the model's.
+  - Decision: stays off (`KATANA_LOOKUP=1` to enable). It would pay only with a verification pass that costs close to one token
+    (dense model, or an expert-grouped block kernel) or on a path that is not bandwidth-bound; `KATANA_SPEC` is already the
+    name of the specialization setting, so the switch keeps its name. The gate is still the engine's own timing, so turning it
+    on for experiments cannot make generation much slower, only the first 4 tokens and the probes.
+- **NOT checked:** the hybrid GPU path of the agent on the 4 GB card (it falls back to one token at a time, so the
+  option does nothing there), the full Vulkan graph (needs more VRAM than the card has), the Vulkan graph path (the tiny `--gpu` model falls to the
   hybrid mode, which crashes with `malloc(): corrupted top size` also on the base commit, unrelated to this work);
   Qwen3.6 itself; temperature > 0 statistics; the agent loop end to end; prefix cache on disk after a turn that used
   the draft (should be safe because the state is restored before the turn ends).
