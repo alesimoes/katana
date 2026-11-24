@@ -33,6 +33,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 | `worktree.c`, `powershell.c`, `notify.c` | `EnterWorktree`, `ExitWorktree`, `PowerShell`, `PushNotification`, `SendUserFile`, `EndConversation` | 61 |
 | `lsp.c` | `LSP` | 39 |
 | `schedule.c` | `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup` | 156 |
+| `render.c` | `Render` (2026-11-24: `katana render generate` for an image and a request; `tools/tooltest/render.sh`, fake engine via `KATANA_RENDER_BIN`; not in the prompt declarations) | 21 |
 
 Measured: the 1244 checks pass; `tools/traintest/run.sh` passes, including a whole-loop run with the tiny test model
 and the mock teacher with this set (Write, Edit, Bash with the working-directory reset, Grep).

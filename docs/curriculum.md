@@ -767,3 +767,12 @@ without the context block (the policy reads what the engine returned):
 
 `Glob`, `Rename`, `Replace`, `Patch` and `Task*` are not taught (they are not in the table); a file by name is `Find`, a folder listing is
 `Symbols tree` or `Bash`.
+
+## Render in the final curriculum (note, 2026-11-24)
+
+The agent now has a lean `Render` tool (`src/tools/render.c`, `docs/render.md`; arguments `request`, `image`, `engine` stable or flux, `out`, `brief`; it runs
+`katana render generate` and returns the output path). It is in the tool table but in no training data and not in the short prompt declarations. The model is trained
+on its tools and the `katana.no_tool_decl` prompt has no tool section, so a model trained before Render does not know it. **The final curriculum, generated at the end of
+the UIOE construction, must include Render conversations** (image and request to engine stable or flux, a briefing file, the output path in the answer, the failure
+case where the render exits non-zero), and `Render` goes into the coverage table (`g_cu_cov`, tier B, by name through ToolSearch) when that is done. Nothing was generated or
+changed in the curriculum or in any training data now.
