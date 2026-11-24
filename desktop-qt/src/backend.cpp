@@ -1695,8 +1695,8 @@ bool Backend::sendImage(const QString &text)
         emit imageChanged();
         reopenAgentAfterImage();
     });
-    // a placa tem 4 GB e o agente ocupa quase tudo: com o FLUX na GPU o agente sai primeiro (volta ao terminar a imagem)
-    if (engine == "flux" && imageBackend() != "cpu" && m_proc && !m_answering) {
+    // a placa tem 4 GB e o agente ocupa quase tudo: com o FLUX ou o Stable na GPU o agente sai primeiro (volta ao terminar a imagem)
+    if ((engine == "flux" || engine == "stable") && imageBackend() != "cpu" && m_proc && !m_answering) {
         m_reloadModel = m_model;
         detach(m_proc);
         m_proc = nullptr;
