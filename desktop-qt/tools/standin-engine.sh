@@ -8,15 +8,15 @@ render)
     # `katana render generate --engine E ... --out ARQ`: stable grava a imagem de amostra; flux e krea saem com 3 (WIP), como o motor real;
     # um prompt com a palavra "falhe" faz o stable falhar (codigo 2)
     [ "$2" = generate ] || exit 1
-    shift 2; E=stable; OUT=; PF=
+    shift 2; E=stable; OUT=; PF=; NL=
     while [ $# -gt 0 ]; do
-        case "$1" in --engine) E=$2; shift;; --out) OUT=$2; shift;; --prompt-file) PF=$2; shift;; esac
+        case "$1" in --engine) E=$2; shift;; --out) OUT=$2; shift;; --prompt-file) PF=$2; shift;; --nl) NL=$2; shift;; esac
         shift
     done
     case "$E" in
     flux|krea) echo "render: o motor $E esta em desenvolvimento (WIP), ainda nao disponivel" >&2; exit 3;;
     esac
-    if [ -n "$PF" ] && grep -q falhe "$PF"; then echo "render: nao achei os pesos do Stable" >&2; exit 2; fi
+    if { [ -n "$PF" ] && grep -q falhe "$PF"; } || case "$NL" in *falhe*) true;; *) false;; esac; then echo "render: nao achei os pesos do Stable" >&2; exit 2; fi
     cp "$(dirname "$0")/samples/render-saida.png" "$OUT"; exit 0;;
 coder)
     # `katana coder status <pasta>`: saida real (tools/samples/coder-status.txt); a primeira consulta de cada execucao responde com o

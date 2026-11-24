@@ -1527,11 +1527,8 @@ bool Backend::sendImage(const QString &text)
     }
     QDir().mkpath(imageDir());
     const QString out = QDir(imageDir()).filePath(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + "-" + engine + ".png");
-    auto *pf = new QTemporaryFile(QDir::temp().filePath("katana-render-XXXXXX.txt"), this);
-    if (!pf->open()) { delete pf; return false; }
-    pf->write(prompt.toUtf8());
-    pf->flush();
-    QStringList args{"render", "generate", "--engine", engine, "--prompt-file", pf->fileName(), "--init", img, "--strength", "0.35",
+    // o pedido inteiro vai ao motor de prompt do katana (--nl): ele monta o prompt do motor escolhido (dominio, presets, pesos)
+    QStringList args{"render", "generate", "--engine", engine, "--nl", prompt, "--init", img, "--strength", "0.35",
                      "--size", QString("%1x%2").arg(W).arg(H), "--out", out};
     if (engine == "stable") args << "--lcm";
     if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");
@@ -1549,10 +1546,9 @@ bool Backend::sendImage(const QString &text)
     auto *p = new QProcess(this);
     m_imgProc = p;
     p->setProcessChannelMode(QProcess::MergedChannels);
-    connect(p, &QProcess::finished, this, [this, p, pf, out, engine, nome](int code, QProcess::ExitStatus st) {
+    connect(p, &QProcess::finished, this, [this, p, out, engine, nome](int code, QProcess::ExitStatus st) {
         const QString log = QString::fromUtf8(p->readAll()).trimmed();
         m_imgProc = nullptr;
-        pf->deleteLater();
         p->deleteLater();
         if (st == QProcess::NormalExit && code == 0 && QFileInfo::exists(out)) {
             m_msgs.append("image", out, engine);
