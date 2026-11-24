@@ -278,7 +278,7 @@ static int sdp_generate(const SdpParams *P) {
 }
 
 static int sdp_main(int argc, char **argv) {
-    SdpParams P; memset(&P, 0, sizeof P); int steps_set = 0;
+    SdpParams P; memset(&P, 0, sizeof P); int steps_set = 0; const char *engine = NULL;
     P.steps = 20; P.guidance = 7.5; P.strength = 0.75; P.control_scale = 1.0; P.canny_lo = 100; P.canny_hi = 200; P.negative = ""; P.max_chunks = 4;
     static char models[1100]; snprintf(models, sizeof models, "%s/render", models_dir()); P.models = models;
     for (int i = 0; i < argc; i++) {
@@ -302,6 +302,7 @@ static int sdp_main(int argc, char **argv) {
         else if (!strcmp(a, "--control-scale") && more) P.control_scale = atof(argv[++i]);
         else if (!strcmp(a, "--canny") && i + 2 < argc) { P.canny_lo = atoi(argv[++i]); P.canny_hi = atoi(argv[++i]); }
         else if (!strcmp(a, "--control-lines")) P.control_lines = 1;
+        else if (!strcmp(a, "--engine") && more) engine = argv[++i];
         else if (!strcmp(a, "--init") && more) P.init = argv[++i];
         else if (!strcmp(a, "--strength") && more) P.strength = atof(argv[++i]);
         else if (!strcmp(a, "--models") && more) P.models = argv[++i];
@@ -310,6 +311,10 @@ static int sdp_main(int argc, char **argv) {
     }
     if (!P.prompt || !P.out) { fprintf(stderr, "uso: katana render generate --prompt \"...\" (ou --prompt-file arq) --out saida.png [--chunks 4] [--lcm: LCM, 4 passos, 1 passe] [--negative \"...\"] [--steps 20] [--guidance 7.5] [--seed 0]\n"
                                               "       [--size WxH (multiplos de 64)] [--control img [--control-lines] [--control-scale 1.0] [--canny BAIXO ALTO]] [--init img [--strength 0.75]] [--models pasta]\n"); return 1; }
+    if (engine && strcmp(engine, "stable")) {                                /* motores em preparacao (WIP): contrato ja fixado para o desktop */
+        if (!strcmp(engine, "flux") || !strcmp(engine, "krea")) { fprintf(stderr, "render: o motor %s esta em desenvolvimento (WIP), ainda nao disponivel\n", engine); return 3; }
+        fprintf(stderr, "render: motor desconhecido: %s (stable, flux ou krea)\n", engine); return 1;
+    }
     if (P.lcm && !steps_set) P.steps = 4;
     if (P.steps < 1 || P.steps > 200) { fprintf(stderr, "render: --steps entre 1 e 200\n"); return 1; }
     if (P.strength <= 0 || P.strength > 1) { fprintf(stderr, "render: --strength entre 0 (exclusive) e 1\n"); return 1; }
