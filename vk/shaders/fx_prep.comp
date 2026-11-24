@@ -1,0 +1,23 @@
+#version 450
+// FLUX.2: RMSNorm por cabeca (eps 1e-6, ganho de 128) e RoPE nas colunas de q e k de um produto qkv fundido, no lugar.
+// Um grupo por (token, q/k, cabeca); os tokens abaixo de Nt (texto) usam os ganhos 0/1, os demais (imagem) os ganhos 2/3 (W = [q txt, k txt, q img, k img][128]).
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) buffer D { float d[]; };
+layout(std430, binding = 1) readonly buffer W { float w[]; };
+layout(std430, binding = 2) readonly buffer C { float cs[]; };
+layout(std430, binding = 3) readonly buffer S { float sn[]; };
+layout(push_constant) uniform P { uint ld, nt, qo, ko, wo; } pc;
+shared float red[128];
+shared float nv[128];
+void main() {
+    const uint l = gl_LocalInvocationID.x, id = gl_WorkGroupID.x, tok = id / 48, qk = (id / 24) & 1, h = id % 24;
+    const uint at = (qk == 0 ? pc.qo : pc.ko) + h * 128 + tok * pc.ld;
+    const float v = d[at + l];
+    red[l] = v * v; barrier();
+    for (uint s = 64; s > 0; s >>= 1) { if (l < s) red[l] += red[l + s]; barrier(); }
+    const float inv = 1.0 / sqrt(red[0] / 128.0 + 1e-6);
+    nv[l] = v * inv * w[pc.wo + ((tok < pc.nt ? 0u : 2u) + qk) * 128 + l];
+    barrier();
+    const float a = nv[l & ~1u], b = nv[l | 1u], c = cs[tok * 128 + l], s = sn[tok * 128 + l];
+    d[at + l] = (l & 1u) == 0u ? a * c - b * s : b * c + a * s;
+}

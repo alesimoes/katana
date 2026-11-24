@@ -1,0 +1,19 @@
+#version 450
+// elementwise do FLUX.2. MODE 0 (SwiGLU): Y[r*ldy + i + yo] = silu(H[r*ldh + i + ho]) * H[r*ldh + m + i + ho]; MODE 1 (residual com portao): X[r*d+i + xo] += G[go+i] * Y[r*d+i + yo]
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+layout(std430, binding = 1) buffer B { float b[]; };
+layout(std430, binding = 2) readonly buffer G { float g[]; };
+layout(push_constant) uniform P { uint n, m, lda, ldb, ao, bo, go; } pc;     // n linhas, m colunas
+void main() {
+    const uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.n * pc.m) return;
+    const uint r = idx / pc.m, i = idx % pc.m;
+#if MODE == 0
+    const uint h = pc.ao + r * pc.lda + i;
+    const float u = a[h];
+    b[pc.bo + r * pc.ldb + i] = u / (1.0 + exp(-u)) * a[h + pc.m];
+#else
+    b[pc.bo + r * pc.ldb + i] += g[pc.go + i] * a[pc.ao + r * pc.lda + i];
+#endif
+}

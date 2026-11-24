@@ -124,6 +124,7 @@ static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, 
     for (size_t i = 0; i < (size_t)w * h * 3; i++) { float v = (rgb[i] * 0.5f + 0.5f) * 255.0f; px[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : (int)(v + 0.5f)); }
     const int ok = sdp_png_write(out, px, w, h);
     free(px); free(rgb);
+    fxq_report();
     if (ok) fprintf(stderr, "[flux] pronto: %s (%dx%d)\n", out, w, h);
     return ok;
 }
@@ -162,6 +163,7 @@ static int fxg_selftest(const char *dir) {
     const char *ref[1] = { refp };
     float *rgb = fxg_run(prompt, ref, 1, W, H, steps, 0, maxlen, noise, cd, NULL, 1.0f);
     if (!rgb) return 1;
+    fxq_report();
     float *r = fxg_read(dir, "c_text.bin", &n); float *m = fxg_read(cd, "c_text.bin", &n);
     if (r && m) bad += fxg_cmp("texto [maxlen][7680]", m, r, n, 1e-3); free(r); free(m);
     r = fxg_read(dir, "ref0_tokens.bin", &n); m = fxg_read(cd, "ref0_tokens.bin", &n);

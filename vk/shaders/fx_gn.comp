@@ -1,0 +1,54 @@
+#version 450
+// GroupNorm (32 grupos) sobre X [n][C] NHWC, em tres passos: MODE 0 somas parciais por (grupo, parte); MODE 1 somas parciais de (x - media)^2; MODE 2 aplica (com SiLU opcional).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer X { float x[]; };
+layout(std430, binding = 1) buffer PT { float part[]; };      // [2][32][64]
+layout(std430, binding = 2) writeonly buffer Y { float y[]; };
+layout(std430, binding = 3) readonly buffer GB { float gb[]; };   // [ganho C][vies C]
+layout(push_constant) uniform P { uint n, C, silu; float eps; } pc;
+shared float red[256];
+shared float mu[32], iv[32];
+void main() {
+    const uint l = gl_LocalInvocationID.x, cpg = pc.C / 32u;
+    const float cnt = float(pc.n) * float(cpg);
+#if MODE < 2
+    const uint g = gl_WorkGroupID.x % 32u, pr = gl_WorkGroupID.x / 32u;
+    const uint p0 = pr * pc.n / 64u, p1 = (pr + 1u) * pc.n / 64u;
+    float m = 0.0;
+#if MODE == 1
+    {   // media do grupo a partir das somas parciais
+        float s = 0.0;
+        if (l < 64u) s = part[g * 64u + l];
+        red[l] = s; barrier();
+        for (uint t = 128; t > 0; t >>= 1) { if (l < t) red[l] += red[l + t]; barrier(); }
+        m = red[0] / cnt; barrier();
+    }
+#endif
+    float s = 0.0;
+    for (uint e = l; e < (p1 - p0) * cpg; e += 256u) {
+        const uint pix = p0 + e / cpg, c = e % cpg;
+        const float v = x[pix * pc.C + g * cpg + c] - m;
+#if MODE == 1
+        s += v * v;
+#else
+        s += v;
+#endif
+    }
+    red[l] = s; barrier();
+    for (uint t = 128; t > 0; t >>= 1) { if (l < t) red[l] += red[l + t]; barrier(); }
+    if (l == 0u) part[MODE * 2048u + g * 64u + pr] = red[0];
+#else
+    if (l < 32u) {
+        float s0 = 0.0, s1 = 0.0;
+        for (uint i = 0; i < 64u; i++) { s0 += part[l * 64u + i]; s1 += part[2048u + l * 64u + i]; }
+        mu[l] = s0 / cnt; iv[l] = 1.0 / sqrt(s1 / cnt + pc.eps);
+    }
+    barrier();
+    const uint idx = (gl_WorkGroupID.y * 32768u + gl_WorkGroupID.x) * 256u + l;
+    if (idx >= pc.n * pc.C) return;
+    const uint c = idx % pc.C, g = c / cpg;
+    float v = (x[idx] - mu[g]) * iv[g] * gb[c] + gb[pc.C + c];
+    if (pc.silu != 0u) v = v / (1.0 + exp(-v));
+    y[idx] = v;
+#endif
+}

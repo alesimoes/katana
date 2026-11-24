@@ -66,4 +66,14 @@ for kv in 0 1; do
   s=kv32; [ $kv = 1 ] && s=kv16
   $G -V --target-env vulkan1.2 -DKV16=$kv -DOF32 --vn att_flash32_${s}_spv -o att_flash32_$s.h att_flash.comp || exit 1
 done
+# render (FLUX.2): transposicao em ladrilhos (fp32 -> fp16 para o mm.comp, fp32 -> fp32 para a saida)
+$G -V --target-env vulkan1.2 -DOUT16 --vn fx_tp16_spv -o fx_tp16.h fx_tp.comp || exit 1
+$G -V --target-env vulkan1.2 --vn fx_tp32_spv -o fx_tp32.h fx_tp.comp || exit 1
+for n in ln prep att; do $G -V --target-env vulkan1.2 --vn fx_${n}_spv -o fx_$n.h fx_$n.comp || exit 1; done
+$G -V --target-env vulkan1.2 -DMODE=0 --vn fx_swi_spv -o fx_swi.h fx_ew.comp || exit 1
+$G -V --target-env vulkan1.2 -DMODE=1 --vn fx_axg_spv -o fx_axg.h fx_ew.comp || exit 1
+$G -V --target-env vulkan1.2 -DBIAS --vn fx_tpb_spv -o fx_tpb.h fx_tp.comp || exit 1
+$G -V --target-env vulkan1.2 -DBIAS -DRES --vn fx_tpbr_spv -o fx_tpbr.h fx_tp.comp || exit 1
+$G -V --target-env vulkan1.2 --vn fx_im2col_spv -o fx_im2col.h fx_im2col.comp || exit 1
+for m in 0 1 2; do $G -V --target-env vulkan1.2 -DMODE=$m --vn fx_gn${m}_spv -o fx_gn$m.h fx_gn.comp || exit 1; done
 echo gen ok

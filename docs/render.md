@@ -14,7 +14,7 @@ owner: put an image-generation pipeline inside katana.
 | 6 | VAE decoder and encoder (`sdvae.c`) | 1.4e-6 and 5.4e-6 |
 | 7 | Euler sampler, PNG writer, Canny, `generate` (`sdgen.c`) | sampler 7e-7 against EulerDiscreteScheduler; text to image works end to end (a 512x512 living room, 354 s) |
 | 8 | preview from a SketchUp PNG with the Canny ControlNet (`--control`, `--init`) | works: a SketchUp reception render became a photographic preview in 317 s (576x320). Geometry kept (arch, desk, console, armchair, ceiling light); colours and materials drift (a burgundy wall came out slate blue at strength 0.75) and text on walls is garbled, which Stable Diffusion 1.5 cannot write. Judged by eye on one scene; whether the preview predicts the outside service is still unknown |
-| 9 | Vulkan kernels | not started; the training job holds the GPU |
+| 9 | Vulkan kernels (FLUX.2 klein path, `src/render/fxvk.c`, `fxvaegpu.c`, `vk/shaders/fx_*.comp`) | done for FLUX.2 klein, on by default when a Vulkan GPU with fp16 cooperative matrices exists; `KATANA_CPU=1` (or `KATANA_FLUX_GPU=0`) forces the CPU path. Measured on the RTX 3050 Laptop (4 GB): one transformer step (720 image + 512 text tokens) 14.4 s CPU -> 2.65 s GPU; (720 + 77) 8.3 s -> 1.8 s; VAE decode 576x320 about 10 s CPU -> 1.6 s GPU; 2-step 576x320 image 18 s end to end (text encoder still CPU). All of `flux-dit selftest`, `flux-vae selftest`, `flux-gen selftest` pass on the GPU (see "Vulkan path" below). Stable Diffusion 1.5 is still CPU only |
 | 10 | agent tool and the package for the outside service | not started |
 
 Speed (one measurement, with the training job running on the same machine): one UNet step about 9 s, one ControlNet step about 4 s, VAE
@@ -58,7 +58,7 @@ checkpoint layout, and later Vulkan kernels for convolution and attention.
 6. VAE decoder (then encoder, for image-to-image): image against the reference.
 7. Sampler (Euler or DDIM) with classifier-free guidance, PNG encoder: first text-to-image picture.
 8. ControlNet branch and Canny: preview from a SketchUp PNG.
-9. Vulkan kernels for convolution and attention, so one image fits the laptop GPU in a reasonable time (the speed is not known yet).
+9. Vulkan kernels for convolution and attention, so one image fits the laptop GPU in a reasonable time (done for FLUX.2 klein, see "Vulkan path").
 10. Integration: `katana render` command and an agent tool; the agent writes the prompt from the scene's materials and lighting and also
     writes a package (clay image, edges, prompt) for the outside service.
 
@@ -185,3 +185,41 @@ darkens a white logo on a dark wall without a colour cast, fractions, degenerate
 noise over it), the box or corners are given by the user (nothing detects the wall plane), and it was not tried on a real render.
 
 **Desktop.** In image mode the "briefing" and "logo" buttons attach the files; the backend passes `--brief` and `--logo --logo-box --logo-blend` (`desktop-qt/README.md`).
+
+## Vulkan path (FLUX.2 klein, stage 9)
+
+Single GPU backend: the engine's own `kvk` layer (`vk/kvk.h`), no CUDA. Default policy: use the GPU when `kvk_init` succeeds and the device has fp16
+16x16x16 cooperative matrices and at least 36 KB of shared memory; otherwise, or with `KATANA_CPU=1` / `KATANA_FLUX_GPU=0`, everything runs on the CPU as before.
+
+What runs on the GPU (all verified against the CPU/reference results, see below):
+
+- Transformer (`fxvk.c`, driven by `fxd_gpu_blocks` in `fxdit.c`): the 5 double and 20 single blocks, entirely resident in VRAM. Q4_K and Q5_K weights are uploaded once, still
+  quantized (2112 MB for the whole transformer), in the engine's 32-row interleaved layout, and decoded inside the cooperative-matrix GEMM (`mm.comp`, the existing prompt-batch kernel,
+  "precise" variant: weights and activations each split in two fp16 parts, so about 22 bits; the plain fp16 variant was measured and fails the 1e-3 tolerance at the last block).
+  New kernels: tiled transpose (fp32 to fp16/fp32), LayerNorm + modulation, RMSNorm per head + RoPE, non-causal attention (24 heads x 128, online softmax, 64x64 tiles, fp32),
+  SwiGLU, gated residual.
+- VAE decoder and encoder (`fxvaegpu.c`): convolution as im2col in blocks + the same precise GEMM (F32 weights), GroupNorm + SiLU (three-pass kernel), nearest upsampling fused into the im2col,
+  bias and resnet residual fused into the output transpose.
+- Still on the CPU: the text encoder (Qwen3-4B, `fxtext.c`), the BF16 tensors (input projections, time embedding, modulation vectors: single-vector products or tiny GEMMs), the final layer, the
+  scheduler, the single-head attention of the VAE middle block (once per image, 72x40 tokens x 512; one round trip), and PNG writing.
+- Fallback inside the GPU path: if a transformer weight does not fit the VRAM budget (92% of what the driver reports, minus an activation reserve) the block-resident path is skipped and each GEMM that fits
+  runs on the GPU with a host round trip, the rest on the CPU. If the VAE buffers do not fit (they are about 190 MB per 1/64 of a megapixel of latent x 4 buffers, i.e. roughly 750 MB at 576x320 and
+  scale linearly with the pixel count), the VAE runs on the CPU. The transformer weights are released before the VAE runs and uploaded again on the next forward.
+
+Measured (RTX 3050 Laptop GPU 4 GB, 8-thread CPU host, 2026-11-24, `bench` and `gemm-test` commands of `flux-dit`):
+
+| item | CPU | GPU |
+|---|---|---|
+| transformer step, 720 image + 77 text tokens | 8.3 s | 1.8 s |
+| transformer step, 720 image + 512 text tokens (576x320 as `generate` does it) | 14.4 s | 2.65 s |
+| one GEMM 27648x3072, 800 tokens | 216 ms | 34-52 ms (fp16 variant 34, precise variant 52; about 2.5 TFLOP/s effective in the precise one) |
+| attention, 797 tokens, 24 heads | 38 ms | 5.5 ms |
+| VAE decode 576x320 | about 10 s (estimated from 3.5 s at 320x192) | 1.6 s |
+| 2-step 576x320 image, end to end | not run | 18.3 s (text encoder 4-5 s on the CPU) |
+| VRAM | | 2112 MB transformer weights + about 300-450 MB activations; peak sampled with nvidia-smi 2562 MiB |
+
+Verification against the CPU and the float32 references (all pass on the GPU): `flux-dit selftest` (fluxB) worst block ratio 5.5e-5, final output 7.4e-5 (CPU: 6e-6; tolerance 1e-3);
+`flux-vae selftest` encoder 1.9e-5, decoder 2.7e-5 (tolerance 1e-3); `flux-gen selftest` (fluxD, 320x192, 2 steps, reference image): latents 6e-6 and 1.8e-4, final image 6e-4 of full scale (mean pixel
+difference 0.002 of 255); per-kernel tests: `flux-dit gemm-test`, `flux-dit attn-test` (GPU attention 7e-6), `flux-vae gpu-test` (convolutions, resnets, GroupNorm).
+Limits: the GPU results differ from the CPU ones at the 1e-5 to 1e-4 level (fp16 cooperative matrices with split parts), so images are not bit-identical; a model with more than about 3.2 GB of weights
+would need layer streaming, which is not implemented; sizes above roughly 1 megapixel fall back to the CPU VAE.

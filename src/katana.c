@@ -201,6 +201,8 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdspec.c"              /* render: pedido -> especificacao de imagem -> prompt do Stable Diffusion (katana render spec) */
 #include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */
 #include "render/fxconvert_vae.c"        /* render: VAE do FLUX.2 klein, conversor (katana render flux-vae convert) */
+#include "render/fxvk.c"              /* render: FLUX.2 na GPU (Vulkan): produtos Q4_K/Q5_K, blocos do transformador */
+#include "render/fxvaegpu.c"        /* render: VAE do FLUX.2 na GPU (Vulkan): convolucao, GroupNorm */
 #include "render/fxvae.c"                /* render: VAE do FLUX.2 klein na CPU (katana render flux-vae selftest) */
 #include "render/fxdit.c"              /* render: transformador do FLUX.2 klein (katana render flux-dit) */
 #include "render/fxlora.c"             /* render: adaptadores LoRA do transformador do FLUX.2 klein (.fxlora) */

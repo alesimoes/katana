@@ -1,0 +1,72 @@
+#version 450
+// Atencao do FLUX.2 (sem mascara, cabecas de 128): O = softmax(Q K^T * escala) V, por cabeca, com soma online (a matriz de pontuacoes nunca existe inteira).
+// Q, K, V ficam num buffer com passo ld (colunas qo/ko/vo + 128*cabeca). Grupo = (bloco de 64 consultas, cabeca), 256 threads, ladrilhos de 64 chaves.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer QKV { float qkv[]; };
+layout(std430, binding = 1) writeonly buffer O { float o[]; };
+layout(push_constant) uniform P { uint n, ld, qo, ko, vo, ldo, oo; float scale; } pc;
+shared float sS[64 * 65];
+shared float sA[64 * 33];
+shared float sB[64 * 33];
+shared float sV[16 * 128];
+shared float sm[64], sl[64], sal[64];
+void main() {
+    const uint tid = gl_LocalInvocationID.x, ty = tid >> 4, tx = tid & 15u, h = gl_WorkGroupID.y, qb = gl_WorkGroupID.x * 64, n = pc.n;
+    float acc[4][8];
+    for (uint i = 0; i < 4; i++) for (uint j = 0; j < 8; j++) acc[i][j] = 0.0;
+    if (tid < 64) { sm[tid] = -1e30; sl[tid] = 0.0; }
+    for (uint kt = 0; kt < n; kt += 64) {
+        float s[4][4];
+        for (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) s[i][j] = 0.0;
+        for (uint dc = 0; dc < 128; dc += 32) {
+            barrier();
+            for (uint e = 0; e < 8; e++) {
+                const uint idx = tid + e * 256, r = idx >> 5, dd = idx & 31u, gq = qb + r, gk = kt + r;
+                sA[r * 33 + dd] = gq < n ? qkv[gq * pc.ld + pc.qo + h * 128 + dc + dd] : 0.0;
+                sB[r * 33 + dd] = gk < n ? qkv[gk * pc.ld + pc.ko + h * 128 + dc + dd] : 0.0;
+            }
+            barrier();
+            for (uint dd = 0; dd < 32; dd++) {
+                float a[4], b[4];
+                for (uint i = 0; i < 4; i++) a[i] = sA[(ty * 4 + i) * 33 + dd];
+                for (uint j = 0; j < 4; j++) b[j] = sB[(tx + 16 * j) * 33 + dd];
+                for (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) s[i][j] += a[i] * b[j];
+            }
+        }
+        for (uint i = 0; i < 4; i++) for (uint j = 0; j < 4; j++) {
+            const uint col = tx + 16 * j;
+            sS[(ty * 4 + i) * 65 + col] = (kt + col < n) ? s[i][j] * pc.scale : -1e30;
+        }
+        barrier();
+        if (tid < 64) {
+            float mx = sm[tid];
+            for (uint c = 0; c < 64; c++) mx = max(mx, sS[tid * 65 + c]);
+            const float al = exp(sm[tid] - mx);
+            float sum = 0.0;
+            for (uint c = 0; c < 64; c++) { const float p = exp(sS[tid * 65 + c] - mx); sS[tid * 65 + c] = p; sum += p; }
+            sl[tid] = sl[tid] * al + sum; sm[tid] = mx; sal[tid] = al;
+        }
+        barrier();
+        for (uint i = 0; i < 4; i++) { const float al = sal[ty * 4 + i]; for (uint j = 0; j < 8; j++) acc[i][j] *= al; }
+        for (uint kc = 0; kc < 64; kc += 16) {
+            for (uint e = 0; e < 8; e++) {
+                const uint idx = tid + e * 256, kk = idx >> 7, dd = idx & 127u, gk = kt + kc + kk;
+                sV[kk * 128 + dd] = gk < n ? qkv[gk * pc.ld + pc.vo + h * 128 + dd] : 0.0;
+            }
+            barrier();
+            for (uint kk = 0; kk < 16; kk++) {
+                float p[4], v[8];
+                for (uint i = 0; i < 4; i++) p[i] = sS[(ty * 4 + i) * 65 + kc + kk];
+                for (uint j = 0; j < 8; j++) v[j] = sV[kk * 128 + tx + 16 * j];
+                for (uint i = 0; i < 4; i++) for (uint j = 0; j < 8; j++) acc[i][j] += p[i] * v[j];
+            }
+            barrier();
+        }
+    }
+    for (uint i = 0; i < 4; i++) {
+        const uint gq = qb + ty * 4 + i;
+        if (gq >= n) continue;
+        const float inv = 1.0 / sl[ty * 4 + i];
+        for (uint j = 0; j < 8; j++) o[gq * pc.ldo + pc.oo + h * 128 + tx + 16 * j] = acc[i][j] * inv;
+    }
+}
