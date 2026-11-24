@@ -152,7 +152,7 @@ static uint8_t *sdp_canny(const uint8_t *rgb, int w, int h, int lo, int hi) {
 
 /* ---------- pipeline ---------- */
 typedef struct {
-    const char *prompt, *negative, *models, *out, *control, *init;
+    const char *prompt, *negative, *models, *out, *control, *init, *sdmodel;
     int steps, w, h, canny_lo, canny_hi, control_lines, max_chunks, lcm; double guidance, strength, control_scale; uint64_t seed;
 } SdpParams;
 
@@ -191,6 +191,29 @@ static int sdp_eps(SdpPass *Q, const float *lat, float t, const float *ctx, floa
     return 1;
 }
 
+/* Checkpoint do Stable: --sd-model <nome> (ou KATANA_SD_MODEL; a opcao vale mais) escolhe sd15-<nome>.gguf, ou sd15-<nome>-lcm.gguf com --lcm.
+ * Padrao: realistic-vision. O nome so tem letras, digitos, '-' e '_' (e um nome de arquivo, nunca um caminho). Os modelos que existem
+ * (sd15-*.gguf em models/render, sem os -lcm e o ControlNet) sao listados no erro. 0 = ok */
+static int sdp_model_path(const SdpParams *P, char *out, size_t cap) {
+    const char *nm = P->sdmodel && *P->sdmodel ? P->sdmodel : getenv("KATANA_SD_MODEL");
+    if (!nm || !*nm) nm = "realistic-vision";
+    for (const char *c = nm; *c; c++) if (!isalnum((unsigned char)*c) && *c != '-' && *c != '_') { fprintf(stderr, "render: nome de modelo invalido: %s (so letras, digitos, - e _)\n", nm); return 1; }
+    snprintf(out, cap, "%s/sd15-%s%s.gguf", P->models, nm, P->lcm ? "-lcm" : "");
+    if (access(out, R_OK) == 0) return 0;
+    fprintf(stderr, "render: o modelo \"%s\"%s nao existe (%s).", nm, P->lcm ? " na variante LCM" : "", out);
+    DIR *d = opendir(P->models);
+    if (d) {
+        fprintf(stderr, " Disponiveis:");
+        for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+            const size_t l = strlen(e->d_name);
+            if (l > 9 && !strncmp(e->d_name, "sd15-", 5) && !strcmp(e->d_name + l - 5, ".gguf") && !strstr(e->d_name, "-lcm.") && !strstr(e->d_name, "controlnet")) fprintf(stderr, " %.*s", (int)(l - 10), e->d_name + 5);
+        }
+        closedir(d);
+    }
+    fprintf(stderr, "\n");
+    return 1;
+}
+
 static int sdp_generate(const SdpParams *P) {
     int W = P->w, H = P->h; char path[1100];
     if ((!W || !H) && (P->control || P->init)) {                         /* tamanho pela proporcao da imagem, lado maior 512 */
@@ -202,7 +225,8 @@ static int sdp_generate(const SdpParams *P) {
     if (!W || !H) { W = 512; H = 512; }
     if (W % 64 || H % 64) { fprintf(stderr, "render: o tamanho tem de ter lados multiplos de 64 (veio %dx%d)\n", W, H); return 1; }
     SdgFile base, ctrl; SdClip clip; int use_ctrl = P->control != NULL;
-    snprintf(path, sizeof path, "%s/%s", P->models, P->lcm ? "sd15-realistic-vision-lcm.gguf" : "sd15-realistic-vision.gguf"); if (!sdg_open(&base, path)) return 1;
+    if (sdp_model_path(P, path, sizeof path)) return 1;
+    if (!sdg_open(&base, path)) return 1;
     if (use_ctrl) { snprintf(path, sizeof path, "%s/sd15-controlnet-canny.gguf", P->models); if (!sdg_open(&ctrl, path)) return 1; }
     if (!sdc_load(&clip, &base)) return 1;
     const double t0 = sdp_now();
@@ -343,6 +367,7 @@ static int sdp_main(int argc, char **argv) {
         }
         else if (!strcmp(a, "--chunks") && more) P.max_chunks = atoi(argv[++i]);
         else if (!strcmp(a, "--lcm")) P.lcm = 1;
+        else if (!strcmp(a, "--sd-model") && more) P.sdmodel = argv[++i];
         else if (!strcmp(a, "--steps") && more) { P.steps = atoi(argv[++i]); steps_set = 1; }
         else if (!strcmp(a, "--guidance") && more) P.guidance = atof(argv[++i]);
         else if (!strcmp(a, "--seed") && more) P.seed = (uint64_t)strtoull(argv[++i], NULL, 10);
@@ -385,7 +410,7 @@ static int sdp_main(int argc, char **argv) {
     }
     if (brief && P.out) { if (!sdb_fill(&P, brief)) return 1; }
     else if (nl && P.out && !sds_fill(&P, nl)) return 1;
-    if (!P.prompt || !P.out) { fprintf(stderr, "uso: katana render generate --prompt \"...\" (ou --prompt-file arq) --out saida.png [--chunks 4] [--lcm: LCM, 4 passos, 1 passe] [--negative \"...\"] [--steps 20] [--guidance 7.5] [--seed 0]\n"
+    if (!P.prompt || !P.out) { fprintf(stderr, "uso: katana render generate --prompt \"...\" (ou --prompt-file arq) --out saida.png [--chunks 4] [--lcm: LCM, 4 passos, 1 passe] [--sd-model nome (ou KATANA_SD_MODEL): realistic-vision (padrao), interior] [--negative \"...\"] [--steps 20] [--guidance 7.5] [--seed 0]\n"
                                               "       [--size WxH (multiplos de 64)] [--control img [--control-lines] [--control-scale 1.0] [--canny BAIXO ALTO]] [--init img [--strength 0.75]] [--models pasta]\n"); return 1; }
     if (engine && strcmp(engine, "stable")) {                                /* motores em preparacao (WIP): contrato ja fixado para o desktop */
         if (!strcmp(engine, "flux") || !strcmp(engine, "krea")) { fprintf(stderr, "render: o motor %s esta em desenvolvimento (WIP), ainda nao disponivel\n", engine); return 3; }
