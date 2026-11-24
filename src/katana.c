@@ -196,3 +196,5 @@ static const char KATANA_CHANGES[] = "";
 #include "render/fxtext.c"              /* render: texto do FLUX.2 klein, Qwen3-4B camadas 9/18/27 (katana render flux-text) */
 #include "render/sdspec.c"              /* render: pedido -> especificacao de imagem -> prompt do Stable Diffusion (katana render spec) */
 #include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */
+#include "render/fxconvert_vae.c"        /* render: VAE do FLUX.2 klein, conversor (katana render flux-vae convert) */
+#include "render/fxvae.c"                /* render: VAE do FLUX.2 klein na CPU (katana render flux-vae selftest) */
