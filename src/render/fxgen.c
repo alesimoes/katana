@@ -125,6 +125,7 @@ static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, 
     const int ok = sdp_png_write(out, px, w, h);
     free(px); free(rgb);
     fxq_report();
+    { static const char *nm[3] = { "cpu", "cuda", "vulkan" }; fprintf(stderr, "[flux] usado: dit=%s vae=%s\n", nm[g_fx_be_dit], nm[g_fx_be_vae]); }
     if (ok) fprintf(stderr, "[flux] pronto: %s (%dx%d)\n", out, w, h);
     return ok;
 }

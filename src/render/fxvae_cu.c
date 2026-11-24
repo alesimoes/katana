@@ -191,5 +191,6 @@ done:
     cu_free(ca); cu_free(cb); cu_free(tv); cu_free(zd); free(z);
     if (!ok || !img) { if (img) free(img); fprintf(stderr, "flux-vae: a GPU (CUDA) nao conseguiu; usando a CPU\n"); return NULL; }
     *Ho = H; *Wo = W;
+    g_fx_be_vae = 1;
     return img;
 }

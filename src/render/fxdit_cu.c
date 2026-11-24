@@ -228,6 +228,7 @@ static int fxc_forward(const FxDit *F, const float *img, const float *ids_img, i
 done:
     cu_sync();
     fxc_buf_free(&mem); free(mod); free(cs); free(sn);
+    if (ok) g_fx_be_dit = 1;
     if (!ok) { fprintf(stderr, "flux: a GPU (CUDA) nao conseguiu o passo (VRAM livre insuficiente?); usando a CPU\n"); fxc_release(); g_fc.ok = 0; }
     return ok;
 }

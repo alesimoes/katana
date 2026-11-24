@@ -1,3 +1,4 @@
+#include <memory>
 #include <QFont>
 #include <QStandardPaths>
 #include <QUrl>
@@ -1600,8 +1601,16 @@ bool Backend::sendImage(const QString &text)
         p->deleteLater();
         if (!briefFile.isEmpty()) QFile::remove(briefFile);
         if (st == QProcess::NormalExit && code == 0 && QFileInfo::exists(out)) {
-            m_msgs.append("image", out, engine);
-            m_sess.mensagens.append({"image", out, engine, QDateTime::currentDateTime().toString(Qt::ISODate)});
+            // o motor diz quem processou de fato ("[flux] usado: dit=cuda vae=vulkan"); o cartao mostra CUDA, Vulkan ou CPU
+            QString nome2 = engine;
+            const auto mt = QRegularExpression(QStringLiteral("\\[flux\\] usado: dit=(\\w+) vae=(\\w+)")).match(log);
+            if (mt.hasMatch()) {
+                auto rot = [](const QString &s) { return s == "cuda" ? QStringLiteral("CUDA") : s == "vulkan" ? QStringLiteral("Vulkan") : QStringLiteral("CPU"); };
+                const QString a = rot(mt.captured(1)), b = rot(mt.captured(2));
+                nome2 += "|" + (a == b ? a : QStringLiteral("transformador %1, VAE %2").arg(a, b));
+            }
+            m_msgs.append("image", out, nome2);
+            m_sess.mensagens.append({"image", out, nome2, QDateTime::currentDateTime().toString(Qt::ISODate)});
             saveSession();
         } else if (st == QProcess::NormalExit && code == 3) {   // motor ainda nao existe: aviso amigavel, nao e erro
             m_msgs.append("image", {}, engine, {}, QString("O motor %1 ainda nao esta disponivel nesta versao. Use o Stable por enquanto.").arg(nome));
@@ -1609,6 +1618,7 @@ bool Backend::sendImage(const QString &text)
             m_msgs.append("error", QString("A geracao da imagem (%1) falhou (codigo %2):\n%3").arg(nome).arg(code).arg(log.right(600)));
         }
         emit imageChanged();
+        reopenAgentAfterImage();
     });
     connect(p, &QProcess::errorOccurred, this, [this, p, nome, briefFile](QProcess::ProcessError e) {
         if (e != QProcess::FailedToStart) return;
@@ -1617,10 +1627,39 @@ bool Backend::sendImage(const QString &text)
         m_msgs.append("error", QString("Nao foi possivel iniciar o katana para gerar a imagem (%1): %2").arg(nome, p->errorString()));
         p->deleteLater();
         emit imageChanged();
+        reopenAgentAfterImage();
     });
+    // a placa tem 4 GB e o agente ocupa quase tudo: com o FLUX na GPU o agente sai primeiro (volta ao terminar a imagem)
+    if (engine == "flux" && imageBackend() != "cpu" && m_proc && !m_answering) {
+        m_reloadModel = m_model;
+        detach(m_proc);
+        m_proc = nullptr;
+        setState(false, false, false);
+        setTexts(QStringLiteral("Liberando a placa de video para a imagem..."), {});
+        auto *tm = new QTimer(this);
+        auto tries = std::make_shared<int>(0);
+        connect(tm, &QTimer::timeout, this, [this, tm, tries, p, args] {
+            if (m_dying > 0 && ++*tries < 60) return;      // espera o agente sair de fato (libera a VRAM), no maximo ~9 s
+            tm->deleteLater();
+            setTexts(QStringLiteral("Gerando a imagem na placa de video..."), {});
+            p->start(m_katana, args);
+            emit imageChanged();
+        });
+        tm->start(150);
+        emit imageChanged();
+        return true;
+    }
     p->start(m_katana, args);
     emit imageChanged();
     return true;
+}
+
+void Backend::reopenAgentAfterImage()
+{
+    if (m_reloadModel.isEmpty()) return;
+    const QString mdl = m_reloadModel;
+    m_reloadModel.clear();
+    if (!m_proc) start(mdl);
 }
 
 bool Backend::newChat()

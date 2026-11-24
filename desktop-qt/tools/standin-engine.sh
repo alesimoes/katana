@@ -18,7 +18,10 @@ render)
     # briefing que nao existe: o motor real recusa antes de gerar (codigo 1)
     if [ -n "$BR" ]; then [ -f "$BR" ] || { echo "render: nao consegui abrir o briefing" >&2; exit 1; }; cp "$BR" "${HOME:-/tmp}/.standin-render-brief"; fi
     case "$E" in
-    flux) echo "render: o motor $E ainda nao esta disponivel" >&2; exit 3;;
+    flux) case "$KATANA_BACKEND" in
+          cuda|vulkan) echo "[flux] usado: dit=$KATANA_BACKEND vae=$KATANA_BACKEND" >&2; cp "$(dirname "$0")/samples/render-saida.png" "$OUT"; exit 0;;   # com a placa escolhida o flux "gera" e diz quem processou
+          esac
+          echo "render: o motor $E ainda nao esta disponivel" >&2; exit 3;;
     esac
     if { [ -n "$PF" ] && grep -q falhe "$PF"; } || case "$NL" in *falhe*) true;; *) false;; esac; then echo "render: nao achei os pesos do Stable" >&2; exit 2; fi
     cp "$(dirname "$0")/samples/render-saida.png" "$OUT"; exit 0;;

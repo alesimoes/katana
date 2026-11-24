@@ -612,6 +612,7 @@ static int fxd_forward(const FxDit *F, const float *img, const float *ids_img, i
     /* 5. blocos duplos (a GPU faz os 25 blocos de uma vez, se puder) */
     float *z = xalloc((size_t)N * D, 4);
     const int on_gpu = fxd_gpu_blocks(F, x, c, Ni, Nt, mi, mt, ms, cs, sn, z, pr);
+    if (on_gpu) g_fx_be_dit = 2;
     for (int b = 0; b < FXD_NDBL && !on_gpu; b++) {
         if (!fxd_double(F, b, x, Ni, c, Nt, mi, mt, cs, sn)) return 0;
         if (pr) { fxd_probe_copy(pr->dimg[b], x, (size_t)Ni * D); fxd_probe_copy(pr->dtxt[b], c, (size_t)Nt * D); }

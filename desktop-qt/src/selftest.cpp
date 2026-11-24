@@ -1034,6 +1034,18 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(w["kind"] == "image" && w["text"].toString().isEmpty() && !w["out"].toString().isEmpty() && !w["out"].toString().contains("WIP") && w["name"] == "flux", "flux: aviso de motor indisponivel, sem erro e sem WIP");
         { QList<QQuickItem *> notes; findAll(c.root(), "imageNote", notes); check(!notes.isEmpty() && notes.last()->isVisible(), "aviso visivel"); c.grab("62-motor-indisponivel.png"); }
 
+        // FLUX com a placa escolhida: o cartao diz quem processou (CUDA)
+        be.setImageBackend("cuda");
+        be.setImageEngine("flux");
+        be.attachImage(img);
+        const int antesC = be.messages()->count();
+        c.typeAndEnter("gere com flux na placa");
+        check(waitFor([&] { return be.messages()->count() > antesC + 1 && !be.imageBusy(); }, 30000), "flux na placa: terminou");
+        QTest::qWait(400);
+        check(be.messages()->get(be.messages()->count() - 1)["name"] == "flux|CUDA", "cartao do FLUX indica CUDA");
+        { QList<QQuickItem *> tt; findAll(c.root(), "imageTitle", tt); check(!tt.isEmpty() && tt.last()->property("text").toString().contains("CUDA"), "titulo do cartao mostra CUDA"); c.grab("67-imagem-cuda.png"); }
+        be.setImageBackend("auto");
+
         // falha do stable: cartao de erro
         be.setImageEngine("stable");
         be.attachImage(img);

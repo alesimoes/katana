@@ -250,6 +250,7 @@ public:
     Q_INVOKABLE void clearImage();
     Q_INVOKABLE bool pasteClipboardImage();                   // anexa a imagem da area de transferencia (se houver); false se nao houver
     Q_INVOKABLE static bool looksLikeBrief(const QString &text);   // texto longo ou com cara de briefing: vai como --brief em vez de --nl
+    void reopenAgentAfterImage();                             // volta a abrir o agente fechado para liberar a placa
     Q_INVOKABLE bool sendImage(const QString &text);          // gera a imagem com `katana render generate` (nao passa pelo agente)
     Q_INVOKABLE QString imageDir() const;                     // pasta das imagens geradas
     Q_INVOKABLE void stop();
@@ -366,6 +367,7 @@ private:
     static QString cleanArgs(const QString &s);
 
     QString m_katana, m_modelsDir, m_home, m_sessDir;
+    QString m_reloadModel;      // modelo do agente fechado para liberar a placa durante a imagem; volta a abrir quando a imagem termina
     QString m_attach, m_imgEngine = QStringLiteral("stable");
     QProcess *m_imgProc = nullptr;
     QSettings *m_ui = nullptr;

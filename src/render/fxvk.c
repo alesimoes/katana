@@ -119,6 +119,7 @@ static int fxv_lin(const SdgFile *g, float *Y, const float *X, int n, const SdgI
 
 /* ---- bloco inteiro na GPU: z [texto; imagem] e as ativacoes ficam na VRAM, so a entrada e a saida passam pelo hospedeiro ---- */
 static struct { KvkBuf z, xn, h, cat, o, mod, cs, sn, nw; int N; size_t cap; double t; } fxr;
+static int g_fx_be_dit, g_fx_be_vae;       /* quem processou de fato: 0 CPU, 1 CUDA, 2 Vulkan (dito na linha "[flux] usado:" do fim da geracao) */
 #define FXV_D 3072
 static int fxv_res_open(int N) {
     if (!fxv.on || !fxv.shared_ok) return 0;

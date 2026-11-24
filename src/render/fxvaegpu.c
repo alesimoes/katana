@@ -223,6 +223,7 @@ static float *fxq_decode(const SdgFile *g, const float *z, int H, int W, int *Ho
     if (!ok) { fprintf(stderr, "flux: VAE na GPU falhou (%s), CPU\n", kvk_error()); free(img); return NULL; }
     fxq.t += sdt_now() - t0;
     *Ho = H; *Wo = W;
+    if (img) g_fx_be_vae = 2;
     return img;
 }
 
