@@ -574,6 +574,7 @@ static int fxd_bench(int Ni, int Nt) {
     double h = 0; for (size_t i = 0; i < (size_t)Ni * FXD_INCH; i++) h += (double)out[i] * (double)((i % 97) + 1);
     printf("bench Ni=%d Nt=%d  1o forward %.2f s  2o forward %.2f s  | desquantizar/empacotar %.2f  produtos %.2f  atencao %.2f  resto %.2f | soma %.6e\n", Ni, Nt, first, tot,
            g_fxd_tm[FT_PACK], g_fxd_tm[FT_GEMM], g_fxd_tm[FT_ATT], tot - g_fxd_tm[FT_PACK] - g_fxd_tm[FT_GEMM] - g_fxd_tm[FT_ATT], h);
+    if (g_fc.ok) printf("  GPU (CUDA, %s): produtos %.3f s  atencao %.3f s  resto %.3f s  | pesos na VRAM %.2f GB | %.2f TFLOPS no passo\n", g_fc.prec ? "preciso" : "rapido", g_fc_tm[0], g_fc_tm[1], g_fc_tm[2], (double)g_fc.wbytes / 1e9, g_fc_flop / 2 / tot / 1e12);
     return 0;
 }
 

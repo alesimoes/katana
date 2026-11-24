@@ -3,9 +3,6 @@
  * F16/F32), produtos por mma.sync (cu_ptx.c), atencao fundida (tools/cuda/kern.cu), o fluxo residual em F32 e as entradas dos produtos em F16.
  * So os vetores pequenos (embedding do passo e modulacoes, n = 1) ficam na CPU. Sem placa, sem libcuda ou sem VRAM suficiente,
  * fxc_forward() devolve 0 e o chamador usa a CPU. KATANA_BACKEND=cpu/vulkan ou KATANA_CPU=1 desligam; KATANA_FLUX_CUDA=0 tambem. */
-#include "engine/cu_rt.c"
-#include "engine/cu_ptx.c"
-#include "engine/cu_kern.inc"
 
 #define FXC_NW 320
 static struct {
@@ -37,7 +34,7 @@ static int fxc_init(void) {
     if (g_fc.prec) { cpx_gemmx(GQ_BF16, S, 3, "gemm_bf16"); cpx_gemmx(GQ_Q4K, S, 3, "gemm_q4k"); cpx_gemmx(GQ_Q5K, S, 3, "gemm_q5k"); g_fc.smem[0] = S * 8192 * 3; g_fc.smem[1] = g_fc.smem[2] = S * 8192 * 4; }
     else { cpx_gemm(GQ_BF16, S, "gemm_bf16"); cpx_gemm(GQ_Q4K, S, "gemm_q4k"); cpx_gemm(GQ_Q5K, S, "gemm_q5k"); g_fc.smem[0] = g_fc.smem[1] = g_fc.smem[2] = S * 32768; }
     g_fc.mg = cu_module(ptx); free(ptx);
-    g_fc.mk = cu_module((const char *)cu_kern_ptx);
+    g_fc.mk = cu_kmod();
     if (!g_fc.mg || !g_fc.mk) return 0;
     g_fc.f_gemm[0] = cu_fn(g_fc.mg, "gemm_bf16"); g_fc.f_gemm[1] = cu_fn(g_fc.mg, "gemm_q4k"); g_fc.f_gemm[2] = cu_fn(g_fc.mg, "gemm_q5k");
     g_fc.f_cast = cu_fn(g_fc.mk, "cast_f32_f16"); g_fc.f_ln = cu_fn(g_fc.mk, "ln_mod"); g_fc.f_qkv = cu_fn(g_fc.mk, "qkv_prep");

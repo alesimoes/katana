@@ -56,8 +56,11 @@ static float *fxv_unpatch(const FxVae *v, const float *tok, int th, int tw) {
     return z;
 }
 
+#include "render/fxvae_cu.c"       /* o decodificador na GPU (CUDA) */
+
 /* fichas normalizadas [th*tw][128] -> imagem [8*2th * 8*2tw][3] em [-1, 1] (memoria nova) ou NULL */
 static float *fxv_decode(const FxVae *v, const float *tok, int th, int tw, int *Ho, int *Wo) {
+    { float *r = fxcv_decode(v, tok, th, tw, Ho, Wo); if (r) return r; }
     const SdgFile *g = &v->g;
     int H = 2 * th, W = 2 * tw, C = 512, ok = 1; char b[220];
     float *z = fxv_unpatch(v, tok, th, tw);

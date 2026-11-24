@@ -196,3 +196,158 @@ __device__ __forceinline__ void attn_impl(const u16 *Q, const u16 *K, const u16 
 }
 EXT __launch_bounds__(128) void attn(const u16 *Q, const u16 *K, const u16 *V, u16 *O, int N, int ldo, float sl) { attn_impl<false, 64>(Q, K, V, 0, 0, 0, O, 0, N, ldo, sl); }
 EXT __launch_bounds__(128) void attnx(const u16 *Q, const u16 *K, const u16 *V, const u16 *Ql, const u16 *Kl, const u16 *Vl, u16 *O, u16 *Ol, int N, int ldo, float sl) { attn_impl<true, 32>(Q, K, V, Ql, Kl, Vl, O, Ol, N, ldo, sl); }
+
+// ---------------------------------------------------------------- VAE: convolucao como GEMM implicito, norma por grupos
+// Coeficientes da norma por grupos (32 grupos): y = silu(ca[c] * x + cb[c]); somas em double como na CPU. Um bloco por grupo.
+EXT void gn_coef(const float *X, int n, int C, const float *gamma, const float *beta, float eps, float *ca, float *cb) {
+    __shared__ double rs[256], rs2[256];
+    const int g = blockIdx.x, cpg = C / 32;
+    double s = 0, s2 = 0;
+    for (long i = threadIdx.x; i < (long)n * cpg; i += blockDim.x) { const long p = i / cpg; const int c = (int)(i - p * cpg); const double v = X[p * C + g * cpg + c]; s += v; s2 += v * v; }
+    rs[threadIdx.x] = s; rs2[threadIdx.x] = s2; __syncthreads();
+    for (int o = 128; o; o >>= 1) { if ((int)threadIdx.x < o) { rs[threadIdx.x] += rs[threadIdx.x + o]; rs2[threadIdx.x] += rs2[threadIdx.x + o]; } __syncthreads(); }
+    const double cnt = (double)n * cpg, mean = rs[0] / cnt, var = rs2[0] / cnt - mean * mean;
+    const float inv = (float)(1.0 / sqrt((var > 0 ? var : 0) + (double)eps)), m = (float)mean;
+    if ((int)threadIdx.x < cpg) { const int ch = g * cpg + threadIdx.x; ca[ch] = gamma[ch] * inv; cb[ch] = beta[ch] - m * gamma[ch] * inv; }
+}
+
+// pesos F32 -> metades F16 [R][Kp] (zeros ate Kp); trans = a fonte e [scols][srows]... out[r][c] = trans ? src[c][r] : src[r][c]
+EXT void wsplit(const float *src, long srows, long scols, int trans, int Kp, u16 *Wh, u16 *Wl) {
+    const long R = trans ? scols : srows, Cc = trans ? srows : scols;
+    for (long i = (long)blockIdx.x * blockDim.x + threadIdx.x; i < R * Kp; i += (long)gridDim.x * blockDim.x) {
+        const long r = i / Kp, c = i - r * Kp; float v = 0;
+        if (c < Cc) v = trans ? src[c * scols + r] : src[r * scols + c];
+        u16 h, l; split16(v, h, l); Wh[i] = h; Wl[i] = l;
+    }
+}
+
+// softmax por linha no lugar: S[nr][nc] *= scale antes
+EXT void softmax_rows(float *S, int nc, float scale) {
+    __shared__ float red[32];
+    float *s = S + (size_t)blockIdx.x * nc;
+    float m = -1e30f; for (int i = threadIdx.x; i < nc; i += blockDim.x) m = fmaxf(m, s[i] * scale);
+    for (int o = 16; o; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+    if (!(threadIdx.x & 31)) red[threadIdx.x >> 5] = m;
+    __syncthreads(); m = -1e30f; for (int i = 0; i < (int)(blockDim.x >> 5); i++) m = fmaxf(m, red[i]);
+    float sum = 0; for (int i = threadIdx.x; i < nc; i += blockDim.x) { const float e = expf(s[i] * scale - m); s[i] = e; sum += e; }
+    const float tot = block_sum(sum, red), inv = 1.0f / tot;
+    for (int i = threadIdx.x; i < nc; i += blockDim.x) s[i] *= inv;
+}
+
+// C[pix][cout] = bias + res + sum_k A[pix][k] W[cout][k]; k = (ky*ks + kx)*Cin + ci; A vem de X [Hin*Win][Cin] F32 (ampliado 2x se up) com
+// y = silu(ca*x + cb) opcional (zeros fora da imagem DEPOIS da transformacao); W em metades F16 [Cout][Kp]. Ladrilho 128 x 128 x 32.
+template <bool PR>
+__device__ __forceinline__ void conv_impl(const float *X, const u16 *Wh, const u16 *Wl, const float *bias, const float *res, float *Y, const float *ca, const float *cb,
+                                          int silu, int H, int W, int Cin, int Cout, int ks, int up, int Kp) {
+    extern __shared__ __align__(16) unsigned char sm[];
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, wm = warp >> 2, wn = warp & 3;
+    const int npix = H * W, p0 = blockIdx.y * 128, c0 = blockIdx.x * 128;
+    const int K = ks * ks * Cin, nkt = (K + 31) / 32, pad = ks >> 1, Hin = up ? H >> 1 : H, Win = up ? W >> 1 : W;
+    const u32 sb = smaddr(sm), sAh = sb, sAl = sb + 8192, sBh = sb + (PR ? 16384 : 8192), sBl = sb + 24576;
+    const int row = tid >> 1, half = tid & 1, p = p0 + row, co = c0 + row, oy = p / W, ox = p - oy * W;
+    const bool pv = p < npix, cv = co < Cout;
+    float acc[16][4]; for (int i = 0; i < 16; i++) for (int j = 0; j < 4; j++) acc[i][j] = 0.0f;
+    float av[16]; uint4 bh0, bh1, bl0, bl1;
+    auto fetch = [&](int kt) {
+        const int k0 = kt * 32 + half * 16;
+        const bool fast = (Cin & 15) == 0;
+        if (fast) {
+            bool ok = pv && k0 < K; float4 v0 = make_float4(0, 0, 0, 0), v1 = v0, v2 = v0, v3 = v0; int ci = 0;
+            if (ok) {
+                const int cell = k0 / Cin; ci = k0 - cell * Cin; const int ky = cell / ks, kx = cell - ky * ks;
+                int iy = oy + ky - pad, ix = ox + kx - pad;
+                if (iy < 0 || iy >= H || ix < 0 || ix >= W) ok = false;
+                else {
+                    if (up) { iy >>= 1; ix >>= 1; }
+                    const float4 *s = (const float4 *)(X + ((size_t)iy * Win + ix) * Cin + ci);
+                    v0 = s[0]; v1 = s[1]; v2 = s[2]; v3 = s[3];
+                }
+            }
+            float t[16] = { v0.x, v0.y, v0.z, v0.w, v1.x, v1.y, v1.z, v1.w, v2.x, v2.y, v2.z, v2.w, v3.x, v3.y, v3.z, v3.w };
+            for (int e = 0; e < 16; e++) {
+                float v = t[e];
+                if (ok && ca) { v = ca[ci + e] * v + cb[ci + e]; if (silu) v = v / (1.0f + __expf(-v)); }
+                av[e] = ok ? v : 0.0f;
+            }
+        } else {
+            for (int e = 0; e < 16; e++) {
+                const int kk = k0 + e; float v = 0;
+                if (pv && kk < K) {
+                    const int cell = kk / Cin, ci = kk - cell * Cin, ky = cell / ks, kx = cell - ky * ks;
+                    int iy = oy + ky - pad, ix = ox + kx - pad;
+                    if (!(iy < 0 || iy >= H || ix < 0 || ix >= W)) {
+                        if (up) { iy >>= 1; ix >>= 1; }
+                        v = X[((size_t)iy * Win + ix) * Cin + ci];
+                        if (ca) { v = ca[ci] * v + cb[ci]; if (silu) v = v / (1.0f + __expf(-v)); }
+                    }
+                }
+                av[e] = v;
+            }
+        }
+        const uint4 z = make_uint4(0, 0, 0, 0);
+        const size_t o = (size_t)co * Kp + kt * 32 + half * 16;
+        bh0 = cv ? *(const uint4 *)(Wh + o) : z; bh1 = cv ? *(const uint4 *)(Wh + o + 8) : z;
+        if (PR) { bl0 = cv ? *(const uint4 *)(Wl + o) : z; bl1 = cv ? *(const uint4 *)(Wl + o + 8) : z; }
+    };
+    auto store = [&]() {
+        const int o0 = row * 64 + (((half * 2) ^ ((row >> 1) & 3)) << 4), o1 = row * 64 + (((half * 2 + 1) ^ ((row >> 1) & 3)) << 4);
+        u32 h[8], l[8];
+        for (int e = 0; e < 8; e++) split2(av[2 * e], av[2 * e + 1], h[e], l[e]);
+        asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sAh + o0), "r"(h[0]), "r"(h[1]), "r"(h[2]), "r"(h[3]) : "memory");
+        asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sAh + o1), "r"(h[4]), "r"(h[5]), "r"(h[6]), "r"(h[7]) : "memory");
+        asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sBh + o0), "r"(bh0.x), "r"(bh0.y), "r"(bh0.z), "r"(bh0.w) : "memory");
+        asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sBh + o1), "r"(bh1.x), "r"(bh1.y), "r"(bh1.z), "r"(bh1.w) : "memory");
+        if (PR) {
+            asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sAl + o0), "r"(l[0]), "r"(l[1]), "r"(l[2]), "r"(l[3]) : "memory");
+            asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sAl + o1), "r"(l[4]), "r"(l[5]), "r"(l[6]), "r"(l[7]) : "memory");
+            asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sBl + o0), "r"(bl0.x), "r"(bl0.y), "r"(bl0.z), "r"(bl0.w) : "memory");
+            asm volatile("st.shared.v4.b32 [%0],{%1,%2,%3,%4};" :: "r"(sBl + o1), "r"(bl1.x), "r"(bl1.y), "r"(bl1.z), "r"(bl1.w) : "memory");
+        }
+    };
+    fetch(0);
+    for (int kt = 0; kt < nkt; kt++) {
+        __syncthreads();
+        store();
+        __syncthreads();
+        if (kt + 1 < nkt) fetch(kt + 1);
+        for (int kk = 0; kk < 2; kk++) {
+            u32 af[4][4], al[4][4], bf[2][4], bfl[2][4];
+            for (int mi = 0; mi < 4; mi++) {
+                const int r = wm * 64 + mi * 16 + (lane & 7) + (((lane >> 3) & 1) << 3), ch = 2 * kk + (lane >> 4);
+                const u32 off = r * 64 + ((ch ^ ((r >> 1) & 3)) << 4);
+                ldm4(af[mi][0], af[mi][1], af[mi][2], af[mi][3], sAh + off);
+                if (PR) ldm4(al[mi][0], al[mi][1], al[mi][2], al[mi][3], sAl + off);
+            }
+            for (int nj = 0; nj < 2; nj++) {
+                const int r = wn * 32 + nj * 16 + (lane & 7) + ((lane >> 4) << 3), ch = 2 * kk + ((lane >> 3) & 1);
+                const u32 off = r * 64 + ((ch ^ ((r >> 1) & 3)) << 4);
+                ldm4(bf[nj][0], bf[nj][1], bf[nj][2], bf[nj][3], sBh + off);
+                if (PR) ldm4(bfl[nj][0], bfl[nj][1], bfl[nj][2], bfl[nj][3], sBl + off);
+            }
+            for (int mi = 0; mi < 4; mi++) for (int ni = 0; ni < 4; ni++) {
+                const int nj = ni >> 1, h2 = (ni & 1) * 2;
+                mma16816(acc[mi * 4 + ni], af[mi][0], af[mi][1], af[mi][2], af[mi][3], bf[nj][h2], bf[nj][h2 + 1]);
+                if (PR) {
+                    mma16816(acc[mi * 4 + ni], al[mi][0], al[mi][1], al[mi][2], al[mi][3], bf[nj][h2], bf[nj][h2 + 1]);
+                    mma16816(acc[mi * 4 + ni], af[mi][0], af[mi][1], af[mi][2], af[mi][3], bfl[nj][h2], bfl[nj][h2 + 1]);
+                }
+            }
+        }
+    }
+    for (int mi = 0; mi < 4; mi++) for (int ni = 0; ni < 4; ni++) for (int hh = 0; hh < 2; hh++) {
+        const int r = p0 + wm * 64 + mi * 16 + (lane >> 2) + hh * 8, c = c0 + wn * 32 + ni * 8 + 2 * (lane & 3);
+        if (r >= npix) continue;
+        for (int e = 0; e < 2; e++) {
+            if (c + e >= Cout) continue;
+            float v = acc[mi * 4 + ni][hh * 2 + e] + (bias ? bias[c + e] : 0.0f);
+            if (res) v += res[(size_t)r * Cout + c + e];
+            Y[(size_t)r * Cout + c + e] = v;
+        }
+    }
+}
+EXT __launch_bounds__(256) void conv(const float *X, const u16 *Wh, const float *bias, const float *res, float *Y, const float *ca, const float *cb, int silu, int H, int W, int Cin, int Cout, int ks, int up, int Kp) {
+    conv_impl<false>(X, Wh, 0, bias, res, Y, ca, cb, silu, H, W, Cin, Cout, ks, up, Kp);
+}
+EXT __launch_bounds__(256) void convx(const float *X, const u16 *Wh, const u16 *Wl, const float *bias, const float *res, float *Y, const float *ca, const float *cb, int silu, int H, int W, int Cin, int Cout, int ks, int up, int Kp) {
+    conv_impl<true>(X, Wh, Wl, bias, res, Y, ca, cb, silu, H, W, Cin, Cout, ks, up, Kp);
+}
