@@ -80,7 +80,7 @@ static SdcW *scu_wget(const SdcM *m, int nb, const char *const *base, int bias) 
     char nm[260];
     snprintf(nm, sizeof nm, "%s.weight", base[0]);
     const SdgInfo *t0 = sdg_find(m->g, nm);
-    if (!t0) { fprintf(stderr, "[stable] cuda: peso %s ausente\n", nm); return NULL; }
+    if (!t0) { fprintf(stderr, "[stable] gpu: peso %s ausente\n", nm); return NULL; }
     for (int i = 0; i < g_sdc.nw; i++) {
         SdcW *e = &g_sdc.w[i];
         if (e->key == t0) { if (!e->w && !scu_up_w(e)) return NULL; return e; }
@@ -90,7 +90,7 @@ static SdcW *scu_wget(const SdcM *m, int nb, const char *const *base, int bias) 
     for (int p = 0; p < nb; p++) {
         snprintf(nm, sizeof nm, "%s.weight", base[p]);
         ti[p] = sdg_find(m->g, nm);
-        if (!ti[p] || ti[p]->type > 1) { fprintf(stderr, "[stable] cuda: peso %s ausente ou com tipo inesperado\n", nm); return NULL; }
+        if (!ti[p] || ti[p]->type > 1) { fprintf(stderr, "[stable] gpu: peso %s ausente ou com tipo inesperado\n", nm); return NULL; }
         int ci, co, kk;
         if (ti[p]->nd == 4 && ti[p]->dim[0] == ti[p]->dim[1]) { kk = (int)ti[p]->dim[0]; ci = (int)ti[p]->dim[2]; co = (int)ti[p]->dim[3]; }
         else if (ti[p]->nd == 2) { kk = 1; ci = (int)ti[p]->dim[0]; co = (int)ti[p]->dim[1]; }
@@ -117,7 +117,7 @@ static SdcW *scu_wget(const SdcM *m, int nb, const char *const *base, int bias) 
             snprintf(nm, sizeof nm, "%s.bias", base[p]);
             const SdgInfo *b = sdg_find(m->g, nm);
             const int co = ti[p]->nd == 4 ? (int)ti[p]->dim[3] : (int)ti[p]->dim[1];
-            if (!b || b->type != 0 || b->nd != 1 || (int)b->dim[0] != co) { fprintf(stderr, "[stable] cuda: vies %s ausente ou nao e F32\n", nm); free(hb); free(e->host); e->host = NULL; return NULL; }
+            if (!b || b->type != 0 || b->nd != 1 || (int)b->dim[0] != co) { fprintf(stderr, "[stable] gpu: vies %s ausente ou nao e F32\n", nm); free(hb); free(e->host); e->host = NULL; return NULL; }
             memcpy(hb + o, sdg_data(m->g, b), (size_t)co * 4); o += (size_t)co;
         }
         e->b = scu_alloc((size_t)cout * 4);
@@ -433,12 +433,12 @@ static int scu_plan(const SdgFile *base, const SdgFile *ctrl, int h8, int w8, in
     const size_t wu = scu_group_bytes(base, "unet."), wc = ctrl ? scu_group_bytes(ctrl, "ctrl.") : 0, ws = scu_ws_bytes(h8 * w8, nctx), lim = fr / 100 * 96;
     if (wu + wc + ws <= lim) g_sdc.stream = 0;
     else if ((wu > wc ? wu : wc) + ws <= lim) g_sdc.stream = 1;
-    else { fprintf(stderr, "[stable] cuda: VRAM livre %zu MB nao basta (UNet %zu MB, ControlNet %zu MB, ativacoes %zu MB); usando a CPU\n", fr >> 20, wu >> 20, wc >> 20, ws >> 20); return 0; }
-    if (g_sdc.stream) fprintf(stderr, "[stable] cuda: pesos em streaming (UNet e ControlNet nao cabem juntos)\n");
+    else { fprintf(stderr, "[stable] gpu: VRAM livre %zu MB nao basta (UNet %zu MB, ControlNet %zu MB, ativacoes %zu MB); usando a CPU\n", fr >> 20, wu >> 20, wc >> 20, ws >> 20); return 0; }
+    if (g_sdc.stream) fprintf(stderr, "[stable] gpu: pesos em streaming (UNet e ControlNet nao cabem juntos)\n");
     return 1;
 }
 static void scu_abort(const char *what) {
-    fprintf(stderr, "[stable] cuda: %s falhou; usando a CPU\n", what);
+    fprintf(stderr, "[stable] gpu: %s falhou; usando a CPU\n", what);
     g_sdc.dead = 1; g_sdc.stream = 0;
     scu_sync(); scu_unload(0, 1); scu_unload(1, 1); scu_unload(2, 1); scu_ws_free();
 }
@@ -583,7 +583,7 @@ done:
     scu_sync();
     scu_vae_free(&vb); scu_free(zd);
     scu_unload(2, 1);
-    if (!ok || !img) { if (img) free(img); fprintf(stderr, "[stable] cuda: o VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
+    if (!ok || !img) { if (img) free(img); fprintf(stderr, "[stable] gpu: o VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
     *Ho = H; *Wo = W; g_sd_be_vae = g_scu_be;
     return img;
 }
@@ -629,7 +629,7 @@ done:
     scu_sync();
     scu_vae_free(&vb); scu_free(id);
     scu_unload(2, 1);
-    if (!ok || !mean) { free(mean); fprintf(stderr, "[stable] cuda: o codificador do VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
+    if (!ok || !mean) { free(mean); fprintf(stderr, "[stable] gpu: o codificador do VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
     *ho = H; *wo = W;
     return mean;
 }
