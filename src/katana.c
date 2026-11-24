@@ -182,3 +182,4 @@ static const char KATANA_CHANGES[] = "";
 #include "app/visiontest.c"            /* katana vision: cabecalho, custo, etapas para o oraculo, fuzz dos decodificadores */
 #include "app/main.c"                  /* toktest, subcomandos e main */
 #include "app/convert.c"               /* katana convert: checkpoint do Hugging Face (safetensors) -> GGUF */
+#include "app/embed.c"                 /* katana embed: embeddings de texto (embeddinggemma2) na CPU, embed_text() */

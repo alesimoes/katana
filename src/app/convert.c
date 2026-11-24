@@ -258,7 +258,9 @@ typedef struct {
     CvSrcSet S;
     CvOut *o; int no, cap;
     /* hiperparametros */
-    char arch[16]; int moe;
+    char arch[24]; int moe;
+    int emb;                                 /* embeddinggemma2: codificador de embeddings (so o texto) */
+    int emb_dim, emb_ple, emb_window;
     int layers, hidden, heads, kvh, hd, dk, dv, nk, nv, conv, interval, nexp, nused, ffe, ffs, ffd, vocab_rows;
     char prefix[40];
     int skipped, unused_warn;
@@ -568,8 +570,13 @@ static void cv_tokenizer(const char *dir, CvCtx *c, const JV *cfgtop, const JV *
     }
     for (int i = 0; i < V; i++) if (!toks[i]) { char tmp[32]; snprintf(tmp, sizeof tmp, "[PAD%d]", i); toks[i] = strdup(tmp); }
 
-    gkv_str(kv, "tokenizer.ggml.model", "gpt2"); (*nkv)++;
-    gkv_str(kv, "tokenizer.ggml.pre", "qwen35"); (*nkv)++;     /* a pre-tokenizacao da familia Qwen3.5/3.6 (o motor conhece este nome) */
+    if (c->emb) {       /* familia Gemma 4: espacos viram U+2581, BPE por caractere UTF-8, bytes <0xNN> de reserva */
+        gkv_str(kv, "tokenizer.ggml.model", "gemma4"); (*nkv)++;
+        for (int i = 0; i < V; i++) if (types[i] == 1 && strlen(toks[i]) == 6 && !strncmp(toks[i], "<0x", 3) && toks[i][5] == '>') types[i] = 6;
+    } else {
+        gkv_str(kv, "tokenizer.ggml.model", "gpt2"); (*nkv)++;
+        gkv_str(kv, "tokenizer.ggml.pre", "qwen35"); (*nkv)++;     /* a pre-tokenizacao da familia Qwen3.5/3.6 (o motor conhece este nome) */
+    }
     gbuf_gstr(kv, "tokenizer.ggml.tokens", strlen("tokenizer.ggml.tokens")); gbuf_u32(kv, 9); gbuf_u32(kv, 8); gbuf_u64(kv, (uint64_t)V);
     for (int i = 0; i < V; i++) gbuf_gstr(kv, toks[i], strlen(toks[i]));
     (*nkv)++;
@@ -603,6 +610,20 @@ static void cv_tokenizer(const char *dir, CvCtx *c, const JV *cfgtop, const JV *
     if (bos >= 0) { gkv_u32(kv, "tokenizer.ggml.bos_token_id", (uint32_t)bos); (*nkv)++; }
     gkv_u32(kv, "tokenizer.ggml.eos_token_id", (uint32_t)eos); (*nkv)++;
     if (pad >= 0) { gkv_u32(kv, "tokenizer.ggml.padding_token_id", (uint32_t)pad); (*nkv)++; }
+    if (c->emb) {       /* o modelo de embeddings cerca o texto com <bos> ... <eos>: vem do post_processor do tokenizer.json */
+        const JV *pp = jget(&tj, "post_processor"), *sg = pp ? jget(pp, "single") : NULL;
+        int pb = 0, pe = 0;
+        if (sg && sg->t == J_ARR && sg->n >= 2) {
+            const JV *a = jget(&sg->v[0], "SpecialToken"), *z = jget(&sg->v[sg->n - 1], "SpecialToken");
+            const char *ia = a ? jstr(a, "id") : NULL, *iz = z ? jstr(z, "id") : NULL;
+            pb = ia && bos >= 0 && !strcmp(ia, toks[bos]); pe = iz && eos >= 0 && !strcmp(iz, toks[eos]);
+        }
+        cv_kv_bool(kv, "tokenizer.ggml.add_bos_token", pb); (*nkv)++;
+        cv_kv_bool(kv, "tokenizer.ggml.add_eos_token", pe); (*nkv)++;
+        printf("  tokenizador: %d tokens, %zu merges, bos=%d eos=%d pad=%d, <bos> %s, <eos> %s (post_processor)\n", V, merges->n, bos, eos, pad, pb ? "sim" : "nao", pe ? "sim" : "nao");
+        free(types);
+        return;
+    }
     { const JV *ab = has_tc ? jget(&tc, "add_bos_token") : NULL; cv_kv_bool(kv, "tokenizer.ggml.add_bos_token", ab && ab->t == J_BOOL && ab->i); (*nkv)++; }
 
     /* modelo de conversa: chat_template.jinja, chat_template.json ou tokenizer_config.json */
@@ -684,6 +705,109 @@ static int cv_list(const char *dir) {
     return 0;
 }
 
+/* ---------- embeddinggemma2 (so o texto) ----------
+   P = language_model.  (as normas do HF aqui sao x * w, sem o +1 do Gemma 3; nenhuma transformacao nos pesos)
+     P embed_tokens.weight                 token_embd.weight          (multiplicado por sqrt(dim) no motor)
+     P ple.per_layer_model_projection      ple_proj.weight            [camadas*ple, dim]
+     P ple.per_layer_projection_norm       ple_norm.weight
+     P embedding_projection.weight         embd_proj.weight           [dim_saida, dim]
+     P norm.weight                         output_norm.weight
+   camada l:  input_layernorm / post_attention_layernorm / pre_feedforward_layernorm / post_feedforward_layernorm ->
+     attn_norm / post_attention_norm / ffn_norm / post_ffw_norm; self_attn.{q,k,v,o}_proj -> attn_{q,k,v}, attn_output;
+     self_attn.{q,k}_norm -> attn_{q,k}_norm; mlp.{gate,up,down}_proj -> ffn_{gate,up,down};
+     ple_block.per_layer_input_gate / per_layer_projection / post_per_layer_input_norm -> ple_gate / ple_out / ple_post_norm;
+     layer_scalar -> layer_scale */
+static void cv_plan_emb(CvCtx *c) {
+    char a[220], b[100];
+    static const struct { const char *hf, *gg; int keep; } G[] = {
+        { "ple.per_layer_model_projection.weight", "ple_proj.weight", 0 }, { "ple.per_layer_projection_norm.weight", "ple_norm.weight", 1 },
+        { "embedding_projection.weight", "embd_proj.weight", 0 }, { "norm.weight", "output_norm.weight", 1 } };
+    for (int i = 0; i < 4; i++) { snprintf(a, sizeof a, "%s%s", c->prefix, G[i].hf); cv_simple(c, G[i].gg, a, -1, EW_NONE, G[i].keep, -1); }
+    static const struct { const char *hf, *gg; int keep; } L[] = {
+        { "input_layernorm.weight", "attn_norm.weight", 1 }, { "post_attention_layernorm.weight", "post_attention_norm.weight", 1 },
+        { "pre_feedforward_layernorm.weight", "ffn_norm.weight", 1 }, { "post_feedforward_layernorm.weight", "post_ffw_norm.weight", 1 },
+        { "self_attn.q_proj.weight", "attn_q.weight", 0 }, { "self_attn.k_proj.weight", "attn_k.weight", 0 },
+        { "self_attn.v_proj.weight", "attn_v.weight", 0 }, { "self_attn.o_proj.weight", "attn_output.weight", 0 },
+        { "self_attn.q_norm.weight", "attn_q_norm.weight", 1 }, { "self_attn.k_norm.weight", "attn_k_norm.weight", 1 },
+        { "mlp.gate_proj.weight", "ffn_gate.weight", 0 }, { "mlp.up_proj.weight", "ffn_up.weight", 0 }, { "mlp.down_proj.weight", "ffn_down.weight", 0 },
+        { "ple_block.per_layer_input_gate.weight", "ple_gate.weight", 0 }, { "ple_block.per_layer_projection.weight", "ple_out.weight", 0 },
+        { "ple_block.post_per_layer_input_norm.weight", "ple_post_norm.weight", 1 }, { "layer_scalar", "layer_scale.weight", 1 } };
+    for (int l = 0; l < c->layers; l++)
+        for (size_t i = 0; i < sizeof L / sizeof L[0]; i++) {
+            snprintf(a, sizeof a, "%slayers.%d.%s", c->prefix, l, L[i].hf); snprintf(b, sizeof b, "blk.%d.%s", l, L[i].gg);
+            cv_simple(c, b, a, l, EW_NONE, L[i].keep, -1);
+        }
+}
+
+/* metadados do embeddinggemma2: camadas, janela, tipos de camada, cabecas por camada, pooling, projecao, dimensoes
+   Matryoshka e os prefixos de tarefa (config_sentence_transformers.json). Nada disto e fixo no motor. */
+static void cv_kv_emb(CvCtx *c, const char *dir, const JV *txt, GBuf *kv, uint64_t *nkv) {
+    char key[96], path[2048];
+    const char *A = c->arch;
+#define EU(suffix, val) do { snprintf(key, sizeof key, "%s." suffix, A); gkv_u32(kv, key, (uint32_t)(val)); (*nkv)++; } while (0)
+#define EF(suffix, val) do { snprintf(key, sizeof key, "%s." suffix, A); cv_kv_f32(kv, key, (float)(val)); (*nkv)++; } while (0)
+    int32_t nkv_l[256], hd_l[256], swa[256];
+    const JV *lt = jget(txt, "layer_types"), *plc = jget(txt, "per_layer_config");
+    if (!lt || lt->t != J_ARR || (int)lt->n != c->layers || c->layers > 256) { fprintf(stderr, "convert: layer_types ausente ou com tamanho diferente de num_hidden_layers\n"); exit(1); }
+    int hd_swa = 0, hd_glob = 0;
+    for (int l = 0; l < c->layers; l++) {
+        const char *ty = lt->v[l].t == J_STR ? lt->v[l].s : "";
+        swa[l] = !strcmp(ty, "sliding_attention");
+        if (!swa[l] && strcmp(ty, "full_attention")) { fprintf(stderr, "convert: tipo de camada '%s' desconhecido\n", ty); exit(1); }
+        nkv_l[l] = c->kvh; hd_l[l] = c->hd;
+        char ks[16]; snprintf(ks, sizeof ks, "%02d", l);       /* per_layer_config: chaves "05", "11"... com head_dim e num_key_value_heads */
+        const JV *ov = plc ? jget(plc, ks) : NULL;
+        if (!ov && plc) { snprintf(ks, sizeof ks, "%d", l); ov = jget(plc, ks); }
+        if (ov) { nkv_l[l] = (int)jnum(ov, "num_key_value_heads", nkv_l[l]); hd_l[l] = (int)jnum(ov, "head_dim", hd_l[l]); }
+        if (swa[l]) { if (hd_swa && hd_swa != hd_l[l]) { fprintf(stderr, "convert: largura de cabeca diferente entre camadas locais\n"); exit(1); } hd_swa = hd_l[l]; }
+        else { if (hd_glob && hd_glob != hd_l[l]) { fprintf(stderr, "convert: largura de cabeca diferente entre camadas globais\n"); exit(1); } hd_glob = hd_l[l]; }
+    }
+    const JV *rp = jget(txt, "rope_parameters");
+    const JV *rf = rp ? jget(rp, "full_attention") : NULL, *rs = rp ? jget(rp, "sliding_attention") : NULL;
+    if (!rf || !rs) { fprintf(stderr, "convert: rope_parameters sem full_attention/sliding_attention\n"); exit(1); }
+    int ctx = cv_i(txt, NULL, "max_position_embeddings", 8192);
+    if (ctx > 8192) ctx = 8192;                  /* a pagina do modelo: janela de contexto de 8192 tokens */
+    EU("block_count", c->layers); EU("context_length", ctx); EU("embedding_length", c->hidden); EU("feed_forward_length", c->ffd);
+    EU("attention.head_count", c->heads);
+    snprintf(key, sizeof key, "%s.attention.head_count_kv", A); cv_kv_arr_i32(kv, key, nkv_l, c->layers); (*nkv)++;
+    snprintf(key, sizeof key, "%s.attention.head_dim_list", A); cv_kv_arr_i32(kv, key, hd_l, c->layers); (*nkv)++;
+    snprintf(key, sizeof key, "%s.attention.sliding_window_pattern", A);      /* 1 = camada local (janela) */
+    gbuf_gstr(kv, key, strlen(key)); gbuf_u32(kv, 9); gbuf_u32(kv, 7); gbuf_u64(kv, (uint64_t)c->layers);
+    for (int l = 0; l < c->layers; l++) { uint8_t x = (uint8_t)swa[l]; gbuf_bytes(kv, &x, 1); }
+    (*nkv)++;
+    EU("attention.key_length", hd_glob ? hd_glob : c->hd); EU("attention.key_length_swa", hd_swa ? hd_swa : c->hd);
+    EU("attention.sliding_window", c->emb_window);
+    snprintf(key, sizeof key, "%s.attention.causal", A); cv_kv_bool(kv, key, 0); (*nkv)++;
+    EF("rope.freq_base", jnum(rf, "rope_theta", 1e6)); EF("rope.freq_base_swa", jnum(rs, "rope_theta", 1e4));
+    EF("attention.layer_norm_rms_epsilon", jnum(txt, "rms_norm_eps", 1e-6));
+    EU("ple_length", c->emb_ple); EU("embedding_dim", c->emb_dim);
+    EU("pooling_type", 1);                       /* 1 = media (1_Pooling/config.json: pooling_mode mean) */
+    { static const int32_t md[4] = { 128, 256, 512, 768 }; snprintf(key, sizeof key, "%s.matryoshka_dims", A); cv_kv_arr_i32(kv, key, md, 4); (*nkv)++; }
+    /* pooling e normalizacao conferidos nos modulos do sentence-transformers */
+    { JV pj; snprintf(path, sizeof path, "%s/1_Pooling/config.json", dir);
+      if (cv_json_file(path, &pj)) { const char *pm = jstr(&pj, "pooling_mode"); if (!pm || strcmp(pm, "mean")) { fprintf(stderr, "convert: pooling '%s' nao suportado (so mean)\n", pm ? pm : "?"); exit(1); } }
+      else fprintf(stderr, "convert: aviso: 1_Pooling/config.json ausente; assumindo pooling por media\n"); }
+    /* prefixos de tarefa */
+    { JV st; snprintf(path, sizeof path, "%s/config_sentence_transformers.json", dir);
+      if (!cv_json_file(path, &st)) { fprintf(stderr, "convert: %s nao existe (prefixos de tarefa)\n", path); exit(1); }
+      const JV *pr = jget(&st, "prompts");
+      const char *code = pr ? jstr(pr, "CodeRetrieval") : NULL, *search = pr ? jstr(pr, "SearchQuery") : NULL, *doc = pr ? jstr(pr, "Document") : NULL;
+      if (!code || !search || !doc) { fprintf(stderr, "convert: prompts CodeRetrieval/SearchQuery/Document ausentes em config_sentence_transformers.json\n"); exit(1); }
+      const char *none = strstr(doc, "none");        /* "title: none | text: " -> prefixo do titulo e separador do texto */
+      if (!none) { fprintf(stderr, "convert: prompt Document sem o titulo 'none'\n"); exit(1); }
+      char pre[64], mid[64]; snprintf(pre, sizeof pre, "%.*s", (int)(none - doc), doc); snprintf(mid, sizeof mid, "%s", none + 4);
+      snprintf(key, sizeof key, "%s.prompt.code", A); gkv_str(kv, key, code); (*nkv)++;
+      snprintf(key, sizeof key, "%s.prompt.search", A); gkv_str(kv, key, search); (*nkv)++;
+      snprintf(key, sizeof key, "%s.prompt.document_title", A); gkv_str(kv, key, pre); (*nkv)++;
+      snprintf(key, sizeof key, "%s.prompt.document_text", A); gkv_str(kv, key, mid); (*nkv)++;
+      printf("  prefixos: code '%s', search '%s', documento '%sTITULO%s'\n", code, search, pre, mid); }
+    { int nl = 0; for (int l = 0; l < c->layers; l++) nl += swa[l];
+      printf("  atencao: bidirecional, janela %d nas camadas locais (%d de %d camadas), cabeca %d local / %d global, pooling media, projecao %d -> %d\n",
+             c->emb_window, nl, c->layers, hd_swa, hd_glob, c->hidden, c->emb_dim); }
+#undef EU
+#undef EF
+}
+
 static int cv_run(const char *dir, const char *out_path, int mode) {
     CvCtx *c = xalloc(1, sizeof(CvCtx));
     char path[2048];
@@ -696,9 +820,21 @@ static int cv_run(const char *dir, const char *out_path, int mode) {
     const char *tmt = jstr(txt, "model_type"); if (!tmt) tmt = "";
     if (strstr(an, "Qwen3_5Moe") || !strncmp(mt, "qwen3_5_moe", 11) || !strncmp(tmt, "qwen3_5_moe", 11)) { strcpy(c->arch, "qwen35moe"); c->moe = 1; }
     else if (strstr(an, "Qwen3_5") || !strncmp(mt, "qwen3_5", 7) || !strncmp(tmt, "qwen3_5", 7)) { strcpy(c->arch, "qwen35"); c->moe = 0; }
-    else { fprintf(stderr, "convert: arquitetura '%s' (model_type '%s') nao suportada. Suportadas: Qwen3_5MoeForConditionalGeneration / Qwen3_5MoeForCausalLM (qwen35moe) e Qwen3_5ForConditionalGeneration / Qwen3_5ForCausalLM (qwen35).\n", an, mt); return 1; }
+    else if (strstr(an, "EmbeddingGemma2") || !strncmp(mt, "embedding_gemma2", 16) || !strncmp(tmt, "embedding_gemma2", 16)) { strcpy(c->arch, "embeddinggemma2"); c->emb = 1; }
+    else { fprintf(stderr, "convert: arquitetura '%s' (model_type '%s') nao suportada. Suportadas: Qwen3_5MoeForConditionalGeneration / Qwen3_5MoeForCausalLM (qwen35moe), Qwen3_5ForConditionalGeneration / Qwen3_5ForCausalLM (qwen35) e EmbeddingGemma2Model (embeddinggemma2, so o texto).\n", an, mt); return 1; }
+    if (c->emb && mode < 0) mode = CM_Q8;       /* sem tipo pedido: Q8_0 (o mix dinamico q4_k_m e dos especialistas do Qwen) */
+    if (mode < 0) mode = CM_Q4M;
 
     c->layers = cv_i(txt, &cfg, "num_hidden_layers", 0); c->hidden = cv_i(txt, &cfg, "hidden_size", 0);
+    if (c->emb) {
+        c->heads = cv_i(txt, &cfg, "num_attention_heads", 0); c->kvh = cv_i(txt, &cfg, "num_key_value_heads", c->heads);
+        c->ffd = cv_i(txt, &cfg, "intermediate_size", 0); c->emb_dim = cv_i(txt, &cfg, "embedding_dim", 0);
+        c->emb_ple = cv_i(txt, &cfg, "hidden_size_per_layer_input", 0); c->emb_window = cv_i(txt, &cfg, "sliding_window", 0);
+        c->hd = cv_i(txt, &cfg, "head_dim", 0);
+        if (c->layers <= 0 || c->hidden <= 0 || c->heads <= 0 || c->kvh <= 0 || c->ffd <= 0 || c->emb_dim <= 0 || c->emb_ple <= 0 || c->emb_window <= 0 || c->hd <= 0) {
+            fprintf(stderr, "convert: config.json incompleto (faltam hiperparametros de %s)\n", c->arch); return 1;
+        }
+    } else {
     c->heads = cv_i(txt, &cfg, "num_attention_heads", 0); c->kvh = cv_i(txt, &cfg, "num_key_value_heads", c->heads);
     c->hd = cv_i(txt, &cfg, "head_dim", c->heads ? c->hidden / c->heads : 0);
     c->dk = cv_i(txt, &cfg, "linear_key_head_dim", 0); c->dv = cv_i(txt, &cfg, "linear_value_head_dim", 0);
@@ -711,6 +847,7 @@ static int cv_run(const char *dir, const char *out_path, int mode) {
         fprintf(stderr, "convert: config.json incompleto (faltam hiperparametros da arquitetura %s)\n", c->arch); return 1;
     }
     cv_vreorder_check(c);
+    }
 
     const int nf = cv_open_all(dir, &c->S);
     if (nf < 0) return 1;
@@ -719,6 +856,7 @@ static int cv_run(const char *dir, const char *out_path, int mode) {
 
     /* prefixo dos tensores de texto */
     if (cv_find(&c->S, "model.language_model.embed_tokens.weight")) strcpy(c->prefix, "model.language_model.");
+    else if (c->emb && cv_find(&c->S, "language_model.embed_tokens.weight")) strcpy(c->prefix, "language_model.");
     else if (cv_find(&c->S, "model.embed_tokens.weight")) strcpy(c->prefix, "model.");
     else { fprintf(stderr, "convert: nao achei embed_tokens.weight (esperado model.language_model.embed_tokens.weight ou model.embed_tokens.weight)\n"); return 1; }
 
@@ -727,20 +865,24 @@ static int cv_run(const char *dir, const char *out_path, int mode) {
     { CvOut *o; snprintf(nm, sizeof nm, "%sembed_tokens.weight", c->prefix);
       o = cv_simple(c, "token_embd.weight", nm, -1, EW_NONE, 0, -1); c->vocab_rows = (int)o->dim[1];
       if ((int)o->dim[0] != c->hidden) { fprintf(stderr, "convert: embedding com %d colunas, hidden_size=%d\n", (int)o->dim[0], c->hidden); return 1; } }
+    if (c->emb) cv_plan_emb(c);
+    else {
     snprintf(nm, sizeof nm, "%snorm.weight", c->prefix); cv_simple(c, "output_norm.weight", nm, -1, EW_PLUS1, 1, -1);
     if (cv_opt(c, "lm_head.weight")) cv_simple(c, "output.weight", "lm_head.weight", -1, EW_NONE, 0, -1);
     else printf("  lm_head.weight ausente: pesos amarrados (output.weight omitido; o motor usa token_embd)\n");
     for (int l = 0; l < c->layers; l++) cv_layer(c, l);
+    }
 
     /* conferencia do que sobrou no checkpoint */
     for (size_t i = 0; i < c->S.nst; i++) {
         const CvSt *t = &c->S.st[i];
         if (t->used) continue;
-        if (strstr(t->name, "visual.") || strstr(t->name, "vision") || !strncmp(t->name, "mtp.", 4) || strstr(t->name, ".mtp.")) { c->skipped++; continue; }
+        if (strstr(t->name, "visual.") || strstr(t->name, "vision") || strstr(t->name, "audio") || !strncmp(t->name, "mtp.", 4) || strstr(t->name, ".mtp.")) { c->skipped++; continue; }
         if (c->unused_warn++ < 8) fprintf(stderr, "convert: aviso: tensor do checkpoint sem mapeamento, ignorado: %s\n", t->name);
     }
     if (c->unused_warn > 8) fprintf(stderr, "convert: aviso: mais %d tensores sem mapeamento\n", c->unused_warn - 8);
-    if (c->skipped) printf("  %d tensores de visao/MTP ignorados (o motor carrega o projetor de visao de um GGUF a parte)\n", c->skipped);
+    if (c->skipped && c->emb) printf("  %d tensores de imagem/audio ignorados (so o texto e convertido)\n", c->skipped);
+    else if (c->skipped) printf("  %d tensores de visao/MTP ignorados (o motor carrega o projetor de visao de um GGUF a parte)\n", c->skipped);
 
     /* tipos, deslocamentos, KV (primeira passada) */
     const uint64_t align = 32;
@@ -771,6 +913,8 @@ static int cv_run(const char *dir, const char *out_path, int mode) {
     char key[96];
 #define KU(suffix, val) do { snprintf(key, sizeof key, "%s." suffix, c->arch); gkv_u32(&kv, key, (uint32_t)(val)); nkv++; } while (0)
 #define KF(suffix, val) do { snprintf(key, sizeof key, "%s." suffix, c->arch); cv_kv_f32(&kv, key, (float)(val)); nkv++; } while (0)
+    if (c->emb) cv_kv_emb(c, dir, txt, &kv, &nkv);
+    else {
     KU("block_count", c->layers);
     KU("context_length", cv_i(txt, &cfg, "max_position_embeddings", 4096));
     KU("embedding_length", c->hidden);
@@ -792,6 +936,7 @@ static int cv_run(const char *dir, const char *out_path, int mode) {
     KU("ssm.conv_kernel", c->conv); KU("ssm.state_size", c->dk); KU("ssm.group_count", c->nk); KU("ssm.time_step_rank", c->nv);
     KU("ssm.inner_size", c->nv * c->dv); KU("full_attention_interval", c->interval);
     KU("rope.dimension_count", (int)(c->hd * prf + 0.5));
+    }
 #undef KU
 #undef KF
     cv_tokenizer(dir, c, &cfg, txt, &kv, &nkv);
@@ -862,7 +1007,7 @@ static int convert_main(int argc, char **argv) {
         return 1;
     }
     if (!strcmp(argv[1], "--list")) return cv_list(argv[0]);
-    int mode = CM_Q4M;
+    int mode = -1;      /* sem tipo: o padrao depende da arquitetura (cv_run) */
     if (argc >= 3) { mode = cv_mode_parse(argv[2]); if (mode < 0) { fprintf(stderr, "convert: tipo '%s' nao suportado (q4_k_m, q4_k, q5_k_m, q6_k, q8_0, f16, bf16, f32)\n", argv[2]); return 1; } }
     return cv_run(argv[0], argv[1], mode);
 }
