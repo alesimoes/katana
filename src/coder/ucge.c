@@ -810,6 +810,10 @@ static int cgx_jexpr(Cgx *g, const CgxJ *v, CgxB *b) {
     const char *op = cgx_jstr(v, "op");
     if (!op) { cgx_err(g, 0, "JSON expression object without \"op\" (expected one of ADD, SUBTRACT, MULTIPLY, DIVIDE, IDIVIDE, MOD, COMPARE, AND, OR, NOT, CALL, VAR, LIT, LIST, MAP, INDEX, FIELD, METHOD)"); return 0; }
     CgxJ *args = cgx_jget(v, "args");
+    if (!args && cgx_jget(v, "left") && cgx_jget(v, "right")) {          /* forma {"op", "left", "right"}: vira args [left, right] */
+        args = (CgxJ *)cgx_alloc(g, sizeof *args); args->t = 4; args->n = 2; args->kid = (CgxJ **)cgx_alloc(g, sizeof(CgxJ *) * 2);
+        args->kid[0] = cgx_jget(v, "left"); args->kid[1] = cgx_jget(v, "right");
+    }
     if (cgx_jop(op)) {
         if (!args || args->t != 4 || args->n < 2) { cgx_err(g, 0, "JSON %s needs \"args\": [a, b]", op); return 0; }
         cgx_bs(b, "(");
@@ -856,6 +860,11 @@ static int cgx_jstmt(Cgx *g, const CgxJ *st, CgxB *b, int d) {
     const char *op = cgx_jstr(st, "op");
     if (!op) { cgx_err(g, 0, "JSON statement without \"op\" (expected FUNCTION, DECLARE, ASSIGN, RETURN, IF, LOOP, ITERATE, TRY_CATCH, THROW, CALL, RAW, BREAK, CONTINUE, CLASS, TEST)"); return 0; }
     CgxJ *body = cgx_jget(st, "body");
+    if (cgx_jstr(st, "result") && (cgx_jop(op) || !strcmp(op, "COMPARE") || !strcmp(op, "NOT"))) {      /* {"op": "ADD", "left": a, "right": b, "result": c} = let c = a + b */
+        cgx_ind(b, d); cgx_bf(b, "let %s = ", cgx_jstr(st, "result"));
+        if (!cgx_jexpr(g, st, b)) return 0;
+        cgx_bs(b, "\n"); return 1;
+    }
     if (!strcmp(op, "FUNCTION")) {
         const char *name = cgx_jstr(st, "name"); CgxJ *pars = cgx_jget(st, "params");
         if (!name) { cgx_err(g, 0, "JSON FUNCTION needs \"name\""); return 0; }

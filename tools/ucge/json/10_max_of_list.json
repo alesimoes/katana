@@ -1,0 +1,6 @@
+[{"op":"FUNCTION","name":"maxOf","params":[{"name":"xs","type":"list[int]"}],"returns":"int","body":[
+  {"op":"IF","cond":{"op":"COMPARE","cmp":"==","left":"len(xs)","right":0},"then":[{"op":"THROW","value":{"op":"LIT","value":"empty list"}}]},
+  {"op":"DECLARE","name":"best","value":"xs[0]"},
+  {"op":"ITERATE","var":"x","over":"xs","body":[{"op":"IF","cond":{"op":"COMPARE","cmp":">","left":"x","right":"best"},"then":[{"op":"ASSIGN","target":"best","value":"x"}]}]},
+  {"op":"RETURN","value":"best"}]},
+ {"op":"TEST","expr":"maxOf([3, 9, 2])","expect":9}]

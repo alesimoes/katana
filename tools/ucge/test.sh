@@ -111,6 +111,7 @@ cat > "$T/j.json" <<'XX'
 XX
 o=$("$U" run python "$T/j.json"); has "JSON equivalente roda" "$o" "tests: 1 passed, 0 failed"
 a=$("$U" gen python "$T/j.json" | head -2); b=$("$U" gen python "$HERE/tasks/01_sum_default.csp" | head -2); [ "$a" = "$b" ] && ok "JSON e texto geram o mesmo codigo" || fail "JSON x texto" "$a / $b"
+for n in 01_sum_default 04_factorial 10_max_of_list; do o=$("$U" run python "$HERE/json/$n.json"); has "JSON do dono (left/right/result) $n roda" "$o" "1 passed, 0 failed"; done
 printf '[{"op":"FOO"}]' > "$T/bad.json"; o=$("$U" check "$T/bad.json"); has "JSON: operacao desconhecida lista as validas" "$o" 'unknown operation "FOO" (expected FUNCTION'
 cat > "$T/r.csp" <<'XX'
 fn twice(x: int) -> int
