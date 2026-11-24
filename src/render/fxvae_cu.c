@@ -12,6 +12,7 @@ static int fxcv_init(void) {
     if (g_fcv.tried) return g_fcv.ok;
     g_fcv.tried = 1;
     const char *e = getenv("KATANA_FLUX_CUDA"); if (e && !atoi(e)) return 0;
+    { const char *be = getenv("KATANA_BACKEND"); if (be && *be && strcmp(be, "cuda")) return 0; }
     if (!cu_init()) return 0;
     void *m = cu_kmod(); if (!m) return 0;
     g_fcv.f_conv = cu_fn(m, "conv"); g_fcv.f_convx = cu_fn(m, "convx"); g_fcv.f_gn = cu_fn(m, "gn_coef"); g_fcv.f_wsplit = cu_fn(m, "wsplit"); g_fcv.f_sm = cu_fn(m, "softmax_rows");

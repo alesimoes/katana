@@ -20,6 +20,7 @@ static void fxv_init(void) {
     fxv.tried = 1;
     const char *c = getenv("KATANA_CPU"), *g = getenv("KATANA_FLUX_GPU");
     if ((c && atoi(c)) || (g && !atoi(g))) return;
+    { const char *be = getenv("KATANA_BACKEND"); if (be && *be && strcmp(be, "vulkan")) return; }   /* cuda ou cpu escolhidos: o Vulkan nao entra */
     KvkInfo I;
     if (!kvk_init(&I)) { fprintf(stderr, "flux: Vulkan indisponivel (%s), CPU\n", kvk_error()); return; }
     int coop = 0;

@@ -25,6 +25,8 @@ static int fxc_init(void) {
     g_fc.tried = 1;
     const char *e = getenv("KATANA_FLUX_CUDA");
     if (e && !atoi(e)) return 0;
+    { const char *be = getenv("KATANA_BACKEND");   /* cuda|vulkan|cpu: quem nao e o escolhido fica de fora (sem escolha: CUDA, depois Vulkan, depois CPU) */
+      if (be && *be && strcmp(be, "cuda")) return 0; }
     if (!cu_init()) return 0;
     const int S = g_fc.stages = fxc_gemm_stages();
     { const char *pe = getenv("KATANA_CUDA_PREC"); g_fc.prec = !(pe && !strcmp(pe, "fast")); }
