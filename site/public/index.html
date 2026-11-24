@@ -32,7 +32,7 @@
     margin: 0; background: var(--bg); color: var(--fg);
     font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+  .wrap { max-width: 1680px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 96px); }
   a { color: var(--ac); }
   nav { display: flex; align-items: center; gap: 10px; padding: 22px 0; font-family: var(--mono); font-size: .95rem; }
   nav img { width: 28px; height: 28px; border-radius: 8px; }
@@ -56,10 +56,10 @@
   .btn.pri { background: var(--ac2); border-color: var(--ac2); color: #fff; }
   .btn { border-radius: 12px; }
   .btn:hover { border-color: var(--ac); }
-  .lead { font-size: 1.25rem; color: var(--mut); margin: 22px 0 0; max-width: 36em; }
+  .lead { font-size: 1.25rem; color: var(--mut); margin: 22px 0 0; max-width: 34em; }
   .lead strong { color: var(--fg); font-weight: 600; }
   /* terminal de comandos: o painel de terminal do katana desktop (fundo de codigo, barra com >_) */
-  .term { margin: 26px 0 0; background: var(--code); border: 1px solid var(--bd); border-radius: 12px; overflow: hidden; box-shadow: 0 12px 32px var(--shadow); }
+  .term { max-width: 62em; margin: 26px 0 0; background: var(--code); border: 1px solid var(--bd); border-radius: 12px; overflow: hidden; box-shadow: 0 12px 32px var(--shadow); }
   .term .bar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--codeh); border-bottom: 1px solid var(--bd); color: var(--mut); font: 600 .78rem var(--mono); letter-spacing: .04em; }
   .term .bar::before { content: ">_"; color: var(--ac); font-weight: 800; }
   .term pre { margin: 0; padding: 14px 16px; overflow-x: auto; font: .88rem/1.65 var(--mono); }
@@ -67,11 +67,27 @@
   .c { color: var(--mut); }
   h2 { margin: 64px 0 6px; font: 700 1.5rem/1.2 var(--mono); letter-spacing: -.02em; }
   h2::before { content: "# "; color: var(--ac); }
-  p { margin: 12px 0; max-width: 46em; }
-  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); margin-top: 18px; }
-  .card { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 18px; }
-  .card h3 { margin: 0 0 6px; font: 600 1rem var(--mono); color: var(--ac); }
-  .card p { margin: 0; color: var(--mut); font-size: .96rem; }
+  p { margin: 12px 0; max-width: 62em; line-height: 1.7; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); margin-top: 18px; align-items: stretch; }
+  .grid.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid.c2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.c4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(28px, 4vw, 72px); align-items: start; }
+  .hero-r .term { margin-top: 12px; max-width: none; }
+  .hero-r .models { grid-template-columns: 1fr 1fr; }
+  .shot { max-width: 1240px; }
+  .tablewrap { max-width: 62em; }
+  .models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 16px 0 0; }
+  .models > div { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 16px 18px; }
+  .models h3 { margin: 0 0 4px; font: 600 .95rem var(--mono); color: var(--ac); }
+  .models p { margin: 4px 0 8px; font-size: .92rem; color: var(--mut); }
+  .models ol { margin: 0; padding-left: 1.3em; font-size: .93rem; color: var(--fg); }
+  .models li { margin: 3px 0; padding-left: 2px; }
+  .models li::marker { color: var(--mut); font-family: var(--mono); }
+  .models p.note { margin: 10px 0 0; }
+  .card { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 18px 20px; }
+  .card h3 { margin: 0 0 8px; font: 600 1rem/1.3 var(--mono); color: var(--ac); }
+  .card p { margin: 0; color: var(--mut); font-size: .96rem; line-height: 1.6; max-width: none; }
   .tablewrap { overflow-x: auto; margin: 16px 0 8px; }
   table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--bd); border-radius: 14px; overflow: hidden; font-size: .96rem; }
   th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--bd); }
@@ -79,14 +95,29 @@
   tr:last-child td { border-bottom: 0; }
   td.num { font-family: var(--mono); white-space: nowrap; color: var(--ok); }
   .note { color: var(--mut); font-size: .9rem; }
+  ul.points { margin: 8px 0 12px; padding-left: 1.2em; max-width: 62em; }
+  ul.points li { margin: 7px 0; padding-left: 4px; line-height: 1.65; }
+  ul.points li::marker { color: var(--ac); }
   .shot { margin: 1.4rem 0; }
   .shot img { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line, rgba(128,128,128,.3)); }
   .shot figcaption { color: var(--mut); font-size: .9rem; margin-top: .5rem; }
   code { font-family: var(--mono); font-size: .9em; background: var(--code); border: 1px solid var(--bd); padding: 1px 6px; border-radius: 6px; }
-  .callout { border-left: 3px solid var(--ac); background: var(--card); border-radius: 0 12px 12px 0; padding: 12px 18px; margin: 20px 0; color: var(--mut); }
+  .callout { max-width: 62em; border-left: 3px solid var(--ac); background: var(--card); border-radius: 0 12px 12px 0; padding: 12px 18px; margin: 20px 0; color: var(--mut); }
   .callout strong { color: var(--fg); }
   footer { margin: 80px 0 40px; padding-top: 22px; border-top: 1px solid var(--bd); color: var(--mut); font: .85rem var(--mono); display: flex; gap: 16px; flex-wrap: wrap; }
+  @media (max-width: 1180px) {
+    .grid.c4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 980px) {
+    .hero { grid-template-columns: 1fr; }
+    .hero-r .term { margin-top: 26px; }
+  }
+  @media (max-width: 760px) {
+    .grid.c3, .grid.c2, .grid.c4, .models, .hero-r .models { grid-template-columns: 1fr; }
+  }
   @media (max-width: 560px) {
+    .term pre { white-space: pre-wrap; word-break: break-word; }
+    .term pre .c { display: block; padding-left: 2ch; margin-bottom: -1.65em; padding-bottom: .5em; }
     .hero { padding-top: 30px; }
     .mark { gap: 12px; }
     .samurai { width: 96px; height: 96px; }          /* 48x48 em 2x */
@@ -100,6 +131,7 @@
 <nav><img src="icon.png" alt="" width="28" height="28"><b>katana</b><span class="links"><a href="#ai">AI</a><a href="#project">Project</a><a href="#me">Me</a><a href="https://github.com/alesimoes/katana">Git</a></span></nav>
 
 <header class="hero">
+<div class="hero-l">
   <div class="mark">
     <img class="samurai" src="samurai.png" alt="" width="48" height="48">
     <h1><picture><source srcset="titulo-claro.png" media="(prefers-color-scheme: light)"><img class="pixtitle" src="titulo-escuro.png" alt="katana" width="36" height="8"></picture></h1>
@@ -107,22 +139,49 @@
   <p class="tag">Big models. <em>Small hardware.</em> All local.</p>
   <p class="lead">katana is an inference engine written <strong>from scratch in C</strong>. It runs large Mixture-of-Experts models on a laptop GPU, with a tool-using agent and a native desktop app on top. No framework. No external service.</p>
   <div class="btns"><a class="btn pri" href="https://github.com/alesimoes/katana">Source on GitHub</a><a class="btn" href="#project">How it works</a></div>
+</div>
+<div class="hero-r">
   <div class="term" aria-label="Example commands">
     <div class="bar">terminal</div>
-<pre><span class="p">$</span> sh build.sh                        <span class="c"># one C file, gcc, nothing to install</span>
-<span class="p">$</span> ./katana catalog                   <span class="c"># models it can download, and which fit this machine</span>
-<span class="p">$</span> ./katana pull qwen3.6-35b          <span class="c"># download into models/ and verify it</span>
-<span class="p">$</span> ./katana                           <span class="c"># chat with tools in this folder; it picks a model</span>
-<span class="p">$</span> ./katana --model qwen             <span class="c"># or name one: a file name, part of it, or a .gguf path</span></pre>
+<pre><span class="p">$</span> sh build.sh                <span class="c"># one C file, gcc, nothing to install</span>
+<span class="p">$</span> ./katana catalog           <span class="c"># models to download; what fits here</span>
+<span class="p">$</span> ./katana pull qwen3.6-35b  <span class="c"># download into models/, then verify</span>
+<span class="p">$</span> ./katana                   <span class="c"># chat with tools here; picks a model</span>
+<span class="p">$</span> ./katana --model qwen      <span class="c"># or name one: file name, part, or path</span></pre>
   </div>
-  <p class="lead" style="font-size:.95rem;margin-top:14px">Where the model comes from: katana reads <code>.gguf</code> files from a models folder (<code>KATANA_MODELS</code>, <code>models=</code> in <code>.katana/katana.cfg</code> or <code>~/.katana/katana.cfg</code>, <code>./models</code>, the <code>models</code> folder beside the binary, then <code>~/.katana/models</code>). With no flag it chooses in this order: <code>--model</code>, <code>KATANA_MODEL</code>, <code>model=</code> in the config, the model the desktop app used last, the recommended one, the largest installed. It prints which one it picked and why. <code>./katana agent model.gguf</code> still takes an explicit file.</p>
+  <div class="models">
+    <div>
+      <h3>Where it looks for models</h3>
+      <p>katana reads <code>.gguf</code> files from a models folder, searched in this order:</p>
+      <ol>
+        <li><code>KATANA_MODELS</code></li>
+        <li><code>models=</code> in <code>.katana/katana.cfg</code> or <code>~/.katana/katana.cfg</code></li>
+        <li><code>./models</code></li>
+        <li>the <code>models</code> folder beside the binary</li>
+        <li><code>~/.katana/models</code></li>
+      </ol>
+    </div>
+    <div>
+      <h3>Which one it picks</h3>
+      <p>With no option it takes the first that applies, and prints which one and why:</p>
+      <ol>
+        <li><code>--model</code> (a name, part of one, or a path)</li>
+        <li><code>KATANA_MODEL</code></li>
+        <li><code>model=</code> in the config</li>
+        <li>the model the desktop app used last</li>
+        <li>the recommended one, then the largest installed</li>
+      </ol>
+      <p class="note"><code>./katana agent model.gguf</code> still takes an explicit file.</p>
+    </div>
+  </div>
+</div>
 </header>
 
 <main>
 <h2 id="ai">How a language model runs</h2>
 <p>A large language model is a very large table of numbers, the <em>weights</em>, plus a fixed recipe for turning a piece of text into the next piece of text. <strong>Training</strong> is the expensive part, done once by whoever builds the model. <strong>Inference</strong> is what happens every time you use it: the text goes through the recipe, one token at a time, and a token comes out. katana is about inference.</p>
 <p>Three ideas explain most of what makes local inference practical:</p>
-<div class="grid">
+<div class="grid c3">
   <div class="card"><h3>Quantization</h3><p>Weights are stored with 4 or 5 bits instead of 16, shrinking a model by about four times with a small loss of quality. This is why a 35B model is about 20 GB, not 70.</p></div>
   <div class="card"><h3>Mixture of experts</h3><p>Some models split their feed-forward layers into many <em>experts</em> and use only a few for each token. Most of the model sits idle at any moment, which is what a small GPU can exploit.</p></div>
   <div class="card"><h3>Why run it locally</h3><p>Privacy (your text never leaves the machine), no per-token bill, no network needed, and full control over the model and the tools it may use.</p></div>
@@ -138,7 +197,7 @@
 <p>katana takes the middle road: run large <strong>Mixture-of-Experts</strong> models fast on small hardware, privately, and put a useful agent on top.</p>
 
 <h2>How it works</h2>
-<div class="grid">
+<div class="grid c4">
   <div class="card"><h3>VRAM as an expert cache</h3><p>A MoE model uses only a few experts per token (say 8 of 128 per layer). Attention stays in VRAM, hot experts take VRAM slots, cold experts run on the CPU straight from the memory-mapped file, and a background loader promotes the ones that heat up. A token never waits for the disk.</p></div>
   <div class="card"><h3>Long context, small card</h3><p>The KV cache is sized per architecture, kept in fp16, and can be saved to disk, so an agent session resumes without recomputing its prompt.</p></div>
   <div class="card"><h3>Readable and checkable</h3><p>One C file you can read and change. <code>selftest</code> checks the GPU and CPU matrix products and the whole CPU path against exact float math.</p></div>
@@ -147,7 +206,14 @@
 
 <h2>The agent</h2>
 <p>The agent gives the model a short list of tools: a shell (<code>Bash</code>; git, package managers and the rest go through it), reading, searching and editing files, code search (<code>Find</code>, <code>Symbols</code>, <code>Grep</code>), a plan list, a built-in web meta-search (no API key) and page fetching, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results reach the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
-<p><strong>Finding things in code.</strong> The agent has one entry point for search, <code>Find</code>: it looks at the question and chooses the way to search (a name, quoted text, or a description in words), reads the files again to check what it reports, and says what it did not find, including the folders it left out of the index and why. A <code>Symbols</code> tool answers precise questions (where a name is defined, who calls it, what it calls, what a change would reach, how two files are connected, a summary of a folder) from an index of the code that supports more than 60 languages and file formats, and every answer carries a confidence level. The index is built on demand by a background crawler, kept fresh by a file watcher, and starts from zero in each project you initialise. Before the model starts, the program can also look the question up itself and attach what it verified (paths, lines, who calls whom, and what it could not find) after your message; the model is told to check it before relying on it. None of this uses embeddings or a remote service. It is new, the model has not been trained on it yet, and none of it has been measured.</p>
+<p><strong>Finding things in code.</strong> The agent searches with a few tools that say how sure they are and what they did not find:</p>
+<ul class="points">
+  <li><code>Find</code> looks at the question and chooses how to search (a name, quoted text, or a description in words), reads the files again to check what it reports, and says what it did not find, including the folders it left out of the index and why.</li>
+  <li><code>Symbols</code> answers precise questions: where a name is defined, who calls it, what it calls, what a change would reach, how two files are connected, a summary of a folder. It works from an index that supports more than 60 languages and file formats; every answer carries a confidence level.</li>
+  <li>The index is built on demand by a background crawler, kept fresh by a file watcher, and starts from zero in each project you initialise.</li>
+  <li>Before the model starts, the program can look the question up itself and attach what it verified (paths, lines, who calls whom, and what it could not find) after your message. The model is told to check it before relying on it.</li>
+</ul>
+<p class="note">None of this uses embeddings or a remote service. It is new, the model has not been trained on it yet, and none of it has been measured.</p>
 <div class="callout"><strong>Heads up:</strong> by default the agent acts on your machine without asking. Set <code>KATANA_CONFIRM=1</code> to have it ask first.</div>
 
 <h2>Measured</h2>
@@ -164,22 +230,25 @@
 <p class="note">Alternating runs on the same machine, because the machine drifts over time; taken before the latest changes to the agent and not repeated since. Your numbers will differ with your hardware.</p>
 
 <h2 id="model">The model</h2>
-<p>katana is developed and tested with <strong>Qwen3.6-35B-A3B</strong>, a Mixture-of-Experts model with 35 billion parameters of which about 3 billion are active for each token. The original model, its model card and its license are at <a href="https://huggingface.co/Qwen/Qwen3.6-35B-A3B">Qwen/Qwen3.6-35B-A3B</a> on Hugging Face. katana reads GGUF files, so it uses the 4-bit quantization <code>Qwen3.6-35B-A3B-UD-Q4_K_M.gguf</code> (22 GB, 32 GB of RAM or more recommended) published by <a href="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF">Unsloth</a>. <code>./katana pull qwen3.6-35b</code> downloads that exact file and checks it against a pinned revision and checksum. <code>katana convert</code> turns a Hugging Face checkpoint into a GGUF file for this architecture; it has only been checked on tiny test checkpoints, not on the real model yet.</p>
+<p>katana is developed and tested with <strong>Qwen3.6-35B-A3B</strong>, a Mixture-of-Experts model with 35 billion parameters of which about 3 billion are active for each token. The original model, its model card and its license are at <a href="https://huggingface.co/Qwen/Qwen3.6-35B-A3B">Qwen/Qwen3.6-35B-A3B</a> on Hugging Face.</p>
+<p>katana reads GGUF files, so it uses the 4-bit quantization <code>Qwen3.6-35B-A3B-UD-Q4_K_M.gguf</code> (22 GB; 32 GB of RAM or more recommended) published by <a href="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF">Unsloth</a>. <code>./katana pull qwen3.6-35b</code> downloads that exact file and checks it against a pinned revision and checksum.</p>
+<p class="note"><code>katana convert</code> turns a Hugging Face checkpoint into a GGUF file for this architecture; it has only been checked on tiny test checkpoints, not on the real model yet.</p>
 
 <h2 id="ways">Three ways to use it</h2>
-<div class="grid">
-  <div class="card"><h3>Console</h3><p><code>./katana</code> in your project folder (or <code>./katana -p "request"</code> for a single answer). The agent with all its tools, in the terminal; it picks the model as described above, or take one with <code>--model</code>.</p></div>
+<div class="grid c3">
+  <div class="card"><h3>Console</h3><p><code>./katana</code> in your project folder, or <code>./katana -p "request"</code> for a single answer. The agent with all its tools, in the terminal. It picks the model as described above, or take one with <code>--model</code>.</p></div>
   <div class="card"><h3>Desktop</h3><p>A native window (Qt 6, no browser) that drives the same agent: conversations, tool cards, plan, context meter. Linux only for now.</p></div>
-  <div class="card"><h3>Web <em>(work in progress)</em></h3><p><code>katana web</code> opens the same window as the desktop app in your browser, running locally: same layout, themes, conversations, tool cards and plan. It listens only on 127.0.0.1 and asks for a token that it prints in the address. The page matches the desktop in side-by-side screenshots, but it has only been run against stand-in engines, not yet with a real model; <code>katana serve model.gguf</code> still serves a plain chat page and an OpenAI-compatible API.</p></div>
+  <div class="card"><h3>Web <em>(work in progress)</em></h3><p><code>katana web</code> opens the desktop's window in your browser, running locally on 127.0.0.1 with a token. It matches the desktop in screenshots but has not been run with a real model yet.</p></div>
 </div>
+<p class="note"><code>katana serve model.gguf</code> still serves a plain chat page and an OpenAI-compatible API on your machine.</p>
 
 <h2 id="desktop">Run the desktop app</h2>
-<figure class="shot"><img src="desktop.png" width="1000" height="695" alt="katana-desktop: conversation list on the left, a chat where the agent listed the .md files in a folder, and the message box with the model selector and token counter" loading="lazy"><figcaption>katana-desktop: conversations on the left, the agent's actions folded into one step, and the model, working folder and context counter under the message box.</figcaption></figure>
+<figure class="shot"><img src="desktop.png" width="1000" height="695" alt="katana-desktop: conversation list on the left, a chat with a plan of steps and the actions folded under it, and the message box with the model selector and context counter" loading="lazy"><figcaption>katana-desktop: conversations on the left, the agent's actions folded into one step per task, the plan with its steps, and the model, working folder and context counter under the message box. (Screenshot from the test harness, with a stand-in engine instead of a model.)</figcaption></figure>
 <p>The desktop app is a native window (Qt 6, no browser) that starts the agent for you. It needs the engine built first, a model file, and Qt 6.5 or newer with CMake 3.21 or newer. On Ubuntu or Debian the Qt packages used here are <code>qt6-base-dev</code>, <code>qt6-declarative-dev</code> and <code>qml6-module-qtquick-controls</code>.</p>
 <div class="term" aria-label="Desktop app commands">
   <div class="bar">terminal</div>
-<pre><span class="p">$</span> ./build.sh                          <span class="c"># 1. the engine -> ./katana</span>
-<span class="p">$</span> desktop-qt/build.sh                 <span class="c"># 2. the app    -> desktop-qt/build/katana-desktop-qt</span>
+<pre><span class="p">$</span> sh build.sh                         <span class="c"># 1. the engine -> ./katana</span>
+<span class="p">$</span> sh desktop-qt/build.sh               <span class="c"># 2. the app    -> desktop-qt/build/katana-desktop-qt</span>
 <span class="p">$</span> mkdir -p models &amp;&amp; cp model.gguf models/   <span class="c"># 3. put a GGUF model in models/</span>
 <span class="p">$</span> ./desktop-qt/build/katana-desktop-qt   <span class="c"># 4. run it, from the repository root</span></pre>
 </div>
