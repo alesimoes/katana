@@ -1,0 +1,22 @@
+#version 450
+// convolucao 2D do VAE como produto de matrizes: col[k][p] (k = (ky*K + kx)*Cin + ci, p = pixel de saida dentro do bloco), k >= Kd e zero (preenchimento ate multiplo de 64).
+// X em NHWC [H*W][Cin]; com UP a entrada e a ampliacao 2x por vizinho mais proximo de uma imagem [H/2][W/2] (a ampliacao nao existe na memoria).
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer X { float x[]; };
+layout(std430, binding = 1) writeonly buffer C { float col[]; };
+layout(push_constant) uniform P { uint H, W, Cin, K, stride, pt, pl, Wo, B, p0, Kd, Kp, up; } pc;
+void main() {
+    const uint idx = (gl_WorkGroupID.y * 32768u + gl_WorkGroupID.x) * 256u + gl_LocalInvocationID.x;
+    if (idx >= pc.Kp * pc.B) return;
+    const uint k = idx / pc.B, p = idx % pc.B;
+    float v = 0.0;
+    if (k < pc.Kd) {
+        const uint tap = k / pc.Cin, ci = k % pc.Cin, ky = tap / pc.K, kx = tap % pc.K, pix = pc.p0 + p, oy = pix / pc.Wo, ox = pix % pc.Wo;
+        const int iy = int(oy * pc.stride + ky) - int(pc.pt), ix = int(ox * pc.stride + kx) - int(pc.pl);
+        if (iy >= 0 && iy < int(pc.H) && ix >= 0 && ix < int(pc.W)) {
+            if (pc.up != 0u) v = x[(uint(iy >> 1) * (pc.W >> 1) + uint(ix >> 1)) * pc.Cin + ci];
+            else v = x[(uint(iy) * pc.W + uint(ix)) * pc.Cin + ci];
+        }
+    }
+    col[idx] = v;
+}

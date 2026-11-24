@@ -9,6 +9,12 @@ layout(std430, binding = 1) writeonly buffer B { float16_t b[]; };
 #else
 layout(std430, binding = 1) writeonly buffer B { float b[]; };
 #endif
+#ifdef BIAS
+layout(std430, binding = 2) readonly buffer BI { float bias[]; };
+#endif
+#ifdef RES
+layout(std430, binding = 3) readonly buffer RS { float res[]; };
+#endif
 layout(push_constant) uniform P { uint R, C, aoff, boff; } pc;
 shared float t[16][17];
 void main() {
@@ -20,6 +26,10 @@ void main() {
     if (c2 < pc.C && r2 < pc.R)
 #ifdef OUT16
         b[pc.boff + c2 * pc.R + r2] = float16_t(t[lx][ly]);
+#elif defined(RES)
+        b[pc.boff + c2 * pc.R + r2] = t[lx][ly] + bias[r2] + res[pc.boff + c2 * pc.R + r2];
+#elif defined(BIAS)
+        b[pc.boff + c2 * pc.R + r2] = t[lx][ly] + bias[r2];
 #else
         b[pc.boff + c2 * pc.R + r2] = t[lx][ly];
 #endif

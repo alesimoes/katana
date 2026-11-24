@@ -61,6 +61,7 @@ static float *fxv_decode(const FxVae *v, const float *tok, int th, int tw, int *
     const SdgFile *g = &v->g;
     int H = 2 * th, W = 2 * tw, C = 512, ok = 1; char b[220];
     float *z = fxv_unpatch(v, tok, th, tw);
+    { float *r = fxq_decode(g, z, H, W, Ho, Wo); if (r) { free(z); return r; } }     /* GPU (fxvaegpu.c); NULL = CPU */
     float *x = sdn_alloc((size_t)H * W * 32);
     ok &= sdn_conv(x, z, H, W, g, "vae.post_quant_conv", 1, 0, NULL, NULL);
     free(z);
@@ -72,6 +73,7 @@ static float *fxv_decode(const FxVae *v, const float *tok, int th, int tw, int *
         for (int l = 0; l < 3 && ok; l++) {
             snprintf(b, sizeof b, "vae.decoder.up_blocks.%d.resnets.%d", blk, l);
             ok &= fxv_res(g, b, &x, H, W, &C);
+            if (getenv("FXQ_DBG")) { double sm = 0, a = 0; for (size_t i = 0; i < (size_t)H * W * C; i++) { sm += x[i]; a += fabs(x[i]); } fprintf(stderr, "  dbgcpu resnet n=%zu mean %.5f meanabs %.5f\n", (size_t)H * W * C, sm / ((size_t)H * W * C), a / ((size_t)H * W * C)); }
         }
         if (ok && blk < 3) {
             float *u = sdn_alloc((size_t)4 * H * W * C);
@@ -99,6 +101,7 @@ static float *fxv_decode(const FxVae *v, const float *tok, int th, int tw, int *
 /* imagem [H0*W0][3] em [-1, 1] -> media do latente [H0/8 * W0/8][32] (memoria nova) ou NULL; antes do patchify e da normalizacao */
 static float *fxv_encode_mean(const FxVae *v, const float *img, int H0, int W0, int *ho, int *wo) {
     const SdgFile *g = &v->g;
+    { float *r = fxq_encode(g, img, H0, W0, ho, wo); if (r) return r; }              /* GPU (fxvaegpu.c); NULL = CPU */
     int H = H0, W = W0, C = 128, ok = 1; char b[220];
     float *x = sdn_alloc((size_t)H * W * C);
     ok &= sdn_conv(x, img, H, W, g, "vae.encoder.conv_in", 1, 1, NULL, NULL);
@@ -206,7 +209,63 @@ static int fxv_selftest(const char *refdir, const char *gguf) {
     return bad ? 1 : 0;
 }
 
+/* gpu-test <vae.gguf>: convolucao e GroupNorm na GPU contra a CPU, entradas aleatorias */
+static int fxv_gpu_test(const char *gguf) {
+    FxVae v; if (!fxv_load(&v, gguf)) return 1;
+    if (!fxq_open()) { fprintf(stderr, "sem GPU\n"); return 1; }
+    int bad = 0; const SdgFile *g = &v.g;
+    struct { const char *name; int H, W, cin, up; } T[] = { { "vae.decoder.conv_in", 24, 40, 32, 0 }, { "vae.decoder.mid_block.resnets.0.conv1", 24, 40, 512, 0 },
+        { "vae.decoder.up_blocks.0.upsamplers.0.conv", 48, 80, 512, 1 }, { "vae.decoder.up_blocks.2.resnets.0.conv_shortcut", 96, 160, 512, 0 }, { "vae.decoder.conv_out", 96, 160, 128, 0 }, { "vae.decoder.up_blocks.2.upsamplers.0.conv", 192, 320, 256, 1 } };
+    for (int ti = 0; ti < 6; ti++) {
+        int cin, cout; if (!sdn_conv_cin_cout(g, T[ti].name, &cin, &cout)) { printf("sem %s\n", T[ti].name); continue; }
+        const int H = T[ti].H, W = T[ti].W, hin = T[ti].up ? H / 2 : H, win = T[ti].up ? W / 2 : W, pad = cin == 512 && cout == 256 ? 0 : 1;
+        const int kk = (int)sdg_find(g, (char[]){0}) ? 0 : 0; (void)kk;
+        float *X = xalloc((size_t)hin * win * cin, 4), *Xu = X, *Yc = xalloc((size_t)H * W * cout, 4), *Yg = xalloc((size_t)H * W * cout, 4);
+        uint64_t r = 5; for (size_t i = 0; i < (size_t)hin * win * cin; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; X[i] = ((int)(r >> 40) % 2000 - 1000) / 1000.0f; }
+        if (T[ti].up) { Xu = xalloc((size_t)H * W * cin, 4); sdr_upsample2x(Xu, X, hin, win, cin); }
+        SdrConv c; if (!sdr_conv_load(g, T[ti].name, &c)) return 1;
+        const int pd = c.k == 1 ? 0 : 1; (void)pad;
+        sdr_conv2d(Yc, Xu, H, W, &c, 1, pd, pd, pd, pd, NULL, NULL); sdr_conv_free(&c);
+        KvkBuf bx = kvk_buf_create((size_t)hin * win * cin * 4, KVK_USAGE_RW), by = kvk_buf_create((size_t)H * W * cout * 4, KVK_USAGE_RW);
+        kvk_buf_write(bx, 0, X, (size_t)hin * win * cin * 4);
+        const FxqConv *fc = fxq_conv(g, T[ti].name);
+        const int ok = fc && fxq_run_conv(fc, bx, H, W, 1, pd, pd, pd, pd, T[ti].up, by, (KvkBuf){0}, NULL, NULL);
+        kvk_wait(); kvk_buf_read(by, 0, Yg, (size_t)H * W * cout * 4);
+        printf("conv %s (%dx%d, %d->%d, ok=%d)\n", T[ti].name, H, W, cin, cout, ok);
+        bad += fxv_cmp("  GPU x CPU", Yg, Yc, (size_t)H * W * cout);
+    }
+    const char *rn[3] = { "vae.decoder.mid_block.resnets.0", "vae.decoder.up_blocks.2.resnets.0", "vae.decoder.up_blocks.3.resnets.0" };
+    const int rh[3] = { 24, 96, 192 }, rw[3] = { 40, 160, 320 };
+    for (int ti = 0; ti < 3; ti++) {
+        char nb[220]; int cin, cout; snprintf(nb, sizeof nb, "%s.conv1", rn[ti]); sdn_conv_cin_cout(g, nb, &cin, &cout);
+        const int H = rh[ti], W = rw[ti], n = H * W;
+        float *X = xalloc((size_t)n * cin, 4), *Yc = xalloc((size_t)n * cout, 4), *Yg = xalloc((size_t)n * cout, 4);
+        uint64_t r = 3; for (size_t i = 0; i < (size_t)n * cin; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; X[i] = ((int)(r >> 40) % 2000 - 1000) / 700.0f; }
+        int Co; sdn_resnet(g, rn[ti], X, Yc, H, W, &Co, NULL);
+        KvkBuf bb[4]; size_t mx = (size_t)n * (cin > cout ? cin : cout) * 4;
+        for (int i = 0; i < 4; i++) bb[i] = kvk_buf_create(mx, KVK_USAGE_RW);
+        kvk_buf_write(bb[0], 0, X, (size_t)n * cin * 4);
+        const int ok = fxq_resnet(g, rn[ti], bb[0], bb[1], bb[2], bb[3], H, W, &Co);
+        kvk_wait(); kvk_buf_read(bb[1], 0, Yg, (size_t)n * cout * 4);
+        printf("resnet %s (%dx%d %d->%d ok=%d)\n", rn[ti], H, W, cin, cout, ok);
+        bad += fxv_cmp("  GPU x CPU", Yg, Yc, (size_t)n * cout);
+        for (int i = 0; i < 4; i++) kvk_buf_destroy(&bb[i]);
+    }
+    { /* GroupNorm + SiLU */
+        const int n = 96 * 160, C = 128; float *X = xalloc((size_t)n * C, 4), *Yc = xalloc((size_t)n * C, 4), *Yg = xalloc((size_t)n * C, 4);
+        uint64_t r = 9; for (size_t i = 0; i < (size_t)n * C; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; X[i] = 3.0f + ((int)(r >> 40) % 2000 - 1000) / 300.0f; }
+        sdn_gn(Yc, X, n, C, g, "vae.decoder.up_blocks.3.resnets.1.norm1", 1e-6f, 1);
+        KvkBuf bx = kvk_buf_create((size_t)n * C * 4, KVK_USAGE_RW), by = kvk_buf_create((size_t)n * C * 4, KVK_USAGE_RW);
+        kvk_buf_write(bx, 0, X, (size_t)n * C * 4);
+        fxq_gn(g, "vae.decoder.up_blocks.3.resnets.1.norm1", bx, by, n, C, 1);
+        kvk_wait(); kvk_buf_read(by, 0, Yg, (size_t)n * C * 4);
+        bad += fxv_cmp("groupnorm+silu GPU x CPU", Yg, Yc, (size_t)n * C);
+    }
+    return bad;
+}
+
 static int fxv_main(int argc, char **argv) {
+    if (argc >= 2 && !strcmp(argv[0], "gpu-test")) return fxv_gpu_test(argv[1]);
     if (argc >= 3 && !strcmp(argv[0], "convert")) return fxv_convert(argv[1], argv[2]);
     if (argc >= 3 && !strcmp(argv[0], "selftest")) return fxv_selftest(argv[1], argv[2]);
     fprintf(stderr, "uso: katana render flux-vae convert <pasta-do-vae> <saida.gguf>\n     katana render flux-vae selftest <pasta-de-referencia> <vae.gguf>\n");
