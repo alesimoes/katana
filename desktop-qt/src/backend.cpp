@@ -1564,17 +1564,6 @@ bool Backend::pasteClipboardImage()
     return im.save(p, "PNG") && attachImage(p);
 }
 
-// o briefing e o proprio texto digitado ou colado; o que parece briefing vai ao motor como arquivo (--brief), o resto como --nl
-bool Backend::looksLikeBrief(const QString &text)
-{
-    if (text.size() > 600 || text.contains("MATERIAIS") || text.contains("REGRAS"))
-        return true;
-    for (const QString &l : text.split('\n'))
-        if (l.trimmed().startsWith("- \""))
-            return true;
-    return false;
-}
-
 void Backend::setImageEngine(const QString &e)
 {
     if ((e != "look" && e != "stable" && e != "flux") || e == m_imgEngine) return;
@@ -1604,9 +1593,10 @@ bool Backend::sendImage(const QString &text)
     const QString nome = engine == "flux" ? "FLUX" : "Stable";
     const QString img = m_attach;
     QString prompt = text.trimmed();
-    const bool asBrief = !prompt.isEmpty() && looksLikeBrief(prompt);
-    if (prompt.isEmpty())
-        prompt = QStringLiteral("Fotografia arquitetonica de interiores, fotorrealista, mesma camera, mesma composicao e mesmos materiais da imagem de referencia.");
+    if (prompt.isEmpty()) {                                           // o motor nao escreve prompt: sem texto nao ha o que gerar
+        m_msgs.append("error", QStringLiteral("Escreva na caixa o que a imagem deve mostrar."));
+        return false;
+    }
     // tamanho: multiplos de 64, area do tamanho escolhido no menu (1024x576 a 1920x1080), proporcao da imagem, lados ate 64 acima do nominal
     const int bw = imageSize(), bh = bw * 9 / 16;
     const QSize sz = QImageReader(img).size();
@@ -1618,21 +1608,18 @@ bool Backend::sendImage(const QString &text)
     }
     QDir().mkpath(imageDir());
     const QString out = QDir(imageDir()).filePath(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + "-" + engine + ".png");
-    // o pedido inteiro vai ao motor de prompt do katana (--nl): ele monta o prompt do motor escolhido (dominio, presets, pesos)
+    // o texto da caixa e o prompt, literal: o motor nao reescreve nem acrescenta nada; se passar do limite ele corta por relevancia
     QStringList args{"render", "generate", "--engine", engine, "--init", img, "--strength", "0.35",
                      "--size", QString("%1x%2").arg(W).arg(H), "--out", out};
-    QString briefFile;
-    if (asBrief) {                                                    // briefing colado: vai como arquivo temporario (removido ao fim)
-        briefFile = QDir(QDir::tempPath()).filePath("katana-briefing-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".md");
+    QString briefFile = QDir(QDir::tempPath()).filePath("katana-briefing-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".md");
+    {                                                                 // arquivo temporario com o texto exato (removido ao fim)
         QFile bf(briefFile);
         if (!bf.open(QIODevice::WriteOnly) || bf.write(prompt.toUtf8()) < 0) {
-            m_msgs.append("error", QStringLiteral("Nao foi possivel gravar o briefing temporario."));
+            m_msgs.append("error", QStringLiteral("Nao foi possivel gravar o prompt temporario."));
             return false;
         }
         bf.close();
         args << "--brief" << briefFile;
-    } else {
-        args << "--nl" << prompt;
     }
     if (engine == "stable") {                                          // as bordas da vista seguram arcos e curvas (ControlNet canny)
         const int ss = stableSteps();

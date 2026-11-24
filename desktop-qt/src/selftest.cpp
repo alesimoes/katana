@@ -1040,7 +1040,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
             check(waitFor([&] { return !be.ready() && !be.answering(); }, 30000), "agente encerrado de novo");
         }
 
-        // gerar com o stable: nao passa pelo agente; texto curto vai como --nl
+        // gerar com o stable: nao passa pelo agente; o texto da caixa vai literal, como --brief (arquivo temporario)
         const QString argsFile = QDir::homePath() + "/.standin-render-args";
         const QString briefCopy = QDir::homePath() + "/.standin-render-brief";
         QStringList sentToAgent;
@@ -1057,7 +1057,8 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(be.messages()->get(be.messages()->count() - 2)["kind"] == "user" && sentToAgent.isEmpty(), "o texto aparece como mensagem do usuario e nao vai ao agente");
         check(be.attachedImage().isEmpty(), "o anexo e consumido no envio");
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
-          check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief");
+          check(rl.contains("--brief") && !rl.contains("--nl") && !rl.contains("--logo"), "texto curto: vai literal como --brief, sem --nl");
+          { QFile bfc(briefCopy); QString b0; if (bfc.open(QIODevice::ReadOnly)) b0 = QString::fromUtf8(bfc.readAll()); check(b0 == "gere a recepcao realista", "o arquivo --brief tem o texto da caixa, byte a byte, sem acrescimo"); }
           { const int si = rl.indexOf("--steps"); check(rl.contains("--control") && rl.contains("--control-scale") && si >= 0 && rl[si + 1] == "20", "stable: ControlNet pelas bordas da vista, --steps 20 (o padrao)"); }
           const int zi = rl.indexOf("--size"); check(be.imageSize() == 1024 && zi >= 0 && rl[zi + 1].split('x')[0].toInt() >= 320, "1024 (o menor) e o padrao e vai em --size: " + (zi >= 0 ? rl[zi + 1] : QString())); }
         QQuickItem *ic = c.item("imageCard");
@@ -1072,10 +1073,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         if (Sessoes::carregar(be.sessionsDir(), be.currentSessionId(), &ss)) for (const Msg &m : ss.mensagens) gravada |= m.papel == "image" && m.texto == saida;
         check(gravada, "sessao grava o caminho da imagem");
 
-        // briefing colado na propria caixa: texto longo ou com cara de briefing vai como --brief (arquivo temporario)
-        check(Backend::looksLikeBrief("MATERIAIS\n- \"Arenito\": x") && Backend::looksLikeBrief("regras: REGRAS de fidelidade") && Backend::looksLikeBrief(QString(700, 'a'))
-              && Backend::looksLikeBrief("texto\n- \"Piso\": madeira") && !Backend::looksLikeBrief("gere a recepcao realista") && !Backend::looksLikeBrief(""),
-              "looksLikeBrief: MATERIAIS, REGRAS, mais de 600 caracteres, linhas - \"...\"");
+        // texto longo colado na propria caixa: tambem literal, como --brief (arquivo temporario com o texto exato)
         const QString brief = "MATERIAIS\n- \"Arenito\": material, repeticao do padrao 275x184 cm (aproximadamente 7% da moldura)\nREGRAS\n- manter a camera";
         QFile::remove(argsFile); QFile::remove(briefCopy);
         be.attachImage(img);
@@ -1085,7 +1083,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(waitFor([&] { return be.messages()->count() > n1 + 1 && !be.imageBusy(); }, 30000), "briefing colado: terminou");
         QTest::qWait(300);
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
-          check(rl.contains("--brief") && !rl.contains("--nl"), "briefing colado: vai como --brief, sem --nl");
+          check(rl.contains("--brief") && !rl.contains("--nl"), "texto colado: vai como --brief, sem --nl");
           const int i = rl.indexOf("--brief");
           check(i >= 0 && i + 1 < rl.size() && rl[i + 1].endsWith(".md") && !QFileInfo::exists(rl[i + 1]), "o arquivo temporario do briefing e removido ao fim"); }
         { QFile f(briefCopy); QString bc; if (f.open(QIODevice::ReadOnly)) bc = QString::fromUtf8(f.readAll());

@@ -259,7 +259,6 @@ public:
     Q_INVOKABLE bool attachImage(const QString &pathOrUrl);   // anexa uma imagem (caminho ou file://); false se nao for imagem legivel
     Q_INVOKABLE void clearImage();
     Q_INVOKABLE bool pasteClipboardImage();                   // anexa a imagem da area de transferencia (se houver); false se nao houver
-    Q_INVOKABLE static bool looksLikeBrief(const QString &text);   // texto longo ou com cara de briefing: vai como --brief em vez de --nl
     void reopenAgentAfterImage();                             // volta a abrir o agente fechado para liberar a placa
     Q_INVOKABLE bool sendImage(const QString &text);          // gera a imagem com `katana render generate`; com a acao "look" manda ao agente com a imagem anexada
     Q_INVOKABLE QString imageDir() const;                     // pasta das imagens geradas

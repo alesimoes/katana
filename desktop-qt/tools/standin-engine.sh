@@ -23,7 +23,7 @@ render)
           esac
           echo "render: o motor $E ainda nao esta disponivel" >&2; exit 3;;
     esac
-    if { [ -n "$PF" ] && grep -q falhe "$PF"; } || case "$NL" in *falhe*) true;; *) false;; esac; then echo "render: nao achei os pesos do Stable" >&2; exit 2; fi
+    if { [ -n "$PF" ] && grep -q falhe "$PF"; } || { [ -n "$BR" ] && grep -q falhe "$BR"; } || case "$NL" in *falhe*) true;; *) false;; esac; then echo "render: nao achei os pesos do Stable" >&2; exit 2; fi
     case "$KATANA_BACKEND" in cuda|vulkan) echo "[stable] usado: unet=$KATANA_BACKEND vae=$KATANA_BACKEND" >&2;; esac      # com a placa escolhida o stable diz quem processou
     cp "$(dirname "$0")/samples/render-saida.png" "$OUT"; exit 0;;
 coder)
