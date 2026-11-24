@@ -201,6 +201,7 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdspec.c"              /* render: pedido -> especificacao de imagem -> prompt do Stable Diffusion (katana render spec) */
 #include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */
 #include "engine/cu_mod.c"             /* CUDA (opcional, API do driver carregada em tempo de execucao): camada, produtos em PTX, kernels de apoio */
+#include "render/sdcu.c"               /* render: Stable Diffusion 1.5 na GPU (CUDA): UNet, ControlNet, VAE */
 #include "render/fxconvert_vae.c"        /* render: VAE do FLUX.2 klein, conversor (katana render flux-vae convert) */
 #include "render/fxvk.c"              /* render: FLUX.2 na GPU (Vulkan): produtos Q4_K/Q5_K, blocos do transformador */
 #include "render/fxvaegpu.c"        /* render: VAE do FLUX.2 na GPU (Vulkan): convolucao, GroupNorm */

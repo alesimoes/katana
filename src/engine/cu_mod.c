@@ -7,3 +7,10 @@ static void *cu_kmod(void) {
     if (!tried) { tried = 1; m = cu_module((const char *)cu_kern_ptx); }
     return m;
 }
+#include "engine/cu_sdkern.inc"
+/* modulo dos kernels do Stable Diffusion (tools/cuda/sdkern.cu) */
+static void *cu_sdmod(void) {
+    static void *m; static int tried;
+    if (!tried) { tried = 1; m = cu_module((const char *)cu_sdkern_ptx); }
+    return m;
+}
