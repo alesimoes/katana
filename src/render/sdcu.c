@@ -396,6 +396,7 @@ static int scu_plan(const SdgFile *base, const SdgFile *ctrl, int h8, int w8, in
     if (g_sdc.dead || !scu_init()) return 0;
     if (h8 % 8 || w8 % 8) return 0;
     size_t fr = 0, tot = 0; cuapi.MemGetInfo(&fr, &tot);
+    { const char *cap = getenv("KATANA_STABLE_VRAM_MB"); if (cap && (size_t)atoll(cap) << 20 < fr) fr = (size_t)atoll(cap) << 20; }      /* teste: finge menos VRAM livre */
     const size_t wu = scu_group_bytes(base, "unet."), wc = ctrl ? scu_group_bytes(ctrl, "ctrl.") : 0, ws = scu_ws_bytes(h8 * w8, nctx), lim = fr / 100 * 96;
     if (wu + wc + ws <= lim) g_sdc.stream = 0;
     else if ((wu > wc ? wu : wc) + ws <= lim) g_sdc.stream = 1;
@@ -598,4 +599,54 @@ done:
     if (!ok || !mean) { free(mean); fprintf(stderr, "[stable] cuda: o codificador do VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
     *ho = H; *wo = W;
     return mean;
+}
+
+/* ---------- katana render stable-gpu-test [pasta-models/render]: a GPU contra a CPU (mesmos pesos, mesma entrada) ----------
+ * UNet + ControlNet (uma passada, 256x192), decodificador e codificador do VAE. Mede o maior erro e o erro RMS relativos ao maior |valor| /
+ * RMS da CPU; passa abaixo de 1e-2 (maior) e 3e-3 (RMS): as contas da GPU usam operandos F16 com acumulo F32 (a CPU e F32 puro). Sem GPU: "pulado", saida 0. */
+static int scu_cmp(const char *what, const float *a, const float *r, size_t n, double secs, double lim_max, double lim_rms) {
+    double mx = 0, mr = 0, se = 0, sr = 0;
+    for (size_t i = 0; i < n; i++) { const double d = fabs((double)a[i] - r[i]); if (!(d <= mx)) mx = d; if (fabs(r[i]) > mr) mr = fabs(r[i]); se += d * d; sr += (double)r[i] * r[i]; }
+    const double rm = mr > 0 ? mx / mr : mx, rr = sr > 0 ? sqrt(se / sr) : sqrt(se);
+    const int ok = rm < lim_max && rr < lim_rms;
+    printf("  %-30s %s  erro max %.3e  |ref| max %.3f  razao %.2e  rms relativo %.2e  (GPU %.2f s)\n", what, ok ? "OK    " : "FALHOU", mx, mr, rm, rr, secs);
+    return ok ? 0 : 1;
+}
+static int scu_test_main(const char *mdir) {
+    char p[1100]; SdgFile base, ctrl; int bad = 0;
+    if (!scu_init()) { printf("stable-gpu-test: sem GPU CUDA utilizavel (KATANA_BACKEND=%s): pulado\n", getenv("KATANA_BACKEND") ? getenv("KATANA_BACKEND") : ""); return 0; }
+    snprintf(p, sizeof p, "%s/sd15-realistic-vision.gguf", mdir); if (!sdg_open(&base, p)) return 1;
+    snprintf(p, sizeof p, "%s/sd15-controlnet-canny.gguf", mdir); if (!sdg_open(&ctrl, p)) return 1;
+    const int W = 256, H = 192, h8 = H / 8, w8 = W / 8, nctx = 77;
+    SdpRng rng = { 12345, 0, 0 };
+    float *lat = sdn_alloc((size_t)h8 * w8 * 4), *ctx = sdn_alloc((size_t)nctx * 768), *img = sdn_alloc((size_t)W * H * 3);
+    for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) lat[i] = sdp_rng_gauss(&rng);
+    for (size_t i = 0; i < (size_t)nctx * 768; i++) ctx[i] = 0.5f * sdp_rng_gauss(&rng);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) { const float v = (x % 37 == 0 || y % 29 == 0 || (x - y) % 53 == 0) ? 1.0f : 0.0f; for (int c = 0; c < 3; c++) img[((size_t)y * W + x) * 3 + c] = v; }
+    printf("katana render stable-gpu-test (%s, %dx%d)\n", cu_dev.name, W, H);
+    int hc, wc; float *cond = sdn_cond_embed(&ctrl, img, H, W, &hc, &wc);
+    SdSkips res; float *mres = NULL; int hm, wm;
+    float *ref = sdn_alloc((size_t)h8 * w8 * 4), *out = sdn_alloc((size_t)h8 * w8 * 4);
+    if (!cond || !sdn_control(&ctrl, lat, h8, w8, 500.0f, ctx, nctx, cond, 1.0f, &res, &mres, &hm, &wm) || !sdn_unet(&base, lat, h8, w8, 500.0f, ctx, nctx, &res, mres, ref)) { fprintf(stderr, "stable-gpu-test: a CPU falhou\n"); return 1; }
+    if (!scu_plan(&base, &ctrl, h8, w8, nctx)) { printf("  nao coube na GPU: pulado\n"); return 0; }
+    double t0 = sdp_now();
+    if (!scu_cond(&ctrl, img, H, W, nctx)) { printf("  cond embedding FALHOU\n"); return 1; }
+    if (!scu_eps(&base, &ctrl, lat, h8, w8, 500.0f, ctx, nctx, 1.0f, out)) { printf("  UNet + ControlNet FALHOU\n"); return 1; }
+    bad += scu_cmp("UNet + ControlNet (eps)", out, ref, (size_t)h8 * w8 * 4, sdp_now() - t0, 1e-2, 3e-3);
+    t0 = sdp_now();
+    if (!scu_eps(&base, NULL, lat, h8, w8, 500.0f, ctx, nctx, 1.0f, out)) { printf("  UNet FALHOU\n"); return 1; }
+    if (!sdn_unet(&base, lat, h8, w8, 500.0f, ctx, nctx, NULL, NULL, ref)) return 1;
+    bad += scu_cmp("UNet sem ControlNet (eps)", out, ref, (size_t)h8 * w8 * 4, sdp_now() - t0, 1e-2, 3e-3);
+    int Ho, Wo, Hc, Wc;
+    t0 = sdp_now(); float *dg = scu_vae_decode(&base, lat, h8, w8, &Ho, &Wo); const double td = sdp_now() - t0;
+    float *dc = sdv_decode(&base, lat, h8, w8, &Hc, &Wc);
+    if (!dg || !dc || Ho != Hc || Wo != Wc) { printf("  VAE decodificador FALHOU\n"); return 1; }
+    bad += scu_cmp("VAE decodificador", dg, dc, (size_t)Ho * Wo * 3, td, 1e-2, 3e-3);
+    for (size_t i = 0; i < (size_t)W * H * 3; i++) img[i] = dc[i] > 1 ? 1 : dc[i] < -1 ? -1 : dc[i];
+    t0 = sdp_now(); float *eg = scu_vae_encode(&base, img, H, W, &hc, &wc); const double te = sdp_now() - t0;
+    float *ec = sdv_encode(&base, img, H, W, &Hc, &Wc);
+    if (!eg || !ec) { printf("  VAE codificador FALHOU\n"); return 1; }
+    bad += scu_cmp("VAE codificador", eg, ec, (size_t)hc * wc * 4, te, 1e-2, 3e-3);
+    printf("%s\n", bad ? "FALHOU" : "tudo OK");
+    return bad ? 1 : 0;
 }

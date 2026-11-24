@@ -399,6 +399,7 @@ static int sd_names(const char *dir) {
 }
 
 static int sdt_main(const char *refdir, const char *mdir);      /* render/sdtest.c */
+static int scu_test_main(const char *mdir);                      /* render/sdcu.c */
 static int sdp_main(int argc, char **argv);                      /* render/sdgen.c */
 static int sdb_main(int argc, char **argv);                      /* render/sdbrief.c */
 static int fxt_convert(const char *dir, const char *out_path);       /* render/fxconvert_text.c */
@@ -413,6 +414,7 @@ static int render_main(int argc, char **argv) {
     g_cv_skip_int = 1;      /* position_ids do CLIP e outros tensores de inteiros: nao entram */
     if (argc >= 2 && !strcmp(argv[0], "names")) return sd_names(argv[1]);
     if (argc >= 3 && !strcmp(argv[0], "selftest")) return sdt_main(argv[1], argv[2]);
+    if (argc >= 2 && !strcmp(argv[0], "stable-gpu-test")) return scu_test_main(argv[1]);
     if (argc >= 1 && !strcmp(argv[0], "generate")) return sdp_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "brief")) return sdb_main(argc - 1, argv + 1);
     if (argc >= 3 && !strcmp(argv[0], "flux-convert-text")) return fxt_convert(argv[1], argv[2]);
@@ -434,6 +436,7 @@ static int render_main(int argc, char **argv) {
     fprintf(stderr, "uso: katana render convert <pasta> <base.gguf> <controle.gguf>\n"
                     "     katana render names   <pasta>\n"
                     "     katana render selftest <referencia> <pasta>\n"
+                    "     katana render stable-gpu-test <pasta>   (GPU contra CPU: UNet, ControlNet, VAE; pula sem GPU)\n"
                     "     katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--show]   |   katana render brief selftest [briefing.md]\n"
                     "     katana render logo --image render.png --logo logo.png --box x,y,w,h [--perspective x1,y1,...,x4,y4] [--blend]   |   katana render logo selftest\n"
                     "     katana render spec --brief briefing.md --engine flux|stable   (imprime o prompt do briefing, sem gerar)\n"
