@@ -1023,6 +1023,17 @@ void Backend::setState(bool ready, bool loading, bool answering)
     updateInhibit();
 }
 
+int Backend::imageSteps() const {
+    const int n = m_ui->value("imagemPassos", 4).toInt();
+    return (n == 4 || n == 8 || n == 12 || n == 20) ? n : 4;
+}
+void Backend::setImageSteps(int n) {
+    if (n != 4 && n != 8 && n != 12 && n != 20) return;
+    if (n == imageSteps()) return;
+    m_ui->setValue("imagemPassos", n);
+    m_ui->sync();
+    emit imageChanged();
+}
 QString Backend::imageBackend() const {
     const QString b = m_ui->value("imagemBackend", "auto").toString();
     return (b == "cuda" || b == "vulkan" || b == "cpu") ? b : QStringLiteral("auto");
@@ -1574,7 +1585,8 @@ bool Backend::sendImage(const QString &text)
     } else {
         args << "--nl" << prompt;
     }
-    if (engine == "stable") args << "--lcm";
+    if (engine == "stable") args << "--lcm" << "--control" << img << "--control-scale" << "1.0";   // as bordas da vista seguram arcos e curvas (ControlNet canny)
+    if (engine == "flux") args << "--steps" << QString::number(imageSteps());
     if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");
 
     if (!m_sess.valida())

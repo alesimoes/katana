@@ -990,7 +990,8 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(be.messages()->get(be.messages()->count() - 2)["kind"] == "user" && sentToAgent.isEmpty(), "o texto aparece como mensagem do usuario e nao vai ao agente");
         check(be.attachedImage().isEmpty(), "o anexo e consumido no envio");
         { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
-          check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief"); }
+          check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief");
+          check(rl.contains("--control") && rl.contains("--control-scale") && !rl.contains("--steps"), "stable: ControlNet pelas bordas da vista, sem --steps"); }
         QQuickItem *ic = c.item("imageCard");
         check(ic && ic->isVisible() && c.item("imagePic") && c.item("imagePic")->isVisible(), "cartao de imagem visivel");
         c.grab("61-imagem-gerada.png");
@@ -1036,6 +1037,9 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
 
         // FLUX com a placa escolhida: o cartao diz quem processou (CUDA)
         be.setImageBackend("cuda");
+        check(be.imageSteps() == 4, "passos do FLUX: 4 e o padrao");
+        be.setImageSteps(7); check(be.imageSteps() == 4, "passos invalidos sao recusados");
+        be.setImageSteps(8); check(be.imageSteps() == 8, "escolher 8 passos");
         be.setImageEngine("flux");
         be.attachImage(img);
         const int antesC = be.messages()->count();
@@ -1044,6 +1048,9 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         QTest::qWait(400);
         check(be.messages()->get(be.messages()->count() - 1)["name"] == "flux|CUDA", "cartao do FLUX indica CUDA");
         { QList<QQuickItem *> tt; findAll(c.root(), "imageTitle", tt); check(!tt.isEmpty() && tt.last()->property("text").toString().contains("CUDA"), "titulo do cartao mostra CUDA"); c.grab("67-imagem-cuda.png"); }
+        { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n'); const int i = rl.lastIndexOf("--steps");
+          check(i >= 0 && i + 1 < rl.size() && rl[i + 1] == "8", "flux: --steps 8 chega ao motor"); }
+        be.setImageSteps(4);
         be.setImageBackend("auto");
 
         // falha do stable: cartao de erro

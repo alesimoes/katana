@@ -129,6 +129,7 @@ class Backend : public QObject
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY catalogChanged)    // memoria, placa, disco livre (katana hw)
     Q_PROPERTY(QString attachedImage READ attachedImage NOTIFY imageChanged)      // imagem anexada ao proximo envio ("" = nenhuma)
     Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // stable ou flux
+    Q_PROPERTY(int imageSteps READ imageSteps WRITE setImageSteps NOTIFY imageChanged)   // passos do FLUX: 4 (padrao do modelo), 8, 12 ou 20
     Q_PROPERTY(QString imageBackend READ imageBackend WRITE setImageBackend NOTIFY imageChanged)   // processamento do FLUX: auto, cuda, vulkan ou cpu (KATANA_BACKEND)
     Q_PROPERTY(bool imageBusy READ imageBusy NOTIFY imageChanged)
     Q_PROPERTY(bool hasUsableModel READ hasUsableModel NOTIFY modelsChanged)
@@ -241,6 +242,8 @@ public:
     Q_INVOKABLE void start(const QString &modelFile);
     Q_INVOKABLE bool send(const QString &text);
     QString attachedImage() const { return m_attach; }
+    int imageSteps() const;
+    void setImageSteps(int n);
     QString imageBackend() const;
     void setImageBackend(const QString &b);
     QString imageEngine() const { return m_imgEngine; }
