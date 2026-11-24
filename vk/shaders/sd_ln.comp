@@ -1,0 +1,16 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// LayerNorm por linha: Y = (X - media) / sqrt(var + eps) * g + b; um grupo de trabalho por linha
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint X, Y, g, b; int C; float eps; } pc;
+void main() {
+    const uint l = gl_LocalInvocationID.x, row = gl_WorkGroupID.x, C = uint(pc.C), bx = pc.X + row * C * 4u, by = pc.Y + row * C * 4u;
+    float s = 0.0;
+    for (uint i = l; i < C; i += 256u) s += ldf(bx + i * 4u);
+    const float mean = sd_total(s) / float(C);
+    float v = 0.0;
+    for (uint i = l; i < C; i += 256u) { const float d = ldf(bx + i * 4u) - mean; v += d * d; }
+    const float inv = 1.0 / sqrt(sd_total(v) / float(C) + pc.eps);
+    for (uint i = l; i < C; i += 256u) stf(by + i * 4u, (ldf(bx + i * 4u) - mean) * inv * ldf(pc.g + i * 4u) + ldf(pc.b + i * 4u));
+}

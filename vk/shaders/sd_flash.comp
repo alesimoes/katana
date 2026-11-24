@@ -1,0 +1,54 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_clustered : require
+#include "sd_common.glsl"
+// Atencao de 8 cabecas sem mascara, estilo flash (sem a matriz nq x nk): Q [nq][ldq], K [nk][ldk], V [nk][ldv] F16, O F32 [nq][ldo].
+// HD = tamanho da cabeca (40, 80, 160); LN = HD / 5 fios por consulta (cada um com 5 dimensoes); o produto q.k e somado no grupo de LN fios.
+layout(local_size_x = 256) in;
+const uint HD = HDV;
+const uint LN = LNV;
+layout(push_constant) uniform P { uint Q, K, V, O; int ldq, ldk, ldv, ldo, nq, nk; float sl2; } pc;
+const uint BK = 16;
+shared float Ks[BK * HD];
+shared float Vs[BK * HD];
+void main() {
+    const uint tid = gl_LocalInvocationID.x, lane = tid % LN, qpg = 256u / LN;
+    const uint h = gl_WorkGroupID.y;
+    int q = int(gl_WorkGroupID.x * qpg + tid / LN);
+    const bool qv = q < pc.nq;
+    if (!qv) q = pc.nq - 1;
+    const uint d0 = lane * 5u;
+    float qf[5], o[5];
+    for (uint e = 0u; e < 5u; e++) { qf[e] = ldh(pc.Q + (uint(q) * uint(pc.ldq) + h * HD + d0 + e) * 2u); o[e] = 0.0; }
+    float mx = -1e30, l = 0.0;
+    const int nt = (pc.nk + int(BK) - 1) / int(BK);
+    for (int kt = 0; kt < nt; kt++) {
+        barrier();
+        for (uint i = tid; i < BK * HD; i += 256u) {
+            const uint j = i / HD, d = i - j * HD; const int key = kt * int(BK) + int(j);
+            float kv = 0.0, vv = 0.0;
+            if (key < pc.nk) { kv = ldh(pc.K + (uint(key) * uint(pc.ldk) + h * HD + d) * 2u); vv = ldh(pc.V + (uint(key) * uint(pc.ldv) + h * HD + d) * 2u); }
+            Ks[i] = kv; Vs[i] = vv;
+        }
+        barrier();
+        float s[BK];
+        float tm = -1e30;
+        for (uint j = 0u; j < BK; j++) {
+            float part = 0.0;
+            for (uint e = 0u; e < 5u; e++) part += qf[e] * Ks[j * HD + d0 + e];
+            float sv = subgroupClusteredAdd(part, LN) * pc.sl2;
+            if (kt * int(BK) + int(j) >= pc.nk) sv = -1e30;
+            s[j] = sv; tm = max(tm, sv);
+        }
+        const float nm = max(mx, tm), al = exp2(mx - nm);
+        l *= al;
+        for (uint e = 0u; e < 5u; e++) o[e] *= al;
+        for (uint j = 0u; j < BK; j++) {
+            const float p = exp2(s[j] - nm);
+            l += p;
+            for (uint e = 0u; e < 5u; e++) o[e] += p * Vs[j * HD + d0 + e];
+        }
+        mx = nm;
+    }
+    if (qv) for (uint e = 0u; e < 5u; e++) stf(pc.O + (uint(q) * uint(pc.ldo) + h * HD + d0 + e) * 4u, o[e] / l);
+}

@@ -7,7 +7,8 @@
  * Se nem isso cabe, ou algo falha, scu_* devolve 0 e a CPU (sdunet.c, sdvae.c) faz o trabalho, com a mesma conta.
  * Selecao: KATANA_BACKEND=cuda|vulkan|cpu (sem escolha: CUDA, depois Vulkan, depois CPU); KATANA_STABLE_CUDA=0 desliga so este caminho. */
 
-static int g_sd_be_unet, g_sd_be_vae;       /* quem processou de fato: 0 CPU, 1 CUDA, 2 Vulkan (linha "[stable] usado:") */
+/* g_sd_be_unet / g_sd_be_vae (em sdgen.c): quem processou de fato: 0 CPU, 1 CUDA, 2 Vulkan (linha "[stable] usado:") */
+static int g_scu_be;        /* camada em uso: 1 CUDA, 2 Vulkan (render/sdvk.c) */
 
 typedef struct { const SdgInfo *key; CUdptr_ w, b; uint16_t *host; int cin, cout, k, Kp, grp; } SdcW;
 typedef struct { const SdgInfo *key; CUdptr_ p; int C, grp; } SdcV;
@@ -22,9 +23,7 @@ static struct {
     int have_ws;
 } g_sdc;
 
-static int scu_init(void) {
-    if (g_sdc.tried) return g_sdc.ok;
-    g_sdc.tried = 1;
+static int scu_cuda_init(void) {
     { const char *e = getenv("KATANA_STABLE_CUDA"); if (e && !atoi(e)) return 0; }
     { const char *be = getenv("KATANA_BACKEND"); if (be && *be && strcmp(be, "cuda")) return 0; }
     if (!cu_init()) return 0;
@@ -35,9 +34,23 @@ static int scu_init(void) {
     g_sdc.f_gemv = cu_fn(m, "gemv"); g_sdc.f_sm = cu_fn(m, "softmax_rows"); g_sdc.f_tr = cu_fn(m, "transp16"); g_sdc.f_cast = cu_fn(m, "cast16");
     if (!g_sdc.f_conv || !g_sdc.f_gn || !g_sdc.f_fl[0] || !g_sdc.f_fl[1] || !g_sdc.f_fl[2] || !g_sdc.f_ln || !g_sdc.f_geglu || !g_sdc.f_cat || !g_sdc.f_add || !g_sdc.f_gemv || !g_sdc.f_sm || !g_sdc.f_tr || !g_sdc.f_cast) return 0;
     cuapi.FuncSetAttribute(g_sdc.f_fl[2], 8, 43008);
-    g_sdc.ok = 1;
     return 1;
 }
+/* escolhe a camada: KATANA_BACKEND=cuda|vulkan|cpu; sem escolha, CUDA e depois Vulkan; nenhuma = CPU */
+static int scu_init(void) {
+    if (g_sdc.tried) return g_sdc.ok;
+    g_sdc.tried = 1;
+    if (scu_cuda_init()) g_scu_be = 1;
+    else if (svk_init()) g_scu_be = 2;
+    g_sdc.ok = g_scu_be != 0;
+    return g_sdc.ok;
+}
+static CUdptr_ scu_alloc(size_t n) { return g_scu_be == 2 ? svk_alloc(n) : cu_alloc(n); }
+static void scu_free(CUdptr_ p) { if (g_scu_be == 2) svk_free(p); else cu_free(p); }
+static int scu_up(CUdptr_ d, const void *h, size_t n) { return g_scu_be == 2 ? svk_up(d, h, n) : cu_up(d, h, n); }
+static int scu_down(void *h, CUdptr_ d, size_t n) { return g_scu_be == 2 ? svk_down(h, d, n) : cu_down(h, d, n); }
+static int scu_sync(void) { return g_scu_be == 2 ? svk_sync() : cu_sync(); }
+static void scu_meminfo(size_t *fr) { if (g_scu_be == 2) *fr = svk_free_bytes(); else { size_t tot = 0; cuapi.MemGetInfo(fr, &tot); } }
 
 /* ---------- pesos ---------- */
 typedef struct { uint16_t *dst; const uint8_t *src; int type, cin, k, Kp; size_t row0; } SdcRo;
@@ -57,9 +70,9 @@ static void scu_ro_job(void *cx, int o0, int o1) {      /* linhas o0..o1 de uma 
 }
 static int scu_up_w(SdcW *e) {
     const size_t n = (size_t)e->cout * e->Kp * 2;
-    e->w = cu_alloc(n);
+    e->w = scu_alloc(n);
     if (!e->w) return 0;
-    if (!cu_up(e->w, e->host, n)) { cu_free(e->w); e->w = 0; return 0; }
+    if (!scu_up(e->w, e->host, n)) { scu_free(e->w); e->w = 0; return 0; }
     return 1;
 }
 /* nb tensores <base>.weight empilhados nas linhas (q, k, v fundidos); bias: <base>.bias de cada um, empilhados */
@@ -107,12 +120,12 @@ static SdcW *scu_wget(const SdcM *m, int nb, const char *const *base, int bias) 
             if (!b || b->type != 0 || b->nd != 1 || (int)b->dim[0] != co) { fprintf(stderr, "[stable] cuda: vies %s ausente ou nao e F32\n", nm); free(hb); free(e->host); e->host = NULL; return NULL; }
             memcpy(hb + o, sdg_data(m->g, b), (size_t)co * 4); o += (size_t)co;
         }
-        e->b = cu_alloc((size_t)cout * 4);
-        const int ok = e->b && cu_up(e->b, hb, (size_t)cout * 4);
+        e->b = scu_alloc((size_t)cout * 4);
+        const int ok = e->b && scu_up(e->b, hb, (size_t)cout * 4);
         free(hb);
-        if (!ok) { cu_free(e->b); e->b = 0; free(e->host); e->host = NULL; return NULL; }
+        if (!ok) { scu_free(e->b); e->b = 0; free(e->host); e->host = NULL; return NULL; }
     }
-    if (!scu_up_w(e)) { cu_free(e->b); e->b = 0; free(e->host); e->host = NULL; return NULL; }
+    if (!scu_up_w(e)) { scu_free(e->b); e->b = 0; free(e->host); e->host = NULL; return NULL; }
     if (!g_sdc.stream) { free(e->host); e->host = NULL; }
     g_sdc.nw++;
     return e;
@@ -130,8 +143,8 @@ static CUdptr_ scu_dvec(const SdcM *m, const char *base, int C) {
     snprintf(nm, sizeof nm, "%s.weight", base); const float *gw = sdc_vec(m->g, nm, C, &ok);
     snprintf(nm, sizeof nm, "%s.bias", base); const float *gb = sdc_vec(m->g, nm, C, &ok);
     if (!ok) return 0;
-    CUdptr_ p = cu_alloc((size_t)C * 8);
-    if (!p || !cu_up(p, gw, (size_t)C * 4) || !cu_up(p + (size_t)C * 4, gb, (size_t)C * 4)) { cu_free(p); return 0; }
+    CUdptr_ p = scu_alloc((size_t)C * 8);
+    if (!p || !scu_up(p, gw, (size_t)C * 4) || !scu_up(p + (size_t)C * 4, gb, (size_t)C * 4)) { scu_free(p); return 0; }
     g_sdc.v[g_sdc.nv++] = (SdcV){ t, p, C, m->grp };
     return p;
 }
@@ -141,16 +154,17 @@ static void scu_unload(int grp, int release) {
     for (int i = 0; i < g_sdc.nw; i++) {
         SdcW *e = &g_sdc.w[i];
         if (!e->key || e->grp != grp) continue;
-        cu_free(e->w); e->w = 0;
-        if (release || !e->host) { cu_free(e->b); free(e->host); memset(e, 0, sizeof *e); }
+        scu_free(e->w); e->w = 0;
+        if (release || !e->host) { scu_free(e->b); free(e->host); memset(e, 0, sizeof *e); }
     }
-    if (release) for (int i = 0; i < g_sdc.nv; i++) if (g_sdc.v[i].key && g_sdc.v[i].grp == grp) { cu_free(g_sdc.v[i].p); memset(&g_sdc.v[i], 0, sizeof g_sdc.v[i]); }
+    if (release) for (int i = 0; i < g_sdc.nv; i++) if (g_sdc.v[i].key && g_sdc.v[i].grp == grp) { scu_free(g_sdc.v[i].p); memset(&g_sdc.v[i], 0, sizeof g_sdc.v[i]); }
 }
 
 /* ---------- lancamentos ---------- */
 static int scu_conv(const SdcW *w, CUdptr_ X, CUdptr_ Y, CUdptr_ bias, CUdptr_ res, CUdptr_ ca, CUdptr_ cb, int silu, int H, int W, int up, int stride, int pt, int pl, int LH, int LW, float oscale, int out16) {
     const int Cin = w->cin, Cout = w->cout, ks = w->k, Kp = w->Kp; CUdptr_ wh = w->w;
     void *a[] = { &X, &wh, &bias, &res, &Y, &ca, &cb, &silu, &H, &W, (void *)&Cin, (void *)&Cout, (void *)&ks, &up, (void *)&Kp, &stride, &pt, &pl, &LH, &LW, &oscale, &out16 };
+    if (g_scu_be == 2) return svk_conv(X, wh, bias, res, Y, ca, cb, silu, H, W, Cin, Cout, ks, up, Kp, stride, pt, pl, LH, LW, oscale, out16);
     return cu_launch(g_sdc.f_conv, (Cout + 127) / 128, (H * W + 127) / 128, 1, 256, 16384, a);
 }
 /* convolucao padrao: passo 1, preenchimento k/2, saida F32, vies do peso */
@@ -161,25 +175,45 @@ static int scu_gn(const SdcM *m, const char *base, CUdptr_ X, int n, int C, floa
     CUdptr_ v = scu_dvec(m, base, C); if (!v) return 0;
     CUdptr_ be = v + (size_t)C * 4, ca = g_sdc.ca, cb = g_sdc.cb;
     void *a[] = { &X, &n, &C, &v, &be, &eps, &ca, &cb };
+    if (g_scu_be == 2) return svk_gn(X, n, C, v, be, eps, ca, cb);
     return cu_launch(g_sdc.f_gn, 32, 1, 1, 256, 0, a);
 }
 static int scu_ln(const SdcM *m, const char *base, CUdptr_ X, CUdptr_ Y, int n, int C) {
     CUdptr_ v = scu_dvec(m, base, C); if (!v) return 0;
     CUdptr_ be = v + (size_t)C * 4; float eps = 1e-5f;
     void *a[] = { &X, &Y, &v, &be, &C, &eps };
+    if (g_scu_be == 2) return svk_ln(X, Y, v, be, n, C, eps);
     return cu_launch(g_sdc.f_ln, n, 1, 1, 256, 0, a);
 }
 static int scu_gemv(const SdcW *w, CUdptr_ x, CUdptr_ b2, CUdptr_ y, int silu) {
     CUdptr_ wh = w->w, b1 = w->b; int Kp = w->Kp, nout = w->cout, K = w->cin;
     void *a[] = { &wh, &Kp, &x, &b1, &b2, &y, &nout, &K, &silu };
+    if (g_scu_be == 2) return svk_gemv(wh, x, b1, b2, y, Kp, nout, K, silu);
     return cu_launch(g_sdc.f_gemv, (nout + 3) / 4, 1, 1, 128, 0, a);
+}
+static int scu_geglu(CUdptr_ pj, CUdptr_ gg, int n, int F) {
+    if (g_scu_be == 2) return svk_geglu(pj, gg, n, F);
+    void *ga[] = { &pj, &gg, &F };
+    return cu_launch(g_sdc.f_geglu, n, 1, 1, 256, 0, ga);
+}
+static int scu_softmax(CUdptr_ S, int nr, int nc, float sc) {
+    if (g_scu_be == 2) return svk_softmax(S, nr, nc, sc);
+    void *a[] = { &S, &nc, &sc };
+    return cu_launch(g_sdc.f_sm, nr, 1, 1, 256, 0, a);
+}
+static int scu_transp(CUdptr_ in, CUdptr_ out, int n, int C, int ld) {
+    if (g_scu_be == 2) return svk_transp(in, out, n, C, ld);
+    void *a[] = { &in, &out, &n, &C, &ld };
+    return cu_launch(g_sdc.f_tr, (n + 31) / 32, (C + 31) / 32, 1, 256, 0, a);
 }
 static int scu_cat(CUdptr_ A, CUdptr_ B, CUdptr_ Br, CUdptr_ Y, int n, int Ca, int Cb) {
     void *a[] = { &A, &B, &Br, &Y, &Ca, &Cb };
+    if (g_scu_be == 2) return svk_cat(A, B, Br, Y, n, Ca, Cb);
     return cu_launch(g_sdc.f_cat, n, 1, 1, 256, 0, a);
 }
 static int scu_addv(CUdptr_ Y, CUdptr_ X, long n) {
     void *a[] = { &Y, &X, &n };
+    if (g_scu_be == 2) return svk_add(Y, X, n);
     return cu_launch(g_sdc.f_add, (int)((n + 255) / 256 > 4096 ? 4096 : (n + 255) / 256), 1, 1, 256, 0, a);
 }
 static int scu_flash(CUdptr_ Q, int ldq, CUdptr_ K, int ldk, CUdptr_ V, int ldv, CUdptr_ O, int nq, int nk, int C) {
@@ -188,6 +222,7 @@ static int scu_flash(CUdptr_ Q, int ldq, CUdptr_ K, int ldk, CUdptr_ V, int ldv,
     const int smem = ix == 0 ? 14336 : ix == 1 ? 22528 : 43008, ldo = C;
     const float sl2 = 1.4426950408889634f / sqrtf((float)hd);
     void *a[] = { &Q, &ldq, &K, &ldk, &V, &ldv, &O, &ldo, &nq, &nk, (void *)&sl2 };
+    if (g_scu_be == 2) return svk_flash(Q, ldq, K, ldk, V, ldv, O, ldo, nq, nk, C, sl2);
     return cu_launch(g_sdc.f_fl[ix], (nq + 63) / 64, 8, 1, 128, smem, a);
 }
 
@@ -195,8 +230,8 @@ static int scu_flash(CUdptr_ Q, int ldq, CUdptr_ K, int ldk, CUdptr_ V, int ldv,
 static void scu_ws_free(void) {
     CUdptr_ *p[] = { &g_sdc.x, &g_sdc.y, &g_sdc.t1, &g_sdc.t2, &g_sdc.t3, &g_sdc.h, &g_sdc.t, &g_sdc.a, &g_sdc.q16, &g_sdc.pj, &g_sdc.gg, &g_sdc.kv16, &g_sdc.ca, &g_sdc.cb,
         &g_sdc.act, &g_sdc.tb, &g_sdc.tb2, &g_sdc.ctx, &g_sdc.tin, &g_sdc.eps, &g_sdc.lat, &g_sdc.cond, &g_sdc.m1, &g_sdc.m2, &g_sdc.mres };
-    for (size_t i = 0; i < sizeof p / sizeof *p; i++) { cu_free(*p[i]); *p[i] = 0; }
-    for (int i = 0; i < 12; i++) { cu_free(g_sdc.sk[i]); cu_free(g_sdc.rs[i]); g_sdc.sk[i] = g_sdc.rs[i] = 0; }
+    for (size_t i = 0; i < sizeof p / sizeof *p; i++) { scu_free(*p[i]); *p[i] = 0; }
+    for (int i = 0; i < 12; i++) { scu_free(g_sdc.sk[i]); scu_free(g_sdc.rs[i]); g_sdc.sk[i] = g_sdc.rs[i] = 0; }
     g_sdc.have_ws = 0;
 }
 static int scu_ws_alloc(int P, int nctx) {
@@ -204,15 +239,15 @@ static int scu_ws_alloc(int P, int nctx) {
     scu_ws_free();
     const size_t p = (size_t)P;
     CUdptr_ *q[] = { &g_sdc.t1, &g_sdc.t2, &g_sdc.h, &g_sdc.t, &g_sdc.a, &g_sdc.cond };
-    if (!(g_sdc.x = cu_alloc(p * 640 * 4)) || !(g_sdc.y = cu_alloc(p * 640 * 4))) return 0;
-    for (int i = 0; i < 6; i++) if (!(*q[i] = cu_alloc(p * 320 * 4))) return 0;
-    if (!(g_sdc.t3 = cu_alloc(p * 960 * 4)) || !(g_sdc.q16 = cu_alloc(p * 960 * 2)) || !(g_sdc.pj = cu_alloc(p * 2560 * 4)) || !(g_sdc.gg = cu_alloc(p * 1280 * 4))) return 0;
-    if (!(g_sdc.kv16 = cu_alloc((size_t)nctx * 2560 * 2)) || !(g_sdc.ctx = cu_alloc((size_t)nctx * 768 * 4))) return 0;
-    if (!(g_sdc.ca = cu_alloc(4096 * 4)) || !(g_sdc.cb = cu_alloc(4096 * 4)) || !(g_sdc.act = cu_alloc(1280 * 4)) || !(g_sdc.tb = cu_alloc(1280 * 4)) || !(g_sdc.tb2 = cu_alloc(1280 * 4)) || !(g_sdc.tin = cu_alloc(320 * 4))) return 0;
-    if (!(g_sdc.eps = cu_alloc(p * 4 * 4)) || !(g_sdc.lat = cu_alloc(p * 4 * 4))) return 0;
+    if (!(g_sdc.x = scu_alloc(p * 640 * 4)) || !(g_sdc.y = scu_alloc(p * 640 * 4))) return 0;
+    for (int i = 0; i < 6; i++) if (!(*q[i] = scu_alloc(p * 320 * 4))) return 0;
+    if (!(g_sdc.t3 = scu_alloc(p * 960 * 4)) || !(g_sdc.q16 = scu_alloc(p * 960 * 2)) || !(g_sdc.pj = scu_alloc(p * 2560 * 4)) || !(g_sdc.gg = scu_alloc(p * 1280 * 4))) return 0;
+    if (!(g_sdc.kv16 = scu_alloc((size_t)nctx * 2560 * 2)) || !(g_sdc.ctx = scu_alloc((size_t)nctx * 768 * 4))) return 0;
+    if (!(g_sdc.ca = scu_alloc(4096 * 4)) || !(g_sdc.cb = scu_alloc(4096 * 4)) || !(g_sdc.act = scu_alloc(1280 * 4)) || !(g_sdc.tb = scu_alloc(1280 * 4)) || !(g_sdc.tb2 = scu_alloc(1280 * 4)) || !(g_sdc.tin = scu_alloc(320 * 4))) return 0;
+    if (!(g_sdc.eps = scu_alloc(p * 4 * 4)) || !(g_sdc.lat = scu_alloc(p * 4 * 4))) return 0;
     const size_t skn[12] = { p * 320, p * 320, p * 320, p / 4 * 320, p / 4 * 640, p / 4 * 640, p / 16 * 640, p / 16 * 1280, p / 16 * 1280, p / 64 * 1280, p / 64 * 1280, p / 64 * 1280 };
-    for (int i = 0; i < 12; i++) if (!(g_sdc.sk[i] = cu_alloc(skn[i] * 4)) || !(g_sdc.rs[i] = cu_alloc(skn[i] * 4))) return 0;
-    if (!(g_sdc.m1 = cu_alloc(p / 64 * 1280 * 4)) || !(g_sdc.m2 = cu_alloc(p / 64 * 1280 * 4)) || !(g_sdc.mres = cu_alloc(p / 64 * 1280 * 4))) return 0;
+    for (int i = 0; i < 12; i++) if (!(g_sdc.sk[i] = scu_alloc(skn[i] * 4)) || !(g_sdc.rs[i] = scu_alloc(skn[i] * 4))) return 0;
+    if (!(g_sdc.m1 = scu_alloc(p / 64 * 1280 * 4)) || !(g_sdc.m2 = scu_alloc(p / 64 * 1280 * 4)) || !(g_sdc.mres = scu_alloc(p / 64 * 1280 * 4))) return 0;
     g_sdc.P = P; g_sdc.nctx = nctx; g_sdc.have_ws = 1;
     return 1;
 }
@@ -289,10 +324,8 @@ static int scu_transformer(const SdcM *m, const char *pfx, CUdptr_ x, int H, int
         const int F = w1->cout / 2;
         snprintf(b, sizeof b, "%s.norm3", tb); if (!scu_ln(m, b, h, t, n, C)) return 0;
         if (!scu_conv(w1, t, g_sdc.pj, w1->b, 0, 0, 0, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 0)) return 0;
-        CUdptr_ pj = g_sdc.pj, gg = g_sdc.gg; int FF = F;
-        void *ga[] = { &pj, &gg, &FF };
-        if (!cu_launch(g_sdc.f_geglu, n, 1, 1, 256, 0, ga)) return 0;
-        if (!scu_conv(w2, gg, h, w2->b, h, 0, 0, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 0)) return 0;
+        if (!scu_geglu(g_sdc.pj, g_sdc.gg, n, F)) return 0;
+        if (!scu_conv(w2, g_sdc.gg, h, w2->b, h, 0, 0, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 0)) return 0;
     }
     return scu_cv(pout, h, x, x, 0, 0, 0, H, W);
 }
@@ -301,7 +334,7 @@ static int scu_transformer(const SdcM *m, const char *pfx, CUdptr_ x, int H, int
 static int scu_temb(const SdcM *m, const char *pfx, float t) {
     float sc[320]; char b[220];
     for (int i = 0; i < 160; i++) { const float a = t * expf(-logf(10000.0f) * (float)i / 160.0f); sc[i] = cosf(a); sc[160 + i] = sinf(a); }
-    if (!cu_up(g_sdc.tin, sc, sizeof sc)) return 0;
+    if (!scu_up(g_sdc.tin, sc, sizeof sc)) return 0;
     snprintf(b, sizeof b, "%s.time_embedding.linear_1", pfx); const SdcW *l1 = scu_w1(m, b, 1);
     snprintf(b, sizeof b, "%s.time_embedding.linear_2", pfx); const SdcW *l2 = scu_w1(m, b, 1);
     return l1 && l2 && scu_gemv(l1, g_sdc.tin, 0, g_sdc.tb2, 1) && scu_gemv(l2, g_sdc.tb2, 0, g_sdc.act, 1);
@@ -333,7 +366,7 @@ static int scu_encoder(const SdcM *m, const char *pfx, int H0, int W0, int nctx)
     snprintf(b, sizeof b, "%s.mid_block.resnets.1", pfx); return scu_resnet(m, b, g_sdc.m1, g_sdc.m2, H, W, 1, &Co);
 }
 
-static int scu_load_ctx(const float *ctx, int nctx) { return cu_up(g_sdc.ctx, ctx, (size_t)nctx * 768 * 4); }
+static int scu_load_ctx(const float *ctx, int nctx) { return scu_up(g_sdc.ctx, ctx, (size_t)nctx * 768 * 4); }
 
 /* ControlNet: lat ja em g_sdc.lat; residuos em rs[12] e mres */
 static int scu_control(const SdgFile *ctrl, int H, int W, float t, float scale, int nctx) {
@@ -395,7 +428,7 @@ static size_t scu_group_bytes(const SdgFile *g, const char *pfx) {
 static int scu_plan(const SdgFile *base, const SdgFile *ctrl, int h8, int w8, int nctx) {
     if (g_sdc.dead || !scu_init()) return 0;
     if (h8 % 8 || w8 % 8) return 0;
-    size_t fr = 0, tot = 0; cuapi.MemGetInfo(&fr, &tot);
+    size_t fr = 0; scu_meminfo(&fr);
     { const char *cap = getenv("KATANA_STABLE_VRAM_MB"); if (cap && (size_t)atoll(cap) << 20 < fr) fr = (size_t)atoll(cap) << 20; }      /* teste: finge menos VRAM livre */
     const size_t wu = scu_group_bytes(base, "unet."), wc = ctrl ? scu_group_bytes(ctrl, "ctrl.") : 0, ws = scu_ws_bytes(h8 * w8, nctx), lim = fr / 100 * 96;
     if (wu + wc + ws <= lim) g_sdc.stream = 0;
@@ -407,7 +440,7 @@ static int scu_plan(const SdgFile *base, const SdgFile *ctrl, int h8, int w8, in
 static void scu_abort(const char *what) {
     fprintf(stderr, "[stable] cuda: %s falhou; usando a CPU\n", what);
     g_sdc.dead = 1; g_sdc.stream = 0;
-    cu_sync(); scu_unload(0, 1); scu_unload(1, 1); scu_unload(2, 1); scu_ws_free();
+    scu_sync(); scu_unload(0, 1); scu_unload(1, 1); scu_unload(2, 1); scu_ws_free();
 }
 
 /* uma passada (ControlNet opcional + UNet): lat[h8*w8][4], ctx[nctx][768], eps[h8*w8][4]; 0 = nao deu (a CPU faz) */
@@ -415,15 +448,15 @@ static int scu_eps(const SdgFile *base, const SdgFile *ctrl, const float *lat, i
     if (g_sdc.dead || !scu_init()) return 0;
     const int P = h8 * w8;
     if (!scu_ws_alloc(P, nctx)) { scu_abort("alocar as ativacoes"); return 0; }
-    if (!cu_up(g_sdc.lat, lat, (size_t)P * 16) || !scu_load_ctx(ctx, nctx)) { scu_abort("subir a entrada"); return 0; }
+    if (!scu_up(g_sdc.lat, lat, (size_t)P * 16) || !scu_load_ctx(ctx, nctx)) { scu_abort("subir a entrada"); return 0; }
     if (ctrl) {
         if (!scu_control(ctrl, h8, w8, t, scale, nctx)) { scu_abort("o ControlNet"); return 0; }
-        if (g_sdc.stream) { cu_sync(); scu_unload(1, 0); }
+        if (g_sdc.stream) { scu_sync(); scu_unload(1, 0); }
     }
     if (!scu_unet(base, h8, w8, t, nctx, ctrl != NULL)) { scu_abort("a UNet"); return 0; }
-    if (!cu_sync() || !cu_down(eps, g_sdc.eps, (size_t)P * 16)) { scu_abort("a UNet"); return 0; }
+    if (!scu_sync() || !scu_down(eps, g_sdc.eps, (size_t)P * 16)) { scu_abort("a UNet"); return 0; }
     if (g_sdc.stream) scu_unload(0, 0);
-    g_sd_be_unet = 1;
+    g_sd_be_unet = g_scu_be;
     return 1;
 }
 
@@ -436,8 +469,8 @@ static int scu_cond(const SdgFile *ctrl, const float *img, int H, int W, int nct
     static const int stride[8] = { 1, 1, 2, 1, 2, 1, 2, 1 };
     const SdcM m = { ctrl, 1 };
     const size_t big = (size_t)H * W * 16 * 4;
-    CUdptr_ a = cu_alloc((size_t)H * W * 12 > big ? (size_t)H * W * 12 : big), b = cu_alloc(big);
-    int ok = a && b && cu_up(a, img, (size_t)H * W * 12);
+    CUdptr_ a = scu_alloc((size_t)H * W * 12 > big ? (size_t)H * W * 12 : big), b = scu_alloc(big);
+    int ok = a && b && scu_up(a, img, (size_t)H * W * 12);
     int h = H, w = W;
     CUdptr_ cur = a, nxt = b;
     for (int i = 0; ok && i < 8; i++) {
@@ -449,8 +482,8 @@ static int scu_cond(const SdgFile *ctrl, const float *img, int H, int W, int nct
         if (i < 7) { CUdptr_ t = cur; cur = nxt; nxt = t; }
         h = ho; w = wo;
     }
-    if (ok) ok = cu_sync();
-    cu_free(a); cu_free(b);
+    if (ok) ok = scu_sync();
+    scu_free(a); scu_free(b);
     scu_unload(1, 0);                      /* sem streaming isto so descarrega o que nao sera mais usado: os pesos do cond embedding */
     if (!ok) { scu_abort("o embedding da imagem de controle"); return 0; }
     return 1;
@@ -468,22 +501,22 @@ static int scu_vae_attn(const SdcM *m, const char *pfx, CUdptr_ x, int n, int C)
     if (!wq || !wk || !wv || !wo) return 0;
     const int Kp = (n + 31) / 32 * 32;
     const int QB = (int)(((size_t)64 << 20) / ((size_t)n * 4)) / 128 * 128 > 128 ? (int)(((size_t)64 << 20) / ((size_t)n * 4)) / 128 * 128 : 128;
-    CUdptr_ q = cu_alloc((size_t)n * C * 4), v = cu_alloc((size_t)n * C * 4), k16 = cu_alloc((size_t)n * C * 2), vt = cu_alloc((size_t)C * Kp * 2), o = cu_alloc((size_t)n * C * 4), S = cu_alloc((size_t)QB * n * 4);
+    CUdptr_ q = scu_alloc((size_t)n * C * 4), v = scu_alloc((size_t)n * C * 4), k16 = scu_alloc((size_t)n * C * 2), vt = scu_alloc((size_t)C * Kp * 2), o = scu_alloc((size_t)n * C * 4), S = scu_alloc((size_t)QB * n * 4);
     int ok = q && v && k16 && vt && o && S;
     if (ok) ok = scu_conv(wq, x, q, wq->b, 0, g_sdc.ca, g_sdc.cb, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 0) && scu_conv(wk, x, k16, wk->b, 0, g_sdc.ca, g_sdc.cb, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 1)
               && scu_conv(wv, x, v, wv->b, 0, g_sdc.ca, g_sdc.cb, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 0);
-    if (ok) { int nn = n, CC = C, ld = Kp; void *a[] = { &v, &vt, &nn, &CC, &ld }; ok = cu_launch(g_sdc.f_tr, (n + 31) / 32, (C + 31) / 32, 1, 256, 0, a); }
+    if (ok) ok = scu_transp(v, vt, n, C, Kp);
     /* S e V^T como "pesos" de dois produtos: S = Q K^T (Cout = n chaves, Kp = C), O = S V (Cin = n, Cout = C) */
     SdcW kw = { 0, k16, 0, 0, C, n, 1, C, 2 }, vw = { 0, vt, 0, 0, n, C, 1, Kp, 2 };
     for (int q0 = 0; ok && q0 < n; q0 += QB) {
         const int qb = q0 + QB > n ? n - q0 : QB;
         ok = scu_conv(&kw, q + (size_t)q0 * C * 4, S, 0, 0, 0, 0, 0, qb, 1, 0, 1, 0, 0, qb, 1, 1.0f, 0);
-        if (ok) { int nc = n; float sc = 1.0f / sqrtf((float)C); void *a[] = { &S, &nc, &sc }; ok = cu_launch(g_sdc.f_sm, qb, 1, 1, 256, 0, a); }
+        if (ok) ok = scu_softmax(S, qb, n, 1.0f / sqrtf((float)C));
         if (ok) ok = scu_conv(&vw, S, o + (size_t)q0 * C * 4, 0, 0, 0, 0, 0, qb, 1, 0, 1, 0, 0, qb, 1, 1.0f, 0);
     }
     if (ok) ok = scu_conv(wo, o, x, wo->b, x, 0, 0, 0, n, 1, 0, 1, 0, 0, n, 1, 1.0f, 0);
-    if (ok) ok = cu_sync();
-    cu_free(q); cu_free(v); cu_free(k16); cu_free(vt); cu_free(o); cu_free(S);
+    if (ok) ok = scu_sync();
+    scu_free(q); scu_free(v); scu_free(k16); scu_free(vt); scu_free(o); scu_free(S);
     return ok;
 }
 typedef struct { CUdptr_ x, y, t1, t2; } SdcVb;
@@ -504,12 +537,12 @@ static int scu_vae_mid(const SdcM *m, const char *pfx, SdcVb *vb, CUdptr_ *x, CU
     return 1;
 }
 static int scu_vae_bufs(SdcVb *vb, size_t nx, size_t nt) {
-    vb->x = cu_alloc(nx * 4); vb->y = cu_alloc(nx * 4); vb->t1 = cu_alloc(nt * 4); vb->t2 = cu_alloc(nt * 4);
+    vb->x = scu_alloc(nx * 4); vb->y = scu_alloc(nx * 4); vb->t1 = scu_alloc(nt * 4); vb->t2 = scu_alloc(nt * 4);
     return vb->x && vb->y && vb->t1 && vb->t2;
 }
-static void scu_vae_free(SdcVb *vb) { cu_free(vb->x); cu_free(vb->y); cu_free(vb->t1); cu_free(vb->t2); }
+static void scu_vae_free(SdcVb *vb) { scu_free(vb->x); scu_free(vb->y); scu_free(vb->t1); scu_free(vb->t2); }
 static int scu_vae_pre(void) {          /* ca/cb dos GroupNorms; libera a area da UNet (o VAE roda depois do laco) */
-    if (!g_sdc.ca) { g_sdc.ca = cu_alloc(4096 * 4); g_sdc.cb = cu_alloc(4096 * 4); }
+    if (!g_sdc.ca) { g_sdc.ca = scu_alloc(4096 * 4); g_sdc.cb = scu_alloc(4096 * 4); }
     return g_sdc.ca && g_sdc.cb;
 }
 
@@ -521,8 +554,8 @@ static float *scu_vae_decode(const SdgFile *g, const float *lat, int h, int w, i
     if (!scu_vae_pre()) return NULL;
     const size_t n = (size_t)h * w;
     SdcVb vb; float *img = NULL; int ok = 1, H = h, W = w, C = 512, Co;
-    CUdptr_ zd = cu_alloc(n * 16);
-    if (!zd || !cu_up(zd, lat, n * 16) || !scu_vae_bufs(&vb, n * 16384, n * 64 * 128)) { ok = 0; goto done; }
+    CUdptr_ zd = scu_alloc(n * 16);
+    if (!zd || !scu_up(zd, lat, n * 16) || !scu_vae_bufs(&vb, n * 16384, n * 64 * 128)) { ok = 0; goto done; }
     {
         CUdptr_ x = vb.x, y = vb.y;
         const SdcW *pq = scu_w1(&m, "vae.post_quant_conv", 1), *ci = scu_w1(&m, "vae.decoder.conv_in", 1);
@@ -542,16 +575,16 @@ static float *scu_vae_decode(const SdgFile *g, const float *lat, int h, int w, i
         }
         const SdcW *co = scu_w1(&m, "vae.decoder.conv_out", 1);
         if (!ok || !co || !scu_gn(&m, "vae.decoder.conv_norm_out", x, H * W, C, 1e-6f)) { ok = 0; goto done; }
-        if (!scu_cv(co, x, y, 0, g_sdc.ca, g_sdc.cb, 1, H, W) || !cu_sync()) { ok = 0; goto done; }
+        if (!scu_cv(co, x, y, 0, g_sdc.ca, g_sdc.cb, 1, H, W) || !scu_sync()) { ok = 0; goto done; }
         img = xalloc((size_t)H * W * 3, 4);
-        if (!cu_down(img, y, (size_t)H * W * 12)) { ok = 0; free(img); img = NULL; }
+        if (!scu_down(img, y, (size_t)H * W * 12)) { ok = 0; free(img); img = NULL; }
     }
 done:
-    cu_sync();
-    scu_vae_free(&vb); cu_free(zd);
+    scu_sync();
+    scu_vae_free(&vb); scu_free(zd);
     scu_unload(2, 1);
     if (!ok || !img) { if (img) free(img); fprintf(stderr, "[stable] cuda: o VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
-    *Ho = H; *Wo = W; g_sd_be_vae = 1;
+    *Ho = H; *Wo = W; g_sd_be_vae = g_scu_be;
     return img;
 }
 
@@ -562,9 +595,9 @@ static float *scu_vae_encode(const SdgFile *g, const float *img, int H0, int W0,
     const SdcM m = { g, 2 }; char b[220];
     if (!scu_vae_pre()) return NULL;
     SdcVb vb; float *mean = NULL; int ok = 1, H = H0, W = W0, C = 128, Co;
-    CUdptr_ id = cu_alloc((size_t)H * W * 12);
+    CUdptr_ id = scu_alloc((size_t)H * W * 12);
     memset(&vb, 0, sizeof vb);
-    if (!id || !cu_up(id, img, (size_t)H * W * 12) || !scu_vae_bufs(&vb, (size_t)H * W * 128, (size_t)H * W * 128)) { ok = 0; goto done; }
+    if (!id || !scu_up(id, img, (size_t)H * W * 12) || !scu_vae_bufs(&vb, (size_t)H * W * 128, (size_t)H * W * 128)) { ok = 0; goto done; }
     {
         CUdptr_ x = vb.x, y = vb.y;
         const SdcW *ci = scu_w1(&m, "vae.encoder.conv_in", 1);
@@ -585,16 +618,16 @@ static float *scu_vae_encode(const SdgFile *g, const float *img, int H0, int W0,
         if (!ok || !scu_vae_mid(&m, "vae.encoder.mid_block", &vb, &x, &y, H, W, C)) { ok = 0; goto done; }
         const SdcW *co = scu_w1(&m, "vae.encoder.conv_out", 1), *qc = scu_w1(&m, "vae.quant_conv", 1);
         if (!co || !qc || !scu_gn(&m, "vae.encoder.conv_norm_out", x, H * W, C, 1e-6f)) { ok = 0; goto done; }
-        if (!scu_cv(co, x, y, 0, g_sdc.ca, g_sdc.cb, 1, H, W) || !scu_cv(qc, y, x, 0, 0, 0, 0, H, W) || !cu_sync()) { ok = 0; goto done; }
+        if (!scu_cv(co, x, y, 0, g_sdc.ca, g_sdc.cb, 1, H, W) || !scu_cv(qc, y, x, 0, 0, 0, 0, H, W) || !scu_sync()) { ok = 0; goto done; }
         float *q8 = xalloc((size_t)H * W * 8, 4);
-        if (!cu_down(q8, x, (size_t)H * W * 32)) { ok = 0; free(q8); goto done; }
+        if (!scu_down(q8, x, (size_t)H * W * 32)) { ok = 0; free(q8); goto done; }
         mean = xalloc((size_t)H * W * 4, 4);
         for (int i = 0; i < H * W; i++) memcpy(mean + (size_t)i * 4, q8 + (size_t)i * 8, 16);
         free(q8);
     }
 done:
-    cu_sync();
-    scu_vae_free(&vb); cu_free(id);
+    scu_sync();
+    scu_vae_free(&vb); scu_free(id);
     scu_unload(2, 1);
     if (!ok || !mean) { free(mean); fprintf(stderr, "[stable] cuda: o codificador do VAE nao coube ou falhou; usando a CPU\n"); return NULL; }
     *ho = H; *wo = W;
@@ -614,7 +647,7 @@ static int scu_cmp(const char *what, const float *a, const float *r, size_t n, d
 }
 static int scu_test_main(const char *mdir) {
     char p[1100]; SdgFile base, ctrl; int bad = 0;
-    if (!scu_init()) { printf("stable-gpu-test: sem GPU CUDA utilizavel (KATANA_BACKEND=%s): pulado\n", getenv("KATANA_BACKEND") ? getenv("KATANA_BACKEND") : ""); return 0; }
+    if (!scu_init()) { printf("stable-gpu-test: sem GPU utilizavel (CUDA ou Vulkan) (KATANA_BACKEND=%s): pulado\n", getenv("KATANA_BACKEND") ? getenv("KATANA_BACKEND") : ""); return 0; }
     snprintf(p, sizeof p, "%s/sd15-realistic-vision.gguf", mdir); if (!sdg_open(&base, p)) return 1;
     snprintf(p, sizeof p, "%s/sd15-controlnet-canny.gguf", mdir); if (!sdg_open(&ctrl, p)) return 1;
     const int W = 256, H = 192, h8 = H / 8, w8 = W / 8, nctx = 77;
@@ -623,7 +656,7 @@ static int scu_test_main(const char *mdir) {
     for (size_t i = 0; i < (size_t)h8 * w8 * 4; i++) lat[i] = sdp_rng_gauss(&rng);
     for (size_t i = 0; i < (size_t)nctx * 768; i++) ctx[i] = 0.5f * sdp_rng_gauss(&rng);
     for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) { const float v = (x % 37 == 0 || y % 29 == 0 || (x - y) % 53 == 0) ? 1.0f : 0.0f; for (int c = 0; c < 3; c++) img[((size_t)y * W + x) * 3 + c] = v; }
-    printf("katana render stable-gpu-test (%s, %dx%d)\n", cu_dev.name, W, H);
+    printf("katana render stable-gpu-test (%s, %dx%d)\n", g_scu_be == 2 ? "Vulkan" : cu_dev.name, W, H);
     int hc, wc; float *cond = sdn_cond_embed(&ctrl, img, H, W, &hc, &wc);
     SdSkips res; float *mres = NULL; int hm, wm;
     float *ref = sdn_alloc((size_t)h8 * w8 * 4), *out = sdn_alloc((size_t)h8 * w8 * 4);

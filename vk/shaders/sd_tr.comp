@@ -1,0 +1,18 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "sd_common.glsl"
+// V^T: out[d][j] (F16, passo ldo) = in[j][d] (F32 [n][C]); ladrilho de 32 x 32 (cada fio escreve um par de j vizinhos)
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P { uint in_, out_; int n, C, ldo; } pc;
+shared float t[32][33];
+void main() {
+    const uint tid = gl_LocalInvocationID.x, tx = tid & 31u, ty = tid >> 5;
+    const int j0 = int(gl_WorkGroupID.x) * 32, d0 = int(gl_WorkGroupID.y) * 32;
+    for (uint r = ty; r < 32u; r += 8u) { const int j = j0 + int(r), d = d0 + int(tx); t[r][tx] = (j < pc.n && d < pc.C) ? ldf(pc.in_ + (uint(j) * uint(pc.C) + uint(d)) * 4u) : 0.0; }
+    barrier();
+    // saida: 32 linhas d x 16 pares de j; 256 fios = 16 pares x 16 linhas por passada
+    for (uint r = tid >> 4; r < 32u; r += 16u) {
+        const uint pj = tid & 15u; const int d = d0 + int(r), j = j0 + int(pj) * 2;
+        if (d < pc.C && j < pc.ldo) sth2(pc.out_ + (uint(d) * uint(pc.ldo) + uint(j)) * 2u, j < pc.n ? t[pj * 2u][r] : 0.0, (j + 1) < pc.n ? t[pj * 2u + 1u][r] : 0.0);
+    }
+}
