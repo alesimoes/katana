@@ -13,8 +13,8 @@ repeat them.
   none), the router on the GPU, dense weights moved to the CPU to open slots, lower swap margins (uploads block the
   token). The best fixed expert set reaches the same hit rate as the current policy; the ideal eviction policy
   would reach 61 to 67%.
-- A lookup-based speculative decoder exists for `katana chat`; the agent's sampling loop (`gen_console`,
-  `src/app/console.c`) does not use it.
+- A lookup-based speculative decoder (`src/engine/lookup.c`, off by default) is wired into `katana run`/`chat` and the
+  agent's sampling loop (`gen_console`); measured on Qwen3.6 on the CPU it gives no gain (see optimization-roadmap 7.1).
 - Open items of the plan: CPU experts overlapping GPU work inside a layer (C1), one more slot (C2), wider CPU
   kernels (C3), Gemma 4 start time (C4), long context on the GPU for Qwen3.6 (C5), all "after measuring where the
   time of one token goes", which has not been done.
