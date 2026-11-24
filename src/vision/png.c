@@ -5,7 +5,8 @@
 #define IM_MAX_FILE ((size_t)64 << 20)      /* arquivo */
 #define IM_MAX_DIM  16384                   /* lado */
 #define IM_MAX_PIX  ((size_t)40000000)      /* pixels */
-typedef struct { int w, h; uint8_t *rgb; } Img;
+typedef struct { int w, h; uint8_t *rgb; uint8_t *alpha; } Img;      /* alpha: so se im_want_alpha estava ligado ao decodificar um PNG (cor sem misturar com branco + canal alfa); senao NULL */
+static int im_want_alpha;
 
 static int im_fail(char *err, size_t cap, const char *msg) { if (err && cap) snprintf(err, cap, "%s", msg); return 0; }
 static uint32_t im_be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
@@ -179,7 +180,7 @@ static int png_decode(const uint8_t *f, size_t n, Img *im, int dims_only, char *
     const int nch = ct == 0 || ct == 3 ? 1 : ct == 2 ? 3 : ct == 4 ? 2 : ct == 6 ? 4 : 0;
     const int bdok = bd == 8 || (bd == 16 && ct != 3) || ((bd == 1 || bd == 2 || bd == 4) && (ct == 0 || ct == 3));
     if (!nch || !bdok || f[26] || f[27] || lace > 1) return im_fail(err, cap, "unsupported PNG format");
-    im->w = (int)w; im->h = (int)h; im->rgb = NULL;
+    im->w = (int)w; im->h = (int)h; im->rgb = NULL; im->alpha = NULL;
     if (dims_only) return 1;
     const int bpp = nch * bd;
     size_t raw = 0;      /* bytes descomprimidos, com o byte de filtro de cada linha */
@@ -220,7 +221,8 @@ static int png_decode(const uint8_t *f, size_t n, Img *im, int dims_only, char *
     if (ok) {
         o = malloc(raw);
         im->rgb = malloc((size_t)w * h * 3);
-        if (!o || !im->rgb) ok = im_fail(err, cap, "out of memory for the image");
+        if (im_want_alpha) im->alpha = malloc((size_t)w * h);
+        if (!o || !im->rgb || (im_want_alpha && !im->alpha)) ok = im_fail(err, cap, "out of memory for the image");
         else if (!zlib_inflate(z, zn, o, raw)) ok = im_fail(err, cap, "PNG data is damaged or incomplete");
     }
     free(z);
@@ -251,14 +253,16 @@ static int png_decode(const uint8_t *f, size_t n, Img *im, int dims_only, char *
             const uint32_t yy = lace ? y0[p] + y * dy[p] : y;
             uint8_t *line = im->rgb + (size_t)yy * w * 3;
             for (uint32_t x = 0; x < pw[p]; x++) {
-                uint8_t *px = line + (size_t)(lace ? x0[p] + x * dx[p] : x) * 3;
+                const size_t xx = lace ? x0[p] + x * dx[p] : x;
+                uint8_t *px = line + xx * 3;
+                uint8_t *al = im->alpha ? im->alpha + (size_t)yy * w + xx : NULL;
                 uint32_t v[4] = {0, 0, 0, 0};
                 if (bd == 8) for (int k = 0; k < nch; k++) v[k] = r[(size_t)x * nch + k];
                 else if (bd == 16) for (int k = 0; k < nch; k++) v[k] = (uint32_t)r[2 * ((size_t)x * nch + k)] << 8 | r[2 * ((size_t)x * nch + k) + 1];
                 else v[0] = (r[(size_t)x * bd / 8] >> (8 - bd - (int)((size_t)x * bd % 8))) & ((1u << bd) - 1);
                 if (ct == 3) {
                     const uint8_t *c = pal[v[0]];      /* indice fora da paleta: branco */
-                    if (c[3] == 255) memcpy(px, c, 3); else for (int k = 0; k < 3; k++) px[k] = im_white(c[k], c[3]);
+                    if (al) { memcpy(px, c, 3); *al = c[3]; } else if (c[3] == 255) memcpy(px, c, 3); else for (int k = 0; k < 3; k++) px[k] = im_white(c[k], c[3]);
                     continue;
                 }
                 int a = 255;
@@ -268,13 +272,14 @@ static int png_decode(const uint8_t *f, size_t n, Img *im, int dims_only, char *
                 for (int k = 0; k < 3; k++) {
                     const uint32_t q = v[ct & 2 ? k : 0];
                     const int c8 = (int)(bd == 16 ? q >> 8 : bd == 8 ? q : q * 255 / ((1u << bd) - 1));
-                    px[k] = a == 255 ? (uint8_t)c8 : im_white(c8, a);
+                    px[k] = a == 255 || al ? (uint8_t)c8 : im_white(c8, a);
                 }
+                if (al) *al = (uint8_t)a;
             }
         }
     }
     free(o);
-    if (!ok) { free(im->rgb); im->rgb = NULL; }
+    if (!ok) { free(im->rgb); im->rgb = NULL; free(im->alpha); im->alpha = NULL; }
     return ok;
 }
 
@@ -293,7 +298,7 @@ static int bmp_decode(const uint8_t *f, size_t n, Img *im, int dims_only, char *
         return im_fail(err, cap, "unsupported BMP format (compressed)");
     const size_t rb = (((size_t)w * bpp + 31) / 32) * 4;
     if (off > n || rb * h > n - off) return im_fail(err, cap, "BMP file is incomplete");
-    im->w = (int)w; im->h = (int)h; im->rgb = NULL;
+    im->w = (int)w; im->h = (int)h; im->rgb = NULL; im->alpha = NULL;
     if (dims_only) return 1;
     uint32_t mk[3] = { 0x7C00, 0x03E0, 0x001F };
     if (bpp == 32) { mk[0] = 0xFF0000; mk[1] = 0xFF00; mk[2] = 0xFF; }

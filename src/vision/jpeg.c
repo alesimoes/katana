@@ -294,7 +294,7 @@ static int jpeg_decode(const uint8_t *f, size_t n, Img *im, int dims_only, char 
     Jpg *j = xalloc(1, sizeof *j);
     char e2[160] = "";
     j->p = f + 2; j->end = f + n; j->adobe = -1; j->orient = 1;
-    im->rgb = NULL;
+    im->rgb = NULL; im->alpha = NULL;
     int ok = 1, done = 0;
     while (ok && !done) {
         int m = j->marker;

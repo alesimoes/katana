@@ -407,6 +407,7 @@ static int sds_main(int argc, char **argv);                      /* render/sdspe
 static int fxv_main(int argc, char **argv);                      /* render/fxvae.c */
 static int fxd_main(int argc, char **argv);                      /* render/fxdit.c */
 static int fxg_main(int argc, char **argv);                      /* render/fxgen.c */
+static int sdl_main(int argc, char **argv);                      /* render/sdlogo.c */
 static int render_main(int argc, char **argv) {
     g_cv_skip_int = 1;      /* position_ids do CLIP e outros tensores de inteiros: nao entram */
     if (argc >= 2 && !strcmp(argv[0], "names")) return sd_names(argv[1]);
@@ -418,6 +419,7 @@ static int render_main(int argc, char **argv) {
     if (argc >= 1 && !strcmp(argv[0], "flux-dit")) return fxd_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "flux-gen")) return fxg_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "spec")) return sds_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "logo")) return sdl_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "flux-vae")) return fxv_main(argc - 1, argv + 1);
     if (argc >= 4 && !strcmp(argv[0], "convert")) {
         for (int i = 4; i < argc; i++) {
@@ -430,7 +432,9 @@ static int render_main(int argc, char **argv) {
     fprintf(stderr, "uso: katana render convert <pasta> <base.gguf> <controle.gguf>\n"
                     "     katana render names   <pasta>\n"
                     "     katana render selftest <referencia> <pasta>\n"
-                    "     katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--show]\n"
+                    "     katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--show]   |   katana render brief selftest [briefing.md]\n"
+                    "     katana render logo --image render.png --logo logo.png --box x,y,w,h [--perspective x1,y1,...,x4,y4] [--blend]   |   katana render logo selftest\n"
+                    "     katana render spec --brief briefing.md --engine flux|stable   (imprime o prompt do briefing, sem gerar)\n"
                     "     katana render generate --prompt \"...\" --out saida.png [opcoes]   (katana render generate sem argumentos lista as opcoes)\n"
                     "  <pasta> = models/render (com realistic-vision/, vae-ft-mse/ e controlnet-canny/); docs/render.md\n");
     return 1;
