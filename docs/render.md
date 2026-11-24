@@ -78,7 +78,7 @@ FLUX.2 klein 4B (distilled, 4 steps, guidance 1.0, Apache-2.0):
 
 | Stage | What | Status |
 |---|---|---|
-| F1 | GGUF reader for the Q4_K_M transformer, tensor names, converter for the VAE and the rest | not started |
+| F1 | GGUF reader for the Q4_K_M transformer, tensor names, converter for the VAE and the rest | in progress: names and types mapped (below); reader and VAE converter not written |
 | F2 | text: Qwen3-4B hidden states of layers 9/18/27 concatenated (7680), through the existing Qwen3 code | not started |
 | F3 | transformer: 5 double + 20 single blocks, 24 heads x 128, RoPE on 4 axes (32 each), modulation, compared with the reference | not started |
 | F4 | VAE (32 latent channels, 2x2 patchify, batch-norm statistics), encoder for the reference image(s) | not started |
@@ -97,3 +97,5 @@ Layers, each replaceable on its own:
 4. **Engine adapters**: Stable gets weighted CLIP chunks (subject `(x:1.2)`, no automatic "8k" keywords); the final engine gets prose, and the approved preview as reference (`--ref`, strength 0.40) so the architecture does not change between preview and final.
 
 Two modes with the same spec: **preview** (Stable + LCM, composition first) and **final**. The final engine is FLUX klein or Krea 2 Turbo, still to be tested against each other (both WIP, see above); `--final-engine` picks one. Inpaint/outpaint requests ("remove", "change the background") are recognised and reported; there is no mask yet, so they run as image-to-image. Geometry control stays with the existing ControlNet canny / line drawing and image-to-image; when dimensional fidelity matters the geometry source is the 3D model.
+
+FLUX.2 klein GGUF (`flux-2-klein-4b-Q4_K_M.gguf`, architecture `flux`, 149 tensors): only the transformer is in it, in the BFL native names, not the diffusers ones: `double_blocks.N.{img,txt}_attn.{qkv,proj}.weight`, `{img,txt}_attn.norm.{query,key}_norm.scale`, `{img,txt}_mlp.{0,2}.weight` (5 blocks); `single_blocks.N.{linear1,linear2}.weight` + `norm.{query,key}_norm.scale` (20 blocks); `double_stream_modulation_{img,txt}.lin`, `single_stream_modulation.lin`, `time_in.{in,out}_layer`, `img_in`, `txt_in`, `final_layer.{adaLN_modulation.1,linear}`. Types: F32 (60: the norm scales), Q4_K (50), Q5_K (30), BF16 (9). The engine already has Q4_K/Q5_K dot kernels (`engine/cpu_kernels.c`); BF16 and the 3072-wide shapes need the image path. The text encoder (Qwen3-4B) and the VAE are not in the GGUF: they come from the safetensors in `models/flux2klein/FLUX.2-klein-4B/` (text_encoder bf16, vae) through a converter like `render convert`.
