@@ -233,6 +233,48 @@ unchanged lines, identifiers). Off by default.
 | Native Q2_K and Q3_K | on top of the Q4_K kernel | small to medium |
 | Table formats (IQ) | do not write a direct product: unpack to bytes in a tile and use the generic 8-bit kernel (same base as the batches) | large |
 
+## 9. Code retrieval without a model: context, symbol units, rerank (`src/coder/search.c`, 2026-11-23)
+
+The search index holds one document per file, so a passage found alone loses where it comes from. Three deterministic steps add that context
+(details and formulas in `docs/code-intelligence.md`, section 12.6a). Checked by hand on 15 queries (the greymod and katana trees; query list and
+positions below), not a campaign. Nothing about a model's task result was measured. Times were taken with a training job running on the machine, so
+they only show the order of magnitude.
+
+| Step | Status | Result |
+|---|---|---|
+| 1. Structural context field (`CF_CTX`, weight 1.5): header comment, imports, defined names, per file, in the index (`STORE_FORMAT` 3) | done, on | **neutral** on the 15 queries when it is the only change (file positions moved by at most 1 in both directions). Costs about 10% more tokens indexed and 5% more postings. Kept on because it is not worse; it has no measured benefit yet. `-DCS_CTX_W=0` removes its effect on the scores. |
+| 2. Symbol as unit (per-symbol BM25F with the symbol's own context: path, containing chain, neighbours, header, imports) | done, on | the right symbol is listed first or among the first for the cases below; typo query `listSesions` now returns `listSessions` (file 13 -> 2, symbol first); the unit context (1.5) is slightly better than without it (`-DCS_UCTX_W=0`: 5 of the 15 queries 1-2 positions worse without it, 1 better). |
+| 3. Rerank of the top 30 within each tier: fusion position, best unit, symbol-name coverage (definition against use), path, whole identifier defined in the file, re-read check | done, on | most of the gain of the file positions (below). Worse on 2 queries by 1 and 2 positions. `-DCS_NO_RERANK` turns it off. |
+| `semantic` channel for the embedder | extension point only (`g_cs_semantic`, `CH_SEM`), absent | no effect today |
+
+Positions of the right file in `coder search` (limit 30; `-` = not in the 30), base binary -> new binary:
+
+| Query | Right target | Before | After |
+|---|---|---|---|
+| how katana sends session info to the phone (greymod) | bridge/sessions.mjs | 13 | 10 |
+| the same in Portuguese | bridge/sessions.mjs | 16 | 15 |
+| terminalSessionIds (not in the current tree: the answer is "not found") | bridge/sessions.mjs | 12 | 10 |
+| listSesions (typo) | bridge/sessions.mjs (`listSessions`) | 13 | 2 (symbol 1st) |
+| where the repeat-call counter lives | src/agent/loop.c `rr_check` | 11 | 13 |
+| how the read cursor remembers lines | src/tools/common.c `rc_*` | - | - |
+| where the tokenizer splits identifiers into words | src/coder/text.c `coder_tokens_ex` | - | - |
+| where secret files are skipped from the index | src/coder/ignore.c `ign_secret_name` | 5 | 6 |
+| how a file is judged binary by its extension when indexing | src/coder/storedocs.c `st_binary_ext` | 4 (symbol: not listed) | 4 (symbol 4th) |
+| function that merges the search lexicons when segments are compacted | src/coder/search.c `cs_merge_terms` | 5 | 1 |
+| where the knowledge base concept files are loaded from disk | src/coder/kb.c `coder_kb_load` | - | - |
+| how the Edit tool replaces text | src/tools/edit.c `ct_edit` | 1 | 1 (symbol 1st) |
+| where the Find tool reads a file into memory | src/tools/find.c `fd_slurp` | - | - |
+| how the web fetch tool limits repeated fetches of one url | src/tools/webfetch.c `ct_wf_at` | 17 | 14 |
+| ordem dos tokens na gramatica de chamadas | not known | - | - |
+
+The four misses that stay `-` are recall failures (the right file is not among the candidates of the six channels: the words of the question are not
+in its text); reordering the top 30 cannot fix them. A model or a bigger concept base would. `mode=refs` (name and phrase) gave identical output before
+and after. The Find (`tool Find`) text is unchanged in format; on 15 queries its output differed in 3 (candidate order or the "similar names" lines for
+a name that does not exist; one of them, `listSesions`, now names the right file).
+
+Cost: the CLI `coder search` reads the 30 candidates again: about +70 ms per query on the katana tree (98 -> 167 ms, process total, measured under load).
+The Find does not read them again (symbol-table signals only): +19 ms, within noise. Index size on the katana tree: 14.0 MiB before and after (+0.05).
+
 ## Suggested order
 
 1. Cheap experiments: threads, power, busy-wait, fast math, block page request, warm-up.

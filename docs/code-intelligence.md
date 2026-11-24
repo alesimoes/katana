@@ -2181,6 +2181,40 @@ bridge/sessions.mjs:114-130  terminalSessionIds   score 0.58
 the model the numbers are left out**: the model sees the reasons in words and the order, in line with the rule of
 6.4 that nothing in the packet may read as a probability. The numbers are for the owner, the log and calibration.
 
+### 12.6a Structural context, symbols as units, and the cheap rerank (implemented 2026-11-23, `src/coder/search.c`)
+
+A passage indexed alone loses where it comes from. Three deterministic steps add that context, with no model. The first changes the stored
+index; the other two run at query time over the first `CS_RR_TOP` (30) fused candidates.
+
+1. **Structural context field (`CF_CTX`, BM25F weight `CS_CTX_W` = 1.5, fixed).** A fifth field of the file document, indexed next to path (2.0),
+   file name (4.0) and content (1.0). Text built per file at index time without the symbol parser (the N1 text tier does not have it): the
+   header comment (the first comment block or docstring that is not a license), the import/include/`from ... import`/`require` lines (module
+   and imported names), and the names defined at file or class level (definition keyword, C-style function line, `const x = () =>`; recognized by
+   line rules in `cs_ctx_scan`). Path components are not repeated here (the path field has them). The same terms are also in the body; the field only
+   gives definitions and the header more weight than uses. The lengths table has a fourth column (context length) and the search view keeps it apart
+   (`CsView.clen`) so the Find, which reads the first three, is unchanged. **Index format: `STORE_FORMAT` 3** (a store of another format is rebuilt
+   without notice; no migration).
+2. **Symbol as retrieval unit (query time).** For each of the top candidates the symbol table gives the symbols (name, signature, line range, parent) and
+   each symbol gets its own BM25F score from the global idf of the query terms: name 4.0, signature 2.0, structural context 1.5, own body lines 1.0
+   (lines of nested symbols do not count). The symbol's context is assembled from what the index knows: path components, the chain of symbols that
+   contain it, the names of the neighbours (same parent, up to 3 each side), the file header and the imported names (reference table, exact). A
+   symbol is listed only if it matches directly (name, signature or body); context only adds. `coder search` prints, per file, its best units
+   (`path:line0-line1 kind name`, the same line shape as before) and, after the file list, `symbols (best units among the top 30 files)`; JSON has
+   `symbols` per file and `symbol_results`. The file document still exists and still ranks first; files without symbols (docs, config, text) stay file
+   results. Terms are the user's, abbreviations, concept expansions and typo corrections (not the operation verbs).
+3. **Rerank, within each tier, of the top 30.** Score = position after fusion (1 down to ~0) + 0.6 x best unit (relative to the best of the 30) + 0.3 x
+   share of the user's terms found in symbol NAMES (definition against use) + 0.2 x share found in path/file name + 0.3 x share found in lines when the
+   file is read again (the check the Find already makes: the same re-read that prints the evidence) + 0.4 if a whole identifier cited in the query is the
+   name of a symbol defined in the file - 0.5 if the file cannot be read again. Fixed weights; compile with `-DCS_NO_RERANK` to turn the step off. In the
+   Find (`coder_lookup`) the files are not read again here (cost): only the signals from the symbol table are used.
+
+**Extension point for the embedder.** The `semantic` channel exists as an enum slot (`CH_SEM`) and a null function pointer (`g_cs_semantic`, see the
+comment in `search.c`): when set, it writes one similarity per document and the rest (rank, RRF weight `g_cs_chw[CH_SEM]`, tier logic, channel printing,
+rerank) is already wired; today it is absent, so it never enters the fusion. The same point applies to the unit score (`cs_units`).
+
+What was measured (a hand check, not a campaign; see `docs/optimization-roadmap.md`): neutral to better on 15 queries; context field alone is neutral;
+the rerank and the unit score carry the gain. Not measured: any effect on a model's task result.
+
 ### 12.7 Risks specific to CSSE
 
 | Risk | Detail | Mitigation, and what remains |
