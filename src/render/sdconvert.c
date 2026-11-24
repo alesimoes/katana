@@ -405,6 +405,7 @@ static int fxt_convert(const char *dir, const char *out_path);       /* render/f
 static int fxt_main(int argc, char **argv);                          /* render/fxtext.c */
 static int sds_main(int argc, char **argv);                      /* render/sdspec.c */
 static int fxv_main(int argc, char **argv);                      /* render/fxvae.c */
+static int fxd_main(int argc, char **argv);                      /* render/fxdit.c */
 static int render_main(int argc, char **argv) {
     g_cv_skip_int = 1;      /* position_ids do CLIP e outros tensores de inteiros: nao entram */
     if (argc >= 2 && !strcmp(argv[0], "names")) return sd_names(argv[1]);
@@ -413,6 +414,7 @@ static int render_main(int argc, char **argv) {
     if (argc >= 1 && !strcmp(argv[0], "brief")) return sdb_main(argc - 1, argv + 1);
     if (argc >= 3 && !strcmp(argv[0], "flux-convert-text")) return fxt_convert(argv[1], argv[2]);
     if (argc >= 1 && !strcmp(argv[0], "flux-text")) return fxt_main(argc - 1, argv + 1);
+    if (argc >= 1 && !strcmp(argv[0], "flux-dit")) return fxd_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "spec")) return sds_main(argc - 1, argv + 1);
     if (argc >= 1 && !strcmp(argv[0], "flux-vae")) return fxv_main(argc - 1, argv + 1);
     if (argc >= 4 && !strcmp(argv[0], "convert")) {

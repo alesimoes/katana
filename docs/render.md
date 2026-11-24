@@ -80,7 +80,7 @@ FLUX.2 klein 4B (distilled, 4 steps, guidance 1.0, Apache-2.0):
 |---|---|---|
 | F1 | GGUF reader for the Q4_K_M transformer, tensor names, converter for the VAE and the rest | in progress: names and types mapped (below); reader and VAE converter not written |
 | F2 | text: Qwen3-4B hidden states of layers 9/18/27 concatenated (7680), through the existing Qwen3 code | not started |
-| F3 | transformer: 5 double + 20 single blocks, 24 heads x 128, RoPE on 4 axes (32 each), modulation, compared with the reference | not started |
+| F3 | transformer: 5 double + 20 single blocks, 24 heads x 128, RoPE on 4 axes (32 each), modulation, compared with the reference | done (`src/render/fxdit.c`, `katana render flux-dit selftest`): every stage matches the float32 diffusers forward with the same dequantized GGUF weights, error/|ref|max between 4e-7 and 1.5e-5 (timestep embedding, img_in/txt_in, 5 double blocks, single blocks 0/4/19, final output); reference script `/mnt/dados/render-ref/fluxB/ref_dit.py` (own K-quant dequantizer, official name converter) |
 | F4 | VAE (32 latent channels, 2x2 patchify, batch-norm statistics), encoder for the reference image(s) | not started |
 | F5 | flow-match Euler sampler (distilled, 2 to 4 steps), image reference as extra tokens, PNG out | not started |
 

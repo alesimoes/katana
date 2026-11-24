@@ -198,3 +198,4 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdtest.c"              /* katana render selftest: as operacoes contra os tensores de referencia */
 #include "render/fxconvert_vae.c"        /* render: VAE do FLUX.2 klein, conversor (katana render flux-vae convert) */
 #include "render/fxvae.c"                /* render: VAE do FLUX.2 klein na CPU (katana render flux-vae selftest) */
+#include "render/fxdit.c"              /* render: transformador do FLUX.2 klein (katana render flux-dit) */
