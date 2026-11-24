@@ -78,11 +78,11 @@ FLUX.2 klein 4B (distilled, 4 steps, guidance 1.0, Apache-2.0):
 
 | Stage | What | Status |
 |---|---|---|
-| F1 | GGUF reader for the Q4_K_M transformer, tensor names, converter for the VAE and the rest | in progress: names and types mapped (below); reader and VAE converter not written |
-| F2 | text: Qwen3-4B hidden states of layers 9/18/27 concatenated (7680), through the existing Qwen3 code | not started |
-| F3 | transformer: 5 double + 20 single blocks, 24 heads x 128, RoPE on 4 axes (32 each), modulation, compared with the reference | done (`src/render/fxdit.c`, `katana render flux-dit selftest`): every stage matches the float32 diffusers forward with the same dequantized GGUF weights, error/|ref|max between 4e-7 and 1.5e-5 (timestep embedding, img_in/txt_in, 5 double blocks, single blocks 0/4/19, final output); reference script `/mnt/dados/render-ref/fluxB/ref_dit.py` (own K-quant dequantizer, official name converter) |
-| F4 | VAE (32 latent channels, 2x2 patchify, batch-norm statistics), encoder for the reference image(s) | not started |
-| F5 | flow-match Euler sampler (distilled, 2 to 4 steps), image reference as extra tokens, PNG out | not started |
+| F1 | GGUF reader for the Q4_K_M transformer, tensor names, converter for the VAE and the rest | done 2026-11-24 (`flux-convert-text`, `flux-vae convert`; the transformer GGUF is read as is) |
+| F2 | text: Qwen3-4B hidden states of layers 9/18/27 concatenated (7680) | done, verified against float32 (`flux-text --selftest`, error 4e-7 to 8e-6) |
+| F3 | transformer: 5 double + 20 single blocks, RoPE on 4 axes | done, verified (`flux-dit selftest`, final error 1.8e-5); weights cached as F32 panels (~15 GB per process), blocked attention (`KATANA_FLUX_WEIGHTS=none` / `KATANA_FLUX_ATT=simple` go back to the plain path) |
+| F4 | VAE (32 latent channels, 2x2 patchify, batch-norm statistics) | done, verified (`flux-vae selftest`, 8e-7 to 2.5e-6) |
+| F5 | flow-match Euler sampler, reference images as extra tokens, `--engine flux` | done, verified end to end against the pipeline (`flux-gen selftest`: 1.8e-4 on the final image, 0 of 255 mean pixel difference); `--init` and `--init2` are the references, the request goes in as prose (`sds_nl_prose`, no negative prompt: the model is distilled); two references written, not yet exercised |
 
 Krea 2 Turbo (12.8B DiT, Qwen3-VL text encoder, Q4_K_S 6.84 GB, community licence): starts after FLUX, reusing the DiT pieces; image-to-image by SDEdit (latents + sigmas). Not started.
 
