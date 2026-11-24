@@ -92,49 +92,6 @@ ApplicationWindow {
             }
         }
     }
-    Connections { target: backend; function onTeacherKeyNeeded() { tchDlg.open(); } }
-    Popup {
-        id: tchDlg
-        objectName: "teacherDialog"
-        modal: true
-        anchors.centerIn: Overlay.overlay
-        width: Math.min(460, win.width - 40)
-        padding: 18
-        onOpened: { tchModel.text = backend.teacherModel; tchKey.text = ""; tchKey.forceActiveFocus(); }
-        function save() { backend.setTeacher(tchKey.text, tchModel.text); tchKey.text = ""; close(); }
-        background: Rectangle { radius: 14; color: Theme.card; border.color: Theme.bd }
-        contentItem: Column {
-            spacing: 10
-            Text { font.family: Theme.sans; text: "Professor"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
-            Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
-                text: "Um modelo maior responde no lugar do modelo local, usando as mesmas ferramentas nesta máquina. Quem fala com ele é um programa externo (plugin do professor, configurado em ~/.katana/teacher.cmd ou KATANA_TEACHER_CMD). A chave, se o plugin pedir uma, fica em ~/.katana/teacher.key (legível só por você). A conversa, o prompt do agente e os resultados das ferramentas são entregues ao plugin e podem sair desta máquina."  }
-            TextField {
-                id: tchKey
-                objectName: "teacherKey"
-                width: parent.width
-                echoMode: TextInput.Password
-                placeholderText: backend.hasTeacherKey() ? "Chave da API (em branco mantém a atual)" : "Chave da API (opcional; depende do plugin)"
-                color: Theme.fg
-                Accessible.name: "Chave da API do professor"
-                onAccepted: tchDlg.save()
-            }
-            TextField {
-                id: tchModel
-                objectName: "teacherModel"
-                width: parent.width
-                placeholderText: "Modelo (em branco: o padrão do plugin)"
-                color: Theme.fg
-                Accessible.name: "Modelo do professor"
-                onAccepted: tchDlg.save()
-            }
-            Row {
-                spacing: 8
-                anchors.right: parent.right
-                Button { text: "Cancelar"; onClicked: tchDlg.close() }
-                Button { objectName: "teacherSave"; text: "Salvar e ligar"; highlighted: true; onClicked: tchDlg.save() }
-            }
-        }
-    }
     Popup {
         id: pwDlg
         objectName: "passwordDialog"
@@ -288,18 +245,22 @@ ApplicationWindow {
                                     contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
                                         text: (awk.on ? "☑  " : "☐  ") + "Não bloquear enquanto trabalha"; color: Theme.fg; font.pixelSize: 13 }
                                 }
-                                Text { font.family: Theme.sans; text: "PROFESSOR"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                AbstractButton {
-                                    id: tchCfg
-                                    objectName: "teacherConfig"
-                                    width: apMenu.width - 16; height: 32
-                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Chave e modelo do professor"
-                                    onClicked: { apMenu.close(); tchDlg.open(); }
-                                    background: Rectangle { radius: 8; color: tchCfg.hovered ? Theme.hov : "transparent"
-                                        border.width: tchCfg.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
-                                        text: "Chave e modelo…  (" + backend.teacherModel + ")"; color: Theme.fg; font.pixelSize: 13 }
+                                Text { font.family: Theme.sans; text: "PROCESSAMENTO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                Repeater {
+                                    model: [["auto", "Auto"], ["cuda", "CUDA"], ["vulkan", "Vulkan"], ["cpu", "CPU"]]
+                                    AbstractButton {
+                                        id: ib
+                                        required property var modelData
+                                        objectName: "backend_" + modelData[0]
+                                        width: apMenu.width - 16; height: 32
+                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                        Accessible.name: "Processamento da imagem: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                        onClicked: backend.imageBackend = modelData[0]
+                                        background: Rectangle { radius: 8; color: ib.hovered ? Theme.hov : "transparent"
+                                            border.width: ib.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                            text: (backend.imageBackend === ib.modelData[0] ? "●  " : "○  ") + ib.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    }
                                 }
                                 Text { font.family: Theme.sans; text: "ESPECIALIZAÇÕES"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                 Text { objectName: "specsActive"; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12

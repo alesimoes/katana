@@ -237,7 +237,7 @@ Item {
                             width: parent.width - 28
                             spacing: 8
                             Text { objectName: "imageTitle"; font.family: Theme.sans; color: Theme.mut; font.pixelSize: 12
-                                text: "Imagem gerada · " + (d.name === "flux" ? "FLUX" : d.name === "krea" ? "Krea" : "Stable") + (d.text.length ? "" : " · WIP") }
+                                text: "Imagem gerada · " + (d.name === "flux" ? "FLUX" : "Stable") }
                             Image {
                                 objectName: "imagePic"
                                 visible: d.text.length > 0

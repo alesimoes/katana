@@ -53,18 +53,6 @@ Item {
         onAccepted: backend.attachImage(selectedFile.toString())
     }
 
-    FileDialog {
-        id: briefDialog
-        title: "Anexar briefing de renderizacao"
-        nameFilters: ["Briefing (*.md *.txt)"]
-        onAccepted: backend.attachBrief(selectedFile.toString())
-    }
-    FileDialog {
-        id: logoDialog
-        title: "Anexar logo (PNG com transparencia)"
-        nameFilters: ["Imagens (*.png *.webp *.jpg *.jpeg *.bmp)"]
-        onAccepted: backend.attachLogo(selectedFile.toString())
-    }
 
     // sombra suave: camadas translucidas
     Repeater {
@@ -118,7 +106,8 @@ Item {
         y: 0
         width: comp.cw
         // cresce com o conteudo: minimo ~4 linhas, maximo ~14 linhas (depois rola)
-        height: Math.max(116, fl.height + 24 + 38)
+        readonly property real chipH: backend.attachedImage.length > 0 ? 62 : 0
+        height: Math.max(116, chipH + fl.height + 24 + 38)
         radius: 22
         color: Theme.card
         border.color: ta.activeFocus ? Theme.mut : Theme.bd
@@ -127,7 +116,7 @@ Item {
             id: fl
             objectName: "composerFlick"
             x: 20
-            y: 12
+            y: 12 + box.chipH
             width: parent.width - 20 - 20
             height: Math.min(ta.implicitHeight, 330)
             contentWidth: width
@@ -159,6 +148,7 @@ Item {
                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: { ta.forceActiveFocus(); tmenu.popup(); } }
                 Accessible.role: Accessible.EditableText
                 Keys.onPressed: (e) => {
+                    if ((e.matches(StandardKey.Paste) || (e.key === Qt.Key_V && (e.modifiers & Qt.ControlModifier))) && backend.pasteClipboardImage()) { e.accepted = true; return; }
                     if (e.key === Qt.Key_Escape && backend.answering) { e.accepted = true; backend.stop(); return; }
                     if ((e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !(e.modifiers & Qt.ShiftModifier)) {
                         e.accepted = true;
@@ -168,7 +158,33 @@ Item {
             }
         }
 
-        // anexar imagem (clipe) e miniatura da imagem anexada, com botao de remover
+        // miniatura da imagem anexada (chip removivel) em cima do texto
+        Rectangle {
+            id: thumb
+            objectName: "attachThumb"
+            visible: backend.attachedImage.length > 0
+            x: 20; y: 12
+            width: 72; height: 48; radius: 8
+            color: Theme.hov
+            border.color: Theme.bd
+            clip: true
+            Image {
+                anchors.fill: parent
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                source: backend.attachedImage ? "file://" + backend.attachedImage : ""
+                sourceSize.width: 144
+            }
+            Rectangle {
+                objectName: "attachRemove"
+                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
+                width: 18; height: 18; radius: 9
+                color: Theme.card; opacity: 0.92
+                Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 10; color: Theme.fg }
+                MouseArea { anchors.fill: parent; anchors.margins: -3; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearImage() }
+            }
+        }
+        // anexar imagem (+), dentro da caixa, a esquerda
         IconButton {
             id: attachBtn
             objectName: "attachButton"
@@ -178,36 +194,48 @@ Item {
             anchors.bottomMargin: 8
             implicitWidth: 34
             implicitHeight: 34
-            glyph: "image"
-            iconSize: 18
-            tip: "Anexar uma imagem (gera uma imagem a partir dela)"
+            glyph: "plus"
+            iconSize: 20
+            tip: "Anexar uma imagem"
             onClicked: imgDialog.open()
         }
-        Rectangle {
-            id: thumb
-            objectName: "attachThumb"
+        // motor da imagem: so aparece com uma imagem anexada
+        ComboBox {
+            id: engineBox
+            objectName: "imageEngineBox"
             visible: backend.attachedImage.length > 0
-            anchors.left: attachBtn.right
-            anchors.leftMargin: 6
-            anchors.verticalCenter: attachBtn.verticalCenter
-            width: 56; height: 32; radius: 6
-            color: Theme.hov
-            border.color: Theme.bd
-            clip: true
-            Image {
-                anchors.fill: parent
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-                source: backend.attachedImage ? "file://" + backend.attachedImage : ""
-                sourceSize.width: 112
+            anchors.right: sendBtn.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: sendBtn.verticalCenter
+            width: 168; height: 30
+            model: [{ id: "stable", label: "Stable (rápido)" }, { id: "flux", label: "FLUX (qualidade)" }]
+            textRole: "label"
+            currentIndex: backend.imageEngine === "flux" ? 1 : 0
+            onActivated: (i) => backend.imageEngine = model[i].id
+            Accessible.name: "Motor da imagem"
+            font.family: Theme.sans; font.pixelSize: 12
+            background: Rectangle { radius: 15; color: engineBox.hovered ? Theme.hov : "transparent"; border.color: Theme.bd }
+            contentItem: Text { leftPadding: 12; rightPadding: 24; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                font: engineBox.font; color: Theme.fg; text: engineBox.displayText }
+            indicator: Icon { x: engineBox.width - width - 10; y: (engineBox.height - height) / 2; name: "down"; size: 12; color: Theme.mut }
+            popup: Popup {
+                y: -implicitHeight - 4
+                width: engineBox.width
+                padding: 4
+                implicitHeight: contentItem.implicitHeight + 8
+                background: Rectangle { radius: 10; color: Theme.card; border.color: Theme.bd }
+                contentItem: ListView {
+                    implicitHeight: contentHeight
+                    model: engineBox.popup.visible ? engineBox.delegateModel : null
+                    interactive: false
+                }
             }
-            Rectangle {
-                objectName: "attachRemove"
-                anchors.right: parent.right; anchors.top: parent.top
-                width: 16; height: 16; radius: 8
-                color: Theme.card; opacity: 0.9
-                Text { anchors.centerIn: parent; text: "✕"; font.pixelSize: 9; color: Theme.fg }
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearImage() }
+            delegate: ItemDelegate {
+                required property var modelData
+                required property int index
+                width: engineBox.width - 8; height: 30
+                contentItem: Text { text: modelData.label; font: engineBox.font; color: Theme.fg; verticalAlignment: Text.AlignVCenter; leftPadding: 4 }
+                background: Rectangle { radius: 8; color: hovered || engineBox.currentIndex === index ? Theme.hov : "transparent" }
             }
         }
         IconButton {
@@ -221,14 +249,14 @@ Item {
             implicitHeight: 38
             circle: true
             glyph: backend.answering && ta.text.trim().length === 0 && !backend.attachedImage ? "stop" : "up"
-            iconSize: backend.answering ? 18 : 18
+            iconSize: 18
             iconColor: Theme.acfg
             hoverIconColor: Theme.acfg
             fillColor: Theme.ac
             hoverFill: Qt.lighter(Theme.ac, 1.1)
             enabled: backend.attachedImage.length > 0 ? !backend.imageBusy : (backend.answering || (backend.ready && ta.text.trim().length > 0))
             opacity: enabled ? 1 : 0.35
-            tip: backend.answering ? (ta.text.trim().length ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar"
+            tip: backend.attachedImage.length > 0 ? "Gerar a imagem" : backend.answering ? (ta.text.trim().length ? "Enfileirar (envia quando o agente terminar)" : "Parar (Esc)") : "Enviar"
             onClicked: comp.submit()
         }
     }
@@ -246,126 +274,6 @@ Item {
             implicitHeight: 22
             maxWidth: Math.max(120, box.width * 0.45)
             compact: true
-        }
-        // modo imagem e motor de geracao: Stable (padrao), FLUX e Krea; os dois ultimos e o modo ainda sao WIP
-        AbstractButton {
-            id: imgModeBtn
-            objectName: "imageModeButton"
-            implicitHeight: 22
-            implicitWidth: imgModeTxt.implicitWidth + 14
-            hoverEnabled: true
-            background: Rectangle { radius: 6; color: backend.imageMode ? Theme.hov : imgModeBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: imgModeTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
-                color: backend.imageMode ? Theme.fg : Theme.mut; text: "imagem · WIP" }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: "Modo imagem (em desenvolvimento): anexe uma imagem (modelo 3D) e escolha o motor que gera a versão realista."
-            Accessible.name: "Modo imagem"
-            onClicked: backend.imageMode = !backend.imageMode
-        }
-        Repeater {
-            model: [["stable", "Stable", ""], ["flux", "FLUX", ""], ["krea", "Krea", " WIP"]]
-            AbstractButton {
-                required property var modelData
-                objectName: "engine_" + modelData[0]
-                visible: backend.imageMode || backend.attachedImage.length > 0
-                implicitHeight: 22
-                implicitWidth: engTxt.implicitWidth + 14
-                hoverEnabled: true
-                readonly property bool sel: backend.imageEngine === modelData[0]
-                background: Rectangle { radius: 6; color: sel ? Theme.hov : parent.hovered ? Theme.hov : "transparent"; border.width: sel ? 1 : 0; border.color: Theme.bd }
-                contentItem: Text { id: engTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
-                    color: sel ? Theme.fg : Theme.mut; text: modelData[1] + modelData[2] }
-                Accessible.name: "Motor de imagem " + modelData[1]
-                onClicked: backend.imageEngine = modelData[0]
-            }
-        }
-        // processamento do FLUX: Auto (o katana escolhe o mais rapido verificado: CUDA, Vulkan, CPU), CUDA, Vulkan ou CPU
-        Repeater {
-            model: [["auto", "Auto", "O katana escolhe: CUDA se houver placa NVIDIA, senão Vulkan, senão CPU."], ["cuda", "CUDA", "Força o CUDA (só placa NVIDIA)."],
-                    ["vulkan", "Vulkan", "Força o Vulkan (NVIDIA, AMD ou Intel)."], ["cpu", "CPU", "Força a CPU: mais lento, não usa a placa."]]
-            AbstractButton {
-                required property var modelData
-                objectName: "backend_" + modelData[0]
-                visible: (backend.imageMode || backend.attachedImage.length > 0) && backend.imageEngine === "flux"
-                implicitHeight: 22
-                implicitWidth: beTxt.implicitWidth + 14
-                hoverEnabled: true
-                readonly property bool sel: backend.imageBackend === modelData[0]
-                background: Rectangle { radius: 6; color: sel ? Theme.hov : parent.hovered ? Theme.hov : "transparent"; border.width: sel ? 1 : 0; border.color: Theme.bd }
-                contentItem: Text { id: beTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
-                    color: sel ? Theme.fg : Theme.mut; text: modelData[1] }
-                ToolTip.visible: hovered
-                ToolTip.delay: 400
-                ToolTip.text: modelData[2]
-                Accessible.name: "Processamento " + modelData[1]
-                onClicked: backend.imageBackend = modelData[0]
-            }
-        }
-        // briefing (.md/.txt) e logo opcionais do modo imagem: o briefing vira o prompt (materiais, cores, luz, regras de fidelidade);
-        // o logo (PNG com alfa) e composto no render depois de gerado, dentro da caixa x,y,w,h (fracao da imagem ou pixels)
-        AbstractButton {
-            id: briefBtn
-            objectName: "briefButton"
-            visible: backend.imageMode || backend.attachedImage.length > 0
-            implicitHeight: 22
-            implicitWidth: briefTxt.implicitWidth + 14
-            hoverEnabled: true
-            background: Rectangle { radius: 6; color: backend.attachedBrief.length > 0 || briefBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: briefTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
-                color: backend.attachedBrief.length > 0 ? Theme.fg : Theme.mut
-                text: backend.attachedBrief.length > 0 ? "briefing ✓" : "briefing" }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: backend.attachedBrief.length > 0 ? "Briefing: " + backend.attachedBrief : "Anexar o briefing de renderizacao (.md ou .txt): materiais, cores, luz e regras viram o prompt, sem resumo a mao."
-            Accessible.name: "Anexar briefing"
-            onClicked: briefDialog.open()
-        }
-        Text {
-            objectName: "briefRemove"
-            visible: backend.attachedBrief.length > 0
-            font.family: Theme.sans; font.pixelSize: 11; color: Theme.mut; text: "✕"
-            Accessible.name: "Remover briefing"
-            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearBrief() }
-        }
-        AbstractButton {
-            id: logoBtn
-            objectName: "logoButton"
-            visible: backend.imageMode || backend.attachedImage.length > 0
-            implicitHeight: 22
-            implicitWidth: logoTxt.implicitWidth + 14
-            hoverEnabled: true
-            background: Rectangle { radius: 6; color: backend.attachedLogo.length > 0 || logoBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: logoTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
-                color: backend.attachedLogo.length > 0 ? Theme.fg : Theme.mut
-                text: backend.attachedLogo.length > 0 ? "logo ✓" : "logo" }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: backend.attachedLogo.length > 0 ? "Logo: " + backend.attachedLogo : "Anexar o logo real (PNG com transparencia): o modelo de imagem nao escreve marcas, entao o logo e composto na imagem pronta."
-            Accessible.name: "Anexar logo"
-            onClicked: logoDialog.open()
-        }
-        TextField {
-            objectName: "logoBoxField"
-            visible: backend.attachedLogo.length > 0
-            implicitWidth: 118; implicitHeight: 22; leftPadding: 6; rightPadding: 6; topPadding: 0; bottomPadding: 0
-            font.family: Theme.sans; font.pixelSize: 11
-            color: Theme.fg
-            text: backend.logoBox
-            placeholderText: "x,y,w,h"
-            background: Rectangle { radius: 6; color: Theme.hov; border.color: Theme.bd }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: "Caixa do logo na imagem: x,y,w,h em fracao da imagem (0.04,0.04,0.22,0.12) ou em pixels."
-            Accessible.name: "Caixa do logo"
-            onEditingFinished: backend.logoBox = text
-        }
-        Text {
-            objectName: "logoRemove"
-            visible: backend.attachedLogo.length > 0
-            font.family: Theme.sans; font.pixelSize: 11; color: Theme.mut; text: "✕"
-            Accessible.name: "Remover logo"
-            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearLogo() }
         }
         // pasta sem confianca: aviso aqui (a escolha da pasta fica nas configuracoes)
         Text {
@@ -392,22 +300,6 @@ Item {
             Accessible.name: "Modo plano"
             onClicked: backend.togglePlan()
         }
-        AbstractButton {
-            id: tchBtn
-            objectName: "teacherButton"
-            implicitHeight: 22
-            implicitWidth: tchTxt.implicitWidth + 14
-            enabled: backend.ready
-            hoverEnabled: true
-            background: Rectangle { radius: 6; color: backend.teacher ? Theme.hov : tchBtn.hovered ? Theme.hov : "transparent" }
-            contentItem: Text { id: tchTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12; color: backend.teacher ? Theme.fg : Theme.mut
-                text: backend.teacher ? "professor: " + backend.teacherModel : "professor" }
-            ToolTip.visible: hovered
-            ToolTip.delay: 400
-            ToolTip.text: "Com o professor ligado, um modelo maior (pela API) responde no lugar do modelo local, com as mesmas ferramentas.\nA conversa sai desta máquina; as respostas ficam guardadas para treinar o modelo local."
-            Accessible.name: "Modo professor"
-            onClicked: backend.toggleTeacher()
-        }
         Text { font.family: Theme.sans;
             Layout.fillWidth: true
             Layout.leftMargin: 8
@@ -415,7 +307,7 @@ Item {
             font.pixelSize: 12
             objectName: "statusLine"
             color: backend.errorText || backend.stalled ? Theme.err : Theme.mut
-            text: backend.imageBusy ? "Gerando a imagem (" + backend.imageEngine + ")..."
+            text: backend.imageBusy ? "Gerando a imagem (" + (backend.imageEngine === "flux" ? "FLUX" : "Stable") + ")..."
                   : backend.errorText ? backend.errorText
                   : backend.stalled ? backend.activityText
                   : backend.statusText && !/^(Preparando|Retomando|Carregando)/.test(backend.statusText) ? backend.statusText

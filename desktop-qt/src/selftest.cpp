@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QDir>
+#include <QSettings>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -936,43 +937,48 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         c.grab("50-agente-morreu.png");
     }
 
-    // ---- geracao de imagem: anexar, escolher o motor, gerar (stable), WIP (flux e krea) e falha ----
+    // ---- geracao de imagem: anexar (+), motor (2 opcoes), gerar (stable), FLUX indisponivel, briefing colado e falha ----
     fprintf(stderr, "-- imagem: anexar, motor, gerar\n");
     {
         const QString img = QFileInfo(be.katanaPath()).absolutePath() + "/samples/render-entrada.png";   // imagem de teste, ao lado do motor de mentira
         check(QFileInfo(img).isFile(), "imagem de teste encontrada: " + img);
+        // nada de Krea, briefing, logo, professor nem botao de modo imagem na interface
+        for (const char *n : {"briefButton", "briefRemove", "logoButton", "logoBoxField", "logoRemove", "teacherButton", "teacherConfig", "teacherDialog", "imageModeButton", "engine_krea", "engine_flux", "engine_stable"})
+            check(!c.item(n), QString("interface sem o objeto ") + n);
+        be.setImageEngine("krea");
+        check(be.imageEngine() == "stable", "Krea nao e aceito como motor");
         check(!be.attachImage("/tmp/katana-standin/relatorio final.txt"), "anexar um arquivo que nao e imagem e recusado");
         check(be.attachedImage().isEmpty() && !c.item("attachThumb")->isVisible(), "sem anexo: sem miniatura");
-        check(c.item("attachButton") && c.item("attachButton")->isVisible(), "botao de anexar visivel");
+        check(!c.item("imageEngineBox")->isVisible(), "sem anexo: sem seletor de motor");
+        check(c.item("attachButton") && c.item("attachButton")->isVisible(), "botao + de anexar visivel");
         check(be.attachImage("file://" + img) && be.attachedImage() == img, "anexar pela URL file://");
         QTest::qWait(400);
-        check(c.item("attachThumb")->isVisible() && c.item("engine_stable")->isVisible() && c.item("engine_flux")->isVisible() && c.item("engine_krea")->isVisible(),
-              "com anexo: miniatura e os tres motores aparecem");
-        check(be.imageEngine() == "stable", "Stable e o padrao");
+        QQuickItem *eb = c.item("imageEngineBox");
+        check(c.item("attachThumb")->isVisible() && eb->isVisible(), "com anexo: miniatura e seletor de motor aparecem");
+        check(eb->property("count").toInt() == 2, "o seletor tem exatamente 2 opcoes");
+        check(eb->property("currentText").toString() == "Stable (rápido)", "Stable (rapido) e o padrao: " + eb->property("currentText").toString());
+        check(be.imageEngine() == "stable", "motor padrao: Stable");
         c.grab("60-imagem-anexada.png");
-        check(!c.item("backend_cuda")->isVisible(), "Stable: a escolha CUDA/Vulkan/CPU fica escondida");
-        c.click(c.item("engine_flux"));
-        check(be.imageEngine() == "flux", "escolher FLUX");
+        { const QSize sz0 = win->size(); win->resize(715, sz0.height()); QTest::qWait(500);
+          c.item("composerInput")->setProperty("text", "deixe o piso de madeira clara e a luz mais quente");
+          c.grab("66-imagem-anexada-estreita.png");
+          c.item("composerInput")->setProperty("text", "");
+          win->resize(sz0); QTest::qWait(500); }
+        be.setImageEngine("flux");
         QTest::qWait(200);
-        check(c.item("backend_auto")->isVisible() && c.item("backend_cuda")->isVisible() && c.item("backend_vulkan")->isVisible() && c.item("backend_cpu")->isVisible(), "FLUX: aparecem Auto, CUDA, Vulkan e CPU");
-        check(be.imageBackend() == "auto", "Auto e o padrao");
-        c.click(c.item("backend_vulkan"));
-        check(be.imageBackend() == "vulkan", "escolher Vulkan");
-        c.click(c.item("backend_auto"));
-        check(be.imageBackend() == "auto", "voltar para Auto");
+        check(eb->property("currentText").toString() == "FLUX (qualidade)", "FLUX (qualidade) e a segunda opcao");
+        be.setImageEngine("stable");
         c.click(c.item("attachRemove"));
         check(be.attachedImage().isEmpty(), "remover o anexo");
         QTest::qWait(300);
-        check(!c.item("engine_flux")->isVisible(), "sem anexo e fora do modo imagem: motores escondidos");
-        c.click(c.item("imageModeButton"));
-        QTest::qWait(300);
-        check(be.imageMode() && c.item("engine_krea")->isVisible(), "modo imagem mostra os motores sem anexo");
-        c.click(c.item("engine_stable"));
-        check(be.imageEngine() == "stable", "escolher Stable de novo");
+        check(!c.item("attachThumb")->isVisible() && !eb->isVisible(), "sem anexo: miniatura e seletor somem");
 
-        // gerar com o stable: nao passa pelo agente
+        // gerar com o stable: nao passa pelo agente; texto curto vai como --nl
+        const QString argsFile = QDir::homePath() + "/.standin-render-args";
+        const QString briefCopy = QDir::homePath() + "/.standin-render-brief";
         QStringList sentToAgent;
         QObject::connect(&be, &Backend::sentToAgent, [&](const QString &l) { sentToAgent << l; });
+        QFile::remove(argsFile); QFile::remove(briefCopy);
         be.attachImage(img);
         const int n0 = be.messages()->count();
         c.typeAndEnter("gere a recepcao realista");
@@ -983,6 +989,8 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(saida.startsWith(be.imageDir()) && QFileInfo(saida).isFile() && QImage(saida).width() == 320, "imagem gravada em ~/.katana/desktop/imagens: " + saida);
         check(be.messages()->get(be.messages()->count() - 2)["kind"] == "user" && sentToAgent.isEmpty(), "o texto aparece como mensagem do usuario e nao vai ao agente");
         check(be.attachedImage().isEmpty(), "o anexo e consumido no envio");
+        { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
+          check(rl.contains("--nl") && rl.contains("gere a recepcao realista") && !rl.contains("--brief") && !rl.contains("--logo"), "texto curto: vai como --nl, sem --brief"); }
         QQuickItem *ic = c.item("imageCard");
         check(ic && ic->isVisible() && c.item("imagePic") && c.item("imagePic")->isVisible(), "cartao de imagem visivel");
         c.grab("61-imagem-gerada.png");
@@ -995,69 +1003,37 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         if (Sessoes::carregar(be.sessionsDir(), be.currentSessionId(), &ss)) for (const Msg &m : ss.mensagens) gravada |= m.papel == "image" && m.texto == saida;
         check(gravada, "sessao grava o caminho da imagem");
 
-        // flux e krea: aviso amigavel (WIP), sem cartao de erro
-        for (const QString &e : {QStringLiteral("flux"), QStringLiteral("krea")}) {
-            be.setImageEngine(e);
-            be.attachImage(img);
-            const int antes = be.messages()->count();
-            c.typeAndEnter("gere com " + e);
-            check(waitFor([&] { return be.messages()->count() > antes + 1 && !be.imageBusy(); }, 30000), e + ": terminou");
-            QTest::qWait(400);
-            const QVariantMap w = be.messages()->get(be.messages()->count() - 1);
-            check(w["kind"] == "image" && w["text"].toString().isEmpty() && w["out"].toString().contains("WIP") && w["name"] == e, e + ": aviso de motor em desenvolvimento (WIP), sem erro");
-            if (e == "flux") { QList<QQuickItem *> notes; findAll(c.root(), "imageNote", notes); check(!notes.isEmpty() && notes.last()->isVisible(), "aviso WIP visivel"); c.grab("62-motor-wip.png"); }
-        }
-        // briefing e logo opcionais: o briefing vira o prompt (--brief), o logo e composto depois (--logo, --logo-box, --logo-blend)
-        {
-            const QString argsFile = QDir::homePath() + "/.standin-render-args";
-            const QString brief = "/tmp/katana-standin/briefing recepcao.md";
-            QDir().mkpath("/tmp/katana-standin");
-            { QFile f(brief); if (f.open(QIODevice::WriteOnly)) f.write("MATERIAIS\n- \"Arenito\": material, repeticao do padrao 275x184 cm (aproximadamente 7% da moldura)\n"); }
-            be.setImageEngine("stable");
-            check(!be.attachBrief(img), "briefing: uma imagem nao e aceita como briefing");
-            check(!be.attachBrief("/tmp/katana-standin/nao-existe.md"), "briefing: arquivo que nao existe e recusado");
-            check(!be.attachLogo("/tmp/katana-standin/relatorio final.txt"), "logo: um arquivo que nao e imagem e recusado");
-            check(Backend::validLogoBox("0.04,0.04,0.22,0.12") && Backend::validLogoBox("100,50,300,120") && !Backend::validLogoBox("1,2,3") && !Backend::validLogoBox("1,2,0,4") && !Backend::validLogoBox("a,b,c,d"),
-                  "caixa do logo: x,y,w,h validos e invalidos");
-            QTest::qWait(300);
-            check(c.item("briefButton")->isVisible() && c.item("logoButton")->isVisible(), "modo imagem mostra os botoes de briefing e logo");
-            check(!c.item("briefRemove")->isVisible() && !c.item("logoBoxField")->isVisible(), "sem anexos: sem remover e sem campo da caixa");
-            check(be.attachBrief("file://" + brief) && be.attachedBrief() == brief && be.attachLogo(img) && be.attachedLogo() == img, "anexar briefing (URL file://) e logo");
-            QTest::qWait(300);
-            check(c.item("briefRemove")->isVisible() && c.item("logoRemove")->isVisible() && c.item("logoBoxField")->isVisible(), "com anexos: remover e campo da caixa do logo aparecem");
-            c.grab("64-briefing-e-logo.png");
-            c.click(c.item("briefRemove"));
-            c.click(c.item("logoRemove"));
-            check(be.attachedBrief().isEmpty() && be.attachedLogo().isEmpty(), "remover briefing e logo");
-            // enviar so com briefing e logo, sem texto: --brief, sem --nl, e o logo com a caixa
-            QFile::remove(argsFile);
-            be.attachImage(img); be.attachBrief(brief); be.attachLogo(img); be.setLogoBox("0.1,0.1,0.2,0.1");
-            const int n1 = be.messages()->count();
-            check(be.sendImage(""), "enviar com briefing e logo, sem texto");
-            check(waitFor([&] { return be.messages()->count() > n1 + 1 && !be.imageBusy(); }, 30000), "stable com briefing: terminou");
-            QTest::qWait(300);
-            QString ra; { QFile f(argsFile); if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); }
-            const QStringList rl = ra.split('\n');
-            check(rl.contains("--brief") && rl.contains(brief) && !rl.contains("--nl"), "argumentos: --brief com o arquivo e nenhum --nl");
-            check(rl.contains("--logo") && rl.contains(img) && rl.contains("--logo-box") && rl.contains("0.1,0.1,0.2,0.1") && rl.contains("--logo-blend"), "argumentos: --logo, --logo-box e --logo-blend");
-            check(be.attachedBrief().isEmpty() && be.attachedLogo().isEmpty() && be.messages()->get(be.messages()->count() - 1)["kind"] == "image", "anexos consumidos; cartao de imagem");
-            check(be.messages()->get(be.messages()->count() - 2)["text"].toString().contains("briefing recepcao.md"), "a conversa mostra o nome do briefing");
-            // com texto, o texto entra como pedido adicional (--nl); sem logo, nenhum --logo
-            QFile::remove(argsFile);
-            be.attachImage(img); be.attachBrief(brief);
-            c.typeAndEnter("luz mais quente");
-            check(waitFor([&] { return !be.imageBusy() && QFileInfo::exists(argsFile); }, 30000), "briefing com texto: terminou");
-            QTest::qWait(300);
-            { QFile f(argsFile); ra.clear(); if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); }
-            const QStringList r2 = ra.split('\n');
-            check(r2.contains("--brief") && r2.contains("--nl") && r2.contains("luz mais quente") && !r2.contains("--logo"), "argumentos: --brief e o texto como --nl, sem --logo");
-            // caixa invalida: nada e gerado, aparece o erro e o anexo continua para corrigir
-            QFile::remove(argsFile);
-            be.attachImage(img); be.attachLogo(img); be.setLogoBox("1,2,3");
-            check(!be.sendImage("x") && !QFileInfo::exists(argsFile) && be.messages()->get(be.messages()->count() - 1)["kind"] == "error", "caixa do logo invalida: erro e nada e gerado");
-            check(!be.attachedImage().isEmpty() && !be.attachedLogo().isEmpty(), "os anexos ficam para corrigir a caixa");
-            be.clearLogo(); be.clearImage();
-        }
+        // briefing colado na propria caixa: texto longo ou com cara de briefing vai como --brief (arquivo temporario)
+        check(Backend::looksLikeBrief("MATERIAIS\n- \"Arenito\": x") && Backend::looksLikeBrief("regras: REGRAS de fidelidade") && Backend::looksLikeBrief(QString(700, 'a'))
+              && Backend::looksLikeBrief("texto\n- \"Piso\": madeira") && !Backend::looksLikeBrief("gere a recepcao realista") && !Backend::looksLikeBrief(""),
+              "looksLikeBrief: MATERIAIS, REGRAS, mais de 600 caracteres, linhas - \"...\"");
+        const QString brief = "MATERIAIS\n- \"Arenito\": material, repeticao do padrao 275x184 cm (aproximadamente 7% da moldura)\nREGRAS\n- manter a camera";
+        QFile::remove(argsFile); QFile::remove(briefCopy);
+        be.attachImage(img);
+        const int n1 = be.messages()->count();
+        c.item("composerInput")->setProperty("text", brief);          // como se tivesse sido colado
+        QTest::keyClick(win, Qt::Key_Return);
+        check(waitFor([&] { return be.messages()->count() > n1 + 1 && !be.imageBusy(); }, 30000), "briefing colado: terminou");
+        QTest::qWait(300);
+        { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); const QStringList rl = ra.split('\n');
+          check(rl.contains("--brief") && !rl.contains("--nl"), "briefing colado: vai como --brief, sem --nl");
+          const int i = rl.indexOf("--brief");
+          check(i >= 0 && i + 1 < rl.size() && rl[i + 1].endsWith(".md") && !QFileInfo::exists(rl[i + 1]), "o arquivo temporario do briefing e removido ao fim"); }
+        { QFile f(briefCopy); QString bc; if (f.open(QIODevice::ReadOnly)) bc = QString::fromUtf8(f.readAll());
+          check(bc.trimmed() == brief, "o arquivo --brief tinha o texto colado"); }
+        check(be.messages()->get(be.messages()->count() - 1)["kind"] == "image", "briefing colado: cartao de imagem");
+
+        // FLUX: ainda indisponivel (codigo 3): aviso amigavel, sem cartao de erro e sem a palavra WIP
+        be.setImageEngine("flux");
+        be.attachImage(img);
+        const int antes = be.messages()->count();
+        c.typeAndEnter("gere com flux");
+        check(waitFor([&] { return be.messages()->count() > antes + 1 && !be.imageBusy(); }, 30000), "flux: terminou");
+        QTest::qWait(400);
+        const QVariantMap w = be.messages()->get(be.messages()->count() - 1);
+        check(w["kind"] == "image" && w["text"].toString().isEmpty() && !w["out"].toString().isEmpty() && !w["out"].toString().contains("WIP") && w["name"] == "flux", "flux: aviso de motor indisponivel, sem erro e sem WIP");
+        { QList<QQuickItem *> notes; findAll(c.root(), "imageNote", notes); check(!notes.isEmpty() && notes.last()->isVisible(), "aviso visivel"); c.grab("62-motor-indisponivel.png"); }
+
         // falha do stable: cartao de erro
         be.setImageEngine("stable");
         be.attachImage(img);
@@ -1065,8 +1041,25 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         check(waitFor([&] { return !be.imageBusy() && be.messages()->get(be.messages()->count() - 1)["kind"] == "error"; }, 30000), "falha do stable: cartao de erro");
         check(be.messages()->get(be.messages()->count() - 1)["text"].toString().contains("codigo 2"), "erro traz o codigo de saida");
         c.grab("63-imagem-erro.png");
-        c.click(c.item("imageModeButton"));
-        check(!be.imageMode(), "desligar o modo imagem");
+        be.clearImage();
+
+        // processamento da imagem: nas configuracoes (engrenagem), 4 opcoes, gravado no ui.ini
+        check(be.imageBackend() == "auto", "Auto e o padrao");
+        c.click(c.item("appearanceButton"));
+        check(waitFor([&] { QQuickItem *t = c.item("backend_cuda"); return t && t->isVisible(); }, 5000), "configuracoes abrem com as opcoes de processamento");
+        check(c.item("backend_auto")->isVisible() && c.item("backend_cuda")->isVisible() && c.item("backend_vulkan")->isVisible() && c.item("backend_cpu")->isVisible(), "configuracoes: Auto, CUDA, Vulkan e CPU");
+        c.grab("65-configuracoes-processamento.png");
+        c.click(c.item("backend_vulkan"));
+        check(be.imageBackend() == "vulkan", "escolher Vulkan");
+        { QSettings ui(QDir::cleanPath(be.imageDir() + "/../ui.ini"), QSettings::IniFormat); ui.sync();
+          check(ui.value("imagemBackend").toString() == "vulkan", "ui.ini guarda imagemBackend=vulkan"); }
+        c.click(c.item("backend_cpu"));
+        check(be.imageBackend() == "cpu", "escolher CPU");
+        c.click(c.item("backend_auto"));
+        check(be.imageBackend() == "auto", "voltar para Auto");
+        check(!c.item("teacherConfig"), "configuracoes sem a secao do professor");
+        QTest::keyClick(win, Qt::Key_Escape);
+        QTest::qWait(200);
     }
 
     fprintf(stderr, "== %d verificacoes ok, %d falhas\n", g_ok, g_fail);

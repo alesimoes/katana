@@ -1153,7 +1153,7 @@ void Backend::launch(const QString &modelFile)
             "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
             "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
             "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST",
-            "KATANA_SPEC", "KATANA_TOOL_DECL", "KATANA_TEACHER", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK",
+            "KATANA_SPEC", "KATANA_TOOL_DECL", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK",
             "KATANA_TEACHER_CMD", "KATANA_TEACHER_KEY", "KATANA_TEACHER_VIA", "KATANA_TEACHER_CLI", "KATANA_TEACHER_MAX_TOKENS"};
         for (const QString &k : env.keys())
             if (k.startsWith("KATANA_") && !k.startsWith("KATANA_MCP_") && !manter.contains(k))
@@ -1161,10 +1161,7 @@ void Backend::launch(const QString &modelFile)
     }
     env.insert("KATANA_UI", "1");
     env.insert("NO_COLOR", "1");
-    if (!env.contains("KATANA_TEACHER_MODEL"))
-        env.insert("KATANA_TEACHER_MODEL", teacherModel());
-    if (!env.contains("KATANA_TEACHER") && m_ui->value("professor", false).toBool())
-        env.insert("KATANA_TEACHER", "1");      // o professor estava ligado quando o aplicativo fechou
+    // professor: sem interface; nada do ui.ini liga o professor (so o ambiente herdado, que o desktop nao oferece)
     // especializacoes: todos os .kspec de ~/.katana/specs treinados sobre o modelo escolhido entram na carga
     if (!env.contains("KATANA_SPEC")) {
         const QString specs = specsDir();
@@ -1519,54 +1516,24 @@ void Backend::clearImage()
     emit imageChanged();
 }
 
-bool Backend::attachBrief(const QString &pathOrUrl)
+bool Backend::pasteClipboardImage()
 {
-    const QString p = pathOrUrl.startsWith("file:") ? QUrl(pathOrUrl).toLocalFile() : pathOrUrl;
-    const QFileInfo fi(p);
-    const QString ext = fi.suffix().toLower();
-    if (!fi.isFile() || (ext != "md" && ext != "txt") || fi.size() <= 0 || fi.size() > 2 * 1024 * 1024)
-        return false;
-    m_brief = fi.absoluteFilePath();
-    emit imageChanged();
-    return true;
+    const QImage im = QGuiApplication::clipboard()->image();
+    if (im.isNull()) return false;
+    QDir().mkpath(imageDir());
+    const QString p = QDir(imageDir()).filePath("colada-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".png");
+    return im.save(p, "PNG") && attachImage(p);
 }
 
-void Backend::clearBrief()
+// o briefing e o proprio texto digitado ou colado; o que parece briefing vai ao motor como arquivo (--brief), o resto como --nl
+bool Backend::looksLikeBrief(const QString &text)
 {
-    if (m_brief.isEmpty()) return;
-    m_brief.clear();
-    emit imageChanged();
-}
-
-bool Backend::attachLogo(const QString &pathOrUrl)
-{
-    const QString p = pathOrUrl.startsWith("file:") ? QUrl(pathOrUrl).toLocalFile() : pathOrUrl;
-    QImageReader r(p);
-    if (!QFileInfo(p).isFile() || !r.canRead())
-        return false;
-    m_logo = QFileInfo(p).absoluteFilePath();
-    emit imageChanged();
-    return true;
-}
-
-void Backend::clearLogo()
-{
-    if (m_logo.isEmpty()) return;
-    m_logo.clear();
-    emit imageChanged();
-}
-
-bool Backend::validLogoBox(const QString &box)
-{
-    const QStringList f = box.split(',');
-    if (f.size() != 4) return false;
-    double v[4];
-    for (int i = 0; i < 4; ++i) {
-        bool ok = false;
-        v[i] = f[i].trimmed().toDouble(&ok);
-        if (!ok || v[i] < 0) return false;
-    }
-    return v[2] > 0 && v[3] > 0;
+    if (text.size() > 600 || text.contains("MATERIAIS") || text.contains("REGRAS"))
+        return true;
+    for (const QString &l : text.split('\n'))
+        if (l.trimmed().startsWith("- \""))
+            return true;
+    return false;
 }
 
 bool Backend::sendImage(const QString &text)
@@ -1574,18 +1541,11 @@ bool Backend::sendImage(const QString &text)
     if (m_attach.isEmpty() || m_imgProc || m_katana.isEmpty())
         return false;
     const QString engine = m_imgEngine;
-    const QString nome = engine == "flux" ? "FLUX" : engine == "krea" ? "Krea" : "Stable";
+    const QString nome = engine == "flux" ? "FLUX" : "Stable";
     const QString img = m_attach;
-    const QString brief = m_brief, logo = m_logo;
-    QString logoBox = m_logoBox.simplified().remove(' ');
-    if (!logo.isEmpty() && !validLogoBox(logoBox)) {
-        m_msgs.append("error", QString("A caixa do logo \"%1\" nao vale: use x,y,w,h, por exemplo 0.04,0.04,0.22,0.12 (fracao da imagem) ou em pixels.").arg(m_logoBox));
-        return false;
-    }
     QString prompt = text.trimmed();
-    if (prompt.isEmpty() && !brief.isEmpty())
-        prompt = QStringLiteral("(briefing: %1)").arg(QFileInfo(brief).fileName());      // so o rotulo da conversa; o prompt vem do briefing
-    else if (prompt.isEmpty())
+    const bool asBrief = !prompt.isEmpty() && looksLikeBrief(prompt);
+    if (prompt.isEmpty())
         prompt = QStringLiteral("Fotografia arquitetonica de interiores, fotorrealista, mesma camera, mesma composicao e mesmos materiais da imagem de referencia.");
     // tamanho: multiplos de 64, area parecida com 576x320, lados entre 64 e 640, proporcao da imagem
     const QSize sz = QImageReader(img).size();
@@ -1600,13 +1560,19 @@ bool Backend::sendImage(const QString &text)
     // o pedido inteiro vai ao motor de prompt do katana (--nl): ele monta o prompt do motor escolhido (dominio, presets, pesos)
     QStringList args{"render", "generate", "--engine", engine, "--init", img, "--strength", "0.35",
                      "--size", QString("%1x%2").arg(W).arg(H), "--out", out};
-    if (!brief.isEmpty()) {
-        args << "--brief" << brief;                                  // o prompt vem do briefing; o texto digitado entra como pedido adicional
-        if (!text.trimmed().isEmpty()) args << "--nl" << text.trimmed();
+    QString briefFile;
+    if (asBrief) {                                                    // briefing colado: vai como arquivo temporario (removido ao fim)
+        briefFile = QDir(QDir::tempPath()).filePath("katana-briefing-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".md");
+        QFile bf(briefFile);
+        if (!bf.open(QIODevice::WriteOnly) || bf.write(prompt.toUtf8()) < 0) {
+            m_msgs.append("error", QStringLiteral("Nao foi possivel gravar o briefing temporario."));
+            return false;
+        }
+        bf.close();
+        args << "--brief" << briefFile;
     } else {
         args << "--nl" << prompt;
     }
-    if (!logo.isEmpty()) args << "--logo" << logo << "--logo-box" << logoBox << "--logo-blend";
     if (engine == "stable") args << "--lcm";
     if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");
 
@@ -1619,8 +1585,6 @@ bool Backend::sendImage(const QString &text)
     saveSession();
     refreshSessions();
     m_attach.clear();
-    m_brief.clear();                                                  // briefing e logo valem para um envio, como a imagem
-    m_logo.clear();
 
     auto *p = new QProcess(this);
     m_imgProc = p;
@@ -1630,24 +1594,26 @@ bool Backend::sendImage(const QString &text)
         env.insert("KATANA_BACKEND", imageBackend());
         p->setProcessEnvironment(env);
     }
-    connect(p, &QProcess::finished, this, [this, p, out, engine, nome](int code, QProcess::ExitStatus st) {
+    connect(p, &QProcess::finished, this, [this, p, out, engine, nome, briefFile](int code, QProcess::ExitStatus st) {
         const QString log = QString::fromUtf8(p->readAll()).trimmed();
         m_imgProc = nullptr;
         p->deleteLater();
+        if (!briefFile.isEmpty()) QFile::remove(briefFile);
         if (st == QProcess::NormalExit && code == 0 && QFileInfo::exists(out)) {
             m_msgs.append("image", out, engine);
             m_sess.mensagens.append({"image", out, engine, QDateTime::currentDateTime().toString(Qt::ISODate)});
             saveSession();
         } else if (st == QProcess::NormalExit && code == 3) {   // motor ainda nao existe: aviso amigavel, nao e erro
-            m_msgs.append("image", {}, engine, {}, QString("O motor %1 esta em desenvolvimento (WIP) e ainda nao esta disponivel. Use o Stable por enquanto.").arg(nome));
+            m_msgs.append("image", {}, engine, {}, QString("O motor %1 ainda nao esta disponivel nesta versao. Use o Stable por enquanto.").arg(nome));
         } else {
             m_msgs.append("error", QString("A geracao da imagem (%1) falhou (codigo %2):\n%3").arg(nome).arg(code).arg(log.right(600)));
         }
         emit imageChanged();
     });
-    connect(p, &QProcess::errorOccurred, this, [this, p, nome](QProcess::ProcessError e) {
+    connect(p, &QProcess::errorOccurred, this, [this, p, nome, briefFile](QProcess::ProcessError e) {
         if (e != QProcess::FailedToStart) return;
         m_imgProc = nullptr;
+        if (!briefFile.isEmpty()) QFile::remove(briefFile);
         m_msgs.append("error", QString("Nao foi possivel iniciar o katana para gerar a imagem (%1): %2").arg(nome, p->errorString()));
         p->deleteLater();
         emit imageChanged();

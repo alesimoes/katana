@@ -5,20 +5,20 @@ case "$1" in
 hw) printf 'ram_gb\t64\ngpu\t-\nvram_gb\t0\ndisk_gb\t100\n'; exit 0;;
 catalog|pull) exit 0;;
 render)
-    # `katana render generate --engine E ... --out ARQ`: stable grava a imagem de amostra; flux e krea saem com 3 (WIP), como o motor real;
-    # um prompt com a palavra "falhe" faz o stable falhar (codigo 2); --brief, --logo, --logo-box e --logo-blend sao aceitos e anotados
+    # `katana render generate --engine E ... --out ARQ`: stable grava a imagem de amostra; flux sai com 3 (ainda nao disponivel), como o motor real;
+    # um prompt com a palavra "falhe" faz o stable falhar (codigo 2); --brief e aceito (o conteudo e copiado para $HOME/.standin-render-brief) e anotado
     [ "$2" = generate ] || exit 1
-    # os argumentos recebidos ficam em $HOME/.standin-render-args (um por linha, execucao a execucao) para o selftest conferir --brief, --logo e --logo-box
+    # os argumentos recebidos ficam em $HOME/.standin-render-args (um por linha, execucao a execucao) para o selftest conferir --brief e --nl
     { printf '%s\n' "$@"; echo '--'; } >> "${HOME:-/tmp}/.standin-render-args"
-    shift 2; E=stable; OUT=; PF=; NL=; BR=; LG=
+    shift 2; E=stable; OUT=; PF=; NL=; BR=
     while [ $# -gt 0 ]; do
-        case "$1" in --engine) E=$2; shift;; --out) OUT=$2; shift;; --prompt-file) PF=$2; shift;; --nl) NL=$2; shift;; --brief) BR=$2; shift;; --logo) LG=$2; shift;; esac
+        case "$1" in --engine) E=$2; shift;; --out) OUT=$2; shift;; --prompt-file) PF=$2; shift;; --nl) NL=$2; shift;; --brief) BR=$2; shift;; esac
         shift
     done
-    # briefing ou logo que nao existe: o motor real recusa antes de gerar (codigo 1)
-    if { [ -n "$BR" ] && [ ! -f "$BR" ]; } || { [ -n "$LG" ] && [ ! -f "$LG" ]; }; then echo "render: nao consegui abrir o briefing ou o logo" >&2; exit 1; fi
+    # briefing que nao existe: o motor real recusa antes de gerar (codigo 1)
+    if [ -n "$BR" ]; then [ -f "$BR" ] || { echo "render: nao consegui abrir o briefing" >&2; exit 1; }; cp "$BR" "${HOME:-/tmp}/.standin-render-brief"; fi
     case "$E" in
-    flux|krea) echo "render: o motor $E esta em desenvolvimento (WIP), ainda nao disponivel" >&2; exit 3;;
+    flux) echo "render: o motor $E ainda nao esta disponivel" >&2; exit 3;;
     esac
     if { [ -n "$PF" ] && grep -q falhe "$PF"; } || case "$NL" in *falhe*) true;; *) false;; esac; then echo "render: nao achei os pesos do Stable" >&2; exit 2; fi
     cp "$(dirname "$0")/samples/render-saida.png" "$OUT"; exit 0;;
