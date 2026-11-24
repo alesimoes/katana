@@ -1,0 +1,25 @@
+#version 450
+// LayerNorm sem parametros (eps 1e-6) e modulacao do FLUX.2: Y = (X - media) / sqrt(var + eps) * (1 + escala) + deslocamento; um grupo por linha
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer X { float x[]; };
+layout(std430, binding = 1) readonly buffer M { float m[]; };
+layout(std430, binding = 2) writeonly buffer Y { float y[]; };
+layout(push_constant) uniform P { uint d, ioff, ooff, shoff, scoff; } pc;
+shared float red[256];
+float total(float v) {
+    const uint l = gl_LocalInvocationID.x;
+    barrier(); red[l] = v; barrier();
+    for (uint s = 128; s > 0; s >>= 1) { if (l < s) red[l] += red[l + s]; barrier(); }
+    const float r = red[0];
+    return r;
+}
+void main() {
+    const uint l = gl_LocalInvocationID.x, d = pc.d, bi = pc.ioff + gl_WorkGroupID.x * d, bo = pc.ooff + gl_WorkGroupID.x * d;
+    float s = 0.0;
+    for (uint i = l; i < d; i += 256) s += x[bi + i];
+    const float mean = total(s) / float(d);
+    float s2 = 0.0;
+    for (uint i = l; i < d; i += 256) { const float v = x[bi + i] - mean; s2 += v * v; }
+    const float inv = 1.0 / sqrt(total(s2) / float(d) + 1e-6);
+    for (uint i = l; i < d; i += 256) y[bo + i] = (x[bi + i] - mean) * inv * (1.0 + m[pc.scoff + i]) + m[pc.shoff + i];
+}

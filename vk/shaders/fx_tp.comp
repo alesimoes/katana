@@ -9,18 +9,18 @@ layout(std430, binding = 1) writeonly buffer B { float16_t b[]; };
 #else
 layout(std430, binding = 1) writeonly buffer B { float b[]; };
 #endif
-layout(push_constant) uniform P { uint R, C; } pc;
+layout(push_constant) uniform P { uint R, C, aoff, boff; } pc;
 shared float t[16][17];
 void main() {
     const uint cx = gl_WorkGroupID.x * 16, ry = gl_WorkGroupID.y * 16, lx = gl_LocalInvocationID.x, ly = gl_LocalInvocationID.y;
     const uint c = cx + lx, r = ry + ly;
-    t[ly][lx] = (c < pc.C && r < pc.R) ? a[r * pc.C + c] : 0.0;
+    t[ly][lx] = (c < pc.C && r < pc.R) ? a[pc.aoff + r * pc.C + c] : 0.0;
     barrier();
     const uint r2 = ry + lx, c2 = cx + ly;
     if (c2 < pc.C && r2 < pc.R)
 #ifdef OUT16
-        b[c2 * pc.R + r2] = float16_t(t[lx][ly]);
+        b[pc.boff + c2 * pc.R + r2] = float16_t(t[lx][ly]);
 #else
-        b[c2 * pc.R + r2] = t[lx][ly];
+        b[pc.boff + c2 * pc.R + r2] = t[lx][ly];
 #endif
 }

@@ -69,4 +69,7 @@ done
 # render (FLUX.2): transposicao em ladrilhos (fp32 -> fp16 para o mm.comp, fp32 -> fp32 para a saida)
 $G -V --target-env vulkan1.2 -DOUT16 --vn fx_tp16_spv -o fx_tp16.h fx_tp.comp || exit 1
 $G -V --target-env vulkan1.2 --vn fx_tp32_spv -o fx_tp32.h fx_tp.comp || exit 1
+for n in ln prep att; do $G -V --target-env vulkan1.2 --vn fx_${n}_spv -o fx_$n.h fx_$n.comp || exit 1; done
+$G -V --target-env vulkan1.2 -DMODE=0 --vn fx_swi_spv -o fx_swi.h fx_ew.comp || exit 1
+$G -V --target-env vulkan1.2 -DMODE=1 --vn fx_axg_spv -o fx_axg.h fx_ew.comp || exit 1
 echo gen ok

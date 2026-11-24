@@ -492,6 +492,83 @@ static int fxd_single(const FxDit *F, int b, float *x, int N, const float *ms, c
 
 static void fxd_probe_copy(float *dst, const float *src, size_t n) { if (dst) memcpy(dst, src, n * 4); }
 
+
+/* ---- transformador na GPU: texto + imagem ficam na VRAM do primeiro bloco ao ultimo (fxvk.c). Devolve 1 com z [Nt+Ni][3072] preenchido,
+ * 0 se a GPU nao pode (sem GPU, pesos que nao cabem na VRAM, falha): o chamador roda os blocos na CPU. Os tensores sao os de fxd_double / fxd_single. */
+static int fxd_gpu_blocks(const FxDit *F, const float *x, const float *c, int Ni, int Nt, const float *mi, const float *mt, const float *ms, const float *cs, const float *sn, float *z, const FxdProbe *pr) {
+    fxv_init();
+    const int D = FXD_DIM, N = Nt + Ni;
+    if (!fxv.on) return 0;
+    static const char *dn[8] = { "double_blocks.%d.txt_attn.qkv.weight", "double_blocks.%d.img_attn.qkv.weight", "double_blocks.%d.txt_attn.proj.weight", "double_blocks.%d.img_attn.proj.weight",
+                                 "double_blocks.%d.txt_mlp.0.weight", "double_blocks.%d.txt_mlp.2.weight", "double_blocks.%d.img_mlp.0.weight", "double_blocks.%d.img_mlp.2.weight" };
+    const FxvW *dw[FXD_NDBL][8], *sw[FXD_NSGL][2];
+    for (int b = 0; b < FXD_NDBL; b++) for (int k = 0; k < 8; k++) { const SdgInfo *t = fxd_t(F, dn[k], b); if (!t || !(dw[b][k] = fxv_weight(&F->g, t))) return 0; }
+    for (int b = 0; b < FXD_NSGL; b++) {
+        const SdgInfo *a = fxd_t(F, "single_blocks.%d.linear1.weight", b), *e = fxd_t(F, "single_blocks.%d.linear2.weight", b);
+        if (!a || !e || !(sw[b][0] = fxv_weight(&F->g, a)) || !(sw[b][1] = fxv_weight(&F->g, e))) return 0;
+    }
+    if (!fxv_res_open(N)) return 0;
+    const double t0 = sdt_now();
+    /* ganhos das normas de q/k: bloco duplo b em nw[b*512 + {0: q txt, 128: k txt, 256: q img, 384: k img}], simples em nw[(5+b)*512 + {q, k}] */
+    static int nw_done;
+    if (!nw_done) {
+        float *nw = xalloc((size_t)25 * 512, 4);
+        for (int b = 0; b < FXD_NDBL; b++) {
+            const char *nm[4] = { "double_blocks.%d.txt_attn.norm.query_norm.scale", "double_blocks.%d.txt_attn.norm.key_norm.scale", "double_blocks.%d.img_attn.norm.query_norm.scale", "double_blocks.%d.img_attn.norm.key_norm.scale" };
+            for (int k = 0; k < 4; k++) { float *w = fxd_scale(F, nm[k], b); if (!w) return 0; memcpy(nw + (size_t)b * 512 + k * 128, w, 512); free(w); }
+        }
+        for (int b = 0; b < FXD_NSGL; b++) {
+            float *q = fxd_scale(F, "single_blocks.%d.norm.query_norm.scale", b), *k = fxd_scale(F, "single_blocks.%d.norm.key_norm.scale", b);
+            if (!q || !k) return 0;
+            memcpy(nw + (size_t)(5 + b) * 512, q, 512); memcpy(nw + (size_t)(5 + b) * 512 + 128, k, 512); free(q); free(k);
+        }
+        if (!kvk_buf_write(fxr.nw, 0, nw, (size_t)25 * 512 * 4)) return 0;
+        free(nw); nw_done = 1;
+    }
+    const size_t DD = (size_t)D, MI = 0, MT = 6 * DD, MS = 12 * DD;
+    int ok = kvk_buf_write(fxr.z, 0, c, (size_t)Nt * D * 4) && kvk_buf_write(fxr.z, (size_t)Nt * D * 4, x, (size_t)Ni * D * 4)
+          && kvk_buf_write(fxr.mod, MI * 4, mi, 6 * DD * 4) && kvk_buf_write(fxr.mod, MT * 4, mt, 6 * DD * 4) && kvk_buf_write(fxr.mod, MS * 4, ms, 3 * DD * 4)
+          && kvk_buf_write(fxr.cs, 0, cs, (size_t)N * 128 * 4) && kvk_buf_write(fxr.sn, 0, sn, (size_t)N * 128 * 4);
+    if (!ok) return 0;
+    const size_t zi = (size_t)Nt * D;       /* inicio da imagem em z (elementos) */
+    const int M2 = 2 * FXD_MLP;
+    for (int b = 0; b < FXD_NDBL && ok; b++) {
+        const FxvW **w = dw[b];                 /* 0 tqkv 1 iqkv 2 tprj 3 iprj 4 tm0 5 tm2 6 im0 7 im2 */
+        ok &= fxv_ln(fxr.z, 0, 0, Nt, MT, MT + DD, fxr.xn);
+        ok &= fxv_gemm(w[0], fxr.xn, 0, Nt, fxr.h, 0);
+        ok &= fxv_ln(fxr.z, zi, zi, Ni, MI, MI + DD, fxr.xn);
+        ok &= fxv_gemm(w[1], fxr.xn, zi, Ni, fxr.h, (size_t)Nt * 3 * D);
+        ok &= fxv_prep(fxr.h, 3 * D, N, Nt, (size_t)b * 512);
+        ok &= fxv_att(fxr.h, fxr.cat, N, 3 * D, D);
+        ok &= fxv_gemm(w[3], fxr.cat, zi, Ni, fxr.o, 0);  ok &= fxv_axg(fxr.o, fxr.z, zi, Ni, MI + 2 * DD);
+        ok &= fxv_gemm(w[2], fxr.cat, 0, Nt, fxr.o, 0);   ok &= fxv_axg(fxr.o, fxr.z, 0, Nt, MT + 2 * DD);
+        ok &= fxv_ln(fxr.z, zi, zi, Ni, MI + 3 * DD, MI + 4 * DD, fxr.xn);
+        ok &= fxv_gemm(w[6], fxr.xn, zi, Ni, fxr.h, 0);  ok &= fxv_swi(fxr.h, 0, M2, fxr.cat, 0, FXD_MLP, Ni, FXD_MLP);
+        ok &= fxv_gemm(w[7], fxr.cat, 0, Ni, fxr.o, 0);  ok &= fxv_axg(fxr.o, fxr.z, zi, Ni, MI + 5 * DD);
+        ok &= fxv_ln(fxr.z, 0, 0, Nt, MT + 3 * DD, MT + 4 * DD, fxr.xn);
+        ok &= fxv_gemm(w[4], fxr.xn, 0, Nt, fxr.h, 0);   ok &= fxv_swi(fxr.h, 0, M2, fxr.cat, 0, FXD_MLP, Nt, FXD_MLP);
+        ok &= fxv_gemm(w[5], fxr.cat, 0, Nt, fxr.o, 0);  ok &= fxv_axg(fxr.o, fxr.z, 0, Nt, MT + 5 * DD);
+        if (pr && ok && pr->dimg[b]) {
+            if (!kvk_buf_read(fxr.z, 0, z, (size_t)N * D * 4)) return 0;
+            fxd_probe_copy(pr->dtxt[b], z, (size_t)Nt * D); fxd_probe_copy(pr->dimg[b], z + (size_t)Nt * D, (size_t)Ni * D);
+        }
+    }
+    const int L1 = 3 * D + 2 * FXD_MLP, C2 = D + FXD_MLP;
+    for (int b = 0; b < FXD_NSGL && ok; b++) {
+        ok &= fxv_ln(fxr.z, 0, 0, N, MS, MS + DD, fxr.xn);
+        ok &= fxv_gemm(sw[b][0], fxr.xn, 0, N, fxr.h, 0);
+        ok &= fxv_prep(fxr.h, L1, N, N, (size_t)(5 + b) * 512);
+        ok &= fxv_att(fxr.h, fxr.cat, N, L1, C2);
+        ok &= fxv_swi(fxr.h, (size_t)3 * D, L1, fxr.cat, (size_t)D, C2, N, FXD_MLP);
+        ok &= fxv_gemm(sw[b][1], fxr.cat, 0, N, fxr.o, 0);
+        ok &= fxv_axg(fxr.o, fxr.z, 0, N, MS + 2 * DD);
+        if (pr && ok && pr->sgl[b]) { if (!kvk_buf_read(fxr.z, 0, pr->sgl[b], (size_t)N * D * 4)) return 0; }
+    }
+    if (!ok || !kvk_buf_read(fxr.z, 0, z, (size_t)N * D * 4)) { fprintf(stderr, "flux: falha na GPU (%s), CPU\n", kvk_error()); fxv.on = 0; return 0; }
+    fxr.t += sdt_now() - t0;
+    return 1;
+}
+
 static int fxd_forward(const FxDit *F, const float *img, const float *ids_img, int Ni, const float *txt, const float *ids_txt, int Nt, float t, float *out, const FxdProbe *pr) {
     const int D = FXD_DIM, N = Nt + Ni;
     /* 1. embedding do passo: senoidal de 256 (cos, sin), depois linear, SiLU, linear */
@@ -521,15 +598,16 @@ static int fxd_forward(const FxDit *F, const float *img, const float *ids_img, i
     /* 4. RoPE: texto primeiro, imagem depois */
     float *cs = xalloc((size_t)N * 128, 4), *sn = xalloc((size_t)N * 128, 4);
     fxd_rope_table(cs, sn, ids_txt, Nt); fxd_rope_table(cs + (size_t)Nt * 128, sn + (size_t)Nt * 128, ids_img, Ni);
-    /* 5. blocos duplos */
-    for (int b = 0; b < FXD_NDBL; b++) {
+    /* 5. blocos duplos (a GPU faz os 25 blocos de uma vez, se puder) */
+    float *z = xalloc((size_t)N * D, 4);
+    const int on_gpu = fxd_gpu_blocks(F, x, c, Ni, Nt, mi, mt, ms, cs, sn, z, pr);
+    for (int b = 0; b < FXD_NDBL && !on_gpu; b++) {
         if (!fxd_double(F, b, x, Ni, c, Nt, mi, mt, cs, sn)) return 0;
         if (pr) { fxd_probe_copy(pr->dimg[b], x, (size_t)Ni * D); fxd_probe_copy(pr->dtxt[b], c, (size_t)Nt * D); }
     }
     /* 6. blocos simples sobre [texto; imagem] */
-    float *z = xalloc((size_t)N * D, 4);
-    memcpy(z, c, (size_t)Nt * D * 4); memcpy(z + (size_t)Nt * D, x, (size_t)Ni * D * 4);
-    for (int b = 0; b < FXD_NSGL; b++) {
+    if (!on_gpu) { memcpy(z, c, (size_t)Nt * D * 4); memcpy(z + (size_t)Nt * D, x, (size_t)Ni * D * 4); }
+    for (int b = 0; b < FXD_NSGL && !on_gpu; b++) {
         if (!fxd_single(F, b, z, N, ms, cs, sn)) return 0;
         if (pr) fxd_probe_copy(pr->sgl[b], z, (size_t)N * D);
     }
@@ -572,6 +650,7 @@ static int fxd_bench(int Ni, int Nt) {
     double h = 0; for (size_t i = 0; i < (size_t)Ni * FXD_INCH; i++) h += (double)out[i] * (double)((i % 97) + 1);
     printf("bench Ni=%d Nt=%d  1o forward %.2f s  2o forward %.2f s  | desquantizar/empacotar %.2f  produtos %.2f  atencao %.2f  resto %.2f | soma %.6e\n", Ni, Nt, first, tot,
            g_fxd_tm[FT_PACK], g_fxd_tm[FT_GEMM], g_fxd_tm[FT_ATT], tot - g_fxd_tm[FT_PACK] - g_fxd_tm[FT_GEMM] - g_fxd_tm[FT_ATT], h);
+    if (fxv.on) printf("  GPU: %ld produtos, pesos %.0f MB na VRAM (%d tensores na CPU por falta de espaco), envio %.2f s  produto %.2f s  leitura %.2f s (soma dos 2 forwards)\n  GPU residente: blocos %.2f s (soma dos 2 forwards, inclui envio e leitura de z)\n", fxv.ncalls, fxv.wbytes / 1048576.0, fxv.nfall, fxv.t_up, fxv.t_gemm, fxv.t_dl, fxr.t);
     return 0;
 }
 
@@ -582,8 +661,19 @@ static int fxd_attn_test(int n) {
     uint64_t r = 99; for (size_t i = 0; i < sz; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; Q[i] = ((int)(r >> 40) % 2000 - 1000) / 250.0f; r = r * 6364136223846793005ULL + 1442695040888963407ULL; K[i] = ((int)(r >> 40) % 2000 - 1000) / 250.0f; r = r * 6364136223846793005ULL + 1442695040888963407ULL; V[i] = ((int)(r >> 40) % 2000 - 1000) / 1000.0f; }
     double t0 = sdt_now(); fxd_attention_simple(O1, Q, K, V, n); const double ts = sdt_now() - t0;
     t0 = sdt_now(); fxd_attention_gemm(O2, Q, K, V, n); const double tg = sdt_now() - t0;
-    const int bad = fxd_cmp("atencao por produtos x simples", O2, O1, sz);
-    printf("  n=%d tokens  razao de tempo simples/produtos %.1f\n", n, ts / tg);
+    int bad = fxd_cmp("atencao por produtos x simples", O2, O1, sz);
+    printf("  n=%d tokens  razao de tempo simples/produtos %.1f  (produtos %.1f ms)\n", n, ts / tg, tg * 1e3);
+    fxv_init();
+    if (fxv.on && fxv.shared_ok) {       /* atencao na GPU contra a CPU: q, k, v lado a lado [n][9216] */
+        float *qkv = xalloc((size_t)n * 3 * FXD_DIM, 4), *Og = xalloc(sz, 4);
+        for (int i = 0; i < n; i++) { memcpy(qkv + (size_t)i * 3 * FXD_DIM, Q + (size_t)i * FXD_DIM, FXD_DIM * 4); memcpy(qkv + (size_t)i * 3 * FXD_DIM + FXD_DIM, K + (size_t)i * FXD_DIM, FXD_DIM * 4); memcpy(qkv + (size_t)i * 3 * FXD_DIM + 2 * FXD_DIM, V + (size_t)i * FXD_DIM, FXD_DIM * 4); }
+        KvkBuf bq = kvk_buf_create(sz * 12, KVK_USAGE_RW), bo = kvk_buf_create(sz * 4, KVK_USAGE_RW);
+        kvk_buf_write(bq, 0, qkv, sz * 12); fxv_att(bq, bo, n, 3 * FXD_DIM, FXD_DIM); kvk_wait();
+        t0 = sdt_now(); for (int i = 0; i < 5; i++) fxv_att(bq, bo, n, 3 * FXD_DIM, FXD_DIM); kvk_wait(); const double tv = (sdt_now() - t0) / 5;
+        kvk_buf_read(bo, 0, Og, sz * 4);
+        bad += fxd_cmp("atencao GPU x CPU", Og, O1, sz);
+        printf("  GPU %.1f ms por atencao (%.0f GFLOP/s)\n", tv * 1e3, 4.0 * n * n * FXD_DIM / tv / 1e9);
+    }
     return bad;
 }
 
