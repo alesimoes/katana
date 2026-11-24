@@ -85,3 +85,15 @@ FLUX.2 klein 4B (distilled, 4 steps, guidance 1.0, Apache-2.0):
 | F5 | flow-match Euler sampler (distilled, 2 to 4 steps), image reference as extra tokens, PNG out | not started |
 
 Krea 2 Turbo (12.8B DiT, Qwen3-VL text encoder, Q4_K_S 6.84 GB, community licence): starts after FLUX, reusing the DiT pieces; image-to-image by SDEdit (latents + sigmas). Not started.
+
+## Prompt engine (UIIE): request -> image spec -> engine prompt (src/render/sdspec.c)
+
+`katana render spec "<request>" [--ref preview.png] [--lcm] [--final [--final-engine flux|krea]] [--json] [--no-rag]` shows the canonical image spec and what each engine receives; `katana render generate --nl "<request>"` or `--spec spec.json` generates from it (`--prompt` stays the raw path; weights `(term:1.3)` work in both).
+
+Layers, each replaceable on its own:
+1. **Router + scene compiler** (code, no LLM call): classifies the domain (architecture exterior/interior, product, person, landscape, general) and fills only the visual gaps the request left (framing, lighting, camera, negatives, aspect) from a preset table. Concept words (style, light, composition, camera, aspect, purpose) are matched in PT and EN; the rest is content, translated by a small PT->EN lexicon. A clause no word recognises goes to the embedding model (`es_rank`) against the concept descriptions (threshold `KATANA_SPEC_RAG`, default 0.62); `--no-rag` skips it. Words without a translation are reported: CLIP only reads English.
+2. **Visual Prompt Director** (the agent's LLM, one call): for requests the lexicon cannot understand, the agent writes the spec as JSON (`art_direction`, `subject.primary/details`, `environment`, `composition`, `lighting`, `color_palette`, `preview.aspect_ratio`, `positive_prompt`, `negative_prompt`, `mode`) and passes it with `--spec`. The C side validates it. The model decides art direction, never technical parameters.
+3. **Configuration engine** (code): aspect -> width x height (multiples of 64), steps, guidance, strength; the user never asks for "30 steps".
+4. **Engine adapters**: Stable gets weighted CLIP chunks (subject `(x:1.2)`, no automatic "8k" keywords); the final engine gets prose, and the approved preview as reference (`--ref`, strength 0.40) so the architecture does not change between preview and final.
+
+Two modes with the same spec: **preview** (Stable + LCM, composition first) and **final**. The final engine is FLUX klein or Krea 2 Turbo, still to be tested against each other (both WIP, see above); `--final-engine` picks one. Inpaint/outpaint requests ("remove", "change the background") are recognised and reported; there is no mask yet, so they run as image-to-image. Geometry control stays with the existing ControlNet canny / line drawing and image-to-image; when dimensional fidelity matters the geometry source is the 3D model.
