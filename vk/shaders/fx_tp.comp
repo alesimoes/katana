@@ -1,0 +1,26 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+// transposicao em ladrilhos 16x16 para o transformador do FLUX.2: B[C][R] = A[R][C]; com OUT16 a saida e fp16 (entrada do mm.comp)
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer A { float a[]; };
+#ifdef OUT16
+layout(std430, binding = 1) writeonly buffer B { float16_t b[]; };
+#else
+layout(std430, binding = 1) writeonly buffer B { float b[]; };
+#endif
+layout(push_constant) uniform P { uint R, C; } pc;
+shared float t[16][17];
+void main() {
+    const uint cx = gl_WorkGroupID.x * 16, ry = gl_WorkGroupID.y * 16, lx = gl_LocalInvocationID.x, ly = gl_LocalInvocationID.y;
+    const uint c = cx + lx, r = ry + ly;
+    t[ly][lx] = (c < pc.C && r < pc.R) ? a[r * pc.C + c] : 0.0;
+    barrier();
+    const uint r2 = ry + lx, c2 = cx + ly;
+    if (c2 < pc.C && r2 < pc.R)
+#ifdef OUT16
+        b[c2 * pc.R + r2] = float16_t(t[lx][ly]);
+#else
+        b[c2 * pc.R + r2] = t[lx][ly];
+#endif
+}

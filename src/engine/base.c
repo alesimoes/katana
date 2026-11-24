@@ -90,6 +90,8 @@
 #include "vk/shaders/moe_gath.h"
 #include "vk/shaders/moe_scat.h"
 #include "vk/shaders/mla_att.h"
+#include "vk/shaders/fx_tp16.h"
+#include "vk/shaders/fx_tp32.h"
 #include "vk/shaders/mm_t0_64x64_g0.h"
 #include "vk/shaders/mm_t0_64x64_g1.h"
 #include "vk/shaders/mm_t0_64x32w4_g0.h"

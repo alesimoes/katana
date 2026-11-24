@@ -198,6 +198,7 @@ static void fxd_gj_job(void *cx, int j0, int j1) {
 /* Y[n][rows] = X[n][cols] * W^T (sem vies). O GGUF guarda [ne0 = entrada, ne1 = saida]. */
 static void fxd_lin(const FxDit *F, float *Y, const float *X, int n, const SdgInfo *t) {
     const int cols = (int)t->dim[0], rows = (int)t->dim[1], NR = vt_nr(), np = (rows + NR - 1) / NR;
+    { const double t0 = FXD_TIC(); if (fxv_lin(&F->g, Y, X, n, t)) { FXD_TOC(FT_GEMM, t0); return; } }
     if (fxd_wmode()) {
         double t0 = FXD_TIC();
         const FxdWE *w = fxd_wget(F, t);
@@ -586,7 +587,29 @@ static int fxd_attn_test(int n) {
     return bad;
 }
 
+/* gemm-test [n] [tensor]: um produto na GPU contra o da CPU (mesmo tensor, X aleatorio) */
+static int fxd_gemm_test(int n, const char *name) {
+    char gp[1100]; snprintf(gp, sizeof gp, "%s/flux2klein/gguf/flux-2-klein-4b-Q4_K_M.gguf", models_dir());
+    FxDit F; if (!fxd_open(&F, gp)) return 1;
+    const SdgInfo *t = sdg_find(&F.g, name); if (!t) { fprintf(stderr, "tensor %s nao existe\n", name); return 1; }
+    const int cols = (int)t->dim[0], rows = (int)t->dim[1];
+    float *X = xalloc((size_t)n * cols, 4), *Yc = xalloc((size_t)n * rows, 4), *Yg = xalloc((size_t)n * rows, 4);
+    uint64_t r = 7; for (size_t i = 0; i < (size_t)n * cols; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; X[i] = ((int)(r >> 40) % 2000 - 1000) / 500.0f; }
+    const char *sv = getenv("KATANA_FLUX_GPU"); setenv("KATANA_FLUX_GPU", "0", 1);
+    double t0 = sdt_now(); fxd_lin(&F, Yc, X, n, t); fxd_lin(&F, Yc, X, n, t); const double tc = (sdt_now() - t0) / 2;
+    if (sv) setenv("KATANA_FLUX_GPU", sv, 1); else unsetenv("KATANA_FLUX_GPU");
+    fxv.tried = 0; fxv_init();
+    if (!fxv.on) { fprintf(stderr, "sem GPU\n"); return 1; }
+    fxv_lin(&F.g, Yg, X, n, t);      /* sobe o peso */
+    t0 = sdt_now(); for (int i = 0; i < 5; i++) fxv_lin(&F.g, Yg, X, n, t); const double tg = (sdt_now() - t0) / 5;
+    const int bad = fxd_cmp(name, Yg, Yc, (size_t)n * rows);
+    printf("  n=%d  %dx%d  CPU %.1f ms  GPU %.1f ms (envio %.1f, produto %.1f, leitura %.1f)  %.1f GFLOP/s\n", n, rows, cols, tc * 1e3, tg * 1e3,
+           fxv.t_up / 6e-3, fxv.t_gemm / 6e-3, fxv.t_dl / 6e-3, 2.0 * n * rows * cols / tg / 1e9);
+    return bad;
+}
+
 static int fxd_main(int argc, char **argv) {
+    if (argc >= 1 && !strcmp(argv[0], "gemm-test")) return fxd_gemm_test(argc > 1 ? atoi(argv[1]) : 800, argc > 2 ? argv[2] : "single_blocks.0.linear1.weight");
     if (argc >= 1 && !strcmp(argv[0], "attn-test")) return fxd_attn_test(argc > 1 ? atoi(argv[1]) : 2700);
     if (argc >= 1 && !strcmp(argv[0], "bench")) return fxd_bench(argc > 1 ? atoi(argv[1]) : 240, argc > 2 ? atoi(argv[2]) : 64);
     if (argc < 1 || strcmp(argv[0], "selftest")) { fprintf(stderr, "uso: katana render flux-dit selftest [pasta-referencia] [flux2-klein.gguf]\n"); return 1; }

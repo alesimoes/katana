@@ -66,4 +66,7 @@ for kv in 0 1; do
   s=kv32; [ $kv = 1 ] && s=kv16
   $G -V --target-env vulkan1.2 -DKV16=$kv -DOF32 --vn att_flash32_${s}_spv -o att_flash32_$s.h att_flash.comp || exit 1
 done
+# render (FLUX.2): transposicao em ladrilhos (fp32 -> fp16 para o mm.comp, fp32 -> fp32 para a saida)
+$G -V --target-env vulkan1.2 -DOUT16 --vn fx_tp16_spv -o fx_tp16.h fx_tp.comp || exit 1
+$G -V --target-env vulkan1.2 --vn fx_tp32_spv -o fx_tp32.h fx_tp.comp || exit 1
 echo gen ok
