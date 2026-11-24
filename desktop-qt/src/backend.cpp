@@ -1037,10 +1037,10 @@ void Backend::setImageSize(int w) {
 }
 int Backend::imageSteps() const {
     const int n = m_ui->value("imagemPassos", 4).toInt();
-    return (n == 4 || n == 8 || n == 12 || n == 20) ? n : 4;
+    return (n >= 1 && n <= 8) ? n : 4;
 }
 void Backend::setImageSteps(int n) {
-    if (n != 4 && n != 8 && n != 12 && n != 20) return;
+    if (n < 1 || n > 8) return;
     if (n == imageSteps()) return;
     m_ui->setValue("imagemPassos", n);
     m_ui->sync();

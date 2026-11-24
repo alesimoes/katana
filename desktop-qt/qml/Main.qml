@@ -288,7 +288,7 @@ ApplicationWindow {
                                     }
                                     Text { font.family: Theme.sans; text: "PASSOS DO FLUX"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                     Repeater {
-                                        model: [[4, "4 (padrão do modelo)"], [8, "8"], [12, "12"], [20, "20"]]
+                                        model: [[1, "1"], [2, "2"], [3, "3"], [4, "4 (padrão do modelo)"], [5, "5"], [6, "6"], [7, "7"], [8, "8"]]
                                         AbstractButton {
                                             id: sb
                                             required property var modelData

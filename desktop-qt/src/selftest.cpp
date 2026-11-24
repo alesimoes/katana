@@ -1112,7 +1112,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         be.setImageSize(768); check(be.imageSize() == 1024, "576/768 nao existem mais: o menor e 1024");
         be.setImageSize(1600); check(be.imageSize() == 1600, "escolher 1600"); be.setImageSize(1024);
         check(be.imageSteps() == 4, "passos do FLUX: 4 e o padrao");
-        be.setImageSteps(7); check(be.imageSteps() == 4, "passos invalidos sao recusados");
+        be.setImageSteps(9); check(be.imageSteps() == 4, "passos invalidos sao recusados");
         be.setImageSteps(8); check(be.imageSteps() == 8, "escolher 8 passos");
         check(be.stableSteps() == 20, "passos do Stable: 20 e o padrao");
         be.setStableSteps(7); check(be.stableSteps() == 20, "passos invalidos do Stable sao recusados");
