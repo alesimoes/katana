@@ -109,10 +109,13 @@
   <div class="btns"><a class="btn pri" href="https://github.com/alesimoes/katana">Source on GitHub</a><a class="btn" href="#project">How it works</a></div>
   <div class="term" aria-label="Example commands">
     <div class="bar">terminal</div>
-<pre><span class="p">$</span> ./build.sh                       <span class="c"># one C file, gcc, nothing to install</span>
-<span class="p">$</span> ./katana info  model.gguf        <span class="c"># architecture, experts, context</span>
-<span class="p">$</span> ./katana agent model.gguf        <span class="c"># chat with tools: files, shell, web, MCP</span></pre>
+<pre><span class="p">$</span> sh build.sh                        <span class="c"># one C file, gcc, nothing to install</span>
+<span class="p">$</span> ./katana catalog                   <span class="c"># models it can download, and which fit this machine</span>
+<span class="p">$</span> ./katana pull qwen3.6-35b          <span class="c"># download into models/ and verify it</span>
+<span class="p">$</span> ./katana                           <span class="c"># chat with tools in this folder; it picks a model</span>
+<span class="p">$</span> ./katana --model qwen             <span class="c"># or name one: a file name, part of it, or a .gguf path</span></pre>
   </div>
+  <p class="lead" style="font-size:.95rem;margin-top:14px">Where the model comes from: katana reads <code>.gguf</code> files from a models folder (<code>KATANA_MODELS</code>, <code>models=</code> in <code>.katana/katana.cfg</code> or <code>~/.katana/katana.cfg</code>, <code>./models</code>, the <code>models</code> folder beside the binary, then <code>~/.katana/models</code>). With no flag it chooses in this order: <code>--model</code>, <code>KATANA_MODEL</code>, <code>model=</code> in the config, the model the desktop app used last, the recommended one, the largest installed. It prints which one it picked and why. <code>./katana agent model.gguf</code> still takes an explicit file.</p>
 </header>
 
 <main>
@@ -165,7 +168,7 @@
 
 <h2 id="ways">Three ways to use it</h2>
 <div class="grid">
-  <div class="card"><h3>Console</h3><p><code>./katana agent model.gguf</code> in your project folder. The agent with all its tools, in the terminal.</p></div>
+  <div class="card"><h3>Console</h3><p><code>./katana</code> in your project folder (or <code>./katana -p "request"</code> for a single answer). The agent with all its tools, in the terminal; it picks the model as described above, or take one with <code>--model</code>.</p></div>
   <div class="card"><h3>Desktop</h3><p>A native window (Qt 6, no browser) that drives the same agent: conversations, tool cards, plan, context meter. Linux only for now.</p></div>
   <div class="card"><h3>Web <em>(work in progress)</em></h3><p><code>katana web</code> opens the same window as the desktop app in your browser, running locally: same layout, themes, conversations, tool cards and plan. It listens only on 127.0.0.1 and asks for a token that it prints in the address. The page matches the desktop in side-by-side screenshots, but it has only been run against stand-in engines, not yet with a real model; <code>katana serve model.gguf</code> still serves a plain chat page and an OpenAI-compatible API.</p></div>
 </div>
