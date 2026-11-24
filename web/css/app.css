@@ -69,8 +69,8 @@ textarea:focus-visible, input:focus-visible { outline: none; }
 #main { position: absolute; top: 0; right: 0; bottom: 0; left: 0; --termh: 0px; --bottomspace: 100px; transition: margin-left .2s cubic-bezier(.215,.61,.355,1); }
 #top { position: absolute; left: 0; right: 0; top: 0; height: 48px; z-index: 5; display: flex; align-items: center; padding: 0 8px 0 14px; gap: 2px; }
 #mv { position: absolute; left: 0; right: 0; top: 48px; bottom: var(--termh); overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--bd) transparent; }
-#col { width: min(1100px, calc(100% - 40px)); margin: 8px auto 0; }
-#dots { width: min(1100px, calc(100% - 40px)); margin: 0 auto; height: 44px; position: relative; }
+#col { width: min(1400px, calc(100% - 40px)); margin: 8px auto 0; }
+#dots { width: min(1400px, calc(100% - 40px)); margin: 0 auto; height: 44px; position: relative; }
 #dots img { position: absolute; left: 0; top: 0; }
 #dots .dd { position: absolute; left: 38px; top: 9px; display: flex; gap: 5px; }
 #dots .dd i { width: 7px; height: 7px; border-radius: 50%; background: var(--mut); opacity: .4; display: block; animation: 1160ms linear infinite; }
@@ -153,7 +153,7 @@ textarea:focus-visible, input:focus-visible { outline: none; }
 .nt-h { color: var(--ac); font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nt-b { font-size: 14px; margin-top: 2px; overflow-wrap: anywhere; }
 .fcard { border-radius: 14px; background: var(--card); box-shadow: inset 0 0 0 1px var(--bd); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; max-width: 620px; }
-.fcard.find { gap: 4px; max-width: 760px; }
+.fcard.find { gap: 4px; max-width: 100%; }
 .fc-l { color: var(--mut); font-size: 12px; }
 .fc-n { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fc-c { font-size: 13px; overflow-wrap: anywhere; }
@@ -166,7 +166,7 @@ textarea:focus-visible, input:focus-visible { outline: none; }
 .fi-t { font-size: 13px; overflow-wrap: anywhere; }
 
 /* tela inicial */
-#empty { position: absolute; left: 50%; transform: translateX(-50%); width: min(1100px, calc(100% - 40px)); top: 16px; }
+#empty { position: absolute; left: 50%; transform: translateX(-50%); width: min(1400px, calc(100% - 40px)); top: 16px; }
 .emp-col { display: flex; flex-direction: column; }
 .emp-img { display: flex; justify-content: center; }
 .pix { image-rendering: pixelated; display: block; }
@@ -183,7 +183,7 @@ textarea:focus-visible, input:focus-visible { outline: none; }
 /* esmaece o texto atras da caixa */
 #fade { position: absolute; left: 0; right: 0; bottom: 6px; height: 140px; pointer-events: none; background: linear-gradient(to bottom, var(--bg0) 0%, var(--bg) 35%, var(--bg) 100%); z-index: 3; }
 #cards { position: absolute; left: 0; right: 0; bottom: 0; height: 0; z-index: 4; }
-.card14 { position: absolute; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 32px)); border-radius: 14px; background: var(--card); box-shadow: inset 0 0 0 1px var(--bd); }
+.card14 { position: absolute; left: 50%; transform: translateX(-50%); width: var(--cw, min(1400px, calc(100% - 32px))); border-radius: 14px; background: var(--card); box-shadow: inset 0 0 0 1px var(--bd); }
 .wc-col { padding: 10px 14px; display: flex; flex-direction: column; gap: 5px; }
 .wc-plan { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .wc-plan .pbtn { height: 28px; }
@@ -203,7 +203,7 @@ textarea:focus-visible, input:focus-visible { outline: none; }
 
 /* caixa de mensagem */
 #composer { position: absolute; left: 0; right: 0; bottom: calc(var(--termh) + 6px); z-index: 6; padding-bottom: 8px; }
-#box, #meta, #sys { width: var(--cw, 1100px); margin-left: auto; margin-right: auto; }
+#box, #meta, #sys { width: var(--cw, 1400px); margin-left: auto; margin-right: auto; }
 #box { position: relative; height: 116px; border-radius: 22px; background: var(--card); border: 1px solid var(--bd); box-shadow: var(--shd); }
 #box:focus-within { border-color: var(--mut); }
 #ta { position: absolute; left: 20px; top: 12px; width: calc(100% - 40px); border: 0; background: transparent; resize: none; outline: none; font-size: 15px; line-height: normal; padding: 6px 0; margin: 0; overflow-y: auto; max-height: 330px; scrollbar-width: thin; scrollbar-color: var(--bd) transparent; }
@@ -212,7 +212,7 @@ textarea:focus-visible, input:focus-visible { outline: none; }
 #send { position: absolute; right: 8px; bottom: 8px; width: 38px; height: 38px; border-radius: 50%; background: var(--ac); display: flex; align-items: center; justify-content: center; }
 #send:hover:not(:disabled) { filter: brightness(1.1); }
 #send:disabled { opacity: .35; }
-#queue { position: absolute; left: 50%; transform: translateX(-50%); width: var(--cw, 1100px); bottom: calc(100% + 6px); display: flex; flex-direction: column; gap: 4px; }
+#queue { position: absolute; left: 50%; transform: translateX(-50%); width: var(--cw, 1400px); bottom: calc(100% + 6px); display: flex; flex-direction: column; gap: 4px; }
 .qit { height: 30px; border-radius: 15px; background: var(--card); border: 1px solid var(--bd); display: flex; align-items: center; padding: 0 14px; gap: 10px; font-size: 12px; }
 .qt { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qres { color: var(--ac); cursor: pointer; } .qx { color: var(--mut); cursor: pointer; }

@@ -25,7 +25,7 @@
     var termH = termOpen ? Math.min(340, Math.max(160, main.clientHeight * 0.4)) : 0;
     main.style.setProperty("--termh", termH + "px");
     $("term").style.height = termH + "px";
-    var cw = Math.min(1100, comp.clientWidth - 32);
+    var cw = Math.min(1400, comp.clientWidth - 32);
     main.style.setProperty("--cw", cw + "px");
     var qh = $("queue").children.length ? $("queue").offsetHeight + 6 : 0;
     var wc = $("workCard"), cc = $("choiceCard");
