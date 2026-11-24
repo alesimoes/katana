@@ -1057,6 +1057,17 @@ void Backend::setStableSteps(int n) {
     m_ui->sync();
     emit imageChanged();
 }
+int Backend::stableStrength() const {
+    const int n = m_ui->value("imagemForcaStable", 0).toInt();
+    return (n == 25 || n == 40 || n == 55 || n == 70 || n == 85) ? n : 0;
+}
+void Backend::setStableStrength(int n) {
+    if (n != 0 && n != 25 && n != 40 && n != 55 && n != 70 && n != 85) return;
+    if (n == stableStrength()) return;
+    m_ui->setValue("imagemForcaStable", n);
+    m_ui->sync();
+    emit imageChanged();
+}
 QString Backend::stableModel() const {
     const QString m = m_ui->value("imagemModeloStable", "realistic-vision").toString();
     return (m == "interior" || m == "xsachi") ? m : QStringLiteral("realistic-vision");
@@ -1638,6 +1649,7 @@ bool Backend::sendImage(const QString &text)
         if (stableModel() != "realistic-vision") args << "--sd-model" << stableModel();
         if (ss <= 8) args << "--lcm";                                  // 4/8: LCM, rapido
         else args << "--strength" << "0.6";                            // 25/40: Euler com guia; mais liberdade para ficar realista (o ControlNet segura a forma)
+        if (stableStrength() > 0) args << "--strength" << QString::number(stableStrength() / 100.0, 'f', 2);   // escolha do menu: vale mais que o padrao do modo
     }
     if (engine == "flux") args << "--steps" << QString::number(imageSteps());
     if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");

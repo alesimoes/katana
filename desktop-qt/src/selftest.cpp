@@ -1118,6 +1118,10 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         be.setStableSteps(7); check(be.stableSteps() == 20, "passos invalidos do Stable sao recusados");
         be.setStableSteps(40); check(be.stableSteps() == 40, "escolher 40 passos do Stable");
         be.setStableSteps(20);
+        check(be.stableStrength() == 0, "fidelidade a vista: automatica e o padrao");
+        be.setStableStrength(33); check(be.stableStrength() == 0, "fidelidade invalida e recusada");
+        be.setStableStrength(55); check(be.stableStrength() == 55, "escolher fidelidade 55%");
+        be.setStableStrength(0);
         be.setImageEngine("flux");
         be.attachImage(img);
         const int antesC = be.messages()->count();
@@ -1151,6 +1155,7 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         // processamento da imagem: nas configuracoes (engrenagem), 4 opcoes, gravado no ui.ini
         check(be.imageBackend() == "auto", "Auto e o padrao");
         c.click(c.item("appearanceButton"));
+        if (QQuickItem *h = c.item("sec_proc")) c.click(h);   // o menu e um acordeao: abre a secao de processamento
         check(waitFor([&] { QQuickItem *t = c.item("backend_cuda"); return t && t->isVisible(); }, 5000), "configuracoes abrem com as opcoes de processamento");
         check(c.item("backend_auto")->isVisible() && c.item("backend_cuda")->isVisible() && c.item("backend_vulkan")->isVisible() && c.item("backend_cpu")->isVisible(), "configuracoes: Auto, CUDA, Vulkan e CPU");
         c.grab("65-configuracoes-processamento.png");
