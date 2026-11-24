@@ -1,0 +1,13 @@
+fn countWords(text: str) -> int
+  return len(words(text))
+fn wordFreq(text: str) -> map[str, int]
+  let freq: map[str, int] = {}
+  for w in words(lower(text))
+    if contains(freq, w)
+      freq[w] += 1
+    else
+      freq[w] = 1
+  return freq
+test countWords("a bb  ccc") == 3
+test countWords("") == 0
+test wordFreq("the cat The dog") == {"the": 2, "cat": 1, "dog": 1}

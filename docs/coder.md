@@ -81,4 +81,4 @@ folder). Freshness: `KATANA_INDEX_WATCH` (`off`, `poll`), `KATANA_INDEX_WATCH_MA
 watch), `fresh.c` (cited-file check), `indexctl.c` (when a query revalidates; cached views), `maint.c` (`list`,
 `forget`, `gc`, `ignored`, `include`, `exclude`, store health), `statemap.c` (per-folder level map for the status
 line and `tree`), `findstore.c` and `graph.c` (`Find` over the store; the file graph), `text.c`, `search.c`, `keys.c`,
-`parse.c`/`parse2.c`, `symindex.c`, `symquery.c`, `symtool.c`, `symedit.c` (validated `Edit` by symbol, see `docs/tools.md`), `flow.c`, `kb.c`; `coder.c` dispatches `katana coder`.
+`parse.c`/`parse2.c`, `symindex.c`, `symquery.c`, `symtool.c`, `symedit.c` (validated `Edit` by symbol, see `docs/tools.md`), `flow.c`, `kb.c`; `ucge*.c` (the Unified Code Generation Engine core: spec parser, validator, type table, pretty-printer, Python backend; not yet part of the build, see `docs/ucge.md`); `coder.c` dispatches `katana coder`.

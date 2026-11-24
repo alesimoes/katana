@@ -1,0 +1,13 @@
+fn validEmail(s: str) -> bool
+  let at = indexof(s, "@")
+  if at <= 0
+    return false
+  let domain = slice(s, at + 1)
+  if contains(domain, "@") or not contains(domain, ".")
+    return false
+  return not startswith(domain, ".") and not endswith(domain, ".") and not contains(s, " ")
+test validEmail("a@b.com") == true
+test validEmail("a@b") == false
+test validEmail("@b.com") == false
+test validEmail("a b@c.com") == false
+test validEmail("a@@b.com") == false

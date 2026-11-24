@@ -1,0 +1,11 @@
+fn maxOf(xs: list[int]) -> int
+  if len(xs) == 0
+    throw "empty list"
+  let best = xs[0]
+  for x in xs
+    if x > best
+      best = x
+  return best
+test maxOf([3, 9, 2]) == 9
+test maxOf([-5]) == -5
+test maxOf([]) raises

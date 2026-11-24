@@ -1,0 +1,9 @@
+# filtrar os positivos de uma lista
+fn filterPositive(xs: list[int]) -> list[int]
+  let out: list[int] = []
+  for x in xs
+    if x > 0
+      push(out, x)
+  return out
+test filterPositive([3, -1, 0, 7]) == [3, 7]
+test filterPositive([]) == []
