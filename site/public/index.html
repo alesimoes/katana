@@ -98,11 +98,9 @@
   ul.points { margin: 8px 0 12px; padding-left: 1.2em; max-width: 62em; }
   ul.points li { margin: 7px 0; padding-left: 4px; line-height: 1.65; }
   ul.points li::marker { color: var(--ac); }
-  .me { display: grid; grid-template-columns: minmax(0, 1fr) 252px; gap: clamp(20px, 4vw, 48px); align-items: start; max-width: 62em; }
-  .me p:first-child { margin-top: 0; }
-  .me figure { margin: 12px 0 0; }
-  .me img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--bd); }
-  .me figcaption { color: var(--mut); font-size: .85rem; margin-top: .5rem; }
+  .me { display: flex; align-items: center; gap: clamp(20px, 4vw, 40px); max-width: 62em; margin-top: 8px; }
+  .me p:first-child { margin-top: 0; } .me p:last-child { margin-bottom: 0; }
+  .me .avatar { flex: none; width: 160px; height: 160px; border-radius: 50%; object-fit: cover; border: 2px solid var(--bd); box-shadow: 0 8px 24px var(--shadow); image-rendering: auto; }
   .shot { margin: 1.4rem 0; }
   .shot img { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line, rgba(128,128,128,.3)); }
   .shot figcaption { color: var(--mut); font-size: .9rem; margin-top: .5rem; }
@@ -118,8 +116,8 @@
     .hero-r .term { margin-top: 26px; }
   }
   @media (max-width: 760px) {
-    .me { grid-template-columns: 1fr; }
-    .me figure { order: -1; max-width: 252px; }
+    .me { flex-direction: column; align-items: flex-start; }
+    .me .avatar { width: 120px; height: 120px; }
     .grid.c3, .grid.c2, .grid.c4, .models, .hero-r .models { grid-template-columns: 1fr; }
   }
   @media (max-width: 560px) {
@@ -150,11 +148,11 @@
 <div class="hero-r">
   <div class="term" aria-label="Example commands">
     <div class="bar">terminal</div>
-<pre><span class="p">$</span> sh build.sh                <span class="c"># one C file, gcc, nothing to install</span>
-<span class="p">$</span> ./katana catalog           <span class="c"># models to download; what fits here</span>
-<span class="p">$</span> ./katana pull qwen3.6-35b  <span class="c"># download into models/, then verify</span>
-<span class="p">$</span> ./katana                   <span class="c"># chat with tools here; picks a model</span>
-<span class="p">$</span> ./katana --model qwen      <span class="c"># or name one: file name, part, or path</span></pre>
+<pre><span class="p">$</span> sh build.sh                <span class="c"># one C file, gcc</span>
+<span class="p">$</span> ./katana catalog           <span class="c"># what fits here</span>
+<span class="p">$</span> ./katana pull qwen3.6-35b  <span class="c"># download, verify</span>
+<span class="p">$</span> ./katana                   <span class="c"># chat with tools</span>
+<span class="p">$</span> ./katana --model qwen      <span class="c"># or name a model</span></pre>
   </div>
   <div class="models">
     <div>
@@ -269,11 +267,11 @@
 
 <h2 id="me">About me</h2>
 <div class="me">
+<img class="avatar" src="avatar.jpg" width="320" height="320" alt="Alexandre Simões, in a yellow Brazil shirt, drawn as Minecraft-style blocks" loading="lazy">
 <div>
 <p>I am Alexandre Simões, and katana is my project. I wrote it to understand how language models really run, by building the whole path myself: reading the model file, the tokenizer, the math on the CPU and the GPU, the memory management that lets a big model fit in a small card, and the agent that puts it to work.</p>
 <p>The engine, the agent and the desktop app live in my own repository. This page describes them as they are today, including what does not work yet.</p>
 </div>
-<figure><img src="alexandre.jpg" width="504" height="630" alt="Portrait of Alexandre Simões in a yellow Brazil national team shirt, looking down at a phone, rendered as Minecraft-style blocks" loading="lazy"><figcaption>Me, as Minecraft blocks.</figcaption></figure>
 </div>
 
 <footer><span>katana</span><span>local inference, written in C</span><a href="https://github.com/alesimoes/katana">github.com/alesimoes/katana</a></footer>
