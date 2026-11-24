@@ -122,6 +122,14 @@ while IFS= read -r line; do
         printf '\001TOOLOUT TodoWrite\tlist saved: all 3 steps done\n'
         printf 'Pronto: li o projeto, corrigi o erro e os testes passam.\n'
         printf '\001READY\n';;
+    *"renderize pelo agente"*)
+        # o agente chama a ferramenta Render (stable): o resultado traz o caminho da imagem e a linha do motor usado; o desktop mostra o cartao logo abaixo da acao
+        R="${HOME:-/tmp}/.standin-render-agent.png"; cp "$(dirname "$0")/samples/render-saida.png" "$R"
+        printf '\001TOOL Render\t{"image":"/tmp/vista.jpeg","engine":"stable","brief":"MATERIAIS:\\n- \\"Concreto\\": concreto/cimento (~20%% do quadro)\\n"}\n'
+        sleep 0.3
+        printf '\001TOOLOUT Render\trendered with stable: %s (12345 bytes); prompt from the brief\\n[stable] usado: unet=cpu vae=cpu\n' "$R"
+        printf 'Gerei a previa: %s\n' "$R"
+        printf '\001READY\n';;
     *"consulte o indice"*)
         # Find e Symbols com saidas reais do katana (tools/samples); a ultima chamada leva uma nota longa do motor; Symbols flow,
         # Symbols flow e tree so conferem o verbo e a acao; o motor avisa em stderr que anexou o bloco [katana: context ...]

@@ -1980,6 +1980,22 @@ void Backend::handleMarker(const QByteArray &line)
                 else r += o[i];
             }
             toolResult(r);
+            // Render: "rendered with <motor>: <caminho> (<n> bytes)" + linha "[flux|stable] usado: ..." vira o cartao de imagem logo abaixo da acao
+            if (args.left(tab) == "Render") {
+                const auto mp = QRegularExpression(QStringLiteral("^rendered with (stable|flux): (.+?) \\(\\d+ bytes\\)"), QRegularExpression::MultilineOption).match(r);
+                if (mp.hasMatch() && QFileInfo::exists(mp.captured(2))) {
+                    QString nome2 = mp.captured(1);
+                    const auto mt = QRegularExpression(QStringLiteral("\\[(?:flux|stable)\\] usado: (?:dit|unet)=(\\w+) vae=(\\w+)")).match(r);
+                    if (mt.hasMatch()) {
+                        auto rot = [](const QString &x) { return x == "cuda" ? QStringLiteral("CUDA") : x == "vulkan" ? QStringLiteral("Vulkan") : QStringLiteral("CPU"); };
+                        const QString a = rot(mt.captured(1)), b = rot(mt.captured(2));
+                        nome2 += "|" + (a == b ? a : QStringLiteral("transformador %1, VAE %2").arg(a, b));
+                    }
+                    m_msgs.append("image", mp.captured(2), nome2);
+                    m_sess.mensagens.append({"image", mp.captured(2), nome2, QDateTime::currentDateTime().toString(Qt::ISODate)});
+                    saveSession();
+                }
+            }
         }
     } else if (name == "TOKENS") {  // TOKENS <pos> <ctx>
         const QStringList a = args.split(' ', Qt::SkipEmptyParts);

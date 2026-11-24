@@ -683,6 +683,30 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
     }
     check(be.messages()->get(be.messages()->count() - 1)["kind"] == "assistant", "pedido com resposta em texto: sem linha de parada");
 
+    fprintf(stderr, "-- Render pelo agente: cartao de imagem logo abaixo da acao\n");
+    {
+        const QString rimg = QDir::homePath() + "/.standin-render-agent.png";
+        QFile::remove(rimg);
+        c.typeAndEnter("renderize pelo agente a vista");
+        check(waitFor([&] { return be.ready() && QFileInfo(rimg).isFile(); }, 60000), "Render: o turno terminou e a imagem existe");
+        QTest::qWait(500);
+        int it = -1, ii = -1;
+        for (int i = 0; i < be.messages()->count(); i++) {
+            const QVariantMap m = be.messages()->get(i);
+            if (m["kind"] == "tool" && m["name"].toString().contains("Render")) it = i;
+            if (m["kind"] == "image" && m["text"].toString() == rimg) ii = i;
+        }
+        check(it >= 0 && ii == it + 1, QString("Render: cartao de imagem logo depois da acao (acao %1, imagem %2)").arg(it).arg(ii));
+        check(ii >= 0 && be.messages()->get(ii)["name"].toString() == "stable|CPU", "Render: o cartao leva o motor e o processador (stable|CPU)");
+        QQuickItem *ric = c.item("imageCard");
+        check(ric && ric->isVisible(), "Render: cartao de imagem visivel");
+        c.grab("22-render-pelo-agente.png");
+        c.click(c.item("imageOpen"));
+        check(be.lastOpened() == rimg, "Render: Abrir mostra a imagem: " + be.lastOpened());
+        c.click(c.item("imageFolder"));
+        check(be.lastOpened() == QDir::homePath(), "Render: Abrir pasta: " + be.lastOpened());
+    }
+
     fprintf(stderr, "-- agente parou sem responder\n");
     c.typeAndEnter("faca algo mudo");
     check(waitFor([&] { return be.ready() && be.messages()->get(be.messages()->count() - 1)["kind"] == "stopped"; }, 60000),
