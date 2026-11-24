@@ -140,61 +140,48 @@ FLUX.2 klein GGUF (`flux-2-klein-4b-Q4_K_M.gguf`, architecture `flux`, 149 tenso
 - **GPU conflict (not solved, CPU fallback kept).** The agent process holds about 3.5 GB of the 4 GB card (dense weights, expert cache, graph buffers, DeltaNet state), so the FLUX child finds no free memory and runs on the CPU (the result line says so: `dit=cpu vae=cpu`). Releasing it from inside the agent was investigated and not implemented: there is no teardown path for the Vulkan state (weights are bound to each matrix as `gbuf`, graphs and recorded command buffers reference them, the Qwen3.6 graph also keeps recurrent state on the card), and a half-released state would leave the agent without a working GPU, which must never happen silently. Workarounds that exist today: start the agent with a smaller expert cache (`KATANA_EXPERT_MB=1000`) so FLUX fits next to it, or run the final with `katana render generate --engine flux` from a terminal while the agent is closed, or use the desktop image mode.
 - **(earlier plan) Render is not a tool of the lean list yet.** The desktop calls `katana render generate` directly from its image mode (attach an image, pick Stable/FLUX/Krea); the agent (Qwen) is not in that path and does not rewrite the prompt. The engine itself treats the request: lexical analysis, embedding for what the words do not recognise and for priority (`sdspec.c`), then the engine adapter.
 - **A `Render` tool for the agent comes after FLUX is ready.** The specialized agent leaves the tools section out of its prompt because it knows the 12 tools from training (`docs/specialization.md`, "Tools known by training"); a tool created later is unknown to it. Order: (1) now: no tool, desktop direct; (2) when FLUX is stable: a one-line declaration of Render only, found through ToolSearch so the base prompt does not change; (3) at the final curriculum: Render conversations in the training data, then the declaration is dropped like the others.
+- **Update 2026-11-24 (branch feat-brief-verbatim): flow and limits.** The `Render` description and the capability note now say: `brief` is the final prompt in the engine's style and limit (stable: English tags, about 200 words; flux: English prose, about 350 words), any kind of image, `image` optional, over-limit text is cut by relevance and the result reports `brief: N/budget tokens` and `cut: ...`. Flow: preview with stable, show it, ASK the user if it is approved, call flux (high definition) only after approval; never chain stable and flux in one answer; a direct request for the final or high definition goes straight to flux. The capability note grew from about 135 to about 175 tokens.
 - **The curriculum is not touched by this work.** It is still being built and tested; the final version is generated from zero at the END of the UIOE construction (`docs/plan.md` T5; `tools/curriculum/generate.sh`, trained once, at night). Version names stopped at v7 (2026-11-23); v6 and v7 data were deleted, and the curriculum is now updated in place with no version name. Nothing of render or embedding is in any training data yet.
 
-## Briefing to prompt, and the logo (2026-11-24, branch feat-brief)
+## The brief is the prompt, and the logo (2026-11-24, branch feat-brief-verbatim)
 
-**FLUX prompt from the briefing, by rule.** `katana render spec --brief briefing.md --engine flux [--lines]` prints the prompt and generates nothing;
-`katana render generate --engine flux --brief briefing.md --init view.png [--init2 lines.png] [--nl "extra request"] --out out.png` uses it
-(`--engine stable --brief` uses the condensed Stable prompt of `katana render brief`). The text comes from `sdb_flux_prose` in `src/render/sdbrief.c`, no
-hand summary: fidelity rules (exact camera, lens, framing, perspective; nothing added, removed, moved or resized; no extra decoration, plants, people,
-lamps, artwork or written text when the briefing forbids them), each material with its colour (RGB to a name by HSV: burgundy, slate blue-grey, off-white...;
-the RGB numbers stay only for painted walls), its pattern scale in cm and its share of the frame, the main objects (counter, chair), the sun elevation, the
-colour temperature and the types of lights that are on, and the style requests of the briefing. Materials of the same phrase add their share; they run from the largest
-to the smallest; items under 1% ("~0%") are left out.
+**The engine does not write the brief.** Whoever sends it writes the final prompt: the chat model through the `Render` tool (`brief`), or the user in the
+desktop box or in a file (`--brief`). The text goes to the image engine with the author's own words: no prefix, no fixed template, no translation, nothing
+added, whatever the subject (illustration, character, architecture). The old rewrite (an architecture photograph template, per-material sentences, lighting
+and style dictionaries, "16:9, no borders", a fixed Stable negative with plants and furniture) was removed: it replaced the subject of the request (a pixel-art
+sorceress came out as a pink photoreal room). The `--nl` path (`sdspec.c`: lexical, then embedding, then adapter) is a different thing and is unchanged.
 
-Material type comes only from what the briefing writes after the name, never from the name. `"Arenito": material, repetition of the pattern 275x184 cm` becomes
-`surface material "Arenito", pattern 275x184 cm, 7%`: no stone, no sandstone (the name is only the SketchUp label; the Stable builder was fixed the same way and
-its "stone veining" style phrase was removed). `AK_PISO CONCRETO 0x` typed concrete stay `concrete floor tiles, pattern 90x90 cm` (the four entries add to 11%);
-the one typed porcelain, whose name says concrete, is `concrete-look porcelain floor tiles, pattern 100x100 cm`. Names without a known type (`ANGRA_21_PRATA`,
-`HIBISCO`) stay neutral surfaces: a colour word inside a name is not used.
+`katana render generate --engine flux|stable --brief prompt.txt [--nl "extra"] [--negative "..."] ...`; `katana render spec --brief prompt.txt --engine flux|stable [--chunks N]`
+prints what would be sent and generates nothing. `--nl` with `--brief` is appended as the last line, as written. The Stable negative is what the caller passes
+(`--negative`), else the short generic `blurry, low quality, deformed`.
 
-The text encoder has 512 positions and Stable reads 75 CLIP tokens per chunk (`--chunks`, default 4), so a real briefing does not fit whole. Cutting at the
-end (the old rule) dropped whatever came last; since 2026-11-24 (branch feat-brief-select) a relevance selector chooses, without any LLM (`src/render/sdsel.c`,
-used by `sdb_flux_prose` and `sdb_build` in `src/render/sdbrief.c`).
+**Limits (what the writer must respect).** FLUX: 504 positions of text (512 minus a margin), counted with the real tokenizer of `qwen3-4b-text.gguf` with the chat
+template (`fxt_count`; about 350 words of English prose; without that file it estimates 0.30 token per character and says so). Stable: `--chunks` x 75 - 4 CLIP
+tokens (default 4, about 290 tokens, 200 words), counted by `sdc_ids_w`; write English tags or short phrases, subject and style first. The Render tool
+description and the agent's capability note tell the model this.
 
-**Selector.** The briefing becomes *units*: one rule, one material (same phrase adds its share), one light (sun, colour temperature, one per light type),
-one object, one style request. Each unit gets `score = category weight x (0.6 + bm25) + area + signals`: BM25 (k1 1.2, b 0.75) of the unit's own source
-text against a weighted search vocabulary (colour, RGB, K, wall, floor, wood, fabric, lit, never/oversaturated...), with the idf taken from the units of the
-same briefing (a word in almost every unit, like "piso" in five floors, counts less; a rare one counts more); category weights rule 10, material 3, light 2,
-object 1.5, style 1; materials add share of frame / 10 (at most 3), +1.5 with an RGB colour, +0.4 with a pattern scale, -1.2 when vague (no colour and no known
-type); styles carry a fixed prior (colour fidelity 1.2 ... elegance 0.2). Rules, the sun, the colour temperature and the user's `--nl` request are mandatory and
-always in. The rest enter by score, each only if the assembled text (measured with the engine's own tokenizer) stays within budget; one that does not fit is
-skipped and a smaller one after it can still enter. Noise never enters: materials under 1% of the frame ("~0%"), lamp materials (light, not surface), paint with
-no colour, units with no text for that engine. Final order, stable: rules > materials by area > light > objects > style > user request.
+**Whole or selected.** If the text fits, it goes whole and byte-identical. If not, `src/render/sdsel.c` selects, with no LLM and no fixed domain:
+*units* are lines (list items, sentences); a long line splits into sentences and then into `;` or `,` pieces (a one-line tag list: each tag a unit); headers
+(`#`, ending in `:`, all caps) stay only if a child does. *Mandatory*: the first line (subject), the first non-header unit, and any unit with a rule marker
+(ABSOLUTAS, REGRAS, NUNCA, SEM, PROIBIDO, NEVER, MUST...) plus the extra `--nl` text; if the mandatory ones alone pass 60% of the budget the lowest-scored go back to
+competing. *Score*: RGB or hex colour +2.5, number with a unit (K, cm, %, px, lm...) +1/+1.5, colour / material / light / style words (pt and en) +1.2/+1/+0.8/+1.5, an
+ALL-CAPS word +1, plus a within-text rarity term (BM25-style idf over the units of the same text) up to +2 and a slight favour to earlier units. Units enter by score
+while the assembled text stays inside the budget (an oversize one is skipped and a smaller one can still enter); cuts are whole units, original order kept, no word added.
 
-Budgets: FLUX 504 of 512 positions, counted with the Qwen3 tokenizer of `qwen3-4b-text.gguf` including the chat template (`fxt_count` in `fxtext.c`; only the
-tokenizer is loaded; without that file it estimates 0.30 token per character, with margin, and says so). Stable `--chunks x 75 - 4` CLIP tokens counted by
-`sdc_ids_w` (weights included), the negative prompt separately with the same limit and in priority order (text, logo, watermark, people, what the briefing
-forbids, then the generic ones). Stable gets English tags with `(term:1.2)` on a frame share of 20% or more, `1.1` from 8% and on the colour temperature; FLUX gets
-prose. `--nl` still works: with FLUX it is the mandatory "Additional request from the user"; with Stable and `--brief` it is ignored, as before.
+**Telling the author.** `katana render generate` and `render spec` print `[brief] <engine> tokens N/budget` (`(inteiro)` when whole) and, when something was cut,
+`[brief] cut K: "first words"; ...`. The `Render` tool result carries them as `brief: N/budget tokens` and `cut: ...` so the model can resend a shorter brief.
+`--explain-brief` (generate, spec, `render brief`) prints every unit on stderr: ENTROU / OBRIG / CORTE, source line, score and tokens.
 
-`--explain-brief` (on `render generate`, `render spec --brief` and `render brief`) prints on stderr every unit with ENTROU or CORTE, category, score, bm25, share
-of frame, tokens it added (or overshot) and the reason of a cut ("nao coube no orcamento", "abaixo de 1% do quadro"...), plus the totals.
+Example: the pixel-art sorceress brief (3 lines, 113 of 504 tokens) goes through untouched. The client reception briefing of the earlier work (a long Portuguese
+instruction to a rendering assistant, not a prompt) does not fit; selected for FLUX it keeps the subject line, the "Sem decoracao extra..." rule, the three
+painted walls with RGB, and the style lines with the "sem ..." rules (492 of 504), and cuts 45 units. That text is the wrong thing to send to an image engine; the
+model is now told to write the prompt itself.
 
-Result for `/mnt/dados/render-ref/briefs/recepcao_v1.md` (client briefing, not committed). Before: 4 of the 13 materials left out (cut by character count) and, in
-Stable, a 0% "foliage" and a "black lacquer" in the prompt of a briefing that forbids plants. After (FLUX, 503 of 504 positions, nothing of signal cut: all 11
-materials that say anything are in, the style list loses only "full-frame camera"; cut as noise are the ~0% items, the LED2 lamp and the paint with no colour):
-
-> Photorealistic architectural interior photograph of a reception, made from the reference view (a 3D model export). Keep the exact camera position, lens, framing, perspective and proportions. Every wall, opening, ceiling, floor, piece of furniture and object keeps its position, size and shape: nothing is added, removed, moved or resized, no extra decoration, plants, people, lamps, artwork or written text. Every edge of the line drawing stays in place. Luminaires that are not listed as on stay off. Each material sits exactly on its surfaces in the view, with its real colour and pattern scale (share of the frame in %): slate blue-grey painted wall (RGB 99,112,123), 25%; burgundy painted wall (RGB 119,79,81), 23%; concrete floor tiles, pattern 90x90 cm, 11%; off-white painted wall (RGB 228,222,204), 10%; surface material "Arenito", pattern 275x184 cm, 7%; fabric "H10248", pattern 40x40 cm, 4%; surface material "ANGRA_21_PRATA", pattern 187x281 cm, 4%; surface material "HIBISCO", pattern 10x10 cm, 4%; concrete-look porcelain floor tiles, pattern 100x100 cm, 3%; natural wood "demolição", pattern 121x181 cm, 2%; dark grey metal, 1%. Lighting: bright daylight from a high sun (solar elevation 66.5 degrees) matching the shadows of the view; warm artificial light at 3000 K from recessed spotlights, linear LED strip, round ceiling lamp, organic pendant lamp, mirror light, sphere lamp, support light. Main objects: reception counter, chair. Style: faithful colours, never oversaturated, visible wood grain and fabric weave, neutral to slightly warm white balance, deep contact shadows, natural realistic interior photography, no computer graphics look, soft light with real falloff, soft light gradients on the walls, clean, elegant, authentic. 16:9, no borders, no watermark.
-
-
-Limits, stated plainly: the quoted name `"Arenito"` is still in the prompt as a label, and a text encoder that reads Portuguese may still link it to the
-stone (not tested: nothing was generated); FLUX cannot match an RGB number, only a colour word, so how close the colours come is unknown; the date and
-place of the "Luz do dia" line are not used; the main-object list only knows the words of `sdb_build` (counter, chair, armchair, sofa, table, mirror, bed); `--image3`
-(material samples) is still not used. `katana render brief selftest [briefing.md]` checks the rules (about 30 checks including a synthetic briefing with 40 materials, on an embedded text with the same material
-lines and, when a path is given, on the real file): no `stone`/`sandstone`/`pedra`, floor says concrete with the pattern size, wall colours present,
-neutral names kept, 0% items left out, fidelity rules, lights, objects, the token budget, mandatory items kept and low-signal ones cut, order, Stable weights.
+Not tested: nothing was generated with this change (only text and token counts); how well FLUX or Stable respond to a Portuguese prompt is unknown. Material
+samples (`--image3` of `render brief`) are still not used. `katana render brief selftest [file]` (no engine, estimate counter plus the real FLUX counter if present)
+checks: short text byte-identical; a long synthetic text (a sorceress brief plus 40 items) fits, keeps the first line, the rules and the high-signal items, keeps
+order, adds no word (output words are a subsequence of the input); a tag line cuts on whole tags; the old template terms ("architectural", "interior photograph", "3D model export",
+"no watermark") never appear unless the input has them; and, with a file, the same on that file.
 
 **Logo compositing (`src/render/sdlogo.c`).** No image model writes a brand; the real logo goes in afterwards, on the CPU.
 `katana render logo --image render.png --logo logo.png --box x,y,w,h [--perspective x1,y1,x2,y2,x3,y3,x4,y4] [--blend] [--out out.png]`.
@@ -209,7 +196,7 @@ trip, box placement, nothing outside the box changes, transparent areas leave th
 darkens a white logo on a dark wall without a colour cast, fractions, degenerate quads. Limits: the logo is flat (no relief, no reflection, no wall texture or
 noise over it), the box or corners are given by the user (nothing detects the wall plane), and it was not tried on a real render.
 
-**Desktop.** In image mode the "briefing" and "logo" buttons attach the files; the backend passes `--brief` and `--logo --logo-box --logo-blend` (`desktop-qt/README.md`).
+**Desktop.** The text in the box goes as the literal prompt (`--brief`, temporary file); see `desktop-qt/README.md`.
 
 ## Vulkan path (FLUX.2 klein, stage 9)
 
