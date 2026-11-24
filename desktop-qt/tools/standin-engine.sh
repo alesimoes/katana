@@ -6,13 +6,17 @@ hw) printf 'ram_gb\t64\ngpu\t-\nvram_gb\t0\ndisk_gb\t100\n'; exit 0;;
 catalog|pull) exit 0;;
 render)
     # `katana render generate --engine E ... --out ARQ`: stable grava a imagem de amostra; flux e krea saem com 3 (WIP), como o motor real;
-    # um prompt com a palavra "falhe" faz o stable falhar (codigo 2)
+    # um prompt com a palavra "falhe" faz o stable falhar (codigo 2); --brief, --logo, --logo-box e --logo-blend sao aceitos e anotados
     [ "$2" = generate ] || exit 1
-    shift 2; E=stable; OUT=; PF=; NL=
+    # os argumentos recebidos ficam em $HOME/.standin-render-args (um por linha, execucao a execucao) para o selftest conferir --brief, --logo e --logo-box
+    { printf '%s\n' "$@"; echo '--'; } >> "${HOME:-/tmp}/.standin-render-args"
+    shift 2; E=stable; OUT=; PF=; NL=; BR=; LG=
     while [ $# -gt 0 ]; do
-        case "$1" in --engine) E=$2; shift;; --out) OUT=$2; shift;; --prompt-file) PF=$2; shift;; --nl) NL=$2; shift;; esac
+        case "$1" in --engine) E=$2; shift;; --out) OUT=$2; shift;; --prompt-file) PF=$2; shift;; --nl) NL=$2; shift;; --brief) BR=$2; shift;; --logo) LG=$2; shift;; esac
         shift
     done
+    # briefing ou logo que nao existe: o motor real recusa antes de gerar (codigo 1)
+    if { [ -n "$BR" ] && [ ! -f "$BR" ]; } || { [ -n "$LG" ] && [ ! -f "$LG" ]; }; then echo "render: nao consegui abrir o briefing ou o logo" >&2; exit 1; fi
     case "$E" in
     flux|krea) echo "render: o motor $E esta em desenvolvimento (WIP), ainda nao disponivel" >&2; exit 3;;
     esac

@@ -999,6 +999,57 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
             check(w["kind"] == "image" && w["text"].toString().isEmpty() && w["out"].toString().contains("WIP") && w["name"] == e, e + ": aviso de motor em desenvolvimento (WIP), sem erro");
             if (e == "flux") { QList<QQuickItem *> notes; findAll(c.root(), "imageNote", notes); check(!notes.isEmpty() && notes.last()->isVisible(), "aviso WIP visivel"); c.grab("62-motor-wip.png"); }
         }
+        // briefing e logo opcionais: o briefing vira o prompt (--brief), o logo e composto depois (--logo, --logo-box, --logo-blend)
+        {
+            const QString argsFile = QDir::homePath() + "/.standin-render-args";
+            const QString brief = "/tmp/katana-standin/briefing recepcao.md";
+            QDir().mkpath("/tmp/katana-standin");
+            { QFile f(brief); if (f.open(QIODevice::WriteOnly)) f.write("MATERIAIS\n- \"Arenito\": material, repeticao do padrao 275x184 cm (aproximadamente 7% da moldura)\n"); }
+            be.setImageEngine("stable");
+            check(!be.attachBrief(img), "briefing: uma imagem nao e aceita como briefing");
+            check(!be.attachBrief("/tmp/katana-standin/nao-existe.md"), "briefing: arquivo que nao existe e recusado");
+            check(!be.attachLogo("/tmp/katana-standin/relatorio final.txt"), "logo: um arquivo que nao e imagem e recusado");
+            check(Backend::validLogoBox("0.04,0.04,0.22,0.12") && Backend::validLogoBox("100,50,300,120") && !Backend::validLogoBox("1,2,3") && !Backend::validLogoBox("1,2,0,4") && !Backend::validLogoBox("a,b,c,d"),
+                  "caixa do logo: x,y,w,h validos e invalidos");
+            QTest::qWait(300);
+            check(c.item("briefButton")->isVisible() && c.item("logoButton")->isVisible(), "modo imagem mostra os botoes de briefing e logo");
+            check(!c.item("briefRemove")->isVisible() && !c.item("logoBoxField")->isVisible(), "sem anexos: sem remover e sem campo da caixa");
+            check(be.attachBrief("file://" + brief) && be.attachedBrief() == brief && be.attachLogo(img) && be.attachedLogo() == img, "anexar briefing (URL file://) e logo");
+            QTest::qWait(300);
+            check(c.item("briefRemove")->isVisible() && c.item("logoRemove")->isVisible() && c.item("logoBoxField")->isVisible(), "com anexos: remover e campo da caixa do logo aparecem");
+            c.grab("64-briefing-e-logo.png");
+            c.click(c.item("briefRemove"));
+            c.click(c.item("logoRemove"));
+            check(be.attachedBrief().isEmpty() && be.attachedLogo().isEmpty(), "remover briefing e logo");
+            // enviar so com briefing e logo, sem texto: --brief, sem --nl, e o logo com a caixa
+            QFile::remove(argsFile);
+            be.attachImage(img); be.attachBrief(brief); be.attachLogo(img); be.setLogoBox("0.1,0.1,0.2,0.1");
+            const int n1 = be.messages()->count();
+            check(be.sendImage(""), "enviar com briefing e logo, sem texto");
+            check(waitFor([&] { return be.messages()->count() > n1 + 1 && !be.imageBusy(); }, 30000), "stable com briefing: terminou");
+            QTest::qWait(300);
+            QString ra; { QFile f(argsFile); if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); }
+            const QStringList rl = ra.split('\n');
+            check(rl.contains("--brief") && rl.contains(brief) && !rl.contains("--nl"), "argumentos: --brief com o arquivo e nenhum --nl");
+            check(rl.contains("--logo") && rl.contains(img) && rl.contains("--logo-box") && rl.contains("0.1,0.1,0.2,0.1") && rl.contains("--logo-blend"), "argumentos: --logo, --logo-box e --logo-blend");
+            check(be.attachedBrief().isEmpty() && be.attachedLogo().isEmpty() && be.messages()->get(be.messages()->count() - 1)["kind"] == "image", "anexos consumidos; cartao de imagem");
+            check(be.messages()->get(be.messages()->count() - 2)["text"].toString().contains("briefing recepcao.md"), "a conversa mostra o nome do briefing");
+            // com texto, o texto entra como pedido adicional (--nl); sem logo, nenhum --logo
+            QFile::remove(argsFile);
+            be.attachImage(img); be.attachBrief(brief);
+            c.typeAndEnter("luz mais quente");
+            check(waitFor([&] { return !be.imageBusy() && QFileInfo::exists(argsFile); }, 30000), "briefing com texto: terminou");
+            QTest::qWait(300);
+            { QFile f(argsFile); ra.clear(); if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); }
+            const QStringList r2 = ra.split('\n');
+            check(r2.contains("--brief") && r2.contains("--nl") && r2.contains("luz mais quente") && !r2.contains("--logo"), "argumentos: --brief e o texto como --nl, sem --logo");
+            // caixa invalida: nada e gerado, aparece o erro e o anexo continua para corrigir
+            QFile::remove(argsFile);
+            be.attachImage(img); be.attachLogo(img); be.setLogoBox("1,2,3");
+            check(!be.sendImage("x") && !QFileInfo::exists(argsFile) && be.messages()->get(be.messages()->count() - 1)["kind"] == "error", "caixa do logo invalida: erro e nada e gerado");
+            check(!be.attachedImage().isEmpty() && !be.attachedLogo().isEmpty(), "os anexos ficam para corrigir a caixa");
+            be.clearLogo(); be.clearImage();
+        }
         // falha do stable: cartao de erro
         be.setImageEngine("stable");
         be.attachImage(img);

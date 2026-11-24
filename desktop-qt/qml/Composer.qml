@@ -53,6 +53,19 @@ Item {
         onAccepted: backend.attachImage(selectedFile.toString())
     }
 
+    FileDialog {
+        id: briefDialog
+        title: "Anexar briefing de renderizacao"
+        nameFilters: ["Briefing (*.md *.txt)"]
+        onAccepted: backend.attachBrief(selectedFile.toString())
+    }
+    FileDialog {
+        id: logoDialog
+        title: "Anexar logo (PNG com transparencia)"
+        nameFilters: ["Imagens (*.png *.webp *.jpg *.jpeg *.bmp)"]
+        onAccepted: backend.attachLogo(selectedFile.toString())
+    }
+
     // sombra suave: camadas translucidas
     Repeater {
         model: 5
@@ -266,6 +279,71 @@ Item {
                 Accessible.name: "Motor de imagem " + modelData[1]
                 onClicked: backend.imageEngine = modelData[0]
             }
+        }
+        // briefing (.md/.txt) e logo opcionais do modo imagem: o briefing vira o prompt (materiais, cores, luz, regras de fidelidade);
+        // o logo (PNG com alfa) e composto no render depois de gerado, dentro da caixa x,y,w,h (fracao da imagem ou pixels)
+        AbstractButton {
+            id: briefBtn
+            objectName: "briefButton"
+            visible: backend.imageMode || backend.attachedImage.length > 0
+            implicitHeight: 22
+            implicitWidth: briefTxt.implicitWidth + 14
+            hoverEnabled: true
+            background: Rectangle { radius: 6; color: backend.attachedBrief.length > 0 || briefBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: briefTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
+                color: backend.attachedBrief.length > 0 ? Theme.fg : Theme.mut
+                text: backend.attachedBrief.length > 0 ? "briefing ✓" : "briefing" }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: backend.attachedBrief.length > 0 ? "Briefing: " + backend.attachedBrief : "Anexar o briefing de renderizacao (.md ou .txt): materiais, cores, luz e regras viram o prompt, sem resumo a mao."
+            Accessible.name: "Anexar briefing"
+            onClicked: briefDialog.open()
+        }
+        Text {
+            objectName: "briefRemove"
+            visible: backend.attachedBrief.length > 0
+            font.family: Theme.sans; font.pixelSize: 11; color: Theme.mut; text: "✕"
+            Accessible.name: "Remover briefing"
+            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearBrief() }
+        }
+        AbstractButton {
+            id: logoBtn
+            objectName: "logoButton"
+            visible: backend.imageMode || backend.attachedImage.length > 0
+            implicitHeight: 22
+            implicitWidth: logoTxt.implicitWidth + 14
+            hoverEnabled: true
+            background: Rectangle { radius: 6; color: backend.attachedLogo.length > 0 || logoBtn.hovered ? Theme.hov : "transparent" }
+            contentItem: Text { id: logoTxt; verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter; font.family: Theme.sans; font.pixelSize: 12
+                color: backend.attachedLogo.length > 0 ? Theme.fg : Theme.mut
+                text: backend.attachedLogo.length > 0 ? "logo ✓" : "logo" }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: backend.attachedLogo.length > 0 ? "Logo: " + backend.attachedLogo : "Anexar o logo real (PNG com transparencia): o modelo de imagem nao escreve marcas, entao o logo e composto na imagem pronta."
+            Accessible.name: "Anexar logo"
+            onClicked: logoDialog.open()
+        }
+        TextField {
+            objectName: "logoBoxField"
+            visible: backend.attachedLogo.length > 0
+            implicitWidth: 118; implicitHeight: 22; leftPadding: 6; rightPadding: 6; topPadding: 0; bottomPadding: 0
+            font.family: Theme.sans; font.pixelSize: 11
+            color: Theme.fg
+            text: backend.logoBox
+            placeholderText: "x,y,w,h"
+            background: Rectangle { radius: 6; color: Theme.hov; border.color: Theme.bd }
+            ToolTip.visible: hovered
+            ToolTip.delay: 400
+            ToolTip.text: "Caixa do logo na imagem: x,y,w,h em fracao da imagem (0.04,0.04,0.22,0.12) ou em pixels."
+            Accessible.name: "Caixa do logo"
+            onEditingFinished: backend.logoBox = text
+        }
+        Text {
+            objectName: "logoRemove"
+            visible: backend.attachedLogo.length > 0
+            font.family: Theme.sans; font.pixelSize: 11; color: Theme.mut; text: "✕"
+            Accessible.name: "Remover logo"
+            MouseArea { anchors.fill: parent; anchors.margins: -5; cursorShape: Qt.PointingHandCursor; onClicked: backend.clearLogo() }
         }
         // pasta sem confianca: aviso aqui (a escolha da pasta fica nas configuracoes)
         Text {

@@ -131,6 +131,9 @@ class Backend : public QObject
     Q_PROPERTY(QString imageEngine READ imageEngine WRITE setImageEngine NOTIFY imageChanged)   // stable, flux ou krea
     Q_PROPERTY(bool imageMode READ imageMode WRITE setImageMode NOTIFY imageChanged)            // modo Imagem: envia para o gerador, nao para o agente
     Q_PROPERTY(bool imageBusy READ imageBusy NOTIFY imageChanged)
+    Q_PROPERTY(QString attachedBrief READ attachedBrief NOTIFY imageChanged)      // briefing (.md/.txt) do proximo envio de imagem ("" = nenhum)
+    Q_PROPERTY(QString attachedLogo READ attachedLogo NOTIFY imageChanged)        // logo (PNG com alfa) a compor no render ("" = nenhum)
+    Q_PROPERTY(QString logoBox READ logoBox WRITE setLogoBox NOTIFY imageChanged) // caixa do logo no render: x,y,w,h em fracao da imagem (0 a 1) ou pixels
     Q_PROPERTY(bool hasUsableModel READ hasUsableModel NOTIFY modelsChanged)
     Q_PROPERTY(QString pullId READ pullId NOTIFY pullChanged)             // modelo sendo baixado ("" = nenhum)
     Q_PROPERTY(double pullFraction READ pullFraction NOTIFY pullChanged)
@@ -246,6 +249,15 @@ public:
     bool imageMode() const { return m_imgMode; }
     void setImageMode(bool on) { if (on != m_imgMode) { m_imgMode = on; emit imageChanged(); } }
     bool imageBusy() const { return m_imgProc != nullptr; }
+    QString attachedBrief() const { return m_brief; }
+    QString attachedLogo() const { return m_logo; }
+    QString logoBox() const { return m_logoBox; }
+    void setLogoBox(const QString &b) { if (b != m_logoBox) { m_logoBox = b; emit imageChanged(); } }
+    Q_INVOKABLE bool attachBrief(const QString &pathOrUrl);   // anexa o briefing de renderizacao (.md ou .txt legivel); false se nao for
+    Q_INVOKABLE void clearBrief();
+    Q_INVOKABLE bool attachLogo(const QString &pathOrUrl);    // anexa o logo (imagem legivel, PNG com alfa); false se nao for imagem
+    Q_INVOKABLE void clearLogo();
+    static bool validLogoBox(const QString &box);             // "x,y,w,h": quatro numeros positivos (w e h > 0)
     Q_INVOKABLE bool attachImage(const QString &pathOrUrl);   // anexa uma imagem (caminho ou file://); false se nao for imagem legivel
     Q_INVOKABLE void clearImage();
     Q_INVOKABLE bool sendImage(const QString &text);          // gera a imagem com `katana render generate` (nao passa pelo agente)
@@ -364,7 +376,7 @@ private:
     static QString cleanArgs(const QString &s);
 
     QString m_katana, m_modelsDir, m_home, m_sessDir;
-    QString m_attach, m_imgEngine = QStringLiteral("stable");
+    QString m_attach, m_brief, m_logo, m_logoBox = QStringLiteral("0.04,0.04,0.22,0.12"), m_imgEngine = QStringLiteral("stable");
     bool m_imgMode = false;
     QProcess *m_imgProc = nullptr;
     QSettings *m_ui = nullptr;

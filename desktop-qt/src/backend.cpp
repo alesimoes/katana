@@ -1507,6 +1507,56 @@ void Backend::clearImage()
     emit imageChanged();
 }
 
+bool Backend::attachBrief(const QString &pathOrUrl)
+{
+    const QString p = pathOrUrl.startsWith("file:") ? QUrl(pathOrUrl).toLocalFile() : pathOrUrl;
+    const QFileInfo fi(p);
+    const QString ext = fi.suffix().toLower();
+    if (!fi.isFile() || (ext != "md" && ext != "txt") || fi.size() <= 0 || fi.size() > 2 * 1024 * 1024)
+        return false;
+    m_brief = fi.absoluteFilePath();
+    emit imageChanged();
+    return true;
+}
+
+void Backend::clearBrief()
+{
+    if (m_brief.isEmpty()) return;
+    m_brief.clear();
+    emit imageChanged();
+}
+
+bool Backend::attachLogo(const QString &pathOrUrl)
+{
+    const QString p = pathOrUrl.startsWith("file:") ? QUrl(pathOrUrl).toLocalFile() : pathOrUrl;
+    QImageReader r(p);
+    if (!QFileInfo(p).isFile() || !r.canRead())
+        return false;
+    m_logo = QFileInfo(p).absoluteFilePath();
+    emit imageChanged();
+    return true;
+}
+
+void Backend::clearLogo()
+{
+    if (m_logo.isEmpty()) return;
+    m_logo.clear();
+    emit imageChanged();
+}
+
+bool Backend::validLogoBox(const QString &box)
+{
+    const QStringList f = box.split(',');
+    if (f.size() != 4) return false;
+    double v[4];
+    for (int i = 0; i < 4; ++i) {
+        bool ok = false;
+        v[i] = f[i].trimmed().toDouble(&ok);
+        if (!ok || v[i] < 0) return false;
+    }
+    return v[2] > 0 && v[3] > 0;
+}
+
 bool Backend::sendImage(const QString &text)
 {
     if (m_attach.isEmpty() || m_imgProc || m_katana.isEmpty())
@@ -1514,8 +1564,16 @@ bool Backend::sendImage(const QString &text)
     const QString engine = m_imgEngine;
     const QString nome = engine == "flux" ? "FLUX" : engine == "krea" ? "Krea" : "Stable";
     const QString img = m_attach;
+    const QString brief = m_brief, logo = m_logo;
+    QString logoBox = m_logoBox.simplified().remove(' ');
+    if (!logo.isEmpty() && !validLogoBox(logoBox)) {
+        m_msgs.append("error", QString("A caixa do logo \"%1\" nao vale: use x,y,w,h, por exemplo 0.04,0.04,0.22,0.12 (fracao da imagem) ou em pixels.").arg(m_logoBox));
+        return false;
+    }
     QString prompt = text.trimmed();
-    if (prompt.isEmpty())
+    if (prompt.isEmpty() && !brief.isEmpty())
+        prompt = QStringLiteral("(briefing: %1)").arg(QFileInfo(brief).fileName());      // so o rotulo da conversa; o prompt vem do briefing
+    else if (prompt.isEmpty())
         prompt = QStringLiteral("Fotografia arquitetonica de interiores, fotorrealista, mesma camera, mesma composicao e mesmos materiais da imagem de referencia.");
     // tamanho: multiplos de 64, area parecida com 576x320, lados entre 64 e 640, proporcao da imagem
     const QSize sz = QImageReader(img).size();
@@ -1528,8 +1586,15 @@ bool Backend::sendImage(const QString &text)
     QDir().mkpath(imageDir());
     const QString out = QDir(imageDir()).filePath(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + "-" + engine + ".png");
     // o pedido inteiro vai ao motor de prompt do katana (--nl): ele monta o prompt do motor escolhido (dominio, presets, pesos)
-    QStringList args{"render", "generate", "--engine", engine, "--nl", prompt, "--init", img, "--strength", "0.35",
+    QStringList args{"render", "generate", "--engine", engine, "--init", img, "--strength", "0.35",
                      "--size", QString("%1x%2").arg(W).arg(H), "--out", out};
+    if (!brief.isEmpty()) {
+        args << "--brief" << brief;                                  // o prompt vem do briefing; o texto digitado entra como pedido adicional
+        if (!text.trimmed().isEmpty()) args << "--nl" << text.trimmed();
+    } else {
+        args << "--nl" << prompt;
+    }
+    if (!logo.isEmpty()) args << "--logo" << logo << "--logo-box" << logoBox << "--logo-blend";
     if (engine == "stable") args << "--lcm";
     if (QDir(QDir(m_modelsDir).filePath("render")).exists()) args << "--models" << QDir(m_modelsDir).filePath("render");
 
@@ -1542,6 +1607,8 @@ bool Backend::sendImage(const QString &text)
     saveSession();
     refreshSessions();
     m_attach.clear();
+    m_brief.clear();                                                  // briefing e logo valem para um envio, como a imagem
+    m_logo.clear();
 
     auto *p = new QProcess(this);
     m_imgProc = p;
