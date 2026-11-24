@@ -4,8 +4,10 @@
  * O Flux2Transformer2DModel inteiro: projecoes de entrada, embedding do passo, modulacoes, 5 blocos duplos (fluxos de imagem e de texto com
  * atencao conjunta), 20 blocos simples (atencao e MLP em paralelo num so produto) e a camada final com normalizacao adaptativa.
  * Os pesos ficam no GGUF mapeado, com os nomes do formato original do modelo (double_blocks.N.img_attn.qkv.weight ...), em F32, BF16,
- * Q4_K e Q5_K. Cada produto desquantiza o peso direto para os paineis do produto de matrizes (vision/tensor.c) e roda em float32;
- * nada alem do GGUF mapeado fica em memoria entre duas chamadas.
+ * Q4_K e Q5_K. Cada peso e desquantizado uma unica vez para os paineis do produto de matrizes (vision/tensor.c) e fica em cache
+ * (~15 GB em float32, KATANA_FLUX_WEIGHTS muda isso); os produtos rodam em float32 em tarefas de duas dimensoes (fatia do peso x bloco de
+ * linhas) e a atencao e feita por produtos de matrizes em blocos de consultas, sem materializar a matriz n x n. Comandos de apoio:
+ * `katana render flux-dit bench [Ni] [Nt]` (tempo por etapa) e `attn-test [n]` (atencao por produtos contra a versao simples).
  *
  * Formas (config.json): dim 3072 = 24 cabecas x 128; entrada de imagem 128 canais (latente 32 x patch 2x2); texto 7680 (tres camadas do
  * codificador de texto concatenadas); MLP de razao 3 (9216) com SwiGLU; RoPE em 4 eixos de 32 (t, h, w, l), theta 2000.
@@ -25,6 +27,12 @@
 #define FXD_NSGL 20
 
 typedef struct { SdgFile g; } FxDit;
+
+/* contadores de tempo por etapa (KATANA_FLUX_PROF=1 ou o comando bench): empacotamento/desquantizacao, produtos, atencao */
+enum { FT_PACK, FT_GEMM, FT_ATT, FT_N };
+static double g_fxd_tm[FT_N]; static int g_fxd_prof;
+#define FXD_TIC() (g_fxd_prof ? sdt_now() : 0.0)
+#define FXD_TOC(k, t0) do { if (g_fxd_prof) g_fxd_tm[k] += sdt_now() - (t0); } while (0)
 
 /* destinos opcionais (buffers do chamador) para os estados intermediarios */
 typedef struct {
@@ -56,32 +64,163 @@ static void fxd_row(const SdgInfo *t, const uint8_t *data, int row, int cols, fl
 }
 
 /* paineis do produto: NR linhas do peso viram um painel [cols][NR] (o mesmo layout de vt_pack, com a origem desquantizada) */
-typedef struct { const SdgInfo *t; const uint8_t *data; float *B; int rows, cols, NR; } FxdPackJob;
+typedef struct { const SdgInfo *t; const uint8_t *data; float *B; uint16_t *H; int rows, cols, NR; } FxdPackJob;
 static void fxd_pack_job(void *cx, int j0, int j1) {
     const FxdPackJob *j = cx;
     const int c = j->cols, NR = j->NR;
     float *row = vt_alloc((size_t)c * 4);
     for (int p = j0; p < j1; p++) {
-        float *o = j->B + (size_t)p * c * NR;
+        float *o = j->B ? j->B + (size_t)p * c * NR : NULL;
+        uint16_t *oh = j->H ? j->H + (size_t)p * c * NR : NULL;
         for (int r = 0; r < NR; r++) {
             const int rr = p * NR + r;
-            if (rr >= j->rows) { for (int i = 0; i < c; i++) o[(size_t)i * NR + r] = 0.0f; continue; }
+            if (rr >= j->rows) { for (int i = 0; i < c; i++) { if (oh) oh[(size_t)i * NR + r] = 0; else o[(size_t)i * NR + r] = 0.0f; } continue; }
             fxd_row(j->t, j->data, rr, c, row);
-            for (int i = 0; i < c; i++) o[(size_t)i * NR + r] = row[i];
+            if (oh) for (int i = 0; i < c; i++) oh[(size_t)i * NR + r] = _cvtss_sh(row[i], 0);
+            else for (int i = 0; i < c; i++) o[(size_t)i * NR + r] = row[i];
         }
     }
     vt_free(row);
 }
 
+/* ---- produto com pesos em cache: paineis F16 (ou F32), montados uma vez por tensor e reaproveitados em todas as chamadas ----
+ * KATANA_FLUX_WEIGHTS: f32 (padrao, paineis float: ~15 GB, exato), f16 (metade da memoria; o peso desquantizado e arredondado para 10 bits de
+ * mantissa, a conversao acontece dentro do laco do produto; o erro da saida passa de 1e-3 e o produto fica mais lento, so serve a quem nao tem
+ * a memoria), none (desquantiza a cada chamada, o caminho original). */
+typedef struct { const SdgInfo *t; float *f; uint16_t *h; } FxdWE;
+static FxdWE g_fxd_wc[320]; static int g_fxd_nwc;
+static int fxd_wmode(void) {
+    static int m = -1;
+    if (m < 0) { const char *e = getenv("KATANA_FLUX_WEIGHTS"); m = !e || !strcmp(e, "f32") ? 2 : !strcmp(e, "f16") ? 1 : 0; }
+    return m;
+}
+static const FxdWE *fxd_wget(const FxDit *F, const SdgInfo *t) {
+    for (int i = 0; i < g_fxd_nwc; i++) if (g_fxd_wc[i].t == t) return &g_fxd_wc[i];
+    if (g_fxd_nwc >= 320) return NULL;
+    const int cols = (int)t->dim[0], rows = (int)t->dim[1], NR = vt_nr(), np = (rows + NR - 1) / NR, mode = fxd_wmode();
+    FxdWE *e = &g_fxd_wc[g_fxd_nwc++]; e->t = t;
+    FxdPackJob pj = { t, sdg_data(&F->g, t), NULL, NULL, rows, cols, NR };
+    if (mode == 1) { e->h = vt_alloc((size_t)np * NR * cols * 2); pj.H = e->h; } else { e->f = vt_alloc((size_t)np * NR * cols * 4); pj.B = e->f; }
+    pool_for(fxd_pack_job, &pj, np, 1);
+    return e;
+}
+
+/* nucleo com painel F16: igual ao do produto de vision/tensor.c, com b carregado como metades e convertido */
+VT_512 VT_INL void fxd_k512h(const int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
+    __m512 x[12], y[12];
+#pragma GCC unroll 12
+    for (int i = 0; i < mr; i++) { x[i] = _mm512_setzero_ps(); y[i] = _mm512_setzero_ps(); }
+    for (int p = 0; p < k; p++, b += 32) {
+        const __m512 b0 = _mm512_cvtph_ps(_mm256_load_si256((const __m256i *)b)), b1 = _mm512_cvtph_ps(_mm256_load_si256((const __m256i *)(b + 16)));
+#pragma GCC unroll 12
+        for (int i = 0; i < mr; i++) {
+            const __m512 v = _mm512_set1_ps(a[(size_t)i * lda + p]);
+            x[i] = _mm512_fmadd_ps(v, b0, x[i]); y[i] = _mm512_fmadd_ps(v, b1, y[i]);
+        }
+    }
+#pragma GCC unroll 12
+    for (int i = 0; i < mr; i++) {
+        float *o = c + (size_t)i * ldc;
+        if (add) { x[i] = _mm512_add_ps(x[i], _mm512_loadu_ps(o)); y[i] = _mm512_add_ps(y[i], _mm512_loadu_ps(o + 16)); }
+        _mm512_storeu_ps(o, x[i]); _mm512_storeu_ps(o + 16, y[i]);
+    }
+}
+VT_512 static void fxd_kern512h(int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
+    switch (mr) {
+#define K(n) case n: fxd_k512h(n, a, lda, b, k, c, ldc, add); break;
+    K(1) K(2) K(3) K(4) K(5) K(6) K(7) K(8) K(9) K(10) K(11) K(12)
+#undef K
+    }
+}
+VT_INL void fxd_k256h(const int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
+    __m256 x[6], y[6];
+#pragma GCC unroll 6
+    for (int i = 0; i < mr; i++) { x[i] = _mm256_setzero_ps(); y[i] = _mm256_setzero_ps(); }
+    for (int p = 0; p < k; p++, b += 16) {
+        const __m256 b0 = _mm256_cvtph_ps(_mm_load_si128((const __m128i *)b)), b1 = _mm256_cvtph_ps(_mm_load_si128((const __m128i *)(b + 8)));
+#pragma GCC unroll 6
+        for (int i = 0; i < mr; i++) {
+            const __m256 v = _mm256_broadcast_ss(a + (size_t)i * lda + p);
+            x[i] = _mm256_fmadd_ps(v, b0, x[i]); y[i] = _mm256_fmadd_ps(v, b1, y[i]);
+        }
+    }
+#pragma GCC unroll 6
+    for (int i = 0; i < mr; i++) {
+        float *o = c + (size_t)i * ldc;
+        if (add) { x[i] = _mm256_add_ps(x[i], _mm256_loadu_ps(o)); y[i] = _mm256_add_ps(y[i], _mm256_loadu_ps(o + 8)); }
+        _mm256_storeu_ps(o, x[i]); _mm256_storeu_ps(o + 8, y[i]);
+    }
+}
+static void fxd_kern256h(int mr, const float *a, size_t lda, const uint16_t *b, int k, float *c, size_t ldc, int add) {
+    switch (mr) {
+#define K(n) case n: fxd_k256h(n, a, lda, b, k, c, ldc, add); break;
+    K(1) K(2) K(3) K(4) K(5) K(6)
+#undef K
+    }
+}
+/* C[n][m] = A[n][k] * paineis F16, so os paineis pa..pb-1 (colunas de C pa*NR em diante) */
+static void fxd_gemm_h(float *C, size_t ldc, const float *A, size_t lda, const uint16_t *B, int n, int k, int m, int pa, int pb) {
+    const int wide = vt_wide(), NR = wide ? 32 : 16, MR = wide ? 12 : 6, KC = 512;
+    for (int p0 = 0; p0 < k; p0 += KC) {
+        const int kc = k - p0 < KC ? k - p0 : KC, add = p0 > 0;
+        for (int p = pa; p < pb; p++) {
+            const int j = p * NR, w = m - j < NR ? m - j : NR;
+            const uint16_t *b = B + (size_t)p * k * NR + (size_t)p0 * NR;
+            for (int i = 0; i < n; i += MR) {
+                const int mr = n - i < MR ? n - i : MR;
+                const float *a = A + (size_t)i * lda + p0;
+                float *c = C + (size_t)i * ldc + j;
+                if (w == NR) { if (wide) fxd_kern512h(mr, a, lda, b, kc, c, ldc, add); else fxd_kern256h(mr, a, lda, b, kc, c, ldc, add); continue; }
+                float t[12 * 32];
+                if (add) for (int r = 0; r < mr; r++) { memset(t + r * NR, 0, (size_t)NR * 4); memcpy(t + r * NR, c + (size_t)r * ldc, (size_t)w * 4); }
+                if (wide) fxd_kern512h(mr, a, lda, b, kc, t, (size_t)NR, add); else fxd_kern256h(mr, a, lda, b, kc, t, (size_t)NR, add);
+                for (int r = 0; r < mr; r++) memcpy(c + (size_t)r * ldc, t + r * NR, (size_t)w * 4);
+            }
+        }
+    }
+}
+
+/* tarefas em duas dimensoes: grupos de paineis (fatia do peso que cabe em ~2 MB) x blocos de FXD_RB linhas; o indice varre os blocos de
+ * linhas por dentro, assim as threads que rodam juntas dividem a mesma fatia de peso na cache. Poucas linhas (texto) ainda enchem as threads. */
+#define FXD_RB 48
+typedef struct { float *Y; const float *X; const FxdWE *w; int n, k, m, NR, G, np, nrb; } FxdGj;
+static void fxd_gj_job(void *cx, int j0, int j1) {
+    const FxdGj *j = cx;
+    for (int idx = j0; idx < j1; idx++) {
+        const int pg = idx / j->nrb, rb = idx % j->nrb, r0 = rb * FXD_RB, nn = j->n - r0 < FXD_RB ? j->n - r0 : FXD_RB;
+        const int pa = pg * j->G, pb = pa + j->G < j->np ? pa + j->G : j->np;
+        float *y = j->Y + (size_t)r0 * j->m; const float *x = j->X + (size_t)r0 * j->k;
+        if (j->w->h) fxd_gemm_h(y, (size_t)j->m, x, (size_t)j->k, j->w->h, nn, j->k, j->m, pa, pb);
+        else { const int c0 = pa * j->NR, mm = (pb * j->NR < j->m ? pb * j->NR : j->m) - c0; vt_gemm_packed(y + c0, (size_t)j->m, x, (size_t)j->k, j->w->f + (size_t)pa * j->k * j->NR, nn, j->k, mm); }
+    }
+}
+
 /* Y[n][rows] = X[n][cols] * W^T (sem vies). O GGUF guarda [ne0 = entrada, ne1 = saida]. */
 static void fxd_lin(const FxDit *F, float *Y, const float *X, int n, const SdgInfo *t) {
     const int cols = (int)t->dim[0], rows = (int)t->dim[1], NR = vt_nr(), np = (rows + NR - 1) / NR;
+    if (fxd_wmode()) {
+        double t0 = FXD_TIC();
+        const FxdWE *w = fxd_wget(F, t);
+        FXD_TOC(FT_PACK, t0); t0 = FXD_TIC();
+        if (w) {
+            const size_t es = w->h ? 2 : 4;
+            int G = (int)((2u << 20) / ((size_t)cols * NR * es)); if (G < 1) G = 1;
+            const int nrb = (n + FXD_RB - 1) / FXD_RB, npg = (np + G - 1) / G;
+            FxdGj j = { Y, X, w, n, cols, rows, NR, G, np, nrb };
+            pool_for(fxd_gj_job, &j, npg * nrb, 1);
+            FXD_TOC(FT_GEMM, t0);
+            return;
+        }
+    }
+    double t0 = FXD_TIC();
     float *B = vt_alloc((size_t)np * NR * cols * 4);
-    FxdPackJob pj = { t, sdg_data(&F->g, t), B, rows, cols, NR };
+    FxdPackJob pj = { t, sdg_data(&F->g, t), B, NULL, rows, cols, NR };
     pool_for(fxd_pack_job, &pj, np, 1);
+    FXD_TOC(FT_PACK, t0); t0 = FXD_TIC();
     VtLinJob j = { Y, X, B, NULL, n, cols, rows, (size_t)rows, (size_t)cols };
     pool_for(vt_lin_job, &j, (n + VT_ROWS - 1) / VT_ROWS, 1);
     vt_free(B);
+    FXD_TOC(FT_GEMM, t0);
 }
 
 /* um vetor (n = 1): y[rows] = W x, sem empacotar */
@@ -187,7 +326,62 @@ static void fxd_att_job(void *cx, int i0, int i1) {
     }
     free(sc);
 }
-static void fxd_attention(float *O, const float *Q, const float *K, const float *V, int n) { FxdAtt j = { Q, K, V, O, n }; pool_for(fxd_att_job, &j, n * FXD_HEADS, 4); }
+static void fxd_attention_simple(float *O, const float *Q, const float *K, const float *V, int n) { FxdAtt j = { Q, K, V, O, n }; pool_for(fxd_att_job, &j, n * FXD_HEADS, 4); }
+
+/* atencao por produtos de matrizes: por cabeca, K vira paineis [painel de n][128][NR] (ja multiplicado por 1/sqrt(128)) e V paineis
+ * [painel de colunas][n][NR]; cada bloco de FXD_AQ consultas faz sc = Q K^T (produto), softmax por linha, O = sc V (produto). A matriz de
+ * pontuacoes nunca existe inteira: so FXD_AQ x n por tarefa (~260 KB com 2700 tokens). Cabecas e blocos de consultas rodam em paralelo. */
+#define FXD_AQ 48
+typedef struct { const float *Q, *K, *V; float *O, *KP, *VP; int n, NR, np, nv, nqb; float scale; } FxdAg;
+static void fxd_ag_packk(void *cx, int j0, int j1) {
+    const FxdAg *j = cx;
+    for (int idx = j0; idx < j1; idx++) {
+        const int h = idx / j->np, p = idx % j->np;
+        for (int r = 0; r < j->NR; r++) {
+            const int t = p * j->NR + r;
+            const float *k = t < j->n ? j->K + (size_t)t * FXD_DIM + (size_t)h * FXD_HD : NULL;
+            float *o = j->KP + ((size_t)h * j->np + p) * FXD_HD * j->NR + r;
+            for (int i = 0; i < FXD_HD; i++) o[(size_t)i * j->NR] = k ? k[i] * j->scale : 0.0f;
+        }
+    }
+}
+static void fxd_ag_packv(void *cx, int j0, int j1) {
+    const FxdAg *j = cx;
+    for (int idx = j0; idx < j1; idx++) {
+        const int h = idx / j->nv, pv = idx % j->nv;
+        const int w = FXD_HD - pv * j->NR < j->NR ? FXD_HD - pv * j->NR : j->NR;
+        for (int t = 0; t < j->n; t++) {
+            float *o = j->VP + ((size_t)h * j->nv + pv) * j->n * j->NR + (size_t)t * j->NR;
+            memset(o, 0, (size_t)j->NR * 4);
+            memcpy(o, j->V + (size_t)t * FXD_DIM + (size_t)h * FXD_HD + (size_t)pv * j->NR, (size_t)w * 4);
+        }
+    }
+}
+static void fxd_ag_job(void *cx, int j0, int j1) {
+    const FxdAg *j = cx;
+    float *sc = vt_alloc((size_t)FXD_AQ * j->n * 4);
+    for (int idx = j0; idx < j1; idx++) {
+        const int h = idx / j->nqb, b = idx % j->nqb, t0 = b * FXD_AQ, nq = j->n - t0 < FXD_AQ ? j->n - t0 : FXD_AQ;
+        vt_gemm_packed(sc, (size_t)j->n, j->Q + (size_t)t0 * FXD_DIM + (size_t)h * FXD_HD, (size_t)FXD_DIM, j->KP + (size_t)h * j->np * FXD_HD * j->NR, nq, FXD_HD, j->n);
+        for (int t = 0; t < nq; t++) vt_softmax(sc + (size_t)t * j->n, j->n);
+        vt_gemm_packed(j->O + (size_t)t0 * FXD_DIM + (size_t)h * FXD_HD, (size_t)FXD_DIM, sc, (size_t)j->n, j->VP + (size_t)h * j->nv * j->n * j->NR, nq, j->n, FXD_HD);
+    }
+    vt_free(sc);
+}
+static void fxd_attention_gemm(float *O, const float *Q, const float *K, const float *V, int n) {
+    const int NR = vt_nr(), np = (n + NR - 1) / NR, nv = (FXD_HD + NR - 1) / NR, nqb = (n + FXD_AQ - 1) / FXD_AQ;
+    FxdAg j = { Q, K, V, O, vt_alloc((size_t)FXD_HEADS * np * NR * FXD_HD * 4), vt_alloc((size_t)FXD_HEADS * nv * NR * n * 4), n, NR, np, nv, nqb, 1.0f / sqrtf((float)FXD_HD) };
+    pool_for(fxd_ag_packk, &j, FXD_HEADS * np, 4);
+    pool_for(fxd_ag_packv, &j, FXD_HEADS * nv, 1);
+    pool_for(fxd_ag_job, &j, FXD_HEADS * nqb, 1);
+    vt_free(j.KP); vt_free(j.VP);
+}
+static void fxd_attention(float *O, const float *Q, const float *K, const float *V, int n) {
+    const double t0 = FXD_TIC();
+    static int simple = -1; if (simple < 0) { const char *e = getenv("KATANA_FLUX_ATT"); simple = e && !strcmp(e, "simple"); }
+    if (simple) fxd_attention_simple(O, Q, K, V, n); else fxd_attention_gemm(O, Q, K, V, n);
+    FXD_TOC(FT_ATT, t0);
+}
 
 /* SwiGLU: H[n][2m] -> Y[n][m] = silu(H[:, :m]) * H[:, m:], com passo de entrada ldh */
 typedef struct { float *Y; const float *H; int m; size_t ldh; } FxdSw;
@@ -197,9 +391,33 @@ static void fxd_sw_job(void *cx, int r0, int r1) {
 }
 static void fxd_swiglu(float *Y, const float *H, int n, int m, size_t ldh) { FxdSw j = { Y, H, m, ldh }; pool_for(fxd_sw_job, &j, n, 4); }
 
-static void fxd_axpy_gate(float *X, const float *G, const float *Y, int n, int d) {       /* X += gate * Y (gate por coluna) */
-    for (int r = 0; r < n; r++) for (int i = 0; i < d; i++) X[(size_t)r * d + i] += G[i] * Y[(size_t)r * d + i];
+typedef struct { float *X; const float *G, *Y; int d; } FxdAx;
+static void fxd_ax_job(void *cx, int r0, int r1) {
+    const FxdAx *j = cx;
+    for (int r = r0; r < r1; r++) for (int i = 0; i < j->d; i++) j->X[(size_t)r * j->d + i] += j->G[i] * j->Y[(size_t)r * j->d + i];
 }
+static void fxd_axpy_gate(float *X, const float *G, const float *Y, int n, int d) {       /* X += gate * Y (gate por coluna) */
+    FxdAx j = { X, G, Y, d }; pool_for(fxd_ax_job, &j, n, 8);
+}
+
+/* qkv de um produto fundido [n][ld] (q, k, v lado a lado, 3072 cada) para tres matrizes [n][3072], a partir da coluna c0 de cada linha */
+typedef struct { const float *src; float *Q, *K, *V; size_t ld, c0; } FxdSplit;
+static void fxd_split_job(void *cx, int r0, int r1) {
+    const FxdSplit *j = cx;
+    for (int r = r0; r < r1; r++) {
+        const float *p = j->src + (size_t)r * j->ld + j->c0;
+        memcpy(j->Q + (size_t)r * FXD_DIM, p, (size_t)FXD_DIM * 4); memcpy(j->K + (size_t)r * FXD_DIM, p + FXD_DIM, (size_t)FXD_DIM * 4); memcpy(j->V + (size_t)r * FXD_DIM, p + 2 * FXD_DIM, (size_t)FXD_DIM * 4);
+    }
+}
+static void fxd_split_qkv(const float *src, size_t ld, int n, float *Q, float *K, float *V) { FxdSplit j = { src, Q, K, V, ld, 0 }; pool_for(fxd_split_job, &j, n, 8); }
+
+/* SwiGLU com saida em passo proprio: Y[r*ldy + i] = silu(H[r*ldh + i]) * H[r*ldh + m + i] */
+typedef struct { float *Y; const float *H; int m; size_t ldh, ldy; } FxdSw2;
+static void fxd_sw2_job(void *cx, int r0, int r1) {
+    const FxdSw2 *j = cx;
+    for (int r = r0; r < r1; r++) { const float *h = j->H + (size_t)r * j->ldh; float *y = j->Y + (size_t)r * j->ldy; for (int i = 0; i < j->m; i++) y[i] = fxd_silu(h[i]) * h[j->m + i]; }
+}
+static void fxd_swiglu2(float *Y, size_t ldy, const float *H, size_t ldh, int n, int m) { FxdSw2 j = { Y, H, m, ldh, ldy }; pool_for(fxd_sw2_job, &j, n, 4); }
 
 
 /* ganho de 128 de uma norma de q/k (F32 no GGUF); o chamador libera */
@@ -227,10 +445,10 @@ static int fxd_double(const FxDit *F, int b, float *img, int Ni, float *txt, int
     float *Q = xalloc((size_t)N * D, 4), *K = xalloc((size_t)N * D, 4), *V = xalloc((size_t)N * D, 4), *A = xalloc((size_t)N * D, 4);
     /* texto primeiro, imagem depois */
     fxd_ln_mod(xn, txt, Nt, D, t_sh1, t_sc1); fxd_lin(F, qkv, xn, Nt, tqkv);
-    for (int r = 0; r < Nt; r++) { memcpy(Q + (size_t)r * D, qkv + (size_t)r * 3 * D, (size_t)D * 4); memcpy(K + (size_t)r * D, qkv + (size_t)r * 3 * D + D, (size_t)D * 4); memcpy(V + (size_t)r * D, qkv + (size_t)r * 3 * D + 2 * D, (size_t)D * 4); }
+    fxd_split_qkv(qkv, (size_t)3 * D, Nt, Q, K, V);
     fxd_rms(Q, Nt, D, tq); fxd_rms(K, Nt, D, tk);
     fxd_ln_mod(xn, img, Ni, D, i_sh1, i_sc1); fxd_lin(F, qkv, xn, Ni, iqkv);
-    for (int r = 0; r < Ni; r++) { const size_t o = (size_t)(Nt + r) * D; memcpy(Q + o, qkv + (size_t)r * 3 * D, (size_t)D * 4); memcpy(K + o, qkv + (size_t)r * 3 * D + D, (size_t)D * 4); memcpy(V + o, qkv + (size_t)r * 3 * D + 2 * D, (size_t)D * 4); }
+    fxd_split_qkv(qkv, (size_t)3 * D, Ni, Q + (size_t)Nt * D, K + (size_t)Nt * D, V + (size_t)Nt * D);
     fxd_rms(Q + (size_t)Nt * D, Ni, D, iq); fxd_rms(K + (size_t)Nt * D, Ni, D, ik);
     fxd_rope(Q, N, cs, sn); fxd_rope(K, N, cs, sn);
     fxd_attention(A, Q, K, V, N);
@@ -257,16 +475,14 @@ static int fxd_single(const FxDit *F, int b, float *x, int N, const float *ms, c
     float *Q = xalloc((size_t)N * D, 4), *K = xalloc((size_t)N * D, 4), *V = xalloc((size_t)N * D, 4), *A = xalloc((size_t)N * D, 4);
     fxd_ln_mod(xn, x, N, D, ms, ms + D);
     fxd_lin(F, h, xn, N, l1);
-    for (int r = 0; r < N; r++) { const float *p = h + (size_t)r * L1; memcpy(Q + (size_t)r * D, p, (size_t)D * 4); memcpy(K + (size_t)r * D, p + D, (size_t)D * 4); memcpy(V + (size_t)r * D, p + 2 * D, (size_t)D * 4); }
+    fxd_split_qkv(h, (size_t)L1, N, Q, K, V);
     fxd_rms(Q, N, D, wq); fxd_rms(K, N, D, wk);
     fxd_rope(Q, N, cs, sn); fxd_rope(K, N, cs, sn);
     fxd_attention(A, Q, K, V, N);
     const int C2 = D + FXD_MLP;
     float *cat = xalloc((size_t)N * C2, 4), *o = xalloc((size_t)N * D, 4);
     for (int r = 0; r < N; r++) memcpy(cat + (size_t)r * C2, A + (size_t)r * D, (size_t)D * 4);
-    {   /* parte do MLP: silu(primeira metade) * segunda metade, escrita depois das D colunas da atencao */
-        for (int r = 0; r < N; r++) { const float *hm = h + (size_t)r * L1 + 3 * D; float *y = cat + (size_t)r * C2 + D; for (int i = 0; i < FXD_MLP; i++) y[i] = fxd_silu(hm[i]) * hm[FXD_MLP + i]; }
-    }
+    fxd_swiglu2(cat + D, (size_t)C2, h + 3 * D, (size_t)L1, N, FXD_MLP);     /* parte do MLP: silu(primeira metade) * segunda, depois das D colunas da atencao */
     fxd_lin(F, o, cat, N, l2);
     fxd_axpy_gate(x, ms + 2 * D, o, N, D);
     free(xn); free(h); free(Q); free(K); free(V); free(A); free(cat); free(o); free(wq); free(wk);
@@ -338,7 +554,41 @@ static int fxd_cmp(const char *what, const float *a, const float *b, size_t n) {
     return ok ? 0 : 1;
 }
 
+/* bench: forward com entradas sinteticas, tamanho Ni (imagem) x Nt (texto); o primeiro forward e descartado (monta caches), o segundo e medido */
+static int fxd_bench(int Ni, int Nt) {
+    char gp[1100]; snprintf(gp, sizeof gp, "%s/flux2klein/gguf/flux-2-klein-4b-Q4_K_M.gguf", models_dir());
+    FxDit F; if (!fxd_open(&F, gp)) return 1;
+    float *img = xalloc((size_t)Ni * FXD_INCH, 4), *txt = xalloc((size_t)Nt * FXD_TXTCH, 4), *ii = xalloc((size_t)Ni * 4, 4), *it = xalloc((size_t)Nt * 4, 4), *out = xalloc((size_t)Ni * FXD_INCH, 4);
+    uint64_t r = 12345; for (size_t i = 0; i < (size_t)Ni * FXD_INCH; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; img[i] = ((int)(r >> 40) % 2000 - 1000) / 1000.0f; }
+    for (size_t i = 0; i < (size_t)Nt * FXD_TXTCH; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; txt[i] = ((int)(r >> 40) % 2000 - 1000) / 400.0f; }
+    int W = 1; while (W * W < Ni) W++;
+    for (int i = 0; i < Ni; i++) { ii[i * 4] = 0; ii[i * 4 + 1] = (float)(i / W); ii[i * 4 + 2] = (float)(i % W); ii[i * 4 + 3] = 0; }
+    for (int i = 0; i < Nt; i++) { it[i * 4] = 0; it[i * 4 + 1] = 0; it[i * 4 + 2] = 0; it[i * 4 + 3] = (float)i; }
+    g_fxd_prof = 0;
+    double t0 = sdt_now(); if (!fxd_forward(&F, img, ii, Ni, txt, it, Nt, 0.5f, out, NULL)) return 1; const double first = sdt_now() - t0;
+    g_fxd_prof = 1; memset(g_fxd_tm, 0, sizeof g_fxd_tm);
+    t0 = sdt_now(); if (!fxd_forward(&F, img, ii, Ni, txt, it, Nt, 0.5f, out, NULL)) return 1; const double tot = sdt_now() - t0;
+    double h = 0; for (size_t i = 0; i < (size_t)Ni * FXD_INCH; i++) h += (double)out[i] * (double)((i % 97) + 1);
+    printf("bench Ni=%d Nt=%d  1o forward %.2f s  2o forward %.2f s  | desquantizar/empacotar %.2f  produtos %.2f  atencao %.2f  resto %.2f | soma %.6e\n", Ni, Nt, first, tot,
+           g_fxd_tm[FT_PACK], g_fxd_tm[FT_GEMM], g_fxd_tm[FT_ATT], tot - g_fxd_tm[FT_PACK] - g_fxd_tm[FT_GEMM] - g_fxd_tm[FT_ATT], h);
+    return 0;
+}
+
+/* attn-test [n]: atencao por produtos contra a versao simples, Q K V aleatorios, n tokens */
+static int fxd_attn_test(int n) {
+    const size_t sz = (size_t)n * FXD_DIM;
+    float *Q = xalloc(sz, 4), *K = xalloc(sz, 4), *V = xalloc(sz, 4), *O1 = xalloc(sz, 4), *O2 = xalloc(sz, 4);
+    uint64_t r = 99; for (size_t i = 0; i < sz; i++) { r = r * 6364136223846793005ULL + 1442695040888963407ULL; Q[i] = ((int)(r >> 40) % 2000 - 1000) / 250.0f; r = r * 6364136223846793005ULL + 1442695040888963407ULL; K[i] = ((int)(r >> 40) % 2000 - 1000) / 250.0f; r = r * 6364136223846793005ULL + 1442695040888963407ULL; V[i] = ((int)(r >> 40) % 2000 - 1000) / 1000.0f; }
+    double t0 = sdt_now(); fxd_attention_simple(O1, Q, K, V, n); const double ts = sdt_now() - t0;
+    t0 = sdt_now(); fxd_attention_gemm(O2, Q, K, V, n); const double tg = sdt_now() - t0;
+    const int bad = fxd_cmp("atencao por produtos x simples", O2, O1, sz);
+    printf("  n=%d tokens  razao de tempo simples/produtos %.1f\n", n, ts / tg);
+    return bad;
+}
+
 static int fxd_main(int argc, char **argv) {
+    if (argc >= 1 && !strcmp(argv[0], "attn-test")) return fxd_attn_test(argc > 1 ? atoi(argv[1]) : 2700);
+    if (argc >= 1 && !strcmp(argv[0], "bench")) return fxd_bench(argc > 1 ? atoi(argv[1]) : 240, argc > 2 ? atoi(argv[2]) : 64);
     if (argc < 1 || strcmp(argv[0], "selftest")) { fprintf(stderr, "uso: katana render flux-dit selftest [pasta-referencia] [flux2-klein.gguf]\n"); return 1; }
     const char *dir = argc > 1 ? argv[1] : "/mnt/dados/render-ref/fluxB";
     char gp[1100]; snprintf(gp, sizeof gp, "%s/flux2klein/gguf/flux-2-klein-4b-Q4_K_M.gguf", models_dir());
