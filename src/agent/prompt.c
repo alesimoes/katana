@@ -176,7 +176,7 @@ static void agent_build_sys(char *out, size_t cap, const char *extra) {
             if (st || fx) o += (size_t)snprintf(out + o, cap - o,
                 "- This machine can generate images (any kind: illustration, character, scene, architecture): Render tool (load it with ToolSearch select:Render). Engines: %s%s%s. "
                 "Write the final prompt yourself in the brief argument, in English (stable: comma-separated tags, up to ~200 words; flux: prose, up to ~350 words; subject and style first); the engine sends it as written and cuts what exceeds the limit. "
-                "Pass image only if the user gave a reference. Preview with stable, show it and ask the user if it is approved; call flux only after they approve (or if they ask for the final directly); never chain stable and flux in one answer.\n",
+                "Pass image whenever the user gave or attached a view (use its path from the conversation), omit it only for text-only requests; colours as plain names, never hex or RGB; keep the user's words for materials and objects. Preview with stable, show it and ask the user if it is approved; call flux only after they approve (or if they ask for the final directly); never chain stable and flux in one answer.\n",
                 st ? "stable = fast preview (about 25 s for 768x448 on the CPU)" : "", st && fx ? "; " : "", fx ? "flux = final quality (GPU if free)" : ""); }
         /* sem o bloco de declaracoes nem a instrucao de formato quando o modelo foi treinado nas ferramentas: uma
            especializacao chamada tools.kspec esta aplicada (feita com este mesmo prompt). O modelo base nao sabe os

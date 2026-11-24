@@ -9,6 +9,7 @@ static const char CT_RENDER_DESC[] =
     "stable (default, fast preview): short English tags or phrases separated by commas, subject and style first, up to ~290 tokens (~200 words). "
     "flux (high definition): English prose, subject and style first, up to ~500 tokens (~350 words). "
     "Beyond the limit, whole lines or phrases are cut by relevance (colours, numbers, rules, rare words kept); the result says `brief: N/budget tokens` and `cut: ...` so you can resend it shorter. "
+    "Colours: use plain colour names (burgundy, slate blue-grey, cream), never hex or RGB numbers: the image model does not read them; keep the user's own words for materials and objects, do not rename or reinterpret them, and do not invent a room type. "
     "`image` (PNG or JPEG) is optional: a view, sketch or photo the picture should follow; leave it out to draw from the text alone. `brief` may also be the path of a text file with the prompt. "
     "Flow: preview with stable first, show the result and ASK the user whether it is approved; call flux only after the user approves (more steps and a larger size for the final), "
     "never stable then flux in the same answer. If the user asks directly for the final or high definition, go straight to flux. "
