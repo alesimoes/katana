@@ -1,0 +1,23 @@
+class Account
+  field owner: str = ""
+  field balance: int = 0
+  fn init(owner: str, balance: int = 0)
+    self.owner = owner
+    self.balance = balance
+  fn deposit(amount: int) -> int
+    if amount <= 0
+      throw "amount must be positive"
+    self.balance += amount
+    return self.balance
+  fn withdraw(amount: int) -> int
+    if amount > self.balance
+      throw "insufficient funds"
+    self.balance -= amount
+    return self.balance
+fn demo() -> int
+  let a = Account("ana", 10)
+  a.deposit(5)
+  return a.withdraw(3)
+test demo() == 12
+test Account("x").deposit(0) raises
+test Account("x", 1).withdraw(2) raises

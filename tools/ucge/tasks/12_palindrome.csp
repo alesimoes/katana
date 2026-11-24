@@ -1,0 +1,5 @@
+fn isPalindrome(s: str) -> bool
+  let t = lower(replace(s, " ", ""))
+  return t == reverse(t)
+test isPalindrome("Anotaram a data da maratona") == true
+test isPalindrome("abc") == false

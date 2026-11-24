@@ -1,0 +1,13 @@
+fn divide(a: float, b: float) -> float
+  if b == 0
+    throw "division by zero"
+  return a / b
+fn safeDivide(a: float, b: float, fallback: float = 0.0) -> float
+  try
+    return divide(a, b)
+  catch e
+    print("error: " + errmsg(e))
+    return fallback
+test safeDivide(6, 3) ~= 2.0
+test safeDivide(1, 0, -1.0) ~= -1.0
+test divide(1, 0) raises

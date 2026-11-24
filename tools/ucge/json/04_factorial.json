@@ -1,0 +1,6 @@
+[{"op":"FUNCTION","name":"factorial","params":[{"name":"n","type":"int"}],"returns":"int","body":[
+  {"op":"IF","cond":{"op":"COMPARE","cmp":"<","left":"n","right":0},"then":[{"op":"THROW","value":{"op":"LIT","value":"n must be >= 0"}}]},
+  {"op":"DECLARE","name":"r","value":1},
+  {"op":"LOOP","var":"i","from":2,"to":{"op":"ADD","left":"n","right":1},"body":[{"op":"ASSIGN","target":"r","assign":"*=","value":"i"}]},
+  {"op":"RETURN","value":"r"}]},
+ {"op":"TEST","expr":"factorial(5)","expect":120}]

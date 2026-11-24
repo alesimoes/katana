@@ -1,0 +1,3 @@
+[{"op":"FUNCTION","name":"sumValues","params":[{"name":"a","type":"int"},{"name":"b","type":"int","default":0}],"returns":"int",
+  "body":[{"op":"ADD","left":"a","right":"b","result":"r"},{"op":"RETURN","value":"r"}]},
+ {"op":"TEST","expr":"sumValues(2, 3)","expect":5}]

@@ -1,0 +1,12 @@
+# ler um arquivo JSON com {"items": [{"price": n}, ...]} e somar: o arquivo e a biblioteca json NAO estao na UIR -> raw
+fn totalFromFile(path: str) -> float
+  raw python defines data
+    import json
+    with open(path) as f:
+        data = json.load(f)
+  raw js defines data
+    const data = JSON.parse(require("fs").readFileSync(path, "utf8"));
+  let total = 0.0
+  for item in data["items"]
+    total += item["price"]
+  return total

@@ -1,0 +1,6 @@
+# somar dois numeros; o segundo e opcional (padrao 0)
+fn sumValues(a: int, b: int = 0) -> int
+  return a + b
+test sumValues(2, 3) == 5
+test sumValues(4) == 4
+test sumValues(-1, 1) == 0

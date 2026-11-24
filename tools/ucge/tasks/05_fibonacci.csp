@@ -1,0 +1,16 @@
+fn fib(n: int) -> int
+  let a = 0
+  let b = 1
+  for i in 0..n
+    let t = a + b
+    a = b
+    b = t
+  return a
+fn fibList(n: int) -> list[int]
+  let out: list[int] = []
+  for i in 0..n
+    push(out, fib(i))
+  return out
+test fib(0) == 0
+test fib(10) == 55
+test fibList(7) == [0, 1, 1, 2, 3, 5, 8]
