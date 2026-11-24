@@ -392,3 +392,17 @@ gain), co-occurrence and previous-token prediction (recall 49% and 40%).
 Selftest (`katana selftest`, option off) on Qwen3.6 and Gemma 4: the CPU lines are identical to the binary built from the base
 commit; the GPU-vs-exact lines move by a few 1e-4 between runs of the same binary because they depend on the free VRAM and
 swap timing (another job used the GPU), the argmax agrees (OK) in all.
+
+
+## FLUX.2 klein: CPU, Vulkan and CUDA (2026-11-24, RTX 3050 Laptop 4 GB, 8-thread host)
+
+Same session, GPU serialised with a lock, other jobs on the CPU. `katana render flux-dit bench Ni Nt` (second forward, weights already resident) and `flux-vae bench` (second decode). Vulkan is the `feat-vulkan` branch built from a clean export. CUDA is `feat-cuda`, default exact mode (verified against the float32 references, see `docs/render.md`, "CUDA path").
+
+| item | CPU | Vulkan | CUDA exact | CUDA fast (not verified: fails 1e-3) |
+|---|---|---|---|---|
+| transformer step, 720 + 64 tokens | 9.9 s | 1.62 s | 1.42 s | 0.58 s |
+| transformer step, 720 + 512 tokens | | 2.62 s | 2.07 s | |
+| VAE decode 576x320 | 4.8 s | 1.6 s (reported by the Vulkan branch) | 0.68 s | 0.30 s |
+| `render generate --engine flux --steps 2 --size 576x320`, end to end | | 18.3 s (reported by the Vulkan branch) | 13.9 s | |
+
+Single runs; noise was not measured. The Vulkan end-to-end and VAE numbers are the ones its branch reports, not re-measured here.

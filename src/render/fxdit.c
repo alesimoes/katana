@@ -498,6 +498,8 @@ static int fxd_single(const FxDit *F, int b, float *x, int N, const float *ms, c
     return 1;
 }
 
+#include "render/fxdit_cu.c"        /* o mesmo transformador na GPU (CUDA) */
+
 static void fxd_probe_copy(float *dst, const float *src, size_t n) { if (dst) memcpy(dst, src, n * 4); }
 
 
@@ -578,6 +580,7 @@ static int fxd_gpu_blocks(const FxDit *F, const float *x, const float *c, int Ni
 }
 
 static int fxd_forward(const FxDit *F, const float *img, const float *ids_img, int Ni, const float *txt, const float *ids_txt, int Nt, float t, float *out, const FxdProbe *pr) {
+    if (fxc_enabled() && fxc_forward(F, img, ids_img, Ni, txt, ids_txt, Nt, t, out, pr)) return 1;
     const int D = FXD_DIM, N = Nt + Ni;
     /* 1. embedding do passo: senoidal de 256 (cos, sin), depois linear, SiLU, linear */
     float temb[FXD_DIM], te[256], hbuf[FXD_DIM];
@@ -659,6 +662,7 @@ static int fxd_bench(int Ni, int Nt) {
     printf("bench Ni=%d Nt=%d  1o forward %.2f s  2o forward %.2f s  | desquantizar/empacotar %.2f  produtos %.2f  atencao %.2f  resto %.2f | soma %.6e\n", Ni, Nt, first, tot,
            g_fxd_tm[FT_PACK], g_fxd_tm[FT_GEMM], g_fxd_tm[FT_ATT], tot - g_fxd_tm[FT_PACK] - g_fxd_tm[FT_GEMM] - g_fxd_tm[FT_ATT], h);
     if (fxv.on) printf("  GPU: %ld produtos, pesos %.0f MB na VRAM (%d tensores na CPU por falta de espaco), envio %.2f s  produto %.2f s  leitura %.2f s (soma dos 2 forwards)\n  GPU residente: blocos %.2f s (soma dos 2 forwards, inclui envio e leitura de z)\n", fxv.ncalls, fxv.wbytes / 1048576.0, fxv.nfall, fxv.t_up, fxv.t_gemm, fxv.t_dl, fxr.t);
+    if (g_fc.ok) printf("  GPU (CUDA, %s): produtos %.3f s  atencao %.3f s  resto %.3f s  | pesos na VRAM %.2f GB | %.2f TFLOPS no passo\n", g_fc.prec ? "preciso" : "rapido", g_fc_tm[0], g_fc_tm[1], g_fc_tm[2], (double)g_fc.wbytes / 1e9, g_fc_flop / 2 / tot / 1e12);
     return 0;
 }
 
