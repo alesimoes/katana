@@ -542,3 +542,15 @@ static int sds_fill(SdpParams *P, const char *nl) {
     fprintf(stderr, "[spec] dominio %s/%s; prompt (%d bloco(s)): %s\n[spec] negativo: %s\n", s.domain, s.scene, pl.chunks_used, pl.positive, pl.negative);
     return 1;
 }
+
+/* katana render generate --engine flux --nl "<pedido>": o mesmo pedido, em prosa para o FLUX (sem pesos, sem limite de 75 tokens e sem a clausula "Avoid":
+ * o modelo e destilado, nao tem prompt negativo, e citar o que evitar o convida a aparecer) */
+static void sds_nl_prose(const char *nl, int has_image, char *out, size_t cap) {
+    SdSpec s;
+    sds_parse(&s, nl, has_image, 1);
+    s.negative[0] = 0;
+    sds_prose(&s, out, cap);
+    if (!out[0]) snprintf(out, cap, "%s", nl);                                 /* nada reconhecido: o pedido como veio */
+    if (!strcmp(s.intent, "inpaint")) fprintf(stderr, "[spec] pedido de edicao localizada (inpaint): ainda sem mascara, segue como imagem a imagem\n");
+    fprintf(stderr, "[spec] dominio %s/%s; prompt do FLUX: %s\n", s.domain, s.scene, out);
+}

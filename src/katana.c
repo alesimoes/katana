@@ -199,3 +199,4 @@ static const char KATANA_CHANGES[] = "";
 #include "render/fxconvert_vae.c"        /* render: VAE do FLUX.2 klein, conversor (katana render flux-vae convert) */
 #include "render/fxvae.c"                /* render: VAE do FLUX.2 klein na CPU (katana render flux-vae selftest) */
 #include "render/fxdit.c"              /* render: transformador do FLUX.2 klein (katana render flux-dit) */
+#include "render/fxgen.c"              /* render: FLUX.2 klein completo, amostrador e referencias (katana render generate --engine flux) */
