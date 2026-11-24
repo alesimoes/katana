@@ -270,3 +270,9 @@ static float *fxq_encode(const SdgFile *g, const float *img, int H0, int W0, int
     *ho = H; *wo = W;
     return mean;
 }
+
+/* uma linha no fim da geracao: o que rodou na GPU */
+static void fxq_report(void) {
+    if (!fxv.on && !fxq.ready) { fprintf(stderr, "[flux] GPU: nao usada (CPU)\n"); return; }
+    fprintf(stderr, "[flux] GPU: blocos do transformador %.2f s (soma das chamadas), VAE %.2f s, pico de VRAM dos pesos do transformador %.0f MB\n", fxr.t, fxq.t, fxv.wmax / 1048576.0);
+}

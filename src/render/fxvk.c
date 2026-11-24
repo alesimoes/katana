@@ -11,7 +11,7 @@ static struct {
     FxvW w[320]; int nw;
     KvkBuf x32, xt, y, yt; size_t cx32, cxt, cy, cyt;
     KvkPipe tp32, ln, prep, att, swi, axg;
-    uint64_t budget, wbytes; int nfall, shared_ok;      /* prec: 0 = ativacao e peso em fp16; 1 = peso em duas partes fp16; 2 = tambem a ativacao em duas partes */
+    uint64_t budget, wbytes, wmax; int nfall, shared_ok;      /* prec: 0 = ativacao e peso em fp16; 1 = peso em duas partes fp16; 2 = tambem a ativacao em duas partes */
     double t_up, t_gemm, t_dl; long ncalls;
 } fxv;
 
@@ -71,7 +71,7 @@ static const FxvW *fxv_weight(const SdgFile *g, const SdgInfo *t) {
     e->w = kvk_buf_create(e->bytes, KVK_USAGE_RW);
     if (!e->w.b || !kvk_buf_write(e->w, 0, tmp, e->bytes)) { free(tmp); if (e->w.b) kvk_buf_destroy(&e->w); fxv.nfall++; return NULL; }
     free(tmp);
-    fxv.wbytes += e->bytes; e->gpu = 1;
+    fxv.wbytes += e->bytes; if (fxv.wbytes > fxv.wmax) fxv.wmax = fxv.wbytes; e->gpu = 1;
     return e;
 }
 
