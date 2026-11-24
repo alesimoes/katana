@@ -1,33 +1,31 @@
-/* ============================ render: pedido em linguagem natural -> especificacao de imagem -> prompt do Stable Diffusion ===========
- * katana render spec "<pedido>" [--ref ref.png] [--lcm] [--chunks 4] [--long 512] [--json]     mostra a especificacao e o que o SD recebe
+/* ============================ render: pedido em linguagem natural -> especificacao de imagem -> prompt do modelo de imagem ===========
+ * katana render spec "<pedido>" [--ref preview.png] [--lcm] [--chunks 4] [--long 512] [--final [--final-engine flux|krea]] [--json] [--no-rag]
  * katana render generate --nl "<pedido>" --out saida.png [--ref ref.png] ...                     gera a partir do pedido inteiro
- * katana render generate --spec spec.json --out saida.png                                          especificacao escrita pelo LLM do agente
  *
- * Quatro camadas independentes (docs/render.md, "UIIE"):
- *   1. Interpretacao   pedido (PT ou EN) -> SdSpec: assunto, ambiente, estilo, luz, composicao, camera, qualidade, negativo, proporcao,
- *                      finalidade. Tabelas de conceitos por palavra; a clausula que nenhuma palavra reconhece vai ao RAG (es_rank, embedding
- *                      multilingue) contra as descricoes dos conceitos, e so entra acima de um limiar com folga sobre o segundo. O que sobra
- *                      e conteudo (assunto/ambiente) e passa por um lexico PT->EN; palavra sem traducao fica registrada em unknown[] e
- *                      avisada (o CLIP so entende ingles: nesse caso o LLM do agente deve escrever a especificacao em JSON, --spec).
- *   2. Configuracao    codigo, nao texto: proporcao -> largura x altura (multiplos de 64), passos, guidance, forca da imagem de referencia.
- *                      O usuario nao pede "30 passos"; a politica do motor decide.
- *   3. Roteador        com --ref e imagem a imagem; sem ela, texto para imagem. "remova/troque o fundo" (inpaint) e reconhecido e avisado,
- *                      ainda sem mascara: segue como imagem a imagem.
- *   4. Adaptador SD    SdSpec + config -> prompt positivo (assunto com peso (x:1.2), ordem de importancia), negativo coerente com o estilo e
- *                      os campos de SdpParams; corta nos blocos de 75 tokens do CLIP. Outro modelo (FLUX, Krea) tera outro adaptador.
- * A especificacao e canonica (JSON), sem nada do SD dentro dela. */
+ * O motor entende o pedido sozinho, sem nenhum modelo de linguagem no caminho:
+ *   1. Analise lexica   normaliza (minusculas, sem acento), separa em clausulas, acha os conceitos por palavra (estilo, luz, composicao,
+ *                       camera, proporcao, finalidade), os pedidos negativos ("sem X") e os sinais de importancia ("principal", "destaque",
+ *                       "ao fundo"); o conteudo passa por um lexico PT->EN.
+ *   2. Embedding        a clausula que nenhuma palavra reconhece e comparada (EmbeddingGemma, multilingue) com exemplos naturais em PT e EN
+ *                       de cada conceito; entra o conceito do melhor exemplo se passa do limiar e tem folga sobre o melhor conceito diferente.
+ *   3. Roteador         classifica o dominio (arquitetura exterior/interior, produto, pessoa, paisagem) e o compilador de cena preenche so as
+ *                       lacunas que o pedido deixou (enquadramento, luz, camera, negativos, proporcao).
+ *   4. Prioridade       assunto primeiro, depois o que o pedido enfatiza; o que nao cabe nos blocos de 75 tokens do CLIP cai do fim.
+ *   5. Configuracao     codigo: proporcao -> largura x altura (multiplos de 64), passos, guidance, forca da referencia. O usuario nao pede passos.
+ *   6. Adaptador        SdSpec -> prompt do Stable (blocos de 75 tokens, pesos (x:1.2)); o final (FLUX/Krea) recebe prosa e o preview como referencia.
+ * "remova/troque o fundo" (inpaint) e reconhecido e avisado; sem mascara, segue como imagem a imagem. */
 
 typedef struct {
     char intent[16];                                    /* text_to_image | image_to_image | inpaint (so reconhecido) */
     char subject[240], environment[240], style[200], lighting[200], composition[200], camera[160], quality[200], extra[240], negative[300];
     char domain[24], scene[32];                          /* roteador: architecture, product, person, landscape, general; cena (exterior/interior) */
     char purpose[24];                                   /* wallpaper, profile, banner, ... ou vazio */
-    char concept[200], mood[120], hierarchy[120], palette[160], materials[200];   /* direcao de arte (Visual Prompt Director) */
     int final_mode;                                     /* 0 = preview (composicao forte, rapido), 1 = final (mais passos e detalhe) */
     double aspect;                                      /* largura/altura pedida; 0 = nao pedida */
+    char request[1200];                                 /* o pedido inteiro (consulta do embedding na priorizacao) */
+    int rag;                                            /* o embedding pode ser usado */
     int person;                                         /* o assunto tem uma pessoa (negativos de anatomia) */
     char unknown[200];                                  /* palavras do conteudo sem traducao */
-    char *positive_override;                            /* positive_prompt do JSON do LLM, se veio */
 } SdSpec;
 
 enum { SC_STYLE, SC_LIGHT, SC_COMP, SC_CAMERA, SC_QUALITY, SC_NEG, SC_ASPECT, SC_PURPOSE };
@@ -94,12 +92,48 @@ static const SdsConcept SDS_C[] = {
 };
 #define SDS_NC ((int)(sizeof SDS_C / sizeof SDS_C[0]))
 
+
+/* exemplos naturais (PT e EN) de cada conceito, para o embedding: a clausula do pedido e comparada com eles, nao com as chaves de palavras.
+ * A pontuacao do conceito e a do melhor exemplo. "phrase" tem de ser igual a de SDS_C. */
+static const struct { const char *phrase, *ex; } SDS_X[] = {
+    { "golden hour, warm low sun", "luz rasante de fim de tarde;sol baixo e dourado;por do sol;golden hour light;warm low sunset sun" },
+    { "sunrise, soft warm light", "luz suave do amanhecer;nascer do sol;sunrise glow;early morning light" },
+    { "night scene, dark sky, artificial lights", "cena noturna;a noite com luzes acesas;night scene;dark sky at night" },
+    { "soft natural daylight", "luz natural do dia;iluminacao natural suave;soft natural daylight;sunlit by the window" },
+    { "dramatic lighting, rim light", "iluminacao dramatica;contraluz forte;dramatic lighting;strong backlight and shadows" },
+    { "cinematic lighting, dramatic contrast", "iluminacao cinematografica;luz de cinema com contraste;cinematic lighting" },
+    { "professional studio lighting, softbox", "iluminacao de estudio;luz de softbox;studio lighting" },
+    { "warm cozy lighting, 3000K", "luz quente e aconchegante;iluminacao amarelada;warm cozy light" },
+    { "soft diffused light", "luz difusa e suave;dia nublado;soft diffused light;overcast light" },
+    { "overcast diffused light, soft mist", "dia nublado com neblina;nevoeiro;foggy overcast day" },
+    { "neon lighting, glowing colors", "luzes de neon;neon colorido brilhando;neon lights" },
+    { "close-up shot", "plano fechado;close no detalhe;close-up shot" },
+    { "wide shot, wide angle", "plano aberto;grande angular;wide angle shot;wide establishing view" },
+    { "aerial view, high angle", "vista aerea;visto de cima;drone view;aerial view" },
+    { "low angle shot", "visto de baixo para cima;contra-plongee;low angle shot" },
+    { "symmetrical composition, centered", "composicao simetrica e centralizada;symmetrical centered composition" },
+    { "strong perspective, leading lines", "perspectiva marcada com linhas de fuga;strong perspective leading lines" },
+    { "shallow depth of field, bokeh", "pouca profundidade de campo com fundo desfocado;shallow depth of field;bokeh background" },
+    { "professional photograph, photorealistic", "fotografia realista;foto profissional;photorealistic photograph" },
+    { "cinematic film still, anamorphic, film grain", "quadro de filme;aparencia de cinema com grao;cinematic film still" },
+    { "minimalist, clean, uncluttered", "estilo minimalista e limpo;minimalist clean design" },
+    { "luxurious, elegant, refined", "luxuoso e sofisticado;acabamento de alto padrao;luxurious elegant refined" },
+    { "vintage, retro look", "aparencia retro;estilo vintage;retro vintage look" },
+    { "futuristic, sci-fi design", "design futurista;ficcao cientifica;futuristic sci-fi design" },
+    { "highly detailed, intricate textures", "muito detalhado;texturas ricas e detalhes;highly detailed intricate textures" },
+    { "visible material textures", "texturas dos materiais visiveis;grao da madeira e trama do tecido;visible material textures" },
+    { "high quality, sharp focus", "alta qualidade e foco nitido;high quality sharp focus" },
+};
+
 /* lexico PT -> EN do conteudo (assunto e ambiente); radicais sem acento. "" = palavra funcional, descartada */
 static const struct { const char *pt, *en; } SDS_LEX[] = {
     { "piscina", "swimming pool" }, { "fachada", "facade" }, { "pavimentos", "stories" }, { "pavimento", "story" }, { "dois", "two" }, { "tres", "three" }, { "tropical", "tropical" }, { "aparente", "exposed" },
     { "varanda", "balcony" }, { "telhado", "roof" }, { "garagem", "garage" }, { "paisagismo", "landscaping" }, { "vegetacao", "vegetation" }, { "arvores", "trees" }, { "arvore", "tree" }, { "flores", "flowers" },
     { "tenis", "sneaker" }, { "garrafa", "bottle" }, { "relogio", "watch" }, { "perfume", "perfume bottle" }, { "bolsa", "handbag" }, { "campanha", "" }, { "publicitaria", "" }, { "publicidade", "" }, { "produto", "product" },
     { "futurista", "futuristic" }, { "esportiva", "sports" }, { "premium", "premium" }, { "moderna", "modern" }, { "grandes", "large" }, { "portas", "doors" }, { "janelas", "windows" },
+    { "curvo", "curved" }, { "curva", "curved" }, { "clara", "light" }, { "claro", "light" }, { "escuro", "dark" }, { "escura", "dark" }, { "acinzentada", "greyish" }, { "acinzentado", "greyish" }, { "logotipo", "logo" }, { "logo", "logo" },
+    { "arcos", "arches" }, { "arco", "arch" }, { "corredor", "corridor" }, { "objetos", "objects" }, { "objeto", "object" }, { "suave", "soft" }, { "lateral", "side" }, { "spots", "recessed spotlights" }, { "perfil", "profile" },
+    { "led", "LED" }, { "tapete", "rug" }, { "altura", "" }, { "olhos", "" }, { "aberto", "wide" }, { "plano", "" }, { "camera", "camera" }, { "dourada", "golden" }, { "ripada", "slatted" }, { "ripado", "slatted" }, { "brises", "louvers" },
     { "crie", "" }, { "renderizacao", "" }, { "render", "" }, { "visualizacao", "" }, { "cena", "scene" }, { "aparencia", "" }, { "estilo", "" }, { "iluminacao", "" }, { "formato", "" }, { "criar", "" }, { "gere", "" }, { "gerar", "" }, { "faca", "" }, { "fazer", "" }, { "uma", "" }, { "um", "" }, { "de", "" }, { "do", "" }, { "da", "" }, { "em", "in" }, { "no", "in the" }, { "na", "in the" },
     { "com", "with" }, { "para", "" }, { "e", "and" }, { "o", "" }, { "a", "" }, { "os", "" }, { "as", "" }, { "que", "" }, { "usando", "wearing" }, { "vestindo", "wearing" }, { "imagem", "" }, { "foto", "" }, { "fotografia", "" },
     { "homem", "man" }, { "mulher", "woman" }, { "menino", "boy" }, { "menina", "girl" }, { "crianca", "child" }, { "pessoa", "person" }, { "idoso", "elderly man" }, { "idosa", "elderly woman" },
@@ -143,7 +177,7 @@ static int sds_isw(char c) { return isalnum((unsigned char)c) || c == '-' || c =
 static int sds_key_in(const char *t, const char *key, size_t kl) {
     for (const char *p = t; (p = strstr(p, key)) != NULL; p++) {
         if (p != t && sds_isw(p[-1])) continue;
-        if (kl <= 3 && sds_isw(p[kl])) continue;
+        if ((kl <= 3 || memchr(key, ' ', kl)) && sds_isw(p[kl])) continue;
         return 1;
     }
     return 0;
@@ -169,7 +203,7 @@ static void sds_blank(char *t, const char *keys) {
         memcpy(k, p, l); k[l] = 0;
         for (char *q = t; l && (q = strstr(q, k)) != NULL; q++) {
             if (q != t && sds_isw(q[-1])) continue;
-            if (l <= 3 && sds_isw(q[l])) continue;
+            if ((l <= 3 || strchr(k, ' ')) && sds_isw(q[l])) continue;
             char *end = q + l; while (sds_isw(*end)) end++;
             memset(q, ' ', (size_t)(end - q));
         }
@@ -301,27 +335,37 @@ static void sds_negative_from(SdSpec *s, const char *folded) {           /* "sem
     }
 }
 
-/* clausula sem palavra de conceito: o RAG compara com as descricoes dos conceitos; 1 = aplicou algum */
+/* clausula sem palavra de conceito: o RAG compara a clausula com os exemplos de cada conceito (embedding multilingue); o conceito vale o melhor
+ * exemplo. Entra so se passa do limiar absoluto E tem folga sobre o melhor conceito DIFERENTE. 1 = aplicou algum. KATANA_EMBED_DEBUG mostra os cossenos. */
 static int sds_rag(SdSpec *s, const char *clause) {
-    static const char *chunk[SDS_NC]; static char desc[SDS_NC][220]; static int ready;
-    int idx[SDS_NC], n = 0;
-    for (int i = 0; i < SDS_NC; i++) {
-        if (SDS_C[i].cat == SC_ASPECT || !SDS_C[i].phrase[0]) continue;
-        if (!ready) snprintf(desc[i], sizeof desc[i], "%s (%s)", SDS_C[i].phrase, SDS_C[i].keys);
-        chunk[n] = desc[i]; idx[n++] = i;
+    static const char *chunk[256]; static int owner[256], n;
+    if (!n) {
+        static char buf[256][160];
+        for (size_t x = 0; x < sizeof SDS_X / sizeof SDS_X[0]; x++) {
+            int ci = -1; for (int i = 0; i < SDS_NC; i++) if (!strcmp(SDS_C[i].phrase, SDS_X[x].phrase)) { ci = i; break; }
+            if (ci < 0) continue;
+            for (const char *p = SDS_X[x].ex; *p && n < 256; ) {
+                const char *e = strchr(p, ';'); size_t l = e ? (size_t)(e - p) : strlen(p);
+                if (l >= sizeof buf[0]) l = sizeof buf[0] - 1;
+                memcpy(buf[n], p, l); buf[n][l] = 0; chunk[n] = buf[n]; owner[n++] = ci;
+                p += l; if (*p == ';') p++;
+            }
+        }
     }
-    ready = 1;
-    float sc[SDS_NC];
-    if (!es_available() || es_rank(clause, EMB_SEARCH, chunk, NULL, n, 4000.0, sc) <= 0) return 0;
+    float sc[256];
+    if (!es_available() || es_rank(clause, EMB_SEARCH, chunk, NULL, n, 8000.0, sc) <= 0) return 0;
     int b1 = -1, b2 = -1;
-    for (int i = 0; i < n; i++) { if (b1 < 0 || sc[i] > sc[b1]) { b2 = b1; b1 = i; } else if (b2 < 0 || sc[i] > sc[b2]) b2 = i; }
-    const float lim = getenv("KATANA_SPEC_RAG") ? (float)atof(getenv("KATANA_SPEC_RAG")) : 0.62f;
-    if (b1 >= 0 && sc[b1] >= lim && (b2 < 0 || sc[b1] - sc[b2] >= 0.03f)) { sds_apply(s, &SDS_C[idx[b1]]); return 1; }
+    for (int i = 0; i < n; i++) if (b1 < 0 || sc[i] > sc[b1]) b1 = i;
+    for (int i = 0; i < n; i++) if (owner[i] != owner[b1] && (b2 < 0 || sc[i] > sc[b2])) b2 = i;
+    const float lim = getenv("KATANA_SPEC_RAG") ? (float)atof(getenv("KATANA_SPEC_RAG")) : 0.82f, gap = getenv("KATANA_SPEC_GAP") ? (float)atof(getenv("KATANA_SPEC_GAP")) : 0.05f;
+    if (getenv("KATANA_EMBED_DEBUG")) fprintf(stderr, "[spec] '%s' -> %s (%.3f) contra %s (%.3f)\n", clause, SDS_C[owner[b1]].phrase, sc[b1], b2 >= 0 ? SDS_C[owner[b2]].phrase : "-", b2 >= 0 ? sc[b2] : 0.0f);
+    if (sc[b1] >= lim && (b2 < 0 || sc[b1] - sc[b2] >= gap)) { sds_apply(s, &SDS_C[owner[b1]]); return 1; }
     return 0;
 }
 
 static void sds_parse(SdSpec *s, const char *text, int has_image, int use_rag) {
     memset(s, 0, sizeof *s);
+    snprintf(s->request, sizeof s->request, "%s", text); s->rag = use_rag;
     snprintf(s->intent, sizeof s->intent, "%s", has_image ? "image_to_image" : "text_to_image");
     char folded[4096]; sds_fold(text, folded, sizeof folded);
     char padded[4200]; snprintf(padded, sizeof padded, " %s", folded);
@@ -366,57 +410,12 @@ static void sds_parse(SdSpec *s, const char *text, int has_image, int use_rag) {
     (void)nw;
 }
 
-/* ---------- JSON: leitura (do LLM) e escrita ---------- */
-static const char *sds_js(const JV *o, const char *a, const char *b) {          /* string em o.a.b (ou o.a se b NULL) */
-    const JV *x = jget(o, a);
-    if (x && b) x = jget(x, b);
-    return x ? jstr(x, NULL) : NULL;
-}
-static void sds_set(char *dst, size_t cap, const char *v) { if (v) snprintf(dst, cap, "%s", v); }
-
-/* le a especificacao de um JSON no formato do prompt de sistema (intent, subject, environment, style, lighting, composition, positive_prompt,
- * negative_prompt, requested_aspect_ratio); valida os tipos e devolve 0 com a mensagem em err se faltar o minimo */
-static int sds_from_json(SdSpec *s, const char *path, char *err, size_t ecap) {
-    JV j;
-    if (!cv_json_file(path, &j) || j.t != J_OBJ) { snprintf(err, ecap, "%s nao e um JSON de objeto", path); return 0; }
-    memset(s, 0, sizeof *s);
-    const char *in = jstr(&j, "intent");
-    snprintf(s->intent, sizeof s->intent, "%s", in && (!strcmp(in, "image_to_image") || !strcmp(in, "inpaint")) ? in : "text_to_image");
-    const JV *sub = jget(&j, "subject");
-    if (sub && sub->t == J_STR) sds_set(s->subject, sizeof s->subject, jstr(&j, "subject"));
-    else if (sub) sds_set(s->subject, sizeof s->subject, sds_js(&j, "subject", "description"));
-    const JV *env = jget(&j, "environment");
-    if (env && env->t == J_STR) sds_set(s->environment, sizeof s->environment, jstr(&j, "environment"));
-    else if (env) { sds_set(s->environment, sizeof s->environment, sds_js(&j, "environment", "location")); const char *bg = sds_js(&j, "environment", "background"); if (bg) sds_cat(s->environment, sizeof s->environment, bg); }
-    const JV *st = jget(&j, "style");
-    if (st && st->t == J_STR) sds_set(s->style, sizeof s->style, jstr(&j, "style")); else if (st) { sds_set(s->style, sizeof s->style, sds_js(&j, "style", "type")); const char *q = sds_js(&j, "style", "quality"); if (q) sds_cat(s->quality, sizeof s->quality, q); }
-    const JV *li = jget(&j, "lighting");
-    if (li && li->t == J_STR) sds_set(s->lighting, sizeof s->lighting, jstr(&j, "lighting")); else if (li) sds_set(s->lighting, sizeof s->lighting, sds_js(&j, "lighting", "type"));
-    const JV *co = jget(&j, "composition");
-    if (co && co->t == J_STR) sds_set(s->composition, sizeof s->composition, jstr(&j, "composition")); else if (co) { sds_set(s->composition, sizeof s->composition, sds_js(&j, "composition", "framing")); const char *a = sds_js(&j, "composition", "camera_angle"); if (a) sds_cat(s->composition, sizeof s->composition, a); }
-    const JV *ad = jget(&j, "art_direction");
-    if (ad && ad->t == J_OBJ) { sds_set(s->concept, sizeof s->concept, sds_js(&j, "art_direction", "concept")); sds_set(s->mood, sizeof s->mood, sds_js(&j, "art_direction", "mood")); sds_set(s->hierarchy, sizeof s->hierarchy, sds_js(&j, "art_direction", "visual_hierarchy")); }
-    const JV *pa = jget(&j, "color_palette");
-    if (pa && pa->t == J_ARR) for (size_t k = 0; k < pa->n && k < 6; k++) if (pa->v[k].t == J_STR) sds_cat(s->palette, sizeof s->palette, jstr(&pa->v[k], NULL) ? jstr(&pa->v[k], NULL) : "");
-    const JV *sd = jget(&j, "subject");
-    if (sd && sd->t == J_OBJ) { const JV *dt = jget(sd, "details"); if (dt && dt->t == J_ARR) for (size_t k = 0; k < dt->n && k < 6; k++) if (dt->v[k].t == J_STR) sds_cat(s->materials, sizeof s->materials, jstr(&dt->v[k], NULL) ? jstr(&dt->v[k], NULL) : ""); const char *pr = sds_js(&j, "subject", "primary"); if (pr) sds_set(s->subject, sizeof s->subject, pr); }
-    const JV *pv = jget(&j, "preview");
-    if (pv && pv->t == J_OBJ) { const char *ra = sds_js(&j, "preview", "aspect_ratio"); int a, b; if (ra && sscanf(ra, "%d:%d", &a, &b) == 2 && a > 0 && b > 0) s->aspect = (double)a / b; }
-    const char *md = jstr(&j, "mode"); if (md && !strcmp(md, "final")) s->final_mode = 1;
-    const char *ng = jstr(&j, "negative_prompt"); if (ng) sds_set(s->negative, sizeof s->negative, ng);
-    const char *pp = jstr(&j, "positive_prompt"); if (pp) s->positive_override = strdup(pp);
-    const JV *ar = jget(&j, "requested_aspect_ratio");
-    if (ar && ar->t == J_STR) { int a, b; const char *v = jstr(&j, "requested_aspect_ratio"); if (v && sscanf(v, "%d:%d", &a, &b) == 2 && a > 0 && b > 0) s->aspect = (double)a / b; }
-    if (!s->subject[0] && !s->positive_override) { snprintf(err, ecap, "o JSON nao tem subject nem positive_prompt; reescreva a especificacao (subject em ingles)"); return 0; }
-    return 1;
-}
-
+/* ---------- JSON: escrita ---------- */
 static void sds_json(const SdSpec *s, FILE *f) {
     const struct { const char *k; const char *v; } F[] = { { "intent", s->intent }, { "domain", s->domain }, { "scene", s->scene }, { "subject", s->subject }, { "environment", s->environment }, { "style", s->style }, { "lighting", s->lighting },
-        { "composition", s->composition }, { "camera", s->camera }, { "quality", s->quality }, { "negative", s->negative }, { "purpose", s->purpose },
-        { "concept", s->concept }, { "mood", s->mood }, { "visual_hierarchy", s->hierarchy }, { "color_palette", s->palette }, { "details", s->materials } };
+        { "composition", s->composition }, { "camera", s->camera }, { "quality", s->quality }, { "negative", s->negative }, { "purpose", s->purpose } };
     fputs("{\n", f);
-    for (int i = 0; i < 17; i++) { fprintf(f, "  \"%s\": \"", F[i].k); for (const char *p = F[i].v; *p; p++) { if (*p == '"' || *p == '\\') fputc('\\', f); fputc(*p, f); } fputs("\",\n", f); }
+    for (int i = 0; i < 12; i++) { fprintf(f, "  \"%s\": \"", F[i].k); for (const char *p = F[i].v; *p; p++) { if (*p == '"' || *p == '\\') fputc('\\', f); fputc(*p, f); } fputs("\",\n", f); }
     if (s->aspect > 0) fprintf(f, "  \"requested_aspect_ratio\": %.4f\n}\n", s->aspect); else fputs("  \"requested_aspect_ratio\": null\n}\n", f);
 }
 
@@ -432,12 +431,36 @@ static void sds_plan(const SdSpec *s, int has_image, int ref_w, int ref_h, int c
     /* adaptador SD: ordem de importancia, assunto com peso */
     const int budget = chunks * 75 - 4;
     char pr[2400] = "";
-    if (s->positive_override) snprintf(pr, sizeof pr, "%s", s->positive_override);
-    else {
+    {
         char subj[300]; if (s->subject[0]) snprintf(subj, sizeof subj, "(%s:1.2)", s->subject); else subj[0] = 0;
-        char pal[200]; if (s->palette[0]) snprintf(pal, sizeof pal, "%s color palette", s->palette); else pal[0] = 0;
-        const char *parts[] = { s->concept, s->style, subj, s->materials, s->environment, s->composition, s->lighting, s->mood, pal, s->camera, s->quality, s->extra };
-        for (int i = 0; i < 12; i++) if (parts[i][0]) { char trial[2400]; snprintf(trial, sizeof trial, "%s%s%s", pr, pr[0] ? ", " : "", parts[i]); if (i == 2 || sdb_tokens(clip, trial) <= budget) snprintf(pr, sizeof pr, "%s", trial); }
+        /* partes: estilo, assunto, cada item do ambiente (separado por virgula), composicao, luz, camera, qualidade, extra */
+        enum { NP = 40 };
+        const char *parts[NP]; char envbuf[300]; int np = 0;
+        parts[np++] = s->style; parts[np++] = subj;
+        snprintf(envbuf, sizeof envbuf, "%s", s->environment);
+        for (char *it = envbuf; *it && np < NP - 5; ) { char *e = strstr(it, ", "); if (e) *e = 0; if (*it) parts[np++] = it; if (!e) break; it = e + 2; }
+        parts[np++] = s->composition; parts[np++] = s->lighting; parts[np++] = s->camera; parts[np++] = s->quality; parts[np++] = s->extra;
+        int use[NP], nu = 0, taken[NP] = { 0 };
+        char all[2400] = ""; for (int i = 0; i < np; i++) if (parts[i][0]) { use[nu++] = i; snprintf(all + strlen(all), sizeof all - strlen(all), "%s%s", all[0] ? ", " : "", parts[i]); }
+        /* priorizacao: o assunto e o estilo entram sempre; cabendo tudo no orcamento, a ordem e a canonica e o embedding nem e chamado (custo zero);
+         * so quando passa do orcamento o embedding ordena o resto pela proximidade com o pedido inteiro, e entra o que couber, do mais ao menos proximo */
+        int order[NP], no = 0;
+        order[no++] = 1; order[no++] = 0;
+        if (sdb_tokens(clip, all) > budget && s->rag && s->request[0]) {
+            const char *ch[NP]; int idx[NP], nc = 0; float sc[NP];
+            for (int k = 0; k < nu; k++) if (use[k] != 0 && use[k] != 1) { ch[nc] = parts[use[k]]; idx[nc++] = use[k]; }
+            if (nc && es_available() && es_rank(s->request, EMB_SEARCH, ch, NULL, nc, 4000.0, sc) > 0) {
+                for (int a2 = 0; a2 < nc; a2++) for (int b2 = a2 + 1; b2 < nc; b2++) if (sc[b2] > sc[a2]) { float t = sc[a2]; sc[a2] = sc[b2]; sc[b2] = t; int ti = idx[a2]; idx[a2] = idx[b2]; idx[b2] = ti; }
+                for (int k = 0; k < nc; k++) order[no++] = idx[k];
+            } else for (int k = 2; k < np; k++) order[no++] = k;
+        } else for (int k = 2; k < np; k++) order[no++] = k;
+        for (int k = 0; k < no; k++) {
+            const int i = order[k]; if (!parts[i][0]) continue;
+            char trial[2400]; snprintf(trial, sizeof trial, "%s%s%s", pr, pr[0] ? ", " : "", parts[i]);
+            if (i == 1 || sdb_tokens(clip, trial) <= budget) { snprintf(pr, sizeof pr, "%s", trial); taken[i] = 1; }
+        }
+        pr[0] = 0;                                                            /* sai na ordem canonica, so o que entrou */
+        for (int i = 0; i < np; i++) if (taken[i]) snprintf(pr + strlen(pr), sizeof pr - strlen(pr), "%s%s", pr[0] ? ", " : "", parts[i]);
     }
     snprintf(o->positive, sizeof o->positive, "%s", pr);
     o->chunks_used = (sdb_tokens(clip, pr) + 74) / 75;
@@ -455,18 +478,17 @@ static void sds_plan(const SdSpec *s, int has_image, int ref_w, int ref_h, int c
 /* Prompt do render final (FLUX ou Krea): esses motores leem prosa, sem limite de 75 tokens nem pesos; o mesmo SdSpec vira frases */
 static void sds_prose(const SdSpec *s, char *out, size_t cap) {
     out[0] = 0;
-    const struct { const char *pre, *v; } P[] = { { "", s->concept }, { "A ", s->style }, { "Subject: ", s->subject }, { "Details: ", s->materials }, { "Setting: ", s->environment }, { "Composition: ", s->composition },
-        { "Lighting: ", s->lighting }, { "Mood: ", s->mood }, { "Color palette: ", s->palette }, { "Camera: ", s->camera }, { "", s->quality } };
-    for (int i = 0; i < 11; i++) if (P[i].v[0]) { strncat(out, P[i].pre, cap - strlen(out) - 1); strncat(out, P[i].v, cap - strlen(out) - 1); strncat(out, ". ", cap - strlen(out) - 1); }
+    const struct { const char *pre, *v; } P[] = { { "A ", s->style }, { "Subject: ", s->subject }, { "Setting: ", s->environment }, { "Composition: ", s->composition },
+        { "Lighting: ", s->lighting }, { "Camera: ", s->camera }, { "", s->quality } };
+    for (int i = 0; i < 7; i++) if (P[i].v[0]) { strncat(out, P[i].pre, cap - strlen(out) - 1); strncat(out, P[i].v, cap - strlen(out) - 1); strncat(out, ". ", cap - strlen(out) - 1); }
     if (s->negative[0]) { strncat(out, "Avoid: ", cap - strlen(out) - 1); strncat(out, s->negative, cap - strlen(out) - 1); strncat(out, ".", cap - strlen(out) - 1); }
 }
 
 static int sds_main(int argc, char **argv) {
-    const char *text = NULL, *image = NULL, *specf = NULL; int chunks = 4, lcm = 0, json = 0, norag = 0, final_mode = 0; const char *fengine = "flux"; double longside = 512;
+    const char *text = NULL, *image = NULL; int chunks = 4, lcm = 0, json = 0, norag = 0, final_mode = 0; const char *fengine = "flux"; double longside = 512;
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i]; const int more = i + 1 < argc;
         if (!strcmp(a, "--ref") && more) image = argv[++i];
-        else if (!strcmp(a, "--spec") && more) specf = argv[++i];
         else if (!strcmp(a, "--chunks") && more) chunks = atoi(argv[++i]);
         else if (!strcmp(a, "--long") && more) longside = atof(argv[++i]);
         else if (!strcmp(a, "--lcm")) lcm = 1;
@@ -477,11 +499,10 @@ static int sds_main(int argc, char **argv) {
         else if (a[0] != '-' && !text) text = a;
         else { fprintf(stderr, "render spec: opcao desconhecida: %s\n", a); return 1; }
     }
-    if (!text && !specf) { fprintf(stderr, "uso: katana render spec \"<pedido>\" [--ref ref.png] [--lcm] [--chunks 4] [--long 512] [--final [--final-engine flux|krea]] [--json] [--no-rag]\n       katana render spec --spec spec.json\n"); return 1; }
+    if (!text) { fprintf(stderr, "uso: katana render spec \"<pedido>\" [--ref ref.png] [--lcm] [--chunks 4] [--long 512] [--final [--final-engine flux|krea]] [--json] [--no-rag]\n"); return 1; }
     if (chunks < 1) chunks = 1; if (chunks > 16) chunks = 16;
-    SdSpec s; char err[300];
-    if (specf) { if (!sds_from_json(&s, specf, err, sizeof err)) { fprintf(stderr, "render spec: %s\n", err); return 1; } }
-    else sds_parse(&s, text, image != NULL, !norag);
+    SdSpec s;
+    sds_parse(&s, text, image != NULL, !norag);
     if (final_mode) s.final_mode = 1;
     SdgFile base; SdClip clip; const SdClip *cp = NULL; char path[1100];
     snprintf(path, sizeof path, "%s/render/sd15-realistic-vision.gguf", models_dir());
@@ -499,15 +520,14 @@ static int sds_main(int argc, char **argv) {
     }
     printf("--- Stable Diffusion ---\nprompt (%d bloco(s) de 75): %s\nnegative: %s\nsize: %dx%d  steps: %d  guidance: %.1f%s  strength: %.2f\n", pl.chunks_used, pl.positive, pl.negative, pl.w, pl.h, pl.steps, pl.guidance, pl.lcm ? "  (LCM)" : "", pl.strength);
     if (!strcmp(s.intent, "inpaint")) printf("aviso: pedido de edicao localizada (inpaint); ainda sem mascara, segue como imagem a imagem\n");
-    if (s.unknown[0]) printf("aviso: palavras sem traducao: %s. O CLIP so entende ingles; peca ao LLM do agente uma especificacao em JSON (--spec)\n", s.unknown);
+    if (s.unknown[0]) printf("aviso: palavras sem traducao: %s. O CLIP so entende ingles: palavra fora do lexico segue como veio\n", s.unknown);
     return 0;
 }
 
-/* katana render generate --nl "<pedido>" | --spec spec.json: preenche o prompt, o negativo e os parametros que o usuario nao deu (tamanho, guia, forca) */
-static int sds_fill(SdpParams *P, const char *nl, const char *specf) {
-    SdSpec s; char err[300];
-    if (specf) { if (!sds_from_json(&s, specf, err, sizeof err)) { fprintf(stderr, "render: %s\n", err); return 0; } }
-    else sds_parse(&s, nl, P->init != NULL, 1);
+/* katana render generate --nl "<pedido>": preenche o prompt, o negativo e os parametros que o usuario nao deu (tamanho, guia, forca) */
+static int sds_fill(SdpParams *P, const char *nl) {
+    SdSpec s;
+    sds_parse(&s, nl, P->init != NULL, 1);
     SdgFile base; SdClip clip; const SdClip *cp = NULL; char path[1100];
     snprintf(path, sizeof path, "%s/sd15-realistic-vision.gguf", P->models);
     if (sdg_open(&base, path) && sdc_load(&clip, &base)) cp = &clip;
@@ -518,7 +538,7 @@ static int sds_fill(SdpParams *P, const char *nl, const char *specf) {
     if (P->strength == 0.75 && P->init) P->strength = pl.strength;
     if (!P->lcm && P->guidance == 7.5) P->guidance = pl.guidance;
     if (!strcmp(s.intent, "inpaint")) fprintf(stderr, "[spec] pedido de edicao localizada (inpaint): ainda sem mascara, segue como imagem a imagem\n");
-    if (s.unknown[0]) fprintf(stderr, "[spec] palavras sem traducao: %s (o CLIP so entende ingles; use --spec com o JSON do LLM do agente)\n", s.unknown);
+    if (s.unknown[0]) fprintf(stderr, "[spec] palavras sem traducao: %s (o CLIP so entende ingles)\n", s.unknown);
     fprintf(stderr, "[spec] dominio %s/%s; prompt (%d bloco(s)): %s\n[spec] negativo: %s\n", s.domain, s.scene, pl.chunks_used, pl.positive, pl.negative);
     return 1;
 }
