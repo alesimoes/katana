@@ -212,181 +212,189 @@ ApplicationWindow {
                             width: 230
                             padding: 8
                             background: Rectangle { radius: 12; color: Theme.card; border.color: Theme.bd }
-                            contentItem: Column {
-                                spacing: 2
-                                Text { font.family: Theme.sans; text: "TEMA"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 2; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [["escuro", "Escuro (padrão)"], ["claro", "Claro"], ["ide", "IDE escuro (código)"]]
-                                    AbstractButton {
-                                        id: to
-                                        required property var modelData
-                                        objectName: "tema_" + modelData[0]
-                                        width: apMenu.width - 16; height: 32
-                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: { backend.setTema(modelData[0]); Theme.tema = modelData[0]; }
-                                        background: Rectangle { radius: 8; color: to.hovered ? Theme.hov : "transparent"
-                                            border.width: to.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (Theme.tema === to.modelData[0] ? "●  " : "○  ") + to.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                            height: Math.min(apCol.implicitHeight + 16, (Overlay.overlay ? Overlay.overlay.height : 700) - y - 12)
+                            contentItem: Flickable {
+                                id: apFlick; objectName: "apFlick"
+                                clip: true; contentWidth: width; contentHeight: apCol.implicitHeight
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar { policy: apFlick.contentHeight > apFlick.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
+                                Column {
+                                id: apCol
+                                    spacing: 2
+                                    Text { font.family: Theme.sans; text: "TEMA"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 2; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [["escuro", "Escuro (padrão)"], ["claro", "Claro"], ["ide", "IDE escuro (código)"]]
+                                        AbstractButton {
+                                            id: to
+                                            required property var modelData
+                                            objectName: "tema_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: { backend.setTema(modelData[0]); Theme.tema = modelData[0]; }
+                                            background: Rectangle { radius: 8; color: to.hovered ? Theme.hov : "transparent"
+                                                border.width: to.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (Theme.tema === to.modelData[0] ? "●  " : "○  ") + to.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
                                     }
-                                }
-                                Text { font.family: Theme.sans; text: "TELA"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                AbstractButton {
-                                    id: awk
-                                    objectName: "keepAwake"
-                                    property bool on: backend.keepAwake()
-                                    width: apMenu.width - 16; height: 32
-                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Não bloquear a tela enquanto o agente trabalha"; Accessible.role: Accessible.CheckBox
-                                    onClicked: { on = !on; backend.setKeepAwake(on); }
-                                    background: Rectangle { radius: 8; color: awk.hovered ? Theme.hov : "transparent"
-                                        border.width: awk.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                        text: (awk.on ? "☑  " : "☐  ") + "Não bloquear enquanto trabalha"; color: Theme.fg; font.pixelSize: 13 }
-                                }
-                                Text { font.family: Theme.sans; text: "PROCESSAMENTO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [["auto", "Auto"], ["cuda", "CUDA"], ["vulkan", "Vulkan"], ["cpu", "CPU"]]
+                                    Text { font.family: Theme.sans; text: "TELA"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
                                     AbstractButton {
-                                        id: ib
-                                        required property var modelData
-                                        objectName: "backend_" + modelData[0]
+                                        id: awk
+                                        objectName: "keepAwake"
+                                        property bool on: backend.keepAwake()
                                         width: apMenu.width - 16; height: 32
                                         hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: "Processamento da imagem: " + modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: backend.imageBackend = modelData[0]
-                                        background: Rectangle { radius: 8; color: ib.hovered ? Theme.hov : "transparent"
-                                            border.width: ib.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        Accessible.name: "Não bloquear a tela enquanto o agente trabalha"; Accessible.role: Accessible.CheckBox
+                                        onClicked: { on = !on; backend.setKeepAwake(on); }
+                                        background: Rectangle { radius: 8; color: awk.hovered ? Theme.hov : "transparent"
+                                            border.width: awk.visualFocus ? 2 : 0; border.color: Theme.foc }
                                         contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (backend.imageBackend === ib.modelData[0] ? "●  " : "○  ") + ib.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                            text: (awk.on ? "☑  " : "☐  ") + "Não bloquear enquanto trabalha"; color: Theme.fg; font.pixelSize: 13 }
                                     }
-                                }
-                                Text { font.family: Theme.sans; text: "TAMANHO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [[1024, "1024 × 576 (menor)"], [1280, "1280 × 720"], [1600, "1600 × 900"], [1920, "1920 × 1080 (muito lento)"]]
-                                    AbstractButton {
-                                        id: zb
-                                        required property var modelData
-                                        objectName: "size_" + modelData[0]
-                                        width: apMenu.width - 16; height: 32
-                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: "Tamanho da imagem: " + modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: backend.imageSize = modelData[0]
-                                        background: Rectangle { radius: 8; color: zb.hovered ? Theme.hov : "transparent"
-                                            border.width: zb.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (backend.imageSize === zb.modelData[0] ? "●  " : "○  ") + zb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    Text { font.family: Theme.sans; text: "PROCESSAMENTO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [["auto", "Auto"], ["cuda", "CUDA"], ["vulkan", "Vulkan"], ["cpu", "CPU"]]
+                                        AbstractButton {
+                                            id: ib
+                                            required property var modelData
+                                            objectName: "backend_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: "Processamento da imagem: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: backend.imageBackend = modelData[0]
+                                            background: Rectangle { radius: 8; color: ib.hovered ? Theme.hov : "transparent"
+                                                border.width: ib.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (backend.imageBackend === ib.modelData[0] ? "●  " : "○  ") + ib.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
                                     }
-                                }
-                                Text { font.family: Theme.sans; text: "PASSOS DO FLUX"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [[4, "4 (padrão do modelo)"], [8, "8"], [12, "12"], [20, "20"]]
-                                    AbstractButton {
-                                        id: sb
-                                        required property var modelData
-                                        objectName: "steps_" + modelData[0]
-                                        width: apMenu.width - 16; height: 32
-                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: "Passos do FLUX: " + modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: backend.imageSteps = modelData[0]
-                                        background: Rectangle { radius: 8; color: sb.hovered ? Theme.hov : "transparent"
-                                            border.width: sb.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (backend.imageSteps === sb.modelData[0] ? "●  " : "○  ") + sb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    Text { font.family: Theme.sans; text: "TAMANHO DA IMAGEM"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [[1024, "1024 × 576 (menor)"], [1280, "1280 × 720"], [1600, "1600 × 900"], [1920, "1920 × 1080 (muito lento)"]]
+                                        AbstractButton {
+                                            id: zb
+                                            required property var modelData
+                                            objectName: "size_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: "Tamanho da imagem: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: backend.imageSize = modelData[0]
+                                            background: Rectangle { radius: 8; color: zb.hovered ? Theme.hov : "transparent"
+                                                border.width: zb.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (backend.imageSize === zb.modelData[0] ? "●  " : "○  ") + zb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
                                     }
-                                }
-                                Text { font.family: Theme.sans; text: "MODELO DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"]]
-                                    AbstractButton {
-                                        id: smd
-                                        required property var modelData
-                                        objectName: "smodel_" + modelData[0]
-                                        width: apMenu.width - 16; height: 32
-                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: "Modelo do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: backend.stableModel = modelData[0]
-                                        background: Rectangle { radius: 8; color: smd.hovered ? Theme.hov : "transparent"
-                                            border.width: smd.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (backend.stableModel === smd.modelData[0] ? "●  " : "○  ") + smd.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    Text { font.family: Theme.sans; text: "PASSOS DO FLUX"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [[4, "4 (padrão do modelo)"], [8, "8"], [12, "12"], [20, "20"]]
+                                        AbstractButton {
+                                            id: sb
+                                            required property var modelData
+                                            objectName: "steps_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: "Passos do FLUX: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: backend.imageSteps = modelData[0]
+                                            background: Rectangle { radius: 8; color: sb.hovered ? Theme.hov : "transparent"
+                                                border.width: sb.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (backend.imageSteps === sb.modelData[0] ? "●  " : "○  ") + sb.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
                                     }
-                                }
-                                Text { font.family: Theme.sans; text: "PASSOS DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [[4, "4 (rápido, LCM)"], [8, "8 (LCM)"], [20, "20 (realista)"], [40, "40 (mais realista, lento)"]]
-                                    AbstractButton {
-                                        id: sst
-                                        required property var modelData
-                                        objectName: "ssteps_" + modelData[0]
-                                        width: apMenu.width - 16; height: 32
-                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: "Passos do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: backend.stableSteps = modelData[0]
-                                        background: Rectangle { radius: 8; color: sst.hovered ? Theme.hov : "transparent"
-                                            border.width: sst.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (backend.stableSteps === sst.modelData[0] ? "●  " : "○  ") + sst.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                    Text { font.family: Theme.sans; text: "MODELO DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"]]
+                                        AbstractButton {
+                                            id: smd
+                                            required property var modelData
+                                            objectName: "smodel_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: "Modelo do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: backend.stableModel = modelData[0]
+                                            background: Rectangle { radius: 8; color: smd.hovered ? Theme.hov : "transparent"
+                                                border.width: smd.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (backend.stableModel === smd.modelData[0] ? "●  " : "○  ") + smd.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
                                     }
-                                }
-                                Text { font.family: Theme.sans; text: "ESPECIALIZAÇÕES"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Text { objectName: "specsActive"; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
-                                    color: backend.specsActive.length ? Theme.fg : Theme.mut
-                                    text: backend.specsActive.length ? "Em uso neste modelo:\n" + backend.specsActive.join("\n") : "Nenhuma em uso neste modelo." }
-                                Text { objectName: "specsSkipped"; visible: backend.specsSkipped.length > 0; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
-                                    color: Theme.mut
-                                    text: "Puladas:\n" + backend.specsSkipped.join("\n") }
-                                AbstractButton {
-                                    id: spBtn
-                                    objectName: "specsFolder"
-                                    width: apMenu.width - 16; height: 32
-                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                    Accessible.name: "Abrir a pasta das especializações"
-                                    onClicked: backend.openSpecsFolder()
-                                    background: Rectangle { radius: 8; color: spBtn.hovered ? Theme.hov : "transparent"
-                                        border.width: spBtn.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                        text: "Abrir a pasta"; color: Theme.fg; font.pixelSize: 13 }
-                                    ToolTip.visible: hovered
-                                    ToolTip.delay: 400
-                                    ToolTip.text: backend.specsDir
-                                }
-                                Text { font.family: Theme.sans; text: "PASTA DE TRABALHO"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                // pasta onde o agente trabalha: clique para escolher outra (o agente pergunta se confia nela)
-                                AbstractButton {
-                                    id: wsBtn
-                                    objectName: "workspaceButton"
-                                    width: apMenu.width - 16; height: 32
-                                    enabled: backend.ready || !backend.running
-                                    hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                    readonly property string folder: { var p = backend.workspace || ""; var i = p.lastIndexOf("/"); return i >= 0 && i < p.length - 1 ? p.slice(i + 1) : p; }
-                                    Accessible.name: "Pasta de trabalho"
-                                    onClicked: { apMenu.close(); folderDlg.open(); }
-                                    background: Rectangle { radius: 8; color: wsBtn.hovered ? Theme.hov : "transparent"
-                                        border.width: wsBtn.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                    contentItem: Text { font.family: Theme.sans; leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter; elide: Text.ElideMiddle
-                                        text: wsBtn.folder + (backend.workspaceTrusted ? "" : "  (sem confiança)")
-                                        color: backend.workspaceTrusted ? Theme.fg : Theme.err; font.pixelSize: 13 }
-                                    ToolTip.visible: hovered
-                                    ToolTip.delay: 400
-                                    ToolTip.text: (backend.workspace || "") + "\nClique para trocar a pasta."
-                                }
-                                Text { font.family: Theme.sans; text: "FONTE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
-                                Repeater {
-                                    model: [["jetbrains", "JetBrains Mono"], ["plex", "IBM Plex"]]
+                                    Text { font.family: Theme.sans; text: "PASSOS DO STABLE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [[4, "4 (rápido, LCM)"], [8, "8 (LCM)"], [20, "20 (realista)"], [40, "40 (mais realista, lento)"]]
+                                        AbstractButton {
+                                            id: sst
+                                            required property var modelData
+                                            objectName: "ssteps_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: "Passos do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: backend.stableSteps = modelData[0]
+                                            background: Rectangle { radius: 8; color: sst.hovered ? Theme.hov : "transparent"
+                                                border.width: sst.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (backend.stableSteps === sst.modelData[0] ? "●  " : "○  ") + sst.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
+                                    }
+                                    Text { font.family: Theme.sans; text: "ESPECIALIZAÇÕES"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Text { objectName: "specsActive"; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
+                                        color: backend.specsActive.length ? Theme.fg : Theme.mut
+                                        text: backend.specsActive.length ? "Em uso neste modelo:\n" + backend.specsActive.join("\n") : "Nenhuma em uso neste modelo." }
+                                    Text { objectName: "specsSkipped"; visible: backend.specsSkipped.length > 0; font.family: Theme.sans; leftPadding: 8; rightPadding: 8; width: apMenu.width - 16; wrapMode: Text.Wrap; font.pixelSize: 12
+                                        color: Theme.mut
+                                        text: "Puladas:\n" + backend.specsSkipped.join("\n") }
                                     AbstractButton {
-                                        id: fo
-                                        required property var modelData
-                                        objectName: "font_" + modelData[0]
+                                        id: spBtn
+                                        objectName: "specsFolder"
                                         width: apMenu.width - 16; height: 32
                                         hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: modelData[1]; Accessible.role: Accessible.RadioButton
-                                        onClicked: { backend.setFonte(modelData[0]); Theme.fonte = modelData[0]; }
-                                        background: Rectangle { radius: 8; color: fo.hovered ? Theme.hov : "transparent"
-                                            border.width: fo.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        Accessible.name: "Abrir a pasta das especializações"
+                                        onClicked: backend.openSpecsFolder()
+                                        background: Rectangle { radius: 8; color: spBtn.hovered ? Theme.hov : "transparent"
+                                            border.width: spBtn.visualFocus ? 2 : 0; border.color: Theme.foc }
                                         contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                            text: (Theme.fonte === fo.modelData[0] ? "●  " : "○  ") + fo.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                            text: "Abrir a pasta"; color: Theme.fg; font.pixelSize: 13 }
+                                        ToolTip.visible: hovered
+                                        ToolTip.delay: 400
+                                        ToolTip.text: backend.specsDir
+                                    }
+                                    Text { font.family: Theme.sans; text: "PASTA DE TRABALHO"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    // pasta onde o agente trabalha: clique para escolher outra (o agente pergunta se confia nela)
+                                    AbstractButton {
+                                        id: wsBtn
+                                        objectName: "workspaceButton"
+                                        width: apMenu.width - 16; height: 32
+                                        enabled: backend.ready || !backend.running
+                                        hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                        readonly property string folder: { var p = backend.workspace || ""; var i = p.lastIndexOf("/"); return i >= 0 && i < p.length - 1 ? p.slice(i + 1) : p; }
+                                        Accessible.name: "Pasta de trabalho"
+                                        onClicked: { apMenu.close(); folderDlg.open(); }
+                                        background: Rectangle { radius: 8; color: wsBtn.hovered ? Theme.hov : "transparent"
+                                            border.width: wsBtn.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                        contentItem: Text { font.family: Theme.sans; leftPadding: 8; rightPadding: 8; verticalAlignment: Text.AlignVCenter; elide: Text.ElideMiddle
+                                            text: wsBtn.folder + (backend.workspaceTrusted ? "" : "  (sem confiança)")
+                                            color: backend.workspaceTrusted ? Theme.fg : Theme.err; font.pixelSize: 13 }
+                                        ToolTip.visible: hovered
+                                        ToolTip.delay: 400
+                                        ToolTip.text: (backend.workspace || "") + "\nClique para trocar a pasta."
+                                    }
+                                    Text { font.family: Theme.sans; text: "FONTE"; color: Theme.mut; font.pixelSize: 11; leftPadding: 8; topPadding: 8; bottomPadding: 4; font.letterSpacing: 0.6 }
+                                    Repeater {
+                                        model: [["jetbrains", "JetBrains Mono"], ["plex", "IBM Plex"]]
+                                        AbstractButton {
+                                            id: fo
+                                            required property var modelData
+                                            objectName: "font_" + modelData[0]
+                                            width: apMenu.width - 16; height: 32
+                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
+                                            Accessible.name: modelData[1]; Accessible.role: Accessible.RadioButton
+                                            onClicked: { backend.setFonte(modelData[0]); Theme.fonte = modelData[0]; }
+                                            background: Rectangle { radius: 8; color: fo.hovered ? Theme.hov : "transparent"
+                                                border.width: fo.visualFocus ? 2 : 0; border.color: Theme.foc }
+                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                                                text: (Theme.fonte === fo.modelData[0] ? "●  " : "○  ") + fo.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
+                                        }
                                     }
                                 }
                             }

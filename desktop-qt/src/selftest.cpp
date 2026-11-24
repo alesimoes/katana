@@ -648,7 +648,11 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
           "configuracoes listam as puladas");
     c.grab("20-especializacoes.png");
     QDir(be.specsDir()).removeRecursively();
+    if (QQuickItem *fl = c.item("apFlick")) fl->setProperty("contentY", qMax(0.0, fl->property("contentHeight").toDouble() - fl->height()));   // o menu rola: leva o fim a vista
+    QTest::qWait(100);
     c.click(c.item("specsFolder"));
+    if (QQuickItem *fl = c.item("apFlick")) fl->setProperty("contentY", 0.0);
+    QTest::qWait(100);
     check(QFileInfo(be.specsDir()).isDir() && be.lastOpened() == be.specsDir(), "botao cria a pasta que faltava e a abre: " + be.lastOpened());
     QTest::keyClick(win, Qt::Key_Escape);
     QTest::qWait(200);
