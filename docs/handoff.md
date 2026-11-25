@@ -9,11 +9,10 @@ Vulkan backend. To resume: read this file, then `knowledge.md` (everything that 
 
 `main` is at commit `44748e1` and is already pushed. Everything below compiles; **nothing in this list was measured** and none of it was run in a
 live agent session with Qwen3.6 (owner's rule for this phase: improve the engine, no tests or measurements). The numbers in the dated sections
-further down are measurements from the dates in their titles; do not read them as today's performance. Sections marked "historical" describe the
-old tool set and are kept only where they explain a decision.
+further down are measurements from the dates in their titles; do not read them as today's performance.
 
 1. **Working model: Qwen3.6-35B-A3B only.** Tests, measurements, training and proofs happen on it. Gemma 4 is not tested, not even for regression.
-2. **No legacy and no compatibility (T7 of `plan.md`).** No old-format readers, no aliases, no escape switches, no migration code; a store in another format is rebuilt without a notice.
+2. **No legacy, no compatibility** (`plan.md` T7). Store formats are format 2 only (another format is rebuilt without a notice); there are no aliases and no escape switches.
 3. **Lean tool list of 12:** `Bash, Read, Edit, Write, Find, Symbols, Grep, TodoWrite, AskUserQuestion, WebSearch, WebFetch, ToolSearch` (`docs/tools.md`,
    `docs/tools-review.md`). `Glob` and `Task*` are removed; file names are found with `Find` or `Bash ls`. `Find` and `Symbols` run on one engine (the U5 facade).
 4. **Code index (coder), nine phases built** (`docs/coder.md`, `docs/code-index-lifecycle.md`): root by `katana init`, crawler on demand in levels N0 to N3,
@@ -32,7 +31,7 @@ old tool set and are kept only where they explain a decision.
 
 To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
 
-**2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library; README maps the old `KATANA_TEACHER_*` settings; the old names keep working there). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
+**2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
 
 **2026-11-22, expert tiers (GPU / RAM / SSD) for MoE larger than RAM.** `src/engine/expert_tier.c` (hooks: `moe_route`,
 `moe_cpu_multi`, `qn_layer`, `load_model`, one line each; the file is `#ifdef __linux__`). `KATANA_EXPERT_RAM=<GB>` (max
@@ -43,9 +42,7 @@ file's alignment inside the page). Stats at exit. `katana tiersim run|sim` and `
 Numbers: knowledge.md 5c, comparisons.md 18. Measured only on Qwen3.6 on the CPU path; the GPU upload path of the VRAM
 expert cache and Gemma 4 do not use the arena yet.
 
-## 0t. Second tool set of the agent: `src/tools/` (2026-11-21) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+## 0t. Agent tools: `src/tools/` (2026-11-21)
 
 
 **2026-11-21, the judge is part of the binary: `katana codebench` (`src/app/codebench.c`).** Owner's rule: the engine must be C and whatever it uses must be C; tools humans run by hand may be Python. `katana learn` started `python3 tools/codebench/run.py` as its judge, which broke it, so the runner was rewritten in C and `tools/codebench/run.py` was deleted. The tasks (repo, hidden tests, reference solutions, `setup.py` helpers) stay as they were: they are test material in the language they are about. Commands: `katana codebench run --model M.gguf --out r.jsonl [--tasks 'glob,glob'] [--repeat N] [--timeout S] [--label L] [--katana BIN] [--env K=V]... [--sessions DIR] [--keep DIR] [--teacher URL --teacher-model M --distill-out F]`, `katana codebench verify [--tasks ...]`, `katana codebench compare A.jsonl B.jsonl`, `katana codebench list`. Same task folders, same defaults, same result fields in the same order (`label task passed seconds tool_calls gen_tokens timed_out [attempt] [session instruction]`, plus `skipped` when setup fails). New fields at the end, read from each run's own `KATANA_LOG` file and from the agent's stderr: `calls`, `failed_calls`, `refused_calls` (calls started minus calls logged: the engine's refusals do not reach the log), `repeated_calls` (same tool and arguments among the 20 previous calls, the `katana agentlog` rule), `rounds`, `last_text`, `tokens_read`, `tokens_written`; `compare` prints them after the solved counts. Differences from the script: each task's agent runs in its own process group and the whole group is killed at the time limit (and again when the agent exits, so background servers it started die); hidden tests also receive the `--env` variables (the stand-in tasks of `tools/traintest` use `KATANA_SPEC`); `setup.py` runs in a small Python host (`cb_shim`, embedded in the C file) that calls `setup()`, reports `vars` and `agent_env`, and calls `stop()` when the judge closes the pipe; `--dir` (default `tools/codebench`, or next to the binary) and `--python` (default `python3`, used for setup and for the hidden tests) are new; `tool_calls` still counts each call twice (the call line and the result line), as the script did, so old and new files compare. `katana learn` now starts `katana codebench run` (same binary, `--dir` from its `--bench`). POSIX only; on Windows the command says so. Checked: `katana codebench verify` prints the same 63 lines as `run.py --verify` did (63 tasks, 0 broken, news tasks included because this machine had internet; a news task whose setup fails is shown as skipped), `compare` prints the same first eight lines as the script on two hand-written files, the stand-in tasks of `tools/traintest/run.sh` (`mock_bench/test_hidden.py`) drive `katana learn` as before, and `tools/traintest/codebench_part.sh` covers the time limit, the cleanup of a task that leaves a background server, the log metrics, a failing setup and `compare` with a known answer. Not tested: `run` with a real model, the new log metrics on real agent output (checked against a stand-in agent that prints the same line formats), Windows.
@@ -82,7 +79,7 @@ compiled. Also fixed: `ANS 0` counted as yes in `agent_ask_kind`.
 `docs/curriculum.md`, section "Composed scenarios"): real small projects in five stacks, a policy in C that decides each step
 from the real tool result, every call run through the agent's dispatcher, and `check` re-running each conversation and
 comparing byte for byte. New commands: `curriculum pick` (selection by coverage) and `curriculum windows` (training windows
-with the model's tokenizer, vocabulary only). The v3 files were in `/mnt/dados/cu-v3` (removed on 2026-11-22; the v6 data that superseded them was removed too on 2026-11-23, and the curriculum is regenerated from zero, see `plan.md` T5) (`v3-raw.jsonl`, `v3-data.jsonl`,
+with the model's tokenizer, vocabulary only). The curriculum is regenerated from zero (`plan.md` T5) (`v3-raw.jsonl`, `v3-data.jsonl`,
 `v3-holdout-raw.jsonl`, `v3-holdout-data.jsonl`); nothing was trained. Left to do: move the older MCP, skill and file-creation
 families to the composed generator (they still have one tool sequence each), reserve rare-tool situations for the validation
 file, five distinct situations per rare tool (there are three or four), more request shapes, and the tool situations that
@@ -131,7 +128,7 @@ ported). **Not measured**: nothing of this ran on a real model; tested only on t
 44 tools in `src/tools/`, one file each (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, tasks, questions, plan
 mode, sub-agents, LSP, worktrees, scheduling and others), tested without a model by `tools/tooltest/*.sh` (765 checks)
 and `./katana tool <Name> '<json>'`. It is the default set since 2026-11-21 (owner's decision, before any measurement on
-Qwen3.6 and Gemma 4). The first set was removed. Description, status and what is not measured: `docs/tools.md`.
+Qwen3.6 and Gemma 4). Description, status and what is not measured: `docs/tools.md`.
 
 Evening of 2026-11-21, review of the convention examples before any training (`katana curriculum`): the three formats
 were right, the way of working was expensive. Measured on 1,800 generated conversations: every plan was written as the
@@ -161,7 +158,7 @@ desktop, which must be restarted to pick up the new binary.
 Same day, owner report: the agent executes but never answers. Measured in the desktop session of that afternoon
 (Qwen-AgentWorld, no teacher): 114 model turns, 1 with any text; "Tudo instalado?" got 24 tool rounds and no reply; two
 requests ended at exactly 40 turns, the round limit of one request, which ends silently. Two changes: a rule in the
-system prompt of the second set ("The user must hear from you": a question gets its answer in words, every request
+system prompt ("The user must hear from you": a question gets its answer in words, every request
 ends with a short message, never end on a tool call; prompt 8.8k -> 9.0k characters), and in ChatML the tool results
 of the round before the last carry a note telling the model to stop calling tools and report to the user.
 **Not measured with a model**: whether the rule changes the behaviour of Qwen3.6, AgentWorld or Gemma 4, and the
@@ -191,7 +188,7 @@ The per-request repeat state is now reset at the start of each request. (3) *rou
 (`KATANA_ROUNDS`), another block while the last one wrote a file or completed a step, hard cap 200. (4) *plan first*:
 3rd and 6th call of a request with no task list get a note to write one with TodoWrite; every 5th result carries the
 step in progress; TodoWrite's result names the next step. (5) `Bash` declares `description`; the desktop marker is now
-`\x01TOOL name\targs[\tdescription]`. (6) Prompt: one rule for missing external things; second set prompt 9,034 -> 9,293
+`\x01TOOL name\targs[\tdescription]`. (6) Prompt: one rule for missing external things; prompt 9,034 -> 9,293
 characters. (7) `katana agentlog [file] [--days N]`. Scripted checks in `tools/traintest/run.sh` (stand-in teacher).
 **None of this was measured with a real model.**
 
@@ -235,9 +232,7 @@ both in `tools/traintest/run.sh`; 4 new checks in `tools/tooltest/tasks.sh`, and
 JSON is now a one-step plan, not an error). **Not measured with a model**: rejected calls per 100 in `agente.log`
 before and after, on Qwen3.6 and Gemma 4, is the measurement to do next.
 
-## 0s. Teacher mode in the agent and the desktop (2026-11-20) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+## 0s. Teacher mode in the agent and the desktop (2026-11-20)
 
 
 *Since 2026-11-23 the vendor-specific parts below (Messages API, `claude -p`, key, defaults) live in the plugin `plugins/teacher-anthropic/`; the binary speaks `docs/teacher-protocol.md`. The text that follows is the history of what was built.*
@@ -291,23 +286,9 @@ answers become training data for the local model.
   Teacher, local model, teacher again: checked with the tiny model only.
   **Not run against the real API** (no key on the machine when it was written), and the desktop button was not
   clicked: the app was only started offscreen (no QML errors); the desktop selftest was not run.
-- *Reading with a kept position* (same day, owner request; `src/agent/code.c`, `tool_digest` in `delegate.c`):
-  the engine remembers, per file, up to which line the agent has read in this conversation. `read_file` with only
-  the path continues from there (the notice says so); `offset`/`limit` return exact lines and leave the position
-  alone. Each chunk read in sequence (3,500 bytes or more, ChatML) becomes a note of up to 250 words that replaces
-  the raw text (the "read, use, drop" mechanism of 0o, now **on by default**; `KATANA_DIGEST=0` turns it off) and
-  the note stays attached to the chunk while the file is unchanged (size and date). Asking for a file already read
-  to the end returns the kept notes at once; continuing after a context compaction brings the notes of the earlier
-  chunks along. Reset on `/new` and on a session switch; the sub-agent and teacher mode read raw. Motive: in the
-  owner's session of that day the local model made 85 reads against 7 searches and re-read one 328-line file more
-  than 20 times. Checked with the tiny model driven by the stand-in teacher (step 11 of the traintest: 4 chunks,
-  the fifth read returns the notes); the position alone with `katana toolrun`. **Not measured with Qwen3.6 or
-  Gemma 4** (the GPU was in use by the owner's desktop): note quality, time per chunk (one earlier measurement:
-  63 s for 5.8 KB against about 45 s raw) and the effect on codebench are unknown; the path that brings notes back
-  after a compaction was not exercised.
 - *Transcripts to training data* (2026-11-21, in C: `src/app/transcript.c`, part of `katana import`): when the input
   of `katana import` is a folder or a JSONL transcript of a coding agent whose tools have the names and arguments of
-  the second tool set (0t), each user request becomes one conversation: the blocks of one answer joined, automatic
+  the agent's tools (0t), each user request becomes one conversation: the blocks of one answer joined, automatic
   notices and interrupted calls left out, long results clipped (`--max-result`), `--replace 'REGEX=TEXT'` for paths
   and names of the source machine, `--cut-matching REGEX` to end an episode before a turn that must not be learned
   (both use the engine's own regex). Measured on the 88 transcript files of this repository's development sessions:
@@ -316,23 +297,6 @@ answers become training data for the local model.
   101k). Only 170 of the 3909 reasoning blocks in the transcripts carry text; the rest become an empty block. The
   output was left out of the repository and nothing was trained on it. Check the provider's terms before training on
   these answers.
-- *First tool set to second* (same day, `im_old2new` in `src/app/importer.c`): `katana import` rewrites calls of the
-  first set into the second, name and arguments (`read_file` -> `Read`, `run_command` -> `Bash` with the timeout in
-  ms, `search_files` -> `Grep`, `todo` -> `TodoWrite`, `ask_user` -> `AskUserQuestion`, `delegate` -> `Agent`,
-  `list_dir` and `git` -> `Bash`, `find_file` -> `Glob`, `write_file` with `append` -> `Bash` with a here-document,
-  and so on). A turn with a call that has no equivalent (`remember`, `recall`, `terminal`, `job`...) stays in the
-  conversation as context and is left out of the training spans; `--keep-tool-names` turns the conversion off. The
-  result texts stay as recorded (context, not a training target).
-- *Recorded agent sessions* (same day, `ksx_messages` in `src/app/learn.c`): `katana import <model> <session.ksess>
-  out.jsonl --system file:sys.txt --teacher` takes a ChatML session apart (reasoning block, text, calls, one message
-  per tool result), converts the calls as above and renders it again with the current system prompt, in the format
-  of the model given (`katana agentsys` for Qwen, `katana agentsys gemma4` for Gemma 4). `--teacher` trains only the
-  teacher's turns; `--replace` works here too (use it to mask keys and tokens that appear in the conversation).
-  Measured on the owner's session of 2026-11-20/21 (the Linux installer of another project, 181 teacher turns): 419
-  calls, 416 converted, 178 turns to train (3 turns call `job` or `recall`), 467k characters to learn; imported for
-  Qwen3.6 and for Gemma 4. The earlier session of 2026-11-20 has only its `.teacher` file left, so it cannot be
-  converted. Synthetic conversations are in `tools/traintest/run.sh`; the session path was checked on that real
-  session only, and one session per call. Training plan: `docs/specialization.md`.
 - *Not done*: `katana train` on a real 35B model is still
   unmeasured (start with `--plan 1`). Check the API provider's terms before training on its answers.
 
@@ -356,8 +320,7 @@ desktop agent idle but loaded. Measured:
   model's from the first token of reasoning. Nothing about quality was measured.
 
 Not measured: any task result with the specialization (codebench, the greymod task), validation loss, training on the
-GPU. The output (`professor.kspec` and logs) was discarded on 2026-11-21 by the owner's decision: it was trained on
-the first tool set's names, and the agent now uses the second set (section 0t). The numbers above stay as the
+GPU. The output (`professor.kspec` and logs) was discarded on 2026-11-21 by the owner's decision: the numbers above stay as the
 measured cost of training on this model.
 
 ## 0r. katana's own training engine: `katana train`, `katana gradcheck`, `.kspec` (2026-11-20)
@@ -464,9 +427,7 @@ model (`tools/tinymodel/make_tiny_gguf.py`, 0.5 MB, llama architecture, ChatML),
   rendered text, message spans); `run.py --sessions DIR --repeat N`; `tools/dataset/ksess2jsonl.py`. The owner decided
   the specialization must be katana's own training engine (no external LoRA tooling); design still to be written.
 
-## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+## 0o. Download and run: machine probe, model catalog, model screen, packaging (2026-11-19)
 
 
 Goal set by the owner: a local AI tool a person downloads and runs. Decision of the owner on the same day: the
@@ -508,16 +469,6 @@ models are out (they were downloaded and screened, see below).
   generated at 12.3 tok/s; after the first one exited it reloaded (about 40 s, 2126 tokens recomputed), kept the
   conversation and generated at 23 to 27 tok/s. Not done: shrinking when another program arrives later, and resizing
   without a reload. `KATANA_NO_REGROW=1` turns the reload off.
-- *Read, use, drop* (2026-11-20, `tool_digest` in `src/agent/delegate.c`, off by default, `KATANA_DIGEST=1`): a
-  `read_file` or `web_fetch` result of 3,500 bytes or more is read in a clean context (main context saved and loaded
-  back with `pfx_save`/`pfx_load`, as the sub-agent does) and only a note of up to 250 words enters the conversation;
-  the note is kept by the identity of the read (tool, arguments, file size and date), so the same read again returns
-  the note at once. Reads with `offset`, `limit` or `find` pass whole. ChatML only. First trial, Qwen3.6, one file of
-  13.8 KB: the first chunk (5,853 bytes, 1,865 tokens) became a note of 1,093 bytes (538 tokens in the main context)
-  in 63 s, against roughly 45 s to read it raw; the note must carry the final notice of the raw result ("lines 1-60
-  of 240...") or the model takes the first chunk for the whole file (seen, fixed). Open: the following chunks come
-  with `offset` and pass raw, so the saving is small on long files; telling "continue reading" from "exact lines"
-  needs a tool parameter. Not benchmarked; whether it pays is unknown.
 - *Desktop* (2026-11-20): time on each message, progress of long inputs (`FEED total done` from the engine, in chunks
   of 256 tokens), stall detection (no output, idle CPU and no running command for 30 s), machine use (CPU, RAM, GPU)
   under the message box, wider and taller message box, undo button removed, work folder moved to the settings
@@ -540,12 +491,8 @@ models are out (they were downloaded and screened, see below).
   systems (this machine has glibc 2.43). **Neither was executed**: running the script here was blocked by the
   permission system, and the workflow was not triggered. Windows: the engine builds with `build.bat`, but the Qt
   app uses Linux-only pieces (pty terminal, signals), so there is no Windows installer.
-- *Tool tests*: `tools/testar_ferramentas.sh` passes again (98 of 98); the 5 failures were expectations from
-  before the owner's decisions (tools work in any folder, sudo only on request).
 
-## 0n. Source split and the agent layers above the model (2026-11-19) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+## 0n. Source split and the agent layers above the model (2026-11-19)
 
 
 **Source layout.** `src/katana.c` is still the single compilation unit, but it now only includes the parts:
@@ -553,23 +500,6 @@ models are out (they were downloaded and screened, see below).
 (everything that sits above the model) and `src/app/` (console, server, subcommands, `main`). The splits were mechanical
 and checked by comparing the stripped binary before and after (identical apart from the build id). Functions are
 `static` and shared, so a fragment does not compile on its own; `build.sh` passes `-I src`.
-
-`src/agent/`, one layer per file:
-
-| File | Layer |
-|---|---|
-| `tools.c` | paths, permissions, confirmation, `search_files`, persistent memory |
-| `web.c`, `webnav.c` | curl, HTML to text, search; page memory with `offset`, `find`, `links` |
-| `prompt.c` | system prompt: rules and tools first (stable), environment block last |
-| `locate.c`, `ask.c` | `list_dir` with details and `find_file`; `ask_user` (question with options) |
-| `devtools.c`, `code.c` | `edit_file`, `glob`, git, packages; `read_file` by line range, syntax check after every write |
-| `exec.c`, `sudo.c`, `terminal.c`, `logs.c` | command execution, sudo password flow, pty sessions and root shell, logs |
-| `diagnose.c`, `howto.c` | one next-step hint when a command fails; recipes on demand |
-| `dispatch.c` | tool dispatch, log, neutralising markers in results |
-| `prefix_cache.c`, `context.c`, `loop.c` | system-prompt KV cache on disk, compaction, sessions and the agent loop |
-| `mcp.c`, `fmt_gemma4.c`, `fmt_harmony.c` | MCP client and the tool formats of Gemma 4 and gpt-oss |
-| `todo.c`, `project.c`, `undo.c` | the model's own task list; project instructions file; previous version of every file the agent changes and `/undo` |
-| `jobs.c`, `planmode.c`, `delegate.c` | background commands; plan mode (read-only until approved); sub-agent with a clean context |
 
 **What changed in behaviour.**
 
@@ -581,16 +511,6 @@ and checked by comparing the stripped binary before and after (identical apart f
   memory) last. The stable part is cached once for any folder; opening a new folder computes only the environment
   block. Measured on the `rotate` task of codebench (fresh temporary folder each run): 97 s before, 48 s after
   (3,336 tokens: 943 computed, 2,390 from disk). The same folder a second time loads everything in 0.05 s.
-- *Code layer.* `read_file` returns whole lines (6 KB per call) and takes `offset`/`limit`; `write_file` and
-  `edit_file` run a syntax check (Python, shell, JSON, JavaScript, PHP, Ruby when the tool is installed) and append
-  `[syntax check: ok]` or the error to the tool result.
-- *Command layer.* When a command fails the engine appends one hint: missing program, missing Python or Node module,
-  wrong path (with the folder the command ran in), permission (use sudo, a password dialog opens), script not
-  executable, port in use, package lock, pip refused by the system, process killed.
-- *Web layer.* `web_fetch` keeps the last 4 pages (clean text and links). `offset` continues a long page, `find`
-  returns only the passages with a word, `links=true` lists the absolute links (filtered by `find`). The text comes
-  from `<main>`/`<article>` when the page has one, menus (`nav`, `select`, `button`) are skipped and a run of 10 or more
-  link-only lines becomes one note. A PDF URL is refused with the instruction to download and use `read_document`.
 - *Compaction inside one long request.* A coding job is usually one user message followed by dozens of tool rounds.
   The old layers only summarised earlier turns, so in that case nothing could be summarised: once the tool results
   were shrunk the context stayed above the trigger and every round "compacted" again, recomputing the whole context
@@ -600,176 +520,10 @@ and checked by comparing the stripped binary before and after (identical apart f
   over the transcript). The history becomes: summary, the user's request, the last tool call and its result. After a
   compaction the next automatic one waits until the context grows 2,000 tokens past the compacted size. Gemma 4 and
   `/compact` keep the previous method (summary from a fresh prompt).
-- *Computer navigation layer.* `list_dir` lists folders first with their item count, then files with size and date.
-  `find_file` finds files and folders by part of the name: breadth-first from the home folder and the other mounted
-  disks (or from `under`), skipping hidden and build folders, 5 s limit, exact name and shortest path first.
-- *Interaction layer.* `ask_user` asks one question with 2 to 5 options. Desktop: marker `CHOICE`, a card above the
-  message box with one button per option (typing also answers; it is not a dialog, the sudo password stays the only
-  one). Terminal: numbered options. Piped input: the model is told to decide by itself.
-- *Lean system prompt.* 14.8 KB (about 3400 tokens) became 7.3 KB (1957 tokens): rules in 8 lines, short environment
-  block, 11 tools with a full definition (`read_file`, `list_dir`, `find_file`, `search_files`, `write_file`,
-  `edit_file`, `run_command`, `ask_user`, `web_search`, `web_fetch`, `remember`) and 8 more in one compact line (`git`,
-  `terminal`, `glob`, `recall`, `download_file`, `install_package`, `read_log`, `howto`); all stay in the dispatcher.
-  `read_file` reads PDF and HTML, so `read_document` left the prompt. The Gemma 4 tool declarations cover only the 11
-  full tools and were not retested.
-
-**Eight layers taken from what other agent harnesses do (2026-11-19, owner request).** All tested with Qwen3.6 on
-this machine, one scenario each; the full benchmark after them is in the table below.
-
-- *Task list (`todo(steps)`).* The model writes its steps (one per line, or a JSON list) and calls again with `[x]`
-  on the finished ones. The list lives in the engine: it is put back after a compaction, and if the model ends its
-  answer with open steps that it listed in this request the loop reminds it once. Marker `TODO` for the interface.
-- *Project instructions.* `KATANA.md` or `AGENTS.md` in the working folder, or above it up to the repository root, goes
-  into the system prompt after the environment block (5000 bytes at most; outside the stable part of the prefix
-  cache). `/cd` to another folder sends that folder's file with the next message. The file is treated as
-  instructions from the project owner, so a cloned repository can steer the agent through it.
-- *Undo.* Before `write_file` and `edit_file` write, the previous version is kept in `~/.katana/undo`. `/undo` puts
-  back every file changed by the last request that changed any (again: the one before), and the next message tells
-  the model. Not covered: what a shell command changes, files only root can read, files above 8 MB. The journal lives
-  in memory, so it ends with the process.
-- *Regex search.* `search_files` takes `regex=true` (POSIX extended, case-insensitive); a plain-text search with no
-  hits whose pattern looks like a regex is retried as one.
-- *Background commands.* `run_command` with `background=true` starts the command in its own process group with the
-  output in a file and returns a job number after 1.5 s (an immediate failure is reported instead); `job(id, action)`
-  reads the end of the output, lists or stops. Everything still running is killed when the agent exits. No sudo.
-- *Sub-agent (`delegate(task)`).* The same model does a search or reading job in a clean context and returns only its
-  answer (3000 bytes at most). There is one model in memory, so the engine saves the KV cache of the main conversation
-  to disk in the prefix-cache format, runs the sub-agent from position 0 (read-only, 12 rounds, 14000 tokens at most)
-  and loads the cache back; if the load fails the loop recomputes the conversation. ChatML only. Measured once: main
-  context 2264 -> 2869 tokens for a job that took 8339 tokens inside the sub-agent (152 s); the same job done
-  directly left the main context at 8419 tokens. It saves context, not time.
-- *Plan mode.* `/plan` makes the agent read-only: the engine refuses writes, edits, downloads, installs, terminal
-  sessions, MCP tools and any shell command that is not on a read-only list (no redirection to a file, no command
-  substitution). `/go` approves and executes, `/plan off` leaves. Marker `MODE plan|normal`.
-- *Pages that need JavaScript.* `web_fetch` opens the page in an installed Chrome or Chromium without a window
-  (temporary profile, `--dump-dom`) when the plain download has almost no text, when curl gets nothing, or with
-  `render=true`. It loads and reads only: no login, no clicking.
-
-System prompt after these: 7.8 KB (the lean prompt was 7.3 KB): one rule line for `todo`, `job` and `delegate` in the
-compact tool line, `regex`, `background` and `render` in three tool definitions.
-
-Desktop: a card above the message box shows the task list and, in plan mode, the "Aprovar e executar" button; "plano"
-and "desfazer" sit next to the folder button. The engine now ignores an interface reply (`\x01ANS`, `\x01PASS`) that
-arrives with no question pending; it used to be taken as a user message.
-
-Side effect of a test on this machine: during the plan-mode test the model ran `sudo apt-get install -y
-python3-pytest` and it went through without a password, because this machine's sudoers has `NOPASSWD` for apt. The
-package and three dependencies are installed (`sudo apt-get remove python3-pytest python3-pluggy python3-iniconfig`
-undoes it; `python3-packaging` may be wanted by other packages).
-
 **Qwen3.8-27B (`qwen35` dense).** Loads and generates coherent text and code on the hybrid path (dense SwiGLU
 feed-forward in place of the MoE; the extra next-token-prediction layer is ignored). Not compared numerically with the
 reference engine; the full Vulkan graph is still MoE only. Speed with the GPU free (measured 2026-11-19, `bench`, 96 tokens, three rounds): 1.2 tok/s of generation, too slow for use on this machine.
 
-**codebench (`tools/codebench/`).** (Note 2026-11-21: the runner is now `katana codebench`, in C; the `run.py` named in this section and in 0q and 0s no longer exists. Commands: see 0t and `tools/codebench/README.md`.) 21 small tasks with hidden tests (15 Python fixes plus 6 larger ones: several
-files, shell scripts). Qwen3.6, one run each, 900 s limit (measured 2026-11-19, same machine, runs one after another):
-
-| run | solved | failed | mean time | mean tool calls |
-|---|---|---|---|---|
-| long prompt (14.8 KB), `agent` | 18/21 | calc, lru, todo | 128 s | 12.0 |
-| lean prompt (7.3 KB), `agent` | 19/21 | calc (timeout), mdhtml | 139 s | 12.5 |
-| lean prompt, `code` | 19/21 | ledger, mdhtml | 109 s | 12.8 |
-| lean prompt + the eight layers (7.8 KB), `agent` | 19/21 | calc (timeout), ledger | 137 s | 12.3 |
-
-Gemma 4 26B on the same 21 tasks, lean prompt, `agent`, one run each (2026-11-19; the machine was loaded by other
-work during the first run, so the times are not comparable):
-
-| run | solved | failed | mean time |
-|---|---|---|---|
-| default prompt order | 17/21 | calc (timeout), kvstore, ledger, todo | 304 s |
-| per-folder block after the declarations (switch since removed) | 16/21 | calc (timeout), kvstore, ledger, mdhtml, todo | 193 s |
-
-One task of difference in one run each is not a difference (`mdhtml` passed the default run at the 900 s limit).
-That order was not adopted and its switch was removed. The second run also covered the 9 new tasks (below): 9/9.
-
-**New task groups (30 tasks, then 39 with the news tasks, then 51 with the code-writing tasks below).** 5 terminal tasks (`term-*`: find the process behind a port, find the commit
-that broke a check, an interactive program, a build that fails three times, rotated gzip logs) and 4 web tasks
-(`web-*`, served by a local HTTP server started by the task's `setup.py`). `run.py --verify` checks every task
-without the model (fails untouched, passes with the reference solution): 30 of 30. One run each (2026-11-19): Gemma 4 9/9, Qwen3.6 9/9 (mean 79 s). Both models solve all nine, so these tasks show the terminal and web tools working end to end but do not separate the models; harder ones are needed for that.
-
-**Code-writing tasks (12 more, 2026-11-21; plan item B5).** Written because the owner's local model, asked to build something new, made over 100 tool calls and never wrote code. They are selected by name prefix (`--tasks 'write-*'`, globs work; the glob support is new in `run.py`). `write-*` (6, an empty folder plus an instruction): `write-todo-cli`, `write-wordstats` (a package of three modules), `write-c-stats` (C and a Makefile), `write-sh-organize` (POSIX sh), `write-http-notes` (an HTTP server on a free port), `write-miniconf` (parser plus formatter). `prereq-*` (3, the code needs something that is not on the machine; the hidden test checks a clean failure without it and success with a stub, a temporary credentials file or a local server): `prereq-quillpress`, `prereq-datavault`, `prereq-pingd`. `extend-*` (3, 300 to 400 lines over several files, a new module plus changes in existing ones): `extend-library`, `extend-agenda`, `extend-salesrep`. Eight instructions are in informal Portuguese, four in English. Measured: `run.py --verify` passes all 12 without a model (they fail untouched and pass with the reference solution). Not measured: no model has been run on them, so it is unknown which ones separate the models or whether a hidden test is stricter than the instruction.
-
-No difference is significant (sign test p = 1.0; which tasks fail changes from run to run): the lean prompt did not
-lose tasks, and nothing here shows it gaining any. The mean time of the lean `agent` run carries one 901 s timeout.
-`mdhtml` failed in both lean runs and passed in the last run, so it is run-to-run variation. In the last run the model
-never called `todo` or `delegate` (the tasks are short): the benchmark shows the new layers cost nothing here, and says
-nothing about whether they help on long jobs.
-
-**Known gap.** The Windows build has not been compiled since the terminal work of 2026-11-18. Two functions that the
-shared code calls (`tool_howto`, `ui_toolout`) sat inside the non-Windows block; they are now outside it, but nothing
-was compiled on Windows, so expect more of the same kind (`find_file`, the syntax check and the failure hints are
-POSIX only by design).
-
-**Next, in the order agreed with the owner:** find which tools fail in real use on the desktop (owner report, not
-yet specified); retest Gemma 4 with the lean prompt; harder terminal and web tasks (the nine new ones are solved by both models); the runtime LoRA adapter for Qwen3.8 is on hold (dense model, the owner decided not to spend time on dense models).
-
-## 0m. Tools that work anywhere, long writes, sudo only on request, working folder (2026-11-18) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-
-Owner decision (2026-11-18): the tools run as the normal user and **root only when sudo is requested**; the **only** dialog is the sudo password (no trust or write-permission prompts). Terminal sessions are normal-user shells with `sudo()` bound to `sudo -A`; the askpass reads the password from a 0600 tmpfs file (`KATANA_PWFILE`, removed at exit), written after the dialog.
-
-Problem reported by the owner: `write_file`/`edit_file` failed in the desktop and long scripts were never finished. Causes found: (1) they accepted only
-relative paths inside the current folder (the model uses absolute paths: `error: invalid path (only relative paths inside the current directory)`
-in `agente.log`); (2) the agent generated at most 1024 tokens per answer (`KATANA_MAXTOK`), so a long `write_file` call was cut, and a cut call was
-executed as if complete (half a file written); (3) `content` was a 16 KB buffer, silently truncated (the same silent truncation as the terminal
-`send` heredoc bug, whose buffer was 8 KB).
-Done (`src/katana.c`): `agent_write_path` (relative, absolute, `~`, `..` normalized, symlinks resolved; any folder, no prompt: the user's request is the
-authorization); `write_file` creates parent folders and has `append`; buffers 64 KB with an explicit error above that; agent token limit 32768 (chat
-8192); `trunc` guard: a tool call still open when the answer hit the limit is not run and the model gets an error explaining how to write in parts; root
-root only when requested: `write_file`/`edit_file` take `sudo=true` (otherwise a denied write returns an error that says so), through `root_write_file`/`root_read_file` and `sudo_ready()` which opens the password dialog
-(`NEEDPASS`, retried up to 3 times with `NEEDPASS retry`); `install_package apt` uses the same flow; `git -C <folder> ...`; `/cd <folder>`; marker `CWD`.
-The `ASK` marker / `agent_ask_kind` (answer `\x01ANS 1|0`) now serves `KATANA_CONFIRM=1` and `KATANA_TRUST=0`; by default nothing is asked except the sudo
-password. katana-desktop: working-folder button + folder dialog (`/cd`), `askDlg`, password dialog with "wrong password" text, agent started in the chosen folder.
-Tested: relative/absolute/append/edit/parent folders/`..`, 42 KB write, 70 KB error, `git -C`, the `NEEDPASS`/`retry`/cancel flow with a wrong password, and
-the root script with a fake `sudo` (create, append, edit through root). **Not tested**: a real correct sudo password through the dialog; the dialogs on screen.
-
-## 0l. Terminal and logs for the agent: robust run_command, terminal, read_log, terminal_screen (2026-11-18) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-
-Problem: `run_command` used popen (stderr on the user's terminal, shared stdin, no timeout), so the model did not see
-errors and `sudo`/`ssh` hung the agent. Code in `src/katana.c`, "terminal e logs" block before `agent_tool_run`.
-- `run_command(command, timeout_s?)`: `vfork`+`setsid` (new process group), stdin `/dev/null`, stdout and stderr on the same pipe,
-  `GIT_TERMINAL_PROMPT=0` and `PAGER=cat`. Timeout `timeout_s` (default 120, `KATANA_CMD_TIMEOUT`, maximum 3600): kills the group
-  (SIGTERM, then SIGKILL) and reports `[timeout apos N s]`, keeping the partial output. Ctrl+C during the command kills the group and the
-  output says `[interrupted by the user]` (katana stays alive). Output with START (1/3) and END (2/3) and `[... N bytes omitted ...]`
-  in the middle (limit ~6000 bytes, or the context budget). Always ends with `[exit code N]`. If the output has "a password is
-  required", "[sudo] password", "Permission denied (publickey", etc., a hint follows: ask the user to run the command in their
-  own terminal; a generic "Permission denied" gets a milder hint. A background process that holds the pipe does not block the
-  call (the shell exited and nothing more arrives: it returns; the process keeps running).
-- `terminal(action, name?, text?, enter?, lines?, wait_ms?)`: persistent shell sessions in a pty (`posix_openpt`, no
-  new libs; bash `--norc --noediting` or sh; `TERM=dumb`, `PS1='$ '`). Actions: `open`, `send` (Enter by default; waits for the output
-  to settle: something arrived and 150 ms of silence, up to `wait_ms`, default 1500), `read` (only the new part; with `lines` the last N lines;
-  waits up to `wait_ms`), `list`, `close`, `interrupt` (Ctrl+C). Up to 4 sessions, 256 KB ring per session, ANSI/`\r` removed.
-  Without `name` the single open session is used. Sessions die when the agent exits (`atexit`; if katana dies the pty closes and the shell
-  receives SIGHUP). `open` and `send` go through `agent_act`; if a password prompt appears, a hint says not to guess.
-- `read_log(source, lines?, filter?, unit?)`: `agent` (`KATANA_LOG`/`~/.katana/agente.log`), `commands` (ring of 32 commands from this
-  session: command, exit code or `[terminal]`, summary of the end of the output; recorded by run_command and terminal), `journal`
-  (`journalctl -n N --no-pager`, optional `unit`), `dmesg` (falls back to `journalctl -k`), `syslog` (`/var/log/syslog` or `messages`) or
-  a text file path (reading outside the folder goes through `agent_read_access`; refuses binary; reads only the final 1 MB). `filter`
-  is a case-insensitive extended regex (plain text if the regex is invalid). Without permission the message says what to do
-  (group `adm`/`systemd-journal`, or ask the user for `sudo tail ...`).
-- `terminal_screen(lines?, pane?)`: `tmux capture-pane -p -t <pane> -S -N`. Without `pane`, it uses another pane of the window of
-  `TMUX_PANE` (the own pane is the chat one). Outside tmux (`TMUX` empty) or without tmux installed: a clear error asking the user to paste the
-  error. It does not try to read other terminals.
-- System prompt: lists in both formats (`g4_agent_sys` checked with `katana agentsys gemma4`; `integer` and `boolean` types
-  come out as `INTEGER`/`BOOLEAN`) and a sentence asking for `read_log`/`terminal` when a command fails and not to insist on sudo/password.
-  The prompt grew ~1.3 KB (~330 tokens).
-- New test without a model: `katana toolrun` reads `<tool> <json>` lines from the input and runs them in sequence in the same process
-  (needed for terminal sessions and for the `commands` ring). `sh tools/testar_ferramentas.sh`: 95 checks.
-- katana-desktop: new verbs in the `verbos` map of `ActivityGroup.qml`; `cleanArgs` already accepts unquoted number/boolean
-  (`lines: 50`, `enter: true`). `sh desktop-qt/build.sh` compiles; the app was not opened.
-- **Really tested (Linux, no model/GPU)**: visible stderr, exit code, closed stdin (`read` returns empty), password hint
-  (simulated text and real `sudo -n true`), timeout that kills the group (background child dies), start+end truncation, terminal
-  open/send/read with persistent `cd` and variable, interactive prompt, optional Enter, two sessions, close, read_log of a file
-  (text/regex filter, last N, nonexistent, binary, no permission), of `commands` and `agent`, journal/dmesg (valid answer or
-  permission hint), terminal_screen without tmux and with a fake `tmux` in the PATH (checks the arguments built).
-- **Not tested**: `terminal_screen` with a real tmux (tmux not installed on this machine); a real user Ctrl+C during a
-  command (only the signal path was read, not exercised); Windows (the three new tools return "not available on Windows
-  yet"; run_command still uses popen, now with `2>&1`); a model using the tools; the desktop app open.
 
 ## 0k. Final measurements with the machine free: GPU, MoE on the CPU and swap margin (2026-11-18)
 
@@ -950,44 +704,6 @@ for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katan
 ```
 Next: compact Q8_0 on the GPU (+1 slot in each model, estimated +1.2 to +2.5 p.p.); upload of the slots outside the
 blocking path (own transfer queue) so the margin can be lowered without paying the blocking.
-
-## 0g. Programming tools in the agent (2026-11-18, branch worktree-agent-a1a49838b82625b7e) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-
-New tools in `src/katana.c` (block before `agent_tool_run`): `edit_file`, `glob`, `read_document`,
-`git`, and, with the internet on (`KATANA_WEB` different from 0), `download_file` and `install_package`. Arguments and
-behavior in the README ("Ferramentas do agente para programar"). Design points:
-- `edit_file` and `download_file` only write to a relative path inside the current folder (same rule as `write_file`);
-  `glob` and `read_document` read outside the folder with the usual per-root-folder confirmation. Writing/executing goes through
-  `agent_act` (`KATANA_CONFIRM=1` asks for confirmation). Everything goes to `~/.katana/agente.log`.
-- `git`: the arguments are split by the engine itself (single/double quotes) and each token goes to the shell between
-  single quotes, so `status; rm x` runs nothing. Options that run programs (`--upload-pack`, `--exec`,
-  `--output`, `--config`, `-u`/`-c` in clone/pull/fetch, `ext::` URL) are refused. Refused without
-  `KATANA_GIT_UNSAFE=1`: `push` with `--force/-f/--delete/--mirror/+refspec`, `reset`, `clean`, `rebase`, `merge`,
-  `stash`, `restore`, `rm`, `tag`, `revert`, `branch -D`, `checkout -f/-B/.`. `status/diff/log/show` do not ask for
-  confirmation.
-- `download_file`: curl with `--max-filesize` and `ulimit -f` (limit `KATANA_DL_MAX_MB`, default 2048), writes to
-  `<path>.part` and renames; SHA-256 in own C code (`sha2_*`, streaming).
-- `install_package`: pip/npm/apt/cargo whitelist, validated name (no space, `;`, quotes, nor starting with `-`);
-  pip uses the active venv, `./.venv` or `--user` (if the system says "externally-managed", the output suggests creating `.venv`);
-  apt uses `sudo -n` and returns a clear error if it asks for a password. Returns only the last ~12 lines.
-- `web_fetch` already extracted readable text from HTML (no script/style); `read_document` reuses `html_to_text`.
-- Formats: the declarations go into the `<tools>` JSON list (Qwen3.6 in XML `<function=..>`, or JSON) and
-  `g4_agent_sys` converts them to Gemma 4's `<|tool>declaration:..` (checked with `katana agentsys gemma4`;
-  `replace_all` is boolean). The prompt grew about 1.2 KB (~300 tokens): the KV-cached prefix is recomputed
-  once per model.
-- New test modes (no model): `katana tool <name> '<json>'` (already existed), `katana agentsys [qwen|json|gemma4]` and
-  `katana toolparse <xml|gemma4> '<call>'` (converts the call as the agent does and runs it).
-- `sh tools/testar_ferramentas.sh`: 48 checks without model/GPU (edit single/duplicate/replace_all, glob, git incl.
-  refusals and injection, HTML/PDF, download from a local HTTP server incl. limit and 404, install validation, log).
-- katana-desktop: the tool card already shows `key: value | ...`; the `cleanArgs` expression now accepts
-  unquoted boolean/number (Gemma's `replace_all: true`). It compiles; the app was not opened.
-- **Not tested**: a model calling the new tools (neither Qwen3.6 nor Gemma 4: the GPU/CPU were reserved);
-  real `install_package` (pip/npm/apt/cargo: only input validation); `git clone/pull/push` with network;
-  Windows (shell tools return "not available on Windows yet"; `edit_file` and `read_document` of HTML/text
-  work).
 
 ## 0h. MoE router on the GPU in generation: measured, no gain (2026-11-18, branch worktree-agent-a516d8e63276dd43a)
 
@@ -1179,9 +895,7 @@ katana-desktop is no longer Go + an HTML page in Chrome: it is now a Qt6/QML app
 `desktop-qt/README.md`; build with `desktop-qt/build.sh`; test `--selftest`). The Go code and `desktop/` were
 removed. To swap the binary in use: `cp desktop-qt/build/katana-desktop-qt katana-desktop`.
 
-## 0b. Packed context and tokenized conversations (2026-11-17, branch worktree-agent-a79e57555acd5ead4) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+## 0b. Packed context and tokenized conversations (2026-11-17, branch worktree-agent-a79e57555acd5ead4)
 
 
 Done (commit eff16d8):
@@ -1189,10 +903,7 @@ Done (commit eff16d8):
   The agent keeps the messages that are already in the KV cache. `/compact` forces; automatic when the turn would exceed
   the system prompt plus 6000 tokens of conversation (fixed inside the engine, not a user option; at most 60% of the context; it used to be 85%, but
   speed drops as the context fills, so it compacts early and often; `KATANA_COMPACT=0` turns off the automatic one). `/compact`
-  summarizes the whole conversation, including the last turn, and saves the session. In layer 3 the code bodies of old
-  `write_file` calls are also cut. The system prompt now has an Environment block (OS, user, folder, git, map of the
-  folders around, internet, what the agent can do) and a "Writing code" section (plan, small files, parts of ~150 lines with
-  append, test each part, PLAN.md). The prompt is 13 KB (about 3.4k tokens, most of it the tool definitions). At start the agent warms it (`pfx_warm`): the KV of the system
+  summarizes the whole conversation, including the last turn, and saves the session. At start the agent warms it (`pfx_warm`): the KV of the system
   prompt is loaded from `~/.katana/cache` in milliseconds, or computed once and saved, so the first message does not wait. Layers: (1) tool results prior
   to the last user request become `[resultado de X omitido para economizar contexto: N bytes]`; (2) if still
   above 50% of the context (or forced), the turns before the last request become a summary generated by the
@@ -1418,9 +1129,7 @@ reference engine in `ref/llama-src`). What the architecture has:
 - Context 131072 in the agent: SOLVED (section 12; KV fp16 2.90 GB, ring in the local ones).
 - Agent with `web_search` validated end-to-end on the CPU (slow); confirm on Vulkan when the GPU frees up.
 
-### 2.2c gpt-oss architecture (`gpt-oss`, done 2026-11-16) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+### 2.2c gpt-oss architecture (`gpt-oss`, done 2026-11-16)
 
 
 Test model: `models/gpt-oss-20b-F16.gguf` (OpenAI MoE ~20B, native MXFP4; 24 layers, dim 2880,
@@ -1460,7 +1169,6 @@ reference (`ref/llama-src`: `src/models/openai-moe.cpp`, `llama-graph.cpp`, `lla
 - Agent with **tools in harmony format**: `go_agent_sys` converts the `<tools>` list to the TypeScript
   namespace; the model calls `...to=functions.name...<|message|>{args}<|call|>`, the agent
   executes and returns `<|start|>functions.name to=assistant<|channel|>commentary<|message|>...<|end|>`.
-  Tested: "list the files" -> called `list_dir` and answered with the right listing and count.
 - `gpu_setup` sends `gpt-oss` to the CPU (guard); no Vulkan path yet.
 
 **Pending for gpt-oss**:
@@ -1626,15 +1334,11 @@ Only code change: `_putenv` mapped to `putenv` outside Windows.
   (another hour, another system: not directly comparable). The Vulkan drop on Linux is a point to
   investigate (driver, clocks or submission path).
 
-### 5.1 Step 2.1a done on Linux (Vulkan, Qwen2.5 1.5B) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+### 5.1 Step 2.1a done on Linux (Vulkan, Qwen2.5 1.5B)
 
 
 - `run`, single-question `chat` and interactive `chat` (two turns, remembers the name): ok, recorded
   graph on Vulkan, generation 83–97 tok/s.
-- `agent`: `list_dir` did not exist outside Windows; ported with `opendir`/`readdir`. Listing ok;
-  `run_command` asks for confirmation and respects the refusal.
 - Mistral 7B Q5_K_M: loads 25 of 32 layers in the VRAM ("Vulkan: grafo na CPU"), answers correctly,
   generation 6.3 tok/s. That is, the rest falls to the CPU; the real mixed path is step 2.1b.
 - Not tested yet: dense Qwen3 (there is no GGUF in `models/`).
@@ -1888,9 +1592,7 @@ VRAM (8 slots of 128), the rest runs on the CPU; each `chat` starts with the hea
 3. Token-by-token precision: hot experts in fp32 on the one-token path (as the Qwen3-30B batch became
    fp32 in section 8) would remove the 1.78 from the selftest; today it does not affect greedy generation.
 
-## 12. gemma4 with 131072 context in the agent (2026-11-17, worktree agent-aeade) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
+## 12. gemma4 with 131072 context in the agent (2026-11-17, worktree agent-aeade)
 
 
 The warning `cache KV da CPU: 30 camadas, fp32, 128.85 GB` at 131072 was **only the warning's arithmetic** (`print_info` used
@@ -1920,8 +1622,6 @@ What was missing: fp16 in the global ones and removing the agent's special case.
   exercised). At 131072 (fp16) the output diverges from fp32 at byte 8390 of 40 generated tokens (fp16 rounding).
 - `selftest` gemma4 (CPU and Vulkan with the GPU free), Llama-3.2-1B and Qwen3-30B (`KATANA_KV16=0 KATANA_CTX=512`)
   without regression; the "GPU token a token FALHOU" of gemma4 (6.21) and of Qwen3-30B (0.115) is the same as on main.
-- gemma4 `agent` without `KATANA_CTX`: ctx=131072, KV fp16 2.90 GB, max RSS 15.05 GB; called `list_dir` and
-  listed the files.
 - The RSS is almost all mapped weights (~15 GB); the KV only occupies what was touched. **Estimate**: full context
   adds ~2.9 GB (fp16) against ~5.8 GB (fp32 on main, which also fit in the 64 GB RAM).
 - Limitations: global attention is linear on the CPU per token (not measured at 100k; the 100k prompt on the CPU would take
@@ -2108,27 +1808,3 @@ done
 Also compare the generation (9 slots and Q5_1 in 6 words instead of 9: less reading on the GPU) against the main
 binary. If the batch MoE in the slots does not win, return the default to the CPU (it stays exact).
 
-
-## 0m. sudo in the agent (2026-11-18) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-`run_command` with `sudo`: if `sudo -n true` fails, the engine asks for the password once (terminal without echo; on the desktop, `NEEDPASS` marker and `\x01PASS password` reply on the input), validates with `sudo -A -k -v` and keeps it only in memory (`g_sudo_pw`). Commands run with `sudo() { command sudo -A "$@"; }` and `SUDO_ASKPASS=~/.katana/askpass.sh` reading `KATANA_PW` from the child's environment. Test with a fake sudo in `tools/testar_ferramentas.sh` (96/96). It does not cover the `terminal` tool (pty): there the model sees the password prompt. Not tested with real sudo nor with the dialog in the window.
-
-## 0n. root by default and the howto tool (2026-11-18; SUPERSEDED by 0m: since 2026-11-18 evening the default is the normal user and root only when sudo is requested; `KATANA_SUDO=1` restores root by default) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-In the interactive agent, `run_command` runs everything as root: `exec sudo -A sh -c '<cmd>'` (escaped quotes), with the password asked once (0m). `KATANA_SUDO=0` turns it off. Outside the agent (`katana tool`, `toolrun`) it is not the default (only with `KATANA_SUDO_FORCE=1`, used in the test with the fake sudo). If the password does not come (cancelled, no tty), the command runs without sudo. Cautions: files created by commands belong to root (write_file/edit_file still run as the user); SIGKILL on timeout kills the sudo but does not report to the root child. New tool `howto(topic)` with recipes (web, terminal, sudo, files, code, packages, logs, all) and 2 new lines in the prompt about web and terminal. Not measured: a model calling `howto`; the prompt cost (+~0.6 KB) in the prefix cache.
-
-## 0o. persistent root shell (2026-11-18) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-With root by default (0n), `run_command` does not open a `sudo sh -c` per command: it uses a `sudo -A bash` session in a pty (`root_open`/`root_exec`, `g_rootS`, outside the `terminal` list). The password is asked once (modal on the desktop); after that cwd and variables persist between commands and there is no new password. Each command becomes a file read with `. file </dev/null` (a syntax error does not hang; stdin closed) and a `__KEND_<id>_<rc>__` marker marks the end and carries the code. Timeout/Ctrl+C send ^C to the pty and a second marker (rc 130); the shell and the state survive. With no marker within 3 s after the ^C, the session is discarded and reopened on the next command. If the session does not open (password refused, no sudo), it falls back to `sudo -A sh -c` per command. Tested with a fake sudo (98/98); not tested with real sudo, long commands with lots of output (>32 MB) nor programs that ask for a tty.
-
-## 0p. terminal also as root + automatic opening (2026-11-18) (historical)
-
-> **Historical.** This section was written for the old tool set (`run_command`, `read_file`, `write_file`, `list_dir`, `find_file`, `terminal`, `git`, `recall`, `Glob`, `Task*`, `katana code`), removed on 2026-11-23 with no alias. Kept only because it explains a decision; the current 12 tools are in `docs/tools.md`. Names and numbers below are not current.
-
-The model (Gemma) used the `terminal` tool to run `sudo` and got stuck in a loop with "no terminal session is open" (it sent `send` without `open`); the `sudo` there fell on the pty's password prompt and the modal did not appear, because only `run_command` went through the password flow. Now: `terminal send` without a session opens one by itself; `terminal` sessions open as `sudo -A bash` (root by default, password through the modal once), so `sudo` inside them does not ask for a password. Test: 98/98 (fake sudo); not tested with real sudo nor the modal in the window.

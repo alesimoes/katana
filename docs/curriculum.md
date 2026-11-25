@@ -128,15 +128,14 @@ What runs for real, set up by `src/app/scenario_rare2.c`:
 | `ListMcpResourcesTool`, `ReadMcpResourceTool`, `WaitForMcpServers` | a small stdio MCP server written into the project and started through the engine's client before the prompt is built (four resources, one binary); a second configured server whose command does not exist gives the failed and unavailable paths |
 | `ListAgents`, `SendMessage` | another session registered in the mailbox of the scenario's home folder (a parked process); delivery by name and by pid |
 | `Agent`, `SendMessage` to `agent-N`, `Workflow` | the engine's sub-agent hook (`KATANA_AGENT_FAKE=1`); the hook returns what the engine's `Grep` or `Glob` find in the project at that moment |
-| `terminal` | sessions really opened: state kept between sends, list, close, duplicate name |
 | `LSP` | a minimal language server for Python files placed first on `PATH` (workspace symbols, document symbols, definition, references) |
-| `git`, `EnterWorktree`, `ExitWorktree` | a real repository with one commit |
+| `EnterWorktree`, `ExitWorktree` | a real repository with one commit |
 | `Monitor`, `TaskStop`, background `Bash` | real processes; the generator waits for the output file instead of a fixed time |
 | `ScheduleWakeup`, `CronCreate`, `CronList`, `CronDelete` | the real scheduler with a fixed clock (`KATANA_SCHED_NOW`) |
 | `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` | the real tools, only when the user asks for numbered tasks or names the tool; the model's own plan stays `TodoWrite`. A recorded task no longer triggers the unfinished-steps reminder |
 
 Still stand-ins: `PushNotification` and `ReportFindings` (interface marker and a stand-in `notify-send`; the generator sets
-`KATANA_NO_NOTIFY=1`, so no real notification leaves it), `install_package` (stand-in `pip` and `npm`), `SubagentHandback`
+`KATANA_NO_NOTIFY=1`, so no real notification leaves it), `SubagentHandback`
 (only the refusal for the main agent), `Agent` with an empty task. What changes between runs is normalised when the line is
 written: schedule ids, the pid of the other session and of a shell session, the id of a new notebook cell, the date the
 memory tool stamps. Still out: a `SubagentHandback` from inside a sub-agent (it needs the sub-agent's own loop, which needs
@@ -199,14 +198,6 @@ Tool coverage of the training file (conversations with a trained call, and the m
 | A | `WebSearch` | 25 | 8 |
 | A | `WebFetch` | 25 | 8 |
 | A | `Skill` | 42 | 8 |
-| B | `git` | 5 | 5 |
-| B | `recall` | 5 | 5 |
-| B | `remember` | 5 | 5 |
-| B | `download_file` | 5 | 5 |
-| B | `terminal` | 5 | 5 |
-| C | `install_package` | 5 | 5 |
-| C | `read_log` | 5 | 5 |
-| C | `howto` | 5 | 5 |
 | B | `Agent` | 5 | 5 |
 | B | `LSP` | 5 | 5 |
 | B | `Monitor` | 5 | 5 |

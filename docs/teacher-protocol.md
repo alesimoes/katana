@@ -41,13 +41,13 @@ between turns (katana sends the whole conversation each time).
 ```json
 {"protocol": 1,
  "system": "text: the agent's system prompt, without the student's own call syntax",
- "tools": [{"name": "write_file", "description": "...", "parameters": {"type": "object", "properties": {...}, "required": [...]}}],
+ "tools": [{"name": "Write", "description": "...", "parameters": {"type": "object", "properties": {...}, "required": [...]}}],
  "messages": [
    {"role": "user", "content": [{"type": "text", "text": "write a note"}]},
    {"role": "assistant", "content": [
        {"type": "opaque", "data": <whatever the plugin returned as "opaque" for this turn>},
        {"type": "text", "text": "I will write it."},
-       {"type": "tool_call", "id": "kt_1_0", "name": "write_file", "arguments": {"path": "nota.txt", "content": "..."}}]},
+       {"type": "tool_call", "id": "kt_1_0", "name": "Write", "arguments": {"file_path": "nota.txt", "content": "..."}}]},
    {"role": "user", "content": [{"type": "tool_result", "id": "kt_1_0", "content": "ok: wrote 17 bytes"}]}],
  "options": {"max_tokens": 32000, "model": "optional", "effort": "optional"}}
 ```
@@ -81,7 +81,7 @@ One JSON object per line; lines that are not JSON objects are ignored. Field `ev
 {"event": "done",
  "text": "the full answer text (may be empty when only calling tools)",
  "thinking": "the full reasoning summary (optional)",
- "tool_calls": [{"id": "ignored", "name": "write_file", "arguments": {"path": "nota.txt", "content": "..."}}],
+ "tool_calls": [{"id": "ignored", "name": "Write", "arguments": {"file_path": "nota.txt", "content": "..."}}],
  "stop": "end_turn",
  "usage": {"input": 100, "output": 20, "cached": 50},
  "opaque": null}
@@ -106,7 +106,7 @@ done event", and the agent step does nothing (the user can send the message agai
 req=$(cat)
 case "$req" in
   *'"type": "tool_result"'*) echo '{"event":"done","text":"Done.","tool_calls":[]}' ;;
-  *) echo '{"event":"done","text":"Writing.","tool_calls":[{"name":"write_file","arguments":{"path":"a.txt","content":"hi\n"}}]}' ;;
+  *) echo '{"event":"done","text":"Writing.","tool_calls":[{"name":"Write","arguments":{"file_path":"a.txt","content":"hi\n"}}]}' ;;
 esac
 ```
 

@@ -107,7 +107,7 @@ lines worse than the model's.
 
 **T6. A tool set that fits the model.** Declare 8 tools in full (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`,
 `TodoWrite`, `WebSearch`) and move `AskUserQuestion`, `WebFetch` and `ToolSearch` to the by-name list. Measured
-first: plan item B4 (first set against second set) extended with this 8-tool arm. Evidence: [1][67][78]. Drop if the
+first: an 8-tool arm in codebench. Evidence: [1][67][78]. Drop if the
 8-tool arm solves fewer tasks.
 
 ### Next

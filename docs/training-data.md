@@ -79,7 +79,7 @@ katana import <student.gguf> runs/teacher.jsonl runs/train.jsonl --system keep
 
 The teacher is any server with an OpenAI-compatible `/chat/completions` and function calling (an open-weight model
 such as Kimi, DeepSeek or GLM on an API, or a local server). It gets the agent's real system prompt and the agent's
-tool declarations (without `ask_user` and `remember`); every call it makes runs on this machine through the agent's
+tool declarations (without `AskUserQuestion`); every call it makes runs on this machine through the agent's
 own `agent_tool`, in the current folder. The request goes out through the system `curl`; the key is read from the
 environment variable named by `--key-env` and written to a header file only the owner can read, never on the command
 line. The user's saved memory is kept out of the prompt (an empty `HOME` while the prompt is built).

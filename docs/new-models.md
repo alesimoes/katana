@@ -373,4 +373,4 @@ Checks that remain for the owner's machine once the GPU is free (Gemma 4, real m
 3. Tool-call validity per 100 calls in `agente.log` with and without the constraint (`KATANA_CALL_GRAMMAR=0`), thinking
    off (desktop) and on.
 4. Compaction time on a long job (live summary against `KATANA_COMPACT_LIVE=0`) and the quality of the summary.
-5. One sub-agent call and one large `read_file` note (time, note quality, main context reloaded).
+5. One sub-agent call and one large `Read` note (time, note quality, main context reloaded).

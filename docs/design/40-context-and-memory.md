@@ -17,7 +17,7 @@ What stays in front of the model, what is dropped, what it costs to drop it, and
 - **Reading notes** (`tool_digest`): see `20-tools.md`.
 - **Sub-agent**: saves the main KV state to disk, runs from position 0, reloads (`src/agent/delegate.c`).
 - **Sessions** (`sess_save` in `src/agent/loop.c`): compact history, token ids, expert heat, full text.
-- **Persistent memory**: `remember`/`recall` of the first tool set and a memory file injected in the environment
+- **Persistent memory**: a memory file injected in the environment
   block.
 
 Consequence seen in the reference session: about 86,000 tokens of conversation passed through a window that keeps

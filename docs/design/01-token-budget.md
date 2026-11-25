@@ -1,7 +1,7 @@
 # Token budget: where the tokens of a real session go
 
 Written 2026-11-21. Source: the owner's desktop session of that afternoon (`~/.katana/desktop/sessoes/
-20261121-152838-038.ksess`, local model, no teacher, second tool set), read from the `KSX1` block of the session file
+20261121-152838-038.ksess`, local model, no teacher), read from the `KSX1` block of the session file
 (the exact text the model read and wrote, with one span per message; writer: `sess_wext` in `src/agent/loop.c`).
 The agent log (`~/.katana/agente.log`) was **not** used for accounting: it truncates arguments at 399 bytes and
 results at 199, and on that day it still holds the negative checks of the tool tests (3,551 `Grep` lines), so
@@ -81,14 +81,6 @@ The 86 minutes between the two are tool run time, compaction (a model-written su
 recomputation of the kept history, `agent_compact` in `src/agent/context.c`, triggered at system prompt + 6,000
 tokens) and generation slower than nominal. **The session file cannot separate them**: it has no times. This is the
 first gap to close (section 4).
-
-### The same tools driven by a strong model
-
-The teacher session of 2026-11-20/21 (a hosted model writing every turn through katana's first tool set, 18
-requests) is the contrast: 181 turns, 419 calls (**2.3 calls per turn**), 13 failed result groups of 163 (8%), text
-in 178 of 181 turns, 135,500 tokens written and 166,100 read. The strong model spends more tokens per turn and far
-fewer rounds per unit of work, and it batches calls. Two facts for the design: batching is a habit that exists in
-the training data, and the local model's cost is dominated by failed and repeated rounds, not by verbosity.
 
 ## 2. Reading the numbers
 

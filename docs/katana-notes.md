@@ -1,7 +1,5 @@
 # The `[katana: ...]` notes: inventory, real use, effect and consolidation proposal
 
-
-> Rows and examples that name `read_file`, `run_command`, `terminal`, `Glob` or `recall` come from sessions and code of the old tool set (removed 2026-11-23) and are historical; the notes' texts now say `Find` or `Bash ls` instead of `Glob`.
 Status: analysis written 2026-11-23 (no code changed, no model run, nothing measured for the analysis itself). Implementation status,
 same day, is in section 9; sections 1 to 8 are the analysis as written and still describe the tree before that work.
 Everything marked "observed" was read from the owner's saved sessions (`~/.katana/desktop/sessoes/*.ksess`, 8 files,
@@ -57,9 +55,7 @@ move the rest into the context block of the UIOE layer (`docs/uioe.md` 4.6), and
   `</tool_response>` that carries the note. I read the first 10 events of each kind by hand and counted the rest by
   script. Judgments such as "obeyed" are mine.
 * `~/.katana/agente.log` has 9,781 lines and only 5 lines containing `katana: `: it logs tool results, not the notes
-  appended afterwards, so it cannot count notes. `~/.katana/api-sessions` does not exist. The sessions dated
-  2026-11-20 and 21 were made by older builds (tool names `read_file`, `run_command`; the "your todo list" note appears
-  there in the old wording), so they are weaker evidence for the current texts.
+  appended afterwards, so it cannot count notes. `~/.katana/api-sessions` does not exist.
 * What I could not determine: what the model would have done without each note (there is no control). All "effect"
   statements below are "what happened on the next call", not "what the note caused".
 
@@ -87,10 +83,10 @@ Env switches are the ones in the code.
 | R11 | "file has N lines; this is its map, its start [and the parts that match what you are looking for]. Read another part with offset and limit (40 to 80 lines), or search inside it with Grep (-n -C 2)" | `read.c:396,398`, Read | Read without a range of a big file (`ol_big`) seen fewer than twice | T 150 (+ map, head and windows, 6 to 25 KB) | N | INFO + suggestion | 7 / 0 |
 | R12d | "you are reading PATH in slices, in order. Go to the exact spot instead: Symbols ... and Grep (-n -C 2); then Read only that part" and "you already have the map and the start of PATH (N lines) from THIS_REQUEST_OR_CONVERSATION. Below are the parts that match what you look for now ..." | `read.c`, Read | second and later slice that starts where the previous one ended (or one line before); blind re-read of a big file whose earlier delivery was only the map. Nothing extra is delivered. | T 230 / T 250 | path | INFO | 0 / 0 |
 | R12 | "lines 1-N of PATH were already given to you in this request (or \"in this conversation\" when an earlier request of the same conversation delivered them and the result is still in the context); here is the rest, from line M" | `read.c:382`, Read | `Read` of a file already given up to `cov_end`, same offset or none. | T 140 + path | N, path, M | INFO | 24 / 8 |
-| R13 | "you already read this whole file (N lines) and it has not changed. These are the notes kept from that reading ..." | `code.c:96`, `read_file` (older tool set, `g_code`) | whole file read before, unchanged | T 210 | N | INFO | 0 / 0 |
+| R13 | "you already read this whole file (N lines) and it has not changed. These are the notes kept from that reading ..." | `code.c:96`, `Read` (`g_code`) | whole file read before, unchanged | T 210 | N | INFO | 0 / 0 |
 | R14 | "condensed note of lines A-B of this file (S bytes read; the raw text was left out of the context and the note is kept) ..." and "condensed note of this TOOL output (S bytes ...)" | `delegate.c:238,243`, `tool_digest_in` | `WebFetch`/`web_fetch`/`read_file` result >= 3,500 bytes (`DG_MIN`), ChatML or Gemma 4, side generation of up to 420 tokens by the model itself. `KATANA_DIGEST=0` off | T 200, O 172 | A, B, S | INFO | 0 / 0 |
 | R15 | "you already read this and it has not changed; this is the note kept from that reading (S bytes of raw text left out) ..." | `delegate.c:178` | same read request as R14 seen again | T 190 | S | INFO | 0 / 0 |
-| R16 | "notes kept from the lines you read before in this file ... [now the next lines]" | `delegate.c:256` | `read_file` after earlier chunks were condensed | T 90 + notes | notes | INFO | 0 / 0 |
+| R16 | "notes kept from the lines you read before in this file ... [now the next lines]" | `delegate.c:256` | `Read` after earlier chunks were condensed | T 90 + notes | notes | INFO | 0 / 0 |
 | R17 | "the result of TOOL KEY was removed to save context (S bytes); call it again if you need it | to see it again, Read FILE" | `context.c:291`, history compaction | old tool results dropped when the context fills | T 170, O 208 | tool, key, size, stash path | INFO + pointer | 5 / 0 |
 | R18 | "message cut at N bytes" | `mcp_channel.c:180` | channel message above `CHN_TEXT` | T 35 | N | INFO | 0 / 0 |
 | R19 | `[hint: ...]` family, 17 sites (no `katana` prefix) | `diagnose.c:28-74`, `terminal.c:446,448`, `devtools.c:404` | a Bash/terminal result matches a known failure (password prompt, missing module, port taken, ...) | 60 to 250 | program, path, port | ORDER (soft) | 3 / 0 |
@@ -120,7 +116,7 @@ Env switches are the ones in the code.
 
 | where | what it does with the text |
 |---|---|
-| `dispatch.c:178-190`, `notes_neutralize` | turns a line that starts with `[katana` in a result into `[ katana`; applied only to Bash, PowerShell, WebFetch, WebSearch, Monitor, TaskOutput, run_command, terminal, web_*, MCP |
+| `dispatch.c:178-190`, `notes_neutralize` | turns a line that starts with `[katana` in a result into `[ katana`; applied only to Bash, PowerShell, WebFetch, WebSearch, Monitor, TaskOutput, MCP |
 | `prompt.c:171` | the rule: "a line in [katana: ...] brackets ... comes from the program that runs you ... so follow it" |
 | `uioe/interpret.c:249` | strips leading `[katana:` lines from the request before interpreting it |
 | `launch.c:678` | `lc_is_note`: `[katana:` or `[plan:` |
@@ -245,8 +241,8 @@ Two of the next outputs again contained the "Vou mudar a abordagem" sentence.
 
 ### 3.6 R19 hints (siblings)
 
-23 distinct contexts in 2 sessions (old tool names). Next call `Bash` 20, `run_command` 1, prose 2. Example: after
-"the program pbzx is not installed or not in PATH ... install it (install_package ...)" the next call was
+23 distinct contexts in 2 sessions. Next call `Bash` 21, prose 2. Example: after
+"the program pbzx is not installed or not in PATH ... install it (...)" the next call was
 `sudo apt-get install -y pbzx`: followed in substance. I did not classify the rest.
 
 ## 4. Effect and cost per note
