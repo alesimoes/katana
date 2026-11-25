@@ -69,7 +69,7 @@
 #include "agent/delegate.c"            /* subagente com contexto limpo (delegate) */
 /* segundo conjunto de ferramentas do agente, uma por arquivo (docs/tools.md) */
 #include "tools/common.c"              /* argumentos em JSON, arquivos vistos na conversa */
-#include "tools/bash.c"                /* Bash, TaskStop, Monitor */
+#include "tools/bash.c"                /* Bash, TaskStop, Monitor, SendInput */
 #include "tools/read.c"
 #include "tools/write.c"
 #include "tools/edit.c"

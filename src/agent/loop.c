@@ -495,6 +495,7 @@ static int loop_todo_should_nudge(void) {
 }
 /* marcador TOOL para o desktop: nome, argumentos (uma linha) e, quando a chamada traz "description", ela num 3o campo */
 static void ui_tool_mark(const char *name, const char *ap, const char *end) {
+    static char red[8192]; ap = job_redact(name, ap, end, red, sizeof red, &end);      /* texto do SendInput vira *** */
     launch_tool_call(name, ap, end);
     if (!getenv("KATANA_UI")) return;
     const size_t sl = strcspn(ap, "\n");
