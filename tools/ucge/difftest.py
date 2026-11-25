@@ -187,8 +187,8 @@ class G:
                     v = r.choice(sv); x = s.new("c"); s.emit("for %s in %s" % (x, v)); s.push(); s.declare(x, "str"); s.frozen.add(x)
                     s.loops += 1; s.block(r.randrange(1, 3), "loop"); s.loops -= 1; s.pop()
                 else:
-                    v = r.choice(mv); k = s.new("k"); x = s.new("x"); s.emit("for %s, %s in %s" % (k, x, v)); s.push(); s.declare(k, "str"); s.declare(x, "int"); s.frozen.add(x)
-                    s.loops += 1; s.block(r.randrange(1, 3), "loop"); s.loops -= 1; s.pop()
+                    v = r.choice(mv); k = s.new("k"); x = s.new("x"); s.emit("for %s, %s in %s" % (k, x, v)); s.push(); s.declare(k, "str"); s.declare(x, "int"); s.frozen.add(x); s.frozen.add(v)
+                    s.loops += 1; s.block(r.randrange(1, 3), "loop"); s.loops -= 1; s.frozen.discard(v); s.pop()      # Python recusa mudar o tamanho do dict durante o for
             elif ch < 0.82:
                 mv = s.vars("map", True)
                 if mv:
