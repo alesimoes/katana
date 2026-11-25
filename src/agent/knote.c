@@ -55,7 +55,8 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
 #define KNF_FAIL_AROUND "\n[katana: %d calls in this request failed around the same thing: %s (last error: \"%s\"). " \
     "If it is something you cannot produce yourself (a program or SDK the user must download, a login, a key, a file only they have), " \
     "%sstop probing it. Tell the user in one sentence exactly what they must provide, and go on now with the work that does not " \
-    "depend on it: write the code and files anyway.]"
+    "depend on it: write the code and files anyway. If the user told you something exists (a file, a folder, a program) and your searches do not find it, " \
+    "do not search again with another pattern: ask them for its exact path or name.]"
 #define KNF_FAIL_ROW "\n[katana: %d calls in a row failed. Stop guessing. What do the errors have in common? Check the help or the documentation " \
     "(WebSearch), or tell the user in words what is missing and ask how to proceed.]"
 #define KNF_ROUNDS "\n[katana: this request has used its tool rounds. Do not call a tool now. Tell the user in a few sentences what you did, " \
