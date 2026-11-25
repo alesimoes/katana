@@ -369,10 +369,14 @@ static int cgx_gen_python(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests) 
 }
 static int cgx_gen_js(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* ucgejs.c */
 static int cgx_gen_ts(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);
+static int cgx_gen_c(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);        /* ucgec.c */
+static int cgx_gen_go(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* ucgego.c */
 static const CgxBackend CGX_BACKENDS[] = {
     {"python", "py", ".py", cgx_gen_python},
     {"javascript", "js", ".js", cgx_gen_js},
     {"typescript", "ts", ".ts", cgx_gen_ts},
+    {"c", "c99", ".c", cgx_gen_c},
+    {"go", "golang", ".go", cgx_gen_go},
     {NULL, NULL, NULL, NULL}};
 static const CgxBackend *cgx_backend(const char *name) {
     for (int i = 0; CGX_BACKENDS[i].name; i++) if (!strcmp(CGX_BACKENDS[i].name, name) || !strcmp(CGX_BACKENDS[i].alias, name)) return &CGX_BACKENDS[i];
