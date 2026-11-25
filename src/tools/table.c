@@ -260,7 +260,7 @@ static int ct_idle_ms(void) {                           /* quanto esperar ate ol
 }
 /* le a proxima linha do usuario, mas acorda para entregar o que venceu enquanto ele nao digita.
    0 = fim da entrada; 1 = linha do usuario; 2 = linha entregue pelo proprio agente */
-static int ct_read_line(char *line, size_t cap) {
+static int ct_read_line0(char *line, size_t cap) {
 #ifndef _WIN32
     static int was_idle;        /* a ultima entrega nao foi do teclado: uma linha ja digitada passa na frente da proxima */
     for (;;) {
@@ -277,4 +277,11 @@ static int ct_read_line(char *line, size_t cap) {
 #else
     return read_line(line, cap) ? 1 : 0;
 #endif
+}
+/* pedido novo: uma mensagem STEER que o ciclo anterior nao consumiu (console.c) vem antes de tudo */
+static int ct_read_line(char *line, size_t cap) {
+    g_steer_req = 1;
+    const int r = g_steer_q[0] || g_line_back_ok ? (read_line(line, cap) ? 1 : 0) : ct_read_line0(line, cap);
+    g_steer_req = 0;
+    return r;
 }

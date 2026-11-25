@@ -62,6 +62,7 @@ Item {
             required property int index
             required property int plan
             required property string vkind
+            required property bool steer
             // sequencia de ferramentas seguidas vira um unico grupo (so o primeiro item desenha)
             // (acoes que rodaram sob um passo do plano aparecem no item "plan", nao aqui: vkind "hidden")
             readonly property bool grouped: vkind === "tool" || vkind === "finding" || vkind === "hidden"
@@ -145,11 +146,11 @@ Item {
                     }
                     Text {      // hora em que a mensagem foi enviada
                         objectName: "msgTime"
-                        visible: d.time.length > 0
+                        visible: d.time.length > 0 || d.steer
                         anchors.right: parent.right
                         anchors.rightMargin: 6
                         y: bubble.height + 3
-                        text: d.time
+                        text: d.steer ? "enviada durante o ciclo" + (d.time.length > 0 ? " · " + d.time : "") : d.time
                         color: Theme.mut
                         font.family: Theme.sans
                         font.pixelSize: 10

@@ -1367,6 +1367,8 @@ int main(int argc, char **argv) {
     }
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    /* interface: stdin sem buffer, para que poll no descritor veja toda linha que chegou (STEER, console.c) */
+    if (getenv("KATANA_UI")) setvbuf(stdin, NULL, _IONBF, 0);
     reap_start(argc, argv);
     pool_init();
     vnni_init();

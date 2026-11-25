@@ -260,14 +260,107 @@ static void stats_line(int in_n, double in_s, int gen, double gen_s, int pos, in
             CE(C_DIM), in_n, in_n / (in_s + 1e-9), gen, gen / (gen_s + 1e-9), pos, ctx, 100 * pos / ctx, CE(C_RESET));
 }
 
+/* ---------- mensagem durante o ciclo (STEER) ----------
+ * Com KATANA_UI, a interface manda a linha "\x01STEER texto" enquanto o agente trabalha. steer_poll (chamada depois
+ * do resultado de cada ferramenta) junta a mensagem ao resultado, que e o que entra no historico; se o pedido acaba
+ * antes da proxima ferramenta, read_line entrega a mensagem como pedido novo. Nos dois casos sai o marcador
+ * "\x01STEERED\ttexto", e a interface sabe que foi entregue. No modo de interface o stdin fica sem buffer (main),
+ * entao poll no descritor ve tudo o que chegou. Uma linha STEER lida durante uma pergunta (\x01ANS, \x01PASS) fica
+ * na fila e nao atrapalha a resposta. */
+#ifndef _WIN32
+#include <poll.h>
+#endif
+#define STEER_MAX 2000
+static char g_steer_q[8 * (STEER_MAX + 8)];  /* mensagens recebidas e ainda nao entregues, separadas por \n */
+static char g_line_back[8192];                 /* linha que steer_poll leu e nao era STEER: volta para read_line */
+static int g_line_back_ok;
+static int g_steer_req;                        /* 1: le um pedido novo (nao a resposta de uma pergunta) */
+
+static void steer_mark(const char *t, size_t n) {
+    if (!getenv("KATANA_UI")) return;
+    fputs("\x01" "STEERED\t", stdout);
+    fwrite(t, 1, n, stdout);
+    fputc('\n', stdout);
+    fflush(stdout);
+}
+/* guarda uma mensagem (texto depois de "\x01STEER "): vazia e ignorada; longa e cortada em STEER_MAX bytes */
+static void steer_take(const char *t) {
+    while (*t == ' ' || *t == '\t') t++;
+    size_t n = strlen(t);
+    while (n && (t[n - 1] == ' ' || t[n - 1] == '\t' || t[n - 1] == '\r')) n--;
+    if (!n) return;
+    if (n > STEER_MAX) { n = STEER_MAX; while (n && ((unsigned char)t[n] & 0xC0) == 0x80) n--; }   /* nao corta um caractere UTF-8 */
+    const size_t ql = strlen(g_steer_q);
+    if (ql + n + 2 >= sizeof g_steer_q) {      /* fila cheia: descarta, mas avisa a interface para ela nao esperar */
+        fprintf(stderr, "[mensagem durante o ciclo descartada: fila cheia]\n");
+        steer_mark(t, n);
+        return;
+    }
+    char *d = g_steer_q + ql;
+    for (size_t i = 0; i < n; i++) d[i] = t[i] == '\t' ? ' ' : t[i];
+    d[n] = '\n'; d[n + 1] = 0;
+}
+/* tira a primeira mensagem da fila para line e avisa a interface */
+static void steer_pop(char *line, size_t cap) {
+    const char *e = strchr(g_steer_q, '\n');
+    const size_t n = e ? (size_t)(e - g_steer_q) : strlen(g_steer_q);
+    snprintf(line, cap, "%.*s", (int)n, g_steer_q);
+    steer_mark(g_steer_q, n);
+    const char *rest = g_steer_q + n + (e ? 1 : 0);
+    memmove(g_steer_q, rest, strlen(rest) + 1);
+}
+/* uma linha crua do stdin sem o fim de linha; drain = 1 descarta o resto de uma linha maior que cap */
+static int steer_raw_line(char *l, size_t cap, int drain) {
+    if (!fgets(l, (int)cap, stdin)) return 0;
+    size_t n = strlen(l);
+    const int whole = n && l[n - 1] == '\n';
+    while (n > 0 && (l[n - 1] == '\n' || l[n - 1] == '\r')) l[--n] = 0;
+    if (drain && !whole && n + 1 >= cap) { int ch; while ((ch = getc(stdin)) != EOF && ch != '\n') {} }
+    return 1;
+}
+/* depois do resultado de uma ferramenta: le as linhas STEER que ja chegaram (sem esperar) e junta ao resultado
+   a nota com cada mensagem. out e o resultado inteiro (cap = tamanho do buffer); se faltar espaco, o fim do
+   resultado cede lugar a nota. 1 se alguma mensagem foi entregue. */
+static int steer_poll(char *out, size_t cap) {
+    if (!getenv("KATANA_UI")) return 0;
+#ifndef _WIN32
+    for (int i = 0; i < 16 && !g_line_back_ok; i++) {
+        struct pollfd p = { 0, POLLIN, 0 };
+        if (poll(&p, 1, 0) <= 0 || !(p.revents & POLLIN)) break;
+        static char l[8192];
+        if (!steer_raw_line(l, sizeof l, 1)) break;
+        if (strncmp(l, "\x01" "STEER ", 7) == 0) steer_take(l + 7);
+        else { snprintf(g_line_back, sizeof g_line_back, "%s", l); g_line_back_ok = 1; }
+    }
+#endif
+    if (!g_steer_q[0] || cap < 4 * STEER_MAX) return 0;
+    static char note[sizeof g_steer_q + 2048];
+    size_t nl = 0;
+    while (g_steer_q[0] && nl + STEER_MAX + 200 < sizeof note && nl + STEER_MAX + 200 < cap / 2) {
+        char m[STEER_MAX + 8];
+        steer_pop(m, sizeof m);
+        nl += (size_t)snprintf(note + nl, sizeof note - nl,
+            "\n[user message, sent while you were working: \"%s\". Read it now and follow it; it takes priority over your plan.]", m);
+    }
+    size_t rl = strlen(out);
+    if (rl + nl + 1 > cap) rl = cap - nl - 1;
+    memcpy(out + rl, note, nl + 1);
+    fprintf(stderr, "[mensagem do usuario entregue ao modelo no meio do ciclo]\n");
+    return 1;
+}
+
 /* le uma linha sem o fim de linha; 0 no fim da entrada */
 static int read_line(char *line, size_t cap) {
     int hr;
     if (launch_first_line(line, cap)) { launch_request_start(); return 1; }
     if (launch_read_line(line, cap, &hr)) { if (hr) launch_request_start(); return hr; }     /* headless ou editor de linha (terminal) */
-    if (!fgets(line, (int)cap, stdin)) return 0;
-    size_t ln = strlen(line);
-    while (ln > 0 && (line[ln - 1] == '\n' || line[ln - 1] == '\r')) line[--ln] = 0;
+    for (;;) {
+        if (g_steer_req && g_steer_q[0]) { steer_pop(line, cap); break; }     /* STEER que o ciclo nao consumiu: vira o pedido novo */
+        if (g_line_back_ok) { snprintf(line, cap, "%s", g_line_back); g_line_back_ok = 0; }
+        else if (!steer_raw_line(line, cap, 0)) return 0;
+        if (strncmp(line, "\x01" "STEER ", 7) == 0) { steer_take(line + 7); continue; }   /* durante uma pergunta: fica na fila */
+        break;
+    }
     launch_request_start();
     return 1;
 }
@@ -385,7 +478,10 @@ static int session(Model *m, const char *sys0, int max_tokens, float temp) {
     fprintf(stderr, "%sChat started. /help lists the commands; Ctrl+C interrupts the answer.%s\n", CE(C_DIM), CE(C_RESET));
     for (;;) {
         prompt_user();
-        if (!read_line(line, sizeof line)) break;
+        g_steer_req = 1;
+        const int got = read_line(line, sizeof line);
+        g_steer_req = 0;
+        if (!got) break;
         if (line[0] == 0) continue;
         cmd_norm(line, sizeof line);
         int reset = 0;

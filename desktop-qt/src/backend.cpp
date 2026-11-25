@@ -46,6 +46,7 @@ QVariant MessageModel::data(const QModelIndex &i, int role) const
     case PlanRole: return it.plan;
     case StepRole: return it.step;
     case VKindRole: return it.kind == "tool" && it.step != 0 ? QStringLiteral("hidden") : it.kind;
+    case SteerRole: return it.steer;
     }
     return {};
 }
@@ -53,7 +54,7 @@ QVariant MessageModel::data(const QModelIndex &i, int role) const
 QHash<int, QByteArray> MessageModel::roleNames() const
 {
     return {{KindRole, "kind"}, {TextRole, "text"}, {NameRole, "name"}, {OutRole, "out"}, {TimeRole, "time"},
-            {PlanRole, "plan"}, {StepRole, "step"}, {VKindRole, "vkind"}};
+            {PlanRole, "plan"}, {StepRole, "step"}, {VKindRole, "vkind"}, {SteerRole, "steer"}};
 }
 
 QVariantMap MessageModel::get(int i) const
@@ -63,7 +64,7 @@ QVariantMap MessageModel::get(int i) const
     const Item &it = m_items[i];
     return {{"kind", it.kind}, {"text", it.text}, {"name", it.name}, {"out", it.out}, {"time", showTime(it.time)},
             {"desc", it.desc}, {"note", it.note}, {"state", it.state}, {"t0", double(it.t0)}, {"dur", double(it.dur)},
-            {"plan", it.plan}, {"step", it.step},
+            {"plan", it.plan}, {"step", it.step}, {"steer", it.steer},
             {"vkind", it.kind == "tool" && it.step != 0 ? QStringLiteral("hidden") : it.kind}};
 }
 
@@ -83,6 +84,15 @@ void MessageModel::append(const QString &kind, const QString &text, const QStrin
     m_items.append({kind, text, name, out, t});
     endInsertRows();
     emit countChanged();
+}
+
+void MessageModel::setSteer(int i, bool on)
+{
+    if (i < 0 || i >= m_items.size() || m_items[i].steer == on)
+        return;
+    m_items[i].steer = on;
+    const QModelIndex x = index(i);
+    emit dataChanged(x, x, {SteerRole});
 }
 
 void MessageModel::appendToLast(const QString &text)
@@ -1238,7 +1248,7 @@ void Backend::launch(const QString &modelFile)
     connect(p, &QProcess::errorOccurred, this, [this, p](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart && p == m_proc) {
             m_proc = nullptr;
-            m_queue.clear(); m_paused = false;
+            m_queue.clear(); m_paused = false; m_steerIdx.clear();
             emit queueChanged();
             setState(false, false, false);
             const QString msg = "Nao foi possivel iniciar o katana (" + m_katana + "): " + p->errorString();
@@ -1262,7 +1272,7 @@ void Backend::onFinished(QProcess *p, int code, QProcess::ExitStatus st)
         m_errTail << QString::fromUtf8(m_errBuf).trimmed();
     m_errBuf.clear();
     const bool wasLoading = m_loading, wasAnswering = m_answering;
-    m_queue.clear(); m_paused = false;
+    m_queue.clear(); m_paused = false; m_steerIdx.clear();
     emit queueChanged();
     m_msgs.finishRunning(QDateTime::currentMSecsSinceEpoch(), true);
     setState(false, false, false);
@@ -1318,6 +1328,22 @@ bool Backend::enqueue(const QString &text)
         return false;
     m_queue.append(t);
     emit queueChanged();
+    return true;
+}
+
+// mensagem no meio do ciclo: o motor a le na proxima fronteira de ferramenta e a junta ao resultado; se o pedido
+// acabar antes, ele a le como pedido novo. Nos dois casos responde STEERED (em ordem), e a marca da bolha some.
+bool Backend::steer(const QString &text)
+{
+    const QString t = Sessoes::umaLinha(text.trimmed()).trimmed();
+    if (!m_proc || !m_answering || t.isEmpty())
+        return false;
+    m_msgs.append("user", t);
+    m_msgs.setSteer(m_msgs.count() - 1, true);
+    m_steerIdx.append(m_msgs.count() - 1);
+    m_sess.mensagens.append({"user", t, QString(), QDateTime::currentDateTime().toString(Qt::ISODate)});
+    saveSession();
+    writeLine(QStringLiteral("\x01STEER ") + t);
     return true;
 }
 
@@ -1745,7 +1771,7 @@ bool Backend::newChat()
     if (!m_ready)
         return false;
     m_msgs.clear();
-    m_queue.clear(); m_paused = false;
+    m_queue.clear(); m_paused = false; m_steerIdx.clear();
     emit queueChanged();
     m_sess = Session();
     m_pendingCtx.clear();
@@ -1996,6 +2022,11 @@ void Backend::handleMarker(const QByteArray &line)
     const int sp = line.indexOf(' ');
     const QByteArray name = sp < 0 ? line : line.left(sp);
     const QString args = sp < 0 ? QString() : QString::fromUtf8(line.mid(sp + 1));
+    if (line.startsWith("STEERED\t") || line == "STEERED") {   // STEERED\t<texto>: o motor entregou a mais antiga mensagem STEER
+        if (!m_steerIdx.isEmpty())
+            m_msgs.setSteer(m_steerIdx.takeFirst(), false);
+        return;
+    }
     if (name == "READY") {
         markReady();
     } else if (name == "TOOL") {
@@ -2180,6 +2211,11 @@ void Backend::markReady()
     }
     if (m_dirty)
         saveSession();
+    if (!m_steerIdx.isEmpty() && m_proc) {  // STEER que o ciclo nao consumiu: o motor o le agora como pedido novo; segue respondendo
+        m_stopRequested = false;
+        m_msgs.finishRunning(QDateTime::currentMSecsSinceEpoch());
+        return;
+    }
     if (m_answering && !m_stopRequested) {   // o pedido terminou: se o ultimo turno do modelo nao teve texto, avisa
         QString last;
         for (int i = m_msgs.count() - 1; i >= 0; i--) {

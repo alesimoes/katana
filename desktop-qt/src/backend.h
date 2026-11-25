@@ -35,7 +35,7 @@ class MessageModel : public QAbstractListModel
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(int revision READ revision NOTIFY revisionChanged)   // muda (agrupado) a cada alteracao: o QML refaz as visoes de plano
 public:
-    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole, TimeRole, PlanRole, StepRole, VKindRole };
+    enum Roles { KindRole = Qt::UserRole + 1, TextRole, NameRole, OutRole, TimeRole, PlanRole, StepRole, VKindRole, SteerRole };
     struct Item {
         QString kind, text, name, out;
         QString time;   // hora ISO da mensagem (vazio = desconhecida)
@@ -47,6 +47,7 @@ public:
         qint64 dur = -1;    // duracao em ms (-1 = ainda nao terminou ou desconhecida)
         int plan = 0;       // plano do pedido (0 = nenhum); no item "plan", o id do plano
         int step = 0;       // passo do plano (0 = nenhum, -1 = chamada de gestao do plano, escondida)
+        bool steer = false; // so para user: enviada durante o ciclo (STEER) e o motor ainda nao confirmou (STEERED)
     };
     static QString showTime(const QString &iso);     // "HH:mm" hoje, "dd/MM HH:mm" em outro dia
     using QAbstractListModel::QAbstractListModel;
@@ -59,6 +60,7 @@ public:
     Q_INVOKABLE QVariantMap get(int i) const;
     void append(const QString &kind, const QString &text, const QString &name = {}, const QString &time = {}, const QString &out = {});
     void appendToLast(const QString &text);
+    void setSteer(int i, bool on);      // marca "enviada durante o ciclo" na mensagem do usuario i
     void setLastToolOut(const QString &out, bool append = false);
     void setAll(const QList<Item> &items);
     void clear() { setAll({}); m_plans.clear(); }
@@ -286,6 +288,7 @@ public:
     QString workspace() const;
     bool workspaceTrusted() const { return m_wsTrusted; }
     Q_INVOKABLE bool enqueue(const QString &text);  // mensagem para depois: so enquanto o agente responde
+    Q_INVOKABLE bool steer(const QString &text);    // mensagem para o modelo agora, no meio do ciclo (\x01STEER): so enquanto o agente responde
     Q_INVOKABLE void removeQueued(int i);
     Q_INVOKABLE void resumeQueue();                 // depois de Parar a fila fica pausada
     QStringList queue() const { return m_queue; }
@@ -443,6 +446,7 @@ private:
     void requestResume(const QString &path);
     QVariantList m_sessions;
     QStringList m_queue;
+    QList<int> m_steerIdx;      // mensagens enviadas com STEER que o motor ainda nao confirmou (STEERED), em ordem
     bool m_paused = false;
     QString m_wsReal;          // pasta confirmada pelo agente (marcador CWD)
     bool m_wsTrusted = false;
