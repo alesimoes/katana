@@ -188,8 +188,11 @@ static void cpu_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
 /* qwen35moe, B tokens (B <= GPU_BMAX) a partir de pos0 na CPU: projecoes, saidas e feed-forward em
    lote (cada matriz lida uma vez para os B tokens; os pares (token, especialista) da camada saem num
    despacho so); convolucao, recorrencia do DeltaNet e atencao seguem token a token. X: B x dim. */
+static float *qn_ckpt; static size_t qn_ckpt_n;      /* decodificacao especulativa: onde guardar o estado recorrente depois de cada posicao do lote (qn_ckpt_n floats por posicao) */
+static double qn_prof[6]; static int qn_prof_on;      /* spectime: projecoes+DeltaNet/atencao, roteador, especialistas, compartilhado */
 static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
     const Config *c = &m->cfg;
+    double pt0 = 0, pt1 = 0;
     const int d = c->dim, nh = c->n_heads, hd = c->hd, qd = nh * hd, kvd = c->n_kv * hd, K = c->n_used;
     const int C = (int)dn_channels(c), inner = c->ssm_inner, nv = c->ssm_rank, Hs = c->n_shared * c->hidden;
     static float *Xb, *X2, *P1, *Z, *O, *KK, *VV, *AL, *BE, *HB, *HB2, *OUTS;
@@ -208,6 +211,7 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
         const Layer *L = &m->layers[l];
         int prep = 0;
         if (l + 1 < l1) layer_prefetch(m, l + 1);
+        if (qn_prof_on) pt0 = now_sec();
         for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->attn_norm, d, c->eps);
         if (L->lin) {
             if (pos0 == 0) dn_reset(m, L);
@@ -215,12 +219,16 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
             matmat(Z, &L->wz, Xb, xqs, &prep, B, inner, d);
             matmat(AL, &L->walpha, Xb, xqs, &prep, B, nv, d);
             matmat(BE, &L->wbeta, Xb, xqs, &prep, B, nv, d);
+            if (qn_prof_on) pt1 = now_sec();
             for (int t = 0; t < B; t++) {
                 float *qkv = P1 + (size_t)t * C, *o = O + (size_t)t * inner;
                 dn_conv(c, L, dn_CV(m, L), qkv);
                 dn_recur(m, L, qkv, AL + (size_t)t * nv, BE + (size_t)t * nv, o);
                 dn_gate(c, L, o, Z + (size_t)t * inner);
+                if (qn_ckpt && t < B - 1) memcpy(qn_ckpt + (size_t)t * qn_ckpt_n + (size_t)L->lin_i * dn_state_floats(c), dn_S(m, L), dn_state_floats(c) * sizeof(float));
             }
+            if (qn_prof_on) qn_prof[5] += now_sec() - pt1;     /* [5] conv + recorrencia + portao */
+            if (qn_prof_on) { pt1 = now_sec(); qn_prof[4] += pt1 - pt0; pt0 = pt1; }     /* [4] projecoes de entrada + conv/recorrencia */
             prep = 0;
             matmat(X2, &L->wssm_out, O, xqs, &prep, B, d, inner);
         } else {
@@ -237,6 +245,7 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
             matmat(X2, &L->wo, O, xqs, &prep, B, d, qd);
         }
         for (size_t i = 0; i < (size_t)B * d; i++) X[i] += X2[i];
+        if (qn_prof_on) { pt1 = now_sec(); qn_prof[0] += pt1 - pt0; pt0 = pt1; }     /* [0] camada de atencao/DeltaNet inteira */
         /* feed-forward: roteamento por token, todos os pares do lote de uma vez, compartilhado em lote */
         for (int t = 0; t < B; t++) rmsnorm(Xb + (size_t)t * d, X + (size_t)t * d, L->ffn_norm, d, c->eps);
         if (layer_tap) for (int t = 0; t < B; t++) layer_tap(l, pos0 + t, Xb + (size_t)t * d);
@@ -246,7 +255,9 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
             moe_route(m, L, l);
             for (int j = 0; j < K; j++) { ex[t * K + j] = moe.sel[j]; xi[t * K + j] = t; ew[t * K + j] = moe.w[j]; }
         }
+        if (qn_prof_on) { pt1 = now_sec(); qn_prof[1] += pt1 - pt0; pt0 = pt1; }     /* [1] normas + roteador */
         moe_cpu_multi(m, L, ex, xi, B * K, B, Xb, OUTS);
+        if (qn_prof_on) { pt1 = now_sec(); qn_prof[2] += pt1 - pt0; pt0 = pt1; }     /* [2] especialistas */
         for (int t = 0; t < B; t++) {
             float *x = X + (size_t)t * d;
             for (int j = 0; j < K; j++) {
@@ -268,6 +279,7 @@ static void qn_layers_n(Model *m, int l0, int l1, int pos0, int B, float *X) {
                 for (int i = 0; i < d; i++) x[i] += sw * y[i];
             }
         }
+        if (qn_prof_on) { pt1 = now_sec(); qn_prof[3] += pt1 - pt0; pt0 = pt1; }     /* [3] soma dos especialistas + compartilhado */
     }
 }
 
