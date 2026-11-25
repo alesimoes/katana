@@ -1,5 +1,5 @@
-/* ---------- coder/ucgepy.c: UCGE, backend de referencia: Python (docs/ucge.md, "Backends") ----------
- * Percorre a AST ja validada e monta um documento (ucgedoc.c); nunca concatena codigo solto. Este arquivo e o MODELO dos demais backends:
+/* ---------- coder/codegenpy.c: Codegen, backend de referencia: Python (docs/codegen.md, "Backends") ----------
+ * Percorre a AST ja validada e monta um documento (codegendoc.c); nunca concatena codigo solto. Este arquivo e o MODELO dos demais backends:
  * mesma estrutura (precedencia por no, tabela das funcoes embutidas, classe, tentativa/captura, raw, harness de testes), so muda a tabela.
  * Semantica fixada pela UIR e como o Python a cumpre: `//` e `%` ja sao piso (floored); `/` e divisao real; strings e listas indexadas por
  * inteiro; mapas viram dict; `catch e` captura Exception; defaults mutaveis (lista, mapa) viram None + criacao no corpo. */
@@ -60,6 +60,35 @@ static CgxDoc *py_args(CgxPy *p, const char *head, const CgxBlk *a, int skip) {
 static const int CGX_PREC_CMP = 5;
 static CgxDoc *py_wrap(CgxPy *p, CgxDoc *d, int prec, int minprec) { return prec < minprec ? cgx_dcatn(PD, py_t(p, "("), d, py_t(p, ")"), NULL) : d; }
 
+/* modelo de texto do registro (codegenreg.c) -> documento: `$N`, `{N}`, `{N@P}`, `{N?}`, `{*N}`, `{[i,j]}` */
+static CgxDoc *py_tmpl(CgxPy *p, const CgxNode *n, const char *t) {
+    const CgxBlk *a = &n->b1; CgxDoc *r = NULL; CgxB lit = {0};
+#define FLUSH() do { if (lit.p && lit.n) { CgxDoc *x = cgx_dtext(PD, lit.p); r = r ? cgx_dcat(PD, r, x) : x; lit.n = 0; lit.p[0] = 0; } } while (0)
+#define ADD(d) do { FLUSH(); CgxDoc *x_ = (d); r = r ? cgx_dcat(PD, r, x_) : x_; } while (0)
+    for (const char *q = t; *q;) {
+        if (*q == '$' && isdigit((unsigned char)q[1])) { const int i = q[1] - '0'; q += 2; if (i < a->n) ADD(py_ex(p, a->p[i], 10)); }
+        else if (*q == '{') {
+            const char *e = strchr(q, '}'); if (!e) { cgx_bs(&lit, "{"); q++; continue; }
+            if (q[1] == '*' || q[1] == '[') {
+                CgxDoc *it[64]; int k = 0;
+                if (q[1] == '*') { for (int i = atoi(q + 2); i < a->n && k < 64; i++) it[k++] = py_ex(p, a->p[i], 0); }
+                else for (const char *c = q + 2; c < e && k < 64;) { const int i = atoi(c); if (i < a->n) it[k++] = py_ex(p, a->p[i], 0); while (c < e && *c != ',') c++; if (c < e) c++; }
+                ADD(py_seq(p, "(", it, k, ")"));
+            } else {
+                const int i = atoi(q + 1); const char *c = q + 1; while (isdigit((unsigned char)*c)) c++;
+                int mp = 0; if (*c == '@') mp = atoi(c + 1);
+                if (i < a->n) ADD(py_ex(p, a->p[i], mp));
+            }
+            q = e + 1;
+        } else { const char ch[2] = {*q++, 0}; cgx_bs(&lit, ch); }
+    }
+    FLUSH();
+#undef FLUSH
+#undef ADD
+    free(lit.p);
+    return r ? r : cgx_dnil(PD);
+}
+
 static CgxDoc *py_call(CgxPy *p, const CgxNode *n, int *prec) {
     const CgxBlk *a = &n->b1; *prec = 10;
     if (n->bi == 0) {                                   /* funcao ou construtor da especificacao */
@@ -67,42 +96,12 @@ static CgxDoc *py_call(CgxPy *p, const CgxNode *n, int *prec) {
         for (int i = 0; i < a->n && k < 64; i++) it[k++] = py_ex(p, a->p[i], 0);
         return cgx_dcat(PD, cgx_dtext(PD, n->s), py_seq(p, "(", it, k, ")"));
     }
-    CgxDoc *A0 = a->n > 0 ? py_ex(p, a->p[0], 0) : NULL;
-    switch (n->bi) {
-        case CGB_LEN: return py_args(p, "len", a, 0);
-        case CGB_PUSH: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".append", a, 1), NULL);
-        case CGB_POP: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".pop()"));
-        case CGB_STR: return py_args(p, "str", a, 0);
-        case CGB_INT: return py_args(p, "int", a, 0);
-        case CGB_FLOAT: return py_args(p, "float", a, 0);
-        case CGB_UPPER: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".upper()"));
-        case CGB_LOWER: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".lower()"));
-        case CGB_TRIM: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".strip()"));
-        case CGB_SPLIT: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".split", a, 1), NULL);
-        case CGB_WORDS: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".split()"));
-        case CGB_JOIN: return cgx_dcatn(PD, py_ex(p, a->p[1], 10), py_t(p, ".join"), py_seq(p, "(", (CgxDoc *[]){A0}, 1, ")"), NULL);
-        case CGB_CONTAINS: *prec = CGX_PREC_CMP; return cgx_dcatn(PD, py_ex(p, a->p[1], CGX_PREC_CMP + 1), py_t(p, " in "), py_ex(p, a->p[0], CGX_PREC_CMP + 1), NULL);
-        case CGB_INDEXOF: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".find", a, 1), NULL);
-        case CGB_REPLACE: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".replace", a, 1), NULL);
-        case CGB_STARTS: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".startswith", a, 1), NULL);
-        case CGB_ENDS: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".endswith", a, 1), NULL);
-        case CGB_SLICE: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_t(p, "["), py_ex(p, a->p[1], 0), py_t(p, ":"), a->n > 2 ? py_ex(p, a->p[2], 0) : cgx_dnil(PD), py_t(p, "]"), NULL);
-        case CGB_KEYS: return cgx_dcatn(PD, py_t(p, "list("), py_ex(p, a->p[0], 10), py_t(p, ".keys())"), NULL);
-        case CGB_PRINT: return py_args(p, "print", a, 0);
-        case CGB_ABS: return py_args(p, "abs", a, 0);
-        case CGB_MIN: return py_args(p, "min", a, 0);
-        case CGB_MAX: return py_args(p, "max", a, 0);
-        case CGB_SQRT: p->need_math = 1; return py_args(p, "math.sqrt", a, 0);
-        case CGB_FLOOR: p->need_math = 1; return py_args(p, "math.floor", a, 0);
-        case CGB_POW: p->need_math = 1; return py_args(p, "math.pow", a, 0);
-        case CGB_SUM: return py_args(p, "sum", a, 0);
-        case CGB_SORT: return py_args(p, "sorted", a, 0);
-        case CGB_REVERSE: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, "[::-1]"));
-        case CGB_MATCHES: p->need_re = 1; *prec = CGX_PREC_CMP; return cgx_dcatn(PD, py_t(p, "re.search("), py_ex(p, a->p[1], 0), py_t(p, ", "), A0, py_t(p, ") is not None"), NULL);
-        case CGB_ERRMSG: return py_args(p, "str", a, 0);
-    }
-    cgx_err(p->g, n->line, "python: built-in `%s` has no Python form yet", n->s);
-    return cgx_dnil(PD);
+    const CgxOp *op = cgx_op_by_id(n->bi);
+    const CgxOpMap *m = op ? cgx_op_map(op, 0, a->n ? a->p[0]->ty.k : CGT_ANY) : NULL;
+    if (!m || !m->tmpl) { cgx_err(p->g, n->line, "python: built-in `%s` has no Python form%s%s", n->s, m && m->unsup ? ": " : " yet", m && m->unsup ? m->unsup : ""); return cgx_dnil(PD); }
+    if (m->imp) { if (!strcmp(m->imp, "math")) p->need_math = 1; else if (!strcmp(m->imp, "re")) p->need_re = 1; else cgx_err(p->g, n->line, "python: unknown import `%s` in the mapping of `%s`", m->imp, n->s); }
+    *prec = m->prec;
+    return py_tmpl(p, n, m->tmpl);
 }
 static int py_binprec(int op) { switch (op) { case CGO_OR: return 2; case CGO_AND: return 3; case CGO_EQ: case CGO_NE: case CGO_LT: case CGO_LE: case CGO_GT: case CGO_GE: case CGO_IN: return 5; case CGO_ADD: case CGO_SUB: return 6; default: return 7; } }
 static CgxDoc *py_ex0(CgxPy *p, const CgxNode *n, int *prec) {
@@ -293,7 +292,7 @@ static void py_tests(CgxPy *p, const CgxNode *prog, CgxB *out) {
     for (int i = 0; i < prog->b1.n; i++) if (prog->b1.p[i]->k == CGN_TEST) n++;
     if (!n) return;
     cgx_bs(out,
-        "def _ucge_t(n, f, exp, mode):\n"
+        "def _codegen_t(n, f, exp, mode):\n"
         "    try:\n"
         "        got = f()\n"
         "    except Exception as e:\n"
@@ -307,22 +306,52 @@ static void py_tests(CgxPy *p, const CgxNode *prog, CgxB *out) {
     int k = 0;
     for (int i = 0; i < prog->b1.n; i++) {
         const CgxNode *t = prog->b1.p[i]; if (t->k != CGN_TEST) continue;
-        CgxDoc *d = cgx_dcatn(PD, cgx_dtextf(PD, "_ucge_t(%d, lambda: ", ++k), py_ex(p, t->a, 0), py_t(p, ", "), t->b ? py_ex(p, t->b, 0) : py_t(p, "None"), cgx_dtextf(PD, ", %d)", (int)t->iv), NULL);
+        CgxDoc *d = cgx_dcatn(PD, cgx_dtextf(PD, "_codegen_t(%d, lambda: ", ++k), py_ex(p, t->a, 0), py_t(p, ", "), t->b ? py_ex(p, t->b, 0) : py_t(p, "None"), cgx_dtextf(PD, ", %d)", (int)t->iv), NULL);
         cgx_render(d, 100000, out); cgx_bs(out, "\n");
     }
 }
 
+/* uma declaracao de topo -> documento (NULL se nao gera nada); isfn: funcao ou classe (duas linhas em branco em volta) */
+static CgxDoc *py_decl(CgxPy *p, const CgxNode *d, int *isfn) {
+    const CgxGenOpts *o = p->o; CgxDoc *x = NULL; *isfn = 0;
+    if (d->k == CGN_FN) { x = py_fn(p, d, NULL); *isfn = 1; }
+    else if (d->k == CGN_CLASS) { x = py_class(p, d); *isfn = 1; }
+    else if (d->k == CGN_LET) { cgx_py_name(p, d->line, d->s, 0); x = cgx_dcatn(PD, cgx_dtextf(PD, "%s = ", d->s), py_ex(p, d->a, 0), NULL); }
+    else if (d->k == CGN_RAW) x = py_raw(p, d);
+    else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cgx_dtextf(PD, "# %s", d->defs);
+    return x;
+}
+/* uma unidade sozinha, com a mascara de imports que ela pede (1 math, 2 re); usado pelo cache por unidade (codegendep.c) */
+static int cgx_py_unit(Cgx *g, const CgxGenOpts *o, const CgxNode *d, CgxB *out, int *isfn, int *imports) {
+    CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o; const int err0 = g->nerr_all;
+    CgxDoc *x = py_decl(&P, d, isfn);
+    if (x) { cgx_render(x, o->width, out); cgx_bs(out, "\n"); }
+    *imports = (P.need_math ? 1 : 0) | (P.need_re ? 2 : 0);
+    cgx_docs_free(&P.D);
+    return g->nerr_all == err0 && x != NULL;
+}
+static void cgx_py_tests_text(Cgx *g, const CgxGenOpts *o, CgxB *tests) {
+    CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o;
+    py_tests(&P, g->prog, tests); cgx_docs_free(&P.D);
+}
+/* junta unidades ja geradas (texto, isfn, imports) na ordem dada: o mesmo layout de cgx_gen_python */
+static void cgx_py_assemble(const char *const *txt, const int *isfn, const int *imports, int n, CgxB *code) {
+    int im = 0; for (int i = 0; i < n; i++) im |= imports[i];
+    if (im & 1) cgx_bs(code, "import math\n");
+    if (im & 2) cgx_bs(code, "import re\n");
+    if (im) cgx_bs(code, "\n\n");
+    int first = 1, prev_fn = 0;
+    for (int i = 0; i < n; i++) {
+        if (!first) cgx_bs(code, isfn[i] || prev_fn ? "\n\n" : "");
+        cgx_bs(code, txt[i]); first = 0; prev_fn = isfn[i];
+    }
+}
 static int cgx_gen_python(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests) {
     CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o; CgxPy *p = &P;
     const CgxNode *prog = g->prog; CgxDoc *all = NULL; int first = 1, prev_fn = 0;
     const int err0 = g->nerr_all;
     for (int i = 0; i < prog->b1.n; i++) {
-        const CgxNode *d = prog->b1.p[i]; CgxDoc *x = NULL; int isfn = 0;
-        if (d->k == CGN_FN) { x = py_fn(p, d, NULL); isfn = 1; }
-        else if (d->k == CGN_CLASS) { x = py_class(p, d); isfn = 1; }
-        else if (d->k == CGN_LET) { cgx_py_name(p, d->line, d->s, 0); x = cgx_dcatn(PD, cgx_dtextf(PD, "%s = ", d->s), py_ex(p, d->a, 0), NULL); }
-        else if (d->k == CGN_RAW) x = py_raw(p, d);
-        else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cgx_dtextf(PD, "# %s", d->defs);
+        int isfn; CgxDoc *x = py_decl(p, prog->b1.p[i], &isfn);
         if (!x) continue;
         if (!first) { const int blank = isfn || prev_fn ? 2 : 0; for (int b = 0; b <= blank; b++) x = cgx_dcat(PD, cgx_dhard(PD), x); }
         all = all ? cgx_dcat(PD, all, x) : x; first = 0; prev_fn = isfn;
@@ -338,8 +367,16 @@ static int cgx_gen_python(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests) 
     cgx_docs_free(&P.D);
     return g->nerr_all == err0;
 }
+static int cgx_gen_js(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* codegenjs.c */
+static int cgx_gen_ts(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);
+static int cgx_gen_c(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);        /* codegenc.c */
+static int cgx_gen_go(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* codegengo.c */
 static const CgxBackend CGX_BACKENDS[] = {
     {"python", "py", ".py", cgx_gen_python},
+    {"javascript", "js", ".js", cgx_gen_js},
+    {"typescript", "ts", ".ts", cgx_gen_ts},
+    {"c", "c99", ".c", cgx_gen_c},
+    {"go", "golang", ".go", cgx_gen_go},
     {NULL, NULL, NULL, NULL}};
 static const CgxBackend *cgx_backend(const char *name) {
     for (int i = 0; CGX_BACKENDS[i].name; i++) if (!strcmp(CGX_BACKENDS[i].name, name) || !strcmp(CGX_BACKENDS[i].alias, name)) return &CGX_BACKENDS[i];

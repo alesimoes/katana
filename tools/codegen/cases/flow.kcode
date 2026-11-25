@@ -1,0 +1,121 @@
+const LIMIT = 5
+const NAMES = ["a", "b", "c"]
+let counter = 0
+fn bump(x: int) -> int
+  print("bump " + str(x))
+  return x + 1
+fn fin(n: int) -> int
+  try
+    if n > 2
+      return n * 10
+    print("in try " + str(n))
+  catch e
+    print("never")
+  finally
+    print("finally " + str(n))
+  return n
+fn loops() -> int
+  let total = 0
+  for i in 0..LIMIT
+    try
+      if i == 1
+        continue
+      if i == 4
+        break
+      total += i
+    finally
+      print("leave " + str(i))
+  let j = 0
+  while j < 10
+    j += 1
+    try
+      try
+        if j == 3
+          throw "three"
+        if j == 6
+          break
+      finally
+        print("inner " + str(j))
+    catch e
+      print("caught " + errmsg(e))
+      continue
+    total += j
+  return total
+fn nested(n: int) -> str
+  try
+    try
+      if n == 0
+        throw "zero"
+      return "ok" + str(n)
+    catch e
+      throw "re-" + errmsg(e)
+    finally
+      print("f1")
+  catch e2
+    return "outer " + errmsg(e2)
+  finally
+    print("f2")
+fn fact(n: int) -> int
+  if n <= 1
+    return 1
+  return n * fact(n - 1)
+fn defaults(a: int, b: int = 2, xs: list[int] = [], tag: str = "t") -> str
+  push(xs, a)
+  return tag + str(a + b) + str(xs)
+fn order() -> int
+  let r = bump(1) + bump(2) * bump(3)
+  print(r)
+  let xs = [bump(10), bump(20), bump(30)]
+  print(xs)
+  print(bump(100) - bump(50))
+  return 0
+fn run() -> int
+  print(fin(1))
+  print(fin(5))
+  print(loops())
+  print(nested(1))
+  print(nested(0))
+  print(fact(15))
+  print(defaults(1))
+  print(defaults(2, 3))
+  print(defaults(3, 4, [9], "z"))
+  print(NAMES)
+  print(LIMIT * 2)
+  order()
+  let m = {"x": 1}
+  m["y"] = 2
+  m["x"] += 10
+  print(m)
+  print(keys(m))
+  for k, v in m
+    print(k + "=" + str(v))
+  try
+    print(m["nokey"])
+  catch e
+    print("key error")
+  try
+    print([1, 2][5])
+  catch e
+    print("index error")
+  try
+    print(1 // 0)
+  catch e
+    print("div error")
+  try
+    print(int("abc"))
+  catch e
+    print("int error")
+  let q = [3, 1, 2]
+  print(sort(q))
+  print(q)
+  print(sum(q))
+  print(pop(q))
+  print(q)
+  print(contains(q, 3))
+  print(contains(m, "x"))
+  return 0
+test run() == 0
+test fact(5) == 120
+test fin(1) == 1
+test nested(0) == "outer re-zero"
+test fact(0) raises

@@ -1,9 +1,9 @@
-/* ---------- coder/ucge.c: Unified Code Generation Engine, parte 1: CSP -> UIR -> AST e validador (docs/ucge.md) ----------
- * O modelo NAO escreve o codigo final: descreve o que construir numa especificacao compacta (CSP, pseudocodigo com indentacao, ou o JSON
+/* ---------- coder/codegen.c: Codegen, parte 1: Code spec -> UIR -> AST e validador (docs/codegen.md) ----------
+ * O modelo NAO escreve o codigo final: descreve o que construir numa especificacao compacta (code spec, pseudocodigo com indentacao, ou o JSON
  * equivalente); o motor le a especificacao, monta a AST da UIR (independente de linguagem), valida (nomes, aridade, retorno, tipos
- * obvios, operacao desconhecida; erro com linha e o que esperava) e os geradores de ucgegen.c escrevem o codigo por AST (nunca por
+ * obvios, operacao desconhecida; erro com linha e o que esperava) e os geradores de codegengen.c escrevem o codigo por AST (nunca por
  * concatenacao solta). O que a UIR nao expressa vai num bloco `raw`: codigo escrito pelo modelo, NAO confiavel, opaco para a AST.
- * Este arquivo e C puro (so a biblioteca padrao): compila sozinho (tools/ucge/ucgecli.c) e dentro do katana.c (coder/ucgetool.c liga
+ * Este arquivo e C puro (so a biblioteca padrao): compila sozinho (tools/codegen/codegencli.c) e dentro do katana.c (coder/codegentool.c liga
  * ao scanner, ao Edit por simbolo e a execucao dos testes). */
 
 /* ---- tipos ---- */
@@ -34,6 +34,9 @@ struct CgxNode {
     char *raw[4]; char *defs;     /* RAW: texto por linguagem (0 python, 1 js, 2 ts, 3 c); nomes que o bloco define; DOC: texto */
     int bi;                       /* chamada: id da funcao embutida (0 = da especificacao) */
     CgxNode *ref;                 /* chamada: funcao ou classe da especificacao; variavel: no do let que a declara */
+    int tid;                      /* tipo resolvido pela inferencia (codegeninfer.c; id na CgxTypes; TYK_GEN = parametro de tipo da funcao); 0 = nao inferido */
+    int chk;                      /* verificacao gradual: tipo (CgxTid) que o valor `any` deste no precisa ter aqui; 0 = nenhuma. Marca na AST, nao codigo de execucao */
+    unsigned char cert;           /* grau de certeza do tipo: 1 derivado, 2 declarado, 3 gradual (any); nunca "exato" */
 };
 
 #define CGX_MAXERR 24
@@ -51,7 +54,7 @@ typedef struct {
 /* ---- memoria: tudo que o motor aloca num Cgx e solto de uma vez ---- */
 static void *cgx_alloc(Cgx *g, size_t n) {
     void *p = calloc(1, n ? n : 1);
-    if (!p) { fprintf(stderr, "ucge: sem memoria\n"); exit(1); }
+    if (!p) { fprintf(stderr, "codegen: sem memoria\n"); exit(1); }
     if (g->nmem == g->capmem) { g->capmem = g->capmem ? g->capmem * 2 : 256; g->mem = (void **)realloc(g->mem, sizeof(void *) * (size_t)g->capmem); }
     g->mem[g->nmem++] = p;
     return p;
@@ -728,7 +731,7 @@ static void cgx_block(Cgx *g, int *li, int ind, CgxBlk *out, int ctx) {
     }
 }
 
-/* ---- JSON equivalente: vira o mesmo texto CSP e passa pelo mesmo parser ---- */
+/* ---- JSON equivalente: vira o mesmo texto code spec e passa pelo mesmo parser ---- */
 typedef struct CgxJ CgxJ;
 struct CgxJ { int t; char *s; double d; CgxJ **kid; char **key; int n; };      /* t: 0 null, 1 bool, 2 num, 3 str, 4 arr, 5 obj */
 typedef struct { const char *p; Cgx *g; int bad; } CgxJP;
@@ -800,7 +803,7 @@ static int cgx_jlist(Cgx *g, const CgxJ *arr, CgxB *b, const char *sep) {
     for (int i = 0; arr && i < arr->n; i++) { if (i) cgx_bs(b, sep); if (!cgx_jexpr(g, arr->kid[i], b)) return 0; }
     return 1;
 }
-/* expressao em JSON -> texto. Uma string e uma expressao escrita no proprio CSP */
+/* expressao em JSON -> texto. Uma string e uma expressao escrita no proprio code spec */
 static int cgx_jexpr(Cgx *g, const CgxJ *v, CgxB *b) {
     if (!v || v->t == 0) { cgx_bs(b, "null"); return 1; }
     if (v->t == 1) { cgx_bs(b, v->d ? "true" : "false"); return 1; }
@@ -938,7 +941,7 @@ static int cgx_jstmts(Cgx *g, const CgxJ *arr, CgxB *b, int d) {
     for (int i = 0; i < arr->n; i++) if (!cgx_jstmt(g, arr->kid[i], b, d)) return 0;
     return 1;
 }
-/* texto JSON da especificacao -> texto CSP (memoria nova em *out); 0 se nao e JSON valido da UIR */
+/* texto JSON da especificacao -> texto code spec (memoria nova em *out); 0 se nao e JSON valido da UIR */
 static int cgx_json_to_text(Cgx *g, const char *src, char **out) {
     CgxJP j = {src, g, 0};
     CgxJ *root = cgx_jval(&j, 0);
@@ -964,7 +967,7 @@ static void cgx_number_node(Cgx *g, CgxNode *n) {
 }
 static void cgx_number(Cgx *g) { g->nnodes = 0; cgx_number_node(g, g->prog); }
 
-/* ---- entrada: texto CSP ou JSON ---- */
+/* ---- entrada: texto code spec ou JSON ---- */
 static int cgx_parse(Cgx *g, const char *src) {
     memset(g, 0, sizeof *g);
     const char *q = src; while (isspace((unsigned char)*q)) q++;

@@ -1,6 +1,6 @@
-/* ---------- coder/ucgetype.c: UCGE, tabela de tipos e unificacao (docs/ucge.md, "Sistema de tipos") ----------
- * Base da inferencia da fase 2 (Hindley-Milner com let-polimorfismo por niveis e extensao gradual). O validador da fase 1 (ucgecheck.c) ainda usa o
- * CgxTy simples; a fase 2 troca-o por estes tipos. Aqui ja ficam prontos e testados (`ucgecli selftest`):
+/* ---------- coder/codegentype.c: Codegen, tabela de tipos e unificacao (docs/codegen.md, "Sistema de tipos") ----------
+ * Base da inferencia da fase 2 (Hindley-Milner com let-polimorfismo por niveis e extensao gradual). O validador da fase 1 (codegencheck.c) ainda usa o
+ * CgxTy simples; a fase 2 troca-o por estes tipos. Aqui ja ficam prontos e testados (`codegencli selftest`):
  *   - tabela de tipos com hash-consing: cada tipo estrutural tem UM id (CgxTid), comparar tipos iguais e comparar inteiros;
  *   - variaveis de tipo com union-find (caminho comprimido), nivel para generalizar (Remy) e verificacao de ocorrencia;
  *   - o tipo gradual `any`: unifica com tudo sem ligar nada (compativel nos dois sentidos, como em linguagens dinamicas);

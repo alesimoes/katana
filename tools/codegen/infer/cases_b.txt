@@ -1,0 +1,338 @@
+### err undeclared variable with suggestion
+@fail
+@has line 3: variable `totl` is not declared
+@has did you mean `total`?
+fn f(a: int) -> int
+  let total = a
+  return totl
+### err add int and str
+@fail
+@has line 2: ADD of int and str (expected two numbers or two str; convert with str(x))
+fn f(a: int) -> int
+  return a + "x"
+### err subtract str
+@fail
+@has SUBTRACT of str and int (expected two numbers)
+fn f(a: str) -> int
+  return a - 1
+### err idivide float
+@fail
+@has IDIVIDE needs two int operands, found float and int
+fn f(a: float) -> int
+  return a // 2
+### err compare int with str
+@fail
+@has COMPARE < of int and str (expected two numbers or two str)
+fn f(a: int, b: str) -> bool
+  return a < b
+### err equality across types
+@fail
+@has comparing int with str is always false
+fn f(a: int, b: str) -> bool
+  return a == b
+### err return type mismatch with hint
+@fail
+@has `f` declares `-> str` but returns int; convert with str(x)
+fn f(a: int) -> str
+  return a
+### err return float into int
+@fail
+@has `f` declares `-> int` but returns float; convert with int(x) or floor(x)
+fn f(a: float) -> int
+  return a
+### err return without value
+@fail
+@has `return` without a value in `f`, which declares `-> int`
+fn f(a: int) -> int
+  return
+### err return value in void
+@fail
+@has `f` is declared `-> void` but returns a value
+fn f(a: int) -> void
+  return a
+### err argument type names the parameter
+@fail
+@has `g` argument 2 (`b`) expects int, found str; convert with int(x)
+fn g(a: int, b: int) -> int
+  return a + b
+fn f() -> int
+  return g(1, "x")
+### err argument arity
+@fail
+@has `g` called with 1 argument, expected 2
+fn g(a: int, b: int) -> int
+  return a + b
+fn f() -> int
+  return g(1)
+### err unknown function
+@fail
+@has unknown function `foo`
+fn f(a: int) -> int
+  return foo(a)
+### err let annotation mismatch
+@fail
+@has `x` is declared int but the value is str; convert with int(x)
+fn f() -> int
+  let x: int = "a"
+  return x
+### err assign wrong type
+@fail
+@has cannot assign str to a target of type int
+fn f() -> int
+  let x = 1
+  x = "a"
+  return x
+### err assign float to int var by compound
+@fail
+@has `+=` would store a float in an int variable
+fn f() -> int
+  let x = 1
+  x += 1.5
+  return x
+### err condition not bool
+@fail
+@has the `if` condition must be bool, found int
+fn f(a: int) -> int
+  if a
+    return 1
+  return 0
+### err while condition not bool
+@fail
+@has the `while` condition must be bool, found str
+fn f(a: str) -> int
+  while a
+    return 1
+  return 0
+### err and with int
+@fail
+@has `and` expects bool on both sides, found int and bool
+fn f(a: int, b: bool) -> bool
+  return a and b
+### err not of int
+@fail
+@has `not` operand must be bool, found int
+fn f(a: int) -> bool
+  return not a
+### err negate str
+@fail
+@has unary `-` expects a number, found str
+fn f(a: str) -> int
+  return -a
+### err list index type
+@fail
+@has a list index must be int, found str
+fn f(xs: list[int]) -> int
+  return xs["a"]
+### err map index type
+@fail
+@has a map index must be str, found int
+fn f(m: map[str, int]) -> int
+  return m[0]
+### err index an int
+@fail
+@has cannot index a int (expected a list, map or str)
+fn f(a: int) -> int
+  return a[0]
+### err map key not str
+@fail
+@has map keys must be str, found int
+fn f() -> int
+  let m = {1: 2}
+  return 0
+### err push wrong element
+@fail
+@has push: the list holds int but the value is str
+fn f() -> int
+  let xs = [1]
+  push(xs, "a")
+  return 0
+### err push to non list
+@fail
+@has push(list, value): argument 1 expected a list, found int
+fn f(a: int) -> int
+  push(a, 1)
+  return 0
+### err len of int
+@fail
+@has len(list|str|map): argument 1 expected a list, str or map, found int
+fn f(a: int) -> int
+  return len(a)
+### err upper of int
+@fail
+@has upper(s): argument 1 expected a str, found int
+fn f(a: int) -> str
+  return upper(a)
+### err join of ints
+@fail
+@has join: the list must hold str
+fn f(xs: list[int]) -> str
+  return join(xs, ",")
+### err sum of strings
+@fail
+@has sum(list): argument 1 expected a list of numbers, found list[str]
+fn f(xs: list[str]) -> int
+  return sum(xs)
+### err builtin arity
+@fail
+@has len called with 2 arguments (expected len(list|str|map))
+fn f(a: str) -> int
+  return len(a, a)
+### err void value in let
+@fail
+@has `x` is assigned the result of a call that returns nothing (void)
+fn g() -> void
+  print(1)
+fn f() -> int
+  let x = g()
+  return 0
+### err void in return
+@fail
+@has returning the result of a call that returns nothing (void)
+fn g() -> void
+  print(1)
+fn f()
+  return g()
+### err redeclare
+@fail
+@has `a` is already declared in this block
+fn f() -> int
+  let a = 1
+  let a = 2
+  return a
+### err shadow a parameter
+@fail
+@has `a` is already declared in an outer block
+fn f(a: int) -> int
+  if a > 0
+    let a = 2
+  return a
+### err const reassigned
+@fail
+@has `K` is a module-level constant and cannot be reassigned
+const K = 1
+fn f() -> int
+  K = 2
+  return K
+### err field does not exist
+@fail
+@has class `A` has no field `y` (fields: x)
+class A
+  field x: int = 0
+fn f(a: A) -> int
+  return a.y
+### err method does not exist
+@fail
+@has class `A` has no method `go` (methods: run)
+class A
+  field x: int = 0
+  fn run() -> int
+    return 1
+fn f(a: A) -> int
+  return a.go()
+### err method on a list
+@fail
+@has lists, strings and maps have no methods in the UIR
+fn f(xs: list[int]) -> int
+  xs.push(1)
+  return 0
+### err iterate an int
+@fail
+@has cannot iterate over int (expected a list, str or map)
+fn f(a: int) -> int
+  for x in a
+    print(x)
+  return 0
+### err range bounds
+@fail
+@has a range loop needs int bounds, found int..str
+fn f(a: str) -> int
+  for i in 0..a
+    print(i)
+  return 0
+### err break outside a loop
+@fail
+@has `break` outside a loop
+fn f() -> int
+  break
+  return 0
+### err throw an int
+@fail
+@has `throw` takes a str (the message) or the error caught by `catch e`, found int
+fn f() -> int
+  throw 3
+  return 0
+### err errmsg of a str
+@fail
+@has errmsg(e): argument 1 expected the error caught by `catch e`
+fn f(s: str) -> str
+  return errmsg(s)
+### err ternary branches against an expectation
+@fail
+@has a branch of `?:` is str but int was expected
+fn f(c: bool) -> int
+  return c ? 1 : "a"
+### err null into int
+@fail
+@has cannot assign
+fn f() -> int
+  let x = 1
+  x = null
+  return x
+### err function has the name of a built-in
+@fail
+@has has the name of a built-in
+fn len(a: int) -> int
+  return a
+### err duplicate function
+@fail
+@has `f` is defined twice
+fn f() -> int
+  return 1
+fn f() -> int
+  return 2
+### err class without init takes no arguments
+@fail
+@has class `A` has no `init`, so `A(...)` takes no arguments (found 1)
+class A
+  field x: int = 0
+fn f() -> int
+  let a = A(1)
+  return 0
+### err field default type
+@fail
+@has field `x` is int but the value is str
+class A
+  field x: int = "a"
+### err test compares different types
+@fail
+@has the test compares int with str
+fn f() -> int
+  return 1
+test f() == "a"
+### err test needs a bool
+@fail
+@has a `test` without `==` must be a bool expression
+fn f() -> int
+  return 1
+test f()
+### err occurs check on assignment
+@fail
+@has infinite type: this would make a value contain itself
+fn f(x)
+  x = [x]
+  return 0
+### err occurs check on push
+@fail
+@has infinite type
+fn f() -> int
+  let xs = []
+  push(xs, xs)
+  return 0
+### err occurs check keeps the rest of the program usable
+@fail
+@has fn g: () -> int [declared]
+fn f(x)
+  x = [x]
+  return 0
+fn g() -> int
+  return 1

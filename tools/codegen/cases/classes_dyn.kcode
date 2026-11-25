@@ -1,0 +1,46 @@
+class Account
+  field owner: str = ""
+  field balance: int = 0
+  field history: list[int] = []
+  fn init(owner: str, balance: int = 0)
+    self.owner = owner
+    self.balance = balance
+  fn deposit(amount: int) -> int
+    if amount <= 0
+      throw "amount must be positive"
+    self.balance += amount
+    push(self.history, amount)
+    return self.balance
+  fn summary() -> str
+    return self.owner + ":" + str(self.balance)
+class Counter
+  field n: int = 0
+  fn deposit(k: int) -> int
+    self.n += k * 2
+    return self.n
+fn run() -> int
+  let accs = [Account("ana", 10), Account("bob")]
+  print(accs[0].deposit(5))
+  print(accs[1].deposit(7))
+  for a in accs
+    print(a.summary())
+    print(a.balance)
+  accs[1].balance = 100
+  print(accs[1].summary())
+  let mixed = [Account("c", 1), Counter()]
+  for o in mixed
+    print(o.deposit(3))
+  let a2 = Account("zed", 3)
+  let b2 = a2
+  b2.deposit(4)
+  print(a2.balance)
+  print(a2.history)
+  try
+    accs[0].deposit(0)
+  catch e
+    print("caught " + errmsg(e))
+  let c = Counter()
+  c.deposit(4)
+  print(c.n)
+  return 0
+test run() == 0

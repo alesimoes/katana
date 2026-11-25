@@ -1,0 +1,198 @@
+### class fields and methods typed
+@ok
+@has field Counter.n: int [declared]
+@has method Counter.inc: () -> int [declared]
+class Counter
+  field n: int = 0
+  fn inc() -> int
+    self.n += 1
+    return self.n
+### class field type from the default
+@ok
+@has field A.x: float [derived]
+class A
+  field x = 1.5
+### class field without default is fixed by the first use
+@ok
+@has field A.name: str
+class A
+  field name
+  fn set(s: str)
+    self.name = s
+### class field never used defaults to any
+@ok
+@has field A.z: any
+class A
+  field z
+### class constructor call typed
+@ok
+@has let f.a: Account [derived]
+class Account
+  field owner: str = ""
+  fn init(owner: str)
+    self.owner = owner
+fn f() -> str
+  let a = Account("ana")
+  return a.owner
+### class constructor argument error
+@fail
+@has `Account` argument 1 (`owner`) expects str, found int; convert with str(x)
+class Account
+  field owner: str = ""
+  fn init(owner: str)
+    self.owner = owner
+fn f() -> int
+  let a = Account(3)
+  return 0
+### class constructor arity error
+@fail
+@has `Account` called with 0 arguments, expected 1
+class Account
+  field owner: str = ""
+  fn init(owner: str)
+    self.owner = owner
+fn f() -> int
+  let a = Account()
+  return 0
+### class method result type
+@ok
+@has use f.a@7: Counter
+class Counter
+  field n: int = 0
+  fn get() -> int
+    return self.n
+fn f() -> int
+  let a = Counter()
+  return a.get()
+### class method wrong argument
+@fail
+@has `add` argument 1 (`k`) expects int, found str
+class Counter
+  field n: int = 0
+  fn add(k: int) -> int
+    self.n += k
+    return self.n
+fn f() -> int
+  let a = Counter()
+  return a.add("x")
+### class field assignment wrong type
+@fail
+@has cannot assign str to a target of type int
+class Counter
+  field n: int = 0
+  fn bad()
+    self.n = "a"
+### class unannotated param inferred from the field use
+@ok
+@has method Counter.add: (int) -> int
+class Counter
+  field n: int = 0
+  fn add(k)
+    self.n += k
+    return self.n
+### class method calls another method
+@ok
+@has method Counter.twice: () -> int
+class Counter
+  field n: int = 0
+  fn inc() -> int
+    self.n += 1
+    return self.n
+  fn twice()
+    self.inc()
+    return self.inc()
+### class two classes passing objects
+@ok
+class P
+  field x: int = 0
+class Q
+  field p: P = null
+  fn get() -> int
+    if self.p == null
+      return 0
+    return self.p.x
+### class untyped parameter resolved by a unique field name
+@ok
+@has fn f: (A) -> int
+class A
+  field size: int = 0
+class B
+  field other: int = 0
+fn f(o)
+  return o.size
+### class untyped parameter ambiguous field name asks for an annotation
+@fail
+@has cannot tell which class has `.size` (A, B); annotate the parameter with the class name
+class A
+  field size: int = 0
+class B
+  field size: int = 0
+fn f(o)
+  return o.size
+### class unique method name resolves the receiver
+@ok
+@has fn f: (A) -> int
+class A
+  field x: int = 0
+  fn run() -> int
+    return 1
+fn f(o)
+  return o.run()
+### class unknown field on a var
+@fail
+@has no class has a field named `zz`
+class A
+  field x: int = 0
+fn f(o)
+  return o.zz
+### class list of objects
+@ok
+@has fn total: (list[P]) -> int
+class P
+  field x: int = 0
+fn total(ps: list[P]) -> int
+  let t = 0
+  for p in ps
+    t += p.x
+  return t
+### class method on an optional receiver needs a test
+@fail
+@has `q` may be null
+class P
+  field x: int = 0
+  fn get() -> int
+    return self.x
+fn f(p: P) -> int
+  let q: P = null
+  return q.get()
+### class catch variable is an Error
+@ok
+@has use f.e@5: Error
+fn f() -> str
+  try
+    throw "x"
+  catch e
+    return errmsg(e)
+  return ""
+### class error has no fields
+@fail
+@has an error has no fields: use errmsg(e) for its text
+fn f() -> str
+  try
+    throw "x"
+  catch e
+    return e.message
+  return ""
+### class rethrow the caught error
+@ok
+fn f() -> int
+  try
+    throw "x"
+  catch e
+    throw e
+  return 0
+### class unknown class in an annotation
+@fail
+@has unknown class `Nope`
+fn f(a: Nope) -> int
+  return a.x

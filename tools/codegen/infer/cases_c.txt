@@ -1,0 +1,310 @@
+### poly identity
+@ok
+@has fn id: ('a) -> 'a [derived]
+fn id(x)
+  return x
+### poly identity used at int and str
+@ok
+@has fn useit: () -> int [declared]
+fn id(x)
+  return x
+fn useit() -> int
+  let a = id(3)
+  let b = id("s")
+  return a + len(b)
+### poly identity result type follows the argument
+@has use g.a@5: str
+fn id(x)
+  return x
+fn g() -> int
+  let a = id("s")
+  return len(a)
+### poly first element
+@has fn first: (list['a]) -> 'a
+fn first(xs)
+  return xs[0]
+### poly first used on three element types
+@ok
+fn first(xs)
+  return xs[0]
+fn g() -> int
+  let a = first([1, 2])
+  let b = first(["a"])
+  let c = first([1.5])
+  return a + len(b) + int(c)
+### poly first result flows to the right type
+@fail
+@has `g` declares `-> str` but returns int
+fn first(xs)
+  return xs[0]
+fn g() -> str
+  return first([1, 2])
+### poly last with len
+@has fn last: (list['a]) -> 'a
+fn last(xs)
+  return xs[len(xs) - 1]
+### poly map-like copy with a loop
+@has fn copy: (list['a]) -> list['a]
+fn copy(xs)
+  let out = []
+  for x in xs
+    push(out, x)
+  return out
+### poly copy used at two types
+@ok
+fn copy(xs)
+  let out = []
+  for x in xs
+    push(out, x)
+  return out
+fn g() -> int
+  let a = copy([1])
+  let b = copy(["x"])
+  return len(a) + len(b)
+### poly filter-like with a bool test on the element size
+@has fn nonEmpty: (list['a]) -> list['a] where 'a in str|list|map
+fn nonEmpty(xs)
+  let out = []
+  for x in xs
+    if len(x) > 0
+      push(out, x)
+  return out
+### poly reverse copy
+@has fn rev: (list['a]) -> list['a]
+fn rev(xs)
+  let out = []
+  let i = len(xs) - 1
+  while i >= 0
+    push(out, xs[i])
+    i -= 1
+  return out
+### poly swap two values in a list
+@has fn pair: ('a, 'a) -> list['a]
+fn pair(a, b)
+  return [a, b]
+### poly composition twice
+@ok
+@has fn twice: ('a) -> 'a
+fn id(x)
+  return x
+fn twice(x)
+  return id(id(x))
+### poly composition of different functions
+@ok
+fn inc(a: int) -> int
+  return a + 1
+fn show(a: int) -> str
+  return str(a)
+fn both(a: int) -> str
+  return show(inc(a))
+### poly composition type mismatch in the chain
+@fail
+@has `inc` argument 1 (`a`) expects int, found str
+fn inc(a: int) -> int
+  return a + 1
+fn show(a: int) -> str
+  return str(a)
+fn bad(a: int) -> int
+  return inc(show(a))
+### poly numeric class: add at int
+@ok
+@has fn add: ('a, 'a) -> 'a where 'a in int|float|str
+fn add(a, b)
+  return a + b
+fn g() -> int
+  return add(1, 2)
+### poly numeric class: add at str
+@ok
+fn add(a, b)
+  return a + b
+fn g() -> str
+  return add("a", "b")
+### poly numeric class: add rejects a bool
+@fail
+@has `add` argument 1 (`a`) expects int|float|str, found bool
+fn add(a, b)
+  return a + b
+fn g() -> bool
+  return add(true, false)
+### poly numeric class: add rejects mixed
+@fail
+@has `add` argument 2 (`b`) expects int, found str
+fn add(a, b)
+  return a + b
+fn g() -> int
+  return add(1, "b")
+### poly numeric class: only numbers
+@has fn dbl: ('a) -> 'a where 'a in int|float
+fn dbl(x)
+  return x * 2
+### poly numeric class rejects a str
+@fail
+@has `dbl` argument 1 (`x`) expects number, found str
+fn dbl(x)
+  return x * 2
+fn g() -> int
+  return dbl("a")
+### poly numeric result keeps float
+@has use g.a@5: float
+fn dbl(x)
+  return x * 2
+fn g() -> float
+  let a = dbl(1.5)
+  return a
+### poly ordering class
+@has fn mx: ('a, 'a) -> 'a where 'a in int|float|str
+fn mx(a, b)
+  if a > b
+    return a
+  return b
+### poly ordering rejects lists
+@fail
+@has `mx` argument 1 (`a`) expects int|float|str, found list[int]
+fn mx(a, b)
+  if a > b
+    return a
+  return b
+fn g()
+  return mx([1], [2])
+### poly len class
+@has fn size: ('a) -> int where 'a in str|list|map
+fn size(x)
+  return len(x)
+### poly len class accepts str and list
+@ok
+fn size(x)
+  return len(x)
+fn g() -> int
+  return size("abc") + size([1, 2]) + size({"a": 1})
+### poly len class rejects int
+@fail
+@has `size` argument 1 (`x`) expects str|list|map, found int
+fn size(x)
+  return len(x)
+fn g() -> int
+  return size(3)
+### poly map values
+@has fn getA: (map[str,'a]) -> 'a
+fn getA(m)
+  return m["a"]
+### poly map values at two types
+@ok
+fn getA(m)
+  return m["a"]
+fn g() -> int
+  return getA({"a": 1}) + len(getA({"a": "xyz"}))
+### poly list of lists flatten shape
+@has fn firstOfFirst: (list[list['a]]) -> 'a
+fn firstOfFirst(m)
+  return m[0][0]
+### poly the polymorphic type does not leak between calls
+@ok
+fn id(x)
+  return x
+fn g() -> int
+  let a = id(1)
+  let b = id("s")
+  let c = id([1.5])
+  return a + len(b) + len(c)
+### poly append returns the same list type
+@has fn app: (list['a], 'a) -> list['a]
+fn app(xs, y)
+  push(xs, y)
+  return xs
+### poly append rejects a wrong element
+@fail
+@has `app` argument 2 (`y`) expects int, found str
+fn app(xs, y)
+  push(xs, y)
+  return xs
+fn g()
+  return app([1], "x")
+### poly constant function
+@has fn mk: () -> list['a]
+fn mk()
+  return []
+### poly constant function instantiated twice
+@ok
+fn mk()
+  return []
+fn g() -> int
+  let a = mk()
+  let b = mk()
+  push(a, 1)
+  push(b, "x")
+  return len(a) + len(b)
+### poly method generalization
+@ok
+@has method Box.put: (int) -> void
+@has field Box.items: list[int] [declared]
+class Box
+  field items: list = []
+  fn put(x)
+    push(self.items, x)
+fn g() -> int
+  let b = Box()
+  b.put(1)
+  return 0
+### poly functions in a chain generalize one by one
+@ok
+@has fn c: ('a) -> 'a
+fn a(x)
+  return x
+fn b(x)
+  return a(x)
+fn c(x)
+  return b(x)
+### poly annotation list without element stays generic
+@has fn f: (list['a]) -> int
+fn f(xs: list) -> int
+  return len(xs)
+### poly annotated element fixes the type
+@fail
+@has the elements of this list must have one type: expected int, found str
+fn f(xs: list[int]) -> int
+  return len(xs)
+fn g() -> int
+  return f(["a"])
+### poly min of mixed
+@has fn lo: ('a, 'a) -> 'a where 'a in int|float
+fn lo(a, b)
+  return min(a, b)
+### poly sort generic
+@has fn srt: (list['a]) -> list['a] where 'a in int|float|str
+fn srt(xs)
+  return sort(xs)
+### poly sort rejects list of lists
+@fail
+@has sort: the elements must be numbers or str
+fn g() -> int
+  let xs = sort([[1], [2]])
+  return 0
+### poly sum generic
+@has fn total: (list['a]) -> 'a where 'a in int|float
+fn total(xs)
+  return sum(xs)
+### poly sum at int and float
+@ok
+fn total(xs)
+  return sum(xs)
+fn g() -> float
+  return total([1, 2]) + total([1.5, 2.5])
+### poly contains resolves by the list element
+@ok
+fn has(xs, x)
+  return contains(xs, x)
+fn g() -> bool
+  return has([1, 2], 2)
+### poly known limit: int and float share one variable in a generic function
+@fail
+@has `add` argument 2 (`b`) expects int, found float
+fn add(a, b)
+  return a + b
+fn g() -> float
+  return add(1, 2.5)
+### poly known limit is lifted by annotating one parameter
+@ok
+fn add(a: float, b: float) -> float
+  return a + b
+fn g() -> float
+  return add(1, 2.5)
