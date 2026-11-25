@@ -5,31 +5,17 @@
  * incompativeis, aridade, retorno em todos os caminhos, operacao e funcao conhecidas. Os blocos `raw` sao opacos: so os nomes que
  * declaram em `defines` entram no escopo. */
 
-enum { CGB_NONE, CGB_LEN, CGB_PUSH, CGB_POP, CGB_STR, CGB_INT, CGB_FLOAT, CGB_UPPER, CGB_LOWER, CGB_TRIM, CGB_SPLIT, CGB_WORDS, CGB_JOIN, CGB_CONTAINS, CGB_INDEXOF, CGB_REPLACE,
-       CGB_STARTS, CGB_ENDS, CGB_SLICE, CGB_KEYS, CGB_PRINT, CGB_ABS, CGB_MIN, CGB_MAX, CGB_SQRT, CGB_FLOOR, CGB_POW, CGB_SUM, CGB_SORT, CGB_REVERSE, CGB_MATCHES, CGB_ERRMSG, CGB_N };
-static const struct { const char *n; int id, lo, hi; const char *use; } CGB[] = {
-    {"len", CGB_LEN, 1, 1, "len(list|str|map)"}, {"push", CGB_PUSH, 2, 2, "push(list, value)"}, {"pop", CGB_POP, 1, 1, "pop(list)"},
-    {"str", CGB_STR, 1, 1, "str(x)"}, {"int", CGB_INT, 1, 1, "int(x)"}, {"float", CGB_FLOAT, 1, 1, "float(x)"},
-    {"upper", CGB_UPPER, 1, 1, "upper(s)"}, {"lower", CGB_LOWER, 1, 1, "lower(s)"}, {"trim", CGB_TRIM, 1, 1, "trim(s)"},
-    {"split", CGB_SPLIT, 2, 2, "split(s, sep)"}, {"words", CGB_WORDS, 1, 1, "words(s)"}, {"join", CGB_JOIN, 2, 2, "join(list, sep)"},
-    {"contains", CGB_CONTAINS, 2, 2, "contains(str|list|map, x)"}, {"indexof", CGB_INDEXOF, 2, 2, "indexof(s, sub)"}, {"replace", CGB_REPLACE, 3, 3, "replace(s, old, new)"},
-    {"startswith", CGB_STARTS, 2, 2, "startswith(s, prefix)"}, {"endswith", CGB_ENDS, 2, 2, "endswith(s, suffix)"}, {"slice", CGB_SLICE, 2, 3, "slice(str|list, from[, to])"},
-    {"keys", CGB_KEYS, 1, 1, "keys(map)"}, {"print", CGB_PRINT, 1, 1, "print(x)"}, {"abs", CGB_ABS, 1, 1, "abs(n)"}, {"min", CGB_MIN, 2, 2, "min(a, b)"}, {"max", CGB_MAX, 2, 2, "max(a, b)"},
-    {"sqrt", CGB_SQRT, 1, 1, "sqrt(n)"}, {"floor", CGB_FLOOR, 1, 1, "floor(n)"}, {"pow", CGB_POW, 2, 2, "pow(a, b)"}, {"sum", CGB_SUM, 1, 1, "sum(list)"},
-    {"sort", CGB_SORT, 1, 1, "sort(list)"}, {"reverse", CGB_REVERSE, 1, 1, "reverse(list|str)"}, {"matches", CGB_MATCHES, 2, 2, "matches(s, regex)"}, {"errmsg", CGB_ERRMSG, 1, 1, "errmsg(e)"},
-    {NULL, 0, 0, 0, NULL}};
-static const char CGX_BUILTIN_LIST[] = "len push pop str int float upper lower trim split words join contains indexof replace startswith endswith slice keys print abs min max sqrt floor pow sum sort reverse matches errmsg";
-
+/* as funcoes embutidas vivem no registro de operacoes (ucgereg.c): aridade, tipos dos argumentos e do resultado, efeito, nivel */
 typedef struct { char name[64]; CgxTy ty; CgxNode *decl; int depth, glob; } CgxSym;
 typedef struct {
     Cgx *g;
     CgxSym sym[600]; int nsym, depth;
-    CgxNode *fns[160]; int nfn; CgxNode *cls[40]; int ncls;
+    CgxNode *fns[4096]; int nfn; CgxNode *cls[40]; int ncls;
     CgxNode *fn, *curcls;
     int loops, ret_val, ret_void, quiet, pass;
     CgxTy ret;
     /* o que a especificacao usa (relatorio) */
-    int nfunc, nclass, ntest, nraw, ndiv, nstrnum, nops[CGO_N], nloop, ntry, neach, nmap, nlist, nstr, nbi[CGB_N], raw_ret;
+    int nfunc, nclass, ntest, nraw, ndiv, nstrnum, nops[CGO_N], nloop, ntry, neach, nmap, nlist, nstr, nbi[CGX_OP_MAX + 1], raw_ret;
 } CgxV;
 
 static CgxNode *cgx_find_fn(CgxV *v, const char *n) { for (int i = 0; i < v->nfn; i++) if (!strcmp(v->fns[i]->s, n)) return v->fns[i]; return NULL; }
@@ -77,53 +63,40 @@ static CgxTy cgx_mklist(int e) { CgxTy t = cgx_t(CGT_LIST); t.e = e; return t; }
 static int cgx_unify(int a, int b) { if (a == b) return a; if ((a == CGT_INT && b == CGT_FLOAT) || (a == CGT_FLOAT && b == CGT_INT)) return CGT_FLOAT; return CGT_ANY; }
 
 static CgxTy cgx_builtin(CgxV *v, CgxNode *c, CgxTy *a, int na) {
-    const int id = c->bi; char tn[60];
-#define NEED(i, cond, what) do { if (!(cond)) { cgx_tyname(&a[i], tn, sizeof tn); cgx_verr(v, c->line, "%s: argument %d expected %s, found %s", CGB[id - 1].use, (i) + 1, what, tn); } } while (0)
-    const int any0 = na > 0 && a[0].k == CGT_ANY;
+    const CgxOp *op = cgx_op_by_id(c->bi); char tn[60];
+    const int id = c->bi;
     v->nbi[id]++;
+    /* tipos dos argumentos: tabela do registro (qualquer tipo com `any`; `any` passa sempre) */
+    for (int i = 0; i < na && i < op->narg && i < 4; i++) {
+        const unsigned m = op->arg[i].mask; if (!m || a[i].k == CGT_ANY) continue;
+        int bad = !(m & (1u << a[i].k));
+        if (id == CGB_ERRMSG) bad = !(a[0].k == CGT_CLASS && !strcmp(a[0].cls, "Error"));
+        const char *what = op->arg[i].what;
+        if (id == CGB_CONTAINS && i == 1) { bad = (a[0].k == CGT_STR || a[0].k == CGT_MAP) && a[1].k != CGT_STR; what = "a str"; }
+        if (bad) { cgx_tyname(&a[i], tn, sizeof tn); cgx_verr(v, c->line, "%s: argument %d expected %s, found %s", op->use, i + 1, what, tn); }
+    }
+    /* verificacoes que dependem de mais de um argumento (ganchos das embutidas) */
     switch (id) {
-        case CGB_LEN: NEED(0, any0 || a[0].k == CGT_LIST || a[0].k == CGT_STR || a[0].k == CGT_MAP, "a list, str or map"); return cgx_t(CGT_INT);
-        case CGB_PUSH: NEED(0, any0 || a[0].k == CGT_LIST, "a list");
+        case CGB_PUSH:
             if (a[0].k == CGT_LIST) {
                 if (a[0].e == CGT_ANY) {                                        /* a primeira inclusao fixa o tipo do elemento da variavel */
                     if (a[1].k != CGT_ANY && a[1].k != CGT_LIST && a[1].k != CGT_MAP && a[1].k != CGT_CLASS && a[1].k != CGT_NULL && c->b1.p[0]->k == CGN_VAR && c->b1.p[0]->ref) { c->b1.p[0]->ref->ty.e = a[1].k; c->b1.p[0]->ref->ty.k = CGT_LIST; CgxSym *s = cgx_lookup(v, c->b1.p[0]->s); if (s) s->ty.e = a[1].k; }
                 } else { CgxTy el = cgx_t(a[0].e); if (!cgx_assignable(&el, &a[1])) { char t2[60]; cgx_tyname(&a[1], tn, sizeof tn); cgx_tyname(&el, t2, sizeof t2); cgx_verr(v, c->line, "push: the list holds %s but the value is %s", t2, tn); } }
             }
-            return cgx_t(CGT_VOID);
-        case CGB_POP: NEED(0, any0 || a[0].k == CGT_LIST, "a list"); return a[0].k == CGT_LIST ? cgx_elem(&a[0]) : cgx_t(CGT_ANY);
-        case CGB_STR: if (a[0].k == CGT_FLOAT || a[0].k == CGT_BOOL) v->nstrnum++; return cgx_t(CGT_STR);
-        case CGB_INT: NEED(0, any0 || cgx_isnum(&a[0]) || a[0].k == CGT_STR || a[0].k == CGT_BOOL, "a number or str"); return cgx_t(CGT_INT);
-        case CGB_FLOAT: NEED(0, any0 || cgx_isnum(&a[0]) || a[0].k == CGT_STR, "a number or str"); return cgx_t(CGT_FLOAT);
-        case CGB_UPPER: case CGB_LOWER: case CGB_TRIM: NEED(0, any0 || a[0].k == CGT_STR, "a str"); return cgx_t(CGT_STR);
-        case CGB_SPLIT: NEED(0, any0 || a[0].k == CGT_STR, "a str"); NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a str separator"); return cgx_mklist(CGT_STR);
-        case CGB_WORDS: NEED(0, any0 || a[0].k == CGT_STR, "a str"); return cgx_mklist(CGT_STR);
-        case CGB_JOIN: NEED(0, any0 || a[0].k == CGT_LIST, "a list of str"); NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a str separator");
-            if (a[0].k == CGT_LIST && a[0].e != CGT_ANY && a[0].e != CGT_STR) { cgx_verr(v, c->line, "join: the list must hold str (convert with str(x) first)"); }
-            return cgx_t(CGT_STR);
-        case CGB_CONTAINS: NEED(0, any0 || a[0].k == CGT_STR || a[0].k == CGT_LIST || a[0].k == CGT_MAP, "a str, list or map");
-            if (a[0].k == CGT_STR || a[0].k == CGT_MAP) NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a str");
-            return cgx_t(CGT_BOOL);
-        case CGB_INDEXOF: NEED(0, any0 || a[0].k == CGT_STR, "a str"); NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a str"); return cgx_t(CGT_INT);
-        case CGB_REPLACE: NEED(0, any0 || a[0].k == CGT_STR, "a str"); NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a str"); NEED(2, a[2].k == CGT_STR || a[2].k == CGT_ANY, "a str"); return cgx_t(CGT_STR);
-        case CGB_STARTS: case CGB_ENDS: NEED(0, any0 || a[0].k == CGT_STR, "a str"); NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a str"); return cgx_t(CGT_BOOL);
-        case CGB_SLICE: NEED(0, any0 || a[0].k == CGT_STR || a[0].k == CGT_LIST, "a str or list"); NEED(1, a[1].k == CGT_INT || a[1].k == CGT_ANY, "an int");
-            if (na > 2) NEED(2, a[2].k == CGT_INT || a[2].k == CGT_ANY, "an int");
-            return a[0].k == CGT_ANY ? cgx_t(CGT_ANY) : a[0];
-        case CGB_KEYS: NEED(0, any0 || a[0].k == CGT_MAP, "a map"); return cgx_mklist(CGT_STR);
-        case CGB_PRINT: if (a[0].k == CGT_VOID) NEED(0, 0, "a value"); return cgx_t(CGT_VOID);
-        case CGB_ABS: NEED(0, any0 || cgx_isnum(&a[0]), "a number"); return a[0].k == CGT_ANY ? cgx_t(CGT_ANY) : a[0];
-        case CGB_MIN: case CGB_MAX: NEED(0, any0 || cgx_isnum(&a[0]), "a number"); NEED(1, a[1].k == CGT_ANY || cgx_isnum(&a[1]), "a number");
-            return a[0].k == CGT_ANY || a[1].k == CGT_ANY ? cgx_t(CGT_ANY) : (a[0].k == CGT_FLOAT || a[1].k == CGT_FLOAT) ? cgx_t(CGT_FLOAT) : cgx_t(CGT_INT);
-        case CGB_SQRT: NEED(0, any0 || cgx_isnum(&a[0]), "a number"); return cgx_t(CGT_FLOAT);
-        case CGB_FLOOR: NEED(0, any0 || cgx_isnum(&a[0]), "a number"); return cgx_t(CGT_INT);
-        case CGB_POW: NEED(0, any0 || cgx_isnum(&a[0]), "a number"); NEED(1, a[1].k == CGT_ANY || cgx_isnum(&a[1]), "a number"); return cgx_t(CGT_FLOAT);
-        case CGB_SUM: NEED(0, any0 || a[0].k == CGT_LIST, "a list of numbers"); return a[0].k == CGT_LIST && (a[0].e == CGT_INT || a[0].e == CGT_FLOAT) ? cgx_t(a[0].e) : cgx_t(CGT_ANY);
-        case CGB_SORT: NEED(0, any0 || a[0].k == CGT_LIST, "a list"); return a[0];
-        case CGB_REVERSE: NEED(0, any0 || a[0].k == CGT_LIST || a[0].k == CGT_STR, "a list or str"); return a[0];
-        case CGB_MATCHES: NEED(0, any0 || a[0].k == CGT_STR, "a str"); NEED(1, a[1].k == CGT_STR || a[1].k == CGT_ANY, "a regex str"); return cgx_t(CGT_BOOL);
-        case CGB_ERRMSG: NEED(0, any0 || (a[0].k == CGT_CLASS && !strcmp(a[0].cls, "Error")), "the error caught by `catch e`"); return cgx_t(CGT_STR);
+            break;
+        case CGB_STR: if (a[0].k == CGT_FLOAT || a[0].k == CGT_BOOL) v->nstrnum++; break;
+        case CGB_JOIN: if (a[0].k == CGT_LIST && a[0].e != CGT_ANY && a[0].e != CGT_STR) cgx_verr(v, c->line, "join: the list must hold str (convert with str(x) first)"); break;
+        default: break;
     }
-#undef NEED
+    /* tipo do resultado */
+    switch (op->rk) {
+        case CGR_FIXED: { CgxTy r = cgx_t(op->rkind); r.e = op->relem; return r; }
+        case CGR_ARG0: return a[0].k == CGT_ANY ? cgx_t(CGT_ANY) : a[0];
+        case CGR_ELEM0: return a[0].k == CGT_LIST ? cgx_elem(&a[0]) : cgx_t(CGT_ANY);
+        case CGR_NUM0: return a[0].k == CGT_ANY ? cgx_t(CGT_ANY) : a[0];
+        case CGR_NUM01: return a[0].k == CGT_ANY || a[1].k == CGT_ANY ? cgx_t(CGT_ANY) : (a[0].k == CGT_FLOAT || a[1].k == CGT_FLOAT) ? cgx_t(CGT_FLOAT) : cgx_t(CGT_INT);
+        case CGR_SUM0: return a[0].k == CGT_LIST && (a[0].e == CGT_INT || a[0].e == CGT_FLOAT) ? cgx_t(a[0].e) : cgx_t(CGT_ANY);
+    }
     return cgx_t(CGT_ANY);
 }
 
@@ -265,7 +238,7 @@ static CgxTy cgx_ex(CgxV *v, CgxNode *n) {
             CgxTy a[16]; int na = n->b1.n > 16 ? 16 : n->b1.n;
             for (int i = 0; i < n->b1.n; i++) { CgxTy t = cgx_ex(v, n->b1.p[i]); if (i < 16) a[i] = t; }
             CgxNode *fn = cgx_find_fn(v, n->s), *cl = fn ? NULL : cgx_find_cls(v, n->s);
-            int bi = 0; for (int i = 0; CGB[i].n; i++) if (!strcmp(CGB[i].n, n->s)) bi = CGB[i].id;
+            const CgxOp *bop = cgx_op_find(n->s); const int bi = bop ? bop->id : 0;
             if (fn) { cgx_check_args(v, n, fn, n->s, a, na); n->ref = fn; r = fn->ty; if (fn->k == CGN_FN && !fn->has_ty && v->pass == 0 && fn->flag == 0) r = cgx_t(CGT_ANY); }
             else if (cl) {
                 CgxNode *init = cgx_cls_method(cl, "init");
@@ -273,10 +246,10 @@ static CgxTy cgx_ex(CgxV *v, CgxNode *n) {
                 n->ref = cl; r = cgx_t(CGT_CLASS); snprintf(r.cls, sizeof r.cls, "%s", cl->s);
             } else if (bi) {
                 n->bi = bi;
-                if (na < CGB[bi - 1].lo || na > CGB[bi - 1].hi) { cgx_verr(v, n->line, "%s called with %d argument%s (expected %s)", n->s, na, na == 1 ? "" : "s", CGB[bi - 1].use); r = cgx_t(CGT_ANY); }
+                if (na < bop->lo || na > bop->hi) { cgx_verr(v, n->line, "%s called with %d argument%s (expected %s)", n->s, na, na == 1 ? "" : "s", bop->use); r = cgx_t(CGT_ANY); }
                 else r = cgx_builtin(v, n, a, na);
             } else if (cgx_lookup(v, n->s)) cgx_verr(v, n->line, "`%s` is a variable, not a function", n->s);
-            else cgx_verr(v, n->line, "unknown function `%s` (not defined in the spec and not a built-in; built-ins: %s)", n->s, CGX_BUILTIN_LIST);
+            else cgx_verr(v, n->line, "unknown function `%s` (not defined in the spec and not a built-in; built-ins: %s)", n->s, cgx_reg_names_all());
             break;
         }
         default: cgx_verr(v, n->line, "internal: unexpected node kind %d in an expression", n->k);
@@ -461,15 +434,16 @@ static void cgx_fn_check(CgxV *v, CgxNode *fn, CgxNode *cls) {
 
 /* valida o programa inteiro (duas passadas: a primeira so infere os tipos de retorno que nao foram escritos) */
 static int cgx_check(Cgx *g) {
+    cgx_reg_init();
     CgxV *v = (CgxV *)calloc(1, sizeof *v);
     v->g = g;
     CgxNode *pr = g->prog;
     for (int i = 0; i < pr->b1.n; i++) {
         CgxNode *d = pr->b1.p[i];
         if (d->k == CGN_FN) {
-            for (int b = 0; CGB[b].n; b++) if (!strcmp(CGB[b].n, d->s)) cgx_verr(v, d->line, "function `%s` has the name of a built-in (rename it; built-ins: %s)", d->s, CGX_BUILTIN_LIST);
+            if (cgx_op_find(d->s)) cgx_verr(v, d->line, "function `%s` has the name of a built-in (rename it; built-ins: %s)", d->s, cgx_reg_names_all());
             if (cgx_find_fn(v, d->s) || cgx_find_cls(v, d->s)) cgx_verr(v, d->line, "`%s` is defined twice", d->s);
-            else if (v->nfn < 160) v->fns[v->nfn++] = d;
+            else if (v->nfn < 4096) v->fns[v->nfn++] = d;
             v->nfunc++;
         } else if (d->k == CGN_CLASS) {
             if (cgx_find_fn(v, d->s) || cgx_find_cls(v, d->s)) cgx_verr(v, d->line, "`%s` is defined twice", d->s);
@@ -548,7 +522,7 @@ static void cgx_stats(Cgx *g, CgxStats *st) {
             case CGN_IF: ifs++; break; case CGN_RET: rets++; break;
         }
         if (n->k == CGN_CALL && n->bi && (n->bi == CGB_STR) && (n->b1.n && (n->b1.p[0]->ty.k == CGT_FLOAT || n->b1.p[0]->ty.k == CGT_BOOL))) st->nstrnum++;
-        if (n->k == CGN_CALL && n->bi >= CGB_UPPER && n->bi <= CGB_MATCHES && n->bi != CGB_KEYS && n->bi != CGB_PRINT && n->bi != CGB_ABS && n->bi != CGB_MIN && n->bi != CGB_MAX && n->bi != CGB_SQRT && n->bi != CGB_FLOOR && n->bi != CGB_POW && n->bi != CGB_SUM && n->bi != CGB_SORT) strs++;
+        if (n->k == CGN_CALL && n->bi) { const CgxOp *bo = cgx_op_by_id(n->bi); if (bo && bo->level >= 2) strs++; }
         CgxNode *kids[8] = {n->a, n->b, n->c};
         for (int i = 0; i < 3 && sp < 4090; i++) if (kids[i]) stack[sp++] = kids[i];
         CgxBlk *bl[3] = {&n->b1, &n->b2, &n->b3};

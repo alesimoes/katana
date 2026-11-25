@@ -1,6 +1,6 @@
 # UCGE: Unified Code Generation Engine
 
-Status: phase 1 (design and core) done on branch `feat-ucge`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
+Status: phase 1 (design and core) done on branch `feat-ucge`; modules I (registry), J (incremental AST) and K (dependency graph, code cache) done on branch `feat-ucge-reg` (section 15); phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
 katana build** (`src/katana.c` does not include it; the files are `static` and compile standalone with `tools/ucge/ucgecli.c`). Phase 2 adds the include
 line after `coder/symedit.c` and the `CodeGen` tool.
 
@@ -282,8 +282,13 @@ every finding and never says "exact":
 | `src/coder/ucgedoc.c` | document algebra, renderer, `CgxGenOpts`, `CgxBackend` | 1 |
 | `src/coder/ucgepy.c` | Python backend (reference) and the backend registry | 1 |
 | `src/coder/ucge_api.h` | the contract between phases (documentation only) | 1 |
+| `src/coder/ucgereg.c` | Operation Registry: one data-driven table (arity, types, level, effect, per-target templates, simplification rules), loader, `cgx_reg_simplify` | I |
+| `src/coder/ucgedep.c` | canonical form and FNV-1a hash, dependency graph (Tarjan, stable order, cycles), disk code cache, cached generation | K |
+| `src/coder/ucgeinc.c` | incremental AST: Python scanner, UIR-H reader with node-to-bytes map, change operations, symbol actions, writers | J |
 | `tools/ucge/ucgecli.c` | standalone driver: `check gen run stats selftest` | 1 |
 | `tools/ucge/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
+| `tools/ucge/test_reg.sh`, `test_dep.sh`, `test_inc.sh` (+ `test_inc.py`) | tests of I (38 checks), K (59), J (59, 45 of them modify real files) | I, J, K |
+| `tools/ucge/ops/extra.ops`, `tools/ucge/inc/*.py` | example user operations; the Python files the incremental tests edit | I, J |
 | `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
 
 Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.
@@ -322,9 +327,9 @@ under `tools/ucge/` and keeps `sh tools/ucge/test.sh` green. Interfaces between 
 | F | Tool and integration (`ucgetool.c`, `src/tools/codegen.c`, table, `docs/tools.md`) | `CodeGen` tool, `path`/`symbol`/`where` through `ct_edit_symbol`, create/insert, index `extern` lookup, include in `katana.c`, `tools/tooltest/ucge.sh` | `ucge_tool(js, end, out, cap)` | declaration under the token limit (tests that check it green), `sh build.sh` and the tool tests (files, meta, find, misc, loopnotes, lsp, launch, symedit, render) green |
 | G | Protocol and model measurement | the description text and few-shot for the tool, repair loop, a natural-language-to-CSP harness (20 requests) run with Qwen on CPU when the machine is free, repair counts | uses F | measured valid-first-try rate and repairs per task, reported honestly, with the raw fraction |
 | H | Language growth (`ucge.c`, `ucgecheck.c`, all backends) | tuples, closures/lambdas, `extern` declarations, modules/imports, typed errors, more built-ins (set, sort by key, string format), Go, Java and Rust backends | grammar change in section 2 first, then parser, checker, each backend | each addition covered by a task and by every backend, or rejected by the checker for the targets that lack it |
-| I | Operation Registry (`ucgeops.c`) | moves `CGB`, `CGO_*` and the builtin mappings of every backend into one extensible table (section 2b.1) | `const CgxOp *cgx_op_find(const char *name)`, `cgx_op_register(const CgxOp *)` | `ucgecli ops` lists name, arity, types, level, targets; the checker and `ucgepy.c` read it; a new operation is one row; tests that every row has a mapping or an explicit "unsupported" per backend |
-| J | Incremental AST (`ucgeinc.c`) | symbol-level and statement-level patching of existing files (section 2b.4) | `int cgx_inc_apply(const char *file, Cgx *spec, ...)` over `coder_parse` ranges and `ct_edit_symbol` | editing one function of a 200-line file leaves every other byte unchanged (byte-compare test); an identical unit writes nothing; `patch` forms covered |
-| K | Dependency graph and code cache (`ucgedep.c`, `ucgecache.c`) | section 2b.5 and 2b.6; canonical dump `cgx_dump` | `cgx_dep_build/order/cycles`, `cgx_cache_get/put(key)` | cycles found in seeded specs; order verified by a C backend test; a second call with the same spec hits the cache, a changed dependency misses, a generator version bump misses |
+| I | Operation Registry (`ucgeops.c`) | moves `CGB`, `CGO_*` and the builtin mappings of every backend into one extensible table (section 2b.1) | `const CgxOp *cgx_op_find(const char *name)`, `cgx_op_register(const CgxOp *)` | `ucgecli ops` lists name, arity, types, level, targets; the checker and `ucgepy.c` read it; a new operation is one row; tests that every row has a mapping or an explicit "unsupported" per backend  **Done on `feat-ucge-reg` (section 15).** |
+| J | Incremental AST (`ucgeinc.c`) | symbol-level and statement-level patching of existing files (section 2b.4) | `int cgx_inc_apply(const char *file, Cgx *spec, ...)` over `coder_parse` ranges and `ct_edit_symbol` | editing one function of a 200-line file leaves every other byte unchanged (byte-compare test); an identical unit writes nothing; `patch` forms covered  **Done on `feat-ucge-reg` (section 15).** |
+| K | Dependency graph and code cache (`ucgedep.c`, `ucgecache.c`) | section 2b.5 and 2b.6; canonical dump `cgx_dump` | `cgx_dep_build/order/cycles`, `cgx_cache_get/put(key)` | cycles found in seeded specs; order verified by a C backend test; a second call with the same spec hits the cache, a changed dependency misses, a generator version bump misses  **Done on `feat-ucge-reg` (section 15).** |
 
 Order: A, B, C, D, E, I, J, K can start now and are independent (J needs F only for the tool wiring) (A and B touch only their own file plus one line in `CGX_BACKENDS`; C and D only read the AST). F needs
 E's report shape and at least A; G needs F; H is continuous and must wait for a freeze of the grammar by the coordinator between rounds.
@@ -334,8 +339,138 @@ mappings (or those two keep their mappings in a local table that I then absorbs)
 
 ## 14. Left out of phase 1
 
-JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
+JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (done on `feat-ucge-reg`, section 15); the incremental AST for other languages than Python;  HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
 and unused-name reports, constant folding; the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
 validator/runner with the graded report (the CLI runs Python tests only, with `ulimit` and `timeout`, which is not a sandbox); the coder index lookup for
 `extern` functions; tuples, closures, imports, inheritance, typed errors, regex outside `matches`, formatting; the protocol text for the model and any
 measurement with the real model (**not run**: it needs the model and the machine); training or curriculum (outside this work by decision).
+
+## 15. Registry, incremental AST, dependency graph and cache (modules I, J, K)
+
+Built on branch `feat-ucge-reg` (base `main` 646da16). Everything is `static`, standard library only, compiled by `tools/ucge/ucgecli.c`; nothing is in
+`katana.c` yet. A scratch copy of `katana.c` with the includes after `coder/symedit.c` and `-DCGX_INC_KATANA` was checked with `gcc -fsyntax-only` (no errors,
+no UCGE warnings); it was not run. The hooks for the katana build are the macro `CGX_INC_KATANA` (writer through `ct_edit_symbol`) and the include order
+`ucge.c, ucgereg.c, ucgecheck.c, ucgetype.c, ucgedoc.c, ucgepy.c, ucgedep.c, ucgeinc.c`.
+
+### 15.1 Operation Registry (`ucgereg.c`)
+
+One table, loaded from data. The built-in operations are a text in the same format the owner can extend (`CGX_REG_DATA`), parsed on first use; the checker
+(`ucgecheck.c`) takes arity, usage text, argument type masks, result type and level from it, and the Python backend (`ucgepy.c`) renders each call from the
+row's template (`py_tmpl`). The old `CGB` table, the `switch` of type rules and the `switch` of Python forms are gone; only the checks that look at several
+arguments at once (`push` fixes the element type, `join` wants `list[str]`, `str` counts float/bool use, `contains` and `errmsg` special cases) stay as
+named hooks in `cgx_builtin`, keyed by the `CGB_*` ids that the embedded text fixes by order.
+
+Format (lines; `#` comment; the lines of an operation are indented):
+
+```
+op clamp 3 3 level=1 effect=pure          # name, min and max arity, level L1..L3, effect pure|reads|mutates|io|throws
+  use clamp(x, lo, hi)                     # text shown in messages
+  sem x limited to the range lo..hi        # normative semantics, one line
+  arg 0 num : a number                     # allowed types: num all any int float str bool list map class void null, joined by |
+  arg 1 num : a number
+  ret num0                                 # int float str bool void any list[str] | =0 (type of arg 0) elem0 num0 num01 sum0
+  py min(max({0}, {1}), {2})               # template per target: py js ts c; optional prec=N import=NAME
+  js[map] Object.keys($0).length           # variant chosen by the type of argument 0 (js[map], ts[str]...)
+  js unsupported: needs a helper           # explicit "not available" with its message
+rule (ADD x 0) => x if int x               # simplification: (HEAD args) patterns, vars are one letter, conditions: int x, str x, pure x
+```
+
+Template language: `$N` argument N as an operand (parenthesized when needed), `{N}` argument N alone, `{N@P}` with minimum precedence P, `{N?}` empty if
+absent, `{*N}` arguments N.. as a breakable parenthesized list, `{[i,j]}` the listed ones. The backend builds documents, so the same template breaks long
+argument lists correctly.
+
+Loading: `cgx_reg_load_file(path)` or `KATANA_UCGE_OPS=file` (read at first use) or `ucgecli --ops file ...`; an operation with an existing name replaces it;
+errors carry `line N: ...`. A function of the spec with the name of any registered operation is rejected (the message lists them, including the user's).
+`ucgecli ops` lists name, arity, level, effect, result and targets; `ucgecli ops --dump` writes the whole registry in the loadable format (the test loads
+the dump and dumps again: byte-identical). Today every row has `py`, `js` and `ts` (a template or an explicit `unsupported`); `c` only for `len` (explicit
+unsupported), the C backend (module B) adds its column. JS and TS columns are data only: no backend reads them yet.
+
+Simplification (`cgx_reg_simplify`, `ucgecli gen ... --simp`): rules rewrite the validated AST to a fixed point. The seed rules are the ones that hold in
+every target: `x+0`, `0+x` (int only), `x-0`, `x*1`, `1*x`, `x*0` and `x-x` and `x%1` (int and pure), `x//1` (int), `not not`, `--x`, `and true`, `or false`,
+`and false` and `or true` (pure `x`), `abs(abs x)`, `upper(upper s)`, `lower(lower s)`, `trim(trim s)`, `sort(sort xs)`, `str(str x)`, and `reverse(reverse s)` for str
+only (for lists it would turn a copy into an alias). "Pure" means no effect and cannot throw: a call counts only if its registry effect is `pure`, a division
+only with a non-zero literal divisor, an index never. `x/1` is not rewritten (true division gives a float). The 13 raw-free tasks, simplified, still pass.
+
+### 15.2 Incremental AST (`ucgeinc.c`)
+
+**Reading.** `cgx_inc_parse` is a Python scanner of a subset: it splits the file into logical lines (strings, triple-quoted strings, brackets, comments and
+backslash continuations are handled by the same tokenizer that later finds names), builds the block tree by indentation and keeps for every statement,
+`def`, `class` the byte range (decorators included) and the line range. A statement's range is extended over its `elif/else/except/finally` clauses and over
+its children. The file is refused (with the line) when the structure is not reliable: inconsistent indentation, unbalanced brackets or an unterminated string,
+a block header without a body.
+
+**UIR-H.** `cgx_inc_uir` writes the CSP of the file, one CSP line per statement, and runs the one parser on it (`cgx_parse`). What the CSP knows becomes `fn`, `class`,
+`const`, `let`/assignment, `if/elif/else`, `while`, `for` (ranges and collections), `try/catch/finally`, `throw`, `return`, `doc`; everything else
+(`import`, `with`, decorators, `lambda`, comprehensions it cannot restate, `*args`, async, one-line defs, class inheritance...) is a `raw python` block carrying the
+statement's own text and the names it defines. If the parser rejects a line the statement responsible becomes `raw` and the file is translated again (up to 12
+rounds, then everything is `raw`). `cgx_inc_range(inc, uir, node, ...)` gives any node's interval: its `line` is a CSP line, the line map points to the statement,
+the statement holds the bytes. On the four fixtures 19 of 38 top-level units are structured and the rest `raw` (shapes.py: 2 of 6, because classes with a base
+class stay `raw`).
+
+**Changing.** A change specification is a list of operations; each runs on the text the previous one left, produces edits `[a,b) -> text` and everything outside
+the edits is copied byte for byte (comments, spacing, quote style, order, `\r\n` endings). If any operation fails, nothing is written. After each operation the
+result is scanned again and must still be structurally valid.
+
+| operation | what changes |
+|---|---|
+| `add-function [after N \| before N \| end]` | new lines only; `end` goes before `if __name__ ...` (and its comment); `import math`/`import re` is added after the last import if the generated code needs it |
+| `add-method CLASS [after NAME]` | new lines in the class body, with its indentation unit |
+| `replace-function NAME` | the symbol's lines (leading comments stay; decorators are replaced with the definition). Identical text: no edit |
+| `replace-body NAME` | from the end of the header to the end of the function; a leading docstring is kept unless the new body has `doc` |
+| `rename OLD NEW` | only the identifier tokens: the definition and the uses; not strings, comments, imports, keyword arguments, attribute uses of a function name, or a function where the name is a parameter or a local |
+| `add-param FN text [call=EXPR]` | one inserted piece in the header (before `*args` when present; multi-line headers get a new line in their own style, trailing comma kept) and, with `call=`, `name=EXPR` in every call |
+| `insert FN start\|end\|before N\|after N [vars a b]` and `insert-py ...` | new lines at a statement boundary; comments above a statement stay with it; `start` is after the docstring |
+| `delete-function NAME` | the symbol, the comments attached to it and the blank lines that followed |
+
+CSP payloads go through the real validator and Python backend (errors say `spec line N: ...` relative to the payload); for methods the engine declares the fields it finds
+(`self.x`, class attributes) so `self.x` checks. `rename Class.method` renames the definition and every `.method`; it says so, because other classes may have it.
+`Class.method` addresses members everywhere a name is taken.
+
+**Writing.** `cgx_inc_apply_file(path, spec, writer, ctx, dry, ...)` returns the result and, through `cgx_inc_diff`, the symbol-level actions (`replace NAME`,
+`replace Class.method` when only methods changed, `after`/`before NAME`, `delete NAME`). The default writer is atomic (temporary file in the same folder,
+`rename`, permissions kept). With `-DCGX_INC_KATANA` the writer `cgx_inc_write_symedit` sends every action to `ct_edit_symbol` (structural validation, callers,
+LSP, undo, the confirmation hook); after the actions it reads the file back and, if text outside symbols changed (imports), writes the expected final text
+atomically. `ucgecli inc apply FILE SPEC [--write] [--acts]` prints the result (or writes it), `inc read` lists the units with bytes and lines, `inc uir` prints the CSP.
+
+### 15.3 Dependency graph and code cache (`ucgedep.c`)
+
+**Canonical form** (`cgx_dump`, `ucgecli dump`): a text of the UIR without lines, spacing, JSON-versus-CSP and alias spelling, with types; comments and docstrings only
+when they will be printed; declarations sorted by name. `ucgecli key SPEC` prints the key of every unit.
+
+**Graph.** Nodes are the units of one or more specs (modules) and module nodes; edges are `call`, `type` (a class named in a signature or on a receiver), `use` (a constant read),
+`field` (a class field typed with a class) and `import` (explicit, or derived from a cross-module reference). Resolution is by name, same module first; names that are
+locals (parameters, `let`, loop variables) are not constants. Algorithms: iterative Tarjan (a 2000-function ring does not touch the stack), stable topological order of the condensation
+with a min-heap on declaration index (dependencies first; ties by file order; members of a group in file order), transitive dependents by reverse BFS. Cycles: a loop through
+`use`/`field` edges (constant reading constant, a class containing itself) is an error with the path and lines and how to break it; a constant that calls a function that reads
+it is an initialization-cycle error; recursion (self or mutual) is a note, or an error with the call path when `allow_rec` is 0 (`ucgecli dep SPEC [--no-rec] [--nocheck]`).
+
+**Cache.** Key per unit = mix64(FNV-1a64 of: generation context (target, `CGX_GEN_VERSION`, digest of the registry dump, width, comments, indent, extra flags), the unit's canonical hash, the
+hash of its group (so mutual recursion shares fate), the sorted keys of the dependencies outside the group). Each dependency key already contains its own dependencies, so the
+invalidation is transitive and exact: change `mid` and `mid` and `top` miss, a sibling still hits; change a constant and its readers, and their callers, miss; bump the version or load another
+registry and everything misses. Value file `UCGC1 key length checksum meta` + payload, named `key.uc` in `$KATANA_UCGE_CACHE` or `~/.katana/ucgecache`. Write: temporary file + `rename`. Read: header, key, length and
+FNV checksum are checked, a bad file is deleted, counted as `corrupt` and regenerated. LRU: a hit `utimes` the file; when the bytes written since the last scan exceed 1/8 of the limit
+(`KATANA_UCGE_CACHE_MAX`, default 64 MB) the folder is scanned and the oldest files go until 90% of the limit. `cgx_gen_cached` generates Python by unit (identical text to `cgx_gen_python`, checked on the 15 tasks, cold and warm)
+and also keeps one entry for the whole program (a warm run is one read); other targets cache the whole program (the declaration order is part of that key), tests are never cached. `--topo` assembles in dependency order instead of file order
+(for targets that need definitions first). Windows: the disk cache compiles to stubs (always a miss) for now.
+
+**Measured** (`ucgecli cachebench N`, chain of N functions, Python, this machine under other load, so the proportions are what counts):
+
+| N | no cache | cold cache | warm cache | change the last function | change the first function |
+|---|---|---|---|---|---|
+| 300 | 4.1 to 7.2 ms | 9.6 to 14.8 ms | 3.0 to 5.1 ms (300 hits) | 1 miss | 300 misses |
+| 2000 | 35 to 62 ms | 76 to 156 ms | 23 to 48 ms (2000 hits) | 1 miss | 2000 misses |
+
+The honest reading: the Python backend takes about 15 to 30 microseconds per function, so a warm cache only saves about 30%, and the cold cache costs about twice generation (hashing and one file per unit). Computing keys
+(canonical text and hashes) is most of the warm time. The cache pays when generation is expensive (a backend with inference, formatting or validation by an external tool); until then it is correct, cheap and measured, not a speed-up for Python.
+
+### 15.4 Limits
+
+- The reader is a subset scanner, not a full Python grammar: no `match`, no f-string nesting with the same quote, no Python 2. It refuses (instead of guessing) inconsistent indentation, unbalanced brackets and headers without bodies. Tabs count as 8 columns, mixed tabs and spaces are only as reliable as Python itself.
+- Only Python is read and changed; the registry's `js`/`ts`/`c` columns are data without a backend.
+- Operations work at the top level and one class level; nested functions are not addressable (a rename still reaches their tokens). `rename` is token-based without type information: attribute uses of a method name are renamed everywhere, strings such as `__all__ = ["name"]` are not.
+- `replace-body` and `insert` need a signature the generator can restate (no `*args`, `**kwargs`, `/`, keyword-only marker); use `insert-py` or `replace-function` there. Names of existing locals are known to a CSP `insert` only through `vars`.
+- `replace-function` drops decorators and the inline comments of the old definition (they are part of it); `rename`, `add-param`, `insert` and `delete-function` do not touch them.
+- An inline comment at the end of a replaced body line goes with the line. The UIR-H of the file has no comments (they stay in the bytes).
+- The registry has 192 operations and 128 rules at most; templates have no conditionals except the per-type variants; the checker's built-in-specific hooks are code, not data.
+- The checker's table of functions was raised from 160 to 4096 entries (the 2000-function benchmark needed it); symbols per scope (600) and classes (40) are unchanged.
+- The katana writer (`cgx_inc_write_symedit`) compiles inside `katana.c` but was not run (no model, no desktop here); the standalone writer and every test run without it.
