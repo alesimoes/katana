@@ -1117,11 +1117,19 @@ static int cgx_inc_diff(const char *old, size_t on, const char *nw, size_t nn, C
 typedef int (*CgxIncWriter)(void *ctx, const char *path, const CgxIncActs *acts, const char *final_text, size_t fn, char *msg, size_t cap);
 /* padrao: grava o arquivo inteiro de forma atomica (arquivo temporario na mesma pasta + rename), mantendo as permissoes */
 static int cgx_inc_write_atomic(void *ctx, const char *path, const CgxIncActs *acts, const char *final_text, size_t fn, char *msg, size_t cap) {
+#ifdef _WIN32
+    (void)ctx; (void)acts; char tmp[1500]; snprintf(tmp, sizeof tmp, "%s.ucge.tmp", path);
+#else
     (void)ctx; (void)acts; char tmp[1500]; snprintf(tmp, sizeof tmp, "%s.ucge.%ld.tmp", path, (long)getpid());
+#endif
     FILE *f = fopen(tmp, "wb"); if (!f) { snprintf(msg, cap, "cannot write %s", tmp); return 0; }
-    const int ok = fwrite(final_text, 1, fn, f) == fn; if (fclose(f) != 0 || !ok) { unlink(tmp); snprintf(msg, cap, "write failed for %s", tmp); return 0; }
-    struct stat st; if (stat(path, &st) == 0) chmod(tmp, st.st_mode & 07777);
-    if (rename(tmp, path) != 0) { unlink(tmp); snprintf(msg, cap, "cannot replace %s", path); return 0; }
+    const int ok = fwrite(final_text, 1, fn, f) == fn; if (fclose(f) != 0 || !ok) { remove(tmp); snprintf(msg, cap, "write failed for %s", tmp); return 0; }
+#ifdef _WIN32
+    remove(path);
+#else
+    { struct stat st; if (stat(path, &st) == 0) chmod(tmp, st.st_mode & 07777); }
+#endif
+    if (rename(tmp, path) != 0) { remove(tmp); snprintf(msg, cap, "cannot replace %s", path); return 0; }
     return 1;
 }
 #ifdef CGX_INC_KATANA
