@@ -183,7 +183,7 @@ static CgxDoc *cc_callN(CgxC *c, const char *fname, const CgxNode *const *ns, co
 }
 /* a OP b com operador nativo, operandos sequenciados */
 static CgxDoc *cc_infix(CgxC *c, const char *sym, const CgxNode *a, const CgxNode *b, const CgxTy *wa, const CgxTy *wb, int pr, int *prec) {
-    const CgxNode *ns[2] = {a, b}; CgxTy w[2] = {*wa, *wb}; CgxDoc *o[2], *pre; cc_ops(c, ns, w, 2, pr + 1, o, &pre);
+    const CgxNode *ns[2] = {a, b}; CgxTy w[2] = {*wa, *wb}; CgxDoc *o[2], *pre; cc_ops(c, ns, w, 2, pr <= 3 ? 4 : pr + 1, o, &pre);          /* && dentro de || sempre com parenteses (-Wparentheses) */
     *prec = pr;
     CgxDoc *e = cgx_dcatn(CD, o[0], cgx_dtextf(CD, " %s ", sym), o[1], NULL);
     return cc_withpre(c, pre, e, prec);
@@ -343,6 +343,8 @@ static CgxDoc *cc_bin(CgxC *c, const CgxNode *n, int *prec, CgxTy *nat) {
                 if (ka == CK_NULL && kb == CK_NULL) return cc_t(c, ne ? "0" : "1");
                 return cc_notnull(c, ka == CK_NULL ? n->b : n->a, !ne, prec);
             }
+            if (cc_isnum(ka) && cc_isnum(kb) && ka != CK_FLT && n->a->k == CGN_VAR && n->b->k == CGN_VAR && !strcmp(n->a->s, n->b->s) && n->a->ref == n->b->ref)
+                return cc_t(c, (op == CGO_EQ || op == CGO_LE || op == CGO_GE) ? "1" : "0");                  /* x == x: sem comparar a variavel com ela mesma (-Wtautological-compare) */
             if (cc_isnum(ka) && cc_isnum(kb)) { const CgxTy w1 = (ka == CK_FLT || kb == CK_FLT) ? F : I; return cc_infix(c, cmpsym[op - CGO_EQ], n->a, n->b, &w1, &w1, ord ? CC_PCMP : 4, prec); }
             if (ka == CK_STR && kb == CK_STR) {
                 w[0] = w[1] = S; CgxDoc *d = cc_callN(c, ord ? "cg_scmp" : "cg_seq", ns, w, 2, prec);
@@ -494,6 +496,7 @@ static CgxDoc *cc_exw(CgxC *c, const CgxNode *n, const CgxTy *want, int minprec)
 /* ---- instrucoes ---- */
 static void cc_scan(CgxC *c, const CgxNode *n) {                   /* quem e lido: o que nunca e lido ganha (void) para nao avisar */
     if (!n) return;
+    if (n->k == CGN_BIN && n->op >= CGO_EQ && n->op <= CGO_GE && n->a->k == CGN_VAR && n->b->k == CGN_VAR && !strcmp(n->a->s, n->b->s) && n->a->ref == n->b->ref && cc_kind(&n->a->ty) != CK_FLT) return;   /* x == x vira constante */
     if (n->k == CGN_VAR && n->ref) {
         if (c->nused == c->capused) { c->capused = c->capused ? c->capused * 2 : 64; c->used = realloc(c->used, sizeof c->used[0] * (size_t)c->capused); }
         c->used[c->nused].ref = n->ref; c->used[c->nused].name = n->s; c->nused++;
@@ -517,7 +520,7 @@ static int cc_has_try(const CgxBlk *b) {
 
 static CgxDoc *cc_stmt(CgxC *c, const CgxNode *s);
 static CgxDoc *cc_stmts(CgxC *c, const CgxBlk *b, CgxDoc *prologue) {
-    CgxDoc *in = prologue;
+    CgxDoc *in = prologue ? cgx_dcat(CD, cgx_dhard(CD), prologue) : NULL;
     for (int i = 0; i < b->n; i++) {
         const CgxNode *s = b->p[i];
         if ((s->k == CGN_COMMENT || s->k == CGN_DOC) && !c->o->comments) continue;
@@ -703,39 +706,39 @@ static CgxDoc *cc_stmt(CgxC *c, const CgxNode *s) {
             CgxDoc *d = cgx_dcatn(CD, cc_t(c, "while ("), cond, cc_t(c, ") "), cc_block(c, &s->b1, NULL, NULL), NULL); c->nloop--; return d;
         }
         case CGN_FOR: {
-            const int id = ++c->uniq; const long long step = s->c ? s->c->iv : 1; CgxB nm = {0}; cc_name(s->s, &nm);
+            const int id = ++c->uniq; const long long step = s->c ? s->c->iv : 1; CgxB nm = {0}; cc_name(s->s, &nm); const char *V_ = c->vol ? "volatile " : "";
             CgxDoc *a = cc_exw(c, s->a, &I, 0), *b = cc_exw(c, s->b, &I, 0);
             c->lbase[c->nloop++] = c->nreg;
             CgxDoc *pro = cgx_dtextf(CD, "long long %s = cgi%d;", nm.p, id);
             if (!cc_isused(c, s, s->s)) pro = cgx_dcatn(CD, pro, cgx_dtextf(CD, " (void)%s;", nm.p), NULL);
             CgxDoc *body = cc_block(c, &s->b1, pro, NULL); c->nloop--;
-            CgxDoc *d = cgx_dcatn(CD, cgx_dtextf(CD, "for (long long cgi%d = ", id), a, cgx_dtextf(CD, ", cge%d = ", id), b, cgx_dtextf(CD, "; cgi%d %s cge%d; cgi%d += %lld) ", id, step > 0 ? "<" : ">", id, id, step), body, NULL);
+            CgxDoc *d = cgx_dcatn(CD, cgx_dtextf(CD, "for (%slong long cgi%d = ", V_, id), a, cgx_dtextf(CD, ", cge%d = ", id), b, cgx_dtextf(CD, "; cgi%d %s cge%d; cgi%d += %lld) ", id, step > 0 ? "<" : ">", id, id, step), body, NULL);
             free(nm.p); return d;
         }
         case CGN_EACH: {
-            const int id = ++c->uniq; const CgxTy tc = cc_vty(s->a); const int kc = cc_kind(&tc); CgxB nm = {0}, nm2 = {0}; cc_name(s->s, &nm); if (s->s2) cc_name(s->s2, &nm2);
+            const int id = ++c->uniq; const CgxTy tc = cc_vty(s->a); const int kc = cc_kind(&tc); const char *V_ = c->vol ? "volatile " : ""; CgxB nm = {0}, nm2 = {0}; cc_name(s->s, &nm); if (s->s2) cc_name(s->s2, &nm2);
             CgxTy vt = cc_ty(CGT_ANY), kt = cc_ty(CGT_STR), cty; CgxDoc *head, *p1 = NULL, *p2 = NULL; char *dc;
             c->lbase[c->nloop++] = c->nreg;
             const char *lim;
             if (kc == CK_LIST) {
                 cty = tc.e == CGT_ANY ? cc_listty(CGT_ANY) : tc; vt = cc_elemty(&tc);
-                head = cgx_dcatn(CD, cgx_dtextf(CD, "CgList *cgl%d = cg_lnn(", id), cc_exw(c, s->a, &cty, 0), cc_t(c, ");"), NULL); lim = "cgl%d->n";
+                head = cgx_dcatn(CD, cgx_dtextf(CD, "CgList *%scgl%d = cg_lnn(", V_, id), cc_exw(c, s->a, &cty, 0), cc_t(c, ");"), NULL); lim = "cgl%d->n";
                 dc = cc_decl(&vt, nm.p, c->vol);
                 char acc[80]; if (cc_ek(tc.e) == 4) snprintf(acc, sizeof acc, "cg_lgetv(cgl%d, cgi%d)", id, id); else snprintf(acc, sizeof acc, "cg_l%sget(cgl%d, cgi%d)", cc_pfx(tc.e), id, id);
                 p1 = cgx_dtextf(CD, "%s = %s;", dc, acc);
             } else if (kc == CK_STR) {
                 vt = cc_ty(CGT_STR); CgxTy S = vt;
-                head = cgx_dcatn(CD, cgx_dtextf(CD, "CgStr cgs%d = cg_snn(", id), cc_exw(c, s->a, &S, 0), cc_t(c, ");"), NULL); lim = "cgs%d.n";
+                head = cgx_dcatn(CD, cgx_dtextf(CD, "%sCgStr cgs%d = cg_snn(", V_, id), cc_exw(c, s->a, &S, 0), cc_t(c, ");"), NULL); lim = "cgs%d.n";
                 dc = cc_decl(&vt, nm.p, c->vol); p1 = cgx_dtextf(CD, "%s = cg_sidx(cgs%d, cgi%d);", dc, id, id);
             } else if (kc == CK_MAP) {
                 CgxTy mt = tc; lim = "cgm%d->n";
-                head = cgx_dcatn(CD, cgx_dtextf(CD, "CgMap *cgm%d = cg_mnn(", id), cc_exw(c, s->a, &mt, 0), cc_t(c, ");"), NULL);
+                head = cgx_dcatn(CD, cgx_dtextf(CD, "CgMap *%scgm%d = cg_mnn(", V_, id), cc_exw(c, s->a, &mt, 0), cc_t(c, ");"), NULL);
                 dc = cc_decl(&kt, nm.p, c->vol); p1 = cgx_dtextf(CD, "%s = cgm%d->keys[cgi%d];", dc, id, id);
                 if (s->s2) { vt = cc_elemty(&tc); char *dc2 = cc_decl(&vt, nm2.p, c->vol); CgxTy A = cc_ty(CGT_ANY); CgxDoc *raw = cgx_dtextf(CD, "cg_mvalat(cgm%d, cgi%d)", id, id);
                     p2 = cgx_dcatn(CD, cgx_dtextf(CD, "%s = ", dc2), cc_conv(c, raw, &A, &vt), cc_t(c, ";"), NULL); free(dc2); }
             } else {
                 CgxTy A = cc_ty(CGT_ANY);
-                head = cgx_dcatn(CD, cgx_dtextf(CD, "CgV cgv%d = ", id), cc_exw(c, s->a, &A, 0), cc_t(c, ";"), NULL); lim = "cg_vlen(cgv%d)";
+                head = cgx_dcatn(CD, cgx_dtextf(CD, "%sCgV cgv%d = ", V_, id), cc_exw(c, s->a, &A, 0), cc_t(c, ";"), NULL); lim = "cg_vlen(cgv%d)";
                 dc = cc_decl(&A, nm.p, c->vol);
                 if (s->s2) { char *dc2 = cc_decl(&A, nm2.p, c->vol); p1 = cgx_dtextf(CD, "%s = cg_vitem(cgv%d, cgi%d);", dc, id, id); p2 = cgx_dtextf(CD, "%s = cg_vitemv(cgv%d, cgi%d);", dc2, id, id); free(dc2); }
                 else p1 = cgx_dtextf(CD, "%s = cg_vitem(cgv%d, cgi%d);", dc, id, id);
@@ -745,7 +748,7 @@ static CgxDoc *cc_stmt(CgxC *c, const CgxNode *s) {
             if (s->s2 && !cc_isused(c, s, s->s2)) pro = cgx_dcatn(CD, pro, cgx_dtextf(CD, " (void)%s;", nm2.p), NULL);
             CgxDoc *body = cc_block(c, &s->b1, pro, NULL); c->nloop--;
             char lm[60]; snprintf(lm, sizeof lm, lim, id);
-            CgxDoc *loop = cgx_dcatn(CD, cgx_dtextf(CD, "for (long long cgi%d = 0; cgi%d < %s; cgi%d++) ", id, id, lm, id), body, NULL);
+            CgxDoc *loop = cgx_dcatn(CD, cgx_dtextf(CD, "for (%slong long cgi%d = 0; cgi%d < %s; cgi%d++) ", V_, id, id, lm, id), body, NULL);
             free(dc); free(nm.p); free(nm2.p);
             return cc_wrapblock(c, cgx_dcatn(CD, cgx_dhard(CD), head, cgx_dhard(CD), loop, NULL));
         }

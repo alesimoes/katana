@@ -15,6 +15,7 @@ def convert(src):
         while lines and not lines[-1].strip(): lines.pop()
         out.append("static const char *const CGX_C_RT_%s[] = {\n" % name.upper())
         for ln in lines:
+            if "CG_NOINL" in ln: out.append('    "%s",\n' % ln.replace("\\", "\\\\").replace('"', '\\"')); continue
             ln = re.sub(r"^((?:CG_NORET )?)static (?!inline)((?:const )?[A-Za-z_][\w ]*?[\s\*]+cg_\w+\()", r"\1static inline \2", ln)
             ln = re.sub(r"^static (?!inline)(CgList|CgMap|CgStr|CgV|CgRn|CgRt)(\s*\*?\s*cg_\w+\()", r"static inline \1\2", ln)
             e = ln.replace("\\", "\\\\").replace('"', '\\"')
