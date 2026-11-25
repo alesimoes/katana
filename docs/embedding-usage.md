@@ -1,6 +1,15 @@
 # When the engine calls the embedding model (usage model)
 
-Status (2026-11-23): the design below is still not implemented in `Find`. What exists now: **`katana embed` and the C
+Status (2026-11-25): the embedding model is wired into the engine through the embedding service (`src/app/embsvc.c`:
+`es_available()`, `es_vec()`, `es_rank()`; 256-dimension Matryoshka vectors; content-keyed append-only cache in
+`~/.katana/cache/embed-<model fingerprint>.vec`; loaded on its own thread while the agent prompt loads,
+`agent/prefix_cache.c`). It is used in three places, always as a reorder-and-suggest filter with a time budget, and the
+tools fall back to the old path without error when there is no model, no time left or `KATANA_EMBED=0`:
+`Find` (semantic channel in `coder/search.c`, budget `KATANA_EMBED_FIND_MS`, default 2000 ms), memory recall
+(`agent/memory.c`, the 200 most recent facts, `KATANA_EMBED_MEM_MS`) and `Bash` output trimming (`agent/exec.c`, failure
+windows, `KATANA_EMBED_BASH_MS`, default 1500 ms). Nothing about its quality was measured after wiring it in. The sections
+below are the original design and are kept for the reasoning; where they say the design is not implemented, read this
+paragraph. Before that, on 2026-11-23, what existed was: **`katana embed` and the C
 function `embed_text()` (`src/app/embed.c`) run google/embeddinggemma-2 (text tower, 0.27 G parameters, 768 dimensions
 with Matryoshka 128/256/512/768) on the CPU in float32**, with `katana convert` producing the GGUF; see `docs/embed.md`.
 It matches the reference implementation (cosine 0.99999999 in F32, 0.9999 in Q8_0) and found the right function for 10 of
