@@ -23,6 +23,7 @@ typedef struct {
     CgxCReg reg[24]; int nreg, lbase[24], nloop;            /* regioes try ativas e onde cada laco comecou */
     struct { const void *ref; const char *name; } *used; int nused, capused;
     const CgxNode *cls_list[40]; int ncls;
+    struct { char name[48]; int kind, n; } dyn[96]; int ndyn;      /* ajudantes de despacho dinamico (receptor any): kind 0 metodo, 1 ler campo, 2 gravar campo */
 } CgxC;
 #define CD (&c->D)
 static CgxDoc *cc_t(CgxC *c, const char *s) { return cgx_dtext(CD, s); }
@@ -413,6 +414,78 @@ static CgxDoc *cc_userargs(CgxC *c, const CgxNode *callee, const CgxNode *recv, 
     return cc_withpre(c, pre, call, prec);
 }
 
+/* receptor sem classe conhecida (any): o gerador cria um ajudante que escolhe o metodo ou o campo pelo id da classe do objeto */
+static CgxDoc *cc_dyncall(CgxC *c, int kind, const char *name, const CgxNode *recv, const CgxBlk *args, const CgxNode *val, int line, int *prec) {
+    int idx = -1, k = args ? args->n : 0; char fn[96]; CgxTy A = cgx_t(CGT_ANY);
+    for (int i = 0; i < c->ndyn; i++) if (c->dyn[i].kind == kind && c->dyn[i].n == k && !strcmp(c->dyn[i].name, name)) idx = i;
+    if (idx < 0) {
+        if (c->ndyn >= 96) { cgx_err(c->g, line, "c: too many dynamic member accesses"); return cgx_dnil(CD); }
+        idx = c->ndyn++; snprintf(c->dyn[idx].name, sizeof c->dyn[idx].name, "%s", name); c->dyn[idx].kind = kind; c->dyn[idx].n = k;
+    }
+    snprintf(fn, sizeof fn, "cg_d%c_%s_%d", kind == 0 ? 'm' : kind == 1 ? 'f' : 's', name, k);
+    const CgxNode *ns[40] = {0}; CgxTy w[40]; int m = 0;
+    ns[m] = recv; w[m++] = A;
+    for (int i = 0; i < k && m < 39; i++) { ns[m] = args->p[i]; w[m++] = A; }
+    if (val) { ns[m] = val; w[m++] = A; }
+    return cc_callN(c, fn, ns, w, m, prec);
+}
+static void cc_fn_begin(CgxC *c, const CgxNode *fn, const CgxNode *cls, int vol);
+static void cc_dynboxres(CgxC *c, CgxB *o, const CgxTy *t, const char *e) {
+    switch (cc_kind(t)) {
+        case CK_INT: cgx_bf(o, "cg_vint(%s)", e); break; case CK_FLT: cgx_bf(o, "cg_vflt(%s)", e); break; case CK_BOOL: cgx_bf(o, "cg_vbool(%s)", e); break;
+        case CK_STR: cgx_bf(o, "cg_vstrv(%s)", e); break; case CK_LIST: cgx_bf(o, "cg_vlist(%s)", e); break; case CK_MAP: cgx_bf(o, "cg_vmap(%s)", e); break;
+        case CK_OBJ: cgx_bf(o, "cg_vobj((void *)%s, %d)", e, cc_clsid(c, t->cls)); break; default: cgx_bs(o, e);
+    }
+}
+static char *cc_render(CgxC *c, CgxDoc *d) { CgxB b = {0}; cgx_render(d, 100000, &b); return b.p ? b.p : strdup(""); }
+/* texto dos ajudantes, depois que todas as funcoes foram geradas (prototipos em *pr, definicoes em *df) */
+static void cc_dynemit(CgxC *c, CgxB *pr, CgxB *df) {
+    for (int i = 0; i < c->ndyn; i++) {
+        const char *nm = c->dyn[i].name; const int kind = c->dyn[i].kind, k = c->dyn[i].n; CgxB sig = {0}; char fn[96];
+        snprintf(fn, sizeof fn, "cg_d%c_%s_%d", kind == 0 ? 'm' : kind == 1 ? 'f' : 's', nm, k);
+        cgx_bf(&sig, "static %s %s(CgV r", kind == 2 ? "void" : "CgV", fn);
+        if (kind == 0) for (int j = 0; j < k; j++) cgx_bf(&sig, ", CgV a%d", j);
+        if (kind == 2) cgx_bs(&sig, ", CgV v");
+        cgx_bs(&sig, ")");
+        cgx_bf(pr, "%s;\n", sig.p);
+        cgx_bf(df, "%s {\n    if (r.t == CG_OBJ) switch (r.u.o.cls) {\n", sig.p);
+        int found = 0;
+        for (int ci = 0; ci < c->ncls; ci++) {
+            const CgxNode *cl = c->cls_list[ci];
+            if (kind == 0) {
+                const CgxNode *m = NULL; for (int j = 0; j < cl->b1.n; j++) if (cl->b1.p[j]->k == CGN_FN && !strcmp(cl->b1.p[j]->s, nm) && strcmp(nm, "init")) m = cl->b1.p[j];
+                if (!m || k > m->npar) continue;
+                int req = 0; for (int j = 0; j < m->npar; j++) if (!m->par[j].def) req = j + 1;
+                if (k < req) continue;
+                CgxB call = {0}; found = 1;
+                cgx_bf(&call, "M_%s__%s((C_%s *)r.u.o.p", cl->s, nm, cl->s);
+                cc_fn_begin(c, NULL, NULL, 0);
+                for (int j = 0; j < m->npar; j++) {
+                    char an[16]; snprintf(an, sizeof an, "a%d", j); CgxTy pt = m->par[j].ty;
+                    char *t = j < k ? cc_render(c, cc_unbox(c, cgx_dtext(CD, an), &pt)) : cc_render(c, cc_exw(c, m->par[j].def, &pt, 0));
+                    if (cc_kind(&pt) == CK_ANY && j < k) { free(t); t = strdup(an); }
+                    cgx_bf(&call, ", %s", t); free(t);
+                }
+                cgx_bs(&call, ")");
+                CgxTy rt = m->ty;
+                if (cc_kind(&rt) == CK_VOID) cgx_bf(df, "        case %d: %s; return cg_nil();\n", ci + 1, call.p);
+                else { CgxB bx = {0}; cc_dynboxres(c, &bx, &rt, call.p); cgx_bf(df, "        case %d: return %s;\n", ci + 1, bx.p); free(bx.p); }
+                free(call.p);
+            } else {
+                const CgxNode *f = NULL; for (int j = 0; j < cl->b1.n; j++) if (cl->b1.p[j]->k == CGN_FIELDDECL && !strcmp(cl->b1.p[j]->s, nm)) f = cl->b1.p[j];
+                if (!f) continue;
+                found = 1; CgxB fnm = {0}; cc_name(nm, &fnm); CgxTy ft = f->ty;
+                if (kind == 1) { CgxB acc = {0}, bx = {0}; cgx_bf(&acc, "((C_%s *)r.u.o.p)->%s", cl->s, fnm.p); cc_dynboxres(c, &bx, &ft, acc.p); cgx_bf(df, "        case %d: return %s;\n", ci + 1, bx.p); free(acc.p); free(bx.p); }
+                else { cc_fn_begin(c, NULL, NULL, 0); char *t = cc_render(c, cc_unbox(c, cgx_dtext(CD, "v"), &ft)); cgx_bf(df, "        case %d: ((C_%s *)r.u.o.p)->%s = %s; return;\n", ci + 1, cl->s, fnm.p, t); free(t); }
+                free(fnm.p);
+            }
+        }
+        cgx_bf(df, "        default: break;\n    }\n    cg_throw(CG_S(\"no member `%s` on this value\"));\n}\n\n", nm);
+        if (!found) cgx_err(c->g, 0, "c: no class has a %s named `%s`", kind == 0 ? "method" : "field", nm);
+        free(sig.p);
+    }
+}
+
 static CgxDoc *cc_ex0(CgxC *c, const CgxNode *n, int *prec, CgxTy *nat) {
     CgxB b = {0}; CgxDoc *d; *prec = 11; *nat = n->ty;
     switch (n->k) {
@@ -442,7 +515,8 @@ static CgxDoc *cc_ex0(CgxC *c, const CgxNode *n, int *prec, CgxTy *nat) {
         }
         case CGN_FIELD: {
             free(b.p); const CgxTy tc = cc_vty(n->a);
-            if (cc_kind(&tc) != CK_OBJ) { cgx_err(c->g, n->line, "c: the field `%s` is read from a value whose class is not known (type `any`); annotate the type of the variable or parameter", n->s); return cgx_dnil(CD); }
+            if (cc_kind(&tc) == CK_ANY) { *nat = cc_ty(CGT_ANY); return cc_dyncall(c, 1, n->s, n->a, NULL, NULL, n->line, prec); }
+            if (cc_kind(&tc) != CK_OBJ) { cgx_err(c->g, n->line, "c: the field `%s` is read from a value that is not an object", n->s); return cgx_dnil(CD); }
             CgxDoc *o = cc_exw(c, n->a, &tc, 10); *prec = 10; *nat = n->ref ? n->ref->ty : n->ty;
             CgxB f = {0}; cgx_bs(&f, "->"); cc_name(n->s, &f); d = cgx_dcatn(CD, cc_recv(c, n->a, o, &tc), cgx_dtext(CD, f.p), NULL); free(f.p); return d;
         }
@@ -470,7 +544,8 @@ static CgxDoc *cc_ex0(CgxC *c, const CgxNode *n, int *prec, CgxTy *nat) {
         }
         case CGN_MCALL: {
             free(b.p); const CgxTy tr = cc_vty(n->a);
-            if (cc_kind(&tr) != CK_OBJ || !n->ref) { cgx_err(c->g, n->line, "c: the method `%s` is called on a value whose class is not known (type `any`); annotate the type of the variable or parameter", n->s); return cgx_dnil(CD); }
+            if (cc_kind(&tr) == CK_ANY) { *nat = cc_ty(CGT_ANY); return cc_dyncall(c, 0, n->s, n->a, &n->b1, NULL, n->line, prec); }
+            if (cc_kind(&tr) != CK_OBJ || !n->ref) { cgx_err(c->g, n->line, "c: the method `%s` is called on a value that is not an object", n->s); return cgx_dnil(CD); }
             const CgxNode *cls = NULL; for (int i = 0; i < c->ncls; i++) if (!strcmp(c->cls_list[i]->s, tr.cls)) cls = c->cls_list[i];
             CgxB f = {0}; cc_fname(n->ref, cls, &f); *nat = n->ref->ty; d = cc_userargs(c, n->ref, n->a, &n->b1, f.p, prec); free(f.p); return d;
         }
@@ -564,7 +639,8 @@ static CgxDoc *cc_store(CgxC *c, const CgxNode *t, const CgxNode *rhs, CgxDoc *r
     }
     if (t->k == CGN_FIELD) {
         const CgxTy to = cc_vty(t->a);
-        if (cc_kind(&to) != CK_OBJ) { cgx_err(c->g, t->line, "c: the field `%s` is assigned on a value whose class is not known (type `any`); annotate the type", t->s); return NULL; }
+        if (cc_kind(&to) == CK_ANY) { int pr; CgxDoc *d = cc_dyncall(c, 2, t->s, t->a, NULL, rhs, t->line, &pr); return cgx_dcat(CD, d, cc_t(c, ";")); }
+        if (cc_kind(&to) != CK_OBJ) { cgx_err(c->g, t->line, "c: the field `%s` is assigned on a value that is not an object", t->s); return NULL; }
         const CgxNode *ns[2] = {rhs, t->a}; CgxTy w[2] = {*tt, to}; CgxDoc *o[2], *pre; cc_ops(c, ns, w, 2, 0, o, &pre);
         CgxB f = {0}; cgx_bs(&f, "->"); cc_name(t->s, &f);
         CgxDoc *lhs = cgx_dcatn(CD, cc_recv(c, t->a, o[1], &to), cgx_dtext(CD, f.p), NULL); free(f.p);
@@ -900,6 +976,7 @@ static int cgx_gen_c(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests) {
         for (int i = 1; i <= nt; i++) cgx_bf(&tb, "    cg_test_%d();\n", i);
         cgx_bs(&tb, "    cg_arena_free();\n    return 0;\n}\n");
     }
+    cc_dynemit(c, &protos, &defs);
     if (g->nerr_all == err0) {
         cgx_bs(code, "/* Generated by UCGE (C backend). Build: gcc -std=c99 -Wall -Wextra -Wpedantic file.c -lm. Memory: one arena, freed by cg_arena_free(). */\n");
         cc_rt(code, CGX_C_RT_CORE); cc_rt(code, CGX_C_RT_COLL); if (c->need_re) cc_rt(code, CGX_C_RT_RE);

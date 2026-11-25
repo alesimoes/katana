@@ -1,0 +1,35 @@
+fn total(grid)
+  let s = 0
+  for row in grid
+    for x in row
+      s += x
+  return s
+fn firstOf(xs)
+  return xs[0]
+fn describe(x)
+  return "<" + str(x) + ">"
+fn main() -> int
+  let g = [[1, 2], [3, 4], [5]]
+  print(g)
+  print(total(g))
+  print(firstOf(g))
+  print(firstOf([7, 8]))
+  print(firstOf("hello"))
+  print(describe(3))
+  print(describe([1, "a", 2.5]))
+  let m = {"a": [1, 2], "b": [3]}
+  print(m)
+  push(m["a"], 9)
+  print(m["a"])
+  print(len(m["a"]))
+  let rows: list[list[int]] = []
+  push(rows, [1, 2])
+  push(rows, [3])
+  print(rows)
+  rows[0][1] = 20
+  print(rows[0])
+  let mix = [1, "two", 3.0, true, null]
+  print(mix)
+  print(len(mix))
+  return 0
+test main() == 0

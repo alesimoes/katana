@@ -262,8 +262,8 @@ class G:
         return "\n".join(out) + "\n"
 
 def one(args):
-    seed, ucgecli, san, keep = args
-    spec = G(seed).gen()
+    seed, ucgecli, san, keep = args[:4]
+    spec = args[4] if len(args) > 4 else G(seed).gen()
     d = tempfile.mkdtemp(prefix="ucgediff")
     try:
         sp = os.path.join(d, "p.csp"); open(sp, "w").write(spec)
@@ -289,21 +289,25 @@ def one(args):
             return (seed, "diff", spec + "\n--- python\n" + py.stdout[-1500:] + py.stderr[-300:] + "\n--- c\n" + c.stdout[-1500:] + c.stderr[-300:])
         return (seed, "ok", len(py.stdout.splitlines()))
     finally:
-        if keep: shutil.copytree(d, os.path.join(keep, "p%d" % seed), dirs_exist_ok=True)
+        if keep: shutil.copytree(d, os.path.join(keep, "p%s" % seed), dirs_exist_ok=True)
         shutil.rmtree(d, ignore_errors=True)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("ucgecli"); ap.add_argument("-n", type=int, default=200); ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--san", action="store_true"); ap.add_argument("--keep"); ap.add_argument("--only", type=int); ap.add_argument("-j", type=int, default=4)
+    ap.add_argument("--san", action="store_true"); ap.add_argument("--keep"); ap.add_argument("--only", type=int); ap.add_argument("--cases", help="compara cada .csp deste diretorio em vez de gerar programas"); ap.add_argument("-j", type=int, default=4)
     a = ap.parse_args()
-    seeds = [a.only] if a.only is not None else list(range(a.seed, a.seed + a.n))
+    jobs = None
+    if a.cases:
+        fs = sorted(f for f in os.listdir(a.cases) if f.endswith(".csp")); seeds = fs
+        jobs = [(f, os.path.abspath(a.ucgecli), a.san, a.keep, open(os.path.join(a.cases, f)).read()) for f in fs]
+    else: seeds = [a.only] if a.only is not None else list(range(a.seed, a.seed + a.n))
     if a.keep: os.makedirs(a.keep, exist_ok=True)
     res = {}; lines = 0; bad = []
     with cf.ThreadPoolExecutor(a.j) as ex:
-        for seed, st, info in ex.map(one, [(x, os.path.abspath(a.ucgecli), a.san, a.keep) for x in seeds]):
+        for seed, st, info in ex.map(one, jobs or [(x, os.path.abspath(a.ucgecli), a.san, a.keep) for x in seeds]):
             res[st] = res.get(st, 0) + 1
             if st == "ok": lines += info
             else: bad.append((seed, st, info))
-    for seed, st, info in bad[:6]: print("=== seed %d: %s\n%s" % (seed, st, info))
+    for seed, st, info in bad[:6]: print("=== %s: %s\n%s" % (seed, st, info))
     print("programs %d: %s; output lines compared: %d" % (len(seeds), ", ".join("%s %d" % kv for kv in sorted(res.items())), lines))
     sys.exit(0 if list(res) == ["ok"] else 1)
