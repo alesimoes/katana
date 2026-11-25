@@ -1,15 +1,9 @@
 # The agent's tools (`src/tools/`)
 
 The katana agent has one tool set. It lives in `src/tools/`, one file per tool or small family, and the table in
-`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers). The
-previous set (`run_command`, `read_file`, `write_file` and the others of `src/agent/`) was removed on 2026-11-23: no alias,
-no migration. What was lost: a stateful shell session (`terminal`), machine-wide search by part of a name (`find_file`),
-reading the katana logs by name (`read_log`), `sudo=true` and `append=true` of the file tools, the sorted directory
-listing, the structured `git`, `install_package`, `download_file`, `read_document`, `howto` as a tool (the recipes are
-read through `Skill`) and `job` (use `Bash` with `run_in_background`, `Monitor` and `TaskStop`); the model-facing
-`remember` and `recall` also went (the memory file and `katana memory` stay).
+`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers). There is no alias layer and no second set.
 
-Why a second set: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
+Why this set: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
 "read before you change" rule, search with output modes, a task list edited item by item, and the less common tools
 announced by name only and loaded on demand (`ToolSearch`), so they cost no context until used.
 
@@ -303,9 +297,8 @@ to which file tool to use when); the prompt grew by about 850 bytes. Windows: no
 
 **File graph, sparse activation and the neighbour note** (`src/tools/findgraph.c`, ported from the research in
 `docs/investigation-engine.md`; no language model was run to build or check it).
-- *Graph.* (Old index; in the default mode the same graph is derived from the store, see "Unified index" above.) Nodes are the indexed files. Four undirected edge types, stored as one CSR (int32 destination, float32
-  weight, 1 byte type mask) in the same cache file as the index (`FD_VERSION` 4: an older file is rebuilt without error;
-  the graph section follows the file records). It is built lazily, the first time a search or the neighbour note needs
+- *Graph.* (The graph is derived from the store, see "Unified index" above.) Nodes are the indexed files. Four undirected edge types, stored as one CSR (int32 destination, float32
+  weight, 1 byte type mask) in memory. It is built lazily, the first time a search or the neighbour note needs
   it, and rebuilt whole (all files re-read once, plus one `git log`) whenever the index changed.
   - `sym` (weight idf): an identifier used in file A and defined, by the index's symbol rules, in file B. Only code files
     (not Markdown or config); names defined in more than 3 files or used in more than max(30, 2% of files) files are skipped,

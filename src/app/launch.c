@@ -1440,7 +1440,6 @@ static void main_usage(FILE *f) {
         "                                       so conversa). Rede: KATANA_HOST=0.0.0.0 KATANA_API_KEY=<chave de 16+ caracteres>\n"
         "  katana serve <modelo.gguf> [porta] --agent   o agente pela rede (/v1/agent/sessions, docs/api.md): quem tem a chave\n"
         "                                       executa comandos nesta maquina\n"
-        "  katana code <modelo.gguf>      agente em modo de programacao (prompt enxuto: ler, editar, executar, conferir)\n"
         "  katana agent <modelo.gguf>     conversa com ferramentas (ler, listar, gravar e executar; KATANA_CONFIRM=1 pede confirmacao)\n"
         "  katana chat <modelo.gguf>      conversa interativa de varios turnos (KATANA_SYSTEM = prompt de sistema)\n");
 }

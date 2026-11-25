@@ -28,7 +28,7 @@ The design is the owner's:
 | Fact | Value | Source |
 |---|---|---|
 | Embedding model | Qwen3-Embedding-0.6B, Q8_0, one file of 639,150,592 bytes in `/mnt/dados/embed-models/qwen3-embedding-0.6b/`; dense qwen3 architecture, 1024-dimension vectors; about 55 times smaller than the large model | file on disk; owner's brief |
-| Current `Find` | per-field BM25 over 40-line chunks (stride 25) + request-word filter + sparse activation over a file graph, each candidate with evidence; the query itself takes 1 to 7 ms; index in `<folder>/.katana/cache/find-<hash>.idx` | `docs/tools.md`, "Find (navigation)"; `src/tools/find.c`, `src/tools/findgraph.c` |
+| Current `Find` | per-field BM25 over 40-line chunks (stride 25) + request-word filter + sparse activation over a file graph, each candidate with evidence; the query itself takes 1 to 7 ms | `docs/tools.md`, "Find (navigation)"; `src/tools/find.c`, `src/tools/findgraph.c` |
 | Activation constants | best 40 files form the active set (`FG_K_FILE`), 2 rounds, 20 winners per round (`FG_K_GRAPH`), threshold 0.15 (`FG_THETA`); the research run kept 39 nodes above threshold on average | `src/tools/findgraph.c`; `docs/investigation-engine.md` 3.3 |
 | `Find` output | default 6 candidates, max 12, about 1500 characters in total (`KATANA_FIND_CHARS`); a graph-entered candidate has a `   why: via <file> (symbol X)` line | `src/tools/find.c` (`ct_findtool`, `fd_show`) |
 | Neighbour note | `[katana: linked files you have not read yet: ...]`, at most 3 neighbours per result and 8 notes per request, after `Read`, `Grep` or `Find` | `src/tools/findgraph.c` (`fg_neighbor_note`, `FG_NOTES_MAX`), called in `src/agent/loop.c` before `loop_plan_note` |
@@ -250,7 +250,7 @@ lives or dies by the cache. Above that, on-demand embedding alone is enough.
 
 ### 3.3 Cache on disk
 
-- **File:** `<working folder>/.katana/cache/embed-<fp>.vec`, next to `find-<hash>.idx`, same fallback rule
+- **File:** `<working folder>/.katana/cache/embed-<fp>.vec`, same fallback rule
   (`~/.katana/cache`, `KATANA_CACHE_DIR`). `<fp>` is a fingerprint of the model (file size, tensor count and a
   hash of the GGUF header and metadata) plus the cache format version. Another model, another quantization or a
   format change gives another file name, so an old vector can never be compared with a new one.

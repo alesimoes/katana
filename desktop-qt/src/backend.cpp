@@ -1192,13 +1192,13 @@ void Backend::launch(const QString &modelFile)
     auto *p = new QProcess(this);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     // configuracao recomendada: variaveis KATANA_* de desempenho/depuracao herdadas do terminal (KATANA_CPU, KATANA_CTX,
-    // KATANA_KV16, KATANA_MOE_OLD, KATANA_SWAP, KATANA_VK_*...) sao descartadas para o motor escolher sozinho os padroes
+    // KATANA_KV16, KATANA_SWAP, KATANA_VK_*...) sao descartadas para o motor escolher sozinho os padroes
     // mais rapidos. Ficam so as de comportamento do usuario. KATANA_DESKTOP_ENV=1 preserva o ambiente herdado.
     if (env.value("KATANA_DESKTOP_ENV") != "1") {
         static const QStringList manter = {"KATANA_UI", "KATANA_THINK", "KATANA_CONFIRM", "KATANA_WEB", "KATANA_SEARX",
             "KATANA_DL_MAX_MB", "KATANA_GIT_UNSAFE", "KATANA_SYSTEM", "KATANA_DATE", "KATANA_CACHE_DIR", "KATANA_LOG",
-            "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB", "KATANA_SESS_RESUMO",
-            "KATANA_RETOMAR_TOK", "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST",
+            "KATANA_TEMP", "KATANA_MAXTOK", "KATANA_COMPACT", "KATANA_SESS_DIAS", "KATANA_SESS_MB",
+            "KATANA_DESKTOP_HOME", "KATANA_DESKTOP_ENV", "KATANA_TRUST",
             "KATANA_SPEC", "KATANA_TOOL_DECL", "KATANA_TEACHER_MODEL", "KATANA_TEACHER_URL", "KATANA_TEACHER_EFFORT", "KATANA_TEACHER_FALLBACK",
             "KATANA_TEACHER_CMD", "KATANA_TEACHER_KEY", "KATANA_TEACHER_VIA", "KATANA_TEACHER_CLI", "KATANA_TEACHER_MAX_TOKENS"};
         for (const QString &k : env.keys())
