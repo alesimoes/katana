@@ -262,8 +262,8 @@ class G:
         return "\n".join(out) + "\n"
 
 def one(args):
-    seed, ucgecli, san, keep = args[:4]
-    spec = args[4] if len(args) > 4 else G(seed).gen()
+    seed, ucgecli, san, keep = args[:4]; target = args[5] if len(args) > 5 else "c"
+    spec = args[4] if len(args) > 4 and args[4] is not None else G(seed).gen()
     d = tempfile.mkdtemp(prefix="ucgediff")
     try:
         sp = os.path.join(d, "p.csp"); open(sp, "w").write(spec)
@@ -272,12 +272,23 @@ def one(args):
             except subprocess.TimeoutExpired: return None
         chk = sh([ucgecli, "check", sp])
         if chk is None or "ok" not in chk.stdout: return (seed, "invalid", spec + "\n" + (chk.stdout if chk else "timeout"))
-        gp = sh([ucgecli, "gen", "python", sp, "--tests"]); gc = sh([ucgecli, "gen", "c", sp, "--tests"])
+        gp = sh([ucgecli, "gen", "python", sp, "--tests"]); gc = sh([ucgecli, "gen", target, sp, "--tests"])
         if gp is None or gp.returncode or gc is None or gc.returncode: return (seed, "gen-fail", spec + "\n" + (gc.stdout if gc else "") + (gp.stdout if gp else ""))
-        open(os.path.join(d, "p.py"), "w").write(gp.stdout); open(os.path.join(d, "p.c"), "w").write(gc.stdout)
-        flags = ["gcc", "-std=c99", "-Wall", "-Wextra", "-Wpedantic", "-O1", "-g", "p.c", "-o", "p", "-lm"] + (["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"] if san else [])
-        cc = sh(flags, 90)
-        if cc is None or cc.returncode or cc.stderr.strip(): return (seed, "cc-fail", spec + "\n" + (cc.stderr[:1500] if cc else "timeout"))
+        open(os.path.join(d, "p.py"), "w").write(gp.stdout)
+        if target == "go":
+            open(os.path.join(d, "p.go"), "w").write(gc.stdout)
+            env = dict(os.environ, GO111MODULE="off", GOCACHE=os.environ.get("GOCACHE", "/mnt/dados/ucgego_tmp/gocache"))
+            fm = subprocess.run(["gofmt", "-l", "p.go"], capture_output=True, text=True, cwd=d)
+            if fm.stdout.strip() or fm.stderr.strip(): return (seed, "fmt-fail", spec + "\n" + subprocess.run(["gofmt", "-d", "p.go"], capture_output=True, text=True, cwd=d).stdout[:1500])
+            cc = subprocess.run(["go", "vet", "p.go"], capture_output=True, text=True, cwd=d, env=env, timeout=120)
+            if cc.returncode or cc.stderr.strip(): return (seed, "cc-fail", spec + "\n" + cc.stderr[:1500])
+            cc = subprocess.run(["go", "build", "-o", "p", "p.go"], capture_output=True, text=True, cwd=d, env=env, timeout=120)
+            if cc.returncode or cc.stderr.strip(): return (seed, "cc-fail", spec + "\n" + cc.stderr[:1500])
+        else:
+            open(os.path.join(d, "p.c"), "w").write(gc.stdout)
+            flags = ["gcc", "-std=c99", "-Wall", "-Wextra", "-Wpedantic", "-O1", "-g", "p.c", "-o", "p", "-lm"] + (["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"] if san else [])
+            cc = sh(flags, 90)
+            if cc is None or cc.returncode or cc.stderr.strip(): return (seed, "cc-fail", spec + "\n" + (cc.stderr[:1500] if cc else "timeout"))
         py = sh(["python3", "-I", "p.py"], 20); c = sh(["./p"], 20)
         if py is None: return (seed, "py-timeout", spec)
         if c is None: return (seed, "c-timeout", spec)
@@ -294,17 +305,17 @@ def one(args):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("ucgecli"); ap.add_argument("-n", type=int, default=200); ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--san", action="store_true"); ap.add_argument("--keep"); ap.add_argument("--only", type=int); ap.add_argument("--cases", help="compara cada .csp deste diretorio em vez de gerar programas"); ap.add_argument("-j", type=int, default=4)
+    ap.add_argument("--san", action="store_true"); ap.add_argument("--keep"); ap.add_argument("--only", type=int); ap.add_argument("--cases", help="compara cada .csp deste diretorio em vez de gerar programas"); ap.add_argument("-j", type=int, default=4); ap.add_argument("--target", default="c", choices=["c", "go"])
     a = ap.parse_args()
     jobs = None
     if a.cases:
         fs = sorted(f for f in os.listdir(a.cases) if f.endswith(".csp")); seeds = fs
-        jobs = [(f, os.path.abspath(a.ucgecli), a.san, a.keep, open(os.path.join(a.cases, f)).read()) for f in fs]
+        jobs = [(f, os.path.abspath(a.ucgecli), a.san, a.keep, open(os.path.join(a.cases, f)).read(), a.target) for f in fs]
     else: seeds = [a.only] if a.only is not None else list(range(a.seed, a.seed + a.n))
     if a.keep: os.makedirs(a.keep, exist_ok=True)
     res = {}; lines = 0; bad = []
     with cf.ThreadPoolExecutor(a.j) as ex:
-        for seed, st, info in ex.map(one, jobs or [(x, os.path.abspath(a.ucgecli), a.san, a.keep) for x in seeds]):
+        for seed, st, info in ex.map(one, jobs or [(x, os.path.abspath(a.ucgecli), a.san, a.keep, None, a.target) for x in seeds]):
             res[st] = res.get(st, 0) + 1
             if st == "ok": lines += info
             else: bad.append((seed, st, info))

@@ -22,9 +22,20 @@ def convert(src):
             out.append('    "%s",\n' % e)
         out.append("    NULL};\n")
     return "".join(out)
+def convert_go(src):
+    out = ["/* GERADO por tools/ucge/rt2inc.py a partir de tools/ucge/rt/cgrt.go: nao edite aqui (docs/ucge.md, \"Backend Go\"). */\n", "static const char *const CGX_GO_RT[] = {\n"]
+    for ln in src.rstrip("\n").split("\n"):
+        out.append('    "%s",\n' % ln.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t"))
+    out.append("    NULL};\n")
+    return "".join(out)
 if __name__ == "__main__":
-    new = convert(open(os.path.join(here, "rt", "cgrt.h")).read())
-    dst = os.path.join(root, "src", "coder", "ucgec_rt.inc")
-    if "--check" in sys.argv:
-        sys.exit(0 if os.path.exists(dst) and open(dst).read() == new else 1)
-    open(dst, "w").write(new)
+    jobs = [("cgrt.h", "ucgec_rt.inc", convert), ("cgrt.go", "ucgego_rt.inc", convert_go)]
+    bad = 0
+    for srcn, dstn, fn in jobs:
+        srcp = os.path.join(here, "rt", srcn)
+        if not os.path.exists(srcp): continue
+        new = fn(open(srcp).read()); dst = os.path.join(root, "src", "coder", dstn)
+        if "--check" in sys.argv:
+            if not (os.path.exists(dst) and open(dst).read() == new): bad = 1
+        else: open(dst, "w").write(new)
+    sys.exit(bad)

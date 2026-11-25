@@ -6,9 +6,10 @@
  *   dline()         espaco quando o grupo cabe; senao quebra de linha na indentacao atual
  *   dsoft()         nada quando cabe; senao quebra de linha
  *   dhard()         quebra obrigatoria (forca o grupo que a contem a quebrar)
+ *   dbrk(s)         texto que so aparece quando o grupo que o contem quebrou (a virgula final das listas em Go)
  *   dcat(a, b)      a seguido de b;  dnest(n, d): indentacao + n dentro de d;  dgroup(d): tenta caber numa linha
  * Os documentos vivem num CgxDocs (arena): solta tudo de uma vez. A indentacao so e escrita quando ha texto (sem espacos no fim das linhas). */
-enum { DK_NIL, DK_TEXT, DK_LINE, DK_SOFT, DK_HARD, DK_CAT, DK_NEST, DK_GROUP };
+enum { DK_NIL, DK_TEXT, DK_LINE, DK_SOFT, DK_HARD, DK_CAT, DK_NEST, DK_GROUP, DK_BRK };
 typedef struct CgxDoc CgxDoc;
 struct CgxDoc { int k, n; char *s; CgxDoc *a, *b; };
 typedef struct { void **p; int n, cap; } CgxDocs;
@@ -23,6 +24,7 @@ static CgxDoc *cgx_dtextf(CgxDocs *D, const char *fmt, ...) { char t[1024]; va_l
 static CgxDoc *cgx_dline(CgxDocs *D) { return cgx_dnew(D, DK_LINE); }
 static CgxDoc *cgx_dsoft(CgxDocs *D) { return cgx_dnew(D, DK_SOFT); }
 static CgxDoc *cgx_dhard(CgxDocs *D) { return cgx_dnew(D, DK_HARD); }
+static CgxDoc *cgx_dbrk(CgxDocs *D, const char *s) { CgxDoc *d = cgx_dnew(D, DK_BRK); d->s = strdup(s); d->n = (int)strlen(s); return d; }
 static CgxDoc *cgx_dnil(CgxDocs *D) { return cgx_dnew(D, DK_NIL); }
 static CgxDoc *cgx_dcat(CgxDocs *D, CgxDoc *a, CgxDoc *b) { CgxDoc *d = cgx_dnew(D, DK_CAT); d->a = a; d->b = b; return d; }
 static CgxDoc *cgx_dnest(CgxDocs *D, int n, CgxDoc *x) { CgxDoc *d = cgx_dnew(D, DK_NEST); d->n = n; d->a = x; return d; }
@@ -56,6 +58,7 @@ static int cgx_fits(int w, const CgxStk *main, const CgxItem *first) {
             case DK_TEXT: w -= d->n; break;
             case DK_LINE: if (it.flat) w -= 1; else goto done; break;
             case DK_SOFT: if (!it.flat) goto done; break;
+            case DK_BRK: if (!it.flat) goto done; break;
             case DK_HARD: if (it.flat) ok = 0; goto done;
             case DK_CAT: cgx_spush(&t, it.i, it.flat, d->b); cgx_spush(&t, it.i, it.flat, d->a); break;
             case DK_NEST: cgx_spush(&t, it.i + d->n, it.flat, d->a); break;
@@ -77,6 +80,7 @@ static void cgx_render(const CgxDoc *root, int width, CgxB *o) {
             case DK_TEXT: if (d->n) { for (; pend > 0; pend--) cgx_bn(o, " ", 1); cgx_bn(o, d->s, (size_t)d->n); k += d->n; } break;
             case DK_LINE: if (it.flat) { for (; pend > 0; pend--) cgx_bn(o, " ", 1); cgx_bn(o, " ", 1); k++; } else { cgx_bn(o, "\n", 1); pend = it.i; k = it.i; } break;
             case DK_SOFT: if (!it.flat) { cgx_bn(o, "\n", 1); pend = it.i; k = it.i; } break;
+            case DK_BRK: if (!it.flat) { for (; pend > 0; pend--) cgx_bn(o, " ", 1); cgx_bn(o, d->s, (size_t)d->n); k += d->n; } break;
             case DK_HARD: cgx_bn(o, "\n", 1); pend = it.i; k = it.i; break;
             case DK_CAT: cgx_spush(&s, it.i, it.flat, d->b); cgx_spush(&s, it.i, it.flat, d->a); break;
             case DK_NEST: cgx_spush(&s, it.i + d->n, it.flat, d->a); break;

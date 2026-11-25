@@ -19,6 +19,7 @@
 #include "src/coder/ucgedoc.c"
 #include "src/coder/ucgepy.c"
 #include "src/coder/ucgec.c"
+#include "src/coder/ucgego.c"
 
 static char *slurp(const char *path) {
     FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin; if (!f) { perror(path); exit(2); }
@@ -106,6 +107,22 @@ static int run_c(const char *code, const char *tests, int *pass, int *fail, char
     snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) return -1;
     return 0;
 }
+/* alvo go: gofmt precisa aceitar sem mudar, go vet sem aviso, e go run executa o harness (sem go no PATH, o alvo e so gerado) */
+static int run_go(const char *code, const char *tests, int *pass, int *fail, char *detail, size_t dcap) {
+    char dir[] = "/tmp/ucgegXXXXXX"; if (!mkdtemp(dir)) return -1;
+    char path[300], cmd[1200]; snprintf(path, sizeof path, "%s/t.go", dir);
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    fprintf(f, "%s\n%s", code, tests); fclose(f);
+    snprintf(cmd, sizeof cmd, "cd %s && export GOFLAGS=-mod=mod GOCACHE=${GOCACHE:-/tmp/ucge-gocache} GO111MODULE=off; { out=$(gofmt -l t.go); [ -n \"$out\" ] && echo 'Error: gofmt changes t.go'; go vet t.go 2>&1 | sed 's/^/Error: vet /'; timeout 20 go run t.go 2>&1; } | head -c 20000", dir);
+    FILE *p = popen(cmd, "r"); char line[512]; *pass = *fail = 0; detail[0] = 0;
+    while (p && fgets(line, sizeof line, p)) {
+        if (!strncmp(line, "test ", 5)) { if (strstr(line, ": ok")) (*pass)++; else { (*fail)++; if (strlen(detail) + strlen(line) + 1 < dcap) strcat(detail, line); } }
+        else if (!strncmp(line, "Error:", 6) || !strncmp(line, "panic:", 6) || !strncmp(line, "# command", 9) || strstr(line, "t.go:")) { (*fail)++; if (strlen(detail) + strlen(line) + 1 < dcap) strcat(detail, line); }
+    }
+    if (p) pclose(p);
+    snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) return -1;
+    return 0;
+}
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n"); return 2; }
     if (!strcmp(argv[1], "selftest")) return selftest();
@@ -131,6 +148,11 @@ int main(int argc, char **argv) {
         else {
             int pass = 0, fail = 0; char det[2000];
             if (!tb.p) { printf("no tests\n"); }
+            else if (!strcmp(be->name, "go")) {
+                run_go(code.p ? code.p : "", tb.p, &pass, &fail, det, sizeof det);
+                printf("tests: %d passed, %d failed\n%s", pass, fail, det);
+                free(code.p); free(tb.p); cgx_free(&g); return fail != 0;
+            }
             else if (!strcmp(be->name, "c")) {
                 run_c(code.p ? code.p : "", tb.p, &pass, &fail, det, sizeof det);
                 printf("tests: %d passed, %d failed\n%s", pass, fail, det);
