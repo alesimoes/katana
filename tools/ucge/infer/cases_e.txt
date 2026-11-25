@@ -1,0 +1,84 @@
+### union ternary of int and str
+@ok
+@has fn f: (bool) -> int | str
+fn f(c: bool)
+  return c ? 1 : "a"
+### union returns of different types
+@ok
+@has fn f: (bool) -> int | str
+fn f(c: bool)
+  if c
+    return 1
+  return "a"
+### union of three returns
+@ok
+@has fn f: (int) -> int | str | bool
+fn f(n: int)
+  if n == 0
+    return true
+  if n == 1
+    return "one"
+  return n
+### union is not a number
+@fail
+@has ADD of int | str and int (expected two numbers or two str; convert with str(x))
+fn f(c: bool) -> int
+  let v = c ? 1 : "a"
+  return v + 1
+### union list literal of mixed elements
+@ok
+@has fn f: () -> list[int | str]
+fn f()
+  return [1, "a"]
+### union does not fit an int slot
+@fail
+@has `f` declares `-> int` but returns int | str
+fn f(c: bool) -> int
+  let v = c ? 1 : "a"
+  return v
+### union accepts a member
+@ok
+fn g(v: any) -> int
+  return 0
+fn f(c: bool) -> int
+  let v = c ? 1 : "a"
+  return g(v)
+### union numbers join to float not union
+@has fn f: (bool) -> float
+fn f(c: bool)
+  if c
+    return 1
+  return 2.5
+### union optional from null and value
+@has fn f: (bool) -> int?
+fn f(c: bool)
+  if c
+    return 1
+  return null
+### union optional ternary
+@has fn f: (bool) -> str?
+fn f(c: bool)
+  return c ? "a" : null
+### union list of lists mixed element types
+@has fn f: () -> list[list[int] | list[str]]
+fn f()
+  return [[1], ["a"]]
+### union join of same lists unifies
+@has fn f: (bool) -> list[int]
+fn f(c: bool)
+  return c ? [1] : [2]
+### union condition from try catch returns
+@ok
+@has fn f: (str) -> int | str
+fn f(s: str)
+  try
+    return int(s)
+  catch e
+    return errmsg(e)
+### union printing in optional
+@has fn f: (bool) -> int?
+fn f(c: bool)
+  let r = null
+  if c
+    r = 1
+  return r

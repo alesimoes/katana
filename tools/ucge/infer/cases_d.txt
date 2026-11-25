@@ -1,0 +1,150 @@
+### rec factorial
+@ok
+@has fn fact: (int) -> int
+fn fact(n)
+  if n <= 1
+    return 1
+  return n * fact(n - 1)
+### rec fibonacci
+@has fn fib: ('a) -> 'a where 'a in int|float
+fn fib(n)
+  if n < 2
+    return n
+  return fib(n - 1) + fib(n - 2)
+### rec gcd
+@has fn gcd: (int, int) -> int
+fn gcd(a, b)
+  if b == 0
+    return a
+  return gcd(b, a % b)
+### rec sum of a list by index
+@has fn sumFrom: (list[int], int) -> int
+fn sumFrom(xs, i)
+  if i >= len(xs)
+    return 0
+  return xs[i] + sumFrom(xs, i + 1)
+### rec declared return
+@has fn count: (int) -> int [declared]
+fn count(n: int) -> int
+  if n == 0
+    return 0
+  return 1 + count(n - 1)
+### rec polymorphic recursion is monomorphic inside the group
+@has fn len2: ('a) -> int where 'a in str|list
+fn len2(xs)
+  if len(xs) == 0
+    return 0
+  return 1 + len2(slice(xs, 1))
+### rec mutual even odd
+@ok
+@has fn isEven: (int) -> bool
+@has fn isOdd: (int) -> bool
+fn isEven(n)
+  if n == 0
+    return true
+  return isOdd(n - 1)
+fn isOdd(n)
+  if n == 0
+    return false
+  return isEven(n - 1)
+### rec mutual with declared one side
+@ok
+@has fn a: (int) -> int [declared]
+@has fn b: (int) -> int [derived]
+fn a(n: int) -> int
+  if n == 0
+    return 0
+  return b(n - 1)
+fn b(n)
+  return a(n) + 1
+### rec mutual three functions
+@ok
+@has fn f1: ('a) -> int where 'a in int|float
+@has fn f2: ('a) -> int where 'a in int|float
+@has fn f3: ('a) -> int where 'a in int|float
+fn f1(n)
+  if n <= 0
+    return 0
+  return f2(n - 1) + 1
+fn f2(n)
+  return f3(n - 1)
+fn f3(n)
+  return f1(n - 1)
+### rec mutual type error is reported
+@fail
+@has `isOdd` argument 1 (`n`) expects int, found str
+fn isEven(n: int) -> bool
+  if n == 0
+    return true
+  return isOdd(n - 1)
+fn isOdd(n: int) -> bool
+  return isEven(n - 1)
+fn bad() -> bool
+  return isOdd("a")
+### rec mutual group is polymorphic after generalization
+@ok
+fn ping(x, n)
+  if n == 0
+    return x
+  return pong(x, n - 1)
+fn pong(x, n)
+  return ping(x, n)
+fn g() -> int
+  let a = ping(1, 3)
+  let b = ping("s", 3)
+  return a + len(b)
+### rec mutual polymorphic signature
+@has fn ping: ('a, int) -> 'a
+@has fn pong: ('a, int) -> 'a
+fn ping(x, n)
+  if n == 0
+    return x
+  return pong(x, n - 1)
+fn pong(x, n)
+  return ping(x, n)
+### rec ackermann
+@has fn ack: (int, int) -> int
+fn ack(m, n)
+  if m == 0
+    return n + 1
+  if n == 0
+    return ack(m - 1, 1)
+  return ack(m - 1, ack(m, n - 1))
+### rec return type only from the base case
+@has fn down: (int) -> list[int]
+fn down(n)
+  if n == 0
+    return []
+  let r = down(n - 1)
+  push(r, n)
+  return r
+### rec void recursion
+@has fn countdown: (int) -> void
+fn countdown(n)
+  if n == 0
+    return
+  print(n)
+  countdown(n - 1)
+### rec call before definition order does not matter
+@ok
+@has fn a: () -> int
+fn a()
+  return b() + 1
+fn b()
+  return 1
+### rec constant used by a function defined before it
+@ok
+fn f() -> int
+  return K + 1
+const K = 3
+### rec constant initializer calls a function
+@ok
+@has const X: int
+fn two() -> int
+  return 2
+const X = two() + 1
+### rec forward reference between constants is an error
+@fail
+@has constant `B` is used before its declaration (line 2)
+const A = B + 1
+const B = 2

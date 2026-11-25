@@ -21,7 +21,7 @@ enum { ST_LET, ST_ASSIGN, ST_ARG, ST_RET, ST_PUSH, ST_ELEM, ST_FIELD, ST_DEFAULT
 #define INF_MAXQ 24
 
 typedef struct { CgxTid t; int nq; unsigned m[INF_MAXQ]; CgxTid qv[INF_MAXQ]; } InfSch;
-typedef struct { int sid; CgxTid ty, nty; CgxNode *decl; int depth, glob, declared; } InfSym;
+typedef struct { int sid; CgxTid ty, nty; CgxNode *decl; int depth, glob, declared, path; } InfSym;    /* path: nome sintetico `obj.campo` (estreitamento de campo) */
 typedef struct { int sym; CgxTid old; } InfTrail;
 typedef struct { int nsym, ntr; } InfMark;
 typedef struct { int sym; CgxTid ty; } InfFact;
@@ -48,7 +48,7 @@ typedef struct {
     InfChk *ck; int nck, capck;
     InfUnit *cu; CgxNode *cconst;
     CgxTid *rets; CgxNode **retn; int nret, capret, nretv, nretb;
-    int loops, nerr0, nerr1, ncert[4], nexpr;
+    int loops, nerr0, nerr1, ncert[4], nexpr, npath; CgxNode *assign_target;
     int *tstack, tsp, tcount, *scc_order, nscc;
 } CgxInf;
 
@@ -249,6 +249,8 @@ static CgxTid inf_zonk(CgxInf *c, CgxTid t, const InfSch *s) {
 }
 
 /* ---------------- escopo e estreitamento ---------------- */
+static int inf_is_ref(const CgxNode *n) { return n->k == CGN_VAR || (n->k == CGN_FIELD && n->a->k == CGN_VAR); }
+static int inf_path_sid(Cgx *g, const CgxNode *fld) { char nm[140]; snprintf(nm, sizeof nm, "%.60s.%.60s", fld->a->s, fld->s); return cgx_intern(g, nm); }
 static int inf_lookup(CgxInf *c, int sid) { return sid > 0 && sid < c->nbind ? c->bind[sid] - 1 : -1; }
 static void inf_bindgrow(CgxInf *c, int sid) {
     if (sid < c->nbind) return;
@@ -291,6 +293,12 @@ static void inf_narrow(CgxInf *c, int sym, CgxTid ty) {
     if (c->ntr == c->captr) { c->captr = c->captr ? c->captr * 2 : 32; c->tr = (InfTrail *)realloc(c->tr, sizeof(InfTrail) * (size_t)c->captr); }
     c->tr[c->ntr++] = (InfTrail){sym, c->sym[sym].nty}; c->sym[sym].nty = ty;
 }
+static int inf_path_sym(CgxInf *c, CgxNode *fld, int create) {      /* simbolo sintetico de `obj.campo` (so um nivel) */
+    const int sid = inf_path_sid(c->g, fld); inf_bindgrow(c, sid);
+    int y = inf_lookup(c, sid);
+    if (y < 0 && create) { y = inf_declare(c, fld->line, cgx_symname(c->g, sid), fld->tid, NULL, 0, 0); c->sym[y].path = 1; c->npath++; }
+    return y;
+}
 static void inf_kill(CgxInf *c, int sym) {                      /* atribuicao: o estreitamento acaba, tambem para o que vem de escopos de fora */
     c->sym[sym].nty = 0;
     for (int i = 0; i < c->ntr; i++) if (c->tr[i].sym == sym) c->tr[i].old = 0;
@@ -298,7 +306,7 @@ static void inf_kill(CgxInf *c, int sym) {                      /* atribuicao: o
 static void inf_collect(CgxBlk *b, int *out, int *n, int cap, Cgx *g);
 static void inf_collect_node(CgxNode *s, int *out, int *n, int cap, Cgx *g) {
     if (!s) return;
-    if (s->k == CGN_ASSIGN && s->a && s->a->k == CGN_VAR && *n < cap) out[(*n)++] = cgx_intern(g, s->a->s);
+    if (s->k == CGN_ASSIGN && s->a && inf_is_ref(s->a) && *n < cap) out[(*n)++] = s->a->k == CGN_VAR ? cgx_intern(g, s->a->s) : inf_path_sid(g, s->a);
     inf_collect(&s->b1, out, n, cap, g); inf_collect(&s->b2, out, n, cap, g); inf_collect(&s->b3, out, n, cap, g);
 }
 static void inf_collect(CgxBlk *b, int *out, int *n, int cap, Cgx *g) { for (int i = 0; i < b->n; i++) inf_collect_node(b->p[i], out, n, cap, g); }
@@ -306,6 +314,7 @@ static void inf_kill_blk(CgxInf *c, CgxBlk *b) {
     int out[256], n = 0; inf_collect(b, out, &n, 256, c->g);
     for (int i = 0; i < n; i++) { const int y = inf_lookup(c, out[i]); if (y >= 0) inf_kill(c, y); }
 }
+static void inf_kill_paths(CgxInf *c) { if (c->npath) for (int i = 0; i < c->nsym; i++) if (c->sym[i].path && c->sym[i].nty) inf_kill(c, i); }
 static int inf_blk_assigns(CgxInf *c, CgxBlk *b, int sid) { int out[256], n = 0; inf_collect(b, out, &n, 256, c->g); for (int i = 0; i < n; i++) if (out[i] == sid) return 1; return 0; }
 static int inf_term(CgxBlk *b) {                                 /* o bloco nunca chega ao fim (return, throw, break, continue) */
     for (int i = b->n - 1; i >= 0; i--) {
@@ -323,9 +332,9 @@ static int inf_facts(CgxInf *c, CgxNode *e, int pos, InfFact *f, int nf, int cap
     if (e->k == CGN_UN && e->op == CGO_NOT) return inf_facts(c, e->a, !pos, f, nf, cap);
     if (e->k == CGN_BIN && ((e->op == CGO_AND && pos) || (e->op == CGO_OR && !pos))) { nf = inf_facts(c, e->a, pos, f, nf, cap); return inf_facts(c, e->b, pos, f, nf, cap); }
     if (e->k == CGN_BIN && (e->op == CGO_EQ || e->op == CGO_NE)) {
-        CgxNode *v = e->a->k == CGN_VAR ? e->a : e->b->k == CGN_VAR ? e->b : NULL, *o = v == e->a ? e->b : e->a;
-        if (!v || o->k == CGN_VAR) return nf;
-        const int y = inf_lookup(c, cgx_intern(c->g, v->s)); if (y < 0) return nf;
+        CgxNode *v = inf_is_ref(e->a) ? e->a : inf_is_ref(e->b) ? e->b : NULL, *o = v == e->a ? e->b : e->a;
+        if (!v || inf_is_ref(o)) return nf;
+        const int y = v->k == CGN_VAR ? inf_lookup(c, cgx_intern(c->g, v->s)) : inf_path_sym(c, v, 1); if (y < 0) return nf;
         const int equal = (e->op == CGO_EQ) == (pos != 0);           /* o fato e "v == o" */
         CgxTid cur = c->sym[y].nty ? c->sym[y].nty : c->sym[y].ty; cur = inf_f(c, cur); const int k = c->T->t[cur].k;
         if (o->k == CGN_NULL) { if (!equal && k == TYK_OPT) { f[nf].sym = y; f[nf].ty = inf_f(c, c->T->t[cur].a[0]); nf++; } return nf; }
@@ -662,6 +671,7 @@ static CgxTid inf_call_unit(CgxInf *c, CgxNode *n, InfUnit *u, const char *what)
         const CgxTid t = inf_ex(c, n->b1.p[i], p && inf_k(c, p) != TYK_VAR ? p : 0);
         if (p) { const InfSite st = {ST_ARG, i + 1, what, i < fn->npar ? fn->par[i].name : "?"}; inf_sub_at(c, p, t, n->b1.p[i], n->b1.p[i]->line, &st); }
     }
+    inf_kill_paths(c);                                                 /* o chamado pode mudar campos de qualquer objeto */
     return c->T->t[inf_f(c, ft)].a[np];
 }
 static const char *inf_cls_list(CgxInf *c, const char *name, int methods, char *buf, size_t cap) {
@@ -756,7 +766,9 @@ static CgxTid inf_ex(CgxInf *c, CgxNode *n, CgxTid want) {
                 for (int i = 0; i < kl->d->b1.n && w + 40 < sizeof fl; i++) if (kl->d->b1.p[i]->k == CGN_FIELDDECL) w += (size_t)snprintf(fl + w, sizeof fl - w, "%s%s", w ? ", " : "", kl->d->b1.p[i]->s);
                 inf_err(c, n->line, "class `%s` has no field `%s` (fields: %s)", kl->d->s, n->s, fl[0] ? fl : "none"); break;
             }
-            r = f->tid; n->ref = f; cert = f->has_ty && !(f->flag & 2) ? CGC_DECLARED : CGC_DERIVED; break;
+            r = f->tid; n->ref = f; cert = f->has_ty && !(f->flag & 2) ? CGC_DECLARED : CGC_DERIVED;
+            if (c->npath && n->a->k == CGN_VAR && c->assign_target != n) { const int y = inf_path_sym(c, n, 0); if (y >= 0 && c->sym[y].nty) r = c->sym[y].nty; }
+            break;
         }
         case CGN_UN: {
             if (n->op == CGO_NOT) { inf_bool(c, n->a, "`not` operand"); r = c->B; break; }
@@ -876,7 +888,7 @@ static void inf_stmt(CgxInf *c, CgxNode *s) {
                 y = inf_lookup(c, cgx_intern(c->g, tg->s));
                 if (y >= 0) { tt = c->sym[y].ty; tg->tid = tt; tg->ref = c->sym[y].decl; tg->cert = c->sym[y].declared ? CGC_DECLARED : CGC_DERIVED; if (c->sym[y].glob) inf_err(c, s->line, "`%s` is a module-level constant and cannot be reassigned inside a function", tg->s); }
                 else tt = inf_ex(c, tg, 0);
-            } else tt = inf_ex(c, tg, 0);
+            } else { c->assign_target = tg; tt = inf_ex(c, tg, 0); c->assign_target = NULL; }
             const CgxTid vt = inf_ex(c, s->b, tt);
             if (inf_k(c, vt) == TYK_VOID) inf_err(c, s->line, "the value assigned is the result of a call that returns nothing (void)");
             if (s->op < 0) { const InfSite st = {ST_ASSIGN, 0, NULL, NULL}; inf_sub_at(c, tt, vt, s->b, s->line, &st); }
@@ -886,6 +898,11 @@ static void inf_stmt(CgxInf *c, CgxNode *s) {
                 const CgxTid res = inf_arith(c, s, s->op, inf_nn(c, tg, cu), inf_nn(c, s->b, vt), tg, s->b);
                 if (inf_k(c, tt) == TYK_INT && inf_k(c, res) == TYK_FLOAT) inf_err(c, s->line, "`%s=` would store a float in an int variable", CGO_SYM[s->op]);
                 else { const InfSite st = {ST_ASSIGN, 0, NULL, NULL}; inf_sub_at(c, tt, res, NULL, s->line, &st); }
+            }
+            if (tg->k == CGN_FIELD && tg->a->k == CGN_VAR) {
+                const CgxTid ty = inf_f(c, tt); const CgxTid v = inf_f(c, vt);
+                int py = inf_path_sym(c, tg, c->T->t[ty].k == TYK_OPT && s->op < 0);
+                if (py >= 0) { inf_kill(c, py); const int kv = c->T->t[v].k; if (c->T->t[ty].k == TYK_OPT && s->op < 0 && kv != TYK_OPT && kv != TYK_VAR && kv != TYK_ANY) inf_narrow(c, py, inf_f(c, c->T->t[ty].a[0])); }
             }
             if (y >= 0) {
                 inf_kill(c, y);
@@ -936,7 +953,7 @@ static void inf_stmt(CgxInf *c, CgxNode *s) {
             break;
         }
         case CGN_WHILE: {
-            inf_kill_blk(c, &s->b1);
+            inf_kill_blk(c, &s->b1); inf_kill_paths(c);
             inf_bool(c, s->a, "the `while` condition");
             InfFact fp[8]; const int np = inf_facts(c, s->a, 1, fp, 0, 8);
             InfMark m; inf_push(c, &m); inf_apply(c, fp, np); c->loops++; inf_blk(c, &s->b1); c->loops--; inf_pop(c, &m);
@@ -946,7 +963,7 @@ static void inf_stmt(CgxInf *c, CgxNode *s) {
             const CgxTid a = inf_ex(c, s->a, c->I), b = inf_ex(c, s->b, c->I);
             if (!inf_want(c, s->a, a, c->I) || !inf_want(c, s->b, b, c->I)) { INF_TN(t1, a); INF_TN(t2, b); inf_err(c, s->line, "a range loop needs int bounds, found %s..%s", t1, t2); INF_FREE(t1); INF_FREE(t2); }
             if (s->c) inf_ex(c, s->c, c->I);
-            inf_kill_blk(c, &s->b1);
+            inf_kill_blk(c, &s->b1); inf_kill_paths(c);
             InfMark m; inf_push(c, &m); const int y = inf_declare(c, s->line, s->s, c->I, s, 0, 1); (void)y;
             c->loops++; inf_blk(c, &s->b1); c->loops--; inf_pop(c, &m);
             inf_kill_blk(c, &s->b1); break;
@@ -958,14 +975,14 @@ static void inf_stmt(CgxInf *c, CgxNode *s) {
                 if (k == TYK_LIST || k == TYK_STR) inf_err(c, s->line, k == TYK_LIST ? "iterating a list gives one variable (`for x in xs`); two variables are for maps" : "iterating a str gives one variable");
                 else { const CgxTid e = inf_as_map(c, col); if (!e) { INF_TN(tn, col); inf_err(c, s->line, "cannot iterate over %s (expected a list, str or map)", tn); INF_FREE(tn); } else vt = e; }
             } else { inf_pend_add(c, IP_ITER, col, 0, vt, s); inf_pend_run(c, 0); }
-            inf_kill_blk(c, &s->b1);
+            inf_kill_blk(c, &s->b1); inf_kill_paths(c);
             InfMark m; inf_push(c, &m);
             if (s->s2) { inf_declare(c, s->line, s->s, kt, s, 0, 0); inf_declare(c, s->line, s->s2, vt, s, 0, 0); } else inf_declare(c, s->line, s->s, vt, s, 0, 0);
             c->loops++; inf_blk(c, &s->b1); c->loops--; inf_pop(c, &m);
             inf_kill_blk(c, &s->b1); break;
         }
         case CGN_TRY: {
-            InfMark m; inf_kill_blk(c, &s->b1);
+            InfMark m; inf_kill_blk(c, &s->b1); inf_kill_paths(c);
             inf_push(c, &m); inf_blk(c, &s->b1); inf_pop(c, &m);
             if (s->flag) { inf_push(c, &m); if (s->s2) inf_declare(c, s->line, s->s2, c->E, s, 0, 1); inf_blk(c, &s->b2); inf_pop(c, &m); }
             if (s->iv) { inf_kill_blk(c, &s->b2); inf_push(c, &m); inf_blk(c, &s->b3); inf_pop(c, &m); }
@@ -1153,7 +1170,9 @@ static int cgx_infer_ex(Cgx *g, CgxTypes *T, int flags, CgxB *rep) {
             const CgxTid want = annotated ? inf_from_ty(c, &f->ty) : 0;
             if (f->a) {
                 const CgxTid t = inf_ex(c, f->a, want);
-                if (annotated) { const InfSite st = {ST_FIELD, 0, f->s, NULL}; inf_sub_at(c, want, t, f->a, f->line, &st); f->tid = want; } else f->tid = t;
+                const int kd = annotated ? inf_k(c, want) : 0;
+                if (annotated && f->a->k == CGN_NULL && (kd == TYK_STR || kd == TYK_LIST || kd == TYK_MAP || kd == TYK_CLASS)) f->tid = cgx_ty_opt(c->T, want);   /* `field next: Node = null` e um Node opcional */
+                else if (annotated) { const InfSite st = {ST_FIELD, 0, f->s, NULL}; inf_sub_at(c, want, t, f->a, f->line, &st); f->tid = want; } else f->tid = t;
             } else f->tid = annotated ? want : inf_var(c);
             f->cert = annotated ? CGC_DECLARED : CGC_DERIVED;
         }
