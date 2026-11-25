@@ -573,7 +573,7 @@ static int inf_need(CgxInf *c, CgxNode *call, int i, CgxTid t, unsigned mask, co
     if (k == TYK_ANY) { if (prim) inf_mark(c, an, cgx_ty_prim(c->T, mk)); return 1; }
     if (k == TYK_VAR) { if (prim ? inf_bind(c, t, cgx_ty_prim(c->T, mk)) : inf_restrict(c, t, mask) != 0) return 1; }
     else if (mask & INF_KM(k)) return 1;
-    INF_TN(tn, t); inf_err(c, call->line, "%s: argument %d expected %s, found %s", CGB[call->bi - 1].use, i + 1, what, tn); INF_FREE(tn);
+    INF_TN(tn, t); inf_err(c, call->line, "%s: argument %d expected %s, found %s", cgx_op_by_id(call->bi)->use, i + 1, what, tn); INF_FREE(tn);
     return 0;
 }
 static CgxTid inf_builtin(CgxInf *c, CgxNode *n, CgxTid *a, int na) {
@@ -583,12 +583,12 @@ static CgxTid inf_builtin(CgxInf *c, CgxNode *n, CgxTid *a, int na) {
         case CGB_LEN: inf_need(c, n, 0, a[0], INF_KM(TYK_LIST) | INF_KM(TYK_STR) | INF_KM(TYK_MAP), "a list, str or map"); return c->I;
         case CGB_PUSH: {
             const CgxTid xs = inf_nn(c, an[0], a[0]); const CgxTid e = inf_as_list(c, xs);
-            if (!e) { INF_TN(tn, xs); inf_err(c, n->line, "%s: argument 1 expected a list, found %s", CGB[id - 1].use, tn); INF_FREE(tn); return c->V; }
+            if (!e) { INF_TN(tn, xs); inf_err(c, n->line, "%s: argument 1 expected a list, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); return c->V; }
             const InfSite st = {ST_PUSH, 0, NULL, NULL}; inf_sub_at(c, e, a[1], an[1], n->line, &st);
             return c->V;
         }
-        case CGB_POP: { const CgxTid e = inf_as_list(c, inf_nn(c, an[0], a[0])); if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list, found %s", CGB[id - 1].use, tn); INF_FREE(tn); return c->A; } return e; }
-        case CGB_STR: if (inf_k(c, a[0]) == TYK_VOID) inf_err(c, n->line, "%s: argument 1 expected a value, found void", CGB[id - 1].use); return c->S;
+        case CGB_POP: { const CgxTid e = inf_as_list(c, inf_nn(c, an[0], a[0])); if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); return c->A; } return e; }
+        case CGB_STR: if (inf_k(c, a[0]) == TYK_VOID) inf_err(c, n->line, "%s: argument 1 expected a value, found void", cgx_op_by_id(id)->use); return c->S;
         case CGB_INT: inf_need(c, n, 0, a[0], INF_NUM | INF_KM(TYK_STR) | INF_KM(TYK_BOOL), "a number or str"); return c->I;
         case CGB_FLOAT: inf_need(c, n, 0, a[0], INF_NUM | INF_KM(TYK_STR), "a number or str"); return c->F;
         case CGB_UPPER: case CGB_LOWER: case CGB_TRIM: inf_need(c, n, 0, a[0], INF_KM(TYK_STR), "a str"); return c->S;
@@ -596,14 +596,14 @@ static CgxTid inf_builtin(CgxInf *c, CgxNode *n, CgxTid *a, int na) {
         case CGB_WORDS: inf_need(c, n, 0, a[0], INF_KM(TYK_STR), "a str"); return cgx_ty_list(c->T, c->S);
         case CGB_JOIN: {
             const CgxTid e = inf_as_list(c, inf_nn(c, an[0], a[0]));
-            if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list of str, found %s", CGB[id - 1].use, tn); INF_FREE(tn); }
+            if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list of str, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); }
             else if (!inf_unify(c, e, c->S)) inf_err(c, n->line, "join: the list must hold str (convert with str(x) first)");
             inf_need(c, n, 1, a[1], INF_KM(TYK_STR), "a str separator"); return c->S;
         }
         case CGB_CONTAINS: {
             const CgxTid x = inf_f(c, inf_nn(c, an[0], a[0])); const int k = c->T->t[x].k;
             if (k == TYK_VAR || k == TYK_LIST || k == TYK_STR || k == TYK_MAP || k == TYK_ANY) inf_pend_add(c, IP_CONTAINS, x, a[1], 0, n);
-            else { INF_TN(tn, x); inf_err(c, n->line, "%s: argument 1 expected a str, list or map, found %s", CGB[id - 1].use, tn); INF_FREE(tn); }
+            else { INF_TN(tn, x); inf_err(c, n->line, "%s: argument 1 expected a str, list or map, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); }
             return c->B;
         }
         case CGB_INDEXOF: inf_need(c, n, 0, a[0], INF_KM(TYK_STR), "a str"); inf_need(c, n, 1, a[1], INF_KM(TYK_STR), "a str"); return c->I;
@@ -614,8 +614,8 @@ static CgxTid inf_builtin(CgxInf *c, CgxNode *n, CgxTid *a, int na) {
             for (int i = 1; i < na; i++) inf_need(c, n, i, a[i], INF_KM(TYK_INT), "an int");
             return inf_nn(c, an[0], a[0]);
         }
-        case CGB_KEYS: { const CgxTid e = inf_as_map(c, inf_nn(c, an[0], a[0])); if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a map, found %s", CGB[id - 1].use, tn); INF_FREE(tn); } return cgx_ty_list(c->T, c->S); }
-        case CGB_PRINT: if (inf_k(c, a[0]) == TYK_VOID) inf_err(c, n->line, "%s: argument 1 expected a value, found void", CGB[id - 1].use); return c->V;
+        case CGB_KEYS: { const CgxTid e = inf_as_map(c, inf_nn(c, an[0], a[0])); if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a map, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); } return cgx_ty_list(c->T, c->S); }
+        case CGB_PRINT: if (inf_k(c, a[0]) == TYK_VOID) inf_err(c, n->line, "%s: argument 1 expected a value, found void", cgx_op_by_id(id)->use); return c->V;
         case CGB_ABS: inf_need(c, n, 0, a[0], INF_NUM, "a number"); return inf_nn(c, an[0], a[0]);
         case CGB_MIN: case CGB_MAX: {
             inf_need(c, n, 0, a[0], INF_NUM, "a number"); inf_need(c, n, 1, a[1], INF_NUM, "a number");
@@ -631,15 +631,15 @@ static CgxTid inf_builtin(CgxInf *c, CgxNode *n, CgxTid *a, int na) {
         case CGB_POW: inf_need(c, n, 0, a[0], INF_NUM, "a number"); inf_need(c, n, 1, a[1], INF_NUM, "a number"); return c->F;
         case CGB_SUM: {
             const CgxTid e = inf_as_list(c, inf_nn(c, an[0], a[0]));
-            if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list of numbers, found %s", CGB[id - 1].use, tn); INF_FREE(tn); return c->A; }
+            if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list of numbers, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); return c->A; }
             const CgxTid ef = inf_f(c, e); const int k = c->T->t[ef].k;
             if (k == TYK_VAR) inf_restrict(c, ef, INF_NUM);
-            else if (k != TYK_INT && k != TYK_FLOAT && k != TYK_ANY) { INF_TN(tn, e); inf_err(c, n->line, "%s: argument 1 expected a list of numbers, found list[%s]", CGB[id - 1].use, tn); INF_FREE(tn); return c->A; }
+            else if (k != TYK_INT && k != TYK_FLOAT && k != TYK_ANY) { INF_TN(tn, e); inf_err(c, n->line, "%s: argument 1 expected a list of numbers, found list[%s]", cgx_op_by_id(id)->use, tn); INF_FREE(tn); return c->A; }
             return ef;
         }
         case CGB_SORT: {
             const CgxTid e = inf_as_list(c, inf_nn(c, an[0], a[0]));
-            if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list, found %s", CGB[id - 1].use, tn); INF_FREE(tn); return c->A; }
+            if (!e) { INF_TN(tn, a[0]); inf_err(c, n->line, "%s: argument 1 expected a list, found %s", cgx_op_by_id(id)->use, tn); INF_FREE(tn); return c->A; }
             const CgxTid ef = inf_f(c, e); const int k = c->T->t[ef].k;
             if (k == TYK_VAR) inf_restrict(c, ef, INF_ORD);
             else if (k != TYK_INT && k != TYK_FLOAT && k != TYK_STR && k != TYK_ANY) { INF_TN(tn, e); inf_err(c, n->line, "sort: the elements must be numbers or str (they are ordered with `<`), found %s", tn); INF_FREE(tn); }
@@ -650,7 +650,7 @@ static CgxTid inf_builtin(CgxInf *c, CgxNode *n, CgxTid *a, int na) {
         case CGB_ERRMSG: {
             const CgxTid t = inf_f(c, a[0]);
             if (c->T->t[t].k == TYK_VAR) inf_bind(c, t, c->E);
-            else if (c->T->t[t].k != TYK_ANY && t != c->E) inf_err(c, n->line, "%s: argument 1 expected the error caught by `catch e`, found %s", CGB[id - 1].use, inf_kname(c->T->t[t].k));
+            else if (c->T->t[t].k != TYK_ANY && t != c->E) inf_err(c, n->line, "%s: argument 1 expected the error caught by `catch e`, found %s", cgx_op_by_id(id)->use, inf_kname(c->T->t[t].k));
             return c->S;
         }
     }
@@ -852,12 +852,12 @@ static CgxTid inf_ex(CgxInf *c, CgxNode *n, CgxTid want) {
             } else if (bi) {
                 CgxTid a[16]; const int na = n->b1.n > 16 ? 16 : n->b1.n; n->bi = bi;
                 for (int i = 0; i < n->b1.n; i++) { const CgxTid t = inf_ex(c, n->b1.p[i], 0); if (i < 16) a[i] = t; }
-                if (na < CGB[bi - 1].lo || na > CGB[bi - 1].hi) inf_err(c, n->line, "%s called with %d argument%s (expected %s)", n->s, na, na == 1 ? "" : "s", CGB[bi - 1].use);
+                if (na < cgx_op_by_id(bi)->lo || na > cgx_op_by_id(bi)->hi) inf_err(c, n->line, "%s called with %d argument%s (expected %s)", n->s, na, na == 1 ? "" : "s", cgx_op_by_id(bi)->use);
                 else r = inf_builtin(c, n, a, na);
             } else {
                 for (int i = 0; i < n->b1.n; i++) inf_ex(c, n->b1.p[i], 0);
                 if (inf_lookup(c, sid) >= 0) inf_err(c, n->line, "`%s` is a variable, not a function", n->s);
-                else inf_err(c, n->line, "unknown function `%s` (not defined in the spec and not a built-in; built-ins: %s)", n->s, CGX_BUILTIN_LIST);
+                else inf_err(c, n->line, "unknown function `%s` (not defined in the spec and not a built-in; built-ins: %s)", n->s, cgx_reg_names_all());
             }
             break;
         }
@@ -1140,12 +1140,13 @@ static int cgx_infer_ex(Cgx *g, CgxTypes *T, int flags, CgxB *rep) {
     c->sidErr = cgx_intern(g, "Error"); c->E = cgx_ty_class(T, c->sidErr);
     CgxNode *pr = g->prog; T->level = 0;
     /* tabelas por simbolo: funcoes, metodos, constantes, classes e embutidas */
-    for (int b = 0; CGB[b].n; b++) cgx_intern(g, CGB[b].n);
+    cgx_reg_init();
+    for (int b = 1; b <= cgx_nops; b++) cgx_intern(g, cgx_op_by_id(b)->name);
     for (int i = 0; i < pr->b1.n; i++) { CgxNode *d = pr->b1.p[i]; if (d->k == CGN_FN || d->k == CGN_CLASS || d->k == CGN_LET) cgx_intern(g, d->s); if (d->k == CGN_CLASS) for (int j = 0; j < d->b1.n; j++) if (d->b1.p[j]->s) cgx_intern(g, d->b1.p[j]->s); }
     c->nh = g->nsyms + 64;
     c->hfn = (int *)calloc((size_t)c->nh, sizeof(int)); c->hmeth = (int *)calloc((size_t)c->nh, sizeof(int)); c->hconst = (int *)calloc((size_t)c->nh, sizeof(int));
     c->hcls = (int *)calloc((size_t)c->nh, sizeof(int)); c->bi_of = (int *)calloc((size_t)c->nh, sizeof(int));
-    for (int b = 0; CGB[b].n; b++) c->bi_of[cgx_intern(g, CGB[b].n)] = CGB[b].id;
+    for (int b = 1; b <= cgx_nops; b++) c->bi_of[cgx_intern(g, cgx_op_by_id(b)->name)] = b;
     inf_bindgrow(c, c->nh);
     int ncu = 0; for (int i = 0; i < pr->b1.n; i++) { CgxNode *d = pr->b1.p[i]; ncu += d->k == CGN_FN || (d->k == CGN_LET && (d->flag & 1)) || d->k == CGN_LET; if (d->k == CGN_CLASS) for (int j = 0; j < d->b1.n; j++) ncu += d->b1.p[j]->k == CGN_FN; }
     c->u = (InfUnit *)calloc((size_t)ncu + 1, sizeof(InfUnit));
@@ -1155,7 +1156,7 @@ static int cgx_infer_ex(Cgx *g, CgxTypes *T, int flags, CgxB *rep) {
         if (d->k == CGN_FN) {
             const int sid = cgx_intern(g, d->s); InfUnit *u = &c->u[c->nu++]; u->d = d; u->kind = 0;
             if (c->hfn[sid]) inf_err(c, d->line, "`%s` is defined twice", d->s); else c->hfn[sid] = c->nu;
-            for (int b = 0; CGB[b].n; b++) if (!strcmp(CGB[b].n, d->s)) inf_err(c, d->line, "function `%s` has the name of a built-in (rename it; built-ins: %s)", d->s, CGX_BUILTIN_LIST);
+            for (int b = 1; b <= cgx_nops; b++) if (!strcmp(cgx_op_by_id(b)->name, d->s)) inf_err(c, d->line, "function `%s` has the name of a built-in (rename it; built-ins: %s)", d->s, cgx_reg_names_all());
         } else if (d->k == CGN_LET) { const int sid = cgx_intern(g, d->s); InfUnit *u = &c->u[c->nu++]; u->d = d; u->kind = 2; if (!c->hconst[sid]) c->hconst[sid] = c->nu; }
         else if (d->k == CGN_CLASS) {
             const int sid = cgx_intern(g, d->s);
