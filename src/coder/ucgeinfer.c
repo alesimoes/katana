@@ -383,8 +383,15 @@ static void inf_hint(CgxInf *c, CgxTid d, CgxTid s, CgxB *h) {
     else if (kd == ks && (kd == TYK_LIST || kd == TYK_MAP)) cgx_bs(h, "lists and maps are invariant: the element types must match exactly");
     else cgx_bs(h, "annotate the source with the type you expect, or convert the value");
 }
+static int inf_contains(CgxInf *c, CgxTid v, CgxTid t) {              /* a variavel v ocorre em t? (sem mexer nos niveis) */
+    t = inf_f(c, t); if (t == v) return 1;
+    for (int i = 0; i < c->T->t[t].n; i++) if (inf_contains(c, v, c->T->t[t].a[i])) return 1;
+    return 0;
+}
 static int inf_sub_at(CgxInf *c, CgxTid d, CgxTid s, CgxNode *sn, int line, const InfSite *st) {
     if (inf_sub(c, d, s, sn)) return 1;
+    { const CgxTid fd = inf_f(c, d), fs = inf_f(c, s);
+      if (c->T->t[fd].k == TYK_VAR && fd != fs && inf_contains(c, fd, fs)) { inf_err(c, line, "infinite type: this would make a value contain itself (a list or map that holds the very variable it is stored in); use a different variable for the nested value"); return 0; } }
     CgxB h = {0}; inf_hint(c, d, s, &h);
     INF_TN(td, d); INF_TN(ts, s);
     switch (st->kind) {

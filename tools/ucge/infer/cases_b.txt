@@ -315,3 +315,24 @@ test f() == "a"
 fn f() -> int
   return 1
 test f()
+### err occurs check on assignment
+@fail
+@has infinite type: this would make a value contain itself
+fn f(x)
+  x = [x]
+  return 0
+### err occurs check on push
+@fail
+@has infinite type
+fn f() -> int
+  let xs = []
+  push(xs, xs)
+  return 0
+### err occurs check keeps the rest of the program usable
+@fail
+@has fn g: () -> int [declared]
+fn f(x)
+  x = [x]
+  return 0
+fn g() -> int
+  return 1

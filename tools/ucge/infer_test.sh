@@ -30,6 +30,13 @@ for f in "$HERE"/infer/cases_*.txt; do
     if [ $okc = 1 ]; then [ "$V" = 1 ] && echo "ok   $name"; else BAD=$((BAD+1)); echo "FAIL $name ($why)"; echo "$out" | grep -v '^--\|^nodes' | head -14 | sed 's/^/     | /'; fi
   done
 done
+# ---- as 15 tarefas da fase 1: a inferencia ligada ao validador (--infer) aceita todas e os testes dados continuam passando ----
+for f in "$HERE"/tasks/*.csp; do
+  b=$(basename "$f" .csp); N=$((N+1)); out=$("$U" check "$f" --infer 2>&1)
+  case "$out" in *ok) ;; *) BAD=$((BAD+1)); echo "FAIL tarefa $b com --infer"; echo "$out" | head -5 | sed 's/^/     | /'; continue ;; esac
+  case $(cat "$f") in *raw*) continue ;; esac
+  N=$((N+1)); out=$("$U" run python "$f" --infer 2>&1); case "$out" in *" 0 failed"*) ;; *) BAD=$((BAD+1)); echo "FAIL tarefa $b roda com --infer"; echo "$out" | head -5 | sed 's/^/     | /' ;; esac
+done
 echo "cases: $N, failed: $BAD"
 P=0
 if [ "${PROP:-1}" != 0 ] && command -v python3 >/dev/null 2>&1; then

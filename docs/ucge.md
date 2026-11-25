@@ -1,6 +1,6 @@
 # UCGE: Unified Code Generation Engine
 
-Status: phase 1 (design and core) done on branch `feat-ucge`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
+Status: phase 1 (design and core) done on branch `feat-ucge`; module C (type inference, section 5b) done on `feat-ucge-infer`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
 katana build** (`src/katana.c` does not include it; the files are `static` and compile standalone with `tools/ucge/ucgecli.c`). Phase 2 adds the include
 line after `coder/symedit.c` and the `CodeGen` tool.
 
@@ -192,18 +192,107 @@ Why Hindley-Milner plus a gradual extension, and not either alone:
   generic functions for free (`fn first(xs) -> ...` is `forall a. list[a] -> a`). Union-find unification is near-linear in practice and gives the principal type.
 - A target like Python or JS is dynamic and a `raw` block is unknown code: a **gradual** `any` that unifies with everything without binding anything
   (compatible both ways, never an error) keeps the system useful where information is missing and silent where it cannot know.
-- Flow-sensitive refinement (for nullable and union types, after `if x != null`) is a **pass over UIR-G** using the dataflow framework of section 6, not
-  part of unification: unification stays simple and the flow facts come from the one analysis engine.
+- Flow-sensitive refinement (for nullable and union types, after `if x != null`) is done **inside the inference over the AST** (section 5b): structured control
+  flow makes the narrowing a scoped slot with an undo trail, which needs no CFG; the SSA/dataflow version (module D) can replace it later without changing the typed AST.
 - Type errors name both types and the expected one (`ADD of int and str (expected two numbers or two str; convert with str(x))`).
 
 Phase 1 behaviour (checker in `ucgecheck.c`, intentionally simpler): declared types plus local inference of `let`, literals, built-ins and calls; list and
 map element type is fixed by the first `push` or literal; return type inferred in two passes; `any` for the unknown.
 
+## 5b. Type inference (`ucgeinfer.c`, module C)
+
+`int cgx_infer(Cgx *g, CgxTypes *T)` (and `cgx_infer_ex(g, T, flags, report)`) types the whole program; `cgx_check_ex(g, T, infer)` is the validator entry that
+runs the phase 1 rules first and the inference after them (`ucgecli check|gen|run|stats --infer` turns it on; `ucgecli infer FILE [--lets] [--uses] [--check]`
+prints errors, the typed signatures with their certainty, and the gradual checks). It is **optional**: nothing in `cgx_check` changed, the 60 checks of
+`tools/ucge/test.sh` are the phase 1 behaviour. It also runs without `cgx_check` (it reports the scope errors itself) so that specs can be typed alone.
+One call per parse (the results are stored in the AST).
+
+**What it writes.** Every typed AST node gets `tid` (an id in the caller's `CgxTypes`; `TYK_GEN(i)` is the i-th type parameter of the enclosing
+function, so a backend with generics reads `list['a] -> 'a` straight from the `FN` node, and a monomorphizing one instantiates it), `cert` (1 derived,
+2 declared, 3 gradual: **never "exact"**) and, where a gradual value meets a concrete slot, `chk` = the type that value must have there. `chk` is a mark
+on the AST for the backend to turn into a cast or an assertion; the engine inserts no run-time test itself. Nothing is written into `n->ty`, so the
+phase 1 backends keep reading what they read.
+
+**Algorithm.** Algorithm J (destructive unification over the union-find of `ucgetype.c`) with generalization by levels (Remy): every variable carries the level
+of the `let` depth where it was created, the occurs check lowers the levels of what a variable is bound to, and a function is generalized when its recursion
+group is done (variables deeper than the outer level become `TYK_GEN`). Pieces added to plain HM:
+
+1. **Call graph and SCCs** (Tarjan): functions, methods and module constants are nodes; edges come from `CALL`, `MCALL` (every method of that name) and uses of
+   a constant. Groups are inferred callee first; inside a group a function is monomorphic (so mutual recursion types), after it the scheme is instantiated per call.
+2. **Variable classes** (a bit mask of allowed kinds per variable, kept in the scheme): `a + b` on two unknowns gives `'a, 'a -> 'a where 'a in int|float|str`,
+   `x * 2` gives `number`, `len(x)` gives `str|list|map`. This is what lets `fn add(a, b)` be generic and still reject `add(true, false)`. Binding a variable checks the
+   mask; unifying two variables intersects them.
+3. **Pending overloads** (index `x[i]`, `in`, `contains`, `for x in c`): resolved the moment the container type is known (after each statement); anything still
+   open at the end of the group defaults to the list reading (`x[i]` and `for` on an unannotated parameter infer a list; annotate `str` to get the string one).
+4. **Bidirectional**: the expected type (annotated parameter, declared return, annotated `let`, field default) is pushed into list and map literals, `?:` and
+   `null`, so `let xs: list[float] = [1, 2]` and `return []` check against the annotation instead of being inferred and compared afterwards.
+5. **Gradual `any`**: consistent with everything, never an error. A variable unified with `any` is bound to `any` (so `push(xs, anyValue)` makes `list[any]`: the
+   list cannot later be trusted to hold only ints). Each `any -> concrete` boundary is recorded in `chk`.
+6. **Flow typing** (`x != null`, `x == null`, `not`, `and`/`or` short circuit, `?:`, early exit by `return/throw/break/continue`, equality with a literal on `any`,
+   unions and optionals, assignment of a non-null value): the narrowed type lives in a per-symbol slot with an undo trail; any assignment kills it (also in the
+   enclosing scopes), loops and `try` kill what their bodies assign before they are entered, a user call kills the narrowed `obj.field` paths.
+7. **Unions** only come from joins: `?:` branches, returns of an unannotated function, list and map literal elements, `try`/`catch` returns. Everywhere else a type
+   mismatch is an error. Optional `T?` is `T | null`; `null` has type `'a?`.
+
+**Typing rules** (what the error texts mention):
+
+| Construct | Rule |
+|---|---|
+| literals | `int`, `float`, `str`, `bool`; `null : 'a?` |
+| `+` `-` `*` | numbers (int op float is float, int op int is int); `+` also `str + str`; an unknown operand gets the class; `any` gives `any` (and a check) |
+| `/` | two numbers, result `float`; `//` `%` two `int`, result `int` |
+| `< <= > >=` | two numbers or two `str`; result `bool` |
+| `== !=` | the two sides must be compatible (`int`/`float` mix, `T` with `T?`, `null` with an optional); result `bool` |
+| `and or not` `if` `while` `?:` conditions | `bool` (no truthiness); `any` is accepted with a check |
+| `xs[i]` `m[k]` `s[i]` | `list[T]` with `int` gives `T`, `map[T]` with `str` gives `T`, `str` with `int` gives `str` |
+| `obj.f` `obj.m(..)` | class fields and methods; an unknown receiver is the one class that has that name, or an error asking for the annotation |
+| `f(a, b)` | arity (defaults optional), each argument assignable to the instantiated parameter (`int` into `float` yes, `list[int]` into `list[float]` no), result = instantiated return |
+| `Class(a)` | the `init` signature, result the class; no `init` means no arguments |
+| `let x = e` | `x : typeof(e)`; `let x: T = e` checks `e <= T`; `let x: str = null` declares an optional `str?` |
+| `x = e`, `x += e` | `e` assignable to the declared type of `x`; `+=` also needs the operator to type, and an `int` cannot take a `float` |
+| `return e` | assignable to the declared return; without one, the join of all returns (value and bare `return` mixed is an error) |
+| `for i in a..b` | `int` bounds, `i : int`; `for x in c`: `list[T]` gives `T`, `str` gives `str`, `map` gives the key (one name) or key and value (two) |
+| `catch e` | `e : Error`; `errmsg(e) : str`; `throw` takes `str` or an `Error` |
+| built-ins | one rule each (`len: str|list|map -> int`, `sort: list[a] -> list[a]` with `a` ordered, `sum: list[a] -> a` with `a` numeric, `contains`, `slice`, `keys`, ...): `inf_builtin` in `ucgeinfer.c` is the single place, to be replaced by the Operation Registry rows (module I) |
+
+**Errors** carry the line (the AST has no columns), what was expected, what was found, and a hint (`convert with int(x)`, `convert with str(x)`, `the value may be
+null; test x != null first`, `write the comparison`, `annotate the parameter with the class name`, `did you mean total?`). The texts of the phase 1 checks that
+the inference also covers are the same strings. After an error the node is typed `any` so one mistake does not cascade.
+
+**Certainty report** (`cgx_infer_ex` with a buffer): one line per function and method with its scheme (`fn first: (list['a]) -> 'a [derived]`; classes as
+`where 'a in int|float`), the fields, the gradual checks (`check line 3: a gradual value must be int here`) and the counts by grade. `[declared]` means every
+parameter and the return are written in the spec, `[derived]` that something was inferred by unification, `[any]` that `any` is part of the signature or of the node
+type. Derived is as strong as the typing rules above; it is **not** a proof about the program (see the limits).
+
+**Complexity.** Unification is near-linear (union-find with path compression, hash-consed types: structural equality is an integer compare). Tarjan is
+O(V+E). Generalization and instantiation walk the type once, O(size of the signature). The pending list is retried after each statement, O(P) per statement while
+anything is open (P is small: only unresolved containers). Narrowing kills walk the trail, O(trail) per assignment. 3000 chained generic functions (33k nodes) and
+one function with 3000 `let`/`if` pairs (27k nodes) type in under 70 ms.
+
+**Limits (known, documented, covered by tests where they are visible).**
+- Annotations cannot spell `T?`, `list[list[T]]`, `A | B` (the parser keeps one base kind): a nested annotation or a bare `list`/`list[any]` means "element to infer"; optionals come from `null`.
+- There is no `is` operator in the grammar, so type tests narrow only through `== null`, `!= null` and equality with a literal.
+- `int` and `float` share a variable in a generic function (`fn add(a, b)`): `add(1, 2.5)` is rejected (the two parameters have one type); annotate one as `float`.
+- Lists and maps are invariant: `list[int]` does not go where `list[float]` is expected.
+- Pending defaults: an unannotated container used only by `x[i]` or `for` is read as a list.
+- Methods and fields are not generic per object: a class field with an unknown element type is fixed by its first use anywhere in the program.
+- Narrowing of `obj.field` is one level (`x.f`), and any user call forgets it; a path through two fields (`a.b.c`) is not narrowed.
+- At most 24 type parameters per function (the rest stay weak and become `any`), 39 parameters, 8 narrowing facts per condition.
+- `any` is bound into a variable it meets, so a gradual value makes the containers it touches `any`-typed: that is sound, and loses precision.
+- Every error is a line, not a column; type errors are not ranked (the first mismatch found reports).
+- The unannotated results are [derived]: sound for the rules above, but the engine does not model run-time facts (list bounds, division by zero, integer width).
+
+**Tests.** `sh tools/ucge/infer_test.sh`: 361 cases in `tools/ucge/infer/cases_*.txt` (typed programs, exact error texts, polymorphism, recursion and mutual
+recursion, unions, flow typing, gradual, classes, bidirectional, generic list helpers), the 15 tasks with `--infer`, and `tools/ucge/infer_prop.py`, a soundness
+property: programs well typed **by construction** (random typed expression and statement generators, annotated and unannotated parameters, calls between the generated
+functions) are inferred, generated to Python, executed with random arguments, and the observed type of every result must fit the inferred one; wrong-typed return
+annotations and wrong-typed arguments are injected and must be rejected. Failure of either side fails the script (the script was checked by injecting a typing bug).
+
 ## 6. Algorithms (decisions and why)
 
 1. **Parsing**: hand-written, line-oriented with an indent stack, recursive descent with precedence climbing for expressions. No parser generator: the error
    messages ("expected X, found Y") and the leniency list are easier to control, and the grammar is small.
-2. **Type inference** (phase 2, `ucgeinfer.c`): constraint-free algorithm W with union-find and levels (Remy): `let` generalizes variables whose level is
+2. **Type inference** (`ucgeinfer.c`, done, section 5b): algorithm J with union-find and levels (Remy): `let` generalizes variables whose level is
    deeper than the current one. `any` and `raw`-defined names are gradual. Classes get nominal types; method calls resolve through the class table.
 3. **Control-flow graph and SSA** (phase 2, `ucgeir.c`): blocks from structured nodes (no goto, so the CFG is reducible by construction). **Dominators**
    by Cooper-Harvey-Kennedy (iterate over the reverse post-order with the `intersect` on idoms: simple, fast on reducible graphs, no Lengauer-Tarjan needed
@@ -278,12 +367,14 @@ every finding and never says "exact":
 |---|---|---|
 | `src/coder/ucge.c` | arena, interning, AST, lexer, parser (CSP + JSON), errors | 1 |
 | `src/coder/ucgecheck.c` | built-in table, semantic validator, statistics | 1 |
-| `src/coder/ucgetype.c` | type table, union-find unification, generalization, schemes | 1 (not yet wired) |
+| `src/coder/ucgetype.c` | type table, union-find unification, generalization, schemes | 1 |
+| `src/coder/ucgeinfer.c` | type inference (HM + levels + gradual + flow typing), certainty report, `cgx_check_ex` | 2 (module C) |
 | `src/coder/ucgedoc.c` | document algebra, renderer, `CgxGenOpts`, `CgxBackend` | 1 |
 | `src/coder/ucgepy.c` | Python backend (reference) and the backend registry | 1 |
 | `src/coder/ucge_api.h` | the contract between phases (documentation only) | 1 |
 | `tools/ucge/ucgecli.c` | standalone driver: `check gen run stats selftest` | 1 |
 | `tools/ucge/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
+| `tools/ucge/infer_test.sh`, `infer/cases_*.txt`, `infer_prop.py` | inference tests: 361 cases, the soundness property | 2 |
 | `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
 
 Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.
@@ -316,7 +407,7 @@ under `tools/ucge/` and keeps `sh tools/ucge/test.sh` green. Interfaces between 
 |---|---|---|---|---|
 | A | JS and TS backends (`ucgejs.c`) | `CgxBackend` for `js` and `ts` (types as annotations), helpers for `//` and `%` floor, `catch`, classes, harness for `node` | `gen(g, opts, code, tests)` registered in `CGX_BACKENDS` | the 13 raw-free tasks pass their tests on node 20; TS output passes a bracket/scanner check (no `tsc` here) |
 | B | C backend (`ucgec.c`) | scalars, `str` as `const char *`, lists as pointer + length (parameters expand), classes as structs + functions, defaults filled at call sites; `try/throw` rejected with a message | same | tasks 01, 04, 06, 10, 12, 13 compile with `gcc -Wall -Werror` and pass; unsupported constructs give the exact message |
-| C | Type inference (`ucgeinfer.c`) | HM with let-polymorphism over `ucgetype.c`, gradual `any`, classes, replaces the type part of `cgx_check` | `int cgx_infer(Cgx *, CgxTypes *)`, same error texts, `n->ty` filled (plus `n->tid`) | all current error tests unchanged; `fn first(xs)` infers `list[a] -> a`; unification tests added to `selftest` |
+| C (done) | Type inference (`ucgeinfer.c`) | HM with let-polymorphism over `ucgetype.c`, gradual `any`, classes, replaces the type part of `cgx_check` | `int cgx_infer(Cgx *, CgxTypes *)`, same error texts, `n->ty` filled (plus `n->tid`) | all current error tests unchanged; `fn first(xs)` infers `list[a] -> a`; unification tests added to `selftest` |
 | D | IR and analyses (`ucgeir.c`, `ucgeflow.c`, `ucgeopt.c`) | CFG, dominators (CHK), SSA, worklist solver, reaching defs, liveness, SCCP, definite assignment, call graph (Tarjan), unused/unreachable/pure reports, optional folding | `cgx_ir_build`, `cgx_flow_run`, `cgx_opt_fold` (see the API header) | dumps stable for the tasks; a seeded set of 20 programs with known dead code, unused names and unreachable branches is reported exactly, no false positive on the 15 tasks |
 | E | Validator and runner (`ucgerun.c`) | per-target syntax tools, scanner cross-check (`coder_parse`: every spec symbol present with the right kind), raw balance (`se_mask`/`se_balance`), sandboxed execution of `test` lines (limits: CPU time, memory, tmp cwd, no env), graded report text | `int cgx_validate(Cgx *, const CgxBackend *, const char *code, CgxB *report)` | report grades match section 8; RAW never executes unless asked; timeouts and crashes are reported, not fatal |
 | F | Tool and integration (`ucgetool.c`, `src/tools/codegen.c`, table, `docs/tools.md`) | `CodeGen` tool, `path`/`symbol`/`where` through `ct_edit_symbol`, create/insert, index `extern` lookup, include in `katana.c`, `tools/tooltest/ucge.sh` | `ucge_tool(js, end, out, cap)` | declaration under the token limit (tests that check it green), `sh build.sh` and the tool tests (files, meta, find, misc, loopnotes, lsp, launch, symedit, render) green |
@@ -334,7 +425,7 @@ mappings (or those two keep their mappings in a local table that I then absorbs)
 
 ## 14. Left out of phase 1
 
-JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
+JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
 and unused-name reports, constant folding; the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
 validator/runner with the graded report (the CLI runs Python tests only, with `ulimit` and `timeout`, which is not a sandbox); the coder index lookup for
 `extern` functions; tuples, closures, imports, inheritance, typed errors, regex outside `matches`, formatting; the protocol text for the model and any
