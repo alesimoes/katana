@@ -159,9 +159,10 @@ static void cgx_dom_build(CgxDom *d, const CgxDg *g, int entry) {
     for (int i = 0; i < np; i++) {
         const int b = d->rpo[i]; int np_ = 0;
         for (int k = g->pp[b]; k < g->pp[b + 1]; k++) if (d->rponum[g->p[k]] >= 0) np_++;
-        if (np_ < 2) continue;
+        if (np_ < 2 && b != entry) continue;                                      /* a entrada com um retorno tem uma predecessora virtual a mais */
         for (int k = g->pp[b]; k < g->pp[b + 1]; k++) {
             int r = g->p[k]; if (d->rponum[r] < 0) continue;
+            if (b == entry) { for (;;) { if (!(dv[r].n && dv[r].p[dv[r].n - 1] == b)) cgx_vi_push(&dv[r], b); if (r == entry) break; r = d->idom[r]; } continue; }
             while (r != d->idom[b]) { if (!(dv[r].n && dv[r].p[dv[r].n - 1] == b)) cgx_vi_push(&dv[r], b); r = d->idom[r]; }
         }
     }
@@ -730,6 +731,7 @@ static void lw_stmt(Lw *L, CgxNode *s) {
             L->f->has_try = 1;
             const int join = lw_bb(L), mid = lw_bb(L);
             const int h = s->flag ? lw_bb(L) : -1;
+            { const int tb = lw_bb(L); lw_jmp(L, tb); L->cur = tb; }               /* o corpo comeca num bloco novo: a aresta excepcional de um bloco vale para todas as suas instrucoes, entao nenhuma de fora do try pode estar nele */
             if (s->iv) lw_ctx_push(L, 1, -1, s);
             const int fin_idx = s->iv ? L->ncx - 1 : -1;
             if (s->flag) lw_ctx_push(L, 0, h, NULL);

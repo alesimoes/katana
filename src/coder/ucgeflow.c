@@ -1,6 +1,6 @@
 /* ---------- coder/ucgeflow.c: UCGE, UIR-G parte 2: analises de fluxo de dados, SCCP, chamadas e relatorio (docs/ucge.md, secao 6.4 a 6.6) ----------
  * Um unico resolvedor de ponto fixo com lista de trabalho para reticulados de conjuntos de bits (direcao, uniao ou intersecao, funcao de
- * transferencia gen/kill ou escrita a mao) e as instancias: vivacidade (para trás), definicoes alcancaveis (para frente, uniao), expressoes
+ * transferencia gen/kill ou escrita a mao) e as instancias: vivacidade (para tras), definicoes alcancaveis (para frente, uniao), expressoes
  * disponiveis (para frente, intersecao) e atribuicao definitiva (para frente, intersecao). A propagacao esparsa condicional de constantes
  * (Wegman e Zadeck) roda sobre a SSA com um reticulado proprio (topo, constante, fundo) e acha tambem os blocos inalcancaveis. Em cima
  * disso: codigo morto por marcacao a partir das instrucoes com efeito, variaveis nao usadas, retornos faltando, lacos sem saida, e o
@@ -42,9 +42,9 @@ static void cgx_dfa_solve(CgxDfa *d) {
             if (!any) { memcpy(acc, po, sizeof(CgxW) * (size_t)nw); any = 1; }
             else if (d->must) for (int w = 0; w < nw; w++) acc[w] &= po[w]; else for (int w = 0; w < nw; w++) acc[w] |= po[w];
         }
-        const int boundary_blk = d->fwd ? b == d->dom->entry : (np_[b + 1] - np_[b] == 0);       /* entrada (frente) ou saida sem sucessor (tras) */
+        const int boundary_blk = d->fwd ? b == d->dom->entry : (sp_[b + 1] == sp_[b]);       /* entrada (frente) ou saida sem sucessor (tras) */
         if (boundary_blk) { if (d->boundary) memcpy(acc, d->boundary, sizeof(CgxW) * (size_t)nw); else memset(acc, 0, sizeof(CgxW) * (size_t)nw); }
-        else if (!any) { if (d->must) memset(acc, 0, sizeof(CgxW) * (size_t)nw); }               /* sem informacao ainda */
+        else if (!any) { if (d->must) memset(acc, 0xff, sizeof(CgxW) * (size_t)nw); }             /* sem informacao ainda: o alto do reticulado (so blocos sem caminho ate a fronteira) */
         memcpy(bin, acc, sizeof(CgxW) * (size_t)nw);
         if (d->xfer) d->xfer(d->ctx, b, bin, tmp);
         else for (int w = 0; w < nw; w++) tmp[w] = d->gen[(size_t)b * (size_t)nw + (size_t)w] | (bin[w] & ~d->kill[(size_t)b * (size_t)nw + (size_t)w]);
@@ -132,8 +132,8 @@ static void cgx_defassign_run(const CgxFnIr *f, CgxW **in, int *nwo, long *visit
 
 /* expressoes disponiveis: BIN e UN sobre variaveis e constantes (temporarios que nao sao constantes contam como distintos). Chave = (op, operando, operando) */
 typedef struct { int op, sub, ka, va, kb, vb; } CgxExprKey;       /* k: 0 nada, 1 variavel, 2 temporario, 3 constante (va = indice na tabela de constantes) */
-typedef struct { CgxExprKey *key; int n, cap; CgxW *in, *out; int nw; long visits; int nredundant; CgxVi red; } CgxAvail;
-static void cgx_avail_free(CgxAvail *a) { free(a->key); free(a->in); free(a->out); cgx_vi_free(&a->red); memset(a, 0, sizeof *a); }
+typedef struct { CgxExprKey *key; int n, cap; CgxW *in, *out; int nw; long visits; int nredundant; CgxVi red; int *ht, htn; CgxVi *byvar; int nbyvar; } CgxAvail;
+static void cgx_avail_free(CgxAvail *a) { free(a->key); free(a->in); free(a->out); cgx_vi_free(&a->red); free(a->ht); for (int i = 0; i < a->nbyvar; i++) cgx_vi_free(&a->byvar[i]); free(a->byvar); memset(a, 0, sizeof *a); }
 static void cgx_avail_opkey(const CgxFnIr *f, int x, int *k, int *v) {
     if (x == CGX_NIL) { *k = 0; *v = 0; return; }
     if (x < 0) { *k = 1; *v = CGX_VARIDX(x); return; }
@@ -146,10 +146,17 @@ static void cgx_avail_opkey(const CgxFnIr *f, int x, int *k, int *v) {
     }
     *k = 2; *v = x;
 }
-static int cgx_avail_find(CgxAvail *a, const CgxExprKey *k, int add) {
-    for (int i = 0; i < a->n; i++) if (!memcmp(&a->key[i], k, sizeof *k)) return i;
+static unsigned cgx_avail_hash(const CgxExprKey *k) { unsigned h = 2166136261u; const unsigned char *p = (const unsigned char *)k; for (size_t i = 0; i < sizeof *k; i++) h = (h ^ p[i]) * 16777619u; return h; }
+static int cgx_avail_find(CgxAvail *a, const CgxExprKey *k, int add) {          /* tabela hash de enderecamento aberto sobre a chave inteira */
+    if (a->n * 2 >= a->htn) {
+        const int nn = a->htn ? a->htn * 2 : 256; int *t = (int *)cgx_xcalloc((size_t)nn, sizeof(int));
+        for (int i = 0; i < a->n; i++) { unsigned h = cgx_avail_hash(&a->key[i]) & (unsigned)(nn - 1); while (t[h]) h = (h + 1) & (unsigned)(nn - 1); t[h] = i + 1; }
+        free(a->ht); a->ht = t; a->htn = nn;
+    }
+    unsigned h = cgx_avail_hash(k) & (unsigned)(a->htn - 1);
+    while (a->ht[h]) { if (!memcmp(&a->key[a->ht[h] - 1], k, sizeof *k)) return a->ht[h] - 1; h = (h + 1) & (unsigned)(a->htn - 1); }
     if (!add) return -1;
-    a->key = (CgxExprKey *)cgx_xgrow(a->key, &a->cap, a->n + 1, sizeof(CgxExprKey)); a->key[a->n] = *k; return a->n++;
+    a->key = (CgxExprKey *)cgx_xgrow(a->key, &a->cap, a->n + 1, sizeof(CgxExprKey)); a->key[a->n] = *k; a->ht[h] = a->n + 1; return a->n++;
 }
 static int cgx_avail_expr(const CgxFnIr *f, CgxAvail *a, const CgxIns *x, int add) {
     if (x->op != IO_BIN && x->op != IO_UN) return -1;
@@ -162,6 +169,8 @@ static void cgx_avail_run(const CgxFnIr *f, CgxAvail *a) {
     memset(a, 0, sizeof *a);
     for (int b = 0; b < f->nbb; b++) if (f->bb[b].reach) for (int k = 0; k < f->bb[b].ins.n; k++) cgx_avail_expr(f, a, &f->ins[f->bb[b].ins.p[k]], 1);
     const int nw = cgx_nw(a->n ? a->n : 1); a->nw = nw;
+    a->nbyvar = f->nvar; a->byvar = (CgxVi *)cgx_xcalloc((size_t)f->nvar + 1, sizeof(CgxVi));         /* expressoes que mencionam cada variavel */
+    for (int j = 0; j < a->n; j++) { if (a->key[j].ka == 1) cgx_vi_push(&a->byvar[a->key[j].va], j); if (a->key[j].kb == 1 && !(a->key[j].ka == 1 && a->key[j].va == a->key[j].vb)) cgx_vi_push(&a->byvar[a->key[j].vb], j); }
     CgxW *gen = cgx_bit_new(a->n ? a->n : 1, f->nbb), *kill = cgx_bit_new(a->n ? a->n : 1, f->nbb);
     for (int b = 0; b < f->nbb; b++) if (f->bb[b].reach) {
         CgxW *ge = gen + (size_t)b * (size_t)nw, *ki = kill + (size_t)b * (size_t)nw;
@@ -170,7 +179,7 @@ static void cgx_avail_run(const CgxFnIr *f, CgxAvail *a) {
             const int e = cgx_avail_expr(f, a, x, 0); if (e >= 0) cgx_bit_set(ge, e);
             for (int w = 0; w < 2; w++) {
                 const int dv = cgx_opvar(f, w ? x->d2 : x->dst); if (dv < 0) continue;
-                for (int j = 0; j < a->n; j++) if ((a->key[j].ka == 1 && a->key[j].va == dv) || (a->key[j].kb == 1 && a->key[j].vb == dv)) { cgx_bit_set(ki, j); cgx_bit_clr(ge, j); }
+                for (int q = 0; q < a->byvar[dv].n; q++) { const int j = a->byvar[dv].p[q]; cgx_bit_set(ki, j); cgx_bit_clr(ge, j); }
             }
         }
     }
@@ -186,7 +195,7 @@ static void cgx_avail_run(const CgxFnIr *f, CgxAvail *a) {
             if (e >= 0) { if (cgx_bit_get(cur, e)) { a->nredundant++; cgx_vi_push(&a->red, ix); } cgx_bit_set(cur, e); }
             for (int w = 0; w < 2; w++) {
                 const int dv = cgx_opvar(f, w ? x->d2 : x->dst); if (dv < 0) continue;
-                for (int j = 0; j < a->n; j++) if ((a->key[j].ka == 1 && a->key[j].va == dv) || (a->key[j].kb == 1 && a->key[j].vb == dv)) cgx_bit_clr(cur, j);
+                for (int q = 0; q < a->byvar[dv].n; q++) cgx_bit_clr(cur, a->byvar[dv].p[q]);
             }
         }
     }
@@ -669,32 +678,35 @@ static void cgx_flow_fn(const CgxIr *ir, const CgxFnIr *f, CgxFlowReport *r, Cgx
       for (int i = 0; i < av.red.n; i++) { const CgxIns *x = &f->ins[av.red.p[i]]; if (!S.bex[x->blk] || !x->node) continue;
           cgx_find(r, FK_REDUNDANT, x->line, CERT_DERIVED, 0, "`%s %s ...` was already computed on every path to here and its operands did not change; keep the first result in a variable (in %s)", x->op == IO_BIN ? "operation" : "operation", CGO_SYM[x->sub], fname); }
       cgx_avail_free(&av); }
-    /* variaveis: nunca usadas, e atribuicoes mortas */
-    for (int v = 0; v < f->nvar; v++) {
-        const CgxVar *vr = &f->var[v];
-        if (vr->kind != VAR_LET && vr->kind != VAR_PARAM) continue;
-        int anylive = 0, anyread = 0, ndef = 0, grouped_dup = 0;
-        for (int i = 1; i < f->nval; i++) if (f->val[i].var == v) {
-            const int d = f->val[i].def; if (d < 0 || !S.bex[f->ins[d].blk]) continue;
-            ndef++; if (lv[i]) anylive = 1;
-        }
-        for (int b = 0; b < f->nbb && !anyread; b++) if (f->bb[b].reach && S.bex[b]) for (int k = 0; k < f->bb[b].ins.n && !anyread; k++) {
+    /* variaveis: nunca usadas, e atribuicoes mortas (uma passada pelos valores e outra pelas instrucoes, nao uma por variavel) */
+    {
+        char *anylive = (char *)cgx_xcalloc((size_t)f->nvar + 1, 1), *anyread = (char *)cgx_xcalloc((size_t)f->nvar + 1, 1); int *ndef = (int *)cgx_xcalloc((size_t)f->nvar + 1, sizeof(int));
+        for (int i = 1; i < f->nval; i++) { const int v = f->val[i].var; const int d = f->val[i].def; if (v < 0 || d < 0 || !S.bex[f->ins[d].blk]) continue; ndef[v]++; if (lv[i]) anylive[v] = 1; }
+        for (int b = 0; b < f->nbb; b++) if (f->bb[b].reach && S.bex[b]) for (int k = 0; k < f->bb[b].ins.n; k++) {
             const CgxIns *x = &f->ins[f->bb[b].ins.p[k]]; if (x->op == IO_PHI) continue;
-            for (int o = 0; o < cgx_ins_nop(x); o++) { const int u = cgx_ins_op(x, o); if (u > 0 && u != CGX_NIL && f->val[u].var == v && !(x->dst > 0 && f->val[x->dst].var == v && x->op != IO_COPY)) { anyread = 1; break; } }
+            for (int o = 0; o < cgx_ins_nop(x); o++) { const int u = cgx_ins_op(x, o); if (u > 0 && u != CGX_NIL && f->val[u].var >= 0) anyread[f->val[u].var] = 1; }
         }
-        /* a mesma declaracao copiada (finally): so uma vez, e so se todas as copias estiverem sem uso */
-        for (int u = 0; u < v; u++) if (f->var[u].decl == vr->decl && f->var[u].kind == vr->kind && f->var[u].sid == vr->sid && vr->decl && vr->kind == VAR_LET) grouped_dup = 1;
-        if (vr->kind == VAR_PARAM) {
-            if (!anylive && ndef && f->fn->b1.n && !f->has_raw && !grouped_dup) cgx_find(r, FK_UNUSEDPARAM, vr->line, CERT_STRUCT, 0, "parameter `%s` is never used (in %s)", vr->name, fname);
-            continue;
+        for (int v = 0; v < f->nvar; v++) {
+            const CgxVar *vr = &f->var[v];
+            if (vr->kind != VAR_LET && vr->kind != VAR_PARAM) continue;
+            int grouped_dup = 0;
+            /* a mesma declaracao copiada (finally): so uma vez */
+            for (int u = 0; u < v; u++) if (f->var[u].decl == vr->decl && f->var[u].kind == vr->kind && f->var[u].sid == vr->sid && vr->decl && vr->kind == VAR_LET) grouped_dup = 1;
+            if (vr->kind == VAR_PARAM) {
+                if (!anylive[v] && ndef[v] && f->fn->b1.n && !f->has_raw && !grouped_dup) cgx_find(r, FK_UNUSEDPARAM, vr->line, CERT_STRUCT, 0, "parameter `%s` is never used (in %s)", vr->name, fname);
+                continue;
+            }
+            if (grouped_dup) continue;
+            if (!anylive[v] && !ndef[v]) continue;                                  /* so existe em codigo inalcancavel: o achado de inalcancavel ja cobre */
+            if (!anylive[v]) { if (anyread[v]) cgx_find(r, FK_UNUSEDVAR, vr->line, CERT_DERIVED, 1, "variable `%s` is assigned but its value is never used (in %s)", vr->name, fname); else cgx_find(r, FK_UNUSEDVAR, vr->line, CERT_STRUCT, 1, "variable `%s` is never read (in %s)", vr->name, fname); continue; }
         }
-        if (grouped_dup) continue;
-        if (!anylive) { if (anyread) cgx_find(r, FK_UNUSEDVAR, vr->line, CERT_DERIVED, 1, "variable `%s` is assigned but its value is never used (in %s)", vr->name, fname); else cgx_find(r, FK_UNUSEDVAR, vr->line, CERT_STRUCT, 1, "variable `%s` is never read (in %s)", vr->name, fname); continue; }
-        for (int i = 1; i < f->nval; i++) if (f->val[i].var == v && !lv[i]) {                   /* variavel usada, mas esta atribuicao nao */
+        for (int i = 1; i < f->nval; i++) {                                           /* variavel usada, mas esta atribuicao nao */
+            const int v = f->val[i].var; if (v < 0 || lv[i] || !anylive[v] || f->var[v].kind != VAR_LET) continue;
             const int d = f->val[i].def; if (d < 0 || !S.bex[f->ins[d].blk]) continue;
             const CgxIns *x = &f->ins[d]; if (!x->node || (x->node->k != CGN_LET && x->node->k != CGN_ASSIGN)) continue;
-            cgx_find(r, FK_DEADSTORE, x->line, CERT_DERIVED, 1, "the value assigned to `%s` here is never read (it is overwritten, or the paths that read it do not run) (in %s)", vr->name, fname);
+            cgx_find(r, FK_DEADSTORE, x->line, CERT_DERIVED, 1, "the value assigned to `%s` here is never read (it is overwritten, or the paths that read it do not run) (in %s)", f->var[v].name, fname);
         }
+        free(anylive); free(anyread); free(ndef);
     }
     /* retorno que falta, e lacos sem saida */
     for (int b = 0; b < f->nbb; b++) if (f->bb[b].reach && S.bex[b]) for (int k = 0; k < f->bb[b].ins.n; k++) {

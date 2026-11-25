@@ -121,7 +121,7 @@ static int cgx_alg_blk(const CgxIr *ir, Cgx *g, CgxBlk *b) {
 /* ================= 3. reescrita guiada pela SSA e pelo SCCP ================= */
 typedef struct { CgxNode **p; int n, cap; } CgxNv;
 static void cgx_nv_push(CgxNv *v, CgxNode *x) { v->p = (CgxNode **)cgx_xgrow(v->p, &v->cap, v->n + 1, sizeof(CgxNode *)); v->p[v->n++] = x; }
-typedef struct { Cgx *g; CgxIr *ir; const CgxFnIr *f; CgxSccp S; char *lv, *li; int passes; CgxOptReport *rep; int changed; } CgxRw;
+typedef struct { Cgx *g; CgxIr *ir; const CgxFnIr *f; CgxSccp S; char *lv, *li; int passes; CgxOptReport *rep; int changed; int *vndef; } CgxRw;
 
 /* o valor de uma ocorrencia (entrada do mapa no -> valor) esta num bloco executavel? */
 static int cgx_occ_exec(const CgxRw *R, int e) {
@@ -182,11 +182,25 @@ static int rw_copyprop(CgxRw *R, CgxNode *n) {
     n->s = (char *)src->name; n->sid = src->sid; n->ref = src->decl;
     R->rep->copies++; R->changed++; return 1;
 }
+/* o no pode ser trocado pelo valor (ou sua avaliacao pode sumir)? Um no que o SCCP provou constante ja foi dobrado sem lancar: seus operandos
+ * sao constantes. O que sobra para checar e o que a dobra nao avaliou: a condicao de ?:, and e or, e partes que nao sao constantes. */
+static int rw_removable(const CgxRw *R, const CgxNode *n) {
+    if (!n || cgx_is_lit(n) || n->k == CGN_VAR) return 1;
+    CgxCv cv;
+    if ((n->k == CGN_UN || (n->k == CGN_BIN && n->op != CGO_AND && n->op != CGO_OR) || (n->k == CGN_CALL && n->bi)) && rw_const(R, n, &cv)) {
+        if (!rw_removable(R, n->a) || !rw_removable(R, n->b)) return 0;               /* a operacao dobrou, mas um operando pode ser um ?: com condicao com efeito */
+        for (int i = 0; i < n->b1.n; i++) if (!rw_removable(R, n->b1.p[i])) return 0;
+        return 1;
+    }
+    if (n->k == CGN_BIN && (n->op == CGO_AND || n->op == CGO_OR)) return rw_removable(R, n->a) && rw_removable(R, n->b);
+    if (n->k == CGN_TERN) return rw_removable(R, n->a) && rw_removable(R, n->b) && rw_removable(R, n->c);
+    return cgx_fx_removable(cgx_fx_expr(R->ir, n));
+}
 static void rw_expr(CgxRw *R, CgxNode *n) {
     if (!n || cgx_is_lit(n)) return;
     if ((R->passes & CGX_O_FOLD) && (n->k == CGN_VAR || n->k == CGN_BIN || n->k == CGN_UN || n->k == CGN_TERN || (n->k == CGN_CALL && n->bi))) {
         CgxCv cv;
-        if (rw_const(R, n, &cv) && cgx_fx_removable(cgx_fx_expr(R->ir, n))) {
+        if (rw_const(R, n, &cv) && rw_removable(R, n)) {
             CgxNode *l = cgx_cv_node(R->g, &cv, n->line);
             if (l) { if (n->k == CGN_VAR) R->rep->propagated++; else R->rep->folded++; R->changed++; cgx_become(n, l); return; }
         }
@@ -216,12 +230,7 @@ static int rw_def_dead(const CgxRw *R, const CgxNode *s) {                  /* t
     return n > 0;
 }
 /* quantas instrucoes (alcancaveis, fora phi) escrevem a variavel que a instrucao `ix` define: se ha outras, a declaracao `let` nao pode sumir */
-static int rw_ndefs(const CgxRw *R, int ix) {
-    const int v = R->f->val[R->f->ins[ix].dst].var; int n = 0;
-    for (int i = 0; i < R->f->nins; i++) { const CgxIns *x = &R->f->ins[i]; if (x->op == IO_PHI || !R->S.bex[x->blk]) continue;
-        if ((x->dst > 0 && R->f->val[x->dst].var == v) || (x->d2 > 0 && x->d2 != CGX_NIL && R->f->val[x->d2].var == v)) n++; }
-    return n;
-}
+static int rw_ndefs(const CgxRw *R, int ix) { return R->vndef[R->f->val[R->f->ins[ix].dst].var]; }
 static int rw_single_def(const CgxRw *R, const CgxNode *s) {
     for (int e = cgx_nm_first(R->f, s->id); e >= 0; e = cgx_nm_next(R->f, e)) if (R->f->nm[e].kind == NM_DEF && R->S.bex[R->f->ins[R->f->nm[e].x].blk] && rw_ndefs(R, R->f->nm[e].x) > 1) return 0;
     return 1;
@@ -260,7 +269,7 @@ static void rw_stmt(CgxRw *R, CgxNode *s, CgxNode *const *rest, int nrest, CgxNv
             break;
         case CGN_IF: {
             const int c = (R->passes & CGX_O_FOLD) ? cgx_cond_const(R->f, &R->S, s->a) : -1;
-            if (c >= 0 && cgx_fx_removable(cgx_fx_expr(R->ir, s->a))) {
+            if (c >= 0 && rw_removable(R, s->a)) {
                 CgxBlk *taken = c ? &s->b1 : &s->b2; int conflict = 0;
                 for (int i = 0; i < taken->n && !conflict; i++) { const CgxNode *t = taken->p[i]; if (t->k == CGN_LET && cgx_stmts_declare(rest, nrest, t->s)) conflict = 1; }
                 if (!conflict) {
@@ -276,7 +285,7 @@ static void rw_stmt(CgxRw *R, CgxNode *s, CgxNode *const *rest, int nrest, CgxNv
         }
         case CGN_WHILE: {
             const int c = (R->passes & CGX_O_FOLD) ? cgx_cond_const(R->f, &R->S, s->a) : -1;
-            if (c == 0 && cgx_fx_removable(cgx_fx_expr(R->ir, s->a))) { R->rep->loops++; R->changed++; return; }
+            if (c == 0 && rw_removable(R, s->a)) { R->rep->loops++; R->changed++; return; }
             rw_expr(R, s->a); rw_blk(R, &s->b1); break;
         }
         case CGN_FOR: rw_expr(R, s->a); rw_expr(R, s->b); rw_blk(R, &s->b1); break;
@@ -286,7 +295,8 @@ static void rw_stmt(CgxRw *R, CgxNode *s, CgxNode *const *rest, int nrest, CgxNv
     }
     cgx_nv_push(out, s);
 }
-/* temporarios: `let t = e` + proximo comando que usa t uma vez (e so ali) -> o comando recebe e no lugar de t */
+/* temporarios: `let t = e` + proximo comando que usa t uma vez (e so ali) -> o comando recebe e no lugar de t. Passada propria, depois das outras
+ * reescritas e so quando nada mais mudou na rodada: as contagens de uso de cada nome vem da AST (nao da SSA, que as reescritas da rodada invalidam) */
 static CgxNode *rw_find_var(CgxNode *n, const char *name) {
     if (!n) return NULL;
     if (n->k == CGN_VAR && !strcmp(n->s, name)) return n;
@@ -296,24 +306,29 @@ static CgxNode *rw_find_var(CgxNode *n, const char *name) {
     for (int i = 0; i < n->b1.n; i++) { r = rw_find_var(n->b1.p[i], name); if (r) return r; }
     return NULL;
 }
-static int cgx_count_var_blk(const CgxBlk *b, const char *name) {
-    int c = 0;
-    for (int i = 0; i < b->n; i++) {
-        const CgxNode *s = b->p[i];
-        c += cgx_count_var(s->a, name) + cgx_count_var(s->b, name) + cgx_count_var(s->c, name);
-        c += cgx_count_var_blk(&s->b1, name) + cgx_count_var_blk(&s->b2, name) + cgx_count_var_blk(&s->b3, name);
-        if (s->k == CGN_EACH || s->k == CGN_FOR) c += s->s && !strcmp(s->s, name);
-    }
-    return c;
+static void rw_count_names(Cgx *g, const CgxNode *n, int *cnt) {
+    if (!n) return;
+    if (n->k == CGN_VAR && n->s) cnt[cgx_intern(g, n->s)]++;
+    rw_count_names(g, n->a, cnt); rw_count_names(g, n->b, cnt); rw_count_names(g, n->c, cnt);
+    for (int i = 0; i < n->b1.n; i++) rw_count_names(g, n->b1.p[i], cnt);
 }
-static int rw_temps(CgxRw *R, CgxNv *v) {
-    int did = 0;
+static void rw_count_blk(Cgx *g, const CgxBlk *b, int *cnt) {
+    for (int i = 0; i < b->n; i++) {
+        const CgxNode *s = b->p[i]; rw_count_names(g, s->a, cnt); rw_count_names(g, s->b, cnt); rw_count_names(g, s->c, cnt);
+        rw_count_blk(g, &s->b1, cnt); rw_count_blk(g, &s->b2, cnt); rw_count_blk(g, &s->b3, cnt);
+        if ((s->k == CGN_EACH || s->k == CGN_FOR) && s->s) cnt[cgx_intern(g, s->s)]++;
+        if ((s->k == CGN_EACH) && s->s2) cnt[cgx_intern(g, s->s2)]++;
+    }
+}
+static void rw_temps_blk(CgxRw *R, CgxBlk *v, int *cnt) {
+    for (int i = 0; i < v->n; i++) { CgxNode *s = v->p[i]; rw_temps_blk(R, &s->b1, cnt); rw_temps_blk(R, &s->b2, cnt); rw_temps_blk(R, &s->b3, cnt); }
     for (int i = 0; i + 1 < v->n; i++) {
         CgxNode *s1 = v->p[i]; if (s1->k != CGN_LET || s1->flag & 1) continue;
         int ndef = 0, ix = -1;
         for (int e = cgx_nm_first(R->f, s1->id); e >= 0; e = cgx_nm_next(R->f, e)) if (R->f->nm[e].kind == NM_DEF) { ndef++; ix = R->f->nm[e].x; }
         if (ndef != 1 || !R->S.bex[R->f->ins[ix].blk] || rw_ndefs(R, ix) != 1) continue;
-        if (cgx_count_var_blk(&R->f->fn->b1, s1->s) != 1) continue;          /* o nome aparece uma vez em toda a funcao (contagem na AST: as reescritas da rodada ja mudaram os usos) */
+        const int sid = cgx_intern(R->g, s1->s);
+        if (cnt[sid] != 1) continue;                                               /* o nome aparece uma vez em toda a funcao */
         int j = i + 1; while (j < v->n && (v->p[j]->k == CGN_COMMENT || v->p[j]->k == CGN_DOC)) j++;
         if (j >= v->n) continue;
         CgxNode *s2 = v->p[j]; CgxNode *host = NULL;
@@ -322,16 +337,21 @@ static int rw_temps(CgxRw *R, CgxNv *v) {
             case CGN_ASSIGN: if (s2->a->k == CGN_VAR && strcmp(s2->a->s, s1->s)) host = s2->b; break;
             default: break;
         }
-        if (!host || cgx_count_var(host, s1->s) != 1) continue;
+        if (!host) continue;
         if (s2->k == CGN_EXPR && host->k != CGN_CALL && host->k != CGN_MCALL) continue;
-        const int fx = cgx_fx_expr(R->ir, s1->a);
-        const int whole = host->k == CGN_VAR && !strcmp(host->s, s1->s) && s2->k != CGN_EXPR && s2->k != CGN_IF;
-        if (!whole && (fx & (CGX_FX_THROW | CGX_FX_WRITE | CGX_FX_LOOP | CGX_FX_READ))) continue;
         CgxNode *hole = rw_find_var(host, s1->s); if (!hole) continue;
-        cgx_become(hole, s1->a);
-        memmove(v->p + i, v->p + i + 1, sizeof(CgxNode *) * (size_t)(v->n - i - 1)); v->n--; R->rep->temps++; R->changed++; did++; i--;
+        const int fx = cgx_fx_expr(R->ir, s1->a);
+        const int whole = host->k == CGN_VAR && s2->k != CGN_EXPR && s2->k != CGN_IF;
+        if (!whole && (fx & (CGX_FX_THROW | CGX_FX_WRITE | CGX_FX_LOOP | CGX_FX_READ))) continue;
+        cgx_become(hole, s1->a); cnt[sid] = 0;
+        memmove(v->p + i, v->p + i + 1, sizeof(CgxNode *) * (size_t)(v->n - i - 1)); v->n--; R->rep->temps++; R->changed++; i--;
     }
-    return did;
+}
+static void rw_temps_fn(CgxRw *R) {
+    int *cnt = (int *)cgx_xcalloc((size_t)R->g->nsyms + 2, sizeof(int));
+    for (int i = 0; i < R->f->fn->npar; i++) cnt[cgx_intern(R->g, R->f->fn->par[i].name)] += 2;     /* parametros nunca sao temporarios: nao contam como removiveis */
+    rw_count_blk(R->g, &R->f->fn->b1, cnt);
+    CgxBlk *body = &R->f->fn->b1; rw_temps_blk(R, body, cnt); free(cnt);
 }
 static void rw_collect(CgxRw *R, CgxNode *const *src, int n, CgxNv *out) {
     for (int i = 0; i < n; i++) rw_stmt(R, src[i], src + i + 1, n - i - 1, out);
@@ -339,7 +359,6 @@ static void rw_collect(CgxRw *R, CgxNode *const *src, int n, CgxNv *out) {
 static void rw_blk(CgxRw *R, CgxBlk *b) {
     CgxNv out = {0}; CgxNode **copy = (CgxNode **)cgx_xcalloc((size_t)b->n + 1, sizeof(CgxNode *)); if (b->n) memcpy(copy, b->p, sizeof(CgxNode *) * (size_t)b->n);
     const int n0 = b->n; rw_collect(R, copy, n0, &out); free(copy);
-    if (R->passes & CGX_O_TEMPS) rw_temps(R, &out);
     CgxNode **np = (CgxNode **)cgx_alloc(R->g, sizeof(CgxNode *) * (size_t)(out.n ? out.n : 1)); if (out.n) memcpy(np, out.p, sizeof(CgxNode *) * (size_t)out.n);
     b->p = np; b->n = b->cap = out.n; free(out.p);
 }
@@ -349,7 +368,11 @@ static int cgx_opt_fn_round(CgxIr *ir, CgxFnIr *f, int passes, CgxOptReport *rep
     cgx_sccp_run(ir, f, &R.S);
     R.lv = (char *)cgx_xcalloc((size_t)f->nval + 1, 1); R.li = (char *)cgx_xcalloc((size_t)f->nins + 1, 1);
     cgx_live_values(ir, f, &R.S, R.lv, R.li);
+    R.vndef = (int *)cgx_xcalloc((size_t)f->nvar + 1, sizeof(int));
+    for (int i = 0; i < f->nins; i++) { const CgxIns *x = &f->ins[i]; if (x->op == IO_PHI || !R.S.bex[x->blk]) continue; if (x->dst > 0 && f->val[x->dst].var >= 0) R.vndef[f->val[x->dst].var]++; if (x->d2 != CGX_NIL && x->d2 > 0 && f->val[x->d2].var >= 0) R.vndef[f->val[x->d2].var]++; }
     rw_blk(&R, &f->fn->b1);
+    if ((passes & CGX_O_TEMPS) && !R.changed) rw_temps_fn(&R);
+    free(R.vndef);
     cgx_sccp_free(&R.S); free(R.lv); free(R.li);
     return R.changed;
 }

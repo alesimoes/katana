@@ -25,7 +25,7 @@ static int ix_run(Ix *X, const CgxFnIr *f, const CgxCv *args, int na, IxRes *res
     CgxCv *vals = (CgxCv *)calloc((size_t)f->nval + 1, sizeof(CgxCv)), *vars = (CgxCv *)calloc((size_t)f->nvar + 1, sizeof(CgxCv));
     for (int i = 0; i <= f->nval; i++) { vals[i].k = CV_TOP; }
     for (int i = 0; i <= f->nvar; i++) { vars[i].k = CV_TOP; }
-    int b = f->entry, prev = -1, rc = IXR_UNSUP; CgxCv pend; memset(&pend, 0, sizeof pend); int pend_sys = 0;
+    int b = f->entry, prev = -1, rc = IXR_UNSUP; CgxCv pend; memset(&pend, 0, sizeof pend); int pend_sys = 0; char pendmsg[160], excmsg[160]; pendmsg[0] = excmsg[0] = 0;
     for (;;) {
         const CgxBB *bb = &f->bb[b];
         /* phis em paralelo */
@@ -62,7 +62,7 @@ static int ix_run(Ix *X, const CgxFnIr *f, const CgxCv *args, int na, IxRes *res
                     } else if (x->callee && x->callee->k == CGN_FN && x->callee->id > 0 && X->ir->fnid[x->callee->id] >= 0) {
                         IxRes cr; const int cc = ix_call(X, X->ir->fnid[x->callee->id], av, x->nargs, &cr);
                         if (cc == IXR_UNSUP) { rc = IXR_UNSUP; goto done; }
-                        if (cc == IXR_EXC) { raise = 1; rm = cr.msg; rsys = cr.sys; } else r = cr.v;
+                        if (cc == IXR_EXC) { raise = 1; snprintf(excmsg, sizeof excmsg, "%s", cr.msg); rm = excmsg; rsys = cr.sys; } else r = cr.v;
                     } else { rc = IXR_UNSUP; goto done; }
                     break;
                 }
@@ -76,7 +76,7 @@ static int ix_run(Ix *X, const CgxFnIr *f, const CgxCv *args, int na, IxRes *res
                 case IO_JMP: { int tgt = -1; for (int e = f->g.sp[b]; e < f->g.sp[b + 1]; e++) if (f->ekind[e] != EK_EXC) tgt = f->g.s[e]; if (tgt < 0) { rc = IXR_UNSUP; goto done; } prev = b; b = tgt; jumped = 1; continue; }
                 case IO_RET: { if (x->a == CGX_NIL) { rc = IXR_UNSUP; goto done; } CgxCv a = GETA; if (bad) { rc = IXR_UNSUP; goto done; } res->v = a; rc = IXR_OK; goto done; }
                 case IO_THROW: {
-                    if (x->flags & IF_RETHROW) { raise = 1; rm = pend.s ? pend.s : ""; rsys = pend_sys; break; }
+                    if (x->flags & IF_RETHROW) { raise = 1; snprintf(excmsg, sizeof excmsg, "%s", pend.s ? pend.s : ""); rm = excmsg; rsys = pend_sys; break; }
                     CgxCv a = GETA; if (bad || a.k != CV_STR) { rc = IXR_UNSUP; goto done; } raise = 1; rm = a.s; rsys = 0; break;
                 }
                 default: rc = IXR_UNSUP; goto done;
@@ -86,7 +86,7 @@ static int ix_run(Ix *X, const CgxFnIr *f, const CgxCv *args, int na, IxRes *res
             if (raise) {
                 int tgt = -1; for (int e = f->g.sp[b]; e < f->g.sp[b + 1]; e++) if (f->ekind[e] == EK_EXC) tgt = f->g.s[e];
                 if (tgt < 0) { snprintf(res->msg, sizeof res->msg, "%s", rm ? rm : ""); res->sys = rsys; rc = IXR_EXC; goto done; }
-                memset(&pend, 0, sizeof pend); pend.k = CV_STR; pend.s = rm ? rm : ""; pend_sys = rsys; prev = b; b = tgt; jumped = 1; continue;
+                snprintf(pendmsg, sizeof pendmsg, "%s", rm ? rm : ""); memset(&pend, 0, sizeof pend); pend.k = CV_STR; pend.s = pendmsg; pend_sys = rsys; prev = b; b = tgt; jumped = 1; continue;
             }
             if (x->dst != CGX_NIL) { if (CGX_ISVAR(x->dst)) vars[CGX_VARIDX(x->dst)] = r; else if (x->dst > 0) vals[x->dst] = r; }
             if (x->d2 != CGX_NIL) { rc = IXR_UNSUP; goto done; }
@@ -155,9 +155,9 @@ static int graph_cli(int argc, char **argv) {
     if ((!strcmp(argv[1], "opt") || !strcmp(argv[1], "optgen")) && argc >= 3) {
         const int gen = !strcmp(argv[1], "optgen"); const char *target = gen ? argv[2] : NULL; const char *path = gen ? argv[3] : argv[2];
         if (gen && argc < 4) { fprintf(stderr, "uso: ucgecli optgen <alvo> <spec>\n"); return 2; }
-        CgxOptOpts oo = {CGX_O_DEFAULT, 0, 0}; CgxGenOpts go = {88, 1, 4}; int recheck = 0;
+        CgxOptOpts oo = {CGX_O_DEFAULT, 0, 0}; CgxGenOpts go = {88, 1, 4}; int recheck = 0, tests = 0;
         for (int i = gen ? 4 : 3; i < argc; i++) {
-            if (!strcmp(argv[i], "--recheck")) recheck = 1; else if (!strcmp(argv[i], "--all")) oo.passes = CGX_O_ALL; else if (!strcmp(argv[i], "--passes") && i + 1 < argc) oo.passes = atoi(argv[++i]);
+            if (!strcmp(argv[i], "--recheck")) recheck = 1; else if (!strcmp(argv[i], "--tests")) tests = 1; else if (!strcmp(argv[i], "--all")) oo.passes = CGX_O_ALL; else if (!strcmp(argv[i], "--passes") && i + 1 < argc) oo.passes = atoi(argv[++i]);
             else if (!strcmp(argv[i], "--no-comments")) go.comments = 0; else if (!strcmp(argv[i], "--width") && i + 1 < argc) go.width = atoi(argv[++i]);
         }
         if (!load(&g, path, 1)) { printf("errors\n"); cgx_free(&g); return 1; }
@@ -166,10 +166,10 @@ static int graph_cli(int argc, char **argv) {
         if (recheck) { g.nerr = g.nerr_all = 0; if (!cgx_check(&g)) { for (int i = 0; i < g.nerr; i++) printf("recheck line %d: %s\n", g.err[i].line, g.err[i].msg); printf("RECHECK FAILED\n"); free(o.p); cgx_free(&g); return 1; } }
         if (!gen) { fputs(o.p, stdout); free(o.p); cgx_free(&g); return 0; }
         const CgxBackend *be = cgx_backend(target); if (!be) { fprintf(stderr, "alvo desconhecido: %s\n", target); cgx_free(&g); return 2; }
-        CgxB code = {0}; const int ok = be->gen(&g, &go, &code, NULL);
+        CgxB code = {0}, tb = {0}; const int ok = be->gen(&g, &go, &code, tests ? &tb : NULL);
         for (int i = 0; i < g.nerr; i++) printf("line %d: %s\n", g.err[i].line, g.err[i].msg);
-        if (ok) fputs(code.p ? code.p : "", stdout);
-        fprintf(stderr, "%s", o.p); free(o.p); free(code.p); cgx_free(&g); return !ok;
+        if (ok) { fputs(code.p ? code.p : "", stdout); if (tb.p) { printf("\n"); fputs(tb.p, stdout); } }
+        fprintf(stderr, "%s", o.p); free(o.p); free(code.p); free(tb.p); cgx_free(&g); return !ok;
     }
     return -1;
 }
