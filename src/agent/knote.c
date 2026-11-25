@@ -15,6 +15,7 @@ typedef enum {
     KN_FAIL_AROUND, KN_FAIL_ROW,           /* R4, R5: falhas em volta da mesma coisa; falhas seguidas */
     KN_ROUNDS,                             /* R6: ultima rodada de ferramentas do pedido */
     KN_TODO_OPEN,                          /* T1: o modelo parou com passos em aberto (turno proprio) */
+    KN_USER_DONE,                          /* Q5: o usuario diz que algo ja esta feito/instalado ou que o modelo esta em loop (loop.c, entrada do pedido) */
     KN_GIVE_CMD,                           /* Q4: o usuario pede para RECEBER o comando/texto (loop.c, entrada do pedido): responder com ele, sem ferramentas */
     KN_TODO_PREV,                          /* Q3: pedido novo com lista antiga em aberto (loop.c, entrada do pedido); so sai SEM bloco do UIOE: com bloco vira clausula de `Not found / limits` (ctxb.c) */
     KN_LINKS,                              /* R10: arquivos ligados ainda nao lidos (grafo do Find) */
@@ -64,6 +65,7 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "what is left and what you need from them; they can ask you to continue.]"
 #define KNF_TODO_OPEN "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. " \
     "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now."
+#define KNF_USER_DONE "%s\n[katana: the user says something here is already done or installed, or that you are repeating yourself. Believe the user: do not redo it. Check the current state with ONE quick command (which, --version, ls), then take the next step that is still undone. If you cannot go on, stop and tell the user in two sentences what blocks you.]"
 #define KNF_GIVE_CMD "%s\n[katana: the user asked you to GIVE them the command (or text), so they run or use it themselves. Do not run it, do not search, do not plan: write the exact command now in a code block, with one line saying what it does. If you do not know it, say what you tried and what is missing.]"
 #define KNF_TODO_PREV "%s\n[katana: your todo list from before still has %d unfinished steps. This message is newer and comes first: " \
     "if it changes the plan, follow it and rewrite or drop the old steps.]"
@@ -123,6 +125,7 @@ static const KnSpec KN_TAB[KN_COUNT] = {
     [KN_FAIL_ROW]        = {"fail_row",        KN_ORDER, KN_RESULT, 0, 0, KNF_FAIL_ROW},
     [KN_ROUNDS]          = {"rounds",          KN_ORDER, KN_RESULT, 0, 0, KNF_ROUNDS},
     [KN_TODO_OPEN]       = {"todo_open",       KN_ORDER, KN_TURN,   0, 0, KNF_TODO_OPEN},
+    [KN_USER_DONE]       = {"user_done",       KN_ORDER, KN_REQUEST,0, 0, KNF_USER_DONE},
     [KN_GIVE_CMD]        = {"give_cmd",        KN_ORDER, KN_REQUEST,0, 0, KNF_GIVE_CMD},
     [KN_TODO_PREV]       = {"todo_prev",       KN_ORDER, KN_REQUEST,0, 0, KNF_TODO_PREV},
     [KN_LINKS]           = {"links",           KN_INFO,  KN_RESULT, KN_BUDGET, 1100, KNF_LINKS},

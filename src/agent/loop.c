@@ -456,6 +456,14 @@ static int asks_for_command(const char *line) {
     for (int i = 0; v[i]; i++) if (strstr(lo, v[i])) return 1;
     return 0;
 }
+/* o usuario diz que algo ja esta feito ("ja ta instalado", "o login ja ta feito") ou que o modelo esta em loop */
+static int says_already_done(const char *line) {
+    static const char *const v[] = {" em loop", "esta em loop", "ta em loop", "ja esta ", "ja est\xc3\xa1 ", "j\xc3\xa1 est\xc3\xa1 ", "j\xc3\xa1 t\xc3\xa1 ", "ja ta ", "ja foi ", "j\xc3\xa1 foi ", "ja instal", "j\xc3\xa1 instal", "ja fiz", "j\xc3\xa1 fiz", "ja tinha", "j\xc3\xa1 tinha", "already ", "you are in a loop", "same thing again", NULL};
+    char lo[2048]; size_t n = 0; for (; line[n] && n < sizeof lo - 2; n++) lo[n] = (char)tolower((unsigned char)line[n]); lo[n] = 0;
+    if (strlen(line) > 600) return 0;      /* mensagem longa e um pedido, nao uma correcao */
+    for (int i = 0; v[i]; i++) if (strstr(lo, v[i])) return 1;
+    return 0;
+}
 static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_covered(const char *name) {
     if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Find") || !strcmp(name, "Symbols") ||
@@ -711,6 +719,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         g_undo_req++; g_todo_touched = 0; nudged = 0;
         rp_n = 0; rp_fail = 0; rp_refused = 0; rp_stuck = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
         if (asks_for_command(line)) { static char gl[16384]; KNOTE(GIVE_CMD, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
+        else if (says_already_done(line)) { static char gl[16384]; KNOTE(USER_DONE, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
         if (ublk) uioe_commit(usess);      /* o que o bloco mostrou conta como mostrado para o Find e o Read (o rr_reset acima apagou o estado anterior) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
