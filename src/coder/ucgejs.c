@@ -361,24 +361,37 @@ static int cjs_litish(const CgxNode *n) {
         case CGN_INT: case CGN_FLT: case CGN_STR: case CGN_BOOL: return 1;
         case CGN_UN: return n->op == CGO_NEG && cjs_litish(n->a);
         case CGN_TERN: return cjs_litish(n->b) && cjs_litish(n->c);
+        case CGN_CALL:                                               /* `float(3)`, `int(3)`, `str("a")` e `str(flag)` saem sem conversao ou como `x ? "True" : "False"` */
+            if (n->bi == CGB_FLOAT || n->bi == CGB_INT) return n->b1.n == 1 && (n->b1.p[0]->ty.k == CGT_INT || n->b1.p[0]->ty.k == CGT_FLOAT) && cjs_litish(n->b1.p[0]);
+            if (n->bi == CGB_STR) return n->b1.n == 1 && (n->b1.p[0]->ty.k == CGT_BOOL || (n->b1.p[0]->ty.k == CGT_STR && cjs_litish(n->b1.p[0])));
+            return 0;
     }
     return 0;
 }
 static const char *cjs_tsbase(int k) { return k == CGT_STR ? "string" : k == CGT_BOOL ? "boolean" : "number"; }
 static CgxDoc *cjs_call(CgxJs *p, const CgxNode *n, int *prec);
 static CgxDoc *cjs_ex0(CgxJs *p, const CgxNode *n, int *prec);
+/* um inteiro que vira float (float(n), n / m, n * x): o JS pode ter -0 (0 * -3) onde o Python tem 0; `n + 0` o normaliza */
+static CgxDoc *cjs_ex_z(CgxJs *p, const CgxNode *n, int minprec) {
+    long long v;
+    if (n->ty.k != CGT_INT || cjs_is_lit_int(n, &v) || cjs_nonneg(p, n)) return cjs_ex(p, n, minprec);
+    return cjs_wrap(p, cgx_dcatn(JD, cjs_ex(p, n, JP_ADD), cjs_t(p, " + 0"), NULL), JP_ADD, minprec);
+}
 /* aritmetica (e compostos `x op= v`): L e opcional (leitura do alvo no composto) */
 static CgxDoc *cjs_arith(CgxJs *p, int op, const CgxNode *ln, const CgxNode *rn, CgxDoc *Lover, int *prec) {
     long long lv; double dv;
     static const char *const sym[] = {"+", "-", "*", "/"};
     if (op == CGO_ADD || op == CGO_SUB || op == CGO_MUL) {
         const int pr = op == CGO_MUL ? JP_MUL : JP_ADD; *prec = pr;
-        CgxDoc *L = Lover ? Lover : cjs_ex(p, ln, pr), *R = cjs_ex(p, rn, pr + 1);
+        const int mx = op == CGO_MUL && ((ln->ty.k == CGT_INT && rn->ty.k == CGT_FLOAT) || (ln->ty.k == CGT_FLOAT && rn->ty.k == CGT_INT));
+        CgxDoc *L = Lover ? Lover : mx && ln->ty.k == CGT_INT ? cjs_ex_z(p, ln, pr) : cjs_ex(p, ln, pr), *R = mx && rn->ty.k == CGT_INT ? cjs_ex_z(p, rn, pr + 1) : cjs_ex(p, rn, pr + 1);
         return cgx_dgroup(JD, cgx_dcatn(JD, L, cgx_dtextf(JD, " %s", sym[op]), cgx_dnest(JD, p->o->indent, cgx_dcatn(JD, cgx_dline(JD), R, NULL)), NULL));
     }
+    const int mixed = (op == CGO_MUL || op == CGO_DIV) && ((ln->ty.k == CGT_INT && rn->ty.k == CGT_FLOAT) || (ln->ty.k == CGT_FLOAT && rn->ty.k == CGT_INT));
+    const int zl = !Lover && ((op == CGO_DIV && ln->ty.k == CGT_INT && rn->ty.k == CGT_INT) || (mixed && ln->ty.k == CGT_INT)), zr = mixed && rn->ty.k == CGT_INT;
     if (op == CGO_DIV) {
-        if (cjs_is_lit_num(rn, &dv) && dv != 0) { *prec = JP_MUL; return cgx_dcatn(JD, Lover ? Lover : cjs_ex(p, ln, JP_MUL), cjs_t(p, " / "), cjs_ex(p, rn, JP_MUL + 1), NULL); }
-        *prec = JP_POST; return cjs_h2(p, H_DIV, "_div", Lover ? Lover : cjs_ex(p, ln, 0), cjs_ex(p, rn, 0));
+        if (cjs_is_lit_num(rn, &dv) && dv != 0) { *prec = JP_MUL; return cgx_dcatn(JD, Lover ? Lover : zl ? cjs_ex_z(p, ln, JP_MUL) : cjs_ex(p, ln, JP_MUL), cjs_t(p, " / "), cjs_ex(p, rn, JP_MUL + 1), NULL); }
+        *prec = JP_POST; return cjs_h2(p, H_DIV, "_div", Lover ? Lover : zl ? cjs_ex_z(p, ln, 0) : cjs_ex(p, ln, 0), zr ? cjs_ex_z(p, rn, 0) : cjs_ex(p, rn, 0));
     }
     if (op == CGO_IDIV) {
         *prec = JP_POST;
@@ -404,6 +417,15 @@ static CgxDoc *cjs_compare(CgxJs *p, const CgxNode *n, int *prec) {
         long long z;
         if (n->b->k == CGN_INT && n->b->iv == 0 && n->a->k == CGN_BIN && n->a->op == CGO_MOD && cjs_is_lit_int(n->a->b, &z) && z != 0)       /* a % k == 0: o sinal do resto nao importa */
             return cgx_dcatn(JD, cjs_ex(p, n->a->a, JP_MUL), cjs_t(p, " % "), cjs_ex(p, n->a->b, JP_MUL + 1), cjs_t(p, op == CGO_EQ ? " === 0" : " !== 0"), NULL);
+        if (ak == CGT_BOOL && bk == CGT_BOOL) {                      /* `x == true` e `x`; o TS estreita `const f = true` e reclama de `f === false` */
+            const CgxNode *lit = n->b->k == CGN_BOOL ? n->b : n->a->k == CGN_BOOL ? n->a : NULL, *o = lit == n->b ? n->a : n->b;
+            if (lit) {
+                const int same = (lit->iv != 0) == (op == CGO_EQ);
+                if (same) return cjs_ex0(p, o, prec);
+                *prec = JP_UN; return cgx_dcat(JD, cjs_t(p, "!"), cjs_ex(p, o, JP_UN));
+            }
+            if (p->ts) return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, 0), cgx_dtextf(JD, " as boolean) %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
+        }
         if (p->ts && cjs_litish(n->a) && cjs_litish(n->b))
             return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, 0), cgx_dtextf(JD, " as %s) %s ", cjs_tsbase(n->a->ty.k), js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
         return cgx_dcatn(JD, cjs_ex(p, n->a, JP_EQ + 1), cgx_dtextf(JD, " %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
@@ -456,7 +478,8 @@ static CgxDoc *cjs_call(CgxJs *p, const CgxNode *n, int *prec) {
             if (k0 == CGT_BOOL) { *prec = JP_TERN; return cgx_dcatn(JD, cjs_ex(p, x0, JP_TERN + 1), cjs_t(p, " ? 1 : 0"), NULL); }
             return cjs_h1(p, H_INT, "_int", cjs_ex(p, x0, 0));
         case CGB_FLOAT:
-            if (k0 == CGT_INT || k0 == CGT_FLOAT) { int pr; CgxDoc *d = cjs_ex0(p, x0, &pr); *prec = pr; return d; }
+            if (k0 == CGT_INT) { *prec = JP_ADD; return cjs_ex_z(p, x0, 0); }
+            if (k0 == CGT_FLOAT) { int pr; CgxDoc *d = cjs_ex0(p, x0, &pr); *prec = pr; return d; }
             if (k0 == CGT_BOOL) { *prec = JP_TERN; return cgx_dcatn(JD, cjs_ex(p, x0, JP_TERN + 1), cjs_t(p, " ? 1 : 0"), NULL); }
             return cjs_h1(p, H_FLOAT, "_float", cjs_ex(p, x0, 0));
         case CGB_UPPER: return cjs_meth0(p, cjs_ex(p, x0, JP_POST), "toUpperCase");

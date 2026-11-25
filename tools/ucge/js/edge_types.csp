@@ -1,0 +1,31 @@
+# pontos onde o JS e o TS poderiam divergir ou o tsc reclamar: -0, zero vezes negativo, comparacoes de literais e de constantes, booleanos
+const FLAG = true
+const NAME = "a"
+const LIMIT = 3
+fn flip(b: bool) -> bool
+  return not b
+fn main() -> int
+  let z = 0
+  let neg = -3
+  print(float(z * neg))
+  print(z * neg / 5)
+  print(z / neg)
+  print(0.5 * z * neg)
+  print(str(float(-z)))
+  print(z * neg * 1.5)
+  let a = true
+  let b = false
+  print(str(a == b) + " " + str(a == true) + " " + str(b == true) + " " + str(a != false) + " " + str(FLAG == false) + " " + str(flip(a) == FLAG) + " " + str(true == false))
+  print(str(NAME == "b") + " " + str("x" == "y") + " " + str(LIMIT == 4) + " " + str(3 == 4) + " " + str(1.5 == 2.5) + " " + str(NAME != "a"))
+  let c = a ? "yes" : "no"
+  print(str(c == "maybe") + " " + str((a ? 1 : 2) == 3) + " " + str(str(a) == "True") + " " + str(str(a) == "x"))
+  let n = 5
+  print(str(float(n) == 5.5) + " " + str(int(2.5) == 3) + " " + str(float(3) == 4.5))
+  let flagVar = false
+  if flagVar == true
+    print("never")
+  if not (flagVar == false)
+    print("never")
+  print(str(not (n == 5)) + " " + str(not (a == b)))
+  return 0
+test main() == 0
