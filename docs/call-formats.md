@@ -126,7 +126,7 @@ When the model opens a call (`<tool_call>` in ChatML, `<|tool_call>` in Gemma 4;
 state machine reads every following byte and answers "can this text still become a valid call?":
 
 - the tool name can only be one of the agent's tools: the ones declared in the `<tools>` block of the system prompt
-  plus, with the second tool set (the default), every ready tool of `src/tools/table.c`;
+  plus every ready tool of `src/tools/table.c`;
 - a parameter name can only be a property of that tool's schema, each at most once, and the call (`</function>`,
   the closing `}` of the arguments, or `}` before `<tool_call|>`) cannot come before the required ones;
 - a value whose schema type is array, object, integer, number or boolean must be valid JSON of that schema (the JSON

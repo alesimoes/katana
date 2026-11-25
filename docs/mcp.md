@@ -98,7 +98,7 @@ unsupported mode.
 - Who asks is always named: the first question is `MCP server 'NAME' asks you for information: <message> (fields: ...)`,
   with the choices Answer and Decline, and the following questions start with `[mcp NAME]`.
 - In the console the questions use the keyboard; in the desktop and the JSON/UI protocol they use the same marker as the
-  `ask_user` tool (`CHOICE question<TAB>option...`, answered by `\x01ANS text`; an empty answer, or Stop, cancels).
+  `AskUserQuestion` tool (`CHOICE question<TAB>option...`, answered by `\x01ANS text`; an empty answer, or Stop, cancels).
   Optional fields skip on an empty answer, `default` is used when present, a value that does not fit the type or limits is
   asked again (three tries, then `cancel`).
 - With nobody to ask (headless runs, `-p`, a pipe) the answer is `{"action":"decline"}` and a line on stderr says so.

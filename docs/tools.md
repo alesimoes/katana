@@ -1,15 +1,11 @@
 # The agent's tools (`src/tools/`)
 
-The katana agent has one tool set. It lives in `src/tools/`, one file per tool or small family, and the table in
-`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers). The
-previous set (`run_command`, `read_file`, `write_file` and the others of `src/agent/`) was removed on 2026-11-23: no alias,
-no migration. What was lost: a stateful shell session (`terminal`), machine-wide search by part of a name (`find_file`),
-reading the katana logs by name (`read_log`), `sudo=true` and `append=true` of the file tools, the sorted directory
-listing, the structured `git`, `install_package`, `download_file`, `read_document`, `howto` as a tool (the recipes are
-read through `Skill`) and `job` (use `Bash` with `run_in_background`, `Monitor` and `TaskStop`); the model-facing
-`remember` and `recall` also went (the memory file and `katana memory` stay).
+The katana agent's tools live in `src/tools/`, one file per tool or small family, and the table in
+`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers). There is no stateful shell session, no machine-wide search by part of a name, no `sudo` or `append` in the file tools, no structured
+`git` or package tools (use `Bash`), and background commands go through `Bash` with `run_in_background`, `Monitor` and `TaskStop`.
+Recipes are read through `Skill`; the memory file and `katana memory` stay.
 
-Why a second set: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
+Design: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
 "read before you change" rule, search with output modes, a task list edited item by item, and the less common tools
 announced by name only and loaded on demand (`ToolSearch`), so they cost no context until used.
 
@@ -22,7 +18,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 |---|---|---|
 | `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
-| `filewalk.c`, `grep.c` | `Grep` (`filewalk.c` keeps only the pattern matcher, the file list and the growing text buffer that `Grep` and the UIOE file connector use; the `Glob` tool was removed) | - |
+| `filewalk.c`, `grep.c` | `Grep` (`filewalk.c` keeps only the pattern matcher, the file list and the growing text buffer that `Grep` and the UIOE file connector use) | - |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
 | `symbols.c` | `Symbols` (def, refs, callers, callees, uses, outline, at, deps, impact, flow, tree over the symbol index; work in `src/coder/symtool.c`) | - |
 | `find.c`, `findgraph.c` | `Find` (navigation: index, search, references; added 2026-11-22) and its file graph, sparse activation and neighbour note | 59 |
@@ -41,13 +37,12 @@ and the mock teacher with this set (Write, Edit, Bash with the working-directory
 The prompt declares 12 tools (the lean list of `docs/tools-review.md`): `Bash`, `Read`, `Edit`, `Write`, `Find`, `Symbols`,
 `Grep`, `TodoWrite`, `AskUserQuestion`, `WebSearch`, `WebFetch` and `ToolSearch`, and lists the rest by name
 (`Skill` and `SubagentHandback` are not listed: skills are named in the environment block, the hand-back exists only inside a
-sub-agent). Removed from the table, with no alias (2026-11-23): `Glob`, `Rename`, `Replace`, `Patch`, `TaskCreate`,
-`TaskUpdate`, `TaskList`, `TaskGet`; file names are found with `Find` or `Bash ls`, changes in many places are `Grep` plus
+sub-agent). File names are found with `Find` or `Bash ls`, changes in many places are `Grep` plus
 `Edit` (`replace_all`) or a `Bash` script, and the plan is `TodoWrite`. The table has 37 tools. The teacher
 takes its tool list from the prompt, so it follows the switch.
 
 The declarations in the prompt are a short form kept in `src/tools/table.c` (`g_ct_short`): the system prompt is
-8.8k characters with this set against 7.8k with the first set (measured; it was 19k with the full descriptions).
+8.8k characters (19k with the full descriptions).
 `ToolSearch` returns the full description and schema of any tool.
 
 Not measured, not done:
@@ -92,7 +87,7 @@ array of `{old_string, new_string, replace_all}` or plain text blocks (`<<<<<<<`
 on its own line, nothing escaped; an empty new part deletes the lines). Up to 64 changes.
 `Edit(file_path, old_string, new_string, replace_all)`: exact replacement; the file must have been read in full;
 `old_string` must occur once unless `replace_all`; non-UTF-8 files refused; result shows the changed lines; syntax
-check and undo as in the first set.
+check and undo.
 `Write(file_path, content)`: whole file, never appends; overwriting needs a previous read; any size.
 `NotebookEdit(notebook_path, cell_id, new_source, cell_type, edit_mode)`: replace, insert, delete; untouched cells
 stay byte for byte.
@@ -122,7 +117,6 @@ give another result (the delta notes take over). Failed calls are not recorded (
 user request starts over. Test: `tools/tooltest/loopnotes.sh` (`katana toolrun notes`).
 
 ### Grep
-(The old file-name pattern tool was removed on 2026-11-23; its pattern matcher, `ct_gmatch`, stays for the `glob` argument of `Grep`.)
 `Grep(pattern, path, glob, type, output_mode, -i, -n, -A, -B, -C, multiline, literal, head_limit, offset)`: katana's
 own backtracking engine (`src/tools/regex.c`) over UTF-8. Syntax: `.` `^` `$` `\A` `\z` `\Z` `\b` `\B` `\<` `\>`;
 classes `[...]` with `[[:alpha:]]` and the other POSIX names; `\d` (0-9) `\w` `\s` `\h` `\v` and negations; `\p{L}`
@@ -459,11 +453,6 @@ list and a full declaration in every `ToolSearch` answer for no gain.
   with several tool calls in parallel threads (the tool redirects stdout to capture the query output); Windows (not built:
   the tool answers "not available on Windows yet", as `Find` does).
 
-### Rename, Replace, Patch (removed)
-Removed from the table on 2026-11-23 (`docs/tools-review.md`, open question 2: 0 curriculum examples, 0 real calls; the
-`x-rename` family teaches the manual way). The model changes many places with `Grep` plus `Edit` (`replace_all`) or a `Bash`
-script. The code in `src/tools/multiedit.c` is owned by the old-index removal front.
-
 ### WebFetch, WebSearch
 Web research is paid for in the local model's reading time (about 60 tokens/s) and in rounds, not in network time
 (a search is 0.9 s and a page 0.7 s without the model). So both tools return few bytes and one call does the work of
@@ -501,8 +490,7 @@ search results; pages are then read only when `KATANA_WEB_ALLOW_LOCAL=1`), `KATA
 `http://127.0.0.1` URLs and do not upgrade http).
 
 ### Tasks, questions, plan mode
-`TodoWrite(todos, done)` writes the list and marks steps finished (the old `Task*` tools were removed on
-2026-11-23: a second way to write a plan that the model never chose). One list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options
+`TodoWrite(todos, done)` writes the list and marks steps finished. One list underneath (the one the desktop card shows). `AskUserQuestion(questions)`: 1 to 4 questions with 2 to 4 options
 each, asked one at a time through the existing question mechanism. `EnterPlanMode()` and `ExitPlanMode(plan)`: the
 model can enter the read-only mode and present a plan for approval.
 
@@ -536,7 +524,7 @@ one-line description of images. Formats, commands and examples: `docs/extending.
 - **Plan-first note.** `loop_plan_note` counts only calls that do something: `Read`, `Grep`, `LSP`, `ToolSearch`,
   `WebSearch`, `WebFetch`, the list and get tools and `AskUserQuestion` are not counted. The note fires on the third and on
   the sixth counted call of a request without a plan. A question answered with reads only never gets it.
-- **Unfinished-steps reminder.** `loop_todo_should_nudge` decides. A task noted with the old `TaskCreate` (removed 2026-11-23; the rule stays in the loop for a task the user asked to save for later) and never moved to
+- **Unfinished-steps reminder.** `loop_todo_should_nudge` decides. A task the user asked to save for later and never moved to
   in progress or completed is a recorded task, not a step of the model's plan: it does not trigger the reminder and the
   engine does not close it at the end of the request.
 - **`ToolSearch select:Edit` and `select:AskUserQuestion`** return the same shape the prompt declares: `edits` is a string

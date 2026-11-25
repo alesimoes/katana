@@ -6,7 +6,7 @@ Written on 2026-11-15. Each step has a measurable done criterion. Context is in
 ## Current goal (2026-11-21): an independent local agent, pleasant and stable to use, that other applications can use as their agent
 
 Set by the owner on 2026-11-21; it replaces the order of the priorities below, which are from 2026-11-15 and mostly
-about dense models. Only Qwen3.6-35B-A3B counts today (Gemma 4 is not tested). The rows A1 to A17 and B1 to B5 below are historical (2026-11-21) and cite the old tool set (`katana code`, `Task*`, `Glob`, `run_command`); they are kept for their done-criteria, not as current state. Current state: `main` at `44748e1`, coder nine phases, UIOE U0 to U5 and U8, lean list of 12 tools, legacy removed, curriculum generator regenerated, training only at night; see the Backlog. Each line is done
+about dense models. Only Qwen3.6-35B-A3B counts today (Gemma 4 is not tested). The rows A1 to A17 and B1 to B5 below are dated 2026-11-21 and kept for their done-criteria. Current state: `main` at `44748e1`, coder nine phases, UIOE U0 to U5 and U8, lean list of 12 tools, curriculum generator regenerated, training only at night; see the Backlog. Each line is done
 when its criterion is measured; "not measured" items stay open even when the code exists.
 
 *2026-11-23: the teacher mode is vendor-free in the binary: an external program speaks `docs/teacher-protocol.md`; the Messages API / CLI code lives in `plugins/teacher-anthropic/`. Open: run the plugin once against the real service, and re-run the teacher steps of `tools/traintest/run.sh` and `tools/tooltest/launch.sh` on Qwen3.6.*
@@ -47,7 +47,6 @@ The instrument for every row below is `katana codebench` (`run`, `verify`, `comp
 | B1 | Reasoning on or off in the desktop (it starts with `KATANA_THINK=0`) | codebench and a set of ambiguous requests in Portuguese, alternating, both models |
 | B2 | Reading notes (`KATANA_DIGEST`, on by default and never measured): a file read becomes a 250-word note | codebench with and without, alternating; default follows the result |
 | B3 | Qwen3.6 against AgentWorld against Gemma 4 as the desktop default | same tasks, same hour |
-| B4 | First set against second set of tools | handoff 0t |
 | B5 | Harder tasks (the terminal and web ones are solved by every model) and requests written the way the owner writes | tasks that separate the models. **Tasks written (2026-11-21), not yet run with any model:** 12 tasks that need new code: `write-*` (6, from an empty folder), `prereq-*` (3, the code needs a command, a credentials file or a service that is not on the machine), `extend-*` (3, a new module plus changes in existing files of a 300 to 400 line project); 8 in informal Portuguese, 4 in English. They pass `katana codebench verify` (fail untouched, pass with the reference solution, no model). Open: run them on Qwen3.6 and Gemma 4, see which separate the models, and read the first runs for ambiguous hidden tests |
 
 **C. Speed** (after measuring where the time of one token goes: GPU, CPU, waiting)

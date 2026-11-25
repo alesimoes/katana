@@ -1,6 +1,6 @@
 # UIOE: Unified Intelligence Orchestration Engine (design)
 
-Status (2026-11-23, `main` at `44748e1`): the design was written first and phases U0 to U5 and U8 are now built (section 6 has the state of each; compiled, not measured, no model trained on the block). U9 and later are not started. Parts of this text describe the starting point and the old tool set (`Glob`, `Task*`, `recall`, `locate.c`, `list_dir`); the tool list today is the 12 of `docs/tools.md`, so those names and the numbers of section 1 are historical (they explain why the design looks as it does). The original status line: design only, no code changed, no model run, nothing measured for this
+Status (2026-11-23, `main` at `44748e1`): the design was written first and phases U0 to U5 and U8 are now built (section 6 has the state of each; compiled, not measured, no model trained on the block). U9 and later are not started.
 document. Numbers marked "observed" were read from the owner's real sessions (`~/.katana/agente.log` and
 `~/.katana/desktop/sessoes/*.json`); numbers marked "estimate" are arithmetic or judgment, not results. Function and
 file names were read in the tree at the commit this document is added to.
@@ -155,7 +155,7 @@ The pieces are present; what is missing is the layer that composes them.
   `flow`, each result with `[confidence N level; how]` from the cascade (`sy_cascade`, `sy_conf`, `fl_pair`).
 - `Read` keeps a cursor per file and, for a large file, shows the windows that match what is being looked for
   (`rd_best_windows` with `intent_get()`, which returns the last `Find` query or the user's request).
-- The loop adds a place note (`place_note`, `ff_resolve_missing` in `src/agent/locate.c`), selects project *(historical: names the removed tools)*
+- The loop adds a place note (`place_note`, `ff_resolve_missing` in `src/agent/locate.c`), selects project
   documents (`ds_select` in `src/agent/docsel.c`), starts indexing (`autoindex_dir`), blocks identical reads
   (`rr_check`), stops insisting on failures (`rp_*`, `bk_*`), and asks for a plan (`loop_plan_note`).
 - Memory (`tool_recall`/`tool_remember`/`mem_tail` in `src/agent/tools.c`), session notes (`katana knowledge search`,
@@ -576,7 +576,7 @@ How the state feeds what exists:
   candidates of the *same* ranked list kept in the request (no second ranking), and from the next unexplored
   branch of the evidence graph, so page 2 of a flow question is "the other links of these files", not "more files".
 - **The repeat table.** `rr_check`/`rr_after` move to the request record. Two changes of behaviour to decide with
-  the owner (they are bug fixes, section 8): a plan update (`TodoWrite`, `TaskUpdate`) no longer clears the table; *(historical: names the removed tools)*
+  the owner (they are bug fixes, section 8): a plan update (`TodoWrite`) no longer clears the table;
   only a tool that changes files or runs a command does.
 - **The neighbour note.** `fg_neighbor_note` takes its "cited" and "read" sets (`g_fg_cited`, `g_fg_read`) from the
   request record, so neighbours already in the packet are not announced again, and prefers the unexplored ends of
@@ -1695,7 +1695,7 @@ finding a cited folder walks the disk). What exists beyond the text above, or di
   makes the path from the definition followed by its callers by depth. Locate, config, error, how-to: `Findings`. Quotes only on path steps and document lines, 110 columns; a caller's line is not
   quoted (it is the definition's line, not the call). Evidence: at most 6 lines (3 for flow, and only lines that match two request terms); tests on one line; already-shown ranges on one line. The
   `Next:` target is the last unread step of a chain, or the first finding when there is no chain, and ends with "Do not search again for what is listed above."; if the folder was located it also says to pass
-  `path=` to `Find`, `Glob` and `Grep`. The ceiling is the pipeline's (500 to 1500 tokens, 4 bytes per token) and trimming follows 4.6.3. Question terms are the request words that occur in the path (the *(historical: names the removed tools)*
+  `path=` to `Find` and `Grep`. The ceiling is the pipeline's (500 to 1500 tokens, 4 bytes per token) and trimming follows 4.6.3. Question terms are the request words that occur in the path (the
   English form when the match was a concept), else the first ones.
 - **Escape.** Every text from a file, name, document or limits clause goes through one routine: `[katana` and `[end of context` get a space after the bracket, `<|`, `tool_call` and `tool_response`
   are neutralized as `defang` does, secret shapes are masked with `kn_mask` (paths are not masked), line breaks become spaces. Checked with a generated project whose line carries `[katana: ...]`,

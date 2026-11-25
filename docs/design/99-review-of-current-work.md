@@ -7,7 +7,7 @@ carried out.
 
 ## The state in one paragraph
 
-In one day the project gained a second tool set of 44 tools, a default switch to it, six loop mechanisms, three
+In one day the project gained a tool set of 44 tools, a default switch to it, six loop mechanisms, three
 document formats, a call grammar, a curriculum generator, a knowledge extractor, a five-source training command, a
 network API with an agent endpoint and a desktop plan view, with thousands of model-free checks. **None of it has
 been measured with a real model**, and the only real-model evidence of the day is a session in which the agent
@@ -141,13 +141,12 @@ Weaknesses:
 - The card is the best of the three and is used only for external servers. Use it for katana's own tools (X6).
 - None of the three was seen by a model. The conventions curriculum will teach formats whose value is unmeasured.
 
-## 8. The second tool set became the default on faith
+## 8. The tool set became the default on faith
 
 44 tools, 1,244 checks, default "before any measurement" (the tools document's own words). Guidance and
 small-model practice point to fewer, consolidated tools [1][67][78]. Its names and arguments were chosen to match
 the transcripts of the hosted agent used as training data, which is a real advantage for import and a reason the
-set is larger than a local model needs. Plan item B4 (first set against second) should include an 8-tool arm
-(T6). The result wrapper around every result is two Portuguese lines in an otherwise English prompt: 9% of the
+set is larger than a local model needs. An 8-tool arm should be measured (T6). The result wrapper around every result is two Portuguese lines in an otherwise English prompt: 9% of the
 session's tokens (T1).
 
 ## 9. The measuring instruments are not trustworthy yet
