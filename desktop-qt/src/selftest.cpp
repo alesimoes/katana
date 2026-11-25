@@ -1152,6 +1152,16 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
         c.grab("63-imagem-erro.png");
         be.clearImage();
 
+        // briefing acima do limite: o motor recusa (nada cortado, nada gerado) e o cartao vermelho mostra o erro dele, como veio
+        QFile::remove(argsFile);
+        be.attachImage(img);
+        const int antesL = be.messages()->count();
+        c.typeAndEnter("estoure o limite do briefing");
+        check(waitFor([&] { return !be.imageBusy() && be.messages()->count() > antesL + 1 && be.messages()->get(be.messages()->count() - 1)["kind"] == "error"; }, 30000), "briefing acima do limite: cartao de erro");
+        check(be.messages()->get(be.messages()->count() - 1)["text"].toString() == "error: the brief has 812 tokens, the limit for stable is 504 (about 350 words): shorten it and send it again", "o cartao mostra o erro do motor, so ele, sem codigo de saida");
+        { QFile f(argsFile); QString ra; if (f.open(QIODevice::ReadOnly)) ra = QString::fromUtf8(f.readAll()); check(ra.contains("--brief") && !ra.contains("--nl"), "o texto da caixa foi literal (--brief), sem --nl"); }
+        be.clearImage();
+
         // processamento da imagem: nas configuracoes (engrenagem), 4 opcoes, gravado no ui.ini
         check(be.imageBackend() == "auto", "Auto e o padrao");
         c.click(c.item("appearanceButton"));

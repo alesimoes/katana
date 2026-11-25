@@ -48,16 +48,20 @@ hasnt "no shell injection" "$(ls)" "pwned"
 o=$(run Render '{"brief":"brief.md","image":"view.png","engine":"flux","request":"extra: warmer light"}'); a=$(cat args.txt | tr '\n' ' ')
 has "brief passed" "$a" "--brief brief.md"
 has "extra request kept" "$a" "--nl extra: warmer light"
-o=$(FAKE_BRIEF='[brief] flux tokens 312/504\n[brief] cut 2: "item a"; "item b"' run Render '{"brief":"brief.md","image":"view.png","engine":"flux"}')
-has "result reports brief tokens/budget" "$o" "brief: 312/504 tokens"
-has "result reports what was cut" "$o" 'cut: "item a"; "item b"'
-o=$(FAKE_BRIEF='[brief] stable tokens 90/296 (inteiro)' run Render '{"brief":"brief.md","engine":"stable"}'); has "whole brief: tokens line, no cut line" "$o" "brief: 90/296 tokens"
-hasnt "whole brief: no cut line" "$o" "cut:"
+o=$(FAKE_BRIEF='[brief] flux tokens 312/504' run Render '{"brief":"brief.md","image":"view.png","engine":"flux"}')
+has "result reports brief tokens/limit" "$o" "brief: 312/504 tokens"
+# o motor recusou o briefing (passou do limite): a ferramenta devolve so o erro, claro, para o modelo reescrever mais curto
+o=$(FAKE_RC=1 FAKE_BRIEF='error: the brief has 812 tokens, the limit for flux is 504 (about 350 words): shorten it and send it again' run Render '{"brief":"brief.md","image":"view.png","engine":"flux"}')
+has "refusal: the engine error comes back as is" "$o" "error: the brief has 812 tokens, the limit for flux is 504 (about 350 words): shorten it and send it again"
+hasnt "refusal: not wrapped as a generic render failure" "$o" "render failed"
+o=$(FAKE_BRIEF='[brief] stable tokens 90/296' run Render '{"brief":"brief.md","engine":"stable"}'); has "stable: tokens line" "$o" "brief: 90/296 tokens"
 o=$(run Render '{"brief":"brief.md","engine":"flux"}'); hasnt "no engine line, no brief line" "$o" "brief:"
 d=$(run ToolSearch '{"query":"select:Render"}')
 has "description states the limits and the approval flow" "$d" "ASK the user whether it is approved"
 has "description: any image, not only architecture" "$d" "Any picture"
 has "description: engine does not rewrite" "$d" "does not rewrite"
+has "description: over the limit is refused, not cut" "$d" "REFUSED, never cut"
+hasnt "description: no relevance cut" "$d" "cut by relevance"
 
 o=$(run Render '{"request":"no image","engine":"flux"}'); a=$(cat args.txt | tr '\n' ' ')
 hasnt "no image: no --init" "$a" "--init"
@@ -83,6 +87,6 @@ o=$(run Render '{"request":"x","size":"1000x500"}'); has "size must be a multipl
 o=$(run Render '{"request":"x","engine":"flux","steps":20}'); has "flux steps limit" "$o" "error: steps must be 1 to 8"
 o=$(unset KATANA_RENDER_BIN; KATANA_MODELS="$T/empty" run Render '{"request":"x","engine":"flux"}'); has "no models: clear error" "$o" "models are not installed"
 
-BS=$("$K" render brief selftest 2>&1); has "brief selftest: short text intact, long text selected, nothing added" "$BS" "todos passaram"
+BS=$("$K" render brief selftest 2>&1); has "brief selftest: count, limit, refusal, short text intact" "$BS" "todos passaram"
 echo "$N checks, $F failed"
 [ "$F" = 0 ]

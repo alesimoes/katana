@@ -498,23 +498,20 @@ static int sds_main(int argc, char **argv) {
         else if (!strcmp(a, "--final-engine") && more) fengine = argv[++i];
         else if (!strcmp(a, "--brief") && more) brief = argv[++i];
         else if (!strcmp(a, "--engine") && more) fengine = argv[++i];
-        else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (a[0] != '-' && !text) text = a;
         else { fprintf(stderr, "render spec: opcao desconhecida: %s\n", a); return 1; }
     }
-    if (brief) {                                                              /* o briefing e o prompt: mostra o que o motor mandaria (tokens/orcamento e o corte), sem gerar nada (render/sdbrief.c) */
-        char *bt = sdb_read_text(brief); if (!bt) return 1; SdsRep rep;
+    if (brief) {                                                              /* o briefing e o prompt: mostra o que o motor mandaria e "tokens N/limite", ou o erro de recusa (passou do limite), sem gerar nada (render/sdbrief.c) */
+        char *bt = sdb_read_text(brief); if (!bt) return 1;
         if (!strcmp(fengine, "flux")) {
-            char *pr = sdb_flux_prompt(bt, text, &rep);
+            char *pr = sdb_flux_prompt(bt, text, stdout); if (!pr) return 1;
             printf("--- FLUX (o briefing, sem reescrita) ---\nprompt: %s\n", pr);
-            sds_report(&rep, "flux", stdout);
         } else if (!strcmp(fengine, "stable")) {
             SdgFile base; SdClip clip; const SdClip *cp = NULL; char mp[1100];
             snprintf(mp, sizeof mp, "%s/render/sd15-realistic-vision.gguf", models_dir());
             if (sdg_open(&base, mp) && sdc_load(&clip, &base)) cp = &clip;
-            char *pr = sdb_stable_prompt(bt, text, cp, chunks < 1 ? 1 : chunks > 16 ? 16 : chunks, &rep);
+            char *pr = sdb_stable_prompt(bt, text, cp, chunks < 1 ? 1 : chunks > SDB_MAX_CHUNKS ? SDB_MAX_CHUNKS : chunks, stdout); if (!pr) return 1;
             printf("--- Stable Diffusion (o briefing, sem reescrita) ---\nprompt: %s\nnegative: %s\n", pr, SDB_NEG_DEFAULT);
-            sds_report(&rep, "stable", stdout);
         } else { fprintf(stderr, "render spec: --engine flux ou stable\n"); return 1; }
         return 0;
     }
