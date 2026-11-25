@@ -159,7 +159,7 @@ static const char *const CGX_JS_RESERVED[] = {"break", "case", "catch", "class",
     "function", "if", "import", "in", "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with", "yield", "let", "static",
     "implements", "interface", "package", "private", "protected", "public", "await", "async", "arguments", "eval", "undefined", "NaN", "Infinity", "of", NULL};
 static const char *const CGX_JS_SHADOW[] = {"Math", "Map", "Set", "Array", "Object", "String", "Number", "Boolean", "Error", "RegExp", "JSON", "Symbol", "Date", "console", "process", "require", "module",
-    "exports", "global", "globalThis", "Iterable", "any", "unknown", "never", NULL};
+    "exports", "global", "globalThis", "Iterable", "IterableIterator", "any", "unknown", "never", NULL};
 static void cjs_name(CgxJs *p, int line, const char *n, int attr) {
     if (attr) { if (!strcmp(n, "constructor") || !strcmp(n, "__proto__") || !strcmp(n, "prototype")) cgx_err(p->g, line, "javascript: `%s` cannot be a field or method name; rename it", n); return; }
     for (int i = 0; CGX_JS_RESERVED[i]; i++) if (!strcmp(n, CGX_JS_RESERVED[i])) { cgx_err(p->g, line, "javascript: `%s` is a JavaScript keyword; rename it", n); return; }
@@ -345,8 +345,8 @@ static CgxDoc *cjs_template(CgxJs *p, const CgxNode *n) {
     for (int i = 0; i < k; i++) {
         if (v[i]->k == CGN_STR) { CgxB q = {0}; cjs_quote(v[i]->s, &q, 1); if (q.n >= 2) cgx_bn(&run, q.p + 1, q.n - 2); free(q.p); continue; }
         CgxDoc *e = cjs_is_str_call(v[i]) ? cjs_str_of(p, v[i]->b1.p[0], 1) : cjs_ex(p, v[i], 0);
-        CgxB pb = {0}; cgx_bs(&pb, run.p ? run.p : ""); cgx_bs(&pb, "${");
-        CgxDoc *piece = cgx_dcatn(JD, cjs_tb(p, &pb), e, cjs_t(p, "}"), NULL);
+        CgxB pb = {0}; cgx_bs(&pb, run.p ? run.p : ""); cgx_bs(&pb, "${"); cgx_render(e, 1000000, &pb); cgx_bs(&pb, "}");      /* a expressao dentro do modelo nao quebra */
+        CgxDoc *piece = cjs_tb(p, &pb);
         if (run.p) { run.n = 0; run.p[0] = 0; }
         d = d ? cgx_dcat(JD, d, piece) : piece;
     }
@@ -355,6 +355,16 @@ static CgxDoc *cjs_template(CgxJs *p, const CgxNode *n) {
     return d;
 }
 
+/* expressao cujo tipo TypeScript e um literal (`"a"`, `3`, `c ? "a" : "b"`): comparar dois assim, ou guardar um num `const`, faz o tsc reclamar de tipos sem sobreposicao */
+static int cjs_litish(const CgxNode *n) {
+    switch (n->k) {
+        case CGN_INT: case CGN_FLT: case CGN_STR: case CGN_BOOL: return 1;
+        case CGN_UN: return n->op == CGO_NEG && cjs_litish(n->a);
+        case CGN_TERN: return cjs_litish(n->b) && cjs_litish(n->c);
+    }
+    return 0;
+}
+static const char *cjs_tsbase(int k) { return k == CGT_STR ? "string" : k == CGT_BOOL ? "boolean" : "number"; }
 static CgxDoc *cjs_call(CgxJs *p, const CgxNode *n, int *prec);
 static CgxDoc *cjs_ex0(CgxJs *p, const CgxNode *n, int *prec);
 /* aritmetica (e compostos `x op= v`): L e opcional (leitura do alvo no composto) */
@@ -394,6 +404,8 @@ static CgxDoc *cjs_compare(CgxJs *p, const CgxNode *n, int *prec) {
         long long z;
         if (n->b->k == CGN_INT && n->b->iv == 0 && n->a->k == CGN_BIN && n->a->op == CGO_MOD && cjs_is_lit_int(n->a->b, &z) && z != 0)       /* a % k == 0: o sinal do resto nao importa */
             return cgx_dcatn(JD, cjs_ex(p, n->a->a, JP_MUL), cjs_t(p, " % "), cjs_ex(p, n->a->b, JP_MUL + 1), cjs_t(p, op == CGO_EQ ? " === 0" : " !== 0"), NULL);
+        if (p->ts && cjs_litish(n->a) && cjs_litish(n->b))
+            return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, 0), cgx_dtextf(JD, " as %s) %s ", cjs_tsbase(n->a->ty.k), js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
         return cgx_dcatn(JD, cjs_ex(p, n->a, JP_EQ + 1), cgx_dtextf(JD, " %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
     }
     *prec = JP_REL;
@@ -597,8 +609,9 @@ static CgxDoc *cjs_raw(CgxJs *p, const CgxNode *s) {
     return r ? r : cgx_dnil(JD);
 }
 /* anotacao de tipo de uma declaracao `let` em TypeScript: so onde o TS nao a infere sozinho ou o autor a escreveu */
-static int cjs_let_annot(const CgxNode *s) {
+static int cjs_let_annot(const CgxNode *s, int cst) {
     if (s->ty.k == CGT_VOID) return 0;
+    if (cst && cjs_litish(s->a) && (s->ty.k == CGT_INT || s->ty.k == CGT_FLOAT || s->ty.k == CGT_STR || s->ty.k == CGT_BOOL)) return 1;      /* `const x: string = "a"`: sem tipo literal */
     const int lit = (s->a->k == CGN_INT && s->ty.k == CGT_INT) || (s->a->k == CGN_FLT && s->ty.k == CGT_FLOAT) || (s->a->k == CGN_STR && s->ty.k == CGT_STR) || (s->a->k == CGN_BOOL && s->ty.k == CGT_BOOL);
     if (lit || (s->a->k == CGN_CALL && s->a->ref && s->a->ref->k == CGN_CLASS)) return 0;       /* `new C(...)` ja diz o tipo */
     if ((s->flag & 2) && (s->ty.k == CGT_INT || s->ty.k == CGT_FLOAT || s->ty.k == CGT_STR || s->ty.k == CGT_BOOL)) return 0;
@@ -648,6 +661,7 @@ static CgxDoc *cjs_assign(CgxJs *p, const CgxNode *s) {
     int pr; CgxDoc *v = cjs_arith(p, s->op, t, s->b, cjs_ex(p, t, 0), &pr);
     return cgx_dcatn(JD, T, cjs_t(p, " = "), v, cjs_t(p, ";"), NULL);
 }
+static CgxDoc *cjs_line_comment(CgxJs *p, const char *text) { CgxB b = {0}; cgx_bs(&b, "// "); cgx_bs(&b, text); return cjs_tb(p, &b); }
 static int cjs_uses(const CgxNode *n, const CgxNode *ref) {
     if (!n) return 0;
     if (n->k == CGN_VAR && n->ref == ref) return 1;
@@ -668,15 +682,15 @@ static int cjs_mm(const CgxNode *n) {
 static int cjs_may_mutate_map(const CgxBlk *b) { for (int i = 0; i < b->n; i++) if (cjs_mm(b->p[i])) return 1; return 0; }
 static CgxDoc *cjs_stmt(CgxJs *p, const CgxNode *s) {
     switch (s->k) {
-        case CGN_COMMENT: if (!s->defs) return NULL; return cgx_dtextf(JD, "// %s", s->defs);
-        case CGN_DOC: return cgx_dtextf(JD, "// %s", s->defs);
+        case CGN_COMMENT: if (!s->defs) return NULL; return cjs_line_comment(p, s->defs);
+        case CGN_DOC: return cjs_line_comment(p, s->defs);
         case CGN_RAW: return cjs_raw(p, s);
         case CGN_LET: {
             cjs_name(p, s->line, s->s, 0);
             const int cst = (s->flag & 1) || !cjs_asg(p, s);
             CgxB h = {0};
             if (p->ts && s->ty.k == CGT_CLASS && (!cst || s->a->k == CGN_NULL)) cgx_bs(&h, ": any");          /* a UIR nao tem tipo opcional: classe que recebe null fica any */
-            else if (p->ts && cjs_let_annot(s)) { cgx_bs(&h, ": "); cjs_type(p, &s->ty, &h); }
+            else if (p->ts && cjs_let_annot(s, cst)) { cgx_bs(&h, ": "); cjs_type(p, &s->ty, &h); }
             CgxDoc *d = cgx_dcatn(JD, cgx_dtextf(JD, "%s %s%s = ", cst ? "const" : "let", s->s, h.p ? h.p : ""), cjs_ex(p, s->a, 0), cjs_t(p, ";"), NULL); free(h.p); return d;
         }
         case CGN_ASSIGN: return cjs_assign(p, s);
@@ -865,7 +879,7 @@ static int cjs_gen(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests, int ts)
         else if (d->k == CGN_CLASS) { x = cjs_class(p, d); isfn = 1; }
         else if (d->k == CGN_LET) x = cjs_stmt(p, d);
         else if (d->k == CGN_RAW) x = cjs_raw(p, d);
-        else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cgx_dtextf(JD, "// %s", d->defs);
+        else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cjs_line_comment(p, d->defs);
         if (!x) continue;
         if (!first) { const int blank = isfn || prev_fn ? 1 : 0; for (int b = 0; b <= blank; b++) x = cgx_dcat(JD, cgx_dhard(JD), x); }
         all = all ? cgx_dcat(JD, all, x) : x; first = 0; prev_fn = isfn;

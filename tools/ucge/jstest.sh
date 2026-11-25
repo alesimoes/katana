@@ -3,12 +3,12 @@
 #   - as 13 tarefas sem RAW geradas em JS e rodadas no node (e em TS, compiladas com o tsc de UCGE_TSC, se houver); as de RAW so geram;
 #   - Python x JS (x TS) em programas de borda escritos a mao (tools/ucge/js/edge_*.csp) e em programas aleatorios (jsfuzz.py);
 #   - estilo do codigo gerado e mensagens de erro do gerador.
-# Uso: sh tools/ucge/jstest.sh [N]     N = programas aleatorios (padrao 60); UCGE_TSC=/caminho/do/tsc inclui TypeScript (ex.: npm i typescript; node_modules/.bin/tsc)
+# Uso: sh tools/ucge/jstest.sh [N]     (SAN=1 compila com ASan/UBSan)   N = programas aleatorios (padrao 60); UCGE_TSC=/caminho/do/tsc inclui TypeScript (ex.: npm i typescript; node_modules/.bin/tsc)
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
 T=$(mktemp -d) || exit 2; trap 'rm -rf "$T"' EXIT
-NFUZZ=${1:-60}; CC=${CC:-gcc}
+NFUZZ=${1:-60}; CC=${CC:-gcc}; SANF=""; [ -n "$SAN" ] && SANF="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
 command -v node >/dev/null || { echo "SKIP: node nao encontrado"; exit 0; }
-$CC -O1 -g -Wall -Wno-unused-function -I "$ROOT" "$HERE/ucgecli.c" -o "$T/ucgecli" -lm 2>"$T/cc.log" || { cat "$T/cc.log"; echo "FAIL build"; exit 1; }
+$CC -O1 -g -Wall -Wno-unused-function $SANF -I "$ROOT" "$HERE/ucgecli.c" -o "$T/ucgecli" -lm 2>"$T/cc.log" || { cat "$T/cc.log"; echo "FAIL build"; exit 1; }
 [ -s "$T/cc.log" ] && { cat "$T/cc.log"; echo "FAIL build warnings"; exit 1; }
 U="$T/ucgecli"; N=0; BAD=0
 ok()   { N=$((N+1)); echo "ok   $1"; }

@@ -1,7 +1,7 @@
 /* ucgecli: o nucleo do UCGE compilado sozinho (docs/ucge.md).
  *   gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm
  *   ucgecli check <spec>              le, valida e escreve os erros (linha: mensagem) ou "ok"
- *   ucgecli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python)
+ *   ucgecli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python, js, ts)
  *   ucgecli run <alvo> <spec>         gera com o harness de testes, roda em subprocesso com limites e conta passou/falhou
  *   ucgecli stats <spec>              resumo da UIR usada
  *   ucgecli selftest                  testes internos da tabela de tipos, unificacao e do pretty-printer */

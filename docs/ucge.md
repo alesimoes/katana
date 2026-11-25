@@ -1,6 +1,6 @@
 # UCGE: Unified Code Generation Engine
 
-Status: phase 1 (design and core) done on branch `feat-ucge`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
+Status: phase 1 (design and core) done on branch `feat-ucge`; phase 2 module A (JavaScript and TypeScript backends, section 15) is on branch `feat-ucge-js`; the rest of phases 2 and 3 is planned at the end of this page. The core is **not yet part of the
 katana build** (`src/katana.c` does not include it; the files are `static` and compile standalone with `tools/ucge/ucgecli.c`). Phase 2 adds the include
 line after `coder/symedit.c` and the `CodeGen` tool.
 
@@ -281,9 +281,11 @@ every finding and never says "exact":
 | `src/coder/ucgetype.c` | type table, union-find unification, generalization, schemes | 1 (not yet wired) |
 | `src/coder/ucgedoc.c` | document algebra, renderer, `CgxGenOpts`, `CgxBackend` | 1 |
 | `src/coder/ucgepy.c` | Python backend (reference) and the backend registry | 1 |
+| `src/coder/ucgejs.c` | JavaScript and TypeScript backends (one generator, `ts` switches the annotations; section 15) | 2 (module A) |
 | `src/coder/ucge_api.h` | the contract between phases (documentation only) | 1 |
 | `tools/ucge/ucgecli.c` | standalone driver: `check gen run stats selftest` | 1 |
 | `tools/ucge/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
+| `tools/ucge/jstest.sh`, `tools/ucge/js/` | JS/TS tests: tasks on node and tsc, edge cases, Python x JS x TS differential, random programs (`jsfuzz.py`) | 2 (module A) |
 | `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
 
 Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.
@@ -334,8 +336,82 @@ mappings (or those two keep their mappings in a local table that I then absorbs)
 
 ## 14. Left out of phase 1
 
-JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
+C, Go, Java, Rust backends (JS and TS: section 15); the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
 and unused-name reports, constant folding; the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
 validator/runner with the graded report (the CLI runs Python tests only, with `ulimit` and `timeout`, which is not a sandbox); the coder index lookup for
 `extern` functions; tuples, closures, imports, inheritance, typed errors, regex outside `matches`, formatting; the protocol text for the model and any
 measurement with the real model (**not run**: it needs the model and the machine); training or curriculum (outside this work by decision).
+
+## 15. JavaScript and TypeScript backends (module A, `src/coder/ucgejs.c`)
+
+Registered as `javascript` (alias `js`, `.js`) and `typescript` (alias `ts`, `.ts`). One generator serves both: it walks the checked AST and builds a document for the
+Wadler/Lindig printer; `ts` only turns on type annotations, which come from the IR type of each node through the type table of `ucgetype.c` (`CgxTy` -> `CgxTid` ->
+text: `list[int]` is `number[]`, `map[str,T]` is `Map<string, T>`, a class is its name, `any` is `any`, the caught error is `unknown`). `ucgecli gen js|ts <spec> [--tests]` and
+`ucgecli run js|ts <spec>` (node; TypeScript is compiled first by the executable named in `UCGE_TSC`, `--strict --target es2022`, and only generated when the variable is not set).
+
+**Style, and why.** Functions and the harness helpers are `function` declarations, not arrows: they hoist (recursion and forward calls behave as in Python, where a function
+body is resolved at call time), they have names in stack traces, and `this` is never captured by accident; arrows are used only for the `test` thunks and callbacks. Locals are
+`const` unless the name is the target of an assignment anywhere (one pre-pass over the AST, keyed by node id), then `let`; module constants are always `const`. Statements end in
+`;`, blocks use braces, `===` and `!==` only. A chain of `+` over `str` with a literal and a `str(x)` becomes a template string (`` `sum ${t} of ${s}` ``). Loops: `for (const x of xs)`
+for lists and strings, `for (const [k, v] of m)` for maps, `for (let i = a; i < b; i++)` for ranges; if the bound is not provably stable (a literal, or an unassigned numeric
+variable, or arithmetic of those) it is evaluated once in the loop head (`let i = 0, _e1 = len + n`), as `range` does; if the body assigns the loop variable, the loop runs on a hidden counter
+and the body gets its own `let`. `catch (e)` becomes `catch {` when `e` is unused. A `doc` line is a JSDoc block; in JS the author's declared types add `@param {T}` and `@returns {T}`,
+which gives editors type checking without TypeScript. The output is a classic script (`"use strict";` unless the spec has a `raw` block, whose code is not ours to restrict) and, in TS,
+a module (`export {};` first, so top-level names never collide with the lib globals).
+
+**Semantics, how they are kept identical to Python.** Where the JavaScript operator differs, the generator calls a *runtime helper* written once in `CGX_JS_H` (TypeScript text; the
+type marks are cut for JS). Only the helpers a program uses, and the ones they need (a dependency list per helper), are copied, in front of the code. Operators whose meaning is the same
+are emitted raw.
+
+| UIR | JavaScript | Divergence removed |
+|---|---|---|
+| `a // b`, `a % b` | `Math.floor(a / 2)` for a non-zero literal, `a % 3` when `a` is provably >= 0 and the divisor a positive literal, `a % 3 === 0` for zero tests, else `_fdiv`/`_mod` (exact floor via the remainder) | truncation toward zero; `%` sign |
+| `a / b` | `a / 2` for a non-zero literal, else `_div` | division by zero is `Infinity`/`NaN` in JS; the helper throws `division by zero` |
+| `xs[i]`, `xs[i] = v` | `_at(xs, i)`, `_put(xs, i, v)`, `_sat(s, i)`, `_mget(m, k)`, `_ix(c, k)` for `any` | negative indices, `IndexError`/`KeyError` instead of `undefined` |
+| map | `Map` (literal `new Map([["a", 1]])`, `m.set`, `m.has`, `.size`) | insertion order for every key (an object puts `"10"` before `"b"`), no `__proto__` keys |
+| `len`, index, `slice`, `reverse`, `indexof` of `str` | `_slen`, `_sat`, `_sslice`, `_rev`, `_find` (fast path when no surrogate pair is present) | UTF-16 units instead of code points |
+| `<` on `str` | `_scmp(a, b) < 0` | UTF-16 order differs from code point order for astral characters |
+| `==` on list, map, `any` | `_eq` (deep); scalars `===` | reference equality |
+| `str(x)`, `print(x)` | by static type: `String(n)`, `_fstr(x)` for float (`2.0`, `1e-05`, `1e+16`: CPython repr), `x ? "True" : "False"`, `_str` for the rest (Python repr of lists and maps; `list[float]` and `map[str,float]` pass a flag so `[1.0, 2.5]` keeps its `.0`) | `2` vs `2.0`, `true` vs `True`, `[object Object]` |
+| `int(x)`, `float(x)` | `_int`, `_float` (Python whitespace set, `_` digit separators, `inf`/`nan`, the CPython error texts) | `Number("")` is 0, `parseInt("12abc")` is 12 |
+| `sqrt`, `pow` | `_sqrt`, `_pow` raise `math domain error`/`math range error` | `NaN` and `Infinity` |
+| `trim`, `words`, `split` | `_trim`, `_words` (the `str.isspace` set, linear scan), `_split` (empty separator is an error) | JS `trim` strips U+FEFF and keeps U+001C..1F and U+0085 |
+| `sum`, `sort` | `_sum` (Neumaier compensated, as CPython >= 3.12 does for floats), `sort(xs)` copies; numbers `(a, b) => a - b`, `str` `_scmp` | float summation order, in-place sort |
+| `pop`, `contains`, `replace`, `keys` | `_pop` (error on empty), `includes`/`has`/`_has`, `split(a).join(b)` (`_replace` for the empty pattern), `[...m.keys()]` | `undefined` results; `$&` patterns of `String.replace` |
+| `any` as a condition or an operand of `and`/`or`/`not` | `_truth` (Python truth: `[]`, `""`, `0`, empty map are false) | JS truthiness |
+| `throw "m"`, `throw e`, `errmsg(e)` | `throw new Error("m")`, `throw e`, `_errmsg(e)` | none (`catch` catches every error, including runtime ones) |
+| class | JS class, fields as class fields (fresh per instance), `constructor` from `init`, `new C(...)`, `self` is `this` | none |
+
+Order of evaluation follows the Python backend, not the JS defaults, where they differ and the operands have effects or can fail: `c[k] = v` evaluates `v` first (the JS form hoists it into
+a block `{ const _v1 = v; _put(c, k, _v1); }`), `x in c` and `contains(c, x)` evaluate `x` first (`_in(x, c)`), `join(xs, sep)` evaluates `sep` first (`_join(sep, xs)`); compound
+assignment to an element with a call in its target hoists the container and the key into temporaries. Iterating a map whose body may insert a key goes through `_mapit`, which raises
+`dictionary changed size during iteration` like CPython. Temporaries and helpers start with `_`; the generator rejects user names that start with `_`, JavaScript keywords, and the globals
+the output uses (`Math`, `Map`, `Error`, `console`, ...), with a message naming the name.
+
+**What stays different, and is reported here instead of hidden.**
+1. *Integers.* JS numbers are doubles: integers are exact to 2^53. A literal outside that range is a generation error; arithmetic that leaves it silently rounds (Python is unbounded). Spec
+   authors that need big integers must use a `raw` block. `int` and `float` are one runtime type, so the *static* type decides how `str`/`print` format a number: a float variable that holds an
+   integral value prints `2.0` (as Python does if every value in it really is a float); an `int` stored in a `float` variable (Python keeps it `int` and prints `3`) or an `any` holding an integral float
+   prints the integer form. Lists and maps whose element type is `any` print integral floats without `.0`.
+2. *Error texts* of the emulated runtime errors are those of CPython 3.14 (`division by zero`, `list index out of range`, `'k'` for a missing key, `expected a nonnegative input, got -1.0`, ...); older
+   Pythons word a few differently (`math domain error`, `integer division or modulo by zero`). Errors that come from the JS runtime itself (`raw` code, `any` misuse: `TypeError: Cannot read ...`) have their own text;
+   deep recursion raises `RangeError` at about 10^4 frames, `RecursionError` at 10^3.
+3. *Regular expressions* (`matches`) are JS `RegExp` without the `u` flag (the ASCII-punctuation escapes Python allows stay valid): `\d`, `\w`, `\s` are ASCII-only (Python: Unicode), no
+   `(?P<name>...)`, no inline flags, `$` does not match before a final newline. Patterns that mean the same in both dialects behave the same.
+4. *Case mapping* (`upper`, `lower`) uses the Unicode tables of the runtime (`ß` becomes `SS` in both), which can differ between versions of Python and node for recently added characters.
+5. *`Math.pow` and `Math.sqrt`* are IEEE `sqrt` and V8's own `pow`: the last bit of a non-integer power can differ from the C library's (not seen in the random tests below).
+6. *Hoisting.* Functions are declarations, so a module constant initialised by calling a function defined later works in JS where Python raises `NameError`.
+7. *Object printing.* `str()` of a class instance is `<Name object>` (CPython prints an address). A `raw` JS block that produces plain objects (`JSON.parse`) gives `any` values: `_ix`, `_iter`, `_items`, `_keys`,
+   `_len` and `_has` accept `Map`, arrays, strings and plain objects.
+8. *Modules.* Nothing is exported: the file is a script (or a TS module with no exports). Add `module.exports` or `export` in a `raw` block; imports are not UIR (section 2.1).
+9. *TypeScript.* The UIR has no optional type: a class-typed field, a reassigned class-typed variable, a class parameter with a `null` default and a function that returns `null` are typed `any`
+   (`T | null` arrives with the inference module). `any` elsewhere is `any`, the caught error is `unknown` (and goes to helpers that take `unknown`). Lists and maps of classes or of nested
+   collections are `any[]` / `Map<string, any>` because `CgxTy` keeps only the base element kind. `target ES2022` (class fields, `catch {`; ES2019 with the fields rewritten by the compiler), `lib es2017` or newer (`Object.entries`, `padStart`).
+10. *A `raw` block* needs a `raw js` version (TypeScript uses `raw ts` when present, else `raw js`); otherwise generation fails with the list of versions the block has (task 15 has only Python).
+
+**Tests** (`sh tools/ucge/jstest.sh [N]`, `UCGE_TSC=<tsc>` adds TypeScript; a `tsc` is one `npm i typescript` away and is not vendored): the 13 raw-free tasks pass their `test` lines on node 20 and,
+compiled with `tsc --strict`, as TypeScript; task 14 runs against a real JSON file; three hand-written programs of edge cases (`tools/ucge/js/edge_*.csp`: floor division and modulo for every sign
+combination, zero divisors, float formatting, `int()`/`float()` parsing, `sum` of floats, unicode strings with astral characters, whitespace, negative indices, slices, maps with numeric-looking keys, loops
+whose bound or variable changes in the body, `try/finally`, rethrow, classes, defaults, `any`) print the same lines on Python, JS and TS; and `jsfuzz.py` generates random valid programs (typed expression
+generator over int, float, str, bool, `list[int]`, `list[str]`, `map[str,int]`, functions with defaults, a class, nested control flow, every operation that can fail wrapped in `try/catch` that prints `errmsg`) and
+compares the standard output of the three targets line by line.
