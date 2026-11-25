@@ -15,6 +15,7 @@ typedef enum {
     KN_FAIL_AROUND, KN_FAIL_ROW,           /* R4, R5: falhas em volta da mesma coisa; falhas seguidas */
     KN_ROUNDS,                             /* R6: ultima rodada de ferramentas do pedido */
     KN_TODO_OPEN,                          /* T1: o modelo parou com passos em aberto (turno proprio) */
+    KN_GIVE_CMD,                           /* Q4: o usuario pede para RECEBER o comando/texto (loop.c, entrada do pedido): responder com ele, sem ferramentas */
     KN_TODO_PREV,                          /* Q3: pedido novo com lista antiga em aberto (loop.c, entrada do pedido); so sai SEM bloco do UIOE: com bloco vira clausula de `Not found / limits` (ctxb.c) */
     KN_LINKS,                              /* R10: arquivos ligados ainda nao lidos (grafo do Find) */
     KN_READ_CURSOR,                        /* R12: Read continua de onde o anterior parou */
@@ -63,6 +64,7 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "what is left and what you need from them; they can ask you to continue.]"
 #define KNF_TODO_OPEN "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. " \
     "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now."
+#define KNF_GIVE_CMD "%s\n[katana: the user asked you to GIVE them the command (or text), so they run or use it themselves. Do not run it, do not search, do not plan: write the exact command now in a code block, with one line saying what it does. If you do not know it, say what you tried and what is missing.]"
 #define KNF_TODO_PREV "%s\n[katana: your todo list from before still has %d unfinished steps. This message is newer and comes first: " \
     "if it changes the plan, follow it and rewrite or drop the old steps.]"
 #define KN_LINKS_HEAD "\n[katana: linked files you have not read yet: "
@@ -121,6 +123,7 @@ static const KnSpec KN_TAB[KN_COUNT] = {
     [KN_FAIL_ROW]        = {"fail_row",        KN_ORDER, KN_RESULT, 0, 0, KNF_FAIL_ROW},
     [KN_ROUNDS]          = {"rounds",          KN_ORDER, KN_RESULT, 0, 0, KNF_ROUNDS},
     [KN_TODO_OPEN]       = {"todo_open",       KN_ORDER, KN_TURN,   0, 0, KNF_TODO_OPEN},
+    [KN_GIVE_CMD]        = {"give_cmd",        KN_ORDER, KN_REQUEST,0, 0, KNF_GIVE_CMD},
     [KN_TODO_PREV]       = {"todo_prev",       KN_ORDER, KN_REQUEST,0, 0, KNF_TODO_PREV},
     [KN_LINKS]           = {"links",           KN_INFO,  KN_RESULT, KN_BUDGET, 1100, KNF_LINKS},
     [KN_READ_CURSOR]     = {"read_cursor",     KN_INFO,  KN_RESULT, 0, 0, KNF_READ_CURSOR},

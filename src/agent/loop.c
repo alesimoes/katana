@@ -448,6 +448,14 @@ static void autoindex_dir(const char *d) { (void)d; }
 static void autoindex_start(void) {}
 #endif
 static void rr_reset(void) { rr_n = 0; rr_total = 0; fg_reset(); rc_reset(); kn_request_begin(); }
+/* o usuario pede para RECEBER o comando ("me passe o comando", "me da o comando que precisa executar"): o modelo tende a seguir pesquisando */
+static int asks_for_command(const char *line) {
+    static const char *const v[] = {"me pass", "me da ", "me d\xc3\xa1", "me de ", "me mand", "me envi", "me mostr", "me diga", "qual o comando", "qual comando", "give me", "send me", "show me", "tell me the command", NULL};
+    char lo[2048]; size_t n = 0; for (; line[n] && n < sizeof lo - 1; n++) lo[n] = (char)tolower((unsigned char)line[n]); lo[n] = 0;
+    if (!strstr(lo, "comando") && !strstr(lo, "command")) return 0;
+    for (int i = 0; v[i]; i++) if (strstr(lo, v[i])) return 1;
+    return 0;
+}
 static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_covered(const char *name) {
     if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Find") || !strcmp(name, "Symbols") ||
@@ -702,6 +710,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         (void)plan_go;
         g_undo_req++; g_todo_touched = 0; nudged = 0;
         rp_n = 0; rp_fail = 0; rp_refused = 0; rp_stuck = 0; bk_n = 0; rr_reset();        /* estado deste pedido (antes so zerava na 1a chamada da rodada 0) */
+        if (asks_for_command(line)) { static char gl[16384]; KNOTE(GIVE_CMD, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
         if (ublk) uioe_commit(usess);      /* o que o bloco mostrou conta como mostrado para o Find e o Read (o rr_reset acima apagou o estado anterior) */
         {   /* a lista de um pedido anterior ainda tem passos em aberto: a mensagem nova do usuario vem antes deles */
             int td = 0; const int tn = todo_count(&td);
