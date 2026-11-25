@@ -1630,7 +1630,7 @@ bool Backend::sendImage(const QString &text)
     }
     QDir().mkpath(imageDir());
     const QString out = QDir(imageDir()).filePath(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + "-" + engine + ".png");
-    // o texto da caixa e o prompt, literal: o motor nao reescreve nem acrescenta nada; se passar do limite ele corta por relevancia
+    // o texto da caixa e o prompt, literal: o motor nao reescreve nem acrescenta nada; se passar do limite ele RECUSA (nao corta) e o erro aparece no cartao vermelho
     QStringList args{"render", "generate", "--engine", engine, "--init", img, "--strength", "0.35",
                      "--size", QString("%1x%2").arg(W).arg(H), "--out", out};
     QString briefFile = QDir(QDir::tempPath()).filePath("katana-briefing-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".md");
@@ -1691,6 +1691,8 @@ bool Backend::sendImage(const QString &text)
             saveSession();
         } else if (st == QProcess::NormalExit && code == 3) {   // motor ainda nao existe: aviso amigavel, nao e erro
             m_msgs.append("image", {}, engine, {}, QString("O motor %1 ainda nao esta disponivel nesta versao. Use o Stable por enquanto.").arg(nome));
+        } else if (const int ib = log.indexOf(QStringLiteral("error: the brief has ")); ib >= 0) {   // briefing acima do limite de tokens: o motor recusou (nada cortado, nada gerado); o cartao mostra o erro do motor, como veio
+            m_msgs.append("error", log.mid(ib).section('\n', 0, 0).trimmed());
         } else {
             m_msgs.append("error", QString("A geracao da imagem (%1) falhou (codigo %2):\n%3").arg(nome).arg(code).arg(log.right(600)));
         }

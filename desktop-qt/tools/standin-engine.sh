@@ -6,7 +6,7 @@ hw) printf 'ram_gb\t64\ngpu\t-\nvram_gb\t0\ndisk_gb\t100\n'; exit 0;;
 catalog|pull) exit 0;;
 render)
     # `katana render generate --engine E ... --out ARQ`: stable grava a imagem de amostra; flux sai com 3 (ainda nao disponivel), como o motor real;
-    # um prompt com a palavra "falhe" faz o stable falhar (codigo 2); --brief e aceito (o conteudo e copiado para $HOME/.standin-render-brief) e anotado
+    # um prompt com a palavra "falhe" faz o stable falhar (codigo 2); --brief e aceito (o conteudo e copiado para $HOME/.standin-render-brief) e anotado; "estoure" no briefing = recusa por passar do limite de tokens (erro do motor, codigo 1, nada gerado)
     [ "$2" = generate ] || exit 1
     # os argumentos recebidos ficam em $HOME/.standin-render-args (um por linha, execucao a execucao) para o selftest conferir --brief e --nl
     { printf '%s\n' "$@"; echo '--'; } >> "${HOME:-/tmp}/.standin-render-args"
@@ -17,6 +17,8 @@ render)
     done
     # briefing que nao existe: o motor real recusa antes de gerar (codigo 1)
     if [ -n "$BR" ]; then [ -f "$BR" ] || { echo "render: nao consegui abrir o briefing" >&2; exit 1; }; cp "$BR" "${HOME:-/tmp}/.standin-render-brief"; fi
+    # briefing acima do limite (a palavra "estoure" no texto): o motor real recusa antes de gerar, com este erro (codigo 1); nada e cortado
+    if [ -n "$BR" ] && grep -q estoure "$BR"; then echo "error: the brief has 812 tokens, the limit for $E is 504 (about 350 words): shorten it and send it again" >&2; exit 1; fi
     case "$E" in
     flux) case "$KATANA_BACKEND" in
           cuda|vulkan) echo "[flux] usado: dit=$KATANA_BACKEND vae=$KATANA_BACKEND" >&2; cp "$(dirname "$0")/samples/render-saida.png" "$OUT"; exit 0;;   # com a placa escolhida o flux "gera" e diz quem processou
