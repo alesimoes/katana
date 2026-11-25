@@ -29,10 +29,11 @@ The desktop reads the agent's stdout and stderr and writes lines to its stdin (`
 
 * The server starts `katana agent <model>` (`KATANA_UI=1`, `NO_COLOR=1`, the same environment filter as the desktop, own process group) and turns what it writes into
   numbered events in a ring buffer (4096 events or 24 MB), sent as Server-Sent Events by `GET /web/events` (reconnection resumes with `Last-Event-ID`):
-  `t` text, `m` a marker line (`READY`, `TOOL`, `TOOLOUT`, `TOOLLIVE`, `TOKENS`, `TODO`, `CHOICE`, `ASK`, `MODE`, `CWD`, `NOTIFY`, `FILE`, `FINDING`, `PREP`, `FEED`, `RESUME`...), `e` a stderr line, `s` started, `x` exited.
+  `t` text, `m` a marker line (`READY`, `TOOL`, `TOOLOUT`, `TOOLLIVE`, `TOKENS`, `TODO`, `CHOICE`, `ASK`, `MODE`, `CWD`, `NOTIFY`, `FILE`, `FINDING`, `PREP`, `FEED`, `RESUME`, `STEERED`...), `e` a stderr line, `s` started, `x` exited.
 * `web/js/backend.js` is a port of the desktop backend: the same marker handling, tag filter, `cleanArgs`, tool states, notes split out of results, plan reconciliation
   (`web/js/model.js` is `MessageModel`), request progress, queue, session save format (`~/.katana/desktop/sessoes/<id>.json`, the desktop's own files) and the `/session`, `/resume`, `/new`, `/cd`, `/plan`, `/go`, `/undo`, `/teacher` lines.
 * The page writes to the agent with `POST /web/line` (one line, newlines and `\x01` become spaces), `POST /web/ans` (`\x01ANS`), `POST /web/pass` (`\x01PASS`) and stops it with `POST /web/stop` (SIGINT to the group, like Ctrl+C / Esc).
+* Message during a cycle: the desktop also writes `\x01STEER <text>` while the agent works; the engine appends it to the next tool result as a user note and answers `\x01STEERED<TAB><text>`, or, if the request ends first, reads it as the next user message (also with `STEERED`). Details in `desktop-qt/README.md`. The web page does not send STEER yet (no endpoint).
 * Other endpoints: `GET /web/state` (models, engine version, preferences, agent state), `POST /web/start` (start or switch model, with the working folder), `GET/PUT/DELETE /web/sessions[/id]`,
   `GET /web/dirs` (folder browser), `POST /web/ui` (preferences in the desktop's `ui.ini`: theme, font, folder, last model, collapsed sidebar, keep awake), `POST /web/open` (xdg-open on the server machine),
   `GET /web/sys` and `GET /web/index` (the bottom bar: CPU, RAM, GPU, agent activity, code-index state), `POST /web/teacher`, `/web/term/*` (embedded terminal).

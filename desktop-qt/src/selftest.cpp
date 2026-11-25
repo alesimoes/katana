@@ -1040,6 +1040,16 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
             be.clearImage(); be.setImageEngine("stable");      // Stable e FLUX seguem para render generate: conferido nos testes abaixo (argumentos e nada ao agente)
             QObject::disconnect(cn);
             check(waitFor([&] { return be.ready(); }, 5000), "agente pronto depois do bloco so olhar");
+            {   // mensagem no meio do ciclo (STEER): vai ao modelo na fronteira da ferramenta; STEERED tira a marca da bolha
+                be.send("ciclo com pin");
+                check(waitFor([&] { return be.answering(); }, 5000), "pin: agente respondendo");
+                check(be.steer("pare e liste so os .md"), "pin: STEER aceito durante o ciclo");
+                const int si = be.messages()->count() - 1;
+                check(be.messages()->get(si)["kind"] == "user" && be.messages()->get(si)["steer"].toBool(), "pin: bolha marcada como enviada durante o ciclo");
+                check(waitFor([&] { return !be.messages()->get(si)["steer"].toBool(); }, 10000), "pin: STEERED tira a marca");
+                check(waitFor([&] { return be.ready(); }, 10000), "pin: o pedido terminou sem ser interrompido");
+                check(!be.steer("fora do ciclo"), "pin: fora do ciclo o STEER e recusado (a mensagem vai pelo envio normal)");
+            }
             be.send("morra agora");      // volta ao estado de antes do bloco (sem agente), como os testes de geracao abaixo esperam
             check(waitFor([&] { return !be.ready() && !be.answering(); }, 30000), "agente encerrado de novo");
         }

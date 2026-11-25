@@ -16,7 +16,7 @@ Item {
     height: implicitHeight
 
     function setText(t) { ta.text = t; ta.cursorPosition = t.length; }
-    function submit() {
+    function submit(later) {
         var t = ta.text.trim();
         if (backend.attachedImage) {                  // imagem anexada: "Só olhar" vai ao agente com a imagem; Stable/FLUX vão para o gerador
             if (!backend.imageBusy && backend.sendImage(t)) ta.clear();
@@ -28,7 +28,7 @@ Item {
         }
         if (backend.answering) {
             if (!t) { backend.stop(); return; }      // vazio: Parar
-            if (backend.enqueue(t)) ta.clear();      // com texto: entra na fila
+            if (later ? backend.enqueue(t) : backend.steer(t)) ta.clear();      // Enter: vai ao modelo agora (STEER); Ctrl+Enter: entra na fila
             return;
         }
         if (!t || !backend.ready) return;
@@ -137,7 +137,7 @@ Item {
                 placeholderText: backend.ready ? "Escreva uma mensagem..."
                                : backend.loading ? (/^Preparando/.test(backend.statusText) ? backend.statusText : "Carregando o modelo...")
                                : backend.answering && /^(Retomando|Preparando)/.test(backend.statusText) ? backend.statusText
-                               : backend.answering ? "Respondendo..."
+                               : backend.answering ? "Respondendo... (Enter fala com o modelo agora; Ctrl+Enter deixa para depois)"
                                : backend.running ? "Aguarde..." : "Escolha um modelo para começar"
                 placeholderTextColor: Theme.mut
                 selectionColor: Theme.ac
@@ -152,7 +152,7 @@ Item {
                     if (e.key === Qt.Key_Escape && backend.answering) { e.accepted = true; backend.stop(); return; }
                     if ((e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !(e.modifiers & Qt.ShiftModifier)) {
                         e.accepted = true;
-                        comp.submit();
+                        comp.submit((e.modifiers & Qt.ControlModifier) !== 0);
                     }
                 }
             }

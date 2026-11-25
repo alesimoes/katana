@@ -70,9 +70,26 @@ if [ -n "$KATANA_SPEC" ] && [ -d "$KATANA_SPEC" ]; then
 fi
 echo "arquitetura=qwen35moe ctx=4096" >&2
 printf '\001READY\n'
+SOH=$(printf '\001')
 while IFS= read -r line; do
     case "$line" in
     /exit) exit 0;;
+    "${SOH}STEER "*)
+        # mensagem no meio do ciclo que o pedido nao consumiu: o motor a le como pedido novo e confirma com STEERED
+        t=${line#"${SOH}STEER "}
+        printf '\001STEERED\t%s\n' "$t"
+        printf 'Recebi depois do pedido: %s\n' "$t"
+        printf '\001READY\n';;
+    *"ciclo com pin"*)
+        # pedido longo: na fronteira da ferramenta o motor le a linha STEER (o selftest a manda), junta ao resultado e confirma
+        printf '\001TOOL Bash\t{"command":"ls","description":"Listar a pasta"}\tListar a pasta\n'
+        IFS= read -r s
+        case "$s" in
+        "${SOH}STEER "*) t=${s#"${SOH}STEER "}; printf '\001STEERED\t%s\n' "$t"; printf '\001TOOLOUT Bash\ta.md\\nb.c\\n[user message, sent while you were working: \"%s\". Read it now and follow it; it takes priority over your plan.]\n' "$t";;
+        *) printf '\001TOOLOUT Bash\ta.md\\nb.c\n';;
+        esac
+        printf 'Mudei o rumo como voce pediu.\n'
+        printf '\001READY\n';;
     /session*|/cd*) ;;                                   # comandos silenciosos: sem READY
     /*) printf '\001READY\n';;
     *"@image("*)
