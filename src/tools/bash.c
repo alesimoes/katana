@@ -6,7 +6,13 @@
  * A pasta do shell persiste entre chamadas so para o Bash (g_ctb_cwd): o roteiro grava `pwd -P` ao sair (trap EXIT);
  * se a pasta final ficar fora da pasta de trabalho do agente (e das pastas liberadas), volta para a pasta de trabalho
  * e o resultado avisa. Variaveis de ambiente nao persistem.
- * TaskStop encerra uma tarefa (grupo inteiro). Monitor inicia um comando em segundo plano com prazo (padrao 5 min). */
+ * TaskStop encerra uma tarefa (grupo inteiro). Monitor inicia um comando em segundo plano com prazo (padrao 5 min).
+ * Entrada de tarefas: o comando iniciado em segundo plano (run_in_background ou Monitor) recebe no stdin a ponta de leitura
+ * de um cano; a ponta de escrita fica com o katana (O_CLOEXEC: outros filhos nao a herdam) enquanto a tarefa vive e fecha
+ * quando ela acaba ou no TaskStop. SendInput escreve nela (senha, codigo 2FA, confirmacao) e devolve a saida nova. Um
+ * programa que le stdin sem ninguem escrever fica parado ate o prazo ou o TaskStop. Programas que leem /dev/tty e nao o
+ * stdin (sem terminal: setsid) continuam falhando. O comando movido para segundo plano no timeout comecou com /dev/null e
+ * nao tem cano. */
 
 #ifndef _WIN32
 static char g_ctb_cwd[4200];       /* pasta do shell do Bash entre chamadas ("" = pasta de trabalho do agente) */
@@ -46,7 +52,8 @@ static size_t ctb_q(char *w, const char *s) {
 static const char *ctb_shell(void) { return access("/bin/bash", X_OK) == 0 ? "/bin/bash" : "/bin/sh"; }
 
 /* inicia o roteiro em novo grupo de processos com a saida em log; devolve o pid ou -1 */
-static pid_t ctb_spawn(const char *script, const char *log) {
+/* inw != NULL: stdin vem de um cano e *inw recebe a ponta de escrita + 1 (0 se o cano falhou: fica /dev/null) */
+static pid_t ctb_spawn(const char *script, const char *log, int *inw) {
     static char *envp[4096];                                 /* ambiente herdado + variaveis que evitam prompts (como run_cmd_ex) */
     int ne = 0;
     for (char **e = environ; e && *e && ne < 4090; e++) if (strncmp(*e, "GIT_TERMINAL_PROMPT=", 20) && strncmp(*e, "PAGER=", 6)) envp[ne++] = *e;
@@ -60,12 +67,16 @@ static pid_t ctb_spawn(const char *script, const char *log) {
     mkdir_parents(log);
     const int lf = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600), dn = open("/dev/null", O_RDONLY);
     if (lf < 0) { if (dn >= 0) close(dn); return -1; }
+    int pp[2] = { -1, -1 };
+    if (inw) { *inw = 0; if (pipe(pp) != 0) pp[0] = pp[1] = -1; else { fcntl(pp[0], F_SETFD, FD_CLOEXEC); fcntl(pp[1], F_SETFD, FD_CLOEXEC); } }
     const char *sh = ctb_shell();
     fflush(stdout); fflush(stderr);
     const pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        if (dn >= 0) dup2(dn, 0);
+        signal(SIGPIPE, SIG_DFL);
+        if (pp[0] >= 0) dup2(pp[0], 0);                      /* dup2 tira o O_CLOEXEC da copia em 0 */
+        else if (dn >= 0) dup2(dn, 0);
         dup2(lf, 1); dup2(lf, 2);
         if (lf > 2) close(lf);
         if (dn > 2) close(dn);
@@ -73,6 +84,9 @@ static pid_t ctb_spawn(const char *script, const char *log) {
         _exit(127);
     }
     close(lf); if (dn >= 0) close(dn);
+    if (pp[0] >= 0) close(pp[0]);
+    if (pid < 0) { if (pp[1] >= 0) close(pp[1]); return -1; }
+    if (pp[1] >= 0) { fcntl(pp[1], F_SETFL, fcntl(pp[1], F_GETFL) | O_NONBLOCK); *inw = pp[1] + 1; }
     reap_add(pid);
     return pid;
 }
@@ -96,11 +110,11 @@ static Job *ctb_slot(void) {
     if (j && j->id) remove(j->log);
     return j;
 }
-static Job *ctb_adopt(pid_t pid, const char *log, const char *cmd, time_t t0) {
+static Job *ctb_adopt(pid_t pid, const char *log, const char *cmd, time_t t0, int inw) {
     Job *j = ctb_slot();
     if (!j) return NULL;
     memset(j, 0, sizeof *j);
-    j->id = ++g_job_seq; j->pid = pid; j->t0 = t0;
+    j->id = ++g_job_seq; j->pid = pid; j->t0 = t0; j->inw = inw;
     snprintf(j->log, sizeof j->log, "%s", log);
     snprintf(j->cmd, sizeof j->cmd, "%.190s", cmd);
     if (!g_job_exit) { atexit(job_all_kill); g_job_exit = 1; }
@@ -172,14 +186,15 @@ static void ctb_background(const char *cmd, int prazo_s, const char *tool, char 
         sprintf(s2, "( sleep %d; kill -TERM -$$ 2>/dev/null; sleep 3; kill -KILL -$$ 2>/dev/null ) >/dev/null 2>&1 &\n%s", prazo_s, script);
         free(script); script = s2;
     }
-    const pid_t pid = ctb_spawn(script, log);
+    int inw = 0;
+    const pid_t pid = ctb_spawn(script, log, &inw);
     free(script);
     if (pid < 0) { snprintf(out, cap, "error: cannot start the command (output file %s)", log); return; }
-    Job *j = ctb_adopt(pid, log, cmd, time(NULL));
-    if (!j) { kill(-pid, SIGKILL); waitpid(pid, NULL, 0); remove(log); snprintf(out, cap, "error: %d background tasks are already running; stop one with TaskStop(task_id)", JOB_N); return; }
+    Job *j = ctb_adopt(pid, log, cmd, time(NULL), inw);
+    if (!j) { if (inw) close(inw - 1); kill(-pid, SIGKILL); waitpid(pid, NULL, 0); remove(log); snprintf(out, cap, "error: %d background tasks are already running; stop one with TaskStop(task_id)", JOB_N); return; }
     cmdlog_add(cmd, 0, "(started in the background)");
-    if (prazo_s > 0) snprintf(out, cap, "%s started with ID: %d (stops after %d s). Output is being written to: %s\nRead it with the Read tool; stop it early with TaskStop(task_id=\"%d\").", tool, j->id, prazo_s, log, j->id);
-    else snprintf(out, cap, "Command running in background with ID: %d. Output is being written to: %s\nRead it with the Read tool; stop it with TaskStop(task_id=\"%d\").", j->id, log, j->id);
+    if (prazo_s > 0) snprintf(out, cap, "%s started with ID: %d (stops after %d s). Output is being written to: %s\nRead it with the Read tool; stop it early with TaskStop(task_id=\"%d\").%s", tool, j->id, prazo_s, log, j->id, inw ? " If it asks for input, answer with SendInput." : "");
+    else snprintf(out, cap, "Command running in background with ID: %d. Output is being written to: %s\nRead it with the Read tool; stop it with TaskStop(task_id=\"%d\").%s", j->id, log, j->id, inw ? " If it asks for input (a password, a code, a confirmation), answer with SendInput." : "");
 }
 
 static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap) {
@@ -192,7 +207,7 @@ static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap
     char *script = ctb_script(cmd, dir, cwdf, sudo);
     if (!script) { snprintf(out, cap, "error: out of memory"); return; }
     cmd_term_hook();
-    const pid_t pid = ctb_spawn(script, log);
+    const pid_t pid = ctb_spawn(script, log, NULL);
     free(script);
     if (pid < 0) { snprintf(out, cap, "error: cannot start the command (output file %s)", log); return; }
     const time_t t0w = time(NULL);
@@ -222,7 +237,7 @@ static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap
     snprintf(secs, sizeof secs, "%g", (double)tmo_ms / 1000.0);
 
     if (timedout && !ctb_is_sleep(cmd)) {                    /* passa para segundo plano em vez de matar */
-        Job *j = ctb_adopt(pid, log, cmd, t0w);
+        Job *j = ctb_adopt(pid, log, cmd, t0w, 0);
         if (j) {
             remove(cwdf);
             size_t pv = cap > 900 ? cap - 700 : 200; if (pv > 2000) pv = 2000;
@@ -321,7 +336,9 @@ static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap
 static const char CT_BASH_DESC[] =
     "Run a shell command (bash) and return its output (stdout and stderr together). Each call starts a new shell: "
     "environment variables do not persist, but the working directory does (a `cd` carries over to the next call while it "
-    "stays inside the project; otherwise it is reset). stdin is closed, so interactive programs fail instead of waiting. "
+    "stays inside the project; otherwise it is reset). In the foreground stdin is closed, so a program that asks for input "
+    "(a password, a 2FA code, a confirmation) fails; run it with run_in_background, read its prompt in the output file and "
+    "answer with SendInput. "
     "timeout is in milliseconds (default 120000, max 600000); a command still running at the timeout is moved to the "
     "background and you get its task ID and output file. Use run_in_background for servers and long jobs; read the output "
     "file with Read and stop it with TaskStop. Large output is saved to a file and you get its path and a preview. "
@@ -400,6 +417,97 @@ static void ct_monitor(const char *js, const char *end, char *out, size_t cap) {
     ctb_background(cmd, (int)((ms + 999) / 1000), "Monitor", out, cap);
     free(cmd);
 }
+
+/* SendInput: escreve no stdin de uma tarefa em segundo plano deste agente e devolve a saida nova. O texto nao aparece no
+ * resultado, no log de comandos nem nos marcadores (job_redact, agent/jobs.c). */
+#define CT_SENDINPUT_MAX 4096
+static const char CT_SENDINPUT_DESC[] =
+    "Type text into a background task started by Bash (run_in_background) or Monitor, as if typed at its prompt: a password, "
+    "a 2FA code, a yes/no confirmation. A newline is added unless newline is false. Returns the new output lines after a short "
+    "wait (about 1.5 s) so you see the answer to what you typed. Read the prompt in the output file first. A command moved to "
+    "the background at its timeout started with stdin closed and cannot take input: run it again with run_in_background. "
+    "Programs that read the terminal directly (not stdin) cannot be answered. At most 4096 bytes per call.";
+static const char CT_SENDINPUT_PROPS[] =
+    "\"task_id\": {\"type\": \"string\", \"description\": \"The ID of the background task\"}, "
+    "\"text\": {\"type\": \"string\", \"description\": \"What to type (not echoed in logs)\"}, "
+    "\"newline\": {\"type\": \"boolean\", \"description\": \"Add a newline after text (default true)\"}";
+static const char CT_SENDINPUT_REQ[] = "\"task_id\", \"text\"";
+static void ct_sendinput(const char *js, const char *end, char *out, size_t cap) {
+    char *id = ct_str(js, end, "task_id");
+    const char *d = id; while (d && *d && !isdigit((unsigned char)*d)) d++;
+    const int n = d && *d ? atoi(d) : 0;
+    free(id);
+    const char *a, *b;
+    size_t tl = 0;
+    char *text = ct_find(js, end, "text", &a, &b) && *a == '"' ? ct_unquote(a, b, &tl) : NULL;
+    if (!text) { snprintf(out, cap, "error: missing text (what to type into the task)"); return; }
+    int nl = 1;
+    if (ct_find(js, end, "newline", &a, &b)) nl = ct_bool(js, end, "newline");
+    if (tl + (size_t)nl > CT_SENDINPUT_MAX) { memset(text, 0, tl); free(text); snprintf(out, cap, "error: text is too long (%zu bytes; at most %d)", tl, CT_SENDINPUT_MAX); return; }
+    for (int i = 0; i < JOB_N; i++) job_poll(&g_jobs[i]);
+    Job *j = NULL;
+    for (int i = 0; i < JOB_N; i++) if (n && g_jobs[i].id == n) j = &g_jobs[i];
+    if (!j || j->done || !j->inw) {
+        memset(text, 0, tl); free(text);
+        if (!j) {
+            size_t o = (size_t)snprintf(out, cap, n ? "error: there is no task %d." : "error: missing task_id.", n);
+            int k = 0;
+            for (int i = 0; i < JOB_N && o + 300 < cap; i++) if (g_jobs[i].id && !g_jobs[i].done) o += (size_t)snprintf(out + o, cap - o, "%s %d (%s)", k++ ? "," : " Running tasks:", g_jobs[i].id, g_jobs[i].cmd);
+            if (!k && o < cap) snprintf(out + o, cap - o, " No background task is running.");
+        } else if (j->done) snprintf(out, cap, "error: task %d is not running (it exited with code %d); nothing was typed. Its output is in %s", j->id, j->rc, j->log);
+        else snprintf(out, cap, "error: task %d started in the foreground with stdin closed and cannot take input; stop it with TaskStop and run the command again with run_in_background", j->id);
+        return;
+    }
+    if (!agent_act("responder ao comando em segundo plano", j->cmd)) { memset(text, 0, tl); free(text); snprintf(out, cap, "error: the user denied this action"); return; }
+    const long from = ctb_size(j->log);
+    char *w = (char *)malloc(tl + 2);
+    if (!w) { memset(text, 0, tl); free(text); snprintf(out, cap, "error: out of memory"); return; }
+    memcpy(w, text, tl); if (nl) w[tl++] = '\n';
+    memset(text, 0, tl - (size_t)nl); free(text);
+    struct sigaction sa, old;                                /* tarefa que fechou o stdin: EPIPE em vez de SIGPIPE */
+    memset(&sa, 0, sizeof sa); sa.sa_handler = SIG_IGN; sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, &old);
+    size_t put = 0; int err = 0;
+    const double t0 = cm_now();
+    while (put < tl) {
+        const ssize_t k = write(j->inw - 1, w + put, tl - put);
+        if (k > 0) { put += (size_t)k; continue; }
+        if (k < 0 && errno == EINTR) continue;
+        if (k < 0 && errno == EAGAIN && cm_now() - t0 < 2.0) { usleep(20000); continue; }      /* cano cheio: o programa nao esta lendo */
+        err = k < 0 ? errno : EIO;
+        break;
+    }
+    sigaction(SIGPIPE, &old, NULL);
+    memset(w, 0, tl); free(w);
+    if (err == EPIPE) { job_close_in(j); snprintf(out, cap, "error: task %d closed its input; nothing more can be typed into it. Read its output in %s", j->id, j->log); return; }
+    if (err) { snprintf(out, cap, "error: could not type into task %d (%s; %zu of %zu bytes written): the program is not reading its input. Read its output in %s", j->id, strerror(err), put, tl, j->log); return; }
+    /* espera curta: ate 1.5 s, ou 0.4 s sem saida nova depois de ela comecar, ou a tarefa acabar */
+    const double w0 = cm_now();
+    long last = from; double still = w0;
+    while (cm_now() - w0 < 1.5) {
+        usleep(50000);
+        job_poll(j);
+        const long sz = ctb_size(j->log);
+        if (sz != last) { last = sz; still = cm_now(); }
+        else if (last > from && cm_now() - still >= 0.4) break;
+        if (j->done) break;
+    }
+    job_poll(j);
+    const long sz = ctb_size(j->log);
+    size_t o = (size_t)snprintf(out, cap, "Typed %zu bytes into task %d%s.", tl - (size_t)nl, j->id, nl ? " followed by a newline" : "");
+    if (j->done && o < cap) o += (size_t)snprintf(out + o, cap - o, " The task has exited with code %d.", j->rc);
+    if (sz <= from) { if (o < cap) snprintf(out + o, cap - o, " No new output yet; read %s later.", j->log); return; }
+    size_t lim = cap > 800 ? cap - 600 : 200; if (lim > 3000) lim = 3000;
+    const long start = sz - from > (long)lim ? sz - (long)lim : from;
+    char *body = (char *)malloc(lim + 1);
+    if (!body) return;
+    size_t k = ctb_read(j->log, start, body, (size_t)(sz - start));
+    size_t s = 0;
+    if (start > from) { char *nlp = memchr(body, '\n', k); s = nlp ? (size_t)(nlp + 1 - body) : 0; }
+    while (k > s && (body[k - 1] == '\n' || body[k - 1] == '\r')) body[--k] = 0;
+    if (o < cap) snprintf(out + o, cap - o, " New output%s:\n%s", start > from ? " (last lines)" : "", body + s);
+    free(body);
+}
 #else
 static const char CT_BASH_DESC[] = "Run a shell command (not available on Windows yet)";
 static const char CT_BASH_PROPS[] = "\"command\": {\"type\": \"string\"}, \"timeout\": {\"type\": \"number\"}, \"description\": {\"type\": \"string\"}, \"run_in_background\": {\"type\": \"boolean\"}";
@@ -413,4 +521,8 @@ static const char CT_MONITOR_DESC[] = "Watch a command's output (not available o
 static const char CT_MONITOR_PROPS[] = "\"command\": {\"type\": \"string\"}, \"description\": {\"type\": \"string\"}, \"timeout_ms\": {\"type\": \"number\"}";
 static const char CT_MONITOR_REQ[] = "\"command\", \"description\"";
 static void ct_monitor(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: Monitor is not available on Windows yet"); }
+static const char CT_SENDINPUT_DESC[] = "Type text into a background task (not available on Windows yet)";
+static const char CT_SENDINPUT_PROPS[] = "\"task_id\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"newline\": {\"type\": \"boolean\"}";
+static const char CT_SENDINPUT_REQ[] = "\"task_id\", \"text\"";
+static void ct_sendinput(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: SendInput is not available on Windows yet"); }
 #endif

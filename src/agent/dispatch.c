@@ -51,9 +51,10 @@ static void agent_tool(const char *name, const char *js, const char *end, char *
     { const char *sb = strrchr(g_sess_path, '/'); snprintf(g_alog_sess, sizeof g_alog_sess, "%s", g_sess_path[0] ? (sb ? sb + 1 : g_sess_path) : ""); }
     agent_tool_run(name, js, end, out, cap);
     if (kn_external(name)) kn_escape(out, cap);      /* o que vem de fora (shell, web, MCP) nao pode imitar uma nota do katana */
-    char a[8192];
-    const size_t l = (size_t)(end - js) < sizeof a - 1 ? (size_t)(end - js) : sizeof a - 1;
-    memcpy(a, js, l); a[l] = 0;
+    char a[8192], ra[8192];
+    const char *rend, *rjs = job_redact(name, js, end, ra, sizeof ra, &rend);      /* texto do SendInput nao vai para o log */
+    const size_t l = (size_t)(rend - rjs) < sizeof a - 1 ? (size_t)(rend - rjs) : sizeof a - 1;
+    memcpy(a, rjs, l); a[l] = 0;
     agent_log(name, a, out);
 }
 

@@ -195,6 +195,6 @@ static void kn_escape(char *out, size_t cap) {
 /* ferramentas cujo resultado traz conteudo de fora e passa por kn_escape */
 static int kn_external(const char *name) {
     return strcmp(name, "Bash") == 0 || strcmp(name, "PowerShell") == 0 || strcmp(name, "WebFetch") == 0 || strcmp(name, "WebSearch") == 0 ||
-           strcmp(name, "Monitor") == 0 || strcmp(name, "TaskOutput") == 0 ||
+           strcmp(name, "Monitor") == 0 || strcmp(name, "TaskOutput") == 0 || strcmp(name, "SendInput") == 0 ||
            strstr(name, "__") != NULL;
 }

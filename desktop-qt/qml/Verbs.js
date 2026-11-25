@@ -6,7 +6,7 @@ var verbos = ({
     "NotebookEdit": "Editando notebook", "Grep": "Procurando nos arquivos",
     "WebSearch": "Pesquisando na web", "WebFetch": "Abrindo página", "Agent": "Subagente trabalhando",
     "TodoWrite": "Atualizando as tarefas",
-    "TaskStop": "Parando tarefa", "Monitor": "Acompanhando comando", "AskUserQuestion": "Perguntando", "EnterPlanMode": "Entrando no modo plano", "ExitPlanMode": "Apresentando o plano",
+    "TaskStop": "Parando tarefa", "Monitor": "Acompanhando comando", "SendInput": "Respondendo ao comando", "AskUserQuestion": "Perguntando", "EnterPlanMode": "Entrando no modo plano", "ExitPlanMode": "Apresentando o plano",
     "LSP": "Consultando o código", "EnterWorktree": "Abrindo cópia de trabalho", "ExitWorktree": "Saindo da cópia de trabalho", "PowerShell": "Executando PowerShell",
     "CronCreate": "Agendando tarefa", "CronDelete": "Cancelando agendamento", "CronList": "Listando agendamentos", "ScheduleWakeup": "Marcando retomada",
     "PushNotification": "Enviando notificação", "SendUserFile": "Entregando arquivo", "EndConversation": "Encerrando a conversa",
@@ -43,6 +43,7 @@ function corta(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
 // resumo de uma linha dos argumentos: Find = consulta (e modo), Symbols = acao + nome/arquivo (def, callers, flow, tree...)
 function resumo(name, args) {
     var m = campos(args);
+    if (name === "SendInput") return m.task_id ? "tarefa " + m.task_id : "";      // o texto digitado (senha, codigo) nunca aparece
     if (name === "Find") {
         if (!m.query) return alvo(args);
         return corta(m.query, 70) + (m.mode ? " (" + m.mode + ")" : "") + (m.path ? " em " + corta(m.path, 30) : "");

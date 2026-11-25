@@ -6,6 +6,7 @@ static const CtTool g_ct[] = {
     {"Bash", ct_bash, 0, CT_BASH_DESC, CT_BASH_PROPS, CT_BASH_REQ},
     {"TaskStop", ct_taskstop, 1, CT_TASKSTOP_DESC, CT_TASKSTOP_PROPS, CT_TASKSTOP_REQ},
     {"Monitor", ct_monitor, 0, CT_MONITOR_DESC, CT_MONITOR_PROPS, CT_MONITOR_REQ},
+    {"SendInput", ct_sendinput, 0, CT_SENDINPUT_DESC, CT_SENDINPUT_PROPS, CT_SENDINPUT_REQ},
     {"Read", ct_read, 1, CT_READ_DESC, CT_READ_PROPS, CT_READ_REQ},
     {"Write", ct_write, 0, CT_WRITE_DESC, CT_WRITE_PROPS, CT_WRITE_REQ},
     {"Edit", ct_edit, 0, CT_EDIT_DESC, CT_EDIT_PROPS, CT_EDIT_REQ},

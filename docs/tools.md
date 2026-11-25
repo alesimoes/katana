@@ -20,7 +20,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 
 | File | Tools | Checks |
 |---|---|---|
-| `bash.c` | `Bash`, `TaskStop`, `Monitor` | 49 |
+| `bash.c` | `Bash`, `TaskStop`, `Monitor`, `SendInput` (`sendinput.sh`, not run yet) | 49 |
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
 | `filewalk.c`, `grep.c` | `Grep` (`filewalk.c` keeps only the pattern matcher, the file list and the growing text buffer that `Grep` and the UIOE file connector use; the `Glob` tool was removed) | - |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
@@ -71,7 +71,7 @@ dispatcher, the declarations for the prompt and the hooks the agent loop calls (
 
 ## The tools
 
-### Bash, TaskStop, Monitor
+### Bash, TaskStop, Monitor, SendInput
 `Bash(command, timeout, run_in_background, description)`. A new shell per command; the working directory persists
 between calls when it stays inside the agent's folder (otherwise it is reset and the result ends with
 `Shell cwd was reset to <dir>`); environment variables do not persist. `timeout` in milliseconds, default 120000,
@@ -82,6 +82,26 @@ about 30000 characters, above that the file path and a 2000-character preview; a
 `git diff`, `git grep`. `run_in_background` returns at once with a task id; `TaskStop(task_id)` stops it.
 `Monitor(command, description, timeout_ms)` starts a command in the background with a deadline (5 min default,
 30 max) and returns the output file; lines are not delivered as events yet.
+
+**Input for background tasks: `SendInput` (2026-11-25).** A foreground command still runs with stdin from `/dev/null`, so
+a program that asks for input fails at once instead of hanging. A command started with `run_in_background` or by `Monitor`
+gets the read end of a pipe as stdin; katana keeps the write end (close-on-exec, so other children do not inherit it,
+non-blocking) while the task lives and closes it when the task exits, on `TaskStop`, or when katana exits (the program then
+sees end of input). `SendInput(task_id, text, newline=true)` writes `text` plus a newline into that pipe and returns the new
+output after a short wait (up to about 1.5 s, or 0.4 s of silence once output starts, or the task's exit), so the model sees
+the answer to what it typed: the use case is a login that asks for a 2FA code mid-command, which the old closed stdin made
+impossible (every retry produced a new code). Rules: only tasks of this agent process (the job table); at most 4096 bytes
+per call; an error if the task does not exist, has exited, or closed its input (EPIPE, with SIGPIPE ignored during the
+write); a full pipe (the program is not reading) is retried for 2 s and then reported. A command that was moved to the
+background at its timeout started in the foreground with `/dev/null` and cannot take input: the error says to stop it and
+start it again with `run_in_background`. Out of scope: programs that read `/dev/tty` instead of stdin (the shell runs
+under `setsid` with no controlling terminal; `ssh` password prompts, `sudo` without `-A`) still fail. A program that waits
+on stdin with nobody writing stays blocked until its deadline or `TaskStop`, which is acceptable in the background.
+The typed text is a secret: it is not echoed in the result, it is replaced by `***` (`job_redact`, `src/agent/jobs.c`) in
+the action log (`agente.log`), the `\x01TOOL` marker for the desktop and the headless event stream, and the desktop shows
+only "Respondendo ao comando: tarefa N". It does stay in the model's own conversation (and a saved session), like any
+tool argument. `SendInput` is announced by name only and loaded with `ToolSearch`; the `Bash` description tells the model
+to use it. Test script: `tools/tooltest/sendinput.sh` (written, not run yet).
 
 ### Read, Write, Edit, NotebookEdit
 `Read(file_path, offset, limit, pages)`: lines prefixed with their number; 2000 lines by default; a `PARTIAL view`
