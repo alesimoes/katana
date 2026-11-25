@@ -1,6 +1,6 @@
 # UCGE: Unified Code Generation Engine
 
-Status: phase 1 (design and core) done on branch `feat-ucge`; modules I (registry), J (incremental AST) and K (dependency graph, code cache) done on branch `feat-ucge-reg` (section 15); module C (type inference, section 5b) done on `feat-ucge-infer`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
+Status: phase 1 (design and core) done on branch `feat-ucge`; modules I (registry), J (incremental AST) and K (dependency graph, code cache) done on branch `feat-ucge-reg` (section 15); module C (type inference, section 5b) done on `feat-ucge-infer`; module D (graphs, analyses, optimizer, section 16) done on `feat-ucge-graph`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
 katana build** (`src/katana.c` does not include it; the files are `static` and compile standalone with `tools/ucge/ucgecli.c`). Phase 2 adds the include
 line after `coder/symedit.c` and the `CodeGen` tool.
 
@@ -175,7 +175,7 @@ prefix is unique in the single translation unit, checked by compiling together w
 1. **CSP** (text or JSON): the model's surface. Only the parser sees it.
 2. **UIR-H**: the typed AST of section 3. Language independent, structured control flow, every name resolved (`ref` points to the declaration), every
    expression typed (`ty`), built-ins identified (`bi`). This is what the checker annotates and what the backends read. Phase 1 stops here.
-3. **UIR-G** (phase 2, `ucgeir.c`): a graph per function, built from UIR-H: basic blocks of three-address instructions (`op dst a b`, `call`, `load/store`
+3. **UIR-G** (module D, `ucgecfg.c`, section 16): a graph per function, built from UIR-H: basic blocks of three-address instructions (`op dst a b`, `call`, `load/store`
    for fields and elements, `phi`, `br`, `jmp`, `ret`, `throw`), edges for normal flow and for exceptions (a `try` block has an exceptional edge to its
    handler; `finally` is duplicated on both paths). Variables are in **SSA** (section 6.3) with one `phi` per merge. Backends do **not** read UIR-G:
    it exists for analyses and for transformations that are written back to UIR-H (constant folding, dead code removal), so generation stays AST-driven
@@ -381,6 +381,10 @@ every finding and never says "exact":
 | `tools/ucge/ops/extra.ops`, `tools/ucge/inc/*.py` | example user operations; the Python files the incremental tests edit | I, J |
 | `tools/ucge/infer_test.sh`, `infer/cases_*.txt`, `infer_prop.py` | inference tests: 363 cases, the soundness property | 2 |
 | `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
+| `src/coder/ucgecfg.c` | digraph (CSR), Tarjan, dominators (CHK), dominance frontier, natural loops, effects and call graph, CFG per function, pruned SSA (Cytron), out of SSA, verifier, dump | D |
+| `src/coder/ucgeflow.c` | worklist solver over bit-set lattices and its instances, constant folding, SCCP, dead values, findings report | D |
+| `src/coder/ucgeopt.c` | optimizer passes written back to UIR-H, inlining, `cgx_opt_run` | D |
+| `tools/ucge/graphcli.h`, `graphtest.c`, `graphtest.sh`, `fuzz_gen.py`, `difftest.py` | commands `ir flow opt optgen irexec`, unit tests, the runner, the program generator and the differential test | D |
 
 Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.
 
@@ -413,7 +417,7 @@ under `tools/ucge/` and keeps `sh tools/ucge/test.sh` green. Interfaces between 
 | A | JS and TS backends (`ucgejs.c`) | `CgxBackend` for `js` and `ts` (types as annotations), helpers for `//` and `%` floor, `catch`, classes, harness for `node` | `gen(g, opts, code, tests)` registered in `CGX_BACKENDS` | the 13 raw-free tasks pass their tests on node 20; TS output passes a bracket/scanner check (no `tsc` here) |
 | B | C backend (`ucgec.c`) | scalars, `str` as `const char *`, lists as pointer + length (parameters expand), classes as structs + functions, defaults filled at call sites; `try/throw` rejected with a message | same | tasks 01, 04, 06, 10, 12, 13 compile with `gcc -Wall -Werror` and pass; unsupported constructs give the exact message |
 | C (done) | Type inference (`ucgeinfer.c`) | HM with let-polymorphism over `ucgetype.c`, gradual `any`, classes, replaces the type part of `cgx_check` | `int cgx_infer(Cgx *, CgxTypes *)`, same error texts, `n->ty` filled (plus `n->tid`) | all current error tests unchanged; `fn first(xs)` infers `list[a] -> a`; unification tests added to `selftest` |
-| D | IR and analyses (`ucgeir.c`, `ucgeflow.c`, `ucgeopt.c`) | CFG, dominators (CHK), SSA, worklist solver, reaching defs, liveness, SCCP, definite assignment, call graph (Tarjan), unused/unreachable/pure reports, optional folding | `cgx_ir_build`, `cgx_flow_run`, `cgx_opt_fold` (see the API header) | dumps stable for the tasks; a seeded set of 20 programs with known dead code, unused names and unreachable branches is reported exactly, no false positive on the 15 tasks |
+| D | **done** (branch `feat-ucge-graph`, section 16). IR and analyses (`ucgecfg.c`, `ucgeflow.c`, `ucgeopt.c`) | CFG, dominators (CHK), SSA, worklist solver, reaching defs, liveness, SCCP, definite assignment, call graph (Tarjan), unused/unreachable/pure reports, optional folding | `cgx_ir_build`, `cgx_flow_run`, `cgx_opt_fold` (see the API header) | dumps stable for the tasks; a seeded set of 20 programs with known dead code, unused names and unreachable branches is reported exactly, no false positive on the 15 tasks |
 | E | Validator and runner (`ucgerun.c`) | per-target syntax tools, scanner cross-check (`coder_parse`: every spec symbol present with the right kind), raw balance (`se_mask`/`se_balance`), sandboxed execution of `test` lines (limits: CPU time, memory, tmp cwd, no env), graded report text | `int cgx_validate(Cgx *, const CgxBackend *, const char *code, CgxB *report)` | report grades match section 8; RAW never executes unless asked; timeouts and crashes are reported, not fatal |
 | F | Tool and integration (`ucgetool.c`, `src/tools/codegen.c`, table, `docs/tools.md`) | `CodeGen` tool, `path`/`symbol`/`where` through `ct_edit_symbol`, create/insert, index `extern` lookup, include in `katana.c`, `tools/tooltest/ucge.sh` | `ucge_tool(js, end, out, cap)` | declaration under the token limit (tests that check it green), `sh build.sh` and the tool tests (files, meta, find, misc, loopnotes, lsp, launch, symedit, render) green |
 | G | Protocol and model measurement | the description text and few-shot for the tool, repair loop, a natural-language-to-CSP harness (20 requests) run with Qwen on CPU when the machine is free, repair counts | uses F | measured valid-first-try rate and repairs per task, reported honestly, with the raw fraction |
@@ -430,8 +434,7 @@ mappings (or those two keep their mappings in a local table that I then absorbs)
 
 ## 14. Left out of phase 1
 
-JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (done on `feat-ucge-reg`, section 15); the incremental AST for other languages than Python;  CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
-and unused-name reports, constant folding; the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
+JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (done on `feat-ucge-reg`, section 15); the incremental AST for other languages than Python;  the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
 validator/runner with the graded report (the CLI runs Python tests only, with `ulimit` and `timeout`, which is not a sandbox); the coder index lookup for
 `extern` functions; tuples, closures, imports, inheritance, typed errors, regex outside `matches`, formatting; the protocol text for the model and any
 measurement with the real model (**not run**: it needs the model and the machine); training or curriculum (outside this work by decision).
@@ -565,3 +568,168 @@ The honest reading: the Python backend takes about 15 to 30 microseconds per fun
 - The registry has 192 operations and 128 rules at most; templates have no conditionals except the per-type variants; the checker's built-in-specific hooks are code, not data.
 - The checker's table of functions was raised from 160 to 4096 entries (the 2000-function benchmark needed it); symbols per scope (600) and classes (40) are unchanged.
 - The katana writer (`cgx_inc_write_symedit`) compiles inside `katana.c` but was not run (no model, no desktop here); the standalone writer and every test run without it.
+
+## 16. UIR-G: graphs, analyses and the optimizer (module D)
+
+Done on branch `feat-ucge-graph`. Files: `src/coder/ucgecfg.c` (graphs, CFG, SSA), `ucgeflow.c` (data-flow, SCCP, report), `ucgeopt.c` (passes). Not part of the
+katana build yet (like the rest of the core): `tools/ucge/ucgecli.c` includes them through `tools/ucge/graphcli.h`. Everything is plain C, `static`, `cgx_`/`Cgx`.
+The katana file-level graph (`coder/graph.c`, a CSR cache of file relations in a store section) was read and **not reused**: it is a persisted, mmap-able
+derived index of files, with typed weighted edges, and the UIR graphs are small, mutable, per function; only the CSR layout idea is the same (`CgxDg`).
+
+```
+UIR-H (AST, checked) --lower--> CFG per function --dominators--> pruned SSA --> SCCP / liveness / reaching defs / available exprs / definite assignment
+        ^                                                                                 |
+        +---------------- rewrites (node -> value map) <---- optimizer rounds <-----------+      report: findings with [structural] / [derived]
+```
+
+### 16.1 Data structures
+
+- **`CgxDg`**: immutable digraph in CSR, successors `sp/s`, predecessors `pp/p`, and `pe[k]` = index in `s[]` of the edge behind predecessor slot `k`. Repeated
+  edges are merged. An edge is one integer, and a phi argument is the predecessor slot (`cgx_dg_pslot`). Used for the CFG and for the call graph.
+- **Bit sets** (`CgxW` = 64-bit words, `cgx_bit_*`), n sets of nbits contiguous: every data-flow value.
+- **`CgxDom`**: `idom`, reverse post-order (`rpo`, `rponum`), dominator tree (CSR), DFS entry/exit times (`a dom b` in O(1)), dominance frontier (CSR).
+  **`CgxLoops`**: natural loops per header with body bit sets and nesting depth.
+- **`CgxFnIr`** per function or method: `var[]` (source variables and hidden ones: `$t` for the join of `and`/`or`/`?:`, `$t` for the counter of a `for`, the
+  iterator of a `for each`, the carrier of a `finally`), `val[]` (SSA values: temporaries and versions of variables, `val 0` = undefined), `ins[]` (three-address
+  instructions), `bb[]` (blocks: instruction ids, `exc` = target of the block's exceptional edge), `nm[]` (map AST node id -> value / instruction / block).
+- **Instructions**: `param const copy bin un call mcall list map index field global setidx setfld iter hasnext next catch rawuse rawdef phi br jmp ret throw undef`.
+  Operands are ints: `>= 0` a value, `< 0` a variable (only before SSA), so the same instruction format serves before and after SSA, and every analysis reads
+  variables through `cgx_opvar`.
+- **The node map** is what lets analyses write back to the AST: every expression node records the value its consumer used (`NM_OP`: instruction + operand slot, so a
+  `VAR` node resolves to the SSA version at that use), or its temporary (`NM_VAL`); every `let`/assignment records its defining instruction (`NM_DEF`); every
+  statement the block it starts in (`NM_BLK`). A node lowered more than once (a `finally` is copied on every exit path) has several entries, and a rewrite needs all of
+  them to agree.
+
+### 16.2 CFG construction
+
+Blocks come from the structured nodes (no goto, so the graph is reducible except for what `finally` copies create). `if`/`while`/`for`/`for each`/`try` become
+blocks and edges; `and`, `or` and `?:` are **control flow** (short circuit: the right side is its own block, the result joins in a hidden variable, SSA makes the phi), which
+is what lets SCCP decide `false and f()`. `for i in a..b step k` keeps a hidden counter (the body may assign `i` without changing the iterations, as `range`).
+Compound `x op= e` computes into a temporary and copies after: if the operation raises, `x` has not changed.
+
+- **Exceptions.** Inside a `try`, an instruction that may raise (call that is not known to be total, `/ // %` with a divisor that is not a non-zero literal, indexing,
+  mixed int/float arithmetic, `throw`, `raw`) ends its block with an **exceptional edge** to the `catch` block; a block's exceptional edge applies to the whole block, so the
+  body of a `try` starts in a new block. Outside a `try` there are no exceptional edges (the exception leaves the function).
+- **`finally`** is copied: once for the normal exit, once per `return`/`break`/`continue` that crosses it (innermost first, the returned value is copied into a temporary
+  before the copies run), and one landing block for the exceptional exit that runs the copy and **rethrows** (an exceptional edge to the next outer handler, or out).
+- `raw`: one `rawuse` that reads every variable in scope, then a `rawdef` per visible variable and per name it `defines` (opaque writes), so nothing is assumed across it.
+- Unreachable statements (after `return`) still get blocks, with no predecessors; they are kept out of the graph's edges, dominators and SSA, and reported.
+
+### 16.3 Algorithms and complexity
+
+n blocks, e edges, v variables, w = v/64 words, and the usual "height" of the lattice.
+
+| Part | Algorithm | Cost |
+|---|---|---|
+| Dominators | Cooper-Harvey-Kennedy: iterate over the reverse post-order with `intersect` on idoms | O(n^2) worst case, near O(e) on structured graphs (2 passes) |
+| Dominance frontier | CHK runners from each join predecessor up to the idom (the entry counts a virtual extra predecessor, so a loop back to it is right) | O(sum of frontier sizes) |
+| Dominator tree queries | DFS entry/exit times | O(1) per query |
+| Natural loops | back edge u->h with h dom u; body by reverse reachability; same header merged | O(n e) worst, small in practice |
+| SCC | Tarjan, **iterative** (explicit stacks; a 200000-node chain is tested) | O(n + e) |
+| SSA | Cytron: iterated dominance frontier per variable, **pruned** with live-in (no phi where the variable is dead, which scoped `let`s would otherwise get at every loop header); renaming by an iterative walk of the dominator tree with per-variable stacks | O((n + e) v / 64 + phis) |
+| Out of SSA | each phi gets a fresh hidden variable; `t = arg` is appended before the terminator of each predecessor and the phi becomes `d = t`; then versions return to their variable. Parallel-copy swap and lost-copy cases cannot happen: copy targets are never sources. Valid for an IR that was not transformed after construction | O(phis x preds) |
+| Data-flow solver | one **worklist** over bit-set lattices (`CgxDfa`): direction, meet (union or intersection), gen/kill or a custom transfer, boundary value; processes in (reverse) RPO, requeues successors on change; blocks without information yet are the top of the lattice | O(h * e * w) |
+| SCCP | Wegman-Zadeck: CFG edge worklist + SSA value worklist, lattice top > constant > bottom (height 3, so every value changes at most twice); phi meets only the **executable** predecessors; a `br` on a constant bool opens one edge | O(e + SSA edges) |
+| Dead values | mark from roots (instructions with effects, terminators, anything that may raise), through operands, only in executable blocks | O(ins) |
+| Call graph | edges from calls resolved by the checker (`ref`), methods called on an untyped receiver reach every method of that name; Tarjan; effect summaries by fixpoint inside each component, callees first | O(n + e) |
+
+Measured: a 15 000 line function (15 001 blocks, 55 000 instructions, 5 000 phis) is analysed in 0.6 s and optimized (3 rounds) in 0.3 s.
+
+### 16.4 Data-flow instances
+
+| Analysis | Direction | Meet | Facts | Used for |
+|---|---|---|---|---|
+| Liveness | backward | union | variables read before written | pruned SSA |
+| Reaching definitions | forward | union | definition sites (every instruction that writes a variable, not phi) | dragon book test; available to reports |
+| Available expressions | forward | intersection | `op a b` over variables and constants, killed by a write to an operand | redundant-computation findings |
+| Definite assignment | forward | intersection | variables certainly written | use before definition (and unresolved names) |
+| SCCP | sparse | meet on the value lattice | constants per SSA value, executable blocks and edges | folding, dead branches, unreachable code |
+| Value liveness (DCE) | backward on SSA | | values reachable from roots | dead assignments, unused variables |
+
+### 16.5 Effects, purity and what may be removed
+
+Every expression and function has a mask: `THROW` (may raise), `WRITE` (changes memory, prints, raw), `READ` (reads mutable memory), `LOOP` (may not terminate:
+`while`, recursion). **Removable** = none of THROW, WRITE, LOOP. The table is conservative on purpose: `any` operands may raise; `int` with `float` may raise (a huge int
+does not convert: `OverflowError`); `/` may raise unless both operands are float with a non-zero literal divisor; `//` and `%` unless the divisor is a non-zero int literal;
+`int(x)` only for int/bool; `float(x)` only for a literal int or a float; `sqrt floor pow matches` always; indexing always; calls take the callee's summary (builtins have
+their own row). A `catch` is assumed to catch everything raised in its body. A function is *pure* (removable) when its summary is, so a call to it can disappear
+when its value is unused; recursion and loops never are.
+
+### 16.6 Constant folding: the Python semantics, and what is refused
+
+Folding happens in SCCP (per value) and is written back only when the node is **removable** (a constant that came through a `?:` with a condition that has effects is not).
+`//` and `%` are floored (`-7 // 2 = -4`, `7 % -2 = -1`), `/` is true division (both operands must be exactly representable, |n| <= 2^53; the result must be finite),
+`int(float)` truncates, `max/min` return the winner **with its own type** (`max(1, 1.0)` is `1`). Not folded: division by zero (the program must still raise), a result that
+overflows 64 bits (Python's integers are unbounded; the generated code must compute the real value), `inf`/`NaN` results, int with float beyond 2^53, comparisons of
+text that is not ASCII, `upper/lower/trim/indexof/slice/reverse` on non-ASCII text (concatenation, equality, `len` as code points, `contains`, `startswith` are fine), `sqrt`
+of a negative, `str(float)`/`str(bool)` (the targets disagree), `bool == int` (Python says `True == 1`), lists, maps and field/element reads. `-0.0` is kept and printed
+as `-0.0`; `x == x`, `x - x`, `x + 0.0` are not simplified for floats (NaN, inf, -0.0); `not (a < b)` is not turned into `a >= b` (NaN).
+
+### 16.7 Findings and certainty
+
+Each finding carries a grade, never "exact": **[structural]** is a fact about the spec text (a variable with no read, code after `return`, a `while true` with no `break`
+in its condition literal, a recursive call), **[derived]** comes from an analysis (a branch that SCCP proves constant, a dead store, a path to the end of the function, a function
+nobody calls). Kinds: `unreachable`, `dead-branch`, `unused-var`, `dead-store`, `use-before-def`, `undefined-name`, `missing-return`, `infinite-loop`; info only: `unused-function`
+(possibly an entry point), `recursion`, `redundant-expr`, `unused-param`. The 15 tasks give no warning (the two `raw` tasks give the info "never called"). `ucgecli flow spec`
+prints them sorted by line, then the **generation order** (callees before callers, Tarjan order) and the size of the work.
+
+### 16.8 The optimizer (`cgx_opt_run`, `CgxOptOpts.passes`)
+
+| Pass | Does | Default |
+|---|---|---|
+| FOLD | replaces nodes SCCP proved constant (literals, propagated variables, builtins on constants); decides `if`/`elif`/`while` with a constant condition: the taken branch is spliced into the parent (unless a name it declares collides with a later declaration: then the dead branch is only emptied), `while false` is removed | on |
+| ALGEBRA | `x+0 0+x x-0 x*1 1*x x//1` (int), `x*0 x%1` (int, operand removable), `x-x`, `x==x` (int/str/bool), `x*1.0` (float), `"" + s`, `a and true`, `true and b`, `a and false` (a removable), `or` likewise, `not not x`, `not (a == b)`, `- -x`, `true ? a : b` | on |
+| COPY | `let b = a` ... use of `b` becomes `a` if `a` is still the version that reached the copy (checked on the dominator tree: the nearest definition of `a` above the use is the copy's source) | on |
+| DCE | removes assignments whose value no live instruction reads when the right-hand side is removable; a dead `let x = f(a)` becomes the statement `f(a)`; a dead `let` of a variable that is assigned later (no `let`) keeps its declaration with a cheap value; removes pure expression statements and empty `if`s | on |
+| UNREACH | removes statements whose block SCCP did not reach | on |
+| TEMPS | `let t = e` followed by the only use of `t`: `e` moves into that statement. Only when `e` has no effect and reads no memory, or when the use is the whole right-hand side (`return t`, `let y = t`). Own pass, only in a round where nothing else changed | on |
+| INLINE | a call to a non-recursive top-level function whose body is a single `return expr` of at most 14 nodes: arguments substituted (trivial arguments copied, others once or if removable and small; an argument with effects only if used once, unconditionally, and the body has none of its own); refused when a caller's local has the name of a function the body calls | off |
+| GLOBALS | module `const` with a literal initializer counts as a constant (the name disappears from the code) | off |
+
+Rounds repeat until nothing changes (at most 10; the second run over the output changes nothing, tested). The AST is edited in place, names are the author's, `cgx_number` runs
+again at the end (ids stay unique and stable). `ucgecli opt spec [--all]` prints the counts; `ucgecli optgen python spec [--all] [--tests] [--recheck]` optimizes and generates
+(`--recheck` runs the checker again on the result).
+
+### 16.9 Tests and results
+
+Run `sh tools/ucge/graphtest.sh [N]` (about 35 s with N=300; `SAN=1` for ASan/UBSan) and `sh tools/ucge/test.sh` (the 60 phase-1 checks, still green).
+
+- **`graphtest.c`, 5 099 checks**: idoms, `dominates`, dominance frontier, reverse post-order, SCC (components and their order) and natural loops of **500 random graphs** compared with
+  naive algorithms (sets to a fixed point, definition of the frontier, mutual reachability); the dragon book CFG (fig. 9.38: idoms, four loop headers and nesting depth) and the
+  Cooper-Harvey-Kennedy irreducible graph (fig. 2); the worklist solver against round-robin iteration on 1 600 random instances (forward/backward x union/intersection);
+  reaching definitions of the dragon book fig. 9.12 (`IN[B2] = {d1,d2,d3,d5,d6,d7}`), liveness and available expressions on hand-solved graphs; a 200 000 node chain; SSA verifier
+  (every use dominated by its definition, phi arity, one definition per value) on the 15 tasks and on 80 generated programs, plus "no phi without a use" (pruned), a stable dump across builds
+  and out-of-SSA leaving no phi; the call graph (mutual recursion as one component, callees-first order, effect summaries); 24 seeded programs whose warnings are matched exactly;
+  about 70 folding and simplification cases on the Python edges (floor, division by zero, 64-bit overflow, 2^53, NaN, `-0.0`, accented text, short circuit with a raising operand,
+  inlining, readable names); idempotence on the tasks and the corpus.
+- **Differential test** (`difftest.py`, generator `fuzz_gen.py`): random valid programs (typed, scoped, loops bounded; try/catch/finally, break/continue, classes, lists, strings, recursion,
+  module constants, plus patterns made to break a careless optimizer: `(a // b) * 0`, `(x > 0) and false`, copy then change the source, return inside `try` with a `finally` that
+  reads a variable). For each, the Python before and after optimization (default passes, and `--all`) runs with the same random arguments (zero, negatives, `2**53+1`, `2**63-1`,
+  `2**64+5`, `-2**70`, `10**30`, `nan`, `inf`, `-0.0`, `1e308`, empty and accented text, empty lists); the **value, the exception (type and text), the printed output and the lists
+  mutated** must be identical. 1 000 programs, 62 860 calls (33 335 raise, 14 401 print, 7 255 with arguments beyond 64 bits): **0 differences**; the optimized result also passes
+  the checker again, parses as Python, and the optimizer changed all 1 000 programs (17 021 folds and propagations, 14 224 algebraic rewrites, 16 383 dead statements, 4 709 unreachable
+  statements, 4 649 decided branches, 503 copies, 402 temporaries, 803 inlined calls). Seeds are fixed, so a run is reproducible.
+  Mutation check: breaking the floor in `//`, the removability guard of `x*0`, `and false`, `or true`, the float identity, the copy-source check, `finally` copies, the short-circuit
+  rule, the exceptional edge or the removable mask each makes the test fail (10 of 11 mutants killed; the generator needed the "stress" statements to kill four of them; the survivor, a phi that ignores which edges are executable, only loses precision and is not a bug).
+- **IR interpreter** (`ucgecli irexec spec pre|ssa|out`): runs the IR of the scalar functions before SSA, in SSA (phi chosen by the arriving edge) and after out-of-SSA, and must equal
+  the Python on 60 096 results (1 000 programs x 3 phases); it is what found that a `try` body must start a new block (an instruction before the `try` shared a block, and so the
+  exceptional edge, with the protected call).
+- The tasks, optimized with the default passes and with `--all`, still pass their own tests (26 runs).
+
+### 16.10 Limits
+
+- Only locals are tracked. Lists, maps and objects are opaque references: no alias analysis, no constant elements or fields, no value numbering across memory; `push`, `pop`, element and field
+  stores and every impure call are barriers (they are never removed or reordered).
+- Without an enclosing `try`, a raising instruction has no edge (the exception leaves the function), so facts about code after a call are optimistic about *that* path only in the
+  sense that the path does not exist; inside a `try` the graph is conservative (the edge carries the state at the end of the block).
+- Arithmetic that may raise only because of astronomically large integers (beyond ~1e308 mixed with floats) is treated as raising, so such code is never removed or folded; nothing
+  else about big integers is approximated: operations that would overflow 64 bits are simply left to Python.
+- Termination is never changed: `while` loops are kept unless their condition is a provable `false`; a call that may not terminate (recursion, loops) is kept; an endless loop is only
+  *reported* (no reachable exit), not proven non-terminating or terminating for the general case.
+- No loop-invariant motion, unrolling, strength reduction, common-subexpression elimination (the redundant computation is **reported**, as info), or code motion across statements.
+  Inlining takes single-`return` functions only; temporaries only when adjacent.
+- The phase-1 checker rule "every path returns" is syntactic (the last statement). The optimizer can prove the end unreachable and remove the final `return`; the Python is right,
+  but a later `cgx_check` of the optimized tree can complain. A backend that needs the final `return` (C) should run the checker's rule on the original, or keep the tail.
+- The unused-variable and dead-store findings count a variable as read when it is visible to a `raw` block (the block may read it).
+- `ucgetype.c` (HM) is not used here: types are the checker's (`ty`), `any` is treated as "may raise". The registry (module I) is used only to map a built-in name to its id (`cgx_op_find`); the effect table stays in `ucgecfg.c`.
+- The IR interpreter is a test tool (scalars, strings of small size, no lists/classes), not a backend.

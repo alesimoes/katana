@@ -21,9 +21,9 @@
  *   int gen(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);   g ja validado; erros do backend em g->err; tests = corpo do harness (ou NULL).
  *   Documentos: cgx_dtext/dline/dsoft/dhard/dcat/dcatn/dnest/dgroup, cgx_render(doc, width, &out), cgx_docs_free.
  * ---- o que a fase 2 acrescenta (nomes reservados) ----
- *   ucgeir.c     CgxIr *cgx_ir_build(Cgx *g);  void cgx_ir_free(CgxIr *);  void cgx_ir_dump(const CgxIr *, CgxB *);  (CFG + SSA, ver docs/ucge.md)
- *   ucgeflow.c   int cgx_flow_run(CgxIr *ir, CgxFlowReport *r);  (definicoes alcancaveis, vivacidade, constantes, codigo morto, variavel nao usada)
- *   ucgeopt.c    int cgx_opt_fold(Cgx *g);  (dobra de constantes e simplificacao na AST, antes da geracao)
+ *   ucgecfg.c    CgxIr *cgx_ir_build(Cgx *g);  void cgx_ir_free(CgxIr *);  void cgx_ir_dump(const CgxIr *, CgxB *);  (CFG, dominadores, SSA; feito, ver docs/ucge.md secao 16)
+ *   ucgeflow.c   int cgx_flow_run(CgxIr *ir, CgxFlowReport *r);  (definicoes alcancaveis, vivacidade, constantes, codigo morto, variavel nao usada; feito)
+ *   ucgeopt.c    int cgx_opt_run(Cgx *g, const CgxOptOpts *o, CgxOptReport *r); int cgx_opt_fold(Cgx *g);  (otimizador com passes; feito)
  *   ucgeinfer.c  int cgx_infer(Cgx *g, CgxTypes *T);  (PRONTO: inferencia HM com niveis, any gradual, fluxo; escreve n->tid, n->cert, n->chk; docs/ucge.md 5b)
  *                int cgx_infer_ex(Cgx *g, CgxTypes *T, int flags, CgxB *report);  (flags 1: lets, 2: usos; report = assinaturas com a certeza)
  *                int cgx_check_ex(Cgx *g, CgxTypes *T, int infer);  (cgx_check e, se infer, a inferencia; ordem de inclusao: depois de ucgetype.c)
