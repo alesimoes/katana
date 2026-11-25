@@ -1,8 +1,8 @@
 # The agent's tools (`src/tools/`)
 
 The katana agent's tools live in `src/tools/`, one file per tool or small family, and the table in
-`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers). There is no stateful shell session, no machine-wide search by part of a name, no `sudo` or `append` in the file tools, no structured
-`git` or package tools (use `Bash`), and background commands go through `Bash` with `run_in_background`, `Monitor` and `TaskStop`.
+`src/tools/table.c` is the only list the dispatcher accepts (plus the tools of the connected MCP servers).
+Background commands go through `Bash` with `run_in_background`, `Monitor` and `TaskStop`.
 Recipes are read through `Skill`; the memory file and `katana memory` stay.
 
 Design: one shell tool that keeps its working directory, whole-file and exact-snippet file tools with a
