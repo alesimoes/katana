@@ -12,14 +12,15 @@
  * do guloso, a menos da diferenca numerica entre o caminho em lote e o de um token (ver docs).
  *
  * Estado recorrente (DeltaNet): o cache KV se corrige sozinho (a posicao e reescrita), o estado
- * recorrente nao. Antes de cada passada nova guarda uma copia do estado (RAM na CPU, VRAM no grafo
- * Vulkan). No desacordo volta a copia e a passada seguinte refaz os tokens ja aceitos junto com o token
- * novo e o proximo rascunho, numa passada so. No fim da geracao (lk_finish) o estado volta ao ultimo
- * token consumido.
+ * recorrente nao. Na CPU a passada guarda o estado depois de cada posicao (pontos de controle); no
+ * desacordo volta ao ponto da ultima posicao certa e a passada nova comeca dali, sem refazer nada. No
+ * grafo Vulkan ainda ha uma copia antes da passada e o refazer dos aceitos. No fim da geracao
+ * (lk_finish) o estado volta ao ultimo token consumido.
  *
- * Adaptacao: o proprio motor mede o tempo por token servido com e sem rascunho; se o rascunho nao paga,
- * fica sem rascunho por um periodo que dobra a cada falha (16 a 1024 tokens); k dobra quando o rascunho
- * passa inteiro e cai pela metade quando menos da metade passa.
+ * Politica (CPU): so rascunha quando o ganho esperado paga. Escolhe a ocorrencia de casamento mais longo,
+ * estima a taxa de acerto por token pela faixa do comprimento do casamento (media movel) e escolhe o k
+ * que maximiza tokens servidos esperados / custo medido da passada; sem ganho de 10%, nao rascunha.
+ * KATANA_LOOKUP_ADAPT=0 rascunha sempre (k fixo). O guarda de seguranca (recuo exponencial) continua.
  *
  * KATANA_LOOKUP=1 liga (desligado por padrao); KATANA_LOOKUP_N (3), KATANA_LOOKUP_K (8),
  * KATANA_LOOKUP_ADAPT=0 desliga a adaptacao. Caminhos: qwen35moe na CPU em lote e no grafo Vulkan
