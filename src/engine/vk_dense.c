@@ -1327,7 +1327,8 @@ static void shexp_cpu(Model *m, const Layer *L) {
 #define MOE_NMAX (GPU_BMAX * 64)
 static inline float gelu_t(float x) { return 0.5f * x * (1.0f + tanhf(0.7978845608f * (x + 0.044715f * x * x * x))); }
 static inline float act_glu(float g) { return g_gelu ? gelu_t(g) : g / (1.0f + expf(-g)); }
-typedef struct { const Mat *eg, *eu, *ed; const int *ex, *xi; int H, d; float *hg, *hu, *outs; XQ *xin, *xh; } MoeJob;
+typedef struct { const Mat *eg, *eu, *ed; const int *ex, *xi; int H, d; float *hg, *hu, *outs; XQ *xin, *xh;
+                 const int *ord, *gs, *gn; int ng; } MoeJob;    /* ord: pares ordenados por especialista; gs/gn: inicio e tamanho de cada grupo */
 /* produto de uma linha de especialista com a entrada quantizada em xq: tipos K pelo dot_row, e
    Q8_0/Q5_1 (down do gemma4) pelos produtos inteiros de blocos de 32 */
 static int moe_int(const Mat *W) {
@@ -1349,6 +1350,33 @@ static void moe_job(void *c, int i0, int i1) {
     xq_tls = NULL;
 }
 /* ativacao e quantizacao da entrada do down, um especialista por item */
+/* por especialista: cada linha de pesos e lida uma vez e multiplicada pelas entradas de todos os pares do grupo
+   (a linha fica na cache de nivel 1 enquanto os pares a usam); o especialista le seus pesos uma vez por passada,
+   qualquer que seja o numero de tokens que o escolheram */
+static void moe_gjob(void *c, int i0, int i1) {
+    const MoeJob *q = c;
+    for (int i = i0; i < i1; i++) {
+        const int g = i / (2 * q->H), r = i % (2 * q->H);
+        const int *pj = q->ord + q->gs[g];
+        const int e = q->ex[pj[0]];
+        if (r < q->H) {
+            for (int u = 0; u < q->gn[g]; u++) { xq_tls = &q->xin[q->xi[pj[u]]]; q->hg[(size_t)pj[u] * q->H + r] = moe_dot(&q->eg[e], (size_t)r, q->d); }
+        } else {
+            for (int u = 0; u < q->gn[g]; u++) { xq_tls = &q->xin[q->xi[pj[u]]]; q->hu[(size_t)pj[u] * q->H + r - q->H] = moe_dot(&q->eu[e], (size_t)(r - q->H), q->d); }
+        }
+    }
+    xq_tls = NULL;
+}
+static void moe_gdown_job(void *c, int i0, int i1) {
+    const MoeJob *q = c;
+    for (int i = i0; i < i1; i++) {
+        const int g = i / q->d, r = i % q->d;
+        const int *pj = q->ord + q->gs[g];
+        const int e = q->ex[pj[0]];
+        for (int u = 0; u < q->gn[g]; u++) { xq_tls = &q->xh[pj[u]]; q->outs[(size_t)pj[u] * q->d + r] = moe_dot(&q->ed[e], (size_t)r, q->H); }
+    }
+    xq_tls = NULL;
+}
 static void moe_act_job(void *c, int i0, int i1) {
     const MoeJob *q = c;
     for (int j = i0; j < i1; j++) {
@@ -1369,6 +1397,7 @@ static void moe_down_job(void *c, int i0, int i1) {
 }
 /* medida das fases (microbancada): quantizar entrada, gate/up, ativacao+quantizar, down */
 static int moe_prof_on; static double moe_prof[4];
+static int moe_grouped = -1;      /* agrupar os pares por especialista (KATANA_MOE_GROUP=0 desliga) */
 static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs) {
     static float *hg, *hu;
     static XQ xin[GPU_BMAX], *xh;
@@ -1394,17 +1423,29 @@ static void moe_cpu_multi(Model *m, const Layer *L, const int *ex, const int *xi
     double t0 = moe_prof_on ? now_sec() : 0.0, t1 = 0.0;
     for (int b = 0; b < n_x; b++) { xq_tls = &xin[b]; xq_prepare(xs + (size_t)b * d, d); }
     xq_tls = NULL;
-    MoeJob job = { L->eg, L->eu, L->ed, ex, xi, H, d, hg, hu, outs, xin, xh };
-    int total = n * 2 * H, chunk = total / (pool.n * 8), minc = 32768 / d + 1;
+    MoeJob job = { L->eg, L->eu, L->ed, ex, xi, H, d, hg, hu, outs, xin, xh, NULL, NULL, NULL, 0 };
+    /* agrupa os pares por especialista (ordenacao por contagem) quando algum especialista se repete */
+    static int ord[MOE_NMAX], gs[MOE_NMAX], gn[MOE_NMAX], ecnt[1024];
+    if (moe_grouped < 0) moe_grouped = getenv("KATANA_MOE_GROUP") ? atoi(getenv("KATANA_MOE_GROUP")) != 0 : 1;
+    if (moe_grouped && n > 1 && c->n_expert <= 1024) {
+        const int E = c->n_expert;
+        memset(ecnt, 0, sizeof(int) * (size_t)E);
+        for (int j = 0; j < n; j++) ecnt[ex[j]]++;
+        int ng = 0, off = 0;
+        for (int e = 0; e < E; e++) if (ecnt[e]) { gs[ng] = off; gn[ng] = ecnt[e]; ng++; off += ecnt[e]; ecnt[e] = gs[ng - 1]; }
+        for (int j = 0; j < n; j++) ord[ecnt[ex[j]]++] = j;
+        if (ng < n) { job.ord = ord; job.gs = gs; job.gn = gn; job.ng = ng; }
+    }
+    int total = (job.ng ? job.ng : n) * 2 * H, chunk = total / (pool.n * 8), minc = 32768 / d + 1;
     if (chunk < minc) chunk = minc;
     if (moe_prof_on) { t1 = now_sec(); moe_prof[0] += t1 - t0; t0 = t1; }
-    pool_for(moe_job, &job, total, chunk);
+    pool_for(job.ng ? moe_gjob : moe_job, &job, total, chunk);
     if (moe_prof_on) { t1 = now_sec(); moe_prof[1] += t1 - t0; t0 = t1; }
     pool_for(moe_act_job, &job, n, 1);
-    total = n * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
+    total = (job.ng ? job.ng : n) * d; chunk = total / (pool.n * 8); minc = 32768 / H + 1;
     if (chunk < minc) chunk = minc;
     if (moe_prof_on) { t1 = now_sec(); moe_prof[2] += t1 - t0; t0 = t1; }
-    pool_for(moe_down_job, &job, total, chunk);
+    pool_for(job.ng ? moe_gdown_job : moe_down_job, &job, total, chunk);
     if (moe_prof_on) moe_prof[3] += now_sec() - t0;
 }
 /* n especialistas sobre a mesma entrada m->xb */

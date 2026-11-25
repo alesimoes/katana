@@ -173,7 +173,7 @@ prediction also for Gemma 4, prefetch 2 layers ahead with a smaller N.
 | Exact pre-tokenizer | state machine by type declared in the GGUF (`tokenizer.ggml.pre`): digit grouping (1 or 1–3), last space before the word, line breaks, contractions, Unicode letter and number classes; split the special tokens beforehand | medium |
 | Chat format by detection in the template | we already do it by template fragments; Gemma, Phi, Mistral, DeepSeek, Kimi are missing | small |
 
-### 7.1 Prompt lookup decoding (`src/engine/lookup.c`, written 2026-11-22, measured 2026-11-24: no gain on the CPU, off by default)
+### 7.1 Prompt lookup decoding (`src/engine/lookup.c`, written 2026-11-22, measured 2026-11-24: optimized the same day, 1.17x on whole-file reproduction and neutral elsewhere on the CPU, off by default)
 
 Speculative decoding with a free draft taken from the context, aimed at code (an Edit repeats the old text,
 unchanged lines, identifiers). Off by default.
@@ -244,6 +244,58 @@ unchanged lines, identifiers). Off by default.
     (dense model, or an expert-grouped block kernel) or on a path that is not bandwidth-bound; `KATANA_SPEC` is already the
     name of the specialization setting, so the switch keeps its name. The gate is still the engine's own timing, so turning it
     on for experiments cannot make generation much slower, only the first 4 tokens and the probes.
+- **Optimization pass, 2026-11-24 (branch `feat-spec-optimize`).** Goal: make the draft pay on the CPU. What was changed and
+  what each change was worth (same model, `KATANA_CPU=1 KATANA_THINK=0`, temperature 0; the machine was shared: 16 threads,
+  load average 10 to 25 during every run, so only alternated pairs and ratios are used; GPU not used, `nvidia-smi` showed a
+  desktop job on it).
+  - *Cost of the batch pass, measured first* (`katana spectime <model> <file>`, new: alternates passes of B = 1, 2, 3, 5, 9
+    positions that continue a copied context, median of rounds): one pass of B positions costs about 0.65 B + 0.35 plain
+    tokens (B=2: 1.7 to 2.0x, B=3: 2.2x, B=5: 3.3x, B=9: 5.6 to 6.0x). Phase profile of a B=5 pass (`KATANA_SPEC_PROF=1`,
+    `KATANA_SPEC_B=5`): dense projections of the attention/DeltaNet layers and the shared expert about 56%, routed experts
+    about 24%, DeltaNet conv + recurrence about 12%, router 2%. So the marginal position is limited by compute in the dense
+    integer dot products, not by reading expert weights; the original diagnosis (union of experts) explains only the 24%.
+  - *Expert-grouped MoE block* (`moe_gjob`, `KATANA_MOE_GROUP=0` turns it off): pairs (token, expert) are sorted by expert;
+    each expert row is read once and dotted with the inputs of all tokens that chose it. Alternated in the same process
+    (`KATANA_SPEC_AB=1`): B=5 3.30x -> 3.10x of a token, B=9 6.00x -> 5.30x (B=2, 3: no difference, within noise). Kept.
+  - *Cheap rollback of the recurrent state (CPU)*: during the pass the DeltaNet state is copied after each position
+    (`qn_ckpt`, 66 MB per position, taken while the layer state is still in cache). A disagreement restores the state after the
+    last correct position and the new pass starts right there; nothing is replayed and no copy is taken before the pass.
+    Before, a disagreement restored the 66 MB snapshot and redid every accepted token in the next pass (about 0.65 token each).
+    Forced draft (no policy), same alternated pairs: rewrite of 3 functions k=4 0.7-0.8x -> 0.98-1.0x, whole file k=4
+    1.12 to 1.23x, k=8 1.16 to 1.33x. Memory: up to `KATANA_LOOKUP_K` x 66 MB of checkpoints (pages touched only if used).
+  - *Draft policy* (`lk_pick`; `KATANA_LOOKUP_ADAPT=0` turns it off and drafts always): among all earlier occurrences of the
+    last n tokens it takes the one with the longest backward match (ties: the most recent; up to 64 tokens), puts the match
+    length in a bucket and keeps a moving per-token acceptance rate per bucket; for each draft length k it computes the expected
+    served tokens 1 + p + ... + p^k against the measured cost of a pass of k+1 positions plus one logits row per served token
+    plus part of a restore, and drafts only if the best ratio against a plain token is above 1.10, with that k. Without
+    measurements yet it uses the 0.65 B + 0.2 model. The old "k doubles/halves" rule is gone; the safety back-off stays.
+  - *Not done*: several candidate drafts or a draft tree (every extra position costs 0.65 token and the tree needs per-branch
+    DeltaNet state, so a second candidate is worth it only if its extra acceptance exceeds 0.65 per position, which the measured
+    rates (35 to 60% outside long copies) do not give); a shared-decode multi-token Q4_K kernel (the weight decode is about 25%
+    of the work of one dot; sharing it across 4 tokens would save at most 12 to 15% of the dense phase while keeping the
+    arithmetic bit-identical to the one-token path, so the pass would still cost about 0.55 B).
+  - *Why it cannot pay much more on this CPU path*: a draft token served costs about 0.65 (position) + 0.15 (logits row) + 0.05
+    (checkpoint) = 0.85 of a plain token even at 100% acceptance, so the ceiling is about 1/0.85 = 1.18x for long drafts and
+    less for short ones; to reach 1.15x the draft must be accepted at 95% or more over 8 tokens. Only verbatim reproduction does.
+  - *Final alternated measurement* (policy on, 3 repetitions of each task, plain/with-draft pairs run back to back, generation
+    tok/s printed by the engine, load average 10 to 18 during the pairs; 120 to 300 generated tokens; outputs byte-identical to
+    the run without draft in all 12 pairs; and in the 12 forced-k pairs):
+    | task | plain tok/s | with draft tok/s | ratio (median) | draft use |
+    |---|---|---|---|---|
+    | rewrite 1 function (126-line C file in the context) | 7.9, 8.1, 8.0 | 8.0, 8.0, 8.1 | 1.01 | 2 of 3 drafts accepted, rest plain |
+    | rewrite 3 functions | 8.1, 8.1, 8.1 | 7.9, 7.7, 7.7 | 0.95 | 2 of 7 accepted (the policy refuses most) |
+    | reproduce the file with a new function (300 tokens) | 8.1, 7.8, 7.7 | 9.5, 9.2, 8.9 | 1.17 | 216 to 245 of 217 to 253 accepted, 34 to 46 passes |
+    | new code, no copy | 8.0, 7.7, 8.1 | 8.2, 7.9, 8.5 | 1.03 (noise) | none (33 drafts refused) |
+    Before the optimization (previous agent, adaptive): 0.7x to 0.9x on the copy tasks; with the policy but the old rollback the
+    whole-file task was 1.12 to 1.16x and the 3-function rewrite 0.91x; the 3-function rewrite is still about 5% slower with
+    the draft on (two disagreements, no gain), which is more than the measurement noise between the three pairs.
+  - *Decision*: stays off by default. The 1.15x gate is met only by whole-file reproduction (1.17x); the rewrite tasks give
+    1.01x and 0.95x, so turning it on would lose a little where the model copies only fragments. `KATANA_LOOKUP=1` is a clear
+    win for "reproduce the file with a change" and neutral elsewhere; the policy keeps the loss on new code at 0 to 3%.
+  - *Hybrid GPU path of the agent (4 GB card, `gpu.n_gl > 0`)*: still one token at a time. Not implemented and not measured: the
+    GPU was in use, and the same arithmetic applies (a position added to the batch costs about 0.65 token on the CPU part, the
+    experts are on the CPU or in the arena), so the ceiling is the same ~1.2x with extra complexity (checkpoint of the GPU-resident
+    DeltaNet layers); worth revisiting only after the dense batch kernel gets faster.
 - **NOT checked:** the hybrid GPU path of the agent on the 4 GB card (it falls back to one token at a time, so the
   option does nothing there), the full Vulkan graph (needs more VRAM than the card has), the Vulkan graph path (the tiny `--gpu` model falls to the
   hybrid mode, which crashes with `malloc(): corrupted top size` also on the base commit, unrelated to this work);
