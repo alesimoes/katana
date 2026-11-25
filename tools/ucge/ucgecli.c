@@ -13,6 +13,7 @@
 #include <math.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include "src/coder/ucge.c"
 #include "src/coder/ucgereg.c"
 #include "src/coder/ucgecheck.c"
@@ -20,6 +21,7 @@
 #include "src/coder/ucgedoc.c"
 #include "src/coder/ucgepy.c"
 #include "src/coder/ucgedep.c"
+#include "src/coder/ucgeinc.c"
 
 static char *slurp(const char *path) {
     FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin; if (!f) { perror(path); exit(2); }
@@ -151,6 +153,30 @@ int main(int argc, char **argv) {
         CgxGenOpts o = {88, 1, 4}; cgx_dep_keys(&d, cgx_cache_ctx(cgx_backend("python"), &o, ""));
         for (int i = 0; i < d.nn; i++) printf("%s %016llx\n", d.n[i].name, (unsigned long long)d.n[i].key);
         cgx_dep_free(&d); cgx_free(&g); return 0;
+    }
+    if (!strcmp(argv[1], "inc") && argc >= 5 && !strcmp(argv[2], "apply")) {      /* inc apply ARQUIVO ESPEC [--write] [--acts]: sem --write imprime o resultado */
+        char *spec = slurp(argv[4]); int wr = 0, acts = 0; for (int i = 5; i < argc; i++) { if (!strcmp(argv[i], "--write")) wr = 1; if (!strcmp(argv[i], "--acts")) acts = 1; }
+        CgxIncResult R; CgxIncActs A = {0}; char msg[1000];
+        const int ok = cgx_inc_apply_file(argv[3], spec, cgx_inc_write_atomic, NULL, !wr, &R, &A, msg, sizeof msg);
+        if (!ok) { fprintf(stderr, "error: %s\n", msg); cgx_inc_acts_free(&A); free(spec); return 1; }
+        for (int i = 0; i < R.nrep; i++) fprintf(stderr, "%s\n", R.rep[i].msg);
+        fprintf(stderr, R.changed ? "changed\n" : "no change\n");
+        if (acts) for (int i = 0; i < A.n; i++) fprintf(stderr, "act %d %s\n", A.a[i].kind, A.a[i].symbol);
+        if (!wr && R.changed) fwrite(R.text, 1, R.n, stdout);
+        cgx_inc_result_free(&R); cgx_inc_acts_free(&A); free(spec); return 0;
+    }
+    if (!strcmp(argv[1], "inc") && argc >= 4 && (!strcmp(argv[2], "read") || !strcmp(argv[2], "uir"))) {     /* inc read|uir ARQUIVO.py */
+        char *src = slurp(argv[3]); CgxInc ic; CgxIncUir u;
+        if (!cgx_inc_parse(&ic, src, strlen(src))) { printf("line %d: %s\n", ic.errline, ic.err); cgx_inc_free(&ic); free(src); return 1; }
+        cgx_inc_uir(&ic, &u);
+        if (!strcmp(argv[2], "uir")) fputs(u.csp.out.p, stdout);
+        else {
+            for (int i = 1; i < u.g.prog->b1.n + 1 && i - 1 < u.g.prog->b1.n; i++) {
+                const CgxNode *nd = u.g.prog->b1.p[i - 1]; size_t b0, b1; int l0, l1;
+                if (cgx_inc_range(&ic, &u, nd, &b0, &b1, &l0, &l1)) printf("%-6s %-14s lines %d-%d bytes %zu-%zu\n", nd->k == CGN_FN ? "fn" : nd->k == CGN_CLASS ? "class" : nd->k == CGN_LET ? "const" : nd->k == CGN_RAW ? "raw" : "node", nd->s ? nd->s : (nd->defs ? nd->defs : ""), l0, l1, b0, b1);
+            }
+        }
+        cgx_inc_uir_free(&u); cgx_inc_free(&ic); free(src); return 0;
     }
     if (!strcmp(argv[1], "cachebench") && argc >= 3) return cachebench(atoi(argv[2]), argc > 3 ? argv[3] : NULL);
     if (!strcmp(argv[1], "dump") && argc >= 3) { if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; } CgxB b = {0}; cgx_dump(&g, 1, &b); fputs(b.p ? b.p : "", stdout); free(b.p); cgx_free(&g); return 0; }
