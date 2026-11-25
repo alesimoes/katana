@@ -11,7 +11,7 @@
  *   - funcoes sao DECLARACOES (`function`, hoisted: recursao e chamadas para frente como no Python), `const` quando o nome nao e reatribuido, `let` senao,
  *     laco `for (let i = a; i < b; i++)` com limite avaliado uma vez (como `range`), `try/catch` com `catch {}` quando a variavel nao e usada.
  * Nomes que comecam com `_` sao reservados para os ajudantes e temporarios. Divergencias que nao da para remover estao em docs/ucge.md. */
-typedef struct { Cgx *g; const CgxGenOpts *o; CgxDocs D; CgxTypes T; int ts, ntmp; unsigned char need[96]; unsigned char *asg; int nasg; int has_raw; } CgxJs;
+typedef struct { Cgx *g; const CgxGenOpts *o; CgxDocs D; CgxTypes T; int ts, ntmp; unsigned char need[96]; unsigned char *asg; int nasg; int has_raw; const CgxNode *ctx; } CgxJs;
 #define JD (&p->D)
 
 /* ---- ajudantes de execucao: o texto e escrito UMA vez, em TypeScript; o que esta entre TS( ) some na saida JavaScript ---- */
@@ -424,10 +424,10 @@ static CgxDoc *cjs_compare(CgxJs *p, const CgxNode *n, int *prec) {
                 if (same) return cjs_ex0(p, o, prec);
                 *prec = JP_UN; return cgx_dcat(JD, cjs_t(p, "!"), cjs_ex(p, o, JP_UN));
             }
-            if (p->ts) return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, 0), cgx_dtextf(JD, " as boolean) %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
+            if (p->ts) return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, JP_ADD), cgx_dtextf(JD, " as boolean) %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
         }
         if (p->ts && cjs_litish(n->a) && cjs_litish(n->b))
-            return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, 0), cgx_dtextf(JD, " as %s) %s ", cjs_tsbase(n->a->ty.k), js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
+            return cgx_dcatn(JD, cjs_t(p, "("), cjs_ex(p, n->a, JP_ADD), cgx_dtextf(JD, " as %s) %s ", cjs_tsbase(n->a->ty.k), js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
         return cgx_dcatn(JD, cjs_ex(p, n->a, JP_EQ + 1), cgx_dtextf(JD, " %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_EQ + 1), NULL);
     }
     *prec = JP_REL;
@@ -549,7 +549,11 @@ static CgxDoc *cjs_ex0(CgxJs *p, const CgxNode *n, int *prec) {
         case CGN_NULL: cgx_bs(&b, "null"); break;
         case CGN_VAR: cgx_bs(&b, !strcmp(n->s, "self") ? "this" : n->s); break;
         case CGN_LIST: {
-            free(b.p); CgxDoc **it = (CgxDoc **)malloc(sizeof(CgxDoc *) * (size_t)(n->b1.n + 1));
+            free(b.p);
+            if (p->ts && n->b1.n == 0 && p->ctx != n) {          /* `[]` sem contexto vira never[] no TS e estraga a inferencia dos ajudantes genericos */
+                CgxB tb = {0}; cgx_bs(&tb, "([] as "); cjs_tystr(p, cjs_elem_tid(p, n->ty.e), &tb); cgx_bs(&tb, "[])"); *prec = JP_PRIM; return cjs_tb(p, &tb);
+            }
+            CgxDoc **it = (CgxDoc **)malloc(sizeof(CgxDoc *) * (size_t)(n->b1.n + 1));
             for (int i = 0; i < n->b1.n; i++) it[i] = cjs_ex(p, n->b1.p[i], 0);
             CgxDoc *d = cjs_seq(p, "[", it, n->b1.n, "]"); free(it); return d;
         }
@@ -679,7 +683,7 @@ static CgxDoc *cjs_assign(CgxJs *p, const CgxNode *s) {
             cjs_ex(p, t, 0), cgx_dtextf(JD, " = _v%d;", id), NULL)), cgx_dhard(JD), cjs_t(p, "}"), NULL);
     }
     CgxDoc *T = cjs_ex(p, t, 0);
-    if (s->op < 0) return cgx_dcatn(JD, T, cjs_t(p, " = "), cjs_ex(p, s->b, 0), cjs_t(p, ";"), NULL);
+    if (s->op < 0) { p->ctx = s->b; CgxDoc *d = cgx_dcatn(JD, T, cjs_t(p, " = "), cjs_ex(p, s->b, 0), cjs_t(p, ";"), NULL); p->ctx = NULL; return d; }
     if (s->op == CGO_ADD || s->op == CGO_SUB || s->op == CGO_MUL) return cgx_dcatn(JD, T, cgx_dtextf(JD, " %s ", as[s->op]), cjs_ex(p, s->b, 0), cjs_t(p, ";"), NULL);
     int pr; CgxDoc *v = cjs_arith(p, s->op, t, s->b, cjs_ex(p, t, 0), &pr);
     return cgx_dcatn(JD, T, cjs_t(p, " = "), v, cjs_t(p, ";"), NULL);
@@ -714,10 +718,11 @@ static CgxDoc *cjs_stmt(CgxJs *p, const CgxNode *s) {
             CgxB h = {0};
             if (p->ts && s->ty.k == CGT_CLASS && (!cst || s->a->k == CGN_NULL)) cgx_bs(&h, ": any");          /* a UIR nao tem tipo opcional: classe que recebe null fica any */
             else if (p->ts && cjs_let_annot(s, cst)) { cgx_bs(&h, ": "); cjs_type(p, &s->ty, &h); }
-            CgxDoc *d = cgx_dcatn(JD, cgx_dtextf(JD, "%s %s%s = ", cst ? "const" : "let", s->s, h.p ? h.p : ""), cjs_ex(p, s->a, 0), cjs_t(p, ";"), NULL); free(h.p); return d;
+            if (h.p) p->ctx = s->a;
+            CgxDoc *d = cgx_dcatn(JD, cgx_dtextf(JD, "%s %s%s = ", cst ? "const" : "let", s->s, h.p ? h.p : ""), cjs_ex(p, s->a, 0), cjs_t(p, ";"), NULL); free(h.p); p->ctx = NULL; return d;
         }
         case CGN_ASSIGN: return cjs_assign(p, s);
-        case CGN_RET: return s->a ? cgx_dcatn(JD, cjs_t(p, "return "), cjs_ex(p, s->a, 0), cjs_t(p, ";"), NULL) : cjs_t(p, "return;");
+        case CGN_RET: if (s->a) p->ctx = s->a; { CgxDoc *d = s->a ? cgx_dcatn(JD, cjs_t(p, "return "), cjs_ex(p, s->a, 0), cjs_t(p, ";"), NULL) : cjs_t(p, "return;"); p->ctx = NULL; return d; }
         case CGN_BREAK: return cjs_t(p, "break;");
         case CGN_CONT: return cjs_t(p, "continue;");
         case CGN_EXPR: return cjs_t_end(p, cjs_ex(p, s->a, 0));
@@ -801,7 +806,7 @@ static CgxDoc *cjs_params(CgxJs *p, const CgxNode *fn) {
         cgx_bs(&b, pr->name);
         if (p->ts) { cgx_bs(&b, ": "); if (pr->ty.k == CGT_CLASS && pr->def && pr->def->k == CGN_NULL) cgx_bs(&b, "any"); else cjs_type(p, &pr->ty, &b); }
         CgxDoc *d = cjs_tb(p, &b);
-        if (pr->def) d = cgx_dcatn(JD, d, cjs_t(p, " = "), cjs_ex(p, pr->def, 0), NULL);
+        if (pr->def) { p->ctx = pr->def; d = cgx_dcatn(JD, d, cjs_t(p, " = "), cjs_ex(p, pr->def, 0), NULL); p->ctx = NULL; }
         it[i] = d;
     }
     CgxDoc *r = cjs_seq(p, "(", it, fn->npar, ")"); free(it); return r;
@@ -840,7 +845,7 @@ static CgxDoc *cjs_class(CgxJs *p, const CgxNode *c) {
         CgxB h = {0}; cgx_bs(&h, f->s);
         if (p->ts) { cgx_bs(&h, ": "); if (f->ty.k == CGT_CLASS) cgx_bs(&h, "any"); else cjs_type(p, &f->ty, &h); }          /* referencia a classe pode ser null: a UIR nao tem tipo opcional */
         cgx_bs(&h, " = ");
-        CgxDoc *x = cgx_dcatn(JD, cgx_dhard(JD), cjs_tb(p, &h), f->a ? cjs_ex(p, f->a, 0) : cjs_zero(p, &f->ty), cjs_t(p, ";"), NULL);
+        p->ctx = f->a; CgxDoc *x = cgx_dcatn(JD, cgx_dhard(JD), cjs_tb(p, &h), f->a ? cjs_ex(p, f->a, 0) : cjs_zero(p, &f->ty), cjs_t(p, ";"), NULL); p->ctx = NULL;
         in = in ? cgx_dcat(JD, in, x) : x;
     }
     int first = in == NULL;
