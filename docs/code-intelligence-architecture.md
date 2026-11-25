@@ -1230,7 +1230,6 @@ cost of the opposite choice is designing a framework for a client that does not 
 | `sym` and `path` edges | `src/tools/findgraph.c` (`fg_build`) | **replaced** | by resolved references and imports, with grades |
 | `rare` edges | same | **replaced** | by `key` entities and lexicon lookups |
 | `co` edges | same | **survives, low weight, probable** | side table; measured neutral to negative |
-| Index file `find-<hash>.idx`, whole-file rewrite, full graph rebuild on change | `fd_save`, `fd_load`, `fg_build` | **discarded** | replaced by segments and query-time linking |
 | `Find` output shape, `why:` line | `fd_show`, `fg_evidence` | **survives as a rendering** | fed by the new search; keeps the trained format |
 | `mode=refs` | `fd_refs` | **replaced** by Q4 | same output shape at first |
 | Neighbour note | `fg_neighbor_note` + call in `src/agent/loop.c` | **survives** as adapter 3 | new content |

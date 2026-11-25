@@ -41,7 +41,7 @@ What exists today, checked in the code:
 
 | Piece | Where | What it is | Limit that matters here |
 |---|---|---|---|
-| Incremental index | `src/tools/find.c` (`fd_update`, `fd_build_file`, `fd_invert`, `fd_save`, `fd_load`) | per file: 40-line chunks with stride 25 (`FD_CHUNK`, `FD_STRIDE`), three fields per chunk (path, defined symbols, body); file `.katana/cache/find-<hash>.idx` (`FD_VERSION` 4); re-reads only files whose mtime or size changed | whole index in memory; cap of 20000 files (`fd_max_files`) and 300 KB per file (`FD_MAXBYTES`) |
+| Incremental index | `src/tools/find.c` (`fd_update`, `fd_build_file`, `fd_invert`, `fd_save`, `fd_load`) | per file: 40-line chunks with stride 25 (`FD_CHUNK`, `FD_STRIDE`), three fields per chunk (path, defined symbols, body); built per query from the store candidates (`findstore.c`), with no file of its own; re-reads only files whose mtime or size changed | whole index in memory; cap of 20000 files (`fd_max_files`) and 300 KB per file (`FD_MAXBYTES`) |
 | Symbols | `fd_sym` in `find.c` | one name per line, by per-language line rules; stored as (line, name id) | **no end line**, no signature, no scope, no kind, no visibility. `fd_enclosing` answers "which function is this line in" with "the last symbol that starts before it", which is wrong after a function ends |
 | References | the inverted index itself (`fd_refs`, `fd_calls`, `fd_also`) | whole-identifier term -> chunks naming it; one-part names confirmed word by word (`fd_has_word`) | a reference is "the name occurs": no distinction between call, use, declaration, comment or string; no caller symbol, only a chunk |
 | File graph | `src/tools/findgraph.c` (`fg_build`) | nodes are **files**; four undirected edge types `sym`, `path`, `rare`, `co` in one CSR | no symbol-level edges, no direction, no call graph |
@@ -525,8 +525,7 @@ produced it.
 
 ### 2.5 Versioning
 
-- A manifest of another format version: the folder is ignored and rebuilt, without an error (the rule `fd_load`
-  already follows for `FD_VERSION`).
+- A manifest of another format version: the folder is ignored and rebuilt, without an error.
 - A section whose version the reader does not know: that section is ignored and the queries that need it say the
   data is being rebuilt; other sections still serve. A newer text-search format does not invalidate the symbols.
 - Each catalog record holds the version of the parser that produced it. A parser fix bumps that parser's version
@@ -660,21 +659,6 @@ When the heavier mechanisms of the proposal would become right: a WAL, if the st
 re-derived or if many small writes per second must each be durable; B+ trees, if a single ordered table grows past
 what periodic merging can rewrite; 64-bit ids, for one store spanning many projects. None applies to one store per
 working folder at 100 thousand files.
-
-**Migration of the current index (`.katana/cache/find-<hash>.idx`).**
-
-1. The old file is not converted. It is a cache: the module builds the coder store from the working tree the first
-   time it runs in a folder (the measured cold build of today's content is 1.15 s for 5349 files).
-2. During the transition (build phases A0 to B1), `Find` keeps reading its own file until the module's text search
-   reproduces its output byte for byte on the `Find` tests and the curriculum replay **with the 40-line unit**
-   (phase A0 changes where the code lives, not what it prints). The switch of the unit to the symbol (2.1) changes
-   which ranges `Find` prints, though not its format; it happens at phase B1 and requires regenerating the `x-find6`
-   curriculum data, whose `check` replays outputs byte for byte. Then `find.c` becomes a facade
-   over `coder_search` and stops writing `find-*.idx`.
-3. After the switch, the first update in a folder deletes that folder's `find-*.idx` (same cache directory, so the
-   module owns the cleanup). `KATANA_CODER=0` during the transition keeps the old path alive; once the facade is the
-   only implementation, that switch only disables the packet and the new tools.
-4. `FD_VERSION` is not bumped again; the old format ends at 4.
 
 ## 3. Parsers
 
@@ -1550,7 +1534,7 @@ it can help. A request typed `CODER_T_NONE` costs the tokenization and nothing e
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KATANA_CODER` | to be decided by the owner (see below) | `0` turns the agent adapter off: no packet, no structural tools, `Find` is today's `Find` while the old path exists (2.9). The `katana coder` commands are not affected: they are the module's own interface |
+| `KATANA_CODER` | to be decided by the owner (see below) | `0` turns the agent adapter off: no packet, no structural tools, `Find` without the coder layer. The `katana coder` commands are not affected: they are the module's own interface |
 | `KATANA_CODER_PACKET` | `full` | `off`: tools only; `exact`: only named entities and their structure; `full`: with hypotheses |
 | `KATANA_CODER_EXPAND` | `1` when the packet is `full` | `0`: no model expansion |
 | `KATANA_CODER_TOKENS` | `1500` | global packet ceiling |
@@ -1654,8 +1638,8 @@ gains the concept channel when it arrives.
 
 | Phase | Deliverable | Done when | Effort | Depends on |
 |---|---|---|---|---|
-| B1. Tools and the `Find` facade | `src/agent/coder_agent.c`: `Def`, `Callers`, `Callees`, `Outline` in the core list, the rest under "More tools"; `Find`, the `Read` map, `fd_enclosing`, `Rename` candidates and the neighbour note answered by the module; `find-*.idx` retired (2.9) | `katana tool <Name>` for each; the `Find` tests and the `x-find6` replay still pass byte for byte | 2 to 3 | A2 |
-| B2. Packet before the request | `coder_agent_packet` and its one line in `loop.c`; `KATANA_CODER_PACKET=exact` and `full`; the case in the action log; compaction recognises old packets | a request in `-p` mode shows the packet in the session file; with `KATANA_CODER=0` the session is byte-identical to today's | 1 to 2 | A4, B1 |
+| B1. Tools and the `Find` facade | `src/agent/coder_agent.c`: `Def`, `Callers`, `Callees`, `Outline` in the core list, the rest under "More tools"; `Find`, the `Read` map, `fd_enclosing`, `Rename` candidates and the neighbour note answered by the module | `katana tool <Name>` for each; the `Find` tests and the `x-find6` replay still pass byte for byte | 2 to 3 | A2 |
+| B2. Packet before the request | `coder_agent_packet` and its one line in `loop.c`; `KATANA_CODER_PACKET=exact` and `full`; the case in the action log; compaction recognises old packets | a request in `-p` mode shows the packet in the session file; with `KATANA_CODER=0` the session has no packet | 1 to 2 | A4, B1 |
 
 **Part C: AI on top, optional.** Only here does the inference engine enter.
 

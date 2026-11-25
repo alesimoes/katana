@@ -13,9 +13,7 @@ further down are measurements from the dates in their titles; do not read them a
 old tool set and are kept only where they explain a decision.
 
 1. **Working model: Qwen3.6-35B-A3B only.** Tests, measurements, training and proofs happen on it. Gemma 4 is not tested, not even for regression.
-2. **Legacy removed (T7 of `plan.md`, `legacy-removal.md`).** No legacy and no compatibility: the old tool set and its dispatcher branches, `katana code`,
-   the old `Find` index (`find-*.idx`, `Rename`/`Replace`/`Patch`), the old memory format, old store formats (format 2 only; another format is rebuilt without a notice),
-   aliases and escape switches are gone. The curriculum data v6 and v7 were deleted.
+2. **No legacy and no compatibility (T7 of `plan.md`).** No old-format readers, no aliases, no escape switches, no migration code; a store in another format is rebuilt without a notice.
 3. **Lean tool list of 12:** `Bash, Read, Edit, Write, Find, Symbols, Grep, TodoWrite, AskUserQuestion, WebSearch, WebFetch, ToolSearch` (`docs/tools.md`,
    `docs/tools-review.md`). `Glob` and `Task*` are removed; file names are found with `Find` or `Bash ls`. `Find` and `Symbols` run on one engine (the U5 facade).
 4. **Code index (coder), nine phases built** (`docs/coder.md`, `docs/code-index-lifecycle.md`): root by `katana init`, crawler on demand in levels N0 to N3,
@@ -61,7 +59,7 @@ sub-agent (native calls, results in the model turn, closing notes in a user turn
 byte against the model's template with jinja2; the constraint knows the declared tools and
 stays off inside a thought channel opened by the prompt; the stand-in teacher no longer doubles the thought channel
 after results; the Internet line names the tools of the set in use. Prompt order left as the template requires
-(declarations last); `KATANA_G4_ENVLAST=1` stays a measurement switch. The "round limit only for `!g4`" gate named in
+(declarations last); the "round limit only for `!g4`" gate named in
 the task does not exist in the code: the note is emitted in every format. New tests: `tools/traintest/gemma4_part.sh`
 (sourced from `run.sh`), `tools/traintest/gemma4_golden.py`. Remaining real-model checks: see the end of the Gemma 4
 section in `docs/new-models.md`.
@@ -789,7 +787,7 @@ Commands (copied from `final.sh`, in the log directory; run at the repository ro
 G=models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf; Q=models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf; T=models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 for m in $G $Q; do KATANA_BACKEND=vulkan ./katana selftest $m; done
 KATANA_BACKEND=vulkan KATANA_KV16=0 KATANA_CTX=512 ./katana selftest $T
-for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o KATANA_BACKEND=vulkan ./katana bench $G 64 64; done; done
+for i in 1 2 3; do KATANA_BACKEND=vulkan ./katana bench $G 64 64; done
 for i in 1 2 3; do for s in 4 8; do KATANA_SWAP=$s KATANA_BACKEND=vulkan ./katana bench $Q 256 128; done; done
 ```
 (the script filtered the output with `grep` and printed the load before each run; the full version is in
@@ -819,7 +817,7 @@ series, with gate/up Q4_K also in float. Microbenchmark (all 8 experts on the CP
 - `dot_q5k_v`: Q5_K with VNNI (same integer arithmetic as the 16-bit product: bit-for-bit identical result).
 - activation + quantization of the down input in parallel (one expert per pool item), before serial on the
   main thread (~1.2 ms/token on Qwen3.6).
-- (the previous path and its `KATANA_MOE_OLD` switch were removed); `selftest` now also checks integer Q8_0/Q5_1.
+- `selftest` now also checks integer Q8_0/Q5_1.
 
 Measured (`tools/moebench` microbenchmark, no GPU, alternating OLD/NEW, machine busy with another agent, load 11-18:
 indicative). Details in `comparisons.md` section 15.
@@ -841,7 +839,7 @@ To repeat with the machine free:
 
     sh tools/moebench/build.sh && sh tools/moebench/ab.sh models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 3 16
     sh tools/moebench/ab.sh models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 3 16
-    for i in 1 2 3; do for o in 1 0; do KATANA_MOE_OLD=$o ./katana bench models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 64 64; done; done
+    for i in 1 2 3; do ./katana bench models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf 64 64; done
     (the same with Qwen3.6-35B-A3B-UD-Q4_K_M.gguf) and selftest with GPU on the three models
 
 Not done (next steps, in order): (1) overlap the cold experts on the CPU with the GPU work in the same
@@ -1142,7 +1140,7 @@ a fact stated only in the 1st turn ("codigo do cofre", which only survives in th
 |---|---|---|---|---|
 | Qwen3.6-35B-A3B | 6 turns, 6819 tok full / 2938 compact | full Vulkan graph, expert cache 10/256 | 112.6 s | 209.0 s |
 | Qwen3.6-35B-A3B | same | hybrid without expert cache (VRAM taken) | 222.9 s | 831.3 s |
-| gemma4 26B-A4B (ctx 8192) | 3 turns, ~2070 tok full / 1988 compact (KATANA_RETOMAR_TOK=600) | gemma4 with layers on the CPU (108 products on the GPU) | 324.7 s (recomputes) / **5.05 s** (KV from disk, 0.26 s) | 501.4 s |
+| gemma4 26B-A4B (ctx 8192) | 3 turns, ~2070 tok full / 1988 compact | gemma4 with layers on the CPU (108 products on the GPU) | 324.7 s (recomputes) / **5.05 s** (KV from disk, 0.26 s) | 501.4 s |
 
 The compact x full rounds were alternated in the same hour, but the pairs did not have the same GPU mode (the
 other processes took the VRAM between one and the other), which is why they are separated by mode; only the 1st and 3rd rows

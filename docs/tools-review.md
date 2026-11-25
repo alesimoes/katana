@@ -43,7 +43,7 @@ Related: `docs/uioe-code-audit.md` (weak point 4: two tool sets), `docs/research
    (`callers` 117, `impact` 38, `callees` 35, `def` 27, `outline` 22, `at` 9, `deps` 5).
 4. **Recommendation in one line:** keep the central list at 12, make it `Bash, Read, Edit, Write, Find, Symbols, Grep,
    TodoWrite, AskUserQuestion, WebSearch, WebFetch, ToolSearch` (Symbols in, Glob out to a by-name tool), retire the old
-   24 names in stages (section 7), do not teach more tools in v8 (section 8), and put one decision rule between Find and
+   24 names, do not teach more tools in v8 (section 8), and put one decision rule between Find and
    Symbols (section 6.2).
 5. **What not to change without retraining** is in section 9; the short version: names and argument keys of every tool the
    curriculum teaches (TodoWrite `todos`/`done`, Read `file_path`/`offset`/`limit`, Edit `old_string`/`new_string`, Find `query`/
@@ -278,7 +278,6 @@ Differences that are real and not cosmetic:
    folder, `Glob` needs a `path`, and the engine's place note (`[katana: you mention "greymod" ... It is at: ...]`) covers only
    a name the user wrote. Evidence: on 2026-11-23 the model sent a wrong path to a folder it could not locate (log set A, 08:09) and the
    test lines of set B repeat it five times, while the old `find_file` found the folder in one call (`find_file {"name":"greymod","kind":"dir"}` at 08:23).
-   This gap must be closed before `find_file` is retired (section 7).
 6. **Directory listing**: only `list_dir` (old) and `Bash ls`. The old log shows `list_dir` 148 calls, 100 of them repeats
    (set C: it was a heavily used first step). The table set answers with `Bash ls` or the environment block in the prompt
    (folders around you).
@@ -527,45 +526,7 @@ sent by the model in the 263 curriculum calls); keep `mode` but let `Symbols ref
 | ToolSearch | **make a non-`select:` query useful**: the model sent `katana` and `select:katana` (4 calls) for a project name. A query that matches no tool could answer "No tool named katana. Tools by name: ..." with the 29 names, instead of `No matching tools` | 4 real calls, 4 for a project name |
 | Glob | by name now; fold into `Find` as `mode=files` in v8 if the owner agrees (opinion) | 3.0% |
 
-## 7. Migration of the old set
-
-### 7.1 What still depends on it
-
-| dependent | what | evidence |
-|---|---|---|
-| dispatcher | accepts the names with `strcmp`; the table is tried first (`agent_tool_run`) | `dispatch.c:28-52` |
-| prompt (base models) | `KATANA_TOOLS=1` declares the old set; default is the table (`ct_set2`) | `prompt.c:139` |
-| prompt (all models) | the "Also:" line names git, terminal, recall, remember, download_file, install_package, read_log, howto | `prompt.c`, the `More tools exist` paragraph |
-| curriculum generator | sets `KATANA_TOOLS=2` (the table) while generating | `curriculum.c:2531, 2593` |
-| `howto`, `webnav`, `loop` | texts that change by `ct_set2()` (`TodoWrite` or `todo`, `Read` or `read_document`) | `howto.c:112`, `webnav.c:160, 192`, `loop.c:439, 441, 513, 854, 909` |
-| call grammar | `callgrammar.c:651`: "the table, even with KATANA_TOOLS=1" | the grammar is already table-only |
-| desktop | `Verbs.js` holds the verbs of the old names; `backend.cpp` treats `todo` as progress, `ask_user` as a CHOICE marker (`backend.cpp:1707`, `ask.c`), `edit_file` in a comment | `desktop-qt/qml/Verbs.js`, `backend.cpp:1829` |
-| saved sessions | `.ksess` and `.json` of 2026-11-20 and 2026-11-21 (old set: 183 `run_command`, 130 `edit_file`, 46 `todo`) replay by name | desktop sessions |
-| tests | `tools/tooltest/*.sh` use old names in 3 to 7 scripts each; `tools/testar_ferramentas.sh` | `grep -lw` counts: `run_command` 7 scripts, `read_file` 7, `write_file` 7 |
-| MCP server | `katana mcp serve` exposes only Read, Glob, Grep, Write, Edit, NotebookEdit, Bash (`mcp_serve.c:13-21`): **no Find, no Symbols, no LSP, no web**; the old set is not exposed | audit: "katana mcp serve does not expose Find/Symbols/LSP" |
-| `brief_guard` | runs only in the table dispatch (`table.c`, `ct_dispatch`), so an old-name call bypasses the `never:`/`ask:` guards of `KATANA.md` | audit weak point 4 |
-
-The last row is the real cost of keeping the old set: **an old-name call skips `brief_guard`** (the project rules the owner wrote in
-`KATANA.md`). That is the strongest reason to stop accepting the old mutating names (`run_command`, `write_file`, `edit_file`) first.
-
-### 7.2 Order
-
-1. **Now, no retraining:** route the old *mutating* names through the table's guards: `run_command` -> `Bash`, `write_file` -> `Write`,
-   `edit_file` -> `Edit` with key translation (`command`, `path` -> `file_path`, `old` -> `old_string`, `new` -> `new_string`;
-   `append` and `sudo` have no table equivalent, keep their old code for those two). This closes the `brief_guard` hole without
-   changing what any model sees. (code change; not made here)
-2. **Close the two real gaps before retiring anything:** machine-wide location (`find_file`) and a directory listing (`list_dir`),
-   as `Find`/`Read` behaviour (section 6.3), not as new tools.
-3. **Stop naming:** the 16 old names that v7 does not teach are not named anywhere in the working prompt already; the "Also:" line keeps
-   the 8 taught ones. Nothing to do.
-4. **Desktop:** keep `Verbs.js` entries (cheap, and old sessions must still render) and keep the `todo` progress case; **add `Find` and `Symbols`
-   to the verbs**: `Verbs.js` has no entry for either (checked with grep; the card shows the raw tool name, `verbo(n) = verbos[n] || n`),
-   although they are 7.9% and 7.6% of what the model is taught.
-5. **Tests:** move `tools/tooltest` scripts to table names; the old names stay in a single compatibility script.
-6. **After v8 is the only model in use:** drop `KATANA_TOOLS=1` and the old declaration branch of `agent_build_sys` (about 40 lines of
-   `TOOLDEF`); keep the dispatcher's accept-list for saved sessions only.
-
-### 7.3 `katana mcp serve`
+## 7. `katana mcp serve`
 
 Not part of the working prompt, but part of the tool set a user sees: it exports 7 tools with `readOnly`/`destructive`/`idempotent`/
 `openWorld` annotations (`McpsTool`). Adding `Find` and `Symbols` there costs one table row each plus the roots plumbing (the file
@@ -631,7 +592,6 @@ block, the index state lines) and adds what this review found.
 
 - Accepting more argument spellings (aliases), more output after the existing lines, new `[katana: ...]` notes the model has seen a
   family of (`x-katananotes`).
-- Routing old names through the table's guards (section 7.2 step 1).
 - Adding `Read` of a folder, a pointer in `ToolSearch`'s empty answer, a note in `Find` results (the model has to ignore unknown notes,
   and it has been trained to follow `[katana: ...]` lines, so a *new kind* of note is a risk, a repeated kind is not).
 - The declaration block for base models (`g_ct_short`): it does not exist for the working model.
@@ -661,7 +621,6 @@ block, the index state lines) and adds what this review found.
 2. `Rename`/`Replace`/`Patch`: teach or remove?
 3. `Task*`: remove or keep by name?
 4. Old-set names taught by v7 (terminal, git, ...): rename to table-style in v8 or keep?
-5. Is the old mutating set to be routed through `brief_guard` now (section 7.2 step 1)? It is the only item with a safety argument.
-6. Should `katana mcp serve` offer `Find` and `Symbols`?
-7. A fresh batch of real sessions (the current evidence is 4 sessions, 43 calls) before deciding the list; the log keeps only 400
+5. Should `katana mcp serve` offer `Find` and `Symbols`?
+6. A fresh batch of real sessions (the current evidence is 4 sessions, 43 calls) before deciding the list; the log keeps only 400
    characters of arguments, so a lossless decision log (audit M4) would make the next review exact.
