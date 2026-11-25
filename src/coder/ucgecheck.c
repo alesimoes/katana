@@ -10,7 +10,7 @@ typedef struct { char name[64]; CgxTy ty; CgxNode *decl; int depth, glob; } CgxS
 typedef struct {
     Cgx *g;
     CgxSym sym[600]; int nsym, depth;
-    CgxNode *fns[160]; int nfn; CgxNode *cls[40]; int ncls;
+    CgxNode *fns[4096]; int nfn; CgxNode *cls[40]; int ncls;
     CgxNode *fn, *curcls;
     int loops, ret_val, ret_void, quiet, pass;
     CgxTy ret;
@@ -443,7 +443,7 @@ static int cgx_check(Cgx *g) {
         if (d->k == CGN_FN) {
             if (cgx_op_find(d->s)) cgx_verr(v, d->line, "function `%s` has the name of a built-in (rename it; built-ins: %s)", d->s, cgx_reg_names_all());
             if (cgx_find_fn(v, d->s) || cgx_find_cls(v, d->s)) cgx_verr(v, d->line, "`%s` is defined twice", d->s);
-            else if (v->nfn < 160) v->fns[v->nfn++] = d;
+            else if (v->nfn < 4096) v->fns[v->nfn++] = d;
             v->nfunc++;
         } else if (d->k == CGN_CLASS) {
             if (cgx_find_fn(v, d->s) || cgx_find_cls(v, d->s)) cgx_verr(v, d->line, "`%s` is defined twice", d->s);

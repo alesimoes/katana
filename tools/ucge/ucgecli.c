@@ -19,6 +19,7 @@
 #include "src/coder/ucgetype.c"
 #include "src/coder/ucgedoc.c"
 #include "src/coder/ucgepy.c"
+#include "src/coder/ucgedep.c"
 
 static char *slurp(const char *path) {
     FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin; if (!f) { perror(path); exit(2); }
@@ -89,7 +90,38 @@ static int run_python(const char *code, const char *tests, int *pass, int *fail,
     unlink(path);
     return 0;
 }
+/* cachebench N DIR: mede a geracao de N funcoes encadeadas (f_i chama f_{i-1}) sem cache, com cache frio, quente e depois de mudar uma funcao */
+static char *bench_spec(int n, int changed) {
+    CgxB b = {0};
+    for (int i = 0; i < n; i++) {
+        cgx_bf(&b, "fn f%d(a: int, b: int) -> int\n  let t = a * %d + b\n  if t > 100\n    t = t - %d\n", i, i + 2, changed == i ? 7 : 1);
+        if (i) cgx_bf(&b, "  t = t + f%d(a, t)\n", i - 1);
+        cgx_bf(&b, "  return t\n");
+    }
+    return b.p;
+}
+static double bench_run(int n, int changed, const CgxBackend *be, CgxCache *c, CgxCacheRep *rp) {
+    char *src = bench_spec(n, changed); Cgx g; CgxGenOpts o = {88, 1, 4}; CgxB code = {0};
+    if (!cgx_parse(&g, src) || !cgx_check(&g)) { printf("bench spec invalid: %s\n", g.nerr ? g.err[0].msg : "?"); exit(1); }
+    const double t0 = cgx_now_ms();
+    if (c) cgx_gen_cached(&g, be, &o, c, "", 0, &code, NULL, rp); else be->gen(&g, &o, &code, NULL);
+    const double t = cgx_now_ms() - t0;
+    free(code.p); free(src); cgx_free(&g); return t;
+}
+static int cachebench(int n, const char *dir) {
+    const CgxBackend *be = cgx_backend("python"); CgxCache c; CgxCacheRep rp;
+    cgx_cache_open(&c, dir); cgx_cache_clear(&c);
+    const double t_nc = bench_run(n, -1, be, NULL, NULL);
+    const double t_cold = bench_run(n, -1, be, &c, &rp); const int cm = rp.misses;
+    const double t_warm = bench_run(n, -1, be, &c, &rp); const int wh = rp.hits;
+    const double t_leaf = bench_run(n, n - 1, be, &c, &rp); const int lm = rp.misses;
+    const double t_root = bench_run(n, 0, be, &c, &rp); const int rm = rp.misses;
+    printf("cachebench %d functions\n  no cache          %9.2f ms\n  cold cache        %9.2f ms  (%d misses)\n  warm cache        %9.2f ms  (%d hits)\n  change last fn    %9.2f ms  (%d misses: it has no dependents)\n  change first fn   %9.2f ms  (%d misses: every function depends on it)\n",
+           n, t_nc, t_cold, cm, t_warm, wh, t_leaf, lm, t_root, rm);
+    return 0;
+}
 int main(int argc, char **argv) {
+    Cgx g;
     if (argc < 2) { fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n"); return 2; }
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--ops")) {          /* --ops ARQUIVO: operacoes do usuario (docs/ucge.md, registro) */
         char e[300]; cgx_reg_init();
@@ -97,9 +129,33 @@ int main(int argc, char **argv) {
         for (int j = i; j + 2 < argc; j++) argv[j] = argv[j + 2];
         argc -= 2; i--;
     }
+    if (!strcmp(argv[1], "dep") && argc >= 3) {                  /* dep SPEC [--no-rec]: grafo, ordem, ciclos */
+        int nocheck = 0, norec = 0; for (int i = 3; i < argc; i++) { if (!strcmp(argv[i], "--nocheck")) nocheck = 1; if (!strcmp(argv[i], "--no-rec")) norec = 1; }
+        if (nocheck) { char *src = slurp(argv[2]); const int ok = cgx_parse(&g, src); free(src); if (!ok) { for (int i = 0; i < g.nerr; i++) printf("line %d: %s\n", g.err[i].line, g.err[i].msg); cgx_free(&g); return 1; } }
+        else if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; }
+        CgxDep d; cgx_dep_init(&d, 1); cgx_dep_add_spec(&d, &g, "main"); CgxB r = {0}, m = {0}; int nrec = 0;
+        cgx_dep_report(&d, &r); const int errs = cgx_dep_cycles(&d, !norec, &m, &nrec);
+        fputs(r.p, stdout); fputs(m.p ? m.p : "", stdout); printf("cycle errors %d recursion groups %d\n", errs, nrec);
+        free(r.p); free(m.p); cgx_dep_free(&d); cgx_free(&g); return errs != 0;
+    }
+    if (!strcmp(argv[1], "cache") && argc >= 3) {               /* cache clear|trim|path [dir] */
+        CgxCache c; cgx_cache_open(&c, argc > 3 ? argv[3] : NULL);
+        if (!strcmp(argv[2], "clear")) printf("removed %d\n", cgx_cache_clear(&c));
+        else if (!strcmp(argv[2], "trim")) printf("size %lld bytes, evicted %d\n", cgx_cache_trim(&c), c.evicted);
+        else if (!strcmp(argv[2], "path")) printf("%s%s\n", c.dir, c.enabled ? "" : " (unavailable)");
+        return 0;
+    }
+    if (!strcmp(argv[1], "key") && argc >= 3) {                  /* key SPEC: chave de cada unidade (para ver o que muda) */
+        if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; }
+        CgxDep d; cgx_dep_init(&d, 1); cgx_dep_add_spec(&d, &g, "main");
+        CgxGenOpts o = {88, 1, 4}; cgx_dep_keys(&d, cgx_cache_ctx(cgx_backend("python"), &o, ""));
+        for (int i = 0; i < d.nn; i++) printf("%s %016llx\n", d.n[i].name, (unsigned long long)d.n[i].key);
+        cgx_dep_free(&d); cgx_free(&g); return 0;
+    }
+    if (!strcmp(argv[1], "cachebench") && argc >= 3) return cachebench(atoi(argv[2]), argc > 3 ? argv[3] : NULL);
+    if (!strcmp(argv[1], "dump") && argc >= 3) { if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; } CgxB b = {0}; cgx_dump(&g, 1, &b); fputs(b.p ? b.p : "", stdout); free(b.p); cgx_free(&g); return 0; }
     if (!strcmp(argv[1], "ops")) { CgxB b = {0}; if (argc > 2 && !strcmp(argv[2], "--dump")) cgx_reg_dump(&b); else cgx_reg_list(&b); fputs(b.p ? b.p : "", stdout); free(b.p); return 0; }
     if (!strcmp(argv[1], "selftest")) return selftest();
-    Cgx g;
     if (!strcmp(argv[1], "check") && argc >= 3) { const int ok = load(&g, argv[2], 1); printf("%s\n", ok ? "ok" : "errors"); cgx_free(&g); return !ok; }
     if (!strcmp(argv[1], "stats") && argc >= 3) {
         if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; }
@@ -114,8 +170,14 @@ int main(int argc, char **argv) {
         for (int i = 4; i < argc; i++) { if (!strcmp(argv[i], "--no-comments")) o.comments = 0; else if (!strcmp(argv[i], "--width") && i + 1 < argc) o.width = atoi(argv[++i]); else if (!strcmp(argv[i], "--tests")) tests = 1; }
         if (!load(&g, argv[3], 1)) { printf("errors\n"); cgx_free(&g); return 1; }
         for (int i = 4; i < argc; i++) if (!strcmp(argv[i], "--simp")) { const int c = cgx_reg_simplify(&g); fprintf(stderr, "simplified %d\n", c); }
-        CgxB code = {0}, tb = {0};
-        const int ok = be->gen(&g, &o, &code, tests ? &tb : NULL);
+        CgxB code = {0}, tb = {0}; int ok; const char *cdir = NULL, *flag = NULL;
+        for (int i = 4; i < argc; i++) if (!strcmp(argv[i], "--cache")) { flag = "1"; if (i + 1 < argc && argv[i + 1][0] != '-') cdir = argv[i + 1]; }
+        if (flag) {
+            CgxCache c; CgxCacheRep rp; cgx_cache_open(&c, cdir);
+            int topo = 0; for (int i = 4; i < argc; i++) if (!strcmp(argv[i], "--topo")) topo = 1;
+            ok = cgx_gen_cached(&g, be, &o, &c, "", topo, &code, tests ? &tb : NULL, &rp);
+            fprintf(stderr, "[cache] units %d hits %d misses %d corrupt %d dep %.2f ms gen %.2f ms total %.2f ms\n", rp.units, rp.hits, rp.misses, rp.corrupt, rp.ms_dep, rp.ms_gen, rp.ms_total);
+        } else ok = be->gen(&g, &o, &code, tests ? &tb : NULL);
         for (int i = 0; i < g.nerr; i++) printf("line %d: %s\n", g.err[i].line, g.err[i].msg);
         if (!ok) { printf("errors\n"); free(code.p); free(tb.p); cgx_free(&g); return 1; }
         if (!strcmp(argv[1], "gen")) { fputs(code.p ? code.p : "", stdout); if (tb.p) { printf("\n"); fputs(tb.p, stdout); } }

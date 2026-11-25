@@ -311,17 +311,47 @@ static void py_tests(CgxPy *p, const CgxNode *prog, CgxB *out) {
     }
 }
 
+/* uma declaracao de topo -> documento (NULL se nao gera nada); isfn: funcao ou classe (duas linhas em branco em volta) */
+static CgxDoc *py_decl(CgxPy *p, const CgxNode *d, int *isfn) {
+    const CgxGenOpts *o = p->o; CgxDoc *x = NULL; *isfn = 0;
+    if (d->k == CGN_FN) { x = py_fn(p, d, NULL); *isfn = 1; }
+    else if (d->k == CGN_CLASS) { x = py_class(p, d); *isfn = 1; }
+    else if (d->k == CGN_LET) { cgx_py_name(p, d->line, d->s, 0); x = cgx_dcatn(PD, cgx_dtextf(PD, "%s = ", d->s), py_ex(p, d->a, 0), NULL); }
+    else if (d->k == CGN_RAW) x = py_raw(p, d);
+    else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cgx_dtextf(PD, "# %s", d->defs);
+    return x;
+}
+/* uma unidade sozinha, com a mascara de imports que ela pede (1 math, 2 re); usado pelo cache por unidade (ucgedep.c) */
+static int cgx_py_unit(Cgx *g, const CgxGenOpts *o, const CgxNode *d, CgxB *out, int *isfn, int *imports) {
+    CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o; const int err0 = g->nerr_all;
+    CgxDoc *x = py_decl(&P, d, isfn);
+    if (x) { cgx_render(x, o->width, out); cgx_bs(out, "\n"); }
+    *imports = (P.need_math ? 1 : 0) | (P.need_re ? 2 : 0);
+    cgx_docs_free(&P.D);
+    return g->nerr_all == err0 && x != NULL;
+}
+static void cgx_py_tests_text(Cgx *g, const CgxGenOpts *o, CgxB *tests) {
+    CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o;
+    py_tests(&P, g->prog, tests); cgx_docs_free(&P.D);
+}
+/* junta unidades ja geradas (texto, isfn, imports) na ordem dada: o mesmo layout de cgx_gen_python */
+static void cgx_py_assemble(const char *const *txt, const int *isfn, const int *imports, int n, CgxB *code) {
+    int im = 0; for (int i = 0; i < n; i++) im |= imports[i];
+    if (im & 1) cgx_bs(code, "import math\n");
+    if (im & 2) cgx_bs(code, "import re\n");
+    if (im) cgx_bs(code, "\n\n");
+    int first = 1, prev_fn = 0;
+    for (int i = 0; i < n; i++) {
+        if (!first) cgx_bs(code, isfn[i] || prev_fn ? "\n\n" : "");
+        cgx_bs(code, txt[i]); first = 0; prev_fn = isfn[i];
+    }
+}
 static int cgx_gen_python(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests) {
     CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o; CgxPy *p = &P;
     const CgxNode *prog = g->prog; CgxDoc *all = NULL; int first = 1, prev_fn = 0;
     const int err0 = g->nerr_all;
     for (int i = 0; i < prog->b1.n; i++) {
-        const CgxNode *d = prog->b1.p[i]; CgxDoc *x = NULL; int isfn = 0;
-        if (d->k == CGN_FN) { x = py_fn(p, d, NULL); isfn = 1; }
-        else if (d->k == CGN_CLASS) { x = py_class(p, d); isfn = 1; }
-        else if (d->k == CGN_LET) { cgx_py_name(p, d->line, d->s, 0); x = cgx_dcatn(PD, cgx_dtextf(PD, "%s = ", d->s), py_ex(p, d->a, 0), NULL); }
-        else if (d->k == CGN_RAW) x = py_raw(p, d);
-        else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cgx_dtextf(PD, "# %s", d->defs);
+        int isfn; CgxDoc *x = py_decl(p, prog->b1.p[i], &isfn);
         if (!x) continue;
         if (!first) { const int blank = isfn || prev_fn ? 2 : 0; for (int b = 0; b <= blank; b++) x = cgx_dcat(PD, cgx_dhard(PD), x); }
         all = all ? cgx_dcat(PD, all, x) : x; first = 0; prev_fn = isfn;
