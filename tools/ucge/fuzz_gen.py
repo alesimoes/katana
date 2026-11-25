@@ -9,8 +9,12 @@ PARAM_TYPES = ["int", "int", "float", "bool", "str", "list[int]", "list[str]"]
 RET_TYPES = ["int", "int", "float", "bool", "str", "list[int]"]
 
 
+BAN = ["[", "print(", "split(", "words(", "join(", "sum(", "sort(", "pop(", "push(", "Box(", "errmsg("]
+
+
 class Gen:
-    def __init__(self, seed):
+    def __init__(self, seed, scalar=False):
+        self.scalar = scalar
         self.r = random.Random(seed)
         self.n = 0
         self.funcs = []          # (name, [ptypes], rtype), as ja definidas (chamaveis)
@@ -116,6 +120,15 @@ class Gen:
         return f"{name}({args})"
 
     def expr(self, ty, d=3):
+        e = self._expr(ty, d)
+        if self.scalar:                              # perfil escalar: o interpretador da IR so entende escalares
+            for _ in range(40):
+                if not any(b in e for b in BAN): return e
+                e = self._expr(ty, d)
+            return self.lit(ty) if ty in SCALARS else e
+        return e
+
+    def _expr(self, ty, d=3):
         r = self.r
         vs = self.visible(ty)
         if self.chance(0.12) and ty in SCALARS + ["list[int]", "list[str]"]:
@@ -150,7 +163,7 @@ class Gen:
             if c == 14: return f"sum({self.expr('list[int]', d - 1)})"
             if c == 15: return f"int({self.pick([self.expr('float', d - 1), self.expr('str', d - 1), self.expr('bool', d - 1), self.expr('int', d - 1)])})"
             if c == 16: return f"floor({self.expr('float', d - 1)})"
-            return f"({a} * 1)" if self.chance(0.5) else f"({a} + 0)"
+            return self.pick([f"({a} * 1)", f"({a} + 0)", f"({a} * 0)", f"(0 * {a})", f"({a} % 1)", f"({a} // 1)", f"({a} - 0)", f"(1 * {a})", f"(0 + {a})"])
         if ty == "float":
             c = r.randint(0, 11)
             a, b = self.expr("float", d - 1), self.expr("float", d - 1)
@@ -187,7 +200,7 @@ class Gen:
                 if v:
                     n = self.pick(v)["name"]
                     return f"({n} {self.pick(['==', '<=', '>='])} {n})"
-            if c == 11: return f"({self.expr('bool', d - 1)} ? {self.expr('bool', d - 1)} : {self.expr('bool', d - 1)})"
+            if c == 11: return self.pick([f"({self.expr('bool', d - 1)} ? {self.expr('bool', d - 1)} : {self.expr('bool', d - 1)})", f"({self.expr('bool', d - 1)} and false)", f"({self.expr('bool', d - 1)} or true)", f"(false and {self.expr('bool', d - 1)})", f"(true or {self.expr('bool', d - 1)})", f"({self.expr('bool', d - 1)} and true)", f"(true and {self.expr('bool', d - 1)})"])
             if c == 12: return f"({self.expr('float', d - 1)} != {self.expr('float', d - 1)})"
             return f"endswith({self.expr('str', d - 1)}, {self.expr('str', d - 1)})"
         if ty == "str":
@@ -248,9 +261,76 @@ class Gen:
         self.indent -= 1
         if scope_open: self.scopes.pop()
 
+    def risky_int(self):
+        """inteiro que as vezes lanca (divisao por zero, indice fora, conversao)"""
+        k = self.r.randint(0, 5)
+        a = self.expr("int", 1)
+        if k == 5: return f"({a} // 0)"
+        if k == 0: return f"({a} // {self.expr('int', 1)})"
+        if k == 1: return f"({a} % {self.expr('int', 1)})"
+        if k == 2: return f"{self.expr('list[int]', 1)}[{self.expr('int', 1)}]"
+        if k == 3: return f"int({self.expr('str', 1)})"
+        return f"({a} // 0)" if self.chance(0.3) else f"({a} // {self.pick(['1', '2'])})"
+
+    def stress(self, depth):
+        """padroes que o otimizador reescreve e que so estao certos com as condicoes certas: o erro tem de sobreviver, a copia tem de ser a de antes"""
+        k = self.r.randint(0, 5)
+        iv = self.visible("int", mut=True)
+        if k == 0:                                   # algebra sobre operando que pode lancar
+            nm = self.name("s")
+            e = self.pick([f"({self.risky_int()} * 0)", f"(0 * {self.risky_int()})", f"({self.risky_int()} % 1)", f"({self.risky_int()} - 0)", f"({self.risky_int()} // 1)"])
+            self.emit(f"let {nm} = {e}"); self.decl(nm, "int")
+            if self.chance(0.5): self.emit(f"print({nm})")
+        elif k == 1:                                 # curto-circuito com operando que pode lancar
+            nm = self.name("s")
+            e = self.pick([f"(({self.risky_int()} > 0) and false)", f"(({self.risky_int()} > 0) or true)", f"(false and ({self.risky_int()} > 0))", f"(true or ({self.risky_int()} > 0))"])
+            self.emit(f"let {nm} = {e}"); self.decl(nm, "bool")
+        elif k == 2 and iv:                          # copia, depois a fonte muda, depois o uso da copia
+            src = self.pick(iv)["name"]; cp = self.name("c")
+            self.emit(f"let {cp} = {src}"); self.decl(cp, "int")
+            self.emit(f"{src} = {self.expr('int', 2)}")
+            self.emit(f"print({cp})")
+            self.emit(f"print({src})")
+        elif k == 3 and iv and depth > 0:            # try/finally que le uma variavel, com return antecipado no corpo
+            v = self.pick(iv)["name"]
+            self.emit("try")
+            self.indent += 1
+            self.emit(f"{v} = {self.expr('int', 2)}")
+            self.emit(f"if {self.expr('bool', 2)}")
+            self.indent += 1
+            self.emit(f"return {self.expr(self.cur_ret, 2)}")
+            self.indent -= 1
+            self.emit(f"{v} += 1")
+            self.indent -= 1
+            self.emit("finally")
+            self.indent += 1
+            self.emit(f"print({v})")
+            self.indent -= 1
+        elif k == 4 and self.loop:                   # break/continue dentro de try/finally
+            self.emit("try")
+            self.indent += 1
+            self.emit(f"if {self.expr('bool', 2)}")
+            self.indent += 1
+            self.emit(self.pick(["break", "continue"]))
+            self.indent -= 1
+            self.indent -= 1
+            self.emit("finally")
+            self.indent += 1
+            self.emit(f"print({self.expr('int', 1)})")
+            self.indent -= 1
+        else:                                        # operando que pode lancar, usado so uma vez e junto (temporario)
+            t = self.name("t")
+            self.emit(f"let {t} = {self.risky_int()}")
+            self.decl(t, "int")
+            self.emit(f"print({t})" if self.chance(0.5) else f"let {self.name('u')} = {t} + 1")
+
     def stmt(self, depth):
         r = self.r
+        if self.chance(0.14):
+            return self.stress(depth)
         c = r.randint(0, 30)
+        if self.scalar and c in (23, 24, 28): c = 0
+        if self.scalar and c in (17, 18): c = 14
         if c <= 4:                                   # let
             ty = self.pick(SCALARS + ["list[int]", "list[str]"])
             nm = self.name("v")
@@ -353,7 +433,8 @@ class Gen:
                 self.emit(f"catch {e}")
                 self.scopes.append([{"name": e, "ty": "Error", "mut": False, "iter": False}])
                 self.indent += 1
-                self.emit(f"print(errmsg({e}))")
+                if self.scalar: self.emit(f"let {self.name('q')} = errmsg({e})")
+                else: self.emit(f"print(errmsg({e}))")
                 for _ in range(self.r.randint(0, 2)): self.stmt(depth - 1)
                 self.indent -= 1
                 self.scopes.pop()
@@ -428,8 +509,8 @@ class Gen:
     def function(self, public=True):
         name = self.name("f")
         n = self.r.randint(1, 3)
-        pts = [self.pick(PARAM_TYPES) for _ in range(n)]
-        ret = self.pick(RET_TYPES)
+        pts = [self.pick(PARAM_TYPES if not self.scalar else SCALARS + ["int"]) for _ in range(n)]
+        ret = self.pick(RET_TYPES if not self.scalar else SCALARS + ["int"])
         params = [(self.name("p"), t) for t in pts]
         self.cur_ret = ret
         self.scopes = [[{"name": p, "ty": t, "mut": t in SCALARS + ["list[int]"], "iter": False} for p, t in params]]
@@ -469,7 +550,7 @@ class Gen:
             self.n += 1
             self.out.append(f"const {nm} = {self.lit(ty)}")
             self.consts.append((nm, ty))
-        if self.chance(0.3):
+        if self.chance(0.3) and not self.scalar:
             self.has_box = True
             self.out += ["class Box", "  field val: int = 0", "  fn init(v: int)", "    self.val = v", "  fn add(n: int) -> int", "    self.val += n", "    return self.val",
                          "  fn get() -> int", "    return self.val", "  fn risky(n: int) -> int", "    return self.val // n"]
@@ -490,6 +571,6 @@ class Gen:
         return "\n".join(self.out) + "\n", public
 
 
-def gen_program(seed):
-    g = Gen(seed)
+def gen_program(seed, scalar=False):
+    g = Gen(seed, scalar)
     return g.program()

@@ -72,7 +72,7 @@ def main():
     while stat["tested"] < n and stat["gen"] < n * 4:
         seed += 1
         stat["gen"] += 1
-        spec, funcs = fuzz_gen.gen_program(seed)
+        spec, funcs = fuzz_gen.gen_program(seed, scalar=(seed % 2 == 0))
         path = os.path.join(tmp, f"p{seed}.csp")
         open(path, "w").write(spec)
         rc, out, err = sh([cli, "check", path])
@@ -116,7 +116,44 @@ def main():
             fails.append((seed, "load", f"{type(ex).__name__}: {ex}")); stat["fail"] += 1
             continue
         bad = None
+        # o interpretador da IR (so escalares), antes da SSA, em SSA e depois da saida de SSA, contra o Python original
+        r2 = random.Random(seed * 31)
+        lines, expect = [], []
         for name, pts, rt in funcs:
+            if name not in base or any(t not in ("int", "float", "bool", "str") for t in pts): continue
+            for _ in range(10):
+                args = []
+                for t in pts:
+                    if t == "int": args.append(r2.choice([x for x in INT_POOL if abs(x) < 2 ** 40]))
+                    elif t == "float": args.append(r2.choice([x for x in FLOAT_POOL if math.isfinite(x) and abs(x) < 1e100]))
+                    elif t == "str": args.append(r2.choice([x for x in STR_POOL if " " not in x]))
+                    else: args.append(r2.choice([True, False]))
+                tok = [name] + [("true" if a else "false") if isinstance(a, bool) else ("s:" + a if isinstance(a, str) else repr(a)) for a in args]
+                lines.append(" ".join(tok)); expect.append(run_call(base[name], args))
+        if lines:
+            for phase in ("pre", "ssa", "out"):
+                rc, o3, e3 = sh([cli, "irexec", path, phase], inp="\n".join(lines) + "\n")
+                got = o3.splitlines()
+                if rc != 0 or len(got) != len(lines):
+                    bad = ("irexec", lines, phase, f"rc={rc} lines {len(got)}/{len(lines)} {e3[:200]}", ""); break
+                for ln, g3, ex in zip(lines, got, expect):
+                    if g3 == "U" or ex[1]:
+                        stat["ir_skip"] = stat.get("ir_skip", 0) + 1; continue
+                    stat["ir_cmp"] = stat.get("ir_cmp", 0) + 1
+                    (kind, *rest) = ex[0]
+                    if kind == "exc":
+                        ok = (rest[0] == "ZeroDivisionError" and g3 == "E ZeroDivisionError") or (rest[0] == "Exception" and g3 == "E Exception " + rest[1])
+                    else:
+                        v = rest[0]; ok = False
+                        if v.endswith(":int"): ok = g3 == "R int " + v[:-4]
+                        elif v.endswith(":bool"): ok = g3 == "R bool " + ("true" if v.startswith("True") else "false")
+                        elif v.endswith(":float"): ok = g3.startswith("R float ") and (float(g3[8:]) == float(v[:-6]) and math.copysign(1, float(g3[8:])) == math.copysign(1, float(v[:-6])))
+                        elif v.endswith(":str"): ok = g3 == "R str " + eval(v[:-4])
+                    if not ok:
+                        bad = ("irexec", ln, phase, ex, g3); break
+                if bad: break
+        for name, pts, rt in funcs:
+            if bad: break
             if name not in base: continue
             combos = [[arg(r, t) for t in pts] for _ in range(14)]
             for args in combos:
@@ -134,12 +171,13 @@ def main():
             if bad: break
         if bad:
             stat["fail"] += 1
-            fails.append((seed, bad[2], f"{bad[0]}{bad[1]!r}\n  original : {bad[3]}\n  optimized: {bad[4]}"))
+            fails.append((seed, bad[2], f"{bad[0]} {bad[1]!r}\n  original : {bad[3]}\n  optimized: {bad[4]}"))
             if keep:
                 os.makedirs("/tmp/ucge_diff", exist_ok=True)
                 shutil.copy(path, f"/tmp/ucge_diff/p{seed}.csp")
     print(f"programs generated {stat['gen']}, rejected by the checker {stat['invalid']}, tested {stat['tested']}, calls compared {stat['calls']} "
           f"(raising {stat['exc_calls']}, printing {stat['nonempty_out']}, big int arguments {stat['big']})")
+    print(f"IR interpreter (before SSA, in SSA, after SSA out) compared {stat.get('ir_cmp', 0)} results with Python, skipped {stat.get('ir_skip', 0)} outside its scalar subset")
     print(f"optimizer changed {stat['changed']} programs; rounds {stat['rounds']}, folded+propagated {stat['folded']}, copies {stat['copies']}, algebraic {stat['algebra']}, dead {stat['dead']}, "
           f"unreachable {stat['unreach']}, branches {stat['branches']}, temporaries {stat['temps']}, inlined {stat['inlined']}")
     for seed, tag, msg in fails[:8]:

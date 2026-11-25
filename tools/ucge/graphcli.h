@@ -7,7 +7,132 @@
 #include "src/coder/ucgecfg.c"
 #include "src/coder/ucgeflow.c"
 #include "src/coder/ucgeopt.c"
+
+/* ---- interpretador da IR (so escalares): executa o CFG antes da SSA, em SSA (phi pela aresta de chegada) e depois da saida de SSA ---- */
+typedef struct { CgxIr *ir; long steps; int depth; } Ix;
+enum { IXR_OK, IXR_EXC, IXR_UNSUP };
+typedef struct { CgxCv v; char msg[160]; int sys; } IxRes;
+static CgxCv ix_get(const CgxFnIr *f, const CgxCv *vals, const CgxCv *vars, int x, int *bad) {
+    CgxCv u; memset(&u, 0, sizeof u); u.k = CV_TOP;
+    if (x == CGX_NIL) { *bad = 1; return u; }
+    if (CGX_ISVAR(x)) { (void)f; return vars[CGX_VARIDX(x)]; }
+    if (x == 0) { *bad = 1; return u; }
+    return vals[x];
+}
+static int ix_call(Ix *X, int fi, const CgxCv *args, int na, IxRes *res);
+static int ix_run(Ix *X, const CgxFnIr *f, const CgxCv *args, int na, IxRes *res) {
+    memset(res, 0, sizeof *res);
+    CgxCv *vals = (CgxCv *)calloc((size_t)f->nval + 1, sizeof(CgxCv)), *vars = (CgxCv *)calloc((size_t)f->nvar + 1, sizeof(CgxCv));
+    for (int i = 0; i <= f->nval; i++) { vals[i].k = CV_TOP; }
+    for (int i = 0; i <= f->nvar; i++) { vars[i].k = CV_TOP; }
+    int b = f->entry, prev = -1, rc = IXR_UNSUP; CgxCv pend; memset(&pend, 0, sizeof pend); int pend_sys = 0;
+    for (;;) {
+        const CgxBB *bb = &f->bb[b];
+        /* phis em paralelo */
+        { CgxCv tmp[64]; int ti[64], nt = 0;
+          for (int k = 0; k < bb->ins.n && nt < 64; k++) { const CgxIns *x = &f->ins[bb->ins.p[k]]; if (x->op != IO_PHI) break;
+              const int slot = prev >= 0 ? cgx_dg_pslot(&f->g, prev, b) : -1; if (slot < 0) { rc = IXR_UNSUP; goto done; }
+              int bad = 0; tmp[nt] = ix_get(f, vals, vars, x->args[slot], &bad); if (bad) { rc = IXR_UNSUP; goto done; } ti[nt++] = x->dst; }
+          for (int k = 0; k < nt; k++) vals[ti[k]] = tmp[k]; }
+        int jumped = 0;
+        for (int k = 0; k < bb->ins.n && !jumped; k++) {
+            const CgxIns *x = &f->ins[bb->ins.p[k]]; int bad = 0; CgxCv r; memset(&r, 0, sizeof r); int raise = 0; const char *rm = NULL; int rsys = 0;
+            if (++X->steps > 400000) { rc = IXR_UNSUP; goto done; }
+            #define GETA ix_get(f, vals, vars, x->a, &bad)
+            switch (x->op) {
+                case IO_PHI: continue;
+                case IO_PARAM: if (x->sub < 0) { rc = IXR_UNSUP; goto done; } if (x->sub < na) r = args[x->sub]; else { const CgxNode *d = f->fn->par[x->sub].def; if (!d || !cgx_is_lit(d)) { rc = IXR_UNSUP; goto done; } r = cgx_cv_of_node(d); } break;
+                case IO_CONST: r = cgx_cv_of_node(x->node); if (r.k < CV_INT) { rc = IXR_UNSUP; goto done; } break;
+                case IO_GLOBAL: if (x->callee && x->callee->a && cgx_is_lit(x->callee->a)) r = cgx_cv_of_node(x->callee->a); else { rc = IXR_UNSUP; goto done; } break;
+                case IO_COPY: r = GETA; break;
+                case IO_BIN: {
+                    CgxCv a = GETA, c = ix_get(f, vals, vars, x->b, &bad); if (bad) break;
+                    if ((x->sub == CGO_DIV || x->sub == CGO_IDIV || x->sub == CGO_MOD) && ((c.k == CV_INT && c.iv == 0) || (c.k == CV_FLT && c.dv == 0.0))) { raise = 1; rm = "division by zero"; rsys = 1; break; }
+                    if (!cgx_cv_bin(X->ir->g, x->sub, &a, &c, &r)) { rc = IXR_UNSUP; goto done; }
+                    break;
+                }
+                case IO_UN: { CgxCv a = GETA; if (bad) break; if (!cgx_cv_un(x->sub, &a, &r)) { rc = IXR_UNSUP; goto done; } break; }
+                case IO_CALL: {
+                    CgxCv av[8]; if (x->nargs > 8) { rc = IXR_UNSUP; goto done; }
+                    for (int j = 0; j < x->nargs; j++) av[j] = ix_get(f, vals, vars, x->args[j], &bad);
+                    if (bad) break;
+                    if (x->sub && !x->callee) {
+                        if (x->sub == CGB_ERRMSG) { if (av[0].k != CV_STR || av[0].iv == 1) { rc = IXR_UNSUP; goto done; } r = av[0]; r.iv = 0; break; }
+                        if (!cgx_cv_builtin(X->ir->g, x->sub, av, x->nargs, &r)) { rc = IXR_UNSUP; goto done; }
+                    } else if (x->callee && x->callee->k == CGN_FN && x->callee->id > 0 && X->ir->fnid[x->callee->id] >= 0) {
+                        IxRes cr; const int cc = ix_call(X, X->ir->fnid[x->callee->id], av, x->nargs, &cr);
+                        if (cc == IXR_UNSUP) { rc = IXR_UNSUP; goto done; }
+                        if (cc == IXR_EXC) { raise = 1; rm = cr.msg; rsys = cr.sys; } else r = cr.v;
+                    } else { rc = IXR_UNSUP; goto done; }
+                    break;
+                }
+                case IO_CATCH: r = pend; r.iv = pend_sys; break;
+                case IO_BR: {
+                    CgxCv c = GETA; if (bad || c.k != CV_BOOL) { rc = IXR_UNSUP; goto done; }
+                    int tgt = -1; for (int e = f->g.sp[b]; e < f->g.sp[b + 1]; e++) if ((f->ekind[e] == EK_TRUE) == (c.iv != 0) && f->ekind[e] != EK_EXC) tgt = f->g.s[e];
+                    if (tgt < 0) { rc = IXR_UNSUP; goto done; }
+                    prev = b; b = tgt; jumped = 1; continue;
+                }
+                case IO_JMP: { int tgt = -1; for (int e = f->g.sp[b]; e < f->g.sp[b + 1]; e++) if (f->ekind[e] != EK_EXC) tgt = f->g.s[e]; if (tgt < 0) { rc = IXR_UNSUP; goto done; } prev = b; b = tgt; jumped = 1; continue; }
+                case IO_RET: { if (x->a == CGX_NIL) { rc = IXR_UNSUP; goto done; } CgxCv a = GETA; if (bad) { rc = IXR_UNSUP; goto done; } res->v = a; rc = IXR_OK; goto done; }
+                case IO_THROW: {
+                    if (x->flags & IF_RETHROW) { raise = 1; rm = pend.s ? pend.s : ""; rsys = pend_sys; break; }
+                    CgxCv a = GETA; if (bad || a.k != CV_STR) { rc = IXR_UNSUP; goto done; } raise = 1; rm = a.s; rsys = 0; break;
+                }
+                default: rc = IXR_UNSUP; goto done;
+            }
+            #undef GETA
+            if (bad) { rc = IXR_UNSUP; goto done; }
+            if (raise) {
+                int tgt = -1; for (int e = f->g.sp[b]; e < f->g.sp[b + 1]; e++) if (f->ekind[e] == EK_EXC) tgt = f->g.s[e];
+                if (tgt < 0) { snprintf(res->msg, sizeof res->msg, "%s", rm ? rm : ""); res->sys = rsys; rc = IXR_EXC; goto done; }
+                memset(&pend, 0, sizeof pend); pend.k = CV_STR; pend.s = rm ? rm : ""; pend_sys = rsys; prev = b; b = tgt; jumped = 1; continue;
+            }
+            if (x->dst != CGX_NIL) { if (CGX_ISVAR(x->dst)) vars[CGX_VARIDX(x->dst)] = r; else if (x->dst > 0) vals[x->dst] = r; }
+            if (x->d2 != CGX_NIL) { rc = IXR_UNSUP; goto done; }
+        }
+        if (!jumped) { rc = IXR_UNSUP; goto done; }
+    }
+done:
+    free(vals); free(vars);
+    return rc;
+}
+static int ix_call(Ix *X, int fi, const CgxCv *args, int na, IxRes *res) {
+    if (++X->depth > 60) { X->depth--; return IXR_UNSUP; }
+    const int rc = ix_run(X, &X->ir->fn[fi], args, na, res); X->depth--; return rc;
+}
+static int irexec_cli(const char *path, const char *phase) {
+    Cgx g; if (!load(&g, path, 1)) { cgx_free(&g); return 1; }
+    const int pre = !strcmp(phase, "pre"), out = !strcmp(phase, "out");
+    CgxIr *ir = cgx_ir_build_ex(&g, pre ? 0 : 1, 0);
+    if (out) for (int i = 0; i < ir->nfn; i++) cgx_ssa_out(&ir->fn[i]);
+    Ix X = {ir, 0, 0}; char line[1024];
+    while (fgets(line, sizeof line, stdin)) {
+        char *tok[10]; int nt = 0; for (char *p = strtok(line, " \r\n"); p && nt < 10; p = strtok(NULL, " \r\n")) tok[nt++] = p;
+        if (!nt) continue;
+        int fi = -1; for (int i = 0; i < ir->nfn; i++) if (!ir->fn[i].cls && !strcmp(ir->fn[i].name, tok[0])) fi = i;
+        if (fi < 0) { printf("U nofn\n"); continue; }
+        CgxCv av[9]; int na = nt - 1;
+        for (int i = 0; i < na; i++) {
+            memset(&av[i], 0, sizeof av[i]); const char *t = tok[i + 1];
+            if (!strcmp(t, "true") || !strcmp(t, "false")) { av[i].k = CV_BOOL; av[i].iv = t[0] == 't'; }
+            else if (t[0] == 's' && t[1] == ':') { av[i].k = CV_STR; av[i].s = t + 2; }
+            else if (strpbrk(t, ".eE")) { av[i].k = CV_FLT; av[i].dv = atof(t); }
+            else { av[i].k = CV_INT; av[i].iv = atoll(t); }
+        }
+        X.steps = 0; X.depth = 0; X.ir->nfn = ir->nfn; IxRes r; const int rc = ix_call(&X, fi, av, na, &r);
+        if (rc == IXR_UNSUP) printf("U\n");
+        else if (rc == IXR_EXC) { if (r.sys) printf("E ZeroDivisionError\n"); else printf("E Exception %s\n", r.msg); }
+        else if (r.v.k == CV_INT) printf("R int %lld\n", r.v.iv);
+        else if (r.v.k == CV_FLT) printf("R float %.17g\n", r.v.dv);
+        else if (r.v.k == CV_BOOL) printf("R bool %s\n", r.v.iv ? "true" : "false");
+        else if (r.v.k == CV_STR) printf("R str %s\n", r.v.s);
+        else printf("U\n");
+    }
+    cgx_ir_free(ir); cgx_free(&g); return 0;
+}
 static int graph_cli(int argc, char **argv) {
+    if (!strcmp(argv[1], "irexec") && argc >= 4) return irexec_cli(argv[2], argv[3]);
     Cgx g;
     if (!strcmp(argv[1], "ir") && argc >= 3) {
         if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; }
