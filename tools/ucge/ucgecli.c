@@ -97,7 +97,7 @@ static int run_node(const char *code, const char *tests, int ts, int *pass, int 
     fputs(code, f); fputs("\n\n", f); fputs(tests, f); fclose(f);
     char cmd[1200];
     if (ts) {
-        const char *tsc = getenv("UCGE_TSC"); if (!tsc) { snprintf(detail, dcap, "typescript: set UCGE_TSC to a tsc (tsc.js or executable) to run\n"); *fail = 1; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {} return 0; }
+        const char *tsc = getenv("UCGE_TSC"); if (!tsc) { snprintf(detail, dcap, "typescript: set UCGE_TSC to an executable tsc to run\n"); *fail = 1; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {} return 0; }
         snprintf(cmd, sizeof cmd, "(cd %s && '%s' --strict --target es2022 --module commonjs --lib es2022,dom --skipLibCheck --outDir out prog.ts 2>&1 && ulimit -t 10 && timeout 10 node out/prog.js) 2>&1", dir, tsc);
     } else snprintf(cmd, sizeof cmd, "(cd %s && ulimit -t 10 && timeout 10 node prog.js) 2>&1", dir);
     FILE *p = popen(cmd, "r"); char line[512]; *pass = *fail = 0; detail[0] = 0;

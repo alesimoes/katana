@@ -379,6 +379,8 @@ are emitted raw.
 | `sum`, `sort` | `_sum` (Neumaier compensated, as CPython >= 3.12 does for floats), `sort(xs)` copies; numbers `(a, b) => a - b`, `str` `_scmp` | float summation order, in-place sort |
 | `pop`, `contains`, `replace`, `keys` | `_pop` (error on empty), `includes`/`has`/`_has`, `split(a).join(b)` (`_replace` for the empty pattern), `[...m.keys()]` | `undefined` results; `$&` patterns of `String.replace` |
 | `any` as a condition or an operand of `and`/`or`/`not` | `_truth` (Python truth: `[]`, `""`, `0`, empty map are false) | JS truthiness |
+| an `int` that becomes a `float` (`float(n)`, `n / m`, `n * 1.5`) | `(n + 0)` unless `n` is a literal or provably non-negative | JS keeps `-0` from `0 * -3`; `str(float(...))` would print `-0.0` where Python prints `0.0` |
+| `b == true`, `b == false`, `b == c` on `bool` | `b`, `!b`; TS casts `(b as boolean) === c` | `const f = true` makes `f === false` a TS2367 error (the compiler narrows to the literal) |
 | `throw "m"`, `throw e`, `errmsg(e)` | `throw new Error("m")`, `throw e`, `_errmsg(e)` | none (`catch` catches every error, including runtime ones) |
 | class | JS class, fields as class fields (fresh per instance), `constructor` from `init`, `new C(...)`, `self` is `this` | none |
 
@@ -405,7 +407,7 @@ the output uses (`Math`, `Map`, `Error`, `console`, ...), with a message naming 
    `_len` and `_has` accept `Map`, arrays, strings and plain objects.
 8. *Modules.* Nothing is exported: the file is a script (or a TS module with no exports). Add `module.exports` or `export` in a `raw` block; imports are not UIR (section 2.1).
 9. *TypeScript.* The UIR has no optional type: a class-typed field, a reassigned class-typed variable, a class parameter with a `null` default and a function that returns `null` are typed `any`
-   (`T | null` arrives with the inference module). `any` elsewhere is `any`, the caught error is `unknown` (and goes to helpers that take `unknown`). Lists and maps of classes or of nested
+   (`T | null` arrives with the inference module). a `const` initialised by a literal (or by `float(3)`, `c ? 1 : 2`, `str(flag)`) gets its base type (`const n: number = 1`) and an `===` between two literal-typed operands is cast (`(1 as number) === 2`), because `tsc` types such constants as the literal and rejects the comparison. `any` elsewhere is `any`, the caught error is `unknown` (and goes to helpers that take `unknown`). Lists and maps of classes or of nested
    collections are `any[]` / `Map<string, any>` because `CgxTy` keeps only the base element kind. `target ES2022` (class fields, `catch {`; ES2019 with the fields rewritten by the compiler), `lib es2017` or newer (`Object.entries`, `padStart`).
 10. *A `raw` block* needs a `raw js` version (TypeScript uses `raw ts` when present, else `raw js`); otherwise generation fails with the list of versions the block has (task 15 has only Python).
 
