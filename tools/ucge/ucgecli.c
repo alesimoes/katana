@@ -30,6 +30,7 @@ static int load(Cgx *g, const char *path, int show) {
     if (show) for (int i = 0; i < g->nerr; i++) printf("line %d: %s\n", g->err[i].line, g->err[i].msg);
     return ok;
 }
+#include "tools/ucge/graphcli.h"
 static int selftest(void) {
     int bad = 0;
 #define T(c) do { if (!(c)) { printf("FAIL selftest: %s (line %d)\n", #c, __LINE__); bad++; } } while (0)
@@ -121,6 +122,7 @@ int main(int argc, char **argv) {
         }
         free(code.p); free(tb.p); cgx_free(&g); return 0;
     }
-    fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n");
+    { const int rc = graph_cli(argc, argv); if (rc >= 0) return rc; }
+    fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest|ir|flow|opt|optgen ...\n");
     return 2;
 }
