@@ -17,6 +17,7 @@
 #include "src/coder/ucgetype.c"
 #include "src/coder/ucgedoc.c"
 #include "src/coder/ucgepy.c"
+#include "src/coder/ucgejs.c"
 #include "src/coder/ucgecfg.c"
 #include "src/coder/ucgeflow.c"
 #include "src/coder/ucgeopt.c"

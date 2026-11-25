@@ -1,7 +1,7 @@
 /* ucgecli: o nucleo do UCGE compilado sozinho (docs/ucge.md).
  *   gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm
  *   ucgecli check <spec>              le, valida e escreve os erros (linha: mensagem) ou "ok"
- *   ucgecli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python)
+ *   ucgecli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python, js, ts)
  *   ucgecli run <alvo> <spec>         gera com o harness de testes, roda em subprocesso com limites e conta passou/falhou
  *   ucgecli stats <spec>              resumo da UIR usada
  *   ucgecli selftest                  testes internos da tabela de tipos, unificacao e do pretty-printer
@@ -25,6 +25,7 @@
 #include "src/coder/ucgepy.c"
 #include "src/coder/ucgedep.c"
 #include "src/coder/ucgeinc.c"
+#include "src/coder/ucgejs.c"
 
 static char *slurp(const char *path) {
     FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin; if (!f) { perror(path); exit(2); }
@@ -128,6 +129,26 @@ static int cachebench(int n, const char *dir) {
            n, t_nc, t_cold, cm, t_warm, wh, t_leaf, lm, t_root, rm);
     return 0;
 }
+/* JavaScript e TypeScript: node (v20+); o TypeScript passa antes pelo tsc que a variavel UCGE_TSC aponta (um tsc executavel), sem ele so gera */
+static int run_node(const char *code, const char *tests, int ts, int *pass, int *fail, char *detail, size_t dcap) {
+    char dir[] = "/tmp/ucgenodeXXXXXX"; if (!mkdtemp(dir)) return -1;
+    char path[300]; snprintf(path, sizeof path, "%s/prog.%s", dir, ts ? "ts" : "js");
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    fputs(code, f); fputs("\n\n", f); fputs(tests, f); fclose(f);
+    char cmd[1200];
+    if (ts) {
+        const char *tsc = getenv("UCGE_TSC"); if (!tsc) { snprintf(detail, dcap, "typescript: set UCGE_TSC to an executable tsc to run\n"); *fail = 1; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {} return 0; }
+        snprintf(cmd, sizeof cmd, "(cd %s && '%s' --strict --target es2022 --module commonjs --lib es2022,dom --skipLibCheck --outDir out prog.ts 2>&1 && ulimit -t 10 && timeout 10 node out/prog.js) 2>&1", dir, tsc);
+    } else snprintf(cmd, sizeof cmd, "(cd %s && ulimit -t 10 && timeout 10 node prog.js) 2>&1", dir);
+    FILE *p = popen(cmd, "r"); char line[512]; *pass = *fail = 0; detail[0] = 0;
+    while (p && fgets(line, sizeof line, p)) {
+        if (!strncmp(line, "test ", 5)) { if (strstr(line, ": ok")) (*pass)++; else { (*fail)++; if (strlen(detail) + strlen(line) + 1 < dcap) strcat(detail, line); } }
+        else if (strstr(line, "Error") || strstr(line, "error TS") || strstr(line, "ulimit")) { (*fail)++; if (strlen(detail) + strlen(line) + 1 < dcap) strcat(detail, line); }
+    }
+    if (p) pclose(p);
+    snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {}
+    return 0;
+}
 int main(int argc, char **argv) {
     Cgx g;
     if (argc < 2) { fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n"); return 2; }
@@ -227,6 +248,11 @@ int main(int argc, char **argv) {
         else {
             int pass = 0, fail = 0; char det[2000];
             if (!tb.p) { printf("no tests\n"); }
+            else if (!strcmp(be->name, "javascript") || !strcmp(be->name, "typescript")) {
+                run_node(code.p ? code.p : "", tb.p, !strcmp(be->name, "typescript"), &pass, &fail, det, sizeof det);
+                printf("tests: %d passed, %d failed\n%s", pass, fail, det);
+                free(code.p); free(tb.p); cgx_free(&g); return fail != 0;
+            }
             else if (!strcmp(be->name, "python")) {
                 run_python(code.p ? code.p : "", tb.p, &pass, &fail, det, sizeof det);
                 printf("tests: %d passed, %d failed\n%s", pass, fail, det);
