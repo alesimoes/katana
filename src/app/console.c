@@ -321,7 +321,7 @@ static int steer_raw_line(char *l, size_t cap, int drain) {
 /* depois do resultado de uma ferramenta: le as linhas STEER que ja chegaram (sem esperar) e junta ao resultado
    a nota com cada mensagem. out e o resultado inteiro (cap = tamanho do buffer); se faltar espaco, o fim do
    resultado cede lugar a nota. 1 se alguma mensagem foi entregue. */
-static int steer_poll(char *out, size_t cap) {
+static int steer_poll(char *out, size_t cap, char *after, size_t acap) {      /* after != NULL: a nota vai para after (fora do resultado, que o prompt rotula como dados) */
     if (!getenv("KATANA_UI")) return 0;
 #ifndef _WIN32
     for (int i = 0; i < 16 && !g_line_back_ok; i++) {
@@ -333,18 +333,23 @@ static int steer_poll(char *out, size_t cap) {
         else { snprintf(g_line_back, sizeof g_line_back, "%s", l); g_line_back_ok = 1; }
     }
 #endif
-    if (!g_steer_q[0] || cap < 4 * STEER_MAX) return 0;
+    const size_t lim = after ? acap : cap;
+    if (after) after[0] = 0;
+    if (!g_steer_q[0] || lim < 4 * STEER_MAX) return 0;
     static char note[sizeof g_steer_q + 2048];
     size_t nl = 0;
-    while (g_steer_q[0] && nl + STEER_MAX + 200 < sizeof note && nl + STEER_MAX + 200 < cap / 2) {
+    while (g_steer_q[0] && nl + STEER_MAX + 200 < sizeof note && nl + STEER_MAX + 200 < lim / 2) {
         char m[STEER_MAX + 8];
         steer_pop(m, sizeof m);
         nl += (size_t)snprintf(note + nl, sizeof note - nl,
             "\n[user message, sent while you were working: \"%s\". Read it now and follow it; it takes priority over your plan.]", m);
     }
-    size_t rl = strlen(out);
-    if (rl + nl + 1 > cap) rl = cap - nl - 1;
-    memcpy(out + rl, note, nl + 1);
+    if (after) memcpy(after, note, nl + 1);
+    else {
+        size_t rl = strlen(out);
+        if (rl + nl + 1 > cap) rl = cap - nl - 1;
+        memcpy(out + rl, note, nl + 1);
+    }
     fprintf(stderr, "[mensagem do usuario entregue ao modelo no meio do ciclo]\n");
     return 1;
 }
