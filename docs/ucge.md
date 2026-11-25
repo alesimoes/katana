@@ -484,7 +484,7 @@ Run `sh tools/ucge/graphtest.sh [N]` (about 35 s with N=300; `SAN=1` for ASan/UB
   the checker again, parses as Python, and the optimizer changed all 1 000 programs (17 021 folds and propagations, 14 224 algebraic rewrites, 16 383 dead statements, 4 709 unreachable
   statements, 4 649 decided branches, 503 copies, 402 temporaries, 803 inlined calls). Seeds are fixed, so a run is reproducible.
   Mutation check: breaking the floor in `//`, the removability guard of `x*0`, `and false`, `or true`, the float identity, the copy-source check, `finally` copies, the short-circuit
-  rule, the exceptional edge or the removable mask each makes the test fail (9 of 10 mutants killed on the first try; the one that survived, ignoring non-executable phi edges, only loses precision).
+  rule, the exceptional edge or the removable mask each makes the test fail (10 of 11 mutants killed; the generator needed the "stress" statements to kill four of them; the survivor, a phi that ignores which edges are executable, only loses precision and is not a bug).
 - **IR interpreter** (`ucgecli irexec spec pre|ssa|out`): runs the IR of the scalar functions before SSA, in SSA (phi chosen by the arriving edge) and after out-of-SSA, and must equal
   the Python on 60 096 results (1 000 programs x 3 phases); it is what found that a `try` body must start a new block (an instruction before the `try` shared a block, and so the
   exceptional edge, with the protected call).
