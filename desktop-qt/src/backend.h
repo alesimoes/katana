@@ -133,7 +133,6 @@ class Backend : public QObject
     Q_PROPERTY(int imageSteps READ imageSteps WRITE setImageSteps NOTIFY imageChanged)   // passos do FLUX: de 1 a 8 (4 e o padrao do modelo)
     Q_PROPERTY(int stableSteps READ stableSteps WRITE setStableSteps NOTIFY imageChanged)   // passos do Stable: 4 ou 8 (LCM, rapido), 20 ou 40 (qualidade: Euler com guia)
     Q_PROPERTY(int stableStrength READ stableStrength WRITE setStableStrength NOTIFY imageChanged)   // fidelidade a vista do Stable, em %: 0 = automatico (35 no modo rapido, 60 no de qualidade), ou 25, 40, 55, 70, 85
-    Q_PROPERTY(QString stableModel READ stableModel WRITE setStableModel NOTIFY imageChanged)   // checkpoint do Stable: realistic-vision (padrao), interior ou xsachi
     Q_PROPERTY(QString imageBackend READ imageBackend WRITE setImageBackend NOTIFY imageChanged)   // processamento do FLUX: auto, cuda, vulkan ou cpu (KATANA_BACKEND)
     Q_PROPERTY(bool imageBusy READ imageBusy NOTIFY imageChanged)
     Q_PROPERTY(bool hasUsableModel READ hasUsableModel NOTIFY modelsChanged)
@@ -253,8 +252,6 @@ public:
     int stableSteps() const;
     int stableStrength() const;
     void setStableStrength(int n);
-    QString stableModel() const;
-    void setStableModel(const QString &m);
     void setStableSteps(int n);
     void setImageSteps(int n);
     QString imageBackend() const;

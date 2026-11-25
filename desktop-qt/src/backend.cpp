@@ -1068,17 +1068,6 @@ void Backend::setStableStrength(int n) {
     m_ui->sync();
     emit imageChanged();
 }
-QString Backend::stableModel() const {
-    const QString m = m_ui->value("imagemModeloStable", "realistic-vision").toString();
-    return (m == "interior" || m == "xsachi") ? m : QStringLiteral("realistic-vision");
-}
-void Backend::setStableModel(const QString &m) {
-    if (m != "realistic-vision" && m != "interior" && m != "xsachi") return;
-    if (m == stableModel()) return;
-    m_ui->setValue("imagemModeloStable", m);
-    m_ui->sync();
-    emit imageChanged();
-}
 QString Backend::imageBackend() const {
     const QString b = m_ui->value("imagemBackend", "auto").toString();
     return (b == "cuda" || b == "vulkan" || b == "cpu") ? b : QStringLiteral("auto");
@@ -1646,7 +1635,6 @@ bool Backend::sendImage(const QString &text)
     if (engine == "stable") {                                          // as bordas da vista seguram arcos e curvas (ControlNet canny)
         const int ss = stableSteps();
         args << "--control" << img << "--control-scale" << "1.0" << "--steps" << QString::number(ss);
-        if (stableModel() != "realistic-vision") args << "--sd-model" << stableModel();
         if (ss <= 8) args << "--lcm";                                  // 4/8: LCM, rapido
         else args << "--strength" << "0.6";                            // 25/40: Euler com guia; mais liberdade para ficar realista (o ControlNet segura a forma)
         if (stableStrength() > 0) args << "--strength" << QString::number(stableStrength() / 100.0, 'f', 2);   // escolha do menu: vale mais que o padrao do modo

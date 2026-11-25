@@ -346,33 +346,6 @@ ApplicationWindow {
                                         }
                                     }
                                     AbstractButton {
-                                        objectName: "sec_smodel"; width: apMenu.width - 16; height: 30; hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                        Accessible.name: "Modelo do stable: " + apCol.lbl([["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"], ["xsachi", "XSAchi (interiores, uso não comercial)"]], backend.stableModel); Accessible.role: Accessible.Button
-                                        onClicked: apCol.sec = apCol.sec === "smodel" ? "" : "smodel"
-                                        background: Rectangle { radius: 8; color: parent.hovered ? Theme.hov : "transparent"; border.width: parent.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                        contentItem: Item {
-                                            Text { anchors.left: parent.left; anchors.leftMargin: 8; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; text: "MODELO STABLE"; color: Theme.mut; font.pixelSize: 11; font.letterSpacing: 0.6 }
-                                            Text { anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; font.family: Theme.sans; text: apCol.lbl([["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"], ["xsachi", "XSAchi (interiores, uso não comercial)"]], backend.stableModel) + (apCol.sec === "smodel" ? "  ▾" : "  ▸"); color: Theme.fg; font.pixelSize: 12; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; width: Math.max(40, parent.width - 16 - parent.children[0].implicitWidth - 12) }
-                                        }
-                                    }
-                                    Repeater {
-                                        model: [["realistic-vision", "Realistic Vision (geral)"], ["interior", "InteriorDesign (interiores)"], ["xsachi", "XSAchi (interiores, uso não comercial)"]]
-                                        AbstractButton {
-                                            id: smd
-                                            required property var modelData
-                                            visible: apCol.sec === "smodel"
-                                            objectName: "smodel_" + modelData[0]
-                                            width: apMenu.width - 16; height: 32
-                                            hoverEnabled: true; focusPolicy: Qt.StrongFocus
-                                            Accessible.name: "Modelo do Stable: " + modelData[1]; Accessible.role: Accessible.RadioButton
-                                            onClicked: backend.stableModel = modelData[0]
-                                            background: Rectangle { radius: 8; color: smd.hovered ? Theme.hov : "transparent"
-                                                border.width: smd.visualFocus ? 2 : 0; border.color: Theme.foc }
-                                            contentItem: Text { font.family: Theme.sans; leftPadding: 8; verticalAlignment: Text.AlignVCenter
-                                                text: (backend.stableModel === smd.modelData[0] ? "●  " : "○  ") + smd.modelData[1]; color: Theme.fg; font.pixelSize: 13 }
-                                        }
-                                    }
-                                    AbstractButton {
                                         objectName: "sec_sstep"; width: apMenu.width - 16; height: 30; hoverEnabled: true; focusPolicy: Qt.StrongFocus
                                         Accessible.name: "Passos do stable: " + apCol.lbl([[4, "4 (rápido, LCM)"], [8, "8 (LCM)"], [20, "20 (realista)"], [40, "40 (mais realista, lento)"]], backend.stableSteps); Accessible.role: Accessible.Button
                                         onClicked: apCol.sec = apCol.sec === "sstep" ? "" : "sstep"
