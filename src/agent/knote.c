@@ -15,6 +15,7 @@ typedef enum {
     KN_FAIL_AROUND, KN_FAIL_ROW,           /* R4, R5: falhas em volta da mesma coisa; falhas seguidas */
     KN_ROUNDS,                             /* R6: ultima rodada de ferramentas do pedido */
     KN_TODO_OPEN,                          /* T1: o modelo parou com passos em aberto (turno proprio) */
+    KN_NO_TTY, KN_NOT_IN_PATH,             /* R19, R20: comando que quer terminal (pergunta ao usuario); programa fora do PATH (loop.c, depois de um Bash) */
     KN_USER_DONE,                          /* Q5: o usuario diz que algo ja esta feito/instalado ou que o modelo esta em loop (loop.c, entrada do pedido) */
     KN_GIVE_CMD,                           /* Q4: o usuario pede para RECEBER o comando/texto (loop.c, entrada do pedido): responder com ele, sem ferramentas */
     KN_TODO_PREV,                          /* Q3: pedido novo com lista antiga em aberto (loop.c, entrada do pedido); so sai SEM bloco do UIOE: com bloco vira clausula de `Not found / limits` (ctxb.c) */
@@ -65,6 +66,9 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "what is left and what you need from them; they can ask you to continue.]"
 #define KNF_TODO_OPEN "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. " \
     "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now."
+#define KNF_NO_TTY "\n[katana: this command wanted to ask a question and you have no terminal here, so running it again fails the same way. Run `<command> --help` (and the help of its subcommands) and use the form that takes the answer as an argument or flag (a path, --mode, --username, --yes, --no-input). " \
+    "Before you assume a step is missing or done, check the real state with the tool's own status command (status, whoami, version). If the only way is interactive, start it as a background task and answer with SendInput, or give the user the exact command to run.]"
+#define KNF_NOT_IN_PATH "\n[katana: a program was not found in PATH. It may be installed in a folder that is not in PATH: find it (`command -v NAME`, `find ~ -name NAME -type f`) and run the command again with PATH=\"<that folder>:$PATH\" in front. Do not install it again before you looked.]"
 #define KNF_USER_DONE "%s\n[katana: the user says something here is already done or installed, or that you are repeating yourself. Believe the user: do not redo it. Check the current state with ONE quick command (which, --version, ls), then take the next step that is still undone. If you cannot go on, stop and tell the user in two sentences what blocks you.]"
 #define KNF_GIVE_CMD "%s\n[katana: the user asked you to GIVE them the command (or text), so they run or use it themselves. Do not run it, do not search, do not plan: write the exact command now in a code block, with one line saying what it does. If you do not know it, say what you tried and what is missing.]"
 #define KNF_TODO_PREV "%s\n[katana: your todo list from before still has %d unfinished steps. This message is newer and comes first: " \
@@ -125,6 +129,8 @@ static const KnSpec KN_TAB[KN_COUNT] = {
     [KN_FAIL_ROW]        = {"fail_row",        KN_ORDER, KN_RESULT, 0, 0, KNF_FAIL_ROW},
     [KN_ROUNDS]          = {"rounds",          KN_ORDER, KN_RESULT, 0, 0, KNF_ROUNDS},
     [KN_TODO_OPEN]       = {"todo_open",       KN_ORDER, KN_TURN,   0, 0, KNF_TODO_OPEN},
+    [KN_NO_TTY]          = {"no_tty",          KN_ORDER, KN_RESULT, 0, 0, KNF_NO_TTY},
+    [KN_NOT_IN_PATH]     = {"not_in_path",     KN_ORDER, KN_RESULT, 0, 0, KNF_NOT_IN_PATH},
     [KN_USER_DONE]       = {"user_done",       KN_ORDER, KN_REQUEST,0, 0, KNF_USER_DONE},
     [KN_GIVE_CMD]        = {"give_cmd",        KN_ORDER, KN_REQUEST,0, 0, KNF_GIVE_CMD},
     [KN_TODO_PREV]       = {"todo_prev",       KN_ORDER, KN_REQUEST,0, 0, KNF_TODO_PREV},

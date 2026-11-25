@@ -464,6 +464,14 @@ static int says_already_done(const char *line) {
     for (int i = 0; v[i]; i++) if (strstr(lo, v[i])) return 1;
     return 0;
 }
+/* saida de um Bash que diz que o comando queria um terminal (1) ou que um programa nao esta no PATH (2): a sessao de 25/11 repetiu `xtool auth login`/`xtool setup` (pedem resposta) em vez de usar a forma com argumento, e nao achou o swiftc fora do PATH */
+static int bash_env_hint(const char *r) {
+    static const char *const tty[] = {"Operation unsupported", "not a tty", "not a terminal", "Inappropriate ioctl", "no tty present", "stdin is not", NULL};
+    static const char *const path[] = {"command not found", "Could not find executable", "not found in PATH", "in PATH", NULL};
+    for (int i = 0; tty[i]; i++) if (strstr(r, tty[i])) return 1;
+    for (int i = 0; path[i]; i++) if (strstr(r, path[i])) return 2;
+    return 0;
+}
 static void uioe_loop_state(UioeLoopState *o) { o->rr_n = rr_n; o->rr_total = rr_total; o->rp_n = rp_n; o->rp_fail = rp_fail; o->rp_refused = rp_refused; o->rp_stuck = rp_stuck; o->bk_n = bk_n; }      /* uioe/state.c: so leitura */
 static int rr_covered(const char *name) {
     if (!strcmp(name, "Read") || !strcmp(name, "Grep") || !strcmp(name, "Find") || !strcmp(name, "Symbols") ||
@@ -971,6 +979,11 @@ static int agent(Model *m, int max_tokens, float temp) {
                     else if (rp_fail >= 4 && rl + 500 < sizeof result) {
                         KNOTE(FAIL_ROW, result + rl, sizeof result - rl, rp_fail);
                         rp_fail = 0;
+                    }
+                    if (!strcmp(name, "Bash") && failed && strstr(result, "[katana: ") == NULL) {
+                        const int eh = bash_env_hint(result); const size_t rl2 = strlen(result);
+                        if (eh == 1 && rl2 + 800 < sizeof result) KNOTE(NO_TTY, result + rl2, sizeof result - rl2);
+                        else if (eh == 2 && rl2 + 500 < sizeof result) KNOTE(NOT_IN_PATH, result + rl2, sizeof result - rl2);
                     }
                 }
                 if (g_rd_toomany && !strcmp(name, "Read") && !trunc) { g_rd_toomany = 0; if (round < lim - 2) round = lim - 2; rl_forced = 1; }      /* muitas fatias do mesmo arquivo: encerra e relata */
