@@ -1,0 +1,46 @@
+# operacoes do usuario: carregue com `ucgecli --ops tools/ucge/ops/extra.ops ...` ou KATANA_UCGE_OPS=arquivo
+op clamp 3 3 level=1 effect=pure
+  use clamp(x, lo, hi)
+  sem x limited to the range lo..hi
+  arg 0 num : a number
+  arg 1 num : a number
+  arg 2 num : a number
+  ret num0
+  py min(max({0}, {1}), {2})
+  js Math.min(Math.max({0}, {1}), {2})
+  ts Math.min(Math.max({0}, {1}), {2})
+op count 2 2 level=2 effect=pure
+  use count(s, sub)
+  sem number of non-overlapping occurrences of sub in s
+  arg 0 str : a str
+  arg 1 str : a str
+  ret int
+  py $0.count{*1}
+  js $0.split({1}).length - 1
+  ts $0.split({1}).length - 1
+op lstrip 1 1 level=2 effect=pure
+  use lstrip(s)
+  sem copy without leading white space
+  arg 0 str : a str
+  ret str
+  py $0.lstrip()
+  js $0.trimStart()
+  ts $0.trimStart()
+op isdigits 1 1 level=2 effect=pure
+  use isdigits(s)
+  sem true when s is not empty and has only the digits 0 to 9
+  arg 0 str : a str
+  ret bool
+  py $0.isdigit()
+  js /^[0-9]+$/.test({0})
+  ts /^[0-9]+$/.test({0})
+op oldprint 1 1 level=1 effect=io
+  use oldprint(x)
+  sem example of an operation that has no Python form
+  arg 0 all : a value
+  ret void
+  py unsupported: oldprint is only available for the web targets
+  js console.log{*0}
+  ts console.log{*0}
+# regra do usuario
+rule (clamp (clamp x a b) a b) => (clamp x a b)

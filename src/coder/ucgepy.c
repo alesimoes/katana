@@ -60,6 +60,35 @@ static CgxDoc *py_args(CgxPy *p, const char *head, const CgxBlk *a, int skip) {
 static const int CGX_PREC_CMP = 5;
 static CgxDoc *py_wrap(CgxPy *p, CgxDoc *d, int prec, int minprec) { return prec < minprec ? cgx_dcatn(PD, py_t(p, "("), d, py_t(p, ")"), NULL) : d; }
 
+/* modelo de texto do registro (ucgereg.c) -> documento: `$N`, `{N}`, `{N@P}`, `{N?}`, `{*N}`, `{[i,j]}` */
+static CgxDoc *py_tmpl(CgxPy *p, const CgxNode *n, const char *t) {
+    const CgxBlk *a = &n->b1; CgxDoc *r = NULL; CgxB lit = {0};
+#define FLUSH() do { if (lit.p && lit.n) { CgxDoc *x = cgx_dtext(PD, lit.p); r = r ? cgx_dcat(PD, r, x) : x; lit.n = 0; lit.p[0] = 0; } } while (0)
+#define ADD(d) do { FLUSH(); CgxDoc *x_ = (d); r = r ? cgx_dcat(PD, r, x_) : x_; } while (0)
+    for (const char *q = t; *q;) {
+        if (*q == '$' && isdigit((unsigned char)q[1])) { const int i = q[1] - '0'; q += 2; if (i < a->n) ADD(py_ex(p, a->p[i], 10)); }
+        else if (*q == '{') {
+            const char *e = strchr(q, '}'); if (!e) { cgx_bs(&lit, "{"); q++; continue; }
+            if (q[1] == '*' || q[1] == '[') {
+                CgxDoc *it[64]; int k = 0;
+                if (q[1] == '*') { for (int i = atoi(q + 2); i < a->n && k < 64; i++) it[k++] = py_ex(p, a->p[i], 0); }
+                else for (const char *c = q + 2; c < e && k < 64;) { const int i = atoi(c); if (i < a->n) it[k++] = py_ex(p, a->p[i], 0); while (c < e && *c != ',') c++; if (c < e) c++; }
+                ADD(py_seq(p, "(", it, k, ")"));
+            } else {
+                const int i = atoi(q + 1); const char *c = q + 1; while (isdigit((unsigned char)*c)) c++;
+                int mp = 0; if (*c == '@') mp = atoi(c + 1);
+                if (i < a->n) ADD(py_ex(p, a->p[i], mp));
+            }
+            q = e + 1;
+        } else { const char ch[2] = {*q++, 0}; cgx_bs(&lit, ch); }
+    }
+    FLUSH();
+#undef FLUSH
+#undef ADD
+    free(lit.p);
+    return r ? r : cgx_dnil(PD);
+}
+
 static CgxDoc *py_call(CgxPy *p, const CgxNode *n, int *prec) {
     const CgxBlk *a = &n->b1; *prec = 10;
     if (n->bi == 0) {                                   /* funcao ou construtor da especificacao */
@@ -67,42 +96,12 @@ static CgxDoc *py_call(CgxPy *p, const CgxNode *n, int *prec) {
         for (int i = 0; i < a->n && k < 64; i++) it[k++] = py_ex(p, a->p[i], 0);
         return cgx_dcat(PD, cgx_dtext(PD, n->s), py_seq(p, "(", it, k, ")"));
     }
-    CgxDoc *A0 = a->n > 0 ? py_ex(p, a->p[0], 0) : NULL;
-    switch (n->bi) {
-        case CGB_LEN: return py_args(p, "len", a, 0);
-        case CGB_PUSH: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".append", a, 1), NULL);
-        case CGB_POP: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".pop()"));
-        case CGB_STR: return py_args(p, "str", a, 0);
-        case CGB_INT: return py_args(p, "int", a, 0);
-        case CGB_FLOAT: return py_args(p, "float", a, 0);
-        case CGB_UPPER: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".upper()"));
-        case CGB_LOWER: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".lower()"));
-        case CGB_TRIM: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".strip()"));
-        case CGB_SPLIT: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".split", a, 1), NULL);
-        case CGB_WORDS: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, ".split()"));
-        case CGB_JOIN: return cgx_dcatn(PD, py_ex(p, a->p[1], 10), py_t(p, ".join"), py_seq(p, "(", (CgxDoc *[]){A0}, 1, ")"), NULL);
-        case CGB_CONTAINS: *prec = CGX_PREC_CMP; return cgx_dcatn(PD, py_ex(p, a->p[1], CGX_PREC_CMP + 1), py_t(p, " in "), py_ex(p, a->p[0], CGX_PREC_CMP + 1), NULL);
-        case CGB_INDEXOF: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".find", a, 1), NULL);
-        case CGB_REPLACE: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".replace", a, 1), NULL);
-        case CGB_STARTS: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".startswith", a, 1), NULL);
-        case CGB_ENDS: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_args(p, ".endswith", a, 1), NULL);
-        case CGB_SLICE: return cgx_dcatn(PD, py_ex(p, a->p[0], 10), py_t(p, "["), py_ex(p, a->p[1], 0), py_t(p, ":"), a->n > 2 ? py_ex(p, a->p[2], 0) : cgx_dnil(PD), py_t(p, "]"), NULL);
-        case CGB_KEYS: return cgx_dcatn(PD, py_t(p, "list("), py_ex(p, a->p[0], 10), py_t(p, ".keys())"), NULL);
-        case CGB_PRINT: return py_args(p, "print", a, 0);
-        case CGB_ABS: return py_args(p, "abs", a, 0);
-        case CGB_MIN: return py_args(p, "min", a, 0);
-        case CGB_MAX: return py_args(p, "max", a, 0);
-        case CGB_SQRT: p->need_math = 1; return py_args(p, "math.sqrt", a, 0);
-        case CGB_FLOOR: p->need_math = 1; return py_args(p, "math.floor", a, 0);
-        case CGB_POW: p->need_math = 1; return py_args(p, "math.pow", a, 0);
-        case CGB_SUM: return py_args(p, "sum", a, 0);
-        case CGB_SORT: return py_args(p, "sorted", a, 0);
-        case CGB_REVERSE: return cgx_dcat(PD, py_ex(p, a->p[0], 10), py_t(p, "[::-1]"));
-        case CGB_MATCHES: p->need_re = 1; *prec = CGX_PREC_CMP; return cgx_dcatn(PD, py_t(p, "re.search("), py_ex(p, a->p[1], 0), py_t(p, ", "), A0, py_t(p, ") is not None"), NULL);
-        case CGB_ERRMSG: return py_args(p, "str", a, 0);
-    }
-    cgx_err(p->g, n->line, "python: built-in `%s` has no Python form yet", n->s);
-    return cgx_dnil(PD);
+    const CgxOp *op = cgx_op_by_id(n->bi);
+    const CgxOpMap *m = op ? cgx_op_map(op, 0, a->n ? a->p[0]->ty.k : CGT_ANY) : NULL;
+    if (!m || !m->tmpl) { cgx_err(p->g, n->line, "python: built-in `%s` has no Python form%s%s", n->s, m && m->unsup ? ": " : " yet", m && m->unsup ? m->unsup : ""); return cgx_dnil(PD); }
+    if (m->imp) { if (!strcmp(m->imp, "math")) p->need_math = 1; else if (!strcmp(m->imp, "re")) p->need_re = 1; else cgx_err(p->g, n->line, "python: unknown import `%s` in the mapping of `%s`", m->imp, n->s); }
+    *prec = m->prec;
+    return py_tmpl(p, n, m->tmpl);
 }
 static int py_binprec(int op) { switch (op) { case CGO_OR: return 2; case CGO_AND: return 3; case CGO_EQ: case CGO_NE: case CGO_LT: case CGO_LE: case CGO_GT: case CGO_GE: case CGO_IN: return 5; case CGO_ADD: case CGO_SUB: return 6; default: return 7; } }
 static CgxDoc *py_ex0(CgxPy *p, const CgxNode *n, int *prec) {

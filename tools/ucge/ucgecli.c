@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include "src/coder/ucge.c"
+#include "src/coder/ucgereg.c"
 #include "src/coder/ucgecheck.c"
 #include "src/coder/ucgetype.c"
 #include "src/coder/ucgedoc.c"
@@ -90,6 +91,13 @@ static int run_python(const char *code, const char *tests, int *pass, int *fail,
 }
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n"); return 2; }
+    for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--ops")) {          /* --ops ARQUIVO: operacoes do usuario (docs/ucge.md, registro) */
+        char e[300]; cgx_reg_init();
+        if (!cgx_reg_load_file(argv[i + 1], e, sizeof e)) { fprintf(stderr, "ops: %s: %s\n", argv[i + 1], e); return 2; }
+        for (int j = i; j + 2 < argc; j++) argv[j] = argv[j + 2];
+        argc -= 2; i--;
+    }
+    if (!strcmp(argv[1], "ops")) { CgxB b = {0}; if (argc > 2 && !strcmp(argv[2], "--dump")) cgx_reg_dump(&b); else cgx_reg_list(&b); fputs(b.p ? b.p : "", stdout); free(b.p); return 0; }
     if (!strcmp(argv[1], "selftest")) return selftest();
     Cgx g;
     if (!strcmp(argv[1], "check") && argc >= 3) { const int ok = load(&g, argv[2], 1); printf("%s\n", ok ? "ok" : "errors"); cgx_free(&g); return !ok; }
@@ -105,6 +113,7 @@ int main(int argc, char **argv) {
         CgxGenOpts o = {88, 1, 4}; int tests = !strcmp(argv[1], "run");
         for (int i = 4; i < argc; i++) { if (!strcmp(argv[i], "--no-comments")) o.comments = 0; else if (!strcmp(argv[i], "--width") && i + 1 < argc) o.width = atoi(argv[++i]); else if (!strcmp(argv[i], "--tests")) tests = 1; }
         if (!load(&g, argv[3], 1)) { printf("errors\n"); cgx_free(&g); return 1; }
+        for (int i = 4; i < argc; i++) if (!strcmp(argv[i], "--simp")) { const int c = cgx_reg_simplify(&g); fprintf(stderr, "simplified %d\n", c); }
         CgxB code = {0}, tb = {0};
         const int ok = be->gen(&g, &o, &code, tests ? &tb : NULL);
         for (int i = 0; i < g.nerr; i++) printf("line %d: %s\n", g.err[i].line, g.err[i].msg);
