@@ -194,9 +194,8 @@ static const char KATANA_CHANGES[] = "";
 #include "render/sdclip.c"              /* render: tokenizador e codificador de texto CLIP */
 #include "render/sdunet.c"              /* render: UNet e ControlNet (CPU) */
 #include "render/sdvae.c"               /* render: VAE, codificador e decodificador (CPU) */
-#include "render/sdsel.c"               /* render: selecao do briefing por relevancia (generica; o briefing e o prompt) */
 #include "render/sdgen.c"               /* render: amostrador, PNG, bordas e o comando katana render generate */
-#include "render/sdbrief.c"             /* render: o briefing e o prompt, sem reescrita; tokens/orcamento (katana render brief) */
+#include "render/sdbrief.c"             /* render: o briefing e o prompt, sem reescrita nem corte; conta tokens e recusa o que passa do limite (katana render brief) */
 #include "render/sdlogo.c"               /* render: logo (PNG com alfa) composto no render gerado (katana render logo) */
 #include "render/fxconvert_text.c"      /* render: conversor do codificador de texto do FLUX.2 klein (katana render flux-convert-text) */
 #include "render/fxtext.c"              /* render: texto do FLUX.2 klein, Qwen3-4B camadas 9/18/27 (katana render flux-text) */

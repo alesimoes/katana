@@ -8,7 +8,7 @@ static const char CT_RENDER_DESC[] =
     "`brief` is the FINAL prompt, written by you in the engine's language and style; the engine does not rewrite, translate or add anything. "
     "stable (default, fast preview): short English tags or phrases separated by commas, subject and style first, up to ~290 tokens (~200 words). "
     "flux (high definition): English prose, subject and style first, up to ~500 tokens (~350 words). "
-    "Beyond the limit, whole lines or phrases are cut by relevance (colours, numbers, rules, rare words kept); the result says `brief: N/budget tokens` and `cut: ...` so you can resend it shorter. "
+    "A brief over the limit is REFUSED, never cut: you get `error: the brief has N tokens, the limit for <engine> is L ...`; rewrite it shorter and call again. "
     "Colours: use plain colour names (burgundy, slate blue-grey, cream), never hex or RGB numbers: the image model does not read them; keep the user's own words for materials and objects, do not rename or reinterpret them, and do not invent a room type. "
     "`image` (PNG or JPEG) is optional: a view, sketch or photo the picture should follow; leave it out to draw from the text alone. `brief` may also be the path of a text file with the prompt. "
     "Flow: preview with stable first, show the result and ASK the user whether it is approved; call flux only after the user approves (more steps and a larger size for the final), "
@@ -83,7 +83,9 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
         if (!res) { snprintf(out, cap, "error: could not start the render"); goto done; }
         const char *tail = tail_lines(res, rn, 6, 900);
         struct stat st;
-        if (rc != 0) snprintf(out, cap, "error: render failed (exit code %d): %.900s", rc, tail);
+        const char *refusal = rc != 0 ? strstr(res, "error: the brief has ") : NULL;            /* o motor recusou o briefing (passou do limite): devolve so essa linha, o modelo reescreve mais curto */
+        if (refusal) { size_t k = 0; while (refusal[k] && refusal[k] != '\n' && k < 600) k++; snprintf(out, cap, "%.*s", (int)k, refusal); }
+        else if (rc != 0) snprintf(out, cap, "error: render failed (exit code %d): %.900s", rc, tail);
         else if (stat(target, &st) != 0 || st.st_size <= 0) snprintf(out, cap, "error: the render finished but %.300s was not written: %.600s", target, tail);
         else {
             char ap[1300]; if (target[0] != '/' && getcwd(ap, 900)) snprintf(ap + strlen(ap), sizeof ap - strlen(ap), "/%s", target); else snprintf(ap, sizeof ap, "%s", target);
@@ -91,17 +93,16 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
             used[0] = 0; const char *u = strstr(res, tag);           /* o motor diz quem processou de fato (cpu, cuda ou vulkan) */
             if (u) { size_t k = 0; while (u[k] && u[k] != '\n' && k < sizeof used - 1) { used[k] = u[k]; k++; } used[k] = 0; }
             else snprintf(used, sizeof used, "%s unknown", tag);
-            /* o motor diz quantos tokens o prompt usou e o que cortou ("[brief] <motor> tokens N/B" e "[brief] cut N: ..."): o modelo reenvia mais curto */
-            char bl[240] = "", cl[1300] = "";
+            /* o motor diz quantos tokens o prompt usou ("[brief] <motor> tokens N/B") */
+            char bl[240] = "";
             { const char *q = strstr(res, "[brief] "); 
               while (q) {
                   const char *eol = strchr(q, '\n'); size_t k = eol ? (size_t)(eol - q) : strlen(q);
                   const char *t = strstr(q, " tokens "); const int isTok = t && t < q + k && !strncmp(q + 8, eng, strlen(eng));
                   if (isTok) { int u2 = 0, b2 = 0; if (sscanf(t + 8, "%d/%d", &u2, &b2) == 2) snprintf(bl, sizeof bl, "\nbrief: %d/%d tokens", u2, b2); }
-                  else if (!strncmp(q + 8, "cut ", 4)) { const char *c = strchr(q + 12, ':'); if (c && c < q + k) snprintf(cl, sizeof cl, "\ncut: %.*s", (int)(k - (size_t)(c + 2 - q) < 1200 ? k - (size_t)(c + 2 - q) : 1200), c + 2); }
                   q = eol ? strstr(eol, "[brief] ") : NULL;
               } }
-            snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s%s\n%s", eng, ap, (long long)st.st_size, bl, cl, used);
+            snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s\n%s", eng, ap, (long long)st.st_size, bl, used);
         }
     }
 done:

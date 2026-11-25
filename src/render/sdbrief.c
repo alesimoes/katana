@@ -1,11 +1,11 @@
-/* ============================ render: o briefing e o prompt (sem reescrita) ===============================
+/* ============================ render: o briefing e o prompt (sem reescrita, sem corte) ===============================
  * O motor NAO escreve o briefing: quem manda (o modelo de conversa pela ferramenta Render, ou o usuario) escreve o prompt final no idioma e no
- * estilo do motor, e ele passa com as palavras do autor, sem prefixo, gabarito, traducao nem acrescimo. Cabendo no orcamento (FLUX: 504 posicoes
- * de texto, tokenizador real; Stable: --chunks blocos de 75 tokens do CLIP) passa inteiro e intacto; excedendo, sdsel.c escolhe por relevancia
- * as unidades (linhas, frases, trechos) que ficam, na ordem original. O resultado diz "tokens N/orcamento" e o que foi cortado, para o autor reenviar mais curto.
+ * estilo do motor, e ele passa com as palavras do autor, sem prefixo, gabarito, traducao nem acrescimo. O motor so CONTA os tokens (FLUX: 504
+ * posicoes de texto, tokenizador real; Stable: --chunks blocos de 75 tokens do CLIP, chunks*75-4). Cabendo, o texto passa inteiro e intacto;
+ * passando do limite NADA e cortado: o motor recusa com um erro que diz quantos tokens tem, o limite e o que fazer, e quem mandou reescreve mais curto.
  *
  *   katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--show] [opcoes]    (Stable, imagem a imagem)
- *   katana render brief selftest [briefing.md] */
+ *   katana render brief selftest */
 
 static int fxt_count(const char *prompt);                  /* render/fxtext.c: tokens do prompt como o FLUX os conta (-1 = sem o tokenizador) */
 
@@ -24,14 +24,35 @@ static int sdb_count_flux(const char *text, void *ctx) {
     static int warned; if (!warned) { warned = 1; fprintf(stderr, "[brief] sem o tokenizador do FLUX (qwen3-4b-text.gguf): contagem estimada por caracteres, com folga\n"); }
     return (int)(strlen(text) * 0.30) + 16;
 }
+static int sdb_count_est(const char *t, void *ctx) { (void)ctx; return sdb_tokens(NULL, t); }
 #define SDB_FLUX_BUDGET 504                    /* 512 posicoes de texto menos 8 de margem (o modelo de conversa gasta cerca de 12, ja contados) */
+#define SDB_MAX_CHUNKS 16                      /* o maximo de blocos de 75 tokens que o Stable aceita */
 #define SDB_NEG_DEFAULT "blurry, low quality, deformed"   /* negativo do Stable quando o chamador nao passa --negative: generico, sem dominio */
 
+/* a mensagem de recusa (em ingles, acionavel) quando used passa de budget; devolve 1 se passou. chunks < 0: motor sem --chunks (FLUX) */
+static int sdb_limit_msg(const char *engine, int used, int budget, int chunks, char *o, size_t cap) {
+    if (used <= budget) return 0;
+    const int words = budget * 7 / 100 * 10;                                     /* ~0.7 palavra por token, em dezenas */
+    if (chunks < 0) snprintf(o, cap, "error: the brief has %d tokens, the limit for %s is %d (about %d words): shorten it and send it again", used, engine, budget, words);
+    else if (chunks < SDB_MAX_CHUNKS) snprintf(o, cap, "error: the brief has %d tokens, the limit for %s is %d with --chunks %d (about %d words): shorten it, or raise --chunks (up to %d) and send it again", used, engine, budget, chunks, words, SDB_MAX_CHUNKS);
+    else snprintf(o, cap, "error: the brief has %d tokens, the limit for %s is %d, the most --chunks allows (about %d words): shorten it and send it again", used, engine, budget, words);
+    return 1;
+}
 
-/* o briefing (+ pedido extra) -> o prompt do motor; rep diz tokens/orcamento e o que saiu */
-static char *sdb_flux_prompt(const char *text, const char *extra, SdsRep *rep) { return sds_prompt(text, extra, SDB_FLUX_BUDGET, sdb_count_flux, NULL, rep, sdb_explain_on); }
-static char *sdb_stable_prompt(const char *text, const char *extra, const SdClip *clip, int chunks, SdsRep *rep) {
-    return sds_prompt(text, extra, chunks * 75 - 4, sdb_count_sd, (void *)clip, rep, sdb_explain_on);
+/* o briefing (+ pedido extra, ultima linha, como veio) -> o prompt do motor: o proprio texto, intacto, ou NULL (recusa, com o erro em err) se passa do limite.
+ * rep (opcional) recebe "[brief] <motor> tokens N/limite" */
+static char *sdb_make(const char *engine, const char *text, const char *extra, int budget, int chunks, int (*count)(const char *, void *), void *ctx, FILE *rep, FILE *err) {
+    const size_t tl = strlen(text), el = extra && extra[0] ? strlen(extra) : 0;
+    char *tx = xalloc(tl + el + 2, 1); memcpy(tx, text, tl);
+    if (el) { tx[tl] = '\n'; memcpy(tx + tl + 1, extra, el); }
+    const int used = count(tx, ctx); char msg[400];
+    if (sdb_limit_msg(engine, used, budget, chunks, msg, sizeof msg)) { if (err) fprintf(err, "%s\n", msg); free(tx); return NULL; }
+    if (rep) fprintf(rep, "[brief] %s tokens %d/%d\n", engine, used, budget);
+    return tx;
+}
+static char *sdb_flux_prompt(const char *text, const char *extra, FILE *rep) { return sdb_make("flux", text, extra, SDB_FLUX_BUDGET, -1, sdb_count_flux, NULL, rep, stderr); }
+static char *sdb_stable_prompt(const char *text, const char *extra, const SdClip *clip, int chunks, FILE *rep) {
+    return sdb_make("stable", text, extra, chunks * 75 - 4, chunks, sdb_count_sd, (void *)clip, rep, stderr);
 }
 
 /* arquivo -> texto (malloc) ou NULL */
@@ -42,120 +63,76 @@ static char *sdb_read_text(const char *path) {
     return t;
 }
 
-/* generate --engine stable --brief: o texto vira o prompt (P->prompt); o negativo e o do chamador ou o generico curto */
+/* generate --engine stable --brief: o texto vira o prompt (P->prompt); o negativo e o do chamador ou o generico curto. 0 = recusado (passa do limite) ou erro */
 static int sdb_fill(SdpParams *P, const char *path, const char *extra) {
     char *text = sdb_read_text(path); if (!text) return 0;
     SdgFile base; SdClip clip; const SdClip *cp = NULL; char mp[1100];
     snprintf(mp, sizeof mp, "%s/sd15-realistic-vision.gguf", P->models);
     if (sdg_open(&base, mp) && sdc_load(&clip, &base)) cp = &clip;
-    SdsRep rep; P->prompt = sdb_stable_prompt(text, extra, cp, P->max_chunks, &rep);
+    if (P->max_chunks < 1) P->max_chunks = 1;
+    if (P->max_chunks > SDB_MAX_CHUNKS) P->max_chunks = SDB_MAX_CHUNKS;
+    P->prompt = sdb_stable_prompt(text, extra, cp, P->max_chunks, stderr);
+    free(text);
+    if (!P->prompt) return 0;
     if (!P->negative || !P->negative[0]) P->negative = SDB_NEG_DEFAULT;
     fprintf(stderr, "[brief] prompt do Stable: %s\n[brief] negativo: %s\n", P->prompt, P->negative);
-    sds_report(&rep, "stable", stderr);
     return 1;
 }
 
 /* ---------- teste ---------- */
 static const char SDB_T_MAGA[] =
     "Pixel art portrait of a young sorceress in the style of a classic 16-bit adventure game, hero shot, clean readable sprite.\n"
-    "She wears a deep green hooded robe (RGB 30,110,60) with gold trim, holds a wooden staff with a glowing blue crystal, long silver braid.\n"
+    "She wears a deep green hooded robe with gold trim, holds a wooden staff with a glowing blue crystal, long silver braid.\n"
     "Warm torch light from the left, soft rim light, simple dark stone dungeon background, limited palette of 16 colors, crisp pixels, no anti-aliasing.\n";
 
 static int sdb_tck(const char *what, int ok) { printf("  %-76s %s\n", what, ok ? "OK" : "FALHOU"); return ok ? 0 : 1; }
-static int sdb_count_est(const char *t, void *ctx) { (void)ctx; return sdb_tokens(NULL, t); }
 
-/* as palavras de out aparecem em in, na mesma ordem (subsequencia): nada acrescentado, ordem original mantida */
-static int sdb_subseq(const char *in, const char *out) {
-    static char A[6000][32], B[6000][32];
-    const int na = sds_words(in, A, 6000), nb = sds_words(out, B, 6000);
-    int i = 0;
-    for (int j = 0; j < nb; j++) { while (i < na && strcmp(A[i], B[j])) i++; if (i >= na) return 0; i++; }
-    return 1;
-}
-/* termos do gabarito antigo: nenhum aparece na saida se nao estavam na entrada */
-static int sdb_no_old_template(const char *in, const char *out) {
-    static const char *const T[] = { "architectural", "interior photograph", "3D model export", "no watermark", "reference view", "Each material", "Main objects", "16:9", NULL };
-    for (int i = 0; T[i]; i++) if (strstr(out, T[i]) && !strstr(in, T[i])) return 0;
-    return 1;
-}
-static int sdb_has_in_order(const char *s, const char *a, const char *b) { const char *p = strstr(s, a), *q = strstr(s, b); return p && q && p < q; }
-
-static int sdb_selftest_unit(const char *real_path) {
-    int bad = 0; SdsRep rep;
-    printf("selecao generica (contador estimado, deterministico)\n");
-    /* (i) texto curto: intacto, byte a byte; com o pedido extra, so o texto + nova linha + o pedido */
-    char *o = sds_prompt(SDB_T_MAGA, NULL, 296, sdb_count_est, NULL, &rep, 0);
-    bad += sdb_tck("curto: passa inteiro e intacto (byte a byte)", rep.whole && !strcmp(o, SDB_T_MAGA) && rep.ncut == 0);
-    free(o);
-    o = sds_prompt("a red apple", "on a table", 296, sdb_count_est, NULL, &rep, 0);
-    bad += sdb_tck("curto + pedido extra: texto, nova linha, pedido; nada mais", !strcmp(o, "a red apple\non a table"));
-    free(o);
-    /* (ii) longo: maga + 40 itens */
-    static char big[16000]; snprintf(big, sizeof big, "%s\nREGRAS ABSOLUTAS:\n- never add text or logos\n- keep the face unchanged\n\nDETALHES:\n", SDB_T_MAGA);
-    for (int i = 0; i < 40; i++) {
-        char l[220];
-        if (i == 7) snprintf(l, sizeof l, "- item %02d: belt buckle color RGB 190,150,60, 3 cm wide\n", i);
-        else if (i == 21) snprintf(l, sizeof l, "- item %02d: rim light at 3000 K from the upper left\n", i);
-        else if (i == 33) snprintf(l, sizeof l, "- item %02d: staff of dark wood, 120 cm tall\n", i);
-        else snprintf(l, sizeof l, "- item %02d: small plain ornament number %d somewhere near the border of the picture\n", i, i * 7);
-        strncat(big, l, sizeof big - strlen(big) - 1);
+static int sdb_selftest(void) {
+    int bad = 0; char msg[400];
+    /* contagem e limite (contador estimado, deterministico) */
+    const int tk = sdb_count_est(SDB_T_MAGA, NULL);
+    printf("contagem e limite (contador estimado: %d tokens no briefing curto)\n", tk);
+    bad += sdb_tck("contagem: texto vazio 0 e mais palavras, mais tokens", sdb_count_est("", NULL) == 0 && sdb_count_est("a b c d", NULL) > sdb_count_est("a b", NULL) && tk > 40);
+    /* (i) curto: intacto, byte a byte; com o pedido extra, so o texto + nova linha + o pedido */
+    char *o = sdb_make("stable", SDB_T_MAGA, NULL, 296, 4, sdb_count_est, NULL, NULL, NULL);
+    bad += sdb_tck("curto: passa intacto (byte a byte), nada acrescentado", o && !strcmp(o, SDB_T_MAGA)); free(o);
+    o = sdb_make("stable", "a red apple", "on a table", 296, 4, sdb_count_est, NULL, NULL, NULL);
+    bad += sdb_tck("curto + pedido extra: texto, nova linha, pedido; nada mais", o && !strcmp(o, "a red apple\non a table")); free(o);
+    /* (ii) o limite: no limite passa, um token acima e recusado, sem cortar nada */
+    static char big[16000]; big[0] = 0;
+    int nw = 0, last_ok = 0;
+    for (; nw < 800; nw++) {                                                    /* palavras "w" ate a contagem passar de 296 */
+        strncat(big, "w ", sizeof big - strlen(big) - 1);
+        if (sdb_count_est(big, NULL) <= 296) last_ok = nw + 1; else break;
     }
-    const int tk0 = sdb_count_est(big, NULL);
-    o = sds_prompt(big, NULL, 200, sdb_count_est, NULL, &rep, 0);
-    const int tk = sdb_count_est(o, NULL);
-    printf("  longo: %d -> %d tokens (orcamento 200), %d unidades, %d cortadas\n", tk0, tk, rep.nunits, rep.ncut);
-    bad += sdb_tck("longo: cabe no orcamento e houve corte", tk0 > 200 && tk <= 200 && rep.ncut > 0 && !rep.whole);
-    bad += sdb_tck("longo: primeira linha (assunto) e regras obrigatorias ficam", strstr(o, "Pixel art portrait of a young sorceress") && strstr(o, "REGRAS ABSOLUTAS:") && strstr(o, "never add text or logos") && strstr(o, "keep the face unchanged"));
-    bad += sdb_tck("longo: alto sinal (RGB, K, cm) fica; ornamentos sem sinal saem", strstr(o, "RGB 190,150,60") && strstr(o, "3000 K") && strstr(o, "120 cm") && !strstr(o, "number 14 "));
-    bad += sdb_tck("longo: ordem original (assunto < regras < itens, item 07 < 21 < 33)", sdb_has_in_order(o, "Pixel art", "REGRAS ABSOLUTAS") && sdb_has_in_order(o, "REGRAS ABSOLUTAS", "item 07") && sdb_has_in_order(o, "item 07", "item 21") && sdb_has_in_order(o, "item 21", "item 33"));
-    bad += sdb_tck("longo: nenhuma palavra acrescentada (subsequencia do original)", sdb_subseq(big, o));
-    bad += sdb_tck("longo: cabecalho DETALHES fica porque algum filho entrou", strstr(o, "DETALHES:") != NULL);
-    bad += sdb_tck("longo: o relatorio lista o corte", rep.cut[0] && rep.used == tk);
-    bad += sdb_tck("(iii) gabarito antigo ausente (architectural, interior photograph, 3D model export, no watermark)", sdb_no_old_template(big, o) && sdb_no_old_template(SDB_T_MAGA, SDB_T_MAGA));
+    o = sdb_make("stable", big, NULL, 296, 4, sdb_count_est, NULL, NULL, NULL);
+    bad += sdb_tck("acima do limite: recusado (NULL), nada cortado nem devolvido", nw < 800 && o == NULL);
     free(o);
-    /* cabecalho sem filho escolhido nao fica; pedido extra obrigatorio */
-    o = sds_prompt(big, "make it night", 120, sdb_count_est, NULL, &rep, 0);
-    bad += sdb_tck("pedido extra (--nl) fica sempre, como ultima linha", strstr(o, "make it night") && strlen(o) >= 13 && !strcmp(o + strlen(o) - 13, "make it night") && sdb_count_est(o, NULL) <= 120);
-    free(o);
-    /* lista de tags numa linha so: cada tag e uma unidade, corte na tag inteira */
-    static char tags[4000]; snprintf(tags, sizeof tags, "pixel art sorceress, 16-bit, green robe RGB 30,110,60");
-    for (int i = 0; i < 90; i++) { char t[40]; snprintf(t, sizeof t, ", filler tag%d", i); strncat(tags, t, sizeof tags - strlen(tags) - 1); }
-    o = sds_prompt(tags, NULL, 100, sdb_count_est, NULL, &rep, 0);
-    bad += sdb_tck("tags: cabe, comeca no assunto, mantem a cor RGB, sem virgula pendurada, sem acrescimo", sdb_count_est(o, NULL) <= 100 && !strncmp(o, "pixel art sorceress,", 20) && strstr(o, "RGB 30,110,60") && o[strlen(o) - 1] != ',' && sdb_subseq(tags, o));
-    free(o);
-    if (real_path) {                                                          /* briefing real (dado local, nunca no repositorio): so confere, o texto nao e impresso */
-        char *real = sdb_read_text(real_path);
-        if (real) {
-            for (int e = 0; e < 2; e++) {
-                SdsRep r; char *out = e ? sdb_stable_prompt(real, NULL, NULL, 4, &r) : sdb_flux_prompt(real, NULL, &r);
-                printf("  arquivo (%s): %d/%d tokens, %d cortadas\n", e ? "stable" : "flux", r.used, r.budget, r.ncut);
-                bad += sdb_tck(e ? "arquivo/stable: cabe, ordem, nada acrescentado, sem gabarito antigo" : "arquivo/flux: cabe, ordem, nada acrescentado, sem gabarito antigo", r.used <= r.budget && sdb_subseq(real, out) && sdb_no_old_template(real, out));
-                free(out);
-            }
-        }
-    }
-    return bad;
-}
-
-static int sdb_selftest(const char *file) {
-    int bad = sdb_selftest_unit(file);
-    /* contador real do FLUX (se o tokenizador existir): o curto passa intacto e o longo cabe nas 504 posicoes */
-    SdsRep rep; char *o = sdb_flux_prompt(SDB_T_MAGA, NULL, &rep);
-    bad += sdb_tck("FLUX: briefing curto da maga passa intacto", rep.whole && !strcmp(o, SDB_T_MAGA)); free(o);
-    static char longp[20000]; longp[0] = 0;
-    snprintf(longp, sizeof longp, "%s", SDB_T_MAGA);
-    for (int i = 0; i < 60; i++) { char l[200]; snprintf(l, sizeof l, "Detail %d: a small ornament, number %d, somewhere near the border of the whole picture, dull grey.\n", i, i * 13); strncat(longp, l, sizeof longp - strlen(longp) - 1); }
-    o = sdb_flux_prompt(longp, NULL, &rep);
-    bad += sdb_tck("FLUX: briefing longo cabe nas 504 posicoes, com corte, sem acrescimo", rep.used <= SDB_FLUX_BUDGET && rep.ncut > 0 && sdb_subseq(longp, o) && !strncmp(o, "Pixel art portrait", 18)); free(o);
-    o = sdb_stable_prompt(longp, NULL, NULL, 4, &rep);
-    bad += sdb_tck("Stable: briefing longo cabe em 4 blocos (estimativa), sem acrescimo", rep.used <= 296 && rep.ncut > 0 && sdb_subseq(longp, o)); free(o);
+    big[last_ok * 2] = 0;
+    o = sdb_make("stable", big, NULL, 296, 4, sdb_count_est, NULL, NULL, NULL);
+    bad += sdb_tck("no limite: passa intacto", o && sdb_count_est(big, NULL) <= 296 && !strcmp(o, big)); free(o);
+    /* a recusa traz o numero, o limite e o que fazer (ingles) */
+    bad += sdb_tck("mensagem FLUX: tokens, limite 504, ~350 palavras, encurtar", sdb_limit_msg("flux", 812, 504, -1, msg, sizeof msg) && !strcmp(msg, "error: the brief has 812 tokens, the limit for flux is 504 (about 350 words): shorten it and send it again"));
+    bad += sdb_tck("mensagem Stable: limite do --chunks e pode subir ate 16", sdb_limit_msg("stable", 400, 296, 4, msg, sizeof msg) && strstr(msg, "limit for stable is 296 with --chunks 4") && strstr(msg, "raise --chunks (up to 16)"));
+    bad += sdb_tck("mensagem Stable com --chunks 16: so encurtar", sdb_limit_msg("stable", 1300, 1196, 16, msg, sizeof msg) && !strstr(msg, "raise") && strstr(msg, "shorten it"));
+    bad += sdb_tck("dentro do limite: sem mensagem", !sdb_limit_msg("flux", 504, 504, -1, msg, sizeof msg));
+    /* contador real do FLUX (se o tokenizador existir): o curto passa intacto e o longo e recusado */
+    if (fxt_count("a") >= 0) {
+        o = sdb_flux_prompt(SDB_T_MAGA, NULL, NULL);
+        bad += sdb_tck("FLUX (tokenizador real): briefing curto passa intacto", o && !strcmp(o, SDB_T_MAGA)); free(o);
+        static char longp[20000]; longp[0] = 0;
+        for (int i = 0; i < 60; i++) { char l[200]; snprintf(l, sizeof l, "Detail %d: a small ornament, number %d, somewhere near the border of the whole picture, dull grey.\n", i, i * 13); strncat(longp, l, sizeof longp - strlen(longp) - 1); }
+        const int n = fxt_count(longp);
+        char *r = sdb_make("flux", longp, NULL, SDB_FLUX_BUDGET, -1, sdb_count_flux, NULL, NULL, NULL);
+        bad += sdb_tck("FLUX (tokenizador real): briefing longo e recusado", n > SDB_FLUX_BUDGET && r == NULL); free(r);
+    } else printf("  (sem o tokenizador do FLUX nesta maquina: verificacoes do contador real puladas)\n");
     printf("RESULTADO: %s\n", bad ? "FALHOU" : "todos passaram");
     return bad ? 1 : 0;
 }
 
 static int sdb_main(int argc, char **argv) {
-    if (argc >= 1 && !strcmp(argv[0], "selftest")) return sdb_selftest(argc > 1 ? argv[1] : NULL);
-    if (argc < 1) { fprintf(stderr, "uso: katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--image3 amostras.png] [--show] [--explain-brief]\n"
+    if (argc >= 1 && !strcmp(argv[0], "selftest")) return sdb_selftest();
+    if (argc < 1) { fprintf(stderr, "uso: katana render brief <briefing.md> --image1 vista.png --out saida.png [--image2 linhas.png] [--image3 amostras.png] [--show]\n"
                                     "       [--size WxH] [--steps 20] [--seed 1] [--strength 0.55] [--guidance 7.0] [--control-scale 1.0] [--chunks 4] [--lcm] [--long 576] [--models pasta]\n"); return 1; }
     const char *brief = argv[0], *img1 = NULL, *img2 = NULL, *img3 = NULL, *out = NULL; int show = 0, steps_set = 0; double longside = 576.0;
     SdpParams P; memset(&P, 0, sizeof P);
@@ -168,7 +145,6 @@ static int sdb_main(int argc, char **argv) {
         else if (!strcmp(a, "--image3") && more) img3 = argv[++i];
         else if (!strcmp(a, "--out") && more) out = argv[++i];
         else if (!strcmp(a, "--show")) show = 1;
-        else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (!strcmp(a, "--size") && more) { if (sscanf(argv[++i], "%dx%d", &P.w, &P.h) != 2) { fprintf(stderr, "render: --size espera LARGURAxALTURA\n"); return 1; } }
         else if (!strcmp(a, "--lcm")) P.lcm = 1;
         else if (!strcmp(a, "--long") && more) longside = atof(argv[++i]);
@@ -184,16 +160,16 @@ static int sdb_main(int argc, char **argv) {
     if (!img1 || (!out && !show)) { fprintf(stderr, "render brief: faltam --image1 e --out (ou --show)\n"); return 1; }
     if (P.lcm && !steps_set) P.steps = 4;
     if (P.max_chunks < 1) P.max_chunks = 1;
-    if (P.max_chunks > 16) P.max_chunks = 16;
+    if (P.max_chunks > SDB_MAX_CHUNKS) P.max_chunks = SDB_MAX_CHUNKS;
     int64_t sz = 0; const uint8_t *b = map_file(brief, &sz);
     if (!b) { fprintf(stderr, "render brief: nao consegui abrir %s\n", brief); return 1; }
     char *text = xalloc((size_t)sz + 1, 1); memcpy(text, b, (size_t)sz);
     SdgFile base; SdClip clip; const SdClip *cp = NULL; char path[1100];
     snprintf(path, sizeof path, "%s/sd15-realistic-vision.gguf", P.models);
     if (sdg_open(&base, path) && sdc_load(&clip, &base)) cp = &clip;
-    SdsRep rep; char *prompt = sdb_stable_prompt(text, NULL, cp, P.max_chunks, &rep); const char *negative = SDB_NEG_DEFAULT;
+    char *prompt = sdb_stable_prompt(text, NULL, cp, P.max_chunks, stderr); const char *negative = SDB_NEG_DEFAULT;
+    if (!prompt) return 1;                                           /* passou do limite: recusado, nada cortado */
     fprintf(stderr, "[brief] prompt (o briefing, sem reescrita): %s\n[brief] negativo: %s\n", prompt, negative);
-    sds_report(&rep, "stable", stderr);
     if (img3) fprintf(stderr, "[brief] --image3 (amostras) nao e usada: o Stable Diffusion 1.5 nao toma uma textura como referencia\n");
     if (show) return 0;
     P.prompt = prompt; P.negative = negative; P.out = out; P.init = img1; P.control = img2 ? img2 : img1; P.control_lines = img2 != NULL;

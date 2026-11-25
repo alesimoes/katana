@@ -333,12 +333,9 @@ static int sdp_generate(const SdpParams *P) {
 static int sds_fill(SdpParams *P, const char *nl);
 static void sds_nl_prose(const char *nl, int has_image, char *out, size_t cap);   /* render/sdspec.c */
 static int fxg_generate(const char *prompt, const char *ref1, const char *ref2, int w, int h, int steps, uint64_t seed, const char *out, const char *lora, float lora_scale);   /* render/fxgen.c */
-struct SdsRep;                                                                              /* render/sdsel.c */
-static char *sdb_flux_prompt(const char *text, const char *extra, struct SdsRep *rep);          /* render/sdbrief.c */
-static void sds_report(const struct SdsRep *r, const char *engine, FILE *f);
+static char *sdb_flux_prompt(const char *text, const char *extra, FILE *rep);                 /* render/sdbrief.c */
 static char *sdb_read_text(const char *path);
 static int sdb_fill(SdpParams *P, const char *path, const char *extra);
-static int sdb_explain_on;                                                    /* --explain-brief: o que entrou e o que foi cortado, por unidade (render/sdbrief.c) */
 static int sdl_run(const char *image, const char *logo_path, const char *box, const char *persp, int blend, const char *out);   /* render/sdlogo.c */
 
 /* depois de gerar: o logo de verdade por cima. O render sem logo fica ao lado, com "-nologo" antes da extensao (a caixa errada se refaz sem gerar de novo) */
@@ -383,7 +380,6 @@ static int sdp_main(int argc, char **argv) {
         else if (!strcmp(a, "--init") && more) P.init = argv[++i];
         else if (!strcmp(a, "--init2") && more) init2 = argv[++i];
         else if (!strcmp(a, "--brief") && more) brief = argv[++i];
-        else if (!strcmp(a, "--explain-brief")) sdb_explain_on = 1;
         else if (!strcmp(a, "--logo") && more) logo = argv[++i];
         else if (!strcmp(a, "--logo-box") && more) logo_box = argv[++i];
         else if (!strcmp(a, "--logo-perspective") && more) logo_persp = argv[++i];
@@ -399,11 +395,11 @@ static int sdp_main(int argc, char **argv) {
     if ((logo_box || logo_persp) && !logo) { fprintf(stderr, "render: --logo-box/--logo-perspective exigem --logo arquivo.png\n"); return 1; }
     if (engine && !strcmp(engine, "flux")) {                                 /* FLUX.2 klein: prosa, sem negativo, referencias como fichas (fxgen.c) */
         char prose[6000]; const char *pr = P.prompt;
-        if (brief) {                                                         /* o briefing E o prompt, com as palavras do autor; so se passa do orcamento o excesso e cortado (render/sdbrief.c) */
+        if (brief) {                                                         /* o briefing E o prompt, com as palavras do autor; passando do limite de tokens e recusado, nunca cortado (render/sdbrief.c) */
             char *bt = sdb_read_text(brief); if (!bt) return 1;
-            struct SdsRep rep; pr = sdb_flux_prompt(bt, nl, &rep);
+            pr = sdb_flux_prompt(bt, nl, stderr); free(bt);
+            if (!pr) return 1;
             fprintf(stderr, "[brief] prompt do FLUX: %s\n", pr);
-            sds_report(&rep, "flux", stderr);
         } else if (nl) { sds_nl_prose(nl, P.init != NULL, prose, sizeof prose); pr = prose; }
         if (!pr || !P.out) { fprintf(stderr, "uso: katana render generate --engine flux (--brief briefing.md [--nl \"pedido adicional\"] | --nl \"pedido\" | --prompt \"...\" | --prompt-file arq) --out saida.png [--init ref.png [--init2 ref2.png]] [--size WxH (multiplos de 16)] [--steps 4] [--seed 0] [--lora arq.fxlora [--lora-scale 1.0]]\n       [--logo logo.png --logo-box x,y,w,h [--logo-perspective x1,y1,..,x4,y4] [--logo-blend]]\n"); return 1; }
         if (init2 && !P.init) { fprintf(stderr, "render: --init2 exige --init\n"); return 1; }
