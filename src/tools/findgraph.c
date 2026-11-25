@@ -1,7 +1,7 @@
 /* ---------- grafo de arquivos do Find e ativacao esparsa (ver docs/tools.md e docs/investigation-engine.md) ----------
- * Nos = arquivos do indice do Find. Quatro tipos de aresta, nao dirigidas, guardadas num CSR com peso normalizado por linha:
- *   sym   identificador usado num arquivo e definido (regra de simbolos do indice) em outro; peso idf; nomes usados em mais
- *         de max(30, 2%) arquivos ou definidos em mais de 3 ficam de fora (nao criam hubs)
+ * Nos = arquivos do indice do coder. Quatro tipos de aresta, nao dirigidas, guardadas num CSR com peso normalizado por linha:
+ *   sym   identificador usado num arquivo e definido em outro; peso idf; nomes usados em mais de max(30, 2%) arquivos ou definidos em mais de 3
+ *         ficam de fora (nao criam hubs)
  *   path  um arquivo cita o caminho (nome do arquivo com extensao conhecida, import relativo, import de python) do outro
  *   rare  identificador raro (em 2 a 4 arquivos, 6+ letras, com _ ou camelCase) compartilhado; peso idf/(df-1)
  *   co    mudaram juntos no git (ultimos FG_GITLOG commits, sem os de mais de FG_GITMAX arquivos); peso 1/(n-1), teto 3; beta 0.5
@@ -21,7 +21,6 @@ static int fgs_find(const FgsGraph *G, uint64_t h) {
     while (lo <= hi) { const int mid = (lo + hi) / 2; if (G->hash[mid] == h) return mid; if (G->hash[mid] < h) lo = mid + 1; else hi = mid - 1; }
     return -1;
 }
-#define FG_MAGIC 0x46524752u        /* "RGRF" */
 #define FG_GITLOG 2000
 #define FG_GITMAX 40
 #define FG_K_FILE 40

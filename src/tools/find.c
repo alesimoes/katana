@@ -947,7 +947,7 @@ static int fd_rank(FdIndex *X, const char *query, const char *pre, FdHit *hits, 
 
 /* outros arquivos que citam os simbolos definidos em [a,b] do arquivo fi; escreve "also referenced in: ...".
    Se alguma linha mostrada (pref) define um simbolo, so esses contam; senao todos os do trecho. */
-static void fd_also_store(FdIndex *X, int fi, int a, int b, const int *pref, int npref, CtSb *sb) {
+static void fd_also(FdIndex *X, int fi, int a, int b, const int *pref, int npref, CtSb *sb) {
     /* modo store: quem cita o nome vem do indice de simbolos (referencias reais, nao a palavra solta no texto); documentos de texto nao tem referencias */
     static char fl[64][300]; int cnt[64], nfl = 0;
     if (X->f[fi].kind == FK_MD) return;
@@ -979,14 +979,11 @@ static void fd_also_store(FdIndex *X, int fi, int a, int b, const int *pref, int
     if (nfl > show) { char m[32]; snprintf(m, sizeof m, " (+%d more)", nfl - show); ct_sb_puts(sb, m); }
     ct_sb_puts(sb, "\n");
 }
-static void fd_also(FdIndex *X, int fi, int a, int b, const int *pref, int npref, CtSb *sb) {
-    fd_also_store(X, fi, a, b, pref, npref, sb);
-}
 
 /* nomes usados nas linhas do trecho que estao definidos em outro lugar do indice (a aresta de saida do grafo):
    "calls: nome (arquivo:linha)". Nota de cada nome: estar numa linha mostrada, perto delas, definido em outro
    arquivo, ter varias partes. Nomes definidos em mais de 3 lugares, curtos ou so em comentario ficam de fora. */
-static void fd_calls_store(FdIndex *X, int fi, int a, int b, const FdText *t, const int *pref, int npref, CtSb *sb) {
+static void fd_calls(FdIndex *X, int fi, int a, int b, const FdText *t, const int *pref, int npref, CtSb *sb) {
     /* modo store: onde o nome esta definido vem do indice de simbolos (definicoes de verdade em todo o projeto, nao so nos candidatos) */
     typedef struct { char name[100]; char path[300]; int line, same; } Got;
     Got got[32]; int gs[32], ng = 0;
@@ -1028,9 +1025,6 @@ static void fd_calls_store(FdIndex *X, int fi, int a, int b, const FdText *t, co
         ct_sb_puts(sb, m);
     }
     ct_sb_puts(sb, "\n");
-}
-static void fd_calls(FdIndex *X, int fi, int a, int b, const FdText *t, const int *pref, int npref, CtSb *sb) {
-    fd_calls_store(X, fi, a, b, t, pref, npref, sb);
 }
 
 /* ---- modo refs ---- */
