@@ -313,6 +313,7 @@ static uint64_t rp_hash(const char *s, size_t n, uint64_t h) { for (size_t i = 0
 /* o resultado e de uma chamada que falhou? erro da ferramenta, ou comando com codigo de saida diferente de zero */
 static int rp_failed(const char *r) {
     if (!strncmp(r, "error:", 6)) return 1;
+    if (!strncmp(r, "[web: ", 6) && strncmp(r + 6, "ok,", 3) != 0 && strncmp(r + 6, "partial,", 8) != 0) return 1;      /* WebFetch: shell, empty, blocked, login ou error (docs/web-design.md 3.1) */
     const char *e = strstr(r, "Exit code ");
     if (e && e[10] >= '1' && e[10] <= '9') return 1;
     e = strstr(r, "[exit code ");

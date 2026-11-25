@@ -70,7 +70,9 @@ static void ct_wf_expire(const char *url) {
 /* ---------- cache em disco (entre sessoes) e leitura de varias paginas ao mesmo tempo ----------
  * Pasta: $KATANA_CACHE_DIR/web ou ~/.katana/cache/web. Um arquivo por chave (hash FNV-1a do texto): buscas valem 6 horas,
  * paginas 24 horas; passando de 50 MB os mais antigos saem (uma vez por processo). KATANA_WEB_CACHE=0 desliga.
- * Arquivo: "KW1 <chave>\n" e depois o conteudo. Pagina: conteudo = "<tn> <ln> <nlinks>\n" + texto + links. */
+ * Arquivo: "KW1 <chave>\n" e depois o conteudo. Pagina: conteudo = "<tn> <ln> <nlinks> <qualidade> <rota>\n" + texto + links. Uma entrada por
+ * endereco, com a nota do verificador (agent/webnav.c) e a rota que deu o texto; so entra leitura ok, e uma shell/empty nunca e servida
+ * nem apaga uma entrada boa (docs/web-design.md 3.7). */
 #ifndef _WIN32
 #include <poll.h>
 #include <errno.h>
@@ -166,8 +168,9 @@ static WnPage *ct_wc_page_load(const char *url) {
     size_t len = 0;
     char *b = ct_wc_read('p', url, CT_WC_PAGINA, &len);
     if (!b) return NULL;
-    size_t tn = 0, ln = 0; int nl = 0, hl = 0;
-    if (sscanf(b, "%zu %zu %d%n", &tn, &ln, &nl, &hl) != 3 || b[hl] != '\n' || (size_t)hl + 1 + tn + ln > len) { free(b); return NULL; }
+    size_t tn = 0, ln = 0; int nl = 0, hl = 0, qual = 0;
+    char route[24] = "";
+    if (sscanf(b, "%zu %zu %d %d %23s%n", &tn, &ln, &nl, &qual, route, &hl) != 5 || b[hl] != '\n' || (size_t)hl + 1 + tn + ln > len) { free(b); return NULL; }
     if (tn < 200) { free(b); return NULL; }      /* pagina quase vazia: a leitura em paralelo da busca nao roda o JavaScript e guardou so o titulo (25/11: 13 bytes de uma pagina de 6 KB); o WebFetch busca de novo, com o navegador */
     char *txt = (char *)malloc(tn + 1), *lk = (char *)malloc(WN_LINKS_BYTES > ln + 1 ? WN_LINKS_BYTES : ln + 1);
     if (!txt || !lk) { free(b); free(txt); free(lk); return NULL; }
@@ -175,13 +178,15 @@ static WnPage *ct_wc_page_load(const char *url) {
     memcpy(lk, b + hl + 1 + tn, ln); lk[ln] = 0;
     free(b);
     WnPage *pg = wn_put(url, txt, tn, lk, ln, nl);
+    pg->verdict = WQ_OK; pg->quality = qual;
+    snprintf(pg->route, sizeof pg->route, "%s", route);
     *ct_wf_at(url, 1) = time(NULL);
     return pg;
 }
 static void ct_wc_page_store(const WnPage *pg) {
-    if (!ct_wc_on() || !pg->txt) return;
-    char hd[80];
-    const int hl = snprintf(hd, sizeof hd, "%zu %zu %d\n", pg->tn, pg->ln, pg->nlinks);
+    if (!ct_wc_on() || !pg->txt || pg->verdict != WQ_OK) return;      /* shell e empty nao entram: nao apagam uma leitura melhor */
+    char hd[120];
+    const int hl = snprintf(hd, sizeof hd, "%zu %zu %d %d %s\n", pg->tn, pg->ln, pg->nlinks, pg->quality, pg->route[0] ? pg->route : "plain");
     size_t an = (size_t)hl + pg->tn;
     char *a = (char *)malloc(an + 1);
     if (!a) return;
@@ -400,14 +405,15 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
             char *tmp = (char *)malloc(cap);
             if (!tmp) { snprintf(out, cap, "error: out of memory"); goto done; }
             const double t1 = now_sec();
-            tool_web_fetch(j, j + n, tmp, cap > 400 ? cap - 400 : cap);
+            tool_web_fetch(j, j + n, tmp, cap > 1500 ? cap - 1500 : cap);
             net = now_sec() - t1;
-            if (strncmp(tmp, "error:", 6) == 0) snprintf(out, cap, "%s%s", tmp, upgraded ? " (fetched after upgrading http to https)" : "");
+            if (strncmp(tmp, "error:", 6) == 0) { snprintf(out, cap, "%s%s", tmp, upgraded ? " (fetched after upgrading http to https)" : ""); wn_prefix_err(out, cap, u2); }
             else {
                 time_t *t = ct_wf_at(u2, 1); if (!*t) *t = time(NULL);
                 snprintf(out, cap, "%s\n\n%s", hdr, tmp);
-                WnPage *np = wn_get(u2);
+                WnPage *np = wn_peek(u2);
                 if (!had && np) ct_wc_page_store(np);
+                if (np) wn_prefix(out, cap, np, u2, g_wn_returned);
                 okres = 1;
             }
             free(tmp);
@@ -424,13 +430,13 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
             const double t1 = now_sec();
             pg = wn_load(u2, err, sizeof err);
             net = now_sec() - t1;
-            if (!pg) { snprintf(out, cap, "%s%s", err, upgraded ? " (fetched after upgrading http to https)" : ""); goto done; }
+            if (!pg) { snprintf(out, cap, "%s%s", err, upgraded ? " (fetched after upgrading http to https)" : ""); wn_prefix_err(out, cap, u2); goto done; }
             *ct_wf_at(u2, 1) = time(NULL);
             ct_wc_page_store(pg);
         }
-        if (!pg->tn) { snprintf(out, cap, "%s\n\n(the page has no readable text, even after running its JavaScript when a browser is installed; it probably needs a login. Try another source)", hdr); goto done; }
+        if (!pg->tn) { snprintf(out, cap, "%s\n\n(the page has no readable text)", hdr); wn_prefix(out, cap, pg, u2, 0); okres = 1; goto done; }
         const size_t total = pg->tn, avail = total < CT_WF_READ ? total : CT_WF_READ;
-        size_t lim = cap > 700 ? cap - 700 : cap / 2;
+        size_t lim = cap > 1700 ? cap - 1700 : cap / 2;
         if (g_budget >= 500 && lim > g_budget) lim = g_budget;
         if (lim > CT_WF_DEF) lim = CT_WF_DEF;                     /* resposta curta por padrao: mais so com offset */
         size_t o;
@@ -438,6 +444,7 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
             snprintf(out, cap, "%s: returned all %zu bytes of the page text%s\n\n", hdr, avail, total > avail ? " (the first 100000 read; the rest was not read)" : "");
             o = strlen(out);
             memcpy(out + o, pg->txt, avail); out[o + avail] = 0;
+            wn_prefix(out, cap, pg, u2, avail);
             okres = 1;
             goto done;
         }
@@ -466,6 +473,7 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
                      "Read more with offset=<n>, or ask for a word with find=\"word\".\n\n", hdr, used, total, what, total - used);
             o = strlen(out);
             memcpy(out + o, sel, sl); out[o + sl] = 0;
+            wn_prefix(out, cap, pg, u2, used);
         } else {                                                  /* sem palavras no prompt ou nenhum trecho cita: o comeco da pagina */
             e = lim;
             while (e > lim / 2 && pg->txt[e] != '\n') e--;
@@ -475,6 +483,7 @@ static void ct_webfetch(const char *js, const char *end, char *out, size_t cap) 
                      "Continue with offset=%zu, or ask for a word with find=\"word\".\n\n", hdr, e, total, total - e, e);
             o = strlen(out);
             memcpy(out + o, pg->txt, e); out[o + e] = 0;
+            wn_prefix(out, cap, pg, u2, e);
         }
         free(sel);
         okres = 1;

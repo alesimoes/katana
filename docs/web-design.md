@@ -1,6 +1,6 @@
 # Web reading: design (WebSearch, WebFetch)
 
-Status: design, 2026-11-25. Nothing here is implemented yet except where marked. Nothing was measured.
+Status: design, 2026-11-25. Phase 1 (sections 3.1, 3.2, 3.3 steps 1-3 and 3.7) is implemented and compiles; the rest is not. Nothing was measured.
 
 ## 1. Why
 
@@ -30,6 +30,8 @@ Web-reading services and agent tools converge on these points (read from their p
 
 ### 3.1 Contract: the result always says its state
 
+**Implemented (phase 1).** `wn_prefix` / `wn_prefix_err` in `src/agent/webnav.c`; used by `ct_webfetch`. `partial` means a good page of which only part was returned.
+
 `WebFetch` returns, before the text, one line:
 
 `[web: ok|partial|shell|empty|blocked|login|error, via <route>, <n> of <m> bytes of text, quality <q>]`
@@ -38,9 +40,13 @@ and, when not `ok`, a **next route computed by the engine** with real addresses 
 
 ### 3.2 Quality verifier (deterministic, in C)
 
+**Implemented (phase 1).** `wn_quality` in `src/agent/webnav.c`. Thresholds (guesses, unmeasured): fewer than 150 bytes of text is `shell`; fewer than 600 with an empty root or a JavaScript `<noscript>` is `shell`; text that is mostly one line repeated 4 or more times is `shell`; text under 0.5% of an HTML over 30 KB (and under 1500 bytes) is `shell`; no text is `empty`; non-HTML content (markdown, `llms.txt`) is `ok` unless empty.
+
 Runs on every result before the model sees it. Signals: bytes of text, ratio text/HTML, empty application root (`id=app|root` with no children), `<noscript>` asking for JavaScript, title only, repeated boilerplate. Output: `ok`, `shell` or `empty`. It is the evaluator of the corrective loop: its verdict picks the next route.
 
 ### 3.3 Ladder of routes (engine, automatic)
+
+**Steps 1-3 implemented (phase 1), steps 4-5 not.** `wn_ingest` in `src/agent/webnav.c`. A twin is accepted only if it is text (not HTML), at least 150 bytes and better than what is already held; the links of the page stay those of the HTML. Total time per `WebFetch` is capped at 60 s (`WN_BUDGET`): the browser runs only with at least 20 s left, a twin request only with at least 2 s.
 
 Each step runs only if the previous one fails the verifier:
 
@@ -69,6 +75,8 @@ Unchanged rule (`docs/embedding-usage.md`): the embedding only reorders and sugg
 As for `Read` (`KNF_READ_SEEN`): per address and per section, the engine remembers what was delivered in this request. A repeat returns only what is new ("you already have sections 1-2; here are 3-4") or, when nothing is new, says so and gives the next route from 3.3. This replaces the repeated-call heuristic added on 2026-11-25 for `WebFetch`.
 
 ### 3.7 One reader for search and fetch
+
+**Implemented (phase 1):** the disk cache has one entry per address with the quality score and route, a `shell`/`empty` read is never stored or served and never replaces a good entry, and the parallel reader of `WebSearch` uses the same verifier and, for pages it fails, the same ladder inside a 30 s budget. Not done: ranking passages with the ladder-read page text beyond what `WebSearch` already does.
 
 `WebSearch` reads the best results with the same ladder (browser allowed, bounded by the time budget), ranks passages against the query and returns passages with their address. Today the parallel reader has no JavaScript and the page it caches is worse than the one `WebFetch` would get. The cache keeps one entry per address with a quality mark; a `shell` entry is never served and is replaced by a better read.
 

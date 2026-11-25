@@ -48,6 +48,7 @@ static void url_dec(const char *s, const char *end, char *out, size_t cap) {
 #define CURL_STATUS_MARK "\nKATANA-HTTP-STATUS:"
 static int g_curl_want_status;      /* 1: o curl escreve o codigo HTTP depois do corpo (so curl_get pede) */
 static int g_curl_http;             /* codigo HTTP da ultima curl_get; 0 se nao deu para saber */
+static int g_curl_tmo;              /* segundos maximos da proxima curl_get (0: 20); a escada de rotas do WebFetch encurta quando o tempo total esta acabando */
 static FILE *curl_open(const char *url, int max_time) {
     char safe[4400], cmd[7000];
     if (!url_safe(url, safe, sizeof safe)) return NULL;
@@ -84,7 +85,7 @@ static long curl_finish(FILE *f, char *buf, size_t cap, int *rc) {
 static long curl_get(const char *url, char *buf, size_t cap, int *rc) {
     *rc = -1; g_curl_http = 0;
     g_curl_want_status = 1;
-    FILE *f = curl_open(url, 20);
+    FILE *f = curl_open(url, g_curl_tmo > 0 ? g_curl_tmo : 20);
     g_curl_want_status = 0;
     if (!f) return -2;
     long n = curl_finish(f, buf, cap, rc);

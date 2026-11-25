@@ -494,14 +494,34 @@ in `Bash` for local servers). Without `offset` the result is short: at most abou
 the words of `prompt`; when none matches (or there is no prompt) the words of the page title and of the most recent
 search query; when still nothing, the start of the page. A header line says how long the page is and how to read more.
 With `offset`, `find` or `links` the content is exact, as before. An HTTP status of 400 or more is an error (2026-11-22):
-the result starts with `error: HTTP 404 (Not Found) from <url>` and carries no page text, the browser fallback is not
-tried and nothing is cached. `WebSearch` reading several pages in parallel does not see the status yet.
+the result carries no page text, the browser fallback is not tried and nothing is cached. `WebSearch` reading several
+pages in parallel does not see the status yet.
+
+**State line (2026-11-25, `docs/web-design.md` phase 1).** Every `WebFetch` result starts with one line,
+`[web: ok|partial|shell|empty|blocked|login|error, via <route>, <n> of <m> bytes of text, quality <q>]`: `n` is what this
+result carries, `m` the whole page text, `q` a 0-100 score from the verifier. `partial` is a good page of which only a
+part was returned (the usual case for a long page), `shell` and `empty` come from the quality verifier (`wn_quality` in
+`src/agent/webnav.c`: bytes of text, text/HTML ratio, empty `id=app|root|__next|__nuxt`, `<noscript>` asking for
+JavaScript, text made of repeated lines), `blocked`/`login`/`error` from the request (HTTP 403 or 429 or a curl failure;
+401; the rest). When the state is not `ok` or `partial`, the next line is `[next: ...]` with what the engine computed:
+the routes already tried, the same page as markdown if that was not tried, the project repository the page links (and its
+README address), and a `WebSearch` query for another source. Routes: `plain`, `browser`, `md-link` (`<link
+rel="alternate" type="text/markdown">`), `md-header` (the `Link` header), `md-suffix` (`<address>.md`), `md-index`
+(`index.md`), `llms-txt` (`/llms.txt`); the result names the one that gave the text. The engine runs the ladder by itself:
+a plain request, then the headless browser only if the verifier fails the plain read, then the machine-readable twins only
+if it still fails; a whole `WebFetch` never opens a new route after 60 s. A result whose first line is not `ok` or
+`partial` counts as a failed call for the repeated-failure cut.
 
 Both tools end the result with one line, `[web: ...]`, with the network time and the bytes returned (it is also in the
 agent log). A result that ends with that line is never sent through the reading notes (`tool_digest`).
 
+The pages `WebSearch` reads in parallel (a plain request, no JavaScript) go through the same verifier; a page it fails
+gets the browser and the twins inside a 30 s budget for the whole search, and a page still failing is dropped from the
+passages and never written to the cache.
+
 Cache across sessions: `$KATANA_CACHE_DIR/web`, or `~/.katana/cache/web`; searches are kept 6 hours, pages (their
-converted text and links) 24 hours; over 50 MB the oldest files are removed; `KATANA_WEB_CACHE=0` turns it off.
+converted text, links, quality score and route; one entry per address) 24 hours; only an `ok` read is stored and a
+page with less than 200 bytes of text is never served from it; over 50 MB the oldest files are removed; `KATANA_WEB_CACHE=0` turns it off.
 Repeating a search after a context compaction therefore costs nothing.
 
 Test hooks (used by `tools/tooltest/web.sh`, with a local server and no internet): `KATANA_WEBSEARCH_FIXTURE` (fixed
