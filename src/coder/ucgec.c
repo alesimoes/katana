@@ -22,7 +22,7 @@ typedef struct {
     int uniq, vol;
     CgxCReg reg[24]; int nreg, lbase[24], nloop;            /* regioes try ativas e onde cada laco comecou */
     struct { const void *ref; const char *name; } *used; int nused, capused;
-    const CgxNode *cls_list[40]; int ncls;
+    const CgxNode *cls_list[40]; int ncls; int line;
     struct { char name[48]; int kind, n; } dyn[96]; int ndyn;      /* ajudantes de despacho dinamico (receptor any): kind 0 metodo, 1 ler campo, 2 gravar campo */
 } CgxC;
 #define CD (&c->D)
@@ -110,6 +110,7 @@ static CgxDoc *cc_unbox(CgxC *c, CgxDoc *d, const CgxTy *t) {
 static CgxDoc *cc_conv(CgxC *c, CgxDoc *d, const CgxTy *from, const CgxTy *to) {
     const int kf = cc_kind(from), kt = cc_kind(to);
     if (kt == CK_VOID || kf == CK_VOID) return d;
+    if (kf == CK_NULL && (kt == CK_INT || kt == CK_FLT || kt == CK_BOOL)) { cgx_err(c->g, c->line, "c: null where a number or bool is expected (declare the type as `any`, or annotate `-> any`)"); return d; }
     if (kf == CK_NULL) return kt == CK_STR ? cgx_dtext(CD, "CG_NULLSTR") : kt == CK_ANY ? cgx_dtext(CD, "cg_nil()") : cgx_dtext(CD, "NULL");
     if (kt == CK_ANY) return kf == CK_ANY ? d : cc_box(c, d, from);
     if (kf == CK_ANY) return cc_unbox(c, d, to);
@@ -733,7 +734,7 @@ static CgxDoc *cc_tmpdecls(CgxC *c) {
 }
 
 static CgxDoc *cc_stmt(CgxC *c, const CgxNode *s) {
-    CgxTy B = cc_ty(CGT_BOOL), I = cc_ty(CGT_INT);
+    CgxTy B = cc_ty(CGT_BOOL), I = cc_ty(CGT_INT); c->line = s->line;
     switch (s->k) {
         case CGN_COMMENT: case CGN_DOC: { if (!s->defs) return NULL; CgxB b = {0}; cgx_bs(&b, "/* "); for (const char *q = s->defs; *q; q++) { if (q[0] == '*' && q[1] == '/') { cgx_bs(&b, "* /"); q++; } else cgx_bn(&b, q, 1); } cgx_bs(&b, " */"); CgxDoc *d = cgx_dtext(CD, b.p); free(b.p); return d; }
         case CGN_RAW: {

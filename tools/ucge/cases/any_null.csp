@@ -1,0 +1,58 @@
+fn add(a, b)
+  return a + b
+fn pick(flag: bool, a, b)
+  return flag ? a : b
+fn cmp(a, b) -> bool
+  return a < b
+fn firstWord(s: str) -> str
+  let ws = words(s)
+  if len(ws) == 0
+    return null
+  return ws[0]
+fn find(xs: list[int], x: int) -> any
+  for i in 0..len(xs)
+    if xs[i] == x
+      return i
+  return null
+class Node
+  field val: int = 0
+  field next: Node = null
+fn run() -> int
+  print(add(1, 2))
+  print(add(1.5, 2))
+  print(add("a", "b"))
+  print(add([1], [2]))
+  print(pick(true, 1, "x"))
+  print(pick(false, 1, "x"))
+  print(cmp(1, 2.5))
+  print(cmp("a", "b"))
+  print(firstWord("hello world"))
+  print(firstWord("   ") == null)
+  print(firstWord("x") != null)
+  print(find([5, 6, 7], 7))
+  print(find([5, 6, 7], 9) == null)
+  let n = Node()
+  print(n.next == null)
+  n.next = Node()
+  n.next.val = 5
+  print(n.next.val)
+  print(n.next != null)
+  let s: str = null
+  print(s == null)
+  let l: list[int] = null
+  print(l == null)
+  let xs = [1, 2, 3]
+  let total = 0
+  for x in xs
+    total += x * x
+  print(total)
+  try
+    print(add(1, "a"))
+  catch e
+    print("type error")
+  try
+    print(len(l))
+  catch e
+    print("null error")
+  return 0
+test run() == 0
