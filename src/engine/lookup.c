@@ -48,8 +48,8 @@ static struct {
 } lk;
 
 /* faixas do comprimento do casamento (tokens iguais antes do rascunho) e a taxa de acerto inicial de cada uma */
-static const int lk_bl[LK_NBUCK] = { 0, 8, 16, 32, 56 };
-static const double lk_p0[LK_NBUCK] = { 0.5, 0.7, 0.88, 0.95, 0.98 };
+static const int lk_bl[LK_NBUCK] = { 0, 6, 12, 20, 40 };
+static const double lk_p0[LK_NBUCK] = { 0.5, 0.75, 0.9, 0.96, 0.98 };
 
 static void lk_init(Model *m) {
     const char *e = getenv("KATANA_LOOKUP");
@@ -137,12 +137,12 @@ static int lk_pick(int nd, int ml) {
     while (b + 1 < LK_NBUCK && ml >= lk_bl[b + 1]) b++;
     lk.bucket = b;
     const double p = lk.pa[b], plain = lk.plain, hrow = lk.nh >= 2 ? lk.hrow : 0.15 * plain;
-    double best = 1.06, E = 1.0, pw = 1.0;      /* ganho minimo de 6% para compensar o erro da estimativa */
+    double best = 1.10, E = 1.0, pw = 1.0;      /* ganho minimo de 10% para compensar o erro da estimativa */
     int bk = 0;
     for (int k = 1; k <= nd; k++) {
         pw *= p; E += pw;
         const double run = lk.nb[k + 1] >= 2 ? lk.tb[k + 1] : plain * (0.65 * (k + 1) + 0.2);
-        const double T = run + hrow * E + (1.0 - pw) * 0.1 * plain;
+        const double T = run + hrow * E + (1.0 - pw) * 0.2 * plain;
         const double g = E * plain / T;
         if (g > best) { best = g; bk = k; }
     }
