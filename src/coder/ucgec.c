@@ -630,7 +630,6 @@ static const char *cgxc_zero(const CgxTy *t) {
     switch (cgxc_kind(t)) { case CGXC_K_INT: return "0"; case CGXC_K_FLT: return "0.0"; case CGXC_K_BOOL: return "0"; case CGXC_K_STR: return "CG_NULLSTR"; case CGXC_K_LIST: case CGXC_K_MAP: case CGXC_K_OBJ: return "NULL"; }
     return "cg_nil()";
 }
-static CgxDoc *cgxc_load_target(CgxC *c, const CgxNode *t, CgxDoc *v, const CgxTy *vt);
 /* alvo = valor; alvo e VAR, INDEX ou FIELD; v ja tem o tipo do alvo */
 static CgxDoc *cgxc_store(CgxC *c, const CgxNode *t, const CgxNode *rhs, CgxDoc *rhsdoc, const CgxTy *tt) {
     (void)rhsdoc;
