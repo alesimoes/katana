@@ -1,16 +1,16 @@
-# UCGE: Unified Code Generation Engine
+# Codegen: code generation from a code spec
 
-Status: phase 1 (design and core) done on branch `feat-ucge`; modules I (registry), J (incremental AST) and K (dependency graph, code cache) done on branch `feat-ucge-reg` (section 15); module C (type inference, section 5b) done on `feat-ucge-infer`; module D (graphs, analyses, optimizer, section 16) done on `feat-ucge-graph`; module A (JavaScript and TypeScript backends, section 17) done on `feat-ucge-js`; module B (C and Go backends, sections 12b and 12c) done on `feat-ucge-c`; phases 2 and 3 are planned at the end of this page. The core is **not yet part of the
-katana build** (`src/katana.c` does not include it; the files are `static` and compile standalone with `tools/ucge/ucgecli.c`). Phase 2 adds the include
-line after `coder/symedit.c` and the `CodeGen` tool.
+Status: phase 1 (design and core) and the phase 2 modules A (JavaScript and TypeScript backends, section 17), B (C and Go backends, sections 12b and 12c), C (type inference, section 5b), D (graphs, analyses, optimizer, section 16), I, J and K (registry, incremental AST, dependency graph, code cache, section 15) are done; phases 2 (the rest) and 3 are planned at the end of this page. The code is included in `src/katana.c` (after `coder/symedit.c`, in the order of `tools/codegen/codegencli.c`) but nothing in katana calls it yet: a local `#pragma GCC diagnostic` around the include block silences the unused-function warning until the `CodeGen` tool exists. The files are `static`, plain C, and also compile standalone with `tools/codegen/codegencli.c`. Phase 2 adds the `CodeGen` tool.
+
+Names: the module is "codegen" and the input format is the "code spec" (files `.kcode`; not `.kspec`, which is the model specialization file, see `docs/specialization.md`). The internal prefixes `cgx_`, `Cgx` and `CGN_` mean "codegen" and are kept as they are.
 
 ## 1. Decision and idea
 
-The owner's decision (2026-11-24): the model does **not** write the final code. It **describes what to build** in a compact structured specification (the CSP,
-"code specification protocol"); the engine turns that into code. Pipeline:
+The owner's decision (2026-11-24): the model does **not** write the final code. It **describes what to build** in a compact structured specification (the code spec,
+"code spec"); the engine turns that into code. Pipeline:
 
 ```
-Intent (LLM) -> CSP text/JSON -> typed AST (UIR-H) -> CFG + SSA (UIR-G) -> analyses -> AST -> doc -> language adapter -> validator -> code
+Intent (LLM) -> code spec text/JSON -> typed AST (UIR-H) -> CFG + SSA (UIR-G) -> analyses -> AST -> doc -> language adapter -> validator -> code
                     parse           check/infer         build            flow/opt         gen     pretty-printer        run/scan
 ```
 
@@ -24,7 +24,7 @@ semantics in every target; (2) **multi-language** from one description; (3) **va
 obvious type errors, scope rules that differ between Python and JavaScript, all caught with a line and what was expected; (4) the model never has to know the
 target's idioms, only a small protocol.
 
-## 2. CSP: the input syntax
+## 2. Code spec: the input syntax
 
 Chosen for the small model (Qwen3.6-35B-A3B, trained on code, not on a private IR): **indentation pseudocode** that looks like Python/Rust/Kotlin hybrids it
 already knows, one statement per line, no braces, no JSON quoting. A JSON equivalent is accepted (section 2.3). An s-expression form was considered and
@@ -99,49 +99,49 @@ undefined: guard it with an explicit `throw`), integer width (Python unbounded, 
 ### 2.3 JSON equivalent
 
 A spec starting with `{` or `[` is JSON. Statements are `{"op": "FUNCTION" | "CLASS" | "DECLARE" | "ASSIGN" | "RETURN" | "IF" | "LOOP" | "ITERATE" |
-"TRY_CATCH" | "THROW" | "CALL" | "METHOD" | "RAW" | "BREAK" | "CONTINUE" | "TEST", ...}`; an expression is either a **string written in the CSP expression
+"TRY_CATCH" | "THROW" | "CALL" | "METHOD" | "RAW" | "BREAK" | "CONTINUE" | "TEST", ...}`; an expression is either a **string written in the code spec expression
 syntax** or an object (`ADD SUBTRACT MULTIPLY DIVIDE IDIVIDE MOD COMPARE AND OR NOT CALL METHOD VAR LIT LIST MAP INDEX FIELD` with `args`). The engine converts
-the JSON to the normalized CSP text and runs the one parser (`Cgx.norm` keeps the text, error lines refer to it), so there is a single grammar to maintain
+the JSON to the normalized code spec text and runs the one parser (`Cgx.norm` keeps the text, error lines refer to it), so there is a single grammar to maintain
 and the two forms cannot drift. An unknown `op` answers with the list of valid ones.
 
 The owner's JSON style is accepted too: an operation object with `left`, `right` and `result` (`{"op": "ADD", "left": "a", "right": "b", "result": "r"}` is
 `let r = a + b`), and `COMPARE` with `"cmp"`. In JSON a plain string is an **expression** (`"a + b"`, `"xs[0]"`); a string literal is `{"op": "LIT",
-"value": "text"}`. Size, measured on three tasks (characters / 4, JSON with whitespace removed, the CSP without comments): task 01 JSON 66 vs CSP 32.5 tokens
+"value": "text"}`. Size, measured on three tasks (characters / 4, JSON with whitespace removed, the code spec without comments): task 01 JSON 66 vs code spec 32.5 tokens
 (2.0x), task 04 121 vs 55.8 (2.2x), task 10 135.5 vs 55.3 (2.5x). The compact form is the primary one for the small model for that reason (and because it is
-closer to code it was trained on); JSON stays for tools that emit structured data. Files: `tools/ucge/json/`.
+closer to code it was trained on); JSON stays for tools that emit structured data. Files: `tools/codegen/json/`.
 
 ## 2b. Engine components (the owner's requirements) and where each lives
 
 The core of the engine is an **AST builder driven by a typed IR**: backends never fill templates or join strings; they walk typed nodes and build documents.
 Generation is graph-based: the dependency graph orders the work, the IR graph feeds the analyses, and the AST is the only thing printed.
 
-1. **Operation Registry** (`ucgeops.c`, phase 2; seed: the `CGB` table and `CGO_NAME` in phase 1). One row per operation known to the engine: `name`, `arity`
+1. **Operation Registry** (`codegenops.c`, phase 2; seed: the `CGB` table and `CGO_NAME` in phase 1). One row per operation known to the engine: `name`, `arity`
    (min, max), `input types` and `output type` as type-table schemes (`len: forall a. list[a] | str | map[a] -> int`), `semantics` (a short normative text
    and an effect flag: pure, reads, mutates, io, throws), `level` L1/L2/L3, and **per-language mapping**: a template of *document constructors* (not a text
    template: receiver precedence, argument breaking and imports are handled by the printer) plus the imports it needs and the targets it is unsupported
    for (with the message). Extensible: a backend adds rows for its own library; a project can add an `extern` row (section 9) at run time. The validator,
    the inference, the analyses (effects, purity) and the backends all read this one table, so adding an operation is one row plus its tests.
-2. **Typed IR with resolution** (`ucgeinfer.c`, phase 2). Name resolution (`ref`), overload and ambiguity resolution (an operation row can have several
+2. **Typed IR with resolution** (`codegeninfer.c`, phase 2). Name resolution (`ref`), overload and ambiguity resolution (an operation row can have several
    signatures: `+` on numbers or on str; `contains` on str, list or map; the unifier picks the first signature that unifies and reports an **ambiguity** with
    the candidates when an `any` argument leaves more than one), numeric promotion (`int <: float`), and the gradual `any` where information is missing. The
    typed AST (UIR-H) is the IR the backends read; UIR-G (section 4) is derived from it.
-3. **IR Optimization Engine** (`ucgeopt.c`, phase 2): simplification, constant folding (SCCP-guided), dead-code and unreachable-branch elimination,
+3. **IR Optimization Engine** (`codegenopt.c`, phase 2): simplification, constant folding (SCCP-guided), dead-code and unreachable-branch elimination,
    unused-binding removal, and **dependency resolution** (a function that is never reached from the exported ones, or a `const` nothing reads, is reported;
    removal is opt-in). Passes run on UIR-H and UIR-G, preserve observable behaviour including thrown errors and effects, and report what they changed.
-4. **Incremental AST** (`ucgeinc.c`, phase 2). To change existing code the engine does **not** rebuild the program: the existing file is parsed by the coder
+4. **Incremental AST** (`codegeninc.c`, phase 2). To change existing code the engine does **not** rebuild the program: the existing file is parsed by the coder
    scanner (`coder_parse`: symbols with byte ranges, the same parse `Edit` by symbol uses); only the spec's top-level units (a function, a class, a method)
    are generated, and each is spliced into the file at the range of the symbol it replaces (or before/after an anchor) through `ct_edit_symbol`. The unit
    of change is a symbol: nodes outside it are never touched, never reprinted, so the user's formatting and comments elsewhere survive; the symbol's
    `shape` hash (already in `CoderSym`) tells whether the new unit differs from the old one at all (no write when it does not). A `patch` spec form
    (`patch NAME` followed by statements to replace, insert before/after a numbered statement, or delete) edits statements **inside** a function: the engine
    parses the old function with the scanner to find the statement ranges and regenerates only the affected statements; this is the finer grain.
-5. **Dependency graph** (`ucgedep.c`, phase 2): nodes are the spec's units (functions, classes, constants, `raw` blocks, and `extern` symbols found in the
+5. **Dependency graph** (`codegendep.c`, phase 2): nodes are the spec's units (functions, classes, constants, `raw` blocks, and `extern` symbols found in the
    index), edges from resolved references. Tarjan SCCs give the **cycles** (reported as errors for constants and class fields, allowed as recursion
    groups for functions); the condensation is topologically ordered, which is the **order of generation and of insertion** (definitions before uses for
    targets that need it, C and Go among them; the order of checking and inference too). Across files it is the same graph with module nodes and import edges.
-6. **Code cache** (`ucgecache.c`, phase 2): key = hash (FNV-1a 64 over the **normalized UIR**: the canonical dump of UIR-H, which ignores comments, spacing,
-   JSON versus CSP, and alias spelling) + hash of each dependency unit's normalized UIR + target + generation options (width, comments) + **generator version**
-   (a constant bumped whenever a backend or the printer changes). Value: the generated code and the report. Stored under `~/.katana/ucge/` as one file per key
+6. **Code cache** (`codegencache.c`, phase 2): key = hash (FNV-1a 64 over the **normalized UIR**: the canonical dump of UIR-H, which ignores comments, spacing,
+   JSON versus code spec, and alias spelling) + hash of each dependency unit's normalized UIR + target + generation options (width, comments) + **generator version**
+   (a constant bumped whenever a backend or the printer changes). Value: the generated code and the report. Stored under `~/.katana/codegen/` as one file per key
    with an LRU cap; **invalidation by dependency** is automatic because the dependencies' hashes are part of the key (a changed callee changes the caller's key);
    `raw` blocks hash their text. A hit skips generation and returns the stored result marked `[cache]`; tests are re-run unless the key also covers the test
    results (they do not: execution is never cached).
@@ -150,7 +150,7 @@ Hash of the normalized UIR needs a canonical dump (`cgx_dump`, phase 2; node ids
 
 ## 3. Data structures
 
-All in `src/coder/ucge.c` (names `Cgx*`, `cgx_*`, `CGN_*` kinds, `CGO_*` operators, `CGT_*` simple types, `CGB_*` built-ins, `TYK_*` table types; the
+All in `src/coder/codegen.c` (names `Cgx*`, `cgx_*`, `CGN_*` kinds, `CGO_*` operators, `CGT_*` simple types, `CGB_*` built-ins, `TYK_*` table types; the
 prefix is unique in the single translation unit, checked by compiling together with `katana.c`).
 
 - **Arena.** `Cgx` owns every allocation (`cgx_alloc` records the pointer; `cgx_free` releases all at once). No per-node free, no leaks by construction;
@@ -164,18 +164,18 @@ prefix is unique in the single translation unit, checked by compiling together w
 - **Interned symbols.** `cgx_intern` maps a name to an integer (open-addressing hash, FNV-1a); `sid` of a node is the id of its name. Scope lookup, call
   graph and the IR use ids, not strings.
 - **Source positions.** Every node has `line` (1-based). Errors are `(line, message)` pairs, at most 24 kept, the rest only counted.
-- **Type table** (`ucgetype.c`). Hash-consed types: one id per structure (`list[int]` is one integer everywhere), mutable type variables with union-find and
+- **Type table** (`codegentype.c`). Hash-consed types: one id per structure (`list[int]` is one integer everywhere), mutable type variables with union-find and
   path compression, levels for generalization, occurs check, gradual `any`, `T | null` (OPT), unions as sorted sets, tuples, function types, named classes,
   schemes by `TYK_GEN` placeholders. The phase 1 validator still uses the small inline `CgxTy` (kind + element kind); phase 2 replaces it with these.
-- **Doc algebra** (`ucgedoc.c`). Documents (`text line soft hard cat nest group`) in their own arena; the renderer is Lindig's "Strictly Pretty" with an
+- **Doc algebra** (`codegendoc.c`). Documents (`text line soft hard cat nest group`) in their own arena; the renderer is Lindig's "Strictly Pretty" with an
   explicit stack (no recursion, no quadratic backtracking: `fits` looks only up to the next permitted break).
 
 ## 4. Representation in three levels
 
-1. **CSP** (text or JSON): the model's surface. Only the parser sees it.
+1. **Code spec** (text or JSON): the model's surface. Only the parser sees it.
 2. **UIR-H**: the typed AST of section 3. Language independent, structured control flow, every name resolved (`ref` points to the declaration), every
    expression typed (`ty`), built-ins identified (`bi`). This is what the checker annotates and what the backends read. Phase 1 stops here.
-3. **UIR-G** (module D, `ucgecfg.c`, section 16): a graph per function, built from UIR-H: basic blocks of three-address instructions (`op dst a b`, `call`, `load/store`
+3. **UIR-G** (module D, `codegencfg.c`, section 16): a graph per function, built from UIR-H: basic blocks of three-address instructions (`op dst a b`, `call`, `load/store`
    for fields and elements, `phi`, `br`, `jmp`, `ret`, `throw`), edges for normal flow and for exceptions (a `try` block has an exceptional edge to its
    handler; `finally` is duplicated on both paths). Variables are in **SSA** (section 6.3) with one `phi` per merge. Backends do **not** read UIR-G:
    it exists for analyses and for transformations that are written back to UIR-H (constant folding, dead code removal), so generation stays AST-driven
@@ -196,15 +196,15 @@ Why Hindley-Milner plus a gradual extension, and not either alone:
   flow makes the narrowing a scoped slot with an undo trail, which needs no CFG; the SSA/dataflow version (module D) can replace it later without changing the typed AST.
 - Type errors name both types and the expected one (`ADD of int and str (expected two numbers or two str; convert with str(x))`).
 
-Phase 1 behaviour (checker in `ucgecheck.c`, intentionally simpler): declared types plus local inference of `let`, literals, built-ins and calls; list and
+Phase 1 behaviour (checker in `codegencheck.c`, intentionally simpler): declared types plus local inference of `let`, literals, built-ins and calls; list and
 map element type is fixed by the first `push` or literal; return type inferred in two passes; `any` for the unknown.
 
-## 5b. Type inference (`ucgeinfer.c`, module C)
+## 5b. Type inference (`codegeninfer.c`, module C)
 
 `int cgx_infer(Cgx *g, CgxTypes *T)` (and `cgx_infer_ex(g, T, flags, report)`) types the whole program; `cgx_check_ex(g, T, infer)` is the validator entry that
-runs the phase 1 rules first and the inference after them (`ucgecli check|gen|run|stats --infer` turns it on; `ucgecli infer FILE [--lets] [--uses] [--check]`
+runs the phase 1 rules first and the inference after them (`codegencli check|gen|run|stats --infer` turns it on; `codegencli infer FILE [--lets] [--uses] [--check]`
 prints errors, the typed signatures with their certainty, and the gradual checks). It is **optional**: nothing in `cgx_check` changed, the 60 checks of
-`tools/ucge/test.sh` are the phase 1 behaviour. It also runs without `cgx_check` (it reports the scope errors itself) so that specs can be typed alone.
+`tools/codegen/test.sh` are the phase 1 behaviour. It also runs without `cgx_check` (it reports the scope errors itself) so that specs can be typed alone.
 One call per parse (the results are stored in the AST).
 
 **What it writes.** Every typed AST node gets `tid` (an id in the caller's `CgxTypes`; `TYK_GEN(i)` is the i-th type parameter of the enclosing
@@ -213,7 +213,7 @@ function, so a backend with generics reads `list['a] -> 'a` straight from the `F
 on the AST for the backend to turn into a cast or an assertion; the engine inserts no run-time test itself. Nothing is written into `n->ty`, so the
 phase 1 backends keep reading what they read.
 
-**Algorithm.** Algorithm J (destructive unification over the union-find of `ucgetype.c`) with generalization by levels (Remy): every variable carries the level
+**Algorithm.** Algorithm J (destructive unification over the union-find of `codegentype.c`) with generalization by levels (Remy): every variable carries the level
 of the `let` depth where it was created, the occurs check lowers the levels of what a variable is bound to, and a function is generalized when its recursion
 group is done (variables deeper than the outer level become `TYK_GEN`). Pieces added to plain HM:
 
@@ -253,7 +253,7 @@ group is done (variables deeper than the outer level become `TYK_GEN`). Pieces a
 | `return e` | assignable to the declared return; without one, the join of all returns (value and bare `return` mixed is an error) |
 | `for i in a..b` | `int` bounds, `i : int`; `for x in c`: `list[T]` gives `T`, `str` gives `str`, `map` gives the key (one name) or key and value (two) |
 | `catch e` | `e : Error`; `errmsg(e) : str`; `throw` takes `str` or an `Error` |
-| built-ins | one rule each (`len: str|list|map -> int`, `sort: list[a] -> list[a]` with `a` ordered, `sum: list[a] -> a` with `a` numeric, `contains`, `slice`, `keys`, ...): `inf_builtin` in `ucgeinfer.c` is the single place, to be replaced by the Operation Registry rows (module I) |
+| built-ins | one rule each (`len: str|list|map -> int`, `sort: list[a] -> list[a]` with `a` ordered, `sum: list[a] -> a` with `a` numeric, `contains`, `slice`, `keys`, ...): `inf_builtin` in `codegeninfer.c` is the single place, to be replaced by the Operation Registry rows (module I) |
 
 **Errors** carry the line (the AST has no columns), what was expected, what was found, and a hint (`convert with int(x)`, `convert with str(x)`, `the value may be
 null; test x != null first`, `write the comparison`, `annotate the parameter with the class name`, `did you mean total?`). The texts of the phase 1 checks that
@@ -282,8 +282,8 @@ one function with 3000 `let`/`if` pairs (27k nodes) type in under 70 ms.
 - Every error is a line, not a column; type errors are not ranked (the first mismatch found reports).
 - The unannotated results are [derived]: sound for the rules above, but the engine does not model run-time facts (list bounds, division by zero, integer width).
 
-**Tests.** `sh tools/ucge/infer_test.sh`: 363 cases in `tools/ucge/infer/cases_*.txt` (typed programs, exact error texts, polymorphism, recursion and mutual
-recursion, unions, flow typing, gradual, classes, bidirectional, generic list helpers), the 15 tasks with `--infer`, and `tools/ucge/infer_prop.py`, a soundness
+**Tests.** `sh tools/codegen/infer_test.sh`: 363 cases in `tools/codegen/infer/cases_*.txt` (typed programs, exact error texts, polymorphism, recursion and mutual
+recursion, unions, flow typing, gradual, classes, bidirectional, generic list helpers), the 15 tasks with `--infer`, and `tools/codegen/infer_prop.py`, a soundness
 property: programs well typed **by construction** (random typed expression and statement generators, annotated and unannotated parameters, calls between the generated
 functions) are inferred, generated to Python, executed with random arguments, and the observed type of every result must fit the inferred one; wrong-typed return
 annotations and wrong-typed arguments are injected and must be rejected. Failure of either side fails the script (the script was checked by injecting a typing bug).
@@ -292,13 +292,13 @@ annotations and wrong-typed arguments are injected and must be rejected. Failure
 
 1. **Parsing**: hand-written, line-oriented with an indent stack, recursive descent with precedence climbing for expressions. No parser generator: the error
    messages ("expected X, found Y") and the leniency list are easier to control, and the grammar is small.
-2. **Type inference** (`ucgeinfer.c`, done, section 5b): algorithm J with union-find and levels (Remy): `let` generalizes variables whose level is
+2. **Type inference** (`codegeninfer.c`, done, section 5b): algorithm J with union-find and levels (Remy): `let` generalizes variables whose level is
    deeper than the current one. `any` and `raw`-defined names are gradual. Classes get nominal types; method calls resolve through the class table.
-3. **Control-flow graph and SSA** (phase 2, `ucgeir.c`): blocks from structured nodes (no goto, so the CFG is reducible by construction). **Dominators**
+3. **Control-flow graph and SSA** (phase 2, `codegenir.c`): blocks from structured nodes (no goto, so the CFG is reducible by construction). **Dominators**
    by Cooper-Harvey-Kennedy (iterate over the reverse post-order with the `intersect` on idoms: simple, fast on reducible graphs, no Lengauer-Tarjan needed
    at these sizes). **Dominance frontiers** from idoms (CHK), **phi placement** with the iterated dominance frontier, renaming by a dominator-tree walk
    (Cytron et al.). Chosen over Braun's on-the-fly SSA because the dominator tree is also needed for loop detection and dead-code reasoning.
-4. **Data-flow analyses** (phase 2, `ucgeflow.c`): one worklist solver over a lattice interface (`meet`, `transfer`, direction) and instances: **reaching
+4. **Data-flow analyses** (phase 2, `codegenflow.c`): one worklist solver over a lattice interface (`meet`, `transfer`, direction) and instances: **reaching
    definitions** (forward), **liveness** (backward, bit vectors), **constant propagation** (SSA sparse conditional constant propagation, Wegman-Zadeck, which
    also finds unreachable branches), **definite assignment** (forward, for `raw`-defined names and `try` blocks), **null-ness** (forward, feeds the optional type).
 5. **Call graph** (phase 2): nodes are functions and methods (interned ids), edges from `CALL`/`MCALL` nodes already resolved by the checker (`ref`); SCCs by
@@ -306,7 +306,7 @@ annotations and wrong-typed arguments are injected and must be rejected. Failure
    code come from the coder symbol index (section 9).
 6. **Dead code and unused names**: from SCCP (unreachable blocks, always-true conditions), liveness (assigned and never read) and the call graph (functions
    nobody calls, reported as `[derived]`: by name, never "exact").
-7. **Simplification and constant folding** (phase 2, `ucgeopt.c`): fold on UIR-H guided by SCCP results; only rewrites the author would not notice
+7. **Simplification and constant folding** (phase 2, `codegenopt.c`): fold on UIR-H guided by SCCP results; only rewrites the author would not notice
    (`2 * 3` to `6`, `if true` branches), never changes observable behaviour including errors, and is **off by default** for readability (the model
    asked for `2 * 3`); a report line says what it would fold.
 8. **Generation**: AST walk to a **document** (section 3), rendered with a width (`CgxGenOpts.width`, default 88). Wadler/Lindig over Oppen's streaming
@@ -355,8 +355,8 @@ every finding and never says "exact":
 ## 10. Protocol with the model (phase 2/3)
 
 1. The system prompt carries nothing (the tool is deferred); `ToolSearch select:CodeGen` returns a declaration whose description holds the grammar in about
-   40 lines and 3 examples. Few-shot examples are the tasks of `tools/ucge/tasks/`.
-2. The model writes the CSP (or the JSON) in the `spec` argument. 3. The engine answers with the code and the graded report, or with **the errors only**
+   40 lines and 3 examples. Few-shot examples are the tasks of `tools/codegen/tasks/`.
+2. The model writes the code spec (or the JSON) in the `spec` argument. 3. The engine answers with the code and the graded report, or with **the errors only**
    (line, what was expected, the offending line quoted): the model repairs the spec and calls again; the harness measures how many repairs it needs.
 4. Training the model on the protocol is out of scope until the owner decides (the curriculum is final at the end of the UIOE): the plan is measured
    few-shot first.
@@ -365,41 +365,41 @@ every finding and never says "exact":
 
 | File | Content | Phase |
 |---|---|---|
-| `src/coder/ucge.c` | arena, interning, AST, lexer, parser (CSP + JSON), errors | 1 |
-| `src/coder/ucgecheck.c` | built-in table, semantic validator, statistics | 1 |
-| `src/coder/ucgetype.c` | type table, union-find unification, generalization, schemes | 1 |
-| `src/coder/ucgeinfer.c` | type inference (HM + levels + gradual + flow typing), certainty report, `cgx_check_ex` | 2 (module C) |
-| `src/coder/ucgedoc.c` | document algebra, renderer, `CgxGenOpts`, `CgxBackend` | 1 |
-| `src/coder/ucgepy.c` | Python backend (reference) and the backend registry | 1 |
-| `src/coder/ucgejs.c` | JavaScript and TypeScript backends (one generator, `ts` switches the annotations; section 17) | 2 (module A) |
-| `src/coder/ucgec.c`, `ucgec_rt.inc` | C backend and its embedded runtime (generated from `tools/ucge/rt/cgrt.h` by `tools/ucge/rt2inc.py`) | 2 (module B) |
-| `src/coder/ucgego.c`, `ucgego_rt.inc` | Go backend and its embedded runtime (generated from `tools/ucge/rt/cgrt.go`) | 2 (module B) |
-| `src/coder/ucge_api.h` | the contract between phases (documentation only) | 1 |
-| `src/coder/ucgereg.c` | Operation Registry: one data-driven table (arity, types, level, effect, per-target templates, simplification rules), loader, `cgx_reg_simplify` | I |
-| `src/coder/ucgedep.c` | canonical form and FNV-1a hash, dependency graph (Tarjan, stable order, cycles), disk code cache, cached generation | K |
-| `src/coder/ucgeinc.c` | incremental AST: Python scanner, UIR-H reader with node-to-bytes map, change operations, symbol actions, writers | J |
-| `tools/ucge/ucgecli.c` | standalone driver: `check gen run stats selftest` | 1 |
-| `tools/ucge/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
-| `tools/ucge/test_reg.sh`, `test_dep.sh`, `test_inc.sh` (+ `test_inc.py`) | tests of I (38 checks), K (59), J (59, 45 of them modify real files) | I, J, K |
-| `tools/ucge/ops/extra.ops`, `tools/ucge/inc/*.py` | example user operations; the Python files the incremental tests edit | I, J |
-| `tools/ucge/infer_test.sh`, `infer/cases_*.txt`, `infer_prop.py` | inference tests: 363 cases, the soundness property | 2 |
-| `tools/ucge/jstest.sh`, `tools/ucge/js/` | JS/TS tests: tasks on node and tsc, edge cases, Python x JS x TS differential, random programs (`jsfuzz.py`) | 2 (module A) |
-| `tools/ucge/testc.sh`, `testgo.sh`, `difftest_targets.py`, `cases/`, `cases_c/` | C and Go backend tests: tasks, hand-written cases, random Python-versus-target differential programs | 2 (module B) |
-| `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
-| `src/coder/ucgecfg.c` | digraph (CSR), Tarjan, dominators (CHK), dominance frontier, natural loops, effects and call graph, CFG per function, pruned SSA (Cytron), out of SSA, verifier, dump | D |
-| `src/coder/ucgeflow.c` | worklist solver over bit-set lattices and its instances, constant folding, SCCP, dead values, findings report | D |
-| `src/coder/ucgeopt.c` | optimizer passes written back to UIR-H, inlining, `cgx_opt_run` | D |
-| `tools/ucge/graphcli.h`, `graphtest.c`, `graphtest.sh`, `fuzz_gen.py`, `difftest.py` | commands `ir flow opt optgen irexec`, unit tests, the runner, the program generator and the differential test | D |
+| `src/coder/codegen.c` | arena, interning, AST, lexer, parser (code spec + JSON), errors | 1 |
+| `src/coder/codegencheck.c` | built-in table, semantic validator, statistics | 1 |
+| `src/coder/codegentype.c` | type table, union-find unification, generalization, schemes | 1 |
+| `src/coder/codegeninfer.c` | type inference (HM + levels + gradual + flow typing), certainty report, `cgx_check_ex` | 2 (module C) |
+| `src/coder/codegendoc.c` | document algebra, renderer, `CgxGenOpts`, `CgxBackend` | 1 |
+| `src/coder/codegenpy.c` | Python backend (reference) and the backend registry | 1 |
+| `src/coder/codegenjs.c` | JavaScript and TypeScript backends (one generator, `ts` switches the annotations; section 17) | 2 (module A) |
+| `src/coder/codegenc.c`, `codegenc_rt.inc` | C backend and its embedded runtime (generated from `tools/codegen/rt/cgrt.h` by `tools/codegen/rt2inc.py`) | 2 (module B) |
+| `src/coder/codegengo.c`, `codegengo_rt.inc` | Go backend and its embedded runtime (generated from `tools/codegen/rt/cgrt.go`) | 2 (module B) |
+| `src/coder/codegen_api.h` | the contract between phases (documentation only) | 1 |
+| `src/coder/codegenreg.c` | Operation Registry: one data-driven table (arity, types, level, effect, per-target templates, simplification rules), loader, `cgx_reg_simplify` | I |
+| `src/coder/codegendep.c` | canonical form and FNV-1a hash, dependency graph (Tarjan, stable order, cycles), disk code cache, cached generation | K |
+| `src/coder/codegeninc.c` | incremental AST: Python scanner, UIR-H reader with node-to-bytes map, change operations, symbol actions, writers | J |
+| `tools/codegen/codegencli.c` | standalone driver: `check gen run stats selftest` | 1 |
+| `tools/codegen/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
+| `tools/codegen/test_reg.sh`, `test_dep.sh`, `test_inc.sh` (+ `test_inc.py`) | tests of I (38 checks), K (59), J (59, 45 of them modify real files) | I, J, K |
+| `tools/codegen/ops/extra.ops`, `tools/codegen/inc/*.py` | example user operations; the Python files the incremental tests edit | I, J |
+| `tools/codegen/infer_test.sh`, `infer/cases_*.txt`, `infer_prop.py` | inference tests: 363 cases, the soundness property | 2 |
+| `tools/codegen/jstest.sh`, `tools/codegen/js/` | JS/TS tests: tasks on node and tsc, edge cases, Python x JS x TS differential, random programs (`jsfuzz.py`) | 2 (module A) |
+| `tools/codegen/testc.sh`, `testgo.sh`, `difftest_targets.py`, `cases/`, `cases_c/` | C and Go backend tests: tasks, hand-written cases, random Python-versus-target differential programs | 2 (module B) |
+| `tools/codegen/tasks/*.kcode`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
+| `src/coder/codegencfg.c` | digraph (CSR), Tarjan, dominators (CHK), dominance frontier, natural loops, effects and call graph, CFG per function, pruned SSA (Cytron), out of SSA, verifier, dump | D |
+| `src/coder/codegenflow.c` | worklist solver over bit-set lattices and its instances, constant folding, SCCP, dead values, findings report | D |
+| `src/coder/codegenopt.c` | optimizer passes written back to UIR-H, inlining, `cgx_opt_run` | D |
+| `tools/codegen/graphcli.h`, `graphtest.c`, `graphtest.sh`, `fuzz_gen.py`, `difftest.py` | commands `ir flow opt optgen irexec`, unit tests, the runner, the program generator and the differential test | D |
 
-Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.
+Build and test: `gcc -O1 -Wall -I. tools/codegen/codegencli.c -o /tmp/codegencli -lm`; `sh tools/codegen/test.sh`; `python3 tools/codegen/bench.py /tmp/codegencli`.
 
 ## 12. What was measured (phase 1, no model, no GPU)
 
-15 tasks written by the author as CSP (sum with default, filter a list, count and frequency of words, iterative factorial, Fibonacci, binary search, error
+15 tasks written by the author as code spec (sum with default, filter a list, count and frequency of words, iterative factorial, Fibonacci, binary search, error
 handling, a class with errors, email validation, maximum, FizzBuzz, palindrome, primality, JSON file total, fetch a page title), each with given tests.
 **Coverage**: 13 of 15 (87%) without `raw`; the Python generated from the spec passes **all** given tests (53 cases). The two that need `raw` are exactly the
 L3 kind (file and JSON library, HTTP): task 14 is a hybrid (the I/O in `raw`, the loop in UIR), task 15 is a function that is entirely `raw`. The author
-wrote both the specs and the language, so 87% is an upper bound for a model: how often Qwen produces valid CSP was **not measured** (no model was run:
+wrote both the specs and the language, so 87% is an upper bound for a model: how often Qwen produces valid code spec was **not measured** (no model was run:
 the machine was under load and the owner's rule is no GPU). Size, in tokens (characters / 4), for the 13 tasks without `raw`:
 
 | | spec (no comments, no `test`) | generated Python | hand-written idiomatic Python |
@@ -410,13 +410,13 @@ The spec is **0.86x** of the generated code and **1.16x** of idiomatic code (com
 spelled-out loops). With the `test` lines and comments the spec is longer still. For `raw` tasks the spec is longer than the code (task 14: 78 vs 38).
 So the UIR does **not** reduce tokens against what a model would write directly; whatever it brings is determinism, one description for several
 languages, and validation before generation. The generated Python follows its own style (type hints, explicit loops), which is why it is longer than
-idiomatic code. The table per task is printed by `tools/ucge/bench.py`.
+idiomatic code. The table per task is printed by `tools/codegen/bench.py`.
 
-## 12b. Backend C (`ucgec.c`)
+## 12b. Backend C (`codegenc.c`)
 
 Module B of the phase plan. The generator walks the typed AST (`CgxNode`, `n->ty`) exactly like the Python backend and builds a document for the pretty-printer;
-the difference is the **runtime**: C has no lists, maps, sized strings or exceptions, so the generated file starts with a small runtime (`tools/ucge/rt/cgrt.h`,
-about 700 lines, embedded in `ucgec_rt.inc` and copied into every output; `python3 tools/ucge/rt2inc.py` regenerates the `.inc`, `testc.sh` checks it is fresh).
+the difference is the **runtime**: C has no lists, maps, sized strings or exceptions, so the generated file starts with a small runtime (`tools/codegen/rt/cgrt.h`,
+about 700 lines, embedded in `codegenc_rt.inc` and copied into every output; `python3 tools/codegen/rt2inc.py` regenerates the `.inc`, `testc.sh` checks it is fresh).
 The output is C99, **warning-free under `gcc -std=c99 -Wall -Wextra -Wpedantic` at `-O0 -O1 -O2 -O3 -Os`**, and clean under ASan and UBSan (leak checker included).
 Every runtime function is `static inline` (an unused one is not a warning) and the file is one translation unit with the generated functions non-`static`
 (so it can also be used as a library: `cg_init()` once, call, `cg_arena_free()`; `gen c --tests` appends a `main` with the `test` lines).
@@ -468,15 +468,15 @@ Python returns the int; a float variable initialised from an int literal prints 
 
 ### Tests (module B)
 
-`sh tools/ucge/testc.sh` (`SAN=1` for ASan+UBSan): the runtime `.inc` is fresh; the 13 raw-free tasks compile with no warning and pass their tests; refusals; five hand-written
+`sh tools/codegen/testc.sh` (`SAN=1` for ASan+UBSan): the runtime `.inc` is fresh; the 13 raw-free tasks compile with no warning and pass their tests; refusals; five hand-written
 cases (`cases/`: nested `any`, dynamic dispatch on objects, null/any, regex and string library against Python's `re`, control flow with `finally`) and one C-only case; and
 `difftest_targets.py`, which generates random valid programs (int arithmetic with floor, lists, maps, strings, floats, `for`/`while`/`break`/`continue`, `try/catch/finally`, functions,
 a class) and compares **the whole stdout** of the generated Python and the generated C. Result when this was written: 200 of 200 programs equal under ASan/UBSan (2925 output lines)
-and 200 of 200 on each of two other seeds without sanitizers; `python3 tools/ucge/difftest_targets.py UCGECLI -n 200 --seed 1 [--san]` reproduces it.
+and 200 of 200 on each of two other seeds without sanitizers; `python3 tools/codegen/difftest_targets.py CODEGENCLI -n 200 --seed 1 [--san]` reproduces it.
 
-## 12c. Backend Go (`ucgego.c`)
+## 12c. Backend Go (`codegengo.c`)
 
-Same structure, much simpler runtime because Go already has strings, maps, a garbage collector and `panic`/`recover` (`tools/ucge/rt/cgrt.go`, embedded in `ucgego_rt.inc`; the
+Same structure, much simpler runtime because Go already has strings, maps, a garbage collector and `panic`/`recover` (`tools/codegen/rt/cgrt.go`, embedded in `codegengo_rt.inc`; the
 output is a single `package main` file). The output passes **`gofmt -l` unchanged and `go vet`**, and `go run` executes the harness (Go 1.26 was used).
 
 | UIR | Go |
@@ -494,27 +494,27 @@ operators only when the expression is the whole statement (gofmt tightens operat
 code after `return`/`throw`/`break` are dropped because `go vet` refuses them. Divergences from the C backend: no `raw` (the raw languages are python, js, ts and c; any `raw` is an error);
 a `return`/`break`/`continue` that leaves a `finally` block is refused; `null` for `str` is `""`; operands are not hoisted (Go evaluates calls left to right, but a variable read versus a call in the
 same expression is unspecified); `x[i] = f()` evaluates the container before `f()` (Python evaluates `f()` first).
-`sh tools/ucge/testgo.sh` (skips with a notice when there is no `go`): 19 checks including the 13 tasks and the five cases; `difftest_targets.py --target go` compared 600 random programs
+`sh tools/codegen/testgo.sh` (skips with a notice when there is no `go`): 19 checks including the 13 tasks and the five cases; `difftest_targets.py --target go` compared 600 random programs
 (seeds 1..200, 1000..1199, 3000..3199): all equal.
 
 ## 13. Phase plan
 
-Modules that different agents can build **in parallel**, each against the contract in `src/coder/ucge_api.h` and the 15 tasks; every module ships tests
-under `tools/ucge/` and keeps `sh tools/ucge/test.sh` green. Interfaces between modules are the AST (`CgxNode`) and the arena; nothing else is shared.
+Modules that different agents can build **in parallel**, each against the contract in `src/coder/codegen_api.h` and the 15 tasks; every module ships tests
+under `tools/codegen/` and keeps `sh tools/codegen/test.sh` green. Interfaces between modules are the AST (`CgxNode`) and the arena; nothing else is shared.
 
 | # | Module (files) | Does | Interface | Done when |
 |---|---|---|---|---|
-| A | JS and TS backends (`ucgejs.c`) | `CgxBackend` for `js` and `ts` (types as annotations), helpers for `//` and `%` floor, `catch`, classes, harness for `node` | `gen(g, opts, code, tests)` registered in `CGX_BACKENDS` | the 13 raw-free tasks pass their tests on node 20; TS output passes a bracket/scanner check (no `tsc` here) |
-| B | C backend (`ucgec.c`), then Go (`ucgego.c`) | **done** (sections 12b and 12c): a real runtime (arena, tagged values, lists, maps, strings, `setjmp` exceptions) instead of the limited MVP; 13 of 13 raw-free tasks, 200 random programs per seed, ASan/UBSan clean; Go with `gofmt` and `go vet` clean | same | tasks 01, 04, 06, 10, 12, 13 compile with `gcc -Wall -Werror` and pass; unsupported constructs give the exact message |
-| C (done) | Type inference (`ucgeinfer.c`) | HM with let-polymorphism over `ucgetype.c`, gradual `any`, classes, replaces the type part of `cgx_check` | `int cgx_infer(Cgx *, CgxTypes *)`, same error texts, `n->ty` filled (plus `n->tid`) | all current error tests unchanged; `fn first(xs)` infers `list[a] -> a`; unification tests added to `selftest` |
-| D | **done** (branch `feat-ucge-graph`, section 16). IR and analyses (`ucgecfg.c`, `ucgeflow.c`, `ucgeopt.c`) | CFG, dominators (CHK), SSA, worklist solver, reaching defs, liveness, SCCP, definite assignment, call graph (Tarjan), unused/unreachable/pure reports, optional folding | `cgx_ir_build`, `cgx_flow_run`, `cgx_opt_fold` (see the API header) | dumps stable for the tasks; a seeded set of 20 programs with known dead code, unused names and unreachable branches is reported exactly, no false positive on the 15 tasks |
-| E | Validator and runner (`ucgerun.c`) | per-target syntax tools, scanner cross-check (`coder_parse`: every spec symbol present with the right kind), raw balance (`se_mask`/`se_balance`), sandboxed execution of `test` lines (limits: CPU time, memory, tmp cwd, no env), graded report text | `int cgx_validate(Cgx *, const CgxBackend *, const char *code, CgxB *report)` | report grades match section 8; RAW never executes unless asked; timeouts and crashes are reported, not fatal |
-| F | Tool and integration (`ucgetool.c`, `src/tools/codegen.c`, table, `docs/tools.md`) | `CodeGen` tool, `path`/`symbol`/`where` through `ct_edit_symbol`, create/insert, index `extern` lookup, include in `katana.c`, `tools/tooltest/ucge.sh` | `ucge_tool(js, end, out, cap)` | declaration under the token limit (tests that check it green), `sh build.sh` and the tool tests (files, meta, find, misc, loopnotes, lsp, launch, symedit, render) green |
-| G | Protocol and model measurement | the description text and few-shot for the tool, repair loop, a natural-language-to-CSP harness (20 requests) run with Qwen on CPU when the machine is free, repair counts | uses F | measured valid-first-try rate and repairs per task, reported honestly, with the raw fraction |
-| H | Language growth (`ucge.c`, `ucgecheck.c`, all backends) | tuples, closures/lambdas, `extern` declarations, modules/imports, typed errors, more built-ins (set, sort by key, string format), Go, Java and Rust backends | grammar change in section 2 first, then parser, checker, each backend | each addition covered by a task and by every backend, or rejected by the checker for the targets that lack it |
-| I | Operation Registry (`ucgeops.c`) | moves `CGB`, `CGO_*` and the builtin mappings of every backend into one extensible table (section 2b.1) | `const CgxOp *cgx_op_find(const char *name)`, `cgx_op_register(const CgxOp *)` | `ucgecli ops` lists name, arity, types, level, targets; the checker and `ucgepy.c` read it; a new operation is one row; tests that every row has a mapping or an explicit "unsupported" per backend  **Done on `feat-ucge-reg` (section 15).** |
-| J | Incremental AST (`ucgeinc.c`) | symbol-level and statement-level patching of existing files (section 2b.4) | `int cgx_inc_apply(const char *file, Cgx *spec, ...)` over `coder_parse` ranges and `ct_edit_symbol` | editing one function of a 200-line file leaves every other byte unchanged (byte-compare test); an identical unit writes nothing; `patch` forms covered  **Done on `feat-ucge-reg` (section 15).** |
-| K | Dependency graph and code cache (`ucgedep.c`, `ucgecache.c`) | section 2b.5 and 2b.6; canonical dump `cgx_dump` | `cgx_dep_build/order/cycles`, `cgx_cache_get/put(key)` | cycles found in seeded specs; order verified by a C backend test; a second call with the same spec hits the cache, a changed dependency misses, a generator version bump misses  **Done on `feat-ucge-reg` (section 15).** |
+| A | JS and TS backends (`codegenjs.c`) | `CgxBackend` for `js` and `ts` (types as annotations), helpers for `//` and `%` floor, `catch`, classes, harness for `node` | `gen(g, opts, code, tests)` registered in `CGX_BACKENDS` | the 13 raw-free tasks pass their tests on node 20; TS output passes a bracket/scanner check (no `tsc` here) |
+| B | C backend (`codegenc.c`), then Go (`codegengo.c`) | **done** (sections 12b and 12c): a real runtime (arena, tagged values, lists, maps, strings, `setjmp` exceptions) instead of the limited MVP; 13 of 13 raw-free tasks, 200 random programs per seed, ASan/UBSan clean; Go with `gofmt` and `go vet` clean | same | tasks 01, 04, 06, 10, 12, 13 compile with `gcc -Wall -Werror` and pass; unsupported constructs give the exact message |
+| C (done) | Type inference (`codegeninfer.c`) | HM with let-polymorphism over `codegentype.c`, gradual `any`, classes, replaces the type part of `cgx_check` | `int cgx_infer(Cgx *, CgxTypes *)`, same error texts, `n->ty` filled (plus `n->tid`) | all current error tests unchanged; `fn first(xs)` infers `list[a] -> a`; unification tests added to `selftest` |
+| D | **done** (section 16). IR and analyses (`codegencfg.c`, `codegenflow.c`, `codegenopt.c`) | CFG, dominators (CHK), SSA, worklist solver, reaching defs, liveness, SCCP, definite assignment, call graph (Tarjan), unused/unreachable/pure reports, optional folding | `cgx_ir_build`, `cgx_flow_run`, `cgx_opt_fold` (see the API header) | dumps stable for the tasks; a seeded set of 20 programs with known dead code, unused names and unreachable branches is reported exactly, no false positive on the 15 tasks |
+| E | Validator and runner (`codegenrun.c`) | per-target syntax tools, scanner cross-check (`coder_parse`: every spec symbol present with the right kind), raw balance (`se_mask`/`se_balance`), sandboxed execution of `test` lines (limits: CPU time, memory, tmp cwd, no env), graded report text | `int cgx_validate(Cgx *, const CgxBackend *, const char *code, CgxB *report)` | report grades match section 8; RAW never executes unless asked; timeouts and crashes are reported, not fatal |
+| F | Tool and integration (`codegentool.c`, `src/tools/codegen.c`, table, `docs/tools.md`) | `CodeGen` tool, `path`/`symbol`/`where` through `ct_edit_symbol`, create/insert, index `extern` lookup, include in `katana.c`, `tools/tooltest/codegen.sh` | `codegen_tool(js, end, out, cap)` | declaration under the token limit (tests that check it green), `sh build.sh` and the tool tests (files, meta, find, misc, loopnotes, lsp, launch, symedit, render) green |
+| G | Protocol and model measurement | the description text and few-shot for the tool, repair loop, a natural-language-to-code spec harness (20 requests) run with Qwen on CPU when the machine is free, repair counts | uses F | measured valid-first-try rate and repairs per task, reported honestly, with the raw fraction |
+| H | Language growth (`codegen.c`, `codegencheck.c`, all backends) | tuples, closures/lambdas, `extern` declarations, modules/imports, typed errors, more built-ins (set, sort by key, string format), Go, Java and Rust backends | grammar change in section 2 first, then parser, checker, each backend | each addition covered by a task and by every backend, or rejected by the checker for the targets that lack it |
+| I | Operation Registry (`codegenops.c`) | moves `CGB`, `CGO_*` and the builtin mappings of every backend into one extensible table (section 2b.1) | `const CgxOp *cgx_op_find(const char *name)`, `cgx_op_register(const CgxOp *)` | `codegencli ops` lists name, arity, types, level, targets; the checker and `codegenpy.c` read it; a new operation is one row; tests that every row has a mapping or an explicit "unsupported" per backend  **Done (section 15).** |
+| J | Incremental AST (`codegeninc.c`) | symbol-level and statement-level patching of existing files (section 2b.4) | `int cgx_inc_apply(const char *file, Cgx *spec, ...)` over `coder_parse` ranges and `ct_edit_symbol` | editing one function of a 200-line file leaves every other byte unchanged (byte-compare test); an identical unit writes nothing; `patch` forms covered  **Done (section 15).** |
+| K | Dependency graph and code cache (`codegendep.c`, `codegencache.c`) | section 2b.5 and 2b.6; canonical dump `cgx_dump` | `cgx_dep_build/order/cycles`, `cgx_cache_get/put(key)` | cycles found in seeded specs; order verified by a C backend test; a second call with the same spec hits the cache, a changed dependency misses, a generator version bump misses  **Done (section 15).** |
 
 Order: A, B, C, D, E, I, J, K can start now and are independent (J needs F only for the tool wiring) (A and B touch only their own file plus one line in `CGX_BACKENDS`; C and D only read the AST). F needs
 E's report shape and at least A; G needs F; H is continuous and must wait for a freeze of the grammar by the coordinator between rounds.
@@ -524,22 +524,20 @@ mappings (or those two keep their mappings in a local table that I then absorbs)
 
 ## 14. Left out of phase 1
 
-Java and Rust backends (JS and TS: section 17; C and Go: sections 12b and 12c); the Operation Registry as one table (done on `feat-ucge-reg`, section 15); the incremental AST for other languages than Python;  the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
+Java and Rust backends (JS and TS: section 17; C and Go: sections 12b and 12c); the Operation Registry as one table (done, section 15); the incremental AST for other languages than Python;  the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
 validator/runner with the graded report (the CLI runs Python tests only, with `ulimit` and `timeout`, which is not a sandbox); the coder index lookup for
 `extern` functions; tuples, closures, imports, inheritance, typed errors, regex outside `matches`, formatting; the protocol text for the model and any
 measurement with the real model (**not run**: it needs the model and the machine); training or curriculum (outside this work by decision).
 
 ## 15. Registry, incremental AST, dependency graph and cache (modules I, J, K)
 
-Built on branch `feat-ucge-reg` (base `main` 646da16). Everything is `static`, standard library only, compiled by `tools/ucge/ucgecli.c`; nothing is in
-`katana.c` yet. A scratch copy of `katana.c` with the includes after `coder/symedit.c` and `-DCGX_INC_KATANA` was checked with `gcc -fsyntax-only` (no errors,
-no UCGE warnings); it was not run. The hooks for the katana build are the macro `CGX_INC_KATANA` (writer through `ct_edit_symbol`) and the include order
-`ucge.c, ucgereg.c, ucgecheck.c, ucgetype.c, ucgedoc.c, ucgepy.c, ucgedep.c, ucgeinc.c`.
+Built from `main` 646da16. Everything is `static`, standard library only, compiled by `tools/codegen/codegencli.c` and by `src/katana.c` (which defines `CGX_INC_KATANA`
+before the includes; the build has no codegen warnings); the katana writer was compiled but not run. The hooks for the katana build are the macro `CGX_INC_KATANA` (writer through `ct_edit_symbol`) and the include order (the one in `src/katana.c`).
 
-### 15.1 Operation Registry (`ucgereg.c`)
+### 15.1 Operation Registry (`codegenreg.c`)
 
 One table, loaded from data. The built-in operations are a text in the same format the owner can extend (`CGX_REG_DATA`), parsed on first use; the checker
-(`ucgecheck.c`) takes arity, usage text, argument type masks, result type and level from it, and the Python backend (`ucgepy.c`) renders each call from the
+(`codegencheck.c`) takes arity, usage text, argument type masks, result type and level from it, and the Python backend (`codegenpy.c`) renders each call from the
 row's template (`py_tmpl`). The old `CGB` table, the `switch` of type rules and the `switch` of Python forms are gone; only the checks that look at several
 arguments at once (`push` fixes the element type, `join` wants `list[str]`, `str` counts float/bool use, `contains` and `errmsg` special cases) stay as
 named hooks in `cgx_builtin`, keyed by the `CGB_*` ids that the embedded text fixes by order.
@@ -563,19 +561,19 @@ Template language: `$N` argument N as an operand (parenthesized when needed), `{
 absent, `{*N}` arguments N.. as a breakable parenthesized list, `{[i,j]}` the listed ones. The backend builds documents, so the same template breaks long
 argument lists correctly.
 
-Loading: `cgx_reg_load_file(path)` or `KATANA_UCGE_OPS=file` (read at first use) or `ucgecli --ops file ...`; an operation with an existing name replaces it;
+Loading: `cgx_reg_load_file(path)` or `KATANA_KATANA_CODEGEN_OPS=file` (read at first use) or `codegencli --ops file ...`; an operation with an existing name replaces it;
 errors carry `line N: ...`. A function of the spec with the name of any registered operation is rejected (the message lists them, including the user's).
-`ucgecli ops` lists name, arity, level, effect, result and targets; `ucgecli ops --dump` writes the whole registry in the loadable format (the test loads
+`codegencli ops` lists name, arity, level, effect, result and targets; `codegencli ops --dump` writes the whole registry in the loadable format (the test loads
 the dump and dumps again: byte-identical). Today every row has `py`, `js` and `ts` (a template or an explicit `unsupported`); `c` only for `len` (explicit
 unsupported), the C backend (module B) adds its column. JS and TS columns are data only: no backend reads them yet.
 
-Simplification (`cgx_reg_simplify`, `ucgecli gen ... --simp`): rules rewrite the validated AST to a fixed point. The seed rules are the ones that hold in
+Simplification (`cgx_reg_simplify`, `codegencli gen ... --simp`): rules rewrite the validated AST to a fixed point. The seed rules are the ones that hold in
 every target: `x+0`, `0+x` (int only), `x-0`, `x*1`, `1*x`, `x*0` and `x-x` and `x%1` (int and pure), `x//1` (int), `not not`, `--x`, `and true`, `or false`,
 `and false` and `or true` (pure `x`), `abs(abs x)`, `upper(upper s)`, `lower(lower s)`, `trim(trim s)`, `sort(sort xs)`, `str(str x)`, and `reverse(reverse s)` for str
 only (for lists it would turn a copy into an alias). "Pure" means no effect and cannot throw: a call counts only if its registry effect is `pure`, a division
 only with a non-zero literal divisor, an index never. `x/1` is not rewritten (true division gives a float). The 13 raw-free tasks, simplified, still pass.
 
-### 15.2 Incremental AST (`ucgeinc.c`)
+### 15.2 Incremental AST (`codegeninc.c`)
 
 **Reading.** `cgx_inc_parse` is a Python scanner of a subset: it splits the file into logical lines (strings, triple-quoted strings, brackets, comments and
 backslash continuations are handled by the same tokenizer that later finds names), builds the block tree by indentation and keeps for every statement,
@@ -583,11 +581,11 @@ backslash continuations are handled by the same tokenizer that later finds names
 its children. The file is refused (with the line) when the structure is not reliable: inconsistent indentation, unbalanced brackets or an unterminated string,
 a block header without a body.
 
-**UIR-H.** `cgx_inc_uir` writes the CSP of the file, one CSP line per statement, and runs the one parser on it (`cgx_parse`). What the CSP knows becomes `fn`, `class`,
+**UIR-H.** `cgx_inc_uir` writes the code spec of the file, one code spec line per statement, and runs the one parser on it (`cgx_parse`). What the code spec knows becomes `fn`, `class`,
 `const`, `let`/assignment, `if/elif/else`, `while`, `for` (ranges and collections), `try/catch/finally`, `throw`, `return`, `doc`; everything else
 (`import`, `with`, decorators, `lambda`, comprehensions it cannot restate, `*args`, async, one-line defs, class inheritance...) is a `raw python` block carrying the
 statement's own text and the names it defines. If the parser rejects a line the statement responsible becomes `raw` and the file is translated again (up to 12
-rounds, then everything is `raw`). `cgx_inc_range(inc, uir, node, ...)` gives any node's interval: its `line` is a CSP line, the line map points to the statement,
+rounds, then everything is `raw`). `cgx_inc_range(inc, uir, node, ...)` gives any node's interval: its `line` is a code spec line, the line map points to the statement,
 the statement holds the bytes. On the four fixtures 19 of 38 top-level units are structured and the rest `raw` (shapes.py: 2 of 6, because classes with a base
 class stay `raw`).
 
@@ -606,7 +604,7 @@ result is scanned again and must still be structurally valid.
 | `insert FN start\|end\|before N\|after N [vars a b]` and `insert-py ...` | new lines at a statement boundary; comments above a statement stay with it; `start` is after the docstring |
 | `delete-function NAME` | the symbol, the comments attached to it and the blank lines that followed |
 
-CSP payloads go through the real validator and Python backend (errors say `spec line N: ...` relative to the payload); for methods the engine declares the fields it finds
+Code spec payloads go through the real validator and Python backend (errors say `spec line N: ...` relative to the payload); for methods the engine declares the fields it finds
 (`self.x`, class attributes) so `self.x` checks. `rename Class.method` renames the definition and every `.method`; it says so, because other classes may have it.
 `Class.method` addresses members everywhere a name is taken.
 
@@ -614,30 +612,30 @@ CSP payloads go through the real validator and Python backend (errors say `spec 
 `replace Class.method` when only methods changed, `after`/`before NAME`, `delete NAME`). The default writer is atomic (temporary file in the same folder,
 `rename`, permissions kept). With `-DCGX_INC_KATANA` the writer `cgx_inc_write_symedit` sends every action to `ct_edit_symbol` (structural validation, callers,
 LSP, undo, the confirmation hook); after the actions it reads the file back and, if text outside symbols changed (imports), writes the expected final text
-atomically. `ucgecli inc apply FILE SPEC [--write] [--acts]` prints the result (or writes it), `inc read` lists the units with bytes and lines, `inc uir` prints the CSP.
+atomically. `codegencli inc apply FILE SPEC [--write] [--acts]` prints the result (or writes it), `inc read` lists the units with bytes and lines, `inc uir` prints the code spec.
 
-### 15.3 Dependency graph and code cache (`ucgedep.c`)
+### 15.3 Dependency graph and code cache (`codegendep.c`)
 
-**Canonical form** (`cgx_dump`, `ucgecli dump`): a text of the UIR without lines, spacing, JSON-versus-CSP and alias spelling, with types; comments and docstrings only
-when they will be printed; declarations sorted by name. `ucgecli key SPEC` prints the key of every unit.
+**Canonical form** (`cgx_dump`, `codegencli dump`): a text of the UIR without lines, spacing, JSON-versus-code spec and alias spelling, with types; comments and docstrings only
+when they will be printed; declarations sorted by name. `codegencli key SPEC` prints the key of every unit.
 
 **Graph.** Nodes are the units of one or more specs (modules) and module nodes; edges are `call`, `type` (a class named in a signature or on a receiver), `use` (a constant read),
 `field` (a class field typed with a class) and `import` (explicit, or derived from a cross-module reference). Resolution is by name, same module first; names that are
 locals (parameters, `let`, loop variables) are not constants. Algorithms: iterative Tarjan (a 2000-function ring does not touch the stack), stable topological order of the condensation
 with a min-heap on declaration index (dependencies first; ties by file order; members of a group in file order), transitive dependents by reverse BFS. Cycles: a loop through
 `use`/`field` edges (constant reading constant, a class containing itself) is an error with the path and lines and how to break it; a constant that calls a function that reads
-it is an initialization-cycle error; recursion (self or mutual) is a note, or an error with the call path when `allow_rec` is 0 (`ucgecli dep SPEC [--no-rec] [--nocheck]`).
+it is an initialization-cycle error; recursion (self or mutual) is a note, or an error with the call path when `allow_rec` is 0 (`codegencli dep SPEC [--no-rec] [--nocheck]`).
 
 **Cache.** Key per unit = mix64(FNV-1a64 of: generation context (target, `CGX_GEN_VERSION`, digest of the registry dump, width, comments, indent, extra flags), the unit's canonical hash, the
 hash of its group (so mutual recursion shares fate), the sorted keys of the dependencies outside the group). Each dependency key already contains its own dependencies, so the
 invalidation is transitive and exact: change `mid` and `mid` and `top` miss, a sibling still hits; change a constant and its readers, and their callers, miss; bump the version or load another
-registry and everything misses. Value file `UCGC1 key length checksum meta` + payload, named `key.uc` in `$KATANA_UCGE_CACHE` or `~/.katana/ucgecache`. Write: temporary file + `rename`. Read: header, key, length and
+registry and everything misses. Value file `UCGC1 key length checksum meta` + payload, named `key.uc` in `$KATANA_KATANA_CODEGEN_CACHE` or `~/.katana/codegen-cache`. Write: temporary file + `rename`. Read: header, key, length and
 FNV checksum are checked, a bad file is deleted, counted as `corrupt` and regenerated. LRU: a hit `utimes` the file; when the bytes written since the last scan exceed 1/8 of the limit
-(`KATANA_UCGE_CACHE_MAX`, default 64 MB) the folder is scanned and the oldest files go until 90% of the limit. `cgx_gen_cached` generates Python by unit (identical text to `cgx_gen_python`, checked on the 15 tasks, cold and warm)
+(`KATANA_KATANA_CODEGEN_CACHE_MAX`, default 64 MB) the folder is scanned and the oldest files go until 90% of the limit. `cgx_gen_cached` generates Python by unit (identical text to `cgx_gen_python`, checked on the 15 tasks, cold and warm)
 and also keeps one entry for the whole program (a warm run is one read); other targets cache the whole program (the declaration order is part of that key), tests are never cached. `--topo` assembles in dependency order instead of file order
 (for targets that need definitions first). Windows: the disk cache compiles to stubs (always a miss) for now.
 
-**Measured** (`ucgecli cachebench N`, chain of N functions, Python, this machine under other load, so the proportions are what counts):
+**Measured** (`codegencli cachebench N`, chain of N functions, Python, this machine under other load, so the proportions are what counts):
 
 | N | no cache | cold cache | warm cache | change the last function | change the first function |
 |---|---|---|---|---|---|
@@ -652,7 +650,7 @@ The honest reading: the Python backend takes about 15 to 30 microseconds per fun
 - The reader is a subset scanner, not a full Python grammar: no `match`, no f-string nesting with the same quote, no Python 2. It refuses (instead of guessing) inconsistent indentation, unbalanced brackets and headers without bodies. Tabs count as 8 columns, mixed tabs and spaces are only as reliable as Python itself.
 - Only Python is read and changed; the registry's `js`/`ts`/`c` columns are data without a backend.
 - Operations work at the top level and one class level; nested functions are not addressable (a rename still reaches their tokens). `rename` is token-based without type information: attribute uses of a method name are renamed everywhere, strings such as `__all__ = ["name"]` are not.
-- `replace-body` and `insert` need a signature the generator can restate (no `*args`, `**kwargs`, `/`, keyword-only marker); use `insert-py` or `replace-function` there. Names of existing locals are known to a CSP `insert` only through `vars`.
+- `replace-body` and `insert` need a signature the generator can restate (no `*args`, `**kwargs`, `/`, keyword-only marker); use `insert-py` or `replace-function` there. Names of existing locals are known to a code spec `insert` only through `vars`.
 - `replace-function` drops decorators and the inline comments of the old definition (they are part of it); `rename`, `add-param`, `insert` and `delete-function` do not touch them.
 - An inline comment at the end of a replaced body line goes with the line. The UIR-H of the file has no comments (they stay in the bytes).
 - The registry has 192 operations and 128 rules at most; templates have no conditionals except the per-type variants; the checker's built-in-specific hooks are code, not data.
@@ -661,8 +659,8 @@ The honest reading: the Python backend takes about 15 to 30 microseconds per fun
 
 ## 16. UIR-G: graphs, analyses and the optimizer (module D)
 
-Done on branch `feat-ucge-graph`. Files: `src/coder/ucgecfg.c` (graphs, CFG, SSA), `ucgeflow.c` (data-flow, SCCP, report), `ucgeopt.c` (passes). Not part of the
-katana build yet (like the rest of the core): `tools/ucge/ucgecli.c` includes them through `tools/ucge/graphcli.h`. Everything is plain C, `static`, `cgx_`/`Cgx`.
+Done. Files: `src/coder/codegencfg.c` (graphs, CFG, SSA), `codegenflow.c` (data-flow, SCCP, report), `codegenopt.c` (passes). Included in
+the katana build like the rest of the core, and in `tools/codegen/codegencli.c` through `tools/codegen/graphcli.h`. Everything is plain C, `static`, `cgx_`/`Cgx`.
 The katana file-level graph (`coder/graph.c`, a CSR cache of file relations in a store section) was read and **not reused**: it is a persisted, mmap-able
 derived index of files, with typed weighted edges, and the UIR graphs are small, mutable, per function; only the CSR layout idea is the same (`CgxDg`).
 
@@ -760,7 +758,7 @@ as `-0.0`; `x == x`, `x - x`, `x + 0.0` are not simplified for floats (NaN, inf,
 Each finding carries a grade, never "exact": **[structural]** is a fact about the spec text (a variable with no read, code after `return`, a `while true` with no `break`
 in its condition literal, a recursive call), **[derived]** comes from an analysis (a branch that SCCP proves constant, a dead store, a path to the end of the function, a function
 nobody calls). Kinds: `unreachable`, `dead-branch`, `unused-var`, `dead-store`, `use-before-def`, `undefined-name`, `missing-return`, `infinite-loop`; info only: `unused-function`
-(possibly an entry point), `recursion`, `redundant-expr`, `unused-param`. The 15 tasks give no warning (the two `raw` tasks give the info "never called"). `ucgecli flow spec`
+(possibly an entry point), `recursion`, `redundant-expr`, `unused-param`. The 15 tasks give no warning (the two `raw` tasks give the info "never called"). `codegencli flow spec`
 prints them sorted by line, then the **generation order** (callees before callers, Tarjan order) and the size of the work.
 
 ### 16.8 The optimizer (`cgx_opt_run`, `CgxOptOpts.passes`)
@@ -777,12 +775,12 @@ prints them sorted by line, then the **generation order** (callees before caller
 | GLOBALS | module `const` with a literal initializer counts as a constant (the name disappears from the code) | off |
 
 Rounds repeat until nothing changes (at most 10; the second run over the output changes nothing, tested). The AST is edited in place, names are the author's, `cgx_number` runs
-again at the end (ids stay unique and stable). `ucgecli opt spec [--all]` prints the counts; `ucgecli optgen python spec [--all] [--tests] [--recheck]` optimizes and generates
+again at the end (ids stay unique and stable). `codegencli opt spec [--all]` prints the counts; `codegencli optgen python spec [--all] [--tests] [--recheck]` optimizes and generates
 (`--recheck` runs the checker again on the result).
 
 ### 16.9 Tests and results
 
-Run `sh tools/ucge/graphtest.sh [N]` (about 35 s with N=300; `SAN=1` for ASan/UBSan) and `sh tools/ucge/test.sh` (the 60 phase-1 checks, still green).
+Run `sh tools/codegen/graphtest.sh [N]` (about 35 s with N=300; `SAN=1` for ASan/UBSan) and `sh tools/codegen/test.sh` (the 60 phase-1 checks, still green).
 
 - **`graphtest.c`, 5 099 checks**: idoms, `dominates`, dominance frontier, reverse post-order, SCC (components and their order) and natural loops of **500 random graphs** compared with
   naive algorithms (sets to a fixed point, definition of the frontier, mutual reachability); the dragon book CFG (fig. 9.38: idoms, four loop headers and nesting depth) and the
@@ -801,7 +799,7 @@ Run `sh tools/ucge/graphtest.sh [N]` (about 35 s with N=300; `SAN=1` for ASan/UB
   statements, 4 649 decided branches, 503 copies, 402 temporaries, 803 inlined calls). Seeds are fixed, so a run is reproducible.
   Mutation check: breaking the floor in `//`, the removability guard of `x*0`, `and false`, `or true`, the float identity, the copy-source check, `finally` copies, the short-circuit
   rule, the exceptional edge or the removable mask each makes the test fail (10 of 11 mutants killed; the generator needed the "stress" statements to kill four of them; the survivor, a phi that ignores which edges are executable, only loses precision and is not a bug).
-- **IR interpreter** (`ucgecli irexec spec pre|ssa|out`): runs the IR of the scalar functions before SSA, in SSA (phi chosen by the arriving edge) and after out-of-SSA, and must equal
+- **IR interpreter** (`codegencli irexec spec pre|ssa|out`): runs the IR of the scalar functions before SSA, in SSA (phi chosen by the arriving edge) and after out-of-SSA, and must equal
   the Python on 60 096 results (1 000 programs x 3 phases); it is what found that a `try` body must start a new block (an instruction before the `try` shared a block, and so the
   exceptional edge, with the protected call).
 - The tasks, optimized with the default passes and with `--all`, still pass their own tests (26 runs).
@@ -821,15 +819,15 @@ Run `sh tools/ucge/graphtest.sh [N]` (about 35 s with N=300; `SAN=1` for ASan/UB
 - The phase-1 checker rule "every path returns" is syntactic (the last statement). The optimizer can prove the end unreachable and remove the final `return`; the Python is right,
   but a later `cgx_check` of the optimized tree can complain. A backend that needs the final `return` (C) should run the checker's rule on the original, or keep the tail.
 - The unused-variable and dead-store findings count a variable as read when it is visible to a `raw` block (the block may read it).
-- `ucgetype.c` (HM) is not used here: types are the checker's (`ty`), `any` is treated as "may raise". The registry (module I) is used only to map a built-in name to its id (`cgx_op_find`); the effect table stays in `ucgecfg.c`.
+- `codegentype.c` (HM) is not used here: types are the checker's (`ty`), `any` is treated as "may raise". The registry (module I) is used only to map a built-in name to its id (`cgx_op_find`); the effect table stays in `codegencfg.c`.
 - The IR interpreter is a test tool (scalars, strings of small size, no lists/classes), not a backend.
 
-## 17. JavaScript and TypeScript backends (module A, `src/coder/ucgejs.c`)
+## 17. JavaScript and TypeScript backends (module A, `src/coder/codegenjs.c`)
 
 Registered as `javascript` (alias `js`, `.js`) and `typescript` (alias `ts`, `.ts`). One generator serves both: it walks the checked AST and builds a document for the
-Wadler/Lindig printer; `ts` only turns on type annotations, which come from the IR type of each node through the type table of `ucgetype.c` (`CgxTy` -> `CgxTid` ->
-text: `list[int]` is `number[]`, `map[str,T]` is `Map<string, T>`, a class is its name, `any` is `any`, the caught error is `unknown`). `ucgecli gen js|ts <spec> [--tests]` and
-`ucgecli run js|ts <spec>` (node; TypeScript is compiled first by the executable named in `UCGE_TSC`, `--strict --target es2022`, and only generated when the variable is not set).
+Wadler/Lindig printer; `ts` only turns on type annotations, which come from the IR type of each node through the type table of `codegentype.c` (`CgxTy` -> `CgxTid` ->
+text: `list[int]` is `number[]`, `map[str,T]` is `Map<string, T>`, a class is its name, `any` is `any`, the caught error is `unknown`). `codegencli gen js|ts <spec> [--tests]` and
+`codegencli run js|ts <spec>` (node; TypeScript is compiled first by the executable named in `KATANA_CODEGEN_TSC`, `--strict --target es2022`, and only generated when the variable is not set).
 
 **Style, and why.** Functions and the harness helpers are `function` declarations, not arrows: they hoist (recursion and forward calls behave as in Python, where a function
 body is resolved at call time), they have names in stack traces, and `this` is never captured by accident; arrows are used only for the `test` thunks and callbacks. Locals are
@@ -893,8 +891,8 @@ the output uses (`Math`, `Map`, `Error`, `console`, ...), with a message naming 
    collections are `any[]` / `Map<string, any>` because `CgxTy` keeps only the base element kind. `target ES2022` (class fields, `catch {`; ES2019 with the fields rewritten by the compiler), `lib es2017` or newer (`Object.entries`, `padStart`).
 10. *A `raw` block* needs a `raw js` version (TypeScript uses `raw ts` when present, else `raw js`); otherwise generation fails with the list of versions the block has (task 17 has only Python).
 
-**Tests** (`sh tools/ucge/jstest.sh [N]`, `UCGE_TSC=<tsc>` adds TypeScript; a `tsc` is one `npm i typescript` away and is not vendored): the 13 raw-free tasks pass their `test` lines on node 20 and,
-compiled with `tsc --strict`, as TypeScript; task 14 runs against a real JSON file; three hand-written programs of edge cases (`tools/ucge/js/edge_*.csp`: floor division and modulo for every sign
+**Tests** (`sh tools/codegen/jstest.sh [N]`, `KATANA_CODEGEN_TSC=<tsc>` adds TypeScript; a `tsc` is one `npm i typescript` away and is not vendored): the 13 raw-free tasks pass their `test` lines on node 20 and,
+compiled with `tsc --strict`, as TypeScript; task 14 runs against a real JSON file; three hand-written programs of edge cases (`tools/codegen/js/edge_*.kcode`: floor division and modulo for every sign
 combination, zero divisors, float formatting, `int()`/`float()` parsing, `sum` of floats, unicode strings with astral characters, whitespace, negative indices, slices, maps with numeric-looking keys, loops
 whose bound or variable changes in the body, `try/finally`, rethrow, classes, defaults, `any`) print the same lines on Python, JS and TS; and `jsfuzz.py` generates random valid programs (typed expression
 generator over int, float, str, bool, `list[int]`, `list[str]`, `map[str,int]`, functions with defaults, a class, nested control flow, every operation that can fail wrapped in `try/catch` that prints `errmsg`) and

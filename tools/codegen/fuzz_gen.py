@@ -1,4 +1,4 @@
-"""Gerador de programas CSP validos para o teste diferencial do otimizador (docs/ucge.md, "UIR-G").
+"""Gerador de programas code spec validos para o teste diferencial do otimizador (docs/codegen.md, "UIR-G").
 Gera especificacoes aleatorias respeitando as regras do validador (tipos, escopo sem sombra, retorno em todos os caminhos, lacos limitados),
 com muita coisa para o otimizador mexer (constantes, ramos mortos, copias, variaveis nao usadas, funcoes pequenas) e muita coisa que NAO pode
 mudar (divisao por zero, indices fora, erros, efeitos de print, inteiros grandes, NaN, -0.0, strings com acento)."""

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Propriedade de soundness da inferencia do UCGE (docs/ucge.md, "Type inference").
-Gera programas CSP bem tipados POR CONSTRUCAO (cada expressao e gerada para um tipo pedido), pede a assinatura inferida a `ucgecli infer`,
-gera o Python com `ucgecli gen python`, executa as funcoes com argumentos do tipo pretendido e compara o tipo OBSERVADO do resultado com o tipo
+"""Propriedade de soundness da inferencia do codegen (docs/codegen.md, "Type inference").
+Gera programas code spec bem tipados POR CONSTRUCAO (cada expressao e gerada para um tipo pedido), pede a assinatura inferida a `codegencli infer`,
+gera o Python com `codegencli gen python`, executa as funcoes com argumentos do tipo pretendido e compara o tipo OBSERVADO do resultado com o tipo
 inferido (instanciado com os argumentos). Tambem faz mutacoes que tornam o programa mal tipado e exige que a inferencia as rejeite.
-  uso: python3 infer_prop.py <ucgecli> [N=300] [seed=1]
+  uso: python3 infer_prop.py <codegencli> [N=300] [seed=1]
 Saida: contagens e `property: ok` quando nao ha violacao de soundness (o tipo observado nunca foge do inferido) e nenhuma mutacao passa."""
 import os, random, re, subprocess, sys, tempfile
 
@@ -125,12 +125,12 @@ class G:
         if r.random() < 0.4:
             lines.append("  if %s" % self.expr("bool", env, 2)); lines.append("    return %s" % self.expr(ret, env, 2))
         lines.append("  return %s" % self.expr(ret, env, 3))
-        head = "fn %s(%s)%s" % (name, ", ".join("%s: %s" % (pn[i], self.csp_ty(ptys[i])) if ann[i] else pn[i] for i in range(np_)),
-                                " -> " + self.csp_ty(ret) if rann else "")
+        head = "fn %s(%s)%s" % (name, ", ".join("%s: %s" % (pn[i], self.kcode_ty(ptys[i])) if ann[i] else pn[i] for i in range(np_)),
+                                " -> " + self.kcode_ty(ret) if rann else "")
         self.funcs.append((name, ptys, ret, ann, rann))
         return head + "\n" + "\n".join(lines)
     @staticmethod
-    def csp_ty(t): return t.replace("map[str,int]", "map[str, int]")
+    def kcode_ty(t): return t.replace("map[str,int]", "map[str, int]")
 
 # ---- tipos: assinatura inferida e tipo observado ----
 def parse_ty(s, i=0):
@@ -219,7 +219,7 @@ def main():
     bad = []
     for it in range(N):
         g = G(rng); src = "\n".join(g.fn() for _ in range(rng.randint(2, 5))) + "\n"
-        path = os.path.join(tmp, "p%d.csp" % it); open(path, "w").write(src); st["programs"] += 1
+        path = os.path.join(tmp, "p%d.kcode" % it); open(path, "w").write(src); st["programs"] += 1
         chk = sh([u, "check", path])
         if "ok" not in chk.stdout.split("\n")[-2:] and chk.returncode != 0:
             st["genbad"] += 1; bad.append(("generator program rejected by the validator", src, chk.stdout)); continue
@@ -230,7 +230,7 @@ def main():
             s = parse_sig(line)
             if s: sigs[s[0]] = s
         code = sh([u, "gen", "python", path]).stdout
-        env = {"__name__": "ucgeprop"}
+        env = {"__name__": "codegenprop"}
         try: exec(compile(code, path, "exec"), env)
         except Exception as e: st["genbad"] += 1; bad.append(("generated python failed to load: %r" % e, src, code)); continue
         for (name, ptys, ret, ann, rann) in g.funcs:

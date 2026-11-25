@@ -1,5 +1,5 @@
-/* ---------- coder/ucgedep.c: UCGE, grafo de dependencia e code cache (docs/ucge.md, "Dependencia e cache") ----------
- * 1) FORMA CANONICA: texto determinista da UIR (sem linhas, sem espacos, sem JSON-ou-CSP, sem comentarios quando eles nao sairao no codigo);
+/* ---------- coder/codegendep.c: Codegen, grafo de dependencia e code cache (docs/codegen.md, "Dependencia e cache") ----------
+ * 1) FORMA CANONICA: texto determinista da UIR (sem linhas, sem espacos, sem JSON-ou-code spec, sem comentarios quando eles nao sairao no codigo);
  *    o hash FNV-1a de 64 bits dela identifica a unidade (funcao, classe, constante, bloco raw) independente de como foi escrita.
  * 2) GRAFO: nos = unidades de um ou mais modulos; arestas = chamada, uso de tipo, leitura de constante, tipo de campo, import. Tarjan iterativo
  *    (SCCs), ordem topologica ESTAVEL (dependencias primeiro; empate pela ordem de declaracao), ciclos com mensagem que diz o caminho e como
@@ -410,10 +410,10 @@ static void cgx_dep_report(CgxDep *d, CgxB *o) {
 typedef struct { char dir[1024]; long long max_bytes; int hits, misses, corrupt, stored, evicted; long long added; int enabled; } CgxCache;
 static int cgx_cache_open(CgxCache *c, const char *dir) {
     memset(c, 0, sizeof *c); c->max_bytes = 64ll << 20;
-    const char *e = getenv("KATANA_UCGE_CACHE_MAX"); if (e && atoll(e) > 0) c->max_bytes = atoll(e);
-    if (!dir || !*dir) dir = getenv("KATANA_UCGE_CACHE");
+    const char *e = getenv("KATANA_KATANA_CODEGEN_CACHE_MAX"); if (e && atoll(e) > 0) c->max_bytes = atoll(e);
+    if (!dir || !*dir) dir = getenv("KATANA_KATANA_CODEGEN_CACHE");
     if (dir && *dir) snprintf(c->dir, sizeof c->dir, "%s", dir);
-    else { const char *h = getenv("HOME"); if (!h || !*h) return 0; snprintf(c->dir, sizeof c->dir, "%s/.katana/ucgecache", h); }
+    else { const char *h = getenv("HOME"); if (!h || !*h) return 0; snprintf(c->dir, sizeof c->dir, "%s/.katana/codegen-cache", h); }
 #ifdef _WIN32
     return 0;
 #else

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Teste diferencial do otimizador do UCGE (docs/ucge.md, "UIR-G"): gera programas CSP aleatorios validos (fuzz_gen.py), gera o Python antes e
+"""Teste diferencial do otimizador do codegen (docs/codegen.md, "UIR-G"): gera programas code spec aleatorios validos (fuzz_gen.py), gera o Python antes e
 depois da otimizacao e executa os dois com as mesmas entradas aleatorias (casos de borda: zero, negativos, inteiros enormes, NaN, infinito, -0.0,
 textos vazios e com acento, listas vazias). Exige saidas identicas: valor devolvido, erro lancado (tipo e texto), texto impresso e listas alteradas.
-Uso: python3 tools/ucge/difftest.py <ucgecli> [programas=300] [semente=1] [-k]      (-k mantem os arquivos dos casos que falham em /tmp/ucge_diff)"""
+Uso: python3 tools/codegen/difftest.py <codegencli> [programas=300] [semente=1] [-k]      (-k mantem os arquivos dos casos que falham em /tmp/codegen_diff)"""
 import warnings
 warnings.filterwarnings("ignore")
 import sys, os, io, math, random, subprocess, tempfile, contextlib, copy, ast, shutil
@@ -50,7 +50,7 @@ def run_call(fn, args):
 
 
 def load(src):
-    ns = {"__name__": "ucge_gen"}
+    ns = {"__name__": "codegen_gen"}
     exec(compile(src, "<gen>", "exec"), ns)
     return ns
 
@@ -65,7 +65,7 @@ def main():
     n = int(sys.argv[2]) if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else 300
     seed0 = int(sys.argv[3]) if len(sys.argv) > 3 and not sys.argv[3].startswith("-") else 1
     keep = "-k" in sys.argv
-    tmp = tempfile.mkdtemp(prefix="ucge_diff_")
+    tmp = tempfile.mkdtemp(prefix="codegen_diff_")
     stat = dict(gen=0, invalid=0, tested=0, calls=0, fail=0, changed=0, exc_calls=0, nonempty_out=0, rounds=0, folded=0, dead=0, copies=0, branches=0, unreach=0, temps=0, algebra=0, inlined=0, big=0)
     fails = []
     seed = seed0
@@ -73,7 +73,7 @@ def main():
         seed += 1
         stat["gen"] += 1
         spec, funcs = fuzz_gen.gen_program(seed, scalar=(seed % 2 == 0))
-        path = os.path.join(tmp, f"p{seed}.csp")
+        path = os.path.join(tmp, f"p{seed}.kcode")
         open(path, "w").write(spec)
         rc, out, err = sh([cli, "check", path])
         if rc != 0:
@@ -173,8 +173,8 @@ def main():
             stat["fail"] += 1
             fails.append((seed, bad[2], f"{bad[0]} {bad[1]!r}\n  original : {bad[3]}\n  optimized: {bad[4]}"))
             if keep:
-                os.makedirs("/tmp/ucge_diff", exist_ok=True)
-                shutil.copy(path, f"/tmp/ucge_diff/p{seed}.csp")
+                os.makedirs("/tmp/codegen_diff", exist_ok=True)
+                shutil.copy(path, f"/tmp/codegen_diff/p{seed}.kcode")
     print(f"programs generated {stat['gen']}, rejected by the checker {stat['invalid']}, tested {stat['tested']}, calls compared {stat['calls']} "
           f"(raising {stat['exc_calls']}, printing {stat['nonempty_out']}, big int arguments {stat['big']})")
     print(f"IR interpreter (before SSA, in SSA, after SSA out) compared {stat.get('ir_cmp', 0)} results with Python, skipped {stat.get('ir_skip', 0)} outside its scalar subset")

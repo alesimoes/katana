@@ -1,5 +1,5 @@
-/* graphtest: testes do modulo de grafos, analises e otimizador do UCGE (docs/ucge.md, "UIR-G"), sem modelo e sem o katana.
- *   gcc -O1 -g -Wall -I. tools/ucge/graphtest.c -o /tmp/graphtest -lm && /tmp/graphtest tools/ucge/tasks [pasta de .csp extra]
+/* graphtest: testes do modulo de grafos, analises e otimizador do codegen (docs/codegen.md, "UIR-G"), sem modelo e sem o katana.
+ *   gcc -O1 -g -Wall -I. tools/codegen/graphtest.c -o /tmp/graphtest -lm && /tmp/graphtest tools/codegen/tasks [pasta de .kcode extra]
  * Referencias independentes: dominadores, fronteira, componentes e lacos contra algoritmos ingenuos (conjuntos e fecho transitivo) em grafos
  * aleatorios; fluxo de dados contra iteracao em rodadas; grafos de livros (CFG do livro do dragao, figura 2 de Cooper-Harvey-Kennedy);
  * invariantes da SSA (cada uso dominado pela definicao) em todas as tarefas; relatorio exato em 20 programas semeados; dobra e simplificacao
@@ -11,18 +11,18 @@
 #include <ctype.h>
 #include <math.h>
 #include <dirent.h>
-#include "src/coder/ucge.c"
-#include "src/coder/ucgereg.c"
-#include "src/coder/ucgecheck.c"
-#include "src/coder/ucgetype.c"
-#include "src/coder/ucgedoc.c"
-#include "src/coder/ucgepy.c"
-#include "src/coder/ucgejs.c"
-#include "src/coder/ucgec.c"
-#include "src/coder/ucgego.c"
-#include "src/coder/ucgecfg.c"
-#include "src/coder/ucgeflow.c"
-#include "src/coder/ucgeopt.c"
+#include "src/coder/codegen.c"
+#include "src/coder/codegenreg.c"
+#include "src/coder/codegencheck.c"
+#include "src/coder/codegentype.c"
+#include "src/coder/codegendoc.c"
+#include "src/coder/codegenpy.c"
+#include "src/coder/codegenjs.c"
+#include "src/coder/codegenc.c"
+#include "src/coder/codegengo.c"
+#include "src/coder/codegencfg.c"
+#include "src/coder/codegenflow.c"
+#include "src/coder/codegenopt.c"
 
 static int NT = 0, NBAD = 0;
 #define CHECK(c, ...) do { NT++; if (!(c)) { NBAD++; printf("FAIL line %d: %s  ", __LINE__, #c); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -410,7 +410,7 @@ static void test_ssa_on_file(const char *path) {
 }
 static int test_dir(const char *dir, int (*fn)(const char *)) {
     DIR *d = opendir(dir); if (!d) return 0; struct dirent *e; char names[512][300]; int n = 0;
-    while ((e = readdir(d)) && n < 512) { const size_t l = strlen(e->d_name); if (l > 4 && !strcmp(e->d_name + l - 4, ".csp")) snprintf(names[n++], sizeof names[0], "%s/%s", dir, e->d_name); }
+    while ((e = readdir(d)) && n < 512) { const size_t l = strlen(e->d_name); if (l > 6 && !strcmp(e->d_name + l - 6, ".kcode")) snprintf(names[n++], sizeof names[0], "%s/%s", dir, e->d_name); }
     closedir(d);
     for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (strcmp(names[i], names[j]) > 0) { char t[300]; memcpy(t, names[i], sizeof t); memcpy(names[i], names[j], sizeof t); memcpy(names[j], t, sizeof t); }
     for (int i = 0; i < n; i++) fn(names[i]);

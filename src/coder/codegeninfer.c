@@ -1,4 +1,4 @@
-/* ---------- coder/ucgeinfer.c: UCGE, inferencia de tipos (docs/ucge.md, "Type inference") ----------
+/* ---------- coder/codegeninfer.c: Codegen, inferencia de tipos (docs/codegen.md, "Type inference") ----------
  * Hindley-Milner (algoritmo J: unificacao destrutiva por union-find) com generalizacao por niveis (Remy), let-polimorfismo para funcoes e
  * metodos, e uma extensao gradual: `any` e consistente com tudo (nunca e erro) e cada ponto onde um valor `any` entra num lugar de tipo
  * concreto recebe uma MARCA na AST (n->chk), nao um teste de execucao. Em cima disso:

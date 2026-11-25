@@ -1,11 +1,11 @@
-/* ---------- coder/ucgecheck.c: Unified Code Generation Engine, parte 2: validador semantico da UIR (docs/ucge.md) ----------
- * Roda sobre a AST ja montada por ucge.c, ANTES de gerar. Cada erro leva a linha e o que se esperava. Regras que valem para qualquer
+/* ---------- coder/codegencheck.c: code generation module, parte 2: validador semantico da UIR (docs/codegen.md) ----------
+ * Roda sobre a AST ja montada por codegen.c, ANTES de gerar. Cada erro leva a linha e o que se esperava. Regras que valem para qualquer
  * linguagem de destino (e por isso o codigo gerado se comporta igual nelas): variavel declarada antes do uso, nada de redeclarar nem
  * sombrear um nome visivel (Python e JS divergem nisso), condicao so booleana (a verdade de 0, "" e [] diverge), tipos obvios
  * incompativeis, aridade, retorno em todos os caminhos, operacao e funcao conhecidas. Os blocos `raw` sao opacos: so os nomes que
  * declaram em `defines` entram no escopo. */
 
-/* as funcoes embutidas vivem no registro de operacoes (ucgereg.c): aridade, tipos dos argumentos e do resultado, efeito, nivel */
+/* as funcoes embutidas vivem no registro de operacoes (codegenreg.c): aridade, tipos dos argumentos e do resultado, efeito, nivel */
 typedef struct { char name[64]; CgxTy ty; CgxNode *decl; int depth, glob; } CgxSym;
 typedef struct {
     Cgx *g;

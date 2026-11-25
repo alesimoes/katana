@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Teste de propriedade/diferencial do UCGE (docs/ucge.md, "Backends JS e TS"): gera programas CSP aleatorios VALIDOS (tipados pela IR: int, float, str, bool,
+"""Teste de propriedade/diferencial do codegen (docs/codegen.md, "Backends JS e TS"): gera programas code spec aleatorios VALIDOS (tipados pela IR: int, float, str, bool,
    list[int], list[str], map[str,int], funcoes com default, uma classe, laco, try/catch/finally) e compara a saida de Python x JavaScript x TypeScript (jsdiff.py).
    Operacoes que podem levantar erro (divisao, indice, pop, int(), sqrt...) ficam em try/catch e imprimem errmsg, entao o TEXTO dos erros tambem e comparado.
-   Uso: jsfuzz.py <ucgecli> [N=200] [semente=1] [diretorio-de-falhas]      (UCGE_TSC=... inclui TypeScript)"""
+   Uso: jsfuzz.py <codegencli> [N=200] [semente=1] [diretorio-de-falhas]      (KATANA_CODEGEN_TSC=... inclui TypeScript)"""
 import os, random, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jsdiff
@@ -302,21 +302,21 @@ def program(seed):
 
 if __name__ == "__main__":
     cli = sys.argv[1]; n = int(sys.argv[2]) if len(sys.argv) > 2 else 200; seed0 = int(sys.argv[3]) if len(sys.argv) > 3 else 1
-    faildir = sys.argv[4] if len(sys.argv) > 4 else None; tsc = os.environ.get("UCGE_TSC")
+    faildir = sys.argv[4] if len(sys.argv) > 4 else None; tsc = os.environ.get("KATANA_CODEGEN_TSC")
     bad = invalid = 0; lines = 0
     with tempfile.TemporaryDirectory() as d:
         for s in range(seed0, seed0 + n):
-            p = os.path.join(d, "f%d.csp" % s); text = program(s); open(p, "w", encoding="utf8").write(text)
+            p = os.path.join(d, "f%d.kcode" % s); text = program(s); open(p, "w", encoding="utf8").write(text)
             import subprocess
             chk = subprocess.run([cli, "check", p], capture_output=True, text=True)
             if chk.stdout.strip() != "ok":
                 invalid += 1; print("INVALIDO seed %d: %s" % (s, chk.stdout.strip().splitlines()[0] if chk.stdout.strip() else chk.stderr[:100]))
-                if faildir: os.makedirs(faildir, exist_ok=True); open(os.path.join(faildir, "invalid%d.csp" % s), "w", encoding="utf8").write(text)
+                if faildir: os.makedirs(faildir, exist_ok=True); open(os.path.join(faildir, "invalid%d.kcode" % s), "w", encoding="utf8").write(text)
                 continue
             ok, msg = jsdiff.compare(cli, p, tsc)
             if ok: lines += int(msg.split()[0])
             else:
                 bad += 1; print("FAIL seed %d: %s" % (s, msg))
-                if faildir: os.makedirs(faildir, exist_ok=True); open(os.path.join(faildir, "fail%d.csp" % s), "w", encoding="utf8").write(text)
+                if faildir: os.makedirs(faildir, exist_ok=True); open(os.path.join(faildir, "fail%d.kcode" % s), "w", encoding="utf8").write(text)
     print("programas %d, divergentes %d, invalidos (gerador) %d, linhas de saida comparadas %d, alvos: python js%s" % (n, bad, invalid, lines, " ts" if tsc else ""))
     sys.exit(1 if bad or invalid else 0)

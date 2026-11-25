@@ -1,6 +1,6 @@
-/* GERADO por tools/ucge/rt2inc.py a partir de tools/ucge/rt/cgrt.h: nao edite aqui (docs/ucge.md, "Backend C"). */
+/* GERADO por tools/codegen/rt2inc.py a partir de tools/codegen/rt/cgrt.h: nao edite aqui (docs/codegen.md, "Backend C"). */
 static const char *const CGX_C_RT_CORE[] = {
-    "/* ---- runtime do backend C do UCGE (docs/ucge.md, \"Backend C\"): arena, erros, inteiros, strings ---- */",
+    "/* ---- runtime do backend C do codegen (docs/codegen.md, \"Backend C\"): arena, erros, inteiros, strings ---- */",
     "#include <stdio.h>",
     "#include <stdlib.h>",
     "#include <string.h>",

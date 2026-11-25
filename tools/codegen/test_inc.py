@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Testes da AST incremental (docs/ucge.md, "AST incremental"): modifica arquivos Python reais pequenos com ucgecli e confere que
+"""Testes da AST incremental (docs/codegen.md, "AST incremental"): modifica arquivos Python reais pequenos com codegencli e confere que
 (1) so mudaram as linhas esperadas (diff minimo, byte a byte fora delas), (2) o resultado e Python valido (ast), (3) o conteudo certo.
-Uso: python3 tools/ucge/test_inc.py /caminho/do/ucgecli"""
+Uso: python3 tools/codegen/test_inc.py /caminho/do/codegencli"""
 import ast, difflib, os, shutil, subprocess, sys, tempfile, time
 
 U = sys.argv[1]
 HERE = os.path.dirname(os.path.abspath(__file__))
 INC = os.path.join(HERE, "inc")
-T = tempfile.mkdtemp(prefix="ucgeinc")
+T = tempfile.mkdtemp(prefix="codegeninc")
 N = BAD = 0
 
 
@@ -206,7 +206,7 @@ check("insert-py: Python como esta, com o recuo do corpo", TXT, """insert-py out
       pass
 """, [(a, b)], contains=["    for _ in range(2):\n        pass\n    for i in range(n):"], maxchanged=2)
 check_err("insert: instrucao fora do corpo", TXT, "insert outer before 9\n  let q = 1\n", "has only")
-check_err("insert: erro no CSP da carga com a linha", TXT, "insert outer end\n  let q = nada + 1\n", "spec line 1: variable `nada` is not declared")
+check_err("insert: erro no code spec da carga com a linha", TXT, "insert outer end\n  let q = nada + 1\n", "spec line 1: variable `nada` is not declared")
 # ---------------- apagar ----------------
 a, b = sp(TXT, "count_vowels")
 check("delete-function (def de uma linha)", TXT, "delete-function count_vowels\n", [(a - 2, a + 3)], absent=["count_vowels"], maxchanged=3)
@@ -272,7 +272,7 @@ if good and seen >= 4 and "fn     price_with_tax lines 11-16" in p.stdout: ok("U
 else: fail("UIR-H leitura", p.stdout[:400])
 u = subprocess.run([U, "inc", "uir", os.path.join(INC, INV)], capture_output=True, text=True).stdout
 if "fn price_with_tax(price, rate = 0.2)" in u and "raw python defines decorated" in u and "class Stock" in u: ok("UIR-H: o que se entende vira fn/class/const, o resto raw")
-else: fail("UIR-H csp", u[:300])
+else: fail("UIR-H kcode", u[:300])
 # ---------------- arquivo grande: so a funcao tocada muda e o tempo e baixo ----------------
 big = "".join("def f%d(a, b):\n    # work %d\n    t = a * %d + b\n    return t\n\n\n" % (i, i, i) for i in range(3000))
 mk("big.py", big)

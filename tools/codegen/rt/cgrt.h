@@ -1,5 +1,5 @@
 /*@@ core */
-/* ---- runtime do backend C do UCGE (docs/ucge.md, "Backend C"): arena, erros, inteiros, strings ---- */
+/* ---- runtime do backend C do codegen (docs/codegen.md, "Backend C"): arena, erros, inteiros, strings ---- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

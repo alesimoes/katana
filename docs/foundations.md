@@ -30,7 +30,7 @@ Priority = (how much the project leans on it) x (how little there is to show for
 
 | # | Gap | Why it ranks here | Class | First action |
 |---|---|---|---|---|
-| 1 | **UCGE has its own input syntax (the "CSP") and nobody has measured whether Qwen writes it correctly.** The first-try validity rate is "not measured" (`docs/ucge.md` 12, 14). The literature says models are weaker on formats and languages they saw little of (section 8), and the "fewer tokens" premise was measured false (spec = 1.16x idiomatic Python). | The whole UCGE bet (phases F, G) rests on it, and the core is not even in the build yet. | ad hoc, needs test or replacement | Run the 20-request harness (module G) against three arms: direct Python, JSON under a schema grammar, CSP. Decide with numbers; keep the typed IR and validators either way. |
+| 1 | **Codegen has its own input syntax (the "code spec") and nobody has measured whether Qwen writes it correctly.** The first-try validity rate is "not measured" (`docs/codegen.md` 12, 14). The literature says models are weaker on formats and languages they saw little of (section 8), and the "fewer tokens" premise was measured false (spec = 1.16x idiomatic Python). | The whole codegen bet (phases F, G) rests on it, and the core is not even in the build yet. | ad hoc, needs test or replacement | Run the 20-request harness (module G) against three arms: direct Python, JSON under a schema grammar, code spec. Decide with numbers; keep the typed IR and validators either way. |
 | 2 | **The briefing selector's weights were hand-picked on one briefing** (+2.5 for a colour, +1.5 for a style word, 60% mandatory cap, 0.35 exponent for the logo blend...). No second corpus, no comparison with plain truncation, no check that the image improves. | A silent cut changes what is drawn; the only "test" is that words are a subsequence and the old template terms do not reappear. | ad hoc, needs test or replacement | Build a 30-brief corpus; compare against head-truncation and against a standard prompt-compression baseline; judge by an image metric plus a blind pairwise look. |
 | 3 | **Specialization (LoRA/DoRA/PiSSA, curriculum) has no result on the real model.** Everything is measured on tiny random models; "no codebench pass on the new data exist yet" (`docs/plan.md`); the curriculum is deferred until UIOE ends. | The product story ("the model learns katana's tools") depends on it, and gradient correctness is the only thing proven. | deviation unmeasured | One night-run on Qwen3.6, scored by `katana codebench` before/after on held-out tasks, plus the drift loss already in the harness. |
 | 4 | **UIOE is built (U0 to U5, U8) with "nothing measured", and the only retrieval numbers we do have are weak** (BM25 at rank 1 right about 4% of the time on the 76-question set; the hop slice is a documented negative result). | It sits in front of every request; its routing, gating and context-packet format are all justified by design arguments, not by an A/B. | deviation unmeasured | Replay the owner's real sessions with UIOE on and off; count rounds, tokens and answer-correct. |
@@ -39,7 +39,7 @@ Priority = (how much the project leans on it) x (how little there is to show for
 | 7 | **The agent layer has no end-to-end task evaluation on the real model**; 765 tool checks run without a model, and several A-items are "code done, not measured with a model" (`docs/plan.md`). | The agent is the product; tool-use quality is the thing a user feels. | deviation unmeasured | Fix a task suite (codebench already exists), run it per release, publish pass rate and invalid-call rate. |
 | 8 | **Engine numerics have no model-level quality number against a standard** (perplexity or KL of the real quantized model against its float reference on public text). Kernel-level selftests are good (1e-5 range); a KL study is *proposed* for the expert-tier idea, not run. | Quantization and GPU precision shortcuts (f16 activations, fp16 KV) are standard, but "standard" has to be shown on this engine. | grounded, deviation justified (kernels); deviation unmeasured (model level) | Run KL/top-1 agreement against a float reference on a fixed 20k-token text, per backend and quant. |
 | 9 | **Code-intelligence's Edit-by-symbol and the LSP path have little real-world evidence**: the LSP tests use `fake_lsp.py`; the plan lists "LSP with a real server" among tools "written and never exercised"; `tools/editbench` exists but its results are not recorded in the docs I read. | The design is sound (symbol-addressed edits are used by published agent work), but our scanners are tolerant, not full parsers. | deviation unmeasured | Record editbench results; run one real server (for example a Python and a TypeScript one) end to end. |
-| 10 | **Names.** "CSP" collides with three established meanings; "UIOE" has no market equivalent; `.kspec` names an adapter file while `KATANA_SPEC` names the specialization switch (and a speculative-decoding switch used to share it). | Cost of confusion grows with every doc and every outside reader. | ad hoc, needs test or replacement | Rename CSP (section 11); keep UIOE as an internal name but always gloss it; resolve the `spec` overload. |
+| 10 | **Names.** the earlier three-letter name of the input format collided with three established meanings (now "code spec", `.kcode`); "UIOE" has no market equivalent; `.kspec` names an adapter file while `KATANA_SPEC` names the specialization switch (and a speculative-decoding switch used to share it). | Cost of confusion grows with every doc and every outside reader. | ad hoc, needs test or replacement | Rename code spec (section 11); keep UIOE as an internal name but always gloss it; resolve the `spec` overload. |
 
 ---
 
@@ -52,8 +52,8 @@ Short glossary first, because half of the "unusual" feeling is vocabulary. The f
 | UIOE (Interpret, Classify, Route, Retrieve, Orchestrate) | query understanding, then query routing, then retrieval-augmented generation, assembled by "context engineering" |
 | Context Builder | context assembly / prompt construction; context engineering |
 | Briefing selector (`sdsel.c`) | extractive prompt compression with a lexical relevance score |
-| UCGE | a code generator driven by a typed intermediate representation (a program-synthesis back end), fed by a small DSL |
-| CSP ("code specification protocol") | a domain-specific language (DSL) for programs; **not** Hoare's CSP |
+| Codegen | a code generator driven by a typed intermediate representation (a program-synthesis back end), fed by a small DSL |
+| Code spec (file extension `.kcode`) | a domain-specific language (DSL) for programs; not Hoare's process algebra |
 | Evidence graph / evidence pack | retrieved-context set with provenance |
 | Prefix cache | prompt (prefix) caching, KV-cache reuse |
 
@@ -161,7 +161,7 @@ Per `docs/knowledge.md`, `docs/comparisons.md`, `docs/optimization-roadmap.md`, 
 
 ---
 
-## 8. UCGE (typed IR, AST, flow analyses, generation)
+## 8. Codegen (typed IR, AST, flow analyses, generation)
 
 This is where the repo is furthest from an established path, and the owner's concern applies most.
 
@@ -174,17 +174,17 @@ This is where the repo is furthest from an established path, and the owner's con
   - Models do worse on low-resource languages: MultiPL-T (arXiv 2308.09895, abstract read: code models "struggle with low-resource languages that have limited training data").
   - Format restrictions can hurt reasoning: "Let Me Speak Freely?" (arXiv 2408.02442, abstract read: "a significant decline in LLMs reasoning abilities under format restrictions", and stricter constraints degrade more).
 - **Departure.** Four, and they should be judged separately:
-  1. *A new surface syntax (the CSP) instead of a language the model knows.* The repo mitigates it: an indentation pseudocode close to Python/Kotlin, a lenient parser that accepts `def`/`function`/`func`, `&&`/`and`, etc., errors that say what to write, a JSON form. That is a good design for a small model. It is still a format the model has never seen as training data, and the literature above is the warning. The second cited paper cuts both ways: if the spec is also grammar-constrained, reasoning may degrade; if it is not, validity may be low. Neither side has been measured here.
+  1. *A new surface syntax (the code spec) instead of a language the model knows.* The repo mitigates it: an indentation pseudocode close to Python/Kotlin, a lenient parser that accepts `def`/`function`/`func`, `&&`/`and`, etc., errors that say what to write, a JSON form. That is a good design for a small model. It is still a format the model has never seen as training data, and the literature above is the warning. The second cited paper cuts both ways: if the spec is also grammar-constrained, reasoning may degrade; if it is not, validity may be low. Neither side has been measured here.
   2. *"The model does not write the final code."* The decision (2026-11-24) is stronger than any measured benefit: the doc's own numbers are spec = 0.86x generated Python but **1.16x idiomatic Python**, and with `test` lines and comments longer still; `raw` tasks are longer than the code. The stated benefits (determinism, multi-target, validation before generation, the model need not know idioms) are real but unmeasured with a model, and multi-target currently means Python only (JS, TS, C backends are planned modules A and B).
   3. *A unified semantic core with a conservative intersection of language rules* (no shadowing, no truthiness, floor division). Sound; it trades expressiveness for portability, and `raw` becomes the escape hatch. 13 of 15 tasks avoided `raw`, **written by the same author who wrote the language**, which the doc itself flags as an upper bound.
   4. *Scope.* HM, CFG/SSA, dominators and the data-flow analyses are planned (modules C and D), not built; the core is not in the `katana.c` build; "the machine was under load" is why no model was run. A heavy analysis stack designed before the first model measurement is a classic order-of-work risk.
-- **Evidence.** `tools/ucge/test.sh` (60 checks), the 15 tasks, 53 test cases pass in the generated Python (`docs/ucge.md` 12). Model validity rate: not measured. "Fewer tokens": measured, false (stated honestly in the doc).
-- **Class.** typed IR, validator, generated-code checks: grounded. CSP surface syntax: **ad hoc, needs test or replacement**. "Model never writes final code" policy: **deviation unmeasured**. Analysis stack: grounded in theory, not yet built.
+- **Evidence.** `tools/codegen/test.sh` (60 checks), the 15 tasks, 53 test cases pass in the generated Python (`docs/codegen.md` 12). Model validity rate: not measured. "Fewer tokens": measured, false (stated honestly in the doc).
+- **Class.** typed IR, validator, generated-code checks: grounded. Code spec surface syntax: **ad hoc, needs test or replacement**. "Model never writes final code" policy: **deviation unmeasured**. Analysis stack: grounded in theory, not yet built.
 - **Action.**
-  1. Before building modules C and D, run module G: 20 natural-language requests, Qwen3.6, three arms (direct Python; JSON under a JSON-schema or grammar constraint; CSP with and without grammar). Metrics: first-try validity, repairs to pass the given tests, tokens, total latency. Decision rule written down in advance: CSP continues only if it beats "direct Python plus our validators" on tests passed per repair budget.
+  1. Before building modules C and D, run module G: 20 natural-language requests, Qwen3.6, three arms (direct Python; JSON under a JSON-schema or grammar constraint; code spec with and without grammar). Metrics: first-try validity, repairs to pass the given tests, tokens, total latency. Decision rule written down in advance: Code spec continues only if it beats "direct Python plus our validators" on tests passed per repair budget.
   2. Keep the typed IR and validators as an independent value: they can validate *Python the model wrote* (undeclared names, arity, missing returns) without any new syntax. That is a cheaper path to most of benefits (3) and (4) in the doc.
   3. Rename (section 11.1).
-  4. State plainly in `docs/ucge.md` 1 that multi-language is a plan until a second backend passes the same 13 tasks.
+  4. State plainly in `docs/codegen.md` 1 that multi-language is a plan until a second backend passes the same 13 tasks.
 
 ---
 
@@ -242,17 +242,13 @@ This is where the repo is furthest from an established path, and the owner's con
 
 ---
 
-## 11. Naming, glossary, and the CSP rename
+## 11. Naming, glossary, and the code spec name
 
-### 11.1 Rename "CSP"
+### 11.1 The code spec name (decided)
 
-"CSP" already means, to any outside reader: **Communicating Sequential Processes** (Hoare's process algebra; Wikipedia page opened), **Constraint Satisfaction Problem** (the AI/OR term; the repo's own UIR work also touches constraints), and **Content Security Policy** (a web security header; MDN page opened). The doc's expansion, "code specification protocol", is a fourth, and it is not a protocol either (it is a language). Recommendation, with the owner's agreement in principle: rename. Candidates, in order of preference:
+The earlier three-letter name of the input format already meant, to any outside reader: **Communicating Sequential Processes** (Hoare's process algebra; Wikipedia page opened), **Constraint Satisfaction Problem** (the AI/OR term; the repo's own UIR work also touches constraints), and **Content Security Policy** (a web security header; MDN page opened). Its expansion was a fourth meaning, and it is not a protocol either (it is a language). Decision of the owner (2026-11-24): katana is the name of the engine and `.kspec` stays; no new acronyms. The module is called **codegen** and the input format **"code spec"**, with the file extension `.kcode`. Do **not** use `.kspec`, which is the adapter file of `docs/specialization.md` (the adapter loader opens `*.kspec` by glob).
 
-1. **UCGE Spec** (short name `ucspec`), since the engine is already "UCGE"; file extension `.ucs`. Do **not** use `.kspec`, which is the adapter file of `docs/specialization.md`.
-2. **KCL** (Katana Code Language) or **KSL**; shorter, but a new proper noun with no anchor.
-3. Plainly: **"code spec"** in prose.
-
-Whichever is chosen, also describe it as "a small program-description DSL" on first use. Touch points to update when it happens: `docs/ucge.md` (title of section 2 and the first section), `src/coder/ucge*.c` comments and the planned `CodeGen` tool description, `tools/ucge/`. Not done in this change (documentation-only branch).
+Also describe it as "a small program-description DSL" on first use. Done: `docs/codegen.md`, `src/coder/codegen*.c`, `tools/codegen/`, `docs/architecture.md` and the architecture page.
 
 Other collisions worth fixing: **"spec"** is used for the adapter file (`.kspec`), the specialization switch (`KATANA_SPEC`, per `docs/optimization-roadmap.md` it is "already the name of the specialization setting" and an older speculative draft switch once used the same name), speculative decoding, `sdspec.c`, and the image spec. Pick one word per meaning.
 
@@ -282,9 +278,9 @@ Other collisions worth fixing: **"spec"** is used for the adapter file (`.kspec`
 | Fidelity (strength) | img2img denoising strength | SDEdit, arXiv 2108.01073 |
 | Tolerant scanner / line-rule fallback | lightweight (non-compiler) parsers, regex/lexical symbol extraction | contrast: tree-sitter |
 | Edit by symbol | symbol-addressed code edit with pre-write validation | |
-| UCGE | typed-IR code generator / program-synthesis backend | |
+| Codegen | typed-IR code generator / program-synthesis backend | |
 | UIR (UIR-H / UIR-G) | high-level typed IR / graph IR (CFG+SSA) | SSA: Cytron et al. |
-| CSP (UCGE) | a small code-description DSL | rename, 11.1 |
+| Code spec (codegen) | a small code-description DSL | named in 11.1 |
 | `raw` block | escape hatch / foreign code block | |
 | Operation Registry | builtin/intrinsic table | |
 | Evidence "grade" exact/derived/probable | provenance / confidence labels | |
@@ -297,7 +293,7 @@ Each item is the smallest experiment that would let the owner decide. All need t
 
 | Gap | Experiment | Metric and decision rule (write it before running) | Uses |
 |---|---|---|---|
-| 1 CSP | 20 NL requests x 3 arms (direct Python; JSON under a grammar; CSP with and without grammar), 3 seeds each, Qwen3.6 on CPU | first-try validity, repairs to pass given tests, tokens, latency. CSP continues only if tests-passed per repair budget exceeds "direct Python + our validators" | module G of `docs/ucge.md`, `tools/ucge/tasks` |
+| 1 code spec | 20 NL requests x 3 arms (direct Python; JSON under a grammar; code spec with and without grammar), 3 seeds each, Qwen3.6 on CPU | first-try validity, repairs to pass given tests, tokens, latency. Code spec continues only if tests-passed per repair budget exceeds "direct Python + our validators" | module G of `docs/codegen.md`, `tools/codegen/tasks` |
 | 2 Selector | 30-brief corpus; arms truncation / selector / compressor; 3 seeds | CLIP score to the full brief; blind pairwise preference; keep the selector only if it wins on at least a stated margin | `katana render brief`, `--explain-brief` |
 | 3 Specialization | one night of `katana specialize` on a frozen task set | codebench pass rate base vs adapter on held-out tasks; drift loss; adopt only if pass rate rises and drift loss does not | `tools/codebench`, `katana train --compare` |
 | 4 UIOE | replay 30 recorded real requests with UIOE off/on; plus the 76-question retrieval set swept over gate/share/floor | rounds, tokens, answer-correct (human check); recall at 5 for each parameter setting | `~/.katana` sessions, `tools/findbench`, `katana uioe ask --pack` |
@@ -306,7 +302,7 @@ Each item is the smallest experiment that would let the owner decide. All need t
 | 7 Agent | 30 to 50 fixed tasks, nudges on/off | pass rate, invalid-call rate, rounds; one ablation per nudge starting with A9 | `tools/codebench`, `katana agentlog` |
 | 8 Engine quality | KL and top-1 agreement vs float reference on 20k tokens, per backend, KV fp16 vs f32 | KL below a pre-stated bound (for example the one the reference engine's own quantization shows); report even if worse | `katana selftest`, new table in `docs/comparisons.md` |
 | 9 Code intelligence | scanner vs tree-sitter on 3 repos x 3 languages; editbench with/without validation; one real LSP server | precision/recall of defs and call sites; edit success rate; the real-server run completes | `tools/editbench`, `tools/tooltest/symedit.sh` |
-| 10 Names | rename CSP; resolve `spec` overload | grep for the old term returns nothing outside history | docs, `src/coder/ucge*` |
+| 10 Names | name the code spec (done); resolve `spec` overload | grep for the old term returns nothing outside history | docs, `src/coder/codegen*` |
 | 3.7 Lookup decoding | retest once on the Vulkan graph, idle machine | decoded tokens per second plain vs lookup, 5 alternations; keep only if faster by more than the noise | `tools/spectest.sh` |
 | 9.2, 9.4 Strength/guidance | sweep strength 0.4-0.9, guidance on 10 real views | edge-overlap and CLIP score; defaults at the knee | `render generate` |
 | 9.5 Tiling | tiled vs untiled decode of one latent where both fit | PSNR in the seam band as a function of overlap | `flux-vae selftest` style |
@@ -323,7 +319,7 @@ Each item is the smallest experiment that would let the owner decide. All need t
 
 ## 14. What could not be verified (unverified)
 
-- Cooper, Harvey and Kennedy, "A Simple, Fast Dominance Algorithm": the CHK method cited in `docs/ucge.md` was not confirmed (Crossref returned other records; the PDF link returned 404). Do not quote title, venue or year until checked.
+- Cooper, Harvey and Kennedy, "A Simple, Fast Dominance Algorithm": the CHK method cited in `docs/codegen.md` was not confirmed (Crossref returned other records; the PDF link returned 404). Do not quote title, venue or year until checked.
 - ACM Digital Library pages returned 403 to automated access; the Crossref records above stand in for the SSA and Damas-Milner citations, but the papers themselves were not read.
 - The Foundations and Trends BM25 paper itself (publisher 403, the author's PDF link 404); only the Crossref record was checked.
 - NVIDIA PTX ISA and CUDA driver API documentation, Vulkan and OpenCL specifications: not opened; the claims about `mma.sync`, `ldmatrix` and driver loading come from the repo's own docs.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Teste diferencial do backend C do UCGE: gera programas CSP validos e pequenos ao acaso, gera Python e C a partir do mesmo
+"""Teste diferencial do backend C do codegen: gera programas code spec validos e pequenos ao acaso, gera Python e C a partir do mesmo
 programa, roda os dois e compara a saida inteira (as linhas impressas pelo programa e o resultado dos `test`).
-Uso: python3 tools/ucge/difftest_targets.py UCGECLI [-n 200] [--seed 1] [--san] [--keep DIR] [--only SEED]
-  UCGECLI = o binario de tools/ucge/ucgecli.c.  --san compila o C com ASan e UBSan (e sai com erro se qualquer um acusar).
+Uso: python3 tools/codegen/difftest_targets.py CODEGENCLI [-n 200] [--seed 1] [--san] [--keep DIR] [--only SEED]
+  CODEGENCLI = o binario de tools/codegen/codegencli.c.  --san compila o C com ASan e UBSan (e sai com erro se qualquer um acusar).
 Cada programa usa: aritmetica inteira com piso, listas, mapas, strings, floats, loops, try/catch/finally, break/continue,
 funcoes e classes. O gerador mantem a validade pelo tipo (nao ha rejeicao por tentativa): um programa recusado pelo validador
 e contado como "invalid" e e um defeito do gerador."""
@@ -262,22 +262,22 @@ class G:
         return "\n".join(out) + "\n"
 
 def one(args):
-    seed, ucgecli, san, keep = args[:4]; target = args[5] if len(args) > 5 else "c"
+    seed, codegencli, san, keep = args[:4]; target = args[5] if len(args) > 5 else "c"
     spec = args[4] if len(args) > 4 and args[4] is not None else G(seed).gen()
-    d = tempfile.mkdtemp(prefix="ucgediff")
+    d = tempfile.mkdtemp(prefix="codegendiff")
     try:
-        sp = os.path.join(d, "p.csp"); open(sp, "w").write(spec)
+        sp = os.path.join(d, "p.kcode"); open(sp, "w").write(spec)
         def sh(cmd, t=30):
             try: return subprocess.run(cmd, capture_output=True, text=True, timeout=t, cwd=d)
             except subprocess.TimeoutExpired: return None
-        chk = sh([ucgecli, "check", sp])
+        chk = sh([codegencli, "check", sp])
         if chk is None or "ok" not in chk.stdout: return (seed, "invalid", spec + "\n" + (chk.stdout if chk else "timeout"))
-        gp = sh([ucgecli, "gen", "python", sp, "--tests"]); gc = sh([ucgecli, "gen", target, sp, "--tests"])
+        gp = sh([codegencli, "gen", "python", sp, "--tests"]); gc = sh([codegencli, "gen", target, sp, "--tests"])
         if gp is None or gp.returncode or gc is None or gc.returncode: return (seed, "gen-fail", spec + "\n" + (gc.stdout if gc else "") + (gp.stdout if gp else ""))
         open(os.path.join(d, "p.py"), "w").write(gp.stdout)
         if target == "go":
             open(os.path.join(d, "p.go"), "w").write(gc.stdout)
-            env = dict(os.environ, GO111MODULE="off", GOCACHE=os.environ.get("GOCACHE", "/mnt/dados/ucgego_tmp/gocache"))
+            env = dict(os.environ, GO111MODULE="off", GOCACHE=os.environ.get("GOCACHE", "/mnt/dados/codegengo_tmp/gocache"))
             fm = subprocess.run(["gofmt", "-l", "p.go"], capture_output=True, text=True, cwd=d)
             if fm.stdout.strip() or fm.stderr.strip(): return (seed, "fmt-fail", spec + "\n" + subprocess.run(["gofmt", "-d", "p.go"], capture_output=True, text=True, cwd=d).stdout[:1500])
             cc = subprocess.run(["go", "vet", "p.go"], capture_output=True, text=True, cwd=d, env=env, timeout=120)
@@ -304,18 +304,18 @@ def one(args):
         shutil.rmtree(d, ignore_errors=True)
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("ucgecli"); ap.add_argument("-n", type=int, default=200); ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--san", action="store_true"); ap.add_argument("--keep"); ap.add_argument("--only", type=int); ap.add_argument("--cases", help="compara cada .csp deste diretorio em vez de gerar programas"); ap.add_argument("-j", type=int, default=4); ap.add_argument("--target", default="c", choices=["c", "go"])
+    ap = argparse.ArgumentParser(); ap.add_argument("codegencli"); ap.add_argument("-n", type=int, default=200); ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--san", action="store_true"); ap.add_argument("--keep"); ap.add_argument("--only", type=int); ap.add_argument("--cases", help="compara cada .kcode deste diretorio em vez de gerar programas"); ap.add_argument("-j", type=int, default=4); ap.add_argument("--target", default="c", choices=["c", "go"])
     a = ap.parse_args()
     jobs = None
     if a.cases:
-        fs = sorted(f for f in os.listdir(a.cases) if f.endswith(".csp")); seeds = fs
-        jobs = [(f, os.path.abspath(a.ucgecli), a.san, a.keep, open(os.path.join(a.cases, f)).read(), a.target) for f in fs]
+        fs = sorted(f for f in os.listdir(a.cases) if f.endswith(".kcode")); seeds = fs
+        jobs = [(f, os.path.abspath(a.codegencli), a.san, a.keep, open(os.path.join(a.cases, f)).read(), a.target) for f in fs]
     else: seeds = [a.only] if a.only is not None else list(range(a.seed, a.seed + a.n))
     if a.keep: os.makedirs(a.keep, exist_ok=True)
     res = {}; lines = 0; bad = []
     with cf.ThreadPoolExecutor(a.j) as ex:
-        for seed, st, info in ex.map(one, jobs or [(x, os.path.abspath(a.ucgecli), a.san, a.keep, None, a.target) for x in seeds]):
+        for seed, st, info in ex.map(one, jobs or [(x, os.path.abspath(a.codegencli), a.san, a.keep, None, a.target) for x in seeds]):
             res[st] = res.get(st, 0) + 1
             if st == "ok": lines += info
             else: bad.append((seed, st, info))

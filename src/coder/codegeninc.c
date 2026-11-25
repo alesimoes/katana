@@ -1,19 +1,19 @@
-/* ---------- coder/ucgeinc.c: UCGE, AST incremental (docs/ucge.md, "AST incremental") ----------
+/* ---------- coder/codegeninc.c: Codegen, AST incremental (docs/codegen.md, "AST incremental") ----------
  * Muda codigo EXISTENTE sem reescreve-lo: le o arquivo (Python primeiro) num scanner proprio de subconjunto que guarda, para cada declaracao e
- * cada instrucao, o intervalo exato de bytes e de linhas; traduz o que entende para a UIR-H (CSP -> cgx_parse) com o mapa no -> intervalo, e o que
+ * cada instrucao, o intervalo exato de bytes e de linhas; traduz o que entende para a UIR-H (code spec -> cgx_parse) com o mapa no -> intervalo, e o que
  * nao entende vira `raw python` (RAW: opaco, nunca regenerado); aplica uma ESPECIFICACAO DE MUDANCA so nos nos afetados e produz uma lista de
  * edicoes [a,b) -> texto: todo byte fora das edicoes (comentarios, espacos, aspas, ordem) sai igual. O texto novo dos trechos afetados vem do
- * gerador (CSP -> Python). A gravacao e um gancho (CgxIncWriter): o padrao grava o arquivo de forma atomica; no katana (CGX_INC_KATANA) cada
+ * gerador (code spec -> Python). A gravacao e um gancho (CgxIncWriter): o padrao grava o arquivo de forma atomica; no katana (CGX_INC_KATANA) cada
  * simbolo alterado passa por ct_edit_symbol (validacao estrutural, desfazer, LSP). Nada aqui depende do katana alem desse gancho.
  *
- * Especificacao de mudanca (uma operacao por bloco; a carga util vem recuada de 2 espacos e e CSP, salvo `insert-py`):
- *   add-function [after NOME | before NOME | end]      carga: uma ou mais funcoes/classes CSP
- *   add-method CLASSE [after NOME]                      carga: `fn` CSP (o `self` e acrescentado)
- *   replace-function NOME                               carga: a funcao/classe CSP inteira (Classe.metodo para metodos)
- *   replace-body NOME                                   carga: instrucoes CSP; o docstring antigo fica se a carga nao traz `doc`
+ * Especificacao de mudanca (uma operacao por bloco; a carga util vem recuada de 2 espacos e e code spec, salvo `insert-py`):
+ *   add-function [after NOME | before NOME | end]      carga: uma ou mais funcoes/classes code spec
+ *   add-method CLASSE [after NOME]                      carga: `fn` code spec (o `self` e acrescentado)
+ *   replace-function NOME                               carga: a funcao/classe code spec inteira (Classe.metodo para metodos)
+ *   replace-body NOME                                   carga: instrucoes code spec; o docstring antigo fica se a carga nao traz `doc`
  *   rename ANTIGO NOVO                                  nome de funcao/classe/metodo (Classe.metodo): definicao e usos, so os tokens
  *   add-param FUNCAO TEXTO-DO-PARAMETRO [call=EXPR]     `limite: int = 10`; com call=, cada chamada ganha `limite=EXPR`
- *   insert FUNCAO start|end|before N|after N [vars a b] carga: instrucoes CSP (N conta as instrucoes do corpo, de 1)
+ *   insert FUNCAO start|end|before N|after N [vars a b] carga: instrucoes code spec (N conta as instrucoes do corpo, de 1)
  *   insert-py FUNCAO start|end|before N|after N         carga: Python como esta
  *   delete-function NOME */
 
@@ -222,9 +222,9 @@ static int cgx_inc_find(const CgxInc *c, const char *spec, char *err, size_t eca
     return cur ? cur : -1;
 }
 
-/* ---- Python -> UIR-H: gera o CSP equivalente (uma linha de CSP por instrucao) e o mapa linha-do-CSP -> no; o que nao entende vira `raw python` ---- */
-typedef struct { CgxB out; int *lmap; int nl, cl; unsigned char *force_raw; const CgxInc *inc; int nforce; size_t covered; } CgxIncCsp;
-static void cgx_ic_line(CgxIncCsp *x, int level, int node, const char *txt) {
+/* ---- Python -> UIR-H: gera o code spec equivalente (uma linha de code spec por instrucao) e o mapa linha-do-code spec -> no; o que nao entende vira `raw python` ---- */
+typedef struct { CgxB out; int *lmap; int nl, cl; unsigned char *force_raw; const CgxInc *inc; int nforce; size_t covered; } CgxIncKcode;
+static void cgx_ic_line(CgxIncKcode *x, int level, int node, const char *txt) {
     if (x->nl == x->cl) { x->cl = x->cl ? x->cl * 2 : 64; x->lmap = (int *)realloc(x->lmap, sizeof(int) * (size_t)x->cl); }
     x->lmap[x->nl++] = node;
     for (int i = 0; i < level; i++) cgx_bs(&x->out, "  ");
@@ -268,7 +268,7 @@ static size_t cgx_inc_hdr_colon(const char *t, size_t b0, size_t b1) {
     }
     return last;
 }
-static const char *cgx_inc_ty(const char *a, char *o, size_t cap) {         /* anotacao Python -> tipo CSP, ou NULL */
+static const char *cgx_inc_ty(const char *a, char *o, size_t cap) {         /* anotacao Python -> tipo code spec, ou NULL */
     char s[120]; size_t k = 0; for (const char *p = a; *p && k + 1 < sizeof s; p++) if (*p != ' ') s[k++] = *p; s[k] = 0;
     if (!strcmp(s, "int") || !strcmp(s, "float") || !strcmp(s, "str") || !strcmp(s, "bool")) { snprintf(o, cap, "%s", s); return o; }
     if (!strncmp(s, "list[", 5) || !strncmp(s, "List[", 5)) { char in[120]; snprintf(in, sizeof in, "%s", s + 5); char *e = strrchr(in, ']'); if (e) *e = 0; char b[100]; if (cgx_inc_ty(in, b, sizeof b)) { snprintf(o, cap, "list[%s]", b); return o; } return "list"; }
@@ -316,7 +316,7 @@ static void cgx_inc_params_free(CgxIncParam *p, int n) { for (int i = 0; i < n; 
 typedef struct { char names[64][48]; int n; } CgxIncDecl;
 static int cgx_inc_declared(CgxIncDecl *d, const char *nm) { for (int i = 0; i < d->n; i++) if (!strcmp(d->names[i], nm)) return 1; return 0; }
 static void cgx_inc_declare(CgxIncDecl *d, const char *nm) { if (!cgx_inc_declared(d, nm) && d->n < 64) snprintf(d->names[d->n++], 48, "%s", nm); }
-static void cgx_ic_raw(CgxIncCsp *x, const CgxInc *c, int idx, int level) {
+static void cgx_ic_raw(CgxIncKcode *x, const CgxInc *c, int idx, int level) {
     const CgxPyNode *n = &c->nd[idx]; const char *t = c->t; size_t a = n->b0, e = cgx_inc_chain_end(c, idx);
     if (e > x->covered) x->covered = e;
     /* nomes que o bloco define (so o primeiro nivel: atribuicao, def, class, import) */
@@ -356,8 +356,8 @@ static void cgx_ic_raw(CgxIncCsp *x, const CgxInc *c, int idx, int level) {
         free(ln.p); firstl = 0; p = le + 1;
     }
 }
-static void cgx_ic_block(CgxIncCsp *x, const CgxInc *c, int parent, int level, CgxIncDecl *dc, int in_fn);
-static void cgx_ic_stmt(CgxIncCsp *x, const CgxInc *c, int idx, int level, CgxIncDecl *dc, int in_fn) {
+static void cgx_ic_block(CgxIncKcode *x, const CgxInc *c, int parent, int level, CgxIncDecl *dc, int in_fn);
+static void cgx_ic_stmt(CgxIncKcode *x, const CgxInc *c, int idx, int level, CgxIncDecl *dc, int in_fn) {
     const CgxPyNode *n = &c->nd[idx]; const char *t = c->t; char hd[900]; CgxB e = {0}; hd[0] = 0;
     if (n->b0 < x->covered) return;
     if (x->force_raw[idx] || n->kind != PK_STMT || n->decorated || n->oneliner) { cgx_ic_raw(x, c, idx, level); free(e.p); return; }
@@ -432,12 +432,12 @@ static int cgx_ic_is_doc(const CgxInc *c, int idx) {
     CgxPyTok k2; if (cgx_pt_next(c->t, n->hb1, &pos, &k2)) return 0;
     return 1;
 }
-static void cgx_ic_block(CgxIncCsp *x, const CgxInc *c, int parent, int level, CgxIncDecl *dc, int in_fn) {
+static void cgx_ic_block(CgxIncKcode *x, const CgxInc *c, int parent, int level, CgxIncDecl *dc, int in_fn) {
     const CgxPyNode *p = &c->nd[parent];
     for (int i = 0; i < p->nch; i++) cgx_ic_stmt(x, c, p->ch[i], level, dc, in_fn);
 }
 /* def -> `fn`; devolve 0 se o cabecalho nao cabe no subconjunto (o chamador emite raw) */
-static int cgx_ic_fn(CgxIncCsp *x, const CgxInc *c, int idx, int level, int is_method) {
+static int cgx_ic_fn(CgxIncKcode *x, const CgxInc *c, int idx, int level, int is_method) {
     const CgxPyNode *n = &c->nd[idx]; CgxIncParam ps[24]; int np; size_t ob, cb; char *ret = NULL;
     if (x->force_raw[idx] || n->decorated || n->oneliner || n->kw[0] == 'a' || !cgx_inc_params(c, idx, ps, 24, &np, &ob, &cb, &ret)) { free(ret); return 0; }
     CgxB h = {0}; cgx_bf(&h, "fn %s(", n->name); int first = 1; CgxIncDecl dc; memset(&dc, 0, sizeof dc);
@@ -460,7 +460,7 @@ static int cgx_ic_fn(CgxIncCsp *x, const CgxInc *c, int idx, int level, int is_m
     }
     return 1;
 }
-static void cgx_ic_unit(CgxIncCsp *x, const CgxInc *c, int idx) {
+static void cgx_ic_unit(CgxIncKcode *x, const CgxInc *c, int idx) {
     const CgxPyNode *n = &c->nd[idx]; const char *t = c->t;
     if (n->b0 < x->covered) return;
     if (n->kind == PK_DEF) { const int save = x->nl; const size_t sv = x->out.n; if (!cgx_ic_fn(x, c, idx, 0, 0)) { x->nl = save; x->out.n = sv; if (x->out.p) x->out.p[sv] = 0; cgx_ic_raw(x, c, idx, 0); } return; }
@@ -499,42 +499,42 @@ static void cgx_ic_unit(CgxIncCsp *x, const CgxInc *c, int idx) {
     }
     cgx_ic_raw(x, c, idx, 0);
 }
-/* arquivo -> CSP (+ mapa). Itera: cada erro do parser marca a instrucao responsavel como raw e tenta de novo. */
-typedef struct { Cgx g; CgxIncCsp csp; int ok, nraw_forced; } CgxIncUir;
-static void cgx_inc_uir_free(CgxIncUir *u) { cgx_free(&u->g); free(u->csp.out.p); free(u->csp.lmap); free(u->csp.force_raw); memset(u, 0, sizeof *u); }
+/* arquivo -> code spec (+ mapa). Itera: cada erro do parser marca a instrucao responsavel como raw e tenta de novo. */
+typedef struct { Cgx g; CgxIncKcode kcode; int ok, nraw_forced; } CgxIncUir;
+static void cgx_inc_uir_free(CgxIncUir *u) { cgx_free(&u->g); free(u->kcode.out.p); free(u->kcode.lmap); free(u->kcode.force_raw); memset(u, 0, sizeof *u); }
 static int cgx_inc_uir(const CgxInc *c, CgxIncUir *u) {
-    memset(u, 0, sizeof *u); u->csp.inc = c; u->csp.force_raw = (unsigned char *)calloc((size_t)c->nn + 1, 1);
+    memset(u, 0, sizeof *u); u->kcode.inc = c; u->kcode.force_raw = (unsigned char *)calloc((size_t)c->nn + 1, 1);
     for (int round = 0; round < 12; round++) {
-        free(u->csp.out.p); free(u->csp.lmap); memset(&u->csp.out, 0, sizeof u->csp.out); u->csp.lmap = NULL; u->csp.nl = u->csp.cl = 0; u->csp.covered = 0;
-        cgx_ic_line(&u->csp, 0, 0, "# ucge incremental reader"); /* linha 1: mantem o mapa 1-based */
+        free(u->kcode.out.p); free(u->kcode.lmap); memset(&u->kcode.out, 0, sizeof u->kcode.out); u->kcode.lmap = NULL; u->kcode.nl = u->kcode.cl = 0; u->kcode.covered = 0;
+        cgx_ic_line(&u->kcode, 0, 0, "# codegen incremental reader"); /* linha 1: mantem o mapa 1-based */
         const CgxPyNode *root = &c->nd[0];
-        for (int i = 0; i < root->nch; i++) cgx_ic_unit(&u->csp, c, root->ch[i]);
+        for (int i = 0; i < root->nch; i++) cgx_ic_unit(&u->kcode, c, root->ch[i]);
         memset(&u->g, 0, sizeof u->g);
-        if (cgx_parse(&u->g, u->csp.out.p ? u->csp.out.p : "")) { u->ok = 1; return 1; }
+        if (cgx_parse(&u->g, u->kcode.out.p ? u->kcode.out.p : "")) { u->ok = 1; return 1; }
         int marked = 0;
         for (int e = 0; e < u->g.nerr; e++) {
-            const int ln = u->g.err[e].line; if (ln < 1 || ln > u->csp.nl) continue;
-            int nd = u->csp.lmap[ln - 1]; if (nd <= 0) continue;
+            const int ln = u->g.err[e].line; if (ln < 1 || ln > u->kcode.nl) continue;
+            int nd = u->kcode.lmap[ln - 1]; if (nd <= 0) continue;
             while (c->nd[nd].clause && c->nd[nd].parent >= 0) { const CgxPyNode *pp = &c->nd[c->nd[nd].parent]; int hd = nd; for (int q = 0; q < pp->nch; q++) { if (pp->ch[q] == nd) break; if (!c->nd[pp->ch[q]].clause) hd = pp->ch[q]; } if (hd == nd) break; nd = hd; }
-            if (!u->csp.force_raw[nd]) { u->csp.force_raw[nd] = 1; marked++; }
-            else if (c->nd[nd].parent > 0 && !u->csp.force_raw[c->nd[nd].parent]) { u->csp.force_raw[c->nd[nd].parent] = 1; marked++; }       /* sobe: o pai inteiro vira raw */
+            if (!u->kcode.force_raw[nd]) { u->kcode.force_raw[nd] = 1; marked++; }
+            else if (c->nd[nd].parent > 0 && !u->kcode.force_raw[c->nd[nd].parent]) { u->kcode.force_raw[c->nd[nd].parent] = 1; marked++; }       /* sobe: o pai inteiro vira raw */
         }
         cgx_free(&u->g);
         if (!marked) break;
     }
     /* ultimo recurso: tudo raw (o mapa continua valendo) */
-    memset(u->csp.force_raw, 1, (size_t)c->nn + 1);
-    free(u->csp.out.p); free(u->csp.lmap); memset(&u->csp.out, 0, sizeof u->csp.out); u->csp.lmap = NULL; u->csp.nl = u->csp.cl = 0; u->csp.covered = 0;
-    cgx_ic_line(&u->csp, 0, 0, "# ucge incremental reader");
-    for (int i = 0; i < c->nd[0].nch; i++) cgx_ic_raw(&u->csp, c, c->nd[0].ch[i], 0);
+    memset(u->kcode.force_raw, 1, (size_t)c->nn + 1);
+    free(u->kcode.out.p); free(u->kcode.lmap); memset(&u->kcode.out, 0, sizeof u->kcode.out); u->kcode.lmap = NULL; u->kcode.nl = u->kcode.cl = 0; u->kcode.covered = 0;
+    cgx_ic_line(&u->kcode, 0, 0, "# codegen incremental reader");
+    for (int i = 0; i < c->nd[0].nch; i++) cgx_ic_raw(&u->kcode, c, c->nd[0].ch[i], 0);
     memset(&u->g, 0, sizeof u->g);
-    u->ok = cgx_parse(&u->g, u->csp.out.p) != 0; return u->ok;
+    u->ok = cgx_parse(&u->g, u->kcode.out.p) != 0; return u->ok;
 }
 /* intervalo de um no da UIR-H no arquivo original: a instrucao ou declaracao que o originou */
 static int cgx_inc_range(const CgxInc *c, const CgxIncUir *u, const CgxNode *n, size_t *b0, size_t *b1, int *l0, int *l1) {
     if (n->k == CGN_PROG) { *b0 = 0; *b1 = c->n; *l0 = 1; *l1 = cgx_inc_lineno(c, c->n); return 1; }
-    if (n->line < 1 || n->line > u->csp.nl) return 0;
-    const int nd = u->csp.lmap[n->line - 1]; if (nd <= 0) return 0;
+    if (n->line < 1 || n->line > u->kcode.nl) return 0;
+    const int nd = u->kcode.lmap[n->line - 1]; if (nd <= 0) return 0;
     *b0 = c->nd[nd].b0; *b1 = cgx_inc_chain_end(c, nd); *l0 = cgx_inc_lineno(c, *b0); *l1 = cgx_inc_lineno(c, *b1 > 0 ? *b1 - 1 : 0);
     return 1;
 }
@@ -594,11 +594,11 @@ static int cgx_inc_spec_parse(const char *src, CgxIncSpec *s, char *err, size_t 
     return 1;
 }
 
-/* ---- geracao de trechos (CSP -> Python) ---- */
-/* gera o Python de um texto CSP; hdr_lines: linhas de envoltorio antes da carga do autor (para o numero da linha nos erros) */
-static int cgx_inc_gen(const char *csp, int width, int hdr_lines, CgxB *code, int *imports, char *err, size_t ecap) {
+/* ---- geracao de trechos (code spec -> Python) ---- */
+/* gera o Python de um texto code spec; hdr_lines: linhas de envoltorio antes da carga do autor (para o numero da linha nos erros) */
+static int cgx_inc_gen(const char *kcode, int width, int hdr_lines, CgxB *code, int *imports, char *err, size_t ecap) {
     Cgx g; CgxGenOpts o = {width, 1, 4}; int ok = 0; *imports = 0; err[0] = 0;
-    if (cgx_parse(&g, csp) && cgx_check(&g)) {
+    if (cgx_parse(&g, kcode) && cgx_check(&g)) {
         CgxB raw = {0}; ok = cgx_backend("python")->gen(&g, &o, &raw, NULL);
         if (ok) {
             const char *q = raw.p ? raw.p : "";
@@ -713,7 +713,7 @@ static void cgx_inc_first_fn_name(const char *payload, char *o, size_t cap) {
     const char *p = payload; o[0] = 0;
     while (*p) { while (*p == ' ') p++; if (!strncmp(p, "fn ", 3) || !strncmp(p, "def ", 4)) { p += p[0] == 'f' ? 3 : 4; while (*p == ' ') p++; size_t k = 0; while ((isalnum((unsigned char)*p) || *p == '_') && k + 1 < cap) o[k++] = *p++; o[k] = 0; return; } const char *e = strchr(p, '\n'); if (!e) break; p = e + 1; }
 }
-/* gera um metodo (CSP `fn`) como linhas de classe, sem o `class __W:`; ind: recuo do corpo da classe de destino */
+/* gera um metodo (code spec `fn`) como linhas de classe, sem o `class __W:`; ind: recuo do corpo da classe de destino */
 static int cgx_inc_gen_method(const CgxInc *c, int cls, const char *payload, const char *ind, const char *unit, int crlf, CgxB *o, int *im, char *err, size_t ecap) {
     CgxB w = {0}, code = {0}; const int hl = cgx_inc_wrap_class(c, cls, payload, &w);
     if (!cgx_inc_gen(w.p, 88, hl, &code, im, err, ecap)) { free(w.p); free(code.p); return 0; }
@@ -768,7 +768,7 @@ static int cgx_inc_op_replace_function(const CgxInc *c, const CgxIncOp *op, CgxE
     snprintf(rp->msg + strlen(rp->msg), sizeof rp->msg - strlen(rp->msg), "replaced %s (lines %d-%d)", op->args, n->line0, n->line1);
     free(nw.p); return 1;
 }
-/* cabecalho `fn nome(params)` a partir do def existente; mais envoltorio do corpo CSP */
+/* cabecalho `fn nome(params)` a partir do def existente; mais envoltorio do corpo code spec */
 static int cgx_inc_wrap_fn(const CgxInc *c, int fx, const char *extra_vars, const char *payload, CgxB *o, char *err, size_t ecap) {
     CgxIncParam ps[24]; int np; size_t ob, cb; char *ret = NULL; const CgxPyNode *n = &c->nd[fx];
     if (n->oneliner) { snprintf(err, ecap, "`%s` is a one-line def; use replace-function", n->name); return 0; }
@@ -1118,9 +1118,9 @@ typedef int (*CgxIncWriter)(void *ctx, const char *path, const CgxIncActs *acts,
 /* padrao: grava o arquivo inteiro de forma atomica (arquivo temporario na mesma pasta + rename), mantendo as permissoes */
 static int cgx_inc_write_atomic(void *ctx, const char *path, const CgxIncActs *acts, const char *final_text, size_t fn, char *msg, size_t cap) {
 #ifdef _WIN32
-    (void)ctx; (void)acts; char tmp[1500]; snprintf(tmp, sizeof tmp, "%s.ucge.tmp", path);
+    (void)ctx; (void)acts; char tmp[1500]; snprintf(tmp, sizeof tmp, "%s.codegen.tmp", path);
 #else
-    (void)ctx; (void)acts; char tmp[1500]; snprintf(tmp, sizeof tmp, "%s.ucge.%ld.tmp", path, (long)getpid());
+    (void)ctx; (void)acts; char tmp[1500]; snprintf(tmp, sizeof tmp, "%s.codegen.%ld.tmp", path, (long)getpid());
 #endif
     FILE *f = fopen(tmp, "wb"); if (!f) { snprintf(msg, cap, "cannot write %s", tmp); return 0; }
     const int ok = fwrite(final_text, 1, fn, f) == fn; if (fclose(f) != 0 || !ok) { remove(tmp); snprintf(msg, cap, "write failed for %s", tmp); return 0; }

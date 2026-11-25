@@ -123,24 +123,25 @@
 #include "coder/symtool.c"           /* coder: ferramenta Symbols e Find mode=refs em cima do indice de simbolos */
 #include "coder/symedit.c"           /* coder: Edit por simbolo com validacao (scanner da familia, chamadores, LSP opcional) */
 /* codegen (docs/codegen.md): gerador de codigo a partir da especificacao (code spec). Ainda sem chamador no katana (a ferramenta de agente vem depois); o
- * pragma abaixo cobre so este bloco e evita o aviso de funcao static sem uso ate la. A ordem e a de tools/ucge/ucgecli.c. */
+ * pragma abaixo cobre so este bloco e evita o aviso de funcao static sem uso ate la. A ordem e a de tools/codegen/codegencli.c. */
+#define CGX_INC_KATANA 1             /* o escritor do AST incremental passa por ct_edit_symbol (symedit.c) */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
-#include "coder/ucge.c"                  /* codegen: nucleo: UIR-H, parser, tipos */
-#include "coder/ucgereg.c"               /* codegen: registro de operacoes */
-#include "coder/ucgecheck.c"             /* codegen: validador */
-#include "coder/ucgetype.c"              /* codegen: tabela de tipos e unificacao */
-#include "coder/ucgeinfer.c"             /* codegen: inferencia de tipos */
-#include "coder/ucgedoc.c"               /* codegen: algebra de documentos e renderizador */
-#include "coder/ucgepy.c"                /* codegen: backend Python e tabela de backends */
-#include "coder/ucgejs.c"                /* codegen: backends JavaScript e TypeScript */
-#include "coder/ucgec.c"                 /* codegen: backend C */
-#include "coder/ucgego.c"                /* codegen: backend Go */
-#include "coder/ucgecfg.c"               /* codegen: CFG, dominadores, SSA */
-#include "coder/ucgeflow.c"              /* codegen: analises de fluxo de dados e relatorio */
-#include "coder/ucgeopt.c"               /* codegen: otimizador */
-#include "coder/ucgedep.c"               /* codegen: grafo de dependencia e cache de codigo */
-#include "coder/ucgeinc.c"               /* codegen: AST incremental */
+#include "coder/codegen.c"                  /* codegen: nucleo: UIR-H, parser, tipos */
+#include "coder/codegenreg.c"               /* codegen: registro de operacoes */
+#include "coder/codegencheck.c"             /* codegen: validador */
+#include "coder/codegentype.c"              /* codegen: tabela de tipos e unificacao */
+#include "coder/codegeninfer.c"             /* codegen: inferencia de tipos */
+#include "coder/codegendoc.c"               /* codegen: algebra de documentos e renderizador */
+#include "coder/codegenpy.c"                /* codegen: backend Python e tabela de backends */
+#include "coder/codegenjs.c"                /* codegen: backends JavaScript e TypeScript */
+#include "coder/codegenc.c"                 /* codegen: backend C */
+#include "coder/codegengo.c"                /* codegen: backend Go */
+#include "coder/codegencfg.c"               /* codegen: CFG, dominadores, SSA */
+#include "coder/codegenflow.c"              /* codegen: analises de fluxo de dados e relatorio */
+#include "coder/codegenopt.c"               /* codegen: otimizador */
+#include "coder/codegendep.c"               /* codegen: grafo de dependencia e cache de codigo */
+#include "coder/codegeninc.c"               /* codegen: AST incremental */
 #pragma GCC diagnostic pop
 #include "coder/search.c"            /* coder: busca por nome e texto (indice em secoes 0x100, canais, fusao, evidencia) */
 #include "coder/findstore.c"        /* coder: o Find unificado: candidatos do indice, indice de trechos por consulta, grafo derivado de N2/N3 (fase 7) */

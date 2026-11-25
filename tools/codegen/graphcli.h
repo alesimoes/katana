@@ -1,12 +1,12 @@
-/* graphcli.h: comandos de linha do modulo de grafos do UCGE (docs/ucge.md, "UIR-G"), incluido por ucgecli.c depois de slurp() e load().
- *   ucgecli ir <spec>                       CFG em SSA por funcao (blocos, dominadores, phi), mais o verificador de invariantes
- *   ucgecli flow <spec>                     relatorio das analises (codigo morto, variaveis, retornos, lacos, chamadas) com a certeza de cada achado
- *   ucgecli opt <spec> [--all] [--passes N] otimiza e diz o que mudou
- *   ucgecli optgen <alvo> <spec> [opcoes]   otimiza e gera o codigo do alvo (as mesmas opcoes de gen mais as de opt)
- *   ucgecli irexec <spec> <fn> <fase> args  interpretador da IR (so escalares): fase pre, ssa ou out; confere SSA e saida de SSA contra o Python */
-#include "src/coder/ucgecfg.c"
-#include "src/coder/ucgeflow.c"
-#include "src/coder/ucgeopt.c"
+/* graphcli.h: comandos de linha do modulo de grafos do codegen (docs/codegen.md, "UIR-G"), incluido por codegencli.c depois de slurp() e load().
+ *   codegencli ir <spec>                       CFG em SSA por funcao (blocos, dominadores, phi), mais o verificador de invariantes
+ *   codegencli flow <spec>                     relatorio das analises (codigo morto, variaveis, retornos, lacos, chamadas) com a certeza de cada achado
+ *   codegencli opt <spec> [--all] [--passes N] otimiza e diz o que mudou
+ *   codegencli optgen <alvo> <spec> [opcoes]   otimiza e gera o codigo do alvo (as mesmas opcoes de gen mais as de opt)
+ *   codegencli irexec <spec> <fn> <fase> args  interpretador da IR (so escalares): fase pre, ssa ou out; confere SSA e saida de SSA contra o Python */
+#include "src/coder/codegencfg.c"
+#include "src/coder/codegenflow.c"
+#include "src/coder/codegenopt.c"
 
 /* ---- interpretador da IR (so escalares): executa o CFG antes da SSA, em SSA (phi pela aresta de chegada) e depois da saida de SSA ---- */
 typedef struct { CgxIr *ir; long steps; int depth; } Ix;
@@ -154,7 +154,7 @@ static int graph_cli(int argc, char **argv) {
     }
     if ((!strcmp(argv[1], "opt") || !strcmp(argv[1], "optgen")) && argc >= 3) {
         const int gen = !strcmp(argv[1], "optgen"); const char *target = gen ? argv[2] : NULL; const char *path = gen ? argv[3] : argv[2];
-        if (gen && argc < 4) { fprintf(stderr, "uso: ucgecli optgen <alvo> <spec>\n"); return 2; }
+        if (gen && argc < 4) { fprintf(stderr, "uso: codegencli optgen <alvo> <spec>\n"); return 2; }
         CgxOptOpts oo = {CGX_O_DEFAULT, 0, 0}; CgxGenOpts go = {88, 1, 4}; int recheck = 0, tests = 0;
         for (int i = gen ? 4 : 3; i < argc; i++) {
             if (!strcmp(argv[i], "--recheck")) recheck = 1; else if (!strcmp(argv[i], "--tests")) tests = 1; else if (!strcmp(argv[i], "--all")) oo.passes = CGX_O_ALL; else if (!strcmp(argv[i], "--passes") && i + 1 < argc) oo.passes = atoi(argv[++i]);

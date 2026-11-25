@@ -1,11 +1,11 @@
-/* ucgecli: o nucleo do UCGE compilado sozinho (docs/ucge.md).
- *   gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm
- *   ucgecli check <spec>              le, valida e escreve os erros (linha: mensagem) ou "ok"
- *   ucgecli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python, js, ts)
- *   ucgecli run <alvo> <spec>         gera com o harness de testes, roda em subprocesso com limites e conta passou/falhou
- *   ucgecli stats <spec>              resumo da UIR usada
- *   ucgecli selftest                  testes internos da tabela de tipos, unificacao e do pretty-printer
- *   ucgecli infer <spec> [--lets] [--uses] [--check]   inferencia de tipos (ucgeinfer.c): erros e o relatorio de tipos e certeza
+/* codegencli: o nucleo do codegen compilado sozinho (docs/codegen.md).
+ *   gcc -O1 -Wall -I. tools/codegen/codegencli.c -o /tmp/codegencli -lm
+ *   codegencli check <spec>              le, valida e escreve os erros (linha: mensagem) ou "ok"
+ *   codegencli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python, js, ts)
+ *   codegencli run <alvo> <spec>         gera com o harness de testes, roda em subprocesso com limites e conta passou/falhou
+ *   codegencli stats <spec>              resumo da UIR usada
+ *   codegencli selftest                  testes internos da tabela de tipos, unificacao e do pretty-printer
+ *   codegencli infer <spec> [--lets] [--uses] [--check]   inferencia de tipos (codegeninfer.c): erros e o relatorio de tipos e certeza
  *   --infer em check/gen/run/stats liga a inferencia depois do validador */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,18 +16,18 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
-#include "src/coder/ucge.c"
-#include "src/coder/ucgereg.c"
-#include "src/coder/ucgecheck.c"
-#include "src/coder/ucgetype.c"
-#include "src/coder/ucgeinfer.c"
-#include "src/coder/ucgedoc.c"
-#include "src/coder/ucgepy.c"
-#include "src/coder/ucgedep.c"
-#include "src/coder/ucgeinc.c"
-#include "src/coder/ucgejs.c"
-#include "src/coder/ucgec.c"
-#include "src/coder/ucgego.c"
+#include "src/coder/codegen.c"
+#include "src/coder/codegenreg.c"
+#include "src/coder/codegencheck.c"
+#include "src/coder/codegentype.c"
+#include "src/coder/codegeninfer.c"
+#include "src/coder/codegendoc.c"
+#include "src/coder/codegenpy.c"
+#include "src/coder/codegendep.c"
+#include "src/coder/codegeninc.c"
+#include "src/coder/codegenjs.c"
+#include "src/coder/codegenc.c"
+#include "src/coder/codegengo.c"
 
 static char *slurp(const char *path) {
     FILE *f = strcmp(path, "-") ? fopen(path, "rb") : stdin; if (!f) { perror(path); exit(2); }
@@ -42,7 +42,7 @@ static int load(Cgx *g, const char *path, int show) {
     if (show) for (int i = 0; i < g->nerr; i++) printf("line %d: %s\n", g->err[i].line, g->err[i].msg);
     return ok;
 }
-#include "tools/ucge/graphcli.h"
+#include "tools/codegen/graphcli.h"
 static int selftest(void) {
     int bad = 0;
 #define T(c) do { if (!(c)) { printf("FAIL selftest: %s (line %d)\n", #c, __LINE__); bad++; } } while (0)
@@ -88,7 +88,7 @@ static int selftest(void) {
     return bad != 0;
 }
 static int run_python(const char *code, const char *tests, int *pass, int *fail, char *detail, size_t dcap) {
-    char path[] = "/tmp/ucgeXXXXXX.py"; int fd = mkstemps(path, 3); if (fd < 0) return -1;
+    char path[] = "/tmp/codegenXXXXXX.py"; int fd = mkstemps(path, 3); if (fd < 0) return -1;
     if (write(fd, code, strlen(code)) < 0 || write(fd, "\n\n", 2) < 0 || write(fd, tests, strlen(tests)) < 0) { close(fd); return -1; }
     close(fd);
     char cmd[400]; snprintf(cmd, sizeof cmd, "(ulimit -t 10; ulimit -v 4000000; timeout 10 python3 -I %s) 2>&1", path);
@@ -131,15 +131,15 @@ static int cachebench(int n, const char *dir) {
            n, t_nc, t_cold, cm, t_warm, wh, t_leaf, lm, t_root, rm);
     return 0;
 }
-/* JavaScript e TypeScript: node (v20+); o TypeScript passa antes pelo tsc que a variavel UCGE_TSC aponta (um tsc executavel), sem ele so gera */
+/* JavaScript e TypeScript: node (v20+); o TypeScript passa antes pelo tsc que a variavel KATANA_CODEGEN_TSC aponta (um tsc executavel), sem ele so gera */
 static int run_node(const char *code, const char *tests, int ts, int *pass, int *fail, char *detail, size_t dcap) {
-    char dir[] = "/tmp/ucgenodeXXXXXX"; if (!mkdtemp(dir)) return -1;
+    char dir[] = "/tmp/codegennodeXXXXXX"; if (!mkdtemp(dir)) return -1;
     char path[300]; snprintf(path, sizeof path, "%s/prog.%s", dir, ts ? "ts" : "js");
     FILE *f = fopen(path, "wb"); if (!f) return -1;
     fputs(code, f); fputs("\n\n", f); fputs(tests, f); fclose(f);
     char cmd[1200];
     if (ts) {
-        const char *tsc = getenv("UCGE_TSC"); if (!tsc) { snprintf(detail, dcap, "typescript: set UCGE_TSC to an executable tsc to run\n"); *fail = 1; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {} return 0; }
+        const char *tsc = getenv("KATANA_CODEGEN_TSC"); if (!tsc) { snprintf(detail, dcap, "typescript: set KATANA_CODEGEN_TSC to an executable tsc to run\n"); *fail = 1; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {} return 0; }
         snprintf(cmd, sizeof cmd, "(cd %s && '%s' --strict --target es2022 --module commonjs --lib es2022,dom --skipLibCheck --outDir out prog.ts 2>&1 && ulimit -t 10 && timeout 10 node out/prog.js) 2>&1", dir, tsc);
     } else snprintf(cmd, sizeof cmd, "(cd %s && ulimit -t 10 && timeout 10 node prog.js) 2>&1", dir);
     FILE *p = popen(cmd, "r"); char line[512]; *pass = *fail = 0; detail[0] = 0;
@@ -153,7 +153,7 @@ static int run_node(const char *code, const char *tests, int ts, int *pass, int 
 }
 /* alvo c: compila com gcc (SAN=1 liga ASan e UBSan; os avisos contam como falha) e roda; o harness imprime `test N: ok` */
 static int run_c(const char *code, const char *tests, int *pass, int *fail, char *detail, size_t dcap) {
-    char dir[] = "/tmp/ucgecXXXXXX"; if (!mkdtemp(dir)) return -1;
+    char dir[] = "/tmp/codegencXXXXXX"; if (!mkdtemp(dir)) return -1;
     char path[300], cmd[1200]; snprintf(path, sizeof path, "%s/t.c", dir);
     FILE *f = fopen(path, "wb"); if (!f) return -1;
     fprintf(f, "%s\n\n%s", code, tests); fclose(f);
@@ -170,11 +170,11 @@ static int run_c(const char *code, const char *tests, int *pass, int *fail, char
 }
 /* alvo go: gofmt precisa aceitar sem mudar, go vet sem aviso, e go run executa o harness (sem go no PATH, o alvo e so gerado) */
 static int run_go(const char *code, const char *tests, int *pass, int *fail, char *detail, size_t dcap) {
-    char dir[] = "/tmp/ucgegXXXXXX"; if (!mkdtemp(dir)) return -1;
+    char dir[] = "/tmp/codegengXXXXXX"; if (!mkdtemp(dir)) return -1;
     char path[300], cmd[1200]; snprintf(path, sizeof path, "%s/t.go", dir);
     FILE *f = fopen(path, "wb"); if (!f) return -1;
     fprintf(f, "%s\n%s", code, tests); fclose(f);
-    snprintf(cmd, sizeof cmd, "cd %s && export GOFLAGS=-mod=mod GOCACHE=${GOCACHE:-/tmp/ucge-gocache} GO111MODULE=off; { out=$(gofmt -l t.go); [ -n \"$out\" ] && echo 'Error: gofmt changes t.go'; go vet t.go 2>&1 | sed 's/^/Error: vet /'; timeout 20 go run t.go 2>&1; } | head -c 20000", dir);
+    snprintf(cmd, sizeof cmd, "cd %s && export GOFLAGS=-mod=mod GOCACHE=${GOCACHE:-/tmp/codegen-gocache} GO111MODULE=off; { out=$(gofmt -l t.go); [ -n \"$out\" ] && echo 'Error: gofmt changes t.go'; go vet t.go 2>&1 | sed 's/^/Error: vet /'; timeout 20 go run t.go 2>&1; } | head -c 20000", dir);
     FILE *p = popen(cmd, "r"); char line[512]; *pass = *fail = 0; detail[0] = 0;
     while (p && fgets(line, sizeof line, p)) {
         if (!strncmp(line, "test ", 5)) { if (strstr(line, ": ok")) (*pass)++; else { (*fail)++; if (strlen(detail) + strlen(line) + 1 < dcap) strcat(detail, line); } }
@@ -186,8 +186,8 @@ static int run_go(const char *code, const char *tests, int *pass, int *fail, cha
 }
 int main(int argc, char **argv) {
     Cgx g;
-    if (argc < 2) { fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n"); return 2; }
-    for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--ops")) {          /* --ops ARQUIVO: operacoes do usuario (docs/ucge.md, registro) */
+    if (argc < 2) { fprintf(stderr, "uso: codegencli check|gen|run|stats|selftest ...\n"); return 2; }
+    for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--ops")) {          /* --ops ARQUIVO: operacoes do usuario (docs/codegen.md, registro) */
         char e[300]; cgx_reg_init();
         if (!cgx_reg_load_file(argv[i + 1], e, sizeof e)) { fprintf(stderr, "ops: %s: %s\n", argv[i + 1], e); return 2; }
         for (int j = i; j + 2 < argc; j++) argv[j] = argv[j + 2];
@@ -242,7 +242,7 @@ int main(int argc, char **argv) {
         char *src = slurp(argv[3]); CgxInc ic; CgxIncUir u;
         if (!cgx_inc_parse(&ic, src, strlen(src))) { printf("line %d: %s\n", ic.errline, ic.err); cgx_inc_free(&ic); free(src); return 1; }
         cgx_inc_uir(&ic, &u);
-        if (!strcmp(argv[2], "uir")) fputs(u.csp.out.p, stdout);
+        if (!strcmp(argv[2], "uir")) fputs(u.kcode.out.p, stdout);
         else {
             for (int i = 1; i < u.g.prog->b1.n + 1 && i - 1 < u.g.prog->b1.n; i++) {
                 const CgxNode *nd = u.g.prog->b1.p[i - 1]; size_t b0, b1; int l0, l1;
@@ -307,6 +307,6 @@ int main(int argc, char **argv) {
         free(code.p); free(tb.p); cgx_free(&g); return 0;
     }
     { const int rc = graph_cli(argc, argv); if (rc >= 0) return rc; }
-    fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest|ir|flow|opt|optgen ...\n");
+    fprintf(stderr, "uso: codegencli check|gen|run|stats|selftest|ir|flow|opt|optgen ...\n");
     return 2;
 }

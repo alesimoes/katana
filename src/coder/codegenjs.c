@@ -1,6 +1,6 @@
-/* ---------- coder/ucgejs.c: UCGE, backends JavaScript e TypeScript (docs/ucge.md, "Backends JS e TS") ----------
- * Um gerador so serve as duas linguagens: percorre a AST ja validada e monta um documento (ucgedoc.c); `p->ts` liga as anotacoes de tipo (derivadas
- * dos tipos da IR pela tabela de ucgetype.c) e os poucos pontos onde o TypeScript pede mais (genericos nos ajudantes, `Map<string, T>`).
+/* ---------- coder/codegenjs.c: Codegen, backends JavaScript e TypeScript (docs/codegen.md, "Backends JS e TS") ----------
+ * Um gerador so serve as duas linguagens: percorre a AST ja validada e monta um documento (codegendoc.c); `p->ts` liga as anotacoes de tipo (derivadas
+ * dos tipos da IR pela tabela de codegentype.c) e os poucos pontos onde o TypeScript pede mais (genericos nos ajudantes, `Map<string, T>`).
  * Semantica IDENTICA a do Python onde a especificacao a fixa; onde o JavaScript diverge o gerador emite um AJUDANTE de execucao (`_fdiv`, `_mod`,
  * `_at`, `_len`, ...), copiado so quando algum no o usa (arvore de dependencias entre ajudantes), nunca uma biblioteca inteira:
  *   - `//` e `%` por piso (`_fdiv`, `_mod`; troca por `Math.floor(a / 2)` ou `a % n` quando o operando e conhecido), `/` e divisao por zero levantam erro;
@@ -10,7 +10,7 @@
  *   - str() de float e bool imita o Python (`2.0`, `True`), int()/float() de str idem, erros de execucao levam o texto do CPython;
  *   - funcoes sao DECLARACOES (`function`, hoisted: recursao e chamadas para frente como no Python), `const` quando o nome nao e reatribuido, `let` senao,
  *     laco `for (let i = a; i < b; i++)` com limite avaliado uma vez (como `range`), `try/catch` com `catch {}` quando a variavel nao e usada.
- * Nomes que comecam com `_` sao reservados para os ajudantes e temporarios. Divergencias que nao da para remover estao em docs/ucge.md. */
+ * Nomes que comecam com `_` sao reservados para os ajudantes e temporarios. Divergencias que nao da para remover estao em docs/codegen.md. */
 typedef struct { Cgx *g; const CgxGenOpts *o; CgxDocs D; CgxTypes T; int ts, ntmp; unsigned char need[96]; unsigned char *asg; int nasg; int has_raw; const CgxNode *ctx; } CgxJs;
 #define JD (&p->D)
 
@@ -186,7 +186,7 @@ static void cjs_quote(const char *s, CgxB *o, int tpl) {
 static CgxDoc *cjs_t(CgxJs *p, const char *s) { return cgx_dtext(JD, s); }
 static CgxDoc *cjs_tb(CgxJs *p, CgxB *b) { CgxDoc *d = cgx_dtext(JD, b->p ? b->p : ""); free(b->p); b->p = NULL; return d; }
 
-/* ---- tipos: da IR (CgxTy) para a tabela de ucgetype.c e dela para o texto TypeScript/JSDoc ---- */
+/* ---- tipos: da IR (CgxTy) para a tabela de codegentype.c e dela para o texto TypeScript/JSDoc ---- */
 static CgxTid cjs_elem_tid(CgxJs *p, int e) {
     switch (e) { case CGT_INT: return cgx_ty_prim(&p->T, TYK_INT); case CGT_FLOAT: return cgx_ty_prim(&p->T, TYK_FLOAT); case CGT_STR: return cgx_ty_prim(&p->T, TYK_STR); case CGT_BOOL: return cgx_ty_prim(&p->T, TYK_BOOL); default: return cgx_ty_prim(&p->T, TYK_ANY); }
 }
@@ -881,11 +881,11 @@ static void cjs_tests(CgxJs *p, const CgxNode *prog, CgxB *out) {
     int k = 0;
     for (int i = 0; i < prog->b1.n; i++) {
         const CgxNode *t = prog->b1.p[i]; if (t->k != CGN_TEST) continue;
-        CgxDoc *d = cgx_dcatn(JD, cgx_dtextf(JD, "_ucge_t(%d, () => ", ++k), cjs_ex(p, t->a, 0), cjs_t(p, ", "), t->b ? cjs_ex(p, t->b, 0) : cjs_t(p, "null"), cgx_dtextf(JD, ", %d);", (int)t->iv), NULL);
+        CgxDoc *d = cgx_dcatn(JD, cgx_dtextf(JD, "_codegen_t(%d, () => ", ++k), cjs_ex(p, t->a, 0), cjs_t(p, ", "), t->b ? cjs_ex(p, t->b, 0) : cjs_t(p, "null"), cgx_dtextf(JD, ", %d);", (int)t->iv), NULL);
         cgx_render(d, 100000, &lines); cgx_bs(&lines, "\n");
     }
     cjs_emit_text(
-        "function _ucge_t(n" TS(": number") ", f" TS(": () => any") ", exp" TS(": any") ", mode" TS(": number") ")" TS(": void") " {\n"
+        "function _codegen_t(n" TS(": number") ", f" TS(": () => any") ", exp" TS(": any") ", mode" TS(": number") ")" TS(": void") " {\n"
         "    let got" TS(": any") ";\n    try {\n        got = f();\n    } catch (e) {\n"
         "        console.log(\"test \" + n + \": \" + (mode === 2 ? \"ok\" : \"FAIL raised \" + (e instanceof Error ? e.message : String(e))));\n        return;\n    }\n"
         "    if (mode === 2) {\n        console.log(\"test \" + n + \": FAIL did not raise\");\n        return;\n    }\n"

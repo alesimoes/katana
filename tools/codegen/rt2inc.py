@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Gera src/coder/ucgec_rt.inc a partir de tools/ucge/rt/cgrt.h: cada secao (/*@@ nome */) vira um vetor de linhas de texto C.
+"""Gera src/coder/codegenc_rt.inc a partir de tools/codegen/rt/cgrt.h: cada secao (/*@@ nome */) vira um vetor de linhas de texto C.
 Todas as funcoes estaticas viram `static inline` (nada de aviso de funcao nao usada num programa que nao usa a secao inteira).
-Uso: python3 tools/ucge/rt2inc.py [--check]"""
+Uso: python3 tools/codegen/rt2inc.py [--check]"""
 import re, sys, os
 here = os.path.dirname(os.path.abspath(__file__)); root = os.path.dirname(os.path.dirname(here))
 def convert(src):
@@ -10,7 +10,7 @@ def convert(src):
         m = re.match(r"/\*@@ (\w+) \*/$", ln)
         if m: cur = (m.group(1), []); secs.append(cur); continue
         if cur is not None: cur[1].append(ln)
-    out = ["/* GERADO por tools/ucge/rt2inc.py a partir de tools/ucge/rt/cgrt.h: nao edite aqui (docs/ucge.md, \"Backend C\"). */\n"]
+    out = ["/* GERADO por tools/codegen/rt2inc.py a partir de tools/codegen/rt/cgrt.h: nao edite aqui (docs/codegen.md, \"Backend C\"). */\n"]
     for name, lines in secs:
         while lines and not lines[-1].strip(): lines.pop()
         out.append("static const char *const CGX_C_RT_%s[] = {\n" % name.upper())
@@ -23,13 +23,13 @@ def convert(src):
         out.append("    NULL};\n")
     return "".join(out)
 def convert_go(src):
-    out = ["/* GERADO por tools/ucge/rt2inc.py a partir de tools/ucge/rt/cgrt.go: nao edite aqui (docs/ucge.md, \"Backend Go\"). */\n", "static const char *const CGX_GO_RT[] = {\n"]
+    out = ["/* GERADO por tools/codegen/rt2inc.py a partir de tools/codegen/rt/cgrt.go: nao edite aqui (docs/codegen.md, \"Backend Go\"). */\n", "static const char *const CGX_GO_RT[] = {\n"]
     for ln in src.rstrip("\n").split("\n"):
         out.append('    "%s",\n' % ln.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t"))
     out.append("    NULL};\n")
     return "".join(out)
 if __name__ == "__main__":
-    jobs = [("cgrt.h", "ucgec_rt.inc", convert), ("cgrt.go", "ucgego_rt.inc", convert_go)]
+    jobs = [("cgrt.h", "codegenc_rt.inc", convert), ("cgrt.go", "codegengo_rt.inc", convert_go)]
     bad = 0
     for srcn, dstn, fn in jobs:
         srcp = os.path.join(here, "rt", srcn)

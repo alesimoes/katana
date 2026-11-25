@@ -1,4 +1,4 @@
-/* ---------- coder/ucgeflow.c: UCGE, UIR-G parte 2: analises de fluxo de dados, SCCP, chamadas e relatorio (docs/ucge.md, secao 6.4 a 6.6) ----------
+/* ---------- coder/codegenflow.c: Codegen, UIR-G parte 2: analises de fluxo de dados, SCCP, chamadas e relatorio (docs/codegen.md, secao 6.4 a 6.6) ----------
  * Um unico resolvedor de ponto fixo com lista de trabalho para reticulados de conjuntos de bits (direcao, uniao ou intersecao, funcao de
  * transferencia gen/kill ou escrita a mao) e as instancias: vivacidade (para tras), definicoes alcancaveis (para frente, uniao), expressoes
  * disponiveis (para frente, intersecao) e atribuicao definitiva (para frente, intersecao). A propagacao esparsa condicional de constantes

@@ -1,23 +1,23 @@
 #!/bin/sh
-# Testes da inferencia de tipos do UCGE (docs/ucge.md, "Type inference"): compila tools/ucge/ucgecli.c, roda cada caso de tools/ucge/infer/cases_*.txt
-# e a propriedade de soundness (tools/ucge/infer_prop.py). Formato de um caso:
+# Testes da inferencia de tipos do codegen (docs/codegen.md, "Type inference"): compila tools/codegen/codegencli.c, roda cada caso de tools/codegen/infer/cases_*.txt
+# e a propriedade de soundness (tools/codegen/infer_prop.py). Formato de um caso:
 #   ### nome
 #   @ok            sem erros            @fail   com erros
 #   @has TEXTO     a saida contem TEXTO (assinatura, let, use, erro, certeza)       @hasnt TEXTO   a saida nao contem
-#   (o resto das linhas e o programa CSP)
-# Uso: sh tools/ucge/infer_test.sh   (CC=gcc; SAN=1 liga ASan/UBSan; PROP=0 pula a propriedade; NPROP=numero de programas aleatorios)
+#   (o resto das linhas e o programa code spec)
+# Uso: sh tools/codegen/infer_test.sh   (CC=gcc; SAN=1 liga ASan/UBSan; PROP=0 pula a propriedade; NPROP=numero de programas aleatorios)
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
 T=$(mktemp -d) || exit 2; trap 'rm -rf "$T"' EXIT
 CC=${CC:-gcc}; SANF=""; [ -n "$SAN" ] && SANF="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
-$CC -O1 -g -Wall -Wno-unused-function $SANF -I "$ROOT" "$HERE/ucgecli.c" -o "$T/ucgecli" -lm 2>"$T/cc.log" || { cat "$T/cc.log"; echo "FAIL build"; exit 1; }
+$CC -O1 -g -Wall -Wno-unused-function $SANF -I "$ROOT" "$HERE/codegencli.c" -o "$T/codegencli" -lm 2>"$T/cc.log" || { cat "$T/cc.log"; echo "FAIL build"; exit 1; }
 [ -s "$T/cc.log" ] && { cat "$T/cc.log"; echo "FAIL build warnings"; exit 1; }
-U="$T/ucgecli"; N=0; BAD=0; V=${V:-0}
+U="$T/codegencli"; N=0; BAD=0; V=${V:-0}
 for f in "$HERE"/infer/cases_*.txt; do
   rm -rf "$T/c"; mkdir "$T/c"
-  awk -v d="$T/c" '/^### /{n++; name=substr($0,5); print name > (d "/" sprintf("%03d", n) ".name"); prog=d "/" sprintf("%03d", n) ".csp"; ef=d "/" sprintf("%03d", n) ".exp"; printf "" > prog; printf "" > ef; next}
+  awk -v d="$T/c" '/^### /{n++; name=substr($0,5); print name > (d "/" sprintf("%03d", n) ".name"); prog=d "/" sprintf("%03d", n) ".kcode"; ef=d "/" sprintf("%03d", n) ".exp"; printf "" > prog; printf "" > ef; next}
     /^@/{print substr($0,2) > ef; next} {print > prog}' "$f"
   for nf in "$T"/c/*.name; do
-    b=${nf%.name}; name=$(cat "$nf"); N=$((N+1)); out=$("$U" infer "$b.csp" --lets --uses 2>&1); rc=$?; okc=1; why=""
+    b=${nf%.name}; name=$(cat "$nf"); N=$((N+1)); out=$("$U" infer "$b.kcode" --lets --uses 2>&1); rc=$?; okc=1; why=""
     while IFS= read -r e; do
       kind=${e%% *}; arg=${e#* }; [ "$kind" = "$e" ] && arg=""
       case "$kind" in
@@ -31,8 +31,8 @@ for f in "$HERE"/infer/cases_*.txt; do
   done
 done
 # ---- as 15 tarefas da fase 1: a inferencia ligada ao validador (--infer) aceita todas e os testes dados continuam passando ----
-for f in "$HERE"/tasks/*.csp; do
-  b=$(basename "$f" .csp); N=$((N+1)); out=$("$U" check "$f" --infer 2>&1)
+for f in "$HERE"/tasks/*.kcode; do
+  b=$(basename "$f" .kcode); N=$((N+1)); out=$("$U" check "$f" --infer 2>&1)
   case "$out" in *ok) ;; *) BAD=$((BAD+1)); echo "FAIL tarefa $b com --infer"; echo "$out" | head -5 | sed 's/^/     | /'; continue ;; esac
   case $(cat "$f") in *raw*) continue ;; esac
   N=$((N+1)); out=$("$U" run python "$f" --infer 2>&1); case "$out" in *" 0 failed"*) ;; *) BAD=$((BAD+1)); echo "FAIL tarefa $b roda com --infer"; echo "$out" | head -5 | sed 's/^/     | /' ;; esac

@@ -1,4 +1,4 @@
-/* ---------- coder/ucgedoc.c: UCGE, pretty-printer por algebra de documentos (docs/ucge.md, "Geracao") ----------
+/* ---------- coder/codegendoc.c: Codegen, pretty-printer por algebra de documentos (docs/codegen.md, "Geracao") ----------
  * Wadler/Lindig ("Strictly Pretty"): o gerador monta um DOCUMENTO (texto, linha, aninhamento, grupo) em vez de concatenar strings; o renderizador
  * escolhe, grupo a grupo, entre a forma plana (cabe na largura) e a quebrada. Assim a quebra de chamadas, listas e cabecalhos longos e a
  * indentacao saem corretas em qualquer linguagem de destino, e o mesmo gerador serve para largura 80, 100 ou 120.

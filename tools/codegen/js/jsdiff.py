@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Diferencial Python x JavaScript x TypeScript do UCGE (docs/ucge.md, "Backends JS e TS"): gera o codigo de cada alvo com `ucgecli gen <alvo> --tests`,
+"""Diferencial Python x JavaScript x TypeScript do codegen (docs/codegen.md, "Backends JS e TS"): gera o codigo de cada alvo com `codegencli gen <alvo> --tests`,
    executa e compara a saida (stdout). Linhas `test N: FAIL ...` so comparam ate o FAIL (o texto depois e o repr de cada linguagem).
-   Uso: jsdiff.py <ucgecli> <arquivo.csp>...     (UCGE_TSC=/caminho/do/tsc para incluir o TypeScript; sem ele so Python x JS)"""
+   Uso: jsdiff.py <codegencli> <arquivo.kcode>...     (KATANA_CODEGEN_TSC=/caminho/do/tsc para incluir o TypeScript; sem ele so Python x JS)"""
 import os, subprocess, sys, tempfile
 
 def gen(cli, target, path):
@@ -54,7 +54,7 @@ def compare(cli, path, tsc=None, verbose=False):
         return True, "%d linhas iguais" % len(ref)
 
 if __name__ == "__main__":
-    cli = sys.argv[1]; tsc = os.environ.get("UCGE_TSC"); bad = 0
+    cli = sys.argv[1]; tsc = os.environ.get("KATANA_CODEGEN_TSC"); bad = 0
     for p in sys.argv[2:]:
         ok, msg = compare(cli, p, tsc)
         print(("ok   " if ok else "FAIL ") + os.path.basename(p) + ": " + msg)

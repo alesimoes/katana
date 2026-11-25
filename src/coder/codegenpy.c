@@ -1,5 +1,5 @@
-/* ---------- coder/ucgepy.c: UCGE, backend de referencia: Python (docs/ucge.md, "Backends") ----------
- * Percorre a AST ja validada e monta um documento (ucgedoc.c); nunca concatena codigo solto. Este arquivo e o MODELO dos demais backends:
+/* ---------- coder/codegenpy.c: Codegen, backend de referencia: Python (docs/codegen.md, "Backends") ----------
+ * Percorre a AST ja validada e monta um documento (codegendoc.c); nunca concatena codigo solto. Este arquivo e o MODELO dos demais backends:
  * mesma estrutura (precedencia por no, tabela das funcoes embutidas, classe, tentativa/captura, raw, harness de testes), so muda a tabela.
  * Semantica fixada pela UIR e como o Python a cumpre: `//` e `%` ja sao piso (floored); `/` e divisao real; strings e listas indexadas por
  * inteiro; mapas viram dict; `catch e` captura Exception; defaults mutaveis (lista, mapa) viram None + criacao no corpo. */
@@ -60,7 +60,7 @@ static CgxDoc *py_args(CgxPy *p, const char *head, const CgxBlk *a, int skip) {
 static const int CGX_PREC_CMP = 5;
 static CgxDoc *py_wrap(CgxPy *p, CgxDoc *d, int prec, int minprec) { return prec < minprec ? cgx_dcatn(PD, py_t(p, "("), d, py_t(p, ")"), NULL) : d; }
 
-/* modelo de texto do registro (ucgereg.c) -> documento: `$N`, `{N}`, `{N@P}`, `{N?}`, `{*N}`, `{[i,j]}` */
+/* modelo de texto do registro (codegenreg.c) -> documento: `$N`, `{N}`, `{N@P}`, `{N?}`, `{*N}`, `{[i,j]}` */
 static CgxDoc *py_tmpl(CgxPy *p, const CgxNode *n, const char *t) {
     const CgxBlk *a = &n->b1; CgxDoc *r = NULL; CgxB lit = {0};
 #define FLUSH() do { if (lit.p && lit.n) { CgxDoc *x = cgx_dtext(PD, lit.p); r = r ? cgx_dcat(PD, r, x) : x; lit.n = 0; lit.p[0] = 0; } } while (0)
@@ -292,7 +292,7 @@ static void py_tests(CgxPy *p, const CgxNode *prog, CgxB *out) {
     for (int i = 0; i < prog->b1.n; i++) if (prog->b1.p[i]->k == CGN_TEST) n++;
     if (!n) return;
     cgx_bs(out,
-        "def _ucge_t(n, f, exp, mode):\n"
+        "def _codegen_t(n, f, exp, mode):\n"
         "    try:\n"
         "        got = f()\n"
         "    except Exception as e:\n"
@@ -306,7 +306,7 @@ static void py_tests(CgxPy *p, const CgxNode *prog, CgxB *out) {
     int k = 0;
     for (int i = 0; i < prog->b1.n; i++) {
         const CgxNode *t = prog->b1.p[i]; if (t->k != CGN_TEST) continue;
-        CgxDoc *d = cgx_dcatn(PD, cgx_dtextf(PD, "_ucge_t(%d, lambda: ", ++k), py_ex(p, t->a, 0), py_t(p, ", "), t->b ? py_ex(p, t->b, 0) : py_t(p, "None"), cgx_dtextf(PD, ", %d)", (int)t->iv), NULL);
+        CgxDoc *d = cgx_dcatn(PD, cgx_dtextf(PD, "_codegen_t(%d, lambda: ", ++k), py_ex(p, t->a, 0), py_t(p, ", "), t->b ? py_ex(p, t->b, 0) : py_t(p, "None"), cgx_dtextf(PD, ", %d)", (int)t->iv), NULL);
         cgx_render(d, 100000, out); cgx_bs(out, "\n");
     }
 }
@@ -321,7 +321,7 @@ static CgxDoc *py_decl(CgxPy *p, const CgxNode *d, int *isfn) {
     else if (d->k == CGN_COMMENT && o->comments && d->defs) x = cgx_dtextf(PD, "# %s", d->defs);
     return x;
 }
-/* uma unidade sozinha, com a mascara de imports que ela pede (1 math, 2 re); usado pelo cache por unidade (ucgedep.c) */
+/* uma unidade sozinha, com a mascara de imports que ela pede (1 math, 2 re); usado pelo cache por unidade (codegendep.c) */
 static int cgx_py_unit(Cgx *g, const CgxGenOpts *o, const CgxNode *d, CgxB *out, int *isfn, int *imports) {
     CgxPy P; memset(&P, 0, sizeof P); P.g = g; P.o = o; const int err0 = g->nerr_all;
     CgxDoc *x = py_decl(&P, d, isfn);
@@ -367,10 +367,10 @@ static int cgx_gen_python(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests) 
     cgx_docs_free(&P.D);
     return g->nerr_all == err0;
 }
-static int cgx_gen_js(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* ucgejs.c */
+static int cgx_gen_js(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* codegenjs.c */
 static int cgx_gen_ts(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);
-static int cgx_gen_c(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);        /* ucgec.c */
-static int cgx_gen_go(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* ucgego.c */
+static int cgx_gen_c(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);        /* codegenc.c */
+static int cgx_gen_go(Cgx *g, const CgxGenOpts *o, CgxB *code, CgxB *tests);       /* codegengo.c */
 static const CgxBackend CGX_BACKENDS[] = {
     {"python", "py", ".py", cgx_gen_python},
     {"javascript", "js", ".js", cgx_gen_js},

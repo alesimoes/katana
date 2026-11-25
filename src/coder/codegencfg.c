@@ -1,6 +1,6 @@
-/* ---------- coder/ucgecfg.c: UCGE, UIR-G parte 1: grafos, dominadores, SSA e CFG por funcao (docs/ucge.md, "UIR-G") ----------
+/* ---------- coder/codegencfg.c: Codegen, UIR-G parte 1: grafos, dominadores, SSA e CFG por funcao (docs/codegen.md, "UIR-G") ----------
  * A UIR-H (AST validada) vira, por funcao, um GRAFO DE FLUXO DE CONTROLE de blocos basicos com instrucoes de tres enderecos; o grafo e a
- * base das analises (ucgeflow.c) e do otimizador (ucgeopt.c). Os backends NAO leem este grafo: ele existe para analisar e para guiar
+ * base das analises (codegenflow.c) e do otimizador (codegenopt.c). Os backends NAO leem este grafo: ele existe para analisar e para guiar
  * reescritas que voltam para a AST, entao o codigo gerado continua saindo da AST e com os nomes do autor.
  * Conteudo, na ordem:
  *   1. vetores, conjuntos de bits e o grafo dirigido em CSR (sucessores e predecessores), geral: serve a qualquer grafo (CFG, chamadas);
@@ -9,21 +9,21 @@
  *   3. efeitos das expressoes (puro, pode lancar, escreve, pode nao terminar) e GRAFO DE CHAMADAS com resumos por funcao;
  *   4. a IR: valores, variaveis, instrucoes, blocos; construcao do CFG a partir da AST (try/catch/finally com arestas excepcionais);
  *   5. SSA de Cytron (phi podada por vivacidade, renomeacao pela arvore de dominancia), saida de SSA, verificador, dump.
- * C puro, so a biblioteca padrao; compila junto de ucge.c e ucgecheck.c (usa Cgx, CgxNode, cgx_alloc... de la). */
+ * C puro, so a biblioteca padrao; compila junto de codegen.c e codegencheck.c (usa Cgx, CgxNode, cgx_alloc... de la). */
 #include <limits.h>
 
 /* ================= 1. vetores, bits e grafo em CSR ================= */
 typedef struct { int *p; int n, cap; } CgxVi;
 static void cgx_vi_push(CgxVi *v, int x) {
-    if (v->n == v->cap) { v->cap = v->cap ? v->cap * 2 : 8; v->p = (int *)realloc(v->p, sizeof(int) * (size_t)v->cap); if (!v->p) { fprintf(stderr, "ucge: sem memoria\n"); exit(1); } }
+    if (v->n == v->cap) { v->cap = v->cap ? v->cap * 2 : 8; v->p = (int *)realloc(v->p, sizeof(int) * (size_t)v->cap); if (!v->p) { fprintf(stderr, "codegen: sem memoria\n"); exit(1); } }
     v->p[v->n++] = x;
 }
 static void cgx_vi_free(CgxVi *v) { free(v->p); v->p = NULL; v->n = v->cap = 0; }
-static void *cgx_xcalloc(size_t n, size_t sz) { void *p = calloc(n ? n : 1, sz ? sz : 1); if (!p) { fprintf(stderr, "ucge: sem memoria\n"); exit(1); } return p; }
+static void *cgx_xcalloc(size_t n, size_t sz) { void *p = calloc(n ? n : 1, sz ? sz : 1); if (!p) { fprintf(stderr, "codegen: sem memoria\n"); exit(1); } return p; }
 static void *cgx_xgrow(void *p, int *cap, int need, size_t sz) {          /* cresce um vetor generico ate caber `need` elementos (zerando o novo) */
     if (need <= *cap) return p;
     int nc = *cap ? *cap : 8; while (nc < need) nc *= 2;
-    p = realloc(p, sz * (size_t)nc); if (!p) { fprintf(stderr, "ucge: sem memoria\n"); exit(1); }
+    p = realloc(p, sz * (size_t)nc); if (!p) { fprintf(stderr, "codegen: sem memoria\n"); exit(1); }
     memset((char *)p + sz * (size_t)*cap, 0, sz * (size_t)(nc - *cap)); *cap = nc; return p;
 }
 
@@ -822,7 +822,7 @@ static int cgx_is_term(int op) { return op == IO_BR || op == IO_JMP || op == IO_
 /* a instrucao e um uso ordinario de seus operandos (phi nao: seus argumentos sao usos no fim dos predecessores) */
 static int cgx_uses_ops(const CgxIns *x) { return x->op != IO_PHI; }
 
-static void cgx_live_in(const CgxFnIr *f, CgxW **in);                    /* ucgeflow.c: vivacidade de variaveis, para a SSA podada */
+static void cgx_live_in(const CgxFnIr *f, CgxW **in);                    /* codegenflow.c: vivacidade de variaveis, para a SSA podada */
 static void cgx_ssa_build(CgxFnIr *f) {
     const int nv = f->nvar, nb = f->nbb, nw = cgx_nw(nv ? nv : 1);
     const CgxDg *g = &f->g; const CgxDom *d = &f->dom;

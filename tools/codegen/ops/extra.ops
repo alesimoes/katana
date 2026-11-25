@@ -1,4 +1,4 @@
-# operacoes do usuario: carregue com `ucgecli --ops tools/ucge/ops/extra.ops ...` ou KATANA_UCGE_OPS=arquivo
+# operacoes do usuario: carregue com `codegencli --ops tools/codegen/ops/extra.ops ...` ou KATANA_KATANA_CODEGEN_OPS=arquivo
 op clamp 3 3 level=1 effect=pure
   use clamp(x, lo, hi)
   sem x limited to the range lo..hi

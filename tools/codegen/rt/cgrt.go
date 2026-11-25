@@ -1,5 +1,5 @@
-// ---- runtime do backend Go do UCGE (docs/ucge.md, "Backend Go"): erros, inteiros, strings, listas, mapas e valores etiquetados ----
-// Este arquivo e a fonte; src/coder/ucgego_rt.inc e gerado dele por tools/ucge/rt2inc.py (o gerador o copia para o arquivo de saida).
+// ---- runtime do backend Go do codegen (docs/codegen.md, "Backend Go"): erros, inteiros, strings, listas, mapas e valores etiquetados ----
+// Este arquivo e a fonte; src/coder/codegengo_rt.inc e gerado dele por tools/codegen/rt2inc.py (o gerador o copia para o arquivo de saida).
 
 // CgErr e o valor de panic de um `throw`; try/catch o recupera.
 type CgErr struct{ Msg string }

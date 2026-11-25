@@ -1,4 +1,4 @@
-/* ---------- coder/ucgeopt.c: UCGE, otimizador sobre a UIR-H guiado pelas analises da UIR-G (docs/ucge.md, secao 6.7) ----------
+/* ---------- coder/codegenopt.c: Codegen, otimizador sobre a UIR-H guiado pelas analises da UIR-G (docs/codegen.md, secao 6.7) ----------
  * As analises (SCCP, vivacidade, dominancia) rodam no grafo; as reescritas voltam para a AST, que continua sendo o que os backends leem. Por
  * isso os nomes das variaveis do autor sobrevivem e o codigo gerado fica legivel. Passes (cada um liga e desliga em CgxOptOpts.passes):
  *   FOLD      constantes: dobra expressoes e propaga constantes e desvios decididos pelo SCCP (if/while de condicao constante);
@@ -506,7 +506,7 @@ static int cgx_opt_run(Cgx *g, const CgxOptOpts *o, CgxOptReport *rep) {
     rep->folded += 0;
     return rep->rounds;
 }
-/* o que a opcao `fold` do contrato (ucge_api.h) pede: so a dobra de constantes e a simplificacao, sem mexer em variaveis */
+/* o que a opcao `fold` do contrato (codegen_api.h) pede: so a dobra de constantes e a simplificacao, sem mexer em variaveis */
 static int cgx_opt_fold(Cgx *g) { CgxOptOpts o = {CGX_O_FOLD | CGX_O_ALGEBRA | CGX_O_UNREACH, 0, 0}; return cgx_opt_run(g, &o, NULL); }
 static void cgx_opt_report_str(const CgxOptReport *r, CgxB *o) {
     cgx_bf(o, "optimizer: %d round%s; folded %d expression%s, propagated %d constant%s, %d copy propagation%s, %d algebraic, %d dead statement%s removed, %d unreachable removed, %d branch%s decided, %d loop%s removed, %d temporar%s removed, %d call%s inlined\n",

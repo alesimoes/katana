@@ -5,7 +5,7 @@ katana site, and show in a diagram how everything connects and what we have in e
 from the bottom up, with a status for every component. It does not describe plans as if they were built: planned and disabled parts are shown as such.
 
 Related documents (the details live there, this page is the map): `docs/knowledge.md` and `docs/comparisons.md` (measurements), `docs/uioe.md`,
-`docs/coder.md`, `docs/code-intelligence-architecture.md`, `docs/tools.md`, `docs/ucge.md`, `docs/render.md`, `docs/api.md`, `desktop-qt/README.md`.
+`docs/coder.md`, `docs/code-intelligence-architecture.md`, `docs/tools.md`, `docs/codegen.md`, `docs/render.md`, `docs/api.md`, `desktop-qt/README.md`.
 
 The diagram is `docs/img/architecture.svg` (also on the site, `site/public/architecture.html`):
 
@@ -15,7 +15,7 @@ The diagram is `docs/img/architecture.svg` (also on the site, `site/public/archi
 
 | katana term | What it is here | Market term |
 |---|---|---|
-| **katana** | The whole product: engine, agent, tools, UIOE, code intelligence, UCGE, image engine and the apps. | local LLM runtime plus agent harness |
+| **katana** | The whole product: engine, agent, tools, UIOE, code intelligence, codegen, image engine and the apps. | local LLM runtime plus agent harness |
 | **engine** | `src/engine/`: reads GGUF models and runs them on CPU or GPU. No external service. | inference engine / runtime |
 | **agent** | `src/agent/` and `src/tools/`: the loop that lets the model call tools, with sessions and context compaction. | agent harness, tool-using agent |
 | **UIOE** (Unified Intelligence Orchestration Engine) | The layer **before the model** (`docs/plan.md` T3, `docs/uioe.md`): Interpret, Classify, Route, Retrieve, Orchestrate, then a Context Builder that attaches one verified block to the user's message. Code in `src/uioe/`. | retrieval pipeline / query routing / context engineering (agentic RAG without embeddings as the front door) |
@@ -23,9 +23,9 @@ The diagram is `docs/img/architecture.svg` (also on the site, `site/public/archi
 | **code intelligence** (module "coder") | `src/coder/`: a per-folder index (catalog, text, symbols, references, links), scanners per language family, graphs, and the tools that query it (`Find`, `Symbols`). | code index and code search (ctags, LSIF, Sourcegraph-like), not an LSP |
 | **scanner (per family)** | A tolerant structural scanner for a family of languages (brace languages, Python-like, shell, markup, config...), not a full parser. | lightweight parser (tree-sitter-like role) |
 | **Edit by symbol** | `Edit` with `symbol`, `where`, `new_string`: the model names the symbol, the engine finds it with a fresh parse, checks the result and only then writes. | AST-aware edit, structured edit with pre-write validation |
-| **UCGE** (Unified Code Generation Engine) | Subsystem that generates code from a spec instead of letting the model write the final code (`docs/ucge.md`). | spec-driven / model-driven code generation, a small transpiler with a typed IR |
-| **spec protocol (currently "CSP", to be renamed)** | The compact text (or JSON) the model writes to describe what to build. The name collides with other acronyms and the owner agreed to rename it later; the code and `docs/ucge.md` still say CSP. | DSL, intermediate spec language |
-| **UIR** | UCGE's typed intermediate representation: a typed AST (UIR-H) and a control-flow graph in SSA form (UIR-G, designed). | typed IR |
+| **codegen** (code generation) | Subsystem that generates code from a spec instead of letting the model write the final code (`docs/codegen.md`). | spec-driven / model-driven code generation, a small transpiler with a typed IR |
+| **code spec** (files `.kcode`) | The compact text (or JSON) the model writes to describe what to build. Not `.kspec`, which is the model specialization file. | DSL, intermediate spec language |
+| **UIR** | Codegen's typed intermediate representation: a typed AST (UIR-H) and a control-flow graph in SSA form (UIR-G, designed). | typed IR |
 | **image engine** (`katana render`) | `src/render/`: Stable Diffusion 1.5 with ControlNet canny and LCM, and FLUX.2 klein, written in C. | local image generation pipeline (diffusion) |
 | **Stable / FLUX** | The fast preview engine and the final-quality engine of the image cascade. | SD 1.5 + ControlNet + LCM; FLUX.2 klein 4B |
 | **expert cache** | MoE experts live in VRAM slots by heat; cold experts run on the CPU from the memory-mapped file. | MoE expert offloading |
@@ -46,9 +46,9 @@ required in the latest phase, and only Qwen3.6-35B-A3B counts as the working mod
 
 ## 3. The layers, from the bottom up
 
-Order: L0 hardware, L1 engine, L2 agent and tools, L3 UIOE, L4 code intelligence, L5 UCGE, L6 image engine, L7 apps. This is the order of
+Order: L0 hardware, L1 engine, L2 agent and tools, L3 UIOE, L4 code intelligence, L5 codegen, L6 image engine, L7 apps. This is the order of
 dependency (an upper layer uses the lower ones), not the order of one request: a request enters at the top and goes down through UIOE, the model and the tools.
-The image engine and UCGE are side subsystems: the first is reached through the `Render` tool and the desktop, the second is not connected to the agent yet.
+The image engine and codegen are side subsystems: the first is reached through the `Render` tool and the desktop, the second is not connected to the agent yet.
 
 ### L0. Hardware and compute backends
 
@@ -124,22 +124,22 @@ Detail: `docs/coder.md`, `docs/code-index-lifecycle.md`, `docs/code-intelligence
 | Edit by symbol (validated) | `Edit(file_path, symbol, where, new_string)`: fresh parse, new text indented by the engine, brackets and scanner checks and the language syntax tool run **before** writing, so a refused edit leaves the file untouched; findings graded `[structural]`, `[derived]`, `[lsp NAME]` | `src/coder/symedit.c`, `src/tools/edit.c` | working (`tools/tooltest/symedit.sh`; `tools/editbench/bench.py` compares it with the plain edit); LSP check only with a server installed |
 | LSP | Optional diagnostics before and after an edit | `src/tools/lsp.c`, `symedit.c` | partial (see L2) |
 
-### L5. UCGE (code generation from a spec)
+### L5. Codegen (code generation from a spec)
 
-Decision of the owner, 2026-11-24: the model does not write the final code; it describes what to build and the engine generates it. Detail: `docs/ucge.md`.
+Decision of the owner, 2026-11-24: the model does not write the final code; it describes what to build and the engine generates it. Detail: `docs/codegen.md`.
 
 ```
-request -> spec (spec protocol, currently "CSP"; text or JSON) -> parse -> typed UIR -> checks -> AST -> doc -> language backend -> validation -> code -> Edit by symbol
+request -> code spec (text or JSON) -> parse -> typed UIR -> checks -> AST -> doc -> language backend -> validation -> code -> Edit by symbol
 ```
 
 | Component | What it does | Where | Status |
 |---|---|---|---|
-| Parser, validator, type table and unification, pretty-printer | Reads the spec (text and JSON), checks names, arity, scopes, returns, some types | `src/coder/ucge.c`, `ucgecheck.c`, `ucgetype.c`, `ucgedoc.c` | working (`sh tools/ucge/test.sh`: 60 checks pass; 15 tasks, 13 without `raw`, generated Python passes all 53 given tests). Not part of the katana build (`src/katana.c` does not include it); standalone `tools/ucge/ucgecli.c` |
-| Python backend | Generates Python from the typed AST | `src/coder/ucgepy.c` | working (same tests) |
+| Parser, validator, type table and unification, pretty-printer | Reads the spec (text and JSON), checks names, arity, scopes, returns, some types | `src/coder/codegen.c`, `codegencheck.c`, `codegentype.c`, `codegendoc.c` | working (`sh tools/codegen/test.sh`: 60 checks pass; 15 tasks, 13 without `raw`, generated Python passes all 53 given tests). Not part of the katana build (`src/katana.c` does not include it); standalone `tools/codegen/codegencli.c` |
+| Python backend | Generates Python from the typed AST | `src/coder/codegenpy.c` | working (same tests) |
 | `raw` fallback | What the spec cannot express is written by the model, treated as untrusted | same | working (in the tests); trusted-ness is graded in the report |
-| Other backends (JS/TS, C, Go, Java, Rust), type inference, CFG/SSA and optimizer, operation registry, incremental AST, dependency graph, code cache, validator and sandboxed runner, `CodeGen` tool, protocol text for the model | | `docs/ucge.md` sections 2b, 13, 14 | planned (separate branches exist in the repository; not merged into this tree) |
+| Other backends (JS/TS, C, Go, Java, Rust), type inference, CFG/SSA and optimizer, operation registry, incremental AST, dependency graph, code cache, validator and sandboxed runner, `CodeGen` tool, protocol text for the model | | `docs/codegen.md` sections 2b, 13, 14 | planned (separate branches exist in the repository; not merged into this tree) |
 
-What is **not** known: how often the model writes a valid spec. No model was run. Measured instead (without a model): the spec is about 1.16x the size of idiomatic Python, so UCGE is not justified by token count; its argument is determinism, one description for several languages, and validation before generation.
+What is **not** known: how often the model writes a valid spec. No model was run. Measured instead (without a model): the spec is about 1.16x the size of idiomatic Python, so codegen is not justified by token count; its argument is determinism, one description for several languages, and validation before generation.
 
 ### L6. Image engine (`katana render`)
 
@@ -174,14 +174,14 @@ Context Builder appends the block or nothing -> the model (L1, on Vulkan or the 
 **Image request.** The user attaches a view -> the agent (or the desktop directly) writes a brief -> `Render` with `stable` produces a preview -> the user approves -> `Render` with `flux` produces the final image.
 
 **Code request, today.** The model reads with `Find`/`Symbols`, changes code with `Edit` (by symbol, validated before writing).
-**Code request, planned.** The model writes a spec -> UCGE parses it, builds the typed UIR and the AST, generates the language, validates it -> the result goes in through `Edit` by symbol.
-The UCGE half of this flow does not exist in the agent yet.
+**Code request, planned.** The model writes a spec -> codegen parses it, builds the typed UIR and the AST, generates the language, validates it -> the result goes in through `Edit` by symbol.
+The codegen half of this flow does not exist in the agent yet.
 
 ## 5. What this audit could not verify
 
 - Nothing here was measured again. Numbers are quoted from the documents named next to them, taken on one machine (RTX 3050 Laptop 4 GB, i7-11800H, 64 GB RAM, Linux).
-- The engine was not rebuilt and the tool tests were not run for this page; only `sh tools/ucge/test.sh` was run (60 checks, all passed). Every other "working" rests on the tests and measurements the documents record.
+- The engine was not rebuilt and the tool tests were not run for this page; only `sh tools/codegen/test.sh` was run (60 checks, all passed). Every other "working" rests on the tests and measurements the documents record.
 - Whether any of the UIOE, the tool set or the index improves the real model's answers is unknown: no measurement with Qwen3.6 is recorded.
 - The state of the older 3-token repetition draft of the dense Vulkan graph (`KATANA_SPEC`, mentioned in `README.md` under "Speculation") was not checked.
-- Branches `feat-ucge-*` and other worktrees were not inspected; the UCGE rows mean this tree only.
+- The code generator's own branches and other worktrees were not inspected; the codegen rows mean this tree only.
 - Documents with older status lines: `docs/code-intelligence-architecture.md` (says "design only"), `docs/embedding-usage.md` and `README.md` (say embeddings are not connected), `src/katana.c` (`STUB` comments).

@@ -1,10 +1,10 @@
-/* ---------- coder/ucgereg.c: UCGE, registro de operacoes (docs/ucge.md, "Registro de operacoes") ----------
+/* ---------- coder/codegenreg.c: Codegen, registro de operacoes (docs/codegen.md, "Registro de operacoes") ----------
  * UMA tabela, extensivel, para tudo que o motor sabe sobre as funcoes embutidas: nome, aridade, restricao de tipo de cada argumento e tipo do
  * resultado (com polimorfismo simples: "o mesmo tipo do argumento 0", "elemento da lista"), nivel L1/L2/L3, efeito (pura, le, muta, io, lanca),
  * semantica em uma linha e o mapeamento por linguagem de destino (modelo de texto + imports, ou "unsupported: mensagem"), alem das regras de
- * simplificacao algebrica. O validador (ucgecheck.c), o backend Python (ucgepy.c) e as analises leem esta tabela; acrescentar uma operacao e
- * acrescentar um bloco de dados, sem recompilar: o texto embutido (ucgeregdata abaixo) e o mesmo formato de arquivo que o dono tambem pode
- * carregar (cgx_reg_load_file, variavel KATANA_UCGE_OPS, ou `ucgecli --ops arquivo`).
+ * simplificacao algebrica. O validador (codegencheck.c), o backend Python (codegenpy.c) e as analises leem esta tabela; acrescentar uma operacao e
+ * acrescentar um bloco de dados, sem recompilar: o texto embutido (codegenregdata abaixo) e o mesmo formato de arquivo que o dono tambem pode
+ * carregar (cgx_reg_load_file, variavel KATANA_KATANA_CODEGEN_OPS, ou `codegencli --ops arquivo`).
  *
  * Formato (linhas; `#` comentario; as linhas de uma operacao comecam com espaco):
  *   op NOME MIN MAX level=1|2|3 effect=pure|reads|mutates|io|throws
@@ -299,9 +299,9 @@ static void cgx_reg_init(void) {
     if (cgx_reg_ready) return;
     char err[200] = "";
     cgx_reg_ready = 1;
-    if (!cgx_reg_load_text(CGX_REG_DATA, 1, err, sizeof err)) { fprintf(stderr, "ucge: embedded operation table: %s\n", err); exit(1); }
-    const char *env = getenv("KATANA_UCGE_OPS");
-    if (env && *env && !cgx_reg_load_file(env, err, sizeof err)) fprintf(stderr, "ucge: KATANA_UCGE_OPS: %s\n", err);
+    if (!cgx_reg_load_text(CGX_REG_DATA, 1, err, sizeof err)) { fprintf(stderr, "codegen: embedded operation table: %s\n", err); exit(1); }
+    const char *env = getenv("KATANA_KATANA_CODEGEN_OPS");
+    if (env && *env && !cgx_reg_load_file(env, err, sizeof err)) fprintf(stderr, "codegen: KATANA_KATANA_CODEGEN_OPS: %s\n", err);
 }
 static const char *cgx_reg_names_all(void) { cgx_reg_init(); return cgx_reg_names_buf; }
 
