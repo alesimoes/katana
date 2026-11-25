@@ -638,6 +638,7 @@ static CgxDoc *cjs_raw(CgxJs *p, const CgxNode *s) {
 /* anotacao de tipo de uma declaracao `let` em TypeScript: so onde o TS nao a infere sozinho ou o autor a escreveu */
 static int cjs_let_annot(const CgxNode *s, int cst) {
     if (s->ty.k == CGT_VOID) return 0;
+    if (!cst && s->ty.k == CGT_BOOL) return 1;           /* `let f = !true` seria o tipo `false` no TS */
     if (cst && cjs_litish(s->a) && (s->ty.k == CGT_INT || s->ty.k == CGT_FLOAT || s->ty.k == CGT_STR || s->ty.k == CGT_BOOL)) return 1;      /* `const x: string = "a"`: sem tipo literal */
     const int lit = (s->a->k == CGN_INT && s->ty.k == CGT_INT) || (s->a->k == CGN_FLT && s->ty.k == CGT_FLOAT) || (s->a->k == CGN_STR && s->ty.k == CGT_STR) || (s->a->k == CGN_BOOL && s->ty.k == CGT_BOOL);
     if (lit || (s->a->k == CGN_CALL && s->a->ref && s->a->ref->k == CGN_CLASS)) return 0;       /* `new C(...)` ja diz o tipo */

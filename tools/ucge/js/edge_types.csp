@@ -27,5 +27,9 @@ fn main() -> int
   if not (flagVar == false)
     print("never")
   print(str(not (n == 5)) + " " + str(not (a == b)))
+  let g = (3 < 2) and not true
+  g = n > 1
+  let es = []
+  print(str(g) + " " + str(len(sort(es))) + " " + str(len(sort([]))))
   return 0
 test main() == 0
