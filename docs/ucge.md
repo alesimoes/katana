@@ -282,7 +282,7 @@ one function with 3000 `let`/`if` pairs (27k nodes) type in under 70 ms.
 - Every error is a line, not a column; type errors are not ranked (the first mismatch found reports).
 - The unannotated results are [derived]: sound for the rules above, but the engine does not model run-time facts (list bounds, division by zero, integer width).
 
-**Tests.** `sh tools/ucge/infer_test.sh`: 361 cases in `tools/ucge/infer/cases_*.txt` (typed programs, exact error texts, polymorphism, recursion and mutual
+**Tests.** `sh tools/ucge/infer_test.sh`: 363 cases in `tools/ucge/infer/cases_*.txt` (typed programs, exact error texts, polymorphism, recursion and mutual
 recursion, unions, flow typing, gradual, classes, bidirectional, generic list helpers), the 15 tasks with `--infer`, and `tools/ucge/infer_prop.py`, a soundness
 property: programs well typed **by construction** (random typed expression and statement generators, annotated and unannotated parameters, calls between the generated
 functions) are inferred, generated to Python, executed with random arguments, and the observed type of every result must fit the inferred one; wrong-typed return
@@ -374,7 +374,7 @@ every finding and never says "exact":
 | `src/coder/ucge_api.h` | the contract between phases (documentation only) | 1 |
 | `tools/ucge/ucgecli.c` | standalone driver: `check gen run stats selftest` | 1 |
 | `tools/ucge/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
-| `tools/ucge/infer_test.sh`, `infer/cases_*.txt`, `infer_prop.py` | inference tests: 361 cases, the soundness property | 2 |
+| `tools/ucge/infer_test.sh`, `infer/cases_*.txt`, `infer_prop.py` | inference tests: 363 cases, the soundness property | 2 |
 | `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
 
 Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.

@@ -295,3 +295,16 @@ fn has(xs, x)
   return contains(xs, x)
 fn g() -> bool
   return has([1, 2], 2)
+### poly known limit: int and float share one variable in a generic function
+@fail
+@has `add` argument 2 (`b`) expects int, found float
+fn add(a, b)
+  return a + b
+fn g() -> float
+  return add(1, 2.5)
+### poly known limit is lifted by annotating one parameter
+@ok
+fn add(a: float, b: float) -> float
+  return a + b
+fn g() -> float
+  return add(1, 2.5)
