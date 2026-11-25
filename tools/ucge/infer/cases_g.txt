@@ -1,0 +1,140 @@
+### gradual any parameter
+@ok
+@has fn f: (any) -> any [any]
+fn f(x: any)
+  return x
+### gradual any plus int is any
+@ok
+@has fn f: (any) -> any [any]
+fn f(x: any)
+  return x + 1
+### gradual any into an int slot marks a check
+@ok
+@has check line 4: a gradual value must be int here
+fn g(a: int) -> int
+  return a
+fn f(x: any) -> int
+  return g(x)
+### gradual any returned as a declared type marks a check
+@ok
+@has check line 2: a gradual value must be str here
+fn f(x: any) -> str
+  return x
+### gradual any never an error with a concrete operand
+@ok
+fn f(x: any) -> bool
+  return x < 3
+### gradual check on arithmetic operand
+@ok
+@has check line 2: a gradual value must be int here
+fn f(x: any) -> any
+  return x * 2
+### gradual raw defines names as any
+@ok
+@has use f.data@4: any
+fn f(path: str) -> int
+  raw python defines data
+    data = open(path).read()
+  return len(data)
+### gradual raw value into typed let marks a check
+@ok
+@has check line 4: a gradual value must be float here
+fn f(path: str) -> float
+  raw python defines data
+    data = 1
+  let t: float = data
+  return t
+### gradual list[any] annotation means an unknown element type (the parser keeps one base kind)
+@ok
+@has fn f: (list['a]) -> 'a
+fn f(xs: list[any])
+  return xs[0]
+### gradual list[any] is inferred from the first push
+@fail
+@has push: the list holds int but the value is str
+fn f() -> int
+  let xs: list[any] = []
+  push(xs, 1)
+  push(xs, "a")
+  return len(xs)
+### gradual var bound to any absorbs later types
+@ok
+fn f(x: any) -> int
+  let xs = []
+  push(xs, x)
+  push(xs, 3)
+  return len(xs)
+### gradual any in a condition marks a check
+@ok
+@has check line 2: a gradual value must be bool here
+fn f(x: any) -> int
+  if x
+    return 1
+  return 0
+### gradual any as a map index
+@ok
+fn f(m: map[str, int], k: any) -> int
+  return m[k]
+### gradual any iterate
+@ok
+@has use f.v@3: any
+fn f(xs: any) -> int
+  for v in xs
+    print(v)
+  return 0
+### gradual any field access
+@ok
+fn f(o: any) -> any
+  return o.size
+### gradual any method call
+@ok
+fn f(o: any) -> any
+  return o.go(1)
+### gradual certainty of a function with any is [any]
+@has fn f: (any) -> int [any]
+fn f(x: any) -> int
+  return 0
+### gradual certainty summary counts any nodes
+@has [any] 1
+fn f(x: any) -> int
+  return 0
+### gradual declared certainty
+@has fn f: (int) -> int [declared]
+@has [declared]
+fn f(x: int) -> int
+  return x
+### gradual derived certainty
+@has fn f: (int) -> int [derived]
+fn f(x: int)
+  return x
+### gradual equality with any is fine
+@ok
+fn f(x: any, y: int) -> bool
+  return x == y
+### gradual any str concat stays str
+@ok
+@has fn f: (any) -> str
+fn f(x: any) -> str
+  return "a" + x
+### gradual any throw
+@ok
+fn f(x: any) -> int
+  throw x
+  return 0
+### gradual any default
+@ok
+fn f(x: any = null) -> int
+  return 0
+### gradual unknown stays unresolved as any
+@ok
+@has let f.xs: list[any]
+fn f() -> int
+  let xs = []
+  return len(xs)
+### gradual any in try catch
+@ok
+fn f(x: any) -> int
+  try
+    return x
+  catch e
+    return 0

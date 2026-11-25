@@ -1,0 +1,290 @@
+### flow null test narrows in then
+@ok
+@has use g.x@6: int?
+@has use g.x@8: int
+fn f(x: any) -> int
+  return 0
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if x != null
+    return x + 1
+  return 0
+### flow equals null narrows in else
+@ok
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if x == null
+    return 0
+  else
+    return x + 1
+### flow early return narrows the rest
+@ok
+@has use g.x@7: int
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if x == null
+    return 0
+  return x + 1
+### flow without the test is an error
+@fail
+@has `x` may be null (its type is int?) here; test `x != null` first
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  return x + 1
+### flow narrowing does not escape the branch
+@fail
+@has `x` may be null
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if x != null
+    print(1)
+  return x + 1
+### flow and chain narrows the right side
+@ok
+fn g(c: bool) -> bool
+  let x = null
+  if c
+    x = 1
+  return x != null and x > 0
+### flow or chain narrows the right side
+@ok
+fn g(c: bool) -> bool
+  let x = null
+  if c
+    x = 1
+  return x == null or x > 0
+### flow not narrows
+@ok
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if not (x == null)
+    return x
+  return 0
+### flow and on the wrong side does not narrow
+@fail
+@has `x` may be null
+fn g(c: bool) -> bool
+  let x = null
+  if c
+    x = 1
+  return x > 0 and x != null
+### flow assignment kills the narrowing
+@fail
+@has `x` may be null
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if x != null
+    x = null
+    return x + 1
+  return 0
+### flow assignment of a value narrows to the value type
+@ok
+fn g(c: bool) -> int
+  let x = null
+  x = 5
+  return x + 1
+### flow loop assignment kills the narrowing at the loop head
+@fail
+@has `x` may be null
+fn g(n: int) -> int
+  let x = null
+  x = 1
+  while n > 0
+    print(x + 1)
+    x = null
+    n -= 1
+  return 0
+### flow ternary narrows
+@ok
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  return x != null ? x : 0
+### flow else branch of equality narrows
+@ok
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 2
+  if x == null
+    print(0)
+  else
+    return x * 2
+  return 0
+### flow throw is an early exit
+@ok
+fn g(c: bool) -> int
+  let x = null
+  if c
+    x = 2
+  if x == null
+    throw "missing"
+  return x
+### flow break is an early exit inside a loop
+@ok
+fn g(xs: list[int]) -> int
+  let t = 0
+  for v in xs
+    let y = null
+    if v > 0
+      y = v
+    if y == null
+      continue
+    t += y
+  return t
+### flow optional param with default null
+@ok
+@has fn f: (str, str?) -> str
+fn f(a: str, b: str = null) -> str
+  if b == null
+    return a
+  return a + b
+### flow optional param used without test
+@fail
+@has `b` may be null
+fn f(a: str, b: str = null) -> str
+  return a + b
+### flow let declared with null is optional
+@ok
+@has use f.s@3: str?
+@has use f.s@5: str
+fn f() -> int
+  let s: str = null
+  if s == null
+    return 0
+  return len(s)
+### flow optional passed to a non optional parameter
+@fail
+@has `g` argument 1 (`a`) expects int, found int?; the value may be null; test `x != null` first
+fn g(a: int) -> int
+  return a
+fn f(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  return g(x)
+### flow optional passed after the test
+@ok
+fn g(a: int) -> int
+  return a
+fn f(c: bool) -> int
+  let x = null
+  if c
+    x = 1
+  if x != null
+    return g(x)
+  return 0
+### flow any narrowed by literal equality
+@ok
+@has use f.v@3: int
+fn f(v: any) -> int
+  if v == 1
+    return v + 1
+  return 0
+### flow any narrowed to str by equality
+@ok
+fn f(v: any) -> int
+  if v == "a"
+    return len(v)
+  return 0
+### flow union member by equality
+@ok
+fn f(c: bool) -> int
+  let v = c ? 1 : "a"
+  if v == 1
+    return v + 1
+  return 0
+### flow result of a return of an optional
+@has fn f: (list[int]) -> int?
+fn f(xs: list[int])
+  for x in xs
+    if x > 0
+      return x
+  return null
+### flow optional of a field
+@ok
+class Node
+  field next: Node = null
+  field val: int = 0
+fn f(n: Node) -> int
+  if n.next == null
+    return 0
+  return 1
+### flow field path narrowed by a null test
+@ok
+class Node
+  field next: Node = null
+  field val: int = 0
+fn f(n: Node) -> int
+  if n.next != null
+    return n.next.val
+  return 0
+### flow field path narrowed by early return
+@ok
+class Node
+  field next: Node = null
+  field val: int = 0
+fn f(n: Node) -> int
+  if n.next == null
+    return 0
+  return n.next.val + 1
+### flow field path is killed by a call
+@fail
+@has this value may be null
+class Node
+  field next: Node = null
+  field val: int = 0
+fn touch(n: Node) -> void
+  n.next = null
+fn f(n: Node) -> int
+  if n.next == null
+    return 0
+  touch(n)
+  return n.next.val
+### flow field path is killed by an assignment
+@fail
+@has this value may be null
+class Node
+  field next: Node = null
+  field val: int = 0
+fn f(n: Node) -> int
+  if n.next == null
+    return 0
+  n.next = null
+  return n.next.val
+### flow field assignment of a value narrows the field
+@ok
+class Node
+  field next: Node = null
+  field val: int = 0
+fn f(n: Node, m: Node) -> int
+  n.next = m
+  return n.next.val
+### flow field path killed at a loop head
+@fail
+@has this value may be null
+class Node
+  field next: Node = null
+  field val: int = 0
+fn f(n: Node) -> int
+  if n.next == null
+    return 0
+  let t = 0
+  for i in 0..3
+    t += n.next.val
+  return t

@@ -1,0 +1,189 @@
+### generic count of elements equal to a value
+@ok
+@has fn countEq: (list['a], 'a) -> int
+fn countEq(xs, v)
+  let n = 0
+  for x in xs
+    if x == v
+      n += 1
+  return n
+### generic count used at int and str
+@ok
+fn countEq(xs, v)
+  let n = 0
+  for x in xs
+    if x == v
+      n += 1
+  return n
+fn g() -> int
+  return countEq([1, 2, 1], 1) + countEq(["a"], "a")
+### generic count rejects a value of another type
+@fail
+@has `countEq` argument 2 (`v`) expects int, found str
+fn countEq(xs, v)
+  let n = 0
+  for x in xs
+    if x == v
+      n += 1
+  return n
+fn g() -> int
+  return countEq([1, 2, 1], "a")
+### generic last or default
+@ok
+@has fn lastOr: (list['a], 'a) -> 'a
+fn lastOr(xs, d)
+  if len(xs) == 0
+    return d
+  return xs[len(xs) - 1]
+### generic pairs of two lists as a list of lists
+@ok
+@has fn zip2: (list['a], list['a]) -> list[list['a]]
+fn zip2(a, b)
+  let out = []
+  let n = min(len(a), len(b))
+  for i in 0..n
+    push(out, [a[i], b[i]])
+  return out
+### generic take the first n
+@ok
+@has fn take: ('a, int) -> 'a where 'a in str|list
+fn take(xs, n)
+  return slice(xs, 0, n)
+### generic concat of two lists
+@ok
+@has fn concat: (list['a], list['a]) -> list['a]
+fn concat(a, b)
+  let out = []
+  for x in a
+    push(out, x)
+  for y in b
+    push(out, y)
+  return out
+### generic concat rejects different element types
+@fail
+@has the elements of this list must have one type: expected int, found str
+fn concat(a, b)
+  let out = []
+  for x in a
+    push(out, x)
+  for y in b
+    push(out, y)
+  return out
+fn g()
+  return concat([1], ["a"])
+### generic keep the larger of two
+@ok
+@has fn larger: ('a, 'a) -> 'a where 'a in int|float|str
+fn larger(a, b)
+  return a > b ? a : b
+### generic maximum of a list
+@ok
+@has fn best: (list['a]) -> 'a? where 'a in int|float|str
+fn best(xs)
+  let m = null
+  for x in xs
+    if m == null or x > m
+      m = x
+  return m
+### generic maximum used at int and str
+@ok
+fn best(xs)
+  let m = null
+  for x in xs
+    if m == null or x > m
+      m = x
+  return m
+fn g() -> int
+  let a = best([3, 1])
+  let b = best(["x", "y"])
+  if a == null or b == null
+    return 0
+  return a + len(b)
+### generic grouping into a map of counts
+@ok
+@has fn tally: (list[str]) -> map[str,int]
+fn tally(xs)
+  let m = {}
+  for x in xs
+    if contains(m, x)
+      m[x] += 1
+    else
+      m[x] = 1
+  return m
+### generic values of a map as a list
+@ok
+@has fn vals: (map[str,'a]) -> list['a]
+fn vals(m)
+  let out = []
+  for k, v in m
+    push(out, v)
+  return out
+### generic invert a list into a map by index
+@ok
+@has fn index: (list[str]) -> map[str,int]
+fn index(xs)
+  let m = {}
+  for i in 0..len(xs)
+    m[xs[i]] = i
+  return m
+### generic flatten a list of lists
+@ok
+@has fn flat: (list[list['a]]) -> list['a]
+fn flat(xss)
+  let out = []
+  for xs in xss
+    for x in xs
+      push(out, x)
+  return out
+### generic flatten at two element types
+@ok
+fn flat(xss)
+  let out = []
+  for xs in xss
+    for x in xs
+      push(out, x)
+  return out
+fn g() -> int
+  return len(flat([[1], [2, 3]])) + len(flat([["a"]]))
+### generic compose three steps
+@ok
+fn dbl(x)
+  return x * 2
+fn inc(x)
+  return x + 1
+fn comp(x)
+  return dbl(inc(dbl(x)))
+fn g() -> float
+  return comp(1.5) + comp(2)
+### generic compose result stays numeric class
+@has fn comp: ('a) -> 'a where 'a in int|float
+fn dbl(x)
+  return x * 2
+fn inc(x)
+  return x + 1
+fn comp(x)
+  return dbl(inc(dbl(x)))
+### generic string builder
+@has fn rep: (str, int) -> str
+fn rep(s, n)
+  let out = ""
+  for i in 0..n
+    out += s
+  return out
+### generic default of a polymorphic result
+@ok
+@has fn orElse: ('a?, 'a) -> 'a
+fn orElse(v, d)
+  if v == null
+    return d
+  return v
+### generic option helper used at two types
+@ok
+fn orElse(v, d)
+  if v == null
+    return d
+  return v
+fn g() -> int
+  let a = null
+  let b = null
+  return orElse(a, 3) + len(orElse(b, "xy"))

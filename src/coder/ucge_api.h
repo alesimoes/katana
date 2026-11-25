@@ -24,6 +24,9 @@
  *   ucgeir.c     CgxIr *cgx_ir_build(Cgx *g);  void cgx_ir_free(CgxIr *);  void cgx_ir_dump(const CgxIr *, CgxB *);  (CFG + SSA, ver docs/ucge.md)
  *   ucgeflow.c   int cgx_flow_run(CgxIr *ir, CgxFlowReport *r);  (definicoes alcancaveis, vivacidade, constantes, codigo morto, variavel nao usada)
  *   ucgeopt.c    int cgx_opt_fold(Cgx *g);  (dobra de constantes e simplificacao na AST, antes da geracao)
- *   ucgeinfer.c  int cgx_infer(Cgx *g, CgxTypes *T);  (substitui o cgx_check de tipos; mesmos erros, tipos mais precisos)
+ *   ucgeinfer.c  int cgx_infer(Cgx *g, CgxTypes *T);  (PRONTO: inferencia HM com niveis, any gradual, fluxo; escreve n->tid, n->cert, n->chk; docs/ucge.md 5b)
+ *                int cgx_infer_ex(Cgx *g, CgxTypes *T, int flags, CgxB *report);  (flags 1: lets, 2: usos; report = assinaturas com a certeza)
+ *                int cgx_check_ex(Cgx *g, CgxTypes *T, int infer);  (cgx_check e, se infer, a inferencia; ordem de inclusao: depois de ucgetype.c)
+ *                CgxNode.tid = tipo (TYK_GEN = parametro de tipo da funcao); .cert 1 derivado 2 declarado 3 any; .chk = tipo exigido de um valor any (marca, nao teste)
  *   ucgetool.c   void ucge_tool(const char *js, const char *end, char *out, size_t cap);  (a ferramenta CodeGen)
  */

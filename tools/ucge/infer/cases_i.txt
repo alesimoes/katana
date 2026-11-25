@@ -1,0 +1,271 @@
+### bidi empty list takes the annotation
+@ok
+@has let f.xs: list[float] [declared]
+fn f() -> int
+  let xs: list[float] = []
+  push(xs, 1)
+  return len(xs)
+### bidi int literals fit a float list
+@ok
+@has let f.xs: list[float] [declared]
+fn f() -> int
+  let xs: list[float] = [1, 2, 3]
+  return len(xs)
+### bidi list literal checked against the declared element
+@fail
+@has the elements of this list must have one type: expected float, found str
+fn f() -> int
+  let xs: list[float] = [1, "a"]
+  return len(xs)
+### bidi map literal against the annotation
+@fail
+@has the elements of this map must have one type: expected int, found str
+fn f() -> int
+  let m: map[str, int] = {"a": 1, "b": "x"}
+  return len(m)
+### bidi argument literal against the parameter
+@fail
+@has the elements of this list must have one type: expected str, found int
+fn g(xs: list[str]) -> int
+  return len(xs)
+fn f() -> int
+  return g(["a", 2])
+### bidi return literal against the declared return
+@ok
+@has fn f: () -> list[float] [declared]
+fn f() -> list[float]
+  return [1, 2]
+### bidi return empty list against the declared return
+@ok
+fn f() -> list[str]
+  return []
+### bidi ternary against the declared type
+@ok
+fn f(c: bool) -> float
+  return c ? 1 : 2.5
+### bidi null for an optional argument
+@ok
+fn g(a: str = null) -> int
+  return 0
+fn f() -> int
+  return g(null)
+### bidi default of the wrong type
+@fail
+@has the default of `n` is str but the parameter is int
+fn f(n: int = "a") -> int
+  return n
+### bidi annotated let with an int value into float
+@ok
+@has let f.x: float [declared]
+fn f() -> float
+  let x: float = 3
+  return x
+### bidi annotated param drives the body
+@ok
+@has use f.xs@3: list[str]
+fn f(xs: list[str]) -> int
+  let t = 0
+  for s in xs
+    t += len(s)
+  return t
+### bidi unannotated param is pinned by a call inside the body
+@ok
+@has fn f: (str) -> int
+fn f(s)
+  return len(upper(s))
+### bidi unannotated param pinned to int by indexing a list
+@ok
+@has fn f: (list['a], int) -> 'a
+fn f(xs, i)
+  return xs[i]
+### bidi unannotated param pinned to str by a map index
+@ok
+@has fn f: (map[str,'a], str) -> 'a
+fn f(m, k)
+  let x = upper(k)
+  return m[k]
+### bidi unannotated param pinned to bool by a condition
+@ok
+@has fn f: (bool) -> int
+fn f(c)
+  if c
+    return 1
+  return 0
+### bidi untyped str index is a pending resolved by a later use
+@ok
+@has fn f: (str) -> str
+fn f(s)
+  let t = upper(s)
+  return s[0] + t
+### report signatures carry their certainty
+@ok
+@has fn a: (int) -> int [declared]
+@has fn b: (int) -> int [derived]
+@has fn c: (any) -> any [any]
+fn a(x: int) -> int
+  return x
+fn b(x)
+  return a(x)
+fn c(x: any)
+  return x
+### report summary line
+@has nodes typed:
+@has [declared]
+@has [derived]
+fn a(x: int) -> int
+  return x
+### report states the certainty vocabulary
+@has never "exact"
+fn a(x: int) -> int
+  return x
+### misc try catch typed
+@ok
+@has fn f: (str) -> int [declared]
+fn f(s: str) -> int
+  try
+    return int(s)
+  catch e
+    print(errmsg(e))
+    return 0
+  finally
+    print("done")
+### misc nested loops and break
+@ok
+fn f(n: int) -> int
+  let t = 0
+  for i in 0..n
+    for j in 0..n
+      if i * j > 10
+        break
+      t += 1
+  return t
+### misc step loop
+@ok
+fn f(n: int) -> int
+  let t = 0
+  for i in 0..n step 2
+    t += i
+  return t
+### misc range call form
+@ok
+fn f(n: int) -> int
+  let t = 0
+  for i in range(n)
+    t += i
+  return t
+### misc elif chain
+@ok
+@has fn f: (int) -> str
+fn f(n: int)
+  if n < 0
+    return "neg"
+  elif n == 0
+    return "zero"
+  else
+    return "pos"
+### misc string compare
+@ok
+fn f(a: str, b: str) -> bool
+  return a < b
+### misc matches regex
+@ok
+@has fn f: (str) -> bool
+fn f(s: str)
+  return matches(s, "a+")
+### misc not in
+@ok
+fn f(xs: list[int]) -> bool
+  return 3 not in xs
+### misc map in
+@ok
+fn f(m: map[str, int]) -> bool
+  return "a" in m
+### misc string in map wrong key type
+@fail
+@has `x in map` needs a str on the left, found int
+fn f(m: map[str, int]) -> bool
+  return 3 in m
+### misc list in with wrong element
+@fail
+@has looking for str in a list of int can never succeed
+fn f(xs: list[int]) -> bool
+  return "a" in xs
+### misc contains on a map with a str key
+@ok
+fn f(m: map[str, int]) -> bool
+  return contains(m, "k")
+### misc contains list wrong element
+@fail
+@has looking for str in a list of int can never succeed
+fn f(xs: list[int]) -> bool
+  return contains(xs, "a")
+### misc errors keep going and report several lines
+@fail
+@has line 2:
+@has line 3:
+fn f() -> int
+  let a: int = "x"
+  let b: str = 1
+  return a
+### misc error does not cascade into a second error on the same name
+@fail
+@hasnt line 4
+fn f() -> int
+  let a: int = "x"
+  let b = a + 1
+  return b
+### misc JSON spec infers like the text form
+@ok
+@has fn sumValues: (int, int) -> int
+[{"op":"FUNCTION","name":"sumValues","params":[{"name":"a","type":"int"},{"name":"b","type":"int","default":0}],"returns":"int","body":[{"op":"RETURN","value":{"op":"ADD","args":["a","b"]}}]}]
+### misc raw block between statements
+@ok
+@has use f.y@4: any
+fn f(x: int) -> int
+  raw python defines y
+    y = x * 2
+  return y
+### misc swap with a temp keeps types
+@ok
+fn f(a: int, b: int) -> int
+  let t = a
+  a = b
+  b = t
+  return a - b
+### misc float accumulator from ints
+@ok
+@has let f.t: float
+fn f(xs: list[int]) -> float
+  let t = 0.0
+  for x in xs
+    t += x
+  return t
+### misc int accumulator rejects float elements
+@fail
+@has `+=` would store a float in an int variable
+fn f(xs: list[float]) -> int
+  let t = 0
+  for x in xs
+    t += x
+  return t
+### misc pow and sqrt
+@ok
+@has fn f: (int, int) -> float
+fn f(a: int, b: int)
+  return pow(a, b) + sqrt(a)
+### misc join requires str list
+@ok
+fn f(xs: list[str]) -> str
+  return join(xs, ", ")
+### misc slice of a string keeps str
+@has fn f: (str) -> str
+fn f(s: str)
+  return slice(s, 1)
+### misc reverse of a string
+@has fn f: (str) -> str
+fn f(s: str)
+  return reverse(s)
+### misc indexof and replace
+@has fn f: (str) -> int
+fn f(s: str)
+  return indexof(replace(s, "a", "b"), "b")

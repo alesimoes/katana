@@ -1,0 +1,239 @@
+### lit int
+@ok
+@has fn f: () -> int [declared]
+fn f() -> int
+  return 1
+### lit float promoted by annotation
+@ok
+@has fn f: () -> float [declared]
+fn f() -> float
+  return 1
+### lit str
+@has fn f: () -> str [declared]
+fn f() -> str
+  return "a"
+### lit bool
+@has fn f: () -> bool [declared]
+fn f() -> bool
+  return true
+### inferred return int
+@has fn f: (int) -> int [derived]
+fn f(a: int)
+  return a + 1
+### inferred return float by promotion
+@has fn f: (int, float) -> float
+fn f(a: int, b: float)
+  return a + b
+### int times int stays int
+@has fn f: (int, int) -> int
+fn f(a: int, b: int)
+  return a * b
+### divide is float
+@has fn f: (int, int) -> float
+fn f(a: int, b: int)
+  return a / b
+### floor divide of ints is int
+@has fn f: (int, int) -> int
+fn f(a: int, b: int)
+  return a // b
+### modulo of ints is int
+@has fn f: (int, int) -> int
+fn f(a: int, b: int)
+  return a % b
+### string concatenation
+@has fn f: (str, str) -> str
+fn f(a: str, b: str)
+  return a + b
+### comparison is bool
+@has fn f: (int, float) -> bool
+fn f(a: int, b: float)
+  return a < b
+### equality is bool
+@has fn f: (str, str) -> bool
+fn f(a: str, b: str)
+  return a == b
+### and or not
+@has fn f: (bool, bool) -> bool
+fn f(a: bool, b: bool)
+  return not a or b and a
+### void function
+@has fn f: (int) -> void
+fn f(a: int)
+  print(a)
+### list literal
+@has fn f: () -> list[int]
+fn f()
+  return [1, 2, 3]
+### list of floats by join
+@has fn f: () -> list[float]
+fn f()
+  return [1, 2.5]
+### empty list gets the type of the first push
+@has fn f: () -> list[str]
+fn f()
+  let xs = []
+  push(xs, "a")
+  return xs
+### map literal
+@has fn f: () -> map[str,int]
+fn f()
+  return {"a": 1, "b": 2}
+### map index
+@has fn f: (map[str,float]) -> float
+fn f(m: map[str, float])
+  return m["a"]
+### list index
+@has fn f: (list[str]) -> str
+fn f(xs: list[str])
+  return xs[0]
+### str index
+@has fn f: (str) -> str
+fn f(s: str)
+  return s[0]
+### range loop variable is int
+@has use f.i@4: int
+@has fn f: (int) -> int
+fn f(n: int)
+  let t = 0
+  for i in 0..n
+    t += i
+  return t
+### iterate a list gives the element
+@has fn f: (list[float]) -> float
+fn f(xs: list[float])
+  let t = 0.0
+  for x in xs
+    t += x
+  return t
+### iterate a map with two variables
+@has fn f: (map[str,int]) -> int
+fn f(m: map[str, int])
+  let t = 0
+  for k, v in m
+    t += v
+  return t
+### iterate a string gives str
+@has use f.s@3: str
+fn f(s: str)
+  let n = 0
+  for c in s
+    n += 1
+  return n
+### while loop
+@has fn f: (int) -> int
+fn f(n: int)
+  let i = 0
+  while i < n
+    i += 1
+  return i
+### ternary same type
+@has fn f: (bool) -> int
+fn f(c: bool)
+  return c ? 1 : 2
+### ternary numeric join
+@has fn f: (bool) -> float
+fn f(c: bool)
+  return c ? 1 : 2.5
+### len is int
+@has fn f: (list[str]) -> int
+fn f(xs: list[str])
+  return len(xs)
+### split gives list of str
+@has fn f: (str) -> list[str]
+fn f(s: str)
+  return split(s, ",")
+### words and join
+@has fn f: (str) -> str
+fn f(s: str)
+  return join(words(s), "-")
+### sum of ints
+@has fn f: (list[int]) -> int
+fn f(xs: list[int])
+  return sum(xs)
+### sum of floats
+@has fn f: (list[float]) -> float
+fn f(xs: list[float])
+  return sum(xs)
+### min max promote
+@has fn f: (int, float) -> float
+fn f(a: int, b: float)
+  return min(a, b)
+### sqrt is float floor is int
+@has fn f: (int) -> int
+fn f(a: int)
+  return floor(sqrt(a))
+### abs keeps the type
+@has fn f: (float) -> float
+fn f(a: float)
+  return abs(a)
+### sort keeps the list type
+@has fn f: (list[str]) -> list[str]
+fn f(xs: list[str])
+  return sort(xs)
+### keys of a map
+@has fn f: (map[str,int]) -> list[str]
+fn f(m: map[str, int])
+  return keys(m)
+### pop gives the element
+@has fn f: (list[float]) -> float
+fn f(xs: list[float])
+  return pop(xs)
+### slice of a list keeps the list
+@has fn f: (list[int]) -> list[int]
+fn f(xs: list[int])
+  return slice(xs, 1, 3)
+### conversions
+@has fn f: (str) -> float
+fn f(s: str)
+  return float(s) + int(s)
+### contains on a list
+@has fn f: (list[int], int) -> bool
+fn f(xs: list[int], x: int)
+  return contains(xs, x)
+### in on a list
+@has fn f: (list[str], str) -> bool
+fn f(xs: list[str], x: str)
+  return x in xs
+### in on a string
+@has fn f: (str, str) -> bool
+fn f(a: str, s: str)
+  return a in s
+### str of a number
+@has fn f: (int) -> str
+fn f(a: int)
+  return "n=" + str(a)
+### module constant
+@has const LIMIT: int
+@has fn f: (int) -> bool
+const LIMIT = 10
+fn f(a: int)
+  return a < LIMIT
+### module constant list
+@has const NAMES: list[str]
+const NAMES = ["a", "b"]
+fn f()
+  return len(NAMES)
+### defaults make parameters optional
+@ok
+@has fn f: (int, int) -> int [declared]
+fn f(a: int, b: int = 0) -> int
+  return a + b
+fn g() -> int
+  return f(1) + f(1, 2)
+### default decides an untyped parameter
+@has fn f: (int) -> int
+fn f(a = 5)
+  return a + 1
+### default list of str
+@has fn f: (list[str]) -> int
+fn f(acc: list[str] = [])
+  push(acc, "x")
+  return len(acc)
+### nested lists
+@has fn f: () -> list[list[int]]
+fn f()
+  return [[1], [2, 3]]
+### nested list element access
+@has fn f: (list[list['a]]) -> 'a
+fn f(m)
+  return m[0][1]
