@@ -1,0 +1,35 @@
+class Node
+  field val: int = 0
+  field next: Node = null
+  fn init(v: int)
+    self.val = v
+fn firstOr(xs, d)
+  if len(xs) == 0
+    return d
+  return xs[0]
+fn typeless(a, b = [], c = {})
+  push(b, a)
+  c["k"] = a
+  return len(b) + len(c)
+fn walk(n: Node) -> int
+  let t = 0
+  let cur = n
+  while cur != null
+    t += cur.val
+    cur = cur.next
+  return t
+fn main() -> int
+  let a = Node(1)
+  a.next = Node(2)
+  print(walk(a))
+  print(str(firstOr([], 5)) + str(firstOr([7], 0)))
+  print(typeless(4))
+  let any_v = firstOr(["x"], "d")
+  if any_v == "x"
+    print("is x")
+  print(str(any_v < "y"))
+  let m = {"a": [1, 2], "b": [3]}
+  for k in m
+    print(k)
+  return 0
+test main() == 0

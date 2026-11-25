@@ -1,0 +1,93 @@
+# fluxo: laco com limite avaliado uma vez, variavel de laco reatribuida, try/finally, classes, recursao, defaults
+class Stack
+  field items: list[int] = []
+  field count: int = 0
+  field name: str = "s"
+  fn push_(v: int) -> int
+    push(self.items, v)
+    self.count += 1
+    return self.count
+  fn top() -> int
+    if self.count == 0
+      throw "empty stack"
+    return self.items[-1]
+fn grow(xs: list[int], acc: list[str] = []) -> int
+  push(acc, "x")
+  for i in 0..len(xs)
+    push(xs, i)
+  return len(xs) + len(acc)
+fn collatz(n: int) -> int
+  let steps = 0
+  let x = n
+  while x != 1
+    if x % 2 == 0
+      x = x // 2
+    else
+      x = 3 * x + 1
+    steps += 1
+  return steps
+fn cleanup(n: int) -> int
+  try
+    if n > 2
+      throw "big"
+    return n
+  catch e
+    print("caught " + errmsg(e))
+    return -1
+  finally
+    print("finally " + str(n))
+fn rethrow() -> int
+  try
+    throw "inner"
+  catch e
+    throw e
+fn main() -> int
+  let xs = [1, 2]
+  print(str(grow(xs)) + " " + str(grow(xs)) + " " + str(xs))
+  for i in 10..0 step -3
+    print(i)
+  for j in 0..10 step 4
+    j = j + 1
+    print(j)
+  for k in 5..2
+    print("never")
+  let n = 3
+  for q in 0..n
+    n = n + 1
+  print(str(n))
+  print(str(collatz(27)) + " " + str(cleanup(1)) + " " + str(cleanup(5)))
+  try
+    rethrow()
+  catch e
+    print("outer " + errmsg(e))
+  let s = Stack()
+  s.push_(4)
+  s.push_(5)
+  print(str(s.top()) + " " + str(s.count) + " " + str(s.items) + " " + s.name)
+  let s2 = Stack()
+  print(str(len(s2.items)))
+  try
+    s2.top()
+  catch e2
+    print(errmsg(e2))
+  let total = 0.0
+  for v in [1, 2, 3]
+    total += v / 2
+  print(str(total))
+  let big = [1, 2, 3, 4, 5, 6]
+  let evens: list[int] = []
+  for b in big
+    if b % 2 == 1
+      continue
+    if b > 5
+      break
+    push(evens, b)
+  print(str(evens))
+  let c = 5 > 3 ? "yes" : "no"
+  print(c)
+  let flag = true
+  print(str(flag and not flag or 3 > 2))
+  return 0
+test main() == 0
+test collatz(27) == 111
+test rethrow() raises

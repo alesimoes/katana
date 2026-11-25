@@ -17,7 +17,7 @@ typedef struct { Cgx *g; const CgxGenOpts *o; CgxDocs D; CgxTypes T; int ts, ntm
 /* ---- ajudantes de execucao: o texto e escrito UMA vez, em TypeScript; o que esta entre TS( ) some na saida JavaScript ---- */
 #define TS(x) "\x01" x "\x02"
 enum { H_SUR, H_ISWS, H_TRIM, H_WORDS, H_FSTR, H_PYQ, H_REPR, H_STR, H_EQ, H_HAS, H_NORM, H_AT, H_PUT, H_SLEN, H_SAT, H_MGET, H_IX, H_IXPUT, H_LEN, H_SSLICE, H_SLICE, H_FIND,
-       H_REV, H_POP, H_SUM, H_SCMP, H_CMP, H_SORT, H_DIV, H_FDIV, H_MOD, H_INT, H_FLOAT, H_SQRT, H_POW, H_SPLIT, H_REPLACE, H_ERRMSG, H_EXC, H_TRUTH, H_ITER, H_ITEMS, H_KEYS, H_N };
+       H_REV, H_POP, H_SUM, H_SCMP, H_CMP, H_SORT, H_DIV, H_FDIV, H_MOD, H_INT, H_FLOAT, H_SQRT, H_POW, H_SPLIT, H_REPLACE, H_ERRMSG, H_EXC, H_TRUTH, H_ITER, H_ITEMS, H_KEYS, H_IN, H_JOIN, H_MAPIT, H_N };
 typedef struct { const char *text; int dep[5]; } CgxJsHelper;
 static const CgxJsHelper CGX_JS_H[H_N] = {
     /* H_SUR */ {"const _SUR = /[\\ud800-\\udfff]/;\n", {-1}},
@@ -47,17 +47,17 @@ static const CgxJsHelper CGX_JS_H[H_N] = {
         "        else if (c === \"\\n\") r += \"\\\\n\";\n        else if (c === \"\\t\") r += \"\\\\t\";\n        else if (c === \"\\r\") r += \"\\\\r\";\n"
         "        else if (k < 32 || (k >= 127 && k < 161) || k === 173) r += \"\\\\x\" + k.toString(16).padStart(2, \"0\");\n"
         "        else r += c;\n    }\n    return q + r + q;\n}\n", {-1}},
-    /* H_REPR */ {"function _repr(x" TS(": unknown") ")" TS(": string") " {\n"
+    /* H_REPR */ {"function _repr(x" TS(": unknown") ", fl" TS("?: boolean") ")" TS(": string") " {\n"
         "    if (typeof x === \"string\") return _pyq(x);\n"
-        "    if (typeof x === \"number\") return Number.isInteger(x) ? String(x) : _fstr(x);\n"
+        "    if (typeof x === \"number\") return Number.isInteger(x) && !fl ? String(x) : _fstr(x);\n"
         "    if (typeof x === \"boolean\") return x ? \"True\" : \"False\";\n"
         "    if (x === null || x === undefined) return \"None\";\n"
-        "    if (Array.isArray(x)) return \"[\" + x.map((y) => _repr(y)).join(\", \") + \"]\";\n"
-        "    if (x instanceof Map) return \"{\" + Array.from(x, ([k, v]) => _repr(k) + \": \" + _repr(v)).join(\", \") + \"}\";\n"
+        "    if (Array.isArray(x)) return \"[\" + x.map((y) => _repr(y, fl)).join(\", \") + \"]\";\n"
+        "    if (x instanceof Map) return \"{\" + Array.from(x, ([k, v]) => _repr(k) + \": \" + _repr(v, fl)).join(\", \") + \"}\";\n"
         "    const o = x" TS(" as any") ";\n"
         "    if (o.constructor !== Object) return \"<\" + o.constructor.name + \" object>\";\n"
-        "    return \"{\" + Object.entries(o).map(([k, v]) => _repr(k) + \": \" + _repr(v)).join(\", \") + \"}\";\n}\n", {H_FSTR, H_PYQ, -1}},
-    /* H_STR */ {"function _str(x" TS(": unknown") ")" TS(": string") " {\n    return typeof x === \"string\" ? x : _repr(x);\n}\n", {H_REPR, -1}},
+        "    return \"{\" + Object.entries(o).map(([k, v]) => _repr(k) + \": \" + _repr(v, fl)).join(\", \") + \"}\";\n}\n", {H_FSTR, H_PYQ, -1}},
+    /* H_STR */ {"function _str(x" TS(": unknown") ", fl" TS("?: boolean") ")" TS(": string") " {\n    return typeof x === \"string\" ? x : _repr(x, fl);\n}\n", {H_REPR, -1}},
     /* H_EQ */ {"function _eq(a" TS(": unknown") ", b" TS(": unknown") ")" TS(": boolean") " {\n"
         "    if (a === b) return true;\n"
         "    if (Array.isArray(a) && Array.isArray(b)) {\n        if (a.length !== b.length) return false;\n"
@@ -133,6 +133,11 @@ static const CgxJsHelper CGX_JS_H[H_N] = {
         "    if (x instanceof Map) return x.keys();\n    if (typeof x === \"object\" && x !== null && !Array.isArray(x)) return Object.keys(x);\n    return x;\n}\n", {-1}},
     /* H_ITEMS */ {"function _items(x" TS(": any") ")" TS(": Iterable<[any, any]>") " {\n    return x instanceof Map ? x : Object.entries(x)" TS(" as [any, any][]") ";\n}\n", {-1}},
     /* H_KEYS */ {"function _keys(x" TS(": any") ")" TS(": string[]") " {\n    return x instanceof Map ? [...x.keys()] : Object.keys(x);\n}\n", {-1}},
+    /* H_IN */ {"function _in(x" TS(": unknown") ", c" TS(": any") ")" TS(": boolean") " {\n    return _has(c, x);\n}\n", {H_HAS, -1}},
+    /* H_JOIN */ {"function _join(sep" TS(": string") ", xs" TS(": string[]") ")" TS(": string") " {\n    return xs.join(sep);\n}\n", {-1}},
+    /* H_MAPIT */ {"function* _mapit(m" TS(": Map<string, any>") ", kv" TS(": boolean") ")" TS(": IterableIterator<any>") " {\n"
+        "    const n = m.size;\n    for (const e of kv ? m : m.keys()) {\n        if (m.size !== n) throw new Error(\"dictionary changed size during iteration\");\n        yield e;\n    }\n"
+        "    if (m.size !== n) throw new Error(\"dictionary changed size during iteration\");\n}\n", {-1}},
 };
 static void cjs_need(CgxJs *p, int h) {
     if (p->need[h]) return;
@@ -312,6 +317,7 @@ static CgxDoc *cjs_idx_write(CgxJs *p, int ck, CgxDoc *c, CgxDoc *k, CgxDoc *v) 
     }
 }
 
+static int cjs_triv(const CgxNode *n);
 static int cjs_is_str_call(const CgxNode *n) { return n->k == CGN_CALL && n->bi == CGB_STR && n->b1.n == 1; }
 /* `str(x)` como texto: sem o `String(...)` quando vai dentro de um modelo de texto */
 static CgxDoc *cjs_str_of(CgxJs *p, const CgxNode *x, int in_tpl) {
@@ -320,6 +326,7 @@ static CgxDoc *cjs_str_of(CgxJs *p, const CgxNode *x, int in_tpl) {
         case CGT_INT: return in_tpl ? cjs_ex(p, x, 0) : cjs_app1(p, "String", cjs_ex(p, x, 0));
         case CGT_FLOAT: return cjs_h1(p, H_FSTR, "_fstr", cjs_ex(p, x, 0));
         case CGT_BOOL: return cgx_dcatn(JD, cjs_ex(p, x, JP_TERN + 1), cjs_t(p, " ? \"True\" : \"False\""), NULL);
+        case CGT_LIST: case CGT_MAP: if (x->ty.e == CGT_FLOAT) return cjs_h2(p, H_STR, "_str", cjs_ex(p, x, 0), cjs_t(p, "true")); /* fallthrough */
         default: return cjs_h1(p, H_STR, "_str", cjs_ex(p, x, 0));
     }
 }
@@ -398,8 +405,10 @@ static CgxDoc *cjs_compare(CgxJs *p, const CgxNode *n, int *prec) {
     return cgx_dcatn(JD, cjs_ex(p, n->a, JP_REL + 1), cgx_dtextf(JD, " %s ", js[op - CGO_EQ]), cjs_ex(p, n->b, JP_REL + 1), NULL);
 }
 /* `x in c` e contains(c, x) */
+static int cjs_triv(const CgxNode *n);
 static CgxDoc *cjs_contains(CgxJs *p, const CgxNode *c, const CgxNode *x, int *prec) {
     *prec = JP_POST;
+    if (!cjs_triv(x) && !cjs_triv(c)) return cjs_h2(p, H_IN, "_in", cjs_ex(p, x, 0), cjs_ex(p, c, 0));       /* o Python avalia `x in c` com x primeiro */
     switch (c->ty.k) {
         case CGT_STR: return cjs_meth1(p, cjs_ex(p, c, JP_POST), "includes", cjs_ex(p, x, 0));
         case CGT_MAP: return cjs_meth1(p, cjs_ex(p, c, JP_POST), "has", cjs_ex(p, x, 0));
@@ -443,7 +452,9 @@ static CgxDoc *cjs_call(CgxJs *p, const CgxNode *n, int *prec) {
         case CGB_TRIM: return cjs_h1(p, H_TRIM, "_trim", cjs_ex(p, x0, 0));
         case CGB_SPLIT: return cjs_h2(p, H_SPLIT, "_split", cjs_ex(p, x0, 0), cjs_ex(p, x1, 0));
         case CGB_WORDS: return cjs_h1(p, H_WORDS, "_words", cjs_ex(p, x0, 0));
-        case CGB_JOIN: return cjs_meth1(p, cjs_ex(p, x0, JP_POST), "join", cjs_ex(p, x1, 0));
+        case CGB_JOIN:
+            if (!cjs_triv(x0) && !cjs_triv(x1)) return cjs_h2(p, H_JOIN, "_join", cjs_ex(p, x1, 0), cjs_ex(p, x0, 0));      /* o Python avalia o separador primeiro */
+            return cjs_meth1(p, cjs_ex(p, x0, JP_POST), "join", cjs_ex(p, x1, 0));
         case CGB_CONTAINS: return cjs_contains(p, x0, x1, prec);
         case CGB_INDEXOF: return cjs_h2(p, H_FIND, "_find", cjs_ex(p, x0, 0), cjs_ex(p, x1, 0));
         case CGB_REPLACE: {
@@ -593,6 +604,16 @@ static int cjs_let_annot(const CgxNode *s) {
     if ((s->flag & 2) && (s->ty.k == CGT_INT || s->ty.k == CGT_FLOAT || s->ty.k == CGT_STR || s->ty.k == CGT_BOOL)) return 0;
     return 1;
 }
+/* expressao que nao tem efeito nem levanta erro: a ordem em que e avaliada nao se nota */
+static int cjs_triv(const CgxNode *n) {
+    switch (n->k) {
+        case CGN_INT: case CGN_FLT: case CGN_STR: case CGN_BOOL: case CGN_NULL: case CGN_VAR: return 1;
+        case CGN_FIELD: case CGN_UN: return cjs_triv(n->a);
+        case CGN_BIN: return n->op != CGO_DIV && n->op != CGO_IDIV && n->op != CGO_MOD && n->op != CGO_IN && cjs_triv(n->a) && cjs_triv(n->b);
+        case CGN_LIST: case CGN_MAP: for (int i = 0; i < n->b1.n; i++) if (!cjs_triv(n->b1.p[i])) return 0; return 1;
+    }
+    return 0;
+}
 static CgxDoc *cjs_t_end(CgxJs *p, CgxDoc *d) { return cgx_dcat(JD, d, cjs_t(p, ";")); }
 static CgxDoc *cjs_assign(CgxJs *p, const CgxNode *s) {
     static const char *const as[] = {"+=", "-=", "*="};
@@ -600,6 +621,11 @@ static CgxDoc *cjs_assign(CgxJs *p, const CgxNode *s) {
     if (t->k == CGN_INDEX) {
         const int ck = t->a->ty.k;
         const int hoist = s->op >= 0 && (!cjs_pure(t->a) || !cjs_pure(t->b));
+        if (!hoist && s->op < 0 && !cjs_triv(s->b) && (!cjs_triv(t->a) || !cjs_triv(t->b))) {      /* `c[k] = v`: o Python avalia v ANTES de c e k */
+            const int id = ++p->ntmp;
+            return cgx_dcatn(JD, cjs_t(p, "{"), cgx_dnest(JD, p->o->indent, cgx_dcatn(JD, cgx_dhard(JD), cgx_dtextf(JD, "const _v%d = ", id), cjs_ex(p, s->b, 0), cjs_t(p, ";"), cgx_dhard(JD),
+                cjs_t_end(p, cjs_idx_write(p, ck, cjs_ex(p, t->a, 0), cjs_ex(p, t->b, 0), cgx_dtextf(JD, "_v%d", id))), NULL)), cgx_dhard(JD), cjs_t(p, "}"), NULL);
+        }
         if (!hoist) {
             CgxDoc *c = cjs_ex(p, t->a, 0), *k = cjs_ex(p, t->b, 0), *v;
             if (s->op < 0) v = cjs_ex(p, s->b, 0);
@@ -610,6 +636,11 @@ static CgxDoc *cjs_assign(CgxJs *p, const CgxNode *s) {
         CgxDoc *v = cjs_arith(p, s->op, t->a, s->b, cjs_idx_read(p, ck, cgx_dtextf(JD, "_c%d", id), cgx_dtextf(JD, "_k%d", id)), &pr);
         return cgx_dcatn(JD, cjs_t(p, "{"), cgx_dnest(JD, p->o->indent, cgx_dcatn(JD, cgx_dhard(JD), cgx_dtextf(JD, "const _c%d = ", id), cjs_ex(p, t->a, 0), cjs_t(p, ";"),
             cgx_dhard(JD), cgx_dtextf(JD, "const _k%d = ", id), cjs_ex(p, t->b, 0), cjs_t(p, ";"), cgx_dhard(JD), cjs_t_end(p, cjs_idx_write(p, ck, c, k, v)), NULL)), cgx_dhard(JD), cjs_t(p, "}"), NULL);
+    }
+    if (t->k == CGN_FIELD && s->op < 0 && !cjs_triv(s->b) && !cjs_triv(t->a)) {                  /* `f().x = v`: v primeiro */
+        const int id = ++p->ntmp;
+        return cgx_dcatn(JD, cjs_t(p, "{"), cgx_dnest(JD, p->o->indent, cgx_dcatn(JD, cgx_dhard(JD), cgx_dtextf(JD, "const _v%d = ", id), cjs_ex(p, s->b, 0), cjs_t(p, ";"), cgx_dhard(JD),
+            cjs_ex(p, t, 0), cgx_dtextf(JD, " = _v%d;", id), NULL)), cgx_dhard(JD), cjs_t(p, "}"), NULL);
     }
     CgxDoc *T = cjs_ex(p, t, 0);
     if (s->op < 0) return cgx_dcatn(JD, T, cjs_t(p, " = "), cjs_ex(p, s->b, 0), cjs_t(p, ";"), NULL);
@@ -625,6 +656,16 @@ static int cjs_uses(const CgxNode *n, const CgxNode *ref) {
     for (int k = 0; k < 3; k++) for (int i = 0; i < bl[k]->n; i++) if (cjs_uses(bl[k]->p[i], ref)) return 1;
     return 0;
 }
+/* o corpo do laco pode inserir chave num mapa? (escrita por indice num mapa ou any, ou qualquer chamada que nao seja embutida) */
+static int cjs_may_mutate_map(const CgxBlk *b);
+static int cjs_mm(const CgxNode *n) {
+    if (!n) return 0;
+    if (n->k == CGN_ASSIGN && n->a && n->a->k == CGN_INDEX && (n->a->a->ty.k == CGT_MAP || n->a->a->ty.k == CGT_ANY)) return 1;
+    if ((n->k == CGN_CALL && n->bi == 0) || n->k == CGN_MCALL || n->k == CGN_RAW) return 1;
+    if (cjs_mm(n->a) || cjs_mm(n->b) || cjs_mm(n->c)) return 1;
+    return cjs_may_mutate_map(&n->b1) || cjs_may_mutate_map(&n->b2) || cjs_may_mutate_map(&n->b3);
+}
+static int cjs_may_mutate_map(const CgxBlk *b) { for (int i = 0; i < b->n; i++) if (cjs_mm(b->p[i])) return 1; return 0; }
 static CgxDoc *cjs_stmt(CgxJs *p, const CgxNode *s) {
     switch (s->k) {
         case CGN_COMMENT: if (!s->defs) return NULL; return cgx_dtextf(JD, "// %s", s->defs);
@@ -632,8 +673,10 @@ static CgxDoc *cjs_stmt(CgxJs *p, const CgxNode *s) {
         case CGN_RAW: return cjs_raw(p, s);
         case CGN_LET: {
             cjs_name(p, s->line, s->s, 0);
-            CgxB h = {0}; if (p->ts && cjs_let_annot(s)) { cgx_bs(&h, ": "); cjs_type(p, &s->ty, &h); }
             const int cst = (s->flag & 1) || !cjs_asg(p, s);
+            CgxB h = {0};
+            if (p->ts && s->ty.k == CGT_CLASS && (!cst || s->a->k == CGN_NULL)) cgx_bs(&h, ": any");          /* a UIR nao tem tipo opcional: classe que recebe null fica any */
+            else if (p->ts && cjs_let_annot(s)) { cgx_bs(&h, ": "); cjs_type(p, &s->ty, &h); }
             CgxDoc *d = cgx_dcatn(JD, cgx_dtextf(JD, "%s %s%s = ", cst ? "const" : "let", s->s, h.p ? h.p : ""), cjs_ex(p, s->a, 0), cjs_t(p, ";"), NULL); free(h.p); return d;
         }
         case CGN_ASSIGN: return cjs_assign(p, s);
@@ -671,10 +714,11 @@ static CgxDoc *cjs_stmt(CgxJs *p, const CgxNode *s) {
             cjs_name(p, s->line, s->s, 0); if (s->s2) cjs_name(p, s->line, s->s2, 0);
             const int ck = s->a->ty.k; const char *kw = cjs_asg(p, s) ? "let" : "const";
             CgxDoc *coll, *vars;
-            if (s->s2) { vars = cgx_dtextf(JD, "%s [%s, %s]", kw, s->s, s->s2); coll = ck == CGT_MAP ? cjs_ex(p, s->a, 0) : cjs_h1(p, H_ITEMS, "_items", cjs_ex(p, s->a, 0)); }
+            const int mut = ck == CGT_MAP && cjs_may_mutate_map(&s->b1);           /* o Python levanta erro se o mapa muda de tamanho durante o laco */
+            if (s->s2) { vars = cgx_dtextf(JD, "%s [%s, %s]", kw, s->s, s->s2); coll = ck == CGT_MAP ? (mut ? cjs_h2(p, H_MAPIT, "_mapit", cjs_ex(p, s->a, 0), cjs_t(p, "true")) : cjs_ex(p, s->a, 0)) : cjs_h1(p, H_ITEMS, "_items", cjs_ex(p, s->a, 0)); }
             else {
                 vars = cgx_dtextf(JD, "%s %s", kw, s->s);
-                coll = ck == CGT_MAP ? cjs_meth0(p, cjs_ex(p, s->a, JP_POST), "keys") : ck == CGT_ANY ? cjs_h1(p, H_ITER, "_iter", cjs_ex(p, s->a, 0)) : cjs_ex(p, s->a, 0);
+                coll = ck == CGT_MAP ? (mut ? cjs_h2(p, H_MAPIT, "_mapit", cjs_ex(p, s->a, 0), cjs_t(p, "false")) : cjs_meth0(p, cjs_ex(p, s->a, JP_POST), "keys")) : ck == CGT_ANY ? cjs_h1(p, H_ITER, "_iter", cjs_ex(p, s->a, 0)) : cjs_ex(p, s->a, 0);
             }
             return cgx_dcatn(JD, cjs_t(p, "for ("), vars, cjs_t(p, " of "), coll, cjs_t(p, ") "), cjs_block(p, &s->b1, NULL), NULL);
         }
@@ -704,13 +748,21 @@ static CgxDoc *cjs_zero(CgxJs *p, const CgxTy *t) {
     }
 }
 static void cjs_jsdoc_clean(const char *s, CgxB *o) { for (; *s; s++) { if (s[0] == '*' && s[1] == '/') { cgx_bs(o, "* /"); s++; } else cgx_bn(o, s, 1); } }
+static int cjs_returns_null(const CgxBlk *b) {
+    for (int i = 0; i < b->n; i++) {
+        const CgxNode *n = b->p[i];
+        if (n->k == CGN_RET && n->a && n->a->k == CGN_NULL) return 1;
+        if (cjs_returns_null(&n->b1) || cjs_returns_null(&n->b2) || cjs_returns_null(&n->b3)) return 1;
+    }
+    return 0;
+}
 static CgxDoc *cjs_params(CgxJs *p, const CgxNode *fn) {
     CgxDoc **it = (CgxDoc **)malloc(sizeof(CgxDoc *) * (size_t)(fn->npar + 1));
     for (int i = 0; i < fn->npar; i++) {
         const CgxParam *pr = &fn->par[i]; CgxB b = {0};
         cjs_name(p, pr->line, pr->name, 0);
         cgx_bs(&b, pr->name);
-        if (p->ts) { cgx_bs(&b, ": "); cjs_type(p, &pr->ty, &b); }
+        if (p->ts) { cgx_bs(&b, ": "); if (pr->ty.k == CGT_CLASS && pr->def && pr->def->k == CGN_NULL) cgx_bs(&b, "any"); else cjs_type(p, &pr->ty, &b); }
         CgxDoc *d = cjs_tb(p, &b);
         if (pr->def) d = cgx_dcatn(JD, d, cjs_t(p, " = "), cjs_ex(p, pr->def, 0), NULL);
         it[i] = d;
@@ -721,7 +773,7 @@ static CgxDoc *cjs_fn(CgxJs *p, const CgxNode *fn, const CgxNode *cls) {
     const int ctor = cls && !strcmp(fn->s, "init");
     if (!ctor) cjs_name(p, fn->line, fn->s, cls != NULL);
     CgxB rb = {0};
-    if (p->ts && !ctor) { cgx_bs(&rb, ": "); cjs_type(p, &fn->ty, &rb); }
+    if (p->ts && !ctor) { cgx_bs(&rb, ": "); if (fn->ty.k == CGT_CLASS && cjs_returns_null(&fn->b1)) cgx_bs(&rb, "any"); else cjs_type(p, &fn->ty, &rb); }
     CgxDoc *head = cgx_dcatn(JD, cgx_dtextf(JD, "%s%s", cls ? "" : "function ", ctor ? "constructor" : fn->s), cjs_params(p, fn), cgx_dtextf(JD, "%s ", rb.p ? rb.p : ""), NULL);
     free(rb.p);
     /* o primeiro `doc` do corpo vira JSDoc (e, em JS, os tipos escritos pelo autor viram @param/@returns) */
@@ -749,7 +801,7 @@ static CgxDoc *cjs_class(CgxJs *p, const CgxNode *c) {
         const CgxNode *f = c->b1.p[i]; if (f->k != CGN_FIELDDECL) continue;
         cjs_name(p, f->line, f->s, 1);
         CgxB h = {0}; cgx_bs(&h, f->s);
-        if (p->ts) { cgx_bs(&h, ": "); cjs_type(p, &f->ty, &h); if (!f->a && f->ty.k == CGT_CLASS) cgx_bs(&h, " | null"); }
+        if (p->ts) { cgx_bs(&h, ": "); if (f->ty.k == CGT_CLASS) cgx_bs(&h, "any"); else cjs_type(p, &f->ty, &h); }          /* referencia a classe pode ser null: a UIR nao tem tipo opcional */
         cgx_bs(&h, " = ");
         CgxDoc *x = cgx_dcatn(JD, cgx_dhard(JD), cjs_tb(p, &h), f->a ? cjs_ex(p, f->a, 0) : cjs_zero(p, &f->ty), cjs_t(p, ";"), NULL);
         in = in ? cgx_dcat(JD, in, x) : x;
