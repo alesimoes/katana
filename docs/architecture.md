@@ -134,10 +134,14 @@ request -> code spec (text or JSON) -> parse -> typed UIR -> checks -> AST -> do
 
 | Component | What it does | Where | Status |
 |---|---|---|---|
-| Parser, validator, type table and unification, pretty-printer | Reads the spec (text and JSON), checks names, arity, scopes, returns, some types | `src/coder/codegen.c`, `codegencheck.c`, `codegentype.c`, `codegendoc.c` | working (`sh tools/codegen/test.sh`: 60 checks pass; 15 tasks, 13 without `raw`, generated Python passes all 53 given tests). Not part of the katana build (`src/katana.c` does not include it); standalone `tools/codegen/codegencli.c` |
+| Parser, validator, type table and unification, pretty-printer | Reads the spec (text and JSON), checks names, arity, scopes, returns, some types | `src/coder/codegen.c`, `codegencheck.c`, `codegentype.c`, `codegendoc.c` | working (`sh tools/codegen/test.sh`: 60 checks pass; 15 tasks, 13 without `raw`, generated Python passes all 53 given tests). Compiled into `src/katana.c` but not called by any tool or command yet; the standalone CLI `tools/codegen/codegencli.c` runs it |
 | Python backend | Generates Python from the typed AST | `src/coder/codegenpy.c` | working (same tests) |
 | `raw` fallback | What the spec cannot express is written by the model, treated as untrusted | same | working (in the tests); trusted-ness is graded in the report |
-| Other backends (JS/TS, C, Go, Java, Rust), type inference, CFG/SSA and optimizer, operation registry, incremental AST, dependency graph, code cache, validator and sandboxed runner, `CodeGen` tool, protocol text for the model | | `docs/codegen.md` sections 2b, 13, 14 | planned (separate branches exist in the repository; not merged into this tree) |
+| JS/TS, C and Go backends | Same semantics as the Python backend (floor `//` and `%`, no truthiness, ordered maps); C has an arena runtime, Go a generic runtime | `src/coder/codegenjs.c`, `codegenc.c`, `codegengo.c` | working in tests (JS and TS: 45 checks, 2400 random programs equal to Python; C: 26 checks, ASan/UBSan clean, 800 programs equal; Go: 19 checks, 1000 programs equal). Not exposed to the model |
+| Type inference | Hindley-Milner with let-polymorphism by levels, gradual `any`, flow typing, optionals and unions at branch joins | `src/coder/codegeninfer.c` | working in tests (363 cases, 0 soundness violations in about 1500 generated programs) |
+| CFG, SSA, data flow, optimizer | Dominators, SSA, liveness, reaching definitions, SCCP, call graph, findings, passes (fold, algebra, copy, dead code) | `src/coder/codegencfg.c`, `codegenflow.c`, `codegenopt.c` | working in tests (differential: 1000 programs, 62,860 calls, 0 differences) |
+| Operation registry, incremental AST, dependency graph, code cache | One extensible op table; minimal edits of existing Python; topological order; on-disk cache | `src/coder/codegenreg.c`, `codegeninc.c`, `codegendep.c` | working in tests; the cache does not speed up Python generation (15-30 µs per function); the write through `Edit` by symbol is compiled but never run |
+| Validator with sandboxed runner, `CodeGen` tool, protocol text for the model, Java and Rust backends | | `docs/codegen.md` sections 13, 14 | planned. No model has written a code spec yet |
 
 What is **not** known: how often the model writes a valid spec. No model was run. Measured instead (without a model): the spec is about 1.16x the size of idiomatic Python, so codegen is not justified by token count; its argument is determinism, one description for several languages, and validation before generation.
 
@@ -174,7 +178,7 @@ Context Builder appends the block or nothing -> the model (L1, on Vulkan or the 
 **Image request.** The user attaches a view -> the agent (or the desktop directly) writes a brief -> `Render` with `stable` produces a preview -> the user approves -> `Render` with `flux` produces the final image.
 
 **Code request, today.** The model reads with `Find`/`Symbols`, changes code with `Edit` (by symbol, validated before writing).
-**Code request, planned.** The model writes a spec -> codegen parses it, builds the typed UIR and the AST, generates the language, validates it -> the result goes in through `Edit` by symbol.
+**Code request, built but not connected to the agent.** The model writes a spec -> codegen parses it, builds the typed UIR and the AST, generates the language, validates it -> the result goes in through `Edit` by symbol.
 The codegen half of this flow does not exist in the agent yet.
 
 ## 5. What this audit could not verify
