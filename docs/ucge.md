@@ -230,7 +230,7 @@ map element type is fixed by the first `push` or literal; return type inferred i
 ## 7. Semantics: errors, scope, effects
 
 - **Errors.** `throw` raises an error with a text (`str`); `try/catch e/finally`; `errmsg(e)` reads it. Backends map to `raise Exception(text)`/`throw new
-  Error(text)`; C has no exceptions, so a C backend rejects `try`/`throw` with a message (use error returns or `raw c`). Error values are not typed beyond
+  Error(text)`; the C backend implements them with `setjmp`/`longjmp` (section 12b), Go with `panic`/`recover` (section 12c). Error values are not typed beyond
   "Error" in the UIR (typed errors are phase 3).
 - **Scope.** Lexical, block level; parameters and module constants are visible; a name cannot be declared twice or shadow a visible one. This is the
   intersection of Python (function scope) and JS (`let`, block scope): code that is valid here means the same in both.
@@ -281,9 +281,12 @@ every finding and never says "exact":
 | `src/coder/ucgetype.c` | type table, union-find unification, generalization, schemes | 1 (not yet wired) |
 | `src/coder/ucgedoc.c` | document algebra, renderer, `CgxGenOpts`, `CgxBackend` | 1 |
 | `src/coder/ucgepy.c` | Python backend (reference) and the backend registry | 1 |
+| `src/coder/ucgec.c`, `ucgec_rt.inc` | C backend and its embedded runtime (generated from `tools/ucge/rt/cgrt.h` by `tools/ucge/rt2inc.py`) | 2 (module B) |
+| `src/coder/ucgego.c`, `ucgego_rt.inc` | Go backend and its embedded runtime (generated from `tools/ucge/rt/cgrt.go`) | 2 (module B) |
 | `src/coder/ucge_api.h` | the contract between phases (documentation only) | 1 |
 | `tools/ucge/ucgecli.c` | standalone driver: `check gen run stats selftest` | 1 |
 | `tools/ucge/test.sh` | tests (60 checks, optional ASan/UBSan with `SAN=1`) | 1 |
+| `tools/ucge/testc.sh`, `testgo.sh`, `difftest.py`, `cases/`, `cases_c/` | C and Go backend tests: tasks, hand-written cases, random Python-versus-target differential programs | 2 (module B) |
 | `tools/ucge/tasks/*.csp`, `ref/*.py`, `bench.py` | the 15 tasks, hand-written Python, the measurement | 1 |
 
 Build and test: `gcc -O1 -Wall -I. tools/ucge/ucgecli.c -o /tmp/ucgecli -lm`; `sh tools/ucge/test.sh`; `python3 tools/ucge/bench.py /tmp/ucgecli`.
@@ -307,6 +310,91 @@ So the UIR does **not** reduce tokens against what a model would write directly;
 languages, and validation before generation. The generated Python follows its own style (type hints, explicit loops), which is why it is longer than
 idiomatic code. The table per task is printed by `tools/ucge/bench.py`.
 
+## 12b. Backend C (`ucgec.c`)
+
+Module B of the phase plan. The generator walks the typed AST (`CgxNode`, `n->ty`) exactly like the Python backend and builds a document for the pretty-printer;
+the difference is the **runtime**: C has no lists, maps, sized strings or exceptions, so the generated file starts with a small runtime (`tools/ucge/rt/cgrt.h`,
+about 700 lines, embedded in `ucgec_rt.inc` and copied into every output; `python3 tools/ucge/rt2inc.py` regenerates the `.inc`, `testc.sh` checks it is fresh).
+The output is C99, **warning-free under `gcc -std=c99 -Wall -Wextra -Wpedantic` at `-O0 -O1 -O2 -O3 -Os`**, and clean under ASan and UBSan (leak checker included).
+Every runtime function is `static inline` (an unused one is not a warning) and the file is one translation unit with the generated functions non-`static`
+(so it can also be used as a library: `cg_init()` once, call, `cg_arena_free()`; `gen c --tests` appends a `main` with the `test` lines).
+
+### Representation
+
+| UIR | C | Notes |
+|---|---|---|
+| `int` | `long long` | every `+ - * // %` and unary `-` is a checked helper (`cg_iadd`, ...): overflow throws `integer overflow` (Python has unbounded ints: a documented divergence); `//` and `%` floor, divisor 0 throws |
+| `float`, `bool` | `double`, `int` | `/` throws `division by zero` like Python; `str(float)` reproduces Python's `repr` (shortest digits, `1e+16`, `1.5e-07`, `100.0`) |
+| `str` | `CgStr {const char *p; long long n}` | by value, bytes, no NUL needed (slices are views, no copy), the null string has `p == NULL`; `len`, indices and slices count **bytes** (ASCII and UTF-8 pass through intact, but `len("é")` is 2) |
+| `list[T]` | `CgList *` = vector + `ek` (element kind: int, float, str, bool or any) | one C type for all lists: typed fast accessors for the four scalar kinds (`cg_li_get`), tagged storage for `any`; a list is a reference, aliasing works as in Python |
+| `map[str,T]` | `CgMap *` | open-addressing hash over insertion-ordered arrays (iteration and `keys` order = Python's), same `ek` scheme, FNV-1a |
+| class | `C_Name *` | struct allocated from the arena; `N_Name` is the constructor (field defaults, then `init`), `M_Name__method` the methods; defaults of omitted arguments are filled **at the call site** (a list or map default is created per call) |
+| `any` | `CgV` | tagged value (`nil bool int float str list map obj`); `any` appears when the validator could not infer a type (untyped parameter, `list[list[int]]` element, `raw`-defined name) |
+| `Error` (the `e` of `catch e`) | `CgStr` | the message; `errmsg(e)` is `e`, `throw e` rethrows it |
+| names | `u_f`, `C_Cls`, `N_Cls`, `M_Cls__m`; locals as written | locals are only renamed when they collide with a C keyword, a macro or the `cg`/`u_`/`C_`/`M_`/`N_` prefixes |
+
+### How each construct is handled
+
+- **Typing and `any`.** The generator never invents types: it reads `n->ty` and the declarations. Where the type is `any` it emits a `CgV` and **dynamic** operations
+  (`cg_varith`, `cg_veq`, `cg_vcmp`, `cg_vget`, ...) with run-time type errors; conversions between a static type and `any` are explicit (`cg_vint(x)`, `cg_ui(v)`).
+  A typed list or map coming back from `any` goes through `cg_ul`/`cg_um`, which check the element kind (an empty list is re-tagged in place, so `let xs = []` passed to a
+  `list[int]` parameter still aliases). Methods and fields on an `any` receiver use generated dispatch helpers (`cg_dm_deposit_1(recv, a0)`: a `switch` on the class id of the
+  object), so `let accs = [Account(..), Counter()]` followed by `for a in accs: a.deposit(1)` works. A construct that cannot be typed at all is refused with a message that
+  says what to annotate (`null` where a number is expected, `/=` on an `int`). The type inference of module C will turn most `any` into precise types without changing this file.
+- **Exceptions.** `try/catch/finally` is `setjmp`/`longjmp` over a stack of handlers (`cg_enter`/`cg_leave`); `throw` stores the message and jumps; an uncaught error prints
+  `uncaught error: ...` and exits. `return`, `break` and `continue` inside a `try` pop the handler and **inline the `finally` code** of every region they leave (the
+  design of section 4: `finally` on both paths); an exception inside `catch` runs the `finally` and rethrows. Because of `setjmp`, every local and temporary of a function that
+  contains a `try` is declared `volatile`; `-Wclobbered` is disabled in the file (the inlined helper parameters trigger it falsely, and everything live across the jump is volatile).
+- **Evaluation order.** C leaves the order of function arguments and operands unspecified; the Python reference is left to right. Operands that call something (or read the heap
+  while another operand calls) are hoisted into temporaries sequenced by the comma operator: `(cgt1 = f(x), g(cgt1, h(y)))`. Plain and short-circuit operators need nothing.
+- **Memory.** One arena (64 KiB blocks, big requests get their own block); `cg_arena_free()` releases everything, so there is nothing to leak by construction (the differential tests
+  run under LeakSanitizer). The last allocation grows in place (vectors) and the last string is appended in place (`s += "x"` in a loop is amortized O(1)); everything else is
+  garbage until the arena is freed, so a program that builds millions of temporary strings uses memory proportional to that, and the arena is not for long-running servers.
+- **Library calls.** All 31 built-ins are implemented. `sort` is a stable merge sort (a new list, like `sorted`); `matches` is a backtracking regex engine in the runtime
+  (literals, `.`, classes, `\d \w \s \b`, groups, `|`, `* + ? {m,n}` and lazy forms, anchors, a step budget; no captures or back-references) checked against Python's `re`
+  on 18 patterns x 20 subjects; `int("...")`/`float("...")` follow Python (whitespace, underscores, errors catchable).
+- **Formatting.** Documents with `group`/`soft` like the other backends: a call whose arguments do not fit in `--width` breaks one argument per line.
+- **`raw`.** `raw c` is inserted verbatim (module level: before the functions; in a body: as a statement). `defines y` names must be declared by the block as `CgV y = ...;`.
+  A `raw` without a `c` version is an error that lists the versions present (tasks 14 and 15).
+
+### Known divergences from the Python reference (all intentional, all reported by the validator or documented here)
+
+integer width (64-bit, overflow throws); `len`/index/slice/`reverse`/`upper`/`lower` on non-ASCII text work on bytes; `max(1, 2.5)` and `sum` of an empty float list return floats where
+Python returns the int; a float variable initialised from an int literal prints `3.0` (Python backend: `3`); runtime error texts match Python for the common ones
+(`list index out of range`, `'key'`, `division by zero`) but not for all; regular expressions are the subset above; recursion depth is the C stack; `list[int]` passed where
+`list[float]` is expected is copied (aliasing lost).
+
+### Tests (module B)
+
+`sh tools/ucge/testc.sh` (`SAN=1` for ASan+UBSan): the runtime `.inc` is fresh; the 13 raw-free tasks compile with no warning and pass their tests; refusals; five hand-written
+cases (`cases/`: nested `any`, dynamic dispatch on objects, null/any, regex and string library against Python's `re`, control flow with `finally`) and one C-only case; and
+`difftest.py`, which generates random valid programs (int arithmetic with floor, lists, maps, strings, floats, `for`/`while`/`break`/`continue`, `try/catch/finally`, functions,
+a class) and compares **the whole stdout** of the generated Python and the generated C. Result when this was written: 200 of 200 programs equal under ASan/UBSan (2925 output lines)
+and 200 of 200 on each of two other seeds without sanitizers; `python3 tools/ucge/difftest.py UCGECLI -n 200 --seed 1 [--san]` reproduces it.
+
+## 12c. Backend Go (`ucgego.c`)
+
+Same structure, much simpler runtime because Go already has strings, maps, a garbage collector and `panic`/`recover` (`tools/ucge/rt/cgrt.go`, embedded in `ucgego_rt.inc`; the
+output is a single `package main` file). The output passes **`gofmt -l` unchanged and `go vet`**, and `go run` executes the harness (Go 1.26 was used).
+
+| UIR | Go |
+|---|---|
+| `int`, `float`, `bool`, `str` | `int64` (checked `cgAdd`, `cgMul`, ...: overflow panics), `float64`, `bool`, `string` (bytes; a null `str` is `""`) |
+| `list[int]` / `list[any]` | `*List[int64]` (generic, `Get/Set/Push/Pop`) / `Lister` (interface: the dynamic view every `*List[T]` implements, so a `list[int]` flows into `list[any]` without copying) |
+| `map[str,T]` / `map[str,any]` | `*Map[T]` (insertion ordered) / `Mapper` |
+| class | `*Name`, `newName(...)` constructor, methods with a `self` receiver |
+| `any` | Go `any`; `cgAs[T](v)`, `cgBox`, `cgArith`, `cgEq`, `cgCmp`; methods and fields on an `any` receiver use generated type-switch helpers (`cgdm_deposit_1`) |
+| `throw` / `try` | `panic(CgErr{msg})` / `cgTry(body, catch, finally)` with closures; `return`, `break`, `continue` inside a closure become control codes (1, 2, 3) that the code after `cgTry` acts on (the value of a `return` goes through `cgrv`); `finally` runs by `defer`, also when a `catch` panics |
+
+Details that came from running `gofmt` and `go vet` on the output: variables never read get `_ = x`; the ternary is a `func() T {...}()` (only one branch runs); struct fields are aligned;
+call arguments that do not fit break with a trailing comma (a new document node, `dbrk`, prints text only in the broken form); indentation is tabs; float `+ - *` and `str +` are written as
+operators only when the expression is the whole statement (gofmt tightens operators by nesting depth, so inside other expressions they are `cgFAdd`/`cgCat` calls); `a && a`, `x = x` and
+code after `return`/`throw`/`break` are dropped because `go vet` refuses them. Divergences from the C backend: no `raw` (the raw languages are python, js, ts and c; any `raw` is an error);
+a `return`/`break`/`continue` that leaves a `finally` block is refused; `null` for `str` is `""`; operands are not hoisted (Go evaluates calls left to right, but a variable read versus a call in the
+same expression is unspecified); `x[i] = f()` evaluates the container before `f()` (Python evaluates `f()` first).
+`sh tools/ucge/testgo.sh` (skips with a notice when there is no `go`): 19 checks including the 13 tasks and the five cases; `difftest.py --target go` compared 600 random programs
+(seeds 1..200, 1000..1199, 3000..3199): all equal.
+
 ## 13. Phase plan
 
 Modules that different agents can build **in parallel**, each against the contract in `src/coder/ucge_api.h` and the 15 tasks; every module ships tests
@@ -315,7 +403,7 @@ under `tools/ucge/` and keeps `sh tools/ucge/test.sh` green. Interfaces between 
 | # | Module (files) | Does | Interface | Done when |
 |---|---|---|---|---|
 | A | JS and TS backends (`ucgejs.c`) | `CgxBackend` for `js` and `ts` (types as annotations), helpers for `//` and `%` floor, `catch`, classes, harness for `node` | `gen(g, opts, code, tests)` registered in `CGX_BACKENDS` | the 13 raw-free tasks pass their tests on node 20; TS output passes a bracket/scanner check (no `tsc` here) |
-| B | C backend (`ucgec.c`) | scalars, `str` as `const char *`, lists as pointer + length (parameters expand), classes as structs + functions, defaults filled at call sites; `try/throw` rejected with a message | same | tasks 01, 04, 06, 10, 12, 13 compile with `gcc -Wall -Werror` and pass; unsupported constructs give the exact message |
+| B | C backend (`ucgec.c`), then Go (`ucgego.c`) | **done** (sections 12b and 12c): a real runtime (arena, tagged values, lists, maps, strings, `setjmp` exceptions) instead of the limited MVP; 13 of 13 raw-free tasks, 200 random programs per seed, ASan/UBSan clean; Go with `gofmt` and `go vet` clean | same | tasks 01, 04, 06, 10, 12, 13 compile with `gcc -Wall -Werror` and pass; unsupported constructs give the exact message |
 | C | Type inference (`ucgeinfer.c`) | HM with let-polymorphism over `ucgetype.c`, gradual `any`, classes, replaces the type part of `cgx_check` | `int cgx_infer(Cgx *, CgxTypes *)`, same error texts, `n->ty` filled (plus `n->tid`) | all current error tests unchanged; `fn first(xs)` infers `list[a] -> a`; unification tests added to `selftest` |
 | D | IR and analyses (`ucgeir.c`, `ucgeflow.c`, `ucgeopt.c`) | CFG, dominators (CHK), SSA, worklist solver, reaching defs, liveness, SCCP, definite assignment, call graph (Tarjan), unused/unreachable/pure reports, optional folding | `cgx_ir_build`, `cgx_flow_run`, `cgx_opt_fold` (see the API header) | dumps stable for the tasks; a seeded set of 20 programs with known dead code, unused names and unreachable branches is reported exactly, no false positive on the 15 tasks |
 | E | Validator and runner (`ucgerun.c`) | per-target syntax tools, scanner cross-check (`coder_parse`: every spec symbol present with the right kind), raw balance (`se_mask`/`se_balance`), sandboxed execution of `test` lines (limits: CPU time, memory, tmp cwd, no env), graded report text | `int cgx_validate(Cgx *, const CgxBackend *, const char *code, CgxB *report)` | report grades match section 8; RAW never executes unless asked; timeouts and crashes are reported, not fatal |
@@ -334,7 +422,7 @@ mappings (or those two keep their mappings in a local table that I then absorbs)
 
 ## 14. Left out of phase 1
 
-JS, TS, C, Go, Java, Rust backends; the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
+JS, TS, Java and Rust backends (C and Go are done, sections 12b and 12c); the Operation Registry as one table (only the built-in table of the checker exists); the incremental AST, dependency graph and code cache (designed in 2b, not built); HM inference (the table exists, the checker does not use it); CFG, SSA, dominators, the data-flow analyses, call graph, dead-code
 and unused-name reports, constant folding; the `CodeGen` tool, the inclusion in `katana.c`, `docs/tools.md`, tooltests; insertion by symbol through `Edit`; the
 validator/runner with the graded report (the CLI runs Python tests only, with `ulimit` and `timeout`, which is not a sandbox); the coder index lookup for
 `extern` functions; tuples, closures, imports, inheritance, typed errors, regex outside `matches`, formatting; the protocol text for the model and any

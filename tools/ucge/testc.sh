@@ -42,6 +42,7 @@ printf 'fn f(p) -> int\n  try\n    return len(p)\n  finally\n    print("x")\ntes
 # ---- casos escritos a mao e programas aleatorios: saida de Python e de C iguais ----
 o=$(python3 "$HERE/difftest.py" "$U" --cases "$HERE/cases" ${SAN:+--san} 2>&1 | tail -3); has "casos a mao: Python e C iguais" "$o" "ok"
 case "$o" in *fail*|*diff*) echo "$o";; esac
+o=$(python3 "$HERE/difftest.py" "$U" --cases "$HERE/cases_c" ${SAN:+--san} 2>&1 | tail -3); has "casos so do C (return no finally): Python e C iguais" "$o" "ok 1"
 o=$(python3 "$HERE/difftest.py" "$U" -n "${N_RANDOM:-40}" --seed 1 ${SAN:+--san} 2>&1 | tail -3); has "programas aleatorios: Python e C iguais" "$o" "ok ${N_RANDOM:-40};"
 echo; [ $BAD -eq 0 ] && echo "OK $N checks" || echo "FAILED $BAD of $N"
 exit $BAD

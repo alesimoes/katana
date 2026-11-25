@@ -1,0 +1,23 @@
+fn f(a: int) -> int
+  try
+    if a > 0
+      throw "x"
+    return 1
+  finally
+    print("fin")
+    return 2
+fn g() -> int
+  for i in 0..3
+    try
+      if i == 1
+        continue
+      print(i)
+    finally
+      print("f" + str(i))
+  return 0
+fn run() -> int
+  print(f(1))
+  print(f(0))
+  print(g())
+  return 0
+test run() == 0
