@@ -313,6 +313,7 @@ static uint64_t rp_hash(const char *s, size_t n, uint64_t h) { for (size_t i = 0
 /* o resultado e de uma chamada que falhou? erro da ferramenta, ou comando com codigo de saida diferente de zero */
 static int rp_failed(const char *r) {
     if (!strncmp(r, "error:", 6)) return 1;
+    if (!strncmp(r, "[web: ", 6) && strncmp(r + 6, "ok,", 3) != 0 && strncmp(r + 6, "partial,", 8) != 0) return 1;      /* WebFetch: shell, empty, blocked, login ou error (docs/web-design.md 3.1) */
     const char *e = strstr(r, "Exit code ");
     if (e && e[10] >= '1' && e[10] <= '9') return 1;
     e = strstr(r, "[exit code ");
@@ -895,7 +896,13 @@ static int agent(Model *m, int max_tokens, float temp) {
                     ui_tool_mark(name, ap, end);
                 }
                 /* insistencia no erro: a mesma chamada que ja falhou duas vezes neste pedido nao roda de novo */
-                const uint64_t csig = rp_hash(ap, (size_t)(end - ap), rp_hash(name, strlen(name), 1469598103934665603ULL));
+                uint64_t csig = rp_hash(ap, (size_t)(end - ap), rp_hash(name, strlen(name), 1469598103934665603ULL));
+                if (!strcmp(name, "WebFetch")) {      /* a mesma pagina com outro prompt ou com render mudado e a mesma busca: so o endereco e o offset contam (a sessao de 25/11 abriu a mesma pagina 7 vezes) */
+                    const char *u = NULL; for (const char *q = ap; q + 4 < end; q++) if (!strncmp(q, "http", 4)) { u = q; break; }
+                    if (u) { const char *ue = u; while (ue < end && *ue != '"' && *ue != '\'' && *ue != '<' && *ue != ' ' && *ue != '\n' && *ue != '\\') ue++;
+                        csig = rp_hash(u, (size_t)(ue - u), rp_hash(name, strlen(name), 1469598103934665603ULL));
+                        for (const char *q = ap; q + 6 < end; q++) if (!strncmp(q, "offset", 6)) { const char *d = q + 6; while (d < end && (*d < '0' || *d > '9') && d - q < 12) d++; const char *de = d; while (de < end && *de >= '0' && *de <= '9') de++; csig = rp_hash(d, (size_t)(de - d), csig); break; } }
+                }
                 int rp_same_fail = 0;
                 for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
                 const int rp_refuse = !trunc && rp_same_fail >= 2;

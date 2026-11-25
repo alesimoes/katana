@@ -268,19 +268,21 @@ static void ct_websearch(const char *js, const char *end, char *out, size_t cap)
             if (nd > 0) {
                 CtWsGet g[5];
                 ct_ws_get_all(dl, nd, g, 6, 10.0);
+                g_wn_deadline = now_sec() + 30.0;       /* a escada (navegador, gemeos) so para as paginas que o verificador reprova, e dentro destes 30 s no total */
                 for (int k = 0; k < nd; k++) {
                     if (g[k].n > 0) {
                         char err[300];
-                        pgs[dj[k]] = wn_ingest(dl[k], g[k].buf, g[k].n, 0, 0, err, sizeof err);     /* toma posse do buffer */
+                        pgs[dj[k]] = wn_ingest(dl[k], g[k].buf, g[k].n, 0, 1, err, sizeof err);     /* toma posse do buffer */
                         g[k].buf = NULL;
-                        if (pgs[dj[k]]) { *ct_wf_at(dl[k], 1) = time(NULL); ct_wc_page_store(pgs[dj[k]]); }
+                        if (pgs[dj[k]] && pgs[dj[k]]->verdict == WQ_OK) { *ct_wf_at(dl[k], 1) = time(NULL); ct_wc_page_store(pgs[dj[k]]); }      /* shell/empty nao vai para o cache */
                     }
                     free(g[k].buf);
                 }
+                g_wn_deadline = 0;
             }
         }
         t_pages = now_sec() - t2;
-        for (int k = 0; k < ns; k++) { if (pgs[k] && pgs[k]->tn) nread++; else { pgs[k] = NULL; nfail++; } }
+        for (int k = 0; k < ns; k++) { if (pgs[k] && pgs[k]->tn && pgs[k]->verdict == WQ_OK) nread++; else { pgs[k] = NULL; nfail++; } }
         /* lista compacta */
         size_t o = 0;
         out[0] = 0;
