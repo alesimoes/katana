@@ -219,6 +219,8 @@ static void tool_web_fetch(const char *js, const char *end, char *out, size_t ca
     static char url[1024], find[200];
     if (!json_str(js, end, "url", url, sizeof url) || !url[0]) { snprintf(out, cap, "error: missing url"); return; }
     if (!json_str(js, end, "find", find, sizeof find)) find[0] = 0;
+    {   char *h = strchr(url, '#'); if (h) *h = 0;      /* mesma pagina: sem fragmento e sem a barra final do caminho (a chave do cache e o endereco) */
+        size_t ul = strlen(url); if (ul > 8 && url[ul - 1] == '/' && !strchr(url, '?') && strchr(url + 8, '/') != url + ul - 1) url[ul - 1] = 0; }
     const int want_links = json_bool(js, end, "links");
     long off = json_int(js, end, "offset", 0);
     g_wn_render = json_bool(js, end, "render");
@@ -273,7 +275,9 @@ static void tool_web_fetch(const char *js, const char *end, char *out, size_t ca
         if (*cut == '\n') b = cut; else while (b > a && ((unsigned char)*b & 0xC0) == 0x80) b--;
     }
     o = (size_t)snprintf(out, cap, "%.*s", (int)(b - a), a);
-    if (!pg->tn) snprintf(out, cap, "(the page has no readable text, even after running its JavaScript when a browser is installed; it probably needs a login. Try another source)");
+    if (pg->tn && pg->tn < 200 && !off)
+        snprintf(out + o, cap - o, "\n[katana: this page gave only %zu bytes of text, so it is a shell and its content did not load. Do not fetch it again. Try links=true to see where it leads, a sub-page, or the project's repository (README on GitHub, raw.githubusercontent.com) or another source from WebSearch.]", pg->tn);
+    else if (!pg->tn) snprintf(out, cap, "(the page has no readable text, even after running its JavaScript when a browser is installed; it probably needs a login. Try another source)");
     else if (b < te || off > 0)
         snprintf(out + o, cap - o, b < te ? "\n[page text bytes %zu-%zu of %zu. Continue: same url with offset=%zu. Jump to a subject: find=\"word\". See where the page leads: links=true]"
                                           : "\n[page text bytes %zu-%zu of %zu (end of page)]", (size_t)(a - pg->txt), (size_t)(b - pg->txt), pg->tn, (size_t)(b - pg->txt));

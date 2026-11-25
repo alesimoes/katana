@@ -168,6 +168,7 @@ static WnPage *ct_wc_page_load(const char *url) {
     if (!b) return NULL;
     size_t tn = 0, ln = 0; int nl = 0, hl = 0;
     if (sscanf(b, "%zu %zu %d%n", &tn, &ln, &nl, &hl) != 3 || b[hl] != '\n' || (size_t)hl + 1 + tn + ln > len) { free(b); return NULL; }
+    if (tn < 200) { free(b); return NULL; }      /* pagina quase vazia: a leitura em paralelo da busca nao roda o JavaScript e guardou so o titulo (25/11: 13 bytes de uma pagina de 6 KB); o WebFetch busca de novo, com o navegador */
     char *txt = (char *)malloc(tn + 1), *lk = (char *)malloc(WN_LINKS_BYTES > ln + 1 ? WN_LINKS_BYTES : ln + 1);
     if (!txt || !lk) { free(b); free(txt); free(lk); return NULL; }
     memcpy(txt, b + hl + 1, tn); txt[tn] = 0;
