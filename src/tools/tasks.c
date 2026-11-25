@@ -172,7 +172,7 @@ static void ct_todo_commit(CtTask *nt, int n, char *out, size_t cap) {
         for (int i = 0; i < n && same; i++) same = nt[i].st == g_ct_tasks[i].st && strcmp(nt[i].subject, g_ct_tasks[i].subject) == 0;
         while (cur < g_ct_ntasks - 1 && g_ct_tasks[cur].st == 2) cur++;
         if (!n) { snprintf(out, cap, "error: that list is empty and the current one still has open steps. Do step %d of %d: %.300s. When it is finished send done=%d.", cur + 1, g_ct_ntasks, g_ct_tasks[cur].subject, cur + 1); return; }
-        if (same) { snprintf(out, cap, "error: the list did not change. Do step %d of %d now: %.300s. When it is finished send done=%d.", cur + 1, g_ct_ntasks, g_ct_tasks[cur].subject, cur + 1); return; }
+        if (same) { snprintf(out, cap, "error: the list did not change. Do step %d of %d now: %.300s. When it is finished send done=%d. If you cannot do that step yourself (it needs the user's login, a password, an install or a decision), do NOT send the list again: answer the user in words saying what you need.", cur + 1, g_ct_ntasks, g_ct_tasks[cur].subject, cur + 1); return; }
     }
     /* mantem a descricao de quem ja existia com o mesmo texto; ids novos em sequencia */
     for (int i = 0; i < n; i++) {

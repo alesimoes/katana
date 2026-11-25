@@ -898,12 +898,12 @@ static int agent(Model *m, int max_tokens, float temp) {
                 const uint64_t csig = rp_hash(ap, (size_t)(end - ap), rp_hash(name, strlen(name), 1469598103934665603ULL));
                 int rp_same_fail = 0;
                 for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
-                const int rp_refuse = !trunc && rp_same_fail >= 2;
+                const int rp_refuse = !trunc && rp_same_fail >= (!strcmp(name, "TodoWrite") ? 1 : 2);      /* a lista igual so reescrita e o laco mais comum: a 2a chamada ja nao roda */
                 const int rr_hit = !trunc && !rp_refuse && rr_check(name, csig, result, sizeof result);      /* repeticao de leitura que deu certo */
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
                         "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter.");
                     else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "
-                                                 "Do not send it a fourth time. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
+                                                 "Do not send it again. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
                     else if (rr_hit) { }
                     else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
@@ -929,6 +929,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     pl_calls++;
                     char bkey[96]; int bk = 0;
                     if (failed) { bk_key_of(name, ap, end, result, bkey, sizeof bkey); bk = bk_count(bkey); }
+                    if (bk >= 8) { if (round < lim - 2) round = lim - 2; rl_forced = 1; }      /* 8 falhas em volta da mesma coisa e as notas da 3a e da 6a nao o fizeram mudar: encerra o pedido e relata (a sessao de 25/11: ~30 variacoes do mesmo comando que falhava, sem uma repeticao identica) */
                     const size_t rl = strlen(result);
                     if (same >= 1 && rl + 500 < sizeof result)
                         KNOTE(SAME_RESULT, result + rl, sizeof result - rl, same + 1);
