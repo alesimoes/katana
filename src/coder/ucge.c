@@ -34,6 +34,9 @@ struct CgxNode {
     char *raw[4]; char *defs;     /* RAW: texto por linguagem (0 python, 1 js, 2 ts, 3 c); nomes que o bloco define; DOC: texto */
     int bi;                       /* chamada: id da funcao embutida (0 = da especificacao) */
     CgxNode *ref;                 /* chamada: funcao ou classe da especificacao; variavel: no do let que a declara */
+    int tid;                      /* tipo resolvido pela inferencia (ucgeinfer.c; id na CgxTypes; TYK_GEN = parametro de tipo da funcao); 0 = nao inferido */
+    int chk;                      /* verificacao gradual: tipo (CgxTid) que o valor `any` deste no precisa ter aqui; 0 = nenhuma. Marca na AST, nao codigo de execucao */
+    unsigned char cert;           /* grau de certeza do tipo: 1 derivado, 2 declarado, 3 gradual (any); nunca "exato" */
 };
 
 #define CGX_MAXERR 24

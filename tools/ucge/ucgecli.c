@@ -4,7 +4,9 @@
  *   ucgecli gen <alvo> <spec> [--no-comments] [--width N] [--tests]    gera o codigo (alvo: python)
  *   ucgecli run <alvo> <spec>         gera com o harness de testes, roda em subprocesso com limites e conta passou/falhou
  *   ucgecli stats <spec>              resumo da UIR usada
- *   ucgecli selftest                  testes internos da tabela de tipos, unificacao e do pretty-printer */
+ *   ucgecli selftest                  testes internos da tabela de tipos, unificacao e do pretty-printer
+ *   ucgecli infer <spec> [--lets] [--uses] [--check]   inferencia de tipos (ucgeinfer.c): erros e o relatorio de tipos e certeza
+ *   --infer em check/gen/run/stats liga a inferencia depois do validador */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,7 @@
 #include "src/coder/ucge.c"
 #include "src/coder/ucgecheck.c"
 #include "src/coder/ucgetype.c"
+#include "src/coder/ucgeinfer.c"
 #include "src/coder/ucgedoc.c"
 #include "src/coder/ucgepy.c"
 
@@ -25,8 +28,10 @@ static char *slurp(const char *path) {
     for (;;) { size_t r = fread(b + n, 1, cap - n - 1, f); n += r; if (n + 1 < cap) break; cap *= 2; b = (char *)realloc(b, cap); }
     b[n] = 0; if (f != stdin) fclose(f); return b;
 }
+static int g_infer;
 static int load(Cgx *g, const char *path, int show) {
-    char *src = slurp(path); const int ok = cgx_parse(g, src) && cgx_check(g); free(src);
+    char *src = slurp(path); CgxTypes T; cgx_ty_init(&T);
+    const int ok = cgx_parse(g, src) && cgx_check_ex(g, &T, g_infer); free(src); cgx_ty_free(&T);
     if (show) for (int i = 0; i < g->nerr; i++) printf("line %d: %s\n", g->err[i].line, g->err[i].msg);
     return ok;
 }
@@ -92,6 +97,17 @@ int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "uso: ucgecli check|gen|run|stats|selftest ...\n"); return 2; }
     if (!strcmp(argv[1], "selftest")) return selftest();
     Cgx g;
+    for (int i = 2; i < argc; i++) if (!strcmp(argv[i], "--infer")) g_infer = 1;
+    if (!strcmp(argv[1], "infer") && argc >= 3) {
+        int flags = 0, chk = 0; for (int i = 3; i < argc; i++) { if (!strcmp(argv[i], "--lets")) flags |= 1; else if (!strcmp(argv[i], "--uses")) flags |= 2; else if (!strcmp(argv[i], "--check")) chk = 1; }
+        char *src = slurp(argv[2]); CgxTypes T; cgx_ty_init(&T); CgxB rep = {0};
+        int ok = cgx_parse(&g, src) && (!chk || cgx_check(&g)); free(src);
+        if (ok) ok = cgx_infer_ex(&g, &T, flags, &rep);
+        for (int i = 0; i < g.nerr; i++) printf("line %d: %s\n", g.err[i].line, g.err[i].msg);
+        if (rep.p) fputs(rep.p, stdout);
+        printf("%s\n", ok ? "ok" : "errors");
+        free(rep.p); cgx_ty_free(&T); cgx_free(&g); return !ok;
+    }
     if (!strcmp(argv[1], "check") && argc >= 3) { const int ok = load(&g, argv[2], 1); printf("%s\n", ok ? "ok" : "errors"); cgx_free(&g); return !ok; }
     if (!strcmp(argv[1], "stats") && argc >= 3) {
         if (!load(&g, argv[2], 1)) { cgx_free(&g); return 1; }
