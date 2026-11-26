@@ -8,10 +8,10 @@
  * as linhas para L2/L3. O volume fica limitado a metade do L3 (sysconf/sysfs; padrao 8 MB) e a thread para na hora em
  * que a camada real chega (pf_before). So le: nenhuma saida numerica muda.
  *
- *   KATANA_MOE_PF=0             desliga (padrao ligado)
- *   KATANA_MOE_PF_N=<n>         quantos prever por camada (padrao 12; recall 79% com 8 e 90% com 12 no previsor)
- *   KATANA_MOE_PF_MB=<mb>       limite de volume por camada em MB (padrao metade do L3)
- *   KATANA_MOE_PF_STATS=1       imprime previsoes certas/erradas no fim (tambem com KATANA_DEBUG) */
+ *   KATANA_MOE_PREDICT=0             desliga (padrao ligado)
+ *   KATANA_MOE_PREDICT_N=<n>         quantos prever por camada (padrao 12; recall 79% com 8 e 90% com 12 no previsor)
+ *   KATANA_MOE_PREDICT_MB=<mb>       limite de volume por camada em MB (padrao metade do L3)
+ *   KATANA_MOE_PREDICT_STATS=1       imprime previsoes certas/erradas no fim (tambem com KATANA_DEBUG) */
 #if defined(__linux__)
 #include <unistd.h>
 
@@ -138,14 +138,14 @@ static void pf_report(void) {
 
 static void pf_start(Model *m) {
     pf.init = 1;
-    const char *s = getenv("KATANA_MOE_PF");
+    const char *s = getenv("KATANA_MOE_PREDICT");
     const Config *c = &m->cfg;
     if ((s && atoi(s) == 0) || et_on || !c->n_expert || !gx.slot || c->dim > 8192 || c->n_expert > 4096) return;
     pf.m = m; pf.E = c->n_expert; pf.d = c->dim; pf.nl = c->n_layers;
-    pf.N = (s = getenv("KATANA_MOE_PF_N")) ? atoi(s) : 12;
+    pf.N = (s = getenv("KATANA_MOE_PREDICT_N")) ? atoi(s) : 12;
     if (pf.N < 1) return;
-    pf.budget = (s = getenv("KATANA_MOE_PF_MB")) && atof(s) > 0 ? (size_t)(atof(s) * 1048576.0) : pf_l3_bytes() / 2;
-    pf.stats = (s = getenv("KATANA_MOE_PF_STATS")) && atoi(s) != 0;
+    pf.budget = (s = getenv("KATANA_MOE_PREDICT_MB")) && atof(s) > 0 ? (size_t)(atof(s) * 1048576.0) : pf_l3_bytes() / 2;
+    pf.stats = (s = getenv("KATANA_MOE_PREDICT_STATS")) && atoi(s) != 0;
     pf.jx = xalloc((size_t)pf.d, 4); pf.res = xalloc((size_t)pf.E, 1);
     pf.pl_layer = -1;
     pthread_mutex_init(&pf.mu, NULL); pthread_cond_init(&pf.cv, NULL);

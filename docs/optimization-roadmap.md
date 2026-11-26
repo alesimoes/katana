@@ -176,8 +176,8 @@ norm is scale invariant), picks the N most likely experts that are NOT in the VR
 down blocks of each one line by line (one load per 64 bytes plus software prefetch). This takes the page faults of
 the mapped file and brings the lines to L2/L3 before the cold-expert products run. Volume per layer is capped at half
 the L3 (sysconf, then sysfs, default 8 MB) and the thread stops within a page when the real layer arrives. It only
-reads, so no numeric output changes. Controls: `KATANA_MOE_PF=0` turns it off, `KATANA_MOE_PF_N` (default 12),
-`KATANA_MOE_PF_MB`, and `KATANA_MOE_PF_STATS=1` (or `KATANA_DEBUG`) prints at exit the jobs, cancelled jobs, MB read and
+reads, so no numeric output changes. Controls: `KATANA_MOE_PREDICT=0` turns it off, `KATANA_MOE_PREDICT_N` (default 12),
+`KATANA_MOE_PREDICT_MB`, and `KATANA_MOE_PREDICT_STATS=1` (or `KATANA_DEBUG`) prints at exit the jobs, cancelled jobs, MB read and
 how many of the real cold experts were predicted (fully read / at least started). Nothing was measured: the recall of
 this proxy input (FFN input of layer l instead of the residual after the MoE of layer l and the attention of layer
 l+1), the share of the prediction that is read before the cancel (about 0.4 ms per layer, roughly 2 experts at
