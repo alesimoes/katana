@@ -1268,6 +1268,12 @@ static int run_main(int argc, char **argv) {
         if (argc >= 4 && strcmp(argv[3], "--deep") == 0) return selftest_deep(&m, argc - 4, argv + 4);
         return selftest(&m);
     }
+    if (argc >= 3 && strcmp(argv[1], "toktest") == 0 && (argc == 3 || strcmp(argv[3], "--root") == 0)) {    /* auditoria do tokenizador (src/app/toktest.c) */
+        g_vocab_only = 1;
+        Model m; memset(&m, 0, sizeof m);
+        load_model(&m, argv[2]);
+        return tt_audit(&m, argc > 4 ? argv[4] : ".");
+    }
     if (argc >= 4 && strcmp(argv[1], "toktest") == 0) {     /* teste dourado do tokenizador (tools/tokref) */
         g_vocab_only = 1;
         Model m; memset(&m, 0, sizeof m);

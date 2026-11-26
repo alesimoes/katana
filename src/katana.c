@@ -216,6 +216,7 @@ static const char KATANA_CHANGES[] = "";
 #include "app/attbench.c"              /* katana attbench: custo da atencao do qwen35moe por posicao */
 #include "app/visiontest.c"            /* katana vision: cabecalho, custo, etapas para o oraculo, fuzz dos decodificadores */
 #include "app/snaptest.c"              /* katana snaptest e snapreplay: fotos do estado recorrente */
+#include "app/toktest.c"              /* katana toktest <gguf>: auditoria do tokenizador (dourados, ida e volta, conferencias) */
 #include "app/main.c"                  /* toktest, subcomandos e main */
 #include "app/convert.c"               /* katana convert: checkpoint do Hugging Face (safetensors) -> GGUF */
 #include "render/sdconvert.c"           /* katana render convert: pesos do Stable Diffusion 1.5 -> GGUF (docs/render.md) */

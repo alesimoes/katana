@@ -37,6 +37,13 @@ further down are measurements from the dates in their titles; do not read them a
     (needs `KATANA_FLOW_RERANK=1`), `KATANA_RESUME_WAKE=1`, `KATANA_RESUME_RECALL=1`. Section 12 of the design lists where the build differs from the text.
     Open: run the comparison of section 9 of the design on Qwen3.6 when measurements return, and decide the Gemma 4/harmony paths (not hooked).
 
+**2026-11-26, tokenizer audit (task G; compiled, `katana toktest <gguf>` run on Qwen3.6, Flash-Next, GLM-4.7-Flash and Gemma 4 with vocabulary only; no inference, nothing measured for speed
+of the model).** `katana toktest <gguf> [--root dir]` (`src/app/toktest.c`) runs hand-derived golden cases for the pre-tokenizer (regexes read from the official
+`tokenizer.json`), special/byte-fallback/NFC/BOS goldens, a round trip over docs, src, README and odd texts (accents, emoji, CJK, tabs, NBSP, 200k-char lines), and cross
+checks. Found and fixed: GLM `ignore_merges` (25 of 313 corpus cases changed), Gemma 4 `<eos>` not special, Gemma 4 quadratic BPE (now `bpe_sym` raw mode). Round trip: 0
+failures on all four. Not done: run the official tokenizer on GLM and Gemma 4 ids (use `tools/tokref` with the three `tokenizer.json` files), SentencePiece (`llama`) path.
+Details in `knowledge.md` section 9.
+
 **2026-11-25, declared flows (`docs/flows.md`).** The engine now holds the state of the job per conversation: 13 playbooks as state
 machines in a table (`src/agent/flow.c`), a contract for each of the 40 tools, and one `[katana: next <flow> <i>/<n> <state>: ...]` line at the
 end of a tool result or of the user request when the state changes, a call fails, a call is off the flow, the same call repeats across

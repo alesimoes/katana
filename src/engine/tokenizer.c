@@ -2,6 +2,8 @@
 
 typedef struct { int *ids; int n, cap; } Ids;
 
+static void (*g_tok_trace)(int len);   /* toktest: recebe o tamanho (em bytes) de cada pedaco do pre-tokenizador */
+
 static void ids_push(Ids *o, int id) {
     if (o->n == o->cap) { o->cap = o->cap ? o->cap * 2 : 256; o->ids = realloc(o->ids, o->cap * sizeof(int)); if (!o->ids) die("sem memoria"); }
     o->ids[o->n++] = id;
@@ -34,20 +36,38 @@ static void bpe_desce(BpePar *h, int n, int k) {
 /* aplica BPE em uma "palavra" (bytes crus) e empilha os ids.
    Lista encadeada de simbolos + heap de pares (menor rank; empate = mais a esquerda): O(n log n) em vez de O(n^2),
    que travava em trechos longos sem fronteira (base64, JSON minificado, resultados de ferramenta). */
-static void bpe_word(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+static void bpe_sym(const Tokenizer *tk, const uint8_t *s, int n, Ids *out, int raw) {
+    /* raw = 0: bytes mapeados do GPT-2 (BPE em nivel de byte); raw = 1 (gemma4): simbolos = caracteres UTF-8 do proprio texto,
+       e o que sobrar fora do vocabulario sai em tokens de byte <0xNN> (byte fallback) */
     char *buf = xalloc((size_t)n * 2 + 1, 1);
     int *st = xalloc(n, sizeof(int)), *ln = xalloc(n, sizeof(int));
     int *nx = xalloc(n, sizeof(int)), *pv = xalloc(n, sizeof(int));
     char *vivo = xalloc(n, 1);
     int bl = 0, ns = 0;
 
-    for (int i = 0; i < n; i++) {   /* um simbolo por caractere unicode (bytes mapeados) */
-        int start = bl, cp = tk->byte2cp[s[i]];
-        if (cp < 0x80) buf[bl++] = (char)cp;
-        else { buf[bl++] = (char)(0xC0 | (cp >> 6)); buf[bl++] = (char)(0x80 | (cp & 0x3F)); }
-        /* bytes de continuacao UTF-8 viram simbolos proprios (BPE em nivel de byte) */
-        st[ns] = start; ln[ns] = bl - start; nx[ns] = ns + 1 < n ? ns + 1 : -1; pv[ns] = ns - 1; vivo[ns] = 1; ns++;
+    if (raw) {
+        memcpy(buf, s, (size_t)n); bl = n;
+        for (int i = 0; i < n; ) {
+            const uint8_t ch = s[i];
+            int l = ch < 0x80 ? 1 : ch < 0xE0 ? 2 : ch < 0xF0 ? 3 : 4;
+            if (i + l > n) l = n - i;
+            st[ns] = i; ln[ns] = l; ns++; i += l;
+        }
+    } else {
+        for (int i = 0; i < n; i++) {   /* um simbolo por caractere unicode (bytes mapeados) */
+            int start = bl, cp = tk->byte2cp[s[i]];
+            if (cp < 0x80) buf[bl++] = (char)cp;
+            else { buf[bl++] = (char)(0xC0 | (cp >> 6)); buf[bl++] = (char)(0x80 | (cp & 0x3F)); }
+            /* bytes de continuacao UTF-8 viram simbolos proprios (BPE em nivel de byte) */
+            st[ns] = start; ln[ns] = bl - start; ns++;
+        }
+        /* ignore_merges (Llama 3, GLM): a palavra inteira que ja e um token sai direto, sem passar pelas fusoes */
+        if (tk->ignore_merges) {
+            const int whole = map_get(&tk->vocab, buf, bl);
+            if (whole >= 0) { ids_push(out, whole); free(buf); free(st); free(ln); free(nx); free(pv); free(vivo); return; }
+        }
     }
+    for (int i = 0; i < ns; i++) { nx[i] = i + 1 < ns ? i + 1 : -1; pv[i] = i - 1; vivo[i] = 1; }
     int hcap = 3 * n + 4, hn = 0;
     BpePar *h = xalloc((size_t)hcap, sizeof(BpePar));
     char *pair = NULL; size_t pcap = 0;
@@ -58,7 +78,7 @@ static void bpe_word(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
         const int rk_ = map_get(&tk->merges, pair, a_ + 1 + b_); \
         if (rk_ >= 0) { h[hn] = (BpePar){ rk_, st[I], I, J, a_, b_ }; bpe_sobe(h, hn); hn++; } \
     } while (0)
-    for (int i = 0; i + 1 < n; i++) BPE_AVALIA(i, i + 1);
+    for (int i = 0; i + 1 < ns; i++) BPE_AVALIA(i, i + 1);
     while (hn > 0) {
         const BpePar e = h[0];
         h[0] = h[--hn]; bpe_desce(h, hn, 0);
@@ -71,12 +91,23 @@ static void bpe_word(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
         if (nx[e.i] >= 0) BPE_AVALIA(e.i, nx[e.i]);
     }
 #undef BPE_AVALIA
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < ns; i++) {
         if (!vivo[i]) continue;
         int id = map_get(&tk->vocab, buf + st[i], ln[i]);
-        ids_push(out, id >= 0 ? id : 0);
+        if (id >= 0 || !raw) { ids_push(out, id >= 0 ? id : 0); continue; }
+        for (int j = 0; j < ln[i]; j++) {
+            char bt[8];
+            snprintf(bt, sizeof bt, "<0x%02X>", (uint8_t)buf[st[i] + j]);
+            const int bid = map_get(&tk->vocab, bt, 6);
+            ids_push(out, bid >= 0 ? bid : 0);
+        }
     }
     free(buf); free(st); free(ln); free(nx); free(pv); free(vivo); free(h); free(pair);
+}
+
+static void bpe_word(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+    if (g_tok_trace) g_tok_trace(n);
+    bpe_sym(tk, s, n, out, 0);
 }
 
 static int c_space(int c)  { return c == ' ' || (c >= 9 && c <= 13); }
@@ -246,6 +277,12 @@ static int k_W(uint32_t c) { return ut_in(UT_W, UT_W_N, c) && !u_han(c); }      
 enum { PRE_LEGACY = 0, PRE_QWEN2, PRE_QWEN35, PRE_LLAMA3, PRE_GPT2, PRE_KIMI, PRE_DEEPSEEK, PRE_OLMO, PRE_GPT4O };
 
 static int pre_has_nfc(int kind) { return kind == PRE_QWEN2 || kind == PRE_QWEN35 || kind == PRE_OLMO; }
+
+/* tokenizer.json oficial: ignore_merges = true no Llama 3 e no GLM (verificado); KATANA_TOK_IGNMERGES=0 desliga */
+static int pre_has_ignore_merges(int kind) {
+    const char *e = getenv("KATANA_TOK_IGNMERGES");
+    return kind == PRE_LLAMA3 && !(e && e[0] == '0');
+}
 
 static int pre_kind(const char *sv, int sl) {
     static const struct { const char *nome; int kind; } t[] = {
@@ -523,7 +560,7 @@ static void spm_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out, i
    nao-quebras. Uma sequencia so de quebras que exista no vocabulario vira um token; o resto passa por
    BPE sobre os caracteres UTF-8 (sem o mapeamento de bytes do GPT-2), fundindo a cada passo o par
    vizinho de menor posicao na lista de fusoes. O que sobrar fora do vocabulario sai em bytes <0xNN>. */
-static void g4_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+static void g4_encode_ref(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
     char *buf = xalloc((size_t)n * 3 + 4, 1);
     int bl = 0;
     for (int i = 0; i < n; i++) {
@@ -572,6 +609,26 @@ static void g4_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
         a = b;
     }
     free(key); free(buf); free(st); free(ln);
+}
+
+/* o mesmo, com o BPE de heap (O(n log n)): a versao acima fica so como referencia lenta do toktest */
+static void g4_encode(const Tokenizer *tk, const uint8_t *s, int n, Ids *out) {
+    char *buf = xalloc((size_t)n * 3 + 4, 1);
+    int bl = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == ' ') { buf[bl++] = (char)0xE2; buf[bl++] = (char)0x96; buf[bl++] = (char)0x81; }
+        else buf[bl++] = (char)s[i];
+    }
+    for (int a = 0; a < bl; ) {
+        const int nl = buf[a] == '\n';
+        int b = a;
+        while (b < bl && (buf[b] == '\n') == nl) b++;
+        const int whole = nl ? map_get(&tk->vocab, buf + a, b - a) : -1;
+        if (whole >= 0) ids_push(out, whole);
+        else bpe_sym(tk, (const uint8_t *)buf + a, b - a, out, 1);
+        a = b;
+    }
+    free(buf);
 }
 
 static int (*g_img_mark)(const char *s, int n, Ids *out);      /* visao: marca de imagem -> ids; devolve os bytes usados */
