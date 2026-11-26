@@ -176,7 +176,8 @@ static int flow_retrieve(const char *name, const char *result, char *out, size_t
         const char *a = strstr(g_fl.errfile, "at "); if (!a) return 0; a += 3;
         const char *c = strrchr(a, ':'); if (!c) return 0;
         snprintf(path, sizeof path, "%.*s", (int)(c - a), a); line = atoi(c + 1);
-        size_t o = (size_t)snprintf(out, cap, "\n[katana: evidence for the next step, read by the engine: %s lines %d-%d]\n", path, line > 4 ? line - 4 : 1, line + 4);
+        char hd[400]; snprintf(hd, sizeof hd, "%s lines %d-%d, read by the engine", path, line > 4 ? line - 4 : 1, line + 4);
+        size_t o = KNOTE(FLOW_EVID, out, cap, hd);
         const size_t n = fm_lines(path, line > 4 ? line - 4 : 1, line + 4, out + o, cap - o);
         if (!n) { out[0] = 0; return 0; }
         fl_log("retrieve\tlines\t%s:%d", path, line);
@@ -194,7 +195,8 @@ static int flow_retrieve(const char *name, const char *result, char *out, size_t
         int order[9]; for (int i = 0; i < n; i++) order[i] = i;
         char q[300]; snprintf(q, sizeof q, "finding where this error comes from: %.200s", g_fl.err);
         const int ranked = n > 1 ? fm_probe_rank(q, item, n, order) : 0;
-        size_t o = (size_t)snprintf(out, cap, "\n[katana: evidence for the next step: where `%s` appears%s]\n", id, ranked ? ", best first by the model's own reading" : "");
+        char hd[200]; snprintf(hd, sizeof hd, "where `%s` appears%s", id, ranked ? ", best first by the model's own reading" : "");
+        size_t o = KNOTE(FLOW_EVID, out, cap, hd);
         for (int i = 0; i < n && i < 4 && o + 270 < cap; i++) o += (size_t)snprintf(out + o, cap - o, "%s\n", item[order[i]]);
         fl_log("retrieve\tident\t%s\t%d hit(s)%s", id, n, ranked ? " ranked" : "");
         return 1;
@@ -206,7 +208,8 @@ static int flow_retrieve(const char *name, const char *result, char *out, size_t
             if (!e) break; p = e + 1; }
         int order[9];
         if (n < 2 || !fm_probe_rank("answering the user's question", item, n, order)) return 0;
-        snprintf(out, cap, "\n[katana: of the results above, open this one first: %.300s]", item[order[0]]);
+        char hd[400]; snprintf(hd, sizeof hd, "of the results above, open this one first: %.300s", item[order[0]]);
+        KNOTE(FLOW_EVID, out, cap, hd);
         fl_log("retrieve\tweb\t%d result(s)", n);
         return 1;
     }

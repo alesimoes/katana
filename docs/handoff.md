@@ -29,6 +29,17 @@ further down are measurements from the dates in their titles; do not read them a
 8. **Teacher mode** is an external plugin (below); the binary has no vendor code.
 9. **Git:** see the owner's memory for the push rule in force.
 
+**2026-11-25, declared flows (`docs/flows.md`).** The engine now holds the state of the job per conversation: 13 playbooks as state
+machines in a table (`src/agent/flow.c`), a contract for each of the 40 tools, and one `[katana: next <flow> <i>/<n> <state>: ...]` line at the
+end of a tool result or of the user request when the state changes, a call fails, a call is off the flow, the same call repeats across
+requests, or five calls gain no new evidence. `src/agent/flowmem.c` has the log miner (`katana flow learn`), and, **off by default**, lessons
+(`KATANA_FLOW_LESSONS`), state-guided retrieval (`KATANA_FLOW_RETRIEVE`), the one-pass logit probe on the cached prefix
+(`KATANA_FLOW_RERANK`), just-in-time tool declarations (`KATANA_FLOW_JIT`), the state-conditioned grammar mask (`KATANA_FLOW_GRAMMAR`) and
+refusal (`KATANA_FLOW=strict`). Fixed from the day's log: `TodoWrite` accepts a trailing `- DONE` and `todos` with `done`; `task_id` must be
+a number; secrets in commands are masked in the action log. Checked: build; `katana flow tools` (40 contracts, 0 missing);
+`katana flow sim` on scripted sequences. **Not run with a model, nothing measured**; the model was not trained on the `next` line; only the
+ChatML loop path is hooked. Open list: `docs/flows.md` section 7.
+
 To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
 
 **2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).

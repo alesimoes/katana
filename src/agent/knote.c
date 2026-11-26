@@ -35,6 +35,7 @@ typedef enum {
     KN_PLACE,                              /* Q1: pasta citada que nao existe da pasta de trabalho; so sai SEM bloco do UIOE (com bloco: `Question understood as` e `Next` dizem o caminho) */
     KN_DOCS,                               /* Q2: cabecalho dos trechos de documentos escolhidos pelo motor; com bloco do UIOE o cabecalho nao vai (as linhas entram em `Evidence`) */
     KN_FINISH_EXAMPLE, KN_FINISH_TEST, KN_FINISH_DONE,   /* T2, T3: antes de encerrar */
+    KN_FLOW_EVID, KN_FLOW_DECL,            /* F2, F3: evidencia buscada pelo estado do fluxo; declaracao de ferramenta carregada para o passo (agent/flowmem.c, flow.c; desligadas por padrao) */
     KN_FLOW_NEXT,                          /* F1: estado do fluxo e proximo passo (agent/flow.c, docs/flows.md); fim de um resultado ou do pedido */
     KN_COUNT
 } KnKind;
@@ -121,6 +122,8 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
 #define KNF_FINISH_DONE "[katana: this request changed files, and the project file defines done as: %.250s. Check that before you finish, or say why you cannot.]"
 
 #define KNF_FLOW_NEXT "\n[katana: next%s: %s%s]"
+#define KNF_FLOW_EVID "\n[katana: evidence for the next step: %s]\n"
+#define KNF_FLOW_DECL "\n[katana: declaration of %s, loaded for this step (no ToolSearch needed)]\n"
 
 typedef struct {
     const char *name;           /* rotulo estavel (log, relatorio) */
@@ -166,6 +169,8 @@ static const KnSpec KN_TAB[KN_COUNT] = {
     [KN_FINISH_EXAMPLE]  = {"finish_example",  KN_ORDER, KN_TURN,   0, 0, KNF_FINISH_EXAMPLE},
     [KN_FINISH_TEST]     = {"finish_test",     KN_ORDER, KN_TURN,   0, 0, KNF_FINISH_TEST},
     [KN_FINISH_DONE]     = {"finish_done",     KN_ORDER, KN_TURN,   0, 0, KNF_FINISH_DONE},
+    [KN_FLOW_EVID]       = {"flow_evidence",   KN_INFO,  KN_RESULT, 0, 0, KNF_FLOW_EVID},
+    [KN_FLOW_DECL]       = {"flow_decl",       KN_INFO,  KN_RESULT, 0, 0, KNF_FLOW_DECL},
     [KN_FLOW_NEXT]       = {"flow_next",       KN_ORDER, KN_RESULT, 0, 0, KNF_FLOW_NEXT},
 };
 

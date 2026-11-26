@@ -730,7 +730,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (asks_for_command(line)) { static char gl[16384]; KNOTE(GIVE_CMD, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
         else if (says_already_done(line)) { static char gl[16384]; KNOTE(USER_DONE, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
         {   /* fluxo declarado (agent/flow.c): o pedido escolhe, continua ou encerra o playbook; a linha do proximo passo vai no fim do pedido */
-            static char fn[1400];
+            static char fn[9000];
             const int cmdreq = asks_for_command(ureq) || says_already_done(ureq);      /* essas notas ja mandam o que fazer: a linha do fluxo nao concorre com elas */
             if (cml && flow_request(ureq, fn, sizeof fn) && !cmdreq && strlen(line) + strlen(fn) + 2 < sizeof line) strcat(line, fn);
         }

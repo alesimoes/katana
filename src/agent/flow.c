@@ -220,6 +220,7 @@ static struct {
     struct { uint64_t sig, res; int n, req; } ring[FL_RING]; int ring_n, ring_w;   /* chamadas da conversa: repeticao entre pedidos */
     uint64_t cur_sig;
     uint64_t seen[256]; int seen_n, seen_w;           /* o que a conversa ja viu: resultados e assinaturas de erro (evidencia ganha por passo) */
+    char jit[240];                                    /* declaracoes ja entregues nesta conversa (KATANA_FLOW_JIT) */
     int stall, plan_was;                              /* passos seguidos sem ganho; passos do plano fechados na ultima conta */
 } g_fl;
 
@@ -451,6 +452,7 @@ static int fl_gain(FlowEv ev, const char *result, size_t rl, int failed, int cha
 }
 static int flow_retrieve(const char *name, const char *result, char *out, size_t cap);      /* flowmem.c */
 static void flow_grammar_mask(void);
+static void flow_jit(char *out, size_t cap);
 static size_t flow_memory_note(const char *name, const char *js, const char *end, const char *result, int failed, char *out, size_t cap);      /* flowmem.c */
 
 /* ---- pedido novo do usuario: escolhe, continua ou encerra o fluxo; out recebe a linha para o fim do pedido (0: nada) ---- */
@@ -481,7 +483,9 @@ static size_t flow_request(const char *ureq, char *out, size_t cap) {
     flow_grammar_mask();
     if (!fl_top()) return 0;
     g_fl.emitted_st = -1;
-    return fl_line(out, cap, "");
+    const size_t n = fl_line(out, cap, "");
+    if (n + 400 < cap) flow_jit(out + n, cap - n);
+    return strlen(out);
 }
 
 /* ---- antes de a ferramenta rodar: desvio do fluxo. Devolve 1 (com o erro em out) so em KATANA_FLOW=strict; senao guarda o desvio para a linha ---- */
@@ -588,7 +592,28 @@ static void flow_after(const char *name, const char *js, const char *end, char *
     if (!t && !pn) return;
     size_t el = 0;
     if (changed && flow_retrieve(name, result, result + rl, cap - rl - 900)) el = strlen(result + rl);      /* o estado novo diz o que falta: a evidencia entra antes da linha */
-    fl_line(result + rl + el, cap - rl - el, pre);
+    el += fl_line(result + rl + el, cap - rl - el, pre);
+    if (changed && rl + el + 400 < cap) flow_jit(result + rl + el, cap - rl - el);
+}
+
+/* ---- declaracao na hora (KATANA_FLOW_JIT=1, desligada por padrao): o estado espera uma ferramenta que nao esta na lista curta do prompt
+ * (Render, SendInput, SendUserFile...). Em vez de o modelo gastar uma volta com ToolSearch, o motor entrega a declaracao (o mesmo texto do
+ * ToolSearch) junto da linha, uma vez por conversa e por ferramenta. Custa os tokens da declaracao; economiza uma volta. ---- */
+static void flow_jit(char *out, size_t cap) {
+    static const char lean[] = "Bash|Read|Edit|Write|Find|Symbols|Grep|TodoWrite|AskUserQuestion|WebSearch|WebFetch|ToolSearch";
+    const char *e = getenv("KATANA_FLOW_JIT"); if (!e || atoi(e) <= 0) return;
+    const FlowPos *t = fl_top(); if (!t) return;
+    const char *ex = FL_BOOK[t->id].st[t->st].expect; if (!ex || !ex[0]) return;
+    char nm[40]; snprintf(nm, sizeof nm, "%.*s", (int)strcspn(ex, "|"), ex);
+    if (fl_list_has(lean, nm) || fl_list_has(g_fl.jit, nm) || strlen(g_fl.jit) + strlen(nm) + 2 >= sizeof g_fl.jit) return;
+    static char js[96], d[9000];
+    snprintf(js, sizeof js, "{\"query\": \"select:%s\"}", nm);
+    ct_toolsearch(js, js + strlen(js), d, sizeof d);
+    if (!strncmp(d, "error", 5) || !strncmp(d, "No matching", 11) || strlen(d) + 300 >= cap) return;
+    const size_t o = KNOTE(FLOW_DECL, out, cap, nm);
+    snprintf(out + o, cap - o, "%s", d);
+    snprintf(g_fl.jit + strlen(g_fl.jit), sizeof g_fl.jit - strlen(g_fl.jit), "%s%s", g_fl.jit[0] ? "|" : "", nm);
+    fl_log("jit\t%s", nm);
 }
 
 /* ---- gramatica condicionada ao estado (KATANA_FLOW_GRAMMAR=1, desligada por padrao): as ferramentas que nao tem lugar no fluxo ativo saem da
@@ -625,7 +650,7 @@ static int flow_main(int argc, char **argv) {
     if (!strcmp(cmd, "classify") && argc > 1) { char t[2048]; fl_fold(argv[1], t, sizeof t); printf("%s\n", FL_BOOK[fl_classify(t)].name); return 0; }
     if (!strcmp(cmd, "sim") && argc > 1) {      /* roteiro sem modelo: "U<TAB>pedido" e "C<TAB>ferramenta<TAB>argumentos json<TAB>resultado" (\\n no resultado vira quebra de linha); imprime o que o modelo leria */
         FILE *f = fopen(argv[1], "rb"); if (!f) { fprintf(stderr, "flow sim: cannot open %s\n", argv[1]); return 1; }
-        static char ln[20000], res[24000], note[1400];
+        static char ln[20000], res[24000], note[9000];
         flow_reset();
         while (fgets(ln, sizeof ln, f)) {
             ln[strcspn(ln, "\r\n")] = 0;

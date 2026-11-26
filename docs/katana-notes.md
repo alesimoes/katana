@@ -528,3 +528,15 @@ The informational notes that depend only on what is known before the first call 
   unfinished step(s); this message is newer and comes first: ..."). `loop.c` now emits the note through `KNOTE(TODO_PREV, ...)` (same bytes as the old literal) only when there is no block (`!ublk`).
 * Stay as `knote` where they break a loop (order, repetition, cut): R1 to R8, T1 to T5, R17, R18, and the no-block forms of Q1 to Q3. The loop edit is two lines in the U4 hook (the `todo_open` assignment) and the Q3 block below it.
 * Not verified: that the block of a real request actually reaches the model with the Q3 clause (the limits form that `KATANA_UIOE_LIMITS=1` injects is cut to three clauses, scope first, so the Q3 clause can be left out there).
+
+## 10. Flow notes (2026-11-25; compiled, no model run, nothing measured)
+
+Three kinds added to `KN_TAB`, all emitted by `src/agent/flow.c` and `src/agent/flowmem.c` (design in `docs/flows.md`):
+
+| # | Text | Where | Class | Default |
+|---|---|---|---|---|
+| F1 `flow_next` | "next FLOW i/n STATE: CLAUSES NEXT STEP" (without a flow: "next: CLAUSES") | end of a tool result; end of the user request that opens or continues a flow | ORDER | on |
+| F2 `flow_evidence` | "evidence for the next step: WHAT" + the lines | before F1 in the same result | INFO | off (`KATANA_FLOW_RETRIEVE`) |
+| F3 `flow_decl` | "declaration of TOOL, loaded for this step (no ToolSearch needed)" + the declaration | after F1 | INFO | off (`KATANA_FLOW_JIT`) |
+
+The model was not trained on any of them. F1 is not in the curriculum generator; no scenario checks its text yet.
