@@ -153,6 +153,7 @@ static size_t rz_block(char *out, size_t cap) {
     const size_t n = KNOTE(RESUME, out, cap, why, body);
     if (n >= cap) { out[0] = 0; return 0; }
     g_rz.enter_reason = reason;
+    g_rz.probe_pending = rz_flag("KATANA_RESUME_PROBE");
     rz_ev('N', RZ_RNAME[reason], rz_i((long long)n), NULL);
     fl_log("resume\tenter\t%s\t%d", RZ_RNAME[reason], (int)n);
     g_rz.score_left = 3; g_rz.sc_on = g_rz.sc_dead = g_rz.sc_dup = 0; g_rz.sc_reason = reason;
@@ -259,4 +260,42 @@ static int rz_cmd_report(int argc, char **argv) {
     printf("reason     blocks  bytes  scored  calls  on_flow  dead  dup  answered\n");
     for (int r = 1; r < 7; r++) if (t[r].enter || t[r].score) printf("%-10s %6d %6ld %7d %6d %8d %5d %4d %9d\n", RZ_RNAME[r], t[r].enter, t[r].bytes, t[r].score, t[r].calls, t[r].on_flow, t[r].dead, t[r].dup, t[r].answered);
     return 0;
+}
+
+/* ---- sonda (KATANA_RESUME_PROBE=1, desligada; precisa tambem de KATANA_FLOW_RERANK=1): na primeira chamada depois da reentrada, o motor pergunta
+ * ao proprio modelo "Which tool comes next?" com os candidatos do estado e alguns distratores (as ferramentas das tentativas mortas e da lista
+ * `off`), por fm_probe_rank (flowmem.c): le os logitos, nao gera texto, nao deixa rastro na conversa. O topo esperado: orientado; um distrator:
+ * desvio (uma clausula diz o passo do estado); margem pequena: sem sinal, nada muda. Custa o que docs/flows.md secao 4 diz da sonda. ---- */
+static size_t rz_probe_clause(char *out, size_t cap) {
+    out[0] = 0;
+    if (!g_rz.probe_pending) return 0;
+    g_rz.probe_pending = 0;
+    const FlowPos *t = fl_top();
+    if (!rz_on() || !rz_flag("KATANA_RESUME_PROBE") || !t || cap < 300) return 0;
+    if (!fm_rerank_on()) { fl_log("resume\tprobe\tunavailable (KATANA_FLOW_RERANK is off)"); return 0; }
+    const char *ex = FL_BOOK[t->id].st[t->st].expect;
+    if (!ex) return 0;      /* qualquer ferramenta serve: nada a conferir */
+    static char nm[10][40]; const char *item[10]; int n = 0;
+    if (!ex[0]) snprintf(nm[n++], sizeof nm[0], "answer the user");
+    else for (const char *p = ex; *p && n < 4; ) { const size_t l = strcspn(p, "|"); snprintf(nm[n++], sizeof nm[0], "%.*s", (int)(l < 39 ? l : 39), p); p += l; if (*p) p++; }
+    const int nexp = n;
+    for (int i = 0; i < g_rz.s.natt && n < nexp + 3; i++) {      /* distratores: ferramentas de tentativas mortas, depois a lista off */
+        if (!g_rz.s.att[i].dead) continue;
+        int dup = 0; for (int k = 0; k < n; k++) if (!strcmp(nm[k], g_rz.s.att[i].tool)) dup = 1;
+        if (!dup) snprintf(nm[n++], sizeof nm[0], "%.39s", g_rz.s.att[i].tool);
+    }
+    const char *off = FL_BOOK[t->id].off;
+    for (const char *p = off; p && *p && n < nexp + 3; ) {
+        const size_t l = strcspn(p, "|"); char one[40]; snprintf(one, sizeof one, "%.*s", (int)(l < 39 ? l : 39), p); p += l; if (*p) p++;
+        int dup = 0; for (int k = 0; k < n; k++) if (!strcmp(nm[k], one)) dup = 1;
+        if (!dup) snprintf(nm[n++], sizeof nm[0], "%s", one);
+    }
+    if (n < 2) return 0;
+    for (int i = 0; i < n; i++) item[i] = nm[i];
+    int order[10];
+    if (!fm_probe_rank("Which tool comes next?", item, n, order)) { fl_log("resume\tprobe\tnosignal"); return 0; }
+    if (order[0] < nexp) { fl_log("resume\tprobe\toriented"); return 0; }
+    fl_log("resume\tprobe\tdrift\t%s", item[order[0]]);
+    char nx[600]; fl_next_text(nx, sizeof nx);
+    return (size_t)snprintf(out, cap, "orientation check: the work stands at %s %d/%d %s (%.300s). ", FL_BOOK[t->id].name, t->st + 1, FL_BOOK[t->id].nst, FL_BOOK[t->id].st[t->st].name, nx);
 }

@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    int probe_pending;                                                        /* KATANA_RESUME_PROBE: a primeira chamada depois do bloco recebe uma sonda */
     int sc_calls, dead_hit; uint64_t subj_noted[8]; int nsubj_noted;                    /* nota passiva: chamadas contadas; a chamada casou tentativa morta; (epoca, assunto) ja avisados */
     int task_ended;                                                           /* a reconciliacao achou tarefa terminada que o modelo nao soube */
     int enter_reason;                                                         /* a ultima reentrada (RZR_*): o texto do desvio de tentativa morta diz de quando ela e */
