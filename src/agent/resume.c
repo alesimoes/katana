@@ -438,10 +438,10 @@ static void rz_release(void) {
 #endif
     g_rz.lockfd = 0; g_rz.file[0] = 0; g_rz.readonly = 0; g_rz.seq = 0; g_rz.since_ckpt = 0;
 }
-RZ_UNUSED static void rz_close(void) { rz_release(); memset(&g_rz, 0, sizeof g_rz); }
+static void rz_close(void) { rz_release(); memset(&g_rz, 0, sizeof g_rz); }
 /* abre o estado da sessao: trava, le, reescreve como ponto de salvamento e anota o processo atual. adopt: o estado em memoria
  * (de antes de a sessao ter arquivo) passa para o arquivo novo, se ele ainda nao existe. Devolve 1 se havia estado gravado. */
-RZ_UNUSED static int rz_open(const char *sess_path, int adopt) {
+static int rz_open(const char *sess_path, int adopt) {
     if (!rz_on()) return 0;
     char path[1100]; rz_path(sess_path, path, sizeof path);
     RzState keep; if (adopt) keep = g_rz.s;
@@ -466,4 +466,10 @@ RZ_UNUSED static int rz_open(const char *sess_path, int adopt) {
     rz_checkpoint();      /* reescreve o arquivo limpo (apara a cauda rasgada) e abre para anexar */
     rz_header(sess_path);
     return g_rz.loaded;
+}
+/* a sessao foi apagada (sess_purge): o estado dela vai junto */
+static void rz_remove_files(const char *sess_path) {
+    char p[1100], q[1130]; rz_path(sess_path, p, sizeof p);
+    if (!p[0]) return;
+    remove(p); snprintf(q, sizeof q, "%s.lock", p); remove(q); snprintf(q, sizeof q, "%s.bad", p); remove(q); snprintf(q, sizeof q, "%s.tmp", p); remove(q);
 }

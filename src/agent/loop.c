@@ -124,7 +124,7 @@ static void sess_purge(const char *path) {
         struct stat st;
         snprintf(e[ne].name, sizeof e[ne].name, "%s/%s", dir, de->d_name);
         if (stat(e[ne].name, &st) != 0) continue;
-        if (now - (long)st.st_mtime > (long)(days * 86400.0)) { remove(e[ne].name); continue; }
+        if (now - (long)st.st_mtime > (long)(days * 86400.0)) { remove(e[ne].name); rz_remove_files(e[ne].name); continue; }
         e[ne].t = (long)st.st_mtime; e[ne].sz = (long long)st.st_size; tot += e[ne].sz; ne++;
     }
     closedir(d);
@@ -132,7 +132,7 @@ static void sess_purge(const char *path) {
         int old = 0;
         for (int i = 1; i < ne; i++) if (e[i].t < e[old].t) old = i;
         if (strcmp(e[old].name, path) == 0) break;
-        remove(e[old].name); tot -= e[old].sz; e[old] = e[--ne];
+        remove(e[old].name); rz_remove_files(e[old].name); tot -= e[old].sz; e[old] = e[--ne];
     }
     free(e);
 #else
@@ -582,6 +582,7 @@ static int agent(Model *m, int max_tokens, float temp) {
     ct_mail_register(); atexit(ct_mail_unregister);     /* outras sessoes do katana nesta maquina podem mandar mensagem (SendMessage) */
 #define AGENT_SYS() do { agent_build_sys(sys, sizeof sys, extra); mcp_sys(sys, sizeof sys); if (g4) g4_agent_sys(sys, sizeof sys); if (go) go_agent_sys(sys, sizeof sys); } while (0)
     if (g_resume_path[0] && !g_sess_path[0]) snprintf(g_sess_path, sizeof g_sess_path, "%s", g_resume_path);
+    if (g_sess_path[0] && !g_resume_path[0]) rz_open(g_sess_path, 1);      /* estado do trabalho da sessao (resume.c); o --retomar abre pelo /resume abaixo */
     autoindex_start();
     snap_on(m);                                             /* fotos do estado recorrente (agent/snapshots.c) */
     if (cml && !g_resume_path[0]) { AGENT_SYS(); pfx_warm(m, sys); }     /* motor aquecido antes da primeira mensagem */
@@ -615,13 +616,16 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (!cml) { fprintf(stderr, "[sessions: not supported in this format]\n"); g_no_ready = !res; continue; }
             g_stop = 0; g_busy = 1;
             if (!first && hist.n && (res || strcmp(pa, g_sess_path) != 0)) sess_save(m, sys, &hist, &slog, 0);   /* fecha a sessao atual */
-            ct_session_reset();
+            ct_session_reset(); flow_reset();      /* o fluxo da conversa anterior nao pode sobrar na nova */
+            if (res || (g_rz.file[0] && strcmp(pa, g_sess_path) != 0)) rz_close();      /* o estado da sessao que sai */
             if (res) {
                 AGENT_SYS();
+                const int rzl = rz_open(pa, 0);
                 const int np2 = sess_resume(m, pa, sys, &hist, &slog);
-                if (np2 > 0) { pos = np2; first = 0; snprintf(g_sess_path, sizeof g_sess_path, "%s", pa); }
-                else { pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); }
+                if (np2 > 0) { pos = np2; first = 0; snprintf(g_sess_path, sizeof g_sess_path, "%s", pa); if (rzl) g_rz.reason = RZR_SESSION; }
+                else { pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); rz_close(); }
             } else {
+                if (!g_rz.file[0] || strcmp(pa, g_sess_path) != 0) rz_open(pa, 1);      /* a sessao ganhou arquivo: o estado em memoria vai para ele */
                 snprintf(g_sess_path, sizeof g_sess_path, "%s", pa);
                 fprintf(stderr, "[session: writing to %s]\n", g_sess_path);
                 g_no_ready = 1;     /* silencioso: a interface manda a mensagem logo em seguida */
@@ -671,7 +675,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         if (reset) {
             if (cml && !first && hist.n) { g_busy = 1; sess_save(m, sys, &hist, &slog, 0); g_busy = 0; }   /* fecha a sessao */
             g_sess_path[0] = 0;
-            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess); flow_reset();
+            pos = 0; first = 1; ah_clear(&hist); ah_clear(&slog); todo_clear(); ct_session_reset(); undo_pend = 0; uioe_inv_reset(usess); flow_reset(); rz_close();
         }
         if (cmd == 3) snprintf(line, sizeof line, "%s", g_ext_msg);      /* /init, /skill, /nome, /servidor:prompt: a mensagem vai ao modelo */
         else if (cmd) continue;
@@ -848,6 +852,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     free(rr.p);
                 }
                 sess_save(m, sys, &hist, &slog, 0);      /* barato: sem resumir (nao mexe no cache KV) */
+                if (rz_on()) rz_ev('C', rz_i(hist.n), NULL);      /* ponto limpo: o modelo respondeu */
             }
             free(ids.ids);
             buf_str(&tr, "Assistente: "); buf_str(&tr, reply.p ? reply.p : ""); buf_str(&tr, "\n");
@@ -1056,6 +1061,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         buf_str(&tr, "\n");
     }
     if (cml && !first && hist.n) { g_stop = 0; sess_save(m, sys, &hist, &slog, 1); }    /* ao sair: resume se precisar */
+    rz_close();
 #undef AGENT_SYS
     moe_report();
     heat_save(m);
