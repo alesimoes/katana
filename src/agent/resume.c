@@ -58,6 +58,8 @@ static struct {
     char req_text[400]; int goal_fid;                                         /* o pedido em curso (limpo) e o fluxo de baixo da pilha quando o objetivo foi gravado */
 } g_rz;
 #define RZ_UNUSED __attribute__((unused))
+static int g_rz_keep;      /* 1 quando o estado desta sessao esta em arquivo: os arquivos de saida das tarefas ficam (jobs.c) para o texto do estado poder apontar para eles */
+static int rz_keep_logs(void) { return g_rz_keep; }
 
 static int rz_on(void) { const char *e = getenv("KATANA_RESUME"); return !(e && !strcmp(e, "0")); }
 RZ_UNUSED static int rz_strict(void) { const char *e = getenv("KATANA_RESUME"); return e && !strcmp(e, "strict"); }
@@ -455,6 +457,7 @@ static void rz_release(void) {
 }
 static void rz_close(void) { rz_release(); memset(&g_rz, 0, sizeof g_rz); }
 static void rz_restore_flow(void);
+static void rz_restore_misc(void);
 /* abre o estado da sessao: trava, le, reescreve como ponto de salvamento e anota o processo atual. adopt: o estado em memoria
  * (de antes de a sessao ter arquivo) passa para o arquivo novo, se ele ainda nao existe. Devolve 1 se havia estado gravado. */
 static int rz_open(const char *sess_path, int adopt) {
@@ -482,7 +485,8 @@ static int rz_open(const char *sess_path, int adopt) {
         rz_checkpoint();      /* reescreve o arquivo limpo (apara a cauda rasgada) e abre para anexar */
         rz_header(sess_path);
     }
-    if (g_rz.loaded) rz_restore_flow();
+    if (g_rz.file[0] && !g_rz.readonly) g_rz_keep = 1;
+    if (g_rz.loaded) { rz_restore_flow(); rz_restore_misc(); }
     return g_rz.loaded;
 }
 /* a sessao foi apagada (sess_purge): o estado dela vai junto */
@@ -531,6 +535,7 @@ static void rz_restore_flow(void) {
     if (fl_id() == FL_CODE) fl_find_verify();
     flow_grammar_mask();
 }
+static void rz_sync_all(void);
 /* chamado antes de flow_request: anota o pedido (U) */
 static void rz_request_begin(const char *ureq) {
     if (!rz_on() || g_ct_depth > 1) return;
@@ -538,6 +543,7 @@ static void rz_request_begin(const char *ureq) {
     rz_clean(g_rz.req_text, sizeof g_rz.req_text, ureq, 0);
     char b[240]; rz_clean(b, sizeof b, ureq, 0);
     rz_ev('U', rz_i(g_fl.req + 1), b, NULL);
+    rz_sync_all();
 }
 
 /* ---------- as chamadas: B antes, E depois; tentativas falhas, evidencia ganha, arquivos, decisoes (docs/flow-resume.md secao 5) ---------- */
@@ -610,7 +616,7 @@ static void rz_before(const char *name, const char *js, const char *end) {
     rz_ev('B', name, subj, rz_x(g_fl.cur_sig), NULL);
 }
 /* depois de rodar: E, tentativa falha ou corrigida, evidencia, arquivo, decisao */
-static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain) {
+static void rz_after_body(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain) {
     if (!rz_on() || g_ct_depth > 1) return;
     RzState *s = &g_rz.s;
     rz_ev('E', name, failed ? "0" : "1", rz_x(g_fl.cur_sig), rz_x(fl_hash(result, strlen(result), RZ_FNV)), FE_NAME[ev], gain ? "1" : "0", NULL);
@@ -685,4 +691,84 @@ static void rz_after(const char *name, const char *js, const char *end, const ch
     case FE_SUB_OK: rz_jget(js, end, "prompt", v, sizeof v); snprintf(t, sizeof t, "sub-agent answered: %s", v); rz_evidence(RZE_SUB, t, NULL); break;
     default: break;
     }
+}
+
+static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain) {
+    rz_after_body(name, js, end, result, failed, ev, gain);
+    rz_sync_all();
+}
+/* ---------- espelhos das tarefas, do plano e dos modos: comparados depois de cada resultado, sem gancho dentro de bash.c, jobs.c ou tasks.c ---------- */
+/* inicio de um processo (campo 22 de /proc/PID/stat): com o pid, identifica o processo mesmo que o numero seja reusado */
+static long long rz_proc_start(long pid) {
+#ifdef __linux__
+    char p[64], b[1024]; snprintf(p, sizeof p, "/proc/%ld/stat", pid);
+    FILE *f = fopen(p, "r"); if (!f) return 0;
+    const size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); b[n] = 0;
+    char *c = strrchr(b, ')'); if (!c || !c[1]) return 0;
+    c += 2;
+    int field = 3;
+    while (*c && field < 22) { c = strchr(c, ' '); if (!c) return 0; c++; field++; }
+    return c ? atoll(c) : 0;
+#else
+    (void)pid; return 0;
+#endif
+}
+static void rz_sync_jobs(void) {
+#ifndef _WIN32
+    RzState *s = &g_rz.s;
+    const char *waiting = NULL; int wid = 0;
+    for (int i = 0; i < JOB_N; i++) {
+        Job *j = &g_jobs[i]; if (!j->id) continue;
+        job_poll(j);
+        const int st = j->done ? ((j->rc == 137 || j->rc == 143) ? RZJ_STOPPED : RZJ_DONE) : (j->asked && !j->typed ? RZJ_WAIT : RZJ_RUN);
+        if (st == RZJ_WAIT && !waiting) { waiting = j->asked_label; wid = j->id; }
+        RzJob *e = NULL;
+        for (int k = 0; k < RZ_NJOB; k++) if (s->job[k].id == j->id && s->job[k].agent_pid == (long)getpid()) e = &s->job[k];
+        struct stat sb; const long sz = stat(j->log, &sb) == 0 ? (long)sb.st_size : 0;
+        char asked[240]; rz_clean(asked, sizeof asked, st == RZJ_WAIT ? j->asked_label : "", 0);
+        const int rc = j->done ? j->rc : 0;
+        int told = e ? e->told : 0;
+        if (j->done && g_fl.task == j->id) told = 1;      /* a tarefa acompanhada que acabou: o fluxo ja cuidou do aviso (FE_TASK_ENDED) */
+        if (e && e->status == st && e->rc == rc && !strcmp(e->asked, asked) && e->told == told && labs(sz - e->log_sz) < 2048) continue;
+        char cmd[200], lg[1300]; rz_clean(cmd, sizeof cmd, j->cmd, 0); rz_clean(lg, sizeof lg, j->log, 0);
+        const long long start = e && e->start ? e->start : rz_proc_start((long)j->pid);
+        rz_ev('J', rz_i(j->id), rz_i((long long)j->pid), rz_i(start), rz_i((long long)getpid()), rz_i((long long)j->t0), RZ_JNAME[st], rz_i(rc), rz_i(sz), rz_i(told), cmd, lg, asked, NULL);
+    }
+    char q[240]; rz_clean(q, sizeof q, waiting ? waiting : "", 0);
+    if (strcmp(q, s->ask) || (waiting && s->ask_task != wid)) rz_ev('Q', rz_i(waiting ? wid : 0), q, NULL);
+#endif
+}
+static void rz_sync_all(void) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    rz_sync_jobs();
+    char *t = (char *)malloc(sizeof g_rz.s.todo);
+    if (t) { rz_clean(t, sizeof g_rz.s.todo, g_todo, 1); if (strcmp(t, g_rz.s.todo)) rz_ev('T', t, NULL); free(t); }
+    if (g_rz.s.plan_mode != (g_plan_mode != 0) || g_rz.s.worktree != (g_wt_active != 0)) rz_ev('M', rz_i(g_plan_mode != 0), rz_i(g_wt_active != 0), NULL);
+}
+/* plano e modo plano voltam com a sessao (o estado e a verdade da sessao: o plano de outra conversa nao fica) */
+static void rz_restore_misc(void) {
+    const RzState *s = &g_rz.s;
+    rz_cpy(g_todo, sizeof g_todo, s->todo);
+    g_todo_touched = 0; g_rz.plan_done = 0; { int td = 0; todo_count(&td); g_rz.plan_done = td; }
+    ct_task_sync(); todo_ui();
+    if (g_plan_mode != s->plan_mode) { g_plan_mode = s->plan_mode; plan_ui(); }
+}
+/* arquivos de saida de tarefas mais velhos do que o limite das sessoes saem junto (sess_purge) */
+static void rz_purge_jobs(double days) {
+#ifndef _WIN32
+    char h[1024], d[1100]; agent_home(h, sizeof h); snprintf(d, sizeof d, "%s/.katana/jobs", h);
+    DIR *dir = opendir(d); if (!dir) return;
+    const time_t now = time(NULL);
+    struct dirent *de;
+    while ((de = readdir(dir))) {
+        if (de->d_name[0] == '.') continue;
+        char p[1400]; snprintf(p, sizeof p, "%s/%s", d, de->d_name);
+        struct stat st; if (stat(p, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        int live = 0; for (int i = 0; i < JOB_N; i++) if (g_jobs[i].id && !strcmp(g_jobs[i].log, p)) live = 1;
+        if (!live && (double)(now - st.st_mtime) > days * 86400.0) remove(p);
+    }
+    closedir(dir);
+#else
+    (void)days;
+#endif
 }

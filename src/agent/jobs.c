@@ -45,7 +45,8 @@ static void job_kill(Job *j) {
     for (int i = 0; i < 20 && !j->done; i++) { usleep(50000); job_poll(j); }
     if (!j->done) { kill(-j->pid, SIGKILL); int st; waitpid(j->pid, &st, 0); j->done = 1; j->rc = 137; }
 }
-static void job_all_kill(void) { for (int i = 0; i < JOB_N; i++) { job_kill(&g_jobs[i]); if (g_jobs[i].id) remove(g_jobs[i].log); } }
+static int rz_keep_logs(void);      /* resume.c: com o estado da sessao em arquivo, a saida das tarefas fica (o texto do estado aponta para ela) */
+static void job_all_kill(void) { for (int i = 0; i < JOB_N; i++) { job_kill(&g_jobs[i]); if (g_jobs[i].id && !rz_keep_logs()) remove(g_jobs[i].log); } }
 /* o fim do arquivo de saida (ate max bytes, a partir de um inicio de linha) */
 static size_t job_tail(const Job *j, char *out, size_t max) {
     out[0] = 0;

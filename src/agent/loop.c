@@ -135,6 +135,7 @@ static void sess_purge(const char *path) {
         remove(e[old].name); rz_remove_files(e[old].name); tot -= e[old].sz; e[old] = e[--ne];
     }
     free(e);
+    rz_purge_jobs(days);      /* a saida das tarefas e do tempo das sessoes */
 #else
     (void)path;
 #endif
