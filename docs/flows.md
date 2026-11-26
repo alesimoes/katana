@@ -111,7 +111,7 @@ The same line closes the user message when a request opens or continues a flow. 
 | `the last 5 calls brought nothing new ...` | stall by evidence gain (3.4) |
 | `8 calls since the plan last moved.` | open plan, no `done=N` |
 | `N web calls in this flow (M gave nothing) ...` | web cap reached |
-| `a failure like this one was solved N time(s) before ... by: <call>` | a mined lesson matches (off by default) |
+| `a failure like this one was solved N time(s) before ... by: <call>` | a mined lesson matches (seen twice or more) |
 
 ### 3.2 When it is emitted, and the budget
 
@@ -130,9 +130,8 @@ is never edited: the next one supersedes it.
 
 ### 3.3 Off-flow calls
 
-`flow_before` runs before the tool. By default the call still runs and the clause goes in the line. With
-`KATANA_FLOW=strict` the call is refused before running (`error: refused, NOT run. ... Next: ...`). The advice about
-searching the web for katana itself never refuses.
+`flow_before` runs before the tool. The call always runs and the clause goes in the line: the engine never refuses a call
+(owner decision, 2026-11-26: nothing is strict or exact, everything is inference and approximation).
 
 ### 3.4 Stall: evidence gained per step, not repetition
 
@@ -143,7 +142,7 @@ state moved; the user answered. Five steps in a row with no gain raise the claus
 
 ## 4. Retrieval guided by the state
 
-All of this is **off by default** (`KATANA_FLOW_RETRIEVE=1`, `KATANA_FLOW_RERANK=1`).
+All of this is **on by default** (`KATANA_FLOW_RETRIEVE=0` and `KATANA_FLOW_RERANK=0` turn it off).
 
 Usual RAG asks "what text is similar to the question?" once, before generation. Here the question is not text at
 all: the flow state names a **slot** that is missing, and the engine fills exactly that slot when the state is
@@ -203,7 +202,7 @@ These are engine tables, not training text.
 | playbook text in the system prompt | playbook in the engine; one line at the tail only when there is something to say | no standing context cost, no cache invalidation, and the step shown is always the current one |
 | loop detection by repeated hash | stall by evidence gained per step | catches the loop that varies its arguments |
 | memory = notes written by a model | lessons counted from the log, keyed by error signature | no model in the loop, counts only grow, nothing is rewritten |
-| tool errors after the call | off-flow tools masked in the call grammar (`KATANA_FLOW_GRAMMAR=1`) | costs one resampled token instead of one loop turn |
+| tool errors after the call | off-flow tools get a soft logit penalty in the call grammar (`KATANA_FLOW_GRAMMAR=0` turns it off) | costs one resampled token instead of one loop turn |
 
 Changes made against the first design of this work, and why:
 
@@ -217,23 +216,21 @@ Changes made against the first design of this work, and why:
 
 ## 7. Switches, and what is not built
 
-| Variable | Default | Effect | Why off |
+| Variable | Default | Effect | Note |
 |---|---|---|---|
 | (none) | on | state, `next` line, deviation clauses, cross-request repeat, stall | the base |
-| `KATANA_FLOW=strict` | off | off-flow calls are refused before running | a wrong classification would block a valid call |
-| `KATANA_FLOW_GRAMMAR=1` | off | off-flow tool names leave the grammar's name mask | forcing another name can produce a call the model did not mean |
-| `KATANA_FLOW_JIT=1` | off | declaration of the expected tool appended once | costs up to ~700 tokens per tool; trade not measured |
-| `KATANA_FLOW_RETRIEVE=1` | off | evidence block on entering a state | adds text to results; usefulness not measured |
-| `KATANA_FLOW_RERANK=1` | off | the logit probe | runs the model; parks the context on disk |
-| `KATANA_FLOW_LESSONS=N` | off | mined lessons in the line | tables are small and partly noisy |
+| `KATANA_FLOW_GRAMMAR=0` | on | off-flow tool names lose `KATANA_FLOW_BIAS` (3.0) of logit in the call name; nothing is forbidden (a soft bias, not a mask) | - |
+| `KATANA_FLOW_JIT=0` | on | declaration of the expected tool appended once | - |
+| `KATANA_FLOW_RETRIEVE=0` | on | evidence block on entering a state | - |
+| `KATANA_FLOW_RERANK=0` | on | the logit probe | - |
+| `KATANA_FLOW_LESSONS=0` | on | mined lessons in the line | - |
 | `KATANA_RESUME=0` | on | turns the durable work state off: no `.kstate` file, no `resume` block | - |
-| `KATANA_RESUME=strict` | off | a call that repeats a dead attempt from before the re-entry is refused before running | a wrong match would block a valid call |
 | `KATANA_RESUME_MAX=N` | 1200 | byte cap of the `resume` block (400 to 3000) | - |
 | `KATANA_RESUME_IDLE_MIN=N` | 30 | minutes of silence after which the next request gets the short block | - |
-| `KATANA_RESUME_REHYDRATE=1` | off | on session resume, old turns are replaced by the capsule | the model gets less text; not measured |
-| `KATANA_RESUME_PROBE=1` | off | one logit probe after re-entry (also needs `KATANA_FLOW_RERANK=1`) | runs the model; parks the context on disk |
-| `KATANA_RESUME_WAKE=1` | off | a task that ends while the agent is idle starts a turn | a turn starts without the user typing |
-| `KATANA_RESUME_RECALL=1` | off | a suspended job is restored when the user returns to it | a wrong match resurrects an old flow |
+| `KATANA_RESUME_REHYDRATE=0` | on | on session resume, old turns are replaced by the capsule | - |
+| `KATANA_RESUME_PROBE=0` | on | one logit probe after re-entry (also needs `KATANA_FLOW_RERANK=1`) | - |
+| `KATANA_RESUME_WAKE=0` | on | a task that ends while the agent is idle starts a turn | - |
+| `KATANA_RESUME_RECALL=0` | on | a suspended job is restored when the user returns to it | - |
 | `KATANA_RESUME_FILE=path` | unset | state file path when there is no session file (`katana flow sim`, tests) | test only |
 
 Trace: `~/.katana/flow.log` (enter, step, end, refuse, stall, lesson, probe, retrieve, jit, resume enter, resume score,

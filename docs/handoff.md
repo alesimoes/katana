@@ -33,17 +33,16 @@ further down are measurements from the dates in their titles; do not read them a
     background tasks and modes; it is written before each change takes effect, reconciled with the world on return (files, tasks, folder), and projected
     back to the model as the `resume` block (F4), as a capsule inside summaries, and as a note on calls that repeat a dead attempt. Code: `src/agent/resume.c`,
     `src/agent/resume_note.c`, hooks in `flow.c`, `loop.c`, `context.c`, `jobs.c`, `knote.c`, `tools/table.c`. On by default: the file, the block, the capsule, the
-    dead-attempt note (advice only), the passive orientation score. **Off:** `KATANA_RESUME=strict`, `KATANA_RESUME_REHYDRATE=1`, `KATANA_RESUME_PROBE=1`
+    dead-attempt note (advice only), the passive orientation score. **Also on since 2026-11-26 (`=0` turns each off), no strict mode exists:** `KATANA_RESUME_REHYDRATE=1`, `KATANA_RESUME_PROBE=1`
     (needs `KATANA_FLOW_RERANK=1`), `KATANA_RESUME_WAKE=1`, `KATANA_RESUME_RECALL=1`. Section 12 of the design lists where the build differs from the text.
     Open: run the comparison of section 9 of the design on Qwen3.6 when measurements return, and decide the Gemma 4/harmony paths (not hooked).
 
 **2026-11-25, declared flows (`docs/flows.md`).** The engine now holds the state of the job per conversation: 13 playbooks as state
 machines in a table (`src/agent/flow.c`), a contract for each of the 40 tools, and one `[katana: next <flow> <i>/<n> <state>: ...]` line at the
 end of a tool result or of the user request when the state changes, a call fails, a call is off the flow, the same call repeats across
-requests, or five calls gain no new evidence. `src/agent/flowmem.c` has the log miner (`katana flow learn`), and, **off by default**, lessons
+requests, or five calls gain no new evidence. `src/agent/flowmem.c` has the log miner (`katana flow learn`), and, **on by default since 2026-11-26**, lessons
 (`KATANA_FLOW_LESSONS`), state-guided retrieval (`KATANA_FLOW_RETRIEVE`), the one-pass logit probe on the cached prefix
-(`KATANA_FLOW_RERANK`), just-in-time tool declarations (`KATANA_FLOW_JIT`), the state-conditioned grammar mask (`KATANA_FLOW_GRAMMAR`) and
-refusal (`KATANA_FLOW=strict`). Fixed from the day's log: `TodoWrite` accepts a trailing `- DONE` and `todos` with `done`; `task_id` must be
+(`KATANA_FLOW_RERANK`), just-in-time tool declarations (`KATANA_FLOW_JIT`), the state-conditioned soft logit bias on tool names (`KATANA_FLOW_GRAMMAR`, `KATANA_FLOW_BIAS`; replaced the hard mask). There is no refusal mode. Fixed from the day's log: `TodoWrite` accepts a trailing `- DONE` and `todos` with `done`; `task_id` must be
 a number; secrets in commands are masked in the action log. Checked: build; `katana flow tools` (40 contracts, 0 missing);
 `katana flow sim` on scripted sequences. **Not run with a model, nothing measured**; the model was not trained on the `next` line; only the
 ChatML loop path is hooked. Open list: `docs/flows.md` section 7.

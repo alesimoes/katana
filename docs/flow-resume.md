@@ -66,13 +66,12 @@ the tree).
 | Variable | Default | Effect | Why off |
 |---|---|---|---|
 | `KATANA_RESUME=0` | on | turns the whole feature off: no file, no block | - |
-| `KATANA_RESUME=strict` | off | a call that repeats a dead attempt from before the re-entry is refused before running | a wrong match would block a valid call |
 | `KATANA_RESUME_MAX=N` | 1200 | byte cap of the `resume` block (clamped to 400..3000) | - |
 | `KATANA_RESUME_IDLE_MIN=N` | 30 | minutes of silence after which the next request gets the short block | - |
-| `KATANA_RESUME_REHYDRATE=1` | off | on session resume, old turns are replaced by the capsule | the model gets less text; not measured |
-| `KATANA_RESUME_PROBE=1` | off | one logit probe after re-entry checks the model's next tool | runs the model; parks the context on disk |
-| `KATANA_RESUME_WAKE=1` | off | a task that ends while the agent is idle starts a turn | a turn starts without the user typing |
-| `KATANA_RESUME_RECALL=1` | off | a suspended job is restored when the user returns to it | a wrong match resurrects an old flow |
+| `KATANA_RESUME_REHYDRATE=0` | on | on session resume, old turns are replaced by the capsule | - |
+| `KATANA_RESUME_PROBE=0` | on | one logit probe after re-entry checks the model's next tool | - |
+| `KATANA_RESUME_WAKE=0` | on | a task that ends while the agent is idle starts a turn | - |
+| `KATANA_RESUME_RECALL=0` | on | a suspended job is restored when the user returns to it | - |
 | `KATANA_RESUME_FILE=path` | unset | state file path when there is no session file (tests, `katana flow sim`) | test only |
 
 Not in this design, by decision: **rollback of a failed attempt** (beyond-rag P1, rank 4). It makes the model's
@@ -565,3 +564,8 @@ Where the build differs from the text above:
 - **Paths not hooked.** Like the flows, only the ChatML loop path records and projects; the harmony (`go`) and Gemma 4 result paths are not hooked.
 - **Not verified.** That the file survives a real `kill -9`, that an `agent_regrow` reload re-adopts a running task, that the block reaches the model once
   per re-entry, and every claim about what the model does with it.
+
+
+## 13. Decision of 2026-11-26: everything new is on, nothing is strict
+
+All the switches above that were off by default are now on (`=0` turns each off), and the `strict` modes (`KATANA_FLOW=strict`, `KATANA_RESUME=strict`) were removed with their refusal code: the engine never refuses a call, it only annotates the deviation in the `next` line. The flow grammar no longer masks tool names; it applies a soft logit penalty (`KATANA_FLOW_BIAS`, default 3.0) to the name tokens that only lead to off-flow tools. Not measured.
