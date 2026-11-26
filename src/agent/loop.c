@@ -158,7 +158,7 @@ static void sess_compact(Model *m, const AHist *hist, const char *sys, int allow
     AHist nh = {0};
     if (sm) {
         Buf u = {0};
-        buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm);
+        buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm); rz_capsule(&u);
         ah_push(&nh, 'u', u.p, u.n); ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
         free(u.p); free(sm);
     } else if (out->v[0].role == 'u' && strncmp(out->v[0].s, "[Resumo da conversa anterior", 28) == 0 && out->n > 1) {
@@ -643,7 +643,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 g_stop = 0; g_busy = 1;
                 float *lg_c;
                 const int np2 = agent_compact(m, &hist, sys, "", pos, 1, &lg_c);
-                g_busy = 0;
+                g_busy = 0; rz_after_compact();
                 if (np2 < 0) fprintf(stderr, "[could not compact]\n");
                 else { pos = np2; sess_save(m, sys, &hist, &slog, 0); }   /* a sessao gravada passa a ter o resumo no lugar do historico */
                 if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
@@ -804,6 +804,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             if (tskip) first = 0;
             else if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
                 const int np2 = agent_compact(m, &hist, sys, text, pos, 0, &lg);
+                rz_after_compact();
                 if (np2 == -2) { lg = agent_feed(m, ids.ids, ids.n, pos); pos += ids.n; }      /* nao valia a pena compactar: segue normal */
                 else if (np2 < 0) {
                     fprintf(stderr, "[contexto cheio mesmo compactado (%d de %d tokens): conversa recomecada; repita o pedido]\n", pos, c->ctx);

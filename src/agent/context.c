@@ -514,6 +514,8 @@ static char *ah_summary_live(Model *m, int pos, const char *pending) {
 }
 #define CP_SUM_HEAD "[Summary of the conversation so far, written by you to save context; the older messages were removed]\n"
 #define CP_REQ_HEAD "\n\n[The user's current request, still in progress. Continue from the summary and do not redo what is done]\n"
+static int g_cp_summed;     /* a compactacao escreveu um resumo (o laco reemite a linha `next` e anota no estado do trabalho: rz_after_compact)  */
+static int rz_capsule(Buf *o);      /* resume_note.c: o estado do trabalho, a parte estavel, dentro do resumo */
 static int g_cp_nolive;    /* 1: o cache KV da conversa nao e confiavel (subagente nao devolveu): sem resumo ao vivo */
 
 static int g_cp_reread, g_cp_from;      /* ultima compactacao: tokens relidos e a posicao de onde recomecou */
@@ -578,7 +580,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             if (rq) req = rq + strlen(CP_REQ_HEAD);                 /* pedido original dentro de um resumo anterior */
             AHist nh = {0};
             Buf u = {0};
-            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); { Buf fx = {0}; if (facts_text(&fx)) { buf_str(&u, "\n\n"); buf_str(&u, fx.p); } free(fx.p); } if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); } buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
+            buf_str(&u, CP_SUM_HEAD); buf_str(&u, sm); { Buf fx = {0}; if (facts_text(&fx)) { buf_str(&u, "\n\n"); buf_str(&u, fx.p); } free(fx.p); } if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); } rz_capsule(&u); buf_str(&u, CP_REQ_HEAD); buf_str(&u, req);
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             /* as ultimas rodadas ficam inteiras: o resumo perde nomes e detalhes, e o modelo relia tudo */
@@ -596,7 +598,7 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             }
             ah_clear(h); free(h->v); *h = nh;
             free(u.p); free(sm);
-            summ = 1; g_cp_phase = 0;
+            summ = 1; g_cp_summed = 1; g_cp_phase = 0;
             ah_render(h, sys, &r); buf_str(&r, pending);
             n = ah_count(m, r.p);
         }
@@ -611,13 +613,14 @@ static int agent_compact(Model *m, AHist *h, const char *sys, const char *pendin
             AHist nh = {0};
             Buf u = {0};
             buf_str(&u, "[Resumo da conversa anterior, feito para economizar contexto]\n"); buf_str(&u, sm); { Buf fx = {0}; if (facts_text(&fx)) { buf_str(&u, "\n\n"); buf_str(&u, fx.p); } free(fx.p); } if (g_todo[0]) { buf_str(&u, "\n\n[Your todo list]\n"); buf_str(&u, g_todo); }
+            rz_capsule(&u);
             fprintf(stderr, "%s[resumo]\n%s%s\n", CE(C_DIM), sm, CE(C_RESET));
             ah_push(&nh, 'u', u.p, u.n);
             ah_push(&nh, 'a', "Entendido. Sigo a partir do resumo.", 35);
             for (int i = upto; i < h->n; i++) ah_push(&nh, h->v[i].role, h->v[i].s, strlen(h->v[i].s));
             ah_clear(h); free(h->v); *h = nh;
             free(u.p); free(sm);
-            summ = 1; g_cp_phase = 0;
+            summ = 1; g_cp_summed = 1; g_cp_phase = 0;
             ah_render(h, sys, &r); buf_str(&r, pending);
             n = ah_count(m, r.p);
         }

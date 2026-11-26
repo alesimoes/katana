@@ -157,13 +157,22 @@ static size_t rz_block(char *out, size_t cap) {
     return n;
 }
 /* a capsula dentro de um resumo (context.c, loop.c): so o estavel; 1 se acrescentou algo */
-RZ_UNUSED static int rz_capsule(Buf *o) {
+static int rz_capsule(Buf *o) {
     if (!rz_on() || g_ct_depth > 1) return 0;
     char body[3200]; rz_body(body, sizeof body, 2);
     if (!body[0]) return 0;
     buf_str(o, KNF_RESUME_CAPSULE); buf_str(o, body);
     return 1;
 }
+/* depois de uma compactacao que escreveu resumo: a proxima linha `next` sai de novo e o estado anota (loop.c) */
+static void rz_after_compact(void) {
+    if (!g_cp_summed) return;
+    g_cp_summed = 0;
+    g_fl.emitted_st = -1;
+    g_rz.enter_reason = RZR_SUMMARY;
+    if (rz_on() && g_ct_depth <= 1) rz_ev('N', "summary", "0", NULL);
+}
+
 /* ---------- katana flow state [arquivo]: o arquivo de estado impresso como bloco e como capsula (sem modelo) ---------- */
 static int rz_cmd_state(const char *file) {
     memset(&g_rz, 0, sizeof g_rz);

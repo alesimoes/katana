@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    int enter_reason;                                                         /* a ultima reentrada (RZR_*): o texto do desvio de tentativa morta diz de quando ela e */
     long long t_saved; int grace_age;                                         /* quando o estado foi gravado pela ultima vez; pedidos desde a carga */
     char old_cwd[1024];                                                       /* a pasta gravada antes de este processo se anotar */
     int more_delta;                                                           /* mudancas alem das seis frases */
