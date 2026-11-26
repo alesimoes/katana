@@ -33,6 +33,7 @@ static void agent_regrow(Model *m, const char *sys, const AHist *hist, const AHi
     if (g_no_ready) return;
     { struct pollfd pf = { 0, POLLIN, 0 }; if (poll(&pf, 1, 0) > 0) return; }
     if (mcpch_pending()) return;                            /* mensagem de canal na fila: atender antes */
+    for (int i = 0; i < JOB_N; i++) if (g_jobs[i].id && !g_jobs[i].done) return;      /* tarefa rodando: a recarga fecharia o terminal dela (a ponta mestre nao atravessa o execv) */
     if (hist->n && !g_sess_path[0]) return;                 /* sem sessao gravada nao ha como voltar a conversa */
     const int mb = getenv("KATANA_REGROW_TEST") ? atoi(getenv("KATANA_REGROW_TEST")) : gpu_regrow_mb();
     if (mb < 600) return;
@@ -59,6 +60,7 @@ static void agent_regrow(Model *m, const char *sys, const AHist *hist, const AHi
     fprintf(stderr, "\n%s[a placa de video liberou %d MB: recarregando o modelo para usar a memoria; a conversa continua]%s\n", CE(C_DIM), mb, CE(C_RESET));
     if (getenv("KATANA_UI")) { fputs("\x01" "REGROW\n", stdout); }
     fflush(stdout); fflush(stderr);
+    rz_checkpoint();                                        /* o estado do trabalho vai inteiro para o arquivo; a nova imagem o le de volta */
     reap_keep_exec(1);
     execv(self, av);
     reap_keep_exec(0);
@@ -736,7 +738,7 @@ static int agent(Model *m, int max_tokens, float temp) {
         else if (says_already_done(line)) { static char gl[16384]; KNOTE(USER_DONE, gl, sizeof gl, line); snprintf(line, sizeof line, "%s", gl); }
         {   /* fluxo declarado (agent/flow.c): o pedido escolhe, continua ou encerra o playbook; a linha do proximo passo vai no fim do pedido */
             static char fn[9000];
-            if (cml) rz_request_begin(ureq);      /* estado duravel do trabalho (resume.c): o pedido */
+            if (cml) { rz_request_begin(ureq); if (says_already_done(ureq)) rz_forgive_attempts(); }      /* estado duravel do trabalho (resume.c): o pedido; o que o usuario diz ja feito nao e mais "nao repita" */
             const int cmdreq = asks_for_command(ureq) || says_already_done(ureq);      /* essas notas ja mandam o que fazer: a linha do fluxo nao concorre com elas */
             if (cml && flow_request(ureq, fn, sizeof fn) && !cmdreq && strlen(line) + strlen(fn) + 2 < sizeof line) strcat(line, fn);
         }

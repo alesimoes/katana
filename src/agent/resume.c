@@ -54,6 +54,8 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    char old_cwd[1024];                                                       /* a pasta gravada antes de este processo se anotar */
+    int more_delta;                                                           /* mudancas alem das seis frases */
     int plan_done;                                                            /* passos do plano marcados na ultima conta */
     char req_text[400]; int goal_fid;                                         /* o pedido em curso (limpo) e o fluxo de baixo da pilha quando o objetivo foi gravado */
 } g_rz;
@@ -437,6 +439,7 @@ static void rz_env_check(void) {
     if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
     g_rz.new_proc = s->agent_pid != (long)getpid() || strcmp(s->host, host) != 0;
     g_rz.moved = s->cwd[0] && strcmp(s->cwd, cwd) != 0;
+    rz_cpy(g_rz.old_cwd, sizeof g_rz.old_cwd, s->cwd);
     struct stat st;
     g_rz.foreign = strcmp(s->host, host) != 0 || (s->cwd[0] && stat(s->cwd, &st) != 0);
 }
@@ -458,6 +461,7 @@ static void rz_release(void) {
 static void rz_close(void) { rz_release(); memset(&g_rz, 0, sizeof g_rz); }
 static void rz_restore_flow(void);
 static void rz_restore_misc(void);
+static void rz_reconcile(void);
 /* abre o estado da sessao: trava, le, reescreve como ponto de salvamento e anota o processo atual. adopt: o estado em memoria
  * (de antes de a sessao ter arquivo) passa para o arquivo novo, se ele ainda nao existe. Devolve 1 se havia estado gravado. */
 static int rz_open(const char *sess_path, int adopt) {
@@ -486,7 +490,7 @@ static int rz_open(const char *sess_path, int adopt) {
         rz_header(sess_path);
     }
     if (g_rz.file[0] && !g_rz.readonly) g_rz_keep = 1;
-    if (g_rz.loaded) { rz_restore_flow(); rz_restore_misc(); }
+    if (g_rz.loaded) { rz_restore_flow(); rz_restore_misc(); rz_reconcile(); }
     return g_rz.loaded;
 }
 /* a sessao foi apagada (sess_purge): o estado dela vai junto */
@@ -543,6 +547,7 @@ static void rz_request_begin(const char *ureq) {
     rz_clean(g_rz.req_text, sizeof g_rz.req_text, ureq, 0);
     char b[240]; rz_clean(b, sizeof b, ureq, 0);
     rz_ev('U', rz_i(g_fl.req + 1), b, NULL);
+    rz_reconcile();
     rz_sync_all();
 }
 
@@ -720,10 +725,11 @@ static void rz_sync_jobs(void) {
     for (int i = 0; i < JOB_N; i++) {
         Job *j = &g_jobs[i]; if (!j->id) continue;
         job_poll(j);
-        const int st = j->done ? ((j->rc == 137 || j->rc == 143) ? RZJ_STOPPED : RZJ_DONE) : (j->asked && !j->typed ? RZJ_WAIT : RZJ_RUN);
+        int st = j->done ? ((j->rc == 137 || j->rc == 143) ? RZJ_STOPPED : RZJ_DONE) : (j->asked && !j->typed ? RZJ_WAIT : RZJ_RUN);
         if (st == RZJ_WAIT && !waiting) { waiting = j->asked_label; wid = j->id; }
         RzJob *e = NULL;
         for (int k = 0; k < RZ_NJOB; k++) if (s->job[k].id == j->id && s->job[k].agent_pid == (long)getpid()) e = &s->job[k];
+        if (e && e->status == RZJ_DETACHED && st == RZJ_RUN) st = RZJ_DETACHED;      /* tarefa readotada depois de recarregar: vive, sem terminal */
         struct stat sb; const long sz = stat(j->log, &sb) == 0 ? (long)sb.st_size : 0;
         char asked[240]; rz_clean(asked, sizeof asked, st == RZJ_WAIT ? j->asked_label : "", 0);
         const int rc = j->done ? j->rc : 0;
@@ -771,4 +777,169 @@ static void rz_purge_jobs(double days) {
 #else
     (void)days;
 #endif
+}
+
+/* ---------- reconciliacao: o que se leu de volta e hipotese; confere com o mundo, sem o modelo (docs/flow-resume.md secao 6) ---------- */
+#define RZ_ND 32
+typedef struct { int pr; char t[400]; } RzDelta;
+static void rz_dpush(RzDelta *d, int *nd, int pr, const char *fmt, ...) {
+    if (*nd >= RZ_ND) return;
+    va_list ap; va_start(ap, fmt); vsnprintf(d[*nd].t, sizeof d[*nd].t, fmt, ap); va_end(ap);
+    d[*nd].pr = pr; (*nd)++;
+}
+/* uma tarefa do estado esta viva? outro processo: so com o inicio do processo conferido (sem /proc, nunca) */
+static int rz_alive(long pid, long long start, int strict) {
+#ifndef _WIN32
+    if (pid <= 1) return 0;
+    if (kill((pid_t)pid, 0) != 0 && errno != EPERM) return 0;
+    if (!strict) return 1;
+    const long long now = rz_proc_start(pid);
+    return start && now && start == now;
+#else
+    (void)pid; (void)start; (void)strict; return 0;
+#endif
+}
+static void rz_job_put(const RzJob *e, int status, int rc, int told, long sz) {
+    rz_ev('J', rz_i(e->id), rz_i(e->pid), rz_i(e->start), rz_i(e->agent_pid), rz_i(e->t0), RZ_JNAME[status], rz_i(rc), rz_i(sz), rz_i(told), e->cmd, e->log, e->asked, NULL);
+}
+/* tira um fluxo da pilha onde ele estiver (o estado e o espelho sao ajustados por rz_sync_flow) */
+static void rz_flow_drop(int id) {
+    const int at = fl_in(id); if (!at) return;
+    fl_log("end\t%s\t-\tresume", FL_BOOK[id].name);
+    memmove(g_fl.stk + at - 1, g_fl.stk + at, sizeof g_fl.stk[0] * (size_t)(g_fl.depth - at));
+    g_fl.depth--; g_fl.emitted_st = -1;
+}
+static void rz_reconcile(void) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    RzState *s = &g_rz.s;
+    RzDelta d[RZ_ND]; int nd = 0;
+    char cwd[1024]; if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
+    const int foreign = g_rz.foreign;
+    if (g_rz.moved && !foreign) rz_dpush(d, &nd, 4, "the working folder was %.100s when this work stopped; it is %.100s now", g_rz.old_cwd, cwd);
+    if (foreign) rz_dpush(d, &nd, 0, "this work was saved on another machine or folder: file and task state below is not verified");
+    /* chamada iniciada e sem resultado: o katana parou no meio dela */
+    if (s->open_tool[0]) {
+        if (g_rz.new_proc) {
+            rz_dpush(d, &nd, 0, "the call %.24s %.100s was started and never returned: katana stopped during it. Its effect is unknown; check before you repeat it", s->open_tool, s->open_subj);
+            if (ct_readonly(s->open_tool) == 0 && s->open_subj[0] && !foreign && (s->open_subj[0] == '/' || access(s->open_subj, F_OK) == 0)) {
+                int known = 0; char ap[400]; rz_abs(s->open_subj, ap, sizeof ap);
+                for (int i = 0; i < s->nfile; i++) if (!strcmp(s->file[i].path, ap)) known = 1;
+                if (!known) rz_file_note(s->open_subj, RZF_WRITE, 0);      /* o arquivo passa a ser conferido como os outros */
+            }
+        }
+        rz_ev('E', s->open_tool, "0", "0", "0", "none", "0", NULL);
+    }
+#ifndef _WIN32
+    /* tarefas */
+    for (int k = 0; k < RZ_NJOB; k++) {
+        RzJob e = s->job[k];
+        if (!e.id) continue;
+        const int mine = e.agent_pid == (long)getpid();
+        Job *live = NULL; for (int i = 0; i < JOB_N; i++) if (g_jobs[i].id == e.id && mine) live = &g_jobs[i];
+        if (mine && e.id > g_job_seq) g_job_seq = e.id;      /* um numero que o modelo tem no contexto nao volta a ser usado */
+        else if (!mine && e.id > g_job_seq) g_job_seq = e.id;
+        const int running = e.status == RZJ_RUN || e.status == RZJ_WAIT || e.status == RZJ_DETACHED;
+        struct stat sb; const int has_log = e.log[0] && stat(e.log, &sb) == 0;
+        const long now_sz = has_log ? (long)sb.st_size : 0;
+        if (running && foreign) { rz_job_put(&e, RZJ_LOST, 0, 1, e.log_sz); continue; }
+        if (running && !live) {
+            int st = 0, rc = 0;
+            if (mine) {      /* o mesmo processo depois de recarregar (execv): os comandos continuam filhos deste processo */
+                int ws = 0; const pid_t w = waitpid((pid_t)e.pid, &ws, WNOHANG);
+                if (w == (pid_t)e.pid) { st = RZJ_DONE; rc = WIFEXITED(ws) ? WEXITSTATUS(ws) : 128 + (WIFSIGNALED(ws) ? WTERMSIG(ws) : 0); }
+                else if (rz_alive(e.pid, e.start, 0)) {
+                    Job *j = NULL; for (int i = 0; i < JOB_N && !j; i++) if (!g_jobs[i].id) j = &g_jobs[i];
+                    if (j) {      /* readotada: Read, Monitor e TaskStop voltam a funcionar; a resposta ao terminal nao */
+                        memset(j, 0, sizeof *j); j->id = e.id; j->pid = (pid_t)e.pid; j->t0 = (time_t)e.t0;
+                        snprintf(j->log, sizeof j->log, "%s", e.log); snprintf(j->cmd, sizeof j->cmd, "%s", e.cmd);
+                        if (!g_job_exit) { atexit(job_all_kill); g_job_exit = 1; }
+                        rz_dpush(d, &nd, 1, "task %d (`%.60s`) is still running but its terminal was lost: it can be read and stopped, not answered", e.id, e.cmd);
+                        rz_job_put(&e, RZJ_DETACHED, 0, 1, now_sz);
+                        continue;
+                    }
+                    st = RZJ_LOST;
+                } else st = RZJ_LOST;
+            } else if (rz_alive(e.pid, e.start, 1)) {
+                rz_dpush(d, &nd, 1, "task %d (`%.60s`) kept running when katana restarted (process %ld); its output is in %.100s", e.id, e.cmd, e.pid, e.log);
+                rz_job_put(&e, RZJ_DETACHED, 0, 1, now_sz);
+                continue;
+            } else st = RZJ_LOST;
+            if (st == RZJ_LOST) {
+                if (has_log) rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended when katana restarted; exit code unknown; its output (%ld new bytes) is in %.100s", e.id, e.cmd, now_sz > e.log_sz ? now_sz - e.log_sz : 0L, e.log);
+                else rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended when katana restarted; exit code unknown; its output file is gone", e.id, e.cmd);
+            } else {
+                if (has_log) rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended while katana was reloading with exit code %d; its output (%ld new bytes) is in %.100s", e.id, e.cmd, rc, now_sz > e.log_sz ? now_sz - e.log_sz : 0L, e.log);
+                else rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended while katana was reloading with exit code %d; its output file is gone", e.id, e.cmd, rc);
+            }
+            rz_job_put(&e, st, rc, 1, now_sz);
+        } else if (!running && !e.told && !mine && e.status != RZJ_DETACHED) {      /* acabou antes e o modelo nao soube: diz uma vez */
+            if (has_log) rz_dpush(d, &nd, 1, "task %d (`%.60s`) had ended before; its output is in %.100s", e.id, e.cmd, e.log);
+            rz_job_put(&e, e.status, e.rc, 1, now_sz);
+        }
+    }
+#endif
+    /* o fluxo que acompanha uma tarefa */
+    if (fl_in(FL_TERMINAL) && !fl_job_alive(g_fl.task)) { g_fl.depth = fl_in(FL_TERMINAL); fl_pop("task gone"); g_fl.task = 0; }
+    if (fl_in(FL_IMAGE) && !foreign) {
+        FlowPos *ip = &g_fl.stk[fl_in(FL_IMAGE) - 1];
+        if (ip->st == 3 && !fl_job_alive(g_fl.task)) {
+            if (g_fl.path[0] && access(g_fl.path, R_OK) == 0) ip->st = 2;
+            else { ip->st = 5; rz_dpush(d, &nd, 2, "the image command ended but %.200s was not written", g_fl.path[0] ? g_fl.path : "its output"); }
+            g_fl.emitted_st = -1;
+        } else if ((ip->st == 2 || ip->st == 1) && g_fl.path[0] && access(g_fl.path, R_OK) != 0) {
+            ip->st = 5; g_fl.emitted_st = -1; rz_dpush(d, &nd, 2, "the image command ended but %.200s was not written", g_fl.path);
+        }
+    }
+    if (g_rz.new_proc) {
+        if (fl_in(FL_PLANMODE) && g_fl.stk[fl_in(FL_PLANMODE) - 1].st == 0 && !g_plan_mode) { g_plan_mode = 1; plan_ui(); rz_dpush(d, &nd, 5, "plan mode is on again: read only until the user approves the plan"); }
+        if (fl_in(FL_WORKTREE)) { rz_flow_drop(FL_WORKTREE); rz_dpush(d, &nd, 5, "the worktree session did not survive the restart"); }
+    }
+    /* arquivos */
+    for (int i = 0; i < s->nfile; i++) {
+        RzFile f = s->file[i];
+        if (foreign) { s->file[i].changed = 1; continue; }
+        uint64_t h; long long sz, mt;
+        const int ex = rz_file_info(f.path, &h, &sz, &mt);
+        if (f.op == RZF_WRITE) {
+            if (!ex) { rz_dpush(d, &nd, 3, "%.200s, which you edited, no longer exists", f.path); rz_ev('P', f.path, "0", "0", "0", "0", "0", "0", NULL); i--; continue; }
+            if (sz != f.size || mt != f.mtime) {
+                const int differs = (f.hash && h) ? h != f.hash : (sz != f.size || mt != f.mtime);
+                if (differs) rz_dpush(d, &nd, 3, "%.200s changed outside this session after your edit: read it again before editing", f.path);
+                rz_ev('P', f.path, rz_i(f.op), rz_x(h), rz_i(sz), rz_i(mt), rz_i(f.shown), rz_i(f.req), NULL);      /* o estado de agora e o novo ponto de comparacao */
+            }
+        } else if (f.op == RZF_MADE) {
+            if (!ex) { rz_dpush(d, &nd, 2, "%.200s, which was made, no longer exists", f.path); rz_ev('P', f.path, "0", "0", "0", "0", "0", "0", NULL); i--; continue; }
+        }
+    }
+    /* evidencia ligada a um arquivo: se o arquivo mudou, o item envelheceu */
+    for (int i = 0; i < s->nev; i++) {
+        RzEvid *e = &s->ev[i]; e->stale = 0;
+        if (!e->path[0] || !e->hash) continue;
+        uint64_t h; long long sz, mt;
+        if (foreign || !rz_file_info(e->path, &h, &sz, &mt) || (h && h != e->hash)) e->stale = 1;
+    }
+    /* tentativas: com o tempo, a pasta trocada ou outra maquina, "nao repita" vira "falhou antes" */
+    const long long now = (long long)time(NULL);
+    for (int i = 0; i < s->natt; i++) {
+        const RzAttempt a = s->att[i];
+        if (a.dead && (now - a.t > 24 * 3600 || g_rz.moved || foreign))
+            rz_ev('A', rz_x(a.key), rz_x(a.call), a.tool, a.subj, a.cause, rz_i(a.n), "0", a.fix, rz_i(a.epoch), NULL);
+    }
+    /* as frases: acumulam enquanto a reentrada da sessao espera o bloco; senao recomecam */
+    if (g_rz.reason != RZR_SESSION) { g_rz.ndelta = 0; g_rz.more_delta = 0; }
+    for (int pr = 0; pr < 8; pr++)
+        for (int i = 0; i < nd; i++) {
+            if (d[i].pr != pr) continue;
+            int dup = 0; for (int k = 0; k < g_rz.ndelta; k++) if (!strncmp(g_rz.delta[k], d[i].t, 199)) dup = 1;
+            if (dup) continue;
+            if (g_rz.ndelta < 6) rz_cpy(g_rz.delta[g_rz.ndelta++], sizeof g_rz.delta[0], d[i].t); else g_rz.more_delta++;
+        }
+    g_rz.new_proc = g_rz.moved = g_rz.foreign = 0;
+    rz_sync_flow();
+}
+/* o usuario diz que algo ja esta feito: nenhuma tentativa continua "nao repita" */
+static void rz_forgive_attempts(void) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    const RzState *s = &g_rz.s;
+    for (int i = 0; i < s->natt; i++) { const RzAttempt a = s->att[i]; if (a.dead) rz_ev('A', rz_x(a.key), rz_x(a.call), a.tool, a.subj, a.cause, rz_i(a.n), "0", a.fix, rz_i(a.epoch), NULL); }
 }
