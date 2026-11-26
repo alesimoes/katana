@@ -954,7 +954,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                     else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "
                                                  "Do not send it again. Read the error it gave, change the arguments or use another tool, or stop and tell the user in words what is blocking you.", rp_same_fail);
                     else if (rr_hit || fl_ref) { }
-                    else { g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
+                    else { if (cml) rz_before(name, ap, end); g_agent_m = m; g_agent_pos = pos; agent_tool(name, ap, end, result, sizeof result); }
                     ui_toolout(name, result);
                 if (!g_con_rich) fprintf(stderr, "%s[ferramenta %s: %zu bytes de resultado]%s\n", CE(C_DIM), name, strlen(result), CE(C_RESET));
                 /* Corte da repeticao (rp_stuck), conferido lendo o codigo em 2026-11-23: a 2a, 3a e 4a chamada identica que o rr_check pega (rr_hit) e
@@ -1002,7 +1002,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 if (g_rd_toomany && !strcmp(name, "Read") && !trunc) { g_rd_toomany = 0; if (round < lim - 2) round = lim - 2; rl_forced = 1; }      /* muitas fatias do mesmo arquivo: encerra e relata */
                 if (!trunc && !rp_refuse && !rr_hit && !rp_failed(result)) fg_neighbor_note(name, ap, end, result, sizeof result);      /* vizinhos ainda nao lidos (grafo do Find) */
                 if (!trunc && !rp_refuse) loop_plan_note(result, sizeof result, name, pl_calls, pl_old);     /* planejar antes de executar, e seguir o plano em ordem */
-                if (cml && !trunc && !rp_refuse && !rr_hit && !fl_ref) { g_agent_m = m; g_agent_pos = pos; flow_after(name, ap, end, result, sizeof result, rp_failed(result), round == lim - 2); }      /* o estado do fluxo anda; a linha [katana: next ...] entra no fim do resultado */
+                if (cml && !trunc && !rp_refuse && !rr_hit && !fl_ref) { g_agent_m = m; g_agent_pos = pos; flow_after(name, ap, end, result, sizeof result, rp_failed(result), round == lim - 2); rz_after(name, ap, end, result, rp_failed(result), g_fl_last_ev, g_fl_last_gain); }      /* o estado do fluxo anda; a linha [katana: next ...] entra no fim do resultado */
                 if (round == lim - 2) {      /* penultima rodada deste pedido (ou insistencia): a proxima fala tem de ser a resposta ao usuario */
                     const size_t rl = strlen(result);
                     if (rl + 400 < sizeof result)

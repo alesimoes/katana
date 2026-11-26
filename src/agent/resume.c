@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    int plan_done;                                                            /* passos do plano marcados na ultima conta */
     char req_text[400]; int goal_fid;                                         /* o pedido em curso (limpo) e o fluxo de baixo da pilha quando o objetivo foi gravado */
 } g_rz;
 #define RZ_UNUSED __attribute__((unused))
@@ -537,4 +538,151 @@ static void rz_request_begin(const char *ureq) {
     rz_clean(g_rz.req_text, sizeof g_rz.req_text, ureq, 0);
     char b[240]; rz_clean(b, sizeof b, ureq, 0);
     rz_ev('U', rz_i(g_fl.req + 1), b, NULL);
+}
+
+/* ---------- as chamadas: B antes, E depois; tentativas falhas, evidencia ganha, arquivos, decisoes (docs/flow-resume.md secao 5) ---------- */
+/* valor de uma chave em JSON (texto simples, sem entrar em objetos aninhados com a mesma chave; o primeiro valor vale) */
+static void rz_jget(const char *js, const char *end, const char *key, char *o, size_t cap) {
+    o[0] = 0;
+    char k[48]; snprintf(k, sizeof k, "\"%s\"", key);
+    const size_t kl = strlen(k);
+    for (const char *p = js; p + kl < end; p++) {
+        if (strncmp(p, k, kl)) continue;
+        const char *q = p + kl; while (q < end && (*q == ' ' || *q == ':')) q++;
+        if (q >= end || *q != '"') continue;
+        q++;
+        char tmp[600]; size_t n = 0;
+        while (q < end && *q != '"' && n + 2 < sizeof tmp) { if (*q == '\\' && q + 1 < end) { q++; tmp[n++] = *q == 'n' ? ' ' : *q; } else tmp[n++] = *q; q++; }
+        tmp[n] = 0;
+        rz_clean(o, cap, tmp, 0);
+        return;
+    }
+}
+/* o assunto da chamada para o estado: o comando, o arquivo, o endereco, a consulta; SendInput nunca guarda o texto (pode ser senha) */
+static void rz_subject(const char *name, const char *js, const char *end, char *o, size_t cap) {
+    o[0] = 0;
+    if (!strcmp(name, "SendInput")) { char id[16]; rz_jget(js, end, "task_id", id, sizeof id); snprintf(o, cap, "task %s", id[0] ? id : "?"); return; }
+    static const char *const keys[] = {"command", "file_path", "notebook_path", "path", "url", "pattern", "query", "prompt", "description", "subject", NULL};
+    for (int i = 0; keys[i] && !o[0]; i++) rz_jget(js, end, keys[i], o, cap);
+}
+static void rz_abs(const char *p, char *o, size_t cap) {      /* o pode ser o mesmo buffer de p */
+    char tmp[1600], cwd[1024];
+    if (p[0] == '/' || !p[0] || !getcwd(cwd, sizeof cwd)) snprintf(tmp, sizeof tmp, "%s", p);
+    else snprintf(tmp, sizeof tmp, "%s/%s", cwd, p);
+    rz_cpy(o, cap, tmp);
+}
+/* hash do conteudo de um arquivo (ate 8 MB; acima disso so tamanho e data); 0 se nao existe */
+static int rz_file_info(const char *path, uint64_t *hash, long long *size, long long *mtime) {
+    struct stat st; *hash = 0; *size = 0; *mtime = 0;
+    if (stat(path, &st) != 0) return 0;
+    *size = (long long)st.st_size; *mtime = (long long)st.st_mtime;
+    if (st.st_size > 8 * 1024 * 1024 || !S_ISREG(st.st_mode)) return 1;
+    FILE *f = fopen(path, "rb"); if (!f) return 1;
+    char b[8192]; size_t n; uint64_t h = RZ_FNV;
+    while ((n = fread(b, 1, sizeof b, f)) > 0) h = fl_hash(b, n, h);
+    fclose(f);
+    *hash = h;
+    return 1;
+}
+/* arquivo tocado ou produzido: P com o estado de agora */
+static void rz_file_note(const char *path, int op, int shown) {
+    char ap[400]; rz_clean(ap, sizeof ap, path, 0); rz_abs(ap, ap, sizeof ap);
+    if (!ap[0]) return;
+    uint64_t h; long long sz, mt; rz_file_info(ap, &h, &sz, &mt);
+    rz_ev('P', ap, rz_i(op), rz_x(h), rz_i(sz), rz_i(mt), rz_i(shown), rz_i(g_rz.s.req), NULL);
+}
+static void rz_evidence(int kind, const char *text, const char *path) {
+    char t[160]; rz_clean(t, sizeof t, text, 0);
+    char p[400] = ""; uint64_t h = 0; long long sz, mt;
+    if (path && path[0]) { rz_clean(p, sizeof p, path, 0); rz_abs(p, p, sizeof p); rz_file_info(p, &h, &sz, &mt); }
+    rz_ev('W', RZ_ENAME[kind], rz_x(fl_hash(t, strlen(t), RZ_FNV)), t, p, rz_x(h), NULL);
+}
+static int rz_secret_q(const char *q) {
+    static const char *const w[] = {"password", "senha", "token", "secret", "passphrase", "key", "chave", "pin", NULL};
+    char lo[200]; size_t n = 0; for (; q[n] && n < sizeof lo - 1; n++) lo[n] = (char)tolower((unsigned char)q[n]); lo[n] = 0;
+    for (int i = 0; w[i]; i++) if (strstr(lo, w[i])) return 1;
+    return 0;
+}
+/* antes de rodar: a chamada abre (B). Escrita na frente do efeito */
+static void rz_before(const char *name, const char *js, const char *end) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    char subj[120]; rz_subject(name, js, end, subj, sizeof subj);
+    rz_ev('B', name, subj, rz_x(g_fl.cur_sig), NULL);
+}
+/* depois de rodar: E, tentativa falha ou corrigida, evidencia, arquivo, decisao */
+static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    RzState *s = &g_rz.s;
+    rz_ev('E', name, failed ? "0" : "1", rz_x(g_fl.cur_sig), rz_x(fl_hash(result, strlen(result), RZ_FNV)), FE_NAME[ev], gain ? "1" : "0", NULL);
+    if (ev == FE_NONE) return;
+    char subj[80]; fm_subject(name, js, end, subj, sizeof subj);
+    if (!strcmp(name, "SendInput")) rz_subject(name, js, end, subj, sizeof subj);
+    rz_clean(subj, sizeof subj, subj, 0);
+    if (failed) {
+        char sig[120]; fm_errsig(result, sig, sizeof sig); rz_clean(sig, sizeof sig, sig, 0);
+        uint64_t key = fl_hash(name, strlen(name), RZ_FNV); key = fl_hash(subj, strlen(subj), key); key = fl_hash(sig, strlen(sig), key);
+        int n = 1; const char *fix = "";
+        for (int i = 0; i < s->natt; i++) if (s->att[i].key == key) { n = s->att[i].n + 1; fix = s->att[i].fix; }
+        char fx[120]; rz_cpy(fx, sizeof fx, fix);
+        rz_ev('A', rz_x(key), rz_x(g_fl.cur_sig), name, subj, sig, rz_i(n), rz_i(n >= 2), fx, rz_i(s->epoch), NULL);
+    } else {
+        for (int i = 0; i < s->natt; i++) {
+            const RzAttempt a = s->att[i];
+            if (strcmp(a.tool, name) || strcmp(a.subj, subj) || !(a.dead || !a.fix[0])) continue;
+            char fx[120];
+            if (!strcmp(name, "Bash") || !strcmp(name, "PowerShell")) rz_jget(js, end, "command", fx, sizeof fx);
+            else { char sh[100]; fm_shape(js, sh, sizeof sh); snprintf(fx, sizeof fx, "%.12s(%.100s)", name, sh); }
+            rz_ev('A', rz_x(a.key), rz_x(a.call), a.tool, a.subj, a.cause, rz_i(a.n), "0", fx, rz_i(a.epoch), NULL);
+        }
+    }
+    if (failed) return;
+    char t[200], v[400];
+    if (ev == FE_ASKED) {
+        rz_jget(js, end, "question", v, sizeof v);
+        const char *a = strstr(result, "the user answered: ");
+        char ans[160]; rz_clean(ans, sizeof ans, a ? a + 19 : "", 0);
+        if (rz_secret_q(v)) rz_cpy(ans, sizeof ans, "(given)");
+        rz_ev('D', v, ans, NULL);
+    }
+    if (!strcmp(name, "TodoWrite")) {      /* passo do plano fechado: a evidencia e o texto do passo */
+        int td = 0; todo_count(&td);
+        if (td > g_rz.plan_done) {
+            int k = 0; v[0] = 0;
+            for (const char *l = g_todo; *l; ) {
+                if (!strncmp(l, "[x]", 3) && ++k == td) { const char *e = strchr(l, '\n'); snprintf(v, sizeof v, "%.*s", (int)(e ? e - l - 3 : (int)strlen(l) - 3), l + 3); break; }
+                l = strchr(l, '\n'); if (!l) break; l++;
+            }
+            char tp[120]; rz_clean(tp, sizeof tp, v, 0);
+            snprintf(t, sizeof t, "plan step %d done: %s", td, tp); rz_evidence(RZE_PLAN, t, NULL);
+        }
+        g_rz.plan_done = td;
+    }
+    if (ev == FE_WRITE) { rz_jget(js, end, "file_path", v, sizeof v); if (!v[0]) rz_jget(js, end, "notebook_path", v, sizeof v); if (v[0]) rz_file_note(v, RZF_WRITE, 0); }
+    else if (ev == FE_RENDER_OK) {
+        const char *p = strstr(result, ": "); const char *e = p ? strstr(p, " (") : NULL;
+        if (p && e && e > p + 2) { snprintf(v, sizeof v, "%.*s", (int)(e - p - 2), p + 2); rz_file_note(v, RZF_MADE, 1); }
+    } else if (ev == FE_IMG_CMD) { if (g_fl.path[0]) rz_file_note(g_fl.path, RZF_MADE, 0); }
+    else if (ev == FE_SENT_FILE) {
+        const char *a = strstr(js, "\"files\""); const char *b = a ? strchr(a, '[') : NULL;
+        for (const char *q = b ? b + 1 : NULL; q && q < end && *q != ']'; ) {
+            if (*q != '"') { q++; continue; }
+            const char *e = ++q; while (e < end && *e != '"') e++;
+            snprintf(v, sizeof v, "%.*s", (int)(e - q < 399 ? e - q : 399), q); rz_file_note(v, RZF_MADE, 1);
+            q = e < end ? e + 1 : end;
+        }
+    }
+    if (!gain) return;
+    switch (ev) {
+    case FE_READ:
+        rz_jget(js, end, "file_path", v, sizeof v);
+        if (v[0]) { snprintf(t, sizeof t, "read %s", v); rz_evidence(RZE_READ, t, v); break; }
+        rz_jget(js, end, "pattern", v, sizeof v); if (!v[0]) rz_jget(js, end, "query", v, sizeof v);
+        snprintf(t, sizeof t, v[0] ? "searched %s" : "looked up with %s", v[0] ? v : name); rz_evidence(RZE_READ, t, NULL);
+        break;
+    case FE_CMD_OK: rz_jget(js, end, "command", v, sizeof v); snprintf(t, sizeof t, "`%.120s` passed", v); rz_evidence(RZE_CMD, t, NULL); break;
+    case FE_FETCH_OK: rz_jget(js, end, "url", v, sizeof v); snprintf(t, sizeof t, "read %s", v); rz_evidence(RZE_WEB, t, NULL); break;
+    case FE_SEARCH_OK: rz_jget(js, end, "query", v, sizeof v); snprintf(t, sizeof t, "searched %s", v); rz_evidence(RZE_WEB, t, NULL); break;
+    case FE_SUB_OK: rz_jget(js, end, "prompt", v, sizeof v); snprintf(t, sizeof t, "sub-agent answered: %s", v); rz_evidence(RZE_SUB, t, NULL); break;
+    default: break;
+    }
 }

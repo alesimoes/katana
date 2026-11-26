@@ -223,6 +223,7 @@ static struct {
     char jit[240];                                    /* declaracoes ja entregues nesta conversa (KATANA_FLOW_JIT) */
     int stall, plan_was;                              /* passos seguidos sem ganho; passos do plano fechados na ultima conta */
 } g_fl;
+static int g_fl_last_ev, g_fl_last_gain;           /* o evento e o ganho da ultima chamada (flow_after): o estado duravel os le (resume.c) */
 
 static int flow_strict(void) { const char *e = getenv("KATANA_FLOW"); return e && !strcmp(e, "strict"); }
 static uint64_t fl_hash(const char *s, size_t n, uint64_t h) { for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 1099511628211ULL; } return h; }
@@ -537,6 +538,7 @@ static void flow_after_body(const char *name, const char *js, const char *end, c
     const FlowEv ev = fl_event(name, js, end, result, failed);
     const FlowTool *ft = fl_tool(name);
     int changed = 0;
+    g_fl_last_ev = ev; g_fl_last_gain = 0;
     if (ev == FE_NONE) return;                                           /* ToolSearch: neutro */
     /* entrada por evento: a chamada abre o fluxo dela */
     if (ev == FE_WAIT_INPUT || ev == FE_BG) { if (fl_id() != FL_TERMINAL) { fl_enter(FL_TERMINAL, ev == FE_WAIT_INPUT ? 0 : 1, 1, FE_NAME[ev]); changed = 1; } }
@@ -582,7 +584,7 @@ static void flow_after_body(const char *name, const char *js, const char *end, c
     /* o que a memoria de fluxos sabe sobre esta falha (flowmem.c; desligado por padrao) */
     if (failed && pn + 300 < sizeof pre) pn += flow_memory_note(name, js, end, result, failed, pre + pn, sizeof pre - pn);
     /* falta de progresso: o que conta e a evidencia ganha por passo, nao a repeticao exata (pega o laco que varia os argumentos) */
-    if (fl_gain(ev, result, rl, failed, changed)) g_fl.stall = 0;
+    if (fl_gain(ev, result, rl, failed, changed)) { g_fl.stall = 0; g_fl_last_gain = 1; }
     else if (++g_fl.stall >= 5) { stall = 1; g_fl.stall = 0; if (pn < sizeof pre) pn += (size_t)snprintf(pre + pn, sizeof pre - pn, "the last 5 calls brought nothing new (no new result, no file changed, no step closed). Do not try another variation: use what you already have, or tell the user in two sentences what blocks you. "); fl_log("stall\t%s\t5 steps without gain", name); }
     g_fl.since_emit++;
     flow_grammar_mask();
