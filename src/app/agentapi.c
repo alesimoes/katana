@@ -128,10 +128,12 @@ static int ag_marker(const char *line, char *type, size_t tcap, Buf *js) {
         snprintf(type, tcap, "password_refused");
         buf_str(js, "\"message\":\"a sudo password was requested; passwords are not accepted over the API, so the command was refused\"");
         ag_write("\x01" "NOPASS\n", 8);
-    } else if (!strcmp(name, "SECRET")) {          /* segredo pedido por um comando: tambem nao vem pela rede; cancela ja */
-        snprintf(type, tcap, "secret_refused");
-        buf_str(js, "\"message\":\"a command asked for a secret (password or code); secrets are not accepted over the API, so it was cancelled\"");
-        char l[64]; const int n = snprintf(l, sizeof l, "\x01" "SECRETCANCEL %d\n", atoi(a));
+    } else if (!strcmp(name, "ASKINPUT")) {        /* pergunta de um comando ao usuario: segredo nao vem pela rede e a API nao tem dialogo; cancela ja */
+        const int masked = atoi(a + strcspn(a, " ")) == 1;
+        snprintf(type, tcap, masked ? "secret_refused" : "input_refused");
+        buf_str(js, masked ? "\"message\":\"a command asked for a secret (password or code); secrets are not accepted over the API, so it was cancelled\""
+                           : "\"message\":\"a command asked the user for input; the API has no input dialog, so the question was cancelled\"");
+        char l[64]; const int n = snprintf(l, sizeof l, "\x01" "ASKINPUTCANCEL %d\n", atoi(a));
         ag_write(l, (size_t)n);
     } else if (!strcmp(name, "MODE")) { snprintf(type, tcap, "mode"); ag_kv(js, "mode", a, strcspn(a, " \n"), 0); }
     else if (!strcmp(name, "CWD")) {

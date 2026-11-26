@@ -67,8 +67,9 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
 #define KNF_TODO_OPEN "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. " \
     "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now."
 #define KNF_NO_TTY "\n[katana: this command runs in a terminal, but a question it asked was not answered, so running it again fails the same way. " \
-    "When a command stops at a question you get [waiting for input: ..., task <id>]: answer it with SendInput(task_id, text) instead of starting it again. " \
-    "Passwords and verification codes are asked from the user by katana; never type them. A form that takes the answer as an argument or flag " \
+    "When a command stops at a question you get [waiting for input: ..., task <id>] with the lines before it and [hints]: answer it with SendInput(task_id, text) " \
+    "instead of starting it again, but only with a value you KNOW (the user said it, it is in the files or in [hints]); if you do not know it, call " \
+    "SendInput(task_id, ask_user=true, ask=...) and the user types it. Passwords and verification codes are asked from the user by katana; never type them. A form that takes the answer as an argument or flag " \
     "(see `<command> --help`: a path, --username, --yes, --no-input) also works. Before you assume a step is missing or done, check the real state " \
     "with the tool's own status command (status, whoami, version).]"
 #define KNF_NOT_IN_PATH "\n[katana: a program was not found in PATH. The usual user folders (~/.local/bin, ~/.cargo/bin, ~/go/bin and similar) are already in PATH, so it is " \

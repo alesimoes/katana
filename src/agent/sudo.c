@@ -59,45 +59,78 @@ static int sudo_ask(char *pw, size_t cap, int retry) {
     fprintf(stderr, "\n");
     return ok && pw[0];
 }
-/* segredo pedido por um comando do Bash (senha, frase secreta, PIN, codigo de verificacao, token): vai direto do usuario
- * para o terminal do comando, sem passar pelo modelo, pelo log nem pelo historico. Na interface (KATANA_UI): marcador
- * "\x01SECRET <id> <rotulo>" e a resposta chega na linha "\x01SECRET <id>\t<texto>" (ou "\x01SECRETCANCEL <id>"). No
- * terminal: le de /dev/tty com eco desligado. Sem interface nem terminal: cancela. 1 = out tem o segredo; 0 = cancelado. */
-static int secret_ask(int id, const char *label, char *out, size_t cap) {
+/* resposta do usuario a uma pergunta de um comando do Bash (src/tools/bash.c). masked = 1: segredo (senha, frase secreta, PIN,
+ * codigo, token), vai direto do usuario para o terminal do comando, sem passar pelo modelo, pelo log nem pelo historico;
+ * masked = 0: pergunta comum que o modelo nao soube responder (ou cuja resposta foi recusada), o texto volta ao modelo.
+ * Na interface (KATANA_UI): marcador "\x01ASKINPUT <id> <masked> <pergunta do terminal>\t<pergunta do modelo>\t<contexto>\t<dicas>"
+ * (contexto com \n e \\ escapados; dicas separadas por \x1f, a primeira e a melhor) e a resposta chega na linha
+ * "\x01ASKINPUT <id>\t<texto>" (ou "\x01ASKINPUTCANCEL <id>"). No terminal: le de /dev/tty (eco desligado se masked; Enter
+ * vazio aceita a primeira dica), com limite de KATANA_PROMPT_MAX segundos. Sem interface nem terminal: cancela.
+ * 1 = out tem a resposta; 0 = cancelado. */
+static void ia_clean(const char *s, char *o, size_t cap, int esc) {
+    size_t n = 0;
+    for (const char *q = s ? s : ""; *q && n + 3 < cap; q++) {
+        const unsigned char c = (unsigned char)*q;
+        if (esc && c == '\\') { o[n++] = '\\'; o[n++] = '\\'; }
+        else if (esc && c == '\n') { o[n++] = '\\'; o[n++] = 'n'; }
+        else o[n++] = c < 0x20 && c != 0x1f ? ' ' : (char)c;
+    }
+    while (n && o[n - 1] == ' ') n--;
+    o[n] = 0;
+}
+static int input_ask(int id, int masked, const char *label, const char *question, const char *ctx, const char *hints, char *out, size_t cap) {
     out[0] = 0;
-    char lb[240]; size_t n = 0;
-    for (const char *q = label; *q && n < 200; q++) lb[n++] = (unsigned char)*q < 0x20 ? ' ' : *q;
-    while (n && lb[n - 1] == ' ') n--;
-    lb[n] = 0;
+    static char lb[240], qs[600], cx[2000], hs[3000];
+    ia_clean(label, lb, sizeof lb, 0);
+    ia_clean(question, qs, sizeof qs, 0);
+    ia_clean(ctx, cx, sizeof cx, 1);
+    ia_clean(masked ? "" : hints, hs, sizeof hs, 0);
     if (getenv("KATANA_UI")) {
-        printf("\x01" "SECRET %d %s\n", id, lb); fflush(stdout);
-        static char l[2048];
-        char pre[40];
-        const int pl = snprintf(pre, sizeof pre, "\x01" "SECRET %d\t", id);
+        printf("\x01" "ASKINPUT %d %d %s\t%s\t%s\t%s\n", id, masked ? 1 : 0, lb, qs, cx, hs); fflush(stdout);
+        static char l[4200];
+        char pre[48];
+        const int pl = snprintf(pre, sizeof pre, "\x01" "ASKINPUT %d\t", id);
         int ok = 0;
         if (read_line(l, sizeof l) && strncmp(l, pre, (size_t)pl) == 0) { snprintf(out, cap, "%s", l + pl); ok = 1; }
-        memset(l, 0, sizeof l);                              /* SECRETCANCEL ou qualquer outra linha: cancela */
+        memset(l, 0, sizeof l);                              /* ASKINPUTCANCEL ou qualquer outra linha: cancela */
         return ok;
     }
     const int fd = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (fd < 0) return 0;
-    char msg[400];
-    const int ml = snprintf(msg, sizeof msg, "\n[katana] the command asks for a secret; type it here (it is not shown to the model). %s ", lb[0] ? lb : "Secret:");
-    if (write(fd, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1)) < 0) {}
+    static char msg[6000];
+    int ml = 0;
+    if (masked) ml = snprintf(msg, sizeof msg, "\n[katana] the command asks for a secret; type it here (it is not shown to the model). %s ", lb[0] ? lb : "Secret:");
+    else {
+        ml = snprintf(msg, sizeof msg, "\n[katana] the command is waiting for input and needs your answer%s%s\n%.1900s\n", qs[0] ? ": " : ".", qs, ctx ? ctx : "");
+        int nh = 0;
+        for (const char *q = hs; *q && ml < (int)sizeof msg - 600; nh++) {
+            const size_t l = strcspn(q, "\x1f");
+            ml += snprintf(msg + ml, sizeof msg - (size_t)ml, "%s  %.*s\n", nh ? "" : "suggestions (an empty line accepts the first):\n", (int)(l < 500 ? l : 500), q);
+            q += l + (q[l] ? 1 : 0);
+        }
+        if (ml < (int)sizeof msg - 260) ml += snprintf(msg + ml, sizeof msg - (size_t)ml, "%s ", lb[0] ? lb : "Answer:");
+    }
+    if (ml > (int)sizeof msg - 1) ml = (int)sizeof msg - 1;
+    if (write(fd, msg, (size_t)ml) < 0) {}
     struct termios t0, t1;
     const int hv = tcgetattr(fd, &t0) == 0;
-    if (hv) { t1 = t0; t1.c_lflag &= ~(tcflag_t)(ECHO | ECHONL); t1.c_lflag |= ICANON | ISIG; tcsetattr(fd, TCSANOW, &t1); }
+    if (hv) { t1 = t0; if (masked) t1.c_lflag &= ~(tcflag_t)(ECHO | ECHONL); else t1.c_lflag |= ECHO; t1.c_lflag |= ICANON | ISIG; tcsetattr(fd, TCSANOW, &t1); }
     size_t o = 0; int ok = 0;
+    const char *e = getenv("KATANA_PROMPT_MAX");
+    const int wait_ms = (e && atoi(e) > 0 ? atoi(e) : 900) * 1000;
     for (;;) {
+        struct pollfd pf = { fd, POLLIN, 0 };
+        if (poll(&pf, 1, wait_ms) <= 0) break;               /* sem resposta no prazo (ou Ctrl+C): cancela */
         char ch;
         const ssize_t k = read(fd, &ch, 1);
-        if (k <= 0) break;                                   /* Ctrl+C (EINTR) ou fim: cancela */
+        if (k <= 0) break;
         if (ch == '\n' || ch == '\r') { ok = 1; break; }
         if (o + 1 < cap) out[o++] = ch;
     }
     out[o] = 0;
+    if (ok && !o && !masked && hs[0]) { const size_t l = strcspn(hs, "\x1f"); snprintf(out, cap, "%.*s", (int)l, hs); }
     if (hv) tcsetattr(fd, TCSANOW, &t0);
-    if (write(fd, "\n", 1) < 0) {}
+    if (masked && write(fd, "\n", 1) < 0) {}
     close(fd);
     if (!ok) memset(out, 0, cap);
     return ok;

@@ -89,38 +89,72 @@ The child environment adds `TERM=dumb` and `NO_COLOR=1`, keeps `GIT_TERMINAL_PRO
 straight to the file.
 
 Question detection: while waiting, after `KATANA_PROMPT_WAIT` ms without new output (default 2000, 300 to 30000), katana
-checks whether a process of the command's session is blocked in `read` on the terminal (`/proc/<pid>/stat` for the session,
-`/proc/<pid>/syscall` and the fd link; x86-64 and arm64). When that cannot be told (the program waits in
-`poll`/`select`, or `/proc` is closed), the last output line counts as a question when the output does not end with a
+looks at every thread of every process in the command's session (`/proc/<pid>/stat` for the session,
+`/proc/<pid>/task/<tid>/syscall` and the fd link; x86-64 and arm64). A thread blocked in `read` on the terminal (or
+`/dev/tty`) is a question. A process whose sleeping threads are all in `nanosleep`/`clock_nanosleep`/`wait4`/`waitid` (a
+`sleep`, a shell waiting for its child) is only counting time: not a question. Any other wait (`sigsuspend`, `futex`,
+`epoll_wait`, `poll`, as in multi-threaded tools whose main thread parks in `sigsuspend` and whose reader thread polls stdin)
+means "cannot tell", and then the last output line decides: it counts as a question when the output does not end with a
 newline and the line ends with `:`, `?`, `]`, `)`, `>` or names a prompt (`password`, `passphrase`, `[sudo]`, `PIN`, `code`,
-`token`, `login`, `username`, `(y/n)`, `[Y/n]`, `select`, `path to`, `enter`, `choose`). A question does not wait for the
-timeout: the command becomes a background task (it keeps its terminal) and the result is the output so far plus
-`[waiting for input: "<prompt line>", task <id>; answer with SendInput(task_id="<id>", text=...)]`. A program that reads its
-terminal with no prompt (`cat` with no file) gets the same line with an empty prompt. A task that keeps waiting at a
-question with no new output for `KATANA_PROMPT_MAX` seconds (default 900) is stopped by the job poll; stopped and finished
-tasks are cleaned as before (job table, exit handler, reaper).
+`token`, `login`, `username`, `(y/n)`, `[Y/n]`, `select`, `path to`, `enter`, `choose`). Chosen criterion for false
+positives: `sleep 4`, `printf Loading:; sleep 5` and a loop that prints `Loading:` every second are not questions (sleep
+only, or output keeps changing); a program that prints a line ending in `:` without a newline and then computes silently
+in a `futex`/`poll` wait for longer than `KATANA_PROMPT_WAIT` is still taken for a question (known limit; the model sees it
+with its context and can just wait or read the output file). A program that reads its terminal with no prompt (`cat` with
+no file) gets a question with an empty prompt.
+
+A question does not wait for the timeout: the command becomes a background task (it keeps its terminal). A background task
+(`run_in_background`, `Monitor`, or a command already moved to the background) that stops at a question unseen by the model
+gets a note at the end of the result of the next tool call (`ctb_bg_note`, called from `ct_dispatch`):
+`[background task <id> (<command>) stopped at a question]` plus the block below. A task that keeps waiting at a question
+with no new output for `KATANA_PROMPT_MAX` seconds (default 900) is stopped by the job poll; stopped and finished tasks are
+cleaned as before (job table, exit handler, reaper).
+
+Answering a question works in three levels, in this order:
+
+1. **What katana already knows (deterministic, no model).** The result carries `[waiting for input: "<prompt line>", task
+   <id>]`, the prompt context (the last 12 lines, up to 800 bytes, as `[prompt context (last lines of the output): ...]`
+   when the output shown does not already end with them: a prompt like `Path to Tool.xip:` only makes sense with the line
+   before it) and `[hints found by katana (nothing was typed): "<value>" (<note>); ...]` (`ctb_hints`): for a path prompt
+   (`path`, `file`, `directory`, `folder`, `location`, or a file name in the prompt), the files named or with the extension
+   named in the prompt (or the 3 lines before it) found in the shell folder, `~/Downloads`, `~/Desktop` and the home folder
+   (no recursion; same name first, then newest; with the size); for a user/login/e-mail prompt, the system user name and
+   `git config user.email`; for a yes/no prompt, the bracketed default first. Secret prompts get no hints. Katana never
+   types a hint by itself.
+2. **The model answers.** The block ends with the policy: answer with `SendInput(task_id, text)` only when the value is
+   known (the user said it, it is in the files, or a hint fits); otherwise call `SendInput(task_id, ask_user=true,
+   ask="<short question>")` instead of guessing or running the command again; never type secrets. When the same prompt
+   comes back right after the model's answer, the next block says so (`[the same question came back after your answer:
+   ...]`).
+3. **The user types.** With `ask_user=true`, for a secret prompt, or automatically when the same prompt comes back a second
+   time after the model's answers, katana asks the user (`input_ask`, `src/agent/sudo.c`). With the desktop (`KATANA_UI`) it
+   emits `\x01ASKINPUT <id> <masked 0|1> <prompt line>\t<model question>\t<context>\t<hints>` (context with `\n` and
+   `\\` escaped; hints separated by `\x1f`, best first; none when masked) and reads one line back: `\x01ASKINPUT
+   <id>\t<text>` or `\x01ASKINPUTCANCEL <id>`. In the terminal it shows the context and hints and reads `/dev/tty` (echo
+   off when masked; an empty line takes the first hint; gives up after `KATANA_PROMPT_MAX` seconds). With neither
+   (headless) it cancels. A non-secret answer is written to the terminal and comes back to the model as `[user answered:
+   "<text>"]`, so it learns the value. A cancel sends Ctrl+C to the program (`[input cancelled by the user]` in the output).
+   The time the user takes does not count against the timeout.
 
 Secrets: a question is a secret when the terminal has echo off in line mode (what password readers do) or the prompt line
 mentions a password, passphrase, `passwd`, PIN, OTP, 2FA, code, token, secret, verification or one-time. Katana does not
-hand a secret question to the model: it asks the user (`secret_ask`, `src/agent/sudo.c`). With the desktop
-(`KATANA_UI`) it emits `\x01SECRET <id> <prompt line>` and reads one line back: `\x01SECRET <id>\t<text>` or
-`\x01SECRETCANCEL <id>`; in the terminal it reads `/dev/tty` with echo off; with neither (headless) it cancels. The text is
-written straight to the command's terminal with echo turned off during the write (and turned back on 0.3 s later if it was
-on), so it never reaches the output file; the output gets `[secret entered by the user]` (or `[secret cancelled]`, and
-Ctrl+C is sent to the command). Up to 3 secret questions per wait are asked; the next one is cancelled. The time the user
-takes does not count against the timeout. The secret is kept only in a static buffer that is wiped after the write: it is
-not in the tool result, `agente.log`, the `\x01TOOL`/`TOOLOUT`/`TOOLLIVE` markers, the desktop session files or any error
-message. The HTTP agent API (`src/app/agentapi.c`) refuses secrets like sudo passwords: it answers `SECRETCANCEL` and emits
-a `secret_refused` event.
+hand a secret question to the model: it asks the user at once (level 3, masked). The text is written straight to the
+command's terminal with echo turned off during the write (and turned back on 0.3 s later if it was on), so it never
+reaches the output file; the output gets `[secret entered by the user]` (or `[secret cancelled]`, and Ctrl+C is sent to the
+command). Up to 3 secret questions per wait are asked; the next one is cancelled. The secret is kept only in a static
+buffer that is wiped after the write: it is not in the tool result, `agente.log`, the `\x01TOOL`/`TOOLOUT`/`TOOLLIVE`
+markers, the desktop session files or any error message. The HTTP agent API (`src/app/agentapi.c`) has no input dialog: it
+answers `ASKINPUTCANCEL` and emits a `secret_refused` (masked) or `input_refused` event.
 
-**`SendInput(task_id, text, newline=true, eof=false)`** writes into the task's terminal (at most 4096 bytes; `eof` adds
-Ctrl+D, end of input for a program reading the terminal). If the task is sitting at a secret question, the model's text is
-wiped unused and the user is asked instead. After writing it waits like `Bash` does, until the task exits, stops at its
-next question (`[waiting for input: ...]` again) or 20 s pass, and returns the new output (echo of what was typed included,
-for non-secret text). Errors: no such task, task finished, task without a terminal, terminal not taking input after 2 s.
-The typed text is replaced by `***` (`job_redact`, `src/agent/jobs.c`) in the action log (`agente.log`), the `\x01TOOL`
-marker and the headless event stream, and the desktop shows only "Respondendo ao comando: tarefa N"; it does stay in the
-model's own conversation, like any tool argument, which is why secrets never go through `SendInput`.
+**`SendInput(task_id, text, newline=true, eof=false, ask_user=false, ask)`** writes into the task's terminal (at most 4096
+bytes; `eof` adds Ctrl+D, end of input for a program reading the terminal). `ask_user=true` (no `text` needed) hands the
+question to the user (level 3) with `ask` as the question shown to them. If the task is sitting at a secret question, the
+model's text is wiped unused and the user is asked instead. After writing it waits like `Bash` does, until the task exits,
+stops at its next question (`[waiting for input: ...]` again) or 20 s pass, and returns the new output (echo of what was
+typed included, for non-secret text). Errors: no such task, task finished, task without a terminal, terminal not taking
+input after 2 s. The typed text is replaced by `***` (`job_redact`, `src/agent/jobs.c`) in the action log (`agente.log`),
+the `\x01TOOL` marker and the headless event stream, and the desktop shows only "Respondendo ao comando: tarefa N"; it does
+stay in the model's own conversation, like any tool argument, which is why secrets never go through `SendInput`.
 
 **PATH.** The command's `PATH` is katana's own plus the usual user program folders that exist and are not already in it:
 `~/.local/bin`, `~/.cargo/bin`, `~/.local/share/swiftly/bin`, `~/go/bin`, `~/.bun/bin`, `~/.deno/bin`, `~/.dotnet/tools`,
@@ -128,7 +162,7 @@ the newest `~/.nvm/versions/node/*/bin` and `/usr/local/go/bin` (`ctb_path`).
 
 Engine notes after a failed `Bash` (`bash_env_hint`, `src/agent/loop.c`): output that says the command wanted a terminal or
 an answer (`Operation unsupported`, `not a tty`, `no tty present`, ...) gets the `no_tty` note (answer the question with
-`SendInput`, never type secrets, or use the flag form; check the real state first); `command not found` and similar get
+`SendInput` when the value is known, `ask_user=true` when it is not, never type secrets, or use the flag form; check the real state first); `command not found` and similar get
 `not_in_path` (the usual folders are already in PATH; find the program elsewhere and prefix PATH). Test script:
 `tools/tooltest/sendinput.sh`.
 

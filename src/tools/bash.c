@@ -6,8 +6,9 @@
  * Pergunta: se o comando fica parado lendo o terminal (ou, sem /proc, a saida acaba numa linha com cara de pergunta) depois
  * de um silencio (KATANA_PROMPT_WAIT ms, padrao 2000), o Bash nao espera o timeout: a tarefa passa para segundo plano e o
  * modelo recebe "[waiting for input: ...]" com o numero dela; SendInput escreve no terminal dela. Pergunta de SEGREDO (eco
- * desligado no terminal, ou senha/frase secreta/PIN/codigo/token no texto): o katana pede ao usuario (secret_ask, agent/sudo.c:
- * marcador SECRET no desktop, /dev/tty no terminal) e escreve direto no terminal; o modelo so ve a marca.
+ * desligado no terminal, ou senha/frase secreta/PIN/codigo/token no texto): o katana pede ao usuario (input_ask, agent/sudo.c:
+ * marcador ASKINPUT mascarado no desktop, /dev/tty no terminal) e escreve direto no terminal; o modelo so ve a marca. Pergunta
+ * comum: o modelo recebe a pergunta, o contexto e dicas calculadas (ctb_hints); responde se sabe ou passa ao usuario (ask_user).
  * A pasta do shell persiste entre chamadas so para o Bash (g_ctb_cwd): o roteiro grava `pwd -P` ao sair (trap EXIT);
  * se a pasta final ficar fora da pasta de trabalho do agente (e das pastas liberadas), volta para a pasta de trabalho
  * e o resultado avisa. Variaveis de ambiente nao persistem. O PATH ganha as pastas usuais de programas do usuario (ctb_path).
@@ -17,6 +18,7 @@
 #include <glob.h>
 #include <dirent.h>
 #include <poll.h>
+#include <pwd.h>
 static char g_ctb_cwd[4200];       /* pasta do shell do Bash entre chamadas ("" = pasta de trabalho do agente) */
 static int g_ctb_seq;
 
@@ -258,14 +260,17 @@ static long ctb_size(const char *path) { struct stat st; return stat(path, &st) 
 static size_t ctb_utf8(const char *s, size_t n) { while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--; return n; }
 
 /* ---- perguntas do comando (terminal parado esperando resposta) ---- */
-/* 1 = algum processo da sessao sid esta parado lendo o terminal (slave ou /dev/tty); 0 = nenhum; -1 = nao da para saber
- * (espera em poll/select, /proc fechado, outra arquitetura) */
+/* 1 = algum processo da sessao sid esta parado lendo o terminal (slave ou /dev/tty); 0 = nenhum (todos rodando, em sleep ou
+ * esperando um filho); -1 = nao da para saber (alguma thread em poll/epoll/futex/sigsuspend, /proc fechado, outra arquitetura):
+ * entao o texto da ultima linha decide (ctb_prompt_like) */
 static int ctb_reading(pid_t sid, const char *slave) {
 #if defined(__x86_64__) || defined(__aarch64__)
 #if defined(__x86_64__)
     static const long rd[] = { 0, 19, 275, -9 };      /* read, readv, splice */
+    static const long tm[] = { 35, 230, 61, 247, -9 };  /* nanosleep, clock_nanosleep, wait4, waitid */
 #else
     static const long rd[] = { 63, 65, 76, -9 };
+    static const long tm[] = { 101, 115, 260, 95, -9 };
 #endif
     DIR *d = opendir("/proc");
     if (!d) return -1;
@@ -291,6 +296,7 @@ static int ctb_reading(pid_t sid, const char *slave) {
         snprintf(td, sizeof td, "/proc/%s/task", e->d_name);
         DIR *dt = opendir(td);
         if (!dt) { res = -1; continue; }
+        int unk = 0;                                         /* alguma thread dorme numa chamada que pode ser espera de entrada */
         struct dirent *et;
         while ((et = readdir(dt))) {
             if (!isdigit((unsigned char)et->d_name[0])) continue;
@@ -303,16 +309,20 @@ static int ctb_reading(pid_t sid, const char *slave) {
             long nr = -1;
             unsigned long a0 = 0;
             if (sscanf(b, "%ld 0x%lx", &nr, &a0) != 2) { if (strncmp(b, "running", 7)) res = -1; continue; }
-            int isrd = 0;
+            int isrd = 0, istm = 0;
             for (int i = 0; rd[i] >= 0; i++) if (nr == rd[i]) isrd = 1;
+            for (int i = 0; tm[i] >= 0; i++) if (nr == tm[i]) istm = 1;
             if (isrd) {
                 char l[256];
                 snprintf(p, sizeof p, "/proc/%s/fd/%lu", e->d_name, a0);
                 const ssize_t ll = readlink(p, l, sizeof l - 1);
                 if (ll > 0) { l[ll] = 0; if (!strcmp(l, slave) || !strcmp(l, "/dev/tty")) { closedir(dt); closedir(d); return 1; } }
-            } else res = -1;
+            } else if (!istm) unk = 1;
         }
         closedir(dt);
+        /* processo so com threads em sleep/wait (um `sleep`, o shell esperando o filho): esta contando tempo, nao lendo; qualquer
+           outra espera (sigsuspend, futex, epoll, poll) num programa de varias threads pode ser a leitura do terminal */
+        if (unk) res = -1;
     }
     closedir(d);
     return res;
@@ -397,29 +407,235 @@ static size_t ctb_write(int m, const char *s, size_t n, int *err) {
     }
     return put;
 }
-static int g_ctb_secret_seq;
-/* pergunta de segredo: o usuario responde (secret_ask) e o texto vai direto ao terminal, com o eco desligado durante a escrita;
- * na saida (e para o modelo) fica so a marca. Cancelado (ou cancel = 1): Ctrl+C no terminal. */
-static void ctb_secret_answer(int m, const char *log, const char *label, int cancel) {
+/* contexto da pergunta: as ultimas 12 linhas da saida (ate 800 bytes), sem caracteres de controle; o texto da pergunta de
+ * muitos programas so faz sentido com a frase anterior */
+static void ctb_context(const char *log, char *o, size_t cap) {
+    char b[808];
+    const long sz = ctb_size(log);
+    size_t k = ctb_read(log, sz > 800 ? sz - 800 : 0, b, 800);
+    b[k] = 0;
+    size_t s0 = 0;
+    if (sz > 800) { const char *nl = memchr(b, '\n', k); s0 = nl ? (size_t)(nl + 1 - b) : 0; }
+    while (k > s0 && (b[k - 1] == '\n' || b[k - 1] == '\r' || b[k - 1] == ' ' || b[k - 1] == '\t')) k--;
+    int lines = 0;
+    size_t i = k;
+    while (i > s0) { if (b[i - 1] == '\n' && ++lines >= 12) break; i--; }
+    while (i < k && (b[i] == '\n' || b[i] == '\r')) i++;
+    size_t n = 0;
+    for (; i < k && n + 1 < cap; i++) { const unsigned char c = (unsigned char)b[i]; if (c == '\r') continue; o[n++] = c < 0x20 && c != '\n' ? ' ' : (char)c; }
+    o[n] = 0;
+}
+/* dicas calculadas pelo katana (sem modelo): o valor e uma nota curta. Nunca sao digitadas sozinhas. */
+typedef struct { char v[480], note[96]; } CtbHint;
+#define CTB_HINT_N 6
+static int ctb_hint_add(CtbHint *h, int n, const char *v, const char *note) {
+    if (n >= CTB_HINT_N || !v || !*v) return n;
+    for (int i = 0; i < n; i++) if (!strcmp(h[i].v, v)) return n;
+    snprintf(h[n].v, sizeof h[n].v, "%s", v);
+    snprintf(h[n].note, sizeof h[n].note, "%s", note);
+    return n + 1;
+}
+static void ctb_human(double b, char *o, size_t cap) {
+    if (b >= 1e9) snprintf(o, cap, "%.1f GB", b / 1e9);
+    else if (b >= 1e6) snprintf(o, cap, "%.1f MB", b / 1e6);
+    else if (b >= 1e3) snprintf(o, cap, "%.0f KB", b / 1e3);
+    else snprintf(o, cap, "%.0f bytes", b);
+}
+/* nomes de arquivo citados no texto (Tool.xip, setup.tar.gz): nome e extensao */
+static int ctb_named_files(const char *t, char nm[][128], char ex[][16], int max) {
+    int n = 0;
+    for (const char *p = t; *p && n < max;) {
+        if (!(isalnum((unsigned char)*p) || *p == '_' || *p == '-' || *p == '+' || *p == '.')) { p++; continue; }
+        const char *q = p;
+        while (*q && (isalnum((unsigned char)*q) || *q == '_' || *q == '-' || *q == '+' || *q == '.')) q++;
+        size_t l = (size_t)(q - p);
+        while (l && p[l - 1] == '.') l--;
+        const char *dot = NULL;
+        for (size_t i = 1; i < l; i++) if (p[i] == '.') dot = p + i;
+        if (dot && l < 128) {
+            const size_t el = (size_t)(p + l - dot - 1);
+            int alpha = 0, ok = el >= 1 && el <= 8;
+            for (size_t i = 0; ok && i < el; i++) { if (!isalnum((unsigned char)dot[1 + i])) ok = 0; if (isalpha((unsigned char)dot[1 + i])) alpha = 1; }
+            if (ok && alpha) {
+                snprintf(nm[n], 128, "%.*s", (int)l, p);
+                snprintf(ex[n], 16, "%.*s", (int)el, dot + 1);
+                int dup = 0;
+                for (int i = 0; i < n; i++) if (!strcasecmp(nm[i], nm[n])) dup = 1;
+                if (!dup) n++;
+            }
+        }
+        p = q;
+    }
+    return n;
+}
+/* candidatos no disco para uma pergunta de caminho: arquivos com o nome ou a extensao citados, na pasta do shell, em
+ * ~/Downloads, ~/Desktop e na pasta pessoal (sem descer em subpastas); o nome exato vem antes, depois o mais recente */
+static int ctb_path_hints(const char *label, const char *ctx, int wants_dir, CtbHint *h, int n) {
+    char nm[6][128], ex[6][16];
+    int nn = ctb_named_files(label, nm, ex, 6);
+    if (!nn && ctx) {                                        /* a frase anterior a pergunta: so as 3 ultimas linhas */
+        const char *c = ctx + strlen(ctx);
+        for (int k = 0; c > ctx && k < 4; ) { c--; if (*c == '\n') k++; }
+        nn = ctb_named_files(c, nm, ex, 6);
+    }
+    char dirs[4][4200];
+    int nd = 0;
+    ctb_start_dir(dirs[nd++], sizeof dirs[0]);
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        snprintf(dirs[nd++], sizeof dirs[0], "%s/Downloads", home);
+        snprintf(dirs[nd++], sizeof dirs[0], "%s/Desktop", home);
+        snprintf(dirs[nd++], sizeof dirs[0], "%s", home);
+    }
+    struct { char p[480]; int score; time_t mt; double sz; int dir; } c[16];
+    int nc = 0;
+    for (int d = 0; d < nd && nn; d++) {
+        int dup = 0;
+        for (int e = 0; e < d; e++) if (!strcmp(dirs[e], dirs[d])) dup = 1;
+        if (dup) continue;
+        char rp[4200];
+        if (realpath(dirs[d], rp)) snprintf(dirs[d], sizeof dirs[0], "%s", rp);
+        for (int e = 0; e < d; e++) if (!strcmp(dirs[e], dirs[d])) dup = 1;
+        if (dup) continue;
+        DIR *dp = opendir(dirs[d]);
+        if (!dp) continue;
+        struct dirent *e;
+        while ((e = readdir(dp))) {
+            if (e->d_name[0] == '.') continue;
+            int score = 0;
+            const char *dot = strrchr(e->d_name, '.');
+            for (int i = 0; i < nn; i++) {
+                if (!strcasecmp(e->d_name, nm[i])) score = score > 3 ? score : 3;
+                else if (dot && !strcasecmp(dot + 1, ex[i])) score = score > 1 ? score : 1;
+            }
+            if (!score) continue;
+            char fp[4800];
+            snprintf(fp, sizeof fp, "%s/%s", dirs[d], e->d_name);
+            struct stat st;
+            if (stat(fp, &st) != 0 || strlen(fp) >= sizeof c[0].p) continue;
+            int at = nc < 16 ? nc++ : -1;
+            if (at < 0) continue;
+            snprintf(c[at].p, sizeof c[at].p, "%s", fp);
+            c[at].score = score; c[at].mt = st.st_mtime; c[at].sz = (double)st.st_size; c[at].dir = S_ISDIR(st.st_mode);
+        }
+        closedir(dp);
+    }
+    for (int i = 0; i < nc; i++)                             /* ordem: nome exato, depois o mais recente */
+        for (int k = i + 1; k < nc; k++)
+            if (c[k].score > c[i].score || (c[k].score == c[i].score && c[k].mt > c[i].mt)) { __typeof__(c[0]) t = c[i]; c[i] = c[k]; c[k] = t; }
+    for (int i = 0; i < nc; i++) {
+        char hs[32], note[96];
+        ctb_human(c[i].sz, hs, sizeof hs);
+        if (c[i].dir) snprintf(note, sizeof note, "folder found on disk%s", c[i].score >= 3 ? ", same name" : "");
+        else snprintf(note, sizeof note, "file found on disk, %s%s", hs, c[i].score >= 3 ? ", same name" : "");
+        n = ctb_hint_add(h, n, c[i].p, note);
+    }
+    if (!nc && wants_dir) { char d[4200]; ctb_start_dir(d, sizeof d); n = ctb_hint_add(h, n, d, "current folder of the shell"); }
+    return n;
+}
+/* dicas para a pergunta (nunca para segredo): caminho (arquivos citados achados no disco), usuario/login/e-mail (nome do
+ * usuario do sistema e git config user.email) e sim/nao (o padrao entre colchetes primeiro) */
+static int ctb_hints(const char *label, const char *ctx, CtbHint *h) {
+    int n = 0;
+    char lo[256];
+    ctb_lower(label, lo, sizeof lo);
+    const char *yn = strstr(lo, "y/n");
+    const char *yesno = strstr(lo, "yes/no");
+    if (yn || yesno) {
+        const size_t at = (size_t)((yn ? yn : yesno) - lo);
+        const char *o = label + at;
+        const char *sl = strchr(o, '/');
+        const int defy = isupper((unsigned char)o[0]) && sl && islower((unsigned char)sl[1]);
+        const int defn = islower((unsigned char)o[0]) && sl && isupper((unsigned char)sl[1]);
+        const char *y = yesno ? "yes" : "y", *no = yesno ? "no" : "n";
+        if (defn) { n = ctb_hint_add(h, n, no, "default shown in brackets"); n = ctb_hint_add(h, n, y, ""); }
+        else { n = ctb_hint_add(h, n, y, defy ? "default shown in brackets" : ""); n = ctb_hint_add(h, n, no, ""); }
+        return n;
+    }
+    char nm[2][128], ex[2][16];
+    const int wants_dir = ctb_word(lo, "directory") || ctb_word(lo, "folder") || ctb_word(lo, "dir");
+    if (strstr(lo, "path") || ctb_word(lo, "file") || wants_dir || ctb_word(lo, "location") || ctb_named_files(label, nm, ex, 2))
+        return ctb_path_hints(label, ctx, wants_dir, h, n);
+    const int mail = ctb_word(lo, "email") || ctb_word(lo, "e-mail") || strstr(lo, "mail") != NULL;
+    if (mail || ctb_word(lo, "user") || ctb_word(lo, "username") || ctb_word(lo, "login") || ctb_word(lo, "account") || strstr(lo, "user name")) {
+        char em[300] = "";
+        int rc = 1;
+        char *g = run_collect("git config user.email 2>/dev/null", 3, 290, &rc);
+        if (g && rc == 0) { size_t l = strcspn(g, "\r\n"); snprintf(em, sizeof em, "%.*s", (int)l, g); }
+        free(g);
+        const struct passwd *pw = getpwuid(getuid());
+        if (mail) n = ctb_hint_add(h, n, em, "git config user.email");
+        if (pw && pw->pw_name) n = ctb_hint_add(h, n, pw->pw_name, "user name on this computer");
+        n = ctb_hint_add(h, n, em, "git config user.email");
+    }
+    return n;
+}
+#define CTB_POLICY "How to answer: (1) if you KNOW the value (the user said it, it is in the files, or a hint above fits), answer with " \
+    "SendInput(task_id=\"%d\", text=...); (2) if you do not know it, call SendInput(task_id=\"%d\", ask_user=true, ask=\"<short question>\") " \
+    "and the user types it: do not guess and do not run the command again; (3) never type passwords, PINs or codes (katana asks the user for those)."
+/* a tarefa parou numa pergunta mostrada ao modelo: guarda o texto e conta se e a MESMA pergunta depois de uma resposta dele */
+static void ctb_mark_asked(Job *j, const char *label) {
+    if (j->typed && !strcmp(j->asked_label, label)) j->asked_rep++;
+    else j->asked_rep = 0;
+    j->typed = 0;
+    snprintf(j->asked_label, sizeof j->asked_label, "%s", label);
+    j->asked = time(NULL); j->asked_sz = ctb_size(j->log);
+}
+/* texto "[waiting for input ...]" para o modelo: a pergunta, o contexto (ctx = 1; quando a saida mostrada nao o traz), as
+ * dicas e a politica de resposta. Devolve os bytes escritos. */
+static size_t ctb_waiting(const Job *j, const char *label, int ctx, char *out, size_t cap) {
+    if (!cap) return 0;
+    size_t o = (size_t)snprintf(out, cap, "[waiting for input: \"%s\", task %d]", label, j->id);
+    char c[1000];
+    if (ctx && o < cap) { ctb_context(j->log, c, sizeof c); if (c[0]) o += (size_t)snprintf(out + o, cap - o, "\n[prompt context (last lines of the output):\n%s\n]", c); }
+    if (j->asked_rep == 1 && o < cap)
+        o += (size_t)snprintf(out + o, cap - o, "\n[the same question came back after your answer: the program did not accept it. Do not repeat the same text; if you are not sure, use ask_user=true]");
+    if (j->mfd && !ctb_is_secret(j->mfd - 1, label)) {
+        CtbHint h[CTB_HINT_N];
+        ctb_context(j->log, c, sizeof c);
+        const int nh = ctb_hints(label, c, h);
+        for (int i = 0; i < nh && o < cap; i++)
+            o += (size_t)snprintf(out + o, cap - o, "%s\"%s\"%s%s%s", i ? "; " : "\n[hints found by katana (nothing was typed): ", h[i].v, h[i].note[0] ? " (" : "", h[i].note, h[i].note[0] ? ")" : "");
+        if (nh && o < cap) o += (size_t)snprintf(out + o, cap - o, "]");
+    } else if (o < cap) o += (size_t)snprintf(out + o, cap - o, "\n[this is a secret question: call SendInput(task_id=\"%d\", ask_user=true) and katana asks the user]", j->id);
+    if (o < cap) o += (size_t)snprintf(out + o, cap - o, "\n" CTB_POLICY, j->id, j->id);
+    return o < cap ? o : cap - 1;
+}
+static int g_ctb_ask_seq;
+/* o usuario responde a pergunta do terminal (input_ask, agent/sudo.c): masked = segredo. O texto vai direto ao terminal (com o
+ * eco desligado durante a escrita, se segredo). Segredo: na saida (e para o modelo) fica so a marca. Pergunta comum: ans recebe
+ * o texto (volta ao modelo). Cancelado (ou cancel = 1): Ctrl+C no terminal. 1 = respondido; 0 = cancelado. */
+static int ctb_user_answer(int m, const char *log, const char *label, const char *question, int masked, int cancel, char *ans, size_t acap) {
     static char pw[1100];
-    const int ok = !cancel && secret_ask(++g_ctb_secret_seq, label, pw, sizeof pw - 2);
+    char ctx[1000], hj[3000] = "";
+    ctb_context(log, ctx, sizeof ctx);
+    if (!masked) {                                           /* dicas para o dialogo, separadas por \x1f */
+        CtbHint h[CTB_HINT_N];
+        const int nh = ctb_hints(label, ctx, h);
+        size_t o = 0;
+        for (int i = 0; i < nh && o + 2 < sizeof hj; i++) o += (size_t)snprintf(hj + o, sizeof hj - o, "%s%s", i ? "\x1f" : "", h[i].v);
+    }
+    const int ok = !cancel && input_ask(++g_ctb_ask_seq, masked, label, question, ctx, hj, pw, sizeof pw - 2);
     const int lf = open(log, O_WRONLY | O_APPEND);
     int err = 0;
+    if (ans && acap) ans[0] = 0;
     if (ok) {
         struct termios t;
-        const int echo = tcgetattr(m, &t) == 0 && (t.c_lflag & ECHO);
+        const int echo = masked && tcgetattr(m, &t) == 0 && (t.c_lflag & ECHO);
         if (echo) { struct termios t2 = t; t2.c_lflag &= ~(tcflag_t)(ECHO | ECHONL); tcsetattr(m, TCSANOW, &t2); }
         size_t n = strlen(pw);
+        if (!masked && ans && acap) snprintf(ans, acap, "%s", pw);
         pw[n++] = '\n';
         ctb_write(m, pw, n, &err);
         if (echo) { usleep(300000); if (tcgetattr(m, &t) == 0) { t.c_lflag |= ECHO; tcsetattr(m, TCSANOW, &t); } }      /* a linha ja foi lida pelo terminal sem eco */
-        if (lf >= 0 && write(lf, "[secret entered by the user]\n", 29) < 0) {}
+        if (masked && lf >= 0 && write(lf, "[secret entered by the user]\n", 29) < 0) {}
     } else {
         ctb_write(m, "\x03", 1, &err);
-        if (lf >= 0 && write(lf, "[secret cancelled]\n", 19) < 0) {}
+        if (lf >= 0) { const char *c = masked ? "[secret cancelled]\n" : "[input cancelled by the user]\n"; if (write(lf, c, strlen(c)) < 0) {} }
     }
     memset(pw, 0, sizeof pw);
     if (lf >= 0) close(lf);
+    return ok;
 }
 enum { CW_EXIT, CW_PROMPT, CW_TIME, CW_INTR };
 /* espera o comando: CW_EXIT quando ele acaba (*st), CW_PROMPT quando para numa pergunta que o modelo pode responder (label
@@ -449,7 +665,7 @@ static int ctb_watch(pid_t pid, const CtbPty *t, const char *log, double max_s, 
             if (r == 1 || (r < 0 && !nl && ctb_prompt_like(label))) {
                 if (!ctb_is_secret(t->mfd - 1, label)) return CW_PROMPT;
                 const double a0 = cm_now();
-                ctb_secret_answer(t->mfd - 1, log, label, nsec++ >= 3);
+                ctb_user_answer(t->mfd - 1, log, label, NULL, 1, nsec++ >= 3, NULL, 0);
                 t0 += cm_now() - a0;
                 last = ctb_size(log); still = cm_now(); next = 0;
             }
@@ -512,7 +728,7 @@ static void ctb_background(const char *cmd, int prazo_s, const char *tool, char 
     Job *j = ctb_adopt(pid, log, cmd, time(NULL), &t);
     if (!j) { kill(-pid, SIGKILL); waitpid(pid, NULL, 0); ctb_pty_close(&t, 0.5); remove(log); snprintf(out, cap, "error: %d background tasks are already running; stop one with TaskStop(task_id)", JOB_N); return; }
     cmdlog_add(cmd, 0, "(started in the background)");
-    const char *ask = j->mfd ? " If it stops at a question, answer it with SendInput (passwords and codes are asked from the user, not from you)." : "";
+    const char *ask = j->mfd ? " If it stops at a question you get [waiting for input ...] in a later result: answer with SendInput if you know the value, or SendInput(ask_user=true) so the user types it (passwords and codes are always asked from the user)." : "";
     if (prazo_s > 0) snprintf(out, cap, "%s started with ID: %d (stops after %d s). Output is being written to: %s\nRead it with the Read tool; stop it early with TaskStop(task_id=\"%d\").%s", tool, j->id, prazo_s, log, j->id, ask);
     else snprintf(out, cap, "Command running in background with ID: %d. Output is being written to: %s\nRead it with the Read tool; stop it with TaskStop(task_id=\"%d\").%s", j->id, log, j->id, ask);
 }
@@ -563,10 +779,10 @@ static void ct_bash_run(const char *cmd, long long tmo_ms, char *out, size_t cap
             char *tl = (char *)malloc(pv + 1);
             const size_t n = tl ? job_tail(j, tl, pv) : 0;
             if (why == CW_PROMPT) {
-                j->asked = time(NULL); j->asked_sz = ctb_size(log);
-                snprintf(out, cap, "%s\n[waiting for input: \"%s\", task %d; answer with SendInput(task_id=\"%d\", text=...)]\n"
-                         "The command is still running as background task %d (output file: %s); stop it with TaskStop(task_id=\"%d\").",
-                         n ? tl : "(no output yet)", label, j->id, j->id, j->id, log, j->id);
+                ctb_mark_asked(j, label);
+                size_t o = (size_t)snprintf(out, cap, "%s\n", n ? tl : "(no output yet)");
+                if (o < cap) o += ctb_waiting(j, label, n == 0, out + o, cap - o);
+                if (o < cap) snprintf(out + o, cap - o, "\nThe command is still running as background task %d (output file: %s); stop it with TaskStop(task_id=\"%d\").", j->id, log, j->id);
                 cmdlog_add(cmd, -1, "(waiting for input)");
             } else {
                 snprintf(out, cap, "Command did not complete within its %ss timeout and was moved to the background with ID: %d. Output is being written to: %s\nRead it with the Read tool; stop it with TaskStop(task_id=\"%d\").\nOutput so far:\n%s",
@@ -666,9 +882,12 @@ static const char CT_BASH_DESC[] =
     "Run a shell command (bash) and return its output (stdout and stderr together). Each call starts a new shell: "
     "environment variables do not persist, but the working directory does (a `cd` carries over to the next call while it "
     "stays inside the project; otherwise it is reset). Commands run in a terminal. If a command stops at a question (a "
-    "username, a path, yes/no), you get [waiting for input: \"<prompt>\", task <id>] and the command keeps running: answer "
-    "with SendInput(task_id, text). Passwords, passphrases, PINs and verification codes are asked from the user directly; "
-    "you only see [secret entered by the user]: never type a secret yourself. Common user program folders (~/.local/bin, "
+    "username, a path, yes/no), you get [waiting for input: \"<prompt>\", task <id>] with the lines before it and [hints] "
+    "katana found (files on disk, the user name, the default answer), and the command keeps running. Answer with "
+    "SendInput(task_id, text) only if you KNOW the value (the user said it, it is in the files or in [hints]); otherwise "
+    "call SendInput(task_id, ask_user=true, ask=...) and the user types it: never guess, never run the command again. "
+    "Passwords, passphrases, PINs and verification codes are asked from the user directly; you only see [secret entered "
+    "by the user]: never type a secret yourself. Common user program folders (~/.local/bin, "
     "~/.cargo/bin, ~/go/bin and similar) are already in PATH. "
     "timeout is in milliseconds (default 120000, max 600000); a command still running at the timeout is moved to the "
     "background and you get its task ID and output file. Use run_in_background for servers and long jobs; read the output "
@@ -750,23 +969,44 @@ static void ct_monitor(const char *js, const char *end, char *out, size_t cap) {
 }
 
 /* SendInput: escreve no terminal de uma tarefa deste agente e devolve a saida nova. O texto nao aparece no resultado, no log de
- * comandos nem nos marcadores (job_redact, agent/jobs.c). Se a tarefa esta parada numa pergunta de segredo, o texto do modelo
- * e descartado e o katana pede o segredo ao usuario (ctb_secret_answer). Depois de escrever, espera como o Bash: ate a tarefa
- * acabar, parar noutra pergunta ou 20 s. */
+ * comandos nem nos marcadores (job_redact, agent/jobs.c). Tres niveis de resposta a uma pergunta do terminal: (1) o katana
+ * mostra dicas (ctb_hints) no "[waiting for input ...]"; (2) o modelo responde com text quando sabe o valor; (3) o usuario
+ * responde (ctb_user_answer): quando o modelo pede (ask_user=true), quando a pergunta e de segredo (o texto do modelo e
+ * descartado) ou quando a MESMA pergunta volta pela segunda vez depois de respostas do modelo. Depois de escrever, espera
+ * como o Bash: ate a tarefa acabar, parar noutra pergunta ou 20 s. */
 #define CT_SENDINPUT_MAX 4096
 static const char CT_SENDINPUT_DESC[] =
     "Type text into a running task (a Bash command that stopped at a question, or one started with run_in_background or "
     "Monitor), as if typed at its prompt: a username, a path, a yes/no answer, a menu choice. A newline is added unless "
     "newline is false; eof=true sends end of input (Ctrl+D) after the text. Returns the new output: it waits until the task "
-    "ends, stops at its next question ([waiting for input: ...]) or 20 s pass. Never type passwords, passphrases, PINs or "
-    "verification codes: when the task asks for a secret, katana asks the user directly and your text is discarded. At most "
-    "4096 bytes per call.";
+    "ends, stops at its next question ([waiting for input: ...]) or 20 s pass. Answer only when you KNOW the value (the "
+    "user said it, it is in the files, or it is in the [hints] katana found); when you do not know it, set ask_user=true "
+    "(with ask, a short question) instead of guessing: the user types the answer and you get [user answered: \"...\"]. "
+    "Never type passwords, passphrases, PINs or verification codes: katana asks the user for secrets and your text is "
+    "discarded. If the same question comes back twice after your answers, katana asks the user. At most 4096 bytes per call.";
 static const char CT_SENDINPUT_PROPS[] =
     "\"task_id\": {\"type\": \"string\", \"description\": \"The ID of the task\"}, "
     "\"text\": {\"type\": \"string\", \"description\": \"What to type (not echoed in logs)\"}, "
     "\"newline\": {\"type\": \"boolean\", \"description\": \"Add a newline after text (default true)\"}, "
-    "\"eof\": {\"type\": \"boolean\", \"description\": \"Send end of input (Ctrl+D) after the text (default false)\"}";
+    "\"eof\": {\"type\": \"boolean\", \"description\": \"Send end of input (Ctrl+D) after the text (default false)\"}, "
+    "\"ask_user\": {\"type\": \"boolean\", \"description\": \"You do not know the answer: the user types it (text is not needed)\"}, "
+    "\"ask\": {\"type\": \"string\", \"description\": \"With ask_user: a short question for the user, saying what the program needs\"}";
 static const char CT_SENDINPUT_REQ[] = "\"task_id\"";
+/* o usuario responde a pergunta em que a tarefa esta: 1 = segredo digitado, 2 = respondeu (ans), 3 = cancelou */
+static int ctb_ask_job(Job *j, const char *label, const char *question, int secret, char *ans, size_t acap) {
+    const int ok = ctb_user_answer(j->mfd - 1, j->log, label, question, secret, 0, ans, acap);
+    j->typed = 0;
+    if (!ok) return 3;
+    return secret ? 1 : 2;
+}
+static size_t ctb_ask_msg(const Job *j, int mode, const char *ans, int discarded, char *out, size_t cap) {
+    if (mode == 1) return (size_t)snprintf(out, cap, "Task %d was asking for a secret: the user typed it [secret entered by the user]%s.", j->id, discarded ? "; your text was discarded" : "");
+    if (mode == 3) return (size_t)snprintf(out, cap, "The user cancelled the question of task %d; Ctrl+C was sent to the task%s.", j->id, discarded ? " (it asked for a secret, so your text was discarded)" : "");
+    char q[1100]; size_t n = 0;
+    for (const char *p = ans; *p && n + 1 < sizeof q; p++) q[n++] = *p == '"' ? '\'' : *p;
+    q[n] = 0;
+    return (size_t)snprintf(out, cap, "The user typed the answer into task %d: [user answered: \"%s\"].", j->id, q);
+}
 static void ct_sendinput(const char *js, const char *end, char *out, size_t cap) {
     char *id = ct_str(js, end, "task_id");
     const char *d = id; while (d && *d && !isdigit((unsigned char)*d)) d++;
@@ -775,8 +1015,9 @@ static void ct_sendinput(const char *js, const char *end, char *out, size_t cap)
     const char *a, *b;
     size_t tl = 0;
     const int eof = ct_find(js, end, "eof", &a, &b) && ct_bool(js, end, "eof");
+    const int ask_user = ct_find(js, end, "ask_user", &a, &b) && ct_bool(js, end, "ask_user");
     char *text = ct_find(js, end, "text", &a, &b) && *a == '"' ? ct_unquote(a, b, &tl) : NULL;
-    if (!text && !eof) { snprintf(out, cap, "error: missing text (what to type into the task)"); return; }
+    if (!text && !eof && !ask_user) { snprintf(out, cap, "error: missing text (what to type into the task), or ask_user=true when you do not know the answer"); return; }
     if (!text) { text = (char *)calloc(1, 1); tl = 0; if (!text) { snprintf(out, cap, "error: out of memory"); return; } }
     int nl = tl > 0 || !eof;
     if (ct_find(js, end, "newline", &a, &b)) nl = ct_bool(js, end, "newline");
@@ -796,6 +1037,7 @@ static void ct_sendinput(const char *js, const char *end, char *out, size_t cap)
         return;
     }
     if (!agent_act("responder ao comando em segundo plano", j->cmd)) { memset(text, 0, tl); free(text); snprintf(out, cap, "error: the user denied this action"); return; }
+    char *question = ask_user ? ct_str(js, end, "ask") : NULL;
     const int m = j->mfd - 1;
     const long from = ctb_size(j->log);
     char label[240];
@@ -805,30 +1047,49 @@ static void ct_sendinput(const char *js, const char *end, char *out, size_t cap)
         ctb_last_line(j->log, label, sizeof label, &lnl);
         if ((r == 1 || (r < 0 && !lnl && ctb_prompt_like(label))) && ctb_is_secret(m, label)) secret = 1;
     }
-    size_t put = 0;
-    int err = 0;
-    if (secret) {
+    static char ans[1100];
+    char pre[1600] = "";
+    size_t pl = 0;
+    int mode = 0;                                            /* 0 = o modelo escreveu; 1/2/3 = ctb_ask_job */
+    if (secret || ask_user) {
+        const int discarded = tl > 0;
         memset(text, 0, tl); free(text);
-        ctb_secret_answer(m, j->log, label, 0);
+        mode = ctb_ask_job(j, label, question, secret, ans, sizeof ans);
+        pl = ctb_ask_msg(j, mode, ans, discarded && secret, pre, sizeof pre);
     } else {
         char *w = (char *)malloc(tl + 3);
-        if (!w) { memset(text, 0, tl); free(text); snprintf(out, cap, "error: out of memory"); return; }
+        if (!w) { memset(text, 0, tl); free(text); free(question); snprintf(out, cap, "error: out of memory"); return; }
         memcpy(w, text, tl);
         memset(text, 0, tl); free(text);
         size_t wl = tl;
         if (nl) w[wl++] = '\n';
         if (eof) w[wl++] = 4;                                /* VEOF: fim da entrada para quem le o terminal */
-        put = ctb_write(m, w, wl, &err);
+        int err = 0;
+        const size_t put = ctb_write(m, w, wl, &err);
         memset(w, 0, wl); free(w);
-        if (err) { snprintf(out, cap, "error: could not type into task %d (%s; %zu of %zu bytes written): the program is not reading its input. Read its output in %s", j->id, strerror(err), put, wl, j->log); return; }
+        if (err) { free(question); snprintf(out, cap, "error: could not type into task %d (%s; %zu of %zu bytes written): the program is not reading its input. Read its output in %s", j->id, strerror(err), put, wl, j->log); return; }
+        j->typed = 1;
+        pl = (size_t)snprintf(pre, sizeof pre, "Typed %zu bytes into task %d%s%s.", tl, j->id, nl ? " followed by a newline" : "", eof ? " and end of input" : "");
     }
     j->asked = 0;
     CtbPty t;
     t.mfd = j->mfd; t.pump = 0;
     snprintf(t.slave, sizeof t.slave, "%s", j->slave);
-    int st = 0;
-    long seen = 0;
-    const int why = ctb_watch(j->pid, &t, j->log, 20.0, 0, &seen, &st, label, sizeof label);
+    int st = 0, why;
+    for (int round = 0;; round++) {
+        long seen = 0;
+        why = ctb_watch(j->pid, &t, j->log, 20.0, 0, &seen, &st, label, sizeof label);
+        if (why != CW_PROMPT) break;
+        ctb_mark_asked(j, label);
+        if (j->asked_rep < 2 || round > 0 || pl + 400 >= sizeof pre) break;
+        /* a mesma pergunta voltou pela segunda vez depois das respostas do modelo: o usuario responde */
+        mode = ctb_ask_job(j, label, NULL, 0, ans, sizeof ans);
+        pl += (size_t)snprintf(pre + pl, sizeof pre - pl, " [the same question came back twice after your answers, so katana asked the user] ");
+        if (pl < sizeof pre) pl += ctb_ask_msg(j, mode, ans, 0, pre + pl, sizeof pre - pl);
+        j->asked = 0; j->asked_rep = 0;
+    }
+    memset(ans, 0, sizeof ans);
+    free(question);
     if (why == CW_EXIT) {
         j->done = 1; j->rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
         CtbPty jt; jt.mfd = j->mfd; jt.pump = j->pump; jt.slave[0] = 0;
@@ -836,27 +1097,52 @@ static void ct_sendinput(const char *js, const char *end, char *out, size_t cap)
         j->mfd = 0; j->pump = 0;
     }
     const long sz = ctb_size(j->log);
-    size_t o;
-    if (secret) o = (size_t)snprintf(out, cap, "Task %d was asking for a secret; it was asked from the user and your text was discarded.", j->id);
-    else o = (size_t)snprintf(out, cap, "Typed %zu bytes into task %d%s%s.", tl, j->id, nl ? " followed by a newline" : "", eof ? " and end of input" : "");
+    size_t o = (size_t)snprintf(out, cap, "%s", pre);
     if (o >= cap) o = cap - 1;
     if (why == CW_EXIT) o += (size_t)snprintf(out + o, cap - o, " The task has exited with code %d.", j->rc);
-    else if (why == CW_PROMPT) {
-        j->asked = time(NULL); j->asked_sz = sz;
-        o += (size_t)snprintf(out + o, cap - o, " [waiting for input: \"%s\", task %d; answer with SendInput(task_id=\"%d\", text=...)]", label, j->id, j->id);
-    } else o += (size_t)snprintf(out + o, cap - o, " The task is still running; read %s later or stop it with TaskStop.", j->log);
+    else if (why != CW_PROMPT) o += (size_t)snprintf(out + o, cap - o, " The task is still running; read %s later or stop it with TaskStop.", j->log);
     if (o >= cap) return;
-    if (sz <= from) { snprintf(out + o, cap - o, " No new output."); return; }
-    size_t lim = cap > o + 800 ? cap - 600 - o : 200; if (lim > 3000) lim = 3000;
-    const long start = sz - from > (long)lim ? sz - (long)lim : from;
-    char *body = (char *)malloc(lim + 1);
-    if (!body) return;
-    size_t k = ctb_read(j->log, start, body, (size_t)(sz - start));
-    size_t s = 0;
-    if (start > from) { char *nlp = memchr(body, '\n', k); s = nlp ? (size_t)(nlp + 1 - body) : 0; }
-    while (k > s && (body[k - 1] == '\n' || body[k - 1] == '\r')) body[--k] = 0;
-    snprintf(out + o, cap - o, "\nNew output%s:\n%s", start > from ? " (last lines)" : "", body + s);
-    free(body);
+    if (sz <= from) o += (size_t)snprintf(out + o, cap - o, " No new output.");
+    else {
+        size_t lim = cap > o + 2800 ? cap - 2600 - o : 200; if (lim > 3000) lim = 3000;
+        const long start = sz - from > (long)lim ? sz - (long)lim : from;
+        char *body = (char *)malloc(lim + 1);
+        if (!body) return;
+        size_t k = ctb_read(j->log, start, body, (size_t)(sz - start));
+        size_t s = 0;
+        if (start > from) { char *nlp = memchr(body, '\n', k); s = nlp ? (size_t)(nlp + 1 - body) : 0; }
+        while (k > s && (body[k - 1] == '\n' || body[k - 1] == '\r')) body[--k] = 0;
+        body[k] = 0;
+        o += (size_t)snprintf(out + o, cap - o, "\nNew output%s:\n%s", start > from ? " (last lines)" : "", body + s);
+        free(body);
+    }
+    if (why == CW_PROMPT && o + 2 < cap) { out[o++] = '\n'; out[o] = 0; ctb_waiting(j, label, sz - from < 200, out + o, cap - o); }
+}
+/* tarefas em segundo plano paradas numa pergunta que o modelo ainda nao viu: a nota vai no fim do resultado da ferramenta
+ * seguinte (ct_dispatch). Sem saida nova ha KATANA_PROMPT_WAIT e a mesma deteccao do Bash em primeiro plano. */
+static void ctb_bg_note(char *out, size_t cap) {
+    const double ws = ctb_wait_s();
+    for (int i = 0; i < JOB_N; i++) {
+        Job *j = &g_jobs[i];
+        job_poll(j);
+        if (!j->id || j->done || !j->mfd || j->asked) continue;
+        struct stat st;
+        if (stat(j->log, &st) != 0) continue;
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        const double quiet = (double)(now.tv_sec - st.st_mtim.tv_sec) + (now.tv_nsec - st.st_mtim.tv_nsec) / 1e9;
+        if (quiet < ws || (double)(time(NULL) - j->t0) < ws) continue;
+        char label[240];
+        int nl = 0;
+        const int r = ctb_reading(j->pid, j->slave);
+        ctb_last_line(j->log, label, sizeof label, &nl);
+        if (!(r == 1 || (r < 0 && !nl && ctb_prompt_like(label)))) continue;
+        const size_t o = strlen(out);
+        if (o + 600 >= cap) return;
+        ctb_mark_asked(j, label);
+        const size_t k = (size_t)snprintf(out + o, cap - o, "\n[background task %d (%.80s) stopped at a question]\n", j->id, j->cmd);
+        if (o + k < cap) ctb_waiting(j, label, 1, out + o + k, cap - o - k);
+    }
 }
 #else
 static const char CT_BASH_DESC[] = "Run a shell command (not available on Windows yet)";
@@ -872,7 +1158,8 @@ static const char CT_MONITOR_PROPS[] = "\"command\": {\"type\": \"string\"}, \"d
 static const char CT_MONITOR_REQ[] = "\"command\", \"description\"";
 static void ct_monitor(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: Monitor is not available on Windows yet"); }
 static const char CT_SENDINPUT_DESC[] = "Type text into a background task (not available on Windows yet)";
-static const char CT_SENDINPUT_PROPS[] = "\"task_id\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"newline\": {\"type\": \"boolean\"}, \"eof\": {\"type\": \"boolean\"}";
+static const char CT_SENDINPUT_PROPS[] = "\"task_id\": {\"type\": \"string\"}, \"text\": {\"type\": \"string\"}, \"newline\": {\"type\": \"boolean\"}, \"eof\": {\"type\": \"boolean\"}, \"ask_user\": {\"type\": \"boolean\"}, \"ask\": {\"type\": \"string\"}";
 static const char CT_SENDINPUT_REQ[] = "\"task_id\"";
 static void ct_sendinput(const char *js, const char *end, char *out, size_t cap) { (void)js; (void)end; snprintf(out, cap, "error: SendInput is not available on Windows yet"); }
+static void ctb_bg_note(char *out, size_t cap) { (void)out; (void)cap; }
 #endif
