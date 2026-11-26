@@ -957,7 +957,7 @@ static int agent(Model *m, int max_tokens, float temp) {
                 for (int i = 0; i < rp_n; i++) if (rp_sig[i] == csig && rp_err[i]) rp_same_fail++;
                 const int rp_refuse = !trunc && rp_same_fail >= (!strcmp(name, "TodoWrite") ? 1 : 2);      /* a lista igual so reescrita e o laco mais comum: a 2a chamada ja nao roda */
                 const int rr_hit = !trunc && !rp_refuse && rr_check(name, csig, result, sizeof result);      /* repeticao de leitura que deu certo */
-                const int fl_ref = cml && !trunc && !rp_refuse && !rr_hit && flow_before(name, ap, end, result, sizeof result);      /* fora do fluxo: so recusa com KATANA_FLOW=strict */
+                const int fl_ref = cml && !trunc && !rp_refuse && !rr_hit && flow_before(name, ap, end, result, sizeof result);      /* fora do fluxo: so anota o desvio */
                 if (trunc) snprintf(result, sizeof result, "error: your tool call was cut off because the answer reached the limit of %d tokens (or the context), so NOTHING was run. %s", max_tokens,
                         "For a long file call Write with the first 150 lines or so, then add the rest in parts with Bash (cat >> file <<'EOF' ... EOF); or make the script shorter.");
                     else if (rp_refuse) snprintf(result, sizeof result, "error: refused. You already made this exact call %d times in this request and it failed the same way each time, so it was NOT run again. "

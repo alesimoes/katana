@@ -68,7 +68,7 @@ static void fm_load(void) {
     }
     fclose(f);
 }
-static int fm_lessons_min(void) { const char *e = getenv("KATANA_FLOW_LESSONS"); return e ? atoi(e) : 0; }      /* 0 = desligado; N = so licao vista N vezes ou mais */
+static int fm_lessons_min(void) { const char *e = getenv("KATANA_FLOW_LESSONS"); return e && *e ? atoi(e) : 2; }      /* ligado por padrao: so licao vista 2 vezes ou mais; 0 desliga; N = N vezes ou mais */
 static int flow_retrieve(const char *name, const char *result, char *out, size_t cap);
 /* chamado por flow_after quando a chamada falhou: o que a memoria sabe. Devolve quantos bytes escreveu */
 static size_t flow_memory_note(const char *name, const char *js, const char *end, const char *result, int failed, char *out, size_t cap) {
@@ -86,7 +86,7 @@ static size_t flow_memory_note(const char *name, const char *js, const char *end
 }
 
 /* ---- sonda de conjunto fechado: ordena ate 9 candidatos pela resposta do proprio modelo, no prefixo em cache ---- */
-static int fm_rerank_on(void) { const char *e = getenv("KATANA_FLOW_RERANK"); return e && atoi(e) > 0; }
+static int fm_rerank_on(void) { const char *e = getenv("KATANA_FLOW_RERANK"); return !(e && *e && atoi(e) <= 0); }      /* ligado por padrao; =0 desliga */
 /* uma passada: logitos dos numeros depois de `text`, a partir de mpos. 0 = falhou */
 static int fm_probe_pass(Model *m, int mpos, const char *text, const int *dig, int n, float *score) {
     Ids ids = {0};
@@ -142,7 +142,7 @@ static int fm_probe_rank(const char *question, const char *const *item, int n, i
 }
 
 /* ---- recuperacao guiada pelo estado: o estado do fluxo decide O QUE buscar ---- */
-static int fm_retrieve_on(void) { const char *e = getenv("KATANA_FLOW_RETRIEVE"); return e && atoi(e) > 0; }
+static int fm_retrieve_on(void) { const char *e = getenv("KATANA_FLOW_RETRIEVE"); return !(e && *e && atoi(e) <= 0); }      /* ligado por padrao; =0 desliga */
 /* linhas a-b de um arquivo, numeradas, em out */
 static size_t fm_lines(const char *path, int a, int b, char *out, size_t cap) {
     FILE *f = fopen(path, "rb"); if (!f) return 0;

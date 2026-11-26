@@ -5,7 +5,7 @@
 #define RZ_MAX_DEF 1200
 static int rz_max(void) { const char *e = getenv("KATANA_RESUME_MAX"); int v = e && *e ? atoi(e) : RZ_MAX_DEF; return v < 400 ? (v ? 400 : RZ_MAX_DEF) : v > 3000 ? 3000 : v; }
 static int rz_idle_min(void) { const char *e = getenv("KATANA_RESUME_IDLE_MIN"); const int v = e && *e ? atoi(e) : 30; return v > 0 ? v : 30; }
-RZ_UNUSED static int rz_flag(const char *name) { const char *e = getenv(name); return e && atoi(e) > 0; }
+RZ_UNUSED static int rz_flag(const char *name) { const char *e = getenv(name); return !(e && *e && atoi(e) <= 0); }      /* ligado por padrao; =0 desliga */
 static int rz_grace(void) { return g_rz.grace; }
 
 static void rz_app(char *o, size_t cap, const char *fmt, ...) {

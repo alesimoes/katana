@@ -69,7 +69,6 @@ static int g_rz_keep;      /* 1 quando o estado desta sessao esta em arquivo: os
 static int rz_keep_logs(void) { return g_rz_keep; }
 
 static int rz_on(void) { const char *e = getenv("KATANA_RESUME"); return !(e && !strcmp(e, "0")); }
-static int rz_strict(void) { const char *e = getenv("KATANA_RESUME"); return e && !strcmp(e, "strict"); }
 /* o caminho do arquivo de estado: o da sessao sem .ksess e com .kstate; sem sessao, so KATANA_RESUME_FILE */
 static void rz_path(const char *sess, char *o, size_t cap) {
     o[0] = 0;
@@ -1001,18 +1000,18 @@ static size_t rz_job_clause(char *out, size_t cap) {
 #endif
 }
 
-/* tentativa morta de antes da reentrada: a chamada igual ganha um desvio (so conselho; recusa com KATANA_RESUME=strict). Devolve 1 so quando deve recusar */
-static int rz_dead_check(const char *name, const char *js, const char *end) {
+/* tentativa morta de antes da reentrada: a chamada igual ganha um desvio (so conselho, nunca recusa) */
+static void rz_dead_check(const char *name, const char *js, const char *end) {
     g_rz.dead_hit = 0;
-    if (!rz_on() || g_ct_depth > 1 || g_fl.dev[0]) return 0;
+    if (!rz_on() || g_ct_depth > 1 || g_fl.dev[0]) return;
     RzState *s = &g_rz.s;
     const char *when = g_rz.enter_reason == RZR_SUMMARY ? "the context was summarised" : "the session was reopened";
     for (int i = 0; i < s->natt; i++) {
         const RzAttempt *a = &s->att[i];
         if (!a->dead || a->call != g_fl.cur_sig || a->epoch >= s->epoch) continue;
         snprintf(g_fl.dev, sizeof g_fl.dev, "you made this call before %s and it failed %d times: %.100s. It will fail the same way; use what you have or tell the user what blocks you. ", when, a->n, a->cause);
-        g_fl.dev_soft = !rz_strict(); g_rz.dead_hit = 1;
-        return rz_strict();
+        g_fl.dev_soft = 1; g_rz.dead_hit = 1;
+        return;
     }
     char subj[80]; fm_subject(name, js, end, subj, sizeof subj);
     if (!strcmp(name, "SendInput")) rz_subject(name, js, end, subj, sizeof subj);
@@ -1024,11 +1023,11 @@ static int rz_dead_check(const char *name, const char *js, const char *end) {
         if (n == 0) c1 = a->cause; else if (n == 1) c2 = a->cause;
         n++;
     }
-    if (n < 3) return 0;
+    if (n < 3) return;
     uint64_t key = fl_hash(name, strlen(name), (uint64_t)s->epoch + RZ_FNV); key = fl_hash(subj, strlen(subj), key);
-    for (int i = 0; i < g_rz.nsubj_noted; i++) if (g_rz.subj_noted[i] == key) return 0;
+    for (int i = 0; i < g_rz.nsubj_noted; i++) if (g_rz.subj_noted[i] == key) return;
     g_rz.subj_noted[g_rz.nsubj_noted++ & 7] = key; if (g_rz.nsubj_noted > 8) g_rz.nsubj_noted = 8;
     snprintf(g_fl.dev, sizeof g_fl.dev, "%d different calls around %.60s failed before: %.80s; %.80s. ", n, subj, c1, c2);
     g_fl.dev_soft = 1;
-    return 0;
+    return;
 }

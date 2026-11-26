@@ -7,7 +7,7 @@
  *     [katana: next <fluxo> <i>/<n> <estado>: <proximo passo>]
  * A linha vai sempre no fim do contexto (fim de um resultado ou do pedido do usuario): nada que ja foi lido e reescrito,
  * entao o cache de prefixo nao e tocado. O estado e da CONVERSA (o controle de repeticao rr_ e rp_ do laco e do pedido).
- * KATANA_FLOW=strict (desligado por padrao): a chamada fora do fluxo e recusada antes de rodar, em vez de so anotada. */
+ * O motor nunca recusa uma chamada fora do fluxo: so anota o desvio na linha. */
 
 enum { FL_NONE, FL_IMAGE, FL_TERMINAL, FL_DEBUG, FL_CODE, FL_WEB, FL_PLAN, FL_DELEGATE, FL_WORKTREE, FL_PLANMODE, FL_SCHEDULE, FL_MCP, FL_REVIEW, FL_DELIVER, FL_COUNT };
 typedef enum {
@@ -225,7 +225,6 @@ static struct {
 } g_fl;
 static int g_fl_last_ev, g_fl_last_gain;           /* o evento e o ganho da ultima chamada (flow_after): o estado duravel os le (resume.c) */
 
-static int flow_strict(void) { const char *e = getenv("KATANA_FLOW"); return e && !strcmp(e, "strict"); }
 static uint64_t fl_hash(const char *s, size_t n, uint64_t h) { for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 1099511628211ULL; } return h; }
 static FlowPos *fl_top(void) { return g_fl.depth ? &g_fl.stk[g_fl.depth - 1] : NULL; }
 static int fl_id(void) { return g_fl.depth ? g_fl.stk[g_fl.depth - 1].id : FL_NONE; }
@@ -464,7 +463,7 @@ static int rz_cmd_state(const char *file);
 static void rz_suspend(void);      /* resume_note.c (KATANA_RESUME_RECALL) */
 static void rz_try_recall(const char *t, int is_go);
 static size_t rz_probe_clause(char *out, size_t cap);      /* resume_note.c (KATANA_RESUME_PROBE) */
-static int rz_dead_check(const char *name, const char *js, const char *end);
+static void rz_dead_check(const char *name, const char *js, const char *end);
 static int rz_cmd_report(int argc, char **argv);
 static size_t rz_job_clause(char *out, size_t cap);      /* resume.c: tarefas terminadas que o modelo nao soube */
 static void rz_sim_begin(void), rz_sim_restart(void), rz_sim_end(void);
@@ -506,7 +505,7 @@ static size_t flow_request_body(const char *ureq, char *out, size_t cap) {
 
 static size_t flow_request(const char *ureq, char *out, size_t cap) { const size_t r = flow_request_body(ureq, out, cap); rz_sync_flow(); return r; }
 
-/* ---- antes de a ferramenta rodar: desvio do fluxo. Devolve 1 (com o erro em out) so em KATANA_FLOW=strict; senao guarda o desvio para a linha ---- */
+/* ---- antes de a ferramenta rodar: desvio do fluxo. Nunca recusa (devolve 0): guarda o desvio para a linha ---- */
 static int flow_before(const char *name, const char *js, const char *end, char *out, size_t cap) {
     g_fl.dev[0] = 0; g_fl.dev_soft = 0;
     const FlowPos *t = fl_top();
@@ -536,12 +535,8 @@ static int flow_before(const char *name, const char *js, const char *end, char *
         char *q = ct_str(js, end, "query"); char f[300] = ""; if (q) fl_fold(q, f, sizeof f); free(q);
         if (strstr(f, "katana")) { g_fl.dev_soft = 1; snprintf(g_fl.dev, sizeof g_fl.dev, "if you mean the katana program you run in: the web does not document it. Its help is local (`katana <command>` with no arguments prints the usage; ToolSearch gives each tool's declaration). "); }
     }
-    const int rzs = rz_dead_check(name, js, end);      /* tentativa morta de antes da reentrada (resume.c) */
-    if (!g_fl.dev[0] || g_fl.dev_soft || !(flow_strict() || rzs)) return 0;
-    char nx[900] = ""; fl_next_text(nx, sizeof nx);
-    snprintf(out, cap, "error: refused, NOT run. %s%s%s", g_fl.dev, nx[0] ? "Next: " : "", nx);
-    fl_log("refuse\t%s\t%s", name, g_fl.dev);
-    return 1;
+    rz_dead_check(name, js, end);      /* tentativa morta de antes da reentrada (resume.c): so anota o desvio */
+    return 0;
 }
 
 /* ---- depois de a ferramenta rodar: o estado anda e a linha entra no fim do resultado (closing: o pedido esta encerrando, so o estado anda) ---- */
@@ -627,7 +622,7 @@ static void flow_after(const char *name, const char *js, const char *end, char *
  * ToolSearch) junto da linha, uma vez por conversa e por ferramenta. Custa os tokens da declaracao; economiza uma volta. ---- */
 static void flow_jit(char *out, size_t cap) {
     static const char lean[] = "Bash|Read|Edit|Write|Find|Symbols|Grep|TodoWrite|AskUserQuestion|WebSearch|WebFetch|ToolSearch";
-    const char *e = getenv("KATANA_FLOW_JIT"); if (!e || atoi(e) <= 0) return;
+    const char *e = getenv("KATANA_FLOW_JIT"); if (e && *e && atoi(e) <= 0) return;      /* ligado por padrao; =0 desliga */
     const FlowPos *t = fl_top(); if (!t) return;
     const char *ex = FL_BOOK[t->id].st[t->st].expect; if (!ex || !ex[0]) return;
     char nm[40]; snprintf(nm, sizeof nm, "%.*s", (int)strcspn(ex, "|"), ex);
@@ -648,7 +643,7 @@ static void flow_jit(char *out, size_t cap) {
 static void flow_grammar_mask(void) {
     uint64_t mk = 0;
     const char *e = getenv("KATANA_FLOW_GRAMMAR");
-    if (e && atoi(e) > 0 && g_cg.nt <= 64)
+    if (!(e && *e && atoi(e) <= 0) && g_cg.nt <= 64)      /* ligado por padrao; =0 desliga */
         for (int d = 0; d < g_fl.depth; d++) { const char *off = FL_BOOK[g_fl.stk[d].id].off; if (!off) continue; for (int i = 0; i < g_cg.nt; i++) if (fl_list_has(off, cg_tool_names[i])) mk |= 1ULL << i; }
     g_cg_skip = mk;
 }
