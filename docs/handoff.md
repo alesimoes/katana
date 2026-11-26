@@ -47,6 +47,14 @@ a number; secrets in commands are masked in the action log. Checked: build; `kat
 `katana flow sim` on scripted sequences. **Not run with a model, nothing measured**; the model was not trained on the `next` line; only the
 ChatML loop path is hooked. Open list: `docs/flows.md` section 7.
 
+**2026-11-26, stale-item audit (code read, build compiled, nothing run, nothing measured).** Already in the code although earlier notes list them as open:
+`brief_end_note()` is called by the loop (`src/agent/loop.c`, end of request); the call-format constraint knows MCP card tools (`callgrammar.c`, both
+spellings); the UIOE web connector `web.search` exists (`src/uioe/conn_web.c`, behind `KATANA_UIOE_WEB=1`, policy 3.8.6; `web.fetch` is the part still missing).
+Two engine ideas listed as top priority were checked against the notes and are **not** the next step: grouping MoE tokens by expert is done
+(`moe_cpu_multi`, `KATANA_MOE_GROUP`), and the one-token router on the GPU was built and measured with no gain (section 0h, `comparisons.md` 14; off by default).
+On Qwen3.6 generation (~34 ms/token) the cost is the cold experts on the CPU (11-14 ms) with 36% of expert uses in VRAM, so the lever is hit rate:
+early-router prefetch (recall 79% at 8 predicted, built for the RAM arena in `expert_tier.c`) applied to the VRAM slots, plus the arena on the GPU upload path.
+
 To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
 
 **2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
