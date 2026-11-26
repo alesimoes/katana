@@ -59,7 +59,8 @@ static void uioe_render_recall_text(UioeBuf *b, const UioeCtx *cx, const UioeReq
     }
     uioe_bprintf(b, "calls (%d)\n", rc->nex);
     for (int i = 0; i < rc->nex; i++) { const UioeExec *e = &rc->ex[i];
-        uioe_bprintf(b, "  %-2s %-12s %-13s %-40s %6.1f ms  %-11s %d node(s)%s%s%.90s%s\n", e->state, e->label, e->conn, e->input, e->ms, g_ur_name[e->status < 6 ? e->status : 5], e->nnode, e->retried ? "  (retried once)" : "", e->note[0] ? "  (" : "", e->note, e->note[0] ? ")" : ""); }
+        uioe_bprintf(b, "  %-2s %-12s %-13s %-40s %6.1f ms  %-11s %d node(s)%s%s%.90s%s\n", e->state, e->label, e->conn, e->input, e->ms, g_ur_name[e->status < 6 ? e->status : 5], e->nnode, e->retried ? "  (retried once)" : "", e->note[0] ? "  (" : "", e->note, e->note[0] ? ")" : "");
+        if (e->sent[0]) uioe_bprintf(b, "     sent: %s\n", e->sent); }
     if (rc->npath) {
         uioe_bprintf(b, "path      answer path: %d step(s); the confidence of a step is its own, the link to the next is on the arrow\n", rc->npath);
         for (int i = 0; i < rc->npath; i++) {
@@ -110,7 +111,7 @@ static void uioe_render_recall_json(UioeBuf *b, const UioeCtx *cx, const UioeReq
     uioe_bprintf(b, "],\"calls\":[");
     for (int i = 0; i < rc->nex; i++) { const UioeExec *e = &rc->ex[i];
         uioe_bprintf(b, "%s{\"state\":\"%s\",\"label\":\"%s\",\"connector\":\"%s\",\"input\":", i ? "," : "", e->state, e->label, e->conn); ui_json_str(b, e->input);
-        uioe_bprintf(b, ",\"status\":\"%s\",\"ms\":%.1f,\"nodes\":%d,\"retried\":%s,\"note\":", g_ur_name[e->status < 6 ? e->status : 5], e->ms, e->nnode, e->retried ? "true" : "false"); ui_json_str(b, e->note); uioe_bprintf(b, "}"); }
+        uioe_bprintf(b, ",\"status\":\"%s\",\"ms\":%.1f,\"nodes\":%d,\"retried\":%s,\"note\":", g_ur_name[e->status < 6 ? e->status : 5], e->ms, e->nnode, e->retried ? "true" : "false"); ui_json_str(b, e->note); uioe_bprintf(b, ",\"sent\":"); ui_json_str(b, e->sent); uioe_bprintf(b, "}"); }
 #define NODE_JSON(id, extra) do { const UioeNode *n = &g->n[id]; \
         uioe_bprintf(b, "{\"kind\":\"%s\",\"file\":", g_ur_kindname[n->kind]); ui_json_str(b, n->path); \
         uioe_bprintf(b, ",\"line0\":%d,\"line1\":%d,\"name\":", n->line0, n->line1); ui_json_str(b, n->name); \
@@ -140,7 +141,8 @@ static void uioe_fmt_recall_trace(UioeBuf *b, const UioeCtx *cx, const UioeReque
     for (int i = 0; i < rc->ndeg; i++) uioe_bprintf(b, "degrade %s\n", rc->degrade[i]);
     for (int i = 0; i < rc->nstates; i++) { const char *s = rc->states[i]; const char *ms = strstr(s, "; index step"); uioe_bprintf(b, "state   %.*s\n", ms ? (int)(ms - s) : (int)strlen(s), s); }
     for (int i = 0; i < rc->nex; i++) { const UioeExec *e = &rc->ex[i];
-        uioe_bprintf(b, "call    %s %s %s %.70s -> %s, %d node(s)%s%s%.80s | %.1f ms\n", e->state, e->label, e->conn, e->input, g_ur_name[e->status < 6 ? e->status : 5], e->nnode, e->retried ? ", retried once" : "", e->note[0] ? "; " : "", e->note, e->ms); }
+        uioe_bprintf(b, "call    %s %s %s %.70s -> %s, %d node(s)%s%s%.80s | %.1f ms\n", e->state, e->label, e->conn, e->input, g_ur_name[e->status < 6 ? e->status : 5], e->nnode, e->retried ? ", retried once" : "", e->note[0] ? "; " : "", e->note, e->ms);
+        if (e->sent[0]) uioe_bprintf(b, "sent:   %s | %s (what actually left the machine in this call)\n", e->conn, e->sent); }
     for (int i = 0; i < rc->nscore; i++) uioe_bprintf(b, "score   %s\n", rc->score[i]);
     for (int i = 0; i < rc->npath; i++) { const UioeNode *n = &g->n[rc->path[i]]; uioe_bprintf(b, "path    %d. [%d %s T%d] %s:%d-%d %s %s\n", i + 1, n->conf, ur_ver_label(n->ver), n->tier, n->path, n->line0, n->line1, g_ur_kindname[n->kind], n->name);
         if (i + 1 < rc->npath && rc->pathedge[i] >= 0) { const UioeEdge *e = &g->e[rc->pathedge[i]]; uioe_bprintf(b, "link    %s \"%s\" conf %d %s\n", g_ue_kindname[e->kind], e->key, e->conf, ur_ver_label(e->ver)); } }

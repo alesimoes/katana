@@ -27,7 +27,7 @@ enum { UREL_CALLERS = 1, UREL_DEFINED = 2, UREL_USES = 4, UREL_SEND = 8, UREL_RE
 enum { UR_CHANGES_FILES = 1, UR_RUNS_COMMANDS = 2, UR_LEAVES_MACHINE = 4, UR_SENSITIVE = 8, UR_DESTRUCTIVE = 16 };
 /* capacidades (3.8.3) */
 enum { UQ_WHERE = 1, UQ_DEF = 2, UQ_USES = 4, UQ_CALLERS = 8, UQ_CALLEES = 16, UQ_LINKS = 32, UQ_IMPORTS = 64, UQ_IMPACT = 128, UQ_CONFIG = 256,
-       UQ_LITERAL = 512, UQ_STRUCTURE = 1024, UQ_DOC = 2048, UQ_FACT = 4096, UQ_HISTORY = 8192, UQ_EXTERNAL = 16384, UQ_PLACE = 32768, UQ_VERIFY = 65536, UQ_RECIPE = 131072 };
+       UQ_LITERAL = 512, UQ_STRUCTURE = 1024, UQ_DOC = 2048, UQ_FACT = 4096, UQ_HISTORY = 8192, UQ_EXTERNAL = 16384, UQ_PLACE = 32768, UQ_VERIFY = 65536, UQ_RECIPE = 131072, UQ_PAGE = 262144 };
 /* custo (3.8.2) e flags do conector */
 typedef enum { UC_INSTANT, UC_INDEX, UC_FILES, UC_PROCESS, UC_NETWORK, UC_MODEL } UioeCost;
 enum { UCF_READONLY = 1, UCF_LEAVES_MACHINE = 2, UCF_SIDE_EFFECTS = 4, UCF_NEEDS_MODEL = 8, UCF_UNTRUSTED = 16 };
@@ -99,7 +99,7 @@ typedef struct {
     uint16_t rule;                      /* G1..G6 (so G1..G3 sao decididas em U1) */
     char decision_note[200];
     char notrouted[300];                /* fontes que nao entram e por que */
-    char sends_out[120];
+    char sends_out[400];
 } UioeRoute;
 
 /* ---- U3: grafo de evidencias, resultado de conector, recuperacao (docs/uioe.md 3.6, 3.7, 4.5) ---- */
@@ -133,7 +133,7 @@ typedef struct {
     char source[64]; char limits[400]; char notfound[300]; char sent[200]; char note[200];
     double ms; int total, step, from_cache;
 } UioeResult;
-typedef struct { int n; char state[4]; char label[16]; char conn[24]; char input[170]; int status; double ms; int nnode, nedge, retried; char note[200]; } UioeExec;
+typedef struct { int n; char state[4]; char label[16]; char conn[24]; char input[170]; int status; double ms; int nnode, nedge, retried; char note[200]; char sent[240]; } UioeExec;      /* sent: exatamente o que saiu da maquina nesta chamada (so conectores UCF_LEAVES_MACHINE) */
 typedef struct {
     UioeGraph *g;
     UioeExec ex[80]; int nex;
@@ -149,7 +149,7 @@ typedef struct {
     int decision, rule; char decision_note[260];
     double ms, ms_index, ms_verify; int cut; char cut_note[160];
     int nverified, nstale, nmoved, nnotreread, nrange_total;
-    char next[220];
+    char next[400];
     char score[24][230]; int nscore;               /* as ligacoes mais bem pontuadas para a pergunta, com a conta (traco: `score`) */
     int ran;                                     /* a recuperacao rodou */
 } UioeRecall;

@@ -121,14 +121,16 @@ static void orch_gate(UioeOrch *o) {
     int docfinding = 0;       /* como instalar, visao geral: a resposta esta em documentos; uma linha de documento relida, com dois termos ou mais, e o achado (nao ha estrutura de codigo a seguir) */
     if ((k->kind == UI_HOWTO || k->kind == UI_OVERVIEW) && o->cx->verify) for (int i = 0; i < g->nn; i++) { const UioeNode *n = &g->n[i]; if (n->kind == UN_DOCLINE && !n->dropped && (n->ver == UV_OK || n->ver == UV_MOVED) && n->conf >= 55 && n->tier <= 3) docfinding = 1; }
     const int memfinding = k->kind == UI_HISTORY && nfact > 0;      /* U8: o achado de um pedido de historico e uma nota salva, datada e de baixa confianca */
+    const int webfinding = k->kind == UI_WEB && nfact > 0;      /* U9: uma pagina ou um resultado da web: datado, de baixa confianca, nunca verificado contra o codigo */
+    if (webfinding) { conf += 10; GS("+10 a web page or result was retrieved (outside content, dated, not verified)"); }
     if (memfinding) { conf += 10; GS("+10 a saved note matched the request (the owner's memory: dated, low confidence, not verified against the code)"); }
     if (!o->cx->verify) strong = 0;
     if (strong && o->structural) { conf += 20; GS("+20 a verified structural finding with confidence >= 75 (reread in the files)"); }
     else if (docfinding) GS("+0 a document line matching two or more terms was reread in the file: the finding of a how-to request is a document, not a code structure");
     if (agree) { conf += 10; GS("+10 independent sources agree (a document names the files of the chain, or two connectors returned the same item)"); }
-    if ((!any45 || onlyword) && !docfinding && !memfinding) { conf -= 25; GS("-25 %s", !any45 ? "nothing above confidence 45 was found" : "only candidates ranked by words were found, none reached by structure"); }
+    if ((!any45 || onlyword) && !docfinding && !memfinding && !webfinding) { conf -= 25; GS("-25 %s", !any45 ? "nothing above confidence 45 was found" : "only candidates ranked by words were found, none reached by structure"); }
     const int gate = uioe_env_int("KATANA_UIOE_GATE", 70, 1, 100);
-    if (conf >= gate && !(strong && o->structural) && !o->entity_hit && !docfinding && !memfinding) { conf = gate - 1; GS("cap at %d: no verified structural finding with confidence >= 75 and no entity resolved by the index, so a packet would rest on word ranking alone (it never passes G4)", conf); }
+    if (conf >= gate && !(strong && o->structural) && !o->entity_hit && !docfinding && !memfinding && !webfinding) { conf = gate - 1; GS("cap at %d: no verified structural finding with confidence >= 75 and no entity resolved by the index, so a packet would rest on word ranking alone (it never passes G4)", conf); }
     if (conf < 0) conf = 0;
     if (conf > 100) conf = 100;
 #undef GS
@@ -140,7 +142,7 @@ static void orch_gate(UioeOrch *o) {
     else if (rc->idx_mode < 2 && (k->domain[0] == UD_CODE || k->domain[0] == UD_FILES)) { authoritative = 1; why = "the index is partial or absent, and the model should know what to use meanwhile"; }
     else if (o->a->place_note) { authoritative = 1; why = "a cited place was located"; }
     else if (k->kind == UI_HISTORY) { authoritative = 1; why = "nothing saved in memory matches the request"; }
-    else if (k->kind == UI_WEB) { authoritative = 1; why = "the source this request needs is not installed in this build"; }
+    else if (k->kind == UI_WEB) { authoritative = 1; why = nres ? "a web page or result was retrieved" : "the web is the source this request needs and it was not consulted before the model (policy KATANA_UIOE_WEB), so the block proposes the search"; }
     if (k->retrieve == 2) { rt->decision = UG_LIMITS; rt->rule = 5; snprintf(rt->decision_note, sizeof rt->decision_note, "G5: confidence %d; %s: only Question understood as, limits and Next would be told", conf, why); }
     else if (conf >= gate) { rt->decision = UG_PACKET; rt->rule = 4; snprintf(rt->decision_note, sizeof rt->decision_note, "G4: confidence %d >= %d after retrieval (%d node(s), path of %d step(s)): the full block", conf, gate, nres, rc->npath); }
     else if (conf >= 40 && authoritative) { rt->decision = UG_LIMITS; rt->rule = 5; snprintf(rt->decision_note, sizeof rt->decision_note, "G5: confidence %d (40 to %d) and there is something authoritative to say (%s): the limits form only", conf, gate - 1, why); }
@@ -152,6 +154,15 @@ static void orch_gate(UioeOrch *o) {
 /* "Next": a sugestao concreta com criterio de parada (U4 a coloca no bloco; aqui so aparece no resultado) */
 static void orch_next(UioeOrch *o) {
     UioeRecall *rc = o->rc; UioeGraph *g = o->g; rc->next[0] = 0;
+    if (o->k->kind == UI_WEB) {      /* U9: a pagina lida ou o resultado vira a resposta; sem nada da web, a busca e proposta (so se a internet nao esta desligada) */
+        for (int i = 0; i < rc->nitems; i++) { const UioeNode *n = &g->n[rc->items[i]]; if (n->kind != UN_FACT || n->dropped) continue;
+            if (!strcmp(n->cls, "page")) snprintf(rc->next, sizeof rc->next, "Answer from the page above and cite its address and date. For the rest of the page call WebFetch with url=%.160s (it is already in memory). Do not search the web again for what it covers.", n->sig);
+            else snprintf(rc->next, sizeof rc->next, "Answer from the web results above, citing their address and date; call WebFetch on the best address for the full page.");
+            return; }
+        const char *w = getenv("KATANA_WEB");
+        if (w && !strcmp(w, "0")) snprintf(rc->next, sizeof rc->next, "The internet tools are off (KATANA_WEB=0): answer without them and say the answer may be out of date.");
+        else snprintf(rc->next, sizeof rc->next, "Search the web for \"%.200s\", then WebFetch the best result and cite its address.", o->terms[0] ? o->terms : o->a->text);
+        return; }
     if (rc->npath >= 2) { const UioeNode *n = &g->n[rc->path[rc->npath - 1]]; int a = n->line0, b = n->line1 > n->line0 ? n->line1 : n->line0 + 12; if (b - a > 60) b = a + 60;
         snprintf(rc->next, sizeof rc->next, "Read %.100s lines %d-%d, then answer. Do not search again for what is listed above.", n->path, a, b); return; }
     for (int i = 0; i < rc->nitems; i++) { const UioeNode *n = &g->n[rc->items[i]]; if (n->kind == UN_SYMBOL || n->kind == UN_RANGE || n->kind == UN_KEY || n->kind == UN_DOCLINE) {

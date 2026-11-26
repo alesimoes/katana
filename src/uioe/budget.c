@@ -57,7 +57,7 @@ static const char *uioe_fault_of(const UioeCtx *cx, const char *id) {
 /* o conector pode rodar neste escopo? 1 sim; 0 nao, com o motivo */
 static int uioe_runnable(UioeCtx *cx, int ix, char *why, size_t cap) {
     const UioeConnector *c = &cx->s->reg[ix];
-    if (!c->run) { snprintf(why, cap, "%s exists in the registry but is not built in this phase (earlier sessions and the web arrive in U8 and U9)", c->id); return 0; }
+    if (!c->run) { snprintf(why, cap, "%s exists in the registry but is not built (external connectors: U10 to U12)", c->id); return 0; }
     if (cx->s->brk[ix].open) { snprintf(why, cap, "circuit breaker open: failed twice, skipped for %d more request(s)", cx->s->brk[ix].skip_left); return 0; }
     char w[200]; const int av = c->available(c, cx->root, w, sizeof w);
     if (!av && strcmp(c->id, "docs.select") != 0) { snprintf(why, cap, "%s", w); return 0; }
@@ -105,13 +105,14 @@ static int uioe_call(UioeCtx *cx, UioeRecall *rc, const char *state, const char 
         else ur_free(&r2);
     }
     res->ms = (now_sec() - t0) * 1000.0;
+    if (c->cost == UC_NETWORK) cx->t0 += now_sec() - t0;      /* o tempo de rede nao conta no prazo do pedido (o prazo e do que roda na maquina; a rede tem o prazo proprio do conector) */
     uioe_breaker_note(cx->s, ix, res->status);
 done:
     for (int i = 0; i < res->nnode; i++) { UioeNode *x = &res->node[i]; if (uioe_secret_path(x->path)) { x->secret = 1; x->text[0] = 0; x->sig[0] = 0; } else uioe_mask_line(x->text); }       /* um arquivo de segredo mostra o lugar, nunca o texto */
     if (res->status == UR_OK || res->status == UR_PARTIAL || res->status == UR_TIMEOUT || res->status == UR_EMPTY) {
         if (ix >= 0 && res->nnode) { const int e0 = rc->g->ne; (void)e0; ug_merge(rc->g, res, ix, id, q.anchor, map, mapcap); }
     }
-    if (ex) { ex->status = res->status; ex->ms = res->ms; ex->nnode = res->nnode; ex->nedge = res->nedge; snprintf(ex->note, sizeof ex->note, "%.120s%s%.70s", res->note, res->note[0] && res->notfound[0] && res->status == UR_EMPTY ? "; " : "", res->status == UR_EMPTY ? res->notfound : ""); }
+    if (ex) { snprintf(ex->sent, sizeof ex->sent, "%s", res->sent); ex->status = res->status; ex->ms = res->ms; ex->nnode = res->nnode; ex->nedge = res->nedge; snprintf(ex->note, sizeof ex->note, "%.120s%s%.70s", res->note, res->note[0] && res->notfound[0] && res->status == UR_EMPTY ? "; " : "", res->status == UR_EMPTY ? res->notfound : ""); }
     /* o passo do plano que esta chamada cumpre */
     return res->status;
 }

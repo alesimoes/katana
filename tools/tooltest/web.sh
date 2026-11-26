@@ -206,6 +206,38 @@ $(entry 2 'Rust ownership guide' "$B/p1" 'About ownership')"
   r=$("$K" tool WebFetch "{\"url\":\"$B/p2\",\"prompt\":\"lifetimes\"}" 2>&1)
   has "fetch: pagina boa continua vindo" "Lifetimes annotate" "$r"
   hasnt "fetch: a marca do codigo HTTP nao aparece no texto" "KATANA-HTTP-STATUS" "$r"
+  # ---------- UIOE U9: o conector web.fetch (katana uioe ask), sem rede: servidor local ----------
+  # o endereco digitado no pedido e lido antes do modelo mesmo com KATANA_UIOE_WEB=0; nada alem dessa URL sai; a pagina entra com URL e hora
+  export KATANA_UIOE_LOG="$T/uioe.log"; mkdir -p "$T/proj"; rm -f "$T/uioe.log"
+  UQ="what does $B/p1 say about the borrow checker"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "$UQ" --cwd "$T/proj" --explain --no-trace 2>&1)
+  has "uioe web: URL do pedido e lida com a internet do UIOE desligada" "web.fetch" "$r"
+  has "uioe web: a chamada rodou" "page         web.fetch" "$r"
+  has "uioe web: sent mostra so a URL" "sent: page address $B/p1" "$r"
+  has "uioe web: sai so o endereco digitado" "the address typed in the request to web.fetch: $B/p1" "$r"
+  hasnt "uioe web: sem busca (os termos nao saem)" "search terms" "$r"
+  has "uioe web: a busca fica fora da politica" "web search (policy: KATANA_UIOE_WEB=0)" "$r"
+  has "uioe web: pagina e um no de fato" "web.fetch" "$r"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "$UQ" --cwd "$T/proj" --pack --no-trace 2>&1)
+  has "uioe web: bloco traz a pagina com URL" "web page $B/p1 (read 20" "$r"
+  has "uioe web: bloco rotula como nao verificado" "outside content" "$r"
+  has "uioe web: bloco traz o trecho da pagina" "borrow checker" "$r"
+  has "uioe web: Next manda responder da pagina" "Answer from the page above" "$r"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "$UQ" --cwd "$T/proj" --json --no-trace 2>&1)
+  has "uioe web: json traz sent" "\"sent\":\"page address $B/p1\"" "$r"
+  KATANA_UIOE_WEB=0 "$K" uioe ask "$UQ" --cwd "$T/proj" >/dev/null 2>&1
+  has "uioe web: traco tem a linha sent:" "sent:   web.fetch | page address $B/p1" "$(cat "$T/uioe.log")"
+  r=$(KATANA_WEB=0 "$K" uioe ask "$UQ" --cwd "$T/proj" --explain --no-trace 2>&1)
+  hasnt "uioe web: KATANA_WEB=0 nao le a pagina" "page address" "$r"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "$B/gone" --cwd "$T/proj" --explain --no-trace 2>&1)
+  has "uioe web: pagina que falha vira limite, nao erro" "the page was not read" "$r"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "search the web for latest rust release notes" --cwd "$T/proj" --pack --no-trace 2>&1)
+  hasnt "uioe web: sem URL e sem a chave nada sai" "page address" "$r"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "search the web for latest rust release notes" --cwd "$T/proj" --explain --no-trace 2>&1)
+  has "uioe web: sem a chave o Next propoe a busca" "Search the web for \"" "$r"
+  has "uioe web: sem a chave nada sai da maquina" "sends out: nothing" "$r"
+  r=$(KATANA_UIOE_WEB=0 "$K" uioe ask "search the web for latest rust release notes" --cwd "$T/proj" --explain --no-trace 2>&1 | grep -c "sent:")
+  eq "uioe web: sem a chave nenhuma chamada tem sent" "0" "$r"
   unset KATANA_WEB_ALLOW_LOCAL
   kill $SRV 2>/dev/null
 else

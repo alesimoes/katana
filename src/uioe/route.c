@@ -108,10 +108,16 @@ static void uioe_route(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, UioeRo
         ui_step(cx, rt, "memory", UQ_FACT, "memory.recall", ts, 0);
         ui_step(cx, rt, "history", UQ_HISTORY, "history.search", ts, 0);
         break;
-    case UI_WEB:
+    case UI_WEB: {
+        /* U9 (3.8.6): o endereco que o usuario digitou e lido antes do modelo mesmo com KATANA_UIOE_WEB=0; a busca e a pagina do melhor resultado so com KATANA_UIOE_WEB=1 */
+        char urls[400]; ui_ents_str(a, 1u << UK_URL, urls, sizeof urls);
         ui_step(cx, rt, "docs", UQ_DOC, "docs.search", ts, 0);
-        ui_step(cx, rt, "web", UQ_EXTERNAL, "web.search", ts, 0);
-        break;
+        if (urls[0]) ui_step(cx, rt, "page", UQ_PAGE, "web.fetch", urls, 0);
+        UioeStep *ws = ui_step(cx, rt, "web", UQ_EXTERNAL, "web.search", ts, urls[0] ? 2 : 0);
+        const int wsok = ws && !ws->status;
+        UioeStep *bs = ui_step(cx, rt, "best", UQ_PAGE, "web.fetch", "the address of the best search result", wsok ? ws->n : 0);
+        if (bs && !wsok) { bs->status = 2; snprintf(bs->note, sizeof bs->note, "needs the search above (KATANA_UIOE_WEB=1)"); }
+        break; }
     case UI_OVERVIEW:
         ui_step(cx, rt, "tree", UQ_STRUCTURE, "file.glob", "the folder listing", 0);
         ui_step(cx, rt, "docs", UQ_DOC, "docs.select", "title lines of README or KATANA.md", 0);
@@ -128,8 +134,8 @@ static void uioe_route(UioeCtx *cx, const UioeAsk *a, const UioeClass *k, UioeRo
 gate:
     /* ---- fontes que nao entram ---- */
     { size_t o = 0; rt->notrouted[0] = 0;
-      int web = 0, mem = 0, mcp = 1; for (int i = 0; i < rt->nstep; i++) { if (!strncmp(rt->step[i].conn, "web.", 4)) web = 1; if (!strncmp(rt->step[i].conn, "memory.", 7) || !strncmp(rt->step[i].conn, "history.", 8)) mem = 1; }
-      if (!web) o += (size_t)snprintf(rt->notrouted + o, sizeof rt->notrouted - o, "web (%s); ", k->domain[0] == UD_RESEARCH ? "policy: KATANA_UIOE_WEB=0" : "not needed for this kind of request");
+      int web = 0, wsearch = 0, mem = 0, mcp = 1; for (int i = 0; i < rt->nstep; i++) { if (!strncmp(rt->step[i].conn, "web.", 4) && !rt->step[i].status) web = 1; if (!strcmp(rt->step[i].conn, "web.search") && !rt->step[i].status) wsearch = 1; if (!strncmp(rt->step[i].conn, "memory.", 7) || !strncmp(rt->step[i].conn, "history.", 8)) mem = 1; }
+      if (!web || (k->domain[0] == UD_RESEARCH && !wsearch)) o += (size_t)snprintf(rt->notrouted + o, sizeof rt->notrouted - o, "%s (%s); ", web ? "web search" : "web", k->domain[0] == UD_RESEARCH ? (getenv("KATANA_WEB") && !strcmp(getenv("KATANA_WEB"), "0") ? "KATANA_WEB=0" : "policy: KATANA_UIOE_WEB=0") : "not needed for this kind of request");
       if (!mem) o += (size_t)snprintf(rt->notrouted + o, sizeof rt->notrouted - o, "memory and earlier sessions (no memory cue); ");
       if (mcp) o += (size_t)snprintf(rt->notrouted + o, sizeof rt->notrouted - o, "mcp (no connector card installed)"); }
     /* ---- confianca antes da recuperacao (3.5.3) ---- */
@@ -161,5 +167,7 @@ gate:
     else { rt->decision = UG_NONE; rt->rule = 0; snprintf(rt->decision_note, sizeof rt->decision_note, "passes G1 to G3; G4 (>= %d after retrieval), G5 and G6 are decided after retrieval (run `katana uioe ask`; `plan` does not execute the route)", uioe_env_int("KATANA_UIOE_GATE", 70, 1, 100)); }
     /* ---- o que sairia da maquina ---- */
     rt->sends_out[0] = 0;
-    for (int i = 0; i < rt->nstep; i++) if (rt->step[i].conn[0] && !rt->step[i].status) { const int ix = uioe_find_conn(cx->s, rt->step[i].conn); if (ix >= 0 && (cx->s->reg[ix].flags & UCF_LEAVES_MACHINE)) snprintf(rt->sends_out, sizeof rt->sends_out, "terms to %s: %.60s", rt->step[i].conn, rt->step[i].input); }
+    for (int i = 0; i < rt->nstep; i++) if (rt->step[i].conn[0] && !rt->step[i].status) { const int ix = uioe_find_conn(cx->s, rt->step[i].conn); if (ix >= 0 && (cx->s->reg[ix].flags & UCF_LEAVES_MACHINE)) {
+        const size_t l = strlen(rt->sends_out); const int pg = !strcmp(rt->step[i].conn, "web.fetch");
+        snprintf(rt->sends_out + l, sizeof rt->sends_out - l, "%s%s to %s: %.120s", l ? "; " : "", pg ? (strcmp(rt->step[i].label, "page") ? "the best result's address" : "the address typed in the request") : "terms", rt->step[i].conn, rt->step[i].input); } }
 }
