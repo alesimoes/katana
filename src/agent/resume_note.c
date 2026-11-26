@@ -203,3 +203,33 @@ static void rz_sim_end(void) {
     rz_close();
     if (p && !strncmp(p, "/tmp/katana-flow-sim-", 21)) { char q[260]; remove(p); snprintf(q, sizeof q, "%.200s.lock", p); remove(q); unsetenv("KATANA_RESUME_FILE"); }
 }
+
+/* katana flow resume-report [--days N]: as linhas `resume` do registro de fluxos, somadas por motivo (o que o modelo fez depois do bloco) */
+static int rz_cmd_report(int argc, char **argv) {
+    int days = 0;
+    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--days") && i + 1 < argc) days = atoi(argv[++i]);
+    char h[1024], p[1200]; agent_home(h, sizeof h); snprintf(p, sizeof p, "%s/.katana/flow.log", h);
+    FILE *f = fopen(p, "rb"); if (!f) { fprintf(stderr, "resume-report: no %s\n", p); return 1; }
+    struct { int enter, score, calls, on_flow, dead, dup, answered; long bytes; } t[7]; memset(t, 0, sizeof t);
+    const time_t cut = days > 0 ? time(NULL) - (time_t)days * 86400 : 0;
+    static char ln[2000];
+    while (fgets(ln, sizeof ln, f)) {
+        char *tab[12]; int nt = 0; ln[strcspn(ln, "\r\n")] = 0;
+        for (char *q = ln; nt < 12; ) { tab[nt++] = q; char *e = strchr(q, '\t'); if (!e) break; *e = 0; q = e + 1; }
+        if (nt < 5 || strcmp(tab[2], "resume")) continue;
+        if (cut) { struct tm tm; memset(&tm, 0, sizeof tm); if (sscanf(tab[0], "%d-%d-%d %d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) { tm.tm_year -= 1900; tm.tm_mon--; tm.tm_isdst = -1; if (mktime(&tm) < cut) continue; } }
+        int r = 0; for (int i = 1; i < 7; i++) if (!strcmp(tab[4], RZ_RNAME[i])) r = i;
+        if (!r) continue;
+        if (!strcmp(tab[3], "enter")) { t[r].enter++; if (nt > 5) t[r].bytes += atol(tab[5]); }
+        else if (!strcmp(tab[3], "score") && nt >= 10) {
+            t[r].score++;
+            t[r].calls += atoi(strchr(tab[5], '=') ? strchr(tab[5], '=') + 1 : "0"); t[r].on_flow += atoi(strchr(tab[6], '=') ? strchr(tab[6], '=') + 1 : "0");
+            t[r].dead += atoi(strchr(tab[7], '=') ? strchr(tab[7], '=') + 1 : "0"); t[r].dup += atoi(strchr(tab[8], '=') ? strchr(tab[8], '=') + 1 : "0");
+            t[r].answered += atoi(strchr(tab[9], '=') ? strchr(tab[9], '=') + 1 : "0");
+        }
+    }
+    fclose(f);
+    printf("reason     blocks  bytes  scored  calls  on_flow  dead  dup  answered\n");
+    for (int r = 1; r < 7; r++) if (t[r].enter || t[r].score) printf("%-10s %6d %6ld %7d %6d %8d %5d %4d %9d\n", RZ_RNAME[r], t[r].enter, t[r].bytes, t[r].score, t[r].calls, t[r].on_flow, t[r].dead, t[r].dup, t[r].answered);
+    return 0;
+}

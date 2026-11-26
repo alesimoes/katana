@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    int sc_calls, dead_hit; uint64_t subj_noted[8]; int nsubj_noted;                    /* nota passiva: chamadas contadas; a chamada casou tentativa morta; (epoca, assunto) ja avisados */
     int task_ended;                                                           /* a reconciliacao achou tarefa terminada que o modelo nao soube */
     int enter_reason;                                                         /* a ultima reentrada (RZR_*): o texto do desvio de tentativa morta diz de quando ela e */
     long long t_saved; int grace_age;                                         /* quando o estado foi gravado pela ultima vez; pedidos desde a carga */
@@ -67,7 +68,7 @@ static int g_rz_keep;      /* 1 quando o estado desta sessao esta em arquivo: os
 static int rz_keep_logs(void) { return g_rz_keep; }
 
 static int rz_on(void) { const char *e = getenv("KATANA_RESUME"); return !(e && !strcmp(e, "0")); }
-RZ_UNUSED static int rz_strict(void) { const char *e = getenv("KATANA_RESUME"); return e && !strcmp(e, "strict"); }
+static int rz_strict(void) { const char *e = getenv("KATANA_RESUME"); return e && !strcmp(e, "strict"); }
 /* o caminho do arquivo de estado: o da sessao sem .ksess e com .kstate; sem sessao, so KATANA_RESUME_FILE */
 static void rz_path(const char *sess, char *o, size_t cap) {
     o[0] = 0;
@@ -547,10 +548,12 @@ static void rz_restore_flow(void) {
 static void rz_sync_all(void);
 static int rz_has_work(void);
 static int rz_idle_min(void);
+static void rz_score_flush(int answered);
 /* chamado antes de flow_request: anota o pedido (U) */
 static void rz_request_begin(const char *ureq) {
     if (!rz_on() || g_ct_depth > 1) return;
     if (!g_rz.s.agent_pid) rz_header(g_sess_path);
+    rz_score_flush(1);      /* o pedido anterior acabou antes da terceira chamada: respondeu */
     if (g_rz.grace && g_rz.grace_age++ >= 1) g_rz.grace = 0;      /* a graca vale para um pedido so */
     rz_clean(g_rz.req_text, sizeof g_rz.req_text, ureq, 0);
     char b[240]; rz_clean(b, sizeof b, ureq, 0);
@@ -564,6 +567,12 @@ static void rz_request_begin(const char *ureq) {
         else if (g_rz.ndelta > 0) g_rz.reason = RZR_IDLE;
     }
     g_rz.task_ended = 0;
+}
+/* a nota passiva da orientacao: as tres chamadas depois do bloco, lidas do comportamento do modelo (sem juiz e sem sonda) */
+static void rz_score_flush(int answered) {
+    if (g_rz.score_left <= 0) return;
+    fl_log("resume\tscore\t%s\tcalls=%d\ton_flow=%d\tdead=%d\tdup=%d\tanswered=%d", RZ_RNAME[g_rz.sc_reason], g_rz.sc_calls, g_rz.sc_on, g_rz.sc_dead, g_rz.sc_dup, answered);
+    g_rz.score_left = 0; g_rz.sc_calls = g_rz.sc_on = g_rz.sc_dead = g_rz.sc_dup = 0;
 }
 /* o pedido terminou numa interrupcao do usuario: o proximo pedido recebe o bloco curto */
 static void rz_interrupted(void) { if (rz_on() && g_ct_depth <= 1 && !g_rz.reason) g_rz.reason = RZR_INTERRUPT; }
@@ -636,6 +645,12 @@ static void rz_before(const char *name, const char *js, const char *end) {
     if (!rz_on() || g_ct_depth > 1) return;
     char subj[120]; rz_subject(name, js, end, subj, sizeof subj);
     rz_ev('B', name, subj, rz_x(g_fl.cur_sig), NULL);
+    if (g_rz.score_left > 0) {      /* nota passiva: esta chamada esta no fluxo? repete tentativa morta? duplica tarefa que roda? */
+        int on = 1; const FlowPos *t = fl_top();
+        if (t && strcmp(name, "ToolSearch")) { const char *ex = FL_BOOK[t->id].st[t->st].expect; if (ex) on = ex[0] && fl_list_has(ex, name); }
+        g_rz.sc_calls++; g_rz.sc_on += on; g_rz.sc_dead += g_rz.dead_hit; g_rz.sc_dup += strstr(g_fl.dev, "ALREADY running") != NULL;
+        if (--g_rz.score_left == 0) { g_rz.score_left = 1; rz_score_flush(0); }
+    }
 }
 /* depois de rodar: E, tentativa falha ou corrigida, evidencia, arquivo, decisao */
 static void rz_after_body(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain) {
@@ -983,4 +998,36 @@ static size_t rz_job_clause(char *out, size_t cap) {
 #else
     (void)cap; return 0;
 #endif
+}
+
+/* tentativa morta de antes da reentrada: a chamada igual ganha um desvio (so conselho; recusa com KATANA_RESUME=strict). Devolve 1 so quando deve recusar */
+static int rz_dead_check(const char *name, const char *js, const char *end) {
+    g_rz.dead_hit = 0;
+    if (!rz_on() || g_ct_depth > 1 || g_fl.dev[0]) return 0;
+    RzState *s = &g_rz.s;
+    const char *when = g_rz.enter_reason == RZR_SUMMARY ? "the context was summarised" : "the session was reopened";
+    for (int i = 0; i < s->natt; i++) {
+        const RzAttempt *a = &s->att[i];
+        if (!a->dead || a->call != g_fl.cur_sig || a->epoch >= s->epoch) continue;
+        snprintf(g_fl.dev, sizeof g_fl.dev, "you made this call before %s and it failed %d times: %.100s. It will fail the same way; use what you have or tell the user what blocks you. ", when, a->n, a->cause);
+        g_fl.dev_soft = !rz_strict(); g_rz.dead_hit = 1;
+        return rz_strict();
+    }
+    char subj[80]; fm_subject(name, js, end, subj, sizeof subj);
+    if (!strcmp(name, "SendInput")) rz_subject(name, js, end, subj, sizeof subj);
+    rz_clean(subj, sizeof subj, subj, 0);
+    int n = 0; const char *c1 = "", *c2 = "";
+    for (int i = 0; i < s->natt; i++) {
+        const RzAttempt *a = &s->att[i];
+        if (!a->dead || a->epoch >= s->epoch || strcmp(a->tool, name) || strcmp(a->subj, subj)) continue;
+        if (n == 0) c1 = a->cause; else if (n == 1) c2 = a->cause;
+        n++;
+    }
+    if (n < 3) return 0;
+    uint64_t key = fl_hash(name, strlen(name), (uint64_t)s->epoch + RZ_FNV); key = fl_hash(subj, strlen(subj), key);
+    for (int i = 0; i < g_rz.nsubj_noted; i++) if (g_rz.subj_noted[i] == key) return 0;
+    g_rz.subj_noted[g_rz.nsubj_noted++ & 7] = key; if (g_rz.nsubj_noted > 8) g_rz.nsubj_noted = 8;
+    snprintf(g_fl.dev, sizeof g_fl.dev, "%d different calls around %.60s failed before: %.80s; %.80s. ", n, subj, c1, c2);
+    g_fl.dev_soft = 1;
+    return 0;
 }

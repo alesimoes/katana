@@ -461,6 +461,8 @@ static void rz_request_begin(const char *ureq);
 static void rz_before(const char *name, const char *js, const char *end);
 static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain);
 static int rz_cmd_state(const char *file);
+static int rz_dead_check(const char *name, const char *js, const char *end);
+static int rz_cmd_report(int argc, char **argv);
 static size_t rz_job_clause(char *out, size_t cap);      /* resume.c: tarefas terminadas que o modelo nao soube */
 static void rz_sim_begin(void), rz_sim_restart(void), rz_sim_end(void);
 
@@ -530,7 +532,8 @@ static int flow_before(const char *name, const char *js, const char *end, char *
         char *q = ct_str(js, end, "query"); char f[300] = ""; if (q) fl_fold(q, f, sizeof f); free(q);
         if (strstr(f, "katana")) { g_fl.dev_soft = 1; snprintf(g_fl.dev, sizeof g_fl.dev, "if you mean the katana program you run in: the web does not document it. Its help is local (`katana <command>` with no arguments prints the usage; ToolSearch gives each tool's declaration). "); }
     }
-    if (!g_fl.dev[0] || g_fl.dev_soft || !flow_strict()) return 0;
+    const int rzs = rz_dead_check(name, js, end);      /* tentativa morta de antes da reentrada (resume.c) */
+    if (!g_fl.dev[0] || g_fl.dev_soft || !(flow_strict() || rzs)) return 0;
     char nx[900] = ""; fl_next_text(nx, sizeof nx);
     snprintf(out, cap, "error: refused, NOT run. %s%s%s", g_fl.dev, nx[0] ? "Next: " : "", nx);
     fl_log("refuse\t%s\t%s", name, g_fl.dev);
@@ -698,6 +701,7 @@ static int flow_main(int argc, char **argv) {
         rz_sim_end();
         return 0;
     }
+    if (!strcmp(cmd, "resume-report")) return rz_cmd_report(argc, argv);
     if (!strcmp(cmd, "state")) { const char *sf = argc > 1 ? argv[1] : getenv("KATANA_RESUME_FILE"); if (!sf) { fprintf(stderr, "usage: katana flow state <file.kstate>\n"); return 1; } return rz_cmd_state(sf); }
     return flowmem_main(argc, argv);
 }
