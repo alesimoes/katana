@@ -128,6 +128,11 @@ static int ag_marker(const char *line, char *type, size_t tcap, Buf *js) {
         snprintf(type, tcap, "password_refused");
         buf_str(js, "\"message\":\"a sudo password was requested; passwords are not accepted over the API, so the command was refused\"");
         ag_write("\x01" "NOPASS\n", 8);
+    } else if (!strcmp(name, "SECRET")) {          /* segredo pedido por um comando: tambem nao vem pela rede; cancela ja */
+        snprintf(type, tcap, "secret_refused");
+        buf_str(js, "\"message\":\"a command asked for a secret (password or code); secrets are not accepted over the API, so it was cancelled\"");
+        char l[64]; const int n = snprintf(l, sizeof l, "\x01" "SECRETCANCEL %d\n", atoi(a));
+        ag_write(l, (size_t)n);
     } else if (!strcmp(name, "MODE")) { snprintf(type, tcap, "mode"); ag_kv(js, "mode", a, strcspn(a, " \n"), 0); }
     else if (!strcmp(name, "CWD")) {
         snprintf(type, tcap, "cwd");

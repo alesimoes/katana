@@ -1,24 +1,43 @@
 /* ---------- tabela de comandos em segundo plano ----------
  * O Bash com run_in_background=true inicia o comando (servidor, build longo) em seu proprio grupo de processos, com a
  * saida num arquivo, e devolve na hora o numero do trabalho (tools/bash.c); TaskStop o encerra. Tudo que ainda roda
- * e encerrado quando o agente sai. */
+ * e encerrado quando o agente sai. Todo comando roda num pseudo-terminal: um processo copiador (pump) passa o que o
+ * terminal escreve para o arquivo de saida, sem as sequencias de escape; o katana guarda a ponta mestre para o SendInput. */
 #ifndef _WIN32
 #define JOB_N 8
-/* inw: ponta de escrita do cano ligado ao stdin da tarefa, guardada como fd+1 (0 = sem cano: comando que comecou em primeiro
- * plano, com stdin /dev/null, e foi movido para segundo plano no timeout). Fecha quando a tarefa acaba ou e encerrada. */
-typedef struct { int id; pid_t pid; int done, rc, inw; char log[1300], cmd[200]; time_t t0; } Job;
+/* mfd: ponta mestre do pseudo-terminal da tarefa, guardada como fd+1 (0 = sem terminal). Fecha quando a tarefa acaba ou e
+ * encerrada. pump: o copiador do terminal para o arquivo. slave: nome do terminal (/dev/pts/N). asked: quando o katana
+ * devolveu "waiting for input" ao modelo (0 = nao esta esperando); asked_sz: tamanho da saida naquele momento. Uma pergunta
+ * sem resposta e sem saida nova por KATANA_PROMPT_MAX segundos (padrao 900) encerra a tarefa (job_poll). */
+typedef struct { int id; pid_t pid, pump; int done, rc, mfd; char log[1300], cmd[200], slave[64]; time_t t0, asked; long asked_sz; } Job;
 static Job g_jobs[JOB_N];
 static int g_job_seq, g_job_exit;
 
-static void job_close_in(Job *j) { if (j->inw > 0) { close(j->inw - 1); j->inw = 0; } }
+/* copiadores cujo comando ja acabou mas que ainda nao sairam (um filho em segundo plano segura o terminal): recolhidos depois */
+static pid_t g_pumps[32];
+static void pump_reap(void) { for (int i = 0; i < 32; i++) if (g_pumps[i] > 0 && waitpid(g_pumps[i], NULL, WNOHANG) != 0) g_pumps[i] = 0; }
+static void pump_later(pid_t p) {
+    if (p <= 0) return;
+    pump_reap();
+    for (int i = 0; i < 32; i++) if (!g_pumps[i]) { g_pumps[i] = p; return; }
+}
+static int job_prompt_max(void) { const char *e = getenv("KATANA_PROMPT_MAX"); return e && atoi(e) > 0 ? atoi(e) : 900; }
+static void job_close_in(Job *j) { if (j->mfd > 0) { close(j->mfd - 1); j->mfd = 0; } if (j->pump > 0) { pump_later(j->pump); j->pump = 0; } }
+static void job_kill(Job *j);
 static void job_poll(Job *j) {
     int st;
     if (!j->id || j->done) { if (j->id) job_close_in(j); return; }
-    if (waitpid(j->pid, &st, WNOHANG) == j->pid) { j->done = 1; j->rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0); job_close_in(j); }
+    if (waitpid(j->pid, &st, WNOHANG) == j->pid) { j->done = 1; j->rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0); job_close_in(j); return; }
+    if (j->asked) {                                          /* pergunta sem resposta: limite de espera */
+        struct stat sb;
+        const long sz = stat(j->log, &sb) == 0 ? (long)sb.st_size : 0;
+        if (sz != j->asked_sz) j->asked = 0;
+        else if (time(NULL) - j->asked > job_prompt_max()) { j->asked = 0; job_kill(j); }
+    }
 }
 static void job_kill(Job *j) {
     if (!j->id) return;
-    job_close_in(j);                                         /* EOF no stdin antes do sinal */
+    job_close_in(j);                                         /* solta a ponta mestre do terminal antes do sinal */
     if (j->done) return;
     kill(-j->pid, SIGTERM);
     for (int i = 0; i < 20 && !j->done; i++) { usleep(50000); job_poll(j); }

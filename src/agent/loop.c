@@ -465,7 +465,7 @@ static int says_already_done(const char *line) {
     for (int i = 0; v[i]; i++) if (strstr(lo, v[i])) return 1;
     return 0;
 }
-/* saida de um Bash que diz que o comando queria um terminal (1) ou que um programa nao esta no PATH (2): a sessao de 25/11 repetiu `xtool auth login`/`xtool setup` (pedem resposta) em vez de usar a forma com argumento, e nao achou o swiftc fora do PATH */
+/* saida de um Bash que diz que o comando queria um terminal ou uma resposta (1) ou que um programa nao esta no PATH (2): a sessao de 25/11 repetiu `tool login` (pede resposta) em vez de responder, e nao achou um compilador fora do PATH */
 static int bash_env_hint(const char *r) {
     static const char *const tty[] = {"Operation unsupported", "not a tty", "not a terminal", "Inappropriate ioctl", "no tty present", "stdin is not", NULL};
     static const char *const path[] = {"command not found", "Could not find executable", "not found in PATH", "in PATH", NULL};

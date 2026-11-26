@@ -66,9 +66,14 @@ enum { KN_BUDGET = 1 };                                    /* flag: conta no orc
     "what is left and what you need from them; they can ask you to continue.]"
 #define KNF_TODO_OPEN "[katana: your todo list still has unfinished steps]\n%sIf they are really done, mark them done with %s and give the final answer. " \
     "The user's newest message comes first: if it changed the plan, rewrite the list or drop the old steps and say so. Otherwise continue with the next step now."
-#define KNF_NO_TTY "\n[katana: this command wanted to ask a question and you have no terminal here, so running it again fails the same way. Run `<command> --help` (and the help of its subcommands) and use the form that takes the answer as an argument or flag (a path, --mode, --username, --yes, --no-input). " \
-    "Before you assume a step is missing or done, check the real state with the tool's own status command (status, whoami, version). If the only way is interactive, start it as a background task and answer with SendInput, or give the user the exact command to run.]"
-#define KNF_NOT_IN_PATH "\n[katana: a program was not found in PATH. It may be installed in a folder that is not in PATH: find it (`command -v NAME`, `find ~ -name NAME -type f`) and run the command again with PATH=\"<that folder>:$PATH\" in front. Do not install it again before you looked.]"
+#define KNF_NO_TTY "\n[katana: this command runs in a terminal, but a question it asked was not answered, so running it again fails the same way. " \
+    "When a command stops at a question you get [waiting for input: ..., task <id>]: answer it with SendInput(task_id, text) instead of starting it again. " \
+    "Passwords and verification codes are asked from the user by katana; never type them. A form that takes the answer as an argument or flag " \
+    "(see `<command> --help`: a path, --username, --yes, --no-input) also works. Before you assume a step is missing or done, check the real state " \
+    "with the tool's own status command (status, whoami, version).]"
+#define KNF_NOT_IN_PATH "\n[katana: a program was not found in PATH. The usual user folders (~/.local/bin, ~/.cargo/bin, ~/go/bin and similar) are already in PATH, so it is " \
+    "either not installed or in another folder: find it (`command -v NAME`, `find ~ /opt /usr/local -name NAME -type f`) and run the command again with " \
+    "PATH=\"<that folder>:$PATH\" in front. Do not install it again before you looked.]"
 #define KNF_USER_DONE "%s\n[katana: the user says something here is already done or installed, or that you are repeating yourself. Believe the user: do not redo it. Check the current state with ONE quick command (which, --version, ls), then take the next step that is still undone. If you cannot go on, stop and tell the user in two sentences what blocks you.]"
 #define KNF_GIVE_CMD "%s\n[katana: the user asked you to GIVE them the command (or text), so they run or use it themselves. Do not run it, do not search, do not plan: write the exact command now in a code block, with one line saying what it does. If you do not know it, say what you tried and what is missing.]"
 #define KNF_TODO_PREV "%s\n[katana: your todo list from before still has %d unfinished steps. This message is newer and comes first: " \
