@@ -109,8 +109,8 @@ folder, files around, skills line), because the calls use absolute paths that co
 `katana curriculum windows <model.gguf> <imported.jsonl> [--seq N] [--window dense --win-ctx N]` prints the windows the
 training would cut, with the model's tokenizer. Only the vocabulary is loaded, so it takes about two seconds.
 
-**Every tool the prompt names** (`x-rare`). The table in `src/app/scenario_rare.c` has 197 situations: 174 for the training
-file and 23 reserved for the validation file (`hold = 1`; the rotation of each file only walks its own rows, so a reserved
+**Every tool the prompt names** (`x-rare`). The table in `src/app/scenario_rare.c` has 140 situations: 121 for the training
+file and 19 reserved for the validation file (2026-11-26; every rare tool now has at least one reserved situation, and `EnterWorktree` and `ExitWorktree` have five or more training situations: an isolated copy and its branch, a path that does not exist, leaving with an uncommitted file refused, leaving with `keep`) (`hold = 1`; the rotation of each file only walks its own rows, so a reserved
 request never appears in training). A situation is a row with its own request intent and its own tool sequence or outcome.
 Every tool has at least five training situations: the right use, a use combined with another tool, the engine's error and
 the reaction, an error followed by another way, and for the scheduling tools the contrast between scheduling
