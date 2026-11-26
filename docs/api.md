@@ -53,7 +53,8 @@ Request fields:
 | `tools`, `tool_choice`, `parallel_tool_calls` | yes, see below |
 | `n` | only 1 (anything else is 400) |
 | images, audio, files in `content` | no (400) |
-| `logprobs`, `top_logprobs`, `logit_bias`, `presence_penalty`, `frequency_penalty`, `user`, `metadata` | ignored |
+| `presence_penalty`, `frequency_penalty`, `logit_bias`, `top_k`, `min_p`, `typical_p`, `repeat_penalty`, `repeat_last_n`, `mirostat*`, `dry_*` | yes, see "Sampling parameters" below |
+| `logprobs`, `top_logprobs`, `user`, `metadata` | ignored |
 
 Plain answer:
 
@@ -267,3 +268,42 @@ AddressSanitizer build; the tool tests use `KATANA_TEST_RAW_OUTPUT` (a fixed raw
 cannot call a tool) and the agent test uses the scripted stand-in teacher. Not yet run with Qwen3.6 or Gemma 4: a
 real client library against each model, a tool round trip with the model choosing the call, the reasoning split with
 thinking on, and the agent endpoint driving a real session.
+
+
+## Sampling parameters
+
+All sampling beyond temperature, top-k and top-p lives in one module (`src/engine/sampler.c`) and is wired into every
+generation point: the console, the agent, `/api/chat` and `/v1/chat/completions`. Defaults are neutral: with none of
+these set, the sampler is off and generation is unchanged (top-k/top-p keep their per-model presets, `KATANA_TOP_K`,
+`KATANA_TOP_P`). The request body fields apply to that request only; environment variables set the default for the
+console, the agent and requests that do not send the field (`/api/chat` accepts the same body fields as the OpenAI
+endpoint, plus `seed`).
+
+| Body field | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `top_k` | `KATANA_TOP_K` | model preset | candidates kept before sampling (max 64) |
+| `min_p` | `KATANA_MIN_P` | 0 (off) | drop tokens whose probability is below `min_p` times the best one |
+| `typical_p` | `KATANA_TYPICAL_P` | 1 (off) | locally typical sampling: keep the smallest set closest to the distribution entropy that sums to `typical_p` |
+| `repeat_penalty` | `KATANA_REPEAT_PENALTY` | 1 (off) | positive logits are divided, negative ones multiplied, once per distinct token in the window (prompt included) |
+| `repeat_last_n` | `KATANA_REPEAT_LAST_N` | 64 | window of the repeat penalty; -1 = whole history, 0 = off |
+| `presence_penalty` | `KATANA_PRESENCE_PENALTY` | 0 | OpenAI semantics: logit -= 1 for any token already generated (range -2 to 2) |
+| `frequency_penalty` | `KATANA_FREQUENCY_PENALTY` | 0 | OpenAI semantics: logit -= count * value over the generated tokens (range -2 to 2) |
+| `mirostat` | `KATANA_MIROSTAT` | 0 | 2 = Mirostat v2 (replaces top-k/top-p; needs temperature > 0) |
+| `mirostat_tau`, `mirostat_eta` | `KATANA_MIROSTAT_TAU`, `KATANA_MIROSTAT_ETA` | 5, 0.1 | target surprise and learning rate |
+| `dry_multiplier` | `KATANA_DRY_MULTIPLIER` | 0 (off) | DRY penalty strength |
+| `dry_base`, `dry_allowed_length` | `KATANA_DRY_BASE`, `KATANA_DRY_ALLOWED_LENGTH` | 1.75, 2 | a token that would extend a repeated sequence of length L >= allowed gets `multiplier * base^(L - allowed)` subtracted |
+| `dry_range` | `KATANA_DRY_RANGE` | 0 (4096 tokens) | how far back DRY looks |
+| `dry_sequence_breakers` | `KATANA_DRY_BREAKERS` (`a\|b\|\n`) | `\n`, `:`, `"`, `*` | a token containing a breaker ends any repeated sequence |
+| `logit_bias` | `KATANA_LOGIT_BIAS` (`id:value,id:value`) | none | added to the token logit, clamped to -100..100 (-100 effectively bans a token) |
+| `seed` | `KATANA_SEED` | none | own generator: the same seed and prompt give the same sequence (without a seed, the process generator is used) |
+| `stop` | - | none | already supported by the OpenAI endpoint, see the table above |
+
+Order of the pipeline: logit_bias, repeat penalty, presence/frequency, DRY, typical-p, min-p, Mirostat, then
+temperature, top-k and top-p. It works on a copy of the logits and only lowers logits or sets them to a very
+negative value; cut tokens are never restored. The call grammar and the flow bias run on those same processed
+logits: when the sampled token is not valid for the tool-call grammar, the re-draw happens over the already
+filtered logits, so a token the sampler cut or the grammar forbids is never rescued. Internal greedy steps
+(context compaction, sub-agents) do not use the sampler.
+
+Check without a model: `katana samplertest` (synthetic distributions: each filter keeps the expected set, the
+probabilities sum to 1, same seed gives the same sequence, penalties lower the right mass, no logit ever rises).

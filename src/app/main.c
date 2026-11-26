@@ -1023,6 +1023,7 @@ static int run_main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "vision") == 0) return vision_main(argc - 2, argv + 2);
     if (argc >= 2 && strcmp(argv[1], "compacttest") == 0) return compact_test();
     if (argc == 2 && strcmp(argv[1], "calltest") == 0) return calltest();
+    if (argc == 2 && strcmp(argv[1], "samplertest") == 0) return samplertest();
     if (argc == 3 && strcmp(argv[1], "toolrun") == 0 && strcmp(argv[2], "notes") == 0) {
         /* teste: como toolrun, mas com as notas que o laco anexa (plano) e a decisao do fim do pedido. Linha "USER": pedido novo;
            linhas "FORGET <caminho>" e "COMPACT": resultado de Read saiu do contexto / conversa compactada; linha "END": o modelo respondeu sem chamar ferramenta (imprime se o motor fecha o ultimo passo e se manda o lembrete) */

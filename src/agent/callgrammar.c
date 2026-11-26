@@ -469,6 +469,7 @@ static int cg_tok_ok(const CgState *s, int t) {
 static int cg_tok_ok_probe(const CgState *s, int t) { g_cg_probe = 1; const int r = cg_tok_ok(s, t); g_cg_probe = 0; return r; }
 static int cg_check(const float *lg, int V, float temp, int t0) {
     if (!g_cg.on) return t0;
+    lg = smp_view(lg);                        /* reamostra sobre os logits ja processados pelo sampler (nunca devolve o que ele cortou) */
     g_cg.checked++;
     /* vies suave do fluxo: no nome da ferramenta, o token que so leva a ferramentas desfavorecidas perde g_cg_bias de logit; nunca e excluido */
     const int soft = g_cg_skip && (g_cg.st.ph == CX_FUNC || g_cg.st.ph == CX_NAME || g_cg.st.ph == CG_CALL || g_cg.st.ph == CG_GNAME);
@@ -490,7 +491,7 @@ static int cg_check(const float *lg, int V, float temp, int t0) {
     if (temp > 0.0f && k > 1) {
         for (int i = 0; i < k; i++) val[i] /= temp;
         softmax(val, k);
-        const float u = (float)rand() / ((float)RAND_MAX + 1.0f); float acc = 0.0f;
+        const float u = smp_rand01(); float acc = 0.0f;
         r = idx[k - 1];
         for (int i = 0; i < k; i++) { acc += val[i]; if (u < acc) { r = idx[i]; break; } }
     }

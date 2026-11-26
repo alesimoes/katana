@@ -22,6 +22,7 @@ typedef struct {
     int max_tokens, stream, usage, rf, has_seed;
     unsigned seed;
     float temp, top_p;
+    SmpCfg sp;                                   /* min_p, penalidades, mirostat, DRY, logit_bias, top_k (engine/sampler.c) */
     char *stop[OA_MAX_STOP]; int nstop;
     char *rf_schema;
     char model[128];
@@ -205,6 +206,7 @@ static const char *oa_parse(const char *js, OaReq *r) {
         else if (!strcmp(k, "temperature") && oa_num(v, &d)) r->temp = (float)d;
         else if (!strcmp(k, "top_p") && oa_num(v, &d)) r->top_p = (float)d;
         else if (!strcmp(k, "seed") && oa_num(v, &d)) { r->seed = (unsigned)(long long)d; r->has_seed = 1; }
+        else if (smp_json_field(&r->sp, k, v)) { }
         else if (!strcmp(k, "n") && oa_num(v, &d)) { if ((int)d != 1) return "only n=1 is supported"; }
         else if (!strcmp(k, "stream")) r->stream = !strncmp(v, "true", 4);
         else if (!strcmp(k, "stream_options") && *v == '{') {
@@ -692,7 +694,7 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     OaReq *rq = xalloc(1, sizeof *rq);
-    rq->max_tokens = -1; rq->temp = 0.7f; rq->top_p = -1.0f;
+    rq->max_tokens = -1; rq->temp = 0.7f; rq->top_p = -1.0f; rq->sp = g_smp;
     const char *err = oa_parse(body, rq);
     Buf text = {0}, forced = {0};
     int tpath = 0, tthink = 0;
@@ -729,7 +731,7 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
     }
     const float top_p0 = g_top_p;
     if (rq->top_p > 0 && rq->top_p <= 1) g_top_p = rq->top_p;
-    if (rq->has_seed) srand(rq->seed);
+    SmpScope spsv; smp_scope_begin(&spsv, &rq->sp, rq->has_seed, rq->seed, ids.ids, ids.n);
 
     /* reuso de prefixo, como no /api/chat */
     int common = 0;
@@ -796,6 +798,7 @@ static void oa_chat(Model *m, sock_t s, const char *body) {
     const double t2 = now_sec();
     gr_off();
     g_top_p = top_p0;
+    smp_scope_end(&spsv);
     srv_unlock();
 
     OaCall calls[OA_MAX_CALLS];

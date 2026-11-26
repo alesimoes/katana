@@ -185,7 +185,9 @@ static int gen_console(Model *m, float *lg, int *pos, int max_tokens, float temp
     while (gen < max_tokens && *pos < c->ctx - 1 && !g_stop) {
         g_gr.left = max_tokens - gen;
         mcpch_tick(0);
-        const int t = cg_check(lg, c->vocab, temp, sample_c(lg, c->vocab, temp, c->eos));
+        const int t0 = sample_c(lg, c->vocab, temp, c->eos);
+        const int t = cg_check(lg, c->vocab, temp, t0);
+        if (t != t0) smp_replace(t0, t);          /* a camada de chamadas trocou o token: o historico do sampler segue o definitivo */
         if (t == c->eos || t == stop2) break;
         if (c->chat_fmt == 9) { if (t == 200012) break; }   /* <|call|>: chamada de ferramenta */
         else if (tk->toktype && tk->toktype[t] == 3) break;

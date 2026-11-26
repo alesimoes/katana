@@ -19,6 +19,7 @@
 #include "engine/vk_qwen35d.c"         /* qwen35 denso no modo hibrido: prompt em lote com os produtos na GPU */
 #include "engine/gpu_suspend.c"         /* gpu_suspend/gpu_resume: solta a VRAM do qwen35moe e a recompoe (Render do agente) */
 #include "engine/qwen4exp.c"           /* qwen4exp na CPU: 4 ramos residuais, atencao esparsa, n-gramas no disco */
+#include "engine/sampler.c"            /* amostrador: min-p, penalidades, typical-p, mirostat v2, DRY, logit_bias, seed (katana samplertest) */
 #include "engine/forward.c"            /* camadas na CPU em lote, forward, amostragem, decodificacao especulativa, generate */
 #include "engine/lookup.c"             /* decodificacao especulativa por consulta ao contexto (KATANA_LOOKUP) */
 #include "engine/qtest.c"              /* katana qtest: teste dos tipos de quantizacao */

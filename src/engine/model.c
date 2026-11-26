@@ -841,6 +841,7 @@ static void q4_config(Model *m);
 static void q4_load(Model *m, const Tensors *ts);
 static void q4g_setup(Model *m);
 static void sample_preset(const char *arch);
+static void smp_bind(const Tokenizer *tk, int V);
 static void spec_apply(Model *m);
 /* mistura data e tamanho de um arquivo na identidade dos pesos: duas fusoes da mesma base tem o mesmo tamanho, o mesmo
    numero de parametros e o mesmo output_norm, e o cache de prefixo de uma nao serve para a outra */
@@ -1398,6 +1399,7 @@ static void load_model(Model *m, const char *path) {
     prefetch_setup(fsz);
     if (c->n_expert) warm_start(m);
     sample_preset(c->arch);
+    smp_bind(&m->tk, c->vocab);          /* sampler: variaveis KATANA_MIN_P, KATANA_REPEAT_PENALTY... (engine/sampler.c) */
     spec_apply(m);                      /* KATANA_SPEC: especializacao por cima do modelo base (app/train.c) */
     if (!c->q4e) et_init(m, path, buf);  /* nivel de SSD: ainda nao cobre modelo em partes */
     if (c->q4e) q4g_setup(m);

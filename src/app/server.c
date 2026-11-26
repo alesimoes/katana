@@ -499,7 +499,7 @@ static int js_skip(const char **pp, int depth) {
 }
 
 typedef struct { char *role, *content; } SrvMsg;
-typedef struct { SrvMsg msg[SRV_MAX_MSGS]; int n; int max_tokens; float temp; int rf; char *rf_schema; } SrvReq;
+typedef struct { SrvMsg msg[SRV_MAX_MSGS]; int n; int max_tokens; float temp; int rf; char *rf_schema; SmpCfg sp; int has_seed; unsigned seed; } SrvReq;
 
 static void srv_req_free(SrvReq *r) {
     for (int i = 0; i < r->n; i++) { free(r->msg[i].role); free(r->msg[i].content); }
@@ -582,6 +582,11 @@ static int srv_parse(const char *js, SrvReq *r) {
         } else if (strcmp(k, "temperature") == 0 && (*p == '-' || (*p >= '0' && *p <= '9'))) {
             r->temp = (float)strtod(p, NULL);
             ok = js_skip(&p, 1);
+        } else if (strcmp(k, "seed") == 0 && (*p == '-' || (*p >= '0' && *p <= '9'))) {
+            r->seed = (unsigned)strtoll(p, NULL, 10); r->has_seed = 1;
+            ok = js_skip(&p, 1);
+        } else if (smp_json_field(&r->sp, k, p)) {      /* min_p, repeat_penalty, logit_bias... (engine/sampler.c) */
+            ok = js_skip(&p, 1);
         } else ok = js_skip(&p, 1);
         free(key.p);
         if (!ok) return 0;
@@ -662,7 +667,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
     const Config *c = &m->cfg;
     const Tokenizer *tk = &m->tk;
     SrvReq *rq = xalloc(1, sizeof *rq);
-    rq->max_tokens = 1024; rq->temp = 0.7f;
+    rq->max_tokens = 1024; rq->temp = 0.7f; rq->sp = g_smp;
     if (!srv_parse(body, rq) || rq->n == 0) { http_error(s, 400, "JSON invalido: esperado {\\\"messages\\\":[...]}"); srv_req_free(rq); free(rq); return; }
     if (rq->max_tokens < 1) rq->max_tokens = 1;
     if (rq->temp < 0) rq->temp = 0;
@@ -671,6 +676,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
     const float temp = rq->temp;
     const int rf = rq->rf;
     char *rf_schema = rq->rf_schema; rq->rf_schema = NULL;      /* fica comigo ate o fim da requisicao */
+    const SmpCfg rsp = rq->sp; const int rseed_on = rq->has_seed; const unsigned rseed = rq->seed;
 
     /* monta o texto da conversa no formato do modelo, como o console faz turno a turno */
     const char *sys = "";
@@ -721,6 +727,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
                      "X-Accel-Buffering: no\r\nConnection: close\r\n\r\n";
     if (!sock_send(s, hd, strlen(hd))) { free(ids.ids); free(rf_schema); srv_cache.n = 0; return; }
 
+    SmpScope spsv; smp_scope_begin(&spsv, &rsp, rseed_on, rseed, ids.ids, ids.n);     /* parametros de amostragem desta requisicao */
     const double t0 = now_sec();
     int pos = common;
     float *lg = snap_feed(m, ids.ids, ids.n, common);
@@ -754,6 +761,7 @@ static void srv_chat(Model *m, sock_t s, const char *body) {
     }
     const double t2 = now_sec();
     gr_off(); free(rf_schema);
+    smp_scope_end(&spsv);
     if (alive) {
         char d[320];
         const int k = snprintf(d, sizeof d,

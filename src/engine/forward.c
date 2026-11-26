@@ -493,7 +493,7 @@ static void sample_preset(const char *arch) {
 
 static int sample(const float *logits, int n, float temp) {
     int idx[TOP_K]; float val[TOP_K]; int k = 0;
-    const int TK = g_top_k;
+    const int TK = smp_bypass(temp) ? TOP_K : g_top_k;
     if (temp <= 0.0f) {
         int best = 0;
         for (int i = 1; i < n; i++) if (logits[i] > logits[best]) best = i;
@@ -507,13 +507,13 @@ static int sample(const float *logits, int n, float temp) {
     }
     for (int i = 0; i < k; i++) val[i] /= temp;
     softmax(val, k);
-    if (g_top_p < 1.0f) {       /* nucleo: corta a cauda e renormaliza */
+    if (g_top_p < 1.0f && !smp_bypass(temp)) {       /* nucleo: corta a cauda e renormaliza */
         float cum = 0.0f; int kk = 0;
         while (kk < k) { cum += val[kk++]; if (cum >= g_top_p) break; }
         for (int i = 0; i < kk; i++) val[i] /= cum;
         k = kk;
     }
-    float r = (float)rand() / ((float)RAND_MAX + 1.0f), acc = 0.0f;
+    float r = smp_rand01(), acc = 0.0f;
     for (int i = 0; i < k; i++) { acc += val[i]; if (r < acc) return idx[i]; }
     return idx[k - 1];
 }
@@ -1143,7 +1143,7 @@ static int gr_sample(const float *lg, int n, float temp, int eos) {
         val[j] = lg[i]; idx[j] = i;
     }
     int cand[TOP_K]; float cv[TOP_K]; int nc = 0;
-    const int want = temp <= 0.0f ? 1 : g_top_k;
+    const int want = temp <= 0.0f ? 1 : smp_bypass(temp) ? TOP_K : g_top_k;
     /* orcamento acabando: so tokens que fecham as estruturas abertas (para o JSON terminar valido) */
     for (int cl = 0; cl >= 0 && nc == 0; cl--) {
         for (int i = 0; i < k && nc < want; i++) {
@@ -1175,7 +1175,7 @@ static int gr_sample(const float *lg, int n, float temp, int eos) {
     if (temp <= 0.0f || nc == 1) return cand[0];
     for (int i = 0; i < nc; i++) cv[i] /= temp;
     softmax(cv, nc);
-    float r = (float)rand() / ((float)RAND_MAX + 1.0f), acc = 0.0f;
+    float r = smp_rand01(), acc = 0.0f;
     for (int i = 0; i < nc; i++) { acc += cv[i]; if (r < acc) return cand[i]; }
     return cand[nc - 1];
 }
@@ -1242,7 +1242,16 @@ static int jsontest(void) {
 
 /* amostra com a gramatica ligada (se houver) ou normalmente */
 static int sample_c(const float *lg, int n, float temp, int eos) {
-    return g_gr.on ? gr_sample(lg, n, temp, eos) : sample(lg, n, temp);
+    const float *pl = smp_apply(lg, n, temp);        /* sampler (min-p, penalidades...) sobre os logits que a gramatica ja filtra depois */
+    const int t = g_gr.on ? gr_sample(pl, n, temp, eos) : sample(pl, n, temp);
+    smp_accept(t);
+    return t;
+}
+/* o mesmo sem gramatica (verificacao do rascunho na decodificacao especulativa) */
+static int sample_s(const float *lg, int n, float temp) {
+    const int t = sample(smp_apply(lg, n, temp), n, temp);
+    smp_accept(t);
+    return t;
 }
 /* KATANA_JSON=1: saida JSON; KATANA_JSON='{...schema...}': saida conforme o schema */
 static int gr_env_begin(const Tokenizer *tk, int V, int stop2) {
@@ -1387,7 +1396,7 @@ static int generate(Model *m, const char *text, int max_tokens, float temp, int 
         int i;
         for (i = 0; i < 3 && !stop && gen < max_tokens; i++) {
             for (int v = 0; v < V; v++) col[v] = all[(size_t)v * 4 + i];
-            const int t = sample(col, V, temp);
+            const int t = sample_s(col, V, temp);
             EMIT_TOKEN(t)
             if (stop) break;
             if (t != toks[i + 1]) {         /* rascunho errado: o modelo segue a partir do token certo */
