@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    int task_ended;                                                           /* a reconciliacao achou tarefa terminada que o modelo nao soube */
     int enter_reason;                                                         /* a ultima reentrada (RZR_*): o texto do desvio de tentativa morta diz de quando ela e */
     long long t_saved; int grace_age;                                         /* quando o estado foi gravado pela ultima vez; pedidos desde a carga */
     char old_cwd[1024];                                                       /* a pasta gravada antes de este processo se anotar */
@@ -544,6 +545,8 @@ static void rz_restore_flow(void) {
     flow_grammar_mask();
 }
 static void rz_sync_all(void);
+static int rz_has_work(void);
+static int rz_idle_min(void);
 /* chamado antes de flow_request: anota o pedido (U) */
 static void rz_request_begin(const char *ureq) {
     if (!rz_on() || g_ct_depth > 1) return;
@@ -554,7 +557,16 @@ static void rz_request_begin(const char *ureq) {
     rz_ev('U', rz_i(g_fl.req + 1), b, NULL);
     rz_reconcile();
     rz_sync_all();
+    if (!g_rz.reason) {      /* reentrada dentro do processo: tarefa que acabou, silencio longo, ou algo que mudou no mundo */
+        const long long now = (long long)time(NULL);
+        if (g_rz.task_ended) g_rz.reason = RZR_TASK;
+        else if (g_rz.s.t_clean && now - g_rz.s.t_clean > (long long)rz_idle_min() * 60 && rz_has_work()) g_rz.reason = RZR_IDLE;
+        else if (g_rz.ndelta > 0) g_rz.reason = RZR_IDLE;
+    }
+    g_rz.task_ended = 0;
 }
+/* o pedido terminou numa interrupcao do usuario: o proximo pedido recebe o bloco curto */
+static void rz_interrupted(void) { if (rz_on() && g_ct_depth <= 1 && !g_rz.reason) g_rz.reason = RZR_INTERRUPT; }
 
 /* ---------- as chamadas: B antes, E depois; tentativas falhas, evidencia ganha, arquivos, decisoes (docs/flow-resume.md secao 5) ---------- */
 /* valor de uma chave em JSON (texto simples, sem entrar em objetos aninhados com a mesma chave; o primeiro valor vale) */
@@ -836,6 +848,7 @@ static void rz_reconcile(void) {
     }
 #ifndef _WIN32
     /* tarefas */
+    if (!foreign) rz_sync_jobs();      /* o estado e a tabela viva dizem a mesma coisa antes da conferencia */
     for (int k = 0; k < RZ_NJOB; k++) {
         RzJob e = s->job[k];
         if (!e.id) continue;
@@ -877,8 +890,10 @@ static void rz_reconcile(void) {
                 else rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended while katana was reloading with exit code %d; its output file is gone", e.id, e.cmd, rc);
             }
             rz_job_put(&e, st, rc, 1, now_sz);
-        } else if (!running && !e.told && !mine && e.status != RZJ_DETACHED) {      /* acabou antes e o modelo nao soube: diz uma vez */
-            if (has_log) rz_dpush(d, &nd, 1, "task %d (`%.60s`) had ended before; its output is in %.100s", e.id, e.cmd, e.log);
+        } else if (!running && !e.told && e.status != RZJ_DETACHED) {      /* acabou e o modelo nao soube: diz uma vez */
+            if (e.status == RZJ_LOST) rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended; exit code unknown%s%.100s", e.id, e.cmd, has_log ? "; its output is in " : "", has_log ? e.log : "");
+            else rz_dpush(d, &nd, 1, "task %d (`%.60s`) ended with exit code %d%s%.100s", e.id, e.cmd, e.rc, has_log ? "; its output is in " : "", has_log ? e.log : "");
+            g_rz.task_ended = 1;
             rz_job_put(&e, e.status, e.rc, 1, now_sz);
         }
     }
@@ -947,4 +962,25 @@ static void rz_forgive_attempts(void) {
     if (!rz_on() || g_ct_depth > 1) return;
     const RzState *s = &g_rz.s;
     for (int i = 0; i < s->natt; i++) { const RzAttempt a = s->att[i]; if (a.dead) rz_ev('A', rz_x(a.key), rz_x(a.call), a.tool, a.subj, a.cause, rz_i(a.n), "0", a.fix, rz_i(a.epoch), NULL); }
+}
+
+/* tarefa de segundo plano terminada e que o modelo nao soube (nao e a que o fluxo acompanha): uma clausula por tarefa, uma vez */
+static size_t rz_job_clause(char *out, size_t cap) {
+    out[0] = 0;
+#ifndef _WIN32
+    if (!rz_on() || g_ct_depth > 1 || cap < 400) return 0;
+    rz_sync_jobs();
+    size_t n = 0;
+    for (int k = 0; k < RZ_NJOB; k++) {
+        const RzJob e = g_rz.s.job[k];
+        if (!e.id || e.told || e.agent_pid != (long)getpid() || e.id == g_fl.task) continue;
+        if (e.status != RZJ_DONE && e.status != RZJ_STOPPED) continue;
+        if (n + 260 >= cap) break;
+        n += (size_t)snprintf(out + n, cap - n, "task %d (`%.60s`) ended with exit code %d; its output is in %.100s. ", e.id, e.cmd, e.rc, e.log);
+        rz_job_put(&e, e.status, e.rc, 1, e.log_sz);
+    }
+    return n;
+#else
+    (void)cap; return 0;
+#endif
 }

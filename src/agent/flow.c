@@ -461,6 +461,7 @@ static void rz_request_begin(const char *ureq);
 static void rz_before(const char *name, const char *js, const char *end);
 static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain);
 static int rz_cmd_state(const char *file);
+static size_t rz_job_clause(char *out, size_t cap);      /* resume.c: tarefas terminadas que o modelo nao soube */
 static void rz_sim_begin(void), rz_sim_restart(void), rz_sim_end(void);
 
 /* ---- pedido novo do usuario: escolhe, continua ou encerra o fluxo; out recebe a linha para o fim do pedido (0: nada) ---- */
@@ -590,6 +591,7 @@ static void flow_after_body(const char *name, const char *js, const char *end, c
     if (repeat && pn < sizeof pre) pn += (size_t)snprintf(pre + pn, sizeof pre - pn, "you made this exact call in an earlier request of this conversation and got this exact result (%d times now); it will not change by itself. Use that result, or tell the user what blocks you. ", repeat);
     /* o que a memoria de fluxos sabe sobre esta falha (flowmem.c; desligado por padrao) */
     if (failed && pn + 300 < sizeof pre) pn += flow_memory_note(name, js, end, result, failed, pre + pn, sizeof pre - pn);
+    if (pn + 500 < sizeof pre) pn += rz_job_clause(pre + pn, sizeof pre - pn);      /* todas as tarefas, nao so a acompanhada (resume.c) */
     /* falta de progresso: o que conta e a evidencia ganha por passo, nao a repeticao exata (pega o laco que varia os argumentos) */
     if (fl_gain(ev, result, rl, failed, changed)) { g_fl.stall = 0; g_fl_last_gain = 1; }
     else if (++g_fl.stall >= 5) { stall = 1; g_fl.stall = 0; if (pn < sizeof pre) pn += (size_t)snprintf(pre + pn, sizeof pre - pn, "the last 5 calls brought nothing new (no new result, no file changed, no step closed). Do not try another variation: use what you already have, or tell the user in two sentences what blocks you. "); fl_log("stall\t%s\t5 steps without gain", name); }

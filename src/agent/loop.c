@@ -866,7 +866,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             free(ids.ids);
             buf_str(&tr, "Assistente: "); buf_str(&tr, reply.p ? reply.p : ""); buf_str(&tr, "\n");
             launch_reply(reply.p ? reply.p : "", reply.n);
-            if (g_stop) break;                          /* interrompido: nao executa ferramentas */
+            if (g_stop) { if (cml) rz_interrupted(); break; }      /* interrompido: nao executa ferramentas; o proximo pedido recebe o bloco curto de reentrada */
             if (round == lim - 2 && !rl_forced && !g_max_turns && lim + rl_block() <= RL_CAP) {      /* fim do bloco: continua se houve progresso */
                 int td = 0; todo_count(&td);
                 if (rl_files || td > rl_done0) {

@@ -4,7 +4,7 @@
  * O bloco nunca diz o proximo passo quando ha fluxo aberto: a linha `next` vem depois e continua a ultima coisa que o modelo le. */
 #define RZ_MAX_DEF 1200
 static int rz_max(void) { const char *e = getenv("KATANA_RESUME_MAX"); int v = e && *e ? atoi(e) : RZ_MAX_DEF; return v < 400 ? (v ? 400 : RZ_MAX_DEF) : v > 3000 ? 3000 : v; }
-RZ_UNUSED static int rz_idle_min(void) { const char *e = getenv("KATANA_RESUME_IDLE_MIN"); const int v = e && *e ? atoi(e) : 30; return v > 0 ? v : 30; }
+static int rz_idle_min(void) { const char *e = getenv("KATANA_RESUME_IDLE_MIN"); const int v = e && *e ? atoi(e) : 30; return v > 0 ? v : 30; }
 RZ_UNUSED static int rz_flag(const char *name) { const char *e = getenv(name); return e && atoi(e) > 0; }
 static int rz_grace(void) { return g_rz.grace; }
 
@@ -136,21 +136,23 @@ static void rz_reason_text(int r, char *o, size_t cap) {
     else if (r == RZR_INTERRUPT) snprintf(o, cap, "you were interrupted");
     else if (r == RZR_IDLE) { rz_dur(g_rz.s.t_clean ? now - g_rz.s.t_clean : 0, d, sizeof d); snprintf(o, cap, "back after %s", d); }
     else if (r == RZR_RECALL) snprintf(o, cap, "back to earlier work");
+    else if (r == RZR_TASK) snprintf(o, cap, "a background task ended");
     else snprintf(o, cap, "state of the work");
 }
 /* o bloco do pedido que segue a reentrada; 0 = nada a dizer (sem trabalho, sem bloco). Gasta a reentrada pendente */
 static size_t rz_block(char *out, size_t cap) {
     out[0] = 0;
     const int reason = g_rz.reason;
-    if (!rz_on() || !reason || reason == RZR_SUMMARY || reason == RZR_TASK) { if (reason == RZR_SUMMARY) g_rz.reason = 0; return 0; }
+    if (!rz_on() || !reason || reason == RZR_SUMMARY) { if (reason == RZR_SUMMARY) g_rz.reason = 0; return 0; }
     g_rz.reason = 0;
     if (!rz_has_work()) return 0;
     char body[3200], why[64];
-    rz_body(body, sizeof body, reason == RZR_INTERRUPT || reason == RZR_IDLE ? 1 : 0);
+    rz_body(body, sizeof body, reason == RZR_INTERRUPT || reason == RZR_IDLE || reason == RZR_TASK ? 1 : 0);
     if (!body[0]) return 0;
     rz_reason_text(reason, why, sizeof why);
     const size_t n = KNOTE(RESUME, out, cap, why, body);
     if (n >= cap) { out[0] = 0; return 0; }
+    g_rz.enter_reason = reason;
     rz_ev('N', RZ_RNAME[reason], rz_i((long long)n), NULL);
     fl_log("resume\tenter\t%s\t%d", RZ_RNAME[reason], (int)n);
     g_rz.score_left = 3; g_rz.sc_on = g_rz.sc_dead = g_rz.sc_dup = 0; g_rz.sc_reason = reason;
