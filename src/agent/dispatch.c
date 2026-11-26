@@ -3,6 +3,16 @@
 static void ui_toolout(const char *name, const char *res) {
     launch_tool_result(name, res);
     if (!getenv("KATANA_UI")) return;
+    if (!strcmp(name, "ToolSearch") && strstr(res, "\"type\": \"function\"")) {      /* a declaracao e para o modelo: ao usuario so os nomes das ferramentas carregadas */
+        printf("\x01" "TOOLOUT %s\tTool declarations loaded:", name);
+        const char *q = res; int k = 0;
+        while ((q = strstr(q, "\"function\": {\"name\": \"")) && k < 12) {
+            q += strlen("\"function\": {\"name\": \"");
+            const char *e = strchr(q, '"'); if (!e || e - q > 60) break;
+            printf("%s%.*s", k ? ", " : " ", (int)(e - q), q); k++; q = e;
+        }
+        putchar('\n'); fflush(stdout); return;
+    }
     const size_t n = strlen(res), HEAD = 3000, TAIL = 5000;
     printf("\x01" "TOOLOUT %s\t", name);
     for (size_t i = 0; i < n; i++) {
