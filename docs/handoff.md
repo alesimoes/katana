@@ -52,8 +52,10 @@ ChatML loop path is hooked. Open list: `docs/flows.md` section 7.
 spellings); the UIOE web connector `web.search` exists (`src/uioe/conn_web.c`, behind `KATANA_UIOE_WEB=1`, policy 3.8.6; `web.fetch` is the part still missing).
 Two engine ideas listed as top priority were checked against the notes and are **not** the next step: grouping MoE tokens by expert is done
 (`moe_cpu_multi`, `KATANA_MOE_GROUP`), and the one-token router on the GPU was built and measured with no gain (section 0h, `comparisons.md` 14; off by default).
-On Qwen3.6 generation (~34 ms/token) the cost is the cold experts on the CPU (11-14 ms) with 36% of expert uses in VRAM, so the lever is hit rate:
-early-router prefetch (recall 79% at 8 predicted, built for the RAM arena in `expert_tier.c`) applied to the VRAM slots, plus the arena on the GPU upload path.
+On Qwen3.6 generation (~34 ms/token) the cost is the cold experts on the CPU (11-14 ms) with 36% of expert uses in VRAM, the cold part is already near the memory bandwidth (about 5 missed experts x ~1.7 MB x 40 layers = ~340 MB per token at the ~24 GB/s the CPU gets = ~14 ms).
+Prefetching the missed experts into the VRAM slots would move the same ~340 MB over PCIe (estimate, not measured, ~12 GB/s: ~30 ms), so it would not beat the CPU path.
+Generation on this machine is close to its hardware limit; what is left is fewer bytes per token (cheaper quantization of cold experts) or a larger VRAM budget.
+The remaining engine levers are the prompt (prefill) and the agent behaviour (flows, grammar), not the expert cache.
 
 To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
 
