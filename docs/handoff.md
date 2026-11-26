@@ -28,6 +28,14 @@ further down are measurements from the dates in their titles; do not read them a
    prints a null `terminal` TypeError at shutdown (the terminal object now outlives the QML engine).
 8. **Teacher mode** is an external plugin (below); the binary has no vendor code.
 9. **Git:** see the owner's memory for the push rule in force.
+10. **Durable work state (2026-11-26), built from `docs/flow-resume.md`, 14 steps, compiled, nothing run with a model, nothing measured.** One event-sourced
+    file per session (`<session>.kstate`, next to the `.ksess`) holds the goal, the flow stack, the plan, evidence won, failed attempts, files, decisions,
+    background tasks and modes; it is written before each change takes effect, reconciled with the world on return (files, tasks, folder), and projected
+    back to the model as the `resume` block (F4), as a capsule inside summaries, and as a note on calls that repeat a dead attempt. Code: `src/agent/resume.c`,
+    `src/agent/resume_note.c`, hooks in `flow.c`, `loop.c`, `context.c`, `jobs.c`, `knote.c`, `tools/table.c`. On by default: the file, the block, the capsule, the
+    dead-attempt note (advice only), the passive orientation score. **Off:** `KATANA_RESUME=strict`, `KATANA_RESUME_REHYDRATE=1`, `KATANA_RESUME_PROBE=1`
+    (needs `KATANA_FLOW_RERANK=1`), `KATANA_RESUME_WAKE=1`, `KATANA_RESUME_RECALL=1`. Section 12 of the design lists where the build differs from the text.
+    Open: run the comparison of section 9 of the design on Qwen3.6 when measurements return, and decide the Gemma 4/harmony paths (not hooked).
 
 **2026-11-25, declared flows (`docs/flows.md`).** The engine now holds the state of the job per conversation: 13 playbooks as state
 machines in a table (`src/agent/flow.c`), a contract for each of the 40 tools, and one `[katana: next <flow> <i>/<n> <state>: ...]` line at the

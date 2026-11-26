@@ -539,4 +539,16 @@ Three kinds added to `KN_TAB`, all emitted by `src/agent/flow.c` and `src/agent/
 | F2 `flow_evidence` | "evidence for the next step: WHAT" + the lines | before F1 in the same result | INFO | off (`KATANA_FLOW_RETRIEVE`) |
 | F3 `flow_decl` | "declaration of TOOL, loaded for this step (no ToolSearch needed)" + the declaration | after F1 | INFO | off (`KATANA_FLOW_JIT`) |
 
-The model was not trained on any of them. F1 is not in the curriculum generator; no scenario checks its text yet.
+A fourth kind, built on 2026-11-26 (compiled, no model run, nothing measured; design in `docs/flow-resume.md`, code in
+`src/agent/resume.c` and `src/agent/resume_note.c`):
+
+| # | Text | Where | Class | Default |
+|---|---|---|---|---|
+| F4 `resume` | "resume (REASON)" + labelled lines `goal:`, `was:`, `done:`, `changed:`, `running:`, `do not repeat:`, `asked:` (and `next:` when no flow is open) | end of the user request that follows a re-entry (session reopened, interruption, long silence, a task that ended), in front of F1 | ORDER | on (`KATANA_RESUME=0` turns it off) |
+
+The same state also goes into a summary as a capsule, `KNF_RESUME_CAPSULE` ("state of the work, kept by the engine; where it
+differs from the summary above, this is right"), at the three places a summary message is built (`context.c` twice,
+`loop.c` `sess_compact`). The capsule holds only the stable part (goal, plan position, evidence, files, dead attempts,
+decisions) and is capped at 2500 bytes.
+
+The model was not trained on any of them. F1 and F4 are not in the curriculum generator; no scenario checks their text yet.

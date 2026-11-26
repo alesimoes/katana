@@ -62,7 +62,8 @@ State belongs to the **conversation**, not to the request (`rr_`/`rp_` stay per 
 four flows: a command that asks a question pushes `terminal` over `debug`; when the task ends, `debug` is back. A
 new user message re-classifies: a clear new intent replaces the flow; "continue", "yes" keep it; anything else ends a
 flow that was already at its answer state. In `image` at `show`, the next message is read as approval (to `final`),
-a change (back to `brief`), or another subject (flow ends). State is lost on resume of a saved session (open).
+a change (back to `brief`), or another subject (flow ends). The state is saved with the session and restored on resume,
+restart and reload, and checked against the world on return: see `docs/flow-resume.md`.
 
 ### 2.2 Tool coverage: all 40 tools have a contract
 
@@ -225,8 +226,18 @@ Changes made against the first design of this work, and why:
 | `KATANA_FLOW_RETRIEVE=1` | off | evidence block on entering a state | adds text to results; usefulness not measured |
 | `KATANA_FLOW_RERANK=1` | off | the logit probe | runs the model; parks the context on disk |
 | `KATANA_FLOW_LESSONS=N` | off | mined lessons in the line | tables are small and partly noisy |
+| `KATANA_RESUME=0` | on | turns the durable work state off: no `.kstate` file, no `resume` block | - |
+| `KATANA_RESUME=strict` | off | a call that repeats a dead attempt from before the re-entry is refused before running | a wrong match would block a valid call |
+| `KATANA_RESUME_MAX=N` | 1200 | byte cap of the `resume` block (400 to 3000) | - |
+| `KATANA_RESUME_IDLE_MIN=N` | 30 | minutes of silence after which the next request gets the short block | - |
+| `KATANA_RESUME_REHYDRATE=1` | off | on session resume, old turns are replaced by the capsule | the model gets less text; not measured |
+| `KATANA_RESUME_PROBE=1` | off | one logit probe after re-entry (also needs `KATANA_FLOW_RERANK=1`) | runs the model; parks the context on disk |
+| `KATANA_RESUME_WAKE=1` | off | a task that ends while the agent is idle starts a turn | a turn starts without the user typing |
+| `KATANA_RESUME_RECALL=1` | off | a suspended job is restored when the user returns to it | a wrong match resurrects an old flow |
+| `KATANA_RESUME_FILE=path` | unset | state file path when there is no session file (`katana flow sim`, tests) | test only |
 
-Trace: `~/.katana/flow.log` (enter, step, end, refuse, stall, lesson, probe, retrieve, jit), one line each.
+Trace: `~/.katana/flow.log` (enter, step, end, refuse, stall, lesson, probe, retrieve, jit, resume enter, resume score,
+resume probe, recall), one line each. `katana flow resume-report [--days N]` sums the `resume` lines per reason.
 
 Designed, not built (order follows beyond-rag section 7):
 
@@ -241,10 +252,13 @@ Designed, not built (order follows beyond-rag section 7):
    unambiguous lessons.
 5. **One classifier.** The flow classifier is a word list beside UIOE's Classify; a request to *do* something
    should become a UIOE kind, and the flow state should be visible in the context packet.
-6. **`done=N` checked against evidence** (failure 12), flow state saved with the session, the Gemma 4 and harmony
-   result paths (only the ChatML loop path is hooked), Windows (the task checks are POSIX only).
+6. **`done=N` checked against evidence** (failure 12), the Gemma 4 and harmony result paths (only the ChatML loop path
+   is hooked), Windows (the task checks are POSIX only). Flow state saved with the session is built (compiled, not run
+   with a model, not measured): `docs/flow-resume.md`.
 7. **Training.** The `next` line is a new note: the model has not been trained on it. `katana-notes.md` lists it;
    a curriculum family for following it is not written.
 
 To see it without a model: `katana flow list`, `katana flow tools`, `katana flow classify "<request>"`,
-`katana flow sim <script>` (lines `U<TAB>request` and `C<TAB>tool<TAB>json args<TAB>result`).
+`katana flow sim <script>` (lines `U<TAB>request`, `C<TAB>tool<TAB>json args<TAB>result`, and `R` for a restart: the state is
+written, memory is cleared, the state is read back and reconciled, and the next `U` prints the `resume` block),
+`katana flow state <file.kstate>` (a state file as the block and as the capsule).
