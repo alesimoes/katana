@@ -22,6 +22,7 @@
 #include "engine/forward.c"            /* camadas na CPU em lote, forward, amostragem, decodificacao especulativa, generate */
 #include "engine/lookup.c"             /* decodificacao especulativa por consulta ao contexto (KATANA_LOOKUP) */
 #include "engine/qtest.c"              /* katana qtest: teste dos tipos de quantizacao */
+#include "engine/expert_pf.c"            /* prefetch dos especialistas frios para a cache da CPU durante a espera pela GPU */
 #include "engine/expert_tier.c"          /* camadas de memoria dos especialistas: RAM com leitura paralela do SSD, previsao, medidas */
 #include "engine/prepare.c"            /* perfil por modelo e katana prepare */
 #include "app/console.c"               /* console (cores, Ctrl+C, comandos de barra) e conversa simples */

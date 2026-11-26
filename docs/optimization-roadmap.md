@@ -142,6 +142,24 @@ preload by the heat of the previous session.
 (+60% disk throughput), use the arena for the GPU upload path and the batch path of the VRAM cache, early router
 prediction also for Gemma 4, prefetch 2 layers ahead with a smaller N.
 
+**Cold-expert prefetch during the GPU wait: implemented, on by default, not measured (2026-11-26).**
+`src/engine/expert_pf.c`, hooks `pf_before` / `pf_after` around `vk_moe_ffn` in the Qwen3.6 one-token Vulkan path
+(`vk_qn_forward_1`). While the CPU blocks on the per-layer read (the GPU is running DeltaNet/attention of layer l+1), a
+dedicated helper thread (not the compute pool) applies the early router of layer l+1 to the state the CPU already
+holds (the FFN input of layer l; the residual is recovered up to scale by dividing by the layer norm weight, and RMS
+norm is scale invariant), picks the N most likely experts that are NOT in the VRAM slots, and reads the gate, up and
+down blocks of each one line by line (one load per 64 bytes plus software prefetch). This takes the page faults of
+the mapped file and brings the lines to L2/L3 before the cold-expert products run. Volume per layer is capped at half
+the L3 (sysconf, then sysfs, default 8 MB) and the thread stops within a page when the real layer arrives. It only
+reads, so no numeric output changes. Controls: `KATANA_MOE_PF=0` turns it off, `KATANA_MOE_PF_N` (default 12),
+`KATANA_MOE_PF_MB`, and `KATANA_MOE_PF_STATS=1` (or `KATANA_DEBUG`) prints at exit the jobs, cancelled jobs, MB read and
+how many of the real cold experts were predicted (fully read / at least started). Nothing was measured: the recall of
+this proxy input (FFN input of layer l instead of the residual after the MoE of layer l and the attention of layer
+l+1), the share of the prediction that is read before the cancel (about 0.4 ms per layer, roughly 2 experts at
+single-thread read speed) and the effect on the 11-14 ms/token of cold experts are all unknown. The helper competes
+with the compute pool for memory bandwidth only if a job is still running when the cold products start (it is cancelled
+first). Disabled when the RAM arena (`KATANA_EXPERT_RAM`) is on. Linux only.
+
 ## 5. Loading and startup
 
 | Technique | What it does | Effort |

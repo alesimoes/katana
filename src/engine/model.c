@@ -751,6 +751,9 @@ static void (*et_hook_route)(Model *, const Layer *, int);     /* no fim de moe_
 static void (*et_hook_post)(Model *, int);                     /* ao fim de uma camada MoE do qwen35moe */
 static int et_wrap(Model *m, const Layer *L, const int *ex, const int *xi, int n, int n_x, const float *xs, float *outs);
 static void et_init(Model *m, const char *path, const uint8_t *base);
+/* prefetch dos especialistas frios durante a espera pela GPU (engine/expert_pf.c; KATANA_MOE_PF=0 desliga) */
+static void pf_before(Model *m, int l);
+static void pf_after(Model *m, int l);
 
 /* mapeia o arquivo em memoria (somente leitura): o SO carrega as paginas sob demanda
    e o mapeamento fica vivo ate o processo terminar */
