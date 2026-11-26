@@ -10,7 +10,7 @@ static const char CT_RENDER_DESC[] =
     "flux (high definition): English prose, subject and style first, up to ~500 tokens (~350 words). "
     "A brief over the limit is REFUSED, never cut: you get `error: the brief has N tokens, the limit for <engine> is L ...`; rewrite it shorter and call again. "
     "Colours: use plain colour names (burgundy, slate blue-grey, cream), never hex or RGB numbers: the image model does not read them; keep the user's own words for materials and objects, do not rename or reinterpret them, and do not invent a room type. "
-    "`image` (PNG or JPEG) is optional: a view, sketch or photo the picture should follow; leave it out to draw from the text alone. `brief` may also be the path of a text file with the prompt. "
+    "`image` (PNG or JPEG) is optional: a view, sketch or photo the picture should follow; leave it out to draw from the text alone. `brief` may also be the path of an existing text file with the prompt. "
     "Flow: preview with stable first, show the result and ASK the user whether it is approved; call flux only after the user approves (more steps and a larger size for the final), "
     "never stable then flux in the same answer. If the user asks directly for the final or high definition, go straight to flux. "
     "It takes minutes (stable about 25 s to a few minutes, flux longer): tell the user before calling. Returns the path of the image written and which backend ran; tell the user the path.";
@@ -83,13 +83,13 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
     if (img && img[0] && access(img, R_OK) != 0) { snprintf(out, cap, "error: cannot read the image %.300s", img); goto done; }
     /* brief: texto de varias linhas (ou longo) vai para um arquivo temporario; senao e o caminho de um arquivo existente */
     if (brf && brf[0]) {
-        if (strchr(brf, '\n') || strlen(brf) > 240) {
+        if (strchr(brf, '\n') || strlen(brf) > 240 || access(brf, R_OK) != 0) {      /* texto (uma linha ou varias) ou caminho de arquivo que existe */
             snprintf(tmpb, sizeof tmpb, "/tmp/katana-brief-XXXXXX");
             const int fd = mkstemp(tmpb);
             if (fd < 0) { tmpb[0] = 0; snprintf(out, cap, "error: cannot write the brief to a temporary file"); goto done; }
             const size_t bl = strlen(brf); const ssize_t wn = write(fd, brf, bl); close(fd);
             if (wn < 0 || (size_t)wn != bl) { snprintf(out, cap, "error: cannot write the brief to a temporary file"); goto done; }
-        } else if (access(brf, R_OK) != 0) { snprintf(out, cap, "error: cannot read the brief file %.300s (to give the briefing text, write it in several lines)", brf); goto done; }
+        }
     }
     char target[1200];
     if (dst && dst[0]) snprintf(target, sizeof target, "%s", dst);
@@ -141,7 +141,7 @@ static void ct_render(const char *js, const char *end, char *out, size_t cap) {
                   if (isTok) { int u2 = 0, b2 = 0; if (sscanf(t + 8, "%d/%d", &u2, &b2) == 2) snprintf(bl, sizeof bl, "\nbrief: %d/%d tokens", u2, b2); }
                   q = eol ? strstr(eol, "[brief] ") : NULL;
               } }
-            snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s\n%s", eng, ap, (long long)st.st_size, bl, used);
+            snprintf(out, cap, "rendered with %s: %s (%lld bytes)%s\n%s\n[katana: the image is ready and the interface shows it from this result; do not run anything else to display it. Tell the user the path and ask if it is approved.]", eng, ap, (long long)st.st_size, bl, used);
         }
     }
 done:

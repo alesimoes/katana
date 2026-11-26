@@ -30,7 +30,6 @@ printf 'x' > view.png; printf 'MATERIAIS\n' > brief.md
 o=$(run Render '{}'); has "needs request or brief" "$o" "error: give a brief"
 o=$(run Render '{"request":"a room","engine":"dalle"}'); has "bad engine" "$o" "error: engine must be stable or flux"
 o=$(run Render '{"request":"a room","image":"nope.png"}'); has "missing image" "$o" "error: cannot read the image nope.png"
-o=$(run Render '{"brief":"nope.md"}'); has "missing brief" "$o" "error: cannot read the brief file nope.md"
 o=$(run Render '{"request":"a room","image":"view.png","out":"view.png"}'); has "never overwrites the view" "$o" "error: out is the same file as image"
 
 o=$(run Render '{"request":"a bright reception","image":"view.png"}'); a=$(cat args.txt)
