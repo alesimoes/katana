@@ -236,7 +236,7 @@
   <div class="sh">
     <div class="kicker">Features</div>
     <h2 id="h-features">An engine, an agent and an app</h2>
-    <p>The engine reads GGUF models and runs them on the CPU, the GPU (Vulkan or OpenCL, and optionally CUDA, all loaded from the driver at run time, no SDK) or both. On top of it sit an agent with tools and a native desktop window.</p>
+    <p>The engine reads GGUF models and runs them on the CPU, the GPU (Vulkan or OpenCL, loaded from the driver at run time, no SDK) or both. On top of it sit an agent with tools and a native desktop window.</p>
   </div>
   <div class="feat">
     <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></div>
@@ -273,7 +273,7 @@
     <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7.5v9L12 21l8-4.5v-9z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M4 7.5 12 12l8-4.5M12 12v9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></div>
       <h3>A quick preview of a 3D view</h3><p>The goal that started it: take a view exported from a 3D model and get a photographic preview that keeps its geometry (the edges guide the generation) and gives an idea of light and materials. Whether the preview predicts a final image is not known yet.</p></div>
     <div class="f"><div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
-      <h3>CPU, Vulkan or CUDA</h3><p>Image generation picks Auto, CUDA, Vulkan or CPU (a setting in the desktop). CUDA is optional: it uses the driver's API loaded at run time, with kernels in PTX and no NVIDIA library at build time. Without an NVIDIA card everything keeps working.</p></div>
+      <h3>CPU, Vulkan or CUDA</h3><p>Image generation picks Auto, CUDA, Vulkan or CPU (a setting in the desktop). CUDA is optional and only for images: it uses the driver's API loaded at run time, with kernels in PTX and no NVIDIA library at build time. Without an NVIDIA card everything keeps working.</p></div>
   </div>
   <p class="note" style="text-align:center;margin-top:18px">One measurement, on the CPU while another job ran on the same machine: a 512x512 image in 20 steps took about 6 minutes, and a 576x320 preview from an input image about 5 minutes. The GPU paths are newer and not measured here.</p>
 </section>
