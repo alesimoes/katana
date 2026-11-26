@@ -894,10 +894,12 @@ static float *vk_qn_forward_1(Model *m, int want_logits) {
         const double tr0 = now_sec();
         if (!kvk_buf_read(vkg.xn, 0, gx.xn, (size_t)(d + (vkq.r1 ? c->n_expert : 0)) * sizeof(float))) die("falha na execucao em Vulkan (leitura)");
         gprof.t_rd += now_sec() - tr0;
+        pf_before(m, l);                    /* a camada real chegou: para o prefetch dos frios */
         if (layer_tap) layer_tap(l, vkq_pos1, gx.xn);
         moe_lg_ext = vkq.r1 ? gx.xn + d : NULL;
         vk_moe_ffn(m, L, l);
         moe_lg_ext = NULL;
+        pf_after(m, l);                     /* conta acertos e manda prever a camada seguinte durante a espera pela GPU */
     }
     if (!want_logits) { if (!kvk_flush()) die("falha na execucao em Vulkan"); return NULL; }
     if (!vk_emit_head(m) || !kvk_buf_read(vkg.lg, 0, m->logits, (size_t)c->vocab * sizeof(float))) die("falha na execucao em Vulkan (cabeca)");
