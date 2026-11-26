@@ -299,3 +299,76 @@ static size_t rz_probe_clause(char *out, size_t cap) {
     char nx[600]; fl_next_text(nx, sizeof nx);
     return (size_t)snprintf(out, cap, "orientation check: the work stands at %s %d/%d %s (%.300s). ", FL_BOOK[t->id].name, t->st + 1, FL_BOOK[t->id].nst, FL_BOOK[t->id].st[t->st].name, nx);
 }
+
+/* ---- acordar (KATANA_RESUME_WAKE=1, desligado): uma tarefa que acaba com o agente parado no prompt inicia um turno sem o usuario digitar.
+ * Devolve a linha que entra como se fosse o pedido; o turno que comeca leva o bloco com a clausula da tarefa ---- */
+static int rz_wake_line(char *line, size_t cap) {
+#ifndef _WIN32
+    if (!rz_on() || !rz_flag("KATANA_RESUME_WAKE") || g_ct_depth > 1) return 0;
+    for (int i = 0; i < JOB_N; i++) {
+        Job *j = &g_jobs[i]; if (!j->id) continue;
+        job_poll(j); if (!j->done) continue;
+        const RzJob *e = NULL; for (int k = 0; k < RZ_NJOB; k++) if (g_rz.s.job[k].id == j->id && g_rz.s.job[k].agent_pid == (long)getpid()) e = &g_rz.s.job[k];
+        if (e && e->told) continue;
+        snprintf(line, cap, "[a background task ended; the user did not type this]");
+        if (!g_rz.reason) g_rz.reason = RZR_TASK;
+        return 1;
+    }
+#else
+    (void)line; (void)cap;
+#endif
+    return 0;
+}
+/* ---- trabalhos suspensos (KATANA_RESUME_RECALL=1, desligado): quando um pedido novo derruba o fluxo aberto, o trabalho vai para work[]
+ * (O); quando o usuario volta a ele, o fluxo volta. Casa por palavras de quatro letras ou mais do objetivo, ou por um "continue" quando ha
+ * um unico trabalho suspenso. Um casamento errado ressuscita um fluxo velho: por isso desligado. ---- */
+static void rz_suspend(void) {
+    if (!rz_on() || !rz_flag("KATANA_RESUME_RECALL") || g_ct_depth > 1) return;
+    const FlowPos *t = fl_top(); if (!t) return;
+    const char *ex = FL_BOOK[t->id].st[t->st].expect;
+    if (ex && !ex[0]) return;      /* estado de responder: o trabalho ja acabou */
+    const RzState *s = &g_rz.s;
+    int slot = -1;
+    for (int i = 0; i < RZ_WORK && slot < 0; i++) if (!s->work[i].depth) slot = i;
+    if (slot < 0) { slot = 0; for (int i = 1; i < RZ_WORK; i++) if (s->work[i].t < s->work[slot].t) slot = i; }
+    const char *f[RZ_MAXF]; char b[FL_DEPTH][48]; int k = 0;
+    f[k++] = rz_i(slot); f[k++] = s->goal[0] ? s->goal : s->last_req; f[k++] = rz_i(g_fl.depth);
+    k = rz_stack_fields(g_fl.stk, g_fl.depth, b, f, k);
+    f[k++] = rz_i((long long)time(NULL));
+    rz_emit('O', k, f);
+}
+static int rz_words_hit(const char *goal_folded, const char *req_folded, int *words) {
+    int w = 0, hit = 0;
+    for (const char *p = goal_folded; *p; ) {
+        while (*p && !isalnum((unsigned char)*p)) p++;
+        const char *e = p; while (*e && isalnum((unsigned char)*e)) e++;
+        const size_t l = (size_t)(e - p);
+        if (l >= 4 && l < 40) { char wd[44]; memcpy(wd, p, l); wd[l] = 0; w++; if (strstr(req_folded, wd)) hit++; }
+        p = e;
+    }
+    *words = w; return hit;
+}
+static void rz_try_recall(const char *t, int is_go) {
+    if (!rz_on() || !rz_flag("KATANA_RESUME_RECALL") || g_ct_depth > 1 || g_fl.depth) return;
+    const RzState *s = &g_rz.s;
+    int cnt = 0, one = -1, pick = -1, best = 0;
+    for (int i = 0; i < RZ_WORK; i++) if (s->work[i].depth) { cnt++; one = i; }
+    if (!cnt) return;
+    if (is_go && cnt == 1) pick = one;
+    else for (int i = 0; i < RZ_WORK; i++) {
+        if (!s->work[i].depth) continue;
+        char gf[420]; fl_fold(s->work[i].goal, gf, sizeof gf);
+        int words; const int hit = rz_words_hit(gf, t, &words);
+        if (words > 0 && hit * 2 >= words && hit > best) { best = hit; pick = i; }
+    }
+    if (pick < 0) return;
+    const RzWork w = s->work[pick];
+    g_fl.depth = w.depth;
+    for (int i = 0; i < w.depth; i++) g_fl.stk[i] = w.stk[i];
+    g_fl.emitted_st = -1;
+    g_rz.goal_fid = w.stk[0].id;
+    rz_ev('G', w.goal, NULL);
+    rz_ev('O', rz_i(pick), "", "0", rz_i(0), NULL);      /* a vaga fica livre */
+    g_rz.reason = RZR_RECALL;
+    fl_log("recall\t%s\t%s", FL_BOOK[w.stk[0].id].name, w.goal);
+}

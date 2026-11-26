@@ -461,6 +461,8 @@ static void rz_request_begin(const char *ureq);
 static void rz_before(const char *name, const char *js, const char *end);
 static void rz_after(const char *name, const char *js, const char *end, const char *result, int failed, int ev, int gain);
 static int rz_cmd_state(const char *file);
+static void rz_suspend(void);      /* resume_note.c (KATANA_RESUME_RECALL) */
+static void rz_try_recall(const char *t, int is_go);
 static size_t rz_probe_clause(char *out, size_t cap);      /* resume_note.c (KATANA_RESUME_PROBE) */
 static int rz_dead_check(const char *name, const char *js, const char *end);
 static int rz_cmd_report(int argc, char **argv);
@@ -482,16 +484,17 @@ static size_t flow_request_body(const char *ureq, char *out, size_t cap) {
     if (top && top->id == FL_IMAGE && (top->st == 1 || top->st == 5) && want != FL_IMAGE) {      /* imagem mostrada: sim, mudanca, ou outro assunto */
         if (top->st == 1 && fl_any(t, yes) && strlen(t) < 160) fl_step(FE_USER_YES);
         else if (fl_any(t, chg)) fl_step(FE_USER_CHANGE);
-        else { g_fl.depth = 0; fl_log("end\timage\t-\tnew subject"); }
+        else { rz_suspend(); g_fl.depth = 0; fl_log("end\timage\t-\tnew subject"); }
     } else if (want != FL_NONE) {
         const int ti = fl_in(FL_TERMINAL);                       /* a tarefa viva continua por cima do fluxo novo */
         FlowPos tp = {0, 0}; if (ti) tp = g_fl.stk[ti - 1];
-        g_fl.depth = 0; fl_enter(want, 0, 0, "request");
+        rz_suspend(); g_fl.depth = 0; fl_enter(want, 0, 0, "request");
         if (ti && want != FL_IMAGE) g_fl.stk[g_fl.depth++] = tp;
     } else if (top && top->id != FL_TERMINAL && top->id != FL_PLAN && top->id != FL_WORKTREE && top->id != FL_PLANMODE) {
         const int closed = FL_BOOK[top->id].st[top->st].expect && !FL_BOOK[top->id].st[top->st].expect[0];      /* estado de responder: o fluxo ja acabou */
-        if (!rz_grace() && (closed || !(fl_any(t, go) && strlen(t) < 120))) { fl_log("end\t%s\t-\tnew request", FL_BOOK[top->id].name); g_fl.depth = 0; }
+        if (!rz_grace() && (closed || !(fl_any(t, go) && strlen(t) < 120))) { rz_suspend(); fl_log("end\t%s\t-\tnew request", FL_BOOK[top->id].name); g_fl.depth = 0; }
     }
+    if (want == FL_NONE && !g_fl.depth) rz_try_recall(t, fl_any(t, go) && strlen(t) < 120);      /* o usuario volta a um trabalho suspenso (desligado) */
     if (fl_id() == FL_CODE) fl_find_verify();
     flow_grammar_mask();
     if (!fl_top()) return 0;

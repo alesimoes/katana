@@ -236,7 +236,9 @@ static int ct_end_check(void) {
 /* ha algo para entregar ao modelo sem o usuario digitar? (tarefa agendada vencida, mensagem de outra sessao).
    Enche line com o texto, ja marcado com a origem, e devolve 1 */
 static void watch_idle(void);                            /* src/coder/watch.c */
+static int rz_wake_line(char *line, size_t cap);      /* agent/resume_note.c (KATANA_RESUME_WAKE) */
 static int ct_idle_line(char *line, size_t cap) {
+    if (rz_wake_line(line, cap)) return 1;            /* uma tarefa terminou com o agente parado: um turno comeca sem o usuario digitar (desligado) */
     watch_idle();                                     /* vigia de arquivos: le os eventos e entrega ao rastreador com a sessao ociosa no prompt */
     if (launch_first_line(line, cap)) return 1;      /* katana "mensagem": a primeira mensagem entra como se tivesse sido digitada */
     if (mcpch_take(line, cap)) return 1;              /* mensagem de um canal MCP autorizado */

@@ -767,7 +767,7 @@ static void rz_sync_jobs(void) {
         char asked[240]; rz_clean(asked, sizeof asked, st == RZJ_WAIT ? j->asked_label : "", 0);
         const int rc = j->done ? j->rc : 0;
         int told = e ? e->told : 0;
-        if (j->done && g_fl.task == j->id) told = 1;      /* a tarefa acompanhada que acabou: o fluxo ja cuidou do aviso (FE_TASK_ENDED) */
+        if (j->done && g_fl.task == j->id) { const int ti = fl_in(FL_TERMINAL); if (!ti || g_fl.stk[ti - 1].st == 2) told = 1; }      /* a tarefa acompanhada que acabou: o fluxo avisa pela linha next quando ja a notou (FE_TASK_ENDED) */
         if (e && e->status == st && e->rc == rc && !strcmp(e->asked, asked) && e->told == told && labs(sz - e->log_sz) < 2048) continue;
         char cmd[200], lg[1300]; rz_clean(cmd, sizeof cmd, j->cmd, 0); rz_clean(lg, sizeof lg, j->log, 0);
         const long long start = e && e->start ? e->start : rz_proc_start((long)j->pid);
