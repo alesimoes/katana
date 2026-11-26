@@ -217,7 +217,7 @@
 </div>
 
 <h2>The agent</h2>
-<p>The agent gives the model a short list of tools: a shell (<code>Bash</code>; git, package managers and the rest go through it), reading, searching and editing files, code search (<code>Find</code>, <code>Symbols</code>, <code>Grep</code>), a plan list, a built-in web meta-search (no API key) and page fetching, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results reach the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
+<p>The agent gives the model a short list of tools: a shell (<code>Bash</code>; git, package managers and the rest go through it), reading, searching and editing files, code search (<code>Find</code>, <code>Symbols</code>, <code>Grep</code>), a plan list, web search that sends each question to the sources that fit it (no API key) and page fetching, persistent memory, and any <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server. Every tool call is shown and logged, and tool results reach the model as data, not as instructions. The agent compacts its own context and keeps a persistent prefix cache, so the long system prompt is processed once.</p>
 <p><strong>Finding things in code.</strong> The agent searches with a few tools that say how sure they are and what they did not find:</p>
 <ul class="points">
   <li><code>Find</code> looks at the question and chooses how to search (a name, quoted text, or a description in words), reads the files again to check what it reports, and says what it did not find, including the folders it left out of the index and why.</li>
@@ -225,7 +225,26 @@
   <li>The index is built on demand by a background crawler, kept fresh by a file watcher, and starts from zero in each project you initialise.</li>
   <li>Before the model starts, the program can look the question up itself and attach what it verified (paths, lines, who calls whom, and what it could not find) after your message. The model is told to check it before relying on it.</li>
 </ul>
-<p class="note">None of this uses embeddings or a remote service. It is new, the model has not been trained on it yet, and none of it has been measured.</p>
+<p class="note">The code search uses no remote service. A small local embedding model, when one is installed, only reorders candidates and never excludes anything. It is new, the model has not been trained on it yet, and none of it has been measured.</p>
+
+<h2>Reading the web</h2>
+<p>What the model reads from outside decides what it answers, so the web tools check what they bring back instead of handing over whatever came.</p>
+<ul class="points">
+  <li><strong>Search that routes.</strong> A registry of sources (code hosting, technical Q&amp;A, a model hub, an encyclopedia, news feeds from Brazil and the world, papers) that you can extend with a plain text file. Each question goes to the two to four sources that fit it, in parallel; a general search engine is the last step, not the first. Sponsored and off-topic results are dropped, and the answer names the sources that worked and the ones that failed.</li>
+  <li><strong>Pages that tell their state.</strong> Every page comes back with a line saying whether it is complete, partial, an empty shell or blocked, and how it was read. An empty shell (a page that only builds itself in the browser) is read again with a headless browser, then through the machine-readable twins some sites publish, and the result says which way worked.</li>
+  <li><strong>No empty answers.</strong> When a page cannot be read, the result names the next place to look instead of a generic error, and a repeated read of the same page is cut short.</li>
+</ul>
+
+<h2>Terminals, logins and passwords</h2>
+<ul class="points">
+  <li>Commands run in a real pseudo-terminal, so programs that ask questions work. When one stops to ask, the agent sees the question and answers it, instead of hanging.</li>
+  <li><strong>Secrets never go through the model.</strong> For a password, a PIN or a two-factor code, the desktop opens a masked field; what you type goes straight to the program. The model only sees that a secret was entered, and it is kept out of the log and the saved conversation.</li>
+  <li>The usual tool folders of your account (<code>~/.local/bin</code>, language toolchains) are added to the command path automatically.</li>
+</ul>
+
+<h2>Talking to it while it works</h2>
+<p>You can send a message in the middle of a task: it reaches the model right after the current tool call, without waiting for the end of the round. The agent also notices when it keeps failing around the same thing or repeats itself, says so, and either changes approach or stops and tells you what blocks it.</p>
+<p class="note">All of this is new. It compiles and has had narrow checks, but it has not been measured against real tasks.</p>
 <div class="callout"><strong>Heads up:</strong> by default the agent acts on your machine without asking. Set <code>KATANA_CONFIRM=1</code> to have it ask first.</div>
 
 <h2>Measured</h2>
