@@ -48,7 +48,7 @@ Project rules:
 
 **Input.** GGUF through a mapped file. Architectures `llama`, `qwen2`, `qwen3`, `olmoe`,
 `qwen3moe`. Tensors F32, F16, Q8_0, Q4_0, Q3_K, Q4_K, Q5_K, Q6_K. BPE tokenizers (with
-approximate pre-tokenization) and SentencePiece. Chat formats ChatML, Llama 3, Zephyr,
+per-family exact pre-tokenization, see section 9) and SentencePiece. Chat formats ChatML, Llama 3, Zephyr,
 `[INST]` and plain text, chosen from the model's template.
 
 **GPU (OpenCL loaded at run time).** Quantized weights stay in VRAM in a custom layout: rows
@@ -312,7 +312,18 @@ Honest reading:
 
 - Batched prompt on OpenCL 11–16x slower than the reference; the Vulkan backend (tensor cores) closes it to 1.7x on Qwen 1.5B and 1.8x on Llama 3B.
 - Few architectures; missing the DeepSeek/Kimi family (low-rank attention), Gemma, Phi.
-- Approximate BPE pre-tokenizer; it may split text differently from the official tokenizer.
+- Tokenizer exactness (audited 2026-11-26, `katana toktest <gguf>`, code compiled and the audit run on the vocabulary only, no weights):
+  the byte-level pre-tokenizers are exact for the regexes of the official `tokenizer.json` of Qwen3.6 / Flash-Next (`qwen35`: NFC, `\p{N}` one digit,
+  `\p{M}` counted as letter) and GLM-4.7-Flash (`glm4`: no normalizer, digits in groups of 3, `ignore_merges`); Unicode classes come from compact
+  range tables (`src/unitab.h`, `src/nfc.h`), no regex engine. Fixed in this audit: (1) GLM/Llama-3 `ignore_merges` was ignored (a whole pre-token
+  that is already a token must not go through the merges): 25 of 313 corpus files tokenized differently, a few tokens each (`KATANA_TOK_IGNMERGES=0`
+  turns it off); (2) Gemma 4 `<eos>` is a plain token in the GGUF but an added (special) token in the official tokenizer: now special;
+  (3) Gemma 4 BPE was quadratic per line (a very long line would be too slow; not timed), now the heap BPE (same ids on the whole corpus). Still not exact or
+  not checked: the 7 Qwen audio/TTS control tokens (`<tts_pad>`, `<|audio_start|>`...) are special in the GGUF but not in the official
+  `tokenizer.json` (text containing them is one token here); Unicode tables follow Python 3.14 (Unicode 16/17), the reference library may use another
+  version; invalid UTF-8 and NUL bytes are not covered; the SentencePiece (`llama`) path is not audited and is still quadratic; the audit's hand-written
+  golden cases are derived from the published regexes, not from running the official tokenizer (it could not be installed here), so agreement with the
+  official ids is verified only by the earlier `tools/tokref` run (Qwen3.6, 1,898 cases) and not re-run for GLM and Gemma 4.
 - Fixed context of 4,096 tokens, KV cache allocated in full, no prefix reuse or shifting.
 - Sampling only with temperature and top-k.
 - No quantizations below 3 bits (Q2_K, IQ family).

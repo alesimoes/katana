@@ -96,6 +96,7 @@ typedef struct {
     int spm; float *score;      /* SentencePiece: funde pares pela pontuacao do token; 2 = espacos como U+2581 e fusoes BPE (gemma4) */
     int digits;                 /* pre-tokenizacao legada: digitos seguidos agrupados ate este numero (0 = 1) */
     int pre;                    /* pre-tokenizador (PRE_*), pela chave tokenizer.ggml.pre */
+    int ignore_merges;          /* palavra inteira que ja e token sai direto, sem fusoes (Llama 3, GLM; KATANA_TOK_IGNMERGES=0 desliga) */
     int nfc;                    /* normaliza o texto em NFC antes de tokenizar (Qwen, OLMo) */
     uint8_t spec1[256];         /* 1 = existe token especial que comeca com este byte */
     Map vocab, merges;
@@ -667,6 +668,7 @@ static Mat get_mat(const Tensors *ts, const char *name, size_t rows, size_t cols
 static int g_vocab_only;    /* toktest: carrega so metadados e vocabulario, sem os pesos */
 static int pre_kind(const char *sv, int sl);
 static int pre_has_nfc(int kind);
+static int pre_has_ignore_merges(int kind);
 
 static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int n_merges) {
     int n = 0;
@@ -681,7 +683,8 @@ static void tokenizer_finish(Tokenizer *tk, const char **merges, int *mlen, int 
     tk->special = xalloc(tk->n, sizeof(int));
     for (int i = 0; i < tk->n; i++) {
         map_put(&tk->vocab, tk->tok[i], tk->toklen[i], i);
-        if (tk->toktype && (tk->toktype[i] == 3 || tk->toktype[i] == 4) && tk->toklen[i] > 0)
+        /* o gemma4 marca <eos> como token comum no GGUF, mas o tokenizador oficial o trata como especial */
+        if (tk->toktype && (tk->toktype[i] == 3 || tk->toktype[i] == 4 || (tk->spm == 2 && tk->toklen[i] == 5 && memcmp(tk->tok[i], "<eos>", 5) == 0)) && tk->toklen[i] > 0)
             tk->special[tk->n_special++] = i;
     }
     map_init(&tk->merges, n_merges);
@@ -902,6 +905,7 @@ static void load_model(Model *m, const char *path) {
             int sl; const char *sv = rd_str(&r, &sl);
             tk->pre = pre_kind(sv, sl);
             tk->nfc = pre_has_nfc(tk->pre);
+            tk->ignore_merges = pre_has_ignore_merges(tk->pre);
         } else if (t == 8 && key_is(k, kl, "tokenizer.chat_template")) {
             int sl; const char *sv = rd_str(&r, &sl);
             tmpl = xalloc((size_t)sl + 1, 1); memcpy(tmpl, sv, sl);
