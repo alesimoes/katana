@@ -637,12 +637,13 @@ static void flow_jit(char *out, size_t cap) {
     fl_log("jit\t%s", nm);
 }
 
-/* ---- gramatica condicionada ao estado (KATANA_FLOW_GRAMMAR=1, desligada por padrao): as ferramentas que nao tem lugar no fluxo ativo saem da
- * mascara de nomes da gramatica de chamadas (callgrammar.c), entao a chamada fora do fluxo nao chega a ser escrita: custa um token reamostrado,
- * nao uma volta. Risco conhecido: forcar outro nome pode produzir uma chamada que o modelo nao queria; por isso so as listas `off`, que sao curtas. ---- */
+/* ---- vies suave condicionado ao estado (ligado por padrao; KATANA_FLOW_GRAMMAR=0 desliga): as ferramentas que nao tem lugar no fluxo ativo (listas `off`)
+ * perdem KATANA_FLOW_BIAS (3.0) de logit nos tokens do nome da chamada (callgrammar.c, cg_check). Nada e proibido: se o modelo tem muita confianca
+ * numa ferramenta fora do fluxo, ele a escolhe; na duvida e empurrado para o fluxo. ---- */
 static void flow_grammar_mask(void) {
     uint64_t mk = 0;
     const char *e = getenv("KATANA_FLOW_GRAMMAR");
+    { const char *b = getenv("KATANA_FLOW_BIAS"); g_cg_bias = b && *b ? (float)atof(b) : 3.0f; }
     if (!(e && *e && atoi(e) <= 0) && g_cg.nt <= 64)      /* ligado por padrao; =0 desliga */
         for (int d = 0; d < g_fl.depth; d++) { const char *off = FL_BOOK[g_fl.stk[d].id].off; if (!off) continue; for (int i = 0; i < g_cg.nt; i++) if (fl_list_has(off, cg_tool_names[i])) mk |= 1ULL << i; }
     g_cg_skip = mk;

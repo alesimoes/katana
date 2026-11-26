@@ -213,7 +213,9 @@ static int cg_name_byte(CgState *s, unsigned char c, const char *const *opt, int
     return -2;
 }
 static const char *cg_tool_names[CG_MAXT];
-static uint64_t g_cg_skip;         /* nomes de ferramenta fora da mascara neste momento (bit = indice em cg_tool_names); agent/flow.c, KATANA_FLOW_GRAMMAR */
+static uint64_t g_cg_skip;         /* nomes de ferramenta DESFAVORECIDOS pelo fluxo neste momento (bit = indice em cg_tool_names); agent/flow.c. Nunca proibe: so da o vies em cg_check */
+static int g_cg_probe;             /* 1 so dentro da sonda de cg_check: o automato trata g_cg_skip como "fora"; fora da sonda ele aceita qualquer nome */
+static float g_cg_bias = 3.0f;     /* penalidade (unidades de logit) dos tokens que so levam a ferramentas desfavorecidas; KATANA_FLOW_BIAS */
 static const char *cg_prop_names(const CgTool *t, const char **out) { for (int i = 0; i < t->np; i++) out[i] = t->pk[i]; return NULL; }
 /* literal com espacos antes (ate CG_WS) */
 static int cg_lit(CgState *s, unsigned char c, const char *lit, int next) {
@@ -262,7 +264,7 @@ static int cg_step_xml(CgState *s, unsigned char c) {
         switch (s->ph) {
         case CX_FUNC: return cg_lit(s, c, "<function=", CX_NAME);
         case CX_NAME: {
-            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, g_cg_skip, '>');
+            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, g_cg_probe ? g_cg_skip : 0, '>');
             if (r == -2) return 0;
             if (r >= 0) { s->tool = r; s->used = 0; cg_enter(s, CX_TAG); }
             return 1;
@@ -368,7 +370,7 @@ static int cg_step_g4(CgState *s, unsigned char c) {
         switch (s->ph) {
         case CG_CALL: return cg_lit(s, c, "call:", CG_GNAME);
         case CG_GNAME: {
-            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, g_cg_skip, '{');
+            const int r = cg_name_byte(s, c, cg_tool_names, g_cg.nt, g_cg_probe ? g_cg_skip : 0, '{');
             if (r == -2) return 0;
             if (r >= 0) { s->tool = r; s->used = 0; cg_enter(s, CG_KEY); }
             return 1;
@@ -464,18 +466,23 @@ static int cg_tok_ok(const CgState *s, int t) {
     return cg_bytes(&tmp, b, n);
 }
 /* t0 foi sorteado normalmente; se a chamada nao aceita, sorteia de novo so entre os tokens que ela aceita */
+static int cg_tok_ok_probe(const CgState *s, int t) { g_cg_probe = 1; const int r = cg_tok_ok(s, t); g_cg_probe = 0; return r; }
 static int cg_check(const float *lg, int V, float temp, int t0) {
     if (!g_cg.on) return t0;
     g_cg.checked++;
-    if (t0 >= 0 && t0 < V && cg_tok_ok(&g_cg.st, t0)) return t0;
+    /* vies suave do fluxo: no nome da ferramenta, o token que so leva a ferramentas desfavorecidas perde g_cg_bias de logit; nunca e excluido */
+    const int soft = g_cg_skip && (g_cg.st.ph == CX_FUNC || g_cg.st.ph == CX_NAME || g_cg.st.ph == CG_CALL || g_cg.st.ph == CG_GNAME);
+    if (!soft && t0 >= 0 && t0 < V && cg_tok_ok(&g_cg.st, t0)) return t0;
     int idx[TOP_K]; float val[TOP_K]; int k = 0;
     const int want = temp <= 0.0f ? 1 : (g_top_k > 0 && g_top_k < TOP_K ? g_top_k : TOP_K);
     for (int t = 0; t < V; t++) {
-        if (k == want && lg[t] <= val[k - 1]) continue;
+        if (k == want && lg[t] <= val[k - 1]) continue;      /* o escore so desce (sc <= lg), entao este corte e seguro */
         if (!cg_tok_ok(&g_cg.st, t)) continue;
+        const float sc = soft && !cg_tok_ok_probe(&g_cg.st, t) ? lg[t] - g_cg_bias : lg[t];
+        if (k == want && sc <= val[k - 1]) continue;
         int j = k < want ? k++ : k - 1;
-        while (j > 0 && val[j - 1] < lg[t]) { val[j] = val[j - 1]; idx[j] = idx[j - 1]; j--; }
-        val[j] = lg[t]; idx[j] = t;
+        while (j > 0 && val[j - 1] < sc) { val[j] = val[j - 1]; idx[j] = idx[j - 1]; j--; }
+        val[j] = sc; idx[j] = t;
     }
     if (k == 0) { g_cg.gaveup++; g_cg.on = 0; return t0; }
     g_cg.fixed++;
