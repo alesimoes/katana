@@ -63,7 +63,7 @@ The remaining engine levers are the prompt (prefill) and the agent behaviour (fl
 Reading: a full pass is balanced between CPU expert products and PCIe uploads (all cold experts of a layer = ~435 MB, ~17 GB per pass, about 1.5 s at ~12 GB/s, estimate), so no cheap knob is left.
 The agent's real cost is not the 256-token pass: the system prefix is stored by `prefix_cache.c` (covers Qwen3.6 only when the attention runs on the CPU, i.e. the large-context mode;
 with the default small-context Vulkan graph the recurrent state lives in VRAM and the prefix is recomputed at each open), and tool results arrive in small passes where most experts are cold.
-Open, to measure when measurements return: prefix cache with the DeltaNet state in VRAM (read it back as bytes like the KV buffers), and the pass size distribution of a real agent session (the log has no prompt token counts).
+Done, not measured: prefix cache for the small-context Vulkan graph of Qwen3.6 (new `pfx_geom` backend 4: KV of the attention layers and the DeltaNet ring + S state are read/written as raw bytes from VRAM; the key includes NV, CH, ssm_state, n_lin, cpuatt; `KATANA_PFX=0` turns it off). Still to verify on the real model: that a loaded prefix gives the same logits as a recomputed one (`snaptest`/`deeptest` cover the `pfx_geom` path). Also done: one `[turn]` line per model turn in `~/.katana/agente.log` (args `new=N reused=N prefill_s=X gen_s=X gen_tok=N`; `katana agentlog` prints a "model turns" summary; readers skip tools starting with `[`; `KATANA_LOG_TURNS=0` turns it off), so the real pass-size distribution can be read from a session log.
 
 To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
 

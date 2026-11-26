@@ -290,7 +290,7 @@ static int flowmem_main(int argc, char **argv) {
         char *e = strchr(p, '\n'); if (e) *e = 0;
         if (isdigit((unsigned char)p[0]) && strlen(p) > 20 && p[4] == '-' && p[19] == '\t' && (!cut[0] || strncmp(p, cut, 19) >= 0)) {
             char *c1 = p + 19; *c1++ = 0; char *c2 = strchr(c1, '\t'); char *c3 = c2 ? strchr(c2 + 1, '\t') : NULL;
-            if (c2 && c3) { *c2++ = 0; *c3++ = 0; if (nr == capr) { capr *= 2; rec = (FmRec *)realloc(rec, sizeof *rec * (size_t)capr); } rec[nr].t = p; rec[nr].tool = c1; rec[nr].args = c2; rec[nr].res = c3; nr++; }
+            if (c2 && c3 && c1[0] != '[') { *c2++ = 0; *c3++ = 0; if (nr == capr) { capr *= 2; rec = (FmRec *)realloc(rec, sizeof *rec * (size_t)capr); } rec[nr].t = p; rec[nr].tool = c1; rec[nr].args = c2; rec[nr].res = c3; nr++; }
         }
         if (!e) break; p = e + 1;
     }

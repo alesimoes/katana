@@ -2,10 +2,10 @@
  * O prompt de sistema do agente (com as ferramentas) tem 1.000-1.500 tokens e era processado a cada abertura.
  * Depois de processar esse prefixo, o estado do cache KV (e, em modelo com estado recorrente, m->ssm)
  * vai para <pasta do projeto>/.katana/cache/pfx-<chave>.kv (ou ~/.katana/cache); a chave e um hash do modelo, dos tokens do prefixo, do contexto
- * (KATANA_CTX) e do tipo do cache (CPU, Vulkan ou OpenCL; 16 ou 32 bits). Ao abrir, se a chave bate, o
+ * (KATANA_CTX) e do tipo do cache (CPU, Vulkan ou OpenCL; 16 ou 32 bits; qwen35moe na GPU inclui o layout do estado). Ao abrir, se a chave bate, o
  * estado e carregado em vez de recalculado. Na GPU os buffers do cache KV da placa sao lidos/gravados
  * como bytes crus (camadas na GPU) e o cache da CPU cobre as camadas restantes. Nao cobre: MLA
- * (deepseek2) e estado recorrente na GPU; nesses casos o prefixo e recalculado. KATANA_PFX=0 desliga. */
+ * (deepseek2); nesse caso o prefixo e recalculado. KATANA_PFX=0 desliga. */
 typedef struct { uint64_t magic, key; int32_t n, L, kvd, ctx, ngl, esz, backend, pad; uint64_t ssm_bytes; } PfxHdr;
 #define PFX_MAGIC 0x3143505858464b4bULL
 #define PFX_KEEP 8
@@ -16,7 +16,7 @@ static uint64_t pfx_hash(uint64_t h, const void *p, size_t n) {
     return h;
 }
 
-/* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL); 0 se nao cobre */
+/* camadas no cache da GPU, tamanho do elemento e backend (0 CPU, 1 Vulkan, 2 OpenCL, 3 qwen35moe com atencao na CPU, 4 qwen35moe com tudo na VRAM); 0 se nao cobre */
 static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     const Config *c = &m->cfg;
     if (m->ckv || !(m->kcache || m->kh)) return 0;
@@ -25,6 +25,9 @@ static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
     else if (gpu.n_gl > 0 && !gpu.force_cpu) { *ngl = gpu.n_gl; *esz = gpu.kv16 ? 2 : 4; *backend = 2; }
     /* qwen35moe no grafo Vulkan com a atencao na CPU: cache KV na RAM, estado do DeltaNet na VRAM (backend 3) */
     if (c->ssm_inner && *backend == 1 && vkq.on && vkq.cpuatt) { *ngl = 0; *esz = m->kh ? 2 : 4; *backend = 3; return 1; }
+    /* qwen35moe no grafo Vulkan de contexto pequeno (atencao na GPU): cache KV das camadas de atencao na VRAM
+       (so elas; as camadas DeltaNet nao tem KV) e estado do DeltaNet na VRAM (backend 4) */
+    if (c->ssm_inner && *backend == 1 && vkq.on && !vkq.cpuatt) { *backend = 4; return 1; }
     if (c->ssm_inner && *backend != 0) return 0;
     if (c->g4 && *backend != 0) return 0;       /* gemma4: so o cache da CPU (anel por camada) */
     return 1;
@@ -34,7 +37,7 @@ static int pfx_geom(const Model *m, int *ngl, int *esz, int *backend) {
 static size_t pfx_lbytes(const Model *m, int l, int n, int ngl, int esz) {
     const Config *c = &m->cfg;
     const size_t kvd = (size_t)c->n_kv * c->hd;
-    if (l < ngl) return (size_t)n * kvd * (size_t)esz;
+    if (l < ngl) return m->layers[l].lin ? 0 : (size_t)n * kvd * (size_t)esz;      /* DeltaNet nao tem buffer de KV na GPU */
     if (m->layers[l].lin) return 0;             /* DeltaNet: sem cache KV */
     const size_t cs = m->kh ? 2 : 4;
     if (c->g4) {
@@ -49,7 +52,7 @@ static size_t pfx_lbytes(const Model *m, int l, int n, int ngl, int esz) {
 static uint64_t pfx_ssm_bytes(const Model *m, int n, int backend) {
     const Config *c = &m->cfg;
     if (!c->ssm_inner) return 0;
-    if (backend == 3) return (uint64_t)m->n_lin * ((size_t)4 * vkq.CH * 4 + (size_t)vkq.NV * c->ssm_state * c->ssm_state * 4);
+    if (backend == 3 || backend == 4) return (uint64_t)m->n_lin * ((size_t)4 * vkq.CH * 4 + (size_t)vkq.NV * c->ssm_state * c->ssm_state * 4);
     return (uint64_t)m->n_lin * dn_state_floats(c) * sizeof(float) + (c->q4e ? q4_state_bytes(m, n) : 0);
 }
 static int pfx_ssm_io(Model *m, FILE *f, int n, int backend, int dir) {      /* dir=1: do motor para o arquivo */
@@ -62,7 +65,7 @@ static int pfx_ssm_io(Model *m, FILE *f, int n, int backend, int dir) {      /* 
         if ((dir ? fwrite(m->ssm, 1, sb, f) : fread(m->ssm, 1, sb, f)) != sb) return 0;
         return q4_state_io(m, f, n, dir);
     }
-    if (backend != 3) return dir ? fwrite(m->ssm, 1, (size_t)tot, f) == tot : fread(m->ssm, 1, (size_t)tot, f) == tot;
+    if (backend != 3 && backend != 4) return dir ? fwrite(m->ssm, 1, (size_t)tot, f) == tot : fread(m->ssm, 1, (size_t)tot, f) == tot;
     const size_t rb = (size_t)4 * vkq.CH * 4, sb = (size_t)vkq.NV * c->ssm_state * c->ssm_state * 4;
     char *buf = (char *)xalloc((rb > sb ? rb : sb) + 64, 1);
     int ok = 1;
@@ -80,6 +83,7 @@ static uint64_t pfx_key(const Model *m, const int *ids, int n, int ngl, int esz,
     const int32_t g[] = { c->dim, c->n_layers, c->n_heads, c->n_kv, c->hd, c->hidden, c->ctx, c->vocab, c->n_expert, ngl, esz, backend, n };
     h = pfx_hash(h, g, sizeof g);
     h = pfx_hash(h, c->arch, strlen(c->arch));
+    if (backend == 3 || backend == 4) { const int32_t vq[] = { vkq.NV, vkq.CH, c->ssm_state, m->n_lin, vkq.cpuatt }; h = pfx_hash(h, vq, sizeof vq); }      /* layout do estado na VRAM */
     h = pfx_hash(h, &m->fsize, sizeof m->fsize);
     h = pfx_hash(h, &m->n_params, sizeof m->n_params);
     h = pfx_hash(h, &m->fid, sizeof m->fid);
@@ -129,6 +133,7 @@ static int pfx_path(char *out, size_t cap, uint64_t key, int mk) {
 static int pfx_layer(Model *m, int l, int vv, int n, int ngl, int esz, int backend, void *buf, int dir) {
     const Config *c = &m->cfg;
     const size_t kvd = (size_t)c->n_kv * c->hd, ctx = c->ctx;
+    if (l < ngl && m->layers[l].lin) return 1;      /* DeltaNet: nada no KV da GPU (o estado vai a parte) */
     if (l >= ngl) {
         const size_t cs = m->kh ? 2 : 4;        /* elemento do cache da CPU */
         if (c->g4) {                            /* gemma4: bytes por camada (anel) */
@@ -143,7 +148,7 @@ static int pfx_layer(Model *m, int l, int vv, int n, int ngl, int esz, int backe
         return 1;
     }
     const size_t off = (size_t)l * ctx * kvd * (size_t)esz, bytes = (size_t)n * kvd * (size_t)esz;
-    if (backend == 1) {
+    if (backend == 1 || backend == 4) {
         const KvkBuf b = vv ? vkg.vc[l] : vkg.kc[l];
         return dir ? kvk_buf_read(b, 0, buf, bytes) : kvk_buf_write(b, 0, buf, bytes);
     }
@@ -168,7 +173,7 @@ static int pfx_save(Model *m, uint64_t key, int n, int ngl, int esz, int backend
     size_t bmax = (size_t)n * kvd * 4;
     for (int l = 0; l < c->n_layers; l++) { const size_t b = pfx_lbytes(m, l, n, ngl, esz); if (b > bmax) bmax = b; }
     void *buf = xalloc(bmax + 64, 1);
-    if (backend == 1 || backend == 3) kvk_wait();
+    if (backend == 1 || backend == 3 || backend == 4) kvk_wait();
     if (backend == 2) cl.Finish(gpu.queue);
     for (int l = 0; l < c->n_layers && ok; l++)
         for (int vv = 0; vv < 2 && ok; vv++) {
@@ -236,7 +241,7 @@ static int pfx_load(Model *m, uint64_t key, int n, int ngl, int esz, int backend
             const size_t bytes = pfx_lbytes(m, l, n, ngl, esz);
             ok = fread(buf, 1, bytes, f) == bytes && pfx_layer(m, l, vv, n, ngl, esz, backend, buf, 0);
         }
-    if (ok && ssm_bytes) { if (backend == 3) kvk_wait(); ok = pfx_ssm_io(m, f, n, backend, 0); }
+    if (ok && ssm_bytes) { if (backend == 3 || backend == 4) kvk_wait(); ok = pfx_ssm_io(m, f, n, backend, 0); }
     free(buf);
     fclose(f);
     if (ok && backend == 2) cl.Finish(gpu.queue);

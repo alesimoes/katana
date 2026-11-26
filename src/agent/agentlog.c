@@ -76,6 +76,7 @@ static int agentlog_main(int argc, char **argv) {
     AlRun cur; memset(&cur, 0, sizeof cur);
     uint64_t last[20] = {0}; int nl20 = 0;
     int used = 0, fails = 0, reps = 0;
+    long tn = 0, tnew = 0, tre = 0, tgt = 0; double tps = 0, tgs = 0;      /* turnos do modelo */
     char first[20] = "", lastt[20] = "";
     for (int i = 0; i < nr; i++) {
         char *ts = rec[i];
@@ -85,6 +86,18 @@ static int agentlog_main(int argc, char **argv) {
         char *t3 = strchr(t2 + 1, '\t');
         const char *res = t3 ? t3 + 1 : "";
         char name[64]; snprintf(name, sizeof name, "%.*s", (int)(t2 - t1 - 1 < 63 ? t2 - t1 - 1 : 63), t1 + 1);
+        if (name[0] == '[') {      /* linha de turno do modelo ("[turn]"): soma o prefill, nao conta como ferramenta */
+            int nw = 0, ru = 0, gt = 0; double ps = 0, gs = 0;
+            const char *ar = t2 + 1;
+            const char *q;
+            if ((q = strstr(ar, "new="))) nw = atoi(q + 4);
+            if ((q = strstr(ar, "reused="))) ru = atoi(q + 7);
+            if ((q = strstr(ar, "prefill_s="))) ps = atof(q + 10);
+            if ((q = strstr(ar, "gen_s="))) gs = atof(q + 6);
+            if ((q = strstr(ar, "gen_tok="))) gt = atoi(q + 8);
+            tn++; tnew += nw; tre += ru; tps += ps; tgs += gs; tgt += gt;
+            continue;
+        }
         const size_t al = (size_t)((t3 ? t3 : t2 + strlen(t2)) - (t2 + 1));
         uint64_t h = 1469598103934665603ULL;
         for (const char *q = name; *q; q++) { h ^= (unsigned char)*q; h *= 1099511628211ULL; }
@@ -121,6 +134,8 @@ static int agentlog_main(int argc, char **argv) {
     printf("agent log %s: %d calls", path, used);
     if (used) printf(" from %s to %s", first, lastt);
     printf(", %d failed (%.0f%%), %d identical repeats\n\n", fails, used ? 100.0 * fails / used : 0.0, reps);
+    if (tn) printf("model turns: %ld, prompt tokens processed %ld, reused from the KV cache %ld (%.0f%%), prefill %.1f s (%.1f tok/s), generation %.1f s for %ld tokens (%.1f tok/s)\n\n",
+                   tn, tnew, tre, tnew + tre ? 100.0 * (double)tre / (double)(tnew + tre) : 0.0, tps, tps > 0 ? (double)tnew / tps : 0.0, tgs, tgt, tgs > 0 ? (double)tgt / tgs : 0.0);
     if (!used) { free(rec); free(buf); return 0; }
     /* por ferramenta, mais chamadas primeiro */
     for (int a = 0; a < nt; a++) for (int b = a + 1; b < nt; b++) if (tl[b].calls > tl[a].calls) { AlTool x = tl[a]; tl[a] = tl[b]; tl[b] = x; }

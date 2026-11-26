@@ -802,21 +802,24 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_stop = 0; g_busy = 1;
             const double t0 = now_sec();
             float *lg = NULL;
+            int tn_new = ids.n, tn_reuse = tskip ? 0 : pos;      /* prefill do turno: tokens novos e reaproveitados do cache KV (registro do agente) */
             if (tskip) first = 0;
             else if (need) {         /* compacta o contexto e recalcula o cache com o texto pendente */
                 const int np2 = agent_compact(m, &hist, sys, text, pos, 0, &lg);
                 rz_after_compact();
+                tn_reuse = 0;
                 if (np2 == -2) { lg = agent_feed(m, ids.ids, ids.n, pos); pos += ids.n; }      /* nao valia a pena compactar: segue normal */
                 else if (np2 < 0) {
                     fprintf(stderr, "[contexto cheio mesmo compactado (%d de %d tokens): conversa recomecada; repita o pedido]\n", pos, c->ctx);
                     g_busy = 0; free(ids.ids); pos = 0; first = 1; ah_clear(&hist);
                     break;
                 }
-                else pos = np2;
+                else { pos = np2; tn_new = np2; }
                 first = 0;
             } else {
                 const int np = first && pos == 0 ? pfx_prepare(m, &ids, sys) : 0;      /* prefixo de sistema do cache em disco */
                 if (!np) snap_round(m, pos, cp_stepped);
+                tn_reuse = pos + np; tn_new = ids.n - np;
                 lg = agent_feed(m, ids.ids + np, ids.n - np, pos + np);
                 pos += ids.n; first = 0;
             }
@@ -847,6 +850,7 @@ static int agent(Model *m, int max_tokens, float temp) {
             g_busy = 0;
             printf("\n"); fflush(stdout);
             stats_line(ids.n, t1 - t0, gen, t2 - t1, pos, c->ctx);
+            if (!tskip) agent_log_turn(tn_new, tn_reuse, t1 - t0, t2 - t1, gen);
             if (cml && !tskip) cp_tick(cp_sys(m, sys), pos, ids.n, gen);
             if (getenv("KATANA_UI")) { printf("\x01" "TOKENS %d %d\n", pos, c->ctx); fflush(stdout); }
             if (cml) {

@@ -298,6 +298,17 @@ static void agent_log_raw(const char *name, const char *args, const char *res) {
     fclose(f);
 }
 
+/* uma linha por turno do modelo no mesmo registro: ferramenta "[turn]", argumentos "new=N reused=N prefill_s=X gen_s=X gen_tok=N"
+ * (new = tokens de prompt processados de fato; reused = tokens que ja estavam no cache KV/prefixo), resultado "ok".
+ * KATANA_LOG_TURNS=0 desliga. Os leitores ignoram ferramentas que comecam com "[". */
+static void agent_log_turn(int nw, int reused, double pre_s, double gen_s, int gen) {
+    const char *e = getenv("KATANA_LOG_TURNS");
+    if (e && atoi(e) == 0) return;
+    char a[160];
+    snprintf(a, sizeof a, "new=%d reused=%d prefill_s=%.3f gen_s=%.3f gen_tok=%d", nw, reused, pre_s, gen_s, gen);
+    agent_log_raw("[turn]", a, "ok");
+}
+
 /* caminho absoluto canonico (aceita ~); 0 se nao existir */
 static int agent_resolve(const char *p, char *out, size_t cap) {
     char tmp[4200];
