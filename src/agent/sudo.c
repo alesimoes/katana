@@ -59,6 +59,49 @@ static int sudo_ask(char *pw, size_t cap, int retry) {
     fprintf(stderr, "\n");
     return ok && pw[0];
 }
+/* segredo pedido por um comando do Bash (senha, frase secreta, PIN, codigo de verificacao, token): vai direto do usuario
+ * para o terminal do comando, sem passar pelo modelo, pelo log nem pelo historico. Na interface (KATANA_UI): marcador
+ * "\x01SECRET <id> <rotulo>" e a resposta chega na linha "\x01SECRET <id>\t<texto>" (ou "\x01SECRETCANCEL <id>"). No
+ * terminal: le de /dev/tty com eco desligado. Sem interface nem terminal: cancela. 1 = out tem o segredo; 0 = cancelado. */
+static int secret_ask(int id, const char *label, char *out, size_t cap) {
+    out[0] = 0;
+    char lb[240]; size_t n = 0;
+    for (const char *q = label; *q && n < 200; q++) lb[n++] = (unsigned char)*q < 0x20 ? ' ' : *q;
+    while (n && lb[n - 1] == ' ') n--;
+    lb[n] = 0;
+    if (getenv("KATANA_UI")) {
+        printf("\x01" "SECRET %d %s\n", id, lb); fflush(stdout);
+        static char l[2048];
+        char pre[40];
+        const int pl = snprintf(pre, sizeof pre, "\x01" "SECRET %d\t", id);
+        int ok = 0;
+        if (read_line(l, sizeof l) && strncmp(l, pre, (size_t)pl) == 0) { snprintf(out, cap, "%s", l + pl); ok = 1; }
+        memset(l, 0, sizeof l);                              /* SECRETCANCEL ou qualquer outra linha: cancela */
+        return ok;
+    }
+    const int fd = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char msg[400];
+    const int ml = snprintf(msg, sizeof msg, "\n[katana] the command asks for a secret; type it here (it is not shown to the model). %s ", lb[0] ? lb : "Secret:");
+    if (write(fd, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1)) < 0) {}
+    struct termios t0, t1;
+    const int hv = tcgetattr(fd, &t0) == 0;
+    if (hv) { t1 = t0; t1.c_lflag &= ~(tcflag_t)(ECHO | ECHONL); t1.c_lflag |= ICANON | ISIG; tcsetattr(fd, TCSANOW, &t1); }
+    size_t o = 0; int ok = 0;
+    for (;;) {
+        char ch;
+        const ssize_t k = read(fd, &ch, 1);
+        if (k <= 0) break;                                   /* Ctrl+C (EINTR) ou fim: cancela */
+        if (ch == '\n' || ch == '\r') { ok = 1; break; }
+        if (o + 1 < cap) out[o++] = ch;
+    }
+    out[o] = 0;
+    if (hv) tcsetattr(fd, TCSANOW, &t0);
+    if (write(fd, "\n", 1) < 0) {}
+    close(fd);
+    if (!ok) memset(out, 0, cap);
+    return ok;
+}
 static int root_exec(const char *cmd, int tmo, HT *ht, int *rc, int *timedout, int *interrupted);   /* shell root persistente (pty) */
 static int g_sudo_agent;   /* 1 so dentro do agente interativo (nos testes de ferramenta nao pede senha sozinho) */
 static int sudo_default(void) { const char *e = getenv("KATANA_SUDO"); return (g_sudo_agent || getenv("KATANA_SUDO_FORCE")) && e && strcmp(e, "1") == 0; }   /* padrao: usuario normal; root so quando o comando pede sudo (KATANA_SUDO=1 roda tudo como root) */

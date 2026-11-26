@@ -46,6 +46,7 @@ ApplicationWindow {
     Connections {
         target: backend
         function onPasswordRequested(retry) { pwDlg.retry = retry; pwField.text = ""; pwDlg.open(); pwField.forceActiveFocus(); }
+        function onSecretRequested(id, label) { secDlg.reqId = id; secDlg.label = label; secField.text = ""; secDlg.open(); secField.forceActiveFocus(); }
         function onAskRequested(kind, what, detail) { askDlg.kind = kind; askDlg.what = what; askDlg.detail = detail; askDlg.open(); }
         function onAskClosed() { askDlg.answered = true; askDlg.close(); }
     }
@@ -126,6 +127,58 @@ ApplicationWindow {
                 anchors.right: parent.right
                 Button { text: "Cancelar"; onClicked: pwDlg.answer(false) }
                 Button { text: "Autorizar"; highlighted: true; onClicked: pwDlg.answer(true) }
+            }
+        }
+    }
+
+    // segredo pedido por um comando (senha, frase secreta, PIN, codigo de verificacao): vai direto ao comando, sem passar pelo modelo
+    Popup {
+        id: secDlg
+        objectName: "secretDialog"
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(460, win.width - 40)
+        padding: 18
+        property int reqId: 0
+        property string label: ""
+        property bool answered: false
+        onOpened: answered = false
+        onClosed: { if (!answered) backend.cancelSecret(reqId); secField.text = ""; }
+        function answer(ok) {
+            answered = true;
+            if (ok) backend.sendSecret(reqId, secField.text); else backend.cancelSecret(reqId);
+            secField.text = "";
+            close();
+        }
+        background: Rectangle { radius: 14; color: Theme.card; border.color: Theme.bd }
+        contentItem: Column {
+            spacing: 10
+            Text { font.family: Theme.sans; text: "O comando pede um segredo"; color: Theme.fg; font.pixelSize: 16; font.bold: true }
+            Text { font.family: Theme.sans; width: parent.width; wrapMode: Text.Wrap; color: Theme.mut; font.pixelSize: 13
+                text: "O que você digitar vai direto para o comando. O modelo não vê o texto, e ele não fica no histórico nem nos logs." }
+            Rectangle {
+                visible: secDlg.label !== ""
+                width: parent.width; height: secLbl.implicitHeight + 16; radius: 8
+                color: Theme.dark ? "#0E0B12" : "#F1EEF5"; border.color: Theme.bd
+                Text { id: secLbl; objectName: "secretLabel"; x: 8; y: 8; width: parent.width - 16; text: secDlg.label
+                    wrapMode: Text.WrapAnywhere; color: Theme.fg; font.family: Theme.mono; font.pixelSize: 12 }
+            }
+            TextField {
+                id: secField
+                objectName: "secretField"
+                width: parent.width
+                echoMode: TextInput.Password
+                placeholderText: "Senha ou código"
+                color: Theme.fg
+                Accessible.name: "Segredo pedido pelo comando"
+                onAccepted: secDlg.answer(true)
+            }
+            Row {
+                spacing: 8
+                anchors.right: parent.right
+                Button { objectName: "secretCancel"; text: "Cancelar"; onClicked: secDlg.answer(false) }
+                Button { objectName: "secretSend"; text: "Enviar"; highlighted: true; onClicked: secDlg.answer(true) }
             }
         }
     }

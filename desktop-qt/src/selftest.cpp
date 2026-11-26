@@ -1050,6 +1050,39 @@ int runStandinTest(Backend &be, QQuickWindow *win, const QString &capDir)
                 check(waitFor([&] { return be.ready(); }, 10000), "pin: o pedido terminou sem ser interrompido");
                 check(!be.steer("fora do ciclo"), "pin: fora do ciclo o STEER e recusado (a mensagem vai pelo envio normal)");
             }
+            {   // segredo pedido por um comando (SECRET): dialogo mascarado, texto direto ao motor, fora das mensagens e da sessao
+                const QString secFile = QDir::homePath() + "/.standin-secret";
+                const QString secret = QStringLiteral("s3gr3do-de-teste-91");
+                QFile::remove(secFile);
+                be.send("pede segredo");
+                check(waitFor([&] { QQuickItem *f = c.item("secretField"); return f && f->isVisible(); }, 10000), "segredo: dialogo aberto pelo marcador SECRET");
+                QQuickItem *lbl = c.item("secretLabel");
+                check(lbl && lbl->property("text").toString() == "Password for ana:", "segredo: dialogo mostra o rotulo do prompt");
+                QQuickItem *sf = c.item("secretField");
+                check(sf && sf->property("echoMode").toInt() == 2, "segredo: campo mascarado (Password)");
+                if (sf) sf->setProperty("text", secret);
+                if (QQuickItem *sb2 = c.item("secretSend")) c.click(sb2);
+                check(waitFor([&] { QFile f(secFile); return f.open(QIODevice::ReadOnly) && QString::fromUtf8(f.readAll()) == secret; }, 10000), "segredo: o texto chegou ao motor sem mudanca");
+                check(waitFor([&] { return be.ready(); }, 10000), "segredo: o pedido terminou");
+                bool leak = false;
+                for (int i = 0; i < be.messages()->count(); i++)
+                    for (const QVariant &v : be.messages()->get(i).values())
+                        if (v.toString().contains(secret)) leak = true;
+                check(!leak, "segredo: nenhuma mensagem guarda o texto");
+                QTest::qWait(1500);       // a sessao e gravada depois do READY
+                bool fleak = false;
+                for (const QFileInfo &fi : QDir(be.sessionsDir()).entryInfoList(QDir::Files)) {
+                    QFile f(fi.filePath());
+                    if (f.open(QIODevice::ReadOnly) && f.readAll().contains(secret.toUtf8())) fleak = true;
+                }
+                check(!fleak, "segredo: nenhum arquivo de sessao guarda o texto");
+                QFile::remove(secFile);
+                be.send("pede segredo de novo");
+                check(waitFor([&] { QQuickItem *f = c.item("secretField"); return f && f->isVisible(); }, 10000), "segredo: dialogo de novo");
+                if (QQuickItem *cb2 = c.item("secretCancel")) c.click(cb2);
+                check(waitFor([&] { QFile f(secFile); return f.open(QIODevice::ReadOnly) && f.readAll() == "cancel"; }, 10000), "segredo: Cancelar manda SECRETCANCEL");
+                check(waitFor([&] { return be.ready(); }, 10000), "segredo: pedido cancelado terminou");
+            }
             be.send("morra agora");      // volta ao estado de antes do bloco (sem agente), como os testes de geracao abaixo esperam
             check(waitFor([&] { return !be.ready() && !be.answering(); }, 30000), "agente encerrado de novo");
         }

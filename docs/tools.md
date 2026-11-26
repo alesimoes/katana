@@ -16,7 +16,7 @@ Every tool has a test script in `tools/tooltest/` that runs it without a model
 
 | File | Tools | Checks |
 |---|---|---|
-| `bash.c` | `Bash`, `TaskStop`, `Monitor`, `SendInput` (`sendinput.sh`, not run yet) | 49 |
+| `bash.c` | `Bash`, `TaskStop`, `Monitor`, `SendInput` (`sendinput.sh`) | 49 |
 | `read.c`, `write.c`, `edit.c`, `notebookedit.c` | `Read`, `Write`, `Edit`, `NotebookEdit` | 125 |
 | `filewalk.c`, `grep.c` | `Grep` (`filewalk.c` keeps only the pattern matcher, the file list and the growing text buffer that `Grep` and the UIOE file connector use) | - |
 | `regex.c` | the regular-expression engine used by `Grep` | 415 |
@@ -78,25 +78,59 @@ about 30000 characters, above that the file path and a 2000-character preview; a
 `Monitor(command, description, timeout_ms)` starts a command in the background with a deadline (5 min default,
 30 max) and returns the output file; lines are not delivered as events yet.
 
-**Input for background tasks: `SendInput` (2026-11-25).** A foreground command still runs with stdin from `/dev/null`, so
-a program that asks for input fails at once instead of hanging. A command started with `run_in_background` or by `Monitor`
-gets the read end of a pipe as stdin; katana keeps the write end (close-on-exec, so other children do not inherit it,
-non-blocking) while the task lives and closes it when the task exits, on `TaskStop`, or when katana exits (the program then
-sees end of input). `SendInput(task_id, text, newline=true)` writes `text` plus a newline into that pipe and returns the new
-output after a short wait (up to about 1.5 s, or 0.4 s of silence once output starts, or the task's exit), so the model sees
-the answer to what it typed: the use case is a login that asks for a 2FA code mid-command, which the old closed stdin made
-impossible (every retry produced a new code). Rules: only tasks of this agent process (the job table); at most 4096 bytes
-per call; an error if the task does not exist, has exited, or closed its input (EPIPE, with SIGPIPE ignored during the
-write); a full pipe (the program is not reading) is retried for 2 s and then reported. A command that was moved to the
-background at its timeout started in the foreground with `/dev/null` and cannot take input: the error says to stop it and
-start it again with `run_in_background`. Out of scope: programs that read `/dev/tty` instead of stdin (the shell runs
-under `setsid` with no controlling terminal; `ssh` password prompts, `sudo` without `-A`) still fail. A program that waits
-on stdin with nobody writing stays blocked until its deadline or `TaskStop`, which is acceptable in the background.
-The typed text is a secret: it is not echoed in the result, it is replaced by `***` (`job_redact`, `src/agent/jobs.c`) in
-the action log (`agente.log`), the `\x01TOOL` marker for the desktop and the headless event stream, and the desktop shows
-only "Respondendo ao comando: tarefa N". It does stay in the model's own conversation (and a saved session), like any
-tool argument. `SendInput` is announced by name only and loaded with `ToolSearch`; the `Bash` description tells the model
-to use it. Test script: `tools/tooltest/sendinput.sh` (written, not run yet).
+**Terminal, questions and secrets (2026-11-25).** Every `Bash`, `run_in_background` and `Monitor` command runs in its own
+pseudo-terminal (`posix_openpt`; stdin, stdout and stderr are the terminal, the shell is the session leader and the
+terminal is its controlling tty, so programs that read `/dev/tty` work too). A small copier process (`ctb_pump` in
+`src/tools/bash.c`, its own session, ignores SIGINT/SIGHUP) reads the terminal and appends to the output file with terminal
+escape sequences removed (CSI color/cursor, OSC titles, charset switches), `\r\n` turned into `\n`, a lone `\r` (progress
+bars) turned into a line break and other control bytes dropped; it exits when the last process lets go of the terminal.
+The child environment adds `TERM=dumb` and `NO_COLOR=1`, keeps `GIT_TERMINAL_PROMPT=0` and `PAGER=cat`, and the terminal is
+200x50 with `ONLCR` off. If the terminal cannot be opened, the command falls back to stdin from `/dev/null` and output
+straight to the file.
+
+Question detection: while waiting, after `KATANA_PROMPT_WAIT` ms without new output (default 2000, 300 to 30000), katana
+checks whether a process of the command's session is blocked in `read` on the terminal (`/proc/<pid>/stat` for the session,
+`/proc/<pid>/syscall` and the fd link; x86-64 and arm64). When that cannot be told (the program waits in
+`poll`/`select`, or `/proc` is closed), the last output line counts as a question when the output does not end with a
+newline and the line ends with `:`, `?`, `]`, `)`, `>` or names a prompt (`password`, `passphrase`, `[sudo]`, `PIN`, `code`,
+`token`, `login`, `username`, `(y/n)`, `[Y/n]`, `select`, `path to`, `enter`, `choose`). A question does not wait for the
+timeout: the command becomes a background task (it keeps its terminal) and the result is the output so far plus
+`[waiting for input: "<prompt line>", task <id>; answer with SendInput(task_id="<id>", text=...)]`. A program that reads its
+terminal with no prompt (`cat` with no file) gets the same line with an empty prompt. A task that keeps waiting at a
+question with no new output for `KATANA_PROMPT_MAX` seconds (default 900) is stopped by the job poll; stopped and finished
+tasks are cleaned as before (job table, exit handler, reaper).
+
+Secrets: a question is a secret when the terminal has echo off in line mode (what password readers do) or the prompt line
+mentions a password, passphrase, `passwd`, PIN, OTP, 2FA, code, token, secret, verification or one-time. Katana does not
+hand a secret question to the model: it asks the user (`secret_ask`, `src/agent/sudo.c`). With the desktop
+(`KATANA_UI`) it emits `\x01SECRET <id> <prompt line>` and reads one line back: `\x01SECRET <id>\t<text>` or
+`\x01SECRETCANCEL <id>`; in the terminal it reads `/dev/tty` with echo off; with neither (headless) it cancels. The text is
+written straight to the command's terminal with echo turned off during the write (and turned back on 0.3 s later if it was
+on), so it never reaches the output file; the output gets `[secret entered by the user]` (or `[secret cancelled]`, and
+Ctrl+C is sent to the command). Up to 3 secret questions per wait are asked; the next one is cancelled. The time the user
+takes does not count against the timeout. The secret is kept only in a static buffer that is wiped after the write: it is
+not in the tool result, `agente.log`, the `\x01TOOL`/`TOOLOUT`/`TOOLLIVE` markers, the desktop session files or any error
+message. The HTTP agent API (`src/app/agentapi.c`) refuses secrets like sudo passwords: it answers `SECRETCANCEL` and emits
+a `secret_refused` event.
+
+**`SendInput(task_id, text, newline=true, eof=false)`** writes into the task's terminal (at most 4096 bytes; `eof` adds
+Ctrl+D, end of input for a program reading the terminal). If the task is sitting at a secret question, the model's text is
+wiped unused and the user is asked instead. After writing it waits like `Bash` does, until the task exits, stops at its
+next question (`[waiting for input: ...]` again) or 20 s pass, and returns the new output (echo of what was typed included,
+for non-secret text). Errors: no such task, task finished, task without a terminal, terminal not taking input after 2 s.
+The typed text is replaced by `***` (`job_redact`, `src/agent/jobs.c`) in the action log (`agente.log`), the `\x01TOOL`
+marker and the headless event stream, and the desktop shows only "Respondendo ao comando: tarefa N"; it does stay in the
+model's own conversation, like any tool argument, which is why secrets never go through `SendInput`.
+
+**PATH.** The command's `PATH` is katana's own plus the usual user program folders that exist and are not already in it:
+`~/.local/bin`, `~/.cargo/bin`, `~/.local/share/swiftly/bin`, `~/go/bin`, `~/.bun/bin`, `~/.deno/bin`, `~/.dotnet/tools`,
+the newest `~/.nvm/versions/node/*/bin` and `/usr/local/go/bin` (`ctb_path`).
+
+Engine notes after a failed `Bash` (`bash_env_hint`, `src/agent/loop.c`): output that says the command wanted a terminal or
+an answer (`Operation unsupported`, `not a tty`, `no tty present`, ...) gets the `no_tty` note (answer the question with
+`SendInput`, never type secrets, or use the flag form; check the real state first); `command not found` and similar get
+`not_in_path` (the usual folders are already in PATH; find the program elsewhere and prefix PATH). Test script:
+`tools/tooltest/sendinput.sh`.
 
 ### Read, Write, Edit, NotebookEdit
 `Read(file_path, offset, limit, pages)`: lines prefixed with their number; 2000 lines by default; a `PARTIAL view`

@@ -90,6 +90,22 @@ while IFS= read -r line; do
         esac
         printf 'Mudei o rumo como voce pediu.\n'
         printf '\001READY\n';;
+    *"pede segredo"*)
+        # um comando do Bash para numa pergunta de senha: o motor pede o segredo ao desktop (SECRET), escreve no terminal do
+        # comando e o modelo so ve a marca. Aqui o segredo recebido vai para um arquivo, para o selftest conferir que chegou.
+        printf '\001TOOL Bash\t{"command":"tool login","description":"Entrar na conta"}\tEntrar na conta\n'
+        printf '\001SECRET 7 Password for ana:\n'
+        IFS= read -r s
+        case "$s" in
+        "${SOH}SECRET 7	"*) printf '%s' "${s#"${SOH}SECRET 7	"}" > "${HOME:-/tmp}/.standin-secret"
+            printf '\001TOOLOUT Bash\tPassword for ana: [secret entered by the user]\\nlogged in\n'
+            printf 'Login feito.\n';;
+        "${SOH}SECRETCANCEL 7"*) printf 'cancel' > "${HOME:-/tmp}/.standin-secret"
+            printf '\001TOOLOUT Bash\tPassword for ana: [secret cancelled]\n'
+            printf 'O login foi cancelado.\n';;
+        *) printf 'other' > "${HOME:-/tmp}/.standin-secret";;
+        esac
+        printf '\001READY\n';;
     /session*|/cd*) ;;                                   # comandos silenciosos: sem READY
     /*) printf '\001READY\n';;
     *"@image("*)
