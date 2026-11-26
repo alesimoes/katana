@@ -495,7 +495,7 @@ static int rz_open(const char *sess_path, int adopt) {
         rz_header(sess_path);
     }
     if (g_rz.file[0] && !g_rz.readonly) g_rz_keep = 1;
-    if (g_rz.loaded) { g_rz.grace = 1; g_rz.grace_age = 0; rz_restore_flow(); rz_restore_misc(); rz_reconcile(); }      /* graca: o primeiro pedido depois da carga nao encerra o trabalho aberto so por nao ser uma palavra de "continue" */
+    if (g_rz.loaded) { g_rz.grace = 1; g_rz.grace_age = 0; rz_ev('N', "session", "0", NULL); g_rz.enter_reason = RZR_SESSION; rz_restore_flow(); rz_restore_misc(); rz_reconcile(); }      /* graca: o primeiro pedido depois da carga nao encerra o trabalho aberto so por nao ser uma palavra de "continue" */
     return g_rz.loaded;
 }
 /* a sessao foi apagada (sess_purge): o estado dela vai junto */

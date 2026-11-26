@@ -166,6 +166,33 @@ static int rz_capsule(Buf *o) {
     buf_str(o, KNF_RESUME_CAPSULE); buf_str(o, body);
     return 1;
 }
+/* ---- reidratacao (KATANA_RESUME_REHYDRATE=1, desligada): ao retomar a sessao, o contexto vem do estado e nao de turnos velhos, sem chamar o modelo.
+ * Tudo antes do ultimo pedido do usuario vira duas mensagens: a capsula (usuario) e "Understood" (assistente); o ultimo pedido e o que veio
+ * depois ficam inteiros. A conversa inteira (full) nao e tocada: e a mesma classe de mudanca da compactacao, nao um desfazer. A capsula e
+ * deterministica, entao a segunda retomada da mesma sessao acha o KV em disco com a mesma chave. ---- */
+static int sess_msg_tokens(const Model *m, const AHist *h, const char *sys);      /* loop.c */
+static void rz_rehydrate(const Model *m, AHist *hist, const char *sys) {
+    if (!rz_on() || !g_rz.loaded || !rz_has_work()) return;
+    int k = -1;
+    for (int i = hist->n - 1; i >= 0; i--) if (hist->v[i].role == 'u') { k = i; break; }
+    if (k <= 0) return;
+    AHist pre = {0};
+    for (int i = 0; i < k; i++) ah_push(&pre, hist->v[i].role, hist->v[i].s, strlen(hist->v[i].s));
+    const int before = sess_msg_tokens(m, &pre, sys);
+    ah_clear(&pre); free(pre.v);
+    if (before <= 600) return;
+    char body[3200]; rz_body(body, sizeof body, 2);
+    if (!body[0]) return;
+    Buf u = {0};
+    buf_str(&u, KNF_RESUME_CAPSULE + 2); buf_str(&u, body);
+    AHist nh = {0};
+    ah_push(&nh, 'u', u.p, u.n); ah_push(&nh, 'a', "Understood. I continue from this state.", 39);
+    free(u.p);
+    for (int i = k; i < hist->n; i++) ah_push(&nh, hist->v[i].role, hist->v[i].s, strlen(hist->v[i].s));
+    if (!g_ah_g4 && sess_msg_tokens(m, &nh, sys) > 3000) ah_mask(&nh, 0, 6000, 0);      /* o que sai fica em disco e volta com o Read, como em sess_compact */
+    fl_log("resume\trehydrate\t%d messages -> %d", hist->n, nh.n);
+    ah_clear(hist); free(hist->v); *hist = nh;
+}
 /* depois de uma compactacao que escreveu resumo: a proxima linha `next` sai de novo e o estado anota (loop.c) */
 static void rz_after_compact(void) {
     if (!g_cp_summed) return;

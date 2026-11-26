@@ -274,6 +274,7 @@ static int sess_resume(Model *m, const char *path, const char *sys, AHist *hist,
     const AHist *use = &cp;
     for (int i = 0; i < use->n; i++) ah_push(hist, use->v[i].role, use->v[i].s, strlen(use->v[i].s));
     for (int i = 0; i < fl.n; i++) ah_push(full, fl.v[i].role, fl.v[i].s, strlen(fl.v[i].s));
+    if (rz_flag("KATANA_RESUME_REHYDRATE")) rz_rehydrate(m, hist, sys);      /* o contexto vem do estado do trabalho, nao de turnos velhos (resume_note.c; desligado) */
     Buf r = {0}; Ids ids = {0};
     ah_render(hist, sys, &r);
     if (c->add_bos && c->bos >= 0) ids_push(&ids, c->bos);
