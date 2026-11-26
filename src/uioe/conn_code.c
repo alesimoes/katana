@@ -288,6 +288,6 @@ static void uioe_bind_runs(UioeSession *s) {
     static const struct { const char *id; int (*run)(UioeCtx *, const UioeCall *, UioeResult *); } T[] = {
         {"code.search", cc_search}, {"code.def", cc_def}, {"code.callers", cc_callers}, {"code.refs", cc_refs}, {"code.callees", cc_callees},
         {"code.outline", cc_outline}, {"code.deps", cc_deps}, {"code.impact", cc_impact}, {"code.flow", cc_flow},
-        {"file.grep", cf_grep}, {"file.glob", cf_glob}, {"place.resolve", cf_place}, {"docs.search", cf_docs}, {"docs.select", cf_docsel}, {"memory.recall", cm_recall}};
+        {"file.grep", cf_grep}, {"file.glob", cf_glob}, {"place.resolve", cf_place}, {"docs.search", cf_docs}, {"docs.select", cf_docsel}, {"memory.recall", cm_recall}, {"web.search", cw_search}};
     for (int i = 0; i < s->nreg; i++) for (size_t k = 0; k < sizeof T / sizeof *T; k++) if (!strcmp(s->reg[i].id, T[k].id)) s->reg[i].run = T[k].run;
 }

@@ -1,6 +1,6 @@
 # Web sources: registry and router (design)
 
-Status: design, 2026-11-25. Not implemented. Nothing was measured. This file is documentation for people; the engine does not read it. What the engine reads is the **source registry** (section 3), a data file.
+Status: implemented 2026-11-25 (steps 1 to 4 of section 7, except the local index of section 5, which is pending). It compiles; nothing was measured (the engine was only run, without a model, on a handful of searches to see that each reader parses its source). Code: `src/agent/websrc.c` (registry, router, readers, verifier, delivery), `src/agent/websources.inc` (built-in registry, a data file), `src/uioe/conn_web.c` (the `web.search` connector), `katana sources [question]` (lists the registry; with a question, prints the classification and the route). This file is documentation for people; the engine does not read it. What the engine reads is the **source registry** (section 3), a data file.
 
 ## 1. Why
 
@@ -37,7 +37,15 @@ id | topics | country | lang | kind | query template | freshness | trust | limit
 - `trust`: 1 to 5. It weighs in the ranking.
 - `limit/min`: requests per minute the engine may spend on that source.
 
-The built-in file is checked address by address before it ships (none of the addresses was verified when this was written).
+A tenth field, optional, is the **map**: space-separated `key=value` pairs the readers need (an extension that reality asked for: a JSON API cannot be read without knowing its fields):
+
+- `json`: `items=<path to the array>` (`.` is the root, dotted paths, `*` = first member), `title=`, `url=`, `snip=`, `date=`. A value is a path, a template with `{path}` (for example `https://example.org/q/{question_id}`), alternatives separated by `,` (first non-empty) or, in `snip`, parts joined by `+` (shown as `name: value`).
+- `html`: `parser=result-a | b-algo | title-s | links` (markup shapes; `links` is the generic reader: anchors with 12+ characters of text pointing to other sites).
+- WebFetch twins: `page=<address with {1} {2}>` and `fetch=<address with the same captures>`, optionally `fetchpath=<json path of the text>` (section 4).
+
+Dates are understood as ISO 8601, RFC 822 or seconds since 1970. A feed declaring ISO-8859-1 or windows-1252 is converted to UTF-8. `KATANA_SOURCES` points at another owner file; `KATANA_SEARX=<base>` adds a JSON metasearch of the owner's (`own-metasearch`) as the first general source. Invalid lines are skipped and logged to the agent log.
+
+The built-in file was checked address by address with curl on 2026-11-25 (section 8).
 
 ## 4. Routing
 
@@ -69,3 +77,38 @@ The built-in file is checked address by address before it ships (none of the add
 2. First built-in sources: code hosting, Q&A, AI models hub, encyclopedia, a few news feeds (Brazil, world), papers.
 3. `html` reader for sources without an API, general search as the last step.
 4. `WebFetch` using registered readers; local index for slow sources.
+
+## 8. Implementation notes (2026-11-25)
+
+What exists, and where it differs from the design above:
+
+- **Classifier**: lives in `websrc.c` (`ws_classify`), not in `uioe/classify.c`: the web layer is compiled before the pre-model layer and the UIOE classifier works on a whole request with its context, not on a search query. Word lists in Portuguese and English decide topics, language (stopwords and accents), country (place names; Portuguese defaults to `br`), recency (words like today/latest, or the current or previous year) and entities (`owner/name`, names with versions, quoted text, capitalized words in the middle of a sentence; `owner/name` adds the code and ai topics).
+- **Router**: score = 10 per matching topic + 2 x trust, +4 language match (-6 mismatch), +4 country match (-8 mismatch), recency bonus for `hours` sources; at most 4 specific sources, at most 2 query-less feeds, and nothing more than 12 points below the best. Feeds without `%s` are used only for news questions.
+- **Parallel query**: every source is a `curl` child started at once (8 s each); a whole `WebSearch` keeps a 14 s budget for the route changes. The pipes are read in order, so a slow early source can stall a large later one (no `poll` yet).
+- **Rate limit**: per process, a one-minute window per source; an HTTP 429 or 403 pauses the source for 120 s. A source skipped by its limit is named as failed (`limit of N requests per minute reached`).
+- **Verifier**: sponsored links are dropped (`/y.js`, `ad_provider=`, `ad_domain=`, `/aclk?`, `/aclick?`, `&adurl=`). A result with none of the query words (title, snippet or address, accent-folded, word-start match) is dropped only if its cosine against the query is under 0.30; without the embedding service, only general-search results with no query word are dropped (a specific source's API already matched the query). Score = (word fraction + 0.3 x position + 0.8 x cosine) x (0.5 + 0.1 x trust) x freshness (only when the question asks for recent facts: 0.3 + 0.7/(1 + age in hours/48); unknown date 0.5). The 0.30 threshold is a guess.
+- **Ladder**: when nothing survives, the next unused general source runs, then the first general source with the query reduced to its 4 main words, inside the budget.
+- **Delivery**: the first line of `WebSearch` is `[search: ok|partial|empty, sources: a, b (c failed: reason; d failed: reason), n results]` (one line per query when `queries` is used, followed by `for "query"`); each result ends with `(sources: id[, id]; date YYYY-MM-DD)`.
+- **WebFetch**: before the plain request, an address matching a source's `page=` is read from its `fetch=` twin (README of a repository or model card as markdown, encyclopedia article as plain text, paper abstract from the papers feed); the address of a registered feed is read with the feed reader. The route shows as `via src:<id>`. Less than 150 bytes falls back to the normal ladder. The "another source" step of the ladder (`[next: ...]`) runs the router on the page subject when at least 8 s are left and names up to 3 addresses from other sites.
+- **UIOE**: `web.search` is bound to `cw_search` (`src/uioe/conn_web.c`); results become dated low-confidence `UN_FACT` nodes (20 + 8 x trust, at most 60, tier 4, never verified); the state line goes to `limits`. The policy is unchanged: the connector runs only with `KATANA_UIOE_WEB=1`.
+- **Pending**: local content index for slow sources (section 5, second item); a `docs` source (no open documentation search API was chosen); `poll` on the source pipes.
+
+### Address check (curl, 2026-11-25)
+
+| Source id | Works | Notes |
+|---|---|---|
+| code-hosting (repository search API) | yes, JSON | 10 searches/min without a key (header); registry limit 8 |
+| q-and-a (Q&A excerpts API) | yes, JSON | 300 requests/day without a key (`quota_max`); registry limit 4/min |
+| packages-js, packages-rust (package registries) | yes, JSON | no key |
+| tech-news (tech news search API) | yes, JSON | no key; Ask posts have no url, the item page is used |
+| models-hub (models API) | yes, JSON | 500 requests per 5 min window (header) |
+| papers (preprint API) | yes, Atom | the site asks for one request every 3 s |
+| encyclopedia-pt, encyclopedia-en | yes, JSON | extract API used for WebFetch |
+| news-br-1, news-br-2, news-br-3 | yes, RSS | news-br-3 is ISO-8859-1 (converted) |
+| news-br-search, news-search-en (news search feed) | yes, RSS | links are redirect addresses of the aggregator; WebFetch of them may need the browser |
+| news-world-1, news-world-2, news-world-3, news-world-pt | yes, RSS | |
+| general-1, general-2 (HTML result pages) | yes | ads appear as `y.js` links in general-1, filtered |
+| a third general HTML engine (`title-s` reader) | **no** | answers a captcha/challenge page; not embedded, reader kept |
+| a UK newspaper world feed | **no** | HTTP 403 to this client |
+| a scholarly search API | **no** | HTTP 429 without a key |
+| an open scholarly catalog API | works, **not embedded** | now meters usage in dollars per key/day; papers come from the preprint feed instead |

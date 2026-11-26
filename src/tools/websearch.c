@@ -1,7 +1,8 @@
 /* ---------- ferramenta WebSearch (ver docs/tools.md) ----------
  * query (ou queries: ate 4, em paralelo), read (0 a 5 paginas lidas ao mesmo tempo, com os trechos que citam as
- * palavras da busca), allowed_domains, blocked_domains (nao os dois). Usa a busca do katana (tool_web_search), filtra
- * pelo host e devolve UM resultado de cerca de 4000 bytes: a lista e os melhores trechos das paginas lidas. */
+ * palavras da busca), allowed_domains, blocked_domains (nao os dois). Usa o roteador de fontes (agent/websrc.c: registro, fontes
+ * especificas em paralelo, verificador, busca geral so no fim), filtra pelo host e devolve UM resultado de cerca de 4000 bytes: a linha
+ * de estado [search: ...] de cada consulta, a lista com a origem de cada resultado e os melhores trechos das paginas lidas. */
 static const char CT_WEBSEARCH_DESC[] =
     "Searches the web and returns results as a numbered list with title, URL and a short summary, followed by the "
     "passages of the top pages that match your words (read=3 by default: the pages are downloaded at the same time, so "
@@ -116,7 +117,7 @@ static void ct_ws_filter(const char *text, char allow[][100], int na, char block
 #define CT_WS_BUDGET 4000          /* bytes do resultado todo (cerca de 1100 tokens) */
 #define CT_WS_MAXQ 4
 #define CT_WS_MAXH 40
-typedef struct { char title[300], url[1000], snip[300]; double score; int idx; } CtWsHit;
+typedef struct { char title[300], url[1000], snip[300], src[160]; double score; int idx; } CtWsHit;
 
 /* lista de textos de um argumento (array, ou um texto so), cada um em memoria nova; devolve quantos */
 static int ct_ws_strlist(const char *js, const char *end, const char *key, char **q, int max) {
@@ -152,7 +153,11 @@ static int ct_ws_parse(const char *text, CtWsHit *h, int max) {
         while (*p == ' ' || *p == '\t') p++;
         if (!ct_ws_entry(p, NULL) && strncmp(p, "(sources:", 9) != 0) snprintf(x->snip, sizeof x->snip, "%.*s", (int)strcspn(p, "\n"), p);
         if (strncmp(x->url, "http", 4) == 0) n++;
-        while (*p && !ct_ws_entry(p, NULL)) p = ct_ws_nextline(p);
+        while (*p && !ct_ws_entry(p, NULL)) {
+            const char *t = p; while (*t == ' ') t++;
+            if (!strncmp(t, "(sources:", 9)) snprintf(x->src, sizeof x->src, "%.*s", (int)strcspn(t, "\n"), t);
+            p = ct_ws_nextline(p);
+        }
     }
     return n;
 }
@@ -184,6 +189,8 @@ static void ct_websearch(const char *js, const char *end, char *out, size_t cap)
     if (rd > 5) rd = 5;
     const int na = ct_ws_domains(js, end, "allowed_domains", allow), nb = ct_ws_domains(js, end, "blocked_domains", block);
     const size_t RB = 40000;
+    static char state[CT_WS_MAXQ][700];
+    for (int k = 0; k < CT_WS_MAXQ; k++) state[k][0] = 0;
     char *raw[CT_WS_MAXQ] = {0}, *tmp[CT_WS_MAXQ] = {0};
     size_t body = 0;
     int i, nfail = 0, nread = 0, sc_cached = 0, pg_cached = 0;
@@ -193,23 +200,31 @@ static void ct_websearch(const char *js, const char *end, char *out, size_t cap)
     if (fix && !ct_web_local_ok()) rd = 0;                      /* e sem leitura de paginas, a menos que sejam locais */
     snprintf(g_ct_lastq, sizeof g_ct_lastq, "%s", qs[0]);
     for (i = 0; i < nq; i++) { raw[i] = (char *)malloc(RB); tmp[i] = (char *)malloc(cap); if (!raw[i] || !tmp[i]) { snprintf(out, cap, "error: out of memory"); goto done; } raw[i][0] = 0; }
-    {   /* buscas: do cache, ou todas ao mesmo tempo */
-        FILE *fp[CT_WS_MAXQ][MS_NSRC];
+    static WsRun runs[CT_WS_MAXQ];
+    {   /* buscas: do cache, ou todas ao mesmo tempo (o roteador abre as fontes de todas antes de ler) */
         int miss[CT_WS_MAXQ] = {0};
-        const char *sx = getenv("KATANA_SEARX");
         for (i = 0; i < nq; i++) {
             size_t len = 0; char *c;
             if (fix) { snprintf(raw[i], RB, "%s", fix); continue; }
             if ((c = ct_wc_read('s', qs[i], CT_WC_BUSCA, &len))) { snprintf(raw[i], RB, "%s", c); free(c); sc_cached++; continue; }
             miss[i] = 1;
-            if (!(sx && *sx)) tool_web_search_start(qs[i], fp[i]);
+            ws_start(qs[i], &runs[i]);
         }
         for (i = 0; i < nq; i++) if (miss[i]) {
-            if (sx && *sx) tool_web_search(qs[i], raw[i], RB); else tool_web_search_collect(qs[i], fp[i], raw[i], RB);
-            if (strncmp(raw[i], "1. ", 3) == 0) ct_wc_write('s', qs[i], raw[i], strlen(raw[i]), "", 0);
+            ws_finish(&runs[i], raw[i], RB);
+            if (strstr(raw[i], "\n1. ")) ct_wc_write('s', qs[i], raw[i], strlen(raw[i]), "", 0);
         }
     }
     t_search = now_sec() - t0;
+    /* linha de estado de cada consulta ([search: ...], a primeira linha do texto da busca): sai do texto e vai para o comeco da resposta */
+    for (i = 0; i < nq; i++) {
+        if (strncmp(raw[i], "[search:", 8) == 0) {
+            const size_t l = strcspn(raw[i], "\n");
+            if (nq > 1) snprintf(state[i], sizeof state[i], "%.*s for \"%.80s\"", (int)(l < 560 ? l : 560), raw[i], qs[i]);
+            else snprintf(state[i], sizeof state[i], "%.*s", (int)(l < 600 ? l : 600), raw[i]);
+            memmove(raw[i], raw[i] + l + (raw[i][l] ? 1 : 0), strlen(raw[i] + l + (raw[i][l] ? 1 : 0)) + 1);
+        }
+    }
     int tot = 0, kept = 0, okq = 0;
     const char *by = na ? "allowed_domains" : "blocked_domains";
     for (i = 0; i < nq; i++) {
@@ -290,7 +305,8 @@ static void ct_websearch(const char *js, const char *end, char *out, size_t cap)
         int shown = 0;
         for (int j = 0; j < nh && j < maxl; j++) {
             char line[1700];
-            const int ln = snprintf(line, sizeof line, "%d. %.*s\n   %s\n   %.*s\n", j + 1, tl, hits[j].title, hits[j].url, sl_, hits[j].snip);
+            const int ln = snprintf(line, sizeof line, "%d. %.*s\n   %s\n   %.*s\n%s%s%s", j + 1, tl, hits[j].title, hits[j].url, sl_, hits[j].snip,
+                                    hits[j].src[0] ? "   " : "", hits[j].src, hits[j].src[0] ? "\n" : "");
             if (shown >= 3 && (int)o + ln > lcap) break;
             if (o + (size_t)ln + 1 > B) break;
             memcpy(out + o, line, (size_t)ln + 1); o += (size_t)ln; shown++;
@@ -360,5 +376,15 @@ foot:
         if (l + strlen(f) + 1 < cap) memcpy(out + l, f, strlen(f) + 1);
     }
 done:
+    {   /* as linhas de estado da busca vao no comeco: o modelo ve primeiro o estado e quais fontes falharam */
+        char head[CT_WS_MAXQ * 710]; size_t hl = 0;
+        for (i = 0; i < nq && i < CT_WS_MAXQ; i++) if (state[i][0]) hl += (size_t)snprintf(head + hl, sizeof head - hl, "%s\n", state[i]);
+        const size_t ol = strlen(out);
+        if (hl > 0 && hl + 2 < cap) {
+            const size_t keep = ol + hl + 1 > cap ? cap - hl - 1 : ol;
+            memmove(out + hl, out, keep); out[hl + keep] = 0;
+            memcpy(out, head, hl);
+        }
+    }
     for (i = 0; i < CT_WS_MAXQ; i++) { free(raw[i]); free(tmp[i]); free(qs[i]); }
 }

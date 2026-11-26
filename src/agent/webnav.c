@@ -423,6 +423,8 @@ static int wn_tried_has(const char *tried, const char *route) {
     for (const char *p = tried; (p = strstr(p, route)); p += l) if ((p == tried || p[-1] == ' ') && (p[l] == 0 || p[l] == ',')) return 1;
     return 0;
 }
+static WnPage *ws_fetch_page(const char *url);                       /* agent/websrc.c */
+static int ws_other_sources(const char *q, const char *url, char *o, size_t cap);
 /* a linha "[next: ...]" para um resultado que nao e ok. state: shell, empty, blocked, login, error. pg pode ser NULL (falha antes de haver pagina) */
 static void wn_next(const char *url, const char *state, const WnPage *pg, const char *tried, char *o, size_t cap) {
     size_t n = 0;
@@ -444,6 +446,11 @@ static void wn_next(const char *url, const char *state, const WnPage *pg, const 
         else n += (size_t)snprintf(o + n, cap - n, " The page links the project repository %s.", repo);
     }
     wn_query(url, pg, q, sizeof q);
+    {   /* passo "outra fonte" da escada: o roteador de fontes busca o mesmo assunto, se ainda ha tempo */
+        char alt[1200];
+        const double left = g_wn_deadline > 0 ? g_wn_deadline - now_sec() : 20.0;
+        if (left > 8.0 && ws_other_sources(q, url, alt, sizeof alt) > 0) { snprintf(o + n, cap - n, " Other sources found by the router for \"%s\": %s.]", q, alt); return; }
+    }
     snprintf(o + n, cap - n, " Another source: WebSearch with query \"%s\" and read a different site.]", q);
 }
 /* estado de um resultado entregue: shell e empty vem do verificador; partial e a pagina boa entregue so em parte */
@@ -580,6 +587,7 @@ static WnPage *wn_load_in(const char *url, char *err, size_t ecap) {
     char *raw = (char *)malloc(RAW + 1);
     int rc;
     g_wn_errst[0] = 0; g_wn_errroute[0] = 0;
+    if (!g_wn_render) { WnPage *sp = ws_fetch_page(url); if (sp) { free(raw); return sp; } }    /* endereco de uma fonte registrada: o leitor dela (docs/web-sources.md 4) */
     if (!raw) { snprintf(err, ecap, "error: out of memory"); snprintf(g_wn_errst, sizeof g_wn_errst, "error"); return NULL; }
     long n = curl_get(url, raw, RAW, &rc);
     int rendered = 0;

@@ -478,6 +478,7 @@ Web research is paid for in the local model's reading time (about 60 tokens/s) a
 several.
 
 `WebSearch(query | queries, read, allowed_domains, blocked_domains)`: katana's search with a host filter.
+- The search is the source router of `docs/web-sources.md`: the question is classified (topic, language, country, recency, entities), 2 to 4 registered sources (APIs and feeds) are queried at once, results are verified (sponsored and off-topic dropped) and ranked; the general search engines run only when fewer than 2 specific sources fit or nothing survives. The first line is `[search: ok|partial|empty, sources: a, b (c failed: reason), n results]`; each result ends with `(sources: id; date YYYY-MM-DD)`. A failed source is always named.
 - `read` (0 to 5, default 3): the top pages are downloaded at the same time (one `curl` child each, 6 s per page, 10 s
   overall; a page that fails or is slow is only listed), and the result is the numbered list (title, URL, short summary)
   followed by the passages of those pages that match the words of the query, each prefixed with its URL. The whole
