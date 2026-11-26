@@ -134,6 +134,7 @@ static void uioe_classify(UioeCtx *cx, const UioeAsk *a, UioeClass *k) {
     /* ---- recuperar ajuda? (C1 a C7) ---- */
     int ret = 0, cr = 7;
     const char *rcol = strchr(a->text, ':');
+    while (rcol && rcol[1] == '/' && rcol[2] == '/') rcol = strchr(rcol + 3, ':');      /* o "http:" de um endereco nao e o dois-pontos de "traduza: texto" (U9) */
     const int rewrite = uw_any(W, g_ui_x_rewrite, NULL) >= 0 && (strlen(a->text) > 200 || strchr(a->text, '\n') || (rcol && strlen(rcol + 1) >= 15));
     const int create = uw_any(W, g_ui_x_create, &which) >= 0 && ncode == 0 && !ui_has_ent(a, UK_FOLDER) && kind != UI_HOWTO;
     if (kind == UI_NONE && !shell) { ret = 0; cr = 1; snprintf(k->why_retrieve, sizeof k->why_retrieve, "nothing to look up (greeting, acknowledgement or too short)"); }

@@ -18,9 +18,9 @@ further down are measurements from the dates in their titles; do not read them a
 4. **Code index (coder), nine phases built** (`docs/coder.md`, `docs/code-index-lifecycle.md`): root by `katana init`, crawler on demand in levels N0 to N3,
    session watch and freshness check, `Symbols tree` and state lines, one index for `Find`, transparent ignored content, maintenance (`list`, `forget`, `gc`).
    Open: measurement on real trees.
-5. **UIOE (`docs/uioe.md`): U0 to U5 and U8 built.** The pre-LLM layer interprets, classifies, routes, retrieves and appends one `[katana: context ...]`
+5. **UIOE (`docs/uioe.md`): U0 to U5, U8 and U9 built.** The pre-LLM layer interprets, classifies, routes, retrieves and appends one `[katana: context ...]`
    block to the user message (`KATANA_UIOE=pack` is the default; `off` is the escape; `katana uioe ask --pack` prints the block with no model). U8 brings
-   memory as dated, low-confidence evidence. Not started: U9 and later (web, external connectors, curriculum families). Not measured.
+   memory as dated, low-confidence evidence. U9 (2026-11-26) adds `web.fetch` and the pre-LLM web route (`uioe.md` 6.2c; compiled, not measured; the live `KATANA_UIOE_WEB=1` path was not run). Not started: U10 and later (external connectors, curriculum families). Not measured.
 6. **Curriculum and training.** The curriculum generator (`tools/curriculum`, `docs/curriculum.md`) was regenerated for the lean list and the context block;
    training runs only at night (`katana specialize`, `docs/specialization.md`). No training result and no codebench pass on the new data exist yet.
 7. **Recent fixes:** the file watch read fd 0 (stdin) before init and stalled the agent at the prompt, swallowing the desktop's first message (fixed in `966ba85`);
@@ -49,7 +49,7 @@ ChatML loop path is hooked. Open list: `docs/flows.md` section 7.
 
 **2026-11-26, stale-item audit (code read, build compiled, nothing run, nothing measured).** Already in the code although earlier notes list them as open:
 `brief_end_note()` is called by the loop (`src/agent/loop.c`, end of request); the call-format constraint knows MCP card tools (`callgrammar.c`, both
-spellings); the UIOE web connector `web.search` exists (`src/uioe/conn_web.c`, behind `KATANA_UIOE_WEB=1`, policy 3.8.6; `web.fetch` is the part still missing).
+spellings); the UIOE web connectors `web.search` and `web.fetch` exist (`src/uioe/conn_web.c`; a typed address is read pre-LLM, search and best-result read only with `KATANA_UIOE_WEB=1`, policy 3.8.6; `sent:` in the trace lists what left).
 Two engine ideas listed as top priority were checked against the notes and are **not** the next step: grouping MoE tokens by expert is done
 (`moe_cpu_multi`, `KATANA_MOE_GROUP`), and the one-token router on the GPU was built and measured with no gain (section 0h, `comparisons.md` 14; off by default).
 On Qwen3.6 generation (~34 ms/token) the cost is the cold experts on the CPU (11-14 ms) with 36% of expert uses in VRAM, the cold part is already near the memory bandwidth (about 5 missed experts x ~1.7 MB x 40 layers = ~340 MB per token at the ~24 GB/s the CPU gets = ~14 ms).
@@ -71,7 +71,7 @@ Done, not measured: prefix cache for the small-context Vulkan graph of Qwen3.6 (
 (3) Cold-expert CPU kernels: 4-row VNNI Q4_K/Q6_K, vectorized SiLU, aligned slices (`KATANA_MOE_ROWS`, `KATANA_MOE_PF`, `KATANA_MOE_ACT`, `KATANA_MOE_ALIGN`, all on, `=0` off); `MOEB_SYNTH=1 tools/moebench/moebench x` passes (relative difference 6e-7 to 8e-6); `MOEB_CHECK=1` on real tensors never ran.
 (4) Predictive prefetch of the next layer's cold experts during the GPU wait (`src/engine/expert_pf.c`, `KATANA_MOE_PREDICT=0` off, `_N`, `_MB`, `_STATS=1`); expected gain small (about 0.4 ms window).
 
-To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U9, then `curriculum.md` for the data.
+To resume: `plan.md` (backlog T1 to T7 and the current goal), then `uioe.md` section 6 for U10, then `curriculum.md` for the data.
 
 **2026-11-23, the teacher is an external plugin.** The vendor part of teacher mode left the binary: `src/agent/teacher.c` now runs a configured program (`KATANA_TEACHER_CMD`, `~/.katana/teacher.cmd` or `~/.katana/plugins/teacher/run`) with a JSON-lines protocol (`docs/teacher-protocol.md`) and keeps everything vendor-free (rewrite in the student's syntax, history and KV cache, `<session>.teacher`, `export --teacher`, on/off in the middle of a conversation). The Messages API and CLI connections, key reading, default model/URL/effort and the fallback are in `plugins/teacher-anthropic/` (Python, standard library). Install it once (`ln -s plugins/teacher-anthropic ~/.katana/plugins/teacher`) or the teacher refuses to turn on. `/teacher api|cli` are gone (use `KATANA_TEACHER_VIA`). Checked: build; a shell stand-in teacher (text + tool call) on a tiny model through `/teacher on`, tool ran, `export --teacher` ok; the plugin against its mock API server (6 requests accepted, signed reasoning round trip, 6 teacher spans); `tools/tooltest/channel.sh` 76/0; the plugin's cli connection with a fake program. **Not checked**: the plugin against the real API and the real `claude` program (no key), the rest of `tools/traintest/run.sh`, `tools/tooltest/launch.sh`/`extend.sh`/`console_pty.py`, `tools/servertest` (scripts updated, not re-run), the desktop build (QML/C++ text and defaults only changed).
 

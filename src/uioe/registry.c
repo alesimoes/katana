@@ -48,6 +48,20 @@ static int uioe_av_web(const UioeConnector *s, const char *root, char *why, size
     if (!(u && !strcmp(u, "1"))) { snprintf(why, cap, "not routed pre-LLM: KATANA_UIOE_WEB is not 1 (policy 3.8.6); the model may still call it"); return 0; }
     snprintf(why, cap, "KATANA_UIOE_WEB=1"); return 1;
 }
+/* a politica da web (3.8.6): 1 so com KATANA_WEB != 0 e KATANA_UIOE_WEB=1. Quem decide o que SAI sem o dono ter pedido (termos de busca, endereco de resultado) consulta isto. */
+static int uioe_web_policy_on(void) {
+    const char *w = getenv("KATANA_WEB"), *u = getenv("KATANA_UIOE_WEB");
+    return !(w && !strcmp(w, "0")) && u && !strcmp(u, "1");
+}
+/* web.fetch: um endereco que o PROPRIO usuario digitou no pedido pode ser lido antes do modelo mesmo com KATANA_UIOE_WEB=0 (ele deu o endereco; docs/uioe.md 3.8.6).
+   O endereco que vem de um resultado de busca so e lido com KATANA_UIOE_WEB=1: quem garante isso e o pipeline (UioeCall.depth = 0) e o proprio conector. */
+static int uioe_av_webfetch(const UioeConnector *s, const char *root, char *why, size_t cap) {
+    (void)s; (void)root; const char *w = getenv("KATANA_WEB");
+    if (w && !strcmp(w, "0")) { snprintf(why, cap, "KATANA_WEB=0"); return 0; }
+    if (uioe_web_policy_on()) snprintf(why, cap, "an address typed in the request, or the best search result (KATANA_UIOE_WEB=1)");
+    else snprintf(why, cap, "only for an address the user typed in the request (KATANA_UIOE_WEB is not 1, so no search-result address)");
+    return 1;
+}
 static int uioe_av_none(const UioeConnector *s, const char *root, char *why, size_t cap) {
     (void)root;
     if (!strncmp(s->id, "mcp:", 4)) snprintf(why, cap, "no connector card installed (stage 4)");
@@ -87,7 +101,7 @@ static void uioe_registry_init(UioeSession *s) {
         C("howto.recipes", UQ_RECIPE,                                     UC_INSTANT, 60, -1, UCF_READONLY, 5,   "system", uioe_av_always),
         C("skill.match",  UQ_RECIPE,                                      UC_INSTANT, 50, -1, UCF_READONLY, 5,   "system", uioe_av_skill),
         C("web.search",   UQ_EXTERNAL,                                 UC_NETWORK, 40, -1, UCF_READONLY | UCF_LEAVES_MACHINE | UCF_UNTRUSTED, 8000, "research", uioe_av_web),
-        C("web.fetch",    UQ_EXTERNAL,                                 UC_NETWORK, 40, -1, UCF_READONLY | UCF_LEAVES_MACHINE | UCF_UNTRUSTED, 8000, "research", uioe_av_web),
+        C("web.fetch",    UQ_PAGE,                                     UC_NETWORK, 40, -1, UCF_READONLY | UCF_LEAVES_MACHINE | UCF_UNTRUSTED, 8000, "research", uioe_av_webfetch),
         C("mcp:<server>", UQ_EXTERNAL,                                 UC_PROCESS, 70, -1, UCF_READONLY | UCF_UNTRUSTED, 3000, "data",     uioe_av_none),
         C("model.expand", UQ_WHERE,                                    UC_MODEL,    0, -1, UCF_NEEDS_MODEL, 6000, "code",     uioe_av_none),
         C("lsp.confirm",  UQ_VERIFY,                                   UC_PROCESS, 95, -1, UCF_READONLY, 3000, "code",     uioe_av_none),

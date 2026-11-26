@@ -608,6 +608,43 @@ static void pipe_memory(UioeOrch *o) {
     if (st == UR_EMPTY) rc_limit(o->rc, "memory: nothing saved matches the request");
     ur_free(&r);
 }
+/* U9: a web (docs/uioe.md 3.8.6). Ordem: (1) os documentos do projeto, se ha indice; (2) cada endereco que o USUARIO digitou (ate 2), lido antes do modelo mesmo com
+   KATANA_UIOE_WEB=0; (3) so com KATANA_UIOE_WEB=1 e sem pagina lida: a busca com os termos interpretados e, nos resultados, a pagina do melhor. Cada chamada grava em
+   `sent` o que saiu; o passo fora da politica fica "not routed" e o Next propoe `Search the web for "..."` (orch_next). */
+static void pipe_web(UioeOrch *o) {
+    o->st = "P3"; po_terms(o);
+    UioeResult r; int map[256]; UioeCall q = {0};
+    if (o->cx->has_store) { snprintf(q.arg, sizeof q.arg, "%.419s", o->terms); q.limit = 4; q.tier = 3; po_run(o, "docs", "docs.search", &q, &r, map, 0); ur_free(&r); }
+    int got = 0, ntyped = 0;
+    for (int i = 0; i < o->a->nent && ntyped < 2; i++) {
+        if (o->a->ent[i].kind != UK_URL) continue;
+        char u[420]; snprintf(u, sizeof u, "%s%.410s", !strncmp(o->a->ent[i].text, "www.", 4) ? "https://" : "", o->a->ent[i].text);
+        for (size_t l = strlen(u); l > 0 && strchr(".,;:)]}>\"'!?", u[l - 1]); ) u[--l] = 0;
+        memset(&q, 0, sizeof q); snprintf(q.arg, sizeof q.arg, "%s", u); snprintf(q.arg2, sizeof q.arg2, "%.200s", o->terms); q.depth = 1; q.tier = 1; q.limit = 1;
+        o->st = "P4"; const int st = po_run(o, "page", "web.fetch", &q, &r, map, 0); ntyped++;
+        if (po_usable(st) && r.nnode) got++;
+        else if (st == UR_EMPTY) rc_limit(o->rc, "web.fetch: %.200s", r.notfound[0] ? r.notfound : "the page returned nothing");
+        ur_free(&r);
+    }
+    const int wi = po_step_find(o->rt, "web");
+    if (got || wi < 0 || o->rt->step[wi].status) {
+        if (!got && !ntyped) rc_limit(o->rc, "the web was not searched before the model: KATANA_UIOE_WEB is not 1 (policy 3.8.6), so no search terms left the machine");
+        return;
+    }
+    memset(&q, 0, sizeof q); snprintf(q.arg, sizeof q.arg, "%.419s", o->terms); q.limit = 4; q.tier = 3; o->st = "P3";
+    const int st = po_run(o, "web", "web.search", &q, &r, map, 0);
+    char best[420] = ""; int bc = -1;
+    if (po_usable(st)) for (int i = 0; i < r.nnode; i++) {
+        const char *w = strstr(r.node[i].how, "web result "); if (!w || strncmp(w + 11, "http", 4)) continue;
+        if (r.node[i].conf > bc) { bc = r.node[i].conf; snprintf(best, sizeof best, "%.*s", (int)strcspn(w + 11, " "), w + 11); } }
+    ur_free(&r);
+    if (best[0] && !uioe_over(o->cx)) {
+        memset(&q, 0, sizeof q); snprintf(q.arg, sizeof q.arg, "%s", best); snprintf(q.arg2, sizeof q.arg2, "%.200s", o->terms); q.depth = 0; q.tier = 3; q.limit = 1; o->st = "P4";
+        const int s2 = po_run(o, "best", "web.fetch", &q, &r, map, 0);
+        if (s2 == UR_EMPTY) rc_limit(o->rc, "web.fetch: %.200s", r.notfound[0] ? r.notfound : "the page returned nothing");
+        ur_free(&r);
+    } else if (!best[0] && po_usable(st)) rc_limit(o->rc, "web.search returned no result with an address to read");
+}
 static void pipe_place(UioeOrch *o) {
     o->st = "P3"; UioeCall q = {0}; snprintf(q.arg, sizeof q.arg, "%s", o->a->nplaces ? o->a->places[0] : o->a->root); q.tier = 1; UioeResult r; int map[256];
     po_run(o, "place", "place.resolve", &q, &r, map, 1); ur_free(&r);
@@ -624,7 +661,8 @@ static void po_pipeline(UioeOrch *o) {
     case UI_HOWTO: pipe_howto(o); break;
     case UI_OVERVIEW: pipe_overview(o); break;
     case UI_HISTORY: pipe_memory(o); break;
-    default: rc_limit(o->rc, "this kind of request (%s) needs sources that are not built in this phase (earlier sessions, the web: U8 and U9)", g_uioe_kindname[o->k->kind]); break;
+    case UI_WEB: pipe_web(o); break;
+    default: rc_limit(o->rc, "this kind of request (%s) needs sources that are not built (external connectors: U10 to U12)", g_uioe_kindname[o->k->kind]); break;
     }
     if (o->k->kind != UI_HISTORY && o->k->kind != UI_NONE) pipe_memory(o);      /* so roda se o roteador pos o passo (pista de memoria) */
 }

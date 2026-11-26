@@ -93,16 +93,18 @@ static int up_gate(const UioeCtx *cx, const UioeRequest *r, char *why, size_t ca
 #define NO(...) do { snprintf(why, cap, __VA_ARGS__); return 0; } while (0)
     if (!rc->ran || !g) NO("door 1: no retrieval ran (%s)", rc->decision_note[0] ? rc->decision_note : r->route.decision_note);
     const int memreq = k->domain[0] == UD_MEMORY && k->kind == UI_HISTORY;      /* U8: o pedido de historico e servido pela memoria do dono (memory.recall) */
-    if (k->domain[0] != UD_CODE && k->domain[0] != UD_FILES && !memreq) NO("door 2: domain %s has no connector in this build; only code and files are served", g_uioe_domname[k->domain[0]]);
+    const int webreq = k->domain[0] == UD_RESEARCH && k->kind == UI_WEB;      /* U9: o pedido da web e servido por web.fetch / web.search (3.8.6) */
+    if (k->domain[0] != UD_CODE && k->domain[0] != UD_FILES && !memreq && !webreq) NO("door 2: domain %s has no connector in this build; only code and files are served", g_uioe_domname[k->domain[0]]);
     if (a->ambiguous) NO("door 1: the request is ambiguous (%s)", a->amb);
     if (k->retrieve != 1) NO("door 1: retrieve = %d (a cited place only: the place note says it)", k->retrieve);
     if (rc->decision == UG_LIMITS) { const char *e = getenv("KATANA_UIOE_LIMITS"); snprintf(why, cap, "door 3: G5, the limits form (%s)%s", rc->decision_note, e && atoi(e) ? "" : "; not injected by default (KATANA_UIOE_LIMITS=1 injects it)"); return e && atoi(e) ? 2 : 0; }
     if (rc->decision != UG_PACKET) NO("door 3: not G4 (%s)", rc->decision_note);
-    if (rc->conf_after < UIOE_PACK_MIN_CONF && !memreq) NO("door 3: confidence %d after retrieval is below the pack threshold %d (UIOE_PACK_MIN_CONF)", rc->conf_after, UIOE_PACK_MIN_CONF);
+    if (rc->conf_after < UIOE_PACK_MIN_CONF && !memreq && !webreq) NO("door 3: confidence %d after retrieval is below the pack threshold %d (UIOE_PACK_MIN_CONF)", rc->conf_after, UIOE_PACK_MIN_CONF);
     int sup = 0;
     if (rc->npath >= 2) { const UioeNode *A = &g->n[rc->path[0]], *B = &g->n[rc->path[1]]; if (cxb_ok(A) && cxb_ok(B)) sup = 1; }
     for (int i = 0; i < rc->nitems && !sup; i++) { const UioeNode *n = &g->n[rc->items[i]]; if (cxb_ok(n) && n->tier <= 2 && n->conf >= 75 && n->kind != UN_FILE && n->kind != UN_FOLDER) sup = 1; }
     if (memreq) for (int i = 0; i < rc->nitems && !sup; i++) if (g->n[rc->items[i]].kind == UN_FACT) sup = 1;      /* U8: a memoria nunca e "verificada": basta uma nota salva que casou (rotulada (guess) no bloco) */
+    if (webreq) for (int i = 0; i < rc->nitems && !sup; i++) if (g->n[rc->items[i]].kind == UN_FACT && !g->n[rc->items[i]].dropped) sup = 1;      /* U9: uma pagina ou resultado lido, rotulado (guess) e com URL e data no bloco */
     if (!sup) NO("door 4: no verified support (a reread path of two steps, or a reread tier-1/2 item with confidence >= 75)");
     int named = 0, other = 0; for (int i = 0; i < a->nent; i++) { const int e = a->ent[i].kind; if (e == UK_PATH && a->ent[i].resolved[0]) named++; else if (e == UK_SYMBOL || e == UK_KEY || e == UK_ENV || e == UK_LITERAL || e == UK_ERRTEXT) other++; }
     if (named && !other && (k->kind == UI_LOCATE || k->kind == UI_HOWTO || k->kind == UI_OVERVIEW || k->kind == UI_CONFIG)) NO("door 5: the request already names the exact file; there is nothing to look for");

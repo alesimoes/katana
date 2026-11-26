@@ -124,6 +124,7 @@ static WnPage *wn_peek(const char *url) {
     for (int i = 0; i < WN_PAGES; i++) if (g_wn[i].txt && strcmp(g_wn[i].url, url) == 0) return &g_wn[i];
     return NULL;
 }
+static int g_wn_no_search;     /* 1: o passo "outra fonte" da escada nao busca no roteador (o UIOE de antes do modelo so deixa sair o endereco do pedido; uioe/conn_web.c) */
 static int g_wn_render;     /* 1: WebFetch pediu render=true (a pagina depois de o JavaScript rodar) */
 static double g_wn_deadline;                /* hora (now_sec) em que a escada de rotas para de abrir rotas novas; 0: 60 s a partir da chamada */
 #define WN_BUDGET 60.0                      /* tempo total de um WebFetch somando as rotas (docs/web-design.md 3.3) */
@@ -449,7 +450,7 @@ static void wn_next(const char *url, const char *state, const WnPage *pg, const 
     {   /* passo "outra fonte" da escada: o roteador de fontes busca o mesmo assunto, se ainda ha tempo */
         char alt[1200];
         const double left = g_wn_deadline > 0 ? g_wn_deadline - now_sec() : 20.0;
-        if (left > 8.0 && ws_other_sources(q, url, alt, sizeof alt) > 0) { snprintf(o + n, cap - n, " Other sources found by the router for \"%s\": %s.]", q, alt); return; }
+        if (!g_wn_no_search && left > 8.0 && ws_other_sources(q, url, alt, sizeof alt) > 0) { snprintf(o + n, cap - n, " Other sources found by the router for \"%s\": %s.]", q, alt); return; }
     }
     snprintf(o + n, cap - n, " Another source: WebSearch with query \"%s\" and read a different site.]", q);
 }

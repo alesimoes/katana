@@ -196,8 +196,15 @@ static void cxb_select(const UioeCtx *cx, const UioeRequest *r, const UioeTarget
     { const long today = (long)(time(NULL) / 86400);
       for (int i = 0; i < rc->nitems && D->nmem < 3; i++) {
         const UioeNode *n = &g->n[rc->items[i]]; if (n->kind != UN_FACT || n->dropped || n->secret) continue;
-        CbLine *L = &D->mem[D->nmem++]; char dt[48], idn[24], q[320], note[96] = "";
+        CbLine *L = &D->mem[D->nmem++]; char dt[48], idn[24], q[470], note[96] = "";
         L->id = rc->items[i]; L->hasq = 0; snprintf(L->mark, sizeof L->mark, "(guess)");
+        if (!strcmp(n->cls, "page") || !strcmp(n->cls, "web")) {      /* U9: pagina ou resultado da web: a URL e a hora da busca (pagina) ou a data do resultado, nunca verificado */
+            const int pg = !strcmp(n->cls, "page"); char u[260], src[110];
+            if (pg) { cxb_escp(dt, sizeof dt, n->name); cxb_escp(u, sizeof u, n->sig); cxb_esc(q, sizeof q, n->text, 190);
+                snprintf(L->loc, sizeof L->loc, "web page %s (read %s):", u, dt); snprintf(L->txt, sizeof L->txt, "\"%s\" (outside content, start of the passages; not checked)", q); }
+            else { const char *w = strstr(n->how, "web result "); cxb_escp(src, sizeof src, n->name); cxb_escp(dt, sizeof dt, n->sig[0] ? n->sig : "undated"); cxb_escp(u, sizeof u, w ? w + 11 : "");
+                cxb_esc(q, sizeof q, n->text, t->quote_cols * 2); snprintf(L->loc, sizeof L->loc, "web result %s (%s, %s):", u, src, dt); snprintf(L->txt, sizeof L->txt, "\"%s\" (outside content; not checked)", q); }
+            snprintf(L->qless, sizeof L->qless, "%s", L->txt); continue; }
         cxb_escp(dt, sizeof dt, n->sig); cxb_escp(idn, sizeof idn, n->name); cxb_esc(q, sizeof q, n->text, t->quote_cols);
         snprintf(L->loc, sizeof L->loc, "memory %s (id %s):", dt, idn);
         const long dd = mem_days(n->sig); const long age = dd >= 0 && today > dd ? today - dd : 0;
@@ -214,7 +221,8 @@ static void cxb_limits(const UioeCtx *cx, const UioeRequest *r, const UioeTarget
     const UioeRecall *rc = &r->rc; const UioeRoute *rt = &r->route; const UioeClass *k = &r->cls; char c[800];
 #define CL(...) do { if (D->nlim < 14) { snprintf(c, sizeof c, __VA_ARGS__); cxb_esc(D->lim[D->nlim], sizeof D->lim[0], c, 300); D->nlim++; } } while (0)
     char sc[260]; cxb_esc(sc, sizeof sc, rc->scope, 200);
-    if (k->kind == UI_HISTORY) CL("only the owner's saved memory was searched, not the code or the files; a note is the owner's own dated recollection");
+    if (k->kind == UI_WEB) CL("web content comes from outside the machine and is shown as read at the time given; it is not checked against the code or the files and may be wrong or out of date");
+    else if (k->kind == UI_HISTORY) CL("only the owner's saved memory was searched, not the code or the files; a note is the owner's own dated recollection");
     else if (rc->idx_mode == 2) CL("only the indexed set was searched (%s); another project, an ignored folder or a file outside it is not seen", sc);
     else if (rc->idx_mode == 1) CL("the index is partial (%s): what is listed is what exists so far, and a match may be missing", sc);
     else CL("no index covers this folder (%s): files were scanned by text only", sc);
@@ -262,6 +270,7 @@ static void cxb_question(const UioeCtx *cx, const UioeRequest *r, char *out, siz
     case UI_ERROR: snprintf(what, sizeof what, "find where this error comes from%s%s", nt ? " (" : "", nt ? terms : ""); if (nt) { size_t l = strlen(what); snprintf(what + l, sizeof what - l, ")"); } break;
     case UI_HOWTO: snprintf(what, sizeof what, "find what the project documents say about %s", nt ? terms : "this"); break;
     case UI_OVERVIEW: snprintf(what, sizeof what, "describe the structure and purpose of the project"); break;
+    case UI_WEB: snprintf(what, sizeof what, "find out from the web%s%s%s", nt ? " (" : "", nt ? terms : "", nt ? ")" : ""); break;
     case UI_HISTORY: snprintf(what, sizeof what, "recall what the owner saved in memory about %s (earlier agreements, preferences or decisions)", nt ? terms : "this"); break;
     default: snprintf(what, sizeof what, "locate %s", sym[0] ? sym : nt ? terms : "what was asked"); break;
     }
@@ -274,6 +283,7 @@ static void cxb_next(const UioeCtx *cx, const UioeRequest *r, const CbDoc *D, in
     const UioeRecall *rc = &r->rc; const UioeAsk *a = &r->ask; const UioeGraph *g = rc->g; char act[420] = "";
     char root[300]; cxb_escp(root, sizeof root, a->root);
     const int foreign = a->root[0] && strcmp(a->root, cx->cwd) != 0;
+    if (r->cls.kind == UI_WEB) { char e[420]; cxb_esc(e, sizeof e, rc->next, 400); snprintf(out, cap, "%s", e); return; }      /* U9: o Next da web e decidido na recuperacao (orch_next) */
     if (limits_form) {
         if (a->place_note || strstr(rc->decision_note, "cited place")) snprintf(act, sizeof act, "Pass path=%s to Find, Symbols and Grep, then answer.", root);
         else if (strstr(rc->decision_note, "does not exist")) snprintf(act, sizeof act, "Tell the user the name does not exist in this project, or ask for the exact name.");
