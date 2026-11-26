@@ -263,9 +263,9 @@ static size_t ctb_utf8(const char *s, size_t n) { while (n > 0 && ((unsigned cha
 static int ctb_reading(pid_t sid, const char *slave) {
 #if defined(__x86_64__) || defined(__aarch64__)
 #if defined(__x86_64__)
-    static const long rd[] = { 0, 19, 275, -9 }, wt[] = { 7, 23, 270, 271, 232, 281, -9 };      /* read, readv, splice; poll, select, pselect6, ppoll, epoll_wait, epoll_pwait */
+    static const long rd[] = { 0, 19, 275, -9 };      /* read, readv, splice */
 #else
-    static const long rd[] = { 63, 65, 76, -9 }, wt[] = { 72, 73, 22, -9 };
+    static const long rd[] = { 63, 65, 76, -9 };
 #endif
     DIR *d = opendir("/proc");
     if (!d) return -1;
@@ -285,24 +285,34 @@ static int ctb_reading(pid_t sid, const char *slave) {
         int ppid = 0, pgrp = 0, sess = 0;
         if (!rp || sscanf(rp + 1, " %c %d %d %d", &state, &ppid, &pgrp, &sess) != 4 || sess != (int)sid || state == 'Z') continue;
         if (state == 'R') { res = res < 0 ? res : 0; continue; }
-        snprintf(p, sizeof p, "/proc/%s/syscall", e->d_name);
-        f = fopen(p, "r");
-        if (!f) { res = -1; continue; }
-        k = fread(b, 1, sizeof b - 1, f);
-        fclose(f);
-        b[k] = 0;
-        long nr = -1;
-        unsigned long a0 = 0;
-        if (sscanf(b, "%ld 0x%lx", &nr, &a0) != 2) { if (strncmp(b, "running", 7)) res = -1; continue; }
-        int isrd = 0, iswt = 0;
-        for (int i = 0; rd[i] >= 0; i++) if (nr == rd[i]) isrd = 1;
-        for (int i = 0; wt[i] >= 0; i++) if (nr == wt[i]) iswt = 1;
-        if (isrd) {
-            char l[256];
-            snprintf(p, sizeof p, "/proc/%s/fd/%lu", e->d_name, a0);
-            const ssize_t ll = readlink(p, l, sizeof l - 1);
-            if (ll > 0) { l[ll] = 0; if (!strcmp(l, slave) || !strcmp(l, "/dev/tty")) { closedir(d); return 1; } }
-        } else if (iswt) res = -1;
+        /* todas as threads do processo (um programa com varias threads le o terminal numa delas; a principal pode estar em sigsuspend,
+           futex ou epoll): leitura do terminal = 1; dormindo em outra chamada = nao da para saber (-1), o texto da ultima linha decide */
+        char td[300];
+        snprintf(td, sizeof td, "/proc/%s/task", e->d_name);
+        DIR *dt = opendir(td);
+        if (!dt) { res = -1; continue; }
+        struct dirent *et;
+        while ((et = readdir(dt))) {
+            if (!isdigit((unsigned char)et->d_name[0])) continue;
+            snprintf(p, sizeof p, "/proc/%s/task/%s/syscall", e->d_name, et->d_name);
+            f = fopen(p, "r");
+            if (!f) { res = -1; continue; }
+            k = fread(b, 1, sizeof b - 1, f);
+            fclose(f);
+            b[k] = 0;
+            long nr = -1;
+            unsigned long a0 = 0;
+            if (sscanf(b, "%ld 0x%lx", &nr, &a0) != 2) { if (strncmp(b, "running", 7)) res = -1; continue; }
+            int isrd = 0;
+            for (int i = 0; rd[i] >= 0; i++) if (nr == rd[i]) isrd = 1;
+            if (isrd) {
+                char l[256];
+                snprintf(p, sizeof p, "/proc/%s/fd/%lu", e->d_name, a0);
+                const ssize_t ll = readlink(p, l, sizeof l - 1);
+                if (ll > 0) { l[ll] = 0; if (!strcmp(l, slave) || !strcmp(l, "/dev/tty")) { closedir(dt); closedir(d); return 1; } }
+            } else res = -1;
+        }
+        closedir(dt);
     }
     closedir(d);
     return res;
