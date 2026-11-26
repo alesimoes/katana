@@ -456,7 +456,8 @@ static void flow_jit(char *out, size_t cap);
 static size_t flow_memory_note(const char *name, const char *js, const char *end, const char *result, int failed, char *out, size_t cap);      /* flowmem.c */
 
 /* ---- pedido novo do usuario: escolhe, continua ou encerra o fluxo; out recebe a linha para o fim do pedido (0: nada) ---- */
-static size_t flow_request(const char *ureq, char *out, size_t cap) {
+static void rz_sync_flow(void);      /* resume.c: o espelho durável do estado do fluxo */
+static size_t flow_request_body(const char *ureq, char *out, size_t cap) {
     static const char *const yes[] = {"aprov", "sim", "pode", "gostei", "perfeito", "otim", "approved", "yes", "looks good", "alta defini", "flux", "final", NULL};
     static const char *const chg[] = {"mais ", "menos", "cor", "mude", "muda", "troque", "troca", "change", "more ", "less ", "add", "adicion", "remov", "tir", "coloc", "fundo", "estilo", "style", "maior", "menor", "outra", "de novo", "again", "nao gostei", "refaz", NULL};
     static const char *const go[] = {"continu", "segue", "siga", "go on", "prossiga", "vai", "pode", "sim", "ok", "yes", NULL};
@@ -487,6 +488,8 @@ static size_t flow_request(const char *ureq, char *out, size_t cap) {
     if (n + 400 < cap) flow_jit(out + n, cap - n);
     return strlen(out);
 }
+
+static size_t flow_request(const char *ureq, char *out, size_t cap) { const size_t r = flow_request_body(ureq, out, cap); rz_sync_flow(); return r; }
 
 /* ---- antes de a ferramenta rodar: desvio do fluxo. Devolve 1 (com o erro em out) so em KATANA_FLOW=strict; senao guarda o desvio para a linha ---- */
 static int flow_before(const char *name, const char *js, const char *end, char *out, size_t cap) {
@@ -526,7 +529,7 @@ static int flow_before(const char *name, const char *js, const char *end, char *
 }
 
 /* ---- depois de a ferramenta rodar: o estado anda e a linha entra no fim do resultado (closing: o pedido esta encerrando, so o estado anda) ---- */
-static void flow_after(const char *name, const char *js, const char *end, char *result, size_t cap, int failed, int closing) {
+static void flow_after_body(const char *name, const char *js, const char *end, char *result, size_t cap, int failed, int closing) {
     const size_t rl = strlen(result);
     char pre[700]; size_t pn = (size_t)snprintf(pre, sizeof pre, "%s", g_fl.dev);
     const int had_dev = g_fl.dev[0] != 0;
@@ -594,6 +597,10 @@ static void flow_after(const char *name, const char *js, const char *end, char *
     if (changed && flow_retrieve(name, result, result + rl, cap - rl - 900)) el = strlen(result + rl);      /* o estado novo diz o que falta: a evidencia entra antes da linha */
     el += fl_line(result + rl + el, cap - rl - el, pre);
     if (changed && rl + el + 400 < cap) flow_jit(result + rl + el, cap - rl - el);
+}
+
+static void flow_after(const char *name, const char *js, const char *end, char *result, size_t cap, int failed, int closing) {
+    flow_after_body(name, js, end, result, cap, failed, closing); rz_sync_flow();
 }
 
 /* ---- declaracao na hora (KATANA_FLOW_JIT=1, desligada por padrao): o estado espera uma ferramenta que nao esta na lista curta do prompt

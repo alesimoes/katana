@@ -54,6 +54,7 @@ static struct {
     int reason;                                                               /* reentrada pendente (RZR_*) */
     int grace, score_left, sc_on, sc_dead, sc_dup, sc_reason; char delta[6][200]; int ndelta;
     int loaded, new_proc, moved, foreign, noted;                              /* carga: houve estado; o que mudou no ambiente; aviso de erro dado */
+    char req_text[400]; int goal_fid;                                         /* o pedido em curso (limpo) e o fluxo de baixo da pilha quando o objetivo foi gravado */
 } g_rz;
 #define RZ_UNUSED __attribute__((unused))
 
@@ -73,7 +74,7 @@ static void rz_path(const char *sess, char *o, size_t cap) {
 }
 static void rz_cpy(char *d, size_t cap, const char *s) { size_t n = s ? strlen(s) : 0; if (n >= cap) n = cap - 1; if (n) memcpy(d, s, n); d[n] = 0; }
 /* texto para dentro do estado: no maximo cap-1 bytes, corte seguro em UTF-8, segredos mascarados; multi: mantem as quebras de linha (so a lista de tarefas) */
-RZ_UNUSED static void rz_clean(char *d, size_t cap, const char *s, int multi) {
+static void rz_clean(char *d, size_t cap, const char *s, int multi) {
     if (!s) s = "";
     if (!multi) fc_cut(d, cap, s);
     else {
@@ -296,6 +297,18 @@ static void rz_ev(char kind, ...) {
     rz_emit(kind, n, f);
 }
 
+/* g_fl guarda o que a conversa ja viu (seen) e as chamadas recentes (ring): vao ao estado so no ponto de salvamento, os mais novos */
+static void rz_pull_ring(void) {
+    RzState *s = &g_rz.s;
+    const int sn = g_fl.seen_n < 256 ? g_fl.seen_n : 256, ss = g_fl.seen_n < 256 ? 0 : (g_fl.seen_w & 255);
+    const int st = sn < RZ_SEEN ? sn : RZ_SEEN;
+    s->nseen = 0;
+    for (int i = sn - st; i < sn; i++) s->seen[s->nseen++] = g_fl.seen[(ss + i) % 256];
+    const int rn = g_fl.ring_n, rs = g_fl.ring_n < FL_RING ? 0 : (g_fl.ring_w % FL_RING);
+    const int rt = rn < RZ_RING ? rn : RZ_RING;
+    s->nring = 0;
+    for (int i = rn - rt; i < rn; i++) { const int k = (rs + i) % FL_RING; s->ring[s->nring].sig = g_fl.ring[k].sig; s->ring[s->nring].res = g_fl.ring[k].res; s->ring[s->nring].n = g_fl.ring[k].n; s->ring[s->nring].req = g_fl.ring[k].req; s->nring++; }
+}
 /* ---- ponto de salvamento: o estado como a menor lista de eventos que o reproduz ---- */
 static void rz_wla(FILE *fp, long *seq, long long ts, char kind, int n, const char *const *f) {
     static char buf[RZ_LINE];
@@ -363,6 +376,7 @@ static FILE *rz_fopen_append(const char *path) {
 }
 static void rz_checkpoint(void) {
     if (!g_rz.file[0] || g_rz.readonly) return;
+    if (g_ct_depth <= 1) rz_pull_ring();
     char tmp[1120]; snprintf(tmp, sizeof tmp, "%s.tmp", g_rz.file);
     FILE *fp = fopen(tmp, "wb");
     if (!fp) { rz_fail(); return; }
@@ -439,6 +453,7 @@ static void rz_release(void) {
     g_rz.lockfd = 0; g_rz.file[0] = 0; g_rz.readonly = 0; g_rz.seq = 0; g_rz.since_ckpt = 0;
 }
 static void rz_close(void) { rz_release(); memset(&g_rz, 0, sizeof g_rz); }
+static void rz_restore_flow(void);
 /* abre o estado da sessao: trava, le, reescreve como ponto de salvamento e anota o processo atual. adopt: o estado em memoria
  * (de antes de a sessao ter arquivo) passa para o arquivo novo, se ele ainda nao existe. Devolve 1 se havia estado gravado. */
 static int rz_open(const char *sess_path, int adopt) {
@@ -462,9 +477,11 @@ static int rz_open(const char *sess_path, int adopt) {
     const int exists = stat(path, &st) == 0;
     if (!adopt || exists) { memset(&g_rz.s, 0, sizeof g_rz.s); g_rz.loaded = rz_replay(path); }
     if (g_rz.loaded) rz_env_check();
-    if (g_rz.readonly) return g_rz.loaded;
-    rz_checkpoint();      /* reescreve o arquivo limpo (apara a cauda rasgada) e abre para anexar */
-    rz_header(sess_path);
+    if (!g_rz.readonly) {
+        rz_checkpoint();      /* reescreve o arquivo limpo (apara a cauda rasgada) e abre para anexar */
+        rz_header(sess_path);
+    }
+    if (g_rz.loaded) rz_restore_flow();
     return g_rz.loaded;
 }
 /* a sessao foi apagada (sess_purge): o estado dela vai junto */
@@ -472,4 +489,52 @@ static void rz_remove_files(const char *sess_path) {
     char p[1100], q[1130]; rz_path(sess_path, p, sizeof p);
     if (!p[0]) return;
     remove(p); snprintf(q, sizeof q, "%s.lock", p); remove(q); snprintf(q, sizeof q, "%s.bad", p); remove(q); snprintf(q, sizeof q, "%s.tmp", p); remove(q);
+}
+
+/* ---------- espelho do fluxo, objetivo e pedido ---------- */
+/* g_fl -> estado: so o que mudou vira evento (F, X, G) */
+static void rz_sync_flow(void) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    RzState *s = &g_rz.s;
+    int diff = s->depth != g_fl.depth || s->task != g_fl.task || s->cycles != g_fl.cycles || s->webcalls != g_fl.webcalls || s->badfetch != g_fl.badfetch;
+    for (int i = 0; !diff && i < g_fl.depth; i++) diff = s->stk[i].id != g_fl.stk[i].id || s->stk[i].st != g_fl.stk[i].st;
+    if (diff) {
+        const char *f[RZ_MAXF]; char b[FL_DEPTH][48]; int k = 0;
+        f[k++] = rz_i(g_fl.depth); k = rz_stack_fields(g_fl.stk, g_fl.depth, b, f, k);
+        f[k++] = rz_i(g_fl.task); f[k++] = rz_i(g_fl.cycles); f[k++] = rz_i(g_fl.webcalls); f[k++] = rz_i(g_fl.badfetch);
+        rz_emit('F', k, f);
+    }
+    char b1[400];
+    rz_clean(b1, sizeof s->path, g_fl.path, 0); if (strcmp(b1, s->path)) rz_ev('X', "path", b1, NULL);
+    rz_clean(b1, sizeof s->err, g_fl.err, 0); if (strcmp(b1, s->err)) rz_ev('X', "err", b1, NULL);
+    rz_clean(b1, sizeof s->errfile, g_fl.errfile, 0); if (strcmp(b1, s->errfile)) rz_ev('X', "errfile", b1, NULL);
+    /* objetivo: o pedido que abriu o fluxo de baixo da pilha; troca so quando o pedido cai em OUTRO fluxo */
+    const int bot = g_fl.depth ? g_fl.stk[0].id : 0;
+    if (!bot) g_rz.goal_fid = 0;
+    else if (bot != g_rz.goal_fid && g_rz.req_text[0]) { g_rz.goal_fid = bot; rz_ev('G', g_rz.req_text, NULL); }
+}
+/* estado -> g_fl, pelos nomes (a pilha ja veio validada de rz_apply) */
+static void rz_restore_flow(void) {
+    const RzState *s = &g_rz.s;
+    g_fl.depth = s->depth;
+    for (int i = 0; i < s->depth; i++) g_fl.stk[i] = s->stk[i];
+    g_fl.task = s->task; g_fl.cycles = s->cycles; g_fl.webcalls = s->webcalls; g_fl.badfetch = s->badfetch;
+    rz_cpy(g_fl.path, sizeof g_fl.path, s->path); rz_cpy(g_fl.err, sizeof g_fl.err, s->err); rz_cpy(g_fl.errfile, sizeof g_fl.errfile, s->errfile);
+    g_fl.req = s->req;
+    g_fl.seen_n = s->nseen; g_fl.seen_w = 0;
+    for (int i = 0; i < s->nseen; i++) g_fl.seen[i] = s->seen[i];
+    g_fl.ring_n = s->nring; g_fl.ring_w = 0;
+    for (int i = 0; i < s->nring; i++) { g_fl.ring[i].sig = s->ring[i].sig; g_fl.ring[i].res = s->ring[i].res; g_fl.ring[i].n = s->ring[i].n; g_fl.ring[i].req = s->ring[i].req; }
+    g_fl.emitted_st = -1;
+    g_rz.goal_fid = s->depth ? s->stk[0].id : 0;
+    if (fl_id() == FL_CODE) fl_find_verify();
+    flow_grammar_mask();
+}
+/* chamado antes de flow_request: anota o pedido (U) */
+static void rz_request_begin(const char *ureq) {
+    if (!rz_on() || g_ct_depth > 1) return;
+    if (!g_rz.s.agent_pid) rz_header(g_sess_path);
+    rz_clean(g_rz.req_text, sizeof g_rz.req_text, ureq, 0);
+    char b[240]; rz_clean(b, sizeof b, ureq, 0);
+    rz_ev('U', rz_i(g_fl.req + 1), b, NULL);
 }
